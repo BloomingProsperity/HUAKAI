@@ -225,6 +225,25 @@ type alertingEvaluatorRunner interface {
 	Run(context.Context) error
 }
 
+type notifyFiringDeliverer struct {
+	notifier *notify.Notifier
+}
+
+func (d notifyFiringDeliverer) DeliverFiring(ctx context.Context, tenantID int64, notice alerting.FiringNotice) error {
+	if d.notifier == nil {
+		return nil
+	}
+	return d.notifier.NotifyAlertFiring(ctx, tenantID, notify.AlertFiringInfo{
+		RuleName:      notice.RuleName,
+		Metric:        notice.Metric,
+		Comparator:    string(notice.Comparator),
+		Threshold:     notice.Threshold,
+		Severity:      string(notice.Severity),
+		ObservedValue: notice.ObservedValue,
+		FiredAt:       notice.FiredAt,
+	})
+}
+
 func startAlertingEvaluator(ctx context.Context, cfg *Config, runner alertingEvaluatorRunner, logger *zap.Logger) func() {
 	if cfg == nil || !cfg.AlertingEvalEnabled || runner == nil {
 		return nil
@@ -939,7 +958,17 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	d.metricsHandler = metricsHandler
 	d.otelShutdown = otelShutdown
 	alertingStore := alerting.NewPostgresStore(pgPool)
-	alertingService := alerting.NewService(alertingStore)
+	alertingService := alerting.NewService(alertingStore,
+		alerting.WithFiringDeliverer(notifyFiringDeliverer{notifier: notifier}),
+		alerting.WithFiringDeliveryErrorRecorder(func(_ context.Context, tenantID int64, notice alerting.FiringNotice, err error) {
+			logger.Warn("alert firing notification delivery failed",
+				zap.Int64("tenant_id", tenantID),
+				zap.Int64("rule_id", notice.RuleID),
+				zap.String("rule_name", notice.RuleName),
+				zap.Error(err),
+			)
+		}),
+	)
 	alertingScheduler := alerting.NewScheduler(alerting.SchedulerConfig{
 		Evaluator:    alertingService,
 		Store:        alertingStore,

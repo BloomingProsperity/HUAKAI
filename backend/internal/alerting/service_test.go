@@ -170,11 +170,12 @@ func TestEvaluateRules_ResolvesWhenRecovered(t *testing.T) {
 	}
 }
 
-func TestEvaluateRules_SilenceSuppresses(t *testing.T) {
-	// MUTATION: ignore active rule-matching silences; the breach creates a firing event despite the silence window.
+func TestSilencedAlertNotDelivered(t *testing.T) {
+	// MUTATION: ignore active rule-matching silences for delivery; the silenced firing edge calls the deliverer.
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
-	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	deliverer := &recordingFiringDeliverer{}
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }), WithFiringDeliverer(deliverer))
 	rule := mustCreateRule(t, svc, CreateRuleInput{
 		TenantID:      7,
 		Name:          "request spike",
@@ -201,8 +202,11 @@ func TestEvaluateRules_SilenceSuppresses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("events=%+v want silence to suppress firing", events)
+	if len(events) != 1 || events[0].State != EventStateFiring {
+		t.Fatalf("events=%+v want one persisted firing event", events)
+	}
+	if got := deliverer.Count(); got != 0 {
+		t.Fatalf("deliveries=%d want 0 for active silence", got)
 	}
 }
 
@@ -235,11 +239,114 @@ func TestEvaluateRules_Idempotent(t *testing.T) {
 	}
 }
 
-func TestAlert_TenantScoped(t *testing.T) {
-	// MUTATION: drop tenant filters from rules/events/silences; tenant A sees tenant B rows or tenant A silence suppresses tenant B firing.
+func TestFiringEdgeDeliversOnce(t *testing.T) {
+	// MUTATION: deliver on every evaluation instead of only a newly created firing edge; the deliverer call count becomes 2.
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	deliverer := &recordingFiringDeliverer{}
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }), WithFiringDeliverer(deliverer))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "latency spike",
+		Metric:        "gateway.latency_ms",
+		Comparator:    ComparatorGTE,
+		Threshold:     100,
+		Severity:      SeverityCritical,
+		WindowSeconds: 60,
+	})
+
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.latency_ms": 150}); err != nil {
+		t.Fatalf("EvaluateRules first firing: %v", err)
+	}
+	now = now.Add(time.Minute)
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.latency_ms": 175}); err != nil {
+		t.Fatalf("EvaluateRules still firing: %v", err)
+	}
+
+	notices := deliverer.Notices()
+	if len(notices) != 1 {
+		t.Fatalf("deliveries=%d want 1", len(notices))
+	}
+	notice := notices[0]
+	if notice.RuleName != "latency spike" || notice.Metric != "gateway.latency_ms" || notice.Comparator != ComparatorGTE ||
+		notice.Threshold != 100 || notice.Severity != SeverityCritical || notice.ObservedValue != 150 || !notice.FiredAt.Equal(time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("notice=%+v want first-edge rule and observed details", notice)
+	}
+}
+
+func TestNilDelivererSafe(t *testing.T) {
+	// MUTATION: assume a non-nil deliverer on the firing edge; this test panics before the persisted event assertion.
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "request spike",
+		Metric:        "gateway.requests",
+		Comparator:    ComparatorGTE,
+		Threshold:     100,
+		Severity:      SeverityWarning,
+		WindowSeconds: 60,
+	})
+
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 150}); err != nil {
+		t.Fatalf("EvaluateRules nil deliverer: %v", err)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("firing events=%+v want one persisted event", events)
+	}
+}
+
+func TestFiringDeliveryErrorDoesNotFailEvaluation(t *testing.T) {
+	// MUTATION: return the deliverer error from EvaluateRules; the evaluation fails instead of preserving the firing event.
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	deliveryErr := errors.New("delivery down")
+	deliverer := &recordingFiringDeliverer{err: deliveryErr}
+	var recordedErr error
+	svc := NewService(
+		NewMemoryStore(),
+		WithClock(func() time.Time { return now }),
+		WithFiringDeliverer(deliverer),
+		WithFiringDeliveryErrorRecorder(func(_ context.Context, _ int64, _ FiringNotice, err error) {
+			recordedErr = err
+		}),
+	)
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "request spike",
+		Metric:        "gateway.requests",
+		Comparator:    ComparatorGTE,
+		Threshold:     100,
+		Severity:      SeverityCritical,
+		WindowSeconds: 60,
+	})
+
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 150}); err != nil {
+		t.Fatalf("EvaluateRules propagated delivery error: %v", err)
+	}
+	if !errors.Is(recordedErr, deliveryErr) {
+		t.Fatalf("recordedErr=%v want delivery error", recordedErr)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("firing events=%+v want one persisted event", events)
+	}
+}
+
+func TestAlert_TenantScoped(t *testing.T) {
+	// MUTATION: drop tenant filters from rules/events/silences; tenant A sees tenant B rows or tenant A silence suppresses tenant B delivery.
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	deliverer := &recordingFiringDeliverer{}
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }), WithFiringDeliverer(deliverer))
 	ruleA := mustCreateRule(t, svc, CreateRuleInput{
 		TenantID:      7,
 		Name:          "tenant a spike",
@@ -279,8 +386,8 @@ func TestAlert_TenantScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListEvents tenant A: %v", err)
 	}
-	if len(eventsA) != 0 {
-		t.Fatalf("tenant A events=%+v want none due silence", eventsA)
+	if len(eventsA) != 1 || eventsA[0].TenantID != 7 {
+		t.Fatalf("tenant A events=%+v want one persisted silenced firing", eventsA)
 	}
 	eventsB, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 8, Limit: 50})
 	if err != nil {
@@ -296,6 +403,10 @@ func TestAlert_TenantScoped(t *testing.T) {
 	if len(silencesB) != 0 {
 		t.Fatalf("tenant B silences=%+v want empty", silencesB)
 	}
+	notices := deliverer.Notices()
+	if len(notices) != 1 || notices[0].RuleName != "tenant b spike" {
+		t.Fatalf("deliveries=%+v want only tenant B unsilenced firing", notices)
+	}
 }
 
 func mustCreateRule(t *testing.T, svc *Service, in CreateRuleInput) AlertRule {
@@ -305,4 +416,26 @@ func mustCreateRule(t *testing.T, svc *Service, in CreateRuleInput) AlertRule {
 		t.Fatalf("CreateRule %q: %v", in.Name, err)
 	}
 	return rule
+}
+
+type recordingFiringDeliverer struct {
+	tenantIDs []int64
+	notices   []FiringNotice
+	err       error
+}
+
+func (d *recordingFiringDeliverer) DeliverFiring(_ context.Context, tenantID int64, notice FiringNotice) error {
+	d.tenantIDs = append(d.tenantIDs, tenantID)
+	d.notices = append(d.notices, notice)
+	return d.err
+}
+
+func (d *recordingFiringDeliverer) Count() int {
+	return len(d.notices)
+}
+
+func (d *recordingFiringDeliverer) Notices() []FiringNotice {
+	out := make([]FiringNotice, len(d.notices))
+	copy(out, d.notices)
+	return out
 }

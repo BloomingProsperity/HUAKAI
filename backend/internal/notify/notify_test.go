@@ -274,6 +274,75 @@ func TestNotifyTypeNoneShortCircuitsRepeatDBReads(t *testing.T) {
 	}
 }
 
+func TestNotifyAlertFiringDispatches(t *testing.T) {
+	// MUTATION: drop the alert firing dispatch call after resolving active settings; no outbound request is recorded.
+	now := time.Date(2026, 6, 7, 9, 30, 0, 0, time.UTC)
+	store := fakeStore{activeSettings: []Settings{
+		{
+			TenantID:      7,
+			UserID:        42,
+			NotifyType:    TypeWebhook,
+			WebhookURL:    "https://hooks.example.test/alerts",
+			WebhookSecret: "alert-secret",
+		},
+		{
+			TenantID:   7,
+			UserID:     43,
+			NotifyType: TypeBark,
+			BarkURL:    "https://bark.example.test/push",
+			UpdatedBy:  "ops",
+			UpdatedAt:  now,
+		},
+	}}
+	httpCalls := &recordingRoundTripper{status: http.StatusNoContent}
+	notifier := NewNotifier(Config{
+		Store:       store,
+		HTTPClient:  &http.Client{Transport: httpCalls},
+		Now:         func() time.Time { return now },
+		RateLimiter: NewRateLimiter(time.Hour),
+	})
+
+	err := notifier.NotifyAlertFiring(context.Background(), 7, AlertFiringInfo{
+		RuleName:      "latency spike",
+		Metric:        "gateway.latency_ms",
+		Comparator:    "gte",
+		Threshold:     100,
+		Severity:      "critical",
+		ObservedValue: 150,
+		FiredAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("NotifyAlertFiring: %v", err)
+	}
+
+	reqs := httpCalls.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("alert firing calls=%d want 2 configured channels", len(reqs))
+	}
+	webhookReq := reqs[0]
+	if webhookReq.URL.String() != "https://hooks.example.test/alerts" {
+		t.Fatalf("webhook url=%s", webhookReq.URL.String())
+	}
+	if got := webhookReq.Header.Get("X-HUAKAI-Notification-Event"); got != EventAlertFiring {
+		t.Fatalf("event header=%q want %q", got, EventAlertFiring)
+	}
+	if got := webhookReq.Header.Get("X-HUAKAI-Notification-Signature"); got != webhookSignature("alert-secret", webhookReq.Body) {
+		t.Fatalf("webhook signature=%q does not match body", got)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(webhookReq.Body, &payload); err != nil {
+		t.Fatalf("webhook payload json: %v", err)
+	}
+	if payload["event_type"] != EventAlertFiring || payload["rule_name"] != "latency spike" ||
+		payload["metric"] != "gateway.latency_ms" || payload["severity"] != "critical" ||
+		payload["observed_value"].(float64) != 150 {
+		t.Fatalf("webhook payload=%v want alert firing fields", payload)
+	}
+	if barkReq := reqs[1]; barkReq.URL.String() != "https://bark.example.test/push" || barkReq.Header.Get("X-HUAKAI-Notification-Event") != EventAlertFiring {
+		t.Fatalf("bark request=%s event=%q", barkReq.URL.String(), barkReq.Header.Get("X-HUAKAI-Notification-Event"))
+	}
+}
+
 func webhookSignature(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write(body)
@@ -285,8 +354,9 @@ func fixedNow() time.Time {
 }
 
 type fakeStore struct {
-	settings Settings
-	err      error
+	settings       Settings
+	activeSettings []Settings
+	err            error
 }
 
 func (s fakeStore) GetSettings(context.Context, int64, int64) (Settings, error) {
@@ -294,6 +364,15 @@ func (s fakeStore) GetSettings(context.Context, int64, int64) (Settings, error) 
 		return Settings{}, s.err
 	}
 	return s.settings, nil
+}
+
+func (s fakeStore) ListActiveSettings(context.Context, int64) ([]Settings, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	out := make([]Settings, len(s.activeSettings))
+	copy(out, s.activeSettings)
+	return out, nil
 }
 
 func (s fakeStore) UpsertSettings(context.Context, Settings) (Settings, error) {
