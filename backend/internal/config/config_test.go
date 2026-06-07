@@ -413,6 +413,52 @@ func TestLoadPaymentExpireSweepReadsEnv(t *testing.T) {
 	}
 }
 
+func TestLoadAPIKeyExpirySweepDefaultsEnabledBounded(t *testing.T) {
+	// AUTH-150: default boot should materialize expired key status without
+	// operator ceremony, while still bounding cadence and rows per batch.
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED", "")
+	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_INTERVAL", "")
+	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_BATCH_LIMIT", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.APIKeyExpirySweepEnabled {
+		t.Fatal("APIKeyExpirySweepEnabled=false want default true")
+	}
+	if cfg.APIKeyExpirySweepInterval != DefaultAPIKeyExpirySweepInterval {
+		t.Fatalf("APIKeyExpirySweepInterval=%s want %s", cfg.APIKeyExpirySweepInterval, DefaultAPIKeyExpirySweepInterval)
+	}
+	if cfg.APIKeyExpirySweepBatchLimit != DefaultAPIKeyExpirySweepBatchLimit {
+		t.Fatalf("APIKeyExpirySweepBatchLimit=%d want %d", cfg.APIKeyExpirySweepBatchLimit, DefaultAPIKeyExpirySweepBatchLimit)
+	}
+}
+
+func TestLoadAPIKeyExpirySweepReadsEnvAndCanDisable(t *testing.T) {
+	// MUTATION: ignore HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED=false; operators
+	// cannot pause the display-state worker during incident response.
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED", "false")
+	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_INTERVAL", "30s")
+	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_BATCH_LIMIT", "17")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.APIKeyExpirySweepEnabled {
+		t.Fatal("APIKeyExpirySweepEnabled=true want false from env")
+	}
+	if cfg.APIKeyExpirySweepInterval != 30*time.Second {
+		t.Fatalf("APIKeyExpirySweepInterval=%s want 30s", cfg.APIKeyExpirySweepInterval)
+	}
+	if cfg.APIKeyExpirySweepBatchLimit != 17 {
+		t.Fatalf("APIKeyExpirySweepBatchLimit=%d want 17", cfg.APIKeyExpirySweepBatchLimit)
+	}
+}
+
 func TestLoadAlertingEvalDefaultsDisabled(t *testing.T) {
 	// MUTATION: default AlertingEvalEnabled to true; fresh installs start the alert evaluator without operator opt-in.
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
@@ -491,6 +537,38 @@ func TestLoadRejectsInvalidPaymentExpireSweepConfig(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+			t.Setenv(tc.env, tc.raw)
+
+			err := loadOnlyError()
+
+			if err == nil {
+				t.Fatalf("invalid %s=%q was accepted", tc.env, tc.raw)
+			}
+			if !strings.Contains(err.Error(), tc.env) {
+				t.Fatalf("err=%v must name %s", err, tc.env)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidAPIKeyExpirySweepConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		raw  string
+	}{
+		{name: "enabled garbage", env: "HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED", raw: "sometimes"},
+		{name: "interval zero", env: "HUAKAI_API_KEY_EXPIRY_SWEEP_INTERVAL", raw: "0"},
+		{name: "interval garbage", env: "HUAKAI_API_KEY_EXPIRY_SWEEP_INTERVAL", raw: "soon"},
+		{name: "interval negative", env: "HUAKAI_API_KEY_EXPIRY_SWEEP_INTERVAL", raw: "-1s"},
+		{name: "batch zero", env: "HUAKAI_API_KEY_EXPIRY_SWEEP_BATCH_LIMIT", raw: "0"},
+		{name: "batch negative", env: "HUAKAI_API_KEY_EXPIRY_SWEEP_BATCH_LIMIT", raw: "-1"},
+		{name: "batch garbage", env: "HUAKAI_API_KEY_EXPIRY_SWEEP_BATCH_LIMIT", raw: "many"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// MUTATION: accept malformed worker env; boot silently runs with
+			// an unintended expiry sweep lifecycle.
 			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 			t.Setenv(tc.env, tc.raw)
 

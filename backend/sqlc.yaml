@@ -134,6 +134,7 @@ sql:
       - sql/queries/auth_audit.sql
       - sql/queries/auth_credentials.sql
       - sql/queries/auth_inbound.sql
+      - sql/queries/api_key_expiry.sql
       - sql/queries/auth_storm.sql
     gen:
       go:

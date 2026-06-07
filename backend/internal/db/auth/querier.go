@@ -9,6 +9,10 @@ import (
 )
 
 type Querier interface {
+	// API key expiry sweep queries.
+	// Background-only maintenance: materialize already-expired active keys so
+	// user/admin listings stop showing stale active status.
+	ExpireActiveAPIKeys(ctx context.Context, batchLimit int32) (int64, error)
 	GetAccountForRefresh(ctx context.Context, arg GetAccountForRefreshParams) (GetAccountForRefreshRow, error)
 	GetOrCreateAccountStormBudget(ctx context.Context, arg GetOrCreateAccountStormBudgetParams) (GetOrCreateAccountStormBudgetRow, error)
 	GetTokenVersion(ctx context.Context, arg GetTokenVersionParams) (int32, error)

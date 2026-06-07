@@ -72,6 +72,11 @@ type Config struct {
 	PaymentTaobaoCheckoutURL     string
 	PaymentExpireSweepInterval   time.Duration
 	PaymentExpireSweepBatchLimit int
+	// APIKeyExpirySweep* wires the inbound API-key display-state expiry worker.
+	// Default enabled with a bounded ticker; set enabled=false to pause it.
+	APIKeyExpirySweepEnabled    bool
+	APIKeyExpirySweepInterval   time.Duration
+	APIKeyExpirySweepBatchLimit int
 
 	// CacheAnthropicAutoBreakpoints opts into automatic cache_control
 	// breakpoint planning on the live Anthropic Messages egress path
@@ -107,6 +112,8 @@ const (
 	VendorOAuthGemini                   = "gemini"
 	DefaultPaymentExpireSweepInterval   = time.Minute
 	DefaultPaymentExpireSweepBatchLimit = 200
+	DefaultAPIKeyExpirySweepInterval    = 5 * time.Minute
+	DefaultAPIKeyExpirySweepBatchLimit  = 500
 	vendorOAuthAuthURL                  = "AUTH_URL"
 	vendorOAuthTokenURL                 = "TOKEN_URL"
 	vendorOAuthClientID                 = "CLIENT_ID"
@@ -153,6 +160,18 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	paymentExpireSweepBatchLimit, err := envPositiveIntDefault("HUAKAI_PAYMENT_EXPIRE_SWEEP_BATCH_LIMIT", DefaultPaymentExpireSweepBatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	apiKeyExpirySweepEnabled, err := envBoolDefault("HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED", true)
+	if err != nil {
+		return nil, err
+	}
+	apiKeyExpirySweepInterval, err := envPositiveDurationDefault("HUAKAI_API_KEY_EXPIRY_SWEEP_INTERVAL", DefaultAPIKeyExpirySweepInterval)
+	if err != nil {
+		return nil, err
+	}
+	apiKeyExpirySweepBatchLimit, err := envPositiveIntDefault("HUAKAI_API_KEY_EXPIRY_SWEEP_BATCH_LIMIT", DefaultAPIKeyExpirySweepBatchLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +244,9 @@ func Load() (*Config, error) {
 		PaymentTaobaoCheckoutURL:       strings.TrimSpace(os.Getenv("HUAKAI_PAYMENT_TAOBAO_CHECKOUT_URL")),
 		PaymentExpireSweepInterval:     paymentExpireSweepInterval,
 		PaymentExpireSweepBatchLimit:   paymentExpireSweepBatchLimit,
+		APIKeyExpirySweepEnabled:       apiKeyExpirySweepEnabled,
+		APIKeyExpirySweepInterval:      apiKeyExpirySweepInterval,
+		APIKeyExpirySweepBatchLimit:    apiKeyExpirySweepBatchLimit,
 		CacheAnthropicAutoBreakpoints:  cacheAnthropicAutoBreakpoints,
 		AlertingEvalEnabled:            alertingEvalEnabled,
 		AlertingEvalInterval:           alertingEvalInterval,
@@ -375,6 +397,18 @@ func envBool(name string) (bool, error) {
 	return v, nil
 }
 
+func envBoolDefault(name string, fallback bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean, got %q: %w", name, raw, err)
+	}
+	return v, nil
+}
+
 func envOptionalDurationSeconds(name string) (time.Duration, error) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -386,6 +420,27 @@ func envOptionalDurationSeconds(name string) (time.Duration, error) {
 			return 0, fmt.Errorf("%s must be positive seconds, got %q: %w", name, raw, err)
 		}
 		return 0, fmt.Errorf("%s must be positive seconds, got %q", name, raw)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
+
+func envPositiveDurationDefault(name string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d <= 0 {
+			return 0, fmt.Errorf("%s must be positive duration, got %q", name, raw)
+		}
+		return d, nil
+	}
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration like 60s or positive seconds, got %q: %w", name, raw, err)
+	}
+	if seconds <= 0 {
+		return 0, fmt.Errorf("%s must be positive duration, got %q", name, raw)
 	}
 	return time.Duration(seconds) * time.Second, nil
 }

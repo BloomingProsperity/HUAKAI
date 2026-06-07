@@ -34,6 +34,7 @@ type gatewayRuntime struct {
 	hermesRetentionWorker      *hermes.MessageRetentionWorker
 	leaseSweepStop             func()
 	paymentExpireSweepStop     func()
+	apiKeyExpirySweepStop      func()
 	pendingReconcileStop       func()
 	modelSyncStop              func()
 	alertingEvalStop           func()
@@ -69,6 +70,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.paymentExpireSweepStop != nil {
 		rt.paymentExpireSweepStop()
+	}
+	if rt.apiKeyExpirySweepStop != nil {
+		rt.apiKeyExpirySweepStop()
 	}
 	if rt.pendingReconcileStop != nil {
 		rt.pendingReconcileStop()
@@ -187,6 +191,9 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	}
 	if rt.mediaTaskWorker != nil {
 		rt.mediaTaskWorker.Stop()
+	}
+	if rt.apiKeyExpirySweepStop != nil {
+		rt.apiKeyExpirySweepStop()
 	}
 
 	// 合并错误一并返回, 不让前面 step 的失败遮盖后面 step。
