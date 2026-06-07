@@ -51,6 +51,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/usageanalyticshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauditloghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/videoclient"
 )
 
 func (d *deps) AdminObservabilityAuth() gatewayhttp.AdminObservabilityAuth {
@@ -250,6 +251,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		mediataskhttp.MountRoutes(r, mediataskhttp.Deps{Service: d.mediaTaskService})
 		mjclient.MountRoutes(r, d.mediaTaskService)
 		sunoclient.MountRoutes(r, d.mediaTaskService)
+		videoclient.MountRoutes(r, d.mediaTaskService)
 	})
 	r.Route("/v1/users/me/subscriptions", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))

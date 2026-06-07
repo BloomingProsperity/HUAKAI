@@ -1224,6 +1224,21 @@ paths:
         - backend/internal/sunoclient/translate.go
       security:
         - sessionBearerAuth: []
+  /video/submit:
+    post:
+      tags: [video]
+      summary: Submit a video generation task
+      operationId: submitVideoTask
+      x-huakai-spec-source:
+        - backend/internal/videoclient/router.go
+        - backend/internal/videoclient/translate.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Accepts a video-generation request and relays it through the shared
+        async media-task queue. The request JSON is preserved as task input
+        parameters; if no idempotency key is supplied, the server generates one
+        before creating the media task.
       requestBody:
         required: true
         content:
@@ -1232,6 +1247,10 @@ paths:
       responses:
         '202':
           description: Suno task accepted for async provider submission and polling.
+            schema: { $ref: '#/components/schemas/VideoTaskRequest' }
+      responses:
+        '202':
+          description: Video task accepted for async provider submission and polling.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MediaTaskSubmitResponse' }
@@ -1286,6 +1305,13 @@ paths:
       operationId: fetchSunoTaskByQuery
       x-huakai-spec-source:
         - backend/internal/sunoclient/router.go
+  /video/fetch:
+    get:
+      tags: [video]
+      summary: Fetch or list video generation tasks
+      operationId: fetchVideoTask
+      x-huakai-spec-source:
+        - backend/internal/videoclient/router.go
       security:
         - sessionBearerAuth: []
       parameters:
@@ -1305,6 +1331,31 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MediaTask' }
+          description: Optional task id. When omitted, the route lists caller-owned video tasks.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: task_id
+          in: query
+          required: false
+          description: Alias for id.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: taskId
+          in: query
+          required: false
+          description: Camel-case alias for id.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Caller-owned video task status, or a list when no id is supplied.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/MediaTask'
+                  - $ref: '#/components/schemas/MediaTaskListResponse'
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1317,6 +1368,13 @@ paths:
       operationId: fetchSunoTask
       x-huakai-spec-source:
         - backend/internal/sunoclient/router.go
+  /video/fetch/{id}:
+    get:
+      tags: [video]
+      summary: Fetch a video generation task
+      operationId: fetchVideoTaskByID
+      x-huakai-spec-source:
+        - backend/internal/videoclient/router.go
       security:
         - sessionBearerAuth: []
       parameters:
@@ -1324,6 +1382,7 @@ paths:
       responses:
         '200':
           description: Caller-owned Suno task status.
+          description: Caller-owned video task status.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MediaTask' }
@@ -11785,6 +11844,11 @@ components:
       additionalProperties: true
       x-huakai-spec-source:
         - backend/internal/sunoclient/translate.go
+    VideoTaskRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source:
+        - backend/internal/videoclient/translate.go
       properties:
         request_id:
           type: string
@@ -11804,6 +11868,28 @@ components:
         custom_mode: { type: boolean }
         input: { type: string }
         notify_hook: { type: string, format: uri }
+        model: { type: string }
+        prompt: { type: string }
+        image:
+          description: Provider-specific image reference or payload, preserved without translation.
+        duration:
+          description: Provider-specific video duration, preserved without translation.
+        width:
+          type: integer
+          minimum: 1
+        height:
+          type: integer
+          minimum: 1
+        fps:
+          type: integer
+          minimum: 1
+        seed:
+          type: integer
+        n:
+          type: integer
+          minimum: 1
+        response_format:
+          type: string
 
     MediaTaskStatus:
       type: string
