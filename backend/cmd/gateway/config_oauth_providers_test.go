@@ -18,6 +18,8 @@ func TestBuildUserOAuthServiceNewProvidersFailClosedWithoutCompleteCredentials(t
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_AUTH_URL", "https://oauth.nodeseek.example/authorize")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_TOKEN_URL", "https://oauth.nodeseek.example/token")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_USERINFO_URL", "https://api.nodeseek.example/userinfo")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_CLIENT_ID", "linuxdo-id")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_CLIENT_SECRET", "linuxdo-secret")
 
 	svc := buildUserOAuthService(nil)
 	for _, provider := range []string{
@@ -25,6 +27,7 @@ func TestBuildUserOAuthServiceNewProvidersFailClosedWithoutCompleteCredentials(t
 		userauth.SocialProviderDingTalk,
 		userauth.SocialProviderDiscord,
 		userauth.SocialProviderNodeSeek,
+		userauth.SocialProviderLinuxDo,
 	} {
 		if _, ok := svc.Provider(provider); ok {
 			t.Fatalf("%s registered with incomplete credentials/config", provider)
@@ -34,7 +37,7 @@ func TestBuildUserOAuthServiceNewProvidersFailClosedWithoutCompleteCredentials(t
 
 // Mutation guard: omitting any new provider registration branch makes the
 // corresponding Provider lookup fail despite complete config.
-func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkAndNodeSeek(t *testing.T) {
+func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkNodeSeekAndLinuxDo(t *testing.T) {
 	clearSocialOAuthProviderEnv(t)
 	t.Setenv("HUAKAI_QQ_OAUTH_CLIENT_ID", "qq-id")
 	t.Setenv("HUAKAI_QQ_OAUTH_CLIENT_SECRET", "qq-secret")
@@ -54,6 +57,18 @@ func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkAndNodeSeek(t *testin
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_EMAIL_FIELD", "email")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_EMAIL_VERIFIED_FIELD", "email_verified")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_DISPLAY_NAME_FIELD", "name")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_CLIENT_ID", "linuxdo-id")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_CLIENT_SECRET", "linuxdo-secret")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_REDIRECT_URI", "https://app.example/linuxdo")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_AUTH_URL", "https://oauth.linuxdo.example/authorize")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_TOKEN_URL", "https://oauth.linuxdo.example/token")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_USERINFO_URL", "https://api.linuxdo.example/userinfo")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_SUBJECT_FIELD", "id")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_EMAIL_FIELD", "email")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_EMAIL_VERIFIED_FIELD", "email_verified")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_DISPLAY_NAME_FIELD", "username")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_TRUST_LEVEL_FIELD", "trust_level")
+	t.Setenv("HUAKAI_LINUXDO_OAUTH_MIN_TRUST_LEVEL", "2")
 
 	svc := buildUserOAuthService(nil)
 	for _, provider := range []string{
@@ -61,6 +76,7 @@ func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkAndNodeSeek(t *testin
 		userauth.SocialProviderDingTalk,
 		userauth.SocialProviderDiscord,
 		userauth.SocialProviderNodeSeek,
+		userauth.SocialProviderLinuxDo,
 	} {
 		if _, ok := svc.Provider(provider); !ok {
 			t.Fatalf("%s was not registered despite complete credentials/config", provider)
@@ -68,17 +84,15 @@ func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkAndNodeSeek(t *testin
 	}
 }
 
-// Mutation guard: accidentally wiring removed providers makes these inert
+// Mutation guard: accidentally wiring removed providers makes this inert
 // names appear in OAuthService.Provider.
 func TestBuildUserOAuthServiceDoesNotWireRemovedProviders(t *testing.T) {
 	clearSocialOAuthProviderEnv(t)
 	t.Setenv("HUAKAI_WECHAT_OAUTH_CLIENT_ID", "wechat-id")
 	t.Setenv("HUAKAI_WECHAT_OAUTH_CLIENT_SECRET", "wechat-secret")
-	t.Setenv("HUAKAI_LINUXDO_OAUTH_CLIENT_ID", "linuxdo-id")
-	t.Setenv("HUAKAI_LINUXDO_OAUTH_CLIENT_SECRET", "linuxdo-secret")
 
 	svc := buildUserOAuthService(nil)
-	for _, provider := range []string{userauth.SocialProviderWeChat, userauth.SocialProviderLinuxDo} {
+	for _, provider := range []string{userauth.SocialProviderWeChat} {
 		if _, ok := svc.Provider(provider); ok {
 			t.Fatalf("%s must remain inert in this slice", provider)
 		}
@@ -127,6 +141,17 @@ func clearSocialOAuthProviderEnv(t *testing.T) {
 		"HUAKAI_WECHAT_OAUTH_CLIENT_SECRET",
 		"HUAKAI_LINUXDO_OAUTH_CLIENT_ID",
 		"HUAKAI_LINUXDO_OAUTH_CLIENT_SECRET",
+		"HUAKAI_LINUXDO_OAUTH_REDIRECT_URI",
+		"HUAKAI_LINUXDO_OAUTH_AUTH_URL",
+		"HUAKAI_LINUXDO_OAUTH_TOKEN_URL",
+		"HUAKAI_LINUXDO_OAUTH_USERINFO_URL",
+		"HUAKAI_LINUXDO_OAUTH_SUBJECT_FIELD",
+		"HUAKAI_LINUXDO_OAUTH_EMAIL_FIELD",
+		"HUAKAI_LINUXDO_OAUTH_EMAIL_VERIFIED_FIELD",
+		"HUAKAI_LINUXDO_OAUTH_DISPLAY_NAME_FIELD",
+		"HUAKAI_LINUXDO_OAUTH_TRUST_LEVEL_FIELD",
+		"HUAKAI_LINUXDO_OAUTH_MIN_TRUST_LEVEL",
+		"HUAKAI_LINUXDO_OAUTH_SCOPES",
 	} {
 		t.Setenv(key, "")
 	}

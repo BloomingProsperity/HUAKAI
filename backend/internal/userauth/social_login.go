@@ -21,22 +21,24 @@ const (
 )
 
 type OAuthConfig struct {
-	Provider           string
-	ClientID           string
-	ClientSecret       string
-	AuthURL            string
-	TokenURL           string
-	RedirectURI        string
-	Scopes             []string
-	UserURL            string
-	EmailsURL          string
-	OpenIDURL          string
-	JWKSURL            string
-	Issuer             string
-	SubjectField       string
-	EmailField         string
-	EmailVerifiedField string
-	DisplayNameField   string
+	Provider                 string
+	ClientID                 string
+	ClientSecret             string
+	AuthURL                  string
+	TokenURL                 string
+	RedirectURI              string
+	Scopes                   []string
+	UserURL                  string
+	EmailsURL                string
+	OpenIDURL                string
+	JWKSURL                  string
+	Issuer                   string
+	SubjectField             string
+	EmailField               string
+	EmailVerifiedField       string
+	DisplayNameField         string
+	MinimumNumericClaimField string
+	MinimumNumericClaimValue int64
 }
 
 type OAuthStart struct {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -246,7 +247,7 @@ func loadSessionSigningKey() ([]byte, error) {
 }
 
 func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
-	providers := make([]userauth.OAuthProvider, 0, 6)
+	providers := make([]userauth.OAuthProvider, 0, 7)
 	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
 		Provider:     userauth.SocialProviderGoogle,
 		ClientID:     os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_ID"),
@@ -310,6 +311,26 @@ func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
 	}); p != nil {
 		providers = append(providers, p)
 	}
+	if minTrustLevel, ok := linuxDoOAuthMinTrustLevel(logger); ok {
+		if p := buildOAuthProvider(logger, userauth.OAuthConfig{
+			Provider:                 userauth.SocialProviderLinuxDo,
+			ClientID:                 os.Getenv("HUAKAI_LINUXDO_OAUTH_CLIENT_ID"),
+			ClientSecret:             os.Getenv("HUAKAI_LINUXDO_OAUTH_CLIENT_SECRET"),
+			RedirectURI:              os.Getenv("HUAKAI_LINUXDO_OAUTH_REDIRECT_URI"),
+			AuthURL:                  os.Getenv("HUAKAI_LINUXDO_OAUTH_AUTH_URL"),
+			TokenURL:                 os.Getenv("HUAKAI_LINUXDO_OAUTH_TOKEN_URL"),
+			UserURL:                  os.Getenv("HUAKAI_LINUXDO_OAUTH_USERINFO_URL"),
+			SubjectField:             os.Getenv("HUAKAI_LINUXDO_OAUTH_SUBJECT_FIELD"),
+			EmailField:               os.Getenv("HUAKAI_LINUXDO_OAUTH_EMAIL_FIELD"),
+			EmailVerifiedField:       os.Getenv("HUAKAI_LINUXDO_OAUTH_EMAIL_VERIFIED_FIELD"),
+			DisplayNameField:         os.Getenv("HUAKAI_LINUXDO_OAUTH_DISPLAY_NAME_FIELD"),
+			MinimumNumericClaimField: envDefault("HUAKAI_LINUXDO_OAUTH_TRUST_LEVEL_FIELD", "trust_level"),
+			MinimumNumericClaimValue: minTrustLevel,
+			Scopes:                   parseCSVAllowlistEnv("HUAKAI_LINUXDO_OAUTH_SCOPES"),
+		}); p != nil {
+			providers = append(providers, p)
+		}
+	}
 	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
 		Provider:     userauth.SocialProviderDiscord,
 		ClientID:     os.Getenv("HUAKAI_DISCORD_OAUTH_CLIENT_ID"),
@@ -323,6 +344,24 @@ func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
 		providers = append(providers, p)
 	}
 	return userauth.NewOAuthService(providers...)
+}
+
+func linuxDoOAuthMinTrustLevel(logger *zap.Logger) (int64, bool) {
+	raw := strings.TrimSpace(os.Getenv("HUAKAI_LINUXDO_OAUTH_MIN_TRUST_LEVEL"))
+	if raw == "" {
+		return 1, true
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		if logger != nil {
+			logger.Warn("user oauth provider disabled",
+				zap.String("provider", userauth.SocialProviderLinuxDo),
+				zap.String("reason", "min_trust_level_invalid"),
+			)
+		}
+		return 0, false
+	}
+	return value, true
 }
 
 func buildOAuthProvider(logger *zap.Logger, cfg userauth.OAuthConfig) userauth.OAuthProvider {
@@ -352,7 +391,7 @@ func buildOAuthProvider(logger *zap.Logger, cfg userauth.OAuthConfig) userauth.O
 
 func oauthProviderRequiresClientSecret(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case userauth.SocialProviderQQ, userauth.SocialProviderDingTalk, userauth.SocialProviderNodeSeek, userauth.SocialProviderDiscord:
+	case userauth.SocialProviderQQ, userauth.SocialProviderDingTalk, userauth.SocialProviderNodeSeek, userauth.SocialProviderLinuxDo, userauth.SocialProviderDiscord:
 		return true
 	default:
 		return false
