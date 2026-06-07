@@ -1082,6 +1082,138 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /mj/submit/{action}:
+    post:
+      tags: [midjourney]
+      summary: Submit a Midjourney-compatible async media task
+      operationId: submitMidjourneyTask
+      x-huakai-spec-source:
+        - backend/internal/mjclient/router.go
+        - backend/internal/mjclient/translate.go
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - name: action
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [imagine, describe, blend, change, simple-change, action, modal, shorten, edits, video, upload-discord-images]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MJTaskRequest' }
+      responses:
+        '202':
+          description: Midjourney task accepted for async provider submission and polling.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTaskSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /mj/insight-face/swap:
+    post:
+      tags: [midjourney]
+      summary: Submit a Midjourney-compatible face swap task
+      operationId: submitMidjourneySwapFaceTask
+      x-huakai-spec-source:
+        - backend/internal/mjclient/router.go
+        - backend/internal/mjclient/translate.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MJTaskRequest' }
+      responses:
+        '202':
+          description: Face swap task accepted for async provider submission and polling.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTaskSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /mj/task/{id}/fetch:
+    get:
+      tags: [midjourney]
+      summary: Fetch a Midjourney-compatible async media task
+      operationId: fetchMidjourneyTask
+      x-huakai-spec-source:
+        - backend/internal/mjclient/router.go
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Caller-owned Midjourney task status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /mj/task/{id}/image-seed:
+    get:
+      tags: [midjourney]
+      summary: Fetch image seed task state for a Midjourney-compatible task
+      operationId: fetchMidjourneyImageSeedTask
+      x-huakai-spec-source:
+        - backend/internal/mjclient/router.go
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Caller-owned Midjourney task state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /mj/task/list-by-condition:
+    post:
+      tags: [midjourney]
+      summary: List Midjourney-compatible async media tasks
+      operationId: listMidjourneyTasksByCondition
+      x-huakai-spec-source:
+        - backend/internal/mjclient/router.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MJTaskListCondition' }
+      responses:
+        '200':
+          description: Caller-owned Midjourney tasks.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTaskListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/keys/{id}/usage-summary:
     get:
       tags: [user-audit]
@@ -11492,6 +11624,43 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/MediaTask' }
+
+    MJTaskRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source:
+        - backend/internal/mjclient/translate.go
+      properties:
+        request_id:
+          type: string
+          description: Optional stable idempotency key. If omitted, the server generates one.
+        requestId:
+          type: string
+          description: Camel-case alias for request_id.
+        prompt: { type: string }
+        customId: { type: string }
+        botType: { type: string }
+        notifyHook: { type: string, format: uri }
+        action: { type: string }
+        state: { type: string }
+        base64Array:
+          type: array
+          items: { type: string }
+        index: {}
+        maskBase64: { type: string }
+        sourceBase64: { type: string }
+        targetBase64: { type: string }
+
+    MJTaskListCondition:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source:
+        - backend/internal/mjclient/router.go
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
 
     MediaTaskStatus:
       type: string

@@ -129,7 +129,8 @@ func NewHTTPProviderRegistry(source ConfigSource, client *http.Client) *HTTPProv
 }
 
 func (r *HTTPProviderRegistry) Provider(ctx context.Context, name string) (AsyncMediaProvider, bool, error) {
-	if r == nil || r.source == nil || strings.TrimSpace(name) != "http" {
+	name = strings.TrimSpace(name)
+	if r == nil || r.source == nil || (name != "http" && name != "midjourney") {
 		return nil, false, nil
 	}
 	cfg, err := r.source.Load(ctx)

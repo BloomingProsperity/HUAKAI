@@ -94,3 +94,18 @@ func TestNoopProviderNeverReportsTerminalSuccess(t *testing.T) {
 		t.Fatalf("noop poll status=%q want in_progress", poll.Status)
 	}
 }
+
+func TestHTTPProviderRegistryAcceptsMidjourneyAlias(t *testing.T) {
+	// MUTATION: leave the registry hard-coded to provider name "http"; MJ tasks
+	// translated with Provider=midjourney cannot reuse the async HTTP relay.
+	registry := NewHTTPProviderRegistry(StaticConfigSource{Config: Config{
+		Enabled: true, ProviderBaseURL: "http://provider.example",
+		DefaultEstimatedCents: map[string]int64{
+			"mj_imagine": 123,
+		},
+	}}, http.DefaultClient)
+
+	if _, ok, err := registry.Provider(context.Background(), "midjourney"); err != nil || !ok {
+		t.Fatalf("Provider(midjourney) ok=%v err=%v want available", ok, err)
+	}
+}
