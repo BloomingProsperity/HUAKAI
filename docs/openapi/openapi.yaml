@@ -8887,6 +8887,38 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/models/aliases/bulk-import:
+    post:
+      tags: [admin-models]
+      summary: Bulk import model aliases
+      operationId: postAdminModelAliasesBulkImport
+      description: |
+        Platform-admin only bulk import for model aliases. JSON and CSV inputs
+        are accepted. Each row is upserted independently and reported as
+        upserted or failed; successful rows bump the affected registry snapshot.
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/model_admin_aliases_handler.go
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelAliasBulkImportRequest' }
+          text/csv:
+            schema:
+              type: string
+              description: Header columns include tenant_id, scope, model_id, alias, display, status, source.
+      responses:
+        '200':
+          description: Per-row import result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelAliasBulkImportResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/models/{id}/capabilities:
     put:
       tags: [admin-models]
@@ -8917,6 +8949,46 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ModelCapabilitiesUpdateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/models/{id}/capability-bindings:
+    get:
+      tags: [admin-models]
+      summary: List model capability bindings
+      operationId: getAdminModelCapabilityBindings
+      description: |
+        Platform-admin read-only view of model_registry_capabilities rows for
+        one internal model id. Write paths reject capability values outside the
+        known HUAKAI capability vocabulary before touching storage.
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/model_admin_aliases_handler.go
+        - backend/internal/registry/model_capabilities.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Internal `models.id` row.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Capability bindings for the model.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [object, model_id, data]
+                properties:
+                  object: { type: string, enum: [model_capability_binding_list] }
+                  model_id: { type: integer, format: int64, minimum: 1 }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ModelCapabilityBinding' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -11958,6 +12030,120 @@ components:
           additionalProperties: { type: boolean }
         max_output_tokens: { type: integer, minimum: 1 }
         mode: { type: string }
+
+    ModelAliasBulkImportRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/controlhttp/model_admin_aliases_handler.go]
+      required: [aliases]
+      properties:
+        actor: { type: string }
+        reason: { type: string }
+        aliases:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [model_id, alias]
+            properties:
+              tenant_id: { type: integer, format: int64, minimum: 1 }
+              scope: { type: string, enum: [tenant, global], default: tenant }
+              model_id: { type: integer, format: int64, minimum: 1 }
+              alias: { type: string, minLength: 1 }
+              display: { type: string }
+              status: { type: string, enum: [active, disabled], default: active }
+              source: { type: string, default: operator_alias_bulk_import }
+              disabled_reason: { type: [string, 'null'] }
+
+    ModelAliasBulkImportResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/controlhttp/model_admin_aliases_handler.go]
+      required: [object, results]
+      properties:
+        object: { type: string, enum: [model_alias_bulk_import_result] }
+        results:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [index, alias, status]
+            properties:
+              index: { type: integer, minimum: 0 }
+              alias: { type: string }
+              model_id: { type: integer, format: int64, minimum: 1 }
+              status: { type: string, enum: [upserted, failed] }
+              error: { type: string }
+
+    ModelCapabilityBinding:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/registry/model_capabilities.go]
+      required: [model_id, scope, capability, capability_params, enabled, source]
+      properties:
+        model_id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        scope: { type: string, enum: [tenant, global] }
+        capability:
+          type: string
+          description: Known HUAKAI model capability binding name.
+          enum:
+            - vision
+            - function_calling
+            - tool_choice
+            - reasoning
+            - prompt_caching
+            - response_schema
+            - text
+            - tool_use
+            - tool_result
+            - thinking
+            - cache_control
+            - structured_output
+            - computer_use
+            - file
+            - image
+            - audio
+            - video
+            - live_session
+            - batch
+            - mcp_server
+            - data_retention
+            - text_streaming
+            - parallel_tool_calls
+            - structured_output_schema
+            - image_input
+            - audio_input
+            - image_output
+            - max_tokens_finish_reason
+            - max_completion_tokens
+            - stop_sequence_emit
+            - cache_breakpoints
+            - signature_delta
+            - system_prompt_array
+            - multi_role_messages
+            - reasoning_summary
+            - stream
+            - tools
+            - chat
+            - messages
+            - responses
+            - embeddings
+            - rerank
+            - images
+            - audio_speech
+            - audio_transcription
+            - generateContent
+            - countTokens
+            - embedContent
+            - batchEmbedContents
+        capability_value: { type: string }
+        capability_params:
+          type: object
+          additionalProperties: true
+        enabled: { type: boolean }
+        source: { type: string }
 
     ResponsesRequest:
       type: object

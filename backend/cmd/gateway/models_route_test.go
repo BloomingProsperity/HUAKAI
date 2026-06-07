@@ -78,3 +78,40 @@ func TestAdminModelCapabilitiesRouteMountedBehindAdminGate(t *testing.T) {
 		t.Fatalf("body=%s want admin_gate_not_configured proving route is behind adminGate", rec.Body.String())
 	}
 }
+
+func TestAdminModelAliasBulkImportRouteMountedBehindAdminGate(t *testing.T) {
+	r := buildTestRouter(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases/bulk-import",
+		strings.NewReader(`{"aliases":[{"tenant_id":7,"model_id":42,"alias":"gpt-4o"}]}`))
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("POST /v1/admin/models/aliases/bulk-import returned 404; route must be mounted")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503 from adminGate nil resolver", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "admin_gate_not_configured") {
+		t.Fatalf("body=%s want admin_gate_not_configured proving route is behind adminGate", rec.Body.String())
+	}
+}
+
+func TestAdminModelCapabilityBindingsRouteMountedBehindAdminGate(t *testing.T) {
+	r := buildTestRouter(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/models/42/capability-bindings", nil)
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("GET /v1/admin/models/{id}/capability-bindings returned 404; route must be mounted")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503 from adminGate nil resolver", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "admin_gate_not_configured") {
+		t.Fatalf("body=%s want admin_gate_not_configured proving route is behind adminGate", rec.Body.String())
+	}
+}

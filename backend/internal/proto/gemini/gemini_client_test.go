@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -93,5 +94,71 @@ func TestGeminiRequestToCanonicalAndResponseShape(t *testing.T) {
 	}
 	if out.UsageMetadata.PromptTokenCount != 3 || out.UsageMetadata.CandidatesTokenCount != 5 || out.UsageMetadata.TotalTokenCount != 8 {
 		t.Fatalf("usage=%+v want 3/5/8", out.UsageMetadata)
+	}
+}
+
+func TestGeminiPartVideoMetadataPassthrough(t *testing.T) {
+	client := &GeminiClient{}
+	ctx := proto.ContextWithRequestMetaSeed(context.Background(), proto.RequestMetaSeed{
+		RequestID:      "req-gemini-video-part",
+		ClientProtocol: proto.ClientProtocolGemini,
+		ProtocolFamily: "gemini_messages",
+		IngressPath:    "/v1beta/models/gemini-pro:generateContent",
+		Model:          "gemini-pro",
+	})
+
+	raw := []byte(`{
+		"contents": [{
+			"role": "user",
+			"parts": [{
+				"text": "summarize the clip",
+				"videoMetadata": {"startOffset":"1s","endOffset":"4s"},
+				"mediaResolution": "MEDIA_RESOLUTION_LOW"
+			}]
+		}]
+	}`)
+
+	env, losses, err := client.RequestToCanonical(ctx, raw)
+	if err != nil {
+		t.Fatalf("RequestToCanonical: %v", err)
+	}
+	if len(env.Messages) != 1 || len(env.Messages[0].Content) != 1 || env.Messages[0].Content[0].Text != "summarize the clip" {
+		t.Fatalf("messages=%+v want text part still projected", env.Messages)
+	}
+	if env.Passthrough == nil {
+		t.Fatalf("Passthrough nil; MUTATION: dropping videoMetadata leaves no canonical passthrough")
+	}
+	assertGeminiRawJSONEqual(t, env.Passthrough.Extra["contents[0].parts[0].videoMetadata"], `{"startOffset":"1s","endOffset":"4s"}`)
+	assertGeminiRawJSONEqual(t, env.Passthrough.Extra["contents[0].parts[0].mediaResolution"], `"MEDIA_RESOLUTION_LOW"`)
+
+	var sawVideoMetadata, sawMediaResolution bool
+	for _, loss := range losses {
+		if loss.Severity != proto.ProtocolLossInfo {
+			continue
+		}
+		switch loss.Code {
+		case "gemini_part_video_metadata_passthrough":
+			sawVideoMetadata = true
+		case "gemini_part_media_resolution_passthrough":
+			sawMediaResolution = true
+		}
+	}
+	if !sawVideoMetadata || !sawMediaResolution {
+		t.Fatalf("losses=%+v want ProtocolLossInfo for passthrough-only Gemini part fields", losses)
+	}
+}
+
+func assertGeminiRawJSONEqual(t *testing.T, got json.RawMessage, want string) {
+	t.Helper()
+	var gotBuf bytes.Buffer
+	if err := json.Compact(&gotBuf, got); err != nil {
+		t.Fatalf("got invalid JSON %q: %v", string(got), err)
+	}
+	var wantBuf bytes.Buffer
+	if err := json.Compact(&wantBuf, []byte(want)); err != nil {
+		t.Fatalf("want invalid JSON %q: %v", want, err)
+	}
+	if !bytes.Equal(gotBuf.Bytes(), wantBuf.Bytes()) {
+		t.Fatalf("JSON mismatch got=%s want=%s", gotBuf.String(), wantBuf.String())
 	}
 }

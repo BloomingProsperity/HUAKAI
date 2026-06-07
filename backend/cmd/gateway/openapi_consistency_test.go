@@ -653,6 +653,12 @@ func TestModelCapabilitiesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
 	if !hasOperation(implOps, http.MethodPut, "/v1/admin/models/{id}/capabilities") {
 		t.Fatalf("runtime missing PUT /v1/admin/models/{id}/capabilities")
 	}
+	if !hasOperation(implOps, http.MethodPost, "/v1/admin/models/aliases/bulk-import") {
+		t.Fatalf("runtime missing POST /v1/admin/models/aliases/bulk-import")
+	}
+	if !hasOperation(implOps, http.MethodGet, "/v1/admin/models/{id}/capability-bindings") {
+		t.Fatalf("runtime missing GET /v1/admin/models/{id}/capability-bindings")
+	}
 
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {
@@ -664,6 +670,12 @@ func TestModelCapabilitiesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
 	}
 	if !hasOperation(specOps, http.MethodPut, "/v1/admin/models/{id}/capabilities") {
 		t.Fatalf("OpenAPI missing PUT /v1/admin/models/{id}/capabilities")
+	}
+	if !hasOperation(specOps, http.MethodPost, "/v1/admin/models/aliases/bulk-import") {
+		t.Fatalf("OpenAPI missing POST /v1/admin/models/aliases/bulk-import")
+	}
+	if !hasOperation(specOps, http.MethodGet, "/v1/admin/models/{id}/capability-bindings") {
+		t.Fatalf("OpenAPI missing GET /v1/admin/models/{id}/capability-bindings")
 	}
 
 	raw, err := os.ReadFile(specAbs)
@@ -681,6 +693,10 @@ func TestModelCapabilitiesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
 		"function_calling",
 		"response_schema",
 		"prompt_caching",
+		"ModelAliasBulkImportRequest:",
+		"ModelAliasBulkImportResponse:",
+		"ModelCapabilityBinding:",
+		"capability-bindings",
 	} {
 		if !strings.Contains(spec, snippet) {
 			t.Fatalf("OpenAPI model capabilities schema missing snippet %q", snippet)

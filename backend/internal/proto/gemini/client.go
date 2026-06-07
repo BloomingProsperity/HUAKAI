@@ -42,6 +42,8 @@ type geminiClientPart struct {
 	InlineData       json.RawMessage     `json:"inlineData,omitempty"`
 	FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
 	FunctionResponse json.RawMessage     `json:"functionResponse,omitempty"`
+	VideoMetadata    json.RawMessage     `json:"videoMetadata,omitempty"`
+	MediaResolution  json.RawMessage     `json:"mediaResolution,omitempty"`
 }
 
 type geminiGenerationConfig struct {
@@ -133,7 +135,7 @@ func (c *GeminiClient) RequestToCanonical(ctx context.Context, raw []byte) (*pro
 		role := canonicalRoleFromGemini(content.Role)
 		msg := proto.CanonicalMessage{Role: role}
 		for pi, part := range content.Parts {
-			blocks, partLosses := geminiPartToCanonicalBlocks(part)
+			blocks, partLosses := geminiPartToCanonicalBlocks(env, mi, pi, part)
 			losses = append(losses, partLosses...)
 			for _, block := range blocks {
 				bi := len(msg.Content)
@@ -370,9 +372,17 @@ func convertGeminiTools(tools []geminiClientTool) ([]proto.CanonicalTool, []prot
 	return out, losses, nil
 }
 
-func geminiPartToCanonicalBlocks(part geminiClientPart) ([]proto.CanonicalContentBlock, []proto.ProtocolLossEntry) {
+func geminiPartToCanonicalBlocks(env *proto.HCSF, msgIndex, partIndex int, part geminiClientPart) ([]proto.CanonicalContentBlock, []proto.ProtocolLossEntry) {
 	var blocks []proto.CanonicalContentBlock
 	var losses []proto.ProtocolLossEntry
+	if len(bytes.TrimSpace(part.VideoMetadata)) > 0 {
+		attachGeminiPartPassthrough(env, msgIndex, partIndex, "videoMetadata", part.VideoMetadata)
+		losses = append(losses, geminiClientInfoLoss("gemini part videoMetadata preserved as request passthrough; HCSF has no first-class Gemini video metadata field yet", "gemini_part_video_metadata_passthrough", proto.CapabilityVideo))
+	}
+	if len(bytes.TrimSpace(part.MediaResolution)) > 0 {
+		attachGeminiPartPassthrough(env, msgIndex, partIndex, "mediaResolution", part.MediaResolution)
+		losses = append(losses, geminiClientInfoLoss("gemini part mediaResolution preserved as request passthrough; HCSF has no first-class media resolution control yet", "gemini_part_media_resolution_passthrough", proto.CapabilityVideo))
+	}
 	if part.Text != nil {
 		blocks = append(blocks, proto.CanonicalContentBlock{Type: "text", Text: *part.Text})
 	}
@@ -396,6 +406,20 @@ func geminiPartToCanonicalBlocks(part geminiClientPart) ([]proto.CanonicalConten
 		losses = append(losses, geminiClientInfoLoss("gemini functionResponse part has no inbound HCSF tool_result projection yet", "gemini_function_response_unmodeled", proto.CapabilityToolResult))
 	}
 	return blocks, losses
+}
+
+func attachGeminiPartPassthrough(env *proto.HCSF, msgIndex, partIndex int, field string, raw json.RawMessage) {
+	if env == nil || field == "" || len(bytes.TrimSpace(raw)) == 0 {
+		return
+	}
+	if env.Passthrough == nil {
+		env.Passthrough = &proto.PassthroughEnvelope{}
+	}
+	if env.Passthrough.Extra == nil {
+		env.Passthrough.Extra = map[string]json.RawMessage{}
+	}
+	key := fmt.Sprintf("contents[%d].parts[%d].%s", msgIndex, partIndex, field)
+	env.Passthrough.Extra[key] = cloneRaw(raw)
 }
 
 func geminiCapabilityNode(id, role string, block proto.CanonicalContentBlock, msgIdx, blockIdx int) proto.CapabilityNode {
