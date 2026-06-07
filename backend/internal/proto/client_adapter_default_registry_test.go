@@ -4,13 +4,14 @@ import (
 	"testing"
 )
 
-func TestDefaultClientAdapterRegistry_AllThreeRegistered(t *testing.T) {
+func TestDefaultClientAdapterRegistry_AllRegistered(t *testing.T) {
 	reg := DefaultClientAdapterRegistry()
 	if reg == nil {
 		t.Fatal("DefaultClientAdapterRegistry returned nil")
 	}
 	expected := []ClientProtocol{
 		ClientProtocolAnthropicMessages,
+		ClientProtocolGemini,
 		ClientProtocolOpenAIChat,
 		ClientProtocolOpenAIResponses,
 	}
@@ -39,6 +40,7 @@ func TestDefaultClientAdapterRegistry_ProtocolsSorted(t *testing.T) {
 	got := reg.Protocols()
 	want := []ClientProtocol{
 		ClientProtocolAnthropicMessages,
+		ClientProtocolGemini,
 		ClientProtocolOpenAIChat,
 		ClientProtocolOpenAIResponses,
 	}
@@ -72,6 +74,8 @@ func TestClientProtocolByIngressPath(t *testing.T) {
 		{"/v1/native/openai/responses", ClientProtocolOpenAIResponses, true},
 		{"/backend-api/codex/responses", ClientProtocolOpenAIResponses, true},
 		{"/v1/messages", ClientProtocolAnthropicMessages, true},
+		{"/v1beta/models", ClientProtocolGemini, true},
+		{"/v1beta/models/gemini-pro:generateContent", ClientProtocolGemini, true},
 		{"/v1/unknown", "", false},
 		{"", "", false},
 		{"/v1/completions", "", false},

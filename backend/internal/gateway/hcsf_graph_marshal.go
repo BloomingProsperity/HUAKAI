@@ -22,6 +22,8 @@ func MarshalToProviderRequest(env *proto.HCSF, endpointFamily string) ([]byte, e
 		return marshalOpenAIChat(env)
 	case "openai_responses":
 		return marshalOpenAIResponses(env)
+	case "gemini_messages":
+		return marshalGeminiMessages(env)
 	default:
 		return nil, fmt.Errorf("gateway: unsupported HCSF endpoint family %q", endpointFamily)
 	}
@@ -269,6 +271,81 @@ func marshalOpenAIResponses(env *proto.HCSF) ([]byte, error) {
 	body["input"] = input
 	mergeResponsesNative(env, body)
 	return json.Marshal(body)
+}
+
+func marshalGeminiMessages(env *proto.HCSF) ([]byte, error) {
+	body := map[string]any{"contents": []any{}}
+	var contents []any
+	for mi, msg := range env.Messages {
+		role := geminiRole(msg.Role)
+		var parts []any
+		for bi, block := range msg.Content {
+			part, ok := geminiPartFromCanonicalBlock(env, block)
+			if !ok {
+				addMarshalLossRaw(env, "gemini_messages", capabilityFromBlockType(block.Type), "", fmt.Sprintf("canonical messages[%d].content[%d] unsupported by Gemini request schema", mi, bi), "unsupported_gemini_request_block")
+				continue
+			}
+			parts = append(parts, part)
+		}
+		if len(parts) > 0 {
+			contents = append(contents, map[string]any{"role": role, "parts": parts})
+		}
+	}
+	if env.RequestControls.SystemPrompt != "" {
+		body["systemInstruction"] = map[string]any{
+			"parts": []any{map[string]any{"text": env.RequestControls.SystemPrompt}},
+		}
+	}
+	body["contents"] = contents
+	return json.Marshal(body)
+}
+
+func geminiRole(role string) string {
+	if role == "assistant" {
+		return "model"
+	}
+	return "user"
+}
+
+func geminiPartFromCanonicalBlock(env *proto.HCSF, block proto.CanonicalContentBlock) (map[string]any, bool) {
+	switch block.Type {
+	case "text":
+		return map[string]any{"text": block.Text}, true
+	case "image":
+		if len(block.Image) == 0 {
+			addMarshalLossRaw(env, "gemini_messages", proto.CapabilityImage, "", "image block missing inlineData payload", "missing_gemini_inline_data")
+			return nil, false
+		}
+		return map[string]any{"inlineData": rawJSONValue(block.Image)}, true
+	case "tool_use":
+		call := map[string]any{
+			"name": block.Name,
+			"args": rawJSONValue(block.Input),
+		}
+		if block.CallID != "" {
+			call["id"] = block.CallID
+		}
+		return map[string]any{"functionCall": call}, true
+	default:
+		return nil, false
+	}
+}
+
+func capabilityFromBlockType(blockType string) proto.CapabilityKind {
+	switch blockType {
+	case "text":
+		return proto.CapabilityText
+	case "image":
+		return proto.CapabilityImage
+	case "tool_use":
+		return proto.CapabilityToolUse
+	case "tool_result":
+		return proto.CapabilityToolResult
+	case "reasoning", "reasoning_summary":
+		return proto.CapabilityThinking
+	default:
+		return ""
+	}
 }
 
 func addMarshalLoss(env *proto.HCSF, family string, n proto.CapabilityNode, reason, code string) {

@@ -187,6 +187,9 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err
 	}
+	if family == "gemini_messages" {
+		return injectGeminiRequestControls(body, env)
+	}
 	c := env.RequestControls
 	if c.MaxTokens != nil {
 		if family == "openai_responses" {
@@ -262,6 +265,63 @@ func mergeRequestPassthrough(body map[string]any, env *proto.HCSF) {
 		}
 		body[key] = rawJSONValue(raw)
 	}
+}
+func injectGeminiRequestControls(body map[string]any, env *proto.HCSF) ([]byte, error) {
+	c := env.RequestControls
+	generation := map[string]any{}
+	if existing, ok := body["generationConfig"].(map[string]any); ok {
+		for k, v := range existing {
+			generation[k] = v
+		}
+	}
+	if c.MaxTokens != nil {
+		generation["maxOutputTokens"] = *c.MaxTokens
+	}
+	if c.Temperature != nil {
+		generation["temperature"] = *c.Temperature
+	}
+	if c.TopP != nil {
+		generation["topP"] = *c.TopP
+	}
+	if len(c.StopSequences) > 0 {
+		generation["stopSequences"] = c.StopSequences
+	} else if len(c.Stop) > 0 {
+		generation["stopSequences"] = c.Stop
+	}
+	if c.ResponseFormat != nil && len(c.ResponseFormat.Schema) > 0 {
+		var raw map[string]any
+		if json.Unmarshal(c.ResponseFormat.Schema, &raw) == nil {
+			if v, ok := raw["responseMimeType"]; ok && v != "" {
+				generation["responseMimeType"] = v
+			}
+			if v, ok := raw["responseSchema"]; ok {
+				generation["responseSchema"] = v
+			}
+		}
+	}
+	if len(generation) > 0 {
+		body["generationConfig"] = generation
+	}
+	if len(c.Tools) > 0 {
+		body["tools"] = renderGeminiControlTools(c.Tools)
+	}
+	return json.Marshal(body)
+}
+
+func renderGeminiControlTools(tools []proto.CanonicalTool) []any {
+	decls := make([]any, 0, len(tools))
+	for _, t := range tools {
+		decl := map[string]any{
+			"name":        t.Name,
+			"description": t.Description,
+			"parameters":  rawJSONValue(t.InputSchema),
+		}
+		decls = append(decls, decl)
+	}
+	if len(decls) == 0 {
+		return nil
+	}
+	return []any{map[string]any{"functionDeclarations": decls}}
 }
 
 func renderControlTools(family string, tools []proto.CanonicalTool) []any {

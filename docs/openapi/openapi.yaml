@@ -876,6 +876,95 @@ paths:
               schema: { $ref: '#/components/schemas/ModelObject' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1beta/models:
+    get:
+      tags: [gateway]
+      summary: Gemini-compatible model discovery list
+      operationId: listGeminiModels
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-07-b-gemini-native-v1beta-codex.md
+      description: |
+        Gemini native model-list alias backed by the same authenticated HUAKAI
+        model catalog as `/v1/models`.
+      responses:
+        '200':
+          description: Gemini-compatible model list.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelsListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1beta/models/{rest}:
+    get:
+      tags: [gateway]
+      summary: Gemini native v1beta action relay
+      operationId: getGeminiV1BetaModelAction
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-07-b-gemini-native-v1beta-codex.md
+      description: |
+        Gemini native model action route. Runtime parses `{rest}` as
+        `{model}:{action}` and supports `generateContent`,
+        `streamGenerateContent`, and `countTokens`. The request JSON body is
+        not rewritten into another client protocol.
+      parameters:
+        - name: rest
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GeminiGenerateContentRequest' }
+      responses:
+        '200':
+          description: Gemini-compatible action response or SSE stream.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GeminiGenerateContentResponse' }
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/SSEFrame' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [gateway]
+      summary: Gemini native v1beta action relay
+      operationId: postGeminiV1BetaModelAction
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-07-b-gemini-native-v1beta-codex.md
+      description: |
+        Gemini native model action route. Runtime parses `{rest}` as
+        `{model}:{action}` and supports `generateContent`,
+        `streamGenerateContent`, and `countTokens`. The request JSON body is
+        not rewritten into another client protocol.
+      parameters:
+        - name: rest
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GeminiGenerateContentRequest' }
+      responses:
+        '200':
+          description: Gemini-compatible action response or SSE stream.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GeminiGenerateContentResponse' }
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/SSEFrame' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/generation:
@@ -11552,6 +11641,78 @@ components:
         input_tokens: { type: integer, minimum: 0 }
         cache_creation_input_tokens: { type: integer, minimum: 0 }
         cache_read_input_tokens: { type: integer, minimum: 0 }
+
+    GeminiGenerateContentRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [docs/process/plans/2026-06-07-b-gemini-native-v1beta-codex.md]
+      required: [contents]
+      properties:
+        contents:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              role: { type: string }
+              parts:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                  properties:
+                    text: { type: string }
+                    inlineData: { type: object, additionalProperties: true }
+        systemInstruction:
+          type: object
+          additionalProperties: true
+        generationConfig:
+          type: object
+          additionalProperties: true
+          properties:
+            temperature: { type: number }
+            topP: { type: number }
+            topK: { type: integer }
+            maxOutputTokens: { type: integer }
+            stopSequences:
+              type: array
+              items: { type: string }
+            responseMimeType: { type: string }
+            responseSchema: { type: object, additionalProperties: true }
+        tools:
+          type: array
+          items: { type: object, additionalProperties: true }
+        safetySettings:
+          type: array
+          items: { type: object, additionalProperties: true }
+
+    GeminiGenerateContentResponse:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [docs/process/plans/2026-06-07-b-gemini-native-v1beta-codex.md]
+      properties:
+        candidates:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              content:
+                type: object
+                additionalProperties: true
+                properties:
+                  parts:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+              finishReason: { type: string }
+        usageMetadata:
+          type: object
+          additionalProperties: true
+          properties:
+            promptTokenCount: { type: integer, minimum: 0 }
+            candidatesTokenCount: { type: integer, minimum: 0 }
+            totalTokenCount: { type: integer, minimum: 0 }
 
     UsageBlock:
       type: object

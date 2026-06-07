@@ -1,6 +1,9 @@
 package proto
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // P-2 D13.0 — 默认 ClientAdapterRegistry singleton：把已实现的 3 个 client
 // adapter（anthropic_messages / openai_chat / openai_responses）注册成默认表，
@@ -19,7 +22,30 @@ import "sync"
 var (
 	defaultClientAdapterRegistryOnce sync.Once
 	defaultClientAdapterRegistry     *ClientAdapterRegistry
+	defaultClientAdapterFactoriesMu  sync.Mutex
+	defaultClientAdapterFactories    []defaultClientAdapterFactory
 )
+
+type defaultClientAdapterFactory struct {
+	protocol ClientProtocol
+	factory  func() ClientAdapter
+}
+
+// RegisterDefaultClientAdapterFactory lets protocol subpackages add built-in
+// client adapters without making the parent proto package import its child
+// packages. It must be called from package init before DefaultClientAdapterRegistry
+// is first used.
+func RegisterDefaultClientAdapterFactory(protocol ClientProtocol, factory func() ClientAdapter) {
+	if protocol == "" || factory == nil {
+		panic("proto: invalid default client adapter factory")
+	}
+	defaultClientAdapterFactoriesMu.Lock()
+	defer defaultClientAdapterFactoriesMu.Unlock()
+	defaultClientAdapterFactories = append(defaultClientAdapterFactories, defaultClientAdapterFactory{
+		protocol: protocol,
+		factory:  factory,
+	})
+}
 
 // DefaultClientAdapterRegistry 返回懒初始化的默认 registry；第一次调用时
 // 注册 3 个内置 client adapter。后续调用复用同一实例。
@@ -32,6 +58,12 @@ func DefaultClientAdapterRegistry() *ClientAdapterRegistry {
 		mustRegister(reg, ClientProtocolAnthropicMessages, &AnthropicMessagesClient{})
 		mustRegister(reg, ClientProtocolOpenAIChat, &OpenAIChatClient{})
 		mustRegister(reg, ClientProtocolOpenAIResponses, &OpenAIResponsesClient{})
+		defaultClientAdapterFactoriesMu.Lock()
+		factories := append([]defaultClientAdapterFactory(nil), defaultClientAdapterFactories...)
+		defaultClientAdapterFactoriesMu.Unlock()
+		for _, f := range factories {
+			mustRegister(reg, f.protocol, f.factory())
+		}
 		defaultClientAdapterRegistry = reg
 	})
 	return defaultClientAdapterRegistry
@@ -51,6 +83,7 @@ func mustRegister(reg *ClientAdapterRegistry, protocol ClientProtocol, adapter C
 //   - /backend-api/codex/responses → openai_responses（Codex CLI ingress）
 //   - /v1/messages             → anthropic_messages
 //   - /v1/native/openai/responses → openai_responses（native passthrough route）
+//   - /v1beta/models...        → gemini
 //
 // 返回 ok=false 表示路径未识别；调用方应返回 404/400，不要默认 fallback 到
 // 任意 adapter（synthesis 反 silent fallback）。
@@ -63,6 +96,9 @@ func ClientProtocolByIngressPath(path string) (ClientProtocol, bool) {
 	case "/v1/messages":
 		return ClientProtocolAnthropicMessages, true
 	default:
+		if path == "/v1beta/models" || strings.HasPrefix(path, "/v1beta/models/") {
+			return ClientProtocolGemini, true
+		}
 		return "", false
 	}
 }

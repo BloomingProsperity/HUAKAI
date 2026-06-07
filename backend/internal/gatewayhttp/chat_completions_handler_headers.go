@@ -162,7 +162,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if err != nil || cachedEnv == nil || cachedEnv.BufferedResponse == nil {
 		return false
 	}
-	seed := requestMetaSeed(r, in.Ident, in.ClientProtocol, in.ProtocolFamily, in.RouteID, in.RequestID, in.AccountID, in.AcquisitionToken)
+	seed := requestMetaSeed(r, in.Ident, in.ClientProtocol, in.ProtocolFamily, in.RouteID, in.RequestID, in.RequestedModel, in.AccountID, in.AcquisitionToken)
 	_ = seed.ApplyToRequestMeta(&cachedEnv.RequestMeta)
 	enrichCanonicalRequestMeta(cachedEnv, in.UpstreamModelID, in.Provider, in.IdempotencyHeader, in.PromptHash)
 	setAccountingModelRequested(cachedEnv, in.RequestedModel)

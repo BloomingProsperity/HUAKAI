@@ -243,6 +243,38 @@ func TestOpenAPI_CompletionsAndCountTokensMountedAndDocumented(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_GeminiV1BetaRoutesMountedAndDocumented(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+
+	checks := []struct {
+		method   string
+		implPath string
+		specPath string
+	}{
+		{method: http.MethodGet, implPath: "/v1beta/models", specPath: "/v1beta/models"},
+		{method: http.MethodPost, implPath: "/v1beta/models/{rest:.*}", specPath: "/v1beta/models/{rest}"},
+		{method: http.MethodGet, implPath: "/v1beta/models/{rest:.*}", specPath: "/v1beta/models/{rest}"},
+	}
+	for _, check := range checks {
+		if !hasOperation(implOps, check.method, check.implPath) {
+			t.Fatalf("runtime missing %s %s; Gemini native v1beta route must be mounted", check.method, check.implPath)
+		}
+		if !hasOperation(specOps, check.method, check.specPath) {
+			t.Fatalf("OpenAPI missing %s %s; generated clients would not see Gemini native v1beta route", check.method, check.specPath)
+		}
+	}
+}
+
 func TestOpenAPI_UserAuditEventsMountedAndDocumented(t *testing.T) {
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {
