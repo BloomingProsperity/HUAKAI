@@ -3,6 +3,7 @@
 **Domain summary:** HUAKAI has a strong multi-tier auth core (API key resolver, session service, user-auth service, admin token RBAC, social OAuth) with well-designed security primitives; the primary commercial gaps are absent MFA/TOTP, no admin user-management API (explicitly deferred in code comments), no per-key scoping/IP-allowlist, no authenticated self-service password change, and no enterprise SSO (SAML/LDAP/SCIM).
 
 Audit date: 2026-06-02. Reviewer: Claude PM-Orchestrator (read-only, no code changes). Evidence verified by direct file reads and targeted `grep` across `backend/`.
+Codex update: 2026-06-07 updated AUTH-086 social unlink and AUTH-140 logout rows after HUAKAI-internal implementation.
 
 ---
 
@@ -18,7 +19,7 @@ Audit date: 2026-06-02. Reviewer: Claude PM-Orchestrator (read-only, no code cha
 | 5 | Social login – Google OAuth2 | PRESENT | `internal/userauth/oauth_flow.go`; `internal/userauth/social_login.go:67` `StartOAuth()` | PKCE + HTTPS-only endpoint guard; JWKS verification |
 | 6 | Social login – GitHub OAuth2 | PRESENT | `internal/credentialacq/oauth.go`; `userauth.Service.StartOAuth` provider "github" | read:user + user:email scopes |
 | 7 | Social identity linking (provider subject → user row) | PRESENT | `0020:social_identity_links`; PK `(tenant_id, provider, subject)` | FK to users (tenant_id, id) prevents cross-tenant binding |
-| 8 | Social identity unlink / merge endpoint | MISSING | grep `unlink`, `delink`, `unmerge` → no hits in handlers | sub2api provides `/api/user/oauth` DELETE; gap |
+| 8 | Social identity unlink / merge endpoint | PRESENT | `backend/internal/userauth/social_login.go` `UnlinkSocialIdentity()`; self route `DELETE /v1/auth/account-bindings/{provider}`; admin route `DELETE /admin/v1/users/{id}/account-bindings/{provider}` | Last-login-method guard prevents locking out no-password social-only users |
 | 9 | PKCE verifier encryption at rest | PRESENT | `0024_encrypt_pkce_verifier_at_rest.up.sql`; `userauth/store.go:754 encryptPKCEVerifier()` | AES-GCM envelope; keys from credentialKeys |
 | 10 | User profile update (display_name, email) | MISSING | No `PUT /v1/users/me` or `PATCH /v1/users/me` in `routes.go`; no `UpdateProfile` in `userauth/service.go` | new-api / sub2api both expose `/api/user` PUT; gap |
 | 11 | Account self-deletion | MISSING | No `DELETE /v1/users/me`; `userauth` has no `DeleteSelf()` | Compliance/GDPR risk |
@@ -34,7 +35,7 @@ Audit date: 2026-06-02. Reviewer: Claude PM-Orchestrator (read-only, no code cha
 | 20 | Session listing | PRESENT | `internal/gatewayhttp/session_handler.go:76` `newSessionListHandler()`; `POST /v1/sessions/list` | Returns session families for current user |
 | 21 | Session revocation (single family or all) | PRESENT | `session_handler.go:97` `newSessionRevokeHandler()`; `Sessions.Revoke()` | Ownership check prevents revoking other users' sessions |
 | 22 | Session me endpoint (who am I) | PRESENT | `internal/panelauthhttp/handler.go`; `GET /v1/auth/me` with SessionMiddleware | Returns panel role + user identity |
-| 23 | Dedicated logout endpoint | PARTIAL | No `POST /v1/auth/logout`; revocation is via `POST /v1/sessions/revoke` (requires knowing the family ID or passing token) | Ergonomic gap: clients must call revoke; sub2api/new-api expose `/api/user/logout` as a distinct named action |
+| 23 | Dedicated logout endpoint | PRESENT | `backend/internal/controlhttp/panelauth_handler.go` `POST /v1/auth/logout`; calls `usersession.Service.Revoke()` with current `SessionIdentity.FamilyID` | Revokes only the caller's current session family |
 | **Password Management** |||||
 | 24 | Password hashing (Argon2id) | PRESENT | `internal/userauth/password.go:32` `HashPassword()`; `argon2.IDKey(mem=64KiB×1024, iter=3, par=1, salt=16, key=32)` | constant-time verify via `subtle.ConstantTimeCompare` |
 | 25 | Password reset via email token (unauthenticated) | PRESENT | `service.go:256 ResetPassword()`; `0020:password_reset_tokens`; token hash + password_version binding | Token version prevents old-token reuse after password change |
@@ -118,12 +119,8 @@ Audit date: 2026-06-02. Reviewer: Claude PM-Orchestrator (read-only, no code cha
 
 8. **User self-service profile update and account deletion (#10, #11)** — No `PUT /v1/users/me`, no `DELETE /v1/users/me`. GDPR Article 17 requires a deletion path. Sub2api / new-api expose `/api/user` PUT.
 
-9. **Social identity unlink (#8)** — Users cannot remove a linked Google/GitHub account without direct DB access.
+9. **Durable user auth audit log (#73)** — API key create/revoke actions are slog only. DB-backed `user_audit_events` table is explicitly deferred (RR-W5-009) but is required for compliance (SOC 2, ISO 27001 evidence).
 
-10. **Durable user auth audit log (#73)** — API key create/revoke actions are slog only. DB-backed `user_audit_events` table is explicitly deferred (RR-W5-009) but is required for compliance (SOC 2, ISO 27001 evidence).
+10. **SAML / LDAP / SCIM enterprise SSO (#58–61)** — Not present. Lower urgency for early SaaS phase but a hard requirement for enterprise contracts.
 
-11. **Dedicated logout endpoint (#23)** — No `POST /v1/auth/logout`. Clients must call `POST /v1/sessions/revoke`. Minor UX/spec compliance gap (OpenAPI convention; sub2api/new-api expose named logout).
-
-12. **SAML / LDAP / SCIM enterprise SSO (#58–61)** — Not present. Lower urgency for early SaaS phase but a hard requirement for enterprise contracts.
-
-13. **Token introspection (#70)** — Absence means service-to-service callers cannot verify session tokens without implementing HMAC verification themselves.
+11. **Token introspection (#70)** — Absence means service-to-service callers cannot verify session tokens without implementing HMAC verification themselves.

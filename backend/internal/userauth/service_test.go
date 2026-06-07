@@ -663,6 +663,69 @@ func TestAuthVerifiedSocialLinkPreservesPasswordRecovery(t *testing.T) {
 	}
 }
 
+func TestUnlinkSocialIdentityAllowsPasswordBackedUser(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	user, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: 1, Email: "unlink-password@example.test", DisplayName: "Linked",
+		PasswordHash: "argon2id-test-hash", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.LinkSocialIdentity(ctx, 1, user.ID, SocialProviderGoogle, "google-subject"); err != nil {
+		t.Fatalf("LinkSocialIdentity: %v", err)
+	}
+
+	unlinked, err := svc.UnlinkSocialIdentity(ctx, 1, user.ID, SocialProviderGoogle)
+	if err != nil {
+		t.Fatalf("UnlinkSocialIdentity: %v", err)
+	}
+	if !unlinked {
+		t.Fatal("UnlinkSocialIdentity deleted=false, want true")
+	}
+	if _, err := store.GetUserBySocialIdentity(ctx, 1, SocialProviderGoogle, "google-subject"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("GetUserBySocialIdentity after unlink err=%v want ErrUserNotFound", err)
+	}
+	got, err := store.GetUserByID(ctx, 1, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID after unlink: %v", err)
+	}
+	if got.SocialLoginProvider != "" {
+		t.Fatalf("social_login_provider=%q want empty after final link removal", got.SocialLoginProvider)
+	}
+}
+
+func TestUnlinkSocialIdentityRejectsLastLoginMethod(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 10, 15, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	user, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: 1, Email: "social-only@example.test", DisplayName: "Social Only",
+		EmailVerified: true, SocialLoginProvider: SocialProviderGoogle, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.LinkSocialIdentity(ctx, 1, user.ID, SocialProviderGoogle, "google-only"); err != nil {
+		t.Fatalf("LinkSocialIdentity: %v", err)
+	}
+
+	if _, err := svc.UnlinkSocialIdentity(ctx, 1, user.ID, SocialProviderGoogle); !errors.Is(err, ErrLastLoginMethod) {
+		t.Fatalf("UnlinkSocialIdentity err=%v want ErrLastLoginMethod; MUTATION: deleting the last-login-method guard makes this call succeed", err)
+	}
+	stillLinked, err := store.GetUserBySocialIdentity(ctx, 1, SocialProviderGoogle, "google-only")
+	if err != nil {
+		t.Fatalf("social-only link was removed despite lockout guard: %v", err)
+	}
+	if stillLinked.ID != user.ID {
+		t.Fatalf("social identity resolved user=%d want %d", stillLinked.ID, user.ID)
+	}
+}
+
 func TestInviteRedemptionRollsBackWhenUserCreateFails(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 11, 30, 0, 0, time.UTC)
@@ -948,8 +1011,9 @@ func (s *memoryAuthStore) GetUserBySocialIdentity(_ context.Context, tenantID in
 func (s *memoryAuthStore) LinkSocialIdentity(_ context.Context, tenantID, userID int64, provider, subject string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	provider = normalizeSocialProvider(provider)
 	user, ok := s.users[userID]
-	if !ok || user.TenantID != tenantID {
+	if !ok || user.TenantID != tenantID || provider == "" || strings.TrimSpace(subject) == "" {
 		return User{}, ErrUserNotFound
 	}
 	user.SocialLoginProvider = provider
@@ -958,6 +1022,77 @@ func (s *memoryAuthStore) LinkSocialIdentity(_ context.Context, tenantID, userID
 	s.users[user.ID] = user
 	s.socialLinks[emailKey(tenantID, normalizeSocialProvider(provider)+":"+strings.TrimSpace(subject))] = user.ID
 	return user, nil
+}
+
+func (s *memoryAuthStore) CountUserSocialIdentityLinks(_ context.Context, tenantID, userID int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int
+	for _, linkedUserID := range s.socialLinks {
+		if linkedUserID == userID {
+			if user, ok := s.users[linkedUserID]; ok && user.TenantID == tenantID {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+func (s *memoryAuthStore) CountSocialIdentityLinks(_ context.Context, tenantID, userID int64, provider string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	provider = normalizeSocialProvider(provider)
+	if provider == "" {
+		return 0, ErrInvalidInput
+	}
+	prefix := emailKey(tenantID, provider+":")
+	var count int
+	for key, linkedUserID := range s.socialLinks {
+		if strings.HasPrefix(key, prefix) && linkedUserID == userID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *memoryAuthStore) UnlinkSocialIdentity(_ context.Context, tenantID, userID int64, provider string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	provider = normalizeSocialProvider(provider)
+	if provider == "" {
+		return false, ErrInvalidInput
+	}
+	prefix := emailKey(tenantID, provider+":")
+	var deleted bool
+	for key, linkedUserID := range s.socialLinks {
+		if strings.HasPrefix(key, prefix) && linkedUserID == userID {
+			delete(s.socialLinks, key)
+			deleted = true
+		}
+	}
+	if !deleted {
+		return false, nil
+	}
+	user, ok := s.users[userID]
+	if !ok || user.TenantID != tenantID {
+		return false, ErrUserNotFound
+	}
+	user.SocialLoginProvider = ""
+	tenantPrefix := strconv.FormatInt(tenantID, 10) + ":"
+	for key, linkedUserID := range s.socialLinks {
+		if linkedUserID != userID || !strings.HasPrefix(key, tenantPrefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(key, tenantPrefix)
+		nextProvider, _, ok := strings.Cut(rest, ":")
+		if ok {
+			user.SocialLoginProvider = nextProvider
+			break
+		}
+	}
+	user.UpdatedAt = s.now
+	s.users[userID] = user
+	return true, nil
 }
 
 func (s *memoryAuthStore) CreateEmailVerificationToken(_ context.Context, challenge TokenChallenge) error {

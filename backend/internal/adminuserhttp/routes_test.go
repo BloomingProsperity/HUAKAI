@@ -15,6 +15,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
 func TestAdminListUsers_PaginationCapsAndOffset(t *testing.T) {
@@ -135,6 +136,50 @@ func TestAdminUsersNoMutation(t *testing.T) {
 	}
 }
 
+func TestAdminUnlinkSocialIdentityTenantScoped(t *testing.T) {
+	store := &usersStoreStub{}
+	links := &adminSocialLinkStub{unlinked: true}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:        usersAuthStub{ident: tenantOperator(7)},
+		Store:       store,
+		SocialLinks: links,
+	}, http.MethodDelete, "/admin/v1/users/101/account-bindings/github", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	if links.calls != 1 || links.gotTenantID != 7 || links.gotUserID != 101 || links.gotProvider != userauth.SocialProviderGitHub {
+		t.Fatalf("unlink call mismatch: calls=%d tenant=%d user=%d provider=%q", links.calls, links.gotTenantID, links.gotUserID, links.gotProvider)
+	}
+	var body struct {
+		Unlinked bool `json:"unlinked"`
+	}
+	decodeBody(t, rec, &body)
+	if !body.Unlinked {
+		t.Fatalf("unlinked=%v want true", body.Unlinked)
+	}
+}
+
+func TestAdminUnlinkSocialIdentityRejectsLastLoginMethod(t *testing.T) {
+	links := &adminSocialLinkStub{err: userauth.ErrLastLoginMethod}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:        usersAuthStub{ident: tenantOperator(7)},
+		Store:       &usersStoreStub{},
+		SocialLinks: links,
+	}, http.MethodDelete, "/admin/v1/users/101/account-bindings/google", nil)
+
+	assertStatus(t, rec, http.StatusConflict)
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeBody(t, rec, &body)
+	if body.Error.Code != "last_login_method" {
+		t.Fatalf("error code=%q want last_login_method", body.Error.Code)
+	}
+}
+
 type usersAuthStub struct {
 	ident admin.AdminIdentity
 	err   error
@@ -188,6 +233,26 @@ func (s *usersStoreStub) AdminGetTwoFAAdoptionStatsForTenant(_ context.Context, 
 
 func (s *usersStoreStub) calls() int {
 	return s.listCalls + s.getCalls + s.historyCalls + s.twoFAStatsCalls
+}
+
+type adminSocialLinkStub struct {
+	calls       int
+	gotTenantID int64
+	gotUserID   int64
+	gotProvider string
+	unlinked    bool
+	err         error
+}
+
+func (s *adminSocialLinkStub) UnlinkSocialIdentity(_ context.Context, tenantID, userID int64, provider string) (bool, error) {
+	s.calls++
+	s.gotTenantID = tenantID
+	s.gotUserID = userID
+	s.gotProvider = provider
+	if s.err != nil {
+		return false, s.err
+	}
+	return s.unlinked, nil
 }
 
 func invokeAdminUsers(t *testing.T, deps Deps, method, target string, _ any) *httptest.ResponseRecorder {

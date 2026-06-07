@@ -4,6 +4,7 @@ package userauth
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"testing"
@@ -46,6 +47,72 @@ func TestPGUpdateDisplayNamePersistsAndStaysTenantScoped(t *testing.T) {
 	}
 	if got := readUserAuthProfileDisplayName(t, ctx, pool, tenantA, userA); got != "Alice Updated" {
 		t.Fatalf("cross-tenant attempt changed tenant A display_name=%q", got)
+	}
+}
+
+func TestPGUnlinkSocialIdentityDeletesBinding(t *testing.T) {
+	ctx := context.Background()
+	pool := openUserAuthProfilePool(t, ctx)
+	t.Cleanup(pool.Close)
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tenantID := seedUserAuthProfileTenant(t, ctx, pool, "unlink-social-"+suffix)
+	t.Cleanup(func() { cleanupUserAuthProfileTenant(t, ctx, pool, tenantID) })
+
+	user, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: tenantID, Email: "unlink-" + suffix + "@example.test", DisplayName: "Password Backed",
+		PasswordHash: "argon2id-test-hash", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.LinkSocialIdentity(ctx, tenantID, user.ID, SocialProviderGoogle, "pg-google-"+suffix); err != nil {
+		t.Fatalf("LinkSocialIdentity: %v", err)
+	}
+
+	unlinked, err := svc.UnlinkSocialIdentity(ctx, tenantID, user.ID, SocialProviderGoogle)
+	if err != nil {
+		t.Fatalf("UnlinkSocialIdentity: %v", err)
+	}
+	if !unlinked {
+		t.Fatal("UnlinkSocialIdentity deleted=false, want true")
+	}
+	if _, err := store.GetUserBySocialIdentity(ctx, tenantID, SocialProviderGoogle, "pg-google-"+suffix); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("GetUserBySocialIdentity after unlink err=%v want ErrUserNotFound", err)
+	}
+}
+
+func TestPGUnlinkSocialIdentityRejectsLastLoginMethod(t *testing.T) {
+	ctx := context.Background()
+	pool := openUserAuthProfilePool(t, ctx)
+	t.Cleanup(pool.Close)
+	store := NewPostgresStore(pool)
+	svc := NewService(store)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tenantID := seedUserAuthProfileTenant(t, ctx, pool, "unlink-lockout-"+suffix)
+	t.Cleanup(func() { cleanupUserAuthProfileTenant(t, ctx, pool, tenantID) })
+
+	user, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: tenantID, Email: "social-only-" + suffix + "@example.test", DisplayName: "Social Only",
+		EmailVerified: true, SocialLoginProvider: SocialProviderGoogle, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.LinkSocialIdentity(ctx, tenantID, user.ID, SocialProviderGoogle, "pg-google-only-"+suffix); err != nil {
+		t.Fatalf("LinkSocialIdentity: %v", err)
+	}
+
+	if _, err := svc.UnlinkSocialIdentity(ctx, tenantID, user.ID, SocialProviderGoogle); !errors.Is(err, ErrLastLoginMethod) {
+		t.Fatalf("UnlinkSocialIdentity err=%v want ErrLastLoginMethod; MUTATION: removing the final-login guard makes this pass and deletes the only login path", err)
+	}
+	stillLinked, err := store.GetUserBySocialIdentity(ctx, tenantID, SocialProviderGoogle, "pg-google-only-"+suffix)
+	if err != nil {
+		t.Fatalf("social link disappeared after rejected unlink: %v", err)
+	}
+	if stillLinked.ID != user.ID {
+		t.Fatalf("social identity resolved user=%d want %d", stillLinked.ID, user.ID)
 	}
 }
 
@@ -95,6 +162,9 @@ func readUserAuthProfileDisplayName(t *testing.T, ctx context.Context, pool *pgx
 
 func cleanupUserAuthProfileTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64) {
 	t.Helper()
+	if _, err := pool.Exec(ctx, `DELETE FROM social_identity_links WHERE tenant_id=$1`, tenantID); err != nil {
+		t.Fatalf("cleanup social_identity_links: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM users WHERE tenant_id=$1`, tenantID); err != nil {
 		t.Fatalf("cleanup users: %v", err)
 	}

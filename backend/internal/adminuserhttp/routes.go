@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
 const (
@@ -24,8 +25,9 @@ const (
 )
 
 type Deps struct {
-	Auth  adminAuth
-	Store userReadStore
+	Auth        adminAuth
+	Store       userReadStore
+	SocialLinks socialLinkService
 }
 
 type adminAuth interface {
@@ -39,11 +41,16 @@ type userReadStore interface {
 	AdminListUserBalanceHistoryForTenant(context.Context, admindb.AdminListUserBalanceHistoryForTenantParams) ([]admindb.AdminListUserBalanceHistoryForTenantRow, error)
 }
 
+type socialLinkService interface {
+	UnlinkSocialIdentity(context.Context, int64, int64, string) (bool, error)
+}
+
 func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/", newListHandler(d))
 	r.Get("/2fa-adoption-stats", newTwoFAStatsHandler(d))
 	r.Get("/{id}", newGetHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
+	r.Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -236,6 +243,31 @@ func newBalanceHistoryHandler(d Deps) http.HandlerFunc {
 	}
 }
 
+func newUnlinkSocialIdentityHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID, ok := resolveTenant(w, r, d)
+		if !ok {
+			return
+		}
+		if d.SocialLinks == nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured",
+				"social link dependency unset")
+			return
+		}
+		userID, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		provider := chi.URLParam(r, "provider")
+		unlinked, err := d.SocialLinks.UnlinkSocialIdentity(r.Context(), tenantID, userID, provider)
+		if err != nil {
+			writeSocialLinkError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"unlinked": unlinked})
+	}
+}
+
 func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, bool) {
 	if d.Auth == nil || d.Store == nil {
 		writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured",
@@ -263,6 +295,20 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, bool)
 		writeError(w, http.StatusForbidden, "admin_forbidden_scope",
 			"admin role required")
 		return 0, false
+	}
+}
+
+func writeSocialLinkError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, userauth.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, "invalid_account_binding", "account binding request is invalid")
+	case errors.Is(err, userauth.ErrLastLoginMethod):
+		writeError(w, http.StatusConflict, "last_login_method", "cannot remove the last login method")
+	case errors.Is(err, userauth.ErrUserNotFound):
+		writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+	default:
+		writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
+			fmt.Sprintf("unlink social identity failed: %v", err))
 	}
 }
 

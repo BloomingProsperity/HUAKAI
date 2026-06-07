@@ -2900,6 +2900,71 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/auth/account-bindings/{provider}:
+    parameters:
+      - in: path
+        name: provider
+        required: true
+        schema:
+          type: string
+          enum: [google, github, wechat, dingtalk, linuxdo, oidc]
+    delete:
+      tags: [auth]
+      summary: Unlink the authenticated user's social login binding for one provider
+      operationId: unlinkAuthAccountBinding
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-07-auth-unlink-logout-codex.md
+        - backend/internal/controlhttp/panelauth_handler.go
+        - backend/internal/userauth/social_login.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Deletes social identity links for the requested provider using only the
+        authenticated session tenant/user scope. The service refuses to remove
+        the caller's last login method when the account has no local password.
+      responses:
+        '200':
+          description: Binding delete completed or was already absent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unlinked: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Logout by revoking the caller's current session family
+      operationId: authLogout
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-07-auth-unlink-logout-codex.md
+        - backend/internal/controlhttp/panelauth_handler.go
+        - backend/internal/usersession/invalidation.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Semantically equivalent to revoking the authenticated caller's current
+        session family. The family id is taken from SessionIdentity, never from
+        request body or query parameters.
+      responses:
+        '200':
+          description: Current session family revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/2fa/setup:
     post:
       tags: [auth]
@@ -6419,6 +6484,44 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/users/{id}/account-bindings/{provider}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+      - in: path
+        name: provider
+        required: true
+        schema:
+          type: string
+          enum: [google, github, wechat, dingtalk, linuxdo, oidc]
+    delete:
+      tags: [admin-users]
+      summary: Clear one user's social login binding for a provider
+      operationId: adminUnlinkUserAccountBinding
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-07-auth-unlink-logout-codex.md
+        - backend/internal/adminuserhttp/routes.go
+        - backend/internal/userauth/social_login.go
+      x-huakai-required-role: tenant_operator
+      description: |
+        Tenant-scoped admin action that calls the same social unlink service as
+        self-service unlink. It refuses to remove a user's last login method
+        when the account has no local password.
+      responses:
+        '200':
+          description: Binding delete completed or was already absent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unlinked: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/users/{id}/balance-history:

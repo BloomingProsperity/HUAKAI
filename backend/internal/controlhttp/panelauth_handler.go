@@ -10,12 +10,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/panelauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 // PanelResolver 解析用户面板归属(由 *panelauth.Resolver 实现)。
@@ -29,10 +31,22 @@ type AuthProfileService interface {
 	UpdateProfile(ctx context.Context, tenantID, userID int64, displayName string) (userauth.User, error)
 }
 
+// AuthSocialLinkService removes authenticated users' social login bindings.
+type AuthSocialLinkService interface {
+	UnlinkSocialIdentity(ctx context.Context, tenantID, userID int64, provider string) (bool, error)
+}
+
+// AuthSessionRevoker revokes authenticated user sessions.
+type AuthSessionRevoker interface {
+	Revoke(ctx context.Context, in usersession.RevokeInput) (int64, error)
+}
+
 // AuthMeDeps whoami 路由依赖。
 type AuthMeDeps struct {
-	Resolver PanelResolver
-	Profiles AuthProfileService
+	Resolver    PanelResolver
+	Profiles    AuthProfileService
+	SocialLinks AuthSocialLinkService
+	Sessions    AuthSessionRevoker
 }
 
 // meResponse 是 /auth/me 的响应 DTO — 仅暴露面板归属与自身 id, 不含任何敏感字段。
@@ -57,6 +71,8 @@ type profileResponse struct {
 func MountAuthMeRoutes(r chi.Router, d AuthMeDeps) {
 	r.Get("/me", newAuthMeHandler(d))
 	r.Put("/me/profile", newAuthProfileUpdateHandler(d))
+	r.Delete("/account-bindings/{provider}", newAuthSocialUnlinkHandler(d))
+	r.Post("/logout", newAuthLogoutHandler(d))
 }
 
 func newAuthMeHandler(d AuthMeDeps) http.HandlerFunc {
@@ -114,6 +130,54 @@ func newAuthProfileUpdateHandler(d AuthMeDeps) http.HandlerFunc {
 	}
 }
 
+func newAuthSocialUnlinkHandler(d AuthMeDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.SocialLinks == nil {
+			controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "social link dependency unset")
+			return
+		}
+		ident, ok := authMeSessionIdentity(w, r)
+		if !ok {
+			return
+		}
+		provider := chi.URLParam(r, "provider")
+		unlinked, err := d.SocialLinks.UnlinkSocialIdentity(r.Context(), ident.TenantID, ident.UserID, provider)
+		if err != nil {
+			writeAuthSocialLinkError(w, err)
+			return
+		}
+		controlWriteJSON(w, http.StatusOK, map[string]any{"unlinked": unlinked})
+	}
+}
+
+func newAuthLogoutHandler(d AuthMeDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Sessions == nil {
+			controlWriteJSONError(w, http.StatusServiceUnavailable, "session_auth_not_configured", "session dependency unset")
+			return
+		}
+		ident, ok := authMeSessionIdentity(w, r)
+		if !ok {
+			return
+		}
+		if strings.TrimSpace(ident.FamilyID) == "" {
+			controlWriteJSONError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
+			return
+		}
+		revoked, err := d.Sessions.Revoke(r.Context(), usersession.RevokeInput{
+			TenantID: ident.TenantID,
+			UserID:   ident.UserID,
+			FamilyID: ident.FamilyID,
+			Reason:   "logout",
+		})
+		if err != nil {
+			writeAuthLogoutSessionError(w, err)
+			return
+		}
+		controlWriteJSON(w, http.StatusOK, map[string]any{"revoked": revoked})
+	}
+}
+
 func authMeSessionIdentity(w http.ResponseWriter, r *http.Request) (sessionauth.SessionIdentity, bool) {
 	ident, ok := sessionauth.SessionFromContext(r.Context())
 	if !ok || ident.TenantID <= 0 || ident.UserID <= 0 {
@@ -131,6 +195,35 @@ func writeAuthProfileError(w http.ResponseWriter, err error, fallbackCode string
 		controlWriteJSONError(w, http.StatusForbidden, "account_not_active", "account is no longer active")
 	default:
 		controlWriteJSONError(w, http.StatusServiceUnavailable, fallbackCode, "profile backend unavailable")
+	}
+}
+
+func writeAuthSocialLinkError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, userauth.ErrInvalidInput):
+		controlWriteJSONError(w, http.StatusBadRequest, "invalid_account_binding", "account binding request is invalid")
+	case errors.Is(err, userauth.ErrLastLoginMethod):
+		controlWriteJSONError(w, http.StatusConflict, "last_login_method", "cannot remove the last login method")
+	case errors.Is(err, userauth.ErrUserNotFound):
+		controlWriteJSONError(w, http.StatusNotFound, "user_not_found", "user was not found")
+	default:
+		controlWriteJSONError(w, http.StatusServiceUnavailable, "social_link_backend_error", "social link backend unavailable")
+	}
+}
+
+func writeAuthLogoutSessionError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, usersession.ErrInvalidInput):
+		controlWriteJSONError(w, http.StatusBadRequest, "invalid_logout_request", "logout request is invalid")
+	case errors.Is(err, usersession.ErrStoreNotConfigured), errors.Is(err, usersession.ErrSigningKeyMissing):
+		controlWriteJSONError(w, http.StatusServiceUnavailable, "session_auth_not_configured", "session dependency unset")
+	case errors.Is(err, usersession.ErrFamilyNotFound),
+		errors.Is(err, usersession.ErrFamilyRevoked),
+		errors.Is(err, usersession.ErrTokenNotFound),
+		errors.Is(err, usersession.ErrTokenExpired):
+		controlWriteJSONError(w, http.StatusUnauthorized, "session_token_invalid", "session token is invalid")
+	default:
+		controlWriteJSONError(w, http.StatusServiceUnavailable, "session_backend_error", "session backend unavailable")
 	}
 }
 
