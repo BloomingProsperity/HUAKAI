@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	geminiproto "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 )
 
 func marshalBody(t *testing.T, env *proto.HCSF, family string) map[string]any {
@@ -65,8 +66,37 @@ func imageNode() proto.CapabilityNode {
 	return proto.CapabilityNode{ID: "n_image_1", Kind: proto.CapabilityImage, StreamReady: proto.StreamReadyYes, Image: &proto.ImageNode{SourceKind: proto.DataSourceURL, MediaType: "image/png", Locator: proto.DataLocator{Kind: proto.DataSourceURL, Value: "https://example.test/i.png"}}}
 }
 
+func inlineImageNode() proto.CapabilityNode {
+	return proto.CapabilityNode{
+		ID:          "n_image_inline_1",
+		Kind:        proto.CapabilityImage,
+		StreamReady: proto.StreamReadyYes,
+		Image: &proto.ImageNode{
+			SourceKind: proto.DataSourceInlineBase64,
+			MediaType:  "image/png",
+			Locator: proto.DataLocator{
+				Kind:  proto.DataSourceInlineBase64,
+				Value: "iVBORw0KGgo=",
+			},
+		},
+	}
+}
+
 func thinkingNode() proto.CapabilityNode {
 	return proto.CapabilityNode{ID: "n_thinking_1", Kind: proto.CapabilityThinking, StreamReady: proto.StreamReadyPartial, Thinking: &proto.ThinkingNode{Redaction: proto.RedactionPublic, Blocks: []proto.CanonicalContentBlock{{Type: "text", Text: "visible thought"}}}}
+}
+
+func thinkingBudgetNode() proto.CapabilityNode {
+	return proto.CapabilityNode{
+		ID:          "n_thinking_budget_1",
+		Kind:        proto.CapabilityThinking,
+		StreamReady: proto.StreamReadyPartial,
+		Thinking: &proto.ThinkingNode{
+			BudgetTokens: 1024,
+			Blocks:       []proto.CanonicalContentBlock{},
+			Redaction:    proto.RedactionProviderOnly,
+		},
+	}
 }
 
 func assistantThinkingNode() proto.CapabilityNode {
@@ -158,6 +188,144 @@ func TestMarshalToolUseAndResultOpenAIResponses(t *testing.T) {
 	in := body["input"].([]any)
 	if in[0].(map[string]any)["type"] != "function_call" || in[1].(map[string]any)["type"] != "function_call_output" {
 		t.Fatalf("responses tools = %+v", body)
+	}
+}
+
+// TestMarshalGeminiMessages guards the Gemini egress graph projection.
+// MUTATION: leaving assistant as "assistant" instead of Gemini "model", or
+// dropping functionCall/functionResponse parts, must make this test fail.
+func TestMarshalGeminiMessages(t *testing.T) {
+	temp := 0.25
+	topP := 0.75
+	maxTokens := 128
+	env := graphEnv(
+		textNode("n_system_1", "system", "be concise"),
+		textNode("n_user_1", "user", "hello"),
+		inlineImageNode(),
+		textNode("n_assistant_1", "assistant", "I can help"),
+		toolUseNode(),
+		toolResultNode(),
+		thinkingBudgetNode(),
+	)
+	env.RequestControls = proto.RequestControls{
+		Temperature: &temp,
+		TopP:        &topP,
+		MaxTokens:   &maxTokens,
+		Stop:        []string{"END"},
+	}
+
+	body := marshalBody(t, env, "gemini_messages")
+	system, ok := body["systemInstruction"].(map[string]any)
+	if !ok {
+		t.Fatalf("Gemini systemInstruction missing or wrong shape: %+v", body)
+	}
+	systemParts := system["parts"].([]any)
+	if systemParts[0].(map[string]any)["text"] != "be concise" {
+		t.Fatalf("Gemini systemInstruction = %+v", body)
+	}
+
+	contents, ok := body["contents"].([]any)
+	if !ok {
+		t.Fatalf("Gemini contents missing or wrong shape: %+v", body)
+	}
+	if len(contents) != 3 {
+		t.Fatalf("Gemini contents len = %d, body=%+v", len(contents), body)
+	}
+	user := contents[0].(map[string]any)
+	if user["role"] != "user" {
+		t.Fatalf("Gemini user role = %v, body=%+v", user["role"], body)
+	}
+	userParts := user["parts"].([]any)
+	if userParts[0].(map[string]any)["text"] != "hello" {
+		t.Fatalf("Gemini user text part = %+v", userParts[0])
+	}
+	inlineData := userParts[1].(map[string]any)["inlineData"].(map[string]any)
+	if inlineData["mimeType"] != "image/png" || inlineData["data"] != "iVBORw0KGgo=" {
+		t.Fatalf("Gemini inlineData = %+v", inlineData)
+	}
+
+	model := contents[1].(map[string]any)
+	if model["role"] != "model" {
+		t.Fatalf("Gemini assistant role = %v, want model; body=%+v", model["role"], body)
+	}
+	modelParts := model["parts"].([]any)
+	if modelParts[0].(map[string]any)["text"] != "I can help" {
+		t.Fatalf("Gemini model text part = %+v", modelParts[0])
+	}
+	functionCall := modelParts[1].(map[string]any)["functionCall"].(map[string]any)
+	if functionCall["name"] != "lookup" || functionCall["id"] != "call_1" {
+		t.Fatalf("Gemini functionCall = %+v", functionCall)
+	}
+	if functionCall["args"].(map[string]any)["q"] != "x" {
+		t.Fatalf("Gemini functionCall args = %+v", functionCall["args"])
+	}
+
+	toolResponse := contents[2].(map[string]any)
+	if toolResponse["role"] != "user" {
+		t.Fatalf("Gemini tool response role = %v, want user; body=%+v", toolResponse["role"], body)
+	}
+	functionResponse := toolResponse["parts"].([]any)[0].(map[string]any)["functionResponse"].(map[string]any)
+	if functionResponse["name"] != "lookup" {
+		t.Fatalf("Gemini functionResponse name = %+v", functionResponse)
+	}
+	response := functionResponse["response"].(map[string]any)
+	if response["content"] != "ok" {
+		t.Fatalf("Gemini functionResponse response = %+v", response)
+	}
+
+	generation := body["generationConfig"].(map[string]any)
+	if generation["temperature"] != 0.25 || generation["topP"] != 0.75 || generation["maxOutputTokens"].(float64) != 128 {
+		t.Fatalf("Gemini generationConfig controls = %+v", generation)
+	}
+	if generation["stopSequences"].([]any)[0] != "END" {
+		t.Fatalf("Gemini stopSequences = %+v", generation["stopSequences"])
+	}
+	thinking := generation["thinkingConfig"].(map[string]any)
+	if thinking["thinkingBudget"].(float64) != 1024 {
+		t.Fatalf("Gemini thinkingConfig = %+v", thinking)
+	}
+}
+
+// TestGeminiIngressToAnthropicUpstream proves Gemini-native ingress produces
+// canonical roles that can be projected into a non-Gemini upstream.
+// MUTATION: keeping Gemini's "model" role instead of canonical assistant must
+// make the Anthropic upstream role assertion fail.
+func TestGeminiIngressToAnthropicUpstream(t *testing.T) {
+	client := &geminiproto.GeminiClient{}
+	ctx := proto.ContextWithRequestMetaSeed(context.Background(), proto.RequestMetaSeed{
+		RequestID:      "req_gateway_gemini_loop",
+		ClientProtocol: proto.ClientProtocolGemini,
+		ProtocolFamily: "gemini_messages",
+		IngressPath:    "/v1beta/models/gemini-pro:generateContent",
+		Model:          "gemini-pro",
+		EvidenceLabel:  proto.EvidenceMock,
+	})
+	env, losses, err := client.RequestToCanonical(ctx, []byte(`{
+		"contents":[{"role":"model","parts":[{"text":"already answered"}]}],
+		"systemInstruction":{"parts":[{"text":"operator policy"}]}
+	}`))
+	if err != nil {
+		t.Fatalf("Gemini RequestToCanonical: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("unexpected Gemini ingress losses: %+v", losses)
+	}
+
+	body := marshalBody(t, env, "anthropic_messages")
+	if body["system"] != "operator policy" {
+		t.Fatalf("Anthropic system = %+v, body=%+v", body["system"], body)
+	}
+	messages := body["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("Anthropic messages len = %d, body=%+v", len(messages), body)
+	}
+	msg := messages[0].(map[string]any)
+	if msg["role"] != "assistant" {
+		t.Fatalf("Anthropic message role = %v, want assistant; body=%+v", msg["role"], body)
+	}
+	block := msg["content"].([]any)[0].(map[string]any)
+	if block["type"] != "text" || block["text"] != "already answered" {
+		t.Fatalf("Anthropic content block = %+v", block)
 	}
 }
 
