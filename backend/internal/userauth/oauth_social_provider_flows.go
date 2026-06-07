@@ -16,21 +16,24 @@ import (
 )
 
 const (
-	defaultGoogleAuthURL  = "https://accounts.google.com/o/oauth2/v2/auth"
-	defaultGoogleTokenURL = "https://oauth2.googleapis.com/token"
-	defaultGoogleJWKSURL  = "https://www.googleapis.com/oauth2/v3/certs"
-	defaultGoogleIssuer   = "https://accounts.google.com"
-	defaultGitHubAuthURL  = "https://github.com/login/oauth/authorize"
-	defaultGitHubTokenURL = "https://github.com/login/oauth/access_token"
-	defaultGitHubUserURL  = "https://api.github.com/user"
-	defaultGitHubEmailURL = "https://api.github.com/user/emails"
-	defaultQQAuthURL      = "https://graph.qq.com/oauth2.0/authorize"
-	defaultQQTokenURL     = "https://graph.qq.com/oauth2.0/token"
-	defaultQQOpenIDURL    = "https://graph.qq.com/oauth2.0/me"
-	defaultQQUserURL      = "https://graph.qq.com/user/get_user_info"
-	defaultDingAuthURL    = "https://login.dingtalk.com/oauth2/auth"
-	defaultDingTokenURL   = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken"
-	defaultDingUserURL    = "https://api.dingtalk.com/v1.0/contact/users/me"
+	defaultGoogleAuthURL   = "https://accounts.google.com/o/oauth2/v2/auth"
+	defaultGoogleTokenURL  = "https://oauth2.googleapis.com/token"
+	defaultGoogleJWKSURL   = "https://www.googleapis.com/oauth2/v3/certs"
+	defaultGoogleIssuer    = "https://accounts.google.com"
+	defaultGitHubAuthURL   = "https://github.com/login/oauth/authorize"
+	defaultGitHubTokenURL  = "https://github.com/login/oauth/access_token"
+	defaultGitHubUserURL   = "https://api.github.com/user"
+	defaultGitHubEmailURL  = "https://api.github.com/user/emails"
+	defaultQQAuthURL       = "https://graph.qq.com/oauth2.0/authorize"
+	defaultQQTokenURL      = "https://graph.qq.com/oauth2.0/token"
+	defaultQQOpenIDURL     = "https://graph.qq.com/oauth2.0/me"
+	defaultQQUserURL       = "https://graph.qq.com/user/get_user_info"
+	defaultDingAuthURL     = "https://login.dingtalk.com/oauth2/auth"
+	defaultDingTokenURL    = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken"
+	defaultDingUserURL     = "https://api.dingtalk.com/v1.0/contact/users/me"
+	defaultDiscordAuthURL  = "https://discord.com/oauth2/authorize"
+	defaultDiscordTokenURL = "https://discord.com/api/oauth2/token"
+	defaultDiscordUserURL  = "https://discord.com/api/users/@me"
 )
 
 func applyOAuthProviderDefaults(cfg OAuthConfig) (OAuthConfig, error) {
@@ -98,6 +101,31 @@ func applyOAuthProviderDefaults(cfg OAuthConfig) (OAuthConfig, error) {
 			strings.TrimSpace(cfg.AuthURL) == "" ||
 			strings.TrimSpace(cfg.UserURL) == "" {
 			return OAuthConfig{}, ErrInvalidInput
+		}
+	case SocialProviderDiscord:
+		if cfg.AuthURL == "" {
+			cfg.AuthURL = defaultDiscordAuthURL
+		}
+		if cfg.TokenURL == "" {
+			cfg.TokenURL = defaultDiscordTokenURL
+		}
+		if cfg.UserURL == "" {
+			cfg.UserURL = defaultDiscordUserURL
+		}
+		if len(cfg.Scopes) == 0 {
+			cfg.Scopes = []string{"identify", "email"}
+		}
+		if strings.TrimSpace(cfg.SubjectField) == "" {
+			cfg.SubjectField = "id"
+		}
+		if strings.TrimSpace(cfg.EmailField) == "" {
+			cfg.EmailField = "email"
+		}
+		if strings.TrimSpace(cfg.EmailVerifiedField) == "" {
+			cfg.EmailVerifiedField = "verified"
+		}
+		if strings.TrimSpace(cfg.DisplayNameField) == "" {
+			cfg.DisplayNameField = "global_name"
 		}
 	}
 	return cfg, nil
@@ -333,9 +361,17 @@ func (p *OAuthHTTPProvider) genericUserInfoIdentity(ctx context.Context, accessT
 		Provider:      p.cfg.Provider,
 		Subject:       subject,
 		Email:         email,
-		DisplayName:   stringField(raw, p.cfg.DisplayNameField),
+		DisplayName:   p.genericDisplayName(raw),
 		EmailVerified: verified,
 	}, nil
+}
+
+func (p *OAuthHTTPProvider) genericDisplayName(raw map[string]any) string {
+	display := stringField(raw, p.cfg.DisplayNameField)
+	if display == "" && p.cfg.Provider == SocialProviderDiscord {
+		display = stringField(raw, "username")
+	}
+	return display
 }
 
 func (p *OAuthHTTPProvider) getURLJSON(ctx context.Context, endpoint string, dst any) error {
@@ -462,6 +498,10 @@ func mapField(m map[string]any, field string) (any, bool) {
 }
 
 func syntheticOAuthEmail(provider, subject string) string {
+	return SyntheticOAuthEmail(provider, subject)
+}
+
+func SyntheticOAuthEmail(provider, subject string) string {
 	provider = normalizeSocialProvider(provider)
 	sum := sha256.Sum256([]byte(provider + ":" + strings.TrimSpace(subject)))
 	local := strings.ToLower(base64.RawURLEncoding.EncodeToString(sum[:12]))

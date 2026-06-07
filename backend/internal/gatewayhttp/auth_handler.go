@@ -18,6 +18,7 @@ import (
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
+	"github.com/BloomingProsperity/HUAKAI/internal/telegramauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
@@ -82,7 +83,9 @@ type AuthHandlerDeps struct {
 	TwoFactorSettings AuthTwoFactorSettings
 	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸。nil = 不限流(测试/旧装配),
 	// 生产装配必须注入,否则未认证攻击者可对任意邮箱触发昂贵 argon2 放大 CPU。
-	LoginThrottle *loginthrottle.Limiter
+	LoginThrottle        *loginthrottle.Limiter
+	TelegramBotToken     string
+	TelegramWidgetMaxAge time.Duration
 }
 
 type authRegisterRequest struct {
@@ -134,6 +137,12 @@ type authOAuthCallbackRequest struct {
 	DeviceInfo map[string]any `json:"device_info,omitempty"`
 }
 
+type authTelegramLoginRequest struct {
+	TenantID   int64             `json:"tenant_id"`
+	Params     map[string]string `json:"params"`
+	DeviceInfo map[string]any    `json:"device_info,omitempty"`
+}
+
 type authSocialIdentityChangedRequest struct {
 	TenantID   int64  `json:"tenant_id"`
 	UserID     int64  `json:"user_id"`
@@ -157,6 +166,7 @@ func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/reset-password", newAuthResetPasswordHandler(d))
 	r.Post("/oauth-init", newAuthOAuthInitHandler(d))
 	r.Post("/oauth-callback", newAuthOAuthCallbackHandler(d))
+	r.Post("/telegram-login", newAuthTelegramLoginHandler(d))
 	r.Post("/social/identity-changed", newAuthSocialIdentityChangedHandler(d))
 }
 
@@ -618,6 +628,66 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 	}
 }
 
+func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Auth == nil || d.Sessions == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth/session dependency unset")
+			return
+		}
+		if strings.TrimSpace(d.TelegramBotToken) == "" {
+			writeAuthError(w, userauth.ErrOAuthProviderMissing)
+			return
+		}
+		var req authTelegramLoginRequest
+		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		identity, err := telegramauth.VerifyWidget(req.Params, d.TelegramBotToken, time.Now().UTC(), telegramWidgetMaxAge(d))
+		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: userauth.SocialProviderTelegram,
+				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: userauth.SocialProviderTelegram,
+			})
+			writeAuthError(w, err)
+			return
+		}
+		user, err := d.Auth.ApplyVerifiedSocialIdentity(r.Context(), req.TenantID, identity)
+		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: userauth.SocialProviderTelegram,
+				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: userauth.SocialProviderTelegram,
+			})
+			writeAuthError(w, err)
+			return
+		}
+		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
+			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
+			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: userauth.SocialProviderTelegram,
+		})
+		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_social_login_session_failed", TenantID: user.TenantID, UserID: user.ID,
+				Provider: userauth.SocialProviderTelegram, Outcome: "failure", ReasonClass: sessionReasonClass(err),
+				AuthMethod: userauth.SocialProviderTelegram,
+			})
+			writeSessionError(w, err)
+			return
+		}
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
+			Provider: userauth.SocialProviderTelegram, Outcome: "success", AuthMethod: userauth.SocialProviderTelegram,
+		})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
+	}
+}
+
+func telegramWidgetMaxAge(d AuthHandlerDeps) time.Duration {
+	if d.TelegramWidgetMaxAge > 0 {
+		return d.TelegramWidgetMaxAge
+	}
+	return 24 * time.Hour
+}
+
 func setOAuthStateCookie(w http.ResponseWriter, r *http.Request, state string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     oauthStateCookieName,
@@ -829,6 +899,10 @@ func safeSocialProvider(provider string) (string, bool) {
 		return userauth.SocialProviderLinuxDo, true
 	case userauth.SocialProviderOIDC:
 		return userauth.SocialProviderOIDC, true
+	case userauth.SocialProviderDiscord:
+		return userauth.SocialProviderDiscord, true
+	case userauth.SocialProviderTelegram:
+		return userauth.SocialProviderTelegram, true
 	default:
 		return "", false
 	}

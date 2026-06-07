@@ -172,6 +172,8 @@ func (p *OAuthHTTPProvider) ExchangeVerifiedIdentity(ctx context.Context, flow O
 		return p.qqIdentity(ctx, resp.AccessToken)
 	case SocialProviderNodeSeek:
 		return p.genericUserInfoIdentity(ctx, resp.AccessToken)
+	case SocialProviderDiscord:
+		return p.genericUserInfoIdentity(ctx, resp.AccessToken)
 	default:
 		return VerifiedIdentity{}, ErrOAuthProviderMissing
 	}

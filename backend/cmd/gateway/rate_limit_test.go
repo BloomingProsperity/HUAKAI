@@ -436,13 +436,14 @@ func TestRateLimit_OAuthClassSharesOneBucket(t *testing.T) {
 	rl := fixedClockLimiter(t)
 	initTier := rl.authStrict["/v1/auth/oauth-init"]
 	cbTier := rl.authStrict["/v1/auth/oauth-callback"]
-	if initTier != cbTier {
-		t.Fatal("OAuth routes do not share one tier — class budget can be doubled")
+	telegramTier := rl.authStrict["/v1/auth/telegram-login"]
+	if initTier != cbTier || initTier != telegramTier {
+		t.Fatal("social login routes do not share one tier — class budget can be doubled")
 	}
 	burst := int(initTier.registry.burst)
 
 	const ip = "203.0.113.140:9100"
-	paths := []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback"}
+	paths := []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback", "/v1/auth/telegram-login"}
 	// Alternate paths for `burst` total requests: all must pass (one shared bucket).
 	for i := 0; i < burst; i++ {
 		req := httptest.NewRequest(http.MethodPost, paths[i%2], nil)
