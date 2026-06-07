@@ -282,6 +282,44 @@ func TestResponsesRoute200RoundTrip(t *testing.T) {
 	}
 }
 
+func TestCodexResponsesIngressRouted(t *testing.T) {
+	// MUTATION: leave /backend-api/codex/responses out of
+	// ClientProtocolByIngressPath; validateClientProtocol returns 404
+	// unknown_route and the Responses dispatcher is never called.
+	enableHCSFDispatchForTest(t)
+	const codexPath = "/backend-api/codex/responses"
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := responsesClientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+
+	rec := invokeResponsesHandlerPath(t, d, codexPath, `{
+		"model":"gpt-4o",
+		"instructions":"reply tersely",
+		"input":[{"type":"message","role":"user","content":"hi"}],
+		"store":false,
+		"stream":false
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"object":"response"`) {
+		t.Fatalf("body = %s; want OpenAI Responses response object", rec.Body.String())
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("canonical dispatcher calls = %d; want 1", dispatcher.calls)
+	}
+	if dispatcher.observed == nil {
+		t.Fatal("canonical dispatcher did not observe Codex Responses request")
+	}
+	meta := dispatcher.observed.RequestMeta
+	if string(meta.ClientProtocol) != "openai_responses" || meta.EndpointFamily != "openai_responses" {
+		t.Fatalf("Codex Responses meta client/family=%q/%q; want openai_responses/openai_responses", meta.ClientProtocol, meta.EndpointFamily)
+	}
+	if meta.IngressPath != codexPath {
+		t.Fatalf("IngressPath=%q want %q", meta.IngressPath, codexPath)
+	}
+}
+
 func TestResponsesFamilySetEndpointFamily(t *testing.T) {
 	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
 	dispatcher := &mockCanonicalBufferedDispatcher{}
@@ -302,6 +340,55 @@ func TestResponsesFamilySetEndpointFamily(t *testing.T) {
 	if string(dispatcher.observed.RequestMeta.ClientProtocol) != "openai_responses" ||
 		dispatcher.observed.RequestMeta.EndpointFamily != "openai_responses" {
 		t.Fatalf("responses meta client/family=%q/%q", dispatcher.observed.RequestMeta.ClientProtocol, dispatcher.observed.RequestMeta.EndpointFamily)
+	}
+}
+
+func TestCodexResponsesBilled(t *testing.T) {
+	// MUTATION: bypass the normal Responses settle path for the Codex ingress;
+	// the HTTP response can still be 200 but no SettleRequest is recorded.
+	enableHCSFDispatchForTest(t)
+	const codexPath = "/backend-api/codex/responses"
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	claimGate := &recordingClaimGate{claimID: 8123}
+	settler := &recordingSettler{}
+	d := responsesClientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.ClaimGate = claimGate
+	d.Settler = settler
+
+	rec := invokeResponsesHandlerPath(t, d, codexPath, `{"model":"gpt-4o","stream":false,"input":"hi"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if claimGate.endpointFamily != "openai_responses" {
+		t.Fatalf("reserve EndpointFamily=%q want openai_responses", claimGate.endpointFamily)
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	if settler.calls[0].ClaimID != 8123 {
+		t.Fatalf("settle ClaimID=%d want 8123 from reserve path", settler.calls[0].ClaimID)
+	}
+	if settler.calls[0].RequestedModel != "gpt-4o" {
+		t.Fatalf("settle RequestedModel=%q want gpt-4o", settler.calls[0].RequestedModel)
+	}
+}
+
+func TestCodexResponsesAuthRequired(t *testing.T) {
+	// MUTATION: route Codex ingress around NewResponsesHandler auth; the mock
+	// dispatcher would be called and the response would be 200 instead of 401.
+	enableHCSFDispatchForTest(t)
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	d := responsesClientAdapterDeps(t)
+	d.Auth = stubAuth{err: auth.ErrUnauthorized}
+	d.CanonicalDispatcher = dispatcher
+
+	rec := invokeResponsesHandlerPath(t, d, "/backend-api/codex/responses", `{"model":"gpt-4o","stream":false,"input":"hi"}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d; want 401; body = %s", rec.Code, rec.Body.String())
+	}
+	if dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls=%d want 0 when auth fails", dispatcher.calls)
 	}
 }
 

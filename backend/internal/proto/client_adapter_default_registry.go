@@ -48,6 +48,7 @@ func mustRegister(reg *ClientAdapterRegistry, protocol ClientProtocol, adapter C
 // 映射约定（HUAKAI v0.4）：
 //   - /v1/chat/completions     → openai_chat
 //   - /v1/responses            → openai_responses
+//   - /backend-api/codex/responses → openai_responses（Codex CLI ingress）
 //   - /v1/messages             → anthropic_messages
 //   - /v1/native/openai/responses → openai_responses（native passthrough route）
 //
@@ -57,7 +58,7 @@ func ClientProtocolByIngressPath(path string) (ClientProtocol, bool) {
 	switch path {
 	case "/v1/chat/completions":
 		return ClientProtocolOpenAIChat, true
-	case "/v1/responses", "/v1/native/openai/responses":
+	case "/v1/responses", "/v1/native/openai/responses", "/backend-api/codex/responses":
 		return ClientProtocolOpenAIResponses, true
 	case "/v1/messages":
 		return ClientProtocolAnthropicMessages, true
