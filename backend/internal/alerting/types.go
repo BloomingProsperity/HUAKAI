@@ -64,6 +64,23 @@ type AlertSilence struct {
 	CreatedAt time.Time
 }
 
+type FiringNotice struct {
+	RuleID        int64
+	RuleName      string
+	Metric        string
+	Comparator    Comparator
+	Threshold     float64
+	Severity      Severity
+	ObservedValue float64
+	FiredAt       time.Time
+}
+
+type FiringDeliverer interface {
+	DeliverFiring(context.Context, int64, FiringNotice) error
+}
+
+type FiringDeliveryErrorRecorder func(context.Context, int64, FiringNotice, error)
+
 type CreateRuleInput struct {
 	TenantID      int64
 	Name          string
@@ -124,7 +141,7 @@ type Store interface {
 	ListEnabledRules(context.Context, int64) ([]AlertRule, error)
 	ListTenantsWithEnabledRules(context.Context) ([]int64, error)
 
-	UpsertFiringEvent(context.Context, int64, int64, float64, time.Time) (AlertEvent, error)
+	UpsertFiringEvent(context.Context, int64, int64, float64, time.Time) (AlertEvent, bool, error)
 	ResolveFiringEvent(context.Context, int64, int64, time.Time) (AlertEvent, bool, error)
 	ListEvents(context.Context, ListEventsInput) ([]AlertEvent, error)
 

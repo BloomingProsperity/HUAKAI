@@ -140,9 +140,9 @@ func (s *MemoryStore) ListTenantsWithEnabledRules(_ context.Context) ([]int64, e
 	return out, nil
 }
 
-func (s *MemoryStore) UpsertFiringEvent(_ context.Context, tenantID, ruleID int64, observed float64, now time.Time) (AlertEvent, error) {
+func (s *MemoryStore) UpsertFiringEvent(_ context.Context, tenantID, ruleID int64, observed float64, now time.Time) (AlertEvent, bool, error) {
 	if s == nil {
-		return AlertEvent{}, ErrStoreNotConfigured
+		return AlertEvent{}, false, ErrStoreNotConfigured
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,7 +150,7 @@ func (s *MemoryStore) UpsertFiringEvent(_ context.Context, tenantID, ruleID int6
 		if event.TenantID == tenantID && event.RuleID == ruleID && event.State == EventStateFiring {
 			event.ObservedValue = observed
 			s.events[id] = event
-			return event, nil
+			return event, false, nil
 		}
 	}
 	event := AlertEvent{
@@ -163,7 +163,7 @@ func (s *MemoryStore) UpsertFiringEvent(_ context.Context, tenantID, ruleID int6
 	}
 	s.nextEventID++
 	s.events[event.ID] = event
-	return event, nil
+	return event, true, nil
 }
 
 func (s *MemoryStore) ResolveFiringEvent(_ context.Context, tenantID, ruleID int64, now time.Time) (AlertEvent, bool, error) {

@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +56,10 @@ type Notifier struct {
 	limiter     *RateLimiter
 	now         func() time.Time
 	typeCache   *notifyTypeCache
+}
+
+type activeSettingsLister interface {
+	ListActiveSettings(context.Context, int64) ([]Settings, error)
 }
 
 func NewNotifier(cfg Config) *Notifier {
@@ -131,6 +138,55 @@ func (n *Notifier) NotifyLowBalance(ctx context.Context, tenantID, userID int64,
 	})
 }
 
+func (n *Notifier) NotifyAlertFiring(ctx context.Context, tenantID int64, alert AlertFiringInfo) error {
+	if n == nil || n.store == nil {
+		return nil
+	}
+	if tenantID <= 0 {
+		return fmt.Errorf("%w: tenant_id", ErrInvalidSettings)
+	}
+	now := n.now().UTC()
+	alert, err := normalizeAlertFiringInfo(alert, now)
+	if err != nil {
+		return err
+	}
+	lister, ok := n.store.(activeSettingsLister)
+	if !ok {
+		return nil
+	}
+	settingsList, err := lister.ListActiveSettings(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, settings := range settingsList {
+		settings = settings.normalized()
+		if settings.NotifyType == TypeNone {
+			continue
+		}
+		settings, err = ValidateSettings(settings)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if settings.TenantID != tenantID {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%w: tenant_id mismatch", ErrInvalidSettings)
+			}
+			continue
+		}
+		if n.limiter != nil && !n.limiter.Allow(tenantID, settings.UserID, EventAlertFiring, now) {
+			continue
+		}
+		if err := n.sendAlertFiring(ctx, settings, alert, now); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func (n *Notifier) send(ctx context.Context, settings Settings, event Event) error {
 	switch settings.NotifyType {
 	case TypeEmail:
@@ -141,6 +197,21 @@ func (n *Notifier) send(ctx context.Context, settings Settings, event Event) err
 		return n.sendBark(ctx, settings, event)
 	case TypeGotify:
 		return n.sendGotify(ctx, settings, event)
+	default:
+		return nil
+	}
+}
+
+func (n *Notifier) sendAlertFiring(ctx context.Context, settings Settings, alert AlertFiringInfo, occurredAt time.Time) error {
+	switch settings.NotifyType {
+	case TypeEmail:
+		return n.sendAlertFiringEmail(ctx, settings, alert)
+	case TypeWebhook:
+		return n.sendAlertFiringWebhook(ctx, settings, alert, occurredAt)
+	case TypeBark:
+		return n.sendAlertFiringBark(ctx, settings, alert)
+	case TypeGotify:
+		return n.sendAlertFiringGotify(ctx, settings, alert)
 	default:
 		return nil
 	}
@@ -174,6 +245,39 @@ func (n *Notifier) sendEmail(ctx context.Context, settings Settings, event Event
 	return nil
 }
 
+func (n *Notifier) sendAlertFiringEmail(ctx context.Context, settings Settings, alert AlertFiringInfo) error {
+	if n.emailSender == nil {
+		return fmt.Errorf("%w: email sender unavailable", ErrDeliveryFailed)
+	}
+	subject := "HUAKAI alert firing: " + alert.RuleName
+	if err := rejectHeaderInjection(settings.NotificationEmail); err != nil {
+		return err
+	}
+	if err := rejectHeaderInjection(subject); err != nil {
+		return err
+	}
+	body := fmt.Sprintf(
+		"<p>A HUAKAI alert is firing.</p><p>Rule: %s</p><p>Metric: %s</p><p>Condition: %s %s</p><p>Observed: %s</p><p>Severity: %s</p><p>Fired at: %s</p>",
+		html.EscapeString(alert.RuleName),
+		html.EscapeString(alert.Metric),
+		html.EscapeString(alert.Comparator),
+		html.EscapeString(formatAlertFloat(alert.Threshold)),
+		html.EscapeString(formatAlertFloat(alert.ObservedValue)),
+		html.EscapeString(alert.Severity),
+		html.EscapeString(alert.FiredAt.UTC().Format(time.RFC3339)),
+	)
+	msg := mailinfra.Message{
+		TenantID: settings.TenantID,
+		To:       settings.NotificationEmail,
+		Subject:  subject,
+		HTMLBody: body,
+	}
+	if err := n.emailSender.SendTenantMessage(ctx, settings.TenantID, msg); err != nil {
+		return fmt.Errorf("%w: email", ErrDeliveryFailed)
+	}
+	return nil
+}
+
 func (n *Notifier) sendWebhook(ctx context.Context, settings Settings, event Event) error {
 	if err := validateOutboundURL("webhook_url", settings.WebhookURL); err != nil {
 		return err
@@ -184,6 +288,33 @@ func (n *Notifier) sendWebhook(ctx context.Context, settings Settings, event Eve
 	}
 	headers := map[string]string{
 		headerEvent:     event.EventType,
+		headerSignature: signWebhook(settings.WebhookSecret, body),
+	}
+	return n.postJSON(ctx, settings.WebhookURL, body, headers)
+}
+
+func (n *Notifier) sendAlertFiringWebhook(ctx context.Context, settings Settings, alert AlertFiringInfo, occurredAt time.Time) error {
+	if err := validateOutboundURL("webhook_url", settings.WebhookURL); err != nil {
+		return err
+	}
+	body, err := json.Marshal(alertFiringPayload{
+		EventType:     EventAlertFiring,
+		TenantID:      settings.TenantID,
+		UserID:        settings.UserID,
+		RuleName:      alert.RuleName,
+		Metric:        alert.Metric,
+		Comparator:    alert.Comparator,
+		Threshold:     alert.Threshold,
+		Severity:      alert.Severity,
+		ObservedValue: alert.ObservedValue,
+		FiredAt:       alert.FiredAt.UTC(),
+		OccurredAt:    occurredAt.UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	headers := map[string]string{
+		headerEvent:     EventAlertFiring,
 		headerSignature: signWebhook(settings.WebhookSecret, body),
 	}
 	return n.postJSON(ctx, settings.WebhookURL, body, headers)
@@ -203,6 +334,20 @@ func (n *Notifier) sendBark(ctx context.Context, settings Settings, event Event)
 	return n.postJSON(ctx, settings.BarkURL, body, map[string]string{headerEvent: event.EventType})
 }
 
+func (n *Notifier) sendAlertFiringBark(ctx context.Context, settings Settings, alert AlertFiringInfo) error {
+	if err := validateOutboundURL("bark_url", settings.BarkURL); err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]string{
+		"title": "HUAKAI alert firing",
+		"body":  alertFiringSummary(alert),
+	})
+	if err != nil {
+		return err
+	}
+	return n.postJSON(ctx, settings.BarkURL, body, map[string]string{headerEvent: EventAlertFiring})
+}
+
 func (n *Notifier) sendGotify(ctx context.Context, settings Settings, event Event) error {
 	if err := validateOutboundURL("gotify_url", settings.GotifyURL); err != nil {
 		return err
@@ -217,6 +362,24 @@ func (n *Notifier) sendGotify(ctx context.Context, settings Settings, event Even
 	}
 	return n.postJSON(ctx, settings.GotifyURL, body, map[string]string{
 		headerEvent:    event.EventType,
+		"X-Gotify-Key": settings.GotifyToken,
+	})
+}
+
+func (n *Notifier) sendAlertFiringGotify(ctx context.Context, settings Settings, alert AlertFiringInfo) error {
+	if err := validateOutboundURL("gotify_url", settings.GotifyURL); err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]any{
+		"title":    "HUAKAI alert firing",
+		"message":  alertFiringSummary(alert),
+		"priority": settings.GotifyPriority,
+	})
+	if err != nil {
+		return err
+	}
+	return n.postJSON(ctx, settings.GotifyURL, body, map[string]string{
+		headerEvent:    EventAlertFiring,
 		"X-Gotify-Key": settings.GotifyToken,
 	})
 }
@@ -246,6 +409,54 @@ func (n *Notifier) postJSON(ctx context.Context, rawURL string, body []byte, hea
 		return fmt.Errorf("%w: status %d", ErrDeliveryFailed, resp.StatusCode)
 	}
 	return nil
+}
+
+type alertFiringPayload struct {
+	EventType     string    `json:"event_type"`
+	TenantID      int64     `json:"tenant_id"`
+	UserID        int64     `json:"user_id"`
+	RuleName      string    `json:"rule_name"`
+	Metric        string    `json:"metric"`
+	Comparator    string    `json:"comparator"`
+	Threshold     float64   `json:"threshold"`
+	Severity      string    `json:"severity"`
+	ObservedValue float64   `json:"observed_value"`
+	FiredAt       time.Time `json:"fired_at"`
+	OccurredAt    time.Time `json:"occurred_at"`
+}
+
+func normalizeAlertFiringInfo(alert AlertFiringInfo, fallback time.Time) (AlertFiringInfo, error) {
+	alert.RuleName = strings.TrimSpace(alert.RuleName)
+	alert.Metric = strings.TrimSpace(alert.Metric)
+	alert.Comparator = strings.TrimSpace(alert.Comparator)
+	alert.Severity = strings.TrimSpace(alert.Severity)
+	if alert.RuleName == "" || alert.Metric == "" || alert.Comparator == "" || alert.Severity == "" {
+		return alert, fmt.Errorf("%w: alert firing info", ErrInvalidSettings)
+	}
+	if math.IsNaN(alert.Threshold) || math.IsInf(alert.Threshold, 0) || math.IsNaN(alert.ObservedValue) || math.IsInf(alert.ObservedValue, 0) {
+		return alert, fmt.Errorf("%w: alert firing value", ErrInvalidSettings)
+	}
+	if alert.FiredAt.IsZero() {
+		alert.FiredAt = fallback
+	}
+	alert.FiredAt = alert.FiredAt.UTC()
+	return alert, nil
+}
+
+func alertFiringSummary(alert AlertFiringInfo) string {
+	return fmt.Sprintf(
+		"%s %s: %s %s %s (observed %s)",
+		alert.Severity,
+		alert.RuleName,
+		alert.Metric,
+		alert.Comparator,
+		formatAlertFloat(alert.Threshold),
+		formatAlertFloat(alert.ObservedValue),
+	)
+}
+
+func formatAlertFloat(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func signWebhook(secret string, body []byte) string {

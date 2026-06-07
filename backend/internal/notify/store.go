@@ -14,6 +14,7 @@ import (
 const notifySecretEnvelopePrefix = "huakai-notify-secret-v1:"
 
 type sqlDB interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
@@ -70,6 +71,73 @@ WHERE tenant_id = $1 AND user_id = $2`
 		}
 		return Settings{}, err
 	}
+	return s.finishLoadedSettings(ctx, out, thresholdRaw)
+}
+
+func (s *PostgresStore) ListActiveSettings(ctx context.Context, tenantID int64) ([]Settings, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrStoreUnavailable
+	}
+	if tenantID <= 0 {
+		return nil, fmt.Errorf("%w: tenant_id", ErrInvalidSettings)
+	}
+	const q = `
+SELECT user_id,
+       notify_type,
+       webhook_url,
+       webhook_secret,
+       notification_email,
+       bark_url,
+       gotify_url,
+       gotify_token,
+       gotify_priority,
+       balance_threshold::text,
+       updated_at,
+       updated_by
+FROM user_notification_settings
+WHERE tenant_id = $1
+  AND notify_type <> 'none'
+ORDER BY user_id ASC`
+	rows, err := s.db.Query(ctx, q, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []Settings{}
+	for rows.Next() {
+		settings := DefaultSettings(tenantID, 1)
+		settings.TenantID = tenantID
+		var thresholdRaw string
+		if err := rows.Scan(
+			&settings.UserID,
+			&settings.NotifyType,
+			&settings.WebhookURL,
+			&settings.WebhookSecret,
+			&settings.NotificationEmail,
+			&settings.BarkURL,
+			&settings.GotifyURL,
+			&settings.GotifyToken,
+			&settings.GotifyPriority,
+			&thresholdRaw,
+			&settings.UpdatedAt,
+			&settings.UpdatedBy,
+		); err != nil {
+			return nil, err
+		}
+		settings, err = s.finishLoadedSettings(ctx, settings, thresholdRaw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, settings)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) finishLoadedSettings(ctx context.Context, out Settings, thresholdRaw string) (Settings, error) {
 	threshold, err := decimal.NewFromString(thresholdRaw)
 	if err != nil {
 		return Settings{}, fmt.Errorf("%w: balance_threshold", ErrInvalidSettings)

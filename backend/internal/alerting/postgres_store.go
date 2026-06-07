@@ -156,9 +156,9 @@ ORDER BY tenant_id ASC`)
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) UpsertFiringEvent(ctx context.Context, tenantID, ruleID int64, observed float64, now time.Time) (AlertEvent, error) {
+func (s *PostgresStore) UpsertFiringEvent(ctx context.Context, tenantID, ruleID int64, observed float64, now time.Time) (AlertEvent, bool, error) {
 	if s == nil || s.pool == nil {
-		return AlertEvent{}, ErrStoreNotConfigured
+		return AlertEvent{}, false, ErrStoreNotConfigured
 	}
 	current, err := scanEvent(s.pool.QueryRow(ctx, `
 SELECT id, tenant_id, rule_id, state, observed_value::float8, fired_at, resolved_at
@@ -167,23 +167,25 @@ WHERE tenant_id=$1 AND rule_id=$2 AND state='firing'
 ORDER BY fired_at DESC, id DESC
 LIMIT 1`, tenantID, ruleID))
 	if err == nil {
-		return scanEvent(s.pool.QueryRow(ctx, `
+		event, err := scanEvent(s.pool.QueryRow(ctx, `
 UPDATE alert_events
 SET observed_value=$3
 WHERE tenant_id=$1 AND id=$2
 RETURNING id, tenant_id, rule_id, state, observed_value::float8, fired_at, resolved_at`,
 			tenantID, current.ID, observed,
 		))
+		return event, false, err
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return AlertEvent{}, err
+		return AlertEvent{}, false, err
 	}
-	return scanEvent(s.pool.QueryRow(ctx, `
+	event, err := scanEvent(s.pool.QueryRow(ctx, `
 INSERT INTO alert_events (tenant_id, rule_id, state, observed_value, fired_at)
 VALUES ($1,$2,'firing',$3,$4)
 RETURNING id, tenant_id, rule_id, state, observed_value::float8, fired_at, resolved_at`,
 		tenantID, ruleID, observed, now.UTC(),
 	))
+	return event, err == nil, err
 }
 
 func (s *PostgresStore) ResolveFiringEvent(ctx context.Context, tenantID, ruleID int64, now time.Time) (AlertEvent, bool, error) {

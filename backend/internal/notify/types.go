@@ -20,7 +20,8 @@ const (
 	TypeBark    Type = "bark"
 	TypeGotify  Type = "gotify"
 
-	EventLowBalance = "low_balance"
+	EventLowBalance  = "low_balance"
+	EventAlertFiring = "alert_firing"
 )
 
 var (
@@ -56,6 +57,16 @@ type Event struct {
 	Threshold      decimal.Decimal `json:"threshold"`
 	BillingEventID int64           `json:"billing_event_id,omitempty"`
 	OccurredAt     time.Time       `json:"occurred_at"`
+}
+
+type AlertFiringInfo struct {
+	RuleName      string    `json:"rule_name"`
+	Metric        string    `json:"metric"`
+	Comparator    string    `json:"comparator"`
+	Threshold     float64   `json:"threshold"`
+	Severity      string    `json:"severity"`
+	ObservedValue float64   `json:"observed_value"`
+	FiredAt       time.Time `json:"fired_at"`
 }
 
 type Store interface {

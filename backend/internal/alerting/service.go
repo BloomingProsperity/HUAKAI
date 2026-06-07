@@ -13,8 +13,10 @@ const (
 )
 
 type Service struct {
-	store Store
-	now   func() time.Time
+	store                     Store
+	now                       func() time.Time
+	firingDeliverer           FiringDeliverer
+	firingDeliveryErrRecorder FiringDeliveryErrorRecorder
 }
 
 type Option func(*Service)
@@ -24,6 +26,18 @@ func WithClock(now func() time.Time) Option {
 		if now != nil {
 			s.now = now
 		}
+	}
+}
+
+func WithFiringDeliverer(deliverer FiringDeliverer) Option {
+	return func(s *Service) {
+		s.firingDeliverer = deliverer
+	}
+}
+
+func WithFiringDeliveryErrorRecorder(record FiringDeliveryErrorRecorder) Option {
+	return func(s *Service) {
+		s.firingDeliveryErrRecorder = record
 	}
 }
 
@@ -222,11 +236,12 @@ func (s *Service) EvaluateRules(ctx context.Context, tenantID int64, metricSnaps
 			continue
 		}
 		if breaches(rule.Comparator, observed, rule.Threshold) {
-			if silenceMatches(rule.ID, silences) {
-				continue
-			}
-			if _, err := s.store.UpsertFiringEvent(ctx, tenantID, rule.ID, observed, now); err != nil {
+			event, created, err := s.store.UpsertFiringEvent(ctx, tenantID, rule.ID, observed, now)
+			if err != nil {
 				return err
+			}
+			if created && !silenceMatches(rule.ID, silences) {
+				s.deliverFiring(ctx, tenantID, rule, observed, event.FiredAt)
 			}
 			continue
 		}
@@ -235,6 +250,25 @@ func (s *Service) EvaluateRules(ctx context.Context, tenantID int64, metricSnaps
 		}
 	}
 	return nil
+}
+
+func (s *Service) deliverFiring(ctx context.Context, tenantID int64, rule AlertRule, observed float64, firedAt time.Time) {
+	if s == nil || s.firingDeliverer == nil {
+		return
+	}
+	notice := FiringNotice{
+		RuleID:        rule.ID,
+		RuleName:      rule.Name,
+		Metric:        rule.Metric,
+		Comparator:    rule.Comparator,
+		Threshold:     rule.Threshold,
+		Severity:      rule.Severity,
+		ObservedValue: observed,
+		FiredAt:       firedAt.UTC(),
+	}
+	if err := s.firingDeliverer.DeliverFiring(ctx, tenantID, notice); err != nil && s.firingDeliveryErrRecorder != nil {
+		s.firingDeliveryErrRecorder(ctx, tenantID, notice, err)
+	}
 }
 
 func validateRule(rule AlertRule) error {
