@@ -147,6 +147,7 @@ type chatExecution struct {
 	clientAdapter   proto.ClientAdapter
 	requestID       string
 	clientRequestID string
+	clientSessionID string
 
 	resolved          registry.Resolved
 	plan              router.RoutePlan

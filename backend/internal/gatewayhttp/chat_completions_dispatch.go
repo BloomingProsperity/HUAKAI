@@ -2,6 +2,8 @@ package gatewayhttp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"expvar"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -33,6 +36,18 @@ import (
 
 var quotaReserveFailedOpenTotal = expvar.NewInt("quota_reserve_failed_open_total")
 
+const (
+	clientSessionIDMaxLength = 200
+	clientSessionHashPrefix  = "client-session:"
+	clientSessionHashDomain  = "huakai:client-session:v1:"
+)
+
+var clientSessionIDHeaderPriority = []string{
+	"X-Session-ID",
+	"X-Amp-Thread-Id",
+	"Session-Id",
+}
+
 func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, validated chatValidatedRequest, startedAt time.Time) *chatExecution {
 	return &chatExecution{
 		d:                                d,
@@ -46,9 +61,67 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 		clientAdapter:                    validated.ClientAdapter,
 		requestID:                        validated.RequestID,
 		clientRequestID:                  validated.ClientRequestID,
+		clientSessionID:                  requestClientSessionID(r, validated),
 		streamInputOnlyInterruptedPolicy: d.BillingPolicyResolver.ResolveStreamInputOnlyInterruptedPolicy(r.Context(), ident.TenantID),
 		balanceEnforcementMode:           d.BillingPolicyResolver.ResolveBalanceEnforcementMode(r.Context(), ident.TenantID),
 	}
+}
+
+func requestClientSessionID(r *http.Request, validated chatValidatedRequest) string {
+	if r != nil {
+		for _, header := range clientSessionIDHeaderPriority {
+			if id := normalizeClientSessionID(r.Header.Get(header)); id != "" {
+				return id
+			}
+		}
+	}
+	if !isOpenAIClientProtocol(validated.ClientProtocol) {
+		return ""
+	}
+	return openAITopLevelClientSessionID(validated.Body)
+}
+
+func isOpenAIClientProtocol(clientProtocol proto.ClientProtocol) bool {
+	switch clientProtocol {
+	case proto.ClientProtocolOpenAIChat, proto.ClientProtocolOpenAIResponses:
+		return true
+	default:
+		return false
+	}
+}
+
+func openAITopLevelClientSessionID(rawBody []byte) string {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &top); err != nil || top == nil {
+		return ""
+	}
+	for _, key := range []string{"conversation_id", "session_id"} {
+		raw, ok := top[key]
+		if !ok {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			continue
+		}
+		if id := normalizeClientSessionID(value); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func normalizeClientSessionID(raw string) string {
+	id := strings.TrimSpace(raw)
+	if id == "" || len(id) > clientSessionIDMaxLength {
+		return ""
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) {
+			return ""
+		}
+	}
+	return id
 }
 
 type dispatchTransportSelection struct {
@@ -128,10 +201,13 @@ func transportModeForProvider(providerCode transport.ProviderCode, accountType s
 
 func (ex *chatExecution) refreshRequestSessionHashes() {
 	ex.promptHash = cache_routing.ComputePromptHash(ex.body)
-	ex.sessionHash = requestSessionHash(ex.clientProtocol, ex.body, ex.promptHash)
+	ex.sessionHash = requestSessionHash(ex.clientProtocol, ex.body, ex.promptHash, ex.clientSessionID)
 }
 
-func requestSessionHash(clientProtocol proto.ClientProtocol, rawBody []byte, promptHash string) string {
+func requestSessionHash(clientProtocol proto.ClientProtocol, rawBody []byte, promptHash, clientSessionID string) string {
+	if clientSessionID != "" {
+		return clientSessionHash(clientSessionID)
+	}
 	if promptHash != "" {
 		return promptHash
 	}
@@ -141,6 +217,11 @@ func requestSessionHash(clientProtocol proto.ClientProtocol, rawBody []byte, pro
 		}
 	}
 	return promptHash
+}
+
+func clientSessionHash(clientSessionID string) string {
+	sum := sha256.Sum256([]byte(clientSessionHashDomain + clientSessionID))
+	return clientSessionHashPrefix + hex.EncodeToString(sum[:])
 }
 
 func openAIResponsesPreviousResponseID(rawBody []byte) string {
