@@ -63,13 +63,14 @@ func TestDefaultClientAdapterRegistry_AdaptersImplementInterface(t *testing.T) {
 
 func TestClientProtocolByIngressPath(t *testing.T) {
 	cases := []struct {
-		path    string
-		want    ClientProtocol
-		wantOK  bool
+		path   string
+		want   ClientProtocol
+		wantOK bool
 	}{
 		{"/v1/chat/completions", ClientProtocolOpenAIChat, true},
 		{"/v1/responses", ClientProtocolOpenAIResponses, true},
 		{"/v1/native/openai/responses", ClientProtocolOpenAIResponses, true},
+		{"/backend-api/codex/responses", ClientProtocolOpenAIResponses, true},
 		{"/v1/messages", ClientProtocolAnthropicMessages, true},
 		{"/v1/unknown", "", false},
 		{"", "", false},
@@ -80,5 +81,18 @@ func TestClientProtocolByIngressPath(t *testing.T) {
 		if got != tc.want || ok != tc.wantOK {
 			t.Errorf("path=%q got=(%s,%v) want=(%s,%v)", tc.path, got, ok, tc.want, tc.wantOK)
 		}
+	}
+}
+
+func TestCodexResponsesSamePipelineAsV1Responses(t *testing.T) {
+	// MUTATION: map /backend-api/codex/responses to openai_chat or leave it
+	// as the default unknown path; Codex CLI would bypass the Responses adapter
+	// or return 404 instead of sharing /v1/responses behavior.
+	got, ok := ClientProtocolByIngressPath("/backend-api/codex/responses")
+	if !ok {
+		t.Fatal("Codex Responses ingress path must resolve instead of falling through to 404")
+	}
+	if got != ClientProtocolOpenAIResponses {
+		t.Fatalf("Codex Responses protocol=%s want %s", got, ClientProtocolOpenAIResponses)
 	}
 }

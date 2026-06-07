@@ -144,6 +144,22 @@ func TestOpenAPI_ChatCompletionsMethodMatchesRuntimePOST(t *testing.T) {
 	}
 }
 
+func TestCodexResponsesIngressRouteMounted(t *testing.T) {
+	// MUTATION: omit r.Post("/backend-api/codex/responses", ...); chi returns
+	// 404 for Codex CLI instead of reaching the shared Responses handler.
+	r := buildTestRouter(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/backend-api/codex/responses",
+		strings.NewReader(`{"model":"gpt-4o","stream":false,"input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("POST /backend-api/codex/responses returned 404; route must be mounted for Codex CLI")
+	}
+}
+
 func TestOpenAPI_CompletionsAndCountTokensMountedAndDocumented(t *testing.T) {
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {

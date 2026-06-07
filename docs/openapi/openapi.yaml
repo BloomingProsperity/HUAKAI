@@ -555,6 +555,45 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /backend-api/codex/responses:
+    post:
+      tags: [gateway]
+      summary: Codex CLI Responses compatible relay
+      operationId: postCodexResponses
+      x-huakai-spec-source:
+        - docs/specs/streaming-forwarder.md
+        - docs/specs/protocol-translation.md
+        - docs/specs/observability-billing.md
+      description: |
+        Codex CLI ingress for the OpenAI Responses request shape. This route
+        uses the same authentication, routing, billing, streaming, and
+        Responses adapter pipeline as `/v1/responses`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IdempotentStreamReplay'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResponsesRequest' }
+      responses:
+        '200':
+          description: Successful response (json or SSE per stream flag).
+          headers:
+            X-HUAKAI-Protocol-Loss: { schema: { type: string } }
+            X-HUAKAI-Idempotency-Hit: { schema: { type: string, enum: ['true'] } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResponsesResponse' }
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/SSEFrame' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/messages:
     post:
       tags: [gateway]
