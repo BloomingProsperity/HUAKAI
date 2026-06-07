@@ -2,6 +2,8 @@ package gatewayhttp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"expvar"
 	"io"
@@ -449,6 +451,147 @@ func TestResponsesPreviousResponseIDDoesNotReplacePromptHashAffinity(t *testing.
 	}
 }
 
+func TestSessionHashHonorsExplicitClientSessionID(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	selector := &recordingSelectionRequestSelector{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Selector = selector
+
+	bodyA := `{"model":"gpt-4o","stream":false,"tools":[{"type":"function","function":{"name":"lookup_a","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"first prompt"}]}`
+	bodyB := `{"model":"gpt-4o","stream":false,"tools":[{"type":"function","function":{"name":"lookup_b","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"second prompt"}]}`
+	promptHashA := cache_routing.ComputePromptHash([]byte(bodyA))
+	promptHashB := cache_routing.ComputePromptHash([]byte(bodyB))
+	if promptHashA == "" || promptHashB == "" || promptHashA == promptHashB {
+		t.Fatalf("test fixture must produce distinct non-empty prompt hashes: %q %q", promptHashA, promptHashB)
+	}
+
+	headers := map[string]string{"X-Session-ID": "thread-stable-1"}
+	for _, body := range []string{bodyA, bodyB} {
+		rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, headers)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+		}
+	}
+	if len(selector.requests) != 2 {
+		t.Fatalf("selector requests = %d; want 2", len(selector.requests))
+	}
+	gotA := selector.requests[0].SessionHash
+	gotB := selector.requests[1].SessionHash
+	if gotA == "" || gotB == "" {
+		t.Fatalf("explicit session hash must be non-empty: %q %q", gotA, gotB)
+	}
+	// MUTATION: ignore the explicit id and always use the prefix hash; these
+	// distinct prompt prefixes would produce different sticky session hashes.
+	if gotA != gotB {
+		t.Fatalf("same X-Session-ID produced different SessionHash values: %q vs %q", gotA, gotB)
+	}
+	if gotA == promptHashA || gotA == promptHashB {
+		t.Fatalf("SessionHash=%q still used prompt hash despite explicit client session id", gotA)
+	}
+}
+
+func TestSessionHashFallbackUnchanged(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	selector := &recordingSelectionRequestSelector{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Selector = selector
+
+	body := `{"model":"gpt-4o","stream":false,"tools":[{"type":"function","function":{"name":"fallback_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"no explicit session"}]}`
+	want := cache_routing.ComputePromptHash([]byte(body))
+	if want == "" {
+		t.Fatal("test fixture must produce a non-empty prompt hash")
+	}
+
+	rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 1 {
+		t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+	}
+	// MUTATION: always take the explicit-id hash path, even when the id is
+	// absent; the empty-id hash would differ from the pre-change prompt hash.
+	if got := selector.requests[0].SessionHash; got != want {
+		t.Fatalf("selector SessionHash=%q want unchanged prompt hash %q", got, want)
+	}
+}
+
+func TestSessionHashHeaderPriority(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+
+	t.Run("x_session_id_beats_body_conversation_id", func(t *testing.T) {
+		selector := &recordingSelectionRequestSelector{}
+		d := clientAdapterDeps(t)
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		d.Selector = selector
+		body := `{"model":"gpt-4o","stream":false,"conversation_id":"body-thread","tools":[{"type":"function","function":{"name":"priority_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"priority"}]}`
+
+		rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, map[string]string{"X-Session-ID": "header-thread"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		if len(selector.requests) != 1 {
+			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+		}
+		want := expectedClientSessionHashForTest("header-thread")
+		// MUTATION: prefer body conversation_id over X-Session-ID; the observed
+		// sticky hash would equal the body-thread hash instead of header-thread.
+		if got := selector.requests[0].SessionHash; got != want {
+			t.Fatalf("selector SessionHash=%q want X-Session-ID hash %q", got, want)
+		}
+	})
+
+	t.Run("invalid_control_header_falls_through_to_body_id", func(t *testing.T) {
+		selector := &recordingSelectionRequestSelector{}
+		d := clientAdapterDeps(t)
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		d.Selector = selector
+		body := `{"model":"gpt-4o","stream":false,"conversation_id":"body-thread","tools":[{"type":"function","function":{"name":"control_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"control"}]}`
+
+		rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, map[string]string{"X-Session-ID": "bad\x01thread"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		if len(selector.requests) != 1 {
+			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+		}
+		want := expectedClientSessionHashForTest("body-thread")
+		// MUTATION: accept control characters in the header id; the observed
+		// sticky hash would be derived from the invalid header value.
+		if got := selector.requests[0].SessionHash; got != want {
+			t.Fatalf("selector SessionHash=%q want body conversation_id hash %q", got, want)
+		}
+	})
+
+	t.Run("too_long_body_id_falls_back_to_prompt_hash", func(t *testing.T) {
+		selector := &recordingSelectionRequestSelector{}
+		d := clientAdapterDeps(t)
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		d.Selector = selector
+		longSessionID := strings.Repeat("x", 201)
+		body := `{"model":"gpt-4o","stream":false,"session_id":"` + longSessionID + `","tools":[{"type":"function","function":{"name":"long_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"long"}]}`
+		want := cache_routing.ComputePromptHash([]byte(body))
+		if want == "" {
+			t.Fatal("test fixture must produce a non-empty prompt hash")
+		}
+
+		rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		if len(selector.requests) != 1 {
+			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+		}
+		// MUTATION: accept an over-length explicit id; the observed sticky hash
+		// would be derived from session_id instead of the existing prompt hash.
+		if got := selector.requests[0].SessionHash; got != want {
+			t.Fatalf("selector SessionHash=%q want prompt hash fallback %q", got, want)
+		}
+	})
+}
+
 func TestHandler_WaitPlanReturnsQueueWait(t *testing.T) {
 	settler := &stubSettler{}
 	d := minimalDeps()
@@ -779,6 +922,24 @@ func (s *recordingSelectionRequestSelector) Select(_ context.Context, req pool.S
 	s.calls++
 	s.requests = append(s.requests, req)
 	return &pool.SelectionResult{AccountID: 1}, nil
+}
+
+func invokeHandlerPathWithHeaders(t *testing.T, deps ChatHandlerDeps, path, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := NewChatCompletionsHandler(deps)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+func expectedClientSessionHashForTest(id string) string {
+	sum := sha256.Sum256([]byte("huakai:client-session:v1:" + id))
+	return "client-session:" + hex.EncodeToString(sum[:])
 }
 
 // TestSelectPoolAccount_ThreadsUserGroupFromIdentity 守 R-SUB-WIRE-1 接线: 选号时
