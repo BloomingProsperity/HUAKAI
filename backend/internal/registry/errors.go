@@ -36,3 +36,8 @@ var ErrTenantNoAccess = errors.New("registry: model has no eligible pool binding
 // not told their valid alias does not exist during an infra outage.
 // Mirrors auth.ErrAuthBackend.
 var ErrRegistryBackend = errors.New("registry: backend datastore error")
+
+// ErrInvalidModelCapability is returned by admin writers before touching the
+// datastore when a model-capability binding uses a value outside HUAKAI's
+// known model capability vocabulary.
+var ErrInvalidModelCapability = errors.New("registry: invalid model capability")

@@ -361,7 +361,14 @@ func syncVendorCapabilities(ctx context.Context, tx pgx.Tx, modelID int64, capab
 	changed := false
 	want := make(map[string]struct{}, len(capabilities))
 	for _, capability := range capabilities {
-		capability = strings.TrimSpace(capability)
+		rawCapability := capability
+		capability, err := normalizeKnownModelCapability(capability)
+		if err != nil {
+			if strings.TrimSpace(rawCapability) == "" {
+				continue
+			}
+			return false, err
+		}
 		if capability == "" {
 			continue
 		}

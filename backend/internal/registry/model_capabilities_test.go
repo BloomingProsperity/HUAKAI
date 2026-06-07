@@ -98,6 +98,50 @@ func TestUpdateModelCapabilitiesMissingModelReturnsUnknownModel(t *testing.T) {
 	}
 }
 
+func TestCapabilityBindingEnumReject(t *testing.T) {
+	db := &modelCapabilityBindingDBStub{
+		row: modelCapabilityBindingScanRow{
+			modelID:    42,
+			capability: "vision",
+			enabled:    true,
+			source:     "operator",
+		},
+	}
+
+	_, err := upsertModelCapabilityBinding(context.Background(), db, UpsertModelCapabilityBindingParams{
+		TenantID:   7,
+		Scope:      "tenant",
+		ModelID:    42,
+		Capability: "made_up_capability",
+		Enabled:    true,
+		Source:     "operator",
+	})
+	if !errors.Is(err, ErrInvalidModelCapability) {
+		t.Fatalf("invalid capability err=%v want ErrInvalidModelCapability", err)
+	}
+	if db.calls != 0 {
+		t.Fatalf("invalid capability touched db calls=%d; MUTATION: removing enum validation lets invalid values persist", db.calls)
+	}
+
+	got, err := upsertModelCapabilityBinding(context.Background(), db, UpsertModelCapabilityBindingParams{
+		TenantID:   7,
+		Scope:      "tenant",
+		ModelID:    42,
+		Capability: "vision",
+		Enabled:    true,
+		Source:     "operator",
+	})
+	if err != nil {
+		t.Fatalf("valid capability upsert: %v", err)
+	}
+	if db.calls != 1 {
+		t.Fatalf("valid capability db calls=%d want 1", db.calls)
+	}
+	if got.ModelID != 42 || got.Capability != "vision" || !got.Enabled || got.Source != "operator" {
+		t.Fatalf("binding=%+v want persisted vision binding", got)
+	}
+}
+
 type modelCapabilityDBStub struct {
 	sql  string
 	args []any
@@ -131,4 +175,41 @@ func (r modelCapabilityScanRow) Scan(dest ...any) error {
 
 func ptrString(v string) *string {
 	return &v
+}
+
+type modelCapabilityBindingDBStub struct {
+	calls int
+	sql   string
+	args  []any
+	row   modelCapabilityBindingScanRow
+}
+
+func (s *modelCapabilityBindingDBStub) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	s.calls++
+	s.sql = sql
+	s.args = append([]any(nil), args...)
+	return s.row
+}
+
+type modelCapabilityBindingScanRow struct {
+	modelID    int64
+	capability string
+	value      *string
+	params     []byte
+	enabled    bool
+	source     string
+	err        error
+}
+
+func (r modelCapabilityBindingScanRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*dest[0].(*int64) = r.modelID
+	*dest[1].(*string) = r.capability
+	*dest[2].(**string) = r.value
+	*dest[3].(*[]byte) = r.params
+	*dest[4].(*bool) = r.enabled
+	*dest[5].(*string) = r.source
+	return nil
 }
