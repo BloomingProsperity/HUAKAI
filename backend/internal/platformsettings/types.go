@@ -22,6 +22,12 @@ type SettingKey string
 const (
 	KeyRegistrationEnabled            SettingKey = "registration_enabled"
 	KeyInvitationRequired             SettingKey = "invitation_required"
+	KeyPasswordRegisterEnabled        SettingKey = "password_register_enabled"
+	KeyPasswordLoginEnabled           SettingKey = "password_login_enabled"
+	KeyEmailDomainAllowlistEnabled    SettingKey = "email_domain_allowlist_enabled"
+	KeyEmailDomainAllowlist           SettingKey = "email_domain_allowlist"
+	KeyEmailAliasRestrictionEnabled   SettingKey = "email_alias_restriction_enabled"
+	KeyReservedEmailLocalparts        SettingKey = "reserved_email_localparts"
 	KeyCaptchaEnabled                 SettingKey = "captcha_enabled"
 	KeyTwoFactorEnabled               SettingKey = "two_factor_enabled"
 	KeyCaptchaProvider                SettingKey = "captcha_provider"
@@ -65,10 +71,16 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
+		KeyPasswordRegisterEnabled:        "true",
+		KeyPasswordLoginEnabled:           "true",
+		KeyEmailDomainAllowlistEnabled:    "false",
+		KeyEmailDomainAllowlist:           "",
+		KeyEmailAliasRestrictionEnabled:   "false",
+		KeyReservedEmailLocalparts:        "",
 		KeyCaptchaEnabled:                 "false",
 		KeyTwoFactorEnabled:               "true",
 		KeyCaptchaProvider:                "",
@@ -169,11 +181,14 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyBudgetLimits {
 		return validateJSONObjectValue(key, value)
 	}
+	if key == KeyEmailDomainAllowlist || key == KeyReservedEmailLocalparts {
+		return validateCSVPublicTextValue(key, value)
+	}
 	if value == "" {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailAliasRestrictionEnabled, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs:
 		return validatePositiveIntValue(key, value)
@@ -184,6 +199,28 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	default:
 		return validatePublicTextValue(key, value)
 	}
+}
+
+func validateCSVPublicTextValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.ToLower(strings.TrimSpace(part))
+		if key == KeyEmailDomainAllowlist {
+			item = strings.TrimPrefix(item, "@")
+		}
+		if item == "" {
+			return "", fmt.Errorf("%w: %s contains empty CSV value", ErrInvalidValue, key)
+		}
+		if _, err := validatePublicTextValue(key, item); err != nil {
+			return "", err
+		}
+		out = append(out, item)
+	}
+	return strings.Join(out, ","), nil
 }
 
 func validateOptionalPublicTextValue(key SettingKey, value string) (string, error) {

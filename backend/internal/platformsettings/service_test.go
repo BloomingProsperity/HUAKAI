@@ -50,6 +50,35 @@ func TestTwoFactorSettingDefaultsOnAndValidatesBool(t *testing.T) {
 	}
 }
 
+func TestEmailDomainEmptyGuard(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	svc := NewService(store, nil, WithNow(fixedNow))
+
+	if _, err := svc.Upsert(ctx, UpsertInput{
+		Key:       KeyEmailDomainAllowlistEnabled,
+		Value:     "true",
+		UpdatedBy: "admin:1",
+	}); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("enable empty email domain allowlist err=%v want ErrInvalidValue; MUTATION: deleting the empty-list guard lets this unsafe lockout config persist", err)
+	}
+
+	if _, err := svc.Upsert(ctx, UpsertInput{
+		Key:       KeyEmailDomainAllowlist,
+		Value:     "example.com",
+		UpdatedBy: "admin:1",
+	}); err != nil {
+		t.Fatalf("seed allowlist: %v", err)
+	}
+	if _, err := svc.Upsert(ctx, UpsertInput{
+		Key:       KeyEmailDomainAllowlistEnabled,
+		Value:     "true",
+		UpdatedBy: "admin:1",
+	}); err != nil {
+		t.Fatalf("enable non-empty allowlist: %v", err)
+	}
+}
+
 func TestMediaTaskSettingsDefaultDisabledAndValidate(t *testing.T) {
 	store := NewMemoryStore()
 	svc := NewService(store, nil, WithNow(fixedNow))
