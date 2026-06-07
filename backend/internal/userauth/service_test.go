@@ -3,6 +3,7 @@ package userauth
 import (
 	"context"
 	"errors"
+	"github.com/BloomingProsperity/HUAKAI/internal/emailpolicy"
 	"net/url"
 	"strconv"
 	"strings"
@@ -97,6 +98,161 @@ type staticVerificationPolicy bool
 
 func (p staticVerificationPolicy) EmailVerificationEnabled(context.Context, int64) (bool, error) {
 	return bool(p), nil
+}
+
+func TestPasswordRegisterToggle(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 8, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		gate    RegistrationGate
+		wantErr error
+	}{
+		{name: "nil_gate_allows"},
+		{name: "gate_true_allows", gate: staticRegistrationGate{registerAllowed: true, loginAllowed: true}},
+		{name: "gate_false_rejects", gate: staticRegistrationGate{registerAllowed: false, loginAllowed: true}, wantErr: ErrPasswordRegistrationDisabled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemoryAuthStore(now)
+			svc := NewService(store)
+			svc.RequireVerified = false
+			svc.PasswordPolicy = cheapPasswordPolicy()
+			svc.Now = func() time.Time { return now }
+			svc.RegistrationGate = tc.gate
+
+			_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "user@example.test", Password: "secret"})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Register err=%v want %v; MUTATION: reversing the false gate into allow makes the reject case persist a user", err, tc.wantErr)
+			}
+			if tc.wantErr != nil && len(store.users) != 0 {
+				t.Fatalf("password registration disabled persisted users: %+v", store.users)
+			}
+			if tc.wantErr == nil && len(store.users) != 1 {
+				t.Fatalf("allowed registration user count=%d want 1", len(store.users))
+			}
+		})
+	}
+}
+
+func TestPasswordLoginToggle(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 8, 30, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	gate := &mutableRegistrationGate{registerAllowed: true, loginAllowed: true}
+	svc := NewService(store)
+	svc.RequireVerified = false
+	svc.PasswordPolicy = cheapPasswordPolicy()
+	svc.Now = func() time.Time { return now }
+	svc.RegistrationGate = gate
+
+	if _, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "login@example.test", Password: "secret"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	gate.loginAllowed = false
+
+	orig := verifyPasswordFn
+	t.Cleanup(func() { verifyPasswordFn = orig })
+	var calls int
+	var lastHash string
+	verifyPasswordFn = func(encoded, password string) (bool, error) {
+		calls++
+		lastHash = encoded
+		return orig(encoded, password)
+	}
+
+	_, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "login@example.test", Password: "secret"})
+	if !errors.Is(err, ErrPasswordLoginDisabled) {
+		t.Fatalf("Authenticate with password login disabled err=%v want ErrPasswordLoginDisabled; MUTATION: checking only after successful credentials and allowing valid credentials turns this red", err)
+	}
+	if calls != 1 {
+		t.Fatalf("disabled password login ran %d password verifications, want exactly 1 dummy argon2 equal-work call", calls)
+	}
+	if lastHash != timingEqualizationHash {
+		t.Fatalf("disabled password login verified hash=%q want timingEqualizationHash; moving the check after GetUserByEmail/real hash reopens a switch-state timing oracle", lastHash)
+	}
+}
+
+func TestRegisterEmailPolicyWiring(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name    string
+		email   string
+		policy  EmailPolicy
+		wantErr error
+	}{
+		{name: "nil_policy_allows", email: "user@evil.test"},
+		{name: "domain_rejected", email: "user@evil.test", policy: staticEmailPolicy{domainEnabled: true, domainList: "example.test"}, wantErr: emailpolicy.ErrEmailDomainNotAllowed},
+		{name: "domain_allowed", email: "user@example.test", policy: staticEmailPolicy{domainEnabled: true, domainList: "example.test"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMemoryAuthStore(now)
+			svc := NewService(store)
+			svc.RequireVerified = false
+			svc.PasswordPolicy = cheapPasswordPolicy()
+			svc.Now = func() time.Time { return now }
+			svc.EmailPolicy = tc.policy
+
+			_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: tc.email, Password: "secret"})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Register err=%v want %v", err, tc.wantErr)
+			}
+			if tc.wantErr != nil && len(store.users) != 0 {
+				t.Fatalf("rejected email policy persisted users: %+v", store.users)
+			}
+		})
+	}
+}
+
+type staticRegistrationGate struct {
+	registerAllowed bool
+	loginAllowed    bool
+}
+
+func (g staticRegistrationGate) PasswordRegistrationAllowed(context.Context, int64) (bool, error) {
+	return g.registerAllowed, nil
+}
+
+func (g staticRegistrationGate) PasswordLoginAllowed(context.Context, int64) (bool, error) {
+	return g.loginAllowed, nil
+}
+
+type mutableRegistrationGate struct {
+	registerAllowed bool
+	loginAllowed    bool
+}
+
+func (g *mutableRegistrationGate) PasswordRegistrationAllowed(context.Context, int64) (bool, error) {
+	return g.registerAllowed, nil
+}
+
+func (g *mutableRegistrationGate) PasswordLoginAllowed(context.Context, int64) (bool, error) {
+	return g.loginAllowed, nil
+}
+
+type staticEmailPolicy struct {
+	domainEnabled bool
+	domainList    string
+	aliasEnabled  bool
+	reservedList  string
+}
+
+func (p staticEmailPolicy) EmailDomainAllowlist(context.Context, int64) (bool, string, error) {
+	return p.domainEnabled, p.domainList, nil
+}
+
+func (p staticEmailPolicy) EmailAliasRestrictionEnabled(context.Context, int64) (bool, error) {
+	return p.aliasEnabled, nil
+}
+
+func (p staticEmailPolicy) ReservedEmailLocalparts(context.Context, int64) (string, error) {
+	return p.reservedList, nil
+}
+
+func cheapPasswordPolicy() PasswordPolicy {
+	return PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
 }
 
 func TestUpdateProfile_SelfScoped(t *testing.T) {

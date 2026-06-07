@@ -108,6 +108,9 @@ func (s *Service) Upsert(ctx context.Context, in UpsertInput) (StoredSetting, er
 	if err != nil {
 		return StoredSetting{}, err
 	}
+	if err := s.validateSettingCombination(ctx, key, value); err != nil {
+		return StoredSetting{}, err
+	}
 	updatedBy := firstNonEmpty(in.UpdatedBy, in.ActorID, "system")
 	in.Key = key
 	in.Value = value
@@ -146,6 +149,43 @@ func (s *Service) Upsert(ctx context.Context, in UpsertInput) (StoredSetting, er
 	s.cacheSetting(updated)
 	s.rememberLastKnown(updated)
 	return updated, nil
+}
+
+func (s *Service) validateSettingCombination(ctx context.Context, key SettingKey, value string) error {
+	switch key {
+	case KeyEmailDomainAllowlistEnabled:
+		if value != "true" {
+			return nil
+		}
+		allowlist, err := s.readFresh(ctx, KeyEmailDomainAllowlist)
+		if err != nil {
+			return err
+		}
+		if !csvSettingHasItems(allowlist.Value) {
+			return fmt.Errorf("%w: %s requires non-empty %s", ErrInvalidValue, key, KeyEmailDomainAllowlist)
+		}
+	case KeyEmailDomainAllowlist:
+		if csvSettingHasItems(value) {
+			return nil
+		}
+		enabled, err := s.readFresh(ctx, KeyEmailDomainAllowlistEnabled)
+		if err != nil {
+			return err
+		}
+		if enabled.Value == "true" {
+			return fmt.Errorf("%w: %s cannot be empty while %s is true", ErrInvalidValue, key, KeyEmailDomainAllowlistEnabled)
+		}
+	}
+	return nil
+}
+
+func csvSettingHasItems(value string) bool {
+	for _, part := range strings.Split(value, ",") {
+		if strings.TrimSpace(part) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) RefreshAll(ctx context.Context) error {

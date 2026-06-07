@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/emailpolicy"
 )
 
 // verifyPasswordFn 是口令校验的可注入入口(生产即 VerifyPassword)。抽成变量是为了让测试
@@ -62,6 +64,17 @@ type EmailVerificationPolicy interface {
 	EmailVerificationEnabled(context.Context, int64) (bool, error)
 }
 
+type RegistrationGate interface {
+	PasswordRegistrationAllowed(context.Context, int64) (bool, error)
+	PasswordLoginAllowed(context.Context, int64) (bool, error)
+}
+
+type EmailPolicy interface {
+	EmailDomainAllowlist(context.Context, int64) (bool, string, error)
+	EmailAliasRestrictionEnabled(context.Context, int64) (bool, error)
+	ReservedEmailLocalparts(context.Context, int64) (string, error)
+}
+
 type Service struct {
 	Store            Store
 	PasswordPolicy   PasswordPolicy
@@ -76,6 +89,8 @@ type Service struct {
 	Now              func() time.Time
 	OAuth            *OAuthService
 	Verification     EmailVerificationPolicy
+	RegistrationGate RegistrationGate
+	EmailPolicy      EmailPolicy
 	// AllowedRedirectURIs 是 social OAuth init 允许的 caller redirect_uri 精确白名单。空(默认)=
 	// 不接受任何 caller 提供的 redirect_uri,只能用各 provider 服务端配置的固定 RedirectURI,fail-closed 防
 	// open-redirect / 授权码外泄。
@@ -156,6 +171,12 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 	if mode == RegistrationModeDisabled {
 		return RegistrationResult{}, ErrRegistrationDisabled
 	}
+	if err := s.checkPasswordRegistration(ctx, in.TenantID); err != nil {
+		return RegistrationResult{}, err
+	}
+	if err := s.checkRegistrationEmailPolicy(ctx, in.TenantID, email); err != nil {
+		return RegistrationResult{}, err
+	}
 	passwordHash, err := HashPassword(in.Password, s.PasswordPolicy)
 	if err != nil {
 		return RegistrationResult{}, err
@@ -225,6 +246,9 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 	if in.TenantID <= 0 || email == "" || strings.TrimSpace(in.Password) == "" {
 		return User{}, ErrInvalidInput
 	}
+	if err := s.checkPasswordLogin(ctx, in.TenantID, in.Password); err != nil {
+		return User{}, err
+	}
 	user, err := s.Store.GetUserByEmail(ctx, in.TenantID, email)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
@@ -272,6 +296,60 @@ func (s *Service) Authenticate(ctx context.Context, in LoginInput) (User, error)
 	}
 	_ = s.Store.MarkLoginSuccess(ctx, user.TenantID, user.ID)
 	return user, nil
+}
+
+func (s *Service) checkPasswordRegistration(ctx context.Context, tenantID int64) error {
+	if s == nil || s.RegistrationGate == nil {
+		return nil
+	}
+	allowed, err := s.RegistrationGate.PasswordRegistrationAllowed(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrPasswordRegistrationDisabled
+	}
+	return nil
+}
+
+func (s *Service) checkPasswordLogin(ctx context.Context, tenantID int64, attempted string) error {
+	if s == nil || s.RegistrationGate == nil {
+		return nil
+	}
+	allowed, err := s.RegistrationGate.PasswordLoginAllowed(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		s.equalizeLoginWork("", attempted)
+		return ErrPasswordLoginDisabled
+	}
+	return nil
+}
+
+func (s *Service) checkRegistrationEmailPolicy(ctx context.Context, tenantID int64, email string) error {
+	if s == nil || s.EmailPolicy == nil {
+		return nil
+	}
+	domainEnabled, domainList, err := s.EmailPolicy.EmailDomainAllowlist(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if err := emailpolicy.CheckDomain(email, domainEnabled, domainList); err != nil {
+		return err
+	}
+	aliasEnabled, err := s.EmailPolicy.EmailAliasRestrictionEnabled(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if err := emailpolicy.CheckAlias(email, aliasEnabled); err != nil {
+		return err
+	}
+	reservedList, err := s.EmailPolicy.ReservedEmailLocalparts(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	return emailpolicy.CheckReserved(email, reservedList)
 }
 
 type txCapableStore interface {
