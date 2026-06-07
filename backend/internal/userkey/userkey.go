@@ -33,6 +33,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauditlog"
 )
 
 // Environment 复用 admin 包枚举,但拒 EnvAdmin (用户绝不应签发 hk_admin_ 前缀)。
@@ -59,14 +60,14 @@ const (
 
 // Errors.
 var (
-	ErrInvalidName       = errors.New("userkey: name invalid")
-	ErrInvalidExpiry     = errors.New("userkey: expires_at must be future")
-	ErrInvalidEnv        = errors.New("userkey: environment must be live or test")
-	ErrActiveKeyCapHit   = errors.New("userkey: user has reached active key cap")
-	ErrNotFound          = errors.New("userkey: api_key not found for owner")
-	ErrAlreadyRevoked    = errors.New("userkey: api_key already revoked")
-	ErrServiceMisconfig  = errors.New("userkey: service not configured")
-	ErrBackend           = errors.New("userkey: backend datastore error")
+	ErrInvalidName      = errors.New("userkey: name invalid")
+	ErrInvalidExpiry    = errors.New("userkey: expires_at must be future")
+	ErrInvalidEnv       = errors.New("userkey: environment must be live or test")
+	ErrActiveKeyCapHit  = errors.New("userkey: user has reached active key cap")
+	ErrNotFound         = errors.New("userkey: api_key not found for owner")
+	ErrAlreadyRevoked   = errors.New("userkey: api_key already revoked")
+	ErrServiceMisconfig = errors.New("userkey: service not configured")
+	ErrBackend          = errors.New("userkey: backend datastore error")
 )
 
 // IssueRequest 用户签发自己 key 的入参。
@@ -149,37 +150,55 @@ type ListRequest struct {
 type Service struct {
 	pool       *pgxpool.Pool
 	logger     *slog.Logger
+	auditSink  userauditlog.UserAuditSink
 	bcryptCost int
 	now        func() time.Time
+}
+
+type Option func(*Service)
+
+func WithAuditSink(sink userauditlog.UserAuditSink) Option {
+	return func(s *Service) {
+		if sink != nil {
+			s.auditSink = sink
+		}
+	}
 }
 
 // NewService 构造。pool 必填;logger nil 则用 slog.Default;now nil 则用 time.Now。
 //
 // bcryptCost 复用 admin.KeyIssuer 默认 (cost 10),与 inbound resolver 解析时
 // 的 bcrypt.CompareHashAndPassword 配套。
-func NewService(pool *pgxpool.Pool, logger *slog.Logger) *Service {
+func NewService(pool *pgxpool.Pool, logger *slog.Logger, opts ...Option) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{
+	s := &Service{
 		pool:       pool,
 		logger:     logger,
+		auditSink:  userauditlog.NoopSink{},
 		bcryptCost: bcrypt.DefaultCost,
 		now:        time.Now,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
 }
 
 // Issue 给当前 session user 签发一条新 api_keys 行。返回明文一次。
 //
 // 流程:
-//   1. 参数校验 (Name 非空且 ≤ MaxNameLen,Environment 合法,ExpiresAt 未来时刻)
-//   2. 生成 bearer + bcrypt hash (重 CPU,放 TX 外避免持锁)
-//   3. BeginTx:
-//      a. 数当前 active 数,≥ MaxActiveKeysPerUser → ErrActiveKeyCapHit
-//      b. INSERT api_keys (条件 EXISTS tenant + user 都 active)
-//      c. NoRows → tenant/user 失效 → ErrNotFound (映射 400 缺 user/tenant)
-//   4. slog INFO audit (action=issue, outcome=committed, key_id/key_prefix/tenant/user)
-//   5. 返回 IssueResult + Plaintext
+//  1. 参数校验 (Name 非空且 ≤ MaxNameLen,Environment 合法,ExpiresAt 未来时刻)
+//  2. 生成 bearer + bcrypt hash (重 CPU,放 TX 外避免持锁)
+//  3. BeginTx:
+//     a. 数当前 active 数,≥ MaxActiveKeysPerUser → ErrActiveKeyCapHit
+//     b. INSERT api_keys (条件 EXISTS tenant + user 都 active)
+//     c. NoRows → tenant/user 失效 → ErrNotFound (映射 400 缺 user/tenant)
+//  4. slog INFO audit (action=issue, outcome=committed, key_id/key_prefix/tenant/user)
+//  5. 返回 IssueResult + Plaintext
 //
 // 失败路径:slog WARN audit (action=issue, outcome=denied/error, reason)。
 func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, error) {
@@ -328,13 +347,13 @@ func (s *Service) List(ctx context.Context, req ListRequest) ([]KeyDescriptor, e
 	var out []KeyDescriptor
 	for rows.Next() {
 		var (
-			d              KeyDescriptor
-			expiresAt      pgtype.Timestamptz
-			lastUsedAt     pgtype.Timestamptz
-			revokedAt      pgtype.Timestamptz
-			revokedReason  *string
-			createdAt      pgtype.Timestamptz
-			updatedAt      pgtype.Timestamptz
+			d             KeyDescriptor
+			expiresAt     pgtype.Timestamptz
+			lastUsedAt    pgtype.Timestamptz
+			revokedAt     pgtype.Timestamptz
+			revokedReason *string
+			createdAt     pgtype.Timestamptz
+			updatedAt     pgtype.Timestamptz
 		)
 		if err := rows.Scan(&d.APIKeyID, &d.Name, &d.KeyPrefix, &d.Status,
 			&expiresAt, &lastUsedAt, &revokedAt, &revokedReason,
@@ -380,13 +399,13 @@ func (s *Service) Get(ctx context.Context, tenantID, userID, apiKeyID int64) (Ke
 		return KeyDescriptor{}, ErrNotFound
 	}
 	var (
-		d              KeyDescriptor
-		expiresAt      pgtype.Timestamptz
-		lastUsedAt     pgtype.Timestamptz
-		revokedAt      pgtype.Timestamptz
-		revokedReason  *string
-		createdAt      pgtype.Timestamptz
-		updatedAt      pgtype.Timestamptz
+		d             KeyDescriptor
+		expiresAt     pgtype.Timestamptz
+		lastUsedAt    pgtype.Timestamptz
+		revokedAt     pgtype.Timestamptz
+		revokedReason *string
+		createdAt     pgtype.Timestamptz
+		updatedAt     pgtype.Timestamptz
 	)
 	// 与 List 同样的双 JOIN 防御:失活 tenant/user 拿不到 key。
 	err := s.pool.QueryRow(ctx,
@@ -449,6 +468,7 @@ func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, 
 		reason = reason[:256]
 	}
 	out := RevokeResult{APIKeyID: req.APIKeyID}
+	keyPrefix := ""
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		// 单点 owner+active-parent 校验:JOIN tenants/users 强制 active,
 		// SELECT FOR UPDATE 锁住 row 避免并发 Revoke 竞态。
@@ -456,14 +476,14 @@ func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, 
 		// 缺失都会让这唯一 gate 失守,mutation 自检有判别力。
 		var status string
 		err := tx.QueryRow(ctx,
-			`SELECT k.status FROM api_keys k
+			`SELECT k.status, k.key_prefix FROM api_keys k
 			   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
 			   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
 			                 AND u.deleted_at IS NULL AND u.status = 'active'
 			  WHERE k.id = $1 AND k.tenant_id = $2 AND k.user_id = $3 AND k.deleted_at IS NULL
 			  FOR UPDATE OF k`,
 			req.APIKeyID, req.TenantID, req.UserID,
-		).Scan(&status)
+		).Scan(&status, &keyPrefix)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
@@ -493,13 +513,13 @@ func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, 
 	})
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			s.logRevoke(req, "denied", "not_found_for_owner", false)
+			s.logRevoke(req, "denied", "not_found_for_owner", false, "")
 			return RevokeResult{}, err
 		}
-		s.logRevoke(req, "error", "tx_failed", false)
+		s.logRevoke(req, "error", "tx_failed", false, keyPrefix)
 		return RevokeResult{}, err
 	}
-	s.logRevoke(req, "committed", "ok", out.AlreadyRevoked)
+	s.logRevoke(req, "committed", "ok", out.AlreadyRevoked, keyPrefix)
 	return out, nil
 }
 
@@ -536,9 +556,19 @@ func (s *Service) logIssue(req IssueRequest, outcome, reason string, apiKeyID in
 		slog.String("key_prefix", prefix),
 		slog.String("request_id", req.RequestID),
 	)
+	s.recordAudit(context.Background(), userauditlog.Event{
+		TenantID:  req.TenantID,
+		UserID:    req.UserID,
+		Action:    userauditlog.ActionIssueAPIKey,
+		Outcome:   outcome,
+		APIKeyID:  auditAPIKeyID(apiKeyID),
+		KeyPrefix: prefix,
+		Reason:    reason,
+		RequestID: req.RequestID,
+	})
 }
 
-func (s *Service) logRevoke(req RevokeRequest, outcome, reason string, alreadyRevoked bool) {
+func (s *Service) logRevoke(req RevokeRequest, outcome, reason string, alreadyRevoked bool, prefix string) {
 	level := slog.LevelInfo
 	if outcome != "committed" {
 		level = slog.LevelWarn
@@ -551,8 +581,43 @@ func (s *Service) logRevoke(req RevokeRequest, outcome, reason string, alreadyRe
 		slog.Int64("user_id", req.UserID),
 		slog.Int64("api_key_id", req.APIKeyID),
 		slog.Bool("already_revoked", alreadyRevoked),
+		slog.String("key_prefix", prefix),
 		slog.String("request_id", req.RequestID),
 	)
+	s.recordAudit(context.Background(), userauditlog.Event{
+		TenantID:  req.TenantID,
+		UserID:    req.UserID,
+		Action:    userauditlog.ActionRevokeAPIKey,
+		Outcome:   outcome,
+		APIKeyID:  auditAPIKeyID(req.APIKeyID),
+		KeyPrefix: prefix,
+		Reason:    reason,
+		RequestID: req.RequestID,
+	})
+}
+
+func (s *Service) recordAudit(ctx context.Context, event userauditlog.Event) {
+	if s == nil || s.auditSink == nil {
+		return
+	}
+	if err := s.auditSink.Record(ctx, event); err != nil && s.logger != nil {
+		s.logger.WarnContext(ctx, "userkey.audit_sink_failed",
+			slog.String("action", event.Action),
+			slog.String("outcome", event.Outcome),
+			slog.String("reason", event.Reason),
+			slog.Int64("tenant_id", event.TenantID),
+			slog.Int64("user_id", event.UserID),
+			slog.String("request_id", event.RequestID),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
+func auditAPIKeyID(id int64) *int64 {
+	if id <= 0 {
+		return nil
+	}
+	return &id
 }
 
 // randomHex 仅用于测试 fixture 生成 key_prefix / key_hash 占位;production

@@ -186,6 +186,28 @@ func TestOpenAPI_CompletionsAndCountTokensMountedAndDocumented(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_UserAuditEventsMountedAndDocumented(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+
+	const path = "/v1/me/audit-events"
+	if !hasOperation(implOps, http.MethodGet, path) {
+		t.Fatalf("runtime missing GET %s; user self-service audit log route must be mounted", path)
+	}
+	if !hasOperation(specOps, http.MethodGet, path) {
+		t.Fatalf("OpenAPI missing GET %s; generated clients would not see user audit log route", path)
+	}
+}
+
 func hasOperation(ops []openapicheck.Operation, method, path string) bool {
 	for _, op := range ops {
 		if op.Method == method && op.Path == path {

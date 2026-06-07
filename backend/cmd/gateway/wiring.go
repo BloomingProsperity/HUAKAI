@@ -86,6 +86,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauditlog"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
@@ -127,6 +128,7 @@ type deps struct {
 	twoFactor                *twofa.Service
 	loginThrottle            *loginthrottle.Limiter
 	userKeyService           *userkey.Service
+	userAuditStore           *userauditlog.PostgresStore
 	paymentService           *payment.Service
 	checkinService           *checkin.Service
 	paymentProviders         map[string]paymenthttp.ProviderBinding
@@ -872,6 +874,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	mediaTaskWorker := mediatask.NewWorker(mediaTaskStore, mediaTaskConfig, mediaTaskProviders, mediatask.WorkerOptions{})
 	mediaTaskWorker.Start(ctx)
 	rt.mediaTaskWorker = mediaTaskWorker
+	userAuditStore := userauditlog.NewPostgresStore(pgPool)
 
 	d := &deps{
 		cfg:                   cfg,
@@ -904,7 +907,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		passkeys:              passkeyService,
 		twoFactor:             twoFactorService,
 		loginThrottle:         loginThrottle,
-		userKeyService:        userkey.NewService(pgPool, nil),
+		userKeyService:        userkey.NewService(pgPool, nil, userkey.WithAuditSink(userAuditStore)),
+		userAuditStore:        userAuditStore,
 		paymentService:        paymentService,
 		checkinService:        checkinService,
 		paymentProviders:      paymentProviders,

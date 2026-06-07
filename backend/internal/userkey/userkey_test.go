@@ -1,7 +1,13 @@
 package userkey
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/userauditlog"
 )
 
 // 这里只放纯函数/结构语义的判别性 fixture (mutation 自检型);
@@ -65,6 +71,50 @@ func TestEnvAliases(t *testing.T) {
 	if string(EnvTest) != "test" {
 		t.Fatalf("EnvTest alias drift: got %q", EnvTest)
 	}
+}
+
+// TestUserAuditSinkBestEffort: durable audit sink failures must not make the
+// userkey audit path fatal. The real Issue success path is covered by
+// integration_pg; this fast unit locks the local best-effort contract.
+//
+// Mutation: make logIssue panic or return/propagate the sink error -> this test
+// fails before any DB is involved.
+func TestUserAuditSinkBestEffort(t *testing.T) {
+	sink := &failingAuditSink{err: errors.New("audit sink down")}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := NewService(nil, logger, WithAuditSink(sink))
+
+	svc.logIssue(IssueRequest{
+		TenantID:  7,
+		UserID:    42,
+		RequestID: "req-issue",
+	}, "committed", "ok", 99, "hk_live_prefix1")
+
+	if sink.calls != 1 {
+		t.Fatalf("audit sink calls=%d want 1", sink.calls)
+	}
+	if sink.last.Action != userauditlog.ActionIssueAPIKey ||
+		sink.last.Outcome != userauditlog.OutcomeCommitted ||
+		sink.last.TenantID != 7 ||
+		sink.last.UserID != 42 ||
+		sink.last.APIKeyID == nil ||
+		*sink.last.APIKeyID != 99 ||
+		sink.last.KeyPrefix != "hk_live_prefix1" ||
+		sink.last.RequestID != "req-issue" {
+		t.Fatalf("audit event mismatch: %+v", sink.last)
+	}
+}
+
+type failingAuditSink struct {
+	err   error
+	calls int
+	last  userauditlog.Event
+}
+
+func (s *failingAuditSink) Record(_ context.Context, event userauditlog.Event) error {
+	s.calls++
+	s.last = event
+	return s.err
 }
 
 func contains(s, sub string) bool {
