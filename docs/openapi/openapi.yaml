@@ -7715,6 +7715,10 @@ paths:
         - name: pending_reconciliation_only
           in: query
           schema: { type: boolean }
+        - name: outcome
+          in: query
+          schema: { type: string, enum: [success, error, all], default: all }
+          description: Filter by end_class outcome bucket. success includes stream_end_graceful and non_streaming; error includes every other end_class.
       responses:
         '200':
           description: Paginated.

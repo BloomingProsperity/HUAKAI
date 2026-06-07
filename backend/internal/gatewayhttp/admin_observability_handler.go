@@ -33,15 +33,23 @@ type AdminObservabilityDeps interface {
 }
 
 type obsQuery struct {
-	TenantID                                                                    *int64
-	FromTs, ToTs, CursorCreatedAt                                               pgtype.Timestamptz
-	Limit, FetchLimit                                                           int32
-	HasCursor                                                                   bool
-	CursorID                                                                    int64
-	Provider, Model, Status, EventClass, EventType, Severity, LedgerID, ActorID *string
-	PoolID, APIKeyID, ProviderAccountID                                         *int64
-	PendingOnly                                                                 bool
+	TenantID                            *int64
+	FromTs, ToTs, CursorCreatedAt       pgtype.Timestamptz
+	Limit, FetchLimit                   int32
+	HasCursor                           bool
+	CursorID                            int64
+	Provider, Model, Status, Outcome    *string
+	EventClass, EventType, Severity     *string
+	LedgerID, ActorID                   *string
+	PoolID, APIKeyID, ProviderAccountID *int64
+	PendingOnly                         bool
 }
+
+const (
+	usageOutcomeAll     = "all"
+	usageOutcomeSuccess = "success"
+	usageOutcomeError   = "error"
+)
 
 type obsCursor struct {
 	V     int `json:"v"`
@@ -146,6 +154,19 @@ func parseObsQuery(w http.ResponseWriter, v url.Values, ident admin.AdminIdentit
 		Provider: strPtr(trim(v, "provider")), Model: strPtr(trim(v, "model")), Status: strPtr(trim(v, "status")),
 		EventClass: strPtr(trim(v, "event_class")), EventType: strPtr(trim(v, "event_type")), Severity: strPtr(trim(v, "severity")),
 		LedgerID: strPtr(trim(v, "ledger_id")), ActorID: strPtr(trim(v, "actor_id")), PendingOnly: trim(v, "pending_reconciliation_only") == "true"}
+	if kind == "usage" {
+		outcome := trim(v, "outcome")
+		if outcome == "" {
+			outcome = usageOutcomeAll
+		}
+		switch outcome {
+		case usageOutcomeAll, usageOutcomeSuccess, usageOutcomeError:
+			q.Outcome = &outcome
+		default:
+			writeJSONError(w, http.StatusBadRequest, "invalid_outcome", "outcome must be one of success, error, all")
+			return obsQuery{}, false
+		}
+	}
 	if q.PoolID, ok = parseIntFilter(w, v, "pool_id"); !ok {
 		return obsQuery{}, false
 	}
@@ -192,10 +213,10 @@ func parseTenantScope(w http.ResponseWriter, raw string, ident admin.AdminIdenti
 }
 
 func countUsage(ctx context.Context, s AdminObservabilityStore, q obsQuery) (int64, error) {
-	return s.CountUsageRecords(ctx, dbbilling.CountUsageRecordsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, PendingReconciliationOnly: q.PendingOnly})
+	return s.CountUsageRecords(ctx, dbbilling.CountUsageRecordsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, PendingReconciliationOnly: q.PendingOnly, Outcome: q.Outcome})
 }
 func listUsage(ctx context.Context, s AdminObservabilityStore, q obsQuery) ([]dbbilling.ListUsageRecordsRow, error) {
-	return s.ListUsageRecords(ctx, dbbilling.ListUsageRecordsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, PendingReconciliationOnly: q.PendingOnly, HasCursor: q.HasCursor, CursorCreatedAt: q.CursorCreatedAt, CursorID: q.CursorID, PageLimit: q.FetchLimit})
+	return s.ListUsageRecords(ctx, dbbilling.ListUsageRecordsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model, PendingReconciliationOnly: q.PendingOnly, Outcome: q.Outcome, HasCursor: q.HasCursor, CursorCreatedAt: q.CursorCreatedAt, CursorID: q.CursorID, PageLimit: q.FetchLimit})
 }
 func countClaims(ctx context.Context, s AdminObservabilityStore, q obsQuery) (int64, error) {
 	return s.CountBillingClaims(ctx, dbbilling.CountBillingClaimsParams{TenantID: q.TenantID, FromTs: q.FromTs, ToTs: q.ToTs, Status: q.Status, Provider: q.Provider, PoolID: q.PoolID, APIKeyID: q.APIKeyID, ProviderAccountID: q.ProviderAccountID, Model: q.Model})

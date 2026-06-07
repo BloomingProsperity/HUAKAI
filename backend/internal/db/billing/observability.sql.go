@@ -144,6 +144,12 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
       )
     )
   )
+  AND (
+    $10::text IS NULL
+    OR $10::text = 'all'
+    OR ($10::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
+    OR ($10::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
+  )
 `
 
 type CountUsageRecordsParams struct {
@@ -156,6 +162,7 @@ type CountUsageRecordsParams struct {
 	ProviderAccountID         *int64             `db:"provider_account_id" json:"provider_account_id"`
 	Model                     *string            `db:"model" json:"model"`
 	PendingReconciliationOnly bool               `db:"pending_reconciliation_only" json:"pending_reconciliation_only"`
+	Outcome                   *string            `db:"outcome" json:"outcome"`
 }
 
 func (q *Queries) CountUsageRecords(ctx context.Context, arg CountUsageRecordsParams) (int64, error) {
@@ -169,6 +176,7 @@ func (q *Queries) CountUsageRecords(ctx context.Context, arg CountUsageRecordsPa
 		arg.ProviderAccountID,
 		arg.Model,
 		arg.PendingReconciliationOnly,
+		arg.Outcome,
 	)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -613,9 +621,15 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
       )
     )
   )
-  AND ($10::boolean = false OR (ur.settled_at, ur.id) < ($11::timestamptz, $12::bigint))
+  AND (
+    $10::text IS NULL
+    OR $10::text = 'all'
+    OR ($10::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
+    OR ($10::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
+  )
+  AND ($11::boolean = false OR (ur.settled_at, ur.id) < ($12::timestamptz, $13::bigint))
 ORDER BY ur.settled_at DESC, ur.id DESC
-LIMIT $13::integer
+LIMIT $14::integer
 `
 
 type ListUsageRecordsParams struct {
@@ -628,6 +642,7 @@ type ListUsageRecordsParams struct {
 	ProviderAccountID         *int64             `db:"provider_account_id" json:"provider_account_id"`
 	Model                     *string            `db:"model" json:"model"`
 	PendingReconciliationOnly bool               `db:"pending_reconciliation_only" json:"pending_reconciliation_only"`
+	Outcome                   *string            `db:"outcome" json:"outcome"`
 	HasCursor                 bool               `db:"has_cursor" json:"has_cursor"`
 	CursorCreatedAt           pgtype.Timestamptz `db:"cursor_created_at" json:"cursor_created_at"`
 	CursorID                  int64              `db:"cursor_id" json:"cursor_id"`
@@ -681,6 +696,7 @@ func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsPara
 		arg.ProviderAccountID,
 		arg.Model,
 		arg.PendingReconciliationOnly,
+		arg.Outcome,
 		arg.HasCursor,
 		arg.CursorCreatedAt,
 		arg.CursorID,
