@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -319,6 +321,114 @@ func TestOAuthNodeSeekGenericProviderUsesConfiguredSubjectField(t *testing.T) {
 	}
 }
 
+// Mutation guards: deleting the generic numeric-claim gate accepts low-trust
+// LinuxDo users; changing the comparison from < to <= rejects the exact
+// threshold case.
+func TestLinuxDoTrustLevelGate(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		trustLevel int
+		wantErr    error
+	}{
+		{name: "below_threshold_rejected", trustLevel: 1, wantErr: ErrSocialLoginRejected},
+		{name: "equal_threshold_allowed", trustLevel: 2},
+		{name: "above_threshold_allowed", trustLevel: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sawToken, sawUser bool
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Host + req.URL.Path {
+				case "oauth.linuxdo.example/token":
+					sawToken = true
+					if err := req.ParseForm(); err != nil {
+						t.Fatalf("parse LinuxDo token form: %v", err)
+					}
+					if req.PostForm.Get("client_id") != "linuxdo-client" ||
+						req.PostForm.Get("client_secret") != "linuxdo-secret" ||
+						req.PostForm.Get("code") != "linuxdo-code" ||
+						req.PostForm.Get("redirect_uri") != "https://app.example/linuxdo" {
+						t.Fatalf("LinuxDo token form mismatch: %v", req.PostForm)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"access_token":"linuxdo-token"}`))
+				case "api.linuxdo.example/userinfo":
+					sawUser = true
+					if got := req.Header.Get("Authorization"); got != "Bearer linuxdo-token" {
+						t.Fatalf("LinuxDo Authorization=%q want bearer token", got)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(fmt.Sprintf(`{
+						"id":"linuxdo-user-%d",
+						"email":"linuxdo-%d@example.test",
+						"email_verified":true,
+						"username":"LinuxDo User",
+						"trust_level":%d
+					}`, tc.trustLevel, tc.trustLevel, tc.trustLevel)))
+				default:
+					t.Fatalf("unexpected LinuxDo request: %s %s", req.Method, req.URL.String())
+				}
+			})
+			client := &http.Client{Transport: oauthRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				upstream.ServeHTTP(rec, req)
+				return rec.Result(), nil
+			})}
+
+			provider, err := NewOAuthHTTPProvider(OAuthConfig{
+				Provider:                 SocialProviderLinuxDo,
+				ClientID:                 "linuxdo-client",
+				ClientSecret:             "linuxdo-secret",
+				AuthURL:                  "https://oauth.linuxdo.example/authorize",
+				TokenURL:                 "https://oauth.linuxdo.example/token",
+				UserURL:                  "https://api.linuxdo.example/userinfo",
+				RedirectURI:              "https://app.example/linuxdo",
+				SubjectField:             "id",
+				EmailField:               "email",
+				EmailVerifiedField:       "email_verified",
+				DisplayNameField:         "username",
+				MinimumNumericClaimField: "trust_level",
+				MinimumNumericClaimValue: 2,
+			}, client)
+			if err != nil {
+				t.Fatalf("NewOAuthHTTPProvider LinuxDo: %v", err)
+			}
+
+			now := time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)
+			store := newMemoryAuthStore(now)
+			svc := NewService(store)
+			svc.Now = func() time.Time { return now }
+			svc.OAuth = NewOAuthService(provider)
+			init, err := svc.StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderLinuxDo})
+			if err != nil {
+				t.Fatalf("StartOAuth LinuxDo: %v", err)
+			}
+			user, err := svc.CompleteOAuth(ctx, OAuthCallbackInput{
+				TenantID: 1, Provider: SocialProviderLinuxDo, State: init.State, Code: "linuxdo-code",
+			})
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("CompleteOAuth LinuxDo err=%v want %v", err, tc.wantErr)
+				}
+				if len(store.users) != 0 || len(store.socialLinks) != 0 {
+					t.Fatalf("rejected LinuxDo identity persisted users=%+v links=%+v", store.users, store.socialLinks)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("CompleteOAuth LinuxDo: %v", err)
+				}
+				if user.Email != fmt.Sprintf("linuxdo-%d@example.test", tc.trustLevel) ||
+					user.SocialLoginProvider != SocialProviderLinuxDo {
+					t.Fatalf("LinuxDo user mismatch: %+v", user)
+				}
+			}
+			if !sawToken || !sawUser {
+				t.Fatalf("LinuxDo flow did not hit every endpoint: token=%v user=%v", sawToken, sawUser)
+			}
+		})
+	}
+}
+
 // Mutation guards: omitting the Discord dispatch or using a non-bearer userinfo
 // request makes this standard OAuth2 flow fail; using only global_name loses the
 // username fallback when Discord returns global_name=null.
@@ -608,7 +718,7 @@ func TestOAuthNewProviderEndpointGuardRejectsInternalAddresses(t *testing.T) {
 func TestOAuthNewProvidersFailClosedWhenNotRegistered(t *testing.T) {
 	svc := NewService(newMemoryAuthStore(time.Date(2026, 6, 4, 12, 30, 0, 0, time.UTC)))
 	svc.OAuth = NewOAuthService()
-	for _, provider := range []string{SocialProviderQQ, SocialProviderDingTalk, SocialProviderNodeSeek, SocialProviderDiscord} {
+	for _, provider := range []string{SocialProviderQQ, SocialProviderDingTalk, SocialProviderNodeSeek, SocialProviderLinuxDo, SocialProviderDiscord} {
 		if _, err := svc.StartOAuth(context.Background(), OAuthInitInput{
 			TenantID: 1, Provider: provider,
 		}); !errors.Is(err, ErrOAuthProviderMissing) {

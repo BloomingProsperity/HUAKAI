@@ -102,6 +102,23 @@ func applyOAuthProviderDefaults(cfg OAuthConfig) (OAuthConfig, error) {
 			strings.TrimSpace(cfg.UserURL) == "" {
 			return OAuthConfig{}, ErrInvalidInput
 		}
+	case SocialProviderLinuxDo:
+		if strings.TrimSpace(cfg.AuthURL) == "" ||
+			strings.TrimSpace(cfg.UserURL) == "" {
+			return OAuthConfig{}, ErrInvalidInput
+		}
+		if strings.TrimSpace(cfg.SubjectField) == "" {
+			cfg.SubjectField = "id"
+		}
+		if strings.TrimSpace(cfg.EmailField) == "" {
+			cfg.EmailField = "email"
+		}
+		if strings.TrimSpace(cfg.EmailVerifiedField) == "" {
+			cfg.EmailVerifiedField = "email_verified"
+		}
+		if strings.TrimSpace(cfg.DisplayNameField) == "" {
+			cfg.DisplayNameField = "username"
+		}
 	case SocialProviderDiscord:
 		if cfg.AuthURL == "" {
 			cfg.AuthURL = defaultDiscordAuthURL
@@ -348,6 +365,9 @@ func (p *OAuthHTTPProvider) genericUserInfoIdentity(ctx context.Context, accessT
 	if err := p.getBearerJSON(ctx, p.cfg.UserURL, accessToken, &raw); err != nil {
 		return VerifiedIdentity{}, err
 	}
+	if err := p.requireMinimumNumericClaim(raw); err != nil {
+		return VerifiedIdentity{}, err
+	}
 	subject := stringField(raw, p.cfg.SubjectField)
 	if subject == "" {
 		return VerifiedIdentity{}, ErrSocialLoginRejected
@@ -364,6 +384,22 @@ func (p *OAuthHTTPProvider) genericUserInfoIdentity(ctx context.Context, accessT
 		DisplayName:   p.genericDisplayName(raw),
 		EmailVerified: verified,
 	}, nil
+}
+
+func (p *OAuthHTTPProvider) requireMinimumNumericClaim(raw map[string]any) error {
+	field := strings.TrimSpace(p.cfg.MinimumNumericClaimField)
+	if field == "" {
+		return nil
+	}
+	value, ok := mapField(raw, field)
+	if !ok {
+		return ErrSocialLoginRejected
+	}
+	n, ok := int64ClaimValue(value)
+	if !ok || n < p.cfg.MinimumNumericClaimValue {
+		return ErrSocialLoginRejected
+	}
+	return nil
 }
 
 func (p *OAuthHTTPProvider) genericDisplayName(raw map[string]any) string {
@@ -475,6 +511,29 @@ func boolField(m map[string]any, field string) bool {
 		return v != 0
 	default:
 		return false
+	}
+}
+
+func int64ClaimValue(value any) (int64, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		i, err := v.Int64()
+		return i, err == nil
+	case float64:
+		i := int64(v)
+		if v != float64(i) {
+			return 0, false
+		}
+		return i, true
+	case string:
+		i, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		return i, err == nil
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	default:
+		return 0, false
 	}
 }
 
