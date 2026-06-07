@@ -494,6 +494,56 @@ func (s *PostgresStore) RedeemInvite(ctx context.Context, tenantID int64, rawCod
 	return redeemInviteWithDB(ctx, s.db, tenantID, codeHash, rawCode, now)
 }
 
+func (s *PostgresStore) InviteCodeStatus(ctx context.Context, tenantID int64, rawCode string) (InviteCodeStatus, error) {
+	if s == nil || s.db == nil {
+		return "", ErrStoreNotConfigured
+	}
+	if tenantID <= 0 {
+		return "", ErrInvalidInput
+	}
+	rawCode = strings.TrimSpace(rawCode)
+	if rawCode == "" {
+		return InviteCodeStatusNotFound, nil
+	}
+	const q = `
+SELECT status, used_count, max_uses, valid_until
+FROM invite_codes
+WHERE tenant_id = $1
+  AND code = $2`
+	var status string
+	var usedCount, maxUses int
+	var validUntil pgtype.Timestamptz
+	err := s.db.QueryRow(ctx, q, tenantID, HashInviteCode(rawCode)).Scan(&status, &usedCount, &maxUses, &validUntil)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InviteCodeStatusNotFound, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return classifyInviteCodeStatus(status, usedCount, maxUses, validUntil, time.Now().UTC()), nil
+}
+
+func classifyInviteCodeStatus(status string, usedCount, maxUses int, validUntil pgtype.Timestamptz, now time.Time) InviteCodeStatus {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "disabled":
+		return InviteCodeStatusDisabled
+	case "expired":
+		return InviteCodeStatusExpired
+	case "exhausted":
+		return InviteCodeStatusUsedOrExhausted
+	}
+	if validUntil.Valid && !validUntil.Time.After(now) {
+		return InviteCodeStatusExpired
+	}
+	if maxUses <= 0 || usedCount >= maxUses {
+		return InviteCodeStatusUsedOrExhausted
+	}
+	if strings.EqualFold(strings.TrimSpace(status), "active") {
+		return InviteCodeStatusValid
+	}
+	return InviteCodeStatusDisabled
+}
+
 func redeemInviteWithDB(ctx context.Context, database db.DBTX, tenantID int64, codeHash, rawCode string, now time.Time) (InviteCode, error) {
 	invite, err := redeemAuthInviteWithDB(ctx, database, tenantID, codeHash, now)
 	if err == nil {

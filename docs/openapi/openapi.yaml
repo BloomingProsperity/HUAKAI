@@ -2426,6 +2426,36 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/auth/validate-invitation-code:
+    post:
+      tags: [auth]
+      summary: Validate an invitation code without consuming it
+      operationId: authValidateInvitationCode
+      x-huakai-spec-source:
+        - backend/internal/invitevalidatehttp/handler.go
+        - backend/internal/userauth/store.go
+      security: []
+      description: |
+        Public pre-registration validation for invitation codes. The endpoint is
+        read-only: it checks the hashed code for the supplied tenant and returns
+        only a coarse `{valid, reason}` result. It never increments used_count,
+        never takes the invite redemption lock, and never exposes account,
+        creator, email, or inviter metadata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthValidateInvitationCodeRequest' }
+      responses:
+        '200':
+          description: Coarse validation status. `reason=disabled` with `valid=true` means invitation-required registration is disabled by platform settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthValidateInvitationCodeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/login:
     post:
       tags: [auth]
@@ -8871,6 +8901,29 @@ components:
         display_name: { type: string }
         password: { type: string, format: password, minLength: 8 }
         invite_code: { type: string }
+
+    AuthValidateInvitationCodeRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/invitevalidatehttp/handler.go
+      required: [tenant_id, invite_code]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        invite_code: { type: string, minLength: 1 }
+
+    AuthValidateInvitationCodeResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/invitevalidatehttp/handler.go
+        - backend/internal/userauth/store.go
+      required: [valid, reason]
+      properties:
+        valid: { type: boolean }
+        reason:
+          type: string
+          enum: [disabled, not_found, used_or_exhausted, expired, valid]
 
     AuthLoginRequest:
       type: object

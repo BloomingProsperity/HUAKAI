@@ -496,6 +496,37 @@ func TestRateLimit_RetryAfterTracksConfiguredRate(t *testing.T) {
 	}
 }
 
+func TestRateLimit_InviteValidateSharesRegisterBucket(t *testing.T) {
+	rl := fixedClockLimiter(t)
+	registerTier := rl.authStrict["/v1/auth/register"]
+	validateTier := rl.authStrict["/v1/auth/validate-invitation-code"]
+	if registerTier == nil || validateTier == nil {
+		t.Fatalf("register tier=%v validate tier=%v; validate-invitation-code must be auth-strict limited", registerTier, validateTier)
+	}
+	if registerTier != validateTier {
+		t.Fatal("validate-invitation-code must share the register auth-strict bucket, not mint a separate registration budget")
+	}
+	burst := int(registerTier.registry.burst)
+	const ip = "203.0.113.151:9201"
+	paths := []string{"/v1/auth/register", "/v1/auth/validate-invitation-code"}
+	for i := 0; i < burst; i++ {
+		req := httptest.NewRequest(http.MethodPost, paths[i%len(paths)], nil)
+		req.RemoteAddr = ip
+		rec := httptest.NewRecorder()
+		rl.middleware(stubOKHandler()).ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("alternating register/validate request %d/%d unexpectedly 429 within shared burst", i+1, burst)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/validate-invitation-code", nil)
+	req.RemoteAddr = ip
+	rec := httptest.NewRecorder()
+	rl.middleware(stubOKHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("validate request past shared register burst: want 429 got %d", rec.Code)
+	}
+}
+
 // TestRateLimit_GlobalRetryAfterTracksConfiguredRate proves the GLOBAL-tier 429
 // Retry-After is derived from HUAKAI_RL_GLOBAL_RATE, not a hard-coded 1s: at
 // 0.1 req/s the next token is ~10s away.
