@@ -608,3 +608,72 @@ func (a recordingModeAdapter) RefreshCredential(_ context.Context, in ModeRefres
 	}
 	return ModeRefreshResult{Payload: payload, AccessExpiresAt: time.Now().Add(time.Hour)}, nil
 }
+
+func TestDefaultModeAdapterRegistryRoutesUpstreamOAuthRefreshModes(t *testing.T) {
+	// Mutation: drop either register(...) for grok/xai_oauth or kimi/kimi_oauth,
+	// or point tokenURL/clientID at the wrong value; this test goes RED.
+	registry := DefaultModeAdapterRegistry()
+	cases := []struct {
+		vendor, authMode, wantTokenURL, wantClientID string
+	}{
+		{credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, "https://auth.x.ai/oauth/token", "b1a00492-073a-47ea-816f-4c329264a828"},
+		{credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, "https://auth.kimi.com/api/oauth/token", "17e5f671-d194-4dfb-9706-5516cb48c098"},
+	}
+	for _, tc := range cases {
+		adapter, ok := registry.Lookup(tc.vendor, tc.authMode)
+		if !ok {
+			t.Fatalf("missing mode refresh adapter %s/%s", tc.vendor, tc.authMode)
+		}
+		got, ok := adapter.(builtinRefreshTokenModeAdapter)
+		if !ok {
+			t.Fatalf("%s/%s adapter type=%T want builtinRefreshTokenModeAdapter", tc.vendor, tc.authMode, adapter)
+		}
+		if got.tokenURL != tc.wantTokenURL {
+			t.Fatalf("%s/%s tokenURL=%q want %q", tc.vendor, tc.authMode, got.tokenURL, tc.wantTokenURL)
+		}
+		if got.clientID != tc.wantClientID {
+			t.Fatalf("%s/%s clientID=%q want %q", tc.vendor, tc.authMode, got.clientID, tc.wantClientID)
+		}
+	}
+}
+
+func TestBuiltinRefreshTokenModeAdapterRotatesTokens(t *testing.T) {
+	var gotGrant, gotClient, gotRefresh string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotGrant = r.Form.Get("grant_type")
+		gotClient = r.Form.Get("client_id")
+		gotRefresh = r.Form.Get("refresh_token")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`))
+	}))
+	defer srv.Close()
+	adapter := builtinRefreshTokenModeAdapter{providerName: "grok", tokenURL: srv.URL, clientID: "client-xyz", client: srv.Client()}
+	res, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{Payload: []byte(`{"access_token":"old","refresh_token":"old-refresh"}`)})
+	if err != nil {
+		t.Fatalf("RefreshCredential: %v", err)
+	}
+	fields := map[string]any{}
+	if err := json.Unmarshal(res.Payload, &fields); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	// Mutation: remove the refresh_token rotation in executeTokenRequest -> RED.
+	if fields["access_token"] != "new-access" {
+		t.Fatalf("access_token=%v want new-access", fields["access_token"])
+	}
+	if fields["refresh_token"] != "new-refresh" {
+		t.Fatalf("refresh_token=%v want new-refresh (rotation)", fields["refresh_token"])
+	}
+	if gotGrant != "refresh_token" || gotClient != "client-xyz" || gotRefresh != "old-refresh" {
+		t.Fatalf("token request grant=%q client=%q refresh=%q", gotGrant, gotClient, gotRefresh)
+	}
+}
+
+func TestBuiltinRefreshTokenModeAdapterNoRefreshTokenSkips(t *testing.T) {
+	// Mutation: treat missing refresh_token as an error instead of ErrNoRefreshRequired -> RED.
+	adapter := builtinRefreshTokenModeAdapter{providerName: "kimi", tokenURL: "https://auth.kimi.com/api/oauth/token", clientID: "x"}
+	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{Payload: []byte(`{"access_token":"only"}`)})
+	if !errors.Is(err, ErrNoRefreshRequired) {
+		t.Fatalf("err=%v want ErrNoRefreshRequired when refresh_token absent", err)
+	}
+}

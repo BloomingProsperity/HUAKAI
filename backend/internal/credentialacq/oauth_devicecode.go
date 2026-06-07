@@ -32,6 +32,12 @@ const (
 	kimiOAuthTokenURL               = "https://auth.kimi.com/api/oauth/token"
 )
 
+// Exported for credentialworker token-refresh reuse (single source of truth).
+const (
+	KimiOAuthTokenURL = kimiOAuthTokenURL
+	KimiOAuthClientID = kimiOAuthClientID
+)
+
 type deviceCodeExchanger struct{}
 
 func NewDeviceCodeExchanger() Exchanger {

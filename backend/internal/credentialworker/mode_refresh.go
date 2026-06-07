@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -108,6 +109,12 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 		},
 	})
 	register(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, windsurfManualModeAdapter{adapter: adapters.WindsurfManualTokenRefresh{}})
+	register(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, builtinRefreshTokenModeAdapter{
+		providerName: "grok", tokenURL: credentialacq.XAIOAuthTokenURL, clientID: credentialacq.XAIOAuthClientID,
+	})
+	register(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, builtinRefreshTokenModeAdapter{
+		providerName: "kimi", tokenURL: credentialacq.KimiOAuthTokenURL, clientID: credentialacq.KimiOAuthClientID,
+	})
 	return r
 }
 
@@ -592,6 +599,46 @@ func (a windsurfManualModeAdapter) RefreshCredential(ctx context.Context, in Mod
 	return ModeRefreshResult{}, err
 }
 
+// builtinRefreshTokenModeAdapter refreshes upstream OAuth credentials whose provider
+// exposes a standard OAuth2 refresh_token grant at a fixed, compile-time token endpoint
+// with a built-in public client_id (xAI/Grok, Kimi/Moonshot). The token endpoint is
+// never payload-controlled and all egress uses the SSRF-protected OAuth client.
+type builtinRefreshTokenModeAdapter struct {
+	providerName string
+	tokenURL     string
+	clientID     string
+	client       *http.Client
+}
+
+func (a builtinRefreshTokenModeAdapter) RefreshCredential(ctx context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {
+	fields, err := payloadMap(in.Payload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	refreshToken := stringField(fields, "refresh_token")
+	if refreshToken == "" {
+		return ModeRefreshResult{}, ErrNoRefreshRequired
+	}
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("client_id", a.clientID)
+	form.Set("refresh_token", refreshToken)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	return executeTokenRequest(a.httpClient(), req, fields)
+}
+
+func (a builtinRefreshTokenModeAdapter) httpClient() *http.Client {
+	if a.client != nil {
+		return a.client
+	}
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
+}
+
 type mockTokenExchangeAdapter struct {
 	providerName string
 	client       *http.Client
@@ -667,9 +714,10 @@ func executeTokenRequest(client *http.Client, req *http.Request, fields map[stri
 		return ModeRefreshResult{}, fmt.Errorf("token exchange returned status %d", resp.StatusCode)
 	}
 	var token struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
-		TokenType   string `json:"token_type"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+		TokenType    string `json:"token_type"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&token); err != nil {
 		return ModeRefreshResult{}, err
@@ -683,6 +731,9 @@ func executeTokenRequest(client *http.Client, req *http.Request, fields map[stri
 	}
 	expiresAt := time.Now().UTC().Add(time.Duration(ttl) * time.Second)
 	fields["access_token"] = token.AccessToken
+	if strings.TrimSpace(token.RefreshToken) != "" {
+		fields["refresh_token"] = token.RefreshToken
+	}
 	fields["expires_at"] = expiresAt.Format(time.RFC3339)
 	if token.TokenType != "" {
 		fields["token_type"] = token.TokenType
