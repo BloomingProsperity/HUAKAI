@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -50,5 +52,27 @@ func TestServeGatewayReturnsListenAndServeError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not-a-port") && !strings.Contains(err.Error(), "unknown port") {
 		t.Fatalf("serveGateway err=%v; want ListenAndServe address error", err)
+	}
+}
+
+func TestBuildUserServicesWiresPlatformPolicyAdapters(t *testing.T) {
+	t.Setenv("HUAKAI_USER_REGISTRATION_MODE", "open")
+	t.Setenv("HUAKAI_SESSION_SIGNING_KEY_B64", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
+
+	userAuthService, userSessionService, err := buildUserServices(nil, nil, nil, zap.NewNop())
+	if err != nil {
+		t.Fatalf("buildUserServices err=%v want nil", err)
+	}
+	if userAuthService == nil {
+		t.Fatalf("buildUserServices userAuthService=nil want non-nil")
+	}
+	if userAuthService.RegistrationGate == nil {
+		t.Fatalf("RegistrationGate=nil want platformsettings-backed adapter; MUTATION: policy wiring stayed dormant")
+	}
+	if userAuthService.EmailPolicy == nil {
+		t.Fatalf("EmailPolicy=nil want platformsettings-backed adapter; MUTATION: email policy wiring stayed dormant")
+	}
+	if userSessionService == nil {
+		t.Fatalf("buildUserServices userSessionService=nil want non-nil")
 	}
 }

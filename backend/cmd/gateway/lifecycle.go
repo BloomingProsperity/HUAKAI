@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/authpolicyadapter"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -20,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
@@ -295,6 +297,9 @@ func loadRuntimeOptions(logger *zap.Logger) (*runtimeOptions, error) {
 
 func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, emailSettings *mailinfra.PostgresSettingsStore, logger *zap.Logger) (*userauth.Service, *usersession.Service, error) {
 	userAuthService := userauth.NewService(userauth.NewPostgresStoreWithKeys(pgPool, keys))
+	platformSettingsService := platformsettings.NewService(platformsettings.NewPostgresStore(pgPool), nil)
+	userAuthService.RegistrationGate = authpolicyadapter.NewRegistrationGate(platformSettingsService)
+	userAuthService.EmailPolicy = authpolicyadapter.NewEmailPolicy(platformSettingsService)
 	registrationMode, err := loadUserRegistrationModeFromEnv()
 	if err != nil {
 		return nil, nil, fmt.Errorf("load user registration mode: %w", err)
