@@ -19,6 +19,12 @@ const (
 	xaiOAuthScope    = "openid profile email offline_access grok-cli:access api:access"
 )
 
+// Exported for credentialworker token-refresh reuse (single source of truth).
+const (
+	XAIOAuthTokenURL = xaiOAuthTokenURL
+	XAIOAuthClientID = xaiOAuthClientID
+)
+
 type Exchanger interface {
 	StartOAuthFlow(context.Context, *PostgresSessionStore, StartInput, OAuthClientConfig) (OAuthStartResult, error)
 	ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error)
