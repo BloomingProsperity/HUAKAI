@@ -153,6 +153,7 @@ func (s *DefaultSelector) filter(ctx context.Context, gates GateChain, accounts 
 		if account == nil {
 			continue
 		}
+		account = normalizeAccountSnapshotWeight(account)
 		ok, why, err := gates.Allow(ctx, account, req)
 		if err != nil || !ok {
 			reason.GateFailure(account.ID, why)
@@ -234,13 +235,51 @@ func (s *DefaultSelector) rankFresh(accounts []*AccountSnapshot, policy *Routing
 	})
 	k := topK(policy, out)
 	if k > 1 {
-		// math/rand.Rand 非并发安全, 多 goroutine 同时 Shuffle 会 race
-		// (Go race detector 会报). 用 randMu 串行化 Shuffle 调用。
-		s.randMu.Lock()
-		s.rand.Shuffle(k, func(i, j int) { out[i], out[j] = out[j], out[i] })
-		s.randMu.Unlock()
+		if policy != nil && policy.SelectionMode == SelectionModePriorityWeighted {
+			s.randMu.Lock()
+			chosen := s.weightedReservoirIndex(out, k)
+			s.randMu.Unlock()
+			if chosen > 0 {
+				out[0], out[chosen] = out[chosen], out[0]
+			}
+		} else {
+			// math/rand.Rand 非并发安全, 多 goroutine 同时 Shuffle 会 race
+			// (Go race detector 会报). 用 randMu 串行化 Shuffle 调用。
+			s.randMu.Lock()
+			s.rand.Shuffle(k, func(i, j int) { out[i], out[j] = out[j], out[i] })
+			s.randMu.Unlock()
+		}
 	}
 	return out
+}
+
+func (s *DefaultSelector) weightedReservoirIndex(accounts []*AccountSnapshot, k int) int {
+	chosen := 0
+	var total int64
+	for i := 0; i < k; i++ {
+		weight := accountWeight(accounts[i])
+		total += weight
+		if s.rand.Int63n(total) < weight {
+			chosen = i
+		}
+	}
+	return chosen
+}
+
+func normalizeAccountSnapshotWeight(account *AccountSnapshot) *AccountSnapshot {
+	if account == nil || account.Weight > 0 {
+		return account
+	}
+	out := *account
+	out.Weight = 1
+	return &out
+}
+
+func accountWeight(account *AccountSnapshot) int64 {
+	if account == nil || account.Weight <= 0 {
+		return 1
+	}
+	return int64(account.Weight)
 }
 
 func topK(policy *RoutingPolicy, accounts []*AccountSnapshot) int {
