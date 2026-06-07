@@ -3,6 +3,7 @@ package adminuserhttp
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,11 +81,40 @@ func TestAdminUsersAuthRequired(t *testing.T) {
 	})
 }
 
+func TestAdminTwoFAStats_TenantScopedRate(t *testing.T) {
+	store := &usersStoreStub{
+		twoFAStatsRow: admindb.AdminGetTwoFAAdoptionStatsForTenantRow{
+			EnabledCount:   2,
+			TotalUserCount: 3,
+		},
+	}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:  usersAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/users/2fa-adoption-stats", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	if store.twoFAStatsTenantID != 7 {
+		t.Fatalf("2fa stats tenant mismatch: got=%d want=7", store.twoFAStatsTenantID)
+	}
+	var body struct {
+		EnabledUsers int64   `json:"enabled_users"`
+		TotalUsers   int64   `json:"total_users"`
+		EnabledRate  float64 `json:"enabled_rate"`
+	}
+	decodeBody(t, rec, &body)
+	if body.EnabledUsers != 2 || body.TotalUsers != 3 || math.Abs(body.EnabledRate-(2.0/3.0)) > 0.0000001 {
+		t.Fatalf("2fa stats response mismatch: %+v", body)
+	}
+}
+
 func TestAdminUsersNoMutation(t *testing.T) {
 	store := &usersStoreStub{}
 	methods := []string{http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete}
 	targets := []string{
 		"/admin/v1/users",
+		"/admin/v1/users/2fa-adoption-stats",
 		"/admin/v1/users/101",
 		"/admin/v1/users/101/balance-history",
 	}
@@ -118,15 +148,18 @@ func (s usersAuthStub) Resolve(context.Context, *http.Request) (admin.AdminIdent
 }
 
 type usersStoreStub struct {
-	listRows     []admindb.AdminListUsersForTenantRow
-	getRow       admindb.AdminGetUserForTenantRow
-	historyRows  []admindb.AdminListUserBalanceHistoryForTenantRow
-	listArg      admindb.AdminListUsersForTenantParams
-	getArg       admindb.AdminGetUserForTenantParams
-	historyArg   admindb.AdminListUserBalanceHistoryForTenantParams
-	listCalls    int
-	getCalls     int
-	historyCalls int
+	listRows           []admindb.AdminListUsersForTenantRow
+	getRow             admindb.AdminGetUserForTenantRow
+	historyRows        []admindb.AdminListUserBalanceHistoryForTenantRow
+	twoFAStatsRow      admindb.AdminGetTwoFAAdoptionStatsForTenantRow
+	listArg            admindb.AdminListUsersForTenantParams
+	getArg             admindb.AdminGetUserForTenantParams
+	historyArg         admindb.AdminListUserBalanceHistoryForTenantParams
+	twoFAStatsTenantID int64
+	listCalls          int
+	getCalls           int
+	historyCalls       int
+	twoFAStatsCalls    int
 }
 
 func (s *usersStoreStub) AdminListUsersForTenant(_ context.Context, arg admindb.AdminListUsersForTenantParams) ([]admindb.AdminListUsersForTenantRow, error) {
@@ -147,8 +180,14 @@ func (s *usersStoreStub) AdminListUserBalanceHistoryForTenant(_ context.Context,
 	return s.historyRows, nil
 }
 
+func (s *usersStoreStub) AdminGetTwoFAAdoptionStatsForTenant(_ context.Context, tenantID int64) (admindb.AdminGetTwoFAAdoptionStatsForTenantRow, error) {
+	s.twoFAStatsCalls++
+	s.twoFAStatsTenantID = tenantID
+	return s.twoFAStatsRow, nil
+}
+
 func (s *usersStoreStub) calls() int {
-	return s.listCalls + s.getCalls + s.historyCalls
+	return s.listCalls + s.getCalls + s.historyCalls + s.twoFAStatsCalls
 }
 
 func invokeAdminUsers(t *testing.T, deps Deps, method, target string, _ any) *httptest.ResponseRecorder {

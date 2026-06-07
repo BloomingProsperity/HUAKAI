@@ -122,6 +122,35 @@ func TestAdminBalanceHistory_ScopedNewestFirst(t *testing.T) {
 	}
 }
 
+func TestTwoFAStats_TenantScoped(t *testing.T) {
+	ctx := context.Background()
+	pool := openAdminUsersPool(t, ctx)
+	f := newAdminUsersFixture(t, ctx, pool)
+
+	a1 := f.seedUser("2fa-a-one", "active", "user", "0.00000000")
+	a2 := f.seedUser("2fa-a-two", "active", "user", "0.00000000")
+	_ = f.seedUser("2fa-a-three", "active", "user", "0.00000000")
+	b1 := f.seedOtherTenantUser("2fa-b-one", "active", "user", "0.00000000")
+	b2 := f.seedOtherTenantUser("2fa-b-two", "active", "user", "0.00000000")
+	f.seedTwoFASetting(a1, true)
+	f.seedTwoFASetting(a2, true)
+	f.seedOtherTenantTwoFASetting(b1, true)
+	f.seedOtherTenantTwoFASetting(b2, true)
+
+	// MUTATION: remove the enabled-count tenant predicate or ignore ScopeTenantID in the handler -> tenant B enabled rows leak into tenant A stats -> RED.
+	rec := invokeAdminUsers(t, Deps{
+		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
+		Store: admindb.New(pool),
+	}, http.MethodGet, "/admin/v1/users/2fa-adoption-stats", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	var body adminTwoFAStatsResponse
+	decodeBody(t, rec, &body)
+	if body.EnabledUsers != 2 || body.TotalUsers != 3 || body.EnabledRate < 0.6666 || body.EnabledRate > 0.6667 {
+		t.Fatalf("2fa stats mismatch: got=%+v want enabled=2 total=3 rate~=0.6667", body)
+	}
+}
+
 func openAdminUsersPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")
@@ -153,6 +182,7 @@ func newAdminUsersFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	t.Cleanup(func() {
 		c := context.Background()
 		for _, tenantID := range []int64{f.tenantID, f.otherTenantID} {
+			_, _ = pool.Exec(c, `DELETE FROM two_factor_settings WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM payment_credits WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
@@ -183,6 +213,25 @@ func (f *adminUsersFixture) seedUser(label, status, role, balance string) int64 
 
 func (f *adminUsersFixture) seedOtherTenantUser(label, status, role, balance string) int64 {
 	return f.seedUserInTenant(f.otherTenantID, label, status, role, balance)
+}
+
+func (f *adminUsersFixture) seedTwoFASetting(userID int64, enabled bool) {
+	f.seedTwoFASettingInTenant(f.tenantID, userID, enabled)
+}
+
+func (f *adminUsersFixture) seedOtherTenantTwoFASetting(userID int64, enabled bool) {
+	f.seedTwoFASettingInTenant(f.otherTenantID, userID, enabled)
+}
+
+func (f *adminUsersFixture) seedTwoFASettingInTenant(tenantID, userID int64, enabled bool) {
+	f.t.Helper()
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO two_factor_settings (tenant_id, user_id, secret_enc, is_enabled)
+		 VALUES ($1, $2, $3, $4)`,
+		tenantID, userID, []byte{1, 2, 3}, enabled,
+	); err != nil {
+		f.t.Fatalf("seed 2fa setting tenant=%d user=%d: %v", tenantID, userID, err)
+	}
 }
 
 func (f *adminUsersFixture) seedUserInTenant(tenantID int64, label, status, role, balance string) int64 {
@@ -274,4 +323,10 @@ type adminBalanceHistoryResponse struct {
 
 type adminBalanceHistoryItem struct {
 	Fingerprint string `json:"fingerprint"`
+}
+
+type adminTwoFAStatsResponse struct {
+	EnabledUsers int64   `json:"enabled_users"`
+	TotalUsers   int64   `json:"total_users"`
+	EnabledRate  float64 `json:"enabled_rate"`
 }

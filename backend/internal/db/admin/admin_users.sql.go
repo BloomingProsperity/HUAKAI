@@ -11,6 +11,38 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adminGetTwoFAAdoptionStatsForTenant = `-- name: AdminGetTwoFAAdoptionStatsForTenant :one
+WITH enabled AS (
+    SELECT COUNT(*)::bigint AS enabled_count
+    FROM two_factor_settings
+    WHERE tenant_id = $1::bigint
+      AND is_enabled = true
+),
+total_users AS (
+    SELECT COUNT(*)::bigint AS total_user_count
+    FROM users
+    WHERE tenant_id = $1::bigint
+      AND deleted_at IS NULL
+)
+SELECT
+    enabled.enabled_count,
+    total_users.total_user_count
+FROM enabled
+CROSS JOIN total_users
+`
+
+type AdminGetTwoFAAdoptionStatsForTenantRow struct {
+	EnabledCount   int64 `db:"enabled_count" json:"enabled_count"`
+	TotalUserCount int64 `db:"total_user_count" json:"total_user_count"`
+}
+
+func (q *Queries) AdminGetTwoFAAdoptionStatsForTenant(ctx context.Context, tenantID int64) (AdminGetTwoFAAdoptionStatsForTenantRow, error) {
+	row := q.db.QueryRow(ctx, adminGetTwoFAAdoptionStatsForTenant, tenantID)
+	var i AdminGetTwoFAAdoptionStatsForTenantRow
+	err := row.Scan(&i.EnabledCount, &i.TotalUserCount)
+	return i, err
+}
+
 const adminGetUserForTenant = `-- name: AdminGetUserForTenant :one
 SELECT
     u.id,
