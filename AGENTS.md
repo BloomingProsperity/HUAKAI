@@ -603,6 +603,10 @@ If `codex exec review` syntax errors with "unexpected argument" or "cannot be us
 为修 bug 而改冻结包里的**既有文件**是允许的。新增**功能**则必须落新包
 (例:W3 错误模型 → `internal/clienterr`,而非 `gatewayhttp/public_error.go`)。
 
+> **澄清(2026-06-07 Owner「入站协议为什么冻结」纠错):冻结 = 反 god-package 的模块化约束,不是「协议/功能层不可扩展」。** 加新入站协议(Gemini 原生 /v1beta、realtime 等)、新出口能力**正是最高价值的活**——做法 = ClientAdapter/handler 落 **新包**(如 `internal/geminiclient`)+ 对既有 registry/route/capability 文件做 **加性 edit**。**严禁**为绕冻结而搞 hack(request-body 重写 / shim / 把 model、stream 注入 body)。若新包 handler 需要冻结包内部能力 → **导出该能力(既有文件加性 edit)** 供其调用——这才是模块化正道,**不需要任何「冻结例外」**。协议广度是网关 #1 价值轴,冻结规则从不阻止它。
+
+> **全网关范围(2026-06-07):** HUAKAI = Go `gatewayhttp` 大脑 + **Rust 出站强伪装 sidecar**(方向 C)。任何「整个网关」审计/评估 **必须纳入** `exploratory/rust-core-gateway/`(`tls-sidecar`:自维护 BoringSSL fork + JA3/JA4 + H2 SETTINGS wire 指纹 + fail-closed 契约)与 `backend/internal/transport/mimicry/`,**不能只看 `backend/` Go**。反检测/TLS+H2 线级伪装是真实且领先三家的能力轴。
+
 ### Enforcement(这才是"杜绝")
 
 - 任何**计划 / spec** 若要新建文件,必须逐个写明目标包,并确认它不是冻结包。
