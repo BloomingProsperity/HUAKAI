@@ -213,6 +213,56 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	return s.Store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
 }
 
+type socialIdentityUnlinkStore interface {
+	CountUserSocialIdentityLinks(context.Context, int64, int64) (int, error)
+	CountSocialIdentityLinks(context.Context, int64, int64, string) (int, error)
+	UnlinkSocialIdentity(context.Context, int64, int64, string) (bool, error)
+}
+
+func (s *Service) UnlinkSocialIdentity(ctx context.Context, tenantID, userID int64, provider string) (bool, error) {
+	if s == nil || s.Store == nil {
+		return false, ErrStoreNotConfigured
+	}
+	provider = normalizeSocialProvider(provider)
+	if tenantID <= 0 || userID <= 0 || provider == "" {
+		return false, ErrInvalidInput
+	}
+	var unlinked bool
+	err := s.withStoreTx(ctx, func(store Store) error {
+		unlinker, ok := store.(socialIdentityUnlinkStore)
+		if !ok {
+			return ErrStoreNotConfigured
+		}
+		user, err := store.GetUserByID(ctx, tenantID, userID)
+		if err != nil {
+			return err
+		}
+		providerLinks, err := unlinker.CountSocialIdentityLinks(ctx, tenantID, userID, provider)
+		if err != nil {
+			return err
+		}
+		if providerLinks == 0 {
+			unlinked = false
+			return nil
+		}
+		if strings.TrimSpace(user.PasswordHash) == "" {
+			totalLinks, err := unlinker.CountUserSocialIdentityLinks(ctx, tenantID, userID)
+			if err != nil {
+				return err
+			}
+			if totalLinks <= providerLinks {
+				return ErrLastLoginMethod
+			}
+		}
+		unlinked, err = unlinker.UnlinkSocialIdentity(ctx, tenantID, userID, provider)
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return unlinked, nil
+}
+
 func ensureSocialLoginUserAllowed(user User) error {
 	switch user.Status {
 	case UserStatusDisabled, UserStatusDeleted:

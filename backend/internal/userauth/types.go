@@ -38,6 +38,7 @@ var (
 	ErrOAuthFlowExpired             = errors.New("userauth: oauth flow expired")
 	ErrOAuthProviderMissing         = errors.New("userauth: oauth provider not configured")
 	ErrSocialLoginRejected          = errors.New("userauth: social login rejected")
+	ErrLastLoginMethod              = errors.New("userauth: cannot remove last login method")
 	ErrOAuthPendingEmailRequired    = errors.New("userauth: oauth pending email verification required")
 	ErrStoreNotConfigured           = errors.New("userauth: store not configured")
 )

@@ -254,6 +254,76 @@ RETURNING id, tenant_id, email, display_name, password_hash, email_verified,
 	return user, err
 }
 
+func (s *PostgresStore) CountUserSocialIdentityLinks(ctx context.Context, tenantID, userID int64) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrStoreNotConfigured
+	}
+	var count int64
+	if err := s.db.QueryRow(ctx, `
+SELECT count(*)
+FROM social_identity_links
+WHERE tenant_id = $1 AND user_id = $2
+`, tenantID, userID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+func (s *PostgresStore) CountSocialIdentityLinks(ctx context.Context, tenantID, userID int64, provider string) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrStoreNotConfigured
+	}
+	provider = normalizeSocialProvider(provider)
+	if provider == "" {
+		return 0, ErrInvalidInput
+	}
+	var count int64
+	if err := s.db.QueryRow(ctx, `
+SELECT count(*)
+FROM social_identity_links
+WHERE tenant_id = $1 AND user_id = $2 AND provider = $3
+`, tenantID, userID, provider).Scan(&count); err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+func (s *PostgresStore) UnlinkSocialIdentity(ctx context.Context, tenantID, userID int64, provider string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, ErrStoreNotConfigured
+	}
+	provider = normalizeSocialProvider(provider)
+	if tenantID <= 0 || userID <= 0 || provider == "" {
+		return false, ErrInvalidInput
+	}
+	tag, err := s.db.Exec(ctx, `
+DELETE FROM social_identity_links
+WHERE tenant_id = $1 AND user_id = $2 AND provider = $3
+`, tenantID, userID, provider)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	_, err = s.db.Exec(ctx, `
+UPDATE users
+SET social_login_provider = (
+        SELECT sil.provider
+        FROM social_identity_links sil
+        WHERE sil.tenant_id = $1 AND sil.user_id = $2
+        ORDER BY sil.updated_at DESC, sil.provider DESC, sil.subject DESC
+        LIMIT 1
+    ),
+    updated_at = NOW()
+WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+`, tenantID, userID)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *PostgresStore) CreateEmailVerificationToken(ctx context.Context, challenge TokenChallenge) error {
 	if s == nil || s.db == nil {
 		return ErrStoreNotConfigured
