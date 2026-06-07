@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
@@ -98,6 +99,10 @@ func NewCompletionsHandler(d Deps) http.HandlerFunc {
 		}
 		body, req, prompts, ok := validateCompletionRequest(w, r)
 		if !ok {
+			return
+		}
+		if !apikeymodelallow.AllowsCSV(ident.AllowedModels, req.Model) {
+			writeJSONError(w, http.StatusForbidden, "model_not_allowed", "api key is not allowed to use this model")
 			return
 		}
 		requestID := uuid.NewString()

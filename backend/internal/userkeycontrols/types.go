@@ -13,6 +13,7 @@ type SetKeyQuotaRequest struct {
 	UserID        int64
 	APIKeyID      int64
 	LimitUSD      decimal.Decimal
+	Metric        quota.Metric
 	WindowKind    quota.WindowKind
 	WindowSeconds int32
 	Mode          quota.Mode
@@ -66,3 +67,18 @@ type SetKeyIPAllowlistResult struct {
 }
 
 type KeyIPAllowlistView = SetKeyIPAllowlistResult
+
+type SetKeyModelAllowlistRequest struct {
+	TenantID      int64
+	UserID        int64
+	APIKeyID      int64
+	AllowedModels []string
+	RequestID     string
+}
+
+type SetKeyModelAllowlistResult struct {
+	APIKeyID      int64    `json:"api_key_id"`
+	AllowedModels []string `json:"allowed_models"`
+}
+
+type KeyModelAllowlistView = SetKeyModelAllowlistResult

@@ -16,22 +16,21 @@ type Querier interface {
 	GetAccountForRefresh(ctx context.Context, arg GetAccountForRefreshParams) (GetAccountForRefreshRow, error)
 	GetOrCreateAccountStormBudget(ctx context.Context, arg GetOrCreateAccountStormBudgetParams) (GetOrCreateAccountStormBudgetRow, error)
 	GetTokenVersion(ctx context.Context, arg GetTokenVersionParams) (int32, error)
-	// Tenant-scoped user lookup. Used by admin/audit queries (Phase E)
-	// and by the resolver to confirm user.status = 'active'.
+	// Tenant-scoped user lookup. Used by admin/audit queries and by the
+	// resolver to confirm user.status = 'active'.
 	GetUserByID(ctx context.Context, arg GetUserByIDParams) (GetUserByIDRow, error)
 	InsertOAuthRefreshAuditEvent(ctx context.Context, arg InsertOAuthRefreshAuditEventParams) error
-	// Phase L0 minimum inbound auth queries.
-	// Per docs/specs/_invariants/cross-module-boundaries.md:
-	//   queries here MUST NOT return key_hash to logs / traces; the resolver
+	// Inbound auth queries.
+	//   Queries here MUST NOT return key_hash to logs / traces; the resolver
 	//   only uses key_hash for bcrypt comparison and discards it.
-	// resolver writes stay limited to best-effort auth telemetry;
+	// Resolver writes stay limited to best-effort auth telemetry;
 	//   failed telemetry updates must not reject otherwise valid credentials.
 	// Returns active candidates whose key_prefix matches. Capped at 5 to
 	// bound bcrypt-verify-fanout DOS via colliding prefixes.
 	//
 	// Joins tenants + users so the resolver can check all three status
-	// fields in one DB roundtrip
-	// in the per-row check). INNER JOIN with deleted_at IS NULL on both
+	// fields in one DB roundtrip so tenant status is checked together with
+	// key/user status. INNER JOIN with deleted_at IS NULL on both
 	// parent tables means soft-deleted tenants/users never surface a
 	// candidate row at all.
 	LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error)

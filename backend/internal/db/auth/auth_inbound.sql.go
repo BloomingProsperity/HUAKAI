@@ -32,8 +32,8 @@ type GetUserByIDRow struct {
 	Status      string  `db:"status" json:"status"`
 }
 
-// Tenant-scoped user lookup. Used by admin/audit queries (Phase E)
-// and by the resolver to confirm user.status = 'active'.
+// Tenant-scoped user lookup. Used by admin/audit queries and by the
+// resolver to confirm user.status = 'active'.
 func (q *Queries) GetUserByID(ctx context.Context, arg GetUserByIDParams) (GetUserByIDRow, error) {
 	row := q.db.QueryRow(ctx, getUserByID, arg.ID, arg.TenantID)
 	var i GetUserByIDRow
@@ -57,6 +57,7 @@ SELECT
     ak.status        AS key_status,
     ak.expires_at,
     ak.ip_allowlist,
+    ak.allowed_models,
     u.status         AS user_status,
     u.user_group     AS user_group,
     t.status         AS tenant_status
@@ -76,25 +77,25 @@ LIMIT 5
 `
 
 type LookupAPIKeysByPrefixRow struct {
-	ID           int64              `db:"id" json:"id"`
-	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
-	UserID       int64              `db:"user_id" json:"user_id"`
-	KeyHash      string             `db:"key_hash" json:"key_hash"`
-	KeyStatus    string             `db:"key_status" json:"key_status"`
-	ExpiresAt    pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-	IpAllowlist  *string            `db:"ip_allowlist" json:"ip_allowlist"`
-	UserStatus   string             `db:"user_status" json:"user_status"`
-	UserGroup    string             `db:"user_group" json:"user_group"`
-	TenantStatus string             `db:"tenant_status" json:"tenant_status"`
+	ID            int64              `db:"id" json:"id"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	UserID        int64              `db:"user_id" json:"user_id"`
+	KeyHash       string             `db:"key_hash" json:"key_hash"`
+	KeyStatus     string             `db:"key_status" json:"key_status"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	IpAllowlist   *string            `db:"ip_allowlist" json:"ip_allowlist"`
+	AllowedModels *string            `db:"allowed_models" json:"allowed_models"`
+	UserStatus    string             `db:"user_status" json:"user_status"`
+	UserGroup     string             `db:"user_group" json:"user_group"`
+	TenantStatus  string             `db:"tenant_status" json:"tenant_status"`
 }
 
-// Phase L0 minimum inbound auth queries.
-// Per docs/specs/_invariants/cross-module-boundaries.md:
+// Inbound auth queries.
 //
-//	queries here MUST NOT return key_hash to logs / traces; the resolver
+//	Queries here MUST NOT return key_hash to logs / traces; the resolver
 //	only uses key_hash for bcrypt comparison and discards it.
 //
-// resolver writes stay limited to best-effort auth telemetry;
+// Resolver writes stay limited to best-effort auth telemetry;
 //
 //	failed telemetry updates must not reject otherwise valid credentials.
 //
@@ -102,8 +103,8 @@ type LookupAPIKeysByPrefixRow struct {
 // bound bcrypt-verify-fanout DOS via colliding prefixes.
 //
 // Joins tenants + users so the resolver can check all three status
-// fields in one DB roundtrip
-// in the per-row check). INNER JOIN with deleted_at IS NULL on both
+// fields in one DB roundtrip so tenant status is checked together with
+// key/user status. INNER JOIN with deleted_at IS NULL on both
 // parent tables means soft-deleted tenants/users never surface a
 // candidate row at all.
 func (q *Queries) LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error) {
@@ -123,6 +124,7 @@ func (q *Queries) LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) (
 			&i.KeyStatus,
 			&i.ExpiresAt,
 			&i.IpAllowlist,
+			&i.AllowedModels,
 			&i.UserStatus,
 			&i.UserGroup,
 			&i.TenantStatus,

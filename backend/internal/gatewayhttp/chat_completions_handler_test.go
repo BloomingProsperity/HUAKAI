@@ -160,6 +160,28 @@ func TestHandler_AuthForbiddenReturns403(t *testing.T) {
 	}
 }
 
+func TestHandler_ModelAllowlistForbiddenBeforeRoute(t *testing.T) {
+	// Mutation check: fail open on allowlist miss and the request continues into
+	// registry/routing instead of returning this stable 403.
+	allowedModels := "gpt-4o"
+	d := minimalDeps()
+	d.Auth = stubAuth{identity: auth.Identity{
+		TenantID:      7,
+		APIKeyID:      11,
+		UserID:        3,
+		AllowedModels: &allowedModels,
+	}}
+
+	rec := invokeHandler(t, d, `{"model":"gpt-3.5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"model_not_allowed"`) {
+		t.Fatalf("body=%s want model_not_allowed code", rec.Body.String())
+	}
+}
+
 func TestHandler_InsufficientBalanceReturnsClientParseable402(t *testing.T) {
 	// Mutation check: leaving the old reserve_error branch returns a generic
 	// body without type=insufficient_quota, code=insufficient_balance, and the

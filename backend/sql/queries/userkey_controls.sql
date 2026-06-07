@@ -22,7 +22,7 @@ SELECT
     sqlc.arg(tenant_id)::bigint,
     'api_key',
     sqlc.arg(scope_id)::text,
-    'cost_usd',
+    sqlc.arg(metric)::text,
     sqlc.arg(window_kind)::text,
     sqlc.arg(window_seconds)::integer,
     sqlc.arg(limit_value)::numeric(20,8),
@@ -112,6 +112,25 @@ WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
   AND ak.deleted_at IS NULL;
 
+-- name: SetAPIKeyModelAllowlist :execrows
+UPDATE api_keys ak
+SET allowed_models = sqlc.narg(allowed_models)::text,
+    updated_at = NOW()
+WHERE ak.id = sqlc.arg(api_key_id)::bigint
+  AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.deleted_at IS NULL;
+
+-- name: GetAPIKeyModelAllowlist :one
+SELECT
+    ak.id AS api_key_id,
+    ak.allowed_models
+FROM api_keys ak
+WHERE ak.id = sqlc.arg(api_key_id)::bigint
+  AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.deleted_at IS NULL;
+
 -- name: GetAPIKeyQuotaPolicy :one
 SELECT
     ak.id AS api_key_id,
@@ -138,7 +157,6 @@ WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.deleted_at IS NULL
   AND qp.scope_kind = 'api_key'
   AND qp.scope_id = ak.id::text
-  AND qp.metric = 'cost_usd'
   AND qp.enabled = true
   AND qp.valid_until IS NULL;
 

@@ -14,6 +14,7 @@ import (
 
 type setQuotaRequest struct {
 	LimitUSD      string `json:"limit_usd"`
+	Metric        string `json:"metric,omitempty"`
 	WindowKind    string `json:"window_kind,omitempty"`
 	WindowSeconds int32  `json:"window_seconds,omitempty"`
 	Mode          string `json:"mode,omitempty"`
@@ -25,6 +26,10 @@ type setGroupRequest struct {
 
 type setIPAllowlistRequest struct {
 	IPAllowlist []string `json:"ip_allowlist"`
+}
+
+type setModelAllowlistRequest struct {
+	AllowedModels []string `json:"allowed_models"`
 }
 
 func newSetQuotaHandler(d Deps) http.HandlerFunc {
@@ -45,11 +50,16 @@ func newSetQuotaHandler(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		metric, ok := parseQuotaMetric(w, req.Metric)
+		if !ok {
+			return
+		}
 		out, err := d.Service.SetKeyQuota(r.Context(), userkeycontrols.SetKeyQuotaRequest{
 			TenantID:      ident.TenantID,
 			UserID:        ident.UserID,
 			APIKeyID:      apiKeyID,
 			LimitUSD:      limit,
+			Metric:        metric,
 			WindowKind:    quota.WindowKind(strings.TrimSpace(req.WindowKind)),
 			WindowSeconds: req.WindowSeconds,
 			Mode:          quota.Mode(strings.TrimSpace(req.Mode)),
@@ -182,6 +192,54 @@ func newGetIPAllowlistHandler(d Deps) http.HandlerFunc {
 	}
 }
 
+func newSetModelAllowlistHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d.Service != nil)
+		if !ok {
+			return
+		}
+		apiKeyID, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req setModelAllowlistRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		out, err := d.Service.SetKeyModelAllowlist(r.Context(), userkeycontrols.SetKeyModelAllowlistRequest{
+			TenantID:      ident.TenantID,
+			UserID:        ident.UserID,
+			APIKeyID:      apiKeyID,
+			AllowedModels: req.AllowedModels,
+			RequestID:     requestIDFromReq(r),
+		})
+		if err != nil {
+			writeControlsError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+func newGetModelAllowlistHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d.Service != nil)
+		if !ok {
+			return
+		}
+		apiKeyID, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		out, err := d.Service.GetKeyModelAllowlist(r.Context(), ident.TenantID, ident.UserID, apiKeyID)
+		if err != nil {
+			writeControlsError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
 func parsePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	raw := chi.URLParam(r, "id")
 	id, err := strconv.ParseInt(raw, 10, 64)
@@ -204,4 +262,16 @@ func parseLimitUSD(w http.ResponseWriter, raw string) (decimal.Decimal, bool) {
 		return decimal.Zero, false
 	}
 	return limit, true
+}
+
+func parseQuotaMetric(w http.ResponseWriter, raw string) (quota.Metric, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "cost-usd", "cost_usd":
+		return quota.MetricCostUSD, true
+	case "request-count", "requests":
+		return quota.MetricRequests, true
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_metric", "metric must be cost-usd or request-count")
+		return "", false
+	}
 }

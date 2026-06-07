@@ -11,12 +11,14 @@ import (
 type Querier interface {
 	GetAPIKeyGroup(ctx context.Context, arg GetAPIKeyGroupParams) (GetAPIKeyGroupRow, error)
 	GetAPIKeyIPAllowlist(ctx context.Context, arg GetAPIKeyIPAllowlistParams) (GetAPIKeyIPAllowlistRow, error)
+	GetAPIKeyModelAllowlist(ctx context.Context, arg GetAPIKeyModelAllowlistParams) (GetAPIKeyModelAllowlistRow, error)
 	GetAPIKeyQuotaPolicy(ctx context.Context, arg GetAPIKeyQuotaPolicyParams) (GetAPIKeyQuotaPolicyRow, error)
 	SetAPIKeyGroupID(ctx context.Context, arg SetAPIKeyGroupIDParams) (int64, error)
 	SetAPIKeyIPAllowlist(ctx context.Context, arg SetAPIKeyIPAllowlistParams) (int64, error)
+	SetAPIKeyModelAllowlist(ctx context.Context, arg SetAPIKeyModelAllowlistParams) (int64, error)
 	SetAPIKeyQuotaPolicyID(ctx context.Context, arg SetAPIKeyQuotaPolicyIDParams) (int64, error)
 	// User-owned API key control queries.
-	// this file must not select bearer credential material.
+	// This file must not select bearer credential material.
 	// The live uniqueness surface is a partial unique index, so the executable
 	// clause names the same indexed columns and predicate directly.
 	UpsertAPIKeyQuotaPolicy(ctx context.Context, arg UpsertAPIKeyQuotaPolicyParams) (UpsertAPIKeyQuotaPolicyRow, error)

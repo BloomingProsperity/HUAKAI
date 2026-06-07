@@ -25,6 +25,8 @@ type controlsStore interface {
 	GetAPIKeyGroup(context.Context, int64, int64, int64) (keyGroupRow, error)
 	SetAPIKeyIPAllowlist(context.Context, ipAllowlistAssignment) (int64, error)
 	GetAPIKeyIPAllowlist(context.Context, int64, int64, int64) (keyIPAllowlistRow, error)
+	SetAPIKeyModelAllowlist(context.Context, modelAllowlistAssignment) (int64, error)
+	GetAPIKeyModelAllowlist(context.Context, int64, int64, int64) (keyModelAllowlistRow, error)
 }
 
 type quotaPolicyWrite struct {
@@ -99,6 +101,18 @@ type keyIPAllowlistRow struct {
 	IPAllowlist *string
 }
 
+type modelAllowlistAssignment struct {
+	TenantID      int64
+	UserID        int64
+	APIKeyID      int64
+	AllowedModels *string
+}
+
+type keyModelAllowlistRow struct {
+	APIKeyID      int64
+	AllowedModels *string
+}
+
 type PostgresStore struct {
 	pool *pgxpool.Pool
 	q    dbuserkeycontrols.Querier
@@ -145,6 +159,7 @@ func (s *PostgresStore) UpsertKeyQuotaPolicy(ctx context.Context, arg quotaPolic
 	row, err := s.q.UpsertAPIKeyQuotaPolicy(ctx, dbuserkeycontrols.UpsertAPIKeyQuotaPolicyParams{
 		TenantID:      arg.TenantID,
 		ScopeID:       arg.ScopeID,
+		Metric:        string(arg.Metric),
 		WindowKind:    string(arg.WindowKind),
 		WindowSeconds: arg.WindowSeconds,
 		LimitValue:    limit,
@@ -264,6 +279,33 @@ func (s *PostgresStore) GetAPIKeyIPAllowlist(ctx context.Context, tenantID, user
 		return keyIPAllowlistRow{}, err
 	}
 	return keyIPAllowlistRow{APIKeyID: row.APIKeyID, IPAllowlist: row.IpAllowlist}, nil
+}
+
+func (s *PostgresStore) SetAPIKeyModelAllowlist(ctx context.Context, arg modelAllowlistAssignment) (int64, error) {
+	if s == nil || s.q == nil {
+		return 0, fmt.Errorf("%w: queries unset", ErrServiceMisconfig)
+	}
+	return s.q.SetAPIKeyModelAllowlist(ctx, dbuserkeycontrols.SetAPIKeyModelAllowlistParams{
+		AllowedModels: arg.AllowedModels,
+		APIKeyID:      arg.APIKeyID,
+		TenantID:      arg.TenantID,
+		UserID:        arg.UserID,
+	})
+}
+
+func (s *PostgresStore) GetAPIKeyModelAllowlist(ctx context.Context, tenantID, userID, apiKeyID int64) (keyModelAllowlistRow, error) {
+	if s == nil || s.q == nil {
+		return keyModelAllowlistRow{}, fmt.Errorf("%w: queries unset", ErrServiceMisconfig)
+	}
+	row, err := s.q.GetAPIKeyModelAllowlist(ctx, dbuserkeycontrols.GetAPIKeyModelAllowlistParams{
+		APIKeyID: apiKeyID,
+		TenantID: tenantID,
+		UserID:   userID,
+	})
+	if err != nil {
+		return keyModelAllowlistRow{}, err
+	}
+	return keyModelAllowlistRow{APIKeyID: row.APIKeyID, AllowedModels: row.AllowedModels}, nil
 }
 
 func quotaPolicyFromUpsert(row dbuserkeycontrols.UpsertAPIKeyQuotaPolicyRow) (quotaPolicyRow, error) {

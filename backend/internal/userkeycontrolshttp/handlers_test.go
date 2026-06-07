@@ -39,6 +39,28 @@ func TestPutQuota_NegativeLimitUSD_400(t *testing.T) {
 	}
 }
 
+func TestPutQuota_RequestCountMetricPropagates(t *testing.T) {
+	// Mutation check: ignore the JSON metric field and the captured service
+	// request stays cost_usd/empty instead of MetricRequests.
+	service := &stubService{}
+	rr := serveControls(t, Deps{Service: service}, http.MethodPut, "/123/quota",
+		`{"limit_usd":"2","metric":"request-count","window_kind":"fixed","window_seconds":60}`, true)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	if service.setQuotaCalls != 1 {
+		t.Fatalf("SetKeyQuota calls=%d want 1", service.setQuotaCalls)
+	}
+	got := service.lastQuotaReq
+	if got.Metric != quota.MetricRequests {
+		t.Fatalf("Metric=%q want requests", got.Metric)
+	}
+	if got.WindowKind != quota.WindowFixed || got.WindowSeconds != 60 {
+		t.Fatalf("window=%q/%d want fixed/60", got.WindowKind, got.WindowSeconds)
+	}
+}
+
 func TestPutGroup_InvalidGroupID_400(t *testing.T) {
 	service := &stubService{}
 	rr := serveControls(t, Deps{Service: service}, http.MethodPut, "/123/group", `{"group_id":-1}`, true)
@@ -48,6 +70,46 @@ func TestPutGroup_InvalidGroupID_400(t *testing.T) {
 	}
 	if service.setGroupCalls != 0 {
 		t.Fatalf("invalid group_id must not reach service")
+	}
+}
+
+func TestPutModelAllowlist_UsesSessionScopeAndBodyList(t *testing.T) {
+	// Mutation check: route not mounted, scope sourced from body, or body list
+	// ignored all make the status/captured request assertions go red.
+	service := &stubService{}
+	rr := serveControls(t, Deps{Service: service}, http.MethodPut, "/123/model-allowlist",
+		`{"allowed_models":["gpt-4o","claude-3"]}`, true)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	if service.setModelAllowlistCalls != 1 {
+		t.Fatalf("SetKeyModelAllowlist calls=%d want 1", service.setModelAllowlistCalls)
+	}
+	got := service.lastModelAllowlistReq
+	if got.TenantID != 11 || got.UserID != 22 || got.APIKeyID != 123 {
+		t.Fatalf("scope=%+v want tenant=11 user=22 api_key=123", got)
+	}
+	if strings.Join(got.AllowedModels, ",") != "gpt-4o,claude-3" {
+		t.Fatalf("AllowedModels=%+v want request body list", got.AllowedModels)
+	}
+	if !strings.Contains(rr.Body.String(), `"allowed_models"`) {
+		t.Fatalf("body=%s must include allowed_models", rr.Body.String())
+	}
+}
+
+func TestGetModelAllowlist_UsesSessionScope(t *testing.T) {
+	service := &stubService{}
+	rr := serveControls(t, Deps{Service: service}, http.MethodGet, "/123/model-allowlist", ``, true)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rr.Code, rr.Body.String())
+	}
+	if service.getModelAllowlistCalls != 1 {
+		t.Fatalf("GetKeyModelAllowlist calls=%d want 1", service.getModelAllowlistCalls)
+	}
+	if !strings.Contains(rr.Body.String(), `"allowed_models"`) {
+		t.Fatalf("body=%s must include allowed_models", rr.Body.String())
 	}
 }
 
@@ -127,24 +189,34 @@ func serveControls(t *testing.T, deps Deps, method, target, body string, withSes
 }
 
 type stubService struct {
-	setQuotaCalls       int
-	setGroupCalls       int
-	setIPAllowlistCalls int
-	lastIPAllowlistReq  userkeycontrols.SetKeyIPAllowlistRequest
-	getGroupErr         error
-	setIPAllowlistErr   error
-	getIPAllowlistErr   error
+	setQuotaCalls          int
+	setGroupCalls          int
+	setIPAllowlistCalls    int
+	setModelAllowlistCalls int
+	getModelAllowlistCalls int
+	lastQuotaReq           userkeycontrols.SetKeyQuotaRequest
+	lastIPAllowlistReq     userkeycontrols.SetKeyIPAllowlistRequest
+	lastModelAllowlistReq  userkeycontrols.SetKeyModelAllowlistRequest
+	getGroupErr            error
+	setIPAllowlistErr      error
+	getIPAllowlistErr      error
+	getModelAllowlistErr   error
 }
 
 func (s *stubService) SetKeyQuota(_ context.Context, req userkeycontrols.SetKeyQuotaRequest) (userkeycontrols.SetKeyQuotaResult, error) {
 	s.setQuotaCalls++
+	s.lastQuotaReq = req
+	metric := req.Metric
+	if metric == "" {
+		metric = quota.MetricCostUSD
+	}
 	return userkeycontrols.SetKeyQuotaResult{
 		APIKeyID:   req.APIKeyID,
 		PolicyID:   777,
 		LimitUSD:   req.LimitUSD,
 		ScopeKind:  quota.ScopeAPIKey,
 		ScopeID:    "123",
-		Metric:     quota.MetricCostUSD,
+		Metric:     metric,
 		WindowKind: quota.WindowCalendarDay,
 		Mode:       quota.ModeEnforce,
 	}, nil
@@ -189,4 +261,18 @@ func (s *stubService) GetKeyIPAllowlist(context.Context, int64, int64, int64) (u
 		return userkeycontrols.KeyIPAllowlistView{}, s.getIPAllowlistErr
 	}
 	return userkeycontrols.KeyIPAllowlistView{APIKeyID: 123, IPAllowlist: []string{"10.0.0.0/8"}}, nil
+}
+
+func (s *stubService) SetKeyModelAllowlist(_ context.Context, req userkeycontrols.SetKeyModelAllowlistRequest) (userkeycontrols.SetKeyModelAllowlistResult, error) {
+	s.setModelAllowlistCalls++
+	s.lastModelAllowlistReq = req
+	return userkeycontrols.SetKeyModelAllowlistResult{APIKeyID: req.APIKeyID, AllowedModels: req.AllowedModels}, nil
+}
+
+func (s *stubService) GetKeyModelAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyModelAllowlistView, error) {
+	s.getModelAllowlistCalls++
+	if s.getModelAllowlistErr != nil {
+		return userkeycontrols.KeyModelAllowlistView{}, s.getModelAllowlistErr
+	}
+	return userkeycontrols.KeyModelAllowlistView{APIKeyID: 123, AllowedModels: []string{"gpt-4o"}}, nil
 }

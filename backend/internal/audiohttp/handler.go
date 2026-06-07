@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/audiopricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -130,6 +131,10 @@ func newHandler(d Deps, endpoint audioEndpoint) http.HandlerFunc {
 		}
 		body, contentType, req, ok := validateAudioRequest(w, r, endpoint)
 		if !ok {
+			return
+		}
+		if !apikeymodelallow.AllowsCSV(ident.AllowedModels, req.Model) {
+			writeJSONError(w, http.StatusForbidden, "model_not_allowed", "api key is not allowed to use this model")
 			return
 		}
 		requestID := uuid.NewString()

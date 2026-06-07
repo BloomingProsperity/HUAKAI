@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
@@ -24,6 +25,10 @@ func NewCountTokensHandler(d Deps) http.HandlerFunc {
 		}
 		body, req, ok := validateCountTokensRequest(w, r)
 		if !ok {
+			return
+		}
+		if !apikeymodelallow.AllowsCSV(ident.AllowedModels, req.Model) {
+			writeJSONError(w, http.StatusForbidden, "model_not_allowed", "api key is not allowed to use this model")
 			return
 		}
 		requestID := uuid.NewString()

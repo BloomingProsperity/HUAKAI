@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipallow"
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
 
@@ -58,7 +59,7 @@ func (s *KeyControlService) SetKeyQuota(ctx context.Context, req SetKeyQuotaRequ
 			UserID:        req.UserID,
 			APIKeyID:      req.APIKeyID,
 			ScopeID:       strconv.FormatInt(req.APIKeyID, 10),
-			Metric:        quota.MetricCostUSD,
+			Metric:        req.Metric,
 			WindowKind:    req.WindowKind,
 			WindowSeconds: req.WindowSeconds,
 			LimitUSD:      req.LimitUSD,
@@ -157,11 +158,64 @@ func (s *KeyControlService) GetKeyIPAllowlist(ctx context.Context, tenantID, use
 	return KeyIPAllowlistView{APIKeyID: row.APIKeyID, IPAllowlist: entries}, nil
 }
 
+func (s *KeyControlService) SetKeyModelAllowlist(ctx context.Context, req SetKeyModelAllowlistRequest) (SetKeyModelAllowlistResult, error) {
+	if s == nil || s.store == nil {
+		return SetKeyModelAllowlistResult{}, fmt.Errorf("%w: store unset", ErrServiceMisconfig)
+	}
+	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
+		return SetKeyModelAllowlistResult{}, ErrKeyNotFound
+	}
+	normalized := apikeymodelallow.Normalize(req.AllowedModels)
+	affected, err := s.store.SetAPIKeyModelAllowlist(ctx, modelAllowlistAssignment{
+		TenantID:      req.TenantID,
+		UserID:        req.UserID,
+		APIKeyID:      req.APIKeyID,
+		AllowedModels: apikeymodelallow.StorageText(normalized),
+	})
+	if err != nil {
+		return SetKeyModelAllowlistResult{}, fmt.Errorf("%w: set model allowlist: %v", ErrBackend, err)
+	}
+	if affected == 0 {
+		return SetKeyModelAllowlistResult{}, ErrKeyNotFound
+	}
+	return SetKeyModelAllowlistResult{APIKeyID: req.APIKeyID, AllowedModels: normalized}, nil
+}
+
+func (s *KeyControlService) GetKeyModelAllowlist(ctx context.Context, tenantID, userID, apiKeyID int64) (KeyModelAllowlistView, error) {
+	if s == nil || s.store == nil {
+		return KeyModelAllowlistView{}, fmt.Errorf("%w: store unset", ErrServiceMisconfig)
+	}
+	if tenantID <= 0 || userID <= 0 || apiKeyID <= 0 {
+		return KeyModelAllowlistView{}, ErrKeyNotFound
+	}
+	row, err := s.store.GetAPIKeyModelAllowlist(ctx, tenantID, userID, apiKeyID)
+	if err != nil {
+		if isNoRows(err) {
+			return KeyModelAllowlistView{}, ErrKeyNotFound
+		}
+		return KeyModelAllowlistView{}, fmt.Errorf("%w: get model allowlist: %v", ErrBackend, err)
+	}
+	entries := []string{}
+	if row.AllowedModels != nil {
+		entries = apikeymodelallow.NormalizeCSV(*row.AllowedModels)
+	}
+	return KeyModelAllowlistView{APIKeyID: row.APIKeyID, AllowedModels: entries}, nil
+}
+
 func validateQuotaRequest(req SetKeyQuotaRequest) error {
 	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
 		return ErrKeyNotFound
 	}
 	if req.LimitUSD.IsNegative() || req.LimitUSD.GreaterThan(maxNumeric20x8) || req.LimitUSD.Exponent() < -8 {
+		return ErrInvalidQuota
+	}
+	metric := req.Metric
+	if metric == "" {
+		metric = quota.MetricCostUSD
+	}
+	switch metric {
+	case quota.MetricCostUSD, quota.MetricRequests:
+	default:
 		return ErrInvalidQuota
 	}
 	kind := req.WindowKind
@@ -193,6 +247,9 @@ func validateQuotaRequest(req SetKeyQuotaRequest) error {
 }
 
 func normalizeQuotaRequest(req SetKeyQuotaRequest, now time.Time) SetKeyQuotaRequest {
+	if req.Metric == "" {
+		req.Metric = quota.MetricCostUSD
+	}
 	if req.WindowKind == "" {
 		req.WindowKind = quota.WindowCalendarDay
 	}

@@ -21,6 +21,7 @@ SELECT
     ak.status        AS key_status,
     ak.expires_at,
     ak.ip_allowlist,
+    ak.allowed_models,
     u.status         AS user_status,
     u.user_group     AS user_group,
     t.status         AS tenant_status

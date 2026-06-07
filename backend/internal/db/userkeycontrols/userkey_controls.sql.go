@@ -85,6 +85,35 @@ func (q *Queries) GetAPIKeyIPAllowlist(ctx context.Context, arg GetAPIKeyIPAllow
 	return i, err
 }
 
+const getAPIKeyModelAllowlist = `-- name: GetAPIKeyModelAllowlist :one
+SELECT
+    ak.id AS api_key_id,
+    ak.allowed_models
+FROM api_keys ak
+WHERE ak.id = $1::bigint
+  AND ak.tenant_id = $2::bigint
+  AND ak.user_id = $3::bigint
+  AND ak.deleted_at IS NULL
+`
+
+type GetAPIKeyModelAllowlistParams struct {
+	APIKeyID int64 `db:"api_key_id" json:"api_key_id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+	UserID   int64 `db:"user_id" json:"user_id"`
+}
+
+type GetAPIKeyModelAllowlistRow struct {
+	APIKeyID      int64   `db:"api_key_id" json:"api_key_id"`
+	AllowedModels *string `db:"allowed_models" json:"allowed_models"`
+}
+
+func (q *Queries) GetAPIKeyModelAllowlist(ctx context.Context, arg GetAPIKeyModelAllowlistParams) (GetAPIKeyModelAllowlistRow, error) {
+	row := q.db.QueryRow(ctx, getAPIKeyModelAllowlist, arg.APIKeyID, arg.TenantID, arg.UserID)
+	var i GetAPIKeyModelAllowlistRow
+	err := row.Scan(&i.APIKeyID, &i.AllowedModels)
+	return i, err
+}
+
 const getAPIKeyQuotaPolicy = `-- name: GetAPIKeyQuotaPolicy :one
 SELECT
     ak.id AS api_key_id,
@@ -111,7 +140,6 @@ WHERE ak.id = $1::bigint
   AND ak.deleted_at IS NULL
   AND qp.scope_kind = 'api_key'
   AND qp.scope_id = ak.id::text
-  AND qp.metric = 'cost_usd'
   AND qp.enabled = true
   AND qp.valid_until IS NULL
 `
@@ -221,6 +249,36 @@ func (q *Queries) SetAPIKeyIPAllowlist(ctx context.Context, arg SetAPIKeyIPAllow
 	return result.RowsAffected(), nil
 }
 
+const setAPIKeyModelAllowlist = `-- name: SetAPIKeyModelAllowlist :execrows
+UPDATE api_keys ak
+SET allowed_models = $1::text,
+    updated_at = NOW()
+WHERE ak.id = $2::bigint
+  AND ak.tenant_id = $3::bigint
+  AND ak.user_id = $4::bigint
+  AND ak.deleted_at IS NULL
+`
+
+type SetAPIKeyModelAllowlistParams struct {
+	AllowedModels *string `db:"allowed_models" json:"allowed_models"`
+	APIKeyID      int64   `db:"api_key_id" json:"api_key_id"`
+	TenantID      int64   `db:"tenant_id" json:"tenant_id"`
+	UserID        int64   `db:"user_id" json:"user_id"`
+}
+
+func (q *Queries) SetAPIKeyModelAllowlist(ctx context.Context, arg SetAPIKeyModelAllowlistParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setAPIKeyModelAllowlist,
+		arg.AllowedModels,
+		arg.APIKeyID,
+		arg.TenantID,
+		arg.UserID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setAPIKeyQuotaPolicyID = `-- name: SetAPIKeyQuotaPolicyID :execrows
 UPDATE api_keys ak
 SET quota_policy_id = $1::bigint,
@@ -273,17 +331,17 @@ SELECT
     $1::bigint,
     'api_key',
     $2::text,
-    'cost_usd',
     $3::text,
-    $4::integer,
-    $5::numeric(20,8),
-    $6::text,
+    $4::text,
+    $5::integer,
+    $6::numeric(20,8),
+    $7::text,
     200,
     true,
-    $7::timestamptz,
+    $8::timestamptz,
     NULL,
-    $8::text,
-    $8::text
+    $9::text,
+    $9::text
 WHERE EXISTS (
     SELECT 1
     FROM api_keys ak
@@ -296,9 +354,9 @@ WHERE EXISTS (
      AND u.tenant_id = ak.tenant_id
      AND u.deleted_at IS NULL
      AND u.status = 'active'
-    WHERE ak.id = $9::bigint
+    WHERE ak.id = $10::bigint
       AND ak.tenant_id = $1::bigint
-      AND ak.user_id = $10::bigint
+      AND ak.user_id = $11::bigint
       AND ak.deleted_at IS NULL
 )
 ON CONFLICT (
@@ -318,7 +376,7 @@ DO UPDATE SET
     last_modified_by_actor = EXCLUDED.last_modified_by_actor,
     updated_at = NOW()
 RETURNING
-    $9::bigint AS api_key_id,
+    $10::bigint AS api_key_id,
     tenant_id,
     id,
     scope_kind,
@@ -337,6 +395,7 @@ RETURNING
 type UpsertAPIKeyQuotaPolicyParams struct {
 	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
 	ScopeID       string             `db:"scope_id" json:"scope_id"`
+	Metric        string             `db:"metric" json:"metric"`
 	WindowKind    string             `db:"window_kind" json:"window_kind"`
 	WindowSeconds int32              `db:"window_seconds" json:"window_seconds"`
 	LimitValue    pgtype.Numeric     `db:"limit_value" json:"limit_value"`
@@ -365,13 +424,14 @@ type UpsertAPIKeyQuotaPolicyRow struct {
 }
 
 // User-owned API key control queries.
-// this file must not select bearer credential material.
+// This file must not select bearer credential material.
 // The live uniqueness surface is a partial unique index, so the executable
 // clause names the same indexed columns and predicate directly.
 func (q *Queries) UpsertAPIKeyQuotaPolicy(ctx context.Context, arg UpsertAPIKeyQuotaPolicyParams) (UpsertAPIKeyQuotaPolicyRow, error) {
 	row := q.db.QueryRow(ctx, upsertAPIKeyQuotaPolicy,
 		arg.TenantID,
 		arg.ScopeID,
+		arg.Metric,
 		arg.WindowKind,
 		arg.WindowSeconds,
 		arg.LimitValue,
