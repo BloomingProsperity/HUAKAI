@@ -69,10 +69,13 @@ type WaitPlan struct {
 }
 
 type AccountSnapshot struct {
-	ID               int64
-	TenantID         int64
-	ProtocolFamily   string
-	Priority         int
+	ID             int64
+	TenantID       int64
+	ProtocolFamily string
+	Priority       int
+	// Weight controls priority_weighted tie-band selection. 0/unset is
+	// treated as 1 so legacy account sources keep uniform behavior.
+	Weight           int32
 	LoadRate         float64
 	LastUsedAt       time.Time
 	MaxConcurrency   int
@@ -93,10 +96,18 @@ type RoutingPolicy struct {
 	TopKDefault          int
 	BroadTopK            bool
 	OperatorScoring      bool
+	SelectionMode        SelectionMode
 	ScoringPolicyVersion string
 	FallbackTimeoutMS    int
 	FallbackMaxWaiting   int
 }
+
+type SelectionMode string
+
+const (
+	SelectionModeStrictPriority   SelectionMode = "strict_priority"
+	SelectionModePriorityWeighted SelectionMode = "priority_weighted"
+)
 
 type AccountSource interface {
 	ListAccounts(ctx context.Context, req SelectionRequest) ([]*AccountSnapshot, error)
