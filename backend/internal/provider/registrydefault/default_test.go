@@ -29,6 +29,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolTogetherChat,
 		ProtocolPerplexityChat,
 		ProtocolFireworksChat,
+		ProtocolKimiChat,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -54,6 +55,7 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 		ProtocolOpenRouterChat,
 		ProtocolBedrockInvoke,
 		ProtocolGrokChat,
+		ProtocolKimiChat,
 	} {
 		a, err := r.For(pf)
 		if err != nil {
@@ -88,6 +90,7 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolTogetherChat:      "together",
 		ProtocolPerplexityChat:    "perplexity",
 		ProtocolFireworksChat:     "fireworks",
+		ProtocolKimiChat:          "kimi",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -117,6 +120,7 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 		{ProtocolTogetherChat, "together", "https://api.together.xyz/v1/chat/completions"},
 		{ProtocolPerplexityChat, "perplexity", "https://api.perplexity.ai/chat/completions"},
 		{ProtocolFireworksChat, "fireworks", "https://api.fireworks.ai/inference/v1/chat/completions"},
+		{ProtocolKimiChat, "kimi", "https://api.kimi.com/coding/v1/chat/completions"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.protocol, func(t *testing.T) {
@@ -141,6 +145,37 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 				t.Fatalf("%q endpoint=%q want %q", tc.protocol, got, tc.endpoint)
 			}
 		})
+	}
+}
+
+func TestKimiRuntimeAdapterRegistered(t *testing.T) {
+	// Mutation: drop ProtocolKimiChat registration or change its endpoint/platform;
+	// this test must go RED before any gateway route can silently target Kimi.
+	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
+	r := Build()
+	a, err := r.For(ProtocolKimiChat)
+	if err != nil {
+		t.Fatalf("For(%q) err=%v", ProtocolKimiChat, err)
+	}
+	if got := a.Platform(); got != "kimi" {
+		t.Fatalf("Kimi Platform=%q want kimi", got)
+	}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		InboundBody: []byte(`{"model":"kimi-k2","messages":[]}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeUpstreamPassthrough,
+			Value: "Bearer kimi-access",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Kimi BuildRequest: %v", err)
+	}
+	if got := req.URL.String(); got != "https://api.kimi.com/coding/v1/chat/completions" {
+		t.Fatalf("Kimi endpoint=%q", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer kimi-access" {
+		t.Fatalf("Kimi Authorization=%q", got)
 	}
 }
 

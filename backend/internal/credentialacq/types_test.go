@@ -91,6 +91,7 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorAntigravity, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
 		{Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth, Kind: flowKindTokenExchange, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
+		{Vendor: credentialstore.VendorKimi, AuthMode: credentialstore.AuthModeKimiOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorOpenRouter, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorDeepSeek, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},

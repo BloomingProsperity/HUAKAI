@@ -21,6 +21,7 @@ const (
 	VendorOpenRouter  = "openrouter"
 	VendorDeepSeek    = "deepseek"
 	VendorGrok        = "grok"
+	VendorKimi        = "kimi"
 	VendorMistral     = "mistral"
 	VendorGroqCloud   = "groqcloud"
 	VendorTogether    = "together"
@@ -44,6 +45,7 @@ const (
 	AuthModeCopilotOAuth    = "copilot_oauth"
 	AuthModeXAIOAuth        = "xai_oauth"
 	AuthModeOAuth           = "oauth"
+	AuthModeKimiOAuth       = "kimi_oauth"
 
 	StateActive              = "active"
 	StateRefreshing          = "refreshing"
@@ -275,6 +277,7 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorAntigravity, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorWindsurf, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorGrok, authMode: AuthModeXAIOAuth, runtimeKind: RuntimeOAuthAccessToken, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
+		handlerSpec{vendor: VendorKimi, authMode: AuthModeKimiOAuth, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
 	}
 }
 

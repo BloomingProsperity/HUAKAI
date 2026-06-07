@@ -18,6 +18,7 @@
 //   - openrouter_chat          OpenRouter（OpenAI 兼容）
 //   - bedrock_invoke           AWS Bedrock Runtime invoke
 //   - grok_chat                xAI Grok（OpenAI 兼容）
+//   - kimi_chat                Kimi / Moonshot（OpenAI 兼容）
 //   - deepseek_chat            DeepSeek（OpenAI 兼容）
 //   - mistral_chat             Mistral AI（OpenAI 兼容）
 //   - groqcloud_chat           Groq Cloud（OpenAI 兼容）
@@ -60,6 +61,7 @@ const (
 	ProtocolOpenRouterChat         = "openrouter_chat"
 	ProtocolBedrockInvoke          = "bedrock_invoke"
 	ProtocolGrokChat               = "grok_chat"
+	ProtocolKimiChat               = "kimi_chat"
 	ProtocolDeepSeekChat           = "deepseek_chat"
 	ProtocolMistralChat            = "mistral_chat"
 	ProtocolGroqCloudChat          = "groqcloud_chat"
@@ -121,10 +123,14 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolBedrockInvoke, &bedrock.PassthroughAdapter{
 		AutoTranslateAnthropicAPIBody: true,
 	})
-	// 以下 7 家为 OpenAI Chat Completions 兼容直通 API key 路径。
+	// 以下 8 家为 OpenAI Chat Completions 兼容直通路径。
 	r.MustRegister(ProtocolGrokChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "grok",
 		Endpoint:     "https://api.x.ai/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolKimiChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "kimi",
+		Endpoint:     "https://api.kimi.com/coding/v1/chat/completions",
 	})
 	r.MustRegister(ProtocolDeepSeekChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "deepseek",

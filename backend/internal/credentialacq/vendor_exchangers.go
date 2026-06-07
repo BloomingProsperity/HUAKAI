@@ -61,6 +61,7 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth),
 		newAuthorizationCodeOAuthExchanger(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, TokenShapeAccessRefresh, xaiOAuthConfig()))
 	register("copilot/device_code", NewDeviceCodeExchanger())
+	register(credentialstore.ModeKey(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth), newKimiDeviceCodeExchanger())
 	register("kiro/sso", NewSSOExchanger())
 	// copilot/copilot_oauth 的 ModePlan 暴露为 FlowKindOAuth(types.go),但此前没有为该 mode key
 	// 注册任何 acquisition exchanger —— 回调会走到 vendor 级 fallback miss 后才返回 ErrOAuthExchangerMissing
