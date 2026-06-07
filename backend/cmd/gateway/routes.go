@@ -461,6 +461,7 @@ func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 		Auth:             d.userAuth,
 		Sessions:         d.userSessions,
 		EmailSender:      d.authEmailSender,
+		EmailSendLimiter: d.emailSendLimit,
 		AdminAuth:        d.adminAuth,
 		EventSink:        newAuthEventSink(logger),
 		ClientIPResolver: d.clientIPResolver,
