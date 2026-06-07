@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
@@ -39,6 +40,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
@@ -69,6 +71,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(chatHandlerDeps(d)))
 	r.Post("/v1/completions", completionshttp.NewCompletionsHandler(completionsHandlerDeps(d)))
 	r.Post("/v1/embeddings", embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d)))
+	r.Post("/engines/{model}/embeddings", engineembeddingsalias.NewHandler(embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d))))
 	r.Post("/v1/rerank", rerankhttp.NewRerankHandler(rerankHandlerDeps(d)))
 	r.Post("/v1/images/generations", imageshttp.NewGenerationsHandler(imageHandlerDeps(d)))
 	r.Post("/v1/images/edits", imageshttp.NewEditsHandler(imageHandlerDeps(d)))
@@ -77,11 +80,18 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/audio/transcriptions", audiohttp.NewTranscriptionHandler(audioHandlerDeps(d)))
 	r.Post("/v1/audio/translations", audiohttp.NewTranslationHandler(audioHandlerDeps(d)))
 	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
+	r.Post("/v1/responses/compact", responsescompacthttp.NewCompactHandler(gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)), "/v1/responses"))
 	r.Post("/backend-api/codex/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
+	r.Post("/backend-api/codex/responses/compact", responsescompacthttp.NewCompactHandler(gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)), "/backend-api/codex/responses"))
 	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/messages/count_tokens", completionshttp.NewCountTokensHandler(completionsHandlerDeps(d)))
 	r.Get("/v1/realtime", handleRealtimeRoadmap)
 	r.Get("/v1/models", controlhttp.NewModelListHandler(controlhttp.ModelListDeps{
+		Auth:    d.inboundAuth,
+		Catalog: d.modelRegistry,
+		Pricing: d.rateTableSource,
+	}))
+	r.Get("/v1/models/{model}", controlhttp.NewModelGetHandler(controlhttp.ModelListDeps{
 		Auth:    d.inboundAuth,
 		Catalog: d.modelRegistry,
 		Pricing: d.rateTableSource,
