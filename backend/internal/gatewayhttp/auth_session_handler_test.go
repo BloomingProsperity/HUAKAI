@@ -1312,6 +1312,19 @@ func (s *gatewayMemoryAuthStore) MarkLoginSuccess(_ context.Context, tenantID, u
 	}
 	return nil
 }
+func (s *gatewayMemoryAuthStore) ClearLockout(_ context.Context, tenantID, userID int64) (userauth.User, error) {
+	user, ok := s.users[userID]
+	if !ok || user.TenantID != tenantID {
+		return userauth.User{}, userauth.ErrUserNotFound
+	}
+	user.FailedLoginCount = 0
+	if user.Status == userauth.UserStatusLocked {
+		user.Status = userauth.UserStatusActive
+	}
+	s.users[userID] = user
+	return user, nil
+}
+
 func (s *gatewayMemoryAuthStore) MarkLoginFailure(_ context.Context, tenantID, userID int64, threshold int) error {
 	user := s.users[userID]
 	if user.TenantID == tenantID {
