@@ -28,6 +28,10 @@ type AuthEmailSender interface {
 	SendPasswordReset(context.Context, userauth.User, string) error
 }
 
+type AuthEmailSendLimiter interface {
+	Allow(clientIP string) (bool, time.Duration)
+}
+
 type AuthAdminAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
@@ -69,6 +73,7 @@ type AuthHandlerDeps struct {
 	Auth              *userauth.Service
 	Sessions          *usersession.Service
 	EmailSender       AuthEmailSender
+	EmailSendLimiter  AuthEmailSendLimiter
 	AdminAuth         AuthAdminAuth
 	EventSink         AuthEventSink
 	ClientIPResolver  *clientip.Resolver
@@ -186,6 +191,9 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 			return
 		}
 		if result.VerificationToken != "" {
+			if !allowAuthEmailSend(w, r, d, result.User.TenantID, result.User.ID) {
+				return
+			}
 			sender := authEmailSender(d)
 			if err := sender.SendVerification(r.Context(), result.User, result.VerificationToken); err != nil {
 				writeAuthEmailError(w, err, "verification email could not be queued")
@@ -456,6 +464,9 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 				return
 			}
 			if result.UserID != 0 && result.Token != "" {
+				if !allowAuthEmailSend(w, r, d, req.TenantID, result.UserID) {
+					return
+				}
 				user, err := d.Auth.Store.GetUserByID(r.Context(), req.TenantID, result.UserID)
 				if err != nil {
 					writeAuthError(w, err)
@@ -843,6 +854,22 @@ func authEmailSender(d AuthHandlerDeps) AuthEmailSender {
 	return NoopAuthEmailSender{}
 }
 
+func allowAuthEmailSend(w http.ResponseWriter, r *http.Request, d AuthHandlerDeps, tenantID, userID int64) bool {
+	if d.EmailSendLimiter == nil {
+		return true
+	}
+	allowed, retryAfter := d.EmailSendLimiter.Allow(d.ClientIPResolver.ClientIP(r))
+	if allowed {
+		return true
+	}
+	recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		EventType: "auth_email_send_rate_limited", TenantID: tenantID, UserID: userID,
+		Outcome: "failure", ReasonClass: "email_send_rate_limited",
+	})
+	writeEmailSendThrottled(w, retryAfter)
+	return false
+}
+
 func writeAuthEmailError(w http.ResponseWriter, err error, message string) {
 	if errors.Is(err, mailinfra.ErrEmailBackendUnconfigured) {
 		writeJSONError(w, http.StatusServiceUnavailable, "EMAIL_BACKEND_UNCONFIGURED", "email backend is not configured")
@@ -949,4 +976,13 @@ func writeLoginThrottled(w http.ResponseWriter, retryAfter time.Duration) {
 		w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
 	}
 	writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many login attempts; please retry later")
+}
+
+// writeEmailSendThrottled is the auth email-send limiter response: 429 + coarse
+// Retry-After, without exposing per-email state or remaining quota.
+func writeEmailSendThrottled(w http.ResponseWriter, retryAfter time.Duration) {
+	if retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))
+	}
+	writeJSONError(w, http.StatusTooManyRequests, "too_many_email_sends", "too many email send attempts; please retry later")
 }

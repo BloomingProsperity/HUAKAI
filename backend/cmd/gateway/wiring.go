@@ -45,6 +45,7 @@ import (
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
+	"github.com/BloomingProsperity/HUAKAI/internal/emailsendlimit"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
@@ -119,6 +120,7 @@ type deps struct {
 	credentialScheduler      *credentialworker.Scheduler
 	emailSettings            *mailinfra.PostgresSettingsStore
 	authEmailSender          gatewayhttp.AuthEmailSender
+	emailSendLimit           *emailsendlimit.Limiter
 	userAuth                 *userauth.Service
 	userSessions             *usersession.Service
 	passkeys                 *passkey.Service
@@ -848,6 +850,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("load login throttle config: %w", err)
 	}
+	emailSendLimit, err := loadEmailSendLimitFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load email send limit config: %w", err)
+	}
 	tenantRetryBudget, err := loadTenantRetryBudgetFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("load tenant retry budget: %w", err)
@@ -891,6 +897,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialExchangers:  credentialExchangers,
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
+		emailSendLimit:        emailSendLimit,
 		userAuth:              userAuthService,
 		pgPool:                pgPool,
 		userSessions:          userSessionService,
