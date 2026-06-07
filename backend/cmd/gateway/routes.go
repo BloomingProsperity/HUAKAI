@@ -34,6 +34,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mediataskhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meexporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
@@ -246,6 +247,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		mediataskhttp.MountRoutes(r, mediataskhttp.Deps{Service: d.mediaTaskService})
+		mjclient.MountRoutes(r, d.mediaTaskService)
 	})
 	r.Route("/v1/users/me/subscriptions", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))

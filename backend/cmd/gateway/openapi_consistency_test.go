@@ -180,6 +180,11 @@ func TestOpenAPI_ModuleBInboundRoutesMountedAndDocumented(t *testing.T) {
 		{method: http.MethodPost, path: "/backend-api/codex/responses/compact"},
 		{method: http.MethodPost, path: "/engines/{model}/embeddings"},
 		{method: http.MethodGet, path: "/v1/models/{model}"},
+		{method: http.MethodPost, path: "/mj/submit/{action}"},
+		{method: http.MethodPost, path: "/mj/insight-face/swap"},
+		{method: http.MethodGet, path: "/mj/task/{id}/fetch"},
+		{method: http.MethodGet, path: "/mj/task/{id}/image-seed"},
+		{method: http.MethodPost, path: "/mj/task/list-by-condition"},
 	} {
 		if !hasOperation(implOps, tc.method, tc.path) {
 			t.Fatalf("runtime missing %s %s", tc.method, tc.path)
