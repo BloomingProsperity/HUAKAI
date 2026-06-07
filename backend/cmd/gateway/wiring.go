@@ -18,6 +18,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
+	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
@@ -970,10 +971,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		}),
 	)
 	alertingScheduler := alerting.NewScheduler(alerting.SchedulerConfig{
-		Evaluator:    alertingService,
-		Store:        alertingStore,
-		MetricSource: otelbridge.NewExpvarMetricSource(),
-		Interval:     cfg.AlertingEvalInterval,
+		Evaluator: alertingService,
+		Store:     alertingStore,
+		MetricSource: alertmetrics.NewCompositeMetricSource(alertmetrics.CompositeMetricSourceConfig{
+			GlobalSource:  otelbridge.NewExpvarMetricSource(),
+			UsageRolluper: alertmetrics.NewBillingRecentUsageRolluper(billingQueries),
+		}),
+		Interval: cfg.AlertingEvalInterval,
 	})
 	rt.alertingEvalStop = startAlertingEvaluator(ctx, cfg, alertingScheduler, logger)
 

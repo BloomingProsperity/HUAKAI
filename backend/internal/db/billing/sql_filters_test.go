@@ -162,6 +162,25 @@ func TestUsageOverviewSQLUsesWindowDistinctSuccessAndDayBucket(t *testing.T) {
 	}
 }
 
+func TestRecentUsageRollupByTenantSQLScopesWindowAndOutcome(t *testing.T) {
+	sql := strings.Join(strings.Fields(recentUsageRollupByTenant), " ")
+	for _, want := range []string{
+		"count(*)::bigint AS request_count",
+		"count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count",
+		"count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count",
+		"COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text AS total_cost",
+		"WHERE ur.tenant_id = $1::bigint",
+		"ur.settled_at >= $2::timestamptz",
+	} {
+		// Mutation checks: dropping tenant_id leaks cross-tenant alert inputs,
+		// dropping the window admits stale incidents, and changing the success
+		// classifier makes error-rate alerts non-discriminating.
+		if !strings.Contains(sql, want) {
+			t.Fatalf("recent tenant rollup SQL missing %q in %q", want, sql)
+		}
+	}
+}
+
 func TestMyUsageTimeSeriesSQLUsesRequestedGranularityAndCallerScope(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

@@ -213,6 +213,19 @@ SELECT
 FROM usage_records ur
 WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz;
 
+-- name: RecentUsageRollupByTenant :one
+-- Alerting per-tenant recent usage rollup. This is intentionally tenant-only
+-- and SELECT-only: the scheduler passes one enabled-rule tenant at a time, and
+-- this query never accepts tenant_id=0/global mode.
+SELECT
+    count(*)::bigint                                             AS request_count,
+    count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+FROM usage_records ur
+WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ur.settled_at >= sqlc.arg(settled_since)::timestamptz;
+
 -- name: AggregateUsageOverviewTrendByDay :many
 -- Platform-admin overview daily trend across the recent settled usage window.
 SELECT

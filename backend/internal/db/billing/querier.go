@@ -189,6 +189,10 @@ type Querier interface {
 	// would violate uq_claims_idempotency). attempt_seq increments so audits
 	// can count retries. Returns the row's id and bumped attempt_seq.
 	ReReserveAbortedClaim(ctx context.Context, arg ReReserveAbortedClaimParams) (ReReserveAbortedClaimRow, error)
+	// Alerting per-tenant recent usage rollup. This is intentionally tenant-only
+	// and SELECT-only: the scheduler passes one enabled-rule tenant at a time, and
+	// this query never accepts tenant_id=0/global mode.
+	RecentUsageRollupByTenant(ctx context.Context, arg RecentUsageRollupByTenantParams) (RecentUsageRollupByTenantRow, error)
 	ReleaseBalanceHold(ctx context.Context, claimID int64) (int64, error)
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
 	// TRULY IDEMPOTENT in_flight decrement.

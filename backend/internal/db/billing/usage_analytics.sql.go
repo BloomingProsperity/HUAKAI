@@ -715,3 +715,41 @@ func (q *Queries) AggregateUsagePerformanceByProviderAccount(ctx context.Context
 	}
 	return items, nil
 }
+
+const recentUsageRollupByTenant = `-- name: RecentUsageRollupByTenant :one
+SELECT
+    count(*)::bigint                                             AS request_count,
+    count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+FROM usage_records ur
+WHERE ur.tenant_id = $1::bigint
+  AND ur.settled_at >= $2::timestamptz
+`
+
+type RecentUsageRollupByTenantParams struct {
+	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+}
+
+type RecentUsageRollupByTenantRow struct {
+	RequestCount int64  `db:"request_count" json:"request_count"`
+	SuccessCount int64  `db:"success_count" json:"success_count"`
+	ErrorCount   int64  `db:"error_count" json:"error_count"`
+	TotalCost    string `db:"total_cost" json:"total_cost"`
+}
+
+// Alerting per-tenant recent usage rollup. This is intentionally tenant-only
+// and SELECT-only: the scheduler passes one enabled-rule tenant at a time, and
+// this query never accepts tenant_id=0/global mode.
+func (q *Queries) RecentUsageRollupByTenant(ctx context.Context, arg RecentUsageRollupByTenantParams) (RecentUsageRollupByTenantRow, error) {
+	row := q.db.QueryRow(ctx, recentUsageRollupByTenant, arg.TenantID, arg.SettledSince)
+	var i RecentUsageRollupByTenantRow
+	err := row.Scan(
+		&i.RequestCount,
+		&i.SuccessCount,
+		&i.ErrorCount,
+		&i.TotalCost,
+	)
+	return i, err
+}
