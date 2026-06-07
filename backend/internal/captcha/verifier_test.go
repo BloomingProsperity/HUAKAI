@@ -6,10 +6,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
@@ -129,6 +131,92 @@ func TestNewVerifierNoSecretIsNoopEvenWhenRuntimeEnabled(t *testing.T) {
 	}
 }
 
+func TestCaptchaProviderRouting(t *testing.T) {
+	for _, provider := range []struct {
+		name         string
+		wantEndpoint string
+	}{
+		{name: "turnstile", wantEndpoint: defaultTurnstileSiteVerifyURL},
+		{name: "recaptcha", wantEndpoint: "https://www.google.com/recaptcha/api/siteverify"},
+		{name: "hcaptcha", wantEndpoint: "https://hcaptcha.com/siteverify"},
+	} {
+		for _, success := range []bool{false, true} {
+			t.Run(provider.name+"/"+map[bool]string{false: "failure", true: "success"}[success], func(t *testing.T) {
+				var hits int64
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					atomic.AddInt64(&hits, 1)
+					assertCaptchaForm(t, r, "secret-"+provider.name, "token-"+provider.name, "198.51.100.9")
+					w.Header().Set("Content-Type", "application/json")
+					if err := json.NewEncoder(w).Encode(map[string]bool{"success": success}); err != nil {
+						t.Fatalf("encode response: %v", err)
+					}
+				})
+
+				verifier := NewVerifier(
+					enabledCaptchaSettings(provider.name),
+					"secret-"+provider.name,
+					siteVerifyHandlerClient(t, handler, provider.wantEndpoint, time.Second),
+				)
+
+				err := verifier.Verify(context.Background(), "token-"+provider.name, "198.51.100.9")
+				var wantErr error
+				if !success {
+					wantErr = ErrVerificationFailed
+				}
+				if !errors.Is(err, wantErr) {
+					t.Fatalf("Verify error = %v want %v", err, wantErr)
+				}
+				if got := atomic.LoadInt64(&hits); got != 1 {
+					t.Fatalf("siteverify hits = %d want 1", got)
+				}
+			})
+		}
+	}
+}
+
+func TestCaptchaFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		handler      http.HandlerFunc
+		clientPeriod time.Duration
+	}{
+		{
+			name: "non-200",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"success":true}`)
+			},
+			clientPeriod: time.Second,
+		},
+		{
+			name: "timeout",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case <-time.After(100 * time.Millisecond):
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"success":true}`)
+				case <-r.Context().Done():
+				}
+			},
+			clientPeriod: 20 * time.Millisecond,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier := NewVerifier(
+				enabledCaptchaSettings("recaptcha"),
+				"secret",
+				siteVerifyHandlerClient(t, tc.handler, "https://www.google.com/recaptcha/api/siteverify", tc.clientPeriod),
+			)
+
+			err := verifier.Verify(context.Background(), "token-123", "198.51.100.9")
+			if !errors.Is(err, ErrVerificationFailed) {
+				t.Fatalf("Verify error = %v want %v", err, ErrVerificationFailed)
+			}
+		})
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -137,6 +225,40 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func roundTripClient(fn roundTripFunc) *http.Client {
 	return &http.Client{Transport: fn}
+}
+
+func siteVerifyHandlerClient(
+	t *testing.T,
+	handler http.Handler,
+	wantEndpoint string,
+	timeout time.Duration,
+) *http.Client {
+	t.Helper()
+	return &http.Client{
+		Timeout: timeout,
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if got := r.URL.String(); got != wantEndpoint {
+				t.Errorf("siteverify URL = %q want %q", got, wantEndpoint)
+			}
+			rec := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() {
+				handler.ServeHTTP(rec, r)
+				close(done)
+			}()
+			select {
+			case <-done:
+				if err := r.Context().Err(); err != nil {
+					return nil, err
+				}
+				resp := rec.Result()
+				resp.Request = r
+				return resp, nil
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}),
+	}
 }
 
 func jsonResponse(r *http.Request, status int, body string) *http.Response {
@@ -149,6 +271,17 @@ func jsonResponse(r *http.Request, status int, body string) *http.Response {
 }
 
 func assertTurnstileForm(
+	t *testing.T,
+	r *http.Request,
+	secret string,
+	token string,
+	remoteIP string,
+) {
+	t.Helper()
+	assertCaptchaForm(t, r, secret, token, remoteIP)
+}
+
+func assertCaptchaForm(
 	t *testing.T,
 	r *http.Request,
 	secret string,
@@ -176,9 +309,13 @@ func assertTurnstileForm(
 }
 
 func enabledTurnstileSettings() *captchaSettings {
+	return enabledCaptchaSettings("turnstile")
+}
+
+func enabledCaptchaSettings(provider string) *captchaSettings {
 	return &captchaSettings{values: map[platformsettings.SettingKey]string{
 		platformsettings.KeyCaptchaEnabled:  "true",
-		platformsettings.KeyCaptchaProvider: "turnstile",
+		platformsettings.KeyCaptchaProvider: provider,
 	}}
 }
 
