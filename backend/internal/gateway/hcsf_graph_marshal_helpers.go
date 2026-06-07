@@ -248,7 +248,20 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 			}
 		}
 	}
+	mergeRequestPassthrough(body, env)
 	return json.Marshal(body)
+}
+
+func mergeRequestPassthrough(body map[string]any, env *proto.HCSF) {
+	if env == nil || env.Passthrough == nil || len(env.Passthrough.Extra) == 0 {
+		return
+	}
+	for key, raw := range env.Passthrough.Extra {
+		if _, exists := body[key]; exists {
+			continue
+		}
+		body[key] = rawJSONValue(raw)
+	}
 }
 
 func renderControlTools(family string, tools []proto.CanonicalTool) []any {

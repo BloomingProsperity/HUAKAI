@@ -36,6 +36,86 @@ func TestOpenAIResponsesClient_HappyPath_InputString(t *testing.T) {
 	}
 }
 
+func TestParamPassthroughNotDropped(t *testing.T) {
+	tests := []struct {
+		name    string
+		run     func(t *testing.T) (*HCSF, []ProtocolLossEntry, error)
+		field   string
+		wantRaw string
+	}{
+		{
+			name: "anthropic top_k",
+			run: func(t *testing.T) (*HCSF, []ProtocolLossEntry, error) {
+				t.Helper()
+				return (&AnthropicMessagesClient{}).RequestToCanonical(newTestAnthropicCtx(t), []byte(`{
+					"model":"claude-3",
+					"max_tokens":10,
+					"top_k":17,
+					"messages":[{"role":"user","content":"hi"}]
+				}`))
+			},
+			field:   "top_k",
+			wantRaw: `17`,
+		},
+		{
+			name: "responses max_tool_calls",
+			run: func(t *testing.T) (*HCSF, []ProtocolLossEntry, error) {
+				t.Helper()
+				return (&OpenAIResponsesClient{}).RequestToCanonical(newTestOpenAIResponsesCtx(t), []byte(`{
+					"model":"gpt-4o",
+					"input":"hi",
+					"max_tool_calls":3
+				}`))
+			},
+			field:   "max_tool_calls",
+			wantRaw: `3`,
+		},
+		{
+			name: "responses prompt_cache_key",
+			run: func(t *testing.T) (*HCSF, []ProtocolLossEntry, error) {
+				t.Helper()
+				return (&OpenAIResponsesClient{}).RequestToCanonical(newTestOpenAIResponsesCtx(t), []byte(`{
+					"model":"gpt-4o",
+					"input":"hi",
+					"prompt_cache_key":"tenant-a:stable-prefix"
+				}`))
+			},
+			field:   "prompt_cache_key",
+			wantRaw: `"tenant-a:stable-prefix"`,
+		},
+		{
+			name: "responses truncation",
+			run: func(t *testing.T) (*HCSF, []ProtocolLossEntry, error) {
+				t.Helper()
+				return (&OpenAIResponsesClient{}).RequestToCanonical(newTestOpenAIResponsesCtx(t), []byte(`{
+					"model":"gpt-4o",
+					"input":"hi",
+					"truncation":"auto"
+				}`))
+			},
+			field:   "truncation",
+			wantRaw: `"auto"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env, losses, err := tc.run(t)
+			if err != nil {
+				t.Fatalf("RequestToCanonical: %v", err)
+			}
+			if env.Passthrough == nil {
+				t.Fatalf("Passthrough nil; losses=%+v", losses)
+			}
+			got, ok := env.Passthrough.Extra[tc.field]
+			if !ok {
+				t.Fatalf("Passthrough.Extra missing %q; extra=%+v losses=%+v", tc.field, env.Passthrough.Extra, losses)
+			}
+			assertRawJSONEqual(t, got, tc.wantRaw)
+		})
+	}
+}
+
 func TestOpenAIResponsesClient_HappyPath_InputArrayWithMessage(t *testing.T) {
 	adapter := &OpenAIResponsesClient{}
 	body := []byte(`{
@@ -273,7 +353,6 @@ func TestOpenAIResponsesClient_Negative_MissingSeed(t *testing.T) {
 		t.Errorf("expected ErrMissingRequestMetaSeed, got %v", err)
 	}
 }
-
 
 // --------------------------------------------------------------------------
 // --------------------------------------------------------------------------

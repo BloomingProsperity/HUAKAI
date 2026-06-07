@@ -9,18 +9,24 @@ import "encoding/json"
 
 // anthropicMessagesRequest 是 Anthropic Messages body 子集。
 type anthropicMessagesRequest struct {
-	Model         string                     `json:"model"`
-	MaxTokens     *int                       `json:"max_tokens"`
-	Messages      []anthropicMessage         `json:"messages"`
-	System        json.RawMessage            `json:"system,omitempty"`
-	Stream        *bool                      `json:"stream"`
-	Temperature   *float64                   `json:"temperature"`
-	TopP          *float64                   `json:"top_p"`
-	StopSequences []string                   `json:"stop_sequences,omitempty"`
-	Tools         []json.RawMessage          `json:"tools,omitempty"`
-	ToolChoice    json.RawMessage            `json:"tool_choice,omitempty"`
-	Metadata      map[string]json.RawMessage `json:"metadata,omitempty"`
-	Thinking      json.RawMessage            `json:"thinking,omitempty"`
+	Model             string                     `json:"model"`
+	MaxTokens         *int                       `json:"max_tokens"`
+	MaxTokensToSample *int                       `json:"max_tokens_to_sample,omitempty"`
+	Messages          []anthropicMessage         `json:"messages"`
+	System            json.RawMessage            `json:"system,omitempty"`
+	Stream            *bool                      `json:"stream"`
+	Temperature       *float64                   `json:"temperature"`
+	TopP              *float64                   `json:"top_p"`
+	TopK              json.RawMessage            `json:"top_k,omitempty"`
+	StopSequences     []string                   `json:"stop_sequences,omitempty"`
+	Tools             []json.RawMessage          `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage            `json:"tool_choice,omitempty"`
+	Metadata          map[string]json.RawMessage `json:"metadata,omitempty"`
+	Thinking          json.RawMessage            `json:"thinking,omitempty"`
+	ContextManagement json.RawMessage            `json:"context_management,omitempty"`
+	OutputConfig      json.RawMessage            `json:"output_config,omitempty"`
+	OutputFormat      json.RawMessage            `json:"output_format,omitempty"`
+	Container         json.RawMessage            `json:"container,omitempty"`
 }
 
 // anthropicMessage 是 messages[] 数组元素。
@@ -34,6 +40,7 @@ type anthropicContentBlock struct {
 	Type         string                 `json:"type"`
 	Text         string                 `json:"text,omitempty"`
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+	Raw          json.RawMessage        `json:"-"`
 	// tool_use 字段
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
