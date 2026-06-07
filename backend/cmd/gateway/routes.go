@@ -177,6 +177,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 
 	r.Route("/v1/auth", func(r chi.Router) {
+		mountInviteValidateRoutes(r, d)
 		gatewayhttp.MountAuthRoutes(r, authHandlerDeps(d, logger))
 		r.Route("/passkey", func(r chi.Router) {
 			passkeyhttp.MountLoginRoutes(r, passkeyHandlerDeps(d))

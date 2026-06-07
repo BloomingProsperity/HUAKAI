@@ -115,6 +115,76 @@ func TestRedeemInviteDoesNotFallbackWhenAuthInviteRowExists(t *testing.T) {
 	}
 }
 
+func TestInviteCodeStatusReadsAuthInviteWithoutConsuming(t *testing.T) {
+	ctx := context.Background()
+	rawCode := "hki_readonly_test"
+	expires := time.Now().UTC().Add(time.Hour)
+	fake := &fakeInviteStatusDB{
+		status:     "active",
+		usedCount:  0,
+		maxUses:    1,
+		validUntil: &expires,
+	}
+
+	status, err := NewPostgresStore(fake).InviteCodeStatus(ctx, 7, rawCode)
+	if err != nil {
+		t.Fatalf("InviteCodeStatus: %v", err)
+	}
+	if status != InviteCodeStatusValid {
+		t.Fatalf("InviteCodeStatus=%q want %q", status, InviteCodeStatusValid)
+	}
+	if fake.execCalled || fake.queryCalled {
+		t.Fatalf("InviteCodeStatus must be QueryRow-only; exec=%v query=%v", fake.execCalled, fake.queryCalled)
+	}
+	if strings.Contains(strings.ToLower(fake.queryRowSQL), "update") ||
+		strings.Contains(strings.ToLower(fake.queryRowSQL), "pg_advisory") {
+		t.Fatalf("InviteCodeStatus query consumed or locked invite:\n%s", fake.queryRowSQL)
+	}
+	if len(fake.queryRowArgs) != 2 || fake.queryRowArgs[0] != int64(7) || fake.queryRowArgs[1] != HashInviteCode(rawCode) {
+		t.Fatalf("InviteCodeStatus args=%#v want tenant + hashed code", fake.queryRowArgs)
+	}
+}
+
+func TestInviteCodeStatusClassifiesInactiveRows(t *testing.T) {
+	ctx := context.Background()
+	past := time.Now().UTC().Add(-time.Hour)
+	future := time.Now().UTC().Add(time.Hour)
+	cases := []struct {
+		name       string
+		rowErr     error
+		rowStatus  string
+		usedCount  int
+		maxUses    int
+		validUntil *time.Time
+		want       InviteCodeStatus
+	}{
+		{name: "missing", rowErr: pgx.ErrNoRows, want: InviteCodeStatusNotFound},
+		{name: "disabled", rowStatus: "disabled", maxUses: 1, validUntil: &future, want: InviteCodeStatusDisabled},
+		{name: "exhausted_status", rowStatus: "exhausted", usedCount: 1, maxUses: 1, validUntil: &future, want: InviteCodeStatusUsedOrExhausted},
+		{name: "exhausted_count", rowStatus: "active", usedCount: 1, maxUses: 1, validUntil: &future, want: InviteCodeStatusUsedOrExhausted},
+		{name: "expired_status", rowStatus: "expired", maxUses: 1, validUntil: &future, want: InviteCodeStatusExpired},
+		{name: "expired_time", rowStatus: "active", maxUses: 1, validUntil: &past, want: InviteCodeStatusExpired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeInviteStatusDB{
+				err:        tc.rowErr,
+				status:     tc.rowStatus,
+				usedCount:  tc.usedCount,
+				maxUses:    tc.maxUses,
+				validUntil: tc.validUntil,
+			}
+			got, err := NewPostgresStore(fake).InviteCodeStatus(ctx, 7, "hki_classify")
+			if err != nil {
+				t.Fatalf("InviteCodeStatus: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("InviteCodeStatus=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 type fakeInviteRedemptionDB struct {
 	authInviteUpdateTried   bool
 	authInviteExists        bool
@@ -198,4 +268,51 @@ func (r fakeInviteRow) Scan(dest ...interface{}) error {
 		return errors.New("fake invite row has no scan function")
 	}
 	return r.scan(dest...)
+}
+
+type fakeInviteStatusDB struct {
+	queryRowSQL  string
+	queryRowArgs []interface{}
+	queryCalled  bool
+	execCalled   bool
+	err          error
+	status       string
+	usedCount    int
+	maxUses      int
+	validUntil   *time.Time
+}
+
+func (f *fakeInviteStatusDB) Exec(_ context.Context, _ string, _ ...interface{}) (pgconn.CommandTag, error) {
+	f.execCalled = true
+	return pgconn.CommandTag{}, errors.New("unexpected Exec in fake invite status DB")
+}
+
+func (f *fakeInviteStatusDB) Query(_ context.Context, _ string, _ ...interface{}) (pgx.Rows, error) {
+	f.queryCalled = true
+	return nil, errors.New("unexpected Query in fake invite status DB")
+}
+
+func (f *fakeInviteStatusDB) QueryRow(_ context.Context, sql string, args ...interface{}) pgx.Row {
+	f.queryRowSQL = sql
+	f.queryRowArgs = append([]interface{}(nil), args...)
+	return fakeInviteStatusRow{fake: f}
+}
+
+type fakeInviteStatusRow struct {
+	fake *fakeInviteStatusDB
+}
+
+func (r fakeInviteStatusRow) Scan(dest ...interface{}) error {
+	if r.fake.err != nil {
+		return r.fake.err
+	}
+	*dest[0].(*string) = r.fake.status
+	*dest[1].(*int) = r.fake.usedCount
+	*dest[2].(*int) = r.fake.maxUses
+	if r.fake.validUntil != nil {
+		*dest[3].(*pgtype.Timestamptz) = pgtype.Timestamptz{Time: *r.fake.validUntil, Valid: true}
+	} else {
+		*dest[3].(*pgtype.Timestamptz) = pgtype.Timestamptz{}
+	}
+	return nil
 }

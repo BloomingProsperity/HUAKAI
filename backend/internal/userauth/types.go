@@ -94,6 +94,16 @@ type InviteCode struct {
 	CommunityInvitationID int64      `json:"community_invitation_id,omitempty"`
 }
 
+type InviteCodeStatus string
+
+const (
+	InviteCodeStatusDisabled        InviteCodeStatus = "disabled"
+	InviteCodeStatusNotFound        InviteCodeStatus = "not_found"
+	InviteCodeStatusUsedOrExhausted InviteCodeStatus = "used_or_exhausted"
+	InviteCodeStatusExpired         InviteCodeStatus = "expired"
+	InviteCodeStatusValid           InviteCodeStatus = "valid"
+)
+
 type InviteBinding struct {
 	ID         string    `json:"id"`
 	TenantID   int64     `json:"tenant_id"`
