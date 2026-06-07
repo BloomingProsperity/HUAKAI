@@ -15,6 +15,8 @@ type ControlsService interface {
 	GetKeyGroup(context.Context, int64, int64, int64) (userkeycontrols.KeyGroupView, error)
 	SetKeyIPAllowlist(context.Context, userkeycontrols.SetKeyIPAllowlistRequest) (userkeycontrols.SetKeyIPAllowlistResult, error)
 	GetKeyIPAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyIPAllowlistView, error)
+	SetKeyModelAllowlist(context.Context, userkeycontrols.SetKeyModelAllowlistRequest) (userkeycontrols.SetKeyModelAllowlistResult, error)
+	GetKeyModelAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyModelAllowlistView, error)
 }
 
 type Deps struct {
@@ -28,4 +30,6 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/{id}/group", newGetGroupHandler(d))
 	r.Put("/{id}/ip-allowlist", newSetIPAllowlistHandler(d))
 	r.Get("/{id}/ip-allowlist", newGetIPAllowlistHandler(d))
+	r.Put("/{id}/model-allowlist", newSetModelAllowlistHandler(d))
+	r.Get("/{id}/model-allowlist", newGetModelAllowlistHandler(d))
 }

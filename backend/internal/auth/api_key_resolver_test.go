@@ -113,6 +113,41 @@ func TestAPIKeyResolverIPAllowlistUsesTrustedClientIP(t *testing.T) {
 	}
 }
 
+func TestAPIKeyResolverCarriesModelAllowlist(t *testing.T) {
+	// Mutation check: omit ak.allowed_models from LookupAPIKeysByPrefix or
+	// forget to copy it into Identity, and the dispatch layer cannot enforce
+	// per-key model restrictions.
+	token := "hk_test_model_allowlist_token"
+	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt hash: %v", err)
+	}
+	allowedModels := "gpt-4o,claude-3"
+	row := dbauth.LookupAPIKeysByPrefixRow{
+		ID:            101,
+		TenantID:      11,
+		UserID:        22,
+		KeyHash:       string(hash),
+		KeyStatus:     "active",
+		ExpiresAt:     pgtype.Timestamptz{},
+		AllowedModels: &allowedModels,
+		UserStatus:    "active",
+		UserGroup:     "default",
+		TenantStatus:  "active",
+	}
+	store := &fakeInboundAuthQueries{rows: []dbauth.LookupAPIKeysByPrefixRow{row}}
+	resolver := &APIKeyResolver{q: store}
+	req := apiKeyTestRequest("Bearer "+token, "203.0.113.7:5100", "")
+
+	ident, err := resolver.Resolve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if ident.AllowedModels == nil || *ident.AllowedModels != allowedModels {
+		t.Fatalf("AllowedModels=%v want %q", ident.AllowedModels, allowedModels)
+	}
+}
+
 func mustClientIPResolver(t *testing.T, cidrs ...string) *clientip.Resolver {
 	t.Helper()
 	r, err := clientip.NewResolver(cidrs)

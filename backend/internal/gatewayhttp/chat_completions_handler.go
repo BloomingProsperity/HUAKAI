@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -291,6 +292,10 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 
 		validated, ok := validateChatCompletionsRequest(w, r, ctx)
 		if !ok {
+			return
+		}
+		if !apikeymodelallow.AllowsCSV(ident.AllowedModels, validated.Request.Model) {
+			writeJSONError(w, http.StatusForbidden, "model_not_allowed", "api key is not allowed to use this model")
 			return
 		}
 		ctx = context.WithValue(ctx, middleware.RequestIDKey, validated.RequestID)

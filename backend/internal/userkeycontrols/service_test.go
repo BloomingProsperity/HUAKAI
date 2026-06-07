@@ -32,7 +32,50 @@ func TestSetKeyQuota_UsesAPIKeyIDAsScopeID(t *testing.T) {
 		t.Fatalf("scope_id must be api_key_id; got %q", store.upsertArg.ScopeID)
 	}
 	if store.upsertArg.Metric != quota.MetricCostUSD {
-		t.Fatalf("metric must be cost_usd; got %q", store.upsertArg.Metric)
+		t.Fatalf("default metric must be cost_usd; got %q", store.upsertArg.Metric)
+	}
+}
+
+func TestSetKeyQuota_RequestCountMetricWritesRequests(t *testing.T) {
+	// MUTATION: ignore req.Metric and always write cost_usd; this test sees no
+	// MetricRequests policy and fails before quota enforcement ever runs.
+	store := newFakeStore()
+	svc := newServiceForTest(store, fixedNow)
+
+	res, err := svc.SetKeyQuota(context.Background(), SetKeyQuotaRequest{
+		TenantID: 11,
+		UserID:   22,
+		APIKeyID: 333,
+		LimitUSD: decimal.RequireFromString("2.00000000"),
+		Metric:   quota.MetricRequests,
+	})
+	if err != nil {
+		t.Fatalf("SetKeyQuota request metric: %v", err)
+	}
+	if store.upsertArg.Metric != quota.MetricRequests {
+		t.Fatalf("metric=%q want requests", store.upsertArg.Metric)
+	}
+	if res.Metric != quota.MetricRequests {
+		t.Fatalf("result metric=%q want requests", res.Metric)
+	}
+}
+
+func TestSetKeyQuota_RejectsUnsupportedMetric(t *testing.T) {
+	store := newFakeStore()
+	svc := newServiceForTest(store, fixedNow)
+
+	_, err := svc.SetKeyQuota(context.Background(), SetKeyQuotaRequest{
+		TenantID: 11,
+		UserID:   22,
+		APIKeyID: 333,
+		LimitUSD: decimal.RequireFromString("2.00000000"),
+		Metric:   quota.MetricTokensEstimated,
+	})
+	if !errors.Is(err, ErrInvalidQuota) {
+		t.Fatalf("SetKeyQuota err=%v want ErrInvalidQuota", err)
+	}
+	if store.upsertArg.Metric != "" {
+		t.Fatalf("unsupported metric must not reach store; got %q", store.upsertArg.Metric)
 	}
 }
 
@@ -201,15 +244,87 @@ func TestSetKeyIPAllowlist_RejectsInvalidCIDRBeforeStore(t *testing.T) {
 	}
 }
 
+func TestSetKeyModelAllowlist_NormalizesAndStoresCSV(t *testing.T) {
+	// MUTATION: write raw input or ignore the setter argument and the stored CSV
+	// / result list assertions go red.
+	store := newFakeStore()
+	svc := newServiceForTest(store, fixedNow)
+
+	res, err := svc.SetKeyModelAllowlist(context.Background(), SetKeyModelAllowlistRequest{
+		TenantID:      11,
+		UserID:        22,
+		APIKeyID:      333,
+		AllowedModels: []string{" GPT-4O ", "claude-3", "gpt-4o"},
+	})
+	if err != nil {
+		t.Fatalf("SetKeyModelAllowlist: %v", err)
+	}
+	if !store.setModelAllowlistCalled {
+		t.Fatalf("SetKeyModelAllowlist must update api_keys.allowed_models")
+	}
+	if store.setModelAllowlistArg.AllowedModels == nil {
+		t.Fatalf("non-empty model allowlist must store non-null CSV")
+	}
+	if got, want := *store.setModelAllowlistArg.AllowedModels, "gpt-4o,claude-3"; got != want {
+		t.Fatalf("stored allowed_models=%q want %q", got, want)
+	}
+	if got, want := strings.Join(res.AllowedModels, ","), "gpt-4o,claude-3"; got != want {
+		t.Fatalf("result allowed_models=%q want %q", got, want)
+	}
+}
+
+func TestSetKeyModelAllowlist_EmptyClearsRestriction(t *testing.T) {
+	store := newFakeStore()
+	svc := newServiceForTest(store, fixedNow)
+
+	res, err := svc.SetKeyModelAllowlist(context.Background(), SetKeyModelAllowlistRequest{
+		TenantID:      11,
+		UserID:        22,
+		APIKeyID:      333,
+		AllowedModels: []string{" ", ""},
+	})
+	if err != nil {
+		t.Fatalf("SetKeyModelAllowlist clear: %v", err)
+	}
+	if !store.setModelAllowlistCalled {
+		t.Fatalf("clear must update api_keys.allowed_models")
+	}
+	if store.setModelAllowlistArg.AllowedModels != nil {
+		t.Fatalf("clear must bind NULL allowed_models, got %q", *store.setModelAllowlistArg.AllowedModels)
+	}
+	if len(res.AllowedModels) != 0 {
+		t.Fatalf("cleared result must be empty, got %+v", res.AllowedModels)
+	}
+}
+
+func TestGetKeyModelAllowlist_ReturnsStoredCSV(t *testing.T) {
+	store := newFakeStore()
+	value := "gpt-4o,claude-3"
+	store.getModelAllowlistValue = &value
+	svc := newServiceForTest(store, fixedNow)
+
+	res, err := svc.GetKeyModelAllowlist(context.Background(), 11, 22, 333)
+	if err != nil {
+		t.Fatalf("GetKeyModelAllowlist: %v", err)
+	}
+	if got, want := strings.Join(res.AllowedModels, ","), "gpt-4o,claude-3"; got != want {
+		t.Fatalf("allowed_models=%q want %q", got, want)
+	}
+}
+
 func TestSQLQueries_QuotaPolicyIsAPIKeyScopedAndIdempotent(t *testing.T) {
 	sql := readControlsSQL(t)
 	queries := namedQueryBodies(sql)
 	upsert := queries["UpsertAPIKeyQuotaPolicy"]
 	get := queries["GetAPIKeyQuotaPolicy"]
 	mustContain(t, upsert, "'api_key'", "quota policy upsert must hard-code api_key scope")
+	mustContain(t, upsert, "sqlc.arg(metric)::text", "quota policy upsert must honor selected metric")
 	mustContain(t, upsert, "ON CONFLICT (", "quota upsert must be idempotent")
 	mustContain(t, upsert, "WHERE enabled = true AND valid_until IS NULL", "quota upsert must target the live partial unique index")
 	mustContain(t, get, "qp.scope_id = ak.id::text", "quota get must bind policy scope to the owned api_key id")
+	if strings.Contains(get, "qp.metric = 'cost_usd'") {
+		t.Fatalf("quota get must return the linked per-key policy metric, not hard-code cost_usd")
+	}
 }
 
 func TestSQLQueries_ScopeEveryKeyReadWriteByTenantAndUser(t *testing.T) {
@@ -248,6 +363,18 @@ func TestSQLQueries_IPAllowlistControlIsScopedAndReturnsOnlyPolicyText(t *testin
 	mustContain(t, setBody, "ak.user_id = sqlc.arg(user_id)::bigint", "set IP allowlist must scope by user")
 	mustContain(t, getBody, "ak.ip_allowlist", "get IP allowlist must return policy text")
 	mustContain(t, getBody, "ak.user_id = sqlc.arg(user_id)::bigint", "get IP allowlist must scope by user")
+}
+
+func TestSQLQueries_ModelAllowlistControlIsScopedAndReturnsOnlyPolicyText(t *testing.T) {
+	sql := readControlsSQL(t)
+	queries := namedQueryBodies(sql)
+	setBody := queries["SetAPIKeyModelAllowlist"]
+	getBody := queries["GetAPIKeyModelAllowlist"]
+	mustContain(t, setBody, "SET allowed_models = sqlc.narg(allowed_models)::text", "set model allowlist must write only the policy column")
+	mustContain(t, setBody, "ak.tenant_id = sqlc.arg(tenant_id)::bigint", "set model allowlist must scope by tenant")
+	mustContain(t, setBody, "ak.user_id = sqlc.arg(user_id)::bigint", "set model allowlist must scope by user")
+	mustContain(t, getBody, "ak.allowed_models", "get model allowlist must return policy text")
+	mustContain(t, getBody, "ak.user_id = sqlc.arg(user_id)::bigint", "get model allowlist must scope by user")
 }
 
 func fixedNow() time.Time {
@@ -294,16 +421,20 @@ func namedQueryBodies(sql string) map[string]string {
 var errNoRows = pgx.ErrNoRows
 
 type fakeStore struct {
-	upsertArg            quotaPolicyWrite
-	linkQuotaArg         quotaPolicyLink
-	setGroupArg          groupAssignment
-	setIPAllowlistArg    ipAllowlistAssignment
-	getQuotaErr          error
-	validateGroupErr     error
-	getIPAllowlistErr    error
-	linkQuotaCalled      bool
-	setGroupCalled       bool
-	setIPAllowlistCalled bool
+	upsertArg               quotaPolicyWrite
+	linkQuotaArg            quotaPolicyLink
+	setGroupArg             groupAssignment
+	setIPAllowlistArg       ipAllowlistAssignment
+	setModelAllowlistArg    modelAllowlistAssignment
+	getQuotaErr             error
+	validateGroupErr        error
+	getIPAllowlistErr       error
+	getModelAllowlistErr    error
+	getModelAllowlistValue  *string
+	linkQuotaCalled         bool
+	setGroupCalled          bool
+	setIPAllowlistCalled    bool
+	setModelAllowlistCalled bool
 }
 
 func newFakeStore() *fakeStore {
@@ -373,4 +504,17 @@ func (s *fakeStore) GetAPIKeyIPAllowlist(context.Context, int64, int64, int64) (
 	}
 	value := "10.0.0.0/8"
 	return keyIPAllowlistRow{APIKeyID: 333, IPAllowlist: &value}, nil
+}
+
+func (s *fakeStore) SetAPIKeyModelAllowlist(_ context.Context, arg modelAllowlistAssignment) (int64, error) {
+	s.setModelAllowlistCalled = true
+	s.setModelAllowlistArg = arg
+	return 1, nil
+}
+
+func (s *fakeStore) GetAPIKeyModelAllowlist(context.Context, int64, int64, int64) (keyModelAllowlistRow, error) {
+	if s.getModelAllowlistErr != nil {
+		return keyModelAllowlistRow{}, s.getModelAllowlistErr
+	}
+	return keyModelAllowlistRow{APIKeyID: 333, AllowedModels: s.getModelAllowlistValue}, nil
 }
