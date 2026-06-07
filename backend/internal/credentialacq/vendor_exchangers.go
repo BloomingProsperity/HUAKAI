@@ -12,6 +12,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
+const (
+	xaiOAuthAuthURL  = "https://auth.x.ai/oauth/authorize"
+	xaiOAuthTokenURL = "https://auth.x.ai/oauth/token"
+	xaiOAuthClientID = "b1a00492-073a-47ea-816f-4c329264a828"
+	xaiOAuthScope    = "openid profile email offline_access grok-cli:access api:access"
+)
+
 type Exchanger interface {
 	StartOAuthFlow(context.Context, *PostgresSessionStore, StartInput, OAuthClientConfig) (OAuthStartResult, error)
 	ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error)
@@ -51,6 +58,8 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register("openai_codex/device_code", openAICodexDeviceCode)
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock), NewSSOExchanger())
 	register("antigravity/oauth", newAuthorizationCodeOAuthExchanger(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, TokenShapeAnySessionOrAccess))
+	register(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth),
+		newAuthorizationCodeOAuthExchanger(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, TokenShapeAccessRefresh, xaiOAuthConfig()))
 	register("copilot/device_code", NewDeviceCodeExchanger())
 	register("kiro/sso", NewSSOExchanger())
 	// copilot/copilot_oauth 的 ModePlan 暴露为 FlowKindOAuth(types.go),但此前没有为该 mode key
@@ -63,6 +72,14 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	// 两个 fake exchanger 注册已成孤儿(orphaned dead/dangerous wiring)。移除,确保默认 registry 不残留任何
 	// 会把回调码当 JSON 凭据吞下的 fake exchanger。
 	return r
+}
+
+func xaiOAuthConfig() OAuthClientConfig {
+	return OAuthClientConfig{
+		AuthURL: xaiOAuthAuthURL, TokenURL: xaiOAuthTokenURL,
+		ClientID: xaiOAuthClientID, Scopes: strings.Fields(xaiOAuthScope),
+		Source: ClientSourceOperatorConfig,
+	}
 }
 
 var defaultExchangers = DefaultExchangerRegistry()

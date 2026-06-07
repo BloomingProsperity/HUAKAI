@@ -42,6 +42,7 @@ const (
 	AuthModeGoogleOne       = "google_one"
 	AuthModeAntigravity     = "antigravity"
 	AuthModeCopilotOAuth    = "copilot_oauth"
+	AuthModeXAIOAuth        = "xai_oauth"
 	AuthModeOAuth           = "oauth"
 
 	StateActive              = "active"
@@ -273,6 +274,7 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorCopilot, authMode: AuthModeCopilotOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "github_access_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorAntigravity, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorWindsurf, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		handlerSpec{vendor: VendorGrok, authMode: AuthModeXAIOAuth, runtimeKind: RuntimeOAuthAccessToken, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
 	}
 }
 

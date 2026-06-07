@@ -37,6 +37,112 @@ func TestDefaultExchangerRegistryIncludesAntigravityOAuthAlias(t *testing.T) {
 	}
 }
 
+func TestXAIOAuthExchangerRegistered(t *testing.T) {
+	// Mutation: drop the grok/xai_oauth register line and this lookup must go red.
+	registry := DefaultExchangerRegistry()
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth))
+	if !ok {
+		t.Fatal("default registry missing grok/xai_oauth exchanger")
+	}
+	authCode, ok := exc.(authorizationCodeOAuthExchanger)
+	if !ok {
+		t.Fatalf("grok/xai_oauth exchanger type=%T, want authorizationCodeOAuthExchanger", exc)
+	}
+	if authCode.vendor != credentialstore.VendorGrok || authCode.authMode != credentialstore.AuthModeXAIOAuth {
+		t.Fatalf("exchanger target=%s/%s, want grok/xai_oauth", authCode.vendor, authCode.authMode)
+	}
+	if authCode.shape != TokenShapeAccessRefresh {
+		t.Fatalf("token shape=%s, want %s", authCode.shape, TokenShapeAccessRefresh)
+	}
+}
+
+func TestXAIOAuthConfigEndpointsAndClient(t *testing.T) {
+	// Mutation: change the xAI client_id, scope, auth host, token host, or stop
+	// applying registered defaults during StartOAuthFlow and this test must go red.
+	const wantClientID = "b1a00492-073a-47ea-816f-4c329264a828"
+	const wantScope = "openid profile email offline_access grok-cli:access api:access"
+	registry := DefaultExchangerRegistry()
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth))
+	if !ok {
+		t.Fatal("default registry missing grok/xai_oauth exchanger")
+	}
+	authCode, ok := exc.(authorizationCodeOAuthExchanger)
+	if !ok {
+		t.Fatalf("grok/xai_oauth exchanger type=%T, want authorizationCodeOAuthExchanger", exc)
+	}
+	cfg := authCode.config
+	if cfg.ClientID != wantClientID {
+		t.Fatalf("client_id=%q want %q", cfg.ClientID, wantClientID)
+	}
+	if got := strings.Join(cfg.Scopes, " "); got != wantScope {
+		t.Fatalf("scope=%q want %q", got, wantScope)
+	}
+	if cfg.AuthURL != "https://auth.x.ai/oauth/authorize" {
+		t.Fatalf("auth_url=%q", cfg.AuthURL)
+	}
+	if cfg.TokenURL != "https://auth.x.ai/oauth/token" {
+		t.Fatalf("token_url=%q", cfg.TokenURL)
+	}
+	if cfg.Source != ClientSourceOperatorConfig {
+		t.Fatalf("source=%q want %q", cfg.Source, ClientSourceOperatorConfig)
+	}
+
+	now := time.Date(2026, 6, 7, 8, 0, 0, 0, time.UTC)
+	keys, err := credentialstore.NewStaticKeyProvider("test-v1", []byte(strings.Repeat("x", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
+	start, err := authCode.StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 701,
+		Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, OAuthClientConfig{RedirectURI: "https://huakai.example.test/admin/v1/credentials/oauth-callback"})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow with xAI registered defaults: %v", err)
+	}
+	authorize, err := url.Parse(start.AuthorizeURL)
+	if err != nil {
+		t.Fatalf("parse authorize URL: %v", err)
+	}
+	if authorize.Scheme != "https" || authorize.Hostname() != "auth.x.ai" {
+		t.Fatalf("authorize endpoint=%s, want https://auth.x.ai", start.AuthorizeURL)
+	}
+	query := authorize.Query()
+	if query.Get("client_id") != wantClientID || query.Get("scope") != wantScope {
+		t.Fatalf("authorize query client_id=%q scope=%q", query.Get("client_id"), query.Get("scope"))
+	}
+	if query.Get("redirect_uri") != "https://huakai.example.test/admin/v1/credentials/oauth-callback" {
+		t.Fatalf("redirect_uri=%q", query.Get("redirect_uri"))
+	}
+}
+
+func TestXAIOAuthSSRFHost(t *testing.T) {
+	// Mutation: allow arbitrary non-x.ai OAuth hosts for grok/xai_oauth and this
+	// test must go red by accepting the attacker endpoint.
+	const wantClientID = "b1a00492-073a-47ea-816f-4c329264a828"
+	wantScopes := strings.Fields("openid profile email offline_access grok-cli:access api:access")
+	base := OAuthClientConfig{
+		Source: ClientSourceOperatorConfig, ClientID: wantClientID,
+		AuthURL: "https://auth.x.ai/oauth/authorize", TokenURL: "https://auth.x.ai/oauth/token",
+		RedirectURI: "https://huakai.example.test/admin/v1/credentials/oauth-callback",
+		Scopes:      wantScopes,
+	}
+	if err := validateOperatorPKCEConfig(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, base); err != nil {
+		t.Fatalf("valid xAI OAuth config rejected: %v", err)
+	}
+	badAuth := base
+	badAuth.AuthURL = "https://auth.x.ai.attacker.example/oauth/authorize"
+	if err := validateOperatorPKCEConfig(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, badAuth); !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("err=%v want ErrFeatureDisabled for non-x.ai auth host", err)
+	}
+	badToken := base
+	badToken.TokenURL = "https://attacker.example/oauth/token"
+	if err := validateOperatorPKCEConfig(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, badToken); !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("err=%v want ErrFeatureDisabled for non-x.ai token host", err)
+	}
+}
+
 func TestAntigravityOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint(t *testing.T) {
 	now := time.Date(2026, 5, 25, 8, 0, 0, 0, time.UTC)
 	var gotForm url.Values

@@ -27,6 +27,7 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		"copilot/copilot_oauth",
 		"antigravity/oauth",
 		"windsurf/oauth",
+		"grok/xai_oauth",
 	}
 	if got := registry.Names(); len(got) != len(want) {
 		t.Fatalf("handler count=%d want %d: %v", len(got), len(want), got)
@@ -70,6 +71,7 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		{VendorAntigravity, AuthModeOAuth, `{"session_token":"ag-sess","refresh_token":"ag-refresh"}`, RuntimeSessionToken, "ag-sess"},
 		{VendorWindsurf, AuthModeOAuth, `{"session_token":"ws-sess"}`, RuntimeSessionToken, "ws-sess"},
 		{VendorCopilot, AuthModeCopilotOAuth, `{"github_access_token":"gh","session_token":"sess","endpoint_api":"https://copilot-proxy.test"}`, RuntimeSessionToken, "sess"},
+		{VendorGrok, AuthModeXAIOAuth, `{"access_token":"xai-access","refresh_token":"xai-refresh"}`, RuntimeOAuthAccessToken, "xai-access"},
 	}
 	for _, tc := range cases {
 		handler, err := registry.MustLookup(tc.vendor, tc.mode)
@@ -83,6 +85,44 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		if got.Kind != tc.kind || got.Value != tc.value {
 			t.Fatalf("%s/%s got kind=%q value=%q want %q/%q", tc.vendor, tc.mode, got.Kind, got.Value, tc.kind, tc.value)
 		}
+	}
+}
+
+func TestXAIOAuthHandlerSpec(t *testing.T) {
+	// Mutation: remove the grok/xai_oauth handlerSpec, make it session-token
+	// runtime, or accept session_token-only payloads and this test must go red.
+	handler, ok := DefaultHandlerRegistry().Lookup(VendorGrok, AuthModeXAIOAuth)
+	if !ok {
+		t.Fatal("missing grok/xai_oauth handler")
+	}
+	spec, ok := handler.(handlerSpec)
+	if !ok {
+		t.Fatalf("handler type=%T, want handlerSpec", handler)
+	}
+	if spec.runtimeKind != RuntimeOAuthAccessToken {
+		t.Fatalf("runtime kind=%q want %q", spec.runtimeKind, RuntimeOAuthAccessToken)
+	}
+	if !spec.refreshable {
+		t.Fatal("grok/xai_oauth should be refreshable")
+	}
+	if len(spec.anyOf) != 2 || spec.anyOf[0] != "access_token" || spec.anyOf[1] != "refresh_token" {
+		t.Fatalf("anyOf=%v want [access_token refresh_token]", spec.anyOf)
+	}
+	if err := handler.ValidatePayload([]byte(`{"access_token":"xai-access"}`)); err != nil {
+		t.Fatalf("access_token payload rejected: %v", err)
+	}
+	if err := handler.ValidatePayload([]byte(`{"refresh_token":"xai-refresh"}`)); err != nil {
+		t.Fatalf("refresh_token payload rejected: %v", err)
+	}
+	if err := handler.ValidatePayload([]byte(`{"session_token":"xai-session"}`)); !errors.Is(err, ErrInvalidPayload) {
+		t.Fatalf("err=%v want ErrInvalidPayload for session_token-only payload", err)
+	}
+	material, err := handler.RuntimeMaterial([]byte(`{"access_token":"xai-access","refresh_token":"xai-refresh"}`))
+	if err != nil {
+		t.Fatalf("RuntimeMaterial: %v", err)
+	}
+	if material.Kind != RuntimeOAuthAccessToken || material.Value != "xai-access" {
+		t.Fatalf("material=%+v want oauth access token xai-access", material)
 	}
 }
 

@@ -233,6 +233,7 @@ func DefaultModePlans() []ModePlan {
 		hiddenOpenAICompatiblePlan(credentialstore.VendorOpenRouter),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorDeepSeek),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorGrok),
+		oauthPlan(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorMistral),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorGroqCloud),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorTogether),

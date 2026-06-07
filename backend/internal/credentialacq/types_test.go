@@ -94,6 +94,7 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorOpenRouter, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorDeepSeek, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig},
 		{Vendor: credentialstore.VendorMistral, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorGroqCloud, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorTogether, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
@@ -171,6 +172,27 @@ func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 		if !seen[key] {
 			t.Fatalf("F-AUTH-005 registry mode %s missing from Phase A plan", key)
 		}
+	}
+}
+
+func TestXAIOAuthModePlan(t *testing.T) {
+	// Mutation: remove the grok/xai_oauth ModePlan seed or expose it as a paste
+	// helper and this test must go red.
+	plan, ok := LookupModePlan(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth)
+	if !ok {
+		t.Fatal("DefaultModePlans missing grok/xai_oauth")
+	}
+	if plan.Kind != FlowKindOAuth {
+		t.Fatalf("kind=%s want %s", plan.Kind, FlowKindOAuth)
+	}
+	if plan.ClientIdentitySource != ClientSourceOperatorConfig {
+		t.Fatalf("client source=%q want %q", plan.ClientIdentitySource, ClientSourceOperatorConfig)
+	}
+	if len(plan.AllowedHelpers) != 1 || plan.AllowedHelpers[0] != FlowKindOAuth {
+		t.Fatalf("allowed helpers=%v want [oauth]", plan.AllowedHelpers)
+	}
+	if !plan.IsEnabled {
+		t.Fatal("grok/xai_oauth should be enabled")
 	}
 }
 
