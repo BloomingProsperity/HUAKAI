@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
 type authorizationCodeOAuthExchanger struct {
 	vendor   string
 	authMode string
 	shape    TokenShape
+	config   OAuthClientConfig
 	client   *http.Client
 	now      func() time.Time
 }
@@ -42,20 +44,59 @@ type oauthTokenResponse struct {
 	ExpiresIn    json.RawMessage `json:"expires_in"`
 }
 
-func newAuthorizationCodeOAuthExchanger(vendor, authMode string, shape TokenShape) authorizationCodeOAuthExchanger {
+func newAuthorizationCodeOAuthExchanger(vendor, authMode string, shape TokenShape, defaults ...OAuthClientConfig) authorizationCodeOAuthExchanger {
 	if shape == "" {
 		shape = TokenShapeAnySessionOrAccess
 	}
-	return authorizationCodeOAuthExchanger{vendor: vendor, authMode: authMode, shape: shape}
+	cfg := OAuthClientConfig{}
+	if len(defaults) > 0 {
+		cfg = cloneOAuthClientConfig(defaults[0])
+	}
+	return authorizationCodeOAuthExchanger{vendor: vendor, authMode: authMode, shape: shape, config: cfg}
 }
 
 func (e authorizationCodeOAuthExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
+	cfg = mergeOAuthClientConfig(e.config, cfg)
 	if err := validateOperatorPKCEConfig(e.vendor, e.authMode, cfg); err != nil {
 		return OAuthStartResult{}, err
 	}
 	in.Vendor = e.vendor
 	in.AuthMode = e.authMode
 	return startStoredPKCEOAuthFlow(ctx, store, in, cfg)
+}
+
+func cloneOAuthClientConfig(cfg OAuthClientConfig) OAuthClientConfig {
+	cfg.Scopes = append([]string(nil), cfg.Scopes...)
+	return cfg
+}
+
+func mergeOAuthClientConfig(base, override OAuthClientConfig) OAuthClientConfig {
+	cfg := cloneOAuthClientConfig(base)
+	if strings.TrimSpace(override.ClientID) != "" {
+		cfg.ClientID = strings.TrimSpace(override.ClientID)
+	}
+	if strings.TrimSpace(override.ClientSecret) != "" {
+		cfg.ClientSecret = strings.TrimSpace(override.ClientSecret)
+	}
+	if strings.TrimSpace(override.AuthURL) != "" {
+		cfg.AuthURL = strings.TrimSpace(override.AuthURL)
+	}
+	if strings.TrimSpace(override.TokenURL) != "" {
+		cfg.TokenURL = strings.TrimSpace(override.TokenURL)
+	}
+	if strings.TrimSpace(override.RedirectURI) != "" {
+		cfg.RedirectURI = strings.TrimSpace(override.RedirectURI)
+	}
+	if len(override.Scopes) > 0 {
+		cfg.Scopes = append([]string(nil), override.Scopes...)
+	}
+	if strings.TrimSpace(override.Source) != "" {
+		cfg.Source = strings.TrimSpace(override.Source)
+	}
+	if override.HTTPClient != nil {
+		cfg.HTTPClient = override.HTTPClient
+	}
+	return cfg
 }
 
 func (e authorizationCodeOAuthExchanger) ExchangeOAuthCode(_ context.Context, session Session, code string) (CredentialCandidate, error) {
@@ -252,6 +293,11 @@ func validateOperatorPKCEConfig(vendor, authMode string, cfg OAuthClientConfig) 
 			return fmt.Errorf("%w: %s/%s %s 拒绝 (%v)", ErrFeatureDisabled, vendor, authMode, item.name, err)
 		}
 	}
+	if credentialstore.ModeKey(vendor, authMode) == credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth) {
+		if err := validateXAIOAuthConfig(cfg); err != nil {
+			return fmt.Errorf("%w: %s/%s xAI OAuth config 拒绝 (%v)", ErrFeatureDisabled, vendor, authMode, err)
+		}
+	}
 	return nil
 }
 
@@ -332,6 +378,42 @@ func validateOAuthEndpointURL(raw string) error {
 		}
 	}
 	return nil
+}
+
+func validateXAIOAuthConfig(cfg OAuthClientConfig) error {
+	if strings.TrimSpace(cfg.ClientID) != xaiOAuthClientID {
+		return fmt.Errorf("client_id mismatch")
+	}
+	if normalizedOAuthScope(cfg.Scopes) != xaiOAuthScope {
+		return fmt.Errorf("scope mismatch")
+	}
+	for _, item := range []struct {
+		name, raw string
+	}{{"auth_url", cfg.AuthURL}, {"token_url", cfg.TokenURL}} {
+		parsed, err := url.Parse(strings.TrimSpace(item.raw))
+		if err != nil {
+			return fmt.Errorf("%s invalid url: %v", item.name, err)
+		}
+		if !isXAIOAuthHost(parsed.Hostname()) {
+			return fmt.Errorf("%s host=%s is outside x.ai", item.name, parsed.Hostname())
+		}
+	}
+	return nil
+}
+
+func isXAIOAuthHost(host string) bool {
+	lower := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	return lower == "x.ai" || strings.HasSuffix(lower, ".x.ai")
+}
+
+func normalizedOAuthScope(scopes []string) string {
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if trimmed := strings.TrimSpace(scope); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 func (e authorizationCodeOAuthExchanger) nowTime() time.Time {
