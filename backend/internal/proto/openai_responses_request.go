@@ -58,6 +58,19 @@ func (o *OpenAIResponsesClient) RequestToCanonical(ctx context.Context, raw []by
 	}
 
 	var losses []ProtocolLossEntry
+	attachRequestPassthroughFields(env, raw,
+		"top_logprobs",
+		"max_tool_calls",
+		"include",
+		"conversation",
+		"context_management",
+		"prompt_cache_key",
+		"prompt_cache_retention",
+		"truncation",
+		"user",
+		"enable_thinking",
+		"preset",
+	)
 
 	// Tools: first-class function tools + native_required for built-ins
 	if len(req.Tools) > 0 {

@@ -40,9 +40,18 @@ func parseAnthropicContent(raw json.RawMessage, msgIdx int) ([]anthropicContentB
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return []anthropicContentBlock{{Type: "text", Text: s}}, nil, nil
 	}
-	var blocks []anthropicContentBlock
-	if err := json.Unmarshal(raw, &blocks); err != nil {
+	var rawBlocks []json.RawMessage
+	if err := json.Unmarshal(raw, &rawBlocks); err != nil {
 		return nil, nil, fmt.Errorf("proto: anthropic_messages messages[%d].content must be string or block array", msgIdx)
+	}
+	blocks := make([]anthropicContentBlock, 0, len(rawBlocks))
+	for i, rawBlock := range rawBlocks {
+		var block anthropicContentBlock
+		if err := json.Unmarshal(rawBlock, &block); err != nil {
+			return nil, nil, fmt.Errorf("proto: anthropic_messages messages[%d].content[%d] parse: %w", msgIdx, i, err)
+		}
+		block.Raw = append(json.RawMessage(nil), rawBlock...)
+		blocks = append(blocks, block)
 	}
 	return blocks, nil, nil
 }

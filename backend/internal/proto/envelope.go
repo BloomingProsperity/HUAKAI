@@ -52,6 +52,10 @@ type HCSFEnvelope struct {
 	// Extensions 可选；key 必须以 vendor: 或 experimental: 前缀。
 	// 不得用于隐藏 capability drop；任何 capability lossy 必须发 ProtocolLossEntry。
 	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
+
+	// Passthrough 携带请求侧已识别但 canonical 尚无一等字段的 provider JSON
+	// 参数。它不上 HCSF wire；同 family 出站投影可把 Extra 合并回 upstream body。
+	Passthrough *PassthroughEnvelope `json:"-"`
 }
 
 // NewEmptyEnvelope 构造一个最小合法 envelope，主要用于测试与 fixture 起点。
@@ -85,8 +89,8 @@ func NewEmptyEnvelope() *HCSFEnvelope {
 				Enforcement: "unknown",
 				AuditLabel:  "unknown",
 			},
-			Auth:     AuthPolicyStandard,
-			Audit:    AuditPolicy{Visibility: AuditVisible, Label: "default"},
+			Auth:      AuthPolicyStandard,
+			Audit:     AuditPolicy{Visibility: AuditVisible, Label: "default"},
 			Redaction: RedactionPublic,
 		},
 	}

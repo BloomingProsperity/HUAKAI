@@ -17,6 +17,7 @@ type openAIChatRequest struct {
 	ToolChoice          json.RawMessage  `json:"tool_choice,omitempty"`
 	ParallelToolCalls   *bool            `json:"parallel_tool_calls"`
 	ResponseFormat      json.RawMessage  `json:"response_format,omitempty"`
+	ReasoningEffort     string           `json:"reasoning_effort,omitempty"`
 	Seed                *int             `json:"seed"`
 	User                string           `json:"user,omitempty"`
 	Store               *bool            `json:"store"`
@@ -53,4 +54,12 @@ type openAIChatContentPart struct {
 	Type     string          `json:"type"`
 	Text     string          `json:"text,omitempty"`
 	ImageURL json.RawMessage `json:"image_url,omitempty"`
+}
+
+type openAIChatResponseFormatShape struct {
+	Type       string `json:"type"`
+	JSONSchema *struct {
+		Schema json.RawMessage `json:"schema,omitempty"`
+		Strict *bool           `json:"strict,omitempty"`
+	} `json:"json_schema,omitempty"`
 }

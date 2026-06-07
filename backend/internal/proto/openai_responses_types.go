@@ -3,21 +3,32 @@ package proto
 import "encoding/json"
 
 type openAIResponsesRequest struct {
-	Model              string            `json:"model"`
-	Input              json.RawMessage   `json:"input"` // string or array
-	Instructions       string            `json:"instructions,omitempty"`
-	Stream             *bool             `json:"stream"`
-	MaxOutputTokens    *int              `json:"max_output_tokens"`
-	Temperature        *float64          `json:"temperature"`
-	TopP               *float64          `json:"top_p"`
-	Tools              []json.RawMessage `json:"tools,omitempty"`
-	ToolChoice         json.RawMessage   `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool             `json:"parallel_tool_calls"`
-	Text               json.RawMessage   `json:"text,omitempty"`
-	Reasoning          json.RawMessage   `json:"reasoning,omitempty"`
-	Store              *bool             `json:"store"`
-	Metadata           map[string]any    `json:"metadata,omitempty"`
-	PreviousResponseID string            `json:"previous_response_id,omitempty"`
+	Model                string            `json:"model"`
+	Input                json.RawMessage   `json:"input"` // string or array
+	Instructions         string            `json:"instructions,omitempty"`
+	Stream               *bool             `json:"stream"`
+	MaxOutputTokens      *int              `json:"max_output_tokens"`
+	Temperature          *float64          `json:"temperature"`
+	TopP                 *float64          `json:"top_p"`
+	Tools                []json.RawMessage `json:"tools,omitempty"`
+	ToolChoice           json.RawMessage   `json:"tool_choice,omitempty"`
+	ParallelToolCalls    *bool             `json:"parallel_tool_calls"`
+	Text                 json.RawMessage   `json:"text,omitempty"`
+	Reasoning            json.RawMessage   `json:"reasoning,omitempty"`
+	TopLogprobs          json.RawMessage   `json:"top_logprobs,omitempty"`
+	MaxToolCalls         json.RawMessage   `json:"max_tool_calls,omitempty"`
+	Include              json.RawMessage   `json:"include,omitempty"`
+	Conversation         json.RawMessage   `json:"conversation,omitempty"`
+	ContextManagement    json.RawMessage   `json:"context_management,omitempty"`
+	PromptCacheKey       json.RawMessage   `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention json.RawMessage   `json:"prompt_cache_retention,omitempty"`
+	Truncation           json.RawMessage   `json:"truncation,omitempty"`
+	User                 json.RawMessage   `json:"user,omitempty"`
+	EnableThinking       json.RawMessage   `json:"enable_thinking,omitempty"`
+	Preset               json.RawMessage   `json:"preset,omitempty"`
+	Store                *bool             `json:"store"`
+	Metadata             map[string]any    `json:"metadata,omitempty"`
+	PreviousResponseID   string            `json:"previous_response_id,omitempty"`
 }
 
 type openAIResponsesInputItem struct {

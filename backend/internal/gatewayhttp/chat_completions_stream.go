@@ -492,7 +492,20 @@ func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) 
 			}
 		}
 	}
+	mergeStreamingRequestPassthrough(body, env)
 	return json.Marshal(body)
+}
+
+func mergeStreamingRequestPassthrough(body map[string]any, env *proto.HCSF) {
+	if env == nil || env.Passthrough == nil || len(env.Passthrough.Extra) == 0 {
+		return
+	}
+	for key, raw := range env.Passthrough.Extra {
+		if _, exists := body[key]; exists {
+			continue
+		}
+		body[key] = streamingRawJSONValue(raw)
+	}
 }
 
 func forceStreamingRequest(raw []byte) ([]byte, error) {

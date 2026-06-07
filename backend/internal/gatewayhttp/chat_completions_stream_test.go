@@ -1763,3 +1763,34 @@ func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIRespon
 		t.Fatalf("streaming text.format 出现包壳 'schema' 字段是 raw-wrap regression: body=%+v", body)
 	}
 }
+
+func TestInjectStreamingRequestControlsMergesRequestPassthrough(t *testing.T) {
+	max := 12
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{MaxTokens: &max},
+		Passthrough: &proto.PassthroughEnvelope{Extra: map[string]json.RawMessage{
+			"max_tool_calls":    json.RawMessage(`3`),
+			"prompt_cache_key":  json.RawMessage(`"tenant-a:stable-prefix"`),
+			"max_output_tokens": json.RawMessage(`999`),
+		}},
+	}
+	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_responses")
+	if err != nil {
+		t.Fatalf("injectStreamingRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	maxToolCalls, ok := body["max_tool_calls"].(float64)
+	if !ok || maxToolCalls != 3 {
+		t.Fatalf("max_tool_calls passthrough lost: %+v", body)
+	}
+	if body["prompt_cache_key"] != "tenant-a:stable-prefix" {
+		t.Fatalf("prompt_cache_key passthrough lost: %+v", body)
+	}
+	maxOutputTokens, ok := body["max_output_tokens"].(float64)
+	if !ok || maxOutputTokens != 12 {
+		t.Fatalf("modeled max_output_tokens should win over passthrough conflict: %+v", body)
+	}
+}

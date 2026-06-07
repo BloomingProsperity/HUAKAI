@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // P-2 D5 openai_chat ClientAdapter — RequestToCanonical 第一片：text +
@@ -16,7 +17,8 @@ import (
 //   - 出：HCSF v0.4 request envelope；含 Messages、CapabilityText/ToolUse/
 //     ToolResult 节点 + EdgeRequires（tool_result→tool_use；）。
 //   - image_url / input_audio / file 等 multimodal content part 暂 warning loss。
-//   - reasoning_effort / response_format json_schema 在 D5.x 后续小片。
+//   - response_format json_schema / reasoning_effort 作为 capability 节点建模，
+//     同时保留上游原始请求形态供 passthrough 投影。
 
 // OpenAIChatClient 实现 ClientAdapter；零值可用。
 type OpenAIChatClient struct{}
@@ -82,11 +84,29 @@ func (o *OpenAIChatClient) RequestToCanonical(ctx context.Context, raw []byte) (
 	var losses []ProtocolLossEntry
 
 	if len(req.ResponseFormat) > 0 {
-		// D5.x 待补：json_schema 解析 + StructuredOutputNode；D5 first slice 保留 raw。
-		rf := &ResponseFormat{Type: "raw", Schema: req.ResponseFormat}
-		env.RequestControls.ResponseFormat = rf
-		loss, _ := NewClientLossEntry(ProtocolLossInfo, "response_format_d5_raw_passthrough", "d5_response_format_raw", CapabilityStructuredOutput, "")
-		losses = append(losses, loss)
+		losses = append(losses, applyOpenAIChatResponseFormat(env, req.ResponseFormat)...)
+	}
+	if req.ReasoningEffort != "" {
+		attachRequestPassthroughFields(env, raw, "reasoning_effort")
+		budget := effortToBudgetTokens(req.ReasoningEffort, env.RequestControls.MaxTokens)
+		env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+			ID:          "n_thinking_request_1",
+			Kind:        CapabilityThinking,
+			StreamReady: StreamReadyPartial,
+			Source:      &NodeSourceRef{RequestField: "reasoning_effort"},
+			Thinking: &ThinkingNode{
+				BudgetTokens: budget,
+				Blocks:       []CanonicalContentBlock{},
+				Redaction:    RedactionProviderOnly,
+			},
+		})
+		env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+			Capability: CapabilityThinking, NodeID: "n_thinking_request_1", Verdict: ProjectionPreserved,
+		})
+		if budget == 0 {
+			loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_reasoning_effort_unrecognized:"+req.ReasoningEffort, "unknown_reasoning_effort", CapabilityThinking, "n_thinking_request_1")
+			losses = append(losses, loss)
+		}
 	}
 	if req.User != "" {
 		loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_user_field_d5_pending", "d5_user_field_pending", "", "")
@@ -221,4 +241,72 @@ func (o *OpenAIChatClient) RequestToCanonical(ctx context.Context, raw []byte) (
 	}
 
 	return env, losses, nil
+}
+
+func applyOpenAIChatResponseFormat(env *HCSF, raw json.RawMessage) []ProtocolLossEntry {
+	env.RequestControls.ResponseFormat = &ResponseFormat{
+		Type:   "raw",
+		Schema: append(json.RawMessage(nil), raw...),
+	}
+
+	var shape openAIChatResponseFormatShape
+	if err := json.Unmarshal(raw, &shape); err != nil {
+		loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_response_format_unmodeled", "response_format_unmodeled", CapabilityStructuredOutput, "")
+		return []ProtocolLossEntry{loss}
+	}
+	if shape.Type != "json_schema" {
+		return nil
+	}
+	if shape.JSONSchema == nil || len(shape.JSONSchema.Schema) == 0 || string(shape.JSONSchema.Schema) == "null" {
+		loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_response_format_json_schema_missing_schema", "response_format_schema_missing", CapabilityStructuredOutput, "")
+		return []ProtocolLossEntry{loss}
+	}
+	if !jsonRawObject(shape.JSONSchema.Schema) {
+		loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_response_format_json_schema_unmodeled_schema", "response_format_schema_unmodeled", CapabilityStructuredOutput, "")
+		return []ProtocolLossEntry{loss}
+	}
+
+	strict := false
+	if shape.JSONSchema.Strict != nil {
+		strict = *shape.JSONSchema.Strict
+	}
+	nodeID := "n_structured_output_1"
+	env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+		ID:          nodeID,
+		Kind:        CapabilityStructuredOutput,
+		StreamReady: StreamReadyYes,
+		Source:      &NodeSourceRef{RequestField: "response_format"},
+		StructuredOutput: &StructuredOutputNode{
+			Mode:   StructuredOutputJSONSchema,
+			Strict: strict,
+			Schema: append(json.RawMessage(nil), shape.JSONSchema.Schema...),
+		},
+	})
+	env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+		Capability: CapabilityStructuredOutput, NodeID: nodeID, Verdict: ProjectionPreserved,
+	})
+	return nil
+}
+
+func jsonRawObject(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(raw, &obj) == nil && obj != nil
+}
+
+func effortToBudgetTokens(effort string, maxTokens *int) int {
+	var budget int
+	switch strings.ToLower(effort) {
+	case "low":
+		budget = 1280
+	case "medium":
+		budget = 2048
+	case "high":
+		budget = 4096
+	default:
+		return 0
+	}
+	if maxTokens != nil && *maxTokens >= 0 && budget > *maxTokens {
+		return *maxTokens
+	}
+	return budget
 }

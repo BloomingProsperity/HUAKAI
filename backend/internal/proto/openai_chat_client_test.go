@@ -1,7 +1,9 @@
 package proto
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -72,6 +74,85 @@ func TestOpenAIChatClient_MaxCompletionTokensPreferred(t *testing.T) {
 	}
 	if env.RequestControls.MaxTokens == nil || *env.RequestControls.MaxTokens != 500 {
 		t.Errorf("expected 500 (max_completion_tokens preferred over max_tokens), got %v", env.RequestControls.MaxTokens)
+	}
+}
+
+func TestJSONSchemaResponseFormat(t *testing.T) {
+	adapter := &OpenAIChatClient{}
+	body := []byte(`{
+		"model":"gpt-4o",
+		"response_format":{
+			"type":"json_schema",
+			"json_schema":{
+				"name":"answer_shape",
+				"strict":true,
+				"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}
+			}
+		},
+		"messages":[{"role":"user","content":"answer as json"}]
+	}`)
+	env, losses, err := adapter.RequestToCanonical(newTestOpenAIChatCtx(t), body)
+	if err != nil {
+		t.Fatalf("RequestToCanonical: %v", err)
+	}
+	if env.RequestControls.ResponseFormat == nil {
+		t.Fatal("response_format should be modeled in RequestControls")
+	}
+	if env.RequestControls.ResponseFormat.Type != "raw" {
+		t.Fatalf("ResponseFormat.Type=%q want raw passthrough for upstream compatibility", env.RequestControls.ResponseFormat.Type)
+	}
+	assertRawJSONEqual(t, env.RequestControls.ResponseFormat.Schema, `{"type":"json_schema","json_schema":{"name":"answer_shape","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}}`)
+
+	var structured *StructuredOutputNode
+	for i := range env.CapabilityGraph.Nodes {
+		if env.CapabilityGraph.Nodes[i].Kind == CapabilityStructuredOutput {
+			structured = env.CapabilityGraph.Nodes[i].StructuredOutput
+			break
+		}
+	}
+	if structured == nil {
+		t.Fatalf("expected CapabilityStructuredOutput node; losses=%+v", losses)
+	}
+	if structured.Mode != StructuredOutputJSONSchema || !structured.Strict {
+		t.Fatalf("structured output mode/strict = %s/%v", structured.Mode, structured.Strict)
+	}
+	assertRawJSONEqual(t, structured.Schema, `{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`)
+}
+
+func TestReasoningEffortToThinking(t *testing.T) {
+	adapter := &OpenAIChatClient{}
+	body := []byte(`{
+		"model":"gpt-4o",
+		"max_completion_tokens":3000,
+		"reasoning_effort":"high",
+		"messages":[{"role":"user","content":"solve"}]
+	}`)
+	env, _, err := adapter.RequestToCanonical(newTestOpenAIChatCtx(t), body)
+	if err != nil {
+		t.Fatalf("RequestToCanonical: %v", err)
+	}
+	var thinking *ThinkingNode
+	for i := range env.CapabilityGraph.Nodes {
+		if env.CapabilityGraph.Nodes[i].Kind == CapabilityThinking {
+			thinking = env.CapabilityGraph.Nodes[i].Thinking
+			break
+		}
+	}
+	if thinking == nil {
+		t.Fatal("expected CapabilityThinking node for reasoning_effort")
+	}
+	if thinking.BudgetTokens <= 0 || thinking.BudgetTokens > 3000 {
+		t.Fatalf("BudgetTokens=%d want >0 and <= max_completion_tokens", thinking.BudgetTokens)
+	}
+	if env.Passthrough == nil {
+		t.Fatal("reasoning_effort should also be preserved for upstream passthrough")
+	}
+	assertRawJSONEqual(t, env.Passthrough.Extra["reasoning_effort"], `"high"`)
+	maxTokens := 5000
+	low := effortToBudgetTokens("low", &maxTokens)
+	high := effortToBudgetTokens("high", &maxTokens)
+	if low <= 0 || high <= 0 || low >= high {
+		t.Fatalf("effort budgets low=%d high=%d want 0 < low < high", low, high)
 	}
 }
 
@@ -516,8 +597,8 @@ func TestOpenAIChatClient_D6_ToolCalls(t *testing.T) {
 func TestOpenAIChatClient_D6_StopReasonMappings(t *testing.T) {
 	adapter := &OpenAIChatClient{}
 	cases := []struct {
-		canon   CanonicalStopReason
-		expect  string
+		canon    CanonicalStopReason
+		expect   string
 		wantLoss bool
 	}{
 		{CanonicalStopEndTurn, "stop", false},
@@ -612,5 +693,20 @@ func TestOpenAIChatClient_EnvelopeIsValidateReady(t *testing.T) {
 	}
 	if err := ValidateEnvelopeVersionGuard(env); err != nil {
 		t.Fatalf("ValidateEnvelopeVersionGuard: %v", err)
+	}
+}
+
+func assertRawJSONEqual(t *testing.T, got json.RawMessage, want string) {
+	t.Helper()
+	var gotBuf bytes.Buffer
+	if err := json.Compact(&gotBuf, got); err != nil {
+		t.Fatalf("got invalid JSON %q: %v", string(got), err)
+	}
+	var wantBuf bytes.Buffer
+	if err := json.Compact(&wantBuf, []byte(want)); err != nil {
+		t.Fatalf("want invalid JSON %q: %v", want, err)
+	}
+	if !bytes.Equal(gotBuf.Bytes(), wantBuf.Bytes()) {
+		t.Fatalf("JSON mismatch got=%s want=%s", gotBuf.String(), wantBuf.String())
 	}
 }

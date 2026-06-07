@@ -139,6 +139,37 @@ func AttachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope)
 	return events
 }
 
+func attachRequestPassthroughFields(env *HCSF, raw []byte, fields ...string) {
+	if env == nil || len(raw) == 0 || len(fields) == 0 {
+		return
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return
+	}
+	for _, field := range fields {
+		value, ok := all[field]
+		if !ok {
+			continue
+		}
+		attachRequestPassthroughField(env, field, value)
+	}
+}
+
+func attachRequestPassthroughField(env *HCSF, field string, value json.RawMessage) {
+	if env == nil || field == "" {
+		return
+	}
+	if env.Passthrough == nil {
+		env.Passthrough = &PassthroughEnvelope{}
+	}
+	if env.Passthrough.Extra == nil {
+		env.Passthrough.Extra = map[string]json.RawMessage{}
+	}
+	copied := append(json.RawMessage(nil), value...)
+	env.Passthrough.Extra[field] = copied
+}
+
 func attachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope) []CanonicalEvent {
 	return AttachPassthroughToEvents(events, env)
 }

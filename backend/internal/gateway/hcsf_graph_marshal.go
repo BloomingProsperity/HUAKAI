@@ -67,6 +67,10 @@ func isAnthropicRequestThinkingControl(n proto.CapabilityNode) bool {
 	return n.Source != nil && n.Source.RequestField == "thinking"
 }
 
+func isOpenAIChatRequestThinkingControl(n proto.CapabilityNode) bool {
+	return n.Source != nil && n.Source.RequestField == "reasoning_effort"
+}
+
 func anthropicRequestThinkingControl(env *proto.HCSF, n proto.CapabilityNode) (map[string]any, bool) {
 	if n.Thinking == nil {
 		addMarshalLoss(env, "anthropic_messages", n, "thinking request control node missing payload", "missing_thinking_payload")
@@ -201,7 +205,12 @@ func marshalOpenAIChat(env *proto.HCSF) ([]byte, error) {
 			if block, ok := openAIImagePart(env, "openai_chat", n); ok {
 				messages = append(messages, map[string]any{"role": "user", "content": []any{block}})
 			}
-		case proto.CapabilityThinking, proto.CapabilityCacheControl:
+		case proto.CapabilityThinking:
+			if isOpenAIChatRequestThinkingControl(n) {
+				continue
+			}
+			addMarshalLoss(env, "openai_chat", n, "capability not supported by OpenAI Chat request schema", "unsupported_capability")
+		case proto.CapabilityCacheControl:
 			addMarshalLoss(env, "openai_chat", n, "capability not supported by OpenAI Chat request schema", "unsupported_capability")
 		default:
 			addMarshalLoss(env, "openai_chat", n, "capability unsupported by openai_chat marshal", "unsupported_capability")

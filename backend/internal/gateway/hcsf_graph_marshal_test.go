@@ -387,3 +387,72 @@ func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *te
 		t.Fatalf("text.format 出现包壳 'schema' 字段是 raw-wrap regression: body=%+v", body)
 	}
 }
+
+func TestInjectRequestControlsMergesRequestPassthrough(t *testing.T) {
+	max := 12
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{MaxTokens: &max},
+		Passthrough: &proto.PassthroughEnvelope{Extra: map[string]json.RawMessage{
+			"max_tool_calls":    json.RawMessage(`3`),
+			"prompt_cache_key":  json.RawMessage(`"tenant-a:stable-prefix"`),
+			"max_output_tokens": json.RawMessage(`999`),
+		}},
+	}
+	out, err := injectRequestControls([]byte(`{}`), env, "openai_responses")
+	if err != nil {
+		t.Fatalf("injectRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	maxToolCalls, ok := body["max_tool_calls"].(float64)
+	if !ok || maxToolCalls != 3 {
+		t.Fatalf("max_tool_calls passthrough lost: %+v", body)
+	}
+	if body["prompt_cache_key"] != "tenant-a:stable-prefix" {
+		t.Fatalf("prompt_cache_key passthrough lost: %+v", body)
+	}
+	maxOutputTokens, ok := body["max_output_tokens"].(float64)
+	if !ok || maxOutputTokens != 12 {
+		t.Fatalf("modeled max_output_tokens should win over passthrough conflict: %+v", body)
+	}
+}
+
+func TestMarshalOpenAIChatReasoningEffortRequestControl(t *testing.T) {
+	env := graphEnv(
+		textNode("n_text_1", "user", "solve"),
+		proto.CapabilityNode{
+			ID:          "n_thinking_request_1",
+			Kind:        proto.CapabilityThinking,
+			StreamReady: proto.StreamReadyPartial,
+			Source:      &proto.NodeSourceRef{RequestField: "reasoning_effort"},
+			Thinking: &proto.ThinkingNode{
+				BudgetTokens: 4096,
+				Blocks:       []proto.CanonicalContentBlock{},
+				Redaction:    proto.RedactionProviderOnly,
+			},
+		},
+	)
+	env.Passthrough = &proto.PassthroughEnvelope{Extra: map[string]json.RawMessage{
+		"reasoning_effort": json.RawMessage(`"high"`),
+	}}
+	raw, err := MarshalToProviderRequest(env, "openai_chat")
+	if err != nil {
+		t.Fatalf("MarshalToProviderRequest: %v", err)
+	}
+	if len(env.CapabilityGraph.ProtocolLoss) != 0 {
+		t.Fatalf("reasoning_effort request control should not produce marshal loss: %+v", env.CapabilityGraph.ProtocolLoss)
+	}
+	out, err := injectRequestControls(raw, env, "openai_chat")
+	if err != nil {
+		t.Fatalf("injectRequestControls: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort passthrough lost: %+v", body)
+	}
+}

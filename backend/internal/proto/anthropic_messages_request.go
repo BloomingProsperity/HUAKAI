@@ -48,6 +48,9 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 
 	// RequestControls
 	env.RequestControls.MaxTokens = req.MaxTokens
+	if env.RequestControls.MaxTokens == nil && req.MaxTokensToSample != nil {
+		env.RequestControls.MaxTokens = req.MaxTokensToSample
+	}
 	env.RequestControls.Temperature = req.Temperature
 	env.RequestControls.TopP = req.TopP
 	if len(req.StopSequences) > 0 {
@@ -65,6 +68,13 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 	}
 
 	var losses []ProtocolLossEntry
+	attachRequestPassthroughFields(env, raw,
+		"top_k",
+		"context_management",
+		"output_config",
+		"output_format",
+		"container",
+	)
 
 	// 解 system 字段（string 或 block array）
 	if len(req.System) > 0 {
@@ -147,6 +157,41 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 					Capability: CapabilityToolUse, NodeID: nodeID, Verdict: ProjectionPreserved,
 				})
 				toolCallIDToNodeID[b.ID] = nodeID
+			case "web_search_tool", "server_tool_use":
+				input := b.Raw
+				if len(input) == 0 {
+					input, _ = json.Marshal(b)
+				}
+				callID := b.ID
+				if callID == "" {
+					callID = fmt.Sprintf("anthropic_passthrough_%d_%d", mi, bi)
+				}
+				name := b.Name
+				if name == "" {
+					name = b.Type
+				}
+				nodeSeq++
+				nodeID := fmt.Sprintf("n_tool_use_%d", nodeSeq)
+				cm.Content = append(cm.Content, CanonicalContentBlock{
+					Type: "tool_use", CallID: callID, Name: name, Input: input, Raw: input,
+				})
+				env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+					ID:          nodeID,
+					Kind:        CapabilityToolUse,
+					StreamReady: StreamReadyPartial,
+					Source:      &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
+					ToolUse: &ToolUseNode{
+						ToolCallID:         callID,
+						OriginalToolCallID: b.ID,
+						Name:               name,
+						Input:              input,
+						Status:             ToolNodeComplete,
+					},
+				})
+				env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+					Capability: CapabilityToolUse, NodeID: nodeID, Verdict: ProjectionPreserved,
+				})
+				toolCallIDToNodeID[callID] = nodeID
 			case "tool_result":
 				if b.ToolUseID == "" {
 					return nil, nil, fmt.Errorf("proto: anthropic_messages messages[%d].content[%d] tool_result missing tool_use_id", mi, bi)
