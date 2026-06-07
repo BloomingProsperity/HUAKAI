@@ -113,6 +113,48 @@ func TestWiring_AlertingEvaluatorEnabledStopsWithRuntime(t *testing.T) {
 	stop()
 }
 
+func TestWiring_APIKeyExpiryWorkerDisabledDoesNotStart(t *testing.T) {
+	// MUTATION: start the expiry worker even when disabled; this observes an unexpected Start call.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	worker := newWiringAPIKeyExpiryWorker()
+
+	stop := startAPIKeyExpiryWorker(ctx, &Config{APIKeyExpirySweepEnabled: false}, worker)
+
+	if stop != nil {
+		stop()
+		t.Fatal("disabled API key expiry worker returned a stop hook")
+	}
+	select {
+	case <-worker.started:
+		t.Fatal("disabled API key expiry worker started")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestWiring_APIKeyExpiryWorkerEnabledStopsWithRuntime(t *testing.T) {
+	// MUTATION: forget to save/return Stop; runtime shutdown cannot stop the expiry worker.
+	worker := newWiringAPIKeyExpiryWorker()
+	stop := startAPIKeyExpiryWorker(context.Background(), &Config{APIKeyExpirySweepEnabled: true}, worker)
+	if stop == nil {
+		t.Fatal("enabled API key expiry worker did not return stop hook")
+	}
+	select {
+	case <-worker.started:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("enabled API key expiry worker did not start")
+	}
+
+	stop()
+
+	select {
+	case <-worker.stopped:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("enabled API key expiry worker did not stop")
+	}
+	stop()
+}
+
 func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDeps(t *testing.T) {
 	resolver := pricingcatalog.NewRatioResolver(nil, 0)
 	rateTables := billing.NewPGXRateTableSource(nil)
@@ -184,6 +226,28 @@ func (r *wiringAlertingRunner) Run(ctx context.Context) error {
 	<-ctx.Done()
 	r.stopOnce.Do(func() { close(r.stopped) })
 	return nil
+}
+
+type wiringAPIKeyExpiryWorker struct {
+	started   chan struct{}
+	stopped   chan struct{}
+	startOnce sync.Once
+	stopOnce  sync.Once
+}
+
+func newWiringAPIKeyExpiryWorker() *wiringAPIKeyExpiryWorker {
+	return &wiringAPIKeyExpiryWorker{
+		started: make(chan struct{}),
+		stopped: make(chan struct{}),
+	}
+}
+
+func (w *wiringAPIKeyExpiryWorker) Start(context.Context) {
+	w.startOnce.Do(func() { close(w.started) })
+}
+
+func (w *wiringAPIKeyExpiryWorker) Stop() {
+	w.stopOnce.Do(func() { close(w.stopped) })
 }
 
 func TestContentModerationRuntimeEnabledDefaultsOff(t *testing.T) {

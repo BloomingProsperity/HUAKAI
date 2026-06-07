@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyexpiry"
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -224,6 +225,19 @@ func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistr
 
 type alertingEvaluatorRunner interface {
 	Run(context.Context) error
+}
+
+type apiKeyExpiryWorker interface {
+	Start(context.Context)
+	Stop()
+}
+
+func startAPIKeyExpiryWorker(ctx context.Context, cfg *Config, worker apiKeyExpiryWorker) func() {
+	if cfg == nil || !cfg.APIKeyExpirySweepEnabled || worker == nil {
+		return nil
+	}
+	worker.Start(ctx)
+	return worker.Stop
 }
 
 type notifyFiringDeliverer struct {
@@ -938,6 +952,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesRunnerSharedSecret: hermesRunnerSharedSecret,
 	}
 	rt.deps = d
+	apiKeyExpiryService := apikeyexpiry.NewService(
+		authQueries,
+		apikeyexpiry.WithBatchLimit(int32(cfg.APIKeyExpirySweepBatchLimit)),
+	)
+	apiKeyExpiryWorker := apikeyexpiry.NewWorker(apikeyexpiry.WorkerConfig{
+		Service:  apiKeyExpiryService,
+		Interval: cfg.APIKeyExpirySweepInterval,
+		Logger:   logger,
+	})
+	rt.apiKeyExpirySweepStop = startAPIKeyExpiryWorker(ctx, cfg, apiKeyExpiryWorker)
 	if cfg.PaymentExpireSweepInterval > 0 {
 		paymentExpireSweeper := payment.NewExpireSweeper(payment.ExpireSweeperConfig{
 			Store:      paymentStore,
