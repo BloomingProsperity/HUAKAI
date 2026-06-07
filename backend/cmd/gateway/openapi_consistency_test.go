@@ -445,7 +445,7 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	}
 }
 
-func TestAdminUsersReadRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
+func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	r := buildTestRouter(t)
 	implOps := openapicheck.WalkChiOperations(r)
 	readOps := []string{
@@ -457,6 +457,9 @@ func TestAdminUsersReadRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		if !hasOperationEquivalent(implOps, http.MethodGet, path) {
 			t.Fatalf("runtime missing GET %s", path)
 		}
+	}
+	if !hasOperationEquivalent(implOps, http.MethodPost, "/admin/v1/users/{id}/unlock") {
+		t.Fatalf("runtime missing POST /admin/v1/users/{id}/unlock")
 	}
 	for _, op := range []struct {
 		method string
@@ -488,6 +491,9 @@ func TestAdminUsersReadRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 			t.Fatalf("OpenAPI missing GET %s", path)
 		}
 	}
+	if !hasOperation(specOps, http.MethodPost, "/admin/v1/users/{id}/unlock") {
+		t.Fatalf("OpenAPI missing POST /admin/v1/users/{id}/unlock")
+	}
 	for _, op := range []struct {
 		method string
 		path   string
@@ -518,7 +524,9 @@ func TestAdminUsersReadRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		"listAdminUsers",
 		"getAdminUser",
 		"listAdminUserBalanceHistory",
+		"adminUnlockUser",
 		"balance-history",
+		"unlock_user",
 		"source_type:",
 		"fingerprint:",
 	} {

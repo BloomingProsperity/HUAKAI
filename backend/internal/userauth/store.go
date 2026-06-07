@@ -176,6 +176,29 @@ WHERE tenant_id = $1 AND id = $2
 	return err
 }
 
+func (s *PostgresStore) ClearLockout(ctx context.Context, tenantID, userID int64) (User, error) {
+	if s == nil || s.db == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	const q = `
+UPDATE users
+SET failed_login_count = 0,
+    locked_until = NULL,
+    status = CASE WHEN status = 'locked' THEN 'active' ELSE status END,
+    updated_at = NOW()
+WHERE tenant_id = $1
+  AND id = $2
+  AND deleted_at IS NULL
+RETURNING id, tenant_id, email, display_name, password_hash, email_verified,
+          invite_code_used, social_login_provider, status, password_version,
+          failed_login_count, locked_until, created_at, updated_at`
+	user, err := scanUser(s.db.QueryRow(ctx, q, tenantID, userID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	return user, err
+}
+
 func (s *PostgresStore) MarkLoginFailure(ctx context.Context, tenantID, userID int64, threshold int) error {
 	if s == nil || s.db == nil {
 		return ErrStoreNotConfigured

@@ -675,6 +675,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Auth:        d.adminAuth,
 		Store:       d.adminQueries,
 		SocialLinks: d.userAuth,
+		UnlockAudit: adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
+		Unlocker:    d.userAuth,
+		Audit:       d.adminQueries,
 	}
 	r.Get("/admin/v1/users", adminuserhttp.NewListHandler(adminUserDeps))
 	r.Route("/admin/v1/users", func(r chi.Router) {

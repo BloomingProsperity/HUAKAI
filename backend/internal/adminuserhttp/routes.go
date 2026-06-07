@@ -1,4 +1,4 @@
-// Package adminuserhttp exposes read-only admin user visibility endpoints.
+// Package adminuserhttp exposes tenant-scoped admin user visibility and recovery endpoints.
 package adminuserhttp
 
 import (
@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -28,6 +30,9 @@ type Deps struct {
 	Auth        adminAuth
 	Store       userReadStore
 	SocialLinks socialLinkService
+	UnlockAudit userUnlockAuditStore
+	Unlocker    userUnlockService
+	Audit       adminAuditStore
 }
 
 type adminAuth interface {
@@ -45,10 +50,73 @@ type socialLinkService interface {
 	UnlinkSocialIdentity(context.Context, int64, int64, string) (bool, error)
 }
 
+type userUnlockService interface {
+	UnlockUser(context.Context, int64, int64) (userauth.User, error)
+}
+
+type userUnlockAuditStore interface {
+	UnlockUserWithAudit(context.Context, int64, int64, unlockAuditInput) (userauth.User, error)
+}
+
+type adminAuditStore interface {
+	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
+}
+
+type unlockAuditInput struct {
+	ActorID      string
+	ActorRole    string
+	RequestID    *string
+	BeforeStatus string
+}
+
+type postgresUnlockAuditStore struct {
+	pool *pgxpool.Pool
+}
+
+func NewPostgresUnlockAuditStore(pool *pgxpool.Pool) userUnlockAuditStore {
+	if pool == nil {
+		return nil
+	}
+	return postgresUnlockAuditStore{pool: pool}
+}
+
+func (s postgresUnlockAuditStore) UnlockUserWithAudit(ctx context.Context, tenantID, userID int64, input unlockAuditInput) (userauth.User, error) {
+	if s.pool == nil {
+		return userauth.User{}, userauth.ErrStoreNotConfigured
+	}
+	var updated userauth.User
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		user, err := userauth.NewPostgresStore(tx).ClearLockout(ctx, tenantID, userID)
+		if err != nil {
+			return err
+		}
+		payload, err := marshalUnlockAuditPayload(input.BeforeStatus, string(user.Status))
+		if err != nil {
+			return err
+		}
+		if _, err := admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
+			TenantID:   &tenantID,
+			ActorID:    input.ActorID,
+			ActorRole:  input.ActorRole,
+			Action:     "unlock_user",
+			TargetType: "user",
+			TargetID:   &userID,
+			RequestID:  input.RequestID,
+			Payload:    payload,
+		}); err != nil {
+			return err
+		}
+		updated = user
+		return nil
+	})
+	return updated, err
+}
+
 func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/", newListHandler(d))
 	r.Get("/2fa-adoption-stats", newTwoFAStatsHandler(d))
 	r.Get("/{id}", newGetHandler(d))
+	r.Post("/{id}/unlock", newUnlockHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
 	r.Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
@@ -86,6 +154,11 @@ type twoFAStatsBody struct {
 	EnabledUsers int64   `json:"enabled_users"`
 	TotalUsers   int64   `json:"total_users"`
 	EnabledRate  float64 `json:"enabled_rate"`
+}
+
+type unlockUserBody struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
 }
 
 func newListHandler(d Deps) http.HandlerFunc {
@@ -187,6 +260,70 @@ func newGetHandler(d Deps) http.HandlerFunc {
 	}
 }
 
+func newUnlockHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
+		if !ok {
+			return
+		}
+		userID, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		before, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{
+			TenantID: tenantID,
+			UserID:   userID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
+				fmt.Sprintf("get user failed: %v", err))
+			return
+		}
+		auditInput := buildUnlockAuditInput(r, ident, before.Status)
+		if d.UnlockAudit != nil {
+			updated, err := d.UnlockAudit.UnlockUserWithAudit(r.Context(), tenantID, userID, auditInput)
+			if err != nil {
+				writeUnlockError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, unlockUserBody{
+				ID:     updated.ID,
+				Status: string(updated.Status),
+			})
+			return
+		}
+		if d.Unlocker == nil || d.Audit == nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured",
+				"admin user mutation dependency unset")
+			return
+		}
+		updated, err := d.Unlocker.UnlockUser(r.Context(), tenantID, userID)
+		if err != nil {
+			writeUnlockError(w, err)
+			return
+		}
+		payload, err := marshalUnlockAuditPayload(auditInput.BeforeStatus, string(updated.Status))
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "audit_payload_failed", err.Error())
+			return
+		}
+		audit := buildUnlockAuditParams(tenantID, userID, auditInput, payload)
+		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
+				fmt.Sprintf("write unlock audit failed: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, unlockUserBody{
+			ID:     updated.ID,
+			Status: string(updated.Status),
+		})
+	}
+}
+
 func newBalanceHistoryHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID, ok := resolveTenant(w, r, d)
@@ -269,32 +406,87 @@ func newUnlinkSocialIdentityHandler(d Deps) http.HandlerFunc {
 }
 
 func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, bool) {
+	_, tenantID, ok := resolveTenantIdentity(w, r, d)
+	return tenantID, ok
+}
+
+func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admin.AdminIdentity, int64, bool) {
 	if d.Auth == nil || d.Store == nil {
 		writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured",
 			"admin users dependency unset")
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
 	ident, err := d.Auth.Resolve(r.Context(), r)
 	if err != nil {
 		writeAdminAuthError(w, err)
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
 	switch ident.Role {
 	case admin.RoleTenantOperator:
 		if ident.ScopeTenantID <= 0 {
 			writeError(w, http.StatusForbidden, "admin_tenant_scope_required",
 				"tenant_operator scope_tenant_id required")
-			return 0, false
+			return admin.AdminIdentity{}, 0, false
 		}
-		return ident.ScopeTenantID, true
+		return ident, ident.ScopeTenantID, true
 	case admin.RolePlatformAdmin:
 		writeError(w, http.StatusForbidden, "admin_tenant_scope_required",
 			"tenant-scoped admin user reads require a tenant_operator identity")
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	default:
 		writeError(w, http.StatusForbidden, "admin_forbidden_scope",
 			"admin role required")
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
+	}
+}
+
+func buildUnlockAuditInput(r *http.Request, ident admin.AdminIdentity, beforeStatus string) unlockAuditInput {
+	actorRole := ident.Role
+	if actorRole == "" {
+		actorRole = admin.RoleTenantOperator
+	}
+	reqID := middleware.GetReqID(r.Context())
+	var reqIDArg *string
+	if reqID != "" {
+		reqIDArg = &reqID
+	}
+	return unlockAuditInput{
+		ActorID:      fmt.Sprintf("%d", ident.TokenID),
+		ActorRole:    actorRole,
+		RequestID:    reqIDArg,
+		BeforeStatus: beforeStatus,
+	}
+}
+
+func marshalUnlockAuditPayload(beforeStatus, afterStatus string) ([]byte, error) {
+	return json.Marshal(map[string]string{
+		"status_before": beforeStatus,
+		"status_after":  afterStatus,
+	})
+}
+
+func buildUnlockAuditParams(tenantID, userID int64, input unlockAuditInput, payload []byte) admindb.InsertAdminAuditEventParams {
+	return admindb.InsertAdminAuditEventParams{
+		TenantID:   &tenantID,
+		ActorID:    input.ActorID,
+		ActorRole:  input.ActorRole,
+		Action:     "unlock_user",
+		TargetType: "user",
+		TargetID:   &userID,
+		RequestID:  input.RequestID,
+		Payload:    payload,
+	}
+}
+
+func writeUnlockError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, userauth.ErrInvalidInput):
+		writeError(w, http.StatusBadRequest, "invalid_user_id", "user id must be a positive int64")
+	case errors.Is(err, userauth.ErrUserNotFound), errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+	default:
+		writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
+			fmt.Sprintf("unlock user failed: %v", err))
 	}
 }
 

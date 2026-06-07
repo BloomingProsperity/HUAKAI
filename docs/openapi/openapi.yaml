@@ -6638,6 +6638,42 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/users/{id}/unlock:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-users]
+      summary: Unlock one tenant user account
+      operationId: adminUnlockUser
+      description: |
+        Tenant-scoped admin recovery action that clears a locked user's
+        lockout counters and timestamp, converts status `locked` to `active`,
+        and writes an `unlock_user` admin audit event. Cross-tenant ids are
+        not distinguishable from missing users and return 404.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-06-07-auth-124-admin-unlock-codex.md
+        - backend/internal/adminuserhttp/routes.go
+        - backend/internal/userauth/store.go
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: User lockout cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: integer, format: int64 }
+                  status:
+                    type: string
+                    enum: [active, disabled, reset_required, pending_verification, deleted]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/users/{id}/account-bindings/{provider}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'

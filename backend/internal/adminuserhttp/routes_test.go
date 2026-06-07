@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
@@ -180,6 +181,129 @@ func TestAdminUnlinkSocialIdentityRejectsLastLoginMethod(t *testing.T) {
 	}
 }
 
+func TestAdminUnlockUserTenantScopedAudited(t *testing.T) {
+	store := &usersStoreStub{
+		getRow: admindb.AdminGetUserForTenantRow{
+			ID:        101,
+			Email:     "locked@example.test",
+			Role:      "user",
+			Status:    "locked",
+			Balance:   "0.00000000",
+			CreatedAt: pgTimestamp(time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)),
+		},
+	}
+	unlocker := &adminUnlockStub{
+		user: userauth.User{ID: 101, TenantID: 7, Email: "locked@example.test", Status: userauth.UserStatusActive},
+	}
+	audit := &adminAuditStub{}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:     usersAuthStub{ident: tenantOperator(7)},
+		Store:    store,
+		Unlocker: unlocker,
+		Audit:    audit,
+	}, http.MethodPost, "/admin/v1/users/101/unlock", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	if store.getCalls != 1 || store.getArg.TenantID != 7 || store.getArg.UserID != 101 {
+		t.Fatalf("existence check mismatch: calls=%d arg=%+v", store.getCalls, store.getArg)
+	}
+	if unlocker.calls != 1 || unlocker.tenantID != 7 || unlocker.userID != 101 {
+		t.Fatalf("unlock call mismatch: calls=%d tenant=%d user=%d", unlocker.calls, unlocker.tenantID, unlocker.userID)
+	}
+	if audit.calls != 1 {
+		t.Fatalf("audit calls=%d want 1", audit.calls)
+	}
+	if audit.arg.Action != "unlock_user" || audit.arg.TargetType != "user" || audit.arg.ActorID != "12" || audit.arg.ActorRole != admin.RoleTenantOperator {
+		t.Fatalf("audit metadata mismatch: %+v", audit.arg)
+	}
+	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
+		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	}
+	if !strings.Contains(string(audit.arg.Payload), `"status_before":"locked"`) ||
+		!strings.Contains(string(audit.arg.Payload), `"status_after":"active"`) {
+		t.Fatalf("audit payload missing status transition: %s", string(audit.arg.Payload))
+	}
+	var body struct {
+		ID     int64  `json:"id"`
+		Status string `json:"status"`
+	}
+	decodeBody(t, rec, &body)
+	if body.ID != 101 || body.Status != "active" {
+		t.Fatalf("unlock body mismatch: %+v", body)
+	}
+}
+
+func TestAdminUnlockRequiresAdmin(t *testing.T) {
+	store := &usersStoreStub{}
+	unlocker := &adminUnlockStub{}
+	audit := &adminAuditStub{}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:     usersAuthStub{err: admin.ErrAdminUnauthorized},
+		Store:    store,
+		Unlocker: unlocker,
+		Audit:    audit,
+	}, http.MethodPost, "/admin/v1/users/101/unlock", nil)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+	if store.calls() != 0 || unlocker.calls != 0 || audit.calls != 0 {
+		t.Fatalf("unauthorized unlock touched dependencies: store=%+v unlocker=%+v audit=%+v", store, unlocker, audit)
+	}
+}
+
+func TestAdminUnlockUnknownUser404BeforeMutation(t *testing.T) {
+	store := &usersStoreStub{getErr: pgx.ErrNoRows}
+	unlocker := &adminUnlockStub{}
+	audit := &adminAuditStub{}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:     usersAuthStub{ident: tenantOperator(7)},
+		Store:    store,
+		Unlocker: unlocker,
+		Audit:    audit,
+	}, http.MethodPost, "/admin/v1/users/101/unlock", nil)
+
+	assertStatus(t, rec, http.StatusNotFound)
+	if store.getCalls != 1 || store.getArg.TenantID != 7 || store.getArg.UserID != 101 {
+		t.Fatalf("existence check mismatch: calls=%d arg=%+v", store.getCalls, store.getArg)
+	}
+	if unlocker.calls != 0 || audit.calls != 0 {
+		t.Fatalf("unknown user touched mutation dependencies: unlocker=%+v audit=%+v", unlocker, audit)
+	}
+}
+
+func TestAdminUnlockUsesAtomicStoreWhenConfigured(t *testing.T) {
+	store := &usersStoreStub{
+		getRow: admindb.AdminGetUserForTenantRow{
+			ID:        101,
+			Status:    "locked",
+			CreatedAt: pgTimestamp(time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)),
+		},
+	}
+	atomic := &adminUnlockAuditStub{
+		user: userauth.User{ID: 101, TenantID: 7, Status: userauth.UserStatusActive},
+	}
+	unlocker := &adminUnlockStub{}
+	audit := &adminAuditStub{}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:        usersAuthStub{ident: tenantOperator(7)},
+		Store:       store,
+		UnlockAudit: atomic,
+		Unlocker:    unlocker,
+		Audit:       audit,
+	}, http.MethodPost, "/admin/v1/users/101/unlock", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	if atomic.calls != 1 || atomic.tenantID != 7 || atomic.userID != 101 || atomic.input.BeforeStatus != "locked" {
+		t.Fatalf("atomic unlock mismatch: %+v", atomic)
+	}
+	if unlocker.calls != 0 || audit.calls != 0 {
+		t.Fatalf("atomic path used fallback unlock/audit: unlocker=%+v audit=%+v", unlocker, audit)
+	}
+}
+
 type usersAuthStub struct {
 	ident admin.AdminIdentity
 	err   error
@@ -197,6 +321,7 @@ type usersStoreStub struct {
 	getRow             admindb.AdminGetUserForTenantRow
 	historyRows        []admindb.AdminListUserBalanceHistoryForTenantRow
 	twoFAStatsRow      admindb.AdminGetTwoFAAdoptionStatsForTenantRow
+	getErr             error
 	listArg            admindb.AdminListUsersForTenantParams
 	getArg             admindb.AdminGetUserForTenantParams
 	historyArg         admindb.AdminListUserBalanceHistoryForTenantParams
@@ -216,6 +341,9 @@ func (s *usersStoreStub) AdminListUsersForTenant(_ context.Context, arg admindb.
 func (s *usersStoreStub) AdminGetUserForTenant(_ context.Context, arg admindb.AdminGetUserForTenantParams) (admindb.AdminGetUserForTenantRow, error) {
 	s.getCalls++
 	s.getArg = arg
+	if s.getErr != nil {
+		return admindb.AdminGetUserForTenantRow{}, s.getErr
+	}
 	return s.getRow, nil
 }
 
@@ -253,6 +381,59 @@ func (s *adminSocialLinkStub) UnlinkSocialIdentity(_ context.Context, tenantID, 
 		return false, s.err
 	}
 	return s.unlinked, nil
+}
+
+type adminUnlockStub struct {
+	calls    int
+	tenantID int64
+	userID   int64
+	user     userauth.User
+	err      error
+}
+
+func (s *adminUnlockStub) UnlockUser(_ context.Context, tenantID, userID int64) (userauth.User, error) {
+	s.calls++
+	s.tenantID = tenantID
+	s.userID = userID
+	if s.err != nil {
+		return userauth.User{}, s.err
+	}
+	return s.user, nil
+}
+
+type adminAuditStub struct {
+	calls int
+	arg   admindb.InsertAdminAuditEventParams
+	err   error
+}
+
+func (s *adminAuditStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
+	s.calls++
+	s.arg = arg
+	if s.err != nil {
+		return admindb.InsertAdminAuditEventRow{}, s.err
+	}
+	return admindb.InsertAdminAuditEventRow{ID: int64(s.calls)}, nil
+}
+
+type adminUnlockAuditStub struct {
+	calls    int
+	tenantID int64
+	userID   int64
+	input    unlockAuditInput
+	user     userauth.User
+	err      error
+}
+
+func (s *adminUnlockAuditStub) UnlockUserWithAudit(_ context.Context, tenantID, userID int64, input unlockAuditInput) (userauth.User, error) {
+	s.calls++
+	s.tenantID = tenantID
+	s.userID = userID
+	s.input = input
+	if s.err != nil {
+		return userauth.User{}, s.err
+	}
+	return s.user, nil
 }
 
 func invokeAdminUsers(t *testing.T, deps Deps, method, target string, _ any) *httptest.ResponseRecorder {
