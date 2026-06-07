@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ type HCSFDispatchInput struct {
 	Credential      provider.Credential
 	TransportMode   transport.TransportMode
 	RawBody         []byte
+	BodyControls    DispatchBodyControls
 }
 
 type hcsfDispatchInputKey struct{}
@@ -82,7 +84,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		UpstreamModelID: upstreamModel,
 		Credential:      in.Credential,
 		Account:         account,
-	}, env, ingressFamily, endpointFamily, in.RawBody)
+	}, env, ingressFamily, endpointFamily, in.RawBody, in.BodyControls)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequestFromEnvelope/BuildRequest 失败: %w", err)
 	}
@@ -169,15 +171,27 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	return out, nil
 }
 
-func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, ingressFamily string, endpointFamily string, nativeRawBody []byte) (*http.Request, error) {
+func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, ingressFamily string, endpointFamily string, nativeRawBody []byte, controlsOpt ...DispatchBodyControls) (*http.Request, error) {
+	var controls DispatchBodyControls
+	if len(controlsOpt) > 0 {
+		controls = controlsOpt[0]
+	}
 	if b, ok := a.(envelopeRequestBuilder); ok {
-		return b.BuildRequestFromEnvelope(ctx, in, env)
+		req, err := b.BuildRequestFromEnvelope(ctx, in, env)
+		if err != nil {
+			return nil, err
+		}
+		return applyRequestBodyControls(req, controls)
 	}
 	if hcsfProviderRequestUsesNativeRawBody(endpointFamily) {
 		if len(nativeRawBody) == 0 {
 			return nil, fmt.Errorf("dispatcher: HCSF native raw body missing for endpoint family %q", endpointFamily)
 		}
-		in.InboundBody = nativeRawBody
+		body, err := ApplyDispatchBodyControls(nativeRawBody, controls)
+		if err != nil {
+			return nil, err
+		}
+		in.InboundBody = body
 		return a.BuildRequest(ctx, in)
 	}
 	body, err := hcsfRequestBody(env, endpointFamily)
@@ -188,8 +202,35 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 	if err != nil {
 		return nil, err
 	}
+	body, err = ApplyDispatchBodyControls(body, controls)
+	if err != nil {
+		return nil, err
+	}
 	in.InboundBody = body
 	return a.BuildRequest(ctx, in)
+}
+
+func applyRequestBodyControls(req *http.Request, controls DispatchBodyControls) (*http.Request, error) {
+	if req == nil || req.Body == nil || !controls.Enabled() {
+		return req, nil
+	}
+	raw, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := req.Body.Close(); err != nil {
+		return nil, err
+	}
+	body, err := ApplyDispatchBodyControls(raw, controls)
+	if err != nil {
+		return nil, err
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return req, nil
 }
 
 func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {

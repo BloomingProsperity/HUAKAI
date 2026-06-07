@@ -671,6 +671,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		ProtocolFamily:       ex.resolved.ProtocolFamily,
 		UpstreamModelID:      ex.upstreamModelID,
 		InboundBody:          ex.upstreamInboundBody(ex.body),
+		BodyControls:         ex.activeDispatchBodyControls(),
 		Account:              transportSelection.account,
 		Credential:           ex.cred,
 		TransportMode:        transportSelection.mode,
@@ -723,6 +724,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 			classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.accInfo.Platform)
 			decision = gateway.AttemptRetryDecision{ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), AbortReason: "upstream_error"}
 		}
+		decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
 		recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, dispatchRes.StatusCode, ex.requestID)
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, nil)
 		if ex.healthKeyOK {

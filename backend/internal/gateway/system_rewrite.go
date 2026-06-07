@@ -21,6 +21,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/paramgate"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
 // 拼接前后缀时使用的分隔符（两个换行 = 段落级分隔）。
@@ -28,15 +31,15 @@ const systemRewriteSeparator = "\n\n"
 
 // 出参 Reason 的封闭枚举值。改动这里时同步刷新 SystemRewriteResult 的注释。
 const (
-	reasonAlreadyPrefixed = "already_prefixed" // 头部已匹配 PrefixText，未变动
-	reasonRewroteString   = "rewrote_string"   // 原值是字符串，已重写
-	reasonRewroteArray    = "rewrote_array"    // 原值是内容块数组，已重写
-	reasonInsertedString  = "inserted_string"  // 原本无 system 字段，按字符串形态注入
-	reasonReplacedAll     = "replaced_all"     // ReplaceAll 模式覆写所有原内容
-	reasonAppended        = "appended"         // AppendAfter 模式追加在尾部
+	reasonAlreadyPrefixed = "already_prefixed"  // 头部已匹配 PrefixText，未变动
+	reasonRewroteString   = "rewrote_string"    // 原值是字符串，已重写
+	reasonRewroteArray    = "rewrote_array"     // 原值是内容块数组，已重写
+	reasonInsertedString  = "inserted_string"   // 原本无 system 字段，按字符串形态注入
+	reasonReplacedAll     = "replaced_all"      // ReplaceAll 模式覆写所有原内容
+	reasonAppended        = "appended"          // AppendAfter 模式追加在尾部
 	reasonUnsupported     = "unsupported_shape" // system 是数字/对象/布尔等不受支持形态
-	reasonInvalidBody     = "invalid_body"     // body 解析失败
-	reasonEmptyPrefix     = "empty_prefix"     // PrefixText 为空，不动
+	reasonInvalidBody     = "invalid_body"      // body 解析失败
+	reasonEmptyPrefix     = "empty_prefix"      // PrefixText 为空，不动
 )
 
 // SystemRewriteMode 选择 system 字段的重写策略。
@@ -78,6 +81,67 @@ type SystemRewriteResult struct {
 	Body    []byte
 	Applied bool
 	Reason  string
+}
+
+type DispatchBodyControls struct {
+	SystemPrompt *SystemRewritePlan
+	ParamGate    paramgate.GateConfig
+}
+
+// SystemPromptPlanFromBinding converts optional channel metadata into a
+// RewriteSystem plan. Empty metadata returns ok=false so callers can skip JSON
+// parsing and preserve the original body byte-for-byte.
+func SystemPromptPlanFromBinding(binding registry.BindingMetadata) (SystemRewritePlan, bool) {
+	if binding.SystemPrompt == "" {
+		return SystemRewritePlan{}, false
+	}
+	mode := SystemRewriteEnsurePrefix
+	if binding.SystemPromptOverride {
+		mode = SystemRewriteReplaceAll
+	}
+	return SystemRewritePlan{PrefixText: binding.SystemPrompt, Mode: mode}, true
+}
+
+func DispatchBodyControlsFromBinding(binding registry.BindingMetadata) DispatchBodyControls {
+	var controls DispatchBodyControls
+	if plan, ok := SystemPromptPlanFromBinding(binding); ok {
+		controls.SystemPrompt = &plan
+	}
+	controls.ParamGate = paramgate.GateConfig{
+		StripServiceTier:                     binding.StripServiceTier,
+		StripInferenceGeo:                    binding.StripInferenceGeo,
+		StripSpeed:                           binding.StripSpeed,
+		StripSafetyIdentifier:                binding.StripSafetyIdentifier,
+		StripStreamOptionsIncludeObfuscation: binding.StripStreamOptionsIncludeObfuscation,
+		StripStore:                           binding.StripStore,
+	}
+	return controls
+}
+
+func (c DispatchBodyControls) Enabled() bool {
+	return c.SystemPrompt != nil || c.ParamGate.Enabled()
+}
+
+func ApplyDispatchBodyControls(body []byte, controls DispatchBodyControls) ([]byte, error) {
+	if !controls.Enabled() {
+		return body, nil
+	}
+	out := body
+	if controls.SystemPrompt != nil {
+		result, err := RewriteSystem(out, *controls.SystemPrompt)
+		if err != nil {
+			return nil, err
+		}
+		out = result.Body
+	}
+	if controls.ParamGate.Enabled() {
+		var err error
+		out, err = paramgate.StripGatedFields(out, controls.ParamGate)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // systemTextBlock 是 Anthropic content block 中 type=text 的最小投影；

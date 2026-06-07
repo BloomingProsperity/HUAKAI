@@ -319,6 +319,56 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 	return out
 }
 
+func (ex *chatExecution) activeBindingMetadata() (registry.BindingMetadata, bool) {
+	if ex == nil || len(ex.resolved.BindingMetadata) == 0 {
+		return registry.BindingMetadata{}, false
+	}
+	poolGroupID := ex.attempt.PoolGroupID
+	if poolGroupID != 0 {
+		for _, binding := range ex.resolved.BindingMetadata {
+			if binding.PoolGroupID == poolGroupID {
+				return binding, true
+			}
+		}
+	}
+	if len(ex.resolved.BindingMetadata) == 1 {
+		return ex.resolved.BindingMetadata[0], true
+	}
+	return registry.BindingMetadata{}, false
+}
+
+func (ex *chatExecution) activeDispatchBodyControls() gateway.DispatchBodyControls {
+	binding, ok := ex.activeBindingMetadata()
+	if !ok {
+		return gateway.DispatchBodyControls{}
+	}
+	return gateway.DispatchBodyControlsFromBinding(binding)
+}
+
+func (ex *chatExecution) activeStatusCodeMapping() map[int]int {
+	binding, ok := ex.activeBindingMetadata()
+	if !ok {
+		return nil
+	}
+	return binding.StatusCodeMapping
+}
+
+func (ex *chatExecution) activeForceFormat() bool {
+	binding, ok := ex.activeBindingMetadata()
+	return ok && binding.ForceFormat
+}
+
+func (ex *chatExecution) remapClientStatusForUpstream(upstreamStatus int, currentClientStatus int) int {
+	mapping := ex.activeStatusCodeMapping()
+	if len(mapping) == 0 {
+		return currentClientStatus
+	}
+	if mapped, ok := mapping[upstreamStatus]; ok && mapped > 0 {
+		return gateway.RemapClientStatus(upstreamStatus, map[int]int{upstreamStatus: mapped})
+	}
+	return currentClientStatus
+}
+
 func (ex *chatExecution) activateRouteAttempt(attempt router.AttemptPlan) {
 	ex.attempt = attempt
 	ex.routeID = ex.plan.SnapshotVersion
@@ -643,6 +693,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		Credential:      ex.cred,
 		TransportMode:   transportSelection.mode,
 		RawBody:         ex.body,
+		BodyControls:    ex.activeDispatchBodyControls(),
 	})
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
 	// DispatchHCSF 内 MarshalToProviderRequest 会原地往 canonicalReq.CapabilityGraph.ProtocolLoss
@@ -676,6 +727,9 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		}
 		if decision.ClientStatus == 0 {
 			decision.ClientStatus = clientStatus
+		}
+		if upstreamErr != nil {
+			decision.ClientStatus = ex.remapClientStatusForUpstream(upstreamErr.StatusCode, decision.ClientStatus)
 		}
 		if decision.AbortReason == "" {
 			decision.AbortReason = "upstream_dispatch_error"

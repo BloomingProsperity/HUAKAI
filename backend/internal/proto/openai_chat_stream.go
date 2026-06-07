@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,6 +59,67 @@ func (s *OpenAIChatStreamState) openAIChunkBase() map[string]any {
 	}
 }
 
+// ForceOpenAIChatChunkFormat optionally fills the minimum OpenAI Chat SSE JSON
+// chunk keys expected by strict clients. force=false returns an exact copy.
+func ForceOpenAIChatChunkFormat(raw []byte, force bool) ([]byte, error) {
+	if !force {
+		return append([]byte(nil), raw...), nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("[DONE]")) {
+		return append([]byte(nil), raw...), nil
+	}
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, err
+	}
+	if root == nil {
+		return nil, errors.New("proto: openai_chat chunk must be a JSON object")
+	}
+	if object, ok := root["object"].(string); !ok || object == "" {
+		root["object"] = "chat.completion.chunk"
+	}
+	choices, ok := root["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		root["choices"] = []any{
+			map[string]any{
+				"index":         0,
+				"delta":         map[string]any{},
+				"finish_reason": nil,
+			},
+		}
+		return json.Marshal(root)
+	}
+	for i := range choices {
+		choice, ok := choices[i].(map[string]any)
+		if !ok || choice == nil {
+			choice = map[string]any{}
+			choices[i] = choice
+		}
+		if _, ok := choice["index"]; !ok {
+			choice["index"] = i
+		}
+	}
+	root["choices"] = choices
+	return json.Marshal(root)
+}
+
+func (o *OpenAIChatClient) formatChunk(ctx context.Context, raw []byte) []byte {
+	force := o != nil && o.ForceFormat
+	if seed, ok := RequestMetaSeedFromContext(ctx); ok && seed.ForceFormat {
+		force = true
+	}
+	out, err := ForceOpenAIChatChunkFormat(raw, force)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func (o *OpenAIChatClient) marshalChunk(ctx context.Context, chunk map[string]any) []byte {
+	body, _ := json.Marshal(chunk)
+	return o.formatChunk(ctx, body)
+}
+
 // CanonicalEventToClientChunk 把 CanonicalEvent 转 OpenAI Chat SSE chunk。
 func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, canonicalEvt any, state any) ([][]byte, []ProtocolLossEntry, error) {
 	s, err := openAIChatStreamStateRef(state)
@@ -90,7 +152,7 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 				"finish_reason": nil,
 			},
 		}
-		body, _ := json.Marshal(chunk)
+		body := o.marshalChunk(ctx, chunk)
 		return [][]byte{EmitSSEDataLine(body)}, nil, nil
 
 	case "content_block_start":
@@ -127,7 +189,7 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 					"finish_reason": nil,
 				},
 			}
-			body, _ := json.Marshal(chunk)
+			body := o.marshalChunk(ctx, chunk)
 			return [][]byte{EmitSSEDataLine(body)}, nil, nil
 		default:
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_block_start_type_d7_pending:"+evt.ContentBlock.Type, "d7_pending_block_start", "", "")
@@ -148,7 +210,7 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 					"finish_reason": nil,
 				},
 			}
-			body, _ := json.Marshal(chunk)
+			body := o.marshalChunk(ctx, chunk)
 			return [][]byte{EmitSSEDataLine(body)}, nil, nil
 		case "input_json_delta":
 			// 找 tool slot：评 evt.Index → 寻 reverse map（OpenAI partial 累积按 tool slot index）。
@@ -172,7 +234,7 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 					"finish_reason": nil,
 				},
 			}
-			body, _ := json.Marshal(chunk)
+			body := o.marshalChunk(ctx, chunk)
 			return [][]byte{EmitSSEDataLine(body)}, nil, nil
 		case "thinking_delta", "signature_delta":
 			loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_no_thinking_channel_dropped:"+evt.Delta.Type, "thinking_in_chat", CapabilityThinking, "")
@@ -204,7 +266,7 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 		}
 		chunk := s.openAIChunkBase()
 		chunk["choices"] = []any{choice}
-		body, _ := json.Marshal(chunk)
+		body := o.marshalChunk(ctx, chunk)
 		s.Terminated = true
 		return [][]byte{EmitSSEDataLine(body)}, stopLoss, nil
 
@@ -253,7 +315,7 @@ func (o *OpenAIChatClient) FinalizeClientStream(ctx context.Context, state any) 
 				"finish_reason": stop,
 			},
 		}
-		body, _ := json.Marshal(chunk)
+		body := o.marshalChunk(ctx, chunk)
 		out = append(out, EmitSSEDataLine(body))
 		s.Terminated = true
 	}

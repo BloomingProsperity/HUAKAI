@@ -23,6 +23,40 @@ func newTestOpenAIChatCtx(t *testing.T) context.Context {
 	})
 }
 
+func TestForceFormatSynthesizesChunk(t *testing.T) {
+	incomplete := []byte(`{"id":"chatcmpl-x","model":"gpt-4o","choices":[{"delta":{"content":"hi"}}]}`)
+
+	passthrough, err := ForceOpenAIChatChunkFormat(incomplete, false)
+	if err != nil {
+		t.Fatalf("force=false: %v", err)
+	}
+	if !bytes.Equal(passthrough, incomplete) {
+		t.Fatalf("force=false changed chunk\n got %s\nwant %s", passthrough, incomplete)
+	}
+
+	forced, err := ForceOpenAIChatChunkFormat(incomplete, true)
+	if err != nil {
+		t.Fatalf("force=true: %v", err)
+	}
+	var got struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Index int `json:"index"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(forced, &got); err != nil {
+		t.Fatalf("forced chunk is not JSON: %v; body=%s", err, forced)
+	}
+	if got.Object != "chat.completion.chunk" {
+		t.Fatalf("object=%q want chat.completion.chunk; body=%s", got.Object, forced)
+	}
+	if len(got.Choices) != 1 || got.Choices[0].Index != 0 {
+		t.Fatalf("choices/index not synthesized correctly: %+v body=%s", got.Choices, forced)
+	}
+	// MUTATION: if force=true stops synthesizing required keys, object remains
+	// empty or choice index is omitted and this test goes red.
+}
+
 func TestOpenAIChatClient_HappyPath_Text(t *testing.T) {
 	adapter := &OpenAIChatClient{}
 	body := []byte(`{

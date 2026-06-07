@@ -99,6 +99,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.req.Model, ex.acquiredAccountID, ex.acquisitionToken)
+	seed.ForceFormat = ex.activeForceFormat()
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	clientBody, clientLosses, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 	// 响应转换损失之前被丢弃(_);折入 env 并重新快照,使成功 settle 与

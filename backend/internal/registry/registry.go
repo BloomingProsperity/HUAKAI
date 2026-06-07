@@ -76,4 +76,17 @@ type BindingMetadata struct {
 	TPMLimit                *int32
 	MaxParallelRequests     *int32 // LiteLLM GenerateRequestBase.max_parallel_requests analogue
 	FallbackClass           string // 'normal'|'context_window'|'safety'|'quota'|'manual'
+
+	// Channel-level request/response controls. These fields are in-memory only
+	// in this slice; zero values preserve the pre-existing behavior.
+	SystemPrompt                         string
+	SystemPromptOverride                 bool
+	ForceFormat                          bool
+	StatusCodeMapping                    map[int]int
+	StripServiceTier                     bool
+	StripInferenceGeo                    bool
+	StripSpeed                           bool
+	StripSafetyIdentifier                bool
+	StripStreamOptionsIncludeObfuscation bool
+	StripStore                           bool
 }

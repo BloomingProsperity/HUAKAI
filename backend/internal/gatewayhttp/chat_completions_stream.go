@@ -144,6 +144,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
 		InboundBody:     ex.upstreamInboundBody(inboundBody),
+		BodyControls:    ex.activeDispatchBodyControls(),
 		Account:         transportSelection.account,
 		Credential:      ex.cred,
 		TransportMode:   transportSelection.mode,
@@ -200,6 +201,7 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 			AbortReason:  "upstream_error",
 		}
 	}
+	decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
 	recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, dispatchRes.StatusCode, ex.requestID)
 	abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, ex.protocolLoss)
 	if ex.healthKeyOK {
@@ -238,6 +240,9 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	}
 	if clientAdapter != nil {
 		streamForwarder.ClientAdapter = clientAdapter
+	}
+	if ex.activeForceFormat() {
+		streamForwarder.ForceOpenAIChatFormat = true
 	}
 	var ledgerResult auditledger.AuditLedgerResult
 	streamForwarder.LedgerCallback = func(result auditledger.AuditLedgerResult) {
@@ -414,6 +419,9 @@ func (ex *chatExecution) streamingClientAdapter() (proto.ClientAdapter, error) {
 	clientAdapter, ok := proto.DefaultClientAdapterRegistry().Lookup(ex.clientProtocol)
 	if !ok {
 		return nil, fmt.Errorf("client adapter not registered for protocol %q", ex.clientProtocol)
+	}
+	if ex.activeForceFormat() && ex.clientProtocol == proto.ClientProtocolOpenAIChat {
+		return &proto.OpenAIChatClient{ForceFormat: true}, nil
 	}
 	return clientAdapter, nil
 }
