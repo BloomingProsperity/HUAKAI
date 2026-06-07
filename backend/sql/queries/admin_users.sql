@@ -41,6 +41,25 @@ WHERE u.tenant_id = sqlc.arg(tenant_id)::bigint
   AND u.id = sqlc.arg(user_id)::bigint
   AND u.deleted_at IS NULL;
 
+-- name: AdminGetTwoFAAdoptionStatsForTenant :one
+WITH enabled AS (
+    SELECT COUNT(*)::bigint AS enabled_count
+    FROM two_factor_settings
+    WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+      AND is_enabled = true
+),
+total_users AS (
+    SELECT COUNT(*)::bigint AS total_user_count
+    FROM users
+    WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+      AND deleted_at IS NULL
+)
+SELECT
+    enabled.enabled_count,
+    total_users.total_user_count
+FROM enabled
+CROSS JOIN total_users;
+
 -- name: AdminListUserBalanceHistoryForTenant :many
 SELECT
     be.id,

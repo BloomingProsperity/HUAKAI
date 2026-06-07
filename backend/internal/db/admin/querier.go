@@ -36,6 +36,7 @@ type Querier interface {
 	AdminCheckTenantExists(ctx context.Context, tenantID int64) (bool, error)
 	// Tenant-scoped read for revocation flow + audit lookup.
 	AdminGetAPIKeyByID(ctx context.Context, arg AdminGetAPIKeyByIDParams) (AdminGetAPIKeyByIDRow, error)
+	AdminGetTwoFAAdoptionStatsForTenant(ctx context.Context, tenantID int64) (AdminGetTwoFAAdoptionStatsForTenantRow, error)
 	AdminGetUserForTenant(ctx context.Context, arg AdminGetUserForTenantParams) (AdminGetUserForTenantRow, error)
 	// Slice 2 (N+4b2) admin-side api_keys queries.
 	// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.

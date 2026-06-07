@@ -35,11 +35,13 @@ type adminAuth interface {
 type userReadStore interface {
 	AdminListUsersForTenant(context.Context, admindb.AdminListUsersForTenantParams) ([]admindb.AdminListUsersForTenantRow, error)
 	AdminGetUserForTenant(context.Context, admindb.AdminGetUserForTenantParams) (admindb.AdminGetUserForTenantRow, error)
+	AdminGetTwoFAAdoptionStatsForTenant(context.Context, int64) (admindb.AdminGetTwoFAAdoptionStatsForTenantRow, error)
 	AdminListUserBalanceHistoryForTenant(context.Context, admindb.AdminListUserBalanceHistoryForTenantParams) ([]admindb.AdminListUserBalanceHistoryForTenantRow, error)
 }
 
 func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/", newListHandler(d))
+	r.Get("/2fa-adoption-stats", newTwoFAStatsHandler(d))
 	r.Get("/{id}", newGetHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
 }
@@ -71,6 +73,12 @@ type balanceHistoryBody struct {
 	SourceType  string `json:"source_type"`
 	SourceID    int64  `json:"source_id"`
 	OccurredAt  string `json:"occurred_at"`
+}
+
+type twoFAStatsBody struct {
+	EnabledUsers int64   `json:"enabled_users"`
+	TotalUsers   int64   `json:"total_users"`
+	EnabledRate  float64 `json:"enabled_rate"`
 }
 
 func newListHandler(d Deps) http.HandlerFunc {
@@ -110,6 +118,30 @@ func newListHandler(d Deps) http.HandlerFunc {
 			"items":  items,
 			"limit":  limit,
 			"offset": offset,
+		})
+	}
+}
+
+func newTwoFAStatsHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID, ok := resolveTenant(w, r, d)
+		if !ok {
+			return
+		}
+		row, err := d.Store.AdminGetTwoFAAdoptionStatsForTenant(r.Context(), tenantID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
+				fmt.Sprintf("get 2fa adoption stats failed: %v", err))
+			return
+		}
+		rate := 0.0
+		if row.TotalUserCount > 0 {
+			rate = float64(row.EnabledCount) / float64(row.TotalUserCount)
+		}
+		writeJSON(w, http.StatusOK, twoFAStatsBody{
+			EnabledUsers: row.EnabledCount,
+			TotalUsers:   row.TotalUserCount,
+			EnabledRate:  rate,
 		})
 	}
 }
