@@ -2754,7 +2754,7 @@ paths:
   /v1/auth/oauth-init:
     post:
       tags: [auth]
-      summary: Start Google/GitHub OAuth authorization flow
+      summary: Start configured social OAuth authorization flow
       operationId: authOAuthInit
       x-huakai-spec-source: [docs/specs/user-authentication.md]
       security: []
@@ -2783,7 +2783,7 @@ paths:
   /v1/auth/oauth-callback:
     post:
       tags: [auth]
-      summary: Complete neutral Google/GitHub OAuth identity callback
+      summary: Complete configured social OAuth identity callback
       operationId: authOAuthCallback
       x-huakai-spec-source: [docs/specs/user-authentication.md, docs/specs/session-management.md]
       security: []
@@ -2808,6 +2808,35 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/telegram-login:
+    post:
+      tags: [auth]
+      summary: Complete Telegram login-widget identity verification
+      operationId: authTelegramLogin
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/auth_handler.go
+        - backend/internal/telegramauth/telegramauth.go
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthTelegramLoginRequest' }
+      responses:
+        '200':
+          description: Telegram identity accepted and platform session issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '202':
+          description: Telegram identity lacks verified email; pending-email flow is required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -3544,6 +3573,63 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UserAPIKeyIPAllowlistResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/api-keys/{id}/model-allowlist:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [user-api-key-controls]
+      summary: Read the authenticated user's model allowlist for one API key
+      operationId: getUserAPIKeyModelAllowlist
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Allowed model ids for this key. Empty means no model restriction.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed_models: { type: array, items: { type: string } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [user-api-key-controls]
+      summary: Set or clear the authenticated user's model allowlist for one API key
+      operationId: setUserAPIKeyModelAllowlist
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/quota_group_handlers.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                allowed_models: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: Model allowlist updated. Empty or omitted allowed_models clears the restriction.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed_models: { type: array, items: { type: string } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -6557,6 +6643,32 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/users/2fa-adoption-stats:
+    get:
+      tags: [admin-users]
+      summary: Tenant-scoped two-factor adoption summary
+      operationId: getAdminTwoFAAdoptionStats
+      description: |
+        Read-only count of two-factor-enabled users vs total users for the
+        resolved tenant. No mutation; tenant_operator scope mandatory.
+      x-huakai-spec-source:
+        - backend/internal/adminuserhttp/routes.go
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: Two-factor adoption counts and rate for the tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled_users: { type: integer, format: int64 }
+                  total_users: { type: integer, format: int64 }
+                  enabled_rate: { type: number, format: double }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/providers:
     get:
       tags: [admin-provider-catalog]
@@ -8741,7 +8853,7 @@ components:
         email_verified: { type: boolean }
         social_login_provider:
           type: [string, 'null']
-          enum: [google, github, null]
+          enum: [google, github, qq, wechat, dingtalk, nodeseek, linuxdo, oidc, discord, telegram, null]
         status:
           type: string
           enum: [pending_verification, active, disabled, locked, reset_required, deleted]
@@ -8897,7 +9009,7 @@ components:
       required: [tenant_id, provider]
       properties:
         tenant_id: { type: integer, format: int64 }
-        provider: { type: string, enum: [google, github] }
+        provider: { type: string, enum: [google, github, qq, dingtalk, nodeseek, discord] }
         redirect_uri: { type: string, format: uri }
 
     AuthOAuthInitResponse:
@@ -8906,7 +9018,7 @@ components:
       x-huakai-spec-source: [docs/specs/user-authentication.md]
       required: [provider, state, auth_url, expires_at]
       properties:
-        provider: { type: string, enum: [google, github] }
+        provider: { type: string, enum: [google, github, qq, dingtalk, nodeseek, discord] }
         state: { type: string }
         auth_url: { type: string, format: uri }
         expires_at: { type: string, format: date-time }
@@ -8918,9 +9030,24 @@ components:
       required: [tenant_id, provider, state, code]
       properties:
         tenant_id: { type: integer, format: int64 }
-        provider: { type: string, enum: [google, github] }
+        provider: { type: string, enum: [google, github, qq, dingtalk, nodeseek, discord] }
         state: { type: string }
         code: { type: string }
+        device_info: { type: object, additionalProperties: true }
+
+    AuthTelegramLoginRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/auth_handler.go
+        - backend/internal/telegramauth/telegramauth.go
+      required: [tenant_id, params]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        params:
+          type: object
+          additionalProperties: { type: string }
+          description: Telegram login-widget fields including id, auth_date, and hash.
         device_info: { type: object, additionalProperties: true }
 
     AuthSocialIdentityChangedRequest:
@@ -8931,7 +9058,7 @@ components:
       properties:
         tenant_id: { type: integer, format: int64, minimum: 1 }
         user_id: { type: integer, format: int64, minimum: 1 }
-        provider: { type: string, enum: [google, github] }
+        provider: { type: string, enum: [google, github, qq, wechat, dingtalk, nodeseek, linuxdo, oidc, discord, telegram] }
         subject: { type: string }
         change_type: { type: string, description: Safe reason class for the social identity mutation. }
 
@@ -8943,7 +9070,7 @@ components:
       properties:
         tenant_id: { type: integer, format: int64 }
         user_id: { type: integer, format: int64 }
-        provider: { type: string, enum: [google, github] }
+        provider: { type: string, enum: [google, github, qq, wechat, dingtalk, nodeseek, linuxdo, oidc, discord, telegram] }
         session_policy: { type: string, enum: [revoked] }
         reason_class: { type: string }
         sessions_revoked: { type: integer, format: int64, minimum: 0 }

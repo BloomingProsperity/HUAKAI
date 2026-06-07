@@ -319,6 +319,86 @@ func TestOAuthNodeSeekGenericProviderUsesConfiguredSubjectField(t *testing.T) {
 	}
 }
 
+// Mutation guards: omitting the Discord dispatch or using a non-bearer userinfo
+// request makes this standard OAuth2 flow fail; using only global_name loses the
+// username fallback when Discord returns global_name=null.
+func TestOAuthDiscordUsesGenericBearerUserInfo(t *testing.T) {
+	var sawToken, sawUser bool
+	client := &http.Client{Transport: oauthRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host + req.URL.Path {
+		case "discord.com/api/oauth2/token":
+			sawToken = true
+			if err := req.ParseForm(); err != nil {
+				t.Fatalf("parse Discord token form: %v", err)
+			}
+			if req.PostForm.Get("client_id") != "discord-client" ||
+				req.PostForm.Get("client_secret") != "discord-secret" ||
+				req.PostForm.Get("code") != "discord-code" ||
+				req.PostForm.Get("redirect_uri") != "https://app.example/discord" {
+				t.Fatalf("Discord token form mismatch: %v", req.PostForm)
+			}
+			return oauthStubResponse(200, `{"access_token":"discord-token","token_type":"Bearer"}`, "application/json"), nil
+		case "discord.com/api/users/@me":
+			sawUser = true
+			if got := req.Header.Get("Authorization"); got != "Bearer discord-token" {
+				t.Fatalf("Discord Authorization=%q want bearer token", got)
+			}
+			return oauthStubResponse(200, `{
+				"id":"discord-upstream-id",
+				"email":"discord@example.test",
+				"verified":true,
+				"global_name":null,
+				"username":"discord_user"
+			}`, "application/json"), nil
+		default:
+			t.Fatalf("unexpected Discord request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	})}
+	provider, err := NewOAuthHTTPProvider(OAuthConfig{
+		Provider:     SocialProviderDiscord,
+		ClientID:     "discord-client",
+		ClientSecret: "discord-secret",
+		RedirectURI:  "https://app.example/discord",
+	}, client)
+	if err != nil {
+		t.Fatalf("NewOAuthHTTPProvider Discord: %v", err)
+	}
+	authURL, err := provider.AuthorizationURL(OAuthFlowChallenge{
+		State: "discord-state", PKCEChallenge: "pkce", RedirectURI: "https://app.example/discord",
+	})
+	if err != nil {
+		t.Fatalf("AuthorizationURL Discord: %v", err)
+	}
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("parse Discord auth URL: %v", err)
+	}
+	if parsed.Host != "discord.com" || parsed.Path != "/oauth2/authorize" {
+		t.Fatalf("Discord auth endpoint mismatch: %s", authURL)
+	}
+	scope := parsed.Query().Get("scope")
+	if !strings.Contains(scope, "identify") || !strings.Contains(scope, "email") {
+		t.Fatalf("Discord scope=%q want identify+email", scope)
+	}
+	identity, err := provider.ExchangeVerifiedIdentity(context.Background(),
+		OAuthFlowSession{Provider: SocialProviderDiscord, RedirectURI: "https://app.example/discord"},
+		"discord-code")
+	if err != nil {
+		t.Fatalf("Discord ExchangeVerifiedIdentity: %v", err)
+	}
+	if identity.Provider != SocialProviderDiscord ||
+		identity.Subject != "discord-upstream-id" ||
+		identity.Email != "discord@example.test" ||
+		!identity.EmailVerified ||
+		identity.DisplayName != "discord_user" {
+		t.Fatalf("Discord identity mismatch: %+v", identity)
+	}
+	if !sawToken || !sawUser {
+		t.Fatalf("Discord flow did not hit every endpoint: token=%v user=%v", sawToken, sawUser)
+	}
+}
+
 // Mutation guards: removing provider errcode logging makes required substrings
 // disappear; logging raw upstream/request payloads leaks the forbidden sentinels.
 func TestOAuthProviderUpstreamErrorsLogSanitizedDetails(t *testing.T) {
@@ -528,7 +608,7 @@ func TestOAuthNewProviderEndpointGuardRejectsInternalAddresses(t *testing.T) {
 func TestOAuthNewProvidersFailClosedWhenNotRegistered(t *testing.T) {
 	svc := NewService(newMemoryAuthStore(time.Date(2026, 6, 4, 12, 30, 0, 0, time.UTC)))
 	svc.OAuth = NewOAuthService()
-	for _, provider := range []string{SocialProviderQQ, SocialProviderDingTalk, SocialProviderNodeSeek} {
+	for _, provider := range []string{SocialProviderQQ, SocialProviderDingTalk, SocialProviderNodeSeek, SocialProviderDiscord} {
 		if _, err := svc.StartOAuth(context.Background(), OAuthInitInput{
 			TenantID: 1, Provider: provider,
 		}); !errors.Is(err, ErrOAuthProviderMissing) {

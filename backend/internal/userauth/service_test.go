@@ -539,6 +539,8 @@ func TestNormalizeSocialProviderAcceptsMultiOAuthNames(t *testing.T) {
 		{"linuxdo", "linuxdo", SocialProviderLinuxDo},
 		{"oidc", "OIDC", SocialProviderOIDC},
 		{"oidc_slug", "oidc:corp-sso", SocialProviderOIDC},
+		{"discord", " DISCORD ", SocialProviderDiscord},
+		{"telegram", "Telegram", SocialProviderTelegram},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -546,6 +548,41 @@ func TestNormalizeSocialProviderAcceptsMultiOAuthNames(t *testing.T) {
 				t.Fatalf("normalizeSocialProvider(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDiscordOAuthCompleteUsesNormalizedProviderAndSubjectLink(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 9, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+	svc.OAuth = NewOAuthService(&fakeOAuthProvider{
+		provider: SocialProviderDiscord,
+		identity: VerifiedIdentity{
+			Provider: SocialProviderDiscord, Subject: "discord-subject",
+			Email: "discord@example.test", DisplayName: "Discord User", EmailVerified: true,
+		},
+	})
+	init, err := svc.StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: " DISCORD "})
+	if err != nil {
+		t.Fatalf("StartOAuth Discord: %v", err)
+	}
+	user, err := svc.CompleteOAuth(ctx, OAuthCallbackInput{
+		TenantID: 1, Provider: "discord", State: init.State, Code: "discord-code",
+	})
+	if err != nil {
+		t.Fatalf("CompleteOAuth Discord: %v", err)
+	}
+	if user.TenantID != 1 || user.Email != "discord@example.test" || user.SocialLoginProvider != SocialProviderDiscord {
+		t.Fatalf("Discord social signup mismatch: %+v", user)
+	}
+	linked, err := store.GetUserBySocialIdentity(ctx, 1, SocialProviderDiscord, "discord-subject")
+	if err != nil {
+		t.Fatalf("lookup Discord social identity: %v", err)
+	}
+	if linked.ID != user.ID {
+		t.Fatalf("Discord subject linked user %d, want %d", linked.ID, user.ID)
 	}
 }
 
@@ -593,6 +630,29 @@ func TestStartOAuthOIDCSlugUsesStableProviderAndPKCENonce(t *testing.T) {
 	}
 	if user.TenantID != 1 || user.Email != "oidc@example.test" || user.SocialLoginProvider != SocialProviderOIDC {
 		t.Fatalf("oidc slug flow linked wrong user: %+v", user)
+	}
+}
+
+func TestApplyVerifiedSocialIdentityRejectsTelegramSyntheticEmailPendingVerification(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 9, 30, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+
+	_, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
+		Provider: SocialProviderTelegram,
+		Subject:  "424242",
+		Email:    SyntheticOAuthEmail(SocialProviderTelegram, "424242"),
+		// Telegram login-widget does not prove email ownership. This must stay
+		// false so the shared pending-email path rejects instead of creating a user.
+		EmailVerified: false,
+	})
+	if !errors.Is(err, ErrOAuthPendingEmailRequired) {
+		t.Fatalf("Telegram synthetic email identity err=%v want ErrOAuthPendingEmailRequired", err)
+	}
+	if len(store.users) != 0 || len(store.socialLinks) != 0 {
+		t.Fatalf("Telegram pending-email identity persisted users=%+v links=%+v", store.users, store.socialLinks)
 	}
 }
 

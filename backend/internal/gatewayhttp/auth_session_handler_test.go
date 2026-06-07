@@ -3,11 +3,15 @@ package gatewayhttp
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -892,6 +896,8 @@ func TestSafeSocialProviderAcceptsMultiOAuthProviders(t *testing.T) {
 		{"nodeseek", userauth.SocialProviderNodeSeek},
 		{"linuxdo", userauth.SocialProviderLinuxDo},
 		{"OIDC", userauth.SocialProviderOIDC},
+		{"discord", userauth.SocialProviderDiscord},
+		{"TELEGRAM", userauth.SocialProviderTelegram},
 	}
 	for _, tc := range tests {
 		t.Run(tc.want, func(t *testing.T) {
@@ -900,6 +906,42 @@ func TestSafeSocialProviderAcceptsMultiOAuthProviders(t *testing.T) {
 				t.Fatalf("safeSocialProvider(%q) = (%q, %v), want (%q, true)", tc.in, got, ok, tc.want)
 			}
 		})
+	}
+}
+
+func TestTelegramLoginWidgetRejectsEmaillessIdentityWithPendingEmail(t *testing.T) {
+	now := time.Date(2026, 6, 7, 10, 30, 0, 0, time.UTC)
+	authStore := newGatewayMemoryAuthStore(now)
+	authSvc := userauth.NewService(authStore)
+	authSvc.Now = func() time.Time { return now }
+	sessions := newGatewayTestSessionService(now)
+	router := chi.NewRouter()
+	router.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{
+			Auth: authSvc, Sessions: sessions,
+			TelegramBotToken:     "123456:bot-secret",
+			TelegramWidgetMaxAge: 24 * time.Hour,
+		})
+	})
+
+	params := signedTelegramGatewayParams("123456:bot-secret", map[string]string{
+		"id":         "424242",
+		"first_name": "Ada",
+		"last_name":  "Lovelace",
+		"username":   "ada_dev",
+		"auth_date":  strconv.FormatInt(now.Unix(), 10),
+	})
+	rec := serveJSON(t, router, http.MethodPost, "/v1/auth/telegram-login", map[string]any{
+		"tenant_id":   1,
+		"params":      params,
+		"device_info": map[string]any{"device": "browser"},
+	})
+	assertHTTPStatus(t, rec, http.StatusAccepted)
+	if !strings.Contains(rec.Body.String(), "oauth_pending_email_required") {
+		t.Fatalf("Telegram pending-email body=%s", rec.Body.String())
+	}
+	if len(authStore.users) != 0 || len(authStore.socialLinks) != 0 {
+		t.Fatalf("Telegram pending-email handler persisted users=%+v links=%+v", authStore.users, authStore.socialLinks)
 	}
 }
 
@@ -917,6 +959,33 @@ func TestWriteAuthErrorForPendingOAuthAvoidsBackendError(t *testing.T) {
 		!strings.Contains(rec.Body.String(), "oauth_pending_email_required") {
 		t.Fatalf("pending OAuth error body = %s, want pending reason and no backend fallback", rec.Body.String())
 	}
+}
+
+func signedTelegramGatewayParams(botToken string, params map[string]string) map[string]string {
+	out := make(map[string]string, len(params)+1)
+	for k, v := range params {
+		out[k] = v
+	}
+	secret := sha256.Sum256([]byte(botToken))
+	mac := hmac.New(sha256.New, secret[:])
+	mac.Write([]byte(telegramGatewayCheckString(out)))
+	out["hash"] = hex.EncodeToString(mac.Sum(nil))
+	return out
+}
+
+func telegramGatewayCheckString(params map[string]string) string {
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		if key != "hash" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, key+"="+params[key])
+	}
+	return strings.Join(lines, "\n")
 }
 
 type captureAuthEmail struct {

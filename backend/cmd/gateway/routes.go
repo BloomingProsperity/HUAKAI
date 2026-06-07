@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -478,6 +479,7 @@ func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 		LoginThrottle:     d.loginThrottle,
 		TwoFactor:         d.twoFactor,
 		TwoFactorSettings: d.platformSettings,
+		TelegramBotToken:  strings.TrimSpace(os.Getenv("HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN")),
 	}
 }
 

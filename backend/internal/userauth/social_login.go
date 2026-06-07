@@ -16,6 +16,8 @@ const (
 	SocialProviderNodeSeek = "nodeseek"
 	SocialProviderLinuxDo  = "linuxdo"
 	SocialProviderOIDC     = "oidc"
+	SocialProviderDiscord  = "discord"
+	SocialProviderTelegram = "telegram"
 )
 
 type OAuthConfig struct {
@@ -146,6 +148,10 @@ func (s *Service) CompleteOAuth(ctx context.Context, in OAuthCallbackInput) (Use
 		return User{}, err
 	}
 	return s.applyVerifiedSocialIdentity(ctx, in.TenantID, identity)
+}
+
+func (s *Service) ApplyVerifiedSocialIdentity(ctx context.Context, tenantID int64, identity VerifiedIdentity) (User, error) {
+	return s.applyVerifiedSocialIdentity(ctx, tenantID, identity)
 }
 
 func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int64, identity VerifiedIdentity) (User, error) {
@@ -295,6 +301,10 @@ func normalizeSocialProvider(provider string) string {
 		return SocialProviderLinuxDo
 	case p == SocialProviderOIDC || strings.HasPrefix(p, SocialProviderOIDC+":"):
 		return SocialProviderOIDC
+	case p == SocialProviderDiscord:
+		return SocialProviderDiscord
+	case p == SocialProviderTelegram:
+		return SocialProviderTelegram
 	default:
 		return ""
 	}

@@ -246,7 +246,7 @@ func loadSessionSigningKey() ([]byte, error) {
 }
 
 func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
-	providers := make([]userauth.OAuthProvider, 0, 5)
+	providers := make([]userauth.OAuthProvider, 0, 6)
 	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
 		Provider:     userauth.SocialProviderGoogle,
 		ClientID:     os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_ID"),
@@ -310,6 +310,18 @@ func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
 	}); p != nil {
 		providers = append(providers, p)
 	}
+	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
+		Provider:     userauth.SocialProviderDiscord,
+		ClientID:     os.Getenv("HUAKAI_DISCORD_OAUTH_CLIENT_ID"),
+		ClientSecret: os.Getenv("HUAKAI_DISCORD_OAUTH_CLIENT_SECRET"),
+		RedirectURI:  os.Getenv("HUAKAI_DISCORD_OAUTH_REDIRECT_URI"),
+		AuthURL:      os.Getenv("HUAKAI_DISCORD_OAUTH_AUTH_URL"),
+		TokenURL:     os.Getenv("HUAKAI_DISCORD_OAUTH_TOKEN_URL"),
+		UserURL:      os.Getenv("HUAKAI_DISCORD_OAUTH_USERINFO_URL"),
+		Scopes:       parseCSVAllowlistEnv("HUAKAI_DISCORD_OAUTH_SCOPES"),
+	}); p != nil {
+		providers = append(providers, p)
+	}
 	return userauth.NewOAuthService(providers...)
 }
 
@@ -340,7 +352,7 @@ func buildOAuthProvider(logger *zap.Logger, cfg userauth.OAuthConfig) userauth.O
 
 func oauthProviderRequiresClientSecret(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case userauth.SocialProviderQQ, userauth.SocialProviderDingTalk, userauth.SocialProviderNodeSeek:
+	case userauth.SocialProviderQQ, userauth.SocialProviderDingTalk, userauth.SocialProviderNodeSeek, userauth.SocialProviderDiscord:
 		return true
 	default:
 		return false

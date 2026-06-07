@@ -12,6 +12,7 @@ func TestBuildUserOAuthServiceNewProvidersFailClosedWithoutCompleteCredentials(t
 	clearSocialOAuthProviderEnv(t)
 	t.Setenv("HUAKAI_QQ_OAUTH_CLIENT_ID", "qq-id")
 	t.Setenv("HUAKAI_DINGTALK_OAUTH_CLIENT_SECRET", "ding-secret")
+	t.Setenv("HUAKAI_DISCORD_OAUTH_CLIENT_ID", "discord-id")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_CLIENT_ID", "node-id")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_CLIENT_SECRET", "node-secret")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_AUTH_URL", "https://oauth.nodeseek.example/authorize")
@@ -22,6 +23,7 @@ func TestBuildUserOAuthServiceNewProvidersFailClosedWithoutCompleteCredentials(t
 	for _, provider := range []string{
 		userauth.SocialProviderQQ,
 		userauth.SocialProviderDingTalk,
+		userauth.SocialProviderDiscord,
 		userauth.SocialProviderNodeSeek,
 	} {
 		if _, ok := svc.Provider(provider); ok {
@@ -40,6 +42,9 @@ func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkAndNodeSeek(t *testin
 	t.Setenv("HUAKAI_DINGTALK_OAUTH_CLIENT_ID", "ding-id")
 	t.Setenv("HUAKAI_DINGTALK_OAUTH_CLIENT_SECRET", "ding-secret")
 	t.Setenv("HUAKAI_DINGTALK_OAUTH_REDIRECT_URI", "https://app.example/ding")
+	t.Setenv("HUAKAI_DISCORD_OAUTH_CLIENT_ID", "discord-id")
+	t.Setenv("HUAKAI_DISCORD_OAUTH_CLIENT_SECRET", "discord-secret")
+	t.Setenv("HUAKAI_DISCORD_OAUTH_REDIRECT_URI", "https://app.example/discord")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_CLIENT_ID", "node-id")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_CLIENT_SECRET", "node-secret")
 	t.Setenv("HUAKAI_NODESEEK_OAUTH_AUTH_URL", "https://oauth.nodeseek.example/authorize")
@@ -54,6 +59,7 @@ func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkAndNodeSeek(t *testin
 	for _, provider := range []string{
 		userauth.SocialProviderQQ,
 		userauth.SocialProviderDingTalk,
+		userauth.SocialProviderDiscord,
 		userauth.SocialProviderNodeSeek,
 	} {
 		if _, ok := svc.Provider(provider); !ok {
@@ -99,6 +105,13 @@ func clearSocialOAuthProviderEnv(t *testing.T) {
 		"HUAKAI_DINGTALK_OAUTH_AUTH_URL",
 		"HUAKAI_DINGTALK_OAUTH_TOKEN_URL",
 		"HUAKAI_DINGTALK_OAUTH_USER_URL",
+		"HUAKAI_DISCORD_OAUTH_CLIENT_ID",
+		"HUAKAI_DISCORD_OAUTH_CLIENT_SECRET",
+		"HUAKAI_DISCORD_OAUTH_REDIRECT_URI",
+		"HUAKAI_DISCORD_OAUTH_AUTH_URL",
+		"HUAKAI_DISCORD_OAUTH_TOKEN_URL",
+		"HUAKAI_DISCORD_OAUTH_USERINFO_URL",
+		"HUAKAI_DISCORD_OAUTH_SCOPES",
 		"HUAKAI_NODESEEK_OAUTH_CLIENT_ID",
 		"HUAKAI_NODESEEK_OAUTH_CLIENT_SECRET",
 		"HUAKAI_NODESEEK_OAUTH_REDIRECT_URI",
