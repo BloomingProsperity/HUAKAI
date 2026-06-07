@@ -1214,6 +1214,124 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /suno/submit:
+    post:
+      tags: [suno]
+      summary: Submit a Suno-compatible async music task
+      operationId: submitSunoTask
+      x-huakai-spec-source:
+        - backend/internal/sunoclient/router.go
+        - backend/internal/sunoclient/translate.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SunoTaskRequest' }
+      responses:
+        '202':
+          description: Suno task accepted for async provider submission and polling.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTaskSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /suno/submit/{action}:
+    post:
+      tags: [suno]
+      summary: Submit an action-specific Suno-compatible async music task
+      operationId: submitSunoActionTask
+      x-huakai-spec-source:
+        - backend/internal/sunoclient/router.go
+        - backend/internal/sunoclient/translate.go
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - name: action
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_-]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SunoTaskRequest' }
+      responses:
+        '202':
+          description: Suno action task accepted for async provider submission and polling.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTaskSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /suno/fetch:
+    get:
+      tags: [suno]
+      summary: Fetch a Suno-compatible async music task by query id
+      operationId: fetchSunoTaskByQuery
+      x-huakai-spec-source:
+        - backend/internal/sunoclient/router.go
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+          description: HUAKAI media task id. `task_id` is also accepted as a compatibility alias.
+        - name: task_id
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+          description: Alias for `id`.
+      responses:
+        '200':
+          description: Caller-owned Suno task status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /suno/fetch/{id}:
+    get:
+      tags: [suno]
+      summary: Fetch a Suno-compatible async music task by path id
+      operationId: fetchSunoTask
+      x-huakai-spec-source:
+        - backend/internal/sunoclient/router.go
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Caller-owned Suno task status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/keys/{id}/usage-summary:
     get:
       tags: [user-audit]
@@ -11661,6 +11779,31 @@ components:
           type: integer
           minimum: 1
           maximum: 200
+
+    SunoTaskRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source:
+        - backend/internal/sunoclient/translate.go
+      properties:
+        request_id:
+          type: string
+          description: Optional stable idempotency key. If omitted, the server generates one.
+        requestId:
+          type: string
+          description: Camel-case alias for request_id.
+        gpt_description_prompt: { type: string }
+        prompt: { type: string }
+        mv: { type: string }
+        title: { type: string }
+        tags: { type: string }
+        continue_at: {}
+        continue_clip_id: { type: string }
+        make_instrumental: { type: boolean }
+        model_version: { type: string }
+        custom_mode: { type: boolean }
+        input: { type: string }
+        notify_hook: { type: string, format: uri }
 
     MediaTaskStatus:
       type: string

@@ -109,3 +109,19 @@ func TestHTTPProviderRegistryAcceptsMidjourneyAlias(t *testing.T) {
 		t.Fatalf("Provider(midjourney) ok=%v err=%v want available", ok, err)
 	}
 }
+
+func TestHTTPProviderRegistryAcceptsSunoAlias(t *testing.T) {
+	// MUTATION: leave the registry hard-coded to provider names "http" and
+	// "midjourney"; Suno tasks translated with Provider=suno cannot reuse the
+	// async HTTP relay.
+	registry := NewHTTPProviderRegistry(StaticConfigSource{Config: Config{
+		Enabled: true, ProviderBaseURL: "http://provider.example",
+		DefaultEstimatedCents: map[string]int64{
+			"suno_generate": 123,
+		},
+	}}, http.DefaultClient)
+
+	if _, ok, err := registry.Provider(context.Background(), "suno"); err != nil || !ok {
+		t.Fatalf("Provider(suno) ok=%v err=%v want available", ok, err)
+	}
+}

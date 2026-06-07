@@ -185,6 +185,10 @@ func TestOpenAPI_ModuleBInboundRoutesMountedAndDocumented(t *testing.T) {
 		{method: http.MethodGet, path: "/mj/task/{id}/fetch"},
 		{method: http.MethodGet, path: "/mj/task/{id}/image-seed"},
 		{method: http.MethodPost, path: "/mj/task/list-by-condition"},
+		{method: http.MethodPost, path: "/suno/submit"},
+		{method: http.MethodPost, path: "/suno/submit/{action}"},
+		{method: http.MethodGet, path: "/suno/fetch"},
+		{method: http.MethodGet, path: "/suno/fetch/{id}"},
 	} {
 		if !hasOperation(implOps, tc.method, tc.path) {
 			t.Fatalf("runtime missing %s %s", tc.method, tc.path)
