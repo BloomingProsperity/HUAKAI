@@ -148,7 +148,7 @@ func TestUsageOverviewSQLUsesWindowDistinctSuccessAndDayBucket(t *testing.T) {
 
 	trendSQL := strings.Join(strings.Fields(aggregateUsageOverviewTrendByDay), " ")
 	for _, want := range []string{
-		"date_trunc('day', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day",
+		"(date_trunc('day', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS day",
 		"WHERE ur.settled_at >= $1::timestamptz",
 		"GROUP BY 1",
 		"ORDER BY 1 ASC",
@@ -175,7 +175,7 @@ func TestMyUsageTimeSeriesSQLUsesRequestedGranularityAndCallerScope(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			sql := strings.Join(strings.Fields(tc.sql), " ")
 			for _, want := range []string{
-				"date_trunc('" + tc.bucket + "', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS day",
+				"(date_trunc('" + tc.bucket + "', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS day",
 				"ur.tenant_id = $1::bigint",
 				"ur.api_key_id = $2::bigint",
 				"ur.settled_at >= $3::timestamptz",

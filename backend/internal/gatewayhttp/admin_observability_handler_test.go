@@ -39,16 +39,22 @@ type obsStoreStub struct {
 	usage, usageCursor []dbbilling.ListUsageRecordsRow
 	claims             []dbbilling.ListBillingClaimsRow
 	audit              []dbbilling.ListAuditEventsRow
+	usageCountArg      dbbilling.CountUsageRecordsParams
 	usageArg           dbbilling.ListUsageRecordsParams
 	claimsArg          dbbilling.ListBillingClaimsParams
 	auditArg           dbbilling.ListAuditEventsParams
+	usageCountCalls    int
+	usageListCalls     int
 }
 
-func (s *obsStoreStub) CountUsageRecords(context.Context, dbbilling.CountUsageRecordsParams) (int64, error) {
+func (s *obsStoreStub) CountUsageRecords(_ context.Context, arg dbbilling.CountUsageRecordsParams) (int64, error) {
+	s.usageCountArg = arg
+	s.usageCountCalls++
 	return int64(len(s.usage)), nil
 }
 func (s *obsStoreStub) ListUsageRecords(_ context.Context, arg dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
 	s.usageArg = arg
+	s.usageListCalls++
 	if arg.HasCursor && s.usageCursor != nil {
 		return s.usageCursor, nil
 	}
@@ -160,6 +166,35 @@ func TestAdminObsBadCursor(t *testing.T) {
 	assertStatus(t, invokeObs(NewUsageHandler(deps), "/admin/v1/usage?cursor=@@@"), http.StatusBadRequest)
 }
 
+func TestUsageOutcomeInvalid(t *testing.T) {
+	store := &obsStoreStub{}
+	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage?outcome=bogus")
+	assertStatus(t, rec, http.StatusBadRequest)
+	// MUTATION: accepting any outcome reaches the store and returns a non-invalid_outcome response.
+	if !strings.Contains(rec.Body.String(), "invalid_outcome") || store.usageCountCalls != 0 || store.usageListCalls != 0 {
+		t.Fatalf("invalid outcome response/body/store calls mismatch: status=%d body=%s countCalls=%d listCalls=%d", rec.Code, rec.Body.String(), store.usageCountCalls, store.usageListCalls)
+	}
+}
+
+func TestUsageOutcomeDefaultAll(t *testing.T) {
+	store := &obsStoreStub{usage: []dbbilling.ListUsageRecordsRow{
+		usageRowWithEndClass(1, "non_streaming"),
+		usageRowWithEndClass(2, "upstream_error_5xx"),
+	}}
+	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage")
+	assertStatus(t, rec, http.StatusOK)
+	// MUTATION: defaulting absent outcome to error or success changes the threaded query value.
+	if store.usageArg.Outcome == nil || *store.usageArg.Outcome != "all" || store.usageCountArg.Outcome == nil || *store.usageCountArg.Outcome != "all" {
+		t.Fatalf("default outcome params mismatch: count=%+v list=%+v", store.usageCountArg, store.usageArg)
+	}
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 2 {
+		t.Fatalf("default outcome should keep both success and error rows: body=%s err=%v", rec.Body.String(), err)
+	}
+}
+
 func TestAdminObsLargeLimit(t *testing.T) {
 	deps := obsDepsStub{auth: obsAuthStub{}, s: &obsStoreStub{}}
 	assertStatus(t, invokeObs(NewClaimsHandler(deps), "/admin/v1/billing/claims?limit=201"), http.StatusBadRequest)
@@ -210,6 +245,11 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 func usageRow(id int64) dbbilling.ListUsageRecordsRow {
 	providerAccountID := int64(50)
 	return dbbilling.ListUsageRecordsRow{ID: id, TenantID: 7, ClaimID: 20 + id, APIKeyID: 30, UserID: 40, ProviderAccountID: &providerAccountID, AttemptSeq: 1, ActualCost: decimal.RequireFromString("0.01000000"), EndClass: "non_streaming", UsageSource: "reported", CreatedAt: ts(id)}
+}
+func usageRowWithEndClass(id int64, endClass string) dbbilling.ListUsageRecordsRow {
+	row := usageRow(id)
+	row.EndClass = endClass
+	return row
 }
 func claimRow(id int64) dbbilling.ListBillingClaimsRow {
 	return dbbilling.ListBillingClaimsRow{ID: id, TenantID: 7, IdempotencyKey: "idem", APIKeyID: 1, UserID: 2, LogicalRequestID: "lr", EndpointFamily: "chat", RequestedModel: "m", AttemptSeq: 1, PredictedCost: decimal.RequireFromString("0.01000000"), CurrencyCode: "USD", Status: "committed", CreatedAt: ts(id)}

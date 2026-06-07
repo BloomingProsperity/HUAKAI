@@ -43,6 +43,12 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
       )
     )
   )
+  AND (
+    sqlc.narg(outcome)::text IS NULL
+    OR sqlc.narg(outcome)::text = 'all'
+    OR (sqlc.narg(outcome)::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
+    OR (sqlc.narg(outcome)::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
+  )
   AND (sqlc.arg(has_cursor)::boolean = false OR (ur.settled_at, ur.id) < (sqlc.arg(cursor_created_at)::timestamptz, sqlc.arg(cursor_id)::bigint))
 ORDER BY ur.settled_at DESC, ur.id DESC
 LIMIT sqlc.arg(page_limit)::integer;
@@ -127,6 +133,12 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
           AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
+  )
+  AND (
+    sqlc.narg(outcome)::text IS NULL
+    OR sqlc.narg(outcome)::text = 'all'
+    OR (sqlc.narg(outcome)::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
+    OR (sqlc.narg(outcome)::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
   );
 
 -- name: ListBillingClaims :many
