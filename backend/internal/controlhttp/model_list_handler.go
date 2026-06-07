@@ -97,39 +97,43 @@ func NewModelListHandler(d ModelListDeps) http.HandlerFunc {
 			Data:   make([]modelObject, 0, len(models)),
 		}
 		for _, model := range models {
-			item := modelObject{
-				ID:      model.ID,
-				Object:  "model",
-				Created: model.CreatedAt.Unix(),
-				OwnedBy: model.OwnedBy,
-			}
-			if model.ContextWindow > 0 {
-				contextLength := model.ContextWindow
-				item.ContextLength = &contextLength
-			}
-			if len(model.Capabilities) > 0 {
-				item.Capabilities = model.Capabilities
-			}
-			if model.MaxOutputTokens != nil {
-				item.MaxOutputTokens = model.MaxOutputTokens
-			}
-			if model.Mode != "" {
-				item.Mode = model.Mode
-			}
-			if price, ok := prices.Lookup(model.ID, model.CanonicalID); ok {
-				pricing := modelPricing{}
-				if price.HasInput {
-					pricing.InputPerToken = price.InputPerToken.String()
-				}
-				if price.HasOutput {
-					pricing.OutputPerToken = price.OutputPerToken.String()
-				}
-				item.Pricing = &pricing
-			}
-			out.Data = append(out.Data, item)
+			out.Data = append(out.Data, modelObjectFromListedModel(model, prices))
 		}
 		modelWriteJSON(w, http.StatusOK, out)
 	}
+}
+
+func modelObjectFromListedModel(model registry.ListedModel, prices billing.PublicPriceTable) modelObject {
+	item := modelObject{
+		ID:      model.ID,
+		Object:  "model",
+		Created: model.CreatedAt.Unix(),
+		OwnedBy: model.OwnedBy,
+	}
+	if model.ContextWindow > 0 {
+		contextLength := model.ContextWindow
+		item.ContextLength = &contextLength
+	}
+	if len(model.Capabilities) > 0 {
+		item.Capabilities = model.Capabilities
+	}
+	if model.MaxOutputTokens != nil {
+		item.MaxOutputTokens = model.MaxOutputTokens
+	}
+	if model.Mode != "" {
+		item.Mode = model.Mode
+	}
+	if price, ok := prices.Lookup(model.ID, model.CanonicalID); ok {
+		pricing := modelPricing{}
+		if price.HasInput {
+			pricing.InputPerToken = price.InputPerToken.String()
+		}
+		if price.HasOutput {
+			pricing.OutputPerToken = price.OutputPerToken.String()
+		}
+		item.Pricing = &pricing
+	}
+	return item
 }
 
 func modelWriteJSON(w http.ResponseWriter, status int, payload any) {

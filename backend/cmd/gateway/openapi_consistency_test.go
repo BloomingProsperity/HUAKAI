@@ -160,6 +160,63 @@ func TestCodexResponsesIngressRouteMounted(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_ModuleBInboundRoutesMountedAndDocumented(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/v1/responses/compact"},
+		{method: http.MethodPost, path: "/backend-api/codex/responses/compact"},
+		{method: http.MethodPost, path: "/engines/{model}/embeddings"},
+		{method: http.MethodGet, path: "/v1/models/{model}"},
+	} {
+		if !hasOperation(implOps, tc.method, tc.path) {
+			t.Fatalf("runtime missing %s %s", tc.method, tc.path)
+		}
+		if !hasOperation(specOps, tc.method, tc.path) {
+			t.Fatalf("OpenAPI missing %s %s", tc.method, tc.path)
+		}
+	}
+
+	compactRec := httptest.NewRecorder()
+	compactReq := httptest.NewRequest(http.MethodPost, "/v1/responses/compact",
+		strings.NewReader(`{"model":"m","input":"x","stream":true}`))
+	compactReq.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(compactRec, compactReq)
+	if compactRec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/responses/compact status=%d body=%s want 400 stream guard", compactRec.Code, compactRec.Body.String())
+	}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPost, path: "/backend-api/codex/responses/compact", body: `{"model":"m","input":"x","stream":true}`},
+		{method: http.MethodPost, path: "/engines/text-embed-3/embeddings", body: `{"input":"x"}`},
+		{method: http.MethodGet, path: "/v1/models/gpt-x"},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(rec, req)
+		if rec.Code == http.StatusNotFound {
+			t.Fatalf("%s %s returned 404; route must be mounted", tc.method, tc.path)
+		}
+	}
+}
+
 func TestOpenAPI_CompletionsAndCountTokensMountedAndDocumented(t *testing.T) {
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {

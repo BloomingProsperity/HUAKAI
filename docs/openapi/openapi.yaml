@@ -256,6 +256,56 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /engines/{model}/embeddings:
+    post:
+      tags: [gateway]
+      summary: Legacy engines embeddings alias
+      operationId: postEngineEmbeddings
+      x-huakai-spec-source:
+        - backend/internal/engineembeddingsalias/alias.go
+        - backend/internal/embeddingshttp/handler.go
+      description: |
+        Legacy OpenAI-compatible embeddings alias. When the JSON body omits
+        `model`, HUAKAI injects the `{model}` path value and then delegates to
+        the same canonical `/v1/embeddings` handler.
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required: [input]
+              properties:
+                model: { type: string }
+                input:
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items: { type: string }
+                encoding_format: { type: string, enum: [float, base64] }
+                dimensions: { type: integer, minimum: 1 }
+                user: { type: string }
+      responses:
+        '200':
+          description: Successful OpenAI-compatible embeddings response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingsResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/rerank:
     post:
       tags: [gateway]
@@ -555,6 +605,58 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/responses/compact:
+    post:
+      tags: [gateway]
+      summary: Compact Responses compatible relay
+      operationId: postResponsesCompact
+      x-huakai-spec-source:
+        - backend/internal/responsescompacthttp/handler.go
+        - docs/specs/protocol-translation.md
+        - docs/specs/observability-billing.md
+      description: |
+        Compact Responses ingress for non-streaming clients. A top-level
+        `stream:true` request returns `400` with `error.type` set to
+        `invalid_request_error`; any present non-true `stream` field is removed
+        before delegating to the canonical `/v1/responses` pipeline.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResponsesRequest' }
+      responses:
+        '200':
+          description: Successful non-streaming Responses response.
+          headers:
+            X-HUAKAI-Protocol-Loss: { schema: { type: string } }
+            X-HUAKAI-Idempotency-Hit: { schema: { type: string, enum: ['true'] } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResponsesResponse' }
+        '400':
+          description: Malformed request or unsupported compact streaming request.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [error]
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required: [type, message]
+                    properties:
+                      type: { type: string, enum: [invalid_request_error] }
+                      message: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /backend-api/codex/responses:
     post:
       tags: [gateway]
@@ -588,6 +690,57 @@ paths:
             text/event-stream:
               schema: { $ref: '#/components/schemas/SSEFrame' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /backend-api/codex/responses/compact:
+    post:
+      tags: [gateway]
+      summary: Codex CLI compact Responses compatible relay
+      operationId: postCodexResponsesCompact
+      x-huakai-spec-source:
+        - backend/internal/responsescompacthttp/handler.go
+        - docs/specs/protocol-translation.md
+        - docs/specs/observability-billing.md
+      description: |
+        Codex CLI compact Responses ingress. It applies the same compact
+        non-streaming guard as `/v1/responses/compact`, then delegates to the
+        canonical `/backend-api/codex/responses` pipeline.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResponsesRequest' }
+      responses:
+        '200':
+          description: Successful non-streaming Responses response.
+          headers:
+            X-HUAKAI-Protocol-Loss: { schema: { type: string } }
+            X-HUAKAI-Idempotency-Hit: { schema: { type: string, enum: ['true'] } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResponsesResponse' }
+        '400':
+          description: Malformed request or unsupported compact streaming request.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [error]
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required: [type, message]
+                    properties:
+                      type: { type: string, enum: [invalid_request_error] }
+                      message: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/PaymentRequired' }
         '409': { $ref: '#/components/responses/Conflict' }
@@ -696,6 +849,33 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ModelsListResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/models/{model}:
+    get:
+      tags: [gateway]
+      summary: OpenAI-compatible single model discovery
+      operationId: getModel
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/model_get_handler.go
+        - docs/process/plans/2026-04-30-n5-model-registry.md
+      description: |
+        Returns one OpenAI-compatible model object from the same tenant-scoped
+        discovery projection as `/v1/models`. Unknown models return a typed
+        `model_not_found` error without falling back to the first list item.
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: OpenAI-compatible model object.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelObject' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/generation:
