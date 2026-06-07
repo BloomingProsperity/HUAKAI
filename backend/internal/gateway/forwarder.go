@@ -2,6 +2,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -54,6 +55,9 @@ type StreamForwarder struct {
 	// ClientAdapter 将 canonical event 转换为客户端协议块（可选）。
 	// 若为 nil，则透传原始 SSE 给客户端。
 	ClientAdapter proto.ClientAdapter
+	// ForceOpenAIChatFormat opt-in fills required OpenAI Chat chunk keys on
+	// client-bound SSE data frames. Default false preserves previous passthrough.
+	ForceOpenAIChatFormat bool
 
 	Timeouts         TimeoutConfig
 	ScannerBufferCap int
@@ -316,7 +320,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 
 	// adapter 为 nil 时透传原始 SSE（保留既有 nil-adapter 行为）
 	if adapter == nil {
-		if err := writeAndFlush(w, rawSSE(evt)); err != nil {
+		if err := writeAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat)); err != nil {
 			return terminalSeen, false, 0, ErrClientDisconnect
 		}
 		return terminalSeen, true, 1, nil
@@ -464,10 +468,37 @@ func (f *StreamForwarder) drainWithAdapter(
 
 func (f *StreamForwarder) clientChunks(ctx context.Context, canonical any, state any, fallback SSEEvent) ([][]byte, []proto.ProtocolLossEntry, error) {
 	if f.ClientAdapter == nil {
-		return [][]byte{rawSSE(fallback)}, nil, nil
+		return [][]byte{forceOpenAIChatSSEChunkFormat(rawSSE(fallback), f.ForceOpenAIChatFormat)}, nil, nil
 	}
 	chunks, losses, err := f.ClientAdapter.CanonicalEventToClientChunk(ctx, canonical, state)
+	if f.ForceOpenAIChatFormat {
+		for i := range chunks {
+			chunks[i] = forceOpenAIChatSSEChunkFormat(chunks[i], true)
+		}
+	}
 	return chunks, losses, err
+}
+
+func forceOpenAIChatSSEChunkFormat(chunk []byte, force bool) []byte {
+	if !force {
+		return chunk
+	}
+	lines := bytes.Split(chunk, []byte("\n"))
+	for i, line := range lines {
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data: ")))
+		formatted, err := proto.ForceOpenAIChatChunkFormat(data, true)
+		if err != nil {
+			continue
+		}
+		next := make([]byte, 0, len("data: ")+len(formatted))
+		next = append(next, "data: "...)
+		next = append(next, formatted...)
+		lines[i] = next
+	}
+	return bytes.Join(lines, []byte("\n"))
 }
 
 func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, startedAt time.Time, err error) (UsageRecordDraft, error) {

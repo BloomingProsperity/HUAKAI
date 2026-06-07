@@ -307,6 +307,20 @@ func Classify(httpStatus int, headers http.Header, body []byte, provider string)
 	}, nil
 }
 
+// RemapClientStatus applies an optional channel-level status mapping for the
+// client response only. Empty or unmapped configs return the upstream-derived
+// status unchanged; callers must keep classification, body, and billing inputs
+// on the original upstream status.
+func RemapClientStatus(status int, mapping map[int]int) int {
+	if len(mapping) == 0 {
+		return status
+	}
+	if mapped, ok := mapping[status]; ok && mapped > 0 {
+		return mapped
+	}
+	return status
+}
+
 func matchRule(httpStatus int, headers http.Header, body []byte, provider string) (ErrorRule, bool) {
 	normalizedProvider := normalizeProvider(provider)
 	normalizedBody := strings.ToLower(string(body))

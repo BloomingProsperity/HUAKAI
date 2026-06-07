@@ -21,7 +21,11 @@ import (
 //     同时保留上游原始请求形态供 passthrough 投影。
 
 // OpenAIChatClient 实现 ClientAdapter；零值可用。
-type OpenAIChatClient struct{}
+type OpenAIChatClient struct {
+	// ForceFormat makes OpenAI Chat stream chunks fill canonical required keys
+	// before reaching the client. The zero value preserves previous output.
+	ForceFormat bool
+}
 
 var _ ClientAdapter = (*OpenAIChatClient)(nil)
 

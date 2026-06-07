@@ -63,6 +63,9 @@ type RequestMetaSeed struct {
 
 	// EvidenceLabel 可选；默认 mock，P-6 后才可填 smoke / real。
 	EvidenceLabel EvidenceLabel
+
+	// ForceFormat 可选；默认 false，保持客户端响应格式现状。
+	ForceFormat bool
 }
 
 type requestMetaSeedKey struct{}

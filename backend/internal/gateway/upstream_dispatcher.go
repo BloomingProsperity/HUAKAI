@@ -48,6 +48,9 @@ type DispatchInput struct {
 	UpstreamModelID string
 	// InboundBody 客户原始请求 body 字节。
 	InboundBody []byte
+	// BodyControls are optional per-channel pre-dispatch JSON transforms.
+	// Zero value is a no-op.
+	BodyControls DispatchBodyControls
 	// InboundContentType 是入口请求 Content-Type。空值保持 adapter 默认；
 	// multipart audio 透传时必须带原 boundary。
 	InboundContentType string
@@ -132,6 +135,12 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: 取 adapter 失败 (protocol=%q): %w", in.ProtocolFamily, err)
 	}
+
+	controlledBody, err := ApplyDispatchBodyControls(in.InboundBody, in.BodyControls)
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: channel request controls 失败: %w", err)
+	}
+	in.InboundBody = controlledBody
 
 	// 1.5 Optional Anthropic cache_control breakpoint planning. Replaces the
 	// local inbound body only for the anthropic_messages family and only when

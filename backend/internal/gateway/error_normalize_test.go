@@ -46,6 +46,25 @@ func TestClassify_R016_Wildcard(t *testing.T) {
 	}
 }
 
+func TestStatusCodeRemap(t *testing.T) {
+	body := []byte(`{"error":{"message":"bad upstream input"}}`)
+	remap := map[int]int{http.StatusBadRequest: http.StatusInternalServerError}
+	if got := RemapClientStatus(http.StatusBadRequest, remap); got != http.StatusInternalServerError {
+		t.Fatalf("RemapClientStatus(400)=%d want 500; body must remain %s", got, body)
+	}
+	if string(body) != `{"error":{"message":"bad upstream input"}}` {
+		t.Fatalf("status remap must not mutate body, got %s", body)
+	}
+	if got := RemapClientStatus(http.StatusBadRequest, nil); got != http.StatusBadRequest {
+		t.Fatalf("nil mapping changed status to %d; want original 400", got)
+	}
+	if got := RemapClientStatus(http.StatusNotFound, remap); got != http.StatusNotFound {
+		t.Fatalf("unmapped status changed to %d; want original 404", got)
+	}
+	// MUTATION: ignoring the map leaves 400 here, which makes the first
+	// assertion fail while the body-preservation guard still documents scope.
+}
+
 // DR-009 6.6 hard-floor invariant: no ambiguous rule can yield disabled.
 func TestSixSixInvariant_AmbiguousNeverDisables(t *testing.T) {
 	for _, r := range errorRules {
