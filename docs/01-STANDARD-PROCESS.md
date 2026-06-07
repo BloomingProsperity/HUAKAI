@@ -9,6 +9,7 @@
 | **功能树网页** | `huakai-feature-tree.html` | 2322 行**逐行**(搜索/模块/优先级/六级/三家对标/证据/推进动作)| `python3 /tmp/gen_tree.py`(解析 `/home/ubuntu/benchmark/` A-H .md → 自包含 HTML)|
 | **底层真相** | `/home/ubuntu/benchmark/`(A-H + master + INDEX + 审计)| 六级状态**禁虚标**逐行账本 | 审计回写 |
 > 改动同步规约:**功能状态变 → 刷树+看板;规则变 → 同步 `AGENTS.md`/`docs/RULES.md`+总纲;会话末 → 更新记忆。** 三件套一处看全「全貌→路线→逐行」,不再东一块西一块。
+> **🆕 实时标记规约(Owner 2026-06-07「做完一个实时更新功能图,做标记」):每闭环一个缺口,立刻① 把标杆树该行状态改 `已完成` + 在「证据」列前缀 `🆕<short-sha>`;② `python3 /tmp/gen_tree.py` 重生成功能树网页 → 该行自动**金色高亮 + NEW 角标**,顶部计「🆕 本轮闭环 N」,可点「🆕 仅本轮闭环」只看本轮战果。一个都不能漏标。**
 
 ## 1. 标准闭环流程(每个任务波次照走)
 1. **证据级融合审计** —— 对准 **landing 分支**(`origin/fix/hermes-phase-1-e33d940`,**非 origin/main**)、范围**含 Rust 出口层**、三镜(sub2/new-api/cliproxy)带 `file:line`、对抗去误报(0 假阳)→ 产出真缺口。
