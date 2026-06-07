@@ -28,6 +28,7 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		"antigravity/oauth",
 		"windsurf/oauth",
 		"grok/xai_oauth",
+		"kimi/kimi_oauth",
 	}
 	if got := registry.Names(); len(got) != len(want) {
 		t.Fatalf("handler count=%d want %d: %v", len(got), len(want), got)
@@ -72,6 +73,7 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		{VendorWindsurf, AuthModeOAuth, `{"session_token":"ws-sess"}`, RuntimeSessionToken, "ws-sess"},
 		{VendorCopilot, AuthModeCopilotOAuth, `{"github_access_token":"gh","session_token":"sess","endpoint_api":"https://copilot-proxy.test"}`, RuntimeSessionToken, "sess"},
 		{VendorGrok, AuthModeXAIOAuth, `{"access_token":"xai-access","refresh_token":"xai-refresh"}`, RuntimeOAuthAccessToken, "xai-access"},
+		{VendorKimi, AuthModeKimiOAuth, `{"access_token":"kimi-access","refresh_token":"kimi-refresh"}`, RuntimeUpstreamPassthrough, "Bearer kimi-access"},
 	}
 	for _, tc := range cases {
 		handler, err := registry.MustLookup(tc.vendor, tc.mode)
@@ -123,6 +125,37 @@ func TestXAIOAuthHandlerSpec(t *testing.T) {
 	}
 	if material.Kind != RuntimeOAuthAccessToken || material.Value != "xai-access" {
 		t.Fatalf("material=%+v want oauth access token xai-access", material)
+	}
+}
+
+func TestKimiHandlerSpecRefreshable(t *testing.T) {
+	// Mutation: remove refreshable or drop access_token/refresh_token from the
+	// Kimi handler anyOf list; this test must go RED on either regression.
+	registry := DefaultHandlerRegistry()
+	handler, err := registry.MustLookup(VendorKimi, AuthModeKimiOAuth)
+	if err != nil {
+		t.Fatalf("Kimi handler lookup: %v", err)
+	}
+	if !handler.Refreshable() {
+		t.Fatal("Kimi OAuth handler must be refreshable")
+	}
+	for _, raw := range []string{
+		`{"access_token":"kimi-access"}`,
+		`{"refresh_token":"kimi-refresh"}`,
+	} {
+		if err := handler.ValidatePayload([]byte(raw)); err != nil {
+			t.Fatalf("Kimi handler rejected payload %s: %v", raw, err)
+		}
+	}
+	material, err := handler.RuntimeMaterial([]byte(`{"access_token":"kimi-access","refresh_token":"kimi-refresh"}`))
+	if err != nil {
+		t.Fatalf("Kimi RuntimeMaterial: %v", err)
+	}
+	if material.Kind != RuntimeUpstreamPassthrough || material.Value != "Bearer kimi-access" {
+		t.Fatalf("Kimi material kind=%q value=%q, want upstream_passthrough Bearer access token", material.Kind, material.Value)
+	}
+	if material.Extra["auth_header"] != "Authorization" {
+		t.Fatalf("Kimi auth_header extra=%q want Authorization", material.Extra["auth_header"])
 	}
 }
 

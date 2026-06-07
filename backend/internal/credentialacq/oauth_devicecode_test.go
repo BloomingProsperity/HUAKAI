@@ -194,6 +194,124 @@ func TestDefaultExchangerRegistryHasOpenAICodexDeviceCodeAliases(t *testing.T) {
 	}
 }
 
+func TestKimiDeviceExchangerRegistered(t *testing.T) {
+	// Mutation: delete the kimi/kimi_oauth registration in DefaultExchangerRegistry;
+	// this lookup must go RED while unrelated device-code aliases still pass.
+	registry := DefaultExchangerRegistry()
+	if _, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth)); !ok {
+		t.Fatalf("missing Kimi device-code exchanger for %s", credentialstore.ModeKey(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth))
+	}
+}
+
+func TestKimiDeviceConfigConstants(t *testing.T) {
+	// Mutation: change the Kimi client_id, device endpoint, token endpoint, or
+	// device-code grant string; start/poll request assertions below must go RED.
+	now := time.Date(2026, 6, 7, 9, 0, 0, 0, time.UTC)
+	var startURL string
+	var startClientID string
+	var pollGrantType string
+	var pollClientID string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("request body is not JSON: %s", string(raw))
+		}
+		switch r.URL.String() {
+		case "https://auth.kimi.com/api/oauth/device_authorization":
+			startURL = r.URL.String()
+			startClientID = stringField(body, "client_id")
+			return jsonHTTPResponse(t, map[string]any{
+				"device_code":      "kimi-device-code",
+				"user_code":        "KIMI-CODE",
+				"verification_uri": "https://auth.kimi.com/device",
+				"expires_in":       900,
+				"interval":         1,
+			}), nil
+		case "https://auth.kimi.com/api/oauth/token":
+			pollClientID = stringField(body, "client_id")
+			pollGrantType = stringField(body, "grant_type")
+			return jsonHTTPResponse(t, map[string]any{
+				"access_token":  "kimi-access",
+				"refresh_token": "kimi-refresh",
+				"expires_in":    3600,
+			}), nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+		}
+	})}
+	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+
+	start, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 8,
+		Vendor: credentialstore.VendorKimi, AuthMode: credentialstore.AuthModeKimiOAuth,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{HTTPClient: client})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
+	}
+	if startURL != "https://auth.kimi.com/api/oauth/device_authorization" {
+		t.Fatalf("device authorization URL=%q", startURL)
+	}
+	if startClientID != "17e5f671-d194-4dfb-9706-5516cb48c098" {
+		t.Fatalf("device authorization client_id=%q", startClientID)
+	}
+	if start.AuthType != AuthTypeDeviceCode || start.UserCode != "KIMI-CODE" {
+		t.Fatalf("auth_type=%q user_code=%q", start.AuthType, start.UserCode)
+	}
+	if start.Session.Vendor != credentialstore.VendorKimi || start.Session.AuthMode != credentialstore.AuthModeKimiOAuth {
+		t.Fatalf("session mode=%s/%s", start.Session.Vendor, start.Session.AuthMode)
+	}
+
+	candidate, err := PollDeviceCodeToken(context.Background(), start.Session, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client),
+		WithDeviceCodeNow(func() time.Time { return now }),
+		WithDeviceCodeSleeper(func(context.Context, time.Duration) error { return nil }),
+	)
+	if err != nil {
+		t.Fatalf("PollDeviceCodeToken: %v", err)
+	}
+	if pollClientID != "17e5f671-d194-4dfb-9706-5516cb48c098" {
+		t.Fatalf("token poll client_id=%q", pollClientID)
+	}
+	if pollGrantType != "urn:ietf:params:oauth:grant-type:device_code" {
+		t.Fatalf("token poll grant_type=%q", pollGrantType)
+	}
+	if candidate.Vendor != credentialstore.VendorKimi || candidate.AuthMode != credentialstore.AuthModeKimiOAuth {
+		t.Fatalf("candidate mode=%s/%s", candidate.Vendor, candidate.AuthMode)
+	}
+}
+
+func TestKimiSSRFHost(t *testing.T) {
+	// Mutation: remove the Kimi endpoint host check or allow arbitrary public
+	// HTTPS hosts; this fake attacker endpoint will be called and the test goes RED.
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return jsonHTTPResponse(t, map[string]any{
+			"device_code":      "attacker-device-code",
+			"user_code":        "ATTACKER",
+			"verification_uri": "https://attacker.example.com/device",
+		}), nil
+	})}
+	store := NewPostgresSessionStore(newTestSessionDB(time.Date(2026, 6, 7, 9, 10, 0, 0, time.UTC)))
+
+	_, err := StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 9,
+		Vendor: credentialstore.VendorKimi, AuthMode: credentialstore.AuthModeKimiOAuth,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		TokenURL:   "https://attacker.example.com/oauth/token",
+		HTTPClient: client,
+	})
+	if !errors.Is(err, ErrFeatureDisabled) {
+		t.Fatalf("StartOAuthFlow err=%v, want ErrFeatureDisabled for non-kimi.com token host", err)
+	}
+	if called {
+		t.Fatal("Kimi device-code start called HTTP after non-kimi.com token endpoint override")
+	}
+}
+
 func TestOpenAICodexDeviceCodeStartRequiresOperatorConfig(t *testing.T) {
 	// Regression killed: the registered OpenAI Codex device-code exchanger
 	// must enforce operator_config before any HTTP call. Mutation self-check:

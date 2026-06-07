@@ -18,11 +18,18 @@ import (
 
 const deviceCodeSlowDownStep = 5 * time.Second
 const oauthFormResponseMaxBytes = 1 << 20
+const oauthDeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 
 const (
 	openAICodexDeviceVerificationURI = "https://auth.openai.com/codex/device"
 	openAICodexDeviceRedirectURI     = "https://auth.openai.com/deviceauth/callback"
 	openAICodexOAuthTokenURL         = "https://auth.openai.com/oauth/token"
+)
+
+const (
+	kimiOAuthClientID               = "17e5f671-d194-4dfb-9706-5516cb48c098"
+	kimiOAuthDeviceAuthorizationURL = "https://auth.kimi.com/api/oauth/device_authorization"
+	kimiOAuthTokenURL               = "https://auth.kimi.com/api/oauth/token"
 )
 
 type deviceCodeExchanger struct{}
@@ -37,6 +44,69 @@ func (deviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSe
 
 func (deviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
 	return CredentialCandidate{}, errors.New("credentialacq: device-code flow does not use oauth callback exchange")
+}
+
+type kimiDeviceCodeExchanger struct{}
+
+func newKimiDeviceCodeExchanger() Exchanger {
+	return kimiDeviceCodeExchanger{}
+}
+
+func (kimiDeviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
+	kimiCfg, err := kimiDeviceCodeOAuthConfig(cfg)
+	if err != nil {
+		return OAuthStartResult{}, err
+	}
+	in.Vendor = credentialstore.VendorKimi
+	in.AuthMode = credentialstore.AuthModeKimiOAuth
+	in.ClientIdentitySource = ClientSourcePublicCLI
+	return startDeviceAuthorization(ctx, store, in, kimiCfg, AuthTypeDeviceCode)
+}
+
+func (kimiDeviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
+	return CredentialCandidate{}, errors.New("credentialacq: kimi device-code flow does not use oauth callback exchange")
+}
+
+func kimiDeviceCodeOAuthConfig(override OAuthClientConfig) (OAuthClientConfig, error) {
+	cfg := OAuthClientConfig{
+		ClientID:   kimiOAuthClientID,
+		AuthURL:    kimiOAuthDeviceAuthorizationURL,
+		TokenURL:   kimiOAuthTokenURL,
+		Scopes:     override.Scopes,
+		Source:     ClientSourcePublicCLI,
+		HTTPClient: defaultDeviceCodeHTTPClient(),
+	}
+	if override.HTTPClient != nil {
+		cfg.HTTPClient = override.HTTPClient
+	}
+	if raw := strings.TrimSpace(override.AuthURL); raw != "" {
+		if err := validateKimiOAuthEndpointURL(raw); err != nil {
+			return OAuthClientConfig{}, fmt.Errorf("%w: kimi_oauth auth_url rejected (%v)", ErrFeatureDisabled, err)
+		}
+		cfg.AuthURL = raw
+	}
+	if raw := strings.TrimSpace(override.TokenURL); raw != "" {
+		if err := validateKimiOAuthEndpointURL(raw); err != nil {
+			return OAuthClientConfig{}, fmt.Errorf("%w: kimi_oauth token_url rejected (%v)", ErrFeatureDisabled, err)
+		}
+		cfg.TokenURL = raw
+	}
+	return cfg, nil
+}
+
+func validateKimiOAuthEndpointURL(raw string) error {
+	if err := validateOAuthEndpointURL(raw); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host != "kimi.com" && !strings.HasSuffix(host, ".kimi.com") {
+		return fmt.Errorf("host=%s is outside kimi.com", host)
+	}
+	return nil
 }
 
 type openAICodexDeviceCodeExchanger struct{}
@@ -376,8 +446,8 @@ func pollDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAut
 			"client_id":   clientID,
 			"device_code": deviceCode,
 			"deviceCode":  deviceCode,
-			"grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
-			"grantType":   "urn:ietf:params:oauth:grant-type:device_code",
+			"grant_type":  oauthDeviceCodeGrantType,
+			"grantType":   oauthDeviceCodeGrantType,
 		}, &response)
 		if err != nil {
 			return CredentialCandidate{}, err
