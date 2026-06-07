@@ -275,7 +275,82 @@ func marshalOpenAIResponses(env *proto.HCSF) ([]byte, error) {
 
 func marshalGeminiMessages(env *proto.HCSF) ([]byte, error) {
 	body := map[string]any{"contents": []any{}}
-	var contents []any
+	if len(env.CapabilityGraph.Nodes) == 0 {
+		return marshalGeminiMessagesFromLegacyMessages(env, body)
+	}
+
+	contents := []any{}
+	systemParts := []any{}
+	generation := geminiGenerationConfigFromControls(env)
+	toolNames := geminiToolNames(env)
+
+	appendContent := func(role string, part map[string]any) {
+		if len(part) == 0 {
+			return
+		}
+		if len(contents) > 0 {
+			last := contents[len(contents)-1].(map[string]any)
+			if last["role"] == role {
+				last["parts"] = append(last["parts"].([]any), part)
+				return
+			}
+		}
+		contents = append(contents, map[string]any{"role": role, "parts": []any{part}})
+	}
+
+	if env.RequestControls.SystemPrompt != "" {
+		systemParts = append(systemParts, map[string]any{"text": env.RequestControls.SystemPrompt})
+	}
+	for _, n := range env.CapabilityGraph.Nodes {
+		switch n.Kind {
+		case proto.CapabilityText:
+			if n.Text == nil {
+				addMarshalLoss(env, "gemini_messages", n, "text node missing payload", "missing_text_payload")
+				continue
+			}
+			part := map[string]any{"text": n.Text.Block.Text}
+			if n.Text.Role == "system" {
+				systemParts = append(systemParts, part)
+				continue
+			}
+			appendContent(geminiRole(n.Text.Role), part)
+		case proto.CapabilityToolUse:
+			if n.ToolUse == nil {
+				addMarshalLoss(env, "gemini_messages", n, "tool_use node missing payload", "missing_tool_use_payload")
+				continue
+			}
+			appendContent("model", geminiToolUsePart(n.ToolUse))
+		case proto.CapabilityToolResult:
+			if n.ToolResult == nil {
+				addMarshalLoss(env, "gemini_messages", n, "tool_result node missing payload", "missing_tool_result_payload")
+				continue
+			}
+			appendContent("user", geminiToolResultPart(env, n, toolNames))
+		case proto.CapabilityImage:
+			if part, ok := geminiImagePart(env, n); ok {
+				appendContent("user", part)
+			}
+		case proto.CapabilityThinking:
+			geminiApplyThinkingNode(env, n, generation)
+		case proto.CapabilityCacheControl:
+			addMarshalInfoLoss(env, "gemini_messages", n, "cache_control has no Gemini request projection", "unsupported_cache_control")
+		default:
+			addMarshalInfoLoss(env, "gemini_messages", n, "capability unsupported by gemini_messages marshal", "unsupported_capability")
+		}
+	}
+
+	if len(systemParts) > 0 {
+		body["systemInstruction"] = map[string]any{"parts": systemParts}
+	}
+	if len(generation) > 0 {
+		body["generationConfig"] = generation
+	}
+	body["contents"] = contents
+	return json.Marshal(body)
+}
+
+func marshalGeminiMessagesFromLegacyMessages(env *proto.HCSF, body map[string]any) ([]byte, error) {
+	contents := []any{}
 	for mi, msg := range env.Messages {
 		role := geminiRole(msg.Role)
 		var parts []any
@@ -295,6 +370,9 @@ func marshalGeminiMessages(env *proto.HCSF) ([]byte, error) {
 		body["systemInstruction"] = map[string]any{
 			"parts": []any{map[string]any{"text": env.RequestControls.SystemPrompt}},
 		}
+	}
+	if generation := geminiGenerationConfigFromControls(env); len(generation) > 0 {
+		body["generationConfig"] = generation
 	}
 	body["contents"] = contents
 	return json.Marshal(body)
@@ -331,6 +409,111 @@ func geminiPartFromCanonicalBlock(env *proto.HCSF, block proto.CanonicalContentB
 	}
 }
 
+func geminiGenerationConfigFromControls(env *proto.HCSF) map[string]any {
+	c := env.RequestControls
+	generation := map[string]any{}
+	if c.MaxTokens != nil {
+		generation["maxOutputTokens"] = *c.MaxTokens
+	}
+	if c.Temperature != nil {
+		generation["temperature"] = *c.Temperature
+	}
+	if c.TopP != nil {
+		generation["topP"] = *c.TopP
+	}
+	if len(c.StopSequences) > 0 {
+		generation["stopSequences"] = c.StopSequences
+	} else if len(c.Stop) > 0 {
+		generation["stopSequences"] = c.Stop
+	}
+	return generation
+}
+
+func geminiToolNames(env *proto.HCSF) map[string]string {
+	names := map[string]string{}
+	for _, n := range env.CapabilityGraph.Nodes {
+		if n.ToolUse == nil {
+			continue
+		}
+		if n.ToolUse.ToolCallID != "" {
+			names[n.ToolUse.ToolCallID] = n.ToolUse.Name
+		}
+		if n.ToolUse.OriginalToolCallID != "" {
+			names[n.ToolUse.OriginalToolCallID] = n.ToolUse.Name
+		}
+	}
+	return names
+}
+
+func geminiToolUsePart(t *proto.ToolUseNode) map[string]any {
+	call := map[string]any{
+		"name": t.Name,
+		"args": rawJSONValue(t.Input),
+	}
+	if t.ToolCallID != "" {
+		call["id"] = t.ToolCallID
+	}
+	return map[string]any{"functionCall": call}
+}
+
+func geminiToolResultPart(env *proto.HCSF, n proto.CapabilityNode, toolNames map[string]string) map[string]any {
+	name := toolNames[n.ToolResult.ToolCallID]
+	if name == "" {
+		name = n.ToolResult.ToolCallID
+		addMarshalInfoLoss(env, "gemini_messages", n, "tool_result has no matching tool_use name; using call id as Gemini functionResponse name", "missing_tool_result_name")
+	}
+	response := map[string]any{"content": flattenContent(n.ToolResult.Content)}
+	if n.ToolResult.IsError {
+		response["isError"] = true
+	}
+	return map[string]any{"functionResponse": map[string]any{
+		"name":     name,
+		"response": response,
+	}}
+}
+
+func geminiImagePart(env *proto.HCSF, n proto.CapabilityNode) (map[string]any, bool) {
+	if n.Image == nil {
+		addMarshalLoss(env, "gemini_messages", n, "image node missing payload", "missing_image_payload")
+		return nil, false
+	}
+	if n.Image.SourceKind != proto.DataSourceInlineBase64 {
+		addMarshalInfoLoss(env, "gemini_messages", n, "image source kind unsupported by Gemini inlineData projection", "unsupported_image_source")
+		return nil, false
+	}
+	if n.Image.MediaType == "" || n.Image.Locator.Value == "" {
+		addMarshalLoss(env, "gemini_messages", n, "image inlineData missing mimeType or data", "missing_gemini_inline_data")
+		return nil, false
+	}
+	return map[string]any{"inlineData": map[string]any{
+		"mimeType": n.Image.MediaType,
+		"data":     n.Image.Locator.Value,
+	}}, true
+}
+
+func geminiApplyThinkingNode(env *proto.HCSF, n proto.CapabilityNode, generation map[string]any) {
+	if n.Thinking == nil {
+		addMarshalLoss(env, "gemini_messages", n, "thinking node missing payload", "missing_thinking_payload")
+		return
+	}
+	if n.Thinking.BudgetTokens > 0 {
+		if existing, ok := generation["thinkingConfig"].(map[string]any); ok {
+			if existing["thinkingBudget"] != n.Thinking.BudgetTokens {
+				addMarshalInfoLoss(env, "gemini_messages", n, "multiple thinking budgets projected; later Gemini budget overwrote earlier budget", "multiple_thinking_budgets")
+			}
+			existing["thinkingBudget"] = n.Thinking.BudgetTokens
+		} else {
+			generation["thinkingConfig"] = map[string]any{"thinkingBudget": n.Thinking.BudgetTokens}
+		}
+	}
+	for _, b := range n.Thinking.Blocks {
+		if firstNonEmpty(b.Text, b.Thinking, b.ReasoningSummary, string(b.Data)) != "" {
+			addMarshalInfoLoss(env, "gemini_messages", n, "thinking content block has no Gemini request projection", "thinking_content_unprojected")
+			return
+		}
+	}
+}
+
 func capabilityFromBlockType(blockType string) proto.CapabilityKind {
 	switch blockType {
 	case "text":
@@ -353,7 +536,15 @@ func addMarshalLoss(env *proto.HCSF, family string, n proto.CapabilityNode, reas
 }
 
 func addMarshalLossRaw(env *proto.HCSF, family string, cap proto.CapabilityKind, nodeID, reason, code string) {
-	loss, _ := proto.NewClientLossEntry(proto.ProtocolLossWarning, reason, code, cap, nodeID)
+	addMarshalLossRawWithSeverity(env, proto.ProtocolLossWarning, family, cap, nodeID, reason, code)
+}
+
+func addMarshalInfoLoss(env *proto.HCSF, family string, n proto.CapabilityNode, reason, code string) {
+	addMarshalLossRawWithSeverity(env, proto.ProtocolLossInfo, family, n.Kind, n.ID, reason, code)
+}
+
+func addMarshalLossRawWithSeverity(env *proto.HCSF, severity proto.ProtocolLossSeverity, family string, cap proto.CapabilityKind, nodeID, reason, code string) {
+	loss, _ := proto.NewClientLossEntry(severity, reason, code, cap, nodeID)
 	loss.Direction = string(proto.DirectionCanonicalToUpstream)
 	loss.Vendor = family
 	env.CapabilityGraph.ProtocolLoss = append(env.CapabilityGraph.ProtocolLoss, loss)
