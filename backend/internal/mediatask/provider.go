@@ -129,8 +129,8 @@ func NewHTTPProviderRegistry(source ConfigSource, client *http.Client) *HTTPProv
 }
 
 func (r *HTTPProviderRegistry) Provider(ctx context.Context, name string) (AsyncMediaProvider, bool, error) {
-	name = strings.TrimSpace(name)
-	if r == nil || r.source == nil || !isHTTPProviderAlias(name) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if r == nil || r.source == nil || !isHTTPMediaProviderName(name) {
 		return nil, false, nil
 	}
 	cfg, err := r.source.Load(ctx)
@@ -143,9 +143,9 @@ func (r *HTTPProviderRegistry) Provider(ctx context.Context, name string) (Async
 	return NewHTTPProvider(cfg.ProviderBaseURL, r.client), true, nil
 }
 
-func isHTTPProviderAlias(name string) bool {
+func isHTTPMediaProviderName(name string) bool {
 	switch name {
-	case "http", "midjourney", "suno":
+	case "http", "midjourney", "suno", "video", "kling", "jimeng", "vidu", "sora", "hailuo":
 		return true
 	default:
 		return false

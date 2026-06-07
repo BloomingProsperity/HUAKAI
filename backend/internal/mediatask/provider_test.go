@@ -125,3 +125,19 @@ func TestHTTPProviderRegistryAcceptsSunoAlias(t *testing.T) {
 		t.Fatalf("Provider(suno) ok=%v err=%v want available", ok, err)
 	}
 }
+func TestHTTPProviderRegistryAcceptsVideoAliases(t *testing.T) {
+	// MUTATION: leave video providers out of the HTTP registry; /video/submit
+	// reaches mediatask.Service but fails before task creation.
+	registry := NewHTTPProviderRegistry(StaticConfigSource{Config: Config{
+		Enabled: true, ProviderBaseURL: "http://provider.example",
+		DefaultEstimatedCents: map[string]int64{
+			"video_generate": 1000,
+		},
+	}}, http.DefaultClient)
+
+	for _, provider := range []string{"video", "kling", "jimeng", "vidu", "sora", "hailuo"} {
+		if _, ok, err := registry.Provider(context.Background(), provider); err != nil || !ok {
+			t.Fatalf("Provider(%s) ok=%v err=%v want available", provider, ok, err)
+		}
+	}
+}

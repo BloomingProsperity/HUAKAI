@@ -189,6 +189,9 @@ func TestOpenAPI_ModuleBInboundRoutesMountedAndDocumented(t *testing.T) {
 		{method: http.MethodPost, path: "/suno/submit/{action}"},
 		{method: http.MethodGet, path: "/suno/fetch"},
 		{method: http.MethodGet, path: "/suno/fetch/{id}"},
+		{method: http.MethodPost, path: "/video/submit"},
+		{method: http.MethodGet, path: "/video/fetch"},
+		{method: http.MethodGet, path: "/video/fetch/{id}"},
 	} {
 		if !hasOperation(implOps, tc.method, tc.path) {
 			t.Fatalf("runtime missing %s %s", tc.method, tc.path)
