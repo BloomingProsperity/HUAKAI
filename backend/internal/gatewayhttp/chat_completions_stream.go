@@ -369,7 +369,7 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeStreamingAdapterUnregistered, err)
 		return nil, nil, false
 	}
-	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
+	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.req.Model, ex.acquiredAccountID, ex.acquisitionToken)
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	canonicalReq, protocolLosses, err := clientAdapter.RequestToCanonical(seedCtx, ex.body)
 	ex.protocolLoss = protocolLossJSONFromEntries(protocolLosses)
@@ -427,6 +427,9 @@ func streamingProviderRequestBody(env *proto.HCSF, family string) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	if family == "gemini_messages" {
+		return body, nil
+	}
 	return forceStreamingRequest(body)
 }
 
@@ -434,6 +437,9 @@ func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) 
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err
+	}
+	if family == "gemini_messages" {
+		return injectStreamingGeminiRequestControls(body, env)
 	}
 	c := env.RequestControls
 	if c.MaxTokens != nil {
@@ -506,6 +512,62 @@ func mergeStreamingRequestPassthrough(body map[string]any, env *proto.HCSF) {
 		}
 		body[key] = streamingRawJSONValue(raw)
 	}
+}
+func injectStreamingGeminiRequestControls(body map[string]any, env *proto.HCSF) ([]byte, error) {
+	c := env.RequestControls
+	generation := map[string]any{}
+	if existing, ok := body["generationConfig"].(map[string]any); ok {
+		for k, v := range existing {
+			generation[k] = v
+		}
+	}
+	if c.MaxTokens != nil {
+		generation["maxOutputTokens"] = *c.MaxTokens
+	}
+	if c.Temperature != nil {
+		generation["temperature"] = *c.Temperature
+	}
+	if c.TopP != nil {
+		generation["topP"] = *c.TopP
+	}
+	if len(c.StopSequences) > 0 {
+		generation["stopSequences"] = c.StopSequences
+	} else if len(c.Stop) > 0 {
+		generation["stopSequences"] = c.Stop
+	}
+	if c.ResponseFormat != nil && len(c.ResponseFormat.Schema) > 0 {
+		var raw map[string]any
+		if json.Unmarshal(c.ResponseFormat.Schema, &raw) == nil {
+			if v, ok := raw["responseMimeType"]; ok && v != "" {
+				generation["responseMimeType"] = v
+			}
+			if v, ok := raw["responseSchema"]; ok {
+				generation["responseSchema"] = v
+			}
+		}
+	}
+	if len(generation) > 0 {
+		body["generationConfig"] = generation
+	}
+	if len(c.Tools) > 0 {
+		body["tools"] = streamingGeminiControlTools(c.Tools)
+	}
+	return json.Marshal(body)
+}
+
+func streamingGeminiControlTools(tools []proto.CanonicalTool) []any {
+	decls := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		decls = append(decls, map[string]any{
+			"name":        tool.Name,
+			"description": tool.Description,
+			"parameters":  streamingRawJSONValue(tool.InputSchema),
+		})
+	}
+	if len(decls) == 0 {
+		return nil
+	}
+	return []any{map[string]any{"functionDeclarations": decls}}
 }
 
 func forceStreamingRequest(raw []byte) ([]byte, error) {

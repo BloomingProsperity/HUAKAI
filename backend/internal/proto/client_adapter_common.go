@@ -45,6 +45,10 @@ type RequestMetaSeed struct {
 	// IngressPath 必填；如 /v1/chat/completions、/v1/messages、/v1/responses。
 	IngressPath string
 
+	// Model 可选；path-scoped native protocols such as Gemini v1beta carry the
+	// model in the URL rather than the JSON body.
+	Model string
+
 	// TenantID 可选；0 表示无租户上下文。
 	TenantID int64
 
@@ -105,6 +109,9 @@ func (s *RequestMetaSeed) ApplyToRequestMeta(meta *RequestMeta) error {
 	meta.ClientProtocol = s.ClientProtocol
 	meta.ProtocolFamily = s.ProtocolFamily
 	meta.IngressPath = s.IngressPath
+	if s.Model != "" {
+		meta.Model = s.Model
+	}
 	meta.TenantID = s.TenantID
 	meta.RouteID = s.RouteID
 	meta.AccountID = s.AccountID

@@ -27,6 +27,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/geminihttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/imageshttp"
@@ -86,16 +87,21 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/messages", gatewayhttp.NewMessagesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/messages/count_tokens", completionshttp.NewCountTokensHandler(completionsHandlerDeps(d)))
 	r.Get("/v1/realtime", handleRealtimeRoadmap)
-	r.Get("/v1/models", controlhttp.NewModelListHandler(controlhttp.ModelListDeps{
+	modelListHandler := controlhttp.NewModelListHandler(controlhttp.ModelListDeps{
 		Auth:    d.inboundAuth,
 		Catalog: d.modelRegistry,
 		Pricing: d.rateTableSource,
-	}))
+	})
+	r.Get("/v1/models", modelListHandler)
 	r.Get("/v1/models/{model}", controlhttp.NewModelGetHandler(controlhttp.ModelListDeps{
 		Auth:    d.inboundAuth,
 		Catalog: d.modelRegistry,
 		Pricing: d.rateTableSource,
 	}))
+	geminiV1BetaHandler := geminihttp.NewGenerateContentHandler(geminihttp.NewDeps(chatHandlerDeps(d), modelListHandler))
+	r.Get("/v1beta/models", geminiV1BetaHandler.ServeHTTP)
+	r.Post("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
+	r.Get("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
 	r.Get("/v1/me/usage", meusagehttp.NewHandler(meusagehttp.Deps{
 		Auth:  d.inboundAuth,
 		Store: d.billingQueries,

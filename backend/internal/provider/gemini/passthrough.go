@@ -70,6 +70,16 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	}
 
 	defaultEndpoint := a.endpointFor(in.Credential.Extra["stream"] == "true")
+	if endpointPath := strings.TrimSpace(in.EndpointPath); endpointPath != "" {
+		if strings.HasPrefix(endpointPath, "http://") || strings.HasPrefix(endpointPath, "https://") {
+			defaultEndpoint = endpointPath
+		} else {
+			if !strings.HasPrefix(endpointPath, "/") {
+				endpointPath = "/" + endpointPath
+			}
+			defaultEndpoint = "https://generativelanguage.googleapis.com" + endpointPath
+		}
+	}
 	// 先替换 {model} 占位再走 EndpointForCredential。 否则
 	// EndpointForCredential 内的 url.Parse 把 "{" "}" 转 "%7B" "%7D",
 	// 后续 strings.ReplaceAll 找不到 "{model}" 子串, model 占位永远换不掉。

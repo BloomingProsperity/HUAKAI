@@ -98,7 +98,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
 		return markAttemptOutcomeDelivered(outcome)
 	}
-	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
+	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.req.Model, ex.acquiredAccountID, ex.acquisitionToken)
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	clientBody, clientLosses, err := ex.clientAdapter.CanonicalToClientResponse(seedCtx, bufferedEnv)
 	// 响应转换损失之前被丢弃(_);折入 env 并重新快照,使成功 settle 与
@@ -466,7 +466,7 @@ func ledgerDLQRef(result auditledger.AuditLedgerResult) string {
 	return result.DLQRef
 }
 
-func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily, routeID, requestID string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {
+func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.ClientProtocol, protocolFamily, routeID, requestID, model string, accountID int64, acquisitionToken uuid.UUID) proto.RequestMetaSeed {
 	token := ""
 	if acquisitionToken != uuid.Nil {
 		token = acquisitionToken.String()
@@ -476,6 +476,7 @@ func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.
 		ClientProtocol:   clientProtocol,
 		ProtocolFamily:   protocolFamily,
 		IngressPath:      r.URL.Path,
+		Model:            model,
 		TenantID:         ident.TenantID,
 		RouteID:          routeID,
 		AccountID:        accountID,

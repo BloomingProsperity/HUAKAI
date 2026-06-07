@@ -14,6 +14,7 @@ const (
 	ClientProtocolOpenAIChat        ClientProtocol = "openai_chat"
 	ClientProtocolOpenAIResponses   ClientProtocol = "openai_responses"
 	ClientProtocolAnthropicMessages ClientProtocol = "anthropic_messages"
+	ClientProtocolGemini            ClientProtocol = "gemini"
 )
 
 // UpstreamProtocol is the upstream protocol enum from spec section 4.1.
@@ -71,7 +72,7 @@ func (m CapabilityMatrix) Lookup(client ClientProtocol, upstream UpstreamProtoco
 }
 
 func DefaultMatrix() CapabilityMatrix {
-	clients := []ClientProtocol{ClientProtocolOpenAIChat, ClientProtocolOpenAIResponses, ClientProtocolAnthropicMessages}
+	clients := []ClientProtocol{ClientProtocolOpenAIChat, ClientProtocolOpenAIResponses, ClientProtocolAnthropicMessages, ClientProtocolGemini}
 	upstreams := []UpstreamProtocol{UpstreamProtocolAnthropic, UpstreamProtocolOpenAI, UpstreamProtocolGemini, UpstreamProtocolBedrock, UpstreamProtocolAntigravity}
 	m := CapabilityMatrix{}
 	for _, c := range clients {

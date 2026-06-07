@@ -306,6 +306,118 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 	}
 }
 
+// NativeClientRequest is a prevalidated native client-protocol request. The
+// raw HTTP body remains on r.Body and is read by the shared gateway pipeline.
+type NativeClientRequest struct {
+	Model          string
+	Action         string
+	Stream         bool
+	ClientProtocol proto.ClientProtocol
+	ClientAdapter  proto.ClientAdapter
+	EndpointFamily string
+}
+
+// NativeClientGateway exposes the shared chat execution pipeline for native
+// path-scoped client protocols such as Gemini v1beta. It avoids body rewrites:
+// model and stream come from the native URL/action, while the body is passed to
+// the selected ClientAdapter as originally received.
+type NativeClientGateway struct {
+	d ChatHandlerDeps
+}
+
+func NewNativeClientGateway(d ChatHandlerDeps) *NativeClientGateway {
+	if d.CredentialHotRefresher != nil {
+		d.CredentialHotRefresher = newDedupingCredentialHotRefresher(d.CredentialHotRefresher, credentialHotRefreshDedupeWindow)
+	}
+	return &NativeClientGateway{d: d}
+}
+
+func (g *NativeClientGateway) ServeNativeClient(w http.ResponseWriter, r *http.Request, native NativeClientRequest) {
+	if g == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "native gateway dependency unset")
+		return
+	}
+	d := g.d
+	if native.EndpointFamily != "" {
+		d.EndpointFamily = native.EndpointFamily
+	}
+	ctx := r.Context()
+	requestStartedAt := time.Now()
+
+	if !chatHandlerConfigured(d) {
+		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured",
+			"chat handler dependency unset")
+		return
+	}
+	if native.Model == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_model", "model path segment required")
+		return
+	}
+	if native.ClientProtocol == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing_client_protocol", "client protocol required")
+		return
+	}
+	clientAdapter := native.ClientAdapter
+	if clientAdapter == nil {
+		var ok bool
+		clientAdapter, ok = proto.DefaultClientAdapterRegistry().Lookup(native.ClientProtocol)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "adapter_unregistered",
+				"client adapter not registered for protocol "+string(native.ClientProtocol))
+			return
+		}
+	}
+
+	ident, err := d.Auth.Resolve(ctx, r)
+	if errors.Is(err, auth.ErrAuthMisconfigured) {
+		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth tables unavailable")
+		return
+	}
+	if errors.Is(err, auth.ErrAuthBackend) {
+		writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
+		return
+	}
+	if errors.Is(err, auth.ErrForbidden) {
+		writeJSONError(w, http.StatusForbidden, "forbidden", "api key policy forbids this request")
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized", "invalid bearer")
+		return
+	}
+
+	body, ok := readChatRequestBody(w, r, ctx)
+	if !ok {
+		return
+	}
+	if !rejectRemovedBodyFields(w, body) {
+		return
+	}
+	if !apikeymodelallow.AllowsCSV(ident.AllowedModels, native.Model) {
+		writeJSONError(w, http.StatusForbidden, "model_not_allowed", "api key is not allowed to use this model")
+		return
+	}
+	requestID := uuid.NewString()
+	clientRequestID := r.Header.Get(middleware.RequestIDHeader)
+	ctx = context.WithValue(ctx, middleware.RequestIDKey, requestID)
+	r = r.WithContext(ctx)
+	w.Header().Set(middleware.RequestIDHeader, requestID)
+
+	validated := chatValidatedRequest{
+		Body: body,
+		Request: chatRequest{
+			Model:  native.Model,
+			Stream: native.Stream,
+		},
+		ClientProtocol:  native.ClientProtocol,
+		ClientAdapter:   clientAdapter,
+		RequestID:       requestID,
+		ClientRequestID: clientRequestID,
+	}
+	exec := newChatExecution(d, r, ident, validated, requestStartedAt)
+	exec.runWithModelFallback(newDeliveryTracker(w))
+}
+
 func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 	resolver := modelfallback.FromSettings(ex.ctx, ex.d.ModelFallbackSettings)
 	originalModel := ex.req.Model

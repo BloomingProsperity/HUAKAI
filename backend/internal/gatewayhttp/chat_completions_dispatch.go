@@ -547,7 +547,7 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	if accInfo.AccountID == 0 {
 		accInfo.AccountID = ex.acquiredAccountID
 	}
-	ex.cred = cred
+	ex.cred = credentialWithNativeStreamMode(cred, ex.clientProtocol, ex.req.Stream)
 	ex.accInfo = accInfo
 	ex.forwardReq = gateway.ForwardRequest{
 		TenantID:             ex.ident.TenantID,
@@ -569,9 +569,26 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	return nil
 }
 
+func credentialWithNativeStreamMode(cred provider.Credential, clientProtocol proto.ClientProtocol, stream bool) provider.Credential {
+	if clientProtocol != proto.ClientProtocolGemini {
+		return cred
+	}
+	extra := make(map[string]string, len(cred.Extra)+1)
+	for k, v := range cred.Extra {
+		extra[k] = v
+	}
+	if stream {
+		extra["stream"] = "true"
+	} else {
+		extra["stream"] = "false"
+	}
+	cred.Extra = extra
+	return cred
+}
+
 func (ex *chatExecution) dispatchBufferedEnvelope(w http.ResponseWriter) (*proto.HCSF, *classifiedAttemptFailure, bool) {
 	upstreamAttemptStartedAt := time.Now()
-	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.acquiredAccountID, ex.acquisitionToken)
+	seed := requestMetaSeed(ex.r, ex.ident, ex.clientProtocol, ex.resolved.ProtocolFamily, ex.routeID, ex.requestID, ex.req.Model, ex.acquiredAccountID, ex.acquisitionToken)
 	seedCtx := proto.ContextWithRequestMetaSeed(ex.ctx, seed)
 	if hcsfDispatchEnabled() {
 		return ex.dispatchCanonicalBuffered(w, seedCtx, upstreamAttemptStartedAt)
