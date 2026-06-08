@@ -5,12 +5,12 @@
 // OAuth 401 force-refresh。
 //
 // 这套测试做两件事来防回归：
-//   1) StateChange / Reason 枚举的稳定性 — 一旦有人改了 iota 顺序或删了
-//      Reason 字符串值，下游 audit / dashboard / metrics 的语义就会被静默
-//      破坏。
-//   2) Service interface 的可实现性 — 用一个最小 fake 实现穿一遍三个
-//      method，证明 interface 形状（参数列表、返回值数量、context 位置、
-//      error 末位）没被无意改动；新加 method 必须显式更新此测试。
+//  1. StateChange / Reason 枚举的稳定性 — 一旦有人改了 iota 顺序或删了
+//     Reason 字符串值，下游 audit / dashboard / metrics 的语义就会被静默
+//     破坏。
+//  2. Service interface 的可实现性 — 用一个最小 fake 实现穿一遍三个
+//     method，证明 interface 形状（参数列表、返回值数量、context 位置、
+//     error 末位）没被无意改动；新加 method 必须显式更新此测试。
 //
 // 后续实现可扩展 token-bucket/sliding-window 边界、并发安全与 tenant 隔离测试。
 package rate
@@ -67,6 +67,7 @@ func TestReason_StableStringValues(t *testing.T) {
 		{ReasonRateLimitTPM, "rate_limit_tpm"},
 		{ReasonExtraUsageRequired, "extra_usage_required"},
 		{ReasonOverloaded, "overloaded"},
+		{ReasonUpstreamTransient, "upstream_transient_error"},
 		{ReasonTokenRefreshRequired, "token_refresh_required"},
 		{ReasonTokenRevoked, "token_permanently_revoked"},
 		{ReasonKYCRequired, "kyc_required"},
@@ -94,7 +95,7 @@ func TestReason_NoDuplicateValues(t *testing.T) {
 	all := []Reason{
 		ReasonRateLimit5h, ReasonRateLimit7d, ReasonRateLimitBoth,
 		ReasonRateLimitRPM, ReasonRateLimitTPM, ReasonExtraUsageRequired,
-		ReasonOverloaded, ReasonTokenRefreshRequired, ReasonTokenRevoked,
+		ReasonOverloaded, ReasonUpstreamTransient, ReasonTokenRefreshRequired, ReasonTokenRevoked,
 		ReasonKYCRequired, ReasonOrgDisabled, ReasonCreditExhausted,
 		ReasonWorkspaceDeactivated, ReasonModelLimitExceeded,
 		ReasonTempUnschedRule, ReasonOpenAI403Counted, ReasonOpenAI403Disabled,

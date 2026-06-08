@@ -72,6 +72,40 @@ func TestUpstreamRateServiceIgnoresNonRateLimitStatus(t *testing.T) {
 	}
 }
 
+func TestDisableCooling(t *testing.T) {
+	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	headers := http.Header{"Retry-After": []string{"3600"}}
+	svc := NewUpstreamRateService(func() time.Time { return now }, time.Minute, WithDisableCooling(true))
+
+	dec, err := svc.HandleUpstreamError(context.Background(), 101, http.StatusTooManyRequests, headers, nil)
+	if err != nil {
+		t.Fatalf("HandleUpstreamError: %v", err)
+	}
+	if !dec.ShouldFailover {
+		t.Fatal("ShouldFailover=false want true")
+	}
+	if dec.StateChange != StateRateLimited {
+		t.Fatalf("StateChange=%v want StateRateLimited", dec.StateChange)
+	}
+	if dec.Reason != ReasonRateLimitRPM {
+		t.Fatalf("Reason=%s want %s", dec.Reason, ReasonRateLimitRPM)
+	}
+	// MUTATION: still setting CooldownUntil when disable-cooling is active must go red.
+	if !dec.CooldownUntil.IsZero() {
+		t.Fatalf("CooldownUntil=%s want zero when cooling disabled", dec.CooldownUntil)
+	}
+
+	// GUARD: default false keeps existing cooldown behavior unchanged.
+	defaultSvc := NewUpstreamRateService(func() time.Time { return now }, time.Minute)
+	defaultDec, err := defaultSvc.HandleUpstreamError(context.Background(), 101, http.StatusTooManyRequests, headers, nil)
+	if err != nil {
+		t.Fatalf("default HandleUpstreamError: %v", err)
+	}
+	if !defaultDec.CooldownUntil.Equal(now.Add(time.Hour)) {
+		t.Fatalf("default CooldownUntil=%s want %s", defaultDec.CooldownUntil, now.Add(time.Hour))
+	}
+}
+
 type fakeSessionWindowStore struct {
 	calls  int
 	update SessionWindowUpdate

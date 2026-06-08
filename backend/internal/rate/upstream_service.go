@@ -49,20 +49,42 @@ type upstreamRateService struct {
 	now             func() time.Time
 	defaultCooldown time.Duration
 	sessionWindows  SessionWindowStore
+	transient       TransientCooldownConfig
+	disableCooling  bool
 }
 
-func NewUpstreamRateService(clock func() time.Time, defaultCooldown time.Duration) Service {
-	return NewUpstreamRateServiceWithSessionWindowStore(clock, defaultCooldown, nil)
+type UpstreamRateServiceOption func(*upstreamRateService)
+
+func WithDisableCooling(disabled bool) UpstreamRateServiceOption {
+	return func(s *upstreamRateService) {
+		s.disableCooling = disabled
+	}
 }
 
-func NewUpstreamRateServiceWithSessionWindowStore(clock func() time.Time, defaultCooldown time.Duration, store SessionWindowStore) Service {
+func WithTransientCooldown(duration time.Duration) UpstreamRateServiceOption {
+	return func(s *upstreamRateService) {
+		s.transient = TransientCooldownConfig{Duration: duration}
+	}
+}
+
+func NewUpstreamRateService(clock func() time.Time, defaultCooldown time.Duration, opts ...UpstreamRateServiceOption) Service {
+	return NewUpstreamRateServiceWithSessionWindowStore(clock, defaultCooldown, nil, opts...)
+}
+
+func NewUpstreamRateServiceWithSessionWindowStore(clock func() time.Time, defaultCooldown time.Duration, store SessionWindowStore, opts ...UpstreamRateServiceOption) Service {
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 	if defaultCooldown <= 0 {
 		defaultCooldown = defaultUpstreamCooldown
 	}
-	return &upstreamRateService{now: clock, defaultCooldown: defaultCooldown, sessionWindows: store}
+	svc := &upstreamRateService{now: clock, defaultCooldown: defaultCooldown, sessionWindows: store}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(svc)
+		}
+	}
+	return svc
 }
 
 func NewPostgresSessionWindowStore(db sessionWindowDB) *PostgresSessionWindowStore {
@@ -89,19 +111,43 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 	_ = ctx
 	_ = accountID
 	_ = respBody
-	if statusCode != http.StatusTooManyRequests && statusCode != 529 {
-		return Decision{}, nil
-	}
 	now := s.now().UTC()
+	if statusCode != http.StatusTooManyRequests && statusCode != 529 {
+		d, reason, ok := TransientCooldown(statusCode, s.transient)
+		if !ok {
+			return Decision{}, nil
+		}
+		dec := Decision{
+			StateChange:       StateOverloaded,
+			Reason:            reason,
+			ShouldFailover:    true,
+			RetryAfterSeconds: durationSeconds(d),
+		}
+		if !s.disableCooling {
+			dec.CooldownUntil = now.Add(d).UTC()
+		}
+		return dec, nil
+	}
 	until, retryAfterSeconds, ok := retryAfterCooldown(respHeaders, now)
+	reason := ReasonRateLimitRPM
+	if statusCode == http.StatusTooManyRequests {
+		if resetUntil, resetReason, resetOK := ParseMultiWindowReset(respHeaders, now); resetOK {
+			until = resetUntil
+			retryAfterSeconds = durationSeconds(resetUntil.Sub(now))
+			ok = true
+			reason = resetReason
+		}
+	}
 	if !ok {
 		retryAfterSeconds = durationSeconds(s.defaultCooldown)
 		until = now.Add(time.Duration(retryAfterSeconds) * time.Second)
 	}
 	dec := Decision{
-		CooldownUntil:     until.UTC(),
 		ShouldFailover:    true,
 		RetryAfterSeconds: retryAfterSeconds,
+	}
+	if !s.disableCooling {
+		dec.CooldownUntil = until.UTC()
 	}
 	if statusCode == 529 {
 		dec.StateChange = StateOverloaded
@@ -109,7 +155,7 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 		return dec, nil
 	}
 	dec.StateChange = StateRateLimited
-	dec.Reason = ReasonRateLimitRPM
+	dec.Reason = reason
 	return dec, nil
 }
 

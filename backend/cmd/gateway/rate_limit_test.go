@@ -44,6 +44,7 @@ func clearRateLimitEnv(t *testing.T) {
 		"HUAKAI_RL_AUTH_LOGIN_PER_MIN", "HUAKAI_RL_AUTH_REGISTER_PER_MIN",
 		"HUAKAI_RL_AUTH_VERIFY_PER_MIN", "HUAKAI_RL_AUTH_RESET_PER_MIN",
 		"HUAKAI_RL_AUTH_OAUTH_PER_MIN", "HUAKAI_RL_AUTH_REFRESH_PER_MIN",
+		"HUAKAI_RL_MEDIA_PER_MIN",
 	} {
 		t.Setenv(name, "")
 	}
@@ -556,6 +557,47 @@ func TestRateLimit_GlobalRetryAfterTracksConfiguredRate(t *testing.T) {
 	}
 	if ra := rec.Header().Get("Retry-After"); ra != "10" {
 		t.Fatalf("global Retry-After at 0.1 req/s: want 10 got %q — hint not derived from configured rate", ra)
+	}
+}
+
+func TestMediaPerIPLimit(t *testing.T) {
+	clearRateLimitEnv(t)
+	t.Setenv("HUAKAI_RL_MEDIA_PER_MIN", "2")
+	rl := newRateLimiter(nil, nil)
+	frozen := time.Unix(1_700_000_000, 0)
+	rl.nowFn = func() time.Time { return frozen }
+
+	const ip = "203.0.113.190:9500"
+	send := func(path string) int {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.RemoteAddr = ip
+		rec := httptest.NewRecorder()
+		rl.middleware(stubOKHandler()).ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < 2; i++ {
+		if code := send("/v1/audio/speech"); code == http.StatusTooManyRequests {
+			t.Fatalf("media request %d unexpectedly 429 within configured burst", i+1)
+		}
+	}
+	// MUTATION: not wiring media paths to the media class lets the third request through.
+	if code := send("/v1/audio/speech"); code != http.StatusTooManyRequests {
+		t.Fatalf("third media request: want 429 got %d", code)
+	}
+
+	// GUARD: unset/zero env disables the additive media tier, preserving old behavior.
+	clearRateLimitEnv(t)
+	disabled := newRateLimiter(nil, nil)
+	disabled.nowFn = func() time.Time { return frozen }
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil)
+		req.RemoteAddr = "203.0.113.191:9501"
+		rec := httptest.NewRecorder()
+		disabled.middleware(stubOKHandler()).ServeHTTP(rec, req)
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("media env unset but request %d got 429", i+1)
+		}
 	}
 }
 
