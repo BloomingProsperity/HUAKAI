@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -14,6 +15,7 @@ import (
 type UtlsDialer struct {
 	Template         *ClientHelloTemplate
 	NetDialer        net.Dialer
+	ProxyDialer      ProxyDialerFunc
 	TLSConfig        *utls.Config
 	HandshakeTimeout time.Duration
 }
@@ -45,11 +47,13 @@ func NewRoundTripper(template *ClientHelloTemplate) http.RoundTripper {
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
+		template: template,
 	}
 }
 
 type roundTripper struct {
-	inner *http.Transport
+	inner    *http.Transport
+	template *ClientHelloTemplate
 }
 
 func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -69,7 +73,7 @@ func (d *UtlsDialer) DialTLS(ctx context.Context, network, addr string) (net.Con
 	if err != nil {
 		return nil, err
 	}
-	raw, err := d.NetDialer.DialContext(ctx, network, addr)
+	raw, err := d.dialRaw(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -242,4 +246,38 @@ func maxUint16(in []uint16) uint16 {
 		}
 	}
 	return max
+}
+
+// dialRaw 建立 uTLS 握手【之下】的原始 TCP 连接：配置了 ProxyDialer 时经代理
+// 拨号,否则走直连 NetDialer。
+func (d *UtlsDialer) dialRaw(ctx context.Context, network, addr string) (net.Conn, error) {
+	if d.ProxyDialer != nil {
+		return d.ProxyDialer(ctx, network, addr)
+	}
+	return d.NetDialer.DialContext(ctx, network, addr)
+}
+
+// WithProxy 返回一个新的 RoundTripper：上游 TCP 连接经 proxyURL 拨号(在 uTLS
+// 握手之下),从而出口 IP 走代理、JA3 仍是伪装指纹(PROXY-02a)。实现
+// provider.WrapTransportWithProxy 消费的结构化 proxy-aware 接口,无需 provider
+// 反向 import 本包。proxyURL scheme 不支持时返回 error,调用方据此 fail-loud。
+func (rt *roundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) {
+	pd, err := proxyDialerFromURL(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	dialer := NewUtlsDialer(rt.template)
+	dialer.ProxyDialer = pd
+	return &roundTripper{
+		inner: &http.Transport{
+			DialContext:           pd,
+			DialTLSContext:        dialer.DialTLS,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+		template: rt.template,
+	}, nil
 }

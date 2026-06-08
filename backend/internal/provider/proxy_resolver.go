@@ -108,6 +108,13 @@ type simpleError string
 
 func (e simpleError) Error() string { return string(e) }
 
+// proxyAwareRoundTripper 是能自行在【握手之下】注入代理的 RoundTripper(如
+// mimicry uTLS dialer:经代理拨原始 TCP,再在其上跑自定义 ClientHello)。
+// 结构化接口 —— 实现方(transport/mimicry)无需被本包 import,避免循环依赖。
+type proxyAwareRoundTripper interface {
+	WithProxy(*url.URL) (http.RoundTripper, error)
+}
+
 // WrapTransportWithProxy 把代理 URL 注入到 RoundTripper：
 //   - proxyURL == nil → 返回原 rt 不变（零开销直连）
 //   - rt 是 *http.Transport → Clone() 浅拷贝并设 Proxy func（保留连接池
@@ -117,6 +124,13 @@ func (e simpleError) Error() string { return string(e) }
 func WrapTransportWithProxy(rt http.RoundTripper, proxyURL *url.URL) http.RoundTripper {
 	if proxyURL == nil {
 		return rt
+	}
+	if pa, ok := rt.(proxyAwareRoundTripper); ok {
+		wrapped, err := pa.WithProxy(proxyURL)
+		if err != nil {
+			return &proxyWrappedRoundTripper{inner: rt, proxyURL: proxyURL, buildErr: err}
+		}
+		return wrapped
 	}
 	if t, ok := rt.(*http.Transport); ok {
 		clone := t.Clone()
@@ -130,9 +144,13 @@ func WrapTransportWithProxy(rt http.RoundTripper, proxyURL *url.URL) http.RoundT
 type proxyWrappedRoundTripper struct {
 	inner    http.RoundTripper
 	proxyURL *url.URL
+	buildErr error
 }
 
 func (p *proxyWrappedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if p.buildErr != nil {
+		return nil, p.buildErr
+	}
 	return nil, ErrProxyUnsupportedTransport
 }
 
