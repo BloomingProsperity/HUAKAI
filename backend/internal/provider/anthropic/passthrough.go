@@ -103,6 +103,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	applyClaudeDeviceProfile(req.Header)
 
 	// 可选 anthropic-beta（如 prompt-caching / computer-use 等 beta 特性）
 	if betas := in.Credential.Extra["anthropic_beta"]; betas != "" {
@@ -119,4 +120,24 @@ func (a *PassthroughAdapter) acceptsCredential(t provider.CredentialType) bool {
 		}
 	}
 	return false
+}
+
+// Claude Code (Anthropic CLI) device-profile defaults — make the egress carry the
+// genuine Claude Code client signature so upstream sees the real client, not a bare
+// relay. Parity with CLIProxyAPI internal/runtime/executor/helps/claude_device_profile.go.
+// ON per Owner 2026-06-08「必须开着」(overrides CB-001 default-off).
+const (
+	claudeCodeUserAgent           = "claude-cli/2.1.63 (external, cli)"
+	claudeStainlessPackageVersion = "0.74.0"
+	claudeStainlessRuntimeVersion = "v24.3.0"
+	claudeStainlessOS             = "MacOS"
+	claudeStainlessArch           = "arm64"
+)
+
+func applyClaudeDeviceProfile(h http.Header) {
+	h.Set("User-Agent", claudeCodeUserAgent)
+	h.Set("X-Stainless-Package-Version", claudeStainlessPackageVersion)
+	h.Set("X-Stainless-Runtime-Version", claudeStainlessRuntimeVersion)
+	h.Set("X-Stainless-Os", claudeStainlessOS)
+	h.Set("X-Stainless-Arch", claudeStainlessArch)
 }
