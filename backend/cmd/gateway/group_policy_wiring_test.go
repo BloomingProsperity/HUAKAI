@@ -37,7 +37,7 @@ func (errGroupRepo) GroupRoutes(context.Context, int64, string, string) (subscri
 // mutation: buildGroupRoutingGates 漏设 gates.GroupPolicy (退回 AllowAll) → default 越档不再
 // 被拒 → 下面 deny 断言红, 防止 selector_wiring 漏接 gate 的回归。
 func TestBuildGroupRoutingGates_WiresRealGroupPolicyGate(t *testing.T) {
-	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil)
+	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil, nil)
 
 	// premium 打 pool 5 (在其允许集) → 放行。
 	if ok, _, err := gates.GroupPolicy.Allow(context.Background(), nil, poolrouter.SelectionRequest{
@@ -67,7 +67,7 @@ func TestBuildGroupRoutingGates_WiresRealGroupPolicyGate(t *testing.T) {
 // mutation: GroupPolicy 漏接告警 observer → metric/log 断言红; fail-closed → premium 放行断言红。
 func TestBuildGroupRoutingGates_PremiumRepoErrorFailsOpenAndAlerts(t *testing.T) {
 	core, logs := observer.New(zap.WarnLevel)
-	gates := buildGroupRoutingGates(errGroupRepo{}, nil, zap.New(core))
+	gates := buildGroupRoutingGates(errGroupRepo{}, nil, nil, zap.New(core))
 	before := groupPolicyFailOpenTotal.Value()
 
 	ok, reason, err := gates.GroupPolicy.Allow(context.Background(), nil, poolrouter.SelectionRequest{

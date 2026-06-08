@@ -86,6 +86,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpresolve"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
@@ -743,7 +744,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner, channelHealthStoreOptions...)
 	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
-	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, logger)
+	// SUB2-EGRESS-03: construct window cost cache before selector so the gate
+	// can reference it on startup. Worker is started after selector is ready.
+	windowCostCache := windowcost.NewCache()
+	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build selector: %w", err)
 	}
@@ -865,6 +869,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		nil,
 	)
 	tlsProfileHealthWorker.Start(ctx)
+
+	// SUB2-EGRESS-03: start the per-account 5h window spend cap aggregator.
+	windowCostWorker := windowcost.NewWorker(
+		windowcost.NewPostgresLister(pgPool),
+		windowcost.NewPostgresAggregator(pgPool),
+		windowCostCache,
+		windowcost.DefaultInterval,
+		nil,
+	)
+	windowCostWorker.Start(ctx)
 
 	clientIPResolver, err := loadClientIPResolverFromEnv()
 	if err != nil {

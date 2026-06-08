@@ -85,6 +85,9 @@ type AccountSnapshot struct {
 	HealthState      string
 	HealthStateUntil time.Time
 	ModelRateLimits  map[string]ModelRateLimit
+	// WindowCostLimitCents is the operator-configured 5-hour session window
+	// spend cap in cents (1/100 USD). 0 or negative means unlimited (opt-in).
+	WindowCostLimitCents int64
 }
 
 type ModelRateLimit struct {

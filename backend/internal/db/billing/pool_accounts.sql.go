@@ -638,7 +638,8 @@ SELECT
     pa.model_allow_list,
     pa.capability_flags,
     pa.cap_queue_sticky,
-    pa.cap_queue_fallback
+    pa.cap_queue_fallback,
+    pa.window_cost_limit_cents
 FROM provider_accounts pa
 INNER JOIN channels c
     ON c.id = pa.channel_id
@@ -695,8 +696,9 @@ type ListEligibleAccountsByPoolGroupRow struct {
 	ModelRateLimits  []byte             `db:"model_rate_limits" json:"model_rate_limits"`
 	ModelAllowList   []string           `db:"model_allow_list" json:"model_allow_list"`
 	CapabilityFlags  []string           `db:"capability_flags" json:"capability_flags"`
-	CapQueueSticky   int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
-	CapQueueFallback int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+	CapQueueSticky        int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
+	CapQueueFallback      int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+	WindowCostLimitCents  int64              `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
 }
 
 // Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
@@ -747,6 +749,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.CapabilityFlags,
 			&i.CapQueueSticky,
 			&i.CapQueueFallback,
+			&i.WindowCostLimitCents,
 		); err != nil {
 			return nil, err
 		}

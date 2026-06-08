@@ -55,6 +55,7 @@ type HealthGate interface{ Gate }
 type GroupPolicyGate interface{ Gate }
 type ExclusionGate interface{ Gate }
 type PinnedAccountGate interface{ Gate }
+type WindowCostGateIface interface{ Gate }
 
 type GateChain struct {
 	Tenant      TenantGate
@@ -68,6 +69,7 @@ type GateChain struct {
 	GroupPolicy GroupPolicyGate
 	Exclusion   ExclusionGate
 	Pinned      PinnedAccountGate
+	WindowCost  WindowCostGateIface
 }
 
 func DefaultGateChain() GateChain {
@@ -75,6 +77,8 @@ func DefaultGateChain() GateChain {
 	return GateChain{
 		Tenant: g, Lifecycle: g, Channel: g, Protocol: protocolFamilyGate{}, Model: modelRateLimitGate{}, Capability: g,
 		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{}, Pinned: pinnedAccountGate{},
+		// WindowCost defaults to nil; WithWindowCostGate sets it. nil == AllowAll (fail-open).
+		WindowCost: WindowCostGate{},
 	}
 }
 
@@ -114,6 +118,7 @@ func (c GateChain) ForSelection(ctx context.Context, req SelectionRequest) GateC
 	c.GroupPolicy = prepareGate(ctx, c.GroupPolicy, req)
 	c.Exclusion = prepareGate(ctx, c.Exclusion, req)
 	c.Pinned = prepareGate(ctx, c.Pinned, req)
+	c.WindowCost = prepareGate(ctx, c.WindowCost, req)
 	return c
 }
 
@@ -161,6 +166,9 @@ func (c GateChain) withDefaults() GateChain {
 	if c.Pinned == nil {
 		c.Pinned = d.Pinned
 	}
+	if c.WindowCost == nil {
+		c.WindowCost = d.WindowCost
+	}
 	return c
 }
 
@@ -178,6 +186,7 @@ func (c GateChain) ordered() []namedGate {
 		{c.GroupPolicy, GateFailureGroupPolicy},
 		{c.Exclusion, GateFailurePerRequestExclusion},
 		{c.Pinned, GateFailurePinnedAccount},
+		{c.WindowCost, GateFailureWindowCost},
 	}
 }
 
