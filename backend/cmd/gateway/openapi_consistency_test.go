@@ -232,6 +232,7 @@ func TestOpenAPI_ModuleGPerfHealthRoutesMountedAndDocumented(t *testing.T) {
 		{http.MethodGet, "/v1/admin/usage/perf-metrics/summary"},
 		{http.MethodGet, "/v1/admin/usage/perf-metrics/by-bucket"},
 		{http.MethodGet, "/v1/admin/usage/health-score"},
+		{http.MethodGet, "/v1/admin/usage/provider-account-counts"},
 	} {
 		if !hasOperation(implOps, op.method, op.path) {
 			t.Fatalf("runtime missing %s %s", op.method, op.path)
@@ -255,6 +256,7 @@ func TestOpenAPI_ModuleGPerfHealthRoutesMountedAndDocumented(t *testing.T) {
 		{http.MethodGet, "/v1/admin/usage/perf-metrics/summary"},
 		{http.MethodGet, "/v1/admin/usage/perf-metrics/by-bucket"},
 		{http.MethodGet, "/v1/admin/usage/health-score"},
+		{http.MethodGet, "/v1/admin/usage/provider-account-counts"},
 	} {
 		if !hasOperation(specOps, op.method, op.path) {
 			t.Fatalf("OpenAPI missing %s %s", op.method, op.path)
@@ -268,6 +270,7 @@ func TestOpenAPI_ModuleGPerfHealthRoutesMountedAndDocumented(t *testing.T) {
 		{http.MethodPost, "/v1/admin/usage/perf-metrics/summary"},
 		{http.MethodPatch, "/v1/admin/usage/perf-metrics/by-bucket"},
 		{http.MethodDelete, "/v1/admin/usage/health-score"},
+		{http.MethodPost, "/v1/admin/usage/provider-account-counts"},
 	} {
 		if hasOperation(implOps, op.method, op.path) || hasOperation(specOps, op.method, op.path) {
 			t.Fatalf("Module G read-only routes must not expose mutation %s %s", op.method, op.path)
@@ -283,6 +286,7 @@ func TestOpenAPI_ModuleGPerfHealthRoutesMountedAndDocumented(t *testing.T) {
 		"getAdminUsagePerfMetricsSummary",
 		"getAdminUsagePerfMetricsByBucket",
 		"getAdminUsageHealthScore",
+		"getAdminUsageProviderAccountCounts",
 		"latency_percentiles_ms",
 		"overall_score",
 	} {

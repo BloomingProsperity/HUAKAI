@@ -53,6 +53,65 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
 ORDER BY ur.settled_at DESC, ur.id DESC
 LIMIT sqlc.arg(page_limit)::integer;
 
+-- name: ListUsageRecordsWithNames :many
+-- Sibling of ListUsageRecords with display names joined for admin/operator UI.
+-- Tenant predicates on api_keys/users are deliberate defense-in-depth even
+-- though those ids are globally unique today.
+SELECT
+    ur.id, ur.tenant_id, ur.claim_id, ur.api_key_id, ur.user_id,
+    ur.provider_account_id, ur.attempt_seq, ur.tokens_input, ur.tokens_output,
+    ur.cache_creation_tokens, ur.cache_read_tokens, ur.actual_cost,
+    ur.end_class, ur.usage_source, ur.pending_reconciliation,
+    ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
+    ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
+    ur.upstream_model, ur.stream, ur.settlement_source,
+    p.code AS provider, blc.pooling_group_id AS pool_id,
+    blc.logical_request_id AS request_id,
+    ak.name AS token_name,
+    u.display_name AS username,
+    ale.ledger_id AS audit_ledger_id,
+    ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
+    ale.hop_chain AS audit_hop_chain,
+    ale.model_chain AS audit_model_chain
+FROM usage_records ur
+JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
+LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
+LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
+LEFT JOIN api_keys ak ON ak.id = ur.api_key_id AND ak.tenant_id = ur.tenant_id
+LEFT JOIN users u ON u.id = ur.user_id AND u.tenant_id = ur.tenant_id
+LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
+    AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
+WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_id)::bigint)
+  AND (sqlc.narg(from_ts)::timestamptz IS NULL OR ur.settled_at >= sqlc.narg(from_ts)::timestamptz)
+  AND (sqlc.narg(to_ts)::timestamptz IS NULL OR ur.settled_at <= sqlc.narg(to_ts)::timestamptz)
+  AND (sqlc.narg(provider)::text IS NULL OR p.code = sqlc.narg(provider)::text)
+  AND (sqlc.narg(pool_id)::bigint IS NULL OR blc.pooling_group_id = sqlc.narg(pool_id)::bigint)
+  AND (sqlc.narg(api_key_id)::bigint IS NULL OR ur.api_key_id = sqlc.narg(api_key_id)::bigint)
+  AND (sqlc.narg(provider_account_id)::bigint IS NULL OR ur.provider_account_id = sqlc.narg(provider_account_id)::bigint)
+  AND (sqlc.narg(model)::text IS NULL OR ur.requested_model = sqlc.narg(model)::text)
+  AND (
+    sqlc.arg(pending_reconciliation_only)::boolean = false
+    OR (
+      ur.pending_reconciliation = true
+      AND NOT EXISTS (
+        SELECT 1
+        FROM usage_record_reconciliation_events re
+        WHERE re.tenant_id = ur.tenant_id
+          AND re.original_usage_record_id = ur.id
+          AND re.reconciliation_source = 'stream_no_usage_finalized'
+      )
+    )
+  )
+  AND (
+    sqlc.narg(outcome)::text IS NULL
+    OR sqlc.narg(outcome)::text = 'all'
+    OR (sqlc.narg(outcome)::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
+    OR (sqlc.narg(outcome)::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
+  )
+  AND (sqlc.arg(has_cursor)::boolean = false OR (ur.settled_at, ur.id) < (sqlc.arg(cursor_created_at)::timestamptz, sqlc.arg(cursor_id)::bigint))
+ORDER BY ur.settled_at DESC, ur.id DESC
+LIMIT sqlc.arg(page_limit)::integer;
+
 -- name: GetUsageRecordByRequestID :one
 WITH scoped_usage_records AS (
     SELECT
@@ -266,3 +325,23 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR au.tenant_id = sqlc.narg(tenant_i
   AND (sqlc.narg(severity)::text IS NULL OR au.severity = sqlc.narg(severity)::text)
   AND (sqlc.narg(ledger_id)::text IS NULL OR au.ledger_id = sqlc.narg(ledger_id)::text)
   AND (sqlc.narg(actor_id)::text IS NULL OR au.actor_id = sqlc.narg(actor_id)::text);
+
+-- name: PurgeUsageRecordsBefore :one
+-- Usage-log retention only. Deletes bounded batches from usage_records and
+-- deliberately does not touch billing_ledger_claims, billing_events, audit
+-- tables, or other money/trust-chain records.
+WITH doomed AS (
+    SELECT id
+    FROM usage_records
+    WHERE settled_at < sqlc.arg(cutoff)::timestamptz
+    ORDER BY settled_at ASC, id ASC
+    LIMIT sqlc.arg(batch_limit)::integer
+    FOR UPDATE SKIP LOCKED
+),
+deleted AS (
+    DELETE FROM usage_records ur
+    USING doomed
+    WHERE ur.id = doomed.id
+    RETURNING ur.id
+)
+SELECT count(*)::bigint FROM deleted;

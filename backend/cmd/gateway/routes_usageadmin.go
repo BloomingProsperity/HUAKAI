@@ -33,4 +33,6 @@ func mountUsageAdminRoutes(r chi.Router, d *deps) {
 		adminGate(resolver, usageanalyticshttp.NewHealthScoreHandler(d.billingQueries)))
 	r.Method(http.MethodGet, "/v1/admin/usage/overview",
 		adminGate(resolver, usageanalyticshttp.NewOverviewHandler(d.billingQueries)))
+	r.Method(http.MethodGet, "/v1/admin/usage/provider-account-counts",
+		adminGate(resolver, usageanalyticshttp.NewProviderAccountCountsHandler(d.billingQueries)))
 }

@@ -1760,6 +1760,59 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/usage/provider-account-counts:
+    get:
+      tags: [admin]
+      summary: Platform-admin usage counts by provider account
+      operationId: getAdminUsageProviderAccountCounts
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/provider_account_counts_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_analytics.sql
+      description: |
+        Platform-admin (adminGate RBAC) read-only aggregation of settled
+        usage_records by provider_account_id over an explicit RFC3339 time
+        window. The response includes request count, input/output token totals,
+        and actual_cost totals for operator capacity and channel observability.
+        The endpoint does not mutate usage_records, billing ledger rows, quota,
+        or provider-account state.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: tenant_id
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Usage counts grouped by provider account.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from: { type: string, format: date-time }
+                  to: { type: string, format: date-time }
+                  counts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        provider_account_id: { type: integer, format: int64 }
+                        request_count: { type: integer, format: int64 }
+                        total_input_tokens: { type: integer, format: int64 }
+                        total_output_tokens: { type: integer, format: int64 }
+                        total_cost: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/usage/export.csv:
     get:
       tags: [admin-usage]

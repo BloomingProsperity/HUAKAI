@@ -56,6 +56,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	"github.com/BloomingProsperity/HUAKAI/internal/notify"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/obsconfig"
 	"github.com/BloomingProsperity/HUAKAI/internal/otelbridge"
 	"github.com/BloomingProsperity/HUAKAI/internal/panelauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkey"
@@ -86,6 +87,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
+	"github.com/BloomingProsperity/HUAKAI/internal/usageretention"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauditlog"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
@@ -179,6 +181,7 @@ type deps struct {
 	hermesRunnerSharedSecret []byte
 	metricsHandler           http.Handler
 	otelShutdown             func(context.Context) error
+	usageRetentionWorker     *usageretention.Worker
 }
 
 type refundReceiptAppender interface {
@@ -806,6 +809,20 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			rt.hermesRetentionWorker = hermesRetentionWorker
 		}
 	}
+	usageRetentionDays, err := usageretention.UsageRetentionDaysFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	// retention_days=0 is the default safe value: keep usage analytics history
+	// permanently unless an operator explicitly configures a positive TTL.
+	if usageRetentionDays > 0 {
+		usageRetentionWorker := usageretention.NewUsageRetentionWorker(usageretention.Config{
+			Store:         usageretention.NewPostgresUsagePurgeStore(billingQueries),
+			RetentionDays: usageRetentionDays,
+		})
+		usageRetentionWorker.Start(ctx)
+		rt.usageRetentionWorker = usageRetentionWorker
+	}
 
 	// 持久幂等重放存储 + 过期清理 janitor, 防表无界增长。
 	replayStore := billing.NewReplayStore(pgPool)
@@ -1013,6 +1030,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		MetricSource: alertmetrics.NewCompositeMetricSource(alertmetrics.CompositeMetricSourceConfig{
 			GlobalSource:  otelbridge.NewExpvarMetricSource(),
 			UsageRolluper: alertmetrics.NewBillingRecentUsageRolluper(billingQueries),
+			UsageStats:    obsconfig.NewUsageStatsProvider(platformsettings.NewPostgresStore(pgPool)),
 		}),
 		Interval: cfg.AlertingEvalInterval,
 	})

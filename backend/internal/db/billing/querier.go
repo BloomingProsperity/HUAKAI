@@ -45,6 +45,10 @@ type Querier interface {
 	// service; this query still carries tenant_id + api_key_id predicates so a
 	// handler bug cannot widen the read to another tenant or another key.
 	AggregateMyUsageTotals(ctx context.Context, arg AggregateMyUsageTotalsParams) (AggregateMyUsageTotalsRow, error)
+	// Platform-admin read-only usage count/cost totals by provider account over a
+	// bounded settled_at window. Optional tenant_id narrows operator analysis
+	// without changing money-path writes or settlement behavior.
+	AggregateUsageCountsByProviderAccount(ctx context.Context, arg AggregateUsageCountsByProviderAccountParams) ([]AggregateUsageCountsByProviderAccountRow, error)
 	// Global/requested_model TTFT percentiles for the recent settled usage window.
 	// The array keeps the percentile definition adjacent so P50/P95/P99 cannot
 	// drift independently.
@@ -194,6 +198,14 @@ type Querier interface {
 	// F-OBS-001 admin read APIs. SELECT-only: no hot-path, quota, billing,
 	// auth, or trust-chain mutation is allowed here.
 	ListUsageRecords(ctx context.Context, arg ListUsageRecordsParams) ([]ListUsageRecordsRow, error)
+	// Sibling of ListUsageRecords with display names joined for admin/operator UI.
+	// Tenant predicates on api_keys/users are deliberate defense-in-depth even
+	// though those ids are globally unique today.
+	ListUsageRecordsWithNames(ctx context.Context, arg ListUsageRecordsWithNamesParams) ([]ListUsageRecordsWithNamesRow, error)
+	// Usage-log retention only. Deletes bounded batches from usage_records and
+	// deliberately does not touch billing_ledger_claims, billing_events, audit
+	// tables, or other money/trust-chain records.
+	PurgeUsageRecordsBefore(ctx context.Context, arg PurgeUsageRecordsBeforeParams) (int64, error)
 	// Re-attempt path: an earlier attempt aborted (transient upstream failure,
 	// not FINGERPRINT_CONFLICT). Operator policy allows resurrecting the row
 	// under the same idempotency_key rather than inserting a duplicate (which

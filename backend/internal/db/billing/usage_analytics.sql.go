@@ -299,6 +299,64 @@ func (q *Queries) AggregateMyUsageTotals(ctx context.Context, arg AggregateMyUsa
 	return i, err
 }
 
+const aggregateUsageCountsByProviderAccount = `-- name: AggregateUsageCountsByProviderAccount :many
+SELECT
+    COALESCE(ur.provider_account_id, 0)::bigint                  AS provider_account_id,
+    count(*)::bigint                                             AS request_count,
+    COALESCE(sum(ur.tokens_input), 0)::bigint                    AS total_input_tokens,
+    COALESCE(sum(ur.tokens_output), 0)::bigint                   AS total_output_tokens,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+  AND ur.settled_at < $2::timestamptz
+  AND ($3::bigint IS NULL OR ur.tenant_id = $3::bigint)
+GROUP BY COALESCE(ur.provider_account_id, 0)
+ORDER BY total_cost DESC, provider_account_id ASC
+`
+
+type AggregateUsageCountsByProviderAccountParams struct {
+	FromTs   pgtype.Timestamptz `db:"from_ts" json:"from_ts"`
+	ToTs     pgtype.Timestamptz `db:"to_ts" json:"to_ts"`
+	TenantID *int64             `db:"tenant_id" json:"tenant_id"`
+}
+
+type AggregateUsageCountsByProviderAccountRow struct {
+	ProviderAccountID int64  `db:"provider_account_id" json:"provider_account_id"`
+	RequestCount      int64  `db:"request_count" json:"request_count"`
+	TotalInputTokens  int64  `db:"total_input_tokens" json:"total_input_tokens"`
+	TotalOutputTokens int64  `db:"total_output_tokens" json:"total_output_tokens"`
+	TotalCost         string `db:"total_cost" json:"total_cost"`
+}
+
+// Platform-admin read-only usage count/cost totals by provider account over a
+// bounded settled_at window. Optional tenant_id narrows operator analysis
+// without changing money-path writes or settlement behavior.
+func (q *Queries) AggregateUsageCountsByProviderAccount(ctx context.Context, arg AggregateUsageCountsByProviderAccountParams) ([]AggregateUsageCountsByProviderAccountRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsageCountsByProviderAccount, arg.FromTs, arg.ToTs, arg.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsageCountsByProviderAccountRow
+	for rows.Next() {
+		var i AggregateUsageCountsByProviderAccountRow
+		if err := rows.Scan(
+			&i.ProviderAccountID,
+			&i.RequestCount,
+			&i.TotalInputTokens,
+			&i.TotalOutputTokens,
+			&i.TotalCost,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const aggregateUsageLatencyPercentiles = `-- name: AggregateUsageLatencyPercentiles :one
 WITH latency_percentiles AS (
     SELECT COALESCE(

@@ -112,6 +112,32 @@ func TestCompositeMetricSourceDBErrorFailsSoft(t *testing.T) {
 	}
 }
 
+// MUTATION: ignore UsageStatsEnabled=false -> usage rollup runs and emits usage keys -> RED.
+func TestCompositeMetricSourceUsageStatsToggle(t *testing.T) {
+	rolluper := &stubUsageRolluper{rollup: RecentUsageRollup{RequestCount: 9}}
+	source := NewCompositeMetricSource(CompositeMetricSourceConfig{
+		GlobalSource:  stubGlobalSource{snapshot: map[string]float64{"global.counter": 3}},
+		UsageRolluper: rolluper,
+		UsageStats:    stubUsageStatsGate{enabled: false},
+		RecentWindow:  time.Minute,
+		Now:           fixedNow,
+	})
+
+	got, err := source.Snapshot(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if got["global.counter"] != 3 {
+		t.Fatalf("global metric missing: %v", got)
+	}
+	if len(rolluper.calls) != 0 {
+		t.Fatalf("usage rollup calls = %d, want 0 when usage stats disabled", len(rolluper.calls))
+	}
+	if _, ok := got[MetricUsageRequestCount]; ok {
+		t.Fatalf("usage metric emitted while usage stats disabled: %v", got)
+	}
+}
+
 type stubGlobalSource struct {
 	snapshot map[string]float64
 	err      error
@@ -137,6 +163,18 @@ type stubUsageRolluper struct {
 	rollup RecentUsageRollup
 	err    error
 	calls  []usageRollupCall
+}
+
+type stubUsageStatsGate struct {
+	enabled bool
+	err     error
+}
+
+func (s stubUsageStatsGate) UsageStatsEnabled(context.Context, int64) (bool, error) {
+	if s.err != nil {
+		return true, s.err
+	}
+	return s.enabled, nil
 }
 
 func (s *stubUsageRolluper) RecentUsageRollup(_ context.Context, tenantID int64, settledSince time.Time) (RecentUsageRollup, error) {

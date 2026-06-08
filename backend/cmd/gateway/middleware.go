@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accesslog"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -45,6 +46,7 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router.Use(securityHeaders)
 	router.Use(middleware.RequestID)
 	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
+	router.Use(accesslog.Middleware(logger))
 	// Explicit allowlist CORS, early (preflight answered before auth).
 	// Allowlist via HUAKAI_CORS_ALLOWED_ORIGINS (comma-separated); empty = deny.
 	// It runs before the limiter so a 429 to an allowlisted browser origin
