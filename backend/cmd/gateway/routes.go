@@ -31,6 +31,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/imageshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/invoicehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediataskhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meexporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mequotahttp"
@@ -168,6 +169,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		meexporthttp.MountRoutes(r, meexporthttp.Deps{Store: d.billingQueries})
 		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
 		userauditloghttp.MountRoutes(r, userauditloghttp.Deps{Store: d.userAuditStore})
+		invoicehttp.MountRoutes(r, invoicehttp.Deps{Orders: d.paymentService})
 		r.Get("/keys/{id}/usage-summary", usageanalyticshttp.NewKeyUsageSummaryHandler(usageanalyticshttp.KeyUsageSummaryDeps{
 			Keys:  d.userKeyService,
 			Store: d.billingQueries,
