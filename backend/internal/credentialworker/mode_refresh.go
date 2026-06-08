@@ -34,6 +34,17 @@ const (
 	geminiOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
 )
 
+func providerFailureCooldown(vendor string) time.Duration {
+	switch normalizeProviderName(vendor) {
+	case credentialstore.VendorGemini:
+		return 0
+	case credentialstore.VendorAnthropic, credentialstore.VendorOpenAI:
+		return time.Minute
+	default:
+		return time.Minute
+	}
+}
+
 type ModeRefreshInput struct {
 	CredentialID      int64
 	TenantID          int64
@@ -215,7 +226,7 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 		// 不得吞掉失败状态持久化错误。若 SaveRefreshFailure 写失败,凭据的 refresh-failure 状态
 		// (冷却/重试计数/失败原因)未落库,调度器会按陈旧状态反复重试或漏报;用 errors.Join 同时上抛
 		// adapter-missing 与持久化错误,与本包 anthropicoauth refresher 的处理对齐。
-		if saveErr := txStore.SaveRefreshFailure(ctx, rec, "adapter_missing", r.now().Add(time.Minute)); saveErr != nil {
+		if saveErr := txStore.SaveRefreshFailure(ctx, rec, "adapter_missing", r.now().Add(providerFailureCooldown(rec.Vendor))); saveErr != nil {
 			return errors.Join(err, saveErr)
 		}
 		return err
@@ -230,7 +241,7 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 		}
 		emitGeminiFallbackAudit(ctx, txStore, rec, err, false)
 		// 见上,刷新失败时的状态持久化错误必须上抛,不能静默吞掉。
-		if saveErr := txStore.SaveRefreshFailure(ctx, rec, classifyModeRefreshError(err), r.now().Add(time.Minute)); saveErr != nil {
+		if saveErr := txStore.SaveRefreshFailure(ctx, rec, classifyModeRefreshError(err), r.now().Add(providerFailureCooldown(rec.Vendor))); saveErr != nil {
 			return errors.Join(err, saveErr)
 		}
 		return err

@@ -466,6 +466,53 @@ func TestSchedulerRefreshFailureBackoffAndAudit(t *testing.T) {
 	}
 }
 
+func TestWithRefreshTimeoutBoundsEachAttempt(t *testing.T) {
+	ref := &blockingRefresher{entered: make(chan struct{})}
+	timeout := 50 * time.Millisecond
+	s := NewScheduler(nil, nil, nil, ref, WithRefreshTimeout(timeout), WithMaxAttempts(1))
+	if s.refreshTimeout != timeout {
+		t.Fatalf("refreshTimeout=%s, want %s", s.refreshTimeout, timeout)
+	}
+
+	done := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		done <- s.refreshWithBackoff(context.Background(), testAccount(41))
+	}()
+
+	select {
+	case <-ref.entered:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("refresher was not called")
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("refreshWithBackoff err=%v, want context deadline exceeded", err)
+		}
+		if elapsed := time.Since(started); elapsed < timeout/2 || elapsed > 500*time.Millisecond {
+			t.Fatalf("refreshWithBackoff elapsed=%s, want near %s", elapsed, timeout)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("refreshWithBackoff ignored refreshTimeout and did not return")
+	}
+}
+
+func TestRefreshTimeoutDefaultDoesNotInjectDeadline(t *testing.T) {
+	ref := &deadlineProbeRefresher{}
+	s := NewScheduler(nil, nil, nil, ref, WithRefreshTimeout(0), WithRefreshTimeout(-time.Second), WithMaxAttempts(1))
+	if s.refreshTimeout != 0 {
+		t.Fatalf("refreshTimeout=%s, want default zero", s.refreshTimeout)
+	}
+	if err := s.refreshWithBackoff(context.Background(), testAccount(42)); err != nil {
+		t.Fatalf("refreshWithBackoff: %v", err)
+	}
+	if ref.hadDeadline {
+		t.Fatal("default refreshTimeout must not wrap refresh attempts with a deadline")
+	}
+}
+
 func TestSchedulerStopsBackoffLoopForNonRetryableRefreshError(t *testing.T) {
 	// Regression killed: vendor refreshers that have already classified a
 	// failure as terminal for the current tick must not be called again by the
@@ -597,6 +644,25 @@ func (r *refresherSpy) Refresh(_ context.Context, accountID int64) error {
 	if n := len(r.calls); n <= len(r.errs) {
 		return r.errs[n-1]
 	}
+	return nil
+}
+
+type blockingRefresher struct {
+	entered chan struct{}
+}
+
+func (r *blockingRefresher) Refresh(ctx context.Context, accountID int64) error {
+	close(r.entered)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type deadlineProbeRefresher struct {
+	hadDeadline bool
+}
+
+func (r *deadlineProbeRefresher) Refresh(ctx context.Context, accountID int64) error {
+	_, r.hadDeadline = ctx.Deadline()
 	return nil
 }
 

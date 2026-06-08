@@ -7,6 +7,7 @@ package openrouter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 )
 
 const defaultChatCompletionsEndpoint = "https://openrouter.ai/api/v1/chat/completions"
+const openrouterZDRExtraKey = "openrouter_zdr"
 
 // PassthroughAdapter 把客户原始 OpenAI 形态请求直通转发到 OpenRouter。
 type PassthroughAdapter struct {
@@ -57,7 +59,15 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, fmt.Errorf("openrouter passthrough: endpoint rejected: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
+	body := in.InboundBody
+	if in.Credential.Extra[openrouterZDRExtraKey] == "true" {
+		body, err = withZDRProviderPreference(body)
+		if err != nil {
+			return nil, fmt.Errorf("openrouter passthrough: 注入 ZDR provider preference 失败: %w", err)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("openrouter passthrough: 构造请求失败: %w", err)
 	}
@@ -79,6 +89,26 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	}
 
 	return req, nil
+}
+
+func withZDRProviderPreference(body []byte) ([]byte, error) {
+	payload := map[string]any{}
+	if len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, err
+		}
+	}
+	providerPrefs := map[string]any{}
+	if raw, ok := payload["provider"]; ok {
+		existing, ok := raw.(map[string]any)
+		if !ok {
+			return nil, errors.New("provider preference must be a JSON object")
+		}
+		providerPrefs = existing
+	}
+	providerPrefs["zdr"] = true
+	payload["provider"] = providerPrefs
+	return json.Marshal(payload)
 }
 
 func (a *PassthroughAdapter) acceptsCredential(t provider.CredentialType) bool {
