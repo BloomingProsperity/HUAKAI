@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cacheplan"
+	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -162,6 +163,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	if err := validatePassthroughEndpointTarget(ctx, in.Credential, req); err != nil {
 		return nil, err
 	}
+	headerfirewall.StripHopByHopRequestHeaders(req.Header)
 
 	// 3. 取 transport
 	mode := in.TransportMode

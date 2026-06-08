@@ -41,6 +41,30 @@ var builtInDenyRules = []headerRule{
 	prefixRule("X-Amzn-"),
 }
 
+var hopByHopRequestHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"TE",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
+func StripHopByHopRequestHeaders(h http.Header) {
+	for _, value := range h.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			if name := strings.TrimSpace(token); name != "" {
+				h.Del(name)
+			}
+		}
+	}
+	for _, name := range hopByHopRequestHeaders {
+		h.Del(name)
+	}
+}
+
 func FilterResponseHeaders(h http.Header, extraDeny []string, allowOverride []string) http.Header {
 	filtered := make(http.Header, len(h))
 	for name, values := range h {

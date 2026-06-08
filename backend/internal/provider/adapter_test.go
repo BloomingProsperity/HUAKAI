@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/ssrfpolicy"
 )
 
 func passthroughCred(baseURL string) Credential {
@@ -18,6 +20,13 @@ func passthroughCred(baseURL string) Credential {
 		Value: "sk-proxy",
 		Extra: map[string]string{"base_url": baseURL},
 	}
+}
+
+func setPassthroughPolicyEnv(t *testing.T, key, value string) {
+	t.Helper()
+	t.Setenv(key, value)
+	ssrfpolicy.ResetForTesting()
+	t.Cleanup(ssrfpolicy.ResetForTesting)
 }
 
 func TestEndpointForCredential(t *testing.T) {
@@ -147,6 +156,143 @@ func TestEndpointForCredentialRejectsUnsafePassthroughBaseURL(t *testing.T) {
 				t.Fatalf("blocked endpoint error leaked raw destination %q: %v", tc.leak, err)
 			}
 		})
+	}
+}
+
+func TestBlockCloudMetadataHosts(t *testing.T) {
+	blocked := []string{
+		"metadata.google.internal",
+		"metadata.goog",
+		"instance-data",
+		"instance-data.ec2.internal",
+		"localhost",
+		"localhost.localdomain",
+	}
+	for _, host := range blocked {
+		t.Run(host, func(t *testing.T) {
+			_, err := validatePassthroughHost(host)
+			if !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+				t.Fatalf("validatePassthroughHost(%q) error=%v, want ErrUnsafePassthroughEndpoint", host, err)
+			}
+		})
+	}
+
+	got, err := validatePassthroughHost("api.openai.com")
+	if err != nil {
+		t.Fatalf("api.openai.com rejected: %v", err)
+	}
+	if got != "api.openai.com" {
+		t.Fatalf("host=%q want api.openai.com", got)
+	}
+}
+
+func TestPassthroughEndpointPortAllowlist(t *testing.T) {
+	setPassthroughPolicyEnv(t, ssrfpolicy.PortAllowlistEnv, "443,8000-9000")
+
+	_, err := EndpointForCredential(
+		"https://api.openai.com/v1/chat/completions",
+		passthroughCred("https://proxy.example:7000/v1"),
+	)
+	if !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("port 7000 error=%v, want ErrUnsafePassthroughEndpoint", err)
+	}
+
+	for _, baseURL := range []string{
+		"https://proxy.example:443/v1",
+		"https://proxy.example/v1",
+		"https://proxy.example:8500/v1",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			_, err := EndpointForCredential(
+				"https://api.openai.com/v1/chat/completions",
+				passthroughCred(baseURL),
+			)
+			if err != nil {
+				t.Fatalf("%s rejected under allowlist 443,8000-9000: %v", baseURL, err)
+			}
+		})
+	}
+
+	setPassthroughPolicyEnv(t, ssrfpolicy.PortAllowlistEnv, "")
+	_, err = EndpointForCredential(
+		"https://api.openai.com/v1/chat/completions",
+		passthroughCred("https://proxy.example:7000/v1"),
+	)
+	if err != nil {
+		t.Fatalf("empty port allowlist must preserve allow-all default, got %v", err)
+	}
+}
+
+func TestDomainAllowlistWildcard(t *testing.T) {
+	setPassthroughPolicyEnv(t, ssrfpolicy.DomainAllowlistEnv, "api.openai.com,*.anthropic.com")
+
+	if _, err := validatePassthroughHost("evil.com"); !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("evil.com error=%v, want ErrUnsafePassthroughEndpoint", err)
+	}
+	if _, err := validatePassthroughHost("93.184.216.34"); !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("public IP literal must still match non-empty allowlist, err=%v", err)
+	}
+	for _, host := range []string{"api.openai.com", "x.anthropic.com"} {
+		t.Run(host, func(t *testing.T) {
+			if _, err := validatePassthroughHost(host); err != nil {
+				t.Fatalf("%s rejected by allowlist: %v", host, err)
+			}
+		})
+	}
+
+	setPassthroughPolicyEnv(t, ssrfpolicy.DomainDenylistEnv, "x.anthropic.com")
+	if _, err := validatePassthroughHost("x.anthropic.com"); !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("denylist must win over allowlist, err=%v", err)
+	}
+
+	setPassthroughPolicyEnv(t, ssrfpolicy.DomainAllowlistEnv, "")
+	setPassthroughPolicyEnv(t, ssrfpolicy.DomainDenylistEnv, "")
+	if _, err := validatePassthroughHost("evil.com"); err != nil {
+		t.Fatalf("empty domain policy must preserve default pass-through, got %v", err)
+	}
+}
+
+func TestAllowPrivateIPHostsScopedEscapeHatch(t *testing.T) {
+	setPassthroughPolicyEnv(t, ssrfpolicy.AllowPrivateIPHostsEnv, "10.1.2.3,private-proxy.example")
+
+	_, err := EndpointForCredential(
+		"https://api.openai.com/v1/chat/completions",
+		passthroughCred("https://10.1.2.3/v1"),
+	)
+	if err != nil {
+		t.Fatalf("explicit allow-private IP literal rejected: %v", err)
+	}
+
+	_, err = EndpointForCredential(
+		"https://api.openai.com/v1/chat/completions",
+		passthroughCred("https://10.1.2.4/v1"),
+	)
+	if !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("unlisted private IP error=%v, want ErrUnsafePassthroughEndpoint", err)
+	}
+
+	restore := SwapPassthroughEndpointLookupForTesting(func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		if network != "ip" {
+			t.Fatalf("lookup network=%q, want ip", network)
+		}
+		return []netip.Addr{netip.MustParseAddr("10.1.2.3")}, nil
+	})
+	t.Cleanup(restore)
+
+	u, err := url.Parse("https://private-proxy.example/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePassthroughEndpointTarget(context.Background(), u); err != nil {
+		t.Fatalf("listed private resolving host rejected: %v", err)
+	}
+
+	u, err = url.Parse("https://other-proxy.example/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePassthroughEndpointTarget(context.Background(), u); !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("unlisted private resolving host error=%v, want ErrUnsafePassthroughEndpoint", err)
 	}
 }
 
