@@ -774,6 +774,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:  d.adminAuth,
 			Store: d.adminQueries,
 		})
+		adminhttp.MountProviderAccountBulkRoutes(r, adminhttp.ProviderAccountBulkDeps{
+			Auth:  d.adminAuth,
+			Store: d.adminQueries,
+		})
 		gatewayhttp.MountAdminCredentialRoutes(r, gatewayhttp.AdminCredentialDeps{
 			Auth:        d.adminAuth,
 			Credentials: d.credentialStore,
