@@ -220,6 +220,78 @@ func TestOpenAPI_ModuleFReadOnlyRoutesMountedAndDocumented(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_ModuleGPerfHealthRoutesMountedAndDocumented(t *testing.T) {
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/healthz"},
+		{http.MethodHead, "/healthz"},
+		{http.MethodGet, "/v1/admin/usage/perf-metrics/summary"},
+		{http.MethodGet, "/v1/admin/usage/perf-metrics/by-bucket"},
+		{http.MethodGet, "/v1/admin/usage/health-score"},
+	} {
+		if !hasOperation(implOps, op.method, op.path) {
+			t.Fatalf("runtime missing %s %s", op.method, op.path)
+		}
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/healthz"},
+		{http.MethodHead, "/healthz"},
+		{http.MethodGet, "/v1/admin/usage/perf-metrics/summary"},
+		{http.MethodGet, "/v1/admin/usage/perf-metrics/by-bucket"},
+		{http.MethodGet, "/v1/admin/usage/health-score"},
+	} {
+		if !hasOperation(specOps, op.method, op.path) {
+			t.Fatalf("OpenAPI missing %s %s", op.method, op.path)
+		}
+	}
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/healthz"},
+		{http.MethodPost, "/v1/admin/usage/perf-metrics/summary"},
+		{http.MethodPatch, "/v1/admin/usage/perf-metrics/by-bucket"},
+		{http.MethodDelete, "/v1/admin/usage/health-score"},
+	} {
+		if hasOperation(implOps, op.method, op.path) || hasOperation(specOps, op.method, op.path) {
+			t.Fatalf("Module G read-only routes must not expose mutation %s %s", op.method, op.path)
+		}
+	}
+
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, snippet := range []string{
+		"getAdminUsagePerfMetricsSummary",
+		"getAdminUsagePerfMetricsByBucket",
+		"getAdminUsageHealthScore",
+		"latency_percentiles_ms",
+		"overall_score",
+	} {
+		if !strings.Contains(spec, snippet) {
+			t.Fatalf("OpenAPI Module G schema missing snippet %q", snippet)
+		}
+	}
+}
+
 func TestOpenAPI_ModuleBInboundRoutesMountedAndDocumented(t *testing.T) {
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {

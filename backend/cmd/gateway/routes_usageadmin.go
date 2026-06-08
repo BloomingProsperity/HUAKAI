@@ -25,6 +25,12 @@ func mountUsageAdminRoutes(r chi.Router, d *deps) {
 		adminGate(resolver, usageanalyticshttp.NewLeaderboardHandler(d.billingQueries)))
 	r.Method(http.MethodGet, "/v1/admin/usage/performance",
 		adminGate(resolver, usageanalyticshttp.NewPerformanceHandler(d.billingQueries)))
+	r.Method(http.MethodGet, "/v1/admin/usage/perf-metrics/summary",
+		adminGate(resolver, usageanalyticshttp.NewPerfMetricsSummaryHandler(d.billingQueries)))
+	r.Method(http.MethodGet, "/v1/admin/usage/perf-metrics/by-bucket",
+		adminGate(resolver, usageanalyticshttp.NewPerfMetricsByBucketHandler(d.billingQueries)))
+	r.Method(http.MethodGet, "/v1/admin/usage/health-score",
+		adminGate(resolver, usageanalyticshttp.NewHealthScoreHandler(d.billingQueries)))
 	r.Method(http.MethodGet, "/v1/admin/usage/overview",
 		adminGate(resolver, usageanalyticshttp.NewOverviewHandler(d.billingQueries)))
 }

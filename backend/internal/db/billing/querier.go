@@ -12,7 +12,7 @@ import (
 
 type Querier interface {
 	// Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
-	// tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
+	// codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 	AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error)
 	// 首次写入时目标行还不存在, FOR UPDATE 无法锁住空行; 先拿事务级顾问锁
 	// 按租户和设置键串行化同一设置的读改写, 提交或回滚后自动释放。
@@ -45,6 +45,10 @@ type Querier interface {
 	// service; this query still carries tenant_id + api_key_id predicates so a
 	// handler bug cannot widen the read to another tenant or another key.
 	AggregateMyUsageTotals(ctx context.Context, arg AggregateMyUsageTotalsParams) (AggregateMyUsageTotalsRow, error)
+	// Global/requested_model TTFT percentiles for the recent settled usage window.
+	// The array keeps the percentile definition adjacent so P50/P95/P99 cannot
+	// drift independently.
+	AggregateUsageLatencyPercentiles(ctx context.Context, arg AggregateUsageLatencyPercentilesParams) (AggregateUsageLatencyPercentilesRow, error)
 	// Platform-admin cost leaderboard by api_key_id. Passing tenant_id=0 keeps
 	// the existing global admin leaderboard behavior; a positive tenant_id narrows
 	// the read-only rollup to that tenant for tenant-focused ops drilldown.
@@ -65,9 +69,17 @@ type Querier interface {
 	// Platform-admin performance panel by requested_model. Read-only operator
 	// surface: latency, throughput, and error rate inputs only; no cost fields.
 	AggregateUsagePerformanceByModel(ctx context.Context, arg AggregateUsagePerformanceByModelParams) ([]AggregateUsagePerformanceByModelRow, error)
+	// Platform-admin performance panel by UTC requested_at bucket and
+	// requested_model. The caller must validate bucket is one of hour/day before
+	// calling this query.
+	AggregateUsagePerformanceByModelBucketed(ctx context.Context, arg AggregateUsagePerformanceByModelBucketedParams) ([]AggregateUsagePerformanceByModelBucketedRow, error)
 	// Platform-admin performance panel by provider_account_id. Provider-less
 	// usage, such as cache-only settlement, is grouped under "unassigned".
 	AggregateUsagePerformanceByProviderAccount(ctx context.Context, arg AggregateUsagePerformanceByProviderAccountParams) ([]AggregateUsagePerformanceByProviderAccountRow, error)
+	// Platform-admin performance summary across the recent settled usage window,
+	// optionally narrowed to one requested_model. Read-only operator surface:
+	// latency, throughput, request count, and error count only; no cost fields.
+	AggregateUsagePerformanceSummary(ctx context.Context, arg AggregateUsagePerformanceSummaryParams) (AggregateUsagePerformanceSummaryRow, error)
 	ApplyBalanceHoldCapture(ctx context.Context, arg ApplyBalanceHoldCaptureParams) (ApplyBalanceHoldCaptureRow, error)
 	ApplyBalanceHoldRelease(ctx context.Context, arg ApplyBalanceHoldReleaseParams) (ApplyBalanceHoldReleaseRow, error)
 	CaptureBalanceHold(ctx context.Context, arg CaptureBalanceHoldParams) (int64, error)
@@ -159,7 +171,7 @@ type Querier interface {
 	// cap_queue_sticky/fallback are returned so the selector can construct
 	// WaitPlan fallback when every eligible account is at concurrency cap.
 	//
-	// 之前不过滤 model_allow_list /
+	// 2026-05-19 codex review P1 fix: 之前不过滤 model_allow_list /
 	// capability_flags, production gate AllowAll 全过, request 能 reserve
 	// 到明确不被该 account 允许的 model / 缺能力。两个 filter 直接在 SQL
 	// 层做 (Postgres array @> 子集 + cardinality empty bypass):
@@ -172,8 +184,7 @@ type Querier interface {
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
 	// F-OBS-001 read-only query surface for the admin/audit lane.
-	// Per docs/specs/_invariants/cross-module-boundaries.md: this file
-	// contains SELECT-only queries; the Repository wrapper enforces tenant
+	// This file contains SELECT-only queries; the Repository wrapper enforces tenant
 	// scope on every call.
 	//
 	// NONE of these SELECTs include the `credentials` column from
@@ -195,7 +206,7 @@ type Querier interface {
 	RecentUsageRollupByTenant(ctx context.Context, arg RecentUsageRollupByTenantParams) (RecentUsageRollupByTenantRow, error)
 	ReleaseBalanceHold(ctx context.Context, claimID int64) (int64, error)
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
-	// TRULY IDEMPOTENT in_flight decrement.
+	// Spec §Tx2 step 14: TRULY IDEMPOTENT in_flight decrement (codex P1 review fix).
 	// Atomic CTE: flip pool_slot_acquisitions.status acquired -> released_success
 	// AND ONLY THEN decrement provider_accounts.in_flight_count. If the token is
 	// replayed (e.g. retry storm), the inner UPDATE returns 0 rows because status
@@ -212,7 +223,7 @@ type Querier interface {
 	// Tenant-scoped to prevent cross-tenant abort via stale claim id.
 	UpdateClaimAbortedWithReason(ctx context.Context, arg UpdateClaimAbortedWithReasonParams) (int64, error)
 	// Spec §Tx2 step 15: claim status reserving → committed.
-	// tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
+	// codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 	UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error)
 	UpdatePool(ctx context.Context, arg UpdatePoolParams) (PoolGroup, error)
 	UpsertBalanceHold(ctx context.Context, arg UpsertBalanceHoldParams) error

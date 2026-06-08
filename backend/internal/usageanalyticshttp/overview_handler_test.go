@@ -63,6 +63,18 @@ func (s *overviewQueryStub) AggregateUsagePerformanceByProviderAccount(context.C
 	return nil, nil
 }
 
+func (s *overviewQueryStub) AggregateUsagePerformanceSummary(context.Context, dbbilling.AggregateUsagePerformanceSummaryParams) (dbbilling.AggregateUsagePerformanceSummaryRow, error) {
+	return dbbilling.AggregateUsagePerformanceSummaryRow{}, nil
+}
+
+func (s *overviewQueryStub) AggregateUsageLatencyPercentiles(context.Context, dbbilling.AggregateUsageLatencyPercentilesParams) (dbbilling.AggregateUsageLatencyPercentilesRow, error) {
+	return dbbilling.AggregateUsageLatencyPercentilesRow{}, nil
+}
+
+func (s *overviewQueryStub) AggregateUsagePerformanceByModelBucketed(context.Context, dbbilling.AggregateUsagePerformanceByModelBucketedParams) ([]dbbilling.AggregateUsagePerformanceByModelBucketedRow, error) {
+	return nil, nil
+}
+
 func (s *overviewQueryStub) AggregateUsageOverviewTotals(_ context.Context, settledSince pgtype.Timestamptz) (dbbilling.AggregateUsageOverviewTotalsRow, error) {
 	s.mu.Lock()
 	s.calls = append(s.calls, "totals")

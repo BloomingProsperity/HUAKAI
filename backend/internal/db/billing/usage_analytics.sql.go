@@ -299,6 +299,46 @@ func (q *Queries) AggregateMyUsageTotals(ctx context.Context, arg AggregateMyUsa
 	return i, err
 }
 
+const aggregateUsageLatencyPercentiles = `-- name: AggregateUsageLatencyPercentiles :one
+WITH latency_percentiles AS (
+    SELECT COALESCE(
+        percentile_cont(ARRAY[0.5,0.95,0.99]) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000
+        ) FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        ARRAY[0,0,0]::double precision[]
+    ) AS percentiles_ms
+    FROM usage_records ur
+    WHERE ur.settled_at >= $1::timestamptz
+      AND ($2::text IS NULL OR ur.requested_model = $2::text)
+)
+SELECT
+    percentiles_ms[1]::double precision AS p50_ms,
+    percentiles_ms[2]::double precision AS p95_ms,
+    percentiles_ms[3]::double precision AS p99_ms
+FROM latency_percentiles
+`
+
+type AggregateUsageLatencyPercentilesParams struct {
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	Model        *string            `db:"model" json:"model"`
+}
+
+type AggregateUsageLatencyPercentilesRow struct {
+	P50Ms float64 `db:"p50_ms" json:"p50_ms"`
+	P95Ms float64 `db:"p95_ms" json:"p95_ms"`
+	P99Ms float64 `db:"p99_ms" json:"p99_ms"`
+}
+
+// Global/requested_model TTFT percentiles for the recent settled usage window.
+// The array keeps the percentile definition adjacent so P50/P95/P99 cannot
+// drift independently.
+func (q *Queries) AggregateUsageLatencyPercentiles(ctx context.Context, arg AggregateUsageLatencyPercentilesParams) (AggregateUsageLatencyPercentilesRow, error) {
+	row := q.db.QueryRow(ctx, aggregateUsageLatencyPercentiles, arg.SettledSince, arg.Model)
+	var i AggregateUsageLatencyPercentilesRow
+	err := row.Scan(&i.P50Ms, &i.P95Ms, &i.P99Ms)
+	return i, err
+}
+
 const aggregateUsageLeaderboardByApiKey = `-- name: AggregateUsageLeaderboardByApiKey :many
 SELECT
     ur.api_key_id::text                                          AS key,
@@ -650,6 +690,74 @@ func (q *Queries) AggregateUsagePerformanceByModel(ctx context.Context, arg Aggr
 	return items, nil
 }
 
+const aggregateUsagePerformanceByModelBucketed = `-- name: AggregateUsagePerformanceByModelBucketed :many
+SELECT
+    (date_trunc($1::text, ur.requested_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS bucket,
+    ur.requested_model                                               AS key,
+    COALESCE(
+        avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000)
+            FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::numeric(20,4)::text                                           AS avg_ttft_ms,
+    COALESCE(
+        avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0))
+            FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0),
+        0
+    )::numeric(20,4)::text                                           AS avg_tps,
+    count(*)::bigint                                                 AS request_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
+FROM usage_records ur
+WHERE ur.settled_at >= $2::timestamptz
+GROUP BY 1, ur.requested_model
+ORDER BY bucket ASC, count(*) DESC, key ASC
+LIMIT $3::int
+`
+
+type AggregateUsagePerformanceByModelBucketedParams struct {
+	Bucket       string             `db:"bucket" json:"bucket"`
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	RowLimit     int32              `db:"row_limit" json:"row_limit"`
+}
+
+type AggregateUsagePerformanceByModelBucketedRow struct {
+	Bucket       pgtype.Timestamptz `db:"bucket" json:"bucket"`
+	Key          string             `db:"key" json:"key"`
+	AvgTtftMs    string             `db:"avg_ttft_ms" json:"avg_ttft_ms"`
+	AvgTps       string             `db:"avg_tps" json:"avg_tps"`
+	RequestCount int64              `db:"request_count" json:"request_count"`
+	ErrorCount   int64              `db:"error_count" json:"error_count"`
+}
+
+// Platform-admin performance panel by UTC requested_at bucket and
+// requested_model. The caller must validate bucket is one of hour/day before
+// calling this query.
+func (q *Queries) AggregateUsagePerformanceByModelBucketed(ctx context.Context, arg AggregateUsagePerformanceByModelBucketedParams) ([]AggregateUsagePerformanceByModelBucketedRow, error) {
+	rows, err := q.db.Query(ctx, aggregateUsagePerformanceByModelBucketed, arg.Bucket, arg.SettledSince, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateUsagePerformanceByModelBucketedRow
+	for rows.Next() {
+		var i AggregateUsagePerformanceByModelBucketedRow
+		if err := rows.Scan(
+			&i.Bucket,
+			&i.Key,
+			&i.AvgTtftMs,
+			&i.AvgTps,
+			&i.RequestCount,
+			&i.ErrorCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const aggregateUsagePerformanceByProviderAccount = `-- name: AggregateUsagePerformanceByProviderAccount :many
 SELECT
     (CASE
@@ -714,6 +822,52 @@ func (q *Queries) AggregateUsagePerformanceByProviderAccount(ctx context.Context
 		return nil, err
 	}
 	return items, nil
+}
+
+const aggregateUsagePerformanceSummary = `-- name: AggregateUsagePerformanceSummary :one
+SELECT
+    COALESCE(
+        avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000)
+            FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::numeric(20,4)::text                                       AS avg_ttft_ms,
+    COALESCE(
+        avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0))
+            FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0),
+        0
+    )::numeric(20,4)::text                                       AS avg_tps,
+    count(*)::bigint                                             AS request_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
+FROM usage_records ur
+WHERE ur.settled_at >= $1::timestamptz
+  AND ($2::text IS NULL OR ur.requested_model = $2::text)
+`
+
+type AggregateUsagePerformanceSummaryParams struct {
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+	Model        *string            `db:"model" json:"model"`
+}
+
+type AggregateUsagePerformanceSummaryRow struct {
+	AvgTtftMs    string `db:"avg_ttft_ms" json:"avg_ttft_ms"`
+	AvgTps       string `db:"avg_tps" json:"avg_tps"`
+	RequestCount int64  `db:"request_count" json:"request_count"`
+	ErrorCount   int64  `db:"error_count" json:"error_count"`
+}
+
+// Platform-admin performance summary across the recent settled usage window,
+// optionally narrowed to one requested_model. Read-only operator surface:
+// latency, throughput, request count, and error count only; no cost fields.
+func (q *Queries) AggregateUsagePerformanceSummary(ctx context.Context, arg AggregateUsagePerformanceSummaryParams) (AggregateUsagePerformanceSummaryRow, error) {
+	row := q.db.QueryRow(ctx, aggregateUsagePerformanceSummary, arg.SettledSince, arg.Model)
+	var i AggregateUsagePerformanceSummaryRow
+	err := row.Scan(
+		&i.AvgTtftMs,
+		&i.AvgTps,
+		&i.RequestCount,
+		&i.ErrorCount,
+	)
+	return i, err
 }
 
 const recentUsageRollupByTenant = `-- name: RecentUsageRollupByTenant :one

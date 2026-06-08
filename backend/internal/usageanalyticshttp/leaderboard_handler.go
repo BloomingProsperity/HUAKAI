@@ -38,6 +38,9 @@ type Querier interface {
 	AggregateUsageLeaderboardByApiKey(context.Context, dbbilling.AggregateUsageLeaderboardByApiKeyParams) ([]dbbilling.AggregateUsageLeaderboardByApiKeyRow, error)
 	AggregateUsagePerformanceByModel(context.Context, dbbilling.AggregateUsagePerformanceByModelParams) ([]dbbilling.AggregateUsagePerformanceByModelRow, error)
 	AggregateUsagePerformanceByProviderAccount(context.Context, dbbilling.AggregateUsagePerformanceByProviderAccountParams) ([]dbbilling.AggregateUsagePerformanceByProviderAccountRow, error)
+	AggregateUsagePerformanceSummary(context.Context, dbbilling.AggregateUsagePerformanceSummaryParams) (dbbilling.AggregateUsagePerformanceSummaryRow, error)
+	AggregateUsageLatencyPercentiles(context.Context, dbbilling.AggregateUsageLatencyPercentilesParams) (dbbilling.AggregateUsageLatencyPercentilesRow, error)
+	AggregateUsagePerformanceByModelBucketed(context.Context, dbbilling.AggregateUsagePerformanceByModelBucketedParams) ([]dbbilling.AggregateUsagePerformanceByModelBucketedRow, error)
 	AggregateUsageOverviewTotals(context.Context, pgtype.Timestamptz) (dbbilling.AggregateUsageOverviewTotalsRow, error)
 	AggregateUsageOverviewTrendByDay(context.Context, pgtype.Timestamptz) ([]dbbilling.AggregateUsageOverviewTrendByDayRow, error)
 }
