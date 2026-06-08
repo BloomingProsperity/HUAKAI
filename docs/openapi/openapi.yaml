@@ -2846,6 +2846,37 @@ paths:
               schema: { type: object }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+  /v1/admin/referrals/rewards:
+    get:
+      tags: [admin]
+      summary: Admin tenant-scoped referral reward ledger (read-only)
+      operationId: listAdminReferralRewards
+      x-huakai-spec-source:
+        - backend/internal/referralhttp/handler.go
+        - backend/internal/community/invitation/referral_records_store.go
+      x-huakai-required-role: tenant_scoped_admin
+      parameters:
+        - in: query
+          name: referrer_user_id
+          required: false
+          schema: { type: integer, format: int64 }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Paginated tenant-scoped issued referral rewards.
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/referrals/overview:
     get:
       tags: [admin]

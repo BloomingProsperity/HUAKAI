@@ -201,6 +201,9 @@ type referralServiceStub struct {
 	adminReferralCalls int
 	adminIn            invitation.ListReferralsAdminInput
 	adminPage          invitation.ReferralRecordPage
+	adminRewardCalls   int
+	adminRewardIn      invitation.ListReferralRewardsAdminInput
+	adminRewardPage    invitation.AdminReferralRewardPage
 	overviewCalls      int
 	overviewTenantID   int64
 	overview           invitation.ReferralOverview
@@ -266,5 +269,51 @@ func decodeReferralHTTPBody(t *testing.T, rec *httptest.ResponseRecorder, dst an
 	t.Helper()
 	if err := json.Unmarshal(rec.Body.Bytes(), dst); err != nil {
 		t.Fatalf("decode body %s: %v", rec.Body.String(), err)
+	}
+}
+
+func (s *referralServiceStub) ListReferralRewardsAdmin(_ context.Context, in invitation.ListReferralRewardsAdminInput) (invitation.AdminReferralRewardPage, error) {
+	s.adminRewardCalls++
+	s.adminRewardIn = in
+	if s.err != nil {
+		return invitation.AdminReferralRewardPage{}, s.err
+	}
+	return s.adminRewardPage, nil
+}
+
+func TestAdminReferralRewardsTenantScopedAndFiltered(t *testing.T) {
+	ref := int64(42)
+	stub := &referralServiceStub{
+		adminRewardPage: invitation.AdminReferralRewardPage{
+			Items: []invitation.AdminReferralRewardEntry{{
+				ID: 9, ReferralID: 70, ReferrerUserID: 42, RewardType: "credit",
+				AmountUSD: decimal.RequireFromString("1.50"), CreatedAt: time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC),
+			}},
+			Total: 1, TotalRewardUSD: decimal.RequireFromString("1.50"), Limit: 100, Offset: 0,
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/referrals/rewards?referrer_user_id=42&limit=500", nil)
+	rec := httptest.NewRecorder()
+	NewAdminReferralRewardsHandler(Deps{
+		Service:   stub,
+		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+	}).ServeHTTP(rec, req)
+
+	assertReferralHTTPStatus(t, rec, http.StatusOK)
+	// MUTATION: handler dropping tenant scope -> TenantID!=7; dropping referrer parse -> ReferrerUserID nil.
+	if stub.adminRewardIn.TenantID != 7 || stub.adminRewardIn.ReferrerUserID == nil || *stub.adminRewardIn.ReferrerUserID != ref || stub.adminRewardIn.Limit != 100 {
+		t.Fatalf("admin reward input=%+v want tenant=7 referrer=42 limit-cap=100", stub.adminRewardIn)
+	}
+	var body struct {
+		Object string `json:"object"`
+		Total  int64  `json:"total"`
+		Items  []struct {
+			ReferrerUserID int64  `json:"referrer_user_id"`
+			RewardType     string `json:"reward_type"`
+		} `json:"items"`
+	}
+	decodeReferralHTTPBody(t, rec, &body)
+	if body.Object != "admin_referral_rewards_list" || body.Total != 1 || len(body.Items) != 1 || body.Items[0].ReferrerUserID != 42 || body.Items[0].RewardType != "credit" {
+		t.Fatalf("admin reward body=%+v", body)
 	}
 }

@@ -882,6 +882,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Service:   d.invitationService,
 		AdminAuth: d.adminAuth,
 	}))
+	r.Get("/v1/admin/referrals/rewards", referralhttp.NewAdminReferralRewardsHandler(referralhttp.Deps{
+		Service:   d.invitationService,
+		AdminAuth: d.adminAuth,
+	}))
 	r.Get("/v1/admin/referrals/overview", referralhttp.NewAdminReferralOverviewHandler(referralhttp.Deps{
 		Service:   d.invitationService,
 		AdminAuth: d.adminAuth,

@@ -20,6 +20,7 @@ type Service interface {
 	ListUserReferrals(context.Context, invitation.ListUserReferralsInput) (invitation.ReferralRecordPage, error)
 	ListUserReferralRewards(context.Context, invitation.ListUserReferralRewardsInput) (invitation.ReferralRewardPage, error)
 	ListReferralsAdmin(context.Context, invitation.ListReferralsAdminInput) (invitation.ReferralRecordPage, error)
+	ListReferralRewardsAdmin(context.Context, invitation.ListReferralRewardsAdminInput) (invitation.AdminReferralRewardPage, error)
 	ReferralOverview(context.Context, int64) (invitation.ReferralOverview, error)
 }
 
@@ -394,4 +395,69 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]map[string]string{
 		"error": {"code": code, "message": message},
 	})
+}
+
+type adminReferralRewardItem struct {
+	ID             int64           `json:"id"`
+	ReferralID     int64           `json:"referral_id"`
+	ReferrerUserID int64           `json:"referrer_user_id"`
+	RewardType     string          `json:"reward_type"`
+	AmountUSD      decimal.Decimal `json:"amount_usd"`
+	IssuedAt       string          `json:"issued_at"`
+}
+
+type adminReferralRewardsResponse struct {
+	Object         string                    `json:"object"`
+	Items          []adminReferralRewardItem `json:"items"`
+	Total          int64                     `json:"total"`
+	TotalRewardUSD decimal.Decimal           `json:"total_reward_usd"`
+	Limit          int                       `json:"limit"`
+	Offset         int                       `json:"offset"`
+}
+
+// NewAdminReferralRewardsHandler is the tenant-scoped admin referral-reward ledger
+// (read-only). GET /v1/admin/referrals/rewards?referrer_user_id=&limit=&offset=.
+// F-RES-2 / AFF-019.
+func NewAdminReferralRewardsHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID, ok := resolveAdminTenant(w, r, d)
+		if !ok {
+			return
+		}
+		if d.Service == nil {
+			writeError(w, http.StatusServiceUnavailable, "gateway_not_configured", "referral dependency unset")
+			return
+		}
+		limit, offset, ok := parsePage(w, r)
+		if !ok {
+			return
+		}
+		var referrerFilter *int64
+		if raw := strings.TrimSpace(r.URL.Query().Get("referrer_user_id")); raw != "" {
+			v, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || v <= 0 {
+				writeError(w, http.StatusBadRequest, "invalid_request", "referrer_user_id must be a positive integer")
+				return
+			}
+			referrerFilter = &v
+		}
+		page, err := d.Service.ListReferralRewardsAdmin(r.Context(), invitation.ListReferralRewardsAdminInput{
+			TenantID: tenantID, ReferrerUserID: referrerFilter, Limit: limit, Offset: offset,
+		})
+		if err != nil {
+			writeReferralError(w, err)
+			return
+		}
+		items := make([]adminReferralRewardItem, 0, len(page.Items))
+		for _, e := range page.Items {
+			items = append(items, adminReferralRewardItem{
+				ID: e.ID, ReferralID: e.ReferralID, ReferrerUserID: e.ReferrerUserID,
+				RewardType: e.RewardType, AmountUSD: e.AmountUSD, IssuedAt: e.CreatedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		writeJSON(w, http.StatusOK, adminReferralRewardsResponse{
+			Object: "admin_referral_rewards_list", Items: items, Total: page.Total,
+			TotalRewardUSD: page.TotalRewardUSD, Limit: page.Limit, Offset: page.Offset,
+		})
+	}
 }
