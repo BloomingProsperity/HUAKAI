@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"errors"
 	"io"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
@@ -38,6 +40,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/warmupintercept"
 )
 
 type authResolver interface {
@@ -94,9 +97,12 @@ type ChatHandlerDeps struct {
 	RetryBudget            retryBudgetGate
 	CredentialHotRefresher CredentialHotRefresher
 	ModelFallbackSettings  modelfallback.SettingsReader
-	BillingPolicyVersion   string
-	RequestClass           string
-	ClientIPResolver       *clientip.Resolver
+	// PlatformSettings provides access to platform-wide feature flags.
+	// Required for warmup_intercept_enabled gate (SUB2-EGRESS-04).
+	PlatformSettings     platformSettingsReader
+	BillingPolicyVersion string
+	RequestClass         string
+	ClientIPResolver     *clientip.Resolver
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"
@@ -468,6 +474,29 @@ func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 }
 
 func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts int) modelRunResult {
+	// SUB2-EGRESS-04: intercept Claude Code throwaway requests before billing.
+	// Gate is opt-in (default off); when off this block is a true no-op.
+	// Source: sub2api gateway_handler.go:359-369 / 613-623
+	if warmupInterceptEnabled(ex.ctx, ex.d.PlatformSettings) {
+		isClaudeUA := warmupintercept.IsClaudeCodeUserAgent(ex.r.UserAgent())
+		maxTok := 0
+		if ex.req.MaxTokens != nil {
+			maxTok = *ex.req.MaxTokens
+		}
+		if kind, ok := warmupintercept.Detect(isClaudeUA, ex.req.Model, maxTok, ex.req.Stream, ex.body); ok {
+			slog.InfoContext(ex.ctx, "warmup_intercept.intercepted",
+				"kind", int(kind),
+				"model", ex.req.Model,
+				"request_id", ex.requestID,
+			)
+			if ex.req.Stream {
+				warmupintercept.WriteStream(w, kind, ex.req.Model)
+			} else {
+				warmupintercept.WriteNonStream(w, kind, ex.req.Model)
+			}
+			return modelRunResult{DeliveryStarted: true}
+		}
+	}
 	if !ex.prepareRoute(w) {
 		return modelRunResult{DeliveryStarted: responseStarted(w)}
 	}
@@ -800,4 +829,23 @@ func NewResponsesHandler(d ChatHandlerDeps) http.HandlerFunc {
 		d.EndpointFamily = "openai_responses"
 	}
 	return NewChatCompletionsHandler(d)
+}
+
+// platformSettingsReader is the minimal interface for reading a single platform setting.
+// *platformsettings.Service satisfies this interface.
+type platformSettingsReader interface {
+	Get(ctx context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error)
+}
+
+// warmupInterceptEnabled reports whether warmup interception is enabled.
+// Returns false (safe default) when PlatformSettings is nil or the setting is absent/invalid.
+func warmupInterceptEnabled(ctx context.Context, settings platformSettingsReader) bool {
+	if settings == nil {
+		return false
+	}
+	s, err := settings.Get(ctx, platformsettings.KeyWarmupInterceptEnabled)
+	if err != nil {
+		return false
+	}
+	return s.Value == "true"
 }
