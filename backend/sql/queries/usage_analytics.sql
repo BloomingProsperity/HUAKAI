@@ -293,6 +293,23 @@ FROM usage_records ur
 WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ur.settled_at >= sqlc.arg(settled_since)::timestamptz;
 
+-- name: AggregateUsageCountsByProviderAccount :many
+-- Platform-admin read-only usage count/cost totals by provider account over a
+-- bounded settled_at window. Optional tenant_id narrows operator analysis
+-- without changing money-path writes or settlement behavior.
+SELECT
+    COALESCE(ur.provider_account_id, 0)::bigint                  AS provider_account_id,
+    count(*)::bigint                                             AS request_count,
+    COALESCE(sum(ur.tokens_input), 0)::bigint                    AS total_input_tokens,
+    COALESCE(sum(ur.tokens_output), 0)::bigint                   AS total_output_tokens,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+FROM usage_records ur
+WHERE ur.settled_at >= sqlc.arg(from_ts)::timestamptz
+  AND ur.settled_at < sqlc.arg(to_ts)::timestamptz
+  AND (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_id)::bigint)
+GROUP BY COALESCE(ur.provider_account_id, 0)
+ORDER BY total_cost DESC, provider_account_id ASC;
+
 -- name: AggregateUsageOverviewTrendByDay :many
 -- Platform-admin overview daily trend across the recent settled usage window.
 SELECT

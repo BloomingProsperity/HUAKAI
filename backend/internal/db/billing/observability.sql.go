@@ -751,3 +751,218 @@ func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsPara
 	}
 	return items, nil
 }
+
+const listUsageRecordsWithNames = `-- name: ListUsageRecordsWithNames :many
+SELECT
+    ur.id, ur.tenant_id, ur.claim_id, ur.api_key_id, ur.user_id,
+    ur.provider_account_id, ur.attempt_seq, ur.tokens_input, ur.tokens_output,
+    ur.cache_creation_tokens, ur.cache_read_tokens, ur.actual_cost,
+    ur.end_class, ur.usage_source, ur.pending_reconciliation,
+    ur.stream_state, ur.delivered_token_count, ur.stream_terminated_reason,
+    ur.requested_at, ur.settled_at AS created_at, ur.requested_model,
+    ur.upstream_model, ur.stream, ur.settlement_source,
+    p.code AS provider, blc.pooling_group_id AS pool_id,
+    blc.logical_request_id AS request_id,
+    ak.name AS token_name,
+    u.display_name AS username,
+    ale.ledger_id AS audit_ledger_id,
+    ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
+    ale.hop_chain AS audit_hop_chain,
+    ale.model_chain AS audit_model_chain
+FROM usage_records ur
+JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
+LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
+LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
+LEFT JOIN api_keys ak ON ak.id = ur.api_key_id AND ak.tenant_id = ur.tenant_id
+LEFT JOIN users u ON u.id = ur.user_id AND u.tenant_id = ur.tenant_id
+LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
+    AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
+WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
+  AND ($2::timestamptz IS NULL OR ur.settled_at >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR ur.settled_at <= $3::timestamptz)
+  AND ($4::text IS NULL OR p.code = $4::text)
+  AND ($5::bigint IS NULL OR blc.pooling_group_id = $5::bigint)
+  AND ($6::bigint IS NULL OR ur.api_key_id = $6::bigint)
+  AND ($7::bigint IS NULL OR ur.provider_account_id = $7::bigint)
+  AND ($8::text IS NULL OR ur.requested_model = $8::text)
+  AND (
+    $9::boolean = false
+    OR (
+      ur.pending_reconciliation = true
+      AND NOT EXISTS (
+        SELECT 1
+        FROM usage_record_reconciliation_events re
+        WHERE re.tenant_id = ur.tenant_id
+          AND re.original_usage_record_id = ur.id
+          AND re.reconciliation_source = 'stream_no_usage_finalized'
+      )
+    )
+  )
+  AND (
+    $10::text IS NULL
+    OR $10::text = 'all'
+    OR ($10::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
+    OR ($10::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
+  )
+  AND ($11::boolean = false OR (ur.settled_at, ur.id) < ($12::timestamptz, $13::bigint))
+ORDER BY ur.settled_at DESC, ur.id DESC
+LIMIT $14::integer
+`
+
+type ListUsageRecordsWithNamesParams struct {
+	TenantID                  *int64             `db:"tenant_id" json:"tenant_id"`
+	FromTs                    pgtype.Timestamptz `db:"from_ts" json:"from_ts"`
+	ToTs                      pgtype.Timestamptz `db:"to_ts" json:"to_ts"`
+	Provider                  *string            `db:"provider" json:"provider"`
+	PoolID                    *int64             `db:"pool_id" json:"pool_id"`
+	APIKeyID                  *int64             `db:"api_key_id" json:"api_key_id"`
+	ProviderAccountID         *int64             `db:"provider_account_id" json:"provider_account_id"`
+	Model                     *string            `db:"model" json:"model"`
+	PendingReconciliationOnly bool               `db:"pending_reconciliation_only" json:"pending_reconciliation_only"`
+	Outcome                   *string            `db:"outcome" json:"outcome"`
+	HasCursor                 bool               `db:"has_cursor" json:"has_cursor"`
+	CursorCreatedAt           pgtype.Timestamptz `db:"cursor_created_at" json:"cursor_created_at"`
+	CursorID                  int64              `db:"cursor_id" json:"cursor_id"`
+	PageLimit                 int32              `db:"page_limit" json:"page_limit"`
+}
+
+type ListUsageRecordsWithNamesRow struct {
+	ID                     int64              `db:"id" json:"id"`
+	TenantID               int64              `db:"tenant_id" json:"tenant_id"`
+	ClaimID                int64              `db:"claim_id" json:"claim_id"`
+	APIKeyID               int64              `db:"api_key_id" json:"api_key_id"`
+	UserID                 int64              `db:"user_id" json:"user_id"`
+	ProviderAccountID      *int64             `db:"provider_account_id" json:"provider_account_id"`
+	AttemptSeq             int32              `db:"attempt_seq" json:"attempt_seq"`
+	TokensInput            int32              `db:"tokens_input" json:"tokens_input"`
+	TokensOutput           int32              `db:"tokens_output" json:"tokens_output"`
+	CacheCreationTokens    int32              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
+	CacheReadTokens        int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
+	ActualCost             decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	EndClass               string             `db:"end_class" json:"end_class"`
+	UsageSource            string             `db:"usage_source" json:"usage_source"`
+	PendingReconciliation  bool               `db:"pending_reconciliation" json:"pending_reconciliation"`
+	StreamState            int16              `db:"stream_state" json:"stream_state"`
+	DeliveredTokenCount    int64              `db:"delivered_token_count" json:"delivered_token_count"`
+	StreamTerminatedReason *string            `db:"stream_terminated_reason" json:"stream_terminated_reason"`
+	RequestedAt            pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
+	CreatedAt              pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	RequestedModel         string             `db:"requested_model" json:"requested_model"`
+	UpstreamModel          *string            `db:"upstream_model" json:"upstream_model"`
+	Stream                 bool               `db:"stream" json:"stream"`
+	SettlementSource       string             `db:"settlement_source" json:"settlement_source"`
+	Provider               *string            `db:"provider" json:"provider"`
+	PoolID                 *int64             `db:"pool_id" json:"pool_id"`
+	RequestID              string             `db:"request_id" json:"request_id"`
+	TokenName              *string            `db:"token_name" json:"token_name"`
+	Username               *string            `db:"username" json:"username"`
+	AuditLedgerID          *string            `db:"audit_ledger_id" json:"audit_ledger_id"`
+	AuditPubkeyFingerprint *string            `db:"audit_pubkey_fingerprint" json:"audit_pubkey_fingerprint"`
+	AuditHopChain          []byte             `db:"audit_hop_chain" json:"audit_hop_chain"`
+	AuditModelChain        []byte             `db:"audit_model_chain" json:"audit_model_chain"`
+}
+
+// Sibling of ListUsageRecords with display names joined for admin/operator UI.
+// Tenant predicates on api_keys/users are deliberate defense-in-depth even
+// though those ids are globally unique today.
+func (q *Queries) ListUsageRecordsWithNames(ctx context.Context, arg ListUsageRecordsWithNamesParams) ([]ListUsageRecordsWithNamesRow, error) {
+	rows, err := q.db.Query(ctx, listUsageRecordsWithNames,
+		arg.TenantID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.Provider,
+		arg.PoolID,
+		arg.APIKeyID,
+		arg.ProviderAccountID,
+		arg.Model,
+		arg.PendingReconciliationOnly,
+		arg.Outcome,
+		arg.HasCursor,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUsageRecordsWithNamesRow
+	for rows.Next() {
+		var i ListUsageRecordsWithNamesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ClaimID,
+			&i.APIKeyID,
+			&i.UserID,
+			&i.ProviderAccountID,
+			&i.AttemptSeq,
+			&i.TokensInput,
+			&i.TokensOutput,
+			&i.CacheCreationTokens,
+			&i.CacheReadTokens,
+			&i.ActualCost,
+			&i.EndClass,
+			&i.UsageSource,
+			&i.PendingReconciliation,
+			&i.StreamState,
+			&i.DeliveredTokenCount,
+			&i.StreamTerminatedReason,
+			&i.RequestedAt,
+			&i.CreatedAt,
+			&i.RequestedModel,
+			&i.UpstreamModel,
+			&i.Stream,
+			&i.SettlementSource,
+			&i.Provider,
+			&i.PoolID,
+			&i.RequestID,
+			&i.TokenName,
+			&i.Username,
+			&i.AuditLedgerID,
+			&i.AuditPubkeyFingerprint,
+			&i.AuditHopChain,
+			&i.AuditModelChain,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const purgeUsageRecordsBefore = `-- name: PurgeUsageRecordsBefore :one
+WITH doomed AS (
+    SELECT id
+    FROM usage_records
+    WHERE settled_at < $1::timestamptz
+    ORDER BY settled_at ASC, id ASC
+    LIMIT $2::integer
+    FOR UPDATE SKIP LOCKED
+),
+deleted AS (
+    DELETE FROM usage_records ur
+    USING doomed
+    WHERE ur.id = doomed.id
+    RETURNING ur.id
+)
+SELECT count(*)::bigint FROM deleted
+`
+
+type PurgeUsageRecordsBeforeParams struct {
+	Cutoff     pgtype.Timestamptz `db:"cutoff" json:"cutoff"`
+	BatchLimit int32              `db:"batch_limit" json:"batch_limit"`
+}
+
+// Usage-log retention only. Deletes bounded batches from usage_records and
+// deliberately does not touch billing_ledger_claims, billing_events, audit
+// tables, or other money/trust-chain records.
+func (q *Queries) PurgeUsageRecordsBefore(ctx context.Context, arg PurgeUsageRecordsBeforeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, purgeUsageRecordsBefore, arg.Cutoff, arg.BatchLimit)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}

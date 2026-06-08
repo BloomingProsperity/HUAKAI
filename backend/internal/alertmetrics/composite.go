@@ -33,6 +33,10 @@ type RecentUsageRolluper interface {
 	RecentUsageRollup(context.Context, int64, time.Time) (RecentUsageRollup, error)
 }
 
+type UsageStatsGate interface {
+	UsageStatsEnabled(context.Context, int64) (bool, error)
+}
+
 type RecentUsageRollup struct {
 	RequestCount int64
 	SuccessCount int64
@@ -43,6 +47,7 @@ type RecentUsageRollup struct {
 type CompositeMetricSourceConfig struct {
 	GlobalSource  MetricSource
 	UsageRolluper RecentUsageRolluper
+	UsageStats    UsageStatsGate
 	RecentWindow  time.Duration
 	Now           func() time.Time
 }
@@ -50,6 +55,7 @@ type CompositeMetricSourceConfig struct {
 type CompositeMetricSource struct {
 	globalSource  MetricSource
 	usageRolluper RecentUsageRolluper
+	usageStats    UsageStatsGate
 	recentWindow  time.Duration
 	now           func() time.Time
 }
@@ -64,6 +70,7 @@ func NewCompositeMetricSource(cfg CompositeMetricSourceConfig) *CompositeMetricS
 	return &CompositeMetricSource{
 		globalSource:  cfg.GlobalSource,
 		usageRolluper: cfg.UsageRolluper,
+		usageStats:    cfg.UsageStats,
 		recentWindow:  cfg.RecentWindow,
 		now:           cfg.Now,
 	}
@@ -87,6 +94,19 @@ func (s *CompositeMetricSource) snapshot(ctx context.Context, tenantID int64, di
 	}
 	if s == nil || s.usageRolluper == nil || tenantID <= 0 {
 		return snapshot, nil
+	}
+	if s.usageStats != nil {
+		enabled, err := s.usageStats.UsageStatsEnabled(ctx, tenantID)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.WarnContext(ctx, "alert metrics usage stats setting read failed",
+					"tenant_id", tenantID,
+					"error", err.Error(),
+				)
+			}
+		} else if !enabled {
+			return snapshot, nil
+		}
 	}
 
 	rollup, err := s.usageRolluper.RecentUsageRollup(ctx, tenantID, s.now().Add(-s.recentWindow))
