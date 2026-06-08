@@ -46,6 +46,7 @@ type Service interface {
 	SetAutoRenew(context.Context, int64, int64, bool) (subscription.UserSubscription, error)
 	GetSubscription(context.Context, int64, int64) (subscription.UserSubscription, error)
 	ListUserSubscriptions(context.Context, int64, int64) ([]subscription.UserSubscription, error)
+	ListUserSubscriptionsByGroup(context.Context, int64, string, int) ([]subscription.UserSubscription, error)
 	ListAuditEvents(context.Context, int64, int64) ([]subscription.AuditEvent, error)
 }
 
@@ -429,6 +430,19 @@ func newAdminListAssignmentsHandler(d AdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if group := strings.TrimSpace(r.URL.Query().Get("group")); group != "" {
+			limit, ok := parseOptionalLimit(w, r, 50, 200)
+			if !ok {
+				return
+			}
+			subs, err := d.Service.ListUserSubscriptionsByGroup(r.Context(), tenantID, group, limit)
+			if err != nil {
+				writeSubscriptionError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"subscriptions": toAdminSubscriptionViews(subs)})
+			return
+		}
 		userID, ok := parsePositiveQuery(w, r, "user_id")
 		if !ok {
 			return
@@ -637,6 +651,19 @@ func parsePositiveQuery(w http.ResponseWriter, r *http.Request, name string) (in
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || n <= 0 {
 		writeJSONError(w, http.StatusBadRequest, name+"_required", name+" query parameter must be positive")
+		return 0, false
+	}
+	return n, true
+}
+
+func parseOptionalLimit(w http.ResponseWriter, r *http.Request, fallback, max int) (int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if raw == "" {
+		return fallback, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 || n > max {
+		writeJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and "+strconv.Itoa(max))
 		return 0, false
 	}
 	return n, true

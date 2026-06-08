@@ -160,6 +160,66 @@ func TestCodexResponsesIngressRouteMounted(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_ModuleFReadOnlyRoutesMountedAndDocumented(t *testing.T) {
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+	if !hasOperation(implOps, http.MethodGet, "/v1/me/voucher-redemptions") {
+		t.Fatalf("runtime missing GET /v1/me/voucher-redemptions")
+	}
+	if hasOperation(implOps, http.MethodPost, "/v1/me/voucher-redemptions") {
+		t.Fatalf("runtime must not expose mutation method on /v1/me/voucher-redemptions")
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/v1/me/voucher-redemptions"},
+		{http.MethodGet, "/v1/admin/subscriptions/assignments"},
+		{http.MethodGet, "/v1/users/me/payments/config"},
+	} {
+		if !hasOperation(specOps, op.method, op.path) {
+			t.Fatalf("OpenAPI missing %s %s", op.method, op.path)
+		}
+	}
+	for _, op := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/v1/me/voucher-redemptions"},
+		{http.MethodPatch, "/v1/me/voucher-redemptions"},
+		{http.MethodDelete, "/v1/me/voucher-redemptions"},
+	} {
+		if hasOperation(specOps, op.method, op.path) {
+			t.Fatalf("OpenAPI unexpectedly declares mutation %s %s", op.method, op.path)
+		}
+	}
+
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, snippet := range []string{
+		"listMyVoucherRedemptions",
+		"VoucherRedemptionHistoryItem:",
+		"preset_amount_cents:",
+		"name: group",
+	} {
+		if !strings.Contains(spec, snippet) {
+			t.Fatalf("OpenAPI Module F schema missing snippet %q", snippet)
+		}
+	}
+}
+
 func TestOpenAPI_ModuleBInboundRoutesMountedAndDocumented(t *testing.T) {
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {

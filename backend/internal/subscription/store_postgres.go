@@ -347,6 +347,30 @@ ORDER BY created_at DESC, id DESC`, tenantID, userID)
 	return out, rows.Err()
 }
 
+func (s *PostgresStore) ListUserSubscriptionsByGroup(ctx context.Context, tenantID int64, grantedGroup string, limit int) ([]UserSubscription, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	rows, err := s.pool.Query(ctx, `SELECT`+subscriptionSelectColumns+`
+FROM user_subscriptions
+WHERE tenant_id=$1 AND granted_group=$2
+ORDER BY id
+LIMIT $3`, tenantID, grantedGroup, limit)
+	if err != nil {
+		return nil, fmt.Errorf("subscription: list subscriptions by group: %w", err)
+	}
+	defer rows.Close()
+	var out []UserSubscription
+	for rows.Next() {
+		sub, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) SetAutoRenew(ctx context.Context, tenantID, userID int64, autoRenew bool) (UserSubscription, error) {
 	if s == nil || s.pool == nil {
 		return UserSubscription{}, ErrStoreNotConfigured

@@ -35,6 +35,7 @@ var defaultPortalProviders = []payment.ProviderKind{payment.ProviderManual, paym
 type PortalConfig struct {
 	MinTopupCents     int64
 	MaxTopupCents     int64
+	PresetAmountCents []int64
 	EnabledProviders  []payment.ProviderKind
 	ManualInstruction string
 	TaobaoInstruction string
@@ -52,6 +53,20 @@ func (c PortalConfig) maxCents() int64 {
 		return c.MaxTopupCents
 	}
 	return defaultPortalMaxTopupCents
+}
+
+func (c PortalConfig) presetAmounts() []int64 {
+	minCents := c.minCents()
+	maxCents := c.maxCents()
+	out := make([]int64, 0, len(c.PresetAmountCents))
+	for _, amount := range c.PresetAmountCents {
+		if amount < minCents || amount > maxCents {
+			continue
+		}
+		out = append(out, amount)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 func (c PortalConfig) providers() []payment.ProviderKind {
@@ -199,10 +214,11 @@ type portalProviderConfigView struct {
 }
 
 type portalConfigView struct {
-	MinTopupCents int64                      `json:"min_topup_cents"`
-	MaxTopupCents int64                      `json:"max_topup_cents"`
-	CurrencyCode  string                     `json:"currency_code"`
-	Providers     []portalProviderConfigView `json:"providers"`
+	MinTopupCents     int64                      `json:"min_topup_cents"`
+	MaxTopupCents     int64                      `json:"max_topup_cents"`
+	PresetAmountCents []int64                    `json:"preset_amount_cents"`
+	CurrencyCode      string                     `json:"currency_code"`
+	Providers         []portalProviderConfigView `json:"providers"`
 }
 
 type refundRequestView struct {
@@ -257,10 +273,11 @@ func newPortalConfigHandler(d UserDeps) http.HandlerFunc {
 		}
 		sort.Slice(views, func(i, j int) bool { return views[i].Provider < views[j].Provider })
 		writeJSON(w, http.StatusOK, map[string]any{"config": portalConfigView{
-			MinTopupCents: cfg.minCents(),
-			MaxTopupCents: cfg.maxCents(),
-			CurrencyCode:  "USD",
-			Providers:     views,
+			MinTopupCents:     cfg.minCents(),
+			MaxTopupCents:     cfg.maxCents(),
+			PresetAmountCents: cfg.presetAmounts(),
+			CurrencyCode:      "USD",
+			Providers:         views,
 		}})
 	}
 }
