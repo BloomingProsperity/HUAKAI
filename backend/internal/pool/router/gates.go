@@ -18,6 +18,7 @@ const (
 	GateFailureHealth              GateFailureReason = "health"
 	GateFailureGroupPolicy         GateFailureReason = "group_policy"
 	GateFailurePerRequestExclusion GateFailureReason = "per_request_exclusion"
+	GateFailurePinnedAccount       GateFailureReason = "pinned_account"
 	GateFailureScoredBand          GateFailureReason = "scored_band"
 )
 
@@ -53,6 +54,7 @@ type CredentialGate interface{ Gate }
 type HealthGate interface{ Gate }
 type GroupPolicyGate interface{ Gate }
 type ExclusionGate interface{ Gate }
+type PinnedAccountGate interface{ Gate }
 
 type GateChain struct {
 	Tenant      TenantGate
@@ -65,13 +67,14 @@ type GateChain struct {
 	Health      HealthGate
 	GroupPolicy GroupPolicyGate
 	Exclusion   ExclusionGate
+	Pinned      PinnedAccountGate
 }
 
 func DefaultGateChain() GateChain {
 	g := AllowAllGate{}
 	return GateChain{
 		Tenant: g, Lifecycle: g, Channel: g, Protocol: protocolFamilyGate{}, Model: modelRateLimitGate{}, Capability: g,
-		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{},
+		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{}, Pinned: pinnedAccountGate{},
 	}
 }
 
@@ -110,6 +113,7 @@ func (c GateChain) ForSelection(ctx context.Context, req SelectionRequest) GateC
 	c.Health = prepareGate(ctx, c.Health, req)
 	c.GroupPolicy = prepareGate(ctx, c.GroupPolicy, req)
 	c.Exclusion = prepareGate(ctx, c.Exclusion, req)
+	c.Pinned = prepareGate(ctx, c.Pinned, req)
 	return c
 }
 
@@ -154,6 +158,9 @@ func (c GateChain) withDefaults() GateChain {
 	if c.Exclusion == nil {
 		c.Exclusion = d.Exclusion
 	}
+	if c.Pinned == nil {
+		c.Pinned = d.Pinned
+	}
 	return c
 }
 
@@ -170,6 +177,7 @@ func (c GateChain) ordered() []namedGate {
 		{c.Health, GateFailureHealth},
 		{c.GroupPolicy, GateFailureGroupPolicy},
 		{c.Exclusion, GateFailurePerRequestExclusion},
+		{c.Pinned, GateFailurePinnedAccount},
 	}
 }
 
@@ -292,6 +300,18 @@ func (exclusionGate) Allow(_ context.Context, account *AccountSnapshot, req Sele
 		if _, ok := req.ExcludedAccounts[account.ID]; ok {
 			return false, GateFailurePerRequestExclusion, nil
 		}
+	}
+	return true, "", nil
+}
+
+type pinnedAccountGate struct{}
+
+func (pinnedAccountGate) Allow(_ context.Context, account *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason, error) {
+	if req.PinnedAccountID == 0 {
+		return true, "", nil
+	}
+	if account == nil || account.ID != req.PinnedAccountID {
+		return false, GateFailurePinnedAccount, nil
 	}
 	return true, "", nil
 }

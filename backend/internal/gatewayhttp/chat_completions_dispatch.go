@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -47,7 +48,10 @@ var clientSessionIDHeaderPriority = []string{
 	"X-Session-ID",
 	"X-Amp-Thread-Id",
 	"Session-Id",
+	"X-Client-Request-Id",
 }
+
+var openAIMetadataUserIDSessionSuffixRE = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
 func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, validated chatValidatedRequest, startedAt time.Time) *chatExecution {
 	return &chatExecution{
@@ -107,6 +111,18 @@ func openAITopLevelClientSessionID(rawBody []byte) string {
 		}
 		if id := normalizeClientSessionID(value); id != "" {
 			return id
+		}
+	}
+	if raw, ok := top["metadata"]; ok {
+		var metadata struct {
+			UserID string `json:"user_id"`
+		}
+		if err := json.Unmarshal(raw, &metadata); err == nil {
+			userID := strings.TrimSpace(metadata.UserID)
+			if match := openAIMetadataUserIDSessionSuffixRE.FindStringSubmatch(userID); len(match) == 2 {
+				return normalizeClientSessionID(match[1])
+			}
+			return normalizeClientSessionID(metadata.UserID)
 		}
 	}
 	return ""

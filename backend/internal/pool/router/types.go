@@ -39,6 +39,7 @@ type SelectionRequest struct {
 	SessionHash      string
 	ContinuationKey  string
 	ExcludedAccounts map[int64]struct{}
+	PinnedAccountID  int64
 	AttemptSeq       int
 	ClaimID          int64
 
