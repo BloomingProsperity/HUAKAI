@@ -1,0 +1,72 @@
+package mimicry
+
+import "testing"
+
+func validProfileFields() ProfileFields {
+	return ProfileFields{
+		Name:                 "tenant-chrome",
+		GreaseEnabled:        true,
+		CipherSuites:         []int{0x1301, 0x1302, 0xc02b},
+		SupportedCurves:      []int{29, 23, 24},
+		EcPointFormats:       []int{0},
+		SignatureAlgorithms:  []int{0x0403, 0x0804},
+		AlpnProtocols:        []string{"h2", "http/1.1"},
+		TLSSupportedVersions: []int{0x0304, 0x0303},
+		KeyShareGroups:       []int{29, 23},
+		PskModes:             []int{1},
+		ExtensionsOrder:      []int{0, 23, 65281},
+		ExpectedJA3Hash:      "abc123",
+	}
+}
+
+func TestTemplateFromProfileFields_Valid(t *testing.T) {
+	tmpl, err := TemplateFromProfileFields(validProfileFields())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tmpl.ModeName != "tenant-chrome" || !tmpl.GREASE || tmpl.JA3 != "abc123" {
+		t.Fatalf("scalar fields wrong: %+v", tmpl)
+	}
+	if len(tmpl.CipherSuites) != 3 || tmpl.CipherSuites[0] != 0x1301 || tmpl.CipherSuites[2] != 0xc02b {
+		t.Fatalf("cipher suites not widened correctly: %v", tmpl.CipherSuites)
+	}
+	if len(tmpl.EllipticCurves) != 3 || tmpl.EllipticCurves[0] != 29 {
+		t.Fatalf("curves wrong: %v", tmpl.EllipticCurves)
+	}
+	if len(tmpl.ECPointFormats) != 1 || tmpl.ECPointFormats[0] != 0 {
+		t.Fatalf("ec point formats wrong: %v", tmpl.ECPointFormats)
+	}
+	if len(tmpl.Extensions) != 3 || tmpl.Extensions[2] != 65281 {
+		t.Fatalf("extensions order wrong: %v", tmpl.Extensions)
+	}
+	if len(tmpl.SupportedVersions) != 2 || tmpl.SupportedVersions[0] != 0x0304 {
+		t.Fatalf("versions wrong: %v", tmpl.SupportedVersions)
+	}
+}
+
+// MUTATION GUARD: dropping the uint16 range check lets an out-of-range cipher id
+// silently truncate into the ClientHello (corrupt JA3 / broken handshake) ->
+// this assertion (expecting an error) goes red.
+func TestTemplateFromProfileFields_RejectsOutOfRangeUint16(t *testing.T) {
+	f := validProfileFields()
+	f.CipherSuites = []int{0x1301, 0x10000} // 65536 > uint16 max
+	if _, err := TemplateFromProfileFields(f); err == nil {
+		t.Fatal("expected out-of-range cipher id to fail loud (-> caller falls back to builtin), got nil")
+	}
+}
+
+func TestTemplateFromProfileFields_RejectsOutOfRangeUint8(t *testing.T) {
+	f := validProfileFields()
+	f.EcPointFormats = []int{256} // > uint8 max
+	if _, err := TemplateFromProfileFields(f); err == nil {
+		t.Fatal("expected out-of-range ec point format to fail loud, got nil")
+	}
+}
+
+func TestTemplateFromProfileFields_RejectsIncomplete(t *testing.T) {
+	f := validProfileFields()
+	f.CipherSuites = nil
+	if _, err := TemplateFromProfileFields(f); err == nil {
+		t.Fatal("expected incomplete profile (no cipher suites) to fail loud, got nil")
+	}
+}
