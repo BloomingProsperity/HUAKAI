@@ -59,7 +59,7 @@ func httpConnectDialer(proxyURL *url.URL) ProxyDialerFunc {
 		d := &net.Dialer{Timeout: 30 * time.Second}
 		proxyConn, err := d.DialContext(ctx, "tcp", proxyHostPort(proxyURL))
 		if err != nil {
-			return nil, fmt.Errorf("mimicry proxy: 拨号代理 %s 失败: %w", proxyURL.Host, err)
+			return nil, fmt.Errorf("mimicry proxy: 拨号代理 %s 失败: %w", RedactProxyURL(proxyURL), err)
 		}
 		// https 代理:先与代理本身完成 TLS,再发 CONNECT。
 		if strings.EqualFold(proxyURL.Scheme, "https") {
@@ -133,7 +133,7 @@ func socks5Dialer(proxyURL *url.URL) ProxyDialerFunc {
 		d := &net.Dialer{Timeout: 30 * time.Second}
 		conn, err := d.DialContext(ctx, "tcp", proxyURL.Host)
 		if err != nil {
-			return nil, fmt.Errorf("mimicry proxy: 拨号 socks5 %s 失败: %w", proxyURL.Host, err)
+			return nil, fmt.Errorf("mimicry proxy: 拨号 socks5 %s 失败: %w", RedactProxyURL(proxyURL), err)
 		}
 		if deadline, ok := ctx.Deadline(); ok {
 			_ = conn.SetDeadline(deadline)
@@ -231,4 +231,17 @@ func socks5Handshake(conn net.Conn, user *url.Userinfo, host string, port int) e
 		return fmt.Errorf("socks5: read bind addr: %w", err)
 	}
 	return nil
+}
+
+// RedactProxyURL 返回代理 URL 的日志安全形态:scheme://host,带凭据时 user 段
+// 替成 redacted、丢弃 password/path/query(PROXYHDR-01)。任何打印代理 URL 的
+// 地方都该走它,杜绝 user:pass@host basic-auth 泄进日志。
+func RedactProxyURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	if u.User != nil && u.User.Username() != "" {
+		return u.Scheme + "://redacted@" + u.Host
+	}
+	return u.Scheme + "://" + u.Host
 }
