@@ -744,6 +744,15 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Auth:    d.adminAuth,
 		Queries: d.adminQueries,
 	}))
+	channelTestTemplateDeps := adminhttp.AdminChannelTestTemplateDeps{
+		Auth:  d.adminAuth,
+		Store: d.adminQueries,
+	}
+	r.Get("/admin/v1/channel-test-templates", adminhttp.NewChannelTestTemplateListHandler(channelTestTemplateDeps))
+	r.Post("/admin/v1/channel-test-templates", adminhttp.NewChannelTestTemplateCreateHandler(channelTestTemplateDeps))
+	r.Get("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateGetHandler(channelTestTemplateDeps))
+	r.Put("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateUpdateHandler(channelTestTemplateDeps))
+	r.Delete("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateDeleteHandler(channelTestTemplateDeps))
 
 	mountProviderAccountAdminRoutes := func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{

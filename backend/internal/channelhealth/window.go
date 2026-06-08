@@ -127,7 +127,8 @@ func normalizeSignalClass(class SignalClass) SignalClass {
 func isBanSignal(class SignalClass) bool {
 	switch normalizeSignalClass(class) {
 	case SignalAccountSuspended, SignalTokenRevoked, SignalCredentialRevoked,
-		SignalAccountDisabled, SignalSubscriptionOrWorkspaceDisabled:
+		SignalAccountDisabled, SignalSubscriptionOrWorkspaceDisabled,
+		SignalPolicyAutoDisabled:
 		return true
 	default:
 		return false

@@ -3,3 +3,21 @@
 //   sqlc v1.27.0
 
 package admin
+
+import (
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// OBS-175: admin-authored channel probe request templates. Templates are persisted only; execution is a separate explicit action.
+type ChannelTestTemplate struct {
+	ID       int64  `db:"id" json:"id"`
+	TenantID int64  `db:"tenant_id" json:"tenant_id"`
+	Name     string `db:"name" json:"name"`
+	Method   string `db:"method" json:"method"`
+	Path     string `db:"path" json:"path"`
+	// Operator-authored request template. Must not be populated from upstream response bodies.
+	BodyTemplate string `db:"body_template" json:"body_template"`
+	// Template headers JSON object. Admin API validation rejects credential-bearing headers.
+	Headers   []byte             `db:"headers" json:"headers"`
+	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}

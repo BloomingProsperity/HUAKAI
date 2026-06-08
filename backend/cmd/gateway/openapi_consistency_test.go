@@ -660,6 +660,11 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		{http.MethodPost, "/admin/v1/providers"},
 		{http.MethodPut, "/admin/v1/providers/{code}"},
 		{http.MethodDelete, "/admin/v1/providers/{code}"},
+		{http.MethodGet, "/admin/v1/channel-test-templates"},
+		{http.MethodPost, "/admin/v1/channel-test-templates"},
+		{http.MethodGet, "/admin/v1/channel-test-templates/{id}"},
+		{http.MethodPut, "/admin/v1/channel-test-templates/{id}"},
+		{http.MethodDelete, "/admin/v1/channel-test-templates/{id}"},
 	} {
 		if !hasOperation(implOps, op.method, op.path) {
 			t.Fatalf("runtime missing %s %s", op.method, op.path)
@@ -686,6 +691,11 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		{http.MethodPost, "/admin/v1/providers"},
 		{http.MethodPut, "/admin/v1/providers/{code}"},
 		{http.MethodDelete, "/admin/v1/providers/{code}"},
+		{http.MethodGet, "/admin/v1/channel-test-templates"},
+		{http.MethodPost, "/admin/v1/channel-test-templates"},
+		{http.MethodGet, "/admin/v1/channel-test-templates/{id}"},
+		{http.MethodPut, "/admin/v1/channel-test-templates/{id}"},
+		{http.MethodDelete, "/admin/v1/channel-test-templates/{id}"},
 	} {
 		if !hasOperation(specOps, op.method, op.path) {
 			t.Fatalf("OpenAPI missing %s %s", op.method, op.path)
@@ -713,6 +723,12 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		"admin_channels_list",
 		"pool_group_id:",
 		"failover_status_codes:",
+		"AdminChannelTestTemplateItem:",
+		"AdminChannelTestTemplateRequest:",
+		"AdminChannelTestTemplateList:",
+		"AdminChannelTestTemplateDeleteResponse:",
+		"admin_channel_test_templates_list",
+		"admin_channel_test_template_deleted",
 	} {
 		if !strings.Contains(spec, snippet) {
 			t.Fatalf("OpenAPI provider/channel catalog schema missing snippet %q", snippet)

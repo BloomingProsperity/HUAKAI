@@ -90,3 +90,69 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
 ORDER BY pool_group_id, name
 LIMIT sqlc.arg(page_limit)::integer
 OFFSET sqlc.arg(page_offset)::integer;
+
+-- name: CreateChannelTestTemplate :one
+INSERT INTO channel_test_templates (
+    tenant_id,
+    name,
+    method,
+    path,
+    body_template,
+    headers
+) VALUES (
+    sqlc.arg(tenant_id)::bigint,
+    sqlc.arg(name)::text,
+    sqlc.arg(method)::text,
+    sqlc.arg(path)::text,
+    sqlc.arg(body_template)::text,
+    sqlc.arg(headers)::jsonb
+)
+RETURNING id, tenant_id, name, method, path, body_template, headers, created_at;
+
+-- name: ListChannelTestTemplatesByTenant :many
+SELECT
+    id,
+    tenant_id,
+    name,
+    method,
+    path,
+    body_template,
+    headers,
+    created_at
+FROM channel_test_templates
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_limit)::integer
+OFFSET sqlc.arg(page_offset)::integer;
+
+-- name: GetChannelTestTemplate :one
+SELECT
+    id,
+    tenant_id,
+    name,
+    method,
+    path,
+    body_template,
+    headers,
+    created_at
+FROM channel_test_templates
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(id)::bigint;
+
+-- name: UpdateChannelTestTemplate :one
+UPDATE channel_test_templates
+SET
+    name = sqlc.arg(name)::text,
+    method = sqlc.arg(method)::text,
+    path = sqlc.arg(path)::text,
+    body_template = sqlc.arg(body_template)::text,
+    headers = sqlc.arg(headers)::jsonb
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(id)::bigint
+RETURNING id, tenant_id, name, method, path, body_template, headers, created_at;
+
+-- name: DeleteChannelTestTemplate :one
+DELETE FROM channel_test_templates
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(id)::bigint
+RETURNING id, tenant_id, name, method, path, body_template, headers, created_at;

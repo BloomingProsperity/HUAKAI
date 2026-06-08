@@ -23,3 +23,62 @@ func TestSignalClassifierSafeClasses(t *testing.T) {
 		})
 	}
 }
+
+func TestKeywordAutoDisable(t *testing.T) {
+	// MUTATION: ignore configured keywords, or scan RawUpstreamText instead of safe/code text; quota_exceeded no longer becomes disable-worthy.
+	cfg := ClassifierConfig{DisableKeywords: []string{"quota_exceeded"}}
+	in := ClassifierInput{StatusCode: 402, SafeErrorClass: "quota_exceeded"}
+
+	got := ClassifyWithConfig(in, cfg)
+	if got.Class != SignalPolicyAutoDisabled {
+		t.Fatalf("Class=%s want %s", got.Class, SignalPolicyAutoDisabled)
+	}
+	if !isBanSignal(got.Class) {
+		t.Fatalf("Class=%s must be disable-worthy", got.Class)
+	}
+
+	unchangedInput := ClassifierInput{StatusCode: 402, SafeErrorClass: "billing_error"}
+	withoutKeyword := Classify(unchangedInput)
+	withKeyword := ClassifyWithConfig(unchangedInput, cfg)
+	if withKeyword.Class != withoutKeyword.Class {
+		t.Fatalf("non-matching keyword Class=%s want unchanged %s", withKeyword.Class, withoutKeyword.Class)
+	}
+
+	emptyConfig := ClassifyWithConfig(in, ClassifierConfig{})
+	defaultClass := Classify(in)
+	if emptyConfig.Class != defaultClass.Class {
+		t.Fatalf("empty keyword config Class=%s want default %s", emptyConfig.Class, defaultClass.Class)
+	}
+
+	rawOnly := ClassifyWithConfig(ClassifierInput{
+		StatusCode:      402,
+		RawUpstreamText: "quota_exceeded",
+	}, cfg)
+	if rawOnly.Class == SignalPolicyAutoDisabled {
+		t.Fatal("keyword auto-disable must not inspect raw upstream text")
+	}
+}
+
+func TestStatusRangeAutoDisable(t *testing.T) {
+	// MUTATION: ignore configured status ranges; status 503 remains a plain upstream_5xx instead of disable-worthy.
+	cfg := ClassifierConfig{DisableStatusRanges: []string{"500-599"}}
+
+	got := ClassifyWithConfig(ClassifierInput{StatusCode: 503}, cfg)
+	if got.Class != SignalPolicyAutoDisabled {
+		t.Fatalf("Class=%s want %s", got.Class, SignalPolicyAutoDisabled)
+	}
+	if !isBanSignal(got.Class) {
+		t.Fatalf("Class=%s must be disable-worthy", got.Class)
+	}
+
+	notMatched := ClassifyWithConfig(ClassifierInput{StatusCode: 429}, cfg)
+	if notMatched.Class != SignalRateLimit {
+		t.Fatalf("429 Class=%s want existing %s", notMatched.Class, SignalRateLimit)
+	}
+
+	emptyConfig := ClassifyWithConfig(ClassifierInput{StatusCode: 503}, ClassifierConfig{})
+	defaultClass := Classify(ClassifierInput{StatusCode: 503})
+	if emptyConfig.Class != defaultClass.Class {
+		t.Fatalf("empty range config Class=%s want default %s", emptyConfig.Class, defaultClass.Class)
+	}
+}

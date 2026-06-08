@@ -1,8 +1,14 @@
 package channelhealth
 
 import (
+	"strconv"
 	"strings"
 )
+
+type ClassifierConfig struct {
+	DisableKeywords     []string
+	DisableStatusRanges []string
+}
 
 type ClassifierInput struct {
 	StatusCode        int
@@ -19,10 +25,25 @@ type ClassifierResult struct {
 }
 
 func Classify(in ClassifierInput) ClassifierResult {
+	return ClassifyWithConfig(in, ClassifierConfig{})
+}
+
+func ClassifyWithConfig(in ClassifierInput, cfg ClassifierConfig) ClassifierResult {
 	code := strings.ToLower(strings.TrimSpace(in.ErrorCode))
 	safe := strings.ToLower(strings.TrimSpace(in.SafeErrorClass))
 	raw := strings.ToLower(in.RawUpstreamText)
 
+	base := classifyDefault(in, code, safe, raw)
+	if isBanSignal(base.Class) {
+		return base
+	}
+	if matchesDisableKeyword(code, safe, cfg.DisableKeywords) || matchesDisableStatusRange(in.StatusCode, cfg.DisableStatusRanges) {
+		return ClassifierResult{Class: SignalPolicyAutoDisabled, Confidence: ConfidenceObserved}
+	}
+	return base
+}
+
+func classifyDefault(in ClassifierInput, code, safe, raw string) ClassifierResult {
 	switch {
 	case containsAny(code, safe, raw, "account_suspended", "account suspended", "suspended account"):
 		return ClassifierResult{Class: SignalAccountSuspended, Confidence: ConfidenceObserved}
@@ -55,6 +76,56 @@ func Classify(in ClassifierInput) ClassifierResult {
 		return ClassifierResult{Class: SignalSuccess, Confidence: ConfidenceObserved}
 	}
 	return ClassifierResult{Class: SignalSuccess, Confidence: ConfidenceObserved}
+}
+
+func matchesDisableKeyword(code, safe string, keywords []string) bool {
+	for _, keyword := range keywords {
+		needle := strings.ToLower(strings.TrimSpace(keyword))
+		if needle == "" {
+			continue
+		}
+		if strings.Contains(code, needle) || strings.Contains(safe, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesDisableStatusRange(statusCode int, ranges []string) bool {
+	if statusCode <= 0 {
+		return false
+	}
+	for _, raw := range ranges {
+		min, max, ok := parseStatusRange(raw)
+		if !ok {
+			continue
+		}
+		if statusCode >= min && statusCode <= max {
+			return true
+		}
+	}
+	return false
+}
+
+func parseStatusRange(raw string) (int, int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, 0, false
+	}
+	if !strings.Contains(raw, "-") {
+		status, err := strconv.Atoi(raw)
+		if err != nil || status < 100 || status > 599 {
+			return 0, 0, false
+		}
+		return status, status, true
+	}
+	parts := strings.SplitN(raw, "-", 2)
+	min, minErr := strconv.Atoi(strings.TrimSpace(parts[0]))
+	max, maxErr := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if minErr != nil || maxErr != nil || min < 100 || max > 599 || min > max {
+		return 0, 0, false
+	}
+	return min, max, true
 }
 
 func containsAny(values ...string) bool {

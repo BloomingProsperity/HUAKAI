@@ -7840,6 +7840,153 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/channel-test-templates:
+    get:
+      tags: [admin-channel-catalog]
+      summary: List tenant-scoped channel test templates
+      operationId: listAdminChannelTestTemplates
+      description: |
+        Returns operator-authored request templates for manual or scheduled
+        channel health checks. This endpoint only reads stored templates; it
+        does not execute paid upstream requests and never returns credentials.
+        platform_admin callers must pass tenant_id; tenant_operator callers
+        may omit it and are scoped to their admin token tenant.
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated channel test templates.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelTestTemplateList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-channel-catalog]
+      summary: Create a channel test template
+      operationId: createAdminChannelTestTemplate
+      description: |
+        Persists a tenant-scoped test request template. The operation stores
+        the template only; execution is an explicit future action. Credential
+        headers such as Authorization and Cookie are rejected.
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminChannelTestTemplateRequest' }
+      responses:
+        '201':
+          description: Created channel test template.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelTestTemplateItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/channel-test-templates/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-channel-catalog]
+      summary: Get a channel test template
+      operationId: getAdminChannelTestTemplate
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Channel test template.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelTestTemplateItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-channel-catalog]
+      summary: Update a channel test template
+      operationId: updateAdminChannelTestTemplate
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminChannelTestTemplateRequest' }
+      responses:
+        '200':
+          description: Updated channel test template.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelTestTemplateItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-channel-catalog]
+      summary: Delete a channel test template
+      operationId: deleteAdminChannelTestTemplate
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Deleted channel test template.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelTestTemplateDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/api-keys:
     post:
       tags: [admin-api-keys]
@@ -13693,6 +13840,63 @@ components:
           items: { $ref: '#/components/schemas/AdminChannelCatalogItem' }
         limit: { type: integer, minimum: 1, maximum: 500 }
         offset: { type: integer, minimum: 0 }
+
+    AdminChannelTestTemplateItem:
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, name, method, path, body_template, headers, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        name: { type: string }
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] }
+        path: { type: string }
+        body_template: { type: string }
+        headers:
+          type: object
+          additionalProperties: true
+          description: JSON object of non-credential template headers.
+        created_at: { type: string, format: date-time }
+
+    AdminChannelTestTemplateRequest:
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      type: object
+      additionalProperties: false
+      required: [name, method, path]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 128 }
+        method: { type: string, enum: [GET, POST, PUT, PATCH, DELETE] }
+        path: { type: string, minLength: 1, maxLength: 2048 }
+        body_template: { type: string, default: "" }
+        headers:
+          type: object
+          additionalProperties: true
+          default: {}
+          description: Credential-bearing headers are rejected by the server.
+
+    AdminChannelTestTemplateList:
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      type: object
+      additionalProperties: false
+      required: [object, items, limit, offset]
+      properties:
+        object: { type: string, enum: [admin_channel_test_templates_list] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminChannelTestTemplateItem' }
+        limit: { type: integer, minimum: 1, maximum: 500 }
+        offset: { type: integer, minimum: 0 }
+
+    AdminChannelTestTemplateDeleteResponse:
+      x-huakai-spec-source: [backend/internal/adminhttp/channel_test_template_handler.go]
+      type: object
+      additionalProperties: false
+      required: [object, id, deleted]
+      properties:
+        object: { type: string, enum: [admin_channel_test_template_deleted] }
+        id: { type: integer, format: int64 }
+        deleted: { type: boolean, enum: [true] }
 
     APIKey:
       x-huakai-spec-source: [docs/specs/api-contract.md]

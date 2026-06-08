@@ -42,6 +42,7 @@ const (
 	SignalCredentialRevoked               SignalClass = "credential_revoked"
 	SignalAccountDisabled                 SignalClass = "account_disabled"
 	SignalSubscriptionOrWorkspaceDisabled SignalClass = "subscription_or_workspace_disabled"
+	SignalPolicyAutoDisabled              SignalClass = "policy_auto_disabled"
 	SignalManualOverride                  SignalClass = "manual_override"
 )
 

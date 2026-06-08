@@ -83,15 +83,18 @@ type Querier interface {
 	// excluded from the cap. Otherwise an actor that hits the cap keeps
 	// refreshing the window with deny rows on every retry and never recovers.
 	CountIssuanceInWindow(ctx context.Context, arg CountIssuanceInWindowParams) (int64, error)
+	CreateChannelTestTemplate(ctx context.Context, arg CreateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	// auth_secret 应由调用方加密后传入 (HUAKAI credentialstore.KeyProvider)。
 	// sqlc 层是字节流, 不强制加密格式 — 业务层负责。
 	CreateProxy(ctx context.Context, arg CreateProxyParams) (CreateProxyRow, error)
 	CreateTLSFingerprintProfile(ctx context.Context, arg CreateTLSFingerprintProfileParams) (CreateTLSFingerprintProfileRow, error)
+	DeleteChannelTestTemplate(ctx context.Context, arg DeleteChannelTestTemplateParams) (ChannelTestTemplate, error)
 	// After the operator issues a real (non-bootstrap) admin token, the
 	// bootstrap rows should be auto-disabled so the env-var token is no
 	// longer accepted by the resolver. Idempotent.
 	DisableBootstrapAdminTokens(ctx context.Context) (int64, error)
 	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
+	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
 	// 单 profile 查询 (按 tenant + id 双过滤); admin UI 编辑 + resolver 走这条。
 	GetTLSFingerprintProfile(ctx context.Context, arg GetTLSFingerprintProfileParams) (GetTLSFingerprintProfileRow, error)
@@ -116,6 +119,7 @@ type Querier interface {
 	// Read-only directory data for admin UI. These SELECT lists intentionally
 	// exclude tenant_id and every credential-bearing provider_accounts column.
 	ListAdminProvidersByTenant(ctx context.Context, arg ListAdminProvidersByTenantParams) ([]ListAdminProvidersByTenantRow, error)
+	ListChannelTestTemplatesByTenant(ctx context.Context, arg ListChannelTestTemplatesByTenantParams) ([]ChannelTestTemplate, error)
 	// HUAKAI F-FP-POOL Phase 1.3 sqlc queries — 出口代理池 CRUD。
 	//
 	// 多租户约束 (DR-001/TS-006): 所有 query 以 tenant_id 为第一参数过滤,
@@ -157,6 +161,7 @@ type Querier interface {
 	// 软删 (设 deleted_at); provider_accounts.tls_fingerprint_profile_id 引用仍存在
 	// (FK 不级联), 但 resolver 走 GetByID 因 deleted_at IS NULL 过滤掉, 降级到 builtin.
 	SoftDeleteTLSFingerprintProfile(ctx context.Context, arg SoftDeleteTLSFingerprintProfileParams) error
+	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)
 	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
 	UpdateProxy(ctx context.Context, arg UpdateProxyParams) (UpdateProxyRow, error)
