@@ -152,6 +152,25 @@ func EndpointForBuildInput(adapterDefault string, in BuildInput) (string, error)
 	return EndpointForCredential(defaultEndpoint, in.Credential)
 }
 
+func EndpointWithQueryParamIfMissing(endpoint, key, value string) (string, error) {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return endpoint, nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	if q.Get(key) != "" {
+		return endpoint, nil
+	}
+	q.Set(key, value)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
 // isAPIVersionSegment 判断单个 path 段是否是 API 版本号: 以 'v' 开头, 紧跟
 // 至少一个数字 (允许 v1 / v2 / v1beta / v1alpha 等)。
 func isAPIVersionSegment(seg string) bool {

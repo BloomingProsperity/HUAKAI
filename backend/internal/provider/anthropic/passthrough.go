@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
@@ -66,6 +67,12 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	endpoint, err := provider.EndpointForCredential(endpoint, in.Credential)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic passthrough: endpoint rejected: %w", err)
+	}
+	if strings.TrimSpace(in.Credential.Extra["claude_beta_query"]) == "true" {
+		endpoint, err = provider.EndpointWithQueryParamIfMissing(endpoint, "beta", "true")
+		if err != nil {
+			return nil, fmt.Errorf("anthropic passthrough: endpoint rejected: %w", err)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))

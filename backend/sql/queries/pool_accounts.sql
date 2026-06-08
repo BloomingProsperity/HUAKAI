@@ -131,6 +131,7 @@ SELECT
     pa.cap_concurrency,
     pa.in_flight_count,
     pa.priority,
+    pa.static_weight,
     pa.last_dispatch_at,
     pa.health_state,
     pa.health_state_until,

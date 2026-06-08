@@ -60,6 +60,9 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 	store := newProviderAccountHealthStoreStub()
 	row := providerAccountHealthRow(7, 99)
 	row.HealthStateUntil = pgTimestamp(time.Date(2026, 6, 2, 12, 10, 0, 0, time.UTC))
+	row.LastProbeAt = pgTimestamp(time.Date(2026, 6, 2, 12, 9, 0, 0, time.UTC))
+	latencyMS := int32(217)
+	row.LastProbeLatencyMS = &latencyMS
 	row.LastRefreshAt = pgTimestamp(time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC))
 	outcome := "auth_expired"
 	failureClass := "invalid_grant"
@@ -87,6 +90,8 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		"health_state",
 		"health_state_until",
 		"id",
+		"last_probe_at",
+		"last_probe_latency_ms",
 		"last_refresh_at",
 		"last_refresh_outcome",
 		"requires_action",
@@ -147,6 +152,34 @@ func TestProviderAccountHealthJoinsLatestRefreshMetadata(t *testing.T) {
 	}
 	if !body.RequiresAction {
 		t.Fatalf("requires_action=false want true when failure_count > 3")
+	}
+}
+
+func TestProviderAccountHealthResponseIncludesLastProbeSnapshot(t *testing.T) {
+	store := newProviderAccountHealthStoreStub()
+	row := providerAccountHealthRow(7, 102)
+	latencyMS := int32(321)
+	row.LastProbeLatencyMS = &latencyMS
+	row.LastProbeAt = pgTimestamp(time.Date(2026, 6, 2, 12, 3, 4, 0, time.UTC))
+	store.put(row)
+
+	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
+		Auth:  providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, "/admin/v1/provider-accounts/102/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountHealthResponseBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if body.LastProbeLatencyMS == nil || *body.LastProbeLatencyMS != 321 {
+		t.Fatalf("last_probe_latency_ms=%v want 321", body.LastProbeLatencyMS)
+	}
+	if body.LastProbeAt == nil || *body.LastProbeAt != "2026-06-02T12:03:04Z" {
+		t.Fatalf("last_probe_at=%v want 2026-06-02T12:03:04Z", body.LastProbeAt)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -21,6 +22,10 @@ type ProviderAccountCredentialTestResult struct {
 }
 
 func DryRunProviderAccountCredential(ctx context.Context, store ProviderAccountCredentialTestStore, registry *ModeAdapterRegistry, tenantID, accountID int64, now time.Time) (ProviderAccountCredentialTestResult, error) {
+	return DryRunProviderAccountCredentialWithProbeModel(ctx, store, registry, tenantID, accountID, now, "")
+}
+
+func DryRunProviderAccountCredentialWithProbeModel(ctx context.Context, store ProviderAccountCredentialTestStore, registry *ModeAdapterRegistry, tenantID, accountID int64, now time.Time, probeModel string) (ProviderAccountCredentialTestResult, error) {
 	if store == nil {
 		return ProviderAccountCredentialTestResult{}, errors.New("credentialworker: provider account test store missing")
 	}
@@ -58,6 +63,7 @@ func DryRunProviderAccountCredential(ctx context.Context, store ProviderAccountC
 	refreshResult, err := adapter.RefreshCredential(ctx, ModeRefreshInput{
 		CredentialID: rec.ID, TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID,
 		Vendor: rec.Vendor, AuthMode: rec.AuthMode, Payload: rec.PlaintextPayload, Now: now.UTC(),
+		ProbeModel: strings.TrimSpace(probeModel),
 	})
 	if err != nil {
 		if errors.Is(err, ErrNoRefreshRequired) {

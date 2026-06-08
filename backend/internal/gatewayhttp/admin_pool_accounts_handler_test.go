@@ -151,8 +151,20 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg a
 	if arg.Priority != nil {
 		row.Priority = *arg.Priority
 	}
+	if arg.StaticWeight != nil {
+		row.StaticWeight = *arg.StaticWeight
+	}
 	if arg.CapConcurrency != nil {
 		row.CapConcurrency = *arg.CapConcurrency
+	}
+	if arg.SetProbeModel {
+		row.ProbeModel = arg.ProbeModel
+	}
+	if arg.SetTags {
+		row.Tags = arg.Tags
+	}
+	if arg.SetExtra {
+		row.Extra = arg.Extra
 	}
 	if arg.SetModelAllowList {
 		row.ModelAllowList = arg.ModelAllowList
@@ -213,6 +225,31 @@ func TestAdminPoolAccounts_CreateHappyPathInsertsAccount(t *testing.T) {
 	}
 	if got := store.insert.ModelAllowList; len(got) != 1 || got[0] != "gpt-4o" {
 		t.Fatalf("model_allow_list=%v", got)
+	}
+}
+
+func TestAdminPoolAccounts_CreateAdditionalProviderAccountFields(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77}
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","credentials":{"api_key":"sk-live"},"static_weight":4,"probe_model":" gpt-4o-mini-probe ","tags":[" prod ",""],"extra":{"azure_api_version":"2024-08-01","claude_beta_query":"true"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert == nil {
+		t.Fatal("InsertProviderAccount was not called")
+	}
+	if store.insert.StaticWeight == nil || *store.insert.StaticWeight != 4 {
+		t.Fatalf("static_weight insert=%v want 4", store.insert.StaticWeight)
+	}
+	if store.insert.ProbeModel == nil || *store.insert.ProbeModel != "gpt-4o-mini-probe" {
+		t.Fatalf("probe_model insert=%v want gpt-4o-mini-probe", store.insert.ProbeModel)
+	}
+	if got := strings.Join(store.insert.Tags, ","); got != "prod" {
+		t.Fatalf("tags insert=%v want [prod]", store.insert.Tags)
+	}
+	if !strings.Contains(string(store.insert.Extra), `"azure_api_version":"2024-08-01"`) ||
+		!strings.Contains(string(store.insert.Extra), `"claude_beta_query":"true"`) {
+		t.Fatalf("extra insert=%s", string(store.insert.Extra))
 	}
 }
 
@@ -449,12 +486,12 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 		adminProviderRow(77, 7),
 		adminProviderRow(78, 7),
 	}}
-	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts?limit=1&state_filter=active&pool_group_id=9", "")
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts?limit=1&state_filter=active&pool_group_id=9&tag=prod", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if store.listArg == nil || store.listArg.TenantID != 7 || store.listArg.LimitCount != 2 ||
-		store.listArg.StateFilter != "active" || store.listArg.PoolGroupID != 9 {
+		store.listArg.StateFilter != "active" || store.listArg.PoolGroupID != 9 || store.listArg.TagFilter != "prod" {
 		t.Fatalf("list arg mismatch: %+v", store.listArg)
 	}
 	var response struct {
@@ -476,6 +513,11 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 
 func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	row := adminProviderRow(77, 7)
+	probeModel := "gpt-4o-mini-probe"
+	row.StaticWeight = 4
+	row.ProbeModel = &probeModel
+	row.Tags = []string{"prod", "blue"}
+	row.Extra = []byte(`{"azure_api_version":"2024-08-01"}`)
 	store := &adminPoolStoreStub{get: &row}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts/77", "")
 	if rec.Code != http.StatusOK {
@@ -484,18 +526,35 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	if store.getArg == nil || store.getArg.ID != 77 || store.getArg.TenantID != 7 {
 		t.Fatalf("get arg mismatch: %+v", store.getArg)
 	}
+	var body providerAccountResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response json: %v", err)
+	}
+	if body.StaticWeight != 4 || body.ProbeModel == nil || *body.ProbeModel != probeModel {
+		t.Fatalf("additional fields static_weight=%d probe_model=%v", body.StaticWeight, body.ProbeModel)
+	}
+	if strings.Join(body.Tags, ",") != "prod,blue" {
+		t.Fatalf("tags response=%v want [prod blue]", body.Tags)
+	}
+	if !strings.Contains(string(body.Extra), `"azure_api_version":"2024-08-01"`) {
+		t.Fatalf("extra response=%s", string(body.Extra))
+	}
 }
 
 func TestAdminPoolAccounts_UpdateProviderAccountFull(t *testing.T) {
 	store := &adminPoolStoreStub{}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPatch, "/admin/v1/provider-accounts/77",
-		`{"enabled":true,"priority":5,"cap_concurrency":9,"model_allow_list":[" claude "],"capability_flags":["tool"],"custom_error_codes_enabled":true,"custom_error_codes":[429],"pool_mode":true,"temp_unschedulable_enabled":true,"temp_unschedulable_rules":[{"error_code":529,"keywords":["busy"],"duration_minutes":5}]}`)
+		`{"enabled":true,"priority":5,"cap_concurrency":9,"static_weight":4,"probe_model":"claude-probe","tags":["prod"],"extra":{"claude_beta_query":"true"},"model_allow_list":[" claude "],"capability_flags":["tool"],"custom_error_codes_enabled":true,"custom_error_codes":[429],"pool_mode":true,"temp_unschedulable_enabled":true,"temp_unschedulable_rules":[{"error_code":529,"keywords":["busy"],"duration_minutes":5}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if store.updateFull == nil || store.updateFull.ID != 77 || store.updateFull.TenantID != 7 ||
 		store.updateFull.Priority == nil || *store.updateFull.Priority != 5 ||
 		store.updateFull.CapConcurrency == nil || *store.updateFull.CapConcurrency != 9 ||
+		store.updateFull.StaticWeight == nil || *store.updateFull.StaticWeight != 4 ||
+		!store.updateFull.SetProbeModel || store.updateFull.ProbeModel == nil || *store.updateFull.ProbeModel != "claude-probe" ||
+		!store.updateFull.SetTags || store.updateFull.Tags[0] != "prod" ||
+		!store.updateFull.SetExtra || !strings.Contains(string(store.updateFull.Extra), `"claude_beta_query":"true"`) ||
 		!store.updateFull.SetModelAllowList || store.updateFull.ModelAllowList[0] != "claude" ||
 		!store.updateFull.SetCustomErrorCodes || store.updateFull.CustomErrorCodes[0] != 429 ||
 		!store.updateFull.SetTempUnschedulableRules {
@@ -611,8 +670,8 @@ func adminProviderRow(id, tenantID int64) admindb.AdminProviderAccountRow {
 	return admindb.AdminProviderAccountRow{
 		ID: id, TenantID: tenantID, ProviderID: 8, ChannelID: 9, Name: "acct",
 		AccountType: "api_key", Enabled: true, HealthState: "operational", CredentialState: "valid",
-		CapConcurrency: 4, Priority: 100, TokenVersion: 1, OAuthEndpointHealth: "operational",
-		ModelAllowList: []string{}, CapabilityFlags: []string{}, CustomErrorCodes: []int32{},
+		CapConcurrency: 4, Priority: 100, StaticWeight: 1, TokenVersion: 1, OAuthEndpointHealth: "operational",
+		ModelAllowList: []string{}, CapabilityFlags: []string{}, Tags: []string{}, Extra: []byte(`{}`), CustomErrorCodes: []int32{},
 	}
 }
 
@@ -631,6 +690,12 @@ func adminProviderRowFromInsert(id int64, in admindb.InsertProviderAccountParams
 	if in.Priority != nil {
 		row.Priority = *in.Priority
 	}
+	if in.StaticWeight != nil {
+		row.StaticWeight = *in.StaticWeight
+	}
+	row.ProbeModel = in.ProbeModel
+	row.Tags = in.Tags
+	row.Extra = in.Extra
 	row.ModelAllowList = in.ModelAllowList
 	row.CapabilityFlags = in.CapabilityFlags
 	return row

@@ -5,6 +5,8 @@ SELECT
     pa.health_state,
     pa.health_state_until,
     pa.enabled,
+    pa.last_probe_latency_ms,
+    pa.last_probe_at,
     COALESCE(ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
     COALESCE(ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
     ac.failure_class,

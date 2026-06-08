@@ -25,6 +25,10 @@ INSERT INTO provider_accounts (
     cap_queue_sticky,
     cap_queue_fallback,
     priority,
+    static_weight,
+    probe_model,
+    tags,
+    extra,
     model_allow_list,
     capability_flags,
     created_by_actor,
@@ -42,10 +46,14 @@ INSERT INTO provider_accounts (
     COALESCE($10::integer, 2),
     COALESCE($11::integer, 8),
     COALESCE($12::integer, 100),
-    COALESCE($13::text[], ARRAY[]::text[]),
-    COALESCE($14::text[], ARRAY[]::text[]),
-    $15::text,
-    $15::text
+    COALESCE($13::integer, 1),
+    NULLIF(BTRIM($14::text), ''),
+    COALESCE($15::text[], ARRAY[]::text[]),
+    COALESCE($16::jsonb, '{}'::jsonb),
+    COALESCE($17::text[], ARRAY[]::text[]),
+    COALESCE($18::text[], ARRAY[]::text[]),
+    $19::text,
+    $19::text
 )
 RETURNING id
 `
@@ -63,6 +71,10 @@ type InsertProviderAccountParams struct {
 	CapQueueSticky   *int32             `db:"cap_queue_sticky" json:"cap_queue_sticky"`
 	CapQueueFallback *int32             `db:"cap_queue_fallback" json:"cap_queue_fallback"`
 	Priority         *int32             `db:"priority" json:"priority"`
+	StaticWeight     *int32             `db:"static_weight" json:"static_weight"`
+	ProbeModel       *string            `db:"probe_model" json:"probe_model"`
+	Tags             []string           `db:"tags" json:"tags"`
+	Extra            []byte             `db:"extra" json:"extra"`
 	ModelAllowList   []string           `db:"model_allow_list" json:"model_allow_list"`
 	CapabilityFlags  []string           `db:"capability_flags" json:"capability_flags"`
 	ActorID          *string            `db:"actor_id" json:"actor_id"`
@@ -82,6 +94,10 @@ func (q *Queries) InsertProviderAccount(ctx context.Context, arg InsertProviderA
 		arg.CapQueueSticky,
 		arg.CapQueueFallback,
 		arg.Priority,
+		arg.StaticWeight,
+		arg.ProbeModel,
+		arg.Tags,
+		arg.Extra,
 		arg.ModelAllowList,
 		arg.CapabilityFlags,
 		arg.ActorID,

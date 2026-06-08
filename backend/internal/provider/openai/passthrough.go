@@ -67,6 +67,12 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	if err != nil {
 		return nil, fmt.Errorf("openai passthrough: endpoint rejected: %w", err)
 	}
+	if apiVersion := in.Credential.Extra["azure_api_version"]; apiVersion != "" {
+		endpoint, err = provider.EndpointWithQueryParamIfMissing(endpoint, "api-version", apiVersion)
+		if err != nil {
+			return nil, fmt.Errorf("openai passthrough: endpoint rejected: %w", err)
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
 	if err != nil {

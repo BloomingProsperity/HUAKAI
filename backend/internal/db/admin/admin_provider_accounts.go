@@ -20,7 +20,13 @@ type AdminProviderAccountRow struct {
 	CapConcurrency           int32              `db:"cap_concurrency" json:"cap_concurrency"`
 	InFlightCount            int32              `db:"in_flight_count" json:"in_flight_count"`
 	Priority                 int32              `db:"priority" json:"priority"`
+	StaticWeight             int32              `db:"static_weight" json:"static_weight"`
+	ProbeModel               *string            `db:"probe_model" json:"probe_model"`
+	Tags                     []string           `db:"tags" json:"tags"`
+	Extra                    []byte             `db:"extra" json:"extra"`
 	LastDispatchAt           pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
+	LastProbeLatencyMS       *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
+	LastProbeAt              pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
 	ModelAllowList           []string           `db:"model_allow_list" json:"model_allow_list"`
 	CapabilityFlags          []string           `db:"capability_flags" json:"capability_flags"`
 	RateLimitedAt            pgtype.Timestamptz `db:"rate_limited_at" json:"rate_limited_at"`
@@ -46,6 +52,7 @@ type ListAdminProviderAccountsParams struct {
 	LimitCount  int32  `db:"limit_count" json:"limit_count"`
 	PoolGroupID int64  `db:"pool_group_id" json:"pool_group_id"`
 	StateFilter string `db:"state_filter" json:"state_filter"`
+	TagFilter   string `db:"tag_filter" json:"tag_filter"`
 }
 
 type GetAdminProviderAccountParams struct {
@@ -74,8 +81,15 @@ type UpdateAdminProviderAccountParams struct {
 	ActorID                    *string `db:"actor_id" json:"actor_id"`
 	Enabled                    *bool   `db:"enabled" json:"enabled"`
 	Priority                   *int32  `db:"priority" json:"priority"`
+	StaticWeight               *int32  `db:"static_weight" json:"static_weight"`
 	CapConcurrency             *int32  `db:"cap_concurrency" json:"cap_concurrency"`
-	SetModelAllowList          bool    `db:"set_model_allow_list" json:"set_model_allow_list"`
+	SetProbeModel              bool    `db:"set_probe_model" json:"set_probe_model"`
+	ProbeModel                 *string `db:"probe_model" json:"probe_model"`
+	SetTags                    bool    `db:"set_tags" json:"set_tags"`
+	Tags                       []string
+	SetExtra                   bool `db:"set_extra" json:"set_extra"`
+	Extra                      []byte
+	SetModelAllowList          bool `db:"set_model_allow_list" json:"set_model_allow_list"`
 	ModelAllowList             []string
 	SetCapabilityFlags         bool `db:"set_capability_flags" json:"set_capability_flags"`
 	CapabilityFlags            []string
@@ -108,7 +122,13 @@ const adminProviderAccountColumns = `
     cap_concurrency,
     in_flight_count,
     priority,
+    static_weight,
+    probe_model,
+    tags,
+    extra,
     last_dispatch_at,
+    last_probe_latency_ms,
+    last_probe_at,
     model_allow_list,
     capability_flags,
     rate_limited_at,
@@ -152,12 +172,13 @@ WHERE pa.tenant_id = $1
       OR ($5::text = 'temp_unschedulable' AND pa.temp_unschedulable_until IS NOT NULL AND pa.temp_unschedulable_until > NOW())
       OR ($5::text = 'error' AND (pa.health_state = 'revoked' OR pa.credential_state IN ('refresh_failed', 'revoked')))
   )
+  AND ($6::text = '' OR pa.tags @> ARRAY[$6::text])
 ORDER BY pa.id ASC
 LIMIT $3
 `
 
 func (q *Queries) ListAdminProviderAccounts(ctx context.Context, arg ListAdminProviderAccountsParams) ([]AdminProviderAccountRow, error) {
-	rows, err := q.db.Query(ctx, listAdminProviderAccounts, arg.TenantID, arg.AfterID, arg.LimitCount, arg.PoolGroupID, arg.StateFilter)
+	rows, err := q.db.Query(ctx, listAdminProviderAccounts, arg.TenantID, arg.AfterID, arg.LimitCount, arg.PoolGroupID, arg.StateFilter, arg.TagFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -251,6 +272,10 @@ SET
     enabled = COALESCE($1::boolean, enabled),
     priority = COALESCE($2::integer, priority),
     cap_concurrency = COALESCE($3::integer, cap_concurrency),
+    static_weight = COALESCE($15::integer, static_weight),
+    probe_model = CASE WHEN $16::boolean THEN NULLIF(BTRIM($17::text), '') ELSE probe_model END,
+    tags = CASE WHEN $18::boolean THEN COALESCE($19::text[], ARRAY[]::text[]) ELSE tags END,
+    extra = CASE WHEN $20::boolean THEN COALESCE($21::jsonb, '{}'::jsonb) ELSE extra END,
     model_allow_list = CASE WHEN $4::boolean THEN COALESCE($5::text[], ARRAY[]::text[]) ELSE model_allow_list END,
     capability_flags = CASE WHEN $6::boolean THEN COALESCE($7::text[], ARRAY[]::text[]) ELSE capability_flags END,
     custom_error_codes_enabled = COALESCE($8::boolean, custom_error_codes_enabled),
@@ -259,9 +284,9 @@ SET
     temp_unschedulable_enabled = COALESCE($12::boolean, temp_unschedulable_enabled),
     temp_unschedulable_rules = CASE WHEN $13::boolean THEN COALESCE($14::jsonb, '[]'::jsonb) ELSE temp_unschedulable_rules END,
     updated_at = NOW(),
-    last_modified_by_actor = $15::text
-WHERE id = $16
-  AND tenant_id = $17
+    last_modified_by_actor = $22::text
+WHERE id = $23
+  AND tenant_id = $24
   AND deleted_at IS NULL
 RETURNING` + adminProviderAccountColumns + `
 `
@@ -282,6 +307,13 @@ func (q *Queries) UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdmi
 		arg.TempUnschedulableEnabled,
 		arg.SetTempUnschedulableRules,
 		arg.TempUnschedulableRulesJSON,
+		arg.StaticWeight,
+		arg.SetProbeModel,
+		arg.ProbeModel,
+		arg.SetTags,
+		arg.Tags,
+		arg.SetExtra,
+		arg.Extra,
 		arg.ActorID,
 		arg.ID,
 		arg.TenantID,
@@ -338,7 +370,13 @@ func scanAdminProviderAccount(row adminProviderAccountScanner, i *AdminProviderA
 		&i.CapConcurrency,
 		&i.InFlightCount,
 		&i.Priority,
+		&i.StaticWeight,
+		&i.ProbeModel,
+		&i.Tags,
+		&i.Extra,
 		&i.LastDispatchAt,
+		&i.LastProbeLatencyMS,
+		&i.LastProbeAt,
 		&i.ModelAllowList,
 		&i.CapabilityFlags,
 		&i.RateLimitedAt,

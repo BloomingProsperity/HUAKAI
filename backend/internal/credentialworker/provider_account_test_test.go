@@ -55,6 +55,39 @@ func TestDryRunProviderAccountCredentialSuccessDoesNotPersist(t *testing.T) {
 	}
 }
 
+func TestDryRunProviderAccountCredentialPassesProbeModelToAdapter(t *testing.T) {
+	// MUTATION: dry-run 构造 ModeRefreshInput 时漏 ProbeModel, adapter 只能
+	// 用默认模型探测, 账号级 probe_model 不生效。
+	calls := []string{}
+	probeModels := []string{}
+	store := &dryRunCredentialStoreStub{
+		calls: &calls,
+		rec: credentialstore.CredentialRecord{
+			ID: 49, TenantID: 7, ProviderAccountID: 103,
+			Vendor: "testvendor", AuthMode: "safe_refresh",
+			PlaintextPayload: []byte(`{"api_key":"sk-probe"}`),
+		},
+	}
+	registry := NewModeAdapterRegistry()
+	if err := registry.Register("testvendor", "safe_refresh", dryRunModeAdapter{
+		calls: &calls, probeModels: &probeModels,
+		result: ModeRefreshResult{Payload: []byte(`{"ok":true}`), Outcome: "probe_succeeded"},
+	}); err != nil {
+		t.Fatalf("register adapter: %v", err)
+	}
+
+	result, err := DryRunProviderAccountCredentialWithProbeModel(context.Background(), store, registry, 7, 103, time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC), "gpt-4o-mini-probe")
+	if err != nil {
+		t.Fatalf("DryRunProviderAccountCredentialWithProbeModel: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result=%+v, want ok", result)
+	}
+	if len(probeModels) != 1 || probeModels[0] != "gpt-4o-mini-probe" {
+		t.Fatalf("probeModels=%v want [gpt-4o-mini-probe]", probeModels)
+	}
+}
+
 func TestDryRunProviderAccountCredentialMapsInvalidGrantWithoutLeakingRawError(t *testing.T) {
 	// 判别 secret leak: raw adapter error 带 secret marker;结果 message 只能是泛化文案。
 	// Mutation:把 err.Error() 塞进 Message,下方 marker 断言会红。
@@ -213,14 +246,18 @@ func (s *dryRunCredentialStoreStub) LoadForProviderAccountTest(_ context.Context
 }
 
 type dryRunModeAdapter struct {
-	calls  *[]string
-	result ModeRefreshResult
-	err    error
+	calls       *[]string
+	probeModels *[]string
+	result      ModeRefreshResult
+	err         error
 }
 
 func (a dryRunModeAdapter) RefreshCredential(_ context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {
 	if a.calls != nil {
 		*a.calls = append(*a.calls, "adapter:"+strconvInt64(in.CredentialID)+":"+strconvInt64(in.TenantID)+":"+strconvInt64(in.ProviderAccountID))
+	}
+	if a.probeModels != nil {
+		*a.probeModels = append(*a.probeModels, in.ProbeModel)
 	}
 	if a.err != nil {
 		return ModeRefreshResult{}, a.err

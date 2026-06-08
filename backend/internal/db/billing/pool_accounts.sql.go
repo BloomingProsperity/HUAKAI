@@ -630,6 +630,7 @@ SELECT
     pa.cap_concurrency,
     pa.in_flight_count,
     pa.priority,
+    pa.static_weight,
     pa.last_dispatch_at,
     pa.health_state,
     pa.health_state_until,
@@ -687,6 +688,7 @@ type ListEligibleAccountsByPoolGroupRow struct {
 	CapConcurrency   int32              `db:"cap_concurrency" json:"cap_concurrency"`
 	InFlightCount    int32              `db:"in_flight_count" json:"in_flight_count"`
 	Priority         int32              `db:"priority" json:"priority"`
+	StaticWeight     int32              `db:"static_weight" json:"static_weight"`
 	LastDispatchAt   pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
 	HealthState      string             `db:"health_state" json:"health_state"`
 	HealthStateUntil pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
@@ -703,7 +705,7 @@ type ListEligibleAccountsByPoolGroupRow struct {
 // cap_queue_sticky/fallback are returned so the selector can construct
 // WaitPlan fallback when every eligible account is at concurrency cap.
 //
-// 之前不过滤 model_allow_list /
+// 2026-05-19 codex review P1 fix: 之前不过滤 model_allow_list /
 // capability_flags, production gate AllowAll 全过, request 能 reserve
 // 到明确不被该 account 允许的 model / 缺能力。两个 filter 直接在 SQL
 // 层做 (Postgres array @> 子集 + cardinality empty bypass):
@@ -736,6 +738,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.CapConcurrency,
 			&i.InFlightCount,
 			&i.Priority,
+			&i.StaticWeight,
 			&i.LastDispatchAt,
 			&i.HealthState,
 			&i.HealthStateUntil,

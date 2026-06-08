@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -38,7 +39,7 @@ type providerAccountTestAccountStore interface {
 }
 
 type ProviderAccountCredentialTester interface {
-	TestProviderAccountCredential(context.Context, int64, int64, time.Time) (credentialworker.ProviderAccountCredentialTestResult, error)
+	TestProviderAccountCredential(context.Context, int64, int64, time.Time, string) (credentialworker.ProviderAccountCredentialTestResult, error)
 }
 
 type providerAccountCredentialTester struct {
@@ -50,8 +51,8 @@ func NewProviderAccountCredentialTester(store credentialworker.ProviderAccountCr
 	return providerAccountCredentialTester{store: store, registry: registry}
 }
 
-func (t providerAccountCredentialTester) TestProviderAccountCredential(ctx context.Context, tenantID, accountID int64, now time.Time) (credentialworker.ProviderAccountCredentialTestResult, error) {
-	return credentialworker.DryRunProviderAccountCredential(ctx, t.store, t.registry, tenantID, accountID, now)
+func (t providerAccountCredentialTester) TestProviderAccountCredential(ctx context.Context, tenantID, accountID int64, now time.Time, probeModel string) (credentialworker.ProviderAccountCredentialTestResult, error) {
+	return credentialworker.DryRunProviderAccountCredentialWithProbeModel(ctx, t.store, t.registry, tenantID, accountID, now, probeModel)
 }
 
 func MountProviderAccountTestRoutes(r chi.Router, d ProviderAccountTestDeps) {
@@ -74,9 +75,10 @@ func newProviderAccountTestHandler(d ProviderAccountTestDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if _, err := d.Accounts.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{
+		account, err := d.Accounts.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{
 			ID: id, TenantID: tenantID,
-		}); err != nil {
+		})
+		if err != nil {
 			writeProviderAccountTestReadError(w, err, "provider_account_get_failed")
 			return
 		}
@@ -84,7 +86,11 @@ func newProviderAccountTestHandler(d ProviderAccountTestDeps) http.HandlerFunc {
 		if d.Now != nil {
 			now = d.Now
 		}
-		result, err := d.Tester.TestProviderAccountCredential(r.Context(), tenantID, id, now())
+		probeModel := ""
+		if account.ProbeModel != nil {
+			probeModel = strings.TrimSpace(*account.ProbeModel)
+		}
+		result, err := d.Tester.TestProviderAccountCredential(r.Context(), tenantID, id, now(), probeModel)
 		if auditErr := writeProviderAccountTestAudit(r.Context(), r, d.Accounts, ident, tenantID, id, result, err); auditErr != nil {
 			writeError(w, http.StatusServiceUnavailable, "audit_write_failed", "provider account credential test audit failed")
 			return

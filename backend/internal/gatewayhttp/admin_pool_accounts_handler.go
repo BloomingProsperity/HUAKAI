@@ -184,6 +184,10 @@ type createProviderAccountRequest struct {
 	Enabled         *bool           `json:"enabled,omitempty"`
 	CapConcurrency  *int32          `json:"cap_concurrency,omitempty"`
 	Priority        *int32          `json:"priority,omitempty"`
+	StaticWeight    *int32          `json:"static_weight,omitempty"`
+	ProbeModel      *string         `json:"probe_model,omitempty"`
+	Tags            []string        `json:"tags,omitempty"`
+	Extra           json.RawMessage `json:"extra,omitempty"`
 	ModelAllowList  []string        `json:"model_allow_list,omitempty"`
 	CapabilityFlags []string        `json:"capability_flags,omitempty"`
 	Credentials     json.RawMessage `json:"credentials"`
@@ -200,7 +204,11 @@ type updateProviderAccountRequest struct {
 	TenantID                   *int64           `json:"tenant_id,omitempty"`
 	Enabled                    *bool            `json:"enabled,omitempty"`
 	Priority                   *int32           `json:"priority,omitempty"`
+	StaticWeight               *int32           `json:"static_weight,omitempty"`
 	CapConcurrency             *int32           `json:"cap_concurrency,omitempty"`
+	ProbeModel                 *string          `json:"probe_model,omitempty"`
+	Tags                       *[]string        `json:"tags,omitempty"`
+	Extra                      *json.RawMessage `json:"extra,omitempty"`
 	ModelAllowList             *[]string        `json:"model_allow_list,omitempty"`
 	CapabilityFlags            *[]string        `json:"capability_flags,omitempty"`
 	CustomErrorCodesEnabled    *bool            `json:"custom_error_codes_enabled,omitempty"`
@@ -223,37 +231,43 @@ type providerAccountPage struct {
 }
 
 type providerAccountResponse struct {
-	ID                       int64      `json:"id"`
-	TenantID                 int64      `json:"tenant_id"`
-	ProviderID               int64      `json:"provider_id"`
-	ChannelID                int64      `json:"channel_id"`
-	Name                     string     `json:"name"`
-	AccountType              string     `json:"account_type"`
-	Enabled                  bool       `json:"enabled"`
-	ExpiresAt                *time.Time `json:"expires_at"`
-	HealthState              string     `json:"health_state"`
-	CredentialState          string     `json:"credential_state"`
-	CapConcurrency           int32      `json:"cap_concurrency"`
-	InFlightCount            int32      `json:"in_flight_count"`
-	Priority                 int32      `json:"priority"`
-	LastDispatchAt           *time.Time `json:"last_dispatch_at"`
-	ModelAllowList           []string   `json:"model_allow_list"`
-	CapabilityFlags          []string   `json:"capability_flags"`
-	RateLimitedAt            *time.Time `json:"rate_limited_at"`
-	RateLimitResetAt         *time.Time `json:"rate_limit_reset_at"`
-	RateLimitReason          *string    `json:"rate_limit_reason"`
-	OverloadUntil            *time.Time `json:"overload_until"`
-	TempUnschedulableUntil   *time.Time `json:"temp_unschedulable_until"`
-	TokenVersion             int32      `json:"token_version"`
-	LastRefreshAt            *time.Time `json:"last_refresh_at"`
-	LastRefreshOutcome       *string    `json:"last_refresh_outcome"`
-	OAuthEndpointHealth      string     `json:"oauth_endpoint_health,omitempty"`
-	CustomErrorCodesEnabled  bool       `json:"custom_error_codes_enabled"`
-	CustomErrorCodes         []int32    `json:"custom_error_codes"`
-	PoolMode                 bool       `json:"pool_mode"`
-	TempUnschedulableEnabled bool       `json:"temp_unschedulable_enabled"`
-	CreatedAt                *time.Time `json:"created_at"`
-	UpdatedAt                *time.Time `json:"updated_at"`
+	ID                       int64           `json:"id"`
+	TenantID                 int64           `json:"tenant_id"`
+	ProviderID               int64           `json:"provider_id"`
+	ChannelID                int64           `json:"channel_id"`
+	Name                     string          `json:"name"`
+	AccountType              string          `json:"account_type"`
+	Enabled                  bool            `json:"enabled"`
+	ExpiresAt                *time.Time      `json:"expires_at"`
+	HealthState              string          `json:"health_state"`
+	CredentialState          string          `json:"credential_state"`
+	CapConcurrency           int32           `json:"cap_concurrency"`
+	InFlightCount            int32           `json:"in_flight_count"`
+	Priority                 int32           `json:"priority"`
+	StaticWeight             int32           `json:"static_weight"`
+	ProbeModel               *string         `json:"probe_model"`
+	Tags                     []string        `json:"tags"`
+	Extra                    json.RawMessage `json:"extra"`
+	LastDispatchAt           *time.Time      `json:"last_dispatch_at"`
+	LastProbeLatencyMS       *int32          `json:"last_probe_latency_ms"`
+	LastProbeAt              *time.Time      `json:"last_probe_at"`
+	ModelAllowList           []string        `json:"model_allow_list"`
+	CapabilityFlags          []string        `json:"capability_flags"`
+	RateLimitedAt            *time.Time      `json:"rate_limited_at"`
+	RateLimitResetAt         *time.Time      `json:"rate_limit_reset_at"`
+	RateLimitReason          *string         `json:"rate_limit_reason"`
+	OverloadUntil            *time.Time      `json:"overload_until"`
+	TempUnschedulableUntil   *time.Time      `json:"temp_unschedulable_until"`
+	TokenVersion             int32           `json:"token_version"`
+	LastRefreshAt            *time.Time      `json:"last_refresh_at"`
+	LastRefreshOutcome       *string         `json:"last_refresh_outcome"`
+	OAuthEndpointHealth      string          `json:"oauth_endpoint_health,omitempty"`
+	CustomErrorCodesEnabled  bool            `json:"custom_error_codes_enabled"`
+	CustomErrorCodes         []int32         `json:"custom_error_codes"`
+	PoolMode                 bool            `json:"pool_mode"`
+	TempUnschedulableEnabled bool            `json:"temp_unschedulable_enabled"`
+	CreatedAt                *time.Time      `json:"created_at"`
+	UpdatedAt                *time.Time      `json:"updated_at"`
 }
 
 func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
@@ -273,6 +287,8 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		req.AccountType = strings.TrimSpace(req.AccountType)
 		req.Vendor = credentialstore.Normalize(req.Vendor)
 		req.AuthMode = credentialstore.Normalize(req.AuthMode)
+		req.ProbeModel = cleanOptionalString(req.ProbeModel)
+		req.Tags = cleanStringList(req.Tags)
 		req.ModelAllowList = cleanStringList(req.ModelAllowList)
 		req.CapabilityFlags = cleanStringList(req.CapabilityFlags)
 		useCredentialStore := req.Vendor != "" || req.AuthMode != ""
@@ -297,6 +313,8 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			TenantID: tenantID, ProviderID: req.ProviderID, ChannelID: req.ChannelID,
 			Name: req.Name, AccountType: req.AccountType, Enabled: req.Enabled,
 			Credentials: dbCredentials, CapConcurrency: req.CapConcurrency, Priority: req.Priority,
+			StaticWeight: req.StaticWeight, ProbeModel: req.ProbeModel, Tags: req.Tags,
+			Extra:          normalizedProviderAccountExtra(req.Extra),
 			ModelAllowList: req.ModelAllowList, CapabilityFlags: req.CapabilityFlags, ActorID: &actorID,
 		}
 		createResult, err := insertProviderAccountWithMixedRiskCheck(r.Context(), d.Store, createArg, req, confirmed)
@@ -410,9 +428,10 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		tagFilter := parseProviderAccountTagFilter(r)
 		rows, err := d.Store.ListAdminProviderAccounts(r.Context(), admindb.ListAdminProviderAccountsParams{
 			TenantID: tenantID, AfterID: afterID, LimitCount: limit + 1,
-			PoolGroupID: poolGroupID, StateFilter: stateFilter,
+			PoolGroupID: poolGroupID, StateFilter: stateFilter, TagFilter: tagFilter,
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_list_failed", err.Error())
@@ -481,9 +500,21 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		actorID := fmt.Sprintf("%d", ident.TokenID)
 		arg := admindb.UpdateAdminProviderAccountParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
-			Enabled: req.Enabled, Priority: req.Priority, CapConcurrency: req.CapConcurrency,
+			Enabled: req.Enabled, Priority: req.Priority, StaticWeight: req.StaticWeight, CapConcurrency: req.CapConcurrency,
 			CustomErrorCodesEnabled: req.CustomErrorCodesEnabled,
 			PoolMode:                req.PoolMode, TempUnschedulableEnabled: req.TempUnschedulableEnabled,
+		}
+		if req.ProbeModel != nil {
+			arg.SetProbeModel = true
+			arg.ProbeModel = cleanOptionalString(req.ProbeModel)
+		}
+		if req.Tags != nil {
+			arg.SetTags = true
+			arg.Tags = cleanStringList(*req.Tags)
+		}
+		if req.Extra != nil {
+			arg.SetExtra = true
+			arg.Extra = normalizedProviderAccountExtra(*req.Extra)
 		}
 		if req.ModelAllowList != nil {
 			arg.SetModelAllowList = true
@@ -707,6 +738,12 @@ func validateCreateProviderAccount(req createProviderAccountRequest, requireCred
 	if req.CapConcurrency != nil && *req.CapConcurrency <= 0 {
 		return fmt.Errorf("cap_concurrency must be positive")
 	}
+	if req.StaticWeight != nil && *req.StaticWeight <= 0 {
+		return fmt.Errorf("static_weight must be positive")
+	}
+	if len(req.Extra) > 0 && !jsonRawObject(req.Extra) {
+		return fmt.Errorf("extra must be a JSON object")
+	}
 	var obj map[string]json.RawMessage
 	if len(req.Credentials) == 0 || json.Unmarshal(req.Credentials, &obj) != nil || obj == nil {
 		return fmt.Errorf("credentials must be a JSON object")
@@ -778,13 +815,20 @@ func writeProviderAccountMixedRiskRequired(w http.ResponseWriter, report mixedch
 }
 
 func validateUpdateProviderAccount(req updateProviderAccountRequest) error {
-	if req.Enabled == nil && req.Priority == nil && req.CapConcurrency == nil && req.ModelAllowList == nil &&
+	if req.Enabled == nil && req.Priority == nil && req.StaticWeight == nil && req.CapConcurrency == nil &&
+		req.ProbeModel == nil && req.Tags == nil && req.Extra == nil && req.ModelAllowList == nil &&
 		req.CapabilityFlags == nil && req.CustomErrorCodesEnabled == nil && req.CustomErrorCodes == nil &&
 		req.PoolMode == nil && req.TempUnschedulableEnabled == nil && req.TempUnschedulableRulesJSON == nil {
 		return fmt.Errorf("at least one supported field is required")
 	}
 	if req.CapConcurrency != nil && *req.CapConcurrency <= 0 {
 		return fmt.Errorf("cap_concurrency must be positive")
+	}
+	if req.StaticWeight != nil && *req.StaticWeight <= 0 {
+		return fmt.Errorf("static_weight must be positive")
+	}
+	if req.Extra != nil && !jsonRawObject(*req.Extra) {
+		return fmt.Errorf("extra must be a JSON object")
 	}
 	if req.TempUnschedulableRulesJSON != nil {
 		var rules []map[string]any
@@ -887,13 +931,20 @@ func parseProviderAccountStateFilter(w http.ResponseWriter, r *http.Request) (st
 	}
 }
 
+func parseProviderAccountTagFilter(r *http.Request) string {
+	return strings.TrimSpace(r.URL.Query().Get("tag"))
+}
+
 func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResponse {
 	return providerAccountResponse{
 		ID: row.ID, TenantID: row.TenantID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
 		Name: row.Name, AccountType: row.AccountType, Enabled: row.Enabled, ExpiresAt: pgTimePtr(row.ExpiresAt),
 		HealthState: row.HealthState, CredentialState: row.CredentialState,
 		CapConcurrency: row.CapConcurrency, InFlightCount: row.InFlightCount, Priority: row.Priority,
-		LastDispatchAt: pgTimePtr(row.LastDispatchAt), ModelAllowList: nonNilStringSlice(row.ModelAllowList),
+		StaticWeight: row.StaticWeight, ProbeModel: row.ProbeModel, Tags: nonNilStringSlice(row.Tags),
+		Extra:          jsonObjectOrEmpty(row.Extra),
+		LastDispatchAt: pgTimePtr(row.LastDispatchAt), LastProbeLatencyMS: row.LastProbeLatencyMS,
+		LastProbeAt: pgTimePtr(row.LastProbeAt), ModelAllowList: nonNilStringSlice(row.ModelAllowList),
 		CapabilityFlags: nonNilStringSlice(row.CapabilityFlags), RateLimitedAt: pgTimePtr(row.RateLimitedAt),
 		RateLimitResetAt: pgTimePtr(row.RateLimitResetAt), RateLimitReason: row.RateLimitReason,
 		OverloadUntil: pgTimePtr(row.OverloadUntil), TempUnschedulableUntil: pgTimePtr(row.TempUnschedulableUntil),
@@ -927,6 +978,14 @@ func nonNilInt32Slice(in []int32) []int32 {
 	return in
 }
 
+func cleanOptionalString(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	out := strings.TrimSpace(*in)
+	return &out
+}
+
 func cleanStringList(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, item := range in {
@@ -935,6 +994,25 @@ func cleanStringList(in []string) []string {
 		}
 	}
 	return out
+}
+
+func jsonRawObject(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	return len(raw) > 0 && json.Unmarshal(raw, &obj) == nil && obj != nil
+}
+
+func normalizedProviderAccountExtra(raw json.RawMessage) []byte {
+	if len(raw) == 0 {
+		return nil
+	}
+	return []byte(raw)
+}
+
+func jsonObjectOrEmpty(raw []byte) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(raw)
 }
 
 func writeProviderAccountReadError(w http.ResponseWriter, err error, code string) {
