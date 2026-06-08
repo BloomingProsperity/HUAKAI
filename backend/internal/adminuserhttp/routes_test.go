@@ -640,3 +640,49 @@ func TestAdminSetUserGroupRequiresAdmin(t *testing.T) {
 		t.Fatalf("unauthorized set-group touched deps: setter=%+v audit=%+v", setter, audit)
 	}
 }
+
+type userRemarkSetterStub struct {
+	calls    int
+	tenantID int64
+	userID   int64
+	remark   string
+	err      error
+}
+
+func (s *userRemarkSetterStub) SetUserRemarkForTenant(_ context.Context, tenantID, userID int64, remark string) error {
+	s.calls++
+	s.tenantID, s.userID, s.remark = tenantID, userID, remark
+	return s.err
+}
+
+func TestAdminSetUserRemarkTenantScopedAudited(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	setter := &userRemarkSetterStub{}
+	audit := &adminAuditStub{}
+	deps := Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserRemarkSetter: setter, Audit: audit}
+	router := chi.NewRouter()
+	router.Route("/admin/v1/users", func(r chi.Router) { MountRoutes(r, deps) })
+	req := httptest.NewRequest(http.MethodPut, "/admin/v1/users/101/remark", strings.NewReader(`{"remark":"vip customer"}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	if setter.calls != 1 || setter.tenantID != 7 || setter.userID != 101 || setter.remark != "vip customer" {
+		t.Fatalf("set remark mismatch: %+v", setter)
+	}
+	if audit.calls != 1 || audit.arg.Action != "set_user_remark" || audit.arg.TargetType != "user" {
+		t.Fatalf("audit mismatch: %+v", audit.arg)
+	}
+	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
+		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	}
+}
+
+func TestAdminSetUserRemarkRequiresAdmin(t *testing.T) {
+	setter := &userRemarkSetterStub{}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserRemarkSetter: setter, Audit: audit}, http.MethodPut, "/admin/v1/users/101/remark", nil)
+	assertStatus(t, rec, http.StatusUnauthorized)
+	if setter.calls != 0 || audit.calls != 0 {
+		t.Fatalf("unauthorized set-remark touched deps: setter=%+v audit=%+v", setter, audit)
+	}
+}

@@ -27,15 +27,16 @@ const (
 )
 
 type Deps struct {
-	Auth            adminAuth
-	Store           userReadStore
-	SocialLinks     socialLinkService
-	UnlockAudit     userUnlockAuditStore
-	Unlocker        userUnlockService
-	Audit           adminAuditStore
-	TwoFADisabler   twoFADisableService
-	PasskeyResetter passkeyResetService
-	UserGroupSetter userGroupSetter
+	Auth             adminAuth
+	Store            userReadStore
+	SocialLinks      socialLinkService
+	UnlockAudit      userUnlockAuditStore
+	Unlocker         userUnlockService
+	Audit            adminAuditStore
+	TwoFADisabler    twoFADisableService
+	PasskeyResetter  passkeyResetService
+	UserGroupSetter  userGroupSetter
+	UserRemarkSetter userRemarkSetter
 }
 
 type adminAuth interface {
@@ -75,6 +76,10 @@ type passkeyResetService interface {
 
 type userGroupSetter interface {
 	SetUserGroupForTenant(ctx context.Context, tenantID, userID int64, group string) error
+}
+
+type userRemarkSetter interface {
+	SetUserRemarkForTenant(ctx context.Context, tenantID, userID int64, remark string) error
 }
 
 type unlockAuditInput struct {
@@ -135,6 +140,7 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Post("/{id}/2fa/force-disable", newForceDisable2FAHandler(d))
 	r.Delete("/{id}/passkeys", newResetPasskeyHandler(d))
 	r.Put("/{id}/group", newSetUserGroupHandler(d))
+	r.Put("/{id}/remark", newSetUserRemarkHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
 	r.Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
@@ -743,5 +749,79 @@ func newSetUserGroupHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "user_group": group})
+	}
+}
+
+type setUserRemarkRequest struct {
+	Remark string `json:"remark"`
+}
+
+type postgresUserRemarkStore struct {
+	pool *pgxpool.Pool
+}
+
+// NewPostgresUserRemarkStore wires the admin user-remark setter.
+func NewPostgresUserRemarkStore(pool *pgxpool.Pool) userRemarkSetter {
+	if pool == nil {
+		return nil
+	}
+	return postgresUserRemarkStore{pool: pool}
+}
+
+func (s postgresUserRemarkStore) SetUserRemarkForTenant(ctx context.Context, tenantID, userID int64, remark string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET remark=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, userID, remark)
+	return err
+}
+
+// newSetUserRemarkHandler lets a tenant operator set a free-text admin note on a
+// user (users.remark), mirroring newSetUserGroupHandler. Tenant-scoped + audited
+// (action=set_user_remark). AUTH-030. Additive admin-management; default-preserving.
+func newSetUserRemarkHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
+		if !ok {
+			return
+		}
+		userID, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		var req setUserRemarkRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		remark := strings.TrimSpace(req.Remark)
+		if len(remark) > 1024 {
+			writeError(w, http.StatusBadRequest, "invalid_remark", "remark must be <= 1024 chars")
+			return
+		}
+		if d.UserRemarkSetter == nil || d.Audit == nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin user-remark dependency unset")
+			return
+		}
+		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{TenantID: tenantID, UserID: userID}); errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
+			return
+		}
+		if err := d.UserRemarkSetter.SetUserRemarkForTenant(r.Context(), tenantID, userID, remark); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_user_remark_failed", fmt.Sprintf("set user remark failed: %v", err))
+			return
+		}
+		ai := buildUnlockAuditInput(r, ident, "")
+		audit := admindb.InsertAdminAuditEventParams{
+			TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole,
+			Action: "set_user_remark", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID,
+		}
+		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write remark audit failed: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "remark": remark})
 	}
 }
