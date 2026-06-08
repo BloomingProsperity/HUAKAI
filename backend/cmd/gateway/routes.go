@@ -253,8 +253,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Route("/v1/users/me/payments", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		paymenthttp.MountPaymentUserRoutes(r, paymenthttp.UserDeps{
-			Service:        d.paymentService,
-			RefundRequests: d.paymentRefundRequests,
+			Service:          d.paymentService,
+			ClientIPResolver: d.clientIPResolver,
+			RefundRequests:   d.paymentRefundRequests,
 		})
 	})
 	r.Group(func(r chi.Router) {

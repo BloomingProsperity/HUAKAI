@@ -380,6 +380,113 @@ func TestPaymentPostgres_ExpiredPendingOrderRejected(t *testing.T) {
 	}
 }
 
+// PAY-075: 合规确认字段是订单纯记录元数据。带 terms_version / accepted_at / by / ip 建单后,
+// GetOrder 必须原样读回。mutation: insert 列表漏掉 compliance 字段或恒写 NULL → terms_version 空 → 红。
+func TestOrderComplianceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	store := NewPostgresStore(pool)
+	acceptedAt := time.Date(2026, 6, 8, 12, 30, 45, 123456000, time.UTC)
+	svc := NewService(store, WithTestProvider(), WithClock(func() time.Time { return acceptedAt }))
+
+	created, err := svc.CreateOrder(ctx, CreateOrderInput{
+		TenantID:               f.tenantA,
+		UserID:                 f.userA,
+		AmountCents:            1200,
+		OutTradeNo:             "pay-075-compliance-" + f.suffix,
+		ProviderKind:           ProviderTest,
+		ComplianceTermsVersion: "v1",
+		ComplianceAcceptedAt:   &acceptedAt,
+		ComplianceAcceptedBy:   f.userA,
+		ComplianceAcceptedIP:   "198.51.100.23",
+	})
+	if err != nil {
+		t.Fatalf("create order with compliance: %v", err)
+	}
+	got, err := store.GetOrder(ctx, f.tenantA, created.Order.ID)
+	if err != nil {
+		t.Fatalf("get order: %v", err)
+	}
+	if got.ComplianceTermsVersion != "v1" {
+		t.Fatalf("terms_version=%q want v1", got.ComplianceTermsVersion)
+	}
+	if got.ComplianceAcceptedAt == nil || !got.ComplianceAcceptedAt.Equal(acceptedAt) {
+		t.Fatalf("accepted_at=%v want %s", got.ComplianceAcceptedAt, acceptedAt.Format(time.RFC3339Nano))
+	}
+	if got.ComplianceAcceptedBy != f.userA {
+		t.Fatalf("accepted_by=%d want %d", got.ComplianceAcceptedBy, f.userA)
+	}
+	if got.ComplianceAcceptedIP != "198.51.100.23" {
+		t.Fatalf("accepted_ip=%q want 198.51.100.23", got.ComplianceAcceptedIP)
+	}
+}
+
+// PAY-075: 未带合规确认的订单必须保持默认行为: 四字段为空/零, 且确认履约的 credit 与余额增量
+// 完全等于订单金额。mutation: fulfillment 金额依赖 compliance → credit 或 balance delta 变红。
+func TestOrderWithoutComplianceUnchanged(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	store := NewPostgresStore(pool)
+	svc := NewService(store, WithTestProvider())
+
+	const amount = int64(4321)
+	before, err := svc.GetBalance(ctx, f.tenantA, f.userA)
+	if err != nil {
+		t.Fatalf("balance before: %v", err)
+	}
+	created, err := svc.CreateOrder(ctx, CreateOrderInput{
+		TenantID:     f.tenantA,
+		UserID:       f.userA,
+		AmountCents:  amount,
+		OutTradeNo:   "pay-075-no-compliance-" + f.suffix,
+		ProviderKind: ProviderTest,
+	})
+	if err != nil {
+		t.Fatalf("create order without compliance: %v", err)
+	}
+	if created.Order.ComplianceTermsVersion != "" || created.Order.ComplianceAcceptedAt != nil ||
+		created.Order.ComplianceAcceptedBy != 0 || created.Order.ComplianceAcceptedIP != "" {
+		t.Fatalf("new order compliance fields = version=%q at=%v by=%d ip=%q, want all empty/zero",
+			created.Order.ComplianceTermsVersion, created.Order.ComplianceAcceptedAt,
+			created.Order.ComplianceAcceptedBy, created.Order.ComplianceAcceptedIP)
+	}
+	stored, err := store.GetOrder(ctx, f.tenantA, created.Order.ID)
+	if err != nil {
+		t.Fatalf("get order: %v", err)
+	}
+	if stored.ComplianceTermsVersion != "" || stored.ComplianceAcceptedAt != nil ||
+		stored.ComplianceAcceptedBy != 0 || stored.ComplianceAcceptedIP != "" {
+		t.Fatalf("stored compliance fields = version=%q at=%v by=%d ip=%q, want all empty/zero",
+			stored.ComplianceTermsVersion, stored.ComplianceAcceptedAt,
+			stored.ComplianceAcceptedBy, stored.ComplianceAcceptedIP)
+	}
+	fulfilled, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{
+		TenantID:     f.tenantA,
+		OrderID:      created.Order.ID,
+		ActorAdminID: 7,
+	})
+	if err != nil {
+		t.Fatalf("confirm+fulfill without compliance: %v", err)
+	}
+	if fulfilled.Credit.AmountCents != amount {
+		t.Fatalf("credit amount=%d want %d", fulfilled.Credit.AmountCents, amount)
+	}
+	if got := fulfilled.BalanceCents - before.AmountCents; got != amount {
+		t.Fatalf("balance delta=%d want %d", got, amount)
+	}
+	var creditAmount int64
+	if err := pool.QueryRow(ctx, `
+SELECT amount_cents FROM payment_credits WHERE tenant_id=$1 AND payment_order_id=$2`,
+		f.tenantA, created.Order.ID).Scan(&creditAmount); err != nil {
+		t.Fatalf("read credit amount: %v", err)
+	}
+	if creditAmount != amount {
+		t.Fatalf("stored credit amount=%d want %d", creditAmount, amount)
+	}
+}
+
 func keysOf(m map[string]AuditEvent) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

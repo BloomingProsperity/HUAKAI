@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
@@ -137,6 +138,12 @@ func TestPortalCreateTopupForcesTopupKindAndSessionIdentity(t *testing.T) {
 	if svc.gotCreate.ActorKind != payment.ActorKindUser {
 		t.Fatalf("create actor_kind=%q want user", svc.gotCreate.ActorKind)
 	}
+	if svc.gotCreate.ComplianceTermsVersion != "" || svc.gotCreate.ComplianceAcceptedAt != nil ||
+		svc.gotCreate.ComplianceAcceptedBy != 0 || svc.gotCreate.ComplianceAcceptedIP != "" {
+		t.Fatalf("create without terms must leave compliance empty, got version=%q at=%v by=%d ip=%q",
+			svc.gotCreate.ComplianceTermsVersion, svc.gotCreate.ComplianceAcceptedAt,
+			svc.gotCreate.ComplianceAcceptedBy, svc.gotCreate.ComplianceAcceptedIP)
+	}
 	// 渲染必须带 payment_instruction 指引。
 	var resp map[string]json.RawMessage
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -144,6 +151,48 @@ func TestPortalCreateTopupForcesTopupKindAndSessionIdentity(t *testing.T) {
 	}
 	if _, ok := resp["payment_instruction"]; !ok {
 		t.Fatalf("create response missing payment_instruction: %s", rec.Body.String())
+	}
+}
+
+// PAY-075: terms_version 是可选合规确认记录。用户传入时, handler 只记录确认版本 + session user
+// + trusted client IP + 当前时间, 不增加任何下单门控。mutation: 不透传 terms_version 或改用 raw RemoteAddr → 红。
+func TestPortalCreateTopupCapturesOptionalTermsAcceptance(t *testing.T) {
+	svc := &portalService{}
+	ident := sessionauth.SessionIdentity{TenantID: 7, UserID: 42}
+	resolver, err := clientip.NewResolver([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("resolver: %v", err)
+	}
+	router := mountPortalWithSession(svc, UserDeps{
+		RefundRequests:   NewMemoryRefundRequestRecorder(),
+		ClientIPResolver: resolver,
+	}, ident)
+
+	body, _ := json.Marshal(portalCreateTopupRequest{
+		AmountCents:  2500,
+		Provider:     "manual",
+		TermsVersion: "v1",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewReader(body))
+	req.RemoteAddr = "10.1.2.3:5000"
+	req.Header.Set("X-Forwarded-For", "198.51.100.9")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.gotCreate.ComplianceTermsVersion != "v1" {
+		t.Fatalf("terms_version=%q want v1", svc.gotCreate.ComplianceTermsVersion)
+	}
+	if svc.gotCreate.ComplianceAcceptedAt == nil || svc.gotCreate.ComplianceAcceptedAt.IsZero() {
+		t.Fatalf("accepted_at=%v want non-zero capture time", svc.gotCreate.ComplianceAcceptedAt)
+	}
+	if svc.gotCreate.ComplianceAcceptedBy != ident.UserID {
+		t.Fatalf("accepted_by=%d want session user %d", svc.gotCreate.ComplianceAcceptedBy, ident.UserID)
+	}
+	if svc.gotCreate.ComplianceAcceptedIP != "198.51.100.9" {
+		t.Fatalf("accepted_ip=%q want trusted forwarded client 198.51.100.9", svc.gotCreate.ComplianceAcceptedIP)
 	}
 }
 

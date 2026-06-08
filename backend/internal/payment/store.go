@@ -56,22 +56,26 @@ const (
 )
 
 type createOrderRecord struct {
-	TenantID           int64
-	UserID             int64
-	OutTradeNo         string
-	AmountCents        int64
-	CurrencyCode       string
-	ProviderKind       ProviderKind
-	ProviderOrderRef   string
-	RequestFingerprint string
-	CreatedByAdminID   int64
-	CreatedActorKind   string
-	CreatedActorID     int64
-	RequestID          string
-	ExpiresAt          *time.Time
-	OrderKind          string // 缺省 topup
-	SubscriptionPlanID *int64 // 订阅单必填
-	Now                time.Time
+	TenantID               int64
+	UserID                 int64
+	OutTradeNo             string
+	AmountCents            int64
+	CurrencyCode           string
+	ProviderKind           ProviderKind
+	ProviderOrderRef       string
+	RequestFingerprint     string
+	CreatedByAdminID       int64
+	CreatedActorKind       string
+	CreatedActorID         int64
+	RequestID              string
+	ExpiresAt              *time.Time
+	OrderKind              string // 缺省 topup
+	SubscriptionPlanID     *int64 // 订阅单必填
+	ComplianceTermsVersion string
+	ComplianceAcceptedAt   *time.Time
+	ComplianceAcceptedBy   int64
+	ComplianceAcceptedIP   string
+	Now                    time.Time
 }
 
 func sameOptionalInt64(a, b *int64) bool {

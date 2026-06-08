@@ -5,6 +5,7 @@ package paymenthttp
 import (
 	"context"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -204,8 +205,9 @@ func (m *memoryRefundRequestRecorder) CreateRefundRequest(_ context.Context, in 
 // ---- DTO ----
 
 type portalCreateTopupRequest struct {
-	AmountCents int64  `json:"amount_cents"`
-	Provider    string `json:"provider"`
+	AmountCents  int64  `json:"amount_cents"`
+	Provider     string `json:"provider"`
+	TermsVersion string `json:"terms_version,omitempty"`
 }
 
 type portalProviderConfigView struct {
@@ -319,16 +321,30 @@ func newPortalCreateTopupHandler(d UserDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "external_trade_no_failed", "failed to generate top-up order id")
 			return
 		}
+		termsVersion := strings.TrimSpace(req.TermsVersion)
+		var acceptedAt *time.Time
+		var acceptedBy int64
+		var acceptedIP string
+		if termsVersion != "" {
+			now := time.Now().UTC()
+			acceptedAt = &now
+			acceptedBy = ident.UserID
+			acceptedIP = portalComplianceClientIP(r, d)
+		}
 		res, err := d.Service.CreateOrder(r.Context(), payment.CreateOrderInput{
-			TenantID:     ident.TenantID,
-			UserID:       ident.UserID,
-			AmountCents:  req.AmountCents,
-			OutTradeNo:   outTradeNo,
-			ProviderKind: providerKind,
-			OrderKind:    payment.OrderKindTopup,
-			ActorKind:    payment.ActorKindUser,
-			ActorID:      ident.UserID,
-			RequestID:    requestID(r),
+			TenantID:               ident.TenantID,
+			UserID:                 ident.UserID,
+			AmountCents:            req.AmountCents,
+			OutTradeNo:             outTradeNo,
+			ProviderKind:           providerKind,
+			OrderKind:              payment.OrderKindTopup,
+			ActorKind:              payment.ActorKindUser,
+			ActorID:                ident.UserID,
+			RequestID:              requestID(r),
+			ComplianceTermsVersion: termsVersion,
+			ComplianceAcceptedAt:   acceptedAt,
+			ComplianceAcceptedBy:   acceptedBy,
+			ComplianceAcceptedIP:   acceptedIP,
 		})
 		if err != nil {
 			writePaymentError(w, err)
@@ -347,6 +363,17 @@ func newPortalCreateTopupHandler(d UserDeps) http.HandlerFunc {
 			},
 		})
 	}
+}
+
+func portalComplianceClientIP(r *http.Request, d UserDeps) string {
+	ip := strings.TrimSpace(d.ClientIPResolver.ClientIP(r))
+	if ip == "" {
+		return ""
+	}
+	if _, err := netip.ParseAddr(ip); err != nil {
+		return ""
+	}
+	return ip
 }
 
 // newPortalGetOrderHandler 单订单详情/状态 (供前端轮询)。

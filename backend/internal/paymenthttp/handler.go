@@ -17,6 +17,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
@@ -40,6 +41,8 @@ type UserDeps struct {
 	Service Service
 	// Portal 用户支付门户运行时配置 (可充金额范围 + 启用渠道); 零值回落安全默认。
 	Portal PortalConfig
+	// ClientIPResolver 解析用于合规确认记录的请求 IP; nil 时安全回落到 RemoteAddr host。
+	ClientIPResolver *clientip.Resolver
 	// RefundRequests 退款申请记录器 (用户发起 pending 退款申请, 待 admin 审批)。
 	// nil 时退款申请端点回 503 (而非默默吞掉用户意图)。
 	RefundRequests RefundRequestRecorder

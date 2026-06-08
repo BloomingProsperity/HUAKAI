@@ -4,6 +4,7 @@ package payment
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -126,6 +127,13 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 	if err != nil {
 		return CreateOrderResult{}, err
 	}
+	complianceTermsVersion := strings.TrimSpace(in.ComplianceTermsVersion)
+	complianceAcceptedIP := strings.TrimSpace(in.ComplianceAcceptedIP)
+	if complianceAcceptedIP != "" {
+		if _, err := netip.ParseAddr(complianceAcceptedIP); err != nil {
+			return CreateOrderResult{}, ErrInvalidInput
+		}
+	}
 
 	now := s.now()
 	ttl := in.ExpiresIn
@@ -143,22 +151,26 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 	}
 
 	order, replay, err := s.store.CreateOrder(ctx, createOrderRecord{
-		TenantID:           in.TenantID,
-		UserID:             in.UserID,
-		OutTradeNo:         outTradeNo,
-		AmountCents:        amountCents,
-		CurrencyCode:       currency,
-		ProviderKind:       kind,
-		ProviderOrderRef:   intent.OrderRef,
-		RequestFingerprint: strings.TrimSpace(in.RequestFingerprint),
-		CreatedByAdminID:   in.ActorAdminID,
-		CreatedActorKind:   createOrderActorKind(in),
-		CreatedActorID:     createOrderActorID(in),
-		RequestID:          in.RequestID,
-		ExpiresAt:          &expiresAt,
-		OrderKind:          orderKind,
-		SubscriptionPlanID: in.SubscriptionPlanID,
-		Now:                now,
+		TenantID:               in.TenantID,
+		UserID:                 in.UserID,
+		OutTradeNo:             outTradeNo,
+		AmountCents:            amountCents,
+		CurrencyCode:           currency,
+		ProviderKind:           kind,
+		ProviderOrderRef:       intent.OrderRef,
+		RequestFingerprint:     strings.TrimSpace(in.RequestFingerprint),
+		CreatedByAdminID:       in.ActorAdminID,
+		CreatedActorKind:       createOrderActorKind(in),
+		CreatedActorID:         createOrderActorID(in),
+		RequestID:              in.RequestID,
+		ExpiresAt:              &expiresAt,
+		OrderKind:              orderKind,
+		SubscriptionPlanID:     in.SubscriptionPlanID,
+		ComplianceTermsVersion: complianceTermsVersion,
+		ComplianceAcceptedAt:   in.ComplianceAcceptedAt,
+		ComplianceAcceptedBy:   in.ComplianceAcceptedBy,
+		ComplianceAcceptedIP:   complianceAcceptedIP,
+		Now:                    now,
 	})
 	if err != nil {
 		return CreateOrderResult{}, err
