@@ -671,6 +671,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	if streamPending || actualCost.PendingReconciliation {
 		draft.PendingReconciliation = true
 	}
+	draft = withOriginAudit(draft, ex.r, ex.d)
 	return eventbus.RequestCompletionEvent{
 		ID:                        ex.requestID,
 		TenantID:                  ex.ident.TenantID,

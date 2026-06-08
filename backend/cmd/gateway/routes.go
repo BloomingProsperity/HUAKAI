@@ -574,6 +574,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		ModelFallbackSettings:  d.platformSettings,
 		BillingPolicyVersion:   d.cfg.BillingPolicyVersion,
 		RequestClass:           d.cfg.RequestClass,
+		ClientIPResolver:       d.clientIPResolver,
 	}
 }
 
@@ -650,6 +651,7 @@ func imageHandlerDeps(d *deps) imageshttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		ClientIPResolver:      d.clientIPResolver,
 	}
 }
 

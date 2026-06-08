@@ -23,6 +23,7 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelfallback"
@@ -95,6 +96,7 @@ type ChatHandlerDeps struct {
 	ModelFallbackSettings  modelfallback.SettingsReader
 	BillingPolicyVersion   string
 	RequestClass           string
+	ClientIPResolver       *clientip.Resolver
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"

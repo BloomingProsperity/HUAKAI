@@ -37,6 +37,29 @@ func TestSettleCompletion_RateTableMiss_FailsClosed(t *testing.T) {
 	}
 }
 
+func TestChargeUnchangedByAuditColumns(t *testing.T) {
+	size := "1024x1024"
+	ip := "198.51.100.9"
+	ua := "huakai-audit-test/1.0"
+	usage := usageFromDraft(gateway.UsageRecordDraft{
+		TokensInput:        11,
+		TokensOutput:       17,
+		CacheReadTokens:    5,
+		ImageCount:         99,
+		ImageSize:          &size,
+		ImageSizeBreakdown: []byte(`{"1024x1024":99}`),
+		IPAddress:          &ip,
+		UserAgent:          &ua,
+	})
+
+	if usage.InputTokens != 11 || usage.OutputTokens != 17 || usage.CacheReadTokens != 5 {
+		t.Fatalf("usageFromDraft token projection=%+v want input=11 output=17 cache_read=5", usage)
+	}
+	if usage.CacheCreationTokens != 0 || usage.CacheCreation5mTokens != 0 || usage.CacheCreation1hTokens != 0 {
+		t.Fatalf("usageFromDraft unexpectedly changed cache creation fields: %+v", usage)
+	}
+}
+
 func TestSettleCompletion_PricingRatioBackendErrorServesAtDefaultRatioWithAlert(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}

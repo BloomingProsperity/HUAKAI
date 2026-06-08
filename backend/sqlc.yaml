@@ -108,6 +108,7 @@ sql:
           claim_id: ClaimID
           acquisition_token: AcquisitionToken
           dlq: DLQ
+          ip_address: IPAddress
           oauth_endpoint_health: OAuthEndpointHealth
           openai_403_counter: OpenAI403Counter
   - engine: postgresql

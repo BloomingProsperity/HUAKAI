@@ -41,7 +41,8 @@ INSERT INTO usage_records (
     stream_state, delivered_token_count, stream_terminated_reason,
     drain_outcome, routing_reason, protocol_loss,
     requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
-    requested_model, upstream_model, stream, snapshot_version, settlement_source
+    requested_model, upstream_model, stream, snapshot_version, settlement_source,
+    image_count, image_size, image_size_breakdown, ip_address, user_agent
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7,
@@ -54,7 +55,8 @@ INSERT INTO usage_records (
     $26, $27, $28,
     $29, $30, $31,
     $32, $33, $34, $35, $36,
-    $37, $38, $39, $40, $41
+    $37, $38, $39, $40, $41,
+    $42, $43, $44, $45, $46
 )
 RETURNING id;
 

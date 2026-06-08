@@ -2,8 +2,10 @@ package imageshttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,6 +82,8 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 
 func (ex *execution) settleRequest(tokens tokenImageUsage, cost decimal.Decimal, snapshot string, attemptSeq int, pending bool) billing.SettleRequest {
 	confidence := 1.0
+	imageCount := int32(ex.amount)
+	imageSize := auditStringPtr(ex.size, 0)
 	return billing.SettleRequest{
 		ClaimID:           ex.reserveRes.ClaimID,
 		AccountID:         ex.selRes.AccountID,
@@ -103,6 +107,11 @@ func (ex *execution) settleRequest(tokens tokenImageUsage, cost decimal.Decimal,
 			DeliveredTokenCount:   int64(tokens.OutputTokens),
 			ActualCost:            cost,
 			CostSnapshot:          snapshot,
+			ImageCount:            imageCount,
+			ImageSize:             imageSize,
+			ImageSizeBreakdown:    imageSizeBreakdown(ex.size, imageCount),
+			IPAddress:             auditStringPtr(ex.d.ClientIPResolver.ClientIP(ex.r), 128),
+			UserAgent:             auditStringPtr(ex.r.Header.Get("User-Agent"), 512),
 			RoutingReason:         ex.selRes.RoutingReasonJSON,
 			EndClass:              gateway.StreamEndGraceful,
 			UsageSource:           gateway.UsageSourceReported,
@@ -113,6 +122,36 @@ func (ex *execution) settleRequest(tokens tokenImageUsage, cost decimal.Decimal,
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
 	}
+}
+
+func imageSizeBreakdown(size string, count int32) []byte {
+	size = strings.TrimSpace(size)
+	if size == "" || count <= 0 {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]int32{size: count})
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+func auditStringPtr(raw string, maxRunes int) *string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	if maxRunes > 0 {
+		n := 0
+		for i := range s {
+			if n == maxRunes {
+				s = s[:i]
+				break
+			}
+			n++
+		}
+	}
+	return &s
 }
 
 // billingCtx 返回脱离请求取消的结算上下文(同 audiohttp):客户端断连不应取消已决定的
