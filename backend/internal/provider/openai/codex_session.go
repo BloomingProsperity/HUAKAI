@@ -123,6 +123,12 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	if ua == "" {
 		ua = defaultCodexUserAgent
 	}
+	// 反封禁(SUB2-01)：浏览器型 UA(Mozilla/...)绝不能泄给 OpenAI/Codex 上游
+	// (Cloudflare 据此识别非官方客户端)。检出即改写回 Codex CLI 风格 UA。
+	// SUB2-02 接缝：未来此 fallback 可换成 admin 可调的 platformsettings 值。
+	if isBrowserUserAgent(ua) {
+		ua = defaultCodexUserAgent
+	}
 	req.Header.Set("User-Agent", ua)
 
 	// OAI-Device-Id：设备唯一 ID，Codex CLI / ChatGPT 风控必要字段
