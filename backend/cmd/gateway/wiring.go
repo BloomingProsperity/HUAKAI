@@ -85,6 +85,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
+	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpresolve"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
@@ -854,6 +855,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		nil,
 	)
 	proxyHealthWorker.Start(ctx)
+
+	// UTLS-06: TLS 指纹 profile 漂移/健康 worker。周期校验 active 自定义 profile
+	// 还能否构建可用 uTLS ClientHello, 坏的标 drift_detected (无 JA3 计算, 无误杀)。
+	tlsProfileHealthWorker := tlsfphealth.NewWorker(
+		tlsfphealth.NewPostgresLister(pgPool),
+		tlsfphealth.NewPostgresDriftMarker(pgPool),
+		tlsfphealth.DefaultInterval,
+		nil,
+	)
+	tlsProfileHealthWorker.Start(ctx)
 
 	clientIPResolver, err := loadClientIPResolverFromEnv()
 	if err != nil {
