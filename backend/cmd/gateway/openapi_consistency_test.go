@@ -330,6 +330,27 @@ func TestOpenAPI_MeQuotaMountedAndDocumented(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_OrderReceiptMountedAndDocumented(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+	const path = "/v1/me/orders/{id}/receipt"
+	if !hasOperation(implOps, http.MethodGet, path) {
+		t.Fatalf("runtime missing GET %s", path)
+	}
+	if !hasOperation(specOps, http.MethodGet, path) {
+		t.Fatalf("OpenAPI missing GET %s; generated clients would not see the self-service order receipt", path)
+	}
+}
+
 func hasOperation(ops []openapicheck.Operation, method, path string) bool {
 	for _, op := range ops {
 		if op.Method == method && op.Path == path {

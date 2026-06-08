@@ -1535,6 +1535,36 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/orders/{id}/receipt:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [user-payments]
+      summary: Fetch a completed order receipt for the authenticated User
+      operationId: getMyOrderReceipt
+      x-huakai-spec-source:
+        - backend/internal/payment/types.go
+        - backend/internal/invoicehttp/handler.go
+      description: |
+        Read-only self-service receipt for a caller-owned completed top-up or
+        subscription order. Tenant and user scope come only from the validated
+        session identity; cross-user order ids resolve to 404. The receipt is a
+        deterministic plain-text rendering of immutable order fields and does
+        not perform balance, billing, credit, debit, or refund operations.
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Deterministic plain-text order receipt.
+          content:
+            text/plain:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/usage/export.csv:
     get:
       tags: [user-audit]
