@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
@@ -201,7 +202,34 @@ func transportModeForProvider(providerCode transport.ProviderCode, accountType s
 
 func (ex *chatExecution) refreshRequestSessionHashes() {
 	ex.promptHash = cache_routing.ComputePromptHash(ex.body)
+	if affinityKey, ok := ex.configuredAffinityKey(); ok {
+		ex.sessionHash = affinityKey
+		return
+	}
 	ex.sessionHash = requestSessionHash(ex.clientProtocol, ex.body, ex.promptHash, ex.clientSessionID)
+}
+
+func (ex *chatExecution) configuredAffinityKey() (string, bool) {
+	if ex == nil || len(ex.d.AffinityRules) == 0 {
+		return "", false
+	}
+	var path, userAgent string
+	var header func(string) string
+	if ex.r != nil {
+		if ex.r.URL != nil {
+			path = ex.r.URL.Path
+		}
+		userAgent = ex.r.UserAgent()
+		header = ex.r.Header.Get
+	}
+	_, affinityKey, matched := ex.d.AffinityRules.Match(affinityrules.MatchRequest{
+		Model:     ex.req.Model,
+		Path:      path,
+		UserAgent: userAgent,
+		Header:    header,
+		Body:      ex.body,
+	})
+	return affinityKey, matched
 }
 
 func requestSessionHash(clientProtocol proto.ClientProtocol, rawBody []byte, promptHash, clientSessionID string) string {

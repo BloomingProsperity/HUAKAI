@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -51,9 +52,16 @@ type cacheOverrideResolver interface {
 }
 
 type ChatHandlerDeps struct {
-	Auth                  authResolver
-	Registry              registry.Registry
-	Router                router.Router
+	Auth     authResolver
+	Registry registry.Registry
+	Router   router.Router
+
+	// AffinityRules optionally derives the sticky key from request header/body
+	// signals before the legacy session-hash cascade. Nil or empty preserves
+	// the existing behavior. TODO: persist this per binding/channel once the
+	// registry schema owns CRED-205..212/216 configuration.
+	AffinityRules affinityrules.AffinityRuleSet
+
 	ClaimGate             billing.ClaimGate
 	QuotaReserver         quotaenforce.Reserver
 	RateTables            billing.RateTableSource
