@@ -1,6 +1,9 @@
 package mimicry
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // UTLS-03: per-account DB TLS-fingerprint profile -> ClientHelloTemplate.
 //
@@ -33,6 +36,12 @@ type ProfileFields struct {
 // the ClientHello — so the caller can fall back to the builtin per-mode template
 // rather than emit a broken handshake.
 func TemplateFromProfileFields(f ProfileFields) (*ClientHelloTemplate, error) {
+	// UTLS-05: name "preset:<browser>" -> uTLS 内置浏览器 ClientHello, 无需
+	// 手写 cipher 数组。运营建一个 name=preset:chrome 的 profile 即让绑定账号
+	// 走真实 Chrome 指纹 (经 UTLS-03 DB-profile 路消费)。
+	if preset, ok := strings.CutPrefix(f.Name, "preset:"); ok && strings.TrimSpace(preset) != "" {
+		return &ClientHelloTemplate{ModeName: f.Name, Preset: strings.TrimSpace(preset), GREASE: f.GreaseEnabled, JA3: f.ExpectedJA3Hash}, nil
+	}
 	if len(f.CipherSuites) == 0 || len(f.SupportedCurves) == 0 || len(f.TLSSupportedVersions) == 0 {
 		return nil, fmt.Errorf("mimicry: incomplete TLS profile (cipher_suites/curves/supported_versions required)")
 	}
