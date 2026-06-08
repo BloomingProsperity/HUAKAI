@@ -74,6 +74,7 @@ import (
 	provideropenaicodex "github.com/BloomingProsperity/HUAKAI/internal/provider/openai_codex"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
+	"github.com/BloomingProsperity/HUAKAI/internal/proxyhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
@@ -841,6 +842,18 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	)
 	pendingReconciler.Start(ctx)
 	rt.pendingReconcileStop = pendingReconciler.Stop
+
+	// PROXY-04: 代理池健康探测 worker, 带迟滞维护 status (active<->dead)。无此
+	// worker 时一个 flap 的代理会被永久 dead, 绑定它的账号 fail-closed 永不自愈;
+	// TCP 探活恢复后账号自动回来。随 ctx 取消停。
+	proxyHealthWorker := proxyhealth.NewWorker(
+		proxyhealth.NewPostgresLister(pgPool),
+		proxyhealth.NewTCPProber(5*time.Second),
+		proxyhealth.NewPostgresStatusStore(pgPool),
+		proxyhealth.DefaultInterval,
+		nil,
+	)
+	proxyHealthWorker.Start(ctx)
 
 	clientIPResolver, err := loadClientIPResolverFromEnv()
 	if err != nil {
