@@ -22,13 +22,17 @@ func TestAlertRuleAdminCRUD(t *testing.T) {
 	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
 	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
 
-	create := `{"tenant_id":7,"name":"request spike","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"critical","window_seconds":60}`
+	create := `{"tenant_id":7,"name":"request spike","metric":"gateway.requests","metric_type":"cpu_usage_percent","comparator":"gte","threshold":100,"severity":"critical","window_seconds":60,"sustained_seconds":120,"cooldown_seconds":300,"notify_email":true,"filters":{"model":"x"}}`
 	rec := serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-rules", []byte(create))
 	assertStatus(t, rec, http.StatusCreated)
 	var created ruleResponse
 	decodeJSON(t, rec, &created)
 	if created.ID <= 0 || created.TenantID != 7 || created.Name != "request spike" || !created.Enabled {
 		t.Fatalf("created=%+v want persisted enabled rule", created)
+	}
+	if created.MetricType != "cpu_usage_percent" || created.SustainedSeconds != 120 ||
+		created.CooldownSeconds != 300 || !created.NotifyEmail || created.Filters["model"] != "x" {
+		t.Fatalf("created enrichment=%+v want metric_type/sustained/cooldown/notify_email/filters", created)
 	}
 
 	rec = serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-rules?tenant_id=7", nil)
@@ -39,13 +43,13 @@ func TestAlertRuleAdminCRUD(t *testing.T) {
 		t.Fatalf("list=%+v want created rule id %d", list.Items, created.ID)
 	}
 
-	disabled := `{"enabled":false,"threshold":250}`
+	disabled := `{"enabled":false,"threshold":250,"filters":{"model":"y"}}`
 	rec = serveAlerting(t, svc, auth, http.MethodPut, "/v1/admin/alert-rules/"+strconv.FormatInt(created.ID, 10)+"?tenant_id=7", []byte(disabled))
 	assertStatus(t, rec, http.StatusOK)
 	var updated ruleResponse
 	decodeJSON(t, rec, &updated)
-	if updated.Enabled || updated.Threshold != 250 || updated.Name != "request spike" {
-		t.Fatalf("updated=%+v want disabled threshold 250 with name preserved", updated)
+	if updated.Enabled || updated.Threshold != 250 || updated.Name != "request spike" || updated.Filters["model"] != "y" {
+		t.Fatalf("updated=%+v want disabled threshold 250 with name preserved and filters updated", updated)
 	}
 
 	rec = serveAlerting(t, svc, auth, http.MethodDelete, "/v1/admin/alert-rules/"+strconv.FormatInt(created.ID, 10)+"?tenant_id=8", nil)
@@ -108,6 +112,17 @@ func TestAlertEventsAndSilencesAdmin(t *testing.T) {
 	if len(events.Items) != 1 || events.Items[0].RuleID != rule.ID || events.Items[0].State != "firing" {
 		t.Fatalf("events=%+v want one firing event for rule", events.Items)
 	}
+	if events.Items[0].ThresholdValue == nil || *events.Items[0].ThresholdValue != 100 ||
+		events.Items[0].MetricValue == nil || *events.Items[0].MetricValue != 150 {
+		t.Fatalf("event enrichment=%+v want threshold 100 metric 150", events.Items[0])
+	}
+	rec = serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-events/"+strconv.FormatInt(events.Items[0].ID, 10)+"/manual-resolve?tenant_id=7", nil)
+	assertStatus(t, rec, http.StatusOK)
+	var manual eventResponse
+	decodeJSON(t, rec, &manual)
+	if manual.State != "manual_resolved" || manual.ResolvedAt == nil {
+		t.Fatalf("manual event=%+v want manual_resolved with resolved_at", manual)
+	}
 	rec = serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-events?tenant_id=7&state=resolved", nil)
 	assertStatus(t, rec, http.StatusOK)
 	decodeJSON(t, rec, &events)
@@ -115,13 +130,14 @@ func TestAlertEventsAndSilencesAdmin(t *testing.T) {
 		t.Fatalf("resolved events=%+v want none", events.Items)
 	}
 
-	silenceBody := `{"tenant_id":7,"rule_id":` + strconv.FormatInt(rule.ID, 10) + `,"reason":"maintenance","starts_at":"2026-06-06T11:59:00Z","ends_at":"2026-06-06T12:30:00Z"}`
+	silenceBody := `{"tenant_id":7,"rule_id":` + strconv.FormatInt(rule.ID, 10) + `,"reason":"maintenance","starts_at":"2026-06-06T11:59:00Z","ends_at":"2026-06-06T12:30:00Z","platform":"p1","group_id":"g1","region":"us"}`
 	rec = serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-silences", []byte(silenceBody))
 	assertStatus(t, rec, http.StatusCreated)
 	var silence silenceResponse
 	decodeJSON(t, rec, &silence)
-	if silence.ID <= 0 || silence.RuleID == nil || *silence.RuleID != rule.ID {
-		t.Fatalf("silence=%+v want rule-specific silence", silence)
+	if silence.ID <= 0 || silence.RuleID == nil || *silence.RuleID != rule.ID ||
+		silence.Platform != "p1" || silence.GroupID != "g1" || silence.Region != "us" {
+		t.Fatalf("silence=%+v want rule-specific scoped silence", silence)
 	}
 
 	rec = serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-silences?tenant_id=7", nil)

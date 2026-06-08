@@ -17,6 +17,7 @@ type Service interface {
 	GetRule(context.Context, int64, int64) (alerting.AlertRule, error)
 	ListRules(context.Context, alerting.ListRulesInput) ([]alerting.AlertRule, error)
 	ListEvents(context.Context, alerting.ListEventsInput) ([]alerting.AlertEvent, error)
+	ManualResolveEvent(context.Context, int64, int64) (alerting.AlertEvent, error)
 	CreateSilence(context.Context, alerting.CreateSilenceInput) (alerting.AlertSilence, error)
 	DeleteSilence(context.Context, int64, int64) error
 	ListSilences(context.Context, alerting.ListSilencesInput) ([]alerting.AlertSilence, error)
@@ -38,6 +39,7 @@ func MountAdminRoutes(r chi.Router, deps AdminDeps) {
 	r.Put("/v1/admin/alert-rules/{id}", newRuleUpdateHandler(deps))
 	r.Delete("/v1/admin/alert-rules/{id}", newRuleDeleteHandler(deps))
 	r.Get("/v1/admin/alert-events", newEventListHandler(deps))
+	r.Post("/v1/admin/alert-events/{id}/manual-resolve", newEventManualResolveHandler(deps))
 	r.Get("/v1/admin/alert-silences", newSilenceListHandler(deps))
 	r.Post("/v1/admin/alert-silences", newSilenceCreateHandler(deps))
 	r.Delete("/v1/admin/alert-silences/{id}", newSilenceDeleteHandler(deps))

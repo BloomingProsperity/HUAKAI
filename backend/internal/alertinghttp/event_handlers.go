@@ -8,13 +8,17 @@ import (
 )
 
 type eventResponse struct {
-	ID            int64   `json:"id"`
-	TenantID      int64   `json:"tenant_id"`
-	RuleID        int64   `json:"rule_id"`
-	State         string  `json:"state"`
-	ObservedValue float64 `json:"observed_value"`
-	FiredAt       string  `json:"fired_at"`
-	ResolvedAt    *string `json:"resolved_at,omitempty"`
+	ID             int64             `json:"id"`
+	TenantID       int64             `json:"tenant_id"`
+	RuleID         int64             `json:"rule_id"`
+	State          string            `json:"state"`
+	ObservedValue  float64           `json:"observed_value"`
+	ThresholdValue *float64          `json:"threshold_value,omitempty"`
+	MetricValue    *float64          `json:"metric_value,omitempty"`
+	Dimensions     map[string]string `json:"dimensions,omitempty"`
+	FiredAt        string            `json:"fired_at"`
+	ResolvedAt     *string           `json:"resolved_at,omitempty"`
+	EmailSent      bool              `json:"email_sent"`
 }
 
 type eventListResponse struct {
@@ -63,6 +67,29 @@ func newEventListHandler(deps AdminDeps) http.HandlerFunc {
 	}
 }
 
+func newEventManualResolveHandler(deps AdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveAdmin(deps, w, r)
+		if !ok {
+			return
+		}
+		tenantID, ok := tenantFromQuery(w, r, ident)
+		if !ok {
+			return
+		}
+		id, ok := parsePathID(w, r, "event_id")
+		if !ok {
+			return
+		}
+		event, err := deps.Service.ManualResolveEvent(r.Context(), tenantID, id)
+		if err != nil {
+			writeAlertingError(w, err, "alert_event_manual_resolve_failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, eventFromValue(event))
+	}
+}
+
 func eventResponses(events []alerting.AlertEvent) []eventResponse {
 	out := make([]eventResponse, 0, len(events))
 	for _, event := range events {
@@ -73,12 +100,24 @@ func eventResponses(events []alerting.AlertEvent) []eventResponse {
 
 func eventFromValue(event alerting.AlertEvent) eventResponse {
 	return eventResponse{
-		ID:            event.ID,
-		TenantID:      event.TenantID,
-		RuleID:        event.RuleID,
-		State:         string(event.State),
-		ObservedValue: event.ObservedValue,
-		FiredAt:       formatTime(event.FiredAt),
-		ResolvedAt:    formatTimePtr(event.ResolvedAt),
+		ID:             event.ID,
+		TenantID:       event.TenantID,
+		RuleID:         event.RuleID,
+		State:          string(event.State),
+		ObservedValue:  event.ObservedValue,
+		ThresholdValue: float64Ptr(event.ThresholdValue),
+		MetricValue:    float64Ptr(event.MetricValue),
+		Dimensions:     event.Dimensions,
+		FiredAt:        formatTime(event.FiredAt),
+		ResolvedAt:     formatTimePtr(event.ResolvedAt),
+		EmailSent:      event.EmailSent,
 	}
+}
+
+func float64Ptr(in *float64) *float64 {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
 }

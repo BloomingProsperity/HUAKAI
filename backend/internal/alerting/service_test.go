@@ -239,6 +239,351 @@ func TestEvaluateRules_Idempotent(t *testing.T) {
 	}
 }
 
+func TestSustainedMinutes(t *testing.T) {
+	// MUTATION: ignore sustained_seconds and fire on the first breach; the 60s breach window creates a firing event too early.
+	ctx := context.Background()
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	now := base
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:         7,
+		Name:             "sustained cpu",
+		Metric:           "cpu_usage_percent",
+		MetricType:       MetricTypeCPUUsagePercent,
+		Comparator:       ComparatorGTE,
+		Threshold:        80,
+		Severity:         SeverityCritical,
+		WindowSeconds:    60,
+		SustainedSeconds: 120,
+	})
+
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"cpu_usage_percent": 95}); err != nil {
+		t.Fatalf("EvaluateRules initial breach: %v", err)
+	}
+	now = base.Add(60 * time.Second)
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"cpu_usage_percent": 96}); err != nil {
+		t.Fatalf("EvaluateRules 60s breach: %v", err)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents before sustained window: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events before sustained window=%+v want none", events)
+	}
+
+	now = base.Add(120 * time.Second)
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"cpu_usage_percent": 97}); err != nil {
+		t.Fatalf("EvaluateRules sustained breach: %v", err)
+	}
+	events, err = svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents sustained firing: %v", err)
+	}
+	if len(events) != 1 || events[0].MetricValue == nil || *events[0].MetricValue != 97 {
+		t.Fatalf("events after sustained window=%+v want one firing with latest metric value 97", events)
+	}
+
+	now = base
+	guardSvc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	mustCreateRule(t, guardSvc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "default immediate",
+		Metric:        "gateway.requests",
+		Comparator:    ComparatorGTE,
+		Threshold:     100,
+		Severity:      SeverityWarning,
+		WindowSeconds: 60,
+	})
+	if err := guardSvc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 150}); err != nil {
+		t.Fatalf("EvaluateRules default immediate: %v", err)
+	}
+	guardEvents, err := guardSvc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents default immediate: %v", err)
+	}
+	if len(guardEvents) != 1 {
+		t.Fatalf("default sustained=0 events=%+v want immediate firing", guardEvents)
+	}
+}
+
+func TestCooldownSuppression(t *testing.T) {
+	// MUTATION: ignore cooldown_seconds after a resolved event; a second breach inside the cooldown creates a duplicate firing event.
+	ctx := context.Background()
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	now := base
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:        7,
+		Name:            "cooldown requests",
+		Metric:          "gateway.requests",
+		Comparator:      ComparatorGTE,
+		Threshold:       100,
+		Severity:        SeverityCritical,
+		WindowSeconds:   60,
+		CooldownSeconds: 300,
+	})
+
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 150}); err != nil {
+		t.Fatalf("EvaluateRules first firing: %v", err)
+	}
+	now = base.Add(10 * time.Second)
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 50}); err != nil {
+		t.Fatalf("EvaluateRules recovery: %v", err)
+	}
+	now = base.Add(100 * time.Second)
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 175}); err != nil {
+		t.Fatalf("EvaluateRules cooldown breach: %v", err)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents inside cooldown: %v", err)
+	}
+	if len(events) != 1 || events[0].State != EventStateResolved {
+		t.Fatalf("events inside cooldown=%+v want only resolved first event", events)
+	}
+
+	now = base.Add(301 * time.Second)
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 180}); err != nil {
+		t.Fatalf("EvaluateRules after cooldown: %v", err)
+	}
+	events, err = svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents after cooldown: %v", err)
+	}
+	if len(events) != 1 || events[0].MetricValue == nil || *events[0].MetricValue != 180 {
+		t.Fatalf("events after cooldown=%+v want one new firing observed 180", events)
+	}
+}
+
+func TestEventThresholdDimensions(t *testing.T) {
+	// MUTATION: omit threshold_value, metric_value, or dimensions when creating a firing event; the event no longer explains why it fired.
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "model scoped usage",
+		Metric:        "usage.request_count",
+		Comparator:    ComparatorGTE,
+		Threshold:     80,
+		Severity:      SeverityWarning,
+		WindowSeconds: 60,
+		Filters:       map[string]string{"model": "x"},
+	})
+
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"usage.request_count": 95}); err != nil {
+		t.Fatalf("EvaluateRules scoped breach: %v", err)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents scoped breach: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events=%+v want one firing", events)
+	}
+	event := events[0]
+	if event.ThresholdValue == nil || *event.ThresholdValue != 80 {
+		t.Fatalf("threshold_value=%v want 80", event.ThresholdValue)
+	}
+	if event.MetricValue == nil || *event.MetricValue != 95 {
+		t.Fatalf("metric_value=%v want 95", event.MetricValue)
+	}
+	if event.Dimensions["model"] != "x" {
+		t.Fatalf("dimensions=%+v want model=x", event.Dimensions)
+	}
+}
+
+func TestEvaluateRulesFromSourcePassesFilters(t *testing.T) {
+	// MUTATION: always call the global metric source snapshot and ignore rule filters; the scoped source never receives model=x.
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	source := &scopedMetricSourceStub{
+		global: map[string]float64{"usage.request_count": 50},
+		scoped: map[string]float64{
+			"model=x": 95,
+		},
+	}
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "model x usage",
+		Metric:        "usage.request_count",
+		Comparator:    ComparatorGTE,
+		Threshold:     80,
+		Severity:      SeverityWarning,
+		WindowSeconds: 60,
+		Filters:       map[string]string{"model": "x"},
+	})
+
+	if err := svc.EvaluateRulesFromSource(ctx, 7, source); err != nil {
+		t.Fatalf("EvaluateRulesFromSource: %v", err)
+	}
+	if got := source.ScopedCalls(); len(got) != 1 || got[0]["model"] != "x" {
+		t.Fatalf("scoped calls=%+v want one model=x call", got)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 || events[0].MetricValue == nil || *events[0].MetricValue != 95 || events[0].Dimensions["model"] != "x" {
+		t.Fatalf("events=%+v want scoped firing metric=95 dimensions model=x", events)
+	}
+}
+
+func TestSilenceScope(t *testing.T) {
+	// MUTATION: ignore platform/group/region scope and treat a scoped silence as global; the p2 alert delivery is incorrectly suppressed.
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	deliverer := &recordingFiringDeliverer{}
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }), WithFiringDeliverer(deliverer))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "platform p1",
+		Metric:        "usage.request_count",
+		Comparator:    ComparatorGTE,
+		Threshold:     80,
+		Severity:      SeverityWarning,
+		WindowSeconds: 60,
+		Filters:       map[string]string{"platform": "p1"},
+	})
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "platform p2",
+		Metric:        "usage.request_count",
+		Comparator:    ComparatorGTE,
+		Threshold:     80,
+		Severity:      SeverityWarning,
+		WindowSeconds: 60,
+		Filters:       map[string]string{"platform": "p2"},
+	})
+	if _, err := svc.CreateSilence(ctx, CreateSilenceInput{
+		TenantID: 7,
+		Reason:   "p1 maintenance",
+		StartsAt: now.Add(-time.Minute),
+		EndsAt:   now.Add(time.Minute),
+		Platform: "p1",
+	}); err != nil {
+		t.Fatalf("CreateSilence: %v", err)
+	}
+
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"usage.request_count": 95}); err != nil {
+		t.Fatalf("EvaluateRules scoped silences: %v", err)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents scoped silences: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events=%+v want both firing events persisted", events)
+	}
+	notices := deliverer.Notices()
+	if len(notices) != 1 || notices[0].RuleName != "platform p2" {
+		t.Fatalf("deliveries=%+v want only platform p2 delivered", notices)
+	}
+}
+
+func TestManualResolvedEvent(t *testing.T) {
+	// MUTATION: resolve admin action writes regular resolved instead of manual_resolved; operators cannot distinguish recovery from manual closure.
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "manual resolve",
+		Metric:        "gateway.requests",
+		Comparator:    ComparatorGTE,
+		Threshold:     100,
+		Severity:      SeverityCritical,
+		WindowSeconds: 60,
+	})
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 150}); err != nil {
+		t.Fatalf("EvaluateRules firing: %v", err)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents firing: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events=%+v want one firing", events)
+	}
+
+	now = now.Add(time.Minute)
+	manual, err := svc.ManualResolveEvent(ctx, 7, events[0].ID)
+	if err != nil {
+		t.Fatalf("ManualResolveEvent: %v", err)
+	}
+	if manual.State != EventStateManualResolved || manual.ResolvedAt == nil || !manual.ResolvedAt.Equal(now) {
+		t.Fatalf("manual event=%+v want manual_resolved at %s", manual, now)
+	}
+}
+
+func TestFiringDeliveryMarksEmailSent(t *testing.T) {
+	// MUTATION: deliver the notification but never persist email_sent; operators cannot audit which firing produced outbound notification.
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	deliverer := &recordingFiringDeliverer{}
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }), WithFiringDeliverer(deliverer))
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "email marker",
+		Metric:        "gateway.requests",
+		Comparator:    ComparatorGTE,
+		Threshold:     100,
+		Severity:      SeverityCritical,
+		WindowSeconds: 60,
+		NotifyEmail:   true,
+	})
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 150}); err != nil {
+		t.Fatalf("EvaluateRules firing: %v", err)
+	}
+	events, err := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 || !events[0].EmailSent {
+		t.Fatalf("events=%+v want email_sent true after successful delivery", events)
+	}
+}
+
+func TestRootNotifyRateLimitSuppressesRepeatDelivery(t *testing.T) {
+	// MUTATION: ignore the root notify rate-limit window; a second firing inside the window calls the deliverer twice.
+	ctx := context.Background()
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	now := base
+	deliverer := &recordingFiringDeliverer{}
+	svc := NewService(
+		NewMemoryStore(),
+		WithClock(func() time.Time { return now }),
+		WithFiringDeliverer(deliverer),
+		WithFiringDeliveryRateLimit(5*time.Minute),
+	)
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID:      7,
+		Name:          "limited root notify",
+		Metric:        "gateway.requests",
+		Comparator:    ComparatorGTE,
+		Threshold:     100,
+		Severity:      SeverityCritical,
+		WindowSeconds: 60,
+	})
+
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 150}); err != nil {
+		t.Fatalf("EvaluateRules first firing: %v", err)
+	}
+	now = base.Add(30 * time.Second)
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 50}); err != nil {
+		t.Fatalf("EvaluateRules recovery: %v", err)
+	}
+	now = base.Add(time.Minute)
+	if err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 175}); err != nil {
+		t.Fatalf("EvaluateRules repeated firing: %v", err)
+	}
+	if got := deliverer.Count(); got != 1 {
+		t.Fatalf("deliveries=%d want one inside root notify limit window", got)
+	}
+}
+
 func TestFiringEdgeDeliversOnce(t *testing.T) {
 	// MUTATION: deliver on every evaluation instead of only a newly created firing edge; the deliverer call count becomes 2.
 	ctx := context.Background()
@@ -438,4 +783,40 @@ func (d *recordingFiringDeliverer) Notices() []FiringNotice {
 	out := make([]FiringNotice, len(d.notices))
 	copy(out, d.notices)
 	return out
+}
+
+type scopedMetricSourceStub struct {
+	global      map[string]float64
+	scoped      map[string]float64
+	scopedCalls []map[string]string
+}
+
+func (s *scopedMetricSourceStub) Snapshot(_ context.Context, _ int64) (map[string]float64, error) {
+	return cloneMetricSnapshot(s.global), nil
+}
+
+func (s *scopedMetricSourceStub) SnapshotForDimensions(_ context.Context, _ int64, dimensions map[string]string) (map[string]float64, error) {
+	s.scopedCalls = append(s.scopedCalls, normalizeStringMap(dimensions))
+	out := map[string]float64{}
+	for key, value := range s.scoped {
+		if dimensionsKey(dimensions) == key {
+			out["usage.request_count"] = value
+		}
+	}
+	return out, nil
+}
+
+func (s *scopedMetricSourceStub) ScopedCalls() []map[string]string {
+	out := make([]map[string]string, 0, len(s.scopedCalls))
+	for _, call := range s.scopedCalls {
+		out = append(out, normalizeStringMap(call))
+	}
+	return out
+}
+
+func dimensionsKey(dimensions map[string]string) string {
+	if dimensions["model"] != "" {
+		return "model=" + dimensions["model"]
+	}
+	return ""
 }

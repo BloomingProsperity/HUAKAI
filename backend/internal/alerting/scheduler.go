@@ -12,12 +12,20 @@ type RuleEvaluator interface {
 	EvaluateRules(context.Context, int64, map[string]float64) error
 }
 
+type SourceRuleEvaluator interface {
+	EvaluateRulesFromSource(context.Context, int64, MetricSource) error
+}
+
 type EnabledRuleTenantLister interface {
 	ListTenantsWithEnabledRules(context.Context) ([]int64, error)
 }
 
 type MetricSource interface {
 	Snapshot(context.Context, int64) (map[string]float64, error)
+}
+
+type DimensionMetricSource interface {
+	SnapshotForDimensions(context.Context, int64, map[string]string) (map[string]float64, error)
 }
 
 type SchedulerTicker interface {
@@ -94,6 +102,12 @@ func (s *Scheduler) evaluateOnce(ctx context.Context) {
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if evaluator, ok := s.evaluator.(SourceRuleEvaluator); ok {
+			if err := evaluator.EvaluateRulesFromSource(ctx, tenantID, s.metricSource); err != nil {
+				logIfLive(ctx, "alerting scheduler evaluation failed", err, "tenant_id", tenantID)
+			}
+			continue
 		}
 		snapshot, err := s.metricSource.Snapshot(ctx, tenantID)
 		if err != nil {

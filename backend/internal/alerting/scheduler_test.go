@@ -84,6 +84,39 @@ func TestScheduler_SkipsTenantsWithoutEnabledRules(t *testing.T) {
 	}
 }
 
+func TestScheduler_UsesSourceAwareEvaluatorWhenAvailable(t *testing.T) {
+	// MUTATION: always pre-snapshot and call EvaluateRules; source-aware evaluators cannot pass rule filters through to the metric source.
+	ticker := newFakeSchedulerTicker()
+	lister := &schedulerTenantListerStub{tenants: []int64{303}}
+	source := &schedulerMetricSourceStub{snapshots: map[int64]map[string]float64{
+		303: {"usage.request_count": 95},
+	}}
+	evaluator := newSchedulerSourceAwareEvaluatorStub()
+	scheduler := NewScheduler(SchedulerConfig{
+		Evaluator:    evaluator,
+		Store:        lister,
+		MetricSource: source,
+		NewTicker:    func(time.Duration) SchedulerTicker { return ticker },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- scheduler.Run(ctx) }()
+
+	ticker.tick()
+	evaluator.waitCalls(t, 1)
+	cancel()
+	waitSchedulerRunReturned(t, errCh)
+
+	if got := source.tenants(); len(got) != 0 {
+		t.Fatalf("global metric source tenants=%v want none before source-aware evaluator decides dimensions", got)
+	}
+	if got := evaluator.sourceCalls(); len(got) != 1 || got[0] != 303 {
+		t.Fatalf("source-aware calls=%+v want tenant 303", got)
+	}
+}
+
 func TestScheduler_StopsOnContextCancel(t *testing.T) {
 	// MUTATION: remove the ctx.Done select case; Run blocks forever and this test times out.
 	ticker := newFakeSchedulerTicker()
@@ -219,6 +252,29 @@ type schedulerEvaluatorStub struct {
 	mu     sync.Mutex
 	seen   []schedulerEvaluateCall
 	called chan struct{}
+}
+
+type schedulerSourceAwareEvaluatorStub struct {
+	*schedulerEvaluatorStub
+	sourceSeen []int64
+}
+
+func newSchedulerSourceAwareEvaluatorStub() *schedulerSourceAwareEvaluatorStub {
+	return &schedulerSourceAwareEvaluatorStub{schedulerEvaluatorStub: newSchedulerEvaluatorStub()}
+}
+
+func (s *schedulerSourceAwareEvaluatorStub) EvaluateRulesFromSource(_ context.Context, tenantID int64, _ MetricSource) error {
+	s.mu.Lock()
+	s.sourceSeen = append(s.sourceSeen, tenantID)
+	s.mu.Unlock()
+	s.called <- struct{}{}
+	return nil
+}
+
+func (s *schedulerSourceAwareEvaluatorStub) sourceCalls() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.sourceSeen...)
 }
 
 func newSchedulerEvaluatorStub() *schedulerEvaluatorStub {

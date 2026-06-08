@@ -25,6 +25,10 @@ type MetricSource interface {
 	Snapshot(context.Context, int64) (map[string]float64, error)
 }
 
+type DimensionMetricSource interface {
+	SnapshotForDimensions(context.Context, int64, map[string]string) (map[string]float64, error)
+}
+
 type RecentUsageRolluper interface {
 	RecentUsageRollup(context.Context, int64, time.Time) (RecentUsageRollup, error)
 }
@@ -66,10 +70,18 @@ func NewCompositeMetricSource(cfg CompositeMetricSourceConfig) *CompositeMetricS
 }
 
 func (s *CompositeMetricSource) Snapshot(ctx context.Context, tenantID int64) (map[string]float64, error) {
+	return s.snapshot(ctx, tenantID, nil)
+}
+
+func (s *CompositeMetricSource) SnapshotForDimensions(ctx context.Context, tenantID int64, dimensions map[string]string) (map[string]float64, error) {
+	return s.snapshot(ctx, tenantID, dimensions)
+}
+
+func (s *CompositeMetricSource) snapshot(ctx context.Context, tenantID int64, dimensions map[string]string) (map[string]float64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	snapshot, err := s.globalSnapshot(ctx, tenantID)
+	snapshot, err := s.globalSnapshot(ctx, tenantID, dimensions)
 	if err != nil {
 		return nil, err
 	}
@@ -92,9 +104,18 @@ func (s *CompositeMetricSource) Snapshot(ctx context.Context, tenantID int64) (m
 	return snapshot, nil
 }
 
-func (s *CompositeMetricSource) globalSnapshot(ctx context.Context, tenantID int64) (map[string]float64, error) {
+func (s *CompositeMetricSource) globalSnapshot(ctx context.Context, tenantID int64, dimensions map[string]string) (map[string]float64, error) {
 	if s == nil || s.globalSource == nil {
 		return map[string]float64{}, nil
+	}
+	if len(dimensions) > 0 {
+		if scoped, ok := s.globalSource.(DimensionMetricSource); ok {
+			snapshot, err := scoped.SnapshotForDimensions(ctx, tenantID, cloneDimensions(dimensions))
+			if err != nil {
+				return nil, err
+			}
+			return cloneSnapshot(snapshot), nil
+		}
 	}
 	snapshot, err := s.globalSource.Snapshot(ctx, tenantID)
 	if err != nil {
@@ -131,6 +152,14 @@ func overlayUsageMetrics(snapshot map[string]float64, rollup RecentUsageRollup, 
 
 func cloneSnapshot(in map[string]float64) map[string]float64 {
 	out := make(map[string]float64, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneDimensions(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
 	for key, value := range in {
 		out[key] = value
 	}

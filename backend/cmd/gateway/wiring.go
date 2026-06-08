@@ -255,10 +255,12 @@ func (d notifyFiringDeliverer) DeliverFiring(ctx context.Context, tenantID int64
 	return d.notifier.NotifyAlertFiring(ctx, tenantID, notify.AlertFiringInfo{
 		RuleName:      notice.RuleName,
 		Metric:        notice.Metric,
+		MetricType:    string(notice.MetricType),
 		Comparator:    string(notice.Comparator),
 		Threshold:     notice.Threshold,
 		Severity:      string(notice.Severity),
 		ObservedValue: notice.ObservedValue,
+		Dimensions:    notice.Dimensions,
 		FiredAt:       notice.FiredAt,
 	})
 }

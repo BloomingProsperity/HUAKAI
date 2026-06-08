@@ -13,6 +13,9 @@ type silenceCreateRequest struct {
 	Reason   string    `json:"reason"`
 	StartsAt time.Time `json:"starts_at"`
 	EndsAt   time.Time `json:"ends_at"`
+	Platform string    `json:"platform,omitempty"`
+	GroupID  string    `json:"group_id,omitempty"`
+	Region   string    `json:"region,omitempty"`
 }
 
 type silenceResponse struct {
@@ -22,6 +25,9 @@ type silenceResponse struct {
 	Reason    string `json:"reason"`
 	StartsAt  string `json:"starts_at"`
 	EndsAt    string `json:"ends_at"`
+	Platform  string `json:"platform,omitempty"`
+	GroupID   string `json:"group_id,omitempty"`
+	Region    string `json:"region,omitempty"`
 	CreatedAt string `json:"created_at"`
 }
 
@@ -52,6 +58,9 @@ func newSilenceCreateHandler(deps AdminDeps) http.HandlerFunc {
 			Reason:   body.Reason,
 			StartsAt: body.StartsAt,
 			EndsAt:   body.EndsAt,
+			Platform: body.Platform,
+			GroupID:  body.GroupID,
+			Region:   body.Region,
 		})
 		if err != nil {
 			writeAlertingError(w, err, "alert_silence_create_failed")
@@ -131,6 +140,9 @@ func silenceFromValue(silence alerting.AlertSilence) silenceResponse {
 		Reason:    silence.Reason,
 		StartsAt:  formatTime(silence.StartsAt),
 		EndsAt:    formatTime(silence.EndsAt),
+		Platform:  silence.Platform,
+		GroupID:   silence.GroupID,
+		Region:    silence.Region,
 		CreatedAt: formatTime(silence.CreatedAt),
 	}
 }

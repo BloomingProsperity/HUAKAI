@@ -60,13 +60,15 @@ type Event struct {
 }
 
 type AlertFiringInfo struct {
-	RuleName      string    `json:"rule_name"`
-	Metric        string    `json:"metric"`
-	Comparator    string    `json:"comparator"`
-	Threshold     float64   `json:"threshold"`
-	Severity      string    `json:"severity"`
-	ObservedValue float64   `json:"observed_value"`
-	FiredAt       time.Time `json:"fired_at"`
+	RuleName      string            `json:"rule_name"`
+	Metric        string            `json:"metric"`
+	MetricType    string            `json:"metric_type,omitempty"`
+	Comparator    string            `json:"comparator"`
+	Threshold     float64           `json:"threshold"`
+	Severity      string            `json:"severity"`
+	ObservedValue float64           `json:"observed_value"`
+	Dimensions    map[string]string `json:"dimensions,omitempty"`
+	FiredAt       time.Time         `json:"fired_at"`
 }
 
 type Store interface {

@@ -87,6 +87,10 @@ func (ExpvarMetricSource) Snapshot(ctx context.Context, _ int64) (map[string]flo
 	return out, nil
 }
 
+func (s ExpvarMetricSource) SnapshotForDimensions(ctx context.Context, tenantID int64, _ map[string]string) (map[string]float64, error) {
+	return s.Snapshot(ctx, tenantID)
+}
+
 func bridgeCounters() []bridgeCounter {
 	return []bridgeCounter{
 		{
