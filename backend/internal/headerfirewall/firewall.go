@@ -161,3 +161,45 @@ func (r headerRule) matches(normalizedName string) bool {
 func normalize(value string) string {
 	return strings.ToLower(http.CanonicalHeaderKey(strings.TrimSpace(value)))
 }
+
+// egressLeakRequestRules are proxy/forwarding/CDN headers that must NEVER leak to
+// upstream on the OUTBOUND request — they trivially identify the gateway as a
+// relay/proxy to upstream WAFs (Cloudflare/Akamai). Auth headers (Authorization,
+// X-API-Key, Anthropic-*) are deliberately NOT included.
+var egressLeakRequestRules = []headerRule{
+	exactRule("X-Forwarded-For"),
+	exactRule("X-Forwarded-Host"),
+	exactRule("X-Forwarded-Proto"),
+	exactRule("X-Forwarded-Port"),
+	exactRule("X-Real-IP"),
+	exactRule("Forwarded"),
+	exactRule("Via"),
+	exactRule("Proxy-Connection"),
+	exactRule("CF-Connecting-IP"),
+	exactRule("True-Client-IP"),
+	exactRule("X-Cloud-Trace-Context"),
+	prefixRule("CF-"),
+	prefixRule("X-Amzn-"),
+	prefixRule("X-Amz-Cf-"),
+}
+
+// NormalizeEgressRequestHeaders strips proxy/forwarding/CDN-leak headers from the
+// OUTBOUND upstream request so the gateway is not trivially fingerprinted as a
+// relay by upstream WAFs. Egress anti-detection hygiene; safe for ALL paths (these
+// headers are never required by upstream and never carry auth). Parity with
+// CLIProxyAPI / sub2api / AIClient-2-API egress header normalization.
+func NormalizeEgressRequestHeaders(h http.Header) {
+	if h == nil {
+		return
+	}
+	for name := range h {
+		lk := strings.ToLower(name)
+		for _, rule := range egressLeakRequestRules {
+			rv := strings.ToLower(rule.value)
+			if (rule.prefix && strings.HasPrefix(lk, rv)) || (!rule.prefix && lk == rv) {
+				h.Del(name)
+				break
+			}
+		}
+	}
+}
