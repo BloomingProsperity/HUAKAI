@@ -29,7 +29,8 @@ const orderSelectColumns = `
 	created_by_admin_id, confirmed_by_admin_id, COALESCE(confirm_reason, ''),
 	COALESCE(failure_code, ''), COALESCE(failure_message, ''),
 	created_at, updated_at, expires_at, paid_at, recharging_at, completed_at, failed_at,
-	order_kind, subscription_plan_id`
+	order_kind, subscription_plan_id,
+	COALESCE(terms_version, ''), terms_accepted_at, terms_accepted_by, COALESCE(host(terms_accepted_ip), '')`
 
 // PostgresStore 支付权威存储。
 type PostgresStore struct {
@@ -702,13 +703,16 @@ func insertOrderTx(ctx context.Context, tx pgx.Tx, rec createOrderRecord) (Order
 INSERT INTO payment_orders (
 	tenant_id, user_id, out_trade_no, amount_cents, currency_code, status,
 	provider_kind, provider_order_ref, request_fingerprint, created_by_admin_id,
-	created_at, updated_at, expires_at, order_kind, subscription_plan_id
-) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $10, $11, $12, $13)
+	created_at, updated_at, expires_at, order_kind, subscription_plan_id,
+	terms_version, terms_accepted_at, terms_accepted_by, terms_accepted_ip
+) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $10, $11, $12, $13, $14, $15, $16, $17::inet)
 RETURNING`+orderSelectColumns,
 		rec.TenantID, rec.UserID, rec.OutTradeNo, rec.AmountCents, rec.CurrencyCode,
 		string(providerKindOrDefault(rec.ProviderKind)), nullableText(rec.ProviderOrderRef),
 		nullableText(rec.RequestFingerprint), nullableInt64(rec.CreatedByAdminID), rec.Now, rec.ExpiresAt,
-		orderKindOrDefault(rec.OrderKind), rec.SubscriptionPlanID)
+		orderKindOrDefault(rec.OrderKind), rec.SubscriptionPlanID,
+		nullableText(rec.ComplianceTermsVersion), rec.ComplianceAcceptedAt, nullableInt64(rec.ComplianceAcceptedBy),
+		nullableText(rec.ComplianceAcceptedIP))
 	return scanOrder(row)
 }
 
@@ -851,8 +855,8 @@ type rowScanner interface {
 func scanOrder(row rowScanner) (Order, error) {
 	var o Order
 	var status, providerKind string
-	var createdBy, confirmedBy, subPlanID sql.NullInt64
-	var expiresAt, paidAt, rechargingAt, completedAt, failedAt sql.NullTime
+	var createdBy, confirmedBy, subPlanID, complianceAcceptedBy sql.NullInt64
+	var expiresAt, paidAt, rechargingAt, completedAt, failedAt, complianceAcceptedAt sql.NullTime
 	if err := row.Scan(
 		&o.ID, &o.TenantID, &o.UserID, &o.OutTradeNo, &o.AmountCents, &o.CurrencyCode, &status, &providerKind,
 		&o.ProviderOrderRef, &o.RequestFingerprint,
@@ -860,6 +864,7 @@ func scanOrder(row rowScanner) (Order, error) {
 		&o.FailureCode, &o.FailureMessage,
 		&o.CreatedAt, &o.UpdatedAt, &expiresAt, &paidAt, &rechargingAt, &completedAt, &failedAt,
 		&o.OrderKind, &subPlanID,
+		&o.ComplianceTermsVersion, &complianceAcceptedAt, &complianceAcceptedBy, &o.ComplianceAcceptedIP,
 	); err != nil {
 		return Order{}, err
 	}
@@ -875,6 +880,9 @@ func scanOrder(row rowScanner) (Order, error) {
 	if confirmedBy.Valid {
 		o.ConfirmedByAdminID = confirmedBy.Int64
 	}
+	if complianceAcceptedBy.Valid {
+		o.ComplianceAcceptedBy = complianceAcceptedBy.Int64
+	}
 	o.CreatedAt = o.CreatedAt.UTC()
 	o.UpdatedAt = o.UpdatedAt.UTC()
 	o.ExpiresAt = nullTimeToPtr(expiresAt)
@@ -882,6 +890,7 @@ func scanOrder(row rowScanner) (Order, error) {
 	o.RechargingAt = nullTimeToPtr(rechargingAt)
 	o.CompletedAt = nullTimeToPtr(completedAt)
 	o.FailedAt = nullTimeToPtr(failedAt)
+	o.ComplianceAcceptedAt = nullTimeToPtr(complianceAcceptedAt)
 	return o, nil
 }
 

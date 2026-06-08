@@ -67,13 +67,18 @@ type Order struct {
 	FailureMessage     string
 	OrderKind          string // OrderKindTopup / OrderKindSubscription
 	SubscriptionPlanID *int64 // 订阅单指向套餐; 充值单为 nil
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	ExpiresAt          *time.Time
-	PaidAt             *time.Time
-	RechargingAt       *time.Time
-	CompletedAt        *time.Time
-	FailedAt           *time.Time
+	// Compliance* 是用户充值合规确认的纯记录字段; 不参与订单状态机 / 入账金额裁决。
+	ComplianceTermsVersion string
+	ComplianceAcceptedAt   *time.Time
+	ComplianceAcceptedBy   int64
+	ComplianceAcceptedIP   string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ExpiresAt              *time.Time
+	PaidAt                 *time.Time
+	RechargingAt           *time.Time
+	CompletedAt            *time.Time
+	FailedAt               *time.Time
 }
 
 // 订单种类 (与 payment_orders.order_kind CHECK 对齐, 0075 加)。
@@ -138,6 +143,11 @@ type CreateOrderInput struct {
 	// OrderKind 缺省 topup; subscription 时 SubscriptionPlanID 必填。
 	OrderKind          string
 	SubscriptionPlanID *int64
+	// Compliance* 可选记录用户确认的条款版本 / 时间 / 用户 / IP; 空值按 NULL 持久化。
+	ComplianceTermsVersion string
+	ComplianceAcceptedAt   *time.Time
+	ComplianceAcceptedBy   int64
+	ComplianceAcceptedIP   string
 }
 
 // CreateOrderResult 建单结果。Idempotent=true 表示同 out_trade_no 重放命中已有单。
