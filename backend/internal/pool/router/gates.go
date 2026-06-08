@@ -56,20 +56,22 @@ type GroupPolicyGate interface{ Gate }
 type ExclusionGate interface{ Gate }
 type PinnedAccountGate interface{ Gate }
 type WindowCostGateIface interface{ Gate }
+type SessionCountGateIface interface{ Gate }
 
 type GateChain struct {
-	Tenant      TenantGate
-	Lifecycle   LifecycleGate
-	Channel     ChannelGate
-	Protocol    ProtocolFamilyGate
-	Model       ModelSupportGate
-	Capability  CapabilityGate
-	Credential  CredentialGate
-	Health      HealthGate
-	GroupPolicy GroupPolicyGate
-	Exclusion   ExclusionGate
-	Pinned      PinnedAccountGate
-	WindowCost  WindowCostGateIface
+	Tenant       TenantGate
+	Lifecycle    LifecycleGate
+	Channel      ChannelGate
+	Protocol     ProtocolFamilyGate
+	Model        ModelSupportGate
+	Capability   CapabilityGate
+	Credential   CredentialGate
+	Health       HealthGate
+	GroupPolicy  GroupPolicyGate
+	Exclusion    ExclusionGate
+	Pinned       PinnedAccountGate
+	WindowCost   WindowCostGateIface
+	SessionCount SessionCountGateIface
 }
 
 func DefaultGateChain() GateChain {
@@ -79,6 +81,8 @@ func DefaultGateChain() GateChain {
 		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{}, Pinned: pinnedAccountGate{},
 		// WindowCost defaults to nil; WithWindowCostGate sets it. nil == AllowAll (fail-open).
 		WindowCost: WindowCostGate{},
+		// SessionCount defaults to nil registry; fail-open.
+		SessionCount: SessionCountGate{},
 	}
 }
 
@@ -119,6 +123,7 @@ func (c GateChain) ForSelection(ctx context.Context, req SelectionRequest) GateC
 	c.Exclusion = prepareGate(ctx, c.Exclusion, req)
 	c.Pinned = prepareGate(ctx, c.Pinned, req)
 	c.WindowCost = prepareGate(ctx, c.WindowCost, req)
+	c.SessionCount = prepareGate(ctx, c.SessionCount, req)
 	return c
 }
 
@@ -169,6 +174,9 @@ func (c GateChain) withDefaults() GateChain {
 	if c.WindowCost == nil {
 		c.WindowCost = d.WindowCost
 	}
+	if c.SessionCount == nil {
+		c.SessionCount = d.SessionCount
+	}
 	return c
 }
 
@@ -187,6 +195,7 @@ func (c GateChain) ordered() []namedGate {
 		{c.Exclusion, GateFailurePerRequestExclusion},
 		{c.Pinned, GateFailurePinnedAccount},
 		{c.WindowCost, GateFailureWindowCost},
+		{c.SessionCount, GateFailureSessionCount},
 	}
 }
 

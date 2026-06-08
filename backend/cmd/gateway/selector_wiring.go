@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 )
@@ -52,6 +53,7 @@ func buildSelector(
 	selectorCfg *config.PoolSelectorConfig,
 	healthService *channelhealth.Service,
 	windowCostReader windowcost.CostReader,
+	sessionCapRegistry *sessioncap.Registry,
 	logger *zap.Logger,
 ) (pool.Selector, func(), error) {
 	if selectorCfg == nil {
@@ -65,7 +67,7 @@ func buildSelector(
 	// gate 链构造抽到 buildGroupRoutingGates 便于直接单测生产激活接线 (否则漏接订阅
 	// gate 静默退回 AllowAll 无测可抓)。同一 gates 值流入 default selector + actual/shadow PASR,
 	// 一处接线覆盖全 5 mode。
-	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, logger)
+	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, sessionCapRegistry, logger)
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
@@ -153,7 +155,7 @@ func buildSelector(
 // 必红 (TestBuildGroupRoutingGates_WiresRealGroupPolicyGate)。
 // observer: routes repo 不可用 / 查询失败时 fail-open 保可用性并累计 metric + WARN;
 // 明确硬拒路径保留 fail-closed observer 接口, transient 控制面问题不误拒付费用户。
-func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, windowCostReader windowcost.CostReader, logger *zap.Logger) pool.GateChain {
+func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, windowCostReader windowcost.CostReader, sessionCapRegistry *sessioncap.Registry, logger *zap.Logger) pool.GateChain {
 	gates := pool.DefaultGateChain()
 	if healthService != nil {
 		gates.Health = channelhealth.NewServicePoolGate(healthService, nil)
@@ -166,5 +168,8 @@ func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthSer
 	// SUB2-EGRESS-03: per-account 5h window spend cap gate.
 	// windowCostReader nil → WindowCostGate is fail-open (AllowAll equivalent).
 	gates.WindowCost = pool.WindowCostGate{Reader: windowCostReader}
+	// SUB2-EGRESS-02: per-account max concurrent sessions cap gate.
+	// sessionCapRegistry nil -> SessionCountGate is fail-open.
+	gates.SessionCount = pool.SessionCountGate{Registry: sessionCapRegistry}
 	return gates
 }

@@ -82,11 +82,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/retrybudget"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphealth"
-	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpresolve"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
@@ -98,6 +98,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
+	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 )
 
 // deps is the live dependency tree handlers receive after run() boots.
@@ -186,6 +187,7 @@ type deps struct {
 	metricsHandler           http.Handler
 	otelShutdown             func(context.Context) error
 	usageRetentionWorker     *usageretention.Worker
+	sessionCapRegistry       *sessioncap.Registry
 }
 
 type refundReceiptAppender interface {
@@ -747,7 +749,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// SUB2-EGRESS-03: construct window cost cache before selector so the gate
 	// can reference it on startup. Worker is started after selector is ready.
 	windowCostCache := windowcost.NewCache()
-	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, logger)
+	// SUB2-EGRESS-02: per-account max concurrent sessions cap registry.
+	sessionCapRegistry := sessioncap.NewRegistry(0)
+	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, sessionCapRegistry, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build selector: %w", err)
 	}
@@ -942,6 +946,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		billingPolicyStore:    billingPolicyStore,
 		billingPolicyResolver: billingPolicyResolver,
 		selector:              selector,
+		sessionCapRegistry:    sessionCapRegistry,
 		channelHealth:         channelHealthService,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool))),

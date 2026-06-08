@@ -617,6 +617,11 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	ex.selRes = selRes
 	ex.acquiredAccountID = selRes.AccountID
 	ex.acquisitionToken = selRes.AcquisitionToken
+	// SUB2-EGRESS-02: register the session against the acquired account so
+	// the SessionCountGate has an up-to-date view on the next selection.
+	if ex.d.SessionCapRegistry != nil && ex.sessionHash != "" {
+		ex.d.SessionCapRegistry.Register(ex.acquiredAccountID, ex.sessionHash)
+	}
 	return nil
 }
 
