@@ -353,3 +353,24 @@ func optionsJSON(options CeremonyOptions) json.RawMessage {
 	}
 	return json.RawMessage(options)
 }
+
+// AdminClearCredentials force-removes ALL of a user's passkeys for admin account
+// recovery, reusing the owner-scoped list+delete primitives; returns the count
+// cleared. AUTH-098.
+func (s *Service) AdminClearCredentials(ctx context.Context, tenantID, userID int64) (int, error) {
+	summaries, err := s.ListCredentials(ctx, tenantID, userID)
+	if err != nil {
+		return 0, err
+	}
+	cleared := 0
+	for _, c := range summaries {
+		if err := s.DeleteCredential(ctx, DeleteCredentialInput{TenantID: tenantID, UserID: userID, ID: c.ID}); err != nil {
+			if err == ErrCredentialNotFound {
+				continue
+			}
+			return cleared, err
+		}
+		cleared++
+	}
+	return cleared, nil
+}
