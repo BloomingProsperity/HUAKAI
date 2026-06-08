@@ -24,14 +24,15 @@ type stubService struct {
 	getCalls    []struct{ tenantID, userID, apiKeyID int64 }
 	revokeCalls []userkey.RevokeRequest
 
-	issueReturn  userkey.IssueResult
-	issueErr     error
-	listReturn   []userkey.KeyDescriptor
-	listErr      error
-	getReturn    userkey.KeyDescriptor
-	getErr       error
-	revokeReturn userkey.RevokeResult
-	revokeErr    error
+	issueReturn   userkey.IssueResult
+	issueErr      error
+	listReturn    []userkey.KeyDescriptor
+	listErr       error
+	getReturn     userkey.KeyDescriptor
+	getErr        error
+	revokeReturn  userkey.RevokeResult
+	revokeErr     error
+	revokeErrByID map[int64]error
 }
 
 func (s *stubService) Issue(ctx context.Context, req userkey.IssueRequest) (userkey.IssueResult, error) {
@@ -48,6 +49,11 @@ func (s *stubService) Get(ctx context.Context, tenantID, userID, apiKeyID int64)
 }
 func (s *stubService) Revoke(ctx context.Context, req userkey.RevokeRequest) (userkey.RevokeResult, error) {
 	s.revokeCalls = append(s.revokeCalls, req)
+	if s.revokeErrByID != nil {
+		if err, ok := s.revokeErrByID[req.APIKeyID]; ok {
+			return userkey.RevokeResult{}, err
+		}
+	}
 	return s.revokeReturn, s.revokeErr
 }
 
@@ -383,5 +389,48 @@ func TestErrorMappingFallthrough(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("unknown err: want 503; got %d", rec.Code)
+	}
+}
+
+// KEY-028. MUTATION: handler passing TenantID:0 (dropping session scope) makes the
+// revokeCalls fail the owner-scope assertion; treating ErrNotFound as fatal makes
+// the status/not_found assertion fail; only-first-id makes len(revoked)!=2.
+func TestBatchRevokeOwnerScopedWithNotFound(t *testing.T) {
+	svc := &stubService{
+		revokeReturn:  userkey.RevokeResult{},
+		revokeErrByID: map[int64]error{99: userkey.ErrNotFound},
+	}
+	ident := sessionauth.SessionIdentity{TenantID: 7, UserID: 42}
+	router := mountWithSession(t, svc, ident, true)
+
+	body := strings.NewReader(`{"ids":[1,2,99],"reason":"cleanup"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/api-keys/batch-revoke", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Revoked  []int64 `json:"revoked"`
+		NotFound []int64 `json:"not_found"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if len(out.Revoked) != 2 {
+		t.Fatalf("revoked=%v want 2 entries", out.Revoked)
+	}
+	if len(out.NotFound) != 1 || out.NotFound[0] != 99 {
+		t.Fatalf("not_found=%v want [99]", out.NotFound)
+	}
+	if len(svc.revokeCalls) != 3 {
+		t.Fatalf("revokeCalls=%d want 3", len(svc.revokeCalls))
+	}
+	for _, c := range svc.revokeCalls {
+		if c.TenantID != 7 || c.UserID != 42 {
+			t.Fatalf("revoke call scope=(%d,%d) want (7,42) — owner scope dropped", c.TenantID, c.UserID)
+		}
 	}
 }

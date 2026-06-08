@@ -42,6 +42,7 @@ func MountUserAPIKeyRoutes(r chi.Router, d Deps) {
 	r.Get("/", newListHandler(d))
 	r.Get("/{id}", newGetHandler(d))
 	r.Delete("/{id}", newRevokeHandler(d))
+	r.Post("/batch-revoke", newBatchRevokeHandler(d))
 }
 
 // ---- request / response DTO ----
@@ -349,5 +350,61 @@ func writeUserKeyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "userkey_service_unavailable", "user api key service unavailable")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "userkey_backend_error", "user api key backend transient failure")
+	}
+}
+
+type batchRevokeRequest struct {
+	IDs    []int64 `json:"ids"`
+	Reason string  `json:"reason"`
+}
+
+// newBatchRevokeHandler revokes many of the caller's own keys in one request.
+// Each id goes through the SAME idempotent owner-scoped Service.Revoke; a foreign
+// or missing id (ErrNotFound) lands in not_found (anti-enumeration, never another
+// tenant's key) instead of failing the batch. KEY-028.
+func newBatchRevokeHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d)
+		if !ok {
+			return
+		}
+		var req batchRevokeRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		if len(req.IDs) == 0 || len(req.IDs) > 200 {
+			writeError(w, http.StatusBadRequest, "invalid_ids", "ids must contain between 1 and 200 entries")
+			return
+		}
+		reqID := requestIDFromReq(r)
+		revoked := make([]int64, 0, len(req.IDs))
+		notFound := make([]int64, 0)
+		seen := make(map[int64]bool, len(req.IDs))
+		for _, id := range req.IDs {
+			if id <= 0 || seen[id] {
+				continue
+			}
+			seen[id] = true
+			_, err := d.Service.Revoke(r.Context(), userkey.RevokeRequest{
+				TenantID:  ident.TenantID,
+				UserID:    ident.UserID,
+				APIKeyID:  id,
+				Reason:    req.Reason,
+				RequestID: reqID,
+			})
+			if err != nil {
+				if errors.Is(err, userkey.ErrNotFound) {
+					notFound = append(notFound, id)
+					continue
+				}
+				writeUserKeyError(w, err)
+				return
+			}
+			revoked = append(revoked, id)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"revoked": revoked, "not_found": notFound})
 	}
 }
