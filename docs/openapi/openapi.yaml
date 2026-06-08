@@ -7742,6 +7742,30 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/ServiceBusy" }
 
+  /admin/v1/users/{id}/group:
+    parameters:
+      - $ref: "#/components/parameters/ResourceId"
+    put:
+      tags: [admin-users]
+      summary: Set a tenant user routing group (entitlement)
+      operationId: adminSetUserGroup
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [group], properties: { group: { type: string, minLength: 1, maxLength: 64 } } }
+      responses:
+        "200":
+          description: Group updated.
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer, format: int64 }, user_group: { type: string } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceBusy" }
+
   /admin/v1/users/{id}/account-bindings/{provider}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
