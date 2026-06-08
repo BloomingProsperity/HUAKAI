@@ -27,12 +27,14 @@ const (
 )
 
 type Deps struct {
-	Auth        adminAuth
-	Store       userReadStore
-	SocialLinks socialLinkService
-	UnlockAudit userUnlockAuditStore
-	Unlocker    userUnlockService
-	Audit       adminAuditStore
+	Auth            adminAuth
+	Store           userReadStore
+	SocialLinks     socialLinkService
+	UnlockAudit     userUnlockAuditStore
+	Unlocker        userUnlockService
+	Audit           adminAuditStore
+	TwoFADisabler   twoFADisableService
+	PasskeyResetter passkeyResetService
 }
 
 type adminAuth interface {
@@ -60,6 +62,14 @@ type userUnlockAuditStore interface {
 
 type adminAuditStore interface {
 	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
+}
+
+type twoFADisableService interface {
+	Disable(ctx context.Context, tenantID, userID int64) error
+}
+
+type passkeyResetService interface {
+	AdminClearCredentials(ctx context.Context, tenantID, userID int64) (int, error)
 }
 
 type unlockAuditInput struct {
@@ -117,6 +127,8 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/2fa-adoption-stats", newTwoFAStatsHandler(d))
 	r.Get("/{id}", newGetHandler(d))
 	r.Post("/{id}/unlock", newUnlockHandler(d))
+	r.Post("/{id}/2fa/force-disable", newForceDisable2FAHandler(d))
+	r.Delete("/{id}/passkeys", newResetPasskeyHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
 	r.Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
@@ -574,4 +586,81 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func timestamp(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
+}
+
+// newForceDisable2FAHandler lets a tenant operator force-clear a locked-out user's
+// TOTP 2FA (account recovery), mirroring newUnlockHandler. Tenant-scoped + audited
+// (action=force_disable_2fa). AUTH-108b.
+func newForceDisable2FAHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
+		if !ok {
+			return
+		}
+		userID, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		if d.TwoFADisabler == nil || d.Audit == nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin 2fa mutation dependency unset")
+			return
+		}
+		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{TenantID: tenantID, UserID: userID}); errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
+			return
+		}
+		if err := d.TwoFADisabler.Disable(r.Context(), tenantID, userID); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_2fa_disable_failed", fmt.Sprintf("force disable 2fa failed: %v", err))
+			return
+		}
+		ai := buildUnlockAuditInput(r, ident, "")
+		audit := admindb.InsertAdminAuditEventParams{TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole, Action: "force_disable_2fa", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID}
+		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write 2fa audit failed: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "two_factor_enabled": false})
+	}
+}
+
+// newResetPasskeyHandler force-clears ALL of a user's passkeys (admin account
+// recovery), mirroring newForceDisable2FAHandler. Tenant-scoped + audited
+// (action=reset_passkey). AUTH-098.
+func newResetPasskeyHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
+		if !ok {
+			return
+		}
+		userID, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		if d.PasskeyResetter == nil || d.Audit == nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin passkey mutation dependency unset")
+			return
+		}
+		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{TenantID: tenantID, UserID: userID}); errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
+			return
+		}
+		cleared, err := d.PasskeyResetter.AdminClearCredentials(r.Context(), tenantID, userID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_passkey_reset_failed", fmt.Sprintf("reset passkeys failed: %v", err))
+			return
+		}
+		ai := buildUnlockAuditInput(r, ident, "")
+		audit := admindb.InsertAdminAuditEventParams{TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole, Action: "reset_passkey", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID}
+		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write passkey audit failed: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "cleared": cleared})
+	}
 }

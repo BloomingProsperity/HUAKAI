@@ -7679,6 +7679,38 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/ServiceBusy" }
 
+  /admin/v1/users/{id}/passkeys:
+    parameters:
+      - $ref: "#/components/parameters/ResourceId"
+    delete:
+      tags: [admin-users]
+      summary: Force-clear all of a tenant user passkeys for account recovery
+      operationId: adminResetUserPasskeys
+      description: |
+        Tenant-scoped admin recovery action that removes every passkey
+        credential for a locked-out user and writes a reset_passkey admin
+        audit event. Cross-tenant ids return 404 (anti-enumeration).
+      x-huakai-spec-source:
+        - backend/internal/adminuserhttp/routes.go
+        - backend/internal/passkey/service.go
+      x-huakai-required-role: tenant_operator
+      responses:
+        "200":
+          description: Passkeys cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, cleared]
+                properties:
+                  id: { type: integer, format: int64 }
+                  cleared: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceBusy" }
+
   /admin/v1/users/{id}/account-bindings/{provider}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'

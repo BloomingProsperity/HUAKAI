@@ -540,3 +540,55 @@ func TestAdminForceDisable2FAUnknownUser404BeforeMutation(t *testing.T) {
 		t.Fatalf("unknown user touched mutation deps: disabler=%+v audit=%+v", disabler, audit)
 	}
 }
+
+type passkeyResetStub struct {
+	calls    int
+	tenantID int64
+	userID   int64
+	cleared  int
+	err      error
+}
+
+func (s *passkeyResetStub) AdminClearCredentials(_ context.Context, tenantID, userID int64) (int, error) {
+	s.calls++
+	s.tenantID, s.userID = tenantID, userID
+	return s.cleared, s.err
+}
+
+func TestAdminResetPasskeyTenantScopedAudited(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	resetter := &passkeyResetStub{cleared: 3}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, PasskeyResetter: resetter, Audit: audit}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
+	assertStatus(t, rec, http.StatusOK)
+	if resetter.calls != 1 || resetter.tenantID != 7 || resetter.userID != 101 {
+		t.Fatalf("reset call mismatch: calls=%d tenant=%d user=%d", resetter.calls, resetter.tenantID, resetter.userID)
+	}
+	if audit.calls != 1 || audit.arg.Action != "reset_passkey" || audit.arg.TargetType != "user" {
+		t.Fatalf("audit mismatch: %+v", audit.arg)
+	}
+	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
+		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	}
+}
+
+func TestAdminResetPasskeyRequiresAdmin(t *testing.T) {
+	resetter := &passkeyResetStub{}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, PasskeyResetter: resetter, Audit: audit}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
+	assertStatus(t, rec, http.StatusUnauthorized)
+	if resetter.calls != 0 || audit.calls != 0 {
+		t.Fatalf("unauthorized reset touched deps: resetter=%+v audit=%+v", resetter, audit)
+	}
+}
+
+func TestAdminResetPasskeyUnknownUser404BeforeMutation(t *testing.T) {
+	store := &usersStoreStub{getErr: pgx.ErrNoRows}
+	resetter := &passkeyResetStub{}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, PasskeyResetter: resetter, Audit: audit}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
+	assertStatus(t, rec, http.StatusNotFound)
+	if resetter.calls != 0 || audit.calls != 0 {
+		t.Fatalf("unknown user touched mutation deps: resetter=%+v audit=%+v", resetter, audit)
+	}
+}

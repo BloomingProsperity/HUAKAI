@@ -718,13 +718,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	adminUserDeps := adminuserhttp.Deps{
-		Auth:          d.adminAuth,
-		Store:         d.adminQueries,
-		SocialLinks:   d.userAuth,
-		UnlockAudit:   adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
-		TwoFADisabler: d.twoFactor,
-		Unlocker:      d.userAuth,
-		Audit:         d.adminQueries,
+		Auth:            d.adminAuth,
+		Store:           d.adminQueries,
+		SocialLinks:     d.userAuth,
+		UnlockAudit:     adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
+		TwoFADisabler:   d.twoFactor,
+		PasskeyResetter: d.passkeys,
+		Unlocker:        d.userAuth,
+		Audit:           d.adminQueries,
 	}
 	r.Get("/admin/v1/users", adminuserhttp.NewListHandler(adminUserDeps))
 	r.Route("/admin/v1/users", func(r chi.Router) {
