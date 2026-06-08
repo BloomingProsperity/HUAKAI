@@ -470,3 +470,73 @@ func tenantOperator(tenantID int64) admin.AdminIdentity {
 func pgTimestamp(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
 }
+
+type twoFADisableStub struct {
+	calls    int
+	tenantID int64
+	userID   int64
+	err      error
+}
+
+func (s *twoFADisableStub) Disable(_ context.Context, tenantID, userID int64) error {
+	s.calls++
+	s.tenantID, s.userID = tenantID, userID
+	return s.err
+}
+
+func TestAdminForceDisable2FATenantScopedAudited(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	disabler := &twoFADisableStub{}
+	audit := &adminAuditStub{}
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:          usersAuthStub{ident: tenantOperator(7)},
+		Store:         store,
+		TwoFADisabler: disabler,
+		Audit:         audit,
+	}, http.MethodPost, "/admin/v1/users/101/2fa/force-disable", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	if disabler.calls != 1 || disabler.tenantID != 7 || disabler.userID != 101 {
+		t.Fatalf("disable call mismatch: calls=%d tenant=%d user=%d", disabler.calls, disabler.tenantID, disabler.userID)
+	}
+	if audit.calls != 1 || audit.arg.Action != "force_disable_2fa" || audit.arg.TargetType != "user" {
+		t.Fatalf("audit mismatch: %+v", audit.arg)
+	}
+	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
+		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	}
+}
+
+func TestAdminForceDisable2FARequiresAdmin(t *testing.T) {
+	disabler := &twoFADisableStub{}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsers(t, Deps{
+		Auth:          usersAuthStub{err: admin.ErrAdminUnauthorized},
+		Store:         &usersStoreStub{},
+		TwoFADisabler: disabler,
+		Audit:         audit,
+	}, http.MethodPost, "/admin/v1/users/101/2fa/force-disable", nil)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+	if disabler.calls != 0 || audit.calls != 0 {
+		t.Fatalf("unauthorized force-disable touched deps: disabler=%+v audit=%+v", disabler, audit)
+	}
+}
+
+func TestAdminForceDisable2FAUnknownUser404BeforeMutation(t *testing.T) {
+	store := &usersStoreStub{getErr: pgx.ErrNoRows}
+	disabler := &twoFADisableStub{}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsers(t, Deps{
+		Auth:          usersAuthStub{ident: tenantOperator(7)},
+		Store:         store,
+		TwoFADisabler: disabler,
+		Audit:         audit,
+	}, http.MethodPost, "/admin/v1/users/101/2fa/force-disable", nil)
+
+	assertStatus(t, rec, http.StatusNotFound)
+	if disabler.calls != 0 || audit.calls != 0 {
+		t.Fatalf("unknown user touched mutation deps: disabler=%+v audit=%+v", disabler, audit)
+	}
+}

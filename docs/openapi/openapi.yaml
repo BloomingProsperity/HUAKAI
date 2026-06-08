@@ -7646,6 +7646,39 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/users/{id}/2fa/force-disable:
+    parameters:
+      - $ref: "#/components/parameters/ResourceId"
+    post:
+      tags: [admin-users]
+      summary: Force-disable a tenant user 2FA for account recovery
+      operationId: adminForceDisableUserTwoFA
+      description: |
+        Tenant-scoped admin recovery action that force-clears a locked-out
+        user TOTP 2FA enrollment and writes a force_disable_2fa admin audit
+        event. Cross-tenant ids are not distinguishable from missing users
+        and return 404.
+      x-huakai-spec-source:
+        - backend/internal/adminuserhttp/routes.go
+        - backend/internal/twofa/service.go
+      x-huakai-required-role: tenant_operator
+      responses:
+        "200":
+          description: User 2FA cleared.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, two_factor_enabled]
+                properties:
+                  id: { type: integer, format: int64 }
+                  two_factor_enabled: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceBusy" }
+
   /admin/v1/users/{id}/account-bindings/{provider}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
