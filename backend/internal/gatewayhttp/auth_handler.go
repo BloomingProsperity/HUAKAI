@@ -642,7 +642,7 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if !decodeAdminPoolJSON(w, r, &req) {
 			return
 		}
-		identity, err := telegramauth.VerifyWidget(req.Params, d.TelegramBotToken, time.Now().UTC(), telegramWidgetMaxAge(d))
+		identity, err := telegramauth.VerifyWidget(req.Params, d.TelegramBotToken, d.Auth.Clock(), telegramWidgetMaxAge(d))
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
 				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: userauth.SocialProviderTelegram,
