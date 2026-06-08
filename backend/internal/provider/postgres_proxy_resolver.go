@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"net/url"
 	"strconv"
@@ -63,6 +64,7 @@ func NewPostgresProxyResolverWithKeys(pool *pgxpool.Pool, keys credentialstore.K
 // proxyRow 是 SQL JOIN 返回的中间值, 跟 Go *url.URL 构造解耦.
 type proxyRow struct {
 	tenantID       int64
+	proxyGroupID   string // PROXY-05: 账号绑定的代理组 (空=未绑组)
 	accountExists  bool
 	hasProxyBound  bool   // account.proxy_id IS NOT NULL
 	proxyIsHealthy bool   // 绑定的代理同时满足 status='active' + 未软删
@@ -111,6 +113,7 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 	const q = `
 	        SELECT
 	            pa.tenant_id                                                AS tenant_id,
+	            COALESCE(pa.proxy_group_id, '')                            AS proxy_group_id,
 	            TRUE AS account_exists,
 	            pa.proxy_id IS NOT NULL                                    AS has_proxy_bound,
 	            (p.id IS NOT NULL AND p.status = 'active' AND p.deleted_at IS NULL) AS proxy_is_healthy,
@@ -135,6 +138,7 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 	var row proxyRow
 	if err := tx.QueryRow(ctx, q, accountID).Scan(
 		&row.tenantID,
+		&row.proxyGroupID,
 		&row.accountExists,
 		&row.hasProxyBound,
 		&row.proxyIsHealthy,
@@ -159,6 +163,25 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("provider proxy resolver: commit: %w", err)
+	}
+
+	// PROXY-05: 账号绑了代理组(且未单绑 proxy_id)-> 在组内 active 成员按账号
+	// 确定性轮换。空组/无健康成员 fail-closed(不落直连)。优先级在单绑之后、
+	// tenant-default 之前。
+	if !row.hasProxyBound && row.proxyGroupID != "" {
+		members, gerr := r.listGroupMembers(ctx, row.tenantID, row.proxyGroupID)
+		if gerr != nil {
+			return nil, fmt.Errorf("provider proxy resolver: list group members: %w", gerr)
+		}
+		chosen := pickGroupMember(accountID, members)
+		if chosen == nil {
+			return nil, fmt.Errorf("account %d: %w", accountID, ErrProxyUnhealthy)
+		}
+		grow := proxyRow{protocol: chosen.protocol, host: chosen.host, port: chosen.port, username: chosen.username, secret: chosen.secret}
+		if err := r.decryptRowAuthSecret(ctx, &grow); err != nil {
+			return nil, fmt.Errorf("provider proxy resolver: decrypt auth secret: %w", err)
+		}
+		return buildProxyURL(grow, accountID)
 	}
 
 	// 按优先级选层: account > tenant-default > direct。每层 bound-but-unhealthy
@@ -272,4 +295,39 @@ func chooseProxyTier(row proxyRow) (proxyFields, bool, error) {
 		return proxyFields{protocol: row.dprotocol, host: row.dhost, port: row.dport, username: row.dusername, secret: row.dsecret}, true, nil
 	}
 	return proxyFields{}, false, nil
+}
+
+// listGroupMembers 列出某 tenant 某组的 active 代理成员(原始字段, secret 待解密)。
+func (r *PostgresProxyResolver) listGroupMembers(ctx context.Context, tenantID int64, groupID string) ([]proxyFields, error) {
+	const q = `
+		SELECT COALESCE(protocol, ''), COALESCE(host, ''), COALESCE(port, 0), auth_username, auth_secret
+		FROM proxies
+		WHERE tenant_id = $1 AND group_id = $2 AND status = 'active' AND deleted_at IS NULL
+		ORDER BY id`
+	rows, err := r.pool.Query(ctx, q, tenantID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []proxyFields
+	for rows.Next() {
+		var f proxyFields
+		if err := rows.Scan(&f.protocol, &f.host, &f.port, &f.username, &f.secret); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// pickGroupMember 在组成员里按 accountID 确定性选一个(不同账号散布、同账号粘定)。
+// 空列表返回 nil(调用方 fail-closed)。纯函数, 可单测。
+func pickGroupMember(accountID int64, members []proxyFields) *proxyFields {
+	if len(members) == 0 {
+		return nil
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strconv.FormatInt(accountID, 10)))
+	idx := int(h.Sum32() % uint32(len(members)))
+	return &members[idx]
 }
