@@ -116,13 +116,38 @@ SELECT
     mpb.tpm_limit,
     mpb.max_parallel_requests,
     mpb.fallback_class,
-    mpb.reason
+    mpb.reason,
+    to_jsonb(COALESCE(channel_gate.body_param_strips, ARRAY[]::text[]))::text AS body_param_strips,
+    COALESCE(channel_gate.param_override, '{}'::jsonb)::text AS param_override
 FROM model_pool_bindings mpb
 INNER JOIN pool_groups pg
     ON pg.id = mpb.pool_group_id
    AND pg.tenant_id = mpb.tenant_id
    AND pg.enabled = true
    AND pg.deleted_at IS NULL
+LEFT JOIN LATERAL (
+    SELECT
+        COALESCE((
+            SELECT array_agg(DISTINCT strip_key ORDER BY strip_key)
+            FROM channels c
+            CROSS JOIN LATERAL unnest(c.body_param_strips) AS strip_key
+            WHERE c.pool_group_id = mpb.pool_group_id
+              AND c.tenant_id = mpb.tenant_id
+              AND c.enabled = true
+              AND c.deleted_at IS NULL
+              AND strip_key <> ''
+        ), ARRAY[]::text[]) AS body_param_strips,
+        COALESCE((
+            SELECT jsonb_object_agg(entry.key, entry.value ORDER BY c.id)
+            FROM channels c
+            CROSS JOIN LATERAL jsonb_each(c.param_override) AS entry(key, value)
+            WHERE c.pool_group_id = mpb.pool_group_id
+              AND c.tenant_id = mpb.tenant_id
+              AND c.enabled = true
+              AND c.deleted_at IS NULL
+              AND entry.key <> ''
+        ), '{}'::jsonb) AS param_override
+) channel_gate ON true
 WHERE mpb.tenant_id = sqlc.arg(tenant_id)::bigint
   AND mpb.model_id = sqlc.arg(model_id)::bigint
   AND mpb.deleted_at IS NULL

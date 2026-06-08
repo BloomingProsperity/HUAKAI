@@ -720,7 +720,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		Account:         transportSelection.account,
 		Credential:      ex.cred,
 		TransportMode:   transportSelection.mode,
-		RawBody:         ex.body,
+		RawBody:         ex.upstreamInboundBody(ex.body),
 		BodyControls:    ex.activeDispatchBodyControls(),
 	})
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)

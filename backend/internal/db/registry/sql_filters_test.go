@@ -18,3 +18,17 @@ func TestListModelPoolBindingsSQLFiltersPoolGroupLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestListModelPoolBindingsSQLLoadsChannelBodyParamGate(t *testing.T) {
+	sql := strings.Join(strings.Fields(listModelPoolBindings), " ")
+	for _, want := range []string{
+		"body_param_strips",
+		"param_override",
+		"LEFT JOIN LATERAL",
+		"channels c",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("ListModelPoolBindings SQL missing channel body-param gate fragment %q in %q", want, sql)
+		}
+	}
+}

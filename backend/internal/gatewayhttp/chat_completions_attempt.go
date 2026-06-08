@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bodyparamgate"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -263,23 +264,61 @@ func (ex *chatExecution) prepareNextAttemptAfterAbort() {
 }
 
 func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
-	if ex == nil || len(body) == 0 || strings.TrimSpace(ex.upstreamModelID) == "" {
+	if ex == nil || len(body) == 0 {
 		return body
 	}
+	out := body
+	if strings.TrimSpace(ex.upstreamModelID) != "" {
+		rewritten, ok := ex.rewriteUpstreamModel(body)
+		if !ok {
+			return body
+		}
+		out = rewritten
+	}
+	override, stripKeys := ex.activeBodyParamGate()
+	if len(override) == 0 && len(stripKeys) == 0 {
+		return out
+	}
+	if len(override) > 0 {
+		next, err := bodyparamgate.ApplyParamOverride(out, override)
+		if err != nil {
+			return out
+		}
+		out = next
+	}
+	if len(stripKeys) > 0 {
+		next, err := bodyparamgate.StripBodyParams(out, stripKeys)
+		if err != nil {
+			return out
+		}
+		out = next
+	}
+	return out
+}
+
+func (ex *chatExecution) rewriteUpstreamModel(body []byte) ([]byte, bool) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return body
+		return body, false
 	}
 	modelRaw, err := json.Marshal(ex.upstreamModelID)
 	if err != nil {
-		return body
+		return body, false
 	}
 	obj["model"] = modelRaw
 	out, err := json.Marshal(obj)
 	if err != nil {
-		return body
+		return body, false
 	}
-	return out
+	return out, true
+}
+
+func (ex *chatExecution) activeBodyParamGate() (map[string]json.RawMessage, []string) {
+	binding, ok := ex.activeBindingMetadata()
+	if !ok {
+		return nil, nil
+	}
+	return binding.ParamOverride, binding.BodyParamStrips
 }
 
 // markAttemptOutcomeDelivered 只用于已经写入客户端响应或明确不可进入

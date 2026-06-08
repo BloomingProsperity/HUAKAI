@@ -16,7 +16,7 @@ type Querier interface {
 	// Resolves the canonical model row, constrained to the requesting tenant
 	// (scope='tenant' AND tenant_id=$tenant) OR scope='global'. This blocks
 	// a misconfigured tenant alias from reaching another tenant's model row
-	// admin-write-time validation).
+	// as defense in depth in addition to admin-write-time validation.
 	GetModelByID(ctx context.Context, arg GetModelByIDParams) (GetModelByIDRow, error)
 	GetProtocolPolicyByVersion(ctx context.Context, arg GetProtocolPolicyByVersionParams) (ProtocolPolicyVersion, error)
 	// Returns whether a tenant has opted into global-catalog inheritance.
@@ -37,24 +37,22 @@ type Querier interface {
 	// Returns enabled bindings ordered by priority then id, filtered by the
 	// effective_from/until time window. ALWAYS tenant-scoped: pool_groups
 	// are tenant-owned so a global binding would leak pool_group ids across
-	// tenants (addressed by removing the
-	// scope column from model_pool_bindings entirely; bindings are inherently
-	// tenant-local even for global models). Slice 2 emits all candidates;
-	// Router selects index 0 only at L0 (AttemptBudget=1).
+	// tenants. Bindings are inherently tenant-local even for global models.
+	// The resolver emits all candidates; Router selects index 0 only at L0
+	// (AttemptBudget=1).
 	ListModelPoolBindings(ctx context.Context, arg ListModelPoolBindingsParams) ([]ListModelPoolBindingsRow, error)
 	// Step 2 of resolve. Only called when tenant lookup misses AND the tenant
 	// policy permits global inheritance.
 	LookupGlobalAlias(ctx context.Context, aliasLower string) (LookupGlobalAliasRow, error)
-	// Slice 2 (N+5a) Model Registry queries.
-	// Per docs/process/plans/2026-04-30-n5-model-registry.md.
+	// Model Registry queries.
 	// SELECT-only at request time. Snapshot version increments
-	// happen via a future Phase E admin writer outside this package.
+	// happen via admin writers outside this package.
 	// NEVER select credentials; this package never joins
 	// provider_accounts.credentials, OAuth tokens, or api_keys.key_hash.
 	// Step 1 of resolve. Returns the tenant-scoped alias row regardless of
 	// status (active/disabled/deleted-protected). The Go resolver checks
 	// status: tenant disabled is an EXPLICIT DENY that blocks global fallback
-	// per D3 invariant (integration test).
+	// per D3 invariant (integration test #5).
 	LookupTenantAlias(ctx context.Context, arg LookupTenantAliasParams) (LookupTenantAliasRow, error)
 	UpsertCapabilityCell(ctx context.Context, arg UpsertCapabilityCellParams) error
 }
