@@ -9078,6 +9078,28 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /admin/v1/provider-accounts/{id}/upstream-models:
+    get:
+      tags: [admin-accounts]
+      summary: List the live model ids a provider account upstream serves (SSRF-guarded, on-demand)
+      operationId: listProviderAccountUpstreamModels
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: Live upstream model list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models: { type: array, items: { type: string } }
+                  count: { type: integer }
+        "422": { description: Upstream address blocked by SSRF policy or base_url invalid. }
+        "502": { description: Upstream models endpoint error or unparseable response. }
+
   /admin/v1/provider-accounts/bulk-by-tag:
     post:
       tags: [admin-accounts]
@@ -9097,6 +9119,28 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
+
+  /v1/admin/provider-accounts/{id}/upstream-models:
+    get:
+      tags: [admin-accounts]
+      summary: List the live model ids a provider account upstream serves (SSRF-guarded, on-demand)
+      operationId: listProviderAccountUpstreamModelsV1
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200":
+          description: Live upstream model list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models: { type: array, items: { type: string } }
+                  count: { type: integer }
+        "422": { description: Upstream address blocked by SSRF policy or base_url invalid. }
+        "502": { description: Upstream models endpoint error or unparseable response. }
 
   /v1/admin/provider-accounts/bulk-by-tag:
     post:
