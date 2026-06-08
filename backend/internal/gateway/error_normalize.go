@@ -17,6 +17,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -303,7 +304,7 @@ func Classify(httpStatus int, headers http.Header, body []byte, provider string)
 		Tier:          rule.Tier,
 		RetryAction:   rule.Action,
 		FsmTransition: transitionFor(rule.Action, rule.Tier),
-		RetryAfterMs:  retryAfterMillis(headers),
+		RetryAfterMs:  max(retryAfterMillis(headers), retryAfterFromBody(body, time.Now())),
 	}, nil
 }
 
@@ -468,6 +469,34 @@ func retryAfterMillis(headers http.Header) int64 {
 			return 0
 		}
 		return delta.Milliseconds()
+	}
+	return 0
+}
+
+// retryAfterFromBody extracts a cooldown delta from a provider error BODY when no
+// Retry-After header was supplied (RR-02). Codex usage_limit_reached carries
+// error.resets_at (unix seconds) / error.resets_in_seconds in the body only, so
+// a header-only parser benches the account for the wrong (default) duration.
+func retryAfterFromBody(body []byte, now time.Time) int64 {
+	if len(body) == 0 {
+		return 0
+	}
+	var parsed struct {
+		Error struct {
+			ResetsAt        *int64   `json:"resets_at"`
+			ResetsInSeconds *float64 `json:"resets_in_seconds"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0
+	}
+	if parsed.Error.ResetsInSeconds != nil && *parsed.Error.ResetsInSeconds > 0 {
+		return int64(*parsed.Error.ResetsInSeconds * 1000)
+	}
+	if parsed.Error.ResetsAt != nil && *parsed.Error.ResetsAt > 0 {
+		if delta := time.Unix(*parsed.Error.ResetsAt, 0).Sub(now); delta > 0 {
+			return delta.Milliseconds()
+		}
 	}
 	return 0
 }
