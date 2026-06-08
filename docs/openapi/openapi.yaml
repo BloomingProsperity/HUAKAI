@@ -9078,6 +9078,46 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /admin/v1/provider-accounts/bulk-by-tag:
+    post:
+      tags: [admin-accounts]
+      summary: Bulk enable/disable/reprioritize provider accounts by tag
+      operationId: bulkUpdateProviderAccountsByTag
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagRequest" }
+      responses:
+        "200":
+          description: Bulk update applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /v1/admin/provider-accounts/bulk-by-tag:
+    post:
+      tags: [admin-accounts]
+      summary: Bulk enable/disable/reprioritize provider accounts by tag (v1 prefix)
+      operationId: bulkUpdateProviderAccountsByTagV1
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagRequest" }
+      responses:
+        "200":
+          description: Bulk update applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
   /admin/v1/credentials/paste:
     post:
       tags: [admin-credential-acquisition]
@@ -14766,6 +14806,26 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/ProviderAccount' } }
         page: { $ref: '#/components/schemas/PageMeta' }
+
+    ProviderAccountBulkByTagRequest:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      required: [tag]
+      properties:
+        tag: { type: string, minLength: 1 }
+        enabled: { type: boolean }
+        priority: { type: integer, format: int32 }
+        static_weight: { type: integer, format: int32 }
+
+    ProviderAccountBulkByTagResponse:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      required: [affected_ids, count]
+      properties:
+        affected_ids: { type: array, items: { type: integer, format: int64 } }
+        count: { type: integer, format: int32, minimum: 0 }
 
     AccountCredentialMetadata:
       x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
