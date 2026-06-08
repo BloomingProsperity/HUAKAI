@@ -30,6 +30,7 @@ const (
 	GateFailureGroupPolicy         = router.GateFailureGroupPolicy
 	GateFailurePerRequestExclusion = router.GateFailurePerRequestExclusion
 	GateFailureScoredBand          = router.GateFailureScoredBand
+	GateFailureWindowCost          = router.GateFailureWindowCost
 )
 
 type Gate = router.Gate
@@ -47,6 +48,7 @@ type GroupPolicyGate = router.GroupPolicyGate
 type ExclusionGate = router.ExclusionGate
 type GateChain = router.GateChain
 type AllowAllGate = router.AllowAllGate
+type WindowCostGate = router.WindowCostGate
 
 const (
 	HealthStateActive      = router.HealthStateActive

@@ -139,7 +139,8 @@ SELECT
     pa.model_allow_list,
     pa.capability_flags,
     pa.cap_queue_sticky,
-    pa.cap_queue_fallback
+    pa.cap_queue_fallback,
+    pa.window_cost_limit_cents
 FROM provider_accounts pa
 INNER JOIN channels c
     ON c.id = pa.channel_id
