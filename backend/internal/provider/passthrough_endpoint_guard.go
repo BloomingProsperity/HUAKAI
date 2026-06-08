@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/ssrfpolicy"
 )
 
 var ErrUnsafePassthroughEndpoint = errors.New("provider: unsafe upstream passthrough endpoint")
@@ -50,10 +52,25 @@ func validatePassthroughEndpointURL(u *url.URL) (string, error) {
 	if port := u.Port(); port != "" && !validEndpointPort(port) {
 		return "", passthroughEndpointBlocked("invalid port")
 	}
-	return validatePassthroughHost(u.Hostname())
+	policy, err := currentPassthroughPolicy()
+	if err != nil {
+		return "", err
+	}
+	if !policy.AllowsPort(passthroughEndpointPort(u)) {
+		return "", passthroughEndpointBlocked("blocked port")
+	}
+	return validatePassthroughHostWithPolicy(u.Hostname(), policy)
 }
 
 func validatePassthroughHost(raw string) (string, error) {
+	policy, err := currentPassthroughPolicy()
+	if err != nil {
+		return "", err
+	}
+	return validatePassthroughHostWithPolicy(raw, policy)
+}
+
+func validatePassthroughHostWithPolicy(raw string, policy ssrfpolicy.Policy) (string, error) {
 	host := strings.ToLower(raw)
 	if host == "" {
 		return "", passthroughEndpointBlocked("empty host")
@@ -67,8 +84,11 @@ func validatePassthroughHost(raw string) (string, error) {
 	if hasNonASCII(host) {
 		return "", passthroughEndpointBlocked("non-ascii host")
 	}
+	if !policy.AllowsHost(host) {
+		return "", passthroughEndpointBlocked("blocked host")
+	}
 	if addr, err := netip.ParseAddr(host); err == nil {
-		if !publicPassthroughIP(addr) {
+		if !passthroughIPAllowedForHost(policy, host, addr) {
 			return "", passthroughEndpointBlocked("blocked IP")
 		}
 		return host, nil
@@ -117,12 +137,16 @@ func ValidatePassthroughEndpointTarget(ctx context.Context, endpoint *url.URL) e
 	if _, err := netip.ParseAddr(host); err == nil {
 		return nil
 	}
+	policy, err := currentPassthroughPolicy()
+	if err != nil {
+		return err
+	}
 	addrs, err := passthroughEndpointLookupNetIP(ctx, "ip", host)
 	if err != nil || len(addrs) == 0 {
 		return passthroughEndpointBlocked("host resolution failed")
 	}
 	for _, addr := range addrs {
-		if !publicPassthroughIP(addr) {
+		if !passthroughIPAllowedForHost(policy, host, addr) {
 			return passthroughEndpointBlocked("blocked resolved IP")
 		}
 	}
@@ -158,18 +182,18 @@ func WrapPassthroughEndpointTransport(rt http.RoundTripper) (http.RoundTripper, 
 
 func passthroughGuardedDialContext(base func(context.Context, string, string) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
-		dialAddresses, err := resolvePublicPassthroughDialAddresses(ctx, address)
+		dialAddresses, err := resolvePassthroughDialAddresses(ctx, address)
 		if err != nil {
 			return nil, err
 		}
 		var lastDialErr error
 		for _, dialAddress := range dialAddresses {
-			conn, err := base(ctx, network, dialAddress)
+			conn, err := base(ctx, network, dialAddress.address)
 			if err != nil {
 				lastDialErr = err
 				continue
 			}
-			if !publicPassthroughNetAddr(conn.RemoteAddr()) {
+			if !passthroughNetAddrAllowedForHost(dialAddress.policy, dialAddress.host, conn.RemoteAddr()) {
 				_ = conn.Close()
 				return nil, passthroughEndpointBlocked("blocked remote IP")
 			}
@@ -182,33 +206,51 @@ func passthroughGuardedDialContext(base func(context.Context, string, string) (n
 	}
 }
 
-func resolvePublicPassthroughDialAddresses(ctx context.Context, address string) ([]string, error) {
+type passthroughDialAddress struct {
+	address string
+	host    string
+	policy  ssrfpolicy.Policy
+}
+
+func resolvePassthroughDialAddresses(ctx context.Context, address string) ([]passthroughDialAddress, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, passthroughEndpointBlocked("invalid dial address")
 	}
-	host, err = validatePassthroughHost(host)
+	policy, err := currentPassthroughPolicy()
+	if err != nil {
+		return nil, err
+	}
+	host, err = validatePassthroughHostWithPolicy(host, policy)
 	if err != nil {
 		return nil, err
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
-		return []string{net.JoinHostPort(addr.String(), port)}, nil
+		return []passthroughDialAddress{{
+			address: net.JoinHostPort(addr.String(), port),
+			host:    host,
+			policy:  policy,
+		}}, nil
 	}
 	addrs, err := passthroughEndpointLookupNetIP(ctx, "ip", host)
 	if err != nil || len(addrs) == 0 {
 		return nil, passthroughEndpointBlocked("host resolution failed")
 	}
-	dialAddresses := make([]string, 0, len(addrs))
+	dialAddresses := make([]passthroughDialAddress, 0, len(addrs))
 	for _, addr := range addrs {
-		if !publicPassthroughIP(addr) {
+		if !passthroughIPAllowedForHost(policy, host, addr) {
 			return nil, passthroughEndpointBlocked("blocked resolved IP")
 		}
-		dialAddresses = append(dialAddresses, net.JoinHostPort(addr.String(), port))
+		dialAddresses = append(dialAddresses, passthroughDialAddress{
+			address: net.JoinHostPort(addr.String(), port),
+			host:    host,
+			policy:  policy,
+		})
 	}
 	return dialAddresses, nil
 }
 
-func publicPassthroughNetAddr(addr net.Addr) bool {
+func passthroughNetAddrAllowedForHost(policy ssrfpolicy.Policy, host string, addr net.Addr) bool {
 	tcp, ok := addr.(*net.TCPAddr)
 	if !ok {
 		return false
@@ -217,7 +259,7 @@ func publicPassthroughNetAddr(addr net.Addr) bool {
 	if !ok {
 		return false
 	}
-	return publicPassthroughIP(netipAddr)
+	return passthroughIPAllowedForHost(policy, host, netipAddr)
 }
 
 func passthroughEndpointBlocked(reason string) error {
@@ -247,9 +289,32 @@ func validEndpointPort(raw string) bool {
 	return err == nil && port > 0 && port <= 65535
 }
 
+func passthroughEndpointPort(u *url.URL) int {
+	if raw := u.Port(); raw != "" {
+		port, _ := strconv.Atoi(raw)
+		return port
+	}
+	return 443
+}
+
+func currentPassthroughPolicy() (ssrfpolicy.Policy, error) {
+	policy, err := ssrfpolicy.LoadFromEnv()
+	if err != nil {
+		return ssrfpolicy.Policy{}, passthroughEndpointBlocked("invalid SSRF policy")
+	}
+	return policy, nil
+}
+
 func blockedPassthroughHost(host string) bool {
 	switch host {
-	case "localhost", "metadata", "metadata.google.internal", "169.254.169.254":
+	case "localhost",
+		"localhost.localdomain",
+		"metadata",
+		"metadata.google.internal",
+		"metadata.goog",
+		"instance-data",
+		"instance-data.ec2.internal",
+		"169.254.169.254":
 		return true
 	}
 	for _, suffix := range []string{".localhost", ".local", ".internal", ".lan", ".home", ".corp", ".intranet"} {
@@ -290,6 +355,28 @@ func numericObfuscatedHost(host string) bool {
 func publicPassthroughIP(addr netip.Addr) bool {
 	addr = addr.Unmap()
 	if !addr.IsValid() || addr.IsLoopback() || addr.IsPrivate() ||
+		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
+		addr.IsMulticast() || addr.IsUnspecified() || !addr.IsGlobalUnicast() {
+		return false
+	}
+	for _, prefix := range passthroughSpecialUseDenyPrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	return true
+}
+
+func passthroughIPAllowedForHost(policy ssrfpolicy.Policy, host string, addr netip.Addr) bool {
+	if publicPassthroughIP(addr) {
+		return true
+	}
+	return policy.AllowsPrivateIPHost(host) && privatePassthroughIP(addr)
+}
+
+func privatePassthroughIP(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !addr.IsValid() || !addr.IsPrivate() || addr.IsLoopback() ||
 		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
 		addr.IsMulticast() || addr.IsUnspecified() || !addr.IsGlobalUnicast() {
 		return false

@@ -21,10 +21,11 @@ import (
 
 // stubAdapter 是测试用的最小 Adapter 实现。
 type stubAdapter struct {
-	platform  string
-	endpoint  string
-	buildErr  error
-	lastInput provider.BuildInput
+	platform     string
+	endpoint     string
+	buildErr     error
+	extraHeaders http.Header
+	lastInput    provider.BuildInput
 }
 
 func (s *stubAdapter) Platform() string { return s.platform }
@@ -45,6 +46,11 @@ func (s *stubAdapter) BuildRequest(ctx context.Context, in provider.BuildInput) 
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+in.Credential.Value)
+	for name, values := range s.extraHeaders {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 	return req, nil
 }
 
@@ -159,6 +165,57 @@ func TestDispatcher_PassesInboundContentTypeToAdapter(t *testing.T) {
 	}
 	if got := adapter.lastInput.EndpointPath; got != "/v1/audio/transcriptions" {
 		t.Fatalf("adapter EndpointPath=%q want audio endpoint path", got)
+	}
+}
+
+func TestDispatcher_StripsHopByHopHeadersBeforeDo(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: "{}"}
+	adapter := &stubAdapter{
+		platform: "openai",
+		extraHeaders: http.Header{
+			"Connection":          []string{"upgrade"},
+			"Keep-Alive":          []string{"timeout=5"},
+			"Proxy-Authenticate":  []string{"Basic"},
+			"Proxy-Authorization": []string{"Basic secret"},
+			"Te":                  []string{"trailers"},
+			"Trailer":             []string{"X-Trailer"},
+			"Transfer-Encoding":   []string{"chunked"},
+			"Upgrade":             []string{"websocket"},
+			"X-Stable":            []string{"keep"},
+		},
+	}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily:  "openai_chat",
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte("{}"),
+		Account:         provider.AccountInfo{AccountID: 7, Platform: "openai", AccountType: "apikey"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-x"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{
+		"Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Te",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+	} {
+		if got := doer.got.Header.Get(name); got != "" {
+			t.Fatalf("%s reached HTTP Do with value %q", name, got)
+		}
+	}
+	if got := doer.got.Header.Get("X-Stable"); got != "keep" {
+		t.Fatalf("X-Stable=%q want keep", got)
+	}
+	if got := doer.got.Header.Get("Authorization"); got != "Bearer sk-x" {
+		t.Fatalf("Authorization=%q want preserved credential header", got)
 	}
 }
 
