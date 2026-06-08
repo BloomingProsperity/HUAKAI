@@ -115,3 +115,26 @@ func toUint8s(field string, in []int) ([]uint8, error) {
 	}
 	return out, nil
 }
+
+// ValidateProfileFields reports whether a DB TLS profile still produces a usable
+// uTLS ClientHello. Preset profiles are valid iff the preset name is known;
+// custom profiles must convert (range-valid) AND build a uTLS spec without error.
+// UTLS-06 drift worker uses this to flag profiles that can no longer drive a
+// handshake (e.g. bad cipher ids, or an unknown preset after an edit), without
+// computing JA3 (which would risk false positives). nil = healthy.
+func ValidateProfileFields(f ProfileFields) error {
+	tmpl, err := TemplateFromProfileFields(f)
+	if err != nil {
+		return err
+	}
+	if tmpl.Preset != "" {
+		if _, ok := clientHelloIDForPreset(tmpl.Preset); !ok {
+			return fmt.Errorf("mimicry: unknown preset %q", tmpl.Preset)
+		}
+		return nil
+	}
+	if _, err := tmpl.UTLSSpec(); err != nil {
+		return err
+	}
+	return nil
+}
