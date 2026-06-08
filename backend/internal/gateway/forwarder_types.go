@@ -89,6 +89,11 @@ type UsageRecordDraft struct {
 	CostSnapshot            string          `json:"cost_snapshot,omitempty"`
 	CacheCreationCost       decimal.Decimal `json:"cache_creation_cost"`
 	CacheReadCost           decimal.Decimal `json:"cache_read_cost"`
+	ImageCount              int32           `json:"image_count"`
+	ImageSize               *string         `json:"image_size,omitempty"`
+	ImageSizeBreakdown      []byte          `json:"image_size_breakdown,omitempty"`
+	IPAddress               *string         `json:"ip_address,omitempty"`
+	UserAgent               *string         `json:"user_agent,omitempty"`
 	RoutingReason           []byte          `json:"routing_reason"`
 	EndClass                StreamEndClass  `json:"end_class"`
 	StreamTerminatedReason  string          `json:"stream_terminated_reason"`

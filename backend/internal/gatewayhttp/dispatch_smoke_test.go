@@ -33,6 +33,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -243,6 +244,10 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 
 	// --- 5. 构建计费 stub ---
 	settler := &smokeSettler{}
+	clientIPResolver, err := clientip.NewResolver([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("client ip resolver: %v", err)
+	}
 
 	// --- 6. 组装 ChatHandlerDeps ---
 	deps := ChatHandlerDeps{
@@ -269,6 +274,7 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 		RateTables:           testRateTables("smoke-v1"),
 		BillingPolicyVersion: "smoke-v1",
 		RequestClass:         "default",
+		ClientIPResolver:     clientIPResolver,
 	}
 
 	// --- 7. 构建 HTTP 请求并调用 handler ---
@@ -276,6 +282,9 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer hk_test_smoke")
+	req.Header.Set("X-Forwarded-For", "198.51.100.9")
+	req.Header.Set("User-Agent", "huakai-origin-audit/1.0")
+	req.RemoteAddr = "10.1.2.3:5000"
 
 	rec := httptest.NewRecorder()
 	handler := NewChatCompletionsHandler(deps)
@@ -338,6 +347,12 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 	}
 	if attempt := settleReq.StreamAttempt; attempt == nil || !attempt.State.Chargeable() {
 		t.Fatalf("断言9失败：StreamAttempt = %#v；期望 chargeable", attempt)
+	}
+	if settleReq.Draft.IPAddress == nil || *settleReq.Draft.IPAddress != "198.51.100.9" {
+		t.Fatalf("断言10失败：Draft.IPAddress=%v；期望 198.51.100.9", settleReq.Draft.IPAddress)
+	}
+	if settleReq.Draft.UserAgent == nil || *settleReq.Draft.UserAgent != "huakai-origin-audit/1.0" {
+		t.Fatalf("断言10失败：Draft.UserAgent=%v；期望 huakai-origin-audit/1.0", settleReq.Draft.UserAgent)
 	}
 }
 

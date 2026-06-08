@@ -170,6 +170,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 }
 
 func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost completionCostBreakdown, routingReason []byte) billing.SettleRequest {
+	draft := withOriginAudit(nonStreamingUsageDraft(env, actualCost, routingReason), ex.r, ex.d)
 	return billing.SettleRequest{
 		ClaimID:             ex.reserveRes.ClaimID,
 		AccountID:           ex.acquiredAccountID,
@@ -186,10 +187,37 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost c
 		ActualCost:          actualCost.Total,
 		ProtocolLoss:        ex.protocolLoss,
 		Fingerprint:         ex.payloadHash,
-		Draft:               nonStreamingUsageDraft(env, actualCost, routingReason),
+		Draft:               draft,
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
 	}
+}
+
+func withOriginAudit(draft gateway.UsageRecordDraft, r *http.Request, d ChatHandlerDeps) gateway.UsageRecordDraft {
+	if r == nil {
+		return draft
+	}
+	draft.IPAddress = boundedAuditStringPtr(d.ClientIPResolver.ClientIP(r), 128)
+	draft.UserAgent = boundedAuditStringPtr(r.Header.Get("User-Agent"), 512)
+	return draft
+}
+
+func boundedAuditStringPtr(raw string, maxRunes int) *string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	if maxRunes > 0 {
+		n := 0
+		for i := range s {
+			if n == maxRunes {
+				s = s[:i]
+				break
+			}
+			n++
+		}
+	}
+	return &s
 }
 
 func protocolLossJSONFromEnv(env *proto.HCSF) json.RawMessage {

@@ -750,6 +750,111 @@ func TestAT_AUDIT_001_028_RefundQueuesBillingEventReplica(t *testing.T) {
 	}
 }
 
+func TestUsageRecordImageColumns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "usage-image-audit")
+	settler := NewSettler(pool)
+	actualCost := decimal.RequireFromString("0.00600000")
+	req := settleRequest(seed, actualCost)
+	size := "1024x1024"
+	req.RequestedModel = "dall-e-3"
+	req.Draft.ImageCount = 2
+	req.Draft.ImageSize = &size
+	req.Draft.ImageSizeBreakdown = []byte(`{"1024x1024":2}`)
+
+	if _, err := settler.Settle(ctx, req); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	var gotCount int32
+	var gotSize *string
+	var gotBreakdown map[string]int
+	if err := pool.QueryRow(ctx,
+		`SELECT image_count, image_size, image_size_breakdown FROM usage_records WHERE claim_id=$1`,
+		seed.claimID,
+	).Scan(&gotCount, &gotSize, &gotBreakdown); err != nil {
+		t.Fatalf("read image audit columns: %v", err)
+	}
+	if gotCount != 2 {
+		t.Fatalf("image_count=%d want 2", gotCount)
+	}
+	if gotSize == nil || *gotSize != "1024x1024" {
+		t.Fatalf("image_size=%v want 1024x1024", gotSize)
+	}
+	if gotBreakdown["1024x1024"] != 2 {
+		t.Fatalf("image_size_breakdown=%v want 1024x1024=2", gotBreakdown)
+	}
+}
+
+func TestUsageRecordOriginColumns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "usage-origin-audit")
+	settler := NewSettler(pool)
+	req := settleRequest(seed, decimal.RequireFromString("0.02000000"))
+	ip := "198.51.100.9"
+	ua := "huakai-origin-audit/1.0"
+	req.Draft.IPAddress = &ip
+	req.Draft.UserAgent = &ua
+
+	if _, err := settler.Settle(ctx, req); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	var gotIP, gotUA *string
+	if err := pool.QueryRow(ctx,
+		`SELECT ip_address, user_agent FROM usage_records WHERE claim_id=$1`,
+		seed.claimID,
+	).Scan(&gotIP, &gotUA); err != nil {
+		t.Fatalf("read origin audit columns: %v", err)
+	}
+	if gotIP == nil || *gotIP != ip {
+		t.Fatalf("ip_address=%v want %s", gotIP, ip)
+	}
+	if gotUA == nil || *gotUA != ua {
+		t.Fatalf("user_agent=%v want %s", gotUA, ua)
+	}
+}
+
+func TestSettler_ChargeUnchangedByAuditColumns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "usage-audit-cost")
+	settler := NewSettler(pool)
+	actualCost := decimal.RequireFromString("0.02000000")
+	req := settleRequest(seed, actualCost)
+	size := "1024x1024"
+	ip := "198.51.100.9"
+	ua := "huakai-audit-cost/1.0"
+	req.Draft.ImageCount = 2
+	req.Draft.ImageSize = &size
+	req.Draft.ImageSizeBreakdown = []byte(`{"1024x1024":2}`)
+	req.Draft.IPAddress = &ip
+	req.Draft.UserAgent = &ua
+
+	if _, err := settler.Settle(ctx, req); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+
+	var usageCost, claimCost decimal.Decimal
+	if err := pool.QueryRow(ctx,
+		`SELECT ur.actual_cost, blc.actual_cost
+		   FROM usage_records ur
+		   JOIN billing_ledger_claims blc ON blc.id = ur.claim_id
+		  WHERE ur.claim_id=$1`,
+		seed.claimID,
+	).Scan(&usageCost, &claimCost); err != nil {
+		t.Fatalf("read settled costs: %v", err)
+	}
+	if !usageCost.Equal(actualCost) || !claimCost.Equal(actualCost) {
+		t.Fatalf("audit columns changed charge: usage_cost=%s claim_cost=%s want %s", usageCost, claimCost, actualCost)
+	}
+}
+
 type settlerSeed struct {
 	tenantID          int64
 	apiKeyID          int64

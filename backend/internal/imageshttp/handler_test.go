@@ -55,6 +55,37 @@ func TestImagesHandler_PerImageCostUsesSizeQualityAndNExactlyOnce(t *testing.T) 
 	}
 }
 
+func TestImagesHandler_SettleDraftCarriesImageAuditColumns(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/a.png"},{"url":"https://img.test/b.png"}]}`,
+	})
+	env.rateTable.raw = imageRateTableFixture(2, 10, 1000)
+
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"audit columns","size":"1024x1024","quality":"standard","n":2}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if got := len(env.settler.settles); got != 1 {
+		t.Fatalf("settle calls=%d want 1", got)
+	}
+	draft := env.settler.settles[0].Draft
+	if draft.ImageCount != 2 {
+		t.Fatalf("Draft.ImageCount=%d want 2", draft.ImageCount)
+	}
+	if draft.ImageSize == nil || *draft.ImageSize != "1024x1024" {
+		t.Fatalf("Draft.ImageSize=%v want 1024x1024", draft.ImageSize)
+	}
+	var breakdown map[string]int
+	if err := json.Unmarshal(draft.ImageSizeBreakdown, &breakdown); err != nil {
+		t.Fatalf("ImageSizeBreakdown invalid JSON: %v payload=%s", err, string(draft.ImageSizeBreakdown))
+	}
+	if breakdown["1024x1024"] != 2 {
+		t.Fatalf("ImageSizeBreakdown=%v want 1024x1024=2", breakdown)
+	}
+}
+
 func TestImagesHandler_TokenImageSettlesReportedUsageNotReserveEstimate(t *testing.T) {
 	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
 		status: http.StatusOK,

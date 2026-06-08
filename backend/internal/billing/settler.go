@@ -175,6 +175,11 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		UpstreamModel:          nullableString(req.UpstreamModel),
 		Stream:                 req.Stream,
 		SnapshotVersion:        nullableString(req.SnapshotVersion),
+		ImageCount:             req.Draft.ImageCount,
+		ImageSize:              req.Draft.ImageSize,
+		ImageSizeBreakdown:     req.Draft.ImageSizeBreakdown,
+		IPAddress:              req.Draft.IPAddress,
+		UserAgent:              req.Draft.UserAgent,
 	}
 
 	endClass := normalizeEndClass(req.Draft.EndClass, req.Stream)
@@ -528,6 +533,11 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 		UpstreamModel:          nullableString(req.UpstreamModel),
 		Stream:                 false,
 		SnapshotVersion:        nullableString(req.SnapshotVersion),
+		ImageCount:             req.Draft.ImageCount,
+		ImageSize:              req.Draft.ImageSize,
+		ImageSizeBreakdown:     req.Draft.ImageSizeBreakdown,
+		IPAddress:              req.Draft.IPAddress,
+		UserAgent:              req.Draft.UserAgent,
 	}
 	if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "cache_hit_usage_record_insert_failed"); err != nil {
 		return err
@@ -900,6 +910,11 @@ func marshalUsageRecordPayload(params dbbilling.InsertUsageRecordParams) (json.R
 		UpstreamModel:          params.UpstreamModel,
 		Stream:                 params.Stream,
 		SnapshotVersion:        params.SnapshotVersion,
+		ImageCount:             params.ImageCount,
+		ImageSize:              params.ImageSize,
+		ImageSizeBreakdown:     json.RawMessage(params.ImageSizeBreakdown),
+		IPAddress:              params.IPAddress,
+		UserAgent:              params.UserAgent,
 	}
 	raw, err := json.Marshal(payload)
 	return json.RawMessage(raw), err

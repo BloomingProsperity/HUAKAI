@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -56,6 +57,7 @@ type Deps struct {
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string
+	ClientIPResolver      *clientip.Resolver
 }
 
 type execution struct {

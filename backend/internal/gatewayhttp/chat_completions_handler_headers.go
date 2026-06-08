@@ -220,7 +220,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				ProtocolLoss:    protocolLossJSONFromEnv(cachedEnv),
 				RequestedAt:     in.RequestStartedAt,
 				Fingerprint:     in.PayloadHash,
-				Draft:           nonStreamingUsageDraft(cachedEnv, completionCostBreakdown{}, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
+				Draft:           withOriginAudit(nonStreamingUsageDraft(cachedEnv, completionCostBreakdown{}, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)), r, d),
 				SnapshotVersion: in.PlanSnapshot,
 			}
 			auditEvent := eventbus.RequestCompletionEvent{
@@ -288,7 +288,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		ProtocolLoss:        protocolLossJSONFromEnv(cachedEnv),
 		ActualCost:          actualCost.Total,
 		Fingerprint:         in.PayloadHash,
-		Draft:               nonStreamingUsageDraft(cachedEnv, actualCost, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)),
+		Draft:               withOriginAudit(nonStreamingUsageDraft(cachedEnv, actualCost, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)), r, d),
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     in.PlanSnapshot,
 	}
