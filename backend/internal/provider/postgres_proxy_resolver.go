@@ -71,6 +71,14 @@ type proxyRow struct {
 	port           int
 	username       *string
 	secret         *string
+	// tenant-default tier (PROXY-03): 账号无绑定时回退到 tenant.default_proxy_id
+	hasDefaultBound  bool
+	defaultIsHealthy bool
+	dprotocol        string
+	dhost            string
+	dport            int
+	dusername        *string
+	dsecret          *string
 }
 
 // Resolve 按 accountID 查 provider_accounts JOIN proxies 取出代理字段在 Go 端
@@ -110,9 +118,18 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
             COALESCE(p.host, '')          AS host,
             COALESCE(p.port, 0)           AS port,
             p.auth_username                AS auth_username,
-            p.auth_secret                  AS auth_secret
+            p.auth_secret                  AS auth_secret,
+            t.default_proxy_id IS NOT NULL AS has_default_bound,
+            (dp.id IS NOT NULL AND dp.status = 'active' AND dp.deleted_at IS NULL) AS default_is_healthy,
+            COALESCE(dp.protocol, '')     AS d_protocol,
+            COALESCE(dp.host, '')         AS d_host,
+            COALESCE(dp.port, 0)          AS d_port,
+            dp.auth_username               AS d_auth_username,
+            dp.auth_secret                 AS d_auth_secret
         FROM provider_accounts pa
         LEFT JOIN proxies p ON pa.proxy_id = p.id
+        LEFT JOIN tenants t ON pa.tenant_id = t.id
+        LEFT JOIN proxies dp ON t.default_proxy_id = dp.id
         WHERE pa.id = $1
     `
 	var row proxyRow
@@ -126,6 +143,13 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 		&row.port,
 		&row.username,
 		&row.secret,
+		&row.hasDefaultBound,
+		&row.defaultIsHealthy,
+		&row.dprotocol,
+		&row.dhost,
+		&row.dport,
+		&row.dusername,
+		&row.dsecret,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("account %d: %w", accountID, ErrAccountNotFound)
@@ -137,22 +161,21 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 		return nil, fmt.Errorf("provider proxy resolver: commit: %w", err)
 	}
 
-	// 1. 没绑代理 → 直连 (跟老 proxy_url IS NULL 行为一致)
-	if !row.hasProxyBound {
+	// 按优先级选层: account > tenant-default > direct。每层 bound-but-unhealthy
+	// 都 fail-closed (不静默落到下层或直连, 否则破坏账号级 IP 隔离)。
+	fields, useProxy, perr := chooseProxyTier(row)
+	if perr != nil {
+		return nil, fmt.Errorf("account %d: %w", accountID, perr)
+	}
+	if !useProxy {
 		return nil, nil
 	}
 
-	// 2. 绑了但不健康 → fail-closed, 不静默走直连
-	if !row.proxyIsHealthy {
-		return nil, fmt.Errorf("account %d: %w", accountID, ErrProxyUnhealthy)
-	}
-
-	if err := r.decryptRowAuthSecret(ctx, &row); err != nil {
+	chosen := proxyRow{protocol: fields.protocol, host: fields.host, port: fields.port, username: fields.username, secret: fields.secret}
+	if err := r.decryptRowAuthSecret(ctx, &chosen); err != nil {
 		return nil, fmt.Errorf("provider proxy resolver: decrypt auth secret: %w", err)
 	}
-
-	// 3. 健康 → 构造 URL (用 url.UserPassword 转义 user info, net.JoinHostPort 处理 host/port)
-	return buildProxyURL(row, accountID)
+	return buildProxyURL(chosen, accountID)
 }
 
 func (r *PostgresProxyResolver) decryptRowAuthSecret(ctx context.Context, row *proxyRow) error {
@@ -221,4 +244,32 @@ func parseProxyURLValue(raw *string, accountID int64) (*url.URL, error) {
 		return nil, fmt.Errorf("%w (account=%d, scheme=%q): host 为空", ErrProxyURLInvalid, accountID, parsed.Scheme)
 	}
 	return parsed, nil
+}
+
+// proxyFields 是选中那层代理的原始字段(secret 待解密)。
+type proxyFields struct {
+	protocol string
+	host     string
+	port     int
+	username *string
+	secret   *string
+}
+
+// chooseProxyTier 按优先级 account > tenant-default > direct 选出该用哪层代理。
+// 每层 bound-but-unhealthy 都返回 ErrProxyUnhealthy(fail-closed,绝不静默落到下
+// 层或直连——那会破坏账号级 IP 隔离)。useProxy=false 表示直连(无任何绑定)。
+func chooseProxyTier(row proxyRow) (proxyFields, bool, error) {
+	if row.hasProxyBound {
+		if !row.proxyIsHealthy {
+			return proxyFields{}, false, ErrProxyUnhealthy
+		}
+		return proxyFields{protocol: row.protocol, host: row.host, port: row.port, username: row.username, secret: row.secret}, true, nil
+	}
+	if row.hasDefaultBound {
+		if !row.defaultIsHealthy {
+			return proxyFields{}, false, ErrProxyUnhealthy
+		}
+		return proxyFields{protocol: row.dprotocol, host: row.dhost, port: row.dport, username: row.dusername, secret: row.dsecret}, true, nil
+	}
+	return proxyFields{}, false, nil
 }
