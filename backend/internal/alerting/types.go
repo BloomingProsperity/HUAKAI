@@ -23,35 +23,52 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
+type MetricType string
+
+const (
+	MetricTypeCPUUsagePercent MetricType = "cpu_usage_percent"
+)
+
 type EventState string
 
 const (
-	EventStateFiring   EventState = "firing"
-	EventStateResolved EventState = "resolved"
+	EventStateFiring         EventState = "firing"
+	EventStateResolved       EventState = "resolved"
+	EventStateManualResolved EventState = "manual_resolved"
 )
 
 type AlertRule struct {
-	ID            int64
-	TenantID      int64
-	Name          string
-	Metric        string
-	Comparator    Comparator
-	Threshold     float64
-	Severity      Severity
-	WindowSeconds int32
-	Enabled       bool
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID               int64
+	TenantID         int64
+	Name             string
+	Metric           string
+	MetricType       MetricType
+	Comparator       Comparator
+	Threshold        float64
+	Severity         Severity
+	WindowSeconds    int32
+	SustainedSeconds int32
+	CooldownSeconds  int32
+	NotifyEmail      bool
+	Filters          map[string]string
+	LastTriggeredAt  *time.Time
+	Enabled          bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type AlertEvent struct {
-	ID            int64
-	TenantID      int64
-	RuleID        int64
-	State         EventState
-	ObservedValue float64
-	FiredAt       time.Time
-	ResolvedAt    *time.Time
+	ID             int64
+	TenantID       int64
+	RuleID         int64
+	State          EventState
+	ObservedValue  float64
+	ThresholdValue *float64
+	MetricValue    *float64
+	Dimensions     map[string]string
+	FiredAt        time.Time
+	ResolvedAt     *time.Time
+	EmailSent      bool
 }
 
 type AlertSilence struct {
@@ -61,6 +78,9 @@ type AlertSilence struct {
 	Reason    string
 	StartsAt  time.Time
 	EndsAt    time.Time
+	Platform  string
+	GroupID   string
+	Region    string
 	CreatedAt time.Time
 }
 
@@ -68,10 +88,12 @@ type FiringNotice struct {
 	RuleID        int64
 	RuleName      string
 	Metric        string
+	MetricType    MetricType
 	Comparator    Comparator
 	Threshold     float64
 	Severity      Severity
 	ObservedValue float64
+	Dimensions    map[string]string
 	FiredAt       time.Time
 }
 
@@ -82,26 +104,36 @@ type FiringDeliverer interface {
 type FiringDeliveryErrorRecorder func(context.Context, int64, FiringNotice, error)
 
 type CreateRuleInput struct {
-	TenantID      int64
-	Name          string
-	Metric        string
-	Comparator    Comparator
-	Threshold     float64
-	Severity      Severity
-	WindowSeconds int32
-	Enabled       *bool
+	TenantID         int64
+	Name             string
+	Metric           string
+	MetricType       MetricType
+	Comparator       Comparator
+	Threshold        float64
+	Severity         Severity
+	WindowSeconds    int32
+	SustainedSeconds int32
+	CooldownSeconds  int32
+	NotifyEmail      bool
+	Filters          map[string]string
+	Enabled          *bool
 }
 
 type UpdateRuleInput struct {
-	TenantID      int64
-	ID            int64
-	Name          *string
-	Metric        *string
-	Comparator    *Comparator
-	Threshold     *float64
-	Severity      *Severity
-	WindowSeconds *int32
-	Enabled       *bool
+	TenantID         int64
+	ID               int64
+	Name             *string
+	Metric           *string
+	MetricType       *MetricType
+	Comparator       *Comparator
+	Threshold        *float64
+	Severity         *Severity
+	WindowSeconds    *int32
+	SustainedSeconds *int32
+	CooldownSeconds  *int32
+	NotifyEmail      *bool
+	Filters          *map[string]string
+	Enabled          *bool
 }
 
 type ListRulesInput struct {
@@ -116,6 +148,19 @@ type CreateSilenceInput struct {
 	Reason   string
 	StartsAt time.Time
 	EndsAt   time.Time
+	Platform string
+	GroupID  string
+	Region   string
+}
+
+type UpsertFiringEventInput struct {
+	TenantID       int64
+	RuleID         int64
+	ObservedValue  float64
+	ThresholdValue float64
+	MetricValue    float64
+	Dimensions     map[string]string
+	FiredAt        time.Time
 }
 
 type ListSilencesInput struct {
@@ -141,8 +186,11 @@ type Store interface {
 	ListEnabledRules(context.Context, int64) ([]AlertRule, error)
 	ListTenantsWithEnabledRules(context.Context) ([]int64, error)
 
-	UpsertFiringEvent(context.Context, int64, int64, float64, time.Time) (AlertEvent, bool, error)
+	UpsertFiringEvent(context.Context, UpsertFiringEventInput) (AlertEvent, bool, error)
 	ResolveFiringEvent(context.Context, int64, int64, time.Time) (AlertEvent, bool, error)
+	ManualResolveEvent(context.Context, int64, int64, time.Time) (AlertEvent, error)
+	MarkEventEmailSent(context.Context, int64, int64) (AlertEvent, error)
+	MarkRuleTriggered(context.Context, int64, int64, time.Time) error
 	ListEvents(context.Context, ListEventsInput) ([]AlertEvent, error)
 
 	CreateSilence(context.Context, AlertSilence) (AlertSilence, error)

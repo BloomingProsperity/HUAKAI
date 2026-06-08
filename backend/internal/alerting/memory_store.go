@@ -39,8 +39,8 @@ func (s *MemoryStore) CreateRule(_ context.Context, rule AlertRule) (AlertRule, 
 	}
 	rule.ID = s.nextRuleID
 	s.nextRuleID++
-	s.rules[rule.ID] = rule
-	return rule, nil
+	s.rules[rule.ID] = cloneRule(rule)
+	return cloneRule(rule), nil
 }
 
 func (s *MemoryStore) UpdateRule(_ context.Context, rule AlertRule) (AlertRule, error) {
@@ -57,8 +57,9 @@ func (s *MemoryStore) UpdateRule(_ context.Context, rule AlertRule) (AlertRule, 
 		return AlertRule{}, ErrRuleExists
 	}
 	rule.CreatedAt = current.CreatedAt
-	s.rules[rule.ID] = rule
-	return rule, nil
+	rule.LastTriggeredAt = timePtr(rule.LastTriggeredAt)
+	s.rules[rule.ID] = cloneRule(rule)
+	return cloneRule(rule), nil
 }
 
 func (s *MemoryStore) DeleteRule(_ context.Context, tenantID, id int64) error {
@@ -85,7 +86,7 @@ func (s *MemoryStore) GetRule(_ context.Context, tenantID, id int64) (AlertRule,
 	if !ok || rule.TenantID != tenantID {
 		return AlertRule{}, ErrNotFound
 	}
-	return rule, nil
+	return cloneRule(rule), nil
 }
 
 func (s *MemoryStore) ListRules(_ context.Context, in ListRulesInput) ([]AlertRule, error) {
@@ -97,7 +98,7 @@ func (s *MemoryStore) ListRules(_ context.Context, in ListRulesInput) ([]AlertRu
 	out := make([]AlertRule, 0, len(s.rules))
 	for _, rule := range s.rules {
 		if rule.TenantID == in.TenantID {
-			out = append(out, rule)
+			out = append(out, cloneRule(rule))
 		}
 	}
 	sortRules(out)
@@ -113,7 +114,7 @@ func (s *MemoryStore) ListEnabledRules(_ context.Context, tenantID int64) ([]Ale
 	out := make([]AlertRule, 0, len(s.rules))
 	for _, rule := range s.rules {
 		if rule.TenantID == tenantID && rule.Enabled {
-			out = append(out, rule)
+			out = append(out, cloneRule(rule))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -140,30 +141,36 @@ func (s *MemoryStore) ListTenantsWithEnabledRules(_ context.Context) ([]int64, e
 	return out, nil
 }
 
-func (s *MemoryStore) UpsertFiringEvent(_ context.Context, tenantID, ruleID int64, observed float64, now time.Time) (AlertEvent, bool, error) {
+func (s *MemoryStore) UpsertFiringEvent(_ context.Context, in UpsertFiringEventInput) (AlertEvent, bool, error) {
 	if s == nil {
 		return AlertEvent{}, false, ErrStoreNotConfigured
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, event := range s.events {
-		if event.TenantID == tenantID && event.RuleID == ruleID && event.State == EventStateFiring {
-			event.ObservedValue = observed
-			s.events[id] = event
-			return event, false, nil
+		if event.TenantID == in.TenantID && event.RuleID == in.RuleID && event.State == EventStateFiring {
+			event.ObservedValue = in.ObservedValue
+			event.ThresholdValue = float64Ptr(in.ThresholdValue)
+			event.MetricValue = float64Ptr(in.MetricValue)
+			event.Dimensions = normalizeStringMap(in.Dimensions)
+			s.events[id] = cloneEvent(event)
+			return cloneEvent(event), false, nil
 		}
 	}
 	event := AlertEvent{
-		ID:            s.nextEventID,
-		TenantID:      tenantID,
-		RuleID:        ruleID,
-		State:         EventStateFiring,
-		ObservedValue: observed,
-		FiredAt:       now.UTC(),
+		ID:             s.nextEventID,
+		TenantID:       in.TenantID,
+		RuleID:         in.RuleID,
+		State:          EventStateFiring,
+		ObservedValue:  in.ObservedValue,
+		ThresholdValue: float64Ptr(in.ThresholdValue),
+		MetricValue:    float64Ptr(in.MetricValue),
+		Dimensions:     normalizeStringMap(in.Dimensions),
+		FiredAt:        in.FiredAt.UTC(),
 	}
 	s.nextEventID++
-	s.events[event.ID] = event
-	return event, true, nil
+	s.events[event.ID] = cloneEvent(event)
+	return cloneEvent(event), true, nil
 }
 
 func (s *MemoryStore) ResolveFiringEvent(_ context.Context, tenantID, ruleID int64, now time.Time) (AlertEvent, bool, error) {
@@ -182,6 +189,55 @@ func (s *MemoryStore) ResolveFiringEvent(_ context.Context, tenantID, ruleID int
 		}
 	}
 	return AlertEvent{}, false, nil
+}
+
+func (s *MemoryStore) ManualResolveEvent(_ context.Context, tenantID, eventID int64, now time.Time) (AlertEvent, error) {
+	if s == nil {
+		return AlertEvent{}, ErrStoreNotConfigured
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	event, ok := s.events[eventID]
+	if !ok || event.TenantID != tenantID {
+		return AlertEvent{}, ErrNotFound
+	}
+	resolvedAt := now.UTC()
+	event.State = EventStateManualResolved
+	event.ResolvedAt = &resolvedAt
+	s.events[eventID] = cloneEvent(event)
+	return cloneEvent(event), nil
+}
+
+func (s *MemoryStore) MarkEventEmailSent(_ context.Context, tenantID, eventID int64) (AlertEvent, error) {
+	if s == nil {
+		return AlertEvent{}, ErrStoreNotConfigured
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	event, ok := s.events[eventID]
+	if !ok || event.TenantID != tenantID {
+		return AlertEvent{}, ErrNotFound
+	}
+	event.EmailSent = true
+	s.events[eventID] = cloneEvent(event)
+	return cloneEvent(event), nil
+}
+
+func (s *MemoryStore) MarkRuleTriggered(_ context.Context, tenantID, ruleID int64, now time.Time) error {
+	if s == nil {
+		return ErrStoreNotConfigured
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rule, ok := s.rules[ruleID]
+	if !ok || rule.TenantID != tenantID {
+		return ErrNotFound
+	}
+	triggeredAt := now.UTC()
+	rule.LastTriggeredAt = &triggeredAt
+	rule.UpdatedAt = triggeredAt
+	s.rules[ruleID] = cloneRule(rule)
+	return nil
 }
 
 func (s *MemoryStore) ListEvents(_ context.Context, in ListEventsInput) ([]AlertEvent, error) {
@@ -345,6 +401,9 @@ func pageSilences(items []AlertSilence, limit, offset int) []AlertSilence {
 
 func cloneEvent(event AlertEvent) AlertEvent {
 	event.ResolvedAt = timePtr(event.ResolvedAt)
+	event.ThresholdValue = float64PtrFromPtr(event.ThresholdValue)
+	event.MetricValue = float64PtrFromPtr(event.MetricValue)
+	event.Dimensions = normalizeStringMap(event.Dimensions)
 	return event
 }
 
@@ -353,10 +412,29 @@ func cloneSilence(silence AlertSilence) AlertSilence {
 	return silence
 }
 
+func cloneRule(rule AlertRule) AlertRule {
+	rule.Filters = normalizeStringMap(rule.Filters)
+	rule.LastTriggeredAt = timePtr(rule.LastTriggeredAt)
+	return rule
+}
+
 func timePtr(in *time.Time) *time.Time {
 	if in == nil {
 		return nil
 	}
 	t := in.UTC()
 	return &t
+}
+
+func float64Ptr(in float64) *float64 {
+	v := in
+	return &v
+}
+
+func float64PtrFromPtr(in *float64) *float64 {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
 }

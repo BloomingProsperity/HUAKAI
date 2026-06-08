@@ -6798,7 +6798,7 @@ paths:
         - in: query
           name: state
           required: false
-          schema: { type: string, enum: [firing, resolved] }
+          schema: { type: string, enum: [firing, resolved, manual_resolved] }
         - in: query
           name: limit
           required: false
@@ -6816,6 +6816,39 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/alert-events/{id}/manual-resolve:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    post:
+      tags: [admin-alerting]
+      summary: Mark a tenant alert event manually resolved
+      operationId: adminManualResolveAlertEvent
+      x-huakai-spec-source:
+        - backend/internal/alertinghttp/event_handlers.go
+        - backend/internal/alerting/service.go
+        - backend/internal/alerting/postgres_store.go
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Alert event marked manual_resolved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertEvent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/alert-silences:
@@ -11086,12 +11119,18 @@ components:
         - backend/internal/alerting/types.go
         - backend/internal/alertinghttp/rule_handlers.go
         - docs/process/plans/2026-06-06-alert-rules-codex.md
-      required: [id, tenant_id, name, metric, comparator, threshold, severity, window_seconds, enabled, created_at, updated_at]
+      required: [id, tenant_id, name, metric, comparator, threshold, severity, window_seconds, sustained_seconds, cooldown_seconds, notify_email, enabled, created_at, updated_at]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         tenant_id: { type: integer, format: int64, minimum: 1 }
         name: { type: string, minLength: 1 }
         metric: { type: string, minLength: 1 }
+        metric_type:
+          type: string
+          enum: [cpu_usage_percent]
+        filters:
+          type: object
+          additionalProperties: { type: string }
         comparator:
           type: string
           enum: [gt, gte, lt, lte]
@@ -11100,6 +11139,10 @@ components:
           type: string
           enum: [info, warning, critical]
         window_seconds: { type: integer, format: int32, minimum: 1 }
+        sustained_seconds: { type: integer, format: int32, minimum: 0, default: 0 }
+        cooldown_seconds: { type: integer, format: int32, minimum: 0, default: 0 }
+        notify_email: { type: boolean, default: false }
+        last_triggered_at: { type: string, format: date-time }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
@@ -11135,6 +11178,12 @@ components:
           description: Required for platform_admin; tenant_operator may omit only when using its scoped tenant.
         name: { type: string, minLength: 1 }
         metric: { type: string, minLength: 1 }
+        metric_type:
+          type: string
+          enum: [cpu_usage_percent]
+        filters:
+          type: object
+          additionalProperties: { type: string }
         comparator:
           type: string
           enum: [gt, gte, lt, lte]
@@ -11143,6 +11192,9 @@ components:
           type: string
           enum: [info, warning, critical]
         window_seconds: { type: integer, format: int32, minimum: 1 }
+        sustained_seconds: { type: integer, format: int32, minimum: 0, default: 0 }
+        cooldown_seconds: { type: integer, format: int32, minimum: 0, default: 0 }
+        notify_email: { type: boolean, default: false }
         enabled:
           type: boolean
           default: true
@@ -11157,6 +11209,12 @@ components:
       properties:
         name: { type: string, minLength: 1 }
         metric: { type: string, minLength: 1 }
+        metric_type:
+          type: string
+          enum: [cpu_usage_percent]
+        filters:
+          type: object
+          additionalProperties: { type: string }
         comparator:
           type: string
           enum: [gt, gte, lt, lte]
@@ -11165,6 +11223,9 @@ components:
           type: string
           enum: [info, warning, critical]
         window_seconds: { type: integer, format: int32, minimum: 1 }
+        sustained_seconds: { type: integer, format: int32, minimum: 0 }
+        cooldown_seconds: { type: integer, format: int32, minimum: 0 }
+        notify_email: { type: boolean }
         enabled: { type: boolean }
 
     AlertEvent:
@@ -11174,17 +11235,23 @@ components:
         - backend/internal/alerting/types.go
         - backend/internal/alertinghttp/event_handlers.go
         - docs/process/plans/2026-06-06-alert-rules-codex.md
-      required: [id, tenant_id, rule_id, state, observed_value, fired_at]
+      required: [id, tenant_id, rule_id, state, observed_value, fired_at, email_sent]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         tenant_id: { type: integer, format: int64, minimum: 1 }
         rule_id: { type: integer, format: int64, minimum: 1 }
         state:
           type: string
-          enum: [firing, resolved]
+          enum: [firing, resolved, manual_resolved]
         observed_value: { type: number, format: double }
+        threshold_value: { type: number, format: double }
+        metric_value: { type: number, format: double }
+        dimensions:
+          type: object
+          additionalProperties: { type: string }
         fired_at: { type: string, format: date-time }
         resolved_at: { type: string, format: date-time }
+        email_sent: { type: boolean, default: false }
 
     AlertEventListResponse:
       type: object
@@ -11220,6 +11287,9 @@ components:
         reason: { type: string }
         starts_at: { type: string, format: date-time }
         ends_at: { type: string, format: date-time }
+        platform: { type: string }
+        group_id: { type: string }
+        region: { type: string }
         created_at: { type: string, format: date-time }
 
     AlertSilenceListResponse:
@@ -11262,6 +11332,9 @@ components:
           type: string
           format: date-time
           description: Must be later than starts_at.
+        platform: { type: string }
+        group_id: { type: string }
+        region: { type: string }
 
     UserNotification:
       type: object

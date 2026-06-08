@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -257,13 +258,14 @@ func (n *Notifier) sendAlertFiringEmail(ctx context.Context, settings Settings, 
 		return err
 	}
 	body := fmt.Sprintf(
-		"<p>A HUAKAI alert is firing.</p><p>Rule: %s</p><p>Metric: %s</p><p>Condition: %s %s</p><p>Observed: %s</p><p>Severity: %s</p><p>Fired at: %s</p>",
+		"<p>A HUAKAI alert is firing.</p><p>Rule: %s</p><p>Metric: %s</p><p>Condition: %s %s</p><p>Observed: %s</p><p>Severity: %s</p><p>Dimensions: %s</p><p>Fired at: %s</p>",
 		html.EscapeString(alert.RuleName),
 		html.EscapeString(alert.Metric),
 		html.EscapeString(alert.Comparator),
 		html.EscapeString(formatAlertFloat(alert.Threshold)),
 		html.EscapeString(formatAlertFloat(alert.ObservedValue)),
 		html.EscapeString(alert.Severity),
+		html.EscapeString(formatAlertDimensions(alert.Dimensions)),
 		html.EscapeString(alert.FiredAt.UTC().Format(time.RFC3339)),
 	)
 	msg := mailinfra.Message{
@@ -303,10 +305,12 @@ func (n *Notifier) sendAlertFiringWebhook(ctx context.Context, settings Settings
 		UserID:        settings.UserID,
 		RuleName:      alert.RuleName,
 		Metric:        alert.Metric,
+		MetricType:    alert.MetricType,
 		Comparator:    alert.Comparator,
 		Threshold:     alert.Threshold,
 		Severity:      alert.Severity,
 		ObservedValue: alert.ObservedValue,
+		Dimensions:    cloneAlertDimensions(alert.Dimensions),
 		FiredAt:       alert.FiredAt.UTC(),
 		OccurredAt:    occurredAt.UTC(),
 	})
@@ -412,24 +416,28 @@ func (n *Notifier) postJSON(ctx context.Context, rawURL string, body []byte, hea
 }
 
 type alertFiringPayload struct {
-	EventType     string    `json:"event_type"`
-	TenantID      int64     `json:"tenant_id"`
-	UserID        int64     `json:"user_id"`
-	RuleName      string    `json:"rule_name"`
-	Metric        string    `json:"metric"`
-	Comparator    string    `json:"comparator"`
-	Threshold     float64   `json:"threshold"`
-	Severity      string    `json:"severity"`
-	ObservedValue float64   `json:"observed_value"`
-	FiredAt       time.Time `json:"fired_at"`
-	OccurredAt    time.Time `json:"occurred_at"`
+	EventType     string            `json:"event_type"`
+	TenantID      int64             `json:"tenant_id"`
+	UserID        int64             `json:"user_id"`
+	RuleName      string            `json:"rule_name"`
+	Metric        string            `json:"metric"`
+	MetricType    string            `json:"metric_type,omitempty"`
+	Comparator    string            `json:"comparator"`
+	Threshold     float64           `json:"threshold"`
+	Severity      string            `json:"severity"`
+	ObservedValue float64           `json:"observed_value"`
+	Dimensions    map[string]string `json:"dimensions,omitempty"`
+	FiredAt       time.Time         `json:"fired_at"`
+	OccurredAt    time.Time         `json:"occurred_at"`
 }
 
 func normalizeAlertFiringInfo(alert AlertFiringInfo, fallback time.Time) (AlertFiringInfo, error) {
 	alert.RuleName = strings.TrimSpace(alert.RuleName)
 	alert.Metric = strings.TrimSpace(alert.Metric)
+	alert.MetricType = strings.TrimSpace(alert.MetricType)
 	alert.Comparator = strings.TrimSpace(alert.Comparator)
 	alert.Severity = strings.TrimSpace(alert.Severity)
+	alert.Dimensions = cloneAlertDimensions(alert.Dimensions)
 	if alert.RuleName == "" || alert.Metric == "" || alert.Comparator == "" || alert.Severity == "" {
 		return alert, fmt.Errorf("%w: alert firing info", ErrInvalidSettings)
 	}
@@ -441,6 +449,36 @@ func normalizeAlertFiringInfo(alert AlertFiringInfo, fallback time.Time) (AlertF
 	}
 	alert.FiredAt = alert.FiredAt.UTC()
 	return alert, nil
+}
+
+func cloneAlertDimensions(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func formatAlertDimensions(dimensions map[string]string) string {
+	if len(dimensions) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(dimensions))
+	for key, value := range dimensions {
+		parts = append(parts, key+"="+value)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 func alertFiringSummary(alert AlertFiringInfo) string {
