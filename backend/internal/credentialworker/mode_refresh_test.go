@@ -89,6 +89,25 @@ func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
 	}
 }
 
+func TestProviderFailureCooldown(t *testing.T) {
+	cases := []struct {
+		vendor string
+		want   time.Duration
+	}{
+		{vendor: "anthropic", want: time.Minute},
+		{vendor: "openai", want: time.Minute},
+		{vendor: "gemini", want: 0},
+		{vendor: "unknown", want: time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.vendor, func(t *testing.T) {
+			if got := providerFailureCooldown(tc.vendor); got != tc.want {
+				t.Fatalf("providerFailureCooldown(%q)=%s, want %s", tc.vendor, got, tc.want)
+			}
+		})
+	}
+}
+
 func assertOperatorBoundOAuthModeAdapter(t *testing.T, adapter ModeRefreshAdapter) {
 	t.Helper()
 	if _, ok := adapter.(legacyOAuthModeAdapter); ok {

@@ -36,6 +36,7 @@ type Scheduler struct {
 	warningWindow    time.Duration
 	limit            int32
 	maxAttempts      int
+	refreshTimeout   time.Duration
 	backoff          func(attempt int) time.Duration
 	sleep            func(context.Context, time.Duration) error
 	now              func() time.Time
@@ -258,10 +259,18 @@ func (s *Scheduler) refreshWithBackoff(ctx context.Context, account dbbilling.Li
 	var last error
 	for attempt := 1; attempt <= s.maxAttempts; attempt++ {
 		refresher := s.refresherForAccount(account)
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if s.refreshTimeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, s.refreshTimeout)
+		}
 		if aware, ok := refresher.(ProviderAwareRefresher); ok {
-			last = aware.RefreshForProvider(ctx, account.ProviderID, account.ID)
+			last = aware.RefreshForProvider(attemptCtx, account.ProviderID, account.ID)
 		} else {
-			last = refresher.Refresh(ctx, account.ID)
+			last = refresher.Refresh(attemptCtx, account.ID)
+		}
+		if cancel != nil {
+			cancel()
 		}
 		if last == nil || attempt == s.maxAttempts {
 			return last

@@ -23,6 +23,14 @@ func WithInterval(d time.Duration) Option {
 	}
 }
 
+func WithRefreshTimeout(d time.Duration) Option {
+	return func(s *Scheduler) {
+		if d > 0 {
+			s.refreshTimeout = d
+		}
+	}
+}
+
 func WithWarningWindow(d time.Duration) Option {
 	return func(s *Scheduler) {
 		if d > 0 {

@@ -3,6 +3,8 @@ package openrouter
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -58,6 +60,60 @@ func TestPassthroughAdapter_BuildRequest_AttributionHeaders(t *testing.T) {
 	}
 	if got := req.Header.Get("X-Title"); got != "HUAKAI Gateway" {
 		t.Errorf("X-Title=%q", got)
+	}
+}
+
+func TestPassthroughAdapter_BuildRequest_ZDRExtraInjectsProviderPreference(t *testing.T) {
+	a := &PassthroughAdapter{}
+	in := provider.BuildInput{
+		InboundBody: []byte(`{"model":"openai/gpt-4o","messages":[]}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "sk-or",
+			Extra: map[string]string{"openrouter_zdr": "true"},
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("request body is not JSON: %v; body=%s", err, string(body))
+	}
+	providerPrefs, ok := out["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider preferences missing from body: %s", string(body))
+	}
+	if got, ok := providerPrefs["zdr"].(bool); !ok || !got {
+		t.Fatalf("provider.zdr=%v (ok=%t), want true", providerPrefs["zdr"], ok)
+	}
+}
+
+func TestPassthroughAdapter_BuildRequest_ZDRAbsentLeavesBodyUnchanged(t *testing.T) {
+	a := &PassthroughAdapter{}
+	body := []byte(`{"model":"openai/gpt-4o","messages":[]}`)
+	in := provider.BuildInput{
+		InboundBody: body,
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "sk-or",
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("body changed without openrouter_zdr extra: got %s want %s", string(got), string(body))
 	}
 }
 
