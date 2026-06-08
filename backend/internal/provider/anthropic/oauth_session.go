@@ -75,6 +75,9 @@ func (a *OAuthSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	if betas := in.Credential.Extra["anthropic_beta"]; betas != "" {
 		req.Header.Set("Anthropic-Beta", betas)
 	}
+	// DEVPIN-02: OAuth/session 路(池账号主出口)同样要带 Claude Code 设备指纹,
+	// 否则裸 relay 一眼被上游识别。复用 DEVPIN-01 的 per-account 钉定 helper。
+	applyClaudeDeviceProfile(req.Header, resolveAccountDeviceProfile(in.Account.AccountID))
 	return req, nil
 }
 
