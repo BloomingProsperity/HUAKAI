@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,6 +32,8 @@ func proxyDialerFromURL(proxyURL *url.URL) (ProxyDialerFunc, error) {
 	switch strings.ToLower(proxyURL.Scheme) {
 	case "http", "https":
 		return httpConnectDialer(proxyURL), nil
+	case "socks5", "socks5h":
+		return socks5Dialer(proxyURL), nil
 	default:
 		return nil, fmt.Errorf("mimicry proxy: 暂不支持的代理 scheme %q(伪装路仅支持 http/https CONNECT)", proxyURL.Scheme)
 	}
@@ -113,3 +117,118 @@ type bufferedConn struct {
 }
 
 func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// socks5Dialer 返回经 SOCKS5 代理拨号的 ProxyDialerFunc(手写握手,不引 x/net)。
+// 用 domain atyp(0x03)让代理端解析目标(socks5h 语义),适配住宅代理出口。
+func socks5Dialer(proxyURL *url.URL) ProxyDialerFunc {
+	return func(ctx context.Context, _, addr string) (net.Conn, error) {
+		host, portStr, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("mimicry proxy: socks5 target %q: %w", addr, err)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			return nil, fmt.Errorf("mimicry proxy: socks5 bad port %q", portStr)
+		}
+		d := &net.Dialer{Timeout: 30 * time.Second}
+		conn, err := d.DialContext(ctx, "tcp", proxyURL.Host)
+		if err != nil {
+			return nil, fmt.Errorf("mimicry proxy: 拨号 socks5 %s 失败: %w", proxyURL.Host, err)
+		}
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = conn.SetDeadline(deadline)
+		}
+		if err := socks5Handshake(conn, proxyURL.User, host, port); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		_ = conn.SetDeadline(time.Time{})
+		return conn, nil
+	}
+}
+
+// socks5Handshake 跑 SOCKS5 客户端握手(method negotiation + 可选 user/pass 认证
+// + CONNECT),成功后 conn 即到目标的隧道。
+func socks5Handshake(conn net.Conn, user *url.Userinfo, host string, port int) error {
+	hasAuth := user != nil && user.Username() != ""
+	if hasAuth {
+		if _, err := conn.Write([]byte{0x05, 0x02, 0x00, 0x02}); err != nil {
+			return err
+		}
+	} else {
+		if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+			return err
+		}
+	}
+	sel := make([]byte, 2)
+	if _, err := io.ReadFull(conn, sel); err != nil {
+		return fmt.Errorf("socks5: read method: %w", err)
+	}
+	if sel[0] != 0x05 {
+		return fmt.Errorf("socks5: bad version %d", sel[0])
+	}
+	switch sel[1] {
+	case 0x00:
+		// no auth
+	case 0x02:
+		if !hasAuth {
+			return fmt.Errorf("socks5: server demands auth but no credentials")
+		}
+		u := user.Username()
+		pw, _ := user.Password()
+		if len(u) > 255 || len(pw) > 255 {
+			return fmt.Errorf("socks5: credential too long")
+		}
+		buf := []byte{0x01, byte(len(u))}
+		buf = append(buf, u...)
+		buf = append(buf, byte(len(pw)))
+		buf = append(buf, pw...)
+		if _, err := conn.Write(buf); err != nil {
+			return err
+		}
+		ar := make([]byte, 2)
+		if _, err := io.ReadFull(conn, ar); err != nil {
+			return fmt.Errorf("socks5: read auth reply: %w", err)
+		}
+		if ar[1] != 0x00 {
+			return fmt.Errorf("socks5: auth failed (status=%d)", ar[1])
+		}
+	default:
+		return fmt.Errorf("socks5: unacceptable method %d", sel[1])
+	}
+	if len(host) > 255 {
+		return fmt.Errorf("socks5: host too long")
+	}
+	req := []byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}
+	req = append(req, host...)
+	req = append(req, byte(port>>8), byte(port&0xff))
+	if _, err := conn.Write(req); err != nil {
+		return err
+	}
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(conn, head); err != nil {
+		return fmt.Errorf("socks5: read connect reply: %w", err)
+	}
+	if head[1] != 0x00 {
+		return fmt.Errorf("socks5: CONNECT rejected (rep=%d)", head[1])
+	}
+	var addrLen int
+	switch head[3] {
+	case 0x01:
+		addrLen = 4
+	case 0x04:
+		addrLen = 16
+	case 0x03:
+		l := make([]byte, 1)
+		if _, err := io.ReadFull(conn, l); err != nil {
+			return fmt.Errorf("socks5: read bnd len: %w", err)
+		}
+		addrLen = int(l[0])
+	default:
+		return fmt.Errorf("socks5: bad reply atyp %d", head[3])
+	}
+	if _, err := io.ReadFull(conn, make([]byte, addrLen+2)); err != nil {
+		return fmt.Errorf("socks5: read bind addr: %w", err)
+	}
+	return nil
+}
