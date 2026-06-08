@@ -195,3 +195,31 @@ func TestPassthroughAdapter_AcceptableCredentialTypes(t *testing.T) {
 		t.Fatalf("AcceptableCredentialTypes 长度=%d want 2", len(got))
 	}
 }
+
+// Item #2 of the anti-ban parity program (Owner「都要·必须开着」). MUTATION: removing
+// the applyClaudeDeviceProfile call leaves these headers empty → the genuine Claude
+// Code client signature is absent → upstream can fingerprint us as not-the-real-client.
+func TestPassthroughAdapter_BuildRequest_ClaudeDeviceProfile(t *testing.T) {
+	a := &PassthroughAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "claude-3-5-sonnet-20241022",
+		InboundBody:     []byte(`{"model":"claude-3-5-sonnet-20241022","max_tokens":16,"messages":[]}`),
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-ant-test"},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string]string{
+		"User-Agent":                  "claude-cli/2.1.63 (external, cli)",
+		"X-Stainless-Package-Version": "0.74.0",
+		"X-Stainless-Runtime-Version": "v24.3.0",
+		"X-Stainless-Os":              "MacOS",
+		"X-Stainless-Arch":            "arm64",
+	}
+	for k, want := range checks {
+		if got := req.Header.Get(k); got != want {
+			t.Fatalf("device-profile header %s=%q want %q", k, got, want)
+		}
+	}
+}
