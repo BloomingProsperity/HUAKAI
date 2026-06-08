@@ -104,6 +104,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	applyClaudeDeviceProfile(req.Header, resolveAccountDeviceProfile(in.Account.AccountID))
+	stampClaudeCodeStaticHeaders(req.Header)
 
 	// 可选 anthropic-beta（如 prompt-caching / computer-use 等 beta 特性）
 	if betas := in.Credential.Extra["anthropic_beta"]; betas != "" {
@@ -140,4 +141,23 @@ func applyClaudeDeviceProfile(h http.Header, p claudeDeviceProfile) {
 	h.Set("X-Stainless-Runtime-Version", p.runtimeVersion)
 	h.Set("X-Stainless-Os", p.os)
 	h.Set("X-Stainless-Arch", p.arch)
+}
+
+// stampClaudeCodeStaticHeaders 补全真实 Claude Code 客户端固定带、HUAKAI 之前漏掉
+// 的那组 Stainless/CLI 头(CLAUDEHDR-01)。少这些头本身就是 relay 的 tell。
+// SetIfEmpty 语义:caller 已设的值不覆盖。Accept-Encoding 故意不在这里强制浏览器
+// 化(需先有响应解压链 RR-01,否则会破 br/zstd 响应),留给后续。
+func stampClaudeCodeStaticHeaders(h http.Header) {
+	setHeaderIfEmpty(h, "X-App", "cli")
+	setHeaderIfEmpty(h, "X-Stainless-Retry-Count", "0")
+	setHeaderIfEmpty(h, "X-Stainless-Runtime", "node")
+	setHeaderIfEmpty(h, "X-Stainless-Lang", "js")
+	setHeaderIfEmpty(h, "X-Stainless-Timeout", "600")
+	setHeaderIfEmpty(h, "Connection", "keep-alive")
+}
+
+func setHeaderIfEmpty(h http.Header, key, value string) {
+	if h.Get(key) == "" {
+		h.Set(key, value)
+	}
 }
