@@ -54,6 +54,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userauditloghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/videoclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/voucherhttp"
 )
 
 func (d *deps) AdminObservabilityAuth() gatewayhttp.AdminObservabilityAuth {
@@ -182,6 +183,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		}))
 		r.Get("/referrals/rewards", referralhttp.NewUserReferralRewardsHandler(referralhttp.Deps{
 			Service: d.invitationService,
+		}))
+		r.Get("/voucher-redemptions", voucherhttp.NewRedemptionHistoryHandler(voucherhttp.Deps{
+			Service: d.voucherService,
 		}))
 	})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))

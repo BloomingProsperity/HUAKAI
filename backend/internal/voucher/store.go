@@ -14,6 +14,7 @@ type Store interface {
 	GetBatch(context.Context, int64, int64) (GetBatchResult, error)
 	RevokeVoucher(context.Context, RevokeInput) (Voucher, error)
 	Redeem(context.Context, redeemRecord) (RedeemResult, error)
+	ListRedemptionsByUser(context.Context, int64, int64, int) ([]Redemption, error)
 	BillingEvents(context.Context, int64, int64) ([]BillingEvent, error)
 }
 

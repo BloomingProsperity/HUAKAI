@@ -274,6 +274,22 @@ func (s *Service) BillingEvents(ctx context.Context, tenantID, userID int64) ([]
 	return s.store.BillingEvents(ctx, tenantID, userID)
 }
 
+func (s *Service) ListRedemptionsByUser(ctx context.Context, tenantID, userID int64, limit int) ([]Redemption, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return nil, ErrInvalidInput
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return s.store.ListRedemptionsByUser(ctx, tenantID, userID, limit)
+}
+
 func (s *Service) emit(ctx context.Context, event AuditEvent) error {
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now().UTC()

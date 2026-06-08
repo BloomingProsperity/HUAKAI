@@ -94,8 +94,13 @@ func TestPlanViewCapRendering(t *testing.T) {
 // ---- 5d: 订阅券创建端点 ----
 
 type fakeSubscriptionService struct {
-	plan       subscription.Plan
-	getPlanErr error
+	plan              subscription.Plan
+	getPlanErr        error
+	listByGroupCalled bool
+	listByGroupTenant int64
+	listByGroup       string
+	listByGroupLimit  int
+	listByGroupResult []subscription.UserSubscription
 }
 
 func (f *fakeSubscriptionService) CreatePlan(context.Context, subscription.CreatePlanInput) (subscription.Plan, error) {
@@ -140,6 +145,13 @@ func (f *fakeSubscriptionService) GetSubscription(context.Context, int64, int64)
 }
 func (f *fakeSubscriptionService) ListUserSubscriptions(context.Context, int64, int64) ([]subscription.UserSubscription, error) {
 	return nil, nil
+}
+func (f *fakeSubscriptionService) ListUserSubscriptionsByGroup(_ context.Context, tenantID int64, group string, limit int) ([]subscription.UserSubscription, error) {
+	f.listByGroupCalled = true
+	f.listByGroupTenant = tenantID
+	f.listByGroup = group
+	f.listByGroupLimit = limit
+	return f.listByGroupResult, nil
 }
 func (f *fakeSubscriptionService) ListAuditEvents(context.Context, int64, int64) ([]subscription.AuditEvent, error) {
 	return nil, nil
@@ -284,5 +296,43 @@ func TestCreateSubscriptionVoucherNilVoucherServiceReturns503(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// 守 SUB-045: 后台 assignments 支持按 granted_group 只读筛选, 不再强制 user_id。
+// MUTATION: handler 仍只走 user_id 路径 → group 查询 400 或未调用 ListUserSubscriptionsByGroup → 红。
+func TestAdminListAssignmentsByGroupUsesGroupFilter(t *testing.T) {
+	svc := &fakeSubscriptionService{listByGroupResult: []subscription.UserSubscription{
+		{ID: 1, TenantID: 5, UserID: 7, GrantedGroup: "vip"},
+		{ID: 2, TenantID: 5, UserID: 8, GrantedGroup: "vip"},
+	}}
+	d := AdminDeps{
+		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
+		Service: svc,
+	}
+	router := newSubAdminTestRouter(d)
+
+	req := httptest.NewRequest(http.MethodGet, "/subs/assignments?tenant_id=5&group=vip&limit=10", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !svc.listByGroupCalled {
+		t.Fatal("group query must call ListUserSubscriptionsByGroup")
+	}
+	if svc.listByGroupTenant != 5 || svc.listByGroup != "vip" || svc.listByGroupLimit != 10 {
+		t.Fatalf("group call = tenant %d group %q limit %d, want 5/vip/10",
+			svc.listByGroupTenant, svc.listByGroup, svc.listByGroupLimit)
+	}
+	var resp struct {
+		Subscriptions []adminSubscriptionView `json:"subscriptions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Subscriptions) != 2 {
+		t.Fatalf("subscriptions len=%d want 2; body=%s", len(resp.Subscriptions), rec.Body.String())
 	}
 }

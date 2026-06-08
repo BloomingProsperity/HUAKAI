@@ -28,6 +28,7 @@ type Store interface {
 	AssignSubscription(ctx context.Context, rec assignRecord) (AssignResult, error)
 	GetSubscription(ctx context.Context, tenantID, subscriptionID int64) (UserSubscription, error)
 	ListUserSubscriptions(ctx context.Context, tenantID, userID int64) ([]UserSubscription, error)
+	ListUserSubscriptionsByGroup(ctx context.Context, tenantID int64, grantedGroup string, limit int) ([]UserSubscription, error)
 	SetAutoRenew(ctx context.Context, tenantID, userID int64, autoRenew bool) (UserSubscription, error)
 	// CancelSubscription: 标 cancelled + 关闭 quota 策略 + 降级 users.user_group (受 downgrade 守卫), 单事务。
 	CancelSubscription(ctx context.Context, rec lifecycleRecord) (UserSubscription, error)

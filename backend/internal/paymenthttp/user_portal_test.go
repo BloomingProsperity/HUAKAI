@@ -295,6 +295,71 @@ func TestPortalConfigReportsRangeAndProviders(t *testing.T) {
 	}
 }
 
+// 守 PAY-071: 快捷充值金额只返回配置范围内的建议档, 且升序; create-topup 仍只按 min/max 裁决。
+// MUTATION: presetAmounts 返原始配置未过滤/未排序 → 响应含 50/100000 或顺序错误 → 红。
+func TestPresetAmountsClamp(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cfg     PortalConfig
+		want    []int64
+		comment string
+	}{
+		{
+			name: "drops_out_of_range_and_sorts_boundary_values",
+			cfg: PortalConfig{
+				MinTopupCents:     100,
+				MaxTopupCents:     50_000,
+				PresetAmountCents: []int64{50, 100, 100_000, 1000},
+			},
+			want: []int64{100, 1000},
+		},
+		{
+			name: "keeps_in_range_values",
+			cfg: PortalConfig{
+				MinTopupCents:     100,
+				MaxTopupCents:     50_000,
+				PresetAmountCents: []int64{50, 200, 100_000, 1000},
+			},
+			want: []int64{200, 1000},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &portalService{}
+			ident := sessionauth.SessionIdentity{TenantID: 7, UserID: 42}
+			router := mountPortalWithSession(svc, UserDeps{Portal: tc.cfg, RefundRequests: NewMemoryRefundRequestRecorder()}, ident)
+
+			req := httptest.NewRequest(http.MethodGet, "/config", nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("config status=%d want 200; body=%s", rec.Code, rec.Body.String())
+			}
+			var resp struct {
+				Config portalConfigView `json:"config"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got := resp.Config.PresetAmountCents; !equalInt64s(got, tc.want) {
+				t.Fatalf("preset_amount_cents=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func equalInt64s(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // 守内存退款申请幂等: 同一订单重复申请返回既有 pending, 不重复建。
 func TestMemoryRefundRequestRecorderIdempotent(t *testing.T) {
 	rec := NewMemoryRefundRequestRecorder()

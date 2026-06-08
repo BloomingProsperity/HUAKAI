@@ -309,6 +309,21 @@ func (s *Service) ListUserSubscriptions(ctx context.Context, tenantID, userID in
 	return s.store.ListUserSubscriptions(ctx, tenantID, userID)
 }
 
+// ListUserSubscriptionsByGroup 按授予分组列租户内订阅 (任意状态), 供 admin 只读筛选。
+func (s *Service) ListUserSubscriptionsByGroup(ctx context.Context, tenantID int64, grantedGroup string, limit int) ([]UserSubscription, error) {
+	grantedGroup = strings.TrimSpace(grantedGroup)
+	if tenantID <= 0 || grantedGroup == "" {
+		return nil, ErrInvalidInput
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return s.store.ListUserSubscriptionsByGroup(ctx, tenantID, grantedGroup, limit)
+}
+
 // SetAutoRenew 设置某用户当前 active 订阅的续订开关; false 只关续订, 不取消当前权益。
 func (s *Service) SetAutoRenew(ctx context.Context, tenantID, userID int64, autoRenew bool) (UserSubscription, error) {
 	if tenantID <= 0 || userID <= 0 {

@@ -216,6 +216,31 @@ func (s *MemoryStore) BillingEvents(_ context.Context, tenantID, userID int64) (
 	return out, nil
 }
 
+func (s *MemoryStore) ListRedemptionsByUser(_ context.Context, tenantID, userID int64, limit int) ([]Redemption, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Redemption
+	for _, red := range s.redemptions {
+		if red.TenantID != tenantID || red.UserID != userID {
+			continue
+		}
+		if red.Status == "" {
+			red.Status = "succeeded"
+		}
+		out = append(out, red)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].RedeemedAt.Equal(out[j].RedeemedAt) {
+			return out[i].RedeemedAt.After(out[j].RedeemedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (s *MemoryStore) nextIDLocked(kind string) int64 {
 	switch kind {
 	case "voucher":

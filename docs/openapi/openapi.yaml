@@ -4361,6 +4361,28 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/voucher-redemptions:
+    get:
+      tags: [user-vouchers]
+      summary: List the authenticated User's voucher redemption history
+      operationId: listMyVoucherRedemptions
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Caller's voucher redemptions, newest first. Read-only; never changes balance, billing, or voucher state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoucherRedemptionHistoryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/users/me/recharges:
     post:
       tags: [user-recharges]
@@ -4704,6 +4726,10 @@ paths:
                     properties:
                       min_topup_cents: { type: integer, format: int64 }
                       max_topup_cents: { type: integer, format: int64 }
+                      preset_amount_cents:
+                        type: array
+                        items: { type: integer, format: int64 }
+                        description: Sorted suggested top-up amounts within the configured min/max range.
                       currency_code: { type: string }
                       providers: { type: array, items: { type: object } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -5669,7 +5695,7 @@ paths:
   /v1/admin/subscriptions/assignments:
     get:
       tags: [admin-subscriptions]
-      summary: List a tenant user's subscriptions
+      summary: List tenant subscriptions by user or granted group
       operationId: adminListSubscriptions
       x-huakai-spec-source: [docs/process/plans/2026-05-29-payment-p3a-impl-claude.md]
       x-huakai-required-role: platform_admin
@@ -5680,11 +5706,21 @@ paths:
           schema: { type: integer, format: int64, minimum: 1 }
         - in: query
           name: user_id
-          required: true
+          required: false
           schema: { type: integer, format: int64, minimum: 1 }
+          description: Existing user-scoped read path. Required when group is absent.
+        - in: query
+          name: group
+          required: false
+          schema: { type: string, minLength: 1 }
+          description: granted_group filter for SUB-045 by-group read path. Takes precedence when present.
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
       responses:
         '200':
-          description: User subscriptions.
+          description: User subscriptions or granted_group subscriptions.
           content:
             application/json:
               schema:
@@ -10252,6 +10288,28 @@ components:
         billing_event_id: { type: integer, format: int64 }
         redeemed_at: { type: string, format: date-time }
         code_fingerprint: { type: string }
+
+    VoucherRedemptionHistoryItem:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/voucher-system.md]
+      required: [voucher_id, amount_cents, currency_code, status, redeemed_at, billing_event_id]
+      properties:
+        voucher_id: { type: integer, format: int64 }
+        amount_cents: { type: integer, format: int64 }
+        currency_code: { type: string }
+        status: { type: string, enum: [succeeded] }
+        redeemed_at: { type: string, format: date-time }
+        billing_event_id: { type: integer, format: int64 }
+
+    VoucherRedemptionHistoryResponse:
+      type: object
+      additionalProperties: false
+      required: [redemptions]
+      properties:
+        redemptions:
+          type: array
+          items: { $ref: '#/components/schemas/VoucherRedemptionHistoryItem' }
 
     VoucherBatch:
       type: object

@@ -83,6 +83,44 @@ func TestSubscriptionPostgres_DuplicateAssignNoDoubleEntitlement(t *testing.T) {
 	}
 }
 
+// SUB-045: 后台按 granted_group 查询订阅必须只返回该组, 且包含全状态。
+// MUTATION: 去掉 granted_group WHERE → tenant 内 3 条订阅都会返回, 本测试从 2 变 3 后变红。
+func TestListSubscriptionsByGroup(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+	vipPlan := createPremiumPlan(t, ctx, svc, f.tenantA, "vip")
+	basicPlan := createPremiumPlan(t, ctx, svc, f.tenantA, "basic")
+
+	if _, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantA, UserID: f.userA, PlanID: vipPlan.ID, ActorAdminID: 7}); err != nil {
+		t.Fatalf("assign vip userA: %v", err)
+	}
+	if _, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantA, UserID: f.userA2, PlanID: vipPlan.ID, ActorAdminID: 7}); err != nil {
+		t.Fatalf("assign vip userA2: %v", err)
+	}
+	if _, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantA, UserID: f.userA, PlanID: basicPlan.ID, ActorAdminID: 7}); err != nil {
+		t.Fatalf("assign basic userA: %v", err)
+	}
+
+	subs, err := svc.ListUserSubscriptionsByGroup(ctx, f.tenantA, "vip", 10)
+	if err != nil {
+		t.Fatalf("list by group: %v", err)
+	}
+	if len(subs) != 2 {
+		t.Fatalf("vip subscriptions len=%d want 2: %+v", len(subs), subs)
+	}
+	for _, sub := range subs {
+		if sub.GrantedGroup != "vip" {
+			t.Fatalf("returned non-vip subscription: %+v", sub)
+		}
+		if sub.TenantID != f.tenantA {
+			t.Fatalf("returned cross-tenant subscription: %+v", sub)
+		}
+	}
+}
+
 // S2: 授予 → users.user_group 升到 granted_group, prev_user_group 记 default。
 func TestSubscriptionPostgres_AssignUpgradesUserGroup(t *testing.T) {
 	ctx := context.Background()

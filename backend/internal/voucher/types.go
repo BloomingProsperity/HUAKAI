@@ -83,6 +83,7 @@ type Redemption struct {
 	IdempotencyKey   string    `json:"idempotency_key,omitempty"`
 	AmountCents      int64     `json:"amount_cents"`
 	CurrencyCode     string    `json:"currency_code"`
+	Status           string    `json:"status,omitempty"`
 	SingleUsePerUser bool      `json:"single_use_per_user"`
 	SourceIPHash     string    `json:"source_ip_hash,omitempty"`
 	RequestID        string    `json:"request_id,omitempty"`

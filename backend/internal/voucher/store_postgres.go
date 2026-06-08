@@ -359,6 +359,37 @@ func (s *PostgresStore) fulfillSubscriptionRedemption(ctx context.Context, tx pg
 	}, nil
 }
 
+func (s *PostgresStore) ListRedemptionsByUser(ctx context.Context, tenantID, userID int64, limit int) ([]Redemption, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, tenant_id, voucher_id, user_id, COALESCE(idempotency_key, ''), amount_cents, currency_code,
+	single_use_per_user, status, source_ip_hash, COALESCE(request_id, ''), COALESCE(billing_event_id, 0), redeemed_at
+FROM voucher_redemption
+WHERE tenant_id=$1 AND user_id=$2
+ORDER BY redeemed_at DESC
+LIMIT $3`, tenantID, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("voucher: list redemptions by user: %w", err)
+	}
+	defer rows.Close()
+	var out []Redemption
+	for rows.Next() {
+		var red Redemption
+		if err := rows.Scan(
+			&red.ID, &red.TenantID, &red.VoucherID, &red.UserID, &red.IdempotencyKey,
+			&red.AmountCents, &red.CurrencyCode, &red.SingleUsePerUser, &red.Status,
+			&red.SourceIPHash, &red.RequestID, &red.BillingEventID, &red.RedeemedAt,
+		); err != nil {
+			return nil, err
+		}
+		red.RedeemedAt = red.RedeemedAt.UTC()
+		out = append(out, red)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) BillingEvents(ctx context.Context, tenantID, userID int64) ([]BillingEvent, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured

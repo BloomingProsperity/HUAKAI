@@ -258,6 +258,22 @@ func (m *memoryStore) ListUserSubscriptions(_ context.Context, tenantID, userID 
 	return out, nil
 }
 
+func (m *memoryStore) ListUserSubscriptionsByGroup(_ context.Context, tenantID int64, grantedGroup string, limit int) ([]UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []UserSubscription
+	for k, sub := range m.subs {
+		if k.tenant == tenantID && sub.GrantedGroup == grantedGroup {
+			out = append(out, sub)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (m *memoryStore) SetAutoRenew(_ context.Context, tenantID, userID int64, autoRenew bool) (UserSubscription, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
