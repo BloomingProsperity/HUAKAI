@@ -42,6 +42,7 @@ type ModeRefreshInput struct {
 	AuthMode          string
 	Payload           []byte
 	Now               time.Time
+	ProbeModel        string
 }
 
 type ModeRefreshResult struct {

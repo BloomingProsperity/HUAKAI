@@ -18,6 +18,8 @@ SELECT
     pa.health_state,
     pa.health_state_until,
     pa.enabled,
+    pa.last_probe_latency_ms,
+    pa.last_probe_at,
     COALESCE(ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
     COALESCE(ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
     ac.failure_class,
@@ -54,6 +56,8 @@ type GetAdminProviderAccountHealthRow struct {
 	HealthState        string             `db:"health_state" json:"health_state"`
 	HealthStateUntil   pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
 	Enabled            bool               `db:"enabled" json:"enabled"`
+	LastProbeLatencyMS *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
+	LastProbeAt        pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
 	LastRefreshAt      pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
 	LastRefreshOutcome *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
 	FailureClass       *string            `db:"failure_class" json:"failure_class"`
@@ -70,6 +74,8 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.HealthState,
 		&i.HealthStateUntil,
 		&i.Enabled,
+		&i.LastProbeLatencyMS,
+		&i.LastProbeAt,
 		&i.LastRefreshAt,
 		&i.LastRefreshOutcome,
 		&i.FailureClass,

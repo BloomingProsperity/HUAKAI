@@ -41,6 +41,7 @@ sql:
           expected_ja3_hash: ExpectedJA3Hash
           ja3: JA3
           ja4: JA4
+          last_probe_latency_ms: LastProbeLatencyMS
   - engine: postgresql
     schema: sql/migrations
     queries:

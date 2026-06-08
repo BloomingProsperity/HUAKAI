@@ -65,6 +65,7 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 			TenantID:       r.TenantID,
 			ProtocolFamily: r.UpstreamProtocol,
 			Priority:       int(r.Priority),
+			Weight:         r.StaticWeight,
 			MaxConcurrency: int(r.CapConcurrency),
 			LoadRate:       loadRate(r.InFlightCount, r.CapConcurrency),
 			// MaxWaiting feeds the selector's WaitPlan fallback path

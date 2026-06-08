@@ -351,6 +351,56 @@ func TestDBAccountSource_ListByPoolGroup(t *testing.T) {
 	}
 }
 
+func TestStaticWeightSelection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pgPool := openIntegrationPool(t, ctx)
+	seed := seedAdapterGraph(t, ctx, pgPool, "static-weight")
+
+	if _, err := pgPool.Exec(ctx,
+		`UPDATE provider_accounts SET static_weight = 1, priority = 10, in_flight_count = 0, last_dispatch_at = NULL WHERE id = $1`,
+		seed.providerAccountID,
+	); err != nil {
+		t.Fatalf("seed low-weight provider account: %v", err)
+	}
+
+	suffix := uuid.NewString()
+	var heavyAccountID int64
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO provider_accounts (
+			tenant_id, provider_id, channel_id, name, account_type,
+			cap_concurrency, in_flight_count, priority, last_dispatch_at, static_weight
+		) VALUES ($1, $2, $3, $4, 'api_key', 2, 0, 10, NULL, 4) RETURNING id`,
+		seed.tenantID, seed.providerID, seed.channelID, "acct-heavy-"+suffix,
+	).Scan(&heavyAccountID); err != nil {
+		t.Fatalf("seed heavy provider account: %v", err)
+	}
+
+	selector := NewDefaultSelector(
+		NewDBAccountSource(dbbilling.New(pgPool)),
+		WithRoutingPolicySource(&stubPolicy{p: &RoutingPolicy{SelectionMode: "priority_weighted"}}),
+		WithSlotManager(newMemSlotManager()),
+	)
+	counts := map[int64]int{}
+	for i := 0; i < 1000; i++ {
+		res, err := selector.Select(ctx, SelectionRequest{
+			TenantID:    seed.tenantID,
+			PoolGroupID: seed.poolGroupID,
+		})
+		if err != nil {
+			t.Fatalf("Select iteration %d: %v", i, err)
+		}
+		counts[res.AccountID]++
+	}
+	share := float64(counts[heavyAccountID]) / 1000.0
+	// MUTATION: DBAccountSource 不把 static_weight 写入 AccountSnapshot.Weight 时,
+	// 两个同优先级账号退化为约 50/50, 不会落在 70%-85% 窗口。
+	if share < 0.70 || share > 0.85 {
+		t.Fatalf("heavy account selected %d/1000 (share %.3f), want weight-4 share in [0.70,0.85]; counts=%v",
+			counts[heavyAccountID], share, counts)
+	}
+}
+
 func TestDBAccountSource_ListByPoolGroupFiltersProtocolFamily(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

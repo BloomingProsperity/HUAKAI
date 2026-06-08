@@ -148,6 +148,66 @@ func TestListAdminProviderAccounts_StateFilterMatchesPost0056Enum(t *testing.T) 
 	}
 }
 
+func TestTagFilter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openAdminAuditIntegrationPool(t, ctx)
+	q := New(pool)
+
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	var tenantID, providerID, poolGroupID, channelID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
+		"admin-tag-filter-"+suffix,
+	).Scan(&tenantID); err != nil {
+		t.Fatalf("insert tenant: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM channels WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM providers WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id = $1`, tenantID)
+	})
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
+		 VALUES ($1, $2, 'Admin Tag Provider', 'openai_chat') RETURNING id`,
+		tenantID, "admin-tag-"+suffix,
+	).Scan(&providerID); err != nil {
+		t.Fatalf("insert provider: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO pool_groups (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+		tenantID, "admin-tag-pool-"+suffix,
+	).Scan(&poolGroupID); err != nil {
+		t.Fatalf("insert pool group: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`,
+		tenantID, poolGroupID, "admin-tag-channel-"+suffix,
+	).Scan(&channelID); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+
+	prodA := insertAdminTaggedProviderAccount(t, ctx, pool, tenantID, providerID, channelID, "prod-a-"+suffix, []string{"prod", "blue"})
+	prodB := insertAdminTaggedProviderAccount(t, ctx, pool, tenantID, providerID, channelID, "prod-b-"+suffix, []string{"prod"})
+	dev := insertAdminTaggedProviderAccount(t, ctx, pool, tenantID, providerID, channelID, "dev-"+suffix, []string{"dev"})
+
+	rows, err := q.ListAdminProviderAccounts(ctx, ListAdminProviderAccountsParams{
+		TenantID:   tenantID,
+		LimitCount: 10,
+		TagFilter:  "prod",
+	})
+	if err != nil {
+		t.Fatalf("list provider accounts by tag: %v", err)
+	}
+	got := providerAccountIDs(rows)
+	if len(got) != 2 || got[0] != prodA || got[1] != prodB {
+		t.Fatalf("tag=prod ids=%v want exactly [%d %d]; dev id %d must be excluded", got, prodA, prodB, dev)
+	}
+}
+
 func insertAdminStateFilterProviderAccount(
 	t *testing.T,
 	ctx context.Context,
@@ -168,6 +228,29 @@ func insertAdminStateFilterProviderAccount(
 		tenantID, providerID, channelID, "admin-state-"+healthState+"-"+suffix, enabled, healthState,
 	).Scan(&id); err != nil {
 		t.Fatalf("insert provider account health_state=%s: %v", healthState, err)
+	}
+	return id
+}
+
+func insertAdminTaggedProviderAccount(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	tenantID int64,
+	providerID int64,
+	channelID int64,
+	name string,
+	tags []string,
+) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO provider_accounts (
+			tenant_id, provider_id, channel_id, name, account_type, tags
+		) VALUES ($1, $2, $3, $4, 'api_key', $5) RETURNING id`,
+		tenantID, providerID, channelID, name, tags,
+	).Scan(&id); err != nil {
+		t.Fatalf("insert tagged provider account %s: %v", name, err)
 	}
 	return id
 }

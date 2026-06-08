@@ -157,6 +157,30 @@ func TestPassthroughAdapter_BuildRequest_UpstreamPassthrough(t *testing.T) {
 	}
 }
 
+func TestAzureApiVersionExtra(t *testing.T) {
+	// MUTATION: 忽略 Credential.Extra["azure_api_version"] 时 URL 不带
+	// api-version, Azure OpenAI 请求会打到缺版本的 endpoint。
+	a := &PassthroughAdapter{}
+	in := provider.BuildInput{
+		InboundBody: []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeUpstreamPassthrough,
+			Value: "Bearer azure-token",
+			Extra: map[string]string{
+				"base_url":          "https://azure.example/openai/deployments/prod-chat/chat/completions",
+				"azure_api_version": "2024-08-01",
+			},
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.Query().Get("api-version"); got != "2024-08-01" {
+		t.Fatalf("api-version=%q want 2024-08-01; endpoint=%s", got, req.URL.String())
+	}
+}
+
 func TestPassthroughAdapter_BuildRequest_RejectUnsupportedCredential(t *testing.T) {
 	a := &PassthroughAdapter{}
 	in := provider.BuildInput{

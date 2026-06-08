@@ -35,6 +35,8 @@ type providerAccountHealthResponseBody struct {
 	ID                 int64   `json:"id"`
 	HealthState        string  `json:"health_state"`
 	HealthStateUntil   *string `json:"health_state_until,omitempty"`
+	LastProbeLatencyMS *int32  `json:"last_probe_latency_ms"`
+	LastProbeAt        *string `json:"last_probe_at"`
 	LastRefreshAt      *string `json:"last_refresh_at"`
 	LastRefreshOutcome *string `json:"last_refresh_outcome"`
 	FailureClass       *string `json:"failure_class"`
@@ -122,6 +124,8 @@ func providerAccountHealthResponse(row admindb.GetAdminProviderAccountHealthRow)
 		ID:                 row.ID,
 		HealthState:        row.HealthState,
 		HealthStateUntil:   formatProviderAccountHealthTime(row.HealthStateUntil),
+		LastProbeLatencyMS: row.LastProbeLatencyMS,
+		LastProbeAt:        formatProviderAccountHealthTime(row.LastProbeAt),
 		LastRefreshAt:      formatProviderAccountHealthTime(row.LastRefreshAt),
 		LastRefreshOutcome: row.LastRefreshOutcome,
 		FailureClass:       row.FailureClass,

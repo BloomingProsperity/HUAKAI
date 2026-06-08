@@ -78,6 +78,27 @@ func TestPassthroughAdapter_BuildRequest_CustomVersionAndBetas(t *testing.T) {
 	}
 }
 
+func TestPassthroughAdapter_BuildRequest_ClaudeBetaQueryExtra(t *testing.T) {
+	// MUTATION: 忽略 claude_beta_query 时 query.beta 为空, 需要 query
+	// beta=true 的 Claude 兼容上游无法被开启。
+	a := &PassthroughAdapter{}
+	in := provider.BuildInput{
+		InboundBody: []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "sk-x",
+			Extra: map[string]string{"claude_beta_query": "true"},
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.Query().Get("beta"); got != "true" {
+		t.Fatalf("beta query=%q want true; endpoint=%s", got, req.URL.String())
+	}
+}
+
 func TestPassthroughAdapter_BuildRequest_CustomEndpoint(t *testing.T) {
 	a := &PassthroughAdapter{Endpoint: "https://custom.proxy.example/v1/messages"}
 	in := provider.BuildInput{

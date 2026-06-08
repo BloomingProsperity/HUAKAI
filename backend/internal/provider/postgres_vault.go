@@ -4,10 +4,13 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
@@ -56,6 +59,7 @@ type providerAccountRow struct {
 	enabled         bool
 	credentialState string
 	credentials     []byte // 原始 JSONB 字节
+	extra           []byte
 	platform        string // providers.code via JOIN
 }
 
@@ -112,6 +116,7 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, account
 	if err != nil {
 		return Credential{}, AccountInfo{}, err
 	}
+	cred = mergeCredentialAccountExtra(cred, decodeProviderAccountExtra(row.extra))
 
 	// 提交只读事务（提交一个只读事务无副作用，与 postgres_registry.go 一致）。
 	if err := tx.Commit(ctx); err != nil {
@@ -151,7 +156,13 @@ func (v *PostgresCredentialVault) resolveFromStore(
 	if err != nil {
 		return Credential{}, AccountInfo{}, true, err
 	}
-	return mapRuntimeMaterial(material), AccountInfo{
+	cred := mapRuntimeMaterial(material)
+	accountExtra, err := v.loadProviderAccountExtra(ctx, tenantID, accountID)
+	if err != nil {
+		return Credential{}, AccountInfo{}, true, err
+	}
+	cred = mergeCredentialAccountExtra(cred, accountExtra)
+	return cred, AccountInfo{
 		AccountID:           rec.ProviderAccountID,
 		TenantID:            rec.TenantID,
 		Platform:            rec.Vendor,
@@ -159,6 +170,76 @@ func (v *PostgresCredentialVault) resolveFromStore(
 		AccountCredentialID: rec.ID,
 		CredentialVersion:   int(rec.CredentialVersion),
 	}, true, nil
+}
+
+func (v *PostgresCredentialVault) loadProviderAccountExtra(ctx context.Context, tenantID, accountID int64) (map[string]string, error) {
+	if v == nil || v.pool == nil {
+		return nil, nil
+	}
+	var raw []byte
+	err := v.pool.QueryRow(ctx, `
+SELECT extra
+FROM provider_accounts
+WHERE tenant_id = $1
+  AND id = $2
+  AND deleted_at IS NULL
+LIMIT 1`, tenantID, accountID).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("account %d: %w", accountID, ErrAccountNotFound)
+		}
+		return nil, err
+	}
+	return decodeProviderAccountExtra(raw), nil
+}
+
+func mergeCredentialAccountExtra(cred Credential, accountExtra map[string]string) Credential {
+	if len(accountExtra) == 0 {
+		return cred
+	}
+	if cred.Extra == nil {
+		cred.Extra = make(map[string]string, len(accountExtra))
+	}
+	for key, value := range accountExtra {
+		if _, exists := cred.Extra[key]; exists {
+			continue
+		}
+		cred.Extra[key] = value
+	}
+	return cred
+}
+
+func decodeProviderAccountExtra(raw []byte) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var payload map[string]any
+	if err := dec.Decode(&payload); err != nil || len(payload) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(payload))
+	for key, value := range payload {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				out[key] = trimmed
+			}
+		case bool:
+			out[key] = strconv.FormatBool(v)
+		case json.Number:
+			out[key] = v.String()
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func mapRuntimeMaterial(m credentialstore.RuntimeMaterial) Credential {
@@ -198,6 +279,7 @@ SELECT
     pa.enabled,
     pa.credential_state,
     pa.credentials,
+    pa.extra,
     p.code AS platform
 FROM provider_accounts pa
 JOIN providers p ON p.id = pa.provider_id
@@ -215,6 +297,7 @@ LIMIT 1`
 		&r.enabled,
 		&r.credentialState,
 		&r.credentials,
+		&r.extra,
 		&r.platform,
 	)
 	if err != nil {

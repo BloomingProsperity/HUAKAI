@@ -274,6 +274,51 @@ func TestPostgresCredentialVault_APIKeyHappyPath(t *testing.T) {
 	}
 }
 
+func TestPostgresCredentialVault_ProviderAccountExtraSupplementsCredentialExtra(t *testing.T) {
+	ctx := context.Background()
+	suffix := "account-extra"
+	f := setupFixture(ctx, t, suffix)
+	defer cleanupFixture(ctx, t, testDB, f)
+
+	creds := map[string]interface{}{
+		"api_key": "sk-test-key-extra",
+		"extra": map[string]string{
+			"org_id":            "org-credential",
+			"azure_api_version": "credential-version-wins",
+		},
+	}
+	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
+		f.tenantID, f.providerID, f.channelID,
+		"test-account-"+suffix, "api_key", true, creds)
+	accountExtra := map[string]any{
+		"azure_api_version": "2024-08-01",
+		"claude_beta_query": "true",
+		"org_id":            "org-account-must-not-override",
+	}
+	extraJSON, err := json.Marshal(accountExtra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.Exec(ctx, `UPDATE provider_accounts SET extra = $2 WHERE id = $1`, f.providerAccountID, extraJSON); err != nil {
+		t.Fatalf("update provider account extra: %v", err)
+	}
+
+	vault := NewPostgresCredentialVault(testDB)
+	cred, _, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cred.Extra["claude_beta_query"] != "true" {
+		t.Fatalf("claude_beta_query=%q want true; extra=%v", cred.Extra["claude_beta_query"], cred.Extra)
+	}
+	if cred.Extra["azure_api_version"] != "credential-version-wins" {
+		t.Fatalf("azure_api_version=%q want credential credential-version-wins", cred.Extra["azure_api_version"])
+	}
+	if cred.Extra["org_id"] != "org-credential" {
+		t.Fatalf("org_id=%q want credential org-credential", cred.Extra["org_id"])
+	}
+}
+
 // TestPostgresCredentialVault_OAuthHappyPath 验证 oauth 类型凭据正确映射。
 func TestPostgresCredentialVault_OAuthHappyPath(t *testing.T) {
 	ctx := context.Background()

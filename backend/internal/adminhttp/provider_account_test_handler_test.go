@@ -236,6 +236,32 @@ func TestProviderAccountTestSuccessReturnsOK(t *testing.T) {
 	}
 }
 
+func TestProviderAccountTestUsesProbeModelWhenConfigured(t *testing.T) {
+	// MUTATION: handler 忽略 provider_accounts.probe_model 时 tester 收到空
+	// probe model, 无法按账号指定探测目标。
+	accounts := newProviderAccountTestAccountStoreStub()
+	row := providerAccountTestRow(7, 99)
+	probeModel := "claude-3-5-sonnet-probe"
+	row.ProbeModel = &probeModel
+	accounts.put(row)
+	tester := &providerAccountProbeModelTester{}
+
+	rec := invokeProviderAccountTest(t, ProviderAccountTestDeps{
+		Auth: providerAccountTestAuthForTenant(7), Accounts: accounts,
+		Tester: tester, Now: fixedProviderAccountTestNow,
+	}, http.MethodPost, "/admin/v1/provider-accounts/99/test", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if tester.probeModel != probeModel {
+		t.Fatalf("probeModel=%q want %q", tester.probeModel, probeModel)
+	}
+	if tester.tenantID != 7 || tester.accountID != 99 || !tester.at.Equal(fixedProviderAccountTestNow()) {
+		t.Fatalf("tester args tenant=%d account=%d at=%s", tester.tenantID, tester.accountID, tester.at)
+	}
+}
+
 func invokeProviderAccountTest(t *testing.T, deps ProviderAccountTestDeps, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
@@ -366,4 +392,19 @@ func (s *providerAccountTestRegistryStub) RefreshCredential(context.Context, cre
 		AccessExpiresAt: fixedProviderAccountTestNow().Add(time.Hour),
 		Outcome:         "refresh_succeeded",
 	}, nil
+}
+
+type providerAccountProbeModelTester struct {
+	tenantID   int64
+	accountID  int64
+	at         time.Time
+	probeModel string
+}
+
+func (s *providerAccountProbeModelTester) TestProviderAccountCredential(_ context.Context, tenantID, accountID int64, now time.Time, probeModel string) (credentialworker.ProviderAccountCredentialTestResult, error) {
+	s.tenantID = tenantID
+	s.accountID = accountID
+	s.at = now
+	s.probeModel = probeModel
+	return credentialworker.ProviderAccountCredentialTestResult{OK: true}, nil
 }
