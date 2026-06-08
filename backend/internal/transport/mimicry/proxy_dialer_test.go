@@ -92,11 +92,20 @@ func TestUtlsDialer_DialRawUsesProxyDialer(t *testing.T) {
 	}
 }
 
-// TestProxyDialerFromURL_RejectsSocks5 keeps socks5 fail-loud on the mimicry
-// path (we must never silently fall back to a direct connection that leaks IP).
-func TestProxyDialerFromURL_RejectsSocks5(t *testing.T) {
-	pu, _ := url.Parse("socks5://127.0.0.1:1080")
+// PROXY-06: socks5 is now supported on the mimicry path.
+func TestProxyDialerFromURL_Socks5Supported(t *testing.T) {
+	for _, raw := range []string{"socks5://127.0.0.1:1080", "socks5h://u:p@127.0.0.1:1080"} {
+		pu, _ := url.Parse(raw)
+		if _, err := proxyDialerFromURL(pu); err != nil {
+			t.Fatalf("socks5 %q must be supported now: %v", raw, err)
+		}
+	}
+}
+
+// An unknown scheme still fails loud (never a silent direct connection).
+func TestProxyDialerFromURL_RejectsUnknownScheme(t *testing.T) {
+	pu, _ := url.Parse("quic://127.0.0.1:1080")
 	if _, err := proxyDialerFromURL(pu); err == nil {
-		t.Fatal("socks5 must fail-loud on the mimicry path, not silently leak the egress IP")
+		t.Fatal("unknown proxy scheme must fail-loud, not silently leak the egress IP")
 	}
 }
