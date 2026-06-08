@@ -24,8 +24,10 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -119,6 +121,7 @@ func (f *registryFixture) cleanup() {
 	}
 	_, _ = f.pool.Exec(c, `DELETE FROM model_registry_snapshots WHERE tenant_id = $1`, f.tenantID)
 	_, _ = f.pool.Exec(c, `DELETE FROM model_registry_tenant_policies WHERE tenant_id = $1`, f.tenantID)
+	_, _ = f.pool.Exec(c, `DELETE FROM channels WHERE tenant_id IN ($1, $2)`, f.tenantID, f.otherTenantID)
 	_, _ = f.pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id IN ($1, $2)`, f.tenantID, f.otherTenantID)
 	_, _ = f.pool.Exec(c, `DELETE FROM tenants WHERE id IN ($1, $2)`, f.tenantID, f.otherTenantID)
 }
@@ -754,6 +757,41 @@ func TestPostgresRegistry_ProviderModelOverrideOnPrimary(t *testing.T) {
 	if got.BindingMetadata[0].ProviderModelIDOverride == nil ||
 		*got.BindingMetadata[0].ProviderModelIDOverride != "claude-3-5-sonnet-latest" {
 		t.Errorf("BindingMetadata override not preserved")
+	}
+}
+
+func TestPostgresRegistry_ChannelBodyParamGateMetadata(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+
+	mid := f.seedModel(modelOpts{})
+	f.seedAlias(aliasOpts{modelID: mid, publicAliasNormalized: "body-gate"})
+	f.seedBinding(bindingOpts{modelID: mid, poolGroupID: f.poolGroupID, priority: 100})
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO channels (tenant_id, pool_group_id, name, body_param_strips, param_override)
+		 VALUES ($1, $2, $3, ARRAY['service_tier','stream_options.include_obfuscation']::text[], '{"temperature":0}'::jsonb)`,
+		f.tenantID, f.poolGroupID, "body-gate-"+f.suffix,
+	); err != nil {
+		t.Fatalf("seed channel body-param gate: %v", err)
+	}
+
+	r := NewPostgresRegistry(pool, nil)
+	got, err := r.ResolveModel(ctx, "body-gate", f.tenantID)
+	if err != nil {
+		t.Fatalf("ResolveModel: %v", err)
+	}
+	if len(got.BindingMetadata) != 1 {
+		t.Fatalf("BindingMetadata len=%d want 1", len(got.BindingMetadata))
+	}
+	binding := got.BindingMetadata[0]
+	wantStrips := []string{"service_tier", "stream_options.include_obfuscation"}
+	if !reflect.DeepEqual(binding.BodyParamStrips, wantStrips) {
+		t.Fatalf("BodyParamStrips=%v want %v", binding.BodyParamStrips, wantStrips)
+	}
+	if string(binding.ParamOverride["temperature"]) != "0" {
+		asJSON, _ := json.Marshal(binding.ParamOverride)
+		t.Fatalf("ParamOverride=%s want temperature=0", asJSON)
 	}
 }
 

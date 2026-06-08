@@ -29,8 +29,10 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -158,6 +160,14 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		out.Capabilities = append(out.Capabilities, c.Capability)
 	}
 	for _, b := range bindings {
+		bodyParamStrips, err := decodeBindingBodyParamStrips(b.BodyParamStrips)
+		if err != nil {
+			return Resolved{}, fmt.Errorf("%w: decode body_param_strips: %v", ErrRegistryBackend, err)
+		}
+		paramOverride, err := decodeBindingParamOverride(b.ParamOverride)
+		if err != nil {
+			return Resolved{}, fmt.Errorf("%w: decode param_override: %v", ErrRegistryBackend, err)
+		}
 		out.PoolCandidates = append(out.PoolCandidates, b.PoolGroupID)
 		// Binding-level provider model rename takes precedence over the
 		// model's default; first non-nil override wins for the primary
@@ -176,9 +186,53 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 			TPMLimit:                b.TpmLimit,
 			MaxParallelRequests:     b.MaxParallelRequests,
 			FallbackClass:           b.FallbackClass,
+			BodyParamStrips:         bodyParamStrips,
+			ParamOverride:           paramOverride,
 		})
 	}
 	return out, nil
+}
+
+func decodeBindingBodyParamStrips(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var keys []string
+	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+		return nil, err
+	}
+	out := keys[:0]
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			out = append(out, key)
+		}
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func decodeBindingParamOverride(raw string) (map[string]json.RawMessage, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var override map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &override); err != nil {
+		return nil, err
+	}
+	for key := range override {
+		if strings.TrimSpace(key) == "" {
+			delete(override, key)
+		}
+	}
+	if len(override) == 0 {
+		return nil, nil
+	}
+	return override, nil
 }
 
 // resolvedAliasRow is the common shape of LookupTenantAlias /

@@ -59,7 +59,7 @@ type GetModelByIDRow struct {
 // Resolves the canonical model row, constrained to the requesting tenant
 // (scope='tenant' AND tenant_id=$tenant) OR scope='global'. This blocks
 // a misconfigured tenant alias from reaching another tenant's model row
-// admin-write-time validation).
+// as defense in depth in addition to admin-write-time validation.
 func (q *Queries) GetModelByID(ctx context.Context, arg GetModelByIDParams) (GetModelByIDRow, error) {
 	row := q.db.QueryRow(ctx, getModelByID, arg.ID, arg.TenantID)
 	var i GetModelByIDRow
@@ -180,13 +180,38 @@ SELECT
     mpb.tpm_limit,
     mpb.max_parallel_requests,
     mpb.fallback_class,
-    mpb.reason
+    mpb.reason,
+    to_jsonb(COALESCE(channel_gate.body_param_strips, ARRAY[]::text[]))::text AS body_param_strips,
+    COALESCE(channel_gate.param_override, '{}'::jsonb)::text AS param_override
 FROM model_pool_bindings mpb
 INNER JOIN pool_groups pg
     ON pg.id = mpb.pool_group_id
    AND pg.tenant_id = mpb.tenant_id
    AND pg.enabled = true
    AND pg.deleted_at IS NULL
+LEFT JOIN LATERAL (
+    SELECT
+        COALESCE((
+            SELECT array_agg(DISTINCT strip_key ORDER BY strip_key)
+            FROM channels c
+            CROSS JOIN LATERAL unnest(c.body_param_strips) AS strip_key
+            WHERE c.pool_group_id = mpb.pool_group_id
+              AND c.tenant_id = mpb.tenant_id
+              AND c.enabled = true
+              AND c.deleted_at IS NULL
+              AND strip_key <> ''
+        ), ARRAY[]::text[]) AS body_param_strips,
+        COALESCE((
+            SELECT jsonb_object_agg(entry.key, entry.value ORDER BY c.id)
+            FROM channels c
+            CROSS JOIN LATERAL jsonb_each(c.param_override) AS entry(key, value)
+            WHERE c.pool_group_id = mpb.pool_group_id
+              AND c.tenant_id = mpb.tenant_id
+              AND c.enabled = true
+              AND c.deleted_at IS NULL
+              AND entry.key <> ''
+        ), '{}'::jsonb) AS param_override
+) channel_gate ON true
 WHERE mpb.tenant_id = $1::bigint
   AND mpb.model_id = $2::bigint
   AND mpb.deleted_at IS NULL
@@ -213,15 +238,16 @@ type ListModelPoolBindingsRow struct {
 	MaxParallelRequests     *int32  `db:"max_parallel_requests" json:"max_parallel_requests"`
 	FallbackClass           string  `db:"fallback_class" json:"fallback_class"`
 	Reason                  string  `db:"reason" json:"reason"`
+	BodyParamStrips         string  `db:"body_param_strips" json:"body_param_strips"`
+	ParamOverride           string  `db:"param_override" json:"param_override"`
 }
 
 // Returns enabled bindings ordered by priority then id, filtered by the
 // effective_from/until time window. ALWAYS tenant-scoped: pool_groups
 // are tenant-owned so a global binding would leak pool_group ids across
-// tenants (addressed by removing the
-// scope column from model_pool_bindings entirely; bindings are inherently
-// tenant-local even for global models). Slice 2 emits all candidates;
-// Router selects index 0 only at L0 (AttemptBudget=1).
+// tenants. Bindings are inherently tenant-local even for global models.
+// The resolver emits all candidates; Router selects index 0 only at L0
+// (AttemptBudget=1).
 func (q *Queries) ListModelPoolBindings(ctx context.Context, arg ListModelPoolBindingsParams) ([]ListModelPoolBindingsRow, error) {
 	rows, err := q.db.Query(ctx, listModelPoolBindings, arg.TenantID, arg.ModelID)
 	if err != nil {
@@ -243,6 +269,8 @@ func (q *Queries) ListModelPoolBindings(ctx context.Context, arg ListModelPoolBi
 			&i.MaxParallelRequests,
 			&i.FallbackClass,
 			&i.Reason,
+			&i.BodyParamStrips,
+			&i.ParamOverride,
 		); err != nil {
 			return nil, err
 		}
@@ -321,16 +349,15 @@ type LookupTenantAliasRow struct {
 	PublicAliasDisplay string  `db:"public_alias_display" json:"public_alias_display"`
 }
 
-// Slice 2 (N+5a) Model Registry queries.
-// Per docs/process/plans/2026-04-30-n5-model-registry.md.
+// Model Registry queries.
 // SELECT-only at request time. Snapshot version increments
-// happen via a future Phase E admin writer outside this package.
+// happen via admin writers outside this package.
 // NEVER select credentials; this package never joins
 // provider_accounts.credentials, OAuth tokens, or api_keys.key_hash.
 // Step 1 of resolve. Returns the tenant-scoped alias row regardless of
 // status (active/disabled/deleted-protected). The Go resolver checks
 // status: tenant disabled is an EXPLICIT DENY that blocks global fallback
-// per D3 invariant (integration test).
+// per D3 invariant (integration test #5).
 func (q *Queries) LookupTenantAlias(ctx context.Context, arg LookupTenantAliasParams) (LookupTenantAliasRow, error) {
 	row := q.db.QueryRow(ctx, lookupTenantAlias, arg.TenantID, arg.AliasLower)
 	var i LookupTenantAliasRow

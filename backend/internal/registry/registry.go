@@ -23,7 +23,10 @@
 
 package registry
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Registry is the interface implemented by PostgresRegistry. Mirrors the
 // auth.APIKeyResolver shape so deps wiring stays uniform across layers.
@@ -89,4 +92,6 @@ type BindingMetadata struct {
 	StripSafetyIdentifier                bool
 	StripStreamOptionsIncludeObfuscation bool
 	StripStore                           bool
+	BodyParamStrips                      []string
+	ParamOverride                        map[string]json.RawMessage
 }

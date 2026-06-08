@@ -13,6 +13,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
 func TestPR4RetryKeepsGeneratedLogicalRequestIDStable(t *testing.T) {
@@ -86,6 +88,50 @@ func TestUpstreamInboundBodyUsesResolvedModelWithoutMutatingOriginal(t *testing.
 	}
 	if parsed["model"] != "fallback-model" {
 		t.Fatalf("outbound model=%v want fallback-model body=%s", parsed["model"], string(out))
+	}
+	if string(ex.body) != string(original) {
+		t.Fatalf("original body mutated: got %s want %s", string(ex.body), string(original))
+	}
+}
+
+func TestUpstreamInboundBodyAppliesChannelBodyParamGateAfterModelRewrite(t *testing.T) {
+	original := []byte(`{"model":"client-model","temperature":0.9,"service_tier":"flex","stream_options":{"include_obfuscation":true,"include_usage":true},"messages":[{"role":"user","content":"hello"}]}`)
+	ex := &chatExecution{
+		upstreamModelID: "provider-model",
+		body:            original,
+		attempt:         router.AttemptPlan{PoolGroupID: 42},
+		resolved: registry.Resolved{BindingMetadata: []registry.BindingMetadata{{
+			PoolGroupID:     42,
+			BodyParamStrips: []string{"service_tier", "stream_options.include_obfuscation"},
+			ParamOverride: map[string]json.RawMessage{
+				"temperature": json.RawMessage(`0`),
+			},
+		}}},
+	}
+
+	out := ex.upstreamInboundBody(ex.body)
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("outbound body is not JSON: %v body=%s", err, out)
+	}
+	if parsed["model"] != "provider-model" {
+		t.Fatalf("model=%v want provider-model body=%s", parsed["model"], out)
+	}
+	if parsed["temperature"] != float64(0) {
+		t.Fatalf("temperature=%v want 0 body=%s", parsed["temperature"], out)
+	}
+	if _, ok := parsed["service_tier"]; ok {
+		t.Fatalf("service_tier still present after channel strip: %s", out)
+	}
+	streamOptions, ok := parsed["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("stream_options missing or non-object: %s", out)
+	}
+	if _, ok := streamOptions["include_obfuscation"]; ok {
+		t.Fatalf("include_obfuscation still present: %s", out)
+	}
+	if _, ok := streamOptions["include_usage"]; !ok {
+		t.Fatalf("include_usage sibling stripped: %s", out)
 	}
 	if string(ex.body) != string(original) {
 		t.Fatalf("original body mutated: got %s want %s", string(ex.body), string(original))
