@@ -51,6 +51,7 @@ type upstreamRateService struct {
 	sessionWindows  SessionWindowStore
 	transient       TransientCooldownConfig
 	disableCooling  bool
+	rulesProvider   AccountErrorRulesProvider // nil = no-op (default)
 }
 
 type UpstreamRateServiceOption func(*upstreamRateService)
@@ -64,6 +65,15 @@ func WithDisableCooling(disabled bool) UpstreamRateServiceOption {
 func WithTransientCooldown(duration time.Duration) UpstreamRateServiceOption {
 	return func(s *upstreamRateService) {
 		s.transient = TransientCooldownConfig{Duration: duration}
+	}
+}
+
+// WithAccountErrorRulesProvider injects a provider for per-account
+// temp-unschedulable rules and custom error codes. A nil provider (the
+// default) preserves zero-config no-op behaviour.
+func WithAccountErrorRulesProvider(p AccountErrorRulesProvider) UpstreamRateServiceOption {
+	return func(s *upstreamRateService) {
+		s.rulesProvider = p
 	}
 }
 
@@ -109,9 +119,30 @@ WHERE id = $1
 
 func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID int64, statusCode int, respHeaders http.Header, respBody []byte) (Decision, error) {
 	_ = ctx
-	_ = accountID
-	_ = respBody
 	now := s.now().UTC()
+
+	// F-RATE-001 §1.6: evaluate per-account temp-unschedulable rules and
+	// custom error codes when the feature is enabled on this account.
+	// This is ADDITIVE — evaluated first, before the existing 429/529 path,
+	// so operators can classify any upstream status code including 403.
+	if s.rulesProvider != nil {
+		rules, customCodes := s.rulesProvider.GetAccountErrorRules(accountID)
+		if len(rules) > 0 || len(customCodes) > 0 {
+			if dec := evalAccountErrorRules(statusCode, respBody, rules, customCodes,
+				func(minutes int) time.Duration {
+					if minutes <= 0 {
+						return s.defaultCooldown
+					}
+					return time.Duration(minutes) * time.Minute
+				},
+				s.defaultCooldown,
+				now, s.disableCooling,
+			); dec.StateChange != StateNoChange {
+				return dec, nil
+			}
+		}
+	}
+
 	if statusCode != http.StatusTooManyRequests && statusCode != 529 {
 		d, reason, ok := TransientCooldown(statusCode, s.transient)
 		if !ok {
