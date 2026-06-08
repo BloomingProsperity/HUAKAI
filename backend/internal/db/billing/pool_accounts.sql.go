@@ -639,7 +639,8 @@ SELECT
     pa.capability_flags,
     pa.cap_queue_sticky,
     pa.cap_queue_fallback,
-    pa.window_cost_limit_cents
+    pa.window_cost_limit_cents,
+    pa.max_sessions
 FROM provider_accounts pa
 INNER JOIN channels c
     ON c.id = pa.channel_id
@@ -681,24 +682,25 @@ type ListEligibleAccountsByPoolGroupParams struct {
 }
 
 type ListEligibleAccountsByPoolGroupRow struct {
-	ID               int64              `db:"id" json:"id"`
-	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderID       int64              `db:"provider_id" json:"provider_id"`
-	UpstreamProtocol string             `db:"upstream_protocol" json:"upstream_protocol"`
-	ChannelID        int64              `db:"channel_id" json:"channel_id"`
-	CapConcurrency   int32              `db:"cap_concurrency" json:"cap_concurrency"`
-	InFlightCount    int32              `db:"in_flight_count" json:"in_flight_count"`
-	Priority         int32              `db:"priority" json:"priority"`
-	StaticWeight     int32              `db:"static_weight" json:"static_weight"`
-	LastDispatchAt   pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
-	HealthState      string             `db:"health_state" json:"health_state"`
-	HealthStateUntil pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
-	ModelRateLimits  []byte             `db:"model_rate_limits" json:"model_rate_limits"`
-	ModelAllowList   []string           `db:"model_allow_list" json:"model_allow_list"`
-	CapabilityFlags  []string           `db:"capability_flags" json:"capability_flags"`
-	CapQueueSticky        int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
-	CapQueueFallback      int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
-	WindowCostLimitCents  int64              `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
+	ID                   int64              `db:"id" json:"id"`
+	TenantID             int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID           int64              `db:"provider_id" json:"provider_id"`
+	UpstreamProtocol     string             `db:"upstream_protocol" json:"upstream_protocol"`
+	ChannelID            int64              `db:"channel_id" json:"channel_id"`
+	CapConcurrency       int32              `db:"cap_concurrency" json:"cap_concurrency"`
+	InFlightCount        int32              `db:"in_flight_count" json:"in_flight_count"`
+	Priority             int32              `db:"priority" json:"priority"`
+	StaticWeight         int32              `db:"static_weight" json:"static_weight"`
+	LastDispatchAt       pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
+	HealthState          string             `db:"health_state" json:"health_state"`
+	HealthStateUntil     pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	ModelRateLimits      []byte             `db:"model_rate_limits" json:"model_rate_limits"`
+	ModelAllowList       []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapabilityFlags      []string           `db:"capability_flags" json:"capability_flags"`
+	CapQueueSticky       int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
+	CapQueueFallback     int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+	WindowCostLimitCents int64              `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
+	MaxSessions          int32              `db:"max_sessions" json:"max_sessions"`
 }
 
 // Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
@@ -750,6 +752,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.CapQueueSticky,
 			&i.CapQueueFallback,
 			&i.WindowCostLimitCents,
+			&i.MaxSessions,
 		); err != nil {
 			return nil, err
 		}

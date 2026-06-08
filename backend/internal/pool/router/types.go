@@ -88,6 +88,9 @@ type AccountSnapshot struct {
 	// WindowCostLimitCents is the operator-configured 5-hour session window
 	// spend cap in cents (1/100 USD). 0 or negative means unlimited (opt-in).
 	WindowCostLimitCents int64
+	// MaxSessions is the operator-configured maximum concurrent active sessions
+	// for this account. 0 means unlimited (opt-in, default safety).
+	MaxSessions int
 }
 
 type ModelRateLimit struct {

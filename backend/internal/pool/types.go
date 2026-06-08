@@ -49,6 +49,7 @@ type ExclusionGate = router.ExclusionGate
 type GateChain = router.GateChain
 type AllowAllGate = router.AllowAllGate
 type WindowCostGate = router.WindowCostGate
+type SessionCountGate = router.SessionCountGate
 
 const (
 	HealthStateActive      = router.HealthStateActive

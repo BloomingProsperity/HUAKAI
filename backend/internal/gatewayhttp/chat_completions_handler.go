@@ -3,9 +3,9 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -38,6 +38,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/warmupintercept"
@@ -103,6 +104,10 @@ type ChatHandlerDeps struct {
 	BillingPolicyVersion string
 	RequestClass         string
 	ClientIPResolver     *clientip.Resolver
+
+	// SessionCapRegistry is used to register session hashes at dispatch
+	// success (SUB2-EGRESS-02). nil is safe (registration is skipped).
+	SessionCapRegistry *sessioncap.Registry
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"

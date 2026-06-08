@@ -587,6 +587,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		BillingPolicyVersion:   d.cfg.BillingPolicyVersion,
 		RequestClass:           d.cfg.RequestClass,
 		ClientIPResolver:       d.clientIPResolver,
+		SessionCapRegistry:     d.sessionCapRegistry,
 	}
 }
 
