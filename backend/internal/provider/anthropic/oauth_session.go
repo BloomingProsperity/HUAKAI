@@ -79,6 +79,7 @@ func (a *OAuthSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	// 否则裸 relay 一眼被上游识别。复用 DEVPIN-01 的 per-account 钉定 helper。
 	applyClaudeDeviceProfile(req.Header, resolveAccountDeviceProfile(in.Account.AccountID))
 	stampClaudeCodeStaticHeaders(req.Header)
+	applyClaudeSessionHeaders(req.Header, in.Account.AccountID)
 	return req, nil
 }
 

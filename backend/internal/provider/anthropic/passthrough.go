@@ -105,6 +105,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	req.Header.Set("Accept", "application/json")
 	applyClaudeDeviceProfile(req.Header, resolveAccountDeviceProfile(in.Account.AccountID))
 	stampClaudeCodeStaticHeaders(req.Header)
+	applyClaudeSessionHeaders(req.Header, in.Account.AccountID)
 
 	// 可选 anthropic-beta（如 prompt-caching / computer-use 等 beta 特性）
 	if betas := in.Credential.Extra["anthropic_beta"]; betas != "" {
