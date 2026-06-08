@@ -103,7 +103,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	applyClaudeDeviceProfile(req.Header)
+	applyClaudeDeviceProfile(req.Header, resolveAccountDeviceProfile(in.Account.AccountID))
 
 	// 可选 anthropic-beta（如 prompt-caching / computer-use 等 beta 特性）
 	if betas := in.Credential.Extra["anthropic_beta"]; betas != "" {
@@ -134,10 +134,10 @@ const (
 	claudeStainlessArch           = "arm64"
 )
 
-func applyClaudeDeviceProfile(h http.Header) {
-	h.Set("User-Agent", claudeCodeUserAgent)
-	h.Set("X-Stainless-Package-Version", claudeStainlessPackageVersion)
-	h.Set("X-Stainless-Runtime-Version", claudeStainlessRuntimeVersion)
-	h.Set("X-Stainless-Os", claudeStainlessOS)
-	h.Set("X-Stainless-Arch", claudeStainlessArch)
+func applyClaudeDeviceProfile(h http.Header, p claudeDeviceProfile) {
+	h.Set("User-Agent", p.userAgent)
+	h.Set("X-Stainless-Package-Version", p.packageVersion)
+	h.Set("X-Stainless-Runtime-Version", p.runtimeVersion)
+	h.Set("X-Stainless-Os", p.os)
+	h.Set("X-Stainless-Arch", p.arch)
 }
