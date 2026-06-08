@@ -2,8 +2,10 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -164,21 +166,26 @@ func applyVendorCatalogTx(ctx context.Context, tx pgx.Tx, catalog modelsync.Cata
 		if outcome == "unchanged" && capChanged {
 			outcome = "updated"
 		}
+		modelRef := strings.TrimSpace(model.ID)
 		if _, ok := reactivating[AliasNormalize(model.ID)]; ok && outcome != "added" {
 			outcome = "reactivated"
 		}
 		switch outcome {
 		case "added":
 			result.Added++
+			result.Detected = append(result.Detected, modelRef)
 			changedModelIDs = append(changedModelIDs, modelID)
 		case "updated":
 			result.Updated++
+			result.Detected = append(result.Detected, modelRef)
 			changedModelIDs = append(changedModelIDs, modelID)
 		case "reactivated":
 			result.Reactivated++
+			result.Detected = append(result.Detected, modelRef)
 			changedModelIDs = append(changedModelIDs, modelID)
 		default:
 			result.Unchanged++
+			result.Ignored = append(result.Ignored, modelRef)
 		}
 	}
 
@@ -187,6 +194,9 @@ func applyVendorCatalogTx(ctx context.Context, tx pgx.Tx, catalog modelsync.Cata
 		return modelsync.ApplyResult{}, err
 	}
 	result.Disabled = disabled
+	if disabled > 0 {
+		result.Removed = append(result.Removed, plan.DisableAliases...)
+	}
 	changedModelIDs = append(changedModelIDs, disabledModelIDs...)
 
 	if len(changedModelIDs) > 0 {
@@ -197,7 +207,64 @@ func applyVendorCatalogTx(ctx context.Context, tx pgx.Tx, catalog modelsync.Cata
 		result.SnapshotBumps = bumps
 	}
 
+	if err := updateProviderAccountsModelSyncTracking(ctx, tx, catalog.Vendor, result); err != nil {
+		return modelsync.ApplyResult{}, err
+	}
 	return result, nil
+}
+
+func updateProviderAccountsModelSyncTracking(ctx context.Context, tx pgx.Tx, vendor modelsync.Vendor, result modelsync.ApplyResult) error {
+	detected, err := jsonModelList(result.Detected)
+	if err != nil {
+		return fmt.Errorf("%w: encode model_update_detected: %v", ErrRegistryBackend, err)
+	}
+	ignored, err := jsonModelList(result.Ignored)
+	if err != nil {
+		return fmt.Errorf("%w: encode model_update_ignored: %v", ErrRegistryBackend, err)
+	}
+	removed, err := jsonModelList(result.Removed)
+	if err != nil {
+		return fmt.Errorf("%w: encode model_update_removed: %v", ErrRegistryBackend, err)
+	}
+	_, err = tx.Exec(ctx, `
+UPDATE provider_accounts pa
+SET model_sync_last_check_at = now(),
+    model_update_detected = $2::jsonb,
+    model_update_ignored = $3::jsonb,
+    model_update_removed = $4::jsonb,
+    updated_at = now()
+FROM providers p
+WHERE p.id = pa.provider_id
+  AND p.tenant_id = pa.tenant_id
+  AND p.code = $1
+  AND p.deleted_at IS NULL
+  AND pa.deleted_at IS NULL
+`, string(vendor), detected, ignored, removed)
+	if err != nil {
+		return fmt.Errorf("%w: update provider account model sync tracking: %v", ErrRegistryBackend, err)
+	}
+	return nil
+}
+
+func jsonModelList(items []string) ([]byte, error) {
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	if out == nil {
+		out = []string{}
+	}
+	return json.Marshal(out)
 }
 
 func loadVendorAliasStates(ctx context.Context, tx pgx.Tx, vendor modelsync.Vendor) ([]vendorAliasState, error) {

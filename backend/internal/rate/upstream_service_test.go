@@ -3,6 +3,7 @@ package rate
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -68,5 +69,72 @@ func TestUpstreamRateServiceIgnoresNonRateLimitStatus(t *testing.T) {
 	}
 	if dec != (Decision{}) {
 		t.Fatalf("Decision=%+v want zero value for non-rate-limit status", dec)
+	}
+}
+
+type fakeSessionWindowStore struct {
+	calls  int
+	update SessionWindowUpdate
+}
+
+func (f *fakeSessionWindowStore) UpdateProviderAccountSessionWindow5h(_ context.Context, update SessionWindowUpdate) error {
+	f.calls++
+	f.update = update
+	return nil
+}
+
+func TestSessionWindowParse(t *testing.T) {
+	// MUTATION: UpdateSessionWindow 不写列(no-op) -> fake.calls 仍为 0 -> RED.
+	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	store := &fakeSessionWindowStore{}
+	svc := NewUpstreamRateServiceWithSessionWindowStore(func() time.Time { return now }, time.Minute, store)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(resetAt.Unix(), 10))
+
+	if err := svc.UpdateSessionWindow(context.Background(), 101, headers); err != nil {
+		t.Fatalf("UpdateSessionWindow: %v", err)
+	}
+	if store.calls != 1 {
+		t.Fatalf("writes=%d, want 1", store.calls)
+	}
+	if store.update.ProviderAccountID != 101 {
+		t.Fatalf("provider_account_id=%d, want 101", store.update.ProviderAccountID)
+	}
+	if !store.update.WindowEnd.Equal(resetAt) {
+		t.Fatalf("window_end=%s, want %s", store.update.WindowEnd, resetAt)
+	}
+	if !store.update.WindowStart.Equal(resetAt.Add(-5 * time.Hour)) {
+		t.Fatalf("window_start=%s, want %s", store.update.WindowStart, resetAt.Add(-5*time.Hour))
+	}
+	if store.update.Status != "allowed" {
+		t.Fatalf("status=%q, want allowed", store.update.Status)
+	}
+
+	guardHeaders := http.Header{}
+	guardHeaders.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	if err := svc.UpdateSessionWindow(context.Background(), 101, guardHeaders); err != nil {
+		t.Fatalf("UpdateSessionWindow without reset: %v", err)
+	}
+	if store.calls != 1 {
+		t.Fatalf("writes after no-reset guard=%d, want unchanged 1", store.calls)
+	}
+}
+
+func TestSessionWindowRejectsBadReset(t *testing.T) {
+	// MUTATION: 不做范围校验 -> 过去超过 5h 的脏值会写入 -> RED.
+	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
+	store := &fakeSessionWindowStore{}
+	svc := NewUpstreamRateServiceWithSessionWindowStore(func() time.Time { return now }, time.Minute, store)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "rejected")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(now.Add(-99999*time.Second).Unix(), 10))
+
+	if err := svc.UpdateSessionWindow(context.Background(), 101, headers); err != nil {
+		t.Fatalf("UpdateSessionWindow: %v", err)
+	}
+	if store.calls != 0 {
+		t.Fatalf("writes=%d, want 0 for out-of-range reset", store.calls)
 	}
 }

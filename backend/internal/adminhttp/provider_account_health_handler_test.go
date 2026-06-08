@@ -94,7 +94,11 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		"last_probe_latency_ms",
 		"last_refresh_at",
 		"last_refresh_outcome",
+		"model_sync_last_check_at",
 		"requires_action",
+		"session_window_5h_end",
+		"session_window_5h_start",
+		"session_window_5h_status",
 		"updated_at",
 	})
 	forbiddenFragments := []string{"credential", "credentials", "encrypted", "payload", "secret", "token", "nonce", "key_id"}
@@ -180,6 +184,42 @@ func TestProviderAccountHealthResponseIncludesLastProbeSnapshot(t *testing.T) {
 	}
 	if body.LastProbeAt == nil || *body.LastProbeAt != "2026-06-02T12:03:04Z" {
 		t.Fatalf("last_probe_at=%v want 2026-06-02T12:03:04Z", body.LastProbeAt)
+	}
+}
+
+func TestProviderAccountHealthResponseIncludesSyncAndSessionWindowSnapshot(t *testing.T) {
+	store := newProviderAccountHealthStoreStub()
+	row := providerAccountHealthRow(7, 103)
+	row.ModelSyncLastCheckAt = pgTimestamp(time.Date(2026, 6, 2, 12, 4, 0, 0, time.UTC))
+	row.SessionWindow5hStart = pgTimestamp(time.Date(2026, 6, 2, 8, 0, 0, 0, time.UTC))
+	row.SessionWindow5hEnd = pgTimestamp(time.Date(2026, 6, 2, 13, 0, 0, 0, time.UTC))
+	status := "allowed"
+	row.SessionWindow5hStatus = &status
+	store.put(row)
+
+	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
+		Auth:  providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, "/admin/v1/provider-accounts/103/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountHealthResponseBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if body.ModelSyncLastCheckAt == nil || *body.ModelSyncLastCheckAt != "2026-06-02T12:04:00Z" {
+		t.Fatalf("model_sync_last_check_at=%v want 2026-06-02T12:04:00Z", body.ModelSyncLastCheckAt)
+	}
+	if body.SessionWindow5hStart == nil || *body.SessionWindow5hStart != "2026-06-02T08:00:00Z" {
+		t.Fatalf("session_window_5h_start=%v want 2026-06-02T08:00:00Z", body.SessionWindow5hStart)
+	}
+	if body.SessionWindow5hEnd == nil || *body.SessionWindow5hEnd != "2026-06-02T13:00:00Z" {
+		t.Fatalf("session_window_5h_end=%v want 2026-06-02T13:00:00Z", body.SessionWindow5hEnd)
+	}
+	if body.SessionWindow5hStatus == nil || *body.SessionWindow5hStatus != "allowed" {
+		t.Fatalf("session_window_5h_status=%v want allowed", body.SessionWindow5hStatus)
 	}
 }
 

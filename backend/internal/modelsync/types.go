@@ -37,13 +37,16 @@ type ApplyOptions struct {
 
 // ApplyResult 是 registry 应用一个 vendor 快照后的结果。
 type ApplyResult struct {
-	Vendor        Vendor `json:"vendor"`
-	Added         int    `json:"added"`
-	Updated       int    `json:"updated"`
-	Reactivated   int    `json:"reactivated"`
-	Disabled      int    `json:"disabled"`
-	Unchanged     int    `json:"unchanged"`
-	SnapshotBumps int    `json:"snapshot_bumps"`
+	Vendor        Vendor   `json:"vendor"`
+	Added         int      `json:"added"`
+	Updated       int      `json:"updated"`
+	Reactivated   int      `json:"reactivated"`
+	Disabled      int      `json:"disabled"`
+	Unchanged     int      `json:"unchanged"`
+	SnapshotBumps int      `json:"snapshot_bumps"`
+	Detected      []string `json:"detected,omitempty"`
+	Ignored       []string `json:"ignored,omitempty"`
+	Removed       []string `json:"removed,omitempty"`
 }
 
 // SyncResult 汇总一次手动或定时同步。

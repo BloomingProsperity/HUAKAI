@@ -886,7 +886,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		selector:              selector,
 		channelHealth:         channelHealthService,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
-		upstreamRate:          ratelimit.NewUpstreamRateService(nil, channelHealthService.Policy().DefaultRateLimitCooldown),
+		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool)),
 		retryBudget:           tenantRetryBudget,
 		claimGate:             billing.NewClaimGate(pgPool),
 		settler:               settler,

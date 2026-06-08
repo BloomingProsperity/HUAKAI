@@ -20,6 +20,10 @@ SELECT
     pa.enabled,
     pa.last_probe_latency_ms,
     pa.last_probe_at,
+    pa.model_sync_last_check_at,
+    pa.session_window_5h_start,
+    pa.session_window_5h_end,
+    pa.session_window_5h_status,
     COALESCE(ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
     COALESCE(ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
     ac.failure_class,
@@ -51,18 +55,22 @@ type GetAdminProviderAccountHealthParams struct {
 }
 
 type GetAdminProviderAccountHealthRow struct {
-	ID                 int64              `db:"id" json:"id"`
-	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
-	HealthState        string             `db:"health_state" json:"health_state"`
-	HealthStateUntil   pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
-	Enabled            bool               `db:"enabled" json:"enabled"`
-	LastProbeLatencyMS *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
-	LastProbeAt        pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
-	LastRefreshAt      pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
-	LastRefreshOutcome *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
-	FailureClass       *string            `db:"failure_class" json:"failure_class"`
-	FailureCount       int32              `db:"failure_count" json:"failure_count"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                    int64              `db:"id" json:"id"`
+	TenantID              int64              `db:"tenant_id" json:"tenant_id"`
+	HealthState           string             `db:"health_state" json:"health_state"`
+	HealthStateUntil      pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	Enabled               bool               `db:"enabled" json:"enabled"`
+	LastProbeLatencyMS    *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
+	LastProbeAt           pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
+	ModelSyncLastCheckAt  pgtype.Timestamptz `db:"model_sync_last_check_at" json:"model_sync_last_check_at"`
+	SessionWindow5hStart  pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
+	SessionWindow5hEnd    pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
+	SessionWindow5hStatus *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
+	LastRefreshAt         pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
+	LastRefreshOutcome    *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
+	FailureClass          *string            `db:"failure_class" json:"failure_class"`
+	FailureCount          int32              `db:"failure_count" json:"failure_count"`
+	UpdatedAt             pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error) {
@@ -76,6 +84,10 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.Enabled,
 		&i.LastProbeLatencyMS,
 		&i.LastProbeAt,
+		&i.ModelSyncLastCheckAt,
+		&i.SessionWindow5hStart,
+		&i.SessionWindow5hEnd,
+		&i.SessionWindow5hStatus,
 		&i.LastRefreshAt,
 		&i.LastRefreshOutcome,
 		&i.FailureClass,
