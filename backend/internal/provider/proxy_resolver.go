@@ -133,6 +133,14 @@ func WrapTransportWithProxy(rt http.RoundTripper, proxyURL *url.URL) http.RoundT
 		return wrapped
 	}
 	if t, ok := rt.(*http.Transport); ok {
+		if t.DialTLSContext != nil {
+			// 该 transport 用 DialTLSContext 自管 TLS 连接(如 mimicry sidecar 路),
+			// Go 的 net/http 在这种情况下【不消费】Proxy func —— Clone+设 Proxy 会
+			// 静默丢弃代理,真实出口 IP 泄露,破坏账号级 IP 隔离。fail-loud
+			// (ErrProxyUnsupportedTransport)而非静默泄露。让 sidecar+代理真正可用
+			// 需把代理穿进 Rust 控制帧(PROXY-02b)。
+			return &proxyWrappedRoundTripper{inner: rt, proxyURL: proxyURL}
+		}
 		clone := t.Clone()
 		clone.Proxy = http.ProxyURL(proxyURL)
 		return clone
