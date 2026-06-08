@@ -25,56 +25,139 @@ func validFields() mimicry.ProfileFields {
 	}
 }
 
+func fieldsWithJA3(ja3 string) mimicry.ProfileFields {
+	f := validFields()
+	f.ExpectedJA3Hash = ja3
+	return f
+}
+
 type fakeFetcher struct {
-	bp  boundProfile
+	st  accountState
 	err error
 }
 
-func (f fakeFetcher) fetch(context.Context, int64) (boundProfile, error) { return f.bp, f.err }
+func (f fakeFetcher) fetch(context.Context, int64) (accountState, error) { return f.st, f.err }
 
-func TestResolver_ActiveProfile_BuildsRT(t *testing.T) {
-	r := newResolver(fakeFetcher{bp: boundProfile{active: true, fields: validFields()}})
+func ptr(f mimicry.ProfileFields) *mimicry.ProfileFields { return &f }
+
+// ---- ResolveRoundTripper (end-to-end via fake fetcher) ----
+
+func TestResolver_BoundActive_BuildsRT(t *testing.T) {
+	r := newResolver(fakeFetcher{st: accountState{bound: ptr(validFields())}})
 	rt, err := r.ResolveRoundTripper(context.Background(), 7)
 	if err != nil || rt == nil {
-		t.Fatalf("active profile should build a uTLS RT, got rt=%v err=%v", rt, err)
+		t.Fatalf("bound active profile should build a uTLS RT, got rt=%v err=%v", rt, err)
 	}
 }
 
-// MUTATION GUARD: making ResolveRoundTripper ignore !bp.active (always build)
-// would emit a custom fingerprint for accounts that opted OUT -> this expects a
-// nil (builtin) RT and goes red.
-func TestResolver_NoBoundProfile_Builtin(t *testing.T) {
-	r := newResolver(fakeFetcher{bp: boundProfile{active: false}})
+func TestResolver_NoProfile_Builtin(t *testing.T) {
+	r := newResolver(fakeFetcher{st: accountState{}})
 	rt, err := r.ResolveRoundTripper(context.Background(), 7)
 	if err != nil || rt != nil {
-		t.Fatalf("no bound active profile must fall back to builtin (nil RT), got rt=%v err=%v", rt, err)
+		t.Fatalf("no profile must fall back to builtin (nil RT), got rt=%v err=%v", rt, err)
 	}
 }
 
-// A bound-but-invalid profile must NOT break the account: fall back to builtin.
-func TestResolver_InvalidProfile_FallsBackBuiltin(t *testing.T) {
+func TestResolver_InvalidBound_FallsBackBuiltin(t *testing.T) {
 	bad := validFields()
-	bad.CipherSuites = []int{0x10000} // out of uint16 range -> converter errors
-	r := newResolver(fakeFetcher{bp: boundProfile{active: true, fields: bad}})
+	bad.CipherSuites = []int{0x10000}
+	r := newResolver(fakeFetcher{st: accountState{bound: ptr(bad)}})
 	rt, err := r.ResolveRoundTripper(context.Background(), 7)
 	if err != nil || rt != nil {
 		t.Fatalf("invalid profile must fall back to builtin (nil RT, no error), got rt=%v err=%v", rt, err)
 	}
 }
 
+func TestResolver_Rotate_PicksFromPool_BuildsRT(t *testing.T) {
+	pool := []mimicry.ProfileFields{fieldsWithJA3("a"), fieldsWithJA3("b"), fieldsWithJA3("c")}
+	r := newResolver(fakeFetcher{st: accountState{rotate: true, pool: pool}})
+	rt, err := r.ResolveRoundTripper(context.Background(), 7)
+	if err != nil || rt == nil {
+		t.Fatalf("rotate + non-empty pool should build a uTLS RT, got rt=%v err=%v", rt, err)
+	}
+}
+
+func TestResolver_Rotate_EmptyPool_Builtin(t *testing.T) {
+	r := newResolver(fakeFetcher{st: accountState{rotate: true}})
+	rt, err := r.ResolveRoundTripper(context.Background(), 7)
+	if err != nil || rt != nil {
+		t.Fatalf("rotate + empty pool must fall back to builtin (nil RT), got rt=%v err=%v", rt, err)
+	}
+}
+
 func TestResolver_FetchError_Propagates(t *testing.T) {
 	sentinel := errors.New("db down")
 	r := newResolver(fakeFetcher{err: sentinel})
-	_, err := r.ResolveRoundTripper(context.Background(), 7)
-	if !errors.Is(err, sentinel) {
+	if _, err := r.ResolveRoundTripper(context.Background(), 7); !errors.Is(err, sentinel) {
 		t.Fatalf("infra fetch error should propagate, got %v", err)
 	}
 }
 
 func TestResolver_ZeroAccount_Builtin(t *testing.T) {
-	r := newResolver(fakeFetcher{bp: boundProfile{active: true, fields: validFields()}})
+	r := newResolver(fakeFetcher{st: accountState{bound: ptr(validFields())}})
 	rt, err := r.ResolveRoundTripper(context.Background(), 0)
 	if err != nil || rt != nil {
 		t.Fatalf("accountID 0 -> builtin (nil RT), got rt=%v err=%v", rt, err)
+	}
+}
+
+// ---- pure selection logic ----
+
+func TestPickIndex_DeterministicAndSpread(t *testing.T) {
+	for _, id := range []int64{1, 2, 99} {
+		if pickIndex(id, 4) != pickIndex(id, 4) {
+			t.Fatalf("pickIndex not deterministic for account %d", id)
+		}
+	}
+	// MUTATION GUARD: hardcoding pickIndex to a constant collapses rotation to a
+	// single profile (the JA3-clustering 0037 warns about) -> this goes red.
+	seen := map[int]bool{}
+	for id := int64(1); id <= 64; id++ {
+		seen[pickIndex(id, 4)] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("rotation must spread accounts across the pool, collapsed to %d index(es)", len(seen))
+	}
+	if pickIndex(5, 0) != 0 {
+		t.Fatalf("pickIndex(_,0) must be safe")
+	}
+}
+
+func TestSelectProfile_RotateUsesPool(t *testing.T) {
+	pool := []mimicry.ProfileFields{fieldsWithJA3("a"), fieldsWithJA3("b"), fieldsWithJA3("c")}
+	st := accountState{rotate: true, pool: pool}
+	// MUTATION GUARD: making selectProfile ignore the pool (use bound) returns
+	// nil here -> red.
+	p1 := selectProfile(7, st)
+	if p1 == nil {
+		t.Fatal("rotate must pick a profile from the pool")
+	}
+	// same account -> same pick (sticky)
+	if p2 := selectProfile(7, st); p2 == nil || p2.ExpectedJA3Hash != p1.ExpectedJA3Hash {
+		t.Fatal("rotation must be sticky per account")
+	}
+	// picked one is actually in the pool
+	in := false
+	for _, pp := range pool {
+		if pp.ExpectedJA3Hash == p1.ExpectedJA3Hash {
+			in = true
+		}
+	}
+	if !in {
+		t.Fatalf("picked JA3 %q not in pool", p1.ExpectedJA3Hash)
+	}
+}
+
+func TestSelectProfile_NonRotateUsesBound(t *testing.T) {
+	b := fieldsWithJA3("bound")
+	got := selectProfile(7, accountState{bound: &b})
+	if got == nil || got.ExpectedJA3Hash != "bound" {
+		t.Fatalf("non-rotate must use the bound profile, got %v", got)
+	}
+}
+
+func TestSelectProfile_RotateEmptyPool_Nil(t *testing.T) {
+	if selectProfile(7, accountState{rotate: true}) != nil {
+		t.Fatal("rotate + empty pool must select nothing (builtin)")
 	}
 }
