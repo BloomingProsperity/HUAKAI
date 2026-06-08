@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -69,19 +70,30 @@ func (d *UtlsDialer) DialTLS(ctx context.Context, network, addr string) (net.Con
 	if err != nil {
 		return nil, fmt.Errorf("mimicry: split dial address %q: %w", addr, err)
 	}
-	spec, err := d.Template.utlsSpec(host)
-	if err != nil {
-		return nil, err
-	}
 	raw, err := d.dialRaw(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
 	cfg := d.tlsConfig(host)
-	conn := utls.UClient(raw, cfg, utls.HelloCustom)
-	if err := conn.ApplyPreset(spec); err != nil {
-		raw.Close()
-		return nil, err
+	preset := ""
+	if d.Template != nil {
+		preset = d.Template.Preset
+	}
+	var conn *utls.UConn
+	if id, ok := clientHelloIDForPreset(preset); ok {
+		// UTLS-05: uTLS 内置浏览器 ClientHello (真实当前 Chrome/...)。
+		conn = utls.UClient(raw, cfg, id)
+	} else {
+		spec, serr := d.Template.utlsSpec(host)
+		if serr != nil {
+			raw.Close()
+			return nil, serr
+		}
+		conn = utls.UClient(raw, cfg, utls.HelloCustom)
+		if perr := conn.ApplyPreset(spec); perr != nil {
+			raw.Close()
+			return nil, perr
+		}
 	}
 	handshakeCtx := ctx
 	var cancel context.CancelFunc
@@ -280,4 +292,24 @@ func (rt *roundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) 
 		},
 		template: rt.template,
 	}, nil
+}
+
+// clientHelloIDForPreset 把内置浏览器 preset 名映射到 uTLS ClientHelloID。uTLS
+// 生成真实当前浏览器 ClientHello (不手写/伪造 cipher 数组)。空/未知 -> (_, false)。
+// 参照 CLIProxyAPI utls_client.go 用 HelloChrome_Auto。
+func clientHelloIDForPreset(preset string) (utls.ClientHelloID, bool) {
+	switch strings.ToLower(strings.TrimSpace(preset)) {
+	case "chrome":
+		return utls.HelloChrome_Auto, true
+	case "firefox":
+		return utls.HelloFirefox_Auto, true
+	case "safari":
+		return utls.HelloSafari_Auto, true
+	case "edge":
+		return utls.HelloEdge_Auto, true
+	case "ios":
+		return utls.HelloIOS_Auto, true
+	default:
+		return utls.ClientHelloID{}, false
+	}
 }

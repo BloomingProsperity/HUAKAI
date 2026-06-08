@@ -13,7 +13,10 @@ import (
 
 // ClientHelloTemplate 是 collector 净化输出到 uTLS ClientHelloSpec 的中间格式。
 type ClientHelloTemplate struct {
-	ModeName            string    `json:"mode_name,omitempty"`
+	ModeName string `json:"mode_name,omitempty"`
+	// Preset 非空时走 uTLS 内置浏览器 ClientHello (chrome/firefox/safari/edge/ios),
+	// 由 uTLS 生成真实当前浏览器指纹, 不手写 cipher 数组 (UTLS-05)。其它字段忽略。
+	Preset              string    `json:"preset,omitempty"`
 	CollectedAt         string    `json:"collected_at,omitempty"`
 	TargetHost          string    `json:"target_host,omitempty"`
 	TLSBackend          string    `json:"tls_backend,omitempty"`
