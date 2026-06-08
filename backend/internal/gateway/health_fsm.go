@@ -193,7 +193,7 @@ func transitionFromNormal(event Event, now time.Time, score float64, effects []S
 			return HealthStateDisabled, append(effects, notifyOperator("iron_clad_disable", c.RuleID, HealthStateDisabled))
 		}
 		if c.FsmTransition == FsmTransitionCooling {
-			return enterCoolingDown(now, c, effects)
+			return enterCoolingDown(now, withEscalatedCooldown(c, recentErrorCount(event.Health.RecentErrorTimes, now, true), now), effects)
 		}
 		if isAmbiguous(c) || c.FsmTransition == FsmTransitionDegraded || c.FsmTransition == FsmTransitionManualOnly {
 			if manualRecoveryCount(event) >= DefaultManualRecoveryThreshold {
@@ -220,7 +220,7 @@ func transitionFromDegraded(event Event, now time.Time, score float64, effects [
 			return HealthStateDisabled, append(effects, notifyOperator("iron_clad_disable", c.RuleID, HealthStateDisabled))
 		}
 		if c.FsmTransition == FsmTransitionCooling {
-			return enterCoolingDown(now, c, effects)
+			return enterCoolingDown(now, withEscalatedCooldown(c, recentErrorCount(event.Health.RecentErrorTimes, now, true), now), effects)
 		}
 		if isAmbiguous(c) || c.FsmTransition == FsmTransitionManualOnly {
 			if manualRecoveryCount(event) >= DefaultManualRecoveryThreshold {
@@ -247,7 +247,7 @@ func transitionFromCoolingDown(event Event, now time.Time, score float64, effect
 			return HealthStateDisabled, append(effects, notifyOperator("iron_clad_disable", c.RuleID, HealthStateDisabled))
 		}
 		if c.FsmTransition == FsmTransitionCooling {
-			return enterCoolingDown(now, c, effects)
+			return enterCoolingDown(now, withEscalatedCooldown(c, recentErrorCount(event.Health.RecentErrorTimes, now, true), now), effects)
 		}
 		if isAmbiguous(c) && manualRecoveryCount(event) >= DefaultManualRecoveryThreshold {
 			return HealthStateNeedsManualRecovery, append(effects, notifyOperator("ambiguous_manual_threshold", c.RuleID, HealthStateNeedsManualRecovery))
@@ -271,7 +271,7 @@ func transitionFromNeedsRefresh(event Event, now time.Time, score float64, effec
 			return HealthStateDisabled, append(effects, notifyOperator("iron_clad_disable", c.RuleID, HealthStateDisabled))
 		}
 		if c.FsmTransition == FsmTransitionCooling {
-			return enterCoolingDown(now, c, effects)
+			return enterCoolingDown(now, withEscalatedCooldown(c, recentErrorCount(event.Health.RecentErrorTimes, now, true), now), effects)
 		}
 		if isAmbiguous(c) && manualRecoveryCount(event) >= DefaultManualRecoveryThreshold {
 			return HealthStateNeedsManualRecovery, append(effects, notifyOperator("ambiguous_manual_threshold", c.RuleID, HealthStateNeedsManualRecovery))
@@ -482,4 +482,29 @@ func clamp01(v float64) float64 {
 		return 1
 	}
 	return v
+}
+
+// withEscalatedCooldown 实现 TOKLIFE-01 冷却指数退避:当上游没给 Retry-After /
+// 显式 CooldownUntil override 时,按窗口内连续错误次数把 cooldown 翻倍
+// (60s -> 2m -> 4m -> ... 上限 30m),避免一个反复 429 的账号被反复短冷却(60s)
+// 空转抖动、反复打上游。streak 来自已持久化的 RecentErrorTimes(无需新 schema)。
+// 只会【拉长】反复失败账号的冷却,不影响正常账号可用性。
+func withEscalatedCooldown(c FSMClassification, errorStreak int, now time.Time) FSMClassification {
+	if !c.CooldownUntil.IsZero() || c.RetryAfter > 0 {
+		return c // provider / 显式 override 优先,不退避
+	}
+	d := DefaultCooldownDuration
+	if errorStreak > 1 {
+		shift := errorStreak - 1
+		if shift > 30 {
+			shift = 30 // 防极端 streak 上溢
+		}
+		d = DefaultCooldownDuration * time.Duration(int64(1)<<uint(shift))
+	}
+	const escalationCap = 30 * time.Minute
+	if d > escalationCap || d <= 0 {
+		d = escalationCap
+	}
+	c.CooldownUntil = now.Add(d)
+	return c
 }
