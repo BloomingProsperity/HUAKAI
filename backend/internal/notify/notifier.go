@@ -243,6 +243,7 @@ func (n *Notifier) sendEmail(ctx context.Context, settings Settings, event Event
 	if err := n.emailSender.SendTenantMessage(ctx, settings.TenantID, msg); err != nil {
 		return fmt.Errorf("%w: email", ErrDeliveryFailed)
 	}
+	n.sendExtraEmailCopies(ctx, settings, msg)
 	return nil
 }
 
@@ -277,6 +278,7 @@ func (n *Notifier) sendAlertFiringEmail(ctx context.Context, settings Settings, 
 	if err := n.emailSender.SendTenantMessage(ctx, settings.TenantID, msg); err != nil {
 		return fmt.Errorf("%w: email", ErrDeliveryFailed)
 	}
+	n.sendExtraEmailCopies(ctx, settings, msg)
 	return nil
 }
 
@@ -535,4 +537,18 @@ func (l *RateLimiter) Allow(tenantID, userID int64, eventType string, now time.T
 	}
 	l.last[key] = now
 	return true
+}
+
+func (n *Notifier) sendExtraEmailCopies(ctx context.Context, settings Settings, base mailinfra.Message) {
+	for _, extra := range settings.ExtraEmails {
+		if extra == "" || extra == settings.NotificationEmail {
+			continue
+		}
+		if err := rejectHeaderInjection(extra); err != nil {
+			continue
+		}
+		copyMsg := base
+		copyMsg.To = extra
+		_ = n.emailSender.SendTenantMessage(ctx, settings.TenantID, copyMsg)
+	}
 }

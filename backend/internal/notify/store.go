@@ -45,12 +45,15 @@ SELECT notify_type,
        gotify_priority,
        balance_threshold::text,
        updated_at,
-       updated_by
+       updated_by,
+       threshold_type,
+       extra_emails
 FROM user_notification_settings
 WHERE tenant_id = $1 AND user_id = $2`
 	var (
-		out          = DefaultSettings(tenantID, userID)
-		thresholdRaw string
+		out            = DefaultSettings(tenantID, userID)
+		thresholdRaw   string
+		extraEmailsRaw string
 	)
 	err := s.db.QueryRow(ctx, q, tenantID, userID).Scan(
 		&out.NotifyType,
@@ -64,6 +67,8 @@ WHERE tenant_id = $1 AND user_id = $2`
 		&thresholdRaw,
 		&out.UpdatedAt,
 		&out.UpdatedBy,
+		&out.ThresholdType,
+		&extraEmailsRaw,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -71,6 +76,7 @@ WHERE tenant_id = $1 AND user_id = $2`
 		}
 		return Settings{}, err
 	}
+	out.ExtraEmails = decodeExtraEmails(extraEmailsRaw)
 	return s.finishLoadedSettings(ctx, out, thresholdRaw)
 }
 
@@ -93,7 +99,9 @@ SELECT user_id,
        gotify_priority,
        balance_threshold::text,
        updated_at,
-       updated_by
+       updated_by,
+       threshold_type,
+       extra_emails
 FROM user_notification_settings
 WHERE tenant_id = $1
   AND notify_type <> 'none'
@@ -108,7 +116,7 @@ ORDER BY user_id ASC`
 	for rows.Next() {
 		settings := DefaultSettings(tenantID, 1)
 		settings.TenantID = tenantID
-		var thresholdRaw string
+		var thresholdRaw, extraEmailsRaw string
 		if err := rows.Scan(
 			&settings.UserID,
 			&settings.NotifyType,
@@ -122,9 +130,12 @@ ORDER BY user_id ASC`
 			&thresholdRaw,
 			&settings.UpdatedAt,
 			&settings.UpdatedBy,
+			&settings.ThresholdType,
+			&extraEmailsRaw,
 		); err != nil {
 			return nil, err
 		}
+		settings.ExtraEmails = decodeExtraEmails(extraEmailsRaw)
 		settings, err = s.finishLoadedSettings(ctx, settings, thresholdRaw)
 		if err != nil {
 			return nil, err
@@ -188,8 +199,10 @@ INSERT INTO user_notification_settings (
 	gotify_token,
 	gotify_priority,
 	balance_threshold,
-	updated_by
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+	updated_by,
+	threshold_type,
+	extra_emails
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 ON CONFLICT (tenant_id, user_id)
 DO UPDATE SET notify_type = EXCLUDED.notify_type,
               webhook_url = EXCLUDED.webhook_url,
@@ -200,6 +213,8 @@ DO UPDATE SET notify_type = EXCLUDED.notify_type,
               gotify_token = EXCLUDED.gotify_token,
               gotify_priority = EXCLUDED.gotify_priority,
               balance_threshold = EXCLUDED.balance_threshold,
+              threshold_type = EXCLUDED.threshold_type,
+              extra_emails = EXCLUDED.extra_emails,
               updated_by = EXCLUDED.updated_by,
               updated_at = now()
 RETURNING updated_at`
@@ -216,6 +231,8 @@ RETURNING updated_at`
 		normalized.GotifyPriority,
 		normalized.BalanceThreshold.StringFixedBank(8),
 		normalized.UpdatedBy,
+		normalized.ThresholdType,
+		encodeExtraEmails(normalized.ExtraEmails),
 	).Scan(&normalized.UpdatedAt); err != nil {
 		return Settings{}, err
 	}
@@ -330,4 +347,27 @@ func notifySecretAAD(tenantID, userID int64, authMode string) credentialstore.AA
 		AuthMode:          authMode,
 		Version:           1,
 	}
+}
+
+func encodeExtraEmails(emails []string) string {
+	if len(emails) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(emails)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func decodeExtraEmails(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "[]" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
 }
