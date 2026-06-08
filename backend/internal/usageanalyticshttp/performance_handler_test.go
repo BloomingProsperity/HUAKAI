@@ -93,6 +93,18 @@ func (s *performanceQueryStub) AggregateUsagePerformanceByProviderAccount(_ cont
 	return out, nil
 }
 
+func (s *performanceQueryStub) AggregateUsagePerformanceSummary(context.Context, dbbilling.AggregateUsagePerformanceSummaryParams) (dbbilling.AggregateUsagePerformanceSummaryRow, error) {
+	return dbbilling.AggregateUsagePerformanceSummaryRow{}, nil
+}
+
+func (s *performanceQueryStub) AggregateUsageLatencyPercentiles(context.Context, dbbilling.AggregateUsageLatencyPercentilesParams) (dbbilling.AggregateUsageLatencyPercentilesRow, error) {
+	return dbbilling.AggregateUsageLatencyPercentilesRow{}, nil
+}
+
+func (s *performanceQueryStub) AggregateUsagePerformanceByModelBucketed(context.Context, dbbilling.AggregateUsagePerformanceByModelBucketedParams) ([]dbbilling.AggregateUsagePerformanceByModelBucketedRow, error) {
+	return nil, nil
+}
+
 func (s *performanceQueryStub) maybeBlock() {
 	if s.started == nil || s.release == nil {
 		return

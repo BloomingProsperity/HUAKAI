@@ -137,6 +137,18 @@ func (s *leaderboardQueryStub) AggregateUsagePerformanceByProviderAccount(contex
 	return nil, nil
 }
 
+func (s *leaderboardQueryStub) AggregateUsagePerformanceSummary(context.Context, dbbilling.AggregateUsagePerformanceSummaryParams) (dbbilling.AggregateUsagePerformanceSummaryRow, error) {
+	return dbbilling.AggregateUsagePerformanceSummaryRow{}, nil
+}
+
+func (s *leaderboardQueryStub) AggregateUsageLatencyPercentiles(context.Context, dbbilling.AggregateUsageLatencyPercentilesParams) (dbbilling.AggregateUsageLatencyPercentilesRow, error) {
+	return dbbilling.AggregateUsageLatencyPercentilesRow{}, nil
+}
+
+func (s *leaderboardQueryStub) AggregateUsagePerformanceByModelBucketed(context.Context, dbbilling.AggregateUsagePerformanceByModelBucketedParams) ([]dbbilling.AggregateUsagePerformanceByModelBucketedRow, error) {
+	return nil, nil
+}
+
 func (s *leaderboardQueryStub) AggregateUsageOverviewTotals(context.Context, pgtype.Timestamptz) (dbbilling.AggregateUsageOverviewTotalsRow, error) {
 	return dbbilling.AggregateUsageOverviewTotalsRow{}, nil
 }

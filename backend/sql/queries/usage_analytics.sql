@@ -200,6 +200,73 @@ GROUP BY ur.provider_account_id
 ORDER BY count(*) DESC, key ASC
 LIMIT sqlc.arg(row_limit)::int;
 
+-- name: AggregateUsagePerformanceSummary :one
+-- Platform-admin performance summary across the recent settled usage window,
+-- optionally narrowed to one requested_model. Read-only operator surface:
+-- latency, throughput, request count, and error count only; no cost fields.
+SELECT
+    COALESCE(
+        avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000)
+            FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::numeric(20,4)::text                                       AS avg_ttft_ms,
+    COALESCE(
+        avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0))
+            FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0),
+        0
+    )::numeric(20,4)::text                                       AS avg_tps,
+    count(*)::bigint                                             AS request_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
+FROM usage_records ur
+WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+  AND (sqlc.narg(model)::text IS NULL OR ur.requested_model = sqlc.narg(model)::text);
+
+-- name: AggregateUsageLatencyPercentiles :one
+-- Global/requested_model TTFT percentiles for the recent settled usage window.
+-- The array keeps the percentile definition adjacent so P50/P95/P99 cannot
+-- drift independently.
+WITH latency_percentiles AS (
+    SELECT COALESCE(
+        percentile_cont(ARRAY[0.5,0.95,0.99]) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000
+        ) FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        ARRAY[0,0,0]::double precision[]
+    ) AS percentiles_ms
+    FROM usage_records ur
+    WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+      AND (sqlc.narg(model)::text IS NULL OR ur.requested_model = sqlc.narg(model)::text)
+)
+SELECT
+    percentiles_ms[1]::double precision AS p50_ms,
+    percentiles_ms[2]::double precision AS p95_ms,
+    percentiles_ms[3]::double precision AS p99_ms
+FROM latency_percentiles;
+
+-- name: AggregateUsagePerformanceByModelBucketed :many
+-- Platform-admin performance panel by UTC requested_at bucket and
+-- requested_model. The caller must validate bucket is one of hour/day before
+-- calling this query.
+SELECT
+    (date_trunc(sqlc.arg(bucket)::text, ur.requested_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS bucket,
+    ur.requested_model                                               AS key,
+    COALESCE(
+        avg(EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000)
+            FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::numeric(20,4)::text                                           AS avg_ttft_ms,
+    COALESCE(
+        avg(ur.tokens_output::numeric / NULLIF(EXTRACT(EPOCH FROM (ur.last_event_at - ur.first_byte_at)), 0))
+            FILTER (WHERE ur.last_event_at IS NOT NULL AND ur.first_byte_at IS NOT NULL AND ur.tokens_output > 0),
+        0
+    )::numeric(20,4)::text                                           AS avg_tps,
+    count(*)::bigint                                                 AS request_count,
+    count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
+FROM usage_records ur
+WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+GROUP BY 1, ur.requested_model
+ORDER BY bucket ASC, count(*) DESC, key ASC
+LIMIT sqlc.arg(row_limit)::int;
+
 -- name: AggregateUsageOverviewTotals :one
 -- Platform-admin overview totals across the recent settled usage window.
 -- Operator surface: actual_cost is intentionally exposed as decimal text.

@@ -28,6 +28,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/geminihttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/healthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/imageshttp"
@@ -75,6 +76,10 @@ func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
 
 // mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
+	liveness := healthhttp.NewLivenessHandler()
+	r.Method(http.MethodGet, "/healthz", liveness)
+	r.Method(http.MethodHead, "/healthz", liveness)
+
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(chatHandlerDeps(d)))
 	r.Post("/v1/completions", completionshttp.NewCompletionsHandler(completionsHandlerDeps(d)))
 	r.Post("/v1/embeddings", embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d)))

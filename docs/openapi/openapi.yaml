@@ -45,6 +45,8 @@ security:
   - bearerAuth: []
 
 tags:
+  - name: health
+    description: Process-local liveness probes.
   - name: gateway
     description: Client-facing relay endpoints. F-GW-002 + F-PROTO-002 + F-AUTH-005.
   - name: hermes
@@ -127,6 +129,39 @@ tags:
     description: Usage Record DLQ replay. F-OBS-001.
 
 paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Process liveness probe
+      operationId: getHealthz
+      security: []
+      x-huakai-spec-source:
+        - backend/internal/healthhttp/liveness.go
+        - backend/cmd/gateway/routes.go
+      description: |
+        Process-only liveness check. It does not require auth and does not
+        call PostgreSQL, providers, credential stores, or upstream services.
+      responses:
+        '200':
+          description: Gateway process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+    head:
+      tags: [health]
+      summary: Process liveness probe without body
+      operationId: headHealthz
+      security: []
+      x-huakai-spec-source:
+        - backend/internal/healthhttp/liveness.go
+        - backend/cmd/gateway/routes.go
+      responses:
+        '200':
+          description: Gateway process is alive; response body is empty.
+
   # ==========================================================================
   # Gateway endpoints (client-facing relay)
   # ==========================================================================
@@ -1869,6 +1904,154 @@ paths:
                         avg_tps: { type: string }
                         request_count: { type: integer, format: int64 }
                         error_rate: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/usage/perf-metrics/summary:
+    get:
+      tags: [admin]
+      summary: Platform-admin performance metrics summary
+      operationId: getAdminUsagePerfMetricsSummary
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/perf_metrics_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_analytics.sql
+      description: |
+        Platform-admin (adminGate RBAC) read-only performance metrics summary
+        over a recent settled usage window. Returns average TTFT, average
+        tokens-per-second, request count, error count/rate, and global or
+        requested_model-filtered TTFT percentiles P50/P95/P99. No cost fields
+        are selected or returned.
+      parameters:
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 24h }
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Performance summary and latency percentile gauges.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  window: { type: string }
+                  model: { type: string }
+                  summary:
+                    type: object
+                    properties:
+                      avg_ttft_ms: { type: string }
+                      avg_tps: { type: string }
+                      request_count: { type: integer, format: int64 }
+                      error_count: { type: integer, format: int64 }
+                      error_rate: { type: string }
+                  latency_percentiles_ms:
+                    type: object
+                    properties:
+                      p50: { type: number }
+                      p95: { type: number }
+                      p99: { type: number }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/usage/perf-metrics/by-bucket:
+    get:
+      tags: [admin]
+      summary: Platform-admin performance metrics by requested_model bucket
+      operationId: getAdminUsagePerfMetricsByBucket
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/perf_metrics_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_analytics.sql
+      description: |
+        Platform-admin (adminGate RBAC) read-only performance metrics grouped
+        by UTC requested_at bucket and requested_model. Bucket is validated by
+        the handler and must be hour or day. No cost fields are selected or
+        returned.
+      parameters:
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 24h }
+        - name: bucket
+          in: query
+          required: false
+          schema: { type: string, enum: [hour, day], default: hour }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        '200':
+          description: Performance entries grouped by bucket and model.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  window: { type: string }
+                  bucket: { type: string, enum: [hour, day] }
+                  by: { type: string, enum: [model] }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        bucket: { type: string, format: date-time }
+                        key: { type: string }
+                        avg_ttft_ms: { type: string }
+                        avg_tps: { type: string }
+                        request_count: { type: integer, format: int64 }
+                        error_count: { type: integer, format: int64 }
+                        error_rate: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/usage/health-score:
+    get:
+      tags: [admin]
+      summary: Platform-admin usage health score
+      operationId: getAdminUsageHealthScore
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/perf_metrics_handler.go
+        - backend/internal/healthscore/score.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_analytics.sql
+      description: |
+        Platform-admin (adminGate RBAC) read-only health score for recent
+        settled usage. The score is 0-100. Business health combines recent
+        error rate and TTFT P99; overall health currently weights business 70%
+        and infra 30%, with infra using the same error/latency signal as a
+        first-cut placeholder. No cost fields are returned.
+      parameters:
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 24h }
+      responses:
+        '200':
+          description: Recent usage health score and input signals.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  window: { type: string }
+                  overall_score: { type: integer, minimum: 0, maximum: 100 }
+                  business_score: { type: integer, minimum: 0, maximum: 100 }
+                  infra_score: { type: integer, minimum: 0, maximum: 100 }
+                  signals:
+                    type: object
+                    properties:
+                      error_rate: { type: string }
+                      ttft_p99_ms: { type: number }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
