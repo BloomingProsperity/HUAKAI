@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
@@ -515,6 +516,83 @@ func TestSessionHashFallbackUnchanged(t *testing.T) {
 	// absent; the empty-id hash would differ from the pre-change prompt hash.
 	if got := selector.requests[0].SessionHash; got != want {
 		t.Fatalf("selector SessionHash=%q want unchanged prompt hash %q", got, want)
+	}
+}
+
+func TestAffinityRulesOverrideDefaultSessionHashWhenConfigured(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	selector := &recordingSelectionRequestSelector{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Selector = selector
+	d.AffinityRules = affinityrules.AffinityRuleSet{{
+		Name:             "cache",
+		ModelRegex:       []string{"^gpt-"},
+		PathRegex:        []string{"^/v1/chat/completions$"},
+		UserAgentInclude: []string{"affinity-client"},
+		KeySources: []affinityrules.KeySource{{
+			Type: affinityrules.KeySourceRequestHeader,
+			Key:  "X-Affinity-Key",
+		}},
+		IncludeRuleName: true,
+	}}
+	body := `{"model":"gpt-4o","stream":false,"tools":[{"type":"function","function":{"name":"affinity_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"configured rule"}]}`
+	promptHash := cache_routing.ComputePromptHash([]byte(body))
+	if promptHash == "" {
+		t.Fatal("test fixture must produce a non-empty prompt hash")
+	}
+
+	rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, map[string]string{
+		"User-Agent":     "huakai affinity-client",
+		"X-Session-ID":   "legacy-thread",
+		"X-Affinity-Key": "rule-key",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 1 {
+		t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+	}
+	// MUTATION: keep using the legacy requestSessionHash cascade before
+	// affinity rules; this would return the client-session hash instead.
+	if got := selector.requests[0].SessionHash; got != "cache:rule-key" {
+		t.Fatalf("selector SessionHash=%q want cache:rule-key", got)
+	}
+}
+
+func TestAffinityRulesNoMatchFallsBackToExistingSessionHash(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	selector := &recordingSelectionRequestSelector{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Selector = selector
+	d.AffinityRules = affinityrules.AffinityRuleSet{{
+		Name:       "claude-only",
+		ModelRegex: []string{"^claude-"},
+		KeySources: []affinityrules.KeySource{{
+			Type: affinityrules.KeySourceRequestHeader,
+			Key:  "X-Affinity-Key",
+		}},
+	}}
+	body := `{"model":"gpt-4o","stream":false,"tools":[{"type":"function","function":{"name":"fallback_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"rule no match"}]}`
+	want := cache_routing.ComputePromptHash([]byte(body))
+	if want == "" {
+		t.Fatal("test fixture must produce a non-empty prompt hash")
+	}
+
+	rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, map[string]string{
+		"X-Affinity-Key": "rule-key",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 1 {
+		t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+	}
+	// MUTATION: treat a configured but unmatched rule set as authoritative;
+	// this would drop or replace the old prompt-hash fallback.
+	if got := selector.requests[0].SessionHash; got != want {
+		t.Fatalf("selector SessionHash=%q want existing fallback %q", got, want)
 	}
 }
 
