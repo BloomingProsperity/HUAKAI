@@ -1519,6 +1519,45 @@ func TestPR5NonStream429NoRetryAfterStillCooldowns(t *testing.T) {
 	}
 }
 
+func TestPR5NonStreamTransient5xxForceCooldownWhenEnabled(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	selector := newPR5Selector(t, 211, 212)
+	health := &recordingChannelHealth{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusBadGateway, body: `{"error":"upstream transient"}`},
+			{successText: "success after transient failover"},
+		},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88005}, &recordingSettler{}, dispatcher)
+	deps.ChannelHealth = health
+	deps.RateService = rate.NewUpstreamRateService(
+		func() time.Time { return now },
+		time.Minute,
+		rate.WithTransientCooldown(30*time.Second),
+	)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 after transient failover", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 2 {
+		t.Fatalf("selector calls=%d want 2 (failover to 2nd account)", selector.calls)
+	}
+	// MUTATION: keeping the caller prefilter at only 429/529 leaves this at zero.
+	if len(health.forceCooldowns) != 1 {
+		t.Fatalf("ForceCooldown calls=%d want 1 for enabled 502 transient cooldown", len(health.forceCooldowns))
+	}
+	forced := health.forceCooldowns[0]
+	if forced.reason != string(rate.ReasonUpstreamTransient) {
+		t.Fatalf("ForceCooldown reason=%q want %q", forced.reason, rate.ReasonUpstreamTransient)
+	}
+	if !forced.until.Equal(now.Add(30 * time.Second)) {
+		t.Fatalf("ForceCooldown until=%s want %s", forced.until, now.Add(30*time.Second))
+	}
+}
+
 // 守 wave-2 P2(401 最终 attempt 仍获 auth-failover): budget=1 的计划里, 唯一(也是最后)的普通
 // attempt 收到 401 时, 仍必须获得一次换号 auth-failover 重试(设计: gateway/attempt_error.go
 // "401 可交付前换一次号")。原 bug: shouldRetryAttemptFailure 的 finalAttempt 门在最前, 把最终

@@ -781,7 +781,7 @@ func (ex *chatExecution) forceCooldownFromUpstreamRateLimit(upstreamErr *gateway
 	if upstreamErr == nil || ex.d.RateService == nil || ex.d.ChannelHealth == nil || !ex.healthKeyOK {
 		return
 	}
-	if upstreamErr.StatusCode != http.StatusTooManyRequests && upstreamErr.StatusCode != 529 {
+	if !upstreamRateCooldownCandidate(upstreamErr.StatusCode) {
 		return
 	}
 	// 不再因缺 Retry-After 头而早退:很多 provider 的 429/529 不带该头,HandleUpstreamError 对
@@ -796,6 +796,20 @@ func (ex *chatExecution) forceCooldownFromUpstreamRateLimit(upstreamErr *gateway
 		return
 	}
 	_, _ = ex.d.ChannelHealth.ForceCooldown(ex.ctx, ex.healthKey, dec.CooldownUntil, string(dec.Reason))
+}
+
+func upstreamRateCooldownCandidate(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests, 529,
+		http.StatusRequestTimeout,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func (ex *chatExecution) finalizeBufferedEnvelope(w http.ResponseWriter, env *proto.HCSF, statusCode int, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {

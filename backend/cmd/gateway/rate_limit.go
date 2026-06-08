@@ -20,15 +20,18 @@ import (
 
 // Inbound rate limiting.
 //
-// Two always-on token-bucket tiers, keyed on the RealIP-derived client address,
-// stop request floods before any route handler / provider-account / quota use.
+// Token-bucket tiers, keyed on the RealIP-derived client address, stop request
+// floods before any route handler / provider-account / quota use.
 // The anti-enumeration argon2 path is expensive enough that an unbounded
 // /v1/auth/* flood is a self-amplifying DoS; the strict auth tier caps that.
+// The optional media tier caps high-cost media endpoints when explicitly enabled.
 //
 // Tier 1 (global front door): one bucket per client IP, applied to EVERY request.
 // Tier 2 (auth-strict): an additional, tighter bucket per client IP, applied only
 // to the sensitive auth/session mutation endpoints. A request to those endpoints
 // must pass BOTH tiers.
+// Tier 3 (media-strict): default disabled; when enabled, media paths share a
+// separate per-IP bucket without changing auth/global budgets.
 //
 // The buckets reuse the existing token-bucket primitive; this package owns only
 // the per-IP registry, the env-tunable thresholds, and the wiring. The registry
@@ -54,6 +57,7 @@ const (
 	defaultAuthResetPerMin    = 5.0
 	defaultAuthOAuthPerMin    = 20.0
 	defaultRefreshPerMin      = 30.0
+	defaultMediaPerMin        = 0.0
 
 	// maxBucketsPerTier bounds each tier's per-IP registry so a spoofed-source
 	// flood can't grow it without limit. Reaching the cap clears the registry.
@@ -115,21 +119,23 @@ func (r *ipBucketRegistry) allow(key string, now time.Time) bool {
 type rateLimiter struct {
 	global      *ipBucketRegistry
 	authStrict  map[string]*authStrictTier // request path -> tier
+	mediaStrict map[string]*authStrictTier // request path -> tier
 	resolver    *clientip.Resolver
 	logger      *zap.Logger
 	nowFn       func() time.Time
 	retryAfterS int
 }
 
-// authStrictTier couples a per-IP registry with its Retry-After hint. The hint is
-// derived from the configured rate (not hard-coded), so a tuned override yields an
-// accurate retry delay.
+// authStrictTier couples a per-IP registry with its Retry-After hint. Auth and
+// media strict classes reuse this same tier primitive. The hint is derived from
+// the configured rate (not hard-coded), so a tuned override yields an accurate
+// retry delay.
 type authStrictTier struct {
 	registry   *ipBucketRegistry
 	retryAfter int
 }
 
-// authClass describes one auth-strict class: one bucket policy shared by one or
+// authClass describes one strict path class: one bucket policy shared by one or
 // more request paths. Paths that share a single env knob (e.g. both OAuth routes)
 // belong to the SAME class so they share ONE registry — otherwise alternating
 // between the paths would multiply the effective per-class budget.
@@ -150,6 +156,16 @@ var authClasses = []authClass{
 	{paths: []string{"/v1/auth/reset-password"}, envPerMin: "HUAKAI_RL_AUTH_RESET_PER_MIN", defPerMin: defaultAuthResetPerMin},
 	{paths: []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback", "/v1/auth/telegram-login"}, envPerMin: "HUAKAI_RL_AUTH_OAUTH_PER_MIN", defPerMin: defaultAuthOAuthPerMin},
 	{paths: []string{"/v1/sessions/refresh"}, envPerMin: "HUAKAI_RL_AUTH_REFRESH_PER_MIN", defPerMin: defaultRefreshPerMin},
+}
+
+var mediaClasses = []authClass{
+	{paths: []string{
+		"/v1/audio/speech",
+		"/v1/audio/transcriptions",
+		"/v1/audio/translations",
+		"/v1/images/generations",
+		"/v1/images/edits",
+	}, envPerMin: "HUAKAI_RL_MEDIA_PER_MIN", defPerMin: defaultMediaPerMin},
 }
 
 // retryAfterForRatePerSec converts a tokens-per-second refill rate into a
@@ -205,13 +221,32 @@ func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimite
 			authStrict[p] = tier
 		}
 	}
+	mediaStrict := make(map[string]*authStrictTier, len(mediaClasses))
+	for _, c := range mediaClasses {
+		perMin := envFloat(c.envPerMin, c.defPerMin)
+		if perMin <= 0 {
+			continue
+		}
+		burst := perMin
+		if burst < 1 {
+			burst = 1
+		}
+		tier := &authStrictTier{
+			registry:   newIPBucketRegistry(perMin/60.0, burst),
+			retryAfter: retryAfterForRate(perMin),
+		}
+		for _, p := range c.paths {
+			mediaStrict[p] = tier
+		}
+	}
 
 	return &rateLimiter{
-		global:     newIPBucketRegistry(gRate, gBurst),
-		authStrict: authStrict,
-		resolver:   resolver,
-		logger:     logger,
-		nowFn:      time.Now,
+		global:      newIPBucketRegistry(gRate, gBurst),
+		authStrict:  authStrict,
+		mediaStrict: mediaStrict,
+		resolver:    resolver,
+		logger:      logger,
+		nowFn:       time.Now,
 		// Global-tier Retry-After is derived from the configured rate so a tuned-down
 		// HUAKAI_RL_GLOBAL_RATE (e.g. 0.1 req/s) reports a realistic delay, not a
 		// stale 1s that would make honoring clients retry too early.
@@ -219,10 +254,11 @@ func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimite
 	}
 }
 
-// middleware returns the chi middleware enforcing both tiers. Tier 1 (global) is
-// checked first on every request; Tier 2 (auth-strict) is checked only for the
-// configured auth/session classes. Either tier exhausting yields 429 and the
-// request never reaches the wrapped handler (no provider-account / quota use).
+// middleware returns the chi middleware enforcing global plus configured strict
+// path tiers. Global is checked first on every request; auth/media strict tiers
+// are checked only for their configured classes. Any exhausted tier yields 429
+// and the request never reaches the wrapped handler (no provider-account /
+// quota use).
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := rl.clientKey(r)
@@ -237,6 +273,14 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 		if tier := rl.authStrictFor(r); tier != nil {
 			if !tier.registry.allow(key, now) {
 				rl.denied(r, "auth_strict", key, tier.retryAfter)
+				rl.reject(w, tier.retryAfter)
+				return
+			}
+		}
+
+		if tier := rl.mediaStrictFor(r); tier != nil {
+			if !tier.registry.allow(key, now) {
+				rl.denied(r, "media_strict", key, tier.retryAfter)
 				rl.reject(w, tier.retryAfter)
 				return
 			}
@@ -272,14 +316,22 @@ func (rl *rateLimiter) denied(r *http.Request, tier, key string, retryAfterS int
 // induced cross-site GET 429 the real login/register/refresh POST for an IP. The
 // wider global tier still bounds floods of those other methods.
 func (rl *rateLimiter) authStrictFor(r *http.Request) *authStrictTier {
+	return rl.strictTierFor(r, rl.authStrict)
+}
+
+func (rl *rateLimiter) mediaStrictFor(r *http.Request) *authStrictTier {
+	return rl.strictTierFor(r, rl.mediaStrict)
+}
+
+func (rl *rateLimiter) strictTierFor(r *http.Request, tiers map[string]*authStrictTier) *authStrictTier {
 	if r.Method != http.MethodPost {
 		return nil
 	}
-	if tier, ok := rl.authStrict[r.URL.Path]; ok {
+	if tier, ok := tiers[r.URL.Path]; ok {
 		return tier
 	}
 	if rctx := chi.RouteContext(r.Context()); rctx != nil {
-		if tier, ok := rl.authStrict[rctx.RoutePattern()]; ok {
+		if tier, ok := tiers[rctx.RoutePattern()]; ok {
 			return tier
 		}
 	}

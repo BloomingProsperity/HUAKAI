@@ -28,11 +28,11 @@ type Service interface {
 
 // Decision is the outcome of HandleUpstreamError.
 type Decision struct {
-	StateChange         StateChange
-	CooldownUntil       time.Time
-	Reason              Reason
-	ShouldFailover      bool
-	RetryAfterSeconds   int
+	StateChange       StateChange
+	CooldownUntil     time.Time
+	Reason            Reason
+	ShouldFailover    bool
+	RetryAfterSeconds int
 }
 
 // StateChange classifies the Account-state mutation.
@@ -51,23 +51,24 @@ const (
 type Reason string
 
 const (
-	ReasonRateLimit5h          Reason = "rate_limit_5h_exceeded"
-	ReasonRateLimit7d          Reason = "rate_limit_7d_exceeded"
-	ReasonRateLimitBoth        Reason = "rate_limit_both_windows"
-	ReasonRateLimitRPM         Reason = "rate_limit_rpm"
-	ReasonRateLimitTPM         Reason = "rate_limit_tpm"
-	ReasonExtraUsageRequired   Reason = "extra_usage_required"
-	ReasonOverloaded           Reason = "overloaded"
-	ReasonTokenRefreshRequired Reason = "token_refresh_required"
-	ReasonTokenRevoked         Reason = "token_permanently_revoked"
-	ReasonKYCRequired          Reason = "kyc_required"
-	ReasonOrgDisabled          Reason = "org_disabled"
-	ReasonCreditExhausted      Reason = "credit_exhausted"
-	ReasonWorkspaceDeactivated Reason = "workspace_deactivated"
-	ReasonModelLimitExceeded   Reason = "model_limit_exceeded"
-	ReasonTempUnschedRule      Reason = "temp_unsched_rule_matched"
-	ReasonOpenAI403Counted     Reason = "openai_403_counted"
-	ReasonOpenAI403Disabled    Reason = "openai_403_disabled"
+	ReasonRateLimit5h           Reason = "rate_limit_5h_exceeded"
+	ReasonRateLimit7d           Reason = "rate_limit_7d_exceeded"
+	ReasonRateLimitBoth         Reason = "rate_limit_both_windows"
+	ReasonRateLimitRPM          Reason = "rate_limit_rpm"
+	ReasonRateLimitTPM          Reason = "rate_limit_tpm"
+	ReasonExtraUsageRequired    Reason = "extra_usage_required"
+	ReasonOverloaded            Reason = "overloaded"
+	ReasonUpstreamTransient     Reason = "upstream_transient_error"
+	ReasonTokenRefreshRequired  Reason = "token_refresh_required"
+	ReasonTokenRevoked          Reason = "token_permanently_revoked"
+	ReasonKYCRequired           Reason = "kyc_required"
+	ReasonOrgDisabled           Reason = "org_disabled"
+	ReasonCreditExhausted       Reason = "credit_exhausted"
+	ReasonWorkspaceDeactivated  Reason = "workspace_deactivated"
+	ReasonModelLimitExceeded    Reason = "model_limit_exceeded"
+	ReasonTempUnschedRule       Reason = "temp_unsched_rule_matched"
+	ReasonOpenAI403Counted      Reason = "openai_403_counted"
+	ReasonOpenAI403Disabled     Reason = "openai_403_disabled"
 	ReasonAntigravityValidation Reason = "antigravity_403_validation"
-	ReasonCustomErrorCode      Reason = "custom_error_code"
+	ReasonCustomErrorCode       Reason = "custom_error_code"
 )
