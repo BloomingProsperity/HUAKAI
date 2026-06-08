@@ -84,6 +84,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
+	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpresolve"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
@@ -951,6 +952,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			Adapters:                 registrydefault.Build(),
 			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
 			ProxyResolver:            provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys),
+			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
 			Timeouts:                 buildGatewayTimeoutConfig(),
 			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
 		},

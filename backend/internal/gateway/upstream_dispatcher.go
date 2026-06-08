@@ -104,6 +104,11 @@ type UpstreamDispatcher struct {
 	// 未注册 account（ErrAccountNotFound）= 直连，不视为错误。
 	// 仅在 HTTPClient 为 nil 的生产路径生效。
 	ProxyResolver provider.ProxyResolver
+	// TLSProfileResolver 可选:按 accountID 解析账号绑定的 DB TLS-fingerprint
+	// profile -> per-account uTLS RoundTripper。nil 返回 = 保持 builtin per-mode
+	// 指纹(未绑定/非 active/profile 非法)。仅 mimicry mode + HTTPClient 为 nil
+	// 的生产路径生效。
+	TLSProfileResolver TLSProfileResolver
 	// Timeouts applies only to non-streaming buffered dispatches.
 	Timeouts TimeoutConfig
 	// AnthropicAutoBreakpoints opts into automatic cache_control breakpoint
@@ -179,6 +184,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	// 4. 发出请求
 	client := d.HTTPClient
 	if client == nil {
+		rt = d.applyTLSProfile(ctx, rt, mode, in.Account.AccountID)
 		rt, err = d.applyProxy(ctx, rt, in.Account.AccountID)
 		if err != nil {
 			return nil, err
@@ -228,6 +234,26 @@ func roundTripperWithResponseHeaderTimeout(rt http.RoundTripper, timeout time.Du
 		clone := t.Clone()
 		clone.ResponseHeaderTimeout = timeout
 		return clone
+	}
+	return rt
+}
+
+// TLSProfileResolver 按账号解析绑定的 DB TLS-fingerprint profile,返回驱动该
+// profile 指纹的 uTLS RoundTripper;nil = 保持 builtin。结构化接口,实现在
+// internal/tlsfpresolve(gateway 无需反向 import)。
+type TLSProfileResolver interface {
+	ResolveRoundTripper(ctx context.Context, accountID int64) (http.RoundTripper, error)
+}
+
+// applyTLSProfile 在 mimicry mode 下用账号绑定的 DB TLS profile RT 替换 rt;
+// 无绑定/非 mimicry/解析失败一律保持原 rt(builtin)。永不让 dispatch 失败 ——
+// 返回的 profile RT 实现 proxy-aware WithProxy,故 applyProxy 仍能正确叠加代理。
+func (d *UpstreamDispatcher) applyTLSProfile(ctx context.Context, rt http.RoundTripper, mode transport.TransportMode, accountID int64) http.RoundTripper {
+	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard {
+		return rt
+	}
+	if profileRT, err := d.TLSProfileResolver.ResolveRoundTripper(ctx, accountID); err == nil && profileRT != nil {
+		return profileRT
 	}
 	return rt
 }
