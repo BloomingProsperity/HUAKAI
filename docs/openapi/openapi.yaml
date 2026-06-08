@@ -7558,6 +7558,43 @@ paths:
   # Admin: API Keys (Slice 2 N+4b2)
   # ==========================================================================
 
+  /admin/v1/version:
+    get:
+      tags: [admin-version]
+      summary: Build and version metadata for incident triage
+      operationId: getAdminVersion
+      description: |
+        Returns read-only build metadata: semantic version, git commit,
+        build timestamp, and Go runtime version. Admin-only.
+      x-huakai-spec-source: [docs/specs/admin-version.md]
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: Build version snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BuildVersionResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+  /v1/admin/version:
+    get:
+      tags: [admin-version]
+      summary: Build and version metadata for incident triage (legacy prefix)
+      operationId: getAdminVersionLegacy
+      description: |
+        Alias of /admin/v1/version for the legacy /v1/admin prefix.
+      x-huakai-spec-source: [docs/specs/admin-version.md]
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: Build version snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BuildVersionResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
   /admin/v1/account-modes:
     get:
       tags: [admin-account-modes]

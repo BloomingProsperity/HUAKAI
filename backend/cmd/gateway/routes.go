@@ -806,6 +806,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	}
 	r.Route("/admin/v1/provider-accounts", mountProviderAccountAdminRoutes)
 	r.Route("/v1/admin/provider-accounts", mountProviderAccountAdminRoutes)
+	r.Route("/admin/v1", func(r chi.Router) {
+		adminhttp.MountVersionRoutes(r, adminhttp.VersionDeps{Auth: d.adminAuth})
+	})
+	r.Route("/v1/admin", func(r chi.Router) {
+		adminhttp.MountVersionRoutes(r, adminhttp.VersionDeps{Auth: d.adminAuth})
+	})
 	r.Route("/v1/admin/channel-health", func(r chi.Router) {
 		gatewayhttp.MountChannelHealthReadAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
 			Auth:       d.adminAuth,
