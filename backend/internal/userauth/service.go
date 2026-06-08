@@ -458,6 +458,10 @@ func (s *Service) PreparePasswordReset(ctx context.Context, in PasswordResetConf
 	return store.PreparePasswordResetTokenUser(ctx, in.TenantID, HashToken(in.Token), s.now())
 }
 
+// Clock exposes the service injected clock so HTTP handlers thread the same
+// time source (deterministic tests; production uses the default time.Now).
+func (s *Service) Clock() time.Time { return s.now() }
+
 func (s *Service) now() time.Time {
 	if s != nil && s.Now != nil {
 		return s.Now().UTC()
