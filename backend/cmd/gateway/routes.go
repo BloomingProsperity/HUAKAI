@@ -779,6 +779,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:  d.adminAuth,
 			Store: d.adminQueries,
 		})
+		adminhttp.MountProviderAccountUpstreamModelsRoutes(r, adminhttp.UpstreamModelsDeps{
+			Auth:     d.adminAuth,
+			Accounts: d.adminQueries,
+			Creds:    d.credentialStore,
+		})
 		gatewayhttp.MountAdminCredentialRoutes(r, gatewayhttp.AdminCredentialDeps{
 			Auth:        d.adminAuth,
 			Credentials: d.credentialStore,
