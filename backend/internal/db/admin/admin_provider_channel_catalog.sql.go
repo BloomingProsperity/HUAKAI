@@ -36,6 +36,121 @@ func (q *Queries) CountActiveProviderAccountsForProvider(ctx context.Context, ar
 	return column_1, err
 }
 
+const createChannelTestTemplate = `-- name: CreateChannelTestTemplate :one
+INSERT INTO channel_test_templates (
+    tenant_id,
+    name,
+    method,
+    path,
+    body_template,
+    headers
+) VALUES (
+    $1::bigint,
+    $2::text,
+    $3::text,
+    $4::text,
+    $5::text,
+    $6::jsonb
+)
+RETURNING id, tenant_id, name, method, path, body_template, headers, created_at
+`
+
+type CreateChannelTestTemplateParams struct {
+	TenantID     int64  `db:"tenant_id" json:"tenant_id"`
+	Name         string `db:"name" json:"name"`
+	Method       string `db:"method" json:"method"`
+	Path         string `db:"path" json:"path"`
+	BodyTemplate string `db:"body_template" json:"body_template"`
+	Headers      []byte `db:"headers" json:"headers"`
+}
+
+func (q *Queries) CreateChannelTestTemplate(ctx context.Context, arg CreateChannelTestTemplateParams) (ChannelTestTemplate, error) {
+	row := q.db.QueryRow(ctx, createChannelTestTemplate,
+		arg.TenantID,
+		arg.Name,
+		arg.Method,
+		arg.Path,
+		arg.BodyTemplate,
+		arg.Headers,
+	)
+	var i ChannelTestTemplate
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Method,
+		&i.Path,
+		&i.BodyTemplate,
+		&i.Headers,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteChannelTestTemplate = `-- name: DeleteChannelTestTemplate :one
+DELETE FROM channel_test_templates
+WHERE tenant_id = $1::bigint
+  AND id = $2::bigint
+RETURNING id, tenant_id, name, method, path, body_template, headers, created_at
+`
+
+type DeleteChannelTestTemplateParams struct {
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+	ID       int64 `db:"id" json:"id"`
+}
+
+func (q *Queries) DeleteChannelTestTemplate(ctx context.Context, arg DeleteChannelTestTemplateParams) (ChannelTestTemplate, error) {
+	row := q.db.QueryRow(ctx, deleteChannelTestTemplate, arg.TenantID, arg.ID)
+	var i ChannelTestTemplate
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Method,
+		&i.Path,
+		&i.BodyTemplate,
+		&i.Headers,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getChannelTestTemplate = `-- name: GetChannelTestTemplate :one
+SELECT
+    id,
+    tenant_id,
+    name,
+    method,
+    path,
+    body_template,
+    headers,
+    created_at
+FROM channel_test_templates
+WHERE tenant_id = $1::bigint
+  AND id = $2::bigint
+`
+
+type GetChannelTestTemplateParams struct {
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+	ID       int64 `db:"id" json:"id"`
+}
+
+func (q *Queries) GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error) {
+	row := q.db.QueryRow(ctx, getChannelTestTemplate, arg.TenantID, arg.ID)
+	var i ChannelTestTemplate
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Method,
+		&i.Path,
+		&i.BodyTemplate,
+		&i.Headers,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertProvider = `-- name: InsertProvider :one
 INSERT INTO providers (
     tenant_id,
@@ -210,6 +325,58 @@ func (q *Queries) ListAdminProvidersByTenant(ctx context.Context, arg ListAdminP
 	return items, nil
 }
 
+const listChannelTestTemplatesByTenant = `-- name: ListChannelTestTemplatesByTenant :many
+SELECT
+    id,
+    tenant_id,
+    name,
+    method,
+    path,
+    body_template,
+    headers,
+    created_at
+FROM channel_test_templates
+WHERE tenant_id = $1::bigint
+ORDER BY created_at DESC, id DESC
+LIMIT $3::integer
+OFFSET $2::integer
+`
+
+type ListChannelTestTemplatesByTenantParams struct {
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	PageOffset int32 `db:"page_offset" json:"page_offset"`
+	PageLimit  int32 `db:"page_limit" json:"page_limit"`
+}
+
+func (q *Queries) ListChannelTestTemplatesByTenant(ctx context.Context, arg ListChannelTestTemplatesByTenantParams) ([]ChannelTestTemplate, error) {
+	rows, err := q.db.Query(ctx, listChannelTestTemplatesByTenant, arg.TenantID, arg.PageOffset, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ChannelTestTemplate
+	for rows.Next() {
+		var i ChannelTestTemplate
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.Method,
+			&i.Path,
+			&i.BodyTemplate,
+			&i.Headers,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const softDeleteProvider = `-- name: SoftDeleteProvider :one
 UPDATE providers p
 SET
@@ -253,6 +420,53 @@ func (q *Queries) SoftDeleteProvider(ctx context.Context, arg SoftDeleteProvider
 		&i.DisplayName,
 		&i.UpstreamProtocol,
 		&i.Enabled,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const updateChannelTestTemplate = `-- name: UpdateChannelTestTemplate :one
+UPDATE channel_test_templates
+SET
+    name = $1::text,
+    method = $2::text,
+    path = $3::text,
+    body_template = $4::text,
+    headers = $5::jsonb
+WHERE tenant_id = $6::bigint
+  AND id = $7::bigint
+RETURNING id, tenant_id, name, method, path, body_template, headers, created_at
+`
+
+type UpdateChannelTestTemplateParams struct {
+	Name         string `db:"name" json:"name"`
+	Method       string `db:"method" json:"method"`
+	Path         string `db:"path" json:"path"`
+	BodyTemplate string `db:"body_template" json:"body_template"`
+	Headers      []byte `db:"headers" json:"headers"`
+	TenantID     int64  `db:"tenant_id" json:"tenant_id"`
+	ID           int64  `db:"id" json:"id"`
+}
+
+func (q *Queries) UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error) {
+	row := q.db.QueryRow(ctx, updateChannelTestTemplate,
+		arg.Name,
+		arg.Method,
+		arg.Path,
+		arg.BodyTemplate,
+		arg.Headers,
+		arg.TenantID,
+		arg.ID,
+	)
+	var i ChannelTestTemplate
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Method,
+		&i.Path,
+		&i.BodyTemplate,
+		&i.Headers,
 		&i.CreatedAt,
 	)
 	return i, err
