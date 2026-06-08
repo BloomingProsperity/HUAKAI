@@ -82,6 +82,7 @@ type referralRecordsStore interface {
 	ListUserReferrals(context.Context, ListUserReferralsInput) (ReferralRecordPage, error)
 	ListUserReferralRewards(context.Context, ListUserReferralRewardsInput) (ReferralRewardPage, error)
 	ListReferralsAdmin(context.Context, ListReferralsAdminInput) (ReferralRecordPage, error)
+	ListReferralRewardsAdmin(context.Context, ListReferralRewardsAdminInput) (AdminReferralRewardPage, error)
 	GetReferralOverview(context.Context, int64) (ReferralOverview, error)
 }
 
@@ -184,4 +185,50 @@ func zeroReferralStatusCounts() map[string]int64 {
 		ReferralStatusRewarded:  0,
 		ReferralStatusRejected:  0,
 	}
+}
+
+// ListReferralRewardsAdminInput is the tenant-scoped admin reward-ledger filter
+// (ReferrerUserID nil = all referrers in the tenant). F-RES-2 / AFF-019.
+type ListReferralRewardsAdminInput struct {
+	TenantID       int64
+	ReferrerUserID *int64
+	Limit          int
+	Offset         int
+}
+
+type AdminReferralRewardEntry struct {
+	ID             int64
+	ReferralID     int64
+	ReferrerUserID int64
+	RewardType     string
+	AmountUSD      decimal.Decimal
+	CreatedAt      time.Time
+}
+
+type AdminReferralRewardPage struct {
+	Items          []AdminReferralRewardEntry
+	Total          int64
+	TotalRewardUSD decimal.Decimal
+	Limit          int
+	Offset         int
+}
+
+// ListReferralRewardsAdmin lists issued referral rewards for a tenant (read-only
+// admin ledger), optionally filtered to one referrer. No money mutation.
+func (s *Service) ListReferralRewardsAdmin(ctx context.Context, input ListReferralRewardsAdminInput) (AdminReferralRewardPage, error) {
+	if s == nil || s.store == nil {
+		return AdminReferralRewardPage{}, ErrStoreNotConfigured
+	}
+	if input.TenantID <= 0 {
+		return AdminReferralRewardPage{}, ErrInvalidInput
+	}
+	if input.ReferrerUserID != nil && *input.ReferrerUserID <= 0 {
+		return AdminReferralRewardPage{}, ErrInvalidInput
+	}
+	input.Limit, input.Offset = normalizeReferralPage(input.Limit, input.Offset)
+	store, ok := s.store.(referralRecordsStore)
+	if !ok {
+		return AdminReferralRewardPage{}, ErrStoreNotConfigured
+	}
+	return store.ListReferralRewardsAdmin(ctx, input)
 }

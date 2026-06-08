@@ -208,3 +208,47 @@ func nullableReferralStatus(status *string) any {
 }
 
 var _ referralRecordsStore = (*PostgresStore)(nil)
+
+// ListReferralRewardsAdmin implements the tenant-scoped admin reward ledger read.
+func (s *PostgresStore) ListReferralRewardsAdmin(ctx context.Context, input ListReferralRewardsAdminInput) (AdminReferralRewardPage, error) {
+	if s == nil || s.pool == nil {
+		return AdminReferralRewardPage{}, ErrStoreNotConfigured
+	}
+	var refFilter interface{}
+	if input.ReferrerUserID != nil {
+		refFilter = *input.ReferrerUserID
+	}
+	var total, totalMicros int64
+	if err := s.pool.QueryRow(ctx, `
+SELECT COUNT(*)::bigint, COALESCE(SUM(amount_usd_micros), 0)::bigint
+FROM referral_rewards
+WHERE tenant_id=$1 AND ($2::bigint IS NULL OR referrer_user_id=$2)`,
+		input.TenantID, refFilter).Scan(&total, &totalMicros); err != nil {
+		return AdminReferralRewardPage{}, fmt.Errorf("invitation: count admin referral rewards: %w", err)
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, referral_id, referrer_user_id, reward_type, amount_usd_micros, issued_at
+FROM referral_rewards
+WHERE tenant_id=$1 AND ($2::bigint IS NULL OR referrer_user_id=$2)
+ORDER BY issued_at DESC, id DESC
+LIMIT $3 OFFSET $4`,
+		input.TenantID, refFilter, input.Limit, input.Offset)
+	if err != nil {
+		return AdminReferralRewardPage{}, fmt.Errorf("invitation: list admin referral rewards: %w", err)
+	}
+	defer rows.Close()
+	items := make([]AdminReferralRewardEntry, 0)
+	for rows.Next() {
+		var e AdminReferralRewardEntry
+		var micros int64
+		if err := rows.Scan(&e.ID, &e.ReferralID, &e.ReferrerUserID, &e.RewardType, &micros, &e.CreatedAt); err != nil {
+			return AdminReferralRewardPage{}, fmt.Errorf("invitation: scan admin referral rewards: %w", err)
+		}
+		e.AmountUSD = referralMicrosToUSD(micros)
+		items = append(items, e)
+	}
+	if err := rows.Err(); err != nil {
+		return AdminReferralRewardPage{}, fmt.Errorf("invitation: iterate admin referral rewards: %w", err)
+	}
+	return AdminReferralRewardPage{Items: items, Total: total, TotalRewardUSD: referralMicrosToUSD(totalMicros), Limit: input.Limit, Offset: input.Offset}, nil
+}
