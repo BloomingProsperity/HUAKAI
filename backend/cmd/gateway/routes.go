@@ -724,6 +724,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		UnlockAudit:     adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
 		TwoFADisabler:   d.twoFactor,
 		PasskeyResetter: d.passkeys,
+		UserGroupSetter: adminuserhttp.NewPostgresUserGroupStore(d.pgPool),
 		Unlocker:        d.userAuth,
 		Audit:           d.adminQueries,
 	}

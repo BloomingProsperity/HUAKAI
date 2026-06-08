@@ -592,3 +592,51 @@ func TestAdminResetPasskeyUnknownUser404BeforeMutation(t *testing.T) {
 		t.Fatalf("unknown user touched mutation deps: resetter=%+v audit=%+v", resetter, audit)
 	}
 }
+
+type userGroupSetterStub struct {
+	calls    int
+	tenantID int64
+	userID   int64
+	group    string
+	err      error
+}
+
+func (s *userGroupSetterStub) SetUserGroupForTenant(_ context.Context, tenantID, userID int64, group string) error {
+	s.calls++
+	s.tenantID, s.userID, s.group = tenantID, userID, group
+	return s.err
+}
+
+func TestAdminSetUserGroupTenantScopedAudited(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	setter := &userGroupSetterStub{}
+	audit := &adminAuditStub{}
+	deps := Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserGroupSetter: setter, Audit: audit}
+	router := chi.NewRouter()
+	router.Route("/admin/v1/users", func(r chi.Router) { MountRoutes(r, deps) })
+	req := httptest.NewRequest(http.MethodPut, "/admin/v1/users/101/group", strings.NewReader(`{"group":"premium"}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	if setter.calls != 1 || setter.tenantID != 7 || setter.userID != 101 || setter.group != "premium" {
+		t.Fatalf("set group mismatch: %+v", setter)
+	}
+	if audit.calls != 1 || audit.arg.Action != "set_user_group" || audit.arg.TargetType != "user" {
+		t.Fatalf("audit mismatch: %+v", audit.arg)
+	}
+	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
+		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	}
+}
+
+func TestAdminSetUserGroupRequiresAdmin(t *testing.T) {
+	setter := &userGroupSetterStub{}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsers(t, Deps{
+		Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserGroupSetter: setter, Audit: audit,
+	}, http.MethodPut, "/admin/v1/users/101/group", []byte(`{"group":"premium"}`))
+	assertStatus(t, rec, http.StatusUnauthorized)
+	if setter.calls != 0 || audit.calls != 0 {
+		t.Fatalf("unauthorized set-group touched deps: setter=%+v audit=%+v", setter, audit)
+	}
+}

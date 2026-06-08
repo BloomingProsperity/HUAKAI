@@ -35,6 +35,7 @@ type Deps struct {
 	Audit           adminAuditStore
 	TwoFADisabler   twoFADisableService
 	PasskeyResetter passkeyResetService
+	UserGroupSetter userGroupSetter
 }
 
 type adminAuth interface {
@@ -70,6 +71,10 @@ type twoFADisableService interface {
 
 type passkeyResetService interface {
 	AdminClearCredentials(ctx context.Context, tenantID, userID int64) (int, error)
+}
+
+type userGroupSetter interface {
+	SetUserGroupForTenant(ctx context.Context, tenantID, userID int64, group string) error
 }
 
 type unlockAuditInput struct {
@@ -129,6 +134,7 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Post("/{id}/unlock", newUnlockHandler(d))
 	r.Post("/{id}/2fa/force-disable", newForceDisable2FAHandler(d))
 	r.Delete("/{id}/passkeys", newResetPasskeyHandler(d))
+	r.Put("/{id}/group", newSetUserGroupHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
 	r.Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
@@ -662,5 +668,80 @@ func newResetPasskeyHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "cleared": cleared})
+	}
+}
+
+type setUserGroupRequest struct {
+	Group string `json:"group"`
+}
+
+// postgresUserGroupStore sets users.user_group (routing entitlement) for a tenant user.
+type postgresUserGroupStore struct {
+	pool *pgxpool.Pool
+}
+
+// NewPostgresUserGroupStore wires the admin user-group setter.
+func NewPostgresUserGroupStore(pool *pgxpool.Pool) userGroupSetter {
+	if pool == nil {
+		return nil
+	}
+	return postgresUserGroupStore{pool: pool}
+}
+
+func (s postgresUserGroupStore) SetUserGroupForTenant(ctx context.Context, tenantID, userID int64, group string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET user_group=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, userID, group)
+	return err
+}
+
+// newSetUserGroupHandler lets a tenant operator set a user's routing group
+// (users.user_group), mirroring newForceDisable2FAHandler. Tenant-scoped + audited
+// (action=set_user_group). AUTH-031. Additive admin-management; default-preserving.
+func newSetUserGroupHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
+		if !ok {
+			return
+		}
+		userID, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		var req setUserGroupRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		group := strings.TrimSpace(req.Group)
+		if group == "" || len(group) > 64 {
+			writeError(w, http.StatusBadRequest, "invalid_group", "group must be 1..64 chars")
+			return
+		}
+		if d.UserGroupSetter == nil || d.Audit == nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin user-group dependency unset")
+			return
+		}
+		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{TenantID: tenantID, UserID: userID}); errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
+			return
+		}
+		if err := d.UserGroupSetter.SetUserGroupForTenant(r.Context(), tenantID, userID, group); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_user_group_failed", fmt.Sprintf("set user group failed: %v", err))
+			return
+		}
+		ai := buildUnlockAuditInput(r, ident, "")
+		audit := admindb.InsertAdminAuditEventParams{
+			TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole,
+			Action: "set_user_group", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID,
+		}
+		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write group audit failed: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "user_group": group})
 	}
 }
