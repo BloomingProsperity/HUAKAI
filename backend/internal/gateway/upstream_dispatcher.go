@@ -164,6 +164,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		return nil, err
 	}
 	headerfirewall.StripHopByHopRequestHeaders(req.Header)
+	headerfirewall.NormalizeEgressRequestHeaders(req.Header)
 
 	// 3. 取 transport
 	mode := in.TransportMode
