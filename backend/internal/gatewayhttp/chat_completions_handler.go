@@ -741,6 +741,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
+	ex.updateSessionWindowFromHeaders(dispatchRes.Headers)
 	upstreamAdapter, err := protocolAdapterForBuffered(ex.d.Forwarder, ex.resolved.ProtocolFamily)
 	if err != nil {
 		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_adapter_error", ex.requestID, 0, nil); abortErr != nil {
@@ -769,6 +770,15 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		enrichCanonicalRequestMeta(bufferedEnv, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.sessionHash)
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, dispatchRes.StatusCode, startedAt)
+}
+
+func (ex *chatExecution) updateSessionWindowFromHeaders(headers http.Header) {
+	if ex == nil || ex.d.RateService == nil || ex.acquiredAccountID <= 0 {
+		return
+	}
+	if err := ex.d.RateService.UpdateSessionWindow(ex.ctx, ex.acquiredAccountID, headers); err != nil {
+		logInternalError(ex.ctx, ex.requestID, "session_window_update_failed", err)
+	}
 }
 
 // NewMessagesHandler 是 /v1/messages 端点 handler。它复用 chat completions

@@ -176,6 +176,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		outcome.Failure = ex.classifyStreamingUpstreamFailure(dispatchRes, upstreamAttemptStartedAt)
 		return outcome
 	}
+	ex.updateSessionWindowFromHeaders(dispatchRes.Headers)
 	deliveryStarted, failure := ex.forwardSSEAndSettle(w, dispatchRes, upstreamAttemptStartedAt, clientAdapter)
 	outcome = ex.baseAttemptOutcome()
 	outcome.DeliveryStarted = deliveryStarted

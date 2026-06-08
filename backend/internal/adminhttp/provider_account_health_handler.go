@@ -32,18 +32,22 @@ type providerAccountHealthStore interface {
 }
 
 type providerAccountHealthResponseBody struct {
-	ID                 int64   `json:"id"`
-	HealthState        string  `json:"health_state"`
-	HealthStateUntil   *string `json:"health_state_until,omitempty"`
-	LastProbeLatencyMS *int32  `json:"last_probe_latency_ms"`
-	LastProbeAt        *string `json:"last_probe_at"`
-	LastRefreshAt      *string `json:"last_refresh_at"`
-	LastRefreshOutcome *string `json:"last_refresh_outcome"`
-	FailureClass       *string `json:"failure_class"`
-	FailureCount       int32   `json:"failure_count"`
-	Enabled            bool    `json:"enabled"`
-	RequiresAction     bool    `json:"requires_action"`
-	UpdatedAt          string  `json:"updated_at"`
+	ID                    int64   `json:"id"`
+	HealthState           string  `json:"health_state"`
+	HealthStateUntil      *string `json:"health_state_until,omitempty"`
+	LastProbeLatencyMS    *int32  `json:"last_probe_latency_ms"`
+	LastProbeAt           *string `json:"last_probe_at"`
+	ModelSyncLastCheckAt  *string `json:"model_sync_last_check_at"`
+	SessionWindow5hStart  *string `json:"session_window_5h_start"`
+	SessionWindow5hEnd    *string `json:"session_window_5h_end"`
+	SessionWindow5hStatus *string `json:"session_window_5h_status"`
+	LastRefreshAt         *string `json:"last_refresh_at"`
+	LastRefreshOutcome    *string `json:"last_refresh_outcome"`
+	FailureClass          *string `json:"failure_class"`
+	FailureCount          int32   `json:"failure_count"`
+	Enabled               bool    `json:"enabled"`
+	RequiresAction        bool    `json:"requires_action"`
+	UpdatedAt             string  `json:"updated_at"`
 }
 
 func MountProviderAccountHealthRoutes(r chi.Router, d ProviderAccountHealthDeps) {
@@ -121,18 +125,22 @@ func providerAccountHealthResponse(row admindb.GetAdminProviderAccountHealthRow)
 	// requires_action 是确定性 admin 视图规则,不从请求输入或上游响应推断。
 	requiresAction := row.HealthState == "revoked" || row.FailureCount > 3
 	return providerAccountHealthResponseBody{
-		ID:                 row.ID,
-		HealthState:        row.HealthState,
-		HealthStateUntil:   formatProviderAccountHealthTime(row.HealthStateUntil),
-		LastProbeLatencyMS: row.LastProbeLatencyMS,
-		LastProbeAt:        formatProviderAccountHealthTime(row.LastProbeAt),
-		LastRefreshAt:      formatProviderAccountHealthTime(row.LastRefreshAt),
-		LastRefreshOutcome: row.LastRefreshOutcome,
-		FailureClass:       row.FailureClass,
-		FailureCount:       row.FailureCount,
-		Enabled:            row.Enabled,
-		RequiresAction:     requiresAction,
-		UpdatedAt:          requiredProviderAccountHealthTime(row.UpdatedAt),
+		ID:                    row.ID,
+		HealthState:           row.HealthState,
+		HealthStateUntil:      formatProviderAccountHealthTime(row.HealthStateUntil),
+		LastProbeLatencyMS:    row.LastProbeLatencyMS,
+		LastProbeAt:           formatProviderAccountHealthTime(row.LastProbeAt),
+		ModelSyncLastCheckAt:  formatProviderAccountHealthTime(row.ModelSyncLastCheckAt),
+		SessionWindow5hStart:  formatProviderAccountHealthTime(row.SessionWindow5hStart),
+		SessionWindow5hEnd:    formatProviderAccountHealthTime(row.SessionWindow5hEnd),
+		SessionWindow5hStatus: row.SessionWindow5hStatus,
+		LastRefreshAt:         formatProviderAccountHealthTime(row.LastRefreshAt),
+		LastRefreshOutcome:    row.LastRefreshOutcome,
+		FailureClass:          row.FailureClass,
+		FailureCount:          row.FailureCount,
+		Enabled:               row.Enabled,
+		RequiresAction:        requiresAction,
+		UpdatedAt:             requiredProviderAccountHealthTime(row.UpdatedAt),
 	}
 }
 
