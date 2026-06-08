@@ -643,6 +643,70 @@ func TestSessionHashHeaderPriority(t *testing.T) {
 		}
 	})
 
+	t.Run("metadata_user_id_claude_code_session_suffix_fills_session", func(t *testing.T) {
+		selector := &recordingSelectionRequestSelector{}
+		d := clientAdapterDeps(t)
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		d.Selector = selector
+		sessionID := "11111111-2222-3333-4444-555555555555"
+		body := `{"model":"gpt-4o","stream":false,"metadata":{"user_id":"user_x__session_` + sessionID + `"},"tools":[{"type":"function","function":{"name":"metadata_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"metadata"}]}`
+
+		rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		if len(selector.requests) != 1 {
+			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+		}
+		want := expectedClientSessionHashForTest(sessionID)
+		// MUTATION: skip metadata.user_id or hash the full user id instead of
+		// the Claude-Code session suffix; the session hash would fall back to
+		// prompt hash or use a different client-session hash.
+		if got := selector.requests[0].SessionHash; got != want {
+			t.Fatalf("selector SessionHash=%q want metadata.user_id session hash %q", got, want)
+		}
+	})
+
+	t.Run("x_client_request_id_is_lowest_header_priority", func(t *testing.T) {
+		selector := &recordingSelectionRequestSelector{}
+		d := clientAdapterDeps(t)
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		d.Selector = selector
+		body := `{"model":"gpt-4o","stream":false,"conversation_id":"body-thread","tools":[{"type":"function","function":{"name":"client_request_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"request id"}]}`
+
+		rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, map[string]string{
+			"X-Client-Request-Id": "client-request-thread",
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		if len(selector.requests) != 1 {
+			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+		}
+		want := expectedClientSessionHashForTest("client-request-thread")
+		if got := selector.requests[0].SessionHash; got != want {
+			t.Fatalf("selector SessionHash=%q want X-Client-Request-Id hash %q", got, want)
+		}
+
+		selector.requests = nil
+		rec = invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, map[string]string{
+			"X-Session-ID":        "primary-thread",
+			"X-Client-Request-Id": "client-request-thread",
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		if len(selector.requests) != 1 {
+			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
+		}
+		want = expectedClientSessionHashForTest("primary-thread")
+		// MUTATION: move X-Client-Request-Id ahead of existing session headers;
+		// it would steal priority from X-Session-ID here.
+		if got := selector.requests[0].SessionHash; got != want {
+			t.Fatalf("selector SessionHash=%q want existing header priority hash %q", got, want)
+		}
+	})
+
 	t.Run("too_long_body_id_falls_back_to_prompt_hash", func(t *testing.T) {
 		selector := &recordingSelectionRequestSelector{}
 		d := clientAdapterDeps(t)
