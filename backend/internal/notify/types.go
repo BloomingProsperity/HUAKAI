@@ -45,6 +45,8 @@ type Settings struct {
 	GotifyToken       string
 	GotifyPriority    int
 	BalanceThreshold  decimal.Decimal
+	ThresholdType     string
+	ExtraEmails       []string
 	UpdatedAt         time.Time
 	UpdatedBy         string
 }
@@ -83,6 +85,7 @@ func DefaultSettings(tenantID, userID int64) Settings {
 		NotifyType:       TypeNone,
 		GotifyPriority:   5,
 		BalanceThreshold: DefaultLowBalanceThreshold,
+		ThresholdType:    "fixed",
 		UpdatedBy:        "system",
 	}
 }
@@ -108,6 +111,17 @@ func (s Settings) normalized() Settings {
 	if s.GotifyPriority == 0 {
 		s.GotifyPriority = 5
 	}
+	s.ThresholdType = strings.TrimSpace(strings.ToLower(s.ThresholdType))
+	if s.ThresholdType == "" {
+		s.ThresholdType = "fixed"
+	}
+	trimmed := make([]string, 0, len(s.ExtraEmails))
+	for _, e := range s.ExtraEmails {
+		if e = strings.TrimSpace(e); e != "" {
+			trimmed = append(trimmed, e)
+		}
+	}
+	s.ExtraEmails = trimmed
 	return s
 }
 
@@ -121,6 +135,20 @@ func ValidateSettings(settings Settings) (Settings, error) {
 	}
 	if s.BalanceThreshold.IsNegative() {
 		return s, fmt.Errorf("%w: balance_threshold", ErrInvalidSettings)
+	}
+	if s.ThresholdType != "fixed" && s.ThresholdType != "percentage" {
+		return s, fmt.Errorf("%w: threshold_type", ErrInvalidSettings)
+	}
+	if len(s.ExtraEmails) > 10 {
+		return s, fmt.Errorf("%w: extra_emails count", ErrInvalidSettings)
+	}
+	for _, e := range s.ExtraEmails {
+		if err := rejectHeaderInjection(e); err != nil {
+			return s, err
+		}
+		if _, err := mail.ParseAddress(e); err != nil {
+			return s, fmt.Errorf("%w: extra_emails", ErrInvalidSettings)
+		}
 	}
 	switch s.NotifyType {
 	case TypeNone:
