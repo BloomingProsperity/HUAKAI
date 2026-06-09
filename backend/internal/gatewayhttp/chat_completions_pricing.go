@@ -103,7 +103,43 @@ func (ex *chatExecution) actualCompletionCost(usage completionUsageForCost) (com
 	return ex.completionCost(usage)
 }
 
+// cacheExclusiveInputFamilies are upstream protocol families whose vendor reports
+// input_tokens EXCLUDING cache-read/cache-creation tokens (cache counted as a
+// parallel dimension, per the Anthropic Messages contract). For these the additive
+// rate model already prices each dimension once. Every other family (OpenAI, Gemini,
+// and all OpenAI-compatible providers) reports prompt_tokens INCLUDING cached tokens,
+// so cached tokens must be removed from the billing input bucket to avoid charging
+// them twice -- once at the input rate and again at the cache rate. Mirrors new-api's
+// `!IsClaudeUsageSemantic` base-token subtraction (service/text_quota.go).
+var cacheExclusiveInputFamilies = map[string]struct{}{
+	"anthropic_messages": {},
+	"bedrock_invoke":     {},
+}
+
+func inputTokensExcludeCache(protocolFamily string) bool {
+	_, ok := cacheExclusiveInputFamilies[strings.TrimSpace(protocolFamily)]
+	return ok
+}
+
+// billingUsageForCacheConvention returns a billing copy of usage whose InputTokens
+// never double-counts cached tokens. Cache-inclusive upstreams fold cache-read and
+// cache-creation tokens into prompt_tokens; subtract them so the input bucket bills
+// only non-cached tokens while the cache buckets bill the cached tokens once.
+// Client-facing CanonicalUsage is untouched; only this billing-local copy changes.
+func (ex *chatExecution) billingUsageForCacheConvention(usage completionUsageForCost) completionUsageForCost {
+	if inputTokensExcludeCache(ex.resolved.ProtocolFamily) {
+		return usage
+	}
+	nonCached := usage.InputTokens - usage.CacheReadTokens - usage.CacheCreationTokens
+	if nonCached < 0 {
+		nonCached = 0
+	}
+	usage.InputTokens = nonCached
+	return usage
+}
+
 func (ex *chatExecution) completionCost(usage completionUsageForCost) (completionCostBreakdown, error) {
+	usage = ex.billingUsageForCacheConvention(usage)
 	if ex.d.RateTables == nil {
 		return completionCostBreakdown{}, pricingUnavailable("rate table source not configured")
 	}
@@ -422,6 +458,17 @@ func parseRateVector(raw json.RawMessage) (completionRateVector, error) {
 		return completionRateVector{}, err
 	} else if ok {
 		out.Multiplier = multiplier
+	}
+	// Default the cache-read bucket to the input rate when a model is priced (has an
+	// input rate) but omits an explicit cache-read rate. Cache-inclusive upstreams
+	// (OpenAI / Gemini / OpenAI-compatible) report cached tokens for such models;
+	// without this the additive model would fail closed (pricing_unavailable -> 503)
+	// on every cache-hit response. Billing cached tokens at the input rate matches
+	// new-api's cache-ratio default (1.0). Models with an explicit cache-read rate keep
+	// it; truly unpriced models (no input rate) still fail closed.
+	if out.HasInput && !out.HasCacheRead {
+		out.CacheRead = out.Input
+		out.HasCacheRead = true
 	}
 	return out, nil
 }
