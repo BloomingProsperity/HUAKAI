@@ -777,6 +777,19 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	})
 	paymentStore := payment.NewPostgresStore(pgPool)
 	paymentService := payment.NewService(paymentStore, paymentServiceOptions(cfg)...)
+	// NAPI-DIST-SIGNUP-03 + INVITEE-04: wire the registration-time wallet-credit
+	// issuers (default-OFF; amounts read from env, 0 => IssueSignupBonus/Reward
+	// short-circuit before any insert). userauth swallows the returned error so a
+	// credit failure never rolls back the registration.
+	signupInviteeCfg := payment.SignupInviteeConfigFromEnv()
+	userAuthService.SignupBonusFn = func(ctx context.Context, tenantID, userID int64) error {
+		_, err := paymentService.IssueSignupBonus(ctx, signupInviteeCfg, tenantID, userID)
+		return err
+	}
+	userAuthService.InviteeRewardFn = func(ctx context.Context, tenantID, userID int64) error {
+		_, err := paymentService.IssueInviteeReward(ctx, signupInviteeCfg, tenantID, userID)
+		return err
+	}
 	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, completionBus, err := buildSettlementServices(
 		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger, paymentService, platformSettingsService,
 	)
