@@ -96,6 +96,7 @@ type CredentialRecord struct {
 	LastRefreshAt           time.Time
 	LastRefreshOutcome      *string
 	FailureClass            *string
+	RefreshLeadSeconds      *int32
 	FailureCount            int32
 	NextAttemptAt           time.Time
 	CreatedAt               time.Time
@@ -751,7 +752,8 @@ SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.
        ac.nonce, ac.aad_hash, ac.payload_fingerprint, ac.refresh_token_fingerprint,
        ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
        ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
-       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at
+       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at,
+       pa.refresh_lead_seconds
 	FROM account_credentials ac
 	JOIN provider_accounts pa
 	  ON pa.id = ac.provider_account_id
@@ -773,7 +775,7 @@ SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode, ac.
 	  AND ac.refresh_before_at IS NOT NULL
 	ORDER BY ac.refresh_before_at ASC, ac.updated_at ASC
 LIMIT 1`
-	rec, err := s.scanRecord(ctx, q, providerAccountID)
+	rec, err := s.scanRecordForRefresh(ctx, q, providerAccountID)
 	if err != nil {
 		return CredentialRecord{}, err
 	}
@@ -782,6 +784,38 @@ LIMIT 1`
 		return CredentialRecord{}, err
 	}
 	rec.PlaintextPayload = plaintext
+	return rec, nil
+}
+
+func (s *Store) scanRecordForRefresh(ctx context.Context, query string, args ...any) (CredentialRecord, error) {
+	var rec CredentialRecord
+	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
+	var refreshLeadSeconds *int32
+	err := s.db.QueryRow(ctx, query, args...).Scan(
+		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
+		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
+		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
+		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
+		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
+		&nextAttempt, &createdAt, &updatedAt, &deletedAt,
+		&refreshLeadSeconds,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CredentialRecord{}, ErrCredentialNotFound
+		}
+		return CredentialRecord{}, err
+	}
+	rec.AccessExpiresAt = pgTime(accessExp)
+	rec.RefreshExpiresAt = pgTime(refreshExp)
+	rec.RefreshBeforeAt = pgTime(refreshBefore)
+	rec.GraceUntil = pgTime(graceUntil)
+	rec.LastRefreshAt = pgTime(lastRefresh)
+	rec.NextAttemptAt = pgTime(nextAttempt)
+	rec.CreatedAt = pgTime(createdAt)
+	rec.UpdatedAt = pgTime(updatedAt)
+	rec.DeletedAt = pgTime(deletedAt)
+	rec.RefreshLeadSeconds = refreshLeadSeconds
 	return rec, nil
 }
 
@@ -833,6 +867,17 @@ func (s *Store) LoadForProviderAccountTest(ctx context.Context, tenantID, provid
 	return rec, nil
 }
 
+// effectiveRefreshLead returns the lead duration to use when computing
+// refresh_before_at. When the per-account override (perAccount) is non-nil
+// and positive it takes precedence; otherwise the global window is returned
+// unchanged, preserving the exact existing behavior for NULL accounts.
+func effectiveRefreshLead(perAccount *int32, global time.Duration) time.Duration {
+	if perAccount != nil && *perAccount > 0 {
+		return time.Duration(*perAccount) * time.Second
+	}
+	return global
+}
+
 func (s *Store) SaveRefreshSuccess(ctx context.Context, rec CredentialRecord, payload []byte, accessExpiresAt time.Time, outcome string) error {
 	if err := s.validateReady(); err != nil {
 		return err
@@ -858,7 +903,8 @@ func (s *Store) SaveRefreshSuccess(ctx context.Context, rec CredentialRecord, pa
 	}
 	if !accessExpiresAt.IsZero() {
 		prepared.accessExpiresAt = accessExpiresAt.UTC()
-		prepared.refreshBeforeAt = prepared.accessExpiresAt.Add(-RefreshWindow)
+		lead := effectiveRefreshLead(rec.RefreshLeadSeconds, RefreshWindow)
+		prepared.refreshBeforeAt = prepared.accessExpiresAt.Add(-lead)
 	}
 	const q = `
 UPDATE account_credentials
