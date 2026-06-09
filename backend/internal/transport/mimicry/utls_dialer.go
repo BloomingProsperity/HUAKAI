@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/respdecompress"
 	utls "github.com/refraction-networking/utls"
 )
 
@@ -58,7 +59,39 @@ type roundTripper struct {
 }
 
 func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return rt.inner.RoundTrip(req)
+	// 反封禁 AE 解压链:在线缆上呈现浏览器风格的 Accept-Encoding(gzip, deflate,
+	// br, zstd)。Clone 避免改动调用方请求(RoundTripper 契约)。一旦我们显式设置
+	// Accept-Encoding,Go transport 便不再透明解码,故响应解码由我们负责。
+	r2 := req.Clone(req.Context())
+	r2.Header.Set("Accept-Encoding", respdecompress.BrowserAcceptEncoding)
+	resp, err := rt.inner.RoundTrip(r2)
+	if err != nil {
+		return resp, err
+	}
+	return decodeMimicryResponse(resp), nil
+}
+
+// decodeMimicryResponse 按 Content-Encoding 解码响应体(gzip/deflate/br/zstd)。
+// 不支持的编码或解码器构造失败时原样返回(fail-safe:绝不弄坏响应)。解码成功后
+// 去掉 Content-Encoding/Content-Length 头并标记 Uncompressed。
+func decodeMimicryResponse(resp *http.Response) *http.Response {
+	if resp == nil || resp.Body == nil {
+		return resp
+	}
+	enc := resp.Header.Get("Content-Encoding")
+	if !respdecompress.Supported(enc) {
+		return resp
+	}
+	decoded, derr := respdecompress.Wrap(resp.Body, enc)
+	if derr != nil {
+		return resp
+	}
+	resp.Body = decoded
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
+	resp.Uncompressed = true
+	return resp
 }
 
 // DialTLS 建立 TCP 连接后用 uTLS + 自定义 ClientHello 完成握手。
