@@ -1,0 +1,66 @@
+# HUAKAI production docker-compose.
+# DO NOT use for local dev — use docker-compose.dev.yml instead.
+#
+# Required env vars (set in .env or shell before running):
+#   HUAKAI_DATABASE_URL              - PostgreSQL DSN (passed through to gateway)
+#   HUAKAI_CREDENTIAL_KEY_B64        - 32-byte base64 encryption key
+#   HUAKAI_SESSION_SIGNING_KEY_B64   - JWT session signing key (base64), OR
+#   HUAKAI_SESSION_SIGNING_KEY_HEX   - JWT session signing key (hex, >=32 bytes)
+#   HUAKAI_ADMIN_BOOTSTRAP_TOKEN     - one-time bootstrap admin token (rotate after first use)
+#   HUAKAI_RELEASE_MODE              - must be: production
+#   POSTGRES_PASSWORD                - postgres superuser password
+#
+# Usage:
+#   HUAKAI_DATABASE_URL=postgres://huakai:secret@postgres:5432/huakai?sslmode=disable #   HUAKAI_CREDENTIAL_KEY_B64=... HUAKAI_SESSION_SIGNING_KEY_B64=... #   HUAKAI_ADMIN_BOOTSTRAP_TOKEN=... HUAKAI_RELEASE_MODE=production #   POSTGRES_PASSWORD=secret #   docker compose -f docker-compose.prod.yml up -d
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      HUAKAI_DATABASE_URL: ${HUAKAI_DATABASE_URL}
+      HUAKAI_CREDENTIAL_KEY_B64: ${HUAKAI_CREDENTIAL_KEY_B64}
+      HUAKAI_SESSION_SIGNING_KEY_B64: ${HUAKAI_SESSION_SIGNING_KEY_B64:-}
+      HUAKAI_SESSION_SIGNING_KEY_HEX: ${HUAKAI_SESSION_SIGNING_KEY_HEX:-}
+      HUAKAI_ADMIN_BOOTSTRAP_TOKEN: ${HUAKAI_ADMIN_BOOTSTRAP_TOKEN}
+      HUAKAI_RELEASE_MODE: ${HUAKAI_RELEASE_MODE}
+    networks:
+      - huakai-prod
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: huakai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: huakai
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - huakai-prod-pgdata:/var/lib/postgresql/data
+    networks:
+      - huakai-prod
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U huakai -d huakai"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+networks:
+  huakai-prod:
+    name: huakai-prod-net
+
+volumes:
+  huakai-prod-pgdata:

@@ -19,7 +19,11 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/huakai-gateway ./cmd/gateway
 
 FROM alpine:3.20
-RUN apk --no-cache add ca-certificates
-COPY --from=builder /out/huakai-gateway /usr/local/bin/huakai-gateway
+RUN apk --no-cache add ca-certificates wget \
+    && adduser -D -u 10001 huakai
+COPY --from=builder --chown=huakai:huakai /out/huakai-gateway /usr/local/bin/huakai-gateway
 EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \
+    CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+USER huakai
 ENTRYPOINT ["/usr/local/bin/huakai-gateway"]
