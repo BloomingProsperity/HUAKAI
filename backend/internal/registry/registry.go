@@ -94,4 +94,5 @@ type BindingMetadata struct {
 	StripStore                           bool
 	BodyParamStrips                      []string
 	ParamOverride                        map[string]json.RawMessage
+	SensitiveWords                       []string // opt-in keyword obfuscation; empty = disabled
 }

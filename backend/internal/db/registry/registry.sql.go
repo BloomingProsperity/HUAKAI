@@ -182,6 +182,7 @@ SELECT
     mpb.fallback_class,
     mpb.reason,
     to_jsonb(COALESCE(channel_gate.body_param_strips, ARRAY[]::text[]))::text AS body_param_strips,
+    to_jsonb(COALESCE(channel_gate.sensitive_words, ARRAY[]::text[]))::text AS sensitive_words,
     COALESCE(channel_gate.param_override, '{}'::jsonb)::text AS param_override
 FROM model_pool_bindings mpb
 INNER JOIN pool_groups pg
@@ -201,6 +202,16 @@ LEFT JOIN LATERAL (
               AND c.deleted_at IS NULL
               AND strip_key <> ''
         ), ARRAY[]::text[]) AS body_param_strips,
+        COALESCE((
+            SELECT array_agg(DISTINCT sw ORDER BY sw)
+            FROM channels c
+            CROSS JOIN LATERAL unnest(c.sensitive_words) AS sw
+            WHERE c.pool_group_id = mpb.pool_group_id
+              AND c.tenant_id = mpb.tenant_id
+              AND c.enabled = true
+              AND c.deleted_at IS NULL
+              AND sw <> ''
+        ), ARRAY[]::text[]) AS sensitive_words,
         COALESCE((
             SELECT jsonb_object_agg(entry.key, entry.value ORDER BY c.id)
             FROM channels c
@@ -239,6 +250,7 @@ type ListModelPoolBindingsRow struct {
 	FallbackClass           string  `db:"fallback_class" json:"fallback_class"`
 	Reason                  string  `db:"reason" json:"reason"`
 	BodyParamStrips         string  `db:"body_param_strips" json:"body_param_strips"`
+	SensitiveWords          string  `db:"sensitive_words" json:"sensitive_words"`
 	ParamOverride           string  `db:"param_override" json:"param_override"`
 }
 
@@ -270,6 +282,7 @@ func (q *Queries) ListModelPoolBindings(ctx context.Context, arg ListModelPoolBi
 			&i.FallbackClass,
 			&i.Reason,
 			&i.BodyParamStrips,
+			&i.SensitiveWords,
 			&i.ParamOverride,
 		); err != nil {
 			return nil, err

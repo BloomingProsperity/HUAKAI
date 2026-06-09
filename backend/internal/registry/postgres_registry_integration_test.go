@@ -795,6 +795,38 @@ func TestPostgresRegistry_ChannelBodyParamGateMetadata(t *testing.T) {
 	}
 }
 
+func TestPostgresRegistry_ChannelSensitiveWordsMetadata(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+
+	mid := f.seedModel(modelOpts{})
+	f.seedAlias(aliasOpts{modelID: mid, publicAliasNormalized: "cloak-gate"})
+	f.seedBinding(bindingOpts{modelID: mid, poolGroupID: f.poolGroupID, priority: 100})
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO channels (tenant_id, pool_group_id, name, sensitive_words)
+		 VALUES ($1, $2, $3, ARRAY['secret','banned']::text[])`,
+		f.tenantID, f.poolGroupID, "cloak-gate-"+f.suffix,
+	); err != nil {
+		t.Fatalf("seed channel sensitive words: %v", err)
+	}
+
+	r := NewPostgresRegistry(pool, nil)
+	got, err := r.ResolveModel(ctx, "cloak-gate", f.tenantID)
+	if err != nil {
+		t.Fatalf("ResolveModel: %v", err)
+	}
+	if len(got.BindingMetadata) != 1 {
+		t.Fatalf("BindingMetadata len=%d want 1", len(got.BindingMetadata))
+	}
+	binding := got.BindingMetadata[0]
+	// LATERAL aggregation uses array_agg(DISTINCT sw ORDER BY sw) -> sorted ascending.
+	wantWords := []string{"banned", "secret"}
+	if !reflect.DeepEqual(binding.SensitiveWords, wantWords) {
+		t.Fatalf("SensitiveWords=%v want %v", binding.SensitiveWords, wantWords)
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Test 14 — SnapshotVersionStamp
 // snapshot row version = 42 → SnapshotVersion contains ":42".

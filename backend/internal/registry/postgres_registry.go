@@ -164,6 +164,10 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		if err != nil {
 			return Resolved{}, fmt.Errorf("%w: decode body_param_strips: %v", ErrRegistryBackend, err)
 		}
+		sensitiveWords, err := decodeBindingBodyParamStrips(b.SensitiveWords)
+		if err != nil {
+			return Resolved{}, fmt.Errorf("%w: decode sensitive_words: %v", ErrRegistryBackend, err)
+		}
 		paramOverride, err := decodeBindingParamOverride(b.ParamOverride)
 		if err != nil {
 			return Resolved{}, fmt.Errorf("%w: decode param_override: %v", ErrRegistryBackend, err)
@@ -187,6 +191,7 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 			MaxParallelRequests:     b.MaxParallelRequests,
 			FallbackClass:           b.FallbackClass,
 			BodyParamStrips:         bodyParamStrips,
+			SensitiveWords:          sensitiveWords,
 			ParamOverride:           paramOverride,
 		})
 	}

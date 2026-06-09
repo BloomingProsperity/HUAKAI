@@ -24,6 +24,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/paramgate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/sensitiveobfuscate"
 )
 
 // 拼接前后缀时使用的分隔符（两个换行 = 段落级分隔）。
@@ -84,8 +85,9 @@ type SystemRewriteResult struct {
 }
 
 type DispatchBodyControls struct {
-	SystemPrompt *SystemRewritePlan
-	ParamGate    paramgate.GateConfig
+	SystemPrompt   *SystemRewritePlan
+	ParamGate      paramgate.GateConfig
+	ObfuscateWords []string // opt-in; empty = no-op
 }
 
 // SystemPromptPlanFromBinding converts optional channel metadata into a
@@ -115,11 +117,12 @@ func DispatchBodyControlsFromBinding(binding registry.BindingMetadata) DispatchB
 		StripStreamOptionsIncludeObfuscation: binding.StripStreamOptionsIncludeObfuscation,
 		StripStore:                           binding.StripStore,
 	}
+	controls.ObfuscateWords = binding.SensitiveWords
 	return controls
 }
 
 func (c DispatchBodyControls) Enabled() bool {
-	return c.SystemPrompt != nil || c.ParamGate.Enabled()
+	return c.SystemPrompt != nil || c.ParamGate.Enabled() || len(c.ObfuscateWords) > 0
 }
 
 func ApplyDispatchBodyControls(body []byte, controls DispatchBodyControls) ([]byte, error) {
@@ -140,6 +143,9 @@ func ApplyDispatchBodyControls(body []byte, controls DispatchBodyControls) ([]by
 		if err != nil {
 			return nil, err
 		}
+	}
+	if len(controls.ObfuscateWords) > 0 {
+		out = sensitiveobfuscate.ObfuscateSensitiveWords(out, sensitiveobfuscate.BuildSensitiveWordMatcher(controls.ObfuscateWords))
 	}
 	return out, nil
 }
