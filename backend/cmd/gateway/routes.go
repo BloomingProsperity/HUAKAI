@@ -588,6 +588,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		RequestClass:           d.cfg.RequestClass,
 		ClientIPResolver:       d.clientIPResolver,
 		SessionCapRegistry:     d.sessionCapRegistry,
+		RecentReqRing:          d.recentReqRing,
 	}
 }
 
@@ -772,8 +773,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialworker.DefaultModeAdapterRegistry()),
 		})
 		adminhttp.MountProviderAccountHealthRoutes(r, adminhttp.ProviderAccountHealthDeps{
-			Auth:  d.adminAuth,
-			Store: d.adminQueries,
+			Auth:          d.adminAuth,
+			Store:         d.adminQueries,
+			RecentReqRing: d.recentReqRing,
 		})
 		adminhttp.MountProviderAccountBulkRoutes(r, adminhttp.ProviderAccountBulkDeps{
 			Auth:  d.adminAuth,
