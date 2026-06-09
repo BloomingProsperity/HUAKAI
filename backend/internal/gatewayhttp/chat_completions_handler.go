@@ -36,6 +36,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
@@ -108,6 +109,10 @@ type ChatHandlerDeps struct {
 	// SessionCapRegistry is used to register session hashes at dispatch
 	// success (SUB2-EGRESS-02). nil is safe (registration is skipped).
 	SessionCapRegistry *sessioncap.Registry
+
+	// RecentReqRing records per-account request outcomes for incident triage
+	// (MGMT-RECENTREQ-01). nil is safe (recording is skipped).
+	RecentReqRing *recentreq.Ring
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
 	// /v1/chat/completions: "chat"

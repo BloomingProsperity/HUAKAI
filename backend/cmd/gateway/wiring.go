@@ -78,6 +78,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/retrybudget"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
@@ -188,6 +189,7 @@ type deps struct {
 	otelShutdown             func(context.Context) error
 	usageRetentionWorker     *usageretention.Worker
 	sessionCapRegistry       *sessioncap.Registry
+	recentReqRing            *recentreq.Ring
 }
 
 type refundReceiptAppender interface {
@@ -751,6 +753,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	windowCostCache := windowcost.NewCache()
 	// SUB2-EGRESS-02: per-account max concurrent sessions cap registry.
 	sessionCapRegistry := sessioncap.NewRegistry(0)
+	recentReqRing := recentreq.NewRing()
 	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, sessionCapRegistry, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build selector: %w", err)
@@ -947,6 +950,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		billingPolicyResolver: billingPolicyResolver,
 		selector:              selector,
 		sessionCapRegistry:    sessionCapRegistry,
+		recentReqRing:         recentReqRing,
 		channelHealth:         channelHealthService,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool))),

@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 )
 
 func TestProviderAccountHealthUnauthorized(t *testing.T) {
@@ -288,6 +289,110 @@ func (s *providerAccountHealthStoreStub) GetAdminProviderAccountHealth(_ context
 
 func providerAccountHealthKey(tenantID, accountID int64) string {
 	return strconv.FormatInt(tenantID, 10) + ":" + strconv.FormatInt(accountID, 10)
+}
+
+func TestProviderAccountHealthRecentRequestsPopulated(t *testing.T) {
+	// Pre-populate ring with 3 success + 1 failure for account 99.
+	ring := recentreq.NewRing()
+	ring.Record(99, true)
+	ring.Record(99, true)
+	ring.Record(99, true)
+	ring.Record(99, false)
+
+	store := newProviderAccountHealthStoreStub()
+	store.put(providerAccountHealthRow(7, 99))
+
+	rec := invokeProviderAccountHealthWithRing(t, ProviderAccountHealthDeps{
+		Auth:          providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store:         store,
+		RecentReqRing: ring,
+	}, "/admin/v1/provider-accounts/99/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		RecentRequests *struct {
+			Total   int    `json:"total"`
+			Success int    `json:"success"`
+			Failure int    `json:"failure"`
+			LastAt  string `json:"last_at"`
+		} `json:"recent_requests"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if body.RecentRequests == nil {
+		t.Fatalf("recent_requests absent, want populated")
+	}
+	if body.RecentRequests.Total != 4 {
+		t.Fatalf("total=%d want 4", body.RecentRequests.Total)
+	}
+	if body.RecentRequests.Success != 3 {
+		t.Fatalf("success=%d want 3", body.RecentRequests.Success)
+	}
+	if body.RecentRequests.Failure != 1 {
+		t.Fatalf("failure=%d want 1", body.RecentRequests.Failure)
+	}
+	if body.RecentRequests.LastAt == "" {
+		t.Fatalf("last_at empty, want RFC3339 timestamp")
+	}
+}
+
+func TestProviderAccountHealthRecentRequestsNilRingOmitted(t *testing.T) {
+	// nil ring -> recent_requests absent from JSON (omitempty).
+	store := newProviderAccountHealthStoreStub()
+	store.put(providerAccountHealthRow(7, 99))
+
+	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
+		Auth:  providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store: store,
+		// RecentReqRing deliberately nil
+	}, "/admin/v1/provider-accounts/99/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "recent_requests") {
+		t.Fatalf("recent_requests present in response with nil ring: %s", rec.Body.String())
+	}
+}
+
+func TestProviderAccountHealthRecentRequestsEmptyRingOmitted(t *testing.T) {
+	// Ring with no data for this account -> recent_requests absent.
+	ring := recentreq.NewRing()
+	// Record for a DIFFERENT account
+	ring.Record(9999, true)
+
+	store := newProviderAccountHealthStoreStub()
+	store.put(providerAccountHealthRow(7, 99))
+
+	rec := invokeProviderAccountHealthWithRing(t, ProviderAccountHealthDeps{
+		Auth:          providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store:         store,
+		RecentReqRing: ring,
+	}, "/admin/v1/provider-accounts/99/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "recent_requests") {
+		t.Fatalf("recent_requests present when no data for account: %s", rec.Body.String())
+	}
+}
+
+// invokeProviderAccountHealthWithRing is like invokeProviderAccountHealth but
+// mounts at the real path pattern so the handler receives the {id} URL param.
+func invokeProviderAccountHealthWithRing(t *testing.T, deps ProviderAccountHealthDeps, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := chi.NewRouter()
+	r.Route("/admin/v1/provider-accounts", func(r chi.Router) {
+		MountProviderAccountHealthRoutes(r, deps)
+	})
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
 }
 
 func providerAccountHealthRow(tenantID, id int64) admindb.GetAdminProviderAccountHealthRow {

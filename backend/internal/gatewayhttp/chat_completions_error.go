@@ -129,6 +129,9 @@ func channelHealthKey(tenantID int64, account provider.AccountInfo) (channelheal
 }
 
 func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key channelhealth.ChannelKey, class channelhealth.SignalClass, statusCode int, latency time.Duration, requestID string, resetAt *time.Time) {
+	if d.RecentReqRing != nil && key.ProviderAccountID != 0 && class != "" {
+		d.RecentReqRing.Record(key.ProviderAccountID, class == channelhealth.SignalSuccess)
+	}
 	if d.ChannelHealth == nil || class == "" {
 		return
 	}

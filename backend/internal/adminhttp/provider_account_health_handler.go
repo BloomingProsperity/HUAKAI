@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 )
 
 const defaultProviderAccountHealthPlatformTenantID = int64(1)
@@ -21,6 +22,9 @@ const defaultProviderAccountHealthPlatformTenantID = int64(1)
 type ProviderAccountHealthDeps struct {
 	Auth  providerAccountHealthAuth
 	Store providerAccountHealthStore
+	// RecentReqRing exposes in-process recent request outcomes (MGMT-RECENTREQ-01).
+	// nil is safe: recent_requests field will be omitted from the response.
+	RecentReqRing *recentreq.Ring
 }
 
 type providerAccountHealthAuth interface {
@@ -48,6 +52,17 @@ type providerAccountHealthResponseBody struct {
 	Enabled               bool    `json:"enabled"`
 	RequiresAction        bool    `json:"requires_action"`
 	UpdatedAt             string  `json:"updated_at"`
+	// RecentRequests is omitted when no in-process data is available (nil ring or
+	// no recorded requests). Zero-value is not emitted.
+	RecentRequests *recentRequestsSummary `json:"recent_requests,omitempty"`
+}
+
+// recentRequestsSummary is the JSON shape for in-process recent request counts.
+type recentRequestsSummary struct {
+	Total   int    `json:"total"`
+	Success int    `json:"success"`
+	Failure int    `json:"failure"`
+	LastAt  string `json:"last_at,omitempty"`
 }
 
 func MountProviderAccountHealthRoutes(r chi.Router, d ProviderAccountHealthDeps) {
@@ -72,7 +87,7 @@ func newProviderAccountHealthHandler(d ProviderAccountHealthDeps) http.HandlerFu
 			writeProviderAccountHealthReadError(w, err)
 			return
 		}
-		writeProviderAccountHealthJSON(w, http.StatusOK, providerAccountHealthResponse(row))
+		writeProviderAccountHealthJSON(w, http.StatusOK, providerAccountHealthResponse(row, d.RecentReqRing))
 	}
 }
 
@@ -121,7 +136,7 @@ func writeProviderAccountHealthReadError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusServiceUnavailable, "provider_account_health_unavailable", "provider account health is unavailable")
 }
 
-func providerAccountHealthResponse(row admindb.GetAdminProviderAccountHealthRow) providerAccountHealthResponseBody {
+func providerAccountHealthResponse(row admindb.GetAdminProviderAccountHealthRow, ring *recentreq.Ring) providerAccountHealthResponseBody {
 	// requires_action 是确定性 admin 视图规则,不从请求输入或上游响应推断。
 	requiresAction := row.HealthState == "revoked" || row.FailureCount > 3
 	return providerAccountHealthResponseBody{
@@ -141,6 +156,7 @@ func providerAccountHealthResponse(row admindb.GetAdminProviderAccountHealthRow)
 		Enabled:               row.Enabled,
 		RequiresAction:        requiresAction,
 		UpdatedAt:             requiredProviderAccountHealthTime(row.UpdatedAt),
+		RecentRequests:        recentRequestsSummaryFor(ring, row.ID),
 	}
 }
 
@@ -157,6 +173,29 @@ func requiredProviderAccountHealthTime(ts pgtype.Timestamptz) string {
 		return ""
 	}
 	return ts.Time.UTC().Format(time.RFC3339)
+}
+
+// recentRequestsSummaryFor builds the optional recent_requests payload from an
+// in-process ring. Returns nil when the ring is nil or has no data for the account
+// (preserves omitempty: the field is absent from the JSON response).
+func recentRequestsSummaryFor(ring *recentreq.Ring, accountID int64) *recentRequestsSummary {
+	if ring == nil {
+		return nil
+	}
+	s := ring.Summary(accountID)
+	if s.Total == 0 {
+		return nil
+	}
+	var lastAt string
+	if !s.LastAt.IsZero() {
+		lastAt = s.LastAt.UTC().Format(time.RFC3339)
+	}
+	return &recentRequestsSummary{
+		Total:   s.Total,
+		Success: s.Success,
+		Failure: s.Failure,
+		LastAt:  lastAt,
+	}
 }
 
 func writeProviderAccountHealthJSON(w http.ResponseWriter, status int, body providerAccountHealthResponseBody) {
