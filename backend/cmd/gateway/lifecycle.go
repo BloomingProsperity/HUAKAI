@@ -372,5 +372,7 @@ func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, audi
 		LeaseTTL:      cfg.LeaseTTL,
 		IdleSleep:     time.Second,
 	})
+	// OPS-003: keep the dlq_depth expvar gauge fresh for alerting.
+	dlqWorker.ApplyWorkerOptions(legacydlq.WithDepthRefresher(dlqStore))
 	return dlqStore, dlqService, dlqWorker, replicaTarget, closeReplica
 }

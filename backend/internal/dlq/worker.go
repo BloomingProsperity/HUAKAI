@@ -3,6 +3,7 @@ package dlq
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -15,9 +16,16 @@ type WorkerConfig struct {
 	IdleSleep     time.Duration
 }
 
+// depthRefresher is implemented by *Store and allows the Worker to
+// refresh the dlq_depth expvar gauge without coupling to the concrete type.
+type depthRefresher interface {
+	UpdateDLQDepthGauge(context.Context) error
+}
+
 type Worker struct {
-	service *Service
-	cfg     WorkerConfig
+	service      *Service
+	cfg          WorkerConfig
+	depthRefresh depthRefresher // optional; set via WithDepthRefresher
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -42,6 +50,21 @@ func NewWorker(service *Service, cfg WorkerConfig) *Worker {
 	return &Worker{service: service, cfg: cfg}
 }
 
+// WithDepthRefresher wires a depth-gauge refresher (typically *Store) into the
+// Worker so that the dlq_depth expvar map is kept fresh for alerting.
+func WithDepthRefresher(r depthRefresher) func(*Worker) {
+	return func(w *Worker) { w.depthRefresh = r }
+}
+
+// ApplyWorkerOptions applies functional options after construction.
+func (w *Worker) ApplyWorkerOptions(opts ...func(*Worker)) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(w)
+		}
+	}
+}
+
 func (w *Worker) Start(ctx context.Context) {
 	if w == nil || w.service == nil {
 		return
@@ -51,6 +74,13 @@ func (w *Worker) Start(ctx context.Context) {
 	w.startLane(runCtx, LaneHigh, w.cfg.HighWorkers)
 	w.startLane(runCtx, LaneMed, w.cfg.MediumWorkers)
 	w.startLane(runCtx, LaneLow, w.cfg.LowWorkers)
+	if w.depthRefresh != nil {
+		w.wg.Add(1)
+		go func() {
+			defer w.wg.Done()
+			w.runDepthRefresh(runCtx)
+		}()
+	}
 }
 
 func (w *Worker) Stop(ctx context.Context) error {
@@ -110,5 +140,26 @@ func (w *Worker) startLane(ctx context.Context, lane Lane, n int) {
 				}
 			}
 		}()
+	}
+}
+
+// runDepthRefresh periodically calls UpdateDLQDepthGauge so the dlq_depth
+// expvar map stays fresh. It runs every 30 seconds until ctx is cancelled.
+func (w *Worker) runDepthRefresh(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	// Refresh once immediately on startup.
+	if err := w.depthRefresh.UpdateDLQDepthGauge(ctx); err != nil && ctx.Err() == nil {
+		slog.WarnContext(ctx, "dlq depth gauge refresh failed", "error", err.Error())
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.depthRefresh.UpdateDLQDepthGauge(ctx); err != nil && ctx.Err() == nil {
+				slog.WarnContext(ctx, "dlq depth gauge refresh failed", "error", err.Error())
+			}
+		}
 	}
 }

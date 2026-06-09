@@ -103,6 +103,12 @@ func (s *Service) applySignal(ctx context.Context, sig Signal) (Record, error) {
 		} else {
 			applyDecision(&rec, decision, now, s.policy)
 		}
+		switch rec.State {
+		case StateDegraded:
+			incProviderDegraded()
+		case StateCoolingDown, StateDisabled:
+			incProviderError()
+		}
 	}
 	rec, err = s.store.UpsertRecord(ctx, rec)
 	if err != nil {

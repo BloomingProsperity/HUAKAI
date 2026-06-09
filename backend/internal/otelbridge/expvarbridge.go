@@ -148,6 +148,33 @@ func bridgeCounters() []bridgeCounter {
 			description: "Subscription group policy fail-closed decisions.",
 			read:        func() int64 { return readExpvarInt("group_policy_fail_closed_total") },
 		},
+		// OPS-002: provider health counters bridged from channelhealth.Service transitions.
+		{
+			name:        "huakai_provider_error_total",
+			description: "Provider channel health error-rate or ban transitions (cooling_down / disabled).",
+			read:        func() int64 { return readExpvarMapInt("provider_health", "error_total") },
+		},
+		{
+			name:        "huakai_provider_degraded_total",
+			description: "Provider channel health degraded transitions.",
+			read:        func() int64 { return readExpvarMapInt("provider_health", "degraded_total") },
+		},
+		// OPS-003: DLQ pending depth gauges per lane.
+		{
+			name:        "huakai_dlq_pending_depth_high",
+			description: "Pending DLQ rows in the HIGH lane.",
+			read:        func() int64 { return readExpvarMapInt("dlq_depth", "depth_HIGH") },
+		},
+		{
+			name:        "huakai_dlq_pending_depth_med",
+			description: "Pending DLQ rows in the MED lane.",
+			read:        func() int64 { return readExpvarMapInt("dlq_depth", "depth_MED") },
+		},
+		{
+			name:        "huakai_dlq_pending_depth_low",
+			description: "Pending DLQ rows in the LOW lane.",
+			read:        func() int64 { return readExpvarMapInt("dlq_depth", "depth_LOW") },
+		},
 	}
 }
 
