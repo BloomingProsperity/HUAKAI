@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
 
 var errCompletionPricingUnavailable = errors.New("gatewayhttp: pricing unavailable")
@@ -26,6 +27,22 @@ type completionUsageForCost struct {
 	CacheCreation5mTokens int
 	CacheCreation1hTokens int
 	CacheReadTokens       int
+
+	// ToolCallCounts holds built-in tool call counts for surcharge billing.
+	// Defaults to zero (no surcharge) when not populated.
+	//
+	// TODO(NAPI-BILLING-01): wire real counts from upstream response usage.
+	// Provider-specific locations where tool-call counts are exposed:
+	//   - OpenAI chat/completions: response.usage has no per-tool call count
+	//     field today; OpenAI bills via usage_details once GA.
+	//   - OpenAI Responses API: response.usage.input_tokens_details may carry
+	//     tool call counts in future versions.
+	//   - Anthropic Messages API: server_tool_use block count can be derived
+	//     from response.content blocks of type="server_tool_use"; no dedicated
+	//     usage field exists today.
+	// Until a stable upstream signal is available, counts default to zero,
+	// which means zero surcharge — safe conservative billing.
+	ToolCallCounts toolpricing.ToolCallCounts
 }
 
 type completionRateVector struct {
@@ -257,6 +274,7 @@ func pricingUsage(usage completionUsageForCost) pricingeval.Usage {
 		CacheCreation5mTokens: int64(usage.CacheCreation5mTokens),
 		CacheCreation1hTokens: int64(usage.CacheCreation1hTokens),
 		CacheReadTokens:       int64(usage.CacheReadTokens),
+		ToolCallCounts:        usage.ToolCallCounts,
 	}
 }
 
