@@ -30,6 +30,10 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolPerplexityChat,
 		ProtocolFireworksChat,
 		ProtocolKimiChat,
+		ProtocolQwenChat,
+		ProtocolGLMChat,
+		ProtocolYiChat,
+		ProtocolBaichuanChat,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -91,6 +95,10 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolPerplexityChat:    "perplexity",
 		ProtocolFireworksChat:     "fireworks",
 		ProtocolKimiChat:          "kimi",
+		ProtocolQwenChat:          "qwen",
+		ProtocolGLMChat:           "glm",
+		ProtocolYiChat:            "yi",
+		ProtocolBaichuanChat:      "baichuan",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -121,6 +129,10 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 		{ProtocolPerplexityChat, "perplexity", "https://api.perplexity.ai/chat/completions"},
 		{ProtocolFireworksChat, "fireworks", "https://api.fireworks.ai/inference/v1/chat/completions"},
 		{ProtocolKimiChat, "kimi", "https://api.kimi.com/coding/v1/chat/completions"},
+		{ProtocolQwenChat, "qwen", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"},
+		{ProtocolGLMChat, "glm", "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
+		{ProtocolYiChat, "yi", "https://api.lingyiwanwu.com/v1/chat/completions"},
+		{ProtocolBaichuanChat, "baichuan", "https://api.baichuan-ai.com/v1/chat/completions"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.protocol, func(t *testing.T) {

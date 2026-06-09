@@ -25,6 +25,10 @@
 //   - together_chat            Together AI（OpenAI 兼容）
 //   - perplexity_chat          Perplexity AI（OpenAI 兼容）
 //   - fireworks_chat           Fireworks AI（OpenAI 兼容）
+//   - qwen_chat                通义千问 Qwen / 阿里 DashScope（OpenAI 兼容）
+//   - glm_chat                 智谱 GLM/ChatGLM / BigModel（OpenAI 兼容）
+//   - yi_chat                  零一万物 Yi / 01.AI（OpenAI 兼容）
+//   - baichuan_chat            百川大模型（OpenAI 兼容）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
@@ -68,6 +72,11 @@ const (
 	ProtocolTogetherChat           = "together_chat"
 	ProtocolPerplexityChat         = "perplexity_chat"
 	ProtocolFireworksChat          = "fireworks_chat"
+	// 国内大模型 OpenAI 兼容直通路径
+	ProtocolQwenChat     = "qwen_chat"     // 通义千问 Qwen（阿里 DashScope，OpenAI 兼容）
+	ProtocolGLMChat      = "glm_chat"      // 智谱 GLM/ChatGLM（BigModel，OpenAI 兼容）
+	ProtocolYiChat       = "yi_chat"       // 零一万物 Yi（01.AI，OpenAI 兼容）
+	ProtocolBaichuanChat = "baichuan_chat" // 百川大模型（OpenAI 兼容）
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -155,6 +164,24 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolFireworksChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "fireworks",
 		Endpoint:     "https://api.fireworks.ai/inference/v1/chat/completions",
+	})
+	// 国内大模型（OpenAI 兼容直通）。
+	// Doubao/ERNIE/MiniMax/StepFun 均非 OpenAI 兼容；留给专属 adapter，此处跳过。
+	r.MustRegister(ProtocolQwenChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "qwen",
+		Endpoint:     "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolGLMChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "glm",
+		Endpoint:     "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+	})
+	r.MustRegister(ProtocolYiChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "yi",
+		Endpoint:     "https://api.lingyiwanwu.com/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolBaichuanChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "baichuan",
+		Endpoint:     "https://api.baichuan-ai.com/v1/chat/completions",
 	})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
