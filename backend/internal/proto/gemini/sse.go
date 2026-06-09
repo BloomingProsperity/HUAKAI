@@ -241,7 +241,18 @@ func geminiPartToCanonicalEvents(part geminiPart, state *UpstreamState) ([]proto
 	}
 
 	if len(bytes.TrimSpace(part.InlineData)) > 0 {
-		losses = append(losses, proto.NewLossEntry(proto.FeatureImageOutput, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "Gemini inlineData output part skipped"))
+		// Emit the inline image as a canonical image block (mirrors the buffered
+		// path in client.go) instead of dropping it. Streaming image generation
+		// (e.g. gemini-2.5-flash-image via generateContent) previously lost the
+		// image entirely while still billing the output tokens.
+		imageIndex := state.NextBlockIndex
+		state.NextBlockIndex++
+		imageBlock := proto.CanonicalContentBlock{Type: "image", Image: cloneRaw(part.InlineData)}
+		events = append(events,
+			proto.CanonicalEvent{Type: "content_block_start", Index: imageIndex, ContentBlock: &imageBlock},
+			proto.CanonicalEvent{Type: "content_block_stop", Index: imageIndex},
+		)
+		state.DeliveredChunkCount++
 	}
 
 	if part.Text == nil || *part.Text == "" {
