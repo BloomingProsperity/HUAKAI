@@ -79,6 +79,7 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 			ModelRateLimits:      modelRateLimits,
 			WindowCostLimitCents: r.WindowCostLimitCents,
 			MaxSessions:          int(r.MaxSessions),
+			DisableCooling:       r.DisableCooling,
 		}
 		if r.LastDispatchAt.Valid {
 			snap.LastUsedAt = r.LastDispatchAt.Time

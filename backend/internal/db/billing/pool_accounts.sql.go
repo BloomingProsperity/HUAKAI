@@ -640,7 +640,8 @@ SELECT
     pa.cap_queue_sticky,
     pa.cap_queue_fallback,
     pa.window_cost_limit_cents,
-    pa.max_sessions
+    pa.max_sessions,
+    pa.disable_cooling
 FROM provider_accounts pa
 INNER JOIN channels c
     ON c.id = pa.channel_id
@@ -701,6 +702,7 @@ type ListEligibleAccountsByPoolGroupRow struct {
 	CapQueueFallback     int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
 	WindowCostLimitCents int64              `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
 	MaxSessions          int32              `db:"max_sessions" json:"max_sessions"`
+	DisableCooling       bool               `db:"disable_cooling" json:"disable_cooling"`
 }
 
 // Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
@@ -753,6 +755,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.CapQueueFallback,
 			&i.WindowCostLimitCents,
 			&i.MaxSessions,
+			&i.DisableCooling,
 		); err != nil {
 			return nil, err
 		}

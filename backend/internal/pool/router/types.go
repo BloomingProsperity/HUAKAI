@@ -91,6 +91,9 @@ type AccountSnapshot struct {
 	// MaxSessions is the operator-configured maximum concurrent active sessions
 	// for this account. 0 means unlimited (opt-in, default safety).
 	MaxSessions int
+	// DisableCooling bypasses the health/cooldown gate for this account when true.
+	// Default false = exact existing behavior. Opt-in escape hatch for high-value accounts.
+	DisableCooling bool
 }
 
 type ModelRateLimit struct {
