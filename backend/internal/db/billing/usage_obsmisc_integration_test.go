@@ -143,10 +143,10 @@ func seedObsMiscFixture(t *testing.T, ctx context.Context, tx pgx.Tx) obsMiscFix
 	if err := tx.QueryRow(ctx, `INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`, f.tenantID, f.poolID, "channel-b-"+suffix).Scan(&channelBID); err != nil {
 		t.Fatalf("insert channel B: %v", err)
 	}
-	if err := tx.QueryRow(ctx, `INSERT INTO provider_accounts (tenant_id, provider_id, channel_id, name, account_type, health_state) VALUES ($1, $2, $3, $4, 'api_key', 'operational') RETURNING id`, f.tenantID, providerID, channelAID, "account-a-"+suffix).Scan(&f.providerAccountAID); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO provider_accounts (tenant_id, provider_id, channel_id, name, account_type, health_state) VALUES ($1, $2, $3, $4, 'api_key', 'healthy') RETURNING id`, f.tenantID, providerID, channelAID, "account-a-"+suffix).Scan(&f.providerAccountAID); err != nil {
 		t.Fatalf("insert provider account A: %v", err)
 	}
-	if err := tx.QueryRow(ctx, `INSERT INTO provider_accounts (tenant_id, provider_id, channel_id, name, account_type, health_state) VALUES ($1, $2, $3, $4, 'api_key', 'operational') RETURNING id`, f.tenantID, providerID, channelBID, "account-b-"+suffix).Scan(&f.providerAccountBID); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO provider_accounts (tenant_id, provider_id, channel_id, name, account_type, health_state) VALUES ($1, $2, $3, $4, 'api_key', 'healthy') RETURNING id`, f.tenantID, providerID, channelBID, "account-b-"+suffix).Scan(&f.providerAccountBID); err != nil {
 		t.Fatalf("insert provider account B: %v", err)
 	}
 	return f
