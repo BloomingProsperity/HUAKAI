@@ -148,6 +148,14 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	}
 	in.InboundBody = controlledBody
 
+	// RR-04: trim client-supplied excess cache_control breakpoints to
+	// CacheControlMaxAllowed before forwarding. Anthropic 400s requests
+	// with >4 cache_control blocks. Fail-open: on decode error the body
+	// is forwarded unchanged.
+	if trimmed, _ := EnforceCacheControlLimit(in.InboundBody, CacheControlMaxAllowed); len(trimmed) > 0 {
+		in.InboundBody = trimmed
+	}
+
 	// 1.5 Optional Anthropic cache_control breakpoint planning. Replaces the
 	// local inbound body only for the anthropic_messages family and only when
 	// opted in; see maybeInjectAnthropicBreakpoints.

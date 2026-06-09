@@ -8,7 +8,6 @@
 // Invariant: InspectCacheControl(result.Body).Count ==
 //
 //	InspectCacheControl(originalBody).Count + len(result.Applied)
-//
 package gateway
 
 import (
@@ -293,4 +292,98 @@ func resolveToolBlock(root map[string]interface{}, index int) (map[string]interf
 		return nil, false, err
 	}
 	return block, false, nil
+}
+
+// EnforceCacheControlLimit trims excess client-supplied cache_control
+// breakpoints so that the body contains at most maxBlocks of them before it is
+// forwarded to Anthropic (which hard-caps at CacheControlMaxAllowed=4 and 400s
+// any request that carries more).
+//
+// Strategy: "earliest-first preserved" — walk system blocks then
+// messages[].content blocks in document order and keep the FIRST maxBlocks
+// blocks that carry cache_control; delete the "cache_control" key from every
+// block beyond that. This mirrors the priority order used by InspectCacheControl.
+//
+// Invariants:
+//   - If InspectCacheControl(body).Count <= maxBlocks the original slice is
+//     returned byte-identical (no allocation, no re-serialization).
+//   - On any decode error the original slice is returned together with the
+//     error; the caller may ignore the error and forward raw (fail-open).
+//   - The input slice is never mutated.
+func EnforceCacheControlLimit(body []byte, maxBlocks int) ([]byte, error) {
+	snap, err := InspectCacheControl(body)
+	if err != nil {
+		// Fail-open: cannot parse → return original unchanged.
+		return body, err
+	}
+	if snap.Count <= maxBlocks {
+		// Common case: already within limit — byte-identical passthrough.
+		return body, nil
+	}
+
+	root, err := decodeMessagesRequest(body)
+	if err != nil {
+		return body, err
+	}
+
+	kept := 0
+
+	// Walk system blocks in document order.
+	if system, ok := root["system"]; ok {
+		switch s := system.(type) {
+		case map[string]interface{}:
+			if hasCacheControl(s) {
+				if kept < maxBlocks {
+					kept++
+				} else {
+					delete(s, "cache_control")
+				}
+			}
+		case []interface{}:
+			for _, item := range s {
+				if block, ok := item.(map[string]interface{}); ok {
+					if hasCacheControl(block) {
+						if kept < maxBlocks {
+							kept++
+						} else {
+							delete(block, "cache_control")
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Walk messages[].content blocks in document order.
+	if msgs, ok := root["messages"].([]interface{}); ok {
+		for _, msgRaw := range msgs {
+			msg, ok := msgRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			blocks, ok := msg["content"].([]interface{})
+			if !ok {
+				continue
+			}
+			for _, blockRaw := range blocks {
+				block, ok := blockRaw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if hasCacheControl(block) {
+					if kept < maxBlocks {
+						kept++
+					} else {
+						delete(block, "cache_control")
+					}
+				}
+			}
+		}
+	}
+
+	out, err := json.Marshal(root)
+	if err != nil {
+		return body, fmt.Errorf("cache_control enforce: re-serialization failed: %w", err)
+	}
+	return out, nil
 }
