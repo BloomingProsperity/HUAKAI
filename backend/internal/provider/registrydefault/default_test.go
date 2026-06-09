@@ -34,6 +34,10 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolGLMChat,
 		ProtocolYiChat,
 		ProtocolBaichuanChat,
+		ProtocolDoubaoChat,
+		ProtocolErnieChat,
+		ProtocolStepChat,
+		ProtocolHunyuanChat,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -99,6 +103,10 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolGLMChat:           "glm",
 		ProtocolYiChat:            "yi",
 		ProtocolBaichuanChat:      "baichuan",
+		ProtocolDoubaoChat:        "doubao",
+		ProtocolErnieChat:         "ernie",
+		ProtocolStepChat:          "step",
+		ProtocolHunyuanChat:       "hunyuan",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -133,6 +141,10 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 		{ProtocolGLMChat, "glm", "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
 		{ProtocolYiChat, "yi", "https://api.lingyiwanwu.com/v1/chat/completions"},
 		{ProtocolBaichuanChat, "baichuan", "https://api.baichuan-ai.com/v1/chat/completions"},
+		{ProtocolDoubaoChat, "doubao", "https://ark.cn-beijing.volces.com/api/v3/chat/completions"},
+		{ProtocolErnieChat, "ernie", "https://qianfan.baidubce.com/v2/chat/completions"},
+		{ProtocolStepChat, "step", "https://api.stepfun.com/v1/chat/completions"},
+		{ProtocolHunyuanChat, "hunyuan", "https://api.hunyuan.cloud.tencent.com/v1/chat/completions"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.protocol, func(t *testing.T) {
