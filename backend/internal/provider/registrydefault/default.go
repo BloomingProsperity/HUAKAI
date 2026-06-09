@@ -77,6 +77,10 @@ const (
 	ProtocolGLMChat      = "glm_chat"      // 智谱 GLM/ChatGLM（BigModel，OpenAI 兼容）
 	ProtocolYiChat       = "yi_chat"       // 零一万物 Yi（01.AI，OpenAI 兼容）
 	ProtocolBaichuanChat = "baichuan_chat" // 百川大模型（OpenAI 兼容）
+	ProtocolDoubaoChat   = "doubao_chat"   // 豆包 Doubao（火山方舟 Volcengine Ark，OpenAI 兼容）
+	ProtocolErnieChat    = "ernie_chat"    // 文心 ERNIE（百度千帆 Qianfan v2，OpenAI 兼容）
+	ProtocolStepChat     = "step_chat"     // 阶跃星辰 StepFun（OpenAI 兼容）
+	ProtocolHunyuanChat  = "hunyuan_chat"  // 腾讯混元 Hunyuan（OpenAI 兼容端点，Bearer）
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -182,6 +186,22 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolBaichuanChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "baichuan",
 		Endpoint:     "https://api.baichuan-ai.com/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolDoubaoChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "doubao",
+		Endpoint:     "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+	})
+	r.MustRegister(ProtocolErnieChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "ernie",
+		Endpoint:     "https://qianfan.baidubce.com/v2/chat/completions",
+	})
+	r.MustRegister(ProtocolStepChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "step",
+		Endpoint:     "https://api.stepfun.com/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolHunyuanChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "hunyuan",
+		Endpoint:     "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
 	})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
