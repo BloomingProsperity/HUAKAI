@@ -146,3 +146,45 @@ func adminOrderWhere(filter OrderListFilter) (string, []any) {
 func dashboardWhere(filter DashboardFilter) (string, []any) {
 	return "WHERE tenant_id=$1 AND created_at >= $2 AND created_at < $3", []any{filter.TenantID, filter.From, filter.To}
 }
+
+// AdminExportRefunds returns refund records for CSV export (read-only).
+func (s *PostgresStore) AdminExportRefunds(ctx context.Context, filter RefundExportFilter) ([]RefundRecord, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	clauses := []string{"pr.tenant_id=$1"}
+	args := []any{filter.TenantID}
+	if filter.From != nil {
+		args = append(args, *filter.From)
+		clauses = append(clauses, "pr.created_at >= $"+fmt.Sprint(len(args)))
+	}
+	if filter.To != nil {
+		args = append(args, *filter.To)
+		clauses = append(clauses, "pr.created_at < $"+fmt.Sprint(len(args)))
+	}
+	args = append(args, filter.Limit)
+	limitPos := len(args)
+	where := "WHERE " + strings.Join(clauses, " AND ")
+	rows, err := s.pool.Query(ctx, `
+SELECT pr.id, pr.tenant_id, pr.order_id, pr.user_id, pr.amount_cents, pr.currency_code,
+       pr.idempotency_key, pr.reason, pr.actor_kind, pr.actor_id, pr.billing_event_id, pr.created_at
+FROM payment_refunds pr
+`+where+`
+ORDER BY pr.created_at DESC, pr.id DESC LIMIT $`+fmt.Sprint(limitPos), args...)
+	if err != nil {
+		return nil, fmt.Errorf("payment: admin export refunds: %w", err)
+	}
+	defer rows.Close()
+	var out []RefundRecord
+	for rows.Next() {
+		var r RefundRecord
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.OrderID, &r.UserID, &r.AmountCents, &r.CurrencyCode,
+			&r.IdempotencyKey, &r.Reason, &r.ActorKind, &r.ActorID, &r.BillingEventID, &r.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("payment: scan refund export row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

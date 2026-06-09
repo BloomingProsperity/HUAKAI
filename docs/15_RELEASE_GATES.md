@@ -21,6 +21,7 @@ Release gates do not authorize over-blocking. After the Owner starts a phase or 
 | Security Gate | Secrets, permissions, audit logs, and abuse controls are reviewed. | Claude |
 | Billing Gate | Usage, quota, and billing behavior is testable and reconciled. | Codex |
 | OpenAPI Drift Gate | `go test ./cmd/gateway -run TestOpenAPI_ImplementationConsistency` passes — declared OpenAPI spec and mounted routes have zero residual drift. | Claude PM |
+| OpenAPI Drift Gate | `go test ./cmd/gateway -run TestOpenAPI_ImplementationConsistency` 通过（spec↔impl 零漂移） | Codex |
 | Trust Ledger Escape Flag Gate | Production startup fails if `HUAKAI_TRUST_LEDGER_ALLOW_MISSING_MONEY_REF=true/on/1`. Release checks still MUST verify the flag is false or unset before production deployment. | Codex |
 | UI Ops Gate | Admin workflows are complete and operable. | Gemini |
 | Release Decision Gate | Open mandatory roadmap items are explicitly accepted or blocked. | Claude |
