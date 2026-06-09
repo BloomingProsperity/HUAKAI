@@ -1856,6 +1856,114 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/orders/export.csv:
+    get:
+      summary: Export orders as CSV
+      description: >
+        OPS-005. Read-only streaming CSV export of payment orders within the
+        given date window (max 366 days). Excludes all sensitive/key/PII columns
+        (provider_order_ref, request_fingerprint, compliance fields). Requires
+        tenant-scoped admin credential.
+      operationId: adminExportOrdersCSV
+      tags: [admin, payments]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+          description: Start of export window (RFC3339, inclusive).
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+          description: End of export window (RFC3339, exclusive).
+        - name: status
+          in: query
+          required: false
+          schema: { type: string }
+          description: Optional order status filter.
+      responses:
+        '200':
+          description: CSV file download.
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            X-Truncated: { schema: { type: string }, description: "true if row limit reached" }
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { description: Invalid date range or parameters. }
+        '401': { description: Missing or invalid admin credential. }
+        '403': { description: Insufficient role. }
+        '503': { description: Dependency not configured. }
+
+  /v1/admin/refunds/export.csv:
+    get:
+      summary: Export refunds as CSV
+      description: >
+        OPS-005. Read-only streaming CSV export of payment refunds within the
+        given date window (max 366 days). Excludes sensitive columns. Requires
+        tenant-scoped admin credential.
+      operationId: adminExportRefundsCSV
+      tags: [admin, payments]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: CSV file download.
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            X-Truncated: { schema: { type: string }, description: "true if row limit reached" }
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { description: Invalid date range or parameters. }
+        '401': { description: Missing or invalid admin credential. }
+        '403': { description: Insufficient role. }
+        '503': { description: Dependency not configured. }
+
+  /v1/admin/system/health:
+    get:
+      summary: System health aggregation
+      description: >
+        ADMIN-042. Read-only aggregated system health snapshot for operators.
+        Aggregates channelhealth summary, DLQ pending depth, alerting firing
+        event count, and DB ping. No upstream paid calls; zero billing side effects.
+        Requires platform-admin or tenant-operator credential.
+      operationId: getAdminSystemHealth
+      tags: [admin, observability]
+      responses:
+        '200':
+          description: Health aggregation response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemHealthResponse' }
+        '401': { description: Missing or invalid admin credential. }
+        '403': { description: Insufficient role. }
+        '503': { description: Health source not configured. }
+
+  /admin/v1/system/health:
+    get:
+      summary: System health aggregation (alias)
+      description: Alias for /v1/admin/system/health for UI compatibility.
+      operationId: getAdminSystemHealthAlias
+      tags: [admin, observability]
+      responses:
+        '200':
+          description: Health aggregation response.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemHealthResponse' }
+        '401': { description: Missing or invalid admin credential. }
+        '403': { description: Insufficient role. }
+        '503': { description: Health source not configured. }
+
   /v1/admin/usage/leaderboard:
     get:
       tags: [admin]
@@ -15979,6 +16087,37 @@ components:
           pattern: '^[0-9]+(\.[0-9]{1,8})?$'
         currency_code: { type: string, enum: [USD] }
         recharge_order_id: { type: integer, format: int64, minimum: 1 }
+
+    SystemHealthResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/h-ops-systemhealth.md
+      required: [status, components]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: Worst-case aggregate of all component statuses.
+        components:
+          type: array
+          items: { $ref: '#/components/schemas/SystemHealthComponent' }
+
+    SystemHealthComponent:
+      type: object
+      additionalProperties: false
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          description: Component name (database, channel_health, dlq, alerting).
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        detail:
+          type: string
+          description: Optional human-readable detail string.
+
 
     AuditEvent:
       type: object

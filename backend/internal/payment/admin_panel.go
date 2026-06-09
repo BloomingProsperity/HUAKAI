@@ -34,6 +34,14 @@ type OrderExportFilter struct {
 	Limit    int
 }
 
+// RefundExportFilter filters for refund CSV export.
+type RefundExportFilter struct {
+	TenantID int64
+	From     *time.Time
+	To       *time.Time
+	Limit    int
+}
+
 type DashboardFilter struct {
 	TenantID int64
 	From     time.Time
@@ -98,6 +106,24 @@ func (s *Service) ExportOrders(ctx context.Context, filter OrderExportFilter) ([
 		return nil, ErrStoreNotConfigured
 	}
 	return store.AdminExportOrders(ctx, filter)
+}
+
+// ExportRefunds returns refund records for CSV export (read-only, no billing side effects).
+func (s *Service) ExportRefunds(ctx context.Context, filter RefundExportFilter) ([]RefundRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	if filter.TenantID <= 0 {
+		return nil, ErrInvalidInput
+	}
+	if filter.Limit <= 0 {
+		filter.Limit = defaultAdminOrderExportLimit
+	}
+	store, ok := s.store.(adminRefundExportStore)
+	if !ok {
+		return nil, ErrStoreNotConfigured
+	}
+	return store.AdminExportRefunds(ctx, filter)
 }
 
 func (s *Service) DashboardStats(ctx context.Context, filter DashboardFilter) (DashboardStats, error) {

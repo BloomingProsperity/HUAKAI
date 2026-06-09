@@ -35,6 +35,10 @@ type adminOrderExportStore interface {
 	AdminExportOrders(ctx context.Context, filter OrderExportFilter) ([]Order, error)
 }
 
+type adminRefundExportStore interface {
+	AdminExportRefunds(ctx context.Context, filter RefundExportFilter) ([]RefundRecord, error)
+}
+
 type subscriptionPlanPriceSnapshot struct {
 	TenantID     int64
 	PlanID       int64

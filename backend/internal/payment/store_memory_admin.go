@@ -110,3 +110,32 @@ func sortOrdersForAdmin(orders []Order) {
 		return orders[i].CreatedAt.After(orders[j].CreatedAt)
 	})
 }
+
+// AdminExportRefunds returns refund records for CSV export (read-only).
+func (m *MemoryStore) AdminExportRefunds(_ context.Context, filter RefundExportFilter) ([]RefundRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []RefundRecord
+	for _, r := range m.refunds {
+		if r == nil || r.TenantID != filter.TenantID {
+			continue
+		}
+		if filter.From != nil && r.CreatedAt.Before(*filter.From) {
+			continue
+		}
+		if filter.To != nil && !r.CreatedAt.Before(*filter.To) {
+			continue
+		}
+		out = append(out, *r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	if filter.Limit > 0 && len(out) > filter.Limit {
+		out = out[:filter.Limit]
+	}
+	return out, nil
+}

@@ -698,6 +698,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	})
 	mountPlatformSettingsRoutes(r, d)
 	mountUsageAdminRoutes(r, d)
+	mountSystemHealthRoutes(r, d) // ADMIN-042
 	var adminResolver adminIdentityResolver
 	if d.adminAuth != nil {
 		adminResolver = d.adminAuth
@@ -878,6 +879,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Auth:     d.adminAuth,
 		Payments: d.paymentService,
 		Usage:    d.billingQueries,
+		Orders:   d.paymentService, // OPS-005: order CSV export (read-only)
+		Refunds:  d.paymentService, // OPS-005: refund CSV export (read-only)
 	})
 	r.Route("/v1/admin/payments", func(r chi.Router) {
 		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{
