@@ -11,6 +11,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/loglevel"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
@@ -21,7 +23,9 @@ var smokeBuildStamp string
 
 func main() {
 	_ = smokeBuildStamp // referenced only by the smoke build to defeat dead-code elimination
-	logger, err := zap.NewProduction()
+	loggerCfg := zap.NewProductionConfig()
+	loggerCfg.Level = loglevel.Level // runtime-adjustable via /admin/v1/loglevel
+	logger, err := loggerCfg.Build()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logger init failed: %v\n", err)
 		os.Exit(1)
