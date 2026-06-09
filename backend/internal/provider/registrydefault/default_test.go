@@ -38,6 +38,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolErnieChat,
 		ProtocolStepChat,
 		ProtocolHunyuanChat,
+		ProtocolMinimaxChat,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -107,6 +108,7 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolErnieChat:         "ernie",
 		ProtocolStepChat:          "step",
 		ProtocolHunyuanChat:       "hunyuan",
+		ProtocolMinimaxChat:       "minimax",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -145,6 +147,7 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 		{ProtocolErnieChat, "ernie", "https://qianfan.baidubce.com/v2/chat/completions"},
 		{ProtocolStepChat, "step", "https://api.stepfun.com/v1/chat/completions"},
 		{ProtocolHunyuanChat, "hunyuan", "https://api.hunyuan.cloud.tencent.com/v1/chat/completions"},
+		{ProtocolMinimaxChat, "minimax", "https://api.minimax.io/v1/chat/completions"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.protocol, func(t *testing.T) {
