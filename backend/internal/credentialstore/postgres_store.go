@@ -924,19 +924,26 @@ SET encrypted_payload = $1,
     last_refresh_outcome = $11,
     failure_class = NULL,
     failure_count = 0,
-    next_attempt_at = NULL,
+    next_attempt_at = $16,
     updated_at = NOW()
 WHERE id = $12
   AND tenant_id = $13
   AND provider_account_id = $14
   AND deleted_at IS NULL
   AND credential_version = $15`
+	now := time.Now().UTC()
+	// Compute next_attempt_at: NULL for a normal effective refresh, throttled for ineffective.
+	// refreshBeforeAt is zero when accessExpiresAt is zero (no expiry info); treat as effective.
+	var nextAttemptAt time.Time // zero -> NULL via nullableTime
+	if !prepared.refreshBeforeAt.IsZero() {
+		nextAttemptAt = ineffectiveRefreshNextAttempt(prepared.refreshBeforeAt, now, time.Time{})
+	}
 	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
 		tag, err := txStore.db.Exec(ctx, q,
 			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
 			prepared.payloadFingerprint, prepared.refreshFingerprint,
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-			outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion,
+			outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion, nullableTime(nextAttemptAt),
 		)
 		if err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)

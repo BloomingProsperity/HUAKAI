@@ -83,7 +83,9 @@ func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh returned %v, want no adapter_missing for windsurf/oauth", err)
 	}
-	want := []string{"probe", "tx_begin", "lock:88", "reread"}
+	// TOKLIFE-04: ErrNoRefreshRequired now sets next_attempt_at via SetNextAttemptThrottle
+	// to prevent a tight re-attempt loop; throttle:88 is expected in the call sequence.
+	want := []string{"probe", "tx_begin", "lock:88", "reread", "throttle:88"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -590,6 +592,11 @@ func (tx *recordingRefreshTx) SaveRefreshSuccess(_ context.Context, rec credenti
 func (tx *recordingRefreshTx) SaveRefreshFailure(_ context.Context, rec credentialstore.CredentialRecord, failureClass string, _ time.Time) error {
 	*tx.calls = append(*tx.calls, "failure:"+strconv.FormatInt(rec.ID, 10)+":"+failureClass)
 	return tx.saveFailureErr
+}
+
+func (tx *recordingRefreshTx) SetNextAttemptThrottle(_ context.Context, rec credentialstore.CredentialRecord, _ time.Time) error {
+	*tx.calls = append(*tx.calls, "throttle:"+strconv.FormatInt(rec.ID, 10))
+	return nil
 }
 
 func (tx *recordingRefreshTx) InsertAuditEvent(_ context.Context, e credentialstore.AuditEvent) error {

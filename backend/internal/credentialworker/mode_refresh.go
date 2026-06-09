@@ -32,6 +32,12 @@ const (
 	geminiOAuthTokenURLEnv     = "HUAKAI_GEMINI_OAUTH_TOKEN_URL"
 	geminiOAuthClientIDEnv     = "HUAKAI_GEMINI_OAUTH_CLIENT_ID"
 	geminiOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
+
+	// ineffectiveRefreshBackoff is applied when a refresh "succeeds" but the
+	// resulting token is still immediately due for refresh (upstream returned a
+	// near-stale token), or when no refresh was required. It prevents a tight
+	// re-attempt loop against the upstream provider.
+	ineffectiveRefreshBackoff = credentialstore.IneffectiveRefreshBackoff
 )
 
 func providerFailureCooldown(vendor string) time.Duration {
@@ -237,6 +243,12 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 	})
 	if err != nil {
 		if errors.Is(err, ErrNoRefreshRequired) {
+			// No refresh was required, but we still throttle the next attempt to
+			// avoid a tight re-attempt loop. We only set next_attempt_at without
+			// changing state, failure_class, or failure_count.
+			if throttleErr := txStore.SetNextAttemptThrottle(ctx, rec, r.now().Add(ineffectiveRefreshBackoff)); throttleErr != nil {
+				return throttleErr
+			}
 			return nil
 		}
 		emitGeminiFallbackAudit(ctx, txStore, rec, err, false)
@@ -258,6 +270,7 @@ type accountCredentialRefreshTxStore interface {
 	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
 	SaveRefreshSuccess(context.Context, credentialstore.CredentialRecord, []byte, time.Time, string) error
 	SaveRefreshFailure(context.Context, credentialstore.CredentialRecord, string, time.Time) error
+	SetNextAttemptThrottle(context.Context, credentialstore.CredentialRecord, time.Time) error
 	InsertAuditEvent(context.Context, credentialstore.AuditEvent) error
 }
 
