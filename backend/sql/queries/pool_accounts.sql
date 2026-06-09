@@ -141,7 +141,8 @@ SELECT
     pa.cap_queue_sticky,
     pa.cap_queue_fallback,
     pa.window_cost_limit_cents,
-    pa.max_sessions
+    pa.max_sessions,
+    pa.disable_cooling
 FROM provider_accounts pa
 INNER JOIN channels c
     ON c.id = pa.channel_id

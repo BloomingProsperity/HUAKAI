@@ -269,6 +269,11 @@ func (g ProviderAccountHealthGate) Allow(_ context.Context, account *AccountSnap
 	if account == nil {
 		return false, GateFailureHealth, nil
 	}
+	// TOKLIFE-02: operator escape hatch — skip health/cooldown bench for flagged accounts.
+	// Only activates when disable_cooling=TRUE; default false preserves existing behavior exactly.
+	if account.DisableCooling {
+		return true, "", nil
+	}
 	if providerAccountHealthEligible(account.HealthState, account.HealthStateUntil, g.now()) {
 		return true, "", nil
 	}
