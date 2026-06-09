@@ -7558,6 +7558,29 @@ paths:
   # Admin: API Keys (Slice 2 N+4b2)
   # ==========================================================================
 
+  /admin/v1/loglevel:
+    get:
+      tags: [admin-ops]
+      summary: Get the current process log level
+      operationId: getLogLevel
+      x-huakai-required-role: platform_admin
+      responses:
+        "200": { description: Current process log level (zap AtomicLevel JSON). }
+        "403": { description: platform_admin role required. }
+    put:
+      tags: [admin-ops]
+      summary: Set the process log level at runtime (incident triage)
+      operationId: setLogLevel
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { level: { type: string, example: debug } } }
+      responses:
+        "200": { description: New process log level. }
+        "403": { description: platform_admin role required. }
+
   /admin/v1/version:
     get:
       tags: [admin-version]
@@ -7577,6 +7600,29 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+  /v1/admin/loglevel:
+    get:
+      tags: [admin-ops]
+      summary: Get the current process log level
+      operationId: getLogLevelV1
+      x-huakai-required-role: platform_admin
+      responses:
+        "200": { description: Current process log level (zap AtomicLevel JSON). }
+        "403": { description: platform_admin role required. }
+    put:
+      tags: [admin-ops]
+      summary: Set the process log level at runtime (incident triage)
+      operationId: setLogLevelV1
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { level: { type: string, example: debug } } }
+      responses:
+        "200": { description: New process log level. }
+        "403": { description: platform_admin role required. }
+
   /v1/admin/version:
     get:
       tags: [admin-version]
