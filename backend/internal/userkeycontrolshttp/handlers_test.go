@@ -269,6 +269,14 @@ func (s *stubService) SetKeyModelAllowlist(_ context.Context, req userkeycontrol
 	return userkeycontrols.SetKeyModelAllowlistResult{APIKeyID: req.APIKeyID, AllowedModels: req.AllowedModels}, nil
 }
 
+func (s *stubService) SetKeyIPBlacklist(_ context.Context, req userkeycontrols.SetKeyIPBlacklistRequest) (userkeycontrols.SetKeyIPBlacklistResult, error) {
+	return userkeycontrols.SetKeyIPBlacklistResult{APIKeyID: req.APIKeyID, IPBlacklist: req.IPBlacklist}, nil
+}
+
+func (s *stubService) GetKeyIPBlacklist(_ context.Context, tenantID, userID, apiKeyID int64) (userkeycontrols.KeyIPBlacklistView, error) {
+	return userkeycontrols.KeyIPBlacklistView{APIKeyID: apiKeyID}, nil
+}
+
 func (s *stubService) GetKeyModelAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyModelAllowlistView, error) {
 	s.getModelAllowlistCalls++
 	if s.getModelAllowlistErr != nil {

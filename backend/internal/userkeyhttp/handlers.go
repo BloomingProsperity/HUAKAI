@@ -28,6 +28,8 @@ type UserKeyService interface {
 	List(ctx context.Context, req userkey.ListRequest) ([]userkey.KeyDescriptor, error)
 	Get(ctx context.Context, tenantID, userID, apiKeyID int64) (userkey.KeyDescriptor, error)
 	Revoke(ctx context.Context, req userkey.RevokeRequest) (userkey.RevokeResult, error)
+	// KEY-026: partial update
+	Patch(ctx context.Context, req userkey.PatchRequest) (userkey.PatchResult, error)
 }
 
 // Deps 是挂载路由所需的依赖集合。Service nil → 全部 endpoint 返 503。
@@ -42,6 +44,7 @@ func MountUserAPIKeyRoutes(r chi.Router, d Deps) {
 	r.Get("/", newListHandler(d))
 	r.Get("/{id}", newGetHandler(d))
 	r.Delete("/{id}", newRevokeHandler(d))
+	r.Patch("/{id}", newPatchHandler(d))
 	r.Post("/batch-revoke", newBatchRevokeHandler(d))
 }
 
@@ -217,6 +220,58 @@ func newRevokeHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, revokeResponse{APIKeyID: out.APIKeyID, AlreadyRevoked: out.AlreadyRevoked})
+	}
+}
+
+// ---- KEY-026: PATCH partial update ----
+
+type patchRequest struct {
+	Name   *string `json:"name,omitempty"`
+	Status *string `json:"status,omitempty"`
+}
+
+type patchResponse struct {
+	APIKeyID int64  `json:"api_key_id"`
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+}
+
+func newPatchHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveSession(w, r, d)
+		if !ok {
+			return
+		}
+		id, ok := parsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req patchRequest
+		// Allow empty body (no-op patch).
+		body := http.MaxBytesReader(w, r.Body, 16<<10)
+		dec := json.NewDecoder(body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
+			return
+		}
+		out, err := d.Service.Patch(r.Context(), userkey.PatchRequest{
+			TenantID:  ident.TenantID,
+			UserID:    ident.UserID,
+			APIKeyID:  id,
+			Name:      req.Name,
+			Status:    req.Status,
+			RequestID: requestIDFromReq(r),
+		})
+		if err != nil {
+			writeUserKeyError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, patchResponse{
+			APIKeyID: out.APIKeyID,
+			Name:     out.Name,
+			Status:   out.Status,
+		})
 	}
 }
 

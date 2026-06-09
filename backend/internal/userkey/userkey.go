@@ -620,6 +620,122 @@ func auditAPIKeyID(id int64) *int64 {
 	return &id
 }
 
+
+
+// PatchRequest is the partial-update request for KEY-026. Fields use pointers so
+// the handler can distinguish "omitted" (nil) from "explicitly set". Only non-nil
+// fields are updated; omitted fields are left unchanged.
+type PatchRequest struct {
+	TenantID  int64
+	UserID    int64
+	APIKeyID  int64
+	Name      *string // nil = leave unchanged
+	Status    *string // nil = leave unchanged; accepted: "active" | "revoked"
+	RequestID string
+}
+
+// PatchResult is the partial-update result returned to the handler.
+type PatchResult struct {
+	APIKeyID int64
+	Name     string
+	Status   string
+}
+
+// Patch partially updates name and/or status of a key owned by the caller.
+// Only non-nil request fields are written. No-op if both are nil.
+//
+// Security: WHERE clause enforces (id, tenant_id, user_id) ownership — a foreign
+// key silently maps to ErrNotFound (same as Get/Revoke, anti-enumeration).
+// CMB-5: key prefix is never logged here.
+func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, error) {
+	if s == nil || s.pool == nil {
+		return PatchResult{}, fmt.Errorf("%w: pool unset", ErrServiceMisconfig)
+	}
+	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
+		return PatchResult{}, ErrNotFound
+	}
+	if req.Name == nil && req.Status == nil {
+		// Nothing to update — fetch and return current state.
+		row, err := s.Get(ctx, req.TenantID, req.UserID, req.APIKeyID)
+		if err != nil {
+			return PatchResult{}, err
+		}
+		return PatchResult{APIKeyID: row.APIKeyID, Name: row.Name, Status: row.Status}, nil
+	}
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if len(name) == 0 || len(name) > MaxNameLen {
+			return PatchResult{}, ErrInvalidName
+		}
+		req.Name = &name
+	}
+	if req.Status != nil {
+		switch *req.Status {
+		case "active", "revoked":
+		default:
+			return PatchResult{}, fmt.Errorf("%w: status must be active or revoked", ErrNotFound)
+		}
+	}
+	var out PatchResult
+	out.APIKeyID = req.APIKeyID
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		// Build a dynamic UPDATE that only touches provided fields.
+		// We always update updated_at.
+		var (
+			setClauses []string
+			args       []any
+			argIdx     = 1
+		)
+		if req.Name != nil {
+			setClauses = append(setClauses, fmt.Sprintf("name = $%d", argIdx))
+			args = append(args, *req.Name)
+			argIdx++
+		}
+		if req.Status != nil {
+			setClauses = append(setClauses, fmt.Sprintf("status = $%d", argIdx))
+			args = append(args, *req.Status)
+			argIdx++
+			// set revoked_at when transitioning to revoked
+			setClauses = append(setClauses, fmt.Sprintf(
+				"revoked_at = CASE WHEN $%d = 'revoked' THEN NOW() ELSE revoked_at END", argIdx))
+			args = append(args, *req.Status)
+			argIdx++
+		}
+		setClauses = append(setClauses, "updated_at = NOW()")
+		setSQL := strings.Join(setClauses, ", ")
+
+		// WHERE enforces owner triple; tenant/user active check via JOIN.
+		whereArgs := []any{req.APIKeyID, req.TenantID, req.UserID}
+		for i, a := range whereArgs {
+			_ = a
+			whereArgs[i] = a
+		}
+		query := fmt.Sprintf(
+			`UPDATE api_keys
+			    SET %s
+			  WHERE id = $%d
+			    AND tenant_id = $%d
+			    AND user_id = $%d
+			    AND deleted_at IS NULL
+			RETURNING name, status`,
+			setSQL, argIdx, argIdx+1, argIdx+2,
+		)
+		allArgs := append(args, req.APIKeyID, req.TenantID, req.UserID)
+		row := tx.QueryRow(ctx, query, allArgs...)
+		if err := row.Scan(&out.Name, &out.Status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return fmt.Errorf("%w: patch: %v", ErrBackend, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return PatchResult{}, err
+	}
+	return out, nil
+}
+
 // randomHex 仅用于测试 fixture 生成 key_prefix / key_hash 占位;production
 // 路径用 admin.GenerateBearer + bcrypt.GenerateFromPassword。
 func randomHex(n int) string {

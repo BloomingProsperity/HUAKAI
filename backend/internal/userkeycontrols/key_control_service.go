@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipallow"
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipdeny"
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
@@ -18,16 +19,21 @@ import (
 var maxNumeric20x8 = decimal.RequireFromString("999999999999.99999999")
 
 type KeyControlService struct {
-	store  controlsStore
-	logger *slog.Logger
-	now    func() time.Time
+	store        controlsStore
+	logger       *slog.Logger
+	now          func() time.Time
+	progressRead quota.ProgressReadStore // KEY-007: optional usage reader
 }
 
-func NewKeyControlService(pool *pgxpool.Pool, logger *slog.Logger) *KeyControlService {
+func NewKeyControlService(pool *pgxpool.Pool, logger *slog.Logger, opts ...func(*KeyControlService)) *KeyControlService {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &KeyControlService{store: NewPostgresStore(pool), logger: logger, now: time.Now}
+	s := &KeyControlService{store: NewPostgresStore(pool), logger: logger, now: time.Now}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func NewControlsService(store controlsStore, logger *slog.Logger) *KeyControlService {
@@ -42,6 +48,14 @@ func newServiceForTest(store controlsStore, now func() time.Time) *KeyControlSer
 		now = time.Now
 	}
 	return &KeyControlService{store: store, logger: slog.Default(), now: now}
+}
+
+// WithProgressReader injects a quota.ProgressReadStore for KEY-007 used_usd reporting.
+// If not set, GetKeyQuota returns used_usd=0 and no remaining_usd.
+func WithProgressReader(r quota.ProgressReadStore) func(*KeyControlService) {
+	return func(s *KeyControlService) {
+		s.progressRead = r
+	}
 }
 
 func (s *KeyControlService) SetKeyQuota(ctx context.Context, req SetKeyQuotaRequest) (SetKeyQuotaResult, error) {
@@ -82,7 +96,7 @@ func (s *KeyControlService) SetKeyQuota(ctx context.Context, req SetKeyQuotaRequ
 		if affected == 0 {
 			return ErrKeyNotFound
 		}
-		out = quotaResult(req.APIKeyID, row)
+		out = quotaResultToSet(req.APIKeyID, row)
 		return nil
 	})
 	if err != nil {
@@ -105,7 +119,34 @@ func (s *KeyControlService) GetKeyQuota(ctx context.Context, tenantID, userID, a
 		}
 		return KeyQuotaView{}, fmt.Errorf("%w: get quota policy: %v", ErrBackend, err)
 	}
-	return quotaResult(apiKeyID, row), nil
+	view := quotaViewFromRow(apiKeyID, row)
+
+	// KEY-007: inject usage if progress reader is available
+	if s.progressRead != nil {
+		scopeID := strconv.FormatInt(apiKeyID, 10)
+		windows, err := s.progressRead.ListCurrentWindowsForScope(ctx, tenantID, quota.ScopeAPIKey, scopeID, s.now().UTC())
+		if err != nil {
+			// Non-fatal: log and return zero usage rather than failing the read.
+			if s.logger != nil {
+				s.logger.WarnContext(ctx, "userkeycontrols.get_quota_usage_failed",
+					"api_key_id", apiKeyID,
+					"tenant_id", tenantID,
+					"error", err)
+			}
+		} else {
+			var used decimal.Decimal
+			for _, w := range windows {
+				// consumed = settled + reserved
+				used = used.Add(w.SettledValue).Add(w.ReservedValue)
+			}
+			view.UsedUSD = used
+			if !row.LimitUSD.IsZero() {
+				remaining := row.LimitUSD.Sub(used)
+				view.RemainingUSD = &remaining
+			}
+		}
+	}
+	return view, nil
 }
 
 func (s *KeyControlService) SetKeyIPAllowlist(ctx context.Context, req SetKeyIPAllowlistRequest) (SetKeyIPAllowlistResult, error) {
@@ -156,6 +197,58 @@ func (s *KeyControlService) GetKeyIPAllowlist(ctx context.Context, tenantID, use
 		}
 	}
 	return KeyIPAllowlistView{APIKeyID: row.APIKeyID, IPAllowlist: entries}, nil
+}
+
+// KEY-016: IP blacklist set/get (parallel to allowlist)
+
+func (s *KeyControlService) SetKeyIPBlacklist(ctx context.Context, req SetKeyIPBlacklistRequest) (SetKeyIPBlacklistResult, error) {
+	if s == nil || s.store == nil {
+		return SetKeyIPBlacklistResult{}, fmt.Errorf("%w: store unset", ErrServiceMisconfig)
+	}
+	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
+		return SetKeyIPBlacklistResult{}, ErrKeyNotFound
+	}
+	normalized, err := apikeyipdeny.Normalize(req.IPBlacklist)
+	if err != nil {
+		return SetKeyIPBlacklistResult{}, ErrInvalidIPBlacklist
+	}
+	affected, err := s.store.SetAPIKeyIPBlacklist(ctx, ipBlacklistAssignment{
+		TenantID:    req.TenantID,
+		UserID:      req.UserID,
+		APIKeyID:    req.APIKeyID,
+		IPBlacklist: apikeyipdeny.StorageText(normalized),
+	})
+	if err != nil {
+		return SetKeyIPBlacklistResult{}, fmt.Errorf("%w: set ip blacklist: %v", ErrBackend, err)
+	}
+	if affected == 0 {
+		return SetKeyIPBlacklistResult{}, ErrKeyNotFound
+	}
+	return SetKeyIPBlacklistResult{APIKeyID: req.APIKeyID, IPBlacklist: normalized}, nil
+}
+
+func (s *KeyControlService) GetKeyIPBlacklist(ctx context.Context, tenantID, userID, apiKeyID int64) (KeyIPBlacklistView, error) {
+	if s == nil || s.store == nil {
+		return KeyIPBlacklistView{}, fmt.Errorf("%w: store unset", ErrServiceMisconfig)
+	}
+	if tenantID <= 0 || userID <= 0 || apiKeyID <= 0 {
+		return KeyIPBlacklistView{}, ErrKeyNotFound
+	}
+	row, err := s.store.GetAPIKeyIPBlacklist(ctx, tenantID, userID, apiKeyID)
+	if err != nil {
+		if isNoRows(err) {
+			return KeyIPBlacklistView{}, ErrKeyNotFound
+		}
+		return KeyIPBlacklistView{}, fmt.Errorf("%w: get ip blacklist: %v", ErrBackend, err)
+	}
+	entries := []string{}
+	if row.IPBlacklist != nil {
+		entries, err = apikeyipdeny.NormalizeCSV(*row.IPBlacklist)
+		if err != nil {
+			return KeyIPBlacklistView{}, ErrInvalidIPBlacklist
+		}
+	}
+	return KeyIPBlacklistView{APIKeyID: row.APIKeyID, IPBlacklist: entries}, nil
 }
 
 func (s *KeyControlService) SetKeyModelAllowlist(ctx context.Context, req SetKeyModelAllowlistRequest) (SetKeyModelAllowlistResult, error) {
@@ -259,8 +352,23 @@ func normalizeQuotaRequest(req SetKeyQuotaRequest, now time.Time) SetKeyQuotaReq
 	return req
 }
 
-func quotaResult(apiKeyID int64, row quotaPolicyRow) SetKeyQuotaResult {
+func quotaResultToSet(apiKeyID int64, row quotaPolicyRow) SetKeyQuotaResult {
 	return SetKeyQuotaResult{
+		APIKeyID:      apiKeyID,
+		PolicyID:      row.ID,
+		LimitUSD:      row.LimitUSD,
+		ScopeKind:     row.ScopeKind,
+		ScopeID:       row.ScopeID,
+		Metric:        row.Metric,
+		WindowKind:    row.WindowKind,
+		WindowSeconds: row.WindowSeconds,
+		Mode:          row.Mode,
+		ValidFrom:     row.ValidFrom,
+	}
+}
+
+func quotaViewFromRow(apiKeyID int64, row quotaPolicyRow) KeyQuotaView {
+	return KeyQuotaView{
 		APIKeyID:      apiKeyID,
 		PolicyID:      row.ID,
 		LimitUSD:      row.LimitUSD,

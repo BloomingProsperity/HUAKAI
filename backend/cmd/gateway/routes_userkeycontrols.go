@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeycontrols"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeycontrolshttp"
 )
@@ -12,7 +13,7 @@ import (
 func mountUserKeyControlsRoutes(r chi.Router, d *deps) {
 	var controlsSvc userkeycontrolshttp.ControlsService
 	if d != nil {
-		controlsSvc = userkeycontrols.NewKeyControlService(d.pgPool, nil)
+		controlsSvc = userkeycontrols.NewKeyControlService(d.pgPool, nil, userkeycontrols.WithProgressReader(quota.NewPostgresStore(d.pgPool)))
 	}
 	userkeycontrolshttp.MountRoutes(r, userkeycontrolshttp.Deps{Service: controlsSvc})
 }

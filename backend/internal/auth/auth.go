@@ -30,7 +30,7 @@ type MimicryEngine interface {
 
 // MimicryAudit records what was applied for the audit-event row.
 type MimicryAudit struct {
-	ComponentsApplied   []string
+	ComponentsApplied    []string
 	MimicryPolicyVersion string
 }
 

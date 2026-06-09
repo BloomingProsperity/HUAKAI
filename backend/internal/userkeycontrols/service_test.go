@@ -435,6 +435,8 @@ type fakeStore struct {
 	setGroupCalled          bool
 	setIPAllowlistCalled    bool
 	setModelAllowlistCalled bool
+	setIPBlacklistArg       ipBlacklistAssignment
+	setIPBlacklistCalled    bool
 }
 
 func newFakeStore() *fakeStore {
@@ -510,6 +512,16 @@ func (s *fakeStore) SetAPIKeyModelAllowlist(_ context.Context, arg modelAllowlis
 	s.setModelAllowlistCalled = true
 	s.setModelAllowlistArg = arg
 	return 1, nil
+}
+
+func (s *fakeStore) SetAPIKeyIPBlacklist(_ context.Context, arg ipBlacklistAssignment) (int64, error) {
+	s.setIPBlacklistArg = arg
+	s.setIPBlacklistCalled = true
+	return 1, nil
+}
+
+func (s *fakeStore) GetAPIKeyIPBlacklist(_ context.Context, tenantID, userID, apiKeyID int64) (keyIPBlacklistRow, error) {
+	return keyIPBlacklistRow{APIKeyID: apiKeyID, IPBlacklist: s.setIPBlacklistArg.IPBlacklist}, nil
 }
 
 func (s *fakeStore) GetAPIKeyModelAllowlist(context.Context, int64, int64, int64) (keyModelAllowlistRow, error) {

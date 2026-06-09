@@ -35,6 +35,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipallow"
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipdeny"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
@@ -165,6 +166,19 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(row.KeyHash), []byte(bearer)); err != nil {
 			continue
+		}
+		// KEY-016: deny check runs BEFORE allowlist (deny takes precedence).
+		// NULL ip_blacklist -> DeniesCSV false -> zero behavior change.
+		denied, err := apikeyipdeny.DeniesCSV(row.IpBlacklist, r.clientIPResolver.ClientIP(req))
+		if err != nil {
+			slog.WarnContext(ctx, "api_key_ip_blacklist_invalid",
+				"tenant_id", row.TenantID,
+				"api_key_id", row.ID,
+				"error", err)
+			return Identity{}, ErrForbidden
+		}
+		if denied {
+			return Identity{}, ErrForbidden
 		}
 		allowed, err := apikeyipallow.AllowsCSV(row.IpAllowlist, r.clientIPResolver.ClientIP(req))
 		if err != nil {

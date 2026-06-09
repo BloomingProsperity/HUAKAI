@@ -39,8 +39,8 @@ func (c *memCache) Set(_ context.Context, key, token string, ttl time.Duration) 
 
 // memLock is an in-memory RefreshLock.
 type memLock struct {
-	mu    sync.Mutex
-	held  map[string]time.Time
+	mu   sync.Mutex
+	held map[string]time.Time
 }
 
 func newMemLock() *memLock {
