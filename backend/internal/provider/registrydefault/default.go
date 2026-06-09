@@ -81,6 +81,7 @@ const (
 	ProtocolErnieChat    = "ernie_chat"    // 文心 ERNIE（百度千帆 Qianfan v2，OpenAI 兼容）
 	ProtocolStepChat     = "step_chat"     // 阶跃星辰 StepFun（OpenAI 兼容）
 	ProtocolHunyuanChat  = "hunyuan_chat"  // 腾讯混元 Hunyuan（OpenAI 兼容端点，Bearer）
+	ProtocolMinimaxChat  = "minimax_chat"  // MiniMax（api.minimax.io，OpenAI 兼容 /v1/chat/completions，Bearer）
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -169,8 +170,8 @@ func Build() *provider.StaticRegistry {
 		PlatformName: "fireworks",
 		Endpoint:     "https://api.fireworks.ai/inference/v1/chat/completions",
 	})
-	// 国内大模型（OpenAI 兼容直通）。
-	// Doubao/ERNIE/MiniMax/StepFun 均非 OpenAI 兼容；留给专属 adapter，此处跳过。
+	// 国内大模型（OpenAI 兼容直通）。各家均暴露 OpenAI 形 /chat/completions +
+	// Bearer 鉴权；channel base_url 可覆盖默认 Endpoint。
 	r.MustRegister(ProtocolQwenChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "qwen",
 		Endpoint:     "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -202,6 +203,10 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolHunyuanChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "hunyuan",
 		Endpoint:     "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolMinimaxChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "minimax",
+		Endpoint:     "https://api.minimax.io/v1/chat/completions",
 	})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
