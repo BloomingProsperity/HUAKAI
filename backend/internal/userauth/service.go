@@ -96,6 +96,14 @@ type Service struct {
 	// 不接受任何 caller 提供的 redirect_uri,只能用各 provider 服务端配置的固定 RedirectURI,fail-closed 防
 	// open-redirect / 授权码外泄。
 	AllowedRedirectURIs []string
+	// SignupBonusFn, if non-nil, is called after every successful new-user
+	// registration (password + social paths) to issue a signup welcome credit.
+	// Nil = feature absent = no-op. Set by the caller; default-OFF.
+	SignupBonusFn func(ctx context.Context, tenantID, userID int64) error
+	// InviteeRewardFn, if non-nil, is called after an invite binding is applied
+	// at registration to issue a wallet credit to the new user (referee reward).
+	// Nil = feature absent = no-op. Set by the caller; default-OFF.
+	InviteeRewardFn func(ctx context.Context, tenantID, userID int64) error
 }
 
 func NewService(store Store) *Service {
@@ -246,6 +254,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 	}); err != nil {
 		return RegistrationResult{}, err
 	}
+	s.issueSignupCredits(ctx, out.User.TenantID, out.User.ID, out.User.InviteCodeUsed != "")
 	return out, nil
 }
 
@@ -477,4 +486,19 @@ func (s *Service) requireEmailVerification(ctx context.Context, tenantID int64) 
 		}
 	}
 	return s == nil || s.RequireVerified
+}
+
+// issueSignupCredits fires the optional signup-time wallet credits after a
+// successful new-user registration. Both fns are nil by default (feature off).
+// Errors are silently swallowed: a credit failure must not roll back registration.
+func (s *Service) issueSignupCredits(ctx context.Context, tenantID, userID int64, hadInvite bool) {
+	if s == nil {
+		return
+	}
+	if s.SignupBonusFn != nil {
+		_ = s.SignupBonusFn(ctx, tenantID, userID)
+	}
+	if hadInvite && s.InviteeRewardFn != nil {
+		_ = s.InviteeRewardFn(ctx, tenantID, userID)
+	}
 }
