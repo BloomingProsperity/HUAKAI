@@ -1,0 +1,141 @@
+package toolpricing_test
+
+import (
+	"testing"
+
+	"github.com/shopspring/decimal"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
+)
+
+// assertDecimal is a test helper that fails if got != want (string-parsed).
+func assertDecimal(t *testing.T, label string, got decimal.Decimal, want string) {
+	t.Helper()
+	wantD := decimal.RequireFromString(want)
+	if !got.Equal(wantD) {
+		t.Fatalf("%s = %s, want %s", label, got.String(), wantD.String())
+	}
+}
+
+// TestSurcharge_SpecExample verifies the canonical spec example:
+// web_search count=3, price $10/1000, groupRatio 2.0 -> 0.06
+//
+// Derivation: ($10/1000) * 3 * 2.0 = $0.01 * 3 * 2.0 = $0.06
+func TestSurcharge_SpecExample(t *testing.T) {
+	prices := toolpricing.ToolPrices{
+		WebSearchPer1000: decimal.RequireFromString("10"),
+	}
+	counts := toolpricing.ToolCallCounts{WebSearch: 3}
+	groupRatio := decimal.RequireFromString("2.0")
+
+	got := toolpricing.Surcharge(prices, counts, groupRatio)
+	assertDecimal(t, "Surcharge", got, "0.06")
+}
+
+// TestSurcharge_ZeroPrices_ReturnsZero ensures that when no tool prices are
+// configured (the default empty-table case) the surcharge is exactly zero.
+func TestSurcharge_ZeroPrices_ReturnsZero(t *testing.T) {
+	prices := toolpricing.ToolPrices{} // all zero
+	counts := toolpricing.ToolCallCounts{WebSearch: 5, FileSearch: 3, ImageGeneration: 1}
+	got := toolpricing.Surcharge(prices, counts, decimal.NewFromInt(1))
+	assertDecimal(t, "Surcharge", got, "0")
+}
+
+// TestSurcharge_ZeroCounts_ReturnsZero ensures that when there are no tool
+// calls the surcharge is zero even if prices are configured.
+func TestSurcharge_ZeroCounts_ReturnsZero(t *testing.T) {
+	prices := toolpricing.ToolPrices{
+		WebSearchPer1000:       decimal.RequireFromString("10"),
+		FileSearchPer1000:      decimal.RequireFromString("5"),
+		ImageGenerationPer1000: decimal.RequireFromString("40"),
+	}
+	counts := toolpricing.ToolCallCounts{} // all zero
+	got := toolpricing.Surcharge(prices, counts, decimal.NewFromInt(1))
+	assertDecimal(t, "Surcharge", got, "0")
+}
+
+// TestSurcharge_MultiTool_Sum verifies that multi-tool surcharges are summed
+// and group-ratio is applied once to the total.
+//
+// web_search: ($10/1000)*2 = 0.02
+// file_search: ($5/1000)*4  = 0.02
+// image_gen:  ($40/1000)*1  = 0.04
+// sum = 0.08; * groupRatio 1.5 = 0.12
+func TestSurcharge_MultiTool_Sum(t *testing.T) {
+	prices := toolpricing.ToolPrices{
+		WebSearchPer1000:       decimal.RequireFromString("10"),
+		FileSearchPer1000:      decimal.RequireFromString("5"),
+		ImageGenerationPer1000: decimal.RequireFromString("40"),
+	}
+	counts := toolpricing.ToolCallCounts{
+		WebSearch:       2,
+		FileSearch:      4,
+		ImageGeneration: 1,
+	}
+	groupRatio := decimal.RequireFromString("1.5")
+
+	got := toolpricing.Surcharge(prices, counts, groupRatio)
+	assertDecimal(t, "Surcharge", got, "0.12")
+}
+
+// TestSurcharge_DefaultGroupRatioZeroTreatedAsOne ensures that a zero groupRatio
+// (the pricingeval default) is treated as 1 (identity) rather than zeroing the
+// surcharge.
+func TestSurcharge_DefaultGroupRatioZeroTreatedAsOne(t *testing.T) {
+	prices := toolpricing.ToolPrices{
+		WebSearchPer1000: decimal.RequireFromString("10"),
+	}
+	counts := toolpricing.ToolCallCounts{WebSearch: 1}
+
+	// zero groupRatio should be treated as 1.0
+	got := toolpricing.Surcharge(prices, counts, decimal.Zero)
+	assertDecimal(t, "Surcharge", got, "0.01")
+}
+
+// TestTable_EmptyTableReturnsZeroPrices verifies that a nil or empty Table
+// returns zero ToolPrices for any lookup.
+func TestTable_EmptyTableReturnsZeroPrices(t *testing.T) {
+	var nilTable toolpricing.Table
+	prices := nilTable.Lookup(42, "gpt-4o")
+	if !prices.IsZero() {
+		t.Fatalf("nil Table.Lookup returned non-zero prices: %+v", prices)
+	}
+
+	emptyTable := toolpricing.Table{}
+	prices = emptyTable.Lookup(42, "gpt-4o")
+	if !prices.IsZero() {
+		t.Fatalf("empty Table.Lookup returned non-zero prices: %+v", prices)
+	}
+}
+
+// TestTable_SetAndLookup verifies that prices stored via Set are returned by
+// Lookup for the matching (tenantID, modelID) pair.
+func TestTable_SetAndLookup(t *testing.T) {
+	tbl := toolpricing.Table{}
+	want := toolpricing.ToolPrices{
+		WebSearchPer1000: decimal.RequireFromString("10"),
+	}
+	tbl.Set(7, "gpt-4o", want)
+
+	got := tbl.Lookup(7, "gpt-4o")
+	if !got.WebSearchPer1000.Equal(want.WebSearchPer1000) {
+		t.Fatalf("Lookup WebSearchPer1000=%s want %s", got.WebSearchPer1000, want.WebSearchPer1000)
+	}
+	// different tenant/model should still return zero
+	other := tbl.Lookup(99, "gpt-4o")
+	if !other.IsZero() {
+		t.Fatalf("cross-tenant lookup returned non-zero prices: %+v", other)
+	}
+}
+
+// TestDefaultToolPrices verifies that DefaultToolPrices returns the expected
+// platform-level constants: web_search=$10/1000, file_search=$2.5/1000,
+// image_generation=$0 (Stage D deferred).
+func TestDefaultToolPrices(t *testing.T) {
+	p := toolpricing.DefaultToolPrices()
+	assertDecimal(t, "WebSearchPer1000", p.WebSearchPer1000, "10")
+	assertDecimal(t, "FileSearchPer1000", p.FileSearchPer1000, "2.5")
+	if !p.ImageGenerationPer1000.IsZero() {
+		t.Fatalf("ImageGenerationPer1000=%s want 0 (deferred Stage D)", p.ImageGenerationPer1000)
+	}
+}

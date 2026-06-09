@@ -78,31 +78,39 @@ type DrainBudgets struct {
 
 // UsageRecordDraft 是 F-GW-002 Phase D 交给 F-OBS-001 Tx2 的载荷。
 type UsageRecordDraft struct {
-	TokensInput             int             `json:"tokens_input"`
-	TokensOutput            int             `json:"tokens_output"`
-	DeliveredTokenCount     int64           `json:"delivered_token_count"`
-	CacheCreationTokens     int             `json:"cache_creation_tokens"`
-	CacheCreation5mTokens   int             `json:"cache_creation_5m_tokens"`
-	CacheCreation1hTokens   int             `json:"cache_creation_1h_tokens"`
-	CacheReadTokens         int             `json:"cache_read_tokens"`
-	ActualCost              decimal.Decimal `json:"actual_cost"`
-	CostSnapshot            string          `json:"cost_snapshot,omitempty"`
-	CacheCreationCost       decimal.Decimal `json:"cache_creation_cost"`
-	CacheReadCost           decimal.Decimal `json:"cache_read_cost"`
-	ImageCount              int32           `json:"image_count"`
-	ImageSize               *string         `json:"image_size,omitempty"`
-	ImageSizeBreakdown      []byte          `json:"image_size_breakdown,omitempty"`
-	IPAddress               *string         `json:"ip_address,omitempty"`
-	UserAgent               *string         `json:"user_agent,omitempty"`
-	RoutingReason           []byte          `json:"routing_reason"`
-	EndClass                StreamEndClass  `json:"end_class"`
-	StreamTerminatedReason  string          `json:"stream_terminated_reason"`
-	UsageSource             UsageSource     `json:"usage_source"`
-	ConfidenceScore         *float64        `json:"confidence_score"`
-	DrainOutcome            DrainOutcome    `json:"drain_outcome"`
-	PendingReconciliation   bool            `json:"pending_reconciliation"`
-	FirstTokenLatencyMillis int64           `json:"first_token_latency_ms"`
-	TotalDurationMillis     int64           `json:"total_duration_ms"`
+	TokensInput           int             `json:"tokens_input"`
+	TokensOutput          int             `json:"tokens_output"`
+	DeliveredTokenCount   int64           `json:"delivered_token_count"`
+	CacheCreationTokens   int             `json:"cache_creation_tokens"`
+	CacheCreation5mTokens int             `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens int             `json:"cache_creation_1h_tokens"`
+	CacheReadTokens       int             `json:"cache_read_tokens"`
+	ActualCost            decimal.Decimal `json:"actual_cost"`
+	CostSnapshot          string          `json:"cost_snapshot,omitempty"`
+	CacheCreationCost     decimal.Decimal `json:"cache_creation_cost"`
+	CacheReadCost         decimal.Decimal `json:"cache_read_cost"`
+	ImageCount            int32           `json:"image_count"`
+	ImageSize             *string         `json:"image_size,omitempty"`
+	ImageSizeBreakdown    []byte          `json:"image_size_breakdown,omitempty"`
+
+	// WebSearchCalls / FileSearchCalls / ImageGenerationCalls mirror
+	// proto.CanonicalUsage for the streaming path: populated by upstream
+	// response parse (Stage B+), default zero = no surcharge.
+	WebSearchCalls       int `json:"web_search_calls,omitempty"`
+	FileSearchCalls      int `json:"file_search_calls,omitempty"`
+	ImageGenerationCalls int `json:"image_generation_calls,omitempty"`
+
+	IPAddress               *string        `json:"ip_address,omitempty"`
+	UserAgent               *string        `json:"user_agent,omitempty"`
+	RoutingReason           []byte         `json:"routing_reason"`
+	EndClass                StreamEndClass `json:"end_class"`
+	StreamTerminatedReason  string         `json:"stream_terminated_reason"`
+	UsageSource             UsageSource    `json:"usage_source"`
+	ConfidenceScore         *float64       `json:"confidence_score"`
+	DrainOutcome            DrainOutcome   `json:"drain_outcome"`
+	PendingReconciliation   bool           `json:"pending_reconciliation"`
+	FirstTokenLatencyMillis int64          `json:"first_token_latency_ms"`
+	TotalDurationMillis     int64          `json:"total_duration_ms"`
 
 	// ReasoningTokens / EstimatedOutputTokens / EstimatedReasoningTokens 携带流式 token 交叉校验
 	// 所需信号到 gatewayhttp 层(settle 时与 reported OutputTokens 比对,审计-only,不参与计费):
@@ -211,6 +219,12 @@ func (a *UsageAccumulator) Update(source UsageSource, usage proto.CanonicalUsage
 	if usage.CacheReadInputTokens != 0 {
 		a.Usage.CacheReadInputTokens = usage.CacheReadInputTokens
 	}
+	// Stage B: tool-call counts are ADDITIVE across stream events (one
+	// content_block_start per invocation), unlike tokens which are set-to-latest.
+	// Guard: TerminalLocked is already checked at the top of Update().
+	a.Usage.WebSearchCalls += usage.WebSearchCalls
+	a.Usage.FileSearchCalls += usage.FileSearchCalls
+	a.Usage.ImageGenerationCalls += usage.ImageGenerationCalls
 	if a.Usage.TotalTokens == 0 {
 		a.Usage.TotalTokens = a.Usage.InputTokens + a.Usage.OutputTokens
 	}
