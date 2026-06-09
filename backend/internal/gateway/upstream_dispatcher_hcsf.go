@@ -12,6 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/thinkingnorm"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -192,6 +193,10 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		if err != nil {
 			return nil, err
 		}
+		// RR-03: enforce Anthropic extended-thinking validity (temperature=1 /
+		// tool_choice auto) before forwarding, else upstream 400; no-op (byte-
+		// identical) when the body has no active thinking field.
+		body = thinkingnorm.NormalizeThinkingValidity(body)
 		in.InboundBody = body
 		return a.BuildRequest(ctx, in)
 	}
