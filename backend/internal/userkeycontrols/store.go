@@ -27,6 +27,9 @@ type controlsStore interface {
 	GetAPIKeyIPAllowlist(context.Context, int64, int64, int64) (keyIPAllowlistRow, error)
 	SetAPIKeyModelAllowlist(context.Context, modelAllowlistAssignment) (int64, error)
 	GetAPIKeyModelAllowlist(context.Context, int64, int64, int64) (keyModelAllowlistRow, error)
+	// KEY-016: IP blacklist (parallel to allowlist)
+	SetAPIKeyIPBlacklist(context.Context, ipBlacklistAssignment) (int64, error)
+	GetAPIKeyIPBlacklist(context.Context, int64, int64, int64) (keyIPBlacklistRow, error)
 }
 
 type quotaPolicyWrite struct {
@@ -113,16 +116,30 @@ type keyModelAllowlistRow struct {
 	AllowedModels *string
 }
 
+// KEY-016: IP blacklist store types (parallel to allowlist)
+type ipBlacklistAssignment struct {
+	TenantID    int64
+	UserID      int64
+	APIKeyID    int64
+	IPBlacklist *string
+}
+
+type keyIPBlacklistRow struct {
+	APIKeyID    int64
+	IPBlacklist *string
+}
+
 type PostgresStore struct {
 	pool *pgxpool.Pool
 	q    dbuserkeycontrols.Querier
+	db   dbuserkeycontrols.DBTX // raw DBTX for hand-written queries (blacklist)
 }
 
 func newPGControlsStore(pool *pgxpool.Pool) *PostgresStore {
 	if pool == nil {
 		return &PostgresStore{}
 	}
-	return &PostgresStore{pool: pool, q: dbuserkeycontrols.New(pool)}
+	return &PostgresStore{pool: pool, q: dbuserkeycontrols.New(pool), db: pool}
 }
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
@@ -138,7 +155,7 @@ func (s *PostgresStore) WithTx(ctx context.Context, fn func(context.Context, con
 		return fmt.Errorf("%w: begin: %v", ErrBackend, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	txStore := &PostgresStore{q: dbuserkeycontrols.New(tx)}
+	txStore := &PostgresStore{q: dbuserkeycontrols.New(tx), db: tx}
 	if err := fn(ctx, txStore); err != nil {
 		return err
 	}
@@ -383,6 +400,45 @@ func timePtr(t pgtype.Timestamptz) *time.Time {
 	}
 	out := t.Time
 	return &out
+}
+
+func (s *PostgresStore) SetAPIKeyIPBlacklist(ctx context.Context, arg ipBlacklistAssignment) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("%w: db unset", ErrServiceMisconfig)
+	}
+	result, err := s.db.Exec(ctx,
+		`UPDATE api_keys
+		    SET ip_blacklist = $1::text, updated_at = NOW()
+		  WHERE id = $2
+		    AND tenant_id = $3
+		    AND user_id = $4
+		    AND deleted_at IS NULL`,
+		arg.IPBlacklist, arg.APIKeyID, arg.TenantID, arg.UserID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("%w: set ip blacklist: %v", ErrBackend, err)
+	}
+	return result.RowsAffected(), nil
+}
+
+func (s *PostgresStore) GetAPIKeyIPBlacklist(ctx context.Context, tenantID, userID, apiKeyID int64) (keyIPBlacklistRow, error) {
+	if s == nil || s.db == nil {
+		return keyIPBlacklistRow{}, fmt.Errorf("%w: db unset", ErrServiceMisconfig)
+	}
+	row := s.db.QueryRow(ctx,
+		`SELECT id, ip_blacklist
+		   FROM api_keys
+		  WHERE id = $1
+		    AND tenant_id = $2
+		    AND user_id = $3
+		    AND deleted_at IS NULL`,
+		apiKeyID, tenantID, userID,
+	)
+	var out keyIPBlacklistRow
+	if err := row.Scan(&out.APIKeyID, &out.IPBlacklist); err != nil {
+		return keyIPBlacklistRow{}, err
+	}
+	return out, nil
 }
 
 func isNoRows(err error) bool {

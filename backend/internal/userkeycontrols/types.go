@@ -33,7 +33,24 @@ type SetKeyQuotaResult struct {
 	ValidFrom     time.Time        `json:"valid_from"`
 }
 
-type KeyQuotaView = SetKeyQuotaResult
+// KeyQuotaView is the read projection returned by GetKeyQuota.
+// UsedUSD is settled + reserved consumed in the current window (0 when no window exists).
+// RemainingUSD is LimitUSD - UsedUSD; nil when LimitUSD is zero (unlimited).
+type KeyQuotaView struct {
+	APIKeyID      int64            `json:"api_key_id"`
+	PolicyID      int64            `json:"policy_id"`
+	LimitUSD      decimal.Decimal  `json:"limit_usd"`
+	ScopeKind     quota.ScopeKind  `json:"scope_kind"`
+	ScopeID       string           `json:"scope_id"`
+	Metric        quota.Metric     `json:"metric"`
+	WindowKind    quota.WindowKind `json:"window_kind"`
+	WindowSeconds int32            `json:"window_seconds"`
+	Mode          quota.Mode       `json:"mode"`
+	ValidFrom     time.Time        `json:"valid_from"`
+	// KEY-007: additive usage fields
+	UsedUSD      decimal.Decimal  `json:"used_usd"`
+	RemainingUSD *decimal.Decimal `json:"remaining_usd,omitempty"`
+}
 
 type SetKeyGroupRequest struct {
 	TenantID  int64
@@ -67,6 +84,22 @@ type SetKeyIPAllowlistResult struct {
 }
 
 type KeyIPAllowlistView = SetKeyIPAllowlistResult
+
+// KEY-016: IP blacklist types (parallel to allowlist)
+type SetKeyIPBlacklistRequest struct {
+	TenantID    int64
+	UserID      int64
+	APIKeyID    int64
+	IPBlacklist []string
+	RequestID   string
+}
+
+type SetKeyIPBlacklistResult struct {
+	APIKeyID    int64    `json:"api_key_id"`
+	IPBlacklist []string `json:"ip_blacklist"`
+}
+
+type KeyIPBlacklistView = SetKeyIPBlacklistResult
 
 type SetKeyModelAllowlistRequest struct {
 	TenantID      int64

@@ -4503,6 +4503,38 @@ paths:
         '404':
           description: 不存在或不归当前用户 (响应不区分这两种,防 ID 枚举)。
         '503': { $ref: '#/components/responses/ServiceBusy' }
+    patch:
+      tags: [user-api-keys]
+      summary: Partially update name and/or status of one of the authenticated user's API keys
+      operationId: patchUserAPIKey
+      x-huakai-spec-source:
+        - backend/internal/userkeyhttp/handlers.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 128 }
+                status: { type: string, enum: [active, revoked] }
+      responses:
+        '200':
+          description: Updated api_key fields. Only provided fields are changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_key_id: { type: integer, format: int64 }
+                  name: { type: string }
+                  status: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/api-keys/batch-revoke:
     post:
@@ -4681,6 +4713,65 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/UserAPIKeyIPAllowlistResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/api-keys/{id}/ip-blacklist:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [user-api-key-controls]
+      summary: Read the authenticated user's IP blacklist for one API key
+      operationId: getUserAPIKeyIPBlacklist
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/ip_blacklist_handlers.go
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Blacklisted IP ranges for this key. Empty means no blacklist restriction.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_key_id: { type: integer, format: int64 }
+                  ip_blacklist: { type: array, items: { type: string } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [user-api-key-controls]
+      summary: Set or clear the authenticated user's IP blacklist for one API key
+      operationId: setUserAPIKeyIPBlacklist
+      x-huakai-spec-source:
+        - backend/internal/userkeycontrolshttp/ip_blacklist_handlers.go
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ip_blacklist: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: IP blacklist updated. Empty or omitted ip_blacklist clears the restriction.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_key_id: { type: integer, format: int64 }
+                  ip_blacklist: { type: array, items: { type: string } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }

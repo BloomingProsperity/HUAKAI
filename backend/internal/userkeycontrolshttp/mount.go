@@ -17,6 +17,9 @@ type ControlsService interface {
 	GetKeyIPAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyIPAllowlistView, error)
 	SetKeyModelAllowlist(context.Context, userkeycontrols.SetKeyModelAllowlistRequest) (userkeycontrols.SetKeyModelAllowlistResult, error)
 	GetKeyModelAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyModelAllowlistView, error)
+	// KEY-016: IP blacklist (parallel to allowlist)
+	SetKeyIPBlacklist(context.Context, userkeycontrols.SetKeyIPBlacklistRequest) (userkeycontrols.SetKeyIPBlacklistResult, error)
+	GetKeyIPBlacklist(context.Context, int64, int64, int64) (userkeycontrols.KeyIPBlacklistView, error)
 }
 
 type Deps struct {
@@ -30,6 +33,8 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/{id}/group", newGetGroupHandler(d))
 	r.Put("/{id}/ip-allowlist", newSetIPAllowlistHandler(d))
 	r.Get("/{id}/ip-allowlist", newGetIPAllowlistHandler(d))
+	r.Put("/{id}/ip-blacklist", newSetIPBlacklistHandler(d))
+	r.Get("/{id}/ip-blacklist", newGetIPBlacklistHandler(d))
 	r.Put("/{id}/model-allowlist", newSetModelAllowlistHandler(d))
 	r.Get("/{id}/model-allowlist", newGetModelAllowlistHandler(d))
 }

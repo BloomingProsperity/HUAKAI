@@ -6,6 +6,7 @@ var (
 	ErrInvalidQuota          = errors.New("userkeycontrols: quota invalid")
 	ErrInvalidGroup          = errors.New("userkeycontrols: group invalid")
 	ErrInvalidIPAllowlist    = errors.New("userkeycontrols: ip allowlist invalid")
+	ErrInvalidIPBlacklist    = errors.New("userkeycontrols: ip blacklist invalid")
 	ErrInvalidModelAllowlist = errors.New("userkeycontrols: model allowlist invalid")
 	ErrKeyNotFound           = errors.New("userkeycontrols: api_key not found for owner")
 	ErrQuotaPolicyNotFound   = errors.New("userkeycontrols: api_key quota policy not found")

@@ -57,6 +57,7 @@ SELECT
     ak.status        AS key_status,
     ak.expires_at,
     ak.ip_allowlist,
+    ak.ip_blacklist,
     ak.allowed_models,
     u.status         AS user_status,
     u.user_group     AS user_group,
@@ -84,6 +85,7 @@ type LookupAPIKeysByPrefixRow struct {
 	KeyStatus     string             `db:"key_status" json:"key_status"`
 	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 	IpAllowlist   *string            `db:"ip_allowlist" json:"ip_allowlist"`
+	IpBlacklist   *string            `db:"ip_blacklist" json:"ip_blacklist"`
 	AllowedModels *string            `db:"allowed_models" json:"allowed_models"`
 	UserStatus    string             `db:"user_status" json:"user_status"`
 	UserGroup     string             `db:"user_group" json:"user_group"`
@@ -124,6 +126,7 @@ func (q *Queries) LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) (
 			&i.KeyStatus,
 			&i.ExpiresAt,
 			&i.IpAllowlist,
+			&i.IpBlacklist,
 			&i.AllowedModels,
 			&i.UserStatus,
 			&i.UserGroup,

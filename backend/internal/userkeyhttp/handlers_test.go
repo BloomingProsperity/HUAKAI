@@ -47,6 +47,10 @@ func (s *stubService) Get(ctx context.Context, tenantID, userID, apiKeyID int64)
 	s.getCalls = append(s.getCalls, struct{ tenantID, userID, apiKeyID int64 }{tenantID, userID, apiKeyID})
 	return s.getReturn, s.getErr
 }
+func (s *stubService) Patch(ctx context.Context, req userkey.PatchRequest) (userkey.PatchResult, error) {
+	return userkey.PatchResult{}, nil
+}
+
 func (s *stubService) Revoke(ctx context.Context, req userkey.RevokeRequest) (userkey.RevokeResult, error) {
 	s.revokeCalls = append(s.revokeCalls, req)
 	if s.revokeErrByID != nil {
