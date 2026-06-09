@@ -193,8 +193,12 @@ func TestSettleCompletion_GroupRatioDiscountsReserveAndActualCost(t *testing.T) 
 func TestSettleCompletion_CacheOverrideScalesOnlyCacheCosts(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	// gpt-4o is a cache-inclusive provider: prompt_tokens (InputTokens) already
+	// includes the cache_read + cache_creation tokens. Billing subtracts them from
+	// the input bucket (non-cached = 20-7-5 = 8) so cached tokens are priced once,
+	// not twice (input rate + cache rate). See billingUsageForCacheConvention.
 	usage := proto.CanonicalUsage{
-		InputTokens:              2,
+		InputTokens:              20,
 		OutputTokens:             3,
 		CacheCreationInputTokens: 5,
 		CacheReadInputTokens:     7,
@@ -222,7 +226,7 @@ func TestSettleCompletion_CacheOverrideScalesOnlyCacheCosts(t *testing.T) {
 	if len(officialSettler.calls) != 1 {
 		t.Fatalf("official settle calls=%d want 1", len(officialSettler.calls))
 	}
-	assertDecimalEqual(t, "official ActualCost", officialSettler.calls[0].ActualCost, decimal.RequireFromString("0.027"))
+	assertDecimalEqual(t, "official ActualCost", officialSettler.calls[0].ActualCost, decimal.RequireFromString("0.033"))
 	assertDecimalEqual(t, "official CacheCreationCost", officialSettler.calls[0].Draft.CacheCreationCost, decimal.RequireFromString("0.005"))
 	assertDecimalEqual(t, "official CacheReadCost", officialSettler.calls[0].Draft.CacheReadCost, decimal.RequireFromString("0.014"))
 
@@ -251,8 +255,8 @@ func TestSettleCompletion_CacheOverrideScalesOnlyCacheCosts(t *testing.T) {
 	if overrideResolver.lastTenantID != 7 || overrideResolver.lastModel != "gpt-4o" {
 		t.Fatalf("cache override resolver saw tenant/model=%d/%q want 7/gpt-4o", overrideResolver.lastTenantID, overrideResolver.lastModel)
 	}
-	assertDecimalEqual(t, "override ActualCost", overrideSettler.calls[0].ActualCost, decimal.RequireFromString("0.046"))
-	assertDecimalEqual(t, "override Draft.ActualCost", overrideSettler.calls[0].Draft.ActualCost, decimal.RequireFromString("0.046"))
+	assertDecimalEqual(t, "override ActualCost", overrideSettler.calls[0].ActualCost, decimal.RequireFromString("0.052"))
+	assertDecimalEqual(t, "override Draft.ActualCost", overrideSettler.calls[0].Draft.ActualCost, decimal.RequireFromString("0.052"))
 	assertDecimalEqual(t, "override CacheCreationCost", overrideSettler.calls[0].Draft.CacheCreationCost, decimal.RequireFromString("0.010"))
 	assertDecimalEqual(t, "override CacheReadCost", overrideSettler.calls[0].Draft.CacheReadCost, decimal.RequireFromString("0.028"))
 
