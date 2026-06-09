@@ -48,7 +48,7 @@ WHERE ch.enabled = true
   AND ch.deleted_at IS NULL
   AND pa.enabled = true
   AND pa.deleted_at IS NULL
-  AND pa.health_state IN ('operational', 'degraded')
+  AND pa.health_state = 'healthy'
   AND pa.credential_state IN ('valid', 'refreshing_with_grace')
   AND ac.deleted_at IS NULL
   AND ac.state IN ('active', 'refreshing_with_grace')
