@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
+	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
 
 func TestSettleCompletion_RateTableMiss_FailsClosed(t *testing.T) {
@@ -1018,4 +1019,151 @@ func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) (decim
 		return decimal.NewFromInt(1), nil
 	}
 	return s.ratio, nil
+}
+
+// ---------------------------------------------------------------------------
+// NAPI-BILLING-01 Stage A discriminating tests
+// ---------------------------------------------------------------------------
+
+// TestToolSurcharge_EmptyTableByteIdentical verifies default-off: when
+// ToolPricingTable is nil, the Total is byte-identical to the no-surcharge
+// result even if ToolCallCounts are non-zero.
+//
+// MUTATION: if the applyToolCallSurcharge call site is removed from
+// completionCost(), this test still passes (both paths skip surcharge).
+// The mutation guard is TestToolSurcharge_ConfiguredFires below.
+func TestToolSurcharge_EmptyTableByteIdentical(t *testing.T) {
+	ex := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables: &rateTableSourceStub{table: billing.RateTable{
+				Version:     "test-policy",
+				PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+			}},
+			BillingPolicyVersion: "test-policy",
+			ToolPricingTable:     nil, // default-off
+		},
+		ident:           auth.Identity{TenantID: 7, APIKeyID: 11},
+		req:             chatRequest{Model: "gpt-4o"},
+		upstreamModelID: "gpt-4o",
+		cacheVendor:     "openai",
+	}
+
+	// usage with non-zero token cost + non-zero tool calls
+	usage := completionUsageForCost{
+		InputTokens:  100,
+		OutputTokens: 200,
+		ToolCallCounts: toolpricing.ToolCallCounts{
+			WebSearch: 5,
+		},
+	}
+
+	// baseline: compute cost without any tool pricing
+	baseEx := &chatExecution{
+		ctx: ex.ctx,
+		d: ChatHandlerDeps{
+			RateTables:           ex.d.RateTables,
+			BillingPolicyVersion: ex.d.BillingPolicyVersion,
+			ToolPricingTable:     nil,
+		},
+		ident:           ex.ident,
+		req:             ex.req,
+		upstreamModelID: ex.upstreamModelID,
+		cacheVendor:     ex.cacheVendor,
+	}
+	baselineUsage := completionUsageForCost{
+		InputTokens:  100,
+		OutputTokens: 200,
+		// no tool counts
+	}
+
+	got, err := ex.completionCost(usage)
+	if err != nil {
+		t.Fatalf("completionCost error: %v", err)
+	}
+	want, err := baseEx.completionCost(baselineUsage)
+	if err != nil {
+		t.Fatalf("baseline completionCost error: %v", err)
+	}
+
+	if !got.Total.Equal(want.Total) {
+		t.Fatalf("nil ToolPricingTable: Total=%s want byte-identical %s (default-off violated)", got.Total, want.Total)
+	}
+}
+
+// TestToolSurcharge_ConfiguredFires verifies that when a ToolPricingTable is
+// configured for (tenant, model) and WebSearch counts are non-zero, the
+// surcharge is correctly added to Total.
+//
+// Formula: tokenCost + (WebSearchPer1000/1000 * count * groupRatio)
+//
+//	= tokenCost + (10.0/1000 * 3 * 1.0) = tokenCost + 0.03
+//
+// MUTATION GUARD: if the applyToolCallSurcharge call site in completionCost()
+// is removed, Total stays at tokenCost (no surcharge added) => this test RED.
+// This is the primary discriminating test for Stage A wiring.
+func TestToolSurcharge_ConfiguredFires(t *testing.T) {
+	priceTable := toolpricing.Table{}
+	priceTable.Set(7, "gpt-4o", toolpricing.ToolPrices{
+		WebSearchPer1000: decimal.RequireFromString("10"),
+	})
+
+	ex := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables: &rateTableSourceStub{table: billing.RateTable{
+				Version:     "test-policy",
+				PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+			}},
+			BillingPolicyVersion: "test-policy",
+			ToolPricingTable:     priceTable,
+		},
+		ident:           auth.Identity{TenantID: 7, APIKeyID: 11},
+		req:             chatRequest{Model: "gpt-4o"},
+		upstreamModelID: "gpt-4o",
+		cacheVendor:     "openai",
+	}
+
+	tokenOnlyUsage := completionUsageForCost{
+		InputTokens:  100,
+		OutputTokens: 200,
+	}
+	tokenOnlyCost, err := (&chatExecution{
+		ctx: ex.ctx,
+		d: ChatHandlerDeps{
+			RateTables:           ex.d.RateTables,
+			BillingPolicyVersion: ex.d.BillingPolicyVersion,
+			ToolPricingTable:     nil,
+		},
+		ident:           ex.ident,
+		req:             ex.req,
+		upstreamModelID: ex.upstreamModelID,
+		cacheVendor:     ex.cacheVendor,
+	}).completionCost(tokenOnlyUsage)
+	if err != nil {
+		t.Fatalf("token-only cost error: %v", err)
+	}
+
+	usage := completionUsageForCost{
+		InputTokens:  100,
+		OutputTokens: 200,
+		ToolCallCounts: toolpricing.ToolCallCounts{
+			WebSearch: 3,
+		},
+	}
+
+	got, err := ex.completionCost(usage)
+	if err != nil {
+		t.Fatalf("completionCost with surcharge error: %v", err)
+	}
+
+	// Expected surcharge: 10.0/1000 * 3 * groupRatio(1.0) = 0.03
+	// groupRatio defaults to 1.0 (no PricingRatioResolver configured => ratio 0 => treated as 1)
+	expectedSurcharge := decimal.RequireFromString("0.03")
+	wantTotal := tokenOnlyCost.Total.Add(expectedSurcharge)
+
+	if !got.Total.Equal(wantTotal) {
+		t.Fatalf("Total=%s want tokenCost(%s) + surcharge(%s) = %s MUTATION: removing applyToolCallSurcharge call site => Total stays at tokenCost => RED",
+			got.Total, tokenOnlyCost.Total, expectedSurcharge, wantTotal)
+	}
 }

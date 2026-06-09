@@ -42,6 +42,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/warmupintercept"
 )
 
@@ -121,6 +122,11 @@ type ChatHandlerDeps struct {
 
 	// CacheScope 决定 L2 缓存键 principal 隔离粒度(tenant|apikey|user); 空 → "apikey"。
 	CacheScope string
+
+	// ToolPricingTable holds the per-(tenant, model) tool-call surcharge price
+	// table (NAPI-BILLING-01 Stage A). nil = default-off: no surcharge is added
+	// regardless of tool call counts. Configure via runtime settings to enable.
+	ToolPricingTable toolpricing.Table
 }
 
 type channelHealthRecorder interface {

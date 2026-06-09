@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
 
 var errCompletionPricingUnavailable = errors.New("gatewayhttp: pricing unavailable")
@@ -26,6 +27,22 @@ type completionUsageForCost struct {
 	CacheCreation5mTokens int
 	CacheCreation1hTokens int
 	CacheReadTokens       int
+
+	// ToolCallCounts holds built-in tool call counts for surcharge billing.
+	// Defaults to zero (no surcharge) when not populated.
+	//
+	// TODO(NAPI-BILLING-01): wire real counts from upstream response usage.
+	// Provider-specific locations where tool-call counts are exposed:
+	//   - OpenAI chat/completions: response.usage has no per-tool call count
+	//     field today; OpenAI bills via usage_details once GA.
+	//   - OpenAI Responses API: response.usage.input_tokens_details may carry
+	//     tool call counts in future versions.
+	//   - Anthropic Messages API: server_tool_use block count can be derived
+	//     from response.content blocks of type="server_tool_use"; no dedicated
+	//     usage field exists today.
+	// Until a stable upstream signal is available, counts default to zero,
+	// which means zero surcharge — safe conservative billing.
+	ToolCallCounts toolpricing.ToolCallCounts
 }
 
 type completionRateVector struct {
@@ -113,6 +130,7 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 		return completionCostBreakdown{}, pricingUnavailable(err.Error())
 	}
 	result = ex.applyCacheCostOverride(result)
+	result = ex.applyToolCallSurcharge(result, usage.ToolCallCounts, groupRatio)
 	if ratioPendingReconciliation {
 		result.PendingReconciliation = true
 		result.CostSnapshot = snapshotWithPricingRatioPending(result.CostSnapshot)
@@ -137,6 +155,18 @@ func (ex *chatExecution) applyCacheCostOverride(result pricingeval.Result) prici
 		return result
 	}
 	return pricingeval.ApplyCacheCostOverride(result, override)
+}
+
+// applyToolCallSurcharge adds the built-in tool-call surcharge to result when a
+// ToolPricingTable is configured for this (tenant, model) pair. Returns result
+// unmodified (default-off) when ToolPricingTable is nil or the lookup returns
+// zero prices.
+func (ex *chatExecution) applyToolCallSurcharge(result pricingeval.Result, counts toolpricing.ToolCallCounts, groupRatio decimal.Decimal) pricingeval.Result {
+	if ex.d.ToolPricingTable == nil {
+		return result
+	}
+	prices := ex.d.ToolPricingTable.Lookup(ex.ident.TenantID, ex.req.Model)
+	return pricingeval.ApplyToolCallSurcharge(result, prices, counts, groupRatio)
 }
 
 func (ex *chatExecution) groupPricingRatio() (decimal.Decimal, bool) {
@@ -235,6 +265,11 @@ func usageFromBufferedEnvelope(env *proto.HCSF) completionUsageForCost {
 		CacheCreation5mTokens: usage.CacheCreationInputTokens5m,
 		CacheCreation1hTokens: usage.CacheCreationInputTokens1h,
 		CacheReadTokens:       usage.CacheReadInputTokens,
+		ToolCallCounts: toolpricing.ToolCallCounts{
+			WebSearch:       int64(usage.WebSearchCalls),
+			FileSearch:      int64(usage.FileSearchCalls),
+			ImageGeneration: int64(usage.ImageGenerationCalls),
+		},
 	}
 }
 
@@ -246,6 +281,11 @@ func usageFromDraft(draft gateway.UsageRecordDraft) completionUsageForCost {
 		CacheCreation5mTokens: draft.CacheCreation5mTokens,
 		CacheCreation1hTokens: draft.CacheCreation1hTokens,
 		CacheReadTokens:       draft.CacheReadTokens,
+		ToolCallCounts: toolpricing.ToolCallCounts{
+			WebSearch:       int64(draft.WebSearchCalls),
+			FileSearch:      int64(draft.FileSearchCalls),
+			ImageGeneration: int64(draft.ImageGenerationCalls),
+		},
 	}
 }
 
@@ -257,6 +297,7 @@ func pricingUsage(usage completionUsageForCost) pricingeval.Usage {
 		CacheCreation5mTokens: int64(usage.CacheCreation5mTokens),
 		CacheCreation1hTokens: int64(usage.CacheCreation1hTokens),
 		CacheReadTokens:       int64(usage.CacheReadTokens),
+		ToolCallCounts:        usage.ToolCallCounts,
 	}
 }
 

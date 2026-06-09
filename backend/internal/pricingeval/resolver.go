@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billingdsl"
+	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
 
 var microUSDDivisor = decimal.NewFromInt(1_000_000)
@@ -23,6 +24,11 @@ type Usage struct {
 	CacheCreation1hTokens int64
 	CacheReadTokens       int64
 	BillableUnits         decimal.Decimal
+
+	// ToolCallCounts holds the number of server-side built-in tool calls
+	// (web_search, file_search, image_generation). Defaults to zero.
+	// Zero counts = zero surcharge = Total byte-identical to token-only billing.
+	ToolCallCounts toolpricing.ToolCallCounts
 }
 
 type FlatRateFallback struct {

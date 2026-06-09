@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -188,7 +189,23 @@ func (s *Adapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope,
 		state.CurrentBlockIndex = env.Index
 		state.BlocksInProgress[env.Index] = true
 		block, losses := canonicalBlock(env.ContentBlock)
-		return []proto.CanonicalEvent{{Type: "content_block_start", Index: env.Index, ContentBlock: &block}}, losses, nil
+		ev := proto.CanonicalEvent{Type: "content_block_start", Index: env.Index, ContentBlock: &block}
+		// Stage B: emit a CanonicalUsage with the server tool call count so the
+		// UsageAccumulator can accumulate it (+=). ONLY server_tool_use is billable.
+		if env.ContentBlock.Type == "server_tool_use" {
+			var svcUsage proto.CanonicalUsage
+			switch {
+			case strings.Contains(env.ContentBlock.Name, "web_search"):
+				svcUsage.WebSearchCalls = 1
+			case strings.Contains(env.ContentBlock.Name, "file_search") || strings.Contains(env.ContentBlock.Name, "document_search"):
+				svcUsage.FileSearchCalls = 1
+				// Unknown server tool names: not bucketed — avoid mis-billing.
+			}
+			if svcUsage.WebSearchCalls > 0 || svcUsage.FileSearchCalls > 0 {
+				ev.Usage = &svcUsage
+			}
+		}
+		return []proto.CanonicalEvent{ev}, losses, nil
 	case "content_block_delta":
 		if anthropicDeltaDelivered(env.Delta) {
 			state.DeliveredChunkCount++
@@ -340,6 +357,25 @@ func anthropicResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, 
 		block, blockLosses := anthropicBufferedBlockToCanonical(i, rawBlock)
 		losses = append(losses, blockLosses...)
 		out.Content = append(out.Content, block)
+	}
+	// Stage B: count server-side built-in tool invocations for per-call surcharge.
+	// ONLY type=="server_tool_use" is billable; type=="tool_use" is a free client
+	// function-call and MUST NOT be counted (over-charge prevention).
+	for _, rawBlock := range resp.Content {
+		var blk struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}
+		if err2 := json.Unmarshal(rawBlock, &blk); err2 != nil || blk.Type != "server_tool_use" {
+			continue
+		}
+		switch {
+		case strings.Contains(blk.Name, "web_search"):
+			out.Usage.WebSearchCalls++
+		case strings.Contains(blk.Name, "file_search") || strings.Contains(blk.Name, "document_search"):
+			out.Usage.FileSearchCalls++
+			// Unknown server tool names: intentionally not bucketed to avoid mis-billing.
+		}
 	}
 	return out, losses, nil
 }

@@ -128,6 +128,17 @@ type CanonicalUsage struct {
 	// 它们是 CacheCreationInputTokens 的分项，不参与 TotalTokens 计算。
 	CacheCreationInputTokens5m int `json:"cache_creation_input_tokens_5m,omitempty"`
 	CacheCreationInputTokens1h int `json:"cache_creation_input_tokens_1h,omitempty"`
+
+	// WebSearchCalls, FileSearchCalls, ImageGenerationCalls are billable
+	// server-side built-in tool-call COUNTS (per call), populated by upstream
+	// response parse in a later slice (Stage B+).
+	//
+	// IMPORTANT: these are call counts, NOT tokens. They MUST NOT enter the
+	// UsageHasValue / token cross-check helper — doing so would cause spurious
+	// usage-nonzero signals for token-less tool calls and break reconciliation.
+	WebSearchCalls       int `json:"web_search_calls,omitempty"`
+	FileSearchCalls      int `json:"file_search_calls,omitempty"`
+	ImageGenerationCalls int `json:"image_generation_calls,omitempty"`
 }
 
 func UsageHasValue(usage CanonicalUsage) bool {
