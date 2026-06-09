@@ -218,7 +218,12 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	if err != nil {
 		return User{}, err
 	}
-	return s.Store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
+	linkedUser, err := s.Store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
+	if err != nil {
+		return User{}, err
+	}
+	s.issueSignupCredits(ctx, linkedUser.TenantID, linkedUser.ID, false)
+	return linkedUser, nil
 }
 
 type socialIdentityUnlinkStore interface {
