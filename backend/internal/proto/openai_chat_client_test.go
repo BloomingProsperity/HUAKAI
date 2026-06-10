@@ -744,3 +744,37 @@ func assertRawJSONEqual(t *testing.T, got json.RawMessage, want string) {
 		t.Fatalf("JSON mismatch got=%s want=%s", gotBuf.String(), wantBuf.String())
 	}
 }
+
+// MUTATION: chat 解析器透传清单去掉 prompt_cache_key/safety_identifier → 红
+// (DM-13:HCSF 重组丢 prompt_cache_key 直接拉低上游前缀缓存命中率;
+// mergeRequestPassthrough 回放侧已有,损失点只在解析侧清单)。
+func TestOpenAIChatRequestPassthroughPromptCacheKey(t *testing.T) {
+	raw := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],` +
+		`"prompt_cache_key":"pck-1","prompt_cache_retention":"24h","safety_identifier":"si-9"}`)
+	env, _, err := (&OpenAIChatClient{}).RequestToCanonical(newTestOpenAIChatCtx(t), raw)
+	if err != nil {
+		t.Fatalf("RequestToCanonical: %v", err)
+	}
+	if env.Passthrough == nil {
+		t.Fatal("Passthrough 应非空")
+	}
+	for _, field := range []string{"prompt_cache_key", "prompt_cache_retention", "safety_identifier"} {
+		if _, ok := env.Passthrough.Extra[field]; !ok {
+			t.Fatalf("Passthrough.Extra 缺 %s: %v", field, env.Passthrough.Extra)
+		}
+	}
+	if string(env.Passthrough.Extra["prompt_cache_key"]) != `"pck-1"` {
+		t.Fatalf("prompt_cache_key 值变形: %s", env.Passthrough.Extra["prompt_cache_key"])
+	}
+	// 未发送的请求不应凭空多出字段
+	plain := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+	envPlain, _, err := (&OpenAIChatClient{}).RequestToCanonical(newTestOpenAIChatCtx(t), plain)
+	if err != nil {
+		t.Fatalf("RequestToCanonical(plain): %v", err)
+	}
+	if envPlain.Passthrough != nil {
+		if _, ok := envPlain.Passthrough.Extra["prompt_cache_key"]; ok {
+			t.Fatal("未发送 prompt_cache_key 不应出现")
+		}
+	}
+}

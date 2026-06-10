@@ -87,6 +87,15 @@ func (o *OpenAIChatClient) RequestToCanonical(ctx context.Context, raw []byte) (
 
 	var losses []ProtocolLossEntry
 
+	// DM-13:prompt cache 路由键与滥用归因标识透传——OpenAI chat/responses
+	// 双族都识别;HCSF 重组丢 prompt_cache_key 会直接拉低上游前缀缓存命中率。
+	// attachRequestPassthroughFields 只透传 raw 里实际存在的字段。
+	attachRequestPassthroughFields(env, raw,
+		"prompt_cache_key",
+		"prompt_cache_retention",
+		"safety_identifier",
+	)
+
 	if len(req.ResponseFormat) > 0 {
 		losses = append(losses, applyOpenAIChatResponseFormat(env, req.ResponseFormat)...)
 	}
