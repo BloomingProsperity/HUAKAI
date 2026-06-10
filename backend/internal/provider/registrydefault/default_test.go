@@ -40,6 +40,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolHunyuanChat,
 		ProtocolMinimaxChat,
 		ProtocolCohereChat,
+		ProtocolOllamaChat,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -110,6 +111,8 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolStepChat:          "step",
 		ProtocolHunyuanChat:       "hunyuan",
 		ProtocolMinimaxChat:       "minimax",
+		ProtocolCohereChat:        "cohere",
+		ProtocolOllamaChat:        "ollama",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -149,6 +152,8 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 		{ProtocolStepChat, "step", "https://api.stepfun.com/v1/chat/completions"},
 		{ProtocolHunyuanChat, "hunyuan", "https://api.hunyuan.cloud.tencent.com/v1/chat/completions"},
 		{ProtocolMinimaxChat, "minimax", "https://api.minimax.io/v1/chat/completions"},
+		{ProtocolCohereChat, "cohere", "https://api.cohere.ai/compatibility/v1/chat/completions"},
+		{ProtocolOllamaChat, "ollama", "http://127.0.0.1:11434/v1/chat/completions"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.protocol, func(t *testing.T) {

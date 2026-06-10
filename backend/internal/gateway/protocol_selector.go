@@ -125,6 +125,7 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("hunyuan_chat", &openai.Adapter{})
 	r.MustRegister("minimax_chat", &openai.Adapter{})
 	r.MustRegister("cohere_chat", &openai.Adapter{})
+	r.MustRegister("ollama_chat", &openai.Adapter{})
 	// 订阅 session 反转路径。响应 SSE 形态分两类：
 	//   - copilot_session:               OpenAI Chat Completions 兼容 → openai.Adapter
 	//   - gemini_advanced_session:       Google 内部 SSE 形态，近似 Gemini 官方 → gemini.Adapter

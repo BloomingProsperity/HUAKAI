@@ -220,7 +220,7 @@ func TestOpenAICompatFamiliesResolveInbound(t *testing.T) {
 		"deepseek_chat", "mistral_chat", "groqcloud_chat", "together_chat",
 		"perplexity_chat", "fireworks_chat", "kimi_chat", "qwen_chat",
 		"glm_chat", "yi_chat", "baichuan_chat", "doubao_chat", "ernie_chat",
-		"step_chat", "hunyuan_chat", "minimax_chat", "cohere_chat",
+		"step_chat", "hunyuan_chat", "minimax_chat", "cohere_chat", "ollama_chat",
 		"grok_chat", "openrouter_chat",
 	}
 	for _, f := range families {
