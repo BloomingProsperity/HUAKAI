@@ -784,10 +784,11 @@ func terminalErrorFrame(clientProtocol string) [][]byte {
 		// Gemini streamGenerateContent 错误体走 data: 行,无具名 event,无 [DONE]。
 		return [][]byte{proto.EmitSSEDataLine([]byte(fmt.Sprintf(`{"error":{"code":502,"status":"UNAVAILABLE","message":%q}}`, msg)))}
 	default:
-		// openai_chat(及空/未知):裸 data: 行(严格 chat SDK 只认 data:)+ data: [DONE] 收尾。
+		// openai_chat(及空/未知):裸 data: 行(严格 chat SDK 只认 data:)。不发 data: [DONE]
+		// ——[DONE] 是"成功完成"标记,出错时发它会让截断流伪装成正常完成;OpenAI 真实
+		// 错误流也是发 error chunk 后流结束、不发 [DONE]。客户端见 error chunk 即抛 APIError。
 		return [][]byte{
 			proto.EmitSSEDataLine([]byte(fmt.Sprintf(`{"error":{"message":%q,"type":%q,"code":%q}}`, msg, code, code))),
-			proto.EmitSSEDone(),
 		}
 	}
 }

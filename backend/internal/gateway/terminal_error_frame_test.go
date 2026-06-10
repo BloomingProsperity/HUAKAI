@@ -45,11 +45,14 @@ func TestTerminalErrorFrame_PerProtocolFormat(t *testing.T) {
 	// openai_chat（含空/未知默认）：裸 data: 行 + [DONE]，无 event: error
 	for _, cp := range []string{"openai_chat", "", "something_unknown"} {
 		body := join(terminalErrorFrame(cp))
-		if !strings.Contains(body, `data: {"error"`) || !strings.Contains(body, "[DONE]") {
-			t.Fatalf("openai_chat(%q) 帧应有 data: error + [DONE]: %q", cp, body)
+		if !strings.Contains(body, `data: {"error"`) {
+			t.Fatalf("openai_chat(%q) 帧应有 data: error: %q", cp, body)
 		}
 		if strings.Contains(body, "event: error") {
 			t.Fatalf("openai_chat(%q) 不应发 event: error(严格 SDK 忽略): %q", cp, body)
+		}
+		if strings.Contains(body, "[DONE]") {
+			t.Fatalf("openai_chat(%q) 错误帧不应跟 [DONE](避免截断流伪装成正常完成): %q", cp, body)
 		}
 		if !strings.Contains(body, `"upstream_error"`) {
 			t.Fatalf("openai_chat(%q) 缺固定 upstream_error code: %q", cp, body)
@@ -84,7 +87,7 @@ func TestForward_DeliveredThenTimeout_EmitsProtocolTerminalFrame(t *testing.T) {
 		wantContains    []string
 		wantNotContains []string
 	}{
-		{"openai_chat", []string{`data: {"error"`, "[DONE]", "upstream_error"}, []string{"event: error"}},
+		{"openai_chat", []string{`data: {"error"`, "upstream_error"}, []string{"event: error", "[DONE]"}},
 		{"anthropic_messages", []string{"event: error", "upstream_error"}, nil},
 		{"gemini", []string{`data: {"error"`, "UNAVAILABLE"}, []string{"event: error", "[DONE]"}},
 	}
