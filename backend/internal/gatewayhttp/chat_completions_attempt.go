@@ -1,9 +1,11 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -281,6 +284,7 @@ func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
 		}
 		out = rewritten
 	}
+	out = ex.stripCrossAccountResponseChain(out)
 	override, stripKeys := ex.activeBodyParamGate()
 	if len(override) == 0 && len(stripKeys) == 0 {
 		return out
@@ -456,4 +460,29 @@ func (w *deliveryTracker) statusCode() int {
 		return http.StatusOK
 	}
 	return w.status
+}
+
+// stripCrossAccountResponseChain(DM-07):responses 协议的 previous_response_id
+// 指向具体上游账号的 response 存储。sticky 未命中换号(绑定账号被健康门/
+// 限流/重试排除挡掉)时,链 ID 跨账号原样转发上游必 404/400;剥掉它让请求
+// 降级为无链续写成功,而非确定性失败。无 binding(短 prompt/TTL 过期)时
+// 无法证明跨账号,保守不动(fail-open,对齐参照 sub2api 9a0e4398)。
+func (ex *chatExecution) stripCrossAccountResponseChain(body []byte) []byte {
+	if ex == nil || ex.clientProtocol != proto.ClientProtocolOpenAIResponses {
+		return body
+	}
+	if ex.selRes == nil || ex.selRes.StickyState != pool.StickyStateMiss {
+		return body
+	}
+	stripped, err := bodyparamgate.StripBodyParams(body, []string{"previous_response_id"})
+	if err != nil {
+		return body
+	}
+	if !bytes.Equal(stripped, body) {
+		// 不记 body 内容(CMB-5),只留可观测痕迹。
+		slog.InfoContext(ex.ctx, "responses previous_response_id stripped on sticky miss",
+			slog.String("request_id", ex.requestID),
+			slog.Int64("account_id", ex.accInfo.AccountID))
+	}
+	return stripped
 }

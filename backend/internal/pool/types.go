@@ -7,6 +7,16 @@ import (
 type Selector = router.Selector
 type SelectionRequest = router.SelectionRequest
 type SelectionResult = router.SelectionResult
+
+// StickyState 别名(DM-07):让 gatewayhttp 等消费方不必直接 import pool/router。
+type StickyState = router.StickyState
+
+const (
+	StickyStateNone = router.StickyStateNone
+	StickyStateHit  = router.StickyStateHit
+	StickyStateMiss = router.StickyStateMiss
+)
+
 type WaitPlan = router.WaitPlan
 
 type AccountSnapshot = router.AccountSnapshot

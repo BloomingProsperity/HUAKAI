@@ -53,12 +53,28 @@ type SelectionRequest struct {
 	UserGroup string
 }
 
+// StickyState 标记一次 Select 相对 sticky binding 的结果(DM-07)。
+type StickyState string
+
+const (
+	// StickyStateNone 无 binding(短 prompt / TTL 过期 / 首次)。
+	StickyStateNone StickyState = ""
+	// StickyStateHit 命中绑定账号。
+	StickyStateHit StickyState = "hit"
+	// StickyStateMiss 有 binding 但选了别的账号(绑定账号被健康门/限流/
+	// 重试排除集挡掉)。responses 链路据此剥 previous_response_id——
+	// 跨账号的链 ID 原样转发上游必 404/400。
+	StickyStateMiss StickyState = "miss"
+)
+
 // SelectionResult 是 Phase C 输出：已拿到的 Provider Account 或等待计划。
 type SelectionResult struct {
 	AccountID         int64
 	AcquisitionToken  uuid.UUID
 	WaitPlan          *WaitPlan
 	RoutingReasonJSON []byte
+	// StickyState 见上;只对 AccountID != 0 的结果有意义。
+	StickyState StickyState
 }
 
 // WaitPlan 描述 Layer 3 fallback 下的一次排队 admission 尝试。

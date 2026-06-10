@@ -74,7 +74,7 @@ func WithNow(fn func() time.Time) SelectorOption {
 	}
 }
 
-func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*SelectionResult, error) {
+func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res *SelectionResult, err error) {
 	reason := NewRoutingReasonBuilder(req)
 	if s == nil || s.accounts == nil {
 		return nil, ErrNoEligibleAccount
@@ -101,15 +101,39 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (*Se
 
 	routeConstrained := hasModelRoute(policy, req.RequestedModel)
 	routed := modelRoute(policy, req.RequestedModel, eligible)
+
+	// DM-07:sticky lookup 一次前置——既供 trySticky 用,也在最终结果上盖
+	// StickyState(hit/miss)。dispatch 据此判断 responses 链 ID 是否跨账号。
+	// 条件与原 trySticky 调用点完全一致,lookup 行为/错误语义零变化。
+	var stickyBoundID int64
+	if s.sticky != nil && (len(routed) > 0 || !routeConstrained) {
+		id, found, lookupErr := s.sticky.Lookup(ctx, req)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		if found {
+			stickyBoundID = id
+		}
+	}
+	defer func() {
+		if res == nil || res.AccountID == 0 || stickyBoundID == 0 {
+			return
+		}
+		if res.AccountID == stickyBoundID {
+			res.StickyState = StickyStateHit
+		} else {
+			res.StickyState = StickyStateMiss
+		}
+	}()
 	if len(routed) > 0 {
-		if res, done, err := s.trySticky(ctx, gates, req, routed, RoutingLayerStickyWithinRoute, reason); done || err != nil {
+		if res, done, err := s.trySticky(ctx, gates, req, routed, RoutingLayerStickyWithinRoute, reason, stickyBoundID); done || err != nil {
 			return res, err
 		}
 		if res, done, err := s.tryLayer(ctx, gates, req, routed, RoutingLayerRoutingAffinity, reason); done || err != nil {
 			return res, err
 		}
 	} else if !routeConstrained {
-		if res, done, err := s.trySticky(ctx, gates, req, eligible, RoutingLayerStickyStandalone, reason); done || err != nil {
+		if res, done, err := s.trySticky(ctx, gates, req, eligible, RoutingLayerStickyStandalone, reason, stickyBoundID); done || err != nil {
 			return res, err
 		}
 	}
@@ -164,16 +188,12 @@ func (s *DefaultSelector) filter(ctx context.Context, gates GateChain, accounts 
 	return out
 }
 
-func (s *DefaultSelector) trySticky(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder) (*SelectionResult, bool, error) {
-	if s.sticky == nil {
+func (s *DefaultSelector) trySticky(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder, boundID int64) (*SelectionResult, bool, error) {
+	if boundID == 0 {
 		return nil, false, nil
 	}
-	id, found, err := s.sticky.Lookup(ctx, req)
-	if err != nil || !found {
-		return nil, false, err
-	}
 	for _, candidate := range candidates {
-		if candidate.ID == id {
+		if candidate.ID == boundID {
 			return s.tryLayer(ctx, gates, req, []*AccountSnapshot{candidate}, layer, reason)
 		}
 	}
