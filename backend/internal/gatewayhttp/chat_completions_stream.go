@@ -455,10 +455,12 @@ func streamingProviderRequestBody(env *proto.HCSF, family string) ([]byte, error
 		return nil, err
 	}
 	switch family {
-	case "gemini_messages", "dify_chat":
-		// 这两族的流式开关不在顶层 stream 字段:gemini 由 endpoint 路径
-		// (streamGenerateContent)决定,dify 由 body 内 response_mode 决定
-		// (marshal 已按 StreamPlan 写入)。注 openai 形 stream:true 会污染 body。
+	case "gemini_messages", "dify_chat", "ollama_native":
+		// 这三族跳过 forceStreamingRequest:gemini 的流式开关由 endpoint 路径
+		// (streamGenerateContent)决定,dify 由 body 内 response_mode 决定,
+		// 两者注 openai 形 stream:true 即污染 body;ollama_native 的 stream
+		// 字段已由 marshal 按 StreamPlan 显式写入(再注 true 虽幂等,但 stream
+		// 字段的真相源必须唯一收敛在 marshal,禁止两处写)。
 		return body, nil
 	}
 	return forceStreamingRequest(body)
@@ -468,6 +470,11 @@ func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) 
 	if family == "dify_chat" {
 		// Dify 无 per-request 控制参数(模型/采样在 app 侧配置),openai 形
 		// controls 字段一律不可注入;被丢弃的 controls 已在 marshal 内记 loss。
+		return raw, nil
+	}
+	if family == "ollama_native" {
+		// Ollama 的采样控制已在 marshal 阶段嵌进 options{}(num_predict 等);
+		// 顶层二次注入 openai 形 max_tokens/temperature 是协议污染。
 		return raw, nil
 	}
 	var body map[string]any

@@ -10,6 +10,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/bedrock"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
 
@@ -209,6 +210,20 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 	}
 	if _, ok := difyAdapter.(*protodify.Adapter); !ok {
 		t.Errorf("dify_chat adapter 类型=%T 期望 *dify.Adapter", difyAdapter)
+	}
+
+	// ollama_native 走专用 ollama.Adapter(NDJSON 帧,无 data:/[DONE])。
+	// 抓的回归:漏注册(流式/非流式取 adapter 即失败)或误注册成 openai.Adapter
+	// (Ollama 帧解不出 choices,整流零输出)。
+	ollamaAdapter, err := r.For("ollama_native")
+	if err != nil {
+		t.Errorf("ollama_native 应已注册,err=%v", err)
+	}
+	if ollamaAdapter == nil {
+		t.Error("For(ollama_native) adapter = nil")
+	}
+	if _, ok := ollamaAdapter.(*protoollama.Adapter); !ok {
+		t.Errorf("ollama_native adapter 类型=%T 期望 *ollama.Adapter", ollamaAdapter)
 	}
 }
 

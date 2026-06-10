@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/redact"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -581,6 +582,8 @@ func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 				return &gemini.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			case *protodify.Adapter:
 				return &protodify.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+			case *protoollama.Adapter:
+				return &protoollama.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			}
 		}
 	}

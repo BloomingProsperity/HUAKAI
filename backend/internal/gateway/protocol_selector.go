@@ -10,6 +10,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/bedrock"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
 
@@ -132,6 +133,10 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("ollama_chat", &openai.Adapter{})
 	// Dify 应用 API：非 OpenAI 兼容 SSE（事件名在 data JSON 内），专用 adapter。
 	r.MustRegister("dify_chat", &protodify.Adapter{})
+	// Ollama 原生 /api/chat：NDJSON 帧（逐行裸 JSON，无 data: 前缀/[DONE]
+	// 哨兵，done:true 终帧携带 usage），专用 adapter；与 OpenAI 兼容直通的
+	// ollama_chat（上方，openai.Adapter）并存为两个独立 family。
+	r.MustRegister("ollama_native", &protoollama.Adapter{})
 	// 订阅 session 反转路径。响应 SSE 形态分两类：
 	//   - copilot_session:               OpenAI Chat Completions 兼容 → openai.Adapter
 	//   - gemini_advanced_session:       Google 内部 SSE 形态，近似 Gemini 官方 → gemini.Adapter

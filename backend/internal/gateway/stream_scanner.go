@@ -22,12 +22,15 @@
 package gateway
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"reflect"
+	"time"
 )
 
 // StreamScanner 把 io.Reader 上的字节按 wire format 切成 SSEEvent 流。
@@ -116,6 +119,55 @@ func (s *SSEStreamScanner) Scan(ctx context.Context, r io.Reader, bufferCap int)
 	return ScanSSEEvents(ctx, r, bufferCap)
 }
 
+// NDJSONStreamScanner 把 NDJSON（newline-delimited JSON）wire 切成事件流：
+// 逐行一个裸 JSON 对象，无 "data:" 前缀、无 [DONE] 哨兵、无 event: 行。
+// 每行原样作为 SSEEvent.Data 交给 proto adapter——不剥任何前缀、不识别哨兵
+//（行内出现 "data:" 字面也按 payload 原样保留）；空行跳过。
+//
+// 与 SSEStreamScanner / BedrockEventStreamScanner 的契约对齐：
+//   - honor bufferCap（bufio.Scanner.Buffer 上限），超长行 yield
+//     ErrScannerOverflow（与 ScanSSEEvents 的错误分类一致，forwarder 归类
+//     ResponseEventTooLarge）
+//   - 遵守 ctx.Done() 提前退出，yield ctx.Err()
+type NDJSONStreamScanner struct{}
+
+// Scan 实现 StreamScanner：逐行切 NDJSON 帧。
+func (s *NDJSONStreamScanner) Scan(ctx context.Context, r io.Reader, bufferCap int) iter.Seq2[SSEEvent, error] {
+	return func(yield func(SSEEvent, error) bool) {
+		capBytes := normalizeScannerCap(bufferCap)
+		scanner := bufio.NewScanner(r)
+		// bufio.Scanner 的实际 token 上限是 max(cap(buf), max):初始缓冲必须
+		// 不超过 capBytes,否则小 cap 被 64KB 初始缓冲架空、超长行不报 overflow。
+		initial := 64 * 1024
+		if capBytes < initial {
+			initial = capBytes
+		}
+		scanner.Buffer(make([]byte, initial), capBytes)
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				yield(SSEEvent{}, ctx.Err())
+				return
+			default:
+			}
+			line := bytes.TrimSpace(scanner.Bytes())
+			if len(line) == 0 {
+				continue
+			}
+			if !yield(SSEEvent{Data: bytes.Clone(line), ObservedAt: time.Now()}, nil) {
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			if errors.Is(err, bufio.ErrTooLong) {
+				yield(SSEEvent{}, ErrScannerOverflow)
+			} else {
+				yield(SSEEvent{}, err)
+			}
+		}
+	}
+}
+
 // BuildDefaultStreamScannerRegistry 构造默认 scanner 注册表。
 // 当前阶段除 bedrock_invoke 外所有 family 走 SSE；bedrock_invoke 走专用
 // BedrockEventStreamScanner（A3 atomic 实现，binary EventStream 切帧）。
@@ -145,8 +197,9 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		// 12 家 OpenAI 兼容族(国内 + cohere + ollama;均走 OpenAI 兼容 SSE)。
 		// 与 protocol_selector 双注册;漏此处=这些 family 流式请求在 forwarder
 		// Scanners.For 取 scanner 失败、投递前挂(同 23e0cb91 入站漏接同源)。
-		// 注:ollama_chat 现走兼容模式 SSE;将来原生 /api/chat adapter 落地后
-		// 改注册 NDJSON scanner(仍在两 registry 里,族集对称不变)。
+		// 注:ollama_chat 走 OpenAI 兼容端点(/v1/chat/completions)的 SSE;
+		// 原生 /api/chat 已落地为并存的独立族 ollama_native(NDJSON scanner,
+		// 单独注册在下方),本族保持 SSE 不变。
 		"kimi_chat",
 		"qwen_chat",
 		"glm_chat",
@@ -176,6 +229,11 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 	// AWS Bedrock invoke-with-response-stream 走 binary EventStream wire format
 	// （非 SSE），需 BedrockEventStreamScanner 切帧并解 chunk envelope。
 	r.MustRegister("bedrock_invoke", &BedrockEventStreamScanner{})
+
+	// Ollama 原生 /api/chat 走 NDJSON wire（逐行裸 JSON，无 data: 前缀/[DONE]
+	// 哨兵），专用 NDJSONStreamScanner；不进上面的 SSE for-range 列表。
+	// 注：与 OpenAI 兼容直通的 ollama_chat（SSE，已在上方列表）并存。
+	r.MustRegister("ollama_native", &NDJSONStreamScanner{})
 
 	return r
 }
