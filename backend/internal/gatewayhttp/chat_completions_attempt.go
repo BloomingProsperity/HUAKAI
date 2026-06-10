@@ -224,6 +224,7 @@ var retryableAttemptScopedResponseHeaders = [...]string{
 	"Trailer",
 	"Cache-Control",
 	"Connection",
+	"X-Accel-Buffering",
 	"X-HUAKAI-Cache-L2",
 	headerHUAKAIAuditLedgerID,
 	headerHUAKAIAuditLedgerDLQRef,
@@ -241,6 +242,28 @@ func clearRetryableAttemptFailureHeaders(w http.ResponseWriter) {
 		return
 	}
 	for _, header := range retryableAttemptScopedResponseHeaders {
+		w.Header().Del(header)
+	}
+}
+
+// terminalFailureResidualHeaders 是终局 JSON 错误前要清的流式残留:SSE 格式
+// 头 + 流计费状态头。与 retryableAttemptScopedResponseHeaders(重试间全清)
+// 不同,诊断/审计标记在终局保留。
+var terminalFailureResidualHeaders = [...]string{
+	"Trailer",
+	"Cache-Control",
+	"Connection",
+	"X-Accel-Buffering",
+	"X-HUAKAI-Cache-L2",
+	headerHUAKAIStreamState,
+	headerHUAKAIDeliveredTokens,
+}
+
+func clearTerminalFailureResidualHeaders(w http.ResponseWriter) {
+	if w == nil {
+		return
+	}
+	for _, header := range terminalFailureResidualHeaders {
 		w.Header().Del(header)
 	}
 }
@@ -391,6 +414,12 @@ func writeAttemptFailure(w http.ResponseWriter, failure *classifiedAttemptFailur
 	if failure == nil || failure.DeliveredToClient {
 		return
 	}
+	// DM-19:终局 JSON 错误不得携带失败流式尝试的残留头(Trailer 声明/
+	// X-Accel-Buffering/流计费状态头)——Trailer+JSON 会让严格客户端/中间层
+	// 困惑,流计费头残留把"半截尝试"的状态泄进终局错误。诊断标记
+	// (abort_failed/settle_error/forward_error)与审计头不在此列:终局错误
+	// 正要靠它们暴露故障取证。Retry-After 在清理后设置。
+	clearTerminalFailureResidualHeaders(w)
 	status := failure.ClientStatus
 	if status == 0 {
 		status = http.StatusBadGateway
