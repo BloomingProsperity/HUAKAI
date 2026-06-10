@@ -248,7 +248,7 @@ INSERT INTO provider_accounts (
     created_by_actor, last_modified_by_actor
 ) VALUES (
     $1, $2, $3, 'huakai-smoke-openai-account', 'api_key',
-    true, 'operational', 'valid', '{}'::jsonb,
+    true, 'healthy', 'valid', '{}'::jsonb,
     4, 0, 0,
     2, 8, 10,
     $4, $4

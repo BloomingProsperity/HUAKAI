@@ -111,9 +111,29 @@ func (ex *execution) tokenCost(usage audioTokenUsage) (decimal.Decimal, string, 
 	return result.Total, result.CostSnapshot, result.PendingReconciliation, nil
 }
 
+// reserve 估 token 常量:≈15 token/s 音频 ×2 安全系数;无时长时按压缩音频 ~1KB/token
+// 兜底。只影响预留 hold 大小;settle 始终按上游真实 usage 结算(attempt.go parseTokenUsage)。
+const (
+	audioReserveTokensPerSecond = 30
+	audioReserveBytesPerToken   = 1000
+)
+
 func (ex *execution) reserveTokenUsage() audioTokenUsage {
 	if len(ex.req.File.Data) > 0 {
-		return audioTokenUsage{InputTokens: len(ex.req.File.Data)}
+		// 字节≠token:此前把上传文件字节数当 token 数,25MB 文件造出 ~2600 万幻影
+		// token(约 157 USD hold,真实约几毛),mandatory 余额模式下余额充足的用户被假 402。
+		if ex.estimatedDuration.Seconds.IsPositive() {
+			tokens := int(ex.estimatedDuration.Seconds.Mul(decimal.NewFromInt(audioReserveTokensPerSecond)).Ceil().IntPart())
+			if tokens < 1 {
+				tokens = 1
+			}
+			return audioTokenUsage{InputTokens: tokens}
+		}
+		tokens := len(ex.req.File.Data) / audioReserveBytesPerToken
+		if tokens < 1 {
+			tokens = 1
+		}
+		return audioTokenUsage{InputTokens: tokens}
 	}
 	if ex.charCount > 0 {
 		return audioTokenUsage{InputTokens: ex.charCount}

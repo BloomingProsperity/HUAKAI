@@ -107,7 +107,9 @@ func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.
 }
 
 func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gateway.DispatchResult, raw []byte, attemptSeq int) bool {
-	if _, err := ex.d.Settler.Settle(ex.ctx, ex.settleRequest(ex.costSnapshot, attemptSeq)); err != nil {
+	sbctx, scancel := ex.billingCtx()
+	defer scancel()
+	if _, err := ex.d.Settler.Settle(sbctx, ex.settleRequest(ex.costSnapshot, attemptSeq)); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
 		return false
 	}
