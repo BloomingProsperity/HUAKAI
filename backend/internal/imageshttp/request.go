@@ -1,12 +1,16 @@
 package imageshttp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -41,7 +45,19 @@ func validateRequest(w http.ResponseWriter, r *http.Request, endpoint imageEndpo
 		return nil, imageRequest{}, false
 	}
 	var req imageRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	// OpenAI 官方 /v1/images/edits、/v1/images/variations 是 multipart/form-data
+	// (必传图片文件)。此前一律 json.Unmarshal,multipart body 必失败 → 400
+	// invalid_json,标准 SDK 的 images.edit/variations 全断。按 Content-Type 分叉:
+	// multipart 从 form 字段取 model/prompt/n/size/quality 做同样校验与计费预估,
+	// 原始字节保持不动交给已就绪的 relaybody multipart 改写路径(attempt.go)。
+	if boundary, isMultipart := multipartBoundary(r.Header.Get("Content-Type")); isMultipart {
+		parsed, perr := parseMultipartImageRequest(body, boundary)
+		if perr != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_multipart", "failed to parse multipart/form-data image request")
+			return nil, imageRequest{}, false
+		}
+		req = parsed
+	} else if err := json.Unmarshal(body, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidJSON, clienterr.MessageFor(clienterr.CodeInvalidJSON))
 		return nil, imageRequest{}, false
 	}
@@ -79,6 +95,78 @@ func validateRequest(w http.ResponseWriter, r *http.Request, endpoint imageEndpo
 		return nil, imageRequest{}, false
 	}
 	return body, req, true
+}
+
+// multipartBoundary 解析 Content-Type,返回 boundary 与是否 multipart/form-data。
+func multipartBoundary(contentType string) (string, bool) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.EqualFold(mediaType, "multipart/form-data") {
+		return "", false
+	}
+	b := strings.TrimSpace(params["boundary"])
+	return b, b != ""
+}
+
+// parseMultipartImageRequest 从已读的 multipart body 字节里提取 image 请求字段
+// (不消费 r.Body,原始字节仍交下游)。文件 part(image/image[]/mask)只标记存在,
+// 不读内容(省内存);标量字段 model/prompt/n/size/quality 读出填入 imageRequest。
+func parseMultipartImageRequest(body []byte, boundary string) (imageRequest, error) {
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	var req imageRequest
+	hasImageFile := false
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return imageRequest{}, err
+		}
+		name := part.FormName()
+		if part.FileName() != "" {
+			if name == "image" || name == "image[]" || strings.HasPrefix(name, "image") {
+				hasImageFile = true
+			}
+			_ = part.Close()
+			continue // 文件内容不读
+		}
+		// 标量字段:限读避免超大 value 占内存(单字段 64KiB 足够)。
+		val, err := io.ReadAll(io.LimitReader(part, 64<<10))
+		_ = part.Close()
+		if err != nil {
+			return imageRequest{}, err
+		}
+		v := strings.TrimSpace(string(val))
+		switch name {
+		case "model":
+			req.Model = v
+		case "prompt":
+			p := v
+			req.Prompt = &p
+		case "size":
+			req.Size = v
+		case "quality":
+			req.Quality = v
+		case "n":
+			if v != "" {
+				n, convErr := strconv.Atoi(v)
+				if convErr != nil {
+					return imageRequest{}, fmt.Errorf("invalid n field: %q", v)
+				}
+				req.N = &n
+			}
+		case "stream":
+			if b, convErr := strconv.ParseBool(v); convErr == nil {
+				req.Stream = &b
+			}
+		}
+	}
+	// image 文件 part 满足 edits/variations 的图片引用要求(用 sentinel,使
+	// hasImageReference() 无需感知 multipart)。
+	if hasImageFile {
+		req.Image = json.RawMessage(`"<multipart-file>"`)
+	}
+	return req, nil
 }
 
 func (r imageRequest) Amount() int {
