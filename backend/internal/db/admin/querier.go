@@ -83,6 +83,9 @@ type Querier interface {
 	// excluded from the cap. Otherwise an actor that hits the cap keeps
 	// refreshing the window with deny rows on every retry and never recovers.
 	CountIssuanceInWindow(ctx context.Context, arg CountIssuanceInWindowParams) (int64, error)
+	// pool_group 必须属于同租户(EXISTS 守卫防跨租户链接);name 唯一冲突由
+	// uq_channels_tenant_pool_name 抛 23505。
+	CreateChannel(ctx context.Context, arg CreateChannelParams) (CreateChannelRow, error)
 	CreateChannelTestTemplate(ctx context.Context, arg CreateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	// auth_secret 应由调用方加密后传入 (HUAKAI credentialstore.KeyProvider)。
 	// sqlc 层是字节流, 不强制加密格式 — 业务层负责。
@@ -155,12 +158,14 @@ type Querier interface {
 	// status 转换专用; drift worker 标 'drift_detected', admin disable/enable 走这。
 	// 不动 updated_at (status 不算内容变); active 时刷 last_validated_at.
 	SetTLSFingerprintProfileStatus(ctx context.Context, arg SetTLSFingerprintProfileStatusParams) error
+	SoftDeleteChannel(ctx context.Context, arg SoftDeleteChannelParams) (SoftDeleteChannelRow, error)
 	SoftDeleteProvider(ctx context.Context, arg SoftDeleteProviderParams) (SoftDeleteProviderRow, error)
 	SoftDeleteProviderAccount(ctx context.Context, arg SoftDeleteProviderAccountParams) error
 	SoftDeleteProxy(ctx context.Context, arg SoftDeleteProxyParams) error
 	// 软删 (设 deleted_at); provider_accounts.tls_fingerprint_profile_id 引用仍存在
 	// (FK 不级联), 但 resolver 走 GetByID 因 deleted_at IS NULL 过滤掉, 降级到 builtin.
 	SoftDeleteTLSFingerprintProfile(ctx context.Context, arg SoftDeleteTLSFingerprintProfileParams) error
+	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error)
 	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)
 	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
