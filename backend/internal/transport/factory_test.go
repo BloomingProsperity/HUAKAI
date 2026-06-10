@@ -494,3 +494,23 @@ func (rt *responseRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		Request:    req,
 	}, nil
 }
+
+// MUTATION: standardRoundTripper 不再显式覆盖 MaxIdleConnsPerHost → 回 Go
+// 默认 2 → 红(DM-17:网关负载下出站连接复用近失效,反复 TLS 握手)。
+func TestStandardRoundTripperPoolTuning(t *testing.T) {
+	f := &Factory{}
+	rt, err := f.For("anthropic", TransportModeStandard)
+	if err != nil {
+		t.Fatalf("For(standard): %v", err)
+	}
+	tr, ok := rt.(*http.Transport)
+	if !ok {
+		t.Fatalf("standard RoundTripper 应是 *http.Transport, got %T", rt)
+	}
+	if tr.MaxIdleConnsPerHost != 64 || tr.MaxIdleConns != 256 {
+		t.Fatalf("pool tuning: per-host=%d total=%d, want 64/256", tr.MaxIdleConnsPerHost, tr.MaxIdleConns)
+	}
+	if tr.Proxy != nil {
+		t.Fatal("standard 路径必须 Proxy=nil(代理只能走 dispatcher.applyProxy)")
+	}
+}

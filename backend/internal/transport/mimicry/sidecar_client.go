@@ -33,7 +33,8 @@ func NewSidecarRoundTripper(client *SidecarClient, profileID string) http.RoundT
 		DialTLSContext:      rt.DialTLSContext,
 		ForceAttemptHTTP2:   false,
 		DisableCompression:  false,
-		MaxIdleConns:        100,
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 64, // DM-17:默认 2 在网关负载下复用近失效
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}

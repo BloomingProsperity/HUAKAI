@@ -1,6 +1,7 @@
 package mimicry
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -154,5 +155,27 @@ func TestClientHelloTemplate_ValidateStubVsReal(t *testing.T) {
 	partial.JA3 = "bad"
 	if err := partial.Validate(); err == nil {
 		t.Fatal("只填 JA3 不填 JA4 应被拒绝")
+	}
+}
+
+// MUTATION: mimicry 两条出站(sidecar/uTLS)漏 MaxIdleConnsPerHost → 红(DM-17)。
+func TestMimicryTransportsPoolTuning(t *testing.T) {
+	srt := NewSidecarRoundTripper(NewSidecarClient("/tmp/x.sock"), "p1")
+	tr, ok := srt.(*http.Transport)
+	if !ok {
+		t.Fatalf("sidecar RoundTripper 应是 *http.Transport, got %T", srt)
+	}
+	if tr.MaxIdleConnsPerHost != 64 || tr.MaxIdleConns != 256 {
+		t.Fatalf("sidecar pool: per-host=%d total=%d, want 64/256", tr.MaxIdleConnsPerHost, tr.MaxIdleConns)
+	}
+
+	urt := NewRoundTripper(&ClientHelloTemplate{})
+	wrapped, ok := urt.(*roundTripper)
+	if !ok {
+		t.Fatalf("uTLS RoundTripper 应是 *roundTripper, got %T", urt)
+	}
+	inner := wrapped.inner
+	if inner.MaxIdleConnsPerHost != 64 || inner.MaxIdleConns != 256 {
+		t.Fatalf("uTLS pool: per-host=%d total=%d, want 64/256", inner.MaxIdleConnsPerHost, inner.MaxIdleConns)
 	}
 }
