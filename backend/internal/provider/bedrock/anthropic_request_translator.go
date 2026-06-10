@@ -141,6 +141,21 @@ func TranslateAnthropicAPIToBedrock(anthropicBody []byte) (AnthropicAPIToBedrock
 		delete(raw, "stream")
 	}
 
+	// Bedrock 对未知顶层字段返回 400 ValidationException(sub2api bf28a009 实测
+	// 结论,delta-mine #4):剥除 Anthropic 直连专有顶层字段。metadata 是重灾区
+	// ——Claude Code 客户端必带 metadata.user_id,不剥则默认 AutoTranslate 配置下
+	// 真实 CC 流量经 Bedrock 必 400,整条 Bedrock CC 闭环坏死。
+	delete(raw, "metadata")
+	// body 内嵌 anthropic_beta:Bedrock 只支持子集,按白名单过滤;过滤后为空则
+	// 整字段删除,防不支持的 beta token 直达 Bedrock 触发 400。
+	if rawBetas, ok := raw["anthropic_beta"]; ok {
+		if filtered, keep := filterBedrockBetaTokens(rawBetas); keep {
+			raw["anthropic_beta"] = filtered
+		} else {
+			delete(raw, "anthropic_beta")
+		}
+	}
+
 	// 注入 anthropic_version（如未声明）
 	if _, exists := raw["anthropic_version"]; !exists {
 		raw["anthropic_version"] = json.RawMessage(`"` + AnthropicVersionBedrock + `"`)
@@ -157,4 +172,43 @@ func TranslateAnthropicAPIToBedrock(anthropicBody []byte) (AnthropicAPIToBedrock
 		Stream:          stream,
 		UpstreamModelID: modelID,
 	}, nil
+}
+
+// bedrockSupportedBetaTokens 是 Bedrock 认识的 anthropic beta token 白名单
+// (对照 sub2api bedrockSupportedBetaTokens;不在名单的 token Bedrock 会 400)。
+var bedrockSupportedBetaTokens = map[string]struct{}{
+	"computer-use-2024-10-22":                {},
+	"computer-use-2025-01-24":                {},
+	"token-efficient-tools-2025-02-19":       {},
+	"interleaved-thinking-2025-05-14":        {},
+	"fine-grained-tool-streaming-2025-05-14": {},
+	"context-1m-2025-08-07":                  {},
+	"context-management-2025-06-27":          {},
+}
+
+// filterBedrockBetaTokens 解析 body 内嵌 anthropic_beta(数组或单字符串),
+// 只保留白名单 token;keep=false 表示该字段应整体删除。
+func filterBedrockBetaTokens(raw json.RawMessage) (json.RawMessage, bool) {
+	var list []string
+	if err := json.Unmarshal(raw, &list); err != nil {
+		var single string
+		if err2 := json.Unmarshal(raw, &single); err2 != nil {
+			return nil, false
+		}
+		list = []string{single}
+	}
+	kept := make([]string, 0, len(list))
+	for _, t := range list {
+		if _, ok := bedrockSupportedBetaTokens[t]; ok {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, false
+	}
+	out, err := json.Marshal(kept)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
