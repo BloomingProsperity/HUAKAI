@@ -24,6 +24,7 @@ type imageRequest struct {
 	Image    json.RawMessage `json:"image,omitempty"`
 	Images   json.RawMessage `json:"images,omitempty"`
 	ImageURL string          `json:"image_url,omitempty"`
+	Stream   *bool           `json:"stream,omitempty"`
 }
 
 type tokenImageUsage struct {
@@ -46,6 +47,13 @@ func validateRequest(w http.ResponseWriter, r *http.Request, endpoint imageEndpo
 	}
 	if strings.TrimSpace(req.Model) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_model", "model field required")
+		return nil, imageRequest{}, false
+	}
+	if req.Stream != nil && *req.Stream {
+		// stream:true 原样透传会让上游回 SSE,token 计费解析失败 → abort 假 502 →
+		// 余额退款,但 vendor 已对生成扣费 = 平台漏钱。图片流式中继落地前显式拒绝
+		// (new-api d2576dd 已实现流式图片中继,完整能力另列)。
+		writeJSONError(w, http.StatusBadRequest, "stream_not_supported", "images API does not support stream:true yet")
 		return nil, imageRequest{}, false
 	}
 	switch endpoint {
