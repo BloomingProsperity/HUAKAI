@@ -603,3 +603,66 @@ func moderationFailureMetricValue(key string) int64 {
 	}
 	return v.Value()
 }
+
+// MUTATION: recordAutoBan/clean 审计忽略 TailRole(去掉 repeatAgentTurn 守卫)
+// → 重发轮断言红(DM-16:agent 循环单条违规消息每轮计 ban,一会话冲破阈值)。
+func TestScreener_RepeatAgentTurnSuppressesBanCountAndCleanAudit(t *testing.T) {
+	mk := func() (Screener, *auditSpy, *banCounterSpy) {
+		audit := &auditSpy{}
+		ban := &banCounterSpy{}
+		s := NewScreener(ScreenerDeps{
+			Config: configStub{cfg: ModerationConfig{
+				Enabled: true, FailClosed: true, SampleRatePct: 100,
+				BanThreshold: 3, BanWindowSeconds: 3600,
+			}},
+			Keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 17, Keyword: "forbidden", ReasonCode: "policy_keyword"}}},
+			Hashes:   hashStoreStub{},
+			Audit:    audit,
+			Ban:      ban,
+		})
+		return s, audit, ban
+	}
+	blockedBody := []byte(`{"messages":[{"role":"user","content":"contains a forbidden phrase"},{"role":"assistant","content":"x"}]}`)
+
+	// 重发轮(尾=assistant):拦截照旧,审计照写(取证),ban 不计
+	s, audit, ban := mk()
+	res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r1", Body: blockedBody, TailRole: "assistant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision != DecisionBlockKeyword {
+		t.Fatalf("重发轮拦截判定不得放水: %q", res.Decision)
+	}
+	if len(audit.events) != 1 {
+		t.Fatalf("block 审计必须写: %d", len(audit.events))
+	}
+	if ban.calls != 0 {
+		t.Fatalf("重发轮不得计 ban: calls=%d", ban.calls)
+	}
+
+	// 用户轮:ban 照计
+	s, _, ban = mk()
+	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r2", Body: blockedBody, TailRole: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if ban.calls != 1 {
+		t.Fatalf("用户轮应计 ban: calls=%d", ban.calls)
+	}
+
+	// 干净请求:重发轮不写 clean 审计;未知 TailRole 照写(现行为)
+	s, audit, _ = mk()
+	clean := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"}]}`)
+	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r3", Body: clean, TailRole: "assistant"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.events) != 0 {
+		t.Fatalf("重发轮 clean 审计应跳过: %d", len(audit.events))
+	}
+	s, audit, _ = mk()
+	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r4", Body: clean}); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.events) != 1 {
+		t.Fatalf("未知 TailRole 应保持现行为写 clean 审计: %d", len(audit.events))
+	}
+}

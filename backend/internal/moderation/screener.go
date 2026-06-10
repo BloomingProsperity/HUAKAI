@@ -67,8 +67,12 @@ func (s *storeScreener) Screen(ctx context.Context, req ScreenRequest) (ScreenRe
 		return externalResult, err
 	}
 	result := ScreenResult{Decision: DecisionPass, ReasonCode: "clean"}
-	if err := s.writeAudit(ctx, req, result, cfg); err != nil {
-		reportModerationFailure(ctx, "audit_write_failed", req, result, err)
+	// DM-16:重发轮的 clean 审计是纯噪音(同对话每轮一条);命中(block)的
+	// 审计仍无条件写——取证不打折。
+	if !repeatAgentTurn(req) {
+		if err := s.writeAudit(ctx, req, result, cfg); err != nil {
+			reportModerationFailure(ctx, "audit_write_failed", req, result, err)
+		}
 	}
 	return result, nil
 }
@@ -276,8 +280,19 @@ func (s *storeScreener) writeAudit(ctx context.Context, req ScreenRequest, res S
 	return s.audit.Log(ctx, eventFromResult(req, res), cfg)
 }
 
+// repeatAgentTurn 报告本次请求是否为 agent 工具循环的重发轮(尾消息非
+// user)。空 TailRole(未知)按首轮处理——fail-open 到现行为(DM-16)。
+func repeatAgentTurn(req ScreenRequest) bool {
+	return req.TailRole != "" && !strings.EqualFold(req.TailRole, "user")
+}
+
 func (s *storeScreener) recordAutoBan(ctx context.Context, req ScreenRequest, res ScreenResult, cfg ModerationConfig) error {
 	if s.ban == nil {
+		return nil
+	}
+	// DM-16:同一条违规用户消息在 agent 循环里每轮重发,只在用户轮计 ban,
+	// 否则单条消息一个会话内就冲破阈值。拦截判定不受影响。
+	if repeatAgentTurn(req) {
 		return nil
 	}
 	_, err := s.ban.RecordAndCheck(ctx, eventFromResult(req, res), cfg)

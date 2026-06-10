@@ -26,6 +26,11 @@ type ScreenRequest struct {
 	PayloadHash   string
 	Body          []byte
 	ImageDataURLs []string
+	// TailRole 是请求体最后一条消息的角色(gatewayhttp 按客户端协议解析;
+	// 空 = 未知/不可解析,行为不变)。Agent 工具循环每轮重发整段对话,
+	// 尾消息非 user 时:拦截判定照旧(防绕过),但跳过 auto-ban 重复计数
+	// 与 clean 审计噪音(DM-16)。
+	TailRole string
 }
 
 type ScreenResult struct {
