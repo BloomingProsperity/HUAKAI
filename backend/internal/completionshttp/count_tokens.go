@@ -11,6 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
 func NewCountTokensHandler(d Deps) http.HandlerFunc {
@@ -79,12 +80,13 @@ func (ex *execution) runCountTokens(w http.ResponseWriter, requestedModel string
 
 func (ex *execution) dispatchCountTokens(w http.ResponseWriter) int {
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
-		ProtocolFamily:  ex.resolved.ProtocolFamily,
-		EndpointPath:    ex.upstreamPath,
-		UpstreamModelID: ex.upstreamModelID,
-		InboundBody:     ex.body,
-		Account:         ex.accInfo,
-		Credential:      ex.cred,
+		ProtocolFamily:    ex.resolved.ProtocolFamily,
+		EndpointPath:      ex.upstreamPath,
+		UpstreamModelID:   ex.upstreamModelID,
+		InboundBody:       ex.body,
+		Account:           ex.accInfo,
+		Credential:        ex.cred,
+		InboundBetaTokens: provider.ParseInboundBetaTokens(ex.r.Header.Values("Anthropic-Beta")),
 	})
 	if err != nil {
 		return attemptRetryable

@@ -17,13 +17,14 @@ import (
 )
 
 type HCSFDispatchInput struct {
-	ProtocolFamily  string
-	UpstreamModelID string
-	Account         provider.AccountInfo
-	Credential      provider.Credential
-	TransportMode   transport.TransportMode
-	RawBody         []byte
-	BodyControls    DispatchBodyControls
+	ProtocolFamily    string
+	UpstreamModelID   string
+	Account           provider.AccountInfo
+	Credential        provider.Credential
+	TransportMode     transport.TransportMode
+	RawBody           []byte
+	BodyControls      DispatchBodyControls
+	InboundBetaTokens []string
 }
 
 type hcsfDispatchInputKey struct{}
@@ -82,9 +83,10 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		return nil, fmt.Errorf("dispatcher: 取 provider adapter 失败 (protocol=%q): %w", family, err)
 	}
 	req, err := buildHCSFProviderRequest(ctx, providerAdapter, provider.BuildInput{
-		UpstreamModelID: upstreamModel,
-		Credential:      in.Credential,
-		Account:         account,
+		UpstreamModelID:   upstreamModel,
+		Credential:        in.Credential,
+		Account:           account,
+		InboundBetaTokens: in.InboundBetaTokens,
 	}, env, ingressFamily, endpointFamily, in.RawBody, in.BodyControls)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequestFromEnvelope/BuildRequest 失败: %w", err)
