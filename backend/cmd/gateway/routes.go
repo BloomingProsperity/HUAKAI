@@ -747,10 +747,15 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Post("/admin/v1/providers", adminhttp.NewProviderCatalogCreateHandler(providerCatalogDeps))
 	r.Put("/admin/v1/providers/{code}", adminhttp.NewProviderCatalogUpdateHandler(providerCatalogDeps))
 	r.Delete("/admin/v1/providers/{code}", adminhttp.NewProviderCatalogDeleteHandler(providerCatalogDeps))
-	r.Get("/admin/v1/channels", adminhttp.NewChannelCatalogListHandler(adminhttp.AdminChannelCatalogDeps{
+	channelCatalogDeps := adminhttp.AdminChannelCatalogDeps{
 		Auth:    d.adminAuth,
 		Queries: d.adminQueries,
-	}))
+		Store:   adminhttp.NewChannelCatalogStoreAdapter(d.adminQueries, d.pgPool),
+	}
+	r.Get("/admin/v1/channels", adminhttp.NewChannelCatalogListHandler(channelCatalogDeps))
+	r.Post("/admin/v1/channels", adminhttp.NewChannelCatalogCreateHandler(channelCatalogDeps))
+	r.Put("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogUpdateHandler(channelCatalogDeps))
+	r.Delete("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogDeleteHandler(channelCatalogDeps))
 	channelTestTemplateDeps := adminhttp.AdminChannelTestTemplateDeps{
 		Auth:  d.adminAuth,
 		Store: d.adminQueries,

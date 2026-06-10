@@ -310,3 +310,93 @@ func insertCatalogChannel(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	}
 	return id
 }
+
+// TestChannelCRUD_TenantScopedAndUnique exercises the channel CRUD sqlc queries
+// against a real Postgres: the tenant_id fence on update/delete, the
+// (tenant,pool_group,name) unique constraint, the pool-group cross-tenant
+// EXISTS guard on create/update, and soft-delete name reuse.
+//
+// Mutation guards: dropping `tenant_id = $` from UpdateChannel/SoftDeleteChannel
+// makes the cross-tenant assertions return a row (red); dropping the EXISTS
+// pool-group guard makes the cross-tenant pool create succeed (red).
+func TestChannelCRUD_TenantScopedAndUnique(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openAdminAuditIntegrationPool(t, ctx)
+	q := New(pool)
+
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tenantA := insertCatalogTenant(t, ctx, pool, "chcrud-a-"+suffix)
+	tenantB := insertCatalogTenant(t, ctx, pool, "chcrud-b-"+suffix)
+	cleanupCatalogTenants(t, pool, tenantA, tenantB)
+
+	pgA := insertCatalogPoolGroup(t, ctx, pool, tenantA, "pg-a-"+suffix)
+	pgB := insertCatalogPoolGroup(t, ctx, pool, tenantB, "pg-b-"+suffix)
+	codes := []int32{401, 429}
+
+	// Create in tenantA's own pool group succeeds.
+	row, err := q.CreateChannel(ctx, CreateChannelParams{
+		TenantID: tenantA, PoolGroupID: pgA, Name: "primary", FailoverStatusCodes: codes, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if row.ID == 0 || row.PoolGroupID != pgA || row.Name != "primary" {
+		t.Fatalf("create row wrong: %+v", row)
+	}
+	chID := row.ID
+
+	// Pool-group cross-tenant guard: tenantA cannot attach tenantB's pool group.
+	if _, err := q.CreateChannel(ctx, CreateChannelParams{
+		TenantID: tenantA, PoolGroupID: pgB, Name: "x-tenant", FailoverStatusCodes: codes, Enabled: true,
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("cross-tenant pool create: err=%v want pgx.ErrNoRows (EXISTS guard)", err)
+	}
+
+	// Unique (tenant, pool_group, name) among non-deleted rows.
+	if _, err := q.CreateChannel(ctx, CreateChannelParams{
+		TenantID: tenantA, PoolGroupID: pgA, Name: "primary", FailoverStatusCodes: codes, Enabled: true,
+	}); !isChannelUniqueViolation(err) {
+		t.Fatalf("duplicate name create: err=%v want uq_channels_tenant_pool_name 23505", err)
+	}
+
+	// Tenant fence on update: tenantB cannot update tenantA's channel.
+	if _, err := q.UpdateChannel(ctx, UpdateChannelParams{
+		TenantID: tenantB, ID: chID, PoolGroupID: pgB, Name: "hijack", FailoverStatusCodes: codes, Enabled: true,
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("cross-tenant update: err=%v want pgx.ErrNoRows (tenant fence)", err)
+	}
+
+	// Owner update succeeds.
+	upd, err := q.UpdateChannel(ctx, UpdateChannelParams{
+		TenantID: tenantA, ID: chID, PoolGroupID: pgA, Name: "renamed", FailoverStatusCodes: []int32{500}, Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("owner update: %v", err)
+	}
+	if upd.Name != "renamed" || upd.Enabled {
+		t.Fatalf("update row wrong: %+v", upd)
+	}
+
+	// Tenant fence on delete: tenantB cannot delete tenantA's channel.
+	if _, err := q.SoftDeleteChannel(ctx, SoftDeleteChannelParams{TenantID: tenantB, ID: chID}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("cross-tenant delete: err=%v want pgx.ErrNoRows (tenant fence)", err)
+	}
+
+	// Owner soft-delete succeeds, then the name is reusable (partial unique index).
+	if _, err := q.SoftDeleteChannel(ctx, SoftDeleteChannelParams{TenantID: tenantA, ID: chID}); err != nil {
+		t.Fatalf("owner soft delete: %v", err)
+	}
+	if _, err := q.CreateChannel(ctx, CreateChannelParams{
+		TenantID: tenantA, PoolGroupID: pgA, Name: "renamed", FailoverStatusCodes: codes, Enabled: true,
+	}); err != nil {
+		t.Fatalf("name reuse after soft delete should succeed: %v", err)
+	}
+}
+
+func isChannelUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "uq_channels_tenant_pool_name"
+}

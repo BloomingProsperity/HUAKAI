@@ -11,6 +11,7 @@ import (
 type AdminChannelCatalogDeps struct {
 	Auth    adminCatalogAuth
 	Queries adminChannelCatalogQueries
+	Store   adminChannelCatalogStore
 }
 
 type adminChannelCatalogQueries interface {

@@ -8350,6 +8350,117 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-channel-catalog]
+      summary: Create a tenant-scoped channel
+      operationId: createAdminChannel
+      description: |
+        Creates a channel (a pool_group -> failover_status_codes routing entry)
+        for the selected tenant. `name` is unique per (tenant, pool_group)
+        among non-deleted channels; `pool_group_id` must belong to the same
+        tenant. platform_admin callers must pass tenant_id; tenant_operator
+        callers may omit it and are scoped to their admin token tenant.
+        Successful mutations write an admin audit event.
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminChannelCatalogCreateRequest' }
+      responses:
+        '201':
+          description: Created channel.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelCatalogItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/channels/{id}:
+    put:
+      tags: [admin-channel-catalog]
+      summary: Update a tenant-scoped channel
+      operationId: updateAdminChannel
+      description: |
+        Updates pool_group_id, name, failover_status_codes, and enabled state
+        for a channel selected by tenant scope plus path `id`. `pool_group_id`
+        must belong to the same tenant. Successful mutations write an admin
+        audit event.
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminChannelCatalogUpdateRequest' }
+      responses:
+        '200':
+          description: Updated channel.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelCatalogItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-channel-catalog]
+      summary: Soft-delete a tenant-scoped channel
+      operationId: deleteAdminChannel
+      description: |
+        Soft-deletes a channel selected by tenant scope plus path `id`. The
+        partial unique index frees the (tenant, pool_group, name) tuple for
+        reuse after deletion. Successful mutations write an admin audit event.
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminProviderCatalogDeleteRequest' }
+      responses:
+        '200':
+          description: Channel was soft-deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelCatalogDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/channel-test-templates:
     get:
@@ -14450,6 +14561,50 @@ components:
           items: { type: integer }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
+
+    AdminChannelCatalogCreateRequest:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      required: [pool_group_id, name, enabled]
+      properties:
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        name: { type: string, minLength: 1 }
+        failover_status_codes:
+          type: array
+          description: Optional; defaults to [401, 403, 429, 529] when omitted.
+          items: { type: integer, minimum: 100, maximum: 599 }
+        enabled: { type: boolean }
+        reason:
+          type: string
+          description: Optional operator-visible audit reason.
+
+    AdminChannelCatalogUpdateRequest:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      required: [pool_group_id, name, enabled]
+      properties:
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        name: { type: string, minLength: 1 }
+        failover_status_codes:
+          type: array
+          description: Optional; defaults to [401, 403, 429, 529] when omitted.
+          items: { type: integer, minimum: 100, maximum: 599 }
+        enabled: { type: boolean }
+        reason:
+          type: string
+          description: Optional operator-visible audit reason.
+
+    AdminChannelCatalogDeleteResponse:
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      type: object
+      additionalProperties: false
+      required: [object, id, deleted]
+      properties:
+        object: { type: string, enum: [admin_channel_deleted] }
+        id: { type: integer, format: int64 }
+        deleted: { type: boolean, enum: [true] }
 
     AdminChannelCatalogList:
       x-huakai-spec-source: [docs/specs/pool-routing.md]
