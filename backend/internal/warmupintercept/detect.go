@@ -1,26 +1,28 @@
-// Package warmupintercept detects Claude Code "throwaway" requests and builds
-// synthetic responses so they never reach the pooled upstream account.
+// Package warmupintercept 在网关本地识别并应答 Claude Code 的"一次性"请求
+// (连通性探测 / 标题生成预热 / SUGGESTION MODE),不让它们消耗池内上游账号
+// 的真实配额。
 //
-// Faithfully ported from sub2api-latest:
+// 拦截的三种形状是 Claude Code 客户端的可观测行为事实(机制参照 sub2api 的
+// 同类能力,实现为本仓独立编写;行为对齐 + 客户端可见面更拟真):
 //
-//	backend/internal/handler/gateway_handler.go  lines 1604-1810
+//  1. 连通性探测: max_tokens=1 + haiku 系模型 + 非流式 + claude-cli UA,
+//     真实上游会回一个 "#"(stop_reason=max_tokens)。
+//  2. SUGGESTION MODE: 末条 user 消息文本以 "[SUGGESTION MODE:" 开头,
+//     期望空文本应答。
+//  3. 预热/标题生成: 消息文本含 5-10 词标题生成指令或恰为 "Warmup",
+//     或 system 含"新话题判定+2-3 词标题抽取"指令,期望 "New Conversation"。
 //
-// Three intercept shapes (all must match exactly):
-//  1. Connectivity probe   -- max_tokens==1, haiku model, non-stream, Claude Code UA
-//  2. Suggestion mode      -- last user message text starts with "[SUGGESTION MODE:"
-//  3. Warmup / title-gen   -- message contains title-generation prompt OR system has
-//     "nalyze if this message indicates a new conversation topic..."
-//
-// The gate (warmup_intercept_enabled, default false) is opt-in; when OFF this
-// package is a pure no-op from the caller's perspective.
+// 开关(warmup_intercept_enabled,默认关)在调用方;本包只负责识别与合成。
+// 合成应答的消息 ID 一律随机生成为 Anthropic 直连形态(msg_01 + base62),
+// 客户端可见面不留 mock 指纹。
 package warmupintercept
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -30,92 +32,100 @@ type Kind int
 
 const (
 	KindNone       Kind = iota
-	KindConnProbe       // max_tokens=1 + haiku + non-stream (connectivity probe)
-	KindSuggestion      // [SUGGESTION MODE: ...] in last user message
-	KindWarmup          // title-generation / warmup prompt
+	KindConnProbe       // 连通性探测(max_tokens=1 + haiku + 非流式)
+	KindSuggestion      // [SUGGESTION MODE: ...] 末条 user 消息
+	KindWarmup          // 预热 / 标题生成
 )
 
-// isHaikuModel returns true when model name contains "haiku" (case-insensitive).
-// Source: gateway_handler.go:1614-1616
-func isHaikuModel(model string) bool {
-	return strings.Contains(strings.ToLower(model), "haiku")
+// Claude Code 一次性请求里出现的精确标记串(客户端 prompt 原文,事实数据)。
+// 预扫描只认这些精确串,避免泛关键字误伤正常对话再走全量解析。
+const (
+	markerSuggestion  = "[SUGGESTION MODE:"
+	markerTitlePrompt = "Please write a 5-10 word title for the following conversation:"
+	markerWarmupQuote = `"Warmup"`
+	markerTopicProbe  = "nalyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title"
+)
+
+// probeDoc 是检测所需的最小请求投影(具名类型,只取文本块)。
+type probeDoc struct {
+	Messages []probeMessage `json:"messages"`
+	System   []probeText    `json:"system"`
 }
 
-// isConnProbeShape returns true for the connectivity-probe shape:
-// max_tokens==1 AND haiku model AND non-streaming.
-// Source: gateway_handler.go:1619-1623
-func isConnProbeShape(model string, maxTokens int, stream bool) bool {
-	return maxTokens == 1 && isHaikuModel(model) && !stream
+type probeMessage struct {
+	Role    string      `json:"role"`
+	Content []probeText `json:"content"`
 }
 
-// Detect classifies a request into one of the three intercept kinds.
-// All parameters come from the already-parsed request body -- no re-decode needed.
+type probeText struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// firstText 返回消息首个 text 块的文本;无 text 块返回空串。
+func (m probeMessage) firstText() string {
+	for _, b := range m.Content {
+		if b.Type == "text" {
+			return b.Text
+		}
+	}
+	return ""
+}
+
+// IsClaudeCodeUserAgent 报告 User-Agent 是否为 Claude Code(claude-cli)客户端。
+func IsClaudeCodeUserAgent(userAgent string) bool {
+	return strings.Contains(strings.ToLower(userAgent), "claude-cli/")
+}
+
+// Detect 把请求分类为三种拦截形状之一。
 //
-//   - isClaudeCodeUA: caller should pass IsClaudeCodeUserAgent(r.UserAgent())
-//   - body: raw request body bytes (used for warmup/suggestion fast-path scan + structured check)
-//   - model, maxTokens, stream: from the parsed top-level fields
-//
-// Source: gateway_handler.go:1626-1696
+//   - isClaudeCodeUA: 调用方传 IsClaudeCodeUserAgent(r.UserAgent())
+//   - model / maxTokens / stream: 来自已解析的顶层字段
+//   - body: 原始请求体(只在预扫描命中标记串时才做结构化解析)
 func Detect(isClaudeCodeUA bool, model string, maxTokens int, stream bool, body []byte) (Kind, bool) {
-	// Shape 1: connectivity probe (requires Claude Code UA)
-	// Source: gateway_handler.go:1634-1637
-	if isClaudeCodeUA && isConnProbeShape(model, maxTokens, stream) {
+	// 形状 1:连通性探测只看顶层字段 + UA,无需碰 body。
+	if isClaudeCodeUA && maxTokens == 1 && !stream &&
+		strings.Contains(strings.ToLower(model), "haiku") {
 		return KindConnProbe, true
 	}
 
-	// Fast-path: if body contains neither keyword, nothing further to check.
-	// Source: gateway_handler.go:1639-1647
-	bodyStr := string(body)
-	hasSuggestion := strings.Contains(bodyStr, "[SUGGESTION MODE:")
-	hasWarmup := strings.Contains(bodyStr, "title") || strings.Contains(bodyStr, "Warmup")
-	if !hasSuggestion && !hasWarmup {
+	// 预扫描:四个精确标记串一个都不沾的请求直接放行,不付解析成本。
+	wantSuggestion := bytes.Contains(body, []byte(markerSuggestion))
+	wantWarmup := bytes.Contains(body, []byte(markerTitlePrompt)) ||
+		bytes.Contains(body, []byte(markerWarmupQuote)) ||
+		bytes.Contains(body, []byte(markerTopicProbe))
+	if !wantSuggestion && !wantWarmup {
 		return KindNone, false
 	}
 
-	// Parse body once for structured checks.
-	// Source: gateway_handler.go:1649-1663
-	var req struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"messages"`
-		System []struct {
-			Text string `json:"text"`
-		} `json:"system"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
+	var doc probeDoc
+	if err := json.Unmarshal(body, &doc); err != nil {
 		return KindNone, false
 	}
 
-	// Shape 2: SUGGESTION MODE -- last user message text starts with "[SUGGESTION MODE:"
-	// Source: gateway_handler.go:1665-1672
-	if hasSuggestion && len(req.Messages) > 0 {
-		last := req.Messages[len(req.Messages)-1]
-		if last.Role == "user" && len(last.Content) > 0 &&
-			last.Content[0].Type == "text" &&
-			strings.HasPrefix(last.Content[0].Text, "[SUGGESTION MODE:") {
+	// 形状 2:末条消息必须是 user 且其文本以标记串开头(结构化确认,
+	// 防止标记串只是出现在历史/引用里)。
+	if wantSuggestion && len(doc.Messages) > 0 {
+		if last := doc.Messages[len(doc.Messages)-1]; last.Role == "user" &&
+			strings.HasPrefix(last.firstText(), markerSuggestion) {
 			return KindSuggestion, true
 		}
 	}
 
-	// Shape 3: warmup / title-generation prompt
-	// Source: gateway_handler.go:1674-1695
-	if hasWarmup {
-		for _, msg := range req.Messages {
-			for _, c := range msg.Content {
-				if c.Type == "text" {
-					if strings.Contains(c.Text, "Please write a 5-10 word title for the following conversation:") ||
-						c.Text == "Warmup" {
-						return KindWarmup, true
-					}
+	// 形状 3:任一消息文本含标题指令或恰为 "Warmup";或 system 含话题判定指令。
+	if wantWarmup {
+		for _, m := range doc.Messages {
+			for _, b := range m.Content {
+				if b.Type != "text" {
+					continue
+				}
+				if strings.Contains(b.Text, markerTitlePrompt) || b.Text == "Warmup" {
+					return KindWarmup, true
 				}
 			}
 		}
-		for _, sys := range req.System {
-			if strings.Contains(sys.Text, "nalyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title") {
+		for _, s := range doc.System {
+			if strings.Contains(s.Text, markerTopicProbe) {
 				return KindWarmup, true
 			}
 		}
@@ -124,132 +134,146 @@ func Detect(isClaudeCodeUA bool, model string, maxTokens int, stream bool, body 
 	return KindNone, false
 }
 
-// IsClaudeCodeUserAgent returns true when the User-Agent header value indicates
-// a Claude Code / claude-cli client.
-// Source: service/gateway_service.go:3867-3873
-func IsClaudeCodeUserAgent(userAgent string) bool {
-	return strings.Contains(strings.ToLower(userAgent), "claude-cli/")
+// syntheticSpec 描述每种拦截形状的应答内容。
+type syntheticSpec struct {
+	text       string
+	stopReason string
+	deltas     []string
+	outTokens  int
 }
 
-// generateRealisticMsgID generates a realistic-looking message ID.
-// Source: gateway_handler.go:1800-1810
-func generateRealisticMsgID() string {
-	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-	const idLen = 24
-	randomBytes := make([]byte, idLen)
-	if _, err := rand.Read(randomBytes); err != nil {
-		return fmt.Sprintf("msg_bdrk_%d", time.Now().UnixNano())
-	}
-	b := make([]byte, idLen)
-	for i := range b {
-		b[i] = charset[int(randomBytes[i])%len(charset)]
-	}
-	return "msg_bdrk_" + string(b)
-}
-
-// SyntheticNonStreamBody returns the JSON body for a synthetic non-stream
-// Anthropic Messages API response. status is always 200.
-// Source: gateway_handler.go:1769-1810
-func SyntheticNonStreamBody(kind Kind, model string) (status int, body []byte) {
-	var msgID, text, stopReason string
-	var outputTokens int
-
+func specFor(kind Kind) syntheticSpec {
 	switch kind {
-	case KindSuggestion:
-		msgID = "msg_mock_suggestion"
-		text = ""
-		outputTokens = 1
-		stopReason = "end_turn"
 	case KindConnProbe:
-		msgID = generateRealisticMsgID()
-		text = "#"
-		outputTokens = 1
-		stopReason = "max_tokens"
+		// 真实上游对 max_tokens=1 探测回单字符并以 max_tokens 截断。
+		return syntheticSpec{text: "#", stopReason: "max_tokens", deltas: []string{"#"}, outTokens: 1}
+	case KindSuggestion:
+		return syntheticSpec{text: "", stopReason: "end_turn", deltas: []string{""}, outTokens: 1}
 	default: // KindWarmup
-		msgID = "msg_mock_warmup"
-		text = "New Conversation"
-		outputTokens = 2
-		stopReason = "end_turn"
+		return syntheticSpec{text: "New Conversation", stopReason: "end_turn", deltas: []string{"New", " Conversation"}, outTokens: 2}
 	}
+}
 
-	response := map[string]interface{}{
-		"model": model,
-		"id":    msgID,
-		"type":  "message",
-		"role":  "assistant",
-		"content": []map[string]interface{}{
-			{"type": "text", "text": text},
-		},
-		"stop_reason":   stopReason,
-		"stop_sequence": nil,
-		"usage": map[string]interface{}{
-			"input_tokens":                10,
-			"cache_creation_input_tokens": 0,
-			"cache_read_input_tokens":     0,
-			"cache_creation": map[string]interface{}{
-				"ephemeral_5m_input_tokens": 0,
-				"ephemeral_1h_input_tokens": 0,
-			},
-			"output_tokens": outputTokens,
-			"total_tokens":  10 + outputTokens,
-		},
+const syntheticInputTokens = 10
+
+// newMessageID 生成 Anthropic 直连形态的消息 ID(msg_01 + 22 位 base62)。
+// 所有拦截形状统一用随机 ID——客户端可见面不留可指纹化的固定 mock ID。
+func newMessageID() string {
+	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	const tail = 22
+	buf := make([]byte, tail)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("msg_01fb%016x", time.Now().UnixNano())
 	}
+	for i, c := range buf {
+		buf[i] = alphabet[int(c)%len(alphabet)]
+	}
+	return "msg_01" + string(buf)
+}
 
-	enc, err := json.Marshal(response)
+// 应答体用具名类型 Marshal,字段形状对齐 Anthropic Messages API(API 形状
+// 本身是事实;含 cache_creation 细分,与真实应答同构)。
+type syntheticUsage struct {
+	InputTokens         int            `json:"input_tokens"`
+	CacheCreationInput  int            `json:"cache_creation_input_tokens"`
+	CacheReadInput      int            `json:"cache_read_input_tokens"`
+	CacheCreationDetail map[string]int `json:"cache_creation"`
+	OutputTokens        int            `json:"output_tokens"`
+	TotalTokens         int            `json:"total_tokens"`
+}
+
+func newSyntheticUsage(outTokens int) syntheticUsage {
+	return syntheticUsage{
+		InputTokens: syntheticInputTokens,
+		CacheCreationDetail: map[string]int{
+			"ephemeral_5m_input_tokens": 0,
+			"ephemeral_1h_input_tokens": 0,
+		},
+		OutputTokens: outTokens,
+		TotalTokens:  syntheticInputTokens + outTokens,
+	}
+}
+
+type syntheticMessage struct {
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	Role         string          `json:"role"`
+	Model        string          `json:"model"`
+	Content      []probeText     `json:"content"`
+	StopReason   *string         `json:"stop_reason"`
+	StopSequence *string         `json:"stop_sequence"`
+	Usage        *syntheticUsage `json:"usage,omitempty"`
+}
+
+// SyntheticNonStreamBody 返回合成的非流式 Anthropic Messages 应答体;status
+// 恒为 200。
+func SyntheticNonStreamBody(kind Kind, model string) (status int, body []byte) {
+	spec := specFor(kind)
+	usage := newSyntheticUsage(spec.outTokens)
+	msg := syntheticMessage{
+		ID:         newMessageID(),
+		Type:       "message",
+		Role:       "assistant",
+		Model:      model,
+		Content:    []probeText{{Type: "text", Text: spec.text}},
+		StopReason: &spec.stopReason,
+		Usage:      &usage,
+	}
+	enc, err := json.Marshal(msg)
 	if err != nil {
 		enc = []byte(`{"type":"message","role":"assistant","content":[],"stop_reason":"end_turn"}`)
 	}
 	return http.StatusOK, enc
 }
 
-// SyntheticStreamBody builds the SSE event stream bytes for a synthetic
-// streaming Anthropic Messages API response.
-// Source: gateway_handler.go:1699-1767
+// sseEvent 以 "event: <name>\ndata: <json>\n\n" 形态追加一个 SSE 事件。
+func sseEvent(sb *strings.Builder, name string, payload any) {
+	enc, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	sb.WriteString("event: ")
+	sb.WriteString(name)
+	sb.WriteString("\ndata: ")
+	sb.Write(enc)
+	sb.WriteString("\n\n")
+}
+
+// SyntheticStreamBody 构造合成的流式(SSE)Anthropic Messages 应答字节。
 func SyntheticStreamBody(kind Kind, model string) []byte {
-	var msgID string
-	var outputTokens int
-	var textDeltas []string
-
-	switch kind {
-	case KindSuggestion:
-		msgID = "msg_mock_suggestion"
-		outputTokens = 1
-		textDeltas = []string{""}
-	default: // KindWarmup (ConnProbe is always non-stream by definition)
-		msgID = "msg_mock_warmup"
-		outputTokens = 2
-		textDeltas = []string{"New", " Conversation"}
-	}
-
-	messageStartJSON := `{"type":"message_start","message":{"id":` + strconv.Quote(msgID) +
-		`,"type":"message","role":"assistant","model":` + strconv.Quote(model) +
-		`,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`
-
-	events := []string{
-		"event: message_start\ndata: " + messageStartJSON,
-		`event: content_block_start` + "\n" + `data: {"content_block":{"text":"","type":"text"},"index":0,"type":"content_block_start"}`,
-	}
-
-	for _, text := range textDeltas {
-		deltaJSON := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":` +
-			strconv.Quote(text) + `}}`
-		events = append(events, "event: content_block_delta\ndata: "+deltaJSON)
-	}
-
-	messageDeltaJSON := `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"output_tokens":` +
-		strconv.Itoa(outputTokens) + `}}`
-
-	events = append(events,
-		`event: content_block_stop`+"\n"+`data: {"index":0,"type":"content_block_stop"}`,
-		"event: message_delta\ndata: "+messageDeltaJSON,
-		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`,
-	)
+	spec := specFor(kind)
 
 	var sb strings.Builder
-	for _, ev := range events {
-		sb.WriteString(ev)
-		sb.WriteString("\n\n")
+	sseEvent(&sb, "message_start", map[string]any{
+		"type": "message_start",
+		"message": syntheticMessage{
+			ID:      newMessageID(),
+			Type:    "message",
+			Role:    "assistant",
+			Model:   model,
+			Content: []probeText{},
+			Usage:   &syntheticUsage{InputTokens: syntheticInputTokens, CacheCreationDetail: map[string]int{}},
+		},
+	})
+	sseEvent(&sb, "content_block_start", map[string]any{
+		"type":          "content_block_start",
+		"index":         0,
+		"content_block": probeText{Type: "text", Text: ""},
+	})
+	for _, delta := range spec.deltas {
+		sseEvent(&sb, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]string{"type": "text_delta", "text": delta},
+		})
 	}
+	sseEvent(&sb, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	sseEvent(&sb, "message_delta", map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": spec.stopReason, "stop_sequence": nil},
+		"usage": map[string]int{"input_tokens": syntheticInputTokens, "output_tokens": spec.outTokens},
+	})
+	sseEvent(&sb, "message_stop", map[string]any{"type": "message_stop"})
 	return []byte(sb.String())
 }
 
@@ -268,8 +292,7 @@ func WriteStream(w http.ResponseWriter, kind Kind, model string) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	body := SyntheticStreamBody(kind, model)
-	_, _ = w.Write(body)
+	_, _ = w.Write(SyntheticStreamBody(kind, model))
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
