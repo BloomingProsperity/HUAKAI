@@ -256,6 +256,23 @@ func renderAnthropicResponseBlockForStart(b *CanonicalContentBlock) (map[string]
 			"name":  b.Name,
 			"input": json.RawMessage("{}"),
 		}, nil
+	case "thinking":
+		// Claude 客户端经中转的 extended thinking 回程:start 空文本,文本由
+		// thinking_delta 流出(下方 renderAnthropicResponseDelta)。
+		return map[string]any{"type": "thinking", "thinking": ""}, nil
+	case "redacted_thinking":
+		block := map[string]any{"type": "redacted_thinking"}
+		if len(b.Data) > 0 {
+			block["data"] = b.Data
+		}
+		return block, nil
+	case "server_tool_use":
+		return map[string]any{
+			"type":  "server_tool_use",
+			"id":    b.CallID,
+			"name":  b.Name,
+			"input": json.RawMessage("{}"),
+		}, nil
 	default:
 		loss, _ := NewClientLossEntry(ProtocolLossWarning, "block_start_type_d1_pending:"+b.Type, "d1_pending_block_start", "", "")
 		return map[string]any{"type": b.Type}, []ProtocolLossEntry{loss}
@@ -274,12 +291,18 @@ func renderAnthropicResponseDelta(d *CanonicalContentDelta) (map[string]any, []P
 			partial = json.RawMessage(`""`)
 		}
 		return map[string]any{"type": "input_json_delta", "partial_json": partial}, nil
-	case "thinking_delta":
-		loss, _ := NewClientLossEntry(ProtocolLossWarning, "thinking_delta_d1_pending", "d1_thinking_delta_pending", CapabilityThinking, "")
-		return nil, []ProtocolLossEntry{loss}
+	case "reasoning_delta", "thinking_delta":
+		// 上游 anthropic 适配器把 thinking_delta 统一转成 canonical reasoning_delta
+		// (anthropic/sse.go canonicalDelta);此前这里只认 thinking_delta=死分支,
+		// 真实到来的 reasoning_delta 掉 default 被丢 = 中转 thinking 文本全丢。
+		text := d.ReasoningText
+		if text == "" {
+			text = d.Text
+		}
+		return map[string]any{"type": "thinking_delta", "thinking": text}, nil
 	case "signature_delta":
-		loss, _ := NewClientLossEntry(ProtocolLossInfo, "signature_delta_default_drop", "signature_delta_default_drop", CapabilityThinking, "")
-		return nil, []ProtocolLossEntry{loss}
+		// 上游按 CarryForwardSignatureDelta 策略门决定是否转发;能到这里就该渲染。
+		return map[string]any{"type": "signature_delta", "signature": d.Signature}, nil
 	default:
 		loss, _ := NewClientLossEntry(ProtocolLossWarning, "unknown_delta_type:"+d.Type, "unknown_delta_type", "", "")
 		return nil, []ProtocolLossEntry{loss}
