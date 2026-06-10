@@ -7,6 +7,16 @@
 
 ---
 
+## ⚠️ Tuyên bố miễn trừ trách nhiệm
+
+> **Hãy đọc trước khi sử dụng HUAKAI.**
+>
+> 🚨 **Rủi ro về điều khoản dịch vụ.** Việc dùng HUAKAI để truy cập nhà cung cấp LLM thượng nguồn có thể vi phạm Điều khoản Dịch vụ của nhà cung cấp đó (Anthropic, OpenAI, Google, AWS, v.v.). Việc một hình thức triển khai cụ thể có được phép hay không là do người vận hành tự xác định, và **mọi rủi ro khi sử dụng dự án này do người vận hành tự chịu hoàn toàn.**
+>
+> 📖 **Mục đích sử dụng.** HUAKAI chỉ được cung cấp cho mục đích học tập kỹ thuật, nghiên cứu bảo mật và tự lưu trữ bởi người vận hành. Tác giả và những người đóng góp **không chịu bất kỳ trách nhiệm nào** đối với việc khóa tài khoản, gián đoạn dịch vụ, thiệt hại tài chính hoặc bất kỳ hậu quả nào khác phát sinh từ việc sử dụng dự án này.
+>
+> Điều khoản đầy đủ: mục "Compliance & responsibility" trong bản tiếng Anh và [LEGAL.md](LEGAL.md).
+
 Hiện tại nội dung chính chỉ có trong [README.md tiếng Anh](README.md) và
 [README_CN.md tiếng Trung](README_CN.md). Phiên bản tiếng Việt đầy đủ đang
 được chuẩn bị.

@@ -7,6 +7,23 @@
 
 ---
 
+## ⚠️ Aviso legal
+
+> **Lee esto antes de usar HUAKAI.**
+>
+> 🚨 **Riesgo respecto a los términos de servicio.** Usar HUAKAI para acceder a un
+> proveedor de LLM upstream puede infringir los Términos de Servicio de dicho proveedor
+> (Anthropic, OpenAI, Google, AWS, entre otros). Determinar si un despliegue concreto está
+> permitido corresponde al operador, y **todo el riesgo del uso de este proyecto recae
+> exclusivamente en el operador.**
+>
+> 📖 **Uso previsto.** HUAKAI se ofrece únicamente para aprendizaje técnico,
+> investigación de seguridad y autoalojamiento por el operador. Los autores y colaboradores
+> **no asumen ninguna responsabilidad** por suspensión de cuentas, interrupción del servicio,
+> pérdidas económicas ni cualquier otra consecuencia derivada del uso de este proyecto.
+>
+> Términos completos: la sección «Compliance & responsibility» en inglés y [LEGAL.md](LEGAL.md).
+
 Actualmente, el contenido principal solo está disponible en
 [README.md en inglés](README.md) y [README_CN.md en chino](README_CN.md).
 La versión completa en español está en preparación.
