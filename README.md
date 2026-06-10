@@ -6,6 +6,22 @@
 
 ---
 
+## ⚠️ Disclaimer
+
+> **Read this before using HUAKAI.**
+>
+> 🚨 **Terms-of-service risk.** Using HUAKAI to reach an upstream LLM provider may
+> violate that provider's Terms of Service (Anthropic, OpenAI, Google, AWS, and others).
+> Whether any given deployment is permitted is the operator's own determination, and
+> **all risk of using this project is borne solely by the operator.**
+>
+> 📖 **Intended use.** HUAKAI is provided for technical learning, security research,
+> and operator self-hosting only. The authors and contributors accept **no liability** for
+> account suspension, service interruption, financial loss, or any other consequence
+> arising from use of this project.
+>
+> Full terms: the "Compliance & responsibility" section below and [LEGAL.md](LEGAL.md).
+
 ## What HUAKAI is
 
 HUAKAI is an **operator-side, self-hosted reverse proxy and account router** for LLM API
