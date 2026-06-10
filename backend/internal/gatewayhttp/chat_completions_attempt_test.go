@@ -246,3 +246,28 @@ func TestWriteAttemptFailureClearsStreamResidualHeaders(t *testing.T) {
 		t.Fatal("终局错误仍须清 Trailer")
 	}
 }
+
+// MUTATION: clientTailMessageRole 任一协议分支解析错位 → 对应子断言红(DM-16)。
+func TestClientTailMessageRole(t *testing.T) {
+	cases := []struct {
+		name  string
+		proto proto.ClientProtocol
+		body  string
+		want  string
+	}{
+		{"chat tail user", proto.ClientProtocolOpenAIChat, `{"messages":[{"role":"assistant"},{"role":"user"}]}`, "user"},
+		{"chat tail tool", proto.ClientProtocolOpenAIChat, `{"messages":[{"role":"user"},{"role":"Tool"}]}`, "tool"},
+		{"anthropic tail assistant", proto.ClientProtocolAnthropicMessages, `{"messages":[{"role":"user"},{"role":"assistant"}]}`, "assistant"},
+		{"gemini tail model", proto.ClientProtocolGemini, `{"contents":[{"role":"user"},{"role":"model"}]}`, "model"},
+		{"responses string input", proto.ClientProtocolOpenAIResponses, `{"input":"hello"}`, "user"},
+		{"responses tail function output", proto.ClientProtocolOpenAIResponses, `{"input":[{"role":"user"},{"type":"function_call_output"}]}`, "tool"},
+		{"responses tail user item", proto.ClientProtocolOpenAIResponses, `{"input":[{"type":"function_call_output"},{"role":"user"}]}`, "user"},
+		{"unparseable", proto.ClientProtocolOpenAIChat, `not json`, ""},
+		{"empty messages", proto.ClientProtocolOpenAIChat, `{"messages":[]}`, ""},
+	}
+	for _, tc := range cases {
+		if got := clientTailMessageRole(tc.proto, []byte(tc.body)); got != tc.want {
+			t.Fatalf("[%s] got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}

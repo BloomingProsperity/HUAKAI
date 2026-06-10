@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -620,6 +621,7 @@ func (ex *chatExecution) screenModerationInput(w http.ResponseWriter) bool {
 		RequestID:   ex.requestID,
 		PayloadHash: ex.payloadHash,
 		Body:        ex.body,
+		TailRole:    clientTailMessageRole(ex.clientProtocol, ex.body),
 	})
 	if err != nil {
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeContentPolicyViolation, err)
@@ -881,4 +883,57 @@ func (ex *chatExecution) clientBetaTokens() []string {
 		ex.inboundBetaTokens = provider.ParseInboundBetaTokens(ex.r.Header.Values("Anthropic-Beta"))
 	}
 	return ex.inboundBetaTokens
+}
+
+// clientTailMessageRole 解析请求体最后一条消息的角色,供输入审核区分
+// "新用户轮"与"agent 工具循环重发轮"(DM-16)。按客户端协议取字段:
+// chat/anthropic=messages[].role;gemini=contents[].role;responses=input
+// (字符串=用户输入;数组取尾项 role,无 role 的工具输出项归 "tool")。
+// 解析失败返回 ""(未知,审核按首轮处理)。
+func clientTailMessageRole(clientProtocol proto.ClientProtocol, body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	switch clientProtocol {
+	case proto.ClientProtocolOpenAIResponses:
+		var req struct {
+			Input json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil || len(req.Input) == 0 {
+			return ""
+		}
+		if req.Input[0] == '"' {
+			return "user"
+		}
+		var items []struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(req.Input, &items); err != nil || len(items) == 0 {
+			return ""
+		}
+		if role := strings.TrimSpace(items[len(items)-1].Role); role != "" {
+			return strings.ToLower(role)
+		}
+		return "tool"
+	case proto.ClientProtocolGemini:
+		var req struct {
+			Contents []struct {
+				Role string `json:"role"`
+			} `json:"contents"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil || len(req.Contents) == 0 {
+			return ""
+		}
+		return strings.ToLower(strings.TrimSpace(req.Contents[len(req.Contents)-1].Role))
+	default:
+		var req struct {
+			Messages []struct {
+				Role string `json:"role"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil || len(req.Messages) == 0 {
+			return ""
+		}
+		return strings.ToLower(strings.TrimSpace(req.Messages[len(req.Messages)-1].Role))
+	}
 }
