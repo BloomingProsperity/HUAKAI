@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -224,6 +225,9 @@ func (s *Service) advanceRamp(ctx context.Context, key ChannelKey) (Record, erro
 		rec.RampStagePct = 0
 		rec.RampStartedAt = nil
 		rec.ReasonClass = SignalNone
+		// ramp 完全恢复 = 连续失败 streak 结束;清零,使下一轮回滚从 d*factor
+		// 重新起步,而非沿用账号终生累计失败数永久卡在最大 cooldown。
+		rec.RampFailureCount = 0
 	}
 	if rec.State == StateRamping {
 		rec.RampStartedAt = &now
@@ -611,6 +615,10 @@ func applyDecision(rec *Record, dec decision, now time.Time, p Policy) {
 	rec.UpdatedAt = now
 }
 
+// maxRampBackoffLevel 封顶连续 ramp 回滚的指数退避级数,防 factor^n 无界增长。
+// factor=2(默认)时最大 2^5=32x ErrorRateCooldown。
+const maxRampBackoffLevel = 5
+
 func (s *Service) rollbackRamp(rec *Record, now time.Time, reason SignalClass) {
 	rec.State = StateCoolingDown
 	rec.ReasonClass = reason
@@ -621,7 +629,22 @@ func (s *Service) rollbackRamp(rec *Record, now time.Time, reason SignalClass) {
 	if d <= 0 {
 		d = DefaultPolicy().ErrorRateCooldown
 	}
-	backoff := time.Duration(float64(d) * s.policy.RampBackoffFactor)
+	// 连续 ramp 回滚指数升级 cooldown:第 n 次连续回滚 backoff = d * factor^n。
+	// 单次回滚(RampFailureCount==1)= d*factor,与历史行为逐字一致;之后随连续
+	// 失败次数升级,level 封顶 maxRampBackoffLevel 防 factor^n 无界增长。streak 在
+	// ramp 完全恢复(AdvanceRamp 推进到 StateActive)时清零。
+	factor := s.policy.RampBackoffFactor
+	if factor < 1 {
+		factor = 1
+	}
+	level := rec.RampFailureCount
+	if level < 1 {
+		level = 1
+	}
+	if level > maxRampBackoffLevel {
+		level = maxRampBackoffLevel
+	}
+	backoff := time.Duration(float64(d) * math.Pow(factor, float64(level)))
 	c := now.Add(backoff)
 	rec.CooldownUntil = &c
 	rec.StateEnteredAt = now

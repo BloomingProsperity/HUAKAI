@@ -475,3 +475,68 @@ func (s *failingAuditStore) WithTx(ctx context.Context, fn func(Store) error) er
 	_ = ctx
 	return nil
 }
+
+// TestChannelHealth_RampRollbackExponentialBackoffAndReset 守卫两半:
+// (1) 连续 ramp 回滚的 cooldown 随 RampFailureCount 指数升级(非固定系数);
+// (2) ramp 完全恢复到 StateActive 时 RampFailureCount 清零。
+// Mutation guard: rollbackRamp 改回固定 d*factor → 升级断言红;default case 去掉
+// RampFailureCount=0 → 重置断言红。
+func TestChannelHealth_RampRollbackExponentialBackoffAndReset(t *testing.T) {
+	ctx, svc, store, clock := testService()
+	key := testKey()
+
+	// 给定回滚前 RampFailureCount,驱动一次 ramp 回滚,返回 cooldown 时长。
+	rollbackCooldown := func(failBefore int) time.Duration {
+		rec, _ := svc.EnsureDefaultActive(ctx, key)
+		rec.State = StateRamping
+		rec.RampStagePct = 10
+		start := clock.Now().Add(-time.Second)
+		rec.RampStartedAt = &start
+		rec.SampleWindow = WindowSummary{}
+		rec.RampFailureCount = failBefore
+		rec.CooldownUntil = nil
+		rec, _ = store.UpsertRecord(ctx, rec)
+		clock.Add(time.Millisecond)
+		_, _ = svc.ApplySignal(ctx, Signal{Key: key, Class: SignalChannelError})
+		rec, err := svc.AdvanceRamp(ctx, key)
+		if err != nil {
+			t.Fatalf("AdvanceRamp rollback: %v", err)
+		}
+		if rec.State != StateCoolingDown || rec.CooldownUntil == nil {
+			t.Fatalf("expected cooling down with cooldown; rec=%+v", rec)
+		}
+		return rec.CooldownUntil.Sub(clock.Now())
+	}
+
+	first := rollbackCooldown(0) // → RampFailureCount 1 → d*factor^1
+	third := rollbackCooldown(3) // → RampFailureCount 4 → d*factor^4 (capped)
+	if !(third > first) {
+		t.Fatalf("连续回滚 cooldown 应指数升级: first(count1)=%s not < later(count4)=%s", first, third)
+	}
+
+	// 完全恢复清零 streak:从 ramping 一路推进到 StateActive,断言 RampFailureCount=0。
+	rec, _ := svc.EnsureDefaultActive(ctx, key)
+	rec.State = StateRamping
+	rec.RampStagePct = 50
+	rstart := clock.Now().Add(-time.Second)
+	rec.RampStartedAt = &rstart
+	rec.RampFailureCount = 4
+	rec.SampleWindow = WindowSummary{}
+	rec, _ = store.UpsertRecord(ctx, rec)
+	for {
+		clock.Add(time.Millisecond)
+		if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalSuccess}); err != nil {
+			t.Fatalf("clean signal: %v", err)
+		}
+		rec, _ = svc.AdvanceRamp(ctx, key)
+		if rec.State == StateActive {
+			break
+		}
+		if rec.State != StateRamping {
+			t.Fatalf("unexpected state during recovery: %s", rec.State)
+		}
+	}
+	if rec.RampFailureCount != 0 {
+		t.Fatalf("ramp 完全恢复后 RampFailureCount 应清零, got %d", rec.RampFailureCount)
+	}
+}
