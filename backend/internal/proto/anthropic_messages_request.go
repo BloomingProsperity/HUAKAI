@@ -298,13 +298,18 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 		if err := json.Unmarshal(req.Thinking, &thinkCfg); err != nil {
 			return nil, nil, fmt.Errorf("proto: anthropic_messages 'thinking' parse: %w", err)
 		}
-		if thinkCfg.Type == "enabled" {
+		// enabled(手动 budget)与 adaptive(always-on，无 budget，如 claude-fable-5 /
+		// opus-4.7+)都建 CapabilityThinking 节点。此前只认 enabled，adaptive 不建节点
+		// 且零 loss 记录 → fable-5 客户端的 thinking 配置在 HCSF 重组路径整个蒸发。
+		switch thinkCfg.Type {
+		case "enabled", "adaptive":
 			nodeSeq++
 			nodeID := fmt.Sprintf("n_thinking_%d", nodeSeq)
 			env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
 				ID: nodeID, Kind: CapabilityThinking, StreamReady: StreamReadyPartial,
 				Source: &NodeSourceRef{RequestField: "thinking"},
 				Thinking: &ThinkingNode{
+					Mode:         thinkCfg.Type,
 					BudgetTokens: thinkCfg.BudgetTokens,
 					Blocks:       []CanonicalContentBlock{},
 					Redaction:    RedactionPublic,
@@ -313,6 +318,12 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 			env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
 				Capability: CapabilityThinking, NodeID: nodeID, Verdict: ProjectionPreserved,
 			})
+		case "", "disabled":
+			// 无 thinking：不建节点(原行为)。
+		default:
+			// 未知 thinking type:不静默丢弃(hcsf 规则),记 loss 供审计。
+			loss, _ := NewClientLossEntry(ProtocolLossWarning, "anthropic_thinking_type_unmapped:"+thinkCfg.Type, "thinking_type_unmapped", CapabilityThinking, "")
+			losses = append(losses, loss)
 		}
 	}
 	if len(req.Metadata) > 0 {
