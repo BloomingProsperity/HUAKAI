@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 )
 
 // TransportErrorClass 是 Go dispatcher 与未来 Rust transport sidecar 共用的
@@ -24,6 +25,14 @@ const (
 	TransportErrorUpstreamHeaderTimeout   TransportErrorClass = "upstream_header_timeout"
 	TransportErrorUpstreamBodyIdleTimeout TransportErrorClass = "upstream_body_idle_timeout"
 	TransportErrorLocalDispatch           TransportErrorClass = "local_dispatch_error"
+
+	// DM-06 持久型传输错误:重试同一账号几乎必然再失败(端点拒连/域名
+	// 解析失败/路由不可达/代理握手失败),必须立刻 failover 换号并计入
+	// channelhealth,而非归 local_dispatch_error 直接 500 终结。
+	TransportErrorConnectionRefused  TransportErrorClass = "connection_refused"
+	TransportErrorDNSFailure         TransportErrorClass = "dns_failure"
+	TransportErrorNetworkUnreachable TransportErrorClass = "network_unreachable"
+	TransportErrorProxyFailure       TransportErrorClass = "proxy_failure"
 )
 
 // CredentialRefreshIntent 表示 attempt 失败后是否应触发凭据热刷新路径。
@@ -90,6 +99,9 @@ func TransportErrorClassFromError(err error) TransportErrorClass {
 	if isTLSError(err, lower) {
 		return TransportErrorTLSHandshakeFailed
 	}
+	if class := persistentTransportErrorClass(err, lower); class != TransportErrorNone {
+		return class
+	}
 	if strings.Contains(lower, "connect timeout") || strings.Contains(lower, "connection timeout") {
 		return TransportErrorConnectTimeout
 	}
@@ -116,6 +128,34 @@ func TransportErrorClassFromError(err error) TransportErrorClass {
 	return TransportErrorLocalDispatch
 }
 
+// persistentTransportErrorClass 识别持久型传输错误(DM-06)。proxyconnect
+// 判定必须最先:Go transport 的代理 CONNECT 失败串里常内嵌 connection
+// refused,故障应归代理而非目标端点。DNS 超时仍归 network_timeout
+// (transient),只有解析失败才算持久 DNS 故障。
+func persistentTransportErrorClass(err error, lower string) TransportErrorClass {
+	if strings.Contains(lower, "proxyconnect") || strings.Contains(lower, "proxy authentication required") {
+		return TransportErrorProxyFailure
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsTimeout {
+			return TransportErrorNetworkTimeout
+		}
+		return TransportErrorDNSFailure
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || strings.Contains(lower, "connection refused") {
+		return TransportErrorConnectionRefused
+	}
+	if errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) ||
+		strings.Contains(lower, "host is unreachable") || strings.Contains(lower, "network is unreachable") {
+		return TransportErrorNetworkUnreachable
+	}
+	if strings.Contains(lower, "no such host") {
+		return TransportErrorDNSFailure
+	}
+	return TransportErrorNone
+}
+
 // ClassifyAttemptTransportError 是未来 Rust transport class 的接入口。
 func ClassifyAttemptTransportError(class TransportErrorClass) AttemptRetryDecision {
 	switch class {
@@ -129,6 +169,14 @@ func ClassifyAttemptTransportError(class TransportErrorClass) AttemptRetryDecisi
 		return retryableTransportDecision(class, http.StatusServiceUnavailable, "transport_upstream_header_timeout")
 	case TransportErrorUpstreamBodyIdleTimeout:
 		return retryableTransportDecision(class, http.StatusServiceUnavailable, "transport_upstream_body_idle_timeout")
+	case TransportErrorConnectionRefused:
+		return retryableTransportDecision(class, http.StatusBadGateway, "transport_connection_refused")
+	case TransportErrorDNSFailure:
+		return retryableTransportDecision(class, http.StatusBadGateway, "transport_dns_failure")
+	case TransportErrorNetworkUnreachable:
+		return retryableTransportDecision(class, http.StatusBadGateway, "transport_network_unreachable")
+	case TransportErrorProxyFailure:
+		return retryableTransportDecision(class, http.StatusBadGateway, "transport_proxy_failure")
 	case TransportErrorNone:
 		return AttemptRetryDecision{}
 	default:

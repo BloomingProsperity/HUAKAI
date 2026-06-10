@@ -156,3 +156,19 @@ func TestDegradeFailureIfAbortFailedUsesSafeAbortReasonAndLogsErrorClass(t *test
 	assertLogContains(t, logs, "req-abort-safe", "abort_failed", "error_class")
 	assertLogOmits(t, logs, marker)
 }
+
+// MUTATION: endClassFromAttemptFailure 漏 DM-06 持久传输类 → 红——健康记账
+// 信号落 UnknownTermination,channelhealth 看不见持久故障(不摘账号复发)。
+func TestEndClassFromAttemptFailure_PersistentTransportClassesAreUpstream5xx(t *testing.T) {
+	for _, class := range []gateway.TransportErrorClass{
+		gateway.TransportErrorConnectionRefused,
+		gateway.TransportErrorDNSFailure,
+		gateway.TransportErrorNetworkUnreachable,
+		gateway.TransportErrorProxyFailure,
+	} {
+		got := endClassFromAttemptFailure(gateway.Classification{}, gateway.AttemptRetryDecision{TransportClass: class})
+		if got != gateway.UpstreamError5xx {
+			t.Fatalf("class %s endClass=%s want UpstreamError5xx", class, got)
+		}
+	}
+}

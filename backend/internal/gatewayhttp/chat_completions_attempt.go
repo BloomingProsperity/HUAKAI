@@ -136,13 +136,19 @@ func endClassFromAttemptFailure(classification gateway.Classification, decision 
 		gateway.TransportErrorUpstreamHeaderTimeout,
 		gateway.TransportErrorUpstreamBodyIdleTimeout:
 		return gateway.InterEventTimeout
-	case gateway.TransportErrorTLSHandshakeFailed:
+	case gateway.TransportErrorTLSHandshakeFailed,
+		gateway.TransportErrorConnectionRefused,
+		gateway.TransportErrorDNSFailure,
+		gateway.TransportErrorNetworkUnreachable,
+		gateway.TransportErrorProxyFailure:
 		return gateway.UpstreamError5xx
 	}
 	switch decision.AbortReason {
 	case "upstream_5xx", "upstream_overloaded", "pool_no_capacity",
 		"pool_select_error", "pool_select_no_account", "credential_resolve_error",
-		"upstream_dispatch_error", "upstream_empty_response":
+		"upstream_dispatch_error", "upstream_empty_response",
+		"transport_connection_refused", "transport_dns_failure",
+		"transport_network_unreachable", "transport_proxy_failure":
 		return gateway.UpstreamError5xx
 	case "upstream_rate_limited", "queue_wait":
 		return gateway.UpstreamRateLimit
