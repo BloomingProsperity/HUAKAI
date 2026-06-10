@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"syscall"
 	"testing"
 )
 
@@ -382,3 +384,60 @@ func assertDecision(t *testing.T, got, want AttemptRetryDecision) {
 }
 
 var _ net.Error = timeoutNetError{}
+
+// MUTATION: persistentTransportErrorClass 退化返回 TransportErrorNone,或
+// ClassifyAttemptTransportError 漏新 case → 子断言红(DM-06:持久传输错必须
+// failover 换号,不得归 local_dispatch_error 直接 500 终结)。
+func TestClassifyAttemptDispatchError_PersistentTransportFailures(t *testing.T) {
+	t.Parallel()
+
+	refused := &url.Error{Op: "Post", URL: "https://api.example.com/v1/messages",
+		Err: &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
+	dns := &url.Error{Op: "Post", URL: "https://api.example.com/v1/messages",
+		Err: &net.OpError{Op: "dial", Net: "tcp",
+			Err: &net.DNSError{Err: "no such host", Name: "api.example.com", IsNotFound: true}}}
+	unreachable := &url.Error{Op: "Post", URL: "https://api.example.com/v1/messages",
+		Err: &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)}}
+	proxy := &url.Error{Op: "Post", URL: "https://api.example.com/v1/messages",
+		Err: errors.New("proxyconnect tcp: dial tcp 10.0.0.9:8080: connect: connection refused")}
+
+	tests := []struct {
+		name      string
+		err       error
+		wantClass TransportErrorClass
+		wantAbort string
+	}{
+		{"connection refused fails over", refused, TransportErrorConnectionRefused, "transport_connection_refused"},
+		{"dns not found fails over", dns, TransportErrorDNSFailure, "transport_dns_failure"},
+		{"host unreachable fails over", unreachable, TransportErrorNetworkUnreachable, "transport_network_unreachable"},
+		{"proxyconnect wins over embedded connection refused", proxy, TransportErrorProxyFailure, "transport_proxy_failure"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			decision := ClassifyAttemptDispatchError(tt.err)
+			assertDecision(t, decision, AttemptRetryDecision{
+				RetryableBeforeDelivery: true,
+				SwitchAccount:           true,
+				SwitchPool:              true,
+				ClientStatus:            http.StatusBadGateway,
+				AbortReason:             tt.wantAbort,
+				TransportClass:          tt.wantClass,
+			})
+		})
+	}
+
+	// 回归:无法证明持久/可重试的本地错误仍保守归 local_dispatch_error。
+	plain := ClassifyAttemptDispatchError(errors.New("boom"))
+	if plain.TransportClass != TransportErrorLocalDispatch || plain.RetryableBeforeDelivery {
+		t.Fatalf("plain error 应保守 local_dispatch: %+v", plain)
+	}
+
+	// DNS 超时仍是 transient network_timeout,不得误归持久 DNS 故障。
+	dnsTimeout := ClassifyAttemptDispatchError(&url.Error{Op: "Post", URL: "https://x",
+		Err: &net.DNSError{Err: "i/o timeout", Name: "x", IsTimeout: true}})
+	if dnsTimeout.TransportClass != TransportErrorNetworkTimeout {
+		t.Fatalf("dns timeout 应 network_timeout: %+v", dnsTimeout)
+	}
+}
