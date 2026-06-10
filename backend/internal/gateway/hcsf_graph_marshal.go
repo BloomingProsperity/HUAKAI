@@ -78,11 +78,15 @@ func anthropicRequestThinkingControl(env *proto.HCSF, n proto.CapabilityNode) (m
 		addMarshalLoss(env, "anthropic_messages", n, "thinking request control node missing payload", "missing_thinking_payload")
 		return nil, false
 	}
+	// adaptive(claude-fable-5 / opus-4.7+ always-on thinking)无 budget_tokens：
+	// 回写 {type:"adaptive"}，绝不要求 budget>0(否则 fable-5 thinking 被丢)。
+	if n.Thinking.Mode == "adaptive" {
+		return map[string]any{"type": "adaptive"}, true
+	}
 	if n.Thinking.BudgetTokens <= 0 {
 		addMarshalLoss(env, "anthropic_messages", n, "thinking request control missing budget_tokens", "missing_thinking_budget_tokens")
 		return nil, false
 	}
-	// RequestToCanonical 只为顶层 thinking.type=enabled 建此节点。
 	return map[string]any{"type": "enabled", "budget_tokens": n.Thinking.BudgetTokens}, true
 }
 

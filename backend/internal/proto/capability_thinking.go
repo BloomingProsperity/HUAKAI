@@ -12,6 +12,11 @@ const (
 
 // ThinkingNode 是 thinking capability 的 payload；表达 visible/hidden reasoning。
 type ThinkingNode struct {
+	// Mode 记录 thinking 形态："enabled"(手动 budget_tokens)或 "adaptive"
+	// (always-on，无 budget_tokens，如 claude-fable-5 / opus-4.7+)。空=兼容旧行为
+	// 按 enabled 处理；adaptive 模式 BudgetTokens 通常为 0,合法不应被当作丢弃信号。
+	Mode string `json:"mode,omitempty"`
+
 	// BudgetTokens 必填；0 表示 provider 未声明 budget。
 	BudgetTokens int `json:"budget_tokens"`
 
