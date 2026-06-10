@@ -153,7 +153,8 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	clientState := f.newClientState()
 	var terminalSeen bool
 	var firstEmitted bool
-	var keepaliveCommitted bool // 仅心跳已向客户端提交 200、尚无真实内容(用于错误收尾时补发显式 error 事件)
+	var keepaliveCommitted bool   // 仅心跳已向客户端提交 200、尚无真实内容(用于错误收尾时补发显式 error 事件)
+	var terminalFrameWritten bool // 已写过协议终止 error 帧(上游主动 error 帧),防终止收尾时双写
 	var endErr error
 
 	totalTimer := newTimer(f.Timeouts.TotalStreamTimeout)
@@ -242,6 +243,10 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
 				seen, wrote, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
 				terminalSeen = terminalSeen || seen
+				// 上游主动 error 帧已由 handleEventWithAdapter 写出协议终止帧,记账防双写。
+				if res.event.Type == "error" && wrote {
+					terminalFrameWritten = true
+				}
 				if delivered > 0 {
 					acc.DeliveredChunkCount += delivered
 				}
@@ -261,12 +266,18 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				}
 			}
 		}
-		// 若此前仅用心跳向客户端提交了 200(尚无任何真实内容),而流以错误收尾:deliveryStarted 已为真,
-		// 上层"未交付→可重试/写 HTTP 错误状态"路径不再可走,必须在流内补发一个显式 error 事件,
-		// 否则客户端只收到 ": hk" 注释后被静默关闭、无从判断成败。仅针对"心跳已提交且
-		// 零真实交付"这一新引入情形;"已交付内容后再超时/断连"等既有路径行为不变。
-		if endErr != nil && keepaliveCommitted && !firstEmitted && draft.EndClass != ClientDisconnect {
-			_ = writeAndFlush(clientWriter, canonicalStreamErrorSSE())
+		// 流以错误收尾(超时/scan/adapter 错误)时,只要已向客户端提交过 200 字节
+		// (心跳或真实内容),上层"未交付→可重试/写 HTTP 错误状态"路径已不可走,必须在
+		// 流内补发一个【按客户端协议正确的】终止 error 帧,否则严格 SDK(Codex CLI)只见
+		// 静默 TCP EOF,报 "stream closed before response.completed",且无从区分完整/截断流。
+		// (keepaliveCommitted||firstEmitted)=deliveryStarted;此前只覆盖"仅心跳零交付",
+		// "已交付内容后出错"被漏掉(delta-mine #1)。ClientDisconnect 没人收、terminalSeen/
+		// terminalFrameWritten 已有终止帧:均跳过。补帧只写 socket,不碰 settle 计费。
+		if endErr != nil && draft.EndClass != ClientDisconnect &&
+			(keepaliveCommitted || firstEmitted) && !terminalSeen && !terminalFrameWritten {
+			for _, fr := range terminalErrorFrame(req.ClientProtocol) {
+				_ = writeAndFlush(clientWriter, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat))
+			}
 		}
 		return finish(draft, acc, endErr)
 	}
@@ -312,8 +323,12 @@ func (f *StreamForwarder) handleEventWithAdapter(
 			ErrorClass: streamProtocolErrorCode,
 			Attrs:      attrs,
 		})
-		if err := writeAndFlush(w, canonicalStreamErrorSSE()); err != nil {
-			return terminalSeen, false, 0, ErrClientDisconnect
+		// 上游主动 error 帧按客户端协议合成(canonicalStreamErrorSSE 是 anthropic-only
+		// event: error,对 openai_chat 客户端只认 data: 行 → 被忽略=静默截断)。
+		for _, fr := range terminalErrorFrame(req.ClientProtocol) {
+			if err := writeAndFlush(w, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat)); err != nil {
+				return terminalSeen, false, 0, ErrClientDisconnect
+			}
 		}
 		return terminalSeen, true, 0, nil
 	}
@@ -750,6 +765,31 @@ func rawSSE(evt SSEEvent) []byte {
 		return []byte(fmt.Sprintf("data: %s\n\n", evt.Data))
 	}
 	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", evt.Type, evt.Data))
+}
+
+// terminalErrorFrame 按客户端协议合成协议正确的终止 error 帧(可能多帧)。
+// 不走 client adapter(CanonicalEvent 无 error 字段、各 adapter 无 error case),也不
+// 裸用 anthropic-only 的 canonicalStreamErrorSSE()。脱敏口径固定为 upstream_error,
+// 不含任何上游原文。req.ClientProtocol 为空/未知 → openai_chat 形态(最广兼容)。
+func terminalErrorFrame(clientProtocol string) [][]byte {
+	code, msg := streamProtocolErrorCode, streamProtocolErrorMessage
+	switch clientProtocol {
+	case string(proto.ClientProtocolAnthropicMessages):
+		// 复用既有 anthropic 风格(event: error),与历史字节一致。
+		return [][]byte{canonicalStreamErrorSSE()}
+	case string(proto.ClientProtocolOpenAIResponses):
+		// Responses 全程命名事件;顶层 {type:error},不杜撰 response 包裹字段免 SDK 拒解析。
+		return [][]byte{proto.EmitSSEEvent("error", []byte(fmt.Sprintf(`{"type":"error","code":%q,"message":%q}`, code, msg)))}
+	case string(proto.ClientProtocolGemini):
+		// Gemini streamGenerateContent 错误体走 data: 行,无具名 event,无 [DONE]。
+		return [][]byte{proto.EmitSSEDataLine([]byte(fmt.Sprintf(`{"error":{"code":502,"status":"UNAVAILABLE","message":%q}}`, msg)))}
+	default:
+		// openai_chat(及空/未知):裸 data: 行(严格 chat SDK 只认 data:)+ data: [DONE] 收尾。
+		return [][]byte{
+			proto.EmitSSEDataLine([]byte(fmt.Sprintf(`{"error":{"message":%q,"type":%q,"code":%q}}`, msg, code, code))),
+			proto.EmitSSEDone(),
+		}
+	}
 }
 
 func canonicalStreamErrorSSE() []byte {

@@ -172,6 +172,7 @@ func anthropicForwardRequest(tenantID, accountID int64) ForwardRequest {
 		TenantID:       tenantID,
 		AccountID:      accountID,
 		ProtocolFamily: "anthropic_messages",
+		ClientProtocol: "anthropic_messages",
 	}
 }
 
