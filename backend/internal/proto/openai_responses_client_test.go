@@ -440,7 +440,10 @@ func TestOpenAIResponses_D11_EventsAfterCompletedDropped(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponses_D11_ToolUseStartingPendingLoss(t *testing.T) {
+// D11 tool_use 流式已实现:start 必须发 function_call output_item.added 且不再记
+// pending loss(原测试钉旧 pending 行为,功能落地后翻转为回归守卫;完整生命周期
+// 见 openai_responses_stream_tool_test.go)。
+func TestOpenAIResponses_D11_ToolUseStartEmitsFunctionCallItem(t *testing.T) {
 	adapter := &OpenAIResponsesClient{}
 	state := NewOpenAIResponsesStreamState()
 	_, _, _ = adapter.CanonicalEventToClientChunk(context.Background(), &CanonicalEvent{Type: "message_start", MessageID: "r", Model: "x"}, state)
@@ -448,8 +451,11 @@ func TestOpenAIResponses_D11_ToolUseStartingPendingLoss(t *testing.T) {
 		Type:         "content_block_start",
 		ContentBlock: &CanonicalContentBlock{Type: "tool_use", CallID: "c", Name: "n"},
 	}, state)
-	if len(chunks) != 0 || len(losses) == 0 {
-		t.Errorf("expected tool_use D11.x pending loss; chunks=%d losses=%d", len(chunks), len(losses))
+	if len(chunks) == 0 || len(losses) != 0 {
+		t.Errorf("tool_use start 必须发 chunk 且零 loss; chunks=%d losses=%d", len(chunks), len(losses))
+	}
+	if len(chunks) > 0 && !strings.Contains(string(chunks[len(chunks)-1]), "function_call") {
+		t.Errorf("缺 function_call item: %s", chunks[len(chunks)-1])
 	}
 }
 
