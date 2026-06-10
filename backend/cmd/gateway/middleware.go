@@ -34,6 +34,7 @@ import (
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
+	"github.com/BloomingProsperity/HUAKAI/internal/reqdecompress"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
@@ -47,6 +48,9 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router.Use(middleware.RequestID)
 	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
 	router.Use(accesslog.Middleware(logger))
+	// 入站请求体透明解码 Content-Encoding(Codex CLI 0.125+ 默认发 zstd,delta-mine #8)。
+	// 解码后剥头+修正 ContentLength,下游各 handler 的 io.ReadAll 读到明文;带解压上限防炸弹。
+	router.Use(reqdecompress.Middleware(reqdecompress.DefaultMaxDecodedBytes))
 	// Explicit allowlist CORS, early (preflight answered before auth).
 	// Allowlist via HUAKAI_CORS_ALLOWED_ORIGINS (comma-separated); empty = deny.
 	// It runs before the limiter so a 429 to an allowlisted browser origin
