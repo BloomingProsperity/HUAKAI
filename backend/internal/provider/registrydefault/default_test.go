@@ -39,6 +39,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolStepChat,
 		ProtocolHunyuanChat,
 		ProtocolMinimaxChat,
+		ProtocolCohereChat,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)

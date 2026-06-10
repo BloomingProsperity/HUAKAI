@@ -206,3 +206,26 @@ func assertPanic(t *testing.T, fn func()) {
 	}()
 	fn()
 }
+
+// TestOpenAICompatFamiliesResolveInbound 守卫出站/入站注册表对称:每个 OpenAI
+// Chat Completions 兼容上游族都必须在入站协议适配器注册表登记。出站
+// registrydefault 注册这些族用于 BuildRequest;非流式默认走 HCSF
+// (hcsfDispatchEnabled 默认开),DispatchHCSF 用本注册表 adapter 解析上游响应。
+// 漏登记 = 该 provider 非流式请求直接 "取 upstream adapter 失败"(本轮修复的
+// kimi/qwen/glm/yi/baichuan/doubao/ernie/step/hunyuan/minimax 整类漏接)。
+// Mutation guard: 删 protocol_selector.go 任一 MustRegister 行 → 对应族子断言红。
+func TestOpenAICompatFamiliesResolveInbound(t *testing.T) {
+	reg := BuildDefaultProtocolAdapterRegistry()
+	families := []string{
+		"deepseek_chat", "mistral_chat", "groqcloud_chat", "together_chat",
+		"perplexity_chat", "fireworks_chat", "kimi_chat", "qwen_chat",
+		"glm_chat", "yi_chat", "baichuan_chat", "doubao_chat", "ernie_chat",
+		"step_chat", "hunyuan_chat", "minimax_chat", "cohere_chat",
+		"grok_chat", "openrouter_chat",
+	}
+	for _, f := range families {
+		if _, err := reg.For(f); err != nil {
+			t.Errorf("OpenAI 兼容族 %q 未在入站协议适配器注册表登记: %v", f, err)
+		}
+	}
+}
