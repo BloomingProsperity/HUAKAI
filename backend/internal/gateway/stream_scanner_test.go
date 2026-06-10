@@ -131,6 +131,71 @@ func TestBuildDefaultStreamScannerRegistry(t *testing.T) {
 	if _, ok := bedrock.(*BedrockEventStreamScanner); !ok {
 		t.Errorf("bedrock_invoke scanner 类型=%T 期望 *BedrockEventStreamScanner", bedrock)
 	}
+
+	// ollama_native 走专用 NDJSONStreamScanner——误注册成 SSE scanner 时
+	// 裸 JSON 行没有 data: 前缀,SSE 切帧产不出任何事件,整族流式零输出。
+	ollama, err := r.For("ollama_native")
+	if err != nil {
+		t.Errorf("ollama_native 应已注册,err=%v", err)
+	}
+	if _, ok := ollama.(*NDJSONStreamScanner); !ok {
+		t.Errorf("ollama_native scanner 类型=%T 期望 *NDJSONStreamScanner", ollama)
+	}
+}
+
+// TestNDJSONStreamScannerSplitsLinesVerbatim 抓的回归:NDJSON 切帧行为漂移——
+// (1) 行被剥 "data:" 前缀或被当 [DONE] 哨兵吞(NDJSON 帧是裸 JSON,任何字面
+// 必须原样保留交给 proto adapter);(2) 空行没跳过(空帧进 adapter 变 loss 噪音)。
+func TestNDJSONStreamScannerSplitsLinesVerbatim(t *testing.T) {
+	wire := "{\"message\":{\"content\":\"a\"},\"done\":false}\n" +
+		"\n" + // 空行必须跳过
+		"data: {\"x\":1}\n" + // 含 data: 字面的行原样保留(不剥前缀)
+		"[DONE]\n" // 哨兵字面不在 scanner 层消费,原样交付
+	var got []string
+	for evt, err := range (&NDJSONStreamScanner{}).Scan(context.Background(), strings.NewReader(wire), 0) {
+		if err != nil {
+			t.Fatalf("scan err=%v", err)
+		}
+		got = append(got, string(evt.Data))
+	}
+	want := []string{
+		`{"message":{"content":"a"},"done":false}`,
+		`data: {"x":1}`,
+		"[DONE]",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("事件数=%d want %d: %q", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d] Data=%q want %q(逐行原样,不剥前缀/不吞哨兵)", i, got[i], want[i])
+		}
+	}
+}
+
+// TestNDJSONStreamScannerCtxCancel 抓的回归:取消的 ctx 不被尊重,scanner
+// 继续读流(慢上游下泄漏 goroutine/连接)。
+func TestNDJSONStreamScannerCtxCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := lastScanError((&NDJSONStreamScanner{}).Scan(ctx, strings.NewReader("{\"a\":1}\n{\"b\":2}\n"), 0))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("已取消 ctx 应 yield ctx.Err(): %v", err)
+	}
+}
+
+// TestNDJSONStreamScannerOverflow 抓的回归:超长行不按 ErrScannerOverflow
+// 归类(forwarder 的 ResponseEventTooLarge 终止分类失效,错按网络错误重试)。
+func TestNDJSONStreamScannerOverflow(t *testing.T) {
+	long := "{\"content\":\"" + strings.Repeat("X", 256) + "\"}\n"
+	err := lastScanError((&NDJSONStreamScanner{}).Scan(context.Background(), strings.NewReader(long), 64))
+	if !errors.Is(err, ErrScannerOverflow) {
+		t.Fatalf("超长行 err=%v want ErrScannerOverflow", err)
+	}
+	class, _ := classifyScanError(err)
+	if class != ResponseEventTooLarge {
+		t.Fatalf("overflow class=%q want %q", class, ResponseEventTooLarge)
+	}
 }
 
 // TestSSEStreamScanner_DelegatesToScanSSEEvents 验证 wrapper 与原函数行为

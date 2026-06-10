@@ -188,6 +188,12 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 		// controls 字段一律不可注入;被丢弃的 controls 已在 marshal 内记 loss。
 		return raw, nil
 	}
+	if family == "ollama_native" {
+		// Ollama 的采样控制已在 marshal 阶段嵌进 options{}(num_predict 等);
+		// 在顶层二次注入 openai 形 temperature/max_tokens 是协议污染。
+		// 不可表达的控制已在 marshal 内记 loss。
+		return raw, nil
+	}
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err

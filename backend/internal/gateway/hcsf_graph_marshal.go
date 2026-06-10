@@ -8,6 +8,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
+	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 )
 
 // MarshalToProviderRequest 把 HCSF graph 投影为目标 provider endpoint 的请求 body。
@@ -34,6 +35,10 @@ func MarshalToProviderRequest(env *proto.HCSF, endpointFamily string) ([]byte, e
 		// Dify 形态自带流式语义(response_mode)与全部可表达字段;loss 记账在
 		// proto/dify 包内完成。
 		return protodify.MarshalChatRequest(env)
+	case "ollama_native":
+		// Ollama 原生形态自带流式语义(显式 stream 字段)与 options{} 采样
+		// 控制;loss 记账在 proto/ollama 包内完成。
+		return protoollama.MarshalChatRequest(env)
 	default:
 		return nil, fmt.Errorf("gateway: unsupported HCSF endpoint family %q", endpointFamily)
 	}

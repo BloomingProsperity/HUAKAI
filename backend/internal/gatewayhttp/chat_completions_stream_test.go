@@ -1900,6 +1900,53 @@ func TestStreamingProviderRequestBodyDifyChat(t *testing.T) {
 	}
 }
 
+// TestStreamingProviderRequestBodyOllamaNative 抓的回归:ollama_native 流式
+// 翻译 body 被 openai 形处理污染——Ollama 的采样控制只认 options{} 嵌套
+// (num_predict),injectStreamingRequestControls 注顶层 max_tokens 即协议污染;
+// stream 字段由 marshal 按 StreamPlan 显式写,真相源必须唯一(forceStreaming
+// 跳过为单源纪律,其 true 写入与 marshal 幂等,判别断言落在 controls 注入)。
+// Mutation:从 injectStreamingRequestControls 删掉 ollama_native 早退 →
+// 顶层 max_tokens 断言红。
+func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta.Model = "llama3.2"
+	env.RequestMeta.RequestID = "req_ollama_stream"
+	env.StreamPlan.Mode = proto.StreamModeStreaming
+	env.CapabilityGraph.Nodes = []proto.CapabilityNode{{
+		ID:          "n1",
+		Kind:        proto.CapabilityText,
+		StreamReady: proto.StreamReadyYes,
+		Text:        &proto.TextNode{Role: "user", Block: proto.CanonicalContentBlock{Type: "text", Text: "hi"}},
+	}}
+	max := 64
+	env.RequestControls.MaxTokens = &max
+
+	raw, err := streamingProviderRequestBody(env, "ollama_native")
+	if err != nil {
+		t.Fatalf("streamingProviderRequestBody(ollama_native): %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, raw)
+	}
+	if body["stream"] != true {
+		t.Errorf("stream=%v want true(流式语义由 marshal 在 body 内显式表达)", body["stream"])
+	}
+	if _, ok := body["max_tokens"]; ok {
+		t.Errorf("ollama body 不得含顶层 max_tokens(openai 形 controls 注入须跳过): %v", body)
+	}
+	options, ok := body["options"].(map[string]any)
+	if !ok || options["num_predict"] != float64(64) {
+		t.Errorf("options.num_predict=%v want 64(MaxTokens 可表达,必须嵌 options)", body["options"])
+	}
+	// MaxTokens 已投影进 options,不应同时记 unsupported loss(与 dify 相反)。
+	for _, loss := range env.CapabilityGraph.ProtocolLoss {
+		if loss.Field == "max_tokens" {
+			t.Errorf("可表达的 MaxTokens 不应记 loss: %+v", loss)
+		}
+	}
+}
+
 // TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough 守卫流式
 // 翻译门(renew-156 族集不对称第 5 处变体):上游族的 wire 形态与客户端协议
 // 同形时(kimi/qwen/... == openai_chat;openai_codex == openai_responses)

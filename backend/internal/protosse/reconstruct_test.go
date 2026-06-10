@@ -6,6 +6,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
 
@@ -28,6 +29,32 @@ data: {"event":"message_end","conversation_id":"conv-1","metadata":{"usage":{"pr
 		t.Fatalf("reconstructed envelope missing buffered response: %+v", env)
 	}
 	if got := env.BufferedResponse.Content; len(got) != 1 || got[0].Type != "text" || got[0].Text != "rescued dify text" {
+		t.Fatalf("reconstructed content = %+v, want one text block", got)
+	}
+	if got := env.BufferedResponse.Usage; got.InputTokens != 7 || got.OutputTokens != 3 {
+		t.Fatalf("reconstructed usage = %+v, want input=7 output=3", got)
+	}
+}
+
+// TestReconstructBufferedFromSSEOllamaStream 守卫族集对称第 8 站:
+// newUpstreamState 漏 ollama case 时 ollama adapter type-assert
+// *ollama.UpstreamState 失败,每个事件进 loss、重组永远失败——blocking 请求
+// 遇代理把 NDJSON 包成 SSE 回传时整族不可恢复。
+// Mutation:删 newUpstreamState 的 ollama case → 本测试红。
+func TestReconstructBufferedFromSSEOllamaStream(t *testing.T) {
+	raw := []byte(`
+data: {"model":"llama3.2","message":{"role":"assistant","content":"rescued ollama text"},"done":false}
+
+data: {"model":"llama3.2","done":true,"done_reason":"stop","prompt_eval_count":7,"eval_count":3}
+`)
+	env, _, ok := ReconstructBufferedFromSSE(&ollama.Adapter{}, raw)
+	if !ok {
+		t.Fatal("ollama SSE-shaped body must be detected and reconstructed")
+	}
+	if env == nil || env.BufferedResponse == nil {
+		t.Fatalf("reconstructed envelope missing buffered response: %+v", env)
+	}
+	if got := env.BufferedResponse.Content; len(got) != 1 || got[0].Type != "text" || got[0].Text != "rescued ollama text" {
 		t.Fatalf("reconstructed content = %+v, want one text block", got)
 	}
 	if got := env.BufferedResponse.Usage; got.InputTokens != 7 || got.OutputTokens != 3 {

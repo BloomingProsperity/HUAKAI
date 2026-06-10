@@ -683,6 +683,52 @@ func TestInjectRequestControlsSkipsDifyChat(t *testing.T) {
 	}
 }
 
+// TestInjectRequestControlsSkipsOllamaNative 抓的回归:非流式 HCSF 路径把
+// openai 形 controls(顶层 max_tokens/temperature)注进 Ollama body——Ollama
+// 的采样控制已由 marshal 嵌进 options{}(num_predict),顶层二次注入=协议
+// 污染(上游静默忽略顶层字段,且 body 双真相源)。流式孪生跳过由 gatewayhttp
+// 的 TestStreamingProviderRequestBodyOllamaNative 钉,本测试钉非流式。
+// Mutation:删 injectRequestControls 的 ollama_native 早退 → 本测试红。
+func TestInjectRequestControlsSkipsOllamaNative(t *testing.T) {
+	env := proto.NewEmptyEnvelope()
+	max := 42
+	env.RequestControls.MaxTokens = &max
+	temp := 0.3
+	env.RequestControls.Temperature = &temp
+	raw := []byte(`{"model":"llama3.2","messages":[{"role":"user","content":"hi"}],"stream":false,"options":{"num_predict":42,"temperature":0.3}}`)
+	out, err := injectRequestControls(raw, env, "ollama_native")
+	if err != nil {
+		t.Fatalf("injectRequestControls(ollama_native): %v", err)
+	}
+	if !bytes.Equal(out, raw) {
+		t.Fatalf("ollama_native body 被 controls 注入污染:\ngot:  %s\nwant: %s", out, raw)
+	}
+}
+
+// TestMarshalToProviderRequestOllamaNative 抓的回归:gateway marshal 分派把
+// ollama_native 接错投影(回落 openai_chat 形顶层采样字段)或漏接(流式 501/
+// 非流式 502)。判别点:options 嵌套 + 显式 stream 字段是 Ollama 形独有,
+// openai_chat 投影不会产出。
+func TestMarshalToProviderRequestOllamaNative(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	max := 9
+	env.RequestControls.MaxTokens = &max
+	body := marshalBody(t, env, "ollama_native")
+	if _, ok := body["max_tokens"]; ok {
+		t.Errorf("顶层不得出现 max_tokens(必须嵌 options.num_predict): %v", body)
+	}
+	options, ok := body["options"].(map[string]any)
+	if !ok || options["num_predict"] != float64(9) {
+		t.Errorf("options.num_predict=%v want 9", body["options"])
+	}
+	if _, present := body["stream"]; !present {
+		t.Error("Ollama body 必须显式携带 stream 字段")
+	}
+	if got := body["model"]; got != "model-up" {
+		t.Errorf("model=%v want model-up(UpstreamModel 优先)", got)
+	}
+}
+
 // TestMarshalSupportsEveryRegisteredProtocolFamily 把 marshal 形态映射纳入
 // 0ee632fc 建立的族集对称守卫:入站协议注册表里的每个族,要么能
 // MarshalToProviderRequest,要么在下面 fail-closed 例外表里有文档化理由。

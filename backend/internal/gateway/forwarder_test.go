@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	protoanthropic "github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
+	protoollamafwd "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/shopspring/decimal"
@@ -1476,6 +1477,27 @@ func TestNewUpstreamStateDifyChat(t *testing.T) {
 		t.Fatalf("state 类型=%T 期望 *dify.UpstreamState(回落别家 state 会让 dify adapter type assertion 失败)", state)
 	}
 	if st.TenantID != 7 || st.AccountID != 21 || st.PrefixHash != "prefix-h" {
+		t.Fatalf("forwarder 注入字段不齐: %+v", st)
+	}
+}
+
+// TestNewUpstreamStateOllamaNative 抓的回归(八站接线第 7 站):ollama_native
+// 注册了专用 proto adapter 但 newUpstreamState 仍回落 *anthropic.UpstreamState
+// → ProviderEventToCanonicalEvents 内 type assertion 失败,ollama 流式链路
+// 收到第一帧即报错。同时钉住 TenantID/AccountID/PrefixHash 三字段注入约定。
+func TestNewUpstreamStateOllamaNative(t *testing.T) {
+	f := newForwarder()
+	state := f.newUpstreamState(ForwardRequest{
+		ProtocolFamily: "ollama_native",
+		TenantID:       3,
+		AccountID:      17,
+		SessionHash:    "prefix-o",
+	})
+	st, ok := state.(*protoollamafwd.UpstreamState)
+	if !ok {
+		t.Fatalf("state 类型=%T 期望 *ollama.UpstreamState(回落别家 state 会让 ollama adapter type assertion 失败)", state)
+	}
+	if st.TenantID != 3 || st.AccountID != 17 || st.PrefixHash != "prefix-o" {
 		t.Fatalf("forwarder 注入字段不齐: %+v", st)
 	}
 }
