@@ -183,6 +183,11 @@ func mergeResponsesNative(env *proto.HCSF, body map[string]any) {
 }
 
 func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, error) {
+	if family == "dify_chat" {
+		// Dify 无 per-request 控制参数(模型/采样在 app 侧配置),openai 形
+		// controls 字段一律不可注入;被丢弃的 controls 已在 marshal 内记 loss。
+		return raw, nil
+	}
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err

@@ -300,7 +300,9 @@ func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
 		return body
 	}
 	out := body
-	if strings.TrimSpace(ex.upstreamModelID) != "" {
+	// dify_chat 的出站 body 没有 model 字段(Dify 由 app token 决定模型,
+	// 模型选择只参与路由/计费),不得把顶层 model 注进翻译产物污染契约。
+	if strings.TrimSpace(ex.upstreamModelID) != "" && ex.resolved.ProtocolFamily != "dify_chat" {
 		rewritten, ok := ex.rewriteUpstreamModel(body)
 		if !ok {
 			return body

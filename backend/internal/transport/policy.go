@@ -58,6 +58,10 @@ const (
 	ProviderMinimax  ProviderCode = "minimax"
 	ProviderCohere   ProviderCode = "cohere"
 	ProviderOllama   ProviderCode = "ollama"
+
+	// Dify 应用编排平台(per-app token 直通;chat-messages/workflows/
+	// completion-messages)。非订阅反转目标,仅 standard + diagnostics。
+	ProviderDify ProviderCode = "dify"
 )
 
 // TransportMode 决定 RoundTripper 的形态。
@@ -264,6 +268,11 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 		TransportModeDiagnosticsOnly: true,
 	},
 	ProviderOllama: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	// Dify:API token 直通,与 deepseek 等同款(standard + diagnostics_only)。
+	ProviderDify: {
 		TransportModeStandard:        true,
 		TransportModeDiagnosticsOnly: true,
 	},

@@ -454,13 +454,22 @@ func streamingProviderRequestBody(env *proto.HCSF, family string) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	if family == "gemini_messages" {
+	switch family {
+	case "gemini_messages", "dify_chat":
+		// 这两族的流式开关不在顶层 stream 字段:gemini 由 endpoint 路径
+		// (streamGenerateContent)决定,dify 由 body 内 response_mode 决定
+		// (marshal 已按 StreamPlan 写入)。注 openai 形 stream:true 会污染 body。
 		return body, nil
 	}
 	return forceStreamingRequest(body)
 }
 
 func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, error) {
+	if family == "dify_chat" {
+		// Dify 无 per-request 控制参数(模型/采样在 app 侧配置),openai 形
+		// controls 字段一律不可注入;被丢弃的 controls 已在 marshal 内记 loss。
+		return raw, nil
+	}
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err

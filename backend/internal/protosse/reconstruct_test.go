@@ -5,8 +5,35 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
+
+// TestReconstructBufferedFromSSEDifyStream 守卫族集对称第 8 站:本包
+// newUpstreamState 与 gateway/forwarder.newUpstreamState 是孪生类型分派,
+// dify case 缺失时 dify adapter type-assert *dify.UpstreamState 失败,每个
+// 事件进 loss、重组永远失败——blocking 请求遇上游回 SSE 时整族不可恢复。
+// Mutation:删 newUpstreamState 的 dify case → 本测试红。
+func TestReconstructBufferedFromSSEDifyStream(t *testing.T) {
+	raw := []byte(`
+data: {"event":"message","conversation_id":"conv-1","answer":"rescued dify text"}
+
+data: {"event":"message_end","conversation_id":"conv-1","metadata":{"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}}
+`)
+	env, _, ok := ReconstructBufferedFromSSE(&dify.Adapter{}, raw)
+	if !ok {
+		t.Fatal("dify SSE body must be detected and reconstructed")
+	}
+	if env == nil || env.BufferedResponse == nil {
+		t.Fatalf("reconstructed envelope missing buffered response: %+v", env)
+	}
+	if got := env.BufferedResponse.Content; len(got) != 1 || got[0].Type != "text" || got[0].Text != "rescued dify text" {
+		t.Fatalf("reconstructed content = %+v, want one text block", got)
+	}
+	if got := env.BufferedResponse.Usage; got.InputTokens != 7 || got.OutputTokens != 3 {
+		t.Fatalf("reconstructed usage = %+v, want input=7 output=3", got)
+	}
+}
 
 func TestReconstructBufferedFromSSEOpenAITextAndUsage(t *testing.T) {
 	// Removing the SSE sniff/fallback makes this test go red: the raw body is

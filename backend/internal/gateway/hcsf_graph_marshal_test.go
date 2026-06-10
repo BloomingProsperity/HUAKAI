@@ -661,6 +661,28 @@ func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 	}
 }
 
+// TestInjectRequestControlsSkipsDifyChat 抓的回归:非流式 HCSF 路径
+// (hcsfRequestBody→injectRequestControls)把 openai 形 controls(max_tokens/
+// temperature/tools)注进 Dify body——Dify 无 per-request 参数,marshal 已对
+// controls 记 loss,注入=协议污染且与 loss 记账自相矛盾。流式孪生跳过由
+// gatewayhttp 的 TestStreamingProviderRequestBodyDifyChat 钉,本测试钉非流式。
+// Mutation:删 injectRequestControls 的 dify_chat 早退 → 本测试红。
+func TestInjectRequestControlsSkipsDifyChat(t *testing.T) {
+	env := proto.NewEmptyEnvelope()
+	max := 42
+	env.RequestControls.MaxTokens = &max
+	temp := 0.3
+	env.RequestControls.Temperature = &temp
+	raw := []byte(`{"inputs":{},"query":"USER: hi","response_mode":"blocking","user":"u1","auto_generate_name":false}`)
+	out, err := injectRequestControls(raw, env, "dify_chat")
+	if err != nil {
+		t.Fatalf("injectRequestControls(dify_chat): %v", err)
+	}
+	if !bytes.Equal(out, raw) {
+		t.Fatalf("dify_chat body 被 controls 注入污染:\ngot:  %s\nwant: %s", out, raw)
+	}
+}
+
 // TestMarshalSupportsEveryRegisteredProtocolFamily 把 marshal 形态映射纳入
 // 0ee632fc 建立的族集对称守卫:入站协议注册表里的每个族,要么能
 // MarshalToProviderRequest,要么在下面 fail-closed 例外表里有文档化理由。

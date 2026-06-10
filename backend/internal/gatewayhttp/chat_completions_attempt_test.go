@@ -75,6 +75,30 @@ func TestPR4PrepareNextAttemptAfterAbortClearsReservationAndAcquisition(t *testi
 	}
 }
 
+// TestUpstreamInboundBodySkipsModelRewriteForDifyChat 抓的回归:dify_chat
+// 的翻译产物 body 没有 model 字段(Dify 契约无此键),流式路径经
+// upstreamInboundBody 时不得被 rewriteUpstreamModel 注入顶层 model 污染契约。
+// Mutation:删掉 upstreamInboundBody 的 dify_chat 跳过 → 本测试红。
+func TestUpstreamInboundBodySkipsModelRewriteForDifyChat(t *testing.T) {
+	original := []byte(`{"inputs":{},"query":"USER: hi","response_mode":"streaming","user":"req-1","auto_generate_name":false}`)
+	ex := &chatExecution{
+		upstreamModelID: "dify-app-model",
+		body:            original,
+		resolved:        registry.Resolved{ProtocolFamily: "dify_chat"},
+	}
+	out := ex.upstreamInboundBody(ex.body)
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("outbound body is not JSON: %v", err)
+	}
+	if _, has := parsed["model"]; has {
+		t.Fatalf("dify_chat 出站 body 被注入 model 字段: %s", out)
+	}
+	if parsed["query"] != "USER: hi" {
+		t.Fatalf("body 内容被意外改写: %s", out)
+	}
+}
+
 func TestUpstreamInboundBodyUsesResolvedModelWithoutMutatingOriginal(t *testing.T) {
 	original := []byte(`{"model":"primary-model","messages":[{"role":"user","content":"hello"}]}`)
 	ex := &chatExecution{

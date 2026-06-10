@@ -9,6 +9,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
@@ -129,12 +130,17 @@ func trimSSEFieldValue(v []byte) []byte {
 	return bytes.TrimRight(v, "\r")
 }
 
+// newUpstreamState 与 gateway/forwarder.newUpstreamState 是同一类型分派的
+// 孪生站点(族集对称第 8 站):新 proto adapter 落地时两处都要加 case,
+// 否则 SSE 兜底重组对该族 type-assert 失败、整族不可恢复。
 func newUpstreamState(adapter proto.UpstreamAdapter) any {
 	switch adapter.(type) {
 	case *openai.Adapter:
 		return &openai.UpstreamState{}
 	case *gemini.Adapter:
 		return &gemini.UpstreamState{}
+	case *dify.Adapter:
+		return &dify.UpstreamState{}
 	default:
 		return &anthropic.UpstreamState{}
 	}

@@ -1850,6 +1850,56 @@ func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 	}
 }
 
+// TestStreamingProviderRequestBodyDifyChat 抓的回归:dify_chat 流式翻译 body
+// 被 openai 形处理污染——Dify 的流式语义只在 body 内 response_mode 字段,
+// (1) forceStreamingRequest 注顶层 stream:true、(2) injectStreamingRequestControls
+// 注 max_tokens 等 openai 形 controls,任一发生都是协议污染;且被丢弃的
+// MaxTokens 控制必须在 marshal 内记 loss 而非静默蒸发。
+// Mutation:从 streamingProviderRequestBody 的跳过分支删掉 dify_chat → 顶层
+// stream 断言红;从 injectStreamingRequestControls 删掉 dify_chat 早退 →
+// max_tokens 断言红。
+func TestStreamingProviderRequestBodyDifyChat(t *testing.T) {
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta.Model = "dify-app"
+	env.RequestMeta.RequestID = "req_dify_stream"
+	env.StreamPlan.Mode = proto.StreamModeStreaming
+	env.CapabilityGraph.Nodes = []proto.CapabilityNode{{
+		ID:          "n1",
+		Kind:        proto.CapabilityText,
+		StreamReady: proto.StreamReadyYes,
+		Text:        &proto.TextNode{Role: "user", Block: proto.CanonicalContentBlock{Type: "text", Text: "hi"}},
+	}}
+	max := 64
+	env.RequestControls.MaxTokens = &max
+
+	raw, err := streamingProviderRequestBody(env, "dify_chat")
+	if err != nil {
+		t.Fatalf("streamingProviderRequestBody(dify_chat): %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, raw)
+	}
+	if body["response_mode"] != "streaming" {
+		t.Errorf("response_mode=%v want streaming(流式语义须由 marshal 在 body 内表达)", body["response_mode"])
+	}
+	if _, ok := body["stream"]; ok {
+		t.Errorf("dify body 不得含顶层 stream 字段(forceStreamingRequest 须跳过): %v", body)
+	}
+	if _, ok := body["max_tokens"]; ok {
+		t.Errorf("dify body 不得含 max_tokens(openai 形 controls 注入须跳过): %v", body)
+	}
+	var maxTokensLoss bool
+	for _, loss := range env.CapabilityGraph.ProtocolLoss {
+		if loss.Field == "max_tokens" && loss.Code == "unsupported_request_control" {
+			maxTokensLoss = true
+		}
+	}
+	if !maxTokensLoss {
+		t.Errorf("MaxTokens 被丢弃但 marshal 未记 loss: %+v", env.CapabilityGraph.ProtocolLoss)
+	}
+}
+
 // TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough 守卫流式
 // 翻译门(renew-156 族集不对称第 5 处变体):上游族的 wire 形态与客户端协议
 // 同形时(kimi/qwen/... == openai_chat;openai_codex == openai_responses)

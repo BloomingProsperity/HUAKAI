@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 )
 
 // MarshalToProviderRequest 把 HCSF graph 投影为目标 provider endpoint 的请求 body。
@@ -29,6 +30,10 @@ func MarshalToProviderRequest(env *proto.HCSF, endpointFamily string) ([]byte, e
 		return marshalOpenAIResponses(env)
 	case "gemini_messages":
 		return marshalGeminiMessages(env)
+	case "dify_chat":
+		// Dify 形态自带流式语义(response_mode)与全部可表达字段;loss 记账在
+		// proto/dify 包内完成。
+		return protodify.MarshalChatRequest(env)
 	default:
 		return nil, fmt.Errorf("gateway: unsupported HCSF endpoint family %q", endpointFamily)
 	}
