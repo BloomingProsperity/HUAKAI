@@ -79,10 +79,10 @@ func TestTranslate_EmptyBody(t *testing.T) {
 func TestTranslate_InvalidJSON(t *testing.T) {
 	cases := []string{
 		`{not json`,
-		`[1,2,3]`,             // 数组顶层非 object
-		`"just a string"`,     // 标量
-		`12345`,               // number
-		`null`,                // null
+		`[1,2,3]`,         // 数组顶层非 object
+		`"just a string"`, // 标量
+		`12345`,           // number
+		`null`,            // null
 	}
 	for _, in := range cases {
 		t.Run(in, func(t *testing.T) {
@@ -95,7 +95,10 @@ func TestTranslate_InvalidJSON(t *testing.T) {
 }
 
 func TestTranslate_PreservesAllOtherFields_U7Consistency(t *testing.T) {
-	// vendor 加新字段时透传不丢——与 U7 passthrough field matrix 一致语义
+	// vendor 加新字段时透传不丢——与 U7 passthrough field matrix 一致语义。
+	// 例外:Bedrock 已知拒绝的顶层字段(metadata/anthropic_beta)必须剥除,
+	// 否则真实 Claude Code 流量(必带 metadata.user_id)经 Bedrock 必 400
+	// ValidationException(delta-mine #4,行为修正后本测试预期同步翻转)。
 	in := []byte(`{
 		"model":"claude-3",
 		"messages":[{"role":"user","content":"x"}],
@@ -115,14 +118,14 @@ func TestTranslate_PreservesAllOtherFields_U7Consistency(t *testing.T) {
 	}
 	for _, field := range []string{
 		"messages", "max_tokens", "system", "temperature", "top_p", "top_k",
-		"stop_sequences", "tools", "vendor_future_field", "metadata",
+		"stop_sequences", "tools", "vendor_future_field",
 	} {
 		if !strings.Contains(string(got.Body), `"`+field+`"`) {
 			t.Errorf("body 应保留 %q: %s", field, got.Body)
 		}
 	}
 	// 不应含被剥离的
-	for _, dropped := range []string{`"model"`, `"stream"`} {
+	for _, dropped := range []string{`"model"`, `"stream"`, `"metadata"`} {
 		if strings.Contains(string(got.Body), dropped) {
 			t.Errorf("body 不应含 %q: %s", dropped, got.Body)
 		}
