@@ -42,6 +42,40 @@ type NoopAuditSink struct{}
 
 func (NoopAuditSink) EmitVoucherAudit(context.Context, AuditEvent) error { return nil }
 
+// PrivacyLogAuditSink 把 voucher 审计事件发到 privacy.system 结构化日志。
+// 生产 wiring 此前没传 sink → 默认 NoopAuditSink,grant/redeem/revoke 审计被
+// 静默丢弃(审计抓到的 dormant)。复用 ValidateAuditEvent 防泄漏门(CMB-5:
+// payload 绝不带 code 明文,违规直接拒发)。
+type PrivacyLogAuditSink struct{}
+
+func (PrivacyLogAuditSink) EmitVoucherAudit(ctx context.Context, event AuditEvent) error {
+	event.Payload = sanitizeAuditPayload(ctx, event.Payload)
+	if err := ValidateAuditEvent(event); err != nil {
+		return err
+	}
+	attrs := map[string]any{
+		"event_class":      event.EventType,
+		"tenant_id":        event.TenantID,
+		"voucher_id":       event.VoucherID,
+		"batch_id":         event.BatchID,
+		"redemption_id":    event.RedemptionID,
+		"user_id":          event.UserID,
+		"actor_id":         event.ActorID,
+		"reason_class":     event.ReasonClass,
+		"code_fingerprint": event.CodeFingerprint,
+		"occurred_at":      event.OccurredAt.UTC().Format(time.RFC3339),
+	}
+	for k, v := range event.Payload {
+		attrs["payload_"+k] = v
+	}
+	return privacy.LogSystem(ctx, privacy.SystemEvent{
+		Severity:  privacy.SeverityInfo,
+		Component: "voucher.audit",
+		RequestID: event.RequestID,
+		Attrs:     attrs,
+	})
+}
+
 type MemoryAuditSink struct {
 	mu     sync.Mutex
 	events []AuditEvent
