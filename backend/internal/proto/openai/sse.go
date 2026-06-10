@@ -114,7 +114,11 @@ type openAIUsage struct {
 
 type openAIPromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens,omitempty"`
-	AudioTokens  int `json:"audio_tokens,omitempty"`
+	// AudioTokens 是 prompt_tokens 的子拆分(已含在 InputTokens 里计费),有意
+	// 不进 CanonicalUsage:HUAKAI 暂无按模态差异计价,carry 它只会引入双算风险。
+	// 若日后做 per-modality 定价,应仿 ReasoningTokens 加 audit-only 字段且不入
+	// UsageHasValue/token 交叉校验。
+	AudioTokens int `json:"audio_tokens,omitempty"`
 }
 
 type openAICompletionTokensDetails struct {
