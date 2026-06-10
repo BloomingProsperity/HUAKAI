@@ -34,6 +34,12 @@ type OpenAIResponsesStreamState struct {
 	ToolCallID   string
 	ToolName     string
 	ToolArgs     []byte
+
+	// reasoning item 生命周期（thinking/reasoning 块 → Responses reasoning output item）
+	ReasoningItemOpen bool
+	ReasoningItemID   string
+	ReasoningText     []byte
+	ReasoningSig      string
 }
 
 func NewOpenAIResponsesStreamState() *OpenAIResponsesStreamState {
@@ -67,6 +73,38 @@ func (s *OpenAIResponsesStreamState) closeOpenMessageItem() [][]byte {
 		s.ItemOpen = false
 	}
 	return out
+}
+
+// closeOpenReasoningItem 收尾 reasoning item：output_item.done(type reasoning，
+// summary=[{summary_text}]，签名进 encrypted_content)，形状对齐 buffered 渲染器
+// openAIResponsesReasoningOutputItem。
+func (s *OpenAIResponsesStreamState) closeOpenReasoningItem() [][]byte {
+	if !s.ReasoningItemOpen {
+		return nil
+	}
+	summary := make([]map[string]string, 0, 1)
+	if len(s.ReasoningText) > 0 {
+		summary = append(summary, map[string]string{"type": "summary_text", "text": string(s.ReasoningText)})
+	}
+	item := map[string]any{
+		"type":    "reasoning",
+		"id":      s.ReasoningItemID,
+		"status":  "completed",
+		"summary": summary,
+	}
+	if s.ReasoningSig != "" {
+		item["encrypted_content"] = s.ReasoningSig
+	}
+	done := map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": s.CurrentOutputIndex,
+		"item":         item,
+	}
+	body, _ := json.Marshal(done)
+	s.ReasoningItemOpen = false
+	s.ReasoningText = nil
+	s.ReasoningSig = ""
+	return [][]byte{EmitSSEEvent("response.output_item.done", body)}
 }
 
 // closeOpenToolItem 收尾 function_call item：arguments.done + output_item.done，
@@ -164,6 +202,7 @@ func (o *OpenAIResponsesClient) CanonicalEventToClientChunk(ctx context.Context,
 		case "text":
 			var out [][]byte
 			out = append(out, s.closeOpenToolItem()...) // 防御：上块未 stop 先补收尾
+			out = append(out, s.closeOpenReasoningItem()...)
 			s.CurrentOutputIndex = evt.Index
 			s.CurrentItemID = fmt.Sprintf("msg_%s_%d", s.ResponseID, evt.Index)
 			s.ItemOpen = true
@@ -223,6 +262,32 @@ func (o *OpenAIResponsesClient) CanonicalEventToClientChunk(ctx context.Context,
 			body, _ := json.Marshal(added)
 			out = append(out, EmitSSEEvent("response.output_item.added", body))
 			return out, nil, nil
+		case "thinking", "reasoning", "redacted_thinking":
+			// 上游 thinking 块 → Responses reasoning output item(buffered 路早已渲染
+			// reasoning item;此前流式掉 default 当 unknown 丢 = 流式/缓冲不对称)。
+			var out [][]byte
+			out = append(out, s.closeOpenToolItem()...)
+			out = append(out, s.closeOpenMessageItem()...)
+			s.CurrentOutputIndex = evt.Index
+			s.ReasoningItemOpen = true
+			s.ReasoningItemID = fmt.Sprintf("rs_%s_%d", s.ResponseID, evt.Index)
+			s.ReasoningText = nil
+			s.ReasoningSig = evt.ContentBlock.Signature
+			if evt.ContentBlock.Thinking != "" {
+				s.ReasoningText = append(s.ReasoningText, evt.ContentBlock.Thinking...)
+			}
+			added := map[string]any{
+				"type":         "response.output_item.added",
+				"output_index": evt.Index,
+				"item": map[string]any{
+					"type":    "reasoning",
+					"id":      s.ReasoningItemID,
+					"summary": []any{},
+				},
+			}
+			body, _ := json.Marshal(added)
+			out = append(out, EmitSSEEvent("response.output_item.added", body))
+			return out, nil, nil
 		default:
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "responses_unknown_block_start:"+evt.ContentBlock.Type, "unknown_block_start", "", "")
 			return nil, []ProtocolLossEntry{loss}, nil
@@ -260,8 +325,33 @@ func (o *OpenAIResponsesClient) CanonicalEventToClientChunk(ctx context.Context,
 			}
 			body, _ := json.Marshal(payload)
 			return [][]byte{EmitSSEEvent("response.function_call_arguments.delta", body)}, nil, nil
-		case "thinking_delta", "signature_delta":
-			loss, _ := NewClientLossEntry(ProtocolLossInfo, "responses_thinking_delta_d11_pending:"+evt.Delta.Type, "d11_thinking_delta_pending", CapabilityThinking, "")
+		case "reasoning_delta", "thinking_delta":
+			// 上游统一发 canonical reasoning_delta(thinking_delta 兼容留存);此前
+			// reasoning_delta 掉 default 当 unknown 丢 = 流式 reasoning 摘要全丢。
+			if !s.ReasoningItemOpen {
+				loss, _ := NewClientLossEntry(ProtocolLossInfo, "reasoning_delta_without_open_item", "reasoning_delta_no_item", CapabilityThinking, "")
+				return nil, []ProtocolLossEntry{loss}, nil
+			}
+			text := evt.Delta.ReasoningText
+			if text == "" {
+				text = evt.Delta.Text
+			}
+			s.ReasoningText = append(s.ReasoningText, text...)
+			payload := map[string]any{
+				"type":          "response.reasoning_summary_text.delta",
+				"item_id":       s.ReasoningItemID,
+				"output_index":  s.CurrentOutputIndex,
+				"summary_index": 0,
+				"delta":         text,
+			}
+			body, _ := json.Marshal(payload)
+			return [][]byte{EmitSSEEvent("response.reasoning_summary_text.delta", body)}, nil, nil
+		case "signature_delta":
+			if s.ReasoningItemOpen {
+				s.ReasoningSig += evt.Delta.Signature
+				return nil, nil, nil
+			}
+			loss, _ := NewClientLossEntry(ProtocolLossInfo, "signature_delta_without_open_item", "signature_delta_no_item", CapabilityThinking, "")
 			return nil, []ProtocolLossEntry{loss}, nil
 		default:
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "responses_unknown_delta_type:"+evt.Delta.Type, "unknown_delta_type", "", "")
@@ -274,6 +364,9 @@ func (o *OpenAIResponsesClient) CanonicalEventToClientChunk(ctx context.Context,
 		}
 		if s.ToolItemOpen {
 			return s.closeOpenToolItem(), nil, nil
+		}
+		if s.ReasoningItemOpen {
+			return s.closeOpenReasoningItem(), nil, nil
 		}
 		return s.closeOpenMessageItem(), nil, nil
 
@@ -288,6 +381,7 @@ func (o *OpenAIResponsesClient) CanonicalEventToClientChunk(ctx context.Context,
 		var out [][]byte
 		// 补尚未关闭的 function_call / content_part / output_item
 		out = append(out, s.closeOpenToolItem()...)
+		out = append(out, s.closeOpenReasoningItem()...)
 		out = append(out, s.closeOpenMessageItem()...)
 		completed := map[string]any{
 			"type": "response.completed",
@@ -336,6 +430,7 @@ func (o *OpenAIResponsesClient) FinalizeClientStream(ctx context.Context, state 
 	}
 	var out [][]byte
 	out = append(out, s.closeOpenToolItem()...)
+	out = append(out, s.closeOpenReasoningItem()...)
 	out = append(out, s.closeOpenMessageItem()...)
 	completed := map[string]any{
 		"type": "response.completed",
