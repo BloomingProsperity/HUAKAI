@@ -109,7 +109,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Catalog: d.modelRegistry,
 		Pricing: d.rateTableSource,
 	}))
-	geminiV1BetaHandler := geminihttp.NewGenerateContentHandler(geminihttp.NewDeps(chatHandlerDeps(d), modelListHandler))
+	geminiV1BetaHandler := geminihttp.NewGenerateContentHandler(geminihttp.NewDeps(chatHandlerDeps(d), modelListHandler, embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d))))
 	r.Get("/v1beta/models", geminiV1BetaHandler.ServeHTTP)
 	r.Post("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
 	r.Get("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)

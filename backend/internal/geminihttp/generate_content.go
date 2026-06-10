@@ -47,13 +47,17 @@ type Deps struct {
 	Gateway     NativeGateway
 	CountTokens CountTokensRelay
 	Models      http.Handler
+	// Embeddings 是 OpenAI 形 /v1/embeddings 管线(embeddingshttp,完整
+	// auth/配额/计费);embedContent/batchEmbedContents 经翻译包装复用它。
+	Embeddings http.Handler
 }
 
-func NewDeps(chat gatewayhttp.ChatHandlerDeps, models http.Handler) Deps {
+func NewDeps(chat gatewayhttp.ChatHandlerDeps, models http.Handler, embeddings http.Handler) Deps {
 	return Deps{
 		Gateway:     gatewayhttp.NewNativeClientGateway(chat),
 		CountTokens: NewCountTokensRelay(chat),
 		Models:      models,
+		Embeddings:  embeddings,
 	}
 }
 
@@ -87,6 +91,10 @@ func NewGenerateContentHandler(d Deps) http.Handler {
 				ClientAdapter:  &protogemini.GeminiClient{},
 				EndpointFamily: endpointFamilyGenerateContent,
 			})
+		case ActionEmbedContent:
+			serveGeminiEmbed(w, r, model, d.Embeddings, false)
+		case ActionBatchEmbedContents:
+			serveGeminiEmbed(w, r, model, d.Embeddings, true)
 		case ActionCountTokens:
 			if d.CountTokens == nil {
 				writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "Gemini countTokens dependency unset")
