@@ -358,6 +358,15 @@ func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
 	if cp == fam {
 		return false
 	}
+	// 上游族 wire 形态与客户端协议同形时(kimi/qwen/cohere/... == openai_chat;
+	// openai_codex == openai_responses)走 raw 直通:保真 vendor 专有字段
+	// (top_k 等;流式无 mergeHCSFRawPassthroughFields,翻译会静默丢),与
+	// openai→openai 既有直通语义一致。此前这些族在此返回 true 后
+	// MarshalToProviderRequest 不认原始族名,所有兼容族流式请求 501 在投递前
+	// 就挂(renew-156 族集不对称第 5 处变体)。
+	if gateway.HCSFEndpointModelFamily(fam) == cp {
+		return false
+	}
 	// bedrock_invoke 已通过 AutoTranslateAnthropicAPIBody 在 PassthroughAdapter
 	// 里把 anthropic_messages 客户端 body 自动转 Bedrock invoke body, 不需要
 	// 也不应在此再走 HCSF (MarshalToProviderRequest 不支持 bedrock_invoke)
@@ -429,6 +438,14 @@ func (ex *chatExecution) streamingClientAdapter() (proto.ClientAdapter, error) {
 }
 
 func streamingProviderRequestBody(env *proto.HCSF, family string) ([]byte, error) {
+	// 先归一到 marshal 形态族(kimi/qwen/... → openai_chat;openai_codex →
+	// openai_responses;gemini_advanced_session → gemini_messages)。controls
+	// 注入的字段形态(max_tokens vs max_output_tokens、gemini generationConfig)
+	// 与 stream 字段注入方式都跟"形态"走;跟原始族名走会在跨协议流式
+	// (anthropic→codex / openai→gemini_advanced 等)把 openai_chat 形态的
+	// controls 注进 Responses/Gemini body。同形态直通路径不经过本函数
+	// (needsStreamingHCSFTranslation fast-path),此处只服务真翻译路径。
+	family = gateway.HCSFEndpointModelFamily(family)
 	body, err := gateway.MarshalToProviderRequest(env, family)
 	if err != nil {
 		return nil, err

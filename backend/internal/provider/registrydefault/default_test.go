@@ -8,6 +8,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
@@ -51,6 +52,40 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 	for i, pf := range want {
 		if i >= len(got) || got[i] != pf {
 			t.Errorf("missing protocol %q; registered=%v", pf, got)
+		}
+	}
+}
+
+// TestEveryRegisteredPlatformHasTransportPolicy 族集对称守卫第 6 站:出站
+// 注册表里每个 adapter 的 Platform() 都必须在 transport 的
+// allowedModesByProvider 里至少允许 standard 模式——否则该族的请求在
+// dispatcher 取 RoundTripper 时 ErrUnknownProvider,即便 marshal/三注册表
+// 全对也整族不可用(kimi/qwen/glm/yi/baichuan/doubao/ernie/step/hunyuan/
+// minimax/cohere/ollama 12 平台曾如此)。占位 session 族开 env 后一并校验。
+// Mutation:从 transport/policy.go 删任一平台条目 → 对应子断言红。
+func TestEveryRegisteredPlatformHasTransportPolicy(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
+	for _, env := range []string{
+		cursorSessionAdapterEnv, copilotSessionAdapterEnv,
+		geminiAdvancedSessionAdapterEnv, antigravitySessionAdapterEnv,
+		kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
+	} {
+		t.Setenv(env, "true")
+	}
+	r := Build()
+	for _, pf := range r.RegisteredProtocolFamilies() {
+		a, err := r.For(pf)
+		if err != nil {
+			t.Errorf("For(%q) err=%v", pf, err)
+			continue
+		}
+		platform := a.Platform()
+		if platform == "" {
+			t.Errorf("family %q 的 adapter Platform() 为空", pf)
+			continue
+		}
+		if err := transport.ValidateModeForProvider(transport.ProviderCode(platform), transport.TransportModeStandard); err != nil {
+			t.Errorf("family %q platform %q 无 transport 策略(dispatcher 取 RoundTripper 必挂): %v", pf, platform, err)
 		}
 	}
 }

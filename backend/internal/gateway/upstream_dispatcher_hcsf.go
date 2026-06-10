@@ -254,14 +254,42 @@ func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {
 	return body, nil
 }
 
+// hcsfProviderRequestModelFamily 把 endpoint family 归一到它的 HCSF marshal
+// 形态族(wire 形态同形 ⇒ 同一 marshal 投影)。这张表是族集对称守卫的第 4 个
+// 站点:出站 registrydefault / 入站 protocol_selector / stream_scanner 三表
+// 之外,每个注册族还必须在此有 marshal 形态(或在守卫测试的 fail-closed
+// 例外表里有文档化理由)——此前 kimi/qwen/glm/yi/baichuan/doubao/ernie/step/
+// hunyuan/minimax/cohere/ollama 12 族缺失,导致流式翻译路径 501、非流式
+// HCSF 路径 502(MarshalToProviderRequest unsupported)。守卫:
+// gateway.TestMarshalSupportsEveryRegisteredProtocolFamily。
+//
+// 刻意 fail-closed、不在表内的族(映射前提"请求 body 与形态族同形"不成立,
+// 待 OCAW 真实流量采集确认后再接):
+//   - openai_codex            请求侧 native-raw(Responses 形),但响应侧
+//     protocol_selector 注册的是 chat-chunk 解析器,仓内两处记载互斥,
+//     形态未定 → 保持 marshal unsupported。
+//   - cursor_session          上游是 Connect/proto 帧(application/connect+proto,
+//     见 provider/cursor),openai_chat JSON 投影必不可解析。
+//   - gemini_advanced_session 上游是 f.req= form-urlencoded 包装(见
+//     provider/gemini/gemini_advanced_session.go),非 Gemini API JSON。
+//   - bedrock_invoke          binary EventStream;anthropic 入站走 native-raw +
+//     adapter 内 AutoTranslate;openai 入站在 marshal 处 fail-closed(501)。
 func hcsfProviderRequestModelFamily(endpointFamily string) string {
 	switch endpointFamily {
 	case "openrouter_chat", "grok_chat", "deepseek_chat", "mistral_chat", "groqcloud_chat", "together_chat", "perplexity_chat", "fireworks_chat",
+		"kimi_chat", "qwen_chat", "glm_chat", "yi_chat", "baichuan_chat", "doubao_chat", "ernie_chat", "step_chat", "hunyuan_chat", "minimax_chat", "cohere_chat", "ollama_chat",
 		"copilot_session", "antigravity_session", "kiro_session", "windsurf_session":
 		return "openai_chat"
 	default:
 		return endpointFamily
 	}
+}
+
+// HCSFEndpointModelFamily 是 hcsfProviderRequestModelFamily 的导出形式,供
+// gatewayhttp 流式翻译门(needsStreamingHCSFTranslation)判断"上游族与客户端
+// 协议同形 ⇒ raw 直通"。保持单一映射真相源,禁止在调用方复制这张表。
+func HCSFEndpointModelFamily(endpointFamily string) string {
+	return hcsfProviderRequestModelFamily(endpointFamily)
 }
 
 func hcsfProviderRequestUsesNativeRawBody(endpointFamily string) bool {

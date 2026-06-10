@@ -1794,3 +1794,110 @@ func TestInjectStreamingRequestControlsMergesRequestPassthrough(t *testing.T) {
 		t.Fatalf("modeled max_output_tokens should win over passthrough conflict: %+v", body)
 	}
 }
+
+// TestStreamingProviderRequestBodyNormalizesMarshalShape 守卫流式翻译路径
+// 的形态归一:injectStreamingRequestControls 的按形态分支(response_format
+// raw 直通的 case "openai_chat" 等)必须收到归一后的形态族,不能收到原始
+// 族名。判别点(真实可达路径 = 跨协议翻译,如 gemini 客户端→kimi 上游):
+//  1. kimi_chat → max_tokens=33 + 顶层 stream:true(openai_chat 形态);
+//  2. kimi_chat + ResponseFormat{Type:"raw"} → body 出现 response_format
+//     ——不归一时 family="kimi_chat" 命中不了 case "openai_chat",raw
+//     response_format 被静默丢弃。
+//  3. 留 fail-closed 的族(openai_codex/cursor_session/gemini_advanced_session)
+//     在此报错,不产出 body。
+// Mutation:删掉 streamingProviderRequestBody 开头的形态归一行 → 2 必红
+// (response_format 缺失);把归一改错成恒等 → 同红。
+func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
+	newEnv := func() *proto.HCSF {
+		env := proto.NewEmptyEnvelope()
+		env.RequestMeta.Model = "m-in"
+		env.RequestMeta.UpstreamModel = "m-up"
+		env.CapabilityGraph.Nodes = []proto.CapabilityNode{{
+			ID:          "n1",
+			Kind:        proto.CapabilityText,
+			StreamReady: proto.StreamReadyYes,
+			Text:        &proto.TextNode{Role: "user", Block: proto.CanonicalContentBlock{Type: "text", Text: "hi"}},
+		}}
+		max := 33
+		env.RequestControls.MaxTokens = &max
+		env.RequestControls.ResponseFormat = &proto.ResponseFormat{Type: "raw", Schema: json.RawMessage(`{"type":"json_object"}`)}
+		return env
+	}
+
+	rawKimi, err := streamingProviderRequestBody(newEnv(), "kimi_chat")
+	if err != nil {
+		t.Fatalf("kimi_chat streamingProviderRequestBody err=%v(兼容族流式翻译路径回归 501)", err)
+	}
+	var kimi map[string]any
+	if err := json.Unmarshal(rawKimi, &kimi); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, rawKimi)
+	}
+	if got, ok := kimi["max_tokens"].(float64); !ok || got != 33 {
+		t.Errorf("kimi_chat 应注入 max_tokens=33(openai_chat 形态),got=%v", kimi["max_tokens"])
+	}
+	if kimi["stream"] != true {
+		t.Errorf("kimi_chat 应注入 stream:true,got=%v", kimi["stream"])
+	}
+	rf, ok := kimi["response_format"].(map[string]any)
+	if !ok || rf["type"] != "json_object" {
+		t.Errorf("kimi_chat 的 raw response_format 未直通(形态归一缺失时 case openai_chat 不命中、静默丢弃): %v", kimi["response_format"])
+	}
+
+	for _, fam := range []string{"openai_codex", "cursor_session", "gemini_advanced_session"} {
+		if _, err := streamingProviderRequestBody(newEnv(), fam); err == nil {
+			t.Errorf("family %q 应在 marshal 处 fail-closed(待 OCAW 确认形态),却产出了 body", fam)
+		}
+	}
+}
+
+// TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough 守卫流式
+// 翻译门(renew-156 族集不对称第 5 处变体):上游族的 wire 形态与客户端协议
+// 同形时(kimi/qwen/... == openai_chat;openai_codex == openai_responses)
+// 必须走 raw 直通——既保留 vendor 专有字段(top_k 等,流式无 raw-merge,
+// 走 HCSF 翻译会被静默丢),也是此前全部兼容族流式 501 的根因(返回 true 后
+// MarshalToProviderRequest 不认这些族)。真跨协议(anthropic→kimi、
+// openai→anthropic)仍须翻译。
+// Mutation:删掉 needsStreamingHCSFTranslation 的同形态 fast-path → 兼容族
+// 用例红;把 fast-path 错写成无条件 false → 跨协议用例红。
+func TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough(t *testing.T) {
+	cases := []struct {
+		name string
+		cp   proto.ClientProtocol
+		fam  string
+		want bool
+	}{
+		{"openai→kimi 同形态直通", proto.ClientProtocolOpenAIChat, "kimi_chat", false},
+		{"openai→qwen 同形态直通", proto.ClientProtocolOpenAIChat, "qwen_chat", false},
+		{"openai→cohere 同形态直通", proto.ClientProtocolOpenAIChat, "cohere_chat", false},
+		{"openai→ollama 同形态直通", proto.ClientProtocolOpenAIChat, "ollama_chat", false},
+		{"openai→grok 同形态直通", proto.ClientProtocolOpenAIChat, "grok_chat", false},
+		{"openai→deepseek 同形态直通", proto.ClientProtocolOpenAIChat, "deepseek_chat", false},
+		{"openai→copilot_session JSON形 session 直通", proto.ClientProtocolOpenAIChat, "copilot_session", false},
+		// cursor(Connect/proto 帧)/codex(形态仓内互斥)不在映射表 →
+		// 仍走翻译路径,在 marshal 处 fail-closed 501(见
+		// hcsfProviderRequestModelFamily 排除注释;OCAW 采集后再接)。
+		{"openai→cursor_session 留 fail-closed", proto.ClientProtocolOpenAIChat, "cursor_session", true},
+		{"responses→codex 留 fail-closed", proto.ClientProtocolOpenAIResponses, "openai_codex", true},
+		{"openai→openai 既有直通不回归", proto.ClientProtocolOpenAIChat, "openai_chat", false},
+		{"openai→anthropic 跨协议须翻译", proto.ClientProtocolOpenAIChat, "anthropic_messages", true},
+		{"anthropic→kimi 跨协议须翻译", proto.ClientProtocolAnthropicMessages, "kimi_chat", true},
+		{"openai→gemini_advanced 留 fail-closed", proto.ClientProtocolOpenAIChat, "gemini_advanced_session", true},
+		// ClientProtocolGemini=="gemini" ≠ 族名 "gemini_messages":gemini 客户端
+		// 永不进 fast-path,同形态对也走翻译(保守现状)。钉住这一不对称——
+		// 若有人把枚举值改成 "gemini_messages",此行翻转,必须显式 review。
+		{"gemini→gemini_messages 仍走翻译(枚举值≠族名)", proto.ClientProtocolGemini, "gemini_messages", true},
+		{"anthropic→bedrock 适配器内翻译不走 HCSF", proto.ClientProtocolAnthropicMessages, "bedrock_invoke", false},
+		{"无 client protocol 直通", proto.ClientProtocol(""), "kimi_chat", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ex := &chatExecution{
+				clientProtocol: tc.cp,
+				resolved:       registry.Resolved{ProtocolFamily: tc.fam},
+			}
+			if got := ex.needsStreamingHCSFTranslation(); got != tc.want {
+				t.Errorf("needsStreamingHCSFTranslation(cp=%q fam=%q) = %v, want %v", tc.cp, tc.fam, got, tc.want)
+			}
+		})
+	}
+}

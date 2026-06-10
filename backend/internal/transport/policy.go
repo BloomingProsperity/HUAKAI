@@ -40,6 +40,24 @@ const (
 	ProviderTogether   ProviderCode = "together"
 	ProviderPerplexity ProviderCode = "perplexity"
 	ProviderFireworks  ProviderCode = "fireworks"
+
+	// 12 家后补 OpenAI 兼容直通平台(国内族 + cohere + ollama)。此前缺席
+	// 本清单与 allowedModesByProvider,导致 dispatcher 取 RoundTripper 时
+	// ErrUnknownProvider——marshal/注册表都修好后这 12 族仍在 transport 层
+	// 整体不可用(renew-156 族集不对称第 6 站)。守卫:registrydefault
+	// default_test 的 TestEveryRegisteredPlatformHasTransportPolicy。
+	ProviderKimi     ProviderCode = "kimi"
+	ProviderQwen     ProviderCode = "qwen"
+	ProviderGLM      ProviderCode = "glm"
+	ProviderYi       ProviderCode = "yi"
+	ProviderBaichuan ProviderCode = "baichuan"
+	ProviderDoubao   ProviderCode = "doubao"
+	ProviderErnie    ProviderCode = "ernie"
+	ProviderStep     ProviderCode = "step"
+	ProviderHunyuan  ProviderCode = "hunyuan"
+	ProviderMinimax  ProviderCode = "minimax"
+	ProviderCohere   ProviderCode = "cohere"
+	ProviderOllama   ProviderCode = "ollama"
 )
 
 // TransportMode 决定 RoundTripper 的形态。
@@ -196,6 +214,56 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 		TransportModeDiagnosticsOnly: true,
 	},
 	ProviderFireworks: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	// 12 家后补 OpenAI 兼容直通平台:与 deepseek 等同款(standard +
+	// diagnostics_only),无 mimicry 模式。
+	ProviderKimi: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderQwen: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderGLM: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderYi: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderBaichuan: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderDoubao: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderErnie: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderStep: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderHunyuan: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderMinimax: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderCohere: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	ProviderOllama: {
 		TransportModeStandard:        true,
 		TransportModeDiagnosticsOnly: true,
 	},
