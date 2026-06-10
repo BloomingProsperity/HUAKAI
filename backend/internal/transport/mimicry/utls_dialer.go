@@ -44,7 +44,8 @@ func NewRoundTripper(template *ClientHelloTemplate) http.RoundTripper {
 			DialContext:           dialer.NetDialer.DialContext,
 			DialTLSContext:        dialer.DialTLS,
 			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
+			MaxIdleConns:          256,
+			MaxIdleConnsPerHost:   64, // DM-17
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
@@ -318,7 +319,8 @@ func (rt *roundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) 
 			DialContext:           pd,
 			DialTLSContext:        dialer.DialTLS,
 			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
+			MaxIdleConns:          256,
+			MaxIdleConnsPerHost:   64, // DM-17
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,

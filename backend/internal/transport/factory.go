@@ -235,11 +235,24 @@ func (f *Factory) standardRoundTripper() http.RoundTripper {
 			// 保底：Go runtime 若被替换 DefaultTransport 为非 *http.Transport
 			// （极少见，比如 test 自打补丁），仍构造一个最小 *http.Transport
 			// 防止账号 IP 隔离被绕过。
-			f.standardCached = &http.Transport{Proxy: nil}
+			// DM-17:网关型负载下 Go 默认 MaxIdleConnsPerHost=2 让连接
+			// 复用近乎失效(每 vendor 端点只留 2 条空闲连接,高并发下
+			// 反复 TLS 握手)。显式调到 64/256,IdleConnTimeout 与
+			// DefaultTransport 对齐 90s。
+			f.standardCached = &http.Transport{
+				Proxy:               nil,
+				MaxIdleConns:        256,
+				MaxIdleConnsPerHost: 64,
+				IdleConnTimeout:     90 * time.Second,
+			}
 			return
 		}
 		cloned := base.Clone()
 		cloned.Proxy = nil
+		// DM-17:同上,Clone 继承 DefaultTransport 的 MaxIdleConnsPerHost
+		// 零值(=2),必须显式覆盖。
+		cloned.MaxIdleConns = 256
+		cloned.MaxIdleConnsPerHost = 64
 		f.standardCached = cloned
 	})
 	return f.standardCached
