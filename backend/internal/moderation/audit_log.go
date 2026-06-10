@@ -1,6 +1,8 @@
 package moderation
 
 import (
+	"github.com/BloomingProsperity/HUAKAI/internal/textsafe"
+
 	"context"
 	"strings"
 )
@@ -34,8 +36,6 @@ func safeReasonCode(reason string, decision Decision) string {
 	if reason == "" {
 		return string(decision)
 	}
-	if len(reason) > 128 {
-		return reason[:128]
-	}
-	return reason
+	// rune 安全:裸 reason[:128] 切半中文 → 审计行 INSERT 失败丢失。
+	return textsafe.TruncateBytes(reason, 128)
 }

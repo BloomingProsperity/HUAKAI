@@ -1,6 +1,8 @@
 package passkey
 
 import (
+	"github.com/BloomingProsperity/HUAKAI/internal/textsafe"
+
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -218,9 +220,6 @@ func cloneTime(value *time.Time) *time.Time {
 }
 
 func cleanName(name string) string {
-	name = strings.TrimSpace(name)
-	if len(name) > 120 {
-		return name[:120]
-	}
-	return name
+	// rune 安全:裸 name[:120] 切半多字节字符 → 注册写库 PG 22021 失败。
+	return textsafe.TruncateBytes(strings.TrimSpace(name), 120)
 }
