@@ -195,3 +195,57 @@ func assertFloat(t *testing.T, got, want float64) {
 		t.Fatalf("got %.8f, want %.8f", got, want)
 	}
 }
+
+type stubAccountHealth struct {
+	counts map[string]int64
+	err    error
+}
+
+func (s stubAccountHealth) UnhealthyAccountCounts(context.Context, int64) (map[string]int64, error) {
+	return s.counts, s.err
+}
+
+// MUTATION: snapshot 去掉 overlayAccountHealth 调用 → 红(DM-14:自动摘除
+// 的账号对告警引擎不可见,告警体系盲区复发)。
+func TestCompositeSnapshotOverlaysAccountHealth(t *testing.T) {
+	src := NewCompositeMetricSource(CompositeMetricSourceConfig{
+		AccountHealth: stubAccountHealth{counts: map[string]int64{"cooldown": 2, "throttled": 1}},
+	})
+	got, err := src.Snapshot(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[MetricAccountUnhealthyCount] != 3 {
+		t.Fatalf("total=%v want 3; snapshot=%v", got[MetricAccountUnhealthyCount], got)
+	}
+	if got["account.unhealthy_count.cooldown"] != 2 || got["account.unhealthy_count.throttled"] != 1 {
+		t.Fatalf("per-state 缺失: %v", got)
+	}
+
+	// 空计数也要有 total=0(告警规则恢复需要持续有值)
+	src = NewCompositeMetricSource(CompositeMetricSourceConfig{AccountHealth: stubAccountHealth{counts: map[string]int64{}}})
+	got, err = src.Snapshot(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := got[MetricAccountUnhealthyCount]; !ok || v != 0 {
+		t.Fatalf("空计数应有 total=0: %v", got)
+	}
+
+	// counter 出错 → 降级缺席,Snapshot 不失败
+	src = NewCompositeMetricSource(CompositeMetricSourceConfig{AccountHealth: stubAccountHealth{err: errors.New("db down")}})
+	got, err = src.Snapshot(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got[MetricAccountUnhealthyCount]; ok {
+		t.Fatalf("出错时不应有半截指标: %v", got)
+	}
+
+	// tenantID<=0(全局快照)不查
+	src = NewCompositeMetricSource(CompositeMetricSourceConfig{AccountHealth: stubAccountHealth{counts: map[string]int64{"cooldown": 9}}})
+	got, _ = src.Snapshot(context.Background(), 0)
+	if _, ok := got[MetricAccountUnhealthyCount]; ok {
+		t.Fatalf("tenant 0 不应 overlay: %v", got)
+	}
+}

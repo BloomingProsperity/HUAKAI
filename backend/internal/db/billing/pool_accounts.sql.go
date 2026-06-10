@@ -11,6 +11,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countUnhealthyAccountsByTenant = `-- name: CountUnhealthyAccountsByTenant :many
+SELECT
+    health_state,
+    COUNT(*)::bigint AS account_count
+FROM provider_accounts
+WHERE tenant_id = $1
+  AND deleted_at IS NULL
+  AND enabled
+  AND health_state <> 'healthy'
+  AND (health_state_until IS NULL OR health_state_until > NOW())
+GROUP BY health_state
+`
+
+type CountUnhealthyAccountsByTenantRow struct {
+	HealthState  string `db:"health_state" json:"health_state"`
+	AccountCount int64  `db:"account_count" json:"account_count"`
+}
+
+// DM-14:告警指标——当前被自动摘除(非 healthy 且仍在生效期)的账号数,按状态分组。
+// 过期的 cooldown/throttled 已重新可调度(对齐 ListEligibleAccounts 语义),不计入。
+func (q *Queries) CountUnhealthyAccountsByTenant(ctx context.Context, tenantID int64) ([]CountUnhealthyAccountsByTenantRow, error) {
+	rows, err := q.db.Query(ctx, countUnhealthyAccountsByTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountUnhealthyAccountsByTenantRow
+	for rows.Next() {
+		var i CountUnhealthyAccountsByTenantRow
+		if err := rows.Scan(&i.HealthState, &i.AccountCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const decrementInFlightCount = `-- name: DecrementInFlightCount :exec
 UPDATE provider_accounts
 SET

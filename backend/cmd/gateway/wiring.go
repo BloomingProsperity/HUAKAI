@@ -1093,6 +1093,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			GlobalSource:  otelbridge.NewExpvarMetricSource(),
 			UsageRolluper: alertmetrics.NewBillingRecentUsageRolluper(billingQueries),
 			UsageStats:    obsconfig.NewUsageStatsProvider(platformsettings.NewPostgresStore(pgPool)),
+			AccountHealth: alertmetrics.NewPoolAccountHealthCounter(billingQueries),
 		}),
 		Interval: cfg.AlertingEvalInterval,
 	})

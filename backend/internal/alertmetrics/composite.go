@@ -48,6 +48,9 @@ type CompositeMetricSourceConfig struct {
 	GlobalSource  MetricSource
 	UsageRolluper RecentUsageRolluper
 	UsageStats    UsageStatsGate
+	// AccountHealth 可选;非 nil 时 snapshot 附带 account.unhealthy_count 族
+	// (DM-14)。不受 UsageStats 开关门控——账号健康不是用量统计。
+	AccountHealth AccountHealthCounter
 	RecentWindow  time.Duration
 	Now           func() time.Time
 }
@@ -56,6 +59,7 @@ type CompositeMetricSource struct {
 	globalSource  MetricSource
 	usageRolluper RecentUsageRolluper
 	usageStats    UsageStatsGate
+	accountHealth AccountHealthCounter
 	recentWindow  time.Duration
 	now           func() time.Time
 }
@@ -71,6 +75,7 @@ func NewCompositeMetricSource(cfg CompositeMetricSourceConfig) *CompositeMetricS
 		globalSource:  cfg.GlobalSource,
 		usageRolluper: cfg.UsageRolluper,
 		usageStats:    cfg.UsageStats,
+		accountHealth: cfg.AccountHealth,
 		recentWindow:  cfg.RecentWindow,
 		now:           cfg.Now,
 	}
@@ -92,6 +97,9 @@ func (s *CompositeMetricSource) snapshot(ctx context.Context, tenantID int64, di
 	if err != nil {
 		return nil, err
 	}
+	// DM-14:account-health overlay 在 usage 早退分支之前,不被
+	// usageRolluper 缺席/UsageStats 关闭跳过。
+	s.overlayAccountHealth(ctx, tenantID, snapshot)
 	if s == nil || s.usageRolluper == nil || tenantID <= 0 {
 		return snapshot, nil
 	}
@@ -122,6 +130,32 @@ func (s *CompositeMetricSource) snapshot(ctx context.Context, tenantID int64, di
 	}
 	overlayUsageMetrics(snapshot, rollup, s.recentWindow)
 	return snapshot, nil
+}
+
+func (s *CompositeMetricSource) overlayAccountHealth(ctx context.Context, tenantID int64, snapshot map[string]float64) {
+	if s == nil || s.accountHealth == nil || tenantID <= 0 {
+		return
+	}
+	counts, err := s.accountHealth.UnhealthyAccountCounts(ctx, tenantID)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.WarnContext(ctx, "alert metrics account health counts failed",
+				"tenant_id", tenantID,
+				"error", err.Error(),
+			)
+		}
+		return
+	}
+	var total int64
+	for state, count := range counts {
+		if count < 0 {
+			count = 0
+		}
+		snapshot[metricAccountUnhealthyPrefix+state] = float64(count)
+		total += count
+	}
+	// 空计数也写 total=0:告警规则需要持续有值才能从 firing 恢复。
+	snapshot[MetricAccountUnhealthyCount] = float64(total)
 }
 
 func (s *CompositeMetricSource) globalSnapshot(ctx context.Context, tenantID int64, dimensions map[string]string) (map[string]float64, error) {
