@@ -29,6 +29,7 @@
 //   - glm_chat                 智谱 GLM/ChatGLM / BigModel（OpenAI 兼容）
 //   - yi_chat                  零一万物 Yi / 01.AI（OpenAI 兼容）
 //   - baichuan_chat            百川大模型（OpenAI 兼容）
+//   - cohere_chat              Cohere（OpenAI 兼容 /compatibility/v1）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
@@ -82,6 +83,7 @@ const (
 	ProtocolStepChat     = "step_chat"     // 阶跃星辰 StepFun（OpenAI 兼容）
 	ProtocolHunyuanChat  = "hunyuan_chat"  // 腾讯混元 Hunyuan（OpenAI 兼容端点，Bearer）
 	ProtocolMinimaxChat  = "minimax_chat"  // MiniMax（api.minimax.io，OpenAI 兼容 /v1/chat/completions，Bearer）
+	ProtocolCohereChat   = "cohere_chat"   // Cohere（api.cohere.ai/compatibility/v1，OpenAI 兼容，Bearer）
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -207,6 +209,10 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolMinimaxChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "minimax",
 		Endpoint:     "https://api.minimax.io/v1/chat/completions",
+	})
+	r.MustRegister(ProtocolCohereChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "cohere",
+		Endpoint:     "https://api.cohere.ai/compatibility/v1/chat/completions",
 	})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。

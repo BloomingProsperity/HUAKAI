@@ -109,6 +109,22 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("together_chat", &openai.Adapter{})
 	r.MustRegister("perplexity_chat", &openai.Adapter{})
 	r.MustRegister("fireworks_chat", &openai.Adapter{})
+	// OpenAI Chat Completions 兼容族:出站经 registrydefault 的
+	// OpenAICompatPassthroughAdapter,响应 SSE/JSON 形态同 OpenAI,复用 openai.Adapter。
+	// 必须与出站注册表对称登记——非流式默认走 HCSF(hcsfDispatchEnabled 默认开),
+	// DispatchHCSF 用本注册表的 adapter 做 ProviderResponseToCanonical;漏登记会让
+	// 该 provider 的非流式请求直接 "取 upstream adapter 失败"。
+	r.MustRegister("kimi_chat", &openai.Adapter{})
+	r.MustRegister("qwen_chat", &openai.Adapter{})
+	r.MustRegister("glm_chat", &openai.Adapter{})
+	r.MustRegister("yi_chat", &openai.Adapter{})
+	r.MustRegister("baichuan_chat", &openai.Adapter{})
+	r.MustRegister("doubao_chat", &openai.Adapter{})
+	r.MustRegister("ernie_chat", &openai.Adapter{})
+	r.MustRegister("step_chat", &openai.Adapter{})
+	r.MustRegister("hunyuan_chat", &openai.Adapter{})
+	r.MustRegister("minimax_chat", &openai.Adapter{})
+	r.MustRegister("cohere_chat", &openai.Adapter{})
 	// 订阅 session 反转路径。响应 SSE 形态分两类：
 	//   - copilot_session:               OpenAI Chat Completions 兼容 → openai.Adapter
 	//   - gemini_advanced_session:       Google 内部 SSE 形态，近似 Gemini 官方 → gemini.Adapter
