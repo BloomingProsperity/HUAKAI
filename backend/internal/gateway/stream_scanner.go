@@ -124,7 +124,7 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 	r := NewStaticStreamScannerRegistry()
 	sse := &SSEStreamScanner{}
 
-	// 19 个走 SSE 的 family（与 protocol_selector.BuildDefaultProtocolAdapterRegistry
+	// 31 个走 SSE 的 family（与 protocol_selector.BuildDefaultProtocolAdapterRegistry
 	// 注册顺序对齐）。bedrock_invoke 走 binary scanner，单独注册在下方。
 	for _, family := range []string{
 		// 既有官方 API 路径
@@ -142,6 +142,23 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		"together_chat",
 		"perplexity_chat",
 		"fireworks_chat",
+		// 12 家 OpenAI 兼容族(国内 + cohere + ollama;均走 OpenAI 兼容 SSE)。
+		// 与 protocol_selector 双注册;漏此处=这些 family 流式请求在 forwarder
+		// Scanners.For 取 scanner 失败、投递前挂(同 23e0cb91 入站漏接同源)。
+		// 注:ollama_chat 现走兼容模式 SSE;将来原生 /api/chat adapter 落地后
+		// 改注册 NDJSON scanner(仍在两 registry 里,族集对称不变)。
+		"kimi_chat",
+		"qwen_chat",
+		"glm_chat",
+		"yi_chat",
+		"baichuan_chat",
+		"doubao_chat",
+		"ernie_chat",
+		"step_chat",
+		"hunyuan_chat",
+		"minimax_chat",
+		"cohere_chat",
+		"ollama_chat",
 		// 6 家订阅 session 反转
 		"copilot_session",
 		"cursor_session",
