@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -169,6 +170,37 @@ func TestEndClassFromAttemptFailure_PersistentTransportClassesAreUpstream5xx(t *
 		got := endClassFromAttemptFailure(gateway.Classification{}, gateway.AttemptRetryDecision{TransportClass: class})
 		if got != gateway.UpstreamError5xx {
 			t.Fatalf("class %s endClass=%s want UpstreamError5xx", class, got)
+		}
+	}
+}
+
+// MUTATION: stripCrossAccountResponseChain 去掉 miss 判定(任何 responses 都
+// 剥)→ hit/none 用例红;去掉剥除 → miss 用例红(DM-07:只在 sticky miss 剥
+// 跨账号链 ID,其余场景 body 必须原样)。
+func TestStripCrossAccountResponseChain(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.2","previous_response_id":"resp_abc","input":"hi"}`)
+
+	ex := &chatExecution{
+		ctx:            context.Background(),
+		clientProtocol: proto.ClientProtocolOpenAIResponses,
+		selRes:         &pool.SelectionResult{AccountID: 7, StickyState: pool.StickyStateMiss},
+	}
+	got := ex.stripCrossAccountResponseChain(body)
+	if strings.Contains(string(got), "previous_response_id") {
+		t.Fatalf("sticky miss 应剥 previous_response_id: %s", got)
+	}
+	if !strings.Contains(string(got), `"input":"hi"`) || !strings.Contains(string(got), `"model":"gpt-5.2"`) {
+		t.Fatalf("其余字段必须保留: %s", got)
+	}
+
+	for name, e := range map[string]*chatExecution{
+		"sticky hit":  {ctx: context.Background(), clientProtocol: proto.ClientProtocolOpenAIResponses, selRes: &pool.SelectionResult{AccountID: 7, StickyState: pool.StickyStateHit}},
+		"no binding":  {ctx: context.Background(), clientProtocol: proto.ClientProtocolOpenAIResponses, selRes: &pool.SelectionResult{AccountID: 7}},
+		"nil selRes":  {ctx: context.Background(), clientProtocol: proto.ClientProtocolOpenAIResponses},
+		"chat client": {ctx: context.Background(), clientProtocol: proto.ClientProtocolOpenAIChat, selRes: &pool.SelectionResult{AccountID: 7, StickyState: pool.StickyStateMiss}},
+	} {
+		if got := e.stripCrossAccountResponseChain(body); string(got) != string(body) {
+			t.Fatalf("[%s] 不应改动 body: %s", name, got)
 		}
 	}
 }
