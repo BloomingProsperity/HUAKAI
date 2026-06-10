@@ -18,6 +18,8 @@
 package userkey
 
 import (
+	"github.com/BloomingProsperity/HUAKAI/internal/textsafe"
+
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -463,10 +465,9 @@ func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, 
 	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
 		return RevokeResult{}, ErrNotFound
 	}
-	reason := strings.TrimSpace(req.Reason)
-	if len(reason) > 256 {
-		reason = reason[:256]
-	}
+	// rune 安全截断:裸 reason[:256] 切半中文 → PG 22021 → 吊销事务整体失败,
+	// 泄露的 key 反而杀不掉(delta-mine #2)。
+	reason := textsafe.TruncateBytes(strings.TrimSpace(req.Reason), 256)
 	out := RevokeResult{APIKeyID: req.APIKeyID}
 	keyPrefix := ""
 	err := s.tx(ctx, func(tx pgx.Tx) error {
@@ -619,8 +620,6 @@ func auditAPIKeyID(id int64) *int64 {
 	}
 	return &id
 }
-
-
 
 // PatchRequest is the partial-update request for KEY-026. Fields use pointers so
 // the handler can distinguish "omitted" (nil) from "explicitly set". Only non-nil
