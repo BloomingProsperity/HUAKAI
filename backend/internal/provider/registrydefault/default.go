@@ -84,6 +84,7 @@ const (
 	ProtocolHunyuanChat  = "hunyuan_chat"  // 腾讯混元 Hunyuan（OpenAI 兼容端点，Bearer）
 	ProtocolMinimaxChat  = "minimax_chat"  // MiniMax（api.minimax.io，OpenAI 兼容 /v1/chat/completions，Bearer）
 	ProtocolCohereChat   = "cohere_chat"   // Cohere（api.cohere.ai/compatibility/v1，OpenAI 兼容，Bearer）
+	ProtocolOllamaChat   = "ollama_chat"   // Ollama 自托管（OpenAI 兼容 /v1/chat/completions；默认 endpoint 仅占位，实际部署必须经 channel/account base_url 覆盖到真实主机）
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -213,6 +214,13 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolCohereChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "cohere",
 		Endpoint:     "https://api.cohere.ai/compatibility/v1/chat/completions",
+	})
+	// Ollama 自托管:默认 endpoint 指向常规本机端口仅作占位,运营经 channel/
+	// account base_url 覆盖到真实主机。注意私网/localhost 上游受出站 SSRF
+	// 策略约束(security,运营可配白名单),本注册只提供一等 family 与协议处理。
+	r.MustRegister(ProtocolOllamaChat, &provider.OpenAICompatPassthroughAdapter{
+		PlatformName: "ollama",
+		Endpoint:     "http://127.0.0.1:11434/v1/chat/completions",
 	})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
