@@ -70,6 +70,10 @@ type anthropicBlockPayload struct {
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
+	// thinking / redacted_thinking 块字段(content_block_start 携带)
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
 }
 
 type anthropicDeltaPayload struct {
@@ -308,6 +312,19 @@ func canonicalBlock(b anthropicBlockPayload) (proto.CanonicalContentBlock, []pro
 			return proto.CanonicalContentBlock{Type: "tool_use", Name: b.Name, Input: b.Input}, []proto.ProtocolLossEntry{loss}
 		}
 		return proto.CanonicalContentBlock{Type: "tool_use", CallID: callID, Name: b.Name, Input: b.Input}, nil
+	case "thinking":
+		// 对齐 buffered 路(下方 anthropicBuffered 映射):此前流式把 thinking 折成
+		// {Type:"unknown"} = Claude SDK 客户端经中转开 extended thinking 时收到非法
+		// 块类型,thinking 输出整条损坏(delta 早已转 reasoning_delta 正常流出)。
+		return proto.CanonicalContentBlock{Type: "thinking", Thinking: b.Thinking, Signature: b.Signature}, nil
+	case "redacted_thinking":
+		return proto.CanonicalContentBlock{Type: "redacted_thinking", Data: append(json.RawMessage(nil), b.Data...)}, nil
+	case "server_tool_use":
+		// 形状同 tool_use;Stage B 计费在 content_block_start 处按上游原始类型计数
+		// (本函数返回值不参与计费判定)。server 端工具 ID 是服务端命名空间
+		// (srvtoolu_),不参与 client tool_result 回程映射,保留原始 ID 不走
+		// toolu_↔call_ 翻译器(翻译器只认 toolu_ 前缀会误报 malformed)。
+		return proto.CanonicalContentBlock{Type: "server_tool_use", CallID: b.ID, Name: b.Name, Input: b.Input}, nil
 	default:
 		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown content block type skipped")
 		return proto.CanonicalContentBlock{Type: "unknown"}, []proto.ProtocolLossEntry{loss}
