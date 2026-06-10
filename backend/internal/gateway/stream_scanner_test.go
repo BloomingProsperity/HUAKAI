@@ -107,6 +107,9 @@ func TestBuildDefaultStreamScannerRegistry(t *testing.T) {
 		"gemini_messages", "openrouter_chat", "grok_chat",
 		"deepseek_chat", "mistral_chat", "groqcloud_chat",
 		"together_chat", "perplexity_chat", "fireworks_chat",
+		"kimi_chat", "qwen_chat", "glm_chat", "yi_chat", "baichuan_chat",
+		"doubao_chat", "ernie_chat", "step_chat", "hunyuan_chat",
+		"minimax_chat", "cohere_chat", "ollama_chat",
 		"copilot_session", "cursor_session", "gemini_advanced_session",
 		"antigravity_session", "kiro_session", "windsurf_session",
 	} {
@@ -234,4 +237,29 @@ func lastScanError(seq func(yield func(SSEEvent, error) bool)) error {
 		return true
 	})
 	return last
+}
+
+// TestStreamScannerAndProtocolAdapterRegistriesAreSymmetric 守卫两默认注册表的
+// family 集合完全相等:任一 family 在 protocol-adapter 注册却漏在 stream-scanner
+// (或反之),该 family 的流式请求会在 forwarder.go 的 Scanners.For 取 scanner
+// 失败、在投递前直接挂。本轮修复的 kimi/qwen/glm/yi/baichuan/doubao/ernie/step/
+// hunyuan/minimax/cohere/ollama_chat 12 族整类即此漏接(同 23e0cb91 入站漏接同源)。
+// Mutation guard: 删 stream_scanner.go 任一 SSE family,或 protocol_selector.go
+// 任一 MustRegister → 两集不等,对应方向子断言红。
+func TestStreamScannerAndProtocolAdapterRegistriesAreSymmetric(t *testing.T) {
+	scanners := BuildDefaultStreamScannerRegistry().scanners
+	adapters := BuildDefaultProtocolAdapterRegistry().adapters
+	for fam := range adapters {
+		if _, ok := scanners[fam]; !ok {
+			t.Errorf("family %q 有 protocol adapter 但缺 stream scanner（流式请求会在 forwarder Scanners.For 失败）", fam)
+		}
+	}
+	for fam := range scanners {
+		if _, ok := adapters[fam]; !ok {
+			t.Errorf("family %q 有 stream scanner 但缺 protocol adapter", fam)
+		}
+	}
+	if len(scanners) != len(adapters) {
+		t.Errorf("注册表族数不等: scanners=%d adapters=%d", len(scanners), len(adapters))
+	}
 }
