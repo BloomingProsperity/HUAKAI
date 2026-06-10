@@ -34,7 +34,7 @@ a billing console + an ops cockpit), bilingual **zh-CN / en**.
   ```jsonc
   // package.json
   "devDependencies": { "openapi-typescript": "^7" },
-  "scripts": { "gen:api": "openapi-typescript ../backend/docs/openapi/openapi.yaml -o lib/api/schema.d.ts" }
+  "scripts": { "gen:api": "openapi-typescript ../docs/openapi/openapi.yaml -o lib/api/schema.d.ts" }
   ```
   Then type all fetch calls against `paths`/`components['schemas']` from `schema.d.ts`. **Never** write a
   request/response interface by hand — this is what guarantees "完美对接后端". Regenerate on every backend
