@@ -152,6 +152,10 @@ func TestImagesHandler_ModelCatalogValidationHappensBeforeReserve(t *testing.T) 
 		{name: "dall-e2 n too high", body: `{"model":"dall-e-2","prompt":"x","size":"512x512","n":11}`, wantCode: http.StatusBadRequest},
 		{name: "dall-e3 size rejected", body: `{"model":"dall-e-3","prompt":"x","size":"512x512","n":1}`, wantCode: http.StatusBadRequest},
 		{name: "dall-e2 size ok", body: `{"model":"dall-e-2","prompt":"x","size":"512x512","n":1}`, wantCode: http.StatusOK},
+		// stream:true 透传上游会回 SSE → token 计费解析失败 → abort 假 502 → 退款,
+		// 但 vendor 已扣费 = 漏钱;入口必须 400 拒绝(reserve 之前,零成本)。
+		{name: "stream true rejected", body: `{"model":"dall-e-2","prompt":"x","size":"512x512","stream":true}`, wantCode: http.StatusBadRequest},
+		{name: "stream false ok", body: `{"model":"dall-e-2","prompt":"x","size":"512x512","stream":false}`, wantCode: http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
