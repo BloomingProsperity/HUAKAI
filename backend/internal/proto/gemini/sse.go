@@ -513,7 +513,9 @@ func geminiResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, []p
 			}
 		}
 		if len(bytes.TrimSpace(part.InlineData)) > 0 {
-			losses = append(losses, proto.NewLossEntry(proto.FeatureImageOutput, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "Gemini inlineData output part skipped"))
+			// 同 streaming 路(bb9d4d24):buffered 响应同样保留生成图。此前这里只记
+			// lossy 丢图 = 非流式 generateContent 出图请求计了 output token 却收不到图。
+			out.Content = append(out.Content, proto.CanonicalContentBlock{Type: "image", Image: cloneRaw(part.InlineData)})
 		}
 	}
 	return out, losses, nil
