@@ -11,11 +11,12 @@
 //   - 旧格式（Claude Code < 2.1.78）："user_<64位hex>_account_<UUID|空>_session_<UUID36>"
 //   - 新格式（Claude Code ≥ 2.1.78）：JSON {"device_id":"...","account_uuid":"...","session_id":"..."}
 //
-// HUAKAI 相对 sub2api 的差异：
-//   - 替换组件由 plan 指定，不耦合到 user 表
-//   - 纯函数：入参 bytes + plan → 出参 bytes + 审计信息
-//   - 无法解析时回退到 plan.FallbackUserID（直接整体替换为给定字符串）
-//   - 解析与格式化拆为公开 helper，可在测试 / 其它路径单独使用
+// 设计要点（HUAKAI 自有重写引擎；sub2api 等网关有同类伪装能力，
+// 仅机制参考，代码为本仓独立编写）：
+//   - 替换组件由 plan 指定，与 user 表解耦
+//   - 纯函数形态：入参 bytes + plan → 出参 bytes + 审计信息
+//   - 不可解析时整体回退到 plan.FallbackUserID
+//   - parse / format / version 三个 helper 独立导出，供引擎与测试复用
 package gateway
 
 import (
@@ -81,90 +82,112 @@ type MetadataUserIDResult struct {
 	FinalUserID string
 }
 
-// ParsedUserID 是 metadata.user_id 解析后的语义组件视图。
+// ParsedUserID 还原 metadata.user_id 的三个语义组件加形态标记。组件集合
+// (设备指纹 / 账号 / 会话)由 wire 协议固定;IsNewFormat 记录原值是 JSON
+// 还是 legacy 拼接,供写回时选用同一形态。
 type ParsedUserID struct {
-	// DeviceID 设备指纹（旧格式 64 hex；新格式可任意非空）。
-	DeviceID string
-	// AccountUUID 账号 UUID（可为空）。
-	AccountUUID string
-	// SessionID 会话 ID（旧格式 UUID36；新格式可任意非空）。
-	SessionID string
-	// IsNewFormat 表示原值是否为 JSON 形态。
-	IsNewFormat bool
+	DeviceID    string // legacy 下为 64 位 hex,JSON 下为客户端任意非空指纹
+	AccountUUID string // 账号 UUID,允许缺省为空
+	SessionID   string // legacy 下为 36 字符 UUID,JSON 下为任意非空会话标识
+	IsNewFormat bool   // 原值为 JSON 形态时为 true
 }
 
-// jsonUserIDPayload 是新格式 user_id 的 JSON 投影。
-type jsonUserIDPayload struct {
+// newFormatUserID 是 JSON 形态 user_id 的字段投影,三键名固定于 wire 协议。
+type newFormatUserID struct {
 	DeviceID    string `json:"device_id"`
 	AccountUUID string `json:"account_uuid"`
 	SessionID   string `json:"session_id"`
 }
 
-// MetadataNewFormatMinVersion 是切换到 JSON 形态 user_id 的最低 Claude Code
-// CLI 版本。
+// MetadataNewFormatMinVersion:自此 Claude Code CLI 版本起,user_id 改用 JSON
+// 形态。
 const MetadataNewFormatMinVersion = "2.1.78"
 
-// legacyMetadataUserIDPattern 匹配旧格式 user_id：
-//
-//	user_<64hex>_account_<可选UUID>_session_<UUID36>
-var legacyMetadataUserIDPattern = regexp.MustCompile(`^user_([a-fA-F0-9]{64})_account_([a-fA-F0-9-]*)_session_([a-fA-F0-9-]{36})$`)
+// legacy 形态:user_<设备64hex>_account_<账号UUID或空>_session_<会话UUID>。
+// 由 hex / uuid 子片段拼装而成;会话与账号按 UUID 结构(8-4-4-4-12)校验,
+// 比纯长度匹配更严、能拒掉畸形指纹,账号另允许整体缺省为空串。
+const (
+	hexRun   = `[0-9a-fA-F]`
+	uuidPart = hexRun + `{8}-` + hexRun + `{4}-` + hexRun + `{4}-` + hexRun + `{4}-` + hexRun + `{12}`
+)
 
-// ParseMetadataUserID 解析 metadata.user_id 字符串，自动识别 JSON / legacy
-// 两种形态。返回 nil 表示无法识别。
+var legacyMetadataUserIDPattern = regexp.MustCompile(
+	`^user_(` + hexRun + `{64})_account_(` + uuidPart + `|)_session_(` + uuidPart + `)$`)
+
+// ParseMetadataUserID 把 metadata.user_id 还原为组件视图;JSON 与 legacy 两种
+// 形态都接受,无法归类时返回 nil。形态由首个非空白字符是否为 '{' 分派。
 func ParseMetadataUserID(raw string) *ParsedUserID {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
+	v := strings.TrimSpace(raw)
+	switch {
+	case v == "":
 		return nil
-	}
-	if trimmed[0] == '{' {
-		var p jsonUserIDPayload
-		if err := json.Unmarshal([]byte(trimmed), &p); err != nil {
-			return nil
-		}
-		if p.DeviceID == "" || p.SessionID == "" {
-			return nil
-		}
-		return &ParsedUserID{
-			DeviceID:    p.DeviceID,
-			AccountUUID: p.AccountUUID,
-			SessionID:   p.SessionID,
-			IsNewFormat: true,
-		}
-	}
-	groups := legacyMetadataUserIDPattern.FindStringSubmatch(trimmed)
-	if groups == nil {
-		return nil
-	}
-	return &ParsedUserID{
-		DeviceID:    groups[1],
-		AccountUUID: groups[2],
-		SessionID:   groups[3],
-		IsNewFormat: false,
+	case strings.HasPrefix(v, "{"):
+		return parseNewFormatUserID(v)
+	default:
+		return parseLegacyUserID(v)
 	}
 }
 
-// FormatMetadataUserID 按指定形态把三组件拼装回 user_id 字符串。
-// useNewFormat=true 输出 JSON；否则输出 legacy 拼接形态。
+// parseNewFormatUserID 解析 JSON 形态;device_id 或 session_id 缺失即判无效
+// (账号允许为空)。
+func parseNewFormatUserID(v string) *ParsedUserID {
+	var p newFormatUserID
+	if json.Unmarshal([]byte(v), &p) != nil {
+		return nil
+	}
+	if p.DeviceID == "" || p.SessionID == "" {
+		return nil
+	}
+	out := assembleParsedUserID(p.DeviceID, p.AccountUUID, p.SessionID, true)
+	return &out
+}
+
+// parseLegacyUserID 解析 legacy 拼接形态;三个捕获组缺一即判无效。
+func parseLegacyUserID(v string) *ParsedUserID {
+	groups := legacyMetadataUserIDPattern.FindStringSubmatch(v)
+	if len(groups) != 4 {
+		return nil
+	}
+	out := assembleParsedUserID(groups[1], groups[2], groups[3], false)
+	return &out
+}
+
+// assembleParsedUserID 把三组件加形态标记装进 ParsedUserID(两个解析路径共用,
+// 避免各自重复 struct 字面量)。
+func assembleParsedUserID(device, account, session string, jsonForm bool) ParsedUserID {
+	return ParsedUserID{
+		DeviceID:    device,
+		AccountUUID: account,
+		SessionID:   session,
+		IsNewFormat: jsonForm,
+	}
+}
+
+// FormatMetadataUserID 把三组件按指定形态拼回 user_id;useNewFormat=true 输出
+// JSON,否则输出 legacy 拼接串。
 func FormatMetadataUserID(deviceID, accountUUID, sessionID string, useNewFormat bool) string {
-	if useNewFormat {
-		b, _ := json.Marshal(jsonUserIDPayload{
-			DeviceID:    deviceID,
-			AccountUUID: accountUUID,
-			SessionID:   sessionID,
-		})
-		return string(b)
+	if !useNewFormat {
+		return fmt.Sprintf("user_%s_account_%s_session_%s", deviceID, accountUUID, sessionID)
 	}
-	return "user_" + deviceID + "_account_" + accountUUID + "_session_" + sessionID
+	encoded, err := json.Marshal(newFormatUserID{
+		DeviceID:    deviceID,
+		AccountUUID: accountUUID,
+		SessionID:   sessionID,
+	})
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
-// IsNewMetadataFormatVersion 判断给定 Claude Code CLI 版本号是否使用 JSON
-// 形态 user_id（≥ 2.1.78）。空串视为旧格式。
+// IsNewMetadataFormatVersion 判断给定 Claude Code CLI 版本是否使用 JSON 形态
+// user_id(>= MetadataNewFormatMinVersion);空串按旧版处理。
 func IsNewMetadataFormatVersion(version string) bool {
-	v := strings.TrimSpace(version)
-	if v == "" {
+	trimmed := strings.TrimSpace(version)
+	if trimmed == "" {
 		return false
 	}
-	return compareSemver(v, MetadataNewFormatMinVersion) >= 0
+	return compareSemver(trimmed, MetadataNewFormatMinVersion) >= 0
 }
 
 // compareSemver 比较两个 X.Y.Z 形式的版本号。返回 -1 / 0 / 1。
