@@ -204,3 +204,45 @@ func TestStripCrossAccountResponseChain(t *testing.T) {
 		}
 	}
 }
+
+// MUTATION: writeAttemptFailure 去掉 clearRetryableAttemptFailureHeaders 调用,
+// 或清单删掉 X-Accel-Buffering → 红(DM-19:终局 JSON 错误携带流式残留头)。
+func TestWriteAttemptFailureClearsStreamResidualHeaders(t *testing.T) {
+	rec := httptest.NewRecorder()
+	// 模拟 forwardSSEAndSettle 已预设的流式头之后尝试失败
+	rec.Header().Set("Trailer", "X-HUAKAI-Stream-State")
+	rec.Header().Set("X-Accel-Buffering", "no")
+	rec.Header().Set("Cache-Control", "no-cache")
+	rec.Header().Set(headerHUAKAIStreamState, "in_flight")
+
+	writeAttemptFailure(rec, &classifiedAttemptFailure{ClientStatus: 502})
+
+	for _, h := range []string{"Trailer", "X-Accel-Buffering", "Cache-Control", headerHUAKAIStreamState} {
+		if got := rec.Header().Get(h); got != "" {
+			t.Fatalf("终局错误响应残留 %s=%q", h, got)
+		}
+	}
+	if rec.Code != 502 || !strings.Contains(rec.Body.String(), "error") {
+		t.Fatalf("应写 502 JSON error: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 已开播(DeliveredToClient)绝不能动头/写体
+	rec2 := httptest.NewRecorder()
+	rec2.Header().Set("Trailer", "X-HUAKAI-Stream-State")
+	writeAttemptFailure(rec2, &classifiedAttemptFailure{ClientStatus: 502, DeliveredToClient: true})
+	if rec2.Header().Get("Trailer") == "" || rec2.Body.Len() != 0 {
+		t.Fatalf("DeliveredToClient 不应动头/写体: %v %q", rec2.Header(), rec2.Body.String())
+	}
+
+	// 诊断标记必须在终局错误上存活(PR5 abort-failed 取证契约)
+	rec3 := httptest.NewRecorder()
+	rec3.Header().Set(headerHuakaiAbortFailed, "1")
+	rec3.Header().Set("Trailer", "X-HUAKAI-Stream-State")
+	writeAttemptFailure(rec3, &classifiedAttemptFailure{ClientStatus: 502})
+	if rec3.Header().Get(headerHuakaiAbortFailed) != "1" {
+		t.Fatal("终局错误必须保留 abort_failed 诊断标记")
+	}
+	if rec3.Header().Get("Trailer") != "" {
+		t.Fatal("终局错误仍须清 Trailer")
+	}
+}
