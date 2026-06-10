@@ -107,8 +107,9 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	stampClaudeCodeStaticHeaders(req.Header)
 	applyClaudeSessionHeaders(req.Header, in.Account.AccountID)
 
-	// 可选 anthropic-beta（如 prompt-caching / computer-use 等 beta 特性）
-	if betas := in.Credential.Extra["anthropic_beta"]; betas != "" {
+	// 可选 anthropic-beta:凭据配置 + 客户端请求头 token 合并去重(DM-03)。
+	// API-key 直连是租户自有账号,客户端 token(已语法校验)宽放。
+	if betas := outboundBetaHeader(in.Credential.Extra["anthropic_beta"], in.InboundBetaTokens, nil); betas != "" {
 		req.Header.Set("Anthropic-Beta", betas)
 	}
 

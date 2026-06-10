@@ -72,7 +72,10 @@ func (a *OAuthSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	req.Header.Set("Anthropic-Version", version)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	if betas := in.Credential.Extra["anthropic_beta"]; betas != "" {
+	// DM-03:客户端 beta token 只放行白名单——OAuth/session 池账号带
+	// Claude Code 设备指纹,透传任意 token=指纹异常(反封禁);凭据配置
+	// token 永远原样在前。
+	if betas := outboundBetaHeader(in.Credential.Extra["anthropic_beta"], in.InboundBetaTokens, oauthBetaAllowed); betas != "" {
 		req.Header.Set("Anthropic-Beta", betas)
 	}
 	// DEVPIN-02: OAuth/session 路(池账号主出口)同样要带 Claude Code 设备指纹,

@@ -533,3 +533,26 @@ func TestDispatchHCSFPrefersProviderEnvelopeBuilder(t *testing.T) {
 		t.Fatalf("request body = %s", body)
 	}
 }
+
+// MUTATION: DispatchHCSF 构造 provider.BuildInput 时丢 InboundBetaTokens
+// 映射 → 红(DM-03 HCSF 路径穿线守卫)。
+func TestDispatchHCSFPassesInboundBetaTokensToAdapter(t *testing.T) {
+	adapter := &stubAdapter{platform: "openai"}
+	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
+	d := newDispatcherForTest(adapter, doer)
+
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:    "openai_chat",
+		UpstreamModelID:   "gpt-4o-upstream",
+		Account:           provider.AccountInfo{AccountID: 7, Platform: "openai", AccountType: "apikey"},
+		Credential:        provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"},
+		InboundBetaTokens: []string{"context-management-2025-06-27"},
+	})
+	if _, err := d.DispatchHCSF(ctx, testHCSFEnvelope()); err != nil {
+		t.Fatalf("DispatchHCSF: %v", err)
+	}
+	got := adapter.lastInput.InboundBetaTokens
+	if len(got) != 1 || got[0] != "context-management-2025-06-27" {
+		t.Fatalf("adapter InboundBetaTokens=%v; want HCSF 路径完整透传", got)
+	}
+}

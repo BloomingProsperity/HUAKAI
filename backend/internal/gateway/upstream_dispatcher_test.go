@@ -732,3 +732,27 @@ func TestDispatcher_AnthropicAutoBreakpoints_OnlyAnthropicFamily(t *testing.T) {
 		t.Fatalf("non-anthropic family must be untouched, got=%s", string(adapter.lastInput.InboundBody))
 	}
 }
+
+// MUTATION: Dispatch 丢掉 InboundBetaTokens→BuildInput 映射 → 红——
+// 客户端 anthropic-beta 透传链(DM-03)在 raw dispatch 层断裂。
+func TestDispatcher_PassesInboundBetaTokensToAdapter(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: "{}"}
+	adapter := &stubAdapter{platform: "anthropic"}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily:    "anthropic_messages",
+		UpstreamModelID:   "claude-3-5-sonnet-20241022",
+		InboundBody:       []byte(`{}`),
+		InboundBetaTokens: []string{"context-management-2025-06-27", "interleaved-thinking-2025-05-14"},
+		Account:           provider.AccountInfo{AccountID: 7, Platform: "anthropic", AccountType: "apikey"},
+		Credential:        provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-x"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := adapter.lastInput.InboundBetaTokens
+	if len(got) != 2 || got[0] != "context-management-2025-06-27" || got[1] != "interleaved-thinking-2025-05-14" {
+		t.Fatalf("adapter InboundBetaTokens=%v; want 完整透传", got)
+	}
+}

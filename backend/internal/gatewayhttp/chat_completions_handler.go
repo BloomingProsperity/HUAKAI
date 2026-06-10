@@ -189,6 +189,8 @@ type chatExecution struct {
 	currentAttemptSeq int
 
 	idempotencyHeader                string
+	inboundBetaTokens                []string
+	inboundBetaTokensParsed          bool
 	logicalRequestID                 string
 	payloadHash                      string
 	promptHash                       string
@@ -727,6 +729,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		UpstreamModelID:      ex.upstreamModelID,
 		InboundBody:          ex.upstreamInboundBody(ex.body),
 		BodyControls:         ex.activeDispatchBodyControls(),
+		InboundBetaTokens:    ex.clientBetaTokens(),
 		Account:              transportSelection.account,
 		Credential:           ex.cred,
 		TransportMode:        transportSelection.mode,
@@ -864,4 +867,18 @@ func warmupInterceptEnabled(ctx context.Context, settings platformSettingsReader
 		return false
 	}
 	return s.Value == "true"
+}
+
+// clientBetaTokens 惰性解析并缓存客户端 anthropic-beta 请求头(DM-03)。
+// 产出只被 anthropic 族出站 adapter 消费(与凭据 beta 合并去重;OAuth 池
+// 账号侧另有白名单);attempt 重试不重复解析。
+func (ex *chatExecution) clientBetaTokens() []string {
+	if ex == nil || ex.r == nil {
+		return nil
+	}
+	if !ex.inboundBetaTokensParsed {
+		ex.inboundBetaTokensParsed = true
+		ex.inboundBetaTokens = provider.ParseInboundBetaTokens(ex.r.Header.Values("Anthropic-Beta"))
+	}
+	return ex.inboundBetaTokens
 }

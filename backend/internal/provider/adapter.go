@@ -230,6 +230,11 @@ type BuildInput struct {
 	Credential Credential
 	// Account 池中选中的 account。
 	Account AccountInfo
+	// InboundBetaTokens 客户端 anthropic-beta 请求头解析出的 beta token
+	// 列表(ParseInboundBetaTokens 产出:已 trim/小写/语法校验/去重/限长)。
+	// 仅 anthropic 族 adapter 消费——与凭据 Extra["anthropic_beta"] 合并
+	// 去重后写出站 Anthropic-Beta;其余 adapter 忽略本字段。
+	InboundBetaTokens []string
 }
 
 // Adapter 是 vendor-specific 出站适配器接口。

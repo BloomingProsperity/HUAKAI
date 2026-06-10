@@ -736,13 +736,14 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	}
 	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchCtx := gateway.ContextWithHCSFDispatchInput(seedCtx, gateway.HCSFDispatchInput{
-		ProtocolFamily:  ex.resolved.ProtocolFamily,
-		UpstreamModelID: ex.upstreamModelID,
-		Account:         transportSelection.account,
-		Credential:      ex.cred,
-		TransportMode:   transportSelection.mode,
-		RawBody:         ex.upstreamInboundBody(ex.body),
-		BodyControls:    ex.activeDispatchBodyControls(),
+		ProtocolFamily:    ex.resolved.ProtocolFamily,
+		UpstreamModelID:   ex.upstreamModelID,
+		Account:           transportSelection.account,
+		Credential:        ex.cred,
+		TransportMode:     transportSelection.mode,
+		RawBody:           ex.upstreamInboundBody(ex.body),
+		BodyControls:      ex.activeDispatchBodyControls(),
+		InboundBetaTokens: ex.clientBetaTokens(),
 	})
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
 	// DispatchHCSF 内 MarshalToProviderRequest 会原地往 canonicalReq.CapabilityGraph.ProtocolLoss

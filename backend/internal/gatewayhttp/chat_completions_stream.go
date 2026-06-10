@@ -141,13 +141,14 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 	}
 	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
-		ProtocolFamily:  ex.resolved.ProtocolFamily,
-		UpstreamModelID: ex.upstreamModelID,
-		InboundBody:     ex.upstreamInboundBody(inboundBody),
-		BodyControls:    ex.activeDispatchBodyControls(),
-		Account:         transportSelection.account,
-		Credential:      ex.cred,
-		TransportMode:   transportSelection.mode,
+		ProtocolFamily:    ex.resolved.ProtocolFamily,
+		UpstreamModelID:   ex.upstreamModelID,
+		InboundBody:       ex.upstreamInboundBody(inboundBody),
+		BodyControls:      ex.activeDispatchBodyControls(),
+		InboundBetaTokens: ex.clientBetaTokens(),
+		Account:           transportSelection.account,
+		Credential:        ex.cred,
+		TransportMode:     transportSelection.mode,
 	})
 	if err != nil {
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
