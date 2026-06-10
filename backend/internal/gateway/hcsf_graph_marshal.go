@@ -15,7 +15,12 @@ func MarshalToProviderRequest(env *proto.HCSF, endpointFamily string) ([]byte, e
 	if env == nil {
 		return nil, errors.New("gateway: nil HCSF envelope")
 	}
-	switch endpointFamily {
+	// 先把 endpoint family 归一到 marshal 形态族(OpenAI 兼容族/部分 session
+	// 反转族与 openai_chat 同形等)。流式路径(gatewayhttp
+	// streamingProviderRequestBody)直接传原始族名进来,归一前这里对全部
+	// 兼容族报 unsupported → 流式 501;非流式靠调用方先行映射,但映射表曾
+	// 漏 12 个兼容族 → 502。归一收敛在本函数内,任何调用方传原始族名都安全。
+	switch hcsfProviderRequestModelFamily(endpointFamily) {
 	case "anthropic_messages":
 		return marshalAnthropicMessages(env)
 	case "openai_chat":

@@ -126,6 +126,12 @@ func TestDispatchHCSFUnsupportedEndpointFamilyFailsBeforeRawFallback(t *testing.
 	}
 }
 
+// cursor_session 刻意留在 marshal fail-closed 例外表(上游是 Connect/proto
+// 帧,openai_chat JSON 投影不可解析,见 hcsfProviderRequestModelFamily 排除
+// 注释;OCAW 采集确认真实形态前不接)。本测试守:该族走 HCSF 非流式时在
+// marshal 处 fail-closed,绝不把客户端 raw body 透传到上游。
+// Mutation:往 hcsfProviderRequestModelFamily 加 cursor_session→openai_chat
+// → err==nil 断言红(同时守卫测试的例外表反向断言也红)。
 func TestDispatchHCSFNativeOnlySessionFamilyFailsBeforeRawFallback(t *testing.T) {
 	const rawMarker = "CURSOR_RAWFALLBACK_MARKER"
 	env := testHCSFEnvelope()
@@ -232,6 +238,10 @@ func TestDispatchHCSFOpenAICompatibleAliasUsesModeledChatBody(t *testing.T) {
 	}{
 		{name: "direct_api_key_alias", family: "deepseek_chat", provider: "deepseek", model: "deepseek-chat"},
 		{name: "opt_in_session_alias", family: "copilot_session", provider: "copilot", model: "gpt-4o-copilot"},
+		// 12 个后补兼容族的 dispatch 级代表(marshal 级守卫见
+		// TestMarshalCompatFamiliesProjectToOpenAIChat):映射缺失时本用例
+		// 在 DispatchHCSF 即报 unsupported,必红。
+		{name: "late_compat_family_alias", family: "kimi_chat", provider: "kimi", model: "kimi-k2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			seed := 4242

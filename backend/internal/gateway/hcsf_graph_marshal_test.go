@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -622,5 +623,70 @@ func TestMarshalOpenAIChatReasoningEffortRequestControl(t *testing.T) {
 	}
 	if body["reasoning_effort"] != "high" {
 		t.Fatalf("reasoning_effort passthrough lost: %+v", body)
+	}
+}
+
+// TestMarshalCompatFamiliesProjectToOpenAIChat 守卫 renew-156 同源的第 4 处
+// 族集不对称:MarshalToProviderRequest 必须认识全部 OpenAI 兼容直通族 +
+// JSON 形 session 反转族,并把它们投影成与 openai_chat 完全相同的请求 body。
+// 此前 kimi/qwen/glm/yi/baichuan/doubao/ernie/step/hunyuan/minimax/cohere/
+// ollama 12 族不在映射表里 → 非流式 HCSF 请求 marshal 直接报 unsupported
+// (502);流式路径(streamingProviderRequestBody)传原始族名,全部 20 兼容族
+// marshal 失败 → 501,投递前就挂。
+// 判别性:断言输出与 openai_chat 投影逐字节相等——映射错指到别的形态族
+// (anthropic/gemini)会产生不同 body,必红;漏映射直接 error,必红。
+// Mutation:从 hcsfProviderRequestModelFamily 删任一族 → 对应子断言红。
+func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	want, err := MarshalToProviderRequest(env, "openai_chat")
+	if err != nil {
+		t.Fatalf("baseline openai_chat marshal: %v", err)
+	}
+	for _, fam := range []string{
+		"openrouter_chat", "grok_chat", "deepseek_chat", "mistral_chat",
+		"groqcloud_chat", "together_chat", "perplexity_chat", "fireworks_chat",
+		"kimi_chat", "qwen_chat", "glm_chat", "yi_chat", "baichuan_chat",
+		"doubao_chat", "ernie_chat", "step_chat", "hunyuan_chat",
+		"minimax_chat", "cohere_chat", "ollama_chat",
+		"copilot_session", "antigravity_session", "kiro_session", "windsurf_session",
+	} {
+		got, err := MarshalToProviderRequest(env, fam)
+		if err != nil {
+			t.Errorf("family %q: marshal err=%v(流式翻译路径 501 / 非流式 HCSF 502)", fam, err)
+			continue
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("family %q 投影 != openai_chat 投影\ngot:  %s\nwant: %s", fam, got, want)
+		}
+	}
+}
+
+// TestMarshalSupportsEveryRegisteredProtocolFamily 把 marshal 形态映射纳入
+// 0ee632fc 建立的族集对称守卫:入站协议注册表里的每个族,要么能
+// MarshalToProviderRequest,要么在下面 fail-closed 例外表里有文档化理由。
+// 新增族只注册三表而漏 marshal 映射 → 本测试红,锁死整类 bug 的第 4 处变体。
+// 例外表是显式逃逸口:扩编必须带理由注释,review 可见。
+func TestMarshalSupportsEveryRegisteredProtocolFamily(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	failClosedFamilies := map[string]string{
+		// 与 hcsfProviderRequestModelFamily 的排除注释保持同步(单一真相在
+		// upstream_dispatcher_hcsf.go,此处仅作守卫例外登记)。
+		"bedrock_invoke":          "binary EventStream;anthropic 走 native-raw + adapter 内 AutoTranslate,openai 入站 marshal fail-closed",
+		"openai_codex":            "请求/响应形态仓内记载互斥(native-raw Responses vs chat-chunk 解析器),待 OCAW 采集确认",
+		"cursor_session":          "上游 Connect/proto 帧(application/connect+proto),openai_chat JSON 投影不可解析,待 OCAW",
+		"gemini_advanced_session": "上游 f.req= form-urlencoded 包装,非 Gemini API JSON,待 OCAW",
+	}
+	for fam := range BuildDefaultProtocolAdapterRegistry().adapters {
+		if _, ok := failClosedFamilies[fam]; ok {
+			// fail-closed 族必须真的不支持 marshal——若某天有人加了映射却忘删
+			// 例外行,这里反向红,防例外表腐化成静默放行。
+			if _, err := MarshalToProviderRequest(env, fam); err == nil {
+				t.Errorf("family %q 在 fail-closed 例外表里但 marshal 居然成功——例外表或映射表有一边过期", fam)
+			}
+			continue
+		}
+		if _, err := MarshalToProviderRequest(env, fam); err != nil {
+			t.Errorf("family %q 已注册入站协议适配器但 HCSF 请求 marshal 不支持(流式 501/非流式 502): %v", fam, err)
+		}
 	}
 }
