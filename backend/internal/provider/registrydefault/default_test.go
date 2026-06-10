@@ -42,6 +42,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolMinimaxChat,
 		ProtocolCohereChat,
 		ProtocolOllamaChat,
+		ProtocolDifyChat,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -102,6 +103,7 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 		ProtocolBedrockInvoke,
 		ProtocolGrokChat,
 		ProtocolKimiChat,
+		ProtocolDifyChat,
 	} {
 		a, err := r.For(pf)
 		if err != nil {
@@ -148,6 +150,7 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolMinimaxChat:       "minimax",
 		ProtocolCohereChat:        "cohere",
 		ProtocolOllamaChat:        "ollama",
+		ProtocolDifyChat:          "dify",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)

@@ -8,6 +8,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/bedrock"
+	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
@@ -194,6 +195,20 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 	}
 	if _, ok := bedrockAdapter.(*bedrock.EventStreamAdapter); !ok {
 		t.Errorf("bedrock_invoke adapter 类型=%T 期望 *bedrock.EventStreamAdapter", bedrockAdapter)
+	}
+
+	// dify_chat 走专用 dify.Adapter(事件键 SSE,与 OpenAI 兼容形态不同)。
+	// 抓的回归:漏注册(流式/非流式取 adapter 即失败)或误注册成 openai.Adapter
+	// (Dify 帧解不出 choices,整流零输出)。
+	difyAdapter, err := r.For("dify_chat")
+	if err != nil {
+		t.Errorf("dify_chat 应已注册,err=%v", err)
+	}
+	if difyAdapter == nil {
+		t.Error("For(dify_chat) adapter = nil")
+	}
+	if _, ok := difyAdapter.(*protodify.Adapter); !ok {
+		t.Errorf("dify_chat adapter 类型=%T 期望 *dify.Adapter", difyAdapter)
 	}
 }
 

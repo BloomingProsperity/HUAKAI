@@ -30,6 +30,7 @@
 //   - yi_chat                  零一万物 Yi / 01.AI（OpenAI 兼容）
 //   - baichuan_chat            百川大模型（OpenAI 兼容）
 //   - cohere_chat              Cohere（OpenAI 兼容 /compatibility/v1）
+//   - dify_chat                Dify 应用 API（per-app token；bot_type 分端点）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
@@ -48,6 +49,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/bedrock"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
+	providerdify "github.com/BloomingProsperity/HUAKAI/internal/provider/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/kiro"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
@@ -85,6 +87,7 @@ const (
 	ProtocolMinimaxChat  = "minimax_chat"  // MiniMax（api.minimax.io，OpenAI 兼容 /v1/chat/completions，Bearer）
 	ProtocolCohereChat   = "cohere_chat"   // Cohere（api.cohere.ai/compatibility/v1，OpenAI 兼容，Bearer）
 	ProtocolOllamaChat   = "ollama_chat"   // Ollama 自托管（OpenAI 兼容 /v1/chat/completions；默认 endpoint 仅占位，实际部署必须经 channel/account base_url 覆盖到真实主机）
+	ProtocolDifyChat     = "dify_chat"     // Dify 应用 API（chat-messages/workflows/completion-messages；per-app token，事件键 SSE）
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -222,6 +225,10 @@ func Build() *provider.StaticRegistry {
 		PlatformName: "ollama",
 		Endpoint:     "http://127.0.0.1:11434/v1/chat/completions",
 	})
+	// Dify 应用编排平台：非 OpenAI 兼容形态（单 query 折叠 + per-app token +
+	// bot_type 分端点），走专用 adapter；自托管实例经 upstream_passthrough
+	// base_url 覆盖默认 https://api.dify.ai。
+	r.MustRegister(ProtocolDifyChat, &providerdify.Adapter{})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
 	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境

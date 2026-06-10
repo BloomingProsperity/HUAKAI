@@ -8,6 +8,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/bedrock"
+	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
@@ -74,6 +75,9 @@ func (r *StaticProtocolAdapterRegistry) For(family string) (proto.UpstreamAdapte
 
 // BuildDefaultProtocolAdapterRegistry 构造包含当前已实现 adapters 的默认注册表。
 //
+// dify_chat 走专用 dify.Adapter（事件键 SSE：事件名在 data JSON 的 "event"
+// 字段，message_end 终止、无 [DONE] 哨兵，与 OpenAI 兼容形态不同）。
+//
 // 以下 6 家 vendor 使用 openai.Adapter 解析 SSE，因为它们均实现了
 // OpenAI Chat Completions 兼容协议（data: {"choices":[...]} 形态）：
 //   - deepseek_chat   DeepSeek
@@ -126,6 +130,8 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r.MustRegister("minimax_chat", &openai.Adapter{})
 	r.MustRegister("cohere_chat", &openai.Adapter{})
 	r.MustRegister("ollama_chat", &openai.Adapter{})
+	// Dify 应用 API：非 OpenAI 兼容 SSE（事件名在 data JSON 内），专用 adapter。
+	r.MustRegister("dify_chat", &protodify.Adapter{})
 	// 订阅 session 反转路径。响应 SSE 形态分两类：
 	//   - copilot_session:               OpenAI Chat Completions 兼容 → openai.Adapter
 	//   - gemini_advanced_session:       Google 内部 SSE 形态，近似 Gemini 官方 → gemini.Adapter

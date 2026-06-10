@@ -124,7 +124,7 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 	r := NewStaticStreamScannerRegistry()
 	sse := &SSEStreamScanner{}
 
-	// 31 个走 SSE 的 family（与 protocol_selector.BuildDefaultProtocolAdapterRegistry
+	// 32 个走 SSE 的 family（与 protocol_selector.BuildDefaultProtocolAdapterRegistry
 	// 注册顺序对齐）。bedrock_invoke 走 binary scanner，单独注册在下方。
 	for _, family := range []string{
 		// 既有官方 API 路径
@@ -159,6 +159,9 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		"minimax_chat",
 		"cohere_chat",
 		"ollama_chat",
+		// Dify 应用 API:event-keyed SSE——wire 仍是标准 SSE 帧(本 scanner 照常
+		// 切),但事件名在 data JSON 的 "event" 字段里,由 proto/dify adapter 解。
+		"dify_chat",
 		// 6 家订阅 session 反转
 		"copilot_session",
 		"cursor_session",
