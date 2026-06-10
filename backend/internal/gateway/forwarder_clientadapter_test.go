@@ -434,7 +434,7 @@ func assertProtocolErrorSanitized(t *testing.T, adapter proto.UpstreamAdapter) {
 		nil,
 		nil,
 		&UsageAccumulator{},
-		ForwardRequest{RequestID: "req-c18"},
+		ForwardRequest{RequestID: "req-c18", ClientProtocol: "anthropic_messages"},
 	)
 	if err != nil {
 		t.Fatalf("handleEventWithAdapter returned err=%v", err)
