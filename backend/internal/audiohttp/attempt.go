@@ -128,6 +128,16 @@ func (ex *execution) settleAndStreamSpeech(w http.ResponseWriter, res *gateway.D
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
 		return false
 	}
+	// 重定价必须在写响应头之前:预扣用协议族 vendor 估的 predictedCost,选号后
+	// 真账号平台(providerForPricing 此刻已含 accInfo.Platform)可能价不同,沿用
+	// 预估会误扣/少收(与 per-second/token 在 settle 重算对称)。算价失败 → abort
+	// 不计费,此刻响应未写可回 JSON 错误。
+	actualCost, costSnapshot, pending, err := ex.charCost()
+	if err != nil {
+		ex.abort(w, "pricing_unavailable", 0)
+		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
+		return false
+	}
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/octet-stream")
@@ -147,7 +157,7 @@ func (ex *execution) settleAndStreamSpeech(w http.ResponseWriter, res *gateway.D
 	// 音频完整交付后才结算,避免二进制断流误扣费(F1);结算走 billingCtx 防客户端断连取消(F2)。
 	bctx, cancel := ex.billingCtx()
 	defer cancel()
-	if _, err := ex.d.Settler.Settle(bctx, ex.settleRequest(audioTokenUsage{}, ex.predictedCost, ex.costSnapshot, attemptSeq, ex.pending)); err != nil {
+	if _, err := ex.d.Settler.Settle(bctx, ex.settleRequest(audioTokenUsage{}, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
 		// 交付后结算失败:响应已发出,无法回 500;响亮告警让对账可见(防静默漏记)。
 		ex.logSettleAfterDeliveryFailure(err)
 		return false

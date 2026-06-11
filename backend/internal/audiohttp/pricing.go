@@ -41,11 +41,7 @@ func (ex *execution) preparePricing() error {
 		if scheme != audiopricing.SchemePerChar {
 			return fmt.Errorf("audio speech requires per_char pricing, got %s", scheme)
 		}
-		perUnit, err := catalog.CharMicroUSD(ex.providerForPricing(), ex.modelCandidatesForPricing())
-		if err != nil {
-			return err
-		}
-		ex.predictedCost, ex.costSnapshot, ex.pending, err = ex.perUnitCost(decimal.NewFromInt(int64(ex.charCount)), perUnit)
+		ex.predictedCost, ex.costSnapshot, ex.pending, err = ex.charCost()
 		return err
 	default:
 		switch scheme {
@@ -64,6 +60,19 @@ func (ex *execution) preparePricing() error {
 			return fmt.Errorf("unsupported audio pricing scheme %s", scheme)
 		}
 	}
+}
+
+// charCost 按当前 providerForPricing 解析出的 provider 计 per-char 成本。
+// reserve(preparePricing,选号前)调用时 providerForPricing 给协议族 vendor 作
+// 估算;settle(settleAndStreamSpeech,选号后)调用时 accInfo.Platform 已填,按
+// 真实账号平台重定价——与 per-second/token 路径在 settle 重算的对称性(分叉账号
+// 的真账号平台 ≠ 协议族 vendor 且价不同时,沿用预估会误扣/少收)。
+func (ex *execution) charCost() (decimal.Decimal, string, bool, error) {
+	perUnit, err := ex.catalog.CharMicroUSD(ex.providerForPricing(), ex.modelCandidatesForPricing())
+	if err != nil {
+		return decimal.Zero, "", false, err
+	}
+	return ex.perUnitCost(decimal.NewFromInt(int64(ex.charCount)), perUnit)
 }
 
 func (ex *execution) perUnitCost(units, perUnit decimal.Decimal) (decimal.Decimal, string, bool, error) {
