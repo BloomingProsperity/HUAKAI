@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/geminicodeassist"
 	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/redact"
@@ -579,6 +580,12 @@ func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 			case *openai.Adapter:
 				return &openai.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			case *gemini.Adapter:
+				return &gemini.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+			case *geminicodeassist.Adapter:
+				// 族集对称第 8 站(protosse.newUpstreamState 的孪生):
+				// geminicodeassist.Adapter 委托内嵌 gemini.Adapter 解析,需 gemini
+				// 的 state 类型;漏此 case 落 default=anthropic state,委托内
+				// type-assert *gemini.UpstreamState 失败,整族流式不可恢复。
 				return &gemini.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			case *protodify.Adapter:
 				return &protodify.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}

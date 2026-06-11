@@ -11,6 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/geminicodeassist"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
@@ -139,6 +140,12 @@ func newUpstreamState(adapter proto.UpstreamAdapter) any {
 	case *openai.Adapter:
 		return &openai.UpstreamState{}
 	case *gemini.Adapter:
+		return &gemini.UpstreamState{}
+	case *geminicodeassist.Adapter:
+		// 族集对称第 8 站(gateway/forwarder.newUpstreamState 的孪生):
+		// geminicodeassist.Adapter 委托内嵌 gemini.Adapter,需 gemini 的 state
+		// 类型;漏此 case 落 default=anthropic state,SSE 兜底重组对该族
+		// type-assert *gemini.UpstreamState 失败、不可恢复。
 		return &gemini.UpstreamState{}
 	case *dify.Adapter:
 		return &dify.UpstreamState{}

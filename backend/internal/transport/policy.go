@@ -19,20 +19,21 @@ import (
 type ProviderCode string
 
 const (
-	ProviderAnthropic      ProviderCode = "anthropic"
-	ProviderOpenAI         ProviderCode = "openai"
-	ProviderOpenAICodex    ProviderCode = "openai_codex" // ChatGPT Plus / Codex CLI session 反转，路径走 chatgpt.com
-	ProviderVertex         ProviderCode = "vertex"
-	ProviderBedrock        ProviderCode = "bedrock"
-	ProviderOpenRouter     ProviderCode = "openrouter"
-	ProviderGrok           ProviderCode = "grok"
-	ProviderCursor         ProviderCode = "cursor"   // Cursor IDE 反转
-	ProviderCopilot        ProviderCode = "copilot"  // GitHub Copilot 反转
-	ProviderKiro           ProviderCode = "kiro"     // AWS Kiro 反转（独立于 Bedrock）
-	ProviderWindsurf       ProviderCode = "windsurf" // Codeium Windsurf 反转
-	ProviderAntigravity    ProviderCode = "antigravity"
-	ProviderGemini         ProviderCode = "gemini"          // Gemini generativelanguage API key 直通
-	ProviderGeminiAdvanced ProviderCode = "gemini_advanced" // Gemini Advanced 网页 session 反转，路径走 gemini.google.com
+	ProviderAnthropic        ProviderCode = "anthropic"
+	ProviderOpenAI           ProviderCode = "openai"
+	ProviderOpenAICodex      ProviderCode = "openai_codex" // ChatGPT Plus / Codex CLI session 反转，路径走 chatgpt.com
+	ProviderVertex           ProviderCode = "vertex"
+	ProviderBedrock          ProviderCode = "bedrock"
+	ProviderOpenRouter       ProviderCode = "openrouter"
+	ProviderGrok             ProviderCode = "grok"
+	ProviderCursor           ProviderCode = "cursor"   // Cursor IDE 反转
+	ProviderCopilot          ProviderCode = "copilot"  // GitHub Copilot 反转
+	ProviderKiro             ProviderCode = "kiro"     // AWS Kiro 反转（独立于 Bedrock）
+	ProviderWindsurf         ProviderCode = "windsurf" // Codeium Windsurf 反转
+	ProviderAntigravity      ProviderCode = "antigravity"
+	ProviderGemini           ProviderCode = "gemini"             // Gemini generativelanguage API key 直通
+	ProviderGeminiAdvanced   ProviderCode = "gemini_advanced"    // Gemini Advanced 网页 session 反转，路径走 gemini.google.com
+	ProviderGeminiCodeAssist ProviderCode = "gemini_code_assist" // Gemini Code Assist（cloudcode-pa v1internal，OAuth）;非订阅反转,仅 standard + diagnostics
 	// 以下 6 家为 OpenAI 兼容直通 API key 路径，不做订阅反转。
 	ProviderDeepSeek   ProviderCode = "deepseek"
 	ProviderMistral    ProviderCode = "mistral"
@@ -199,6 +200,13 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 		TransportModeStandard:              true,
 		TransportModeMimicryGeminiAdvanced: true,
 		TransportModeDiagnosticsOnly:       true,
+	},
+	ProviderGeminiCodeAssist: {
+		// Gemini Code Assist（cloudcode-pa v1internal）：纯 OAuth Bearer 出站到
+		// Google 内部端点。仅 standard + diagnostics_only——反封禁姿态只加最小
+		// 必需 header（UA/X-Goog-Api-Client），不引入独立 mimicry transport mode。
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
 	},
 	// 以下 6 家走 API key 直通；不是订阅反转目标，仅 standard + diagnostics。
 	ProviderDeepSeek: {

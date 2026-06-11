@@ -10,6 +10,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/bedrock"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/geminicodeassist"
 	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
@@ -106,6 +107,12 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	// "取 upstream adapter 失败"——kimi/qwen/glm 族曾踩的 bug。
 	r.MustRegister("vertex_gemini", &gemini.Adapter{})
 	r.MustRegister("vertex_anthropic", &anthropic.Adapter{CarryForwardSignatureDelta: false})
+	// Gemini Code Assist（cloudcode-pa）：响应包 {response} envelope，专用
+	// geminicodeassist.Adapter 先 unwrap "response" 再委托 gemini.Adapter 解。
+	// 入站无条件注册（出站在 registrydefault env-gate）——入站登记无副作用，
+	// 但 marshal 守卫与族集对称要求每个入站族有 marshal 形态映射（见
+	// hcsfProviderRequestModelFamily 的 gemini_code_assist→gemini_messages）。
+	r.MustRegister("gemini_code_assist", &geminicodeassist.Adapter{})
 	// OpenRouter 是 OpenAI Chat Completions 兼容 meta-aggregator，SSE 形态同 OpenAI。
 	r.MustRegister("openrouter_chat", &openai.Adapter{})
 	// xAI Grok v1/chat/completions 严格 OpenAI 兼容。

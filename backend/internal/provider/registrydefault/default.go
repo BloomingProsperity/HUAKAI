@@ -35,6 +35,7 @@
 //   - replicate_image          Replicate 图片生成（models/{model}/predictions；图片 lane 专用）
 //   - vertex_gemini            Gemini-on-Vertex（publishers/google；generateContent/streamGenerateContent）
 //   - vertex_anthropic         Anthropic-on-Vertex（publishers/anthropic；rawPredict/streamRawPredict + body reshape）
+//   - gemini_code_assist       Google Gemini Code Assist（cloudcode-pa v1internal，OAuth；env-gated 默认 off）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
@@ -110,6 +111,12 @@ const (
 	// 已是 Bearer access_token，由 credentialworker metadata token 刷新链 materialize）。
 	ProtocolVertexGemini    = "vertex_gemini"
 	ProtocolVertexAnthropic = "vertex_anthropic"
+	// Gemini Code Assist（cloudcode-pa v1internal，OAuth）。纯 OAuth Bearer
+	// 出站到 Google 内部 cloudcode-pa 端点；请求包 {model,project,request}
+	// envelope、响应包 {response} envelope（入站 proto/geminicodeassist 解）。
+	// 默认 off（OAuth session + 内部 Google 端点高危项），按 cursor/copilot
+	// placeholder 模式 env-gated opt-in 注册。
+	ProtocolGeminiCodeAssist = "gemini_code_assist"
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -124,6 +131,7 @@ const (
 
 	cursorSessionAdapterEnv         = "HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER"
 	copilotSessionAdapterEnv        = "HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER"
+	geminiCodeAssistAdapterEnv      = "HUAKAI_ENABLE_GEMINI_CODE_ASSIST_ADAPTER"
 	geminiAdvancedSessionAdapterEnv = "HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER"
 	antigravitySessionAdapterEnv    = "HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER"
 	kiroSessionAdapterEnv           = "HUAKAI_ENABLE_KIRO_SESSION_ADAPTER"
@@ -266,6 +274,16 @@ func Build() *provider.StaticRegistry {
 	// PathEscape 防 host/path 注入。
 	r.MustRegister(ProtocolVertexGemini, &vertex.PassthroughAdapter{Mode: vertex.ModeGemini})
 	r.MustRegister(ProtocolVertexAnthropic, &vertex.PassthroughAdapter{Mode: vertex.ModeAnthropic})
+
+	// Gemini Code Assist（cloudcode-pa v1internal）：纯 OAuth Bearer 出站到
+	// Google 内部端点，请求包 {model,project,request} envelope，响应包
+	// {response} envelope（入站 proto/geminicodeassist 解）。属 OAuth session +
+	// 内部 Google 端点高危项 + 反封禁姿态（最小 UA/X-Goog-Api-Client），按
+	// cursor/copilot placeholder 模式默认 off、env opt-in 注册——避免把真实
+	// session credential 默认发到未广泛验证的私有上游。
+	if placeholderSessionAdapterEnabled(geminiCodeAssistAdapterEnv) {
+		r.MustRegister(ProtocolGeminiCodeAssist, &gemini.CodeAssistAdapter{})
+	}
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
 	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境
