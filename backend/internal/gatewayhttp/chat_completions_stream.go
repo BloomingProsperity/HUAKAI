@@ -359,7 +359,8 @@ func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
 		return false
 	}
 	// 上游族 wire 形态与客户端协议同形时(kimi/qwen/cohere/... == openai_chat;
-	// openai_codex == openai_responses)走 raw 直通:保真 vendor 专有字段
+	// openai_codex 刻意不在映射表内,见 hcsfProviderRequestModelFamily 排除注释,
+	// 故 responses→codex 不走此 fast-path 而 fail-closed)走 raw 直通:保真 vendor 专有字段
 	// (top_k 等;流式无 mergeHCSFRawPassthroughFields,翻译会静默丢),与
 	// openai→openai 既有直通语义一致。此前这些族在此返回 true 后
 	// MarshalToProviderRequest 不认原始族名,所有兼容族流式请求 501 在投递前
