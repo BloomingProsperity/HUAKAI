@@ -13,8 +13,20 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/router"
 )
 
+// VendorFromProtocolFamily 把 protocol family 归一到 vendor 字面量,供
+// (a) selector/dispatcher 按 vendor 切片 metric,(b) gatewayhttp cacheVendor →
+// providerForPricing 在选号前命中 rate table 的 providers.<vendor> 节点
+// (先例:imageshttp pricingVendorForFamily 对 replicate 的修复),
+// (c) settle 的 Provider 留档。两条硬规则:
+//   - 4-vendor 真实账号集合的历史标签锁定不得改动:openai_codex→"codex"
+//     (防 ChatGPT Plus/Codex CLI 反转场景被 openai 切片双计,历史 bug)、
+//     gemini_advanced_session→"gemini" 同理;
+//   - 其余族 vendor == registrydefault 注册 adapter 的 Platform() 串——与
+//     选号后 accInfo.Platform 同值,行为零漂移。漂移/漏配由注册表驱动守卫
+//     TestVendorCoversEveryRegisteredProtocolFamily(族集对称第 9 站)锁死。
 func VendorFromProtocolFamily(pf string) string {
 	switch pf {
+	// —— 4-vendor 真实账号集合(标签锁定,勿动)——
 	case "anthropic_messages":
 		return "anthropic"
 	case "openai_chat", "openai_responses":
@@ -23,6 +35,67 @@ func VendorFromProtocolFamily(pf string) string {
 		return "codex"
 	case "gemini_messages", "gemini_advanced_session":
 		return "gemini"
+	// —— 其余注册族:vendor == 注册 platform ——
+	case "bedrock_invoke":
+		return "bedrock"
+	case "openrouter_chat":
+		return "openrouter"
+	case "grok_chat":
+		return "grok"
+	case "kimi_chat":
+		return "kimi"
+	case "deepseek_chat":
+		return "deepseek"
+	case "mistral_chat":
+		return "mistral"
+	case "groqcloud_chat":
+		return "groqcloud"
+	case "together_chat":
+		return "together"
+	case "perplexity_chat":
+		return "perplexity"
+	case "fireworks_chat":
+		return "fireworks"
+	case "qwen_chat":
+		return "qwen"
+	case "glm_chat":
+		return "glm"
+	case "yi_chat":
+		return "yi"
+	case "baichuan_chat":
+		return "baichuan"
+	case "doubao_chat":
+		return "doubao"
+	case "ernie_chat":
+		return "ernie"
+	case "step_chat":
+		return "step"
+	case "hunyuan_chat":
+		return "hunyuan"
+	case "minimax_chat":
+		return "minimax"
+	case "cohere_chat":
+		return "cohere"
+	case "ollama_chat", "ollama_native":
+		return "ollama"
+	case "dify_chat":
+		return "dify"
+	case "replicate_image":
+		return "replicate"
+	case "vertex_gemini", "vertex_anthropic":
+		return "vertex"
+	case "gemini_code_assist":
+		return "gemini_code_assist"
+	case "cursor_session":
+		return "cursor"
+	case "copilot_session":
+		return "copilot"
+	case "antigravity_session":
+		return "antigravity"
+	case "kiro_session":
+		return "kiro"
+	case "windsurf_session":
+		return "windsurf"
 	default:
 		return ""
 	}

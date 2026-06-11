@@ -375,17 +375,19 @@ func TestPackageCompiles(t *testing.T) {
 	}
 }
 
-// TestVendorFromProtocolFamily 锁定 4-vendor 真实账号 metric 切片映射
-// (memory: project_real_vendor_account_scope)。 表驱动覆盖 gateway/
-// protocol_selector.go 当前注册的全部 ProtocolFamily, 防止再出现 prefix
-// 误判 (历史 bug: openai_codex 被 prefix "openai" 抢走, 导致该场景
-// 永远 0、 openai 切片双重计数)。
+// TestVendorFromProtocolFamily 锁定 vendor 切片映射的两条硬规则:
+// (1) 4-vendor 真实账号集合的历史标签不得改动, 防止再出现 prefix 误判
+// (历史 bug: openai_codex 被 prefix "openai" 抢走, 导致该场景永远 0、
+// openai 切片双重计数);(2) 其余注册族 vendor == 注册 platform(全量覆盖,
+// 此前 4-vendor 之外静默返空 → metric 缺片 + 选号前 providers.<vendor>
+// 计价节点不可达, adapter-campaign followup #2)。注册表驱动的完整性由
+// TestVendorCoversEveryRegisteredProtocolFamily 守卫;本表锁具体值。
 func TestVendorFromProtocolFamily(t *testing.T) {
 	cases := []struct {
 		pf   string
 		want string
 	}{
-		// 4-vendor 真实账号集合 — 必须正确分流
+		// 4-vendor 真实账号集合 — 标签锁定
 		{"anthropic_messages", "anthropic"},
 		{"openai_chat", "openai"},
 		{"openai_responses", "openai"},
@@ -393,21 +395,39 @@ func TestVendorFromProtocolFamily(t *testing.T) {
 		{"gemini_messages", "gemini"},
 		{"gemini_advanced_session", "gemini"},
 
-		// 已注册但不在 4-vendor 真账号集合 — 静默返空
-		{"bedrock_invoke", ""},
-		{"openrouter_chat", ""},
-		{"grok_chat", ""},
-		{"deepseek_chat", ""},
-		{"mistral_chat", ""},
-		{"groqcloud_chat", ""},
-		{"together_chat", ""},
-		{"perplexity_chat", ""},
-		{"fireworks_chat", ""},
-		{"copilot_session", ""},
-		{"cursor_session", ""},
-		{"antigravity_session", ""},
-		{"kiro_session", ""},
-		{"windsurf_session", ""},
+		// 其余注册族 — vendor == 注册 platform(与选号后 accInfo.Platform 同值)
+		{"bedrock_invoke", "bedrock"},
+		{"openrouter_chat", "openrouter"},
+		{"grok_chat", "grok"},
+		{"kimi_chat", "kimi"},
+		{"deepseek_chat", "deepseek"},
+		{"mistral_chat", "mistral"},
+		{"groqcloud_chat", "groqcloud"},
+		{"together_chat", "together"},
+		{"perplexity_chat", "perplexity"},
+		{"fireworks_chat", "fireworks"},
+		{"qwen_chat", "qwen"},
+		{"glm_chat", "glm"},
+		{"yi_chat", "yi"},
+		{"baichuan_chat", "baichuan"},
+		{"doubao_chat", "doubao"},
+		{"ernie_chat", "ernie"},
+		{"step_chat", "step"},
+		{"hunyuan_chat", "hunyuan"},
+		{"minimax_chat", "minimax"},
+		{"cohere_chat", "cohere"},
+		{"ollama_chat", "ollama"},
+		{"ollama_native", "ollama"},
+		{"dify_chat", "dify"},
+		{"replicate_image", "replicate"},
+		{"vertex_gemini", "vertex"},
+		{"vertex_anthropic", "vertex"},
+		{"gemini_code_assist", "gemini_code_assist"},
+		{"copilot_session", "copilot"},
+		{"cursor_session", "cursor"},
+		{"antigravity_session", "antigravity"},
+		{"kiro_session", "kiro"},
+		{"windsurf_session", "windsurf"},
 
 		// 边界 — 空字符串 / 未注册字面量 / 大小写敏感 / 裸 vendor 名
 		{"", ""},
