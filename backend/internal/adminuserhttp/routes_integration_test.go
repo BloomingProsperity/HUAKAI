@@ -7,15 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
@@ -424,4 +428,106 @@ type adminTwoFAStatsResponse struct {
 	EnabledUsers int64   `json:"enabled_users"`
 	TotalUsers   int64   `json:"total_users"`
 	EnabledRate  float64 `json:"enabled_rate"`
+}
+
+// seedAPIKeyForUser 为已存在用户种一个 active API key,返回明文 token。
+// key_prefix = 明文前 16 字符(对齐 auth.APIKeyResolver 派生)。
+func (f *adminUsersFixture) seedAPIKeyForUser(userID int64) string {
+	f.t.Helper()
+	plaintext := "hk_live_" + uuid.NewString() + "_tail"
+	prefix := plaintext
+	if len(prefix) > auth.APIKeyPrefixLen {
+		prefix = prefix[:auth.APIKeyPrefixLen]
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcrypt.DefaultCost)
+	if err != nil {
+		f.t.Fatalf("bcrypt key: %v", err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, 'active', NULL)`,
+		f.tenantID, userID, "k-"+f.suffix, string(hash), prefix,
+	); err != nil {
+		f.t.Fatalf("seed api_key: %v", err)
+	}
+	return plaintext
+}
+
+// TestPGAdminSetUserStatusBansBothAxes 承重守卫:封号(status=disabled)必须**同时**
+// 切断登录(userauth)与已签发 API key(auth.api_key_resolver 联查 user_status),
+// 解封恢复双轴。这是封禁端点「真有用」的核心——只挡登录、不挡 key 等于没封。
+// MUTATION(端点侧):handler 不调 setter → 双轴仍通 → 红;
+// MUTATION(resolver 侧,非本切片但本测试守):api_key_resolver 去掉 user_status 检查
+// → 封号后 key 仍解析成功 → key 轴断言红。
+func TestPGAdminSetUserStatusBansBothAxes(t *testing.T) {
+	ctx := context.Background()
+	pool := openAdminUsersPool(t, ctx)
+	f := newAdminUsersFixture(t, ctx, pool)
+	userID, email := f.seedPasswordUser("ban", "correct-secret")
+	token := f.seedAPIKeyForUser(userID)
+
+	authSvc := userauth.NewService(userauth.NewPostgresStore(pool))
+	authSvc.RequireVerified = true
+	authSvc.PasswordPolicy = userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
+	keyResolver := auth.NewAPIKeyResolver(dbauth.New(pool))
+	bearer := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}
+
+	// 封号前:两轴都通。
+	if _, err := authSvc.Authenticate(ctx, userauth.LoginInput{TenantID: f.tenantID, Email: email, Password: "correct-secret"}); err != nil {
+		t.Fatalf("封号前登录应成功: %v", err)
+	}
+	if _, err := keyResolver.Resolve(ctx, bearer()); err != nil {
+		t.Fatalf("封号前 API key 应解析成功: %v", err)
+	}
+
+	// 管理员封号(platform_admin 带 ?tenant_id,验证放行 + 封禁双效)。
+	rec := invokeAdminUsersBody(t, Deps{
+		Auth:             usersAuthStub{ident: platformAdmin()},
+		Store:            admindb.New(pool),
+		UserStatusSetter: NewPostgresUserStatusStore(pool),
+		Audit:            admindb.New(pool),
+	}, http.MethodPut, fmt.Sprintf("/admin/v1/users/%d/status?tenant_id=%d", userID, f.tenantID), `{"status":"disabled","reason":"abuse"}`)
+	assertStatus(t, rec, http.StatusOK)
+
+	// 封号后:登录被拒 + API key 被拒(双轴切断)。
+	if _, err := authSvc.Authenticate(ctx, userauth.LoginInput{TenantID: f.tenantID, Email: email, Password: "correct-secret"}); !errors.Is(err, userauth.ErrUserDisabled) {
+		t.Fatalf("封号后登录 err=%v want ErrUserDisabled", err)
+	}
+	if _, err := keyResolver.Resolve(ctx, bearer()); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("封号后 API key err=%v want ErrUnauthorized(resolver 须联查 user_status)", err)
+	}
+
+	// DB 落地确认 + 审计。
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM users WHERE tenant_id=$1 AND id=$2`, f.tenantID, userID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "disabled" {
+		t.Fatalf("db status=%q want disabled", status)
+	}
+	var action string
+	if err := pool.QueryRow(ctx,
+		`SELECT action FROM admin_audit_events WHERE tenant_id=$1 AND target_id=$2 AND action='set_user_status' ORDER BY id DESC LIMIT 1`,
+		f.tenantID, userID).Scan(&action); err != nil {
+		t.Fatalf("read set_user_status audit: %v", err)
+	}
+
+	// 解封:两轴恢复。
+	rec = invokeAdminUsersBody(t, Deps{
+		Auth:             usersAuthStub{ident: platformAdmin()},
+		Store:            admindb.New(pool),
+		UserStatusSetter: NewPostgresUserStatusStore(pool),
+		Audit:            admindb.New(pool),
+	}, http.MethodPut, fmt.Sprintf("/admin/v1/users/%d/status?tenant_id=%d", userID, f.tenantID), `{"status":"active"}`)
+	assertStatus(t, rec, http.StatusOK)
+	if _, err := authSvc.Authenticate(ctx, userauth.LoginInput{TenantID: f.tenantID, Email: email, Password: "correct-secret"}); err != nil {
+		t.Fatalf("解封后登录应恢复: %v", err)
+	}
+	if _, err := keyResolver.Resolve(ctx, bearer()); err != nil {
+		t.Fatalf("解封后 API key 应恢复: %v", err)
+	}
 }

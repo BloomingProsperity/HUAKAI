@@ -37,6 +37,7 @@ type Deps struct {
 	PasskeyResetter  passkeyResetService
 	UserGroupSetter  userGroupSetter
 	UserRemarkSetter userRemarkSetter
+	UserStatusSetter userStatusSetter
 }
 
 type adminAuth interface {
@@ -80,6 +81,12 @@ type userGroupSetter interface {
 
 type userRemarkSetter interface {
 	SetUserRemarkForTenant(ctx context.Context, tenantID, userID int64, remark string) error
+}
+
+type userStatusSetter interface {
+	// SetUserStatusForTenant 设 users.status;返回受影响行数(0 = 该租户无此用户)
+	// 供 handler 区分 404 与成功,避免「改了别租户/不存在的用户却报成功」。
+	SetUserStatusForTenant(ctx context.Context, tenantID, userID int64, status string) (int64, error)
 }
 
 type unlockAuditInput struct {
@@ -141,6 +148,7 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Delete("/{id}/passkeys", newResetPasskeyHandler(d))
 	r.Put("/{id}/group", newSetUserGroupHandler(d))
 	r.Put("/{id}/remark", newSetUserRemarkHandler(d))
+	r.Put("/{id}/status", newSetUserStatusHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
 	r.Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
@@ -452,10 +460,19 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 				"tenant_operator scope_tenant_id required")
 			return admin.AdminIdentity{}, 0, false
 		}
-		return ident, ident.ScopeTenantID, true
+		// tenant_operator 可省略 ?tenant_id,用自身 scope;若显式带,只能是自己的。
+		if tenantID, ok := tenantFromQueryOrScope(w, r, ident); ok {
+			return ident, tenantID, true
+		}
+		return admin.AdminIdentity{}, 0, false
 	case admin.RolePlatformAdmin:
-		writeError(w, http.StatusForbidden, "admin_tenant_scope_required",
-			"tenant-scoped admin user reads require a tenant_operator identity")
+		// 单租户开箱即用(定位 2026-06-11):platform_admin 现可管理用户,镜像
+		// provider_catalog 的 parseAdminCatalogTenant 模式——必须显式带
+		// ?tenant_id,经 CanIssueForTenant 放行(单租户部署即默认租户 id)。
+		// RBAC 语义不变:platform_admin 跨租户但须指名,越权由 CanIssueForTenant 挡。
+		if tenantID, ok := tenantFromQueryOrScope(w, r, ident); ok {
+			return ident, tenantID, true
+		}
 		return admin.AdminIdentity{}, 0, false
 	default:
 		writeError(w, http.StatusForbidden, "admin_forbidden_scope",

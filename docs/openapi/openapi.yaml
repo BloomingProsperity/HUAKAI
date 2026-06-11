@@ -8072,6 +8072,37 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/ServiceBusy" }
 
+  /admin/v1/users/{id}/status:
+    parameters:
+      - $ref: "#/components/parameters/ResourceId"
+    put:
+      tags: [admin-users]
+      summary: Ban or reinstate a tenant user (active/disabled)
+      description: >
+        Sets users.status. A disabled user is cut off on both axes at once:
+        password/social login (ErrUserDisabled) and already-issued API keys
+        (the inbound resolver joins user_status). Only 'active' and 'disabled'
+        are accepted; 'deleted' is a separate destructive operation. platform_admin
+        must pass ?tenant_id; tenant_operator is scoped to its own tenant.
+      operationId: adminSetUserStatus
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [status], properties: { status: { type: string, enum: [active, disabled] }, reason: { type: string, maxLength: 1024 } } }
+      responses:
+        "200":
+          description: Status updated.
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer, format: int64 }, status: { type: string } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/ServiceBusy" }
+
   /admin/v1/users/{id}/account-bindings/{provider}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
