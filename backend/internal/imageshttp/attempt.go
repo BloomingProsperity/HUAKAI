@@ -108,6 +108,12 @@ func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
 		return false
 	}
+	// family 专属响应翻译(replicate_image:prediction → OpenAI 形)必须在
+	// settle/写客户端之前;翻译失败按上游错误处理,绝不 settle 计费。
+	raw, ok := ex.translateUpstreamResponseForFamily(w, raw)
+	if !ok {
+		return false
+	}
 	return ex.settleSuccessfulResponse(w, res, raw, attemptSeq)
 }
 
@@ -128,6 +134,17 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 		actualCost, costSnapshot, pending, err = ex.tokenImageCost(usage)
 		if err != nil {
 			ex.abort(w, "pricing_unavailable", int64(usage.InputTokens))
+			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
+			return false
+		}
+	} else if billable := ex.billableImageCount(); billable < ex.amount {
+		// per_image 按交付数对账:上游交付少于请求数(Replicate model-specific
+		// num_outputs 被忽略只回 1 张)时,按实际交付张数重算成本,绝不按请求
+		// 数多收用户钱。billable==amount(常态)走默认 predictedCost,零开销。
+		var err error
+		actualCost, costSnapshot, pending, err = ex.perImageCost(billable)
+		if err != nil {
+			ex.abort(w, "pricing_unavailable", 0)
 			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
 			return false
 		}

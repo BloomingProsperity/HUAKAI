@@ -544,6 +544,7 @@ type recordingRoundTripper struct {
 	path   string
 	auth   string
 	body   string
+	header http.Header
 }
 
 func (rt *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -554,6 +555,7 @@ func (rt *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 	rt.path = req.URL.Path
 	rt.auth = req.Header.Get("Authorization")
 	rt.body = string(raw)
+	rt.header = req.Header.Clone()
 	status := rt.resp.status
 	if status == 0 {
 		status = http.StatusOK

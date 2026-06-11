@@ -29,6 +29,9 @@ type imageRequest struct {
 	Images   json.RawMessage `json:"images,omitempty"`
 	ImageURL string          `json:"image_url,omitempty"`
 	Stream   *bool           `json:"stream,omitempty"`
+	// ResponseFormat 仅 family 级校验消费(replicate_image 拒 b64_json);
+	// body 原样透传,不参与改写。
+	ResponseFormat string `json:"response_format,omitempty"`
 }
 
 type tokenImageUsage struct {

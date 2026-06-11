@@ -758,3 +758,22 @@ func TestMarshalSupportsEveryRegisteredProtocolFamily(t *testing.T) {
 		}
 	}
 }
+
+// TestMarshalReplicateImageFamilyFailsClosedOnChatLane 钉住 replicate_image
+// 对 chat lane 的 fail-closed 事实:该族只注册出站(registrydefault),刻意
+// 不进入站 protocol_selector(图片 lane 的 Dispatch 不走入站注册表;上面守卫
+// 的主循环因此不迭代它,fail-closed 例外表对未注册族也没有反向断言可挂)。
+// 若运营把 chat 模型 binding 错配到 replicate_image,/v1/chat/completions 的
+// 流式/非流式路径都收敛到 marshal → 必须报错,不得投影成任何 JSON 出站
+// (Replicate 端点只认 {"input":{...}} prediction 形)。Mutation:有人在
+// hcsfProviderRequestModelFamily 把 replicate_image 映到 openai_chat,或注册
+// 入站 adapter 而不同步表态 marshal 支持 → 对应断言红,逼出显式决策。
+func TestMarshalReplicateImageFamilyFailsClosedOnChatLane(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	if _, err := MarshalToProviderRequest(env, "replicate_image"); err == nil {
+		t.Fatal("replicate_image 在 chat lane 必须 marshal fail-closed(误绑定时不能拼出可用的 Replicate body)")
+	}
+	if _, ok := BuildDefaultProtocolAdapterRegistry().adapters["replicate_image"]; ok {
+		t.Fatal("replicate_image 被注册进入站协议注册表——图片 lane 不需要;若有意接 chat lane,须同步 marshal 支持或例外表登记")
+	}
+}

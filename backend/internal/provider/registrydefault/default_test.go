@@ -44,6 +44,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolOllamaChat,
 		ProtocolOllamaNative,
 		ProtocolDifyChat,
+		ProtocolReplicateImage,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -106,6 +107,7 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 		ProtocolKimiChat,
 		ProtocolOllamaNative,
 		ProtocolDifyChat,
+		ProtocolReplicateImage,
 	} {
 		a, err := r.For(pf)
 		if err != nil {
@@ -154,6 +156,7 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolOllamaChat:        "ollama",
 		ProtocolOllamaNative:      "ollama",
 		ProtocolDifyChat:          "dify",
+		ProtocolReplicateImage:    "replicate",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)

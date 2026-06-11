@@ -32,6 +32,7 @@
 //   - cohere_chat              Cohere（OpenAI 兼容 /compatibility/v1）
 //   - ollama_native            Ollama 原生 /api/chat（NDJSON 流式；与 ollama_chat 并存）
 //   - dify_chat                Dify 应用 API（per-app token；bot_type 分端点）
+//   - replicate_image          Replicate 图片生成（models/{model}/predictions；图片 lane 专用）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
@@ -56,6 +57,7 @@ import (
 	providerollama "github.com/BloomingProsperity/HUAKAI/internal/provider/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openrouter"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/replicate"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 )
 
@@ -91,6 +93,12 @@ const (
 	ProtocolOllamaChat   = "ollama_chat"   // Ollama 自托管（OpenAI 兼容 /v1/chat/completions；默认 endpoint 仅占位，实际部署必须经 channel/account base_url 覆盖到真实主机）
 	ProtocolOllamaNative = "ollama_native" // Ollama 原生 /api/chat（NDJSON 流式、options{} 采样参数；与 ollama_chat 并存，默认 endpoint 同为本机占位）
 	ProtocolDifyChat     = "dify_chat"     // Dify 应用 API（chat-messages/workflows/completion-messages；per-app token，事件键 SSE）
+	// Replicate 图片生成（POST /v1/models/{model}/predictions + Prefer: wait
+	// 同步等待）。仅图片 lane（imageshttp /v1/images/generations）serving;
+	// 刻意不注册入站 protocol_selector/stream_scanner——chat lane 误绑定本族
+	// 时 MarshalToProviderRequest fail-closed(守卫:gateway.
+	// TestMarshalReplicateImageFamilyFailsClosedOnChatLane)。
+	ProtocolReplicateImage = "replicate_image"
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -236,6 +244,10 @@ func Build() *provider.StaticRegistry {
 	// bot_type 分端点），走专用 adapter；自托管实例经 upstream_passthrough
 	// base_url 覆盖默认 https://api.dify.ai。
 	r.MustRegister(ProtocolDifyChat, &providerdify.Adapter{})
+	// Replicate 图片生成:OpenAI images 形请求在 adapter 内翻译为
+	// {"input":{...}},model 进 URL path,Prefer: wait 同步等待(计费正确性,
+	// 见 provider/replicate 包注释)。响应翻译在图片 lane(imageshttp)完成。
+	r.MustRegister(ProtocolReplicateImage, &replicate.Adapter{})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
 	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境
