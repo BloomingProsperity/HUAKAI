@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -161,6 +162,174 @@ func TestServiceReserve_RequestsMetricUsesModelBReservedAndSettled(t *testing.T)
 	}
 	if !store.reserveLimit.Equal(decimal.NewFromInt(2)) {
 		t.Fatalf("reserveLimit=%s; want 2", store.reserveLimit)
+	}
+}
+
+func TestServiceReserve_NoTokenPolicyDoesNotApplyTokenEstimate(t *testing.T) {
+	// Mutation check: mistakenly applying ReservedTokens to the requests metric
+	// would deny or reserve 50000 request units. With no token policy configured,
+	// TPD estimates must have zero effect on request quota behavior.
+	at := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	store := &requestMetricReserveStore{
+		at: at,
+		window: WindowCounter{
+			TenantID:      1,
+			ID:            8,
+			PolicyID:      12,
+			ReservedValue: decimal.NewFromInt(1),
+			SettledValue:  decimal.Zero,
+			RequestCount:  0,
+		},
+	}
+	result, err := NewService(store).Reserve(context.Background(), ReserveRequest{
+		TenantID:           1,
+		ClaimID:            12,
+		RequestFingerprint: "fp-no-token-policy",
+		Scopes:             []Scope{{TenantID: 1, Kind: ScopeUser, ID: "42"}},
+		ReservedTokens:     50000,
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		LeaseExpiresAt:     at.Add(5 * time.Minute),
+		At:                 at,
+	})
+	if err != nil {
+		t.Fatalf("Reserve err=%v; want request quota allow without token policy", err)
+	}
+	if !result.Allowed {
+		t.Fatalf("result=%+v; want allowed without token policy", result)
+	}
+	if !store.reserveDelta.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("request reserveDelta=%s want 1, not token estimate", store.reserveDelta)
+	}
+	if !store.insertReservedUnits.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("reservation ReservedUnits=%s want 1 without token policy", store.insertReservedUnits)
+	}
+}
+
+func TestServiceReserve_TokensEstimatedEnforceDeniesWhenEstimateExceedsLimit(t *testing.T) {
+	// Mutation check: restoring the old MetricTokensEstimated skip lets this
+	// request through and inserts a reservation; the deny and insert assertions
+	// must turn red.
+	at := time.Date(2026, 6, 4, 10, 30, 0, 0, time.UTC)
+	store := &tokenMetricReserveStore{
+		at:    at,
+		limit: decimal.NewFromInt(100),
+		window: WindowCounter{
+			TenantID:      1,
+			ID:            9,
+			PolicyID:      13,
+			ReservedValue: decimal.NewFromInt(80),
+			SettledValue:  decimal.Zero,
+		},
+	}
+	result, err := NewService(store).Reserve(context.Background(), ReserveRequest{
+		TenantID:           1,
+		ClaimID:            13,
+		RequestFingerprint: "fp-token-deny",
+		Scopes:             []Scope{{TenantID: 1, Kind: ScopeUser, ID: "42"}},
+		ReservedTokens:     25,
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		LeaseExpiresAt:     at.Add(5 * time.Minute),
+		At:                 at,
+	})
+	if !IsDenied(err) {
+		t.Fatalf("Reserve err=%v; want token quota deny", err)
+	}
+	if result.Allowed || result.Decision.Metric != MetricTokensEstimated {
+		t.Fatalf("result=%+v; want tokens_estimated deny", result)
+	}
+	if store.insertCalls != 0 {
+		t.Fatalf("insertCalls=%d want 0 on token quota deny", store.insertCalls)
+	}
+	if store.reserveIncrements != 0 {
+		t.Fatalf("reserveIncrements=%d want 0 because deny happens before apply", store.reserveIncrements)
+	}
+}
+
+func TestServiceReserve_TokensEstimatedAllowReservesEstimateAndSnapshotsAmount(t *testing.T) {
+	// Mutation check: reserving 1 token instead of the estimate leaves
+	// reserveDelta=1 and snapshot reserved_amount=1; both assertions must fail.
+	at := time.Date(2026, 6, 4, 10, 45, 0, 0, time.UTC)
+	store := &tokenMetricReserveStore{
+		at:    at,
+		limit: decimal.NewFromInt(100),
+		window: WindowCounter{
+			TenantID:      1,
+			ID:            11,
+			PolicyID:      15,
+			ReservedValue: decimal.NewFromInt(10),
+			SettledValue:  decimal.Zero,
+		},
+	}
+	result, err := NewService(store).Reserve(context.Background(), ReserveRequest{
+		TenantID:           1,
+		ClaimID:            15,
+		RequestFingerprint: "fp-token-allow",
+		Scopes:             []Scope{{TenantID: 1, Kind: ScopeUser, ID: "42"}},
+		ReservedTokens:     25,
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		LeaseExpiresAt:     at.Add(5 * time.Minute),
+		At:                 at,
+	})
+	if err != nil {
+		t.Fatalf("Reserve err=%v; want allow under token limit", err)
+	}
+	if !result.Allowed {
+		t.Fatalf("result=%+v; want allowed under token limit", result)
+	}
+	if !store.reserveDelta.Equal(decimal.NewFromInt(25)) {
+		t.Fatalf("token reserveDelta=%s want estimate 25", store.reserveDelta)
+	}
+	if store.requestCountDelta != 0 {
+		t.Fatalf("token requestCountDelta=%d want 0", store.requestCountDelta)
+	}
+	if !store.insertReservedUnits.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("reservation ReservedUnits=%s want request-unit 1", store.insertReservedUnits)
+	}
+	var records []policySnapshotRecord
+	if err := json.Unmarshal(store.policySnapshot, &records); err != nil {
+		t.Fatalf("unmarshal policy snapshot: %v", err)
+	}
+	if len(records) != 1 || records[0].Metric != string(MetricTokensEstimated) || records[0].ReservedAmount != "25" {
+		t.Fatalf("snapshot=%+v want one tokens_estimated record with reserved_amount=25", records)
+	}
+}
+
+func TestServiceReserve_TokensEstimatedZeroEstimateSkipsWithoutDeny(t *testing.T) {
+	// Mutation check: treating missing estimates as 1 token would deny against
+	// this already-full token window. Zero estimate must preserve the current
+	// observe/skip behavior and allow the hot path.
+	at := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)
+	store := &tokenMetricReserveStore{
+		at:    at,
+		limit: decimal.NewFromInt(1),
+		window: WindowCounter{
+			TenantID:      1,
+			ID:            10,
+			PolicyID:      14,
+			ReservedValue: decimal.NewFromInt(1),
+			SettledValue:  decimal.Zero,
+		},
+	}
+	result, err := NewService(store).Reserve(context.Background(), ReserveRequest{
+		TenantID:           1,
+		ClaimID:            14,
+		RequestFingerprint: "fp-token-zero-estimate",
+		Scopes:             []Scope{{TenantID: 1, Kind: ScopeUser, ID: "42"}},
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		LeaseExpiresAt:     at.Add(5 * time.Minute),
+		At:                 at,
+	})
+	if err != nil {
+		t.Fatalf("Reserve err=%v; want allow when token estimate is absent", err)
+	}
+	if !result.Allowed {
+		t.Fatalf("result=%+v; want allowed with zero token estimate", result)
+	}
+	if store.reserveIncrements != 0 || store.upsertCalls != 0 {
+		t.Fatalf("token window calls reserve=%d upsert=%d; want 0 when estimate is absent", store.reserveIncrements, store.upsertCalls)
+	}
+	if store.insertCalls != 1 {
+		t.Fatalf("insertCalls=%d want 1 reservation after token policy skipped", store.insertCalls)
 	}
 }
 
@@ -513,6 +682,7 @@ type requestMetricReserveStore struct {
 	reserveIncrements      int
 	reserveDelta           decimal.Decimal
 	reserveLimit           decimal.Decimal
+	insertReservedUnits    decimal.Decimal
 }
 
 func (s *requestMetricReserveStore) WithTx(ctx context.Context, fn func(PGStore) error) error {
@@ -560,7 +730,8 @@ func (s *requestMetricReserveStore) GetReservationByClaimForUpdate(context.Conte
 	return Reservation{}, pgx.ErrNoRows
 }
 
-func (s *requestMetricReserveStore) InsertReservation(context.Context, ReservationInsert) (Reservation, error) {
+func (s *requestMetricReserveStore) InsertReservation(_ context.Context, input ReservationInsert) (Reservation, error) {
+	s.insertReservedUnits = input.ReservedUnits
 	return Reservation{
 		TenantID:       1,
 		ID:             123,
@@ -575,6 +746,85 @@ func (s *requestMetricReserveStore) ReactivateReservation(context.Context, Reser
 }
 
 func (s *requestMetricReserveStore) InsertAuditEvent(context.Context, AuditEvent) (int64, error) {
+	return 1, nil
+}
+
+type tokenMetricReserveStore struct {
+	noTxReserveStore
+	at                  time.Time
+	limit               decimal.Decimal
+	window              WindowCounter
+	upsertCalls         int
+	insertCalls         int
+	reserveIncrements   int
+	reserveDelta        decimal.Decimal
+	requestCountDelta   int64
+	insertReservedUnits decimal.Decimal
+	policySnapshot      []byte
+}
+
+func (s *tokenMetricReserveStore) WithTx(ctx context.Context, fn func(PGStore) error) error {
+	return fn(s)
+}
+
+func (s *tokenMetricReserveStore) ListActivePolicies(context.Context, PolicyFilter) ([]Policy, error) {
+	limit := s.limit
+	if limit.IsZero() {
+		limit = decimal.NewFromInt(100)
+	}
+	return []Policy{{
+		TenantID:   1,
+		ID:         s.window.PolicyID,
+		Scope:      Scope{TenantID: 1, Kind: ScopeUser, ID: "42"},
+		Metric:     MetricTokensEstimated,
+		Window:     Window{Kind: WindowCalendarDay},
+		LimitValue: limit,
+		Mode:       ModeEnforce,
+		Priority:   10,
+		ValidFrom:  s.at.Add(-time.Minute),
+	}}, nil
+}
+
+func (s *tokenMetricReserveStore) UpsertWindow(context.Context, WindowUpsert) (WindowCounter, error) {
+	s.upsertCalls++
+	return s.window, nil
+}
+
+func (s *tokenMetricReserveStore) GetWindowForUpdate(context.Context, int64, int64) (WindowCounter, error) {
+	return s.window, nil
+}
+
+func (s *tokenMetricReserveStore) IncrementWindowReserved(_ context.Context, input WindowReserve) (WindowCounter, error) {
+	s.reserveIncrements++
+	s.reserveDelta = input.ReserveDelta
+	s.requestCountDelta = input.RequestCountDelta
+	s.window.ReservedValue = s.window.ReservedValue.Add(input.ReserveDelta)
+	s.window.RequestCount += input.RequestCountDelta
+	return s.window, nil
+}
+
+func (s *tokenMetricReserveStore) GetReservationByClaimForUpdate(context.Context, int64, int64) (Reservation, error) {
+	return Reservation{}, pgx.ErrNoRows
+}
+
+func (s *tokenMetricReserveStore) InsertReservation(_ context.Context, input ReservationInsert) (Reservation, error) {
+	s.insertCalls++
+	s.insertReservedUnits = input.ReservedUnits
+	s.policySnapshot = input.PolicySnapshot
+	return Reservation{
+		TenantID:       1,
+		ID:             124,
+		ClaimID:        14,
+		Status:         ReservationReserved,
+		LeaseExpiresAt: s.at.Add(5 * time.Minute),
+	}, nil
+}
+
+func (s *tokenMetricReserveStore) ReactivateReservation(context.Context, ReservationReactivate) (Reservation, error) {
+	return Reservation{}, errors.New("unexpected ReactivateReservation")
+}
+
+func (s *tokenMetricReserveStore) InsertAuditEvent(context.Context, AuditEvent) (int64, error) {
 	return 1, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -843,6 +844,66 @@ func TestHandler_QuotaDenyAbortsBillingClaimAndReturns429(t *testing.T) {
 	}
 	if !hasQuotaScope(quotaReserver.req.Scopes, quota.ScopeAPIKey, "11") {
 		t.Fatalf("quota scopes=%+v missing api-key scope", quotaReserver.req.Scopes)
+	}
+}
+
+// TestHandler_QuotaReserveFeedsInputTokenEstimate W5:输入 token 估算必须喂进
+// 配额预检的 ReservedTokens(否则 token-per-window 配额永远拿不到量、无法拦截)。
+// MUTATION: 去掉 reserveQuota 的 ReservedTokens 接线 → req.ReservedTokens=0 →
+// 本断言红。
+func TestHandler_QuotaReserveFeedsInputTokenEstimate(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	claimGate := &recordingClaimGate{claimID: 99010}
+	quotaReserver := &recordingQuotaReserver{} // allow
+	d := clientAdapterDeps(t)
+	d.ClaimGate = claimGate
+	d.QuotaReserver = quotaReserver
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	invokeHandlerPath(t, d, "/v1/chat/completions", body)
+
+	want := int64(estimateInputTokens([]byte(body)))
+	if want <= 0 {
+		t.Fatalf("fixture non-discriminating: estimateInputTokens=%d must be >0", want)
+	}
+	if quotaReserver.req.ReservedTokens != want {
+		t.Fatalf("quota ReservedTokens=%d want %d(输入 token 估算须喂进配额预检)", quotaReserver.req.ReservedTokens, want)
+	}
+}
+
+// TestHandler_QuotaDenyEmitsRetryAfterAndWindowResetsAt "更强"delta:窗口配额
+// 拒绝时,引擎算出的 RetryAfter 必须吐成 Retry-After 头 + body 的
+// window_resets_at,让客户端按窗口边界智能退避(对齐 sub2api,强于 new-api)。
+// MUTATION: 拒绝写回改回 writeInsufficientQuotaError(w)(不传 RetryAfter)→
+// Retry-After 头缺失 + body 无 window_resets_at → 两断言红。
+func TestHandler_QuotaDenyEmitsRetryAfterAndWindowResetsAt(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	claimGate := &recordingClaimGate{claimID: 99011}
+	quotaReserver := &recordingQuotaReserver{
+		err: &quota.DenyError{Decision: quota.Decision{
+			Kind:       quota.DecisionDeny,
+			Code:       "quota_limit_exceeded",
+			Reason:     "token window exhausted",
+			RetryAfter: 2 * time.Hour,
+		}},
+	}
+	d := clientAdapterDeps(t)
+	d.ClaimGate = claimGate
+	d.QuotaReserver = quotaReserver
+	d.Settler = &stubSettler{}
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d want 429", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "7200" {
+		t.Fatalf("Retry-After=%q want 7200(2h=7200s)", got)
+	}
+	if !strings.Contains(rec.Body.String(), `"window_resets_at"`) {
+		t.Fatalf("body=%s missing window_resets_at", rec.Body.String())
 	}
 }
 

@@ -3,22 +3,25 @@ package quota
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 type policySnapshotRecord struct {
-	ID            int64  `json:"id"`
-	ScopeKind     string `json:"scope_kind"`
-	ScopeID       string `json:"scope_id"`
-	Metric        string `json:"metric"`
-	WindowKind    string `json:"window_kind"`
-	WindowStart   string `json:"window_start,omitempty"`
-	WindowEnd     string `json:"window_end,omitempty"`
-	LimitValue    string `json:"limit_value"`
-	Mode          string `json:"mode"`
-	ManualComment string `json:"manual_comment,omitempty"`
+	ID             int64  `json:"id"`
+	ScopeKind      string `json:"scope_kind"`
+	ScopeID        string `json:"scope_id"`
+	Metric         string `json:"metric"`
+	WindowKind     string `json:"window_kind"`
+	WindowStart    string `json:"window_start,omitempty"`
+	WindowEnd      string `json:"window_end,omitempty"`
+	LimitValue     string `json:"limit_value"`
+	Mode           string `json:"mode"`
+	ReservedAmount string `json:"reserved_amount,omitempty"`
+	ManualComment  string `json:"manual_comment,omitempty"`
 }
 
-func marshalPolicySnapshot(policies []Policy) []byte {
+func marshalPolicySnapshot(policies []Policy, reservedAmounts map[policyMetricKey]decimal.Decimal) []byte {
 	records := make([]policySnapshotRecord, 0, len(policies))
 	for _, policy := range policies {
 		record := policySnapshotRecord{
@@ -29,6 +32,9 @@ func marshalPolicySnapshot(policies []Policy) []byte {
 			WindowKind: string(policy.Window.Kind),
 			LimitValue: policy.LimitValue.String(),
 			Mode:       string(policy.Mode),
+		}
+		if amount, ok := reservedAmounts[policyMetricKey{policyID: policy.ID, metric: policy.Metric}]; ok {
+			record.ReservedAmount = amount.String()
 		}
 		if !policy.Window.Start.IsZero() {
 			record.WindowStart = policy.Window.Start.UTC().Format(time.RFC3339Nano)

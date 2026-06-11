@@ -70,15 +70,17 @@ func (ex *execution) reserveQuota(w http.ResponseWriter, predictedCost decimal.D
 		PoolGroupID:        ex.attempt.PoolGroupID,
 		RequestFingerprint: ex.payloadHash,
 		RequestedModel:     ex.req.Model,
-		PredictedCost:      predictedCost,
-		At:                 time.Now().UTC(),
+		// W5:嵌入输入 token 估算喂进 token-per-window 配额预检。
+		ReservedTokens: int64(ex.inputEstimate),
+		PredictedCost:  predictedCost,
+		At:             time.Now().UTC(),
 	}))
 	if err == nil && result.Allowed {
 		return true
 	}
 	if quotaenforce.IsDenied(err) || (err == nil && !result.Allowed) {
 		ex.abort(w, "quota_denied", 0)
-		writeInsufficientQuotaError(w)
+		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err))
 		return false
 	}
 	return true
