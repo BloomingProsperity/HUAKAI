@@ -33,6 +33,8 @@
 //   - ollama_native            Ollama 原生 /api/chat（NDJSON 流式；与 ollama_chat 并存）
 //   - dify_chat                Dify 应用 API（per-app token；bot_type 分端点）
 //   - replicate_image          Replicate 图片生成（models/{model}/predictions；图片 lane 专用）
+//   - vertex_gemini            Gemini-on-Vertex（publishers/google；generateContent/streamGenerateContent）
+//   - vertex_anthropic         Anthropic-on-Vertex（publishers/anthropic；rawPredict/streamRawPredict + body reshape）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
@@ -58,6 +60,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openrouter"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/replicate"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/vertex"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 )
 
@@ -99,6 +102,14 @@ const (
 	// 时 MarshalToProviderRequest fail-closed(守卫:gateway.
 	// TestMarshalReplicateImageFamilyFailsClosedOnChatLane)。
 	ProtocolReplicateImage = "replicate_image"
+	// Vertex AI serving（Google Cloud aiplatform）。两个独立 family 共享
+	// "vertex" 平台与出站 SSRF 策略：vertex_gemini 走 publishers/google +
+	// generateContent/streamGenerateContent（body passthrough）；vertex_anthropic
+	// 走 publishers/anthropic + rawPredict/streamRawPredict（body 剥 model/stream
+	// + 注 anthropic_version）。凭据 runtime 形态为 upstream_passthrough（Value
+	// 已是 Bearer access_token，由 credentialworker metadata token 刷新链 materialize）。
+	ProtocolVertexGemini    = "vertex_gemini"
+	ProtocolVertexAnthropic = "vertex_anthropic"
 	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
@@ -248,6 +259,13 @@ func Build() *provider.StaticRegistry {
 	// {"input":{...}},model 进 URL path,Prefer: wait 同步等待(计费正确性,
 	// 见 provider/replicate 包注释)。响应翻译在图片 lane(imageshttp)完成。
 	r.MustRegister(ProtocolReplicateImage, &replicate.Adapter{})
+	// Vertex AI serving：两个 family 共享 vertex.PassthroughAdapter，Mode 在
+	// 注册时定（router 已知 protocol family，不从 model 前缀推断）。adapter 不
+	// 签 JWT——消费已 materialize 的 Bearer token（upstream_passthrough）；URL
+	// 含 project/location/publisher/model 模板，location 经 ^[a-z0-9-]+$ 校验 +
+	// PathEscape 防 host/path 注入。
+	r.MustRegister(ProtocolVertexGemini, &vertex.PassthroughAdapter{Mode: vertex.ModeGemini})
+	r.MustRegister(ProtocolVertexAnthropic, &vertex.PassthroughAdapter{Mode: vertex.ModeAnthropic})
 
 	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
 	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境

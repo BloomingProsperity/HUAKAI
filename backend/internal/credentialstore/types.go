@@ -205,7 +205,7 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 	}
 	extra := stringMap(fields, "extra")
 	for _, key := range []string{
-		"org_id", "project_id", "base_url", "auth_header", "anthropic_version",
+		"org_id", "project_id", "location", "base_url", "auth_header", "anthropic_version",
 		"anthropic_beta", "openai_beta", "azure_api_version", "claude_beta_query",
 		"goog_user_project", "auth_in_query",
 		"aws_access_key_id", "aws_region", "aws_session_token", "client_email",

@@ -90,6 +90,45 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 	}
 }
 
+// TestVertexRuntimeMaterialSurfacesLocation 抓的回归:Vertex 模式的
+// RuntimeMaterial 必须把 location 透到 Extra,供 vertex.PassthroughAdapter 拼
+// region-templated URL。location 不在白名单 → adapter 拿不到 → URL 区域错。
+// 判别性:断言 Extra["location"]==us-east5 + Extra["project_id"]==my-proj;
+// Mutation:从 RuntimeMaterial 的 Extra 白名单删 "location" → Extra 无 location
+// 断言红（URL host 会回落默认 us-central1，区域错路由）。
+func TestVertexRuntimeMaterialSurfacesLocation(t *testing.T) {
+	registry := DefaultHandlerRegistry()
+	cases := []struct {
+		vendor string
+		mode   string
+	}{
+		{VendorGemini, AuthModeVertexSA},
+		{VendorAnthropic, AuthModeVertexAnthropic},
+	}
+	for _, tc := range cases {
+		t.Run(tc.vendor+"/"+tc.mode, func(t *testing.T) {
+			handler, err := registry.MustLookup(tc.vendor, tc.mode)
+			if err != nil {
+				t.Fatalf("lookup: %v", err)
+			}
+			raw := `{"access_token":"vertex-access","project_id":"my-proj","location":"us-east5"}`
+			material, err := handler.RuntimeMaterial([]byte(raw))
+			if err != nil {
+				t.Fatalf("RuntimeMaterial: %v", err)
+			}
+			if material.Kind != RuntimeUpstreamPassthrough {
+				t.Fatalf("kind=%q want %q", material.Kind, RuntimeUpstreamPassthrough)
+			}
+			if got := material.Extra["location"]; got != "us-east5" {
+				t.Fatalf("Extra[location]=%q want us-east5 (location 必须透到 adapter)", got)
+			}
+			if got := material.Extra["project_id"]; got != "my-proj" {
+				t.Fatalf("Extra[project_id]=%q want my-proj", got)
+			}
+		})
+	}
+}
+
 func TestXAIOAuthHandlerSpec(t *testing.T) {
 	// Mutation: remove the grok/xai_oauth handlerSpec, make it session-token
 	// runtime, or accept session_token-only payloads and this test must go red.
