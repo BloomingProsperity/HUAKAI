@@ -280,6 +280,16 @@ func hcsfProviderRequestModelFamily(endpointFamily string) string {
 		"kimi_chat", "qwen_chat", "glm_chat", "yi_chat", "baichuan_chat", "doubao_chat", "ernie_chat", "step_chat", "hunyuan_chat", "minimax_chat", "cohere_chat", "ollama_chat",
 		"copilot_session", "antigravity_session", "kiro_session", "windsurf_session":
 		return "openai_chat"
+	case "vertex_gemini":
+		// Gemini-on-Vertex 请求 body 与 generativelanguage Gemini 同形:HCSF 先
+		// marshal 出标准 gemini_messages body,vertex.PassthroughAdapter（ModeGemini）
+		// 再原样直通到 publishers/google endpoint。
+		return "gemini_messages"
+	case "vertex_anthropic":
+		// Anthropic-on-Vertex:HCSF marshal 出标准 anthropic_messages body,
+		// vertex.PassthroughAdapter（ModeAnthropic）再剥 model/stream + 注
+		// anthropic_version 改写成 Vertex rawPredict 形（两步串联）。
+		return "anthropic_messages"
 	default:
 		return endpointFamily
 	}

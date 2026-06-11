@@ -45,6 +45,8 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 		ProtocolOllamaNative,
 		ProtocolDifyChat,
 		ProtocolReplicateImage,
+		ProtocolVertexGemini,
+		ProtocolVertexAnthropic,
 	}
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
@@ -108,6 +110,8 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 		ProtocolOllamaNative,
 		ProtocolDifyChat,
 		ProtocolReplicateImage,
+		ProtocolVertexGemini,
+		ProtocolVertexAnthropic,
 	} {
 		a, err := r.For(pf)
 		if err != nil {
@@ -157,6 +161,8 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 		ProtocolOllamaNative:      "ollama",
 		ProtocolDifyChat:          "dify",
 		ProtocolReplicateImage:    "replicate",
+		ProtocolVertexGemini:      "vertex",
+		ProtocolVertexAnthropic:   "vertex",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -253,6 +259,64 @@ func TestKimiRuntimeAdapterRegistered(t *testing.T) {
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer kimi-access" {
 		t.Fatalf("Kimi Authorization=%q", got)
+	}
+}
+
+// TestVertexRuntimeAdapterRegistered 是 vertex 出站注册的 mutation 守卫:删任一
+// MustRegister(vertex_*) 或改其 Mode/平台 → 本测试红。判别性:断言两族产出的
+// 完整 URL（含 publisher google vs anthropic、action generateContent vs
+// rawPredict）+ 平台 + Authorization 头无双 Bearer。
+func TestVertexRuntimeAdapterRegistered(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
+	r := Build()
+
+	cases := []struct {
+		protocol string
+		model    string
+		body     string
+		wantURL  string
+	}{
+		{
+			ProtocolVertexGemini, "gemini-2.5-pro", `{"contents":[]}`,
+			"https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent",
+		},
+		{
+			ProtocolVertexAnthropic, "claude-opus-4-1", `{"model":"claude-opus-4-1","messages":[]}`,
+			"https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/publishers/anthropic/models/claude-opus-4-1:rawPredict",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.protocol, func(t *testing.T) {
+			a, err := r.For(tc.protocol)
+			if err != nil {
+				t.Fatalf("For(%q) err=%v", tc.protocol, err)
+			}
+			if got := a.Platform(); got != "vertex" {
+				t.Fatalf("%q Platform=%q want vertex", tc.protocol, got)
+			}
+			req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+				UpstreamModelID: tc.model,
+				InboundBody:     []byte(tc.body),
+				Credential: provider.Credential{
+					Type:  provider.CredentialTypeUpstreamPassthrough,
+					Value: "Bearer vertex-access",
+					Extra: map[string]string{"project_id": "p", "auth_header": "Authorization"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("%q BuildRequest: %v", tc.protocol, err)
+			}
+			if got := req.URL.String(); got != tc.wantURL {
+				t.Fatalf("%q URL=%q\nwant %q", tc.protocol, got, tc.wantURL)
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer vertex-access" {
+				t.Fatalf("%q Authorization=%q want Bearer vertex-access (无双 Bearer)", tc.protocol, got)
+			}
+			if got := req.Header.Get("X-Goog-User-Project"); got != "p" {
+				t.Fatalf("%q X-Goog-User-Project=%q want p", tc.protocol, got)
+			}
+		})
 	}
 }
 

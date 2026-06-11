@@ -97,6 +97,15 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	// 复用 openai.Adapter；若后续观测到形态差异再做专用 session SSE adapter。
 	r.MustRegister("openai_codex", &openai.Adapter{})
 	r.MustRegister("gemini_messages", &gemini.Adapter{})
+	// Vertex AI serving 入站响应解析复用既有 proto adapter：
+	//   - vertex_gemini    上游 generateContent/streamGenerateContent 的 SSE/JSON
+	//     形态 == generativelanguage Gemini，复用 gemini.Adapter。
+	//   - vertex_anthropic rawPredict/streamRawPredict 返回原生 Anthropic Messages
+	//     SSE，复用 anthropic.Adapter。
+	// 双注册强制（renew-156 审计）：漏入站登记会让非流式 HCSF 路径
+	// "取 upstream adapter 失败"——kimi/qwen/glm 族曾踩的 bug。
+	r.MustRegister("vertex_gemini", &gemini.Adapter{})
+	r.MustRegister("vertex_anthropic", &anthropic.Adapter{CarryForwardSignatureDelta: false})
 	// OpenRouter 是 OpenAI Chat Completions 兼容 meta-aggregator，SSE 形态同 OpenAI。
 	r.MustRegister("openrouter_chat", &openai.Adapter{})
 	// xAI Grok v1/chat/completions 严格 OpenAI 兼容。

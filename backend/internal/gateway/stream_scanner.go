@@ -185,6 +185,11 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		"openai_responses",
 		"openai_codex",
 		"gemini_messages",
+		// Vertex AI serving:两族均走 SSE（vertex_gemini 的 streamGenerateContent +
+		// ?alt=sse 与 vertex_anthropic 的 streamRawPredict + ?alt=sse 都投影为 SSE
+		// 帧，由各自 proto adapter 解）。
+		"vertex_gemini",
+		"vertex_anthropic",
 		"openrouter_chat",
 		"grok_chat",
 		// 6 家 OpenAI 兼容直 API key 路径

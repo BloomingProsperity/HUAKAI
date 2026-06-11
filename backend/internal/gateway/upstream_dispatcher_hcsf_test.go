@@ -11,6 +11,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/vertex"
 )
 
 const openAIHCSFResponse = `{"id":"chatcmpl-hcsf","object":"chat.completion","model":"gpt-4o-upstream","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`
@@ -206,6 +207,101 @@ func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testi
 			}
 		})
 	}
+}
+
+// TestBuildHCSFProviderRequestVertexFamiliesProduceCorrectOutboundBody 钉死非
+// 流式 HCSF 全链对两个 Vertex 族的出站 body 形态:
+//   - vertex_gemini  → marshal 出 gemini_messages body,vertex adapter(ModeGemini)
+//     原样直通到 publishers/google endpoint;出站 body 必是 Gemini 形(contents/
+//     generationConfig),绝不含 anthropic_version。
+//   - vertex_anthropic → marshal 出标准 anthropic_messages body,vertex adapter
+//     (ModeAnthropic)再剥 model/stream + 注 anthropic_version(两步串联);出站
+//     body 必含 anthropic_version=vertex-2023-10-16 且无顶层 model/stream,
+//     publishers/anthropic + rawPredict。
+//
+// 判别性:用真实 vertex.PassthroughAdapter(非 stub),从实际 *http.Request 读
+// 出站 body;漏 hcsfProviderRequestModelFamily 映射 → marshal unsupported 报错;
+// 漏 ModeAnthropic reshape → anthropic 出站缺 anthropic_version 断言红;
+// Gemini 误走 reshape → 出站含 anthropic_version 断言红。
+func TestBuildHCSFProviderRequestVertexFamiliesProduceCorrectOutboundBody(t *testing.T) {
+	t.Run("vertex_gemini", func(t *testing.T) {
+		env := testHCSFEnvelope()
+		env.RequestMeta.EndpointFamily = "vertex_gemini"
+		env.RequestMeta.Provider = "vertex"
+		env.RequestMeta.UpstreamModel = "gemini-2.5-pro"
+		adapter := &vertex.PassthroughAdapter{Mode: vertex.ModeGemini}
+
+		req, err := buildHCSFProviderRequest(context.Background(), adapter, provider.BuildInput{
+			UpstreamModelID: "gemini-2.5-pro",
+			Credential: provider.Credential{
+				Type:  provider.CredentialTypeUpstreamPassthrough,
+				Value: "Bearer vertex-tok",
+				Extra: map[string]string{"project_id": "p", "auth_header": "Authorization"},
+			},
+			Account: provider.AccountInfo{AccountID: 1, Platform: "vertex", AccountType: "vertex_sa"},
+		}, env, "vertex_gemini", "vertex_gemini", nil)
+		if err != nil {
+			t.Fatalf("buildHCSFProviderRequest(vertex_gemini): %v", err)
+		}
+		if got, want := req.URL.String(), "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent"; got != want {
+			t.Fatalf("vertex_gemini URL=%q want %q", got, want)
+		}
+		body, _ := io.ReadAll(req.Body)
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("vertex_gemini body json: %v\n%s", err, body)
+		}
+		// Gemini 形:必有 contents（marshalGeminiMessages 投影），绝无 anthropic_version。
+		if _, ok := m["contents"]; !ok {
+			t.Fatalf("vertex_gemini body 缺 contents（应是 Gemini 形）: %s", body)
+		}
+		if _, ok := m["anthropic_version"]; ok {
+			t.Fatalf("vertex_gemini body 误注 anthropic_version（Gemini 模式应原样直通）: %s", body)
+		}
+	})
+
+	t.Run("vertex_anthropic", func(t *testing.T) {
+		env := testHCSFEnvelope()
+		env.RequestMeta.EndpointFamily = "vertex_anthropic"
+		env.RequestMeta.Provider = "vertex"
+		env.RequestMeta.UpstreamModel = "claude-opus-4-1"
+		adapter := &vertex.PassthroughAdapter{Mode: vertex.ModeAnthropic}
+
+		req, err := buildHCSFProviderRequest(context.Background(), adapter, provider.BuildInput{
+			UpstreamModelID: "claude-opus-4-1",
+			Credential: provider.Credential{
+				Type:  provider.CredentialTypeUpstreamPassthrough,
+				Value: "Bearer vertex-tok",
+				Extra: map[string]string{"project_id": "p", "location": "us-east5", "auth_header": "Authorization"},
+			},
+			Account: provider.AccountInfo{AccountID: 2, Platform: "vertex", AccountType: "vertex_anthropic"},
+		}, env, "vertex_anthropic", "vertex_anthropic", nil)
+		if err != nil {
+			t.Fatalf("buildHCSFProviderRequest(vertex_anthropic): %v", err)
+		}
+		if got, want := req.URL.String(), "https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-4-1:rawPredict"; got != want {
+			t.Fatalf("vertex_anthropic URL=%q want %q", got, want)
+		}
+		body, _ := io.ReadAll(req.Body)
+		var m map[string]any
+		if err := json.Unmarshal(body, &m); err != nil {
+			t.Fatalf("vertex_anthropic body json: %v\n%s", err, body)
+		}
+		// 两步串联终态:Vertex Anthropic 形——必含 anthropic_version、无顶层 model/stream。
+		if m["anthropic_version"] != vertex.AnthropicVersionVertex {
+			t.Fatalf("vertex_anthropic body anthropic_version=%v want %q（marshal+reshape 链断裂）: %s", m["anthropic_version"], vertex.AnthropicVersionVertex, body)
+		}
+		if _, ok := m["model"]; ok {
+			t.Fatalf("vertex_anthropic body 残留顶层 model（reshape 未剥）: %s", body)
+		}
+		if _, ok := m["stream"]; ok {
+			t.Fatalf("vertex_anthropic body 残留顶层 stream（reshape 未剥）: %s", body)
+		}
+		// marshal 投影的 messages 必须存活（标准 anthropic body 主体）。
+		if _, ok := m["messages"]; !ok {
+			t.Fatalf("vertex_anthropic body 缺 messages: %s", body)
+		}
+	})
 }
 
 func TestHCSFRequestBodyOmitsSeedForOpenAIResponses(t *testing.T) {
