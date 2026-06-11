@@ -686,3 +686,148 @@ func TestAdminSetUserRemarkRequiresAdmin(t *testing.T) {
 		t.Fatalf("unauthorized set-remark touched deps: setter=%+v audit=%+v", setter, audit)
 	}
 }
+
+// platformAdmin 构造 platform_admin 身份(ScopeTenantID=0,跨租户但须显式 ?tenant_id)。
+func platformAdmin() admin.AdminIdentity {
+	return admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}
+}
+
+type userStatusSetterStub struct {
+	calls    int
+	tenantID int64
+	userID   int64
+	status   string
+	affected int64
+	err      error
+}
+
+func (s *userStatusSetterStub) SetUserStatusForTenant(_ context.Context, tenantID, userID int64, status string) (int64, error) {
+	s.calls++
+	s.tenantID = tenantID
+	s.userID = userID
+	s.status = status
+	if s.err != nil {
+		return 0, s.err
+	}
+	switch {
+	case s.affected < 0: // 哨兵:模拟 UPDATE 命中 0 行(软删用户)
+		return 0, nil
+	case s.affected == 0: // 零值默认:1 行受影响(常态成功)
+		return 1, nil
+	default:
+		return s.affected, nil
+	}
+}
+
+func invokeAdminUsersBody(t *testing.T, deps Deps, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	router := chi.NewRouter()
+	router.Get("/admin/v1/users", NewListHandler(deps))
+	router.Route("/admin/v1/users", func(r chi.Router) { MountRoutes(r, deps) })
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestAdminUsersPlatformAdminAllowedWithTenantID 单租户开箱即用放行守卫:
+// platform_admin 带 ?tenant_id 现可达用户管理面(此前一律 403)。
+// MUTATION: 把 resolveTenantIdentity 的 platform_admin 分支改回硬 403 →
+// 本测试拿 403 → 红。
+func TestAdminUsersPlatformAdminAllowedWithTenantID(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	rec := invokeAdminUsersBody(t, Deps{
+		Auth:  usersAuthStub{ident: platformAdmin()},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/users/101?tenant_id=1", "")
+	assertStatus(t, rec, http.StatusOK)
+	if store.getArg.TenantID != 1 {
+		t.Fatalf("platform_admin ?tenant_id=1 应解析为 tenant 1,got %d", store.getArg.TenantID)
+	}
+}
+
+// TestAdminUsersPlatformAdminRequiresTenantID platform_admin 不带 ?tenant_id → 400
+// (RBAC:跨租户必须指名)。MUTATION: 放行分支不要求 ?tenant_id → 拿到 200/落回某租户 → 红。
+func TestAdminUsersPlatformAdminRequiresTenantID(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	rec := invokeAdminUsersBody(t, Deps{
+		Auth:  usersAuthStub{ident: platformAdmin()},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/users/101", "")
+	assertStatus(t, rec, http.StatusBadRequest)
+	if store.getCalls != 0 {
+		t.Fatalf("缺 ?tenant_id 不应触达 store,got getCalls=%d", store.getCalls)
+	}
+}
+
+// TestAdminUsersTenantOperatorCrossTenantForbidden tenant_operator 带别租户
+// ?tenant_id → 403(CanIssueForTenant 越权守卫,RBAC 语义不松动)。
+// MUTATION: tenantFromQueryOrScope 漏 CanIssueForTenant 校验 → 跨租户读到 200 → 红。
+func TestAdminUsersTenantOperatorCrossTenantForbidden(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	rec := invokeAdminUsersBody(t, Deps{
+		Auth:  usersAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/users/101?tenant_id=8", "")
+	assertStatus(t, rec, http.StatusForbidden)
+	if store.getCalls != 0 {
+		t.Fatalf("跨租户被拒不应触达 store,got getCalls=%d", store.getCalls)
+	}
+}
+
+// TestAdminSetUserStatusDisableAudited 封禁主路径:tenant_operator 设 disabled,
+// store 写入 + 审计 set_user_status(before/after payload)。
+// MUTATION: handler 不调 UserStatusSetter / 不写 audit → setter.calls/audit.calls 0 → 红。
+func TestAdminSetUserStatusDisableAudited(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	setter := &userStatusSetterStub{}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsersBody(t, Deps{
+		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserStatusSetter: setter, Audit: audit,
+	}, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled","reason":"abuse"}`)
+	assertStatus(t, rec, http.StatusOK)
+	if setter.calls != 1 || setter.tenantID != 7 || setter.userID != 101 || setter.status != "disabled" {
+		t.Fatalf("set status mismatch: %+v", setter)
+	}
+	if audit.calls != 1 || audit.arg.Action != "set_user_status" || audit.arg.TargetType != "user" {
+		t.Fatalf("audit mismatch: %+v", audit.arg)
+	}
+	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
+		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	}
+	if len(audit.arg.Payload) == 0 || !strings.Contains(string(audit.arg.Payload), "status_before") {
+		t.Fatalf("audit payload 缺 before/after: %s", audit.arg.Payload)
+	}
+}
+
+// TestAdminSetUserStatusInvalidRejected 非 active/disabled 状态 → 400,不触达 store/audit。
+// MUTATION: 删 status 白名单校验 → 'deleted'/'locked' 直写 → 红。
+func TestAdminSetUserStatusInvalidRejected(t *testing.T) {
+	for _, bad := range []string{"deleted", "locked", "", "ACTIVE", "banned"} {
+		store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+		setter := &userStatusSetterStub{}
+		audit := &adminAuditStub{}
+		rec := invokeAdminUsersBody(t, Deps{
+			Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserStatusSetter: setter, Audit: audit,
+		}, http.MethodPut, "/admin/v1/users/101/status", `{"status":"`+bad+`"}`)
+		assertStatus(t, rec, http.StatusBadRequest)
+		if setter.calls != 0 || audit.calls != 0 {
+			t.Fatalf("status=%q 非法却触达 deps: setter=%+v audit=%+v", bad, setter, audit)
+		}
+	}
+}
+
+// TestAdminSetUserStatusSoftDeletedNotFound store UPDATE 0 行(用户软删)→ 404,
+// 不静默成功。MUTATION: 删 affected==0 守卫 → 报成功 200 → 红。
+func TestAdminSetUserStatusSoftDeletedNotFound(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	setter := &userStatusSetterStub{affected: -1} // 用 -1 哨兵表示"返回 0 affected"
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsersBody(t, Deps{
+		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserStatusSetter: setter, Audit: audit,
+	}, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled"}`)
+	assertStatus(t, rec, http.StatusNotFound)
+	if audit.calls != 0 {
+		t.Fatalf("0 affected 不应写审计,got audit.calls=%d", audit.calls)
+	}
+}
