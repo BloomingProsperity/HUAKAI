@@ -674,21 +674,35 @@ func (a canonicalEventPointerClientAdapter) FinalizeClientStream(ctx context.Con
 
 func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
 	usage := usageFromDraft(draft)
+	usageBasisEstimated := false
 	actualCost, err := ex.actualCompletionCost(usage)
 	if err != nil {
 		draft.PendingReconciliation = true
 		actualCost = completionCostBreakdown{}
 		// 缺上游 usage（无任何 token 信号）但已交付内容：不把 DeliveredTokenCount 当 token 计费——
 		// 它此处是内容帧数（canonicalDeliveredChunks）而非 token 数；细碎 tool_input/sub-token 分帧
-		// 会使帧数 > 真实 token 数，按帧计费会向用户多收。保持 ActualCost=0 + pending + inferred，
-		// 交由 settlementreconcile worker 宽限后零差额定稿（无权威 usage 会到达）。
-		// 仅在确为缺 usage 时标 inferred：计费配置失败（rate table 缺失但有真实 token）不可标 inferred，
+		// 会使帧数 > 真实 token 数，按帧计费会向用户多收。
+		// 仅在确为缺 usage 时走估算/inferred：计费配置失败（rate table 缺失但有真实 token）不可标 inferred，
 		// 否则 worker 会把真实请求零差额定稿成 $0（静默零计费）。
 		// 不覆盖 Ambiguous：歧义用量（unknown termination 等）须保留歧义态留待真对账，
-		// 不可降级成 inferred 而被宽限定稿。
-		if reportedUsageMissing(usage) && draft.DeliveredTokenCount > 0 &&
-			draft.UsageSource != gateway.UsageSourceAmbiguous {
-			draft.UsageSource = gateway.UsageSourceInferred
+		// 不可降级成 inferred 而被宽限定稿，也不可被估算终局计费。
+		if reportedUsageMissing(usage) && draft.UsageSource != gateway.UsageSourceAmbiguous {
+			// 估算兜底：终帧缺失/无 usage 帧的流（部分 serving 上游不保证 usage）按
+			// 逐事件可见内容估算终局计费，token 基数写回 draft 留账，inferred +
+			// usage_basis 快照标记构成审计链；不挂 pending（no-usage 定稿 SQL 只认
+			// 全零记录，挂上即永久 pending）。估算不可用（零可见内容/费率表故障）→
+			// 维持 ActualCost=0 + pending + inferred，交由 settlementreconcile worker
+			// 宽限后零差额定稿（无权威 usage 会到达）。
+			if cost, estimated, ok := ex.estimatedStreamingCost(draft); ok {
+				actualCost = cost
+				draft.TokensInput = estimated.InputTokens
+				draft.TokensOutput = estimated.OutputTokens
+				draft.UsageSource = gateway.UsageSourceInferred
+				draft.PendingReconciliation = false
+				usageBasisEstimated = true
+			} else if draft.DeliveredTokenCount > 0 {
+				draft.UsageSource = gateway.UsageSourceInferred
+			}
 		}
 	}
 	draft.ActualCost = actualCost.Total
@@ -701,6 +715,12 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	// 流出但无 ReasoningTokens(Anthropic/Gemini thinking,folding 不可知)→ 跳过校验避免误报。
 	// pending 与上方缺 usage 的 pending 取并集,不互相覆盖。
 	streamConfidence, streamPending := crossCheckAudit(draft.TokensOutput, draft.ReasoningTokens, draft.EstimatedOutputTokens, draft.EstimatedReasoningTokens, actualCost.Total.IsPositive())
+	if usageBasisEstimated {
+		// 估算计费行:交叉校验是估算值自比对,恒满置信且可能在畸形 usage(只报
+		// reasoning)下误挂 pending——估算行的 pending 无人能定稿(no-usage 定稿
+		// SQL 只认全零)。改记固定降级置信,pending 强制清零,保持终局语义。
+		streamConfidence, streamPending = estimatedUsageBasisConfidence, false
+	}
 	draft.ConfidenceScore = &streamConfidence
 	if streamPending || actualCost.PendingReconciliation {
 		draft.PendingReconciliation = true

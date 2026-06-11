@@ -973,8 +973,12 @@ func outputTokensForAttempt(draft gateway.UsageRecordDraft, _ Attempt) int64 {
 	// tokens_output 只反映真实输出 token。不再用 DeliveredTokenCount(SSE 帧/chunk 投递计数,非 token)
 	// 回退充当:缺真实 usage 时(TokensOutput==0)帧数会把 tokens_output 灌成帧计数,既污染 reconcile
 	// 行识别(零真实输出信号被帧数掩盖,R4-P2),又是潜在超收。帧/chunk 投递量另由 delivered_token_count
-	// 列承载,二者不再混用(C1)。无真实输出 token → 记 0(正向估算成本由后续 C3 在 usage_source=estimated
-	// 时单独注入)。参考项目对照(带 repo@sha:file:line)见 docs/process/plans/2026-05-29-money-path-worker-claude.md §9。
+	// 列承载,二者不再混用(C1)。无真实输出 token → 记 0。
+	// [2026-06-11 更新] 流式「上游全程无 usage」的估算兜底(gatewayhttp streamingCompletionEvent)
+	// 会先把内容感知估算基数写入 draft.TokensOutput 再进本函数——该类行 usage_source=inferred 且
+	// cost_snapshot 携带 usage_basis=estimated_from_delivered_content 标记;在 C3 计划的
+	// usage_source='estimated' 枚举(需 schema 迁移,park 待 Owner)落地前以该标记区分估算行。
+	// 参考项目对照(带 repo@sha:file:line)见 docs/process/plans/2026-05-29-money-path-worker-claude.md §9。
 	output := int64(draft.TokensOutput)
 	if output < 0 {
 		return 0

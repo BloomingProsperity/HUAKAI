@@ -112,7 +112,7 @@ If the streaming forwarder crashes between Phase A start and Phase D handoff, th
 
 ### Failure: `UPSTREAM_EOF_NO_TERMINAL`
 - Trigger: upstream cleanly ended stream without sending the protocol's terminal event.
-- Observable outcome: Tx2 commits Usage Record with usage_source `inferred` (tokenizer fallback) AND `pending_reconciliation = true`; or `ambiguous` if tokenizer unavailable.
+- Observable outcome: Tx2 commits Usage Record with usage_source `inferred` (tokenizer fallback). When the per-event delivered-content estimate can be priced, tokens/cost settle on the estimated basis as FINAL: `pending_reconciliation = false`, cost_snapshot carries `usage_basis=estimated_from_delivered_content`, confidence_score is the fixed degraded constant (0.8). When nothing estimable was delivered or pricing is unavailable: zero-cost with `pending_reconciliation = true` (no-usage finalizer zero-diffs after grace); or `ambiguous` if termination is ambiguous (never estimated).
 - Operator-visible signal: counter for missing-terminal-marker rate (alert if rate spikes).
 
 ### Failure: `UPSTREAM_ERROR_4xx` / `UPSTREAM_ERROR_5xx`
@@ -197,7 +197,7 @@ HUAKAI-design:
 - AT-GW-002-16 / Tx2 atomicity: gateway crash mid-stream → orphan sweep finalizes within budget.
 - AT-GW-002-17 / Tenant isolation under load: 100 concurrent streams across 5 tenants → no cross-tenant data.
 - AT-GW-002-18 / AMBIGUOUS_USAGE no-charge gate: zero accumulator + UNKNOWN_TERMINATION → claim aborted.
-- AT-GW-002-19 / Tokenizer fallback: stream EOF without terminal → inferred usage with confidence_score.
+- AT-GW-002-19 / Tokenizer fallback: stream EOF without terminal → inferred usage with confidence_score; estimable delivered content bills the estimated basis as final (positive cost, `usage_basis=estimated` snapshot marker, no pending).
 
 ## Open Questions
 

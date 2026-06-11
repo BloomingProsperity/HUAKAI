@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
 
@@ -101,6 +102,53 @@ func (ex *chatExecution) actualCompletionCost(usage completionUsageForCost) (com
 		return completionCostBreakdown{}, pricingUnavailable("reported usage missing")
 	}
 	return ex.completionCost(usage)
+}
+
+// estimatedUsageBasisMarker 标记该笔结算的 token 基数来自交付内容估算而非上游
+// 报告,与 usage_source=inferred 配合构成估算计费的审计链。在 usage_source 枚举
+// 的 'estimated' 值(需 schema 迁移,已 park 待 Owner)落地前,以本标记区分估算行
+// 与真实 usage 的 inferred 行。
+const estimatedUsageBasisMarker = "usage_basis=estimated_from_delivered_content"
+
+// estimatedUsageBasisConfidence 是估算计费行的固定置信:估算行的 token 交叉校验
+// 是自比对(恒满置信)而无意义,改记降级常量保留「基数有不确定性」的审计信号。
+const estimatedUsageBasisConfidence = 0.8
+
+// estimatedStreamingCost 在上游全程未报告 usage 的流上,用 forwarder 逐事件累积的
+// 可见内容估算作 token 基数计价。输出基数 = EstimatedOutputTokens +
+// EstimatedReasoningTokens(可见 reasoning 文本对上游同样是产出 token,漏加会系统性
+// 低估 thinking 流);输入基数走协议无关的内容感知估算(tokencheck,base64 大块
+// 封顶)——不可用原始 body 字节数/4,多模态请求会按 base64 体积百倍超收。
+// 估算结算是终局:权威 usage 永远不会到达,挂 pending 只会让 no-usage 定稿 SQL
+// (只认 tokens 与 actual_cost 全零的记录)永远跳过它;故连 ratio fail-soft 的
+// pending 也剥离(其快照标记已留痕)。无可估内容或费率表不可用时返回 ok=false,
+// 调用方维持零结算 + pending 的原路径。
+func (ex *chatExecution) estimatedStreamingCost(draft gateway.UsageRecordDraft) (completionCostBreakdown, completionUsageForCost, bool) {
+	estimatedOutput := draft.EstimatedOutputTokens + draft.EstimatedReasoningTokens
+	if estimatedOutput <= 0 {
+		return completionCostBreakdown{}, completionUsageForCost{}, false
+	}
+	usage := completionUsageForCost{
+		InputTokens:  tokencheck.EstimateRequestInputTokens(ex.body),
+		OutputTokens: estimatedOutput,
+	}
+	cost, err := ex.completionCost(usage)
+	if err != nil {
+		return completionCostBreakdown{}, completionUsageForCost{}, false
+	}
+	cost.PendingReconciliation = false
+	cost.CostSnapshot = snapshotWithEstimatedUsageBasis(cost.CostSnapshot)
+	return cost, usage, true
+}
+
+func snapshotWithEstimatedUsageBasis(snapshot string) string {
+	if strings.TrimSpace(snapshot) == "" {
+		return estimatedUsageBasisMarker
+	}
+	if strings.Contains(snapshot, "usage_basis=") {
+		return snapshot
+	}
+	return snapshot + ";" + estimatedUsageBasisMarker
 }
 
 // cacheExclusiveInputFamilies are upstream protocol families whose vendor reports
