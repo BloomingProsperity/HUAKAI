@@ -333,9 +333,9 @@ func TestRejectNonPassthroughCredential(t *testing.T) {
 func TestProjectIDMissingRejected(t *testing.T) {
 	a := &PassthroughAdapter{Mode: ModeGemini}
 	for _, extra := range []map[string]string{
-		{},                       // 完全缺
-		{"project_id": ""},       // 空串
-		{"project_id": "   "},    // 全空格
+		{},                    // 完全缺
+		{"project_id": ""},    // 空串
+		{"project_id": "   "}, // 全空格
 	} {
 		_, err := a.BuildRequest(context.Background(), provider.BuildInput{
 			UpstreamModelID: "gemini-2.5-pro",
@@ -372,4 +372,29 @@ func readBody(t *testing.T, req *http.Request) []byte {
 		t.Fatalf("read request body: %v", err)
 	}
 	return b
+}
+
+// TestGeminiCrossProtocolStreamIntent 守卫跨协议流式兜底:openai/anthropic
+// ingress→vertex_gemini 无 Extra["stream"],marshal 的 gemini body 无顶层
+// stream 字段(body 探测恒 false),端点选择只能靠 BuildInput.ClientStreamIntent。
+// MUTATION: 删 stream 判定的 ClientStreamIntent 分支 → 错选非流 :generateContent
+// → 本测试红。
+func TestGeminiCrossProtocolStreamIntent(t *testing.T) {
+	a := &PassthroughAdapter{Mode: ModeGemini}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		UpstreamModelID:    "gemini-2.5-pro",
+		InboundBody:        []byte(`{"contents":[]}`),
+		ClientStreamIntent: true,
+		Credential:         upstreamCred(map[string]string{"project_id": "p", "location": "us-central1"}),
+	})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	got := req.URL.String()
+	if !strings.Contains(got, ":streamGenerateContent") {
+		t.Errorf("流式 action 不是 streamGenerateContent: %q", got)
+	}
+	if req.URL.Query().Get("alt") != "sse" {
+		t.Errorf("流式缺 ?alt=sse: %q", got)
+	}
 }

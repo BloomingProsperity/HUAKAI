@@ -105,12 +105,18 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, fmt.Errorf("vertex passthrough: location %q 非法（仅 global 或 region 形小写字母数字段，防 host/path 注入）", location)
 	}
 
-	// 流式判定：优先 Extra["stream"]（gemini ingress 经 credentialWithNativeStreamMode
-	// 注入）；Extra 未设时回退读 InboundBody 顶层 stream——Anthropic ingress
-	// (/v1/messages) 不写 Extra["stream"]，客户端 raw body 直通到这里仍带
-	// "stream":true，必须据此选 streamRawPredict 否则 Claude-on-Vertex 流式
-	// 整条不可用（同 bedrock adapter 从 body 派生 stream 的契约）。
-	stream := in.Credential.Extra["stream"] == "true" || inboundRequestsStream(in.InboundBody)
+	// 流式判定(OR 链):Extra["stream"]=="true"(gemini ingress 经
+	// credentialWithNativeStreamMode 注入)| ClientStreamIntent(跨协议 ingress
+	// 的 resolved 流式意图——ModeGemini 的 marshal body 无顶层 stream 字段,
+	// body 探测对它恒 false,无此兜底 openai/anthropic→vertex_gemini 流式会
+	// 错选非流 :generateContent;Extra 已带显式值时不取 intent)| body 探测
+	// (Anthropic ingress /v1/messages raw body 自带 "stream":true,必须据此选
+	// streamRawPredict,同 bedrock adapter 从 body 派生 stream 的契约)。
+	// 注意:显式 Extra="false" 压得住 intent,压不住 body 探测——raw body 的
+	// stream 字段是 anthropic ingress 的真相源(既有契约,刻意保留)。
+	stream := in.Credential.Extra["stream"] == "true" ||
+		(in.Credential.Extra["stream"] == "" && in.ClientStreamIntent) ||
+		inboundRequestsStream(in.InboundBody)
 	publisher, action := a.publisherAction(stream)
 
 	endpoint := buildVertexURL(location, projectID, publisher, in.UpstreamModelID, action)

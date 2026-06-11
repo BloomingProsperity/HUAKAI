@@ -69,7 +69,13 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, errors.New("gemini passthrough: UpstreamModelID 不能为空（endpoint 需要 model 名）")
 	}
 
-	defaultEndpoint := a.endpointFor(in.Credential.Extra["stream"] == "true")
+	// 流式信号优先级:Extra["stream"] 显式值(gemini ingress 注入)>
+	// ClientStreamIntent(跨协议 ingress 的 resolved 意图)。marshal 出的
+	// gemini body 无顶层 stream 字段,无此兜底 openai/anthropic 客户端的
+	// 流式请求会错选非流 :generateContent。
+	streamSignal := in.Credential.Extra["stream"] == "true" ||
+		(in.Credential.Extra["stream"] == "" && in.ClientStreamIntent)
+	defaultEndpoint := a.endpointFor(streamSignal)
 	if endpointPath := strings.TrimSpace(in.EndpointPath); endpointPath != "" {
 		if strings.HasPrefix(endpointPath, "http://") || strings.HasPrefix(endpointPath, "https://") {
 			defaultEndpoint = endpointPath

@@ -258,3 +258,24 @@ func TestCodeAssistAcceptableCredentialTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestCodeAssistCrossProtocolStreamIntent 守卫跨协议流式兜底:openai/anthropic
+// ingress 翻译进来无 Extra["stream"]、内层 gemini body 无顶层 stream 字段
+// (body 探测恒 false),端点选择只能靠 BuildInput.ClientStreamIntent。
+// MUTATION: 删 stream 判定的 ClientStreamIntent 分支 → 错选非流 v1internal:
+// generateContent → 本测试红。
+func TestCodeAssistCrossProtocolStreamIntent(t *testing.T) {
+	a := &CodeAssistAdapter{}
+	in := codeAssistInput(t, sessionCred(map[string]string{"project_id": "proj-x"}), "gemini-2.5-pro", []byte(`{"contents":[]}`))
+	in.ClientStreamIntent = true
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatalf("BuildRequest err=%v", err)
+	}
+	if got := req.URL.String(); got != "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse" {
+		t.Fatalf("URL=%q want .../v1internal:streamGenerateContent?alt=sse(跨协议流式意图被丢)", got)
+	}
+	if got := req.Header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("Accept=%q want text/event-stream", got)
+	}
+}

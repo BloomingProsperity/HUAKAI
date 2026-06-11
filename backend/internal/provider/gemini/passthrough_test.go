@@ -163,3 +163,50 @@ func TestPassthroughAdapter_BuildRequest_UpstreamPassthroughCustomHeader(t *test
 		t.Errorf("Authorization=%q", got)
 	}
 }
+
+// TestPassthroughAdapter_CrossProtocolStreamIntent 守卫跨协议流式兜底:非 gemini
+// ingress 不注入 Extra["stream"],marshal 出的 gemini body 也无顶层 stream 字段,
+// 端点选择只能靠 BuildInput.ClientStreamIntent。
+// MUTATION: 删 streamSignal 的 ClientStreamIntent 分支 → 流式意图被丢、错选非流
+// :generateContent → 本测试红。
+func TestPassthroughAdapter_CrossProtocolStreamIntent(t *testing.T) {
+	a := &PassthroughAdapter{}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		UpstreamModelID:    "gemini-2.5-pro",
+		InboundBody:        []byte(`{"contents":[]}`),
+		ClientStreamIntent: true,
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "AIzaTestKey",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(req.URL.String(), ":streamGenerateContent") {
+		t.Fatalf("URL=%q want :streamGenerateContent(跨协议流式意图被丢)", req.URL.String())
+	}
+}
+
+// TestPassthroughAdapter_ExplicitExtraStreamFalseBeatsIntent Extra["stream"] 显式
+// 值优先级守卫:gemini ingress 已显式声明非流("false")时,intent 不得越权。
+// MUTATION: 把 streamSignal 的 Extra=="" 守卫去掉(intent OR 显式 false)→ 红。
+func TestPassthroughAdapter_ExplicitExtraStreamFalseBeatsIntent(t *testing.T) {
+	a := &PassthroughAdapter{}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		UpstreamModelID:    "gemini-2.5-pro",
+		InboundBody:        []byte(`{"contents":[]}`),
+		ClientStreamIntent: true,
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "AIzaTestKey",
+			Extra: map[string]string{"stream": "false"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(req.URL.String(), ":streamGenerateContent") {
+		t.Fatalf("URL=%q Extra[stream]=false 显式值必须压过 intent", req.URL.String())
+	}
+}

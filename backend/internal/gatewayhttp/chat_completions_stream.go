@@ -149,6 +149,10 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		Account:           transportSelection.account,
 		Credential:        ex.cred,
 		TransportMode:     transportSelection.mode,
+		// 跨协议流式意图:非 gemini ingress 不注入 Extra["stream"],marshal 出的
+		// gemini body 又无顶层 stream 字段,没有这条 gemini-shaped 上游会错选
+		// 非流 :generateContent(评审 A4/A5 共识缺口)。
+		ClientStreamIntent: ex.req.Stream,
 	})
 	if err != nil {
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
