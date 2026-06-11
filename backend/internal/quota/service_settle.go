@@ -407,7 +407,7 @@ func applySettlementWindows(ctx context.Context, store PGStore, reservation Rese
 			if _, err := store.ApplyWindowSettlement(ctx, WindowSettlement{
 				TenantID:             reservation.TenantID,
 				WindowID:             counter.ID,
-				ReservedReleaseValue: reservation.ReservedUnits,
+				ReservedReleaseValue: policy.ReservedAmount,
 				SettledAddValue:      decimal.NewFromInt(1),
 				OverageAddValue:      decimal.Zero,
 			}); err != nil {
@@ -424,13 +424,23 @@ func applySettlementWindows(ctx context.Context, store PGStore, reservation Rese
 			if _, err := store.ApplyWindowSettlement(ctx, WindowSettlement{
 				TenantID:             reservation.TenantID,
 				WindowID:             counter.ID,
-				ReservedReleaseValue: reservation.PredictedCost,
+				ReservedReleaseValue: policy.ReservedAmount,
 				SettledAddValue:      settledAdd,
 				OverageAddValue:      overageAdd,
 			}); err != nil {
 				return decimal.Zero, err
 			}
 			totalOverage = totalOverage.Add(overageAdd)
+		case MetricTokensEstimated:
+			if _, err := store.ApplyWindowSettlement(ctx, WindowSettlement{
+				TenantID:             reservation.TenantID,
+				WindowID:             counter.ID,
+				ReservedReleaseValue: policy.ReservedAmount,
+				SettledAddValue:      policy.ReservedAmount,
+				OverageAddValue:      decimal.Zero,
+			}); err != nil {
+				return decimal.Zero, err
+			}
 		}
 	}
 	return totalOverage, nil
@@ -449,9 +459,11 @@ func applyReleaseWindows(ctx context.Context, store PGStore, reservation Reserva
 		releaseValue := decimal.Zero
 		switch policy.Metric {
 		case MetricRequests:
-			releaseValue = reservation.ReservedUnits
+			releaseValue = policy.ReservedAmount
 		case MetricCostUSD:
-			releaseValue = reservation.PredictedCost
+			releaseValue = policy.ReservedAmount
+		case MetricTokensEstimated:
+			releaseValue = policy.ReservedAmount
 		default:
 			continue
 		}
@@ -470,6 +482,7 @@ func applyReleaseWindows(ctx context.Context, store PGStore, reservation Reserva
 
 type snapshotFinalizationPolicy struct {
 	Policy
+	ReservedAmount decimal.Decimal
 }
 
 func snapshotFinalizationPolicies(reservation Reservation) ([]snapshotFinalizationPolicy, error) {
@@ -487,7 +500,7 @@ func snapshotFinalizationPolicies(reservation Reservation) ([]snapshotFinalizati
 			continue
 		}
 		metric := Metric(record.Metric)
-		if metric != MetricRequests && metric != MetricCostUSD {
+		if !metricHasWindowReservation(metric) {
 			continue
 		}
 		window, err := snapshotRecordWindow(reservation.ID, record)
@@ -498,17 +511,42 @@ func snapshotFinalizationPolicies(reservation Reservation) ([]snapshotFinalizati
 		if err != nil {
 			return nil, fmt.Errorf("quota: reservation %d policy %d snapshot limit is invalid: %w", reservation.ID, record.ID, err)
 		}
-		policies = append(policies, snapshotFinalizationPolicy{Policy: Policy{
-			TenantID:   reservation.TenantID,
-			ID:         record.ID,
-			Scope:      Scope{TenantID: reservation.TenantID, Kind: ScopeKind(record.ScopeKind), ID: normalizeScopeID(ScopeKind(record.ScopeKind), record.ScopeID)},
-			Metric:     metric,
-			Window:     window,
-			LimitValue: limit,
-			Mode:       Mode(record.Mode),
-		}})
+		reservedAmount, err := snapshotReservedAmount(reservation, record, metric)
+		if err != nil {
+			return nil, err
+		}
+		policies = append(policies, snapshotFinalizationPolicy{
+			ReservedAmount: reservedAmount,
+			Policy: Policy{
+				TenantID:   reservation.TenantID,
+				ID:         record.ID,
+				Scope:      Scope{TenantID: reservation.TenantID, Kind: ScopeKind(record.ScopeKind), ID: normalizeScopeID(ScopeKind(record.ScopeKind), record.ScopeID)},
+				Metric:     metric,
+				Window:     window,
+				LimitValue: limit,
+				Mode:       Mode(record.Mode),
+			}})
 	}
 	return policies, nil
+}
+
+func snapshotReservedAmount(reservation Reservation, record policySnapshotRecord, metric Metric) (decimal.Decimal, error) {
+	if strings.TrimSpace(record.ReservedAmount) != "" {
+		amount, err := decimal.NewFromString(record.ReservedAmount)
+		if err != nil {
+			return decimal.Zero, fmt.Errorf("quota: reservation %d policy %d snapshot reserved_amount is invalid: %w", reservation.ID, record.ID, err)
+		}
+		if amount.IsNegative() {
+			return decimal.Zero, fmt.Errorf("quota: reservation %d policy %d snapshot reserved_amount must be non-negative", reservation.ID, record.ID)
+		}
+		return amount, nil
+	}
+	switch metric {
+	case MetricCostUSD:
+		return reservation.PredictedCost, nil
+	default:
+		return reservation.ReservedUnits, nil
+	}
 }
 
 func snapshotRecordWindow(reservationID int64, record policySnapshotRecord) (Window, error) {

@@ -38,6 +38,10 @@ import (
 
 var quotaReserveFailedOpenTotal = expvar.NewInt("quota_reserve_failed_open_total")
 
+// quotaDeniedTotal 计 token/cost/requests 等配额硬拒次数(区别于 fail-open),
+// 供运营观测配额拦截命中率。
+var quotaDeniedTotal = expvar.NewInt("quota_denied_total")
+
 const (
 	clientSessionIDMaxLength = 200
 	clientSessionHashPrefix  = "client-session:"
@@ -509,8 +513,11 @@ func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing
 		PoolGroupID:        ex.attempt.PoolGroupID,
 		RequestFingerprint: ex.payloadHash,
 		RequestedModel:     ex.req.Model,
-		PredictedCost:      predictedCost,
-		At:                 time.Now().UTC(),
+		// W5:输入 token 估算喂进 token-per-window 配额预检(估算口径与计费预扣
+		// estimateInputTokens 一致);未配 token 策略时引擎按 observe 跳过,零影响。
+		ReservedTokens: int64(estimateInputTokens(ex.body)),
+		PredictedCost:  predictedCost,
+		At:             time.Now().UTC(),
 	}))
 	if err == nil && result.Allowed {
 		return true
@@ -520,8 +527,9 @@ func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing
 		if abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
+		quotaDeniedTotal.Add(1)
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeInsufficientBalance, err)
-		writeInsufficientQuotaError(w)
+		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err))
 		return false
 	}
 	quotaReserveFailedOpenTotal.Add(1)

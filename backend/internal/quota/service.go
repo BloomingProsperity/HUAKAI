@@ -221,14 +221,17 @@ type policyEvaluation struct {
 
 func marshalReservationPolicySnapshot(policies []Policy, evaluated []evaluatedPolicy) []byte {
 	concreteWindows := make(map[policyMetricKey]Window, len(evaluated))
+	reservedAmounts := make(map[policyMetricKey]decimal.Decimal, len(evaluated))
 	for _, item := range evaluated {
 		if item.policy.Mode != ModeEnforce {
 			continue
 		}
-		if item.metric != MetricRequests && item.metric != MetricCostUSD {
+		if !metricHasWindowReservation(item.metric) {
 			continue
 		}
-		concreteWindows[policyMetricKey{policyID: item.policy.ID, metric: item.metric}] = item.window.Window
+		key := policyMetricKey{policyID: item.policy.ID, metric: item.metric}
+		concreteWindows[key] = item.window.Window
+		reservedAmounts[key] = item.amount
 	}
 
 	snapshotPolicies := make([]Policy, len(policies))
@@ -238,7 +241,7 @@ func marshalReservationPolicySnapshot(policies []Policy, evaluated []evaluatedPo
 		if policy.Mode != ModeEnforce {
 			continue
 		}
-		if policy.Metric != MetricRequests && policy.Metric != MetricCostUSD {
+		if !metricHasWindowReservation(policy.Metric) {
 			continue
 		}
 		if window, ok := concreteWindows[policyMetricKey{policyID: policy.ID, metric: policy.Metric}]; ok {
@@ -246,7 +249,7 @@ func marshalReservationPolicySnapshot(policies []Policy, evaluated []evaluatedPo
 			snapshotPolicies[i].Window.End = window.End
 		}
 	}
-	return marshalPolicySnapshot(snapshotPolicies)
+	return marshalPolicySnapshot(snapshotPolicies, reservedAmounts)
 }
 
 type policyMetricKey struct {
@@ -254,13 +257,16 @@ type policyMetricKey struct {
 	metric   Metric
 }
 
+// metricHasWindowReservation 列举需要窗口预留账本的 metric(单点真相,避免散落
+// 硬编码 != MetricRequests && != MetricCostUSD)。tokens_estimated 加入后,
+// token-per-window 配额从 observe-only 变为真实预留/拦截。
+func metricHasWindowReservation(metric Metric) bool {
+	return metric == MetricRequests || metric == MetricCostUSD || metric == MetricTokensEstimated
+}
+
 func evaluatePolicies(ctx context.Context, store PGStore, req ReserveRequest, resolved ResolvedPolicies) (policyEvaluation, error) {
 	var out policyEvaluation
 	for _, policy := range resolved.Ordered {
-		if policy.Metric == MetricTokensEstimated {
-			// 暂无 token 估算输入; enforce token 策略按 observe 路径跳过, 不阻断。
-			continue
-		}
 		if policy.Metric == MetricConcurrency && !req.NeedConcurrencySlot {
 			continue
 		}
@@ -300,86 +306,6 @@ func evaluatePolicies(ctx context.Context, store PGStore, req ReserveRequest, re
 		}
 	}
 	return out, nil
-}
-
-type policyAssessment struct {
-	window       WindowCounter
-	current      decimal.Decimal
-	amount       decimal.Decimal
-	limit        decimal.Decimal
-	exceeded     bool
-	skipped      bool
-	retryAfter   time.Duration
-	requestCount int64
-}
-
-func assessPolicy(ctx context.Context, store PGStore, req ReserveRequest, policy Policy) (policyAssessment, error) {
-	switch policy.Metric {
-	case MetricRequests:
-		counter, err := policyWindowForUpdate(ctx, store, req, policy)
-		if err != nil {
-			return policyAssessment{}, err
-		}
-		policy.Window = counter.Window
-		limit := policy.LimitValue
-		current := counter.ReservedValue.Add(counter.SettledValue)
-		amount := decimal.NewFromInt(1)
-		return policyAssessment{
-			window:       counter,
-			current:      current,
-			amount:       amount,
-			limit:        limit,
-			exceeded:     current.Add(amount).GreaterThan(limit),
-			retryAfter:   retryAfter(req.At, policy),
-			requestCount: counter.RequestCount,
-		}, nil
-	case MetricCostUSD:
-		counter, err := policyWindowForUpdate(ctx, store, req, policy)
-		if err != nil {
-			return policyAssessment{}, err
-		}
-		policy.Window = counter.Window
-		current := counter.ReservedValue.Add(counter.SettledValue)
-		amount := req.PredictedCost
-		return policyAssessment{
-			window:     counter,
-			current:    current,
-			amount:     amount,
-			limit:      policy.LimitValue,
-			exceeded:   current.Add(amount).GreaterThan(policy.LimitValue),
-			retryAfter: retryAfter(req.At, policy),
-		}, nil
-	case MetricConcurrency:
-		return policyAssessment{
-			amount:   decimal.NewFromInt(1),
-			limit:    policy.LimitValue,
-			skipped:  false,
-			exceeded: false,
-		}, nil
-	default:
-		return policyAssessment{skipped: true}, nil
-	}
-}
-
-func policyWindowForUpdate(ctx context.Context, store PGStore, req ReserveRequest, policy Policy) (WindowCounter, error) {
-	resolvedWindow, err := serviceWindowForPolicy(policy, req.At)
-	if err != nil {
-		return WindowCounter{}, err
-	}
-	window, err := store.UpsertWindow(ctx, WindowUpsert{
-		TenantID: req.TenantID,
-		PolicyID: policy.ID,
-		Window:   resolvedWindow,
-	})
-	if err != nil {
-		return WindowCounter{}, err
-	}
-	counter, err := store.GetWindowForUpdate(ctx, req.TenantID, window.ID)
-	if err != nil {
-		return WindowCounter{}, err
-	}
-	counter.Window = resolvedWindow
-	return counter, nil
 }
 
 func applyEnforceReservations(ctx context.Context, store PGStore, req ReserveRequest, reservation Reservation, evaluated []evaluatedPolicy) error {
@@ -424,6 +350,27 @@ func applyEnforceReservations(ctx context.Context, store PGStore, req ReserveReq
 					return &rollbackDenyError{
 						deny:    denyErr(decision, ErrDenied),
 						payload: assessmentPayload(item.policy, item.window.ReservedValue.Add(item.window.SettledValue), req.PredictedCost, item.policy.LimitValue, item.window.RequestCount),
+					}
+				}
+				return err
+			}
+		case MetricTokensEstimated:
+			if _, err := store.IncrementWindowReserved(ctx, WindowReserve{
+				TenantID:          req.TenantID,
+				WindowID:          item.window.ID,
+				ReserveDelta:      item.amount,
+				RequestCountDelta: 0,
+				LimitValue:        item.policy.LimitValue,
+			}); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					decision := exceededDecision(req, item.policy, policyAssessment{
+						amount:     item.amount,
+						limit:      item.policy.LimitValue,
+						retryAfter: retryAfter(req.At, item.policy),
+					})
+					return &rollbackDenyError{
+						deny:    denyErr(decision, ErrDenied),
+						payload: assessmentPayload(item.policy, item.window.ReservedValue.Add(item.window.SettledValue), item.amount, item.policy.LimitValue, item.window.RequestCount),
 					}
 				}
 				return err

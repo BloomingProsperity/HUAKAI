@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -29,23 +31,34 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func writeInsufficientBalanceError(w http.ResponseWriter) {
-	writeInsufficientQuotaBody(w, http.StatusPaymentRequired)
+	writeInsufficientQuotaBody(w, http.StatusPaymentRequired, 0)
 }
 
 func writeInsufficientQuotaError(w http.ResponseWriter) {
-	writeInsufficientQuotaBody(w, http.StatusTooManyRequests)
+	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, 0)
 }
 
-func writeInsufficientQuotaBody(w http.ResponseWriter, status int) {
+// writeInsufficientQuotaErrorRetryable 在 token-per-window 等窗口配额拒绝时,
+// 把引擎算好的窗口重置时刻吐给客户端:Retry-After 头(秒)+ body 的
+// window_resets_at(RFC3339),让 SDK 按窗口边界智能退避而非盲目重试。
+func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time.Duration) {
+	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, retryAfter)
+}
+
+func writeInsufficientQuotaBody(w http.ResponseWriter, status int, retryAfter time.Duration) {
 	w.Header().Set("Content-Type", "application/json")
+	errFields := map[string]string{
+		"type":    "insufficient_quota",
+		"code":    clienterr.CodeInsufficientBalance,
+		"message": clienterr.MessageFor(clienterr.CodeInsufficientBalance),
+	}
+	if retryAfter > 0 {
+		secs := int64(math.Ceil(retryAfter.Seconds()))
+		w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
+		errFields["window_resets_at"] = time.Now().UTC().Add(retryAfter).Format(time.RFC3339)
+	}
 	w.WriteHeader(status)
-	body, err := json.Marshal(map[string]map[string]string{
-		"error": {
-			"type":    "insufficient_quota",
-			"code":    clienterr.CodeInsufficientBalance,
-			"message": clienterr.MessageFor(clienterr.CodeInsufficientBalance),
-		},
-	})
+	body, err := json.Marshal(map[string]map[string]string{"error": errFields})
 	if err != nil {
 		body = []byte(`{"error":{"type":"insufficient_quota","code":"insufficient_balance","message":"余额不足"}}`)
 	}

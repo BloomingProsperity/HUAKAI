@@ -98,6 +98,21 @@ func IsDenied(err error) bool {
 	return quota.IsDenied(err)
 }
 
+// DenyRetryAfter 取配额拒绝决策里引擎算好的"距窗口重置还有多久"(window-bound
+// metric 才非零;无窗口/无重置返回 0)。来源二选一:DenyError 包裹的 Decision,
+// 或 fail-soft 路径上 !Allowed 的 ReserveResult.Decision。供 HTTP 层吐
+// Retry-After / window_resets_at,让客户端按窗口边界智能退避(对齐 sub2api)。
+func DenyRetryAfter(result quota.ReserveResult, err error) time.Duration {
+	var deny *quota.DenyError
+	if errors.As(err, &deny) {
+		return deny.Decision.RetryAfter
+	}
+	if !result.Allowed {
+		return result.Decision.RetryAfter
+	}
+	return 0
+}
+
 func (s *Settler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	if s == nil || s.inner == nil {
 		return nil, billing.ErrPoolNotConfigured
