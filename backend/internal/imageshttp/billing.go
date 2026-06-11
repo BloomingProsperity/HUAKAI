@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
 
@@ -80,9 +81,20 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 	return true
 }
 
+// billableImageCount 是 per_image 计费/审计的真相源:常态返回请求 amount,
+// 但当 family 响应翻译记录的实际交付张数少于请求数时(Replicate model-specific
+// num_outputs 被忽略),返回交付数——成本与 ImageCount 审计都按交付数走,
+// 不按请求数多收。交付数为 0(未翻译/解析失败)回退请求数,保守不少收。
+func (ex *execution) billableImageCount() int {
+	if ex.scheme == imagepricing.SchemePerImage && ex.deliveredImageCount > 0 && ex.deliveredImageCount < ex.amount {
+		return ex.deliveredImageCount
+	}
+	return ex.amount
+}
+
 func (ex *execution) settleRequest(tokens tokenImageUsage, cost decimal.Decimal, snapshot string, attemptSeq int, pending bool) billing.SettleRequest {
 	confidence := 1.0
-	imageCount := int32(ex.amount)
+	imageCount := int32(ex.billableImageCount())
 	imageSize := auditStringPtr(ex.size, 0)
 	return billing.SettleRequest{
 		ClaimID:           ex.reserveRes.ClaimID,

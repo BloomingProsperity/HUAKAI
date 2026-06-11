@@ -62,6 +62,10 @@ const (
 	// Dify 应用编排平台(per-app token 直通;chat-messages/workflows/
 	// completion-messages)。非订阅反转目标,仅 standard + diagnostics。
 	ProviderDify ProviderCode = "dify"
+
+	// Replicate 图片生成平台(API token 直通;models/{model}/predictions)。
+	// 非订阅反转目标,仅 standard + diagnostics。
+	ProviderReplicate ProviderCode = "replicate"
 )
 
 // TransportMode 决定 RoundTripper 的形态。
@@ -273,6 +277,11 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 	},
 	// Dify:API token 直通,与 deepseek 等同款(standard + diagnostics_only)。
 	ProviderDify: {
+		TransportModeStandard:        true,
+		TransportModeDiagnosticsOnly: true,
+	},
+	// Replicate:API token 直通,与 deepseek 等同款(standard + diagnostics_only)。
+	ProviderReplicate: {
 		TransportModeStandard:        true,
 		TransportModeDiagnosticsOnly: true,
 	},

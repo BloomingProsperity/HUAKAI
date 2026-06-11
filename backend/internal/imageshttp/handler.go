@@ -91,6 +91,11 @@ type execution struct {
 	predictedCost decimal.Decimal
 	costSnapshot  string
 	pending       bool
+	// deliveredImageCount 是 family 响应翻译实际交付给客户端的图片张数
+	// (0 = 未知/未翻译,按请求 amount 计费)。per_image 计费在 settle 时
+	// 用它做"按交付数对账":上游(如 Replicate model-specific num_outputs
+	// 被忽略只回 1 张)交付少于请求数时,不得按请求数多收用户钱。
+	deliveredImageCount int
 }
 
 func NewGenerationsHandler(d Deps) http.HandlerFunc {
@@ -155,7 +160,7 @@ func newHandler(d Deps, endpoint imageEndpoint) http.HandlerFunc {
 			amount:      req.Amount(),
 			quality:     req.NormalizedQuality(),
 		}
-		if !ex.prepareRoute(w) || !ex.preparePricing(w) {
+		if !ex.prepareRoute(w) || !ex.validateFamilyConstraints(w) || !ex.preparePricing(w) {
 			return
 		}
 		ex.run(w)

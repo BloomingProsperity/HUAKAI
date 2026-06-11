@@ -162,7 +162,7 @@ func (ex *execution) groupPricingRatio() (decimal.Decimal, error) {
 }
 
 func (ex *execution) providerForPricing() string {
-	for _, candidate := range []string{ex.accInfo.Platform, pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)} {
+	for _, candidate := range []string{ex.accInfo.Platform, pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily), pricingVendorForFamily(ex.resolved.ProtocolFamily)} {
 		if strings.TrimSpace(candidate) != "" {
 			return strings.TrimSpace(candidate)
 		}
