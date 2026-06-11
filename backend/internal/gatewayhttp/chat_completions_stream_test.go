@@ -1964,7 +1964,8 @@ func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
 
 // TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough 守卫流式
 // 翻译门(renew-156 族集不对称第 5 处变体):上游族的 wire 形态与客户端协议
-// 同形时(kimi/qwen/... == openai_chat;openai_codex == openai_responses)
+// 同形时(kimi/qwen/... == openai_chat;openai_codex 刻意不在映射表内,
+// responses→codex 留 fail-closed,见下方用例)
 // 必须走 raw 直通——既保留 vendor 专有字段(top_k 等,流式无 raw-merge,
 // 走 HCSF 翻译会被静默丢),也是此前全部兼容族流式 501 的根因(返回 true 后
 // MarshalToProviderRequest 不认这些族)。真跨协议(anthropic→kimi、

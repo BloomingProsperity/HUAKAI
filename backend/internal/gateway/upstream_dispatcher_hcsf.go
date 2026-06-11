@@ -188,6 +188,9 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		return applyRequestBodyControls(req, controls)
 	}
 	if hcsfProviderRequestUsesNativeRawBody(endpointFamily) {
+		if err := validateNativeRawBodyIngress(ingressFamily, endpointFamily); err != nil {
+			return nil, err
+		}
 		if len(nativeRawBody) == 0 {
 			return nil, fmt.Errorf("dispatcher: HCSF native raw body missing for endpoint family %q", endpointFamily)
 		}
@@ -314,6 +317,26 @@ func hcsfProviderRequestUsesNativeRawBody(endpointFamily string) bool {
 	default:
 		return false
 	}
+}
+
+// validateNativeRawBodyIngress 是 native-raw 族直转前的跨协议守卫,许可集与
+// 流式翻译门(gatewayhttp needsStreamingHCSFTranslation)严格镜像,流式/非流式
+// 不得分叉:
+//   - 同族 ingress(native lane;含 ClientProtocol 空回退到族名)直通;
+//   - anthropic_messages→bedrock_invoke 直通:bedrock PassthroughAdapter 内
+//     AutoTranslate 承接,且按真实 ingress 判定——替代只查 "messages" 顶层键的
+//     body 形态嗅探(openai_chat body 同样含 "messages",嗅探会误译);
+//   - 其余跨协议 ingress fail-closed:anthropic body 原样直发 codex、openai
+//     body 误译 bedrock 都是把垃圾投给上游,必须在投递前挡下(此前流式已
+//     fail-closed 而非流式 fail-open,DM-20 评审 S2)。
+func validateNativeRawBodyIngress(ingressFamily, endpointFamily string) error {
+	if ingressFamily == "" || ingressFamily == endpointFamily {
+		return nil
+	}
+	if ingressFamily == "anthropic_messages" && endpointFamily == "bedrock_invoke" {
+		return nil
+	}
+	return fmt.Errorf("dispatcher: native raw-body endpoint family %q does not accept ingress %q (cross-protocol raw forward is fail-closed)", endpointFamily, ingressFamily)
 }
 
 func mergeHCSFRawPassthroughFields(body []byte, ingressFamily string, endpointFamily string, raw []byte) ([]byte, error) {

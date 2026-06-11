@@ -209,6 +209,52 @@ func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testi
 	}
 }
 
+// TestBuildHCSFProviderRequestNativeRawIngressGuard 非流式 native-raw 直转的
+// 跨协议守卫(DM-20 评审 S2):许可集与流式 needsStreamingHCSFTranslation 严格
+// 镜像——同族/空 ingress 直通,anthropic→bedrock 走 adapter 内 AutoTranslate
+// 直通,其余跨协议 fail-closed。
+// MUTATION: 删 validateNativeRawBodyIngress 调用(恢复 fail-open)→ anthropic
+// body 原样直发 codex / openai body 进 bedrock 嗅探误译 → 四个 wantErr 用例 RED;
+// 把 anthropic→bedrock 许可删掉 → AutoTranslate 合法路径被误杀 → 该用例 RED。
+func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		ingressFamily  string
+		endpointFamily string
+		wantErr        bool
+	}{
+		{"anthropic→codex fail-closed", "anthropic_messages", "openai_codex", true},
+		{"responses→codex fail-closed(镜像流式)", "openai_responses", "openai_codex", true},
+		{"openai→codex fail-closed", "openai_chat", "openai_codex", true},
+		{"openai→bedrock fail-closed(嗅探误译路径)", "openai_chat", "bedrock_invoke", true},
+		{"anthropic→bedrock AutoTranslate 直通", "anthropic_messages", "bedrock_invoke", false},
+		{"同族 codex 直通", "openai_codex", "openai_codex", false},
+		{"空 ingress 回退直通", "", "bedrock_invoke", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testHCSFEnvelope()
+			env.RequestMeta.EndpointFamily = tc.endpointFamily
+			adapter := &stubAdapter{platform: "native"}
+
+			_, err := buildHCSFProviderRequest(context.Background(), adapter, provider.BuildInput{
+				UpstreamModelID: "m",
+				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
+				Account:         provider.AccountInfo{AccountID: 12, Platform: "native", AccountType: "native"},
+			}, env, tc.ingressFamily, tc.endpointFamily, []byte(`{"raw":"body"}`))
+
+			if tc.wantErr && err == nil {
+				t.Fatalf("ingress=%q endpoint=%q 应 fail-closed,got nil err(垃圾 body 将直发上游)", tc.ingressFamily, tc.endpointFamily)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("ingress=%q endpoint=%q 应直通,got err=%v", tc.ingressFamily, tc.endpointFamily, err)
+			}
+			if !tc.wantErr && !strings.Contains(string(adapter.lastInput.InboundBody), `"raw":"body"`) {
+				t.Fatalf("直通路径 body 丢失: %s", adapter.lastInput.InboundBody)
+			}
+		})
+	}
+}
+
 // TestBuildHCSFProviderRequestVertexFamiliesProduceCorrectOutboundBody 钉死非
 // 流式 HCSF 全链对两个 Vertex 族的出站 body 形态:
 //   - vertex_gemini  → marshal 出 gemini_messages body,vertex adapter(ModeGemini)
