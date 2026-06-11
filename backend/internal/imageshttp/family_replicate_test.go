@@ -3,7 +3,9 @@ package imageshttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -278,8 +280,209 @@ func TestReplicateImagesHandler_SettlesByDeliveredImageCount(t *testing.T) {
 	}
 }
 
+// recordingCancelDoer 记录 best-effort cancel 请求的控制面 client 夹具。
+// 纪律:任何「带 prediction id 且非终态」的 fixture 必须注入本 doer——否则默认
+// client 会在单测里真发 api.replicate.com。
+// 与真实 http.Client 同口径:context 已取消则拒发(detached-context 判别用)。
+type recordingCancelDoer struct {
+	requests []*http.Request
+	status   int
+	err      error
+}
+
+func (d *recordingCancelDoer) Do(req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	d.requests = append(d.requests, req)
+	if d.err != nil {
+		return nil, d.err
+	}
+	status := d.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{StatusCode: status, Body: http.NoBody}, nil
+}
+
+// TestBestEffortCancelSurvivesCanceledRequestContext detached-context 守卫:
+// 客户端断连(请求 context 已取消)正是最需要 cancel 的时刻,cancel 必须在
+// 脱离请求取消的 context 上发出。
+// MUTATION: bestEffortCancel 的 context 直接从 ex.ctx 派生(去掉 WithoutCancel)
+// → doer 按真实 client 口径拒发 → outcome 变 cancel_send_failed → RED。
+func TestBestEffortCancelSurvivesCanceledRequestContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	doer := &recordingCancelDoer{}
+	ex := &execution{
+		ctx:  ctx,
+		cred: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "r8"},
+		d:    Deps{ReplicateCancelClient: doer},
+	}
+
+	outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-ctx", Status: "processing"})
+
+	if outcome != "cancel_issued" {
+		t.Fatalf("outcome=%q want cancel_issued(断连后仍须取消上游任务)", outcome)
+	}
+	if got := len(doer.requests); got != 1 {
+		t.Fatalf("cancel requests=%d want 1", got)
+	}
+}
+
+// TestBestEffortCancelBlocksRebindingPassthroughEndpoint 运行时 SSRF 守卫
+// (评审 S1):租户自填 base_url 的 host 静态检查能过,但 DNS 解析到内网/
+// metadata(rebinding)时,cancel 发送前必须 fail-closed——cancel 不得成为
+// 主出站守卫的旁路。
+// MUTATION: 删 bestEffortCancel 里的 ValidatePassthroughEndpointTarget 调用 →
+// doer 收到请求 + outcome=cancel_issued → 两断言 RED。
+func TestBestEffortCancelBlocksRebindingPassthroughEndpoint(t *testing.T) {
+	restore := provider.SwapPassthroughEndpointLookupForTesting(func(context.Context, string, string) ([]netip.Addr, error) {
+		return []netip.Addr{netip.MustParseAddr("169.254.169.254")}, nil
+	})
+	defer restore()
+	doer := &recordingCancelDoer{}
+	ex := &execution{
+		ctx: context.Background(),
+		cred: provider.Credential{
+			Type:  provider.CredentialTypeUpstreamPassthrough,
+			Value: "Token x",
+			Extra: map[string]string{"base_url": "https://relay.rebind.example"},
+		},
+		d: Deps{ReplicateCancelClient: doer},
+	}
+
+	outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-ssrf", Status: "processing"})
+
+	if !strings.HasPrefix(outcome, "cancel_blocked_unsafe_endpoint") {
+		t.Fatalf("outcome=%q want cancel_blocked_unsafe_endpoint 前缀(rebinding 必须拦截)", outcome)
+	}
+	if got := len(doer.requests); got != 0 {
+		t.Fatalf("cancel requests=%d want 0(被守卫拦截不得出站)", got)
+	}
+}
+
+// TestBestEffortCancelRecordsRejectedStatus 非 2xx cancel 响应进审计结局
+// (评审遗留 X2:此前 cancel_rejected_status_* 是测试死路径)。
+// MUTATION: 删 status 检查恒返 cancel_issued → RED。
+func TestBestEffortCancelRecordsRejectedStatus(t *testing.T) {
+	doer := &recordingCancelDoer{status: 422}
+	ex := &execution{
+		ctx:  context.Background(),
+		cred: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "r8"},
+		d:    Deps{ReplicateCancelClient: doer},
+	}
+
+	outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-422", Status: "processing"})
+
+	if outcome != "cancel_rejected_status_422" {
+		t.Fatalf("outcome=%q want cancel_rejected_status_422", outcome)
+	}
+}
+
+// TestReplicateImagesHandler_WaitOverrunCancelsPrediction 钱路守卫:Prefer: wait
+// 超窗(status=processing 且带 prediction id)时,abort 退款之外必须向上游发
+// POST predictions/{id}/cancel(鉴权同出站口径),且 id+结局进 abort 审计。
+// Mutation:删 translateUpstreamResponseForFamily 的 cancel 调用 → doer 0 请求
+// → 本测试红(上游任务继续烧钱,平台单边吃成本)。
+func TestReplicateImagesHandler_WaitOverrunCancelsPrediction(t *testing.T) {
+	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"id":"pred-42","status":"processing","output":null,"error":null}`,
+	})
+	doer := &recordingCancelDoer{}
+	env.deps.ReplicateCancelClient = doer
+
+	rec := env.invoke(t, `{"model":"flux-pro","prompt":"x","size":"1024x1024"}`)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s want 502", rec.Code, rec.Body.String())
+	}
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle calls=%d want 0", got)
+	}
+	if got := len(doer.requests); got != 1 {
+		t.Fatalf("cancel requests=%d want 1(超窗 prediction 必须取消)", got)
+	}
+	cancelReq := doer.requests[0]
+	if cancelReq.Method != http.MethodPost {
+		t.Fatalf("cancel method=%s want POST", cancelReq.Method)
+	}
+	if got := cancelReq.URL.String(); got != "https://api.replicate.com/v1/predictions/pred-42/cancel" {
+		t.Fatalf("cancel url=%q want predictions/pred-42/cancel", got)
+	}
+	if got := cancelReq.Header.Get("Authorization"); got != "Bearer r8_test" {
+		t.Fatalf("cancel auth=%q want 与出站同口径 Bearer", got)
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort calls=%d want 1", got)
+	}
+	loss := string(env.settler.aborts[0].protocolLoss)
+	if !strings.Contains(loss, "pred-42") || !strings.Contains(loss, "cancel_issued") {
+		t.Fatalf("abort protocolLoss=%s want prediction id + cancel_issued 审计", loss)
+	}
+}
+
+// TestReplicateImagesHandler_CancelFailureDoesNotBlockAbort best-effort 语义:
+// cancel 发送失败时 abort 退款主路径照常走完(退预留、502、无 abort-failed 头),
+// 失败结局只进审计。Mutation:cancel 错误传染 abort(提前 return / 改 reason)
+// → 本测试红。
+func TestReplicateImagesHandler_CancelFailureDoesNotBlockAbort(t *testing.T) {
+	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"id":"pred-77","status":"starting","output":null,"error":null}`,
+	})
+	doer := &recordingCancelDoer{err: errors.New("upstream cancel unreachable")}
+	env.deps.ReplicateCancelClient = doer
+
+	rec := env.invoke(t, `{"model":"flux-pro","prompt":"x","size":"1024x1024"}`)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s want 502", rec.Code, rec.Body.String())
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort calls=%d want 1(cancel 失败不得阻断 abort)", got)
+	}
+	if env.settler.aborts[0].reason != "replicate_prediction_failed" {
+		t.Fatalf("abort reason=%q want replicate_prediction_failed", env.settler.aborts[0].reason)
+	}
+	if got := rec.Header().Get("X-Huakai-Abort-Failed"); got != "" {
+		t.Fatalf("X-Huakai-Abort-Failed=%q want empty(abort 本身成功)", got)
+	}
+	loss := string(env.settler.aborts[0].protocolLoss)
+	if !strings.Contains(loss, "pred-77") || !strings.Contains(loss, "cancel_send_failed") {
+		t.Fatalf("abort protocolLoss=%s want prediction id + cancel_send_failed 审计", loss)
+	}
+}
+
+// TestReplicateImagesHandler_TerminalPredictionNotCanceled 终态(failed)不发
+// cancel(徒增上游调用),但 prediction id 仍进 abort 审计。
+// Mutation:去掉 CancelWorthwhile 状态门 → doer 收到请求 → 本测试红。
+func TestReplicateImagesHandler_TerminalPredictionNotCanceled(t *testing.T) {
+	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"id":"pred-99","status":"failed","output":null,"error":"NSFW content"}`,
+	})
+	doer := &recordingCancelDoer{}
+	env.deps.ReplicateCancelClient = doer
+
+	rec := env.invoke(t, `{"model":"flux-pro","prompt":"x","size":"1024x1024"}`)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s want 502", rec.Code, rec.Body.String())
+	}
+	if got := len(doer.requests); got != 0 {
+		t.Fatalf("cancel requests=%d want 0(终态 prediction 不取消)", got)
+	}
+	loss := string(env.settler.aborts[0].protocolLoss)
+	if !strings.Contains(loss, "pred-99") || !strings.Contains(loss, "skipped_terminal_status") {
+		t.Fatalf("abort protocolLoss=%s want prediction id + skipped_terminal_status 审计", loss)
+	}
+}
+
 // 静态断言:夹具 stub 满足接口(防 handler_test 夹具演化后本文件悄悄漂移)。
 var (
 	_                 = auth.Identity{}
 	_ billing.Settler = (*recordingSettler)(nil)
+	_ cancelHTTPDoer  = (*recordingCancelDoer)(nil)
 )
