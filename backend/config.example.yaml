@@ -32,6 +32,10 @@ budget:
 
 tenancy:
   # DR-001: MVP hard-codes a single default tenant.
+  # NOT PARSED — production config loads from env only (internal/config reads no YAML).
+  # The default working tenant is seeded automatically at startup
+  # (internal/tenancy.EnsureDefaultTenant); override its id with env var
+  # HUAKAI_DEFAULT_WORKING_TENANT_ID. This key is documentation only.
   default_tenant_id: 1
 
 billing:

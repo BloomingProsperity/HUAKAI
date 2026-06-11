@@ -87,6 +87,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpresolve"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -1101,6 +1102,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
+	}
+	// 单租户开箱即用:空库自动种默认工作租户(id=0 哨兵不算工作租户),否则
+	// 从零部署必须手写 psql 才能得到第一个可用租户(users/api_keys 全链 FK
+	// 断头)。已有任意工作租户时本钩子零写入。
+	if err := tenancy.EnsureDefaultTenant(ctx, pgPool, logger); err != nil {
+		return nil, fmt.Errorf("ensure default tenant: %w", err)
 	}
 	// Production-required gate: credentialScheduler 必须装
 	// authQueries + auditLedger + pgPool + auditSigner,否则 audit/ledger 链
