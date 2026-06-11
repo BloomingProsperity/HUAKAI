@@ -235,6 +235,15 @@ type BuildInput struct {
 	// 仅 anthropic 族 adapter 消费——与凭据 Extra["anthropic_beta"] 合并
 	// 去重后写出站 Anthropic-Beta;其余 adapter 忽略本字段。
 	InboundBetaTokens []string
+	// ClientStreamIntent 表示客户端请求了流式响应(来自入口解析后的 resolved
+	// stream intent)。仅作 OR 信号:true=确定要流式;false=未知/非流,不构成
+	// 非流断言。gemini-shaped 族(gemini_messages/vertex_gemini/
+	// gemini_code_assist)的流式由出站 URL action 表达,跨协议 ingress 时
+	// marshal 出的 gemini body 无顶层 stream 字段、Extra["stream"] 仅 gemini
+	// ingress 注入——没有本字段,openai/anthropic 客户端打 gemini-shaped 上游
+	// 的流式请求会被错选到非流 :generateContent。消费优先级(各 adapter 内):
+	// Extra["stream"] 显式值 > 本字段 > body 探测。
+	ClientStreamIntent bool
 }
 
 // Adapter 是 vendor-specific 出站适配器接口。

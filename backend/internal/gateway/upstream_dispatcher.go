@@ -70,6 +70,9 @@ type DispatchInput struct {
 	// Streaming callers leave this false so stream-specific timeout axes stay
 	// owned by StreamForwarder.
 	NonStreamingBuffered bool
+	// ClientStreamIntent 客户端流式意图,原样穿给 provider.BuildInput(语义见
+	// 彼处注释)。gemini-shaped 族跨协议流式的端点选择依赖它。
+	ClientStreamIntent bool
 }
 
 // DispatchResult 是 Dispatch 的产出。调用方读完 UpstreamReader 后必须
@@ -174,6 +177,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		Account:            in.Account,
 		EndpointPath:       in.EndpointPath,
 		InboundBetaTokens:  in.InboundBetaTokens,
+		ClientStreamIntent: in.ClientStreamIntent,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequest 失败: %w", err)

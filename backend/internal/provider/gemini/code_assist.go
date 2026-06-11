@@ -111,14 +111,15 @@ func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildI
 		return nil, errors.New("gemini code assist: code assist requires project_id（cloudcode-pa 拒空 project，需 onboarding 解析）")
 	}
 
-	// 流式判定：主信号 Extra["stream"]（gemini ingress 经
-	// credentialWithNativeStreamMode 注入，gated on clientProtocol==gemini）。
-	// 其它 ingress 跨协议翻译进来不注入 Extra["stream"]，回退探测 InboundBody
-	// 内层 gemini body 顶层 stream——但裸 gemini generateContent body 用 URL
-	// action 表达流式、无顶层 stream 字段，故此回退几乎总是 false（保守非流式）。
-	// 实践上 gemini ingress→gemini_code_assist 的流式请求必有 Extra["stream"]，
-	// 该路径有专门测试覆盖。
-	stream := in.Credential.Extra["stream"] == "true" || inboundGeminiBodyRequestsStream(in.InboundBody)
+	// 流式判定(OR 链):Extra["stream"]=="true"(gemini ingress 经
+	// credentialWithNativeStreamMode 注入,gated on clientProtocol==gemini)|
+	// ClientStreamIntent(跨协议 ingress 的 resolved 流式意图——内层 gemini
+	// body 用 URL action 表达流式、无顶层 stream 字段,body 探测对它恒 false;
+	// Extra 已带显式值时不取 intent)| body 探测(直灌带顶层 stream 的 body
+	// 的兜底;显式 Extra="false" 压 intent 但不压 body 探测,既有契约)。
+	stream := in.Credential.Extra["stream"] == "true" ||
+		(in.Credential.Extra["stream"] == "" && in.ClientStreamIntent) ||
+		inboundGeminiBodyRequestsStream(in.InboundBody)
 
 	action := "generateContent"
 	if stream {

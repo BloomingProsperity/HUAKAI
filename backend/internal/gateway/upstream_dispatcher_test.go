@@ -756,3 +756,29 @@ func TestDispatcher_PassesInboundBetaTokensToAdapter(t *testing.T) {
 		t.Fatalf("adapter InboundBetaTokens=%v; want 完整透传", got)
 	}
 }
+
+// TestDispatcher_PassesClientStreamIntentToAdapter 守卫跨协议流式意图穿透:
+// DispatchInput.ClientStreamIntent 必须原样到达 provider.BuildInput——gemini-shaped
+// 族(gemini_messages/vertex_gemini/gemini_code_assist)的流式端点选择依赖它,
+// 断链则 openai/anthropic 客户端的流式请求错选非流 :generateContent。
+// MUTATION: 删 Dispatch 里 BuildInput 的 ClientStreamIntent 赋值 → 本测试红。
+func TestDispatcher_PassesClientStreamIntentToAdapter(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: "{}"}
+	adapter := &stubAdapter{platform: "gemini"}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily:     "gemini_messages",
+		UpstreamModelID:    "gemini-2.5-pro",
+		InboundBody:        []byte(`{"contents":[]}`),
+		Account:            provider.AccountInfo{AccountID: 7, Platform: "gemini", AccountType: "apikey"},
+		Credential:         provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "AIza-x"},
+		ClientStreamIntent: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !adapter.lastInput.ClientStreamIntent {
+		t.Fatal("adapter ClientStreamIntent=false want true(意图在 dispatcher 断链)")
+	}
+}

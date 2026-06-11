@@ -36,6 +36,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
+	providergemini "github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -172,6 +173,7 @@ func TestHandleStreamingResponse_CrossProtocolTranslatesRequestAndResponse(t *te
 
 type recordingStreamingDoer struct {
 	body         []byte
+	gotURL       string
 	responseBody string
 }
 
@@ -181,11 +183,83 @@ func (d *recordingStreamingDoer) Do(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	d.body = body
+	d.gotURL = req.URL.String()
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(d.responseBody)),
 	}, nil
+}
+
+// TestHandleStreamingResponse_CrossProtocolGeminiSelectsStreamAction 锁
+// ClientStreamIntent 的 gatewayhttp 接线点(F4 修复主线):openai 客户端流式
+// 请求 → gemini_messages 上游,非 gemini ingress 无 Extra["stream"]、marshal 的
+// gemini body 无顶层 stream 字段,出站 URL 必须仍选 :streamGenerateContent。
+// MUTATION: 删 executeStreamingAttempt 里 DispatchInput 的
+// ClientStreamIntent: ex.req.Stream 接线 → 出站 URL 退回非流 :generateContent
+// → 本测试红(评审 M6:链条两端有锁、源头裸奔的缺口由此补上)。
+func TestHandleStreamingResponse_CrossProtocolGeminiSelectsStreamAction(t *testing.T) {
+	upstream := &recordingStreamingDoer{responseBody: "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":3,\"totalTokenCount\":5}}\n\n"}
+	adapterReg := provider.NewStaticRegistry()
+	adapterReg.MustRegister("gemini_messages", &providergemini.PassthroughAdapter{})
+	reqBody := []byte(`{"model":"gemini-pro-alias","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(reqBody)))
+	ex := &chatExecution{
+		d: ChatHandlerDeps{
+			Dispatcher: &gateway.UpstreamDispatcher{
+				Adapters:         adapterReg,
+				TransportFactory: transport.NewFactory(),
+				HTTPClient:       upstream,
+			},
+			Forwarder: &gateway.StreamForwarder{
+				ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
+				Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
+				ScannerBufferCap: 1 << 20,
+			},
+			Settler: &stubSettler{},
+		},
+		r:                 req,
+		ctx:               req.Context(),
+		startedAt:         time.Now(),
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 3},
+		body:              reqBody,
+		req:               chatRequest{Model: "gemini-pro-alias", Stream: true},
+		clientProtocol:    proto.ClientProtocolOpenAIChat,
+		requestID:         "req_stream_cross_protocol_gemini",
+		resolved:          registry.Resolved{ProtocolFamily: "gemini_messages", ProviderModelID: "gemini-2.5-pro"},
+		plan:              router.RoutePlan{SnapshotVersion: "test-snapshot"},
+		attempt:           router.AttemptPlan{PoolGroupID: 42},
+		routeID:           "route-1",
+		reserveRes:        &billing.ReserveResult{ClaimID: 998},
+		acquiredAccountID: 1,
+		upstreamModelID:   "gemini-2.5-pro",
+		cacheVendor:       "gemini",
+		cred:              provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "AIza-test"},
+		accInfo:           provider.AccountInfo{AccountID: 1, Platform: "gemini", AccountType: "apikey"},
+		forwardReq: gateway.ForwardRequest{
+			TenantID:       7,
+			AccountID:      1,
+			RequestID:      "req_stream_cross_protocol_gemini",
+			RouteID:        "route-1",
+			PoolID:         "42",
+			IngressPath:    "/v1/chat/completions",
+			ProtocolFamily: "gemini_messages",
+			ClientProtocol: string(proto.ClientProtocolOpenAIChat),
+			Model:          "gemini-2.5-pro",
+			RequestedModel: "gemini-pro-alias",
+			Provider:       "gemini",
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	ex.handleStreamingResponse(rec)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(upstream.gotURL, ":streamGenerateContent") {
+		t.Fatalf("出站 URL=%q want :streamGenerateContent(流式意图在 handler→dispatcher 接线点被丢)", upstream.gotURL)
+	}
 }
 
 type selectiveTransportRoundTripper struct {
