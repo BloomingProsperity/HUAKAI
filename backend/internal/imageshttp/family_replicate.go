@@ -189,7 +189,8 @@ func replicateAbortLoss(meta replicate.PredictionMeta, cancelOutcome string) jso
 // pricingVendorForFamily 给 providerForPricing 提供 family 级兜底计价
 // provider:replicate_image 在选号前(accInfo.Platform 未知)也能命中
 // rate table 的 providers.replicate 节点。pool.VendorFromProtocolFamily
-// 的映射范围被 4-vendor 真账号 metric 切片测试锁死,不在那里扩。
+// 现已全量覆盖注册族(同值 "replicate",注册表驱动守卫锁死);本 shim 保留
+// 作 lane 内冗余防线,两处必须同值。
 func pricingVendorForFamily(protocolFamily string) string {
 	if protocolFamily == replicateImageFamily {
 		return "replicate"
