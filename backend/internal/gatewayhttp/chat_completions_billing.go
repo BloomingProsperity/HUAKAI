@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
@@ -169,8 +170,15 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	return outcome
 }
 
+// clientToolFromContext 取 clientid 中间件归一出的非敏感客户端工具枚举(空=未知)。
+// W4:供 chat 各 settle 路径(非流/流式/cache-hit)统一接客户端归因。
+func clientToolFromContext(ctx context.Context) string {
+	return clientid.ToolFromContext(ctx)
+}
+
 func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost completionCostBreakdown, routingReason []byte) billing.SettleRequest {
 	draft := withOriginAudit(nonStreamingUsageDraft(env, actualCost, routingReason), ex.r, ex.d)
+	draft.ClientTool = clientToolFromContext(ex.ctx)
 	return billing.SettleRequest{
 		ClaimID:             ex.reserveRes.ClaimID,
 		AccountID:           ex.acquiredAccountID,

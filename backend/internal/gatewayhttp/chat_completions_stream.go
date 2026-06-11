@@ -731,6 +731,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 		draft.PendingReconciliation = true
 	}
 	draft = withOriginAudit(draft, ex.r, ex.d)
+	draft.ClientTool = clientToolFromContext(ex.ctx)
 	return eventbus.RequestCompletionEvent{
 		ID:                        ex.requestID,
 		TenantID:                  ex.ident.TenantID,

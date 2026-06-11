@@ -180,6 +180,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		ImageSizeBreakdown:     req.Draft.ImageSizeBreakdown,
 		IPAddress:              req.Draft.IPAddress,
 		UserAgent:              req.Draft.UserAgent,
+		ClientTool:             nullableString(req.Draft.ClientTool),
 	}
 
 	endClass := normalizeEndClass(req.Draft.EndClass, req.Stream)
@@ -376,6 +377,9 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 			ProtocolLoss:           jsonOrEmptyArray(protocolLoss),
 			RequestedAt:            pgTimestamp(time.Now().UTC()),
 			RequestedModel:         requestedModel,
+			// abort 路径不持有 draft → 无客户端归因(NULL),与既有 abort
+			// 用量记录"只记结构性字段"一致。
+			ClientTool: nil,
 		}
 		if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "abort_usage_record_insert_failed"); err != nil {
 			return err
@@ -538,6 +542,7 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 		ImageSizeBreakdown:     req.Draft.ImageSizeBreakdown,
 		IPAddress:              req.Draft.IPAddress,
 		UserAgent:              req.Draft.UserAgent,
+		ClientTool:             nullableString(req.Draft.ClientTool),
 	}
 	if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "cache_hit_usage_record_insert_failed"); err != nil {
 		return err
@@ -915,6 +920,7 @@ func marshalUsageRecordPayload(params dbbilling.InsertUsageRecordParams) (json.R
 		ImageSizeBreakdown:     json.RawMessage(params.ImageSizeBreakdown),
 		IPAddress:              params.IPAddress,
 		UserAgent:              params.UserAgent,
+		ClientTool:             params.ClientTool,
 	}
 	raw, err := json.Marshal(payload)
 	return json.RawMessage(raw), err

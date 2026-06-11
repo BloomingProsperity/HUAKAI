@@ -57,6 +57,7 @@ type UsageRecordPayload struct {
 	ImageSizeBreakdown     json.RawMessage `json:"image_size_breakdown,omitempty"`
 	IPAddress              *string         `json:"ip_address,omitempty"`
 	UserAgent              *string         `json:"user_agent,omitempty"`
+	ClientTool             *string         `json:"client_tool,omitempty"`
 }
 
 func NewUsageRecordHandler(pool *pgxpool.Pool) Handler {
@@ -101,7 +102,8 @@ INSERT INTO usage_records (
 	drain_outcome, routing_reason, protocol_loss,
 	requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
 	requested_model, upstream_model, stream, snapshot_version, settlement_source,
-	image_count, image_size, image_size_breakdown, ip_address, user_agent
+	image_count, image_size, image_size_breakdown, ip_address, user_agent,
+	client_tool
 )
 SELECT
 	$1, $2, $3, $4, $5,
@@ -116,7 +118,8 @@ SELECT
 	$29, $30, $31,
 	$32, $33, $34, $35, $36,
 	$37, $38, $39, $40, $41,
-	$42, $43, $44, $45, $46
+	$42, $43, $44, $45, $46,
+	$47
 WHERE NOT EXISTS (
 	SELECT 1 FROM usage_records WHERE tenant_id = $1 AND claim_id = $2
 )`,
@@ -134,6 +137,7 @@ WHERE NOT EXISTS (
 			parseOptionalTime(p.FirstEventAt), parseOptionalTime(p.LastEventAt),
 			p.RequestedModel, p.UpstreamModel, p.Stream, p.SnapshotVersion, settlementSource,
 			p.ImageCount, p.ImageSize, nullableJSON(p.ImageSizeBreakdown), p.IPAddress, p.UserAgent,
+			p.ClientTool,
 		)
 		if err != nil {
 			return fmt.Errorf("dlq: replay usage record: %w", err)

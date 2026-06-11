@@ -209,6 +209,8 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		// 一条 provider-less usage_records 行, 使 receipt / 用量视图可见。 终结
 		// 必须在写 200 body 之前完成, 否则进程退出会让 claim 永卡 reserving。
 		if in.ReserveResult != nil {
+			cacheHitDraft := withOriginAudit(nonStreamingUsageDraft(cachedEnv, completionCostBreakdown{}, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)), r, d)
+			cacheHitDraft.ClientTool = clientToolFromContext(ctx)
 			cacheHitReq := billing.SettleRequest{
 				ClaimID:         in.ReserveResult.ClaimID,
 				TenantID:        in.Ident.TenantID,
@@ -220,7 +222,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				ProtocolLoss:    protocolLossJSONFromEnv(cachedEnv),
 				RequestedAt:     in.RequestStartedAt,
 				Fingerprint:     in.PayloadHash,
-				Draft:           withOriginAudit(nonStreamingUsageDraft(cachedEnv, completionCostBreakdown{}, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)), r, d),
+				Draft:           cacheHitDraft,
 				SnapshotVersion: in.PlanSnapshot,
 			}
 			auditEvent := eventbus.RequestCompletionEvent{
@@ -272,6 +274,8 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if attemptSeq <= 0 {
 		attemptSeq = 1
 	}
+	settleDraft := withOriginAudit(nonStreamingUsageDraft(cachedEnv, actualCost, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)), r, d)
+	settleDraft.ClientTool = clientToolFromContext(ctx)
 	settleReq := billing.SettleRequest{
 		ClaimID:             in.ReserveResult.ClaimID,
 		AccountID:           in.AccountID,
@@ -288,7 +292,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		ProtocolLoss:        protocolLossJSONFromEnv(cachedEnv),
 		ActualCost:          actualCost.Total,
 		Fingerprint:         in.PayloadHash,
-		Draft:               withOriginAudit(nonStreamingUsageDraft(cachedEnv, actualCost, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)), r, d),
+		Draft:               settleDraft,
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     in.PlanSnapshot,
 	}

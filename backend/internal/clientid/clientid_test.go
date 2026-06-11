@@ -256,6 +256,32 @@ func TestIdentityContext_NilCtxSafe(t *testing.T) {
 	}
 }
 
+func TestToolFromContextReturnsPersistableEnumOnly(t *testing.T) {
+	// Mutation check: returning the raw User-Agent/header value instead of the
+	// normalized enum would leak sensitive request metadata and fail this exact
+	// equality assertion.
+	ctx := WithIdentity(context.Background(), IdentityCursor, 1.0)
+	if got := ToolFromContext(ctx); got != "cursor" {
+		t.Fatalf("ToolFromContext=%q want cursor enum", got)
+	}
+}
+
+func TestToolFromContextUnknownStaysEmptyForNullableColumn(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"missing": context.Background(),
+		"unknown": WithIdentity(context.Background(), IdentityUnknown, 0.5),
+		"nil":     nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Mutation check: persisting "unknown" would make usage_records.client_tool
+			// non-NULL for unidentified clients, violating W4's zero-impact default.
+			if got := ToolFromContext(ctx); got != "" {
+				t.Fatalf("ToolFromContext=%q want empty string for nullable client_tool", got)
+			}
+		})
+	}
+}
+
 // TestDetect_HotPathPerformance 简单基准: 1000 次 detect 应 < 10ms。
 // （非 micro-benchmark；只是 hot path budget 守界）
 func TestDetect_HotPathPerformance(t *testing.T) {

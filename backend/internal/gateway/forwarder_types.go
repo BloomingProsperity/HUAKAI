@@ -100,8 +100,12 @@ type UsageRecordDraft struct {
 	FileSearchCalls      int `json:"file_search_calls,omitempty"`
 	ImageGenerationCalls int `json:"image_generation_calls,omitempty"`
 
-	IPAddress               *string        `json:"ip_address,omitempty"`
-	UserAgent               *string        `json:"user_agent,omitempty"`
+	IPAddress *string `json:"ip_address,omitempty"`
+	UserAgent *string `json:"user_agent,omitempty"`
+	// ClientTool 是 clientid 中间件归一出的非敏感客户端工具枚举(cursor /
+	// claude_code / cody / chat_ui / curl_script / ...)。空串=未知客户端,
+	// settle 时转 NULL。CMB-5:只存归一枚举,原始 User-Agent/header 绝不入库。
+	ClientTool              string         `json:"client_tool,omitempty"`
 	RoutingReason           []byte         `json:"routing_reason"`
 	EndClass                StreamEndClass `json:"end_class"`
 	StreamTerminatedReason  string         `json:"stream_terminated_reason"`
