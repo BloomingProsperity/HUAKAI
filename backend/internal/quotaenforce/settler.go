@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -117,7 +118,14 @@ func (s *Settler) Settle(ctx context.Context, req billing.SettleRequest) (*billi
 		return result, nil
 	}
 	if err != nil {
-		return result, err
+		// billing 已成功提交后, quota finalizer 是次级闸的 post-commit 补账动作;
+		// 这里 fail-open 给客户端成功,并把异常交给指标/日志供后续对账处理。
+		observePostCommitFinalizeFailure()
+		slog.WarnContext(ctx, "quota settle finalizer failed after billing commit",
+			slog.Int64("tenant_id", req.TenantID),
+			slog.Int64("claim_id", req.ClaimID),
+			slog.String("error", err.Error()))
+		return result, nil
 	}
 	return result, nil
 }
@@ -161,7 +169,16 @@ func (s *Settler) CommitCacheHit(ctx context.Context, req billing.SettleRequest)
 	if errors.Is(err, quota.ErrReservationNotFound) {
 		return nil
 	}
-	return err
+	if err != nil {
+		// 与 Settle 同语义:billing CommitCacheHit 已提交,quota 是次级闸的
+		// post-commit 补账;fail-open 给客户端成功,异常进指标/WARN 供对账。
+		observePostCommitFinalizeFailure()
+		slog.WarnContext(ctx, "quota cache-hit finalizer failed after billing commit",
+			slog.Int64("tenant_id", req.TenantID),
+			slog.Int64("claim_id", req.ClaimID),
+			slog.String("error", err.Error()))
+	}
+	return nil
 }
 
 func (s *Settler) Refund(ctx context.Context, req billing.RefundRequest) (*billing.RefundResult, error) {

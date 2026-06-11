@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"reflect"
 	"strings"
 	"testing"
@@ -82,6 +83,34 @@ func TestSettlerSettleIgnoresMissingQuotaReservationAfterFailOpen(t *testing.T) 
 	}
 	if got := finalizer.events; !reflect.DeepEqual(got, []string{"quota_settle"}) {
 		t.Fatalf("quota events=%v want quota settle attempt treated as no-op", got)
+	}
+}
+
+func TestSettlerSettleQuotaFailureAfterBillingCommitIsNonFatalAndMetriced(t *testing.T) {
+	// 判别性 mutation: billing 成功后把 quota finalizer error 重新 return,
+	// 客户端路径会看到 500, 且 post-commit 指标不会递增。
+	inner := &recordingBillingSettler{}
+	finalizer := &recordingQuotaFinalizer{settleErr: errors.New("quota finalize backend down")}
+	settler := NewSettler(inner, finalizer)
+	before := quotaPostCommitFinalizeFailuresForTest()
+
+	result, err := settler.Settle(context.Background(), billing.SettleRequest{TenantID: 7, ClaimID: 9008})
+
+	if err != nil {
+		t.Fatalf("Settle err=%v want nil after billing commit", err)
+	}
+	if result == nil {
+		t.Fatal("Settle result is nil")
+	}
+	if got := inner.events; !reflect.DeepEqual(got, []string{"billing_settle"}) {
+		t.Fatalf("inner events=%v want billing settle committed first", got)
+	}
+	if got := finalizer.events; !reflect.DeepEqual(got, []string{"quota_settle"}) {
+		t.Fatalf("quota events=%v want quota finalizer attempted", got)
+	}
+	after := quotaPostCommitFinalizeFailuresForTest()
+	if after != before+1 {
+		t.Fatalf("post-commit quota failure metric before/after=%d/%d want +1", before, after)
 	}
 }
 
@@ -232,4 +261,41 @@ func (s *recordingQuotaFinalizer) CommitCacheHit(_ context.Context, req quota.Ca
 	s.events = append(s.events, "quota_cache_hit")
 	s.cacheReq = req
 	return quota.CacheHitResult{}, s.cacheErr
+}
+
+// TestSettlerCacheHitQuotaFailureAfterBillingCommitIsNonFatalAndMetriced 与
+// Settle 同语义的 cache-hit 路径守卫。
+// MUTATION: billing CommitCacheHit 成功后把 quota finalizer error 重新 return
+// → 已计费的 cache-hit 回 500 → err 断言红;漏 observe → 指标断言红。
+func TestSettlerCacheHitQuotaFailureAfterBillingCommitIsNonFatalAndMetriced(t *testing.T) {
+	inner := &recordingBillingSettler{}
+	finalizer := &recordingQuotaFinalizer{cacheErr: errors.New("quota cache-hit finalize backend down")}
+	settler := NewSettler(inner, finalizer)
+	before := quotaPostCommitFinalizeFailuresForTest()
+
+	err := settler.CommitCacheHit(context.Background(), billing.SettleRequest{TenantID: 7, ClaimID: 9009})
+
+	if err != nil {
+		t.Fatalf("CommitCacheHit err=%v want nil after billing commit", err)
+	}
+	after := quotaPostCommitFinalizeFailuresForTest()
+	if after != before+1 {
+		t.Fatalf("post-commit quota failure metric before/after=%d/%d want +1", before, after)
+	}
+}
+
+func quotaPostCommitFinalizeFailuresForTest() int64 {
+	metric := expvar.Get(quotaMetricsMapName)
+	if metric == nil {
+		return 0
+	}
+	m, ok := metric.(*expvar.Map)
+	if !ok {
+		return 0
+	}
+	v, ok := m.Get(quotaMetricPostCommitFinalizeFailures).(*expvar.Int)
+	if !ok {
+		return 0
+	}
+	return v.Value()
 }
