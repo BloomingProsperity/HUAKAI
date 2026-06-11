@@ -285,6 +285,11 @@ func hcsfProviderRequestModelFamily(endpointFamily string) string {
 		// marshal 出标准 gemini_messages body,vertex.PassthroughAdapter（ModeGemini）
 		// 再原样直通到 publishers/google endpoint。
 		return "gemini_messages"
+	case "gemini_code_assist":
+		// Gemini Code Assist:HCSF 先 marshal 出标准 gemini_messages body 作内层,
+		// gemini.CodeAssistAdapter 再包 {model,project,request} envelope 出站到
+		// cloudcode-pa（两步串联,与 vertex 同模式）。
+		return "gemini_messages"
 	case "vertex_anthropic":
 		// Anthropic-on-Vertex:HCSF marshal 出标准 anthropic_messages body,
 		// vertex.PassthroughAdapter（ModeAnthropic）再剥 model/stream + 注

@@ -6,6 +6,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/geminicodeassist"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
@@ -56,6 +57,35 @@ data: {"model":"llama3.2","done":true,"done_reason":"stop","prompt_eval_count":7
 	}
 	if got := env.BufferedResponse.Content; len(got) != 1 || got[0].Type != "text" || got[0].Text != "rescued ollama text" {
 		t.Fatalf("reconstructed content = %+v, want one text block", got)
+	}
+	if got := env.BufferedResponse.Usage; got.InputTokens != 7 || got.OutputTokens != 3 {
+		t.Fatalf("reconstructed usage = %+v, want input=7 output=3", got)
+	}
+}
+
+// TestReconstructBufferedFromSSEGeminiCodeAssistStream 守卫族集对称第 8 站:
+// newUpstreamState 漏 geminicodeassist case 时,它委托内嵌 gemini.Adapter,
+// type-assert *gemini.UpstreamState 失败,每个事件进 loss、重组永远失败——
+// blocking 请求遇 cloudcode-pa 回 {response}-包裹的 SSE 时整族不可恢复。
+// 本测试同时覆盖 per-chunk {response} unwrap(SSE data 包一层 response)。
+// Mutation:删 newUpstreamState 的 geminicodeassist case → state 落 anthropic、
+// 委托内 type-assert 失败 → 重组无内容 → 红;删 adapter 的 unwrap → gemini 解
+// {response:...} 无 candidates → 无内容 → 红。
+func TestReconstructBufferedFromSSEGeminiCodeAssistStream(t *testing.T) {
+	raw := []byte(`
+data: {"response":{"candidates":[{"content":{"parts":[{"text":"rescued code assist"}],"role":"model"},"index":0}],"modelVersion":"gemini-2.5-pro","responseId":"r1"}}
+
+data: {"response":{"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},"index":0,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,"totalTokenCount":10}}}
+`)
+	env, _, ok := ReconstructBufferedFromSSE(&geminicodeassist.Adapter{}, raw)
+	if !ok {
+		t.Fatal("gemini code assist SSE body must be detected and reconstructed")
+	}
+	if env == nil || env.BufferedResponse == nil {
+		t.Fatalf("reconstructed envelope missing buffered response: %+v", env)
+	}
+	if got := env.BufferedResponse.Content; len(got) != 1 || got[0].Type != "text" || got[0].Text != "rescued code assist" {
+		t.Fatalf("reconstructed content = %+v, want one text block 'rescued code assist'", got)
 	}
 	if got := env.BufferedResponse.Usage; got.InputTokens != 7 || got.OutputTokens != 3 {
 		t.Fatalf("reconstructed usage = %+v, want input=7 output=3", got)

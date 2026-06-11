@@ -72,6 +72,7 @@ func TestEveryRegisteredPlatformHasTransportPolicy(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	for _, env := range []string{
 		cursorSessionAdapterEnv, copilotSessionAdapterEnv,
+		geminiCodeAssistAdapterEnv,
 		geminiAdvancedSessionAdapterEnv, antigravitySessionAdapterEnv,
 		kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
 	} {
@@ -411,6 +412,39 @@ func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
 	}
 }
 
+// TestBuild_GeminiCodeAssistEnvGated 守卫 gemini_code_assist 出站注册的
+// env-gate 姿态:默认 off(不注册,避免把真实 OAuth session credential 默认发
+// 到 Google 内部 cloudcode-pa 端点);开 env 后注册且 Platform()=="gemini_code_assist"。
+// Mutation:把 registrydefault 的注册改成无条件 → 默认 off 子断言红;删注册 →
+// 开 env 子断言红。
+func TestBuild_GeminiCodeAssistEnvGated(t *testing.T) {
+	t.Run("default off not registered", func(t *testing.T) {
+		t.Setenv(placeholderSessionAdaptersEnv, "")
+		clearPlaceholderSessionAdapterEnvs(t)
+		r := Build()
+		if _, err := r.For(ProtocolGeminiCodeAssist); !errors.Is(err, provider.ErrAdapterNotRegistered) {
+			t.Fatalf("gemini_code_assist 默认应 unregistered(高危 OAuth/内部端点),got err=%v", err)
+		}
+	})
+	t.Run("env on registers with vertex-distinct platform", func(t *testing.T) {
+		t.Setenv(placeholderSessionAdaptersEnv, "")
+		clearPlaceholderSessionAdapterEnvs(t)
+		t.Setenv(geminiCodeAssistAdapterEnv, "true")
+		r := Build()
+		a, err := r.For(ProtocolGeminiCodeAssist)
+		if err != nil {
+			t.Fatalf("env on 后 For(gemini_code_assist) err=%v", err)
+		}
+		if got := a.Platform(); got != "gemini_code_assist" {
+			t.Errorf("Platform=%q want gemini_code_assist", got)
+		}
+		// 平台必须有 transport 策略,否则 dispatcher 取 RoundTripper 整族挂。
+		if err := transport.ValidateModeForProvider(transport.ProviderCode(a.Platform()), transport.TransportModeStandard); err != nil {
+			t.Errorf("gemini_code_assist 平台无 transport 策略: %v", err)
+		}
+	})
+}
+
 func TestBuild_UnregisteredReturnsErrAdapterNotRegistered(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	clearPlaceholderSessionAdapterEnvs(t)
@@ -469,6 +503,7 @@ func placeholderSessionAdapterEnvNames() []string {
 	return []string{
 		cursorSessionAdapterEnv,
 		copilotSessionAdapterEnv,
+		geminiCodeAssistAdapterEnv,
 		geminiAdvancedSessionAdapterEnv,
 		antigravitySessionAdapterEnv,
 		kiroSessionAdapterEnv,

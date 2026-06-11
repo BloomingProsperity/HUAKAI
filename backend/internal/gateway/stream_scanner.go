@@ -122,7 +122,7 @@ func (s *SSEStreamScanner) Scan(ctx context.Context, r io.Reader, bufferCap int)
 // NDJSONStreamScanner 把 NDJSON（newline-delimited JSON）wire 切成事件流：
 // 逐行一个裸 JSON 对象，无 "data:" 前缀、无 [DONE] 哨兵、无 event: 行。
 // 每行原样作为 SSEEvent.Data 交给 proto adapter——不剥任何前缀、不识别哨兵
-//（行内出现 "data:" 字面也按 payload 原样保留）；空行跳过。
+// （行内出现 "data:" 字面也按 payload 原样保留）；空行跳过。
 //
 // 与 SSEStreamScanner / BedrockEventStreamScanner 的契约对齐：
 //   - honor bufferCap（bufio.Scanner.Buffer 上限），超长行 yield
@@ -190,6 +190,10 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		// 帧，由各自 proto adapter 解）。
 		"vertex_gemini",
 		"vertex_anthropic",
+		// Gemini Code Assist:streamGenerateContent?alt=sse 投影为标准 SSE 帧
+		// （每帧 data 是包 {response} 的 JSON），由 geminicodeassist proto adapter
+		// unwrap 后解。wire 仍是 SSE,本 scanner 照常切帧。
+		"gemini_code_assist",
 		"openrouter_chat",
 		"grok_chat",
 		// 6 家 OpenAI 兼容直 API key 路径
