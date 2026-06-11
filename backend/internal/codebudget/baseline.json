@@ -1,0 +1,62 @@
+{
+  "files": {
+    "adminuserhttp/routes.go": 828,
+    "audit/receipt_formatter.go": 822,
+    "audit/refund_worker.go": 886,
+    "auth/antigravity_token_provider.go": 684,
+    "billing/settler.go": 1102,
+    "channelhealth/service.go": 813,
+    "credentialacq/oauth_devicecode.go": 762,
+    "credentialstore/postgres_store.go": 1377,
+    "credentialworker/mode_refresh.go": 838,
+    "db/admin/admin_provider_channel_catalog.sql.go": 677,
+    "db/billing/observability.sql.go": 969,
+    "db/billing/pool_accounts.sql.go": 882,
+    "db/billing/usage_analytics.sql.go": 968,
+    "db/hermes/hermes.sql.go": 980,
+    "db/moderation/moderation.sql.go": 937,
+    "db/quota/quota.sql.go": 1391,
+    "gateway/forwarder.go": 962,
+    "gatewayhttp/admin_pool_accounts_handler.go": 1043,
+    "gatewayhttp/auth_handler.go": 1063,
+    "gatewayhttp/chat_completions_billing.go": 711,
+    "gatewayhttp/chat_completions_dispatch.go": 855,
+    "gatewayhttp/chat_completions_handler.go": 940,
+    "gatewayhttp/chat_completions_pricing.go": 736,
+    "gatewayhttp/chat_completions_stream.go": 824,
+    "gatewayhttp/cost_receipt_handler.go": 904,
+    "payment/store_postgres.go": 970,
+    "proto/anthropic/sse.go": 613,
+    "proto/envelope_validate.go": 1058,
+    "proto/gemini/client.go": 650,
+    "proto/openai/sse.go": 673,
+    "quota/service.go": 931,
+    "quota/service_settle.go": 825,
+    "registry/model_sync_writer.go": 645,
+    "subscription/store_memory.go": 726,
+    "subscription/store_postgres.go": 1126,
+    "subscriptionhttp/handler.go": 740,
+    "userauth/store.go": 995,
+    "userkey/userkey.go": 745,
+    "usersession/store.go": 937,
+    "voucher/store_postgres.go": 708
+  },
+  "packages": {
+    "gateway": [
+      8098,
+      26
+    ],
+    "gatewayhttp": [
+      13177,
+      32
+    ],
+    "payment": [
+      5614,
+      24
+    ],
+    "proto": [
+      7891,
+      55
+    ]
+  }
+}

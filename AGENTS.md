@@ -591,16 +591,22 @@ If `codex exec review` syntax errors with "unexpected argument" or "cannot be us
    或约 5000 行非测试代码**,必须要么按职责拆分,要么(若拆分被推迟)
    **冻结、不再加新文件**。
 
-### Frozen packages(截至 2026-05-22 已超预算)
+### ~~Frozen packages~~ → 软预算门(2026-06-11 修订,硬冻结退役)
 
-下列包已超预算。其按职责拆分已由 Owner(2026-05-22)推迟到 12 波审计补救
-之后。**在那次拆分之前:禁止给这些包新增任何文件。**
+**实测结论:硬冻结失败了。** 「禁新增文件」只挡住了新文件,把新逻辑逼进旧
+文件继续膨胀(gatewayhttp 冻结后仍长到 13k+ 非测试行,0 子包)。替代物是
+**强制软预算门** `backend/internal/codebudget`(随标准 unit 门运行):
 
-- `backend/internal/gatewayhttp` —— 32 源文件 / 约 9.3k 行
-- `backend/internal/gateway` —— 26 源文件 / 约 6.5k 行
-- `backend/internal/proto` —— 55 源文件 / 约 7.2k 行
+- 非测试 Go 文件 ≤ **600 行**;单目录包非测试 ≤ **6000 行 / 20 文件**;
+- 存量超标项按当前体量入 `baseline.json` 豁免,**只挡继续增长**(基线 +5%
+  余量);超余量 = 门红,出路是**按职责拆子包**(范本:`internal/provider`
+  9 核心 + 13 子包),不是把基线改大;
+- 基线再生成(`HUAKAI_REWRITE_CODE_BUDGET_BASELINE=1`)只允许在有意拆分/
+  重构使体量**下降**之后。
 
-为修 bug 而改冻结包里的**既有文件**是允许的。新增**功能**则必须落新包
+原冻结三包(gatewayhttp/gateway/proto)在门绿的前提下**允许再新增文件**,
+但新功能仍优先落新子包(如 `proto/<family>/`);往超标包里加行会烧掉它
+仅有的增长余量。为修 bug 而改既有文件照旧允许
 (例:W3 错误模型 → `internal/clienterr`,而非 `gatewayhttp/public_error.go`)。
 
 > **澄清(2026-06-07 Owner「入站协议为什么冻结」纠错):冻结 = 反 god-package 的模块化约束,不是「协议/功能层不可扩展」。** 加新入站协议(Gemini 原生 /v1beta、realtime 等)、新出口能力**正是最高价值的活**——做法 = ClientAdapter/handler 落 **新包**(如 `internal/geminiclient`)+ 对既有 registry/route/capability 文件做 **加性 edit**。**严禁**为绕冻结而搞 hack(request-body 重写 / shim / 把 model、stream 注入 body)。若新包 handler 需要冻结包内部能力 → **导出该能力(既有文件加性 edit)** 供其调用——这才是模块化正道,**不需要任何「冻结例外」**。协议广度是网关 #1 价值轴,冻结规则从不阻止它。
@@ -609,15 +615,16 @@ If `codex exec review` syntax errors with "unexpected argument" or "cannot be us
 
 ### Enforcement(这才是"杜绝")
 
-- 任何**计划 / spec** 若要新建文件,必须逐个写明目标包,并确认它不是冻结包。
-- **codex per-commit review**(`codex exec review --uncommitted`)必须把以下情况
-  标为 **HIGH 结构违规、阻断提交**:
-  - 给冻结包新增了文件;
-  - 任何 commit 把一个非冻结包推过体量预算;
+- **机器门**:`internal/codebudget` 在每次 unit 门自动执行,超预算/超基线
+  余量直接红——这是主执法点,不依赖评审记忆。
+- 任何**计划 / spec** 若要新建文件,必须逐个写明目标包,并确认预算门保持绿。
+- **per-commit 评审**(3 镜头对抗评审,2026-06-11 起替代 codex 门)必须把
+  以下情况标为 **HIGH 结构违规、阻断提交**:
+  - 任何 commit 把包推过体量预算或把基线豁免项推过增长余量;
+  - 用调大基线代替拆分(基线只许在体量下降的重构后再生成);
   - 把无关职责塞进同一个包或文件。
 - **切片交叉评审**(本文件 Cross-Review Protocol)在切片收尾做同样检查。
-- 被派发的 codex / Claude 任务,若其 spec 会给冻结包加文件,必须拒绝并改写
-  (改成新包)。
+- 被派发的任务,若其 spec 会把包推爆预算,必须拒绝并改写(改成新子包)。
 
 ## Test Quality Discipline (added 2026-05-22 Owner directive)
 
