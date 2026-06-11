@@ -204,7 +204,7 @@ HUAKAI-design:
 - AT-GW-002-16 / Tx2 atomicity: gateway crash mid-stream → orphan sweep finalizes.
 - AT-GW-002-17 / Tenant isolation under load: 100 concurrent streams across 5 tenants → no cross-tenant data.
 - AT-GW-002-18 / AMBIGUOUS_USAGE no-charge gate: zero accumulator + UNKNOWN_TERMINATION → claim aborted.
-- AT-GW-002-19 / Tokenizer fallback: stream EOF without terminal → inferred usage with confidence_score.
+- AT-GW-002-19 / Tokenizer fallback: stream EOF without terminal → inferred usage with confidence_score; estimable delivered content bills the estimated basis as final (positive cost, `usage_basis=estimated` snapshot marker, no pending).
 
 ## 8. Verified Source Resolutions
 

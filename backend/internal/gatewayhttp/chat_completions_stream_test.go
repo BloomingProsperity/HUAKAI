@@ -929,8 +929,22 @@ func TestAT_GW_002_19_TokenizerFallbackInferredUsage(t *testing.T) {
 	if draft.EndClass != gateway.UpstreamEOFNoTerminal {
 		t.Fatalf("EndClass=%q want %q", draft.EndClass, gateway.UpstreamEOFNoTerminal)
 	}
-	if !draft.PendingReconciliation {
-		t.Fatal("EOF without terminal marker must set PendingReconciliation")
+	// 新契约（usage 估算兜底）：EOF 无终帧但交付了可见内容的流按逐事件估算终局
+	// 计费——正成本 + 估算 token 基数 + usage_basis 快照标记，且不挂 pending
+	//（no-usage 定稿 SQL 只认全零记录，挂上即永久 pending）。
+	// MUTATION: 去掉估算兜底（恢复零结算 + pending 旧路径）→ ActualCost==0 且
+	// pending==true → 下面三条断言 RED。
+	if draft.PendingReconciliation {
+		t.Fatal("estimated settle is final; PendingReconciliation must be false for estimable delivered stream")
+	}
+	if !settler.calls[0].ActualCost.IsPositive() {
+		t.Fatalf("ActualCost=%s want positive (estimated billing must not zero-settle delivered stream)", settler.calls[0].ActualCost)
+	}
+	if draft.TokensOutput <= 0 {
+		t.Fatalf("Draft.TokensOutput=%d want positive estimated basis", draft.TokensOutput)
+	}
+	if !strings.Contains(draft.CostSnapshot, "usage_basis=estimated") {
+		t.Fatalf("CostSnapshot=%q want usage_basis=estimated marker", draft.CostSnapshot)
 	}
 	if draft.UsageSource != gateway.UsageSourceInferred {
 		t.Fatalf("UsageSource=%q want %q for delivered stream without reported usage", draft.UsageSource, gateway.UsageSourceInferred)
@@ -1805,6 +1819,7 @@ func TestInjectStreamingRequestControlsMergesRequestPassthrough(t *testing.T) {
 //     response_format 被静默丢弃。
 //  3. 留 fail-closed 的族(openai_codex/cursor_session/gemini_advanced_session)
 //     在此报错,不产出 body。
+//
 // Mutation:删掉 streamingProviderRequestBody 开头的形态归一行 → 2 必红
 // (response_format 缺失);把归一改错成恒等 → 同红。
 func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {

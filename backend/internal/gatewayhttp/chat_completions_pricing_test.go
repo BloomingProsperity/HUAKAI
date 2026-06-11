@@ -498,6 +498,224 @@ func TestStreamingCompletionEvent_AmbiguousUsagePreservedNotInferred(t *testing.
 	}
 }
 
+func estimatedFallbackChatExecution(t *testing.T, rateTables billing.RateTableSource) *chatExecution {
+	t.Helper()
+	return &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables:           rateTables,
+			BillingPolicyVersion: "test-policy",
+		},
+		ident:             auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13},
+		req:               chatRequest{Model: "gpt-4o", Stream: true},
+		body:              []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`),
+		requestID:         "req-estimated-fallback-stream",
+		reserveRes:        &billing.ReserveResult{ClaimID: 31},
+		acquiredAccountID: 29,
+		upstreamModelID:   "gpt-4o",
+		cacheVendor:       "openai",
+		plan:              router.RoutePlan{SnapshotVersion: "registry:7:9;router:test"},
+	}
+}
+
+func estimatedFallbackRateTable() billing.RateTableSource {
+	return &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+}
+
+func TestStreamingCompletionEvent_MissingUsageBillsEstimatedDeliveredContent(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:   40,
+		EstimatedOutputTokens: 200,
+		UsageSource:           gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 去掉估算兜底（恢复零结算路径），无 usage 但交付了 200 估算 token 的流
+	// ActualCost 回到 0（漏钱）→ 本断言 RED；有兜底则按估算基数计出正成本 → GREEN。
+	wantInput := tokencheck.EstimateRequestInputTokens(ex.body)
+	wantCost := decimal.NewFromInt(int64(wantInput)*1000 + 200*2000).Div(decimal.NewFromInt(1_000_000))
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, wantCost)
+	if got := event.SettleRequest.Draft.ConfidenceScore; got == nil || *got != estimatedUsageBasisConfidence {
+		t.Fatalf("ConfidenceScore=%v want %v (estimated rows must carry degraded confidence)", got, estimatedUsageBasisConfidence)
+	}
+	if got := event.SettleRequest.Draft.TokensInput; got != wantInput {
+		t.Fatalf("Draft.TokensInput=%d want %d (estimated basis must be recorded)", got, wantInput)
+	}
+	if got := event.SettleRequest.Draft.TokensOutput; got != 200 {
+		t.Fatalf("Draft.TokensOutput=%d want 200 (estimated basis must be recorded)", got)
+	}
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceInferred {
+		t.Fatalf("UsageSource=%q want %q", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceInferred)
+	}
+	// 估算结算是终局：挂 pending 会让 no-usage 定稿 SQL（只认全零记录）永远跳过它。
+	if event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=true want false (estimated settle is final)")
+	}
+	if !strings.Contains(event.SettleRequest.Draft.CostSnapshot, "usage_basis=estimated") {
+		t.Fatalf("CostSnapshot=%q want usage_basis=estimated marker", event.SettleRequest.Draft.CostSnapshot)
+	}
+}
+
+func TestStreamingCompletionEvent_MissingUsageEstimateIncludesReasoningText(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:      10,
+		EstimatedReasoningTokens: 120,
+		UsageSource:              gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 10}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 估算基数漏加 EstimatedReasoningTokens，thinking-only 流（可见输出为 0）
+	// 回到零结算 → 本断言 RED;计入 reasoning 文本则产出 120 token 的正成本 → GREEN。
+	if got := event.SettleRequest.Draft.TokensOutput; got != 120 {
+		t.Fatalf("Draft.TokensOutput=%d want 120 (reasoning text is billable output)", got)
+	}
+	wantInput := tokencheck.EstimateRequestInputTokens(ex.body)
+	wantCost := decimal.NewFromInt(int64(wantInput)*1000 + 120*2000).Div(decimal.NewFromInt(1_000_000))
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, wantCost)
+}
+
+func TestStreamingCompletionEvent_MixedVisibleAndReasoningEstimateSums(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:      10,
+		EstimatedOutputTokens:    100,
+		EstimatedReasoningTokens: 120,
+		UsageSource:              gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 10}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 基数只取 EstimatedOutputTokens 或只取 EstimatedReasoningTokens
+	//（「二选一」类变体）→ 220 断言 RED;求和则 GREEN。
+	if got := event.SettleRequest.Draft.TokensOutput; got != 220 {
+		t.Fatalf("Draft.TokensOutput=%d want 220 (visible + reasoning sum)", got)
+	}
+}
+
+func TestStreamingCompletionEvent_ReportedUsageNeverReplacedByEstimate(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	draft := gateway.UsageRecordDraft{
+		TokensInput:           10,
+		TokensOutput:          1000,
+		DeliveredTokenCount:   40,
+		EstimatedOutputTokens: 700,
+		UsageSource:           gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 估算分支越过「actualCompletionCost 失败 && reportedUsageMissing」双门
+	//（如 err==nil 也进估算），真实 reported usage 被估算覆盖 → 下列断言 RED。
+	wantCost := decimal.NewFromInt(10*1000 + 1000*2000).Div(decimal.NewFromInt(1_000_000))
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, wantCost)
+	if got := event.SettleRequest.Draft.TokensOutput; got != 1000 {
+		t.Fatalf("Draft.TokensOutput=%d want 1000 (reported usage must win)", got)
+	}
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceReported {
+		t.Fatalf("UsageSource=%q want %q", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceReported)
+	}
+	if strings.Contains(event.SettleRequest.Draft.CostSnapshot, "usage_basis=") {
+		t.Fatalf("CostSnapshot=%q must not carry estimated marker for reported usage", event.SettleRequest.Draft.CostSnapshot)
+	}
+}
+
+func TestStreamingCompletionEvent_EstimatedSettleStripsRatioPending(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	ex.d.PricingRatioResolver = pricingcatalog.NewRatioResolver(&gatewayPricingRatioStore{err: pricingcatalog.ErrBackend}, time.Hour)
+	// PoolGroupID 必须 >0:ResolveWithSignal 对非正 poolGroupID 直接返回无信号,
+	// ratio fail-soft 根本不触发,本测试会退化成非判别 fixture。
+	ex.attempt = router.AttemptPlan{PoolGroupID: 5}
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:   40,
+		EstimatedOutputTokens: 200,
+		UsageSource:           gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 估算路径不剥离 ratio fail-soft 带来的 PendingReconciliation → 估算行
+	// 以 inferred+tokens>0+pending=true 落库,no-usage 定稿 SQL（只认全零记录）永远
+	// 跳过 → 永久 pending → 本断言 RED;剥离后估算行保持终局 → GREEN（ratio 故障
+	// 已由快照标记留痕，不丢审计信号）。
+	if event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=true want false (estimated settle must stay final under ratio fail-soft)")
+	}
+	if !event.SettleRequest.ActualCost.IsPositive() {
+		t.Fatalf("ActualCost=%s want positive", event.SettleRequest.ActualCost)
+	}
+}
+
+func TestStreamingCompletionEvent_MultimodalInputBasisCapped(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	blob := "data:image/png;base64," + strings.Repeat("iVBORw0KGgoAAAANSUhEUg", 2000) // ~44KB base64
+	ex.body = []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"` + blob + `"}}]}]}`)
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:   5,
+		EstimatedOutputTokens: 50,
+		UsageSource:           gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 5}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 输入基数退回原始 body 字节数/4，44KB base64 折 ~11000 token 终局
+	// 多收 → 上界断言 RED。多模态超收回归（对抗评审 S1/F-1）由此锁死。
+	if got := event.SettleRequest.Draft.TokensInput; got > 2000 {
+		t.Fatalf("Draft.TokensInput=%d want <= 2000 (base64 blob must be capped, not billed by raw bytes)", got)
+	}
+	if !event.SettleRequest.ActualCost.IsPositive() {
+		t.Fatalf("ActualCost=%s want positive", event.SettleRequest.ActualCost)
+	}
+}
+
+func TestStreamingCompletionEvent_AmbiguousUsageNeverEstimated(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:   40,
+		EstimatedOutputTokens: 200,
+		UsageSource:           gateway.UsageSourceAmbiguous,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 估算分支漏掉 Ambiguous 守卫，歧义流被估算终局计费且 pending 被清 →
+	// 真对账通道被关死 → 本断言 RED;有守卫则歧义态原样保留 → GREEN。
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceAmbiguous {
+		t.Fatalf("UsageSource=%q want %q (ambiguous must never be estimated)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceAmbiguous)
+	}
+	if !event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=false want true")
+	}
+}
+
+func TestStreamingCompletionEvent_EstimateUnpriceableKeepsPendingZero(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, &rateTableSourceStub{err: billing.ErrRateTableNotFound})
+	draft := gateway.UsageRecordDraft{
+		DeliveredTokenCount:   40,
+		EstimatedOutputTokens: 200,
+		UsageSource:           gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
+
+	// MUTATION: 估算分支忽略 completionCost 错误伪造成本（或把 pending 清掉），费率表
+	// 故障时会凭空收费/丢失对账信号 → RED;正确行为是回退零结算 + pending + inferred → GREEN。
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
+	if !event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=false want true")
+	}
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceInferred {
+		t.Fatalf("UsageSource=%q want %q", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceInferred)
+	}
+}
+
 // TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields 守 流式交叉校验:
 // streamingCompletionEvent 在算出正成本后,用 forwarder 累加的可见输出估算(draft.EstimatedOutputTokens)
 // 与 reported OutputTokens(扣除隐藏 reasoning)比对,把 confidence_score/pending_reconciliation 标到
