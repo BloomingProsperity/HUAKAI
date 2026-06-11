@@ -26,6 +26,9 @@ type chatRequest struct {
 	Tools   []requestTool  `json:"tools,omitempty"`
 	// Format 是结构化输出开关："json" 字符串或 JSON schema 对象。
 	Format json.RawMessage `json:"format,omitempty"`
+	// Think 开关思维链(Ollama /api/chat 顶层 "think")。nil=不下发(模型默认),
+	// canonical thinking 节点存在时置 true。
+	Think *bool `json:"think,omitempty"`
 }
 
 // chatMessage 是请求 messages 数组元素。
