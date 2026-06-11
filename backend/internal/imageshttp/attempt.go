@@ -137,12 +137,15 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
 			return false
 		}
-	} else if billable := ex.billableImageCount(); billable < ex.amount {
-		// per_image 按交付数对账:上游交付少于请求数(Replicate model-specific
-		// num_outputs 被忽略只回 1 张)时,按实际交付张数重算成本,绝不按请求
-		// 数多收用户钱。billable==amount(常态)走默认 predictedCost,零开销。
+	} else if ex.scheme == imagepricing.SchemePerImage {
+		// per_image settle 时按解析账号平台 + 实际交付张数重算:
+		// (1) 重定价——预扣用协议族 vendor 估的 predictedCost,选号后真账号平台
+		//     (providerForPricing 此刻含 accInfo.Platform)可能价不同,沿用预估
+		//     会误扣/少收(与 token/per-second 路径在 settle 重算对称);
+		// (2) 交付数对账——billableImageCount 在上游交付少于请求数时返回交付数
+		//     (Replicate num_outputs 被忽略只回 1 张),绝不按请求数多收。
 		var err error
-		actualCost, costSnapshot, pending, err = ex.perImageCost(billable)
+		actualCost, costSnapshot, pending, err = ex.perImageCost(ex.billableImageCount())
 		if err != nil {
 			ex.abort(w, "pricing_unavailable", 0)
 			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
