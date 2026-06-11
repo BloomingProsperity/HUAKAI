@@ -36,6 +36,7 @@ func MarshalChatRequest(env *proto.HCSF) ([]byte, error) {
 		messages = append(messages, chatMessage{Role: "system", Content: env.RequestControls.SystemPrompt})
 	}
 
+	var thinkRequested bool
 	for _, n := range env.CapabilityGraph.Nodes {
 		switch n.Kind {
 		case proto.CapabilityText:
@@ -67,11 +68,31 @@ func MarshalChatRequest(env *proto.HCSF) ([]byte, error) {
 			messages = append(messages, chatMessage{Role: "tool", Content: flattenBlocks(n.ToolResult.Content)})
 		case proto.CapabilityImage:
 			appendImage(env, n, &messages)
+		case proto.CapabilityThinking:
+			if n.Thinking == nil {
+				addNodeLoss(env, n, "thinking node missing payload", "missing_thinking_payload")
+				continue
+			}
+			// Ollama /api/chat 用顶层 "think": true 开关思维链;canonical thinking
+			// 节点(enabled/adaptive)投影为该开关。budget 与历史 thinking 块在
+			// Ollama 契约上不可表达,分别记账,禁止静默蒸发。
+			thinkRequested = true
+			if n.Thinking.BudgetTokens > 0 {
+				addNodeLoss(env, n, "thinking budget_tokens has no ollama_native projection (think flag only)", "thinking_budget_unprojected")
+			}
+			if len(n.Thinking.Blocks) > 0 {
+				addNodeLoss(env, n, "prior thinking blocks have no ollama_native request projection", "thinking_blocks_unprojected")
+			}
 		default:
 			addNodeLoss(env, n, "capability unsupported by ollama_native marshal", "unsupported_capability")
 		}
 	}
 
+	var think *bool
+	if thinkRequested {
+		v := true
+		think = &v
+	}
 	body := chatRequest{
 		Model:    marshalModel(env),
 		Messages: messages,
@@ -79,6 +100,7 @@ func MarshalChatRequest(env *proto.HCSF) ([]byte, error) {
 		Options:  optionsFromControls(env),
 		Tools:    requestTools(env.RequestControls.Tools),
 		Format:   formatFromControls(env),
+		Think:    think,
 	}
 	recordControlLosses(env)
 	return json.Marshal(body)

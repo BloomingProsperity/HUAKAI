@@ -459,24 +459,80 @@ func TestMarshalModelFromUpstreamModel(t *testing.T) {
 	}
 }
 
-// TestMarshalUnsupportedCapabilityRecordsLoss 抓的回归:thinking 等无请求投影
-// 的 capability 节点被静默丢弃。
+// TestMarshalUnsupportedCapabilityRecordsLoss 抓的回归:无请求投影的
+// capability 节点被静默丢弃(thinking 已有 think 开关投影,改用未知 kind)。
 func TestMarshalUnsupportedCapabilityRecordsLoss(t *testing.T) {
+	env := marshalEnv(
+		textNode("n1", "user", "hi"),
+		proto.CapabilityNode{
+			ID:          "n_future",
+			Kind:        proto.CapabilityKind("future_capability"),
+			StreamReady: proto.StreamReadyNo,
+		},
+	)
+	marshalBody(t, env)
+	if len(env.CapabilityGraph.ProtocolLoss) != 1 {
+		t.Fatalf("未知 capability 节点应记恰一条 loss: %+v", env.CapabilityGraph.ProtocolLoss)
+	}
+	if env.CapabilityGraph.ProtocolLoss[0].Code != "unsupported_capability" {
+		t.Fatalf("loss code=%q want unsupported_capability", env.CapabilityGraph.ProtocolLoss[0].Code)
+	}
+}
+
+// TestMarshalThinkingNodeProjectsThinkFlag F6:canonical thinking 节点投影为
+// Ollama 顶层 "think": true;budget_tokens 不可表达,单独记账(非整节点丢弃)。
+// MUTATION: 删 CapabilityThinking case(回退 default 整节点 loss)→ think 缺失
+// 断言红;无条件恒 think=true → TestMarshalNoThinkingNodeOmitsThinkFlag 红。
+func TestMarshalThinkingNodeProjectsThinkFlag(t *testing.T) {
 	env := marshalEnv(
 		textNode("n1", "user", "hi"),
 		proto.CapabilityNode{
 			ID:          "n_think",
 			Kind:        proto.CapabilityThinking,
 			StreamReady: proto.StreamReadyNo,
-			Thinking:    &proto.ThinkingNode{},
+			Thinking:    &proto.ThinkingNode{Mode: "enabled", BudgetTokens: 2048},
 		},
 	)
-	marshalBody(t, env)
-	if len(env.CapabilityGraph.ProtocolLoss) != 1 {
-		t.Fatalf("thinking 节点应记恰一条 loss: %+v", env.CapabilityGraph.ProtocolLoss)
+	body := marshalBody(t, env)
+	if got, ok := body["think"].(bool); !ok || !got {
+		t.Fatalf("think=%v want true(thinking 节点应投影为 think 开关)", body["think"])
 	}
-	if env.CapabilityGraph.ProtocolLoss[0].Code != "unsupported_capability" {
-		t.Fatalf("loss code=%q want unsupported_capability", env.CapabilityGraph.ProtocolLoss[0].Code)
+	if len(env.CapabilityGraph.ProtocolLoss) != 1 {
+		t.Fatalf("budget_tokens 应记恰一条 loss: %+v", env.CapabilityGraph.ProtocolLoss)
+	}
+	if env.CapabilityGraph.ProtocolLoss[0].Code != "thinking_budget_unprojected" {
+		t.Fatalf("loss code=%q want thinking_budget_unprojected", env.CapabilityGraph.ProtocolLoss[0].Code)
+	}
+}
+
+// TestMarshalAdaptiveThinkingNoBudgetNoLoss adaptive(无 budget)thinking 节点:
+// think=true 且零 loss(budget=0 合法,不是丢弃信号)。
+func TestMarshalAdaptiveThinkingNoBudgetNoLoss(t *testing.T) {
+	env := marshalEnv(
+		textNode("n1", "user", "hi"),
+		proto.CapabilityNode{
+			ID:          "n_think",
+			Kind:        proto.CapabilityThinking,
+			StreamReady: proto.StreamReadyNo,
+			Thinking:    &proto.ThinkingNode{Mode: "adaptive"},
+		},
+	)
+	body := marshalBody(t, env)
+	if got, ok := body["think"].(bool); !ok || !got {
+		t.Fatalf("think=%v want true", body["think"])
+	}
+	if len(env.CapabilityGraph.ProtocolLoss) != 0 {
+		t.Fatalf("adaptive 无 budget 应零 loss: %+v", env.CapabilityGraph.ProtocolLoss)
+	}
+}
+
+// TestMarshalNoThinkingNodeOmitsThinkFlag 无 thinking 节点时 think 字段不下发
+// (nil + omitempty,保留模型默认行为)。
+func TestMarshalNoThinkingNodeOmitsThinkFlag(t *testing.T) {
+	env := marshalEnv(textNode("n1", "user", "hi"))
+	body := marshalBody(t, env)
+	if _, present := body["think"]; present {
+		t.Fatalf("无 thinking 节点不应下发 think 字段: %v", body["think"])
 	}
 }
 
