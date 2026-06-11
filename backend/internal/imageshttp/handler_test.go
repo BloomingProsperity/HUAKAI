@@ -500,9 +500,10 @@ type recordingSettler struct {
 }
 
 type abortCall struct {
-	tenantID int64
-	claimID  int64
-	reason   string
+	tenantID     int64
+	claimID      int64
+	reason       string
+	protocolLoss json.RawMessage
 }
 
 func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
@@ -513,8 +514,8 @@ func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) 
 	return &billing.SettleResult{}, nil
 }
 
-func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, reason, _ string, _ int64, _ json.RawMessage) error {
-	s.aborts = append(s.aborts, abortCall{tenantID: tenantID, claimID: claimID, reason: reason})
+func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, reason, _ string, _ int64, protocolLoss json.RawMessage) error {
+	s.aborts = append(s.aborts, abortCall{tenantID: tenantID, claimID: claimID, reason: reason, protocolLoss: protocolLoss})
 	return nil
 }
 

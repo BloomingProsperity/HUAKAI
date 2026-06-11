@@ -42,6 +42,12 @@ type dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
 }
 
+// cancelHTTPDoer 发送 best-effort 上游任务取消请求(family_replicate)。控制面
+// 调用,独立于 Dispatcher 的 per-vendor transport 策略。
+type cancelHTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
 type Deps struct {
 	Auth                  authResolver
 	Registry              registry.Registry
@@ -58,6 +64,8 @@ type Deps struct {
 	BillingPolicyVersion  string
 	RequestClass          string
 	ClientIPResolver      *clientip.Resolver
+	// ReplicateCancelClient 可注入(测试/定制);nil 用包内默认 client(10s 超时)。
+	ReplicateCancelClient cancelHTTPDoer
 }
 
 type execution struct {

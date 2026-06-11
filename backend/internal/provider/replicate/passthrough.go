@@ -18,8 +18,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -34,8 +36,12 @@ const defaultPredictionsEndpointTemplate = "https://api.replicate.com/v1/models/
 // 路径由 model 推导,不能拿它当 path 用。
 const imagesGenerationsLanePath = "/v1/images/generations"
 
-// preferWaitHeaderValue 要求上游同步等待 prediction 完成(上限秒数)。
-const preferWaitHeaderValue = "wait=60"
+// preferWaitSecondsDefault / preferWaitSecondsMax:Prefer: wait 同步等待窗口的
+// 默认与上限秒数(上游对 wait 的硬上限即 60)。
+const (
+	preferWaitSecondsDefault = 60
+	preferWaitSecondsMax     = 60
+)
 
 // Adapter 把 OpenAI images 形请求翻译并发往 Replicate predictions 端点。
 type Adapter struct {
@@ -96,22 +102,48 @@ func (a *Adapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*ht
 		return nil, fmt.Errorf("replicate: 构造请求失败: %w", err)
 	}
 
-	switch in.Credential.Type {
-	case provider.CredentialTypeAPIKey:
-		req.Header.Set("Authorization", "Bearer "+in.Credential.Value)
-	case provider.CredentialTypeUpstreamPassthrough:
-		// 透传凭据自带前缀;header 名可由 Extra["auth_header"] 覆盖。
-		header := strings.TrimSpace(in.Credential.Extra["auth_header"])
-		if header == "" {
-			header = "Authorization"
-		}
-		req.Header.Set(header, in.Credential.Value)
-	}
+	applyCredentialAuth(req, in.Credential)
 	// 计费正确性承重墙,见包注释。
-	req.Header.Set("Prefer", preferWaitHeaderValue)
+	req.Header.Set("Prefer", preferWaitHeader(in.Credential))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	return req, nil
+}
+
+// applyCredentialAuth 按凭据形态设置鉴权 header;BuildRequest 与 NewCancelRequest
+// 共用同一口径,口径分叉=cancel 对自托管/代理凭据失效。
+func applyCredentialAuth(req *http.Request, cred provider.Credential) {
+	switch cred.Type {
+	case provider.CredentialTypeAPIKey:
+		req.Header.Set("Authorization", "Bearer "+cred.Value)
+	case provider.CredentialTypeUpstreamPassthrough:
+		// 透传凭据自带前缀;header 名可由 Extra["auth_header"] 覆盖。
+		header := strings.TrimSpace(cred.Extra["auth_header"])
+		if header == "" {
+			header = "Authorization"
+		}
+		req.Header.Set(header, cred.Value)
+	}
+}
+
+// preferWaitHeader 产出 Prefer 头。Credential.Extra["prefer_wait_seconds"] 可按
+// 账号覆盖等待窗口(1..60,先例:Extra["auth_header"])。非法值 fail-safe 回默认
+// 并告警:这是调优旋钮而非计费正确性输入,默认 60 永远合法;fail-loud 会把存量
+// 凭据上的一个垃圾值放大成该账号全部请求 502(评审定级:爆炸半径 > typo 检出收益)。
+func preferWaitHeader(cred provider.Credential) string {
+	rawValue := strings.TrimSpace(cred.Extra["prefer_wait_seconds"])
+	if rawValue == "" {
+		return fmt.Sprintf("wait=%d", preferWaitSecondsDefault)
+	}
+	seconds, err := strconv.Atoi(rawValue)
+	if err != nil || seconds < 1 || seconds > preferWaitSecondsMax {
+		slog.Warn("replicate: prefer_wait_seconds 非法,回落默认",
+			"value", rawValue,
+			"default_seconds", preferWaitSecondsDefault,
+		)
+		return fmt.Sprintf("wait=%d", preferWaitSecondsDefault)
+	}
+	return fmt.Sprintf("wait=%d", seconds)
 }
 
 // endpointTemplate 解析 EndpointPath 覆盖语义:
