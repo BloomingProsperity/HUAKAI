@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
@@ -523,6 +524,42 @@ func estimatedFallbackRateTable() billing.RateTableSource {
 		Version:     "test-policy",
 		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
 	}}
+}
+
+// TestStreamingCompletionEvent_WiresClientToolFromContext W4:settle draft 必须
+// 带上 clientid 中间件归一出的客户端工具枚举(从请求 ctx 取),供按客户端归因
+// 用量/成本。
+// MUTATION: 去掉 streamingCompletionEvent 里 draft.ClientTool = clientToolFromContext
+// 接线 → Draft.ClientTool 空 → 断言红。判别关键:ctx 注入 cursor,空 ctx 会得空串
+// (区别于"恒空")。
+func TestStreamingCompletionEvent_WiresClientToolFromContext(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	ex.ctx = clientid.WithIdentity(ex.ctx, clientid.IdentityCursor, 1.0)
+	draft := gateway.UsageRecordDraft{
+		TokensInput:  2,
+		TokensOutput: 3,
+		UsageSource:  gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 3}, auditledger.AuditLedgerResult{})
+
+	if got := event.SettleRequest.Draft.ClientTool; got != "cursor" {
+		t.Fatalf("Draft.ClientTool=%q want cursor(客户端归因须从 ctx 接进 settle draft)", got)
+	}
+}
+
+// TestStreamingCompletionEvent_ClientToolEmptyForUnknownContext 守 W4 的 CMB-5
+// 语义:未知客户端不写误导性 bucket,留空串(settle 转 NULL)。
+func TestStreamingCompletionEvent_ClientToolEmptyForUnknownContext(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
+	ex.ctx = clientid.WithIdentity(ex.ctx, clientid.IdentityUnknown, 0.5)
+	draft := gateway.UsageRecordDraft{TokensInput: 2, TokensOutput: 3, UsageSource: gateway.UsageSourceReported}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 3}, auditledger.AuditLedgerResult{})
+
+	if got := event.SettleRequest.Draft.ClientTool; got != "" {
+		t.Fatalf("Draft.ClientTool=%q want empty(未知客户端不入库误导 bucket)", got)
+	}
 }
 
 func TestStreamingCompletionEvent_MissingUsageBillsEstimatedDeliveredContent(t *testing.T) {

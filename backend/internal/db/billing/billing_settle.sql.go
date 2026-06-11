@@ -192,7 +192,8 @@ INSERT INTO usage_records (
     drain_outcome, routing_reason, protocol_loss,
     requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
     requested_model, upstream_model, stream, snapshot_version, settlement_source,
-    image_count, image_size, image_size_breakdown, ip_address, user_agent
+    image_count, image_size, image_size_breakdown, ip_address, user_agent,
+    client_tool
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7,
@@ -206,7 +207,8 @@ INSERT INTO usage_records (
     $29, $30, $31,
     $32, $33, $34, $35, $36,
     $37, $38, $39, $40, $41,
-    $42, $43, $44, $45, $46
+    $42, $43, $44, $45, $46,
+    $47
 )
 RETURNING id
 `
@@ -258,6 +260,7 @@ type InsertUsageRecordParams struct {
 	ImageSizeBreakdown     []byte             `db:"image_size_breakdown" json:"image_size_breakdown"`
 	IPAddress              *string            `db:"ip_address" json:"ip_address"`
 	UserAgent              *string            `db:"user_agent" json:"user_agent"`
+	ClientTool             *string            `db:"client_tool" json:"client_tool"`
 }
 
 // Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
@@ -311,6 +314,7 @@ func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordPa
 		arg.ImageSizeBreakdown,
 		arg.IPAddress,
 		arg.UserAgent,
+		arg.ClientTool,
 	)
 	var id int64
 	err := row.Scan(&id)

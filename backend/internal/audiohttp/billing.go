@@ -12,6 +12,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
@@ -111,6 +112,7 @@ func (ex *execution) settleRequest(usage audioTokenUsage, cost decimal.Decimal, 
 			ConfidenceScore:       &confidence,
 			DrainOutcome:          gateway.DrainNotDrained,
 			PendingReconciliation: pending,
+			ClientTool:            clientid.ToolFromContext(ex.ctx),
 		},
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
