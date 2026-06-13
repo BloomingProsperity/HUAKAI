@@ -84,6 +84,7 @@ func modeRequiresPersistingRefresh(vendor, authMode string) bool {
 		credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode),
 		credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth),
 		credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth),
+		credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth),
 		credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken),
 		credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist),
 		credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne),

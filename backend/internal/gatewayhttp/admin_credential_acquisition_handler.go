@@ -378,7 +378,7 @@ func createOrStartCredentialAcqSession(ctx context.Context, d AdminCredentialAcq
 		// ChatGPT OAuth 是 PKCE-only，同样忽略 request body 中的 client_secret。
 		vendor := credentialstore.Normalize(req.Vendor)
 		authMode := credentialstore.Normalize(req.AuthMode)
-		if vendor == credentialstore.VendorGemini || (vendor == credentialstore.VendorOpenAI && authMode == credentialstore.AuthModeChatGPTOAuth) {
+		if vendor == credentialstore.VendorGemini || (vendor == credentialstore.VendorOpenAI && (authMode == credentialstore.AuthModeChatGPTOAuth || authMode == credentialstore.AuthModeCodexWebOAuth)) {
 			clientSecret = ""
 		}
 		result, err := credentialacq.StartOAuthFlowWithRegistry(ctx, d.Sessions, start, credentialacq.OAuthClientConfig{
