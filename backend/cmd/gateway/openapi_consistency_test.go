@@ -740,6 +740,70 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	}
 }
 
+// TestQuotaPoliciesRoutesAndOpenAPISchemasStayInSync is the wiring tripwire for
+// BILL-122: it asserts all 5 quota-policy routes exist in BOTH the chi impl and
+// openapi.yaml, plus the spec carries the schema/enum snippets. Forgetting the
+// openapi entry would otherwise only fire the impl-only TestOpenAPI_Implementation
+// Consistency hard failure; this gives a named, targeted failure instead.
+func TestQuotaPoliciesRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
+	r := buildTestRouter(t)
+	implOps := openapicheck.WalkChiOperations(r)
+
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/admin/v1/quota-policies"},
+		{http.MethodPost, "/admin/v1/quota-policies"},
+		{http.MethodGet, "/admin/v1/quota-policies/{id}"},
+		{http.MethodPut, "/admin/v1/quota-policies/{id}"},
+		{http.MethodDelete, "/admin/v1/quota-policies/{id}"},
+	}
+	for _, op := range routes {
+		if !hasOperation(implOps, op.method, op.path) {
+			t.Fatalf("runtime missing %s %s", op.method, op.path)
+		}
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	for _, op := range routes {
+		if !hasOperation(specOps, op.method, op.path) {
+			t.Fatalf("OpenAPI missing %s %s", op.method, op.path)
+		}
+	}
+
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, snippet := range []string{
+		"AdminQuotaPolicyList:",
+		"AdminQuotaPolicyItem:",
+		"AdminQuotaPolicyCreateRequest:",
+		"AdminQuotaPolicyUpdateRequest:",
+		"AdminQuotaPolicyDeleteResponse:",
+		"admin_quota_policies_list",
+		"admin_quota_policy_deleted",
+		"scope_kind:",
+		"metric:",
+		"window_kind:",
+		"mode:",
+		"limit_value:",
+	} {
+		if !strings.Contains(spec, snippet) {
+			t.Fatalf("OpenAPI quota policy schema missing snippet %q", snippet)
+		}
+	}
+}
+
 func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	r := buildTestRouter(t)
 	implOps := openapicheck.WalkChiOperations(r)

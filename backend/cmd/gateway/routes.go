@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminquotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminuserhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcementhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
@@ -780,6 +781,15 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Post("/admin/v1/channels", adminhttp.NewChannelCatalogCreateHandler(channelCatalogDeps))
 	r.Put("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogUpdateHandler(channelCatalogDeps))
 	r.Delete("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogDeleteHandler(channelCatalogDeps))
+	quotaPolicyDeps := adminquotahttp.Deps{
+		Auth:  d.adminAuth,
+		Store: adminquotahttp.NewQuotaPolicyStoreAdapter(d.pgPool),
+	}
+	r.Get("/admin/v1/quota-policies", adminquotahttp.NewListHandler(quotaPolicyDeps))
+	r.Post("/admin/v1/quota-policies", adminquotahttp.NewCreateHandler(quotaPolicyDeps))
+	r.Get("/admin/v1/quota-policies/{id}", adminquotahttp.NewGetHandler(quotaPolicyDeps))
+	r.Put("/admin/v1/quota-policies/{id}", adminquotahttp.NewUpdateHandler(quotaPolicyDeps))
+	r.Delete("/admin/v1/quota-policies/{id}", adminquotahttp.NewDeleteHandler(quotaPolicyDeps))
 	channelTestTemplateDeps := adminhttp.AdminChannelTestTemplateDeps{
 		Auth:  d.adminAuth,
 		Store: d.adminQueries,
