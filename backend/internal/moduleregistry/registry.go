@@ -20,23 +20,24 @@ type Registry struct {
 	timeout time.Duration
 }
 
-// New returns an empty Registry using DefaultProbeTimeout.
+// New returns an empty Registry using DefaultProbeTimeout. It delegates to
+// NewWithProbeTimeout so the configurable constructor stays on the live path.
 func New() *Registry {
-	return &Registry{
-		byID:    make(map[string]ModuleDescriptor),
-		timeout: DefaultProbeTimeout,
-	}
+	return NewWithProbeTimeout(DefaultProbeTimeout)
 }
 
-// NewWithProbeTimeout returns an empty Registry with a custom per-probe timeout
-// (used by tests to assert the timeout path deterministically). A non-positive
-// timeout falls back to DefaultProbeTimeout.
+// NewWithProbeTimeout returns an empty Registry with a custom per-probe timeout.
+// A non-positive timeout falls back to DefaultProbeTimeout. This is the single
+// underlying constructor (New wraps it with the default), so future wiring can
+// tune the probe budget without a new constructor.
 func NewWithProbeTimeout(d time.Duration) *Registry {
-	r := New()
-	if d > 0 {
-		r.timeout = d
+	if d <= 0 {
+		d = DefaultProbeTimeout
 	}
-	return r
+	return &Registry{
+		byID:    make(map[string]ModuleDescriptor),
+		timeout: d,
+	}
 }
 
 // Register adds (or replaces) a descriptor.

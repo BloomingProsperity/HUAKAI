@@ -6,9 +6,9 @@
 //   - GET /admin/v1/modules (+ ?category=) — admin-gated, read-only, for Hermes
 //     and an admin UI to query each module's identity + capabilities + status +
 //     live probe.
-//   - ContextSummary(...) — a light data accessor the Hermes layer will inject
-//     into the assistant's system context in a later wave (NOT wired into the
-//     runner here).
+//
+// The Hermes runner-context feed accessor is added in the H3 wave alongside its
+// consumer (kept out of this wave so no unwired accessor ships unused).
 //
 // Privacy: this surface carries module identity, enum statuses, and short
 // diagnostic detail strings only — never secrets or user data. It is the
@@ -88,15 +88,4 @@ func Merge(ctx context.Context, src Source, category string) []ModuleView {
 		views = append(views, v)
 	}
 	return views
-}
-
-// ContextSummary is the light Hermes context-feed accessor. It returns the same
-// merged view as the admin endpoint (category-filterable), for the Hermes layer
-// to fold into the assistant's system context in a later wave. This wave only
-// provides the data accessor — it is NOT wired into the runner.
-//
-// Returning the structured slice (not a pre-rendered string) keeps the H3
-// prompt-shaping decision in the Hermes layer where it belongs.
-func ContextSummary(ctx context.Context, src Source, category string) []ModuleView {
-	return Merge(ctx, src, category)
 }
