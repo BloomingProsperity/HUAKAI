@@ -219,6 +219,10 @@ func DefaultModePlans() []ModePlan {
 		apiKeyPlan(credentialstore.VendorOpenAI),
 		oauthPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
 		cliSessionPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindCLIImport, FlowKindJSONImport, FlowKindOAuth}),
+		// codex_web_oauth 是 Codex CLI 浏览器侧 authorization-code(PKCE)登录路径,与 codex_cli_oauth
+		// 的 device-code 路径并列,作为独立可选的获取模式暴露为 OAuth-only(AllowedHelpers 仅含 FlowKindOAuth,
+		// 同 chatgpt_oauth),由 boot 期 ValidateOAuthModeConsistency 闸守住其 exchanger 必须存在且非-fake。
+		oauthPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
 		upstreamTokenPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeAzure, FlowKindPaste, ClientSourceOperatorConfig, []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindTokenExchange}, azureFields()),
 		upstreamTokenPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, FlowKindTokenExchange, ClientSourcePerAccountOverride, []FlowKind{FlowKindTokenExchange, FlowKindPaste}, tokenOneOfFields("runtime_token", "access_token", "refresh_token")),
 		apiKeyPlanWithMode(credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey),
