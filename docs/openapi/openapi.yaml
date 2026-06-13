@@ -4218,6 +4218,84 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/users/me/oauth-bindings:
+    get:
+      tags: [auth]
+      summary: List the authenticated user's social login (OAuth) bindings
+      operationId: listUserOAuthBindings
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/oauth_bindings_handler.go
+        - backend/internal/userauth/social_login.go
+        - backend/internal/userauth/store.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Returns the caller's currently bound social identities using only the
+        authenticated session tenant/user scope (never the path or query). Each
+        upstream subject is masked before serialization; no upstream OAuth token
+        material is ever returned.
+      responses:
+        '200':
+          description: The authenticated user's social login bindings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bindings:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        provider:
+                          type: string
+                          enum: [google, github, qq, wechat, dingtalk, nodeseek, linuxdo, oidc, discord, telegram]
+                        subject:
+                          type: string
+                          description: Masked upstream subject identifier (partially redacted).
+                        linked_at:
+                          type: string
+                          description: RFC 1123 (IMF-fixdate) timestamp the binding was created, in UTC.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/oauth-bindings/{provider}:
+    parameters:
+      - in: path
+        name: provider
+        required: true
+        schema:
+          type: string
+          enum: [google, github, qq, wechat, dingtalk, nodeseek, linuxdo, oidc, discord, telegram]
+    delete:
+      tags: [auth]
+      summary: Unlink the authenticated user's social login binding for one provider
+      operationId: unlinkUserOAuthBinding
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/oauth_bindings_handler.go
+        - backend/internal/userauth/social_login.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Deletes social identity links for the requested provider using only the
+        authenticated session tenant/user scope. The service refuses to remove the
+        caller's last login method when the account has no local password (409).
+        Unlinking a provider that is not bound is a no-op and returns unlinked=false.
+      responses:
+        '200':
+          description: Binding delete completed or was already absent.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unlinked: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/logout:
     post:
       tags: [auth]

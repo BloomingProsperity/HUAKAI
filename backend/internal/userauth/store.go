@@ -311,6 +311,40 @@ WHERE tenant_id = $1 AND user_id = $2 AND provider = $3
 	return int(count), nil
 }
 
+// ListSocialIdentityLinks 返回某用户当前已绑定的全部社交身份(只读),严格 tenant+user 双键过滤。
+// 调用方传入的 tenant/user 必须来自已认证 session,绝不来自请求路径/查询参数,避免越权读他人绑定。
+// 排序按 created_at(绑定时间)再 provider,稳定可分页;不返回上游 OAuth token,仅 subject 标识。
+func (s *PostgresStore) ListSocialIdentityLinks(ctx context.Context, tenantID, userID int64) ([]SocialIdentityLink, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return nil, ErrInvalidInput
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT provider, subject, created_at
+FROM social_identity_links
+WHERE tenant_id = $1 AND user_id = $2
+ORDER BY created_at ASC, provider ASC, subject ASC
+`, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	links := make([]SocialIdentityLink, 0)
+	for rows.Next() {
+		var link SocialIdentityLink
+		if err := rows.Scan(&link.Provider, &link.Subject, &link.LinkedAt); err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return links, nil
+}
+
 func (s *PostgresStore) UnlinkSocialIdentity(ctx context.Context, tenantID, userID int64, provider string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, ErrStoreNotConfigured
