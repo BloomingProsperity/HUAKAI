@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -102,11 +103,12 @@ func buildHermesToolRegistry(d hermesToolDeps) (*hermesops.Registry, *hermestool
 	reg.Register(hermesops.AccountResumeSpec(accountDeps))
 
 	// dlq_replay -> dlq.Service.Replay (platform_admin only). Lookup finds the
-	// target record within the tenant from the existing List read (there is no
-	// single-id read), so Resolve can preview + re-check tenant ownership.
+	// target record within the tenant by a direct tenant-scoped by-id read, so
+	// Resolve can preview + re-check tenant ownership even for records older than
+	// any bounded List window.
 	dlqReplayDeps := hermesops.DLQReplayDeps{}
 	if d.dlqStore != nil {
-		dlqReplayDeps.Lookup = dlqLookupByID(d.dlqStore.List)
+		dlqReplayDeps.Lookup = dlqLookupByID(d.dlqStore.GetByID)
 	}
 	if d.dlqService != nil {
 		dlqReplayDeps.Replay = d.dlqService.Replay
@@ -131,23 +133,20 @@ func buildHermesToolRegistry(d hermesToolDeps) (*hermesops.Registry, *hermestool
 	return reg, inserter, mutator
 }
 
-// dlqLookupByID adapts the tenant-scoped dlq List read into a single-record
-// lookup by id (there is no by-id read in the store). It lists the tenant's
-// records and returns the one matching id. The List read drops the raw payload
-// shape we surface anyway (Resolve only previews kind/lane/status), so this is a
-// read-only target resolution.
-func dlqLookupByID(list func(ctx context.Context, f dlq.ListFilter) ([]dlq.Record, error)) func(ctx context.Context, id, tenantID int64) (dlq.Record, error) {
+// dlqLookupByID adapts the tenant-scoped dlq by-id read into the hermesops
+// Lookup shape (id, tenantID order). It is read-only target resolution for the
+// dlq_replay preview/confirm path. A record that does not exist for the tenant
+// (including a wrong-tenant id) maps the store's ErrNotFound to
+// hermesops.ErrTargetResolution so the HTTP layer returns 404 rather than 5xx.
+func dlqLookupByID(getByID func(ctx context.Context, tenantID, id int64) (dlq.Record, error)) func(ctx context.Context, id, tenantID int64) (dlq.Record, error) {
 	return func(ctx context.Context, id, tenantID int64) (dlq.Record, error) {
-		tenant := tenantID
-		rows, err := list(ctx, dlq.ListFilter{TenantID: &tenant, Limit: 500})
+		rec, err := getByID(ctx, tenantID, id)
+		if errors.Is(err, dlq.ErrNotFound) {
+			return dlq.Record{}, hermesops.ErrTargetResolution
+		}
 		if err != nil {
 			return dlq.Record{}, err
 		}
-		for i := range rows {
-			if rows[i].ID == id {
-				return rows[i], nil
-			}
-		}
-		return dlq.Record{}, hermesops.ErrTargetResolution
+		return rec, nil
 	}
 }

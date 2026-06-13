@@ -50,6 +50,16 @@ type MutationAuditRecord struct {
 	// AuditPayload is the sanitized previous->next state payload. Sanitized again
 	// before insert as defense in depth.
 	AuditPayload map[string]any
+
+	// OwnTx flags a tool whose underlying mutation commits in its OWN separate
+	// transaction (committed internally BEFORE the orchestrator commit) rather
+	// than running inside the orchestrator tx. For such a tool, the mutation has
+	// already persisted by the time the orchestrator reaches its own COMMIT, so a
+	// commit-phase fault leaves the mutation applied while the audit rows roll
+	// back — a "commit_uncertain" condition (reconciliation needed), NOT a
+	// "mutation_failed" one. For an in-tx tool the same fault rolls the mutation
+	// back atomically, so it stays mutation_failed. IsOwnTxMutation derives this.
+	OwnTx bool
 }
 
 // MutateOrchestrator runs a confirmed mutating tool under L3 (atomic audit) +
@@ -82,6 +92,38 @@ func NewMutateOrchestrator(begin txBeginner) *MutateOrchestrator {
 // errAuditUnavailable is returned when the orchestrator has no transaction
 // beginner wired — a mutation must never proceed without the atomic audit path.
 var errAuditUnavailable = errors.New("hermesops: mutation audit transaction unavailable")
+
+// ErrCommitAfterOwnTxMutation marks the specific residual fault where an OWN-TX
+// tool's mutation already committed in its own transaction, the orchestrator
+// then inserted its audit rows successfully, but the FINAL orchestrator COMMIT
+// failed (transport/connection fault). The mutation persisted while the audit
+// rows rolled back, so the outcome is uncertain (reconciliation needed) — it is
+// NOT a "the mutation did not happen" failure. The HTTP layer maps this to the
+// best-effort error_class "commit_uncertain". Only Execute wraps a commit-phase
+// fault with this sentinel, and only when rec.OwnTx is set; an in-tx tool's
+// commit fault rolls the mutation back atomically and stays mutation_failed.
+var ErrCommitAfterOwnTxMutation = errors.New("hermesops: orchestrator commit failed after own-tx mutation persisted")
+
+// IsOwnTxMutation reports whether a mutating tool runs its mutation in its OWN
+// separate transaction (committed internally before the orchestrator commit)
+// rather than inside the orchestrator transaction. This is the single source of
+// truth for the tx-mode of each H4 mutating tool, kept next to the tool-name
+// constants so the orchestrator-commit-failure classification (commit_uncertain
+// vs mutation_failed) cannot drift from how each tool actually persists.
+//
+//   - account_pause / account_resume run their enabled-flip INSIDE the
+//     orchestrator tx (via txFromContext) — in-tx, atomic with the audit rows.
+//   - dlq_replay / renew_trigger delegate to dlq.Service.Replay /
+//     credentialstore.Store.Rotate, each of which owns its transaction and
+//     commits before returning — own-tx.
+func IsOwnTxMutation(toolName string) bool {
+	switch toolName {
+	case ToolDLQReplay, ToolRenewTrigger:
+		return true
+	default:
+		return false
+	}
+}
 
 // Execute runs mutate() inside the atomic-audit + advisory-lock transaction.
 // mutate receives the request and the resolved plan and returns the final
@@ -139,6 +181,15 @@ func (o *MutateOrchestrator) Execute(
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		// The mutation already ran (mErr was nil). If this tool committed its
+		// mutation in its OWN transaction before this point, that mutation has
+		// persisted even though this commit (carrying the audit rows) failed —
+		// classify it commit_uncertain so reconciliation is signalled rather than
+		// reporting "mutation_failed". An in-tx tool's mutation is part of THIS tx,
+		// so this commit failure rolls it back atomically and stays the default.
+		if rec.OwnTx {
+			return ToolResult{}, fmt.Errorf("hermesops: commit mutation tx: %w: %w", ErrCommitAfterOwnTxMutation, err)
+		}
 		return ToolResult{}, fmt.Errorf("hermesops: commit mutation tx: %w", err)
 	}
 	committed = true

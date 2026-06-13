@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,6 +26,13 @@ type fakeMutator struct {
 	lastLock   string
 	lastRec    hermesops.MutationAuditRecord
 	failWith   error
+	// failCommitPhase replicates the REAL orchestrator's commit-phase fault: the
+	// mutation runs (so own-tx tools have persisted) and then the final commit
+	// fails. Like the orchestrator, it wraps ErrCommitAfterOwnTxMutation ONLY when
+	// rec.OwnTx is set; an in-tx tool gets a bare commit error. This lets a handler
+	// test prove the error_class is commit_uncertain vs mutation_failed purely from
+	// whether the handler tagged rec.OwnTx for the tool.
+	failCommitPhase bool
 }
 
 func (f *fakeMutator) Execute(ctx context.Context, lockKey string, rec hermesops.MutationAuditRecord, mutate func(ctx context.Context, tx pgx.Tx) (hermesops.ToolResult, error)) (hermesops.ToolResult, error) {
@@ -32,6 +41,18 @@ func (f *fakeMutator) Execute(ctx context.Context, lockKey string, rec hermesops
 	f.lastRec = rec
 	if f.failWith != nil {
 		return hermesops.ToolResult{}, f.failWith
+	}
+	if f.failCommitPhase {
+		// Run the mutation first (matches the orchestrator: mutate before commit),
+		// then surface the commit fault classified by tx-mode.
+		if _, err := mutate(ctx, nil); err != nil {
+			return hermesops.ToolResult{}, err
+		}
+		base := errors.New("commit: connection reset")
+		if rec.OwnTx {
+			return hermesops.ToolResult{}, fmt.Errorf("hermesops: commit mutation tx: %w: %w", hermesops.ErrCommitAfterOwnTxMutation, base)
+		}
+		return hermesops.ToolResult{}, fmt.Errorf("hermesops: commit mutation tx: %w", base)
 	}
 	return mutate(ctx, nil)
 }
@@ -335,5 +356,69 @@ func TestMutate_OrchestratorAbortReturnsServiceError(t *testing.T) {
 	rec := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5},"confirm":true,"correlation_id":"`+corr+`"}`)
 	if rec.Code == http.StatusOK {
 		t.Fatalf("orchestrator abort returned 200 — caller would think the mutation succeeded")
+	}
+}
+
+// --- H4 S2 commit-phase classification --------------------------------------
+
+// errorClassFor drives a full confirm through the handler under a forced
+// commit-phase fault and returns the error_class recorded on the best-effort
+// hermes_tool_calls row for the given tool. tool is one of the registered
+// mutating tools; args is its arg object; the confirm runs as platform_admin so
+// dlq_replay is authorized too.
+func errorClassFor(t *testing.T, tool, args string) string {
+	t.Helper()
+	c := &mutateCounters{}
+	mut := &fakeMutator{failCommitPhase: true}
+	calls := &fakeToolCalls{}
+	h := buildMutateHandler(mutatingRegistry(c), calls, mut)
+	ident := sessionauth.Identity{TenantID: 7, UserID: 42}
+	actor := adminActor{TokenID: 99, Role: admin.RolePlatformAdmin}
+
+	preview := mutateRequest(h, ident, actor, `{"tool_name":"`+tool+`","args":`+args+`}`)
+	corr, ok := decodeBody(t, preview)["correlation_id"].(string)
+	if !ok {
+		t.Fatalf("%s: no correlation_id in preview body=%s", tool, preview.Body.String())
+	}
+	mutateRequest(h, ident, actor, `{"tool_name":"`+tool+`","args":`+args+`,"confirm":true,"correlation_id":"`+corr+`"}`)
+
+	// The best-effort error row is the LAST recorded row (a dry-run row precedes it).
+	if len(calls.rows) == 0 {
+		t.Fatalf("%s: no tool-call row recorded", tool)
+	}
+	last := calls.rows[len(calls.rows)-1]
+	if last.ResultStatus != string(hermesops.ResultError) {
+		t.Fatalf("%s: last row status=%q want error", tool, last.ResultStatus)
+	}
+	if last.ErrorClass == nil {
+		t.Fatalf("%s: error row has nil error_class", tool)
+	}
+	return *last.ErrorClass
+}
+
+func TestMutate_CommitPhaseFaultClassifiesByTxMode(t *testing.T) {
+	// Regression (H4 S2, DISCRIMINATING): a commit-phase fault (mutation ran, final
+	// orchestrator commit carrying the audit rows failed) must classify by tx-mode.
+	// dlq_replay commits its mutation in its OWN tx, so the mutation persisted while
+	// the audit rolled back -> error_class "commit_uncertain". account_pause flips
+	// enabled INSIDE the orchestrator tx, so the same fault rolls the mutation back
+	// -> "mutation_failed".
+	//
+	// Mutation check (self-proving): the two tools hit the SAME forced fault and the
+	// SAME classifier; the only thing that differs is hermesops.IsOwnTxMutation(tool)
+	// which the handler threads into rec.OwnTx. If the handler stopped setting
+	// rec.OwnTx (or IsOwnTxMutation lost dlq_replay), the own-tx class would collapse
+	// to "mutation_failed" and the `ownClass == inClass` guard goes RED.
+	ownClass := errorClassFor(t, "dlq_replay", `{"id":1}`)
+	inClass := errorClassFor(t, "account_pause", `{"account_id":5}`)
+
+	if ownClass != "commit_uncertain" {
+		t.Fatalf("own-tx dlq_replay commit fault error_class=%q want commit_uncertain", ownClass)
+	}
+	if inClass != "mutation_failed" {
+		t.Fatalf("in-tx account_pause commit fault error_class=%q want mutation_failed", inClass)
+	}
+	if ownClass == inClass {
+		t.Fatalf("tx-mode did not flip the class (own=%q in=%q) — rec.OwnTx not threaded per tool", ownClass, inClass)
 	}
 }
