@@ -47,6 +47,10 @@ type AuthMeDeps struct {
 	Profiles    AuthProfileService
 	SocialLinks AuthSocialLinkService
 	Sessions    AuthSessionRevoker
+	// SelfAccount 改密 + 软删(由 *userauth.Service 实现);nil = 自助账户端点未配置。
+	SelfAccount SelfAccountService
+	// SessionsOthers 撤其它 session(改密保留当前会话用),由 *usersession.Service 实现。
+	SessionsOthers AuthSessionRevokerOthers
 }
 
 // meResponse 是 /auth/me 的响应 DTO — 仅暴露面板归属与自身 id, 不含任何敏感字段。
@@ -71,6 +75,8 @@ type profileResponse struct {
 func MountAuthMeRoutes(r chi.Router, d AuthMeDeps) {
 	r.Get("/me", newAuthMeHandler(d))
 	r.Put("/me/profile", newAuthProfileUpdateHandler(d))
+	r.Post("/me/password", newAuthChangePasswordHandler(d))
+	r.Delete("/me", newAuthDeleteSelfHandler(d))
 	r.Delete("/account-bindings/{provider}", newAuthSocialUnlinkHandler(d))
 	r.Post("/logout", newAuthLogoutHandler(d))
 }
