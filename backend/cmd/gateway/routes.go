@@ -748,6 +748,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		UserGroupSetter:  adminuserhttp.NewPostgresUserGroupStore(d.pgPool),
 		UserRemarkSetter: adminuserhttp.NewPostgresUserRemarkStore(d.pgPool),
 		UserStatusSetter: adminuserhttp.NewPostgresUserStatusStore(d.pgPool),
+		UserCreator:      adminuserhttp.NewPostgresUserCreateStore(d.pgPool),
+		UserSoftDeleter:  adminuserhttp.NewPostgresUserSoftDeleteStore(d.pgPool),
+		SessionRevoker:   d.userSessions,
 		Unlocker:         d.userAuth,
 		Audit:            d.adminQueries,
 	}

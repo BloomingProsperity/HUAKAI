@@ -1,0 +1,195 @@
+package adminuserhttp
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
+)
+
+type userCreateStub struct {
+	calls int
+	in    userCreateInput
+	out   userCreated
+	err   error
+}
+
+func (s *userCreateStub) CreateUser(_ context.Context, in userCreateInput) (userCreated, error) {
+	s.calls++
+	s.in = in
+	if s.err != nil {
+		return userCreated{}, s.err
+	}
+	out := s.out
+	if out.ID == 0 {
+		out = userCreated{ID: 555, Email: in.Email, Role: in.Role, Status: "active", CreatedAt: "2026-06-11T00:00:00Z"}
+	}
+	return out, nil
+}
+
+type userSoftDeleteStub struct {
+	calls     int
+	gotTenant int64
+	gotUser   int64
+	affected  int64
+	err       error
+}
+
+func (s *userSoftDeleteStub) SoftDeleteForTenant(_ context.Context, tenantID, userID int64) (int64, error) {
+	s.calls++
+	s.gotTenant = tenantID
+	s.gotUser = userID
+	if s.err != nil {
+		return 0, s.err
+	}
+	return s.affected, nil
+}
+
+type sessionRevokerStub struct {
+	calls int
+	in    usersession.RevokeInput
+	err   error
+}
+
+func (s *sessionRevokerStub) Revoke(_ context.Context, in usersession.RevokeInput) (int64, error) {
+	s.calls++
+	s.in = in
+	if s.err != nil {
+		return 0, s.err
+	}
+	return 1, nil
+}
+
+func createDeps(creator *userCreateStub, audit *adminAuditStub) Deps {
+	return Deps{
+		Auth:        usersAuthStub{ident: tenantOperator(7)},
+		Store:       &usersStoreStub{},
+		UserCreator: creator,
+		Audit:       audit,
+	}
+}
+
+// TestCreateUser_HappyPath: valid create persists a role=user account, never
+// stores the plaintext password (CMB-5), and writes a create_user audit.
+func TestCreateUser_HappyPath(t *testing.T) {
+	creator := &userCreateStub{}
+	audit := &adminAuditStub{}
+	rec := invokeAdminUsersBody(t, createDeps(creator, audit), http.MethodPost, "/admin/v1/users",
+		`{"email":"new@x.test","password":"longenough1"}`)
+	assertStatus(t, rec, http.StatusCreated)
+	if creator.calls != 1 {
+		t.Fatalf("creator calls=%d want 1", creator.calls)
+	}
+	if creator.in.Role != "user" {
+		t.Fatalf("created role=%q want user", creator.in.Role)
+	}
+	// CMB-5: the store must receive an argon2id hash, never the plaintext.
+	if creator.in.PasswordHash == "longenough1" || !strings.HasPrefix(creator.in.PasswordHash, "$argon2") {
+		t.Fatalf("password not hashed: %q", creator.in.PasswordHash)
+	}
+	if audit.calls != 1 || audit.arg.Action != "create_user" {
+		t.Fatalf("audit calls=%d action=%q want 1/create_user", audit.calls, audit.arg.Action)
+	}
+}
+
+// TestCreateUser_RejectsAdminRole is the privilege-escalation guard: this
+// endpoint must never mint an admin. MUTATION: drop the role!="user" check in
+// setUserCreateRequest → role=admin yields 201 + creator called → RED.
+func TestCreateUser_RejectsAdminRole(t *testing.T) {
+	creator := &userCreateStub{}
+	rec := invokeAdminUsersBody(t, createDeps(creator, &adminAuditStub{}), http.MethodPost, "/admin/v1/users",
+		`{"email":"esc@x.test","password":"longenough1","role":"admin"}`)
+	assertStatus(t, rec, http.StatusForbidden)
+	if !strings.Contains(rec.Body.String(), "admin_role_forbidden") {
+		t.Fatalf("body=%s want admin_role_forbidden", rec.Body.String())
+	}
+	if creator.calls != 0 {
+		t.Fatalf("creator must NOT be called on forbidden role; calls=%d", creator.calls)
+	}
+}
+
+// TestCreateUser_WeakPasswordRejectedBeforeStore: < min length → 400, no store.
+func TestCreateUser_WeakPassword(t *testing.T) {
+	creator := &userCreateStub{}
+	rec := invokeAdminUsersBody(t, createDeps(creator, &adminAuditStub{}), http.MethodPost, "/admin/v1/users",
+		`{"email":"w@x.test","password":"short"}`)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if !strings.Contains(rec.Body.String(), "weak_password") || creator.calls != 0 {
+		t.Fatalf("body=%s creatorCalls=%d want weak_password/0", rec.Body.String(), creator.calls)
+	}
+}
+
+// TestCreateUser_DuplicateMaps409: store ErrUserAlreadyExists → 409.
+func TestCreateUser_Duplicate(t *testing.T) {
+	creator := &userCreateStub{err: ErrUserAlreadyExists}
+	rec := invokeAdminUsersBody(t, createDeps(creator, &adminAuditStub{}), http.MethodPost, "/admin/v1/users",
+		`{"email":"dup@x.test","password":"longenough1"}`)
+	assertStatus(t, rec, http.StatusConflict)
+	if !strings.Contains(rec.Body.String(), "admin_user_exists") {
+		t.Fatalf("body=%s want admin_user_exists", rec.Body.String())
+	}
+}
+
+func deleteDeps(getRow admindb.AdminGetUserForTenantRow, getErr error, del *userSoftDeleteStub, rev *sessionRevokerStub, audit *adminAuditStub) Deps {
+	return Deps{
+		Auth:            usersAuthStub{ident: tenantOperator(7)},
+		Store:           &usersStoreStub{getRow: getRow, getErr: getErr},
+		UserSoftDeleter: del,
+		SessionRevoker:  rev,
+		Audit:           audit,
+	}
+}
+
+// TestDeleteUser_SoftDeletesAndRevokesSessions: deleting a role=user account
+// soft-deletes it AND revokes its sessions (closing the post-delete access
+// window) AND writes a delete_user audit. MUTATION: drop the SessionRevoker
+// call → revoker.calls==0 → RED.
+func TestDeleteUser_SoftDeletesAndRevokesSessions(t *testing.T) {
+	del := &userSoftDeleteStub{affected: 1}
+	rev := &sessionRevokerStub{}
+	audit := &adminAuditStub{}
+	deps := deleteDeps(admindb.AdminGetUserForTenantRow{ID: 101, Role: "user", Status: "active"}, nil, del, rev, audit)
+	rec := invokeAdminUsersBody(t, deps, http.MethodDelete, "/admin/v1/users/101", "")
+	assertStatus(t, rec, http.StatusOK)
+	if del.calls != 1 || del.gotUser != 101 || del.gotTenant != 7 {
+		t.Fatalf("softdelete calls=%d user=%d tenant=%d want 1/101/7", del.calls, del.gotUser, del.gotTenant)
+	}
+	if rev.calls != 1 || rev.in.UserID != 101 {
+		t.Fatalf("session revoke calls=%d user=%d want 1/101 (deleted user's sessions must be revoked)", rev.calls, rev.in.UserID)
+	}
+	if audit.calls != 1 || audit.arg.Action != "delete_user" {
+		t.Fatalf("audit calls=%d action=%q want 1/delete_user", audit.calls, audit.arg.Action)
+	}
+}
+
+// TestDeleteUser_RejectsAdminTarget is the guard against deleting an admin via
+// this endpoint. MUTATION: drop the before.Role=="admin" check → soft-delete
+// runs on an admin → RED.
+func TestDeleteUser_RejectsAdminTarget(t *testing.T) {
+	del := &userSoftDeleteStub{affected: 1}
+	deps := deleteDeps(admindb.AdminGetUserForTenantRow{ID: 9, Role: "admin", Status: "active"}, nil, del, &sessionRevokerStub{}, &adminAuditStub{})
+	rec := invokeAdminUsersBody(t, deps, http.MethodDelete, "/admin/v1/users/9", "")
+	assertStatus(t, rec, http.StatusForbidden)
+	if !strings.Contains(rec.Body.String(), "admin_cannot_delete_admin") {
+		t.Fatalf("body=%s want admin_cannot_delete_admin", rec.Body.String())
+	}
+	if del.calls != 0 {
+		t.Fatalf("admin target must NOT be soft-deleted; calls=%d", del.calls)
+	}
+}
+
+// TestDeleteUser_NotFound: a missing user 404s before any mutation.
+func TestDeleteUser_NotFound(t *testing.T) {
+	del := &userSoftDeleteStub{}
+	deps := deleteDeps(admindb.AdminGetUserForTenantRow{}, pgx.ErrNoRows, del, &sessionRevokerStub{}, &adminAuditStub{})
+	rec := invokeAdminUsersBody(t, deps, http.MethodDelete, "/admin/v1/users/404", "")
+	assertStatus(t, rec, http.StatusNotFound)
+	if del.calls != 0 {
+		t.Fatalf("missing user must not be soft-deleted; calls=%d", del.calls)
+	}
+}

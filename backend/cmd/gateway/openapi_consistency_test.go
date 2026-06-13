@@ -756,14 +756,20 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	if !hasOperationEquivalent(implOps, http.MethodPost, "/admin/v1/users/{id}/unlock") {
 		t.Fatalf("runtime missing POST /admin/v1/users/{id}/unlock")
 	}
+	// S4 single-tenant out-of-box: admin user create + soft-delete are now
+	// intentional mutations on this slice.
+	if !hasOperationEquivalent(implOps, http.MethodPost, "/admin/v1/users") {
+		t.Fatalf("runtime missing POST /admin/v1/users (admin create user)")
+	}
+	if !hasOperationEquivalent(implOps, http.MethodDelete, "/admin/v1/users/{id}") {
+		t.Fatalf("runtime missing DELETE /admin/v1/users/{id} (admin soft-delete user)")
+	}
 	for _, op := range []struct {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/admin/v1/users"},
 		{http.MethodPatch, "/admin/v1/users/{id}"},
 		{http.MethodPut, "/admin/v1/users/{id}"},
-		{http.MethodDelete, "/admin/v1/users/{id}"},
 		{http.MethodPost, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodPatch, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodDelete, "/admin/v1/users/{id}/balance-history"},
@@ -789,14 +795,18 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	if !hasOperation(specOps, http.MethodPost, "/admin/v1/users/{id}/unlock") {
 		t.Fatalf("OpenAPI missing POST /admin/v1/users/{id}/unlock")
 	}
+	if !hasOperation(specOps, http.MethodPost, "/admin/v1/users") {
+		t.Fatalf("OpenAPI missing POST /admin/v1/users (admin create user)")
+	}
+	if !hasOperation(specOps, http.MethodDelete, "/admin/v1/users/{id}") {
+		t.Fatalf("OpenAPI missing DELETE /admin/v1/users/{id} (admin soft-delete user)")
+	}
 	for _, op := range []struct {
 		method string
 		path   string
 	}{
-		{http.MethodPost, "/admin/v1/users"},
 		{http.MethodPatch, "/admin/v1/users/{id}"},
 		{http.MethodPut, "/admin/v1/users/{id}"},
-		{http.MethodDelete, "/admin/v1/users/{id}"},
 		{http.MethodPost, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodPatch, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodDelete, "/admin/v1/users/{id}/balance-history"},

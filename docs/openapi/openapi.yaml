@@ -8005,10 +8005,62 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-users]
+      summary: Create an end-user in the admin token tenant
+      description: |
+        Creates an active, email-verified end user (role is always 'user' — this
+        endpoint can never mint an admin; any elevated role is rejected 403).
+        Password is argon2id-hashed and never stored in plaintext. A duplicate
+        email in the tenant returns 409.
+      operationId: createAdminUser
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminCreateUserRequest' }
+      responses:
+        '201':
+          description: The created user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminCreatedUser' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/users/{id}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
+    delete:
+      tags: [admin-users]
+      summary: Soft-delete an end-user in the admin token tenant
+      description: |
+        Soft-deletes a role='user' account (deleted_at set, status='deleted')
+        and revokes its sessions so deletion takes effect immediately. Deleting
+        an admin via this endpoint is rejected 403; a missing user is 404. The
+        email becomes reusable after deletion.
+      operationId: deleteAdminUser
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: The user was soft-deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, deleted]
+                properties:
+                  id: { type: integer, format: int64 }
+                  deleted: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
     get:
       tags: [admin-users]
       summary: Get one user in the admin token tenant
@@ -14544,6 +14596,29 @@ components:
           type: string
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         created_at: { type: string, format: date-time }
+
+    AdminCreateUserRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, description: At least 8 characters; argon2id-hashed server-side. }
+        display_name: { type: string }
+        role:
+          type: string
+          enum: [user]
+          description: Optional; only 'user' is accepted. Any elevated role is rejected 403.
+    AdminCreatedUser:
+      type: object
+      additionalProperties: false
+      required: [id, email, role, status, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        email: { type: string }
+        role: { type: string }
+        status: { type: string }
+        created_at: { type: string }
 
     AdminUserList:
       x-huakai-spec-source:
