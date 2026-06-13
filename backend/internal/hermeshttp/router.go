@@ -150,7 +150,11 @@ func withAdminActor(ctx context.Context, args map[string]any) map[string]any {
 	for k, v := range args {
 		out[k] = v
 	}
-	out["admin_actor_token_id"] = actor.TokenID
+	// Key is admin_actor_id (NOT *_token_id): the hermes audit sanitizer
+	// (hermes.SanitizeArgs/sensitiveKey) redacts any key containing "token", and
+	// this value is a non-secret admin_tokens row PK that MUST survive into the
+	// persisted trail — otherwise operator attribution is silently dropped.
+	out["admin_actor_id"] = actor.TokenID
 	out["admin_role"] = actor.Role
 	return out
 }
