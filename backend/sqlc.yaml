@@ -294,6 +294,24 @@ sql:
   - engine: postgresql
     schema: sql/migrations
     queries:
+      - sql/queries/quota_admin.sql
+    gen:
+      go:
+        package: quotaadmin
+        out: internal/db/quotaadmin
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
       - sql/queries/userkey_controls.sql
     gen:
       go:
