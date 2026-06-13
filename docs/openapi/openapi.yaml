@@ -3021,6 +3021,29 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/invitation-code:
+    get:
+      tags: [invitations]
+      summary: Get or lazily create the authenticated user's stable self-referral code
+      description: >-
+        Returns the caller's single stable personal referral code, minting one on
+        first call. It is identity, not a campaign code, so it is NOT subject to
+        the per-tenant monthly invitation quota and a pure GET never returns 429.
+        Repeated calls return the same code.
+      operationId: getMyInvitationCode
+      x-huakai-spec-source:
+        - docs/specs/community-invitation-referral.md
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: The authenticated user's stable self-referral code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MyReferralCodeResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/disputes/{id}/resolve:
     post:
       tags: [admin-audit]
@@ -11361,6 +11384,21 @@ components:
           type: integer
           format: int64
           minimum: 0
+
+    MyReferralCodeResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/specs/community-invitation-referral.md
+      required: [code, inviter_user_id]
+      properties:
+        code:
+          type: string
+          description: The caller's stable personal referral code, shareable on the invite page.
+        inviter_user_id:
+          type: integer
+          format: int64
+          minimum: 1
 
     Voucher:
       type: object

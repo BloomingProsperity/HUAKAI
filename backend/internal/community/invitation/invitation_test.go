@@ -202,6 +202,7 @@ type memoryStore struct {
 	nextID      int64
 	rows        []Invitation
 	idempotency map[memoryIdempotencyKey]string
+	selfCodes   map[string]bool
 }
 
 type memoryIdempotencyKey struct {
@@ -210,7 +211,7 @@ type memoryIdempotencyKey struct {
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{nextID: 1, idempotency: map[memoryIdempotencyKey]string{}}
+	return &memoryStore{nextID: 1, idempotency: map[memoryIdempotencyKey]string{}, selfCodes: map[string]bool{}}
 }
 
 func (s *memoryStore) Generate(_ context.Context, rec generateRecord) (Invitation, error) {
@@ -237,6 +238,9 @@ func (s *memoryStore) Generate(_ context.Context, rec generateRecord) (Invitatio
 	s.rows = append(s.rows, row)
 	if rec.ClientIdempotencyKey != nil {
 		s.idempotency[memoryIdempotencyKey{tenantID: rec.TenantID, key: *rec.ClientIdempotencyKey}] = code
+	}
+	if rec.QuotaExempt {
+		s.selfCodes[code] = true
 	}
 	return row, nil
 }
@@ -288,6 +292,9 @@ func (s *memoryStore) CountTenantInvitationsSince(_ context.Context, tenantID in
 	defer s.mu.Unlock()
 	count := 0
 	for _, row := range s.rows {
+		if s.selfCodes[row.Code] {
+			continue // self-referral codes are quota-exempt, never counted
+		}
 		if row.TenantID == tenantID && !row.CreatedAt.Before(since) {
 			count++
 		}
@@ -337,4 +344,105 @@ func codeForSequence(n int) string {
 		n >>= 5
 	}
 	return string(out)
+}
+
+// TestSelfReferralCodeExemptFromTenantMonthlyQuota is the reporter's discriminating
+// guard: once the shared single-tenant campaign quota is exhausted for the month,
+// a pure get-of-my-own-code must still succeed. MUTATION: routing
+// GetOrCreateSelfReferralCode through checkTenantMonthlyQuota (or dropping the
+// QuotaExempt flag) makes this return ErrQuotaExceeded → RED.
+func TestSelfReferralCodeExemptFromTenantMonthlyQuota(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	service := NewService(store,
+		WithNow(func() time.Time { return now }),
+		WithCodeGenerator(&sequenceGenerator{}),
+	)
+	for i := 0; i < MonthlyTenantQuota; i++ {
+		if _, err := service.Generate(context.Background(), GenerateInvitationParams{
+			TenantID: 7, InviterUserID: int64(1000 + i), MaxUsage: 1, ExpiresInDays: 30,
+		}); err != nil {
+			t.Fatalf("Generate filler #%d: %v", i, err)
+		}
+	}
+	out, err := service.GetOrCreateSelfReferralCode(context.Background(), 7, 42, time.Time{})
+	if err != nil {
+		t.Fatalf("self code at exhausted quota: %v want nil (must not 429)", err)
+	}
+	if out.Code == "" {
+		t.Fatal("self code empty")
+	}
+}
+
+// TestSelfReferralCodeIsStableIdempotent guards the get-OR-create contract:
+// repeated calls return the same code and create exactly one row. Idempotency
+// rests on the self path persisting the stable self:<userID> idempotency key.
+// MUTATION: minting the self row with a nil (or per-call) idempotency key
+// removes the stable marker → the second call mints a second code/row → RED.
+// (The service-level early lookup alone is NOT what this guards — the store
+// also dedupes on the key; the persisted KEY is the guarantee.)
+func TestSelfReferralCodeIsStableIdempotent(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	service := NewService(store,
+		WithNow(func() time.Time { return now }),
+		WithCodeGenerator(&sequenceGenerator{}),
+	)
+	first, err := service.GetOrCreateSelfReferralCode(context.Background(), 7, 42, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := service.GetOrCreateSelfReferralCode(context.Background(), 7, 42, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Code != first.Code {
+		t.Fatalf("self code not stable: first=%s again=%s", first.Code, again.Code)
+	}
+	if got := store.rowCount(); got != 1 {
+		t.Fatalf("self code row count=%d want 1 (one stable row)", got)
+	}
+}
+
+// TestSelfReferralCodeDoesNotStarveCampaignQuota guards the counter-exclusion:
+// self codes must not consume the campaign budget, else many users materializing
+// their own codes would 429 the campaign POST for everyone. MUTATION: counting
+// self codes in CountTenantInvitationsSince → the campaign Generate below 429s → RED.
+func TestSelfReferralCodeDoesNotStarveCampaignQuota(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	service := NewService(store,
+		WithNow(func() time.Time { return now }),
+		WithCodeGenerator(&sequenceGenerator{}),
+	)
+	for i := 0; i < MonthlyTenantQuota+50; i++ {
+		if _, err := service.GetOrCreateSelfReferralCode(context.Background(), 7, int64(2000+i), time.Time{}); err != nil {
+			t.Fatalf("self code #%d: %v", i, err)
+		}
+	}
+	if _, err := service.Generate(context.Background(), GenerateInvitationParams{
+		TenantID: 7, InviterUserID: 42, MaxUsage: 1, ExpiresInDays: 30,
+	}); err != nil {
+		t.Fatalf("campaign Generate after %d self codes: %v want nil (self codes must not consume campaign quota)", MonthlyTenantQuota+50, err)
+	}
+}
+
+// TestCampaignGenerateRejectsReservedSelfPrefix closes the quota-bypass exploit:
+// a campaign caller must not be able to supply a self-prefixed idempotency key,
+// which would otherwise make the row escape the campaign counter. MUTATION:
+// dropping the reserved-prefix check in validateGenerateParams → err is nil → RED.
+func TestCampaignGenerateRejectsReservedSelfPrefix(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
+	service := NewService(store,
+		WithNow(func() time.Time { return now }),
+		WithCodeGenerator(&sequenceGenerator{}),
+	)
+	forged := SelfReferralIdempotencyPrefix + "999"
+	_, err := service.Generate(context.Background(), GenerateInvitationParams{
+		TenantID: 7, InviterUserID: 42, MaxUsage: 1, ExpiresInDays: 30, ClientIdempotencyKey: &forged,
+	})
+	if !errors.Is(err, ErrReservedIdempotencyKey) {
+		t.Fatalf("err=%v want ErrReservedIdempotencyKey (forged self marker must be rejected)", err)
+	}
 }

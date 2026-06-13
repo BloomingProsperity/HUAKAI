@@ -118,6 +118,19 @@ type invitationServiceStub struct {
 	called                int
 	summaryTenantID       int64
 	summaryReferrerUserID int64
+	selfOut               invitation.GenerateInvitationOutput
+	selfErr               error
+	selfTenantID          int64
+	selfInviterUserID     int64
+}
+
+func (s *invitationServiceStub) GetOrCreateSelfReferralCode(_ context.Context, tenantID, inviterUserID int64, _ time.Time) (invitation.GenerateInvitationOutput, error) {
+	s.selfTenantID = tenantID
+	s.selfInviterUserID = inviterUserID
+	if s.selfErr != nil {
+		return invitation.GenerateInvitationOutput{}, s.selfErr
+	}
+	return s.selfOut, nil
 }
 
 func (s *invitationServiceStub) Generate(_ context.Context, in invitation.GenerateInvitationParams) (invitation.GenerateInvitationOutput, error) {
@@ -149,4 +162,41 @@ func assertInvitationStatus(t *testing.T, rec *httptest.ResponseRecorder, want i
 	if rec.Code != want {
 		t.Fatalf("status=%d want %d body=%s", rec.Code, want, rec.Body.String())
 	}
+}
+
+// TestMyReferralCodeHandlerExemptFromQuota is the handler-level discriminating
+// guard for the reporter's bug: GET /v1/me/invitation-code must return 200 with
+// the user's own code even when the campaign path is at quota. The stub's
+// campaign Generate is wired to ErrQuotaExceeded while the self path returns a
+// code; the handler must route through the self path. MUTATION: pointing the
+// handler at Generate (the quota-gated path) → the stub returns ErrQuotaExceeded
+// → 429 → RED.
+func TestMyReferralCodeHandlerExemptFromQuota(t *testing.T) {
+	stub := &invitationServiceStub{
+		err:     invitation.ErrQuotaExceeded,
+		selfOut: invitation.GenerateInvitationOutput{Code: "SELF1234", InviterUserID: 42},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/me/invitation-code", nil)
+	req = req.WithContext(auth.ContextWithSession(req.Context(), auth.SessionIdentity{TenantID: 7, UserID: 42}))
+	rec := httptest.NewRecorder()
+	NewMyReferralCodeHandler(InvitationDeps{Service: stub}).ServeHTTP(rec, req)
+	assertInvitationStatus(t, rec, http.StatusOK)
+	if stub.selfTenantID != 7 || stub.selfInviterUserID != 42 {
+		t.Fatalf("self scope=(tenant=%d, inviter=%d) want (7,42)", stub.selfTenantID, stub.selfInviterUserID)
+	}
+	var body myReferralCodeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "SELF1234" || body.InviterUserID != 42 {
+		t.Fatalf("body=%+v want code=SELF1234 inviter=42", body)
+	}
+}
+
+func TestMyReferralCodeHandlerRejectsMissingSession(t *testing.T) {
+	stub := &invitationServiceStub{selfOut: invitation.GenerateInvitationOutput{Code: "X"}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/me/invitation-code", nil)
+	rec := httptest.NewRecorder()
+	NewMyReferralCodeHandler(InvitationDeps{Service: stub}).ServeHTTP(rec, req)
+	assertInvitationStatus(t, rec, http.StatusUnauthorized)
 }

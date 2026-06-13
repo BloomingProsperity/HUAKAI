@@ -15,6 +15,12 @@ import (
 type InvitationService interface {
 	Generate(context.Context, invitation.GenerateInvitationParams) (invitation.GenerateInvitationOutput, error)
 	ReferralSummary(context.Context, int64, int64) (invitation.ReferralSummary, error)
+	GetOrCreateSelfReferralCode(ctx context.Context, tenantID, inviterUserID int64, now time.Time) (invitation.GenerateInvitationOutput, error)
+}
+
+type myReferralCodeResponse struct {
+	Code          string `json:"code"`
+	InviterUserID int64  `json:"inviter_user_id"`
 }
 
 type InvitationDeps struct {
@@ -108,6 +114,35 @@ func NewInvitationSummaryHandler(d InvitationDeps) http.HandlerFunc {
 	}
 }
 
+// NewMyReferralCodeHandler serves GET /v1/me/invitation-code: the caller's
+// single stable self-service referral code, lazily minted on first call. It is
+// a pure read of one's own identity code and is NOT subject to the monthly
+// campaign quota — a logged-in user must always be able to fetch their own code
+// even after a shared single-tenant deployment exhausts the campaign cap for
+// the month (the defect this endpoint must not reproduce).
+func NewMyReferralCodeHandler(d InvitationDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Service == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "invitation dependency unset")
+			return
+		}
+		ident, ok := sessionauth.SessionFromContext(r.Context())
+		if !ok || ident.TenantID <= 0 || ident.UserID <= 0 {
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized", "session bearer token is required")
+			return
+		}
+		out, err := d.Service.GetOrCreateSelfReferralCode(r.Context(), ident.TenantID, ident.UserID, time.Time{})
+		if err != nil {
+			writeInvitationError(w, err)
+			return
+		}
+		writeAuditJSON(w, http.StatusOK, myReferralCodeResponse{
+			Code:          out.Code,
+			InviterUserID: out.InviterUserID,
+		})
+	}
+}
+
 func decodeInvitationJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
@@ -126,6 +161,8 @@ func writeInvitationError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusTooManyRequests, "quota_exceeded", "monthly invitation quota exceeded")
 	case errors.Is(err, invitation.ErrInvalidInput):
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invitation request is invalid")
+	case errors.Is(err, invitation.ErrReservedIdempotencyKey):
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "client_idempotency_key uses a reserved prefix")
 	case errors.Is(err, invitation.ErrInvitationExpiresOverLimit):
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invitation expires_in_days is over limit")
 	case errors.Is(err, invitation.ErrStoreNotConfigured):

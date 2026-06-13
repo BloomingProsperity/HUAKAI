@@ -183,6 +183,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Get("/invitations", gatewayhttp.NewInvitationSummaryHandler(gatewayhttp.InvitationDeps{
 			Service: d.invitationService,
 		}))
+		r.Get("/invitation-code", gatewayhttp.NewMyReferralCodeHandler(gatewayhttp.InvitationDeps{
+			Service: d.invitationService,
+		}))
 		r.Get("/referrals", referralhttp.NewUserReferralsHandler(referralhttp.Deps{
 			Service: d.invitationService,
 		}))

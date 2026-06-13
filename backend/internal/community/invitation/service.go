@@ -147,6 +147,12 @@ func validateGenerateParams(params GenerateInvitationParams) error {
 	if params.TenantID <= 0 || params.InviterUserID <= 0 {
 		return ErrInvalidInput
 	}
+	// The self-referral marker is server-reserved: a campaign caller must not be
+	// able to supply a self-prefixed idempotency key, which would otherwise let
+	// the resulting row escape the campaign quota counter (quota bypass).
+	if params.ClientIdempotencyKey != nil && strings.HasPrefix(*params.ClientIdempotencyKey, SelfReferralIdempotencyPrefix) {
+		return ErrReservedIdempotencyKey
+	}
 	if params.MaxUsage <= 0 || params.MaxUsage > MaxUsageLimit {
 		return ErrInvalidInput
 	}
@@ -157,6 +163,71 @@ func validateGenerateParams(params GenerateInvitationParams) error {
 		return ErrInvitationExpiresOverLimit
 	}
 	return nil
+}
+
+// GetOrCreateSelfReferralCode returns the caller's single stable self-service
+// referral code, lazily minting one on first call. Unlike campaign Generate it
+// is NOT gated by the monthly tenant quota: a personal referral code is user
+// identity, not campaign volume, so a pure GET of one's own code must never be
+// blocked once a shared single-tenant deployment has exhausted the campaign cap
+// for the month (new-api GetAffCode + sub2api both treat self codes as
+// quota-free identity; HUAKAI keeps the campaign cap and adds this exempt path).
+// Idempotent: repeated calls return the same code via the reserved
+// self:<userID> idempotency key.
+func (s *Service) GetOrCreateSelfReferralCode(ctx context.Context, tenantID, inviterUserID int64, now time.Time) (GenerateInvitationOutput, error) {
+	if s == nil || s.store == nil {
+		return GenerateInvitationOutput{}, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || inviterUserID <= 0 {
+		return GenerateInvitationOutput{}, ErrInvalidInput
+	}
+	if now.IsZero() {
+		now = s.now()
+	}
+	now = now.UTC()
+	idemKey := fmt.Sprintf("%s%d", SelfReferralIdempotencyPrefix, inviterUserID)
+
+	existing, err := s.store.GetByClientIdempotencyKey(ctx, tenantID, idemKey)
+	if err == nil {
+		return outputFromInvitation(existing), nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return GenerateInvitationOutput{}, err
+	}
+
+	expiresAt := now.AddDate(selfReferralExpiryYears, 0, 0)
+	for attempt := 0; attempt < MaxGenerateAttempts; attempt++ {
+		code, gerr := s.generator.Generate()
+		if gerr != nil {
+			return GenerateInvitationOutput{}, fmt.Errorf("invitation: generate self code: %w", gerr)
+		}
+		code = NormalizeCode(code)
+		if !ValidCode(code) {
+			return GenerateInvitationOutput{}, ErrInvalidInput
+		}
+		row, serr := s.store.Generate(ctx, generateRecord{
+			TenantID:             tenantID,
+			InviterUserID:        inviterUserID,
+			Code:                 code,
+			CreatedAt:            now,
+			ExpiresAt:            expiresAt,
+			MaxUsage:             MaxUsageLimit,
+			ClientIdempotencyKey: &idemKey,
+			QuotaExempt:          true,
+		})
+		if serr == nil {
+			return outputFromInvitation(row), nil
+		}
+		// A racing first call may have inserted the self row under the same
+		// idempotency key; re-resolve it so both callers converge on one code.
+		if reread, rerr := s.store.GetByClientIdempotencyKey(ctx, tenantID, idemKey); rerr == nil {
+			return outputFromInvitation(reread), nil
+		}
+		if !errors.Is(serr, ErrDuplicateCode) {
+			return GenerateInvitationOutput{}, serr
+		}
+	}
+	return GenerateInvitationOutput{}, ErrDuplicateCode
 }
 
 func outputFromInvitation(row Invitation) GenerateInvitationOutput {
