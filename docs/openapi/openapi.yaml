@@ -1570,6 +1570,37 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/groups:
+    get:
+      tags: [user-quota]
+      summary: End-user visible pool groups and public billing multipliers
+      operationId: getMyGroups
+      x-huakai-spec-source:
+        - backend/internal/megroupshttp/handler.go
+        - backend/internal/subscriptionenforce/routes_repo_postgres.go
+        - backend/internal/pricingcatalog/catalog.go
+      description: |
+        Read-only list of the pool groups reachable by the authenticated
+        session user's current routing tier, with each group's billing
+        multiplier disclosed only when the operator marked that group's ratio
+        public. Tenant and user scope come only from the validated session
+        identity; user_id, tenant_id, or similar query parameters are not
+        accepted for scoping and cannot widen the read. Groups whose ratio is
+        not marked public, or that have no ratio configured, are still listed
+        with has_public_ratio=false and the ratio field omitted so internal
+        cost multipliers never leak. Items are ordered by pool_group_id
+        ascending.
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: Caller-visible pool groups for the session user's tier.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeGroupListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/orders/{id}/receipt:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -16082,6 +16113,48 @@ components:
         request_count: { type: integer, format: int64, minimum: 0 }
         window_start: { type: string, format: date-time }
         window_end: { type: string, format: date-time }
+
+    MeGroupListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/megroupshttp/handler.go
+      required: [object, user_group, items]
+      properties:
+        object:
+          type: string
+          enum: [me_group_list]
+        user_group:
+          type: string
+          description: "The caller's current routing tier (users.user_group)."
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MeGroupItem' }
+
+    MeGroupItem:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/megroupshttp/handler.go
+        - backend/internal/pricingcatalog/catalog.go
+      required: [pool_group_id, name, has_public_ratio]
+      properties:
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        name:
+          type: string
+          description: 'Pool group display name.'
+        ratio:
+          type: string
+          description: >-
+            numeric(20,8) billing multiplier rendered as a string. Present only
+            when has_public_ratio is true; omitted for non-public or unconfigured
+            groups so internal cost multipliers never leak.
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        has_public_ratio:
+          type: boolean
+          description: >-
+            True when this group has an operator-published billing multiplier;
+            false when the ratio is private or unconfigured.
 
     MeUsageListResponse:
       type: object
