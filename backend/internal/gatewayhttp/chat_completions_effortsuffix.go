@@ -61,13 +61,20 @@ func (ex *chatExecution) applyEffortSuffixNormalization() bool {
 // ingressProtocolForEffort maps the gateway's ingress client protocol to the
 // effort-parameter shape the downstream canonical parser for that ingress reads.
 // The emitted parameter is keyed off the INGRESS PATH's protocol (which selects
-// the request parser), NOT the model-name family: openai chat/responses ingress
-// reads a top-level reasoning_effort string; anthropic ingress reads a top-level
-// thinking object. Any other ingress is left unmodeled so its request is never
-// rewritten.
+// the request parser), NOT the model-name family: the openai chat-completions
+// ingress parser reads a top-level reasoning_effort string; the anthropic
+// messages ingress parser reads a top-level thinking object.
+//
+// The OpenAI Responses ingress is deliberately left unmodeled (IngressOther): its
+// canonical parser consumes a NESTED reasoning object, not a top-level
+// reasoning_effort, so emitting the chat shape there would be silently dropped
+// during canonicalization. Leaving it unmodeled means a Responses request with an
+// effort suffix is not rewritten and behaves exactly as before (no silent effort
+// loss). Native Responses effort wiring is a follow-up. Any other ingress is also
+// left unmodeled so its request is never rewritten.
 func ingressProtocolForEffort(p proto.ClientProtocol) thinkingnorm.IngressProtocol {
 	switch p {
-	case proto.ClientProtocolOpenAIChat, proto.ClientProtocolOpenAIResponses:
+	case proto.ClientProtocolOpenAIChat:
 		return thinkingnorm.IngressOpenAIChat
 	case proto.ClientProtocolAnthropicMessages:
 		return thinkingnorm.IngressAnthropic

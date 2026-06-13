@@ -44,9 +44,10 @@ import (
 type IngressProtocol int
 
 const (
-	// IngressOpenAIChat covers the OpenAI chat-completions and responses
-	// ingress paths, whose canonical parser reads a top-level reasoning_effort
-	// string and drops a top-level thinking object.
+	// IngressOpenAIChat covers the OpenAI chat-completions ingress path, whose
+	// canonical parser reads a top-level reasoning_effort string and drops a
+	// top-level thinking object. (The OpenAI Responses ingress is NOT this — its
+	// parser uses a nested reasoning object — so it is mapped to IngressOther.)
 	IngressOpenAIChat IngressProtocol = iota
 	// IngressAnthropic covers the Anthropic messages ingress path, whose
 	// canonical parser reads a top-level thinking object and drops a top-level
