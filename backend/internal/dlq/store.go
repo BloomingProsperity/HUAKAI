@@ -95,6 +95,33 @@ LIMIT $4`,
 	return out, nil
 }
 
+// GetByID reads a single dead-letter record by its id, scoped to tenantID. It is
+// READ-ONLY (no claim, no lease, no state change) — a target lookup for the
+// mutating dlq_replay preview/confirm path, where matching by id over a bounded
+// List window could miss records older than that window. Returns ErrNotFound
+// when no row with that id belongs to tenantID, so a wrong-tenant id cannot
+// resolve another tenant's record (tenant isolation). The actual replay still
+// runs through Claim/Replay; this only resolves the target for the preview.
+func (s *Store) GetByID(ctx context.Context, tenantID, id int64) (Record, error) {
+	if s == nil || s.pool == nil {
+		return Record{}, ErrStoreNotConfigured
+	}
+	rec, err := scanRecord(s.pool.QueryRow(ctx, `
+SELECT `+recordColumnsDLQ+`
+FROM usage_record_dlq d
+WHERE d.id = $1
+  AND d.tenant_id = $2`,
+		id, tenantID,
+	))
+	if err == pgx.ErrNoRows {
+		return Record{}, ErrNotFound
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("dlq: get by id: %w", err)
+	}
+	return rec, nil
+}
+
 func (s *Store) Claim(ctx context.Context, lane Lane, workerID string, leaseTTL time.Duration) (*Record, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured

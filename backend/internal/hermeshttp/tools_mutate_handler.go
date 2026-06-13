@@ -160,6 +160,11 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 		TargetType:        plan.TargetType,
 		TargetID:          plan.TargetID,
 		AuditPayload:      mutationAuditPayload(spec.Name, plan, req.Args),
+		// OwnTx lets the orchestrator tell apart a commit-phase fault that left an
+		// already-persisted (own-tx) mutation behind from one that rolled the
+		// (in-tx) mutation back, so the best-effort error_class can be
+		// commit_uncertain vs mutation_failed respectively.
+		OwnTx: hermesops.IsOwnTxMutation(spec.Name),
 	}
 
 	lockKey := plan.LockKey
@@ -283,6 +288,12 @@ func classifyMutatingError(err error) string {
 		return "target_resolution_failed"
 	case errors.Is(err, hermesops.ErrDependencyUnwired):
 		return "dependency_unwired"
+	case errors.Is(err, hermesops.ErrCommitAfterOwnTxMutation):
+		// An own-tx tool's mutation persisted but the orchestrator commit carrying
+		// the audit rows failed: the outcome is uncertain, not a clean failure.
+		// Checked before the mutation_failed default so this commit-phase residual
+		// is never mislabelled as "the mutation did not happen".
+		return "commit_uncertain"
 	default:
 		return "mutation_failed"
 	}
@@ -307,6 +318,10 @@ func writeMutatingExecError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "hermes_tool_invalid_args", "invalid mutation request")
 	case errors.Is(err, hermesops.ErrDependencyUnwired):
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_unavailable", "tool dependency is not wired")
+	case errors.Is(err, hermesops.ErrCommitAfterOwnTxMutation):
+		// The mutation may have persisted (own-tx) while the audit commit failed:
+		// do NOT claim it was rolled back — signal an uncertain outcome instead.
+		writeError(w, http.StatusServiceUnavailable, "hermes_tool_commit_uncertain", "mutation may have applied but the audit commit failed; reconciliation required")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_failed", "mutation failed and was rolled back")
 	}

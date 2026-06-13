@@ -26,6 +26,7 @@ type txRecorder struct {
 	// injected failures
 	toolCallErr error
 	adminErr    error
+	commitErr   error
 }
 
 type fakeBeginner struct {
@@ -68,7 +69,10 @@ func (tx *fakeMutateTx) QueryRow(_ context.Context, sql string, _ ...any) pgx.Ro
 	}
 }
 
-func (tx *fakeMutateTx) Commit(context.Context) error   { tx.rec.commitCount++; return nil }
+func (tx *fakeMutateTx) Commit(context.Context) error {
+	tx.rec.commitCount++
+	return tx.rec.commitErr
+}
 func (tx *fakeMutateTx) Rollback(context.Context) error { tx.rec.rollbackCount++; return nil }
 func (tx *fakeMutateTx) Begin(context.Context) (pgx.Tx, error) {
 	return nil, errors.New("nested tx unused")
@@ -220,6 +224,59 @@ func TestOrchestrator_MutationFailureRollsBack(t *testing.T) {
 	}
 	if rec.commitCount != 0 || rec.rollbackCount != 1 {
 		t.Fatalf("commit=%d rollback=%d want 0/1 (orphan audit must roll back)", rec.commitCount, rec.rollbackCount)
+	}
+}
+
+func TestOrchestrator_CommitFailureAfterOwnTxMutationIsCommitUncertain(t *testing.T) {
+	// Regression (H4 S2, DISCRIMINATING): the mutation succeeds (mErr=nil) but the
+	// FINAL orchestrator commit fails. For an OWN-TX tool (dlq_replay/renew_trigger)
+	// the mutation already committed in its own tx, so the returned error MUST wrap
+	// ErrCommitAfterOwnTxMutation (-> commit_uncertain). For an IN-TX tool
+	// (account_pause/resume) the same fault rolls the mutation back atomically, so
+	// it must NOT carry the sentinel (-> mutation_failed).
+	//
+	// Mutation check (self-proving): the test runs the EXACT same forced commit
+	// fault for OwnTx=true and OwnTx=false and asserts the sentinel presence
+	// DIFFERS. If Execute ignored rec.OwnTx and wrapped (or did not wrap) the
+	// sentinel unconditionally, the own and in-tx legs would agree and the
+	// `ownWrapped == inWrapped` guard goes RED.
+	run := func(ownTx bool) error {
+		rec := &txRecorder{commitErr: errors.New("connection reset by peer")}
+		o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
+		audit := baseRecord()
+		audit.OwnTx = ownTx
+		mutated := 0
+		_, err := o.Execute(context.Background(), "lock:commit", audit, func(context.Context, pgx.Tx) (ToolResult, error) {
+			mutated++
+			return ToolResult{Summary: map[string]any{"ok": true}}, nil
+		})
+		if err == nil {
+			t.Fatalf("ownTx=%v: execute err=nil want commit failure", ownTx)
+		}
+		if mutated != 1 {
+			t.Fatalf("ownTx=%v: mutate ran %d times want 1 (mutation runs before the failing commit)", ownTx, mutated)
+		}
+		if rec.commitCount != 1 || rec.rollbackCount != 1 {
+			// commit is attempted once (fails) then the defer rolls back.
+			t.Fatalf("ownTx=%v: commit=%d rollback=%d want 1/1", ownTx, rec.commitCount, rec.rollbackCount)
+		}
+		return err
+	}
+
+	ownErr := run(true)
+	inErr := run(false)
+
+	ownWrapped := errors.Is(ownErr, ErrCommitAfterOwnTxMutation)
+	inWrapped := errors.Is(inErr, ErrCommitAfterOwnTxMutation)
+
+	if !ownWrapped {
+		t.Fatalf("own-tx commit fault did NOT wrap ErrCommitAfterOwnTxMutation: %v", ownErr)
+	}
+	if inWrapped {
+		t.Fatalf("in-tx commit fault WRONGLY wrapped ErrCommitAfterOwnTxMutation (in-tx mutation rolled back, must stay mutation_failed): %v", inErr)
+	}
+	if ownWrapped == inWrapped {
+		t.Fatalf("tx-mode did not change the classification (own=%v in=%v) — rec.OwnTx is not threaded into the commit-failure path", ownWrapped, inWrapped)
 	}
 }
 
