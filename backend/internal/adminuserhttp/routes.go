@@ -38,6 +38,9 @@ type Deps struct {
 	UserGroupSetter  userGroupSetter
 	UserRemarkSetter userRemarkSetter
 	UserStatusSetter userStatusSetter
+	UserCreator      userCreateService
+	UserSoftDeleter  userSoftDeleteService
+	SessionRevoker   userSessionRevoker
 }
 
 type adminAuth interface {
@@ -141,6 +144,8 @@ func (s postgresUnlockAuditStore) UnlockUserWithAudit(ctx context.Context, tenan
 
 func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/", newListHandler(d))
+	r.Post("/", newCreateUserHandler(d))
+	r.Delete("/{id}", newDeleteUserHandler(d))
 	r.Get("/2fa-adoption-stats", newTwoFAStatsHandler(d))
 	r.Get("/{id}", newGetHandler(d))
 	r.Post("/{id}/unlock", newUnlockHandler(d))
