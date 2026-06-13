@@ -285,7 +285,8 @@ func openAIResponsesPreviousResponseID(rawBody []byte) string {
 }
 
 func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
-	resolved, err := ex.d.Registry.ResolveModel(ex.ctx, ex.req.Model, ex.ident.TenantID)
+	// resolveModelWithEffortSuffix folds registry-aware effort-suffix normalization into resolution.
+	resolved, err := ex.resolveModelWithEffortSuffix()
 	if errors.Is(err, registry.ErrRegistryBackend) {
 		writeJSONError(w, http.StatusServiceUnavailable, "registry_backend_error",
 			"registry backend transient failure")
