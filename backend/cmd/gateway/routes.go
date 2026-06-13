@@ -35,17 +35,20 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/invoicehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediataskhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meexporthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/megroupshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mequotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/publicrankinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/sunoclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
@@ -185,6 +188,17 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		}))
 		r.Get("/invitation-code", gatewayhttp.NewMyReferralCodeHandler(gatewayhttp.InvitationDeps{
 			Service: d.invitationService,
+		}))
+		meGroupsRatios := megroupshttp.RatioLister(d.pricingRatioStore)
+		if meGroupsRatios == nil {
+			meGroupsRatios = pricingcatalog.NewPostgresStore(d.pgPool)
+		}
+		r.Get("/groups", megroupshttp.NewHandler(megroupshttp.Deps{
+			Auth:       megroupshttp.SessionResolver{},
+			UserGroups: megroupshttp.NewPostgresUserGroupReader(d.pgPool),
+			RoutesRepo: subscriptionenforce.NewPostgresRoutesRepo(d.pgPool),
+			Ratios:     meGroupsRatios,
+			Pools:      megroupshttp.NewPostgresPoolNameLister(d.pgPool),
 		}))
 		r.Get("/referrals", referralhttp.NewUserReferralsHandler(referralhttp.Deps{
 			Service: d.invitationService,
