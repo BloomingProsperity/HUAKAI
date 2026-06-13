@@ -56,6 +56,27 @@ type Source interface {
 	CatalogPkgFor(moduleID string) (string, bool)
 }
 
+// ContextSummary is the read-only module-knowledge view the Hermes ops
+// assistant consumes (WAVE H3 — its consumer is GET /v1/hermes/context). It is
+// the merged module identity + capabilities + live state across ALL categories,
+// the same shape an operator sees, so the assistant can ground a root-cause
+// answer in what is wired and how healthy it is.
+//
+// This accessor was intentionally held out of the H2 landing (no consumer yet);
+// it ships now alongside the hermes context endpoint that calls it. It carries
+// module identity, enum statuses, and short diagnostic detail strings only —
+// never secrets or user data.
+func ContextSummary(ctx context.Context, src Source) []ModuleView {
+	if src == nil {
+		return []ModuleView{}
+	}
+	views := Merge(ctx, src, "")
+	if views == nil {
+		return []ModuleView{}
+	}
+	return views
+}
+
 // Merge joins the live snapshot with the static catalog into the operator view,
 // optionally filtered by category (empty category = all). The result preserves
 // the snapshot's sorted-by-ID order.
