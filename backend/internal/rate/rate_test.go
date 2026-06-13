@@ -17,6 +17,7 @@ package rate
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -241,5 +242,86 @@ func TestDecision_ZeroValueIsSafe(t *testing.T) {
 	}
 	if string(d.Reason) != "" {
 		t.Errorf("Decision 零值 Reason 应为空字符串，实际 %q", string(d.Reason))
+	}
+}
+
+// =============================================================================
+// ClearCascade — 真实 upstreamRateService 实现(非 fake)
+// =============================================================================
+
+// fakeCooldownStore 记录 ClearCooldownCascade 被调用的次数与最后的 accountID,
+// 用来证明 upstreamRateService.ClearCascade 真的把清理委托给了 store,而不再是
+// 历史的空 no-op。
+type fakeCooldownStore struct {
+	clearCalls    int
+	lastAccountID int64
+	returnErr     error
+}
+
+func (f *fakeCooldownStore) ClearCooldownCascade(_ context.Context, accountID int64) error {
+	f.clearCalls++
+	f.lastAccountID = accountID
+	return f.returnErr
+}
+
+// 防回归:历史 ClearCascade body 是 `return nil`(空 no-op,合约未兑现)。
+// 本测试注入一个 fake store,断言 ClearCascade 把 accountID 透传给了 store。
+// MUTATION:把 ClearCascade body 改回空 `return nil`(删掉 store 调用)→
+// clearCalls 保持 0 → 测试 RED。少了这个测试,空 no-op 会 vacuously 通过。
+func TestClearCascade_ClearsAllCooldownColumns(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeCooldownStore{}
+	svc := NewUpstreamRateService(nil, 0, WithCooldownStateStore(store))
+
+	if err := svc.ClearCascade(ctx, 77, "admin:7"); err != nil {
+		t.Fatalf("ClearCascade: 不期望错误: %v", err)
+	}
+	if store.clearCalls != 1 {
+		t.Fatalf("ClearCascade 必须把清理委托给 store 恰好 1 次,实际 clearCalls=%d", store.clearCalls)
+	}
+	if store.lastAccountID != 77 {
+		t.Fatalf("ClearCascade accountID 透传错误:期望 77,实际 %d", store.lastAccountID)
+	}
+}
+
+// 错误透传:store 返回错误时 ClearCascade 必须把错误回传给 caller,
+// 否则 admin 会误以为清理成功。MUTATION:吞掉 store 错误改成 `return nil`→
+// 本断言 RED。
+func TestClearCascade_PropagatesStoreError(t *testing.T) {
+	ctx := context.Background()
+	sentinel := errors.New("clear cascade boom")
+	store := &fakeCooldownStore{returnErr: sentinel}
+	svc := NewUpstreamRateService(nil, 0, WithCooldownStateStore(store))
+
+	if err := svc.ClearCascade(ctx, 5, "admin:1"); !errors.Is(err, sentinel) {
+		t.Fatalf("ClearCascade 必须回传 store 错误,实际 %v", err)
+	}
+}
+
+// 零配置默认:未注入 store 时 ClearCascade 必须是安全 no-op(返回 nil),
+// 保持未接线的 Service 不报错。MUTATION:nil-store 时若仍尝试调用 store →
+// nil-pointer panic → 测试 RED。
+func TestClearCascade_NilStoreIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	svc := NewUpstreamRateService(nil, 0) // 无 WithCooldownStateStore
+
+	if err := svc.ClearCascade(ctx, 42, "admin:9"); err != nil {
+		t.Fatalf("nil store 时 ClearCascade 应为安全 no-op,实际 %v", err)
+	}
+}
+
+// 守卫:accountID<=0 时不得触达 store(避免无 WHERE 限定的误清),返回 nil。
+// MUTATION:删掉 accountID>0 守卫 → accountID=0 会到达 store →
+// store.clearCalls 变 1 → 本断言 RED。
+func TestClearCascade_RejectsNonPositiveID(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeCooldownStore{}
+	svc := NewUpstreamRateService(nil, 0, WithCooldownStateStore(store))
+
+	if err := svc.ClearCascade(ctx, 0, "admin:7"); err != nil {
+		t.Fatalf("accountID=0 时 ClearCascade 应返回 nil,实际 %v", err)
+	}
+	if store.clearCalls != 0 {
+		t.Fatalf("accountID=0 不得触达 store,实际 clearCalls=%d", store.clearCalls)
 	}
 }

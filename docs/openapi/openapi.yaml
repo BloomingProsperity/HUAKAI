@@ -9484,13 +9484,20 @@ paths:
         Atomically clears rate_limit_reset_at + overload_until +
         temp_unschedulable_until + model_rate_limits + openai_403_counter
         per docs/specs/rate-limiting.md §Phase F. Generates audit event with
-        actor_id = the admin user.
+        actor_id = the admin user. Returns the reactivated account so the
+        operator UI can confirm the account is no longer benched.
       x-huakai-spec-source: [docs/specs/rate-limiting.md]
       x-huakai-required-role: tenant_operator
       responses:
-        '204':
-          description: Cleared.
+        '200':
+          description: Cleared; returns the reactivated account (credentials redacted).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/provider-accounts/{id}/test:
     parameters:

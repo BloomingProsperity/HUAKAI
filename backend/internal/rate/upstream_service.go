@@ -37,6 +37,15 @@ type SessionWindowStore interface {
 	UpdateProviderAccountSessionWindow5h(context.Context, SessionWindowUpdate) error
 }
 
+// CooldownStateStore atomically clears every cooldown-state column on a single
+// account so a benched upstream account becomes schedulable again. It carries
+// no tenant scope: ClearCascade callers are system-trusted (or have already
+// performed their own tenant ownership guard before delegating), so the impl
+// keys solely on account id.
+type CooldownStateStore interface {
+	ClearCooldownCascade(ctx context.Context, accountID int64) error
+}
+
 type sessionWindowDB interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
@@ -45,10 +54,15 @@ type PostgresSessionWindowStore struct {
 	db sessionWindowDB
 }
 
+type PostgresCooldownStateStore struct {
+	db sessionWindowDB
+}
+
 type upstreamRateService struct {
 	now             func() time.Time
 	defaultCooldown time.Duration
 	sessionWindows  SessionWindowStore
+	cooldownState   CooldownStateStore // nil = no-op (default)
 	transient       TransientCooldownConfig
 	disableCooling  bool
 	rulesProvider   AccountErrorRulesProvider // nil = no-op (default)
@@ -74,6 +88,15 @@ func WithTransientCooldown(duration time.Duration) UpstreamRateServiceOption {
 func WithAccountErrorRulesProvider(p AccountErrorRulesProvider) UpstreamRateServiceOption {
 	return func(s *upstreamRateService) {
 		s.rulesProvider = p
+	}
+}
+
+// WithCooldownStateStore injects the store that backs ClearCascade. A nil
+// store (the default) preserves zero-config no-op behaviour, so ClearCascade
+// stays a safe no-op until production wires a real store.
+func WithCooldownStateStore(store CooldownStateStore) UpstreamRateServiceOption {
+	return func(s *upstreamRateService) {
+		s.cooldownState = store
 	}
 }
 
@@ -114,6 +137,40 @@ SET session_window_5h_start = $2,
 WHERE id = $1
   AND deleted_at IS NULL
 `, update.ProviderAccountID, update.WindowStart.UTC(), update.WindowEnd.UTC(), update.Status)
+	return err
+}
+
+func NewPostgresCooldownStateStore(db sessionWindowDB) *PostgresCooldownStateStore {
+	return &PostgresCooldownStateStore{db: db}
+}
+
+// ClearCooldownCascade clears every cooldown-state column on one account in a
+// single atomic UPDATE: rate-limit (3 cols), overload (1), temp-unschedulable
+// (3), model_rate_limits jsonb, and the OpenAI-403 counter window (2). This is
+// the same column set the tenant-scoped admin clear-rate-limit path resets;
+// here the WHERE is id-only (no tenant) because the caller is system-trusted
+// or has already enforced ownership. Clearing already-clear columns is a safe
+// idempotent no-op.
+func (s *PostgresCooldownStateStore) ClearCooldownCascade(ctx context.Context, accountID int64) error {
+	if s == nil || s.db == nil || accountID <= 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx, `
+UPDATE provider_accounts
+SET rate_limited_at = NULL,
+    rate_limit_reset_at = NULL,
+    rate_limit_reason = NULL,
+    overload_until = NULL,
+    temp_unschedulable_until = NULL,
+    temp_unschedulable_reason = NULL,
+    temp_unschedulable_rule_index = NULL,
+    model_rate_limits = '{}'::jsonb,
+    openai_403_counter = 0,
+    openai_403_window_start = NULL,
+    updated_at = now()
+WHERE id = $1
+  AND deleted_at IS NULL
+`, accountID)
 	return err
 }
 
@@ -190,11 +247,18 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 	return dec, nil
 }
 
+// ClearCascade honors the rate.Service contract (rate.go §ClearCascade):
+// atomically clear all cooldown state for one account. It delegates to the
+// injected CooldownStateStore. A nil store (the zero-config default) keeps it a
+// safe no-op so an unwired Service does not error. actorID is carried for the
+// contract signature and audit symmetry but the store clears by id only — the
+// admin HTTP path owns the tenant-scoped audit row.
 func (s *upstreamRateService) ClearCascade(ctx context.Context, accountID int64, actorID string) error {
-	_ = ctx
-	_ = accountID
 	_ = actorID
-	return nil
+	if s == nil || s.cooldownState == nil || accountID <= 0 {
+		return nil
+	}
+	return s.cooldownState.ClearCooldownCascade(ctx, accountID)
 }
 
 func (s *upstreamRateService) UpdateSessionWindow(ctx context.Context, accountID int64, headers http.Header) error {

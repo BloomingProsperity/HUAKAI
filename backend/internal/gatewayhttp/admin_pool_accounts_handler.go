@@ -600,9 +600,10 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 			return
 		}
 		actorID := fmt.Sprintf("%d", ident.TokenID)
-		if _, err := d.Store.ClearProviderAccountRateLimit(r.Context(), admindb.ClearProviderAccountRateLimitParams{
+		account, err := d.Store.ClearProviderAccountRateLimit(r.Context(), admindb.ClearProviderAccountRateLimitParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
-		}); err != nil {
+		})
+		if err != nil {
 			writeProviderAccountReadError(w, err, "provider_account_clear_rate_limit_failed")
 			return
 		}
@@ -612,7 +613,10 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		// Return the reactivated account row (the UPDATE...RETURNING already
+		// gives us the post-clear state) so the operator UI sees the account is
+		// no longer benched, instead of an opaque 204.
+		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
 	}
 }
 
