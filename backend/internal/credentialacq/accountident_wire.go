@@ -26,7 +26,7 @@ func AttachIdentity(candidate *CredentialCandidate, identity accountident.Identi
 	}
 	accountID := strings.TrimSpace(identity.AccountID)
 	candidate.AccountIDSource = strings.TrimSpace(identity.Source)
-	if accountID == "" {
+	if identity.Empty() {
 		// Record provenance even when nothing was extracted so the UI can show the
 		// binding fell back to manual, but add no id/email keys.
 		if candidate.AccountIDSource != "" {

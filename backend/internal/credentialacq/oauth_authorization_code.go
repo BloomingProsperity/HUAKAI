@@ -42,6 +42,14 @@ type oauthTokenResponse struct {
 	TokenType    string          `json:"token_type"`
 	Scope        string          `json:"scope"`
 	ExpiresIn    json.RawMessage `json:"expires_in"`
+	// Anthropic claude_ai_oauth carries the upstream account identity inline in the
+	// token-exchange response body. Other providers leave these empty and read the
+	// identity from the id_token claim instead, so the fields are purely additive.
+	Account struct {
+		UUID         string `json:"uuid"`
+		EmailAddress string `json:"email_address"`
+	} `json:"account"`
+	Email string `json:"email"`
 }
 
 func newAuthorizationCodeOAuthExchanger(vendor, authMode string, shape TokenShape, defaults ...OAuthClientConfig) authorizationCodeOAuthExchanger {

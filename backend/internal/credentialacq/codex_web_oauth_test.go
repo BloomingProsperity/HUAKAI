@@ -84,7 +84,7 @@ func TestCodexWebOAuthCallbackPostsAuthorizationCodeAndYieldsSessionAccessRefres
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"cx-access","refresh_token":"cx-refresh","id_token":"cx-id","scope":"openid email profile offline_access","expires_in":1800,"token_type":"Bearer"}`)),
 		}, nil
 	})}
-	exchanger := NewCodexWebOAuthExchangerWithClient(client).(codexWebOAuthExchanger)
+	exchanger := NewCodexWebOAuthExchangerWithClientAndAdminCallbackAllowlist(client, nil).(codexWebOAuthExchanger)
 	exchanger.now = func() time.Time { return now }
 	registry := NewExchangerRegistry()
 	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth), exchanger); err != nil {
@@ -151,7 +151,7 @@ func TestCodexWebOAuthCallbackRejectsAccessOnlyResponse(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT-without-refresh","expires_in":3600,"token_type":"Bearer"}`)),
 		}, nil
 	})}
-	exchanger := NewCodexWebOAuthExchangerWithClient(client).(codexWebOAuthExchanger)
+	exchanger := NewCodexWebOAuthExchangerWithClientAndAdminCallbackAllowlist(client, nil).(codexWebOAuthExchanger)
 	exchanger.now = func() time.Time { return now }
 	start, err := exchanger.StartOAuthFlow(context.Background(), store, codexWebStartInput(903), OAuthClientConfig{})
 	if err != nil {
@@ -282,7 +282,7 @@ func TestIsCodexWebOAuthExchangerWithExplicitClientDistinguishesInjectedClient(t
 	if IsCodexWebOAuthExchangerWithExplicitClient(newCodexWebOAuthExchanger()) {
 		t.Fatal("zero-value codex web exchanger reported explicit client")
 	}
-	if !IsCodexWebOAuthExchangerWithExplicitClient(NewCodexWebOAuthExchangerWithClient(&http.Client{})) {
+	if !IsCodexWebOAuthExchangerWithExplicitClient(NewCodexWebOAuthExchangerWithClientAndAdminCallbackAllowlist(&http.Client{}, nil)) {
 		t.Fatal("injected client was not detected")
 	}
 	if IsCodexWebOAuthExchangerWithExplicitClient(NewPKCEFakeExchanger(TokenShapeAnySessionOrAccess)) {

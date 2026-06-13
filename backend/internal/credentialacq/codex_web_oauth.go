@@ -37,12 +37,6 @@ func newCodexWebOAuthExchanger() codexWebOAuthExchanger {
 	return codexWebOAuthExchanger{}
 }
 
-// NewCodexWebOAuthExchangerWithClient 返回带显式 HTTP client 的 codex web exchanger。
-// 生产 wiring 用它注入 OAuth-grade SSRF 防护 client,测试可注入 mock transport。
-func NewCodexWebOAuthExchangerWithClient(client *http.Client) Exchanger {
-	return codexWebOAuthExchanger{httpClient: client}
-}
-
 // NewCodexWebOAuthExchangerWithClientAndAdminCallbackAllowlist 返回带静态 admin
 // callback allowlist 的 codex web exchanger。allowlist 必须来自 operator 配置或
 // 测试注入,不能来自 OAuth 启动请求体。

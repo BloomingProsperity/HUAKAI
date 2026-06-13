@@ -209,6 +209,101 @@ func TestClaudeAIOAuthExchangeUsesJSONBody(t *testing.T) {
 	}
 }
 
+// TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity is the discriminating,
+// self-proving guard for the live-path Anthropic account-identity seam: the same
+// exchange code runs once with account.uuid/email_address present in the token
+// response (correct path) and once with the account object absent (degraded path),
+// and asserts the two diverge exactly on the captured identity. Deleting the
+// AttachIdentity call in anthropic_oauth.go flips the correct-path assertions red
+// while the degraded path stays green — non-discriminating fixtures cannot.
+func TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
+	const (
+		wantUUID  = "acct-uuid-7f3a"
+		wantEmail = "alice@example.com"
+	)
+	cases := []struct {
+		name       string
+		respBody   string
+		wantID     string
+		wantEmail  string
+		wantRedact bool
+	}{
+		{
+			name:       "account_present_captures_identity",
+			respBody:   `{"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer","account":{"uuid":"` + wantUUID + `","email_address":"` + wantEmail + `"}}`,
+			wantID:     wantUUID,
+			wantEmail:  wantEmail,
+			wantRedact: true,
+		},
+		{
+			name:       "account_absent_falls_back_manual_no_id",
+			respBody:   `{"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}`,
+			wantID:     "",
+			wantEmail:  "",
+			wantRedact: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 6, 13, 9, 0, 0, 0, time.UTC)
+			store, _ := newClaudeAIOAuthTestStore(t, now)
+			exchanger := claudeAIOAuthExchanger{now: func() time.Time { return now }}
+			registry := NewExchangerRegistry()
+			if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
+				t.Fatalf("RegisterExchanger: %v", err)
+			}
+			restore := withClaudeAIOAuthRoundTripper(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tc.respBody)),
+				}, nil
+			}))
+			defer restore()
+
+			start, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
+				TenantID: 1, ProviderAccountID: 104,
+				Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
+				ActorID: "owner", ActorRole: "platform_admin",
+			}, OAuthClientConfig{})
+			if err != nil {
+				t.Fatalf("StartOAuthFlow: %v", err)
+			}
+			candidate, _, err := CompleteOAuthCallbackWithRegistry(context.Background(), store, start.Session.ID, start.State, "anthropic-auth-code", registry)
+			if err != nil {
+				t.Fatalf("CompleteOAuthCallbackWithRegistry: %v", err)
+			}
+			// Both paths must still yield a usable credential — identity capture is
+			// metadata only and must never block acquisition.
+			var payload map[string]any
+			if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
+				t.Fatalf("candidate payload JSON: %v", err)
+			}
+			if got := stringFieldFromAny(payload["access_token"]); got != "AT" {
+				t.Fatalf("access_token=%q want AT (acquisition must succeed on both paths)", got)
+			}
+			if candidate.ExternalAccountID != tc.wantID {
+				t.Fatalf("ExternalAccountID=%q want %q", candidate.ExternalAccountID, tc.wantID)
+			}
+			if candidate.ExternalAccountEmail != tc.wantEmail {
+				t.Fatalf("ExternalAccountEmail=%q want %q", candidate.ExternalAccountEmail, tc.wantEmail)
+			}
+			gotRedactID, _ := candidate.RedactedContext[RedactedKeyUpstreamAccountID].(string)
+			if tc.wantRedact {
+				if gotRedactID != tc.wantID {
+					t.Fatalf("RedactedContext[%s]=%q want %q", RedactedKeyUpstreamAccountID, gotRedactID, tc.wantID)
+				}
+			} else if gotRedactID != "" {
+				t.Fatalf("RedactedContext[%s]=%q want absent on degraded path", RedactedKeyUpstreamAccountID, gotRedactID)
+			}
+			// The raw id_token / account object must never leak into RedactedContext.
+			if v, ok := candidate.RedactedContext["account"]; ok {
+				t.Fatalf("RedactedContext leaked raw account object: %v", v)
+			}
+		})
+	}
+}
+
 func TestClaudeAIOAuthExchangeRejectsInvalidGrant(t *testing.T) {
 	now := time.Date(2026, 5, 26, 12, 20, 0, 0, time.UTC)
 	store, _ := newClaudeAIOAuthTestStore(t, now)
