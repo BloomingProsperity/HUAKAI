@@ -83,10 +83,7 @@ func detectVision(doc looseRequest) bool {
 			return true
 		}
 	}
-	if contentHasVisionPart(doc.Input) {
-		return true
-	}
-	return false
+	return contentHasVisionPart(doc.Input)
 }
 
 // contentHasVisionPart walks a content value that may be a bare string, an
