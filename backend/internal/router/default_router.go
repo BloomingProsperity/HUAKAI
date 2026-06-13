@@ -145,7 +145,7 @@ func stampSnapshot(modelStamp, routerVersion string) string {
 // requiredCapabilities maps Features into the capability strings the
 // Pool's intra-pool gate uses. Order is stable so audit comparisons work.
 func requiredCapabilities(f RequestFeatures) []string {
-	caps := make([]string, 0, 4)
+	caps := make([]string, 0, 5)
 	if f.Stream {
 		caps = append(caps, "stream")
 	}
@@ -157,6 +157,9 @@ func requiredCapabilities(f RequestFeatures) []string {
 	}
 	if f.WantsJSON {
 		caps = append(caps, "json")
+	}
+	if f.WantsAudio {
+		caps = append(caps, "audio")
 	}
 	return caps
 }

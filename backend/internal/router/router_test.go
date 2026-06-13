@@ -297,9 +297,9 @@ func assertAttempts(t *testing.T, plan RoutePlan, want []wantAttempt) {
 }
 
 // TestRequiredCapabilities_EmitsMapperVocabularyNotProtoTokens 锁死能力词表:
-// requiredCapabilities 必须吐 {stream,tools,vision,json} (账号 capability_flags 被
-// 戳的同一套词),而不是 proto 层的 'image'/'tool_use'。词表错位时 @> 会排除所有账号 ->
-// 恒 no_eligible_account 503。
+// requiredCapabilities 必须吐 {stream,tools,vision,json,audio} (账号 capability_flags
+// 被戳的同一套词,registry 的 model_capabilities 也认 "audio"),而不是 proto 层的
+// 'image'/'tool_use'。词表错位时 @> 会排除所有账号 -> 恒 no_eligible_account 503。
 // mutation: 把 mapper 里的 "vision" 改成 "image" 或 "tools" 改成 "tool_use" -> 转红。
 func TestRequiredCapabilities_EmitsMapperVocabularyNotProtoTokens(t *testing.T) {
 	caps := requiredCapabilities(RequestFeatures{
@@ -307,23 +307,47 @@ func TestRequiredCapabilities_EmitsMapperVocabularyNotProtoTokens(t *testing.T) 
 		WantsToolUse: true,
 		WantsVision:  true,
 		WantsJSON:    true,
+		WantsAudio:   true,
 	})
 	got := map[string]bool{}
 	for _, c := range caps {
 		got[c] = true
 	}
-	for _, want := range []string{"stream", "tools", "vision", "json"} {
+	for _, want := range []string{"stream", "tools", "vision", "json", "audio"} {
 		if !got[want] {
 			t.Fatalf("requiredCapabilities missing token %q; got %v", want, caps)
 		}
 	}
-	for _, forbidden := range []string{"image", "tool_use", "reasoning_high", "audio", "long_context"} {
+	for _, forbidden := range []string{"image", "tool_use", "reasoning_high", "input_audio", "long_context"} {
 		if got[forbidden] {
 			t.Fatalf("requiredCapabilities emitted off-vocabulary token %q; would exclude every account; got %v", forbidden, caps)
 		}
 	}
-	if len(caps) != 4 {
-		t.Fatalf("requiredCapabilities should emit exactly the 4 locked tokens; got %v", caps)
+	if len(caps) != 5 {
+		t.Fatalf("requiredCapabilities should emit exactly the 5 locked tokens; got %v", caps)
+	}
+}
+
+// TestRequiredCapabilities_AudioTokenDiscriminates 锁死 audio 词表映射: WantsAudio
+// 必须且只能吐 capability token "audio" (registry model_capabilities 与账号
+// capability_flags 共用的同一套词),不带任何其它约束。这样 SelectionRequest
+// .RequiredCapabilities 经 @> 过滤只筛掉缺 audio 的账号,不误排他人。
+// mutation: 删 mapper 里 `if f.WantsAudio { append "audio" }` 这一支 -> 第一个断言
+// (audio token 缺失) 转红;把 token 写成 "input_audio"/"voice" 等错词 -> 同样转红。
+func TestRequiredCapabilities_AudioTokenDiscriminates(t *testing.T) {
+	caps := requiredCapabilities(RequestFeatures{WantsAudio: true})
+	if len(caps) != 1 || caps[0] != "audio" {
+		t.Fatalf("WantsAudio-only request must emit exactly [audio]; got %v", caps)
+	}
+
+	// Negative arm: a request that does NOT want audio must never carry the
+	// audio constraint (otherwise every text-only call would be pinned to
+	// audio-class accounts and starve). Run a correct-vs-baseline contrast.
+	noAudio := requiredCapabilities(RequestFeatures{Stream: true, WantsVision: true})
+	for _, c := range noAudio {
+		if c == "audio" {
+			t.Fatalf("non-audio request leaked the audio token; got %v", noAudio)
+		}
 	}
 }
 
