@@ -70,13 +70,18 @@ const (
 	KeySiteLogo                       SettingKey = "site_logo"
 	KeySiteFooter                     SettingKey = "site_footer"
 	KeySiteHomeContent                SettingKey = "site_home_content"
+	// KeyAdminNotificationEmail is the operator address the daily ops-inspection
+	// report is mailed to. Empty by default: an unconfigured deployment resolves
+	// no recipient and the inspection worker stays off (fail-safe). An env
+	// fallback also exists at the worker layer.
+	KeyAdminNotificationEmail SettingKey = "admin_notification_email"
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeyAdminNotificationEmail}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -128,6 +133,7 @@ var (
 		KeySiteLogo:                       "",
 		KeySiteFooter:                     "",
 		KeySiteHomeContent:                "",
+		KeyAdminNotificationEmail:         "",
 	}
 )
 
@@ -194,6 +200,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyEmailDomainAllowlist || key == KeyReservedEmailLocalparts {
 		return validateCSVPublicTextValue(key, value)
 	}
+	if key == KeyAdminNotificationEmail {
+		return validateOptionalEmailValue(key, value)
+	}
 	if value == "" {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
@@ -238,6 +247,32 @@ func validateOptionalPublicTextValue(key SettingKey, value string) (string, erro
 		return "", nil
 	}
 	return validatePublicTextValue(key, value)
+}
+
+// validateOptionalEmailValue accepts an empty value (the safe default that keeps
+// the daily-inspection worker off) or a single, syntactically plausible email
+// address. It rejects control characters, internal whitespace, multi-address
+// lists, and addresses missing a local-part/host around exactly one "@" — enough
+// to stop a malformed recipient from reaching the SMTP header without pulling in
+// a full RFC 5322 parser.
+func validateOptionalEmailValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	if _, err := validatePublicTextValue(key, value); err != nil {
+		return "", err
+	}
+	if strings.ContainsAny(value, " \t\r\n,;") {
+		return "", fmt.Errorf("%w: %s must be a single address without whitespace", ErrInvalidValue, key)
+	}
+	at := strings.IndexByte(value, '@')
+	if at <= 0 || at != strings.LastIndexByte(value, '@') || at == len(value)-1 {
+		return "", fmt.Errorf("%w: %s must be a valid email address", ErrInvalidValue, key)
+	}
+	if !strings.Contains(value[at+1:], ".") {
+		return "", fmt.Errorf("%w: %s host must contain a dot", ErrInvalidValue, key)
+	}
+	return value, nil
 }
 
 func validateStringArrayValue(key SettingKey, value string) (string, error) {
