@@ -54,6 +54,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
+	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 	"github.com/BloomingProsperity/HUAKAI/internal/notify"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/obsconfig"
@@ -196,6 +197,11 @@ type deps struct {
 	usageRetentionWorker *usageretention.Worker
 	sessionCapRegistry   *sessioncap.Registry
 	recentReqRing        *recentreq.Ring
+	// moduleRegistry is the WAVE H2 runtime module-knowledge spine queried by the
+	// admin /admin/v1/modules endpoint and (later) the Hermes ops assistant. It is
+	// off every request hot path; populated near the end of buildGatewayRuntime
+	// once probe-referenced services are wired.
+	moduleRegistry *moduleregistry.Registry
 }
 
 type refundReceiptAppender interface {
@@ -1224,6 +1230,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.subscriptionExpiryWorker = subscriptionExpiryWorker
 	rt.subscriptionReminderWorker = subscriptionReminderWorker
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
+	// WAVE H2: build the module-knowledge spine LAST, after all probe-referenced
+	// services (settler, selector, credential store + scheduler) are wired, so the
+	// seed probes capture live (not nil) references. Off the request hot path.
+	d.moduleRegistry = buildModuleRegistry(d)
 	ready = true
 	return rt, nil
 }

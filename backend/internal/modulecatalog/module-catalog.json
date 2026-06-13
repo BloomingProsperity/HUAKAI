@@ -1,0 +1,662 @@
+{
+  "source": "docs/process/feature-tree/feature-tree.json",
+  "generated": "2026-05-30",
+  "modules": [
+    {
+      "pkg": "admin",
+      "section": "§1 用户与权限",
+      "feature_id": "F-SEC-002",
+      "title": "管理员权限",
+      "status": "tested",
+      "parity": "平台/租户 operator+审计(LOW)",
+      "pkgs": [
+        "admin",
+        "adminhttp"
+      ]
+    },
+    {
+      "pkg": "adminhttp",
+      "section": "§10 可观测与运维",
+      "feature_id": "F-OPS-001",
+      "title": "Admin Retry / 故障排查面板",
+      "status": "partial",
+      "parity": "后端动作在,缺操作员可用页面(MED)",
+      "pkgs": [
+        "adminhttp"
+      ]
+    },
+    {
+      "pkg": "anthropicoauth",
+      "section": "§3 账号与凭证",
+      "feature_id": "F-AUTH-005",
+      "title": "OAuth 交换/回调安全",
+      "status": "tested",
+      "parity": "fail-close 假/孤儿 exchanger+终态守卫+claude_ai loopback-only;HTTPS-admin parity roadmap",
+      "pkgs": [
+        "credentialacq",
+        "anthropicoauth"
+      ]
+    },
+    {
+      "pkg": "auditledger",
+      "section": "§9 审计与信任链",
+      "feature_id": "F-TRUST-001",
+      "title": "Audit Ledger / hash-chain / Ed25519 / PubKey registry",
+      "status": "wired",
+      "parity": "后端真实;Merkle 实为 hash-chain 非标准 inclusion proof(MED)",
+      "pkgs": [
+        "auditledger",
+        "sign"
+      ]
+    },
+    {
+      "pkg": "auth",
+      "section": "§1 用户与权限",
+      "feature_id": "F-AUTH-001",
+      "title": "用户注册/登录",
+      "status": "tested",
+      "parity": "缺 2FA/验证码/默认权益初始化(vs sub2api MED)",
+      "pkgs": [
+        "userauth",
+        "auth"
+      ]
+    },
+    {
+      "pkg": "balancehold",
+      "section": "§4 账号池 / 资源池",
+      "feature_id": "F-CONC-001",
+      "title": "并发槽位",
+      "status": "wired",
+      "parity": "原子获取测试通过,缺 orphan sweep/重试(MED)",
+      "pkgs": [
+        "pool",
+        "balancehold"
+      ]
+    },
+    {
+      "pkg": "billing",
+      "section": "§8 用量与计费 (money-path)",
+      "feature_id": "F-BILL-001",
+      "title": "价格表 / Pricing Snapshot",
+      "status": "partial",
+      "parity": "版本表有,默认价格空,细分 bucket 不足;new-api 缓存差价计费(MED)",
+      "pkgs": [
+        "billing"
+      ]
+    },
+    {
+      "pkg": "binding",
+      "section": "§4 账号池 / 资源池",
+      "feature_id": "F-POOL-001/F-GROUP-001",
+      "title": "账号/用户/API Key/模型 绑定",
+      "status": "partial",
+      "parity": "❗绑定是权益+隔离+调度共同地基,缺口大;sub2api 显式组/new-api 用户组+令牌组(HIGH)",
+      "pkgs": [
+        "binding",
+        "pool"
+      ]
+    },
+    {
+      "pkg": "cache",
+      "section": "§16 文档 / 测试 / 发布 + 部署",
+      "feature_id": "-",
+      "title": "Go / Rust / Frontend 测试",
+      "status": "partial",
+      "parity": "Go 测试多;前端只 type-check 无测试;Rust NO-GO(MED)",
+      "pkgs": [
+        "db",
+        "cache",
+        "registry"
+      ]
+    },
+    {
+      "pkg": "cache_routing",
+      "section": "§7 路由与调度",
+      "feature_id": "F-CACHE-001",
+      "title": "PASR cache-locality routing",
+      "status": "partial",
+      "parity": "✓深核:cache_routing 仅 2 文件(比 codex 暗示薄);segment/locality 雏形,HUAKAI 独有成本优化方向(MED)",
+      "pkgs": [
+        "cache_routing",
+        "cachemetrics"
+      ]
+    },
+    {
+      "pkg": "cachemetrics",
+      "section": "§7 路由与调度",
+      "feature_id": "F-CACHE-001",
+      "title": "PASR cache-locality routing",
+      "status": "partial",
+      "parity": "✓深核:cache_routing 仅 2 文件(比 codex 暗示薄);segment/locality 雏形,HUAKAI 独有成本优化方向(MED)",
+      "pkgs": [
+        "cache_routing",
+        "cachemetrics"
+      ]
+    },
+    {
+      "pkg": "channelhealth",
+      "section": "§3 账号与凭证",
+      "feature_id": "F-AUTH-005",
+      "title": "凭证轮换/健康巡检",
+      "status": "partial",
+      "parity": "单凭证轮换有,缺批量+主动巡检(MED)",
+      "pkgs": [
+        "credentialworker",
+        "channelhealth"
+      ]
+    },
+    {
+      "pkg": "clienterr",
+      "section": "§5 网关核心",
+      "feature_id": "F-GW-002",
+      "title": "Error Normalization + transport taxonomy",
+      "status": "wired",
+      "parity": "❗codex 漏列细节;类型化 StreamEndClass 强于三参照,provider-specific 解析不足(MED)",
+      "pkgs": [
+        "transport",
+        "clienterr"
+      ]
+    },
+    {
+      "pkg": "clientid",
+      "section": "§11 安全与隐私",
+      "feature_id": "F-SEC-005",
+      "title": "可信代理 client IP 提取 (anti-spoof)",
+      "status": "tested",
+      "parity": "S2-109:fail-closed trusted-proxy CIDR+rightmost-untrusted XFF;强于 sub2api leftmost/new-api trust-any/CLIProxyAPI trust-peer",
+      "pkgs": [
+        "clientip",
+        "clientid"
+      ]
+    },
+    {
+      "pkg": "clientip",
+      "section": "§11 安全与隐私",
+      "feature_id": "F-SEC-005",
+      "title": "可信代理 client IP 提取 (anti-spoof)",
+      "status": "tested",
+      "parity": "S2-109:fail-closed trusted-proxy CIDR+rightmost-untrusted XFF;强于 sub2api leftmost/new-api trust-any/CLIProxyAPI trust-peer",
+      "pkgs": [
+        "clientip",
+        "clientid"
+      ]
+    },
+    {
+      "pkg": "clientshape",
+      "section": "§12 反封禁 / 网络策略",
+      "feature_id": "F-ACTIVE-DETECT",
+      "title": "TLS / H2 / Header 指纹控制面",
+      "status": "partial",
+      "parity": "❗Go uTLS 有真实现,H2/header 控制面不完整;依赖 Rust 上线;CLIProxyAPI uTLS 库(HIGH)",
+      "pkgs": [
+        "clientshape",
+        "transport"
+      ]
+    },
+    {
+      "pkg": "cmd-gateway",
+      "section": "§16 文档 / 测试 / 发布 + 部署",
+      "feature_id": "F-MODE-001",
+      "title": "release-mode 生产硬化",
+      "status": "tested",
+      "parity": "S1-019:unset 不能静默进 dev,必须显式 production 才开硬化(已修);S2-004:production trust-ledger escape flag 启动失败且 validator fail-closed(已修)",
+      "pkgs": [
+        "config",
+        "cmd-gateway"
+      ]
+    },
+    {
+      "pkg": "community",
+      "section": "§14 社区 / 商业增长",
+      "feature_id": "F-COMM-001",
+      "title": "Reward / 返佣 / Tier / 反作弊 / 活动审计",
+      "status": "spec",
+      "parity": "❗仅表+spec,无发放/冻结/退扣/提现/recompute;sub2api/new-api 完整推广闭环(HIGH)",
+      "pkgs": [
+        "community"
+      ]
+    },
+    {
+      "pkg": "config",
+      "section": "§16 文档 / 测试 / 发布 + 部署",
+      "feature_id": "F-MODE-001",
+      "title": "release-mode 生产硬化",
+      "status": "tested",
+      "parity": "S1-019:unset 不能静默进 dev,必须显式 production 才开硬化(已修);S2-004:production trust-ledger escape flag 启动失败且 validator fail-closed(已修)",
+      "pkgs": [
+        "config",
+        "cmd-gateway"
+      ]
+    },
+    {
+      "pkg": "credentialacq",
+      "section": "§3 账号与凭证",
+      "feature_id": "F-AUTH-005",
+      "title": "OAuth 交换/回调安全",
+      "status": "tested",
+      "parity": "fail-close 假/孤儿 exchanger+终态守卫+claude_ai loopback-only;HTTPS-admin parity roadmap",
+      "pkgs": [
+        "credentialacq",
+        "anthropicoauth"
+      ]
+    },
+    {
+      "pkg": "credentialstore",
+      "section": "§3 账号与凭证",
+      "feature_id": "F-CRED-001",
+      "title": "凭证存储(7 类,V2 AES-GCM)",
+      "status": "tested",
+      "parity": "Credential V2 AES-GCM+AAD,强于三参照(LOW)",
+      "pkgs": [
+        "credentialstore"
+      ]
+    },
+    {
+      "pkg": "credentialworker",
+      "section": "§3 账号与凭证",
+      "feature_id": "F-AUTH-005",
+      "title": "凭证轮换/健康巡检",
+      "status": "partial",
+      "parity": "单凭证轮换有,缺批量+主动巡检(MED)",
+      "pkgs": [
+        "credentialworker",
+        "channelhealth"
+      ]
+    },
+    {
+      "pkg": "db",
+      "section": "§16 文档 / 测试 / 发布 + 部署",
+      "feature_id": "-",
+      "title": "Go / Rust / Frontend 测试",
+      "status": "partial",
+      "parity": "Go 测试多;前端只 type-check 无测试;Rust NO-GO(MED)",
+      "pkgs": [
+        "db",
+        "cache",
+        "registry"
+      ]
+    },
+    {
+      "pkg": "dlq",
+      "section": "§10 可观测与运维",
+      "feature_id": "F-OBS-005",
+      "title": "DLQ / outbox / savepoint",
+      "status": "wired",
+      "parity": "❗codex 漏列 billing 集成;S2-096 replay 失败浮出 MarkFailed err 已修;DLQ operator replay 强于三参照(MED)",
+      "pkgs": [
+        "dlq"
+      ]
+    },
+    {
+      "pkg": "email",
+      "section": "§16 文档 / 测试 / 发布 + 部署",
+      "feature_id": "-",
+      "title": "邮件发送 cooldown",
+      "status": "tested",
+      "parity": "S2-079:cooldown 改 consume-on-success+SMTP 4xx/5xx 分类(已修)",
+      "pkgs": [
+        "email"
+      ]
+    },
+    {
+      "pkg": "eventbus",
+      "section": "§10 可观测与运维",
+      "feature_id": "F-OBS-004",
+      "title": "Event Bus / Hermes 编排",
+      "status": "partial",
+      "parity": "✓深核:eventbus 4 文件存在;codex 漏列;异步 backbone(14-segment chain spec),实现部分(MED)",
+      "pkgs": [
+        "eventbus",
+        "hermes",
+        "hermeschat",
+        "hermeshttp"
+      ]
+    },
+    {
+      "pkg": "gateway",
+      "section": "§13 Juice (模型路由透明)",
+      "feature_id": "-",
+      "title": "EmitModelMismatchLoss",
+      "status": "deadcode",
+      "parity": "❗函数+测试存在,生产零调用=死代码;1-2 天接线点亮差异化(HIGH)",
+      "pkgs": [
+        "gateway"
+      ]
+    },
+    {
+      "pkg": "gatewayhttp",
+      "section": "§16 文档 / 测试 / 发布 + 部署",
+      "feature_id": "-",
+      "title": "JSON error writer 健壮性",
+      "status": "tested",
+      "parity": "S2-148:控制字符不再打坏响应(encoding/json)(已修)",
+      "pkgs": [
+        "gatewayhttp"
+      ]
+    },
+    {
+      "pkg": "hermes",
+      "section": "§10 可观测与运维",
+      "feature_id": "F-OBS-004",
+      "title": "Event Bus / Hermes 编排",
+      "status": "partial",
+      "parity": "✓深核:eventbus 4 文件存在;codex 漏列;异步 backbone(14-segment chain spec),实现部分(MED)",
+      "pkgs": [
+        "eventbus",
+        "hermes",
+        "hermeschat",
+        "hermeshttp"
+      ]
+    },
+    {
+      "pkg": "hermeschat",
+      "section": "§10 可观测与运维",
+      "feature_id": "F-OBS-004",
+      "title": "Event Bus / Hermes 编排",
+      "status": "partial",
+      "parity": "✓深核:eventbus 4 文件存在;codex 漏列;异步 backbone(14-segment chain spec),实现部分(MED)",
+      "pkgs": [
+        "eventbus",
+        "hermes",
+        "hermeschat",
+        "hermeshttp"
+      ]
+    },
+    {
+      "pkg": "hermeshttp",
+      "section": "§10 可观测与运维",
+      "feature_id": "F-OBS-004",
+      "title": "Event Bus / Hermes 编排",
+      "status": "partial",
+      "parity": "✓深核:eventbus 4 文件存在;codex 漏列;异步 backbone(14-segment chain spec),实现部分(MED)",
+      "pkgs": [
+        "eventbus",
+        "hermes",
+        "hermeschat",
+        "hermeshttp"
+      ]
+    },
+    {
+      "pkg": "obs",
+      "section": "§10 可观测与运维",
+      "feature_id": "F-OPS-001",
+      "title": "Request Log / Attempt / Ops Trace",
+      "status": "wired",
+      "parity": "后端有(Slice4 Obs Reader),前端排障面弱(MED)",
+      "pkgs": [
+        "obs",
+        "observability"
+      ]
+    },
+    {
+      "pkg": "observability",
+      "section": "§10 可观测与运维",
+      "feature_id": "F-OBS-002",
+      "title": "可配置外部告警 (OpenTelemetry)",
+      "status": "partial",
+      "parity": "OTel 契约方向;exporter 待接(MED)",
+      "pkgs": [
+        "observability"
+      ]
+    },
+    {
+      "pkg": "openapicheck",
+      "section": "§16 文档 / 测试 / 发布 + 部署",
+      "feature_id": "-",
+      "title": "OpenAPI 契约",
+      "status": "partial",
+      "parity": "存在但有契约 drift(get/post 错位)(MED)",
+      "pkgs": [
+        "openapicheck"
+      ]
+    },
+    {
+      "pkg": "pool",
+      "section": "§4 账号池 / 资源池",
+      "feature_id": "F-CONC-001",
+      "title": "并发槽位",
+      "status": "wired",
+      "parity": "原子获取测试通过,缺 orphan sweep/重试(MED)",
+      "pkgs": [
+        "pool",
+        "balancehold"
+      ]
+    },
+    {
+      "pkg": "privacy",
+      "section": "§11 安全与隐私",
+      "feature_id": "F-PRIVACY-001",
+      "title": "Secret Redaction / Body zeroize / Log Guard",
+      "status": "tested",
+      "parity": "body zeroize+sentinel 测试,强于三参照(LOW)",
+      "pkgs": [
+        "privacy",
+        "redact"
+      ]
+    },
+    {
+      "pkg": "proto",
+      "section": "§2 模型接入",
+      "feature_id": "F-PROTO-002",
+      "title": "Anthropic Messages",
+      "status": "wired",
+      "parity": "刚补非流式;跨协议保真待补(MED)",
+      "pkgs": [
+        "proto"
+      ]
+    },
+    {
+      "pkg": "protosse",
+      "section": "§5 网关核心",
+      "feature_id": "F-GW-002",
+      "title": "Streaming 转发",
+      "status": "partial",
+      "parity": "框架较强,provider 长尾有坑;bounded 1MiB buffer(MED)",
+      "pkgs": [
+        "gatewayhttp",
+        "protosse",
+        "transport"
+      ]
+    },
+    {
+      "pkg": "provider",
+      "section": "§2 模型接入",
+      "feature_id": "F-PROTO-002",
+      "title": "OpenAI Codex 接入",
+      "status": "partial",
+      "parity": "❗仅 session passthrough,非完整接入;sub2api Codex 导入/CLIProxyAPI 专门 executor/new-api Codex 渠道(HIGH)",
+      "pkgs": [
+        "provider",
+        "hermes"
+      ]
+    },
+    {
+      "pkg": "rate",
+      "section": "§11 安全与隐私",
+      "feature_id": "F-SEC-001/F-SEC-004",
+      "title": "通用 API 限流",
+      "status": "partial",
+      "parity": "❗F-RATE-001 上游冷却有,通用 per-IP/per-user 限流未落地;三参照都有(HIGH)",
+      "pkgs": [
+        "rate"
+      ]
+    },
+    {
+      "pkg": "redact",
+      "section": "§11 安全与隐私",
+      "feature_id": "F-PRIVACY-001",
+      "title": "Secret Redaction / Body zeroize / Log Guard",
+      "status": "tested",
+      "parity": "body zeroize+sentinel 测试,强于三参照(LOW)",
+      "pkgs": [
+        "privacy",
+        "redact"
+      ]
+    },
+    {
+      "pkg": "registry",
+      "section": "§16 文档 / 测试 / 发布 + 部署",
+      "feature_id": "-",
+      "title": "Go / Rust / Frontend 测试",
+      "status": "partial",
+      "parity": "Go 测试多;前端只 type-check 无测试;Rust NO-GO(MED)",
+      "pkgs": [
+        "db",
+        "cache",
+        "registry"
+      ]
+    },
+    {
+      "pkg": "router",
+      "section": "§7 路由与调度",
+      "feature_id": "F-CONFIG-001",
+      "title": "命名路由策略(weighted/RR/fill-first/risk-pareto)",
+      "status": "partial",
+      "parity": "可近似,缺 operator 可见命名策略;portkey/new-api 有显式策略(MED)",
+      "pkgs": [
+        "router"
+      ]
+    },
+    {
+      "pkg": "settlementrecovery",
+      "section": "§8 用量与计费 (money-path)",
+      "feature_id": "F-OBS-001",
+      "title": "余额扣费 / 配额预留 / 结算 / 退款",
+      "status": "wired",
+      "parity": "❗claim/settle/refund + durable hold 原子预扣(S1-013 已证存在)在;真钱包余额扣减闭环待补;new-api 预扣/补扣/退款完整(HIGH)",
+      "pkgs": [
+        "billing",
+        "balancehold",
+        "settlementrecovery"
+      ]
+    },
+    {
+      "pkg": "sign",
+      "section": "§9 审计与信任链",
+      "feature_id": "F-TRUST-001",
+      "title": "Audit Ledger / hash-chain / Ed25519 / PubKey registry",
+      "status": "wired",
+      "parity": "后端真实;Merkle 实为 hash-chain 非标准 inclusion proof(MED)",
+      "pkgs": [
+        "auditledger",
+        "sign"
+      ]
+    },
+    {
+      "pkg": "tokencheck",
+      "section": "§13 Juice (模型路由透明)",
+      "feature_id": "-",
+      "title": "tokencheck 包 (CrossCheck/CacheVerify)",
+      "status": "deadcode",
+      "parity": "S2-163 已证非完全死(ce31bdf 接了非流式);流式侧覆盖仍弱(MED)",
+      "pkgs": [
+        "tokencheck"
+      ]
+    },
+    {
+      "pkg": "transport",
+      "section": "§12 反封禁 / 网络策略",
+      "feature_id": "F-ACTIVE-DETECT",
+      "title": "TLS / H2 / Header 指纹控制面",
+      "status": "partial",
+      "parity": "❗Go uTLS 有真实现,H2/header 控制面不完整;依赖 Rust 上线;CLIProxyAPI uTLS 库(HIGH)",
+      "pkgs": [
+        "clientshape",
+        "transport"
+      ]
+    },
+    {
+      "pkg": "trust",
+      "section": "§9 审计与信任链",
+      "feature_id": "F-TRUST-001",
+      "title": "Key Rotation / Revocation / CRL",
+      "status": "partial",
+      "parity": "90 天轮换+撤销 registry spec;实现部分(MED)",
+      "pkgs": [
+        "sign",
+        "trust"
+      ]
+    },
+    {
+      "pkg": "trusthttp",
+      "section": "§9 审计与信任链",
+      "feature_id": "F-RECEIPT-VERIFY",
+      "title": "反掺水 / 用户可验证账单 (Trust Chain UX)",
+      "status": "partial",
+      "parity": "方向强于三参照,前端仍 mock(MED)",
+      "pkgs": [
+        "trusthttp"
+      ]
+    },
+    {
+      "pkg": "trustreceipt",
+      "section": "§8 用量与计费 (money-path)",
+      "feature_id": "F-OBS-001/F-RECEIPT-VERIFY",
+      "title": "成本收据(签名)",
+      "status": "wired",
+      "parity": "链路真存在但 receipt 缺细分 token 且非强制结算产物;三参照均无签名 receipt(HUAKAI 独有,HIGH 收尾)",
+      "pkgs": [
+        "trustreceipt"
+      ]
+    },
+    {
+      "pkg": "userauth",
+      "section": "§1 用户与权限",
+      "feature_id": "F-AUTH-001",
+      "title": "用户注册/登录",
+      "status": "tested",
+      "parity": "缺 2FA/验证码/默认权益初始化(vs sub2api MED)",
+      "pkgs": [
+        "userauth",
+        "auth"
+      ]
+    },
+    {
+      "pkg": "userkey",
+      "section": "§1 用户与权限",
+      "feature_id": "F-KEY-001",
+      "title": "API Key 管理",
+      "status": "wired",
+      "parity": "缺用户自助+令牌级配额/IP/模型策略(vs new-api MED)",
+      "pkgs": [
+        "userkey",
+        "userkeyhttp"
+      ]
+    },
+    {
+      "pkg": "userkeyhttp",
+      "section": "§1 用户与权限",
+      "feature_id": "F-KEY-001",
+      "title": "API Key 管理",
+      "status": "wired",
+      "parity": "缺用户自助+令牌级配额/IP/模型策略(vs new-api MED)",
+      "pkgs": [
+        "userkey",
+        "userkeyhttp"
+      ]
+    },
+    {
+      "pkg": "usersession",
+      "section": "§1 用户与权限",
+      "feature_id": "F-AUTH-002/F-SESSION-MGT",
+      "title": "Session 会话",
+      "status": "tested",
+      "parity": "防重放+token hash,强于三参照(LOW)",
+      "pkgs": [
+        "usersession",
+        "auth"
+      ]
+    },
+    {
+      "pkg": "voucher",
+      "section": "§8 用量与计费 (money-path)",
+      "feature_id": "F-BILL-002",
+      "title": "Voucher 兑换",
+      "status": "tested",
+      "parity": "S2-091 batch 明细已修(防大租户漏券);S1-021 balance_cents 报累计非可花余额→voucher↔wallet 集成(钱路 deferred,需 Owner gate)",
+      "pkgs": [
+        "voucher"
+      ]
+    }
+  ]
+}
