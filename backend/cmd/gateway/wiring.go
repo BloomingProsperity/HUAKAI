@@ -210,6 +210,9 @@ type deps struct {
 	hermesToolRegistry *hermesops.Registry
 	hermesToolCalls    *hermestoolsdb.Queries
 	hermesModuleSource *moduleSource
+	// hermesMutator runs the WAVE H4 mutating-tool atomic-audit + advisory-lock
+	// transaction. Nil when the pool is unset (mutating tools then fail closed).
+	hermesMutator *hermesops.MutateOrchestrator
 }
 
 type refundReceiptAppender interface {
@@ -1245,13 +1248,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// WAVE H3: build the read-only diagnostic-tool spine + its hermes_tool_calls
 	// audit inserter + the module-context source, wiring each tool to its
 	// EXISTING read function. Off the request hot path.
-	d.hermesToolRegistry, d.hermesToolCalls = buildHermesToolRegistry(hermesToolDeps{
+	d.hermesToolRegistry, d.hermesToolCalls, d.hermesMutator = buildHermesToolRegistry(hermesToolDeps{
 		pool:           pgPool,
 		adminQueries:   adminQueries,
 		billingQueries: billingQueries,
 		credentialStr:  credentialStore,
 		channelHealth:  channelHealthService,
 		dlqStore:       dlqStore,
+		dlqService:     dlqService,
 	})
 	d.hermesModuleSource = newModuleSource(d.moduleRegistry)
 	// WAVE H5: the daily ops-inspection worker. Default-OFF (opt-in enable flag);

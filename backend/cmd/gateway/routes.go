@@ -345,6 +345,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			if d.hermesModuleSource != nil {
 				hermesRouterDeps.ContextSource = d.hermesModuleSource
 			}
+			// WAVE H4 mutating-tool orchestrator (atomic-audit + advisory-lock).
+			if d.hermesMutator != nil {
+				hermesRouterDeps.Mutator = d.hermesMutator
+			}
 		}
 		r.With(hermesAuth).
 			Mount("/v1/hermes", hermeshttp.NewRouterWithDeps(hermesRouterDeps))

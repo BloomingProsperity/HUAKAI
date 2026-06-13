@@ -16,7 +16,7 @@ const insertHermesToolCall = `-- name: InsertHermesToolCall :one
 INSERT INTO hermes_tool_calls (
     tenant_id, actor_user_id, admin_actor_token_id, tool_name,
     requested_args, result_status, result_summary, error_class,
-    correlation_id, request_id, called_at, returned_at
+    correlation_id, request_id, called_at, returned_at, dry_run
 ) VALUES (
     $1::bigint,
     $2::bigint,
@@ -29,7 +29,8 @@ INSERT INTO hermes_tool_calls (
     $9::text,
     $10::text,
     $11::timestamptz,
-    $12::timestamptz
+    $12::timestamptz,
+    $13::boolean
 )
 RETURNING id, called_at
 `
@@ -47,6 +48,7 @@ type InsertHermesToolCallParams struct {
 	RequestID         *string            `db:"request_id" json:"request_id"`
 	CalledAt          pgtype.Timestamptz `db:"called_at" json:"called_at"`
 	ReturnedAt        pgtype.Timestamptz `db:"returned_at" json:"returned_at"`
+	DryRun            bool               `db:"dry_run" json:"dry_run"`
 }
 
 type InsertHermesToolCallRow struct {
@@ -78,6 +80,7 @@ func (q *Queries) InsertHermesToolCall(ctx context.Context, arg InsertHermesTool
 		arg.RequestID,
 		arg.CalledAt,
 		arg.ReturnedAt,
+		arg.DryRun,
 	)
 	var i InsertHermesToolCallRow
 	err := row.Scan(&i.ID, &i.CalledAt)
@@ -87,7 +90,7 @@ func (q *Queries) InsertHermesToolCall(ctx context.Context, arg InsertHermesTool
 const listHermesToolCallsByTenant = `-- name: ListHermesToolCallsByTenant :many
 SELECT id, tenant_id, actor_user_id, admin_actor_token_id, tool_name,
        requested_args, result_status, result_summary, error_class,
-       correlation_id, request_id, called_at, returned_at
+       correlation_id, request_id, called_at, returned_at, dry_run
 FROM hermes_tool_calls
 WHERE tenant_id = $1::bigint
 ORDER BY called_at DESC, id DESC
@@ -122,6 +125,7 @@ func (q *Queries) ListHermesToolCallsByTenant(ctx context.Context, arg ListHerme
 			&i.RequestID,
 			&i.CalledAt,
 			&i.ReturnedAt,
+			&i.DryRun,
 		); err != nil {
 			return nil, err
 		}

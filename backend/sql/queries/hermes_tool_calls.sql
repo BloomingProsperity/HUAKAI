@@ -13,7 +13,7 @@
 INSERT INTO hermes_tool_calls (
     tenant_id, actor_user_id, admin_actor_token_id, tool_name,
     requested_args, result_status, result_summary, error_class,
-    correlation_id, request_id, called_at, returned_at
+    correlation_id, request_id, called_at, returned_at, dry_run
 ) VALUES (
     sqlc.arg(tenant_id)::bigint,
     sqlc.arg(actor_user_id)::bigint,
@@ -26,14 +26,15 @@ INSERT INTO hermes_tool_calls (
     sqlc.narg(correlation_id)::text,
     sqlc.narg(request_id)::text,
     sqlc.arg(called_at)::timestamptz,
-    sqlc.narg(returned_at)::timestamptz
+    sqlc.narg(returned_at)::timestamptz,
+    sqlc.arg(dry_run)::boolean
 )
 RETURNING id, called_at;
 
 -- name: ListHermesToolCallsByTenant :many
 SELECT id, tenant_id, actor_user_id, admin_actor_token_id, tool_name,
        requested_args, result_status, result_summary, error_class,
-       correlation_id, request_id, called_at, returned_at
+       correlation_id, request_id, called_at, returned_at, dry_run
 FROM hermes_tool_calls
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
 ORDER BY called_at DESC, id DESC
