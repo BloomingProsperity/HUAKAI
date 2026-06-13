@@ -1254,6 +1254,23 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		dlqStore:       dlqStore,
 	})
 	d.hermesModuleSource = newModuleSource(d.moduleRegistry)
+	// WAVE H5: the daily ops-inspection worker. Default-OFF (opt-in enable flag);
+	// it only starts when enabled AND an admin recipient resolves (platform setting
+	// or env fallback). It reuses the EXISTING read-only diagnostics + notification
+	// email sender + module spine — purely additive, off the request hot path.
+	if inspectionWorker := buildHermesInspectionWorker(ctx, hermesAdminDeps{
+		settings:       platformSettingsService,
+		emailSender:    notificationEmailSender,
+		moduleRegistry: d.moduleRegistry,
+		credentialStr:  credentialStore,
+		channelHealth:  channelHealthService,
+		dlqStore:       dlqStore,
+		billingQueries: billingQueries,
+		logger:         logger,
+	}); inspectionWorker != nil {
+		inspectionWorker.Start(ctx)
+		rt.hermesInspectionWorker = inspectionWorker
+	}
 	ready = true
 	return rt, nil
 }

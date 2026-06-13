@@ -19,6 +19,7 @@ import (
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
@@ -48,6 +49,7 @@ type gatewayRuntime struct {
 	outboxWorker               *obsoutbox.Worker
 	subscriptionExpiryWorker   *subscription.ExpiryWorker
 	subscriptionReminderWorker *subscription.ReminderWorker
+	hermesInspectionWorker     *hermesadmin.InspectionWorker
 	mediaTaskWorker            *mediatask.Worker
 	obsDLQEnabled              bool
 	outboxRuntime              obsoutbox.RuntimeConfig
@@ -86,6 +88,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.mediaTaskWorker != nil {
 		rt.mediaTaskWorker.Stop()
+	}
+	if rt.hermesInspectionWorker != nil {
+		rt.hermesInspectionWorker.Stop()
 	}
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
@@ -198,6 +203,10 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	// 提醒 worker 同理独立, 优雅停止。
 	if rt.subscriptionReminderWorker != nil {
 		rt.subscriptionReminderWorker.Stop()
+	}
+	// 每日巡检 worker 独立于 in-flight handler; Stop 在当前 tick 结束后立即返回。
+	if rt.hermesInspectionWorker != nil {
+		rt.hermesInspectionWorker.Stop()
 	}
 	if rt.mediaTaskWorker != nil {
 		rt.mediaTaskWorker.Stop()
