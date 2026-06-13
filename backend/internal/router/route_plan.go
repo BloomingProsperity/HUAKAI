@@ -55,6 +55,7 @@ type RequestFeatures struct {
 	WantsToolUse bool
 	WantsVision  bool
 	WantsJSON    bool
+	WantsAudio   bool
 }
 
 // RoutePlan is the Router's output — an ordered list of attempts the

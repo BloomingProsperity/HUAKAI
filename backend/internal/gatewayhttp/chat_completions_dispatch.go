@@ -306,9 +306,9 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 
 	// Derive the request's capability needs from the raw body once, before
 	// any attempt — they are stable across retries — so the Router can demand
-	// matching account capability_flags (vision/tools/json). Stream stays
-	// driven by the parsed request flag.
-	wantsVision, wantsToolUse, wantsJSON := bodyfeatures.Detect(ex.body)
+	// matching account capability_flags (vision/tools/json/audio). Stream
+	// stays driven by the parsed request flag.
+	wantsVision, wantsToolUse, wantsJSON, wantsAudio := bodyfeatures.Detect(ex.body)
 	plan, err := ex.d.Router.Plan(ex.ctx, router.PlanInput{
 		Context: router.RequestContext{
 			TenantID:  ex.ident.TenantID,
@@ -322,6 +322,7 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 			WantsVision:  wantsVision,
 			WantsToolUse: wantsToolUse,
 			WantsJSON:    wantsJSON,
+			WantsAudio:   wantsAudio,
 		},
 	})
 	if err != nil {

@@ -19,24 +19,26 @@ import (
 // the request actually needs. The booleans align with the capability tokens
 // the Router emits and accounts are stamped with:
 //
-//	vision -> "vision", tools -> "tools", json -> "json".
+//	vision -> "vision", tools -> "tools", json -> "json", audio -> "audio".
 //
 // Detection is conservative: only a genuinely-present signal flips a flag
 // (a non-empty tools/functions array, a real image part with a usable URL,
-// a json_object/json_schema response format). Unknown or empty signals stay
-// false so the request is not over-constrained.
-func Detect(body []byte) (vision, tools, json bool) {
+// a json_object/json_schema response format, an input_audio content part or
+// an "audio" modality request). Unknown or empty signals stay false so the
+// request is not over-constrained.
+func Detect(body []byte) (vision, tools, json, audio bool) {
 	if len(body) == 0 {
-		return false, false, false
+		return false, false, false, false
 	}
 	var doc looseRequest
 	if err := unmarshal(body, &doc); err != nil {
-		return false, false, false
+		return false, false, false, false
 	}
 	vision = detectVision(doc)
 	tools = detectTools(doc)
 	json = detectJSON(doc)
-	return vision, tools, json
+	audio = detectAudio(doc)
+	return vision, tools, json, audio
 }
 
 // unmarshal is a thin seam over the stdlib decoder so the package keeps a
@@ -62,6 +64,12 @@ type looseRequest struct {
 	// structured-output signals
 	ResponseFormat json.RawMessage `json:"response_format"`
 	Text           json.RawMessage `json:"text"`
+
+	// audio output signal: OpenAI Chat carries a top-level modalities array
+	// whose elements are output modes (text / audio / ...). An "audio"
+	// element means the request asks the model to produce audio, which
+	// requires an audio-class account.
+	Modalities json.RawMessage `json:"modalities"`
 }
 
 type looseMessage struct {
@@ -74,9 +82,9 @@ type looseMessage struct {
 
 // detectVision reports whether any message or Responses-input part carries a
 // media payload that requires a vision-class account. It covers OpenAI Chat
-// content parts (image_url / input_audio routed elsewhere / file / video_url),
-// Anthropic image blocks (type "image" with a source), and OpenAI Responses
-// input_image parts (data-URI image_url).
+// content parts (image_url / file / video_url), Anthropic image blocks (type
+// "image" with a source), and OpenAI Responses input_image parts (data-URI
+// image_url). Audio parts are classified separately by detectAudio.
 func detectVision(doc looseRequest) bool {
 	for _, msg := range doc.Messages {
 		if contentHasVisionPart(msg.Content) {
@@ -148,6 +156,75 @@ func imageURLPresent(raw json.RawMessage) bool {
 	}
 	url := stringField(obj, "url")
 	return url != "" && !isEmptyDataURI(url)
+}
+
+// --- audio ------------------------------------------------------------------
+
+// detectAudio reports whether the request needs an audio-class account. Two
+// independent signals flip it: (1) any message or Responses-input part is an
+// input_audio content part carrying a real audio payload (OpenAI Chat audio
+// input); (2) the top-level modalities array lists "audio" as an output mode
+// (OpenAI Chat audio output). Either signal alone suffices. As with the other
+// detectors, every shape is comma-ok guarded so a malformed body yields false
+// rather than a panic or a spurious constraint.
+func detectAudio(doc looseRequest) bool {
+	for _, msg := range doc.Messages {
+		if contentHasAudioPart(msg.Content) {
+			return true
+		}
+	}
+	if contentHasAudioPart(doc.Input) {
+		return true
+	}
+	return modalitiesHaveAudio(doc.Modalities)
+}
+
+// contentHasAudioPart walks a content value that may be a bare string, an
+// array of typed parts, or junk. Only an array can hold media parts; every
+// lookup is ok-guarded so adversarial shapes fall through to false. Mirrors
+// contentHasVisionPart.
+func contentHasAudioPart(raw json.RawMessage) bool {
+	parts, ok := asArray(raw)
+	if !ok {
+		return false
+	}
+	for _, part := range parts {
+		obj, ok := asObject(part)
+		if !ok {
+			continue
+		}
+		if partIsAudio(obj) {
+			return true
+		}
+	}
+	return false
+}
+
+// partIsAudio classifies a single content part. An input_audio part carries
+// the clip under an input_audio object (with data/format) at the part level;
+// a part with no usable input_audio payload is skipped to avoid an empty-audio
+// false positive, mirroring partIsVision's empty-image guard.
+func partIsAudio(obj map[string]json.RawMessage) bool {
+	if stringField(obj, "type") != "input_audio" {
+		return false
+	}
+	return present(obj["input_audio"])
+}
+
+// modalitiesHaveAudio reports whether the top-level modalities array lists an
+// "audio" output mode. Tolerant of non-array shapes (string / object / null)
+// and of non-string elements, which are simply skipped.
+func modalitiesHaveAudio(raw json.RawMessage) bool {
+	mods, ok := asArray(raw)
+	if !ok {
+		return false
+	}
+	for _, m := range mods {
+		if stringValue(m) == "audio" {
+			return true
+		}
+	}
+	return false
 }
 
 // --- tools -------------------------------------------------------------------

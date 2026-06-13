@@ -10,13 +10,13 @@ func TestDetect_OpenAIChatVisionDiscriminates(t *testing.T) {
 	withImage := `{"model":"gpt-4o","messages":[{"role":"user","content":[` +
 		`{"type":"text","text":"describe this"},` +
 		`{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}]}]}`
-	if v, _, _ := Detect([]byte(withImage)); !v {
+	if v, _, _, _ := Detect([]byte(withImage)); !v {
 		t.Fatalf("vision: image_url part present, want true")
 	}
 
 	textOnly := `{"model":"gpt-4o","messages":[{"role":"user","content":[` +
 		`{"type":"text","text":"describe this"}]}]}`
-	if v, _, _ := Detect([]byte(textOnly)); v {
+	if v, _, _, _ := Detect([]byte(textOnly)); v {
 		t.Fatalf("vision: text-only parts, want false")
 	}
 }
@@ -27,12 +27,12 @@ func TestDetect_OpenAIChatVisionDiscriminates(t *testing.T) {
 func TestDetect_VisionEmptyImageGuard(t *testing.T) {
 	emptyDataURI := `{"messages":[{"role":"user","content":[` +
 		`{"type":"image_url","image_url":{"url":"data:image/png;base64,"}}]}]}`
-	if v, _, _ := Detect([]byte(emptyDataURI)); v {
+	if v, _, _, _ := Detect([]byte(emptyDataURI)); v {
 		t.Fatalf("vision: empty base64 data URI must not count as a real image")
 	}
 	realDataURI := `{"messages":[{"role":"user","content":[` +
 		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}`
-	if v, _, _ := Detect([]byte(realDataURI)); !v {
+	if v, _, _, _ := Detect([]byte(realDataURI)); !v {
 		t.Fatalf("vision: non-empty base64 data URI must count as a real image")
 	}
 }
@@ -42,17 +42,17 @@ func TestDetect_VisionEmptyImageGuard(t *testing.T) {
 // mutation: 把 nonEmptyArray 换成 present (空数组算有) -> 空数组用例转红。
 func TestDetect_ToolsDiscriminates(t *testing.T) {
 	withTools := `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}]}`
-	if _, tl, _ := Detect([]byte(withTools)); !tl {
+	if _, tl, _, _ := Detect([]byte(withTools)); !tl {
 		t.Fatalf("tools: non-empty tools[], want true")
 	}
 
 	legacyFunctions := `{"messages":[{"role":"user","content":"hi"}],"functions":[{"name":"get_weather"}]}`
-	if _, tl, _ := Detect([]byte(legacyFunctions)); !tl {
+	if _, tl, _, _ := Detect([]byte(legacyFunctions)); !tl {
 		t.Fatalf("tools: legacy functions[] only, want true")
 	}
 
 	emptyTools := `{"messages":[{"role":"user","content":"hi"}],"tools":[]}`
-	if _, tl, _ := Detect([]byte(emptyTools)); tl {
+	if _, tl, _, _ := Detect([]byte(emptyTools)); tl {
 		t.Fatalf("tools: empty tools[] is not a signal, want false")
 	}
 }
@@ -62,19 +62,19 @@ func TestDetect_ToolsDiscriminates(t *testing.T) {
 // mutation: 把 formatTypeIsJSON 改成 "存在 response_format 即 true" -> type:text 用例转红。
 func TestDetect_JSONDiscriminates(t *testing.T) {
 	jsonSchema := `{"messages":[],"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{}}}}`
-	if _, _, j := Detect([]byte(jsonSchema)); !j {
+	if _, _, j, _ := Detect([]byte(jsonSchema)); !j {
 		t.Fatalf("json: response_format json_schema, want true")
 	}
 	jsonObject := `{"messages":[],"response_format":{"type":"json_object"}}`
-	if _, _, j := Detect([]byte(jsonObject)); !j {
+	if _, _, j, _ := Detect([]byte(jsonObject)); !j {
 		t.Fatalf("json: response_format json_object, want true")
 	}
 	textFormat := `{"messages":[],"response_format":{"type":"text"}}`
-	if _, _, j := Detect([]byte(textFormat)); j {
+	if _, _, j, _ := Detect([]byte(textFormat)); j {
 		t.Fatalf("json: response_format type=text is not structured output, want false")
 	}
 	none := `{"messages":[{"role":"user","content":"hi"}]}`
-	if _, _, j := Detect([]byte(none)); j {
+	if _, _, j, _ := Detect([]byte(none)); j {
 		t.Fatalf("json: no response_format, want false")
 	}
 }
@@ -83,11 +83,11 @@ func TestDetect_JSONDiscriminates(t *testing.T) {
 // mutation: 删 detectJSON 里的 text.format 分支 -> 转红。
 func TestDetect_ResponsesTextFormatJSON(t *testing.T) {
 	body := `{"input":"hi","text":{"format":{"type":"json_schema","name":"x","schema":{}}}}`
-	if _, _, j := Detect([]byte(body)); !j {
+	if _, _, j, _ := Detect([]byte(body)); !j {
 		t.Fatalf("json: Responses text.format json_schema, want true")
 	}
 	textFmt := `{"input":"hi","text":{"format":{"type":"text"}}}`
-	if _, _, j := Detect([]byte(textFmt)); j {
+	if _, _, j, _ := Detect([]byte(textFmt)); j {
 		t.Fatalf("json: Responses text.format type=text, want false")
 	}
 }
@@ -100,7 +100,7 @@ func TestDetect_AnthropicShape(t *testing.T) {
 		`{"type":"text","text":"what is this"},` +
 		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}],` +
 		`"tools":[{"name":"get_weather","input_schema":{"type":"object"}}]}`
-	v, tl, _ := Detect([]byte(body))
+	v, tl, _, _ := Detect([]byte(body))
 	if !v {
 		t.Fatalf("vision: Anthropic image block, want true")
 	}
@@ -114,17 +114,85 @@ func TestDetect_AnthropicShape(t *testing.T) {
 // mutation: 删 partIsVision 里 case "input_image" -> 转红。
 func TestDetect_ResponsesInputImage(t *testing.T) {
 	withImage := `{"input":[{"type":"input_image","image_url":"https://example.com/cat.png"}]}`
-	if v, _, _ := Detect([]byte(withImage)); !v {
+	if v, _, _, _ := Detect([]byte(withImage)); !v {
 		t.Fatalf("vision: Responses input_image part, want true")
 	}
 	textOnly := `{"input":[{"type":"input_text","text":"hi"}]}`
-	if v, _, _ := Detect([]byte(textOnly)); v {
+	if v, _, _, _ := Detect([]byte(textOnly)); v {
 		t.Fatalf("vision: Responses input_text only, want false")
 	}
 }
 
+// TestDetect_AudioInputPartDiscriminates 守 audio 检测的输入支路: 一条带
+// input_audio content part (有 data/format 载荷) 的 OpenAI Chat body -> audio=true;
+// 仅差那一个 part 改回 text 的 body -> audio=false。两个 fixture 只差 input_audio part。
+// mutation: 删 partIsAudio 里 type=="input_audio" 分支 (或令其恒 false) -> 第一个断言转红。
+func TestDetect_AudioInputPartDiscriminates(t *testing.T) {
+	withAudio := `{"model":"gpt-4o-audio-preview","messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"transcribe this"},` +
+		`{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]}`
+	v, tl, j, a := Detect([]byte(withAudio))
+	if !a {
+		t.Fatalf("audio: input_audio part present, want audio=true")
+	}
+	// input_audio must NOT leak into the other three flags — it is audio-only.
+	if v || tl || j {
+		t.Fatalf("audio: input_audio must flip audio only, got (v=%v,tl=%v,j=%v)", v, tl, j)
+	}
+
+	textOnly := `{"model":"gpt-4o-audio-preview","messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"transcribe this"}]}]}`
+	if _, _, _, a := Detect([]byte(textOnly)); a {
+		t.Fatalf("audio: text-only parts, want audio=false")
+	}
+}
+
+// TestDetect_AudioEmptyInputGuard 守空音频误报: input_audio part 没有载荷对象时不算
+// 真音频 (镜像 vision 的 empty-payload guard)。
+// mutation: 把 partIsAudio 改成只看 type 不看 present(input_audio) -> 空 part 误报 -> 转红。
+func TestDetect_AudioEmptyInputGuard(t *testing.T) {
+	emptyPart := `{"messages":[{"role":"user","content":[` +
+		`{"type":"input_audio"}]}]}`
+	if _, _, _, a := Detect([]byte(emptyPart)); a {
+		t.Fatalf("audio: input_audio part with no payload must not count, want false")
+	}
+	nullPayload := `{"messages":[{"role":"user","content":[` +
+		`{"type":"input_audio","input_audio":null}]}]}`
+	if _, _, _, a := Detect([]byte(nullPayload)); a {
+		t.Fatalf("audio: input_audio with null payload must not count, want false")
+	}
+}
+
+// TestDetect_AudioModalitiesDiscriminates 守 audio 检测的输出支路: 顶层
+// modalities 数组含 "audio" -> audio=true; 仅 ["text"] 或缺省 -> false。
+// mutation: 删 detectAudio 里的 modalitiesHaveAudio 调用 (或令其恒 false) -> 第一个断言转红。
+func TestDetect_AudioModalitiesDiscriminates(t *testing.T) {
+	withAudioMode := `{"model":"gpt-4o-audio-preview","modalities":["text","audio"],` +
+		`"messages":[{"role":"user","content":"say hello out loud"}]}`
+	if _, _, _, a := Detect([]byte(withAudioMode)); !a {
+		t.Fatalf("audio: modalities containing \"audio\", want audio=true")
+	}
+
+	textModeOnly := `{"model":"gpt-4o","modalities":["text"],` +
+		`"messages":[{"role":"user","content":"hi"}]}`
+	if _, _, _, a := Detect([]byte(textModeOnly)); a {
+		t.Fatalf("audio: modalities [\"text\"] only is not an audio signal, want false")
+	}
+}
+
+// TestDetect_PlainTextNoAudio 守回退兼容: 普通纯文本请求绝不 flag audio
+// (不引入额外约束、不缩小账号集)。
+// mutation: 让 detectAudio 默认返回 true / 漏掉空数组 guard -> 转红。
+func TestDetect_PlainTextNoAudio(t *testing.T) {
+	plain := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`
+	if v, tl, j, a := Detect([]byte(plain)); a {
+		t.Fatalf("audio: plain text request must NOT flag audio (back-compat), got (v=%v,tl=%v,j=%v,a=%v)", v, tl, j, a)
+	}
+}
+
 // TestDetect_DefensiveNeverPanics 守防御性: 各种畸形 / null / 空 / 错类型 body
-// 必须返回 (false,false,false) 且不 panic。
+// 必须返回 (false,false,false,false) 且不 panic。新增 modalities / input_audio 的
+// 错类型 fixture,保证 audio 支路同样不 panic、不误报。
 // mutation: 去掉任一 ok-assert / type-guard -> panic -> 转红。
 func TestDetect_DefensiveNeverPanics(t *testing.T) {
 	cases := []string{
@@ -135,21 +203,26 @@ func TestDetect_DefensiveNeverPanics(t *testing.T) {
 		`{"messages":"bare"}`,    // messages as a string
 		`{"messages":123}`,       // messages as a number
 		`{"messages":[123,"x"]}`, // message elements wrong type
-		`{"messages":[{"content":"plain string"}]}`,      // content string
-		`{"messages":[{"content":42}]}`,                  // content number
-		`{"messages":[{"content":[1,2,3]}]}`,             // parts as numbers
-		`{"messages":[{"content":["a","b"]}]}`,           // parts as strings
-		`{"messages":[{"content":[{"type":123}]}]}`,      // part type wrong
-		`{"tools":"a string not array"}`,                 // tools wrong type
-		`{"tools":{"k":"v"}}`,                            // tools as object
-		`{"functions":42}`,                               // functions wrong type
-		`{"response_format":"json"}`,                     // response_format string
-		`{"response_format":[]}`,                         // response_format array
-		`{"text":"hi"}`,                                  // text as string
-		`{"input":42}`,                                   // input wrong type
-		`{"input":[{"image_url":{"url":42}}]}`,           // nested url wrong type
+		`{"messages":[{"content":"plain string"}]}`,         // content string
+		`{"messages":[{"content":42}]}`,                     // content number
+		`{"messages":[{"content":[1,2,3]}]}`,                // parts as numbers
+		`{"messages":[{"content":["a","b"]}]}`,              // parts as strings
+		`{"messages":[{"content":[{"type":123}]}]}`,         // part type wrong
+		`{"tools":"a string not array"}`,                    // tools wrong type
+		`{"tools":{"k":"v"}}`,                               // tools as object
+		`{"functions":42}`,                                  // functions wrong type
+		`{"response_format":"json"}`,                        // response_format string
+		`{"response_format":[]}`,                            // response_format array
+		`{"text":"hi"}`,                                     // text as string
+		`{"input":42}`,                                      // input wrong type
+		`{"input":[{"image_url":{"url":42}}]}`,              // nested url wrong type
 		`{"messages":[{"content":[{"type":"image_url"}]}]}`, // image_url part missing payload
-		`{"deeply":{"nested":{"junk":[null,{},[]]}}}`,    // unrelated junk
+		`{"deeply":{"nested":{"junk":[null,{},[]]}}}`,       // unrelated junk
+		`{"modalities":"audio"}`,                            // modalities as a bare string
+		`{"modalities":{"audio":true}}`,                     // modalities as an object
+		`{"modalities":42}`,                                 // modalities as a number
+		`{"modalities":[1,2,3]}`,                            // modalities elements non-string
+		`{"messages":[{"content":[{"type":"input_audio"}]}]}`, // input_audio part missing payload
 	}
 	for _, body := range cases {
 		func() {
@@ -158,9 +231,9 @@ func TestDetect_DefensiveNeverPanics(t *testing.T) {
 					t.Fatalf("Detect panicked on %q: %v", body, r)
 				}
 			}()
-			v, tl, j := Detect([]byte(body))
-			if v || tl || j {
-				t.Fatalf("Detect(%q) = (%v,%v,%v); want all false for malformed/empty input", body, v, tl, j)
+			v, tl, j, a := Detect([]byte(body))
+			if v || tl || j || a {
+				t.Fatalf("Detect(%q) = (%v,%v,%v,%v); want all false for malformed/empty input", body, v, tl, j, a)
 			}
 		}()
 	}
