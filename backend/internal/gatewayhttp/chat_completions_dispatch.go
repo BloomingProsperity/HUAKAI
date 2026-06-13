@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bodyfeatures"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
@@ -303,6 +304,11 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 	ex.resolved = resolved
 	resolvedModel := routerResolvedModelFromRegistry(resolved)
 
+	// Derive the request's capability needs from the raw body once, before
+	// any attempt — they are stable across retries — so the Router can demand
+	// matching account capability_flags (vision/tools/json). Stream stays
+	// driven by the parsed request flag.
+	wantsVision, wantsToolUse, wantsJSON := bodyfeatures.Detect(ex.body)
 	plan, err := ex.d.Router.Plan(ex.ctx, router.PlanInput{
 		Context: router.RequestContext{
 			TenantID:  ex.ident.TenantID,
@@ -310,8 +316,13 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 			APIKeyID:  ex.ident.APIKeyID,
 			RequestID: ex.requestID,
 		},
-		Model:    resolvedModel,
-		Features: router.RequestFeatures{Stream: ex.req.Stream},
+		Model: resolvedModel,
+		Features: router.RequestFeatures{
+			Stream:       ex.req.Stream,
+			WantsVision:  wantsVision,
+			WantsToolUse: wantsToolUse,
+			WantsJSON:    wantsJSON,
+		},
 	})
 	if err != nil {
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, err)

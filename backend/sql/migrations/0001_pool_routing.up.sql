@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS provider_accounts (
     last_dispatch_at        timestamptz,
     -- Capability flags (F-POOL-001 §Phase A gate 5)
     model_allow_list        text[]      NOT NULL DEFAULT ARRAY[]::text[],
-    capability_flags        text[]      NOT NULL DEFAULT ARRAY[]::text[],   -- 'tool_use', 'vision', 'reasoning_high', etc.
+    capability_flags        text[]      NOT NULL DEFAULT ARRAY[]::text[],   -- router capability tokens: 'stream', 'tools', 'vision', 'json' (must match the Router's required_capabilities vocabulary for @> to gate correctly)
     -- Quota (Sub2API S3 atomic status flip; HUAKAI O8 cross-threshold)
     cap_quota_total         numeric(20,8),
     quota_used_total        numeric(20,8) NOT NULL DEFAULT 0,

@@ -1222,3 +1222,124 @@ func responsesClientAdapterDeps(t *testing.T) ChatHandlerDeps {
 	}}
 	return d
 }
+
+// recordingPlanInputRouter 记录最后一次 Plan 收到的 PlanInput，便于断言 :313
+// 把 body-derived caps 接进了 RequestFeatures，而不是只接了 Stream。
+type recordingPlanInputRouter struct {
+	delegate router.Router
+	last     router.PlanInput
+}
+
+func (r *recordingPlanInputRouter) Plan(ctx context.Context, in router.PlanInput) (router.RoutePlan, error) {
+	r.last = in
+	return r.delegate.Plan(ctx, in)
+}
+
+func capSet(caps []string) map[string]bool {
+	m := make(map[string]bool, len(caps))
+	for _, c := range caps {
+		m[c] = true
+	}
+	return m
+}
+
+// TestPrepareRoute_ThreadsBodyDerivedCapabilities 是自证接线测试 (ROUTE-024 核心契约):
+// 一个含 image part + tools + json_schema 的 streamed body 经 prepareRoute 后,
+// 真 Router 产出的 AttemptPlan.RequiredCapabilities 必须 == {stream,vision,tools,json};
+// baseline arm = 纯 text 非流 body,同代码路径只应得到 {} (没有 :313 接线两臂不会有差别)。
+// 还断言 PlanInput.Features 三个 Wants* 位被 body 真正驱动。
+// mutation: 还原 :313 为 `Features: router.RequestFeatures{Stream: ex.req.Stream}` ->
+// rich arm 的 vision/tools/json 全丢 -> 转红。
+func TestPrepareRoute_ThreadsBodyDerivedCapabilities(t *testing.T) {
+	richBody := `{"model":"claude-3-5-sonnet","stream":true,` +
+		`"messages":[{"role":"user","content":[` +
+		`{"type":"text","text":"look"},` +
+		`{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}]}],` +
+		`"tools":[{"type":"function","function":{"name":"f"}}],` +
+		`"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{}}}}`
+	baselineBody := `{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"plain text"}]}`
+
+	run := func(t *testing.T, body string, stream bool) (router.PlanInput, []string) {
+		t.Helper()
+		rec := &recordingPlanInputRouter{delegate: router.NewDefaultRouter()}
+		ex := &chatExecution{
+			ctx:       context.Background(),
+			ident:     auth.Identity{TenantID: 7, UserID: 3, APIKeyID: 9},
+			d:         ChatHandlerDeps{Router: rec},
+			body:      []byte(body),
+			req:       chatRequest{Model: "claude-3-5-sonnet", Stream: stream},
+			requestID: "r-route024",
+		}
+		ex.d.Registry = stubRegistry{resolved: registry.Resolved{
+			PublicAlias:      "claude-3-5-sonnet",
+			CanonicalModelID: "anthropic/claude-3-5-sonnet",
+			ProviderModelID:  "claude-3-5-sonnet",
+			ProtocolFamily:   "anthropic_messages",
+			PoolCandidates:   []int64{42},
+		}}
+		if ok := ex.prepareRoute(httptest.NewRecorder()); !ok {
+			t.Fatalf("prepareRoute returned false")
+		}
+		return rec.last, ex.attempt.RequiredCapabilities
+	}
+
+	richPlan, richCaps := run(t, richBody, true)
+	if !richPlan.Features.WantsVision || !richPlan.Features.WantsToolUse || !richPlan.Features.WantsJSON {
+		t.Fatalf("PlanInput.Features not driven by body: %+v", richPlan.Features)
+	}
+	if !richPlan.Features.Stream {
+		t.Fatalf("PlanInput.Features.Stream regressed; want true for streamed request")
+	}
+	gotRich := capSet(richCaps)
+	for _, want := range []string{"stream", "vision", "tools", "json"} {
+		if !gotRich[want] {
+			t.Fatalf("rich arm RequiredCapabilities missing %q; got %v", want, richCaps)
+		}
+	}
+	if len(richCaps) != 4 {
+		t.Fatalf("rich arm should carry exactly {stream,vision,tools,json}; got %v", richCaps)
+	}
+
+	basePlan, baseCaps := run(t, baselineBody, false)
+	if basePlan.Features.WantsVision || basePlan.Features.WantsToolUse || basePlan.Features.WantsJSON || basePlan.Features.Stream {
+		t.Fatalf("baseline arm should derive no capabilities; got %+v", basePlan.Features)
+	}
+	if len(baseCaps) != 0 {
+		t.Fatalf("baseline arm RequiredCapabilities should be empty; got %v", baseCaps)
+	}
+
+	// Self-proving: the two arms MUST differ. Without the :313 wiring both
+	// would collapse to {stream}/{} and this guard goes red.
+	if len(richCaps) == len(baseCaps) {
+		t.Fatalf("rich and baseline arms must differ; rich=%v baseline=%v", richCaps, baseCaps)
+	}
+}
+
+// TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps 守 stream 不被回归:
+// 一个 streamed 但无 vision/tools/json 的 body 只应得到 {stream}。
+// mutation: :313 误删 Stream 字段 -> 转红。
+func TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps(t *testing.T) {
+	rec := &recordingPlanInputRouter{delegate: router.NewDefaultRouter()}
+	ex := &chatExecution{
+		ctx:       context.Background(),
+		ident:     auth.Identity{TenantID: 7, UserID: 3, APIKeyID: 9},
+		d:         ChatHandlerDeps{Router: rec},
+		body:      []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`),
+		req:       chatRequest{Model: "gpt-4o", Stream: true},
+		requestID: "r-route024-stream",
+	}
+	ex.d.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias:      "gpt-4o",
+		CanonicalModelID: "openai/gpt-4o",
+		ProviderModelID:  "gpt-4o",
+		ProtocolFamily:   "openai_chat",
+		PoolCandidates:   []int64{42},
+	}}
+	if ok := ex.prepareRoute(httptest.NewRecorder()); !ok {
+		t.Fatalf("prepareRoute returned false")
+	}
+	caps := ex.attempt.RequiredCapabilities
+	if len(caps) != 1 || caps[0] != "stream" {
+		t.Fatalf("stream-only body should yield exactly [stream]; got %v", caps)
+	}
+}

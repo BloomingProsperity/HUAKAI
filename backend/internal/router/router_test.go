@@ -295,3 +295,47 @@ func assertAttempts(t *testing.T, plan RoutePlan, want []wantAttempt) {
 		}
 	}
 }
+
+// TestRequiredCapabilities_EmitsMapperVocabularyNotProtoTokens 锁死能力词表:
+// requiredCapabilities 必须吐 {stream,tools,vision,json} (账号 capability_flags 被
+// 戳的同一套词),而不是 proto 层的 'image'/'tool_use'。词表错位时 @> 会排除所有账号 ->
+// 恒 no_eligible_account 503。
+// mutation: 把 mapper 里的 "vision" 改成 "image" 或 "tools" 改成 "tool_use" -> 转红。
+func TestRequiredCapabilities_EmitsMapperVocabularyNotProtoTokens(t *testing.T) {
+	caps := requiredCapabilities(RequestFeatures{
+		Stream:       true,
+		WantsToolUse: true,
+		WantsVision:  true,
+		WantsJSON:    true,
+	})
+	got := map[string]bool{}
+	for _, c := range caps {
+		got[c] = true
+	}
+	for _, want := range []string{"stream", "tools", "vision", "json"} {
+		if !got[want] {
+			t.Fatalf("requiredCapabilities missing token %q; got %v", want, caps)
+		}
+	}
+	for _, forbidden := range []string{"image", "tool_use", "reasoning_high", "audio", "long_context"} {
+		if got[forbidden] {
+			t.Fatalf("requiredCapabilities emitted off-vocabulary token %q; would exclude every account; got %v", forbidden, caps)
+		}
+	}
+	if len(caps) != 4 {
+		t.Fatalf("requiredCapabilities should emit exactly the 4 locked tokens; got %v", caps)
+	}
+}
+
+// TestRequiredCapabilities_OnlyEmitsRequestedTokens 守过度检测: 只有被请求的 feature
+// 才进 required_capabilities。不请求 vision/json/tools 时不能凭空多约束 (会缩小可用账号集)。
+// mutation: 在 mapper 里无条件 append "vision" -> 转红。
+func TestRequiredCapabilities_OnlyEmitsRequestedTokens(t *testing.T) {
+	caps := requiredCapabilities(RequestFeatures{Stream: true})
+	if len(caps) != 1 || caps[0] != "stream" {
+		t.Fatalf("stream-only request should emit only [stream]; got %v", caps)
+	}
+	if len(requiredCapabilities(RequestFeatures{})) != 0 {
+		t.Fatalf("empty features should emit no capability constraints")
+	}
+}
