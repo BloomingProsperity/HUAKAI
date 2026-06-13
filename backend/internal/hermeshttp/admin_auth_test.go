@@ -8,6 +8,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
 
 // fakeAdminResolver injects a fixed identity / error, standing in for
@@ -159,25 +160,43 @@ func TestAdminAuthMiddlewareOperatorSuccessInjectsScopedIdentityAndActor(t *test
 }
 
 func TestWithAdminActorFoldsAttributionOnlyInAdminMode(t *testing.T) {
-	// Regression: the audit args must gain admin_actor_token_id + admin_role when
-	// (and only when) an admin actor is in context, so the trail attributes the
-	// real operator. Mutation: dropping the fold leaves the args without the
-	// operator keys; folding in end-user mode would wrongly tag normal traffic.
+	// Regression: the audit args must gain admin_actor_id + admin_role when (and
+	// only when) an admin actor is in context, so the trail attributes the real
+	// operator. Mutation: dropping the fold leaves the args without the operator
+	// keys; folding in end-user mode would wrongly tag normal traffic.
 	base := map[string]any{"conversation_id": int64(1002)}
 
 	endUser := withAdminActor(context.Background(), base)
-	if _, ok := endUser["admin_actor_token_id"]; ok {
+	if _, ok := endUser["admin_actor_id"]; ok {
 		t.Fatalf("end-user args unexpectedly carry admin attribution: %v", endUser)
 	}
 
 	ctx := context.WithValue(context.Background(), adminActorContextKey{}, adminActor{TokenID: 77, Role: admin.RoleTenantOperator})
 	adminArgs := withAdminActor(ctx, base)
-	if adminArgs["admin_actor_token_id"] != int64(77) || adminArgs["admin_role"] != admin.RoleTenantOperator {
-		t.Fatalf("admin args=%v want token=77 role=%s", adminArgs, admin.RoleTenantOperator)
+	if adminArgs["admin_actor_id"] != int64(77) || adminArgs["admin_role"] != admin.RoleTenantOperator {
+		t.Fatalf("admin args=%v want admin_actor_id=77 role=%s", adminArgs, admin.RoleTenantOperator)
 	}
 	// The original map must not be mutated (it is reused on error paths).
-	if _, ok := base["admin_actor_token_id"]; ok {
+	if _, ok := base["admin_actor_id"]; ok {
 		t.Fatalf("withAdminActor mutated the caller's args map: %v", base)
+	}
+
+	// DISCRIMINATING: attribution must survive the REAL persistence path
+	// (RecordAudit applies hermes.SanitizeArgs before writing). The operator id
+	// is a non-secret admin_tokens row PK and MUST NOT be redacted. This is the
+	// guard the prior test missed (it asserted only on pre-sanitize output).
+	persisted := hermes.SanitizeArgs(adminArgs)
+	if persisted["admin_actor_id"] != int64(77) {
+		t.Fatalf("admin_actor_id did not survive SanitizeArgs: got %v (operator attribution silently dropped — key must not match the sensitive 'token' substring)", persisted["admin_actor_id"])
+	}
+	if persisted["admin_role"] != admin.RoleTenantOperator {
+		t.Fatalf("admin_role did not survive SanitizeArgs: got %v", persisted["admin_role"])
+	}
+	// Proof the rename matters: the old *_token_id name WOULD be redacted by the
+	// sanitizer, which is exactly the defect this fix closes.
+	redacted := hermes.SanitizeArgs(map[string]any{"admin_actor_token_id": int64(77)})
+	if redacted["admin_actor_token_id"] != "[REDACTED]" {
+		t.Fatalf("expected a *_token_id key to be redacted by the sanitizer, got %v", redacted["admin_actor_token_id"])
 	}
 }
 
