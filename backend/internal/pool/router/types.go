@@ -51,6 +51,20 @@ type SelectionRequest struct {
 	// GroupPolicyGate 按 routes.user_group_match 限制可用 pool_group。
 	// 空字符串视同无限制 (向后兼容未接线 / 无订阅链路)。
 	UserGroup string
+
+	// EstimatedInputTokens 是本次请求 prompt 的输入 token 估算 (由 dispatch 端
+	// 用 tokenestimate 启发式按 ProtocolFamily 算出)。<=0 视为"未接线/无估算",
+	// ContextWindowGate 据此 fail-open。
+	EstimatedInputTokens int
+	// ModelContextWindow 是被请求模型的有效 context window 上限 (per-MODEL 属性,
+	// 来自 registry.Resolved.ContextWindow / models.default_context_window)。
+	// HUAKAI 的 context window 是按模型而非按账号配置, 故随 request 传入而非挂在
+	// AccountSnapshot 上。<=0 视为"未配置/未知", ContextWindowGate 据此 fail-open。
+	ModelContextWindow int
+	// MaxOutputTokens 是客户端请求的 max_tokens (预留输出空间)。>0 时由
+	// ContextWindowGate 加进 EstimatedInputTokens 后再与 ModelContextWindow 比较,
+	// 保证为输出留位; 0 (未指定) 时不影响判定。
+	MaxOutputTokens int
 }
 
 // StickyState 标记一次 Select 相对 sticky binding 的结果(DM-07)。

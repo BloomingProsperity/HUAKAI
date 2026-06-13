@@ -98,3 +98,37 @@ func TestBuildGroupRoutingGates_PremiumRepoErrorFailsOpenAndAlerts(t *testing.T)
 		t.Fatalf("default repo error: ok=%v err=%v, want compatibility allow", ok, err)
 	}
 }
+
+// TestBuildGroupRoutingGates_WiresContextWindowGate 守 ROUTE-023 生产激活点:
+// buildGroupRoutingGates 必须把 ContextWindow 槽显式接成真 ContextWindowGate, 使其
+// 在 ordered() 链里对超 window 的请求 bench 候选。
+// mutation: buildGroupRoutingGates 漏设 gates.ContextWindow → 槽虽默认也是
+// ContextWindowGate{} 但断言其类型 + 实际越界 deny 行为, 漏接线时 type 断言/行为断言红。
+func TestBuildGroupRoutingGates_WiresContextWindowGate(t *testing.T) {
+	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil, nil, nil)
+
+	if _, ok := gates.ContextWindow.(poolrouter.ContextWindowGate); !ok {
+		t.Fatalf("ContextWindow slot type=%T, want router.ContextWindowGate (not AllowAll/default)", gates.ContextWindow)
+	}
+
+	// 超 window 的请求必须被该 gate bench (false, context_window)。
+	ok, reason, err := gates.ContextWindow.Allow(context.Background(), nil, poolrouter.SelectionRequest{
+		TenantID: 1, EstimatedInputTokens: 250000, ModelContextWindow: 200000,
+	})
+	if err != nil {
+		t.Fatalf("ContextWindow.Allow err=%v", err)
+	}
+	if ok {
+		t.Fatal("buildGroupRoutingGates 必须接真 ContextWindowGate; 250000>200000 应被拒, got allow")
+	}
+	if reason != poolrouter.GateFailureContextWindow {
+		t.Fatalf("reason=%q want %q", reason, poolrouter.GateFailureContextWindow)
+	}
+
+	// fail-open: window 未配置 (0) 时放行。
+	if ok, _, err := gates.ContextWindow.Allow(context.Background(), nil, poolrouter.SelectionRequest{
+		TenantID: 1, EstimatedInputTokens: 250000, ModelContextWindow: 0,
+	}); err != nil || !ok {
+		t.Fatalf("unknown window must fail-open: ok=%v err=%v", ok, err)
+	}
+}
