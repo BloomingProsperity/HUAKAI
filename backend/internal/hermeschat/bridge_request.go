@@ -21,6 +21,14 @@ type Request struct {
 	RequestID     string
 	CorrelationID string
 	Body          []byte
+	// Operator carries the admin actor that opened the chat (role + admin token
+	// id) so the conversational READ-ONLY tool loop (WAVE H3b) can enforce the
+	// SAME RBAC role floor + tenant scope and record the SAME operator attribution
+	// as the explicit H3 tool-execute endpoint. It is bound to the session's
+	// request_id so the runner's mid-conversation tool callbacks resolve to this
+	// operator. Zero-value (no role / no token id) => the session is not bound and
+	// the conversational tool loop is unavailable for that chat (fail closed).
+	Operator SessionOperator
 }
 
 type PreparedRequest struct {
@@ -31,6 +39,10 @@ type PreparedRequest struct {
 	ConversationID      int64
 	CreatedConversation bool
 	Body                []byte
+	// BoundOperator is true when PrepareRequest registered a WAVE H3b session
+	// binding for this request_id. The caller (startChat) releases it after the
+	// stream finishes so a binding does not outlive its session.
+	BoundOperator bool
 }
 
 func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedRequest, error) {
@@ -88,14 +100,46 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 	if err := setJSONField(body, "internal_token", token); err != nil {
 		return PreparedRequest{}, err
 	}
+
+	// WAVE H3b: bind the session operator to this request_id and inject the
+	// read-only tool catalog. Both are gated on a usable operator (role + admin
+	// token id) AND the bindings store being wired — if either is absent the chat
+	// proceeds WITHOUT a tool loop (fail closed: the internal endpoint rejects an
+	// unbound session). The binding's expiry tracks the internal_token's expiry so
+	// the two die together.
+	boundOperator := false
+	if b.sessionBindings != nil && req.Operator.Role != "" && req.Operator.AdminActorTokenID > 0 {
+		op := req.Operator
+		op.TenantID = req.TenantID
+		op.ActorUserID = req.UserID
+		op.ExpiresAt = claims.ExpiresAt
+		b.sessionBindings.Bind(requestID, op)
+		boundOperator = true
+		// Inject the catalog ONLY for a bound (admin) session — the LLM should not
+		// be told about tools it cannot call.
+		if b.toolCatalog != nil {
+			catalog := b.toolCatalog.ReadOnlyToolCatalog()
+			if catalog != nil {
+				if err := setJSONField(body, "tool_catalog", catalog); err != nil {
+					b.sessionBindings.Release(requestID)
+					return PreparedRequest{}, err
+				}
+			}
+		}
+	}
+
 	raw, err := json.Marshal(body)
 	if err != nil {
+		if boundOperator {
+			b.sessionBindings.Release(requestID)
+		}
 		return PreparedRequest{}, err
 	}
 	return PreparedRequest{
 		TenantID: req.TenantID, UserID: req.UserID,
 		RequestID: requestID, CorrelationID: strings.TrimSpace(req.CorrelationID),
 		ConversationID: conversationID, CreatedConversation: created, Body: raw,
+		BoundOperator: boundOperator,
 	}, nil
 }
 

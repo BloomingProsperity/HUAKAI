@@ -78,6 +78,38 @@ func WithMessageContentKeys(keys credentialstore.KeyProvider) Option {
 	}
 }
 
+// WithSessionBindings attaches the in-process operator-binding store used by the
+// conversational READ-ONLY tool loop (WAVE H3b). When set, PrepareRequest binds
+// each chat session's operator identity (keyed by the internal_token's
+// request_id) so the runner's mid-conversation tool callbacks resolve to the
+// session operator. When nil, the chat path is unchanged and no tool loop is
+// available (the internal tool endpoint fails closed on an absent binding).
+func WithSessionBindings(b2 *SessionBindings) Option {
+	return func(b *Bridge) {
+		b.sessionBindings = b2
+	}
+}
+
+// WithToolCatalog attaches the read-only tool catalog provider. When set,
+// PrepareRequest injects the sanitized catalog into the runner's chat payload so
+// the LLM knows which diagnostic tools it may call (and grounds its answers).
+// The provider returns ONLY read-only tools; a mutating tool is never described.
+func WithToolCatalog(provider ToolCatalogProvider) Option {
+	return func(b *Bridge) {
+		b.toolCatalog = provider
+	}
+}
+
+// ToolCatalogProvider returns the LLM-facing read-only tool catalog injected into
+// the chat payload. *hermesops.Registry's ReadOnlyCatalog satisfies a thin
+// adapter for this; the bridge depends only on the marshaled shape so it does
+// not import hermesops.
+type ToolCatalogProvider interface {
+	// ReadOnlyToolCatalog returns the catalog entries as already-marshalable
+	// values (name + description + input_schema). It MUST exclude mutating tools.
+	ReadOnlyToolCatalog() []map[string]any
+}
+
 type Bridge struct {
 	tx                  txRunner
 	internalTokenSecret []byte
@@ -87,6 +119,10 @@ type Bridge struct {
 	auditDLQ            auditDLQ
 	headerSettings      headerfirewall.PlatformSettings
 	messageContentKeys  credentialstore.KeyProvider
+	// sessionBindings + toolCatalog back the conversational READ-ONLY tool loop
+	// (WAVE H3b). Both optional: when nil, the chat path is unchanged.
+	sessionBindings *SessionBindings
+	toolCatalog     ToolCatalogProvider
 }
 
 func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
@@ -111,6 +147,17 @@ func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
 		return nil, fmt.Errorf("%w: hermes message content encryption key provider is required", hermes.ErrMisconfigured)
 	}
 	return b, nil
+}
+
+// ReleaseSession drops the WAVE H3b operator binding for a finished chat
+// session. It is safe to call with an empty request_id or when no bindings store
+// is wired (no-op). startChat defers it after the stream so a binding does not
+// outlive its session even before the expiry-based prune reclaims it.
+func (b *Bridge) ReleaseSession(requestID string) {
+	if b == nil || b.sessionBindings == nil {
+		return
+	}
+	b.sessionBindings.Release(requestID)
 }
 
 func (b *Bridge) Stream(ctx context.Context, w http.ResponseWriter, resp *http.Response, prepared PreparedRequest) error {

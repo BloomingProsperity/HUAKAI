@@ -213,6 +213,12 @@ type deps struct {
 	// hermesMutator runs the WAVE H4 mutating-tool atomic-audit + advisory-lock
 	// transaction. Nil when the pool is unset (mutating tools then fail closed).
 	hermesMutator *hermesops.MutateOrchestrator
+	// WAVE H3b conversational READ-ONLY tool loop: the shared session-binding store
+	// (operator identity per chat session, keyed by the internal_token request_id)
+	// and the internal tool-execute handler the runner calls back into. The handler
+	// is nil outside the admin-only repositioning or when the chat bridge is unset.
+	hermesSessionBindings     *hermeschat.SessionBindings
+	hermesInternalToolHandler *hermeschat.InternalToolHandler
 }
 
 type refundReceiptAppender interface {
@@ -868,9 +874,29 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		Proof:   settlementProof,
 	}
 	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
+	// WAVE H3 read-only diagnostic-tool spine + its hermes_tool_calls audit
+	// inserter, built HERE (before the chat bridge) so the WAVE H3b conversational
+	// tool loop can share the registry (catalog provider) + the session-binding
+	// store with the bridge AND the internal tool-execute handler. The mutating
+	// orchestrator is also returned for the H4 path. Each tool wraps its EXISTING
+	// read function — no new query logic. Held in locals here (the deps struct is
+	// built later) and assigned into d below.
+	hermesToolRegistry, hermesToolCalls, hermesMutator := buildHermesToolRegistry(hermesToolDeps{
+		pool:           pgPool,
+		adminQueries:   adminQueries,
+		billingQueries: billingQueries,
+		credentialStr:  credentialStore,
+		channelHealth:  channelHealthService,
+		dlqStore:       dlqStore,
+		dlqService:     dlqService,
+	})
+	// WAVE H3b: the in-process session-binding store shared by the bridge (writes
+	// the operator binding at chat start) and the internal tool handler (reads it
+	// to authorize each conversational tool call).
+	hermesSessionBindings := hermeschat.NewSessionBindings(nil)
 	var hermesChatBridge *hermeschat.Bridge
 	if hermesRunner != nil {
-		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys)
+		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesSessionBindings, hermesToolRegistry)
 		if err != nil {
 			return nil, err
 		}
@@ -1097,6 +1123,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesBootstrapIssuer:    hermesBootstrapIssuer,
 		hermesRunnerSharedSecret: hermesRunnerSharedSecret,
 		hermesAdminOnly:          hermesAdminOnly,
+		hermesToolRegistry:       hermesToolRegistry,
+		hermesToolCalls:          hermesToolCalls,
+		hermesMutator:            hermesMutator,
+		hermesSessionBindings:    hermesSessionBindings,
 	}
 	rt.deps = d
 	apiKeyExpiryService := apikeyexpiry.NewService(
@@ -1245,19 +1275,22 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// services (settler, selector, credential store + scheduler) are wired, so the
 	// seed probes capture live (not nil) references. Off the request hot path.
 	d.moduleRegistry = buildModuleRegistry(d)
-	// WAVE H3: build the read-only diagnostic-tool spine + its hermes_tool_calls
-	// audit inserter + the module-context source, wiring each tool to its
-	// EXISTING read function. Off the request hot path.
-	d.hermesToolRegistry, d.hermesToolCalls, d.hermesMutator = buildHermesToolRegistry(hermesToolDeps{
-		pool:           pgPool,
-		adminQueries:   adminQueries,
-		billingQueries: billingQueries,
-		credentialStr:  credentialStore,
-		channelHealth:  channelHealthService,
-		dlqStore:       dlqStore,
-		dlqService:     dlqService,
-	})
+	// WAVE H3 read-only diagnostic-tool spine is built earlier (before the chat
+	// bridge) so the H3b conversational tool loop can share it. Here we only build
+	// the module-context source.
 	d.hermesModuleSource = newModuleSource(d.moduleRegistry)
+	// WAVE H3b: the internal READ-ONLY tool-execute handler the runner calls back
+	// into mid-conversation. It verifies the session's internal_token, resolves
+	// the bound operator, and dispatches ONLY read-only tools (Run refuses a
+	// mutation) with the operator's role floor + tenant scope + audit. Built only
+	// when the admin-only repositioning + the chat bridge are active.
+	if d.hermesAdminOnly && d.hermesChatBridge != nil {
+		if internalSecret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv)); internalSecret != "" {
+			d.hermesInternalToolHandler = buildHermesInternalToolHandler(
+				[]byte(internalSecret), d.hermesSessionBindings, d.hermesToolRegistry, d.hermesToolCalls,
+			)
+		}
+	}
 	// WAVE H5: the daily ops-inspection worker. Default-OFF (opt-in enable flag);
 	// it only starts when enabled AND an admin recipient resolves (platform setting
 	// or env fallback). It reuses the EXISTING read-only diagnostics + notification
@@ -1323,7 +1356,7 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	})
 }
 
-func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider) (*hermeschat.Bridge, error) {
+func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, bindings *hermeschat.SessionBindings, toolRegistry *hermesops.Registry) (*hermeschat.Bridge, error) {
 	if hermesService == nil {
 		return nil, nil
 	}
@@ -1334,14 +1367,23 @@ func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.
 	if internalSecret == "" {
 		return nil, fmt.Errorf("%w: %s is required for Hermes chat bridge", hermes.ErrMisconfigured, hermeschat.InternalTokenSecretEnv)
 	}
-	bridge, err := hermeschat.NewBridge(
-		hermesService,
+	opts := []hermeschat.Option{
 		hermeschat.WithInternalTokenSecret([]byte(internalSecret)),
 		hermeschat.WithInternalBaseURL(envDefault(hermeschat.InternalBaseURLEnv, hermeschat.DefaultInternalBaseURL)),
 		hermeschat.WithAuditDLQ(dlqService),
 		hermeschat.WithResponseHeaderSettings(settings),
 		hermeschat.WithMessageContentKeys(keys),
-	)
+	}
+	// WAVE H3b: attach the session-binding store + the read-only tool catalog so
+	// the chat payload carries the catalog and each session's operator is bound.
+	// Both optional — a nil bindings store leaves the chat path unchanged.
+	if bindings != nil {
+		opts = append(opts, hermeschat.WithSessionBindings(bindings))
+	}
+	if toolRegistry != nil {
+		opts = append(opts, hermeschat.WithToolCatalog(readOnlyCatalogProvider{reg: toolRegistry}))
+	}
+	bridge, err := hermeschat.NewBridge(hermesService, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("build hermes chat bridge: %w", err)
 	}

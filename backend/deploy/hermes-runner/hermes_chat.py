@@ -28,6 +28,9 @@ HERMES_HOME_ROOT = "/var/lib/huakai/hermes"
 INTERNAL_BASE_URL_ENV = "HUAKAI_HERMES_INTERNAL_LLM_BASE_URL"
 INTERNAL_TOKEN_SECRET_ENV = "HUAKAI_HERMES_INTERNAL_TOKEN_SECRET"
 INTERNAL_TOKEN_MAX_TTL_SECONDS = 5 * 60
+# Bounds one conversational tool call's round-trip to the gateway. Diagnostic
+# reads are fast; a hung gateway must not stall the chat indefinitely.
+TOOL_EXECUTE_TIMEOUT_SECONDS = 15
 
 _DONE = object()
 
@@ -39,6 +42,12 @@ class ChatPayload:
     internal_token: str = field(repr=False)
     conversation_id: int | None = None
     model: str | None = None
+    # tool_catalog is the gateway-injected list of READ-ONLY diagnostic tools the
+    # ops assistant may call mid-conversation (name + description + input_schema).
+    # It NEVER contains a mutating tool — the gateway filters to read-only before
+    # injection. The runner does not authorize tools; it only forwards the model's
+    # chosen tool call to the gateway, which authorizes + executes + audits.
+    tool_catalog: tuple[dict[str, Any], ...] = ()
 
 
 class _CallbackAck:
@@ -165,10 +174,116 @@ class _StreamCallback:
 async def _invoke_run_conversation(agent: Any, payload: ChatPayload, callback: Callable[[Any], Any]) -> Any:
     method = agent.run_conversation
     kwargs = _conversation_kwargs(payload, callback)
+    # WAVE H3b: inject the READ-ONLY tool catalog + a tool executor ONLY when the
+    # loaded agent's run_conversation accepts them (signature-aware), so an agent
+    # that does not support tools is unaffected and the supply-chain surface is not
+    # widened. The executor merely FORWARDS the model's chosen tool call to the
+    # gateway over the internal token — it performs NO authorization itself; the
+    # gateway authorizes (read-only filter + RBAC + tenant scope) + audits.
+    _inject_tool_kwargs(method, kwargs, payload)
 
     if inspect.iscoroutinefunction(method):
         return await method(**kwargs)
     return await _run_sync_method(method, kwargs)
+
+
+def _inject_tool_kwargs(method: Callable[..., Any], kwargs: dict[str, Any], payload: ChatPayload) -> None:
+    """Add tool_catalog + tool_executor to kwargs iff (a) a non-empty catalog was
+    injected by the gateway AND (b) run_conversation declares the matching
+    parameter (or **kwargs). Fail-safe: if the signature cannot be introspected,
+    inject nothing rather than risk a TypeError that aborts the chat."""
+    if not payload.tool_catalog:
+        return
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return
+    accepts_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    if "tool_catalog" in params or accepts_var_kw:
+        kwargs["tool_catalog"] = [dict(t) for t in payload.tool_catalog]
+    if "tool_executor" in params or accepts_var_kw:
+        kwargs["tool_executor"] = _build_tool_executor(payload)
+
+
+def _build_tool_executor(payload: ChatPayload) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
+    """Return a callable (tool_name, args) -> sanitized result dict that the agent
+    invokes when the model picks a tool. It POSTs to the gateway's internal
+    read-only tool-execute endpoint with the session internal_token as proof.
+    The gateway is the sole authority: it verifies the token, resolves the bound
+    operator, REJECTS any mutating tool, runs the read-only tool with the
+    operator's role floor + tenant scope, audits the call, and returns only the
+    sanitized summary. The runner never sees a secret and never authorizes."""
+    url = _internal_tool_execute_url(payload.internal_base_url)
+    token = payload.internal_token
+
+    def execute(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        return _post_tool_execute(url, token, tool_name, args or {})
+
+    return execute
+
+
+def _internal_tool_execute_url(internal_base_url: str) -> str:
+    """Derive the gateway's tool-execute endpoint from the internal LLM base URL.
+    The base URL points at the gateway's internal listener (e.g.
+    http://host:8080/internal/v1/openai); the tool endpoint is a sibling fixed
+    path on the SAME origin so it inherits the listener's network isolation."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(internal_base_url)
+    return urlunsplit((parts.scheme, parts.netloc, "/internal/hermes/tool-execute", "", ""))
+
+
+def _post_tool_execute(url: str, token: str, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Synchronously POST one tool call to the gateway and return the parsed
+    result. Network/parse failures and non-2xx responses are surfaced as a
+    structured error dict (never a raw secret) so the agent can decide how to
+    continue rather than crashing the conversation."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    body = _json.dumps({"tool_name": tool_name, "args": args}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=TOOL_EXECUTE_TIMEOUT_SECONDS) as resp:
+            payload = resp.read()
+        parsed = _json.loads(payload.decode("utf-8"))
+        if isinstance(parsed, dict):
+            return parsed
+        return {"status": "error", "error_class": "malformed_result"}
+    except urllib.error.HTTPError as exc:
+        return _tool_execute_http_error(exc)
+    except Exception:
+        # Never leak the token or a stack trace into the conversation surface.
+        return {"status": "error", "error_class": "tool_execute_failed"}
+
+
+def _tool_execute_http_error(exc: Any) -> dict[str, Any]:
+    """Map a non-2xx gateway response to a structured error dict. The gateway's
+    error body is a small {"error": "<code>"} enum (no PII), safe to surface."""
+    code = "tool_execute_failed"
+    try:
+        detail = json_loads_safe(exc.read())
+        if isinstance(detail, dict):
+            err = detail.get("error") or detail.get("error_class")
+            if isinstance(err, str) and err:
+                code = err
+    except Exception:
+        pass
+    return {"status": "error", "error_class": code}
+
+
+def json_loads_safe(raw: Any) -> Any:
+    import json as _json
+
+    try:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        return _json.loads(raw)
+    except Exception:
+        return None
 
 
 async def _run_sync_method(method: Callable[..., Any], kwargs: dict[str, Any]) -> Any:
@@ -293,7 +408,35 @@ def _parse_payload(value: Any) -> ChatPayload:
         model=model,
         internal_base_url=base_url,
         internal_token=token,
+        tool_catalog=_parse_tool_catalog(value.get("tool_catalog")),
     )
+
+
+def _parse_tool_catalog(raw: Any) -> tuple[dict[str, Any], ...]:
+    """Normalize the gateway-injected tool catalog into an immutable tuple of
+    {name, description, input_schema} dicts. Anything malformed is dropped so a
+    bad entry can never crash the conversation; absent => empty catalog (no tool
+    loop). The runner trusts the gateway's read-only filter — it does not re-check
+    mutating-ness here (it has no registry), it only forwards what the model picks
+    and the gateway re-authorizes."""
+    if not isinstance(raw, list):
+        return ()
+    catalog: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        schema = entry.get("input_schema")
+        catalog.append(
+            {
+                "name": name.strip(),
+                "description": str(entry.get("description") or ""),
+                "input_schema": schema if isinstance(schema, dict) else {},
+            }
+        )
+    return tuple(catalog)
 
 
 def _required_string(value: dict[str, Any], name: str) -> str:

@@ -249,13 +249,13 @@ func TestBuildHermesChatBridgeRequiresDedicatedInternalTokenSecret(t *testing.T)
 	t.Setenv(hermeschat.InternalTokenSecretEnv, "")
 
 	keys := mustGatewayHermesContentKeys(t)
-	bridge, err := buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil, keys)
+	bridge, err := buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil, keys, nil, nil)
 	if !errors.Is(err, hermes.ErrMisconfigured) || bridge != nil {
 		t.Fatalf("bridge=%v err=%v want misconfigured nil bridge without %s", bridge, err, hermeschat.InternalTokenSecretEnv)
 	}
 
 	t.Setenv(hermeschat.InternalTokenSecretEnv, "dedicated-internal-token-secret")
-	bridge, err = buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil, keys)
+	bridge, err = buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil, keys, nil, nil)
 	if err != nil || bridge == nil {
 		t.Fatalf("bridge=%v err=%v want bridge with explicit %s", bridge, err, hermeschat.InternalTokenSecretEnv)
 	}
