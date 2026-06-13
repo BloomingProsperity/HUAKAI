@@ -3155,6 +3155,60 @@ paths:
                           type: string
                           description: Fixed six-decimal fraction of returned request_count volume, from 0.000000 to 1.000000.
         '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/site/config:
+    get:
+      tags: [public]
+      summary: Fetch the unauthenticated site bootstrap configuration
+      operationId: getSiteConfig
+      x-huakai-spec-source:
+        - backend/internal/sitepublichttp/handler.go
+      security: []
+      description: |
+        Returns the customer-safe site bootstrap configuration a not-yet-logged-in
+        frontend needs: brand strings (site name, logo, footer, home content),
+        the working tenant id, and which auth/registration affordances to render
+        (registration toggle, invitation requirement, password login/register
+        toggles, captcha enablement, captcha provider and PUBLIC site key, passkey
+        enablement and relying-party hints, oauth provider list, promo toggle,
+        two-factor enablement). It requires no bearer token or session and projects
+        an explicit allowlist of public setting keys only. It never exposes any
+        secret-bearing setting (payment provider config, moderation api keys) or
+        any captcha/turnstile secret.
+      responses:
+        '200':
+          description: Public site bootstrap configuration.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  [tenant_id, registration_enabled, invitation_required,
+                   password_register_enabled, password_login_enabled,
+                   captcha_enabled, captcha_provider, captcha_site_key,
+                   two_factor_enabled, passkey_enabled, passkey_rp_id,
+                   passkey_rp_display_name, oauth_providers_enabled, promo_enabled,
+                   site_name, site_logo, site_footer, site_home_content]
+                properties:
+                  tenant_id: { type: integer, format: int64 }
+                  registration_enabled: { type: boolean }
+                  invitation_required: { type: boolean }
+                  password_register_enabled: { type: boolean }
+                  password_login_enabled: { type: boolean }
+                  captcha_enabled: { type: boolean }
+                  captcha_provider: { type: string, enum: ["", turnstile, recaptcha, hcaptcha] }
+                  captcha_site_key: { type: string }
+                  two_factor_enabled: { type: boolean }
+                  passkey_enabled: { type: boolean }
+                  passkey_rp_id: { type: string }
+                  passkey_rp_display_name: { type: string }
+                  oauth_providers_enabled: { type: string }
+                  promo_enabled: { type: boolean }
+                  site_name: { type: string }
+                  site_logo: { type: string }
+                  site_footer: { type: string }
+                  site_home_content: { type: string }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/pricing/rate-table:

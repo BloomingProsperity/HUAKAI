@@ -208,6 +208,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/v1/public/rankings", publicrankinghttp.NewHandler(publicrankinghttp.Deps{
 		Store: publicRankingsStore,
 	}))
+	mountSiteConfigRoute(r, d)
 	r.Get("/v1/pricing/snapshots", gatewayhttp.NewPricingSnapshotsHandler(receiptDeps))
 	r.Get("/v1/pricing/snapshots/{snapshot_id}", gatewayhttp.NewPricingSnapshotHandler(receiptDeps))
 	announcementhttp.MountUserRoutes(r, announcementhttp.UserDeps{
