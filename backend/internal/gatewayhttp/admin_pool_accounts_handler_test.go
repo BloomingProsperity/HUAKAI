@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -16,6 +17,32 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
+
+// adminAuditActionWhitelist mirrors the migrated admin_audit_events_action_check
+// CHECK constraint (latest = migration 0141). The stub enforces it so a handler
+// that emits an action absent from the live whitelist fails the same way it
+// would against a real DB (SQLSTATE 23514) instead of silently passing — this
+// is what turns the formerly non-discriminating stub into a guard that catches
+// the latent "action not whitelisted -> 503 audit_write_failed" bug.
+var adminAuditActionWhitelist = map[string]struct{}{
+	"issue_api_key": {}, "revoke_api_key": {}, "list_api_keys": {},
+	"issue_admin_token": {}, "revoke_admin_token": {}, "admin_login": {},
+	"create_provider_account": {}, "disable_provider_account": {},
+	"enable_provider_account": {}, "delete_provider_account": {},
+	"create_account_credential": {}, "rotate_account_credential": {},
+	"disable_account_credential": {}, "delete_account_credential": {},
+	"list_account_credentials": {},
+	"credential_acquisition_started": {}, "credential_acquisition_completed": {},
+	"credential_acquisition_failed": {}, "credential_acquisition_cancelled": {},
+	"update_billing_settings": {},
+	"create_pool_group": {}, "update_pool_group": {},
+	"update_platform_settings": {},
+	"unlock_user": {}, "force_disable_2fa": {}, "reset_passkey": {},
+	"set_user_group": {}, "set_user_remark": {},
+	"set_user_status": {}, "create_user": {}, "delete_user": {},
+	"create_quota_policy": {}, "update_quota_policy": {}, "delete_quota_policy": {},
+	"clear_provider_account_rate_limit": {}, "update_provider_account": {},
+}
 
 type adminPoolAuthStub struct {
 	ident admin.AdminIdentity
@@ -203,6 +230,15 @@ func (s *adminPoolStoreStub) SoftDeleteProviderAccount(_ context.Context, arg ad
 }
 
 func (s *adminPoolStoreStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
+	if _, ok := adminAuditActionWhitelist[arg.Action]; !ok {
+		// Reproduce the real CHECK violation a non-whitelisted action triggers
+		// against Postgres so handler tests stop masking the audit-write bug.
+		return admindb.InsertAdminAuditEventRow{}, &pgconn.PgError{
+			Code:           "23514",
+			ConstraintName: "admin_audit_events_action_check",
+			Message:        "new row for relation \"admin_audit_events\" violates check constraint \"admin_audit_events_action_check\"",
+		}
+	}
 	s.audits = append(s.audits, arg)
 	return admindb.InsertAdminAuditEventRow{ID: int64(len(s.audits))}, nil
 }
@@ -568,14 +604,55 @@ func TestAdminPoolAccounts_UpdateProviderAccountFull(t *testing.T) {
 func TestAdminPoolAccounts_ClearRateLimit(t *testing.T) {
 	store := &adminPoolStoreStub{}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
-	if rec.Code != http.StatusNoContent {
+	// Parity-or-better: the endpoint now returns the reactivated account row
+	// (200 + body) instead of an opaque 204 so the operator UI sees the
+	// account is unbenched (mirrors sub2api's recovered-account response).
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if store.clear == nil || store.clear.ID != 77 || store.clear.TenantID != 7 {
 		t.Fatalf("clear arg mismatch: %+v", store.clear)
 	}
+	var body providerAccountResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode clear-rate-limit response: %v body=%s", err, rec.Body.String())
+	}
+	if body.ID != 77 {
+		t.Fatalf("clear-rate-limit response must echo the reactivated account id 77, got %+v", body)
+	}
 	if len(store.audits) != 1 || store.audits[0].Action != "clear_provider_account_rate_limit" {
 		t.Fatalf("clear audit mismatch: %+v", store.audits)
+	}
+}
+
+// TestAdminPoolAccounts_ClearRateLimit_AuditWhitelistGuardIsDiscriminating
+// proves the hardened audit stub actually catches the latent bug this slice
+// fixes: if 'clear_provider_account_rate_limit' is NOT whitelisted (the
+// pre-migration-0141 world), the audit INSERT raises CHECK 23514 and the
+// handler returns 503 audit_write_failed — exactly the failure mode that was
+// previously masked. The happy-path test above passes ONLY because the action
+// is now in the whitelist; this test pins down what happens without it, so the
+// pair is self-proving (correct path vs broken/baseline path differ).
+func TestAdminPoolAccounts_ClearRateLimit_AuditWhitelistGuardIsDiscriminating(t *testing.T) {
+	// Temporarily remove the action to simulate the pre-0141 whitelist.
+	if _, ok := adminAuditActionWhitelist["clear_provider_account_rate_limit"]; !ok {
+		t.Fatal("precondition: action must be whitelisted before the test removes it")
+	}
+	delete(adminAuditActionWhitelist, "clear_provider_account_rate_limit")
+	t.Cleanup(func() {
+		adminAuditActionWhitelist["clear_provider_account_rate_limit"] = struct{}{}
+	})
+
+	store := &adminPoolStoreStub{}
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("non-whitelisted clear action must surface 503, got status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "audit_write_failed") {
+		t.Fatalf("expected audit_write_failed error, got body=%s", rec.Body.String())
+	}
+	if len(store.audits) != 0 {
+		t.Fatalf("rejected audit must not be recorded, got %+v", store.audits)
 	}
 }
 
