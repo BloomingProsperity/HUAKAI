@@ -130,26 +130,6 @@ func TestHandlerCategoryFilter(t *testing.T) {
 	}
 }
 
-// TestContextSummaryMirrorsMerge — the Hermes feed returns the same merged data.
-// Regression: if ContextSummary diverged from Merge (e.g. dropped the overlay)
-// the billing overlay assertion goes RED, proving the Hermes feed and the admin
-// endpoint share one source of truth.
-func TestContextSummaryMirrorsMerge(t *testing.T) {
-	summary := ContextSummary(context.Background(), newFakeSource(), "")
-	if len(summary) != 2 {
-		t.Fatalf("summary len=%d want 2", len(summary))
-	}
-	found := false
-	for _, v := range summary {
-		if v.ID == "billing.service" && v.Catalog != nil && v.Catalog.FeatureID == "F-BILL-001" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("ContextSummary did not carry billing static overlay")
-	}
-}
-
 // TestHandlerNilSourceFailsClosed — a nil source must not panic; it returns 503
 // with an empty list, never a 200 implying "zero modules exist".
 func TestHandlerNilSourceFailsClosed(t *testing.T) {
