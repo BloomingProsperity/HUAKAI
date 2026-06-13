@@ -10,7 +10,30 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/thinkingnorm"
 )
+
+// TestIngressProtocolForEffort_ResponsesIsUnmodeled guards the v2-review S2: the
+// OpenAI Responses ingress parser consumes a NESTED reasoning object, not the
+// top-level reasoning_effort string the chat parser reads. Mapping Responses to
+// IngressOpenAIChat would emit reasoning_effort that canonicalization silently
+// drops — a silent effort loss. Responses must map to IngressOther (unmodeled →
+// the request is left unchanged, no silent loss; native wiring is a follow-up).
+//
+// Regression caught: folding ClientProtocolOpenAIResponses back into the
+// OpenAIChat case turns this RED.
+func TestIngressProtocolForEffort_ResponsesIsUnmodeled(t *testing.T) {
+	if got := ingressProtocolForEffort(proto.ClientProtocolOpenAIResponses); got != thinkingnorm.IngressOther {
+		t.Fatalf("OpenAI Responses ingress -> %v, want IngressOther (else suffix effort is silently dropped during canonicalization)", got)
+	}
+	// Sanity: the modeled ingresses still map correctly.
+	if got := ingressProtocolForEffort(proto.ClientProtocolOpenAIChat); got != thinkingnorm.IngressOpenAIChat {
+		t.Fatalf("OpenAIChat ingress -> %v, want IngressOpenAIChat", got)
+	}
+	if got := ingressProtocolForEffort(proto.ClientProtocolAnthropicMessages); got != thinkingnorm.IngressAnthropic {
+		t.Fatalf("Anthropic ingress -> %v, want IngressAnthropic", got)
+	}
+}
 
 // perModelRegistry is a registry fake that resolves only the names in entries;
 // any other name returns registry.ErrUnknownModel (the real 404 trigger). It
