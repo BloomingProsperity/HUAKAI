@@ -125,8 +125,10 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 		return
 	}
 	// L2/L5: single-use consume. A re-used / stale / wrong-tool / wrong-tenant /
-	// wrong-actor correlation_id finds nothing and is rejected — no mutation.
-	entry, ok := h.confirmCache.consume(req.CorrelationID, spec.Name, ident.TenantID, ident.UserID)
+	// wrong-actor-user / wrong-operator-token correlation_id finds nothing and is
+	// rejected — no mutation. actor.TokenID binds the confirm to the SAME operator
+	// admin token that issued the preview (not just the tenant-user context).
+	entry, ok := h.confirmCache.consume(req.CorrelationID, spec.Name, ident.TenantID, ident.UserID, actor.TokenID)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_invalid", "correlation_id is stale, unknown, or does not match this tool")
 		return

@@ -73,7 +73,7 @@ func (c *confirmCache) issue(p pendingConfirmation) (string, error) {
 // supplied tool/tenant/actor binding; otherwise (zero, false). Because the
 // delete happens under the same lock as the lookup, two concurrent confirms on
 // the same id can never both succeed — at most one consumes it.
-func (c *confirmCache) consume(id, toolName string, tenantID, actorID int64) (pendingConfirmation, bool) {
+func (c *confirmCache) consume(id, toolName string, tenantID, actorID, tokenID int64) (pendingConfirmation, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[id]
@@ -86,7 +86,11 @@ func (c *confirmCache) consume(id, toolName string, tenantID, actorID int64) (pe
 	if c.now().After(entry.ExpiresAt) {
 		return pendingConfirmation{}, false
 	}
-	if entry.ToolName != toolName || entry.TenantID != tenantID || entry.ActorID != actorID {
+	// Bind the confirm to the EXACT operator that previewed: tool + tenant +
+	// actor-user + the operator's admin TokenID. Without the TokenID check a
+	// different operator (distinct admin token) acting in the same tenant-user
+	// context could consume another operator's preview and execute the mutation.
+	if entry.ToolName != toolName || entry.TenantID != tenantID || entry.ActorID != actorID || entry.TokenID != tokenID {
 		return pendingConfirmation{}, false
 	}
 	return entry, true
