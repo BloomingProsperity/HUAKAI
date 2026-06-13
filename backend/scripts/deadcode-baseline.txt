@@ -4,6 +4,8 @@ internal/adminhttp/catalog.go:  unreachable func: DefaultCatalog
 internal/adminhttp/catalog.go:  unreachable func: RequestedChannelDispositions
 internal/adminhttp/catalog.go:  unreachable func: enabledChannel
 internal/adminhttp/catalog.go:  unreachable func: hiddenFlagChannel
+internal/adminquotahttp/routes.go:  unreachable func: MountRoutes
+internal/adminquotahttp/routes.go:  unreachable func: NewRouter
 internal/anthropicoauth/client_id.go:  unreachable func: OAuthConfig
 internal/anthropicoauth/exchanger.go:  unreachable func: Exchanger.ExchangeOAuthCode
 internal/anthropicoauth/exchanger.go:  unreachable func: Exchanger.ExchangeOAuthCodeWithStore
@@ -187,6 +189,7 @@ internal/credentialworker/options.go:  unreachable func: WithMaxAttempts
 internal/credentialworker/options.go:  unreachable func: WithProviderAccountHealthPolicy
 internal/credentialworker/options.go:  unreachable func: WithTickChannel
 internal/credentialworker/options.go:  unreachable func: WithWarningWindow
+internal/credentialworker/options.go:  unreachable func: withAlertAsync
 internal/credentialworker/options.go:  unreachable func: withAuditWriter
 internal/credentialworker/options.go:  unreachable func: withNow
 internal/credentialworker/options.go:  unreachable func: withProviderAccountHealthStore
