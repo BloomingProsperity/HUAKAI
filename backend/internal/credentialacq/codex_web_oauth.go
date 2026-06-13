@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/google/uuid"
 )
@@ -128,11 +129,16 @@ func (e codexWebOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, 
 	if err := validateTokenShape(fields, TokenShapeAccessRefresh); err != nil {
 		return CredentialCandidate{}, err
 	}
-	return CredentialCandidate{
+	candidate := CredentialCandidate{
 		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
 		RedactedContext: map[string]any{"client_identity_source": codexWebApprovedProfileSource},
-	}, nil
+	}
+	// Auto-extract the upstream account identity from the id_token JWT (sub claim),
+	// mirroring chatgpt_oauth; codex web tokens share the ChatGPT JWT shape. Empty
+	// id_token -> empty Identity -> AttachIdentity no-ops (defensive, never blocks).
+	AttachIdentity(&candidate, accountident.ExtractChatGPT(token.IDToken, ""))
+	return candidate, nil
 }
 
 // buildCodexAuthorizeURL 构造 Codex CLI 浏览器登录的 authorize URL。除标准 PKCE
