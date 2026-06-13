@@ -1995,6 +1995,66 @@ paths:
         '403': { description: Insufficient role. }
         '503': { description: Health source not configured. }
 
+  /admin/v1/modules:
+    get:
+      summary: Module-knowledge spine (Hermes ops assistant)
+      description: >
+        WAVE H2. Read-only merged module-knowledge view for operators and the
+        admin-gated Hermes ops assistant: per HUAKAI subsystem it returns
+        identity (id, category, title, capabilities), the static feature-tree
+        catalog overlay (section, feature id, parity status, owning packages),
+        and a live read-only health probe result. Probe details are
+        system-diagnostic enums/counts only — never secrets or user data. No
+        upstream paid calls; zero billing side effects. Requires platform-admin.
+      operationId: getAdminModules
+      tags: [admin, observability]
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema: { type: string }
+          description: Filter to one module category (e.g. money-path, routing, credentials).
+      responses:
+        '200':
+          description: Merged module-knowledge view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  modules:
+                    type: array
+                    items: { type: object }
+        '401': { description: Missing or invalid admin credential. }
+        '403': { description: Insufficient role (platform-admin required). }
+        '503': { description: Module registry not configured. }
+
+  /v1/admin/modules:
+    get:
+      summary: Module-knowledge spine (alias)
+      description: Alias for /admin/v1/modules for path-prefix compatibility.
+      operationId: getAdminModulesAlias
+      tags: [admin, observability]
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Merged module-knowledge view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  modules:
+                    type: array
+                    items: { type: object }
+        '401': { description: Missing or invalid admin credential. }
+        '403': { description: Insufficient role (platform-admin required). }
+        '503': { description: Module registry not configured. }
+
   /v1/admin/usage/leaderboard:
     get:
       tags: [admin]
