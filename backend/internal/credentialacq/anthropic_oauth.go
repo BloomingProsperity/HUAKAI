@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -109,11 +110,18 @@ func (e claudeAIOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, 
 	if err := validateTokenShape(fields, TokenShapeAccessRefresh); err != nil {
 		return CredentialCandidate{}, err
 	}
-	return CredentialCandidate{
+	candidate := CredentialCandidate{
 		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
 		RedactedContext: map[string]any{"client_identity_source": claudeAIOAuthApprovedProfileSource},
-	}, nil
+	}
+	// Auto-capture the upstream Anthropic account identity carried inline in the
+	// token-exchange response body (account.uuid / account.email_address); an empty
+	// uuid falls back to manual binding and never blocks acquisition. This is the
+	// live-path twin of the chatgpt/codex/gemini id_token seams so all four vendors
+	// capture upstream account metadata at acquisition.
+	AttachIdentity(&candidate, accountident.ExtractAnthropic(token.Account.UUID, token.Account.EmailAddress, token.Email))
+	return candidate, nil
 }
 
 func builtinProfileConfig(override OAuthClientConfig) OAuthClientConfig {
