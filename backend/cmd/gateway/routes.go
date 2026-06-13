@@ -316,7 +316,16 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		mountUserKeyControlsRoutes(r, d)
 	})
 	if d.hermesService != nil && d.hermesRunner != nil {
-		r.With(hermeshttp.APIKeyMiddleware(d.inboundAuth)).
+		// WAVE H1: Hermes is repositioned to an admin/operator ops assistant.
+		// When HUAKAI_HERMES_ADMIN_ONLY is true (the default), mount behind the
+		// admin-token middleware (admin_tokens auth + tenant-scope enforcement).
+		// When false, the legacy end-user customer-key path is preserved verbatim
+		// for clean rollback.
+		hermesAuth := hermeshttp.APIKeyMiddleware(d.inboundAuth)
+		if d.hermesAdminOnly {
+			hermesAuth = hermeshttp.AdminAuthMiddleware(d.adminAuth)
+		}
+		r.With(hermesAuth).
 			Mount("/v1/hermes", hermeshttp.NewRouterWithDeps(hermeshttp.RouterDeps{
 				Service:        d.hermesService,
 				Runner:         d.hermesRunner,
