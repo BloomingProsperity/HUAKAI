@@ -270,6 +270,14 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
 		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver})
 	})
+	r.Route("/v1/users/me/oauth-bindings", func(r chi.Router) {
+		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+		// 子路由相对挂在该组下;tenant/user 由 session 身份注入,handler 绝不取自 path/query。
+		controlhttp.MountOAuthBindingsRoutes(r, controlhttp.OAuthBindingsDeps{
+			Bindings:    d.userAuth,
+			SocialLinks: d.userAuth,
+		})
+	})
 	paymentDeps := paymenthttp.Deps{Service: d.paymentService, Providers: d.paymentProviders}
 	r.Group(func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))

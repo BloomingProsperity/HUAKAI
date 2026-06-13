@@ -112,6 +112,14 @@ type InviteBinding struct {
 	RedeemedAt time.Time `json:"redeemed_at"`
 }
 
+// SocialIdentityLink 是某用户一条已绑定的社交登录身份(只读视图)。Subject 是上游
+// 用户标识,默认应脱敏后再出网络,避免把可关联的第三方 subject 原样暴露给前端。
+type SocialIdentityLink struct {
+	Provider string    `json:"provider"`
+	Subject  string    `json:"subject"`
+	LinkedAt time.Time `json:"linked_at"`
+}
+
 type TokenChallenge struct {
 	ID        string    `json:"id"`
 	UserID    int64     `json:"user_id"`

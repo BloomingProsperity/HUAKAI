@@ -276,6 +276,52 @@ func (s *Service) UnlinkSocialIdentity(ctx context.Context, tenantID, userID int
 	return unlinked, nil
 }
 
+// socialIdentityListStore 是 ListSocialIdentityLinks 所需的只读存储面;由 *PostgresStore 实现。
+type socialIdentityListStore interface {
+	ListSocialIdentityLinks(context.Context, int64, int64) ([]SocialIdentityLink, error)
+}
+
+// ListSocialIdentityLinks 返回已认证用户自己的社交登录绑定(只读)。tenant/user 必须取自 session。
+// 每条 subject 在出 service 前脱敏,前端只需识别「已绑过哪个 provider」,不应拿到可关联第三方账号的原始
+// subject(防 enumeration / 关联泄露)。
+func (s *Service) ListSocialIdentityLinks(ctx context.Context, tenantID, userID int64) ([]SocialIdentityLink, error) {
+	if s == nil || s.Store == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return nil, ErrInvalidInput
+	}
+	lister, ok := s.Store.(socialIdentityListStore)
+	if !ok {
+		return nil, ErrStoreNotConfigured
+	}
+	links, err := lister.ListSocialIdentityLinks(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range links {
+		links[i].Subject = maskSocialSubject(links[i].Subject)
+	}
+	return links, nil
+}
+
+// maskSocialSubject 脱敏上游 subject:保留首尾少量字符,中间以 * 占位;过短的整体以 * 替换。
+// 目的是让用户能粗略辨认是哪个第三方账号、又不把完整可关联标识暴露出去。
+func maskSocialSubject(subject string) string {
+	subject = strings.TrimSpace(subject)
+	runes := []rune(subject)
+	switch n := len(runes); {
+	case n == 0:
+		return ""
+	case n <= 2:
+		return strings.Repeat("*", n)
+	case n <= 6:
+		return string(runes[0]) + strings.Repeat("*", n-1)
+	default:
+		return string(runes[:2]) + strings.Repeat("*", n-4) + string(runes[n-2:])
+	}
+}
+
 func ensureSocialLoginUserAllowed(user User) error {
 	switch user.Status {
 	case UserStatusDisabled, UserStatusDeleted:
