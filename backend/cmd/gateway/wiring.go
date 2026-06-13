@@ -43,6 +43,7 @@ import (
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
+	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/emailsendlimit"
@@ -51,6 +52,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
@@ -202,6 +204,12 @@ type deps struct {
 	// off every request hot path; populated near the end of buildGatewayRuntime
 	// once probe-referenced services are wired.
 	moduleRegistry *moduleregistry.Registry
+	// WAVE H3 read-only ops spine: the diagnostic-tool registry, the
+	// hermes_tool_calls audit inserter, and the module-context source. All are
+	// off the request hot path; mounted under the H1 admin-gated /v1/hermes.
+	hermesToolRegistry *hermesops.Registry
+	hermesToolCalls    *hermestoolsdb.Queries
+	hermesModuleSource *moduleSource
 }
 
 type refundReceiptAppender interface {
@@ -1234,6 +1242,18 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// services (settler, selector, credential store + scheduler) are wired, so the
 	// seed probes capture live (not nil) references. Off the request hot path.
 	d.moduleRegistry = buildModuleRegistry(d)
+	// WAVE H3: build the read-only diagnostic-tool spine + its hermes_tool_calls
+	// audit inserter + the module-context source, wiring each tool to its
+	// EXISTING read function. Off the request hot path.
+	d.hermesToolRegistry, d.hermesToolCalls = buildHermesToolRegistry(hermesToolDeps{
+		pool:           pgPool,
+		adminQueries:   adminQueries,
+		billingQueries: billingQueries,
+		credentialStr:  credentialStore,
+		channelHealth:  channelHealthService,
+		dlqStore:       dlqStore,
+	})
+	d.hermesModuleSource = newModuleSource(d.moduleRegistry)
 	ready = true
 	return rt, nil
 }

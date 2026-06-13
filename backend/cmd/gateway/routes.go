@@ -325,13 +325,29 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		if d.hermesAdminOnly {
 			hermesAuth = hermeshttp.AdminAuthMiddleware(d.adminAuth)
 		}
+		hermesRouterDeps := hermeshttp.RouterDeps{
+			Service:        d.hermesService,
+			Runner:         d.hermesRunner,
+			Bridge:         d.hermesChatBridge,
+			HeaderSettings: d.platformSettings,
+		}
+		// WAVE H3 read-only ops spine. Only attach the tool/context deps when the
+		// admin-only repositioning is active — the legacy end-user customer-key
+		// path must not expose operator diagnostics. The handlers also fail
+		// closed (503) if any dep is nil.
+		if d.hermesAdminOnly {
+			if d.hermesToolRegistry != nil {
+				hermesRouterDeps.Tools = d.hermesToolRegistry
+			}
+			if d.hermesToolCalls != nil {
+				hermesRouterDeps.ToolCalls = d.hermesToolCalls
+			}
+			if d.hermesModuleSource != nil {
+				hermesRouterDeps.ContextSource = d.hermesModuleSource
+			}
+		}
 		r.With(hermesAuth).
-			Mount("/v1/hermes", hermeshttp.NewRouterWithDeps(hermeshttp.RouterDeps{
-				Service:        d.hermesService,
-				Runner:         d.hermesRunner,
-				Bridge:         d.hermesChatBridge,
-				HeaderSettings: d.platformSettings,
-			}))
+			Mount("/v1/hermes", hermeshttp.NewRouterWithDeps(hermesRouterDeps))
 	}
 	r.Post("/internal/runner/bootstrap", d.handleRunnerBootstrap)
 	r.Post("/internal/runner/refresh", d.handleRunnerRefresh)

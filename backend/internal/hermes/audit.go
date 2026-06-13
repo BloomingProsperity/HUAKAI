@@ -20,6 +20,17 @@ const (
 	ActionChatStart          = "hermes.chat.start"
 	ActionMessageSend        = "hermes.message.send"
 	ActionConversationDelete = "hermes.conversation.delete"
+
+	// WAVE H3 read-only diagnostic tool actions (hermes.tool.<name>). The
+	// tool-execute handler mirrors each invocation into hermes_audit_events
+	// under these. The matching DB CHECK is extended in migration 0145; H4
+	// mutating tools add their own actions (validAction + CHECK) when built.
+	ActionToolCredentialDiagnose    = "hermes.tool.credential_diagnose"
+	ActionToolAccountHealthDiagnose = "hermes.tool.account_health_diagnose"
+	ActionToolRequestDiagnose       = "hermes.tool.request_diagnose"
+	ActionToolDLQInspect            = "hermes.tool.dlq_inspect"
+	ActionToolAuditLookup           = "hermes.tool.audit_lookup"
+	ActionToolLogAnalyze            = "hermes.tool.log_analyze"
 )
 
 func (s *Service) RecordAudit(ctx context.Context, tenantID, actorUserID int64, action string, sanitizedArgs map[string]any, result, correlationID, requestID string) error {
@@ -104,10 +115,34 @@ func sensitiveKey(key string) bool {
 
 func validAction(action string) bool {
 	switch action {
-	case ActionEnable, ActionDisable, ActionProfileCreate, ActionProfileRotate, ActionChatStart, ActionMessageSend, ActionConversationDelete:
+	case ActionEnable, ActionDisable, ActionProfileCreate, ActionProfileRotate, ActionChatStart, ActionMessageSend, ActionConversationDelete,
+		ActionToolCredentialDiagnose, ActionToolAccountHealthDiagnose, ActionToolRequestDiagnose,
+		ActionToolDLQInspect, ActionToolAuditLookup, ActionToolLogAnalyze:
 		return true
 	default:
 		return false
+	}
+}
+
+// ToolAuditAction maps a hermesops tool name to its hermes_audit_events action.
+// Returns ("", false) for an unknown tool so the handler fails closed rather
+// than recording an audit row under an unwhitelisted action.
+func ToolAuditAction(toolName string) (string, bool) {
+	switch toolName {
+	case "credential_diagnose":
+		return ActionToolCredentialDiagnose, true
+	case "account_health_diagnose":
+		return ActionToolAccountHealthDiagnose, true
+	case "request_diagnose":
+		return ActionToolRequestDiagnose, true
+	case "dlq_inspect":
+		return ActionToolDLQInspect, true
+	case "audit_lookup":
+		return ActionToolAuditLookup, true
+	case "log_analyze":
+		return ActionToolLogAnalyze, true
+	default:
+		return "", false
 	}
 }
 

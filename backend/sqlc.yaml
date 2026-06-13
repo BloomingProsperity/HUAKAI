@@ -207,6 +207,33 @@ sql:
           api_source: APISource
           correlation_id: CorrelationID
           request_id: RequestID
+  # Hermes WAVE H3 tool-call audit ledger. Isolated in its own gen block + output
+  # package so it can be regenerated without touching the established
+  # internal/db/hermes package (avoids the broad hermes-package regen churn).
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/hermes_tool_calls.sql
+    gen:
+      go:
+        package: hermestoolsdb
+        out: internal/db/hermestoolsdb
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          actor_user_id: ActorUserID
+          admin_actor_token_id: AdminActorTokenID
+          tool_name: ToolName
+          correlation_id: CorrelationID
+          request_id: RequestID
+          error_class: ErrorClass
   - engine: postgresql
     schema: sql/migrations
     queries:

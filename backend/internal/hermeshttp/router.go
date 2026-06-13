@@ -17,6 +17,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
+	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 )
 
 type AuthResolver interface {
@@ -25,11 +27,30 @@ type AuthResolver interface {
 
 type authContextKey struct{}
 
+// ToolRegistry is the read-only registry of diagnostic tools the tool-execute
+// handler dispatches to. *hermesops.Registry satisfies it.
+type ToolRegistry interface {
+	List() []hermesops.ToolSpec
+	Get(name string) (hermesops.ToolSpec, bool)
+	Authorize(name, actorRole string) (hermesops.ToolSpec, error)
+	Run(ctx context.Context, name string, req hermesops.ToolRequest) (hermesops.ToolResult, error)
+}
+
+// ContextSource provides the merged module-knowledge view for GET
+// /v1/hermes/context. *cmdgateway moduleSource (a modulehttp.Source) is wrapped
+// by the wiring; the handler only needs the merged accessor.
+type ContextSource interface {
+	modulehttp.Source
+}
+
 type handler struct {
 	svc            *hermes.Service
 	runner         *hermes.RunnerClient
 	chatBridge     *hermeschat.Bridge
 	headerSettings headerfirewall.PlatformSettings
+	tools          ToolRegistry
+	toolCalls      hermesops.ToolCallInserter
+	contextSource  ContextSource
 }
 
 type RouterDeps struct {
@@ -37,6 +58,12 @@ type RouterDeps struct {
 	Runner         *hermes.RunnerClient
 	Bridge         *hermeschat.Bridge
 	HeaderSettings headerfirewall.PlatformSettings
+	// Tools, ToolCalls, and ContextSource wire the WAVE H3 read-only ops spine.
+	// All are optional: when unset, the tool/context routes return a 503
+	// (service unavailable) rather than panicking.
+	Tools         ToolRegistry
+	ToolCalls     hermesops.ToolCallInserter
+	ContextSource ContextSource
 }
 
 func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges ...*hermeschat.Bridge) http.Handler {
@@ -53,6 +80,9 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 		runner:         d.Runner,
 		chatBridge:     d.Bridge,
 		headerSettings: d.HeaderSettings,
+		tools:          d.Tools,
+		toolCalls:      d.ToolCalls,
+		contextSource:  d.ContextSource,
 	}
 	r := chi.NewRouter()
 	r.Get("/settings", h.getSettings)
@@ -67,6 +97,10 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 	r.Get("/conversations/{id}", h.getConversation)
 	r.Delete("/conversations/{id}", h.deleteConversation)
 	r.Get("/conversations/{id}/messages", h.listConversationMessages)
+	// WAVE H3 read-only ops spine.
+	r.Get("/tools", h.listTools)
+	r.Post("/tool-execute", h.executeTool)
+	r.Get("/context", h.getModuleContext)
 	return r
 }
 

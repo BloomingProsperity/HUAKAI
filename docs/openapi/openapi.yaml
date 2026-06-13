@@ -2395,6 +2395,76 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/hermes/tools:
+    get:
+      tags: [hermes]
+      summary: List available read-only diagnostic tools (WAVE H3)
+      operationId: listHermesTools
+      description: >-
+        Lists the gateway-mediated read-only diagnostic tools an operator (and the
+        Hermes assistant) can run, with each tool's input schema, minimum required
+        role, and read-only flag. Admin-gated.
+      responses:
+        '200':
+          description: Registered diagnostic tools.
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/tool-execute:
+    post:
+      tags: [hermes]
+      summary: Execute a read-only diagnostic tool (WAVE H3)
+      operationId: postHermesToolExecute
+      description: >-
+        Runs one read-only diagnostic tool by name, records a sanitized
+        hermes_tool_calls audit row (success, error, or RBAC denial), mirrors the
+        invocation into the hermes audit ledger, and returns the structured,
+        privacy-bounded result. Admin-gated; tenant scope is enforced by the admin
+        middleware. No tool mutates state in this wave.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tool_name: { type: string }
+                args: { type: object }
+              required: [tool_name]
+      responses:
+        '200':
+          description: Structured diagnostic result.
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/hermes/context:
+    get:
+      tags: [hermes]
+      summary: Read the merged module-knowledge context (WAVE H3)
+      operationId: getHermesContext
+      description: >-
+        Returns the merged module-knowledge view (module identity, capabilities,
+        live probe state, static catalog overlay) the Hermes ops assistant uses to
+        ground root-cause diagnostics. Module identity + enum statuses only; never
+        secrets or user data. Admin-gated.
+      responses:
+        '200':
+          description: Merged module-knowledge view.
+          content:
+            application/json:
+              schema: { type: object }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/hermes/conversations:
     get:
       tags: [hermes]
