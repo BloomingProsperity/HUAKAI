@@ -171,5 +171,9 @@ func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthSer
 	// SUB2-EGRESS-02: per-account max concurrent sessions cap gate.
 	// sessionCapRegistry nil -> SessionCountGate is fail-open.
 	gates.SessionCount = pool.SessionCountGate{Registry: sessionCapRegistry}
+	// ROUTE-023: per-model context-window admission gate. No injected dependency
+	// (reads only SelectionRequest fields); explicit set keeps a wiring
+	// regression test-catchable rather than silently relying on the default.
+	gates.ContextWindow = pool.ContextWindowGate{}
 	return gates
 }

@@ -33,6 +33,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/tokenestimate"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -589,6 +590,14 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		SessionHash:      ex.sessionHash,
 		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 		UserGroup:        ex.ident.UserGroup,
+		// ROUTE-023: pre-dispatch context-window admission inputs. The window is
+		// a per-model property sourced from registry resolution; the estimate is
+		// a vendor-weighted heuristic keyed on the protocol family; the reserved
+		// output is the client-specified max_tokens (0 when unset). All three
+		// must be positive for the gate to ever bench a candidate (fail-open).
+		ModelContextWindow:   ex.resolved.ContextWindow,
+		EstimatedInputTokens: tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily),
+		MaxOutputTokens:      derefIntOrZero(ex.req.MaxTokens),
 	})
 	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_no_capacity", ex.requestID, 0, ex.protocolLoss)
@@ -631,6 +640,16 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		ex.d.SessionCapRegistry.Register(ex.acquiredAccountID, ex.sessionHash)
 	}
 	return nil
+}
+
+// derefIntOrZero returns *p when p is non-nil and positive, else 0. Used to
+// translate the optional client max_tokens into the context-window gate's
+// output reservation without padding when unspecified.
+func derefIntOrZero(p *int) int {
+	if p == nil || *p < 0 {
+		return 0
+	}
+	return *p
 }
 
 func retryAfterSecondsForWaitPlan(plan *pool.WaitPlan) int {

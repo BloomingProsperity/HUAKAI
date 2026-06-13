@@ -59,19 +59,20 @@ type WindowCostGateIface interface{ Gate }
 type SessionCountGateIface interface{ Gate }
 
 type GateChain struct {
-	Tenant       TenantGate
-	Lifecycle    LifecycleGate
-	Channel      ChannelGate
-	Protocol     ProtocolFamilyGate
-	Model        ModelSupportGate
-	Capability   CapabilityGate
-	Credential   CredentialGate
-	Health       HealthGate
-	GroupPolicy  GroupPolicyGate
-	Exclusion    ExclusionGate
-	Pinned       PinnedAccountGate
-	WindowCost   WindowCostGateIface
-	SessionCount SessionCountGateIface
+	Tenant        TenantGate
+	Lifecycle     LifecycleGate
+	Channel       ChannelGate
+	Protocol      ProtocolFamilyGate
+	Model         ModelSupportGate
+	Capability    CapabilityGate
+	Credential    CredentialGate
+	Health        HealthGate
+	GroupPolicy   GroupPolicyGate
+	Exclusion     ExclusionGate
+	Pinned        PinnedAccountGate
+	WindowCost    WindowCostGateIface
+	SessionCount  SessionCountGateIface
+	ContextWindow ContextWindowGateIface
 }
 
 func DefaultGateChain() GateChain {
@@ -83,6 +84,9 @@ func DefaultGateChain() GateChain {
 		WindowCost: WindowCostGate{},
 		// SessionCount defaults to nil registry; fail-open.
 		SessionCount: SessionCountGate{},
+		// ContextWindow zero value is fail-open (allows unless both
+		// ModelContextWindow>0 and EstimatedInputTokens>0 and overflow).
+		ContextWindow: ContextWindowGate{},
 	}
 }
 
@@ -124,6 +128,7 @@ func (c GateChain) ForSelection(ctx context.Context, req SelectionRequest) GateC
 	c.Pinned = prepareGate(ctx, c.Pinned, req)
 	c.WindowCost = prepareGate(ctx, c.WindowCost, req)
 	c.SessionCount = prepareGate(ctx, c.SessionCount, req)
+	c.ContextWindow = prepareGate(ctx, c.ContextWindow, req)
 	return c
 }
 
@@ -177,6 +182,9 @@ func (c GateChain) withDefaults() GateChain {
 	if c.SessionCount == nil {
 		c.SessionCount = d.SessionCount
 	}
+	if c.ContextWindow == nil {
+		c.ContextWindow = d.ContextWindow
+	}
 	return c
 }
 
@@ -196,6 +204,7 @@ func (c GateChain) ordered() []namedGate {
 		{c.Pinned, GateFailurePinnedAccount},
 		{c.WindowCost, GateFailureWindowCost},
 		{c.SessionCount, GateFailureSessionCount},
+		{c.ContextWindow, GateFailureContextWindow},
 	}
 }
 
