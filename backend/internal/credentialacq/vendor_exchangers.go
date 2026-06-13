@@ -60,6 +60,9 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register("gemini/oauth", newAuthorizationCodeOAuthExchanger(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), newChatGPTOAuthExchanger())
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth), openAICodexDeviceCode)
+	// codex_web_oauth 与 codex_cli_oauth(device-code)并列:web 路径走 authorization-code(PKCE)
+	// 浏览器登录,绑定独立 mode key,不扰动 device-code 注册。
+	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth), newCodexWebOAuthExchanger())
 	register("openai_codex/device-code", openAICodexDeviceCode)
 	register("openai_codex/device_code", openAICodexDeviceCode)
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock), NewSSOExchanger())

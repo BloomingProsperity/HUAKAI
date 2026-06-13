@@ -35,6 +35,7 @@ const (
 	AuthModeVertexAnthropic = "vertex_anthropic"
 	AuthModeChatGPTOAuth    = "chatgpt_oauth"
 	AuthModeCodexCLIOAuth   = "codex_cli_oauth"
+	AuthModeCodexWebOAuth   = "codex_web_oauth"
 	AuthModeAzure           = "azure"
 	AuthModeRefreshToken    = "refresh_token"
 	AuthModeAIStudioAPIKey  = "aistudio_api_key"
@@ -266,6 +267,7 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeChatGPTOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeCodexCLIOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeCodexWebOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeAzure, runtimeKind: RuntimeAPIKey, anyOf: []string{"api_key", "azure_api_key", "access_token", "mock_token_endpoint"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeRefreshToken, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorGemini, authMode: AuthModeAIStudioAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},

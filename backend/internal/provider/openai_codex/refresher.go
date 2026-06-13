@@ -475,6 +475,11 @@ func credentialString(cred map[string]any, key string) string {
 }
 
 func isOpenAICodexOAuthRecord(rec credentialstore.CredentialRecord) bool {
-	return credentialstore.Normalize(rec.Vendor) == credentialstore.VendorOpenAI &&
-		credentialstore.Normalize(rec.AuthMode) == credentialstore.AuthModeCodexCLIOAuth
+	if credentialstore.Normalize(rec.Vendor) != credentialstore.VendorOpenAI {
+		return false
+	}
+	mode := credentialstore.Normalize(rec.AuthMode)
+	// codex_cli_oauth(device-code)与 codex_web_oauth(authorization-code/PKCE)是 Codex 凭据的两个
+	// 并列获取模式,token 形状相同,均由本 codex refresher 续期。
+	return mode == credentialstore.AuthModeCodexCLIOAuth || mode == credentialstore.AuthModeCodexWebOAuth
 }
