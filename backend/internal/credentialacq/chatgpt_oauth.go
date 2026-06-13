@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/google/uuid"
 )
@@ -140,11 +141,15 @@ func (e chatgptOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, s
 	if plan := strings.TrimSpace(token.ChatGPTPlanType); plan != "" {
 		redacted["chatgpt_plan_type_class"] = plan
 	}
-	return CredentialCandidate{
+	candidate := CredentialCandidate{
 		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
 		RedactedContext: redacted,
-	}, nil
+	}
+	// 上游账户身份从 id_token 的 chatgpt 账户声明提取(claim > body > sub),
+	// 仅作账户管理元数据;解析失败回退空/manual,不阻断凭据获取。
+	AttachIdentity(&candidate, accountident.ExtractChatGPT(token.IDToken, token.ChatGPTAccountID))
+	return candidate, nil
 }
 
 func chatgptBuiltinProfileConfig(override OAuthClientConfig) OAuthClientConfig {

@@ -44,6 +44,11 @@ type credentialWriteRequest struct {
 	AuthMode    string          `json:"auth_mode"`
 	Credentials json.RawMessage `json:"credentials"`
 	Reason      string          `json:"reason,omitempty"`
+	// ExternalAccountID/ExternalAccountEmail are the operator-supplied upstream account
+	// identity for the manual create path. Auto-extraction at OAuth token exchange is the
+	// primary source; these are the manual override/fallback used when no OAuth flow ran.
+	ExternalAccountID    string `json:"external_account_id,omitempty"`
+	ExternalAccountEmail string `json:"external_account_email,omitempty"`
 }
 
 type credentialStateRequest struct {
@@ -155,6 +160,8 @@ func newCreateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 			TenantID: req.TenantID, ProviderAccountID: accountID,
 			Vendor: req.Vendor, AuthMode: req.AuthMode,
 			Payload: req.Credentials, ActorID: fmt.Sprintf("%d", ident.TokenID),
+			ExternalAccountID:    req.ExternalAccountID,
+			ExternalAccountEmail: req.ExternalAccountEmail,
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_create_failed", err.Error())

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
@@ -63,7 +64,7 @@ func (e Exchanger) ExchangeOAuthCodeWithStore(ctx context.Context, store *creden
 		Scopes:      session.RequestedScopes,
 		Source:      session.ClientIdentitySource,
 	})
-	token, err := e.exchange(ctx, cfg, state, code, string(verifier), session)
+	token, identity, err := e.exchange(ctx, cfg, state, code, string(verifier), session)
 	if err != nil {
 		return credentialacq.CredentialCandidate{}, err
 	}
@@ -71,25 +72,28 @@ func (e Exchanger) ExchangeOAuthCodeWithStore(ctx context.Context, store *creden
 	if err != nil {
 		return credentialacq.CredentialCandidate{}, err
 	}
-	return credentialacq.CredentialCandidate{
+	redacted := map[string]any{
+		"client_id_source": token.ClientIDSource,
+		"email_present":    token.Email != "",
+	}
+	candidate := credentialacq.CredentialCandidate{
 		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 		Vendor: credentialstore.VendorAnthropic, AuthMode: session.AuthMode,
 		Payload: payload, ActorID: session.ActorID,
-		RedactedContext: map[string]any{
-			"client_id_source": token.ClientIDSource,
-			"email_present":    token.Email != "",
-		},
-	}, nil
+		RedactedContext: redacted,
+	}
+	credentialacq.AttachIdentity(&candidate, identity)
+	return candidate, nil
 }
 
-func (e Exchanger) exchange(ctx context.Context, cfg credentialacq.OAuthClientConfig, state, code, verifier string, session credentialacq.Session) (Token, error) {
+func (e Exchanger) exchange(ctx context.Context, cfg credentialacq.OAuthClientConfig, state, code, verifier string, session credentialacq.Session) (Token, accountident.Identity, error) {
 	code = strings.TrimSpace(code)
 	verifier = strings.TrimSpace(verifier)
 	if code == "" {
-		return Token{}, fmt.Errorf("%w: missing authorization code", credentialacq.ErrInvalidTokenShape)
+		return Token{}, accountident.Identity{}, fmt.Errorf("%w: missing authorization code", credentialacq.ErrInvalidTokenShape)
 	}
 	if verifier == "" {
-		return Token{}, fmt.Errorf("%w: missing pkce verifier", credentialacq.ErrInvalidTokenShape)
+		return Token{}, accountident.Identity{}, fmt.Errorf("%w: missing pkce verifier", credentialacq.ErrInvalidTokenShape)
 	}
 	body := map[string]string{
 		"grant_type":    "authorization_code",
@@ -103,35 +107,38 @@ func (e Exchanger) exchange(ctx context.Context, cfg credentialacq.OAuthClientCo
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return Token{}, err
+		return Token{}, accountident.Identity{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL, bytes.NewReader(raw))
 	if err != nil {
-		return Token{}, err
+		return Token{}, accountident.Identity{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := e.httpClient().Do(req)
 	if err != nil {
-		return Token{}, fmt.Errorf("anthropicoauth: token exchange request failed: %w", err)
+		return Token{}, accountident.Identity{}, fmt.Errorf("anthropicoauth: token exchange request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return Token{}, fmt.Errorf("anthropicoauth: token exchange read failed: %w", err)
+		return Token{}, accountident.Identity{}, fmt.Errorf("anthropicoauth: token exchange read failed: %w", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return Token{}, fmt.Errorf("anthropicoauth: token exchange status %d", resp.StatusCode)
+		return Token{}, accountident.Identity{}, fmt.Errorf("anthropicoauth: token exchange status %d", resp.StatusCode)
 	}
 	var decoded tokenResponse
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
-		return Token{}, fmt.Errorf("anthropicoauth: token response decode failed: %w", err)
+		return Token{}, accountident.Identity{}, fmt.Errorf("anthropicoauth: token response decode failed: %w", err)
 	}
 	token := decoded.toToken(e.now(), cfg, session)
 	if token.AccessToken == "" || token.RefreshToken == "" {
-		return Token{}, fmt.Errorf("%w: anthropic oauth requires access_token and refresh_token", credentialacq.ErrInvalidTokenShape)
+		return Token{}, accountident.Identity{}, fmt.Errorf("%w: anthropic oauth requires access_token and refresh_token", credentialacq.ErrInvalidTokenShape)
 	}
-	return token, nil
+	// 上游账户身份从 token-exchange 响应的 account.uuid / account.email_address 提取，
+	// 仅作账户管理元数据；提取失败回退空/manual，不阻断凭据获取。
+	identity := accountident.ExtractAnthropic(decoded.Account.UUID, decoded.Account.EmailAddress, decoded.Email)
+	return token, identity, nil
 }
 
 func (e Exchanger) httpClient() *http.Client {
@@ -161,6 +168,7 @@ type tokenResponse struct {
 	ExpiresAt    string `json:"expires_at"`
 	Email        string `json:"email"`
 	Account      struct {
+		UUID         string `json:"uuid"`
 		EmailAddress string `json:"email_address"`
 	} `json:"account"`
 }

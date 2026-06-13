@@ -64,6 +64,11 @@ type CreateCredentialInput struct {
 	AuthMode          string
 	Payload           []byte
 	ActorID           string
+	// ExternalAccountID/ExternalAccountEmail are the upstream provider account
+	// identity auto-extracted at acquisition (non-secret, queryable metadata).
+	// Empty values are stored as SQL NULL, not empty string.
+	ExternalAccountID    string
+	ExternalAccountEmail string
 }
 
 type RotateCredentialInput struct {
@@ -119,8 +124,12 @@ type CredentialMetadata struct {
 	LastRefreshOutcome *string    `json:"last_refresh_outcome,omitempty"`
 	FailureClass       *string    `json:"failure_class,omitempty"`
 	FailureCount       int32      `json:"failure_count"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	// ExternalAccountID/ExternalAccountEmail surface the auto-extracted upstream
+	// provider account identity for admin APIs/UI. nil when not captured.
+	ExternalAccountID    *string   `json:"external_account_id,omitempty"`
+	ExternalAccountEmail *string   `json:"external_account_email,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 const (
@@ -293,17 +302,19 @@ INSERT INTO account_credentials (
     encrypted_payload, encryption_scheme, key_id, nonce, aad_hash,
     payload_fingerprint, refresh_token_fingerprint,
     access_expires_at, refresh_expires_at, refresh_before_at,
-    created_by_actor, last_modified_by_actor
+    created_by_actor, last_modified_by_actor,
+    external_account_id, external_account_email
 ) VALUES (
     $1, $2, $3, $4, 'active', 1,
     $5, $6, $7, $8, $9,
     $10, $11,
     $12, $13, $14,
-    NULLIF($15, ''), NULLIF($15, '')
+    NULLIF($15, ''), NULLIF($15, ''),
+    NULLIF($16, ''), NULLIF($17, '')
 )
 RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
           access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
-          failure_class, failure_count, created_at, updated_at`
+          failure_class, failure_count, external_account_id, external_account_email, created_at, updated_at`
 	var meta CredentialMetadata
 	err = s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
 		var rec credentialMetadataRow
@@ -313,9 +324,10 @@ RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credenti
 			prepared.payloadFingerprint, prepared.refreshFingerprint,
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
 			strings.TrimSpace(in.ActorID),
+			strings.TrimSpace(in.ExternalAccountID), strings.TrimSpace(in.ExternalAccountEmail),
 		).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-			&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalAccountEmail, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
 		meta = rec.metadata()
@@ -429,7 +441,7 @@ func (s *Store) ListByAccount(ctx context.Context, tenantID, providerAccountID i
 	const q = `
 SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
        access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
-       failure_class, failure_count, created_at, updated_at
+       failure_class, failure_count, external_account_id, external_account_email, created_at, updated_at
 FROM account_credentials
 WHERE tenant_id = $1
   AND provider_account_id = $2
@@ -445,7 +457,7 @@ ORDER BY updated_at DESC, id DESC`
 		var rec credentialMetadataRow
 		if err := rows.Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-			&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalAccountEmail, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, rec.metadata())
@@ -1248,21 +1260,23 @@ func allowedState(state string) bool {
 }
 
 type credentialMetadataRow struct {
-	ID                 int64
-	TenantID           int64
-	ProviderAccountID  int64
-	Vendor             string
-	AuthMode           string
-	State              string
-	Version            int32
-	AccessExpiresAt    pgtype.Timestamptz
-	RefreshBeforeAt    pgtype.Timestamptz
-	LastRefreshAt      pgtype.Timestamptz
-	LastRefreshOutcome *string
-	FailureClass       *string
-	FailureCount       int32
-	CreatedAt          pgtype.Timestamptz
-	UpdatedAt          pgtype.Timestamptz
+	ID                   int64
+	TenantID             int64
+	ProviderAccountID    int64
+	Vendor               string
+	AuthMode             string
+	State                string
+	Version              int32
+	AccessExpiresAt      pgtype.Timestamptz
+	RefreshBeforeAt      pgtype.Timestamptz
+	LastRefreshAt        pgtype.Timestamptz
+	LastRefreshOutcome   *string
+	FailureClass         *string
+	FailureCount         int32
+	ExternalAccountID    *string
+	ExternalAccountEmail *string
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 }
 
 func (r credentialMetadataRow) metadata() CredentialMetadata {
@@ -1272,8 +1286,21 @@ func (r credentialMetadataRow) metadata() CredentialMetadata {
 		AccessExpiresAt: optionalTime(r.AccessExpiresAt), RefreshBeforeAt: optionalTime(r.RefreshBeforeAt),
 		LastRefreshAt: optionalTime(r.LastRefreshAt), LastRefreshOutcome: r.LastRefreshOutcome,
 		FailureClass: r.FailureClass, FailureCount: r.FailureCount,
+		ExternalAccountID: trimmedNonEmpty(r.ExternalAccountID), ExternalAccountEmail: trimmedNonEmpty(r.ExternalAccountEmail),
 		CreatedAt: pgTime(r.CreatedAt), UpdatedAt: pgTime(r.UpdatedAt),
 	}
+}
+
+// trimmedNonEmpty returns the pointer only when it points at a non-empty trimmed
+// string; otherwise nil so an empty column surfaces as omitted JSON, not "".
+func trimmedNonEmpty(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	if strings.TrimSpace(*in) == "" {
+		return nil
+	}
+	return in
 }
 
 func optionalTime(t pgtype.Timestamptz) *time.Time {

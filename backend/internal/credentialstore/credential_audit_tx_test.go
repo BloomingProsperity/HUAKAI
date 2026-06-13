@@ -137,7 +137,7 @@ func (db *credentialAuditTxFakeDB) queryRow(_ context.Context, sql string, args 
 		id := db.nextCredentialID
 		db.nextCredentialID++
 		db.credential = credentialAuditCredentialFromCreateArgs(id, args)
-		return credentialAuditTxScanRow{values: db.credential.metadataValues()}
+		return credentialAuditTxScanRow{values: db.credential.createMetadataValues()}
 	case strings.Contains(sql, "UPDATE account_credentials") && strings.Contains(sql, "credential_version = credential_version + 1"):
 		if db.credential == nil {
 			return credentialAuditTxScanRow{err: pgx.ErrNoRows}
@@ -204,7 +204,7 @@ func (tx *credentialAuditTxFakeTx) QueryRow(_ context.Context, sql string, args 
 		id := tx.parent.nextCredentialID
 		tx.parent.nextCredentialID++
 		tx.staged = credentialAuditCredentialFromCreateArgs(id, args)
-		return credentialAuditTxScanRow{values: tx.staged.metadataValues()}
+		return credentialAuditTxScanRow{values: tx.staged.createMetadataValues()}
 	case strings.Contains(sql, "UPDATE account_credentials") && strings.Contains(sql, "credential_version = credential_version + 1"):
 		if tx.staged == nil {
 			return credentialAuditTxScanRow{err: pgx.ErrNoRows}
@@ -261,6 +261,20 @@ func (c credentialAuditTxFakeCredential) metadataValues() []any {
 		c.id, c.tenantID, c.providerAccountID, c.vendor, c.authMode, c.state, c.version,
 		emptyTime, emptyTime, emptyTime, nilString,
 		nilString, int32(0), now, now,
+	}
+}
+
+// createMetadataValues mirrors the Create RETURNING list, which surfaces the two
+// external-identity columns (external_account_id, external_account_email) ahead of the
+// created_at/updated_at tail. Rotate's RETURNING omits them, so it keeps metadataValues.
+func (c credentialAuditTxFakeCredential) createMetadataValues() []any {
+	now := pgtype.Timestamptz{Time: time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC), Valid: true}
+	emptyTime := pgtype.Timestamptz{}
+	var nilString *string
+	return []any{
+		c.id, c.tenantID, c.providerAccountID, c.vendor, c.authMode, c.state, c.version,
+		emptyTime, emptyTime, emptyTime, nilString,
+		nilString, int32(0), nilString, nilString, now, now,
 	}
 }
 

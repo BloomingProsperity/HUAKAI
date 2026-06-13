@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/google/uuid"
 )
@@ -159,11 +160,15 @@ func (e geminiPublicCLIOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Co
 	if err := validateTokenShape(fields, TokenShapeAccessRefresh); err != nil {
 		return CredentialCandidate{}, err
 	}
-	return CredentialCandidate{
+	candidate := CredentialCandidate{
 		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
 		RedactedContext: map[string]any{"client_identity_source": geminiApprovedProfileSource},
-	}, nil
+	}
+	// 上游账户身份从 id_token 的 sub/email 声明提取(userinfo HTTP 拉取留 roadmap,
+	// 避免在 SSRF 受控交换路径新增出站);仅作账户管理元数据,解析失败回退空/manual。
+	AttachIdentity(&candidate, accountident.ExtractGemini(token.IDToken, ""))
+	return candidate, nil
 }
 
 func geminiBuiltinProfileConfig(override OAuthClientConfig) OAuthClientConfig {

@@ -62,7 +62,9 @@ func (f *Finalizer) Finalize(ctx context.Context, flowID string, candidate Crede
 	meta, err := f.creator.Create(ctx, credentialstore.CreateCredentialInput{
 		TenantID: candidate.TenantID, ProviderAccountID: candidate.ProviderAccountID,
 		Vendor: candidate.Vendor, AuthMode: candidate.AuthMode, Payload: candidate.Payload,
-		ActorID: firstNonEmpty(candidate.ActorID, actorID),
+		ActorID:              firstNonEmpty(candidate.ActorID, actorID),
+		ExternalAccountID:    candidate.ExternalAccountID,
+		ExternalAccountEmail: candidate.ExternalAccountEmail,
 	})
 	if err != nil {
 		failed, _ := f.sessions.MarkFailed(ctx, flowID, "credential_create_failed", redactedErr(err))

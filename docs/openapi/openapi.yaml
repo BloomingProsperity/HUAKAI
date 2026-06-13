@@ -16002,6 +16002,15 @@ components:
         last_refresh_outcome: { type: string }
         failure_class: { type: string }
         failure_count: { type: integer, format: int32, minimum: 0 }
+        external_account_id:
+          type: string
+          description: >-
+            Upstream provider account identifier, auto-extracted from the OAuth token-exchange
+            response / id_token at acquisition (or operator-supplied for manual binding). Omitted
+            when not captured. Non-secret account-management metadata; never an authorization input.
+        external_account_email:
+          type: string
+          description: Upstream provider account email captured alongside external_account_id. Omitted when not captured.
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -16075,6 +16084,16 @@ components:
           writeOnly: true
           description: Raw credential payload. The server stores encrypted material and never returns this field.
         reason: { type: string }
+        external_account_id:
+          type: string
+          description: >-
+            Optional operator-supplied upstream provider account identifier (manual binding).
+            For OAuth modes this is auto-extracted from the token-exchange response; the manual
+            value is an override/fallback used when no auto-extraction occurred. Non-secret
+            account-management metadata; never an authorization input.
+        external_account_email:
+          type: string
+          description: Optional operator-supplied upstream provider account email (manual binding fallback).
 
     AccountCredentialRotateRequest:
       x-huakai-spec-source: [docs/specs/upstream-credential-management.md]

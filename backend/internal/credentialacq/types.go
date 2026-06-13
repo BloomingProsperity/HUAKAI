@@ -165,6 +165,13 @@ type CredentialCandidate struct {
 	Payload           []byte
 	ActorID           string
 	RedactedContext   map[string]any
+	// ExternalAccountID/ExternalAccountEmail/AccountIDSource carry the upstream
+	// provider account identity auto-extracted at token exchange (accountident).
+	// They are non-secret account-management metadata, never an authorization input,
+	// and are empty when extraction yielded nothing (manual/operator value wins).
+	ExternalAccountID    string
+	ExternalAccountEmail string
+	AccountIDSource      string
 }
 
 type Session struct {
