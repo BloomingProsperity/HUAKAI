@@ -188,6 +188,10 @@ type chatExecution struct {
 	attempt           router.AttemptPlan
 	routeID           string
 	currentAttemptSeq int
+	// modelFallbackEnabled mirrors resolver.Enabled() for this request; it gates
+	// the opt-in ROUTE-023 context-window pre-check feed in the dispatch path
+	// (default off => no pre-check, matching sub2api/new-api/CLIProxyAPI).
+	modelFallbackEnabled bool
 
 	idempotencyHeader                string
 	inboundBetaTokens                []string
@@ -455,6 +459,7 @@ func (g *NativeClientGateway) ServeNativeClient(w http.ResponseWriter, r *http.R
 
 func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 	resolver := modelfallback.FromSettings(ex.ctx, ex.d.ModelFallbackSettings)
+	ex.modelFallbackEnabled = resolver.Enabled()
 	originalModel := ex.req.Model
 	triedModels := []string{originalModel}
 	baseLogicalRequestID := ""

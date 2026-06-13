@@ -586,30 +586,32 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	if excludedAccounts == nil {
 		excludedAccounts = map[int64]struct{}{}
 	}
+	// ROUTE-023 Option B: opt-in context-window pre-check (default off — see commit).
+	var ctxWindow, estInput, maxOut int
+	if ex.modelFallbackEnabled {
+		ctxWindow = ex.resolved.ContextWindow
+		estInput = tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily)
+		maxOut = derefIntOrZero(ex.req.MaxTokens)
+	}
 	selRes, err := ex.d.Selector.Select(ex.ctx, pool.SelectionRequest{
-		TenantID:         ex.ident.TenantID,
-		UserID:           ex.ident.UserID,
-		APIKeyID:         ex.ident.APIKeyID,
-		PoolGroupID:      ex.attempt.PoolGroupID,
-		RequestedModel:   ex.req.Model,
-		ModelCooldownKey: ex.upstreamModelID,
-		ProtocolFamily:   ex.resolved.ProtocolFamily,
-		EndpointFamily:   ex.d.effectiveEndpointFamily(),
-		ClaimID:          ex.reserveRes.ClaimID,
-		AttemptSeq:       attemptSeq,
-		ExcludedAccounts: excludedAccounts,
-		CapabilityFlags:  ex.attempt.RequiredCapabilities,
-		SessionHash:      ex.sessionHash,
-		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
-		UserGroup:        ex.ident.UserGroup,
-		// ROUTE-023: pre-dispatch context-window admission inputs. The window is
-		// a per-model property sourced from registry resolution; the estimate is
-		// a vendor-weighted heuristic keyed on the protocol family; the reserved
-		// output is the client-specified max_tokens (0 when unset). All three
-		// must be positive for the gate to ever bench a candidate (fail-open).
-		ModelContextWindow:   ex.resolved.ContextWindow,
-		EstimatedInputTokens: tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily),
-		MaxOutputTokens:      derefIntOrZero(ex.req.MaxTokens),
+		TenantID:             ex.ident.TenantID,
+		UserID:               ex.ident.UserID,
+		APIKeyID:             ex.ident.APIKeyID,
+		PoolGroupID:          ex.attempt.PoolGroupID,
+		RequestedModel:       ex.req.Model,
+		ModelCooldownKey:     ex.upstreamModelID,
+		ProtocolFamily:       ex.resolved.ProtocolFamily,
+		EndpointFamily:       ex.d.effectiveEndpointFamily(),
+		ClaimID:              ex.reserveRes.ClaimID,
+		AttemptSeq:           attemptSeq,
+		ExcludedAccounts:     excludedAccounts,
+		CapabilityFlags:      ex.attempt.RequiredCapabilities,
+		SessionHash:          ex.sessionHash,
+		Vendor:               pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
+		UserGroup:            ex.ident.UserGroup,
+		ModelContextWindow:   ctxWindow,
+		EstimatedInputTokens: estInput,
+		MaxOutputTokens:      maxOut,
 	})
 	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_no_capacity", ex.requestID, 0, ex.protocolLoss)
