@@ -29,7 +29,11 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) Get(name string) (hermesops.ToolSpec, bool) {
-	return hermesops.ToolSpec{Name: name, Mutating: f.mutating[name]}, true
+	// Model the real registry faithfully: a non-mutating tool is ReadOnly=true,
+	// a mutating tool is ReadOnly=false. The handler's read-only filter requires
+	// ReadOnly && !Mutating, so the fake must set ReadOnly to exercise it.
+	mutating := f.mutating[name]
+	return hermesops.ToolSpec{Name: name, Mutating: mutating, ReadOnly: !mutating}, true
 }
 
 func (f *fakeRunner) Run(_ context.Context, name string, req hermesops.ToolRequest) (hermesops.ToolResult, error) {

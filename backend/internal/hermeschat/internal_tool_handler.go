@@ -100,10 +100,13 @@ type internalToolResponse struct {
 	ErrorClass string         `json:"error_class,omitempty"`
 }
 
-// ServeHTTP handles POST <internal_base>/tool-execute. It is mounted on the same
-// internal listener the runner already uses for LLM completions, so it inherits
-// that listener's network isolation; the internal_token is the application-layer
-// proof.
+// ServeHTTP handles POST <internal_base>/tool-execute. It shares the gateway's
+// listener with the runner's other /internal/* callbacks (bootstrap/refresh/keys);
+// the protection is the application-layer internal_token (HMAC-SHA256, short TTL,
+// constant-time compare), NOT network isolation — the route is on the same public
+// listener, so the token gate is the only thing standing between a caller and a
+// tool. A separate loopback listener / source ACL on /internal/* is a hardening
+// follow-up.
 func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || len(h.secret) == 0 || h.bindings == nil || h.tools == nil {
 		writeInternalToolError(w, http.StatusServiceUnavailable, "tool_spine_unavailable")
@@ -135,10 +138,13 @@ func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		req.Args = map[string]any{}
 	}
 
-	// (4) READ-ONLY filter — the structural mutation guard. If the named tool is
-	// registered AND mutating, REJECT it before dispatch and record a denied row.
-	// The LLM cannot reach account_pause / dlq_replay / renew_trigger here.
-	if spec, found := h.tools.Get(req.ToolName); found && spec.Mutating {
+	// (4) READ-ONLY filter — the structural mutation guard. Symmetric with the
+	// catalog's allow-test (catalog.go): a tool is dispatchable ONLY if it is
+	// explicitly ReadOnly AND not Mutating. Rejecting on (Mutating || !ReadOnly)
+	// also excludes any future tool that is neither (an unset ReadOnly flag),
+	// fail-safe by default. The LLM cannot reach account_pause / dlq_replay /
+	// renew_trigger (or any non-read-only tool) here.
+	if spec, found := h.tools.Get(req.ToolName); found && (spec.Mutating || !spec.ReadOnly) {
 		h.recordCall(r, op, req, hermesops.ResultDenied, nil, "mutating_tool_rejected")
 		writeInternalToolError(w, http.StatusForbidden, "mutating_tool_forbidden")
 		return
