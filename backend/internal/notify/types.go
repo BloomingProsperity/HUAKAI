@@ -20,8 +20,9 @@ const (
 	TypeBark    Type = "bark"
 	TypeGotify  Type = "gotify"
 
-	EventLowBalance  = "low_balance"
-	EventAlertFiring = "alert_firing"
+	EventLowBalance          = "low_balance"
+	EventAlertFiring         = "alert_firing"
+	EventProviderAccountDown = "provider_account_down"
 )
 
 var (
@@ -59,6 +60,20 @@ type Event struct {
 	Threshold      decimal.Decimal `json:"threshold"`
 	BillingEventID int64           `json:"billing_event_id,omitempty"`
 	OccurredAt     time.Time       `json:"occurred_at"`
+}
+
+// ProviderAccountDownInfo carries the operator-facing context for a provider
+// account that a credential refresh has driven into a terminal/unhealthy state
+// (token revoked, risk-control trip, quota exhausted, auto-disabled). It is the
+// broadcast payload for EventProviderAccountDown, fanned out across every active
+// tenant notification channel just like AlertFiringInfo.
+type ProviderAccountDownInfo struct {
+	ProviderAccountID int64     `json:"provider_account_id"`
+	VendorName        string    `json:"vendor_name,omitempty"`
+	HealthState       string    `json:"health_state"`
+	Outcome           string    `json:"outcome"`
+	Severity          string    `json:"severity"`
+	OccurredAt        time.Time `json:"occurred_at"`
 }
 
 type AlertFiringInfo struct {
