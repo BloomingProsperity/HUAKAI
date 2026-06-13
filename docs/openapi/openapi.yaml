@@ -4072,6 +4072,74 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [auth]
+      summary: Soft-delete the authenticated user's own account (GDPR self-delete)
+      description: |
+        Soft-deletes the caller's account (deleted_at set, status='deleted',
+        API keys revoked in the same transaction) and revokes all of the user's
+        sessions so deletion takes effect immediately. The last administrator of
+        a tenant cannot self-delete (409). Identity is taken only from the
+        session, never the request body.
+      operationId: deleteAuthMeSelf
+      security:
+        - sessionBearerAuth: []
+      responses:
+        '200':
+          description: The account was soft-deleted and all sessions revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [deleted, sessions_revoked]
+                properties:
+                  deleted: { type: boolean }
+                  sessions_revoked: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/me/password:
+    post:
+      tags: [auth]
+      summary: Change the authenticated user's password (verifies the current one)
+      description: |
+        Verifies old_password, sets new_password (bumping the password version),
+        then revokes all OTHER sessions while keeping the current one — so a
+        stolen pre-change session cannot survive a password change. Identity is
+        taken only from the session.
+      operationId: changeAuthMePassword
+      security:
+        - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [old_password, new_password]
+              properties:
+                old_password: { type: string }
+                new_password: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: Password changed; other sessions revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [changed, sessions_revoked]
+                properties:
+                  changed: { type: boolean }
+                  sessions_revoked: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/auth/me/profile:
     put:

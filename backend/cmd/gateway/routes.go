@@ -240,10 +240,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
 		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
 		controlhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), controlhttp.AuthMeDeps{
-			Resolver:    d.panelAuthResolver,
-			Profiles:    d.userAuth,
-			SocialLinks: d.userAuth,
-			Sessions:    d.userSessions,
+			Resolver:       d.panelAuthResolver,
+			Profiles:       d.userAuth,
+			SocialLinks:    d.userAuth,
+			Sessions:       d.userSessions,
+			SelfAccount:    d.userAuth,
+			SessionsOthers: d.userSessions,
 		})
 		r.Route("/2fa", func(r chi.Router) {
 			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
