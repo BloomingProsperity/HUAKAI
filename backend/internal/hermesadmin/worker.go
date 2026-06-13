@@ -144,6 +144,16 @@ func (w *InspectionWorker) Start(ctx context.Context) {
 
 func (w *InspectionWorker) loop(ctx context.Context) {
 	defer close(w.done)
+	// On exit, emit the cumulative run metrics so an operator can see how the
+	// daily-inspection worker fared over its lifetime (ticks / reports accepted
+	// for delivery / failed ticks) without a separate metrics surface.
+	defer func() {
+		w.log.Info("hermes daily inspection worker stopped",
+			zap.Uint64("ticks", w.TickCount()),
+			zap.Uint64("reports_sent", w.ReportsSent()),
+			zap.Uint64("failed_ticks", w.FailedTicks()),
+		)
+	}()
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	w.tick(ctx) // run once immediately on start
@@ -220,9 +230,6 @@ func (w *InspectionWorker) Stop() {
 		<-doneChan
 	}
 }
-
-// TickOnce synchronously runs one tick (test hook).
-func (w *InspectionWorker) TickOnce(ctx context.Context) { w.tick(ctx) }
 
 // TickCount returns the total ticks.
 func (w *InspectionWorker) TickCount() uint64 { return w.tickCount.Load() }
