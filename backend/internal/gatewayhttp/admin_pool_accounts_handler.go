@@ -731,7 +731,7 @@ func validateCreateProviderAccount(req createProviderAccountRequest, requireCred
 		return fmt.Errorf("provider_id, channel_id, and name are required")
 	}
 	switch req.AccountType {
-	case "oauth", "api_key", "service_account", "upstream_static", "session":
+	case "oauth", "api_key", "service_account", "upstream_static", "session", "aws_sigv4":
 	default:
 		return fmt.Errorf("account_type is invalid")
 	}

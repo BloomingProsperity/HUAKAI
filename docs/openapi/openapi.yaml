@@ -15657,7 +15657,7 @@ components:
         name: { type: string }
         account_type:
           type: string
-          enum: [oauth, api_key, service_account, upstream_static, session]
+          enum: [oauth, api_key, service_account, upstream_static, session, aws_sigv4]
         enabled: { type: boolean }
         expires_at: { type: [string, 'null'], format: date-time }
         health_state:
@@ -15703,7 +15703,7 @@ components:
         name: { type: string, minLength: 1 }
         account_type:
           type: string
-          enum: [oauth, api_key, service_account, upstream_static, session]
+          enum: [oauth, api_key, service_account, upstream_static, session, aws_sigv4]
         vendor:
           type: string
           description: Optional credential-v2 vendor. If omitted, credentials are stored in the legacy account field.
