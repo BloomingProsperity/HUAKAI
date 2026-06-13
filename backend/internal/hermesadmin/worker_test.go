@@ -54,7 +54,7 @@ func newTestWorker(sender MessageSender, recipient string) *InspectionWorker {
 func TestWorkerTickSendsOnce(t *testing.T) {
 	sender := &fakeSender{}
 	w := newTestWorker(sender, "ops@huakai.test")
-	w.TickOnce(context.Background())
+	w.tick(context.Background())
 
 	if sender.count() != 1 {
 		t.Fatalf("expected exactly 1 send, got %d", sender.count())
@@ -83,8 +83,8 @@ func TestWorkerSendErrorCountsAndContinues(t *testing.T) {
 	sender := &fakeSender{err: errors.New("smtp down")}
 	w := newTestWorker(sender, "ops@huakai.test")
 
-	w.TickOnce(context.Background())
-	w.TickOnce(context.Background())
+	w.tick(context.Background())
+	w.tick(context.Background())
 
 	if w.FailedTicks() != 2 {
 		t.Fatalf("expected failed=2, got %d", w.FailedTicks())
@@ -112,7 +112,7 @@ func TestWorkerRecorderReceivesSanitizedOutcome(t *testing.T) {
 		Recipient: "ops@huakai.test",
 		TenantID:  testTenant,
 	})
-	w.TickOnce(context.Background())
+	w.tick(context.Background())
 
 	if got.Sent {
 		t.Fatalf("expected sent=false on send error")
