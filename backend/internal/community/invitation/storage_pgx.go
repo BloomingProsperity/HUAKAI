@@ -50,15 +50,23 @@ func (s *PostgresStore) Generate(ctx context.Context, rec generateRecord) (Invit
 			return Invitation{}, fmt.Errorf("invitation: get by idempotency key: %w", err)
 		}
 	}
-	var count int
-	if err := tx.QueryRow(ctx, `
+	// QuotaExempt rows (self-referral codes) skip the campaign cap entirely: a
+	// user materializing their own stable code must never be blocked by the
+	// shared single-tenant monthly campaign quota. The count below also excludes
+	// self-coded rows so they never starve the campaign budget.
+	if !rec.QuotaExempt {
+		var count int
+		if err := tx.QueryRow(ctx, `
 	SELECT COUNT(*)
 FROM invitations
-WHERE tenant_id=$1 AND created_at >= $2`, rec.TenantID, monthStartUTC(rec.CreatedAt)).Scan(&count); err != nil {
-		return Invitation{}, fmt.Errorf("invitation: quota recheck: %w", err)
-	}
-	if count >= MonthlyTenantQuota {
-		return Invitation{}, ErrQuotaExceeded
+WHERE tenant_id=$1 AND created_at >= $2
+  AND (client_idempotency_key IS NULL OR client_idempotency_key NOT LIKE $3)`,
+			rec.TenantID, monthStartUTC(rec.CreatedAt), SelfReferralIdempotencyPrefix+"%").Scan(&count); err != nil {
+			return Invitation{}, fmt.Errorf("invitation: quota recheck: %w", err)
+		}
+		if count >= MonthlyTenantQuota {
+			return Invitation{}, ErrQuotaExceeded
+		}
 	}
 	row := tx.QueryRow(ctx, `
 	INSERT INTO invitations (
@@ -163,10 +171,14 @@ func (s *PostgresStore) CountTenantInvitationsSince(ctx context.Context, tenantI
 		return 0, ErrStoreNotConfigured
 	}
 	var count int
+	// Exclude self-referral codes: they are quota-exempt identity rows and must
+	// not consume the monthly campaign budget shared across a single tenant.
 	if err := s.pool.QueryRow(ctx, `
 SELECT COUNT(*)
 FROM invitations
-WHERE tenant_id=$1 AND created_at >= $2`, tenantID, since).Scan(&count); err != nil {
+WHERE tenant_id=$1 AND created_at >= $2
+  AND (client_idempotency_key IS NULL OR client_idempotency_key NOT LIKE $3)`,
+		tenantID, since, SelfReferralIdempotencyPrefix+"%").Scan(&count); err != nil {
 		return 0, fmt.Errorf("invitation: count monthly quota: %w", err)
 	}
 	return count, nil

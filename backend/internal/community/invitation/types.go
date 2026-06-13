@@ -12,6 +12,17 @@ const (
 	MaxUsageLimit       = 100
 	MonthlyTenantQuota  = 100
 	MaxGenerateAttempts = 64
+
+	// SelfReferralIdempotencyPrefix marks a user's single stable self-service
+	// referral code in client_idempotency_key. It is server-set only: the
+	// campaign Generate path rejects any caller-supplied key with this prefix
+	// (validateGenerateParams), so a user cannot forge the marker to dodge the
+	// monthly campaign quota. Self-coded rows are quota-exempt AND excluded from
+	// the campaign quota counter (CountTenantInvitationsSince).
+	SelfReferralIdempotencyPrefix = "self:"
+	// selfReferralExpiryYears keeps a personal referral code effectively
+	// permanent (it is identity, not a time-boxed campaign code).
+	selfReferralExpiryYears = 100
 )
 
 var (
@@ -23,6 +34,9 @@ var (
 	ErrExpired                    = errors.New("invitation: expired")
 	ErrExhausted                  = errors.New("invitation: exhausted")
 	ErrStoreNotConfigured         = errors.New("invitation: store not configured")
+	// ErrReservedIdempotencyKey rejects a caller-supplied client_idempotency_key
+	// that collides with the server-reserved self-referral prefix.
+	ErrReservedIdempotencyKey = errors.New("invitation: reserved idempotency key prefix")
 )
 
 type Invitation struct {
@@ -73,4 +87,8 @@ type generateRecord struct {
 	ExpiresAt            time.Time
 	MaxUsage             int
 	ClientIdempotencyKey *string
+	// QuotaExempt skips the monthly campaign quota recheck inside the store
+	// insert. Set only by the self-referral get-or-create path; the campaign
+	// Generate path leaves it false so the cap still applies there.
+	QuotaExempt bool
 }
