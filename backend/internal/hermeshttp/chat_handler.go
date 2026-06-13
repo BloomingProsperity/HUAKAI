@@ -38,13 +38,27 @@ func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
 		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, args, err)
 		return
 	}
-	prepared, err := h.chatBridge.PrepareRequest(r.Context(), hermeschat.Request{
+	// WAVE H3b: thread the operator actor (role + admin token id) so the bridge
+	// can bind it to the session and the runner's mid-conversation READ-ONLY tool
+	// callbacks resolve to THIS operator's scope. An end-user-path request (no
+	// admin actor) leaves Operator zero-valued, so no tool loop is bound.
+	chatReq := hermeschat.Request{
 		TenantID: ident.TenantID, UserID: ident.UserID,
 		RequestID: requestID(r), CorrelationID: correlationID(r), Body: body,
-	})
+	}
+	if actor, ok := adminActorFromContext(r.Context()); ok {
+		chatReq.Operator = hermeschat.SessionOperator{
+			AdminActorTokenID: actor.TokenID,
+			Role:              actor.Role,
+		}
+	}
+	prepared, err := h.chatBridge.PrepareRequest(r.Context(), chatReq)
 	if err != nil {
 		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, args, err)
 		return
+	}
+	if prepared.BoundOperator {
+		defer h.chatBridge.ReleaseSession(prepared.RequestID)
 	}
 	args["conversation_id"] = prepared.ConversationID
 	resp, err := h.runner.Chat(r.Context(), ident.TenantID, ident.UserID, prepared.Body)

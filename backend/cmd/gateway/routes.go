@@ -356,6 +356,14 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/internal/runner/bootstrap", d.handleRunnerBootstrap)
 	r.Post("/internal/runner/refresh", d.handleRunnerRefresh)
 	r.Get("/internal/keys", d.handleRunnerKeys)
+	// WAVE H3b: the runner's mid-conversation READ-ONLY tool-execute callback. It
+	// is authenticated by the session's internal_token (verified inside the
+	// handler) — the SAME HMAC the runner uses for LLM completions on this internal
+	// listener — and dispatches ONLY read-only tools with the bound operator's
+	// scope. Mounted only when the handler is wired (admin-only + chat bridge).
+	if d.hermesInternalToolHandler != nil {
+		r.Method(http.MethodPost, "/internal/hermes/tool-execute", d.hermesInternalToolHandler)
+	}
 	r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/v1/invitations", gatewayhttp.NewInvitationCreateHandler(gatewayhttp.InvitationDeps{
 		Service: d.invitationService,
 	}))
