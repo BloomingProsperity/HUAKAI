@@ -22,4 +22,5 @@ type HermesToolCall struct {
 	RequestID         *string            `db:"request_id" json:"request_id"`
 	CalledAt          pgtype.Timestamptz `db:"called_at" json:"called_at"`
 	ReturnedAt        pgtype.Timestamptz `db:"returned_at" json:"returned_at"`
+	DryRun            bool               `db:"dry_run" json:"dry_run"`
 }

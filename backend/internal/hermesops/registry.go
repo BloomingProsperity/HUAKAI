@@ -84,17 +84,43 @@ func (r *Registry) Authorize(name, actorRole string) (ToolSpec, error) {
 	return spec, nil
 }
 
-// Run authorizes then dispatches. It is the single dispatch entry; it never
-// bypasses the role floor. Tenant-scope authorization is the caller's
-// responsibility (enforced before Run via CanIssueForTenant) — Run trusts
-// req.TenantID as already scope-checked.
+// Run authorizes then dispatches a READ-ONLY tool. It is the single read-only
+// dispatch entry; it never bypasses the role floor, and it REFUSES a mutating
+// tool (ErrNotMutating) so a state change can never sneak through the read-only
+// path. Tenant-scope authorization is the caller's responsibility (enforced
+// before Run via CanIssueForTenant) — Run trusts req.TenantID as already
+// scope-checked.
 func (r *Registry) Run(ctx context.Context, name string, req ToolRequest) (ToolResult, error) {
 	spec, err := r.Authorize(name, req.Role)
 	if err != nil {
 		return ToolResult{}, err
 	}
+	if spec.Mutating {
+		// A mutating tool must NEVER execute through the read-only path — it
+		// bypasses dry-run/confirm + advisory lock + atomic audit. Fail closed.
+		return ToolResult{}, ErrNotMutating
+	}
 	if spec.Run == nil {
 		return ToolResult{}, ErrDependencyUnwired
 	}
 	return spec.Run(ctx, req)
+}
+
+// AuthorizeMutating authorizes a MUTATING tool's role floor WITHOUT running it,
+// and refuses a read-only tool (ErrNotMutating) so the confirm path cannot be
+// pointed at a diagnostic tool. Tenant-scope is enforced separately by the
+// caller (the H1 middleware + the per-tool Resolve re-check against the target
+// row's tenant).
+func (r *Registry) AuthorizeMutating(name, actorRole string) (ToolSpec, error) {
+	spec, err := r.Authorize(name, actorRole)
+	if err != nil {
+		return ToolSpec{}, err
+	}
+	if !spec.Mutating {
+		return spec, ErrNotMutating
+	}
+	if spec.Resolve == nil || spec.Mutate == nil {
+		return spec, ErrDependencyUnwired
+	}
+	return spec, nil
 }

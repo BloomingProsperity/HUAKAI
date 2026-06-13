@@ -39,6 +39,9 @@ type ToolCallAudit struct {
 	RequestID     string
 	CalledAt      time.Time
 	ReturnedAt    time.Time
+	// DryRun marks a WAVE H4 mutating-tool PREVIEW row (true) vs a real execution
+	// / read-only row (false). Read-only tools always leave it false.
+	DryRun bool
 }
 
 // RecordToolCall sanitizes the args + summary and appends one hermes_tool_calls
@@ -77,6 +80,7 @@ func RecordToolCall(ctx context.Context, inserter ToolCallInserter, rec ToolCall
 		RequestID:     nilIfEmpty(rec.RequestID),
 		ErrorClass:    nilIfEmpty(rec.ErrorClass),
 		CalledAt:      pgtype.Timestamptz{Time: called.UTC(), Valid: true},
+		DryRun:        rec.DryRun,
 	}
 	if rec.AdminActorTokenID > 0 {
 		id := rec.AdminActorTokenID

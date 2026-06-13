@@ -60,6 +60,88 @@ func TestSanitizeArgs_RecursesNestedMaps(t *testing.T) {
 	}
 }
 
+func TestSanitizeArgs_RedactsSensitiveKeyInTypedMap(t *testing.T) {
+	// Regression (P2): a sensitive key inside a TYPED map (map[string]int64) must
+	// be redacted. The old switch only recursed map[string]any, so this collection
+	// fell through unredacted. Mutation check: revert sanitizeValue's default
+	// branch to `return v` (the old switch) and the api_key value 7 survives as a
+	// number under "api_key" instead of "[REDACTED]" — this assertion goes RED.
+	input := map[string]any{
+		"counts": map[string]int64{"api_key": 7, "requests": 9},
+	}
+
+	got := SanitizeArgs(input)
+
+	counts, ok := got["counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("counts=%T want sanitized map[string]any", got["counts"])
+	}
+	if counts["api_key"] != "[REDACTED]" {
+		t.Fatalf("typed-map api_key=%v want [REDACTED] (sensitive key in map[string]int64 leaked)", counts["api_key"])
+	}
+	if counts["requests"] != int64(9) {
+		t.Fatalf("typed-map non-sensitive value corrupted: requests=%v want 9", counts["requests"])
+	}
+}
+
+func TestSanitizeArgs_RedactsSensitiveKeyInSliceOfTypedMaps(t *testing.T) {
+	// Regression (P2): a secret under a sensitive key inside a []map[string]any
+	// element must be redacted. The old switch handled []any but not the concrete
+	// []map[string]any element type, so the inner map fell through. Mutation check:
+	// revert sanitizeValue to the old two-case switch and the inner secret_token
+	// survives verbatim in element 0 — this assertion goes RED.
+	input := map[string]any{
+		"items": []map[string]any{
+			{"secret_token": "sk-typed-slice-leak", "ok": true},
+		},
+	}
+
+	got := SanitizeArgs(input)
+
+	items, ok := got["items"].([]any)
+	if !ok {
+		t.Fatalf("items=%T want []any after sanitize", got["items"])
+	}
+	if len(items) != 1 {
+		t.Fatalf("items len=%d want 1", len(items))
+	}
+	elem, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("items[0]=%T want sanitized map", items[0])
+	}
+	if elem["secret_token"] != "[REDACTED]" {
+		t.Fatalf("[]map secret_token=%v want [REDACTED] (sensitive key in []map[string]any leaked)", elem["secret_token"])
+	}
+	if elem["ok"] != true {
+		t.Fatalf("[]map non-sensitive value corrupted: ok=%v want true", elem["ok"])
+	}
+}
+
+func TestSanitizeArgs_RedactsCredentialsPayloadButKeepsDiagnosticFields(t *testing.T) {
+	// Regression (PRIVACY): the renew_trigger "credentials" payload arg must be
+	// fully redacted (even as a raw string, where nested-key recursion cannot
+	// help), while the SINGULAR non-secret diagnostic fields (credential_id /
+	// credential_version) must SURVIVE so read-only credential diagnostics aren't
+	// degraded. Mutation check: broaden the matcher to "credential" (singular) and
+	// credential_id is wrongly redacted (the survive-assertion goes RED); remove
+	// the "credentials" clause and the raw payload string leaks (the redact
+	// assertion goes RED).
+	input := map[string]any{
+		"credentials":        "raw-secret-blob-not-an-object",
+		"credential_id":      int64(3),
+		"credential_version": int64(4),
+	}
+
+	got := SanitizeArgs(input)
+
+	if got["credentials"] != "[REDACTED]" {
+		t.Fatalf("credentials payload=%v want [REDACTED] (rotated material leaked)", got["credentials"])
+	}
+	if got["credential_id"] != int64(3) || got["credential_version"] != int64(4) {
+		t.Fatalf("singular diagnostic fields wrongly redacted: id=%v ver=%v", got["credential_id"], got["credential_version"])
+	}
+}
+
 func TestSanitizeArgs_PreservesNonSensitive(t *testing.T) {
 	// Regression: audit sanitization must not corrupt non-sensitive routing/debug context.
 	input := map[string]any{"tenant_id": int64(42), "name": "test"}

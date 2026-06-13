@@ -14,12 +14,14 @@ import (
 // input schema + required role + read-only flag, so an operator / the assistant
 // can discover what is callable without trial-and-error.
 type toolDescriptor struct {
-	Name         string            `json:"name"`
-	Category     string            `json:"category"`
-	Description  string            `json:"description"`
-	ReadOnly     bool              `json:"read_only"`
-	RequiredRole string            `json:"required_role"`
-	InputSchema  map[string]string `json:"input_schema"`
+	Name                 string            `json:"name"`
+	Category             string            `json:"category"`
+	Description          string            `json:"description"`
+	ReadOnly             bool              `json:"read_only"`
+	Mutating             bool              `json:"mutating"`
+	RequiresConfirmation bool              `json:"requires_confirmation"`
+	RequiredRole         string            `json:"required_role"`
+	InputSchema          map[string]string `json:"input_schema"`
 }
 
 // listTools serves GET /v1/hermes/tools. It is admin-gated by the H1 middleware
@@ -41,12 +43,14 @@ func (h handler) listTools(w http.ResponseWriter, r *http.Request) {
 			schema = map[string]string{}
 		}
 		out = append(out, toolDescriptor{
-			Name:         s.Name,
-			Category:     string(s.Category),
-			Description:  s.Description,
-			ReadOnly:     s.ReadOnly,
-			RequiredRole: s.RequiredRole,
-			InputSchema:  schema,
+			Name:                 s.Name,
+			Category:             string(s.Category),
+			Description:          s.Description,
+			ReadOnly:             s.ReadOnly,
+			Mutating:             s.Mutating,
+			RequiresConfirmation: s.RequiresConfirmation,
+			RequiredRole:         s.RequiredRole,
+			InputSchema:          schema,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tools": out})
@@ -55,6 +59,12 @@ func (h handler) listTools(w http.ResponseWriter, r *http.Request) {
 type toolExecuteRequest struct {
 	ToolName string         `json:"tool_name"`
 	Args     map[string]any `json:"args"`
+	// Confirm + CorrelationID drive the WAVE H4 mutating-tool dry-run+confirm
+	// flow. They are ignored for read-only tools. Confirm=false (default) on a
+	// mutating tool returns a read-only preview + a correlation_id; Confirm=true
+	// with the matching correlation_id executes the mutation exactly once.
+	Confirm       bool   `json:"confirm,omitempty"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
 // executeTool serves POST /v1/hermes/tool-execute. It:
@@ -91,6 +101,15 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor, _ := adminActorFromContext(r.Context())
+
+	// WAVE H4: a mutating tool is dispatched ONLY through the dry-run + confirm
+	// flow (5-layer safety). It must never reach the read-only Authorize/Run path
+	// below. Route it before the read-only RBAC so a mutation can never run
+	// without the confirm gate + advisory lock + atomic audit.
+	if mutSpec, ok := h.tools.Get(req.ToolName); ok && mutSpec.Mutating {
+		h.executeMutatingTool(w, r, ident, actor, req)
+		return
+	}
 
 	// RBAC: authorize the role floor. Tenant-scope was already enforced by the
 	// H1 middleware (CanIssueForTenant) before this handler ran — a cross-tenant

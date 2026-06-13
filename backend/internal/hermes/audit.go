@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -86,8 +87,16 @@ func SanitizeArgs(in map[string]any) map[string]any {
 	return out
 }
 
+// sanitizeValue recurses into a value so a sensitive key nested anywhere inside
+// a collection is still redacted. The common map[string]any / []any shapes are
+// handled directly for speed; ALL other map / slice / array kinds (e.g.
+// map[string]int64, []map[string]any, [N]any) are walked via reflection so a
+// secret under a sensitive key in a typed collection cannot slip through
+// unredacted. Scalars and unsupported kinds (chan/func/etc.) are returned as-is.
 func sanitizeValue(v any) any {
 	switch typed := v.(type) {
+	case nil:
+		return nil
 	case map[string]any:
 		return SanitizeArgs(typed)
 	case []any:
@@ -97,8 +106,57 @@ func sanitizeValue(v any) any {
 		}
 		return out
 	default:
+		return sanitizeReflect(v)
+	}
+}
+
+// sanitizeReflect handles arbitrary map / slice / array kinds via reflection. A
+// map with string keys has each key checked against sensitiveKey (so e.g.
+// map[string]int64{"api_key": 7} redacts the value); maps with non-string keys
+// still have their values recursed. Slices and arrays recurse per element. Any
+// other kind (scalar, struct, pointer, chan, func) is returned unchanged — the
+// audit args are JSON-shaped, so structs/pointers do not occur in practice and
+// returning them verbatim preserves the prior non-collection behavior.
+func sanitizeReflect(v any) any {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Map:
+		out := make(map[string]any, rv.Len())
+		stringKeys := rv.Type().Key().Kind() == reflect.String
+		iter := rv.MapRange()
+		for iter.Next() {
+			key := iter.Key()
+			keyStr := mapKeyString(key)
+			if stringKeys && sensitiveKey(key.String()) {
+				out[keyStr] = "[REDACTED]"
+				continue
+			}
+			out[keyStr] = sanitizeValue(iter.Value().Interface())
+		}
+		return out
+	case reflect.Slice, reflect.Array:
+		// []byte is data, not a collection of audit values; leave it for the
+		// JSON encoder to base64 rather than exploding it into per-byte ints.
+		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
+			return v
+		}
+		out := make([]any, 0, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out = append(out, sanitizeValue(rv.Index(i).Interface()))
+		}
+		return out
+	default:
 		return v
 	}
+}
+
+// mapKeyString renders a reflected map key as a string so the sanitized output
+// is a uniform map[string]any (JSON object keys are always strings anyway).
+func mapKeyString(key reflect.Value) string {
+	if key.Kind() == reflect.String {
+		return key.String()
+	}
+	return fmt.Sprintf("%v", key.Interface())
 }
 
 func sensitiveKey(key string) bool {
@@ -110,7 +168,15 @@ func sensitiveKey(key string) bool {
 		strings.Contains(noSep, "apikey") ||
 		strings.Contains(k, "token") ||
 		strings.Contains(k, "password") ||
-		strings.Contains(k, "secret")
+		strings.Contains(k, "secret") ||
+		// "credentials" (PLURAL) is the raw new-credential payload arg of the
+		// renew_trigger mutating tool — redact the whole value regardless of its
+		// inner shape so rotated material never lands in an audit row, even when
+		// supplied as a raw string (where the nested-key recursion can't help).
+		// Matched on the plural "credentials" specifically so the SINGULAR,
+		// non-secret diagnostic fields (credential_id / credential_version /
+		// credential_state / credential_ok) still survive into tool summaries.
+		strings.Contains(k, "credentials")
 }
 
 func validAction(action string) bool {

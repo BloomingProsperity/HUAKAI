@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5"
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
@@ -27,13 +28,23 @@ type AuthResolver interface {
 
 type authContextKey struct{}
 
-// ToolRegistry is the read-only registry of diagnostic tools the tool-execute
-// handler dispatches to. *hermesops.Registry satisfies it.
+// ToolRegistry is the registry of ops tools the tool-execute handler dispatches
+// to. *hermesops.Registry satisfies it. It covers BOTH the read-only diagnostic
+// dispatch (Run) and the mutating-tool authorization (AuthorizeMutating) that
+// the confirm-gated mutate path uses.
 type ToolRegistry interface {
 	List() []hermesops.ToolSpec
 	Get(name string) (hermesops.ToolSpec, bool)
 	Authorize(name, actorRole string) (hermesops.ToolSpec, error)
+	AuthorizeMutating(name, actorRole string) (hermesops.ToolSpec, error)
 	Run(ctx context.Context, name string, req hermesops.ToolRequest) (hermesops.ToolResult, error)
+}
+
+// MutateOrchestrator runs a confirmed mutating tool under the atomic-audit +
+// advisory-lock transaction. *hermesops.MutateOrchestrator satisfies it. Kept
+// as an interface so the mutate handler is unit-testable with a fake.
+type MutateOrchestrator interface {
+	Execute(ctx context.Context, lockKey string, rec hermesops.MutationAuditRecord, mutate func(ctx context.Context, tx pgx.Tx) (hermesops.ToolResult, error)) (hermesops.ToolResult, error)
 }
 
 // ContextSource provides the merged module-knowledge view for GET
@@ -51,6 +62,10 @@ type handler struct {
 	tools          ToolRegistry
 	toolCalls      hermesops.ToolCallInserter
 	contextSource  ContextSource
+	// mutator + confirmCache back the WAVE H4 mutating-tool path. When mutator is
+	// nil, mutating tools are rejected (503) — the read-only path is unaffected.
+	mutator      MutateOrchestrator
+	confirmCache *confirmCache
 }
 
 type RouterDeps struct {
@@ -64,6 +79,10 @@ type RouterDeps struct {
 	Tools         ToolRegistry
 	ToolCalls     hermesops.ToolCallInserter
 	ContextSource ContextSource
+	// Mutator wires the WAVE H4 mutating-tool path (atomic-audit + advisory-lock
+	// orchestrator). Optional: when unset, mutating tools are rejected (503) and
+	// the read-only path is unaffected.
+	Mutator MutateOrchestrator
 }
 
 func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges ...*hermeschat.Bridge) http.Handler {
@@ -83,6 +102,8 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 		tools:          d.Tools,
 		toolCalls:      d.ToolCalls,
 		contextSource:  d.ContextSource,
+		mutator:        d.Mutator,
+		confirmCache:   newConfirmCache(),
 	}
 	r := chi.NewRouter()
 	r.Get("/settings", h.getSettings)
@@ -97,7 +118,9 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 	r.Get("/conversations/{id}", h.getConversation)
 	r.Delete("/conversations/{id}", h.deleteConversation)
 	r.Get("/conversations/{id}/messages", h.listConversationMessages)
-	// WAVE H3 read-only ops spine.
+	// WAVE H3 read-only ops spine + WAVE H4 mutating ops tools. tool-execute
+	// dispatches read-only tools directly and routes mutating tools through the
+	// dry-run + confirm flow (confirm=false => preview, confirm=true => execute).
 	r.Get("/tools", h.listTools)
 	r.Post("/tool-execute", h.executeTool)
 	r.Get("/context", h.getModuleContext)
