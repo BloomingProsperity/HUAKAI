@@ -39,6 +39,7 @@ func (p ProviderAccountHealthPolicy) normalized() ProviderAccountHealthPolicy {
 type ProviderAccountHealthChange struct {
 	TenantID          int64
 	ProviderAccountID int64
+	VendorName        string
 	HealthState       string
 	HealthStateUntil  *time.Time
 	Alert             bool
@@ -102,13 +103,14 @@ func (s *Scheduler) providerAccountHealthPolicy() ProviderAccountHealthPolicy {
 	return s.healthPolicy.normalized()
 }
 
-func (s *Scheduler) providerAccountHealthChange(accountID, tenantID int64, outcome auth.Outcome, now time.Time) (ProviderAccountHealthChange, bool) {
+func (s *Scheduler) providerAccountHealthChange(accountID, tenantID int64, vendorName string, outcome auth.Outcome, now time.Time) (ProviderAccountHealthChange, bool) {
 	change, ok := s.providerAccountHealthPolicy().Transition(outcome, now)
 	if !ok {
 		return ProviderAccountHealthChange{}, false
 	}
 	change.TenantID = tenantID
 	change.ProviderAccountID = accountID
+	change.VendorName = vendorName
 	return change, true
 }
 
@@ -163,6 +165,20 @@ func updateProviderAccountHealth(ctx context.Context, exec db.DBTX, change Provi
 	return nil
 }
 
+// ProviderAccountDownDeliverer bridges a health transition that raised the
+// operator-alert flag into the notification pipeline. It is defined here (not as
+// an import of the notify package) so credentialworker stays decoupled and
+// unit-testable with a spy, mirroring providerAccountHealthStore. The
+// implementation lives in the gateway wiring as an adapter onto
+// notify.NotifyProviderAccountDown.
+type ProviderAccountDownDeliverer interface {
+	DeliverProviderAccountDown(ctx context.Context, change ProviderAccountHealthChange, outcome auth.Outcome) error
+}
+
+// providerAccountDownDeliveryTimeout bounds the detached best-effort alert send
+// so a slow/hung webhook receiver cannot leak a goroutine indefinitely.
+const providerAccountDownDeliveryTimeout = 15 * time.Second
+
 func (s *Scheduler) maybeLogProviderAccountHealthAlert(ctx context.Context, change ProviderAccountHealthChange, outcome auth.Outcome) {
 	if !change.Alert {
 		return
@@ -173,6 +189,43 @@ func (s *Scheduler) maybeLogProviderAccountHealthAlert(ctx context.Context, chan
 		"outcome", outcome,
 		"health_state", change.HealthState,
 	)
+	s.deliverProviderAccountDown(ctx, change, outcome)
+}
+
+// deliverProviderAccountDown fires the operator alert out-of-band. It is
+// deliberately non-fatal: the alert runs AFTER the credential-worker DB tx has
+// committed and its error is only logged, never propagated back into recordAudit
+// — a notification-pipeline failure must never break credential-worker integrity.
+// The send runs on a context detached from the request lifecycle (so it isn't
+// cancelled when RunOnce returns) but is bounded by a timeout so it cannot leak.
+func (s *Scheduler) deliverProviderAccountDown(ctx context.Context, change ProviderAccountHealthChange, outcome auth.Outcome) {
+	if s == nil || s.alertDeliverer == nil {
+		return
+	}
+	deliverer := s.alertDeliverer
+	deliverCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerAccountDownDeliveryTimeout)
+	s.runAlertAsync(func() {
+		defer cancel()
+		if err := deliverer.DeliverProviderAccountDown(deliverCtx, change, outcome); err != nil {
+			slog.WarnContext(deliverCtx, "provider account down alert delivery failed (non-fatal)",
+				"tenant_id", change.TenantID,
+				"provider_account_id", change.ProviderAccountID,
+				"outcome", outcome,
+				"error", err,
+			)
+		}
+	})
+}
+
+// runAlertAsync launches the best-effort alert send. Production uses a detached
+// goroutine; tests inject a synchronous runner so the spy assertion is
+// deterministic (mirrors notify.WithSettlerAsync).
+func (s *Scheduler) runAlertAsync(fn func()) {
+	if s.alertAsync != nil {
+		s.alertAsync(fn)
+		return
+	}
+	go fn()
 }
 
 func timePtrValue(v time.Time) *time.Time {

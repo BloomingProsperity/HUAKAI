@@ -162,6 +162,152 @@ func TestSchedulerHealthStateUpdateFailureFailsClosed(t *testing.T) {
 	}
 }
 
+// providerAccountDownSpy records every alert delivery the scheduler attempts so
+// the tests can assert the (tenant, account, state, outcome) tuple and the call
+// count. err lets a test simulate a failing notification pipeline.
+type providerAccountDownSpy struct {
+	deliveries []providerAccountDownDelivery
+	err        error
+}
+
+type providerAccountDownDelivery struct {
+	TenantID    int64
+	AccountID   int64
+	HealthState string
+	Outcome     auth.Outcome
+}
+
+func (s *providerAccountDownSpy) DeliverProviderAccountDown(_ context.Context, change ProviderAccountHealthChange, outcome auth.Outcome) error {
+	s.deliveries = append(s.deliveries, providerAccountDownDelivery{
+		TenantID:    change.TenantID,
+		AccountID:   change.ProviderAccountID,
+		HealthState: change.HealthState,
+		Outcome:     outcome,
+	})
+	return s.err
+}
+
+func syncAlertRunner(fn func()) { fn() }
+
+// TestSchedulerProviderAccountDownDeliveredOnAuthExpired proves the alert
+// deliverer fires exactly once, carrying the right (tenant, account, state)
+// tuple, when a refresh classifies as auth_expired (Alert=true).
+//
+// Mutation check: delete the s.deliverProviderAccountDown call inside
+// maybeLogProviderAccountHealthAlert and the spy stays empty -> red. The spy
+// records the concrete (tenant=7, account=31, state=revoked) tuple, so a no-op
+// or a wrong-target delivery is also caught, not merely "something fired".
+func TestSchedulerProviderAccountDownDeliveredOnAuthExpired(t *testing.T) {
+	fixed := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
+	alertSpy := &providerAccountDownSpy{}
+	ref := &refresherSpy{errs: []error{
+		auth.WithRefreshAuditOutcome(nonRetryableRefreshErr{}, "auth_expired"),
+	}}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(31, "anthropic")}, &stormSpy{}, ref,
+		withNow(func() time.Time { return fixed }),
+		withProviderAccountHealthStore(&healthStateStoreSpy{}),
+		WithProviderAccountDownDeliverer(alertSpy),
+		withAlertAsync(syncAlertRunner),
+	)
+
+	_ = s.RunOnce(context.Background())
+
+	if len(alertSpy.deliveries) != 1 {
+		t.Fatalf("alert deliveries=%d, want 1; MUTATION: dropping the deliverer call leaves this 0", len(alertSpy.deliveries))
+	}
+	got := alertSpy.deliveries[0]
+	if got.TenantID != 7 || got.AccountID != 31 {
+		t.Fatalf("alert target=(tenant=%d account=%d), want (7,31)", got.TenantID, got.AccountID)
+	}
+	if got.HealthState != "revoked" {
+		t.Fatalf("alert health state=%q, want revoked", got.HealthState)
+	}
+	if got.Outcome != auth.RefreshAuditOutcome("auth_expired") {
+		t.Fatalf("alert outcome=%q, want auth_expired", got.Outcome)
+	}
+}
+
+// TestSchedulerProviderAccountDownNotDeliveredWhenAlertFalse proves the Alert
+// flag is the gate: account_disabled and rate_limit_exceeded both transition the
+// account but currently carry Alert=false, so NO alert must be delivered.
+//
+// Mutation check: flip `if !change.Alert { return }` in
+// maybeLogProviderAccountHealthAlert to deliver unconditionally and the spy gains
+// deliveries -> red. This is the discriminating fixture for the gate itself, not
+// just for "delivery happens".
+func TestSchedulerProviderAccountDownNotDeliveredWhenAlertFalse(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		outcome string
+	}{
+		{name: "account_disabled", outcome: "account_disabled"},
+		{name: "rate_limit_exceeded", outcome: "rate_limit_exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixed := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
+			alertSpy := &providerAccountDownSpy{}
+			ref := &refresherSpy{errs: []error{
+				auth.WithRefreshAuditOutcome(nonRetryableRefreshErr{}, tc.outcome),
+			}}
+			s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(41, "anthropic")}, &stormSpy{}, ref,
+				withNow(func() time.Time { return fixed }),
+				withProviderAccountHealthStore(&healthStateStoreSpy{}),
+				WithProviderAccountDownDeliverer(alertSpy),
+				withAlertAsync(syncAlertRunner),
+			)
+
+			_ = s.RunOnce(context.Background())
+
+			if len(alertSpy.deliveries) != 0 {
+				t.Fatalf("alert deliveries=%d, want 0 for Alert=false outcome %q; MUTATION: removing the Alert gate makes this >0", len(alertSpy.deliveries), tc.outcome)
+			}
+		})
+	}
+}
+
+// TestSchedulerProviderAccountDownDeliveryFailureNonFatal proves an alert send
+// failure never breaks the credential worker: RunOnce's returned error must be
+// exactly the classified refresh error and must NOT wrap the deliverer error.
+//
+// Mutation check: propagate the deliverer error into recordAudit's return and
+// RunOnce would then wrap deliverErr -> errors.Is(err, deliverErr) becomes true
+// -> red. Proves the non-fatal isolation (the core safety property).
+func TestSchedulerProviderAccountDownDeliveryFailureNonFatal(t *testing.T) {
+	fixed := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
+	deliverErr := errors.New("notification pipeline unavailable")
+	alertSpy := &providerAccountDownSpy{err: deliverErr}
+	health := &healthStateStoreSpy{}
+	audit := &auditSpy{}
+	ref := &refresherSpy{errs: []error{
+		auth.WithRefreshAuditOutcome(nonRetryableRefreshErr{}, "auth_expired"),
+	}}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(51, "anthropic")}, &stormSpy{}, ref,
+		withNow(func() time.Time { return fixed }),
+		withProviderAccountHealthStore(health),
+		withAuditWriter(audit),
+		WithAuditLedger(&ledgerSpy{}),
+		WithProviderAccountDownDeliverer(alertSpy),
+		withAlertAsync(syncAlertRunner),
+	)
+
+	err := s.RunOnce(context.Background())
+
+	if errors.Is(err, deliverErr) {
+		t.Fatalf("RunOnce wrapped the alert delivery error %v; MUTATION: propagating the deliverer error up makes this fail", err)
+	}
+	// The alert was still attempted (delivery ran, returned its error) and the
+	// audit/health path still committed normally.
+	if len(alertSpy.deliveries) != 1 {
+		t.Fatalf("alert deliveries=%d, want 1 (attempted-then-failed)", len(alertSpy.deliveries))
+	}
+	if got := audit.lastOutcome(); got != auth.RefreshAuditOutcome("auth_expired") {
+		t.Fatalf("audit outcome=%q, want auth_expired (audit path still succeeded)", got)
+	}
+	if len(health.entries) != 1 || health.entries[0].HealthState != "revoked" {
+		t.Fatalf("health path did not commit revoked transition: %+v", health.entries)
+	}
+}
+
 func timePtr(v time.Time) *time.Time {
 	return &v
 }

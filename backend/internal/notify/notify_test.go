@@ -343,6 +343,142 @@ func TestNotifyAlertFiringDispatches(t *testing.T) {
 	}
 }
 
+func TestNotifyProviderAccountDownBroadcastsToAllChannels(t *testing.T) {
+	// MUTATION: setting the webhook EventType/header to EventAlertFiring instead of
+	// EventProviderAccountDown turns the event-header assertion red; the test asserts
+	// the exact new wire event_type, not merely a 2xx.
+	now := time.Date(2026, 6, 12, 9, 30, 0, 0, time.UTC)
+	store := fakeStore{activeSettings: []Settings{
+		{
+			TenantID:      7,
+			UserID:        42,
+			NotifyType:    TypeWebhook,
+			WebhookURL:    "https://hooks.example.test/account-down",
+			WebhookSecret: "down-secret",
+		},
+		{
+			TenantID:          7,
+			UserID:            43,
+			NotifyType:        TypeEmail,
+			NotificationEmail: "ops@example.test",
+			UpdatedBy:         "ops",
+			UpdatedAt:         now,
+		},
+	}}
+	httpCalls := &recordingRoundTripper{status: http.StatusNoContent}
+	sender := &recordingEmailSender{}
+	notifier := NewNotifier(Config{
+		Store:       store,
+		HTTPClient:  &http.Client{Transport: httpCalls},
+		EmailSender: sender,
+		Now:         func() time.Time { return now },
+		RateLimiter: NewRateLimiter(time.Hour),
+	})
+
+	err := notifier.NotifyProviderAccountDown(context.Background(), 7, ProviderAccountDownInfo{
+		ProviderAccountID: 31,
+		VendorName:        "anthropic",
+		HealthState:       "revoked",
+		Outcome:           "auth_expired",
+		Severity:          "critical",
+	})
+	if err != nil {
+		t.Fatalf("NotifyProviderAccountDown: %v", err)
+	}
+
+	reqs := httpCalls.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("webhook calls=%d want 1", len(reqs))
+	}
+	webhookReq := reqs[0]
+	if webhookReq.URL.String() != "https://hooks.example.test/account-down" {
+		t.Fatalf("webhook url=%s", webhookReq.URL.String())
+	}
+	if got := webhookReq.Header.Get("X-HUAKAI-Notification-Event"); got != EventProviderAccountDown {
+		t.Fatalf("event header=%q want %q; MUTATION: emitting EventAlertFiring must fail here", got, EventProviderAccountDown)
+	}
+	if got := webhookReq.Header.Get("X-HUAKAI-Notification-Signature"); got != webhookSignature("down-secret", webhookReq.Body) {
+		t.Fatalf("webhook signature=%q does not match body; MUTATION: skipping HMAC must fail", got)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(webhookReq.Body, &payload); err != nil {
+		t.Fatalf("webhook payload json: %v", err)
+	}
+	if payload["event_type"] != EventProviderAccountDown ||
+		payload["health_state"] != "revoked" ||
+		payload["outcome"] != "auth_expired" ||
+		payload["vendor_name"] != "anthropic" ||
+		int64(payload["provider_account_id"].(float64)) != 31 {
+		t.Fatalf("webhook payload=%v want provider account down fields", payload)
+	}
+	if got := sender.Count(); got != 1 {
+		t.Fatalf("email sends=%d want 1; MUTATION: dropping the email channel must fail here", got)
+	}
+}
+
+func TestNotifyProviderAccountDownRateLimited(t *testing.T) {
+	// MUTATION: removing the limiter.Allow check in broadcast lets the second call
+	// re-send and the request count becomes 2 -> red.
+	now := time.Date(2026, 6, 12, 9, 30, 0, 0, time.UTC)
+	store := fakeStore{activeSettings: []Settings{{
+		TenantID:      7,
+		UserID:        42,
+		NotifyType:    TypeWebhook,
+		WebhookURL:    "https://hooks.example.test/account-down",
+		WebhookSecret: "down-secret",
+	}}}
+	httpCalls := &recordingRoundTripper{status: http.StatusNoContent}
+	notifier := NewNotifier(Config{
+		Store:       store,
+		HTTPClient:  &http.Client{Transport: httpCalls},
+		Now:         func() time.Time { return now },
+		RateLimiter: NewRateLimiter(time.Hour),
+	})
+
+	info := ProviderAccountDownInfo{ProviderAccountID: 31, HealthState: "revoked", Outcome: "auth_expired"}
+	if err := notifier.NotifyProviderAccountDown(context.Background(), 7, info); err != nil {
+		t.Fatalf("first NotifyProviderAccountDown: %v", err)
+	}
+	if err := notifier.NotifyProviderAccountDown(context.Background(), 7, info); err != nil {
+		t.Fatalf("second NotifyProviderAccountDown within window: %v", err)
+	}
+
+	if got := len(httpCalls.Requests()); got != 1 {
+		t.Fatalf("webhook calls=%d want 1; MUTATION: removing the limiter check makes this 2", got)
+	}
+}
+
+func TestNotifyProviderAccountDownSkipsTypeNone(t *testing.T) {
+	// MUTATION: dropping the TypeNone continue in broadcast would attempt a delivery
+	// for a disabled recipient -> red.
+	now := time.Date(2026, 6, 12, 9, 30, 0, 0, time.UTC)
+	store := fakeStore{activeSettings: []Settings{DefaultSettings(7, 42)}}
+	httpCalls := &recordingRoundTripper{status: http.StatusNoContent}
+	sender := &recordingEmailSender{}
+	notifier := NewNotifier(Config{
+		Store:       store,
+		HTTPClient:  &http.Client{Transport: httpCalls},
+		EmailSender: sender,
+		Now:         func() time.Time { return now },
+		RateLimiter: NewRateLimiter(time.Hour),
+	})
+
+	if err := notifier.NotifyProviderAccountDown(context.Background(), 7, ProviderAccountDownInfo{
+		ProviderAccountID: 31,
+		HealthState:       "revoked",
+		Outcome:           "auth_expired",
+	}); err != nil {
+		t.Fatalf("NotifyProviderAccountDown: %v", err)
+	}
+
+	if got := len(httpCalls.Requests()); got != 0 {
+		t.Fatalf("http calls=%d want 0 for notify_type=none", got)
+	}
+	if got := sender.Count(); got != 0 {
+		t.Fatalf("email sends=%d want 0 for notify_type=none; MUTATION: dropping the TypeNone skip must fail here", got)
+	}
+}
+
 func webhookSignature(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write(body)

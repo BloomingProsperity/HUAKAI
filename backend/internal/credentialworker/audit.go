@@ -46,7 +46,7 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 		RequestID: requestID,
 		TenantID:  account.TenantID,
 	})
-	healthChange, hasHealthChange := s.providerAccountHealthChange(account.ID, account.TenantID, outcome, now)
+	healthChange, hasHealthChange := s.providerAccountHealthChange(account.ID, account.TenantID, account.VendorName, outcome, now)
 
 	// 同事务路径:txPool + auditSigner + auditQueries 全配齐才走。
 	if s.txPool != nil && s.auditSigner != nil && s.auditQueries != nil {

@@ -151,6 +151,19 @@ func (n *Notifier) NotifyAlertFiring(ctx context.Context, tenantID int64, alert 
 	if err != nil {
 		return err
 	}
+	return n.broadcast(ctx, tenantID, EventAlertFiring, now, func(ctx context.Context, settings Settings) error {
+		return n.sendAlertFiring(ctx, settings, alert, now)
+	})
+}
+
+// broadcast fans a tenant-level operational notification out to every active
+// per-(tenant,user) notification channel: it resolves ListActiveSettings, skips
+// notify_type=none recipients, re-validates each recipient's settings, enforces
+// the tenant boundary, and applies the per-(tenant,user,eventType) rate limit
+// before invoking deliver for the surviving recipients. NotifyAlertFiring and
+// NotifyProviderAccountDown share this loop so the multi-channel pipeline is
+// reused, not forked. deliver receives validated, tenant-matched settings.
+func (n *Notifier) broadcast(ctx context.Context, tenantID int64, eventType string, now time.Time, deliver func(context.Context, Settings) error) error {
 	lister, ok := n.store.(activeSettingsLister)
 	if !ok {
 		return nil
@@ -178,10 +191,10 @@ func (n *Notifier) NotifyAlertFiring(ctx context.Context, tenantID int64, alert 
 			}
 			continue
 		}
-		if n.limiter != nil && !n.limiter.Allow(tenantID, settings.UserID, EventAlertFiring, now) {
+		if n.limiter != nil && !n.limiter.Allow(tenantID, settings.UserID, eventType, now) {
 			continue
 		}
-		if err := n.sendAlertFiring(ctx, settings, alert, now); err != nil && firstErr == nil {
+		if err := deliver(ctx, settings); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

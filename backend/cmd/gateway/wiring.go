@@ -277,6 +277,27 @@ func (d notifyFiringDeliverer) DeliverFiring(ctx context.Context, tenantID int64
 	})
 }
 
+// providerAccountDownDeliverer maps a credential-worker health transition that
+// raised the operator-alert flag (CRED-293) onto notify.NotifyProviderAccountDown,
+// reusing the same multi-channel broadcast pipeline as alert-firing. Parallel to
+// notifyFiringDeliverer.
+type providerAccountDownDeliverer struct {
+	notifier *notify.Notifier
+}
+
+func (d providerAccountDownDeliverer) DeliverProviderAccountDown(ctx context.Context, change credentialworker.ProviderAccountHealthChange, outcome auth.Outcome) error {
+	if d.notifier == nil {
+		return nil
+	}
+	return d.notifier.NotifyProviderAccountDown(ctx, change.TenantID, notify.ProviderAccountDownInfo{
+		ProviderAccountID: change.ProviderAccountID,
+		VendorName:        change.VendorName,
+		HealthState:       change.HealthState,
+		Outcome:           string(outcome),
+		Severity:          string(alerting.SeverityCritical),
+	})
+}
+
 func startAlertingEvaluator(ctx context.Context, cfg *Config, runner alertingEvaluatorRunner, logger *zap.Logger) func() {
 	if cfg == nil || !cfg.AlertingEvalEnabled || runner == nil {
 		return nil
@@ -1137,6 +1158,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialworker.WithVendorRefresher("copilot", &providercopilot.CopilotRefresher{
 			Store: providercopilot.NewCredentialStoreAdapter(credentialStore),
 		}),
+		// CRED-293: fire an operator alert through the notify pipeline when a
+		// refresh drives an account into a terminal/unhealthy state (Alert flag).
+		credentialworker.WithProviderAccountDownDeliverer(providerAccountDownDeliverer{notifier: notifier}),
 	}
 	credentialSchedulerOptions = append(
 		credentialSchedulerOptions,

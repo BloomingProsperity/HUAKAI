@@ -128,6 +128,27 @@ func withProviderAccountHealthStore(store providerAccountHealthStore) Option {
 	return func(s *Scheduler) { s.healthStore = store }
 }
 
+// WithProviderAccountDownDeliverer wires the operator-alert deliverer fired when
+// a credential-refresh health transition raises the Alert flag (CRED-293).
+// nil-safe: passing nil leaves alerts log-only.
+func WithProviderAccountDownDeliverer(d ProviderAccountDownDeliverer) Option {
+	return func(s *Scheduler) {
+		if d != nil {
+			s.alertDeliverer = d
+		}
+	}
+}
+
+// withAlertAsync injects a synchronous alert runner for deterministic tests;
+// production leaves it unset so the best-effort send uses a detached goroutine.
+func withAlertAsync(run func(func())) Option {
+	return func(s *Scheduler) {
+		if run != nil {
+			s.alertAsync = run
+		}
+	}
+}
+
 func withSleep(fn func(context.Context, time.Duration) error) Option {
 	return func(s *Scheduler) {
 		if fn != nil {

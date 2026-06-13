@@ -49,6 +49,12 @@ type Scheduler struct {
 	healthPolicy ProviderAccountHealthPolicy
 	healthStore  providerAccountHealthStore
 
+	// alertDeliverer fires the operator alert when a health transition raised the
+	// Alert flag (CRED-293). nil-safe: nil means alerts are log-only. alertAsync
+	// wraps the detached send so production goroutines but tests run inline.
+	alertDeliverer ProviderAccountDownDeliverer
+	alertAsync     func(func())
+
 	// 同事务路径 (RR-W5-002):txPool + auditSigner + auditQueries 全配齐时
 	// recordAudit 走 BeginFunc;production wiring 必须 gate 三件套都装。
 	txPool       *pgxpool.Pool
