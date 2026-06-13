@@ -126,12 +126,33 @@ func (h handler) requireChatBridge(w http.ResponseWriter) bool {
 }
 
 func (h handler) audit(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, action string, args map[string]any, result string) bool {
-	err := h.svc.RecordAudit(r.Context(), ident.TenantID, ident.UserID, action, args, result, correlationID(r), requestID(r))
+	err := h.svc.RecordAudit(r.Context(), ident.TenantID, ident.UserID, action, withAdminActor(r.Context(), args), result, correlationID(r), requestID(r))
 	if err != nil {
 		writeHermesError(w, err)
 		return false
 	}
 	return true
+}
+
+// withAdminActor folds the resolved operator's token id + role into the
+// sanitized audit args when the request was authenticated in admin-only mode.
+// actor_user_id continues to record the tenant user (so the users FK holds);
+// this records WHICH operator performed the action so the audit trail
+// attributes the real admin. End-user-path requests are returned unchanged.
+// The map is copied so the caller's args (also used in error paths) are not
+// mutated, and so the audit's sensitive-key sanitizer still runs over it.
+func withAdminActor(ctx context.Context, args map[string]any) map[string]any {
+	actor, ok := adminActorFromContext(ctx)
+	if !ok {
+		return args
+	}
+	out := make(map[string]any, len(args)+2)
+	for k, v := range args {
+		out[k] = v
+	}
+	out["admin_actor_token_id"] = actor.TokenID
+	out["admin_role"] = actor.Role
+	return out
 }
 
 func (h handler) auditFailureThenError(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, action string, args map[string]any, err error) {
@@ -144,7 +165,7 @@ func (h handler) auditFailureThenError(w http.ResponseWriter, r *http.Request, i
 func auditFields(r *http.Request, ident sessionauth.Identity, action string, args map[string]any, result string) hermes.AuditFields {
 	return hermes.AuditFields{
 		TenantID: ident.TenantID, ActorUserID: ident.UserID, Action: action,
-		SanitizedArgs: args, Result: result,
+		SanitizedArgs: withAdminActor(r.Context(), args), Result: result,
 		CorrelationID: correlationID(r), RequestID: requestID(r),
 	}
 }

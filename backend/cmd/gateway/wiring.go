@@ -186,11 +186,16 @@ type deps struct {
 	hermesKeyStore           *hermes.KeyStore
 	hermesBootstrapIssuer    *hermes.BootstrapIssuer
 	hermesRunnerSharedSecret []byte
-	metricsHandler           http.Handler
-	otelShutdown             func(context.Context) error
-	usageRetentionWorker     *usageretention.Worker
-	sessionCapRegistry       *sessioncap.Registry
-	recentReqRing            *recentreq.Ring
+	// hermesAdminOnly re-gates Hermes to ADMIN/OPERATOR-only auth when true
+	// (the default). When false the legacy end-user APIKeyMiddleware path is
+	// preserved verbatim for clean rollback. Sourced from
+	// HUAKAI_HERMES_ADMIN_ONLY via envBoolDefault(..., true).
+	hermesAdminOnly      bool
+	metricsHandler       http.Handler
+	otelShutdown         func(context.Context) error
+	usageRetentionWorker *usageretention.Worker
+	sessionCapRegistry   *sessioncap.Registry
+	recentReqRing        *recentreq.Ring
 }
 
 type refundReceiptAppender interface {
@@ -683,6 +688,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	} else {
 		logger.Info("Hermes runner: disabled (env missing)")
 	}
+	hermesAdminOnly, err := hermesAdminOnlyFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	outboxStore := obsoutbox.NewPostgresOutbox(pgPool)
 	opts, err := loadRuntimeOptions(logger)
 	if err != nil {
@@ -1070,6 +1079,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesKeyStore:           hermesKeyStore,
 		hermesBootstrapIssuer:    hermesBootstrapIssuer,
 		hermesRunnerSharedSecret: hermesRunnerSharedSecret,
+		hermesAdminOnly:          hermesAdminOnly,
 	}
 	rt.deps = d
 	apiKeyExpiryService := apikeyexpiry.NewService(
@@ -1293,6 +1303,25 @@ func loadHermesInternalSharedSecret() ([]byte, error) {
 		return nil, fmt.Errorf("%w: %s is required for Hermes internal routes", hermes.ErrMisconfigured, hermes.RunnerInternalSharedSecretEnv)
 	}
 	return []byte(secret), nil
+}
+
+// hermesAdminOnlyEnv re-gates Hermes routes to ADMIN/OPERATOR-only auth.
+const hermesAdminOnlyEnv = "HUAKAI_HERMES_ADMIN_ONLY"
+
+// hermesAdminOnlyFromEnv reads HUAKAI_HERMES_ADMIN_ONLY. Default is TRUE
+// (admin-only); set to a false-y boolean to restore the legacy end-user
+// APIKeyMiddleware path. Mirrors config.envBoolDefault's fail-loud parsing:
+// an unparseable value is a boot error rather than a silent default.
+func hermesAdminOnlyFromEnv() (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(hermesAdminOnlyEnv))
+	if raw == "" {
+		return true, nil
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean, got %q: %w", hermesAdminOnlyEnv, raw, err)
+	}
+	return v, nil
 }
 
 // installAnthropicClaudeAIOAuthMimicryExchanger 把 default ExchangerRegistry

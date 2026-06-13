@@ -4,7 +4,7 @@ Status: planning only. No runtime, database, API, or UI code is implemented by t
 
 ## Goal
 
-HUAKAI should provide a native Hermes-style operations assistant from the Operations area of the product. Users should see a simple enable switch and a normal AI chat surface. When enabled, Hermes stays available until the user disables it. Conversation history and memory are retained like a normal AI assistant.
+HUAKAI should provide a native Hermes-style operations assistant from the Operations area of the product. As repositioned in WAVE H1 (2026-06-13), Hermes is an ADMIN/OPERATOR-facing ops assistant, not an end-user AI chat surface: it is gated to admin_tokens-authenticated operators behind the feature flag `HUAKAI_HERMES_ADMIN_ONLY` (default true; set false to restore the legacy end-user path for rollback). An authorized operator sees a simple enable switch and a streaming chat surface scoped to the tenant/user ops context they are acting within. When enabled, Hermes stays available until disabled. Conversation history and memory are retained as admin diagnostic sessions — encrypted at rest per migration 0091 and subject to the retention boundary — not as end-user data.
 
 The integration should preserve the upstream Hermes/OpenClaw-style runtime as much as possible. HUAKAI should manage configuration, API access, permissions, billing visibility, and audit boundaries.
 
@@ -19,7 +19,9 @@ The Operations module contains a Hermes entry with:
 - API source selection.
 - Optional status, usage, and runtime logs for administrators.
 
-Disabling Hermes stops new chats and background work for that user or tenant, but does not delete history, memory, API profiles, or configuration. Deletion must be a separate explicit action.
+Under the admin-only repositioning the Hermes entry lives in the operator/admin surface; the streaming chat panel, conversation history, and persisted memory are the operator's diagnostic sessions for the tenant/user context they select, not an end-user chat product.
+
+Disabling Hermes stops new chats and background work for that operator-scoped context, but does not delete history, memory, API profiles, or configuration. Deletion must be a separate explicit action.
 
 ## Runtime Model
 
