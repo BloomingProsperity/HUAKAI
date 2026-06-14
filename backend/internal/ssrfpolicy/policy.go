@@ -14,6 +14,12 @@ const (
 	DomainDenylistEnv      = "HUAKAI_PASSTHROUGH_DOMAIN_DENYLIST"
 	DomainAllowlistEnv     = "HUAKAI_PASSTHROUGH_DOMAIN_ALLOWLIST"
 	AllowPrivateIPHostsEnv = "HUAKAI_PASSTHROUGH_ALLOW_PRIVATE_IP_HOSTS"
+	// PrivateIPsEnabledEnv is the master kill-switch for the private-IP passthrough
+	// escape hatch (SEC-084). Unset or true keeps the per-host allowlist
+	// (AllowPrivateIPHostsEnv) behaviour unchanged; an explicit false force-denies
+	// every private-IP host regardless of the allowlist — an emergency lockdown
+	// that can only tighten policy, never widen it.
+	PrivateIPsEnabledEnv = "HUAKAI_PASSTHROUGH_PRIVATE_IPS_ENABLED"
 )
 
 type Policy struct {
@@ -21,6 +27,10 @@ type Policy struct {
 	domainDenylist     []hostPattern
 	domainAllowlist    []hostPattern
 	allowPrivateIPHost map[string]struct{}
+	// privateIPsDisabled is the master kill-switch (SEC-084). Its zero value is
+	// false (not disabled), so a zero Policy keeps the prior fail-closed-by-empty
+	// allowlist behaviour.
+	privateIPsDisabled bool
 }
 
 type portRange struct {
@@ -48,6 +58,7 @@ func LoadFromEnv() (Policy, error) {
 			os.Getenv(DomainDenylistEnv),
 			os.Getenv(DomainAllowlistEnv),
 			os.Getenv(AllowPrivateIPHostsEnv),
+			os.Getenv(PrivateIPsEnabledEnv),
 		)
 	})
 	return defaultEnvCache.policy, defaultEnvCache.err
@@ -57,7 +68,7 @@ func ResetForTesting() {
 	defaultEnvCache = envCache{}
 }
 
-func Parse(portAllowlist, domainDenylist, domainAllowlist, allowPrivateIPHosts string) (Policy, error) {
+func Parse(portAllowlist, domainDenylist, domainAllowlist, allowPrivateIPHosts, privateIPsEnabled string) (Policy, error) {
 	ports, err := parsePortRanges(portAllowlist)
 	if err != nil {
 		return Policy{}, fmt.Errorf("%s: %w", PortAllowlistEnv, err)
@@ -74,12 +85,32 @@ func Parse(portAllowlist, domainDenylist, domainAllowlist, allowPrivateIPHosts s
 	if err != nil {
 		return Policy{}, fmt.Errorf("%s: %w", AllowPrivateIPHostsEnv, err)
 	}
+	disabled, err := parsePrivateIPsDisabled(privateIPsEnabled)
+	if err != nil {
+		return Policy{}, fmt.Errorf("%s: %w", PrivateIPsEnabledEnv, err)
+	}
 	return Policy{
 		portAllowlist:      ports,
 		domainDenylist:     deny,
 		domainAllowlist:    allow,
 		allowPrivateIPHost: privateHosts,
+		privateIPsDisabled: disabled,
 	}, nil
+}
+
+// parsePrivateIPsDisabled reads the master kill-switch. Empty defaults to enabled
+// (not disabled) so the private-IP escape hatch keeps its prior behaviour; an
+// explicit false disables it. The env names the ALLOW state, so disabled = !allow.
+func parsePrivateIPsDisabled(raw string) (bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false, nil
+	}
+	allow, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("invalid boolean")
+	}
+	return !allow, nil
 }
 
 func (p Policy) AllowsPort(port int) bool {
@@ -109,6 +140,11 @@ func (p Policy) AllowsHost(host string) bool {
 }
 
 func (p Policy) AllowsPrivateIPHost(host string) bool {
+	// SEC-084 master kill-switch: when the escape hatch is disabled, deny every
+	// private-IP host regardless of the per-host allowlist.
+	if p.privateIPsDisabled {
+		return false
+	}
 	host = normalizeHost(host)
 	if host == "" || len(p.allowPrivateIPHost) == 0 {
 		return false
