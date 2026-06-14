@@ -82,7 +82,11 @@ func NewRunnerClient(cfg RunnerConfig) (*RunnerClient, error) {
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		// Bounded egress client (connect/TLS/response-header timeouts, no total
+		// timeout so SSE streams are not truncated). Never fall back to the
+		// unbounded http.DefaultClient — a sick runner there can brown out the
+		// shared core data plane. Tests inject their own client via cfg.HTTPClient.
+		client = defaultRunnerHTTPClient()
 	}
 	return &RunnerClient{
 		baseURL:       u,
