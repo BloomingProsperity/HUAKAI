@@ -73,6 +73,16 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	if !rateLimitDisabled() {
 		router.Use(newRateLimiter(d.clientIPResolver, logger).middleware)
 	}
+	// /internal/* (Hermes runner bootstrap/keys/refresh, the read-only
+	// tool-execute callback, the internal OpenAI egress) is the internal control
+	// plane. Gate it to trusted source networks (loopback + RFC1918 private +
+	// link-local by default; add CIDRs via HUAKAI_HERMES_INTERNAL_EXTRA_ALLOW_CIDRS)
+	// so it cannot be reached from the public internet on this shared listener —
+	// the app-layer internal_token is no longer the sole barrier (audit B2). MUST
+	// run BEFORE RealIP (same X-Forwarded-For spoof reason as the rate limiter): it
+	// judges the genuine socket peer, which a `X-Forwarded-For: 127.0.0.1` cannot
+	// forge.
+	router.Use(internalSourceGate(parseInternalAllowCIDRs(os.Getenv(internalAllowCIDRsEnv)), logger))
 	router.Use(middleware.RealIP)
 	router.Use(privacy.Recoverer(privacyLogger))
 	router.Use(aiAwareTimeout(60 * time.Second))
