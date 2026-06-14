@@ -179,7 +179,12 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	quotaEnforce, err := envBool("HUAKAI_QUOTA_ENFORCE")
+	// BILL-121/123: quota enforcement is on by default now that the engine is
+	// proven safe — it no-ops where no policy is configured (assessment skipped),
+	// keeps observe-mode policies non-blocking, and fails OPEN on infra errors, so
+	// default-on cannot block an un-configured deployment. Operators can still set
+	// HUAKAI_QUOTA_ENFORCE=false as an escape hatch.
+	quotaEnforce, err := envBoolDefault("HUAKAI_QUOTA_ENFORCE", true)
 	if err != nil {
 		return nil, err
 	}
