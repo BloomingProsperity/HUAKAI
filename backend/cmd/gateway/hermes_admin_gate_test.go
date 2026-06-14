@@ -146,3 +146,35 @@ func TestHermesAdminOnlyFromEnvFailClosed(t *testing.T) {
 		t.Fatalf("malformed value must be a boot error, got nil")
 	}
 }
+
+func TestHermesBoolEnabledDefaultTrue(t *testing.T) {
+	// Defect this catches: the two runtime kill-switch parsers (KNOB A
+	// HUAKAI_HERMES_MUTATING_ENABLED, KNOB B HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)
+	// must DEFAULT TRUE (unset => enabled => zero behavior change), honor an explicit
+	// bool, and FAIL LOUD on a malformed value (never silently disable enforcement,
+	// and never silently re-enable a surface the operator meant to turn off).
+	for _, env := range []string{hermesMutatingEnabledEnv, hermesLLMToolLoopEnabledEnv} {
+		// Unset -> true. Mutation: change the empty-string return to false -> RED.
+		t.Setenv(env, "")
+		if v, err := hermesBoolEnabledDefaultTrue(env); err != nil || !v {
+			t.Fatalf("%s unset v=%v err=%v want true,nil (default-enabled)", env, v, err)
+		}
+		// Explicit false honored. Mutation: hardcode return true -> RED.
+		t.Setenv(env, "false")
+		if v, err := hermesBoolEnabledDefaultTrue(env); err != nil || v {
+			t.Fatalf("%s=false v=%v err=%v want false,nil", env, v, err)
+		}
+		// Explicit true honored.
+		t.Setenv(env, "true")
+		if v, err := hermesBoolEnabledDefaultTrue(env); err != nil || !v {
+			t.Fatalf("%s=true v=%v err=%v want true,nil", env, v, err)
+		}
+		// Malformed -> fail-loud boot error. Mutation: swallow ParseBool's error and
+		// return a default -> err is nil -> RED.
+		t.Setenv(env, "maybe")
+		if _, err := hermesBoolEnabledDefaultTrue(env); err == nil {
+			t.Fatalf("%s malformed must be a boot error, got nil", env)
+		}
+		t.Setenv(env, "")
+	}
+}

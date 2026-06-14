@@ -63,21 +63,29 @@ type InternalToolHandler struct {
 	tools     ReadOnlyToolRunner
 	toolCalls hermesops.ToolCallInserter
 	now       func() time.Time
+	// toolLoopEnabled is KNOB B's runner-callback gate. When false, ServeHTTP
+	// refuses every call (403 llm_toolloop_disabled) before resolving the operator,
+	// so the LLM conversational tool loop is fully off even if a session were bound.
+	// The bridge-side gate (no catalog injection) is the cooperating half; this is
+	// the enforcing half.
+	toolLoopEnabled bool
 }
 
 // NewInternalToolHandler wires the handler. secret is the internal-token HMAC
 // secret (same as the bridge's). A nil registry / inserter / bindings makes the
-// handler fail closed (503 / 401) rather than panic.
-func NewInternalToolHandler(secret []byte, bindings *SessionBindings, tools ReadOnlyToolRunner, toolCalls hermesops.ToolCallInserter, now func() time.Time) *InternalToolHandler {
+// handler fail closed (503 / 401) rather than panic. toolLoopEnabled is KNOB B:
+// when false the handler refuses every call (403) before touching the token.
+func NewInternalToolHandler(secret []byte, bindings *SessionBindings, tools ReadOnlyToolRunner, toolCalls hermesops.ToolCallInserter, now func() time.Time, toolLoopEnabled bool) *InternalToolHandler {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &InternalToolHandler{
-		secret:    append([]byte(nil), secret...),
-		bindings:  bindings,
-		tools:     tools,
-		toolCalls: toolCalls,
-		now:       now,
+		secret:          append([]byte(nil), secret...),
+		bindings:        bindings,
+		tools:           tools,
+		toolCalls:       toolCalls,
+		now:             now,
+		toolLoopEnabled: toolLoopEnabled,
 	}
 }
 
@@ -114,6 +122,15 @@ func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 	if r.Method != http.MethodPost {
 		writeInternalToolError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+
+	// KNOB B (runtime kill-switch): when the LLM conversational tool loop is
+	// disabled, refuse every call BEFORE resolving the operator — no token is
+	// inspected, no tool runs, no audit row is written for a refused-by-policy call.
+	// Plain /v1/hermes/chat is unaffected (it never reaches this handler).
+	if !h.toolLoopEnabled {
+		writeInternalToolError(w, http.StatusForbidden, "llm_toolloop_disabled")
 		return
 	}
 

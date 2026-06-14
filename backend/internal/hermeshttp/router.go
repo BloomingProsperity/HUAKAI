@@ -66,6 +66,15 @@ type handler struct {
 	// nil, mutating tools are rejected (503) — the read-only path is unaffected.
 	mutator      MutateOrchestrator
 	confirmCache *confirmCache
+	// mutatingDisabled is KNOB A inverted: the runtime kill-switch for ALL mutating
+	// tools. Stored in DISABLED form so the handler's zero value means ENABLED
+	// (current behavior) — white-box handler tests that build a handler{} directly
+	// keep the mutating path live without setting anything. NewRouterWithDeps maps
+	// RouterDeps.MutatingEnabled (default true at the wiring) into !MutatingEnabled
+	// here. When true, executeTool refuses the mutating branch (403
+	// hermes_mutating_disabled) before previewMutation/confirmMutation and records a
+	// denied row; the read-only diagnostics path is untouched.
+	mutatingDisabled bool
 }
 
 type RouterDeps struct {
@@ -83,6 +92,14 @@ type RouterDeps struct {
 	// orchestrator). Optional: when unset, mutating tools are rejected (503) and
 	// the read-only path is unaffected.
 	Mutator MutateOrchestrator
+	// MutatingEnabled is KNOB A: the runtime kill-switch for ALL mutating tools.
+	// The gateway wiring sources it from HUAKAI_HERMES_MUTATING_ENABLED (default
+	// true). When false, the handler refuses the mutating branch of tool-execute
+	// (403 hermes_mutating_disabled, denial recorded) while the read-only path +
+	// chat stay live. NOTE the field is named in ENABLED form for the wiring's
+	// clarity; the handler stores its inverse so a zero-value handler{} (built
+	// directly in tests) keeps mutation ENABLED.
+	MutatingEnabled bool
 }
 
 func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges ...*hermeschat.Bridge) http.Handler {
@@ -90,7 +107,7 @@ func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges .
 	if len(bridges) > 0 {
 		bridge = bridges[0]
 	}
-	return NewRouterWithDeps(RouterDeps{Service: svc, Runner: runnerClient, Bridge: bridge})
+	return NewRouterWithDeps(RouterDeps{Service: svc, Runner: runnerClient, Bridge: bridge, MutatingEnabled: true})
 }
 
 func NewRouterWithDeps(d RouterDeps) http.Handler {
@@ -104,6 +121,9 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 		contextSource:  d.ContextSource,
 		mutator:        d.Mutator,
 		confirmCache:   newConfirmCache(),
+		// KNOB A: store the inverse so a zero-value handler{} (test white-box) keeps
+		// mutation enabled; the wiring passes MutatingEnabled (default true).
+		mutatingDisabled: !d.MutatingEnabled,
 	}
 	r := chi.NewRouter()
 	r.Get("/settings", h.getSettings)

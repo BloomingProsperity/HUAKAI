@@ -332,6 +332,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Runner:         d.hermesRunner,
 			Bridge:         d.hermesChatBridge,
 			HeaderSettings: d.platformSettings,
+			// KNOB A: the runtime mutating-tool kill-switch. The handler enforces it
+			// at the top of the mutating branch (covers preview AND confirm); the
+			// belt-and-suspenders below also withholds the orchestrator when off.
+			MutatingEnabled: d.hermesMutatingEnabled,
 		}
 		// WAVE H3 read-only ops spine. Only attach the tool/context deps when the
 		// admin-only repositioning is active — the legacy end-user customer-key
@@ -348,7 +352,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 				hermesRouterDeps.ContextSource = d.hermesModuleSource
 			}
 			// WAVE H4 mutating-tool orchestrator (atomic-audit + advisory-lock).
-			if d.hermesMutator != nil {
+			// KNOB A belt-and-suspenders: when the mutating kill-switch is off, the
+			// orchestrator is NOT wired, so even if the handler's flag check were
+			// bypassed a direct confirm path 503s (nil mutator) rather than mutating.
+			if d.hermesMutator != nil && d.hermesMutatingEnabled {
 				hermesRouterDeps.Mutator = d.hermesMutator
 			}
 		}

@@ -45,7 +45,7 @@ func (p readOnlyCatalogProvider) ReadOnlyToolCatalog() []map[string]any {
 // bindings (so it resolves the operator), the read-only registry (Run refuses a
 // mutation), and the hermes_tool_calls inserter (audit). A nil registry / nil
 // inserter / nil bindings makes the handler fail closed at request time.
-func buildHermesInternalToolHandler(secret []byte, bindings *hermeschat.SessionBindings, reg *hermesops.Registry, inserter *hermestoolsdb.Queries) *hermeschat.InternalToolHandler {
+func buildHermesInternalToolHandler(secret []byte, bindings *hermeschat.SessionBindings, reg *hermesops.Registry, inserter *hermestoolsdb.Queries, toolLoopEnabled bool) *hermeschat.InternalToolHandler {
 	if reg == nil || bindings == nil || len(secret) == 0 {
 		return nil
 	}
@@ -53,5 +53,9 @@ func buildHermesInternalToolHandler(secret []byte, bindings *hermeschat.SessionB
 	if inserter != nil {
 		calls = inserter
 	}
-	return hermeschat.NewInternalToolHandler(secret, bindings, reg, calls, nil)
+	// KNOB B: thread the runtime tool-loop kill-switch into the handler. When
+	// disabled, the handler refuses every runner callback (403) regardless of the
+	// bound session. The handler is still constructed (not nil) so a disabled-state
+	// call gets a clean 403 rather than a 404 from an unmounted route.
+	return hermeschat.NewInternalToolHandler(secret, bindings, reg, calls, nil, toolLoopEnabled)
 }

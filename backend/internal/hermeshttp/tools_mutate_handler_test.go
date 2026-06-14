@@ -135,6 +135,21 @@ func buildMutateHandler(reg ToolRegistry, calls *fakeToolCalls, mutator MutateOr
 	}
 }
 
+// mutatingPlusReadOnlyRegistry registers account_pause (mutating, tenant_operator
+// floor) AND a read-only diagnostic (dlq_inspect), so a KNOB-A test can prove the
+// kill-switch refuses the mutating tool while the read-only path stays live.
+func mutatingPlusReadOnlyRegistry(c *mutateCounters) *hermesops.Registry {
+	reg := mutatingRegistry(c)
+	reg.Register(hermesops.ToolSpec{
+		Name: hermesops.ToolDLQInspect, Category: hermesops.CategoryDiagnostic,
+		ReadOnly: true, RequiredRole: hermesops.RoleTenantOperator,
+		Run: func(_ context.Context, _ hermesops.ToolRequest) (hermesops.ToolResult, error) {
+			return hermesops.ToolResult{Summary: map[string]any{"dlq_count": 0}}, nil
+		},
+	})
+	return reg
+}
+
 func mutateRequest(h handler, ident sessionauth.Identity, actor adminActor, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/tool-execute", bytes.NewBufferString(body))
 	ctx := context.WithValue(req.Context(), authContextKey{}, ident)
@@ -420,5 +435,86 @@ func TestMutate_CommitPhaseFaultClassifiesByTxMode(t *testing.T) {
 	}
 	if ownClass == inClass {
 		t.Fatalf("tx-mode did not flip the class (own=%q in=%q) — rec.OwnTx not threaded per tool", ownClass, inClass)
+	}
+}
+
+// --- KNOB A: HUAKAI_HERMES_MUTATING_ENABLED runtime kill-switch --------------
+
+func TestKnobA_MutatingDisabledRefusesMutatingTool403AndRecordsDenial(t *testing.T) {
+	// Defect this catches: if the runtime mutating kill-switch were not enforced
+	// (or enforced only on confirm, not on the preview), a mutating tool-execute
+	// would still preview/mutate while HUAKAI_HERMES_MUTATING_ENABLED=false. This
+	// asserts the choke at the TOP of the mutating branch covers the preview path:
+	// 403 hermes_mutating_disabled + a recorded denied row + NO preview/mutation.
+	//
+	// Mutation check (run + RED confirmed): delete the `if h.mutatingDisabled { ...
+	// return }` block in executeTool and this returns 200 with a dry_run preview +
+	// correlation_id (no denial) — the status/code/denial assertions all go RED.
+	c := &mutateCounters{}
+	mut := &fakeMutator{}
+	calls := &fakeToolCalls{}
+	h := buildMutateHandler(mutatingPlusReadOnlyRegistry(c), calls, mut)
+	h.mutatingDisabled = true // KNOB A off (HUAKAI_HERMES_MUTATING_ENABLED=false)
+	ident, actor := operator(7)
+
+	rec := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5}}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s want 403 (mutating disabled)", rec.Code, rec.Body.String())
+	}
+	if got := decodeBody(t, rec)["error"]; got == nil {
+		t.Fatalf("no error object in body=%s", rec.Body.String())
+	} else if code, _ := got.(map[string]any)["code"].(string); code != "hermes_mutating_disabled" {
+		t.Fatalf("error code=%q want hermes_mutating_disabled (body=%s)", code, rec.Body.String())
+	}
+	if c.resolves != 0 || c.mutates != 0 || mut.executions != 0 {
+		t.Fatalf("disabled mutating tool still touched the tool: resolves=%d mutates=%d exec=%d want 0/0/0", c.resolves, c.mutates, mut.executions)
+	}
+	if len(calls.rows) != 1 || calls.rows[0].ResultStatus != string(hermesops.ResultDenied) {
+		t.Fatalf("want exactly one denied row, got %+v", calls.rows)
+	}
+	if calls.rows[0].ToolName != hermesops.ToolAccountPause {
+		t.Fatalf("denied row tool=%q want account_pause", calls.rows[0].ToolName)
+	}
+}
+
+func TestKnobA_MutatingDisabledKeepsReadOnlyPathLive(t *testing.T) {
+	// Defect this catches: a kill-switch that disabled the WHOLE handler (not just
+	// the mutating branch) would also break read-only diagnostics. This proves the
+	// orthogonality requirement — with KNOB A off, a read-only tool still returns
+	// 200 with its result.
+	//
+	// Mutation check (run + RED confirmed): move the `if h.mutatingDisabled` guard
+	// above the mutating-branch test so it gates EVERY tool, and this read-only call
+	// returns 403 instead of 200 — the status assertion goes RED.
+	c := &mutateCounters{}
+	mut := &fakeMutator{}
+	calls := &fakeToolCalls{}
+	h := buildMutateHandler(mutatingPlusReadOnlyRegistry(c), calls, mut)
+	h.mutatingDisabled = true
+	ident, actor := operator(7)
+
+	rec := mutateRequest(h, ident, actor, `{"tool_name":"dlq_inspect","args":{}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read-only status=%d body=%s want 200 even with mutating disabled", rec.Code, rec.Body.String())
+	}
+	if calls.rows[len(calls.rows)-1].ResultStatus != string(hermesops.ResultOK) {
+		t.Fatalf("read-only row status=%q want ok", calls.rows[len(calls.rows)-1].ResultStatus)
+	}
+}
+
+func TestKnobA_MutatingEnabledByDefaultStillPreviews(t *testing.T) {
+	// Positive control: with KNOB A in its DEFAULT (enabled) state — a handler built
+	// without setting mutatingDisabled — the mutating tool still previews. This
+	// proves the 403 above is caused by the kill-switch, not a broken tool, and that
+	// the default is zero-behavior-change.
+	c := &mutateCounters{}
+	mut := &fakeMutator{}
+	h := buildMutateHandler(mutatingPlusReadOnlyRegistry(c), &fakeToolCalls{}, mut)
+	// mutatingDisabled left false (default-enabled).
+	ident, actor := operator(7)
+
+	rec := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5}}`)
+	if rec.Code != http.StatusOK || decodeBody(t, rec)["dry_run"] != true {
+		t.Fatalf("default-enabled mutating tool did not preview: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
