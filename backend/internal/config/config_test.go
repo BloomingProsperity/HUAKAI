@@ -143,7 +143,13 @@ func TestLoadIncludesTransportSidecarFallbackFlag(t *testing.T) {
 	}
 }
 
-func TestLoadQuotaEnforceDefaultOff(t *testing.T) {
+// BILL-121/123: quota enforcement defaults ON. The engine is safe by default
+// (no-ops where no policy exists, observe policies never block, fails open on
+// infra error), so default-on activates configured enforce policies without
+// breaking un-configured deployments.
+// MUTATION: revert Load to envBool("HUAKAI_QUOTA_ENFORCE") (unset -> false) and
+// this assertion goes RED.
+func TestLoadQuotaEnforceDefaultOn(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_QUOTA_ENFORCE", "")
 
@@ -151,21 +157,33 @@ func TestLoadQuotaEnforceDefaultOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.QuotaEnforce {
-		t.Fatal("QuotaEnforce=true want default false so dormant quota cannot change hot-path behavior without opt-in")
+	if !cfg.QuotaEnforce {
+		t.Fatal("QuotaEnforce=false want default true (BILL-121/123 quota enforcement on by default)")
 	}
 }
 
 func TestLoadQuotaEnforceFlag(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
-	t.Setenv("HUAKAI_QUOTA_ENFORCE", "true")
 
+	// Explicit true keeps it on.
+	t.Setenv("HUAKAI_QUOTA_ENFORCE", "true")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if !cfg.QuotaEnforce {
-		t.Fatal("QuotaEnforce=false want true from HUAKAI_QUOTA_ENFORCE")
+		t.Fatal("QuotaEnforce=false want true from HUAKAI_QUOTA_ENFORCE=true")
+	}
+
+	// Explicit false is the operator escape hatch and must still disable it even
+	// though the default is now on. MUTATION: ignore the env value -> RED.
+	t.Setenv("HUAKAI_QUOTA_ENFORCE", "false")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.QuotaEnforce {
+		t.Fatal("QuotaEnforce=true want false from HUAKAI_QUOTA_ENFORCE=false (escape hatch)")
 	}
 }
 

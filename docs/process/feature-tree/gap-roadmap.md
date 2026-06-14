@@ -57,6 +57,14 @@ package inventory confirm most gaps are 5–30% pre-built. We exploit the reuse.
 
 ### Blocked
 - **totp-2fa** — Owner approval required.
+- **BILL-124 ScopeChannel quota** — architecturally blocked, not a config flag. Quota
+  reserve runs pre-account-selection (the reserve sees only `ex.attempt` = the
+  pre-selection `router.AttemptPlan` with a pool group; the concrete channel is a
+  property of the account the executor selects *later*). So a channel scope key
+  cannot be built at reserve time. Closing it needs a post-select money-path design
+  (a second reserve/adjust pass once the account+channel are known, or a two-phase
+  reserve) — Owner-gated money work. ScopeAPIKey / ScopeUser / ScopeTenant /
+  ScopePoolGroup all resolve at reserve time and are now live via default-on.
 - **AUTH-169 user role-assignment endpoint** — Owner design decision required (parked
   2026-06-14). Triple-mirror research (rule #16): the mature account-hub default
   tiebreaker deliberately exposes **no** role-change endpoint (role is write-protected
@@ -82,3 +90,13 @@ package inventory confirm most gaps are 5–30% pre-built. We exploit the reuse.
   (emergency SSRF lockdown that can only tighten, never widen). Self-contained in
   `internal/ssrfpolicy`, no schema. Mutation-verified: dropping the guard lets a
   disabled toggle admit an allowlisted private host -> test RED.
+- **BILL-121/123 quota enforcement default-on** (Owner-authorized money-path) — flip
+  `HUAKAI_QUOTA_ENFORCE` to default true via `envBoolDefault(...,true)`, activating
+  ScopeAPIKey/User/Tenant/PoolGroup quota enforcement out of the box. Safe by design:
+  the engine no-ops where no policy exists, observe-mode policies never block, and
+  the reserve hot path fails OPEN on infra error — so default-on cannot block an
+  un-configured deployment. `HUAKAI_QUOTA_ENFORCE=false` remains the escape hatch.
+  Strong tests: config default flip (mutation: revert to envBool -> RED), explicit
+  false escape hatch, and a new integration_pg no-policy-allows money-safety net.
+  Full integration_pg suite re-run as the money-change milestone. ScopeChannel
+  (BILL-124) stays Blocked above (channel unknown at reserve time).
