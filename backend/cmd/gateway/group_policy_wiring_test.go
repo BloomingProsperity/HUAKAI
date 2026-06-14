@@ -7,11 +7,13 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 
 	poolrouter "github.com/BloomingProsperity/HUAKAI/internal/pool/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate/precheck"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 )
 
@@ -37,7 +39,7 @@ func (errGroupRepo) GroupRoutes(context.Context, int64, string, string) (subscri
 // mutation: buildGroupRoutingGates 漏设 gates.GroupPolicy (退回 AllowAll) → default 越档不再
 // 被拒 → 下面 deny 断言红, 防止 selector_wiring 漏接 gate 的回归。
 func TestBuildGroupRoutingGates_WiresRealGroupPolicyGate(t *testing.T) {
-	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil, nil, nil)
+	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil, nil, nil, nil)
 
 	// premium 打 pool 5 (在其允许集) → 放行。
 	if ok, _, err := gates.GroupPolicy.Allow(context.Background(), nil, poolrouter.SelectionRequest{
@@ -61,13 +63,38 @@ func TestBuildGroupRoutingGates_WiresRealGroupPolicyGate(t *testing.T) {
 	}
 }
 
+// TestBuildGroupRoutingGates_WiresRatePrecheckCounter 守 ROUTE-121 激活点:
+// buildSelector 注入的 precheck.Counter 必须接进 gates.RatePrecheck, 否则即使
+// HUAKAI_RATE_PRECHECK_ENABLED 也无效 (gate nil-counter fail-open)。
+// mutation: buildGroupRoutingGates 漏把 counter 接进 gates.RatePrecheck → 超预算账号不再
+// 被排除 → 下面 deny 断言红。
+func TestBuildGroupRoutingGates_WiresRatePrecheckCounter(t *testing.T) {
+	base := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+	c := precheck.New(time.Minute, func() time.Time { return base })
+	c.Record(5, 0) // 账号 5 的 RPM-1 预算已用满
+
+	acc := &poolrouter.AccountSnapshot{ID: 5, RPMLimit: 1}
+
+	// counter 接进 gate → 账号 5 超预算被排除。若漏接 (gate 拿到 nil counter) → 放行 → 红。
+	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil, nil, c, nil)
+	if ok, reason, _ := gates.RatePrecheck.Allow(context.Background(), acc, poolrouter.SelectionRequest{}); ok || reason != poolrouter.GateFailureRatePrecheck {
+		t.Fatalf("接了 counter 的 gate 必须排除超预算账号, got ok=%v reason=%q", ok, reason)
+	}
+
+	// nil counter (默认关) → fail-open, 不排除。
+	gatesOff := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil, nil, nil, nil)
+	if ok, _, _ := gatesOff.RatePrecheck.Allow(context.Background(), acc, poolrouter.SelectionRequest{}); !ok {
+		t.Fatal("nil counter 必须 fail-open (默认关), got exclude")
+	}
+}
+
 // TestBuildGroupRoutingGates_PremiumRepoErrorFailsOpenAndAlerts 守生产激活点的故障语义:
 // buildSelector 接入的真实 GroupPolicy gate 在 routes repo 瞬时错误时, 对 premium 付费档
 // fail-open 保可用性, 同时累计 error metric 并 WARN; default 组仍保留兼容放行。
 // mutation: GroupPolicy 漏接告警 observer → metric/log 断言红; fail-closed → premium 放行断言红。
 func TestBuildGroupRoutingGates_PremiumRepoErrorFailsOpenAndAlerts(t *testing.T) {
 	core, logs := observer.New(zap.WarnLevel)
-	gates := buildGroupRoutingGates(errGroupRepo{}, nil, nil, nil, zap.New(core))
+	gates := buildGroupRoutingGates(errGroupRepo{}, nil, nil, nil, nil, zap.New(core))
 	before := groupPolicyFailOpenTotal.Value()
 
 	ok, reason, err := gates.GroupPolicy.Allow(context.Background(), nil, poolrouter.SelectionRequest{
@@ -105,7 +132,7 @@ func TestBuildGroupRoutingGates_PremiumRepoErrorFailsOpenAndAlerts(t *testing.T)
 // mutation: buildGroupRoutingGates 漏设 gates.ContextWindow → 槽虽默认也是
 // ContextWindowGate{} 但断言其类型 + 实际越界 deny 行为, 漏接线时 type 断言/行为断言红。
 func TestBuildGroupRoutingGates_WiresContextWindowGate(t *testing.T) {
-	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil, nil, nil)
+	gates := buildGroupRoutingGates(fakeGroupRepo{}, nil, nil, nil, nil, nil)
 
 	if _, ok := gates.ContextWindow.(poolrouter.ContextWindowGate); !ok {
 		t.Fatalf("ContextWindow slot type=%T, want router.ContextWindowGate (not AllowAll/default)", gates.ContextWindow)

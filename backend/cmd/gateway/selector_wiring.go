@@ -22,6 +22,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
@@ -30,6 +32,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate/precheck"
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
@@ -63,11 +66,27 @@ func buildSelector(
 		return nil, nil, fmt.Errorf("buildSelector: invalid config: %w", err)
 	}
 
+	// ROUTE-121: opt-in proactive RPM/TPM limiter. Off by default → nil counter
+	// (gate fail-open + RecordingSelector pass-through = exact current behavior).
+	// One shared counter feeds both the gate (reads budget while selecting) and
+	// the RecordingSelector (consumes budget at dispatch), across all 5 modes.
+	var ratePrecheckCounter *precheck.Counter
+	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_RATE_PRECHECK_ENABLED")); on {
+		ratePrecheckCounter = pool.NewRatePrecheckCounter()
+		logger.Info("ROUTE-121 proactive RPM/TPM rate pre-check ENABLED (per-account, opt-in via rpm_limit/tpm_limit)")
+	}
+	wrapRecording := func(s pool.Selector) pool.Selector {
+		if ratePrecheckCounter == nil {
+			return s
+		}
+		return pool.NewRecordingSelector(s, ratePrecheckCounter)
+	}
+
 	// 1. default selector 总是构造 — 即使 PASR 模式也作为 fallback 实例。
 	// gate 链构造抽到 buildGroupRoutingGates 便于直接单测生产激活接线 (否则漏接订阅
 	// gate 静默退回 AllowAll 无测可抓)。同一 gates 值流入 default selector + actual/shadow PASR,
 	// 一处接线覆盖全 5 mode。
-	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, sessionCapRegistry, logger)
+	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, sessionCapRegistry, ratePrecheckCounter, logger)
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
@@ -79,7 +98,7 @@ func buildSelector(
 	// 2. default mode: 直接返, 不启动 PASR 基础设施
 	if !selectorCfg.IsPASR() {
 		logger.Info("selector mode=default — PASR 基础设施未启动")
-		return defaultSel, func() {}, nil
+		return wrapRecording(defaultSel), func() {}, nil
 	}
 
 	// 3. PASR 基础设施: SegmentTable + AgingWorker + cache feedback observer
@@ -146,7 +165,7 @@ func buildSelector(
 		dispatcher.Stop()
 		agingWorker.Stop()
 	}
-	return dispatcher, cleanup, nil
+	return wrapRecording(dispatcher), cleanup, nil
 }
 
 // buildGroupRoutingGates 构造 selector 用的 gate 链 (R-SUB-WIRE-1 生产激活点)。在
@@ -155,7 +174,7 @@ func buildSelector(
 // 必红 (TestBuildGroupRoutingGates_WiresRealGroupPolicyGate)。
 // observer: routes repo 不可用 / 查询失败时 fail-open 保可用性并累计 metric + WARN;
 // 明确硬拒路径保留 fail-closed observer 接口, transient 控制面问题不误拒付费用户。
-func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, windowCostReader windowcost.CostReader, sessionCapRegistry *sessioncap.Registry, logger *zap.Logger) pool.GateChain {
+func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, windowCostReader windowcost.CostReader, sessionCapRegistry *sessioncap.Registry, ratePrecheckCounter *precheck.Counter, logger *zap.Logger) pool.GateChain {
 	gates := pool.DefaultGateChain()
 	if healthService != nil {
 		gates.Health = channelhealth.NewServicePoolGate(healthService, nil)
@@ -175,5 +194,10 @@ func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthSer
 	// (reads only SelectionRequest fields); explicit set keeps a wiring
 	// regression test-catchable rather than silently relying on the default.
 	gates.ContextWindow = pool.ContextWindowGate{}
+	// ROUTE-121: proactive per-account RPM/TPM pre-check. nil counter → the gate
+	// is fail-open (default off); buildSelector injects a counter only when
+	// HUAKAI_RATE_PRECHECK_ENABLED is set, and pairs it with a RecordingSelector
+	// so the budget is consumed at dispatch.
+	gates.RatePrecheck = pool.RatePrecheckGate{Counter: ratePrecheckCounter}
 	return gates
 }

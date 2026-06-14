@@ -11,6 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/binding"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/dispatcher"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate/precheck"
 )
 
 // VendorFromProtocolFamily 把 protocol family 归一到 vendor 字面量,供
@@ -127,6 +128,21 @@ func DefaultGateChain() GateChain { return router.DefaultGateChain() }
 
 func NewDefaultSelector(accounts AccountSource, opts ...SelectorOption) *DefaultSelector {
 	return router.NewDefaultSelector(accounts, opts...)
+}
+
+// RatePrecheckCounter is the in-memory RPM/TPM budget tracker shared by the
+// RatePrecheckGate (reads) and a RecordingSelector (writes). ROUTE-121.
+type RatePrecheckCounter = precheck.Counter
+
+// NewRatePrecheckCounter builds a budget tracker with the default 1-minute
+// window and wall clock. Returns nil-safe usage when the limiter is disabled.
+func NewRatePrecheckCounter() *RatePrecheckCounter { return precheck.New(0, nil) }
+
+// NewRecordingSelector wraps inner so a successful Select consumes one request
+// (and its estimated input tokens) of the account's RPM/TPM budget (ROUTE-121).
+// A nil counter makes it a transparent pass-through.
+func NewRecordingSelector(inner Selector, counter *precheck.Counter) Selector {
+	return router.NewRecordingSelector(inner, counter)
 }
 
 func WithRoutingPolicySource(v RoutingPolicySource) SelectorOption {
