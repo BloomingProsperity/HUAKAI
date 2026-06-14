@@ -50,3 +50,41 @@ func TestOpenAPI_DLQListAndProviderAccountDeleteMethodParity(t *testing.T) {
 		t.Fatalf("OpenAPI 必须声明 DELETE %s(软删已实现,缺契约前端无法 codegen)", paSpecPath)
 	}
 }
+
+// TestOpenAPI_ProxyAdminMethodParity 钉死 /admin/v1/proxies 的 method 维度:
+// 全局 path-集合一致性测试只比 path,抓不到「共享 path 上掉了一个 method」。
+// 代理管理的 POST(建)/PATCH(改)/DELETE(软删)都与 GET 共享 path
+// (/admin/v1/proxies 或 /{id}),所以删掉其一仍绿 → 必须逐 method 钉。
+// Mutation guard: routes.go 去掉任一 method 或 spec 删对应 operation → 对应断言红。
+func TestOpenAPI_ProxyAdminMethodParity(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	implOps := openapicheck.WalkChiOperations(buildTestRouter(t))
+
+	// chi.Walk renders the collection root (r.Get("/")) with a trailing slash
+	// (/admin/v1/proxies/), while the OpenAPI path is slash-free; item paths match
+	// on both sides. hasOperation is exact-match, so carry impl + spec paths
+	// separately (same pattern as the provider-accounts checks above).
+	const item = "/admin/v1/proxies/{id}"
+	mutating := []struct {
+		method, implPath, specPath string
+	}{
+		{http.MethodPost, "/admin/v1/proxies/", "/admin/v1/proxies"}, // create — shares path with GET list
+		{http.MethodPatch, item, item},                               // update — shares path with GET/DELETE
+		{http.MethodDelete, item, item},                              // soft-delete — destructive, shares path
+	}
+	for _, op := range mutating {
+		if !hasOperation(implOps, op.method, op.implPath) {
+			t.Fatalf("runtime 缺 %s %s;proxyadminhttp.MountRoutes 前提变了", op.method, op.implPath)
+		}
+		if !hasOperation(specOps, op.method, op.specPath) {
+			t.Fatalf("OpenAPI 必须声明 %s %s(已实现,缺契约前端无法 codegen 这个变更动作)", op.method, op.specPath)
+		}
+	}
+}
