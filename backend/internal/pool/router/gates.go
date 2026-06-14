@@ -73,6 +73,7 @@ type GateChain struct {
 	WindowCost    WindowCostGateIface
 	SessionCount  SessionCountGateIface
 	ContextWindow ContextWindowGateIface
+	RatePrecheck  RatePrecheckGateIface
 }
 
 func DefaultGateChain() GateChain {
@@ -87,6 +88,9 @@ func DefaultGateChain() GateChain {
 		// ContextWindow zero value is fail-open (allows unless both
 		// ModelContextWindow>0 and EstimatedInputTokens>0 and overflow).
 		ContextWindow: ContextWindowGate{},
+		// RatePrecheck defaults to a nil-counter gate (fail-open); the wiring
+		// layer injects a precheck.Counter to activate ROUTE-121.
+		RatePrecheck: RatePrecheckGate{},
 	}
 }
 
@@ -129,6 +133,7 @@ func (c GateChain) ForSelection(ctx context.Context, req SelectionRequest) GateC
 	c.WindowCost = prepareGate(ctx, c.WindowCost, req)
 	c.SessionCount = prepareGate(ctx, c.SessionCount, req)
 	c.ContextWindow = prepareGate(ctx, c.ContextWindow, req)
+	c.RatePrecheck = prepareGate(ctx, c.RatePrecheck, req)
 	return c
 }
 
@@ -185,6 +190,9 @@ func (c GateChain) withDefaults() GateChain {
 	if c.ContextWindow == nil {
 		c.ContextWindow = d.ContextWindow
 	}
+	if c.RatePrecheck == nil {
+		c.RatePrecheck = d.RatePrecheck
+	}
 	return c
 }
 
@@ -205,6 +213,7 @@ func (c GateChain) ordered() []namedGate {
 		{c.WindowCost, GateFailureWindowCost},
 		{c.SessionCount, GateFailureSessionCount},
 		{c.ContextWindow, GateFailureContextWindow},
+		{c.RatePrecheck, GateFailureRatePrecheck},
 	}
 }
 
