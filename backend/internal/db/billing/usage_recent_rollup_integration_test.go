@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -51,4 +53,121 @@ func TestRecentUsageRollupByTenant(t *testing.T) {
 	if got.TotalCost != "0.03000000" {
 		t.Fatalf("total_cost=%q want 0.03000000", got.TotalCost)
 	}
+}
+
+// TTFT (first_byte_at - requested_at) p95/p99 must be computed over only the
+// rows that recorded a first byte, and a tenant with no recorded first byte must
+// COALESCE to 0 (not NULL -> scan error). Three extra rows carry distinct TTFTs
+// of 1000/2000/3000 ms, whose percentile_cont(0.95)=2900 and (0.99)=2980 are
+// distinct -- so a query that emitted the same percentile for both columns goes
+// RED, and an all-NULL tenant that returned NULL instead of 0 fails the scan.
+func TestRecentUsageRollupByTenant_LatencyPercentiles(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openUsageOutcomePool(t, ctx)
+	defer pool.Close()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin latency rollup tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	withLatency := seedUsageOutcomeFixture(t, ctx, tx)
+	noLatency := seedUsageOutcomeFixture(t, ctx, tx)
+
+	// usage_records is append-only, so the first byte time is fixed at insert.
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	seedUsageRecordTTFT(t, ctx, tx, withLatency, "ttft-1000", base.Add(10*time.Second), 1000*time.Millisecond)
+	seedUsageRecordTTFT(t, ctx, tx, withLatency, "ttft-2000", base.Add(11*time.Second), 2000*time.Millisecond)
+	seedUsageRecordTTFT(t, ctx, tx, withLatency, "ttft-3000", base.Add(12*time.Second), 3000*time.Millisecond)
+
+	since := pgtype.Timestamptz{
+		Time:  time.Date(2026, 6, 7, 11, 59, 0, 0, time.UTC),
+		Valid: true,
+	}
+	q := New(tx)
+
+	got, err := q.RecentUsageRollupByTenant(ctx, RecentUsageRollupByTenantParams{
+		TenantID:     withLatency.tenantID,
+		SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("RecentUsageRollupByTenant(withLatency): %v", err)
+	}
+	// 3 fixture rows (no first byte) + 3 TTFT rows = 6; percentiles see only the 3.
+	if got.RequestCount != 6 {
+		t.Fatalf("request_count=%d want 6", got.RequestCount)
+	}
+	if !floatNear(got.LatencyP95Ms, 2900, 0.5) {
+		t.Fatalf("latency_p95_ms=%v want ~2900", got.LatencyP95Ms)
+	}
+	if !floatNear(got.LatencyP99Ms, 2980, 0.5) {
+		t.Fatalf("latency_p99_ms=%v want ~2980", got.LatencyP99Ms)
+	}
+	if got.LatencyP95Ms >= got.LatencyP99Ms {
+		t.Fatalf("p95=%v must be < p99=%v (distinct percentiles)", got.LatencyP95Ms, got.LatencyP99Ms)
+	}
+
+	// A tenant whose rows never recorded a first byte must report 0, not NULL.
+	gotNull, err := q.RecentUsageRollupByTenant(ctx, RecentUsageRollupByTenantParams{
+		TenantID:     noLatency.tenantID,
+		SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("RecentUsageRollupByTenant(noLatency): %v", err)
+	}
+	if gotNull.RequestCount != 3 {
+		t.Fatalf("noLatency request_count=%d want 3", gotNull.RequestCount)
+	}
+	if gotNull.LatencyP95Ms != 0 || gotNull.LatencyP99Ms != 0 {
+		t.Fatalf("no-first-byte tenant latency=%v/%v want 0/0", gotNull.LatencyP95Ms, gotNull.LatencyP99Ms)
+	}
+}
+
+// seedUsageRecordTTFT inserts a committed claim + usage record whose first_byte_at
+// is settledAt's requested_at plus ttft, so the rollup's TTFT percentile sees a
+// known latency. usage_records is append-only so the value is set at insert time.
+func seedUsageRecordTTFT(t *testing.T, ctx context.Context, tx pgx.Tx, f usageOutcomeFixture, logicalRequestID string, settledAt time.Time, ttft time.Duration) {
+	t.Helper()
+	acquisitionToken := uuid.New()
+	requestedAt := settledAt.Add(-time.Second)
+	var claimID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO billing_ledger_claims (
+			tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
+			logical_request_id, endpoint_family, requested_model, pooling_group_id,
+			provider_account_id, acquisition_token, attempt_seq, billing_policy_version,
+			request_class, predicted_cost, actual_cost, currency_code, status, settled_at,
+			lease_expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, 'messages', 'claude-usage-outcome', $7,
+			$8, $9, 1, 'bp-test', 'standard', 0.01000000, 0.01000000, 'USD',
+			'committed', $10, $11)
+		RETURNING id
+	`, f.tenantID, "idem-"+logicalRequestID, "fingerprint-"+logicalRequestID, f.apiKeyID, f.userID, logicalRequestID, f.poolID, f.providerAccountID, acquisitionToken, settledAt, settledAt.Add(time.Hour)).Scan(&claimID); err != nil {
+		t.Fatalf("insert claim %s: %v", logicalRequestID, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO usage_records (
+			tenant_id, claim_id, api_key_id, user_id, provider_account_id,
+			acquisition_token, attempt_seq, tokens_input, tokens_output, actual_cost,
+			input_cost, output_cost, end_class, usage_source, pending_reconciliation,
+			requested_at, first_byte_at, settled_at, requested_model, upstream_model, stream,
+			settlement_source
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, 1, 10, 20, 0.01000000, 0.00400000,
+			0.00600000, 'non_streaming', 'reported', false, $7, $8, $9, 'claude-usage-outcome',
+			'claude-usage-outcome-upstream', false, 'provider_upstream')
+	`, f.tenantID, claimID, f.apiKeyID, f.userID, f.providerAccountID, acquisitionToken, requestedAt, requestedAt.Add(ttft), settledAt); err != nil {
+		t.Fatalf("insert usage %s: %v", logicalRequestID, err)
+	}
+}
+
+func floatNear(got, want, tol float64) bool {
+	d := got - want
+	if d < 0 {
+		d = -d
+	}
+	return d <= tol
 }

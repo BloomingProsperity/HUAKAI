@@ -933,7 +933,19 @@ SELECT
     count(*)::bigint                                             AS request_count,
     count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count,
     count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count,
-    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(
+        percentile_cont(0.95) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000
+        ) FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::double precision                                         AS latency_p95_ms,
+    COALESCE(
+        percentile_cont(0.99) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000
+        ) FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::double precision                                         AS latency_p99_ms
 FROM usage_records ur
 WHERE ur.tenant_id = $1::bigint
   AND ur.settled_at >= $2::timestamptz
@@ -945,10 +957,12 @@ type RecentUsageRollupByTenantParams struct {
 }
 
 type RecentUsageRollupByTenantRow struct {
-	RequestCount int64  `db:"request_count" json:"request_count"`
-	SuccessCount int64  `db:"success_count" json:"success_count"`
-	ErrorCount   int64  `db:"error_count" json:"error_count"`
-	TotalCost    string `db:"total_cost" json:"total_cost"`
+	RequestCount int64   `db:"request_count" json:"request_count"`
+	SuccessCount int64   `db:"success_count" json:"success_count"`
+	ErrorCount   int64   `db:"error_count" json:"error_count"`
+	TotalCost    string  `db:"total_cost" json:"total_cost"`
+	LatencyP95Ms float64 `db:"latency_p95_ms" json:"latency_p95_ms"`
+	LatencyP99Ms float64 `db:"latency_p99_ms" json:"latency_p99_ms"`
 }
 
 // Alerting per-tenant recent usage rollup. This is intentionally tenant-only
@@ -962,6 +976,8 @@ func (q *Queries) RecentUsageRollupByTenant(ctx context.Context, arg RecentUsage
 		&i.SuccessCount,
 		&i.ErrorCount,
 		&i.TotalCost,
+		&i.LatencyP95Ms,
+		&i.LatencyP99Ms,
 	)
 	return i, err
 }

@@ -11,7 +11,8 @@ const DefaultRecentUsageWindow = 10 * time.Minute
 const (
 	// Tenant usage metric keys available to alert rules:
 	// usage.request_count, usage.request_rate_per_minute, usage.success_count,
-	// usage.success_rate, usage.error_count, usage.error_rate, usage.total_cost_usd.
+	// usage.success_rate, usage.error_count, usage.error_rate, usage.total_cost_usd,
+	// usage.latency_p95_ms, usage.latency_p99_ms.
 	MetricUsageRequestCount         = "usage.request_count"
 	MetricUsageRequestRatePerMinute = "usage.request_rate_per_minute"
 	MetricUsageSuccessCount         = "usage.success_count"
@@ -19,6 +20,11 @@ const (
 	MetricUsageErrorCount           = "usage.error_count"
 	MetricUsageErrorRate            = "usage.error_rate"
 	MetricUsageTotalCostUSD         = "usage.total_cost_usd"
+	// TTFT (first-byte) latency percentiles over the recent settled window, in
+	// milliseconds. Exposed so latency-SLO alert rules can fire on p95/p99
+	// regressions (OPS-002) — previously only success/error rates were alertable.
+	MetricUsageLatencyP95MS = "usage.latency_p95_ms"
+	MetricUsageLatencyP99MS = "usage.latency_p99_ms"
 )
 
 type MetricSource interface {
@@ -42,6 +48,10 @@ type RecentUsageRollup struct {
 	SuccessCount int64
 	ErrorCount   int64
 	TotalCostUSD float64
+	// LatencyP95MS/LatencyP99MS are TTFT percentiles over the window in ms; 0 when
+	// no request in the window recorded a first byte.
+	LatencyP95MS float64
+	LatencyP99MS float64
 }
 
 type CompositeMetricSourceConfig struct {
@@ -202,6 +212,15 @@ func overlayUsageMetrics(snapshot map[string]float64, rollup RecentUsageRollup, 
 	snapshot[MetricUsageErrorCount] = float64(errorCount)
 	snapshot[MetricUsageErrorRate] = errorRate
 	snapshot[MetricUsageTotalCostUSD] = rollup.TotalCostUSD
+	snapshot[MetricUsageLatencyP95MS] = nonNegativeFloat(rollup.LatencyP95MS)
+	snapshot[MetricUsageLatencyP99MS] = nonNegativeFloat(rollup.LatencyP99MS)
+}
+
+func nonNegativeFloat(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func cloneSnapshot(in map[string]float64) map[string]float64 {

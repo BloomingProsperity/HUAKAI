@@ -40,6 +40,43 @@ func TestCompositeMetricSourceOverlaysPerTenant(t *testing.T) {
 	assertFloat(t, got[MetricUsageRequestRatePerMinute], 1)
 }
 
+// MUTATION: emit rollup.LatencyP99MS under the p95 key (or drop either emit) ->
+// the p95 assertion sees 480.25 instead of 120.5 -> RED. The fixture keeps p95
+// and p99 distinct so a swapped/duplicated key cannot pass.
+func TestCompositeMetricSourceOverlaysLatencyPercentiles(t *testing.T) {
+	now := time.Date(2026, 6, 14, 9, 0, 0, 0, time.UTC)
+	rolluper := &stubUsageRolluper{
+		rollup: RecentUsageRollup{
+			RequestCount: 4,
+			LatencyP95MS: 120.5,
+			LatencyP99MS: 480.25,
+		},
+	}
+	source := NewCompositeMetricSource(CompositeMetricSourceConfig{
+		GlobalSource:  stubGlobalSource{snapshot: map[string]float64{}},
+		UsageRolluper: rolluper,
+		RecentWindow:  10 * time.Minute,
+		Now:           func() time.Time { return now },
+	})
+
+	got, err := source.Snapshot(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	assertFloat(t, got[MetricUsageLatencyP95MS], 120.5)
+	assertFloat(t, got[MetricUsageLatencyP99MS], 480.25)
+
+	// A negative latency (clock skew / bad sample) must be clamped to 0, not
+	// emitted as a negative SLO metric. MUTATION: skip nonNegativeFloat -> -1 -> RED.
+	rolluper.rollup = RecentUsageRollup{RequestCount: 1, LatencyP95MS: -1, LatencyP99MS: -2}
+	got, err = source.Snapshot(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	assertFloat(t, got[MetricUsageLatencyP95MS], 0)
+	assertFloat(t, got[MetricUsageLatencyP99MS], 0)
+}
+
 // MUTATION: drop the expvar/global delegate -> existing global keys disappear -> RED.
 func TestCompositeMetricSourcePreservesGlobals(t *testing.T) {
 	source := NewCompositeMetricSource(CompositeMetricSourceConfig{
