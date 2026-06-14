@@ -42,6 +42,7 @@ const (
 	GateFailureScoredBand          = router.GateFailureScoredBand
 	GateFailureWindowCost          = router.GateFailureWindowCost
 	GateFailureContextWindow       = router.GateFailureContextWindow
+	GateFailureRatePrecheck        = router.GateFailureRatePrecheck
 )
 
 type Gate = router.Gate
@@ -62,6 +63,7 @@ type AllowAllGate = router.AllowAllGate
 type WindowCostGate = router.WindowCostGate
 type SessionCountGate = router.SessionCountGate
 type ContextWindowGate = router.ContextWindowGate
+type RatePrecheckGate = router.RatePrecheckGate
 
 const (
 	HealthStateActive      = router.HealthStateActive
