@@ -173,6 +173,8 @@ type userBody struct {
 	Email     string `json:"email"`
 	Role      string `json:"role"`
 	Status    string `json:"status"`
+	UserGroup string `json:"user_group"`
+	Remark    string `json:"remark"`
 	Balance   string `json:"balance"`
 	CreatedAt string `json:"created_at"`
 }
@@ -227,6 +229,8 @@ func newListHandler(d Deps) http.HandlerFunc {
 				Email:     row.Email,
 				Role:      row.Role,
 				Status:    row.Status,
+				UserGroup: row.UserGroup,
+				Remark:    row.Remark,
 				Balance:   row.Balance,
 				CreatedAt: timestamp(row.CreatedAt.Time),
 			})
@@ -291,6 +295,8 @@ func newGetHandler(d Deps) http.HandlerFunc {
 			Email:     row.Email,
 			Role:      row.Role,
 			Status:    row.Status,
+			UserGroup: row.UserGroup,
+			Remark:    row.Remark,
 			Balance:   row.Balance,
 			CreatedAt: timestamp(row.CreatedAt.Time),
 		})

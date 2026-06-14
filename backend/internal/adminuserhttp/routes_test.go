@@ -55,6 +55,68 @@ func TestAdminListUsers_PaginationCapsAndOffset(t *testing.T) {
 	}
 }
 
+// TestAdminUsers_ProjectUserGroupAndRemark guards U18/U19: both the admin user
+// LIST and the single-user GET must project the already-stored users.user_group
+// and users.remark columns, so an operator sees a user's routing group and
+// admin note without opening each record. Mutation: drop the UserGroup/Remark
+// mapping in either handler (or the column from the SELECT) -> the matching
+// response field is empty -> RED. Two sub-cases cover both distinct handlers.
+func TestAdminUsers_ProjectUserGroupAndRemark(t *testing.T) {
+	t.Run("list projects group+remark", func(t *testing.T) {
+		store := &usersStoreStub{
+			listRows: []admindb.AdminListUsersForTenantRow{{
+				ID:        101,
+				Email:     "alice@example.test",
+				Role:      "user",
+				Status:    "active",
+				UserGroup: "vip",
+				Remark:    "priority client",
+				Balance:   "1.00000000",
+				CreatedAt: pgTimestamp(time.Date(2026, 6, 6, 9, 0, 0, 0, time.UTC)),
+			}},
+		}
+		rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store},
+			http.MethodGet, "/admin/v1/users", nil)
+		assertStatus(t, rec, http.StatusOK)
+		var body struct {
+			Items []struct {
+				UserGroup string `json:"user_group"`
+				Remark    string `json:"remark"`
+			} `json:"items"`
+		}
+		decodeBody(t, rec, &body)
+		if len(body.Items) != 1 || body.Items[0].UserGroup != "vip" || body.Items[0].Remark != "priority client" {
+			t.Fatalf("list must project user_group+remark; got %+v", body)
+		}
+	})
+
+	t.Run("single GET projects group+remark", func(t *testing.T) {
+		store := &usersStoreStub{
+			getRow: admindb.AdminGetUserForTenantRow{
+				ID:        101,
+				Email:     "alice@example.test",
+				Role:      "user",
+				Status:    "active",
+				UserGroup: "staff",
+				Remark:    "internal account",
+				Balance:   "0.00000000",
+				CreatedAt: pgTimestamp(time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)),
+			},
+		}
+		rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store},
+			http.MethodGet, "/admin/v1/users/101", nil)
+		assertStatus(t, rec, http.StatusOK)
+		var body struct {
+			UserGroup string `json:"user_group"`
+			Remark    string `json:"remark"`
+		}
+		decodeBody(t, rec, &body)
+		if body.UserGroup != "staff" || body.Remark != "internal account" {
+			t.Fatalf("single GET must project user_group+remark; got %+v", body)
+		}
+	})
+}
+
 func TestAdminUsersAuthRequired(t *testing.T) {
 	t.Run("missing admin credential returns 401 before store", func(t *testing.T) {
 		store := &usersStoreStub{}

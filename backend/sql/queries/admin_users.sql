@@ -8,6 +8,8 @@ SELECT
     COALESCE(u.email, '')::text AS email,
     u.role,
     u.status,
+    u.user_group,
+    u.remark,
     COALESCE(ub.balance, 0)::numeric(20,8)::text AS balance,
     u.created_at
 FROM users u
@@ -31,6 +33,8 @@ SELECT
     COALESCE(u.email, '')::text AS email,
     u.role,
     u.status,
+    u.user_group,
+    u.remark,
     COALESCE(ub.balance, 0)::numeric(20,8)::text AS balance,
     u.created_at
 FROM users u

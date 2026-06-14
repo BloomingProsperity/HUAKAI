@@ -49,6 +49,8 @@ SELECT
     COALESCE(u.email, '')::text AS email,
     u.role,
     u.status,
+    u.user_group,
+    u.remark,
     COALESCE(ub.balance, 0)::numeric(20,8)::text AS balance,
     u.created_at
 FROM users u
@@ -70,6 +72,8 @@ type AdminGetUserForTenantRow struct {
 	Email     string             `db:"email" json:"email"`
 	Role      string             `db:"role" json:"role"`
 	Status    string             `db:"status" json:"status"`
+	UserGroup string             `db:"user_group" json:"user_group"`
+	Remark    string             `db:"remark" json:"remark"`
 	Balance   string             `db:"balance" json:"balance"`
 	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
@@ -82,6 +86,8 @@ func (q *Queries) AdminGetUserForTenant(ctx context.Context, arg AdminGetUserFor
 		&i.Email,
 		&i.Role,
 		&i.Status,
+		&i.UserGroup,
+		&i.Remark,
 		&i.Balance,
 		&i.CreatedAt,
 	)
@@ -191,6 +197,8 @@ SELECT
     COALESCE(u.email, '')::text AS email,
     u.role,
     u.status,
+    u.user_group,
+    u.remark,
     COALESCE(ub.balance, 0)::numeric(20,8)::text AS balance,
     u.created_at
 FROM users u
@@ -221,6 +229,8 @@ type AdminListUsersForTenantRow struct {
 	Email     string             `db:"email" json:"email"`
 	Role      string             `db:"role" json:"role"`
 	Status    string             `db:"status" json:"status"`
+	UserGroup string             `db:"user_group" json:"user_group"`
+	Remark    string             `db:"remark" json:"remark"`
 	Balance   string             `db:"balance" json:"balance"`
 	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
@@ -247,6 +257,8 @@ func (q *Queries) AdminListUsersForTenant(ctx context.Context, arg AdminListUser
 			&i.Email,
 			&i.Role,
 			&i.Status,
+			&i.UserGroup,
+			&i.Remark,
 			&i.Balance,
 			&i.CreatedAt,
 		); err != nil {
