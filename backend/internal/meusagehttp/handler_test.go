@@ -339,8 +339,10 @@ func TestMeUsageDoesNotLeakClientIPOrUserAgent(t *testing.T) {
 	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
 	const sentinelIP = "203.0.113.7"
 	const sentinelUA = "probe-UA/1.0"
+	const sentinelTool = "cc_tool_sentinel"
 	row.IPAddress = strPtr(sentinelIP)
 	row.UserAgent = strPtr(sentinelUA)
+	row.ClientTool = strPtr(sentinelTool)
 	store := &usageStoreStub{rows: []dbbilling.ListUsageRecordsRow{row}}
 	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
 
@@ -355,6 +357,12 @@ func TestMeUsageDoesNotLeakClientIPOrUserAgent(t *testing.T) {
 	}
 	if strings.Contains(body, "ip_address") || strings.Contains(body, "user_agent") {
 		t.Fatalf("PII LEAK: me usage response exposed an ip/ua JSON key; body=%s", body)
+	}
+	// client_tool (migration 0137) is also admin-only attribution: the me mapper
+	// shape stays frozen, so neither the value nor the key may appear here. If a
+	// later change adds client_tool to the me surface, this flags it for review.
+	if strings.Contains(body, sentinelTool) || strings.Contains(body, "client_tool") {
+		t.Fatalf("BOUNDARY DRIFT: me usage response exposed client_tool; body=%s", body)
 	}
 }
 

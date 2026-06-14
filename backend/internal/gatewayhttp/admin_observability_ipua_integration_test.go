@@ -38,8 +38,9 @@ func TestAdminObsUsageProjectsClientIPAndUA(t *testing.T) {
 	suffix := fmt.Sprintf("obs-ipua-%d", time.Now().UnixNano())
 	const wantIP = "203.0.113.7"
 	const wantUA = "probe-UA/1.0"
+	const wantClientTool = "claude_code"
 
-	fx := seedObsIPUARecord(t, ctx, pool, suffix, wantIP, wantUA)
+	fx := seedObsIPUARecord(t, ctx, pool, suffix, wantIP, wantUA, wantClientTool)
 
 	store := dbbilling.New(pool)
 	deps := obsRealDepsStub{tenantID: fx.tenantID, store: store}
@@ -62,6 +63,12 @@ func TestAdminObsUsageProjectsClientIPAndUA(t *testing.T) {
 	}
 	if got := jsonString(item["user_agent"]); got != wantUA {
 		t.Fatalf("admin usage user_agent=%q want %q (close-loop projection broken) item=%v", got, wantUA, item)
+	}
+	// client_tool (migration 0137) rides the same close-loop: persisted but
+	// unprojected until wired into ListUsageRecords + mapUsageRow. Sentinel
+	// "claude_code" — blanking the mapUsageRow client_tool key sends this red.
+	if got := jsonString(item["client_tool"]); got != wantClientTool {
+		t.Fatalf("admin usage client_tool=%q want %q (close-loop projection broken) item=%v", got, wantClientTool, item)
 	}
 }
 
@@ -95,7 +102,7 @@ func openObsIPUATestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	return p
 }
 
-func seedObsIPUARecord(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix, ip, ua string) obsIPUAFixture {
+func seedObsIPUARecord(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix, ip, ua, clientTool string) obsIPUAFixture {
 	t.Helper()
 	var fx obsIPUAFixture
 	fx.logicalRequestID = "lr-" + suffix
@@ -148,12 +155,12 @@ func seedObsIPUARecord(t *testing.T, ctx context.Context, pool *pgxpool.Pool, su
 			acquisition_token, attempt_seq, tokens_input, tokens_output, actual_cost,
 			input_cost, output_cost, end_class, usage_source, pending_reconciliation,
 			requested_at, settled_at, requested_model, upstream_model, stream,
-			settlement_source, ip_address, user_agent
+			settlement_source, ip_address, user_agent, client_tool
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, 1, 10, 20, 0.01000000, 0.00400000,
 			0.00600000, 'non_streaming', 'reported', false, $7, $8, 'claude-obs-ipua',
-			'claude-obs-ipua-upstream', false, 'provider_upstream', $9, $10)
-	`, tenantID, claimID, apiKeyID, userID, providerAccountID, acquisitionToken, settledAt.Add(-time.Second), settledAt, ip, ua); err != nil {
+			'claude-obs-ipua-upstream', false, 'provider_upstream', $9, $10, $11)
+	`, tenantID, claimID, apiKeyID, userID, providerAccountID, acquisitionToken, settledAt.Add(-time.Second), settledAt, ip, ua, clientTool); err != nil {
 		t.Fatalf("insert usage record: %v", err)
 	}
 
