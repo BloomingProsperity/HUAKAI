@@ -357,6 +357,12 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			// bypassed a direct confirm path 503s (nil mutator) rather than mutating.
 			if d.hermesMutator != nil && d.hermesMutatingEnabled {
 				hermesRouterDeps.Mutator = d.hermesMutator
+				// S2 (c): the per-operator-token rate limiter rides with the mutator
+				// (same admin-only + mutating-enabled gate). A nil/disabled limiter is
+				// the legacy unbounded behavior.
+				hermesRouterDeps.MutateGuard = &hermeshttp.MutateGuardDeps{
+					RateLimiter: d.hermesMutateRateLimiter,
+				}
 			}
 		}
 		r.With(hermesAuth).

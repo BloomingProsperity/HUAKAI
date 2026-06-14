@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 )
 
@@ -75,6 +76,12 @@ type handler struct {
 	// hermes_mutating_disabled) before previewMutation/confirmMutation and records a
 	// denied row; the read-only diagnostics path is untouched.
 	mutatingDisabled bool
+	// mutateRateLimiter is the S2 (c) per-operator-token sliding-window limiter. It
+	// is checked in confirmMutation AFTER the correlation-id consume and BEFORE
+	// Execute, so only REAL confirmed executes count (previews/denials do not). A
+	// nil limiter (the handler's zero value, and what tests build by default) is the
+	// disabled sentinel — every confirm passes, byte-for-byte legacy behavior.
+	mutateRateLimiter *mutateguard.RateLimiter
 }
 
 type RouterDeps struct {
@@ -100,6 +107,21 @@ type RouterDeps struct {
 	// clarity; the handler stores its inverse so a zero-value handler{} (built
 	// directly in tests) keeps mutation ENABLED.
 	MutatingEnabled bool
+	// MutateGuard is the optional S2 bound-the-mutating-path bundle. Its
+	// handler-side piece is the per-operator-token rate limiter; the concurrency
+	// semaphore + tx deadline are applied on the orchestrator at wiring time. The
+	// gateway wiring sets it only when the admin-only mutator path is active; when
+	// nil, the handler's rate limiter is the disabled sentinel — byte-for-byte
+	// legacy behavior.
+	MutateGuard *MutateGuardDeps
+}
+
+// MutateGuardDeps carries the handler-side piece of the S2 mutating-path bound:
+// the per-operator-token rate limiter. The concurrency semaphore + tx deadline
+// are applied on the orchestrator (NewMutateOrchestrator options) at wiring time,
+// not here. A nil RateLimiter (or a disabled one) is the legacy unbounded behavior.
+type MutateGuardDeps struct {
+	RateLimiter *mutateguard.RateLimiter
 }
 
 func NewRouter(svc *hermes.Service, runnerClient *hermes.RunnerClient, bridges ...*hermeschat.Bridge) http.Handler {
@@ -124,6 +146,11 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 		// KNOB A: store the inverse so a zero-value handler{} (test white-box) keeps
 		// mutation enabled; the wiring passes MutatingEnabled (default true).
 		mutatingDisabled: !d.MutatingEnabled,
+	}
+	// S2 (c): the per-operator-token rate limiter, when the guard bundle is wired.
+	// A nil bundle (or nil limiter) leaves h.mutateRateLimiter nil = disabled.
+	if d.MutateGuard != nil {
+		h.mutateRateLimiter = d.MutateGuard.RateLimiter
 	}
 	r := chi.NewRouter()
 	r.Get("/settings", h.getSettings)

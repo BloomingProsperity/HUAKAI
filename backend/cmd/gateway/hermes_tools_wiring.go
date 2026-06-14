@@ -38,7 +38,11 @@ type hermesToolDeps struct {
 // is read-only; no mutating method is referenced. Returns the registry + the
 // tool-call audit inserter (pool-backed). A nil pool yields a registry with the
 // tools still registered but failing closed on dependency checks.
-func buildHermesToolRegistry(d hermesToolDeps) (*hermesops.Registry, *hermestoolsdb.Queries, *hermesops.MutateOrchestrator) {
+//
+// mutateOpts are the additive S2 orchestrator guards (concurrency cap + tx
+// deadline). With no options the orchestrator is byte-for-byte the legacy
+// unbounded behavior.
+func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOption) (*hermesops.Registry, *hermestoolsdb.Queries, *hermesops.MutateOrchestrator) {
 	reg := hermesops.NewRegistry()
 
 	// credential_diagnose -> credentialworker.DryRunProviderAccountCredential
@@ -128,7 +132,7 @@ func buildHermesToolRegistry(d hermesToolDeps) (*hermesops.Registry, *hermestool
 	var mutator *hermesops.MutateOrchestrator
 	if d.pool != nil {
 		inserter = hermestoolsdb.New(d.pool)
-		mutator = hermesops.NewMutateOrchestrator(d.pool)
+		mutator = hermesops.NewMutateOrchestrator(d.pool, mutateOpts...)
 	}
 	return reg, inserter, mutator
 }

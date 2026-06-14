@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +14,31 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
+
+// errMutateRateLimited tags the best-effort ledger row written when the S2 (c)
+// per-operator-token rate limiter rejects a confirmed mutation. It is a
+// handler-local classification sentinel (the limiter lives in the handler), not a
+// mutation outcome — nothing was begun, so it must read "rate_limited", never
+// "mutation_failed".
+var errMutateRateLimited = errors.New("hermeshttp: operator mutation rate limit exceeded")
+
+// mutateRateKey builds the rate-limiter key from the operator admin token id, so
+// the budget is per operator TOKEN (not per tenant): one operator's burst cannot
+// throttle another operator acting in the same tenant.
+func mutateRateKey(tokenID int64) string {
+	return "tok:" + strconv.FormatInt(tokenID, 10)
+}
+
+// retryAfterSeconds renders a coarse (ceil-seconds, minimum 1) Retry-After value
+// for a throttled mutation, mirroring the loginthrottle limiter's coarse hint —
+// no precise remaining-budget is leaked.
+func retryAfterSeconds(d time.Duration) string {
+	secs := int64((d + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	return strconv.FormatInt(secs, 10)
+}
 
 // executeMutatingTool runs the WAVE H4 5-layer safety flow for a mutating tool:
 //
@@ -140,6 +166,23 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 	if entry.TargetID != plan.TargetID {
 		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_invalid", "confirmation target does not match the previewed target")
 		return
+	}
+
+	// S2 (c) PER-OPERATOR-TOKEN RATE LIMIT: checked AFTER the single-use consume
+	// (so a rejected stale id never burns budget) and BEFORE building rec / calling
+	// Execute (so ONLY real confirmed executes count — previews and denials do not
+	// reach here). Keyed on the operator's admin token so one operator cannot drive
+	// the whole mutating budget. A nil/disabled limiter always allows (legacy).
+	if h.mutateRateLimiter != nil {
+		if ok, retryAfter := h.mutateRateLimiter.Allow(mutateRateKey(actor.TokenID)); !ok {
+			// Record the throttle on the authoritative ledger so it is auditable, then
+			// 429 with a coarse Retry-After. The correlation_id was already consumed
+			// (single-use), so the operator must re-preview to retry — by design.
+			h.recordMutatingError(r, ident, actor, req, errMutateRateLimited, false)
+			w.Header().Set("Retry-After", retryAfterSeconds(retryAfter))
+			writeError(w, http.StatusTooManyRequests, "hermes_tool_mutate_rate_limited", "operator mutation rate limit exceeded; retry later")
+			return
+		}
 	}
 
 	now := time.Now().UTC()
@@ -288,12 +331,30 @@ func classifyMutatingError(err error) string {
 		return "target_resolution_failed"
 	case errors.Is(err, hermesops.ErrDependencyUnwired):
 		return "dependency_unwired"
+	case errors.Is(err, errMutateRateLimited):
+		// S2 (c): the per-operator-token limiter rejected the confirm — nothing was
+		// begun, so this is back-pressure, never a failed/uncertain mutation.
+		return "rate_limited"
+	case errors.Is(err, hermesops.ErrMutateBusy):
+		// S2 (a): the concurrency cap was saturated — nothing was begun.
+		return "mutate_busy"
+	case errors.Is(err, hermesops.ErrMutateTimeoutUncertain):
+		// S2 (b) OWN-TX deadline: the inner own-tx may have committed before the tx
+		// deadline tripped. Checked BEFORE both commit_uncertain and the
+		// mutation_failed default so a timed-out own-tx mutation is never falsely
+		// reported as rolled back. Distinct class so reconciliation can tell a
+		// deadline-uncertain from a commit-uncertain residual.
+		return "mutate_timeout_uncertain"
 	case errors.Is(err, hermesops.ErrCommitAfterOwnTxMutation):
 		// An own-tx tool's mutation persisted but the orchestrator commit carrying
 		// the audit rows failed: the outcome is uncertain, not a clean failure.
 		// Checked before the mutation_failed default so this commit-phase residual
 		// is never mislabelled as "the mutation did not happen".
 		return "commit_uncertain"
+	case errors.Is(err, context.DeadlineExceeded):
+		// S2 (b) IN-TX deadline: the deadline rolled the mutation back atomically,
+		// so it is a clean timeout (distinct class from the own-tx uncertain case).
+		return "mutate_timeout"
 	default:
 		return "mutation_failed"
 	}
@@ -318,10 +379,23 @@ func writeMutatingExecError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "hermes_tool_invalid_args", "invalid mutation request")
 	case errors.Is(err, hermesops.ErrDependencyUnwired):
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_unavailable", "tool dependency is not wired")
+	case errors.Is(err, hermesops.ErrMutateBusy):
+		// S2 (a): the concurrency cap was saturated and the bounded acquire window
+		// elapsed — nothing was begun. Pure back-pressure: 429, retry later.
+		writeError(w, http.StatusTooManyRequests, "hermes_tool_mutate_busy", "too many concurrent mutations in flight; retry shortly")
+	case errors.Is(err, hermesops.ErrMutateTimeoutUncertain):
+		// S2 (b) OWN-TX deadline: the inner own-tx may have committed before the tx
+		// deadline tripped. Like commit_uncertain, do NOT claim a rollback — the
+		// outcome is uncertain and reconciliation is required.
+		writeError(w, http.StatusServiceUnavailable, "hermes_tool_mutate_timeout_uncertain", "mutation may have applied but the tx deadline was hit; reconciliation required")
 	case errors.Is(err, hermesops.ErrCommitAfterOwnTxMutation):
 		// The mutation may have persisted (own-tx) while the audit commit failed:
 		// do NOT claim it was rolled back — signal an uncertain outcome instead.
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_commit_uncertain", "mutation may have applied but the audit commit failed; reconciliation required")
+	case errors.Is(err, context.DeadlineExceeded):
+		// S2 (b) IN-TX deadline: the mutation rolled back atomically — a clean
+		// gateway timeout (504), not an uncertain outcome.
+		writeError(w, http.StatusGatewayTimeout, "hermes_tool_mutate_timeout", "mutation exceeded its time budget and was rolled back")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_failed", "mutation failed and was rolled back")
 	}
