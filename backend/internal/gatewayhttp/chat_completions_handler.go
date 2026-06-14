@@ -942,3 +942,39 @@ func clientTailMessageRole(clientProtocol proto.ClientProtocol, body []byte) str
 		return strings.ToLower(strings.TrimSpace(req.Messages[len(req.Messages)-1].Role))
 	}
 }
+
+// classifyPoolSelectFailure maps a pool.Selector error to its HTTP failure and
+// claim abort (incl. the SEC-249/250 per-key rate-limit 429). nil err → nil.
+// Kept here rather than in its own file to stay within the gatewayhttp
+// package's file-count budget.
+func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err error) *classifiedAttemptFailure {
+	if err == nil {
+		return nil
+	}
+	abort := func(reason string) error {
+		return ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, 0, ex.protocolLoss)
+	}
+	switch {
+	case errors.Is(err, pool.ErrKeyRateLimited):
+		if e := abort("key_rate_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeKeyRateLimited, clienterr.MessageFor(clienterr.CodeKeyRateLimited), "key_rate_limited", err)
+		f.RetryAfterSeconds = 1
+		return f
+	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
+		f := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
+		f.RetryAfterSeconds = 5
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_no_capacity"))
+	case errors.Is(err, pool.ErrClaimRace):
+		if e := abort("claim_race"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace), "claim_race", err)
+		f.RetryAfterSeconds = 1
+		return f
+	default:
+		f := retryableLocalAttemptFailure(http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError), "pool_select_error", gateway.UpstreamError5xx, err)
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_select_error"))
+	}
+}

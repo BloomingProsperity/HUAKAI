@@ -38,6 +38,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 )
 
+// envInt64 reads a non-negative int64 config value; missing/invalid/negative → 0.
+func envInt64(key string) int64 {
+	v, err := strconv.ParseInt(os.Getenv(key), 10, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
+
 // buildSelector 装配 selector 链, 返 (Selector 接口, cleanup 闭包, error)。
 // caller 应 defer cleanup() 在 server shutdown 之前调用。
 //
@@ -75,11 +84,28 @@ func buildSelector(
 		ratePrecheckCounter = pool.NewRatePrecheckCounter()
 		logger.Info("ROUTE-121 proactive RPM/TPM rate pre-check ENABLED (per-account, opt-in via rpm_limit/tpm_limit)")
 	}
+
+	// SEC-249/250: opt-in GLOBAL per-API-key RPM/TPM limit, keyed on the resolved
+	// APIKeyID (can't be bypassed by rotating IPs). 0 limits = OFF by default.
+	keyRPM := envInt64("HUAKAI_KEY_RPM_LIMIT")
+	keyTPM := envInt64("HUAKAI_KEY_TPM_LIMIT")
+	var keyRateCounter *precheck.Counter
+	if keyRPM > 0 || keyTPM > 0 {
+		keyRateCounter = pool.NewRatePrecheckCounter()
+		logger.Info("SEC-249/250 per-API-key rate limit ENABLED", zap.Int64("rpm", keyRPM), zap.Int64("tpm", keyTPM))
+	}
+
+	// wrapRecording composes the opt-in selector wrappers (both inert when off):
+	// KeyRateLimit (per-key, outermost, rejects before selection) over
+	// Recording (per-account budget consume, ROUTE-121).
 	wrapRecording := func(s pool.Selector) pool.Selector {
-		if ratePrecheckCounter == nil {
-			return s
+		if ratePrecheckCounter != nil {
+			s = pool.NewRecordingSelector(s, ratePrecheckCounter)
 		}
-		return pool.NewRecordingSelector(s, ratePrecheckCounter)
+		if keyRateCounter != nil {
+			s = pool.NewKeyRateLimitSelector(s, keyRateCounter, keyRPM, keyTPM)
+		}
+		return s
 	}
 
 	// 1. default selector 总是构造 — 即使 PASR 模式也作为 fallback 实例。

@@ -145,6 +145,13 @@ func NewRecordingSelector(inner Selector, counter *precheck.Counter) Selector {
 	return router.NewRecordingSelector(inner, counter)
 }
 
+// NewKeyRateLimitSelector wraps inner with a per-authenticated-API-key RPM/TPM
+// budget enforced before selection (SEC-249/250). rpm/tpm <= 0 = unlimited
+// (inert). Over-budget selection returns ErrKeyRateLimited (-> HTTP 429).
+func NewKeyRateLimitSelector(inner Selector, counter *precheck.Counter, rpm, tpm int64) Selector {
+	return router.NewKeyRateLimitSelector(inner, counter, rpm, tpm)
+}
+
 func WithRoutingPolicySource(v RoutingPolicySource) SelectorOption {
 	return router.WithRoutingPolicySource(v)
 }

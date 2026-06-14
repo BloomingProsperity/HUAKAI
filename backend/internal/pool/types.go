@@ -95,6 +95,7 @@ type RoutingReasonBuilder = router.RoutingReasonBuilder
 
 var (
 	ErrNoEligibleAccount      = router.ErrNoEligibleAccount
+	ErrKeyRateLimited         = router.ErrKeyRateLimited
 	ErrAllChannelsDegraded    = router.ErrAllChannelsDegraded
 	ErrClaimRace              = router.ErrClaimRace
 	ErrSlotManagerUnavailable = router.ErrSlotManagerUnavailable

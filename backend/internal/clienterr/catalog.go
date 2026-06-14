@@ -48,6 +48,7 @@ const (
 	CodePoolSelectError                 = "pool_select_error"
 	CodeCredentialResolveError          = "credential_resolve_error"
 	CodeQueueWait                       = "queue_wait"
+	CodeKeyRateLimited                  = "rate_limit_exceeded"
 	CodeInvalidRequestBody              = "invalid_request_body"
 	CodeNonStreamingNotYetWired         = "non_streaming_not_yet_wired"
 	CodeUpstreamDispatchError           = "upstream_dispatch_error"
@@ -85,6 +86,7 @@ var messages = map[string]string{
 	CodePoolSelectError:                 "account selection failed",
 	CodeCredentialResolveError:          "upstream credential unavailable",
 	CodeQueueWait:                       "request is queued; retry later",
+	CodeKeyRateLimited:                  "API key rate limit exceeded; retry later",
 	CodeInvalidRequestBody:              "request body is invalid",
 	CodeNonStreamingNotYetWired:         "non-streaming dispatch is unavailable",
 	CodeUpstreamDispatchError:           "upstream request failed",

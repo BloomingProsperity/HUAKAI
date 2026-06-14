@@ -614,26 +614,10 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		EstimatedInputTokens: estInput,
 		MaxOutputTokens:      maxOut,
 	})
-	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_no_capacity", ex.requestID, 0, ex.protocolLoss)
-		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
-		failure.RetryAfterSeconds = 5
-		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
-	}
-	if errors.Is(err, pool.ErrClaimRace) {
-		// claim 被并发路径抢占移出 reserving — 这是预期内
-		// 竞态, 不是 internal error。 返 409 + Retry-After 让 client 幂等重试。
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "claim_race", ex.requestID, 0, ex.protocolLoss); abortErr != nil && w != nil {
-			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
-		}
-		failure := terminalLocalAttemptFailure(http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace), "claim_race", err)
-		failure.RetryAfterSeconds = 1
+	// Map any pool selection error (incl. SEC-249/250 per-key rate limit) to the
+	// right HTTP failure + claim abort. Extracted to chat_completions_pool_errors.go.
+	if failure := ex.classifyPoolSelectFailure(w, err); failure != nil {
 		return failure
-	}
-	if err != nil {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_error", ex.requestID, 0, ex.protocolLoss)
-		failure := retryableLocalAttemptFailure(http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError), "pool_select_error", gateway.UpstreamError5xx, err)
-		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if selRes != nil && selRes.WaitPlan != nil {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "queue_wait", ex.requestID, 0, ex.protocolLoss)
