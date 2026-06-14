@@ -71,6 +71,14 @@ type subscriptionProgressView struct {
 	RequestCount int64     `json:"request_count"`
 	WindowStart  time.Time `json:"window_start"`
 	WindowEnd    time.Time `json:"window_end"`
+
+	// Derived read-side fields (purely computed from the existing window data above;
+	// no new query / schema / mutation). All money figures stay in the same USD
+	// decimal unit as Cap/Consumed (numeric(20,8)); see toSubscriptionProgressView.
+	UsagePercent    float64 `json:"usage_percent"`     // consumed/cap*100; 0 when cap==0 (no divide-by-zero); allowed to exceed 100 on overage
+	ResetsInSeconds int64   `json:"resets_in_seconds"` // max(0, window_end − now); 0 once the window has elapsed
+	OverLimit       bool    `json:"over_limit"`        // consumed > cap
+	OverLimitAmount string  `json:"over_limit_amount"` // max(0, consumed − cap), same USD decimal unit as Consumed ("0" when not over). Distinct from the persisted ledger Overage field above.
 }
 
 func toPurchaseOrderView(o payment.Order) purchaseOrderView {
@@ -101,21 +109,55 @@ func currentActiveSubscription(subs []subscription.UserSubscription, now time.Ti
 	return best
 }
 
-func toSubscriptionProgressView(w quota.CurrentWindowRead) subscriptionProgressView {
+// toSubscriptionProgressView projects one current quota window into the user-facing
+// progress view. The derived fields (usage_percent / resets_in_seconds / over_limit /
+// over_limit_amount) are computed purely from the window data plus the supplied now
+// clock — no new query, schema, or money mutation. now is threaded from the handler so
+// resets_in_seconds is deterministic under test (no fresh time.Now here).
+func toSubscriptionProgressView(w quota.CurrentWindowRead, now time.Time) subscriptionProgressView {
+	cap := w.LimitValue
 	consumed := w.SettledValue.Add(w.ReservedValue)
-	remaining := w.LimitValue.Sub(consumed)
+	remaining := cap.Sub(consumed)
 	if remaining.IsNegative() {
 		remaining = decimal.Zero
 	}
+
+	// usage_percent = consumed/cap*100. Guard cap==0 (no division) → 0 rather than
+	// NaN/Inf. Not clamped at 100: an over-limit window reports >100 so callers can
+	// surface overage. DivRound keeps a fixed scale so the float is stable.
+	usagePercent := 0.0
+	if !cap.IsZero() {
+		usagePercent = consumed.DivRound(cap, 8).Mul(decimal.NewFromInt(100)).InexactFloat64()
+	}
+
+	// over_limit / over_limit_amount = max(0, consumed − cap), same USD decimal unit as
+	// consumed. Distinct from the persisted ledger OverageValue (accumulated billing
+	// overage); this is the live snapshot of how far past cap the window currently sits.
+	overLimit := consumed.GreaterThan(cap)
+	overLimitAmount := consumed.Sub(cap)
+	if overLimitAmount.IsNegative() {
+		overLimitAmount = decimal.Zero
+	}
+
+	// resets_in_seconds = max(0, window_end − now); clamps to 0 once the window elapsed.
+	resetsInSeconds := int64(0)
+	if d := w.Window.End.Sub(now); d > 0 {
+		resetsInSeconds = int64(d.Seconds())
+	}
+
 	return subscriptionProgressView{
-		WindowKind:   string(w.Window.Kind),
-		Cap:          w.LimitValue.String(),
-		Consumed:     consumed.String(),
-		Remaining:    remaining.String(),
-		Overage:      w.OverageValue.String(),
-		RequestCount: w.RequestCount,
-		WindowStart:  w.Window.Start,
-		WindowEnd:    w.Window.End,
+		WindowKind:      string(w.Window.Kind),
+		Cap:             cap.String(),
+		Consumed:        consumed.String(),
+		Remaining:       remaining.String(),
+		Overage:         w.OverageValue.String(),
+		RequestCount:    w.RequestCount,
+		WindowStart:     w.Window.Start,
+		WindowEnd:       w.Window.End,
+		UsagePercent:    usagePercent,
+		ResetsInSeconds: resetsInSeconds,
+		OverLimit:       overLimit,
+		OverLimitAmount: overLimitAmount.String(),
 	}
 }
 
@@ -196,7 +238,7 @@ func newUserSubscriptionProgressHandler(d UserDeps) http.HandlerFunc {
 			if !subscriptionAllowsProgressWindow(*cur, row.Window.Kind) {
 				continue
 			}
-			out.Progress = append(out.Progress, toSubscriptionProgressView(row))
+			out.Progress = append(out.Progress, toSubscriptionProgressView(row, now))
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
