@@ -17221,6 +17221,9 @@ components:
         user_agent:
           type: [string, 'null']
           description: 'Client User-Agent captured at billing settlement; admin observability only (never exposed to the /v1/me usage list).'
+        client_tool:
+          type: [string, 'null']
+          description: 'Normalized client-tool enum (e.g. cursor, claude_code) captured at settlement; admin observability only (never exposed to the /v1/me usage list). Raw User-Agent values are not stored here.'
 
     UsageRecordList:
       x-huakai-spec-source: [docs/specs/observability-billing.md]

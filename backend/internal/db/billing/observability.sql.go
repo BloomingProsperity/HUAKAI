@@ -594,7 +594,7 @@ SELECT
     ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
     ale.hop_chain AS audit_hop_chain,
     ale.model_chain AS audit_model_chain,
-    ur.ip_address, ur.user_agent
+    ur.ip_address, ur.user_agent, ur.client_tool
 FROM usage_records ur
 JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
 LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
@@ -684,6 +684,7 @@ type ListUsageRecordsRow struct {
 	AuditModelChain        []byte             `db:"audit_model_chain" json:"audit_model_chain"`
 	IPAddress              *string            `db:"ip_address" json:"ip_address"`
 	UserAgent              *string            `db:"user_agent" json:"user_agent"`
+	ClientTool             *string            `db:"client_tool" json:"client_tool"`
 }
 
 // F-OBS-001 admin read APIs. SELECT-only: no hot-path, quota, billing,
@@ -746,6 +747,7 @@ func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsPara
 			&i.AuditModelChain,
 			&i.IPAddress,
 			&i.UserAgent,
+			&i.ClientTool,
 		); err != nil {
 			return nil, err
 		}
