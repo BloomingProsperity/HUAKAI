@@ -44,6 +44,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
+	"github.com/BloomingProsperity/HUAKAI/internal/proxyadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/publicrankinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
@@ -806,6 +808,15 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Get("/admin/v1/users", adminuserhttp.NewListHandler(adminUserDeps))
 	r.Route("/admin/v1/users", func(r chi.Router) {
 		adminuserhttp.MountRoutes(r, adminUserDeps)
+	})
+	// Outbound proxy-pool admin surface (F-FP-POOL): list/create/update/delete/
+	// set-status over the secret-free proxyadmin.Service. Tenant-scoped via the
+	// shared admin gate; auth_secret is write-only and never projected.
+	r.Route("/admin/v1/proxies", func(r chi.Router) {
+		proxyadminhttp.MountRoutes(r, proxyadminhttp.Deps{
+			Auth:    d.adminAuth,
+			Service: proxyadmin.New(d.adminQueries, d.credentialKeys),
+		})
 	})
 	r.Get("/admin/v1/account-modes", adminhttp.NewAccountModeListHandler(adminhttp.AdminAccountModesDeps{
 		Auth: d.adminAuth,

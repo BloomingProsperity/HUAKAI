@@ -95,6 +95,8 @@ tags:
     description: API Key issuance / list / revoke. Slice 2 N+4b2; backed by admin_tokens + admin_audit_events.
   - name: admin-users
     description: Tenant-scoped admin read-only user visibility and balance ledger history.
+  - name: admin-proxies
+    description: Tenant-scoped outbound proxy-pool management (secret-free read DTO). F-FP-POOL.
   - name: admin-pools
     description: Pool Group management. F-POOL-001.
   - name: admin-accounts
@@ -11321,6 +11323,193 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /admin/v1/proxies:
+    get:
+      tags: [admin-proxies]
+      summary: List tenant-scoped outbound proxies
+      operationId: listAdminProxies
+      description: |
+        Returns the tenant's outbound proxy pool for the operations console. The
+        response is secret-free: each proxy exposes its endpoint and lifecycle
+        status but never the stored credential (auth_secret is write-only).
+        platform_admin callers must pass tenant_id; tenant_operator callers may
+        omit it and are scoped to their admin token tenant.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Proxy list.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminProxyList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-proxies]
+      summary: Create a tenant-scoped outbound proxy
+      operationId: createAdminProxy
+      description: |
+        Registers an outbound proxy (protocol + host + port, optional auth) for the
+        selected tenant. The optional auth_secret is encrypted server-side and never
+        returned. status defaults to active.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminProxyCreateRequest' }
+      responses:
+        '201':
+          description: Created proxy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proxy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/proxies/{id}:
+    get:
+      tags: [admin-proxies]
+      summary: Get a tenant-scoped outbound proxy
+      operationId: getAdminProxy
+      description: |
+        Fetches a single proxy by tenant scope plus path id. Returns 404 if absent
+        or owned by a different tenant. Secret-free.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Proxy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proxy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    patch:
+      tags: [admin-proxies]
+      summary: Update a tenant-scoped outbound proxy
+      operationId: updateAdminProxy
+      description: |
+        Replaces the proxy endpoint fields for a proxy selected by tenant scope plus
+        path id. An omitted auth_secret leaves the stored credential cleared; a
+        supplied auth_secret is re-encrypted server-side and never returned.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminProxyUpdateRequest' }
+      responses:
+        '200':
+          description: Updated proxy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proxy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-proxies]
+      summary: Delete a tenant-scoped outbound proxy
+      operationId: deleteAdminProxy
+      description: |
+        Soft-deletes a proxy selected by tenant scope plus path id. Idempotent — a
+        second delete is a no-op. Returns 204 No Content on success.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '204':
+          description: Proxy was deleted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/proxies/{id}/status:
+    put:
+      tags: [admin-proxies]
+      summary: Set a tenant-scoped outbound proxy's status
+      operationId: setAdminProxyStatus
+      description: |
+        Flips a proxy's lifecycle status (active, disabled, dead) for the selected
+        tenant and stamps last_check_at. An invalid status value returns 400.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminProxySetStatusRequest' }
+      responses:
+        '200':
+          description: Proxy status was updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminProxyStatusResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
 # ============================================================================
 # Components
 # ============================================================================
@@ -15074,6 +15263,71 @@ components:
           type: string
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         created_at: { type: string, format: date-time }
+
+    Proxy:
+      type: object
+      additionalProperties: false
+      required: [id, name, protocol, host, port, auth_username, status, last_check_at, created_at, updated_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        name: { type: string }
+        protocol: { type: string, description: "Outbound proxy protocol, e.g. http or socks5." }
+        host: { type: string }
+        port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
+        auth_username: { type: string, nullable: true, description: "Optional proxy auth username. The matching auth_secret is write-only and never returned." }
+        status: { type: string, enum: [active, disabled, dead] }
+        last_check_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AdminProxyList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Proxy' }
+
+    AdminProxyCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, protocol, host, port]
+      properties:
+        name: { type: string, minLength: 1 }
+        protocol: { type: string, minLength: 1 }
+        host: { type: string, minLength: 1 }
+        port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
+        auth_username: { type: string, nullable: true }
+        auth_secret: { type: string, nullable: true, description: "Write-only proxy credential; encrypted server-side and never returned." }
+        status: { type: string, enum: [active, disabled, dead], description: "Defaults to active when omitted." }
+
+    AdminProxyUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, protocol, host, port]
+      properties:
+        name: { type: string, minLength: 1 }
+        protocol: { type: string, minLength: 1 }
+        host: { type: string, minLength: 1 }
+        port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
+        auth_username: { type: string, nullable: true }
+        auth_secret: { type: string, nullable: true, description: "Write-only proxy credential; encrypted server-side and never returned." }
+
+    AdminProxySetStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [active, disabled, dead] }
+
+    AdminProxyStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        status: { type: string, enum: [active, disabled, dead] }
 
     AdminCreateUserRequest:
       type: object
