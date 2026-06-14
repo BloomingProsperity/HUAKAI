@@ -124,6 +124,13 @@ type AccountSnapshot struct {
 	// DisableCooling bypasses the health/cooldown gate for this account when true.
 	// Default false = exact existing behavior. Opt-in escape hatch for high-value accounts.
 	DisableCooling bool
+	// RPMLimit is the operator-configured proactive requests-per-minute budget
+	// for this account (ROUTE-121). 0 or negative means unlimited (opt-in), so an
+	// account with no configured budget keeps its exact current behavior.
+	RPMLimit int64
+	// TPMLimit is the operator-configured proactive tokens-per-minute budget for
+	// this account (ROUTE-121). 0 or negative means unlimited (opt-in).
+	TPMLimit int64
 }
 
 type ModelRateLimit struct {
