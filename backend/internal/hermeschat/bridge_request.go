@@ -116,8 +116,10 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 		b.sessionBindings.Bind(requestID, op)
 		boundOperator = true
 		// Inject the catalog ONLY for a bound (admin) session — the LLM should not
-		// be told about tools it cannot call.
-		if b.toolCatalog != nil {
+		// be told about tools it cannot call. KNOB B: when the conversational tool
+		// loop is disabled at runtime, skip injection entirely so the LLM is told
+		// about no tools (the internal tool-execute endpoint is also gated off).
+		if b.toolLoopEnabled && b.toolCatalog != nil {
 			catalog := b.toolCatalog.ReadOnlyToolCatalog()
 			if catalog != nil {
 				if err := setJSONField(body, "tool_catalog", catalog); err != nil {

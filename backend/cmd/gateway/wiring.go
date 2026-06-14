@@ -213,6 +213,18 @@ type deps struct {
 	// hermesMutator runs the WAVE H4 mutating-tool atomic-audit + advisory-lock
 	// transaction. Nil when the pool is unset (mutating tools then fail closed).
 	hermesMutator *hermesops.MutateOrchestrator
+	// hermesMutatingEnabled is the runtime kill-switch (KNOB A) for ALL Hermes
+	// mutating tools. Default true (HUAKAI_HERMES_MUTATING_ENABLED). When false the
+	// mutating branch of tool-execute is refused (403 hermes_mutating_disabled) and
+	// the mutator is also withheld from the router, while read-only diagnostics +
+	// chat stay live.
+	hermesMutatingEnabled bool
+	// hermesToolLoopEnabled is the runtime kill-switch (KNOB B) for the LLM
+	// conversational tool loop. Default true (HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED).
+	// When false no read-only tool catalog is injected into the chat body and the
+	// runner's /internal/hermes/tool-execute callback is refused (403
+	// llm_toolloop_disabled), while plain /v1/hermes/chat keeps streaming.
+	hermesToolLoopEnabled bool
 	// WAVE H3b conversational READ-ONLY tool loop: the shared session-binding store
 	// (operator identity per chat session, keyed by the internal_token request_id)
 	// and the internal tool-execute handler the runner calls back into. The handler
@@ -715,6 +727,23 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+	// Runtime kill-switches (both default ENABLED => zero behavior change unset).
+	hermesMutatingEnabled, err := hermesBoolEnabledDefaultTrue(hermesMutatingEnabledEnv)
+	if err != nil {
+		return nil, err
+	}
+	hermesToolLoopEnabled, err := hermesBoolEnabledDefaultTrue(hermesLLMToolLoopEnabledEnv)
+	if err != nil {
+		return nil, err
+	}
+	if !hermesMutatingEnabled {
+		logger.Warn("Hermes MUTATING tools disabled at runtime — account_pause/account_resume/dlq_replay/renew_trigger are refused; read-only diagnostics + chat remain live",
+			zap.String("knob", hermesMutatingEnabledEnv+"=false"))
+	}
+	if !hermesToolLoopEnabled {
+		logger.Warn("Hermes LLM conversational tool loop disabled at runtime — no tool catalog is injected and the internal tool-execute callback is refused; plain chat keeps streaming",
+			zap.String("knob", hermesLLMToolLoopEnabledEnv+"=false"))
+	}
 	outboxStore := obsoutbox.NewPostgresOutbox(pgPool)
 	opts, err := loadRuntimeOptions(logger)
 	if err != nil {
@@ -896,7 +925,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	hermesSessionBindings := hermeschat.NewSessionBindings(nil)
 	var hermesChatBridge *hermeschat.Bridge
 	if hermesRunner != nil {
-		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesSessionBindings, hermesToolRegistry)
+		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesSessionBindings, hermesToolRegistry, hermesToolLoopEnabled)
 		if err != nil {
 			return nil, err
 		}
@@ -1126,6 +1155,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesToolRegistry:       hermesToolRegistry,
 		hermesToolCalls:          hermesToolCalls,
 		hermesMutator:            hermesMutator,
+		hermesMutatingEnabled:    hermesMutatingEnabled,
+		hermesToolLoopEnabled:    hermesToolLoopEnabled,
 		hermesSessionBindings:    hermesSessionBindings,
 	}
 	rt.deps = d
@@ -1287,7 +1318,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if d.hermesAdminOnly && d.hermesChatBridge != nil {
 		if internalSecret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv)); internalSecret != "" {
 			d.hermesInternalToolHandler = buildHermesInternalToolHandler(
-				[]byte(internalSecret), d.hermesSessionBindings, d.hermesToolRegistry, d.hermesToolCalls,
+				[]byte(internalSecret), d.hermesSessionBindings, d.hermesToolRegistry, d.hermesToolCalls, d.hermesToolLoopEnabled,
 			)
 		}
 	}
@@ -1356,7 +1387,7 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	})
 }
 
-func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, bindings *hermeschat.SessionBindings, toolRegistry *hermesops.Registry) (*hermeschat.Bridge, error) {
+func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, bindings *hermeschat.SessionBindings, toolRegistry *hermesops.Registry, toolLoopEnabled bool) (*hermeschat.Bridge, error) {
 	if hermesService == nil {
 		return nil, nil
 	}
@@ -1383,6 +1414,10 @@ func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.
 	if toolRegistry != nil {
 		opts = append(opts, hermeschat.WithToolCatalog(readOnlyCatalogProvider{reg: toolRegistry}))
 	}
+	// KNOB B: when the LLM conversational tool loop is disabled at runtime, the
+	// bridge injects no tool_catalog (the WithToolCatalog provider above stays
+	// wired but the gate suppresses injection), so the LLM is told about no tools.
+	opts = append(opts, hermeschat.WithToolLoopEnabled(toolLoopEnabled))
 	bridge, err := hermeschat.NewBridge(hermesService, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("build hermes chat bridge: %w", err)
@@ -1448,6 +1483,39 @@ func hermesAdminOnlyFromEnv(logger *zap.Logger) (bool, error) {
 			zap.String("enabled_by", hermesAdminOnlyEnv+"=false + "+hermesAllowLegacyUserAuthEnv+"=true"))
 	}
 	return false, nil
+}
+
+// hermesMutatingEnabledEnv is the runtime kill-switch for ALL Hermes MUTATING
+// tools (account_pause/account_resume/dlq_replay/renew_trigger). It defaults
+// ENABLED so an unset env is zero behavior change; flip it to false to disable
+// every mutating tool at runtime while keeping the read-only diagnostics + the
+// conversational chat fully live. Orthogonal to HUAKAI_HERMES_ADMIN_ONLY.
+const hermesMutatingEnabledEnv = "HUAKAI_HERMES_MUTATING_ENABLED"
+
+// hermesLLMToolLoopEnabledEnv is the runtime kill-switch for the LLM
+// CONVERSATIONAL tool loop (read-only tool-catalog injection into the chat body
+// + the runner's mid-conversation /internal/hermes/tool-execute callback). It
+// defaults ENABLED; flip it to false to disable the tool loop while plain
+// /v1/hermes/chat keeps streaming. Orthogonal to HUAKAI_HERMES_ADMIN_ONLY and to
+// the mutating kill-switch above.
+const hermesLLMToolLoopEnabledEnv = "HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED"
+
+// hermesBoolEnabledDefaultTrue resolves a DEFAULT-TRUE runtime boolean knob,
+// mirroring hermesAdminOnlyFromEnv's parse style: unset/empty => the default
+// (true, enabled); any parseable bool is honored; a malformed value is a
+// fail-loud boot error (never a silent fallback that would disable enforcement
+// or, worse, silently re-enable a privileged surface the operator meant to turn
+// off). Used for both Hermes runtime kill-switches.
+func hermesBoolEnabledDefaultTrue(envName string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(envName))
+	if raw == "" {
+		return true, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean, got %q: %w", envName, raw, err)
+	}
+	return enabled, nil
 }
 
 // installAnthropicClaudeAIOAuthMimicryExchanger 把 default ExchangerRegistry

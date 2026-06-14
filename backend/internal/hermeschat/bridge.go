@@ -100,6 +100,18 @@ func WithToolCatalog(provider ToolCatalogProvider) Option {
 	}
 }
 
+// WithToolLoopEnabled is KNOB B's bridge-side gate: the runtime kill-switch for
+// the LLM conversational tool loop's catalog injection. When false, PrepareRequest
+// sets NO tool_catalog field in the runner body even for a bound admin session, so
+// the LLM is told about no tools. Default true (set in NewBridge) => zero behavior
+// change when unset. Orthogonal to WithToolCatalog/WithSessionBindings: the catalog
+// provider can be wired and this still suppresses injection.
+func WithToolLoopEnabled(enabled bool) Option {
+	return func(b *Bridge) {
+		b.toolLoopEnabled = enabled
+	}
+}
+
 // ToolCatalogProvider returns the LLM-facing read-only tool catalog injected into
 // the chat payload. *hermesops.Registry's ReadOnlyCatalog satisfies a thin
 // adapter for this; the bridge depends only on the marshaled shape so it does
@@ -123,6 +135,10 @@ type Bridge struct {
 	// (WAVE H3b). Both optional: when nil, the chat path is unchanged.
 	sessionBindings *SessionBindings
 	toolCatalog     ToolCatalogProvider
+	// toolLoopEnabled is KNOB B's bridge-side gate. Default true (NewBridge). When
+	// false, no tool_catalog is injected into the runner body even for a bound
+	// admin session. Set via WithToolLoopEnabled.
+	toolLoopEnabled bool
 }
 
 func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
@@ -130,6 +146,9 @@ func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
 		tx: tx, internalBaseURL: DefaultInternalBaseURL,
 		now:    func() time.Time { return time.Now().UTC() },
 		logger: stdWarningLogger{},
+		// KNOB B default: the LLM conversational tool loop is enabled unless a
+		// WithToolLoopEnabled(false) option flips it — zero behavior change unset.
+		toolLoopEnabled: true,
 	}
 	for _, opt := range opts {
 		opt(b)

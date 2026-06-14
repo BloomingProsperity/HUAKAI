@@ -63,7 +63,10 @@ func (r *recordingInserter) InsertHermesToolCall(_ context.Context, arg hermesto
 
 func newToolHandler(t *testing.T, runner ReadOnlyToolRunner, inserter hermesops.ToolCallInserter, bindings *SessionBindings) *InternalToolHandler {
 	t.Helper()
-	return NewInternalToolHandler([]byte(toolTestSecret), bindings, runner, inserter, toolTestClock)
+	// toolLoopEnabled=true mirrors the default (KNOB B unset) so the existing
+	// handler tests exercise the live tool loop. The KNOB B off-path has its own
+	// test below.
+	return NewInternalToolHandler([]byte(toolTestSecret), bindings, runner, inserter, toolTestClock, true)
 }
 
 // signSessionToken mints an internal_token for (tenant,user,requestID) matching
@@ -285,4 +288,63 @@ func flipLast(s string) string {
 		return "1"
 	}
 	return "0"
+}
+
+// --- KNOB B: HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED runtime kill-switch ----------
+
+func TestKnobB_ToolLoopDisabledRefusesEveryCall403(t *testing.T) {
+	// Defect this catches: if the runtime tool-loop kill-switch were not enforced
+	// in the runner callback, the LLM conversational tool loop would stay reachable
+	// while HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED=false. With the switch off, a fully
+	// valid bound session + valid token + READ-ONLY tool must be refused 403
+	// llm_toolloop_disabled, before any token inspection or dispatch.
+	//
+	// Mutation check (run + RED confirmed): delete the `if !h.toolLoopEnabled { ...
+	// return }` early-return in ServeHTTP and this call returns 200 (the tool
+	// dispatches) — the 403 + no-dispatch assertions go RED.
+	bindings := NewSessionBindings(toolTestClock)
+	runner := &fakeRunner{result: hermesops.ToolResult{Summary: map[string]any{"event_count": 1}}}
+	ins := &recordingInserter{}
+	// Construct the handler with toolLoopEnabled=false (KNOB B off).
+	h := NewInternalToolHandler([]byte(toolTestSecret), bindings, runner, ins, toolTestClock, false)
+	token := bindSession(t, bindings, 7, 42, 99, "platform_admin", "req-toolloop-off")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, toolRequest(token, "log_analyze", nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s want 403 (tool loop disabled)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "llm_toolloop_disabled") {
+		t.Fatalf("body=%s want llm_toolloop_disabled error code", rec.Body.String())
+	}
+	if runner.ranTool != "" {
+		t.Fatalf("tool ran despite tool loop disabled (ran=%q)", runner.ranTool)
+	}
+	// No audit row for a policy-refused-by-kill-switch call (it short-circuits
+	// before operator resolution / dispatch).
+	if len(ins.rows) != 0 {
+		t.Fatalf("disabled tool loop recorded %d rows, want 0", len(ins.rows))
+	}
+}
+
+func TestKnobB_ToolLoopEnabledByDefaultStillDispatches(t *testing.T) {
+	// Positive control: with KNOB B enabled (toolLoopEnabled=true) the SAME bound
+	// session + token + read-only tool dispatches 200. This proves the 403 above is
+	// caused by the kill-switch, not a broken token/binding, and that the default
+	// (enabled) is zero behavior change.
+	bindings := NewSessionBindings(toolTestClock)
+	runner := &fakeRunner{result: hermesops.ToolResult{Summary: map[string]any{"event_count": 1}}}
+	h := NewInternalToolHandler([]byte(toolTestSecret), bindings, runner, &recordingInserter{}, toolTestClock, true)
+	token := bindSession(t, bindings, 7, 42, 99, "platform_admin", "req-toolloop-on")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, toolRequest(token, "log_analyze", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200 (tool loop enabled)", rec.Code, rec.Body.String())
+	}
+	if runner.ranTool != "log_analyze" {
+		t.Fatalf("tool did not dispatch with loop enabled (ran=%q)", runner.ranTool)
+	}
 }

@@ -107,6 +107,17 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 	// below. Route it before the read-only RBAC so a mutation can never run
 	// without the confirm gate + advisory lock + atomic audit.
 	if mutSpec, ok := h.tools.Get(req.ToolName); ok && mutSpec.Mutating {
+		// KNOB A (runtime kill-switch): when mutating tools are disabled, refuse the
+		// mutating branch HERE — before previewMutation OR confirmMutation — so a
+		// single choke covers both the dry-run preview and the confirmed execution.
+		// Record a denied hermes_tool_calls row (audit parity with the other L1
+		// denials, reusing the mutate handler's denial recorder) so a refused attempt
+		// is auditable, then 403. The read-only path below is unaffected.
+		if h.mutatingDisabled {
+			h.recordMutatingDenied(r, ident, actor, req)
+			writeError(w, http.StatusForbidden, "hermes_mutating_disabled", "hermes mutating tools are disabled at runtime")
+			return
+		}
 		h.executeMutatingTool(w, r, ident, actor, req)
 		return
 	}
