@@ -70,6 +70,17 @@ const (
 	KeySiteLogo                       SettingKey = "site_logo"
 	KeySiteFooter                     SettingKey = "site_footer"
 	KeySiteHomeContent                SettingKey = "site_home_content"
+	// KeySiteSubtitle is a short public tagline shown under the site name.
+	KeySiteSubtitle SettingKey = "site_subtitle"
+	// KeySiteContactInfo is a public operator contact string (email, IM handle,
+	// or free text) shown to users; non-secret, plain display text.
+	KeySiteContactInfo SettingKey = "site_contact_info"
+	// KeySiteDocURL is the public documentation link surfaced in the UI.
+	KeySiteDocURL SettingKey = "site_doc_url"
+	// KeySiteAPIBaseURL is the public gateway base URL shown to users for client
+	// import/config (e.g. the OpenAI-compatible base they point a client at). It
+	// is a public endpoint address, never a secret.
+	KeySiteAPIBaseURL SettingKey = "site_api_base_url"
 	// KeyAdminNotificationEmail is the operator address the daily ops-inspection
 	// report is mailed to. Empty by default: an unconfigured deployment resolves
 	// no recipient and the inspection worker stays off (fail-safe). An env
@@ -81,7 +92,7 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeyAdminNotificationEmail}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeyAdminNotificationEmail}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -133,6 +144,10 @@ var (
 		KeySiteLogo:                       "",
 		KeySiteFooter:                     "",
 		KeySiteHomeContent:                "",
+		KeySiteSubtitle:                   "",
+		KeySiteContactInfo:                "",
+		KeySiteDocURL:                     "",
+		KeySiteAPIBaseURL:                 "",
 		KeyAdminNotificationEmail:         "",
 	}
 )
@@ -173,10 +188,11 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyPasskeyRPOrigins || key == KeyModerationExternalAPIKeys {
 		return validateStringArrayValue(key, value)
 	}
-	if key == KeyPasskeyRPID {
+	if key == KeyPasskeyRPID || key == KeySiteSubtitle || key == KeySiteContactInfo {
 		return validateOptionalPublicTextValue(key, value)
 	}
-	if key == KeyMediaTaskProviderBaseURL || key == KeyModerationExternalBaseURL {
+	if key == KeyMediaTaskProviderBaseURL || key == KeyModerationExternalBaseURL ||
+		key == KeySiteDocURL || key == KeySiteAPIBaseURL {
 		return validateOptionalHTTPURLValue(key, value)
 	}
 	if key == KeyModerationExternalThresholds {

@@ -67,6 +67,10 @@ var stringKeys = []struct {
 	{"site_logo", platformsettings.KeySiteLogo},
 	{"site_footer", platformsettings.KeySiteFooter},
 	{"site_home_content", platformsettings.KeySiteHomeContent},
+	{"site_subtitle", platformsettings.KeySiteSubtitle},
+	{"site_contact_info", platformsettings.KeySiteContactInfo},
+	{"site_doc_url", platformsettings.KeySiteDocURL},
+	{"site_api_base_url", platformsettings.KeySiteAPIBaseURL},
 }
 
 // NewHandler returns the GET /v1/site/config handler. It is anonymous: no auth

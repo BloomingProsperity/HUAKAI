@@ -12,10 +12,10 @@ import (
 )
 
 // expectedFieldCount is the exact size of the public projection: tenant_id +
-// 8 booleans + 9 strings. It is asserted directly so that adding a key to the
+// 8 booleans + 13 strings. It is asserted directly so that adding a key to the
 // handler without updating this test (or vice versa) is caught, and so the
 // CMB-5 leak test can prove "no extra key slipped in".
-const expectedFieldCount = 1 + 8 + 9
+const expectedFieldCount = 1 + 8 + 13
 
 // stubSettings serves canned setting values; absent keys fall back to the
 // compiled default exactly like the real Service does on a DB-miss.
@@ -88,6 +88,10 @@ func TestSiteConfigProjectsCompiledDefaults(t *testing.T) {
 		"site_logo":               "",
 		"site_footer":             "",
 		"site_home_content":       "",
+		"site_subtitle":           "",
+		"site_contact_info":       "",
+		"site_doc_url":            "",
+		"site_api_base_url":       "",
 	}
 	for field, want := range wantString {
 		if got, ok := body[field].(string); !ok || got != want {
@@ -136,6 +140,36 @@ func TestSiteConfigAppliesDBValuesAndParsesBooleans(t *testing.T) {
 	}
 	if body["site_name"] != "Acme Gateway" {
 		t.Fatalf("site_name=%v want Acme Gateway", body["site_name"])
+	}
+}
+
+// T2b: the extended branding strings (subtitle/contact/doc URL/api base URL)
+// must be projected verbatim from the store so an anonymous frontend can render
+// them. Mutation: drop any of the four entries from the handler's stringKeys and
+// that field falls back to its empty default here, failing the assertion.
+func TestSiteConfigProjectsExtendedBranding(t *testing.T) {
+	rec := serveSiteConfig(t, Deps{
+		Settings: stubSettings{values: map[platformsettings.SettingKey]string{
+			platformsettings.KeySiteSubtitle:    "Fast, clean gateway",
+			platformsettings.KeySiteContactInfo: "ops@huakai.example",
+			platformsettings.KeySiteDocURL:      "https://docs.huakai.example",
+			platformsettings.KeySiteAPIBaseURL:  "https://api.huakai.example/v1",
+		}},
+		TenantID: 1,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeSiteConfig(t, rec)
+	for field, want := range map[string]string{
+		"site_subtitle":     "Fast, clean gateway",
+		"site_contact_info": "ops@huakai.example",
+		"site_doc_url":      "https://docs.huakai.example",
+		"site_api_base_url": "https://api.huakai.example/v1",
+	} {
+		if got, ok := body[field].(string); !ok || got != want {
+			t.Fatalf("%s=%v (%T) want %q", field, body[field], body[field], want)
+		}
 	}
 }
 
