@@ -17,6 +17,8 @@ func TestBillingRecentUsageRolluperCallsTenantScopedQuery(t *testing.T) {
 			SuccessCount: 5,
 			ErrorCount:   3,
 			TotalCost:    "2.50000000",
+			LatencyP95Ms: 910.5,
+			LatencyP99Ms: 1750.75,
 		},
 	}
 	rolluper := NewBillingRecentUsageRolluper(querier)
@@ -37,6 +39,11 @@ func TestBillingRecentUsageRolluperCallsTenantScopedQuery(t *testing.T) {
 	}
 	if got.RequestCount != 8 || got.SuccessCount != 5 || got.ErrorCount != 3 || got.TotalCostUSD != 2.5 {
 		t.Fatalf("rollup=%+v want counts 8/5/3 cost 2.5", got)
+	}
+	// MUTATION: drop row.LatencyP95Ms/P99Ms from the mapping -> these go 0 -> RED.
+	// p95 and p99 are distinct so a swapped mapping also fails.
+	if got.LatencyP95MS != 910.5 || got.LatencyP99MS != 1750.75 {
+		t.Fatalf("rollup latency=%v/%v want 910.5/1750.75", got.LatencyP95MS, got.LatencyP99MS)
 	}
 }
 

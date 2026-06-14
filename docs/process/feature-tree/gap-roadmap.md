@@ -57,7 +57,22 @@ package inventory confirm most gaps are 5–30% pre-built. We exploit the reuse.
 
 ### Blocked
 - **totp-2fa** — Owner approval required.
+- **AUTH-169 user role-assignment endpoint** — Owner design decision required (parked
+  2026-06-14). Triple-mirror research (rule #16): the mature account-hub default
+  tiebreaker deliberately exposes **no** role-change endpoint (role is write-protected
+  in its admin user-update path); the one-api-lineage mirror does expose promote/demote
+  but on a numeric Common/Admin/Root hierarchy with a "manage only lower roles" guard +
+  explicit last-root protection — a model HUAKAI does not share; the relay mirror has no
+  user/role concept at all. HUAKAI's `platform_admin`/`tenant_operator` are **operator**
+  identities, not user-table roles, so "assign a role to a user" is a privilege-grant
+  design choice (which roles are user-assignable, last-admin protection, self-demote,
+  horizontal-privilege guard) that is auth-core high-risk and should be Owner-decided,
+  not solo-landed. Surface options to Owner before building.
 
 ## Done
 - gap #1 **tls-fp-crud** — admin CRUD for TLS fingerprint profiles (landed 4b9d7a4).
 - gap #2 **relay-log** — verified already-covered; token residual landed (3142c07).
+- **OPS-002 latency-SLO alerting** — TTFT p95/p99 threaded into the per-tenant alert
+  metric snapshot (`usage.latency_p95_ms` / `usage.latency_p99_ms`), so latency
+  regressions are alertable like success/error rate already were. Additive query
+  columns only, no migration. Strong + mutation-verified unit & integration_pg tests.

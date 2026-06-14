@@ -48,5 +48,7 @@ func (r billingRecentUsageRolluper) RecentUsageRollup(ctx context.Context, tenan
 		SuccessCount: row.SuccessCount,
 		ErrorCount:   row.ErrorCount,
 		TotalCostUSD: totalCost,
+		LatencyP95MS: row.LatencyP95Ms,
+		LatencyP99MS: row.LatencyP99Ms,
 	}, nil
 }
