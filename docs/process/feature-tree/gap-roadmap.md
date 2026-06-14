@@ -76,3 +76,9 @@ package inventory confirm most gaps are 5–30% pre-built. We exploit the reuse.
   metric snapshot (`usage.latency_p95_ms` / `usage.latency_p99_ms`), so latency
   regressions are alertable like success/error rate already were. Additive query
   columns only, no migration. Strong + mutation-verified unit & integration_pg tests.
+- **SEC-084 private-IP passthrough kill-switch** — master env toggle
+  `HUAKAI_PASSTHROUGH_PRIVATE_IPS_ENABLED` (default on = unchanged); an explicit
+  `false` force-denies every private-IP host regardless of the per-host allowlist
+  (emergency SSRF lockdown that can only tighten, never widen). Self-contained in
+  `internal/ssrfpolicy`, no schema. Mutation-verified: dropping the guard lets a
+  disabled toggle admit an allowlisted private host -> test RED.
