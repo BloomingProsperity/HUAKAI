@@ -3349,7 +3349,8 @@ paths:
                    captcha_enabled, captcha_provider, captcha_site_key,
                    two_factor_enabled, passkey_enabled, passkey_rp_id,
                    passkey_rp_display_name, oauth_providers_enabled, promo_enabled,
-                   site_name, site_logo, site_footer, site_home_content]
+                   site_name, site_logo, site_footer, site_home_content,
+                   site_subtitle, site_contact_info, site_doc_url, site_api_base_url]
                 properties:
                   tenant_id: { type: integer, format: int64 }
                   registration_enabled: { type: boolean }
@@ -3369,7 +3370,10 @@ paths:
                   site_logo: { type: string }
                   site_footer: { type: string }
                   site_home_content: { type: string }
-        '503': { $ref: '#/components/responses/ServiceBusy' }
+                  site_subtitle: { type: string }
+                  site_contact_info: { type: string }
+                  site_doc_url: { type: string }
+                  site_api_base_url: { type: string }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/pricing/rate-table:
