@@ -61,6 +61,14 @@ type Scheduler struct {
 	auditSigner  any
 	auditQueries *dbauth.Queries
 
+	// CRED-288: scheduled credential-rotation-due scan, run after the refresh
+	// pass each tick. OFF unless rotationStore is set AND rotationMaxAge > 0
+	// (opt-in via WithRotationScan) — so existing deployments are unaffected.
+	rotationStore  RotationStore
+	rotationMaxAge time.Duration
+	rotationAlert  RotationAlert
+	rotationLimit  int
+
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -174,6 +182,12 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	var out error
 	for _, account := range accounts {
 		out = errors.Join(out, s.processAccount(ctx, account))
+	}
+	// CRED-288: after the refresh pass, flag credentials past their rotation
+	// max-age. No-op unless opt-in (WithRotationScan); a scan error joins the
+	// tick error without aborting the refresh work already done above.
+	if _, err := ScanRotationDue(ctx, s.rotationStore, s.rotationAlert, s.rotationMaxAge, s.now(), s.rotationLimit); err != nil {
+		out = errors.Join(out, err)
 	}
 	return out
 }

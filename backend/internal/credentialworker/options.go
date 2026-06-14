@@ -15,6 +15,19 @@ func WithAuditLedger(ledger auditledger.Ledger) Option {
 	return func(s *Scheduler) { s.AuditLedger = ledger }
 }
 
+// WithRotationScan enables the CRED-288 scheduled rotation-due scan: each tick,
+// after the refresh pass, active credentials whose issuance is older than maxAge
+// are flagged needs_rotation (+ optional alert). maxAge <= 0 keeps it OFF, so it
+// is strictly opt-in. limit caps rows flagged per tick (<=0 → store default).
+func WithRotationScan(store RotationStore, maxAge time.Duration, limit int, alert RotationAlert) Option {
+	return func(s *Scheduler) {
+		s.rotationStore = store
+		s.rotationMaxAge = maxAge
+		s.rotationLimit = limit
+		s.rotationAlert = alert
+	}
+}
+
 func WithInterval(d time.Duration) Option {
 	return func(s *Scheduler) {
 		if d > 0 {
