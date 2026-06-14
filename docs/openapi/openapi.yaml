@@ -17215,6 +17215,12 @@ components:
         requested_model: { type: string }
         upstream_model: { type: [string, 'null'] }
         stream: { type: boolean, default: false }
+        ip_address:
+          type: [string, 'null']
+          description: 'Client IP captured at billing settlement; admin observability only (never exposed to the /v1/me usage list).'
+        user_agent:
+          type: [string, 'null']
+          description: 'Client User-Agent captured at billing settlement; admin observability only (never exposed to the /v1/me usage list).'
 
     UsageRecordList:
       x-huakai-spec-source: [docs/specs/observability-billing.md]

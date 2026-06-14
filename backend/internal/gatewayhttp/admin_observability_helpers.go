@@ -54,6 +54,7 @@ func mapUsageRow(r dbbilling.ListUsageRecordsRow) any {
 		"requested_model": r.RequestedModel, "upstream_model": upstreamModel,
 		"stream": r.Stream, "settlement_source": r.SettlementSource,
 		"pool_id": r.PoolID, "request_id": requestID, "trust_status": trustStatus,
+		"ip_address": r.IPAddress, "user_agent": r.UserAgent,
 	}
 }
 

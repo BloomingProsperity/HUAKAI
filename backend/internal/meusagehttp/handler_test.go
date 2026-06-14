@@ -321,6 +321,45 @@ func TestMeUsageExposesPerRequestTokenCounts(t *testing.T) {
 	}
 }
 
+// TestMeUsageDoesNotLeakClientIPOrUserAgent — PII boundary guard.
+//
+// The shared ListUsageRecordsRow now carries ip_address/user_agent (projected
+// into the ADMIN observability list as an audit close-loop). The user-facing
+// "me" usage mapper must NEVER surface these: a relay caller may not see the
+// client IP/UA captured at settlement. This test seeds DISTINCTIVE sentinels on
+// the row and asserts neither the sentinel nor any ip/ua JSON key appears in the
+// me response body.
+//
+// Discriminating: the sentinels ("203.0.113.7" / "probe-UA/1.0") never occur in
+// the legitimate me payload (model/cost/tokens/provider/verify_hint), so if the
+// me mapper ever copied either field through, the substring assertion goes red.
+// (Mutation-verified by adding the field to usageRecord + mapUsageRecord.)
+func TestMeUsageDoesNotLeakClientIPOrUserAgent(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
+	const sentinelIP = "203.0.113.7"
+	const sentinelUA = "probe-UA/1.0"
+	row.IPAddress = strPtr(sentinelIP)
+	row.UserAgent = strPtr(sentinelUA)
+	store := &usageStoreStub{rows: []dbbilling.ListUsageRecordsRow{row}}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage")
+	assertMeStatus(t, rec, http.StatusOK)
+	body := rec.Body.String()
+	if strings.Contains(body, sentinelIP) {
+		t.Fatalf("PII LEAK: me usage response exposed client ip %q; body=%s", sentinelIP, body)
+	}
+	if strings.Contains(body, sentinelUA) {
+		t.Fatalf("PII LEAK: me usage response exposed user agent %q; body=%s", sentinelUA, body)
+	}
+	if strings.Contains(body, "ip_address") || strings.Contains(body, "user_agent") {
+		t.Fatalf("PII LEAK: me usage response exposed an ip/ua JSON key; body=%s", body)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
 func invokeMeUsage(h http.HandlerFunc, target string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, target, strings.NewReader(""))
 	rec := httptest.NewRecorder()
