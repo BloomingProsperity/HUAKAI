@@ -33,12 +33,25 @@ type SchedulerTicker interface {
 	Stop()
 }
 
+// LeaderLock gates a single evaluation tick so that, across multiple gateway
+// replicas, only the leader fires alerts for a given tick — otherwise every
+// replica evaluates the same rules and emits duplicate notifications. OBS-193.
+type LeaderLock interface {
+	// TryAcquire is non-blocking: (true, release, nil) when this replica is the
+	// tick leader (caller must call release after evaluating), (false, nil, nil)
+	// when another replica holds it, or a non-nil error on a lock fault.
+	TryAcquire(ctx context.Context) (acquired bool, release func(), err error)
+}
+
 type SchedulerConfig struct {
 	Evaluator    RuleEvaluator
 	Store        EnabledRuleTenantLister
 	MetricSource MetricSource
 	Interval     time.Duration
 	NewTicker    func(time.Duration) SchedulerTicker
+	// LeaderLock is optional; nil = evaluate every tick (single-replica default,
+	// exact current behavior).
+	LeaderLock LeaderLock
 }
 
 type Scheduler struct {
@@ -47,6 +60,7 @@ type Scheduler struct {
 	metricSource MetricSource
 	interval     time.Duration
 	newTicker    func(time.Duration) SchedulerTicker
+	leaderLock   LeaderLock
 }
 
 func NewScheduler(cfg SchedulerConfig) *Scheduler {
@@ -64,6 +78,7 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		metricSource: cfg.MetricSource,
 		interval:     cfg.Interval,
 		newTicker:    cfg.NewTicker,
+		leaderLock:   cfg.LeaderLock,
 	}
 }
 
@@ -91,6 +106,20 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 func (s *Scheduler) evaluateOnce(ctx context.Context) {
+	// OBS-193: with a leader lock configured, only the replica that wins the
+	// non-blocking lock evaluates this tick — preventing duplicate alerts across
+	// replicas. On a lock fault we fail OPEN (evaluate anyway): a duplicate alert
+	// is better than silently dropping alerting.
+	if s.leaderLock != nil {
+		acquired, release, err := s.leaderLock.TryAcquire(ctx)
+		if err != nil {
+			logIfLive(ctx, "alerting leader-lock acquire failed; evaluating anyway", err)
+		} else if !acquired {
+			return
+		} else {
+			defer release()
+		}
+	}
 	tenantIDs, err := s.store.ListTenantsWithEnabledRules(ctx)
 	if err != nil {
 		logIfLive(ctx, "alerting scheduler list enabled tenants failed", err)

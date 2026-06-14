@@ -1234,6 +1234,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			AccountHealth: alertmetrics.NewPoolAccountHealthCounter(billingQueries),
 		}),
 		Interval: cfg.AlertingEvalInterval,
+		// OBS-193: only the replica that wins the advisory lock fires alerts for a
+		// given tick, so multi-replica deployments don't emit duplicate alerts.
+		LeaderLock: alerting.NewPostgresLeaderLock(pgPool),
 	})
 	rt.alertingEvalStop = startAlertingEvaluator(ctx, cfg, alertingScheduler, logger)
 
