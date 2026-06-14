@@ -15,7 +15,8 @@ SELECT
     ale.ledger_id AS audit_ledger_id,
     ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
     ale.hop_chain AS audit_hop_chain,
-    ale.model_chain AS audit_model_chain
+    ale.model_chain AS audit_model_chain,
+    ur.ip_address, ur.user_agent
 FROM usage_records ur
 JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
 LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
