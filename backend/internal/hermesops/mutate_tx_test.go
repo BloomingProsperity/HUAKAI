@@ -23,6 +23,12 @@ type txRecorder struct {
 	adminInsert    int
 	commitCount    int
 	rollbackCount  int
+	// rollbackLiveCtx counts rollbacks invoked with a NON-cancelled context.
+	// The orchestrator must roll back on an INDEPENDENT ctx, not the dead
+	// deadline ctx — otherwise the rollback itself is cancelled and the pool
+	// connection + advisory lock leak. A rollback seen with a cancelled ctx
+	// means that independence was lost.
+	rollbackLiveCtx int
 	// injected failures
 	toolCallErr error
 	adminErr    error
@@ -73,7 +79,13 @@ func (tx *fakeMutateTx) Commit(context.Context) error {
 	tx.rec.commitCount++
 	return tx.rec.commitErr
 }
-func (tx *fakeMutateTx) Rollback(context.Context) error { tx.rec.rollbackCount++; return nil }
+func (tx *fakeMutateTx) Rollback(ctx context.Context) error {
+	tx.rec.rollbackCount++
+	if ctx != nil && ctx.Err() == nil {
+		tx.rec.rollbackLiveCtx++
+	}
+	return nil
+}
 func (tx *fakeMutateTx) Begin(context.Context) (pgx.Tx, error) {
 	return nil, errors.New("nested tx unused")
 }

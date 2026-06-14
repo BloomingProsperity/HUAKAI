@@ -13,6 +13,7 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 )
 
 // txBeginner is the narrow pool surface the mutating orchestrator needs to open
@@ -81,12 +82,57 @@ type MutationAuditRecord struct {
 // fault, not a silent missing-audit.
 type MutateOrchestrator struct {
 	begin txBeginner
+	// sem caps process-wide mutating concurrency BELOW the pool MaxConns so a
+	// burst of mutations cannot exhaust the shared pgxpool / advisory-lock slots
+	// and brown out the core gateway. A nil sem (or a disabled one) is the legacy
+	// unbounded behavior.
+	sem *mutateguard.Semaphore
+	// txDeadline bounds a single mutation transaction (client-side ctx deadline +
+	// a server-side SET LOCAL statement_timeout). Zero is the disabled sentinel:
+	// no deadline, no statement_timeout — byte-for-byte legacy behavior.
+	txDeadline time.Duration
+	// acquireWait bounds how long Execute waits for a concurrency slot before
+	// returning ErrMutateBusy. Zero falls back to the parent ctx deadline only.
+	acquireWait time.Duration
+}
+
+// MutateOption configures the orchestrator additively. With no options the
+// orchestrator is byte-for-byte the legacy unbounded, no-deadline orchestrator
+// (every guard carries a disable sentinel).
+type MutateOption func(*MutateOrchestrator)
+
+// WithConcurrencyGuard caps concurrent mutations (acquired BEFORE BeginTx). A nil
+// or disabled Semaphore is a no-op (legacy unbounded). acquireWait bounds the
+// wait for a slot before ErrMutateBusy; zero uses the parent ctx deadline only.
+func WithConcurrencyGuard(sem *mutateguard.Semaphore, acquireWait time.Duration) MutateOption {
+	return func(o *MutateOrchestrator) {
+		o.sem = sem
+		o.acquireWait = acquireWait
+	}
+}
+
+// WithTxDeadline bounds a single mutation tx (client ctx deadline + server
+// statement_timeout). Zero/negative disables it (legacy: no deadline).
+func WithTxDeadline(d time.Duration) MutateOption {
+	return func(o *MutateOrchestrator) {
+		if d > 0 {
+			o.txDeadline = d
+		}
+	}
 }
 
 // NewMutateOrchestrator builds the orchestrator over a transaction beginner
-// (the pgx pool). A nil beginner makes Execute fail closed.
-func NewMutateOrchestrator(begin txBeginner) *MutateOrchestrator {
-	return &MutateOrchestrator{begin: begin}
+// (the pgx pool). A nil beginner makes Execute fail closed. With no options it is
+// byte-for-byte the legacy unbounded behavior; pass WithConcurrencyGuard /
+// WithTxDeadline to enable the additive S2 guards.
+func NewMutateOrchestrator(begin txBeginner, opts ...MutateOption) *MutateOrchestrator {
+	o := &MutateOrchestrator{begin: begin}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(o)
+		}
+	}
+	return o
 }
 
 // errAuditUnavailable is returned when the orchestrator has no transaction
@@ -103,6 +149,23 @@ var errAuditUnavailable = errors.New("hermesops: mutation audit transaction unav
 // fault with this sentinel, and only when rec.OwnTx is set; an in-tx tool's
 // commit fault rolls the mutation back atomically and stays mutation_failed.
 var ErrCommitAfterOwnTxMutation = errors.New("hermesops: orchestrator commit failed after own-tx mutation persisted")
+
+// ErrMutateBusy marks an acquire-timeout on the mutating concurrency cap: too
+// many mutations are already in flight and the bounded acquire window elapsed
+// before a slot freed. It is a clean back-pressure signal (mapped to HTTP 429
+// upstream), NOT a failed mutation — nothing was begun. Only returned when the
+// concurrency guard is enabled.
+var ErrMutateBusy = errors.New("hermesops: mutating concurrency saturated, retry")
+
+// ErrMutateTimeoutUncertain is the OWN-TX analogue of ErrCommitAfterOwnTxMutation
+// for the tx-deadline path: an own-tx tool (dlq_replay/renew_trigger) hit the tx
+// deadline AFTER its inner own-tx already committed. The mutation may have
+// persisted while the orchestrator audit rows roll back, so the outcome is
+// UNCERTAIN (reconciliation needed) and MUST NOT be reported as a clean
+// "rolled back"/mutation_failed. The HTTP layer maps it to the best-effort
+// error_class "mutate_timeout_uncertain". An in-tx tool's deadline rolls the
+// mutation back atomically and stays the timeout/mutation_failed default.
+var ErrMutateTimeoutUncertain = errors.New("hermesops: mutation tx deadline hit after own-tx mutation may have persisted")
 
 // IsOwnTxMutation reports whether a mutating tool runs its mutation in its OWN
 // separate transaction (committed internally before the orchestrator commit)
@@ -143,6 +206,18 @@ func (o *MutateOrchestrator) Execute(
 	if o == nil || o.begin == nil {
 		return ToolResult{}, errAuditUnavailable
 	}
+
+	// S2 (a) CONCURRENCY CAP: reserve a mutating slot BEFORE BeginTx so the cap
+	// bounds how many mutations HOLD a pool connection / advisory-lock slot at
+	// once (acquiring after BeginTx would already have taken the conn). A disabled
+	// guard is a no-op (legacy unbounded). On acquire-timeout return ErrMutateBusy
+	// clean — nothing was begun, so this is pure back-pressure, never a hang.
+	release, err := o.sem.Acquire(ctx, o.acquireWait)
+	if err != nil {
+		return ToolResult{}, fmt.Errorf("hermesops: %w: %w", ErrMutateBusy, err)
+	}
+	defer release()
+
 	tx, err := o.begin.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return ToolResult{}, fmt.Errorf("hermesops: begin mutation tx: %w", err)
@@ -150,37 +225,55 @@ func (o *MutateOrchestrator) Execute(
 	committed := false
 	defer func() {
 		if !committed {
+			// Roll back on its OWN independent ctx so a tripped tx deadline (mutCtx
+			// done) still lets the rollback run — releasing the conn + advisory lock.
 			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = tx.Rollback(rollbackCtx)
 		}
 	}()
 
+	// S2 (b) TX DEADLINE: bound THIS mutation tx with both a client-side ctx
+	// deadline (mutCtx, threaded through the lock/audit/mutate/commit below) and a
+	// server-side SET LOCAL statement_timeout. SET LOCAL is scoped to THIS tx only
+	// and auto-resets at tx end, so it never touches core-path connections. Zero
+	// deadline = disabled (mutCtx == ctx, no statement_timeout) — legacy behavior.
+	mutCtx := ctx
+	if o.txDeadline > 0 {
+		var cancel context.CancelFunc
+		mutCtx, cancel = context.WithTimeout(ctx, o.txDeadline)
+		defer cancel()
+		millis := o.txDeadline.Milliseconds()
+		if _, err := tx.Exec(mutCtx, "SET LOCAL statement_timeout = $1", millis); err != nil {
+			return ToolResult{}, fmt.Errorf("hermesops: set mutation statement_timeout: %w", err)
+		}
+	}
+
 	// L4: serialize concurrent mutations on the SAME target. The lock is held for
 	// the lifetime of this tx (released on commit/rollback), so a second operator
 	// or replica blocks until this mutation + audit commit or abort.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, lockKey); err != nil {
+	if _, err := tx.Exec(mutCtx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, lockKey); err != nil {
 		return ToolResult{}, fmt.Errorf("hermesops: acquire advisory lock: %w", err)
 	}
 
 	// L3: write + VERIFY the audit rows BEFORE the mutation. If either insert
 	// fails, we return here with the tx rolled back and the mutation never run.
-	if err := insertToolCallRow(ctx, tx, rec); err != nil {
+	if err := insertToolCallRow(mutCtx, tx, rec); err != nil {
 		return ToolResult{}, fmt.Errorf("hermesops: tool-call audit insert failed: %w", err)
 	}
-	if err := insertAdminAuditRow(ctx, tx, rec); err != nil {
+	if err := insertAdminAuditRow(mutCtx, tx, rec); err != nil {
 		return ToolResult{}, fmt.Errorf("hermesops: admin audit insert failed: %w", err)
 	}
 
 	// Mutation runs only after the audit rows are accepted by the database. The
 	// tx is threaded via context so a tool's Mutate can run tx-bound writes
 	// (e.g. provider_accounts.enabled flip) atomically with the audit rows.
-	result, mErr := mutate(withMutationTx(ctx, tx), tx)
+	result, mErr := mutate(withMutationTx(mutCtx, tx), tx)
 	if mErr != nil {
-		return ToolResult{}, mErr
+		return ToolResult{}, o.classifyMutateErr(rec, mErr)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(mutCtx); err != nil {
 		// The mutation already ran (mErr was nil). If this tool committed its
 		// mutation in its OWN transaction before this point, that mutation has
 		// persisted even though this commit (carrying the audit rows) failed —
@@ -194,6 +287,30 @@ func (o *MutateOrchestrator) Execute(
 	}
 	committed = true
 	return result, nil
+}
+
+// classifyMutateErr wraps a mutate()-phase error for the tx-deadline path.
+//
+// The dangerous case it guards (correctness constraint): an OWN-TX tool
+// (dlq_replay/renew_trigger) whose inner own-tx ALREADY COMMITTED before the
+// orchestrator's tx deadline (mutCtx) tripped a later step. The mutation may
+// have persisted, so the deadline error MUST be classified as
+// ErrMutateTimeoutUncertain (reconciliation needed) — NEVER as a clean rolled-back
+// mutation_failed, which would falsely claim the replay/rotate did not happen.
+//
+// This only fires when (1) the tx deadline is enabled, (2) the error is a
+// context deadline, and (3) the tool is own-tx. An in-tx tool's deadline rolls
+// the mutation back atomically (it is part of THIS tx), so it is returned
+// unwrapped and stays the timeout/mutation_failed default upstream. A non-deadline
+// mutate error (a real tool failure) is also returned unchanged.
+func (o *MutateOrchestrator) classifyMutateErr(rec MutationAuditRecord, mErr error) error {
+	if o.txDeadline <= 0 || !rec.OwnTx {
+		return mErr
+	}
+	if !errors.Is(mErr, context.DeadlineExceeded) {
+		return mErr
+	}
+	return fmt.Errorf("hermesops: own-tx mutation deadline: %w: %w", ErrMutateTimeoutUncertain, mErr)
 }
 
 // insertToolCallRow appends the sanitized hermes_tool_calls row on the tx.

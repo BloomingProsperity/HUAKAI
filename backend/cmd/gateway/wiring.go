@@ -53,6 +53,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
@@ -212,7 +213,12 @@ type deps struct {
 	hermesModuleSource *moduleSource
 	// hermesMutator runs the WAVE H4 mutating-tool atomic-audit + advisory-lock
 	// transaction. Nil when the pool is unset (mutating tools then fail closed).
+	// Built with the S2 concurrency cap + tx deadline orchestrator options.
 	hermesMutator *hermesops.MutateOrchestrator
+	// hermesMutateRateLimiter is the S2 (c) per-operator-token sliding-window
+	// limiter, enforced in the mutate handler. Nil/disabled when the rate knob is 0
+	// (legacy unbounded). Mounted only when the admin-only mutator path is active.
+	hermesMutateRateLimiter *mutateguard.RateLimiter
 	// hermesMutatingEnabled is the runtime kill-switch (KNOB A) for ALL Hermes
 	// mutating tools. Default true (HUAKAI_HERMES_MUTATING_ENABLED). When false the
 	// mutating branch of tool-execute is refused (403 hermes_mutating_disabled) and
@@ -744,6 +750,19 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		logger.Warn("Hermes LLM conversational tool loop disabled at runtime — no tool catalog is injected and the internal tool-execute callback is refused; plain chat keeps streaming",
 			zap.String("knob", hermesLLMToolLoopEnabledEnv+"=false"))
 	}
+	// S2: bound the Hermes MUTATING path (concurrency cap + tx deadline +
+	// per-operator-token rate limit). Defaults are conservative; every knob carries
+	// a disable sentinel so an unset deployment is byte-for-byte legacy behavior.
+	hermesMutateGuard, err := hermesMutateGuardConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("Hermes mutating-path guards (S2)",
+		zap.Int("max_concurrency", hermesMutateGuard.maxConcurrency),
+		zap.Duration("acquire_wait", hermesMutateGuard.acquireWait),
+		zap.Duration("tx_deadline", hermesMutateGuard.txDeadline),
+		zap.Int("rate_per_token", hermesMutateGuard.ratePerToken),
+		zap.Duration("rate_window", hermesMutateGuard.rateWindow))
 	outboxStore := obsoutbox.NewPostgresOutbox(pgPool)
 	opts, err := loadRuntimeOptions(logger)
 	if err != nil {
@@ -918,7 +937,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealth:  channelHealthService,
 		dlqStore:       dlqStore,
 		dlqService:     dlqService,
-	})
+	}, hermesMutateGuard.orchestratorOptions()...)
+	// S2 (c): the per-operator-token rate limiter, enforced in the mutate handler.
+	hermesMutateRateLimiter := hermesMutateGuard.newRateLimiter()
 	// WAVE H3b: the in-process session-binding store shared by the bridge (writes
 	// the operator binding at chat start) and the internal tool handler (reads it
 	// to authorize each conversational tool call).
@@ -1155,6 +1176,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesToolRegistry:       hermesToolRegistry,
 		hermesToolCalls:          hermesToolCalls,
 		hermesMutator:            hermesMutator,
+		hermesMutateRateLimiter:  hermesMutateRateLimiter,
 		hermesMutatingEnabled:    hermesMutatingEnabled,
 		hermesToolLoopEnabled:    hermesToolLoopEnabled,
 		hermesSessionBindings:    hermesSessionBindings,
