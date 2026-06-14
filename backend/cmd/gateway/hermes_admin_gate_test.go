@@ -99,20 +99,50 @@ func TestHermesAdminOnlyFalsePreservesLegacyEndUserPath(t *testing.T) {
 	}
 }
 
-func TestHermesAdminOnlyFromEnvDefaultsTrue(t *testing.T) {
-	// Regression: the flag must default to admin-only (true) when unset, and
-	// reject a malformed value rather than silently defaulting. Mutation:
-	// flipping the default to false would silently re-expose Hermes to end users.
+func TestHermesAdminOnlyFromEnvFailClosed(t *testing.T) {
+	// S10: the resolver is fail-closed. Default (unset) and a malformed value
+	// behave as before; the security change is that HUAKAI_HERMES_ADMIN_ONLY=false
+	// ALONE no longer drops to legacy customer-key auth — it requires the explicit
+	// second opt-in, and is refused in production.
+
+	// Default unset -> admin-only. Mutation: default to false -> RED.
 	t.Setenv(hermesAdminOnlyEnv, "")
-	if v, err := hermesAdminOnlyFromEnv(); err != nil || !v {
-		t.Fatalf("default v=%v err=%v want true,nil", v, err)
+	t.Setenv(hermesAllowLegacyUserAuthEnv, "")
+	if v, err := hermesAdminOnlyFromEnv(nil); err != nil || !v {
+		t.Fatalf("unset v=%v err=%v want true,nil", v, err)
 	}
+
+	// =false WITHOUT the second opt-in -> STILL admin-only (the fail-closed core).
+	// Mutation: drop the opt-in requirement (return ParseBool(raw)) -> v=false -> RED.
 	t.Setenv(hermesAdminOnlyEnv, "false")
-	if v, err := hermesAdminOnlyFromEnv(); err != nil || v {
-		t.Fatalf("false v=%v err=%v want false,nil", v, err)
+	t.Setenv(hermesAllowLegacyUserAuthEnv, "")
+	if v, err := hermesAdminOnlyFromEnv(nil); err != nil || !v {
+		t.Fatalf("=false without opt-in v=%v err=%v want true,nil (fail-closed)", v, err)
 	}
+	// A truthy-but-not-"true" opt-in value does not count.
+	t.Setenv(hermesAllowLegacyUserAuthEnv, "1")
+	if v, err := hermesAdminOnlyFromEnv(nil); err != nil || !v {
+		t.Fatalf("opt-in must be exactly true; got v=%v err=%v want true,nil", v, err)
+	}
+
+	// =false WITH the second opt-in (non-production) -> legacy mode (rollback works).
+	// Mutation: drop the both-opt-ins branch -> never reaches false -> RED.
+	t.Setenv(hermesAllowLegacyUserAuthEnv, "true")
+	if v, err := hermesAdminOnlyFromEnv(nil); err != nil || v {
+		t.Fatalf("both opt-ins v=%v err=%v want false,nil (legacy enabled)", v, err)
+	}
+
+	// Both opt-ins + production -> boot refusal. Mutation: delete the production
+	// refusal -> err is nil -> RED.
+	t.Setenv("HUAKAI_RELEASE_MODE", "production")
+	if _, err := hermesAdminOnlyFromEnv(nil); err == nil {
+		t.Fatalf("legacy mode in production must be a boot error, got nil")
+	}
+	t.Setenv("HUAKAI_RELEASE_MODE", "")
+
+	// Malformed value -> fail-loud boot error (unchanged).
 	t.Setenv(hermesAdminOnlyEnv, "not-a-bool")
-	if _, err := hermesAdminOnlyFromEnv(); err == nil {
+	if _, err := hermesAdminOnlyFromEnv(nil); err == nil {
 		t.Fatalf("malformed value must be a boot error, got nil")
 	}
 }

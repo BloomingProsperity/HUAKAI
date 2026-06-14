@@ -711,7 +711,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	} else {
 		logger.Info("Hermes runner: disabled (env missing)")
 	}
-	hermesAdminOnly, err := hermesAdminOnlyFromEnv()
+	hermesAdminOnly, err := hermesAdminOnlyFromEnv(logger)
 	if err != nil {
 		return nil, err
 	}
@@ -1401,20 +1401,53 @@ func loadHermesInternalSharedSecret() ([]byte, error) {
 // hermesAdminOnlyEnv re-gates Hermes routes to ADMIN/OPERATOR-only auth.
 const hermesAdminOnlyEnv = "HUAKAI_HERMES_ADMIN_ONLY"
 
-// hermesAdminOnlyFromEnv reads HUAKAI_HERMES_ADMIN_ONLY. Default is TRUE
-// (admin-only); set to a false-y boolean to restore the legacy end-user
-// APIKeyMiddleware path. Mirrors config.envBoolDefault's fail-loud parsing:
-// an unparseable value is a boot error rather than a silent default.
-func hermesAdminOnlyFromEnv() (bool, error) {
+// hermesAllowLegacyUserAuthEnv is the explicit SECOND opt-in required to mount
+// Hermes behind the legacy customer-key path. Without it an
+// HUAKAI_HERMES_ADMIN_ONLY=false is ignored and Hermes stays admin-only — a
+// single env flip can no longer silently expose the LLM ops-assistant to
+// ordinary customer API keys.
+const hermesAllowLegacyUserAuthEnv = "HUAKAI_HERMES_ALLOW_LEGACY_USER_AUTH"
+
+// hermesAdminOnlyFromEnv resolves whether Hermes is admin/operator-only. It is
+// FAIL-CLOSED: the default (unset), any truthy value, and even an explicit
+// HUAKAI_HERMES_ADMIN_ONLY=false WITHOUT the second opt-in
+// HUAKAI_HERMES_ALLOW_LEGACY_USER_AUTH=true all resolve to admin-only. Legacy
+// end-user (customer-key) auth is entered ONLY when BOTH opt-ins are present,
+// and is refused outright in production (HUAKAI_RELEASE_MODE=production),
+// mirroring validateProductionCaptchaConfig's startup gate. A malformed
+// HUAKAI_HERMES_ADMIN_ONLY is still a fail-loud boot error. A nil logger is
+// tolerated (warnings skipped), matching logCaptchaConfig.
+func hermesAdminOnlyFromEnv(logger *zap.Logger) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(hermesAdminOnlyEnv))
 	if raw == "" {
 		return true, nil
 	}
-	v, err := strconv.ParseBool(raw)
+	wantAdminOnly, err := strconv.ParseBool(raw)
 	if err != nil {
 		return false, fmt.Errorf("%s must be a boolean, got %q: %w", hermesAdminOnlyEnv, raw, err)
 	}
-	return v, nil
+	if wantAdminOnly {
+		return true, nil
+	}
+	// Explicitly false: legacy customer-key auth requested. Require the second
+	// opt-in; otherwise stay admin-only (fail-closed) and warn loudly.
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv(hermesAllowLegacyUserAuthEnv)), "true") {
+		if logger != nil {
+			logger.Warn("HUAKAI_HERMES_ADMIN_ONLY=false ignored — legacy end-user auth for Hermes requires an explicit second opt-in; staying admin-only",
+				zap.String("required_optin", hermesAllowLegacyUserAuthEnv+"=true"))
+		}
+		return true, nil
+	}
+	// Both opt-ins present → legacy mode. Never permitted in production.
+	if releaseModeProduction() {
+		return false, fmt.Errorf("refusing to start: Hermes legacy end-user auth (%s=false + %s=true) exposes the LLM ops-assistant to customer API keys and is forbidden when HUAKAI_RELEASE_MODE=production",
+			hermesAdminOnlyEnv, hermesAllowLegacyUserAuthEnv)
+	}
+	if logger != nil {
+		logger.Warn("Hermes mounted behind LEGACY end-user (customer API key) auth — the LLM ops-assistant is reachable by customer keys; admin-only is the safe default",
+			zap.String("enabled_by", hermesAdminOnlyEnv+"=false + "+hermesAllowLegacyUserAuthEnv+"=true"))
+	}
+	return false, nil
 }
 
 // installAnthropicClaudeAIOAuthMimicryExchanger 把 default ExchangerRegistry
