@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/realtokenizer"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
@@ -82,7 +83,7 @@ type pricingRatioResolverWithSignal interface {
 
 func (ex *chatExecution) predictedCompletionCost() (decimal.Decimal, error) {
 	cost, err := ex.completionCost(completionUsageForCost{
-		InputTokens:  estimateInputTokens(ex.body),
+		InputTokens:  estimateInputTokens(ex.req.Model, ex.body),
 		OutputTokens: estimateOutputTokens(ex.req),
 	})
 	if err != nil {
@@ -403,7 +404,19 @@ func (v completionRateVector) flatRateFallback() pricingeval.FlatRateFallback {
 	}
 }
 
-func estimateInputTokens(body []byte) int {
+// estimateInputTokens produces the pre-request input-token estimate that feeds the
+// predicted cost and the quota reservation headroom (never the authoritative
+// charge, which is the provider-reported usage). With the real tokenizer on
+// (default), OpenAI-family text is counted with tiktoken and multimodal blobs are
+// capped; HUAKAI_REAL_TOKENIZER_ENABLED=false restores the legacy byte estimate.
+func estimateInputTokens(model string, body []byte) int {
+	if realtokenizer.Enabled() {
+		return realtokenizer.InputTokens(model, body)
+	}
+	return legacyEstimateInputTokens(body)
+}
+
+func legacyEstimateInputTokens(body []byte) int {
 	n := len(strings.TrimSpace(string(body)))
 	if n <= 0 {
 		return 1

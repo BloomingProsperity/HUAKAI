@@ -529,7 +529,7 @@ func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing
 		RequestedModel:     ex.req.Model,
 		// W5:输入 token 估算喂进 token-per-window 配额预检(估算口径与计费预扣
 		// estimateInputTokens 一致);未配 token 策略时引擎按 observe 跳过,零影响。
-		ReservedTokens: int64(estimateInputTokens(ex.body)),
+		ReservedTokens: int64(estimateInputTokens(ex.req.Model, ex.body)),
 		PredictedCost:  predictedCost,
 		At:             time.Now().UTC(),
 	}))

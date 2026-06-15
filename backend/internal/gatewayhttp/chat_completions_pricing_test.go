@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/realtokenizer"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
@@ -1424,5 +1425,38 @@ func TestToolSurcharge_ConfiguredFires(t *testing.T) {
 	if !got.Total.Equal(wantTotal) {
 		t.Fatalf("Total=%s want tokenCost(%s) + surcharge(%s) = %s MUTATION: removing applyToolCallSurcharge call site => Total stays at tokenCost => RED",
 			got.Total, tokenOnlyCost.Total, expectedSurcharge, wantTotal)
+	}
+}
+
+// estimateInputTokens must route the pre-request estimate through the real
+// tokenizer (default on) so an OpenAI model's predicted cost / quota reservation
+// reflect tiktoken, while the legacy path stays the byte estimate.
+// MUTATION: drop the realtokenizer.Enabled() branch (always legacy) and the
+// gpt-4o assertion goes RED; restore the (n+3)/4 in legacy and the legacy
+// assertion guards it.
+func TestEstimateInputTokens_RoutesThroughRealTokenizer(t *testing.T) {
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"the quick brown fox jumps over the lazy dog"}]}`)
+
+	if !realtokenizer.Enabled() {
+		t.Skip("real tokenizer disabled in this environment")
+	}
+	got := estimateInputTokens("gpt-4o", body)
+	if want := realtokenizer.InputTokens("gpt-4o", body); got != want {
+		t.Fatalf("estimateInputTokens(gpt-4o)=%d; want realtokenizer %d", got, want)
+	}
+	// The real estimate must differ from the legacy byte estimate for this body,
+	// otherwise the wiring couldn't be observed.
+	if legacy := legacyEstimateInputTokens(body); got == legacy {
+		t.Fatalf("real estimate %d equals legacy %d; non-discriminating fixture", got, legacy)
+	}
+}
+
+func TestLegacyEstimateInputTokens_ByteHeuristic(t *testing.T) {
+	body := []byte("abcdefgh") // 8 bytes -> (8+3)/4 = 2
+	if got := legacyEstimateInputTokens(body); got != 2 {
+		t.Fatalf("legacyEstimateInputTokens=%d want 2", got)
+	}
+	if got := legacyEstimateInputTokens([]byte("   ")); got != 1 {
+		t.Fatalf("legacy floor=%d want 1 for whitespace-only", got)
 	}
 }

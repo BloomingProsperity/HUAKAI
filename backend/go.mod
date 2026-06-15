@@ -2,8 +2,6 @@ module github.com/BloomingProsperity/HUAKAI
 
 go 1.25.0
 
-toolchain go1.25.11
-
 require (
 	github.com/andybalholm/brotli v1.0.6
 	github.com/go-chi/chi/v5 v5.1.0
@@ -15,6 +13,7 @@ require (
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/shopspring/decimal v1.4.0
+	github.com/tiktoken-go/tokenizer v0.7.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.65.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
@@ -27,6 +26,7 @@ require (
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
