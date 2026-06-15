@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -86,6 +87,7 @@ func TestFrontendWiring(t *testing.T) {
 
 	var sessionToken string // captured by the login subtest, consumed downstream
 	var createdKey string   // hk_ plaintext from the api-keys subtest
+	var createdKeyID int64  // its api_key_id (for the usage-summary wire)
 
 	// ---- MODULE: login page (register → login → me) ----
 	t.Run("login_page_auth_ring", func(t *testing.T) {
@@ -160,6 +162,9 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("create api-key: plaintext %q lacks hk_ prefix", pt)
 		}
 		createdKey = pt
+		if idf, ok := obj["api_key_id"].(float64); ok {
+			createdKeyID = int64(idf)
+		}
 
 		// list. Frontend reads { api_keys: [...], count }.
 		st, body, list := doJSON(t, ctx, http.MethodGet, base+"/v1/api-keys", sessionToken, nil)
@@ -183,6 +188,21 @@ func TestFrontendWiring(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("list api-keys: created key not found in list; body=%s", body)
+		}
+
+		// Per-key usage summary — the api-keys page row-expand panel calls
+		// GET /v1/me/keys/{id}/usage-summary (SESSION auth). Reads api_key_id/total_cost/request_count.
+		if createdKeyID != 0 {
+			st, body, sum := doJSON(t, ctx, http.MethodGet,
+				fmt.Sprintf("%s/v1/me/keys/%d/usage-summary", base, createdKeyID), sessionToken, nil)
+			if st != http.StatusOK {
+				t.Fatalf("usage-summary expected 200; got %d body=%s", st, body)
+			}
+			for _, f := range []string{"api_key_id", "total_cost", "request_count"} {
+				if _, ok := sum[f]; !ok {
+					t.Fatalf("usage-summary missing %q (api-keys expand panel reads it); body=%s", f, body)
+				}
+			}
 		}
 	})
 
@@ -223,6 +243,21 @@ func TestFrontendWiring(t *testing.T) {
 		}
 		if _, ok := ts["period"]; !ok {
 			t.Fatalf("time-series: missing `period`; body=%s", body)
+		}
+
+		// CSV export — the usage page's 导出 button hits /v1/me/usage/export.csv
+		// (SESSION auth, account-scoped — NOT the api-key path). Assert 200.
+		exReq, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+			base+"/v1/me/usage/export.csv?format=csv&from="+from+"&to="+to, nil)
+		exReq.Header.Set("Authorization", "Bearer "+sessionToken)
+		exResp, err := http.DefaultClient.Do(exReq)
+		if err != nil {
+			t.Fatalf("export.csv: %v", err)
+		}
+		defer exResp.Body.Close()
+		if exResp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(exResp.Body)
+			t.Fatalf("/v1/me/usage/export.csv expected 200; got %d body=%s", exResp.StatusCode, raw)
 		}
 	})
 

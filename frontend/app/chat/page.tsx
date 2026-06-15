@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Eraser,
   KeyRound,
   Loader2,
   RefreshCw,
@@ -19,21 +20,16 @@ import { listModels, type ModelObject } from '@/lib/api/models';
 import { parseSSEStream } from '@/lib/sse';
 import { ApiError } from '@/lib/api/client';
 import { friendlyMessage } from '@/lib/api/errors';
-import type { APIError, UsageBlock } from '@/lib/api/types';
+import type { APIError, ChatMessage, UsageBlock } from '@/lib/api/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { MessageBubble } from './message-bubble';
+import { ParamsPanel } from './params-panel';
+import type { ChatTurn, ParamEnabled, SamplingParams, TabMode } from './types';
 
 const API_KEY_STORAGE = 'huakai_api_key';
-
-// 控制台支持的两种协议 tab
-type TabMode = 'openai' | 'anthropic';
 
 // 拉取失败时的回落模型（手填下拉的预置项）
 const FALLBACK_OPENAI_MODELS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'];
@@ -42,6 +38,15 @@ const FALLBACK_ANTHROPIC_MODELS = [
   'claude-3-5-haiku-20241022',
   'claude-3-opus-20240229',
 ];
+
+const DEFAULT_PARAMS: SamplingParams = { temperature: 0.7, maxTokens: 4096, topP: 1 };
+const DEFAULT_ENABLED: ParamEnabled = { temperature: true, maxTokens: true, topP: false };
+
+let turnSeq = 0;
+function newTurnId(): string {
+  turnSeq += 1;
+  return `t-${Date.now()}-${turnSeq}`;
+}
 
 // 把 chat.ts 抛出的 `HTTP <status>: <body>` 字符串还原成 ApiError，
 // 以便 friendlyMessage 按 code/status 翻译；解析不出来则原样返回。
@@ -79,24 +84,25 @@ export default function PlaygroundPage() {
   const [modelsError, setModelsError] = useState('');
   const [model, setModel] = useState('');
 
-  // 表单
+  // 会话
   const [systemPrompt, setSystemPrompt] = useState('');
-  const [userMessage, setUserMessage] = useState('');
+  const [input, setInput] = useState('');
   const [streamEnabled, setStreamEnabled] = useState(true);
-
-  // 响应
-  const [responseText, setResponseText] = useState('');
-  const [usage, setUsage] = useState<UsageBlock | null>(null);
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // 采样参数
+  const [params, setParams] = useState<SamplingParams>(DEFAULT_PARAMS);
+  const [enabled, setEnabled] = useState<ParamEnabled>(DEFAULT_ENABLED);
+
   const abortRef = useRef<AbortController | null>(null);
-  // 用 ref 暂存流式 usage，保证 error/abort 路径也能 commit
-  const pendingUsageRef = useRef<UsageBlock | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // 初次加载：从 localStorage 读 hk_ key
   useEffect(() => {
-    const stored = typeof window !== 'undefined' ? localStorage.getItem(API_KEY_STORAGE) ?? '' : '';
+    const stored =
+      typeof window !== 'undefined' ? localStorage.getItem(API_KEY_STORAGE) ?? '' : '';
     setApiKey(stored);
     setKeyLoaded(true);
   }, []);
@@ -108,7 +114,6 @@ export default function PlaygroundPage() {
     try {
       const list = await listModels();
       setModels(list);
-      // 若当前选中的 model 不在新列表里，重置为首个
       setModel((prev) => {
         if (prev && list.some((m) => m.id === prev)) return prev;
         return list.length > 0 ? list[0].id : prev;
@@ -130,10 +135,13 @@ export default function PlaygroundPage() {
       setModels([]);
       setModelsError('');
     }
-    // 仅在 key 就绪/变化时触发（apiKey 变化由 onBlur 持久化驱动）
   }, [keyLoaded, apiKey, fetchModels]);
 
-  // 持久化 hk_ key
+  // 新增/更新消息时滚到底部
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+  }, [turns]);
+
   function persistKey(next: string) {
     setApiKey(next);
     if (typeof window !== 'undefined') {
@@ -142,14 +150,10 @@ export default function PlaygroundPage() {
     }
   }
 
-  // 切 tab：清结果，按需把 model 重置成对应回落首项（若拉取列表为空）
   function switchTab(t: TabMode) {
-    if (t === tab) return;
+    if (t === tab || loading) return;
     setTab(t);
-    setResponseText('');
-    setUsage(null);
     setError('');
-    // 列表为空时给个对应协议的回落默认值
     if (models.length === 0) {
       setModel(t === 'openai' ? FALLBACK_OPENAI_MODELS[0] : FALLBACK_ANTHROPIC_MODELS[0]);
     }
@@ -159,51 +163,114 @@ export default function PlaygroundPage() {
   const fallbackModels = tab === 'openai' ? FALLBACK_OPENAI_MODELS : FALLBACK_ANTHROPIC_MODELS;
   const usingRealModels = models.length > 0;
   const modelOptions = usingRealModels ? models.map((m) => m.id) : fallbackModels;
+  const selectedModel = models.find((m) => m.id === model);
 
-  async function handleSend() {
-    if (!userMessage.trim() || !model.trim()) return;
+  function updateTurn(id: string, patch: Partial<ChatTurn>) {
+    setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }
+
+  // 把 UI 轮次序列翻译成请求 messages（system 提示在 OpenAI 走 messages 首项，
+  // Anthropic 走顶层 system 字段；见各自 send 实现）。
+  function buildHistoryMessages(history: ChatTurn[]): ChatMessage[] {
+    return history.map((t) => ({ role: t.role, content: t.content }));
+  }
+
+  // 核心发送：把 history（已含本轮 user）发出，回写到 assistantId 这条占位助手轮。
+  async function runCompletion(history: ChatTurn[], assistantId: string) {
     setLoading(true);
     setError('');
-    setResponseText('');
-    setUsage(null);
-    pendingUsageRef.current = null;
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const startedAt = Date.now();
+    const pendingUsage: { current: UsageBlock | null } = { current: null };
 
     try {
       if (tab === 'openai') {
-        await sendOpenAI(ctrl.signal);
+        await sendOpenAI(history, assistantId, ctrl.signal, pendingUsage);
       } else {
-        await sendAnthropic(ctrl.signal);
+        await sendAnthropic(history, assistantId, ctrl.signal, pendingUsage);
       }
     } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') return;
-      setError(toFriendly(err));
+      if (err instanceof Error && err.name === 'AbortError') {
+        updateTurn(assistantId, { durationMs: Date.now() - startedAt });
+        return;
+      }
+      const msg = toFriendly(err);
+      setError(msg);
+      updateTurn(assistantId, { error: msg, durationMs: Date.now() - startedAt });
     } finally {
-      if (pendingUsageRef.current) setUsage(pendingUsageRef.current);
+      updateTurn(assistantId, {
+        ...(pendingUsage.current ? { usage: pendingUsage.current } : {}),
+        durationMs: Date.now() - startedAt,
+      });
       setLoading(false);
     }
   }
 
-  // OpenAI Chat Completions
-  async function sendOpenAI(signal: AbortSignal) {
+  async function handleSend() {
+    if (!input.trim() || !model.trim() || loading) return;
+    const userTurn: ChatTurn = { id: newTurnId(), role: 'user', content: input.trim() };
+    const assistantTurn: ChatTurn = { id: newTurnId(), role: 'assistant', content: '' };
+    const history = [...turns, userTurn];
+    setTurns([...history, assistantTurn]);
+    setInput('');
+    await runCompletion(history, assistantTurn.id);
+  }
+
+  // 重答：丢弃该助手轮之后所有轮次，用其之前的历史（截至上一条 user）重新生成。
+  async function handleRegenerate(assistantId: string) {
+    if (loading) return;
+    const idx = turns.findIndex((t) => t.id === assistantId);
+    if (idx < 0) return;
+    const history = turns.slice(0, idx).filter((t) => t.content || t.role === 'user');
+    if (history.length === 0) return;
+    const fresh: ChatTurn = { id: newTurnId(), role: 'assistant', content: '' };
+    const next = [...turns.slice(0, idx), fresh];
+    setTurns(next);
+    await runCompletion(history, fresh.id);
+  }
+
+  function handleDelete(id: string) {
+    if (loading) return;
+    setTurns((prev) => prev.filter((t) => t.id !== id));
+  }
+
+  function handleClear() {
+    if (loading) return;
+    setTurns([]);
+    setError('');
+  }
+
+  // OpenAI Chat Completions：system 提示作为 messages 首项透传。
+  async function sendOpenAI(
+    history: ChatTurn[],
+    assistantId: string,
+    signal: AbortSignal,
+    pendingUsage: { current: UsageBlock | null },
+  ) {
     const body = {
       model,
       messages: [
-        ...(systemPrompt.trim() ? [{ role: 'system' as const, content: systemPrompt.trim() }] : []),
-        { role: 'user' as const, content: userMessage.trim() },
+        ...(systemPrompt.trim()
+          ? [{ role: 'system' as const, content: systemPrompt.trim() }]
+          : []),
+        ...buildHistoryMessages(history),
       ],
       stream: streamEnabled,
-      max_tokens: 4096,
+      ...(enabled.temperature ? { temperature: params.temperature } : {}),
+      ...(enabled.maxTokens ? { max_tokens: params.maxTokens } : {}),
+      ...(enabled.topP ? { top_p: params.topP } : {}),
     };
 
     if (!streamEnabled) {
       const res = await postChatCompletionsJSON(body, signal);
       const choice = res.choices?.[0] as { message?: { content?: unknown } } | undefined;
       const content = choice?.message?.content ?? '';
-      setResponseText(typeof content === 'string' ? content : JSON.stringify(content));
-      if (res.usage) setUsage(res.usage);
+      updateTurn(assistantId, {
+        content: typeof content === 'string' ? content : JSON.stringify(content),
+      });
+      if (res.usage) pendingUsage.current = res.usage;
       return;
     }
 
@@ -222,11 +289,10 @@ export default function PlaygroundPage() {
           const delta = chunk?.choices?.[0]?.delta?.content;
           if (typeof delta === 'string') {
             accumulated += delta;
-            setResponseText(accumulated);
+            updateTurn(assistantId, { content: accumulated });
           }
-          // OpenAI stream_options.include_usage 最后一帧带 usage；写入 ref 供 finally 提交
           if (chunk?.usage) {
-            pendingUsageRef.current = {
+            pendingUsage.current = {
               input_tokens: chunk.usage.prompt_tokens ?? 0,
               output_tokens: chunk.usage.completion_tokens ?? 0,
             };
@@ -237,17 +303,28 @@ export default function PlaygroundPage() {
       },
       signal,
       undefined,
-      (err) => setError(toFriendly(err)),
+      (err) => {
+        const msg = toFriendly(err);
+        setError(msg);
+        updateTurn(assistantId, { error: msg });
+      },
     );
   }
 
-  // Anthropic Messages
-  async function sendAnthropic(signal: AbortSignal) {
+  // Anthropic Messages：system 走顶层字段；多轮 messages 透传（仅 user/assistant）。
+  async function sendAnthropic(
+    history: ChatTurn[],
+    assistantId: string,
+    signal: AbortSignal,
+    pendingUsage: { current: UsageBlock | null },
+  ) {
     const body = {
       model,
-      max_tokens: 4096,
-      messages: [{ role: 'user' as const, content: userMessage.trim() }],
+      max_tokens: enabled.maxTokens ? params.maxTokens : 4096,
+      messages: buildHistoryMessages(history),
       ...(systemPrompt.trim() ? { system: systemPrompt.trim() } : {}),
+      ...(enabled.temperature ? { temperature: params.temperature } : {}),
+      ...(enabled.topP ? { top_p: params.topP } : {}),
       stream: streamEnabled,
     };
 
@@ -255,8 +332,8 @@ export default function PlaygroundPage() {
       const res = await postAnthropicMessagesJSON(body, signal);
       const blocks = (res.content ?? []) as Array<{ type?: string; text?: string }>;
       const text = blocks.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('');
-      setResponseText(text);
-      if (res.usage) setUsage(res.usage);
+      updateTurn(assistantId, { content: text });
+      if (res.usage) pendingUsage.current = res.usage;
       return;
     }
 
@@ -285,7 +362,7 @@ export default function PlaygroundPage() {
           if (evtType === 'content_block_delta') {
             if (data?.delta?.type === 'text_delta') {
               accumulated += data.delta.text ?? '';
-              setResponseText(accumulated);
+              updateTurn(assistantId, { content: accumulated });
             }
           } else if (evtType === 'message_start') {
             const u = data?.message?.usage;
@@ -296,13 +373,16 @@ export default function PlaygroundPage() {
                 cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
                 cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
               };
-              pendingUsageRef.current = localUsage;
+              pendingUsage.current = localUsage;
             }
           } else if (evtType === 'message_delta') {
             const u = data?.usage;
             if (u) {
-              localUsage = { ...localUsage, output_tokens: u.output_tokens ?? localUsage.output_tokens };
-              pendingUsageRef.current = localUsage;
+              localUsage = {
+                ...localUsage,
+                output_tokens: u.output_tokens ?? localUsage.output_tokens,
+              };
+              pendingUsage.current = localUsage;
             }
           }
         } catch {
@@ -311,7 +391,11 @@ export default function PlaygroundPage() {
       },
       signal,
       undefined,
-      (err) => setError(toFriendly(err)),
+      (err) => {
+        const msg = toFriendly(err);
+        setError(msg);
+        updateTurn(assistantId, { error: msg });
+      },
     );
   }
 
@@ -320,9 +404,12 @@ export default function PlaygroundPage() {
     setLoading(false);
   }
 
-  const totalTokens = usage
-    ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
-    : 0;
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void handleSend();
+    }
+  }
 
   const cardCls =
     'border-accent-200 bg-white shadow-card dark:border-accent-800 dark:bg-accent-900/70';
@@ -345,7 +432,7 @@ export default function PlaygroundPage() {
           >
             API Keys
           </a>
-          页创建 hk_ 密钥 → 这里粘贴 → 选模型 → 发送。Playground 用 hk_ key 直连推理端点，与登录会话分离。
+          页创建 hk_ 密钥 → 这里粘贴 → 选模型 → 多轮对话。Playground 用 hk_ key 直连推理端点，与登录会话分离。
         </p>
       </section>
 
@@ -398,99 +485,105 @@ export default function PlaygroundPage() {
         </CardContent>
       </Card>
 
-      {/* 协议 tab + 模型 + 表单 */}
-      <Card className={cardCls}>
-        <CardContent className="space-y-4 p-5">
-          {/* tab 切换 */}
-          <div className="inline-flex rounded-lg border border-accent-200 bg-accent-50 p-1 dark:border-accent-800 dark:bg-accent-950/60">
-            {(['openai', 'anthropic'] as TabMode[]).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => switchTab(t)}
-                disabled={loading}
-                className={cn(
-                  'rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed',
-                  tab === t
-                    ? 'bg-primary-600 text-white shadow-sm'
-                    : 'text-accent-600 hover:text-accent-900 dark:text-accent-300 dark:hover:text-white',
-                )}
-              >
-                {t === 'openai' ? 'OpenAI · /v1/chat/completions' : 'Anthropic · /v1/messages'}
-              </button>
-            ))}
-          </div>
+      {/* 主体：左侧设置 + 右侧会话 */}
+      <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
+        {/* 左：协议 / 模型 / system / 参数 */}
+        <Card className={cn(cardCls, 'h-fit')}>
+          <CardContent className="space-y-4 p-5">
+            {/* tab 切换 */}
+            <div className="inline-flex w-full rounded-lg border border-accent-200 bg-accent-50 p-1 dark:border-accent-800 dark:bg-accent-950/60">
+              {(['openai', 'anthropic'] as TabMode[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => switchTab(t)}
+                  disabled={loading}
+                  className={cn(
+                    'flex-1 rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed',
+                    tab === t
+                      ? 'bg-primary-600 text-white shadow-sm'
+                      : 'text-accent-600 hover:text-accent-900 dark:text-accent-300 dark:hover:text-white',
+                  )}
+                >
+                  {t === 'openai' ? 'OpenAI' : 'Anthropic'}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-accent-400 dark:text-accent-500">
+              {tab === 'openai' ? 'POST /v1/chat/completions' : 'POST /v1/messages'}
+            </p>
 
-          {/* 模型选择 */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-accent-600 dark:text-accent-300">模型</label>
-              {modelsLoading ? (
-                <span className="flex items-center gap-1 text-xs text-accent-400">
-                  <Loader2 className="size-3 animate-spin" /> 拉取中
-                </span>
-              ) : usingRealModels ? (
-                <Badge variant="outline" className="text-[11px]">真实列表 · {models.length}</Badge>
-              ) : (
-                <Badge variant="secondary" className="text-[11px]">回落手填</Badge>
+            {/* 模型选择 */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-accent-600 dark:text-accent-300">
+                  模型
+                </label>
+                {modelsLoading ? (
+                  <span className="flex items-center gap-1 text-xs text-accent-400">
+                    <Loader2 className="size-3 animate-spin" /> 拉取中
+                  </span>
+                ) : usingRealModels ? (
+                  <Badge variant="outline" className="text-[11px]">
+                    真实列表 · {models.length}
+                  </Badge>
+                ) : (
+                  <Badge variant="secondary" className="text-[11px]">
+                    回落手填
+                  </Badge>
+                )}
+              </div>
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                disabled={loading}
+                className={cn(inputCls, 'font-mono')}
+              >
+                {model && !modelOptions.includes(model) && (
+                  <option value={model}>{model}（自定义）</option>
+                )}
+                {modelOptions.length === 0 && <option value="">（无可用模型）</option>}
+                {modelOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              {modelsError && (
+                <p className="text-xs text-amber-600 dark:text-amber-300">
+                  模型列表拉取失败：{modelsError}（已回落到手填默认项）
+                </p>
               )}
             </div>
-            <select
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              disabled={loading}
-              className={cn(inputCls, 'font-mono')}
-            >
-              {model && !modelOptions.includes(model) && (
-                <option value={model}>{model}（自定义）</option>
-              )}
-              {modelOptions.length === 0 && <option value="">（无可用模型）</option>}
-              {modelOptions.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-            {modelsError && (
-              <p className="text-xs text-amber-600 dark:text-amber-300">
-                模型列表拉取失败：{modelsError}（已回落到手填默认项）
-              </p>
-            )}
-          </div>
 
-          {/* System prompt */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-accent-600 dark:text-accent-300">
-              System Prompt（可选）
-            </label>
-            <textarea
-              rows={2}
-              value={systemPrompt}
-              disabled={loading}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              placeholder="You are a helpful assistant."
-              className={cn(inputCls, 'resize-y')}
-            />
-          </div>
+            {/* System prompt */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-accent-600 dark:text-accent-300">
+                System Prompt（可选）
+              </label>
+              <textarea
+                rows={3}
+                value={systemPrompt}
+                disabled={loading}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder="You are a helpful assistant."
+                className={cn(inputCls, 'resize-y')}
+              />
+            </div>
 
-          {/* User message */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-medium text-accent-600 dark:text-accent-300">
-              User Message
-            </label>
-            <textarea
-              rows={4}
-              value={userMessage}
-              disabled={loading}
-              onChange={(e) => setUserMessage(e.target.value)}
-              placeholder="输入你的消息…"
-              className={cn(inputCls, 'resize-y')}
-            />
-          </div>
+            {/* 参数面板 */}
+            <div className="border-t border-accent-200 pt-4 dark:border-accent-800">
+              <ParamsPanel
+                params={params}
+                enabled={enabled}
+                onParamChange={(k, v) => setParams((prev) => ({ ...prev, [k]: v }))}
+                onToggle={(k) => setEnabled((prev) => ({ ...prev, [k]: !prev[k] }))}
+                selectedModel={selectedModel}
+                disabled={loading}
+              />
+            </div>
 
-          {/* 控制行 */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <label className="flex items-center gap-2 text-sm text-accent-600 dark:text-accent-300">
+            <label className="flex items-center gap-2 border-t border-accent-200 pt-4 text-sm text-accent-600 dark:border-accent-800 dark:text-accent-300">
               <input
                 type="checkbox"
                 checked={streamEnabled}
@@ -500,114 +593,99 @@ export default function PlaygroundPage() {
               />
               流式（SSE）
             </label>
-            {!loading ? (
-              <Button
-                onClick={handleSend}
-                disabled={!userMessage.trim() || !model.trim() || !hasKey}
-              >
-                <Send className="size-4" />
-                发送
-              </Button>
-            ) : (
-              <Button variant="destructive" onClick={handleStop}>
-                <Square className="size-4" />
-                停止
-              </Button>
-            )}
-          </div>
-
-          {error && (
-            <div
-              role="alert"
-              className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
-            >
-              {error}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* 响应 */}
-      <Card className={cardCls}>
-        <CardHeader className="p-5 pb-3">
-          <CardTitle className="text-base font-semibold tracking-normal text-accent-950 dark:text-white">
-            响应
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-5 pt-0">
-          <div className="min-h-[8rem] whitespace-pre-wrap break-words rounded-lg border border-accent-200 bg-accent-50 p-4 text-sm leading-6 text-accent-800 dark:border-accent-800 dark:bg-accent-950/60 dark:text-accent-100">
-            {responseText ? (
-              <>
-                {responseText}
-                {loading && <span className="ml-0.5 animate-pulse text-primary-500">▌</span>}
-              </>
-            ) : loading ? (
-              <span className="animate-pulse text-primary-500">▌</span>
-            ) : (
-              <span className="text-accent-400 dark:text-accent-500">（暂无输出）</span>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* usage 面板 */}
-      {usage && (
-        <Card className={cardCls}>
-          <CardHeader className="p-5 pb-3">
-            <CardTitle className="text-base font-semibold tracking-normal text-accent-950 dark:text-white">
-              本次用量
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-5 pt-0">
-            <div className="grid grid-cols-3 gap-3 sm:grid-cols-5">
-              <UsageStat label="输入 token" value={usage.input_tokens ?? 0} />
-              <UsageStat label="输出 token" value={usage.output_tokens ?? 0} />
-              <UsageStat label="合计 token" value={totalTokens} highlight />
-              {usage.cache_creation_input_tokens !== undefined && (
-                <UsageStat label="缓存创建" value={usage.cache_creation_input_tokens} />
-              )}
-              {usage.cache_read_input_tokens !== undefined && (
-                <UsageStat label="缓存读取" value={usage.cache_read_input_tokens} />
-              )}
-            </div>
-            <p className="mt-3 text-xs text-accent-400 dark:text-accent-500">
-              数值取自最终 SSE usage 块（OpenAI 用 stream_options.include_usage，Anthropic 用 message_delta）。
-            </p>
           </CardContent>
         </Card>
-      )}
-    </div>
-  );
-}
 
-function UsageStat({
-  label,
-  value,
-  highlight,
-}: {
-  label: string;
-  value: number;
-  highlight?: boolean;
-}) {
-  return (
-    <div
-      className={cn(
-        'rounded-lg border px-3 py-2.5',
-        highlight
-          ? 'border-primary-200 bg-primary-50 dark:border-primary-900 dark:bg-primary-950/40'
-          : 'border-accent-200 bg-accent-50 dark:border-accent-800 dark:bg-accent-950/60',
-      )}
-    >
-      <div className="text-xs text-accent-500 dark:text-accent-400">{label}</div>
-      <div
-        className={cn(
-          'mt-1 font-mono text-lg font-semibold tabular-nums',
-          highlight
-            ? 'text-primary-700 dark:text-primary-300'
-            : 'text-accent-900 dark:text-accent-100',
-        )}
-      >
-        {value.toLocaleString('zh-CN')}
+        {/* 右：会话区 */}
+        <Card className={cn(cardCls, 'flex flex-col')}>
+          <CardHeader className="flex flex-row items-center justify-between p-5 pb-3">
+            <CardTitle className="text-base font-semibold tracking-normal text-accent-950 dark:text-white">
+              对话
+              {turns.length > 0 && (
+                <span className="ml-2 text-xs font-normal text-accent-400">
+                  {turns.filter((t) => t.role === 'user').length} 轮
+                </span>
+              )}
+            </CardTitle>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleClear}
+              disabled={loading || turns.length === 0}
+              className="text-accent-500 hover:text-red-600"
+            >
+              <Eraser className="size-4" />
+              清空
+            </Button>
+          </CardHeader>
+          <CardContent className="flex flex-1 flex-col gap-4 p-5 pt-0">
+            {/* 消息列表 */}
+            <div
+              ref={scrollRef}
+              className="min-h-[20rem] max-h-[28rem] space-y-4 overflow-y-auto rounded-lg border border-accent-200 bg-accent-50/50 p-4 dark:border-accent-800 dark:bg-accent-950/40"
+            >
+              {turns.length === 0 ? (
+                <div className="flex h-full min-h-[18rem] flex-col items-center justify-center gap-2 text-center text-accent-400 dark:text-accent-500">
+                  <Send className="size-6 opacity-40" />
+                  <p className="text-sm">输入消息开始多轮对话。</p>
+                  <p className="text-xs">历史会随每次发送一并提交，助手回复支持 markdown 渲染。</p>
+                </div>
+              ) : (
+                turns.map((t) => (
+                  <MessageBubble
+                    key={t.id}
+                    turn={t}
+                    streaming={loading && t.role === 'assistant' && t.id === turns[turns.length - 1]?.id}
+                    onRegenerate={
+                      t.role === 'assistant' ? () => void handleRegenerate(t.id) : undefined
+                    }
+                    onDelete={() => handleDelete(t.id)}
+                  />
+                ))
+              )}
+            </div>
+
+            {/* 错误条 */}
+            {error && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300"
+              >
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                {error}
+              </div>
+            )}
+
+            {/* 输入区 */}
+            <div className="space-y-2">
+              <textarea
+                rows={3}
+                value={input}
+                disabled={loading}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="输入你的消息…（Ctrl/Cmd + Enter 发送）"
+                className={cn(inputCls, 'resize-y')}
+              />
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-accent-400 dark:text-accent-500">
+                  {hasKey ? 'Ctrl/Cmd + Enter 快捷发送' : '需要先填入 hk_ 密钥'}
+                </span>
+                {!loading ? (
+                  <Button onClick={handleSend} disabled={!input.trim() || !model.trim() || !hasKey}>
+                    <Send className="size-4" />
+                    发送
+                  </Button>
+                ) : (
+                  <Button variant="destructive" onClick={handleStop}>
+                    <Square className="size-4" />
+                    停止
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
