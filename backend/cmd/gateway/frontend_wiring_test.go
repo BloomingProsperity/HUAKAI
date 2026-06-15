@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
@@ -51,7 +52,44 @@ func TestFrontendWiring(t *testing.T) {
 		_, _ = pgPool.Exec(c, `DELETE FROM session_tokens WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM session_families WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM email_verification_tokens WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM admin_tokens WHERE name LIKE 'wire-admin-%'`)
 	})
+
+	// Seed a tenant_operator admin token scoped to the seed tenant, so admin-console
+	// endpoints (admin-token track, not session) are wire-testable without ?tenant_id.
+	adminBearer := "hk_admin_" + uuid.NewString()[:12]
+	adminPrefix := adminBearer
+	if len(adminPrefix) > 16 {
+		adminPrefix = adminPrefix[:16]
+	}
+	adminHash, err := bcrypt.GenerateFromPassword([]byte(adminBearer), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash admin token: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx,
+		`INSERT INTO admin_tokens (name, key_hash, key_prefix, role, scope_tenant_id, status)
+		 VALUES ($1,$2,$3,'tenant_operator',$4,'active')`,
+		"wire-admin-"+uuid.NewString()[:8], string(adminHash), adminPrefix, seed.tenantID); err != nil {
+		t.Fatalf("seed admin_token: %v", err)
+	}
+
+	// Some admin surfaces (global channel-health / ops usage) require platform_admin
+	// (scope_tenant_id NULL). Seed one too for those subtests.
+	adminPlatformBearer := "hk_admin_" + uuid.NewString()[:12]
+	adminPlatPrefix := adminPlatformBearer
+	if len(adminPlatPrefix) > 16 {
+		adminPlatPrefix = adminPlatPrefix[:16]
+	}
+	platHash, err := bcrypt.GenerateFromPassword([]byte(adminPlatformBearer), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash platform admin token: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx,
+		`INSERT INTO admin_tokens (name, key_hash, key_prefix, role, status)
+		 VALUES ($1,$2,$3,'platform_admin','active')`,
+		"wire-admin-plat-"+uuid.NewString()[:8], string(platHash), adminPlatPrefix); err != nil {
+		t.Fatalf("seed platform admin_token: %v", err)
+	}
 
 	// Global platform-setting defaults would block this password-auth test:
 	// registration_enabled defaults false, invitation_required true, and
@@ -403,6 +441,27 @@ func TestFrontendWiring(t *testing.T) {
 		}
 		getOK(t, ctx, base+"/v1/me/disputes", sessionToken)        // list reachable (200, shape varies)
 		assertReachable(t, ctx, base+"/v1/audit/pubkey", "")       // public; 200 or structured 503 (signer)
+	})
+
+	// ============ BATCH 3: admin-console core (admin-token track) ============
+	// Uses the seeded tenant_operator admin token (NOT session). Proves the admin
+	// pages' wires hit real /admin/v1 + /v1/admin routes with admin auth accepted.
+
+	t.Run("admin_users_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/admin/v1/users", adminBearer, "items")
+	})
+
+	t.Run("admin_accounts_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/admin/v1/provider-accounts", adminBearer, "items")
+	})
+
+	// channel-health + ops/usage are platform_admin global surfaces.
+	t.Run("admin_channels_page", func(t *testing.T) {
+		assertReachable(t, ctx, fmt.Sprintf("%s/v1/admin/channel-health/?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
+	})
+
+	t.Run("admin_ops_page", func(t *testing.T) {
+		assertReachable(t, ctx, base+"/v1/admin/usage/overview?window=24h", adminPlatformBearer)
 	})
 }
 
