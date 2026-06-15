@@ -1,5 +1,7 @@
 // 用户自助 API Key 管理：封装 /v1/api-keys/* 端点。
 // 字段形状对齐后端 internal/userkeyhttp/handlers.go（session 鉴权，走 userClient）。
+// 单 key 用量摘要走 /v1/me/keys/{id}/usage-summary
+// （internal/usageanalyticshttp/key_summary_handler.go，同样 session 鉴权）。
 import { userGet, userPost, userDelete } from './userClient';
 
 // ---- 后端响应类型（snake_case，与 handler JSON 一致） ----
@@ -72,6 +74,34 @@ export function createApiKey(req: CreateApiKeyRequest): Promise<CreateApiKeyResp
 
 // 撤销 key（后端用 DELETE，软删置 status=revoked，幂等）。reason 可选。
 export function revokeApiKey(id: number, reason?: string): Promise<RevokeApiKeyResponse> {
-  const body = reason ? { reason } : undefined;
+  const trimmed = reason?.trim();
+  const body = trimmed ? { reason: trimmed } : undefined;
   return userDelete<RevokeApiKeyResponse>(`${BASE_PATH}/${id}`, body);
+}
+
+// ---- 单 key 用量摘要 GET /v1/me/keys/{id}/usage-summary ----
+// 与 /v1/api-keys 不同前缀；session 鉴权一致。非本人 key → 404。
+
+// key_summary_handler.go keyUsageSummaryResponse（cost 为字符串十进制，token 计数为整型）
+export interface KeyUsageSummary {
+  api_key_id: number;
+  total_cost: string;
+  total_tokens_input: number;
+  total_tokens_output: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  request_count: number;
+  from: string | null;
+  to: string | null;
+}
+
+// 取某 key 的累计用量。可选 from/to（RFC3339）窗口，缺省即全量。
+export function getKeyUsageSummary(
+  id: number,
+  window?: { from?: string; to?: string },
+): Promise<KeyUsageSummary> {
+  return userGet<KeyUsageSummary>(`/v1/me/keys/${id}/usage-summary`, {
+    from: window?.from,
+    to: window?.to,
+  });
 }

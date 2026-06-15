@@ -13,6 +13,7 @@
 // 后端错误信封统一 {"error":{"code","message"}}，这里解析成 ApiError 以复用 friendlyMessage。
 import { ApiError } from './client';
 import { userGet } from './userClient';
+import { getSessionToken } from '@/lib/auth/session';
 import type { APIError } from './types';
 
 // 与 chat.ts 对齐的客户 API key localStorage 约定。
@@ -235,4 +236,111 @@ export function defaultWindow(days = 30): { from: string; to: string } {
   const to = new Date();
   const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
   return { from: from.toISOString(), to: to.toISOString() };
+}
+
+// time-series 后端窗口上限 31 天；UI 选择器据此夹紧（design risk: window_too_large=400）。
+export const MAX_TIMESERIES_DAYS = 31;
+
+// 由 YYYY-MM-DD 的本地日期边界算 RFC3339 窗口（from 取当天 00:00，to 取当天 23:59:59.999）。
+// 用本地时区起止，避免用户选「今天」却因 UTC 偏移漏掉当天记录。
+export function rangeFromDates(fromDate: string, toDate: string): { from: string; to: string } {
+  const from = new Date(`${fromDate}T00:00:00`);
+  const to = new Date(`${toDate}T23:59:59.999`);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
+// 把 Date 格式成 input[type=date] 需要的 YYYY-MM-DD（本地时区）。
+export function toDateInput(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// ---- 派生：按 requested_model 聚合成「模型维度」统计（Top 模型 + 占比）----
+// 来源行为：sub2api getDashboardModels(ModelStat 表) + new-api 消耗分布图（按模型配额占比）。
+export interface ModelStatRow {
+  model: string;
+  cost: number;
+  tokens: number;
+  requests: number;
+  costShare: number; // 0..1，占总花费比例
+}
+
+export function aggregateByModel(resp: TimeSeriesResponse): { rows: ModelStatRow[]; totalCost: number } {
+  const byModel = new Map<string, { cost: number; tokens: number; requests: number }>();
+  let totalCost = 0;
+  for (const item of resp.items) {
+    const model = item.requested_model || '—';
+    const cost = Number.parseFloat(item.total_cost) || 0;
+    const tokens =
+      (item.tokens.input || 0) +
+      (item.tokens.output || 0) +
+      (item.tokens.cache_read || 0) +
+      (item.tokens.cache_creation || 0);
+    const requests = item.request_count || 0;
+    totalCost += cost;
+    const cur = byModel.get(model);
+    if (cur) {
+      cur.cost += cost;
+      cur.tokens += tokens;
+      cur.requests += requests;
+    } else {
+      byModel.set(model, { cost, tokens, requests });
+    }
+  }
+  const rows = Array.from(byModel.entries())
+    .map(([model, v]) => ({
+      model,
+      cost: v.cost,
+      tokens: v.tokens,
+      requests: v.requests,
+      costShare: totalCost > 0 ? v.cost / totalCost : 0,
+    }))
+    .sort((a, b) => b.cost - a.cost || b.requests - a.requests);
+  return { rows, totalCost };
+}
+
+// ---- 导出（session 鉴权）----
+// GET /v1/me/usage/export.csv 挂在 r.Route("/v1/me") 下，用 SessionMiddleware（与 quota 一样），
+// 不是 API-key；故按账户范围（tenant+user）导出，与所选 hk_ key 无关。
+// 参数：format=csv|json（默认 csv）、from+to 必填 RFC3339、窗口 <= 366 天。
+export type ExportFormat = 'csv' | 'json';
+
+// 触发浏览器下载。session token 需放进 Authorization 头，无法用裸 <a href>，故走 blob。
+export async function downloadUsageExport(opts: { from: string; to: string; format?: ExportFormat }): Promise<void> {
+  const format = opts.format ?? 'csv';
+  const query = buildQuery({ from: opts.from, to: opts.to, format });
+  const token = getSessionToken();
+  const resp = await fetch(`/v1/me/usage/export.csv${query}`, {
+    method: 'GET',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    cache: 'no-store',
+  });
+  if (!resp.ok) {
+    let payload: APIError;
+    try {
+      payload = (await resp.json()) as APIError;
+    } catch {
+      throw new ApiError(resp.status, { error: { code: 'http_error', message: `HTTP ${resp.status}` } });
+    }
+    throw new ApiError(resp.status, payload);
+  }
+  const truncated = resp.headers.get('X-Truncated') === 'true';
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.download = `huakai-usage-${stamp}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  if (truncated) {
+    // 行数被后端截断（达到 maxRows）——抛出可识别错误让页面提示，但文件已下载。
+    throw new ApiError(200, {
+      error: { code: 'export_truncated', message: '导出行数已达上限，文件仅包含部分记录。请缩小时间范围。' },
+    });
+  }
 }
