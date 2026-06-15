@@ -1145,6 +1145,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
 			Timeouts:                 buildGatewayTimeoutConfig(),
 			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
+			// Dev/demo only: when HUAKAI_DEV_MOCK_UPSTREAM is set and the gateway
+			// is not in production mode, a fake doer fabricates the upstream SSE
+			// so the local MVP loop runs without a real provider. nil in
+			// production / when unset → real transport path untouched.
+			HTTPClient: devMockUpstreamDoer(),
 		},
 		inboundAuth:              auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
 		auditLedger:              auditLedger,
