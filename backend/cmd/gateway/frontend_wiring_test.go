@@ -369,6 +369,41 @@ func TestFrontendWiring(t *testing.T) {
 		getOKorUnavailable(t, ctx, base+"/v1/me/referrals", sessionToken, "items")
 		getOKorUnavailable(t, ctx, base+"/v1/me/referrals/rewards", sessionToken, "total_reward_usd")
 	})
+
+	// ============ BATCH 2: portal-depth modules ============
+
+	// MODULE: billing (balance / config / orders — all session).
+	t.Run("billing_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/v1/users/me/payments/balance", sessionToken, "balance")
+		getOK(t, ctx, base+"/v1/users/me/payments/config", sessionToken, "config")
+		getOK(t, ctx, base+"/v1/users/me/payments/orders", sessionToken, "orders")
+	})
+
+	// MODULE: account security (2FA status / passkeys / oauth-bindings — all session).
+	t.Run("security_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/v1/auth/2fa/status", sessionToken, "available")
+		getOK(t, ctx, base+"/v1/me/passkeys", sessionToken, "passkeys")
+		getOK(t, ctx, base+"/v1/users/me/oauth-bindings", sessionToken, "bindings")
+	})
+
+	// MODULE: pricing (public; page is an ARRAY, may 503 if catalog unconfigured in dev).
+	t.Run("pricing_page", func(t *testing.T) {
+		assertReachable(t, ctx, base+"/v1/pricing/page", "")
+		assertReachable(t, ctx, base+"/v1/pricing/snapshots", "")
+	})
+
+	// MODULE: audit & receipts (HUAKAI moat — receipt get / disputes / audit pubkey).
+	t.Run("audit_page", func(t *testing.T) {
+		// receipt by a non-existent id → structured error (route wired), not chi route-miss.
+		st, body, obj := doJSON(t, ctx, http.MethodGet, base+"/v1/receipts/wire-nope-"+unique, sessionToken, nil)
+		if st != http.StatusOK {
+			if _, ok := obj["error"].(map[string]any); !ok {
+				t.Fatalf("receipt get bad-id: expected structured {error} (route wired); got %d body=%s", st, body)
+			}
+		}
+		getOK(t, ctx, base+"/v1/me/disputes", sessionToken)        // list reachable (200, shape varies)
+		assertReachable(t, ctx, base+"/v1/audit/pubkey", "")       // public; 200 or structured 503 (signer)
+	})
 }
 
 // doJSON sends an optional JSON body with an optional Bearer token and returns
@@ -442,4 +477,23 @@ func getOKorUnavailable(t *testing.T, ctx context.Context, url, bearer string, k
 			t.Fatalf("GET %s missing key %q; body=%s", url, k, body)
 		}
 	}
+}
+
+// assertReachable accepts 200 (any body shape — array or object) OR a structured
+// 503. For public/array endpoints where a key check doesn't apply but we still want
+// to prove the route is mounted and not a chi 404 route-miss.
+func assertReachable(t *testing.T, ctx context.Context, url, bearer string) {
+	t.Helper()
+	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
+	if st == http.StatusOK {
+		return
+	}
+	if st == http.StatusServiceUnavailable {
+		if _, ok := obj["error"].(map[string]any); !ok {
+			t.Fatalf("GET %s 503 but not structured (route may be unmounted); body=%s", url, body)
+		}
+		t.Logf("GET %s → 503 (unconfigured in dev; wire OK)", url)
+		return
+	}
+	t.Fatalf("GET %s expected 200 or structured 503; got %d body=%s", url, st, body)
 }
