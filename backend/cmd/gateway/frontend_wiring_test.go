@@ -479,6 +479,44 @@ func TestFrontendWiring(t *testing.T) {
 		assertWired(t, ctx, base+"/admin/v1/system/health", adminPlatformBearer)
 		assertWired(t, ctx, base+"/admin/v1/modules", adminPlatformBearer)
 	})
+
+	// ============ CLOSEOUT modules ============
+	// (overview /dashboard reuses already-asserted endpoints: balance/quota/api-keys/
+	//  checkin/time-series — no new wire to assert.)
+
+	// MODULE: sessions — active session families list (POST, session auth).
+	t.Run("sessions_page", func(t *testing.T) {
+		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/sessions/list", sessionToken, map[string]any{})
+		if st != http.StatusOK {
+			t.Fatalf("POST /v1/sessions/list expected 200; got %d body=%s", st, body)
+		}
+		if _, ok := obj["families"]; !ok {
+			t.Fatalf("sessions list missing `families` (page maps over it); body=%s", body)
+		}
+	})
+
+	// MODULE: hermes (admin assistant). /v1/hermes is mounted only when hermesService
+	// AND hermesRunner are wired (routes.go) — the minimal dev gateway wires neither,
+	// so the route is absent (404). Skip honestly there; assert the wire where mounted.
+	t.Run("hermes_page", func(t *testing.T) {
+		url := fmt.Sprintf("%s/v1/hermes/settings?as_user_id=%d&tenant_id=%d", base, seed.userID, seed.tenantID)
+		st, _, _ := doJSON(t, ctx, http.MethodGet, url, adminPlatformBearer, nil)
+		if st == http.StatusNotFound {
+			t.Skip("hermes not mounted in minimal dev gateway (needs hermesService+hermesRunner); frontend page uses verified contract")
+		}
+		assertWired(t, ctx, url, adminPlatformBearer)
+	})
+
+	// MODULE: inference console — embeddings route wired (no embeddings model seeded → structured error OK).
+	t.Run("console_page", func(t *testing.T) {
+		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/embeddings", seed.bearer,
+			map[string]any{"model": "gpt-4.1-mini", "input": "wire test"})
+		if st != http.StatusOK {
+			if _, ok := obj["error"].(map[string]any); !ok {
+				t.Fatalf("POST /v1/embeddings: expected 200 or structured error (route wired); got %d body=%s", st, body)
+			}
+		}
+	})
 }
 
 // doJSON sends an optional JSON body with an optional Bearer token and returns
