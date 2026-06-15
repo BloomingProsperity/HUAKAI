@@ -14,8 +14,10 @@ import {
   MessageSquare,
   Package,
   ShieldCheck,
+  Tags,
   Ticket,
   UserCircle,
+  Wallet,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -30,10 +32,13 @@ const navItems = [
   { icon: KeyRound, label: 'API Keys', href: '/api-keys', active: false, disabled: false },
   { icon: BarChart3, label: '用量', href: '/usage', active: false, disabled: false },
   { icon: UserCircle, label: '账户', href: '/account', active: false, disabled: false },
+  { icon: ShieldCheck, label: '安全', href: '/security', active: false, disabled: false },
+  { icon: Wallet, label: '充值', href: '/billing', active: false, disabled: false },
   { icon: Ticket, label: '兑换', href: '/redeem', active: false, disabled: false },
   { icon: Package, label: '订阅', href: '/subscriptions', active: false, disabled: false },
   { icon: Bell, label: '通知', href: '/notifications', active: false, disabled: false },
   { icon: FileCheck2, label: '审计', href: '/audit', active: false, disabled: false },
+  { icon: Tags, label: '定价', href: '/pricing', active: false, disabled: false },
   { icon: Database, label: '管理后台', href: '/accounts', active: false, disabled: false },
 ];
 
