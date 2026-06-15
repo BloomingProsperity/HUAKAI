@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import {
   Activity,
   BarChart3,
+  Bell,
   ChevronLeft,
   Database,
   FileCheck2,
@@ -14,6 +15,7 @@ import {
   Package,
   ShieldCheck,
   Ticket,
+  UserCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -27,8 +29,10 @@ const navItems = [
   { icon: MessageSquare, label: 'Playground', href: '/chat', active: false, disabled: false },
   { icon: KeyRound, label: 'API Keys', href: '/api-keys', active: false, disabled: false },
   { icon: BarChart3, label: '用量', href: '/usage', active: false, disabled: false },
-  { icon: Ticket, label: '兑换', href: '/redeem', active: false, disabled: true },
-  { icon: Package, label: '订阅', href: '/subscriptions', active: false, disabled: true },
+  { icon: UserCircle, label: '账户', href: '/account', active: false, disabled: false },
+  { icon: Ticket, label: '兑换', href: '/redeem', active: false, disabled: false },
+  { icon: Package, label: '订阅', href: '/subscriptions', active: false, disabled: false },
+  { icon: Bell, label: '通知', href: '/notifications', active: false, disabled: false },
   { icon: FileCheck2, label: '审计', href: '/audit', active: false, disabled: false },
   { icon: Database, label: '管理后台', href: '/accounts', active: false, disabled: false },
 ];
