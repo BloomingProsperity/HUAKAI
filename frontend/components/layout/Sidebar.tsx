@@ -10,8 +10,10 @@ import {
   FileCheck2,
   KeyRound,
   LayoutDashboard,
-  Settings,
+  MessageSquare,
+  Package,
   ShieldCheck,
+  Ticket,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -21,48 +23,14 @@ interface SidebarProps {
 }
 
 const navItems = [
-  {
-    icon: LayoutDashboard,
-    label: '总览',
-    href: '/dashboard',
-    active: true,
-    disabled: false,
-  },
-  {
-    icon: Database,
-    label: '账号池',
-    href: '/accounts',
-    active: false,
-    disabled: true,
-  },
-  {
-    icon: KeyRound,
-    label: '密钥',
-    href: '/api-keys',
-    active: false,
-    disabled: true,
-  },
-  {
-    icon: BarChart3,
-    label: '用量',
-    href: '/usage',
-    active: false,
-    disabled: true,
-  },
-  {
-    icon: FileCheck2,
-    label: '审计',
-    href: '/audit',
-    active: false,
-    disabled: false,
-  },
-  {
-    icon: Settings,
-    label: '设置',
-    href: '/settings',
-    active: false,
-    disabled: true,
-  },
+  { icon: LayoutDashboard, label: '概览', href: '/dashboard', active: false, disabled: false },
+  { icon: MessageSquare, label: 'Playground', href: '/chat', active: false, disabled: false },
+  { icon: KeyRound, label: 'API Keys', href: '/api-keys', active: false, disabled: false },
+  { icon: BarChart3, label: '用量', href: '/usage', active: false, disabled: false },
+  { icon: Ticket, label: '兑换', href: '/redeem', active: false, disabled: true },
+  { icon: Package, label: '订阅', href: '/subscriptions', active: false, disabled: true },
+  { icon: FileCheck2, label: '审计', href: '/audit', active: false, disabled: false },
+  { icon: Database, label: '管理后台', href: '/accounts', active: false, disabled: false },
 ];
 
 const Sidebar = (_props: SidebarProps) => {
