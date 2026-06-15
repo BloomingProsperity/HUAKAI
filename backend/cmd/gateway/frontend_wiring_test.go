@@ -463,6 +463,22 @@ func TestFrontendWiring(t *testing.T) {
 	t.Run("admin_ops_page", func(t *testing.T) {
 		assertReachable(t, ctx, base+"/v1/admin/usage/overview?window=24h", adminPlatformBearer)
 	})
+
+	// ============ BATCH 4: admin-console depth ============
+	t.Run("admin_credentials_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/admin/v1/credentials/renew-status", adminPlatformBearer, "items")
+	})
+	t.Run("admin_settings_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/v1/admin/platform-settings", adminPlatformBearer, "items")
+	})
+	t.Run("admin_operations_page", func(t *testing.T) {
+		assertWired(t, ctx, fmt.Sprintf("%s/v1/admin/subscriptions/plans?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
+		assertWired(t, ctx, fmt.Sprintf("%s/v1/admin/vouchers?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
+	})
+	t.Run("admin_system_page", func(t *testing.T) {
+		assertWired(t, ctx, base+"/admin/v1/system/health", adminPlatformBearer)
+		assertWired(t, ctx, base+"/admin/v1/modules", adminPlatformBearer)
+	})
 }
 
 // doJSON sends an optional JSON body with an optional Bearer token and returns
@@ -555,4 +571,21 @@ func assertReachable(t *testing.T, ctx context.Context, url, bearer string) {
 		return
 	}
 	t.Fatalf("GET %s expected 200 or structured 503; got %d body=%s", url, st, body)
+}
+
+// assertWired is the most lenient wire proof: 200, OR any 4xx/5xx that carries a
+// STRUCTURED {error} (route mounted + handler ran + structured response — not a chi
+// route-miss). For admin-depth endpoints whose exact role/tenant nuance we don't
+// fully satisfy in this minimal seed, but whose wire we still want to prove.
+func assertWired(t *testing.T, ctx context.Context, url, bearer string) {
+	t.Helper()
+	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
+	if st == http.StatusOK {
+		return
+	}
+	if _, ok := obj["error"].(map[string]any); ok {
+		t.Logf("GET %s → %d structured (route wired; auth/param nuance)", url, st)
+		return
+	}
+	t.Fatalf("GET %s expected 200 or structured error (route wired, not route-miss); got %d body=%s", url, st, body)
 }
