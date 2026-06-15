@@ -1,12 +1,21 @@
 'use client';
 
 import { useState } from 'react';
+import { usePathname } from 'next/navigation';
 import Sidebar from '@/components/layout/Sidebar';
 import Header from '@/components/layout/Header';
 import { cn } from '@/lib/utils';
 
+// 全屏路由（登录/注册等）不套控制台外壳。
+const BARE_ROUTES = ['/login'];
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const pathname = usePathname();
+
+  if (BARE_ROUTES.some((r) => pathname === r || pathname.startsWith(`${r}/`))) {
+    return <>{children}</>;
+  }
 
   return (
     <div className="min-h-screen bg-accent-50 text-accent-950 dark:bg-accent-950 dark:text-accent-50">

@@ -1,8 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Clock3, Moon, UserRound } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Clock3, LogIn, LogOut, Moon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getStoredUser, type SessionUser } from '@/lib/auth/session';
+import { fetchMe, logout } from '@/lib/api/auth';
 
 interface HeaderProps {
   collapsed?: boolean;
@@ -16,9 +19,23 @@ function formatNow(value: Date | null) {
 }
 
 const Header = (_props: HeaderProps) => {
+  const router = useRouter();
   const [now, setNow] = useState<Date | null>(null);
   const [backendState, setBackendState] = useState<BackendState>('checking');
   const [latency, setLatency] = useState<number | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
+
+  useEffect(() => {
+    setUser(getStoredUser());
+    // 后台静默刷新一次用户信息（带 session token；未登录则忽略）。
+    void fetchMe().then(setUser).catch(() => { /* 未登录 */ });
+  }, []);
+
+  async function onLogout() {
+    await logout();
+    setUser(null);
+    router.push('/login');
+  }
 
   useEffect(() => {
     setNow(new Date());
@@ -110,13 +127,31 @@ const Header = (_props: HeaderProps) => {
         >
           <Moon className="size-4" />
         </button>
-        <div className="flex items-center gap-2 rounded-lg border border-accent-200 bg-accent-50 px-2.5 py-2 text-xs text-accent-600 dark:border-accent-800 dark:bg-accent-900 dark:text-accent-300">
-          <span className="flex size-5 items-center justify-center rounded-full bg-primary-500 text-[10px] font-bold text-white">
-            H
-          </span>
-          <UserRound className="size-3.5 text-accent-400" />
-          <span className="hidden sm:inline">管理员</span>
-        </div>
+        {user ? (
+          <div className="flex items-center gap-2 rounded-lg border border-accent-200 bg-accent-50 px-2.5 py-2 text-xs text-accent-600 dark:border-accent-800 dark:bg-accent-900 dark:text-accent-300">
+            <span className="flex size-5 items-center justify-center rounded-full bg-primary-500 text-[10px] font-bold uppercase text-white">
+              {(user.display_name || user.email || 'H').charAt(0)}
+            </span>
+            <span className="hidden max-w-[10rem] truncate sm:inline">{user.display_name || user.email}</span>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="ml-0.5 flex items-center gap-1 rounded-md px-1.5 py-1 text-accent-500 hover:bg-red-50 hover:text-red-600 dark:text-accent-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+              aria-label="登出"
+              title="登出"
+            >
+              <LogOut className="size-3.5" />
+            </button>
+          </div>
+        ) : (
+          <a
+            href="/login"
+            className="flex items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs font-medium text-primary-700 hover:bg-primary-100 dark:border-primary-900/60 dark:bg-primary-950/40 dark:text-primary-300"
+          >
+            <LogIn className="size-3.5" />
+            <span>登录</span>
+          </a>
+        )}
       </div>
     </header>
   );
