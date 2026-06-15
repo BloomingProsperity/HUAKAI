@@ -7,9 +7,11 @@
 >
 > **状态图例**:✅ 接线+测试齐全 · 🟡 部分(有接线无测试 / 有页面是 mock)· ❌ 未接线 · ⬜ N/A(webhook/internal,无前端)
 >
-> **当前进度(2026-06-15 末次更新)**:**21 模块已接线 + 接线测试绿(23 子测试,`frontend_wiring_test.go` 全 PASS)**,分 4 批落 `feat/frontend-portal`(09611764 / 4fc57d6a / 74ec06f2 / c77ae40a)。用户门户 13 模块全闭;admin 控制台核心+深度 8 大面已接。测试环境 seed **四轨凭证**:session + hk_ key + tenant_operator + platform_admin。
+> **A-R 闭环完成(2026-06-15 终版)**:**25 个功能模块已接线 + 接线测试(`frontend_wiring_test.go` 26 子测试全 PASS,hermes 因最小 dev 装配未挂载诚实 Skip)**,34 静态页 next build 绿,分 5 批 + 收尾落 `feat/frontend-portal`。
 >
-> **剩余收尾(非闭环阻塞,排后续)**:① admin 控制台**外壳+导航树**(页已建可 URL 直达,缺统一 admin shell 导航)② Playground 推理**其余协议台**(messages/responses/embeddings/audio/images/rerank,现只做 chat)③ 零散:会话列表/撤销、Hermes 助手面、部分 admin 子动作的深度表单。
+> **覆盖面**:用户门户 14 模块(登录/概览/Playground/调试台/API Keys/用量/账户/安全/会话/充值/兑换/订阅/通知/审计回执/定价)全闭;admin 控制台 9 面(运营总览/用户/账号池/渠道健康/凭证代理/运营管理/平台设置/审核系统/Hermes)+ context-aware 外壳导航。测试环境 seed **四轨凭证**:session + hk_ key + tenant_operator + platform_admin。
+>
+> **诚实未尽(非阻塞,排后续)**:Hermes 需 hermesService+runner 才挂载(前端页已建用核对契约);部分 admin 深度表单为列表+核心动作(复杂多步表单精简);推理 Rerank tab 留位;sessions「撤销全部」遍历实现(后端无单端点)。
 
 ## A. 用户门户(portal)
 
@@ -70,7 +72,8 @@
 - ✅ **批次 2**(用户深度):充值余额/账户安全(2FA+Passkey+OAuth)/定价/审计回执护城河 — 4fc57d6a,15 子测试
 - ✅ **批次 3**(admin 核心):用户管理/账号池/渠道健康/运营总览 — 74ec06f2,19 子测试(引入 tenant_operator+platform_admin 双管理 token)
 - ✅ **批次 4**(admin 深度):凭证代理/平台设置/运营管理/审核系统 — c77ae40a,23 子测试(assertWired 容忍角色/租户细差)
-- ⬜ **收尾批次**:admin shell 导航 · 推理其余协议台 · 会话/Hermes/零散深度表单
+- ✅ **admin 外壳**:Sidebar context-aware 导航树(/admin/* 切 admin 导航)— c33f5f90
+- ✅ **收尾批次**:用户概览(/dashboard 重建)/会话管理/Hermes助手/多协议调试台 — 685e365c,26 子测试(hermes Skip)
 
 每批已执行:前端页/lib 接真端点 → 扩 `frontend_wiring_test.go` 断言 → tsc+build+接线测试绿 → 提交推送分支。
 布局总纲见 `FUSION-LAYOUT-PLAN-v3.md`。
