@@ -319,6 +319,56 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("/v1/models with created key: missing data array; body=%s", body)
 		}
 	})
+
+	// ============ BATCH 1: portal-completion modules (session auth) ============
+	// Fresh registered user → empty data, but every endpoint must return 200 + the
+	// envelope shape the frontend lib parses. Asserts the wire (route mounted, auth
+	// accepted, shape correct) for redeem / subscriptions / notifications / account.
+
+	// MODULE: redeem (vouchers) — history GET + redeem error-path (route wired).
+	t.Run("redeem_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/v1/me/voucher-redemptions", sessionToken, "redemptions")
+		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/users/me/vouchers/redeem", sessionToken,
+			map[string]any{"code": "WIRE-NOPE-" + unique})
+		// No such voucher → expect a STRUCTURED {error} (handler ran), not a chi 404 route-miss.
+		if st != http.StatusOK {
+			if _, ok := obj["error"].(map[string]any); !ok {
+				t.Fatalf("redeem bad-code: expected structured {error} (route wired); got %d body=%s", st, body)
+			}
+		}
+	})
+
+	// MODULE: subscriptions — current / list / plans (progress may 503 if quota unconfigured).
+	t.Run("subscriptions_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/v1/users/me/subscriptions/", sessionToken, "subscriptions")
+		getOK(t, ctx, base+"/v1/users/me/subscriptions/me", sessionToken, "auto_renew")
+		getOK(t, ctx, base+"/v1/users/me/subscriptions/plans", sessionToken, "plans")
+		st, _, _ := doJSON(t, ctx, http.MethodGet, base+"/v1/users/me/subscriptions/me/progress", sessionToken, nil)
+		if st != http.StatusOK && st != http.StatusServiceUnavailable {
+			t.Fatalf("subscriptions progress expected 200 or 503; got %d", st)
+		}
+	})
+
+	// MODULE: notifications + announcements + per-user notify settings.
+	t.Run("notifications_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/v1/notifications", sessionToken, "items")
+		getOK(t, ctx, base+"/v1/notifications/unread-count", sessionToken, "count")
+		getOK(t, ctx, base+"/v1/announcements", sessionToken, "items")
+		getOK(t, ctx, base+"/v1/users/me/notifications", sessionToken, "notify_type")
+	})
+
+	// MODULE: account (groups / invitations / invite-code / checkin / referrals / rewards).
+	// invite-code/referrals/rewards depend on the invitation+referral feature config,
+	// which this minimal dev assembly leaves unconfigured → structured 503. We assert
+	// the WIRE (route mounted, auth accepted, structured response), tolerating that 503.
+	t.Run("account_page", func(t *testing.T) {
+		getOK(t, ctx, base+"/v1/me/groups", sessionToken, "items")
+		getOK(t, ctx, base+"/v1/me/invitations", sessionToken, "qualified_count")
+		getOK(t, ctx, base+"/v1/me/checkin", sessionToken, "checked_in_today")
+		getOKorUnavailable(t, ctx, base+"/v1/me/invitation-code", sessionToken, "code")
+		getOKorUnavailable(t, ctx, base+"/v1/me/referrals", sessionToken, "items")
+		getOKorUnavailable(t, ctx, base+"/v1/me/referrals/rewards", sessionToken, "total_reward_usd")
+	})
 }
 
 // doJSON sends an optional JSON body with an optional Bearer token and returns
@@ -352,4 +402,44 @@ func doJSON(t *testing.T, ctx context.Context, method, url, bearer string, body 
 	var obj map[string]any
 	_ = json.Unmarshal(raw, &obj) // nil for arrays/non-objects; callers assert as needed
 	return resp.StatusCode, raw, obj
+}
+
+// getOK asserts GET url (with bearer) returns 200 and the parsed object contains
+// every required key, then returns the object. Used for the breadth wiring checks.
+func getOK(t *testing.T, ctx context.Context, url, bearer string, keys ...string) map[string]any {
+	t.Helper()
+	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
+	if st != http.StatusOK {
+		t.Fatalf("GET %s expected 200; got %d body=%s", url, st, body)
+	}
+	for _, k := range keys {
+		if _, ok := obj[k]; !ok {
+			t.Fatalf("GET %s missing key %q (frontend lib parses it); body=%s", url, k, body)
+		}
+	}
+	return obj
+}
+
+// getOKorUnavailable is getOK that also accepts a STRUCTURED 503 — for endpoints
+// whose backend feature is left unconfigured in the minimal dev assembly. It still
+// proves the wire (route mounted, auth accepted, structured response shape); a chi
+// route-miss (404, no {error}) or wrong shape still fails.
+func getOKorUnavailable(t *testing.T, ctx context.Context, url, bearer string, keys ...string) {
+	t.Helper()
+	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
+	if st == http.StatusServiceUnavailable {
+		if _, ok := obj["error"].(map[string]any); !ok {
+			t.Fatalf("GET %s 503 but not structured {error} (route may be unmounted); body=%s", url, body)
+		}
+		t.Logf("GET %s → 503 (feature unconfigured in dev assembly; wire OK)", url)
+		return
+	}
+	if st != http.StatusOK {
+		t.Fatalf("GET %s expected 200 or structured 503; got %d body=%s", url, st, body)
+	}
+	for _, k := range keys {
+		if _, ok := obj[k]; !ok {
+			t.Fatalf("GET %s missing key %q; body=%s", url, k, body)
+		}
+	}
 }
