@@ -6,6 +6,7 @@ import {
   Activity,
   BarChart3,
   Bell,
+  Bot,
   ChevronLeft,
   CornerUpLeft,
   Database,
@@ -18,7 +19,9 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  Smartphone,
   Tags,
+  Terminal,
   Ticket,
   UserCircle,
   Wallet,
@@ -33,10 +36,12 @@ interface SidebarProps {
 const navItems = [
   { icon: LayoutDashboard, label: '概览', href: '/dashboard', active: false, disabled: false },
   { icon: MessageSquare, label: 'Playground', href: '/chat', active: false, disabled: false },
+  { icon: Terminal, label: '调试台', href: '/console', active: false, disabled: false },
   { icon: KeyRound, label: 'API Keys', href: '/api-keys', active: false, disabled: false },
   { icon: BarChart3, label: '用量', href: '/usage', active: false, disabled: false },
   { icon: UserCircle, label: '账户', href: '/account', active: false, disabled: false },
   { icon: ShieldCheck, label: '安全', href: '/security', active: false, disabled: false },
+  { icon: Smartphone, label: '会话', href: '/sessions', active: false, disabled: false },
   { icon: Wallet, label: '充值', href: '/billing', active: false, disabled: false },
   { icon: Ticket, label: '兑换', href: '/redeem', active: false, disabled: false },
   { icon: Package, label: '订阅', href: '/subscriptions', active: false, disabled: false },
@@ -57,6 +62,7 @@ const adminNavItems = [
   { icon: Ticket, label: '运营管理', href: '/admin/operations', active: false, disabled: false },
   { icon: Settings, label: '平台设置', href: '/admin/settings', active: false, disabled: false },
   { icon: ShieldAlert, label: '审核系统', href: '/admin/system', active: false, disabled: false },
+  { icon: Bot, label: 'Hermes 助手', href: '/admin/hermes', active: false, disabled: false },
 ];
 
 const Sidebar = (_props: SidebarProps) => {
