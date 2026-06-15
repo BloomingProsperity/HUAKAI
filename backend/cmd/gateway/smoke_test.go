@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
@@ -163,6 +164,17 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		t.Fatalf("seed api_key: %v", err)
 	}
 
+	// Grant the user a balance so the billing claim's balance-hold reserve
+	// (mandatory by default) can hold the predicted cost; without a balance row
+	// the request 402s with insufficient_balance.
+	if _, err := pgPool.Exec(ctx,
+		`INSERT INTO user_balances (tenant_id, user_id, balance, held, version, updated_at)
+		 VALUES ($1, $2, 100.00, 0, 1, now())`,
+		s.tenantID, s.userID,
+	); err != nil {
+		t.Fatalf("seed user_balance: %v", err)
+	}
+
 	t.Cleanup(func() {
 		c := context.Background()
 		// Cleanup order respects FKs. Slice 2 prepends registry
@@ -180,10 +192,12 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		_, _ = pgPool.Exec(c, `DELETE FROM models WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM account_credentials WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM providers WHERE tenant_id=$1`, s.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM tenants WHERE id=$1`, s.tenantID)
@@ -211,11 +225,34 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO provider_accounts (
 			tenant_id, provider_id, channel_id, name, account_type,
-			cap_concurrency, in_flight_count
-		) VALUES ($1, $2, $3, $4, 'api_key', 4, 2) RETURNING id`,
+			cap_concurrency, in_flight_count, health_state, credential_state, capability_flags
+		) VALUES ($1, $2, $3, $4, 'api_key', 4, 2, 'healthy', 'valid',
+			ARRAY['stream','tools','vision','json','audio','file']) RETURNING id`,
 		s.tenantID, s.providerID, s.channelID, "smoke-acct-"+unique,
 	).Scan(&s.providerAccountID); err != nil {
 		t.Fatalf("seed provider account: %v", err)
+	}
+
+	// Seed a decryptable credential so the vault resolves one. The dev mock
+	// upstream ignores the value, but the row must exist AND decrypt under the
+	// gateway's key (32 zero bytes / key_id local-v1, matching startGateway env).
+	credKP, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
+	if err != nil {
+		t.Fatalf("cred key provider: %v", err)
+	}
+	credEnv, err := credentialstore.NewCipher(credKP).Encrypt(ctx,
+		[]byte(`{"api_key":"sk-mock-dev-key"}`),
+		credentialstore.AAD{TenantID: s.tenantID, ProviderAccountID: s.providerAccountID, Vendor: "openai", AuthMode: "api_key", Version: 1})
+	if err != nil {
+		t.Fatalf("encrypt credential: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx,
+		`INSERT INTO account_credentials (tenant_id, provider_account_id, vendor, auth_mode, state,
+		   credential_version, encrypted_payload, encryption_scheme, key_id, nonce, aad_hash)
+		 VALUES ($1, $2, 'openai', 'api_key', 'active', 1, $3, 'aes-256-gcm', $4, $5, $6)`,
+		s.tenantID, s.providerAccountID, credEnv.Ciphertext, credEnv.KeyID, credEnv.Nonce, credEnv.AADHash,
+	); err != nil {
+		t.Fatalf("seed credential: %v", err)
 	}
 
 	// Slice 2: seed Registry rows so the smoke alias
@@ -224,7 +261,7 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
 		                     default_provider_model_id, default_context_window, status)
-		 VALUES ($1, 'tenant', $2, 'anthropic_messages', 'gpt-4.1-mini', 128000, 'active')
+		 VALUES ($1, 'tenant', $2, 'openai_chat', 'gpt-4.1-mini', 128000, 'active')
 		 RETURNING id`,
 		s.tenantID, "smoke-canonical-"+unique,
 	).Scan(&s.modelID); err != nil {
@@ -333,6 +370,13 @@ func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, se
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
 		"HUAKAI_RELEASE_MODE=dev",
+		// Credential encryption key (32 zero bytes, base64) — required since the
+		// gateway gained a mandatory key; dev-only fixed value.
+		"HUAKAI_CREDENTIAL_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		// Dev mock upstream: fabricate the provider SSE so the loop runs with no
+		// real provider/network (replaces the pre-Phase-E built-in mock).
+		"HUAKAI_DEV_MOCK_UPSTREAM=true",
 		// Phase L0 minimum: SMOKE env vars no longer set; auth
 		// resolves via api_keys table seeded by seedSmokeGraph above.
 	)
