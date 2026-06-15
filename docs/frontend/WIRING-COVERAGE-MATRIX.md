@@ -7,7 +7,9 @@
 >
 > **状态图例**:✅ 接线+测试齐全 · 🟡 部分(有接线无测试 / 有页面是 mock)· ❌ 未接线 · ⬜ N/A(webhook/internal,无前端)
 >
-> **当前进度(2026-06-15)**:用户端核心环已闭(~6 模块);本矩阵是剩余 ~38 模块的追踪地图,按批次推进,每批 tsc+build+接线测试绿后提交推送。
+> **当前进度(2026-06-15 末次更新)**:**21 模块已接线 + 接线测试绿(23 子测试,`frontend_wiring_test.go` 全 PASS)**,分 4 批落 `feat/frontend-portal`(09611764 / 4fc57d6a / 74ec06f2 / c77ae40a)。用户门户 13 模块全闭;admin 控制台核心+深度 8 大面已接。测试环境 seed **四轨凭证**:session + hk_ key + tenant_operator + platform_admin。
+>
+> **剩余收尾(非闭环阻塞,排后续)**:① admin 控制台**外壳+导航树**(页已建可 URL 直达,缺统一 admin shell 导航)② Playground 推理**其余协议台**(messages/responses/embeddings/audio/images/rerank,现只做 chat)③ 零散:会话列表/撤销、Hermes 助手面、部分 admin 子动作的深度表单。
 
 ## A. 用户门户(portal)
 
@@ -62,12 +64,13 @@
 - internal HMAC 控制面(/internal/*,私网门)— runner 用,⬜
 - Hermes 运维助手(/v1/hermes)— 操作员/HMAC,前端按需,排末
 
-## 推进批次
-- **批次 0(已完成)**:1,3,4,5 — 核心环,已测已推(15ae1cbd / 7865d6ed)
-- **批次 1(下一步)**:6 概览·7 分组·8 邀请/签到·9 兑换·10 订阅·12 通知·13 公告·2 会话列表·19 站点配置 — 补齐用户门户,enable 导航灰项
-- **批次 2**:11 充值·14 2FA·15 passkey·16 oauth绑定·17 回执争议·18 定价 — 用户门户深度
-- **批次 3**:21-22,26,28,31,35,37 — admin 核心(用户/账号池/渠道/用量/设置/告警/运营)
-- **批次 4**:23-25,27,29-30,32-34,36,38 — admin 深度
-- **批次 3**(推理):20 其余协议台
+## 推进批次(执行记录)
+- ✅ **批次 0**(核心环):登录/API Keys/用量/Playground — 15ae1cbd / 7865d6ed(后并入分支)
+- ✅ **批次 1**(用户门户):兑换/订阅/通知公告/账户(分组/邀请/签到/推荐)— 09611764,接线测试 11 子测试
+- ✅ **批次 2**(用户深度):充值余额/账户安全(2FA+Passkey+OAuth)/定价/审计回执护城河 — 4fc57d6a,15 子测试
+- ✅ **批次 3**(admin 核心):用户管理/账号池/渠道健康/运营总览 — 74ec06f2,19 子测试(引入 tenant_operator+platform_admin 双管理 token)
+- ✅ **批次 4**(admin 深度):凭证代理/平台设置/运营管理/审核系统 — c77ae40a,23 子测试(assertWired 容忍角色/租户细差)
+- ⬜ **收尾批次**:admin shell 导航 · 推理其余协议台 · 会话/Hermes/零散深度表单
 
-每批:前端页/lib 接真端点 → 扩 `frontend_wiring_test.go` 断言 → tsc+build+接线测试绿 → 提交推送。
+每批已执行:前端页/lib 接真端点 → 扩 `frontend_wiring_test.go` 断言 → tsc+build+接线测试绿 → 提交推送分支。
+布局总纲见 `FUSION-LAYOUT-PLAN-v3.md`。
