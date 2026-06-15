@@ -100,3 +100,17 @@ package inventory confirm most gaps are 5–30% pre-built. We exploit the reuse.
   false escape hatch, and a new integration_pg no-policy-allows money-safety net.
   Full integration_pg suite re-run as the money-change milestone. ScopeChannel
   (BILL-124) stays Blocked above (channel unknown at reserve time).
+- **BILL-086/TOK-008 real tokenizer for the input estimate** (Owner-authorized new
+  dep) — replace the `len/4` byte heuristic that fed the predicted cost + quota
+  reservation with a real BPE tokenizer (`github.com/tiktoken-go/tokenizer` v0.7.0,
+  pure-Go/MIT/BPE compiled-in) for OpenAI-family text, falling back to the existing
+  CJK-aware blob-capped heuristic for Anthropic/Gemini/unknown. Ref-aligned (rule
+  #16): sub2api/CLIProxyAPI bill from provider-reported usage and use a local
+  tokenizer only as an estimate, new-api reconciles a local estimate against
+  reported usage — so HUAKAI keeps provider-reported usage authoritative and only
+  sharpens the *estimate* (notably stops multimodal base64 over-counting that could
+  spuriously deny image requests now that quota-enforce is live). Estimate-only,
+  default-on with `HUAKAI_REAL_TOKENIZER_ENABLED=false` escape hatch, fail-open to
+  heuristic, blobs never tokenized. Mutation-verified: skipping tiktoken makes the
+  OpenAI count fall to the heuristic (RED); routing blobs through the tokenizer
+  balloons the estimate (RED).

@@ -80,3 +80,33 @@ func TestEstimateRequestInputTokensFloorsAtOne(t *testing.T) {
 		}
 	}
 }
+
+// EstimateRequestInputTokensWith must route plain-text leaves through the injected
+// counter while still capping base64/binary blobs with the built-in heuristic (a
+// real tokenizer must never be handed a 1MB data-URI).
+// MUTATION: have estimateStringLeaf send blobs through textCounter too, and the
+// sentinel counter (which returns a huge fixed value per call) would balloon the
+// blob's contribution -> the upper-bound assertion goes RED.
+func TestEstimateRequestInputTokensWith_InjectedCounterButBlobsCapped(t *testing.T) {
+	const perText = 100000
+	textOnly := []byte(`{"a":"hello","b":"world"}`)
+	// Two text leaves -> 2 * perText via the injected counter.
+	if got := EstimateRequestInputTokensWith(textOnly, func(string) int { return perText }); got != 2*perText {
+		t.Fatalf("injected counter not used for text leaves: got %d want %d", got, 2*perText)
+	}
+
+	blob := "data:image/png;base64," + strings.Repeat("A", 40000)
+	body := []byte(fmt.Sprintf(`{"img":%q}`, blob))
+	got := EstimateRequestInputTokensWith(body, func(string) int { return perText })
+	if got >= perText {
+		t.Fatalf("blob leaf was routed through the injected counter (got %d); it must be capped", got)
+	}
+	if got > blobTokenCap {
+		t.Fatalf("blob estimate %d exceeds cap %d", got, blobTokenCap)
+	}
+
+	// A nil counter must behave exactly like the default heuristic entrypoint.
+	if EstimateRequestInputTokensWith(textOnly, nil) != EstimateRequestInputTokens(textOnly) {
+		t.Fatal("nil counter must fall back to the default heuristic")
+	}
+}

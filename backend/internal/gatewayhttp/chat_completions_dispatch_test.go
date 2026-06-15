@@ -863,7 +863,9 @@ func TestHandler_QuotaReserveFeedsInputTokenEstimate(t *testing.T) {
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 	invokeHandlerPath(t, d, "/v1/chat/completions", body)
 
-	want := int64(estimateInputTokens([]byte(body)))
+	// gpt-4o flows through the real tokenizer; the same model the handler reads
+	// from the body must be used here so the estimate matches the reserved tokens.
+	want := int64(estimateInputTokens("gpt-4o", []byte(body)))
 	if want <= 0 {
 		t.Fatalf("fixture non-discriminating: estimateInputTokens=%d must be >0", want)
 	}
