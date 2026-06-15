@@ -7,12 +7,16 @@ import {
   BarChart3,
   Bell,
   ChevronLeft,
+  CornerUpLeft,
   Database,
   FileCheck2,
+  GaugeCircle,
   KeyRound,
   LayoutDashboard,
   MessageSquare,
   Package,
+  Settings,
+  ShieldAlert,
   ShieldCheck,
   Tags,
   Ticket,
@@ -39,13 +43,28 @@ const navItems = [
   { icon: Bell, label: '通知', href: '/notifications', active: false, disabled: false },
   { icon: FileCheck2, label: '审计', href: '/audit', active: false, disabled: false },
   { icon: Tags, label: '定价', href: '/pricing', active: false, disabled: false },
-  { icon: Database, label: '管理后台', href: '/accounts', active: false, disabled: false },
+  { icon: Settings, label: '管理后台', href: '/admin/ops', active: false, disabled: false },
+];
+
+// admin 控制台导航树（在 /admin/* 路由下展示）。
+const adminNavItems = [
+  { icon: CornerUpLeft, label: '返回用户端', href: '/dashboard', active: false, disabled: false },
+  { icon: GaugeCircle, label: '运营总览', href: '/admin/ops', active: false, disabled: false },
+  { icon: UserCircle, label: '用户管理', href: '/admin/users', active: false, disabled: false },
+  { icon: Database, label: '账号池', href: '/admin/accounts', active: false, disabled: false },
+  { icon: Activity, label: '渠道健康', href: '/admin/channels', active: false, disabled: false },
+  { icon: KeyRound, label: '凭证代理', href: '/admin/credentials', active: false, disabled: false },
+  { icon: Ticket, label: '运营管理', href: '/admin/operations', active: false, disabled: false },
+  { icon: Settings, label: '平台设置', href: '/admin/settings', active: false, disabled: false },
+  { icon: ShieldAlert, label: '审核系统', href: '/admin/system', active: false, disabled: false },
 ];
 
 const Sidebar = (_props: SidebarProps) => {
   const pathname = usePathname();
   const collapsed = _props.collapsed ?? false;
   const onToggle = _props.onToggle;
+  const isAdmin = pathname === '/admin' || pathname.startsWith('/admin/');
+  const items = isAdmin ? adminNavItems : navItems;
 
   return (
     <aside
@@ -55,13 +74,13 @@ const Sidebar = (_props: SidebarProps) => {
       )}
     >
       <div className="flex h-16 items-center justify-between border-b border-accent-200 px-3 dark:border-accent-800">
-        <Link href="/dashboard" className="flex min-w-0 items-center gap-3" aria-label="HUAKAI 控制台总览">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary-500 text-sm font-bold text-white shadow-glow">
+        <Link href={isAdmin ? '/admin/ops' : '/dashboard'} className="flex min-w-0 items-center gap-3" aria-label="HUAKAI 控制台总览">
+          <span className={cn('flex size-10 shrink-0 items-center justify-center rounded-lg text-sm font-bold text-white shadow-glow', isAdmin ? 'bg-accent-800 dark:bg-accent-700' : 'bg-primary-500')}>
             HK
           </span>
           <span className={cn('min-w-0', collapsed && 'hidden')}>
             <span className="block text-base font-bold tracking-normal text-accent-950 dark:text-white">HUAKAI</span>
-            <span className="block truncate text-xs text-accent-500 dark:text-accent-400">控制台</span>
+            <span className="block truncate text-xs text-accent-500 dark:text-accent-400">{isAdmin ? '管理控制台' : '控制台'}</span>
           </span>
         </Link>
         {onToggle && (
@@ -78,9 +97,9 @@ const Sidebar = (_props: SidebarProps) => {
           </button>
         )}
       </div>
-      <nav className="flex-1 p-3" aria-label="主导航">
+      <nav className="flex-1 p-3" aria-label={isAdmin ? '管理导航' : '主导航'}>
         <ul className="flex flex-col gap-1">
-          {navItems.map((item) => {
+          {items.map((item) => {
             const isActive = item.active || pathname === item.href || pathname.startsWith(`${item.href}/`);
             const itemClassName = cn(
               'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors',
