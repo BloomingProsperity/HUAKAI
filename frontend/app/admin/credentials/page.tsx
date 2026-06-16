@@ -30,14 +30,8 @@ import {
   ExternalLink,
   KeyRound,
   Loader2,
-  Network,
-  Pencil,
-  Plus,
-  Power,
-  PowerOff,
   RefreshCw,
   ShieldAlert,
-  Trash2,
   Upload,
   X,
 } from 'lucide-react';
@@ -54,46 +48,34 @@ import {
 } from '@/components/ui/table';
 import { friendlyMessage } from '@/lib/api/errors';
 import {
-  createProxy,
-  deleteProxy,
   expiryHint,
   formatDateTime,
   importCredentials,
   initOAuth,
-  listProxies,
   listRenewStatus,
-  proxyStatusBadgeVariant,
-  proxyStatusLabel,
   renewStateBadgeVariant,
   renewStateLabel,
-  setProxyStatus,
-  updateProxy,
   VENDORS,
   type AuthCredentialRenewStatus,
   type ImportKind,
-  type Proxy,
-  type ProxyStatus,
 } from '@/lib/api/adminCredentials';
 import { cn } from '@/lib/utils';
 
 const DEFAULT_TENANT_ID = 1; // 单租户部署默认
 const RENEW_PAGE_SIZE = 50;
 
-type Tab = 'credentials' | 'proxies';
-
 // ---- 主页面 ----
 
 export default function AdminCredentialsPage() {
   const [tenantId, setTenantId] = useState<number>(DEFAULT_TENANT_ID);
-  const [tab, setTab] = useState<Tab>('credentials');
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-5">
       <PageHeader />
 
-      {/* 租户 + 分区切换 */}
+      {/* 租户选择 */}
       <Card className="border-accent-200 bg-white shadow-card dark:border-accent-800 dark:bg-accent-900/70">
-        <CardContent className="flex flex-wrap items-end justify-between gap-4 p-5">
+        <CardContent className="flex flex-wrap items-end gap-4 p-5">
           <div className="flex flex-col gap-1">
             <label className="text-xs text-accent-500 dark:text-accent-400">租户 ID（platform_admin 必填）</label>
             <input
@@ -104,18 +86,10 @@ export default function AdminCredentialsPage() {
               className="h-9 w-28 rounded-md border border-input bg-background px-3 text-sm tabular-nums"
             />
           </div>
-          <div className="inline-flex rounded-lg border border-accent-200 p-1 dark:border-accent-800">
-            <TabButton active={tab === 'credentials'} onClick={() => setTab('credentials')} icon={<KeyRound className="size-4" />}>
-              凭证续期
-            </TabButton>
-            <TabButton active={tab === 'proxies'} onClick={() => setTab('proxies')} icon={<Network className="size-4" />}>
-              出站代理
-            </TabButton>
-          </div>
         </CardContent>
       </Card>
 
-      {tab === 'credentials' ? <CredentialsSection tenantId={tenantId} /> : <ProxiesSection tenantId={tenantId} />}
+      <CredentialsSection tenantId={tenantId} />
     </div>
   );
 }
@@ -123,39 +97,11 @@ export default function AdminCredentialsPage() {
 function PageHeader() {
   return (
     <div className="flex flex-col gap-1">
-      <h1 className="text-xl font-bold text-accent-950 dark:text-white">凭证与代理</h1>
+      <h1 className="text-xl font-bold text-accent-950 dark:text-white">凭证续期</h1>
       <p className="text-sm text-accent-500 dark:text-accent-400">
-        管理上游账号凭证续期状态 + 导入新凭证（粘贴 / CLI / CSV / JSON / OAuth），以及出站代理池。走管理 token。
+        管理上游账号凭证续期状态 + 导入新凭证（粘贴 / CLI / CSV / JSON / OAuth）。走管理 token。出站代理池已迁至「代理池」页。
       </p>
     </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  icon,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-        active
-          ? 'bg-primary-600 text-white dark:bg-primary-500'
-          : 'text-accent-600 hover:bg-accent-100 dark:text-accent-300 dark:hover:bg-accent-800',
-      )}
-    >
-      {icon}
-      {children}
-    </button>
   );
 }
 
@@ -686,412 +632,6 @@ function OAuthInitModal({
               发起
             </Button>
           )}
-        </div>
-      </div>
-    </ModalShell>
-  );
-}
-
-// =====================================================================================
-//  区 ② 出站代理池
-// =====================================================================================
-
-function ProxiesSection({ tenantId }: { tenantId: number }) {
-  const [proxies, setProxies] = useState<Proxy[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [actionKey, setActionKey] = useState<string | null>(null);
-  const [protocolFilter, setProtocolFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | ProxyStatus>('all');
-  const [editTarget, setEditTarget] = useState<Proxy | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const resp = await listProxies(tenantId);
-      setProxies(resp.items ?? []);
-    } catch (err) {
-      setError(friendlyMessage(err));
-      setProxies([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [tenantId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const protocols = useMemo(() => {
-    const set = new Set<string>();
-    proxies.forEach((p) => p.protocol && set.add(p.protocol));
-    return Array.from(set).sort();
-  }, [proxies]);
-
-  const visible = useMemo(() => {
-    return proxies.filter(
-      (p) => (protocolFilter === 'all' || p.protocol === protocolFilter) && (statusFilter === 'all' || p.status === statusFilter),
-    );
-  }, [proxies, protocolFilter, statusFilter]);
-
-  const handleToggle = useCallback(
-    async (p: Proxy) => {
-      const next: ProxyStatus = p.status === 'active' ? 'disabled' : 'active';
-      setActionKey(`status-${p.id}`);
-      setError(null);
-      setNotice(null);
-      try {
-        await setProxyStatus(p.id, next, tenantId);
-        setNotice(`代理「${p.name}」已${next === 'active' ? '启用' : '停用'}。`);
-        await load();
-      } catch (err) {
-        setError(friendlyMessage(err));
-      } finally {
-        setActionKey(null);
-      }
-    },
-    [tenantId, load],
-  );
-
-  const handleDelete = useCallback(
-    async (p: Proxy) => {
-      if (typeof window !== 'undefined' && !window.confirm(`确认删除代理「${p.name}」（${p.host}:${p.port}）？`)) return;
-      setActionKey(`del-${p.id}`);
-      setError(null);
-      setNotice(null);
-      try {
-        await deleteProxy(p.id, tenantId);
-        setNotice(`代理「${p.name}」已删除。`);
-        await load();
-      } catch (err) {
-        setError(friendlyMessage(err));
-      } finally {
-        setActionKey(null);
-      }
-    },
-    [tenantId, load],
-  );
-
-  return (
-    <>
-      {error && <ErrorBanner message={error} />}
-      {notice && <NoticeBanner message={notice} />}
-
-      <Card className="border-accent-200 bg-white shadow-card dark:border-accent-800 dark:bg-accent-900/70">
-        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 p-5 pb-3">
-          <CardTitle className="flex items-center gap-2 text-base font-semibold tracking-normal text-accent-950 dark:text-white">
-            <Network className="size-4 text-primary-600 dark:text-primary-300" />
-            出站代理池
-          </CardTitle>
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={protocolFilter}
-              onChange={(e) => setProtocolFilter(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="all">全部协议</option>
-              {protocols.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as 'all' | ProxyStatus)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            >
-              <option value="all">全部状态</option>
-              <option value="active">启用</option>
-              <option value="disabled">已停用</option>
-              <option value="dead">已失效</option>
-            </select>
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus />
-              新建代理
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
-              <RefreshCw className={cn(loading && 'animate-spin')} />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="p-5 pt-0">
-          {loading && proxies.length === 0 ? (
-            <CenterLoader text="加载代理列表中…" />
-          ) : visible.length === 0 ? (
-            <EmptyState
-              text={proxies.length === 0 ? '当前租户暂无出站代理。' : '没有匹配过滤条件的代理。'}
-            />
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>名称 / 协议</TableHead>
-                    <TableHead>地址</TableHead>
-                    <TableHead>鉴权用户</TableHead>
-                    <TableHead>状态</TableHead>
-                    <TableHead>最近检查</TableHead>
-                    <TableHead className="text-right">操作</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visible.map((p) => {
-                    const busy = actionKey === `status-${p.id}` || actionKey === `del-${p.id}`;
-                    return (
-                      <TableRow key={p.id}>
-                        <TableCell>
-                          <div className="font-medium text-accent-900 dark:text-accent-100">{p.name}</div>
-                          <div className="text-[11px] uppercase text-accent-400">
-                            #{p.id} · {p.protocol}
-                          </div>
-                        </TableCell>
-                        <TableCell className="font-mono text-xs text-accent-700 dark:text-accent-200">
-                          {p.host}:{p.port}
-                        </TableCell>
-                        <TableCell className="text-xs text-accent-500 dark:text-accent-400">
-                          {p.auth_username || <span className="text-accent-300">—</span>}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={proxyStatusBadgeVariant(p.status)}>{proxyStatusLabel(p.status)}</Badge>
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-xs text-accent-500 dark:text-accent-400">
-                          {formatDateTime(p.last_check_at)}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center justify-end gap-1.5">
-                            <Button
-                              size="sm"
-                              variant={p.status === 'active' ? 'outline' : 'default'}
-                              onClick={() => void handleToggle(p)}
-                              disabled={actionKey !== null}
-                              title={p.status === 'active' ? '停用' : '启用'}
-                            >
-                              {busy && actionKey === `status-${p.id}` ? (
-                                <Loader2 className="size-4 animate-spin" />
-                              ) : p.status === 'active' ? (
-                                <PowerOff />
-                              ) : (
-                                <Power />
-                              )}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => {
-                                setEditTarget(p);
-                                setError(null);
-                                setNotice(null);
-                              }}
-                              disabled={actionKey !== null}
-                              title="编辑"
-                            >
-                              <Pencil />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => void handleDelete(p)}
-                              disabled={actionKey !== null}
-                              title="删除"
-                              className="text-red-600 hover:text-red-700 dark:text-red-400"
-                            >
-                              {busy && actionKey === `del-${p.id}` ? <Loader2 className="size-4 animate-spin" /> : <Trash2 />}
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {createOpen && (
-        <ProxyFormModal
-          tenantId={tenantId}
-          onClose={() => setCreateOpen(false)}
-          onDone={(msg) => {
-            setCreateOpen(false);
-            setNotice(msg);
-            void load();
-          }}
-        />
-      )}
-      {editTarget && (
-        <ProxyFormModal
-          tenantId={tenantId}
-          proxy={editTarget}
-          onClose={() => setEditTarget(null)}
-          onDone={(msg) => {
-            setEditTarget(null);
-            setNotice(msg);
-            void load();
-          }}
-        />
-      )}
-    </>
-  );
-}
-
-// ---- 代理 新建 / 编辑弹窗 ----
-
-function ProxyFormModal({
-  tenantId,
-  proxy,
-  onClose,
-  onDone,
-}: {
-  tenantId: number;
-  proxy?: Proxy;
-  onClose: () => void;
-  onDone: (msg: string) => void;
-}) {
-  const editing = proxy != null;
-  const [name, setName] = useState(proxy?.name ?? '');
-  const [protocol, setProtocol] = useState(proxy?.protocol ?? 'http');
-  const [host, setHost] = useState(proxy?.host ?? '');
-  const [port, setPort] = useState<string>(proxy ? String(proxy.port) : '');
-  const [authUsername, setAuthUsername] = useState(proxy?.auth_username ?? '');
-  const [authSecret, setAuthSecret] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
-
-  async function submit() {
-    const p = Number(port.trim());
-    if (name.trim() === '' || protocol.trim() === '' || host.trim() === '') {
-      setLocalError('名称、协议、主机均必填。');
-      return;
-    }
-    if (!Number.isInteger(p) || p <= 0 || p > 65535) {
-      setLocalError('端口需为 1..65535 的整数。');
-      return;
-    }
-    setSubmitting(true);
-    setLocalError(null);
-    try {
-      if (editing && proxy) {
-        await updateProxy(proxy.id, {
-          name,
-          protocol,
-          host,
-          port: p,
-          auth_username: authUsername.trim() || undefined,
-          auth_secret: authSecret || undefined,
-          tenant_id: tenantId,
-        });
-        onDone(`代理「${name.trim()}」已更新。`);
-      } else {
-        await createProxy({
-          name,
-          protocol,
-          host,
-          port: p,
-          auth_username: authUsername.trim() || undefined,
-          auth_secret: authSecret || undefined,
-          tenant_id: tenantId,
-        });
-        onDone(`代理「${name.trim()}」已创建。`);
-      }
-    } catch (err) {
-      setLocalError(friendlyMessage(err));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <ModalShell
-      title={editing ? '编辑代理' : '新建代理'}
-      icon={<Network className="size-4 text-primary-600 dark:text-primary-300" />}
-      onClose={onClose}
-    >
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-accent-500 dark:text-accent-400">名称</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="例：us-residential-1"
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-          />
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-[8rem_1fr_6rem]">
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-accent-500 dark:text-accent-400">协议</label>
-            <input
-              type="text"
-              value={protocol}
-              onChange={(e) => setProtocol(e.target.value)}
-              placeholder="http / https / socks5"
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-accent-500 dark:text-accent-400">主机</label>
-            <input
-              type="text"
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-              placeholder="proxy.example.com"
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-accent-500 dark:text-accent-400">端口</label>
-            <input
-              type="number"
-              min={1}
-              max={65535}
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-              placeholder="8080"
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm tabular-nums"
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-accent-500 dark:text-accent-400">鉴权用户（可选）</label>
-            <input
-              type="text"
-              value={authUsername}
-              onChange={(e) => setAuthUsername(e.target.value)}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-accent-500 dark:text-accent-400">
-              鉴权密钥{editing ? '（留空不改）' : '（可选）'}
-            </label>
-            <input
-              type="password"
-              value={authSecret}
-              onChange={(e) => setAuthSecret(e.target.value)}
-              placeholder={editing ? '••••••••（写入用，不回读）' : '密码 / token'}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-            />
-          </div>
-        </div>
-        <p className="text-[11px] text-accent-400">
-          说明：鉴权密钥写入后不回读（后端为 write-only）。状态新建后默认启用，可在列表中启停。
-        </p>
-        {localError && <InlineError message={localError} />}
-        <div className="flex justify-end gap-2 pt-1">
-          <Button size="sm" variant="outline" onClick={onClose} disabled={submitting}>
-            取消
-          </Button>
-          <Button size="sm" onClick={() => void submit()} disabled={submitting}>
-            {submitting ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 />}
-            {editing ? '保存' : '创建'}
-          </Button>
         </div>
       </div>
     </ModalShell>
