@@ -117,10 +117,14 @@ func buildSelector(
 	if selectorCfg.StickyTTL > 0 {
 		stickyStore.TTL = selectorCfg.StickyTTL
 	}
+	// slot manager 提取一次并注入运维配置的 lease 时长(0 时 WithLeaseDuration
+	// 内部忽略 → 包内 90s 默认)。default selector 与 actual PASR 共用同一实例 —
+	// DBSlotManager 仅包裹 pool/queries,goroutine 安全可共享。
+	slotMgr := pool.NewDBSlotManager(pgPool).WithLeaseDuration(selectorCfg.SlotLeaseDuration)
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
-		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
+		pool.WithSlotManager(slotMgr),
 		pool.WithClaimGate(pool.NewDBClaimGate(q)),
 		pool.WithStickyStore(stickyStore),
 	)
@@ -157,7 +161,7 @@ func buildSelector(
 		actual, err := pool.NewPASRSelector(pool.PASRSelectorConfig{
 			Accounts: pool.NewDBAccountSource(q),
 			Claims:   pool.NewDBClaimGate(q),
-			Slots:    pool.NewDBSlotManager(pgPool),
+			Slots:    slotMgr,
 			Segments: segments,
 			Gates:    gates,
 			LoadCap:  selectorCfg.LoadCap,
