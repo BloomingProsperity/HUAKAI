@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // PoolSelectorMode 是 selector dispatcher 的 5 种合法运行模式之一。
@@ -52,6 +53,12 @@ var ErrInvalidPoolSelectorMode = errors.New("config: invalid pool selector mode"
 // ErrInvalidPercent 指示 percent 类 ENV 解析失败或越界 (合法范围 [0, 100])。
 var ErrInvalidPercent = errors.New("config: invalid percent (must be integer in [0, 100])")
 
+// ErrInvalidLoadCap 指示 PASR LoadCap ENV 解析失败或越界(合法 0 或 (0, 1.0])。
+var ErrInvalidLoadCap = errors.New("config: invalid PASR load cap (must be 0 or in (0, 1.0])")
+
+// ErrInvalidStickyTTL 指示 sticky TTL ENV 解析失败或为负(合法 0 或正秒数)。
+var ErrInvalidStickyTTL = errors.New("config: invalid sticky binding TTL (must be 0 or a positive number of seconds)")
+
 // PoolSelectorConfig 是 selector dispatcher 启动期需要的全部配置快照。
 //
 // 字段说明:
@@ -68,6 +75,12 @@ type PoolSelectorConfig struct {
 	ShadowPercent int
 	CanaryPercent int
 	SamplingSalt  string
+	// LoadCap: PASR 段成员被剔出 candidates 的 LoadRate 上限。0 = 用包内默认
+	// 0.95(运维开关,默认零行为变化)。合法范围 0 或 (0, 1.0]。
+	LoadCap float64
+	// StickyTTL: sticky 绑定的 expires_at = now() + TTL。0 = 用默认 1h(对齐
+	// Anthropic prompt-cache extended TTL)。运维可按 vendor 缓存窗口调整。
+	StickyTTL time.Duration
 }
 
 // 默认值 — 与现状等价, 即不开 PASR。
@@ -123,6 +136,22 @@ func LoadPoolSelector() (*PoolSelectorConfig, error) {
 		cfg.SamplingSalt = raw
 	}
 
+	if raw := os.Getenv("HUAKAI_PASR_LOAD_CAP"); raw != "" {
+		f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: HUAKAI_PASR_LOAD_CAP=%q: %v", ErrInvalidLoadCap, raw, err)
+		}
+		cfg.LoadCap = f
+	}
+
+	if raw := os.Getenv("HUAKAI_POOL_STICKY_BINDING_TTL_SECONDS"); raw != "" {
+		secs, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || secs < 0 {
+			return nil, fmt.Errorf("%w: HUAKAI_POOL_STICKY_BINDING_TTL_SECONDS=%q", ErrInvalidStickyTTL, raw)
+		}
+		cfg.StickyTTL = time.Duration(secs) * time.Second
+	}
+
 	// 兜底: 即使 ENV 解析全过, 仍跑一次 Validate, 让"非 ENV 注入路径"
 	// (未来 YAML 加载 / 测试构造 / dispatcher 复检) 与 ENV 路径走同一校验通道。
 	if err := cfg.Validate(); err != nil {
@@ -157,6 +186,14 @@ func (c *PoolSelectorConfig) Validate() error {
 	}
 	if c.CanaryPercent < 0 || c.CanaryPercent > 100 {
 		return fmt.Errorf("%w: CanaryPercent=%d", ErrInvalidPercent, c.CanaryPercent)
+	}
+	// LoadCap: 0 = 用包内 0.95 默认;否则须在 (0, 1.0]。
+	if c.LoadCap < 0 || c.LoadCap > 1.0 {
+		return fmt.Errorf("%w: LoadCap=%v", ErrInvalidLoadCap, c.LoadCap)
+	}
+	// StickyTTL: 0 = 用默认 1h;否则须非负。
+	if c.StickyTTL < 0 {
+		return fmt.Errorf("%w: StickyTTL=%s", ErrInvalidStickyTTL, c.StickyTTL)
 	}
 	return nil
 }

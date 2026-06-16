@@ -113,12 +113,16 @@ func buildSelector(
 	// gate 静默退回 AllowAll 无测可抓)。同一 gates 值流入 default selector + actual/shadow PASR,
 	// 一处接线覆盖全 5 mode。
 	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, sessionCapRegistry, ratePrecheckCounter, logger)
+	stickyStore := pool.NewDBStickyStore(q)
+	if selectorCfg.StickyTTL > 0 {
+		stickyStore.TTL = selectorCfg.StickyTTL
+	}
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
 		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
 		pool.WithClaimGate(pool.NewDBClaimGate(q)),
-		pool.WithStickyStore(pool.NewDBStickyStore(q)),
+		pool.WithStickyStore(stickyStore),
 	)
 
 	// 2. default mode: 直接返, 不启动 PASR 基础设施
@@ -156,6 +160,7 @@ func buildSelector(
 			Slots:    pool.NewDBSlotManager(pgPool),
 			Segments: segments,
 			Gates:    gates,
+			LoadCap:  selectorCfg.LoadCap,
 			// RingProvider 不注入 — 走 request-scoped ring。
 		})
 		if err != nil {
@@ -173,6 +178,7 @@ func buildSelector(
 			Segments:         segments,
 			ReadOnlySegments: true, // D2: shadow 段表只读, 不污染 actual 学习数据
 			Gates:            gates,
+			LoadCap:          selectorCfg.LoadCap,
 		})
 		if err != nil {
 			agingWorker.Stop()
