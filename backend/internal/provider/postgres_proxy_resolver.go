@@ -47,6 +47,10 @@ var ErrProxyUnhealthy = errors.New("provider proxy resolver: 绑定的代理已 
 type PostgresProxyResolver struct {
 	pool *pgxpool.Pool
 	keys credentialstore.KeyProvider
+	// directFallbackAllowed is the platform kill-switch getter (nil = disallowed).
+	// When it returns true, a proxy with fallback_mode='direct' may fall through to
+	// direct egress on unhealthy; otherwise unhealthy stays fail-closed (reject).
+	directFallbackAllowed func() bool
 }
 
 // 编译期接口合规断言。
@@ -61,6 +65,16 @@ func NewPostgresProxyResolverWithKeys(pool *pgxpool.Pool, keys credentialstore.K
 	return &PostgresProxyResolver{pool: pool, keys: keys}
 }
 
+// WithDirectFallbackGate sets the platform kill-switch getter used to authorize
+// fallback_mode='direct'. Returns the receiver for chaining. A nil getter (the
+// default) keeps direct fallback disabled, preserving fail-closed behavior.
+func (r *PostgresProxyResolver) WithDirectFallbackGate(allowed func() bool) *PostgresProxyResolver {
+	if r != nil {
+		r.directFallbackAllowed = allowed
+	}
+	return r
+}
+
 // proxyRow 是 SQL JOIN 返回的中间值, 跟 Go *url.URL 构造解耦.
 type proxyRow struct {
 	tenantID       int64
@@ -73,6 +87,7 @@ type proxyRow struct {
 	port           int
 	username       *string
 	secret         *string
+	fallbackMode   string // PROXY fallback: 'reject'(默认/fail-closed) | 'direct'(需平台总闸同开)
 	// tenant-default tier (PROXY-03): 账号无绑定时回退到 tenant.default_proxy_id
 	hasDefaultBound  bool
 	defaultIsHealthy bool
@@ -81,6 +96,7 @@ type proxyRow struct {
 	dport            int
 	dusername        *string
 	dsecret          *string
+	dFallbackMode    string // tenant-default 层代理的 fallback_mode
 }
 
 // Resolve 按 accountID 查 provider_accounts JOIN proxies 取出代理字段在 Go 端
@@ -128,7 +144,9 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
             COALESCE(dp.host, '')         AS d_host,
             COALESCE(dp.port, 0)          AS d_port,
             dp.auth_username               AS d_auth_username,
-            dp.auth_secret                 AS d_auth_secret
+            dp.auth_secret                 AS d_auth_secret,
+            COALESCE(p.fallback_mode, 'reject')  AS fallback_mode,
+            COALESCE(dp.fallback_mode, 'reject') AS d_fallback_mode
         FROM provider_accounts pa
         LEFT JOIN proxies p ON pa.proxy_id = p.id
         LEFT JOIN tenants t ON pa.tenant_id = t.id
@@ -154,6 +172,8 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 		&row.dport,
 		&row.dusername,
 		&row.dsecret,
+		&row.fallbackMode,
+		&row.dFallbackMode,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("account %d: %w", accountID, ErrAccountNotFound)
@@ -186,7 +206,7 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 
 	// 按优先级选层: account > tenant-default > direct。每层 bound-but-unhealthy
 	// 都 fail-closed (不静默落到下层或直连, 否则破坏账号级 IP 隔离)。
-	fields, useProxy, perr := chooseProxyTier(row)
+	fields, useProxy, perr := chooseProxyTier(row, r.directFallbackAllowed != nil && r.directFallbackAllowed())
 	if perr != nil {
 		return nil, fmt.Errorf("account %d: %w", accountID, perr)
 	}
@@ -278,23 +298,40 @@ type proxyFields struct {
 	secret   *string
 }
 
+// fallback_mode 取值。
+const (
+	proxyFallbackReject = "reject"
+	proxyFallbackDirect = "direct"
+)
+
 // chooseProxyTier 按优先级 account > tenant-default > direct 选出该用哪层代理。
-// 每层 bound-but-unhealthy 都返回 ErrProxyUnhealthy(fail-closed,绝不静默落到下
-// 层或直连——那会破坏账号级 IP 隔离)。useProxy=false 表示直连(无任何绑定)。
-func chooseProxyTier(row proxyRow) (proxyFields, bool, error) {
+// 默认每层 bound-but-unhealthy fail-closed(reject);仅当该层代理 fallback_mode='direct'
+// 且平台总闸 directFallbackAllowed=true 时才允许落到直连(双重门,见 resolveUnhealthyTier)。
+// useProxy=false + err=nil 表示直连。
+func chooseProxyTier(row proxyRow, directFallbackAllowed bool) (proxyFields, bool, error) {
 	if row.hasProxyBound {
 		if !row.proxyIsHealthy {
-			return proxyFields{}, false, ErrProxyUnhealthy
+			return resolveUnhealthyTier(row.fallbackMode, directFallbackAllowed)
 		}
 		return proxyFields{protocol: row.protocol, host: row.host, port: row.port, username: row.username, secret: row.secret}, true, nil
 	}
 	if row.hasDefaultBound {
 		if !row.defaultIsHealthy {
-			return proxyFields{}, false, ErrProxyUnhealthy
+			return resolveUnhealthyTier(row.dFallbackMode, directFallbackAllowed)
 		}
 		return proxyFields{protocol: row.dprotocol, host: row.dhost, port: row.dport, username: row.dusername, secret: row.dsecret}, true, nil
 	}
 	return proxyFields{}, false, nil
+}
+
+// resolveUnhealthyTier 决定 bound-but-unhealthy 代理层的行为。默认 'reject' = fail-closed
+// (保护账号级 IP 隔离)。'direct' 仅当平台总闸 directFallbackAllowed 也为 true 时才落直连——
+// 双重门:per-proxy 设置或平台总闸任一单独都无法把出站退到网关真实 IP。
+func resolveUnhealthyTier(fallbackMode string, directFallbackAllowed bool) (proxyFields, bool, error) {
+	if fallbackMode == proxyFallbackDirect && directFallbackAllowed {
+		return proxyFields{}, false, nil
+	}
+	return proxyFields{}, false, ErrProxyUnhealthy
 }
 
 // listGroupMembers 列出某 tenant 某组的 active 代理成员(原始字段, secret 待解密)。

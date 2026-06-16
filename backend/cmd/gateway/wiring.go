@@ -1139,9 +1139,18 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,
 		dispatcher: &gateway.UpstreamDispatcher{
-			Adapters:                 registrydefault.Build(),
-			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
-			ProxyResolver:            provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys),
+			Adapters:         registrydefault.Build(),
+			TransportFactory: buildTransportFactory(cfg, mimicryRegistry),
+			ProxyResolver: provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys).
+				WithDirectFallbackGate(func() bool {
+					// 平台总闸:仅当 proxy_direct_fallback_enabled=true 时,才允许
+					// per-proxy fallback_mode='direct' 落到直连(双重门)。默认 false。
+					s, err := platformSettingsService.Get(context.Background(), platformsettings.KeyProxyDirectFallbackEnabled)
+					if err != nil {
+						return false
+					}
+					return s.Value == "true"
+				}),
 			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
 			Timeouts:                 buildGatewayTimeoutConfig(),
 			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
