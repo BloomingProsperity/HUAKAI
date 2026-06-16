@@ -108,11 +108,11 @@
       ]
     },
     {
-      "id": "§6", "name": "Rust 高性能网关", "pct": 10,
-      "summary": "⚠️ 名实不符:Rust crate 真实存在(listener/proxy/SSE/限流/redaction/mimicry)但 READINESS.md 标 NO-GO,生产入口是 Go。",
+      "id": "§6", "name": "Rust 出站强伪装 sidecar(方向 C)", "pct": 60,
+      "summary": "方向 C:Go 是大脑,Rust 只做出站强伪装传输。旧 core_gateway 全数据面 fork + 3 废 lane + gRPC route.proto 已退役删除(cleanup/retire-old-rust)。现存 tls-sidecar 已建+测,生产启用 Owner-gated。",
       "leaves": [
-        {"name": "core_gateway 等 8 crate", "fid": "-", "pkgs": ["(rust)"], "stage": "nogo", "pct": 20, "verified": false, "fix": {"open": []}, "parity": "Rust 真实存在但 NO-GO,非生产数据面(应标 outbound sidecar 候选)"},
-        {"name": "Go 控制面 gRPC 交互", "fid": "-", "pkgs": [], "stage": "missing", "pct": 0, "verified": false, "fix": {"open": []}, "parity": "❗Rust 侧定义 proto,Go 侧无对应 gRPC server(HIGH→按新方向 MED)"}
+        {"name": "tls-sidecar 出站伪装(BoringSSL+JA3/JA4+H2 SETTINGS+防走私)", "fid": "F-ACTIVE-DETECT", "pkgs": ["(rust:tls-sidecar)","transport"], "stage": "nogo", "pct": 70, "verified": false, "fix": {"open": []}, "parity": "已建+测(cargo 36 测试,R-SIDECAR-001 sigalgs raw + R-SIDECAR-002 H2 bridge + 防走私 全 landed);'nogo'=真码未上线,生产启用待 benchmark+shadow+Owner go/no-go;三参照均无 Rust 线级伪装"},
+        {"name": "Go↔Rust 接线(unix socket + fail-closed 契约)", "fid": "F-ACTIVE-DETECT", "pkgs": ["transport","mimicry"], "stage": "tested", "pct": 70, "verified": false, "fix": {"open": []}, "parity": "sidecar_client + transport.Factory 门控 + fail-closed 契约 已 landed(8 判别性 Go 测试);旧 gRPC 控制面已退役,现走 unix-socket framed JSON;尚无真 Rust 二进制↔真 Go 端到端跑通"}
       ]
     },
     {

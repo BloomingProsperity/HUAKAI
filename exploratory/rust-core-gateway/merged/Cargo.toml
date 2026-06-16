@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core_gateway", "crates/tls-sidecar"]
+members = ["crates/tls-sidecar"]
 resolver = "2"
 
 [workspace.package]
