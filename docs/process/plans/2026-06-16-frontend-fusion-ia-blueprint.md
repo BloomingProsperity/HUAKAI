@@ -70,7 +70,11 @@ API Keys                 〔2〕〔N〕  ✅已对齐(搜索/筛选/排序/到�
 
 ## 3. 缺口分级(决定先后)
 
-- **T1 最高 ROI — 后端 rich、前端缺整页,纯接线就能上**:订单 Orders、兑换码 Vouchers、公告 Announcements、代理池 Proxies、订阅计划 SubPlans、告警 Alerts、审核 Moderation。→ 这些是"管理端一半的盘子",建一页就点亮一块,几乎不碰后端。
+- **T1 最高 ROI — 后端 rich、前端缺整页,纯接线就能上**:订单 Orders、兑换码 Vouchers、公告 Announcements、~~代理池 Proxies~~(✅ 已完成,见下)、订阅计划 SubPlans、告警 Alerts、审核 Moderation。→ 这些是"管理端一半的盘子",建一页就点亮一块,几乎不碰后端。
+
+> **⚠️ 校正(2026-06-16,做代理页时发现):** 代理池**并非缺页** —— 它原本被**捆绑**在「凭证与代理」页的一个 tab 里(测绘 agent 没扒出来),已提升为独立 `/admin/proxies`(commit `7617f7ce`,凭证页 1190→729 行)。**教训:本清单的其余"❌缺页"项可能也被捆绑在别处**(如订单/告警可能藏在某管理页内),每页开工前先 grep 确认"是真缺、还是被捆绑",别凭这张表直接判缺。
+>
+> **进度:** Wave-T1 ① 代理池 ✅(`feat/frontend-admin-proxies` / `7617f7ce`,tsc 绿,后端 21 测试函数兜底,E2E 接线 + fallback_mode 待跟进)。
 - **T2 接深 — 已有页但浅,后端深能力没surfaced**:账号池/凭证(导入流/轮转/健康/批量)、Ops 总览、用户管理、渠道。
 - **T3 用户端补齐**:Affiliate 整页、Dashboard 分型、充值多网关、IP 白名单接线。
 - **T4 大结构**:平台设置嵌套树(new-api 8 节);Hermes/mimicry 接线。
