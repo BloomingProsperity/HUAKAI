@@ -36,6 +36,15 @@ const DefaultLeaseDuration = 90 * time.Second
 type DBSlotManager struct {
 	pool *pgxpool.Pool
 	q    *dbbilling.Queries
+
+	// leaseDuration overrides DefaultLeaseDuration when > 0. The zero value
+	// falls back to DefaultLeaseDuration so an unconfigured manager keeps the
+	// safe 90s grace window — operators tune it via
+	// HUAKAI_POOL_SLOT_LEASE_DURATION_SECONDS, range-validated upstream in
+	// config.PoolSelectorConfig.Validate to stay strictly above the orphan-
+	// sweep cadence (billing.leaseSweepTickerInterval). This adapter only
+	// stores the value; it does not re-validate the floor.
+	leaseDuration time.Duration
 }
 
 // NewDBSlotManager constructs the adapter from a pgx pool. The pool is
@@ -45,6 +54,31 @@ func NewDBSlotManager(pool *pgxpool.Pool) *DBSlotManager {
 		return &DBSlotManager{}
 	}
 	return &DBSlotManager{pool: pool, q: dbbilling.New(pool)}
+}
+
+// WithLeaseDuration sets the slot lease grace window written into
+// pool_slot_acquisitions.lease_expires_at at Acquire time. A value <= 0 is
+// ignored so the DefaultLeaseDuration fallback stands (zero-config → zero
+// behavior change). The caller (selector wiring) owns floor validation; this
+// setter only records the chosen value. Returns the receiver for chaining.
+func (m *DBSlotManager) WithLeaseDuration(d time.Duration) *DBSlotManager {
+	if m == nil {
+		return m
+	}
+	if d > 0 {
+		m.leaseDuration = d
+	}
+	return m
+}
+
+// effectiveLeaseDuration centralises the zero-value→DefaultLeaseDuration
+// fallback in one place so the guard is unit-testable without a live DB and
+// the Acquire path reads a single source of truth.
+func (m *DBSlotManager) effectiveLeaseDuration() time.Duration {
+	if m != nil && m.leaseDuration > 0 {
+		return m.leaseDuration
+	}
+	return DefaultLeaseDuration
 }
 
 func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, req SelectionRequest) (*AcquireResult, error) {
@@ -98,7 +132,7 @@ func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapsho
 		ClaimID:           claimID,
 		AttemptSeq:        int32(req.AttemptSeq),
 		LeaseExpiresAt: pgtype.Timestamptz{
-			Time:  time.Now().Add(DefaultLeaseDuration).UTC(),
+			Time:  time.Now().Add(m.effectiveLeaseDuration()).UTC(),
 			Valid: true,
 		},
 	}); err != nil {

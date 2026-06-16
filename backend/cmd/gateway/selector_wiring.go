@@ -113,12 +113,20 @@ func buildSelector(
 	// gate 静默退回 AllowAll 无测可抓)。同一 gates 值流入 default selector + actual/shadow PASR,
 	// 一处接线覆盖全 5 mode。
 	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, sessionCapRegistry, ratePrecheckCounter, logger)
+	stickyStore := pool.NewDBStickyStore(q)
+	if selectorCfg.StickyTTL > 0 {
+		stickyStore.TTL = selectorCfg.StickyTTL
+	}
+	// slot manager 提取一次并注入运维配置的 lease 时长(0 时 WithLeaseDuration
+	// 内部忽略 → 包内 90s 默认)。default selector 与 actual PASR 共用同一实例 —
+	// DBSlotManager 仅包裹 pool/queries,goroutine 安全可共享。
+	slotMgr := pool.NewDBSlotManager(pgPool).WithLeaseDuration(selectorCfg.SlotLeaseDuration)
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
-		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
+		pool.WithSlotManager(slotMgr),
 		pool.WithClaimGate(pool.NewDBClaimGate(q)),
-		pool.WithStickyStore(pool.NewDBStickyStore(q)),
+		pool.WithStickyStore(stickyStore),
 	)
 
 	// 2. default mode: 直接返, 不启动 PASR 基础设施
@@ -153,9 +161,10 @@ func buildSelector(
 		actual, err := pool.NewPASRSelector(pool.PASRSelectorConfig{
 			Accounts: pool.NewDBAccountSource(q),
 			Claims:   pool.NewDBClaimGate(q),
-			Slots:    pool.NewDBSlotManager(pgPool),
+			Slots:    slotMgr,
 			Segments: segments,
 			Gates:    gates,
+			LoadCap:  selectorCfg.LoadCap,
 			// RingProvider 不注入 — 走 request-scoped ring。
 		})
 		if err != nil {
@@ -173,6 +182,7 @@ func buildSelector(
 			Segments:         segments,
 			ReadOnlySegments: true, // D2: shadow 段表只读, 不污染 actual 学习数据
 			Gates:            gates,
+			LoadCap:          selectorCfg.LoadCap,
 		})
 		if err != nil {
 			agingWorker.Stop()
