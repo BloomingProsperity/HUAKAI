@@ -25,7 +25,8 @@
     "test:channel-test-template": "node --experimental-strip-types --test lib/api/channel-test-template-form.test.ts",
     "test:model-sync": "node --experimental-strip-types --test lib/api/model-sync-form.test.ts",
     "test:announcement": "node --experimental-strip-types --test lib/api/announcement-form.test.ts",
-    "test:alert-silence": "node --experimental-strip-types --test lib/api/alert-silence-form.test.ts"
+    "test:alert-silence": "node --experimental-strip-types --test lib/api/alert-silence-form.test.ts",
+    "test:alert-rule": "node --experimental-strip-types --test lib/api/alert-rule-form.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
