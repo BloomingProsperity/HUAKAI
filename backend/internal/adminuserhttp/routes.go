@@ -35,7 +35,7 @@ type Deps struct {
 	Audit            adminAuditStore
 	TwoFADisabler    twoFADisableService
 	PasskeyResetter  passkeyResetService
-	UserGroupSetter  userGroupSetter
+	UserGroupAudit   userGroupAuditStore
 	UserRemarkSetter userRemarkSetter
 	UserStatusSetter userStatusSetter
 	UserCreator      userCreateService
@@ -78,8 +78,12 @@ type passkeyResetService interface {
 	AdminClearCredentials(ctx context.Context, tenantID, userID int64) (int, error)
 }
 
-type userGroupSetter interface {
-	SetUserGroupForTenant(ctx context.Context, tenantID, userID int64, group string) error
+// userGroupAuditStore 在【单个事务】内原子完成「改 users.user_group + 写 set_user_group 审计」,
+// 镜像 userUnlockAuditStore.UnlockUserWithAudit 的范式。修复接线审计 #6d:旧实现把这两次写拆成
+// handler 里两次独立 pool 写,UPDATE 成功而审计 insert 失败时会留下「组已改但无审计」的部分写
+// (handler 还回 503 误导运维以为没改成)。包进同一 pgx.Tx 后,任一写失败整体回滚。
+type userGroupAuditStore interface {
+	SetUserGroupWithAudit(ctx context.Context, tenantID, userID int64, group string, input unlockAuditInput) error
 }
 
 type userRemarkSetter interface {
@@ -709,22 +713,49 @@ type setUserGroupRequest struct {
 	Group string `json:"group"`
 }
 
-// postgresUserGroupStore sets users.user_group (routing entitlement) for a tenant user.
-type postgresUserGroupStore struct {
+// postgresUserGroupAuditStore 原子化「改 users.user_group + 写 set_user_group 审计」。
+type postgresUserGroupAuditStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresUserGroupStore wires the admin user-group setter.
-func NewPostgresUserGroupStore(pool *pgxpool.Pool) userGroupSetter {
+// NewPostgresUserGroupAuditStore wires the atomic set-user-group + audit store.
+func NewPostgresUserGroupAuditStore(pool *pgxpool.Pool) userGroupAuditStore {
 	if pool == nil {
 		return nil
 	}
-	return postgresUserGroupStore{pool: pool}
+	return postgresUserGroupAuditStore{pool: pool}
 }
 
-func (s postgresUserGroupStore) SetUserGroupForTenant(ctx context.Context, tenantID, userID int64, group string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET user_group=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, userID, group)
-	return err
+// SetUserGroupWithAudit 在同一 pgx.Tx 内先 UPDATE users.user_group,再写 set_user_group 审计;
+// 任一失败整体回滚(不会出现「组已改而审计缺失」的部分写)。对照同文件 UnlockUserWithAudit 范式。
+func (s postgresUserGroupAuditStore) SetUserGroupWithAudit(ctx context.Context, tenantID, userID int64, group string, input unlockAuditInput) error {
+	if s.pool == nil {
+		return userauth.ErrStoreNotConfigured
+	}
+	// admin_audit_events.payload 是 NOT NULL jsonb;sqlc 显式插该列,nil 会写成 NULL 违约
+	// (旧实现漏给 payload 即此隐患)。写入设置后的目标组,既满足约束又留审计信息。
+	payload, err := json.Marshal(map[string]string{"group": group})
+	if err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE users SET user_group=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, userID, group); err != nil {
+			return err
+		}
+		if _, err := admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
+			TenantID:   &tenantID,
+			ActorID:    input.ActorID,
+			ActorRole:  input.ActorRole,
+			Action:     "set_user_group",
+			TargetType: "user",
+			TargetID:   &userID,
+			RequestID:  input.RequestID,
+			Payload:    payload,
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // newSetUserGroupHandler lets a tenant operator set a user's routing group
@@ -752,7 +783,7 @@ func newSetUserGroupHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_group", "group must be 1..64 chars")
 			return
 		}
-		if d.UserGroupSetter == nil || d.Audit == nil {
+		if d.UserGroupAudit == nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin user-group dependency unset")
 			return
 		}
@@ -763,17 +794,9 @@ func newSetUserGroupHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
 			return
 		}
-		if err := d.UserGroupSetter.SetUserGroupForTenant(r.Context(), tenantID, userID, group); err != nil {
+		// 原子:改组 + 审计在同一事务内完成(修接线审计 #6d 的部分写)。任一失败整体回滚。
+		if err := d.UserGroupAudit.SetUserGroupWithAudit(r.Context(), tenantID, userID, group, buildUnlockAuditInput(r, ident, "")); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_user_group_failed", fmt.Sprintf("set user group failed: %v", err))
-			return
-		}
-		ai := buildUnlockAuditInput(r, ident, "")
-		audit := admindb.InsertAdminAuditEventParams{
-			TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole,
-			Action: "set_user_group", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID,
-		}
-		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write group audit failed: %v", err))
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "user_group": group})

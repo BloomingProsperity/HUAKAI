@@ -3,6 +3,7 @@ package adminuserhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -655,51 +656,64 @@ func TestAdminResetPasskeyUnknownUser404BeforeMutation(t *testing.T) {
 	}
 }
 
-type userGroupSetterStub struct {
+// userGroupAuditStub 记录原子「改组+审计」单次调用的参数(group + 审计 actor 输入)。
+type userGroupAuditStub struct {
 	calls    int
 	tenantID int64
 	userID   int64
 	group    string
+	input    unlockAuditInput
 	err      error
 }
 
-func (s *userGroupSetterStub) SetUserGroupForTenant(_ context.Context, tenantID, userID int64, group string) error {
+func (s *userGroupAuditStub) SetUserGroupWithAudit(_ context.Context, tenantID, userID int64, group string, input unlockAuditInput) error {
 	s.calls++
-	s.tenantID, s.userID, s.group = tenantID, userID, group
+	s.tenantID, s.userID, s.group, s.input = tenantID, userID, group, input
 	return s.err
 }
 
 func TestAdminSetUserGroupTenantScopedAudited(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
-	setter := &userGroupSetterStub{}
-	audit := &adminAuditStub{}
-	deps := Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserGroupSetter: setter, Audit: audit}
+	setter := &userGroupAuditStub{}
+	deps := Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserGroupAudit: setter}
 	router := chi.NewRouter()
 	router.Route("/admin/v1/users", func(r chi.Router) { MountRoutes(r, deps) })
 	req := httptest.NewRequest(http.MethodPut, "/admin/v1/users/101/group", strings.NewReader(`{"group":"premium"}`))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
+	// 变异:若 handler 改回「改组 + 审计」两次独立写,不会调 SetUserGroupWithAudit → calls!=1 → red。
 	if setter.calls != 1 || setter.tenantID != 7 || setter.userID != 101 || setter.group != "premium" {
 		t.Fatalf("set group mismatch: %+v", setter)
 	}
-	if audit.calls != 1 || audit.arg.Action != "set_user_group" || audit.arg.TargetType != "user" {
-		t.Fatalf("audit mismatch: %+v", audit.arg)
-	}
-	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
-		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	// 审计 actor 输入必须随调用透传(否则原子写里审计的 actor 会丢)。tenant_operator 默认非空角色。
+	if setter.input.ActorRole == "" {
+		t.Fatalf("audit actor role not propagated into atomic call: %+v", setter.input)
 	}
 }
 
 func TestAdminSetUserGroupRequiresAdmin(t *testing.T) {
-	setter := &userGroupSetterStub{}
-	audit := &adminAuditStub{}
+	setter := &userGroupAuditStub{}
 	rec := invokeAdminUsers(t, Deps{
-		Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserGroupSetter: setter, Audit: audit,
+		Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserGroupAudit: setter,
 	}, http.MethodPut, "/admin/v1/users/101/group", []byte(`{"group":"premium"}`))
 	assertStatus(t, rec, http.StatusUnauthorized)
-	if setter.calls != 0 || audit.calls != 0 {
-		t.Fatalf("unauthorized set-group touched deps: setter=%+v audit=%+v", setter, audit)
+	if setter.calls != 0 {
+		t.Fatalf("unauthorized set-group touched store: %+v", setter)
+	}
+}
+
+// 原子写失败(审计 insert 在事务内失败 → 整体回滚 → store 返 error)时,handler 必须回 503、
+// 不得回 200 假成功。变异:若 handler 吞掉 SetUserGroupWithAudit 的 error 仍写 200 → red。
+func TestAdminSetUserGroupStoreErrorReturns503(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	setter := &userGroupAuditStub{err: errors.New("audit insert failed, tx rolled back")}
+	rec := invokeAdminUsersBody(t, Deps{
+		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserGroupAudit: setter,
+	}, http.MethodPut, "/admin/v1/users/101/group", `{"group":"premium"}`)
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+	if setter.calls != 1 {
+		t.Fatalf("atomic store should be called once: %+v", setter)
 	}
 }
 
