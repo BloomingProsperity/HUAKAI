@@ -216,7 +216,18 @@ type updateProviderAccountRequest struct {
 	PoolMode                   *bool            `json:"pool_mode,omitempty"`
 	TempUnschedulableEnabled   *bool            `json:"temp_unschedulable_enabled,omitempty"`
 	TempUnschedulableRulesJSON *json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
-	Reason                     string           `json:"reason,omitempty"`
+	// ProxyBinding 省略=不动出站代理绑定;present=按 mode 设置(互斥由 handler 构造保证)。
+	ProxyBinding *proxyBindingInput `json:"proxy_binding,omitempty"`
+	Reason       string             `json:"reason,omitempty"`
+}
+
+// proxyBindingInput 表达账号出站代理的目标绑定:mode∈{direct,proxy,group}。
+// direct=直连(清两列);proxy=单绑 ProxyID(清组);group=绑组 ProxyGroupID(清单代理)。
+// 互斥由 handler 在每个 mode 同时写两列保证(配合 0148 DB CHECK 兜底)。
+type proxyBindingInput struct {
+	Mode         string  `json:"mode"`
+	ProxyID      *int64  `json:"proxy_id,omitempty"`
+	ProxyGroupID *string `json:"proxy_group_id,omitempty"`
 }
 
 type providerAccountListResponse struct {
@@ -266,6 +277,8 @@ type providerAccountResponse struct {
 	CustomErrorCodes         []int32         `json:"custom_error_codes"`
 	PoolMode                 bool            `json:"pool_mode"`
 	TempUnschedulableEnabled bool            `json:"temp_unschedulable_enabled"`
+	ProxyID                  *int64          `json:"proxy_id"`
+	ProxyGroupID             *string         `json:"proxy_group_id"`
 	CreatedAt                *time.Time      `json:"created_at"`
 	UpdatedAt                *time.Time      `json:"updated_at"`
 }
@@ -531,6 +544,36 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if req.TempUnschedulableRulesJSON != nil {
 			arg.SetTempUnschedulableRules = true
 			arg.TempUnschedulableRulesJSON = []byte(*req.TempUnschedulableRulesJSON)
+		}
+		// 出站代理绑定:按 mode 构造性写两列,互斥由"每 mode 同时设两列"保证;
+		// proxy_id 跨租户由 0038 DB 触发器兜底(前端代理下拉只给本租户代理为主防线)。
+		if req.ProxyBinding != nil {
+			switch req.ProxyBinding.Mode {
+			case "direct":
+				arg.SetProxyID, arg.ProxyID = true, nil
+				arg.SetProxyGroupID, arg.ProxyGroupID = true, nil
+			case "proxy":
+				if req.ProxyBinding.ProxyID == nil || *req.ProxyBinding.ProxyID <= 0 {
+					writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode=proxy 需正整数 proxy_id")
+					return
+				}
+				arg.SetProxyID, arg.ProxyID = true, req.ProxyBinding.ProxyID
+				arg.SetProxyGroupID, arg.ProxyGroupID = true, nil // 互斥:清组
+			case "group":
+				g := ""
+				if req.ProxyBinding.ProxyGroupID != nil {
+					g = strings.TrimSpace(*req.ProxyBinding.ProxyGroupID)
+				}
+				if g == "" {
+					writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode=group 需非空 proxy_group_id")
+					return
+				}
+				arg.SetProxyGroupID, arg.ProxyGroupID = true, &g
+				arg.SetProxyID, arg.ProxyID = true, nil // 互斥:清单代理
+			default:
+				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode 须为 direct/proxy/group")
+				return
+			}
 		}
 		account, err := d.Store.UpdateAdminProviderAccount(r.Context(), arg)
 		if err != nil {
@@ -822,7 +865,8 @@ func validateUpdateProviderAccount(req updateProviderAccountRequest) error {
 	if req.Enabled == nil && req.Priority == nil && req.StaticWeight == nil && req.CapConcurrency == nil &&
 		req.ProbeModel == nil && req.Tags == nil && req.Extra == nil && req.ModelAllowList == nil &&
 		req.CapabilityFlags == nil && req.CustomErrorCodesEnabled == nil && req.CustomErrorCodes == nil &&
-		req.PoolMode == nil && req.TempUnschedulableEnabled == nil && req.TempUnschedulableRulesJSON == nil {
+		req.PoolMode == nil && req.TempUnschedulableEnabled == nil && req.TempUnschedulableRulesJSON == nil &&
+		req.ProxyBinding == nil {
 		return fmt.Errorf("at least one supported field is required")
 	}
 	if req.CapConcurrency != nil && *req.CapConcurrency <= 0 {
@@ -956,6 +1000,7 @@ func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResp
 		LastRefreshOutcome: row.LastRefreshOutcome, OAuthEndpointHealth: row.OAuthEndpointHealth,
 		CustomErrorCodesEnabled: row.CustomErrorCodesEnabled, CustomErrorCodes: nonNilInt32Slice(row.CustomErrorCodes),
 		PoolMode: row.PoolMode, TempUnschedulableEnabled: row.TempUnschedulableEnabled,
+		ProxyID: row.ProxyID, ProxyGroupID: row.ProxyGroupID,
 		CreatedAt: pgTimePtr(row.CreatedAt), UpdatedAt: pgTimePtr(row.UpdatedAt),
 	}
 }
