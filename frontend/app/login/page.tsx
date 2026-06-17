@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { Fingerprint, KeyRound, Loader2, LogIn, Mail, ShieldCheck, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { login, register, isTwoFactor, verifyLoginTwoFactor, startOAuth, passkeyLoginBegin, passkeyLoginFinish } from '@/lib/api/auth';
@@ -231,6 +232,15 @@ function LoginInner() {
                 autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               />
             </Field>
+
+            {mode === 'login' && (
+              <Link
+                href="/forgot-password"
+                className="-mt-2 self-end text-xs text-primary-600 hover:underline dark:text-primary-300"
+              >
+                忘记密码?
+              </Link>
+            )}
 
             {error && (
               <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
