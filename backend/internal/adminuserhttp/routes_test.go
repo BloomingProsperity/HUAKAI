@@ -569,6 +569,10 @@ func TestAdminForceDisable2FATenantScopedAudited(t *testing.T) {
 	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
 		t.Fatalf("audit scope mismatch: %+v", audit.arg)
 	}
+	// payload 必须非空(admin_audit_events.payload NOT NULL)。变异:handler 漏给 Payload → nil → red。
+	if len(audit.arg.Payload) == 0 {
+		t.Fatalf("audit payload 为空,会触 NOT NULL 违约致 503: %+v", audit.arg)
+	}
 }
 
 func TestAdminForceDisable2FARequiresAdmin(t *testing.T) {
@@ -632,6 +636,10 @@ func TestAdminResetPasskeyTenantScopedAudited(t *testing.T) {
 	}
 	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
 		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	}
+	// payload 必须非空且带清除条数(admin_audit_events.payload NOT NULL)。变异:漏 Payload → nil → red。
+	if len(audit.arg.Payload) == 0 || !strings.Contains(string(audit.arg.Payload), "cleared") {
+		t.Fatalf("audit payload 应非空且含 cleared,否则触 NOT NULL 违约致 503: %s", audit.arg.Payload)
 	}
 }
 
@@ -750,6 +758,10 @@ func TestAdminSetUserRemarkTenantScopedAudited(t *testing.T) {
 	}
 	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
 		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	}
+	// payload 必须非空(admin_audit_events.payload NOT NULL)。变异:handler 漏给 Payload → nil → red。
+	if len(audit.arg.Payload) == 0 {
+		t.Fatalf("audit payload 为空,会触 NOT NULL 违约致 503: %+v", audit.arg)
 	}
 }
 

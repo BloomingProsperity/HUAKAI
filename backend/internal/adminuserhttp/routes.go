@@ -661,7 +661,9 @@ func newForceDisable2FAHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		ai := buildUnlockAuditInput(r, ident, "")
-		audit := admindb.InsertAdminAuditEventParams{TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole, Action: "force_disable_2fa", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID}
+		// payload 是 NOT NULL jsonb;旧实现漏给 → sqlc 显式插该列写成 NULL 违约 → 审计 insert 必失败、
+		// handler 每次返 503(2FA 已禁却报失败)。补一个非空 payload 修掉。
+		audit := admindb.InsertAdminAuditEventParams{TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole, Action: "force_disable_2fa", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID, Payload: []byte(`{"forced":true}`)}
 		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write 2fa audit failed: %v", err))
 			return
@@ -700,7 +702,9 @@ func newResetPasskeyHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		ai := buildUnlockAuditInput(r, ident, "")
-		audit := admindb.InsertAdminAuditEventParams{TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole, Action: "reset_passkey", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID}
+		// payload 是 NOT NULL jsonb;旧实现漏给 → 写成 NULL 违约 → 审计 insert 必失败、handler 每次
+		// 返 503(passkey 已清却报失败)。写入清除条数作非空 payload(兼有审计价值)。
+		audit := admindb.InsertAdminAuditEventParams{TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole, Action: "reset_passkey", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID, Payload: []byte(fmt.Sprintf(`{"cleared":%d}`, cleared))}
 		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write passkey audit failed: %v", err))
 			return
@@ -865,9 +869,12 @@ func newSetUserRemarkHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		ai := buildUnlockAuditInput(r, ident, "")
+		// payload 是 NOT NULL jsonb;旧实现漏给 → 写成 NULL 违约 → 审计 insert 必失败、handler 每次
+		// 返 503(备注已写却报失败)。写入备注长度作非空 payload(避免把可能含敏感信息的备注原文落审计)。
 		audit := admindb.InsertAdminAuditEventParams{
 			TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole,
 			Action: "set_user_remark", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID,
+			Payload: []byte(fmt.Sprintf(`{"remark_len":%d}`, len(remark))),
 		}
 		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write remark audit failed: %v", err))
