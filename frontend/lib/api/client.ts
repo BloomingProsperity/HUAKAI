@@ -94,6 +94,45 @@ export async function apiPostNoContent(path: string, body?: unknown): Promise<vo
   throw new ApiError(resp.status, payload);
 }
 
+// 鉴权 CSV 下载：带 admin token GET，2xx 取 blob 触发浏览器下载；非 2xx 抛 ApiError。
+// CSV 端点成功响应是 text/csv（非 JSON），故不走 parseResponse；错误体仍是 JSON。
+export async function downloadCsv(path: string, filename: string): Promise<void> {
+  const resp = await fetch(path, {
+    method: 'GET',
+    headers: buildHeaders({ Accept: 'text/csv' }),
+    cache: 'no-store',
+  });
+  if (!resp.ok) {
+    let payload: APIError;
+    try {
+      payload = await resp.json() as APIError;
+    } catch {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    throw new ApiError(resp.status, payload);
+  }
+  // 后端行数达上限时置 X-Truncated:true 并在 CSV 末尾追加 "# truncated" 行（与 usage.ts 一致）。
+  const truncated = resp.headers.get('X-Truncated') === 'true';
+  const blob = await resp.blob();
+  const objectURL = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = objectURL;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(objectURL);
+  }
+  if (truncated) {
+    // 文件已下载但仅含部分记录（达后端行上限）——抛可识别错误让调用页提示缩小时间范围。
+    throw new ApiError(200, {
+      error: { code: 'export_truncated', message: '导出行数已达上限，文件仅包含部分记录。请缩小时间范围。' },
+    });
+  }
+}
+
 // 解析响应：OK → 返回 T；非 OK → 抛 ApiError
 async function parseResponse<T>(resp: Response): Promise<T> {
   if (resp.ok) {
