@@ -114,6 +114,55 @@ export async function completeOAuth(input: { tenant_id: number; provider: string
   return r.user;
 }
 
+// ── Passkey 免密登录(login/begin 拿挑战 → 浏览器 get → login/finish 换会话)────────
+
+// 登录前调用,无 session(走裸 fetch)。begin 返回标准请求选项(challenge+allowCredentials),
+// finish 返 {user, session}(后端自动认人),直接存会话。
+export interface PasskeyLoginBeginResponse {
+  session_id: string;
+  public_key: { publicKey: Record<string, unknown> };
+  expires_at?: string;
+}
+
+export async function passkeyLoginBegin(tenantId: number): Promise<PasskeyLoginBeginResponse> {
+  const resp = await fetch('/v1/auth/passkey/login/begin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ tenant_id: tenantId }),
+  });
+  const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!resp.ok) {
+    const err = (data as { error?: { code?: string; message?: string } }).error;
+    throw Object.assign(new Error(err?.message ?? `HTTP ${resp.status}`), { status: resp.status, code: err?.code ?? 'passkey_login_begin_failed' });
+  }
+  const r = data as unknown as PasskeyLoginBeginResponse;
+  if (!r.session_id || !r.public_key) {
+    throw Object.assign(new Error('通行密钥登录初始化响应不完整'), { status: resp.status, code: 'passkey_login_no_options' });
+  }
+  return r;
+}
+
+export async function passkeyLoginFinish(input: { tenant_id: number; session_id: string; credential: unknown }): Promise<SessionUser> {
+  const resp = await fetch('/v1/auth/passkey/login/finish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(input),
+  });
+  const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!resp.ok) {
+    const err = (data as { error?: { code?: string; message?: string } }).error;
+    throw Object.assign(new Error(err?.message ?? `HTTP ${resp.status}`), { status: resp.status, code: err?.code ?? 'passkey_login_failed' });
+  }
+  const r = data as { user?: SessionUser; session?: SessionTokens };
+  if (!r.session?.session_token || !r.user) {
+    throw Object.assign(new Error('通行密钥登录响应缺少会话或用户'), { status: resp.status, code: 'passkey_login_no_session' });
+  }
+  storeSession(r.session, r.user);
+  return r.user;
+}
+
 export async function login(req: LoginRequest): Promise<LoginResponse> {
   const resp = await fetch('/v1/auth/login', {
     method: 'POST',
