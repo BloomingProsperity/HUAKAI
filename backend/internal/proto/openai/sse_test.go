@@ -504,3 +504,70 @@ func unquotePartialJSON(t *testing.T, raw json.RawMessage) string {
 	}
 	return value
 }
+
+// TestOpenAIBufferedToolCallNonPrefixedIDPreserved 守 S1-1：OpenAI 兼容上游(Mistral 9 字符等)
+// 返回的无 call_ 前缀 tool_call id 在 buffered 路径上必须被保留成非空 canonical id，
+// 而不是丢成空串(空 id 会让下游 Anthropic 客户端硬报错、OpenAI 客户端也硬报错)，并记一条 loss。
+// Mutation: 把 canonicalOpenAICallID 的 err 分支退回 `return "", []ProtocolLossEntry{loss}` →
+// CallID 变空 → 此处 RED。
+func TestOpenAIBufferedToolCallNonPrefixedIDPreserved(t *testing.T) {
+	raw := []byte(`{"id":"chatcmpl-mistral","object":"chat.completion","model":"mistral-large","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"9aBc12345","type":"function","function":{"name":"search","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	resp, losses, err := openAIResponseToCanonicalResponse(raw)
+	if err != nil {
+		t.Fatalf("openAIResponseToCanonicalResponse: %v", err)
+	}
+	var tool *proto.CanonicalContentBlock
+	for i := range resp.Content {
+		if resp.Content[i].Type == "tool_use" {
+			tool = &resp.Content[i]
+			break
+		}
+	}
+	if tool == nil {
+		t.Fatalf("expected a tool_use block, got %+v", resp.Content)
+	}
+	if tool.CallID == "" {
+		t.Fatalf("non-prefixed tool_call id was dropped to empty (the S1-1 defect)")
+	}
+	if tool.CallID != "call_9aBc12345" {
+		t.Fatalf("non-prefixed id should be preserved as call_<id>, got %q", tool.CallID)
+	}
+	// 行为正确性以"保留为非空可用 id"为准，但仍应记录一条 loss 标注做了 canonical 合成。
+	if len(losses) == 0 {
+		t.Fatalf("synthesizing a non-canonical id should still record a protocol loss")
+	}
+}
+
+// TestOpenAIStreamingToolCallNonPrefixedIDPreserved 守 S1-1 的 streaming 半：
+// streaming delta 里无 call_ 前缀的 id 同样必须保留进 tool_use content_block_start 的 CallID，
+// 否则 Anthropic streaming 客户端会发出 id="" 的 tool_use(静默损坏，永远无法关联 tool_result)。
+// Mutation: 同上把 err 分支退回返回空 → content_block_start 的 CallID 变空 → RED。
+func TestOpenAIStreamingToolCallNonPrefixedIDPreserved(t *testing.T) {
+	name := "search"
+	calls := []openAIStreamToolCall{{
+		Index:    0,
+		ID:       "9aBc12345",
+		Type:     "function",
+		Function: openAIStreamFunction{Name: &name},
+	}}
+	events, losses := openAIToolCallDeltaEvents(calls, &UpstreamState{})
+	var start *proto.CanonicalEvent
+	for i := range events {
+		if events[i].Type == "content_block_start" && events[i].ContentBlock != nil && events[i].ContentBlock.Type == "tool_use" {
+			start = &events[i]
+			break
+		}
+	}
+	if start == nil {
+		t.Fatalf("expected a tool_use content_block_start, got %+v", events)
+	}
+	if start.ContentBlock.CallID == "" {
+		t.Fatalf("streaming non-prefixed tool_call id was dropped to empty (the S1-1 defect)")
+	}
+	if start.ContentBlock.CallID != "call_9aBc12345" {
+		t.Fatalf("streaming non-prefixed id should be preserved as call_<id>, got %q", start.ContentBlock.CallID)
+	}
+	if len(losses) == 0 {
+		t.Fatalf("synthesizing a non-canonical streaming id should still record a protocol loss")
+	}
+}
