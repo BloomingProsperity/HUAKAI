@@ -954,3 +954,37 @@ func TestAT_PROTO_002_14_TranslationLatencySLO(t *testing.T) {
 	}
 	t.Logf("translation latency p99=%v over %d events", p99, len(durations))
 }
+
+// TestAnthropicStreamingToolUseMalformedIDPreserved 守 S2(同 S1-1 族的 anthropic streaming 兄弟):
+// streaming canonicalBlock 在 tool_use id 无法翻译(缺 toolu_ 前缀/畸形)时必须保留成非空 canonical id，
+// 而不是丢成空串——空 CallID 会让下游 openai 流硬报错、anthropic 流发出无法关联 tool_result 的 tool_use。
+// buffered 路径(anthropicBufferedToolUseBlock)早已合成 fallback，本测试守 streaming 路径与之对齐。
+// Mutation: 把 canonicalBlock 的 err 分支退回 `return {Type:"tool_use", Name, Input}`(不带 CallID) →
+// CallID 变空 → 此处 RED。
+func TestAnthropicStreamingToolUseMalformedIDPreserved(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	const malformedToolID = "weirdid99" // 无 toolu_ 前缀 → ToCanonicalCallID 失败
+	evts := [][]byte{
+		anthroEvt(t, "message_start", map[string]any{"message": map[string]any{"id": "msg_y", "model": "claude-3-5-sonnet"}}),
+		anthroEvt(t, "content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "tool_use", "id": malformedToolID, "name": "search"}}),
+		anthroEvt(t, "content_block_stop", map[string]any{"index": 0}),
+		anthroEvt(t, "message_stop", nil),
+	}
+	canonical, _ := runStream(t, adapter, evts)
+	var toolBlockEvt *proto.CanonicalEvent
+	for i := range canonical {
+		if canonical[i].Type == "content_block_start" && canonical[i].ContentBlock != nil && canonical[i].ContentBlock.Type == "tool_use" {
+			toolBlockEvt = &canonical[i]
+			break
+		}
+	}
+	if toolBlockEvt == nil {
+		t.Fatalf("tool_use content_block_start missing")
+	}
+	if toolBlockEvt.ContentBlock.CallID == "" {
+		t.Fatalf("malformed anthropic streaming tool_use id was dropped to empty (the S2 sibling defect)")
+	}
+	if !strings.HasPrefix(toolBlockEvt.ContentBlock.CallID, "call_") {
+		t.Fatalf("synthesized id must keep canonical call_ prefix, got %q", toolBlockEvt.ContentBlock.CallID)
+	}
+}

@@ -330,3 +330,33 @@ func TestGeminiAdapterFunctionCallInputIsValidJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestGeminiAdapterFunctionCallNonPrefixedIDPreserved 守 S2-6：当 Gemini functionCall *携带* id
+// 但不带 func_ 前缀(真实 Gemini provider id 即如此)，provided-id 分支必须保留成非空 canonical id，
+// 而不是丢成空串。空分支(无 id → 合成 call_%08x)本就处理良好，唯独 provided-id 分支曾返回 ""。
+// Mutation: 把 geminiCanonicalCallID 的 err 分支退回 `return "", []ProtocolLossEntry{loss}` →
+// CallID 变空 → 此处 RED。
+func TestGeminiAdapterFunctionCallNonPrefixedIDPreserved(t *testing.T) {
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	out, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), []byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"id":"gemtool77","name":"lookup","args":{"id":42}}}],"role":"model"},"index":0,"finishReason":"STOP"}]}`), state)
+	if err != nil {
+		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
+	}
+	var tool *proto.CanonicalContentBlock
+	for _, ev := range geminiAnyToCanonicalEvents(t, out) {
+		if ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+			tool = ev.ContentBlock
+			break
+		}
+	}
+	if tool == nil {
+		t.Fatalf("expected a tool_use content block: %v", geminiAnyToCanonicalEvents(t, out))
+	}
+	if tool.CallID == "" {
+		t.Fatalf("provided non-prefixed Gemini functionCall id was dropped to empty (the S2-6 defect)")
+	}
+	if tool.CallID != "call_gemtool77" {
+		t.Fatalf("provided non-prefixed id should be preserved as call_<id>, got %q", tool.CallID)
+	}
+}

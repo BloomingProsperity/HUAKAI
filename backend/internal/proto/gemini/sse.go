@@ -391,8 +391,10 @@ func geminiCanonicalCallID(upstreamID string, state *UpstreamState) (string, []p
 	if upstreamID != "" {
 		callID, err := proto.ToCanonicalCallID(upstreamID, proto.UpstreamProtocolGemini)
 		if err != nil {
-			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed Gemini functionCall identifier")
-			return "", []proto.ProtocolLossEntry{loss}
+			// Gemini functionCall 携带 id 时常不带 func_ 前缀；同 OpenAI 路径，保留合成而非丢空串，
+			// 否则 provided-id 分支会断裂 tool_use/tool_result 关联。
+			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-canonical Gemini functionCall identifier; preserved via synthesized canonical call_id")
+			return proto.SynthesizeCanonicalCallID(upstreamID), []proto.ProtocolLossEntry{loss}
 		}
 		return callID, nil
 	}
