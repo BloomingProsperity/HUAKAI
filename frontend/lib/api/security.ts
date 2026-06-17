@@ -101,6 +101,33 @@ export function deletePasskey(id: number): Promise<{ deleted: boolean }> {
   return userDelete<{ deleted: boolean }>(`/v1/me/passkeys/${id}`, {});
 }
 
+// POST /v1/me/passkeys/register/begin {name?, step_up?} → 201 { session_id, public_key, expires_at }。
+// public_key 是标准 WebAuthn 创建选项(go-webauthn protocol.CredentialCreation,顶层含 publicKey)。
+// 本切片走无 step_up 路径;若后端要求 step-up 会返 403/503,UI 给出友好提示(完整二次校验对话框留后续切片)。
+export interface PasskeyRegisterBeginResponse {
+  session_id: string;
+  public_key: { publicKey: Record<string, unknown> };
+  expires_at?: string;
+}
+
+export function registerPasskeyBegin(name?: string): Promise<PasskeyRegisterBeginResponse> {
+  return userPost<PasskeyRegisterBeginResponse>('/v1/me/passkeys/register/begin', name ? { name } : {});
+}
+
+// POST /v1/me/passkeys/register/finish {session_id, name?, credential} → 201 { passkey }。
+// credential 是 encodeCredential 产出的标准 CredentialCreationResponse JSON。
+export function registerPasskeyFinish(
+  sessionId: string,
+  credential: unknown,
+  name?: string,
+): Promise<{ passkey: PasskeySummary }> {
+  return userPost<{ passkey: PasskeySummary }>('/v1/me/passkeys/register/finish', {
+    session_id: sessionId,
+    credential,
+    ...(name ? { name } : {}),
+  });
+}
+
 // ==================== 第三方 OAuth 绑定 ====================
 
 // GET /v1/users/me/oauth-bindings 响应 (newOAuthBindingsListHandler: { bindings: [...] })。
