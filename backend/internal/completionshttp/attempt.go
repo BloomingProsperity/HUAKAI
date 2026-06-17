@@ -2,14 +2,24 @@ package completionshttp
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
+
+// settleRecoveryTimeout 给脱钩后的交付后结算 ctx 一个上限，防止 Tx2 永久挂住。
+// 与 gatewayhttp chat 流式路径同值(30s)。
+const settleRecoveryTimeout = 30 * time.Second
+
+// settleRecoveryEnqueueTimeout 给 DLQ 兜底 enqueue 一个独立(不复用已过期 settle ctx)的上限。
+// 交付后结算因 deadline 超时失败时，recovery intent 仍须落盘，故 enqueue 用 fresh ctx。
+const settleRecoveryEnqueueTimeout = 10 * time.Second
 
 func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int, requestedModel string) bool {
 	claimID := int64(0)
@@ -168,7 +178,12 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 			cost.CostSnapshot += ";pending_reconciliation=stream_usage_missing"
 		}
 	}
-	if _, err := ex.d.Settler.Settle(ex.ctx, ex.settleRequest(usage, cost, attemptSeq, true)); err != nil {
+	// 交付后结算：响应已全部 flush 给客户端。结算必须在**脱钩 ctx**(WithoutCancel)上跑，
+	// 否则客户端在流末断连会取消请求 ctx → Tx2 立即失败 → 已交付 token 永不计费(S1-2)。
+	// settle 失败时经 settlementrecovery DLQ 持久重试，防不可恢复钱丢失(S1-3)。
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), settleRecoveryTimeout)
+	defer cancel()
+	if err := ex.settleStreamWithRecovery(settleCtx, ex.settleRequest(usage, cost, attemptSeq, true)); err != nil {
 		w.Header().Set("X-Huakai-Settle-Failed", clienterr.CodeSettleError)
 		return false
 	}

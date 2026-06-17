@@ -1,6 +1,7 @@
 package completionshttp
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -11,7 +12,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 func (ex *execution) reserve(w http.ResponseWriter) bool {
@@ -117,6 +120,47 @@ func (ex *execution) settleRequest(usage completionUsage, cost completionCostBre
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
 	}
+}
+
+// settleStreamWithRecovery 在流式响应已交付给客户端后结算。调用方必须传入**脱钩 ctx**
+// (context.WithoutCancel)，使客户端断连不取消 Tx2——否则已交付 token 永不计费(S1-2 计费泄漏)。
+// settle 失败时把 SettleRequest 经 settlementrecovery DLQ 持久化(SourceStream)，worker 后续
+// 重 settle 防钱账丢失；DLQ 重结算靠既有三证 proof(claim/usage_records/billing_events)幂等防重扣。
+// 镜像 gatewayhttp.settleCompletionWithRecovery 的交付后兜底语义(S1-3 补齐 completions 路径缺的保护)。
+// SettleRecoveryDLQ 未注入时退回原行为(仅返 err，caller 置 X-Huakai-Settle-Failed 头)。
+// settle err 始终原样返回 caller。
+func (ex *execution) settleStreamWithRecovery(ctx context.Context, req billing.SettleRequest) error {
+	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
+		if ex.d.SettleRecoveryDLQ == nil {
+			return err
+		}
+		payload := settlementrecovery.FromSettleRequest(settlementrecovery.SourceStream, ex.requestID, req)
+		failureClass := privacy.ErrorClassFor(ctx, err)
+		// DLQ 持久化必须用**独立 ctx**：settle 可能正因传入 ctx 的 deadline 耗尽(DB 锁等待/上游慢)
+		// 而失败，此刻复用同一已过期 ctx 会让 enqueue 的 INSERT 立即 deadline-exceeded、recovery
+		// intent 落不了盘——DB 受压时 DLQ 最该兜底却最易失效。WithoutCancel 去掉过期/取消传播后
+		// 重新 WithTimeout，使 enqueue 不受 settle ctx 状态影响。
+		enqCtx, enqCancel := context.WithTimeout(context.WithoutCancel(ctx), settleRecoveryEnqueueTimeout)
+		defer enqCancel()
+		if _, enqErr := settlementrecovery.EnqueuePayload(enqCtx, ex.d.SettleRecoveryDLQ, payload, failureClass); enqErr != nil {
+			// DLQ persist 自身失败 = money path 兜底链断 → P0 alert(不阻塞:流式响应已发不能反悔)。
+			_ = privacy.LogSystem(enqCtx, privacy.SystemEvent{
+				Severity:   privacy.SeverityError,
+				Component:  "completionshttp.settle_recovery",
+				RequestID:  ex.requestID,
+				ErrorClass: privacy.ErrorClassFor(ctx, enqErr),
+				Attrs: map[string]any{
+					"event_class":          "settle_recovery_dlq_enqueue_failed",
+					"event_type":           string(settlementrecovery.SourceStream),
+					"tenant_id":            req.TenantID,
+					"claim_id":             req.ClaimID,
+					"failure_reason_class": failureClass,
+				},
+			})
+		}
+		return err
+	}
+	return nil
 }
 
 func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {

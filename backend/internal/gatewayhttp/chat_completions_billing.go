@@ -310,9 +310,14 @@ func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event 
 	payload := settlementrecovery.FromCompletionEvent(source, event)
 	// post-delivery recovery DLQ 是持久运维元数据,也只能保留错误类别,不能保留 settle 原始错误文本。
 	settleFailureClass := privacy.ErrorClassFor(ctx, err)
-	if _, enqErr := settlementrecovery.EnqueuePayload(ctx, d.SettleRecoveryDLQ, payload, settleFailureClass); enqErr != nil {
+	// DLQ 持久化用**独立 ctx**：settle 可能正因传入 settleCtx 的 deadline 耗尽(DB 锁等待/上游慢)
+	// 而失败,此刻复用同一已过期 ctx 会让 enqueue 的 INSERT 立即 deadline-exceeded、recovery intent
+	// 落不了盘——DB 受压时 DLQ 最该兜底却最易失效。WithoutCancel 去掉过期/取消传播后重新 WithTimeout。
+	enqCtx, enqCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer enqCancel()
+	if _, enqErr := settlementrecovery.EnqueuePayload(enqCtx, d.SettleRecoveryDLQ, payload, settleFailureClass); enqErr != nil {
 		// DLQ persist 自己失败 = money path 双环灰区 (Owner D-4: 只 alert,不 disk spool)。
-		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+		_ = privacy.LogSystem(enqCtx, privacy.SystemEvent{
 			Severity:   privacy.SeverityError,
 			Component:  "gatewayhttp.settle_recovery",
 			RequestID:  event.RequestID,

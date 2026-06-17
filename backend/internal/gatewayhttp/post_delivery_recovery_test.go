@@ -42,15 +42,17 @@ func (s *postDeliveryFakeSettler) Refund(_ context.Context, _ billing.RefundRequ
 
 // postDeliverySpyEnqueuer 捕获 EnqueuePayload 调用,验 event 字段。
 type postDeliverySpyEnqueuer struct {
-	calls    int
-	lastEvt  dlq.Event
-	returnID int64
-	retErr   error
+	calls      int
+	lastEvt    dlq.Event
+	returnID   int64
+	retErr     error
+	lastCtxErr error // ctx.Err() 在 Enqueue 被调那一刻的快照，守 enqueue 用 fresh(非过期 settle)ctx
 }
 
-func (s *postDeliverySpyEnqueuer) Enqueue(_ context.Context, e dlq.Event) (int64, error) {
+func (s *postDeliverySpyEnqueuer) Enqueue(ctx context.Context, e dlq.Event) (int64, error) {
 	s.calls++
 	s.lastEvt = e
+	s.lastCtxErr = ctx.Err()
 	if s.retErr != nil {
 		return 0, s.retErr
 	}
@@ -58,6 +60,36 @@ func (s *postDeliverySpyEnqueuer) Enqueue(_ context.Context, e dlq.Event) (int64
 		return 42, nil
 	}
 	return s.returnID, nil
+}
+
+// TestSettleCompletionWithRecovery_EnqueueUsesFreshContext 守 S2(#2)：交付后 settle 因传入 ctx 的
+// deadline 耗尽而失败时，DLQ 兜底 enqueue 必须用独立未过期 ctx，否则复用同一已过期 ctx 会让
+// recovery intent 落不了盘——DB 受压(settle 超时)时兜底最该工作却最易失效。
+// Mutation: chat_completions_billing.go 把 enqueue 的 enqCtx 改回复用传入 ctx → enqueue 收到
+// 已取消 ctx → lastCtxErr!=nil → RED。
+func TestSettleCompletionWithRecovery_EnqueueUsesFreshContext(t *testing.T) {
+	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle deadline exceeded")}
+	spy := &postDeliverySpyEnqueuer{}
+	deps := ChatHandlerDeps{
+		Settler:           settler,
+		SettleRecoveryDLQ: spy,
+	}
+	event := newPostDeliveryFixtureEvent()
+
+	// 模拟 settle ctx 已过期/取消(deadline 耗尽场景)。
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := settleCompletionWithRecovery(expired, deps, event, settlementrecovery.SourceStream)
+	if err == nil {
+		t.Fatal("settle err must propagate")
+	}
+	if spy.calls != 1 {
+		t.Fatalf("enqueue calls=%d want 1 (recovery must run on deadline-exceeded settle ctx)", spy.calls)
+	}
+	if spy.lastCtxErr != nil {
+		t.Fatalf("DLQ enqueue ran on already-expired settle ctx (err=%v) — recovery intent would never persist (S2 #2)", spy.lastCtxErr)
+	}
 }
 
 // fakeAuditRefPolicy 返"不需要 audit ref" — 让 validateMoneyPathAuditRefForSource
