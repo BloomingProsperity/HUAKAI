@@ -61,6 +61,59 @@ export async function verifyLoginTwoFactor(input: LoginTwoFactorVerifyInput): Pr
   return input.user;
 }
 
+// ── 社交 / OAuth 登录(两步:init 拿授权地址跳转 → callback 换会话)─────────
+
+// 第一步:发起 OAuth。后端 POST /v1/auth/oauth-init {tenant_id, provider, redirect_uri}
+// 返 {provider, state, auth_url} 并【设 state cookie 做 CSRF】,故 credentials 必须带上,
+// 否则回调时 cookie 缺失、后端 state 校验失败。前端拿到 auth_url 后整页跳转到第三方授权页。
+export interface OAuthInitResult {
+  provider: string;
+  state: string;
+  auth_url: string;
+}
+
+export async function startOAuth(input: { tenant_id: number; provider: string; redirect_uri: string }): Promise<OAuthInitResult> {
+  const resp = await fetch('/v1/auth/oauth-init', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(input),
+  });
+  const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!resp.ok) {
+    const err = (data as { error?: { code?: string; message?: string } }).error;
+    throw Object.assign(new Error(err?.message ?? `HTTP ${resp.status}`), { status: resp.status, code: err?.code ?? 'oauth_init_failed' });
+  }
+  const r = data as unknown as OAuthInitResult;
+  if (!r.auth_url) {
+    throw Object.assign(new Error('OAuth 初始化未返回授权地址'), { status: resp.status, code: 'oauth_no_auth_url' });
+  }
+  return r;
+}
+
+// 第二步:第三方授权后回跳到我们的回调页,带 code+state。POST /v1/auth/oauth-callback
+// {tenant_id, provider, state, code} 成功返 {user, session}(后端自动建/认新用户),直接存会话。
+// credentials 必须带上以回传 state cookie 供后端比对。
+export async function completeOAuth(input: { tenant_id: number; provider: string; state: string; code: string }): Promise<SessionUser> {
+  const resp = await fetch('/v1/auth/oauth-callback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(input),
+  });
+  const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!resp.ok) {
+    const err = (data as { error?: { code?: string; message?: string } }).error;
+    throw Object.assign(new Error(err?.message ?? `HTTP ${resp.status}`), { status: resp.status, code: err?.code ?? 'oauth_callback_failed' });
+  }
+  const r = data as { user?: SessionUser; session?: SessionTokens };
+  if (!r.session?.session_token || !r.user) {
+    throw Object.assign(new Error('OAuth 回调响应缺少会话或用户'), { status: resp.status, code: 'oauth_no_session' });
+  }
+  storeSession(r.session, r.user);
+  return r.user;
+}
+
 export async function login(req: LoginRequest): Promise<LoginResponse> {
   const resp = await fetch('/v1/auth/login', {
     method: 'POST',

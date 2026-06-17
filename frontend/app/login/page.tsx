@@ -4,9 +4,9 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { KeyRound, Loader2, LogIn, Mail, ShieldCheck, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { login, register, isTwoFactor, verifyLoginTwoFactor } from '@/lib/api/auth';
+import { login, register, isTwoFactor, verifyLoginTwoFactor, startOAuth } from '@/lib/api/auth';
 import { sanitizeOtp, isOtpComplete, OTP_LENGTH } from '@/lib/api/otp';
-import { fetchSiteConfig, DEFAULT_TENANT_ID } from '@/lib/api/siteConfig';
+import { fetchSiteConfig, DEFAULT_TENANT_ID, parseEnabledProviders } from '@/lib/api/siteConfig';
 import { friendlyMessage } from '@/lib/api/errors';
 import type { SessionUser } from '@/lib/auth/session';
 import { cn } from '@/lib/utils';
@@ -29,9 +29,15 @@ function LoginInner() {
   // 2FA 挑战态:登录命中 2FA 后转入此步(challengeId + 第一步带回的 user,/login/2fa 只返 session)。
   const [twoFactor, setTwoFactor] = useState<{ challengeId: string; user: SessionUser; email: string } | null>(null);
   const [code, setCode] = useState('');
+  // 启用的社交登录 provider(由后端 oauth_providers_enabled 运维开关驱动)+ 正在跳转的 provider。
+  const [providers, setProviders] = useState<string[]>([]);
+  const [oauthBusy, setOauthBusy] = useState<string | null>(null);
 
   useEffect(() => {
-    void fetchSiteConfig().then((c) => setTenantId(c.tenant_id));
+    void fetchSiteConfig().then((c) => {
+      setTenantId(c.tenant_id);
+      setProviders(parseEnabledProviders(c.oauth_providers_enabled));
+    });
   }, []);
 
   async function onSubmit(e: React.FormEvent) {
@@ -90,6 +96,24 @@ function LoginInner() {
     const c = sanitizeOtp(raw);
     setCode(c);
     if (isOtpComplete(c)) void submit2fa(c);
+  }
+
+  // 发起社交/OAuth 登录:拿授权地址后整页跳转到第三方。redirect_uri 指向本前端回调页
+  // (运维需在后端 redirect_uri 白名单放行);登录后目的地暂存 sessionStorage 供回调页读取。
+  async function handleOAuth(provider: string) {
+    setError(null);
+    setOauthBusy(provider);
+    try {
+      const redirectUri = `${window.location.origin}/auth/oauth-callback`;
+      const { auth_url } = await startOAuth({ tenant_id: tenantId, provider, redirect_uri: redirectUri });
+      // 第三方回跳只带 code+state,不带 provider;故在此暂存 provider 与登录后目的地供回调页读取。
+      sessionStorage.setItem('huakai_oauth_provider', provider);
+      sessionStorage.setItem('huakai_oauth_next', next);
+      window.location.href = auth_url;
+    } catch (err) {
+      setError(friendlyMessage(err));
+      setOauthBusy(null);
+    }
   }
 
   return (
@@ -193,6 +217,31 @@ function LoginInner() {
               {mode === 'login' ? '登录' : '创建账号'}
             </Button>
           </form>
+
+          {/* 社交/OAuth 登录(仅登录模式 + 后端有启用的 provider 时渲染)。整页跳后端 start 端点。 */}
+          {mode === 'login' && providers.length > 0 && (
+            <div className="mt-5">
+              <div className="mb-4 flex items-center gap-3">
+                <span className="h-px flex-1 bg-accent-200 dark:bg-accent-700" />
+                <span className="text-xs text-accent-400">或继续用</span>
+                <span className="h-px flex-1 bg-accent-200 dark:bg-accent-700" />
+              </div>
+              <div className="flex flex-col gap-2">
+                {providers.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => void handleOAuth(p)}
+                    disabled={oauthBusy !== null}
+                    className="flex items-center justify-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2.5 text-sm font-medium text-accent-700 transition-colors hover:bg-accent-50 disabled:opacity-60 dark:border-accent-700 dark:bg-accent-950 dark:text-accent-200 dark:hover:bg-accent-900"
+                  >
+                    {oauthBusy === p ? <Loader2 className="size-4 animate-spin" /> : <ProviderIcon provider={p} />}
+                    用 {providerLabel(p)} 登录
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           </>
           )}
 
@@ -223,6 +272,27 @@ function Field({ label, icon, children }: { label: string; icon: React.ReactNode
 
 function UserRoundIcon() {
   return <UserPlus className="size-4 text-accent-400" />;
+}
+
+// provider 显示名:已知的给中文/品牌名,未知的首字母大写兜底(后端可任意配 provider key)。
+const PROVIDER_LABELS: Record<string, string> = {
+  github: 'GitHub',
+  google: 'Google',
+  linuxdo: 'LinuxDO',
+  discord: 'Discord',
+  qq: 'QQ',
+  dingtalk: '钉钉',
+  nodeseek: 'NodeSeek',
+  oidc: 'OIDC',
+};
+
+function providerLabel(p: string): string {
+  return PROVIDER_LABELS[p] ?? p.charAt(0).toUpperCase() + p.slice(1);
+}
+
+function ProviderIcon({ provider: _provider }: { provider: string }) {
+  // 通用社交登录图标(本切片只接线测功能,不追各 provider 品牌图标——留作设计 follow-up)。
+  return <LogIn className="size-4" />;
 }
 
 // 登录 2FA 验证码步骤。单个 one-time-code 输入框(吃密码管理器/短信自动填充)+ 满位自动提交;
