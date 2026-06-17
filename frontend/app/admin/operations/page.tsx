@@ -18,7 +18,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  ArrowLeftRight,
   Ban,
+  CalendarClock,
   CheckCircle2,
   Copy,
   Gift,
@@ -26,9 +28,13 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
+  Search,
+  ShieldX,
   Ticket,
   TrendingUp,
   UserPlus,
+  Users,
   Wallet,
   X,
 } from 'lucide-react';
@@ -46,18 +52,24 @@ import {
 import { friendlyMessage } from '@/lib/api/errors';
 import {
   assignSubscription,
+  bulkAssignSubscription,
   cancelOrder,
+  cancelSubscription,
+  changeSubscriptionPlan,
   confirmOrder,
   createPlan,
+  createSubscriptionVoucher,
   createVoucher,
   createVoucherBatch,
   disablePlan,
+  extendSubscription,
   formatCents,
   formatDate,
   formatDateTime,
   formatUSDString,
   getPaymentDashboard,
   getReferralOverview,
+  listAssignmentsByUser,
   listOrders,
   listPlans,
   listReferralRewards,
@@ -66,19 +78,32 @@ import {
   nowRfc3339,
   orderStatusLabel,
   orderStatusVariant,
+  resetSubscriptionQuota,
+  revokeSubscription,
   revokeVoucher,
   rfc3339FromNow,
+  subscriptionStatusLabel,
+  subscriptionStatusVariant,
   voucherStatusLabel,
   voucherStatusVariant,
   type AdminOrder,
   type AdminReferral,
   type AdminReferralReward,
+  type AdminSubscription,
+  type BulkAssignResult,
   type CreatedCode,
   type PaymentDashboard,
   type ReferralOverview,
   type SubscriptionPlan,
   type Voucher,
 } from '@/lib/api/adminOperations';
+import {
+  newRequestId,
+  parseBulkUserIds,
+  validateChangePlan,
+  validateExtendInput,
+  validateRevokeReason,
+} from '@/lib/api/subscription-lifecycle';
 import { cn } from '@/lib/utils';
 
 const DEFAULT_TENANT_ID = 1; // 单租户部署默认
@@ -572,6 +597,8 @@ function SubscriptionsTab({ tenantId }: { tenantId: number }) {
   const [actionId, setActionId] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [assignTarget, setAssignTarget] = useState<SubscriptionPlan | null>(null);
+  const [bulkTarget, setBulkTarget] = useState<SubscriptionPlan | null>(null);
+  const [voucherTarget, setVoucherTarget] = useState<SubscriptionPlan | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -688,6 +715,34 @@ function SubscriptionsTab({ tenantId }: { tenantId: number }) {
                           <UserPlus />
                           指派
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setBulkTarget(p);
+                            setError(null);
+                            setNotice(null);
+                          }}
+                          disabled={actionId !== null}
+                          title="批量指派给多个用户"
+                        >
+                          <Users />
+                          批量
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setVoucherTarget(p);
+                            setError(null);
+                            setNotice(null);
+                          }}
+                          disabled={actionId !== null}
+                          title="生成订阅兑换券"
+                        >
+                          <Ticket />
+                          订阅券
+                        </Button>
                         {p.enabled && (
                           <Button
                             size="sm"
@@ -732,6 +787,33 @@ function SubscriptionsTab({ tenantId }: { tenantId: number }) {
           }}
         />
       )}
+
+      {bulkTarget && (
+        <BulkAssignModal
+          plan={bulkTarget}
+          tenantId={tenantId}
+          onClose={() => setBulkTarget(null)}
+          onDone={(msg) => {
+            setBulkTarget(null);
+            setNotice(msg);
+          }}
+        />
+      )}
+
+      {voucherTarget && (
+        <SubscriptionVoucherModal
+          plan={voucherTarget}
+          tenantId={tenantId}
+          onClose={() => setVoucherTarget(null)}
+          onDone={(msg) => {
+            setVoucherTarget(null);
+            setNotice(msg);
+          }}
+        />
+      )}
+
+      {/* 订阅生命周期：按用户查其订阅 → 逐行 续期/重置配额/改套餐/取消/撤销 */}
+      <SubscriptionLifecyclePanel tenantId={tenantId} plans={plans} />
     </div>
   );
 }
@@ -888,6 +970,563 @@ function AssignPlanModal({
           <Button size="sm" onClick={() => void submit()} disabled={submitting}>
             {submitting ? <Loader2 className="size-4 animate-spin" /> : <UserPlus />}
             指派
+          </Button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// 批量指派弹窗：多用户 ID（逗号/空白/换行分隔）→ 一个套餐。后端逐用户软失败，结果表展示。
+// 借鉴：sub2api bulk-assign 逐用户 status map。HUAKAI delta：统一 X-Request-Id 幂等。
+function BulkAssignModal({
+  plan,
+  tenantId,
+  onClose,
+  onDone,
+}: {
+  plan: SubscriptionPlan;
+  tenantId: number;
+  onClose: () => void;
+  onDone: (msg: string) => void;
+}) {
+  const [raw, setRaw] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [results, setResults] = useState<BulkAssignResult[] | null>(null);
+
+  async function submit() {
+    const parsed = parseBulkUserIds(raw);
+    if (parsed.error) {
+      setLocalError(parsed.error);
+      return;
+    }
+    setSubmitting(true);
+    setLocalError(null);
+    try {
+      const res = await bulkAssignSubscription(
+        { tenant_id: tenantId, user_ids: parsed.ids, plan_id: plan.id },
+        newRequestId(),
+      );
+      setResults(res.results ?? []);
+    } catch (err) {
+      setLocalError(friendlyMessage(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (results) {
+    const okCount = results.filter((r) => r.ok).length;
+    return (
+      <ModalShell
+        title="批量指派结果"
+        icon={<Users className="size-4 text-primary-600 dark:text-primary-300" />}
+        onClose={() => onDone(`批量指派完成：成功 ${okCount} / ${results.length}。`)}
+        wide
+      >
+        <div className="flex flex-col gap-3">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>用户</TableHead>
+                  <TableHead>结果</TableHead>
+                  <TableHead>说明</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {results.map((r) => (
+                  <TableRow key={r.user_id}>
+                    <TableCell className="font-mono text-xs tabular-nums">#{r.user_id}</TableCell>
+                    <TableCell>
+                      <Badge variant={r.ok ? (r.idempotent ? 'secondary' : 'default') : 'destructive'}>
+                        {r.ok ? (r.idempotent ? '已存在' : '已指派') : '失败'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-xs text-accent-500 dark:text-accent-400">{r.error ?? '—'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" onClick={() => onDone(`批量指派完成：成功 ${okCount} / ${results.length}。`)}>
+              完成
+            </Button>
+          </div>
+        </div>
+      </ModalShell>
+    );
+  }
+
+  return (
+    <ModalShell title="批量指派订阅" icon={<Users className="size-4 text-primary-600 dark:text-primary-300" />} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div className="rounded-lg border border-accent-200 bg-accent-50 p-3 text-xs text-accent-600 dark:border-accent-800 dark:bg-accent-950/40 dark:text-accent-300">
+          套餐「{plan.name}」 · {plan.validity_days} 天
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className={labelCls}>用户 ID 列表（逗号 / 空格 / 换行分隔）</label>
+          <textarea
+            rows={4}
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+            placeholder="1024, 1025, 1026"
+            className={cn(inputCls, 'h-auto py-2 font-mono')}
+          />
+        </div>
+        <p className="text-[11px] text-accent-400">逐用户处理：已有同套餐者幂等命中，无效 ID 单独标失败，不影响其它。</p>
+        {localError && <Banner kind="error" text={localError} />}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button size="sm" variant="outline" onClick={onClose} disabled={submitting}>
+            取消
+          </Button>
+          <Button size="sm" onClick={() => void submit()} disabled={submitting}>
+            {submitting ? <Loader2 className="size-4 animate-spin" /> : <Users />}
+            批量指派
+          </Button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// 生成订阅券弹窗：建一张 grant_kind=subscription 的兑换券（兑换后授予该套餐）。
+// 借鉴：sub2api redeem-codes generate type=subscription。HUAKAI delta：复用 voucher 子系统 + 幂等头。
+function SubscriptionVoucherModal({
+  plan,
+  tenantId,
+  onClose,
+  onDone,
+}: {
+  plan: SubscriptionPlan;
+  tenantId: number;
+  onClose: () => void;
+  onDone: (msg: string) => void;
+}) {
+  const [amount, setAmount] = useState(''); // 名义价 USD（信息性）
+  const [validityDays, setValidityDays] = useState('30'); // 券码兑换窗口
+  const [maxRedemptions, setMaxRedemptions] = useState('1');
+  const [submitting, setSubmitting] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [code, setCode] = useState<string | null>(null);
+
+  async function submit() {
+    const amt = Number(amount);
+    const days = parseInt(validityDays, 10);
+    const maxR = parseInt(maxRedemptions, 10);
+    if (!Number.isFinite(amt) || amt < 0) {
+      setLocalError('名义价（USD）需为非负数。');
+      return;
+    }
+    if (!Number.isInteger(days) || days < 1) {
+      setLocalError('券码有效天数需为正整数。');
+      return;
+    }
+    if (!Number.isInteger(maxR) || maxR < 1) {
+      setLocalError('每码核销上限需为正整数。');
+      return;
+    }
+    setSubmitting(true);
+    setLocalError(null);
+    try {
+      const res = await createSubscriptionVoucher(
+        {
+          tenant_id: tenantId,
+          plan_id: plan.id,
+          amount_cents: Math.round(amt * 100),
+          valid_from: nowRfc3339(),
+          valid_until: rfc3339FromNow(days),
+          max_redemptions: maxR,
+        },
+        newRequestId(),
+      );
+      setCode(res.code ?? '');
+    } catch (err) {
+      setLocalError(friendlyMessage(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (code !== null) {
+    return (
+      <ModalShell
+        title="订阅券已生成"
+        icon={<CheckCircle2 className="size-4 text-emerald-600 dark:text-emerald-400" />}
+        onClose={() => onDone(`已生成套餐「${plan.name}」订阅券。`)}
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-accent-500 dark:text-accent-400">明文券码仅此一次可见，请立即复制保存。</p>
+          <input readOnly value={code} className={cn(inputCls, 'font-mono')} />
+          <div className="flex justify-end gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                if (typeof navigator !== 'undefined' && navigator.clipboard) void navigator.clipboard.writeText(code);
+              }}
+            >
+              <Copy />
+              复制
+            </Button>
+            <Button size="sm" onClick={() => onDone(`已生成套餐「${plan.name}」订阅券。`)}>
+              完成
+            </Button>
+          </div>
+        </div>
+      </ModalShell>
+    );
+  }
+
+  return (
+    <ModalShell title="生成订阅券" icon={<Ticket className="size-4 text-primary-600 dark:text-primary-300" />} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div className="rounded-lg border border-accent-200 bg-accent-50 p-3 text-xs text-accent-600 dark:border-accent-800 dark:bg-accent-950/40 dark:text-accent-300">
+          套餐「{plan.name}」 · 兑换后授予 {plan.validity_days} 天
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <label className={labelCls}>名义价（USD，信息性）</label>
+            <input type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" className={cn(inputCls, 'tabular-nums')} />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className={labelCls}>券码有效天数</label>
+            <input type="number" min={1} value={validityDays} onChange={(e) => setValidityDays(e.target.value)} className={cn(inputCls, 'tabular-nums')} />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className={labelCls}>每码核销上限</label>
+            <input type="number" min={1} value={maxRedemptions} onChange={(e) => setMaxRedemptions(e.target.value)} className={cn(inputCls, 'tabular-nums')} />
+          </div>
+        </div>
+        <p className="text-[11px] text-accent-400">名义价仅信息展示，兑换时不入余额；兑换授予的是套餐时长/配额。</p>
+        {localError && <Banner kind="error" text={localError} />}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button size="sm" variant="outline" onClick={onClose} disabled={submitting}>
+            取消
+          </Button>
+          <Button size="sm" onClick={() => void submit()} disabled={submitting}>
+            {submitting ? <Loader2 className="size-4 animate-spin" /> : <Plus />}
+            生成
+          </Button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+// 订阅生命周期面板：按用户 ID 查其订阅 → 逐行 续期/重置配额/改套餐/取消/撤销。
+// 借鉴：sub2api 按用户管理订阅生命周期。HUAKAI delta：cancel(软)与 revoke(硬+reason)分立 + 统一幂等头。
+type LifecycleAction = 'extend' | 'reset-quota' | 'change-plan' | 'cancel' | 'revoke';
+
+function SubscriptionLifecyclePanel({ tenantId, plans }: { tenantId: number; plans: SubscriptionPlan[] }) {
+  const [userIdInput, setUserIdInput] = useState('');
+  const [queriedUserId, setQueriedUserId] = useState<number | null>(null);
+  const [subs, setSubs] = useState<AdminSubscription[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [target, setTarget] = useState<{ action: LifecycleAction; sub: AdminSubscription } | null>(null);
+
+  const reload = useCallback(
+    async (uid: number) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await listAssignmentsByUser({ tenant_id: tenantId, user_id: uid });
+        setSubs(res.subscriptions ?? []);
+        setQueriedUserId(uid);
+      } catch (err) {
+        setError(friendlyMessage(err));
+        setSubs([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [tenantId],
+  );
+
+  function query() {
+    const uid = parseInt(userIdInput, 10);
+    if (!Number.isInteger(uid) || uid <= 0) {
+      setError('请输入有效的用户 ID。');
+      return;
+    }
+    setNotice(null);
+    void reload(uid);
+  }
+
+  return (
+    <SectionCard title="订阅生命周期" icon={<ArrowLeftRight className="size-4 text-primary-600 dark:text-primary-300" />}>
+      <div className="flex flex-col gap-4">
+        {error && <Banner kind="error" text={error} />}
+        {notice && <Banner kind="ok" text={notice} />}
+
+        <div className="flex items-end gap-2">
+          <div className="flex flex-col gap-1">
+            <label className={labelCls}>用户 ID</label>
+            <input
+              type="number"
+              min={1}
+              value={userIdInput}
+              onChange={(e) => setUserIdInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') query();
+              }}
+              placeholder="例：1024"
+              className={cn(inputCls, 'w-32 tabular-nums')}
+            />
+          </div>
+          <Button size="sm" onClick={query} disabled={loading}>
+            {loading ? <Loader2 className="size-4 animate-spin" /> : <Search />}
+            查询订阅
+          </Button>
+        </div>
+
+        {queriedUserId !== null &&
+          (loading ? (
+            <LoadingRow text="加载用户订阅中…" />
+          ) : subs.length === 0 ? (
+            <EmptyRow text={`用户 #${queriedUserId} 暂无订阅记录。`} />
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>订阅</TableHead>
+                    <TableHead>套餐</TableHead>
+                    <TableHead>状态</TableHead>
+                    <TableHead>有效期</TableHead>
+                    <TableHead className="text-right">生命周期操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {subs.map((s) => (
+                    <TableRow key={s.id}>
+                      <TableCell className="font-mono text-xs tabular-nums">#{s.id}</TableCell>
+                      <TableCell className="text-xs text-accent-600 dark:text-accent-300">
+                        #{s.plan_id}
+                        {s.granted_group ? ` · ${s.granted_group}` : ''}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={subscriptionStatusVariant(s.status)}>{subscriptionStatusLabel(s.status)}</Badge>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-accent-500 dark:text-accent-400">
+                        {formatDate(s.starts_at)} ~ {formatDate(s.expires_at)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex flex-wrap items-center justify-end gap-1.5">
+                          <Button size="sm" variant="outline" onClick={() => setTarget({ action: 'extend', sub: s })} title="续期">
+                            <CalendarClock />
+                            续期
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setTarget({ action: 'reset-quota', sub: s })} title="重置配额">
+                            <RotateCcw />
+                            重置
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setTarget({ action: 'change-plan', sub: s })} title="改套餐">
+                            <ArrowLeftRight />
+                            改套餐
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setTarget({ action: 'cancel', sub: s })} title="取消（软）">
+                            <Ban />
+                            取消
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setTarget({ action: 'revoke', sub: s })} title="撤销（硬，需原因）">
+                            <ShieldX />
+                            撤销
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ))}
+      </div>
+
+      {target && (
+        <LifecycleActionModal
+          action={target.action}
+          subscription={target.sub}
+          plans={plans}
+          tenantId={tenantId}
+          onClose={() => setTarget(null)}
+          onDone={(msg) => {
+            setTarget(null);
+            setNotice(msg);
+            if (queriedUserId !== null) void reload(queriedUserId);
+          }}
+        />
+      )}
+    </SectionCard>
+  );
+}
+
+const LIFECYCLE_META: Record<LifecycleAction, { title: string; verb: string }> = {
+  extend: { title: '续期订阅', verb: '续期' },
+  'reset-quota': { title: '重置配额', verb: '重置配额' },
+  'change-plan': { title: '更换套餐', verb: '更换套餐' },
+  cancel: { title: '取消订阅', verb: '取消' },
+  revoke: { title: '撤销订阅', verb: '撤销' },
+};
+
+// 单一参数化弹窗，按 action 渲染对应字段；提交前用 subscription-lifecycle.ts 的校验器把关，再带新幂等键调对应 client。
+function LifecycleActionModal({
+  action,
+  subscription,
+  plans,
+  tenantId,
+  onClose,
+  onDone,
+}: {
+  action: LifecycleAction;
+  subscription: AdminSubscription;
+  plans: SubscriptionPlan[];
+  tenantId: number;
+  onClose: () => void;
+  onDone: (msg: string) => void;
+}) {
+  const [extendMode, setExtendMode] = useState<'days' | 'until'>('days');
+  const [days, setDays] = useState('30');
+  const [until, setUntil] = useState(''); // datetime-local
+  const [newPlanId, setNewPlanId] = useState<string>('');
+  const [allowDowngrade, setAllowDowngrade] = useState(false);
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  async function submit() {
+    setLocalError(null);
+    try {
+      let msg = '';
+      if (action === 'extend') {
+        const input =
+          extendMode === 'days'
+            ? { days: parseInt(days, 10) }
+            : { until: until ? new Date(until).toISOString() : '' };
+        const err = validateExtendInput(input);
+        if (err) {
+          setLocalError(err);
+          return;
+        }
+        setSubmitting(true);
+        await extendSubscription(subscription.id, tenantId, input, newRequestId());
+        msg = `订阅 #${subscription.id} 已续期。`;
+      } else if (action === 'reset-quota') {
+        setSubmitting(true);
+        await resetSubscriptionQuota(subscription.id, tenantId, newRequestId());
+        msg = `订阅 #${subscription.id} 配额已重置。`;
+      } else if (action === 'change-plan') {
+        const pid = parseInt(newPlanId, 10);
+        const err = validateChangePlan(pid);
+        if (err) {
+          setLocalError(err);
+          return;
+        }
+        setSubmitting(true);
+        await changeSubscriptionPlan(subscription.id, tenantId, pid, allowDowngrade, newRequestId());
+        msg = `订阅 #${subscription.id} 已更换套餐。`;
+      } else if (action === 'cancel') {
+        setSubmitting(true);
+        await cancelSubscription(subscription.id, tenantId, newRequestId());
+        msg = `订阅 #${subscription.id} 已取消。`;
+      } else {
+        const err = validateRevokeReason(reason);
+        if (err) {
+          setLocalError(err);
+          return;
+        }
+        setSubmitting(true);
+        await revokeSubscription(subscription.id, tenantId, reason, newRequestId());
+        msg = `订阅 #${subscription.id} 已撤销。`;
+      }
+      onDone(msg);
+    } catch (err) {
+      setLocalError(friendlyMessage(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const meta = LIFECYCLE_META[action];
+
+  return (
+    <ModalShell title={meta.title} icon={<ArrowLeftRight className="size-4 text-primary-600 dark:text-primary-300" />} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div className="rounded-lg border border-accent-200 bg-accent-50 p-3 text-xs text-accent-600 dark:border-accent-800 dark:bg-accent-950/40 dark:text-accent-300">
+          订阅 #{subscription.id} · 套餐 #{subscription.plan_id} · 到期 {formatDate(subscription.expires_at)}
+        </div>
+
+        {action === 'extend' && (
+          <div className="flex flex-col gap-3">
+            <div className="flex gap-1.5">
+              <Button size="sm" variant={extendMode === 'days' ? 'default' : 'outline'} onClick={() => setExtendMode('days')}>
+                按天数
+              </Button>
+              <Button size="sm" variant={extendMode === 'until' ? 'default' : 'outline'} onClick={() => setExtendMode('until')}>
+                到指定时间
+              </Button>
+            </div>
+            {extendMode === 'days' ? (
+              <div className="flex flex-col gap-1">
+                <label className={labelCls}>延长天数（&gt;0；缩短请用「到指定时间」）</label>
+                <input type="number" min={1} value={days} onChange={(e) => setDays(e.target.value)} className={cn(inputCls, 'tabular-nums')} />
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1">
+                <label className={labelCls}>新到期时间</label>
+                <input type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} className={inputCls} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {action === 'change-plan' && (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <label className={labelCls}>目标套餐</label>
+              <select value={newPlanId} onChange={(e) => setNewPlanId(e.target.value)} className="h-9 rounded-md border border-input bg-background px-3 text-sm">
+                <option value="">选择套餐…</option>
+                {plans
+                  .filter((p) => p.id !== subscription.plan_id)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}（#{p.id} · {p.validity_days} 天）
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-accent-600 dark:text-accent-300">
+              <input type="checkbox" checked={allowDowngrade} onChange={(e) => setAllowDowngrade(e.target.checked)} />
+              允许降级（目标套餐权益低于当前时仍执行）
+            </label>
+          </div>
+        )}
+
+        {action === 'revoke' && (
+          <div className="flex flex-col gap-1">
+            <label className={labelCls}>撤销原因（必填）</label>
+            <input type="text" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="例：违规使用" className={inputCls} />
+          </div>
+        )}
+
+        {(action === 'cancel' || action === 'reset-quota') && (
+          <p className="text-xs text-accent-500 dark:text-accent-400">
+            {action === 'cancel' ? '软取消：关闭配额并降级，记录可查。' : '按套餐快照重建全部配额窗口（日/周/月）。'}
+          </p>
+        )}
+
+        {localError && <Banner kind="error" text={localError} />}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button size="sm" variant="outline" onClick={onClose} disabled={submitting}>
+            取消
+          </Button>
+          <Button size="sm" onClick={() => void submit()} disabled={submitting}>
+            {submitting ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 />}
+            确认{meta.verb}
           </Button>
         </div>
       </div>

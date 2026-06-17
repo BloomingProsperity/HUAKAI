@@ -47,6 +47,15 @@
 
 import { ApiError, apiGet, apiPost } from './client';
 import type { APIError } from './types';
+import {
+  buildBulkAssignBody,
+  buildChangePlanBody,
+  buildExtendBody,
+  buildRevokeBody,
+  buildSubscriptionVoucherBody,
+  type ExtendInput,
+  type SubscriptionVoucherInput,
+} from './subscription-lifecycle';
 
 // ---- 共享：管理 token + PUT（client.ts 未提供 PUT，且不可改它）----
 
@@ -81,6 +90,15 @@ async function parse<T>(resp: Response): Promise<T> {
 // （client.ts 无 PUT 助手且不可改它，故本模块内自带；复用同一 Bearer + ApiError 以让 friendlyMessage 统一翻译）。
 async function adminPut<T>(path: string, body: unknown): Promise<T> {
   const resp = await fetch(path, { method: 'PUT', headers: adminHeaders(), body: JSON.stringify(body) });
+  return parse<T>(resp);
+}
+
+// adminPostIdem：带 X-Request-Id 幂等头的 POST（client.ts apiPost 不支持自定义头且不可改它，故本模块内自带）。
+// 订阅生命周期写操作用：同一 requestId 重试时后端视为 no-op（handler.go requestID → service RequestID）。
+async function adminPostIdem<T>(path: string, body: unknown, requestId?: string): Promise<T> {
+  const headers = adminHeaders();
+  if (requestId && requestId.trim() !== '') headers['X-Request-Id'] = requestId;
+  const resp = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
   return parse<T>(resp);
 }
 
@@ -386,6 +404,115 @@ export function listAssignmentsByGroup(opts: {
     group: opts.group,
     limit: opts.limit,
   });
+}
+
+// =====================================================================================
+// 订阅生命周期 admin 写操作（cancel / extend / reset-quota / change-plan / revoke / bulk + 订阅券）
+// 端点 /v1/admin/subscriptions/assignments/{id}/...（读 subscriptionhttp/handler.go:262-267 真码）。
+// 全部走 adminPostIdem 带 X-Request-Id 幂等头；请求体校验/构造见 subscription-lifecycle.ts（纯逻辑层，已单测）。
+// =====================================================================================
+
+// bulkAssign 逐用户结果（对齐 subscriptionhttp.bulkAssignUserView）。
+export interface BulkAssignResult {
+  user_id: number;
+  ok: boolean;
+  error?: string;
+  idempotent?: boolean;
+  subscription?: AdminSubscription;
+}
+
+// cancelSubscription — POST /assignments/{id}/cancel  body{tenant_id}（软取消：关配额 + 降级）。
+export function cancelSubscription(
+  id: number,
+  tenantId: number,
+  requestId?: string,
+): Promise<{ subscription: AdminSubscription }> {
+  return adminPostIdem<{ subscription: AdminSubscription }>(
+    `/v1/admin/subscriptions/assignments/${id}/cancel`,
+    { tenant_id: tenantId },
+    requestId,
+  );
+}
+
+// extendSubscription — POST /assignments/{id}/extend  body{tenant_id, days?|until?}（后端要求 days>0 XOR until）。
+export function extendSubscription(
+  id: number,
+  tenantId: number,
+  input: ExtendInput,
+  requestId?: string,
+): Promise<{ subscription: AdminSubscription }> {
+  return adminPostIdem<{ subscription: AdminSubscription }>(
+    `/v1/admin/subscriptions/assignments/${id}/extend`,
+    buildExtendBody(tenantId, input),
+    requestId,
+  );
+}
+
+// resetSubscriptionQuota — POST /assignments/{id}/reset-quota  body{tenant_id}（按套餐快照重建全部配额窗口）。
+export function resetSubscriptionQuota(
+  id: number,
+  tenantId: number,
+  requestId?: string,
+): Promise<{ subscription: AdminSubscription }> {
+  return adminPostIdem<{ subscription: AdminSubscription }>(
+    `/v1/admin/subscriptions/assignments/${id}/reset-quota`,
+    { tenant_id: tenantId },
+    requestId,
+  );
+}
+
+// changeSubscriptionPlan — POST /assignments/{id}/change-plan  body{tenant_id, new_plan_id, allow_downgrade?}。
+export function changeSubscriptionPlan(
+  id: number,
+  tenantId: number,
+  newPlanId: number,
+  allowDowngrade?: boolean,
+  requestId?: string,
+): Promise<{ subscription: AdminSubscription }> {
+  return adminPostIdem<{ subscription: AdminSubscription }>(
+    `/v1/admin/subscriptions/assignments/${id}/change-plan`,
+    buildChangePlanBody(tenantId, newPlanId, allowDowngrade),
+    requestId,
+  );
+}
+
+// revokeSubscription — POST /assignments/{id}/revoke  body{tenant_id, reason}（硬结，reason 必填）。
+export function revokeSubscription(
+  id: number,
+  tenantId: number,
+  reason: string,
+  requestId?: string,
+): Promise<{ subscription: AdminSubscription }> {
+  return adminPostIdem<{ subscription: AdminSubscription }>(
+    `/v1/admin/subscriptions/assignments/${id}/revoke`,
+    buildRevokeBody(tenantId, reason),
+    requestId,
+  );
+}
+
+// bulkAssignSubscription — POST /assignments/bulk  body{tenant_id, user_ids, plan_id}（逐用户软失败）。
+export function bulkAssignSubscription(
+  input: { tenant_id: number; user_ids: number[]; plan_id: number },
+  requestId?: string,
+): Promise<{ results: BulkAssignResult[] }> {
+  return adminPostIdem<{ results: BulkAssignResult[] }>(
+    '/v1/admin/subscriptions/assignments/bulk',
+    buildBulkAssignBody(input.tenant_id, input.user_ids, input.plan_id),
+    requestId,
+  );
+}
+
+// createSubscriptionVoucher — POST /vouchers  body{tenant_id, plan_id, amount_cents, valid_from, valid_until, ...}。
+// grant_kind=subscription 由端点强制（不传）；返回 {voucher, code}（201，明文 code 仅此一次可见）。
+export function createSubscriptionVoucher(
+  input: SubscriptionVoucherInput,
+  requestId?: string,
+): Promise<VoucherCreateResult> {
+  return adminPostIdem<VoucherCreateResult>(
+    '/v1/admin/subscriptions/vouchers',
+    buildSubscriptionVoucherBody(input),
+    requestId,
+  );
 }
 
 // =====================================================================================
