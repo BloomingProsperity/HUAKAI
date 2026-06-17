@@ -809,7 +809,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		UnlockAudit:      adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
 		TwoFADisabler:    d.twoFactor,
 		PasskeyResetter:  d.passkeys,
-		UserGroupSetter:  adminuserhttp.NewPostgresUserGroupStore(d.pgPool),
+		UserGroupAudit:   adminuserhttp.NewPostgresUserGroupAuditStore(d.pgPool),
 		UserRemarkSetter: adminuserhttp.NewPostgresUserRemarkStore(d.pgPool),
 		UserStatusSetter: adminuserhttp.NewPostgresUserStatusStore(d.pgPool),
 		UserCreator:      adminuserhttp.NewPostgresUserCreateStore(d.pgPool),
