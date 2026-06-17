@@ -779,6 +779,17 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	// 成功路径稍后由 billing 快照从 bufferedEnv(已含 marshal+resp 损失)覆盖,无重复累加。
 	ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
 	if err != nil {
+		if errors.Is(err, gateway.ErrUpstreamResponseTooLarge) {
+			// 上游 2xx 响应超 1MiB 上限：终止(重试不会让响应变小)，client 拿 upstream_response_too_large
+			// 而非把截断字节喂 ProviderResponseToCanonical 后塌成的 opaque upstream_dispatch_error(502)。
+			// 与 legacy raw 路径(readRawBufferedUpstreamBody → CodeUpstreamResponseTooLarge)行为一致。
+			abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_response_too_large", ex.requestID, 0, ex.protocolLoss)
+			if ex.healthKeyOK {
+				recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, http.StatusOK, time.Since(startedAt), ex.requestID, nil)
+			}
+			failure := terminalLocalAttemptFailure(http.StatusBadGateway, clienterr.CodeUpstreamResponseTooLarge, clienterr.MessageFor(clienterr.CodeUpstreamResponseTooLarge), "upstream_response_too_large", err)
+			return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
+		}
 		// 上游真实 status / header / body 只用于 retry 与 health classification;
 		// client 只拿脱敏后的 code/message。
 		var upstreamErr *gateway.UpstreamHTTPError

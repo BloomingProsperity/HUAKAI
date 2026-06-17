@@ -708,3 +708,74 @@ func TestDispatchHCSFPassesInboundBetaTokensToAdapter(t *testing.T) {
 		t.Fatalf("adapter InboundBetaTokens=%v; want HCSF 路径完整透传", got)
 	}
 }
+
+// TestReadBufferedUpstreamResponseDetectsOverflow 守 S2-7 核心: 读上游 buffered 响应必须
+// 用 limit+1 哨兵探测溢出, 否则 >1MiB 响应被静默截断且无人知晓。
+// Mutation: 把 readBufferedUpstreamResponse 的 LimitReader 改回 maxBufferedUpstreamResponseBytes
+// (无 +1) → over body 读到恰好 limit 字节 → len==limit 非 >limit → oversized=false → RED。
+func TestReadBufferedUpstreamResponseDetectsOverflow(t *testing.T) {
+	// 恰好上限: 不算 oversized, 全量返回。
+	atLimit := strings.Repeat("a", maxBufferedUpstreamResponseBytes)
+	raw, oversized, err := readBufferedUpstreamResponse(strings.NewReader(atLimit))
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if oversized {
+		t.Fatalf("body 恰好等于上限不应判 oversized")
+	}
+	if len(raw) != maxBufferedUpstreamResponseBytes {
+		t.Fatalf("at-limit raw len=%d want %d", len(raw), maxBufferedUpstreamResponseBytes)
+	}
+	// 超 1 字节: 判 oversized, raw 截断到上限。
+	over := strings.Repeat("a", maxBufferedUpstreamResponseBytes+1)
+	raw, oversized, err = readBufferedUpstreamResponse(strings.NewReader(over))
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if !oversized {
+		t.Fatalf("body 超上限必须判 oversized(漏 +1 哨兵 = 静默截断 bug)")
+	}
+	if len(raw) != maxBufferedUpstreamResponseBytes {
+		t.Fatalf("oversized raw 应截断到上限, got %d", len(raw))
+	}
+}
+
+// TestDispatchHCSFRejectsOversizedSuccessResponse 守 S2-7: 上游 2xx 成功响应 >1MiB 必须在
+// canonicalize 前被拒为 ErrUpstreamResponseTooLarge, 而非把截断字节喂 ProviderResponseToCanonical
+// (静默截断→opaque 502 / SSE 形按部分响应错计费)。
+// Mutation: 删 DispatchHCSF 内 `if oversized { return ErrUpstreamResponseTooLarge }` → 截断体进
+// adapter → err 变 nil 或 parse 错(均 ≠ ErrUpstreamResponseTooLarge) → RED。
+func TestDispatchHCSFRejectsOversizedSuccessResponse(t *testing.T) {
+	big := strings.Repeat("x", maxBufferedUpstreamResponseBytes+100)
+	oversized := `{"id":"chatcmpl-big","object":"chat.completion","model":"gpt-4o-upstream","choices":[{"index":0,"message":{"role":"assistant","content":"` + big + `"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	adapter := &stubAdapter{platform: "openai"}
+	doer := &stubDoer{respStatus: 200, respBody: oversized}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.DispatchHCSF(hcsfCtx(), testHCSFEnvelope())
+	if !errors.Is(err, ErrUpstreamResponseTooLarge) {
+		t.Fatalf("DispatchHCSF err=%v; want ErrUpstreamResponseTooLarge for >1MiB 2xx body", err)
+	}
+}
+
+// TestDispatchHCSFOversizedNon2xxStaysUpstreamHTTPError 守: 非 2xx 上游响应即便超 1MiB, 仍须
+// 作 UpstreamHTTPError(带截断 body 供错误分类), 不能被当 too-large 拒绝(镜像 legacy oversizedNon2xx)。
+// Mutation: 把 oversized 检查挪到 status 判断之前 → 非 2xx oversized 被误拒为 too-large → RED。
+func TestDispatchHCSFOversizedNon2xxStaysUpstreamHTTPError(t *testing.T) {
+	big := strings.Repeat("x", maxBufferedUpstreamResponseBytes+100)
+	adapter := &stubAdapter{platform: "openai"}
+	doer := &stubDoer{respStatus: 500, respBody: big}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.DispatchHCSF(hcsfCtx(), testHCSFEnvelope())
+	if errors.Is(err, ErrUpstreamResponseTooLarge) {
+		t.Fatalf("非 2xx oversized 不应被当 too-large 拒绝")
+	}
+	var upstreamErr *UpstreamHTTPError
+	if !errors.As(err, &upstreamErr) {
+		t.Fatalf("非 2xx oversized 应仍是 UpstreamHTTPError(供错误分类), got %v", err)
+	}
+	if upstreamErr.StatusCode != 500 {
+		t.Fatalf("UpstreamHTTPError.StatusCode=%d want 500", upstreamErr.StatusCode)
+	}
+}
