@@ -1,4 +1,4 @@
--- 0148_account_proxy_mutual_exclusive.up.sql
+-- 0149_account_proxy_mutual_exclusive.up.sql
 -- 账号代理绑定互斥(防 IP 隔离泄漏的 DB 层防御纵深)。
 --
 -- provider_accounts 有两种出站代理绑定:proxy_id(单绑某代理,1:1)与
@@ -13,8 +13,6 @@
 --
 -- 注:列已存在(proxy_id@0038 / proxy_group_id@0124);当前无 admin 写路径,故现有行
 -- 不会两列同设,约束可干净添加。
--- (迁移号 0148:operator-switches 分支也占用了 0148 做 proxy_fallback_mode,二者合并时
---  需重编号其一——已知小冲突。)
 
 ALTER TABLE provider_accounts
     ADD CONSTRAINT chk_account_proxy_mutual_exclusive CHECK (
