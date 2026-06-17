@@ -20,7 +20,8 @@
     "test:api-base-url": "node --experimental-strip-types --test lib/api/api-base-url.test.ts",
     "test:account-recovery": "node --experimental-strip-types --test lib/api/account-recovery.test.ts",
     "test:subscription-lifecycle": "node --experimental-strip-types --test lib/api/subscription-lifecycle.test.ts",
-    "test:quota-policy": "node --experimental-strip-types --test lib/api/quota-policy-form.test.ts"
+    "test:quota-policy": "node --experimental-strip-types --test lib/api/quota-policy-form.test.ts",
+    "test:ops-data": "node --experimental-strip-types --test lib/api/ops-data-form.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
