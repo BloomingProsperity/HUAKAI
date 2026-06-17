@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   Activity,
+  Ban,
   BarChart3,
   Bell,
   Bot,
@@ -66,6 +67,7 @@ const adminNavItems = [
   { icon: Ticket, label: '运营管理', href: '/admin/operations', active: false, disabled: false },
   { icon: Settings, label: '平台设置', href: '/admin/settings', active: false, disabled: false },
   { icon: ShieldAlert, label: '审核系统', href: '/admin/system', active: false, disabled: false },
+  { icon: Ban, label: '审核黑名单', href: '/admin/moderation', active: false, disabled: false },
   { icon: Bot, label: 'Hermes 助手', href: '/admin/hermes', active: false, disabled: false },
 ];
 
