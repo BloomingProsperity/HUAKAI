@@ -18,7 +18,8 @@
     "test:webauthn": "node --experimental-strip-types --test lib/api/webauthn.test.ts",
     "test:passkey-login": "node --experimental-strip-types --test lib/api/passkey-login.test.ts",
     "test:api-base-url": "node --experimental-strip-types --test lib/api/api-base-url.test.ts",
-    "test:account-recovery": "node --experimental-strip-types --test lib/api/account-recovery.test.ts"
+    "test:account-recovery": "node --experimental-strip-types --test lib/api/account-recovery.test.ts",
+    "test:subscription-lifecycle": "node --experimental-strip-types --test lib/api/subscription-lifecycle.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
