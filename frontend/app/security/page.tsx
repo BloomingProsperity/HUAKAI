@@ -46,6 +46,8 @@ import {
   fmtDateTime,
   providerLabel,
   regenerateBackupCodes,
+  registerPasskeyBegin,
+  registerPasskeyFinish,
   setup2FA,
   transportLabel,
   unlinkOAuthBinding,
@@ -54,6 +56,7 @@ import {
   type TwoFASetupResult,
   type TwoFAStatus,
 } from '@/lib/api/security';
+import { decodeCreationOptions, encodeCredential, isWebAuthnSupported } from '@/lib/api/webauthn';
 
 // 区块加载失败时,区分「暂不可用 (503)」与一般错误,供卡片显示不同语气。
 function describeError(err: unknown): { message: string; unavailable: boolean } {
@@ -471,6 +474,7 @@ function PasskeySection() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [registering, setRegistering] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -487,6 +491,39 @@ function PasskeySection() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // 注册新通行密钥:begin 拿创建选项 → 浏览器 WebAuthn 交互(生物识别/安全钥)→ finish 落库。
+  // 失败态细分:浏览器不支持 / 用户取消或超时(NotAllowedError)/ 其它(含后端 passkey 未启用或要求 step-up)。
+  const register = useCallback(async () => {
+    setActionErr(null);
+    setNotice(null);
+    if (!isWebAuthnSupported()) {
+      setActionErr('当前浏览器不支持通行密钥(WebAuthn),请换支持的浏览器/设备。');
+      return;
+    }
+    setRegistering(true);
+    try {
+      const begin = await registerPasskeyBegin();
+      const options = decodeCreationOptions(begin.public_key);
+      const cred = (await navigator.credentials.create(options)) as PublicKeyCredential | null;
+      if (!cred) {
+        setActionErr('未能创建通行密钥(浏览器未返回凭据)。');
+        return;
+      }
+      await registerPasskeyFinish(begin.session_id, encodeCredential(cred));
+      setNotice('通行密钥已注册。');
+      await load();
+    } catch (e) {
+      if (e instanceof DOMException && (e.name === 'NotAllowedError' || e.name === 'AbortError')) {
+        setActionErr('注册已取消或超时,请重试。');
+      } else {
+        // 后端 passkey 未启用 / 要求 step-up 二次校验 等也走这里(完整二次校验对话框留后续切片)。
+        setActionErr(friendlyMessage(e));
+      }
+    } finally {
+      setRegistering(false);
+    }
   }, [load]);
 
   const remove = useCallback(async (id: number) => {
@@ -521,12 +558,16 @@ function PasskeySection() {
           {notice && <NoticeLine>{notice}</NoticeLine>}
           {actionErr && <ErrorLine>{actionErr}</ErrorLine>}
 
-          {/* 注册新通行密钥:WebAuthn 全流程 (navigator.credentials.create + register/begin+finish)
-              较复杂,留待后续切片实现;此区先提供列表与删除。 */}
-          <div className="flex items-start gap-2 rounded-lg border border-dashed border-accent-200 bg-accent-50/60 px-3 py-2.5 text-xs text-accent-500 dark:border-accent-800 dark:bg-accent-950/40 dark:text-accent-400">
-            <KeyRound className="mt-0.5 size-3.5 shrink-0" />
-            <span>注册新通行密钥 (浏览器 WebAuthn 交互) 即将上线。当前可查看与删除已绑定的通行密钥。</span>
-          </div>
+          {/* 注册新通行密钥:WebAuthn 全流程(register/begin → navigator.credentials.create → finish)。 */}
+          <button
+            type="button"
+            onClick={() => void register()}
+            disabled={registering}
+            className="flex items-center justify-center gap-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2.5 text-sm font-medium text-primary-700 transition-colors hover:bg-primary-100 disabled:opacity-60 dark:border-primary-900/60 dark:bg-primary-950/40 dark:text-primary-300 dark:hover:bg-primary-950/70"
+          >
+            {registering ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+            注册新通行密钥
+          </button>
 
           {!items || items.length === 0 ? (
             <Empty>尚未绑定任何通行密钥。</Empty>
