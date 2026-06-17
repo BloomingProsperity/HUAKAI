@@ -29,7 +29,8 @@
     "test:alert-rule": "node --experimental-strip-types --test lib/api/alert-rule-form.test.ts",
     "test:usage-analytics": "node --experimental-strip-types --test lib/api/usage-analytics-form.test.ts",
     "test:notifications-admin": "node --experimental-strip-types --test lib/api/notifications-admin-form.test.ts",
-    "test:export-csv": "node --experimental-strip-types --test lib/api/export-csv-form.test.ts"
+    "test:export-csv": "node --experimental-strip-types --test lib/api/export-csv-form.test.ts",
+    "test:notify-settings": "node --experimental-strip-types --test lib/api/notify-settings-form.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
