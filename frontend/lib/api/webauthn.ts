@@ -57,7 +57,39 @@ export function encodeCredential(cred: PublicKeyCredential): Record<string, unkn
   };
 }
 
-// 浏览器是否支持 WebAuthn(用于注册前能力探测,不支持给友好提示而非直接报错)。
+// 免密登录:login/begin 返回的 public_key 形如 { publicKey: { challenge, allowCredentials:[{id,...}], ... } }。
+// 把 challenge 与 allowCredentials[].id 由 base64url 解成字节,产出可喂 navigator.credentials.get 的对象。
+export function decodeRequestOptions(wrapped: { publicKey: Record<string, unknown> }): CredentialRequestOptions {
+  const pk = wrapped.publicKey as Record<string, unknown>;
+  const decoded: Record<string, unknown> = { ...pk, challenge: base64urlToBytes(pk.challenge as string) };
+  if (Array.isArray(pk.allowCredentials)) {
+    decoded.allowCredentials = (pk.allowCredentials as Array<Record<string, unknown>>).map((c) => ({
+      ...c,
+      id: base64urlToBytes(c.id as string),
+    }));
+  }
+  return { publicKey: decoded as unknown as PublicKeyCredentialRequestOptions };
+}
+
+// navigator.credentials.get 返回的 PublicKeyCredential(断言)→ 标准 CredentialRequestResponse JSON。
+// 断言响应字段(authenticatorData/signature/userHandle/clientDataJSON)编 base64url;userHandle 可空。
+export function encodeAssertion(cred: PublicKeyCredential): Record<string, unknown> {
+  const resp = cred.response as AuthenticatorAssertionResponse;
+  return {
+    id: cred.id,
+    rawId: bytesToBase64url(cred.rawId),
+    type: cred.type,
+    response: {
+      clientDataJSON: bytesToBase64url(resp.clientDataJSON),
+      authenticatorData: bytesToBase64url(resp.authenticatorData),
+      signature: bytesToBase64url(resp.signature),
+      userHandle: resp.userHandle ? bytesToBase64url(resp.userHandle) : null,
+    },
+    clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+  };
+}
+
+// 浏览器是否支持 WebAuthn(用于注册/登录前能力探测,不支持给友好提示而非直接报错)。
 export function isWebAuthnSupported(): boolean {
   return typeof window !== 'undefined' && typeof window.PublicKeyCredential === 'function';
 }
