@@ -710,6 +710,8 @@ func completionsHandlerDeps(d *deps) completionshttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		// 流式交付后 settle 失败的 durable 兜底队列，与 chat 路径同一注入(S1-2/S1-3)。
+		SettleRecoveryDLQ: d.dlqService,
 	}
 }
 
