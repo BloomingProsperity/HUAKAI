@@ -308,8 +308,11 @@ func canonicalBlock(b anthropicBlockPayload) (proto.CanonicalContentBlock, []pro
 	case "tool_use":
 		callID, err := proto.ToCanonicalCallID(b.ID, proto.UpstreamProtocolAnthropic)
 		if err != nil {
-			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed tool call identifier")
-			return proto.CanonicalContentBlock{Type: "tool_use", Name: b.Name, Input: b.Input}, []proto.ProtocolLossEntry{loss}
+			// 与同适配器 buffered 路径(anthropicBufferedToolUseBlock)对齐：缺失/畸形 id 不丢成空串
+			// (空 CallID 会让下游 openai 流硬报错、anthropic 流发出无法关联 tool_result 的 tool_use)，
+			// 而是合成一个可用 canonical id 并仅记一条 loss。
+			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-canonical tool call identifier; preserved via synthesized canonical call_id")
+			return proto.CanonicalContentBlock{Type: "tool_use", CallID: proto.SynthesizeCanonicalCallID(b.ID), Name: b.Name, Input: b.Input}, []proto.ProtocolLossEntry{loss}
 		}
 		return proto.CanonicalContentBlock{Type: "tool_use", CallID: callID, Name: b.Name, Input: b.Input}, nil
 	case "thinking":

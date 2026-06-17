@@ -516,8 +516,11 @@ func canonicalOpenAICallID(upstreamID string) (string, []proto.ProtocolLossEntry
 	}
 	callID, err := proto.ToCanonicalCallID(upstreamID, proto.UpstreamProtocolOpenAI)
 	if err != nil {
-		loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed OpenAI tool call identifier")
-		return "", []proto.ProtocolLossEntry{loss}
+		// OpenAI 兼容供应商（Mistral 9 字符 / Qwen / GLM / Kimi 等）的 tool_call id 常不带 call_ 前缀。
+		// 不能丢成空串——空 CallID 会让下游 Anthropic 客户端硬报错、或发出无法关联 tool_result 的 tool_use。
+		// 保留并合成一个可用的 canonical id，仅记一条 loss 而非丢弃。
+		loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-canonical OpenAI tool call identifier; preserved via synthesized canonical call_id")
+		return proto.SynthesizeCanonicalCallID(upstreamID), []proto.ProtocolLossEntry{loss}
 	}
 	return callID, nil
 }
