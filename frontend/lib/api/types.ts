@@ -63,6 +63,8 @@ export interface ProviderAccount {
   custom_error_codes: number[];
   pool_mode: boolean;
   temp_unschedulable_enabled: boolean;
+  proxy_id: number | null;
+  proxy_group_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -98,6 +100,15 @@ export interface ProviderAccountUpdate {
   pool_mode?: boolean;
   temp_unschedulable_enabled?: boolean;
   temp_unschedulable_rules?: TempUnschedulableRule[];
+  // 出站代理绑定:省略=不动;present 按 mode 设(后端构造性保证互斥)。
+  proxy_binding?: ProxyBindingInput;
+}
+
+// 账号出站代理绑定意图:direct 直连 / proxy 指定单代理 / group 代理组(轮换)。
+export interface ProxyBindingInput {
+  mode: 'direct' | 'proxy' | 'group';
+  proxy_id?: number;
+  proxy_group_id?: string;
 }
 
 export interface ProviderAccountList {
