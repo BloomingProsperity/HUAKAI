@@ -32,12 +32,15 @@ import {
   listAdminProviderAccounts,
   setAdminProviderAccountEnabled,
   testAdminProviderAccount,
+  updateAdminProviderAccount,
   type PoolGroup,
   type ProviderAccount,
   type ProviderAccountHealthDetail,
   type ProviderAccountStateFilter,
   type ProviderAccountTestResult,
+  type ProviderAccountUpdate,
 } from '@/lib/api/adminAccounts';
+import { listProxies, type Proxy } from '@/lib/api/adminCredentials';
 import { friendlyMessage } from '@/lib/api/errors';
 import { cn } from '@/lib/utils';
 
@@ -125,6 +128,9 @@ export default function AdminAccountsPage() {
   const [tests, setTests] = useState<Record<number, TestState>>({});
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [healths, setHealths] = useState<Record<number, HealthState>>({});
+  // 出站代理:列表(指定代理下拉数据源)+ 当前编辑代理绑定的账号。
+  const [proxies, setProxies] = useState<Proxy[]>([]);
+  const [editProxyTarget, setEditProxyTarget] = useState<ProviderAccount | null>(null);
 
   const poolNameById = useMemo(() => {
     const map = new Map<number, string>();
@@ -136,7 +142,7 @@ export default function AdminAccountsPage() {
     setLoading(true);
     setError('');
     try {
-      const [accountsRes, poolsRes] = await Promise.all([
+      const [accountsRes, poolsRes, proxiesRes] = await Promise.all([
         listAdminProviderAccounts({
           stateFilter: stateFilter || undefined,
           poolGroupId: poolFilter === '' ? undefined : poolFilter,
@@ -145,9 +151,12 @@ export default function AdminAccountsPage() {
         }),
         // 池组失败不应阻断账号列表;失败时退化为空池名映射。
         listAdminPoolGroups({ limit: 200 }).catch(() => ({ items: [] as PoolGroup[] })),
+        // 代理列表(指定代理下拉);失败退化为空。
+        listProxies().catch(() => ({ items: [] as Proxy[] })),
       ]);
       setAccounts(accountsRes.items);
       setPools(poolsRes.items);
+      setProxies(proxiesRes.items);
     } catch (err: unknown) {
       setError(friendlyMessage(err));
     } finally {
@@ -337,13 +346,14 @@ export default function AdminAccountsPage() {
                 <TableHead className="text-accent-500 dark:text-accent-400">在途 / 容量</TableHead>
                 <TableHead className="text-accent-500 dark:text-accent-400">优先级</TableHead>
                 <TableHead className="text-accent-500 dark:text-accent-400">调度</TableHead>
+                <TableHead className="text-accent-500 dark:text-accent-400">代理</TableHead>
                 <TableHead className="text-right text-accent-500 dark:text-accent-400">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {accounts.length === 0 ? (
                 <TableRow className="border-accent-200 dark:border-accent-800">
-                  <TableCell colSpan={7} className="py-10 text-center text-accent-500 dark:text-accent-400">
+                  <TableCell colSpan={8} className="py-10 text-center text-accent-500 dark:text-accent-400">
                     {loading ? '加载中…' : '当前筛选无 provider account。'}
                   </TableCell>
                 </TableRow>
@@ -363,9 +373,11 @@ export default function AdminAccountsPage() {
                       expanded={expanded}
                       health={healths[account.id]}
                       poolName={account.channel_id ? poolNameById.get(account.channel_id) : undefined}
+                      proxies={proxies}
                       rowError={rowError[account.id]}
                       test={test}
                       onClearRateLimit={() => void handleClearRateLimit(account)}
+                      onEditProxy={() => setEditProxyTarget(account)}
                       onTest={() => void handleTest(account)}
                       onToggleEnabled={() => void handleToggleEnabled(account)}
                       onToggleHealth={() => void handleToggleHealth(account)}
@@ -377,6 +389,152 @@ export default function AdminAccountsPage() {
           </Table>
         </CardContent>
       </Card>
+      {editProxyTarget && (
+        <ProxyBindingModal
+          account={editProxyTarget}
+          proxies={proxies}
+          onClose={() => setEditProxyTarget(null)}
+          onSaved={() => {
+            setEditProxyTarget(null);
+            void load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---- 出站代理绑定:展示标签 + 编辑弹窗 ----
+
+// 账号当前绑定的人读标签:单代理名 / 代理组(轮换) / 直连。
+function proxyBindingLabel(account: ProviderAccount, proxies: Proxy[]): string {
+  if (account.proxy_id != null) {
+    const p = proxies.find((x) => x.id === account.proxy_id);
+    return `代理 ${p ? p.name : '#' + account.proxy_id}`;
+  }
+  if (account.proxy_group_id) return `组 ${account.proxy_group_id}(轮换)`;
+  return '直连';
+}
+
+// 三档代理绑定弹窗:直连 / 指定代理(下拉=本租户代理)/ 代理组(自由文本,因代理无
+// group_id 回读 + 组管理 UI 待补,故手输组标签)。选一档,后端按 mode 构造性互斥。
+function ProxyBindingModal({
+  account,
+  proxies,
+  onClose,
+  onSaved,
+}: {
+  account: ProviderAccount;
+  proxies: Proxy[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const initialMode: 'direct' | 'proxy' | 'group' =
+    account.proxy_id != null ? 'proxy' : account.proxy_group_id ? 'group' : 'direct';
+  const [mode, setMode] = useState<'direct' | 'proxy' | 'group'>(initialMode);
+  const [proxyId, setProxyId] = useState<string>(account.proxy_id != null ? String(account.proxy_id) : '');
+  const [groupId, setGroupId] = useState<string>(account.proxy_group_id ?? '');
+  const [submitting, setSubmitting] = useState(false);
+  const [localError, setLocalError] = useState('');
+
+  async function submit() {
+    let binding: ProviderAccountUpdate['proxy_binding'];
+    if (mode === 'direct') {
+      binding = { mode: 'direct' };
+    } else if (mode === 'proxy') {
+      const pid = Number(proxyId);
+      if (!Number.isInteger(pid) || pid <= 0) {
+        setLocalError('请选择一个代理。');
+        return;
+      }
+      binding = { mode: 'proxy', proxy_id: pid };
+    } else {
+      const g = groupId.trim();
+      if (g === '') {
+        setLocalError('请填写代理组标签。');
+        return;
+      }
+      binding = { mode: 'group', proxy_group_id: g };
+    }
+    setSubmitting(true);
+    setLocalError('');
+    try {
+      await updateAdminProviderAccount(account.id, { proxy_binding: binding });
+      onSaved();
+    } catch (err: unknown) {
+      setLocalError(friendlyMessage(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose} role="presentation">
+      <div
+        className="w-full max-w-md rounded-xl border border-accent-200 bg-white shadow-card dark:border-accent-800 dark:bg-accent-900"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="border-b border-accent-200 p-4 text-base font-semibold text-accent-950 dark:border-accent-800 dark:text-white">
+          出站代理 · {account.name}
+        </div>
+        <div className="flex flex-col gap-3 p-4">
+          <label className="flex items-center gap-2 text-sm text-accent-700 dark:text-accent-200">
+            <input type="radio" checked={mode === 'direct'} onChange={() => setMode('direct')} />
+            直连(不走代理)
+          </label>
+          <label className="flex flex-col gap-1 text-sm text-accent-700 dark:text-accent-200">
+            <span className="flex items-center gap-2">
+              <input type="radio" checked={mode === 'proxy'} onChange={() => setMode('proxy')} />
+              指定代理
+            </span>
+            {mode === 'proxy' && (
+              <select
+                value={proxyId}
+                onChange={(e) => setProxyId(e.target.value)}
+                className="ml-6 h-9 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="">选择代理…</option>
+                {proxies.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    #{p.id} {p.name}({p.host}:{p.port})
+                  </option>
+                ))}
+              </select>
+            )}
+          </label>
+          <label className="flex flex-col gap-1 text-sm text-accent-700 dark:text-accent-200">
+            <span className="flex items-center gap-2">
+              <input type="radio" checked={mode === 'group'} onChange={() => setMode('group')} />
+              代理组(按账号轮换,住宅 IP 隔离)
+            </span>
+            {mode === 'group' && (
+              <>
+                <input
+                  type="text"
+                  value={groupId}
+                  onChange={(e) => setGroupId(e.target.value)}
+                  placeholder="组标签,如 residential-eu"
+                  className="ml-6 h-9 rounded-md border border-input bg-background px-3 text-sm"
+                />
+                <span className="ml-6 text-[11px] text-amber-500">
+                  组标签需与 proxies.group_id 一致(当前组管理 UI 待补,需直配)。
+                </span>
+              </>
+            )}
+          </label>
+          {localError && <p className="text-xs text-red-600 dark:text-red-400">{localError}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button size="sm" variant="outline" onClick={onClose} disabled={submitting}>
+              取消
+            </Button>
+            <Button size="sm" onClick={() => void submit()} disabled={submitting}>
+              保存
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -426,9 +584,11 @@ function RowGroup({
   expanded,
   health,
   poolName,
+  proxies,
   rowError,
   test,
   onClearRateLimit,
+  onEditProxy,
   onTest,
   onToggleEnabled,
   onToggleHealth,
@@ -439,9 +599,11 @@ function RowGroup({
   expanded: boolean;
   health: HealthState | undefined;
   poolName: string | undefined;
+  proxies: Proxy[];
   rowError: string | undefined;
   test: TestState | undefined;
   onClearRateLimit: () => void;
+  onEditProxy: () => void;
   onTest: () => void;
   onToggleEnabled: () => void;
   onToggleHealth: () => void;
@@ -488,6 +650,11 @@ function RowGroup({
               停用
             </Badge>
           )}
+        </TableCell>
+        <TableCell className="text-xs">
+          <Button onClick={onEditProxy} size="sm" variant="ghost" className="h-7 px-2 font-normal" title="编辑出站代理绑定">
+            {proxyBindingLabel(account, proxies)}
+          </Button>
         </TableCell>
         <TableCell>
           <div className="flex flex-wrap items-center justify-end gap-2">
