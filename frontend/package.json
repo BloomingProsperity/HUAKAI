@@ -15,7 +15,8 @@
     "test:login-2fa": "node --experimental-strip-types --test lib/api/login-2fa.test.ts",
     "test:oauth-login": "node --experimental-strip-types --test lib/api/oauth-login.test.ts",
     "type-check": "tsc --noEmit",
-    "test:webauthn": "node --experimental-strip-types --test lib/api/webauthn.test.ts"
+    "test:webauthn": "node --experimental-strip-types --test lib/api/webauthn.test.ts",
+    "test:passkey-login": "node --experimental-strip-types --test lib/api/passkey-login.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",

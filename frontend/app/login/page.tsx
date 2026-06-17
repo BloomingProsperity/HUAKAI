@@ -2,10 +2,11 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { KeyRound, Loader2, LogIn, Mail, ShieldCheck, UserPlus } from 'lucide-react';
+import { Fingerprint, KeyRound, Loader2, LogIn, Mail, ShieldCheck, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { login, register, isTwoFactor, verifyLoginTwoFactor, startOAuth } from '@/lib/api/auth';
+import { login, register, isTwoFactor, verifyLoginTwoFactor, startOAuth, passkeyLoginBegin, passkeyLoginFinish } from '@/lib/api/auth';
 import { sanitizeOtp, isOtpComplete, OTP_LENGTH } from '@/lib/api/otp';
+import { decodeRequestOptions, encodeAssertion, isWebAuthnSupported } from '@/lib/api/webauthn';
 import { fetchSiteConfig, DEFAULT_TENANT_ID, parseEnabledProviders } from '@/lib/api/siteConfig';
 import { friendlyMessage } from '@/lib/api/errors';
 import type { SessionUser } from '@/lib/auth/session';
@@ -32,11 +33,15 @@ function LoginInner() {
   // 启用的社交登录 provider(由后端 oauth_providers_enabled 运维开关驱动)+ 正在跳转的 provider。
   const [providers, setProviders] = useState<string[]>([]);
   const [oauthBusy, setOauthBusy] = useState<string | null>(null);
+  // 通行密钥免密登录:仅当后端 passkey_enabled 运维开关开 且 浏览器支持 WebAuthn 时显示按钮。
+  const [passkeyEnabled, setPasskeyEnabled] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
 
   useEffect(() => {
     void fetchSiteConfig().then((c) => {
       setTenantId(c.tenant_id);
       setProviders(parseEnabledProviders(c.oauth_providers_enabled));
+      setPasskeyEnabled(!!c.passkey_enabled && isWebAuthnSupported());
     });
   }, []);
 
@@ -113,6 +118,32 @@ function LoginInner() {
     } catch (err) {
       setError(friendlyMessage(err));
       setOauthBusy(null);
+    }
+  }
+
+  // 通行密钥免密登录:begin 拿挑战 → 浏览器 WebAuthn get(生物识别/安全钥)→ finish 换会话 → 跳转。
+  async function handlePasskeyLogin() {
+    setError(null);
+    setNotice(null);
+    setPasskeyBusy(true);
+    try {
+      const begin = await passkeyLoginBegin(tenantId);
+      const options = decodeRequestOptions(begin.public_key);
+      const cred = (await navigator.credentials.get(options)) as PublicKeyCredential | null;
+      if (!cred) {
+        setError('未能获取通行密钥凭据。');
+        return;
+      }
+      await passkeyLoginFinish({ tenant_id: tenantId, session_id: begin.session_id, credential: encodeAssertion(cred) });
+      router.push(next);
+    } catch (err) {
+      if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'AbortError')) {
+        setError('通行密钥登录已取消或超时,请重试。');
+      } else {
+        setError(friendlyMessage(err));
+      }
+    } finally {
+      setPasskeyBusy(false);
     }
   }
 
@@ -217,6 +248,19 @@ function LoginInner() {
               {mode === 'login' ? '登录' : '创建账号'}
             </Button>
           </form>
+
+          {/* 通行密钥免密登录(仅登录模式 + passkey_enabled 运维开关开 + 浏览器支持)。 */}
+          {mode === 'login' && passkeyEnabled && (
+            <button
+              type="button"
+              onClick={() => void handlePasskeyLogin()}
+              disabled={passkeyBusy}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-accent-200 bg-white px-3 py-2.5 text-sm font-medium text-accent-700 transition-colors hover:bg-accent-50 disabled:opacity-60 dark:border-accent-700 dark:bg-accent-950 dark:text-accent-200 dark:hover:bg-accent-900"
+            >
+              {passkeyBusy ? <Loader2 className="size-4 animate-spin" /> : <Fingerprint className="size-4" />}
+              用通行密钥登录
+            </button>
+          )}
 
           {/* 社交/OAuth 登录(仅登录模式 + 后端有启用的 provider 时渲染)。整页跳后端 start 端点。 */}
           {mode === 'login' && providers.length > 0 && (
