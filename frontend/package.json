@@ -12,6 +12,7 @@
     "test:dashboard": "node --experimental-strip-types --test lib/dashboard-real-api.test.ts",
     "test:trust": "node --experimental-strip-types --test lib/usage-trust.test.ts",
     "test:moderation": "node --experimental-strip-types --test lib/api/moderation.test.ts",
+    "test:login-2fa": "node --experimental-strip-types --test lib/api/login-2fa.test.ts",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {

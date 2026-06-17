@@ -4,9 +4,11 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { KeyRound, Loader2, LogIn, Mail, ShieldCheck, UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { login, register, isTwoFactor } from '@/lib/api/auth';
+import { login, register, isTwoFactor, verifyLoginTwoFactor } from '@/lib/api/auth';
+import { sanitizeOtp, isOtpComplete, OTP_LENGTH } from '@/lib/api/otp';
 import { fetchSiteConfig, DEFAULT_TENANT_ID } from '@/lib/api/siteConfig';
 import { friendlyMessage } from '@/lib/api/errors';
+import type { SessionUser } from '@/lib/auth/session';
 import { cn } from '@/lib/utils';
 
 type Mode = 'login' | 'register';
@@ -24,6 +26,9 @@ function LoginInner() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // 2FA 挑战态:登录命中 2FA 后转入此步(challengeId + 第一步带回的 user,/login/2fa 只返 session)。
+  const [twoFactor, setTwoFactor] = useState<{ challengeId: string; user: SessionUser; email: string } | null>(null);
+  const [code, setCode] = useState('');
 
   useEffect(() => {
     void fetchSiteConfig().then((c) => setTenantId(c.tenant_id));
@@ -38,7 +43,9 @@ function LoginInner() {
       if (mode === 'login') {
         const r = await login({ tenant_id: tenantId, email: email.trim(), password });
         if (isTwoFactor(r)) {
-          setNotice('该账号开启了两步验证，2FA 流程即将上线，请暂用未开启 2FA 的账号。');
+          // 转入 2FA 验证码步骤;user 取自 202 响应,留待验证成功后随 session 一并存储。
+          setTwoFactor({ challengeId: r.challenge_id, user: r.user, email: r.user.email });
+          setCode('');
           return;
         }
         router.push(next);
@@ -60,6 +67,31 @@ function LoginInner() {
     }
   }
 
+  // 提交 2FA 验证码:满 6 位才提交,成功跳转,失败清空便于重输(吸收 sub2api 的失败清空体感)。
+  async function submit2fa(rawCode: string) {
+    if (!twoFactor) return;
+    const c = sanitizeOtp(rawCode);
+    if (!isOtpComplete(c)) return;
+    setError(null);
+    setLoading(true);
+    try {
+      await verifyLoginTwoFactor({ challenge_id: twoFactor.challengeId, code: c, user: twoFactor.user });
+      router.push(next);
+    } catch (err) {
+      setError(friendlyMessage(err));
+      setCode('');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // 输入即清洗(只留数字、截断 6 位);满位自动提交(吸收 sub2api 的 one-time-code 自动填充+满位自动提交)。
+  function onOtpChange(raw: string) {
+    const c = sanitizeOtp(raw);
+    setCode(c);
+    if (isOtpComplete(c)) void submit2fa(c);
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-accent-50 px-4 dark:bg-accent-950">
       <div className="w-full max-w-md">
@@ -76,6 +108,19 @@ function LoginInner() {
         </div>
 
         <div className="rounded-xl border border-accent-200 bg-white p-6 shadow-card dark:border-accent-800 dark:bg-accent-900">
+          {twoFactor && (
+            <TwoFactorStep
+              email={twoFactor.email}
+              code={code}
+              onChange={onOtpChange}
+              onSubmit={() => void submit2fa(code)}
+              onBack={() => { setTwoFactor(null); setCode(''); setError(null); }}
+              loading={loading}
+              error={error}
+            />
+          )}
+          {!twoFactor && (
+          <>
           {/* 模式切换 */}
           <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-accent-100 p-1 dark:bg-accent-800">
             {(['login', 'register'] as Mode[]).map((m) => (
@@ -148,6 +193,8 @@ function LoginInner() {
               {mode === 'login' ? '登录' : '创建账号'}
             </Button>
           </form>
+          </>
+          )}
 
           <div className="mt-5 flex items-center justify-center gap-1.5 text-xs text-accent-400 dark:text-accent-500">
             <ShieldCheck className="size-3.5" />
@@ -176,6 +223,67 @@ function Field({ label, icon, children }: { label: string; icon: React.ReactNode
 
 function UserRoundIcon() {
   return <UserPlus className="size-4 text-accent-400" />;
+}
+
+// 登录 2FA 验证码步骤。单个 one-time-code 输入框(吃密码管理器/短信自动填充)+ 满位自动提交;
+// 6 格视觉分隔留作设计 follow-up(本切片只接线测功能,不追排版)。
+function TwoFactorStep({
+  email,
+  code,
+  onChange,
+  onSubmit,
+  onBack,
+  loading,
+  error,
+}: {
+  email: string;
+  code: string;
+  onChange: (raw: string) => void;
+  onSubmit: () => void;
+  onBack: () => void;
+  loading: boolean;
+  error: string | null;
+}) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col items-center gap-1.5 text-center">
+        <ShieldCheck className="size-8 text-primary-500" />
+        <h2 className="text-base font-semibold text-accent-950 dark:text-white">两步验证</h2>
+        <p className="text-sm text-accent-500 dark:text-accent-400">
+          输入验证器 App 上的 6 位动态码
+          <br />
+          账号 {email}
+        </p>
+      </div>
+      <input
+        className={cn(inputClass, 'text-center font-mono text-lg tracking-[0.4em]')}
+        value={code}
+        onChange={(e) => onChange(e.target.value)}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        autoFocus
+        maxLength={OTP_LENGTH}
+        placeholder="••••••"
+        aria-label="两步验证码"
+      />
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+          {error}
+        </div>
+      )}
+      <Button onClick={onSubmit} disabled={loading || !isOtpComplete(code)} className="w-full">
+        {loading ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+        验证
+      </Button>
+      <button
+        type="button"
+        onClick={onBack}
+        className="text-center text-xs text-accent-400 transition-colors hover:text-accent-600 dark:hover:text-accent-300"
+      >
+        返回登录
+      </button>
+    </div>
+  );
 }
 
 export default function LoginPage() {
