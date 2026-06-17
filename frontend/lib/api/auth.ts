@@ -30,6 +30,37 @@ export function isTwoFactor(r: LoginResponse): r is LoginTwoFactor {
   return (r as LoginTwoFactor).two_factor_required === true;
 }
 
+// 提交 2FA 挑战码换正式会话(登录命中 2FA 后的第二步)。
+// 后端 POST /v1/auth/login/2fa {challenge_id, code} 成功只返 { session }(不回 user),
+// 故 user 取自第一步 login 的 202 响应一并存入会话——漏带 user 会导致会话缺用户信息。
+export interface LoginTwoFactorVerifyInput {
+  challenge_id: string;
+  code: string;
+  user: SessionUser;
+}
+
+export async function verifyLoginTwoFactor(input: LoginTwoFactorVerifyInput): Promise<SessionUser> {
+  const resp = await fetch('/v1/auth/login/2fa', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: input.challenge_id, code: input.code }),
+  });
+  const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!resp.ok) {
+    const err = (data as { error?: { code?: string; message?: string } }).error;
+    throw Object.assign(new Error(err?.message ?? `HTTP ${resp.status}`), {
+      status: resp.status,
+      code: err?.code ?? 'two_factor_failed',
+    });
+  }
+  const session = (data as { session?: SessionTokens }).session;
+  if (!session?.session_token) {
+    throw Object.assign(new Error('两步验证响应缺少会话令牌'), { status: resp.status, code: 'two_factor_no_session' });
+  }
+  storeSession(session, input.user);
+  return input.user;
+}
+
 export async function login(req: LoginRequest): Promise<LoginResponse> {
   const resp = await fetch('/v1/auth/login', {
     method: 'POST',
