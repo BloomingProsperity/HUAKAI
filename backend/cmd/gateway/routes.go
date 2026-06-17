@@ -40,6 +40,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mequotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
@@ -49,6 +50,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/publicrankinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
@@ -829,6 +831,15 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		proxyadminhttp.MountRoutes(r, proxyadminhttp.Deps{
 			Auth:    d.adminAuth,
 			Service: proxyadmin.New(d.adminQueries, d.credentialKeys),
+		})
+	})
+	// Model -> pool binding admin surface: closes the inert write-path gap
+	// (columns + resolver existed, no admin CRUD). Top-level resource, dual-role
+	// gate, snapshot.version bumped in-Tx by registry.PostgresRegistry.
+	r.Route("/admin/v1/model-pool-bindings", func(r chi.Router) {
+		modelbindingadminhttp.MountRoutes(r, modelbindingadminhttp.Deps{
+			Auth:    d.adminAuth,
+			Service: registry.NewPostgresRegistry(d.pgPool, nil),
 		})
 	})
 	r.Get("/admin/v1/account-modes", adminhttp.NewAccountModeListHandler(adminhttp.AdminAccountModesDeps{
