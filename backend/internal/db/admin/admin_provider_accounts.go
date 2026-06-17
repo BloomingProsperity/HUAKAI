@@ -42,6 +42,8 @@ type AdminProviderAccountRow struct {
 	CustomErrorCodes         []int32            `db:"custom_error_codes" json:"custom_error_codes"`
 	PoolMode                 bool               `db:"pool_mode" json:"pool_mode"`
 	TempUnschedulableEnabled bool               `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
+	ProxyID                  *int64             `db:"proxy_id" json:"proxy_id"`
+	ProxyGroupID             *string            `db:"proxy_group_id" json:"proxy_group_id"`
 	CreatedAt                pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt                pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
@@ -100,6 +102,12 @@ type UpdateAdminProviderAccountParams struct {
 	TempUnschedulableEnabled   *bool  `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
 	SetTempUnschedulableRules  bool   `db:"set_temp_unschedulable_rules" json:"set_temp_unschedulable_rules"`
 	TempUnschedulableRulesJSON []byte `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
+	// 代理绑定(Set-flag 范式,照 SetProbeModel):Set*=false 保留旧值;true 时写
+	// 对应值(ProxyID/ProxyGroupID 可为 nil/"" 表示清回直连)。互斥由 handler 保证。
+	SetProxyID      bool    `db:"set_proxy_id" json:"set_proxy_id"`
+	ProxyID         *int64  `db:"proxy_id" json:"proxy_id"`
+	SetProxyGroupID bool    `db:"set_proxy_group_id" json:"set_proxy_group_id"`
+	ProxyGroupID    *string `db:"proxy_group_id" json:"proxy_group_id"`
 }
 
 type ClearProviderAccountRateLimitParams struct {
@@ -144,6 +152,8 @@ const adminProviderAccountColumns = `
     custom_error_codes,
     pool_mode,
     temp_unschedulable_enabled,
+    proxy_id,
+    proxy_group_id,
     created_at,
     updated_at`
 
@@ -283,6 +293,8 @@ SET
     pool_mode = COALESCE($11::boolean, pool_mode),
     temp_unschedulable_enabled = COALESCE($12::boolean, temp_unschedulable_enabled),
     temp_unschedulable_rules = CASE WHEN $13::boolean THEN COALESCE($14::jsonb, '[]'::jsonb) ELSE temp_unschedulable_rules END,
+    proxy_id = CASE WHEN $25::boolean THEN $26::bigint ELSE proxy_id END,
+    proxy_group_id = CASE WHEN $27::boolean THEN NULLIF($28::text, '') ELSE proxy_group_id END,
     updated_at = NOW(),
     last_modified_by_actor = $22::text
 WHERE id = $23
@@ -317,6 +329,10 @@ func (q *Queries) UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdmi
 		arg.ActorID,
 		arg.ID,
 		arg.TenantID,
+		arg.SetProxyID,
+		arg.ProxyID,
+		arg.SetProxyGroupID,
+		arg.ProxyGroupID,
 	)
 	var i AdminProviderAccountRow
 	err := scanAdminProviderAccount(row, &i)
@@ -392,6 +408,8 @@ func scanAdminProviderAccount(row adminProviderAccountScanner, i *AdminProviderA
 		&i.CustomErrorCodes,
 		&i.PoolMode,
 		&i.TempUnschedulableEnabled,
+		&i.ProxyID,
+		&i.ProxyGroupID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
