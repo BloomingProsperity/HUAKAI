@@ -2,6 +2,11 @@
 // 后端: routes_usageadmin /v1/admin/usage/* + routes_alerting /v1/admin/alert-*。
 // 形状逐字段对照后端 handler（usageanalyticshttp / alertinghttp）真码。
 import { apiGet, apiPostNoContent } from './client';
+import {
+  buildByBucketParams,
+  buildCountsParams,
+  type PerfBucket,
+} from './usage-analytics-form';
 
 // ---- 时间窗口 ----
 // 后端 parseLeaderboardWindow 接受形如 24h / 7d / 30d 的正持续时间，>90d 截断到 90d。
@@ -152,6 +157,63 @@ export interface HealthScoreResponse {
 
 export function getHealthScore(window: UsageWindow): Promise<HealthScoreResponse> {
   return apiGet<HealthScoreResponse>('/v1/admin/usage/health-score', { window });
+}
+
+// ---- 性能分桶 GET /v1/admin/usage/perf-metrics/by-bucket ----
+// perf_metrics_handler.go: 按 hour|day 桶 + 按模型聚合 TTFT/TPS/错误率。
+export interface PerfMetricsBucketEntry {
+  bucket: string; // 桶时间戳标签
+  key: string; // 模型名
+  avg_ttft_ms: string;
+  avg_tps: string;
+  request_count: number;
+  error_count: number;
+  error_rate: string;
+}
+
+export interface PerfMetricsBucketResponse {
+  window: string;
+  bucket: string; // hour|day
+  by: string; // model
+  entries: PerfMetricsBucketEntry[];
+}
+
+export function getPerfMetricsByBucket(
+  bucket: PerfBucket,
+  window: UsageWindow,
+  opts?: { limit?: number },
+): Promise<PerfMetricsBucketResponse> {
+  return apiGet<PerfMetricsBucketResponse>(
+    '/v1/admin/usage/perf-metrics/by-bucket',
+    buildByBucketParams(bucket, window, opts),
+  );
+}
+
+// ---- 按提供商账号用量 GET /v1/admin/usage/provider-account-counts ----
+// provider_account_counts_handler.go: from/to(RFC3339)必填、tenant_id 可选；只读聚合，不触结算。
+export interface ProviderAccountCount {
+  provider_account_id: number;
+  request_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cost: string;
+}
+
+export interface ProviderAccountCountsResponse {
+  from: string;
+  to: string;
+  counts: ProviderAccountCount[];
+}
+
+export function getProviderAccountCounts(
+  from: string,
+  to: string,
+  opts?: { tenant_id?: number },
+): Promise<ProviderAccountCountsResponse> {
+  return apiGet<ProviderAccountCountsResponse>(
+    '/v1/admin/usage/provider-account-counts',
+    buildCountsParams(from, to, opts),
+  );
 }
 
 // ---- 告警事件 GET /v1/admin/alert-events ----
