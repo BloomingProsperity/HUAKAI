@@ -102,6 +102,35 @@ func TestHandler_HCSFUpstreamHTTPErrorDoesNotLeakBody(t *testing.T) {
 	}
 }
 
+// TestHandler_HCSFOversizedSuccessMapsToTooLarge 守 S2-7 caller 映射(默认 HCSF-on 路径)：
+// DispatchHCSF 返回 ErrUpstreamResponseTooLarge 时，client 必须拿 502 + upstream_response_too_large，
+// 而非塌成 opaque upstream_dispatch_error；且终止不重试(dispatcher 只被调一次)。
+// Mutation: 删 chat_completions_dispatch.go 的 errors.Is(ErrUpstreamResponseTooLarge) 分支 →
+// 落到 generic upstream_dispatch_error → body 不含 upstream_response_too_large → RED。
+func TestHandler_HCSFOversizedSuccessMapsToTooLarge(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	dispatcher := &mockCanonicalBufferedDispatcher{
+		err: gateway.ErrUpstreamResponseTooLarge,
+	}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want 502; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "upstream_response_too_large") {
+		t.Fatalf("body=%s want upstream_response_too_large (not opaque upstream_dispatch_error)", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "upstream_dispatch_error") {
+		t.Fatalf("body=%s leaked generic dispatch error; too-large must not collapse to it", rec.Body.String())
+	}
+	// 终止不重试：too-large 重试只会重新拉同样的超大响应，dispatcher 必须只被调一次。
+	if dispatcher.calls != 1 {
+		t.Fatalf("DispatchHCSF calls=%d want 1 (too-large is terminal, no retry/fallback)", dispatcher.calls)
+	}
+}
+
 func TestHandler_EnvOffHCSFOff(t *testing.T) {
 	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
 	dispatcher := &mockCanonicalBufferedDispatcher{}

@@ -44,6 +44,31 @@ type envelopeRequestBuilder interface {
 	BuildRequestFromEnvelope(context.Context, provider.BuildInput, *proto.HCSF) (*http.Request, error)
 }
 
+// maxBufferedUpstreamResponseBytes 是 HCSF non-streaming buffered 上游响应的读取上限(1MiB)。
+// 与 gatewayhttp legacy raw 路径(maxRawBufferedUpstreamBodyBytes)同值，保证两条 buffered
+// 路径对超大响应行为一致。
+const maxBufferedUpstreamResponseBytes = 1 << 20
+
+// ErrUpstreamResponseTooLarge 表示上游 2xx 成功响应超过 buffered 读取上限。caller 应映射成
+// clienterr.CodeUpstreamResponseTooLarge(终止、不重试：重试不会变小)，而非把截断字节喂给
+// ProviderResponseToCanonical 后塌成 opaque dispatch error，或被 ReconstructBufferedFromSSE
+// 当截断 SSE 计部分账。
+var ErrUpstreamResponseTooLarge = errors.New("gateway: upstream buffered response exceeds size limit")
+
+// readBufferedUpstreamResponse 读上游 buffered 响应，带溢出哨兵(读 limit+1 探测)。
+// oversized 时 raw 截断到 maxBufferedUpstreamResponseBytes —— 仅供非 2xx 响应的错误分类用；
+// 2xx 成功响应一旦 oversized，caller 必须拒绝(截断的成功体不可解析/会错计费)。
+func readBufferedUpstreamResponse(r io.Reader) (raw []byte, oversized bool, err error) {
+	raw, err = io.ReadAll(io.LimitReader(r, maxBufferedUpstreamResponseBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(raw) > maxBufferedUpstreamResponseBytes {
+		return raw[:maxBufferedUpstreamResponseBytes], true, nil
+	}
+	return raw, false, nil
+}
+
 // DispatchHCSF 执行 non-streaming HCSF 主链路：envelope -> vendor HTTP -> buffered envelope。
 func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) (*proto.HCSF, error) {
 	if d == nil {
@@ -124,7 +149,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		return nil, fmt.Errorf("dispatcher: HTTP Do 失败: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, oversized, err := readBufferedUpstreamResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: 读取上游响应失败: %w", err)
 	}
@@ -132,11 +157,17 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		// 用类型化错误把 status + body 透传到 caller, 由 caller 决定 client 返回
 		// 状态码 / 走 health classification / 触发 cooldown. 不能塌成 string-only,
 		// 否则 chat handler 总是 502 + status=0 health signal 跟流式路径行为分叉。
+		// 非 2xx 时即便 oversized, 截断 body 仍够做错误分类(镜像 legacy oversizedNon2xx)。
 		return nil, &UpstreamHTTPError{
 			StatusCode: resp.StatusCode,
 			Body:       append([]byte(nil), raw...),
 			Header:     resp.Header.Clone(),
 		}
+	}
+	if oversized {
+		// 2xx 但超 1MiB: 截断字节喂给 ProviderResponseToCanonical 会静默截断(→opaque 502)，
+		// SSE 形则被 ReconstructBufferedFromSSE 当部分响应计费。在 canonicalize 前直接拒绝。
+		return nil, ErrUpstreamResponseTooLarge
 	}
 
 	upstreamAdapters := d.ProtocolAdapters
