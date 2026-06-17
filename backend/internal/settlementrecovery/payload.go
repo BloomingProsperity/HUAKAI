@@ -96,17 +96,29 @@ var (
 // event.RequestID,recovery payload 构造时拿到的是外层未规范化的原始 event ——
 // 不在此处兜底,worker 重放写 NULL audit_request_id,断 audit/receipt 关联。
 // 单点兜底 = 守所有 caller(stream / eventbus billing handler / 未来新 source)。
+//
+// SettleRequest→Payload 的字段映射统一由 FromSettleRequest 承载(单点),本函数只补
+// eventbus 专属的 EventID / AuditLedgerDLQRef。
 func FromCompletionEvent(src Source, event eventbus.RequestCompletionEvent) Payload {
-	req := event.SettleRequest
+	p := FromSettleRequest(src, event.RequestID, event.SettleRequest)
+	p.EventID = event.ID
+	p.AuditLedgerDLQRef = event.AuditLedgerDLQRef
+	return p
+}
+
+// FromSettleRequest 把一个 billing.SettleRequest + requestID 直接转 Payload,供不经
+// eventbus 的直接 settle 路径(如 completionshttp /v1/completions 流式交付后结算)在
+// settle 失败时构造 recovery intent。settleRequestPersisted 是未导出类型,包外无法
+// 直接构造,故此构造器是 completions 等 handler 落 DLQ 的唯一入口。AuditRequestID
+// 规范化兜底逻辑与 FromCompletionEvent 一致(同一单点)。
+func FromSettleRequest(src Source, requestID string, req billing.SettleRequest) Payload {
 	auditRequestID := req.AuditRequestID
 	if auditRequestID == "" {
-		auditRequestID = event.RequestID
+		auditRequestID = requestID
 	}
 	return Payload{
-		Source:            src,
-		EventID:           event.ID,
-		RequestID:         event.RequestID,
-		AuditLedgerDLQRef: event.AuditLedgerDLQRef,
+		Source:    src,
+		RequestID: requestID,
 		Settle: settleRequestPersisted{
 			ClaimID:             req.ClaimID,
 			AccountID:           req.AccountID,

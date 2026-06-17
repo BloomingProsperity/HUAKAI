@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -291,8 +292,14 @@ func newCompletionsTestEnv(resp upstreamResponse) *completionsTestEnv {
 
 func (e *completionsTestEnv) invokeCompletions(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return e.invokeCompletionsCtx(t, context.Background(), body)
+}
+
+// invokeCompletionsCtx 用指定父 ctx 跑请求，供模拟客户端断连(父 ctx 已取消)的脱钩测试。
+func (e *completionsTestEnv) invokeCompletionsCtx(t *testing.T, parent context.Context, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	h := middleware.RequestID(NewCompletionsHandler(e.deps))
-	req := httptest.NewRequest(http.MethodPost, "/v1/completions", bytes.NewBufferString(body))
+	req := httptest.NewRequestWithContext(parent, http.MethodPost, "/v1/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer hk-test")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -439,9 +446,11 @@ func (d *recordingDispatcher) Dispatch(_ context.Context, in gateway.DispatchInp
 }
 
 type recordingSettler struct {
-	settles   []billing.SettleRequest
-	aborts    []abortCall
-	settleErr error
+	settles          []billing.SettleRequest
+	aborts           []abortCall
+	settleErr        error
+	lastSettleCtx    context.Context
+	lastSettleCtxErr error // ctx.Err() 在 Settle 被调那一刻的快照(defer cancel 之前)，守 WithoutCancel 脱钩
 }
 
 type abortCall struct {
@@ -450,12 +459,33 @@ type abortCall struct {
 	reason   string
 }
 
-func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
+func (s *recordingSettler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	s.settles = append(s.settles, req)
+	s.lastSettleCtx = ctx
+	s.lastSettleCtxErr = ctx.Err() // 调用时刻快照：脱钩 ctx 在父被取消时此处应为 nil
 	if s.settleErr != nil {
 		return nil, s.settleErr
 	}
 	return &billing.SettleResult{}, nil
+}
+
+// recordingRecoveryEnqueuer 是 settlementrecovery.Enqueuer 的 spy，记录交付后 settle 失败时
+// 是否落 DLQ（recovery intent）。
+type recordingRecoveryEnqueuer struct {
+	calls      int
+	lastEvt    dlq.Event
+	retErr     error
+	lastCtxErr error // ctx.Err() 在 Enqueue 被调那一刻的快照，守 enqueue 用 fresh(非过期 settle)ctx
+}
+
+func (q *recordingRecoveryEnqueuer) Enqueue(ctx context.Context, e dlq.Event) (int64, error) {
+	q.calls++
+	q.lastEvt = e
+	q.lastCtxErr = ctx.Err()
+	if q.retErr != nil {
+		return 0, q.retErr
+	}
+	return 7, nil
 }
 
 func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, reason, _ string, _ int64, _ json.RawMessage) error {
@@ -469,4 +499,148 @@ func (s *recordingSettler) CommitCacheHit(context.Context, billing.SettleRequest
 
 func (s *recordingSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
 	return nil, nil
+}
+
+func streamWithUsageBody() string {
+	return strings.Join([]string{
+		`data: {"usage":{"prompt_tokens":2,"completion_tokens":4,"total_tokens":6},"choices":[]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n\n")
+}
+
+// TestCompletionsStreamSettleFailureEnqueuesRecoveryDLQ 守 S1-3：流式响应已交付客户端后
+// settle 失败时，必须把 recovery intent 落 settlementrecovery DLQ，否则已交付 token 永久不计费
+// (不可恢复钱丢失)——这正是 chat 路径有、completionshttp 此前缺的保护。
+// Mutation: 删 settleStreamWithRecovery 里的 EnqueuePayload 调用 → spy.calls==0 → RED。
+func TestCompletionsStreamSettleFailureEnqueuesRecoveryDLQ(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status:      http.StatusOK,
+		body:        streamWithUsageBody(),
+		contentType: "text/event-stream",
+	})
+	env.settler.settleErr = errors.New("settle tx aborted (post-delivery)")
+	spy := &recordingRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = spy
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
+
+	// 响应已交付(流式 200 + body 已 flush)。
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (stream already delivered)", rec.Code)
+	}
+	if len(env.settler.settles) != 1 {
+		t.Fatalf("settle calls=%d want 1 (post-delivery settle)", len(env.settler.settles))
+	}
+	// 核心断言：settle 失败 → 必须落 DLQ recovery。
+	if spy.calls != 1 {
+		t.Fatalf("expected 1 settle-recovery DLQ enqueue on post-delivery settle failure, got %d", spy.calls)
+	}
+	// DLQ event 必须带可重结算的 claim/tenant + 正确 kind，否则 worker 无法重放。
+	if spy.lastEvt.ClaimID == 0 || spy.lastEvt.TenantID == 0 {
+		t.Fatalf("DLQ event missing claim/tenant: claim=%d tenant=%d", spy.lastEvt.ClaimID, spy.lastEvt.TenantID)
+	}
+	if spy.lastEvt.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("DLQ event kind=%q want post_delivery_settlement", spy.lastEvt.EventKind)
+	}
+}
+
+// TestCompletionsStreamSettleUsesDetachedContext 守 S1-2 的核心原语 WithoutCancel：
+// 交付后结算必须**脱钩**于请求 ctx——客户端在流末断连(父 ctx 取消)时，settle 仍须在一个
+// 未被取消的 ctx 上跑，否则 Tx2 中止、已交付 token 永不计费。
+// 判别构造：注入一个**已取消**的父 ctx(模拟断连)，断言 settle 被调那一刻其 ctx 未被取消
+// (lastSettleCtxErr==nil) —— 只有 WithoutCancel 脱钩才能做到。
+// Mutation: 把 attempt.go 的 WithoutCancel 去掉(仅留 WithTimeout(ex.ctx,...)) → settle ctx 继承
+// 父的已取消状态 → lastSettleCtxErr==context.Canceled → RED。(仅删 WithTimeout 不影响本断言，
+// 由姊妹断言"仍有 deadline"守住。)
+func TestCompletionsStreamSettleUsesDetachedContext(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status:      http.StatusOK,
+		body:        streamWithUsageBody(),
+		contentType: "text/event-stream",
+	})
+	// 模拟客户端在流末断连：父 ctx 已取消。stub 依赖不检查 ctx，故请求仍能走到交付后结算。
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rec := env.invokeCompletionsCtx(t, parent, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (stream delivered)", rec.Code)
+	}
+	if env.settler.lastSettleCtx == nil {
+		t.Fatalf("settle was not invoked")
+	}
+	// 核心：尽管父 ctx 已取消，settle 调用时刻其 ctx 仍未被取消 → WithoutCancel 脱钩生效。
+	if env.settler.lastSettleCtxErr != nil {
+		t.Fatalf("settle ran on a ctx cancelled by client disconnect (err=%v) — WithoutCancel detachment missing (S1-2 regression)", env.settler.lastSettleCtxErr)
+	}
+	// 姊妹断言：脱钩后仍有 30s 超时上限(WithTimeout 半)，防 Tx2 永久挂住。
+	if _, hasDeadline := env.settler.lastSettleCtx.Deadline(); !hasDeadline {
+		t.Fatalf("post-delivery settle ctx has no deadline — WithTimeout missing")
+	}
+}
+
+// TestCompletionsStreamSettleAndDLQEnqueueBothFail 守 #4：交付后 settle 失败、DLQ enqueue 也失败时，
+// 兜底链的最后一环(P0 log)必须 (a) 不 panic、不改 HTTP(响应已发)，(b) enqueue 仍被尝试一次，
+// (c) DLQ failure_reason 只记错误**类别**、不内插 raw settle 错误文本(防泄漏 prompt/凭证类内容)。
+// Mutation: 把 billing.go 的 failureClass 从 privacy.ErrorClassFor 改成 err.Error() → 原始文本
+// 进 FailureReason → 泄漏断言 RED。
+func TestCompletionsStreamSettleAndDLQEnqueueBothFail(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status:      http.StatusOK,
+		body:        streamWithUsageBody(),
+		contentType: "text/event-stream",
+	})
+	// settle 错误文本里藏一个敏感子串，模拟 err 可能携带的不可外泄内容。
+	const secret = "sk-leak-canary-9f3a"
+	env.settler.settleErr = errors.New("settle tx aborted: " + secret)
+	spy := &recordingRecoveryEnqueuer{retErr: errors.New("dlq insert failed")}
+	env.deps.SettleRecoveryDLQ = spy
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
+
+	// 响应已交付：两路兜底都失败也不能 panic / 改 HTTP 状态。
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (recovery failure must not change delivered HTTP)", rec.Code)
+	}
+	if len(env.settler.settles) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(env.settler.settles))
+	}
+	// enqueue 仍被尝试(即便失败)。
+	if spy.calls != 1 {
+		t.Fatalf("enqueue calls=%d want 1 (recovery attempted even when DLQ persist fails)", spy.calls)
+	}
+	// DLQ failure_reason 必须是错误类别，绝不内插 raw settle 错误文本。
+	if strings.Contains(spy.lastEvt.FailureReason, secret) {
+		t.Fatalf("DLQ failure_reason leaked raw settle error text: %q", spy.lastEvt.FailureReason)
+	}
+}
+
+// TestCompletionsSettleRecoveryEnqueueUsesFreshContext 守 S2(#2)：当交付后 settle 因传入 ctx 的
+// deadline 耗尽(DB 受压)而失败时，DLQ 兜底 enqueue 必须用一个**独立未过期**的 ctx，否则复用同一
+// 已过期 ctx 会让 enqueue 的 INSERT 立即失败、recovery intent 落不了盘——DB 最受压时兜底最该工作。
+// 直接单测 helper：传入一个已取消(模拟过期)的 ctx，断言 enqueue 收到的 ctx 未被取消。
+// Mutation: billing.go 把 enqueue 的 enqCtx 改回复用传入 ctx → enqueue 收到已取消 ctx → RED。
+func TestCompletionsSettleRecoveryEnqueueUsesFreshContext(t *testing.T) {
+	settler := &recordingSettler{settleErr: errors.New("settle deadline exceeded")}
+	spy := &recordingRecoveryEnqueuer{}
+	ex := &execution{
+		d:         Deps{Settler: settler, SettleRecoveryDLQ: spy},
+		requestID: "req-fresh-ctx",
+	}
+	// 模拟 settle ctx 已过期/取消(deadline 耗尽场景)。
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := ex.settleStreamWithRecovery(expired, billing.SettleRequest{ClaimID: 1, TenantID: 7})
+	if err == nil {
+		t.Fatalf("expected settle err to propagate")
+	}
+	if spy.calls != 1 {
+		t.Fatalf("enqueue calls=%d want 1 (recovery must run even on a deadline-exceeded settle ctx)", spy.calls)
+	}
+	// 核心：enqueue 收到的 ctx 未被取消 → 用了 fresh(WithoutCancel)ctx，不受已过期 settle ctx 影响。
+	if spy.lastCtxErr != nil {
+		t.Fatalf("DLQ enqueue ran on the already-expired settle ctx (err=%v) — recovery intent would never persist (S2 #2)", spy.lastCtxErr)
+	}
 }
