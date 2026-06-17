@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // PoolSelectorMode 是 selector dispatcher 的 5 种合法运行模式之一。
@@ -52,6 +53,25 @@ var ErrInvalidPoolSelectorMode = errors.New("config: invalid pool selector mode"
 // ErrInvalidPercent 指示 percent 类 ENV 解析失败或越界 (合法范围 [0, 100])。
 var ErrInvalidPercent = errors.New("config: invalid percent (must be integer in [0, 100])")
 
+// ErrInvalidLoadCap 指示 PASR LoadCap ENV 解析失败或越界(合法 0 或 (0, 1.0])。
+var ErrInvalidLoadCap = errors.New("config: invalid PASR load cap (must be 0 or in (0, 1.0])")
+
+// ErrInvalidStickyTTL 指示 sticky TTL ENV 解析失败或为负(合法 0 或正秒数)。
+var ErrInvalidStickyTTL = errors.New("config: invalid sticky binding TTL (must be 0 or a positive number of seconds)")
+
+// ErrInvalidSlotLease 指示 slot lease 时长 ENV 解析失败 / 为负 / 未严格高于孤儿扫描
+// 周期。合法值 = 0(用 90s 默认) 或 严格大于 minSlotLeaseDuration 的正秒数。
+var ErrInvalidSlotLease = errors.New("config: invalid slot lease duration (must be 0 or strictly greater than the orphan-sweep interval)")
+
+// minSlotLeaseDuration 是 slot lease 的安全下限,锚定孤儿槽清扫节奏
+// billing.leaseSweepTickerInterval(30s)。语义不变量:**lease 必须严格活过至少
+// 一个清扫周期**,否则一个刚 Acquire 的 slot 可能在它服务的请求跑完前就被 sweeper
+// 当孤儿回收 → 过早 Abort + in_flight_count 错乱 + 潜在重复计费。
+// 故 Validate 拒绝 (0, 30s] 区间;0 走 90s 默认;运维要调建议保持 ≥ 默认 90s,
+// 至少高于自身 P99 请求时延 + 余量。这里写成常量而非 import billing 包,避免
+// config→billing 的反向依赖;30s 取值与 sweeper 常量手工对齐(任一改动需同步)。
+const minSlotLeaseDuration = 30 * time.Second
+
 // PoolSelectorConfig 是 selector dispatcher 启动期需要的全部配置快照。
 //
 // 字段说明:
@@ -68,6 +88,16 @@ type PoolSelectorConfig struct {
 	ShadowPercent int
 	CanaryPercent int
 	SamplingSalt  string
+	// LoadCap: PASR 段成员被剔出 candidates 的 LoadRate 上限。0 = 用包内默认
+	// 0.95(运维开关,默认零行为变化)。合法范围 0 或 (0, 1.0]。
+	LoadCap float64
+	// StickyTTL: sticky 绑定的 expires_at = now() + TTL。0 = 用默认 1h(对齐
+	// Anthropic prompt-cache extended TTL)。运维可按 vendor 缓存窗口调整。
+	StickyTTL time.Duration
+	// SlotLeaseDuration: 写入 pool_slot_acquisitions.lease_expires_at 的租约
+	// 宽限窗。0 = 用 DBSlotManager 包内 90s 默认(运维开关,默认零行为变化)。
+	// 合法值 0 或 严格大于 minSlotLeaseDuration(30s 孤儿扫描周期)的正时长。
+	SlotLeaseDuration time.Duration
 }
 
 // 默认值 — 与现状等价, 即不开 PASR。
@@ -123,6 +153,30 @@ func LoadPoolSelector() (*PoolSelectorConfig, error) {
 		cfg.SamplingSalt = raw
 	}
 
+	if raw := os.Getenv("HUAKAI_PASR_LOAD_CAP"); raw != "" {
+		f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: HUAKAI_PASR_LOAD_CAP=%q: %v", ErrInvalidLoadCap, raw, err)
+		}
+		cfg.LoadCap = f
+	}
+
+	if raw := os.Getenv("HUAKAI_POOL_STICKY_BINDING_TTL_SECONDS"); raw != "" {
+		secs, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || secs < 0 {
+			return nil, fmt.Errorf("%w: HUAKAI_POOL_STICKY_BINDING_TTL_SECONDS=%q", ErrInvalidStickyTTL, raw)
+		}
+		cfg.StickyTTL = time.Duration(secs) * time.Second
+	}
+
+	if raw := os.Getenv("HUAKAI_POOL_SLOT_LEASE_DURATION_SECONDS"); raw != "" {
+		secs, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || secs < 0 {
+			return nil, fmt.Errorf("%w: HUAKAI_POOL_SLOT_LEASE_DURATION_SECONDS=%q", ErrInvalidSlotLease, raw)
+		}
+		cfg.SlotLeaseDuration = time.Duration(secs) * time.Second
+	}
+
 	// 兜底: 即使 ENV 解析全过, 仍跑一次 Validate, 让"非 ENV 注入路径"
 	// (未来 YAML 加载 / 测试构造 / dispatcher 复检) 与 ENV 路径走同一校验通道。
 	if err := cfg.Validate(); err != nil {
@@ -157,6 +211,19 @@ func (c *PoolSelectorConfig) Validate() error {
 	}
 	if c.CanaryPercent < 0 || c.CanaryPercent > 100 {
 		return fmt.Errorf("%w: CanaryPercent=%d", ErrInvalidPercent, c.CanaryPercent)
+	}
+	// LoadCap: 0 = 用包内 0.95 默认;否则须在 (0, 1.0]。
+	if c.LoadCap < 0 || c.LoadCap > 1.0 {
+		return fmt.Errorf("%w: LoadCap=%v", ErrInvalidLoadCap, c.LoadCap)
+	}
+	// StickyTTL: 0 = 用默认 1h;否则须非负。
+	if c.StickyTTL < 0 {
+		return fmt.Errorf("%w: StickyTTL=%s", ErrInvalidStickyTTL, c.StickyTTL)
+	}
+	// SlotLeaseDuration: 0 = 用 90s 默认;否则须严格大于孤儿扫描周期下限,
+	// 防 lease 短于一个清扫周期导致活跃 slot 被当孤儿过早回收。
+	if c.SlotLeaseDuration < 0 || (c.SlotLeaseDuration > 0 && c.SlotLeaseDuration <= minSlotLeaseDuration) {
+		return fmt.Errorf("%w: SlotLeaseDuration=%s (floor=%s exclusive)", ErrInvalidSlotLease, c.SlotLeaseDuration, minSlotLeaseDuration)
 	}
 	return nil
 }

@@ -457,6 +457,40 @@ func (p budgetSettingsProvider) BudgetLimitsJSON(ctx context.Context) (string, e
 	return setting.Value, nil
 }
 
+// resolveChannelHealthPolicy loads the operator-tunable channel-health policy from
+// platform settings (key channel_health_policy), layering any override over the
+// safe DefaultPolicy(). A missing, unparseable, or out-of-range override falls back
+// to DefaultPolicy() with a warning, so a bad operator setting can never brick the
+// gateway. (Owner directive 2026-06-16: contested policy = operator switch, safe default.)
+func resolveChannelHealthPolicy(ctx context.Context, settings *platformsettings.Service, logger *zap.Logger) channelhealth.Policy {
+	base := channelhealth.DefaultPolicy()
+	if settings == nil {
+		return base
+	}
+	stored, err := settings.Get(ctx, platformsettings.KeyChannelHealthPolicy)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("channel health policy load failed; using defaults", zap.Error(err))
+		}
+		return base
+	}
+	override, err := channelhealth.ParsePolicyOverride([]byte(stored.Value))
+	if err != nil {
+		if logger != nil {
+			logger.Warn("channel health policy override parse failed; using defaults", zap.Error(err))
+		}
+		return base
+	}
+	policy, err := override.Apply(base)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("channel health policy override invalid; using defaults", zap.Error(err))
+		}
+		return base
+	}
+	return policy
+}
+
 func buildBudgetService(cfg *Config, settings *platformsettings.Service) budgetenforce.Budget {
 	if cfg == nil || !cfg.Budget.Enabled {
 		return nil
@@ -855,7 +889,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealthStoreOptions = append(channelHealthStoreOptions, channelhealth.WithProductionRequired())
 	}
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner, channelHealthStoreOptions...)
-	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
+	channelHealthService := channelhealth.NewService(channelHealthStore, resolveChannelHealthPolicy(ctx, platformSettingsService, logger), nil, channelhealth.WithAlertOutbox(outboxStore))
 	// SUB2-EGRESS-03: construct window cost cache before selector so the gate
 	// can reference it on startup. Worker is started after selector is ready.
 	windowCostCache := windowcost.NewCache()
@@ -1139,9 +1173,18 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,
 		dispatcher: &gateway.UpstreamDispatcher{
-			Adapters:                 registrydefault.Build(),
-			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
-			ProxyResolver:            provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys),
+			Adapters:         registrydefault.Build(),
+			TransportFactory: buildTransportFactory(cfg, mimicryRegistry),
+			ProxyResolver: provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys).
+				WithDirectFallbackGate(func() bool {
+					// 平台总闸:仅当 proxy_direct_fallback_enabled=true 时,才允许
+					// per-proxy fallback_mode='direct' 落到直连(双重门)。默认 false。
+					s, err := platformSettingsService.Get(context.Background(), platformsettings.KeyProxyDirectFallbackEnabled)
+					if err != nil {
+						return false
+					}
+					return s.Value == "true"
+				}),
 			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
 			Timeouts:                 buildGatewayTimeoutConfig(),
 			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
