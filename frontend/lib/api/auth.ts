@@ -208,6 +208,38 @@ export async function register(req: RegisterRequest): Promise<RegisterResponse> 
   return data as unknown as RegisterResponse;
 }
 
+// ── 邮箱验证 / 找回密码(都走裸 fetch,登录前)──────────────────────────
+
+async function postAuth(path: string, body: unknown, failCode: string): Promise<Record<string, unknown>> {
+  const resp = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!resp.ok) {
+    const err = (data as { error?: { code?: string; message?: string } }).error;
+    throw Object.assign(new Error(err?.message ?? `HTTP ${resp.status}`), { status: resp.status, code: err?.code ?? failCode });
+  }
+  return data;
+}
+
+// 邮箱验证:POST /v1/auth/verify-email {tenant_id, token} → { user, email_verified }。
+export function verifyEmail(tenantId: number, token: string): Promise<Record<string, unknown>> {
+  return postAuth('/v1/auth/verify-email', { tenant_id: tenantId, token }, 'verify_email_failed');
+}
+
+// 找回密码-请求:POST /v1/auth/reset-password {tenant_id, email}(不带 token = 请求模式)。
+// 后端枚举安全:无论邮箱是否存在都返 { reset_requested: true },前端不得据此暴露邮箱是否注册。
+export function requestPasswordReset(tenantId: number, email: string): Promise<Record<string, unknown>> {
+  return postAuth('/v1/auth/reset-password', { tenant_id: tenantId, email }, 'password_reset_request_failed');
+}
+
+// 找回密码-完成:POST /v1/auth/reset-password {tenant_id, token, new_password}(带 token = 完成模式)。
+export function resetPassword(tenantId: number, token: string, newPassword: string): Promise<Record<string, unknown>> {
+  return postAuth('/v1/auth/reset-password', { tenant_id: tenantId, token, new_password: newPassword }, 'password_reset_failed');
+}
+
 // GET /v1/auth/me 实际返回 { panel, user_id, tenant_id, display_name }（无 email，
 // 字段是 user_id 不是 id —— 已由 frontend_wiring_test 对真后端核对）。映射到 SessionUser，
 // 并保留登录时存下的 email（me 不返回 email）。
