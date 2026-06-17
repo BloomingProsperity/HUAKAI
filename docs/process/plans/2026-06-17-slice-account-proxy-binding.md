@@ -41,3 +41,41 @@
 
 ## 5. 顺序
 0. 多角度硬化本草案(找 S1)。1. SQL+regen+revert。2. handler DTO+校验+清除语义。3. 后端测试。4. 前端选择器+列。5. tsc。6. commit+push。
+
+---
+
+## 6. 硬化修正(对抗 agent 1·正确性·安全,真码 file:line)
+
+**S1-1 清除语义:草案"0-哨兵"推翻 → 改 Set-flag + nullable 指针。**
+- HTTP JSON 层 `null`/省略都映射 Go `nil`,指针单独无法区分"省略=保留"vs"清空=NULL"。
+- 正解照 HUAKAI 现有 `SetProbeModel` 范式(`admin_provider_accounts.go:276`):
+  `proxy_id = CASE WHEN $SetProxyID::boolean THEN $ProxyID::bigint ELSE proxy_id END`
+  Go params:`SetProxyID bool; ProxyID *int64; SetProxyGroupID bool; ProxyGroupID *string`。
+
+**S1-2 Update 是手写 SQL(非 sqlc)。** `admin_provider_accounts.go:269-324` 的 `UpdateAdminProviderAccount` 是手写 SQL 常量 + params 结构;`mutations.sql` 只有 Insert/Delete。→ **Update 直接改手写常量+params,无 sqlc regen**;**只有 Insert 走 sqlc dance**(mutations.sql 加 narg + generate + revert 非 db/admin 漂移)。
+
+**S1-3 互斥:resolver 靠应用层。** `postgres_proxy_resolver.go:168-185`:`!hasProxyBound && proxyGroupID!=""` 才走组。→ handler:选"指定代理"=SetProxyID(N)+SetProxyGroupID(nil);选"代理组"=SetProxyGroupID(x)+SetProxyID(nil);选"直连"=两者 Set 为 nil。
+
+**S1-3b proxy_group_id 无 FK(text 标签)。** proxy_id 有 DB 触发器 `enforce_provider_account_tenant_alignment`(`0038:194-225`)保证同租户;proxy_group_id 无 → handler 必须显式校验 `SELECT 1 FROM proxies WHERE tenant_id=$ AND group_id=$ AND deleted_at IS NULL`,查不到 422(防跨租户/空组)。
+
+**确认(无需改):** Insert 用 narg → 不传=NULL=直连,零回归;Update Set-flag=false → 保留旧值,零回归。sqlc dance 是已知工作流(提交前 `git diff backend/internal/db/` 查漂移)。
+
+**D2 决策定:** 清除语义 = Set-flag(不用 sub2api 的 0-哨兵,因 HUAKAI JSON 层不适配)。
+
+## 7. 硬化修正(对抗 agent 2·完整性·前端)—— 揭示切片远比草案大 + S0 安全洞
+
+**S0-A 前端账号页【无编辑表单】。** `app/admin/accounts/page.tsx` 行动作只有 test/启停/清冷却/健康快照,**无编辑入口、无弹窗、无代理列**。→ 本刀要**从零建账号编辑弹窗**(三档代理选择器)+ 列表加"代理"列 + 编辑按钮。工作量远超"加选择器"。
+
+**S0-B 互斥失守 = IP 隔离泄漏。** resolver(`postgres_proxy_resolver.go:96-202`)两列都有值时按优先级选 proxy_id 忽略组 → 破坏三档语义。DB 无互斥 CHECK。→ (1) handler 强制互斥(设一列清另一列 + 拒同时显式设两列 400);(2) **建议加 migration CHECK 约束**(= schema 变更,**高危需 Owner gate**);(3) 前端选择器单选联动。
+
+**S1-C account list 不含 proxy 列。** `AdminProviderAccountRow`(`admin_provider_accounts.go:9-47`)+ 列选择器 + scan 均无 proxy_id/proxy_group_id → 列表显示代理列会 N+1。→ Row 加两列 + adminProviderAccountColumns 加 + scanAdminProviderAccount 加。
+
+**S1-D 代理组无 list 端点。** proxies 有 group_id 列但无 list-groups 端点 → 前端从 listProxies 派生 distinct(memo 防闪)。D1 定:派生(a),代理多时承认成本(可后续加 ListProxyGroups 端点优化)。
+
+**测试判别式(禁止假绿,给例):** handler:SetProxyID→另列清空;清除→直连;同时设两列→400;跨租户 proxy_id→trigger 500/或 handler 403;跨租户 group→422。resolver 集成:绑定 proxy healthy→用、unhealthy→ErrProxyUnhealthy(不降级!)、组确定性轮换(同账号粘同 IP)、空组→fail-closed、租户默认 fallback、无绑定→直连。
+
+## 8. ⛔ 待 Owner 决策(本刀升级为 S0-安全 + schema 高危,建议 Owner 先批)
+- **D2 清除语义**:Set-flag(params 层,前端发显式 null/哨兵)—— 定哪种请求表示。
+- **D-schema**:是否加 `0125 account_proxy_mutual` CHECK 约束(schema 变更高危)?还是仅 handler 层互斥?
+- **D-scope**:账号编辑弹窗从零建(本刀只做代理三档,还是顺带把账号其它可编辑字段也补进弹窗)?
+- 风险定级:本刀触**账号管理核心写 + IP 隔离安全 + 可能 schema 迁移** → 按 Risk-Based Confirmation Rule 属高危,**Owner 确认后再开工**。
