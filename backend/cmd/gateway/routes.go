@@ -798,6 +798,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminGate(adminResolver, controlhttp.NewAdminModelAliasBulkImportHandler(modelAliasDeps)))
 	r.Method(http.MethodGet, "/v1/admin/models/{id}/capability-bindings",
 		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingsHandler(modelAliasDeps)))
+	r.Method(http.MethodPut, "/v1/admin/models/{id}/capability-bindings",
+		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingUpsertHandler(modelAliasDeps)))
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
 		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
 			Auth:    d.adminAuth,
