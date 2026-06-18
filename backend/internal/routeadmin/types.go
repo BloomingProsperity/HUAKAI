@@ -51,3 +51,19 @@ type CreateInput struct {
 	MatchPriority     *int
 	AdminID           int64
 }
+
+// UpdateInput 是全替换一条 route 可编辑字段的入参 (PUT 语义)。
+// TenantID+ID 定位行且不可改 (防跨租户搬移); 改 Name/UserGroupMatch/ModelPatternMatch/
+// PoolGroupID/MatchPriority; 保留 Enabled/CreatedAt, bump UpdatedAt。
+// MatchPriority 为 nil 时回落 DB 默认(100) —— 与 Create 同的全替换语义, 非局部 patch。
+// AdminID 仅用于审计归属, 不写入 routes 表本身。
+type UpdateInput struct {
+	TenantID          int64
+	ID                int64
+	Name              string
+	UserGroupMatch    string
+	ModelPatternMatch string
+	PoolGroupID       int64
+	MatchPriority     *int
+	AdminID           int64
+}

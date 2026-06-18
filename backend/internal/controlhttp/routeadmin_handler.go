@@ -32,6 +32,7 @@ type RouteAdminService interface {
 	Create(context.Context, routeadmin.CreateInput) (routeadmin.Route, error)
 	List(context.Context, int64) ([]routeadmin.Route, error)
 	Get(context.Context, int64, int64) (routeadmin.Route, error)
+	Update(context.Context, routeadmin.UpdateInput) (routeadmin.Route, error)
 	Delete(context.Context, int64, int64, int64) (routeadmin.Route, error)
 }
 
@@ -43,6 +44,16 @@ type RouteAdminDeps struct {
 
 type createRouteRequest struct {
 	TenantID          int64  `json:"tenant_id"`
+	Name              string `json:"name"`
+	UserGroupMatch    string `json:"user_group_match"`
+	ModelPatternMatch string `json:"model_pattern_match,omitempty"`
+	PoolGroupID       int64  `json:"pool_group_id"`
+	MatchPriority     *int   `json:"match_priority,omitempty"`
+}
+
+// updateRouteRequest 是 PUT /{id} 的请求体。**不含 tenant_id** —— 租户取自 query 参数、行由
+// path id 定位, 故 body 内出现 tenant_id 会被 DisallowUnknownFields 拒(防经更新跨租户搬移/走私)。
+type updateRouteRequest struct {
 	Name              string `json:"name"`
 	UserGroupMatch    string `json:"user_group_match"`
 	ModelPatternMatch string `json:"model_pattern_match,omitempty"`
@@ -85,6 +96,7 @@ func MountRouteAdminRoutes(r chi.Router, d RouteAdminDeps) {
 	r.Post("/", newRouteAdminCreateHandler(d))
 	r.Get("/", newRouteAdminListHandler(d))
 	r.Get("/{id}", newRouteAdminGetHandler(d))
+	r.Put("/{id}", newRouteAdminUpdateHandler(d))
 	r.Delete("/{id}", newRouteAdminDeleteHandler(d))
 }
 
@@ -147,6 +159,46 @@ func newRouteAdminGetHandler(d RouteAdminDeps) http.HandlerFunc {
 			return
 		}
 		route, err := d.Service.Get(r.Context(), tenantID, id)
+		if err != nil {
+			routeAdminWriteRouteError(w, err)
+			return
+		}
+		controlWriteJSON(w, http.StatusOK, map[string]any{"route": routeAdminToRouteView(route)})
+	}
+}
+
+// newRouteAdminUpdateHandler 处理 PUT /{id}: 全替换一条 route 的可编辑字段。
+// PUT 幂等: 同一请求体重放产生同一行状态(updated_at 每次写都 bump, 仅供审计追踪, 不破坏幂等)。
+// 全替换语义提醒: 省略 match_priority 即回落 DB 默认 100 —— 后续 priority 真裁决落地后该字段变
+// 真选路键, 故前端编辑须 read-modify-write 始终显式带 match_priority, 防 read-omit-write 静默重置。
+func newRouteAdminUpdateHandler(d RouteAdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := routeAdminResolveAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		tenantID, ok := routeAdminParsePositiveQuery(w, r, "tenant_id")
+		if !ok {
+			return
+		}
+		id, ok := routeAdminParsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req updateRouteRequest
+		if !routeAdminDecodeJSON(w, r, &req) {
+			return
+		}
+		route, err := d.Service.Update(r.Context(), routeadmin.UpdateInput{
+			TenantID:          tenantID, // 取自 query, 不可经 body 改 → 防跨租户搬移
+			ID:                id,       // 取自 path
+			Name:              req.Name,
+			UserGroupMatch:    req.UserGroupMatch,
+			ModelPatternMatch: req.ModelPatternMatch,
+			PoolGroupID:       req.PoolGroupID,
+			MatchPriority:     req.MatchPriority,
+			AdminID:           ident.TokenID, // 审计归属取自已认证身份, 非请求体
+		})
 		if err != nil {
 			routeAdminWriteRouteError(w, err)
 			return
