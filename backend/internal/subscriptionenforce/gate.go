@@ -19,7 +19,9 @@ type GroupRoutes struct {
 	// 与是否命中本 model 无关。用于区分"未配置分组路由"与"配置了但本 model 未授权",
 	// 二者的白名单语义不同(前者放行、后者拒)。
 	Configured bool
-	// Allowed 是命中本 model 的路由所指向的有效 pool_group_id 集合。
+	// Allowed 是命中本 model 的路由中【最高优先档】(最小 match_priority, "lower = match first")
+	// 所指向的有效 pool_group_id 集合; 并列同档取并集。多条不同优先级命中时只放最高档(match_priority
+	// 真裁决, slice B); 全部默认优先级时退化为全部命中池(向后兼容)。详见 highestPriorityAllowed。
 	Allowed map[int64]struct{}
 }
 

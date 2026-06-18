@@ -80,6 +80,28 @@ VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 	}
 }
 
+// seedRoutePrio 显式设 match_priority, 用于 slice B 优先档收窄判别测(默认 helper 走 DB 默认 100)。
+func seedRoutePrio(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, name, userGroup, modelPattern string, poolGroupID int64, priority int) {
+	t.Helper()
+	seedRoutePrioEx(t, ctx, pool, tenantID, name, userGroup, modelPattern, poolGroupID, priority, false)
+}
+
+// seedRoutePrioEx 显式设 match_priority + 是否软删, 用于"高优先档软删须回退次档"的判别测。
+func seedRoutePrioEx(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, name, userGroup, modelPattern string, poolGroupID int64, priority int, deleted bool) {
+	t.Helper()
+	var deletedAt *time.Time
+	if deleted {
+		tnow := time.Now()
+		deletedAt = &tnow
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO routes (tenant_id, name, user_group_match, model_pattern_match, pool_group_id, match_priority, enabled, deleted_at)
+VALUES ($1,$2,$3,$4,$5,$6,true,$7)`,
+		tenantID, name, userGroup, modelPattern, poolGroupID, priority, deletedAt); err != nil {
+		t.Fatalf("seed route(prio,ex): %v", err)
+	}
+}
+
 func assertSet(t *testing.T, got map[int64]struct{}, want ...int64) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -239,4 +261,78 @@ func TestPG_GroupRoutes_ExcludesInvalidTargets(t *testing.T) {
 		t.Fatal("silver 唯一路由指向他租户 pool: Configured 应为 false(跨租户目标池被 JOIN 排除)")
 	}
 	assertSet(t, silver.Allowed)
+}
+
+// TestPG_GroupRoutes_PriorityArbitration 守 slice B 真裁决: 多条命中本 model 时只放最高优先档
+// (最小 match_priority)的 pool, 并列同档取并集, 全默认值退化为全量(向后兼容), 最高档软删则回退次档。
+// 判别:
+//   - 收窄逻辑取最大值而非最小 → premium 期望 {pgHi} 变 {pgLo} → 红。
+//   - 并列同档漏池 → gold/silver 并集断言 → 红。
+//   - 误把全默认配置也收成子集 → gold 向后兼容断言 → 红。
+//   - 最高档软删未回退(仍认为最高档存在/收成空) → bronze 回退断言 → 红。
+func TestPG_GroupRoutes_PriorityArbitration(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	suffix := uuid.NewString()
+
+	tenantID := seedTenant(t, ctx, pool, "se-prio-"+suffix)
+	t.Cleanup(cleanupTenants(pool, tenantID))
+
+	pgHi := seedPoolGroup(t, ctx, pool, tenantID, "hi-"+suffix)
+	pgLo := seedPoolGroup(t, ctx, pool, tenantID, "lo-"+suffix)
+	pgA := seedPoolGroup(t, ctx, pool, tenantID, "a-"+suffix)
+	pgB := seedPoolGroup(t, ctx, pool, tenantID, "b-"+suffix)
+
+	repo := NewPostgresRoutesRepo(pool)
+
+	// premium: 两条都命中 claude-*, priority 10(pgHi) 与 20(pgLo) → 只放最高档 pgHi。
+	seedRoutePrio(t, ctx, pool, tenantID, "p-hi-"+suffix, "premium", "claude-*", pgHi, 10)
+	seedRoutePrio(t, ctx, pool, tenantID, "p-lo-"+suffix, "premium", "claude-*", pgLo, 20)
+	premium, err := repo.GroupRoutes(ctx, tenantID, "premium", "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatalf("query premium: %v", err)
+	}
+	assertSet(t, premium.Allowed, pgHi) // 收窄: pgLo(低优先档)被排除
+	if !premium.Configured {
+		t.Fatal("premium 有有效路由, Configured 应为 true")
+	}
+
+	// gold: 两条都命中且都默认优先级(同档) → 取并集(向后兼容, 与旧全量集相等)。
+	seedRoutePrio(t, ctx, pool, tenantID, "g-a-"+suffix, "gold", "claude-*", pgA, 100)
+	seedRoutePrio(t, ctx, pool, tenantID, "g-b-"+suffix, "gold", "claude-*", pgB, 100)
+	gold, err := repo.GroupRoutes(ctx, tenantID, "gold", "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatalf("query gold: %v", err)
+	}
+	assertSet(t, gold.Allowed, pgA, pgB) // 同档并集, 不收窄
+
+	// silver: 三条命中 5(pgHi)/5(pgLo)/20(pgA) → 最高档(5)两池并集 {pgHi,pgLo}, pgA(20)排除。
+	seedRoutePrio(t, ctx, pool, tenantID, "s-1-"+suffix, "silver", "claude-*", pgHi, 5)
+	seedRoutePrio(t, ctx, pool, tenantID, "s-2-"+suffix, "silver", "claude-*", pgLo, 5)
+	seedRoutePrio(t, ctx, pool, tenantID, "s-3-"+suffix, "silver", "claude-*", pgA, 20)
+	silver, err := repo.GroupRoutes(ctx, tenantID, "silver", "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatalf("query silver: %v", err)
+	}
+	assertSet(t, silver.Allowed, pgHi, pgLo)
+	// Configured 独立于优先档收窄(contract #5): 收窄后仍 true。
+	// mutation: 把 Configured 绑 len(matched)/len(Allowed) → silver 收窄了仍须 true → 此断言守门。
+	if !silver.Configured {
+		t.Fatal("silver 有有效路由, Configured 须为 true(独立于优先档收窄)")
+	}
+
+	// bronze: 最高档(5, pgHi)被软删 → SQL deleted_at 谓词过滤后, 档计算回退到次档(20, pgA)。
+	// 关键: 软删那条 priority(5) 比存活那条(20)更高优先, 故只有软删谓词真生效才会回退到 pgA;
+	// 若软删谓词坏掉, pgHi(5) 会胜出 → Allowed={pgHi} → 断言红(判别软删与档计算的交互)。
+	seedRoutePrioEx(t, ctx, pool, tenantID, "b-hi-"+suffix, "bronze", "claude-*", pgHi, 5, true)
+	seedRoutePrio(t, ctx, pool, tenantID, "b-lo-"+suffix, "bronze", "claude-*", pgA, 20)
+	bronze, err := repo.GroupRoutes(ctx, tenantID, "bronze", "claude-3-5-sonnet")
+	if err != nil {
+		t.Fatalf("query bronze: %v", err)
+	}
+	assertSet(t, bronze.Allowed, pgA) // 软删的高档不参与, 回退到 pgA
+	// bronze 仍有一条有效路由(pgA), Configured 须为 true(回退/收窄不改 Configured)。
+	if !bronze.Configured {
+		t.Fatal("bronze 有有效路由(pgA), Configured 须为 true")
+	}
 }
