@@ -17,7 +17,14 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"runtime"
+	"time"
 )
+
+// processStart approximates process boot time: this package is imported by the
+// gateway main package, so its init runs at startup. Uptime is derived from it.
+var processStart = time.Now()
 
 // ComponentStatus represents the health of a single sub-system.
 type ComponentStatus string
@@ -44,10 +51,48 @@ type Component struct {
 	Detail string          `json:"detail,omitempty"`
 }
 
+// RuntimeInfo is a live snapshot of the gateway process's own resource usage,
+// read directly from the Go runtime at request time (no background collector, no
+// storage). All values are diagnostics — heap/goroutine/GC gauges plus uptime,
+// Go toolchain version, and binary size — never secrets (the binary PATH is not
+// exposed, only its size).
+type RuntimeInfo struct {
+	GoVersion       string `json:"go_version"`
+	NumGoroutine    int    `json:"num_goroutine"`
+	HeapAllocBytes  uint64 `json:"heap_alloc_bytes"`
+	HeapSysBytes    uint64 `json:"heap_sys_bytes"`
+	NumGC           uint32 `json:"num_gc"`
+	UptimeSeconds   int64  `json:"uptime_seconds"`
+	BinarySizeBytes int64  `json:"binary_size_bytes,omitempty"`
+}
+
 // HealthResponse is the JSON body returned by the health endpoint.
 type HealthResponse struct {
 	Status     TopLevelStatus `json:"status"`
 	Components []Component    `json:"components"`
+	Runtime    RuntimeInfo    `json:"runtime"`
+}
+
+// collectRuntimeInfo reads a live process-runtime snapshot. Pure runtime/os reads;
+// no deps, no ctx, no side effects. BinarySizeBytes is omitted (0) when the running
+// executable cannot be resolved/stat'd.
+func collectRuntimeInfo() RuntimeInfo {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	info := RuntimeInfo{
+		GoVersion:      runtime.Version(),
+		NumGoroutine:   runtime.NumGoroutine(),
+		HeapAllocBytes: ms.HeapAlloc,
+		HeapSysBytes:   ms.HeapSys,
+		NumGC:          ms.NumGC,
+		UptimeSeconds:  int64(time.Since(processStart).Seconds()),
+	}
+	if exe, err := os.Executable(); err == nil {
+		if fi, statErr := os.Stat(exe); statErr == nil {
+			info.BinarySizeBytes = fi.Size()
+		}
+	}
+	return info
 }
 
 // SystemHealthSource provides read-only already-computed snapshots for aggregation.
@@ -131,7 +176,7 @@ func NewSystemHealthHandler(src SystemHealthSource) http.HandlerFunc {
 		// MUTATION guard: if this is replaced with always-healthy the test turns red.
 		top := deriveTopLevel(components)
 
-		writeJSON(w, http.StatusOK, HealthResponse{Status: top, Components: components})
+		writeJSON(w, http.StatusOK, HealthResponse{Status: top, Components: components, Runtime: collectRuntimeInfo()})
 	}
 }
 
