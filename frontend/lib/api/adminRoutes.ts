@@ -13,6 +13,7 @@ import { ApiError, apiGet, apiPost } from './client';
 import type { APIError } from './types';
 import {
   buildCreateRouteBody,
+  buildSetEnabledBody,
   buildUpdateRouteBody,
   validateRouteInput,
   validateRouteUpdateInput,
@@ -107,6 +108,21 @@ export function updateRoute(id: number, tenantId: number, input: RouteUpdateInpu
   const invalid = validateRouteUpdateInput(input);
   if (invalid) return Promise.reject(new Error(invalid));
   return adminPut<RouteResponse>(`${BASE}/${id}${tenantQuery(tenantId)}`, buildUpdateRouteBody(input));
+}
+
+// 启停一条 route(独立窄动作, 非全替换): 翻转 enabled。tenant 走 query(不入 body)、id 走 path、enabled 走 body。
+// 停用即把路由移出分组路由生效集(后端热路径 gate 过滤 enabled=true)而不软删, 可后续再启用。幂等。
+export function setRouteEnabled(id: number, tenantId: number, enabled: boolean): Promise<RouteResponse> {
+  return adminPut<RouteResponse>(`${BASE}/${id}/enabled${tenantQuery(tenantId)}`, buildSetEnabledBody(enabled));
+}
+
+// 便捷封装: 启用 / 停用一条 route。
+export function enableRoute(id: number, tenantId: number): Promise<RouteResponse> {
+  return setRouteEnabled(id, tenantId, true);
+}
+
+export function disableRoute(id: number, tenantId: number): Promise<RouteResponse> {
+  return setRouteEnabled(id, tenantId, false);
 }
 
 // 软删一条 route(返回删前快照)。

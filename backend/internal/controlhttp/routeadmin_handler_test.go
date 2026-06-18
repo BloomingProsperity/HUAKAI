@@ -36,6 +36,16 @@ type routeAdminStubService struct {
 	getFn      func(int64, int64) (routeadmin.Route, error)
 	updateFn   func(routeadmin.UpdateInput) (routeadmin.Route, error)
 	deleteFn   func(int64, int64, int64) (routeadmin.Route, error)
+
+	lastSetEnabled routeAdminSetEnabledCall
+	setEnabledFn   func(tenantID, id int64, enabled bool, adminID int64) (routeadmin.Route, error)
+}
+
+type routeAdminSetEnabledCall struct {
+	tenantID int64
+	id       int64
+	enabled  bool
+	adminID  int64
 }
 
 func (s *routeAdminStubService) Create(_ context.Context, in routeadmin.CreateInput) (routeadmin.Route, error) {
@@ -75,6 +85,15 @@ func (s *routeAdminStubService) Update(_ context.Context, in routeadmin.UpdateIn
 		ID: in.ID, TenantID: in.TenantID, Name: in.Name, UserGroupMatch: in.UserGroupMatch,
 		ModelPatternMatch: in.ModelPatternMatch, PoolGroupID: in.PoolGroupID, MatchPriority: mp, Enabled: true,
 	}, nil
+}
+func (s *routeAdminStubService) SetEnabled(_ context.Context, tenantID, id int64, enabled bool, adminID int64) (routeadmin.Route, error) {
+	s.called = true
+	s.lastSetEnabled = routeAdminSetEnabledCall{tenantID: tenantID, id: id, enabled: enabled, adminID: adminID}
+	if s.setEnabledFn != nil {
+		return s.setEnabledFn(tenantID, id, enabled, adminID)
+	}
+	// 默认回快照, Enabled 回显入参(让 handler 测试能断言响应体反映新值, 而非 stub 硬编码)。
+	return routeadmin.Route{ID: id, TenantID: tenantID, Enabled: enabled}, nil
 }
 func (s *routeAdminStubService) Delete(_ context.Context, tenantID, id, adminID int64) (routeadmin.Route, error) {
 	s.called = true
@@ -384,5 +403,128 @@ func TestNilDeps_ServiceUnavailable(t *testing.T) {
 	status, _ := doRouteAdminReq(t, ts, http.MethodGet, "/v1/admin/routes/?tenant_id=5", "")
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("nil deps status=%d, want 503", status)
+	}
+}
+
+// 守启停核心: PUT /{id}/enabled 把 enabled 取自 **body**(false)、tenant 取自 query(5)、id 取自 path(55)、
+// adminID 取自已认证身份(4242); 响应体序列化反映新 enabled。用 enabled=false(非默认 true)做判别值:
+// mutation: handler 误把 enabled 写死/读错(如恒传 true)、或 adminID 写 0、或 tenant 误取 body → 对应断言红。
+func TestSetEnabled_FlipsFromBodyWithAuthAdminAndQueryTenant(t *testing.T) {
+	svc := &routeAdminStubService{}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(4242), Service: svc})
+	defer ts.Close()
+
+	status, out := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55/enabled?tenant_id=5", `{"enabled":false}`)
+	if status != http.StatusOK {
+		t.Fatalf("set-enabled status=%d, want 200", status)
+	}
+	if svc.lastSetEnabled.adminID != 4242 {
+		t.Fatalf("adminID passed to service = %d, want 4242 (authenticated identity, not body)", svc.lastSetEnabled.adminID)
+	}
+	if svc.lastSetEnabled.tenantID != 5 || svc.lastSetEnabled.id != 55 {
+		t.Fatalf("tenant/id not from query/path: tenant=%d id=%d, want 5/55", svc.lastSetEnabled.tenantID, svc.lastSetEnabled.id)
+	}
+	if svc.lastSetEnabled.enabled != false {
+		t.Fatalf("enabled passed to service = %v, want false (from body)", svc.lastSetEnabled.enabled)
+	}
+	route, ok := out["route"].(map[string]any)
+	if !ok || route["enabled"] != false || route["id"] != float64(55) {
+		t.Fatalf("response route not serialized with flipped enabled=false: %+v", out)
+	}
+}
+
+// 守显式存在: 空 body `{}`(无 enabled 字段) → 400, service 不触达。防漏传 enabled 时按 Go 零值 false 静默停用路由。
+// mutation: handler 去掉 req.Enabled==nil 检查 → 以 *bool 解引用 panic 或按 false 调用 service → 非 400 / 触达 service → 红。
+func TestSetEnabled_MissingEnabledFieldBadRequest(t *testing.T) {
+	svc := &routeAdminStubService{}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(4242), Service: svc})
+	defer ts.Close()
+
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55/enabled?tenant_id=5", `{}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing enabled status=%d, want 400", status)
+	}
+	if svc.called {
+		t.Fatal("service must NOT run when enabled field is absent (guard against silent zero-value disable)")
+	}
+}
+
+// 守不可经启停走私租户: body 携带 tenant_id → 400(DisallowUnknownFields 拒), service 不触达。
+// mutation: setRouteEnabledRequest 加 tenant_id 字段 / 解码去 DisallowUnknownFields → 走私被接受 → 200/svc.called → 红。
+func TestSetEnabled_RejectsUnknownFieldsBlocksTenantSmuggling(t *testing.T) {
+	svc := &routeAdminStubService{}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(4242), Service: svc})
+	defer ts.Close()
+
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55/enabled?tenant_id=5", `{"enabled":true,"tenant_id":6}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("tenant_id in body status=%d, want 400 (smuggling blocked)", status)
+	}
+	if svc.called {
+		t.Fatal("service must NOT run when body carries tenant_id (cross-tenant move smuggling)")
+	}
+}
+
+// 守越权: 非 platform_admin 启停 → 403, 绝不触达 service。
+// mutation: routeAdminResolveAdmin 删 role 检查 → 200 + svc.called → 红。
+func TestSetEnabled_NonPlatformAdminForbidden(t *testing.T) {
+	svc := &routeAdminStubService{}
+	auth := routeAdminStubAuth{ident: admin.AdminIdentity{TokenID: 9, Role: admin.RoleTenantOperator}}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: auth, Service: svc})
+	defer ts.Close()
+
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55/enabled?tenant_id=5", `{"enabled":false}`)
+	if status != http.StatusForbidden {
+		t.Fatalf("non-admin set-enabled status=%d, want 403", status)
+	}
+	if svc.called {
+		t.Fatal("service must NOT be invoked when role check fails")
+	}
+}
+
+// 守缺 tenant_id query → 400, 不触达 service。
+// mutation: routeAdminParsePositiveQuery 放行空 → service 以 tenant=0 调用 → 非 400 → 红。
+func TestSetEnabled_RequiresTenantID(t *testing.T) {
+	svc := &routeAdminStubService{}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(1), Service: svc})
+	defer ts.Close()
+
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55/enabled", `{"enabled":false}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("set-enabled without tenant_id status=%d, want 400", status)
+	}
+	if svc.called {
+		t.Fatal("service must not run when tenant_id is missing")
+	}
+}
+
+// 守服务层错误映射: ErrRouteNotFound → 404(启停一条不存在/已软删的路由)。
+// mutation: routeAdminWriteRouteError 的 ErrRouteNotFound 分支落 default → 503 ≠ 404 → 红。
+func TestSetEnabled_RouteNotFound(t *testing.T) {
+	svc := &routeAdminStubService{setEnabledFn: func(int64, int64, bool, int64) (routeadmin.Route, error) {
+		return routeadmin.Route{}, routeadmin.ErrRouteNotFound
+	}}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(1), Service: svc})
+	defer ts.Close()
+
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/999/enabled?tenant_id=5", `{"enabled":true}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("set-enabled missing route status=%d, want 404", status)
+	}
+}
+
+// 守 {id}/enabled 这条新 chi 路由的 path-id 解析: 非数字 id → 400(invalid_route_id), 不触达 service。
+// mutation: 新端点误注册成不解析 path-id / routeAdminParsePathID 放行非数字 → service 以 id=0 调用 → 非 400 → 红。
+func TestSetEnabled_InvalidPathIDBadRequest(t *testing.T) {
+	svc := &routeAdminStubService{}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(4242), Service: svc})
+	defer ts.Close()
+
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/abc/enabled?tenant_id=5", `{"enabled":false}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("non-numeric path id status=%d, want 400", status)
+	}
+	if svc.called {
+		t.Fatal("service must NOT run when path id is non-numeric")
 	}
 }

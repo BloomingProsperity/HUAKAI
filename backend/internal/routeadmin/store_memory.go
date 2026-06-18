@@ -138,6 +138,21 @@ func (m *MemoryStore) Get(_ context.Context, tenantID, id int64) (Route, error) 
 	return r, nil
 }
 
+func (m *MemoryStore) SetEnabled(_ context.Context, tenantID, id int64, enabled bool) (Route, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 定位未软删的本租户行(不存在/已删/跨租户 → not found, 与 postgres WHERE tenant+id+未删 一致)。
+	r, ok := m.routes[id]
+	if !ok || m.deleted[id] || r.TenantID != tenantID {
+		return Route{}, ErrRouteNotFound
+	}
+	// 只翻 enabled, bump UpdatedAt; 保留其它列。幂等: 设成当前值也照常返回快照。
+	r.Enabled = enabled
+	r.UpdatedAt = m.now
+	m.routes[id] = r
+	return r, nil
+}
+
 func (m *MemoryStore) SoftDelete(_ context.Context, tenantID, id int64) (Route, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
