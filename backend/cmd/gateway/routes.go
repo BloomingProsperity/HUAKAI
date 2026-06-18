@@ -800,6 +800,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingsHandler(modelAliasDeps)))
 	r.Method(http.MethodPut, "/v1/admin/models/{id}/capability-bindings",
 		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingUpsertHandler(modelAliasDeps)))
+	// 租户目录继承策略(inherit_global_catalog)admin 写面 — platform_admin only(经 adminGate), tenant 取 query。
+	tenantPolicyDeps := controlhttp.AdminTenantPolicyDeps{Store: d.modelRegistry}
+	r.Method(http.MethodGet, "/v1/admin/model-registry-policy",
+		adminGate(adminResolver, controlhttp.NewAdminTenantPolicyGetHandler(tenantPolicyDeps)))
+	r.Method(http.MethodPut, "/v1/admin/model-registry-policy",
+		adminGate(adminResolver, controlhttp.NewAdminTenantPolicySetHandler(tenantPolicyDeps)))
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
 		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
 			Auth:    d.adminAuth,

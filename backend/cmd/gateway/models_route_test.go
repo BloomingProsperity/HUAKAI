@@ -115,3 +115,48 @@ func TestAdminModelCapabilityBindingsRouteMountedBehindAdminGate(t *testing.T) {
 		t.Fatalf("body=%s want admin_gate_not_configured proving route is behind adminGate", rec.Body.String())
 	}
 }
+
+// adminGate is the SOLE privilege barrier for the tenant-policy write face (the handler
+// trusts the context-injected identity for actor attribution and has no auth of its own).
+// buildTestRouter wires a nil admin resolver, so adminGate short-circuits to
+// 503 admin_gate_not_configured BEFORE the handler. Mutation: remount the bare handler
+// without adminGate → the GET/PUT handler runs and emits its own body (never
+// admin_gate_not_configured) → red. This catches a gate-drop regression that would let a
+// tenant flip another tenant's inherit_global_catalog (the exact privilege escalation the
+// platform-admin-only design prevents).
+func TestAdminTenantPolicyGetRouteMountedBehindAdminGate(t *testing.T) {
+	r := buildTestRouter(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/model-registry-policy?tenant_id=7", nil)
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("GET /v1/admin/model-registry-policy returned 404; route must be mounted")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503 from adminGate nil resolver", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "admin_gate_not_configured") {
+		t.Fatalf("body=%s want admin_gate_not_configured proving route is behind adminGate", rec.Body.String())
+	}
+}
+
+func TestAdminTenantPolicySetRouteMountedBehindAdminGate(t *testing.T) {
+	r := buildTestRouter(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/v1/admin/model-registry-policy?tenant_id=7",
+		strings.NewReader(`{"inherit_global_catalog":true}`))
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("PUT /v1/admin/model-registry-policy returned 404; route must be mounted")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503 from adminGate nil resolver", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "admin_gate_not_configured") {
+		t.Fatalf("body=%s want admin_gate_not_configured proving route is behind adminGate", rec.Body.String())
+	}
+}
