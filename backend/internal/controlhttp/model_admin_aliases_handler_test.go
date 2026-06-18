@@ -125,6 +125,20 @@ func (s *adminModelAliasStoreStub) ListModelCapabilityBindings(_ context.Context
 	return s.bindings, nil
 }
 
+// 守严格请求契约(JSON 分支): bulk-import body 携带未知顶层字段 → 400, 不触达 store。
+// mutation: parseAliasBulkImportBody 去掉 DisallowUnknownFields → 未知字段静默丢弃 → store 触达 → 红。
+func TestAdminModelAliasBulkImportRejectsUnknownFields(t *testing.T) {
+	store := &adminModelAliasStoreStub{}
+	rec := invokeAdminModelAliases(t, AdminModelAliasesDeps{Store: store},
+		`{"aliases":[{"model_id":7,"alias":"gpt-a","scope":"global"}],"is_superuser":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s want 400 (unknown field rejected)", rec.Code, rec.Body.String())
+	}
+	if store.calls != 0 {
+		t.Fatalf("unknown-field payload touched store: calls=%d", store.calls)
+	}
+}
+
 func invokeAdminModelAliases(t *testing.T, deps AdminModelAliasesDeps, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases/bulk-import", strings.NewReader(body))

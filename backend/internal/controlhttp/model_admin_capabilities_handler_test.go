@@ -107,6 +107,21 @@ func TestAdminModelCapabilitiesBackendErrorMapsTo503(t *testing.T) {
 	}
 }
 
+// 守严格请求契约: capabilities body 携带未知字段 → 400, 不触达 store(防字段走私/契约漂移)。
+// mutation: parseCapabilitiesBody 去掉 DisallowUnknownFields → 未知字段被静默丢弃 → 200 + store 触达 → 红。
+func TestAdminModelCapabilitiesRejectsUnknownFields(t *testing.T) {
+	store := &adminCapabilitiesStoreStub{}
+	rec := invokeAdminCapabilities(t, AdminCapabilitiesDeps{Store: store},
+		http.MethodPut, "/v1/admin/models/42/capabilities",
+		`{"capabilities":{"vision":true},"max_output_tokens":8192,"is_admin":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s want 400 (unknown field rejected)", rec.Code, rec.Body.String())
+	}
+	if store.calls != 0 {
+		t.Fatalf("unknown-field payload touched store: calls=%d", store.calls)
+	}
+}
+
 type adminCapabilitiesStoreStub struct {
 	row    registry.ModelCapabilityUpdate
 	err    error

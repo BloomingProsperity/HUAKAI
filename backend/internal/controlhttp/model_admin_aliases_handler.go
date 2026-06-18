@@ -96,12 +96,15 @@ func parseAliasBulkImportBody(w http.ResponseWriter, r *http.Request) (registry.
 	}
 
 	var params registry.BulkImportModelAliasesParams
-	if err := json.NewDecoder(limited).Decode(&params); err != nil {
+	dec := json.NewDecoder(limited)
+	dec.DisallowUnknownFields() // 严格请求契约: 拒未知字段(JSON 分支; CSV 分支不受影响)
+	if err := dec.Decode(&params); err != nil {
 		if errors.Is(err, io.EOF) {
 			modelWriteError(w, http.StatusBadRequest, "invalid_json", "request body required")
 			return registry.BulkImportModelAliasesParams{}, false
 		}
-		modelWriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		// 文案硬编码(对齐 routeadmin), 不回 err.Error() —— 防把 DisallowUnknownFields 的 "unknown field X" 字段名暴露。
+		modelWriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 		return registry.BulkImportModelAliasesParams{}, false
 	}
 	if len(params.Aliases) == 0 {

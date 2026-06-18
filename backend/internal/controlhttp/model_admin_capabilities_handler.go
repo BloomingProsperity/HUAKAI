@@ -80,12 +80,16 @@ func parseCapabilitiesBody(w http.ResponseWriter, r *http.Request) (capabilities
 		modelWriteError(w, http.StatusBadRequest, "invalid_json", "request body required")
 		return capabilitiesRequestBody{}, false
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&body); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14))
+	dec.DisallowUnknownFields() // 严格请求契约: 拒未知字段(防字段走私/契约漂移), 与 routeadmin/platformsettings 一致
+	if err := dec.Decode(&body); err != nil {
 		if errors.Is(err, io.EOF) {
 			modelWriteError(w, http.StatusBadRequest, "invalid_json", "request body required")
 			return capabilitiesRequestBody{}, false
 		}
-		modelWriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		// 文案硬编码(对齐 routeadmin), 不回 err.Error() —— DisallowUnknownFields 拒未知字段时 err 含 "unknown field X",
+		// 把请求 schema 字段名回给客户端是无谓的契约暴露。
+		modelWriteError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 		return capabilitiesRequestBody{}, false
 	}
 	if body.MaxOutputTokens != nil && *body.MaxOutputTokens <= 0 {
