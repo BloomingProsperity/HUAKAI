@@ -84,6 +84,29 @@ test('TestBuildNotifySettingsBody_ExactKeySet', () => {
   assert.equal(full.balance_threshold, '5', 'balance_threshold 透传');
 });
 
+// ── extra_emails：builder 输出 + 无条件校验 ──────────────────────────────────
+
+test('TestBuildNotifySettingsBody_ExtraEmails', () => {
+  // 判别：非空 extra_emails 须进 body 且 trim + 去空(对齐后端 normalized + omitempty)。
+  // mutation: builder 漏 extra_emails 分支 → 键缺失 → 红; 不 trim/不过滤空 → 值不符 → 红。
+  const out = buildNotifySettingsBody({ notify_type: 'none', extra_emails: ['a@x.com', '', '  b@x.com  '] });
+  assert.deepEqual(out.extra_emails, ['a@x.com', 'b@x.com'], 'extra_emails trim + 去空后进 body');
+  // 判别：全空/空列表 → 省略键(后端 omitempty，避免发空数组)。
+  assert.ok(!('extra_emails' in buildNotifySettingsBody({ notify_type: 'none', extra_emails: ['', '   '] })), '全空 extra_emails 省略键');
+  assert.ok(!('extra_emails' in buildNotifySettingsBody({ notify_type: 'none' })), 'undefined extra_emails 省略键');
+});
+
+test('TestValidateNotifySettings_ExtraEmails', () => {
+  // 判别：extra_emails 与 notify_type 无关, 即便 none 也校验(后端在 type 分支前无条件校验)。
+  // mutation: 把 extra_emails 校验挪进某个 type 分支/删掉 → none+非法/超量放行 → 红。
+  assert.ok(validateNotifySettings({ notify_type: 'none', extra_emails: ['not-an-email'] }), '非法 extra_emails 即便 none 也应拒');
+  const eleven = Array.from({ length: 11 }, (_, i) => `cc${i}@x.com`);
+  assert.ok(validateNotifySettings({ notify_type: 'none', extra_emails: eleven }), '超过 10 条应拒');
+  // 判别：≤10 且全合法 → 通过; 空串过滤后计数(11 条里有空也按过滤后算)。
+  assert.equal(validateNotifySettings({ notify_type: 'none', extra_emails: ['a@x.com', 'b@x.com'] }), null, '合法 extra_emails 通过');
+  assert.equal(validateNotifySettings({ notify_type: 'email', notification_email: 'u@x.com', extra_emails: ['cc@x.com'] }), null, 'email+合法 extra_emails 通过');
+});
+
 // ── adminUserNotifications.ts 接线：路径(user_id+tenant) + 动词 + builder + validate ──
 
 test('TestEndpoints_Wiring', () => {
