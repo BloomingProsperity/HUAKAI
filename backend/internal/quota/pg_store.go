@@ -98,27 +98,6 @@ func (s *PostgresStore) ListActivePolicies(ctx context.Context, filter PolicyFil
 	return policies, nil
 }
 
-func (s *PostgresStore) ListCurrentWindowsForScope(ctx context.Context, tenantID int64, scopeKind ScopeKind, scopeID string, at time.Time) ([]CurrentWindowRead, error) {
-	q, err := s.queries()
-	if err != nil {
-		return nil, err
-	}
-	rows, err := q.ListCurrentQuotaWindowsForScope(ctx, dbquota.ListCurrentQuotaWindowsForScopeParams{
-		TenantID:  tenantID,
-		ScopeKind: string(scopeKind),
-		ScopeID:   normalizeScopeID(scopeKind, scopeID),
-		AtTime:    pgTimestamptz(at.UTC()),
-	})
-	if err != nil {
-		return nil, err
-	}
-	windows := make([]CurrentWindowRead, 0, len(rows))
-	for _, row := range rows {
-		windows = append(windows, currentWindowReadFromDB(row, at.UTC()))
-	}
-	return windows, nil
-}
-
 func (s *PostgresStore) UpsertWindow(ctx context.Context, input WindowUpsert) (WindowCounter, error) {
 	q, err := s.queries()
 	if err != nil {

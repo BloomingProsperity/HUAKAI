@@ -40,10 +40,11 @@ type quotaStoreCall struct {
 	scopeKind quota.ScopeKind
 	scopeID   string
 	at        time.Time
+	metrics   []quota.Metric
 }
 
-func (s *quotaStoreStub) ListCurrentWindowsForScope(_ context.Context, tenantID int64, scopeKind quota.ScopeKind, scopeID string, at time.Time) ([]quota.CurrentWindowRead, error) {
-	s.calls = append(s.calls, quotaStoreCall{tenantID: tenantID, scopeKind: scopeKind, scopeID: scopeID, at: at})
+func (s *quotaStoreStub) ListCurrentWindowsForScopeMetrics(_ context.Context, tenantID int64, scopeKind quota.ScopeKind, scopeID string, at time.Time, metrics []quota.Metric) ([]quota.CurrentWindowRead, error) {
+	s.calls = append(s.calls, quotaStoreCall{tenantID: tenantID, scopeKind: scopeKind, scopeID: scopeID, at: at, metrics: metrics})
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -126,6 +127,70 @@ func TestMeQuotaStoreErrorIsServiceUnavailable(t *testing.T) {
 	assertMeQuotaStatus(t, rec, http.StatusServiceUnavailable)
 }
 
+// TestMeQuotaMultiMetricWindows guards the F-OPS-001 multi-metric surface: the handler
+// must request the three window-shaped metrics (requests/cost_usd/tokens_estimated),
+// NEVER concurrency (slot-based, deferred), and project each window's metric + dimension
+// value into the response. Fixtures are discriminating — each metric's consumed value is
+// distinct, so dropping the metric projection or collapsing to cost-only goes red.
+// MUTATION: drop `Metric` from windowView -> byMetric keys are "" -> lookups fail -> RED;
+//           pass wrong metrics to the store -> the metrics assertion -> RED.
+func TestMeQuotaMultiMetricWindows(t *testing.T) {
+	user := auth.Identity{TenantID: 7, UserID: 40}
+	scopeID := strconv.FormatInt(user.UserID, 10)
+	store := &quotaStoreStub{rowsByScope: map[string][]quota.CurrentWindowRead{
+		scopeID: {
+			meQuotaWindowMetric(user.TenantID, user.UserID, quota.MetricRequests, "1000", "0", "120", "0", 120),
+			meQuotaWindowMetric(user.TenantID, user.UserID, quota.MetricCostUSD, "10", "0", "3.50", "0", 120),
+			meQuotaWindowMetric(user.TenantID, user.UserID, quota.MetricTokensEstimated, "1000000", "0", "45000", "0", 120),
+		},
+	}}
+	h := NewHandler(Deps{Auth: authStub{identity: user}, Store: store})
+
+	rec := invokeMeQuota(h, "/v1/me/quota")
+	assertMeQuotaStatus(t, rec, http.StatusOK)
+
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if len(body.Items) != 3 {
+		t.Fatalf("items=%d want 3 (requests/cost/tokens); body=%s", len(body.Items), rec.Body.String())
+	}
+	byMetric := map[string]map[string]any{}
+	for _, it := range body.Items {
+		m, _ := it["metric"].(string)
+		byMetric[m] = it
+	}
+	// Each window carries its own metric tag, with a distinct consumed/cap per dimension.
+	assertStringField(t, byMetric["requests"], "consumed", "120")
+	assertStringField(t, byMetric["requests"], "cap", "1000")
+	assertStringField(t, byMetric["cost_usd"], "consumed", "3.5")
+	assertStringField(t, byMetric["tokens_estimated"], "consumed", "45000")
+	assertStringField(t, byMetric["tokens_estimated"], "cap", "1000000")
+
+	// The handler requests exactly the three window-shaped metrics, never concurrency.
+	if len(store.calls) != 1 {
+		t.Fatalf("store calls=%d want 1", len(store.calls))
+	}
+	got := store.calls[0].metrics
+	want := []quota.Metric{quota.MetricRequests, quota.MetricCostUSD, quota.MetricTokensEstimated}
+	if len(got) != len(want) {
+		t.Fatalf("requested metrics=%v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("requested metrics[%d]=%s want %s", i, got[i], want[i])
+		}
+	}
+	for _, m := range got {
+		if m == quota.MetricConcurrency {
+			t.Fatalf("concurrency must not be requested (slot-based, deferred)")
+		}
+	}
+}
+
 func meQuotaWindow(tenantID, userID int64, limit, reserved, settled, overage string, requests int64) quota.CurrentWindowRead {
 	start := time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC)
 	return quota.CurrentWindowRead{
@@ -143,6 +208,12 @@ func meQuotaWindow(tenantID, userID int64, limit, reserved, settled, overage str
 		OverageValue:  mustDecimal(overage),
 		RequestCount:  requests,
 	}
+}
+
+func meQuotaWindowMetric(tenantID, userID int64, metric quota.Metric, limit, reserved, settled, overage string, requests int64) quota.CurrentWindowRead {
+	w := meQuotaWindow(tenantID, userID, limit, reserved, settled, overage, requests)
+	w.Metric = metric
+	return w
 }
 
 func mustDecimal(raw string) decimal.Decimal {

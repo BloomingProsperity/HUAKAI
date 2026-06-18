@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import type { QuotaWindow, QuotaWindowKind } from '@/lib/api/usage';
+import { quotaMetricLabel, quotaWindowKey } from '@/lib/api/quota-window-display';
 
 const WINDOW_LABELS: Record<string, string> = {
   none: '无窗口限制',
@@ -74,12 +75,12 @@ export function QuotaWindowsCard({ windows }: QuotaWindowsCardProps) {
             const ratio = cap > 0 ? consumed / cap : overage ? 1 : 0;
             const pct = Math.min(ratio, 1) * 100;
             return (
-              <div key={w.window_kind}>
+              <div key={quotaWindowKey(w)}>
                 <div className="flex items-end justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold text-accent-900 dark:text-accent-100">
-                        {windowLabel(w.window_kind)}
+                        {quotaMetricLabel(w.metric)} · {windowLabel(w.window_kind)}
                       </span>
                       {overage && <Badge variant="destructive">已超额</Badge>}
                     </div>
