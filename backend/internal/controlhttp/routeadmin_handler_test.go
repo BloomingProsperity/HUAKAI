@@ -29,10 +29,12 @@ func (s routeAdminStubAuth) Resolve(context.Context, *http.Request) (admin.Admin
 type routeAdminStubService struct {
 	called     bool
 	lastCreate routeadmin.CreateInput
+	lastUpdate routeadmin.UpdateInput
 	lastDelAdm int64
 	createFn   func(routeadmin.CreateInput) (routeadmin.Route, error)
 	listFn     func(int64) ([]routeadmin.Route, error)
 	getFn      func(int64, int64) (routeadmin.Route, error)
+	updateFn   func(routeadmin.UpdateInput) (routeadmin.Route, error)
 	deleteFn   func(int64, int64, int64) (routeadmin.Route, error)
 }
 
@@ -57,6 +59,22 @@ func (s *routeAdminStubService) Get(_ context.Context, tenantID, id int64) (rout
 		return s.getFn(tenantID, id)
 	}
 	return routeadmin.Route{ID: id, TenantID: tenantID}, nil
+}
+func (s *routeAdminStubService) Update(_ context.Context, in routeadmin.UpdateInput) (routeadmin.Route, error) {
+	s.called = true
+	s.lastUpdate = in
+	if s.updateFn != nil {
+		return s.updateFn(in)
+	}
+	// 默认回完整 route(全字段回填), 让 handler 测试能断言响应体序列化, 不只看输入透传。
+	mp := 100
+	if in.MatchPriority != nil {
+		mp = *in.MatchPriority
+	}
+	return routeadmin.Route{
+		ID: in.ID, TenantID: in.TenantID, Name: in.Name, UserGroupMatch: in.UserGroupMatch,
+		ModelPatternMatch: in.ModelPatternMatch, PoolGroupID: in.PoolGroupID, MatchPriority: mp, Enabled: true,
+	}, nil
 }
 func (s *routeAdminStubService) Delete(_ context.Context, tenantID, id, adminID int64) (routeadmin.Route, error) {
 	s.called = true
@@ -230,6 +248,117 @@ func TestDelete_UsesAuthenticatedAdminID(t *testing.T) {
 	}
 	if svc.lastDelAdm != 7 {
 		t.Fatalf("delete adminID passed to service = %d, want 7 (authenticated identity)", svc.lastDelAdm)
+	}
+}
+
+// 守 PUT 编辑核心: AdminID 取自已认证身份(4242)、tenant 取自 query(5)、id 取自 path(55), body 字段如实透传。
+// mutation: handler 把 AdminID 写 0、或 tenant 误取 body → lastUpdate 对应字段不符 → 红。
+func TestUpdate_UsesAuthenticatedAdminIDAndTenantFromQuery(t *testing.T) {
+	svc := &routeAdminStubService{}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(4242), Service: svc})
+	defer ts.Close()
+
+	body := `{"name":"premium-claude","user_group_match":"premium","model_pattern_match":"claude-*","pool_group_id":9,"match_priority":5}`
+	status, out := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55?tenant_id=5", body)
+	if status != http.StatusOK {
+		t.Fatalf("update status=%d, want 200", status)
+	}
+	if svc.lastUpdate.AdminID != 4242 {
+		t.Fatalf("AdminID passed to service = %d, want 4242 (authenticated identity)", svc.lastUpdate.AdminID)
+	}
+	if svc.lastUpdate.TenantID != 5 || svc.lastUpdate.ID != 55 {
+		t.Fatalf("tenant/id not from query/path: tenant=%d id=%d, want 5/55", svc.lastUpdate.TenantID, svc.lastUpdate.ID)
+	}
+	if svc.lastUpdate.Name != "premium-claude" || svc.lastUpdate.PoolGroupID != 9 ||
+		svc.lastUpdate.MatchPriority == nil || *svc.lastUpdate.MatchPriority != 5 {
+		t.Fatalf("update input not faithfully forwarded: %+v", svc.lastUpdate)
+	}
+	// 守响应体序列化(端到端): 返回的 route 须含更新后字段。
+	// mutation: routeAdminToRouteView 漏映射某列(如 pool_group_id)或 handler 回旧值 → 该断言红(stub 已回完整 route)。
+	route, ok := out["route"].(map[string]any)
+	if !ok {
+		t.Fatalf("response missing route object: %+v", out)
+	}
+	if route["id"] != float64(55) || route["tenant_id"] != float64(5) || route["name"] != "premium-claude" ||
+		route["user_group_match"] != "premium" || route["model_pattern_match"] != "claude-*" ||
+		route["pool_group_id"] != float64(9) || route["match_priority"] != float64(5) || route["enabled"] != true {
+		t.Fatalf("response route not serialized with updated fields: %+v", route)
+	}
+}
+
+// 守不可经更新走私租户: body 携带 tenant_id (试图跨租户搬移) → 400(DisallowUnknownFields 拒), service 不触达。
+// 这是 PUT 的关键安全属性: 行只能由 path id + query tenant 定位, body 无 tenant_id 字段, 故注入即拒。
+// mutation: updateRouteRequest 加上 tenant_id 字段(或解码去 DisallowUnknownFields) → 走私被静默接受 → 200/svc.called → 红。
+func TestUpdate_RejectsUnknownFieldsBlocksTenantSmuggling(t *testing.T) {
+	svc := &routeAdminStubService{}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(4242), Service: svc})
+	defer ts.Close()
+
+	body := `{"name":"r1","user_group_match":"premium","model_pattern_match":"*","pool_group_id":9,"tenant_id":6}`
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55?tenant_id=5", body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("tenant_id in body status=%d, want 400 (smuggling blocked)", status)
+	}
+	if svc.called {
+		t.Fatal("service must NOT run when body carries tenant_id (cross-tenant move smuggling)")
+	}
+}
+
+// 守 PUT 缺 tenant_id query → 400, 不触达 service。
+// mutation: routeAdminParsePositiveQuery 放行空 → service 以 tenant=0 调用 → 非 400 → 红。
+func TestUpdate_RequiresTenantID(t *testing.T) {
+	svc := &routeAdminStubService{}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(1), Service: svc})
+	defer ts.Close()
+	body := `{"name":"r1","user_group_match":"premium","model_pattern_match":"*","pool_group_id":9}`
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55", body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("update without tenant_id status=%d, want 400", status)
+	}
+	if svc.called {
+		t.Fatal("service must not run when tenant_id is missing")
+	}
+}
+
+// 守越权: 非 platform_admin PUT → 403, 绝不触达 service。
+// mutation: routeAdminResolveAdmin 删 role 检查 → 200 + svc.called → 红。
+func TestUpdate_NonPlatformAdminForbidden(t *testing.T) {
+	svc := &routeAdminStubService{}
+	auth := routeAdminStubAuth{ident: admin.AdminIdentity{TokenID: 9, Role: admin.RoleTenantOperator}}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: auth, Service: svc})
+	defer ts.Close()
+	body := `{"name":"r1","user_group_match":"premium","model_pattern_match":"*","pool_group_id":9}`
+	status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55?tenant_id=5", body)
+	if status != http.StatusForbidden {
+		t.Fatalf("non-admin update status=%d, want 403", status)
+	}
+	if svc.called {
+		t.Fatal("service must NOT be invoked when role check fails")
+	}
+}
+
+// 守 Update 的服务层错误映射: ErrRouteNotFound→404, ErrPoolGroupNotFound→404, ErrDuplicateName→409, ErrInvalidModelPattern→400。
+// mutation: routeAdminWriteRouteError 对应分支落 default → 该 case 非期望码 → 红。
+func TestUpdate_ServiceErrorMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"route not found", routeadmin.ErrRouteNotFound, http.StatusNotFound},
+		{"pool group not found", routeadmin.ErrPoolGroupNotFound, http.StatusNotFound},
+		{"duplicate name", routeadmin.ErrDuplicateName, http.StatusConflict},
+		{"invalid model pattern", routeadmin.ErrInvalidModelPattern, http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		svc := &routeAdminStubService{updateFn: func(routeadmin.UpdateInput) (routeadmin.Route, error) { return routeadmin.Route{}, c.err }}
+		ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(1), Service: svc})
+		body := `{"name":"r1","user_group_match":"premium","model_pattern_match":"*","pool_group_id":9}`
+		status, _ := doRouteAdminReq(t, ts, http.MethodPut, "/v1/admin/routes/55?tenant_id=5", body)
+		ts.Close()
+		if status != c.want {
+			t.Fatalf("%s: status=%d, want %d", c.name, status, c.want)
+		}
 	}
 }
 
