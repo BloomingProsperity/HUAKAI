@@ -7762,6 +7762,47 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/routes/{id}/enabled:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    put:
+      tags: [admin-routes]
+      summary: Enable or disable one routing rule's gate independently of a full update
+      operationId: adminSetRouteEnabled
+      x-huakai-spec-source: [docs/process/plans/2026-05-30-routeadmin-crud-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+                  description: Required; omitting it is rejected (400) so the rule's gate is never silently defaulted. tenant_id in the body is rejected — the route is located by path id within the query tenant scope.
+      responses:
+        '200':
+          description: Routing rule gate updated; the updated row is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/tls-fingerprint-profiles:
     get:
       tags: [admin-tls-fingerprint-profiles]
@@ -10848,6 +10889,105 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/ModelCapabilityBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/model-registry-policy:
+    get:
+      tags: [admin-models]
+      summary: Read a tenant's model-catalog inheritance policy (inherit_global_catalog)
+      operationId: getAdminTenantModelRegistryPolicy
+      description: |
+        Platform-admin read of one tenant's model-registry policy. When the tenant has no
+        policy row the store returns the effective default (inherit_global_catalog=false),
+        aligning with resolve-time semantics, so the endpoint always reports the live value.
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/model_registry_policy_handler.go
+        - backend/internal/registry/tenant_policy_admin.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          description: Target tenant whose catalog-inheritance policy is read.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: The tenant's catalog-inheritance policy (defaulted when no row exists).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [policy]
+                properties:
+                  policy:
+                    type: object
+                    additionalProperties: false
+                    required: [tenant_id, inherit_global_catalog]
+                    properties:
+                      tenant_id: { type: integer, format: int64, minimum: 1 }
+                      inherit_global_catalog: { type: boolean }
+                      updated_at: { type: string, format: date-time }
+                      updated_by_actor: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-models]
+      summary: Set a tenant's inherit_global_catalog flag (bumps that tenant's registry snapshot version)
+      operationId: setAdminTenantModelRegistryPolicy
+      description: |
+        Platform-admin write of one tenant's inherit_global_catalog flag. Granting global-catalog
+        inheritance is a privilege decision owned by the platform (not tenant self-service), so the
+        route sits behind the platform-admin gate. The flag is upserted and the target tenant's
+        model_registry_snapshots version is incremented in the same transaction so client ETags
+        invalidate. The acting admin identity is taken from the authenticated context, never the body.
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/model_registry_policy_handler.go
+        - backend/internal/registry/tenant_policy_admin.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          description: Target tenant whose policy is written.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [inherit_global_catalog]
+              properties:
+                inherit_global_catalog:
+                  type: boolean
+                  description: Required; omitting it is rejected (400) so an already-inheriting tenant is never silently reset to false. tenant_id is carried in the query, not the body.
+      responses:
+        '200':
+          description: Updated policy for the tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [policy]
+                properties:
+                  policy:
+                    type: object
+                    additionalProperties: false
+                    required: [tenant_id, inherit_global_catalog]
+                    properties:
+                      tenant_id: { type: integer, format: int64, minimum: 1 }
+                      inherit_global_catalog: { type: boolean }
+                      updated_at: { type: string, format: date-time }
+                      updated_by_actor: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
