@@ -12888,6 +12888,7 @@ components:
         - window_kind
         - window_seconds
         - mode
+        - priority
         - valid_from
       properties:
         api_key_id: { type: integer, format: int64, minimum: 1 }
@@ -12911,6 +12912,10 @@ components:
         mode:
           type: string
           enum: [enforce, observe, manual_first, disabled]
+        priority:
+          type: integer
+          format: int32
+          description: Resolution tiebreaker; the lowest-priority policy wins when several overlap.
         valid_from: { type: string, format: date-time }
 
     UserAPIKeyGroupUpdateRequest:
