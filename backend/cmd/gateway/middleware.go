@@ -146,7 +146,8 @@ func adminGate(resolver adminIdentityResolver, h http.Handler) http.Handler {
 				"admin_forbidden_scope", "platform_admin role required for global ops surface")
 			return
 		}
-		h.ServeHTTP(w, r)
+		// 把已认证身份注入 context, 供下游 handler 做审计/归属(取代信任请求体的 actor/admin_id 等可伪造字段)。
+		h.ServeHTTP(w, r.WithContext(admin.IdentityToContext(r.Context(), id)))
 	})
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -136,6 +137,61 @@ func TestAdminModelAliasBulkImportRejectsUnknownFields(t *testing.T) {
 	}
 	if store.calls != 0 {
 		t.Fatalf("unknown-field payload touched store: calls=%d", store.calls)
+	}
+}
+
+// 守审计归属不可伪造: body 设 actor:"victim" 也无效, 实际传给 store 的 params.Actor 取自认证身份
+// (admin-token:<TokenID>)。身份经 admin.IdentityToContext 注入(模拟 adminGate 放行后注入)。
+// mutation: handler 不覆盖 actor(信任 body)→ store 收到 "victim" → 红。
+func TestAdminAliasBulkImportActorFromIdentityNotBody(t *testing.T) {
+	store := &adminModelAliasStoreStub{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases/bulk-import",
+		strings.NewReader(`{"aliases":[{"model_id":7,"alias":"gpt-a","scope":"global"}],"actor":"victim","reason":"user note"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(admin.IdentityToContext(req.Context(), admin.AdminIdentity{TokenID: 4242, Role: admin.RolePlatformAdmin}))
+	rec := invokeAdminModelAliasesRequest(t, AdminModelAliasesDeps{Store: store}, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	// actor 取自认证身份, 非 body 'victim'(防伪造)。
+	if store.params.Actor != "admin-token:4242" {
+		t.Fatalf("store params.Actor=%q, want admin-token:4242 (取自认证身份, 非 body 'victim')", store.params.Actor)
+	}
+	// 判别(Reason 保留不变量): Reason 是合法用户备注, 只覆盖 actor 不得连带清掉 reason。
+	// mutation: handler 误覆盖/清空 params.Reason → 此断言红。
+	if store.params.Reason != "user note" {
+		t.Fatalf("store params.Reason=%q, want 'user note' (覆盖 actor 不应动 reason)", store.params.Reason)
+	}
+}
+
+// 守 defensive: 无认证身份注入(异常/未经 gate)时绝不回退去信任 body actor → actor 置空。
+// mutation: handler else 分支保留 body actor → store 收到 "victim" → 红。
+func TestAdminAliasBulkImportActorEmptyWhenNoIdentity(t *testing.T) {
+	store := &adminModelAliasStoreStub{}
+	rec := invokeAdminModelAliases(t, AdminModelAliasesDeps{Store: store},
+		`{"aliases":[{"model_id":7,"alias":"gpt-a","scope":"global"}],"actor":"victim"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	if store.params.Actor != "" {
+		t.Fatalf("no-identity actor=%q, want empty (绝不信任 body)", store.params.Actor)
+	}
+}
+
+// 守 CSV 分支同样覆盖 actor: actor override 在 handler(解析之后)做, 与 JSON/CSV 格式无关。
+// mutation: 把 override 误移进 JSON-only 解析路径 → CSV 分支不再覆盖 → CSV actor 仍是默认/空 → 红。
+func TestAdminAliasBulkImportCSVActorFromIdentity(t *testing.T) {
+	store := &adminModelAliasStoreStub{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases/bulk-import",
+		strings.NewReader("scope,model_id,alias,status\nglobal,7,gpt-a,active\n"))
+	req.Header.Set("Content-Type", "text/csv")
+	req = req.WithContext(admin.IdentityToContext(req.Context(), admin.AdminIdentity{TokenID: 4242, Role: admin.RolePlatformAdmin}))
+	rec := invokeAdminModelAliasesRequest(t, AdminModelAliasesDeps{Store: store}, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if store.params.Actor != "admin-token:4242" {
+		t.Fatalf("CSV 分支 actor=%q, want admin-token:4242 (override 路径无关)", store.params.Actor)
 	}
 }
 

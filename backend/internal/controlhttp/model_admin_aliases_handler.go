@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -43,6 +44,14 @@ func NewAdminModelAliasBulkImportHandler(d AdminModelAliasesDeps) http.HandlerFu
 		params, ok := parseAliasBulkImportBody(w, r)
 		if !ok {
 			return
+		}
+		// 审计归属(actor)一律取自已认证身份, 绝不信任请求体 —— 否则 platform-admin 可在 body 设 actor
+		// 伪造别名导入审计快照的归属(类 routes AdminID-from-identity / modelbinding actor 范式)。adminGate
+		// 已把身份注入 context; 未注入(异常/未经 gate)时置空, 不回退信任 body。Reason 是合法用户备注, 保留 body。
+		if ident, ok := admin.IdentityFromContext(r.Context()); ok {
+			params.Actor = fmt.Sprintf("admin-token:%d", ident.TokenID)
+		} else {
+			params.Actor = ""
 		}
 		results, err := d.Store.BulkImportModelAliases(r.Context(), params)
 		if err != nil {
