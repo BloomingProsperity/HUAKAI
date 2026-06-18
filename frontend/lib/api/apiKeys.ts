@@ -2,7 +2,7 @@
 // 字段形状对齐后端 internal/userkeyhttp/handlers.go（session 鉴权，走 userClient）。
 // 单 key 用量摘要走 /v1/me/keys/{id}/usage-summary
 // （internal/usageanalyticshttp/key_summary_handler.go，同样 session 鉴权）。
-import { userGet, userPost, userDelete } from './userClient';
+import { userGet, userPost, userPatch, userDelete } from './userClient';
 
 // ---- 后端响应类型（snake_case，与 handler JSON 一致） ----
 
@@ -70,6 +70,27 @@ export function createApiKey(req: CreateApiKeyRequest): Promise<CreateApiKeyResp
   if (req.environment) body.environment = req.environment;
   if (req.expires_at) body.expires_at = req.expires_at;
   return userPost<CreateApiKeyResponse>(BASE_PATH, body);
+}
+
+// PATCH /v1/api-keys/{id} 部分更新（handlers.go patchRequest）。所有字段可选。
+// expires_at 三态：省略=不改有效期、""=清成永不过期、RFC3339=设新有效期（详见 api-key-expiry-form.ts）。
+export interface UpdateApiKeyRequest {
+  name?: string;
+  status?: ApiKeyStatus;
+  expires_at?: string;
+}
+
+// PATCH 响应（handlers.go patchResponse）。expires_at 缺省 = 永不过期。
+export interface UpdateApiKeyResponse {
+  api_key_id: number;
+  name: string;
+  status: ApiKeyStatus;
+  expires_at?: string | null;
+}
+
+// 部分更新当前用户自己的一条 key（含延长/调整/清除有效期）。归属由后端 session + (id,tenant,user) 强制。
+export function updateApiKey(id: number, patch: UpdateApiKeyRequest): Promise<UpdateApiKeyResponse> {
+  return userPatch<UpdateApiKeyResponse>(`${BASE_PATH}/${id}`, patch);
 }
 
 // 撤销 key（后端用 DELETE，软删置 status=revoked，幂等）。reason 可选。

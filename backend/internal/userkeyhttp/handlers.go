@@ -228,12 +228,18 @@ func newRevokeHandler(d Deps) http.HandlerFunc {
 type patchRequest struct {
 	Name   *string `json:"name,omitempty"`
 	Status *string `json:"status,omitempty"`
+	// expires_at tri-state (CLAUDE.md #16, sub2api-style):
+	//   absent / JSON null -> nil pointer = leave the deadline unchanged
+	//   empty string ""    -> clear the deadline (key becomes never-expiring)
+	//   RFC3339 string     -> set the deadline to that instant (parse failure -> 400)
+	ExpiresAt *string `json:"expires_at,omitempty"`
 }
 
 type patchResponse struct {
-	APIKeyID int64  `json:"api_key_id"`
-	Name     string `json:"name"`
-	Status   string `json:"status"`
+	APIKeyID  int64      `json:"api_key_id"`
+	Name      string     `json:"name"`
+	Status    string     `json:"status"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 func newPatchHandler(d Deps) http.HandlerFunc {
@@ -255,22 +261,42 @@ func newPatchHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 			return
 		}
+		// Decode the expires_at tri-state into the service's value+clear split.
+		var expiresAt *time.Time
+		var clearExpiry bool
+		if req.ExpiresAt != nil {
+			trimmed := strings.TrimSpace(*req.ExpiresAt)
+			if trimmed == "" {
+				clearExpiry = true
+			} else {
+				t, perr := time.Parse(time.RFC3339, trimmed)
+				if perr != nil {
+					writeError(w, http.StatusBadRequest, "invalid_expires_at",
+						"expires_at must be an RFC3339 timestamp, or empty string to clear")
+					return
+				}
+				expiresAt = &t
+			}
+		}
 		out, err := d.Service.Patch(r.Context(), userkey.PatchRequest{
-			TenantID:  ident.TenantID,
-			UserID:    ident.UserID,
-			APIKeyID:  id,
-			Name:      req.Name,
-			Status:    req.Status,
-			RequestID: requestIDFromReq(r),
+			TenantID:    ident.TenantID,
+			UserID:      ident.UserID,
+			APIKeyID:    id,
+			Name:        req.Name,
+			Status:      req.Status,
+			ExpiresAt:   expiresAt,
+			ClearExpiry: clearExpiry,
+			RequestID:   requestIDFromReq(r),
 		})
 		if err != nil {
 			writeUserKeyError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, patchResponse{
-			APIKeyID: out.APIKeyID,
-			Name:     out.Name,
-			Status:   out.Status,
+			APIKeyID:  out.APIKeyID,
+			Name:      out.Name,
+			Status:    out.Status,
+			ExpiresAt: out.ExpiresAt,
 		})
 	}
 }

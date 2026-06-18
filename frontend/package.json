@@ -35,7 +35,8 @@
     "test:routes-form": "node --experimental-strip-types --test lib/api/routes-form.test.ts",
     "test:model-bindings": "node --experimental-strip-types --test lib/api/modelBindings.test.ts",
     "test:model-capabilities": "node --experimental-strip-types --test lib/api/model-capabilities-form.test.ts",
-    "test:registry-policy": "node --experimental-strip-types --test lib/api/model-registry-policy-form.test.ts"
+    "test:registry-policy": "node --experimental-strip-types --test lib/api/model-registry-policy-form.test.ts",
+    "test:api-key-expiry": "node --experimental-strip-types --test lib/api/api-key-expiry-form.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
