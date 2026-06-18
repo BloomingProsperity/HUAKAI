@@ -14,6 +14,10 @@ type Store interface {
 	// 行不存在/已软删/非本租户 → ErrRouteNotFound; 目标 pool_group 非同租户/已删 → ErrPoolGroupNotFound;
 	// 改名撞同租户另一活路由名 → ErrDuplicateName(排除自身); mid-string 通配在 Service 层已先拒。
 	Update(ctx context.Context, in UpdateInput) (Route, error)
+	// SetEnabled 翻转一条未软删 route 的 enabled 闸并返回更新后快照(独立窄动作, 不碰其它列)。
+	// 停用 → 热路径仲裁排除该路由(subscriptionenforce: AND enabled=true); 启用 → 重新参与。
+	// 行不存在/已软删/非本租户 → ErrRouteNotFound; 幂等: 设成当前值仍命中该行返回快照(不报错)。
+	SetEnabled(ctx context.Context, tenantID, id int64, enabled bool) (Route, error)
 	// SoftDelete 把 route 标记软删(deleted_at=now)并返回删前快照; 不存在/已删返 ErrRouteNotFound。
 	SoftDelete(ctx context.Context, tenantID, id int64) (Route, error)
 }

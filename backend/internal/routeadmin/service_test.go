@@ -410,4 +410,132 @@ func TestNilStore(t *testing.T) {
 	if _, err := svc.Update(context.Background(), UpdateInput{TenantID: 5, ID: 1, Name: "r1", UserGroupMatch: "premium", PoolGroupID: 9}); !errors.Is(err, ErrStoreNotConfigured) {
 		t.Fatalf("nil store update: err=%v, want ErrStoreNotConfigured", err)
 	}
+	if _, err := svc.SetEnabled(context.Background(), 5, 1, false, 77); !errors.Is(err, ErrStoreNotConfigured) {
+		t.Fatalf("nil store set-enabled: err=%v, want ErrStoreNotConfigured", err)
+	}
+}
+
+// 守启停语义 ≠ 软删: 停用后该 route 仍在 List/Get(管理端可见以便再启用), 只是 Enabled=false; 再启用恢复;
+// 且翻转只动 enabled, 其它列(Name/MatchPriority/PoolGroupID/CreatedAt)与 ID/TenantID 全保留。
+// mutation: store.SetEnabled 误写别的列 / 不真翻 enabled → 对应断言红; 若把 SetEnabled 实现成软删 → List 变空 → 红。
+func TestSetEnabled_DisableKeepsRouteListedThenReEnable(t *testing.T) {
+	svc := NewService(NewMemoryStore(), nil)
+	in := baseInput()
+	in.MatchPriority = ptrInt(7)
+	r, err := svc.Create(context.Background(), in) // 新建默认 Enabled=true
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !r.Enabled {
+		t.Fatalf("freshly created route should be enabled, got %+v", r)
+	}
+	// 停用。
+	disabled, err := svc.SetEnabled(context.Background(), 5, r.ID, false, 77)
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if disabled.Enabled {
+		t.Fatal("after SetEnabled(false) route must report Enabled=false")
+	}
+	// 其它列与不可变字段保留(只翻了 enabled): 闭合到全部非 enabled 列, 含 user_group_match。
+	if disabled.Name != "r1" || disabled.UserGroupMatch != "premium" || disabled.ModelPatternMatch != "claude-*" ||
+		disabled.MatchPriority != 7 || disabled.PoolGroupID != 9 ||
+		disabled.ID != r.ID || disabled.TenantID != 5 || !disabled.CreatedAt.Equal(r.CreatedAt) {
+		t.Fatalf("SetEnabled must only flip enabled, other fields changed: %+v (orig %+v)", disabled, r)
+	}
+	// 关键区别于软删: 停用的 route 仍出现在 List 且 Get 可读(管理端要能看到以再启用)。
+	got, _ := svc.List(context.Background(), 5)
+	if len(got) != 1 || got[0].Enabled {
+		t.Fatalf("disabled route must still be listed (not removed like soft-delete) and read enabled=false, got %+v", got)
+	}
+	one, err := svc.Get(context.Background(), 5, r.ID)
+	if err != nil || one.Enabled {
+		t.Fatalf("disabled route must still be gettable with enabled=false: route=%+v err=%v", one, err)
+	}
+	// 再启用恢复。
+	reEnabled, err := svc.SetEnabled(context.Background(), 5, r.ID, true, 77)
+	if err != nil || !reEnabled.Enabled {
+		t.Fatalf("re-enable must restore Enabled=true: route=%+v err=%v", reEnabled, err)
+	}
+}
+
+// 守幂等: 把 enabled 设成当前值不报错, 照常返回快照(与 sub2api schedulable 动作幂等一致)。
+// mutation: 若实现对 same-value 报错/拒绝 → 任一段红。
+func TestSetEnabled_Idempotent(t *testing.T) {
+	svc := NewService(NewMemoryStore(), nil)
+	r, err := svc.Create(context.Background(), baseInput()) // enabled=true
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got, err := svc.SetEnabled(context.Background(), 5, r.ID, true, 77); err != nil || !got.Enabled {
+		t.Fatalf("enable already-enabled must be no-op success: route=%+v err=%v", got, err)
+	}
+	if _, err := svc.SetEnabled(context.Background(), 5, r.ID, false, 77); err != nil {
+		t.Fatalf("first disable: %v", err)
+	}
+	if got, err := svc.SetEnabled(context.Background(), 5, r.ID, false, 77); err != nil || got.Enabled {
+		t.Fatalf("disable already-disabled must be no-op success (enabled=false): route=%+v err=%v", got, err)
+	}
+}
+
+// 守不存在/已软删/跨租户 → ErrRouteNotFound, 且跨租户尝试绝不翻到别租户的行(无越租户启停)。
+// mutation: store.SetEnabled 漏 tenant 谓词 → 跨租户翻转成功 → 末段红; 漏 deleted_at IS NULL → 软删行被启停 → soft-deleted 段红。
+func TestSetEnabled_NotFoundTenantScopedAndSoftDeleted(t *testing.T) {
+	svc := NewService(NewMemoryStore(), nil)
+	r, err := svc.Create(context.Background(), baseInput()) // tenant 5
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.SetEnabled(context.Background(), 5, r.ID+999, false, 77); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("set-enabled missing id: err=%v, want ErrRouteNotFound", err)
+	}
+	// 跨租户: 租户 6 试图停用属租户 5 的行 → not found, 且不得真停用。
+	if _, err := svc.SetEnabled(context.Background(), 6, r.ID, false, 77); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("cross-tenant set-enabled: err=%v, want ErrRouteNotFound (no cross-tenant flip)", err)
+	}
+	if got, _ := svc.Get(context.Background(), 5, r.ID); !got.Enabled {
+		t.Fatalf("cross-tenant attempt must not flip owner's row, enabled=%v want true", got.Enabled)
+	}
+	// 已软删的行不可启停。
+	if _, err := svc.Delete(context.Background(), 5, r.ID, 77); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+	if _, err := svc.SetEnabled(context.Background(), 5, r.ID, true, 77); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("set-enabled on soft-deleted route: err=%v, want ErrRouteNotFound", err)
+	}
+}
+
+// 守必填: tenant<=0 或 id<=0 → ErrInvalidInput, 不触达 store。
+func TestSetEnabled_RejectsMissingRequired(t *testing.T) {
+	svc := NewService(NewMemoryStore(), nil)
+	r, err := svc.Create(context.Background(), baseInput())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.SetEnabled(context.Background(), 0, r.ID, false, 77); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("zero tenant: err=%v, want ErrInvalidInput", err)
+	}
+	if _, err := svc.SetEnabled(context.Background(), 5, 0, false, 77); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("zero id: err=%v, want ErrInvalidInput", err)
+	}
+}
+
+// 守审计: SetEnabled 记一次 RouteUpdated 且 adminID 取自调用方(91); 不误碰 create/delete 计数。
+// mutation: Service.SetEnabled 漏调 audit.RouteUpdated → updated=0 → 红。
+func TestSetEnabled_Audit(t *testing.T) {
+	audit := &capturingAudit{}
+	svc := NewService(NewMemoryStore(), audit)
+	r, err := svc.Create(context.Background(), baseInput())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.SetEnabled(context.Background(), 5, r.ID, false, 91); err != nil {
+		t.Fatalf("set-enabled: %v", err)
+	}
+	if audit.updated != 1 || audit.lastAdmin != 91 {
+		t.Fatalf("after set-enabled: updated=%d admin=%d, want 1/91", audit.updated, audit.lastAdmin)
+	}
+	if audit.created != 1 || audit.deleted != 0 {
+		t.Fatalf("set-enabled must not bump create/delete counters: created=%d deleted=%d", audit.created, audit.deleted)
+	}
 }

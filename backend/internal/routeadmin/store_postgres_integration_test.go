@@ -221,3 +221,89 @@ func TestPG_RouteUpdate(t *testing.T) {
 		t.Fatalf("update soft-deleted route: err=%v, want ErrRouteNotFound (deleted_at IS NULL excludes it)", err)
 	}
 }
+
+// TestPG_RouteSetEnabled 守真 PG 下启停窄动作: 翻 enabled + updated_at bump + 只动 enabled(其它列保留) +
+// 停用 ≠ 软删(仍在 List/Get) + 幂等 + 跨租户拒(无越租户翻转) + 软删行拒翻。
+// 判别:
+//   - SetEnabled SET 误带别的列 → 该列被改 → 保留断言红。
+//   - SetEnabled 实现成软删/把行移出 List → List 变空 → disable≠softdelete 断言红。
+//   - WHERE 漏 tenant 谓词 → 跨租户翻转成功 → 红(越租户=安全洞)。
+//   - WHERE 漏 deleted_at IS NULL → 软删行被复活翻转 → 红。
+func TestPG_RouteSetEnabled(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	sfx := uuid.NewString()
+
+	tenantA := seedTenant(t, ctx, pool, "ea-"+sfx)
+	tenantB := seedTenant(t, ctx, pool, "eb-"+sfx)
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM routes WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
+		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
+		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id IN ($1,$2)`, tenantA, tenantB)
+	})
+	pgA := seedPoolGroup(t, ctx, pool, tenantA, "pgA-"+sfx)
+
+	store := NewPostgresStore(pool)
+	svc := NewService(store, nil)
+
+	created, err := svc.Create(ctx, CreateInput{TenantID: tenantA, Name: "e1-" + sfx, UserGroupMatch: "premium", ModelPatternMatch: "claude-*", PoolGroupID: pgA, MatchPriority: ptrInt(7), AdminID: 1})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !created.Enabled {
+		t.Fatalf("freshly created route should be enabled, got %+v", created)
+	}
+
+	// 停用: enabled→false, 只动 enabled(name/pattern/pool/prio 保留), updated_at bump。
+	disabled, err := svc.SetEnabled(ctx, tenantA, created.ID, false, 9)
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if disabled.Enabled {
+		t.Fatal("after disable route must report Enabled=false")
+	}
+	if disabled.Name != created.Name || disabled.UserGroupMatch != created.UserGroupMatch ||
+		disabled.ModelPatternMatch != "claude-*" || disabled.PoolGroupID != pgA || disabled.MatchPriority != 7 ||
+		!disabled.CreatedAt.Equal(created.CreatedAt) {
+		t.Fatalf("SetEnabled must only flip enabled, other columns changed: %+v (orig %+v)", disabled, created)
+	}
+	if !disabled.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("updated_at not bumped on set-enabled: created=%v disabled=%v", created.UpdatedAt, disabled.UpdatedAt)
+	}
+
+	// 区别于软删: 停用的 route 仍在 List 且 Get 可读(enabled=false)。
+	la, _ := svc.List(ctx, tenantA)
+	if len(la) != 1 || la[0].Enabled {
+		t.Fatalf("disabled route must remain listed with enabled=false (not removed like soft-delete): %+v", la)
+	}
+	if one, err := svc.Get(ctx, tenantA, created.ID); err != nil || one.Enabled {
+		t.Fatalf("disabled route must remain gettable enabled=false: route=%+v err=%v", one, err)
+	}
+
+	// 幂等: 再停用一次仍 ok。
+	if again, err := svc.SetEnabled(ctx, tenantA, created.ID, false, 9); err != nil || again.Enabled {
+		t.Fatalf("disable already-disabled must be no-op success: route=%+v err=%v", again, err)
+	}
+
+	// 再启用恢复。
+	if re, err := svc.SetEnabled(ctx, tenantA, created.ID, true, 9); err != nil || !re.Enabled {
+		t.Fatalf("re-enable must restore Enabled=true: route=%+v err=%v", re, err)
+	}
+
+	// 跨租户: tenantB 试图翻 tenantA 的行 → ErrRouteNotFound, 且不得真翻。
+	if _, err := svc.SetEnabled(ctx, tenantB, created.ID, false, 9); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("cross-tenant set-enabled: err=%v, want ErrRouteNotFound (no cross-tenant flip)", err)
+	}
+	if got, _ := svc.Get(ctx, tenantA, created.ID); !got.Enabled {
+		t.Fatalf("cross-tenant attempt must not flip owner's row, enabled=%v want true", got.Enabled)
+	}
+
+	// 软删后再翻 → ErrRouteNotFound(WHERE deleted_at IS NULL 排除已删行)。
+	if _, err := svc.Delete(ctx, tenantA, created.ID, 2); err != nil {
+		t.Fatalf("soft-delete for set-enabled test: %v", err)
+	}
+	if _, err := svc.SetEnabled(ctx, tenantA, created.ID, true, 9); !errors.Is(err, ErrRouteNotFound) {
+		t.Fatalf("set-enabled on soft-deleted route: err=%v, want ErrRouteNotFound (deleted_at IS NULL excludes it)", err)
+	}
+}
