@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,37 @@ func TestSystemHealthDBFailure(t *testing.T) {
 	}
 	if resp.Status != TopLevelStatusUnhealthy {
 		t.Errorf("status=%q want unhealthy when DB fails", resp.Status)
+	}
+}
+
+// TestSystemHealthRuntimeSnapshot guards the live runtime resource snapshot: the 200
+// response must carry a populated runtime block read from the Go runtime at request time.
+// MUTATION: drop `Runtime: collectRuntimeInfo()` from the handler -> the runtime block is
+// the zero value (go_version="", num_goroutine=0, heap_alloc_bytes=0) -> the three
+// assertions below go RED. Fixtures use live runtime invariants (go-prefixed version,
+// >=1 goroutine, >0 heap) that the zero value cannot satisfy.
+func TestSystemHealthRuntimeSnapshot(t *testing.T) {
+	h := NewSystemHealthHandler(&fakeHealthSource{chTotal: 1})
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodGet, "/v1/admin/system/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	var resp HealthResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.HasPrefix(resp.Runtime.GoVersion, "go") {
+		t.Errorf("runtime.go_version=%q want a go… version (handler omitted the runtime snapshot?)", resp.Runtime.GoVersion)
+	}
+	if resp.Runtime.NumGoroutine < 1 {
+		t.Errorf("runtime.num_goroutine=%d want >=1 (the serving goroutine alone)", resp.Runtime.NumGoroutine)
+	}
+	if resp.Runtime.HeapAllocBytes == 0 {
+		t.Errorf("runtime.heap_alloc_bytes=0 want >0 (live heap)")
+	}
+	if resp.Runtime.UptimeSeconds < 0 {
+		t.Errorf("runtime.uptime_seconds=%d want >=0", resp.Runtime.UptimeSeconds)
 	}
 }
 
