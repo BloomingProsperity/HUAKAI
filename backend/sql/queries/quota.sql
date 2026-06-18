@@ -34,7 +34,10 @@ ORDER BY priority ASC, id ASC
 FOR UPDATE;
 
 -- name: ListCurrentQuotaWindowsForScope :many
--- Subscription progress read projection: active cost_usd policies for one tenant/scope plus the current window counters.
+-- Active quota-window read projection: policies for one tenant/scope filtered to the
+-- requested metrics, plus the current window counters. Cost-only callers (subscription
+-- progress, key-control) pass {cost_usd} to preserve their original behaviour; the
+-- self-service /quota read passes the window-shaped metrics (requests/cost_usd/tokens).
 SELECT
     qp.tenant_id,
     qp.id AS policy_id,
@@ -68,7 +71,7 @@ WHERE qp.tenant_id = sqlc.arg(tenant_id)::bigint
   AND qp.mode <> 'disabled'
   AND qp.scope_kind = sqlc.arg(scope_kind)::text
   AND qp.scope_id = sqlc.arg(scope_id)::text
-  AND qp.metric = 'cost_usd'
+  AND qp.metric = ANY(sqlc.arg(metrics)::text[])
   AND qp.valid_from <= sqlc.arg(at_time)::timestamptz
   AND (qp.valid_until IS NULL OR qp.valid_until > sqlc.arg(at_time)::timestamptz)
 ORDER BY

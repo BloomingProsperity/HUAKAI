@@ -874,7 +874,7 @@ WHERE qp.tenant_id = $2::bigint
   AND qp.mode <> 'disabled'
   AND qp.scope_kind = $3::text
   AND qp.scope_id = $4::text
-  AND qp.metric = 'cost_usd'
+  AND qp.metric = ANY($5::text[])
   AND qp.valid_from <= $1::timestamptz
   AND (qp.valid_until IS NULL OR qp.valid_until > $1::timestamptz)
 ORDER BY
@@ -893,6 +893,7 @@ type ListCurrentQuotaWindowsForScopeParams struct {
 	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
 	ScopeKind string             `db:"scope_kind" json:"scope_kind"`
 	ScopeID   string             `db:"scope_id" json:"scope_id"`
+	Metrics   []string           `db:"metrics" json:"metrics"`
 }
 
 type ListCurrentQuotaWindowsForScopeRow struct {
@@ -919,13 +920,17 @@ type ListCurrentQuotaWindowsForScopeRow struct {
 	Version       int32              `db:"version" json:"version"`
 }
 
-// Subscription progress read projection: active cost_usd policies for one tenant/scope plus the current window counters.
+// Active quota-window read projection: policies for one tenant/scope filtered to the
+// requested metrics, plus the current window counters. Cost-only callers (subscription
+// progress, key-control) pass {cost_usd} to preserve their original behaviour; the
+// self-service /quota read passes the window-shaped metrics (requests/cost_usd/tokens).
 func (q *Queries) ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListCurrentQuotaWindowsForScopeParams) ([]ListCurrentQuotaWindowsForScopeRow, error) {
 	rows, err := q.db.Query(ctx, listCurrentQuotaWindowsForScope,
 		arg.AtTime,
 		arg.TenantID,
 		arg.ScopeKind,
 		arg.ScopeID,
+		arg.Metrics,
 	)
 	if err != nil {
 		return nil, err
