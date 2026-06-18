@@ -363,6 +363,7 @@ func quotaResultToSet(apiKeyID int64, row quotaPolicyRow) SetKeyQuotaResult {
 		WindowKind:    row.WindowKind,
 		WindowSeconds: row.WindowSeconds,
 		Mode:          row.Mode,
+		Priority:      row.Priority,
 		ValidFrom:     row.ValidFrom,
 	}
 }
@@ -378,6 +379,7 @@ func quotaViewFromRow(apiKeyID int64, row quotaPolicyRow) KeyQuotaView {
 		WindowKind:    row.WindowKind,
 		WindowSeconds: row.WindowSeconds,
 		Mode:          row.Mode,
+		Priority:      row.Priority,
 		ValidFrom:     row.ValidFrom,
 	}
 }
