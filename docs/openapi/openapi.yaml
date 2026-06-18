@@ -17373,8 +17373,10 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/mequotahttp/handler.go
-        - backend/internal/quota/pg_store.go
+        - backend/internal/quota/pg_store_window_reads.go
+        - backend/internal/quota/pg_store_map.go
       required:
+        - metric
         - window_kind
         - cap
         - consumed
@@ -17384,12 +17386,18 @@ components:
         - window_start
         - window_end
       properties:
+        metric:
+          type: string
+          description: >-
+            Which quota dimension this window measures. Concurrency is excluded (slot-based,
+            not a window-accumulation counter).
+          enum: [requests, cost_usd, tokens_estimated]
         window_kind:
           type: string
           enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual]
         cap:
           type: string
-          description: 'numeric(20,8) cost_usd limit rendered as a string.'
+          description: "numeric(20,8) limit for this window's metric, rendered as a string."
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         consumed:
           type: string
@@ -17401,7 +17409,7 @@ components:
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         overage:
           type: string
-          description: 'Current cost_usd overage counter rendered as a string.'
+          description: "Current overage counter for this window's metric, rendered as a string."
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         request_count: { type: integer, format: int64, minimum: 0 }
         window_start: { type: string, format: date-time }

@@ -38,7 +38,10 @@ type Querier interface {
 	// 约束: 所有读写定位都显式带 tenant_id, 防跨租户误读/误改。
 	// Reserve 前按租户、scope、metric 取当前可用策略; scopes 为 [{"kind": "...", "id": "..."}]。
 	ListActiveQuotaPoliciesForScopes(ctx context.Context, arg ListActiveQuotaPoliciesForScopesParams) ([]ListActiveQuotaPoliciesForScopesRow, error)
-	// Subscription progress read projection: active cost_usd policies for one tenant/scope plus the current window counters.
+	// Active quota-window read projection: policies for one tenant/scope filtered to the
+	// requested metrics, plus the current window counters. Cost-only callers (subscription
+	// progress, key-control) pass {cost_usd} to preserve their original behaviour; the
+	// self-service /quota read passes the window-shaped metrics (requests/cost_usd/tokens).
 	ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListCurrentQuotaWindowsForScopeParams) ([]ListCurrentQuotaWindowsForScopeRow, error)
 	// 租户内领取到期 job; 后续切片 B 决定 worker 调度粒度。
 	ListDueQuotaReconciliationJobs(ctx context.Context, arg ListDueQuotaReconciliationJobsParams) ([]ListDueQuotaReconciliationJobsRow, error)

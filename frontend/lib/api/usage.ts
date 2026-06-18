@@ -42,7 +42,12 @@ export type QuotaWindowKind =
   | 'calendar_month'
   | (string & {});
 
+// 后端 /quota 现按 metric 各返一个窗口（requests/cost_usd/tokens_estimated）。
+// concurrency 不在内（slot 模型，非窗口累积）。
+export type QuotaMetric = 'requests' | 'cost_usd' | 'tokens_estimated' | (string & {});
+
 export interface QuotaWindow {
+  metric: QuotaMetric;
   window_kind: QuotaWindowKind;
   cap: string;
   consumed: string;

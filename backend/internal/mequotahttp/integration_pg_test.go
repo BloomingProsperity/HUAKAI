@@ -80,17 +80,26 @@ func (f *meQuotaFixture) seedUser(tenantID int64, label string) int64 {
 
 func (f *meQuotaFixture) seedQuotaWindow(tenantID, userID int64, at time.Time, limit, reserved, settled string) {
 	f.t.Helper()
+	f.seedQuotaWindowMetric(tenantID, userID, "cost_usd", at, limit, reserved, settled)
+}
+
+func (f *meQuotaFixture) seedQuotaWindowMetric(tenantID, userID int64, metric string, at time.Time, limit, reserved, settled string) {
+	f.t.Helper()
+	f.seedScopeQuotaWindowMetric(tenantID, "user", strconv.FormatInt(userID, 10), metric, at, limit, reserved, settled)
+}
+
+func (f *meQuotaFixture) seedScopeQuotaWindowMetric(tenantID int64, scopeKind, scopeID, metric string, at time.Time, limit, reserved, settled string) {
+	f.t.Helper()
 	var policyID int64
-	scopeID := strconv.FormatInt(userID, 10)
 	if err := f.pool.QueryRow(f.ctx, `
 INSERT INTO quota_policies (
 	tenant_id, scope_kind, scope_id, metric, window_kind, window_seconds,
 	limit_value, burst_value, mode, priority, enabled, valid_from, valid_until
 ) VALUES (
-	$1, 'user', $2, 'cost_usd', 'calendar_day', 0,
-	$3::numeric(20,8), 0, 'enforce', 10, true, $4, $5
-) RETURNING id`, tenantID, scopeID, limit, at.Add(-time.Hour), at.Add(24*time.Hour)).Scan(&policyID); err != nil {
-		f.t.Fatalf("seed quota policy: %v", err)
+	$1, $2, $3, $4, 'calendar_day', 0,
+	$5::numeric(20,8), 0, 'enforce', 10, true, $6, $7
+) RETURNING id`, tenantID, scopeKind, scopeID, metric, limit, at.Add(-time.Hour), at.Add(24*time.Hour)).Scan(&policyID); err != nil {
+		f.t.Fatalf("seed quota policy (%s/%s): %v", scopeKind, metric, err)
 	}
 	start, end, ok := quota.ComputeWindow(quota.WindowCalendarDay, 0, at)
 	if !ok {
@@ -104,7 +113,7 @@ INSERT INTO quota_windows (
 	$1, $2, $3, $4, $5::numeric(20,8),
 	$6::numeric(20,8), 0, 9
 )`, tenantID, policyID, start, end, reserved, settled); err != nil {
-		f.t.Fatalf("seed quota window: %v", err)
+		f.t.Fatalf("seed quota window (%s/%s): %v", scopeKind, metric, err)
 	}
 }
 
@@ -156,4 +165,112 @@ func TestMeQuotaSelfScope(t *testing.T) {
 	if strings.Contains(rec.Body.String(), `"99"`) {
 		t.Fatalf("response leaked user B quota window: %s", rec.Body.String())
 	}
+}
+
+// TestMeQuotaMultiMetricWindows_Integration is the end-to-end F-OPS-001 proof against a
+// real DB: a user with requests + cost_usd + tokens_estimated policies sees all three
+// windows tagged by metric. It also guards "不能偏移": the cost-only store method that
+// subscription/key-control depend on still returns ONLY cost_usd with the other policies
+// present.
+// MUTATION: revert the query filter to a single metric -> the multi-metric read returns
+//   <3 -> RED; widen the cost-only method's metric set -> it returns >1 -> RED.
+func TestMeQuotaMultiMetricWindows_Integration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openMeQuotaPool(t, ctx)
+	f := newMeQuotaFixture(t, ctx, pool)
+	at := time.Now().UTC()
+	f.seedQuotaWindowMetric(f.tenantA, f.userA, "requests", at, "1000", "0", "120")
+	f.seedQuotaWindowMetric(f.tenantA, f.userA, "cost_usd", at, "10", "0", "3.5")
+	f.seedQuotaWindowMetric(f.tenantA, f.userA, "tokens_estimated", at, "1000000", "0", "45000")
+
+	// End-to-end: the handler returns all three windows, each tagged by its metric.
+	h := NewHandler(Deps{
+		Auth:  authStub{identity: auth.Identity{TenantID: f.tenantA, UserID: f.userA}},
+		Store: quota.NewPostgresStore(pool),
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/me/quota?scope_id="+strconv.FormatInt(f.userA, 10), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	gotCap := map[string]any{}
+	for _, it := range body.Items {
+		m, _ := it["metric"].(string)
+		gotCap[m] = it["cap"]
+	}
+	for metric, wantCap := range map[string]string{"requests": "1000", "cost_usd": "10", "tokens_estimated": "1000000"} {
+		if gotCap[metric] != wantCap {
+			t.Fatalf("metric %s cap=%v want %q; body=%s", metric, gotCap[metric], wantCap, rec.Body.String())
+		}
+	}
+
+	// 不能偏移: the cost-only store method (subscription progress + key-control) must still
+	// return ONLY the cost_usd window despite the requests/tokens policies now existing.
+	store := quota.NewPostgresStore(pool)
+	scopeID := strconv.FormatInt(f.userA, 10)
+	costOnly, err := store.ListCurrentWindowsForScope(ctx, f.tenantA, quota.ScopeUser, scopeID, at)
+	if err != nil {
+		t.Fatalf("cost-only read: %v", err)
+	}
+	if len(costOnly) != 1 || costOnly[0].Metric != quota.MetricCostUSD {
+		t.Fatalf("cost-only method returned %d windows (%v); must stay cost_usd-only", len(costOnly), metricsOf(costOnly))
+	}
+	multi, err := store.ListCurrentWindowsForScopeMetrics(ctx, f.tenantA, quota.ScopeUser, scopeID, at,
+		[]quota.Metric{quota.MetricRequests, quota.MetricCostUSD, quota.MetricTokensEstimated})
+	if err != nil {
+		t.Fatalf("multi-metric read: %v", err)
+	}
+	if len(multi) != 3 {
+		t.Fatalf("multi-metric method returned %d windows want 3 (%v)", len(multi), metricsOf(multi))
+	}
+}
+
+// TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly pins the "不能偏移" invariant at the
+// MONEY-BEARING api_key scope. key-control's UsedUSD (userkeycontrols/key_control_service.go)
+// calls ListCurrentWindowsForScope with ScopeAPIKey and sums settled+reserved over EVERY
+// returned window with no Go-side metric filter — so if the cost-only method ever widened to
+// non-cost metrics, UsedUSD would be corrupted (a request count + a token count added to USD).
+// The ScopeUser guard in the multi-metric test above does NOT cover this scope.
+// MUTATION: widen the cost-only metric set in pg_store_window_reads.go to include
+//   requests/tokens -> this returns 3 windows at the api_key scope -> RED.
+func TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openMeQuotaPool(t, ctx)
+	f := newMeQuotaFixture(t, ctx, pool)
+	at := time.Now().UTC()
+	// quota scope_id is free text and normalizeScopeID is identity for api_key, so an
+	// arbitrary key id needs no real api_keys row. Seed all three metrics at THIS scope.
+	const keyScope = "777"
+	f.seedScopeQuotaWindowMetric(f.tenantA, "api_key", keyScope, "requests", at, "1000", "0", "120")
+	f.seedScopeQuotaWindowMetric(f.tenantA, "api_key", keyScope, "cost_usd", at, "10", "0", "3.5")
+	f.seedScopeQuotaWindowMetric(f.tenantA, "api_key", keyScope, "tokens_estimated", at, "1000000", "0", "45000")
+
+	store := quota.NewPostgresStore(pool)
+	costOnly, err := store.ListCurrentWindowsForScope(ctx, f.tenantA, quota.ScopeAPIKey, keyScope, at)
+	if err != nil {
+		t.Fatalf("cost-only read at api_key scope: %v", err)
+	}
+	if len(costOnly) != 1 || costOnly[0].Metric != quota.MetricCostUSD {
+		t.Fatalf("cost-only method at api_key scope returned %d windows (%v); key-control UsedUSD must see cost_usd ONLY", len(costOnly), metricsOf(costOnly))
+	}
+	// The single window is the cost row (settled 3.5), not a count row — proves no metric mixing.
+	if costOnly[0].SettledValue.String() != "3.5" {
+		t.Fatalf("cost window settled=%s want 3.5 (a count row would be 120/45000)", costOnly[0].SettledValue.String())
+	}
+}
+
+func metricsOf(rows []quota.CurrentWindowRead) []quota.Metric {
+	out := make([]quota.Metric, len(rows))
+	for i, r := range rows {
+		out[i] = r.Metric
+	}
+	return out
 }
