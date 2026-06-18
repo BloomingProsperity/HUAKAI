@@ -9,12 +9,15 @@ import test from 'node:test';
 import {
   buildAliasBulkBody,
   buildCapabilitiesBody,
+  buildCapabilityBindingBody,
   modelAdminErrorMessage,
   validateAliasBulk,
   validateAliasRow,
   validateCapabilitiesInput,
+  validateCapabilityBinding,
   type AliasRow,
   type CapabilitiesInput,
+  type CapabilityBindingInput,
 } from './model-capabilities-form.ts';
 
 const ROOT = process.cwd();
@@ -118,6 +121,45 @@ test('TestBuildAliasBulk_WhitespaceOptionalsOmitted', () => {
   assert.equal(row.alias, 'a', 'alias 仍在');
 });
 
+// ── validateCapabilityBinding: 镜像后端 upsertModelCapabilityBinding 形态前置校验 ──
+test('TestValidateCapabilityBinding', () => {
+  const ok: CapabilityBindingInput = { scope: 'tenant', capability: 'vision', enabled: true, tenant_id: 7 };
+  assert.equal(validateCapabilityBinding(ok), null, '合法绑定应通过');
+  // 判别: 非法 scope 须拒。
+  assert.ok(validateCapabilityBinding({ ...ok, scope: 'weird' }), '非法 scope 应拒');
+  // 判别: tenant scope 缺 tenant_id 须拒。
+  assert.ok(validateCapabilityBinding({ scope: 'tenant', capability: 'vision', enabled: true }), 'tenant scope 缺 tenant_id 应拒');
+  // 判别: global scope 不需要 tenant_id → 通过。
+  assert.equal(validateCapabilityBinding({ scope: 'global', capability: 'vision', enabled: false }), null, 'global scope 无需 tenant_id');
+  // 判别: 空 capability 须拒。
+  assert.ok(validateCapabilityBinding({ ...ok, capability: '  ' }), '空 capability 应拒');
+  // 判别: 省略 scope → 默认 tenant, 仍需 tenant_id。
+  assert.ok(validateCapabilityBinding({ scope: '', capability: 'vision', enabled: true } as CapabilityBindingInput), '省略 scope 默认 tenant 仍需 tenant_id');
+});
+
+// ── buildCapabilityBindingBody: 精确 key-set, 无 source, enabled 永远带 ────
+test('TestBuildCapabilityBindingBody', () => {
+  // 判别(安全): body 绝不含 source —— source 服务端强制 operator, 客户端不得构造它(防伪装 vendor-sync)。
+  // mutation: builder 加 source 键 → 此断言红。
+  const body = buildCapabilityBindingBody({ scope: 'global', capability: 'vision', enabled: false });
+  assert.ok(!('source' in body), 'body 绝不含 source(服务端强制 operator)');
+  // 判别(footgun): enabled 永远显式带 —— 即便 false(省略后端会按零值静默翻 disabled)。fixture 用 false 防硬编码 true 假绿。
+  assert.ok('enabled' in body, 'enabled 永远显式带');
+  assert.equal(body.enabled, false, 'enabled=false 透传(非省略)');
+  assert.equal(body.scope, 'global', 'scope 透传');
+  assert.equal(body.capability, 'vision', 'capability 透传');
+  // 判别: 精确 key-set(无 source); 省略可选项不出现。
+  assert.deepEqual(Object.keys(body).sort(), ['capability', 'enabled', 'scope'], '最小 key-set 仅 scope/capability/enabled');
+  // 判别: 给定可选项精确附带。
+  const full = buildCapabilityBindingBody({ scope: 'tenant', capability: 'reasoning', enabled: true, tenant_id: 7, capability_value: 'high', capability_params: { levels: ['low', 'high'] } });
+  assert.deepEqual(Object.keys(full).sort(), ['capability', 'capability_params', 'capability_value', 'enabled', 'scope', 'tenant_id'], 'full key-set');
+  assert.equal(full.tenant_id, 7, 'tenant_id 透传');
+  assert.equal(full.capability_value, 'high', 'capability_value 透传');
+  // 判别: capability_params 值也须原样透传(与 capability_value 对称, 防 builder 映射成空/错对象)。
+  // mutation: builder 把 capability_params 映射成 {} → 此断言红。
+  assert.deepEqual(full.capability_params, { levels: ['low', 'high'] }, 'capability_params 值透传');
+});
+
 // ── modelAdminErrorMessage ──────────────────────────────────────────────
 test('TestModelAdminErrorMessage', () => {
   for (const code of ['invalid_model_id', 'model_not_found', 'invalid_aliases', 'invalid_capability', 'gateway_not_configured', 'model_admin_store_failed']) {
@@ -131,7 +173,9 @@ test('TestEndpoints_Paths', () => {
   assert.match(bodyAfter('const BASE'), /'\/v1\/admin\/models'/, 'BASE = /v1/admin/models');
   assert.match(bodyAfter('export function updateModelCapabilities'), /\$\{BASE\}\/\$\{modelId\}\/capabilities`/, 'capabilities 路径 BASE/{id}/capabilities');
   assert.match(bodyAfter('export function bulkImportModelAliases'), /\$\{BASE\}\/aliases\/bulk-import`/, 'bulk-import 路径 BASE/aliases/bulk-import');
-  assert.match(bodyAfter('export function getModelCapabilityBindings'), /\$\{BASE\}\/\$\{modelId\}\/capability-bindings`/, 'bindings 路径 BASE/{id}/capability-bindings');
+  assert.match(bodyAfter('export function getModelCapabilityBindings'), /\$\{BASE\}\/\$\{modelId\}\/capability-bindings`/, 'bindings GET 路径 BASE/{id}/capability-bindings');
+  // 判别: upsert 写端点与 GET 同路径(后端同路径不同方法), 路径写错 → 命中错端点。
+  assert.match(bodyAfter('export function upsertModelCapabilityBinding'), /\$\{BASE\}\/\$\{modelId\}\/capability-bindings`/, 'binding upsert 路径 BASE/{id}/capability-bindings');
 });
 
 test('TestEndpoints_VerbsAndBuilders', () => {
@@ -145,4 +189,8 @@ test('TestEndpoints_VerbsAndBuilders', () => {
   assert.match(bodyAfter('export function updateModelCapabilities'), /buildCapabilitiesBody\(input\)/, 'capabilities 用 builder');
   assert.match(bodyAfter('export function bulkImportModelAliases'), /validateAliasBulk\(rows\)/, 'bulk-import validate-first');
   assert.match(bodyAfter('export function bulkImportModelAliases'), /buildAliasBulkBody\(rows, reason\)/, 'bulk-import 用 builder');
+  // 判别: binding upsert 用 PUT(adminPut) + validate-first + builder(漏 builder 则可能漏掉 source 守卫/key-set 失控)。
+  assert.match(bodyAfter('export function upsertModelCapabilityBinding'), /adminPut</, 'binding upsert 用 PUT');
+  assert.match(bodyAfter('export function upsertModelCapabilityBinding'), /validateCapabilityBinding\(input\)/, 'binding upsert validate-first');
+  assert.match(bodyAfter('export function upsertModelCapabilityBinding'), /buildCapabilityBindingBody\(input\)/, 'binding upsert 用 builder');
 });
