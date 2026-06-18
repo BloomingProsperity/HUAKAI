@@ -71,6 +71,44 @@ func (m *MemoryStore) Create(_ context.Context, in CreateInput) (Route, error) {
 	return r, nil
 }
 
+func (m *MemoryStore) Update(_ context.Context, in UpdateInput) (Route, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 定位未软删的本租户行(不存在/已删/跨租户 → not found, 与 postgres WHERE tenant+id+未删 一致)。
+	r, ok := m.routes[in.ID]
+	if !ok || m.deleted[in.ID] || r.TenantID != in.TenantID {
+		return Route{}, ErrRouteNotFound
+	}
+	// 目标 pool_group 归属校验(与 Create 同); 先于改名冲突判 —— 与 postgres WHERE EXISTS 失败优先于 unique 违反一致。
+	if m.poolGroups != nil {
+		if owner, ok := m.poolGroups[in.PoolGroupID]; !ok || owner != in.TenantID {
+			return Route{}, ErrPoolGroupNotFound
+		}
+	}
+	// 改名撞同租户另一活路由名 → 冲突; 排除自身(同 id 保持原名不算撞)。
+	for id, other := range m.routes {
+		if m.deleted[id] || id == in.ID {
+			continue
+		}
+		if other.TenantID == in.TenantID && other.Name == in.Name {
+			return Route{}, ErrDuplicateName
+		}
+	}
+	mp := 100
+	if in.MatchPriority != nil {
+		mp = *in.MatchPriority
+	}
+	// 全替换可编辑字段; 保留 ID/TenantID/Enabled/CreatedAt, bump UpdatedAt。
+	r.Name = in.Name
+	r.UserGroupMatch = in.UserGroupMatch
+	r.ModelPatternMatch = in.ModelPatternMatch
+	r.PoolGroupID = in.PoolGroupID
+	r.MatchPriority = mp
+	r.UpdatedAt = m.now
+	m.routes[in.ID] = r
+	return r, nil
+}
+
 func (m *MemoryStore) List(_ context.Context, tenantID int64) ([]Route, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

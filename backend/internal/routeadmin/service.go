@@ -46,6 +46,35 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Route, error) {
 	return r, nil
 }
 
+// Update 规范化并校验入参后全替换一条 route 的可编辑字段(PUT 语义)。
+// 校验顺序与 Create 一致, 保证非法输入绝不落库: 必填(tenant/id/name/user_group/pool_group)
+// → match_priority 非负 → model_pattern 形态。adminID 仅用于审计归属。
+func (s *Service) Update(ctx context.Context, in UpdateInput) (Route, error) {
+	if s == nil || s.store == nil {
+		return Route{}, ErrStoreNotConfigured
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.UserGroupMatch = strings.TrimSpace(in.UserGroupMatch)
+	in.ModelPatternMatch = strings.TrimSpace(in.ModelPatternMatch)
+	if in.TenantID <= 0 || in.ID <= 0 || in.Name == "" || in.UserGroupMatch == "" || in.PoolGroupID <= 0 {
+		return Route{}, ErrInvalidInput
+	}
+	if in.MatchPriority != nil && *in.MatchPriority < 0 {
+		return Route{}, ErrInvalidInput
+	}
+	if err := ValidateModelPattern(in.ModelPatternMatch); err != nil {
+		return Route{}, err
+	}
+	r, err := s.store.Update(ctx, in)
+	if err != nil {
+		return Route{}, err
+	}
+	if s.audit != nil {
+		s.audit.RouteUpdated(ctx, r, in.AdminID)
+	}
+	return r, nil
+}
+
 // List 返回该租户未软删的全部 route。
 func (s *Service) List(ctx context.Context, tenantID int64) ([]Route, error) {
 	if s == nil || s.store == nil {

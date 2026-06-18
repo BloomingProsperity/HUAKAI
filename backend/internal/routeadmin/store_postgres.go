@@ -59,6 +59,56 @@ RETURNING `+routeColumns,
 	return r, nil
 }
 
+func (s *PostgresStore) Update(ctx context.Context, in UpdateInput) (Route, error) {
+	if s == nil || s.pool == nil {
+		return Route{}, ErrStoreNotConfigured
+	}
+	// 全替换可编辑字段。目标 pool_group 必须同租户且未软删(防跨租户引用, 与 Create 同的纵深防御):
+	// WHERE 同时要求 (本租户该行未软删) 与 EXISTS(同租户 pool_group)。更新 0 行 → pgx.ErrNoRows,
+	// 此时反查该行是否仍在以消歧: 行在 → pool_group 问题; 行不在 → 行本身不存在。
+	// MatchPriority 为 nil 时传 NULL, COALESCE 回落 DB 默认 100(全替换语义); enabled/created_at 不动。
+	row := s.pool.QueryRow(ctx, `
+UPDATE routes
+SET name = $3, user_group_match = $4, model_pattern_match = $5,
+    pool_group_id = $6, match_priority = COALESCE($7::integer, 100), updated_at = now()
+WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+  AND EXISTS (
+      SELECT 1 FROM pool_groups WHERE id = $6 AND tenant_id = $1 AND deleted_at IS NULL
+  )
+RETURNING `+routeColumns,
+		in.TenantID, in.ID, in.Name, in.UserGroupMatch, in.ModelPatternMatch, in.PoolGroupID, in.MatchPriority)
+	r, err := scanRoute(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return Route{}, ErrDuplicateName
+		}
+		if isForeignKeyViolation(err) {
+			return Route{}, ErrPoolGroupNotFound
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Route{}, s.disambiguateUpdateMiss(ctx, in.TenantID, in.ID)
+		}
+		return Route{}, fmt.Errorf("routeadmin: update route: %w", err)
+	}
+	return r, nil
+}
+
+// disambiguateUpdateMiss 在 Update 影响 0 行时判定真因: 该(租户,行)仍未软删 → 是 pool_group
+// 不满足同租户/未删(ErrPoolGroupNotFound); 否则 → 行本身不存在/已软删(ErrRouteNotFound)。
+// 只读, 仅错误路径触发; 并发软删该行的窄窗会落到 ErrRouteNotFound, 语义可接受。
+func (s *PostgresStore) disambiguateUpdateMiss(ctx context.Context, tenantID, id int64) error {
+	var exists int
+	err := s.pool.QueryRow(ctx, `
+SELECT 1 FROM routes WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrRouteNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("routeadmin: update route (disambiguate): %w", err)
+	}
+	return ErrPoolGroupNotFound
+}
+
 func (s *PostgresStore) List(ctx context.Context, tenantID int64) ([]Route, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured
