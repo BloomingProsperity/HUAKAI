@@ -49,14 +49,19 @@
 - **爆炸半径**: 仅 routeadmin + controlhttp 两包；**无 migration、无 schema 变更、无 cmd/gateway 改**（生产 audit=nil，仅测试 capturingAudit 实现接口，加方法零生产破坏）。
 - **成功标准**: 能改一条 route 的任一字段（含 pool_group/优先级/pattern）；非法 pattern/缺字段/跨租户/撞名/改不存在各返正确错误；DisallowUnknownFields 拒 tenant_id 走私；go build/test/vet/codebudget 全绿；零 S0/S1。
 
-### Slice B — match_priority 真裁决（后端 routing/auth core，需独立设计 workflow）
-- **范围**: `subscriptionenforce` gate + RoutesRepo：让 `GroupRoutes` 携带 per-route match_priority，`decideGroupRoutes` 把 Allowed 收窄到**最高优先档命中路由**的 pool_group。
-- **未决设计点**（slice B 启动前先跑设计 workflow 定夺，§10 平行草案精神）:
-  - gate 是**过滤器**（判 req.PoolGroupID 是否允许）不是选择器；「真裁决」= 多条命中时只让最高优先档路由的 pool_group 进 Allowed，其余降级/拒。需定义：优先级方向（store List 按 match_priority **升序**，小者先 → 小=高优先？需对齐 DB 注释 + slice B 明确）。
-  - 是否引入「次高档作 fallback」还是「严格只放最高档」。
-  - 与 PASR 池内已有容灾的关系（避免重复兜底）。
-- **风险**: routing/auth core 运行期行为变更（Owner 已带三镜像当面确认）。需深审 + 完整干净基线 + 对抗 verifier。
-- **依赖**: 读 `subscriptionenforce/routes_repo_postgres.go`（尚未读）。
+### Slice B — match_priority 真裁决（后端 routing/auth core）— 设计已定（workflow weel7kelw）
+- **范围**: `subscriptionenforce` repo 层 `GroupRoutes` 收窄 `Allowed` 到命中本 model 的路由中**最高优先档**的 pool_group；gate/decideGroupRoutes/Configured 语义全部不变。
+- **已决设计**（设计 workflow #10 平行草案 + #16 三镜像方向复核 + 对抗风险 → 综合 ready_to_implement，blocking_owner_decisions=[]）:
+  - **放 repo 层**: `GroupRoutes` SELECT 补 `r.match_priority`，命中本 model 的路由交纯函数 `highestPriorityAllowed` 取最小档并集填 Allowed。纯函数与 `ModelPatternMatches` 同包、免 DB 单测。不放 gate 层（否则要把 priority 漏进 GroupRoutes 结构体 + 改 decideGroupRoutes，破坏「repo 返回已裁 Allowed」单一来源）。
+  - **方向 = 小值高优先（MIN）**: 源码定夺 `docs/schema/pool-routing.sql:247 "lower = match first"` + store ASC + DEFAULT 100 + validate≥0 四处内部一致。三镜像 new-api（`Calcium-Ion/new-api@1ac0f58:model/ability.go:67,92` DESC/MAX）、CLIProxyAPI（`@2a050dc:sdk/cliproxy/auth/scheduler.go:349,366` >best）用大值=高，但 sub2api（#16 默认 tiebreaker）**无 route/channel priority 等价物**，且翻方向必须连带翻默认值 100→0 的破坏性迁移 → **取 MIN 不翻**；方向对齐镜像若将来要做，单列独立 Owner-gated 迁移切片。
+  - **并列同档取并集；命中集非空⇒结果非空（防 S0 硬不变量）；无命中→空集（白名单据此拒）。**
+  - **不加 feature flag 直接收窄**: MIN+默认100 使全默认配置等价旧全量集（等价性单测守门），仅「同组同模型多路由且优先级显式不同」受影响（正是 Q3 要收的）；收窄 bug 只会收成空→**fail-closed 硬拒（安全）**非 fail-open 误放，回滚=revert 即恢复死字段态、零 schema/数据迁移。
+- **爆炸半径**: 仅 `subscriptionenforce` 包（routes_repo_postgres + 新 routes_arbitration + gate.go 注释 + 集成测试）；**无 migration、无 schema 变更**（match_priority 列已存在）；gate_test `configured(ids...)` helper 不变（直接构造已裁集）。
+- **Deferred（后续 ecosystem 切片，非本 slice）**:
+  - **可观测 metric**: repo 发生收窄（命中集 size > Allowed size）时计数 + 标签 tenant/group，让运维区分「priority 收窄拒」与「configured-but-model-miss 拒」。当前 `PostgresRoutesRepo` 无 logger/observer 注入，加之属架构添加 → 单列。收窄本身 fail-closed 安全、不依赖它。
+  - **Deploy-gate 审计（Owner）**: 上线前跑审计 query 统计「同 (tenant,user_group,model 重叠) 有 2+ 启用路由且 match_priority 不同」的配置数，量化冲击面；需生产 DB（Owner deploy gate）。
+  - **方向对齐镜像**（若 Owner 将来要 DESC）= 独立破坏性迁移切片。
+- **风险**: routing/auth core 运行期行为变更（Owner 已带三镜像当面确认 Q3）；安全网=纯函数判别单测 + 集成测试 + 对抗审查 + fail-closed 兜底。
 
 ### Slice C — 前端数据层接线（routes + bindings CRUD client）
 - **范围**: `routes` admin client（create/list/get/delete + **PUT-based update**，依赖 slice A）+ `model-pool-bindings` client（依赖现有 bindings CRUD）+ 前端镜像后端 `model_pattern` 校验（exact/prefix*，拒中段多通配）+ 错误码映射 + 精确 key-set + 强判别测试。
