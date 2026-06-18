@@ -31,7 +31,9 @@
     "test:notifications-admin": "node --experimental-strip-types --test lib/api/notifications-admin-form.test.ts",
     "test:export-csv": "node --experimental-strip-types --test lib/api/export-csv-form.test.ts",
     "test:notify-settings": "node --experimental-strip-types --test lib/api/notify-settings-form.test.ts",
-    "test:tls-profile": "node --experimental-strip-types --test lib/api/tls-profile-form.test.ts"
+    "test:tls-profile": "node --experimental-strip-types --test lib/api/tls-profile-form.test.ts",
+    "test:routes-form": "node --experimental-strip-types --test lib/api/routes-form.test.ts",
+    "test:model-bindings": "node --experimental-strip-types --test lib/api/modelBindings.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",
