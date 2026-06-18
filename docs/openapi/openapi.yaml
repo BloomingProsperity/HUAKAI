@@ -17878,7 +17878,7 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - docs/process/plans/h-ops-systemhealth.md
-      required: [status, components]
+      required: [status, components, runtime]
       properties:
         status:
           type: string
@@ -17887,6 +17887,7 @@ components:
         components:
           type: array
           items: { $ref: '#/components/schemas/SystemHealthComponent' }
+        runtime: { $ref: '#/components/schemas/SystemHealthRuntime' }
 
     SystemHealthComponent:
       type: object
@@ -17902,6 +17903,25 @@ components:
         detail:
           type: string
           description: Optional human-readable detail string.
+
+    SystemHealthRuntime:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/systemhealthhttp/systemhealth.go
+      description: >
+        Live snapshot of the gateway process's own resource usage, read from the Go
+        runtime at request time (no collector, no storage). Diagnostics only — never
+        secrets; the binary path is not exposed, only its size.
+      required: [go_version, num_goroutine, heap_alloc_bytes, heap_sys_bytes, num_gc, uptime_seconds]
+      properties:
+        go_version: { type: string, description: Go toolchain version of the running binary. }
+        num_goroutine: { type: integer, format: int64, minimum: 0 }
+        heap_alloc_bytes: { type: integer, format: int64, minimum: 0, description: Currently allocated heap bytes. }
+        heap_sys_bytes: { type: integer, format: int64, minimum: 0, description: Heap memory obtained from the OS. }
+        num_gc: { type: integer, format: int64, minimum: 0, description: Completed GC cycles. }
+        uptime_seconds: { type: integer, format: int64, minimum: 0 }
+        binary_size_bytes: { type: integer, format: int64, minimum: 0, description: Running executable size; omitted if it cannot be resolved. }
 
 
     AuditEvent:
