@@ -4895,7 +4895,7 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
     patch:
       tags: [user-api-keys]
-      summary: Partially update name and/or status of one of the authenticated user's API keys
+      summary: Partially update name, status, and/or expiry of one of the authenticated user's API keys
       operationId: patchUserAPIKey
       x-huakai-spec-source:
         - backend/internal/userkeyhttp/handlers.go
@@ -4907,9 +4907,18 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name: { type: string, maxLength: 128 }
                 status: { type: string, enum: [active, revoked] }
+                expires_at:
+                  type: string
+                  description: >-
+                    Tri-state. Omit to leave the deadline unchanged; send an empty string "" to
+                    clear it (key becomes never-expiring); send an RFC3339 timestamp to set a new
+                    deadline. A non-empty value that is not RFC3339 is rejected (400
+                    invalid_expires_at); a past timestamp is rejected (400 invalid_expires_at) to
+                    avoid silently disabling the key.
       responses:
         '200':
           description: Updated api_key fields. Only provided fields are changed.
@@ -4921,6 +4930,11 @@ paths:
                   api_key_id: { type: integer, format: int64 }
                   name: { type: string }
                   status: { type: string }
+                  expires_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: Deadline after the update; omitted when the key never expires.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }

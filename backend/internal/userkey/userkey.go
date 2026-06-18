@@ -624,20 +624,33 @@ func auditAPIKeyID(id int64) *int64 {
 // PatchRequest is the partial-update request for KEY-026. Fields use pointers so
 // the handler can distinguish "omitted" (nil) from "explicitly set". Only non-nil
 // fields are updated; omitted fields are left unchanged.
+//
+// expires_at carries a tri-state that a single nullable field cannot express
+// (nil already means "leave unchanged"), so the handler splits it into a value
+// pointer plus an explicit clear flag:
+//   - ExpiresAt == nil && !ClearExpiry → leave the deadline unchanged
+//   - ExpiresAt != nil                 → set the deadline to *ExpiresAt (must be future)
+//   - ClearExpiry == true              → clear the deadline (key becomes never-expiring)
+// Precedence is clear > set > unchanged; a past deadline on set is rejected with
+// ErrInvalidExpiry, mirroring the create path's future check in Issue.
 type PatchRequest struct {
-	TenantID  int64
-	UserID    int64
-	APIKeyID  int64
-	Name      *string // nil = leave unchanged
-	Status    *string // nil = leave unchanged; accepted: "active" | "revoked"
-	RequestID string
+	TenantID    int64
+	UserID      int64
+	APIKeyID    int64
+	Name        *string    // nil = leave unchanged
+	Status      *string    // nil = leave unchanged; accepted: "active" | "revoked"
+	ExpiresAt   *time.Time // non-nil = set deadline (future-validated); nil = unchanged unless ClearExpiry
+	ClearExpiry bool       // true = clear deadline -> never expires (takes precedence over ExpiresAt)
+	RequestID   string
 }
 
-// PatchResult is the partial-update result returned to the handler.
+// PatchResult is the partial-update result returned to the handler. ExpiresAt is
+// the deadline after the update (nil = never expires).
 type PatchResult struct {
-	APIKeyID int64
-	Name     string
-	Status   string
+	APIKeyID  int64
+	Name      string
+	Status    string
+	ExpiresAt *time.Time
 }
 
 // Patch partially updates name and/or status of a key owned by the caller.
@@ -653,13 +666,19 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
 		return PatchResult{}, ErrNotFound
 	}
-	if req.Name == nil && req.Status == nil {
+	if req.Name == nil && req.Status == nil && req.ExpiresAt == nil && !req.ClearExpiry {
 		// Nothing to update — fetch and return current state.
 		row, err := s.Get(ctx, req.TenantID, req.UserID, req.APIKeyID)
 		if err != nil {
 			return PatchResult{}, err
 		}
-		return PatchResult{APIKeyID: row.APIKeyID, Name: row.Name, Status: row.Status}, nil
+		return PatchResult{APIKeyID: row.APIKeyID, Name: row.Name, Status: row.Status, ExpiresAt: row.ExpiresAt}, nil
+	}
+	// Reject a past deadline on set, consistent with the create path (Issue). This
+	// closes the silent-brick footgun both reference projects carry (sub2api/new-api
+	// accept past timestamps on update). Clearing has no instant to validate.
+	if req.ExpiresAt != nil && !req.ExpiresAt.After(s.now().UTC()) {
+		return PatchResult{}, ErrInvalidExpiry
 	}
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
@@ -700,6 +719,15 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 			args = append(args, *req.Status)
 			argIdx++
 		}
+		// expires_at tri-state: clear takes precedence (-> NULL), else set the
+		// provided future deadline; omitted leaves the column untouched.
+		if req.ClearExpiry {
+			setClauses = append(setClauses, "expires_at = NULL")
+		} else if req.ExpiresAt != nil {
+			setClauses = append(setClauses, fmt.Sprintf("expires_at = $%d", argIdx))
+			args = append(args, *req.ExpiresAt)
+			argIdx++
+		}
 		setClauses = append(setClauses, "updated_at = NOW()")
 		setSQL := strings.Join(setClauses, ", ")
 
@@ -716,16 +744,21 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 			    AND tenant_id = $%d
 			    AND user_id = $%d
 			    AND deleted_at IS NULL
-			RETURNING name, status`,
+			RETURNING name, status, expires_at`,
 			setSQL, argIdx, argIdx+1, argIdx+2,
 		)
 		allArgs := append(args, req.APIKeyID, req.TenantID, req.UserID)
+		var expiresAt pgtype.Timestamptz
 		row := tx.QueryRow(ctx, query, allArgs...)
-		if err := row.Scan(&out.Name, &out.Status); err != nil {
+		if err := row.Scan(&out.Name, &out.Status, &expiresAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
 			return fmt.Errorf("%w: patch: %v", ErrBackend, err)
+		}
+		if expiresAt.Valid {
+			t := expiresAt.Time
+			out.ExpiresAt = &t
 		}
 		return nil
 	})
