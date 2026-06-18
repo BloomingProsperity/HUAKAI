@@ -30,6 +30,7 @@ type SetKeyQuotaResult struct {
 	WindowKind    quota.WindowKind `json:"window_kind"`
 	WindowSeconds int32            `json:"window_seconds"`
 	Mode          quota.Mode       `json:"mode"`
+	Priority      int32            `json:"priority"`
 	ValidFrom     time.Time        `json:"valid_from"`
 }
 
@@ -46,7 +47,11 @@ type KeyQuotaView struct {
 	WindowKind    quota.WindowKind `json:"window_kind"`
 	WindowSeconds int32            `json:"window_seconds"`
 	Mode          quota.Mode       `json:"mode"`
-	ValidFrom     time.Time        `json:"valid_from"`
+	// Priority is the resolution tiebreaker: when several quota policies overlap a
+	// request, the lowest-priority policy wins (quota/policy.go). Surfaced read-only so
+	// the user can see which policy takes precedence.
+	Priority  int32     `json:"priority"`
+	ValidFrom time.Time `json:"valid_from"`
 	// KEY-007: additive usage fields
 	UsedUSD      decimal.Decimal  `json:"used_usd"`
 	RemainingUSD *decimal.Decimal `json:"remaining_usd,omitempty"`

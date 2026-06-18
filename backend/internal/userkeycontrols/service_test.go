@@ -60,6 +60,23 @@ func TestSetKeyQuota_RequestCountMetricWritesRequests(t *testing.T) {
 	}
 }
 
+// TestQuotaViews_SurfacePriority guards the read-surfacing of the policy-resolution
+// tiebreaker (quota/policy.go: lowest priority wins when policies overlap). Both the GET
+// projection (KeyQuotaView) and the PUT result (SetKeyQuotaResult) must carry the scanned
+// Priority so the user can see which overlapping policy takes precedence.
+// MUTATION: drop `Priority: row.Priority` from quotaViewFromRow / quotaResultToSet -> the
+// field falls back to its 0 zero-value -> RED. The fixture priority (7) is non-zero so a
+// dropped mapping cannot coincidentally pass.
+func TestQuotaViews_SurfacePriority(t *testing.T) {
+	row := quotaPolicyRow{ID: 5, Priority: 7, Mode: quota.ModeEnforce}
+	if got := quotaViewFromRow(333, row).Priority; got != 7 {
+		t.Fatalf("KeyQuotaView.Priority=%d want 7 (GET read must surface the tiebreaker)", got)
+	}
+	if got := quotaResultToSet(333, row).Priority; got != 7 {
+		t.Fatalf("SetKeyQuotaResult.Priority=%d want 7 (PUT result must surface the tiebreaker)", got)
+	}
+}
+
 func TestSetKeyQuota_RejectsUnsupportedMetric(t *testing.T) {
 	store := newFakeStore()
 	svc := newServiceForTest(store, fixedNow)
