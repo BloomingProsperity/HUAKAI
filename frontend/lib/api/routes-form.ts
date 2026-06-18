@@ -78,6 +78,12 @@ export function buildUpdateRouteBody(input: RouteUpdateInput): Record<string, un
   };
 }
 
+// buildSetEnabledBody: 启停体精确 key-set —— 仅 { enabled }(布尔), 【无 tenant_id】(防跨租户走私, 后端
+// DisallowUnknownFields 会拒)。enabled 显式带且保真布尔: 后端 *bool 强制存在, 漏键会被拒(防空 body 静默停用)。
+export function buildSetEnabledBody(enabled: boolean): Record<string, unknown> {
+  return { enabled };
+}
+
 // ROUTE_ERROR_MESSAGES: 后端 routeAdminWriteRouteError + admin 门的错误码 → 中文文案(UI 展示用)。
 export const ROUTE_ERROR_MESSAGES: Record<string, string> = {
   invalid_model_pattern: "model_pattern 通配只能作整串或末尾后缀",

@@ -8,6 +8,7 @@ import test from 'node:test';
 
 import {
   buildCreateRouteBody,
+  buildSetEnabledBody,
   buildUpdateRouteBody,
   routeErrorMessage,
   validateModelPattern,
@@ -126,6 +127,17 @@ test('TestBuildUpdateRouteBody', () => {
   );
 });
 
+// ── buildSetEnabledBody: 精确 key-set { enabled } 布尔保真, 无 tenant_id(防走私) ──
+test('TestBuildSetEnabledBody', () => {
+  // 判别(安全): 启停 body 绝不含 tenant_id —— 否则可经此面跨租户搬移(后端 DisallowUnknownFields 拒,
+  // 但客户端先就不该构造它)。mutation: builder 加 tenant_id 等键 → key-set 断言红。
+  const on = buildSetEnabledBody(true);
+  assert.deepEqual(Object.keys(on), ['enabled'], 'set-enabled key-set 精确为单键 enabled(无 tenant_id)');
+  // 判别: 布尔保真, 不被字符串化/强转。fixture 用 true 与 false 两值, 防硬编码某一值假绿。
+  assert.equal(on.enabled, true, 'enabled=true 透传为布尔 true');
+  assert.equal(buildSetEnabledBody(false).enabled, false, 'enabled=false 透传为布尔 false');
+});
+
 // ── routeErrorMessage: 错误码映射 ───────────────────────────────────────
 test('TestRouteErrorMessage', () => {
   // 判别: 已知码映射到专属文案(漏映射 → 回退泛文案带 code, 断言红)。
@@ -154,6 +166,9 @@ test('TestEndpoints_Paths', () => {
   assert.match(bodyAfter('export function getRoute'), /\$\{BASE\}\/\$\{id\}\$\{tenantQuery\(tenantId\)\}/, 'get 路径 BASE/{id}?tenant');
   assert.match(bodyAfter('export function updateRoute'), /\$\{BASE\}\/\$\{id\}\$\{tenantQuery\(tenantId\)\}/, 'update 路径 BASE/{id}?tenant');
   assert.match(bodyAfter('export function deleteRoute'), /\$\{BASE\}\/\$\{id\}\$\{tenantQuery\(tenantId\)\}/, 'delete 路径 BASE/{id}?tenant');
+  // 判别: 启停打到子资源 /{id}/enabled?tenant —— 路径少了 /enabled 段就会命中 PUT /{id} 全替换端点(语义错且会
+  // 因缺其它必填字段失败)。锚定 /enabled${tenantQuery 定界, 防尾部 typo 非判别。
+  assert.match(bodyAfter('export function setRouteEnabled'), /\$\{BASE\}\/\$\{id\}\/enabled\$\{tenantQuery\(tenantId\)\}/, 'set-enabled 路径 BASE/{id}/enabled?tenant');
 });
 
 test('TestEndpoints_VerbsAndBuilders', () => {
@@ -171,4 +186,10 @@ test('TestEndpoints_VerbsAndBuilders', () => {
   assert.match(bodyAfter('export function createRoute'), /buildCreateRouteBody\(tenantId, input\)/, 'create 用 builder');
   assert.match(bodyAfter('export function updateRoute'), /validateRouteUpdateInput\(input\)/, 'update 用 validateRouteUpdateInput(强制 match_priority)');
   assert.match(bodyAfter('export function updateRoute'), /buildUpdateRouteBody\(input\)/, 'update 用 builder');
+  // 判别: 启停用 PUT(adminPut) + buildSetEnabledBody(漏 builder 则 key-set 失控可能走私 tenant)。
+  assert.match(bodyAfter('export function setRouteEnabled'), /adminPut</, 'set-enabled 用 PUT');
+  assert.match(bodyAfter('export function setRouteEnabled'), /buildSetEnabledBody\(enabled\)/, 'set-enabled 用 builder');
+  // 判别: 便捷封装 enable/disable 委托 setRouteEnabled 且方向正确(true/false 写反 → 启停颠倒)。
+  assert.match(bodyAfter('export function enableRoute'), /setRouteEnabled\(id, tenantId, true\)/, 'enableRoute 委托 setRouteEnabled(…true)');
+  assert.match(bodyAfter('export function disableRoute'), /setRouteEnabled\(id, tenantId, false\)/, 'disableRoute 委托 setRouteEnabled(…false)');
 });

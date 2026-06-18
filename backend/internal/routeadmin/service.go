@@ -75,6 +75,26 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (Route, error) {
 	return r, nil
 }
 
+// SetEnabled 翻转一条 route 的 enabled 闸(独立窄动作, 非 PUT 全替换)。adminID 仅用于审计归属。
+// 停用即把该路由从分组路由生效集移除(热路径 gate 过滤 enabled=true), 但不软删 —— 可后续再启用。
+// 审计复用 RouteUpdated: 传入的是 store 返回的更新后快照, 其 Enabled 字段已反映新值。
+func (s *Service) SetEnabled(ctx context.Context, tenantID, id int64, enabled bool, adminID int64) (Route, error) {
+	if s == nil || s.store == nil {
+		return Route{}, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || id <= 0 {
+		return Route{}, ErrInvalidInput
+	}
+	r, err := s.store.SetEnabled(ctx, tenantID, id, enabled)
+	if err != nil {
+		return Route{}, err
+	}
+	if s.audit != nil {
+		s.audit.RouteUpdated(ctx, r, adminID)
+	}
+	return r, nil
+}
+
 // List 返回该租户未软删的全部 route。
 func (s *Service) List(ctx context.Context, tenantID int64) ([]Route, error) {
 	if s == nil || s.store == nil {

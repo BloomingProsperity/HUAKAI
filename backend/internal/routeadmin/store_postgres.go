@@ -154,6 +154,34 @@ WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id)
 	return r, nil
 }
 
+// SetEnabled 翻转 enabled 闸(独立窄动作): 仅未软删的本租户行可改, 不碰 pool_group/match_priority 等其它列。
+// 不做 pool_group EXISTS 校验 —— 启用一条 pool_group 已软删的路由无害(热路径 gate 的 JOIN 仍运行时过滤掉),
+// 该检查只属于改 pool_group 的 Update。RETURNING 0 行 → pgx.ErrNoRows → ErrRouteNotFound。
+// 幂等: 把 enabled 设成当前值, UPDATE 仍命中该行(WHERE 不含 enabled 条件)并返回快照, 不报错。
+//
+// roadmap (widening 站点): enabled 现为裸布尔, 只表达「运营手动启/停」。若将来落地健康检查 auto-disable,
+// 须把它扩成小 enum(enabled / manual-disabled / auto-disabled)以区分运营手动 off 与系统自动 off —— 否则
+// 自动 re-enable 会覆盖运营的手动 off(new-api/CLIProxyAPI 用多态 status 正是防此)。
+// 详见 docs/process/plans/2026-06-18-routes-enable-disable.md。
+func (s *PostgresStore) SetEnabled(ctx context.Context, tenantID, id int64, enabled bool) (Route, error) {
+	if s == nil || s.pool == nil {
+		return Route{}, ErrStoreNotConfigured
+	}
+	row := s.pool.QueryRow(ctx, `
+UPDATE routes
+SET enabled = $3, updated_at = now()
+WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
+RETURNING `+routeColumns, tenantID, id, enabled)
+	r, err := scanRoute(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Route{}, ErrRouteNotFound
+	}
+	if err != nil {
+		return Route{}, fmt.Errorf("routeadmin: set route enabled: %w", err)
+	}
+	return r, nil
+}
+
 func (s *PostgresStore) SoftDelete(ctx context.Context, tenantID, id int64) (Route, error) {
 	if s == nil || s.pool == nil {
 		return Route{}, ErrStoreNotConfigured
