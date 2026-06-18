@@ -10,10 +10,13 @@ import type { APIError } from './types';
 import {
   buildAliasBulkBody,
   buildCapabilitiesBody,
+  buildCapabilityBindingBody,
   validateAliasBulk,
   validateCapabilitiesInput,
+  validateCapabilityBinding,
   type AliasRow,
   type CapabilitiesInput,
+  type CapabilityBindingInput,
 } from './model-capabilities-form';
 
 function adminToken(): string {
@@ -110,4 +113,17 @@ export function bulkImportModelAliases(rows: AliasRow[], reason?: string): Promi
 // 读一个模型的能力绑定（只读）。
 export function getModelCapabilityBindings(modelId: number): Promise<CapabilityBindingsResponse> {
   return apiGet<CapabilityBindingsResponse>(`${BASE}/${modelId}/capability-bindings`);
+}
+
+// upsert 一条能力绑定（per-tenant 或 global scope）。发请求前先 validate。
+// source 由后端强制 operator（请求体不带, 防伪装 vendor-sync）; enabled 必填（省略后端 400, 防静默翻 disabled）。
+export interface CapabilityBindingResponse {
+  object: string;
+  binding: ModelCapabilityBinding;
+}
+
+export function upsertModelCapabilityBinding(modelId: number, input: CapabilityBindingInput): Promise<CapabilityBindingResponse> {
+  const invalid = validateCapabilityBinding(input);
+  if (invalid) return Promise.reject(new Error(invalid));
+  return adminPut<CapabilityBindingResponse>(`${BASE}/${modelId}/capability-bindings`, buildCapabilityBindingBody(input));
 }
