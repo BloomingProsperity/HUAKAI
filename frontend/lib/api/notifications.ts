@@ -140,6 +140,8 @@ export interface NotifySettings {
   gotify_priority?: number;
   // decimal 序列化为字符串。
   balance_threshold: string;
+  // 额外抄送邮箱(逐个独立投递, 非 CC)。后端 omitempty: 空列表时不出现。
+  extra_emails?: string[];
   updated_at?: string;
   updated_by?: string;
 }
@@ -158,6 +160,8 @@ export interface NotifySettingsRequest {
   gotify_priority?: number;
   // decimal 字符串，如 "5" / "0.5"。
   balance_threshold?: string;
+  // 额外抄送邮箱列表(≤10, 每条须合法邮箱)。后端 ValidateSettings 为权威校验, 前端 fail-fast。
+  extra_emails?: string[];
 }
 
 // 读取当前用户的通知设置。session 鉴权。

@@ -1,6 +1,6 @@
 // admin per-user 通知设置写体的纯逻辑（notify_type 条件校验 + 精确 key-set 构造），零依赖 strip-types 单测。
 // 后端真码:
-//   - controlhttp/notify_handler.go notifySettingsRequest(9 字段) + decodeNotifySettingsRequest(DisallowUnknownFields)
+//   - controlhttp/notify_handler.go notifySettingsRequest(10 字段, 含 extra_emails) + decodeNotifySettingsRequest(DisallowUnknownFields)
 //   - notify/types.go ValidateSettings：按 notify_type 条件校验（none/email/webhook/bark/gotify）
 // 复用 notifications.ts 的 NotifyType / NotifySettingsRequest 类型（与用户侧同一体形状）。
 import type { NotifySettingsRequest, NotifyType } from './notifications';
@@ -17,10 +17,17 @@ function looksLikeHttpsUrl(u: string | undefined): boolean {
   return !!u && /^https:\/\/\S+$/.test(u.trim());
 }
 
-// validateNotifySettings 镜像后端 ValidateSettings 的 notify_type 条件规则（请求体 9 字段部分）。
+// validateNotifySettings 镜像后端 ValidateSettings（extra_emails 无条件校验 + notify_type 条件规则，请求体 10 字段）。
 // 返回错误串（给 UI）或 null。
 export function validateNotifySettings(body: NotifySettingsRequest): string | null {
   if (!NOTIFY_TYPES.includes(body.notify_type)) return 'notify_type 非法';
+  // extra_emails 与 notify_type 无关, 后端 ValidateSettings 在 type 分支前无条件校验(≤10 + 每条合法邮箱),
+  // 故前端也先 fail-fast(空串过滤后计数, 与后端 normalized 一致)。后端 mail.ParseAddress 为权威。
+  const extras = (body.extra_emails ?? []).map((e) => e.trim()).filter((e) => e !== '');
+  if (extras.length > 10) return 'extra_emails 最多 10 条';
+  for (const e of extras) {
+    if (!EMAIL_RE.test(e)) return `extra_emails 含非法邮箱: ${e}`;
+  }
   switch (body.notify_type) {
     case 'none':
       return null;
@@ -52,10 +59,10 @@ export function validateNotifySettings(body: NotifySettingsRequest): string | nu
   }
 }
 
-// buildNotifySettingsBody 构造 PUT 的精确 key-set。后端 DisallowUnknownFields → 只能含这 9 个键。
+// buildNotifySettingsBody 构造 PUT 的精确 key-set。后端 DisallowUnknownFields → 只能含这 10 个键(含 extra_emails 数组)。
 // 空 optional 字符串字段一律省略（后端 omitempty）；gotify_priority 给定即带。
-export function buildNotifySettingsBody(body: NotifySettingsRequest): Record<string, string | number> {
-  const out: Record<string, string | number> = { notify_type: body.notify_type };
+export function buildNotifySettingsBody(body: NotifySettingsRequest): Record<string, string | number | string[]> {
+  const out: Record<string, string | number | string[]> = { notify_type: body.notify_type };
   if (body.webhook_url && body.webhook_url.trim()) out.webhook_url = body.webhook_url;
   if (body.webhook_secret && body.webhook_secret.trim()) out.webhook_secret = body.webhook_secret;
   if (body.notification_email && body.notification_email.trim()) out.notification_email = body.notification_email;
@@ -64,5 +71,8 @@ export function buildNotifySettingsBody(body: NotifySettingsRequest): Record<str
   if (body.gotify_token && body.gotify_token.trim()) out.gotify_token = body.gotify_token;
   if (body.balance_threshold && body.balance_threshold.trim()) out.balance_threshold = body.balance_threshold;
   if (body.gotify_priority !== undefined) out.gotify_priority = body.gotify_priority;
+  // extra_emails: 空串过滤后非空才带(对齐后端 omitempty + normalized 去空); 全空则省略键。
+  const extras = (body.extra_emails ?? []).map((e) => e.trim()).filter((e) => e !== '');
+  if (extras.length > 0) out.extra_emails = extras;
   return out;
 }
