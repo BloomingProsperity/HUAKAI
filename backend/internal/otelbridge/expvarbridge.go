@@ -154,6 +154,15 @@ func bridgeCounters() []bridgeCounter {
 			description: "Subscription group policy fail-closed decisions.",
 			read:        func() int64 { return readExpvarInt("group_policy_fail_closed_total") },
 		},
+		// Budget/rate-limit enforcement fail-open: when the budget store errors on
+		// reserve/settle/release, the gateway allows the request through rather than
+		// reject it. Bridging this counter (peer of group_policy_fail_open above) lets
+		// operators alert when enforcement is silently bypassed by backend failure.
+		{
+			name:        "huakai_budget_failopen_total",
+			description: "Budget/rate enforcement fail-open events (store error bypassed enforcement; request allowed).",
+			read:        func() int64 { return readExpvarInt("budget_fail_open_total") },
+		},
 		// OPS-002: provider health counters bridged from channelhealth.Service transitions.
 		{
 			name:        "huakai_provider_error_total",
