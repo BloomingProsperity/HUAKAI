@@ -112,6 +112,9 @@ func renewStatusForAccount(rows []credentialstore.RenewStatusMetadata, accountID
 			"auth_mode":            r.AuthMode,
 			"state":                r.State,
 			"credential_version":   r.CredentialVersion,
+			"access_expires_at":    timePtrAny(r.AccessExpiresAt),
+			"refresh_before_at":    timePtrAny(r.RefreshBeforeAt),
+			"last_refresh_at":      timePtrAny(r.LastRefreshAt),
 			"last_refresh_outcome": deref(r.LastRefreshOutcome),
 			"failure_class":        deref(r.FailureClass),
 			"failure_count":        r.FailureCount,
@@ -132,4 +135,14 @@ func deref(s *string) any {
 		return nil
 	}
 	return *s
+}
+
+// timePtrAny nil-guards a *time.Time for diagnostic projection: nil stays nil,
+// otherwise the instant is normalized to UTC. These are credential-timing
+// timestamps (expiry / refresh deadline / last refresh) — never secret material.
+func timePtrAny(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.UTC()
 }
