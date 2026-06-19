@@ -216,6 +216,25 @@ func bridgeCounters() []bridgeCounter {
 			description: "Process uptime in seconds (crash-loop / restart signal).",
 			read:        func() int64 { return int64(time.Since(processStart).Seconds()) },
 		},
+		// F-CACHE-001 activation observability: aggregate the per-(vendor,model)-labeled
+		// L2 response-cache counters into flat totals so the cache's health is alertable
+		// (hit-rate collapse, size pressure) before/while an operator enables it. hit/miss
+		// are monotonic; size_bytes is a gauge bridged like the dlq depth gauges above.
+		{
+			name:        "huakai_cache_l2_hit_total",
+			description: "L2 response-cache hits, summed across vendor/model labels.",
+			read:        func() int64 { return readExpvarMapSum("huakai_cache_l2_hit_total") },
+		},
+		{
+			name:        "huakai_cache_l2_miss_total",
+			description: "L2 response-cache misses, summed across vendor/model labels.",
+			read:        func() int64 { return readExpvarMapSum("huakai_cache_l2_miss_total") },
+		},
+		{
+			name:        "huakai_cache_l2_size_bytes",
+			description: "L2 response-cache total bytes, summed across vendor/model labels.",
+			read:        func() int64 { return readExpvarMapSum("huakai_cache_l2_size_bytes") },
+		},
 	}
 }
 
@@ -237,4 +256,21 @@ func readExpvarMapInt(mapName, key string) int64 {
 		return 0
 	}
 	return value.Value()
+}
+
+// readExpvarMapSum totals every *expvar.Int entry in a labeled expvar.Map — used to
+// collapse a per-(vendor,model)-labeled cache counter into one flat metric for the
+// Prometheus export and the flat alert-rule snapshot.
+func readExpvarMapSum(name string) int64 {
+	metricMap, ok := expvar.Get(name).(*expvar.Map)
+	if !ok || metricMap == nil {
+		return 0
+	}
+	var sum int64
+	metricMap.Do(func(kv expvar.KeyValue) {
+		if value, ok := kv.Value.(*expvar.Int); ok && value != nil {
+			sum += value.Value()
+		}
+	})
+	return sum
 }
