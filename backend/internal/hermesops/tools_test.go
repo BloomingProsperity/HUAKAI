@@ -194,6 +194,44 @@ func TestRequestDiagnoseFailsClosedOnNilDep(t *testing.T) {
 	}
 }
 
+// TestRequestDiagnoseProjectsModelRewriteFields guards the requested_model /
+// upstream_model projection that lets an operator see model rewrite / fallback
+// (requested != upstream) for a request_id. Mutation: drop either key from
+// usageDiagnosticShape -> the field is absent from usage_records[0] -> red.
+func TestRequestDiagnoseProjectsModelRewriteFields(t *testing.T) {
+	upstream := "claude-opus-4-20260514"
+	deps := ObservabilityDeps{
+		ListUsage: func(_ context.Context, _ dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
+			return []dbbilling.ListUsageRecordsRow{
+				{ID: 1, ClaimID: 11, RequestID: "req-A", RequestedModel: "claude-opus-4", UpstreamModel: &upstream, EndClass: "ok"},
+			}, nil
+		},
+		ListClaims: func(_ context.Context, _ dbbilling.ListBillingClaimsParams) ([]dbbilling.ListBillingClaimsRow, error) {
+			return nil, nil
+		},
+	}
+	spec := RequestDiagnoseSpec(deps)
+	r := req(7)
+	r.Args["request_id"] = "req-A"
+	res, err := spec.Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	records, ok := res.Summary["usage_records"].([]map[string]any)
+	if !ok || len(records) != 1 {
+		t.Fatalf("usage_records=%v want exactly one shape", res.Summary["usage_records"])
+	}
+	rec := records[0]
+	// Discriminating: requested != upstream is a real rewrite; a dropped projection
+	// leaves the key nil, which differs from both seeded values.
+	if rec["requested_model"] != "claude-opus-4" {
+		t.Fatalf("requested_model=%v want claude-opus-4 (projection dropped?)", rec["requested_model"])
+	}
+	if rec["upstream_model"] != "claude-opus-4-20260514" {
+		t.Fatalf("upstream_model=%v want claude-opus-4-20260514 (projection dropped?)", rec["upstream_model"])
+	}
+}
+
 // --- audit_lookup -----------------------------------------------------------
 
 func TestAuditLookupDropsPayloadAndReason(t *testing.T) {
