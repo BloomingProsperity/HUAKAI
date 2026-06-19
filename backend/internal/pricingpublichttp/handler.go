@@ -26,11 +26,15 @@ type Deps struct {
 }
 
 type pricingItem struct {
-	Model               string `json:"model"`
-	CanonicalID         string `json:"canonical_id,omitempty"`
-	InputPricePerToken  string `json:"input_price_per_token,omitempty"`
-	OutputPricePerToken string `json:"output_price_per_token,omitempty"`
-	ContextLength       *int   `json:"context_length,omitempty"`
+	Model               string          `json:"model"`
+	CanonicalID         string          `json:"canonical_id,omitempty"`
+	OwnedBy             string          `json:"owned_by,omitempty"`
+	Mode                string          `json:"mode,omitempty"`
+	InputPricePerToken  string          `json:"input_price_per_token,omitempty"`
+	OutputPricePerToken string          `json:"output_price_per_token,omitempty"`
+	ContextLength       *int            `json:"context_length,omitempty"`
+	MaxOutputTokens     *int            `json:"max_output_tokens,omitempty"`
+	Capabilities        map[string]bool `json:"capabilities,omitempty"`
 }
 
 func NewHandler(d Deps) http.HandlerFunc {
@@ -66,6 +70,12 @@ func NewHandler(d Deps) http.HandlerFunc {
 				Model:       model.ID,
 				CanonicalID: model.CanonicalID,
 			}
+			if model.OwnedBy != "" {
+				item.OwnedBy = model.OwnedBy
+			}
+			if model.Mode != "" {
+				item.Mode = model.Mode
+			}
 			if price.HasInput {
 				item.InputPricePerToken = price.InputPerToken.String()
 			}
@@ -75,6 +85,12 @@ func NewHandler(d Deps) http.HandlerFunc {
 			if model.ContextWindow > 0 {
 				contextLength := model.ContextWindow
 				item.ContextLength = &contextLength
+			}
+			if model.MaxOutputTokens != nil {
+				item.MaxOutputTokens = model.MaxOutputTokens
+			}
+			if len(model.Capabilities) > 0 {
+				item.Capabilities = model.Capabilities
 			}
 			items = append(items, item)
 		}

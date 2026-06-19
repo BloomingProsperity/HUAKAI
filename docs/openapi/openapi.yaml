@@ -3256,8 +3256,10 @@ paths:
       description: |
         Returns a customer-safe public pricing catalog for enabled model aliases
         in the default public pricing scope. This marketing view requires no
-        bearer token and no `version` query parameter, and it exposes only model
-        names, canonical model ids, public unit prices, and context length.
+        bearer token and no `version` query parameter, and it exposes only
+        customer-safe catalog metadata: model names, canonical model ids, public
+        unit prices, context length, owner/provider, interaction mode, maximum
+        output tokens, and capability flags.
         It never exposes actual cost, tenant/user/api-key identity, provider
         account ids, internal ratios, cache tiers, markups, or raw rate-table
         payloads.
@@ -15070,6 +15072,23 @@ components:
           type: integer
           minimum: 1
           description: Public context window from the model registry.
+        owned_by:
+          type: string
+          minLength: 1
+          description: Model owner/provider as published in the registry catalog.
+        mode:
+          type: string
+          minLength: 1
+          description: Model interaction mode (e.g. chat) from the registry catalog.
+        max_output_tokens:
+          type: integer
+          minimum: 1
+          description: Maximum output tokens when published by the model registry.
+        capabilities:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: Capability flags (e.g. vision, tools) from the model registry catalog.
 
     RateTable:
       type: object
