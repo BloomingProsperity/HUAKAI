@@ -55,6 +55,11 @@ type KeyQuotaView struct {
 	// KEY-007: additive usage fields
 	UsedUSD      decimal.Decimal  `json:"used_usd"`
 	RemainingUSD *decimal.Decimal `json:"remaining_usd,omitempty"`
+	// WindowEnd is the reset boundary of the current quota window — when the consumed
+	// usage rolls over and frees up. Soonest end across the current cost windows; nil
+	// when no window exists yet. Matches the absolute-timestamp form of the broader
+	// self-service /quota view.
+	WindowEnd *time.Time `json:"window_end,omitempty"`
 }
 
 type SetKeyGroupRequest struct {
