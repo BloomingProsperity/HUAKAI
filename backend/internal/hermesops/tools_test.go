@@ -151,6 +151,46 @@ func TestAccountHealthDiagnoseFailsClosedOnNilDep(t *testing.T) {
 	}
 }
 
+// TestAccountHealthDiagnoseProjectsRecoveryAndSessionWindow guards the recovery-ETA
+// (health_state_until) and 5h session-window boundary (start/end) projection. The
+// three timestamps are distinct, so a dropped key (nil) OR a swapped field both fail.
+// Mutation: remove any of the three keys from the summary map -> red.
+func TestAccountHealthDiagnoseProjectsRecoveryAndSessionWindow(t *testing.T) {
+	until := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	winStart := time.Date(2026, 5, 14, 8, 0, 0, 0, time.UTC)
+	winEnd := time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC)
+	deps := AccountHealthDeps{
+		ProviderAccountHealth: func(_ context.Context, _ admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
+			return admindb.GetAdminProviderAccountHealthRow{
+				ID: 5, TenantID: 7, HealthState: "degraded",
+				HealthStateUntil:     pgtype.Timestamptz{Time: until, Valid: true},
+				SessionWindow5hStart: pgtype.Timestamptz{Time: winStart, Valid: true},
+				SessionWindow5hEnd:   pgtype.Timestamptz{Time: winEnd, Valid: true},
+			}, nil
+		},
+	}
+	spec := AccountHealthDiagnoseSpec(deps)
+	r := req(7)
+	r.Args["account_id"] = float64(5)
+	res, err := spec.Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, c := range []struct {
+		key  string
+		want time.Time
+	}{
+		{"health_state_until", until},
+		{"session_window_5h_start", winStart},
+		{"session_window_5h_end", winEnd},
+	} {
+		got, ok := res.Summary[c.key].(time.Time)
+		if !ok || !got.Equal(c.want) {
+			t.Fatalf("%s=%v want %v (projection dropped?)", c.key, res.Summary[c.key], c.want)
+		}
+	}
+}
+
 // --- request_diagnose -------------------------------------------------------
 
 func TestRequestDiagnoseCorrelatesAndDropsCost(t *testing.T) {
