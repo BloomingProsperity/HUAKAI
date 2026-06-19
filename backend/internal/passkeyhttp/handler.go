@@ -298,7 +298,7 @@ func writeStepUpError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrStepUpRequired):
 		writeError(w, http.StatusForbidden, "passkey_step_up_required", "recent password or two-factor verification is required")
-	case errors.Is(err, ErrStepUpInvalid), errors.Is(err, userauth.ErrInvalidCredentials), errors.Is(err, twofa.ErrInvalidCode):
+	case errors.Is(err, ErrStepUpInvalid), errors.Is(err, userauth.ErrInvalidCredentials), errors.Is(err, twofa.ErrInvalidCode), errors.Is(err, twofa.ErrCodeReused):
 		writeError(w, http.StatusUnauthorized, "passkey_step_up_invalid", "step-up verification failed")
 	case errors.Is(err, ErrStepUpNotConfigured):
 		writeError(w, http.StatusServiceUnavailable, "passkey_step_up_not_configured", "passkey step-up dependency unset")

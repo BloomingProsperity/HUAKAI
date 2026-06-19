@@ -162,3 +162,106 @@ func mustKeyProvider(t *testing.T) credentialstore.KeyProvider {
 	}
 	return keys
 }
+
+// TestVerifyLoginRejectsTOTPReplayWithinWindow 守审计 wy94u3tn9 的 S1:同一枚 TOTP 码在其
+// ±窗口有效期内被重复提交,第 1 次成功后第 2 次必须按 ErrCodeReused 拒绝(RFC 6238 §5.2)。
+// 此前 recordSuccess 只写 last_used_at、不记已消费时间步,故同码可重复登录。
+// 判别(变异):把 VerifyLogin 的 TOTP 分支退回"只 VerifyTOTP + recordSuccess(不记 step)",
+// 同码第 2 次又会成功 → 本测试断言 ErrCodeReused 变红。
+func TestVerifyLoginRejectsTOTPReplayWithinWindow(t *testing.T) {
+	ctx := context.Background()
+	// 启用消费当前时间步;登录发生在 +60s 的全新时间步,避免被启用码占用的步误挡。
+	clock := time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)
+	svc := NewService(NewMemoryStore(), mustKeyProvider(t), WithNow(func() time.Time { return clock }))
+	setup := setupAndEnable(t, ctx, svc, clock)
+	clock = clock.Add(60 * time.Second)
+
+	code := codeFromSetupSecret(t, setup.Secret, clock)
+	if _, err := svc.VerifyLogin(ctx, VerifyInput{TenantID: 1, UserID: 1001, Code: code}); err != nil {
+		t.Fatalf("首次 TOTP 登录应成功: %v", err)
+	}
+	_, err := svc.VerifyLogin(ctx, VerifyInput{TenantID: 1, UserID: 1001, Code: code})
+	if !errors.Is(err, ErrCodeReused) {
+		t.Fatalf("同码重放第 2 次应得 ErrCodeReused,实际 err=%v", err)
+	}
+	// 重放拒绝不计失败次数(不锁合法用户在网络重试里重复提交同一码)。
+	status, err := svc.Status(ctx, 1, 1001)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.LockedUntil != nil {
+		t.Fatalf("重放拒绝不应触发锁定,locked_until=%v", status.LockedUntil)
+	}
+}
+
+// TestVerifyLoginAllowsNextTimeStepAfterConsume 守"防重放不误伤合法连续登录":消费时间步 N 后,
+// 更晚时间步的新码计数器严格更大,必须被接受(否则正常的下一次登录会被误判为重放)。
+// 判别(变异):让 VerifyTOTPStep 恒返回 0(或不按 candidateAt 计步)→ 更晚的码也被算成同一步、
+// 被当作重放拒绝 → 本用例变红。
+// 注:重放的**权威边界**由存储层条件 UPDATE(last_used_step < $4)守住,已由
+// TestMarkTOTPSuccessConditionalGuard 在 store 层精确覆盖"同步/更早/更大步";service 层
+// 快速路径(step <= *LastUsedStep)只是冗余的提前拒绝优化,其 off-by-one 不单独由本用例守。
+func TestVerifyLoginAllowsNextTimeStepAfterConsume(t *testing.T) {
+	ctx := context.Background()
+	clock := time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)
+	svc := NewService(NewMemoryStore(), mustKeyProvider(t), WithNow(func() time.Time { return clock }))
+	setup := setupAndEnable(t, ctx, svc, clock)
+	clock = clock.Add(60 * time.Second)
+	if _, err := svc.VerifyLogin(ctx, VerifyInput{TenantID: 1, UserID: 1001, Code: codeFromSetupSecret(t, setup.Secret, clock)}); err != nil {
+		t.Fatalf("首次登录应成功: %v", err)
+	}
+	clock = clock.Add(60 * time.Second)
+	if _, err := svc.VerifyLogin(ctx, VerifyInput{TenantID: 1, UserID: 1001, Code: codeFromSetupSecret(t, setup.Secret, clock)}); err != nil {
+		t.Fatalf("更晚时间步的新码应被接受,实际 err=%v", err)
+	}
+}
+
+// TestMarkTOTPSuccessConditionalGuard 直接守存储层的原子防重放条件(并发竞态兜底):仅当
+// consumedStep 严格大于已存值时才记录并返回 stored=true。判别(变异):删掉 MemoryStore
+// MarkTOTPSuccess 里的 `consumedStep <= *LastUsedStep → return false` 守卫(改为无条件记录),
+// 则"同 step 第 2 次"和"更早 step"都会错误地返回 stored=true → 本测试变红。
+func TestMarkTOTPSuccessConditionalGuard(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	now := time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)
+	if err := store.SaveSetup(ctx, Settings{TenantID: 1, UserID: 1001, SecretEnc: []byte("x"), CreatedAt: now, UpdatedAt: now}, nil); err != nil {
+		t.Fatalf("SaveSetup: %v", err)
+	}
+	mustStored := func(step int64, want bool) {
+		t.Helper()
+		stored, err := store.MarkTOTPSuccess(ctx, 1, 1001, step, now)
+		if err != nil {
+			t.Fatalf("MarkTOTPSuccess(step=%d): %v", step, err)
+		}
+		if stored != want {
+			t.Fatalf("MarkTOTPSuccess(step=%d) stored=%v want %v", step, stored, want)
+		}
+	}
+	mustStored(100, true)  // 首次消费
+	mustStored(100, false) // 同步重放 → 拒
+	mustStored(99, false)  // 更早步 → 拒
+	mustStored(101, true)  // 更大步 → 纳
+}
+
+// TestVerifyTOTPStepReturnsMatchedCounter 守 VerifyTOTPStep 返回的就是匹配到的时间步计数器
+// (counter = at.Unix()/step),这是防重放比较的基准量;并守 VerifyTOTP 委托后 ok 行为不变。
+// 判别(变异):让 VerifyTOTPStep 返回 0(或不按 candidateAt 计步)→ 计数器断言变红。
+func TestVerifyTOTPStepReturnsMatchedCounter(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x1f}, secretBytes)
+	at := time.Date(2026, 6, 4, 9, 0, 7, 0, time.UTC)
+	cfg := TOTPConfig{Digits: DefaultTOTPDigits, Step: DefaultTOTPStep, Window: DefaultTOTPWindow}
+	code, err := GenerateTOTP(secret, at, DefaultTOTPDigits, DefaultTOTPStep)
+	if err != nil {
+		t.Fatalf("GenerateTOTP: %v", err)
+	}
+	step, ok := VerifyTOTPStep(secret, code, at, cfg)
+	if !ok {
+		t.Fatal("当前时刻生成的码应匹配")
+	}
+	if want := at.Unix() / int64(DefaultTOTPStep.Seconds()); step != want {
+		t.Fatalf("匹配时间步=%d want %d", step, want)
+	}
+	if VerifyTOTP(secret, code, at, cfg) != ok {
+		t.Fatal("VerifyTOTP 委托后 ok 应与 VerifyTOTPStep 一致")
+	}
+}
