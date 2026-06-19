@@ -36,6 +36,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/reqdecompress"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/webui"
 )
 
 func newRouter(d *deps, logger *zap.Logger) chi.Router {
@@ -104,6 +105,12 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 		router.Handle("/metrics", adminGate(adminResolver, d.metricsHandler))
 	}
 	mountRoutes(router, d, logger)
+	// Serve the embedded single-page frontend for any path that matched no API
+	// route. Enabled only in builds compiled with `-tags embed` (a real dist);
+	// the default build returns a nil handler here, leaving chi's plain 404.
+	if spa := webui.Handler(webui.Dist()); spa != nil {
+		router.NotFound(spa.ServeHTTP)
+	}
 	return router
 }
 
