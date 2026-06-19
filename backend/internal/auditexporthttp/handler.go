@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 )
@@ -81,20 +82,44 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/export", NewExportHandler(d))
 }
 
+// authorizedTenantScope 从**认证会话上下文**派生本租户的 tenant_scope_ref,并据此堵住审计导出的
+// 跨租户 IDOR:租户授权范围一律取自已认证身份,绝不让请求里的 tenant_scope_ref 决定范围
+// (它是按 tenant_id 离线可枚举的派生值,不是凭证)。这是失败闭合的主防线——即便路由层漏挂认证
+// 中间件,处理器自身也拒绝无会话请求。
+//   - 无会话 / 身份非法(tenant_id<=0)→ 写 401,返回 ok=false;
+//   - 请求显式带了 tenant_scope_ref 且与认证身份派生值不一致 → 写 403(拒跨租户探测),返回 ok=false;
+//   - 否则返回认证身份派生的 scope_ref(供后续 ledger 查询作为唯一授权范围)。
+func authorizedTenantScope(w http.ResponseWriter, r *http.Request) (string, bool) {
+	ident, ok := sessionauth.SessionFromContext(r.Context())
+	if !ok || ident.TenantID <= 0 {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return "", false
+	}
+	authScope := auditledger.TenantScopeRef(ident.TenantID)
+	if authScope == "" {
+		writeJSONError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return "", false
+	}
+	if supplied := strings.TrimSpace(r.URL.Query().Get("tenant_scope_ref")); supplied != "" && supplied != authScope {
+		writeJSONError(w, http.StatusForbidden, "tenant_scope_forbidden", "tenant_scope_ref does not match the authenticated tenant")
+		return "", false
+	}
+	return authScope, true
+}
+
 func NewProofDownloadHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 			return
 		}
+		tenantScopeRef, ok := authorizedTenantScope(w, r)
+		if !ok {
+			return
+		}
 		requestID := strings.TrimSpace(chi.URLParam(r, "request_id"))
 		if requestID == "" {
 			writeJSONError(w, http.StatusBadRequest, "missing_request_id", "request_id required")
-			return
-		}
-		tenantScopeRef := strings.TrimSpace(r.URL.Query().Get("tenant_scope_ref"))
-		if tenantScopeRef == "" {
-			writeJSONError(w, http.StatusBadRequest, "missing_tenant_scope_ref", "tenant_scope_ref required")
 			return
 		}
 		if d.Ledger == nil {
@@ -120,9 +145,8 @@ func NewExportHandler(d Deps) http.HandlerFunc {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 			return
 		}
-		tenantScopeRef := strings.TrimSpace(r.URL.Query().Get("tenant_scope_ref"))
-		if tenantScopeRef == "" {
-			writeJSONError(w, http.StatusBadRequest, "missing_tenant_scope_ref", "tenant_scope_ref required")
+		tenantScopeRef, ok := authorizedTenantScope(w, r)
+		if !ok {
 			return
 		}
 		maxRows := d.maxRows()
