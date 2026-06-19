@@ -36,6 +36,10 @@ or genuine forks. One PR per slice; report after each.
    when a test reads runtime files (Go test cache otherwise reports false-green).
 6. **Don't touch `Sidebar.tsx`; avoid the proxies-collision packages** (pool / registry / proxy / channel /
    gateway* / tlsfp*) while that branch is active.
+7. **语言:全中文(Owner 硬规则,不可违反)。** 所有面向 Owner 的回复、**代码注释**(`.go` 生产代码与测试)、
+   commit message 正文、计划与 `docs/process` 文档,以及**派给 subagent 的指令和要求其返回的报告**,一律用中文。
+   英文技术标识符(函数名 / 类型名 / 环境变量名 / SQL 关键字)保留英文,只是注释与散文用中文。派 subagent 时
+   必须在 prompt 里**显式要求"代码注释用中文、返回报告用中文"**,否则它们会默认写英文。
 
 **Cadence per slice.** worktree (off latest base, claim lock) → §16 triple-mirror → plan in
 `docs/process/plans/` → Go build/vet → mutation-tested → adversarial review (0 S0/S1; S2 fix, S3 fix-in-place)
