@@ -1,6 +1,8 @@
 package dlq
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -70,5 +72,50 @@ func TestReplicaStatusForKindAuditLedgerEntryNone(t *testing.T) {
 	// this assertion fail.
 	if got := ReplicaStatusForKind(EventKindAuditLedgerEntry); got != ReplicaStatusNone {
 		t.Fatalf("audit ledger entry replica status=%q want %q", got, ReplicaStatusNone)
+	}
+}
+
+// TestNextFailureForErr_QuarantinesUnretryable 守:结构性毒消息(errors.Is 命中
+// ErrUnretryable)在第 1 次失败即转 quarantined,不消耗任何重试预算。
+// Mutation: 删掉 NextFailureForErr 里的 ErrUnretryable 短路分支 → 落 StatusPending
+// (attempt 1 在 backoff 预算内)→ 本断言红。
+func TestNextFailureForErr_QuarantinesUnretryable(t *testing.T) {
+	policy := DefaultRetryPolicy()
+	first := time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC)
+	poison := fmt.Errorf("decode payload: %w", ErrUnretryable)
+	got := policy.NextFailureForErr(first.Add(time.Second), first, 0, poison)
+	if got.Status != StatusQuarantined {
+		t.Fatalf("unretryable err must quarantine on attempt 1, got status=%s", got.Status)
+	}
+	if got.Attempts != 1 {
+		t.Fatalf("quarantine attempts=%d want=1 (must not burn retry budget)", got.Attempts)
+	}
+}
+
+// TestNextFailureForErr_TransientDelegates 守:非 ErrUnretryable 的瞬时错与 nil err
+// 完全沿用 NextFailure 既有语义 —— 对既有调用者零行为变更,且瞬时抖动绝不被误判为
+// 不可重试。Mutation: 若短路对任意非 nil err 命中 → 瞬时 case 变 quarantined → 红。
+func TestNextFailureForErr_TransientDelegates(t *testing.T) {
+	policy := DefaultRetryPolicy()
+	first := time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC)
+	now := first.Add(10 * time.Second)
+	transient := errors.New("pgx: connection refused")
+
+	got := policy.NextFailureForErr(now, first, 0, transient)
+	if got.Status != StatusPending {
+		t.Fatalf("transient err on attempt 1 must stay pending (retryable), got %s", got.Status)
+	}
+
+	// nil-err 路径必须逐字段等同 NextFailure。
+	a := policy.NextFailureForErr(now, first, 3, nil)
+	b := policy.NextFailure(now, first, 3)
+	if a.Status != b.Status || a.Attempts != b.Attempts || a.Delay != b.Delay || !a.NextRetryAt.Equal(b.NextRetryAt) {
+		t.Fatalf("nil-err path must equal NextFailure: %+v vs %+v", a, b)
+	}
+
+	// 达 MaxAttempts 的升级语义(operator_review)必须保留。
+	esc := policy.NextFailureForErr(now, first, 9, transient)
+	if esc.Status != StatusOperatorReview {
+		t.Fatalf("transient err at max attempts must escalate operator_review, got %s", esc.Status)
 	}
 }

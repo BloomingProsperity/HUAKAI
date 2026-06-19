@@ -44,17 +44,19 @@ func (h *Handler) Handle(ctx context.Context, record dlq.Record) error {
 		return ErrProofNil
 	}
 	if record.EventKind != dlq.EventKindPostDeliverySettlement {
-		return fmt.Errorf("settlementrecovery: handler called with wrong event_kind=%q (want post_delivery_settlement)", record.EventKind)
+		// 事件类型不匹配 = 路由/入队错配,重试同一行永远是错的类型 → 结构性不可重试。
+		return fmt.Errorf("settlementrecovery: handler called with wrong event_kind=%q (want post_delivery_settlement): %w", record.EventKind, dlq.ErrUnretryable)
 	}
 
 	payload, err := Decode(record.Payload)
 	if err != nil {
-		// Decode 失败 = payload corrupted,继续重试无意义。worker 按 policy
-		// 多次失败后转 quarantined,operator 介入。
-		return fmt.Errorf("settlementrecovery: decode payload: %w", err)
+		// Decode 失败 = payload 结构性损坏,重试同一份输入永远不会成功 → 裹 dlq.ErrUnretryable,
+		// 由 worker 重试决策立即转 quarantined(不烧满重试预算),operator 介入。
+		return fmt.Errorf("settlementrecovery: decode payload: %w", errors.Join(err, dlq.ErrUnretryable))
 	}
 	if err := payload.Validate(); err != nil {
-		return fmt.Errorf("settlementrecovery: validate payload: %w", err)
+		// 校验不过同属结构性毒消息,重试无意义 → 立即 quarantine。
+		return fmt.Errorf("settlementrecovery: validate payload: %w", errors.Join(err, dlq.ErrUnretryable))
 	}
 
 	req := payload.ToSettleRequest()
