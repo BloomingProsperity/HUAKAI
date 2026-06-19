@@ -17,6 +17,7 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 )
 
 const (
@@ -40,8 +41,20 @@ type Ledger interface {
 type Deps struct {
 	Ledger   Ledger
 	Registry auditledger.PubkeyRegistry
+	// Revocations 为已吊销的 audit signing key 集合;为 nil 时回退到 LoadRevocationsFromEnv
+	// (运维登记的 HUAKAI_TRUST_REVOKED_KEYS_JSON/FILE),与 audit verify / trust-receipt 同一来源。
+	Revocations trusthttp.Revocations
 
 	MaxRows int
+}
+
+// resolveRevocations 解析本次导出/证明使用的吊销表:deps 显式注入优先,未配置(nil)回退 env。
+// env 读取失败返回 error,由调用方失败安全处理(绝不静默跳过吊销检查)。
+func (d Deps) resolveRevocations() (trusthttp.Revocations, error) {
+	if d.Revocations != nil {
+		return d.Revocations, nil
+	}
+	return trusthttp.LoadRevocationsFromEnv()
 }
 
 type ExportBundle struct {
@@ -134,7 +147,13 @@ func NewProofDownloadHandler(d Deps) http.HandlerFunc {
 			writeJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
 		}
-		resp := gatewayhttp.AuditVerifyResponseForEntry(r.Context(), entry, d.Registry)
+		revocations, rerr := d.resolveRevocations()
+		if rerr != nil {
+			// 吊销表加载失败时失败安全:绝不在跳过吊销检查的情况下出具证明。
+			writeJSONError(w, http.StatusServiceUnavailable, "audit_revocations_error", "audit revocation list temporarily unavailable")
+			return
+		}
+		resp := gatewayhttp.AuditVerifyResponseForEntry(r.Context(), entry, d.Registry, revocations)
 		writeJSONAttachment(w, http.StatusOK, fmt.Sprintf(auditProofFilename, safeFilenamePart(requestID)), resp)
 	}
 }
@@ -280,9 +299,15 @@ func buildBundle(ctx context.Context, d Deps, selected, chainEntries []auditledg
 	if err != nil {
 		return ExportBundle{}, err
 	}
+	// 每次导出只解析一次吊销表(批量条目共用),失败则整单失败安全(由 NewExportHandler 转 503),
+	// 绝不在跳过吊销检查的情况下出具自证导出。
+	revocations, err := d.resolveRevocations()
+	if err != nil {
+		return ExportBundle{}, err
+	}
 	return ExportBundle{
-		Entries:          verifyResponses(ctx, selected, d.Registry),
-		ChainEntries:     verifyResponses(ctx, chainEntries, d.Registry),
+		Entries:          verifyResponses(ctx, selected, d.Registry, revocations),
+		ChainEntries:     verifyResponses(ctx, chainEntries, d.Registry, revocations),
 		LatestMerkleRoot: rootHex(root),
 		Pubkeys:          pubkeys,
 		SelfAttestation: SelfAttestationJSON{
@@ -295,10 +320,10 @@ func buildBundle(ctx context.Context, d Deps, selected, chainEntries []auditledg
 	}, nil
 }
 
-func verifyResponses(ctx context.Context, entries []auditledger.LedgerEntry, registry auditledger.PubkeyRegistry) []gatewayhttp.AuditVerifyResponse {
+func verifyResponses(ctx context.Context, entries []auditledger.LedgerEntry, registry auditledger.PubkeyRegistry, revocations trusthttp.Revocations) []gatewayhttp.AuditVerifyResponse {
 	out := make([]gatewayhttp.AuditVerifyResponse, 0, len(entries))
 	for _, entry := range entries {
-		out = append(out, gatewayhttp.AuditVerifyResponseForEntry(ctx, entry, registry))
+		out = append(out, gatewayhttp.AuditVerifyResponseForEntry(ctx, entry, registry, revocations))
 	}
 	return out
 }

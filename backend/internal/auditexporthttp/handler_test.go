@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
+	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 )
 
 func TestAuditProofDownload_Attachment(t *testing.T) {
@@ -157,6 +158,113 @@ func TestAuditExport_RequestIDsBundleFiltersAndAttests(t *testing.T) {
 	}
 	if err := auditledger.VerifyChain(bundleLedgerEntries(t, bundle.ChainEntries)); err != nil {
 		t.Fatalf("request id chain entries do not self-attest: %v", err)
+	}
+}
+
+// revocationsForFingerprint 构造一个把指定 fingerprint 登记为已吊销的吊销表(测试用)。
+func revocationsForFingerprint(t testing.TB, fingerprint string) trusthttp.Revocations {
+	t.Helper()
+	revocations, err := trusthttp.ParseRevocationsJSON([]byte(`{"revoked":[{"fingerprint":"` + fingerprint + `","reason_class":"key_compromise"}]}`))
+	if err != nil {
+		t.Fatalf("ParseRevocationsJSON: %v", err)
+	}
+	return revocations
+}
+
+// TestAuditExport_RevokedKeyDowngradedToKeyRevoked 守审计 wy94u3tn9 最后一个 S1:当某条目的 audit
+// signing key 已被吊销时,导出 bundle 必须把该条目降级为 key_revoked(KeyStatus=revoked、
+// SignatureValid=false),而不是因签名密码学有效就报通过。判别(变异):删 verifyAuditLedgerEntrySignature
+// 里的吊销 overlay → 吊销 key 的条目 KeyStatus 仍 active / SignatureValid=true → 本测试变红。
+func TestAuditExport_RevokedKeyDowngradedToKeyRevoked(t *testing.T) {
+	ledger, registry := newAuditExportTestLedger(t)
+	entry := appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{RequestID: "req_revoked", TenantID: 7, Timestamp: "2026-06-02T10:00:00Z"})
+	deps := Deps{Ledger: ledger, Registry: registry, Revocations: revocationsForFingerprint(t, entry.PubkeyFingerprint)}
+
+	rec := invokeAuditExport(t, deps, "/v1/audit/export?from=2026-06-02T00:00:00Z&to=2026-06-03T00:00:00Z")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var bundle ExportBundle
+	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+		t.Fatalf("decode bundle: %v", err)
+	}
+	if len(bundle.Entries) != 1 {
+		t.Fatalf("entries=%d want 1", len(bundle.Entries))
+	}
+	cp := bundle.Entries[0].ChainProof
+	if cp.KeyStatus != "revoked" {
+		t.Fatalf("KeyStatus=%q want revoked(吊销 key 未降级=验签忽略吊销 S1)", cp.KeyStatus)
+	}
+	if cp.SignatureValid == nil || *cp.SignatureValid {
+		t.Fatalf("SignatureValid=%v want false(吊销 key 即便签名有效也不可信)", cp.SignatureValid)
+	}
+	if cp.Reason != "key_revoked" {
+		t.Fatalf("Reason=%q want key_revoked", cp.Reason)
+	}
+}
+
+// TestAuditExport_NonRevokedKeyStaysValid 守"只在 fingerprint 命中吊销时才降级":把一个**别的**
+// fingerprint 登记为吊销,本条目的 key 未吊销 → 仍应 SignatureValid=true、KeyStatus 非 revoked。
+// 判别(变异):若吊销 overlay 无条件降级 → 未吊销 key 也被误判 → 本测试变红。
+func TestAuditExport_NonRevokedKeyStaysValid(t *testing.T) {
+	ledger, registry := newAuditExportTestLedger(t)
+	appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{RequestID: "req_ok", TenantID: 7, Timestamp: "2026-06-02T10:00:00Z"})
+	deps := Deps{Ledger: ledger, Registry: registry, Revocations: revocationsForFingerprint(t, "deadbeefdeadbeef")}
+
+	rec := invokeAuditExport(t, deps, "/v1/audit/export?from=2026-06-02T00:00:00Z&to=2026-06-03T00:00:00Z")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var bundle ExportBundle
+	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+		t.Fatalf("decode bundle: %v", err)
+	}
+	cp := bundle.Entries[0].ChainProof
+	if cp.KeyStatus == "revoked" || cp.Reason == "key_revoked" {
+		t.Fatalf("未吊销 key 被误判 revoked:KeyStatus=%q Reason=%q", cp.KeyStatus, cp.Reason)
+	}
+	if cp.SignatureValid == nil || !*cp.SignatureValid {
+		t.Fatalf("SignatureValid=%v want true(未吊销有效 key)", cp.SignatureValid)
+	}
+}
+
+// TestAuditProof_RevokedKeyDowngraded 守 proof 下载路径同样应用吊销降级。
+// 判别(变异):删吊销 overlay → proof 对吊销 key 仍 SignatureValid=true → 本测试变红。
+func TestAuditProof_RevokedKeyDowngraded(t *testing.T) {
+	ledger, registry := newAuditExportTestLedger(t)
+	entry := appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{RequestID: "req_proof_revoked", TenantID: 7, Timestamp: "2026-06-02T10:00:00Z"})
+	deps := Deps{Ledger: ledger, Registry: registry, Revocations: revocationsForFingerprint(t, entry.PubkeyFingerprint)}
+
+	rec := invokeAuditProof(t, deps, "/v1/audit/proof/"+entry.RequestID+".json")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp gatewayhttp.AuditVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode proof: %v", err)
+	}
+	if resp.ChainProof.KeyStatus != "revoked" || resp.ChainProof.Reason != "key_revoked" {
+		t.Fatalf("proof KeyStatus=%q Reason=%q want revoked/key_revoked", resp.ChainProof.KeyStatus, resp.ChainProof.Reason)
+	}
+	if resp.ChainProof.SignatureValid == nil || *resp.ChainProof.SignatureValid {
+		t.Fatalf("proof SignatureValid=%v want false", resp.ChainProof.SignatureValid)
+	}
+}
+
+// TestAuditExport_RevocationLoadFailureFailsSafe 守"绝不静默跳过吊销检查"这一安全核心:当吊销表
+// 来源(env)配置非法、加载失败时,导出必须失败安全返回 503,而不是当作"无吊销"照常出具自证导出。
+// 判别(变异):把 resolveRevocations 改成加载失败时吞掉 error、返回空表继续 → 导出又返回 200 →
+// 本测试变红(吊销机制将对 audit-ledger 形同虚设)。
+func TestAuditExport_RevocationLoadFailureFailsSafe(t *testing.T) {
+	// 故意把吊销表 JSON env 配成非法,使 LoadRevocationsFromEnv 报错。
+	t.Setenv(trusthttp.TrustRevocationsJSONEnv, "{not valid json")
+	ledger, registry := newAuditExportTestLedger(t)
+	appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{RequestID: "req_failsafe", TenantID: 7, Timestamp: "2026-06-02T10:00:00Z"})
+	deps := Deps{Ledger: ledger, Registry: registry} // Revocations 为 nil → 回退到(已被污染的)env
+
+	rec := invokeAuditExport(t, deps, "/v1/audit/export?from=2026-06-02T00:00:00Z&to=2026-06-03T00:00:00Z")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("吊销表加载失败应失败安全 503,实际 status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

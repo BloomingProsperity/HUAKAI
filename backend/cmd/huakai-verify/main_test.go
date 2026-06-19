@@ -317,6 +317,70 @@ func TestRunCLI_NotFoundFails(t *testing.T) {
 	}
 }
 
+// TestRunCLI_RequestIDFlowRevokedKeyFails 守审计 wy94u3tn9 最后一个 S1 的 CLI 面:request-id 流
+// 此前丢弃 well-known 文档的 revoked 集合,导致吊销的 signing key 仍被报"验证通过"。这里网关的
+// well-known 把该 key 标为已吊销,验证必须失败(exit!=0、输出含 revoked、不含 passed)。
+// 判别(变异):删 main.go request-id 流里的吊销检查(if keyRevoked ...)→ 又报 passed/exit 0 → 本测试变红。
+func TestRunCLI_RequestIDFlowRevokedKeyFails(t *testing.T) {
+	_, gateway := newVerifyGatewayRevoked(t)
+	defer gateway.Close()
+
+	var out bytes.Buffer
+	code := runCLI([]string{
+		"--pubkey-url=" + gateway.URL + "/.well-known/huakai-pubkey.json",
+		"--request-id=req_cli",
+		"--tenant-scope-ref=" + auditledger.TenantScopeRef(7),
+		"--gateway-url=" + gateway.URL,
+	}, &out, gateway.Client())
+	if code == 0 {
+		t.Fatalf("吊销 key 的 request-id 验证应失败(exit!=0),实际 code=0 output=%s", out.String())
+	}
+	if !strings.Contains(out.String(), "revoked") {
+		t.Fatalf("输出应说明 signing key 已吊销,实际: %s", out.String())
+	}
+	if strings.Contains(out.String(), "audit verification passed") {
+		t.Fatalf("吊销 key 不应报验证通过: %s", out.String())
+	}
+}
+
+// newVerifyGatewayRevoked 与 newVerifyGateway 同构,但 well-known 文档把 signing key 标为已吊销,
+// 用于验证 request-id 流对吊销 key 的独立拒绝(网关自身的吊销表为空,吊销只来自 well-known)。
+func newVerifyGatewayRevoked(t *testing.T) (*sign.Signer, *httptest.Server) {
+	t.Helper()
+	signer, err := sign.GenerateKey()
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	ledger, err := auditledger.NewMemoryLedger(signer)
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	ctx := context.Background()
+	prepared, err := auditledger.PrepareEntry(ctx, auditledger.LedgerEntry{
+		LedgerID:  "lid_cli",
+		RequestID: "req_cli",
+		TenantID:  7,
+		HopChain:  []proto.HopAttestation{{Hop: proto.HopIngress, Timestamp: "2026-05-13T10:00:00Z"}},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if _, err = ledger.Append(ctx, prepared); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	deps := gatewayhttp.AuditVerifyStaticDeps{Ledger: ledger}
+	mux.HandleFunc("/v1/audit/verify", gatewayhttp.NewAuditVerifyHandler(deps))
+	mux.HandleFunc("/v1/audit/merkle-tree.json", gatewayhttp.NewAuditMerkleTreeHandler(deps))
+	mux.HandleFunc("/.well-known/huakai-pubkey.json", func(w http.ResponseWriter, _ *http.Request) {
+		doc := fmt.Sprintf(`{"keys":[{"fingerprint":%q,"public_key":%q}],"revoked":[{"fingerprint":%q}]}`,
+			signer.Fingerprint(), base64.StdEncoding.EncodeToString(signer.PublicKey()), signer.Fingerprint())
+		_, _ = fmt.Fprint(w, doc)
+	})
+	return signer, newLoopbackHTTPServer(t, mux)
+}
+
 func newVerifyGateway(t *testing.T) (*sign.Signer, *httptest.Server) {
 	t.Helper()
 	signer, err := sign.GenerateKey()
