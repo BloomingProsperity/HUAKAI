@@ -1,6 +1,9 @@
 package dlq
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type RetryPolicy struct {
 	BaseBackoff time.Duration
@@ -64,4 +67,16 @@ func (p RetryPolicy) NextFailure(now, firstFailureAt time.Time, previousAttempts
 		Attempts:    attempts,
 		Delay:       delay,
 	}
+}
+
+// NextFailureForErr 在 NextFailure 的基础上加一层"结构性不可重试"短路:当 handler 返回的
+// 错误经 errors.Is 命中 ErrUnretryable(payload 损坏/校验不过/事件类型不匹配等毒消息),
+// 直接判定 quarantined 并停止重试 —— 不再烧满 MaxAttempts/DLQAfter 窗口,让毒消息立刻
+// 进 operator 可见的隔离泳道。failErr 为 nil 或非 ErrUnretryable 时,行为与 NextFailure 完全一致
+// (瞬时故障仍走原有 backoff -> operator_review 升级路径),故对既有调用者零行为变更。
+func (p RetryPolicy) NextFailureForErr(now, firstFailureAt time.Time, previousAttempts int, failErr error) RetryDecision {
+	if failErr != nil && errors.Is(failErr, ErrUnretryable) {
+		return RetryDecision{Status: StatusQuarantined, Attempts: previousAttempts + 1}
+	}
+	return p.NextFailure(now, firstFailureAt, previousAttempts)
 }
