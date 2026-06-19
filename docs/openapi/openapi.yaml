@@ -3610,7 +3610,7 @@ paths:
       summary: Download a signed audit proof bundle by request id
       operationId: downloadAuditProof
       x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
-      security: []
+      x-huakai-required-role: session
       parameters:
         - in: path
           name: request_id
@@ -3618,7 +3618,8 @@ paths:
           schema: { type: string, minLength: 1, maxLength: 256 }
         - in: query
           name: tenant_scope_ref
-          required: true
+          required: false
+          description: Optional. The export scope is always derived from the authenticated session's tenant; when supplied this value must match that tenant, otherwise the request is rejected with 403.
           schema: { type: string, minLength: 1, maxLength: 128 }
       responses:
         '200':
@@ -3631,6 +3632,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuditVerifyResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -3640,11 +3643,12 @@ paths:
       summary: Download tenant-scoped audit proof export bundle
       operationId: downloadAuditExport
       x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
-      security: []
+      x-huakai-required-role: session
       parameters:
         - in: query
           name: tenant_scope_ref
-          required: true
+          required: false
+          description: Optional. The export scope is always derived from the authenticated session's tenant; when supplied this value must match that tenant, otherwise the request is rejected with 403.
           schema: { type: string, minLength: 1, maxLength: 128 }
         - in: query
           name: from
@@ -3672,6 +3676,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuditExportBundle' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '413':
           description: Audit export exceeds the bounded row limit.
           content:

@@ -145,9 +145,15 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Get("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
 		r.Post("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
 		r.Get("/merkle-tree.json", gatewayhttp.NewAuditMerkleTreeHandler(auditVerifyDeps))
-		auditexporthttp.MountRoutes(r, auditexporthttp.Deps{
-			Ledger:   auditExportLedgerFrom(d.auditLedger),
-			Registry: d.auditPubkeyRegistry,
+		// 审计导出/证明会按租户范围返回整条审计链,必须认证并绑定到认证身份的租户;
+		// pubkey/verify/merkle 保持公开(trust-chain 单负载验证)。处理器内部还会从认证
+		// 上下文派生 tenant_scope_ref 并失败闭合,中间件与处理器双层堵住跨租户 IDOR。
+		r.Group(func(r chi.Router) {
+			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+			auditexporthttp.MountRoutes(r, auditexporthttp.Deps{
+				Ledger:   auditExportLedgerFrom(d.auditLedger),
+				Registry: d.auditPubkeyRegistry,
+			})
 		})
 	})
 
