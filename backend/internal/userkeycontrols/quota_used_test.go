@@ -32,6 +32,11 @@ func TestKeyQuotaUsed(t *testing.T) {
 	wantUsed := decimal.RequireFromString("0.5")
 	// fakeStore returns LimitUSD=1
 	wantRemaining := decimal.RequireFromString("0.5")
+	// Two cost windows: window_end must surface the SOONEST reset boundary, and the
+	// earlier end sits on the SECOND window so the assertion fails a naive windows[0]
+	// pick (order-independence) as well as a wrong-direction (latest) pick.
+	wantWindowEnd := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
+	laterWindowEnd := wantWindowEnd.Add(48 * time.Hour)
 
 	store := newFakeStore()
 	reader := &fakeProgressReader{
@@ -41,6 +46,14 @@ func TestKeyQuotaUsed(t *testing.T) {
 				Scope:         quota.Scope{Kind: quota.ScopeAPIKey, ID: "3"},
 				SettledValue:  settledDec,
 				ReservedValue: reservedDec,
+				Window:        quota.Window{End: laterWindowEnd},
+			},
+			{
+				TenantID:      1,
+				Scope:         quota.Scope{Kind: quota.ScopeAPIKey, ID: "3"},
+				SettledValue:  decimal.Zero,
+				ReservedValue: decimal.Zero,
+				Window:        quota.Window{End: wantWindowEnd},
 			},
 		},
 	}
@@ -61,6 +74,15 @@ func TestKeyQuotaUsed(t *testing.T) {
 	if !view.RemainingUSD.Equal(wantRemaining) {
 		t.Errorf("remaining_usd = %s, want %s", *view.RemainingUSD, wantRemaining)
 	}
+	// window_end must surface the soonest reset boundary across the windows.
+	// MUTATION: drop the WindowEnd populate -> nil -> RED; pick the latest/first window
+	// instead of the earliest -> laterWindowEnd != wantWindowEnd -> RED.
+	if view.WindowEnd == nil {
+		t.Fatal("window_end must be set when a quota window exists")
+	}
+	if !view.WindowEnd.Equal(wantWindowEnd) {
+		t.Errorf("window_end = %s, want %s (soonest reset across windows, order-independent)", view.WindowEnd, wantWindowEnd)
+	}
 
 	// No window rows -> used = 0
 	svc2 := newServiceForTest(store, nil)
@@ -74,5 +96,8 @@ func TestKeyQuotaUsed(t *testing.T) {
 	}
 	if view2.RemainingUSD == nil || !view2.RemainingUSD.Equal(decimal.NewFromInt(1)) {
 		t.Errorf("no-window: remaining_usd should equal limit=1, got %v", view2.RemainingUSD)
+	}
+	if view2.WindowEnd != nil {
+		t.Errorf("no-window: window_end should be nil, got %v", view2.WindowEnd)
 	}
 }

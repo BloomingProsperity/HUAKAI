@@ -135,11 +135,18 @@ func (s *KeyControlService) GetKeyQuota(ctx context.Context, tenantID, userID, a
 			}
 		} else {
 			var used decimal.Decimal
+			var windowEnd *time.Time
 			for _, w := range windows {
 				// consumed = settled + reserved
 				used = used.Add(w.SettledValue).Add(w.ReservedValue)
+				// Surface the soonest reset boundary across the current cost windows.
+				if windowEnd == nil || w.Window.End.Before(*windowEnd) {
+					end := w.Window.End
+					windowEnd = &end
+				}
 			}
 			view.UsedUSD = used
+			view.WindowEnd = windowEnd
 			if !row.LimitUSD.IsZero() {
 				remaining := row.LimitUSD.Sub(used)
 				view.RemainingUSD = &remaining
