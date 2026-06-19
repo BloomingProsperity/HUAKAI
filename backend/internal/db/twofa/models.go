@@ -19,4 +19,6 @@ type TwoFactorSetting struct {
 	LastUsedAt     pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
 	CreatedAt      pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	// 最近一次成功消费的 TOTP 时间步计数器(counter = unix/step)。防重放守卫:仅接受匹配到的时间步严格大于该值的码;NULL 表示从未消费。
+	LastUsedStep *int64 `db:"last_used_step" json:"last_used_step"`
 }

@@ -120,7 +120,8 @@ SELECT
     locked_until,
     last_used_at,
     created_at,
-    updated_at
+    updated_at,
+    last_used_step
 FROM two_factor_settings
 WHERE tenant_id = $1
   AND user_id = $2
@@ -144,6 +145,7 @@ func (q *Queries) GetTwoFactorSettings(ctx context.Context, arg GetTwoFactorSett
 		&i.LastUsedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastUsedStep,
 	)
 	return i, err
 }
@@ -167,6 +169,41 @@ type MarkTwoFactorSuccessParams struct {
 func (q *Queries) MarkTwoFactorSuccess(ctx context.Context, arg MarkTwoFactorSuccessParams) error {
 	_, err := q.db.Exec(ctx, markTwoFactorSuccess, arg.TenantID, arg.UserID, arg.LastUsedAt)
 	return err
+}
+
+const markTwoFactorTOTPSuccess = `-- name: MarkTwoFactorTOTPSuccess :execrows
+UPDATE two_factor_settings
+SET failed_attempts = 0,
+    locked_until = NULL,
+    last_used_at = $3,
+    last_used_step = $4,
+    updated_at = $3
+WHERE tenant_id = $1
+  AND user_id = $2
+  AND (last_used_step IS NULL OR last_used_step < $4)
+`
+
+type MarkTwoFactorTOTPSuccessParams struct {
+	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
+	UserID       int64              `db:"user_id" json:"user_id"`
+	LastUsedAt   pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
+	LastUsedStep *int64             `db:"last_used_step" json:"last_used_step"`
+}
+
+// 记录一次成功的 TOTP 校验并落已消费时间步,做防重放的原子守卫:仅当 $4 严格大于
+// 已存 last_used_step(或其为 NULL)时才更新。受影响行数为 0 表示该(或更早)时间步
+// 已被并发请求消费,调用方据此按重放拒绝。
+func (q *Queries) MarkTwoFactorTOTPSuccess(ctx context.Context, arg MarkTwoFactorTOTPSuccessParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markTwoFactorTOTPSuccess,
+		arg.TenantID,
+		arg.UserID,
+		arg.LastUsedAt,
+		arg.LastUsedStep,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setTwoFactorEnabled = `-- name: SetTwoFactorEnabled :exec
@@ -253,6 +290,9 @@ ON CONFLICT (tenant_id, user_id) DO UPDATE SET
     failed_attempts = EXCLUDED.failed_attempts,
     locked_until = EXCLUDED.locked_until,
     last_used_at = EXCLUDED.last_used_at,
+    -- 重新 setup 会换成全新密钥:必须清掉旧的已消费时间步,否则旧 step 会误拒新密钥
+    -- 在同一时间步空间里生成的首个码(counter 与密钥无关,纯按时间推进)。
+    last_used_step = NULL,
     updated_at = EXCLUDED.updated_at
 RETURNING
     tenant_id,
@@ -263,7 +303,8 @@ RETURNING
     locked_until,
     last_used_at,
     created_at,
-    updated_at
+    updated_at,
+    last_used_step
 `
 
 type UpsertTwoFactorSettingsParams struct {
@@ -301,6 +342,7 @@ func (q *Queries) UpsertTwoFactorSettings(ctx context.Context, arg UpsertTwoFact
 		&i.LastUsedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastUsedStep,
 	)
 	return i, err
 }

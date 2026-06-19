@@ -365,6 +365,18 @@ func twoFAErrorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return resp.Error.Code
 }
 
+// TestWriteTwoFAErrorMapsCodeReusedTo401 守防重放新错误 twofa.ErrCodeReused 在读路径错误映射里
+// 被识别为 401 two_factor_code_reused,而不是落到默认分支(503 backend_error)。判别(变异):
+// 删 writeTwoFAError 里的 ErrCodeReused case → 落默认 503 → 本测试两条断言均变红。
+func TestWriteTwoFAErrorMapsCodeReusedTo401(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeTwoFAError(rec, twofa.ErrCodeReused)
+	assertTwoFAStatus(t, rec, http.StatusUnauthorized)
+	if code := twoFAErrorCode(t, rec); code != "two_factor_code_reused" {
+		t.Fatalf("error code=%q want two_factor_code_reused", code)
+	}
+}
+
 func httpCodeFromSecret(t *testing.T, encoded string, now time.Time) string {
 	t.Helper()
 	secret, err := twofa.DecodeSecret(encoded)
