@@ -30,6 +30,7 @@ var (
 	ErrLeaseLost             = errors.New("mediatask: lease lost")
 	ErrActualExceedsEstimate = errors.New("mediatask: actual cost exceeds estimate")
 	ErrStoreNotConfigured    = errors.New("mediatask: store not configured")
+	ErrInvalidOrphanStatus   = errors.New("mediatask: invalid orphan reconcile status")
 )
 
 type Config struct {
