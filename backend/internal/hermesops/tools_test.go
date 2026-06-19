@@ -94,6 +94,60 @@ func TestCredentialDiagnoseFailsClosedOnNilDep(t *testing.T) {
 	}
 }
 
+// TestCredentialDiagnoseProjectsExpiryTiming guards the access_expires_at /
+// refresh_before_at / last_refresh_at projection (credential-expiry root-cause).
+// The three timestamps are distinct (so a dropped key reads nil and a swapped
+// field mismatches), and the row still carries the secret sentinel in a
+// non-diagnostic field — so this test also reaffirms the timestamps did not
+// widen the mask. Mutation: drop any of the three keys -> red.
+func TestCredentialDiagnoseProjectsExpiryTiming(t *testing.T) {
+	accessExp := time.Date(2026, 5, 14, 18, 0, 0, 0, time.UTC)
+	refreshBy := time.Date(2026, 5, 14, 17, 0, 0, 0, time.UTC)
+	lastRefresh := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	deps := CredentialDiagnoseDeps{
+		DryRun: func(_ context.Context, _ credentialworker.ProviderAccountCredentialTestStore, _ *credentialworker.ModeAdapterRegistry, _, _ int64, _ time.Time) (credentialworker.ProviderAccountCredentialTestResult, error) {
+			return credentialworker.ProviderAccountCredentialTestResult{OK: true, Message: "credential is valid"}, nil
+		},
+		TestStore: fakeCredTestStore{},
+		RenewStatus: func(_ context.Context, _ credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error) {
+			return []credentialstore.RenewStatusMetadata{{
+				CredentialID: 9, AccountID: 5, AccountName: secretSentinel,
+				Vendor: "anthropic", AuthMode: "oauth", State: "active",
+				AccessExpiresAt: &accessExp, RefreshBeforeAt: &refreshBy, LastRefreshAt: &lastRefresh,
+			}}, nil
+		},
+	}
+	spec := CredentialDiagnoseSpec(deps)
+	r := req(7)
+	r.Args["account_id"] = float64(5)
+	res, err := spec.Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	rows, ok := res.Summary["renew_status"].([]map[string]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("renew_status=%v want exactly one row", res.Summary["renew_status"])
+	}
+	row := rows[0]
+	for _, c := range []struct {
+		key  string
+		want time.Time
+	}{
+		{"access_expires_at", accessExp},
+		{"refresh_before_at", refreshBy},
+		{"last_refresh_at", lastRefresh},
+	} {
+		got, ok := row[c.key].(time.Time)
+		if !ok || !got.Equal(c.want) {
+			t.Fatalf("%s=%v want %v (projection dropped?)", c.key, row[c.key], c.want)
+		}
+	}
+	// The added timestamps must not have widened the secret mask.
+	if jsonContains(t, res.Summary, secretSentinel) {
+		t.Fatalf("credential_diagnose leaked the secret sentinel after adding timestamps: %v", res.Summary)
+	}
+}
+
 func TestCredentialDiagnoseRejectsMissingAccountID(t *testing.T) {
 	// Regression: a missing/zero account_id must be ErrInvalidArgs (400), not a
 	// read against account 0.
