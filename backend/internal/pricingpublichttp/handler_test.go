@@ -226,22 +226,29 @@ func TestPublicPricingPricingErrorIsServiceUnavailable(t *testing.T) {
 }
 
 type decodedPricingItem struct {
-	Model               string `json:"model"`
-	CanonicalID         string `json:"canonical_id"`
-	InputPricePerToken  string `json:"input_price_per_token"`
-	OutputPricePerToken string `json:"output_price_per_token"`
-	ContextLength       *int   `json:"context_length,omitempty"`
+	Model               string          `json:"model"`
+	CanonicalID         string          `json:"canonical_id"`
+	OwnedBy             string          `json:"owned_by,omitempty"`
+	Mode                string          `json:"mode,omitempty"`
+	InputPricePerToken  string          `json:"input_price_per_token"`
+	OutputPricePerToken string          `json:"output_price_per_token"`
+	ContextLength       *int            `json:"context_length,omitempty"`
+	MaxOutputTokens     *int            `json:"max_output_tokens,omitempty"`
+	Capabilities        map[string]bool `json:"capabilities,omitempty"`
 }
 
 func publicPricingFixture() (*publicPricingCatalogStub, *publicPricingPricerStub) {
 	created := time.Unix(1704067200, 0).UTC()
 	catalog := &publicPricingCatalogStub{fixtures: []publicPricingModelFixture{
 		{enabled: true, model: registry.ListedModel{
-			ID:            "gpt-4.1-mini",
-			CanonicalID:   "openai/gpt-4.1-mini",
-			CreatedAt:     created,
-			OwnedBy:       "openai",
-			ContextWindow: 128000,
+			ID:              "gpt-4.1-mini",
+			CanonicalID:     "openai/gpt-4.1-mini",
+			CreatedAt:       created,
+			OwnedBy:         "openai",
+			Mode:            "chat",
+			ContextWindow:   128000,
+			MaxOutputTokens: ptrInt(16384),
+			Capabilities:    map[string]bool{"vision": true, "tools": true},
 		}},
 	}}
 	pricer := &publicPricingPricerStub{table: billing.NewPublicPriceTable("public-v1", map[string]billing.PublicPrice{
@@ -278,3 +285,39 @@ func assertPublicPricingErrorCode(t *testing.T, rec *httptest.ResponseRecorder, 
 		t.Fatalf("error code=%q want %q body=%s", got.Error.Code, want, rec.Body.String())
 	}
 }
+
+// Mutation: dropping any of the four catalog-metadata projections in handler.go
+// (owned_by / mode / max_output_tokens / capabilities) leaves the corresponding
+// response field at its zero value, which differs from the discriminating fixture
+// values seeded below, so each assertion below goes RED on that defect.
+func TestPublicPricingProjectsCatalogMetadata(t *testing.T) {
+	catalog, pricer := publicPricingFixture()
+	handler := NewHandler(Deps{Catalog: catalog, Pricing: pricer})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/pricing/page", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	items := decodePricingItems(t, rec)
+	if len(items) != 1 {
+		t.Fatalf("items=%+v want exactly one priced model", items)
+	}
+	item := items[0]
+	if item.OwnedBy != "openai" {
+		t.Fatalf("owned_by=%q want openai (projection dropped?)", item.OwnedBy)
+	}
+	if item.Mode != "chat" {
+		t.Fatalf("mode=%q want chat (projection dropped?)", item.Mode)
+	}
+	if item.MaxOutputTokens == nil || *item.MaxOutputTokens != 16384 {
+		t.Fatalf("max_output_tokens=%v want 16384 (projection dropped?)", item.MaxOutputTokens)
+	}
+	if !item.Capabilities["vision"] || !item.Capabilities["tools"] {
+		t.Fatalf("capabilities=%v want vision+tools (projection dropped?)", item.Capabilities)
+	}
+}
+
+func ptrInt(n int) *int { return &n }
