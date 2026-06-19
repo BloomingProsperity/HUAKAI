@@ -13,6 +13,8 @@ This project builds an MIT clean-room AI Gateway + Account Hub + Admin Ops Platf
 - Every reference feature must be mapped to `Implemented`, `Implemented Better`, `Merged Equivalent`, `Safe Equivalent`, `Plugin`, `Feature Flag`, or `Mandatory Roadmap`.
 - No feature may be silently dropped.
 - Do not modify `LICENSE` without explicit owner instruction.
+- **语言:全中文(Owner 硬规则)。** 代码注释(`.go` 生产代码与测试)、commit message 正文、计划与 `docs/process` 文档、面向 Owner 的汇报、以及派发给其它 agent 的指令与其返回报告,一律用中文;英文技术标识符(函数 / 类型 / 环境变量名、SQL 关键字)保留英文,只是注释与散文用中文。Dispatch subagent 时必须在 prompt 显式要求"代码注释用中文、返回报告用中文"。
+- **代码注释禁止提及借鉴项目(Owner 硬规则 + clean-room)。** `.go` 代码注释里**绝不**出现 sub2api / new-api / CLIProxyAPI 等借鉴项目名,也不写"借鉴 / 参考某项目的做法"。注释只描述 HUAKAI 自身的意图与机制。对借鉴项目的 #16 调研与对照只保留在 `docs/process` 计划文档里,不进代码注释。
 
 ## Owner Start Gate
 
