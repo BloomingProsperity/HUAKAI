@@ -1029,3 +1029,34 @@ func yamlSchemaBlock(spec, header string) string {
 	}
 	return strings.Join(lines[start:end], "\n")
 }
+
+// TestMeUsageRecordSchemaListsStreamShapeAndTiming binds the self-service usage record
+// response shape to its OpenAPI schema. The handler projects stream/stream_terminated_reason/
+// requested_at, and MeUsageRecord is additionalProperties:false — so dropping any of those
+// properties from the schema while the handler keeps emitting them silently diverges the
+// documented contract. Mutation: delete one of the three property lines from the MeUsageRecord
+// block in openapi.yaml and this test goes red.
+func TestMeUsageRecordSchemaListsStreamShapeAndTiming(t *testing.T) {
+	r := buildTestRouter(t)
+	if !hasOperation(openapicheck.WalkChiOperations(r), http.MethodGet, "/v1/me/usage") {
+		t.Fatalf("runtime missing GET /v1/me/usage")
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	block := yamlSchemaBlock(string(raw), "MeUsageRecord:")
+	if block == "" {
+		t.Fatalf("MeUsageRecord schema block not found in OpenAPI")
+	}
+	for _, field := range []string{"stream:", "stream_terminated_reason:", "requested_at:"} {
+		if !strings.Contains(block, field) {
+			t.Fatalf("MeUsageRecord schema missing %q property (handler emits it; schema is additionalProperties:false)", field)
+		}
+	}
+}
