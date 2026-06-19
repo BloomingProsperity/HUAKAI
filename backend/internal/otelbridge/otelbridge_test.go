@@ -159,6 +159,58 @@ func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
 	}
 }
 
+// TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot guards that the per-(vendor,model)
+// labeled L2 response-cache expvar maps are aggregated into flat totals on BOTH the Prometheus
+// scrape and the alert-rule snapshot, so an operator can alert on cache hit-rate / size after
+// enabling the cache. Two labels per map prove the bridge SUMS across labels (not reads one).
+// MUTATION: drop an L2 entry from bridgeCounters() -> metric absent (snapshot 0 / scrape
+// missing) -> RED; make readExpvarMapSum read a single key instead of summing -> 3 or 4 != 7 -> RED.
+func TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot(t *testing.T) {
+	setExpvarMapInt(t, "huakai_cache_l2_hit_total", "vendor=a,model=x", 3)
+	setExpvarMapInt(t, "huakai_cache_l2_hit_total", "vendor=b,model=y", 4) // sum 7
+	setExpvarMapInt(t, "huakai_cache_l2_miss_total", "vendor=a,model=x", 1)
+	setExpvarMapInt(t, "huakai_cache_l2_miss_total", "vendor=b,model=y", 2) // sum 3
+	setExpvarMapInt(t, "huakai_cache_l2_size_bytes", "vendor=a,model=x", 1000)
+	setExpvarMapInt(t, "huakai_cache_l2_size_bytes", "vendor=b,model=y", 2000) // sum 3000
+
+	// Alert-snapshot leg: the flat map the alert engine evaluates rules against.
+	snap, err := ExpvarMetricSource{}.Snapshot(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if got := snap["huakai_cache_l2_hit_total"]; got != 7 {
+		t.Errorf("snapshot hit_total=%v want 7 (sum across labels)", got)
+	}
+	if got := snap["huakai_cache_l2_miss_total"]; got != 3 {
+		t.Errorf("snapshot miss_total=%v want 3 (sum across labels)", got)
+	}
+	if got := snap["huakai_cache_l2_size_bytes"]; got != 3000 {
+		t.Errorf("snapshot size_bytes=%v want 3000 (sum across labels)", got)
+	}
+
+	// Prometheus-scrape leg.
+	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "true")
+	mp, handler, shutdown, err := Setup(context.Background())
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	defer func() {
+		if err := shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown() error = %v", err)
+		}
+	}()
+	if handler == nil {
+		t.Fatalf("Setup() with HUAKAI_METRICS_PROMETHEUS=true returned nil handler")
+	}
+	if err := RegisterBridge(context.Background(), mp); err != nil {
+		t.Fatalf("RegisterBridge() error = %v", err)
+	}
+	body := scrapeMetrics(t, handler)
+	assertPromMetricValue(t, body, "huakai_cache_l2_hit_total", "7")
+	assertPromMetricValue(t, body, "huakai_cache_l2_miss_total", "3")
+	assertPromMetricValue(t, body, "huakai_cache_l2_size_bytes", "3000")
+}
+
 func scrapeMetrics(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
