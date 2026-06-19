@@ -216,6 +216,28 @@ func bridgeCounters() []bridgeCounter {
 			description: "Process uptime in seconds (crash-loop / restart signal).",
 			read:        func() int64 { return int64(time.Since(processStart).Seconds()) },
 		},
+		// F-BILL-001 资金完整性可观测性:当某租户的阶梯计价数据无法解析或求值时,
+		// 计价解析器会从阶梯费率柔性降级到平价费率,静默地按平价兜底收费,并将该笔
+		// 收费标记为待对账。这条柔性降级路径本就会递增一个 expvar 计数器,但它对
+		// Prometheus/OTel 暴露面和告警规则快照都是不可见的。把这个 fallback 总数桥接出来
+		// 作为首要可告警信号(与上面 group_policy / budget 的 fail-open 总数同列),让运维
+		// 能对静默错收进行告警;同时桥接 flat-charged 和 tiered-charged 总数作为分母,
+		// 这样就能算出 fallback 比率,而不只是一个绝对计数。
+		{
+			name:        "huakai_billing_pricing_tiered_fallback_total",
+			description: "计价解析器柔性降级事件(阶梯计价无法解析/求值;按平价兜底收费,待对账)。",
+			read:        func() int64 { return readExpvarMapInt("billing_pricing_eval", "tiered_fallback_total") },
+		},
+		{
+			name:        "huakai_billing_pricing_flat_charged_total",
+			description: "计价解析器按平价费率收费的请求数(阶梯降级比率的分母)。",
+			read:        func() int64 { return readExpvarMapInt("billing_pricing_eval", "flat_charged_total") },
+		},
+		{
+			name:        "huakai_billing_pricing_tiered_charged_total",
+			description: "计价解析器按阶梯费率收费的请求数(阶梯降级比率的分母)。",
+			read:        func() int64 { return readExpvarMapInt("billing_pricing_eval", "tiered_charged_total") },
+		},
 		// F-CACHE-001 activation observability: aggregate the per-(vendor,model)-labeled
 		// L2 response-cache counters into flat totals so the cache's health is alertable
 		// (hit-rate collapse, size pressure) before/while an operator enables it. hit/miss
