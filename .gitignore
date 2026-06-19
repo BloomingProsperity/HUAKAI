@@ -42,6 +42,10 @@ credentials.json
 # Build output (placeholder for future phases)
 dist/
 build/
+# The committed SPA-embed placeholder must stay tracked so `go build -tags embed`
+# compiles on a clean checkout (the real dist is produced by the build pipeline).
+!backend/internal/webui/dist/
+!backend/internal/webui/dist/index.html
 out/
 target/
 .cargo-targets/
