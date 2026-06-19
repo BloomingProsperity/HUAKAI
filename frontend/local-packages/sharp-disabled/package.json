@@ -1,7 +1,0 @@
-{
-  "name": "sharp",
-  "version": "0.34.5",
-  "private": true,
-  "license": "MIT",
-  "main": "index.js"
-}
