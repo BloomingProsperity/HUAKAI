@@ -109,6 +109,8 @@ func usageDiagnosticShape(u dbbilling.ListUsageRecordsRow) map[string]any {
 	return map[string]any{
 		"id":                       u.ID,
 		"claim_id":                 u.ClaimID,
+		"requested_model":          u.RequestedModel,
+		"upstream_model":           deref(u.UpstreamModel),
 		"provider_account_id":      int64PtrAny(u.ProviderAccountID),
 		"attempt_seq":              u.AttemptSeq,
 		"tokens_input":             u.TokensInput,
