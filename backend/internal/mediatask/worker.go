@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -11,10 +12,34 @@ import (
 	"github.com/google/uuid"
 )
 
+// OrphanReporter 接收 worker 已在上游创建、却因租约丢失而无法落库的孤儿上游
+// 任务,供运维做孤儿对账(上游已计费但本平台未追踪/结算的任务)。实现需保证
+// 并发安全且不得阻塞 worker 主循环。
+type OrphanReporter interface {
+	ReportOrphanProviderTask(ctx context.Context, ev OrphanProviderTask)
+}
+
+// OrphanProviderTask 描述一条潜在孤儿上游任务的对账线索:上游已创建但本平台
+// 因租约被抢走而未能把 providerTaskID 落库,该上游任务可能跑完并被上游计费,
+// 却没有对应的本平台扣费。
+type OrphanProviderTask struct {
+	TaskID         int64
+	TenantID       int64
+	UserID         int64
+	Provider       string
+	ProviderTaskID string
+	Owner          string
+	ObservedAt     time.Time
+}
+
 type WorkerOptions struct {
 	Owner    string
 	LeaseTTL time.Duration
 	Now      func() time.Time
+	// Logger 用于结构化记录孤儿上游任务等运维事件;为 nil 时回退到 slog 默认实例。
+	Logger *slog.Logger
+	// OrphanReporter 可选,接收孤儿上游任务以便运维对账;为 nil 时仅打日志。
+	OrphanReporter OrphanReporter
 }
 
 type Worker struct {
@@ -24,6 +49,8 @@ type Worker struct {
 	owner    string
 	leaseTTL time.Duration
 	now      func() time.Time
+	logger   *slog.Logger
+	orphans  OrphanReporter
 
 	mu      sync.Mutex
 	running bool
@@ -41,7 +68,13 @@ func NewWorker(store Store, configs ConfigSource, registry ProviderRegistry, opt
 	if opts.Now == nil {
 		opts.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Worker{store: store, configs: configs, registry: registry, owner: opts.Owner, leaseTTL: opts.LeaseTTL, now: opts.Now}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	return &Worker{
+		store: store, configs: configs, registry: registry, owner: opts.Owner,
+		leaseTTL: opts.LeaseTTL, now: opts.Now, logger: opts.Logger, orphans: opts.OrphanReporter,
+	}
 }
 
 func (w *Worker) Start(ctx context.Context) {
@@ -138,6 +171,7 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 	if task.ProviderTaskID == "" || task.Status == StatusQueued {
 		providerTaskID, err := provider.Submit(ctx, SubmitReq{
 			TaskID: task.ID, RequestID: task.RequestID, TaskType: task.TaskType, InputParams: task.InputParams,
+			IdempotencyKey: DeriveIdempotencyKey(task.ID, task.RequestID),
 		})
 		if err != nil {
 			_, ferr := w.store.CompleteFailure(ctx, task, w.owner, "provider_submit_failed", now)
@@ -145,6 +179,11 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		}
 		_, err = w.store.MarkProviderSubmitted(ctx, task, w.owner, providerTaskID, now)
 		if errors.Is(err, ErrLeaseLost) {
+			// 租约在 Submit 期间过期被另一个 worker 抢走:上游任务已创建,但本 worker
+			// 已无权把 providerTaskID 落库。绝不静默丢弃——上游已携同一幂等键去重,理论
+			// 上不会重复计费,但仍需把这条线索记录下来供运维孤儿对账(防上游侧幂等失效时
+			// 留痕)。落库由抢到租约的 worker 用同一幂等键完成。
+			w.reportOrphan(ctx, task, providerTaskID, now)
 			return nil
 		}
 		return err
@@ -165,6 +204,39 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		err = w.store.UpdateProgress(ctx, task, w.owner, result.Progress, now)
 	}
 	return err
+}
+
+// reportOrphan 记录一条潜在孤儿上游任务:上游已创建 providerTaskID,但本 worker
+// 因租约被抢走未能落库。做结构化日志(始终)+ 可选 OrphanReporter 投递(若已配置),
+// 让运维能据 task.ID + providerTaskID + tenant 把上游已计费却无本平台扣费的孤儿对上账。
+// providerTaskID 为空时无对账价值,直接跳过。
+func (w *Worker) reportOrphan(ctx context.Context, task Task, providerTaskID string, now time.Time) {
+	if providerTaskID == "" {
+		return
+	}
+	logger := w.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.WarnContext(ctx, "mediatask 孤儿上游任务:租约丢失致 providerTaskID 未落库",
+		slog.Int64("task_id", task.ID),
+		slog.Int64("tenant_id", task.TenantID),
+		slog.Int64("user_id", task.UserID),
+		slog.String("provider", task.Provider),
+		slog.String("provider_task_id", providerTaskID),
+		slog.String("lease_owner", w.owner),
+	)
+	if w.orphans != nil {
+		w.orphans.ReportOrphanProviderTask(ctx, OrphanProviderTask{
+			TaskID:         task.ID,
+			TenantID:       task.TenantID,
+			UserID:         task.UserID,
+			Provider:       task.Provider,
+			ProviderTaskID: providerTaskID,
+			Owner:          w.owner,
+			ObservedAt:     now,
+		})
+	}
 }
 
 func firstNonEmpty(values ...string) string {
