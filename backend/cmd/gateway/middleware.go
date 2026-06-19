@@ -394,6 +394,7 @@ func buildCompletionEventBusConfig(cfg *runtimeconfig.EventBusConfig, auditRefPo
 		HandlerTimeout:       cfg.HandlerTimeout,
 		ShutdownDrainTimeout: cfg.ShutdownDrainTimeout,
 		AuditRefPolicy:       auditRefPolicy,
+		MaxStates:            cfg.MaxStates,
 	}
 }
 
