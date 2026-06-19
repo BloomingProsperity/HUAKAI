@@ -10645,6 +10645,36 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/pricing/ratios/audit/verify:
+    get:
+      tags: [admin-pricing]
+      summary: Verify the signed pricing-ratio audit hash chain
+      operationId: verifyAdminPricingRatioAudit
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_audit_handler.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Optional tenant scope; resolved against the platform_admin caller.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Pricing-ratio audit chain integrity proof (secret-masked; no signatures or key material returned).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string }
+                  ok: { type: boolean }
+                  row_id: { type: integer, format: int64 }
+                  reason: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/pricing/ratios/{pool_group_id}:
     parameters:
       - in: path
