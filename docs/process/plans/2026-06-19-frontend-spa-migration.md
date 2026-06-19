@@ -8,6 +8,20 @@ Migrate the frontend from **Next.js → React + Vite SPA** (react-router), built
 functionality + maintainability** — Owner explicitly removed effort/code-volume from the criteria
 ("码量不再考虑范围内!要的是功能和维护"). Recorded in memory `frontend-stack-decision-react-vite-spa`.
 
+> ## ⚠️ UPDATE 2026-06-19 — greenfield rebuild, not a port (supersedes "Migration scope" + "Sequencing" below)
+> Owner clarified the existing Next.js frontend was **experimental/test-only, never finalized**
+> ("删 都删掉,本来前端还没定好呢,只是测试。将计划里的前端技术栈也一起改掉"). Therefore:
+> - The disposable Next.js test frontend under `frontend/` is **deleted wholesale** (backed up first to the
+>   archive branch `archive/frontend-nextjs-pre-vite-2026-06-19` + a local tarball; restorable anytime).
+>   **Backend is untouched** — only `frontend/` was removed.
+> - The replacement is a **clean greenfield React + Vite + react-router SPA built from scratch**, NOT a
+>   port that reuses the old components. So the "Migration scope (reuse components/lib/api)" and
+>   "Sequencing (land the 12 frontend branches first)" sections below **no longer apply** — there is nothing
+>   to preserve, no Sidebar.tsx constraint, no branch sequencing (those branches were test artifacts too;
+>   verified stale via content-diff).
+> - The gateway embed infrastructure from Phase 0 (`internal/webui`, build-tag) stays and receives the new
+>   `vite build` output. Tech stack: **React + Vite + react-router + Tailwind**, embedded → single binary.
+
 ## Why (functionality + maintainability)
 - **Functionality: parity, nothing lost.** Next.js's server-only strengths (SSR / server components /
   API routes / middleware / image optimization) are **unused** here (verified: 51 `use client` components,
