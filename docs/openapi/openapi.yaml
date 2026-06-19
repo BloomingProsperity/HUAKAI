@@ -12892,6 +12892,7 @@ components:
         - mode
         - priority
         - valid_from
+        - used_usd
       properties:
         api_key_id: { type: integer, format: int64, minimum: 1 }
         policy_id: { type: integer, format: int64, minimum: 1 }
@@ -12919,6 +12920,18 @@ components:
           format: int32
           description: Resolution tiebreaker; the lowest-priority policy wins when several overlap.
         valid_from: { type: string, format: date-time }
+        used_usd:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+          description: Settled + reserved consumption in the current window (0 when no window exists).
+        remaining_usd:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+          description: limit_usd - used_usd (may be negative in observe mode); omitted when the limit is zero (unlimited).
+        window_end:
+          type: string
+          format: date-time
+          description: Reset boundary of the current quota window — soonest end across the current cost windows; omitted when no window exists yet.
 
     UserAPIKeyGroupUpdateRequest:
       type: object
