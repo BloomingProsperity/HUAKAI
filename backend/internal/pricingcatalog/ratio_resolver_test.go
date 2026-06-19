@@ -127,6 +127,10 @@ func (s *ratioResolverStore) DeleteRatio(context.Context, DeleteRatioParams) err
 	return errors.New("unexpected DeleteRatio")
 }
 
+func (s *ratioResolverStore) VerifyChain(context.Context) (VerifyChainResult, error) {
+	return VerifyChainResult{}, errors.New("unexpected VerifyChain")
+}
+
 func assertCatalogDecimal(t *testing.T, field string, got decimal.Decimal, want string) {
 	t.Helper()
 	wantDecimal := decimal.RequireFromString(want)
