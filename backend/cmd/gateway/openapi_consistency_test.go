@@ -971,3 +971,61 @@ func TestModelCapabilitiesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
 		}
 	}
 }
+
+// TestPublicPricingPageItemSchemaListsCatalogMetadata binds the public pricing page
+// response shape to its OpenAPI schema. The handler projects owned_by/mode/
+// max_output_tokens/capabilities onto the response, and PublicPricingPageItem is
+// additionalProperties:false — so if those properties are dropped from the schema
+// while the handler keeps emitting them, the documented contract silently diverges.
+// Mutation: delete any of the four property lines from the PublicPricingPageItem block
+// in openapi.yaml and this test goes red (the block no longer contains that field).
+func TestPublicPricingPageItemSchemaListsCatalogMetadata(t *testing.T) {
+	r := buildTestRouter(t)
+	if !hasOperation(openapicheck.WalkChiOperations(r), http.MethodGet, "/v1/pricing/page") {
+		t.Fatalf("runtime missing GET /v1/pricing/page")
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	block := yamlSchemaBlock(string(raw), "PublicPricingPageItem:")
+	if block == "" {
+		t.Fatalf("PublicPricingPageItem schema block not found in OpenAPI")
+	}
+	for _, field := range []string{"owned_by:", "mode:", "max_output_tokens:", "capabilities:"} {
+		if !strings.Contains(block, field) {
+			t.Fatalf("PublicPricingPageItem schema missing %q property (handler emits it; schema is additionalProperties:false)", field)
+		}
+	}
+}
+
+// yamlSchemaBlock returns the YAML text of a named schema (from its 4-space-indented
+// header line down to the next sibling schema at the same indentation), or "" if absent.
+func yamlSchemaBlock(spec, header string) string {
+	lines := strings.Split(spec, "\n")
+	start := -1
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "    ") && strings.TrimSpace(ln) == header {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		ln := lines[i]
+		// next sibling schema = exactly 4 leading spaces, non-space at column 5, ends with ':'
+		if len(ln) > 4 && ln[:4] == "    " && ln[4] != ' ' && strings.HasSuffix(strings.TrimSpace(ln), ":") {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n")
+}
