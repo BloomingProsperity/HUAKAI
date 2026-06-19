@@ -1780,6 +1780,8 @@ paths:
                       total_tokens: { type: integer, format: int64 }
                       active_users: { type: integer, format: int64 }
                       active_api_keys: { type: integer, format: int64 }
+                      success_count: { type: integer, format: int64, description: Successful requests in the window. }
+                      error_count: { type: integer, format: int64, description: Failed requests in the window (requests - success_count). }
                       success_rate: { type: string }
                   trend:
                     type: array
