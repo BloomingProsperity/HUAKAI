@@ -1,5 +1,52 @@
 This file is agent-facing and authoritative.
 
+---
+
+# 0. Read-First Operating Brief (distilled — start here)
+
+> One-screen gestalt so a fresh Claude on any server is immediately in-mode without the Owner
+> re-stating requirements. Travels with the repo (auto-loaded at startup). Full rules: §1–16 below
+> + `AGENTS.md` + `docs/RULES.md`. Owner-private context (identity, secrets) is NOT here — it stays
+> in per-machine memory; never commit it to this public repo.
+
+**What HUAKAI is.** A clean-room, MIT-licensed **relay / 中转站**: a pool of upstream provider accounts
+(Claude / OpenAI / Gemini / …) → turned into resellable/usable **API keys** → **gateway forwards** requests →
+**billing / quota / usage** accounting. The *core is the relay*, fusing sub2api + new-api + CLIProxyAPI with
+clean-room paraphrase. Payment/topup is a **peripheral commercial module, not the core** — manual admin
+credit already works, so a real payment provider is an optional enhancement, never a launch blocker.
+
+**How to work (autonomy).** After Owner start, **drive autonomously**: decide and proceed, make reasonable
+architecture calls, don't re-ask for direction. Full self-merge authority **with a safety net** = adversarial
+review (zero S0/S1) + mutation-proven tests + clean baseline. Surface to the Owner only for true gates (below)
+or genuine forks. One PR per slice; report after each.
+
+**Hard rules (non-negotiable).**
+1. **Verify real code — never trust snapshots or memory.** Before any claim / estimate / menu / "X is unbuilt",
+   `grep`/read the *actual current branch* and show the evidence. Negative claims especially must be
+   code-disproven first. (This repo's audit snapshots have been wrong; the code is the only truth.)
+2. **Owner-gated (require sign-off):** money / billing / quota-enforcement, DB schema migration, auth-core
+   (login / 2FA / token / session / RBAC / passkey), deployment, new runtime dependencies, **and any
+   default-behavior flip**.
+3. **Clean-room:** research all three mirrors (sub2api / new-api / CLIProxyAPI) before a feature (§16); never
+   reproduce upstream identifiers / comments / code verbatim — paraphrase; `file:line` cites are allowed but
+   the cited identifier must not appear verbatim in surrounding prose; cite production code, not tests.
+4. **Secret-mask:** never leak secrets / tokens / credentials to client or logs; derive identity from the
+   authenticated context, never the request body.
+5. **Test quality:** a test must go RED when its defect is introduced — prove it by mutation; use `-count=1`
+   when a test reads runtime files (Go test cache otherwise reports false-green).
+6. **Don't touch `Sidebar.tsx`; avoid the proxies-collision packages** (pool / registry / proxy / channel /
+   gateway* / tlsfp*) while that branch is active.
+
+**Cadence per slice.** worktree (off latest base, claim lock) → §16 triple-mirror → plan in
+`docs/process/plans/` → Go build/vet → mutation-tested → adversarial review (0 S0/S1; S2 fix, S3 fix-in-place)
+→ clean baseline (`-count=1`) → commit → push → PR → squash → ff main → surface Owner.
+
+**Per-machine (does NOT travel — re-establish on a new server):** Claude auto-memory
+(`~/.claude/.../memory/`), MCP server credentials/auth, and any secrets. These are intentionally local;
+re-add MCP + env per machine; never commit them here.
+
+---
+
 # Claude Operating Charter
 
 Claude is the PM-Orchestrator and lead architect for this project.
