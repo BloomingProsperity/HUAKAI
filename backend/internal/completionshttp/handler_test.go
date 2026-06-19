@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -421,6 +423,9 @@ type recordingDispatcher struct {
 	lastInput gateway.DispatchInput
 	resp      upstreamResponse
 	err       error
+	// readerOverride 非 nil 时取代默认的 strings.NewReader 作为上游响应体,
+	// 供注入"中途出错"的流(部分交付后返回非 EOF 错误)等不可由静态 body 表达的场景。
+	readerOverride io.Reader
 }
 
 func (d *recordingDispatcher) Dispatch(_ context.Context, in gateway.DispatchInput) (*gateway.DispatchResult, error) {
@@ -437,10 +442,14 @@ func (d *recordingDispatcher) Dispatch(_ context.Context, in gateway.DispatchInp
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	reader := io.Reader(strings.NewReader(d.resp.body))
+	if d.readerOverride != nil {
+		reader = d.readerOverride
+	}
 	return &gateway.DispatchResult{
 		StatusCode:     status,
 		Headers:        http.Header{"Content-Type": []string{contentType}},
-		UpstreamReader: strings.NewReader(d.resp.body),
+		UpstreamReader: reader,
 		Close:          func() error { return nil },
 	}, nil
 }
@@ -642,5 +651,151 @@ func TestCompletionsSettleRecoveryEnqueueUsesFreshContext(t *testing.T) {
 	// 核心：enqueue 收到的 ctx 未被取消 → 用了 fresh(WithoutCancel)ctx，不受已过期 settle ctx 影响。
 	if spy.lastCtxErr != nil {
 		t.Fatalf("DLQ enqueue ran on the already-expired settle ctx (err=%v) — recovery intent would never persist (S2 #2)", spy.lastCtxErr)
+	}
+}
+
+// partialThenErrReader 模拟上游 SSE 流中途断开:先吐出 body(已 flush 给客户端的部分内容),
+// 随后返回一个非 EOF 错误。zeroByte=true 时一个字节都不吐直接错误,模拟真零交付。
+type partialThenErrReader struct {
+	body     []byte
+	pos      int
+	err      error
+	zeroByte bool
+}
+
+func (r *partialThenErrReader) Read(p []byte) (int, error) {
+	if r.zeroByte {
+		return 0, r.err
+	}
+	if r.pos < len(r.body) {
+		n := copy(p, r.body[r.pos:])
+		r.pos += n
+		return n, nil
+	}
+	return 0, r.err
+}
+
+// flakyRateTableStub 第一次(reserve 预估)返回正常费率表,从第 failFrom 次调用起返回错误,
+// 用于模拟"上游交付完成后、结算取价那一刻费率表瞬时不可用"。
+type flakyRateTableStub struct {
+	calls    int
+	failFrom int
+}
+
+func (s *flakyRateTableStub) GetRateTable(ctx context.Context, version string) (billing.RateTable, error) {
+	s.calls++
+	if s.failFrom > 0 && s.calls >= s.failFrom {
+		return billing.RateTable{}, errors.New("rate table transiently unavailable at settle")
+	}
+	return rateTableStub{}.GetRateTable(ctx, version)
+}
+
+func (s *flakyRateTableStub) GetRateTableSnapshot(context.Context, int64) (billing.RateTable, error) {
+	return billing.RateTable{}, billing.ErrRateTableNotFound
+}
+
+func (s *flakyRateTableStub) ListRateTableSnapshots(context.Context) ([]billing.RateTableSnapshot, error) {
+	return nil, nil
+}
+
+// TestCompletionsStreamMidStreamErrorAfterDeliveryDoesNotRefund 守审计 wy94u3tn9 的 S1:流式响应已把
+// 部分 SSE flush 给客户端后,上游中途断开(streamAndCapture 返回非 EOF 错误)——已交付 token 上游已
+// 生成并向平台计费,**绝不能 abort 退款**;必须按待对账结算,经 DLQ recovery 让 worker 后续补算。
+// Mutation: 把 attempt.go 的中途出错分支改回无条件 ex.abort → abort==1/settle==0 → 本测试 RED。
+func TestCompletionsStreamMidStreamErrorAfterDeliveryDoesNotRefund(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status:      http.StatusOK,
+		contentType: "text/event-stream",
+	})
+	// 先交付一帧内容(无 usage 帧),再中途断开。
+	partial := `data: {"id":"cmpl_cut","object":"text_completion","choices":[{"text":"par","index":0}]}` + "\n\n"
+	env.dispatcher.readerOverride = &partialThenErrReader{body: []byte(partial), err: errors.New("upstream connection reset mid-stream")}
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200(头+部分内容已交付)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "par") {
+		t.Fatalf("已交付的部分内容应在响应体里,实际=%q", rec.Body.String())
+	}
+	// 核心 money-safety:交付后中途断开绝不退款。
+	if got := len(env.settler.aborts); got != 0 {
+		t.Fatalf("abort 调用=%d want 0(交付后中途断开绝不能退款)", got)
+	}
+	if got := len(env.settler.settles); got != 1 {
+		t.Fatalf("settle 调用=%d want 1(交付后按待对账结算)", got)
+	}
+	settle := env.settler.settles[0]
+	if !settle.Stream {
+		t.Fatalf("settle.Stream=false want true")
+	}
+	if !settle.Draft.PendingReconciliation {
+		t.Fatalf("PendingReconciliation=false want true(中途断开 usage 不可信,须待对账)")
+	}
+	if !strings.Contains(settle.Draft.CostSnapshot, "stream_interrupted") {
+		t.Fatalf("CostSnapshot=%q 应含 stream_interrupted 因由", settle.Draft.CostSnapshot)
+	}
+}
+
+// TestCompletionsStreamZeroDeliveryErrorStillAborts 守边界:头已 200 但上游一个字节都没交付就断开
+// (真零交付),此时无可计费交付,释放整笔预留(abort)是正确的——不可被上面的修复过度纠正成"也结算"。
+// Mutation: 把 attempt.go 的 copied.Len()==0 守卫去掉(出错就一律走结算)→ settle==1/abort==0 → 本测试 RED。
+func TestCompletionsStreamZeroDeliveryErrorStillAborts(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status:      http.StatusOK,
+		contentType: "text/event-stream",
+	})
+	env.dispatcher.readerOverride = &partialThenErrReader{zeroByte: true, err: errors.New("upstream reset before any byte")}
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
+
+	// 流式分支在 streamAndCapture 之前已 WriteHeader(200)。
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rec.Code)
+	}
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle 调用=%d want 0(真零交付无可计费内容)", got)
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort 调用=%d want 1(真零交付释放预留是正确的)", got)
+	}
+	if env.settler.aborts[0].reason != clienterr.CodeUpstreamReadError {
+		t.Fatalf("abort reason=%q want %q", env.settler.aborts[0].reason, clienterr.CodeUpstreamReadError)
+	}
+}
+
+// TestCompletionsStreamPricingFailureAfterDeliveryDoesNotRefund 守审计 wy94u3tn9 的第二个 S1:清流
+// 全量交付后,结算取价瞬时失败——交付已发生,**绝不能 abort 退款**;以零成本占位 + 待对账落账,经
+// DLQ recovery 让 worker 后续按真实价表补算。reserve 预估时费率表正常(请求得以进行),settle 取价时失败。
+// Mutation: 把 attempt.go 的取价失败分支改回 ex.abort("pricing_unavailable") → abort==1/settle==0 → RED。
+func TestCompletionsStreamPricingFailureAfterDeliveryDoesNotRefund(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status:      http.StatusOK,
+		body:        streamWithUsageBody(),
+		contentType: "text/event-stream",
+	})
+	env.deps.RateTables = &flakyRateTableStub{failFrom: 2} // call1=reserve 成功,call2=settle 取价失败
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200(流已全量交付)", rec.Code)
+	}
+	if got := len(env.settler.aborts); got != 0 {
+		t.Fatalf("abort 调用=%d want 0(交付后取价失败绝不能退款)", got)
+	}
+	if got := len(env.settler.settles); got != 1 {
+		t.Fatalf("settle 调用=%d want 1(以待对账零成本落账)", got)
+	}
+	settle := env.settler.settles[0]
+	if !settle.ActualCost.IsZero() {
+		t.Fatalf("ActualCost=%s want 0(取价失败时零成本占位)", settle.ActualCost)
+	}
+	if !settle.Draft.PendingReconciliation {
+		t.Fatalf("PendingReconciliation=false want true")
+	}
+	if !strings.Contains(settle.Draft.CostSnapshot, "pricing_unavailable") {
+		t.Fatalf("CostSnapshot=%q 应含 pricing_unavailable 因由", settle.Draft.CostSnapshot)
 	}
 }
