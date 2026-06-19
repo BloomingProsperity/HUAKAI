@@ -65,7 +65,7 @@ func runCLI(args []string, out io.Writer, client *http.Client) int {
 		fmt.Fprintf(out, "audit verification failed: %v\n", err)
 		return 1
 	}
-	pub, err := fetchPubKey(client, *pubkeyURL, verify.ChainProof.PubkeyFingerprint)
+	pub, keyRevoked, err := fetchPubKey(client, *pubkeyURL, verify.ChainProof.PubkeyFingerprint)
 	if err != nil {
 		fmt.Fprintf(out, "audit verification failed: %v\n", err)
 		return 1
@@ -77,6 +77,12 @@ func runCLI(args []string, out io.Writer, client *http.Client) int {
 	}
 	if err := verifyRequestedEntry(entry, *requestID, *tenantScopeRef); err != nil {
 		fmt.Fprintf(out, "audit verification failed: %v\n", err)
+		return 1
+	}
+	// 吊销检查:signing key 已吊销则该条目不可信。两个来源任一命中即失败——CLI 据自取的 well-known
+	// 文档独立判断(keyRevoked),并与网关响应的 KeyStatus 交叉验证(防网关侧被绕过)。
+	if keyRevoked || strings.EqualFold(verify.ChainProof.KeyStatus, "revoked") {
+		fmt.Fprintf(out, "audit verification failed: signing key is revoked (pubkey_fingerprint=%s)\n", verify.ChainProof.PubkeyFingerprint)
 		return 1
 	}
 
@@ -442,24 +448,41 @@ type pubkeyDoc struct {
 	Revoked           []pubkeyDoc `json:"revoked"`
 }
 
-func fetchPubKey(client *http.Client, target, wantFP string) (ed25519.PublicKey, error) {
+func fetchPubKey(client *http.Client, target, wantFP string) (ed25519.PublicKey, bool, error) {
 	res, err := client.Get(target)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("pubkey URL returned HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
+		return nil, false, fmt.Errorf("pubkey URL returned HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
 	}
 	material, err := findPubKeyMaterial(body, wantFP)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return decodePubKeyMaterial(material)
+	pub, err := decodePubKeyMaterial(material)
+	if err != nil {
+		return nil, false, err
+	}
+	// request-id 流此前丢弃了 doc.Revoked,导致吊销的 signing key 仍被报"验证通过"。这里把吊销状态
+	// 一并返回:验证者据自取的 well-known 文档独立判断 key 是否已吊销(与 detached 流同一逻辑)。
+	return pub, fingerprintRevokedInBody(body, wantFP), nil
+}
+
+// fingerprintRevokedInBody 解析 well-known pubkey 文档,判断 wantFP 对应的 key 是否已吊销
+// (在 doc.Revoked 集合内,或其 record 状态为 revoked)。复用 selectPubkeyRecord 的吊销判定逻辑;
+// 文档非标准格式致解析失败时保守返回 false(material 已由 findPubKeyMaterial 的兼容格式取得)。
+func fingerprintRevokedInBody(body []byte, wantFP string) bool {
+	record, err := selectPubkeyRecord(body, wantFP)
+	if err != nil {
+		return false
+	}
+	return record.Revoked
 }
 
 func findPubKeyMaterial(body []byte, wantFP string) (string, error) {
