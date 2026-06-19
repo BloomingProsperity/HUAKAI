@@ -157,28 +157,41 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 	w.WriteHeader(http.StatusOK)
 
 	var copied bytes.Buffer
-	if err := streamAndCapture(w, res.UpstreamReader, &copied); err != nil {
+	streamErr := streamAndCapture(w, res.UpstreamReader, &copied)
+	if streamErr != nil && copied.Len() == 0 {
+		// 真零交付:头已 200 但没有任何字节发给客户端、也没捕获到上游内容。此时无可计费交付,
+		// 释放整笔预留是正确的(对齐 chat 流式"仅真零交付才 abort")。
 		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
 		return false
 	}
+
+	// 到这里:要么流干净结束,要么中途出错但已有部分交付(copied.Len()>0)。已交付内容对应的
+	// token 上游已生成并会向平台计费,从此处起任何分支都**不得 abort 退款**——否则用户白拿、
+	// 平台吃下上游成本。只能"尽力计费、不足则以 PendingReconciliation 标记待对账并留审计行"。
 	usage, ok := usageFromSSE(copied.Bytes())
+	if streamErr != nil {
+		// 流中途中断:即便从部分 SSE 解析出 usage 也不可信(只覆盖了部分输出),按缺失处理走待对账。
+		ok = false
+	}
 	if !ok {
 		usage = completionUsage{PromptTokens: ex.inputEstimate}
 	}
-	cost, err := ex.actualCost(usage)
-	if err != nil {
-		ex.abort(w, "pricing_unavailable", int64(usage.PromptTokens))
-		return false
+
+	cost, costErr := ex.actualCost(usage)
+	if costErr != nil {
+		// 定价此刻不可用(费率表缺失/解析失败等),但交付已发生:绝不能退款。以零成本占位并标
+		// PendingReconciliation,留下一条可对账的 usage_record 审计行(供运维/后续对账消费者补价),
+		// 而不是 abort 把已交付内容退成 0。注意:此处不假设有 worker 自动按真实价表重算——下方
+		// settlementrecovery DLQ 仅在 settle 本身失败时重放、保证这条待对账行最终落库,并不重算金额。
+		cost = completionCostBreakdown{}
+		ok = false
 	}
 	if !ok {
 		cost.PendingReconciliation = true
-		if cost.CostSnapshot == "" {
-			cost.CostSnapshot = "pending_reconciliation=stream_usage_missing"
-		} else {
-			cost.CostSnapshot += ";pending_reconciliation=stream_usage_missing"
-		}
+		cost.CostSnapshot = appendStreamPendingReason(cost.CostSnapshot, streamErr, costErr)
 	}
-	// 交付后结算：响应已全部 flush 给客户端。结算必须在**脱钩 ctx**(WithoutCancel)上跑，
+
+	// 交付后结算：响应已 flush 给客户端。结算必须在**脱钩 ctx**(WithoutCancel)上跑，
 	// 否则客户端在流末断连会取消请求 ctx → Tx2 立即失败 → 已交付 token 永不计费(S1-2)。
 	// settle 失败时经 settlementrecovery DLQ 持久重试，防不可恢复钱丢失(S1-3)。
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), settleRecoveryTimeout)
@@ -188,6 +201,24 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 		return false
 	}
 	return true
+}
+
+// appendStreamPendingReason 给交付后待对账的成本快照追加一个 pending 原因标记,供
+// settlementrecovery worker 与审计区分"这条已交付的流为何被挂起待对账"。三种因由按优先级:
+// 流中途中断 > 定价此刻不可用 > 仅缺上游 usage 帧。返回追加后的快照(原快照为空时直接用标记)。
+func appendStreamPendingReason(snapshot string, streamErr, costErr error) string {
+	reason := "stream_usage_missing"
+	switch {
+	case streamErr != nil:
+		reason = "stream_interrupted"
+	case costErr != nil:
+		reason = "pricing_unavailable"
+	}
+	marker := "pending_reconciliation=" + reason
+	if snapshot == "" {
+		return marker
+	}
+	return snapshot + ";" + marker
 }
 
 func streamAndCapture(w http.ResponseWriter, r io.Reader, captured *bytes.Buffer) error {
