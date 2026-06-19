@@ -289,6 +289,140 @@ func TestHandlerGETListReturnsAllDefinedKeys(t *testing.T) {
 	}
 }
 
+// canaryModerationAPIKey 是只在密钥类设置值里出现的判别性夹具串。脱敏正确时它
+// 绝不应出现在任何读响应体中;一旦读路径回吐明文,断言会因为响应体含此子串而 RED。
+const canaryModerationAPIKey = "sk-canary-moderation-7f3a9b2c"
+
+// canaryPaymentSecret 同理用于支付 provider 配置:塞进配置 JSON 里的判别性密钥串,
+// 脱敏后不得出现在响应体中。
+const canaryPaymentSecret = "pay-canary-secret-d41d8cd9"
+
+// TestHandlerGETModerationAPIKeysIsMaskedNotPlaintext 守护读路径对外部审核 provider
+// bearer 密钥数组的脱敏:GET 单 key 时响应体不得含明文密钥子串,且必须以
+// value_configured=true 指示已配置、Value 被清空。变异实验:删去
+// platformSettingsResponseFromStored 中的脱敏分支(直接 Value: setting.Value),
+// 明文密钥会回到响应体,本测试断言响应体不含 canary 子串处即 RED。
+func TestHandlerGETModerationAPIKeysIsMaskedNotPlaintext(t *testing.T) {
+	stored := `["` + canaryModerationAPIKey + `"]`
+	svc := &platformSettingsServiceStub{
+		getResult: platformsettings.StoredSetting{
+			Key:    platformsettings.KeyModerationExternalAPIKeys,
+			Value:  stored,
+			Source: platformsettings.SourceDB,
+		},
+	}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service: svc,
+	})
+
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/moderation_external_api_keys", nil)
+
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	if strings.Contains(rec.Body.String(), canaryModerationAPIKey) {
+		t.Fatalf("响应体泄露了明文密钥: %s", rec.Body.String())
+	}
+	got := decodePlatformSettingsResponse(t, rec)
+	if got.Value != "" {
+		t.Fatalf("Value 应被清空, got=%q", got.Value)
+	}
+	if got.ValueConfigured == nil || !*got.ValueConfigured {
+		t.Fatalf("已配置的密钥 value_configured 应为 true, got=%+v", got.ValueConfigured)
+	}
+}
+
+// TestHandlerGETModerationAPIKeysEmptyShowsNotConfigured 守护“未配置”指示:空集合
+// 占位 "[]" 应解读为未配置,value_configured=false。变异实验:把
+// HasConfiguredSecretValue 对 "[]" 的判定改成返回 true,则空密钥会被错报为已配置,
+// 本断言 RED。
+func TestHandlerGETModerationAPIKeysEmptyShowsNotConfigured(t *testing.T) {
+	svc := &platformSettingsServiceStub{
+		getResult: platformsettings.StoredSetting{
+			Key:    platformsettings.KeyModerationExternalAPIKeys,
+			Value:  "[]",
+			Source: platformsettings.SourceDefault,
+		},
+	}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service: svc,
+	})
+
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/moderation_external_api_keys", nil)
+
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	got := decodePlatformSettingsResponse(t, rec)
+	if got.ValueConfigured == nil || *got.ValueConfigured {
+		t.Fatalf("空密钥 value_configured 应为 false, got=%+v", got.ValueConfigured)
+	}
+	if got.Value != "" {
+		t.Fatalf("Value 应被清空, got=%q", got.Value)
+	}
+}
+
+// TestHandlerGETListMasksSecretKeysButNotPublicKeys 是自证测试:List 同时返回密钥类
+// 与非密钥类 key,断言两类密钥(moderation 数组 + payment 配置)的明文都不在响应体,
+// 而非密钥类的 site_name 明文原样保留。这样既证脱敏生效,又证未误伤公开字段。
+// 变异实验一:删脱敏分支 → moderation/payment 明文回到响应体 → 前两个断言 RED。
+// 变异实验二:把脱敏判定从 IsSecretKey 改成无条件脱敏 → site_name 也被清空 →
+// 最后一个断言(site_name 明文保留)RED。
+func TestHandlerGETListMasksSecretKeysButNotPublicKeys(t *testing.T) {
+	const siteNamePlain = "华楷中转站"
+	items := []platformsettings.StoredSetting{
+		{
+			Key:    platformsettings.KeyModerationExternalAPIKeys,
+			Value:  `["` + canaryModerationAPIKey + `"]`,
+			Source: platformsettings.SourceDB,
+		},
+		{
+			Key:    platformsettings.KeyPaymentProviderConfig,
+			Value:  `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":true,"checkout_url":"https://pay.example/` + canaryPaymentSecret + `"}}`,
+			Source: platformsettings.SourceDB,
+		},
+		{
+			Key:    platformsettings.KeySiteName,
+			Value:  siteNamePlain,
+			Source: platformsettings.SourceDB,
+		},
+	}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service: &platformSettingsServiceStub{listResult: items},
+	})
+
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
+
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	body := rec.Body.String()
+	if strings.Contains(body, canaryModerationAPIKey) {
+		t.Fatalf("List 泄露了 moderation 明文密钥: %s", body)
+	}
+	if strings.Contains(body, canaryPaymentSecret) {
+		t.Fatalf("List 泄露了 payment 配置密钥: %s", body)
+	}
+	if !strings.Contains(body, siteNamePlain) {
+		t.Fatalf("非密钥类 site_name 明文被误伤删除: %s", body)
+	}
+
+	got := decodePlatformSettingsListResponse(t, rec)
+	seen := map[string]platformSettingsResponse{}
+	for _, item := range got.Items {
+		seen[item.Key] = item
+	}
+	mod := seen["moderation_external_api_keys"]
+	if mod.Value != "" || mod.ValueConfigured == nil || !*mod.ValueConfigured {
+		t.Fatalf("moderation 项未正确脱敏: %+v", mod)
+	}
+	pay := seen["payment_provider_config"]
+	if pay.Value != "" || pay.ValueConfigured == nil || !*pay.ValueConfigured {
+		t.Fatalf("payment 项未正确脱敏: %+v", pay)
+	}
+	site := seen["site_name"]
+	if site.Value != siteNamePlain || site.ValueConfigured != nil {
+		t.Fatalf("非密钥类 site_name 不应脱敏: %+v", site)
+	}
+}
+
 type platformSettingsAuthStub struct {
 	ident admin.AdminIdentity
 	err   error
