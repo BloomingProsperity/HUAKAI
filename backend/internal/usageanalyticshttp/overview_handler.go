@@ -28,6 +28,8 @@ type overviewTotals struct {
 	TotalTokens   int64  `json:"total_tokens"`
 	ActiveUsers   int64  `json:"active_users"`
 	ActiveAPIKeys int64  `json:"active_api_keys"`
+	SuccessCount  int64  `json:"success_count"`
+	ErrorCount    int64  `json:"error_count"`
 	SuccessRate   string `json:"success_rate"`
 }
 
@@ -124,12 +126,20 @@ func overviewTotalsFromRow(row dbbilling.AggregateUsageOverviewTotalsRow) (overv
 	if err != nil {
 		return overviewTotals{}, err
 	}
+	// Successful requests are a filtered subset of total requests, so this stays
+	// non-negative; clamp defensively for symmetry with the perf-metrics handler.
+	errorCount := row.RequestCount - row.SuccessCount
+	if errorCount < 0 {
+		errorCount = 0
+	}
 	return overviewTotals{
 		Requests:      row.RequestCount,
 		TotalCost:     cost,
 		TotalTokens:   row.TotalTokens,
 		ActiveUsers:   row.ActiveUsers,
 		ActiveAPIKeys: row.ActiveApiKeys,
+		SuccessCount:  row.SuccessCount,
+		ErrorCount:    errorCount,
 		SuccessRate:   successRateText(row.SuccessCount, row.RequestCount),
 	}, nil
 }
