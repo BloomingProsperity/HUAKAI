@@ -17525,6 +17525,7 @@ components:
         - verify_hint
         - created_at
         - status
+        - stream
       properties:
         requested_model:
           type: string
@@ -17554,6 +17555,16 @@ components:
         request_id:
           type: string
           description: Audit request id used by `/v1/audit/verify` when present.
+        stream:
+          type: boolean
+          description: Whether the request was a streaming request (request mode).
+        stream_terminated_reason:
+          type: string
+          description: Reason a stream ended abnormally; absent for normal completion.
+        requested_at:
+          type: string
+          format: date-time
+          description: Request arrival time, enabling client-side latency calculation.
 
     MeUsageVerifyHint:
       type: object
