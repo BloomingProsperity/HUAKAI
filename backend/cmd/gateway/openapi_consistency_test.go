@@ -116,6 +116,43 @@ func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 	}
 }
 
+// TestOpenAPI_SecurityContractMatchesImpl 校验 security 维度的契约一致性:OpenAPI 标 security:[]
+// (公开)的操作,实现里不得挂会话认证中间件。否则前端/第三方按 spec 当公开调用会撞 401,且这类漂移
+// 是 IDOR 类回归(实现加了租户/会话校验却忘同步 spec)的征兆——本次正是审计 IDOR 修复后 receipts
+// verify 的 spec 漏改(impl 已挂 SessionMiddleware 守退款队列跨租户,spec 仍标公开)被此检查抓出。
+// 本检查只覆盖"spec 公开但 impl 认证"方向(反向因 admin 等在 handler 内鉴权、无中间件,无法纯靠
+// 中间件内省判定,纳入会误报)。两处 len==0 守卫确保 parser/内省失效时不会"空集假绿"。
+func TestOpenAPI_SecurityContractMatchesImpl(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specPublic, err := openapicheck.ParseSpecPublicOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI 公开操作: %v", err)
+	}
+	if len(specPublic) == 0 {
+		t.Fatalf("spec 解析出 0 条 security:[] 公开操作 — parser 可能漏了 security 行")
+	}
+
+	r := buildTestRouter(t)
+	// "SessionMiddleware" 是会话认证中间件(internal/auth)的函数名标记。
+	gated := openapicheck.OperationsGatedByMiddleware(r, "SessionMiddleware")
+	if len(gated) == 0 {
+		t.Fatalf("impl 走出 0 条会话认证路由 — 中间件内省失效")
+	}
+
+	drift := openapicheck.SecurityContractDrift(specPublic, gated)
+	if len(drift) > 0 {
+		msgs := make([]string, 0, len(drift))
+		for _, op := range drift {
+			msgs = append(msgs, op.Method+" "+op.Path)
+		}
+		t.Errorf("OpenAPI 标 security:[](公开)但实现挂了会话认证的 %d 条操作(契约漂移,客户端会撞 401):%v",
+			len(drift), msgs)
+	}
+}
+
 func TestOpenAPI_ChatCompletionsMethodMatchesRuntimePOST(t *testing.T) {
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {

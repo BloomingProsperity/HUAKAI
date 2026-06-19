@@ -2849,7 +2849,8 @@ paths:
       summary: Detached verification for a supplied receipt payload
       operationId: verifyCostReceipt
       x-huakai-spec-source: [docs/specs/user-consumption-transparency.md]
-      security: []
+      security:
+        - sessionBearerAuth: []
       parameters:
         - in: path
           name: request_id
@@ -2867,6 +2868,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ReceiptVerifyResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '413':
           description: Receipt body exceeds the 10KB detached verification limit.
           content:
