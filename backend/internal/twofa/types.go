@@ -27,9 +27,13 @@ var (
 	ErrAlreadyEnabled     = errors.New("twofa: already enabled")
 	ErrDisabled           = errors.New("twofa: disabled")
 	ErrInvalidCode        = errors.New("twofa: invalid code")
-	ErrLocked             = errors.New("twofa: locked")
-	ErrChallengeInvalid   = errors.New("twofa: challenge invalid")
-	ErrChallengeExpired   = errors.New("twofa: challenge expired")
+	// ErrCodeReused 表示该 TOTP 码(或更早时间步的码)已被成功消费过,按防重放拒绝
+	// (RFC 6238 §5.2)。区别于 ErrInvalidCode:码本身有效,只是已用过,故**不计失败次数**,
+	// 避免合法用户在网络重试里重复提交同一码而被锁定。
+	ErrCodeReused       = errors.New("twofa: code already used")
+	ErrLocked           = errors.New("twofa: locked")
+	ErrChallengeInvalid = errors.New("twofa: challenge invalid")
+	ErrChallengeExpired = errors.New("twofa: challenge expired")
 )
 
 type Settings struct {
@@ -40,8 +44,11 @@ type Settings struct {
 	FailedAttempts int
 	LockedUntil    *time.Time
 	LastUsedAt     *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// LastUsedStep 是最近一次成功消费的 TOTP 时间步计数器(counter = unix/step)。
+	// 防重放:校验只接受匹配时间步严格大于它的码;nil 表示从未消费(对应 DB NULL)。
+	LastUsedStep *int64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type SetupInput struct {
@@ -104,6 +111,11 @@ type Store interface {
 	SaveSetup(ctx context.Context, settings Settings, backupCodeHashes [][]byte) error
 	SetEnabled(ctx context.Context, tenantID, userID int64, enabled bool, now time.Time) error
 	MarkSuccess(ctx context.Context, tenantID, userID int64, now time.Time) error
+	// MarkTOTPSuccess 记录一次成功的 TOTP 校验并落已消费时间步 consumedStep,做防重放的
+	// 原子守卫:仅当 consumedStep 严格大于已存 LastUsedStep(或其为 nil/NULL)时才更新,
+	// 返回 stored=true;否则不更新、返回 stored=false——表示该时间步已被并发请求消费,
+	// 调用方据此按重放拒绝。与 MarkSuccess 一样重置失败计数与锁定。
+	MarkTOTPSuccess(ctx context.Context, tenantID, userID int64, consumedStep int64, now time.Time) (stored bool, err error)
 	MarkFailure(ctx context.Context, tenantID, userID int64, failedAttempts int, lockedUntil *time.Time, now time.Time) error
 	CountUnusedBackupCodes(ctx context.Context, tenantID, userID int64) (int, error)
 	ConsumeBackupCode(ctx context.Context, tenantID, userID int64, hash []byte, now time.Time) (bool, error)

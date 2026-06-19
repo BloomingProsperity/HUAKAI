@@ -386,6 +386,10 @@ func writeTwoFactorLoginError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_two_factor_request", "two-factor request is invalid")
 	case errors.Is(err, twofa.ErrInvalidCode), errors.Is(err, twofa.ErrChallengeInvalid), errors.Is(err, twofa.ErrChallengeExpired):
 		writeJSONError(w, http.StatusUnauthorized, "two_factor_invalid", "two-factor challenge or code is invalid")
+	case errors.Is(err, twofa.ErrCodeReused):
+		// 码有效但已被消费过(防重放):按校验失败返 401,用独立 code 让前端提示"该验证码
+		// 已使用过,请用下一个",而不是落到默认 503 backend_error。
+		writeJSONError(w, http.StatusUnauthorized, "two_factor_code_reused", "two-factor code has already been used")
 	case errors.Is(err, twofa.ErrLocked):
 		writeJSONError(w, http.StatusTooManyRequests, "two_factor_locked", "two-factor verification is temporarily locked")
 	default:
@@ -397,6 +401,8 @@ func twoFactorReasonClass(err error) string {
 	switch {
 	case errors.Is(err, twofa.ErrInvalidCode):
 		return "two_factor_invalid"
+	case errors.Is(err, twofa.ErrCodeReused):
+		return "two_factor_code_reused"
 	case errors.Is(err, twofa.ErrLocked):
 		return "two_factor_locked"
 	case errors.Is(err, twofa.ErrChallengeInvalid), errors.Is(err, twofa.ErrChallengeExpired):
