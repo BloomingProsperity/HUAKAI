@@ -1271,6 +1271,10 @@ func (s *gatewayPricingRatioStore) DeleteRatio(context.Context, pricingcatalog.D
 	return pricingcatalog.ErrBackend
 }
 
+func (s *gatewayPricingRatioStore) VerifyChain(context.Context) (pricingcatalog.VerifyChainResult, error) {
+	return pricingcatalog.VerifyChainResult{}, pricingcatalog.ErrBackend
+}
+
 func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) (decimal.Decimal, error) {
 	if s != nil && s.err != nil {
 		return decimal.Zero, s.err
