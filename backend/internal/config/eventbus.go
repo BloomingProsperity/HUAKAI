@@ -14,6 +14,7 @@ var (
 	ErrInvalidEventBusDuration = errors.New("config: invalid eventbus duration seconds")
 	ErrInvalidEventBusWorkers  = errors.New("config: invalid eventbus worker count")
 	ErrInvalidEventBusBuffer   = errors.New("config: invalid eventbus buffer size")
+	ErrInvalidEventBusStateCap = errors.New("config: invalid eventbus state cap")
 	ErrUnsafeEventBusConfig    = errors.New("config: unsafe eventbus configuration")
 )
 
@@ -33,6 +34,10 @@ type EventBusConfig struct {
 	HandlerTimeout       time.Duration
 	ShutdownDrainTimeout time.Duration
 	AllowMissingMoneyRef bool
+	// MaxStates 限制 eventbus 每个 handler 状态账本的大小,使其在整个进程
+	// 生命周期内不会无限增长。有限的默认值开箱即可堵住该泄漏;值 <= 0 时
+	// 恢复历史上不设上限的行为,作为运维显式的应急出口。
+	MaxStates int
 }
 
 func LoadEventBus() (*EventBusConfig, error) {
@@ -46,6 +51,7 @@ func LoadEventBus() (*EventBusConfig, error) {
 		LowBuffer:            512,
 		HandlerTimeout:       3 * time.Second,
 		ShutdownDrainTimeout: 5 * time.Second,
+		MaxStates:            4096,
 	}
 	if raw := strings.TrimSpace(os.Getenv("HUAKAI_EVENTBUS_ENABLED")); raw != "" {
 		enabled, err := parseEventBusBool("HUAKAI_EVENTBUS_ENABLED", raw)
@@ -89,6 +95,9 @@ func LoadEventBus() (*EventBusConfig, error) {
 	if cfg.LowBuffer, err = envEventBusPositiveInt("HUAKAI_EVENTBUS_LOW_BUFFER", cfg.LowBuffer, ErrInvalidEventBusBuffer); err != nil {
 		return nil, err
 	}
+	if cfg.MaxStates, err = envEventBusStateCap("HUAKAI_EVENTBUS_MAX_STATES", cfg.MaxStates); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -127,6 +136,20 @@ func envEventBusPositiveInt(name string, fallback int, sentinel error) (int, err
 	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {
 		return 0, fmt.Errorf("%w: %s=%q", sentinel, name, raw)
+	}
+	return n, nil
+}
+
+// envEventBusStateCap 解析账本上限。与 worker/buffer 这类整数不同,它接受
+// 非正值——非正值表示选择不设上限的应急出口;只有非数字输入才会被拒绝。
+func envEventBusStateCap(name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s=%q", ErrInvalidEventBusStateCap, name, raw)
 	}
 	return n, nil
 }

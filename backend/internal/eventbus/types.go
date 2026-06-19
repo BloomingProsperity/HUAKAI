@@ -141,6 +141,11 @@ type Config struct {
 	HandlerTimeout       time.Duration
 	ShutdownDrainTimeout time.Duration
 	AuditRefPolicy       *AuditRefPolicy
+	// MaxStates 限制每个 handler 状态账本的大小。正值会给该 map 设置上限,
+	// 溢出时淘汰最旧的条目;值 <= 0 时账本不设上限(即历史上的、作为应急
+	// 出口的行为)。NormalizeConfig 刻意不对该字段做归一处理,以便 0 始终
+	// 表示不设上限。
+	MaxStates int
 }
 
 type DropNotice struct {
