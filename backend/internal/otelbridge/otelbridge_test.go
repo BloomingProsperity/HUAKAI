@@ -59,6 +59,36 @@ func TestPrometheusExporterEnabledBridgesGroupPolicyFailClosed(t *testing.T) {
 	assertPromMetricValue(t, body, "huakai_group_policy_failclosed_total", "4")
 }
 
+// TestPrometheusExporterEnabledBridgesBudgetFailOpen guards that the budget/rate
+// enforcement fail-open counter is bridged to the Prometheus scrape, so an operator
+// can alert when enforcement is silently bypassed by a backend error.
+// MUTATION: drop the huakai_budget_failopen_total entry from bridgeCounters() (or map
+// the wrong expvar key) -> the scrape body omits the metric -> assertPromMetricValue RED.
+func TestPrometheusExporterEnabledBridgesBudgetFailOpen(t *testing.T) {
+	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "true")
+
+	mp, handler, shutdown, err := Setup(context.Background())
+	if err != nil {
+		t.Fatalf("Setup() error = %v", err)
+	}
+	defer func() {
+		if err := shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown() error = %v", err)
+		}
+	}()
+	if handler == nil {
+		t.Fatalf("Setup() with HUAKAI_METRICS_PROMETHEUS=true returned nil handler")
+	}
+	if err := RegisterBridge(context.Background(), mp); err != nil {
+		t.Fatalf("RegisterBridge() error = %v", err)
+	}
+
+	setExpvarInt(t, "budget_fail_open_total", 9)
+
+	body := scrapeMetrics(t, handler)
+	assertPromMetricValue(t, body, "huakai_budget_failopen_total", "9")
+}
+
 func TestSetupDisabledReturnsNoopAndNoHandler(t *testing.T) {
 	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "")
 
@@ -109,6 +139,7 @@ func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
 	// MUTATION: build the alerting snapshot from a stale hard-coded map or wrong key names; rules never see the live bridged metric value.
 	setExpvarMapInt(t, "billing_settings", "resolver_db_read_fail_total", 11)
 	setExpvarInt(t, "group_policy_fail_open_total", 4)
+	setExpvarInt(t, "budget_fail_open_total", 6)
 
 	source := NewExpvarMetricSource()
 	snapshot, err := source.Snapshot(context.Background(), 7)
@@ -120,6 +151,11 @@ func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
 	}
 	if got := snapshot["huakai_group_policy_failopen_total"]; got != 4 {
 		t.Fatalf("huakai_group_policy_failopen_total=%v want 4", got)
+	}
+	// Alert path: the budget fail-open counter must reach the rule-evaluation snapshot.
+	// MUTATION: remove the budget bridge entry -> key absent -> got==0 != 6 -> RED.
+	if got := snapshot["huakai_budget_failopen_total"]; got != 6 {
+		t.Fatalf("huakai_budget_failopen_total=%v want 6", got)
 	}
 }
 
