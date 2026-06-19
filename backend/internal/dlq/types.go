@@ -61,6 +61,11 @@ var (
 	ErrInvalidEvent       = errors.New("dlq: invalid event")
 	ErrNoHandler          = errors.New("dlq: handler not registered")
 	ErrNotFound           = errors.New("dlq: record not found")
+	// ErrUnretryable 标记"结构性不可重试"的失败(payload 损坏/校验不过/事件类型不匹配等):
+	// 再重试同一份输入永远不会成功。handler 用 errors.Join/%w 把它裹进返回错,
+	// 重试决策(NextFailureForErr)一旦 errors.Is 命中,立即把 record 转 quarantined,
+	// 不再消耗重试预算 —— 让毒消息立刻进 operator 可见的隔离泳道,而非淹没在瞬时故障重试里。
+	ErrUnretryable = errors.New("dlq: unretryable failure")
 )
 
 type Event struct {

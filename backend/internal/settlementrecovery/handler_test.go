@@ -201,3 +201,77 @@ func TestHandle_DecodeFail_ReturnsErr(t *testing.T) {
 		t.Fatal("Handle must surface decode errors instead of silently marking delivered")
 	}
 }
+
+// TestHandle_DecodeFail_IsUnretryable 守 corrupted payload 被分类为结构性不可重试,
+// worker 据此第 1 次即 quarantine 而非烧满重试预算。
+// Mutation: 把 decode 分支的 errors.Join(err, dlq.ErrUnretryable) 改回裸 err →
+// errors.Is 不再命中 → 红。
+func TestHandle_DecodeFail_IsUnretryable(t *testing.T) {
+	rec := dlq.Record{EventKind: dlq.EventKindPostDeliverySettlement, Payload: []byte(`{not json`)}
+	h := &Handler{Settler: &spySettler{}, Proof: &stubProof{}}
+	err := h.Handle(context.Background(), rec)
+	if !errors.Is(err, dlq.ErrUnretryable) {
+		t.Fatalf("decode failure must classify as dlq.ErrUnretryable (poison), got err=%v", err)
+	}
+}
+
+// TestHandle_ValidateFail_IsUnretryable 守 decode 成功但结构非法(claim_id=0)同样
+// 被分类为不可重试。Mutation: 去掉 validate 分支的 ErrUnretryable wrap → 红。
+func TestHandle_ValidateFail_IsUnretryable(t *testing.T) {
+	event := fixtureCompletionEvent(t)
+	payload := FromCompletionEvent(SourceStream, event)
+	payload.Settle.ClaimID = 0 // 仍可 decode,但 Validate 因缺 claim_id 失败
+	raw, err := payload.Encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	rec := dlq.Record{EventKind: dlq.EventKindPostDeliverySettlement, Payload: raw, TenantID: payload.Settle.TenantID}
+	h := &Handler{Settler: &spySettler{}, Proof: &stubProof{}}
+	gotErr := h.Handle(context.Background(), rec)
+	if !errors.Is(gotErr, dlq.ErrUnretryable) {
+		t.Fatalf("validate failure must classify as dlq.ErrUnretryable, got err=%v", gotErr)
+	}
+}
+
+// TestHandle_WrongEventKind_IsUnretryable 守误路由的事件类型被分类为不可重试。
+// Mutation: 去掉 wrong-kind 分支的 ErrUnretryable wrap → 红。
+func TestHandle_WrongEventKind_IsUnretryable(t *testing.T) {
+	rec := encodedFixture(t)
+	rec.EventKind = dlq.EventKindUsageRecord
+	h := &Handler{Settler: &spySettler{}, Proof: &stubProof{}}
+	err := h.Handle(context.Background(), rec)
+	if !errors.Is(err, dlq.ErrUnretryable) {
+		t.Fatalf("wrong event_kind must classify as dlq.ErrUnretryable, got err=%v", err)
+	}
+}
+
+// TestHandle_TransientSettleErr_NotUnretryable 是 money-safety 控制:瞬时 settle 错
+// (如 DB 连接拒绝)绝不能被误判为不可重试 —— 否则一次瞬时抖动就把一个真实结算意图
+// 立刻 quarantine、停止重试 = 漏结算/丢钱。必须保持可重试(errors.Is 不命中)。
+// Mutation: 若把 generic settle 错也 wrap ErrUnretryable → 红。
+func TestHandle_TransientSettleErr_NotUnretryable(t *testing.T) {
+	settler := &spySettler{retErr: errors.New("pgx: connection refused")}
+	h := &Handler{Settler: settler, Proof: &stubProof{}}
+	err := h.Handle(context.Background(), encodedFixture(t))
+	if err == nil {
+		t.Fatal("transient settle error must propagate so worker retries")
+	}
+	if errors.Is(err, dlq.ErrUnretryable) {
+		t.Fatalf("transient settle error must STAY retryable (not poison), got unretryable: %v", err)
+	}
+}
+
+// TestHandle_ClaimNotReserving_ProofFalse_NotUnretryable 同属 money-safety 控制:
+// claim 非 reserving 且三证未齐时返错重试,但绝不能被分类为不可重试 —— 半提交/
+// aborted 仍可能需 worker 重试或 operator force-settle,立即 quarantine 会过早终止。
+func TestHandle_ClaimNotReserving_ProofFalse_NotUnretryable(t *testing.T) {
+	settler := &spySettler{retErr: billing.ErrClaimNotReserving}
+	h := &Handler{Settler: settler, Proof: &stubProof{committed: false}}
+	err := h.Handle(context.Background(), encodedFixture(t))
+	if err == nil {
+		t.Fatal("proof-false on ErrClaimNotReserving must return err")
+	}
+	if errors.Is(err, dlq.ErrUnretryable) {
+		t.Fatalf("ErrClaimNotReserving+proof-false must STAY retryable, got unretryable: %v", err)
+	}
+}
