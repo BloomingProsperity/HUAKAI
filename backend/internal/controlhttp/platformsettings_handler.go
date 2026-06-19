@@ -39,12 +39,16 @@ type platformSettingsPutRequest struct {
 }
 
 type platformSettingsResponse struct {
-	Key       string                  `json:"key"`
-	Value     string                  `json:"value"`
-	Source    string                  `json:"source"`
-	UpdatedAt *time.Time              `json:"updated_at"`
-	UpdatedBy *string                 `json:"updated_by"`
-	Health    *platformSettingsHealth `json:"health,omitempty"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	// ValueConfigured 仅对密钥/凭据类 key 出现:读路径不回吐其明文,改用此布尔
+	// 指示运维该密钥是否已配置(true=已配置非空值,false=未配置)。非密钥类 key
+	// 不带此字段(omitempty + 指针),保持原样返回 Value。
+	ValueConfigured *bool                   `json:"value_configured,omitempty"`
+	Source          string                  `json:"source"`
+	UpdatedAt       *time.Time              `json:"updated_at"`
+	UpdatedBy       *string                 `json:"updated_by"`
+	Health          *platformSettingsHealth `json:"health,omitempty"`
 }
 
 type platformSettingsHealth struct {
@@ -190,6 +194,14 @@ func platformSettingsResponseFromStored(setting platformsettings.StoredSetting, 
 		Key:    string(setting.Key),
 		Value:  setting.Value,
 		Source: setting.Source,
+	}
+	// 密钥/凭据类 key 在读路径一律脱敏:清空明文 Value,改以 value_configured 指示
+	// 是否已配置。任何角色(端点仍限 RolePlatformAdmin)都拿不到明文密钥,与审计日志
+	// 的 [redacted] 处理保持一致。
+	if platformsettings.IsSecretKey(setting.Key) {
+		configured := platformsettings.HasConfiguredSecretValue(setting.Key, setting.Value)
+		resp.Value = ""
+		resp.ValueConfigured = &configured
 	}
 	if setting.Key == platformsettings.KeyCaptchaEnabled {
 		resp.Health = platformSettingsCaptchaHealth(setting, d)
