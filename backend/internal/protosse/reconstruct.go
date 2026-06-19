@@ -239,7 +239,13 @@ func responseFromEvents(events []proto.CanonicalEvent) (proto.CanonicalResponse,
 			}
 		case "message_delta":
 			if evt.Usage != nil {
-				resp.Usage = *evt.Usage
+				// message_delta 顶层 usage 往往只带新的 output_tokens,
+				// input/cache_read/cache_creation 仅在 message_start 出现。
+				// 此处若整段覆盖 resp.Usage,会把 message_start 写入的 input/cache
+				// token 抹成 0,使缓冲重组响应静默少计费(input 常是缓存重/长上下文
+				// 流量的主成本)。改为逐字段 set-if-nonzero 合并:message_delta
+				// 真带了新的 input/cache 时仍更新,只带 output 时则保住既有 input/cache。
+				mergeNonZeroUsage(&resp.Usage, *evt.Usage)
 			}
 			if evt.StopReason != "" {
 				resp.StopReason = evt.StopReason
@@ -265,10 +271,48 @@ func responseFromEvents(events []proto.CanonicalEvent) (proto.CanonicalResponse,
 		}
 		resp.Content = append(resp.Content, b.block)
 	}
-	if resp.Usage.TotalTokens == 0 {
-		resp.Usage.TotalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
+	// 回填总账。除了 total 缺失,还要处理"total 是上游 message_delta 用被清零的
+	// base 算出的陈旧值"(只反映 output、漏掉 message_start 的 input)的情形:
+	// 此时陈旧 total 会小于已恢复的 input+output,按可见字段重算才不少计费。
+	if recomputed := resp.Usage.InputTokens + resp.Usage.OutputTokens; resp.Usage.TotalTokens < recomputed {
+		resp.Usage.TotalTokens = recomputed
 	}
 	return resp, losses
+}
+
+// mergeNonZeroUsage 把 src 的非零 token 字段并入 dst,保留 dst 已有的非零值。
+// 用于缓冲 SSE 重组:message_start 先填入 input/cache 等字段,后续 message_delta
+// 通常只带新的 output_tokens,合并时不能用零值覆盖既有字段,否则 input/cache 被
+// 抹零导致少计费。语义与活流式 usage 累加器一致:仅在 src 字段非零时写入。
+// tool-call 计数为按次累加(每次调用一帧),与 token 的"取最新非零"不同。
+func mergeNonZeroUsage(dst *proto.CanonicalUsage, src proto.CanonicalUsage) {
+	if src.InputTokens != 0 {
+		dst.InputTokens = src.InputTokens
+	}
+	if src.OutputTokens != 0 {
+		dst.OutputTokens = src.OutputTokens
+	}
+	if src.ReasoningTokens != 0 {
+		dst.ReasoningTokens = src.ReasoningTokens
+	}
+	if src.TotalTokens != 0 {
+		dst.TotalTokens = src.TotalTokens
+	}
+	if src.CacheCreationInputTokens != 0 {
+		dst.CacheCreationInputTokens = src.CacheCreationInputTokens
+	}
+	if src.CacheCreationInputTokens5m != 0 {
+		dst.CacheCreationInputTokens5m = src.CacheCreationInputTokens5m
+	}
+	if src.CacheCreationInputTokens1h != 0 {
+		dst.CacheCreationInputTokens1h = src.CacheCreationInputTokens1h
+	}
+	if src.CacheReadInputTokens != 0 {
+		dst.CacheReadInputTokens = src.CacheReadInputTokens
+	}
+	dst.WebSearchCalls += src.WebSearchCalls
+	dst.FileSearchCalls += src.FileSearchCalls
+	dst.ImageGenerationCalls += src.ImageGenerationCalls
 }
 
 func partialJSONText(raw json.RawMessage) string {
