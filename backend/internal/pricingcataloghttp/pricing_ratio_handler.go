@@ -65,6 +65,9 @@ type ratioListResponseBody struct {
 }
 
 func MountPricingRatioRoutes(r chi.Router, d AdminPricingRatioDeps) {
+	// 这条静态的审计证明路由必须注册在 {pool_group_id} 通配段之前，
+	// 否则会被按组处理的倍率处理器遮蔽。
+	r.Get("/audit/verify", newRatioAuditVerifyHandler(d))
 	r.Get("/", newRatioListHandler(d))
 	r.Get("/{pool_group_id}", newRatioGetHandler(d))
 	r.Put("/{pool_group_id}", newRatioUpsertHandler(d))

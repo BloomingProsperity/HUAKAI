@@ -119,7 +119,10 @@ func signPricingRatioAuditEntry(ctx context.Context, signer *sign.Signer, event 
 		return PricingRatioAuditEntry{}, err
 	}
 	entry := PricingRatioAuditEntry{
-		OccurredAt:  event.OccurredAt.UTC(),
+		// 哈希前先截断到微秒：timestamptz 只能保存到微秒精度，
+		// 若签名时钟里残留了亚微秒级的纳秒部分，读回后取值就会不一致，
+		// 进而导致这条链在回读时无法通过自身的 VerifyChain 校验。
+		OccurredAt:  event.OccurredAt.UTC().Truncate(time.Microsecond),
 		ActorID:     strings.TrimSpace(event.ActorID),
 		ActorRole:   strings.TrimSpace(event.ActorRole),
 		TenantID:    event.TenantID,
