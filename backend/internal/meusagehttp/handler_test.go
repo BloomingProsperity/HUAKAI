@@ -321,6 +321,72 @@ func TestMeUsageExposesPerRequestTokenCounts(t *testing.T) {
 	}
 }
 
+// TestMeUsageExposesStreamShapeAndTiming — request-shape/timing residual for the
+// self-service usage record. usage_records already stores stream / stream_terminated_reason
+// / requested_at and ListUsageRecords already SELECTs them; the DTO dropped them.
+// These are the caller's own request attributes (and are already on the admin view),
+// not third-party PII like ip/user_agent. Mutation: drop any of the three projections
+// (or DTO fields) -> stream reads false / the omitempty string keys go absent -> red.
+func TestMeUsageExposesStreamShapeAndTiming(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
+	row.Stream = true
+	row.StreamTerminatedReason = strPtr("client_disconnect")
+	row.RequestedAt = pgtype.Timestamptz{Time: time.Date(2026, 5, 14, 9, 30, 0, 0, time.UTC), Valid: true}
+	store := &usageStoreStub{rows: []dbbilling.ListUsageRecordsRow{row}}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage")
+	assertMeStatus(t, rec, http.StatusOK)
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 1 {
+		t.Fatalf("decode/len body=%s err=%v", rec.Body.String(), err)
+	}
+	item := body.Items[0]
+	if item["stream"] != true {
+		t.Fatalf("stream=%v want true (projection dropped?); body=%s", item["stream"], rec.Body.String())
+	}
+	if item["stream_terminated_reason"] != "client_disconnect" {
+		t.Fatalf("stream_terminated_reason=%v want client_disconnect; body=%s", item["stream_terminated_reason"], rec.Body.String())
+	}
+	if item["requested_at"] != "2026-05-14T09:30:00Z" {
+		t.Fatalf("requested_at=%v want 2026-05-14T09:30:00Z; body=%s", item["requested_at"], rec.Body.String())
+	}
+}
+
+// TestGenerationExposesStreamShapeAndTiming guards the /v1/generation projection of
+// stream/stream_terminated_reason/requested_at. mapGenerationUsageRecord plumbs them
+// from GetUsageRecordByRequestIDRow; the list-path test does not exercise this path.
+// Mutation: zero the gen-path plumb lines -> the single-record response loses the
+// fields (stream reads false, the omitempty keys go absent) -> this test goes red.
+func TestGenerationExposesStreamShapeAndTiming(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	row := generationUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "R_A", "ledger-a", "anthropic")
+	row.Stream = true
+	row.StreamTerminatedReason = strPtr("upstream_eof")
+	row.RequestedAt = pgtype.Timestamptz{Time: time.Date(2026, 5, 14, 9, 30, 0, 0, time.UTC), Valid: true}
+	store := &generationStoreStub{rows: []dbbilling.GetUsageRecordByRequestIDRow{row}}
+	h := NewGenerationHandler(GenerationDeps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeGeneration(h, "/v1/generation?id=R_A")
+	assertMeStatus(t, rec, http.StatusOK)
+	var item map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &item); err != nil {
+		t.Fatalf("decode generation response: %v body=%s", err, rec.Body.String())
+	}
+	if item["stream"] != true {
+		t.Fatalf("stream=%v want true (gen-path projection dropped?); body=%s", item["stream"], rec.Body.String())
+	}
+	if item["stream_terminated_reason"] != "upstream_eof" {
+		t.Fatalf("stream_terminated_reason=%v want upstream_eof; body=%s", item["stream_terminated_reason"], rec.Body.String())
+	}
+	if item["requested_at"] != "2026-05-14T09:30:00Z" {
+		t.Fatalf("requested_at=%v want 2026-05-14T09:30:00Z; body=%s", item["requested_at"], rec.Body.String())
+	}
+}
+
 // TestMeUsageDoesNotLeakClientIPOrUserAgent — PII boundary guard.
 //
 // The shared ListUsageRecordsRow now carries ip_address/user_agent (projected

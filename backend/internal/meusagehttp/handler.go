@@ -52,17 +52,20 @@ type listResponse struct {
 }
 
 type usageRecord struct {
-	RequestedModel    string      `json:"requested_model"`
-	UpstreamModel     string      `json:"upstream_model"`
-	ActualCost        string      `json:"actual_cost"`
-	Tokens            usageTokens `json:"tokens"`
-	Provider          string      `json:"provider,omitempty"`
-	ProviderAccountID *int64      `json:"provider_account_id,omitempty"`
-	LedgerID          string      `json:"ledger_id"`
-	VerifyHint        verifyHint  `json:"verify_hint"`
-	CreatedAt         string      `json:"created_at"`
-	Status            string      `json:"status"`
-	RequestID         string      `json:"request_id,omitempty"`
+	RequestedModel         string      `json:"requested_model"`
+	UpstreamModel          string      `json:"upstream_model"`
+	ActualCost             string      `json:"actual_cost"`
+	Tokens                 usageTokens `json:"tokens"`
+	Provider               string      `json:"provider,omitempty"`
+	ProviderAccountID      *int64      `json:"provider_account_id,omitempty"`
+	LedgerID               string      `json:"ledger_id"`
+	VerifyHint             verifyHint  `json:"verify_hint"`
+	CreatedAt              string      `json:"created_at"`
+	Status                 string      `json:"status"`
+	RequestID              string      `json:"request_id,omitempty"`
+	Stream                 bool        `json:"stream"`
+	StreamTerminatedReason string      `json:"stream_terminated_reason,omitempty"`
+	RequestedAt            string      `json:"requested_at,omitempty"`
 }
 
 // usageTokens surfaces the per-request token breakdown already stored in
@@ -196,32 +199,38 @@ func mapUsageRecord(row dbbilling.ListUsageRecordsRow, tenantID int64) usageReco
 			CacheCreation: row.CacheCreationTokens,
 			CacheRead:     row.CacheReadTokens,
 		},
-		Provider:          valueString(row.Provider),
-		ProviderAccountID: row.ProviderAccountID,
-		LedgerID:          ledgerID,
-		VerifyHint:        buildVerifyHint(ledgerID, requestID, tenantID),
-		CreatedAt:         formatTS(row.CreatedAt),
-		Status:            usageStatus(row),
-		RequestID:         requestID,
+		Provider:               valueString(row.Provider),
+		ProviderAccountID:      row.ProviderAccountID,
+		LedgerID:               ledgerID,
+		VerifyHint:             buildVerifyHint(ledgerID, requestID, tenantID),
+		CreatedAt:              formatTS(row.CreatedAt),
+		Status:                 usageStatus(row),
+		RequestID:              requestID,
+		Stream:                 row.Stream,
+		StreamTerminatedReason: valueString(row.StreamTerminatedReason),
+		RequestedAt:            formatTS(row.RequestedAt),
 	}
 }
 
 func mapGenerationUsageRecord(row dbbilling.GetUsageRecordByRequestIDRow, tenantID int64) usageRecord {
 	return mapUsageRecord(dbbilling.ListUsageRecordsRow{
-		RequestedModel:        row.RequestedModel,
-		UpstreamModel:         row.UpstreamModel,
-		ActualCost:            decimalFromNumeric(row.ActualCost),
-		TokensInput:           row.TokensInput,
-		TokensOutput:          row.TokensOutput,
-		CacheCreationTokens:   row.CacheCreationTokens,
-		CacheReadTokens:       row.CacheReadTokens,
-		Provider:              row.Provider,
-		ProviderAccountID:     row.ProviderAccountID,
-		AuditLedgerID:         row.AuditLedgerID,
-		CreatedAt:             row.CreatedAt,
-		EndClass:              row.EndClass,
-		PendingReconciliation: row.PendingReconciliation,
-		RequestID:             row.RequestID,
+		RequestedModel:         row.RequestedModel,
+		UpstreamModel:          row.UpstreamModel,
+		ActualCost:             decimalFromNumeric(row.ActualCost),
+		TokensInput:            row.TokensInput,
+		TokensOutput:           row.TokensOutput,
+		CacheCreationTokens:    row.CacheCreationTokens,
+		CacheReadTokens:        row.CacheReadTokens,
+		Provider:               row.Provider,
+		ProviderAccountID:      row.ProviderAccountID,
+		AuditLedgerID:          row.AuditLedgerID,
+		CreatedAt:              row.CreatedAt,
+		EndClass:               row.EndClass,
+		PendingReconciliation:  row.PendingReconciliation,
+		RequestID:              row.RequestID,
+		Stream:                 row.Stream,
+		StreamTerminatedReason: row.StreamTerminatedReason,
+		RequestedAt:            row.RequestedAt,
 	}, tenantID)
 }
 
