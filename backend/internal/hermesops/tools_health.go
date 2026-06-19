@@ -57,8 +57,11 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 			summary := map[string]any{
 				"account_id":               row.ID,
 				"health_state":             row.HealthState,
+				"health_state_until":       tsAny(row.HealthStateUntil),
 				"enabled":                  row.Enabled,
 				"last_probe_latency_ms":    int32PtrAny(row.LastProbeLatencyMS),
+				"session_window_5h_start":  tsAny(row.SessionWindow5hStart),
+				"session_window_5h_end":    tsAny(row.SessionWindow5hEnd),
 				"session_window_5h_status": deref(row.SessionWindow5hStatus),
 				"last_refresh_outcome":     deref(row.LastRefreshOutcome),
 				"failure_class":            deref(row.FailureClass),
