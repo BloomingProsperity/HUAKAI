@@ -4,11 +4,17 @@ import (
 	"context"
 	"expvar"
 	"fmt"
+	"runtime"
+	"time"
 
 	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
 const meterName = "github.com/BloomingProsperity/HUAKAI/internal/otelbridge"
+
+// processStart approximates process boot time: this package initializes at gateway
+// startup, so the runtime uptime gauge is derived from it.
+var processStart = time.Now()
 
 type bridgeCounter struct {
 	name        string
@@ -174,6 +180,32 @@ func bridgeCounters() []bridgeCounter {
 			name:        "huakai_dlq_pending_depth_low",
 			description: "Pending DLQ rows in the LOW lane.",
 			read:        func() int64 { return readExpvarMapInt("dlq_depth", "depth_LOW") },
+		},
+		// F-GW-003 Phase 2: live process runtime-resource gauges, read directly from the
+		// Go runtime (not expvar-backed). Bridged through the same snapshot path as the
+		// counters above so an operator can target the gateway's own footprint with the
+		// existing alert-rule CRUD — heap_alloc as a memory-leak budget, goroutines as a
+		// goroutine-leak signal, uptime to catch crash-loop / restart. Only heap reads
+		// MemStats (one stop-the-world per scrape; the composite snapshot caches it), so
+		// the cost stays negligible.
+		{
+			name:        "huakai_runtime_heap_alloc_bytes",
+			description: "Live Go heap-allocated bytes (process memory-budget signal).",
+			read: func() int64 {
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				return int64(ms.HeapAlloc)
+			},
+		},
+		{
+			name:        "huakai_runtime_goroutines",
+			description: "Live goroutine count (goroutine-leak signal).",
+			read:        func() int64 { return int64(runtime.NumGoroutine()) },
+		},
+		{
+			name:        "huakai_runtime_uptime_seconds",
+			description: "Process uptime in seconds (crash-loop / restart signal).",
+			read:        func() int64 { return int64(time.Since(processStart).Seconds()) },
 		},
 	}
 }
