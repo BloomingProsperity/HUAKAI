@@ -71,6 +71,46 @@ func TestHTTPProviderUsesInjectedClientAndMapsSubmitPoll(t *testing.T) {
 	}
 }
 
+func TestHTTPProviderSubmitSendsTaskDerivedIdempotencyHeader(t *testing.T) {
+	// 变异:删除 provider.go Submit 里设置 Idempotency-Key 头的那段;上游重复提交
+	// 时无法去重,本断言会因 header 为空(或值不等于任务派生键)而 RED。
+	// 判别性:期望值 "mediatask-55" 由 TaskID 派生,与请求体里 RequestID="req-55"
+	// 不同——若改成误用 RequestID 头也会被抓到。
+	var gotIdemHeader string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/tasks" {
+			t.Fatalf("unexpected provider request %s %s", r.Method, r.URL.Path)
+		}
+		gotIdemHeader = r.Header.Get("Idempotency-Key")
+		raw, err := json.Marshal(map[string]string{"provider_task_id": "up-55"})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(string(raw))),
+			Request:    r,
+		}, nil
+	})}
+
+	provider := NewHTTPProvider("http://provider.test", client)
+	// 故意不在请求体里预填 IdempotencyKey,验证 provider 会就地从任务身份派生。
+	if _, err := provider.Submit(context.Background(), SubmitReq{
+		TaskID: 55, RequestID: "req-55", TaskType: "image_generation",
+		InputParams: json.RawMessage(`{"prompt":"a clean test"}`),
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	want := DeriveIdempotencyKey(55, "req-55")
+	if want != "mediatask-55" {
+		t.Fatalf("派生键自检失败 want mediatask-55 got %q", want)
+	}
+	if gotIdemHeader != want {
+		t.Fatalf("Idempotency-Key 头=%q want %q(重复上游提交不会被去重)", gotIdemHeader, want)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
