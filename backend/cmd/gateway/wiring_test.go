@@ -71,6 +71,23 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 	}
 }
 
+// TestWiring_CompletionEventBusConfigCarriesMaxStates 守 config 层的状态 map 上限经由
+// buildCompletionEventBusConfig 透传进运行时 eventbus.Config。否则即便 config 默认 4096,
+// 网关实际跑的 MaxStates 仍是 0(无界),每 handler 状态 map 的内存泄漏会悄悄复活、且无任何测试报红。
+// Mutation: 删掉 middleware.go 里 `MaxStates: cfg.MaxStates` 那一行 → busCfg.MaxStates=0 → 本测试红。
+func TestWiring_CompletionEventBusConfigCarriesMaxStates(t *testing.T) {
+	policy := &eventbus.AuditRefPolicy{ReleaseMode: eventbus.ReleaseModeProduction}
+	def := buildCompletionEventBusConfig(&runtimeconfig.EventBusConfig{Enabled: true, MaxStates: 4096}, policy)
+	if def.MaxStates != 4096 {
+		t.Fatalf("busCfg.MaxStates=%d want 4096(config 层 cap 必须传到运行时 bus)", def.MaxStates)
+	}
+	// 非默认值透传:证明是真透传,而非写死常量。
+	custom := buildCompletionEventBusConfig(&runtimeconfig.EventBusConfig{Enabled: true, MaxStates: 7}, policy)
+	if custom.MaxStates != 7 {
+		t.Fatalf("busCfg.MaxStates=%d want 7(必须按传入值透传,不能是常量)", custom.MaxStates)
+	}
+}
+
 func TestWiring_AlertingEvaluatorDefaultDisabled(t *testing.T) {
 	// MUTATION: start the alerting evaluator regardless of cfg.AlertingEvalEnabled; this observes an unexpected Run call.
 	ctx, cancel := context.WithCancel(context.Background())

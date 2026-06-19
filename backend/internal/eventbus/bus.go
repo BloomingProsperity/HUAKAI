@@ -219,6 +219,33 @@ func (b *Bus) setStateErrorCode(event RequestCompletionEvent, handlerID HandlerI
 		Error:     errorCode,
 		UpdatedAt: b.now(),
 	}
+	b.evictStaleStateLocked()
+}
+
+// evictStaleStateLocked 在 map 超过上限时丢弃最久未更新的条目,从而把账本
+// 控制在 cfg.MaxStates 之内。调用方必须已持有 b.mu。非正的上限会关闭限制
+// (应急出口);由于上限很小且每次插入至多只会超出一个条目,单次线性扫描
+// 即可满足需要。
+func (b *Bus) evictStaleStateLocked() {
+	cap := b.cfg.MaxStates
+	if cap <= 0 || len(b.states) <= cap {
+		return
+	}
+	var (
+		stalestKey   StateKey
+		stalestAt    time.Time
+		stalestFound bool
+	)
+	for key, snap := range b.states {
+		if !stalestFound || snap.UpdatedAt.Before(stalestAt) {
+			stalestKey = key
+			stalestAt = snap.UpdatedAt
+			stalestFound = true
+		}
+	}
+	if stalestFound {
+		delete(b.states, stalestKey)
+	}
 }
 
 func (b *Bus) handlerTimeout(h Handler) time.Duration {
