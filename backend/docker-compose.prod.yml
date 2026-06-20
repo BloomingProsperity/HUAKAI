@@ -21,6 +21,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -31,6 +33,15 @@ services:
       HUAKAI_SESSION_SIGNING_KEY_HEX: ${HUAKAI_SESSION_SIGNING_KEY_HEX:-}
       HUAKAI_ADMIN_BOOTSTRAP_TOKEN: ${HUAKAI_ADMIN_BOOTSTRAP_TOKEN}
       HUAKAI_RELEASE_MODE: ${HUAKAI_RELEASE_MODE}
+      # production 模式硬要求:审计账本持久化到 postgres + 持久 ed25519 私钥签名
+      # (缺任一启动 fail-loud 拒启)。私钥由运维用 `openssl genpkey -algorithm ed25519`
+      # 生成后挂载到容器内固定路径;切勿提交私钥进仓库。
+      HUAKAI_AUDIT_LEDGER_BACKEND: ${HUAKAI_AUDIT_LEDGER_BACKEND:-postgres}
+      HUAKAI_AUDIT_PRIVATE_KEY_PATH: /run/secrets/audit/key.pem
+    volumes:
+      # 运维在宿主生成 ed25519 私钥并经 HUAKAI_AUDIT_PRIVATE_KEY_HOST 指向它
+      # (默认 ./secrets/audit_key.pem);只读挂载,容器内路径与上面 env 对应。
+      - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
     networks:
       - huakai-prod
     healthcheck:
@@ -39,6 +50,26 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # 一次性数据库迁移。gateway 刻意不自管迁移(保持迁移外部化、受控,避免多实例
+  # 启动竞争跑 schema,以及把 schema 变更与应用启动解耦),因此由本 one-shot 服务
+  # 在 gateway 之前把 sql/migrations 应用到 postgres;它成功退出(service_completed_successfully)
+  # 后 gateway 才启动。migrate/migrate 是迁移工具镜像,与 dev 流程一致;迁移幂等,重复 up 安全。
+  migrate:
+    image: migrate/migrate:v4.18.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./sql/migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database"
+      - "${HUAKAI_DATABASE_URL}"
+      - "up"
+    networks:
+      - huakai-prod
+    restart: "no"
 
   postgres:
     image: postgres:16-alpine
