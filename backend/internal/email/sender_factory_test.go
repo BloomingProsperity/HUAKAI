@@ -99,6 +99,19 @@ func TestAT_EMAIL_006_007_ProductionGateRequiresCompleteSettingsAndVerifyToggle(
 	}
 }
 
+// TestProductionGateFailsClosedOnEmptyActiveTenants 守住空 active 列表时的 fail-closed 语义:
+// 当 ListActiveTenantIDs 返回空(例如全新库里只有 id=0 系统哨兵、被 id>0 过滤后列表为空),
+// 生产门必须拒启(ErrEmailBackendUnconfigured),绝不在零真实工作租户时静默放行。
+// 判别性:删掉门里 len==0 的守卫则空列表会让 for 循环空跑直接返回 nil → 本测试转 RED。
+func TestProductionGateFailsClosedOnEmptyActiveTenants(t *testing.T) {
+	keys := testEmailKeys(t)
+	ctx := context.Background()
+	store := &fakeSettingsStore{activeTenants: []int64{}, settings: map[int64]StoredSettings{}}
+	if err := ValidateProductionReleaseGate(ctx, store, keys); !errors.Is(err, ErrEmailBackendUnconfigured) {
+		t.Fatalf("空 active 列表应 fail-closed 返回 ErrEmailBackendUnconfigured,实际=%v", err)
+	}
+}
+
 func TestAT_EMAIL_008_SMTPSenderImplementsEmailSender(t *testing.T) {
 	var sender EmailSender = NewSMTPSender(SMTPSettings{})
 	if sender == nil {
