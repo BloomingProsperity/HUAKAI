@@ -39,10 +39,23 @@ var (
 // DefaultClaimGate is the production-grade Tx1 ClaimGate backed by PostgreSQL
 // via pgx + sqlc. Constructed via NewClaimGate(pool); methods always run a
 // transaction and never silently succeed when stores are missing.
+// DefaultClaimLeaseWindow 是 reserving claim 的孤儿回收租约默认窗口。
+//
+// 该窗口必须显著大于"单个请求的最大生命周期 + 结算/DLQ 重放余量"。reserve 时
+// claim 的 lease_expires_at 设为 now+window 且请求生命周期内不续租;LeaseSweeper
+// 会 Abort 任何 lease 过期仍 reserving 的 claim。若窗口短于请求时长,跑得久的合法
+// 流式请求(大输出/慢上游/长 tool-use,可达 HUAKAI_STREAM_TOTAL_TIMEOUT 默认 600s)
+// 会在仍在传输时被 sweeper 误 Abort —— 已交付内容永不计费(亏钱)且 in_flight
+// 在流仍活时被减低估致上游账号超并发。故默认取 30min,远大于 600s 流上限 + 结算余量。
+// (旧值 90s 是按 slot 抢占窗口设的,误用到必须活过整个请求的 claim 上。)
+// 真孤儿(进程崩溃)仍在此窗口后被回收,仅回收延迟变长,money 安全无丢失。
+const DefaultClaimLeaseWindow = 30 * time.Minute
+
 type DefaultClaimGate struct {
 	pool *pgxpool.Pool
 	q    *dbbilling.Queries
-	// Lease window for claim row orphan-sweep recovery; default 90s.
+	// Lease window for claim row orphan-sweep recovery; 必须 > 请求最大生命周期,
+	// 见 DefaultClaimLeaseWindow。
 	LeaseWindow time.Duration
 }
 
@@ -56,7 +69,7 @@ func NewClaimGate(pool *pgxpool.Pool) *DefaultClaimGate {
 	return &DefaultClaimGate{
 		pool:        pool,
 		q:           dbbilling.New(pool),
-		LeaseWindow: 90 * time.Second,
+		LeaseWindow: DefaultClaimLeaseWindow,
 	}
 }
 
@@ -230,7 +243,7 @@ func (g *DefaultClaimGate) leaseWindow() time.Duration {
 	if g.LeaseWindow > 0 {
 		return g.LeaseWindow
 	}
-	return 90 * time.Second
+	return DefaultClaimLeaseWindow
 }
 
 func nullableInt64(v int64) *int64 {
