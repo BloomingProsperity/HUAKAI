@@ -113,10 +113,16 @@ func (s *PostgresSettingsStore) ListActiveTenantIDs(ctx context.Context) ([]int6
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("%w: settings store unavailable", ErrEmailBackendUnconfigured)
 	}
+	// id > 0 排除非正 id 的系统伪租户:迁移 0030 用显式 id=0 播种了
+	// 'public-pricing' 全局定价 scope 哨兵(状态 active),它没有 users、永不发验证邮件,
+	// 且配置侧对 tenant_id<=0 一律拒写。生产 email 就绪门遍历本列表逐租户要求配齐 SMTP,
+	// 若把该哨兵纳入,会要求一个任何配置入口都拒绝写入的租户配齐 SMTP → 生产永久拒启。
+	// 收窄到正 id 工作租户(与工作租户既定口径一致),使"门要求配置的集合"恰等于
+	// "配置入口能写入的集合",消解该死锁;不改哨兵那行、不影响公开定价 scope。
 	const q = `
 SELECT id
 FROM tenants
-WHERE status = 'active' AND deleted_at IS NULL
+WHERE status = 'active' AND deleted_at IS NULL AND id > 0
 ORDER BY id`
 	rows, err := s.db.Query(ctx, q)
 	if err != nil {
