@@ -30,6 +30,7 @@ backend/.gocache/
 .env.*
 !.env.example
 !backend/.env.dev.example
+!backend/.env.prod.example
 *.pem
 *.key
 *.crt

@@ -150,7 +150,8 @@ risk changes implementation method rather than scope.
 | Path | Purpose |
 | --- | --- |
 | [backend/](backend/) | Go backend core: gateway HTTP entrypoint, inbound auth, model registry, router engine, resource pool, protocol translation, streaming forwarder, billing/observability ledger, SQL migrations, and tests. |
-| [frontend/](frontend/) | Frontend workspace placeholder. The operations console is not implemented yet. |
+| [frontend/](frontend/) | Frontend workspace. A build scaffold exists, but the operations console UI is not yet implemented; self-hosting today is API-only (bootstrap admin token + admin API). |
+| [docs/deploy/](docs/deploy/) | Production deploy + first-boot bootstrap guide (`docker-compose.prod.yml`, env example, startup gates). |
 | [tools/](tools/) | Operator tools (e.g. `fingerprint-collector` for transport-mimicry preparation). Each tool ships its own README with use-boundary rules. |
 | [CLAUDE.md](CLAUDE.md) / [GEMINI.md](GEMINI.md) / [AGENTS.md](AGENTS.md) | Per-agent operating charters. |
 | [docs/](docs/) | Authoritative governance, contracts, parity matrix, risk register, release gates, specs, and plans. |
@@ -175,7 +176,7 @@ Implemented:
 - Resource pool selection and claim writeback in `backend/internal/pool`.
 - Streaming forwarder and usage draft extraction in `backend/internal/gateway`.
 - Tx1/Tx2 billing and observability settlement in `backend/internal/billing`.
-- PostgreSQL migrations through `0093_billing_ledger_claims_listing_index`.
+- PostgreSQL migrations through `0151_media_task_orphans`.
 - R7 application-layer mimicry primitives (system rewrite, cache_control breakpoints,
   tool-name obfuscation, metadata user_id rewrite, 6-step composer) in
   `backend/internal/gateway/`.
