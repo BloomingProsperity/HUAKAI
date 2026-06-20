@@ -42,6 +42,11 @@ type VerifyResponse struct {
 	FieldsMismatch []string `json:"fields_mismatch,omitempty"`
 	CanonicalHash  string   `json:"canonical_hash"`
 	SchemaVersion  string   `json:"schema_version"`
+	// RevokedAt / ReasonClass 仅在 key 已 CRL 撤销时出现:暴露精确撤销时刻与细分原因类,让客户端一次
+	// 拿全撤销详情(此前只回 reason="key_revoked","何时/为何撤销"得另打一次 well-known)。时刻复用
+	// well-known 的 RFC3339 格式以保两端字节一致;两者皆运维登记值,well-known 已公开同字段,无新泄露。
+	RevokedAt   string `json:"revoked_at,omitempty"`
+	ReasonClass string `json:"reason_class,omitempty"`
 }
 
 type verifyRequest struct {
@@ -101,7 +106,7 @@ func (h *verifyHandler) verify(ctx context.Context, raw []byte) VerifyResponse {
 	sum := sha256.Sum256(canonical)
 	canonicalHash := hex.EncodeToString(sum[:])
 
-	key, keyStatus, reason, err := h.lookupKey(ctx, strings.TrimSpace(req.PubkeyFingerprint))
+	key, keyStatus, reason, revocation, err := h.lookupKey(ctx, strings.TrimSpace(req.PubkeyFingerprint))
 	if err != nil {
 		return VerifyResponse{Valid: false, Status: "mismatch", SignatureValid: false, KeyStatus: "unknown", Reason: "unknown_signer", CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 	}
@@ -133,7 +138,14 @@ func (h *verifyHandler) verify(ctx context.Context, raw []byte) VerifyResponse {
 		if reason == "" {
 			reason = "key_revoked"
 		}
-		return VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: keyStatus, Reason: reason, CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
+		resp := VerifyResponse{Valid: false, Status: "unverified", SignatureValid: true, KeyStatus: keyStatus, Reason: reason, CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
+		// 投影撤销详情:时刻复用 well-known 的 RFC3339 格式(formatOptionalTime),与其字节一致;
+		// 原因类原样透传(运维登记值,well-known 已公开)。撤销表无详情时两键 omitempty 自然缺省。
+		if revocation != nil {
+			resp.RevokedAt = formatOptionalTime(revocation.RevokedAt)
+			resp.ReasonClass = revocation.ReasonClass
+		}
+		return resp
 	}
 	// receipt 必须由签名时仍在有效窗口内的 key 签发。occurred_at 已知且落在 key
 	// 有效窗口外 → 拒(堵泄漏旧 key 签新日期 receipt、未来 key 提前生效)。occurred_at 缺省
@@ -147,37 +159,38 @@ func (h *verifyHandler) verify(ctx context.Context, raw []byte) VerifyResponse {
 	return VerifyResponse{Valid: true, Status: "signed-only", SignatureValid: true, KeyStatus: keyStatus, CanonicalHash: canonicalHash, SchemaVersion: trustSchemaVersion}
 }
 
-func (h *verifyHandler) lookupKey(ctx context.Context, fingerprint string) (*auditledger.Pubkey, string, string, error) {
+func (h *verifyHandler) lookupKey(ctx context.Context, fingerprint string) (*auditledger.Pubkey, string, string, *Revocation, error) {
 	fp, err := normalizeFingerprintString(fingerprint)
 	if err != nil {
-		return nil, "unknown", "unknown_signer", err
+		return nil, "unknown", "unknown_signer", nil, err
 	}
 	var key *auditledger.Pubkey
 	if h.deps.Registry != nil {
 		key, err = auditledger.LookupPubkey(ctx, h.deps.Registry, []byte(fp))
 		if errors.Is(err, auditledger.ErrPubkeyNotFound) || errors.Is(err, auditledger.ErrLedgerPubkeyNotFound) || errors.Is(err, auditledger.ErrInvalidPubkeyFingerprint) {
-			return nil, "unknown", "unknown_signer", err
+			return nil, "unknown", "unknown_signer", nil, err
 		}
 		if err != nil {
-			return nil, "unknown", "unknown_signer", err
+			return nil, "unknown", "unknown_signer", nil, err
 		}
 	} else if h.deps.Signer != nil && h.deps.Signer.Fingerprint() == fp {
 		key, err = auditledger.PubkeyFromSigner(h.deps.Signer, trustNow(h.deps.Now))
 		if err != nil {
-			return nil, "unknown", "unknown_signer", err
+			return nil, "unknown", "unknown_signer", nil, err
 		}
 	} else {
-		return nil, "unknown", "unknown_signer", auditledger.ErrPubkeyNotFound
+		return nil, "unknown", "unknown_signer", nil, auditledger.ErrPubkeyNotFound
 	}
 	keyStatus := key.Status()
 	revocations, err := revocationsFromDeps(h.deps.Revocations)
 	if err != nil {
-		return nil, "unknown", "revocation_config_invalid", err
+		return nil, "unknown", "revocation_config_invalid", nil, err
 	}
-	if _, ok := revocations.Lookup(fp); ok {
-		return key, "revoked", "key_revoked", nil
+	// 命中 CRL 撤销:连同撤销详情(时刻 + 原因类)一并返回,供 verify 投影给客户端,免得再打一次 well-known。
+	if rev, ok := revocations.Lookup(fp); ok {
+		return key, "revoked", "key_revoked", &rev, nil
 	}
-	return key, keyStatus, "", nil
+	return key, keyStatus, "", nil, nil
 }
 
 // parseCanonicalTrustReceipt 确认 canonical 字节是一份 trust.receipt.v1,并提取

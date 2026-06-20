@@ -15072,6 +15072,12 @@ components:
           type: string
           pattern: '^$|^[0-9a-f]{64}$'
         schema_version: { type: string, enum: [trust.receipt.v1] }
+        revoked_at:
+          type: string
+          description: 仅 key_status=revoked 时出现;CRL 登记的撤销时刻(RFC3339,与 well-known 同格式),撤销表无时刻则缺省。
+        reason_class:
+          type: string
+          description: 仅 key_status=revoked 时出现;运维登记的撤销细分原因类(与 well-known 同字段),无则缺省。
 
     TrustErrorResponse:
       type: object
