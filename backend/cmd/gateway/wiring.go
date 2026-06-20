@@ -276,6 +276,18 @@ type runtimeOptions struct {
 	cacheScope    string
 }
 
+// newClaimGateWithLease 构造 claim gate 并按 env 设置孤儿回收租约窗口。
+// HUAKAI_BILLING_CLAIM_LEASE 默认 billing.DefaultClaimLeaseWindow(30min),
+// 必须 > HUAKAI_STREAM_TOTAL_TIMEOUT(默认 600s)+ 结算/DLQ 余量,否则跑得久的
+// 合法流式请求会被 LeaseSweeper 在传输中误 Abort(亏钱 + 超并发)。留 env 开关可回退。
+func newClaimGateWithLease(pool *pgxpool.Pool) billing.ClaimGate {
+	cg := billing.NewClaimGate(pool)
+	if cg.LeaseWindow > 0 {
+		cg.LeaseWindow = streamDurationEnv("HUAKAI_BILLING_CLAIM_LEASE", billing.DefaultClaimLeaseWindow)
+	}
+	return cg
+}
+
 func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistry) *transport.Factory {
 	factory := transport.NewFactory(mimicryRegistry)
 	if cfg != nil {
@@ -1102,7 +1114,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool))),
 		retryBudget:           tenantRetryBudget,
-		claimGate:             billing.NewClaimGate(pgPool),
+		claimGate:             newClaimGateWithLease(pgPool),
 		settler:               settler,
 		quotaReserver:         quotaReserver,
 		replayStore:           replayStore,
