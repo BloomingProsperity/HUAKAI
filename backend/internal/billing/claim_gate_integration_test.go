@@ -124,6 +124,42 @@ func baseRequest(tenantID, apiKeyID, userID int64) ReserveRequest {
 	}
 }
 
+// TestClaimReserveLeaseCoversMaxRequestLifetime 守 reserve 写入的 claim 租约窗口
+// 覆盖最大请求生命周期。否则 LeaseSweeper(按 lease_expires_at<NOW() 捞 reserving
+// claim 无条件 Abort)会在长流(可达 600s)仍在传输时把活 claim 误 Abort:已交付内容
+// 永不计费(亏钱)+ in_flight 在流仍活时被减低估致上游账号超并发(CONC-1/LEAK-1)。
+// 变异判据:把 DefaultClaimLeaseWindow 还原成旧值 90s → lease_expires_at-reserveStart
+// ≈90s < 10min → 本测试 RED。
+func TestClaimReserveLeaseCoversMaxRequestLifetime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	tenantID, apiKeyID, userID := seedTenant(t, ctx, pool, "lease")
+	gate := NewClaimGate(pool)
+
+	reserveStart := time.Now().UTC()
+	r, err := gate.Reserve(ctx, baseRequest(tenantID, apiKeyID, userID))
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if r.ClaimID == 0 {
+		t.Fatalf("Reserve 须返非零 ClaimID")
+	}
+	var leaseExpiresAt time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT lease_expires_at FROM billing_ledger_claims WHERE tenant_id=$1 AND id=$2`,
+		tenantID, r.ClaimID,
+	).Scan(&leaseExpiresAt); err != nil {
+		t.Fatalf("读 lease_expires_at: %v", err)
+	}
+	covered := leaseExpiresAt.Sub(reserveStart)
+	const minCover = 10 * time.Minute // 须 > 最大流时长 600s + 结算/DLQ 余量
+	if covered < minCover {
+		t.Fatalf("claim 租约只覆盖 %v(< %v):长流会被 LeaseSweeper 中途 abort 致亏钱+超并发;租约须 >= 最大请求生命周期",
+			covered, minCover)
+	}
+}
+
 // AT-OBS-001 strong: Idempotent replay (same fingerprint) returns cached
 // claim, NO second row inserted, IdempotencyHit=true on the second call.
 func TestAT_OBS_001_IdempotentReplay(t *testing.T) {
