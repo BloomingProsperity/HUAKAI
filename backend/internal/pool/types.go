@@ -93,6 +93,9 @@ type RoutingReasonWaitAction = router.RoutingReasonWaitAction
 type RoutingReasonExclusionItem = router.RoutingReasonExclusionItem
 type RoutingReasonBuilder = router.RoutingReasonBuilder
 
+// NoCapacityError 透传 router 的无容量错误类型,供 HTTP 层 errors.As 取最早恢复时刻算 Retry-After。
+type NoCapacityError = router.NoCapacityError
+
 var (
 	ErrNoEligibleAccount      = router.ErrNoEligibleAccount
 	ErrKeyRateLimited         = router.ErrKeyRateLimited
