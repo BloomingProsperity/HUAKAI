@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -516,4 +518,23 @@ func (ex *chatExecution) stripCrossAccountResponseChain(body []byte) []byte {
 			slog.Int64("account_id", ex.accInfo.AccountID))
 	}
 	return stripped
+}
+
+// noCapacityFallbackRetryAfter 是无法估算池恢复时刻时的默认 Retry-After 秒数(沿用历史常数)。
+const noCapacityFallbackRetryAfter = 5
+
+// poolNoCapacityRetryAfter 从无容量错误里取池最早恢复时刻算 Retry-After 秒:错误携带未来恢复时刻 →
+// ceil(恢复时刻 - now)(至少 1 秒);否则(非 NoCapacityError / 无可估时刻 / 时刻已过)回退默认值。
+// 这样客户端按真实窗口边界退避(如上游长时限流),而非每隔固定 5 秒空撞 503。
+func poolNoCapacityRetryAfter(err error, now time.Time) int {
+	var noCap *pool.NoCapacityError
+	if errors.As(err, &noCap) && noCap != nil && noCap.EarliestRecoveryAt.After(now) {
+		// 整数向上取整,避免引入 math 依赖:(d + 1s - 1ns) / 1s。
+		secs := int((noCap.EarliestRecoveryAt.Sub(now) + time.Second - time.Nanosecond) / time.Second)
+		if secs < 1 {
+			secs = 1
+		}
+		return secs
+	}
+	return noCapacityFallbackRetryAfter
 }

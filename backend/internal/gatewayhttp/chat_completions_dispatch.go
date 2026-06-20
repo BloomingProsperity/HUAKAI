@@ -628,6 +628,9 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	if selRes == nil || selRes.AccountID == 0 {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_no_account", ex.requestID, 0, ex.protocolLoss)
 		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_select_no_account", gateway.UpstreamError5xx, nil)
+		// 此分支 err 为 nil(无哨兵携带恢复时刻),给一个默认 Retry-After 修掉"503 却无退避头"缺陷,
+		// 避免客户端盲目重试。与无容量错误路径的回退值一致。
+		failure.RetryAfterSeconds = noCapacityFallbackRetryAfter
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	ex.selRes = selRes

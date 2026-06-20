@@ -93,10 +93,13 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res
 	gates := s.gates.ForSelection(ctx, req)
 	eligible := s.filter(ctx, gates, accounts, req, reason)
 	if len(eligible) == 0 {
+		// 池内无可用账号:估算最早恢复时刻并包进错误,供 HTTP 层算精确 Retry-After。
+		// 仅丰富错误内容,不改"返回哪个哨兵"的既有语义(Unwrap 保 errors.Is 成立)。
+		recoverAt := earliestPoolRecovery(accounts, modelCooldownKey(req), s.currentTime())
 		if reason.onlyFailure(GateFailureHealth, len(accounts)) {
-			return nil, ErrAllChannelsDegraded
+			return nil, &NoCapacityError{Cause: ErrAllChannelsDegraded, EarliestRecoveryAt: recoverAt}
 		}
-		return nil, ErrNoEligibleAccount
+		return nil, &NoCapacityError{Cause: ErrNoEligibleAccount, EarliestRecoveryAt: recoverAt}
 	}
 
 	routeConstrained := hasModelRoute(policy, req.RequestedModel)
@@ -356,4 +359,51 @@ func fallbackPlan(candidates []*AccountSnapshot, policy *RoutingPolicy) *WaitPla
 		return nil
 	}
 	return &WaitPlan{AccountID: account.ID, MaxConcurrency: account.MaxConcurrency, TimeoutMS: timeout, MaxWaiting: waiting}
+}
+
+// currentTime 返回选择器时钟:WithNow 注入时用注入时钟(供测试确定性),否则系统时钟。
+func (s *DefaultSelector) currentTime() time.Time {
+	if s != nil && s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// modelCooldownKey 解析模型限流键,与 modelRateLimitGate 取键逻辑一致:优先 ModelCooldownKey,
+// 回退 RequestedModel。空键表示该请求不参与模型级限流估算。
+func modelCooldownKey(req SelectionRequest) string {
+	if req.ModelCooldownKey != "" {
+		return req.ModelCooldownKey
+	}
+	return req.RequestedModel
+}
+
+// earliestPoolRecovery 估算池内最早恢复时刻:逐账号取其健康冷却(HealthStateUntil)与本模型限流
+// 重置(RateLimitResetAt)两个时间型阻断里"都需清除"的较晚者(max,两者都得过该账号才可用),再取
+// 所有账号中最早的那个(min,任一账号先恢复池即重新有容量)。账号无任何未来时间型阻断(永不恢复或
+// 因非时间原因被挡)不计入。全部不计入 → 返回零值(调用方回退默认 Retry-After)。
+// 这是 best-effort 退避提示而非保证:对"非时间型门(容量/能力)也挡着"的账号会偏乐观,但显著优于硬编码。
+func earliestPoolRecovery(accounts []*AccountSnapshot, modelKey string, now time.Time) time.Time {
+	var earliest time.Time
+	for _, a := range accounts {
+		if a == nil {
+			continue
+		}
+		acctRecover := time.Time{}
+		if a.HealthStateUntil.After(now) {
+			acctRecover = a.HealthStateUntil
+		}
+		if modelKey != "" {
+			if limit, ok := a.ModelRateLimits[modelKey]; ok && limit.RateLimitResetAt.After(now) && limit.RateLimitResetAt.After(acctRecover) {
+				acctRecover = limit.RateLimitResetAt
+			}
+		}
+		if acctRecover.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || acctRecover.Before(earliest) {
+			earliest = acctRecover
+		}
+	}
+	return earliest
 }

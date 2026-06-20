@@ -14,6 +14,30 @@ var (
 	ErrClaimRace           = errors.New("pool claim writeback race")
 )
 
+// NoCapacityError 包裹"池内无可用容量"哨兵错误,并携带池内账号最早恢复时刻——即所有被健康冷却
+// (HealthStateUntil)或本模型限流(RateLimitResetAt)挡下的账号中,最早能重新可用的那个时刻。供
+// HTTP 层据此算精确 Retry-After,替代硬编码常数。EarliestRecoveryAt 为零值表示无可估恢复时刻(账号
+// 因非时间原因被挡或恢复时刻已过),调用方据此回退默认值。实现 Unwrap,使
+// errors.Is(err, ErrNoEligibleAccount / ErrAllChannelsDegraded) 仍成立,既有分类逻辑不受影响。
+type NoCapacityError struct {
+	Cause              error
+	EarliestRecoveryAt time.Time
+}
+
+func (e *NoCapacityError) Error() string {
+	if e == nil || e.Cause == nil {
+		return ErrNoEligibleAccount.Error()
+	}
+	return e.Cause.Error()
+}
+
+func (e *NoCapacityError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 // Selector 按 docs/specs/pool-routing.md §Phase A-D 的分层算法为租户请求
 // 选择 Provider Account。
 type Selector interface {
