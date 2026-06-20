@@ -299,3 +299,30 @@ func quotaPostCommitFinalizeFailuresForTest() int64 {
 	}
 	return v.Value()
 }
+
+// TestDenyWindowKind 验证从拒绝决策抽出对外窗口标签的全部分支:DenyError 与 fail-soft result 两条
+// 来源都取窗口;none/空一律抑制(不透出),manual/日历窗口照常透出;allowed 无窗口。
+// 变异:删 windowKindLabel 的 none 抑制 → WindowNone 子用例得到 "none" 而非 "" → 红;
+// 把 deny.Decision.WindowKind 读丢 → calendar_month 子用例得 "" → 红。
+func TestDenyWindowKind(t *testing.T) {
+	cases := []struct {
+		name   string
+		result quota.ReserveResult
+		err    error
+		want   string
+	}{
+		{"deny_error_calendar_month", quota.ReserveResult{}, &quota.DenyError{Decision: quota.Decision{WindowKind: quota.WindowCalendarMonth}}, "calendar_month"},
+		{"deny_error_manual_exposed", quota.ReserveResult{}, &quota.DenyError{Decision: quota.Decision{WindowKind: quota.WindowManual}}, "manual"},
+		{"deny_error_none_suppressed", quota.ReserveResult{}, &quota.DenyError{Decision: quota.Decision{WindowKind: quota.WindowNone}}, ""},
+		{"deny_error_empty_suppressed", quota.ReserveResult{}, &quota.DenyError{Decision: quota.Decision{}}, ""},
+		{"fail_soft_result_calendar_day", quota.ReserveResult{Allowed: false, Decision: quota.Decision{WindowKind: quota.WindowCalendarDay}}, nil, "calendar_day"},
+		{"allowed_no_window", quota.ReserveResult{Allowed: true}, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DenyWindowKind(tc.result, tc.err); got != tc.want {
+				t.Fatalf("DenyWindowKind=%q want %q", got, tc.want)
+			}
+		})
+	}
+}

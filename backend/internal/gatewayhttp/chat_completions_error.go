@@ -31,21 +31,21 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func writeInsufficientBalanceError(w http.ResponseWriter) {
-	writeInsufficientQuotaBody(w, http.StatusPaymentRequired, 0)
+	writeInsufficientQuotaBody(w, http.StatusPaymentRequired, 0, "")
 }
 
 func writeInsufficientQuotaError(w http.ResponseWriter) {
-	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, 0)
+	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, 0, "")
 }
 
-// writeInsufficientQuotaErrorRetryable 在 token-per-window 等窗口配额拒绝时,
-// 把引擎算好的窗口重置时刻吐给客户端:Retry-After 头(秒)+ body 的
-// window_resets_at(RFC3339),让 SDK 按窗口边界智能退避而非盲目重试。
-func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time.Duration) {
-	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, retryAfter)
+// writeInsufficientQuotaErrorRetryable 在 token-per-window 等窗口配额拒绝时,把引擎算好的窗口信息
+// 吐给客户端:Retry-After 头(秒)+ body 的 window_resets_at(RFC3339);windowKind 非空时再加 body 的
+// quota_window(如 calendar_month),让 SDK 既能按窗口边界退避,又能区分是日额还是月额超了。
+func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time.Duration, windowKind string) {
+	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, retryAfter, windowKind)
 }
 
-func writeInsufficientQuotaBody(w http.ResponseWriter, status int, retryAfter time.Duration) {
+func writeInsufficientQuotaBody(w http.ResponseWriter, status int, retryAfter time.Duration, windowKind string) {
 	w.Header().Set("Content-Type", "application/json")
 	errFields := map[string]string{
 		"type":    "insufficient_quota",
@@ -56,6 +56,11 @@ func writeInsufficientQuotaBody(w http.ResponseWriter, status int, retryAfter ti
 		secs := int64(math.Ceil(retryAfter.Seconds()))
 		w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
 		errFields["window_resets_at"] = time.Now().UTC().Add(retryAfter).Format(time.RFC3339)
+	}
+	// 窗口种类与 window_resets_at 解耦:manual/none 窗口无固定重置(retryAfter=0、无 resets_at),但仍
+	// 可透出窗口名;空串(未配多窗口/未知)则完全不写本字段,对既有客户端零变化。
+	if windowKind != "" {
+		errFields["quota_window"] = windowKind
 	}
 	w.WriteHeader(status)
 	body, err := json.Marshal(map[string]map[string]string{"error": errFields})
