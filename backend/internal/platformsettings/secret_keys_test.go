@@ -7,15 +7,16 @@ import (
 )
 
 // TestIsSecretKeyClassifiesCredentialKeys 守护密钥类 key 的分类:外部审核 bearer
-// 密钥数组与支付 provider 配置必须判为密钥类,而典型公开展示类 key(site_name)
-// 不得被误判。变异实验:从 secretSettingKeys 删去 KeyModerationExternalAPIKeys,
-// 则首个断言 RED;把 KeySiteName 误加进去,则最后一个断言 RED。
+// 密钥数组必须判为密钥类;支付 provider 配置(仅支付方式开关+收银台 URL,schema 封闭
+// 无凭据)与公开展示类 key(site_name)都不得被误判为密钥类。变异实验:从
+// secretSettingKeys 删去 KeyModerationExternalAPIKeys,则首个断言 RED;把
+// KeyPaymentProviderConfig 或 KeySiteName 误加进去,则对应"不应判为密钥类"断言 RED。
 func TestIsSecretKeyClassifiesCredentialKeys(t *testing.T) {
 	if !IsSecretKey(KeyModerationExternalAPIKeys) {
 		t.Fatalf("moderation_external_api_keys 应判为密钥类")
 	}
-	if !IsSecretKey(KeyPaymentProviderConfig) {
-		t.Fatalf("payment_provider_config 应判为密钥类")
+	if IsSecretKey(KeyPaymentProviderConfig) {
+		t.Fatalf("payment_provider_config 不应判为密钥类(仅支付方式开关+收银台 URL,非凭据)")
 	}
 	if IsSecretKey(KeySiteName) {
 		t.Fatalf("site_name 不应判为密钥类")
@@ -41,13 +42,14 @@ func TestHasConfiguredSecretValueTreatsEmptyContainersAsUnset(t *testing.T) {
 	}
 }
 
-// TestAuditPayloadRedactsAllSecretKeys 守护审计脱敏与读路径共用同一份密钥清单:
-// moderation 密钥与 payment 配置的明文都不得出现在审计 payload 中,而非密钥类的
-// site_name 明文照常保留。变异实验:把 auditValueForSetting 的 IsSecretKey 改回只
-// 判 KeyModerationExternalAPIKeys,则 payment 明文会回到 payload,对应断言 RED。
+// TestAuditPayloadRedactsAllSecretKeys 守护审计脱敏只覆盖真凭据类 key:moderation
+// 密钥明文不得出现在审计 payload 中;而非密钥类的 payment 配置(支付方式开关+收银台
+// URL)与 site_name 明文照常保留(支付配置变更要可审计、可追溯,不该被脱敏埋没)。
+// 变异实验:把 payment 误加进 secretSettingKeys,则 payment 配置明文从 payload 消失,
+// 对应"payment 配置应进入 payload"断言 RED;删 moderation 脱敏则首个断言 RED。
 func TestAuditPayloadRedactsAllSecretKeys(t *testing.T) {
 	const moderationSecret = "sk-canary-mod-abc123"
-	const paymentSecret = "pay-canary-xyz789"
+	const paymentCheckoutFragment = "pay-checkout-xyz789"
 
 	payload, err := platformSettingAuditPayload(AuditParams{
 		Key:      KeyModerationExternalAPIKeys,
@@ -61,16 +63,17 @@ func TestAuditPayloadRedactsAllSecretKeys(t *testing.T) {
 		t.Fatalf("审计 payload 泄露 moderation 明文: %s", payload)
 	}
 
+	// payment 配置是非密钥类:其收银台 URL 等明文应原样进入审计 payload(可追溯),不被脱敏。
 	payload, err = platformSettingAuditPayload(AuditParams{
 		Key:      KeyPaymentProviderConfig,
-		OldValue: `{"taobao":{"enabled":true,"checkout_url":"https://x/` + paymentSecret + `"}}`,
-		NewValue: `{"taobao":{"enabled":false,"checkout_url":""}}`,
+		OldValue: `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":true,"checkout_url":"https://pay.example/` + paymentCheckoutFragment + `"}}`,
+		NewValue: `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":false,"checkout_url":""}}`,
 	})
 	if err != nil {
 		t.Fatalf("build payment payload: %v", err)
 	}
-	if strings.Contains(string(payload), paymentSecret) {
-		t.Fatalf("审计 payload 泄露 payment 明文: %s", payload)
+	if !strings.Contains(string(payload), paymentCheckoutFragment) {
+		t.Fatalf("payment 配置(非密钥类)应进入审计 payload 以便追溯,却被脱敏: %s", payload)
 	}
 
 	// 非密钥类 site_name 明文应原样进入 payload(不误伤)。
