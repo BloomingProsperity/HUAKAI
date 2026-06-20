@@ -293,9 +293,10 @@ func TestHandlerGETListReturnsAllDefinedKeys(t *testing.T) {
 // 绝不应出现在任何读响应体中;一旦读路径回吐明文,断言会因为响应体含此子串而 RED。
 const canaryModerationAPIKey = "sk-canary-moderation-7f3a9b2c"
 
-// canaryPaymentSecret 同理用于支付 provider 配置:塞进配置 JSON 里的判别性密钥串,
-// 脱敏后不得出现在响应体中。
-const canaryPaymentSecret = "pay-canary-secret-d41d8cd9"
+// paymentCheckoutFragment 是塞进支付配置 checkout_url 里的判别性夹具串。payment 是
+// 非密钥类配置(仅支付方式开关+收银台 URL),读路径应原样回吐、不脱敏,故它必须出现
+// 在读响应体中;一旦 payment 被误当密钥脱敏,断言会因响应体缺此子串而 RED。
+const paymentCheckoutFragment = "pay-checkout-d41d8cd9"
 
 // TestHandlerGETModerationAPIKeysIsMaskedNotPlaintext 守护读路径对外部审核 provider
 // bearer 密钥数组的脱敏:GET 单 key 时响应体不得含明文密钥子串,且必须以
@@ -361,11 +362,11 @@ func TestHandlerGETModerationAPIKeysEmptyShowsNotConfigured(t *testing.T) {
 }
 
 // TestHandlerGETListMasksSecretKeysButNotPublicKeys 是自证测试:List 同时返回密钥类
-// 与非密钥类 key,断言两类密钥(moderation 数组 + payment 配置)的明文都不在响应体,
-// 而非密钥类的 site_name 明文原样保留。这样既证脱敏生效,又证未误伤公开字段。
-// 变异实验一:删脱敏分支 → moderation/payment 明文回到响应体 → 前两个断言 RED。
-// 变异实验二:把脱敏判定从 IsSecretKey 改成无条件脱敏 → site_name 也被清空 →
-// 最后一个断言(site_name 明文保留)RED。
+// 与非密钥类 key,断言唯一密钥类(moderation 数组)的明文不在响应体,而非密钥类的
+// payment 配置(支付方式开关+收银台 URL)与 site_name 明文原样保留。既证脱敏生效,
+// 又证未误伤非密钥配置。变异实验一:删脱敏分支 → moderation 明文回到响应体 → 首个
+// 断言 RED。变异实验二:把脱敏判定改成无条件脱敏、或把 payment 误加进 secretSettingKeys
+// → payment/site_name 明文被清空 → 对应"明文应保留"断言 RED。
 func TestHandlerGETListMasksSecretKeysButNotPublicKeys(t *testing.T) {
 	const siteNamePlain = "华楷中转站"
 	items := []platformsettings.StoredSetting{
@@ -376,7 +377,7 @@ func TestHandlerGETListMasksSecretKeysButNotPublicKeys(t *testing.T) {
 		},
 		{
 			Key:    platformsettings.KeyPaymentProviderConfig,
-			Value:  `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":true,"checkout_url":"https://pay.example/` + canaryPaymentSecret + `"}}`,
+			Value:  `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":true,"checkout_url":"https://pay.example/` + paymentCheckoutFragment + `"}}`,
 			Source: platformsettings.SourceDB,
 		},
 		{
@@ -397,8 +398,8 @@ func TestHandlerGETListMasksSecretKeysButNotPublicKeys(t *testing.T) {
 	if strings.Contains(body, canaryModerationAPIKey) {
 		t.Fatalf("List 泄露了 moderation 明文密钥: %s", body)
 	}
-	if strings.Contains(body, canaryPaymentSecret) {
-		t.Fatalf("List 泄露了 payment 配置密钥: %s", body)
+	if !strings.Contains(body, paymentCheckoutFragment) {
+		t.Fatalf("payment 是非密钥配置,读路径应原样返回其 checkout_url,却未出现在响应体: %s", body)
 	}
 	if !strings.Contains(body, siteNamePlain) {
 		t.Fatalf("非密钥类 site_name 明文被误伤删除: %s", body)
@@ -414,8 +415,8 @@ func TestHandlerGETListMasksSecretKeysButNotPublicKeys(t *testing.T) {
 		t.Fatalf("moderation 项未正确脱敏: %+v", mod)
 	}
 	pay := seen["payment_provider_config"]
-	if pay.Value != "" || pay.ValueConfigured == nil || !*pay.ValueConfigured {
-		t.Fatalf("payment 项未正确脱敏: %+v", pay)
+	if pay.ValueConfigured != nil || !strings.Contains(pay.Value, paymentCheckoutFragment) {
+		t.Fatalf("payment 是非密钥配置,应原样返回(Value 含 checkout_url、不带 value_configured): %+v", pay)
 	}
 	site := seen["site_name"]
 	if site.Value != siteNamePlain || site.ValueConfigured != nil {

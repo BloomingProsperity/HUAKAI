@@ -9,12 +9,14 @@ import "strings"
 // secretSettingKeys 列出值里包含上游凭据、不得以明文返回客户端或写入审计日志的
 // key:
 //   - KeyModerationExternalAPIKeys 是外部审核 provider 的 bearer 密钥数组,
-//     消费侧用它拼出 "Bearer <key>" 调用上游;
-//   - KeyPaymentProviderConfig 是支付 provider 配置,属于凭据承载位,按密钥类
-//     从严处理,任何角色都不回吐其明文。
+//     消费侧用它拼出 "Bearer <key>" 调用上游。
+//
+// 注:KeyPaymentProviderConfig 刻意不在此列——它只承载支付方式开关(enabled)与
+// 收银台 URL(checkout_url),schema 封闭、不含任何凭据(校验只接受 manual/taobao 的
+// enabled+checkout_url)。当密钥从严脱敏会让运维读不到支付配置、伤运维;真正的支付
+// 密钥应另立专用 secret key 并登记在此,而非塞进这张支付方式开关表。
 var secretSettingKeys = map[SettingKey]struct{}{
 	KeyModerationExternalAPIKeys: {},
-	KeyPaymentProviderConfig:     {},
 }
 
 // IsSecretKey 判定某个 key 是否属于密钥/凭据类。读路径与审计脱敏都调用它,确保
