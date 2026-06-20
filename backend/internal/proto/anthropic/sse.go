@@ -555,37 +555,52 @@ func (s *Adapter) canonicalDelta(d anthropicDeltaPayload) (*proto.CanonicalConte
 	}
 }
 
+// mergeUsage 把 message_delta 的两路 usage 来源(a=顶层 usage、b=delta.usage)
+// 并入 base(message_start 已确立的累积 usage)。
+//
+// 关键不变量:逐字段"非零才覆盖"——绝不整段替换。Anthropic 的 message_delta
+// 顶层 usage 通常只带 output_tokens,input/cache_read/cache_creation 缺省为 0;
+// 若整段替换 base 会把 message_start 确立的 input/cache 维度抹零,污染随后
+// message_stop / FinalizeUpstreamStream 读取的 cache 命中观测(进而饿掉 cache-aware
+// 路由的正反馈,且使运维 hit-rate 失真)。本语义与 UsageAccumulator.Update、
+// 缓冲重组的非零覆盖保持一致。
 func mergeUsage(base, a, b proto.CanonicalUsage) proto.CanonicalUsage {
-	if a.InputTokens != 0 || a.OutputTokens != 0 || a.TotalTokens != 0 ||
-		a.CacheCreationInputTokens != 0 || a.CacheReadInputTokens != 0 ||
-		a.CacheCreationInputTokens5m != 0 || a.CacheCreationInputTokens1h != 0 {
-		base = a
-	}
-	if b.InputTokens != 0 {
-		base.InputTokens = b.InputTokens
-	}
-	if b.OutputTokens != 0 {
-		base.OutputTokens = b.OutputTokens
-	}
-	if b.TotalTokens != 0 {
-		base.TotalTokens = b.TotalTokens
-	}
-	if b.CacheCreationInputTokens != 0 {
-		base.CacheCreationInputTokens = b.CacheCreationInputTokens
-	}
-	if b.CacheReadInputTokens != 0 {
-		base.CacheReadInputTokens = b.CacheReadInputTokens
-	}
-	if b.CacheCreationInputTokens5m != 0 {
-		base.CacheCreationInputTokens5m = b.CacheCreationInputTokens5m
-	}
-	if b.CacheCreationInputTokens1h != 0 {
-		base.CacheCreationInputTokens1h = b.CacheCreationInputTokens1h
-	}
+	base = overlayNonZeroUsage(base, a)
+	base = overlayNonZeroUsage(base, b)
 	if base.TotalTokens == 0 {
 		base.TotalTokens = base.InputTokens + base.OutputTokens
 	}
 	return base
+}
+
+// overlayNonZeroUsage 把 src 的非零 token 字段叠加到 dst,保留 dst 已有维度。
+// 只处理 token 快照字段;tool-call 计数是累加语义,不在此合并。
+func overlayNonZeroUsage(dst, src proto.CanonicalUsage) proto.CanonicalUsage {
+	if src.InputTokens != 0 {
+		dst.InputTokens = src.InputTokens
+	}
+	if src.OutputTokens != 0 {
+		dst.OutputTokens = src.OutputTokens
+	}
+	if src.ReasoningTokens != 0 {
+		dst.ReasoningTokens = src.ReasoningTokens
+	}
+	if src.TotalTokens != 0 {
+		dst.TotalTokens = src.TotalTokens
+	}
+	if src.CacheCreationInputTokens != 0 {
+		dst.CacheCreationInputTokens = src.CacheCreationInputTokens
+	}
+	if src.CacheReadInputTokens != 0 {
+		dst.CacheReadInputTokens = src.CacheReadInputTokens
+	}
+	if src.CacheCreationInputTokens5m != 0 {
+		dst.CacheCreationInputTokens5m = src.CacheCreationInputTokens5m
+	}
+	if src.CacheCreationInputTokens1h != 0 {
+		dst.CacheCreationInputTokens1h = src.CacheCreationInputTokens1h
+	}
+	return dst
 }
 
 func mapStopReason(reason string) proto.CanonicalStopReason {
