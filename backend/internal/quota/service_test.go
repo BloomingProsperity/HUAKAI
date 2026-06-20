@@ -932,3 +932,15 @@ func (s *txRetryReserveStore) InsertAuditEvent(context.Context, AuditEvent) (int
 	s.auditCalls++
 	return int64(s.auditCalls), nil
 }
+
+// TestExceededDecisionCarriesWindowKind 验证 exceededDecision 把命中策略的窗口种类带进 Decision,
+// 这是拒绝响应能透出"是哪个窗口超限"的源头。变异:删 exceededDecision 里 WindowKind 那行赋值 →
+// Decision.WindowKind 变零值 → 本断言红。
+func TestExceededDecisionCarriesWindowKind(t *testing.T) {
+	dec := exceededDecision(ReserveRequest{}, Policy{
+		Window: Window{Kind: WindowCalendarMonth},
+	}, policyAssessment{})
+	if dec.WindowKind != WindowCalendarMonth {
+		t.Fatalf("Decision.WindowKind=%q want calendar_month", dec.WindowKind)
+	}
+}

@@ -113,6 +113,31 @@ func DenyRetryAfter(result quota.ReserveResult, err error) time.Duration {
 	return 0
 }
 
+// DenyWindowKind 取配额拒绝决策命中的窗口种类标签(calendar_day/week/month/fixed 等),供 HTTP 层
+// 在 429 里透出"是哪个窗口超了",让客户端区分日额/月额满。来源与 DenyRetryAfter 同(DenyError 包裹
+// 的 Decision,或 fail-soft !Allowed 的 ReserveResult.Decision)。none/manual(无固定重置窗口)与未知
+// 一律返回空串,调用方据此不透出窗口名 —— 既与 window_resets_at(对 manual/none 本就为空)解耦,
+// 又保证对未配多窗口策略的租户零行为变化。
+func DenyWindowKind(result quota.ReserveResult, err error) string {
+	var deny *quota.DenyError
+	if errors.As(err, &deny) {
+		return windowKindLabel(deny.Decision.WindowKind)
+	}
+	if !result.Allowed {
+		return windowKindLabel(result.Decision.WindowKind)
+	}
+	return ""
+}
+
+// windowKindLabel 把窗口种类归一为对外标签:无固定窗口(WindowNone)与空值不透出(返回空串),
+// 其余(日历日/周/月、固定秒、手动)原样透出。
+func windowKindLabel(kind quota.WindowKind) string {
+	if kind == quota.WindowNone || kind == "" {
+		return ""
+	}
+	return string(kind)
+}
+
 func (s *Settler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	if s == nil || s.inner == nil {
 		return nil, billing.ErrPoolNotConfigured

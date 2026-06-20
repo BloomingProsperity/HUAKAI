@@ -84,6 +84,10 @@ type Decision struct {
 	Scope      Scope
 	Metric     Metric
 	Amount     decimal.Decimal
+	// WindowKind 标明本次拒绝命中的是哪个时间窗口(calendar_day/week/month/fixed/manual)。
+	// 仅在拒绝决策上有意义,供拒绝响应透出"是日额还是月额超了";零值(WindowNone/空)表示无固定
+	// 窗口或未知,调用方据此决定不透出窗口名,保持对未配多窗口租户的零行为变化。
+	WindowKind WindowKind
 }
 
 // ReservationStatus 是 reservation ledger 的生命周期状态。

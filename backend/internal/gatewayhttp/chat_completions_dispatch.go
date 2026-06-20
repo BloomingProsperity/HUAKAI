@@ -543,7 +543,7 @@ func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing
 		}
 		quotaDeniedTotal.Add(1)
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeInsufficientBalance, err)
-		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err))
+		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err), quotaenforce.DenyWindowKind(result, err))
 		return false
 	}
 	quotaReserveFailedOpenTotal.Add(1)
