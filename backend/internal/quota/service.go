@@ -519,6 +519,8 @@ func exceededDecision(req ReserveRequest, policy Policy, assessment policyAssess
 		Scope:      policy.Scope,
 		Metric:     policy.Metric,
 		Amount:     assessment.amount,
+		// 透出命中的窗口种类,供拒绝响应让客户端区分日/周/月额超限。policy 已在手,直接取其窗口。
+		WindowKind: policy.Window.Kind,
 	}
 }
 
@@ -848,6 +850,7 @@ func assessmentPayload(policy Policy, current decimal.Decimal, amount decimal.De
 		"scope_id":      normalizeScopeID(policy.Scope.Kind, policy.Scope.ID),
 		"metric":        policy.Metric,
 		"mode":          policy.Mode,
+		"window_kind":   policy.Window.Kind,
 		"current":       current.String(),
 		"amount":        amount.String(),
 		"limit":         limit.String(),

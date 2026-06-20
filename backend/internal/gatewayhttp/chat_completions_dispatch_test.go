@@ -905,7 +905,7 @@ func TestHandler_QuotaReserveFeedsInputTokenEstimate(t *testing.T) {
 
 // TestHandler_QuotaDenyEmitsRetryAfterAndWindowResetsAt "更强"delta:窗口配额
 // 拒绝时,引擎算出的 RetryAfter 必须吐成 Retry-After 头 + body 的
-// window_resets_at,让客户端按窗口边界智能退避(对齐 sub2api,强于 new-api)。
+// window_resets_at,让客户端按窗口边界智能退避(逐窗口区分,优于单一累计配额)。
 // MUTATION: 拒绝写回改回 writeInsufficientQuotaError(w)(不传 RetryAfter)→
 // Retry-After 头缺失 + body 无 window_resets_at → 两断言红。
 func TestHandler_QuotaDenyEmitsRetryAfterAndWindowResetsAt(t *testing.T) {
@@ -936,6 +936,53 @@ func TestHandler_QuotaDenyEmitsRetryAfterAndWindowResetsAt(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"window_resets_at"`) {
 		t.Fatalf("body=%s missing window_resets_at", rec.Body.String())
 	}
+}
+
+// TestHandler_QuotaDenyEmitsWindowKind 验证窗口配额拒绝时 429 body 透出 quota_window,让客户端区分
+// 是日额还是月额超了(逐窗口区分超限)。子用例二验 manual 窗口:quota_window 仍透出但与
+// window_resets_at 解耦(manual 无固定重置时刻)。
+// MUTATION: 删 exceededDecision/DenyWindowKind 的窗口透传、或删 errFields 写 quota_window 那行 →
+// body 缺 quota_window → calendar_month 断言红。
+func TestHandler_QuotaDenyEmitsWindowKind(t *testing.T) {
+	run := func(t *testing.T, kind quota.WindowKind, retryAfter time.Duration) *httptest.ResponseRecorder {
+		enableHCSFDispatchForTest(t)
+		quotaReserver := &recordingQuotaReserver{
+			err: &quota.DenyError{Decision: quota.Decision{
+				Kind:       quota.DecisionDeny,
+				Code:       "quota_limit_exceeded",
+				Reason:     "window exhausted",
+				RetryAfter: retryAfter,
+				WindowKind: kind,
+			}},
+		}
+		d := clientAdapterDeps(t)
+		d.ClaimGate = &recordingClaimGate{claimID: 99012}
+		d.QuotaReserver = quotaReserver
+		d.Settler = &stubSettler{}
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		return invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	}
+
+	t.Run("calendar_month", func(t *testing.T) {
+		rec := run(t, quota.WindowCalendarMonth, 3*time.Hour)
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("status=%d want 429", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), `"quota_window":"calendar_month"`) {
+			t.Fatalf("body=%s 缺 quota_window=calendar_month(客户端无法区分是哪个窗口超限)", rec.Body.String())
+		}
+	})
+
+	t.Run("manual_decoupled_from_resets_at", func(t *testing.T) {
+		// manual 窗口无固定重置:retryAfter=0 → 无 window_resets_at,但 quota_window 仍应透出。
+		rec := run(t, quota.WindowManual, 0)
+		if !strings.Contains(rec.Body.String(), `"quota_window":"manual"`) {
+			t.Fatalf("body=%s 缺 quota_window=manual", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), `"window_resets_at"`) {
+			t.Fatalf("manual 窗口无固定重置,不应出现 window_resets_at: %s", rec.Body.String())
+		}
+	})
 }
 
 func TestHandler_QuotaReserveInfraErrorFailsOpenAndKeepsBillingClaim(t *testing.T) {
