@@ -244,6 +244,13 @@ func (s *Adapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope,
 			state.PrefixHash,
 		)
 		return []proto.CanonicalEvent{{Type: "message_stop"}}, nil, nil
+	case "ping":
+		// ping 是 Anthropic 流式协议的保活心跳(TTFT 与稀疏 token 间隙周期性下发),
+		// 无任何载荷。静默吞掉:不产 canonical 事件、不记 loss(它是正常协议非损失,
+		// 记 loss 会给长流账面注入噪音)、不返 error。绝不能落入 default 把保活帧当
+		// 未知事件返 ErrUnknownEventType——那会被 forwarder 判 UnknownTermination
+		// 截断整流并对已交付内容计费。
+		return nil, nil, nil
 	default:
 		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown upstream event type skipped")
 		return nil, []proto.ProtocolLossEntry{loss}, fmt.Errorf("%w: %s", proto.ErrUnknownEventType, evt.Type)
