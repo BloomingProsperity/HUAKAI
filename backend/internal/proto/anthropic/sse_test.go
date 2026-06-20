@@ -282,7 +282,10 @@ func TestAT_PROTO_002_07_MaxTokensFinishReason(t *testing.T) {
 
 func TestAT_PROTO_002_08_UnknownEventType(t *testing.T) {
 	adapter := &anthropic.Adapter{}
-	evt := anthroEvt(t, "ping", nil)
+	// 用一个真正未知的事件类型作夹具(不要用 ping——ping 是合法保活帧,有专门 case 容忍,
+	// 由 TestAT_PROTO_002_PingKeepaliveTolerated 守)。default 分支对真正未知类型仍须
+	// 返 ErrUnknownEventType + loss,保留协议漂移信号。
+	evt := anthroEvt(t, "totally_unknown_event_xyz", nil)
 	state := &anthropic.UpstreamState{}
 	out, loss, err := adapter.ProviderEventToCanonicalEvents(context.Background(), evt, state)
 	if !errors.Is(err, proto.ErrUnknownEventType) {
@@ -293,6 +296,37 @@ func TestAT_PROTO_002_08_UnknownEventType(t *testing.T) {
 	}
 	if len(loss) == 0 {
 		t.Fatalf("unknown event must emit protocol_loss entry (NOT silent drop)")
+	}
+}
+
+// TestAT_PROTO_002_PingKeepaliveTolerated 守"Anthropic 上游 ping 保活帧必须被静默
+// 容忍,绝不返 error"。
+//
+// 这是判别性测试:直接喂 ping 事件(不走 runStream——后者会吞 ErrUnknownEventType
+// 掩盖判别性),断言 err==nil、0 canonical 事件、0 loss。
+// 变异判据:删掉 providerEventSwitch 的 `case "ping"`,ping 落入 default → 返
+// ErrUnknownEventType + loss → `err==nil` 断言 RED。
+// 真实危害:ping 若返 error,forwarder 会判 UnknownTermination 截断整流,并对已交付
+// 内容计费(对失败请求收钱),破坏所有稍有延迟的 Claude 流式请求。
+func TestAT_PROTO_002_PingKeepaliveTolerated(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	state := &anthropic.UpstreamState{}
+	// 先建立流状态(真实流里 ping 总在 message_start 之后到达)。
+	if _, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(),
+		anthroEvt(t, "message_start", map[string]any{"message": map[string]any{"id": "msg_ping", "model": "claude-3-5-sonnet"}}),
+		state); err != nil {
+		t.Fatalf("message_start 不应出错: %v", err)
+	}
+	out, loss, err := adapter.ProviderEventToCanonicalEvents(context.Background(),
+		anthroEvt(t, "ping", nil), state)
+	if err != nil {
+		t.Fatalf("ping 保活帧不得返错误(否则 forwarder 判 UnknownTermination 截断并计费); got %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("ping 不得产生 canonical 事件; got %d", len(out))
+	}
+	if len(loss) != 0 {
+		t.Fatalf("ping 是正常保活帧,不得记协议损失(避免长流账面噪音); got %d", len(loss))
 	}
 }
 
