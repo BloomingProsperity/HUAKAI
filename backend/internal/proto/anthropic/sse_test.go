@@ -66,6 +66,60 @@ func TestAT_PROTO_002_01_AnthropicSSEStreamGraceful(t *testing.T) {
 	}
 }
 
+// TestAT_PROTO_002_StreamMessageDeltaPreservesCacheUsage 守"message_delta 只带
+// output_tokens 时,不得抹掉 message_start 已确立的 input/cache 维度"。
+//
+// 这是判别性测试:message_start 带 input=1000 + cache_read=5000 + cache_creation=200,
+// 随后 message_delta 仅带 output=50。正确合并(非零才覆盖)下 message_delta 事件的
+// Usage 必须同时保留 cache_read=5000/cache_creation=200/input=1000 并更新 output=50。
+// 变异判据:若把 mergeUsage 改回"a 非零即整段替换 base",cache_read 会变 0 → 本测试 RED。
+// 该抹零会让 message_stop 的 cache 命中观测读到 0,饿掉 cache-aware 路由正反馈。
+func TestAT_PROTO_002_StreamMessageDeltaPreservesCacheUsage(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	evts := [][]byte{
+		anthroEvt(t, "message_start", map[string]any{"message": map[string]any{
+			"id":    "msg_cache_stream",
+			"model": "claude-3-5-sonnet",
+			"usage": map[string]any{
+				"input_tokens":                1000,
+				"output_tokens":               1,
+				"cache_read_input_tokens":     5000,
+				"cache_creation_input_tokens": 200,
+			},
+		}}),
+		anthroEvt(t, "content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "text", "text": ""}}),
+		anthroEvt(t, "content_block_delta", map[string]any{"index": 0, "delta": map[string]any{"type": "text_delta", "text": "hi"}}),
+		anthroEvt(t, "content_block_stop", map[string]any{"index": 0}),
+		anthroEvt(t, "message_delta", map[string]any{"delta": map[string]any{"stop_reason": "end_turn"}, "usage": map[string]any{"output_tokens": 50}}),
+		anthroEvt(t, "message_stop", nil),
+	}
+	canonical, _ := runStream(t, adapter, evts)
+
+	var deltaUsage *proto.CanonicalUsage
+	for _, ev := range canonical {
+		if ev.Type == "message_delta" && ev.Usage != nil {
+			deltaUsage = ev.Usage
+		}
+	}
+	if deltaUsage == nil {
+		t.Fatalf("message_delta 事件缺 Usage")
+	}
+	// cache_read 是被抹零 bug 直接命中的字段——必须保留 message_start 的值。
+	if deltaUsage.CacheReadInputTokens != 5000 {
+		t.Fatalf("cache_read 被抹零: 期望 5000 实得 %d", deltaUsage.CacheReadInputTokens)
+	}
+	if deltaUsage.CacheCreationInputTokens != 200 {
+		t.Fatalf("cache_creation 被抹零: 期望 200 实得 %d", deltaUsage.CacheCreationInputTokens)
+	}
+	if deltaUsage.InputTokens != 1000 {
+		t.Fatalf("input 被抹零: 期望 1000 实得 %d", deltaUsage.InputTokens)
+	}
+	// output 必须取 message_delta 的最新值。
+	if deltaUsage.OutputTokens != 50 {
+		t.Fatalf("output 未更新: 期望 50 实得 %d", deltaUsage.OutputTokens)
+	}
+}
+
 func TestAT_PROTO_002_02_ToolCallInterleavingPreservesIndex(t *testing.T) {
 	adapter := &anthropic.Adapter{}
 	const upstreamToolID = "toolu_abc123"
