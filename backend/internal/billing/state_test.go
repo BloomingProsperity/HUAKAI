@@ -107,6 +107,41 @@ func TestAttemptFromGatewayDraftCacheOnlyStreamChargeable(t *testing.T) {
 	}
 }
 
+// TestAttemptFromGatewayDraftAmbiguousDeliveredChargeable 守 SM-05 闸2:
+// AMBIGUOUS_USAGE 默认不可计费(进 reconciliation 留待对账),但已交付可估内容
+//(EstimatedOutputTokens+EstimatedReasoningTokens>0)时须判 Partial 可计费——内容已
+// 发给用户而 reconciliation 是 refund-only 永不补收,留 Failed = 永久零收漏钱。
+// self-proving: 同形两 draft 仅 EstimatedOutputTokens 不同(DeliveredTokenCount 恒 40),
+// 证判据是「可估输出」而非「chunk 帧数」。
+func TestAttemptFromGatewayDraftAmbiguousDeliveredChargeable(t *testing.T) {
+	delivered := gateway.UsageRecordDraft{
+		EndClass:              gateway.AmbiguousUsage,
+		EstimatedOutputTokens: 200,
+		DeliveredTokenCount:   40,
+	}
+	attempt := AttemptFromGatewayDraft(true, delivered)
+	// MUTATION: state.go 把 Ambiguous 分支还原为无条件 StreamStateFailed → 非 chargeable → RED。
+	if attempt.State != StreamStatePartial {
+		t.Fatalf("state=%s want partial (歧义+已交付可估内容须可计费)", attempt.State)
+	}
+	cost := decimal.RequireFromString("0.01000000")
+	if got := CostForAttempt(cost, attempt); !got.Equal(cost) {
+		t.Fatalf("ambiguous-delivered attempt cost=%s want %s (估算成本须穿过闸门落账)", got, cost)
+	}
+
+	// 判别对照: 同形但无可估交付(EstimatedOutputTokens=0)、仅 chunk 帧数 40 的歧义流仍判 Failed,
+	// 证闸门没被放宽成"任何歧义+有帧数都可计费"(否则会按 chunk 帧数误收)。
+	noEstimable := delivered
+	noEstimable.EstimatedOutputTokens = 0
+	noAttempt := AttemptFromGatewayDraft(true, noEstimable)
+	if noAttempt.State != StreamStateFailed {
+		t.Fatalf("无可估交付的歧义流 state=%s want failed", noAttempt.State)
+	}
+	if got := CostForAttempt(cost, noAttempt); !got.IsZero() {
+		t.Fatalf("无可估交付歧义流 cost=%s want zero", got)
+	}
+}
+
 func TestAttemptFromGatewayDraftOutputUsageWinsOverChunkFallback(t *testing.T) {
 	attempt := AttemptFromGatewayDraft(true, gateway.UsageRecordDraft{
 		EndClass:            gateway.UpstreamError5xx,

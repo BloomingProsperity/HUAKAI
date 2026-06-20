@@ -489,11 +489,15 @@ func TestStreamingCompletionEvent_AmbiguousUsagePreservedNotInferred(t *testing.
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 去掉 `!= UsageSourceAmbiguous` 守卫，歧义用量会被降级成 inferred → RED。
-	// 歧义流须保留 ambiguous 态留待真对账，不可降级成可被宽限定稿的 $0 provisional。
+	// SM-05 判别对照:本 draft 只有 DeliveredTokenCount=40(chunk 帧数)、无 EstimatedOutputTokens
+	//(可估交付=0)。歧义放行估算的判据必须是「有可估交付内容」(EstimatedOutputTokens+
+	// EstimatedReasoningTokens>0),无可估内容的歧义流仍保留 ambiguous 态留待真对账。
+	// MUTATION: 若把放行判据错写成 DeliveredTokenCount>0(按 chunk 帧数而非可估输出),本歧义流
+	// 会被误降级 inferred(且可被宽限定稿成 $0 provisional)→ UsageSource 断言 RED;
+	// 正确按可估输出判据则原样保留 → GREEN。证「只在有可估交付时才收」。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
 	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceAmbiguous {
-		t.Fatalf("UsageSource=%q want %q (ambiguous must be preserved)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceAmbiguous)
+		t.Fatalf("UsageSource=%q want %q (无可估交付的歧义流须保留 ambiguous)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceAmbiguous)
 	}
 	if !event.SettleRequest.Draft.PendingReconciliation {
 		t.Fatal("PendingReconciliation=false want true")
@@ -712,7 +716,7 @@ func TestStreamingCompletionEvent_MultimodalInputBasisCapped(t *testing.T) {
 	}
 }
 
-func TestStreamingCompletionEvent_AmbiguousUsageNeverEstimated(t *testing.T) {
+func TestStreamingCompletionEvent_AmbiguousWithDeliveredBillsEstimated(t *testing.T) {
 	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
 	draft := gateway.UsageRecordDraft{
 		DeliveredTokenCount:   40,
@@ -722,14 +726,27 @@ func TestStreamingCompletionEvent_AmbiguousUsageNeverEstimated(t *testing.T) {
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算分支漏掉 Ambiguous 守卫，歧义流被估算终局计费且 pending 被清 →
-	// 真对账通道被关死 → 本断言 RED;有守卫则歧义态原样保留 → GREEN。
-	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
-	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceAmbiguous {
-		t.Fatalf("UsageSource=%q want %q (ambiguous must never be estimated)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceAmbiguous)
+	// SM-05:歧义用量但已交付可估内容(EstimatedOutputTokens>0)——内容已发给用户,而
+	// reconciliation 是 refund-only/zero-finalize 永不补收,留歧义态会永久零收漏钱。故放行
+	// estimatedStreamingCost 估算保守计费,升 inferred + 清 pending + 挂估算基数标记。
+	// MUTATION: 守卫重新排除 Ambiguous(恢复零收)→ ActualCost 回零 + UsageSource 退回
+	// ambiguous + pending 留 true → 下列断言全 RED;放行估算 → GREEN。判别关键:成本基数取
+	// EstimatedOutputTokens=200(可见输出估算)而非 DeliveredTokenCount=40(chunk 帧数),
+	// 证按可见输出估算计费而非按帧数(宁少勿多收)。
+	wantInput := tokencheck.EstimateRequestInputTokens(ex.body)
+	wantCost := decimal.NewFromInt(int64(wantInput)*1000 + 200*2000).Div(decimal.NewFromInt(1_000_000))
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, wantCost)
+	if got := event.SettleRequest.Draft.TokensOutput; got != 200 {
+		t.Fatalf("Draft.TokensOutput=%d want 200 (估算基数取可见输出 200,非 chunk 帧数 40)", got)
 	}
-	if !event.SettleRequest.Draft.PendingReconciliation {
-		t.Fatal("PendingReconciliation=false want true")
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceInferred {
+		t.Fatalf("UsageSource=%q want %q (歧义+已交付须升 inferred 落估算账)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceInferred)
+	}
+	if event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=true want false (估算结算是终局)")
+	}
+	if !strings.Contains(event.SettleRequest.Draft.CostSnapshot, "usage_basis=estimated") {
+		t.Fatalf("CostSnapshot=%q want usage_basis=estimated 标记", event.SettleRequest.Draft.CostSnapshot)
 	}
 }
 
