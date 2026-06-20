@@ -1421,3 +1421,35 @@ func TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps(t *testing.T) {
 		t.Fatalf("stream-only body should yield exactly [stream]; got %v", caps)
 	}
 }
+
+// noAccountSelector 返回 AccountID==0 且 err==nil 的退化结果,复现 dispatch 的 no-account 兜底路径
+// (选择器没报错却也没给出可用账号)。
+type noAccountSelector struct{}
+
+func (noAccountSelector) Select(context.Context, pool.SelectionRequest) (*pool.SelectionResult, error) {
+	return &pool.SelectionResult{AccountID: 0}, nil
+}
+
+// TestSelectPoolAccount_NoAccountFallbackSetsRetryAfter 守 no-account 兜底分支(selRes.AccountID==0 且
+// err==nil):返回的失败必须带默认 Retry-After,修"503 无退避头致客户端盲目重试"缺陷。
+// 变异:删 dispatch 里 failure.RetryAfterSeconds = noCapacityFallbackRetryAfter → RetryAfterSeconds 归 0 → 红。
+func TestSelectPoolAccount_NoAccountFallbackSetsRetryAfter(t *testing.T) {
+	ex := &chatExecution{
+		ctx:        context.Background(),
+		ident:      auth.Identity{TenantID: 7, UserID: 3, APIKeyID: 9},
+		d:          ChatHandlerDeps{Selector: noAccountSelector{}, Settler: &stubSettler{}},
+		body:       []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`),
+		req:        chatRequest{Model: "gpt-4o"},
+		attempt:    router.AttemptPlan{PoolGroupID: 42},
+		reserveRes: &billing.ReserveResult{},
+		resolved:   registry.Resolved{ProtocolFamily: "openai_chat"},
+	}
+
+	f := ex.selectPoolAccount(httptest.NewRecorder(), attemptInput{AttemptSeq: 1})
+	if f == nil {
+		t.Fatalf("no-account 路径应返回失败,得 nil")
+	}
+	if f.RetryAfterSeconds != noCapacityFallbackRetryAfter {
+		t.Fatalf("RetryAfterSeconds=%d want %d(no-account 兜底应带默认退避头)", f.RetryAfterSeconds, noCapacityFallbackRetryAfter)
+	}
+}

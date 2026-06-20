@@ -964,7 +964,8 @@ func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err er
 		return f
 	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
 		f := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
-		f.RetryAfterSeconds = 5
+		// 用池最早恢复时刻算精确 Retry-After,替代硬编码;无可估时刻则回退默认值。
+		f.RetryAfterSeconds = poolNoCapacityRetryAfter(err, time.Now())
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_no_capacity"))
 	case errors.Is(err, pool.ErrClaimRace):
 		if e := abort("claim_race"); e != nil && w != nil {
