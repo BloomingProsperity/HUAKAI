@@ -118,10 +118,18 @@ func AttemptFromGatewayDraft(stream bool, draft gateway.UsageRecordDraft) Attemp
 	}
 
 	state := StreamStatePartial
-	// AMBIGUOUS_USAGE 不论 stream / 非 stream 都不能正向收费:
-	// 进入 reconciliation, 真实 cost 由 audit_mismatch_refund_pending 流程补算。
+	// AMBIGUOUS_USAGE 默认不正向收费:进入 reconciliation 留待真对账。
+	// 例外:已向用户交付可估内容(EstimatedOutputTokens+EstimatedReasoningTokens>0)时
+	// 判 Partial 可计费——内容已发出而 reconciliation 是 refund-only/zero-finalize 永不
+	// 补收, 留 Failed = 永久零收漏钱(SM-05)。与 gatewayhttp 估算计费同口径:gateway 侧
+	// 对同一判据走 estimatedStreamingCost 估出正成本, 此处放行 Chargeable 让其落账;
+	// 无可估交付的歧义流仍判 Failed 留待对账。
 	if draft.EndClass == gateway.AmbiguousUsage {
-		state = StreamStateFailed
+		if draft.EstimatedOutputTokens+draft.EstimatedReasoningTokens > 0 {
+			state = StreamStatePartial
+		} else {
+			state = StreamStateFailed
+		}
 	} else if stream {
 		switch {
 		case delivered > 0:
@@ -132,7 +140,7 @@ func AttemptFromGatewayDraft(stream bool, draft gateway.UsageRecordDraft) Attemp
 			// 纯缓存命中的成功流: 无新 fresh input/output, 但 usage 报告了 cache 创建/读取
 			// token, 仍产生真实 cache 成本。之前一律判 Failed → CostForAttempt 把 cache 成本
 			// 一并归零、不写 usage_record(漏计 + 丢审计行)。cache 桶非零时改判 chargeable
-			// AmbiguousUsage / 非 graceful 已在上方短路为 Failed, 不会被此分支复活。
+			// AmbiguousUsage 已在上方分支单独处理, 不会进入此 else-if 走到本 cache 分支被复活。
 			// 参考项目对照与计费方向决策见 docs/process/plans/2026-05-29-s1015-cache-stream-fu-claude.md。
 			if streamDraftHasCacheTokens(draft) {
 				state = StreamStatePartial

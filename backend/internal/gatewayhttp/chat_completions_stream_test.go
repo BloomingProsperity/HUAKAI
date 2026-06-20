@@ -1258,8 +1258,17 @@ func TestStreamingIdempotencyReplaySettlesAmbiguousUsageWithDeliveredContent(t *
 	if settler.calls[0].StreamAttempt == nil {
 		t.Fatal("StreamAttempt missing")
 	}
-	if settler.calls[0].StreamAttempt.State.Chargeable() {
-		t.Fatalf("ambiguous usage attempt must stay non-chargeable; StreamAttempt=%#v", settler.calls[0].StreamAttempt)
+	// SM-05 端到端铁证:歧义用量但已交付可估内容(fixture 发出 "partial" 文本 →
+	// forwarder 累出 EstimatedOutputTokens>0)。内容已发给用户,reconciliation 是
+	// refund-only 永不补收 → 须按估算保守正收,非零收漏钱。
+	// MUTATION: 还原任一闸(state.go 对 Ambiguous 恒判 Failed,或 stream.go 守卫排除
+	// Ambiguous)→ State 退回 Failed(非 Chargeable)且 ActualCost 回零 → 下列断言 RED;
+	// 两闸放行则 State=Partial 且估出正成本 → GREEN。
+	if !settler.calls[0].StreamAttempt.State.Chargeable() {
+		t.Fatalf("歧义+已交付可估内容须可计费(Partial); StreamAttempt=%#v", settler.calls[0].StreamAttempt)
+	}
+	if !settler.calls[0].ActualCost.IsPositive() {
+		t.Fatalf("歧义+已交付须按估算正收; ActualCost=%s want >0", settler.calls[0].ActualCost)
 	}
 	if settler.calls[0].StreamAttempt.DeliveredTokenCount <= 0 {
 		t.Fatalf("StreamAttempt DeliveredTokenCount=%d want >0", settler.calls[0].StreamAttempt.DeliveredTokenCount)

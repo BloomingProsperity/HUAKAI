@@ -677,6 +677,15 @@ func (a canonicalEventPointerClientAdapter) FinalizeClientStream(ctx context.Con
 	return a.inner.FinalizeClientStream(ctx, state)
 }
 
+// ambiguousDeliveredEstimable 判断歧义用量流是否已交付可估内容：可估输出基数
+//（可见输出 + 可见 reasoning 文本）>0 即说明确有内容发给了用户。仅此种歧义流放行
+// 估算保守计费——reconciliation 是 refund-only/zero-finalize 永不补收，留歧义态会
+// 永久漏收（SM-05）；无可估内容的歧义流仍保留歧义态留待真对账。判据与 billing/
+// state.go AttemptFromGatewayDraft 的 Ambiguous 分支保持同口径。
+func ambiguousDeliveredEstimable(draft gateway.UsageRecordDraft) bool {
+	return draft.EstimatedOutputTokens+draft.EstimatedReasoningTokens > 0
+}
+
 func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
 	usage := usageFromDraft(draft)
 	usageBasisEstimated := false
@@ -689,9 +698,14 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 		// 会使帧数 > 真实 token 数，按帧计费会向用户多收。
 		// 仅在确为缺 usage 时走估算/inferred：计费配置失败（rate table 缺失但有真实 token）不可标 inferred，
 		// 否则 worker 会把真实请求零差额定稿成 $0（静默零计费）。
-		// 不覆盖 Ambiguous：歧义用量（unknown termination 等）须保留歧义态留待真对账，
-		// 不可降级成 inferred 而被宽限定稿，也不可被估算终局计费。
-		if reportedUsageMissing(usage) && draft.UsageSource != gateway.UsageSourceAmbiguous {
+		// 歧义用量（unknown termination 等）默认保留歧义态留待真对账，不降级成 inferred、
+		// 不被估算终局计费——除非已向用户交付可估内容（EstimatedOutputTokens+
+		// EstimatedReasoningTokens>0）：此时内容已发出，而 reconciliation 是 refund-only/
+		// zero-finalize 永不补收，留歧义态 = 永久零收漏钱（SM-05）。故对「歧义且有可估交付」
+		// 放行估算保守计费，与 billing/state.go AttemptFromGatewayDraft 同口径判据一致；
+		// 无可估交付的歧义流仍跳过，保留歧义态。
+		if reportedUsageMissing(usage) &&
+			(draft.UsageSource != gateway.UsageSourceAmbiguous || ambiguousDeliveredEstimable(draft)) {
 			// 估算兜底：终帧缺失/无 usage 帧的流（部分 serving 上游不保证 usage）按
 			// 逐事件可见内容估算终局计费，token 基数写回 draft 留账，inferred +
 			// usage_basis 快照标记构成审计链；不挂 pending（no-usage 定稿 SQL 只认
