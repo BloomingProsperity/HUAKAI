@@ -150,11 +150,12 @@ type ListRequest struct {
 //   - Get: 按 (tenant_id, user_id, id) 取单条;不归属 caller → ErrNotFound
 //   - Revoke: 按 (tenant_id, user_id, id) 撤销;不归属 → ErrNotFound,已撤销 → 幂等
 type Service struct {
-	pool       *pgxpool.Pool
-	logger     *slog.Logger
-	auditSink  userauditlog.UserAuditSink
-	bcryptCost int
-	now        func() time.Time
+	pool            *pgxpool.Pool
+	logger          *slog.Logger
+	auditSink       userauditlog.UserAuditSink
+	bcryptCost      int
+	now             func() time.Time
+	defaultKeyQuota defaultKeyQuotaConfig
 }
 
 type Option func(*Service)
@@ -290,6 +291,9 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 		}
 		out.APIKeyID = id
 		out.CreatedAt = createdAt
+		if err := s.seedDefaultKeyQuota(ctx, tx, req.TenantID, req.UserID, id); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
