@@ -204,3 +204,38 @@ func TestLoadUserRegistrationModeFromEnv(t *testing.T) {
 		})
 	}
 }
+
+// TestReleaseModeMissingErrorGuidesOperator 守护:HUAKAI_RELEASE_MODE 未设/拼错时,拒启错误必须
+// 给出可照抄的取值指引(至少含 production 与 dev),否则运维只看到"required"却不知道填什么。
+//
+// 变异检查:把空值/未知值的报错改回不含示例的裸文案,本测试即 red。
+func TestReleaseModeMissingErrorGuidesOperator(t *testing.T) {
+	t.Setenv("HUAKAI_RELEASE_MODE", "")
+	err := validateReleaseMode()
+	if err == nil {
+		t.Fatal("空 HUAKAI_RELEASE_MODE 必须拒启")
+	}
+	for _, want := range []string{"production", "dev"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("空值拒启文案应含取值指引 %q,实际:%q", want, err.Error())
+		}
+	}
+}
+
+// TestProductionAuditKeyErrorGuidesOperator 守护:production 缺审计私钥拒启时,错误必须直接给出
+// 生成命令与设置项(openssl / 脚本 / HUAKAI_AUDIT_PRIVATE_KEY_PATH),把运维从"知道缺却不知怎么补"里救出来。
+//
+// 变异检查:从拒启文案里抹掉 auditKeySetupHint(或清空该常量),本测试即 red。
+func TestProductionAuditKeyErrorGuidesOperator(t *testing.T) {
+	t.Setenv("HUAKAI_RELEASE_MODE", "production")
+	err := requireProductionChannelHealthSigner(nil)
+	if err == nil {
+		t.Fatal("production 缺 channelhealth signer 必须拒启")
+	}
+	// 两处审计私钥拒启共用 auditKeySetupHint,断言其关键指引齐全即同时覆盖两个调用点。
+	for _, want := range []string{"openssl", "gen-audit-key.sh", "HUAKAI_AUDIT_PRIVATE_KEY_PATH"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("审计私钥拒启文案应含指引 %q,实际:%q", want, err.Error())
+		}
+	}
+}

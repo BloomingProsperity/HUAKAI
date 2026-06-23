@@ -69,9 +69,9 @@ func validateReleaseMode() error {
 	case "dev", "development", "test", "production":
 		return nil
 	case "":
-		return fmt.Errorf("HUAKAI_RELEASE_MODE is required; set production, dev, development, or test explicitly")
+		return fmt.Errorf("HUAKAI_RELEASE_MODE 未设置:必须显式声明运行模式,拒绝静默降级。生产部署设 HUAKAI_RELEASE_MODE=production;本机/内网自测设 dev(亦可 development / test)")
 	default:
-		return fmt.Errorf("HUAKAI_RELEASE_MODE=%q 不是已知取值（production / development / dev / test）；拒绝静默降级为 dev", raw)
+		return fmt.Errorf("HUAKAI_RELEASE_MODE=%q 不是已知取值(production / development / dev / test);拒绝静默降级为 dev。生产设 production,自测设 dev", raw)
 	}
 }
 
@@ -188,12 +188,18 @@ func validateDevAuthTokenFlag() error {
 	return nil
 }
 
+// auditKeySetupHint 在 production 审计私钥相关启动门拒启时附带打印,直接给出生成与设置命令,
+// 避免运维卡在"知道缺私钥却不知怎么补"。这是降摩擦文案,不改任何启动门判定。
+const auditKeySetupHint = "生成 ed25519 私钥:openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem " +
+	"(或跑 backend/scripts/gen-audit-key.sh 一键生成),再设 HUAKAI_AUDIT_PRIVATE_KEY_PATH 指向它;" +
+	"容器部署经 volumes 把宿主私钥挂到该路径,详见 docs/deploy/production-bootstrap.md"
+
 func requireProductionChannelHealthSigner(signer *sign.Signer) error {
 	if !releaseModeProduction() {
 		return nil
 	}
 	if signer == nil {
-		return fmt.Errorf("production 模式要求 channelhealth audit signer：请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH")
+		return fmt.Errorf("production 模式要求 channelhealth audit signer:请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH。%s", auditKeySetupHint)
 	}
 	return nil
 }
@@ -432,7 +438,7 @@ func loadAuditSigner(logger *zap.Logger) (*sign.Signer, error) {
 	isProd := releaseModeProduction()
 	if path == "" {
 		if isProd {
-			return nil, fmt.Errorf("production 模式要求持久私钥：请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH")
+			return nil, fmt.Errorf("production 模式要求持久审计私钥:请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH。%s", auditKeySetupHint)
 		}
 		logger.Warn("using ephemeral key — restart loses chain")
 		return sign.GenerateKey()
