@@ -134,6 +134,56 @@ func TestPasskeyLoginMintsSessionLikePassword(t *testing.T) {
 	}
 }
 
+func TestPasskeyLoginFinishDisabledUserReturnsGeneric403(t *testing.T) {
+	// 守护:passkey 登录被账号状态门拒时,handler 对外只回 generic account_not_active(403),不泄露
+	// 具体状态(disabled/locked/reset),且绝不签发 session。变异检查:把 handler 里 ErrUserDisabled/
+	// Locked/ResetRequired 的 403 映射改回 default(503 passkey_backend_error),本用例转红。
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 11, 12, 0, 0, time.UTC)
+	user := httpTestUser(1, 101, "alice@example.test")
+	user.Status = userauth.UserStatusDisabled
+	users := httpFakeUsers{rows: map[httpUserKey]userauth.User{{tenantID: 1, userID: 101}: user}}
+	engine := &httpFakeEngine{loginCredentialID: []byte("cred-a"), assertedSignCount: 2}
+	passkeys := passkey.NewService(
+		passkey.NewMemoryStore(), users, passkey.StaticConfigSource(httpTestConfig()),
+		passkey.WithCeremonyEngine(engine), passkey.WithNow(func() time.Time { return now }),
+	)
+	if _, err := passkeys.StoreCredential(ctx, passkey.CredentialRecord{
+		TenantID: 1, UserID: 101, CredentialID: []byte("cred-a"), PublicKey: []byte("pk-a"), SignCount: 1,
+	}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+	begin, err := passkeys.LoginBegin(ctx, passkey.LoginBeginInput{TenantID: 1})
+	if err != nil {
+		t.Fatalf("LoginBegin: %v", err)
+	}
+	sessions := usersession.NewService(usersession.NewMemoryStore())
+	sessions.SigningKey = []byte("0123456789abcdef0123456789abcdef")
+	sessions.Now = func() time.Time { return now }
+	deps := Deps{Passkeys: passkeys, Sessions: sessions, ClientIPResolver: &clientip.Resolver{}}
+
+	body := `{"tenant_id":1,"session_id":"` + begin.SessionID + `","credential":{"id":"cred-a"},"device_info":{"label":"test"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/passkey/login/finish", strings.NewReader(body))
+	req.RemoteAddr = "192.0.2.10:443"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://example.test")
+	rec := httptest.NewRecorder()
+	newLoginFinishHandler(deps).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("disabled passkey login status=%d body=%s want 403", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "account_not_active" {
+		t.Fatalf("error code=%q want account_not_active", code)
+	}
+	if b := strings.ToLower(rec.Body.String()); strings.Contains(b, "disabled") || strings.Contains(b, "locked") || strings.Contains(b, "reset") {
+		t.Fatalf("响应泄露了具体账号状态: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "session_token") {
+		t.Fatalf("禁用用户 passkey 登录不应签发 session: %s", rec.Body.String())
+	}
+}
+
 type httpFakeEngine struct {
 	loginCredentialID []byte
 	assertedSignCount uint32
