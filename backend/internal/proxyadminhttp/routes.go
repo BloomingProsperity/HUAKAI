@@ -355,8 +355,8 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // writeServiceError maps proxyadmin sentinels onto HTTP status codes:
-// ErrInvalidInput/ErrInvalidStatus -> 400, ErrNotFound -> 404, ErrBackend (and
-// anything else) -> 503.
+// ErrInvalidInput/ErrInvalidStatus/ErrUnsafeHost -> 400, ErrNotFound -> 404,
+// ErrBackend (and anything else) -> 503.
 func writeServiceError(w http.ResponseWriter, err error, context string) {
 	switch {
 	case errors.Is(err, proxyadmin.ErrInvalidStatus):
@@ -364,6 +364,9 @@ func writeServiceError(w http.ResponseWriter, err error, context string) {
 			"status must be one of active, disabled, dead")
 	case errors.Is(err, proxyadmin.ErrInvalidInput):
 		writeError(w, http.StatusBadRequest, "invalid_proxy", "proxy request is invalid")
+	case errors.Is(err, proxyadmin.ErrUnsafeHost):
+		writeError(w, http.StatusBadRequest, "unsafe_proxy_host",
+			"proxy host resolves to a blocked (loopback/private/metadata) target")
 	case errors.Is(err, proxyadmin.ErrNotFound):
 		writeError(w, http.StatusNotFound, "admin_proxy_not_found", "proxy not found")
 	default:

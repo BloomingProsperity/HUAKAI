@@ -10,6 +10,9 @@ var (
 	ErrInvalidStatus = errors.New("proxyadmin: invalid status")
 	ErrBackend       = errors.New("proxyadmin: backend failure")
 	ErrNotFound      = errors.New("proxyadmin: proxy not found")
+	// ErrUnsafeHost 表示租户代理 host 指向了 loopback/内网/link-local/metadata
+	// 等不安全目标(SSRF)。映射 HTTP 400,与 ErrInvalidInput 同档但语义更明确。
+	ErrUnsafeHost = errors.New("proxyadmin: unsafe proxy host")
 )
 
 // Proxy is the secret-free projection of a proxy row. It deliberately omits
