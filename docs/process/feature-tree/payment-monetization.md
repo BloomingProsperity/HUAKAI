@@ -1,6 +1,6 @@
 # Feature-Tree Audit: payment-monetization
 
-**Domain summary**: HUAKAI has a strong multi-layer monetization core (payment orders, voucher redemption, subscription + quota policies, immutable billing ledger, two-phase reserve/settle, and mismatch-refund DLQ) but is missing production payment-gateway integrations, auto-renewal, admin-initiated refunds, revenue analytics, multi-currency, and tax handling — all of which are present in sub2api / new-api and required by paying operators.
+**Domain summary**: HUAKAI has a strong multi-layer monetization core (payment orders, voucher redemption, subscription + quota policies, immutable billing ledger, two-phase reserve/settle, and mismatch-refund DLQ) but is missing production payment-gateway integrations, auto-renewal, revenue analytics, multi-currency, and tax handling — all of which are present in sub2api / new-api and required by paying operators. (注:admin-initiated refunds 此前列为缺失,实已建并挂路由 `paymenthttp/refund.go:38` + `handler.go:203` `POST /{id}/refund`,见 I-2。)
 
 **Audit date**: 2026-06-02 · Branch: `fix/hermes-phase-1-e33d940`
 
@@ -103,12 +103,12 @@
 | H-4 | Default pricing bootstrap (seed data) | PRESENT | migration `0068_default_pricing_bootstrap.up.sql` | |
 | H-5 | Chat completions pricing calculation (token counting → cost_usd) | PRESENT | `backend/internal/gatewayhttp/chat_completions_pricing.go` | |
 | H-6 | Multi-currency pricing (non-USD) | MISSING | `payment/types.go:175` `ErrUnsupportedCurrency` "P1 ledger is USD-only" · `payment/order_test.go:50` test name makes explicit | All pricing locked to USD; non-USD markets blocked |
-| H-7 | Markup / margin configuration per tenant or channel | MISSING | grep `model_ratio\|markup\|price_multiplier` → only `chat_completions_pricing.go` | new-api / sub2api support per-channel ratio multipliers; HUAKAI has none |
+| H-7 | Markup / margin configuration per tenant or channel | PRESENT | 按 pool_group 定价倍率:`backend/internal/pricingcatalog/ratio_resolver.go` `RatioResolver` (TTL 缓存 + 审计链) · admin 写端点 `pricingcataloghttp/pricing_ratio_handler.go:67` `MountPricingRatioRoutes` / `:73` `PUT /{pool_group_id}` / `:141` `UpsertRatio` 挂 `cmd/gateway/routes_pricing.go:16` · 注入所有 dispatch deps | per-pool-group ratio multiplier 已建并接计价 |
 | H-8 | Admin API to update / publish new pricing version | MISSING | `RateTableSource` is read-only; no write endpoint found | Operators cannot update prices without DB surgery |
 | H-9 | Per-provider cost tracking (upstream cost vs. user billing) | PARTIAL | Provider account tracked in billing_claims; no margin report | Schema has data; no report surface |
 | **I. Refund & Dispute** |||||
 | I-1 | Audit mismatch refund (negative reconciliation, DLQ-based) | PRESENT | `backend/internal/audit/refund_worker.go:RefundWorker` · `0032_audit_mismatch_refund_pending.up.sql` | |
-| I-2 | Admin-initiated manual refund (credit back to balance) | MISSING | No admin refund endpoint found; `admin_credit.go` does adjustments but no refund-specific flow | Customer service cannot issue refunds without direct DB access |
+| I-2 | Admin-initiated manual refund (credit back to balance) | PRESENT | `backend/internal/payment/service.go:236` `RefundOrder()` (幂等键必填 + 金额上限 CAS + 负向入账) · `paymenthttp/refund.go:38` `newAdminRefundHandler` 挂 `paymenthttp/handler.go:203` `POST /{id}/refund` | 专用 admin 退款端点已建并挂路由,与 admin_credit 调整区分;另有用户发起退款申请状态机 `paymenthttp/user_portal.go` |
 | I-3 | Refund audit trail | PRESENT | `audit/refund_worker.go` appends to billing_events as negative reconciliation | |
 | I-4 | Chargeback handling | MISSING | No chargeback/dispute flow | Required by real payment gateways |
 | I-5 | Refund rate limits / anti-abuse | MISSING | No refund rate limiting found | |
@@ -122,11 +122,11 @@
 | **K. Referral & Community** |||||
 | K-1 | Invitation code generation (monthly quota, expiry, max-usage) | PRESENT | `backend/internal/community/invitation/service.go` · `types.go` | |
 | K-2 | Referral tracking schema (referrals table, billing_event link) | PRESENT | migration `0034_community_invitation_referral.up.sql:referrals` + `referral_rewards` tables | |
-| K-3 | Referral reward crediting service (actual credit on referral event) | MISSING | Schema exists; no service Go code found in `community/invitation/` to credit rewards | Tables set up but reward flow never implemented |
+| K-3 | Referral reward crediting service (actual credit on referral event) | PRESENT | `backend/internal/payment/signup_invitee_reward.go:169` `IssueInviteeReward()` / `:140` `IssueSignupBonus()` 真实写钱包 credit · `community/invitation/referral_reward_config.go` + `referral_qualification.go` + `referral_reward_store.go` · 注册路径调用 `cmd/gateway/wiring.go:925,929` | crediting 服务码已建并接注册路径(amounts 经 env,默认 0=OFF 但码在) |
 | K-4 | Referral reward rate configuration | MISSING | No reward rate config found | |
 | **L. Notifications** |||||
 | L-1 | Subscription expiry reminder emails | PRESENT | `backend/internal/subscription/reminder_mailer.go` · `reminder_worker.go` · migration `0074_subscription_reminders.up.sql` | |
-| L-2 | Low balance alerts (email / in-app) | MISSING | grep `low.balance\|balance.alert\|balance.warning` → 0 hits | sub2api sends alerts at configurable thresholds |
+| L-2 | Low balance alerts (email / in-app) | PRESENT | `backend/internal/notify/notifier.go:93` `NotifyLowBalance()` + 可配 `BalanceThreshold` (`:112`) · `notify/types.go:23` `EventLowBalance="low_balance"` · 生产 settle 经 `cmd/gateway/wiring.go:943` `notify.NewSettler(...)` 包裹触发,多渠道 email/webhook/bark/gotify | 低余额告警子系统已建并接生产结算路径 |
 | L-3 | Payment confirmation notification | MISSING | No payment success email flow found | |
 | L-4 | Invoice / receipt email delivery | MISSING | No email delivery for receipts | |
 | **M. Admin Revenue Operations** |||||
@@ -157,8 +157,8 @@
 2. **Subscription auto-renewal** — E-9  
    Subscriptions expire and the worker marks them expired, but there is no automatic re-charge or renewal trigger. Recurring revenue requires auto-renewal with payment-gateway integration. sub2api and new-api both implement this.
 
-3. **Admin-initiated manual refund endpoint** — I-2  
-   Customer service cannot issue refunds without direct DB access. Blocks operator trust and violates consumer protection expectations. The mismatch refund (I-1) is internal-only.
+3. ~~**Admin-initiated manual refund endpoint** — I-2~~ 已实现(BUILT/WIRED)  
+   专用 admin 退款 service + HTTP 端点已建并挂路由(`payment/service.go:236` `RefundOrder`,幂等键必填 + 负向入账;`paymenthttp/refund.go:38` `newAdminRefundHandler` 挂 `handler.go:203` `POST /{id}/refund`),客服无需直接改库即可退款。
 
 4. **Revenue analytics / admin reporting** — M-4, M-5, M-6  
    Operators have zero revenue visibility (MRR, total topup, per-model revenue, provider margin). Sub2api provides a full stat dashboard. This is table-stakes for commercial operations.
@@ -169,14 +169,14 @@
 6. **Admin API to publish new pricing versions** — H-8  
    The pricing table and version history exist but are read-only via API. Operators cannot update pricing without direct DB writes, creating operational friction on every model price change.
 
-7. **Per-channel / per-tenant markup multipliers** — H-7  
-   new-api and sub2api support per-channel ratio multipliers so operators can set different margins per model or route. HUAKAI has none — all users pay the same base rate, blocking reseller / white-label use cases.
+7. ~~**Per-channel / per-tenant markup multipliers** — H-7~~ 已实现(BUILT/WIRED)  
+   按 pool_group 的定价倍率已建并接计价:`pricingcatalog/ratio_resolver.go` `RatioResolver`(TTL + 审计链)+ admin 写端点 `pricingcataloghttp/pricing_ratio_handler.go:73` `PUT /{pool_group_id}` → `:141` `UpsertRatio`,挂 `routes_pricing.go:16`,注入所有 dispatch deps。
 
-8. **Low balance alert notifications** — L-2  
-   Users do not receive warnings before their balance runs out, causing unexpected service interruptions. sub2api sends configurable threshold alerts. This directly impacts user retention and churn.
+8. ~~**Low balance alert notifications** — L-2~~ 已实现(BUILT/WIRED)  
+   低余额告警子系统已建并接生产 settle:`notify/notifier.go:93` `NotifyLowBalance` + 可配 `BalanceThreshold`(`:112`)+ `notify/types.go:23` `EventLowBalance="low_balance"`,经 `wiring.go:943` `notify.NewSettler(...)` 每次结算触发,多渠道 email/webhook/bark/gotify。
 
-9. **Referral reward service implementation** — K-3, K-4  
-   The schema for `referrals` and `referral_rewards` was created (migration 0034), but no Go service code was found to actually credit rewards on a referral event. The feature is a schema-only stub.
+9. **Referral reward service implementation** — ~~K-3~~ 已实现(BUILT/WIRED), K-4  
+   K-3 reward crediting 服务码已建:`payment/signup_invitee_reward.go:169` `IssueInviteeReward` / `:140` `IssueSignupBonus` 真实写钱包 credit + `community/invitation/referral_reward_config.go`/`referral_qualification.go`/`referral_reward_store.go`,注册路径调用 `wiring.go:925,929`(amounts 经 env,默认 0=OFF 但码在);K-4 reward rate 配置仍为 backlog。
 
 10. **Usage export (CSV / PDF) and monthly invoices** — J-4, J-5  
     Enterprise and B2B buyers require downloadable billing statements for accounting and compliance. The usage data exists in the DB; it is just never serialized to a file format or emailed.

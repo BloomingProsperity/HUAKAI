@@ -166,7 +166,10 @@ risk changes implementation method rather than scope.
 
 ## Current backend slice
 
-The current live path is `POST /v1/chat/completions`.
+The live inbound surface spans 44 distinct `/v1/*` and `/admin/v1/*` route prefixes
+(not just `POST /v1/chat/completions`) — including `/v1/messages`, `/v1/embeddings`,
+`/v1/images`, `/v1/audio`, `/v1/responses`, and `/v1/rerank`
+(`backend/cmd/gateway/routes.go:106` registers `/v1/messages`).
 
 Implemented:
 
@@ -186,11 +189,21 @@ Known limitations:
 - Router is still L0: one primary attempt from `PoolCandidates[0]`.
 - Gateway executor logic is still embedded in the chat handler.
 - `attempt_id` and `lease_id` are documented but not yet first-class schema fields.
-- Provider adapters are not production-complete; the current happy path uses mock upstream
-  bytes and an Anthropic SSE parser.
-- Successful requests still settle with a fixed placeholder cost.
-- Admin APIs and the frontend operations console are not implemented yet.
-- R3 transport-layer mimicry is in plan stage; no production-ready code yet.
+- Provider adapters are production-wired: a default registry registers real passthrough
+  adapters (Grok / Kimi / DeepSeek / Mistral and more) in
+  `backend/internal/provider/registrydefault/default.go:177`, and Anthropic egress goes
+  through a real uTLS mimicry exchanger (`backend/cmd/gateway/wiring.go:829`), not mock bytes.
+- Successful requests settle with real micro-USD pricing
+  (`backend/internal/billing/public_price_table.go:166`), not a fixed placeholder cost.
+- Admin APIs are implemented and mounted (20+ `/admin/v1/*` route groups in
+  `backend/cmd/gateway/routes.go:815` plus `internal/{adminhttp,adminuserhttp,adminquotahttp,
+  proxyadminhttp,modelbindingadminhttp}` packages); only the frontend operations console
+  is not yet built.
+- R3 transport-layer mimicry is production code: a real uTLS dialer
+  (`backend/internal/transport/mimicry/utls_dialer.go:13`) is injected into the production
+  dispatcher (`backend/cmd/gateway/wiring.go:1178`, consumed at
+  `backend/internal/gateway/upstream_dispatcher.go:196`). It is off by default
+  (operator opt-in), not in plan stage.
 
 ## Where to start
 
