@@ -73,9 +73,31 @@ func validateChatCompletionsRequest(w http.ResponseWriter, r *http.Request, ctx 
 	}, true
 }
 
+// relay 入站请求体上限:旧版硬写 1MiB,导致付费用户的带图(单张 base64 ~1.5MiB)、长上下文请求被
+// 413。这里把上限抽出来默认抬到成熟中转站量级,运维可经 cmd/gateway 在启动时覆盖(读
+// HUAKAI_MAX_REQUEST_BODY_MB)。放大后的滥用面由已有 per-key 限流(RPM/并发)兜住。
+// (上游非流式响应上限暂未纳入:它在 gatewayhttp 与 internal/gateway HCSF 两条路径各一份须一致,
+// 属 proxies 碰撞包,留作单独协调式 follow-up,见 docs/process/plans。)
+const defaultMaxRequestBodyBytes int64 = 32 << 20 // 32 MiB
+
+// maxRequestBodyBytes 是进程级 relay 入站请求体上限:启动 wiring 阶段经 ConfigureBodyLimits 一次性
+// 设定,之后 serve 期间只读。用包级 set-once 配置(而非穿透每个 handler 自由函数签名),把 money 热
+// 路径改动降到最小。约束:只在启动单线程阶段写,serve 后不再写。
+var maxRequestBodyBytes = defaultMaxRequestBodyBytes
+
+// ConfigureBodyLimits 在启动 wiring 阶段(router serve 之前、单次、非并发)设定入站请求体上限。
+// 传入 <=0 保留默认。设定后只读,无并发写。
+func ConfigureBodyLimits(maxRequestBody int64) {
+	if maxRequestBody > 0 {
+		maxRequestBodyBytes = maxRequestBody
+	}
+}
+
 func readChatRequestBody(w http.ResponseWriter, r *http.Request, ctx context.Context) ([]byte, bool) {
 	// 保留客户端原始 body，后续 dispatcher 直接交给 provider adapter。
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	// 上限由 maxRequestBodyBytes 控制(默认 32MiB,可经 HUAKAI_MAX_REQUEST_BODY_MB 调整),
+	// 旧版硬写 1MiB 会把带图/长上下文的合法请求 413 掉。
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeLoggedJSONError(ctx, middleware.GetReqID(ctx), w, http.StatusBadRequest, clienterr.CodeBodyReadError, err)
