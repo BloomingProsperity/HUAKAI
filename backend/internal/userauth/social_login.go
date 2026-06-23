@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -170,7 +171,7 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 		return User{}, ErrOAuthPendingEmailRequired
 	}
 	if user, err := s.Store.GetUserBySocialIdentity(ctx, tenantID, provider, subject); err == nil {
-		if err := ensureSocialLoginUserAllowed(user); err != nil {
+		if err := ensureSocialLoginUserAllowed(user, s.now()); err != nil {
 			return User{}, err
 		}
 		return user, nil
@@ -183,7 +184,7 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 		if err != nil {
 			return User{}, err
 		}
-		if err := ensureSocialLoginUserAllowed(user); err != nil {
+		if err := ensureSocialLoginUserAllowed(user, s.now()); err != nil {
 			return User{}, err
 		}
 		return user, nil
@@ -322,7 +323,12 @@ func maskSocialSubject(subject string) string {
 	}
 }
 
-func ensureSocialLoginUserAllowed(user User) error {
+// EnsureLoginEligible 校验账号是否允许登录:禁用/删除/锁定/待重置 + 时间型临时锁(locked_until
+// 在未来)一律拒。这是与密码登录(service.go 的内联门)、social 登录一致的账号资格门;任何强认证
+// 方式(passkey 等)在签发 session 之前都必须复用它,否则会出现"被管理员封禁/锁定的用户凭某种认证
+// 方式仍能登录"的绕过——属 auth-core 访问控制不变量。注:邮箱未验证这类按租户策略生效的软门不在
+// 此处(与 social 一致),由各调用方按需另行处理。
+func EnsureLoginEligible(user User, now time.Time) error {
 	switch user.Status {
 	case UserStatusDisabled, UserStatusDeleted:
 		return ErrUserDisabled
@@ -330,9 +336,18 @@ func ensureSocialLoginUserAllowed(user User) error {
 		return ErrUserLocked
 	case UserStatusResetRequired:
 		return ErrPasswordResetRequired
-	default:
-		return nil
 	}
+	// 时间型临时锁:status 仍 active 但 locked_until 在未来时也必须拒(与密码门 service.go 一致),
+	// 否则被时间锁的账号能经 passkey/social 绕过(failed_login_count 达阈值那一支已由 MarkLoginFailure
+	// 原子翻成 status=locked,被上面的 UserStatusLocked 捕获,无独立窗口)。
+	if user.LockedUntil != nil && now.Before(*user.LockedUntil) {
+		return ErrUserLocked
+	}
+	return nil
+}
+
+func ensureSocialLoginUserAllowed(user User, now time.Time) error {
+	return EnsureLoginEligible(user, now)
 }
 
 func normalizeSocialProvider(provider string) string {

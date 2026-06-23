@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
 type CeremonyEngine interface {
@@ -184,6 +186,13 @@ func (s *Service) LoginFinish(ctx context.Context, in LoginFinishInput) (LoginFi
 	}
 	result, err := s.engine.FinishDiscoverableLogin(ctx, cfg, session.SessionData, in.CredentialJSON, s.discoverableResolver(in.TenantID))
 	if err != nil {
+		return LoginFinishResult{}, err
+	}
+	// 账号资格门:ceremony 已验证 credential 归属,但签发 session 前必须复用与密码/social 登录
+	// 一致的账号状态门(EnsureLoginEligible)。否则被管理员禁用/删除/锁定/待重置的用户,凭既有
+	// passkey 仍能登录拿到 session,绕过账号停用控制(auth-core 访问控制不变量)。放在引擎返回后
+	// 而非 resolver 内,避免依赖 webauthn 引擎是否原样透传 resolver 错误。
+	if err := userauth.EnsureLoginEligible(result.User.User, s.now()); err != nil {
 		return LoginFinishResult{}, err
 	}
 	stored := result.MatchedCredential
