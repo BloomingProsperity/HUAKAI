@@ -327,7 +327,7 @@ func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, e
 	userAuthService.AllowedRedirectURIs = loadUserOAuthRedirectAllowlistFromEnv()
 	userAuthService.VerificationTTL = mailinfra.DefaultVerificationTTL
 	userAuthService.Verification = mailinfra.NewVerificationPolicy(emailSettings)
-	sessionSigningKey, err := loadSessionSigningKey()
+	sessionSigningKey, err := loadSessionSigningKey(logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load session signing key: %w", err)
 	}
