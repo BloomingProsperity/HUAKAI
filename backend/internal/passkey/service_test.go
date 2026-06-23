@@ -78,6 +78,86 @@ func TestPasskeyRegisterThenLoginSuccess(t *testing.T) {
 	}
 }
 
+// TestPasskeyLoginRejectsDisabledUser 守护:passkey 登录在签发 session 前必须复用账号资格门——
+// 被管理员禁用的用户即便持有有效 passkey 也不能登录(否则账号停用形同虚设,属 auth-core 访问控制绕过)。
+//
+// 自证式:同一注册凭据,active 用户 LoginFinish 成功、disabled 用户 LoginFinish 被拒(返
+// userauth.ErrUserDisabled 且不返回 user)。变异检查:删掉 LoginFinish 里的 EnsureLoginEligible 门,
+// disabled 用例会由"被拒"变成"成功签发",本测试转红。
+func TestPasskeyLoginRejectsDisabledUser(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 10, 5, 0, 0, time.UTC)
+	engine := &fakeEngine{loginCredentialID: []byte("registered-cred"), assertedSignCount: 2}
+	user := testUser(1, 101, "alice@example.test")
+	users := fakeUsers{rows: map[userKey]userauth.User{{tenantID: 1, userID: 101}: user}}
+	svc := NewService(NewMemoryStore(), users, StaticConfigSource(testConfig()), WithCeremonyEngine(engine), WithNow(func() time.Time { return now }))
+
+	rb, err := svc.RegisterBegin(ctx, RegisterBeginInput{TenantID: 1, User: user, Name: "MacBook"})
+	if err != nil {
+		t.Fatalf("RegisterBegin: %v", err)
+	}
+	if _, err := svc.RegisterFinish(ctx, RegisterFinishInput{TenantID: 1, User: user, SessionID: rb.SessionID, CredentialJSON: []byte(`{"id":"registered-cred"}`), Name: "MacBook"}); err != nil {
+		t.Fatalf("RegisterFinish: %v", err)
+	}
+
+	// 模拟管理员封禁:把该用户置为 disabled,持有效 passkey 登录必须被拒。
+	// (不先跑 active 登录,避免 signCount 被顶高后撞 clone 检测,从而让"无资格门则成功签发"
+	//  成为干净的变异目标——删掉门后本用例会变成登录成功 err==nil。)
+	disabled := user
+	disabled.Status = userauth.UserStatusDisabled
+	users.rows[userKey{tenantID: 1, userID: 101}] = disabled
+
+	lb2, err := svc.LoginBegin(ctx, LoginBeginInput{TenantID: 1})
+	if err != nil {
+		t.Fatalf("LoginBegin(disabled): %v", err)
+	}
+	result, err := svc.LoginFinish(ctx, LoginFinishInput{TenantID: 1, SessionID: lb2.SessionID, CredentialJSON: []byte(`{"id":"registered-cred"}`)})
+	if !errors.Is(err, userauth.ErrUserDisabled) {
+		t.Fatalf("disabled 用户 LoginFinish err=%v want userauth.ErrUserDisabled", err)
+	}
+	if result.User.ID != 0 {
+		t.Fatalf("disabled 用户不应返回 user(更不应签发 session), got user=%+v", result.User)
+	}
+}
+
+// TestPasskeyLoginRejectsTimeLockedUser 守护:passkey 资格门与密码门一致,也拒"时间型临时锁"
+// (status 仍 active 但 locked_until 在未来)。变异检查:删掉 EnsureLoginEligible 里的 LockedUntil
+// 分支,本用例由"被拒(ErrUserLocked)"变成"成功签发(err==nil)",转红。
+func TestPasskeyLoginRejectsTimeLockedUser(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 10, 6, 0, 0, time.UTC)
+	engine := &fakeEngine{loginCredentialID: []byte("registered-cred"), assertedSignCount: 2}
+	user := testUser(1, 101, "alice@example.test")
+	users := fakeUsers{rows: map[userKey]userauth.User{{tenantID: 1, userID: 101}: user}}
+	svc := NewService(NewMemoryStore(), users, StaticConfigSource(testConfig()), WithCeremonyEngine(engine), WithNow(func() time.Time { return now }))
+
+	rb, err := svc.RegisterBegin(ctx, RegisterBeginInput{TenantID: 1, User: user, Name: "MacBook"})
+	if err != nil {
+		t.Fatalf("RegisterBegin: %v", err)
+	}
+	if _, err := svc.RegisterFinish(ctx, RegisterFinishInput{TenantID: 1, User: user, SessionID: rb.SessionID, CredentialJSON: []byte(`{"id":"registered-cred"}`), Name: "MacBook"}); err != nil {
+		t.Fatalf("RegisterFinish: %v", err)
+	}
+
+	// status 仍 active,但被设置了未来的 locked_until(时间型临时锁);passkey 登录必须与密码门一致地拒。
+	locked := user
+	until := now.Add(time.Hour)
+	locked.LockedUntil = &until
+	users.rows[userKey{tenantID: 1, userID: 101}] = locked
+
+	lb, err := svc.LoginBegin(ctx, LoginBeginInput{TenantID: 1})
+	if err != nil {
+		t.Fatalf("LoginBegin: %v", err)
+	}
+	result, err := svc.LoginFinish(ctx, LoginFinishInput{TenantID: 1, SessionID: lb.SessionID, CredentialJSON: []byte(`{"id":"registered-cred"}`)})
+	if !errors.Is(err, userauth.ErrUserLocked) {
+		t.Fatalf("时间锁用户 LoginFinish err=%v want userauth.ErrUserLocked", err)
+	}
+	if result.User.ID != 0 {
+		t.Fatalf("时间锁用户不应签发 session, got user=%+v", result.User)
+	}
+}
+
 func TestPasskeyRegisterChallengeSingleUse(t *testing.T) {
 	// Mutation killed: if RegisterFinish reads but does not delete the ceremony
 	// row, replaying the same attestation creates a duplicate credential attempt.
