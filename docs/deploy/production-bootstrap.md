@@ -90,8 +90,10 @@ Caddy 走 HTTPS。上线只需:
 3. `docker compose -f docker-compose.prod.yml up -d` —— Caddy 首次启动自动签发并续期 Let's Encrypt 证书,
    证书持久化在 caddy-data 卷(重启不重签,避免触发速率限制)。
 
-`per-IP` 限流按真实客户端 IP 计算:gateway 经 `HUAKAI_TRUSTED_PROXY_CIDRS`(默认本 compose 固定子网)
-信任 Caddy 转发的 `X-Forwarded-For`;对非可信来源的 XFF 一律忽略(fail-closed 防伪造)。
+`per-IP` 限流按真实客户端 IP 计算:gateway 经 `HUAKAI_TRUSTED_PROXY_CIDRS`(默认三段 RFC1918 私网
+`172.16.0.0/12,10.0.0.0/8,192.168.0.0/16`,见 `docker-compose.prod.yml:43`;compose 网络不固定子网、由
+docker 自选网段且必落 RFC1918 内,见 `docker-compose.prod.yml:126`)信任 Caddy 转发的 `X-Forwarded-For`;
+对非可信来源的 XFF 一律忽略(fail-closed 防伪造)。
 
 > 本地无公网域名联调:`HUAKAI_PUBLIC_DOMAIN=localhost`(Caddy 发本地自签证书,浏览器提示不受信,仅联调)。
 > 多级代理上线后若要每个代理自带白标域名,Caddyfile 末尾已预留 on-demand TLS 模板(需配 ask 授权端点,默认不启用)。

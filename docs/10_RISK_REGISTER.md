@@ -78,14 +78,9 @@ Each high or release-blocking risk must map to mitigation, test coverage, and re
 
 - **R-AUDIT-001 (Admin UI severity mapping for 4 new outcomes, S2, FIXED)**：observability.sql severity case 漏 auth_expired/rate_limit_exceeded/risk_control_triggered/account_disabled → admin UI warning/error 过滤漏报。修复:severity case 新加 auth_expired/risk_control_triggered/account_disabled → error / rate_limit_exceeded → warning。Last triage 2026-05-25 commit `cd8a5f4`,DEFERRED-audit-outcome-severity-mapping.md [CLOSED]。
 
-- **R-SIDECAR-001 (boring sigalgs 10/26 IDs gap, S2, DEFERRED)**：tls-sidecar profile.rs anthropic_cli_mimicry_v1 sigalgs 字符串仅 10 项标准 sigalg 名,真抓包 wire 26 个数字 ID。boring `SSL_CTX_set_sigalgs_list` API 接受字符串 + 已知算法表校验,无 raw 16-bit setter。R-3-A-fix-6 调研 (docs/process/plans/2026-05-25-r3a-fix6-sigalgs-raw-api-investigation.md) 推荐方案 A: 0.5-1 day vendor C 加 `SSL_CTX_set_sigalgs_raw` 窄 setter + Rust wrapper + extension 13 wire parser。Phase 4 ECH / Phase 5 PQ wire proof **不阻塞**;**生产 sidecar exact-fidelity 接通前必修**。Last triage 2026-05-25 commit `b38a34c`。下一步:Owner 确认 raw setter 命名 + 是否进 Phase 5C 实施 slice。
+- **R-SIDECAR-001 (boring raw sigalgs, RESOLVED 2026-06-02)**：已修。vendored boring 增 raw setter,`boring_ctx.rs:44` 用 `set_raw_verify_algorithm_prefs(&profile.signature_algorithms)` 发完整 26 个数字 sigalg ID(`profile.rs:19`),wire 测试 `boring_signature_algorithms_profile_controls_wire_bytes`(`boring_ctx.rs:382`)断言 26 个全匹配且删空 mutation-red。commit `8cfc5467`。
 
-> 【2026-06-02 已更新】下面 R-SIDECAR-002 中“sidecar 未接通生产”是 2026-05-25 历史。
-> Go 端已通过 `HUAKAI_TRANSPORT_SIDECAR_SOCKET` / `Factory.SidecarSocketPath`
-> 可配置接到 Rust/BoringSSL sidecar；当前风险应读作“任何生产 sidecar 配置启用前，
-> ALPN=h2 raw tunnel 与 H2 framing 必须验证/修复或通过 profile 限制规避”。以下为历史 triage 原文。
-
-- **R-SIDECAR-002 (Phase 3 H2 ALPN raw tunnel 边界, S2, DEFERRED)**：tls-sidecar connect.rs raw tunnel TLS handshake 后即使 ALPN=h2 仍返 raw TLS。Go sidecar transport (HTTP/1.1 only, `ForceAttemptHTTP2:false`) 后续发 HTTP/1.1 request → 服务端按 H2 解 → 协议错乱。sidecar **未接通生产** (`Factory.SidecarSocketPath` 默认空),当前 no-impact。修复路径 3 选项 (Go-Rust 接通切片同期决): (A) raw tunnel ALPN=h2 时 fail / 转 H2 path / (B) Rust own 完整 H2 framing (重大重构) / (C) sidecar profile 强制 ALPN=http/1.1。Last triage 2026-05-25 commit `44bf875`,DEFERRED-sidecar-raw-tunnel-h2-alpn.md。
+- **R-SIDECAR-002 (H2 ALPN raw tunnel 边界, RESOLVED 2026-06-02)**：已按选项 B 修。`connect.rs:118-119` 当 `selected_alpn==Some(b"h2")` 时走 `start_profile_h2_connection`(Rust 端 own H2 framing),不再返 raw TLS;`h2_bridge.rs` 做 IPC HTTP/1.1↔上游 H2 桥接 + Stage-2 流式 + 防请求走私(拒重复 Content-Length/Host)。commits `c0fe5231`/`76f31ea7`/`d3d18933`,cargo test 36/0。**残留(非本票)**:anthropic profile 的 H2 SETTINGS 指纹值未抓(`profile.rs:38-42` `[profile.h2_settings]` 空 + `TODO(Phase 3 real capture)`,`profile.rs:390` 测试断言空),启用生产 sidecar 前抓一次即补全 H2 层指纹。
 
 - **R-VEND-001 (6 vendor operator-config OAuth endpoint 缺, S1, OPEN-PENDING-OWNER)**：cursor/windsurf/openai_codex/kiro/gemini/antigravity 6 vendor RefreshAdapter operator-config endpoint/client/scope 缺。Owner 真账号抓包后才能填入 `HUAKAI_<VENDOR>_OAUTH_{AUTH_URL,TOKEN_URL,CLIENT_ID,CLIENT_SECRET,SCOPE}` env。**当前 fail-closed**:TokenURL 空 → `WithVendorRefresher` 不注入 → vendor 自动 skip,不 crash。Owner-side action:per [[feedback_owner_local_verification]] Owner 本机抓 cursor/windsurf/codex CLI/kiro/gemini Advanced/antigravity OAuth flow。Last triage 2026-05-25 commit `e1af326`。
 
