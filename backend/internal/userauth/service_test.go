@@ -100,6 +100,51 @@ func (p staticVerificationPolicy) EmailVerificationEnabled(context.Context, int6
 	return bool(p), nil
 }
 
+// erroringVerificationPolicy 是可配置的验证策略桩:返回预设的 (enabled, err)。
+// 现有 staticVerificationPolicy 永远返回 nil err,无法覆盖"DB 真错"分支;本桩专为守护
+// 邮箱门软化后的运行时安全不变量(DB 错时 fail-safe 要求验证、不绕过)。
+type erroringVerificationPolicy struct {
+	enabled bool
+	err     error
+}
+
+func (p erroringVerificationPolicy) EmailVerificationEnabled(context.Context, int64) (bool, error) {
+	return p.enabled, p.err
+}
+
+// TestRequireEmailVerificationFailsSafeOnError 守护邮箱门软化切片的核心运行时不变量:
+// production 启动期 fail-loud 门撤掉后,整个安全论证转嫁到请求时 fail-safe——当
+// EmailVerificationEnabled 因 DB 真错返回 (_, err) 时,必须落到 RequireVerified 要求验证,
+// 绝不能把 DB 错误当作"验证关闭"而放行未验证用户注册为 active。
+//
+// 自证式 + 变异检查:同为 enabled=false,err!=nil 应得"要求验证"(true)、err==nil 应得
+// "不要求"(false),两路结果必须相反;把 service.go 的 `if err == nil { return enabled }`
+// 改成吞 err 的 `return enabled`,err!=nil 那路即由 true 变 false(本测试 RED)。
+func TestRequireEmailVerificationFailsSafeOnError(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 23, 8, 0, 0, 0, time.UTC)
+	svc := NewService(newMemoryAuthStore(now))
+	svc.RequireVerified = true // 生产默认(service.go NewService 即此),fail-safe 的兜底值
+
+	// DB 真错:必须 fail-safe 要求验证。
+	svc.Verification = erroringVerificationPolicy{enabled: false, err: errors.New("settings store unavailable")}
+	gotOnErr := svc.requireEmailVerification(ctx, 1)
+	if !gotOnErr {
+		t.Fatal("DB 错时必须 fail-safe 要求验证(不得把错误当\"验证关闭\"放行未验证用户)")
+	}
+
+	// 正常未配(无错、enabled=false):不要求验证,与上相反。
+	svc.Verification = erroringVerificationPolicy{enabled: false, err: nil}
+	gotOnOK := svc.requireEmailVerification(ctx, 1)
+	if gotOnOK {
+		t.Fatal("err==nil 且 enabled=false 时应不要求验证(正常未配走惰性放行)")
+	}
+
+	if gotOnErr == gotOnOK {
+		t.Fatal("自证失败:DB 错与正常未配两路结果应相反,否则吞 err 的回退无法被判别")
+	}
+}
+
 func TestPasswordRegisterToggle(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 7, 8, 0, 0, 0, time.UTC)
