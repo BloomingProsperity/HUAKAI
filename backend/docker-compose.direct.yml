@@ -1,0 +1,131 @@
+# HUAKAI 无域名 / IP 直连部署形态(与 docker-compose.prod.yml 并列的另一种选项)。
+#
+# 这是「提供选项、运维自决」:与 prod 的唯一区别是——不含 Caddy / 不需要域名,gateway 直接
+# 发布到宿主端口,运维用「服务器IP:端口」访问。要域名 + 自动 HTTPS 见 docker-compose.prod.yml。
+# 两者择一,我们不替你设默认形态。
+#
+# 适用场景:
+#   ① 自测 / 内网(可信网络,纯 HTTP 即可,最省事);
+#   ② 对外但运维已有自己的反代 / LB / CDN / 宝塔面板在前面终结 TLS(gateway 仅回源)。
+#
+# ⚠ 安全须知:本形态 gateway 默认是明文 HTTP。
+#   - 自测 / 内网:可直接用。
+#   - 对公网卖额度:务必在前面加一层 TLS(你自己的 nginx / Caddy / LB / 宝塔 + 证书),否则
+#     hk_key 会明文过网被嗅探盗用。是否加 TLS、用哪种形态由你决定——我们只提供选项。
+#
+# 必填 env(写到 .env 或 shell,样例见 .env.direct.example):
+#   HUAKAI_DATABASE_URL            - PostgreSQL DSN(host 用 compose 服务名 postgres)
+#   HUAKAI_CREDENTIAL_KEY_B64      - 32 字节 base64 凭据加密 key
+#   HUAKAI_SESSION_SIGNING_KEY_B64 - JWT 会话签名 key(base64),或 _HEX(>=32 字节 hex)
+#   HUAKAI_ADMIN_BOOTSTRAP_TOKEN   - 一次性引导管理员令牌(hk_admin_<24位base32>)
+#   HUAKAI_RELEASE_MODE            - 必填:dev(自测最省事)/ production(对外硬化,需补审计私钥见下)
+#   POSTGRES_PASSWORD              - postgres 超级用户口令(须与 DSN 内一致)
+#
+# 用法:
+#   docker compose -f docker-compose.direct.yml up -d
+#   访问:http://<服务器IP>:${HUAKAI_HTTP_PORT:-8080}
+
+# 顶层项目名:与 prod(同目录默认项目名 backend)区分开,使本形态可与 prod 在同机并存而容器名不相撞。
+name: huakai-direct
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # 直接把 gateway 发布到宿主端口(无 Caddy 反代)。
+    # HUAKAI_HTTP_BIND 控制绑定网卡:
+    #   0.0.0.0(默认)= 对外可达,用「服务器IP:端口」直接访问;
+    #   127.0.0.1     = 只绑本机,适合「同机另起 nginx / 宝塔 反代」时(反代走 localhost 回源)。
+    ports:
+      - "${HUAKAI_HTTP_BIND:-0.0.0.0}:${HUAKAI_HTTP_PORT:-8080}:8080"
+    environment:
+      HUAKAI_DATABASE_URL: ${HUAKAI_DATABASE_URL}
+      HUAKAI_CREDENTIAL_KEY_B64: ${HUAKAI_CREDENTIAL_KEY_B64}
+      HUAKAI_SESSION_SIGNING_KEY_B64: ${HUAKAI_SESSION_SIGNING_KEY_B64:-}
+      HUAKAI_SESSION_SIGNING_KEY_HEX: ${HUAKAI_SESSION_SIGNING_KEY_HEX:-}
+      HUAKAI_ADMIN_BOOTSTRAP_TOKEN: ${HUAKAI_ADMIN_BOOTSTRAP_TOKEN}
+      # 必填,无默认:dev = 自测 / 内网最省事(审计账本走内存、签名用临时密钥,免私钥文件);
+      # production = 对外硬化(强制审计账本持久化 + 持久 ed25519 私钥等启动门,见下方审计段与
+      # docs/deploy/production-bootstrap.md)。我们不替你设默认 —— 选项在你手里。
+      HUAKAI_RELEASE_MODE: ${HUAKAI_RELEASE_MODE}
+      # 信任「反代转发的 X-Forwarded-For」的来源(CSV CIDR),使 per-IP 限流按真实客户端 IP 计算。
+      # 默认全部 RFC1918 私网段,对两种接法都正确:
+      #   - 直连公网(无反代):公网客户端的 socket 源 IP 非 RFC1918,其伪造的 XFF 被 fail-closed
+      #     忽略,限流按真实 socket IP —— 安全;
+      #   - 同机 / 同网反代回源:反代源 IP 属 RFC1918,XFF 受信,限流按真实客户端 IP —— 正确。
+      HUAKAI_TRUSTED_PROXY_CIDRS: ${HUAKAI_TRUSTED_PROXY_CIDRS:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+      # ---- 审计(仅 production 模式硬要求;dev 模式留空即可,账本走内存 + 临时签名密钥)----
+      # 下面两个值由 .env 注入(dev 留空 → 内存账本 + 临时密钥,无需任何私钥文件)。
+      # production 直连对外时,在 .env 里设齐(三者缺一会 fail-loud 拒启,见 .env.direct.example 对外硬化段):
+      #   HUAKAI_AUDIT_LEDGER_BACKEND=postgres
+      #   HUAKAI_AUDIT_PRIVATE_KEY_PATH=/run/secrets/audit/key.pem   # 容器内路径,gateway 实际读取
+      #   HUAKAI_AUDIT_PRIVATE_KEY_HOST=./secrets/audit_key.pem      # 宿主源文件,喂给下方 volumes 挂载
+      # 并把下方 gateway 的 volumes 审计挂载段一并取消注释。
+      HUAKAI_AUDIT_LEDGER_BACKEND: ${HUAKAI_AUDIT_LEDGER_BACKEND:-}
+      HUAKAI_AUDIT_PRIVATE_KEY_PATH: ${HUAKAI_AUDIT_PRIVATE_KEY_PATH:-}
+    # ---- production 直连才需要:持久审计私钥(默认注释,dev 无需任何密钥文件)----
+    # 运维在宿主用 `openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem` 生成后,取消下面挂载,
+    # 并在 .env 设齐上面三个 HUAKAI_AUDIT_*(BACKEND=postgres / PATH=容器内读取路径 / HOST=宿主源路径)。
+    # volumes:
+    #   - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
+    networks:
+      - huakai-direct
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # 一次性数据库迁移:与 prod 一致,gateway 之前把 sql/migrations 应用到 postgres,成功退出后
+  # gateway 才启动。迁移幂等,重复 up 安全。
+  migrate:
+    image: migrate/migrate:v4.18.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./sql/migrations:/migrations:ro
+    command:
+      - "-path=/migrations"
+      - "-database"
+      - "${HUAKAI_DATABASE_URL}"
+      - "up"
+    networks:
+      - huakai-direct
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: huakai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: huakai
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - huakai-direct-pgdata:/var/lib/postgresql/data
+    networks:
+      - huakai-direct
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U huakai -d huakai"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+networks:
+  huakai-direct:
+    # 独立网络名;配合顶层 name: huakai-direct,与 prod 的容器/网络/卷均不相撞,可同机并存。
+    name: huakai-direct-net
+    # 不固定子网:让 docker 自动选可用网段,避免与宿主已有 docker 网络撞车(pool overlap)。
+
+volumes:
+  # 独立卷名,与 prod 的 huakai-prod-pgdata 隔离。
+  huakai-direct-pgdata:

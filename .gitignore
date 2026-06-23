@@ -31,6 +31,7 @@ backend/.gocache/
 !.env.example
 !backend/.env.dev.example
 !backend/.env.prod.example
+!backend/.env.direct.example
 *.pem
 *.key
 *.crt
