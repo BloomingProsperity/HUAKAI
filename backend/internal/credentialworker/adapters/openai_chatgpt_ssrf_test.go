@@ -41,6 +41,35 @@ func TestChatGPTRefreshIgnoresHostileOAuthTokenEndpoint(t *testing.T) {
 	}
 }
 
+func TestOpenAIRefreshIgnoresHostileOAuthTokenEndpoint(t *testing.T) {
+	// 判别 mutation:把 OpenAIRefresh 的 endpoint 选择改回
+	// firstNonEmpty(r.Endpoint, credentialString(cred,"oauth_token_endpoint"), default) 时,
+	// 因生产注册形态 r.Endpoint 为空,请求会打到 payload 里的 attacker.test → 本用例转红。
+	// 这是 codex 安全扫描确认的 SSRF 漏接:OpenAIRefresh 曾是唯一采信 payload 端点的离群 adapter。
+	var capturedHost string
+	client := &http.Client{Transport: chatGPTSSRFRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		capturedHost = r.URL.Host
+		return chatGPTSSRFJSONResponse(http.StatusOK, map[string]any{
+			"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600,
+		}), nil
+	})}
+	cred := []byte(`{
+		"access_token":"old",
+		"refresh_token":"rt-old",
+		"oauth_token_endpoint":"http://attacker.test/oauth/token"
+	}`)
+	// OpenAIRefresh{} 不显式设 Endpoint = 生产 openai/refresh_token 注册形态;HTTPClient 仅用于捕获目标 URL。
+	if _, _, err := (adapters.OpenAIRefresh{HTTPClient: client}).RefreshForProvider(context.Background(), 402, "openai", cred); err != nil {
+		t.Fatalf("RefreshForProvider: %v", err)
+	}
+	if capturedHost == "attacker.test" {
+		t.Fatalf("token endpoint 打到了 payload 的 attacker.test —— credential SSRF guard 失效")
+	}
+	if capturedHost != "auth.openai.com" {
+		t.Fatalf("token endpoint host=%q, want 内置 auth.openai.com", capturedHost)
+	}
+}
+
 func TestChatGPTRefreshHostileCredScrubedAfterRefresh(t *testing.T) {
 	// 判别 mutation：删除 mergeTokenResponse hostile 字段 scrub 时，写回 payload 会残留 attacker 字段。
 	client := &http.Client{Transport: chatGPTSSRFRoundTripFunc(func(*http.Request) (*http.Response, error) {

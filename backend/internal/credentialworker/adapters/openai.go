@@ -55,7 +55,10 @@ func (r OpenAIRefresh) RefreshForProvider(ctx context.Context, accountID int64, 
 		form.Set("scope", scope)
 	}
 
-	resp, err := postTokenWithRetry(ctx, r.httpClient(), firstNonEmpty(r.Endpoint, credentialString(cred, "oauth_token_endpoint"), defaultOpenAITokenEndpoint), "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	// 出站 token 端点钉死:只取 adapter 显式配置的 r.Endpoint(operator-config,如 codex)或内置默认,
+	// **绝不**采信 credential payload 里的 oauth_token_endpoint——否则攻击者写入的内网/metadata 地址
+	// 会被 refresh worker 当作 token 端点,把 refresh_token+client_secret 外带(SSRF)。
+	resp, err := postTokenWithRetry(ctx, r.httpClient(), firstNonEmpty(r.Endpoint, defaultOpenAITokenEndpoint), "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("openai refresh account %d: %w", accountID, err)
 	}
@@ -74,7 +77,9 @@ func (r OpenAIRefresh) httpClient() *http.Client {
 	if r.HTTPClient != nil {
 		return r.HTTPClient
 	}
-	return http.DefaultClient
+	// 纵深:未显式注入 client 时回退到 SSRF 保护客户端(拒 loopback/私网/link-local/metadata + 禁
+	// 重定向),与 ChatGPTRefresh 一致;裸 http.DefaultClient 会让出站 token 请求对任意地址无防护。
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 func applyOpenAIRefreshMetadata(raw []byte, privacyMutationEnabled bool) ([]byte, error) {
