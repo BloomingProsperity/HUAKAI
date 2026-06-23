@@ -24,8 +24,10 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # gateway 不再对宿主暴露明文端口:外部流量经下方 caddy 反代终结 TLS 后转发,gateway 仅
+    # 在 compose 内网可达(防绕过 TLS 直连明文 + 防外部伪造 X-Forwarded-For)。
+    expose:
+      - "8080"
     environment:
       HUAKAI_DATABASE_URL: ${HUAKAI_DATABASE_URL}
       HUAKAI_CREDENTIAL_KEY_B64: ${HUAKAI_CREDENTIAL_KEY_B64}
@@ -33,6 +35,12 @@ services:
       HUAKAI_SESSION_SIGNING_KEY_HEX: ${HUAKAI_SESSION_SIGNING_KEY_HEX:-}
       HUAKAI_ADMIN_BOOTSTRAP_TOKEN: ${HUAKAI_ADMIN_BOOTSTRAP_TOKEN}
       HUAKAI_RELEASE_MODE: ${HUAKAI_RELEASE_MODE}
+      # 信任 caddy 反代(本 compose 内网)转发的 X-Forwarded-For,使 per-IP 限流按真实
+      # 客户端 IP 计算而非 caddy 自身 IP。默认信任全部 RFC1918 私网段:gateway 仅在 compose
+      # 内网可达(expose 非 ports),能连它的只有同网 caddy(必属私网 IP),外部到不了无从伪造;
+      # clientip 解析对非可信来源的 XFF 一律忽略(fail-closed)。放宽到 RFC1918 同时免去固定
+      # 子网与宿主已有 docker 网段撞车(pool overlap)的起栈失败。
+      HUAKAI_TRUSTED_PROXY_CIDRS: ${HUAKAI_TRUSTED_PROXY_CIDRS:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
       # production 模式硬要求:审计账本持久化到 postgres + 持久 ed25519 私钥签名
       # (缺任一启动 fail-loud 拒启)。私钥由运维用 `openssl genpkey -algorithm ed25519`
       # 生成后挂载到容器内固定路径;切勿提交私钥进仓库。
@@ -50,6 +58,29 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # 反向代理 + 自动 HTTPS(一键上线的 TLS 终结层)。Caddy 对 HUAKAI_PUBLIC_DOMAIN 自动签发/
+  # 续期 Let's Encrypt 证书(需 80/443 对公网可达 + 域名解析到本机),并反代到内网 gateway:8080。
+  # 证书持久化在 caddy-data 卷,重启不重签。配置见同目录 Caddyfile。
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3 (QUIC)
+    environment:
+      HUAKAI_PUBLIC_DOMAIN: ${HUAKAI_PUBLIC_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 证书与 ACME 账户持久化:重启不重签,避免触发 Let's Encrypt 速率限制。
+      - huakai-prod-caddy-data:/data
+      - huakai-prod-caddy-config:/config
+    networks:
+      - huakai-prod
 
   # 一次性数据库迁移。gateway 刻意不自管迁移(保持迁移外部化、受控,避免多实例
   # 启动竞争跑 schema,以及把 schema 变更与应用启动解耦),因此由本 one-shot 服务
@@ -92,6 +123,10 @@ services:
 networks:
   huakai-prod:
     name: huakai-prod-net
+    # 不固定子网:让 docker 自动选可用网段,避免与宿主已有 docker 网络撞车(pool overlap)。
+    # gateway 的 HUAKAI_TRUSTED_PROXY_CIDRS 默认覆盖全部 RFC1918,docker 自选网段必落其内。
 
 volumes:
   huakai-prod-pgdata:
+  huakai-prod-caddy-data:
+  huakai-prod-caddy-config:
