@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -222,5 +223,45 @@ func TestHandler_UnauthorizedAuth(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "unauthorized") {
 		t.Fatalf("body = %q; want unauthorized", rec.Body.String())
+	}
+}
+
+// TestConfigureBodyLimits 守护:ConfigureBodyLimits 设定入站请求体上限,且 <=0 保留默认(不清零)。
+func TestConfigureBodyLimits(t *testing.T) {
+	t.Cleanup(func() { maxRequestBodyBytes = defaultMaxRequestBodyBytes })
+
+	ConfigureBodyLimits(7 << 20)
+	if maxRequestBodyBytes != 7<<20 {
+		t.Fatalf("ConfigureBodyLimits(7MiB) 后 maxRequestBodyBytes=%d,want %d", maxRequestBodyBytes, int64(7<<20))
+	}
+	ConfigureBodyLimits(0) // <=0 应保留当前值,不清零
+	if maxRequestBodyBytes != 7<<20 {
+		t.Fatalf("ConfigureBodyLimits(0) 应保留上次值,got %d", maxRequestBodyBytes)
+	}
+}
+
+// TestReadChatRequestBodyHonorsConfiguredLimit 守护:入站请求体上限真按 maxRequestBodyBytes 生效,
+// 而非旧版硬写 1MiB——这正是修复点(旧 1MiB 会把带图/长上下文请求 413 掉)。
+//
+// 自证式:同函数对"超限"与"未超限" body 给相反结果。变异检查:把 readChatRequestBody 里的
+// maxRequestBodyBytes 改回硬写 1<<20,则 200 字节(远小于 1MiB)会通过,"超限应拒"用例由 false→true(RED)。
+func TestReadChatRequestBodyHonorsConfiguredLimit(t *testing.T) {
+	t.Cleanup(func() { maxRequestBodyBytes = defaultMaxRequestBodyBytes })
+	ConfigureBodyLimits(100) // 100 字节小上限:保持测试轻量 + 可判别
+
+	// 超限:200 字节 > 100 → 应拒(ok=false)。旧硬写 1MiB 会放过 200 字节。
+	reqOver := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Repeat("x", 200)))
+	if _, ok := readChatRequestBody(httptest.NewRecorder(), reqOver, context.Background()); ok {
+		t.Fatal("body 超过配置上限应被拒(ok=false)")
+	}
+
+	// 未超限:50 字节 < 100 → 应通过(ok=true)。
+	reqUnder := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(strings.Repeat("x", 50)))
+	body, ok := readChatRequestBody(httptest.NewRecorder(), reqUnder, context.Background())
+	if !ok {
+		t.Fatal("body 在配置上限内应通过(ok=true)")
+	}
+	if len(body) != 50 {
+		t.Fatalf("通过的 body len=%d,want 50", len(body))
 	}
 }
