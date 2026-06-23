@@ -52,32 +52,30 @@ openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem   # production 审
    `sql/migrations` 应用到空库。漏了迁移,gateway 会因缺表崩溃。
 2. **审计**:要求 `HUAKAI_AUDIT_LEDGER_BACKEND=postgres` + `HUAKAI_AUDIT_PRIVATE_KEY_PATH` 指向有效
    ed25519 私钥(上面已生成并由 compose 挂载)。
-3. **email 就绪门**:要求**每个正 id active 工作租户**都配齐 SMTP 且开启邮件验证。系统伪租户
-   `id=0`(定价 scope 哨兵)已被排除,不需配。空库首启时只有默认工作租户 `id=1`,需给它配 email。
+3. **email 就绪门(默认已软化,不再拦启动)**:从 2026-06-23 起,production 默认**不再因租户未配 SMTP
+   而拒启**——对齐成熟中转站的"请求时惰性"做法:未配 SMTP 的租户,其验证邮件功能在请求时惰性返回错误,
+   注册按"验证关闭"放行(用户直接 active)。门校验仍会跑,但只 warn 提示。若想恢复"每个 active 租户必须
+   配齐 SMTP 且开启邮件验证才放行启动"的旧严格行为,设 `HUAKAI_REQUIRE_EMAIL_GATE=true`。
+   故首启只剩**迁移**与**审计**两道硬门。
 
-## 4. 首启引导序列(解 email 门的"鸡生蛋")
+## 4. (可选)配置 SMTP 以启用邮箱验证 / 重置邮件
 
-email 门要求工作租户配齐 SMTP,但配置只能经 admin API、而 admin API 需要 gateway 已在跑。
-顺序如下:
+email 门已软化,**production 可直接起,不必先配 SMTP**。仅当你要启用邮箱验证、密码重置邮件等功能,或
+显式设了 `HUAKAI_REQUIRE_EMAIL_GATE=true` 时,才需给工作租户配 SMTP。配置经 admin API(需 gateway 已在跑):
 
 ```bash
-# 4.1 先以非生产模式起一次,跳过 email 门、让默认工作租户(id=1)被创建
-HUAKAI_RELEASE_MODE=dev docker compose -f docker-compose.prod.yml up -d
-
-# 4.2 用 bootstrap 令牌给工作租户 id=1 配 SMTP(开启邮件验证)
-#     <BOOTSTRAP> = .env 里的 HUAKAI_ADMIN_BOOTSTRAP_TOKEN
+# 用 bootstrap 令牌给工作租户 id=1 配 SMTP(开启邮件验证)
+#   <BOOTSTRAP> = .env 里的 HUAKAI_ADMIN_BOOTSTRAP_TOKEN
 curl -sS -X PUT http://127.0.0.1:8080/v1/admin/email/settings \
   -H "Authorization: Bearer <BOOTSTRAP>" -H "Content-Type: application/json" \
   -d '{"tenant_id":1,"smtp_host":"smtp.your-provider.example","smtp_port":587,
        "smtp_username":"you@your-domain.example","smtp_password":"<SMTP-PASS>",
        "smtp_from":"no-reply@your-domain.example","smtp_from_name":"HUAKAI",
        "smtp_use_tls":true,"email_verify_enabled":true}'
-
-# 4.3 切回 production 模式重启,三道门此时都满足 → gateway 进入 healthy
-HUAKAI_RELEASE_MODE=production docker compose -f docker-compose.prod.yml up -d
 ```
 
-> 若新增了别的正 id 工作租户,需同样为它们各自配齐 SMTP,否则 production email 门不过。
+> 若设了 `HUAKAI_REQUIRE_EMAIL_GATE=true`,则需先以 `HUAKAI_RELEASE_MODE=dev` 起一次配齐上面的 SMTP,
+> 再切回 production(否则严格门不过)——这正是软化前的旧"鸡生蛋"序列,现已非默认。
 
 ## 5. HTTPS / 反向代理(Caddy 自动 TLS,已内置)
 
