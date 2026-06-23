@@ -9,7 +9,7 @@
 | 输入材料 | 21 份独立深度拆解 + 7 个 inventory + 7 份 Released spec + DR-001/002/006/008 + 01_PROJECT_BRIEF + 50 个 Tx2 invariant + 7 条 CMB cross-module invariant + Slice 1+4 落地证据 |
 | 形态 | 中文 executive 总览（Part A）+ 可视化 + 5 张表（Part B） |
 | 读者 | Owner（决策入口）+ 后续 contributor（执行入口） |
-| 当前实测进度 | **Phase C / N+5b 已进入实现态** — inbound API key resolver、Model Registry、Router.Plan、ClaimGate、Resource Pool selector、stream forwarder、Tx2 Settler、Obs Reader 已落；仍缺 admin UI、支付/充值、真实 pricing、真实 upstream provider、multi-attempt executor |
+| 当前实测进度 | **Phase C / N+5b 已进入实现态** — inbound API key resolver、Model Registry、Router.Plan、ClaimGate、Resource Pool selector、stream forwarder、Tx2 Settler、Obs Reader 已落；真实 upstream provider 与 multi-attempt fallback 现也已实现并接线（真实上游 HTTP dispatch 经 transport.Factory，见 backend/internal/gateway/upstream_dispatcher.go:196；多模型 fallback 循环见 backend/internal/gatewayhttp/chat_completions_handler.go:467-497）；仍缺前端 admin UI、真渠道支付/充值（Stripe/支付宝） |
 
 ---
 
@@ -103,9 +103,9 @@ Owner 2026-04-30 quote: "sub2api 核心复杂度集中在'上下文状态 + 渠�
 | **sub2api** | LGPL-3.0 | OAuth 套利核心：登录 bootstrap + refresh + Claude Code mimicry + 5h window | F-AUTH-005 spec 有；refresh/mimicry/bootstrap 实现 0；登录 bootstrap 是 L0 必须 | **5%** |
 | **one-api** | MIT (anchor) | 多租户 + channel + 额度包分账 + 2-gate auto-disable | tenant + channel schema 有；额度包 0；auto-disable 0；分账 0 | **25%** |
 | **new-api** | AGPL-3.0 | 充值订单 + 邀请码 + 礼品卡 + admin 面板 + 缓存差价计费 + reasoning effort 透传 | 全 0（Phase 4 stub admin endpoints 14 个全 501） | **0%** |
-| **portkey** | MIT | Gateway as cost optimizer：fallback / retry / load balance / cache / virtual key | 9-gate 部分；fallback 0；retry 0；cache 0；virtual key 0；Slice 1 Router skeleton 已起 | **10%** |
+| **portkey** | MIT | Gateway as cost optimizer：fallback / retry / load balance / cache / virtual key | 9-gate 部分；fallback / retry / L2 cache 均已建并接线（fallback 循环 chat_completions_handler.go:467-497；retryBudget 注入 wiring.go:1135；ResponseCache 接 routes.go:658）；virtual key 0 | **50%** |
 | **helicone** | GPL-3.0 | Transparent proxy 日志：不动客户端就拿 prompt+usage | usage_record 写入 70%；prompt body cold store 0；query API 40% (Slice 4) | **20%** |
-| **litellm** | MIT | 统一 SDK 100 模型 normalization + Router 重试 hierarchy | proto 抽象有；OpenAI/Gemini adapter 0；客户 SDK 0；只有 anthropic_sse | **10%** |
+| **litellm** | MIT | 统一 SDK 100 模型 normalization + Router 重试 hierarchy | proto 抽象有；OpenAI/Gemini upstream adapter 已实现并注册为生产 adapter（protocol_selector.go:93-119 注册 openai.Adapter / gemini.Adapter，proto/openai 与 proto/gemini 包齐全）；客户 SDK 0 | **30%** |
 | **all-api-hub** | AGPL-3.0 | (反例) 浏览器自动登录抓 30+ 账号 + 明文凭证 | DR-006 + RB-4 反例已记 → 不抄；只学"账号池概念" | **100% (反例完成)** |
 | **envoy-ai-gw** | Apache-2.0 | 企业 K8s CRD 声明式配置 | 思想保留；不上 K8s；Phase 9+ SaaS Edition packaging blueprint | **0%** |
 
@@ -132,7 +132,7 @@ Owner 2026-04-30 quote: "sub2api 核心复杂度集中在'上下文状态 + 渠�
 | L1-2 | **OpenAI client adapter**（取代 passthrough Anthropic） | 0；handler 注释标 Phase E scope-deferred |
 | L1-3 | **F-RATE-001 实现** | spec 有；代码 0 |
 | L1-4 | **DLQ + orphan sweep worker** | 0；spec 在 F-OBS-001 H8 |
-| L1-5 | **Multi-attempt fallback chain（真实 retry）** | Slice 1 Router skeleton 单 attempt；需 Slice 2 Registry + executor 抽出 |
+| L1-5 | **Multi-attempt fallback chain（真实 retry）** | 已落：handler 内 fallbackAttempts 循环按 resolver.MaxDepth 多模型回退（chat_completions_handler.go:467-497），attempt 层按 budget + ExcludedAccounts 跨账号重试（chat_completions_attempt.go:31,167-184），非单 attempt |
 
 ### L2 — 收尾（生产就绪，"能不能扩"）
 
@@ -191,7 +191,7 @@ Owner 2026-04-30 quote: "很多用 sub2api 的人说客户群体一多请求速�
 | 4 | OAuth 凭证刷新风暴（同 token 同时过期触发 N 个 refresh） | F-AUTH-005 风暴预算 spec 已 lock；代码未实现 | ⏳ N+6 真 upstream 接通时 |
 | 5 | 缺 LRU dedup cache（同租户重放走完整 Tx1） | Phase E.3 计划 | ⏳ Phase E |
 | 6 | 缺 per-tenant rate limit（单租户暴涨拖垮邻居） | F-RATE-001 spec 已 lock；代码 0 | ⏳ L1 |
-| 7 | 真 upstream 单 goroutine + scanner buffer | bounded buffer 1MiB（已实现）；goroutine count cap 待 L1 | 🟡 部分 |
+| 7 | 真 upstream 单 goroutine + scanner buffer | bounded buffer 已实现且生产默认抬到 16MiB（经 HUAKAI_MAX_SSE_EVENT_MB 接进 wiring，middleware.go:315，硬钳 64MiB）；goroutine count cap 待 L1 | 🟡 部分 |
 
 **Don't 列表**：不为速度降 Tx2 隔离级别；不把 settler 改异步；不为缓存默认 log prompt body（CMB-5）。
 
@@ -349,7 +349,7 @@ sequenceDiagram
 | D-8 | `backend/internal/billing/claim_gate.go` (重写) | 之前有 quarantined slice5 broken | 按 plan §B.4 全新实现 + 9-字段 hash + Tx1 + 6-row lock | 集成 sprint plan |
 | D-9 | `backend/internal/billing/settler.go` (重写) | quarantined | 按 plan §B.5 全新实现 + 5-effect + Tx2 atomic + bucket math | 集成 sprint plan |
 | D-10 | `backend/internal/gateway/forwarder.go` | 13-class end_class + bounded buffer ✅ | 加 per-tenant retry budget enforcement (Phase 4.5) | RB-6 |
-| D-11 | `backend/cmd/gateway/main.go` | 17 个 stub 返 501 | 接 pgxpool + DI 5 个 internal package + 1 个真 chi handler | 集成 sprint plan §C |
+| D-11 | `backend/cmd/gateway/main.go` | 已完成：routes.go 注册 ~143 个真实路由，全程仅 1 处 StatusNotImplemented（/v1/realtime，routes.go:404，文档化 roadmap），无"17 个 stub 返 501" | 接 pgxpool + DI 5 个 internal package + 1 个真 chi handler | 集成 sprint plan §C |
 | D-12 | `docs/specs/observability-billing.md` | claim-gate Pattern B | 文档化 "billing_policy_version pin" invariant | RB-2 |
 | D-13 | (新文件) `docs/specs/admin-export.md` | 不存在 | 写明 export 默认排除 credentials；passphrase 加密 | RB-4 |
 | D-14 | `docs/07_REFERENCE_EVIDENCE_LEDGER.md` | 现有 E-* 行 | 每行加 "advertised / source-confirmed" 标签 | RB-3 |
