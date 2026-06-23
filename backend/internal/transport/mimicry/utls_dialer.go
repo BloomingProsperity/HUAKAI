@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -20,9 +21,16 @@ type UtlsDialer struct {
 	ProxyDialer      ProxyDialerFunc
 	TLSConfig        *utls.Config
 	HandshakeTimeout time.Duration
+	// ForceH1 为 true 时,握手在线缆上只广告 ALPN=http/1.1,不广告 h2。
+	// 与 sub2api 的伪装拨号器默认姿态一致(只锁单一真实客户端档案的协议栈)。
+	// 这同时是协议正确性约束:本路径返回的是 *utls.UConn(非标准库 *tls.Conn),
+	// Go 的内置 HTTP/2 升级路径在结构上接不住它,若仍广告 h2 且服务端选 h2,
+	// 会出现"服务端按 h2、客户端发 h1 帧"的握手后错乱。收窄 ALPN 从根上消除。
+	ForceH1 bool
 }
 
 // NewUtlsDialer 返回使用指定 ClientHello 模板的拨号器。
+// ForceH1 默认由运维 env HUAKAI_TRANSPORT_FORCE_H1 决定(默认开)。
 func NewUtlsDialer(template *ClientHelloTemplate) *UtlsDialer {
 	return &UtlsDialer{
 		Template: template,
@@ -31,7 +39,17 @@ func NewUtlsDialer(template *ClientHelloTemplate) *UtlsDialer {
 			KeepAlive: 30 * time.Second,
 		},
 		HandshakeTimeout: 10 * time.Second,
+		ForceH1:          forceH1Enabled(),
 	}
+}
+
+// forceH1Enabled 读运维开关 HUAKAI_TRANSPORT_FORCE_H1。空或非 "false" 一律视为
+// 开启(默认强制 H1),仅当显式设为 "false" 时关闭。与 factory.go 直接读
+// HUAKAI_TRANSPORT_PHASE_A_FALLBACK 的 transport 层就地读 env 惯例保持一致,
+// 避免反向 import config 包。关闭仅适用于 BoringSSL sidecar 等能自洽出 h2 的
+// 出口;Go-native uTLS 路径应保持默认开,否则进入 h2-广告但 h1-收发 的危险中间态。
+func forceH1Enabled() bool {
+	return os.Getenv("HUAKAI_TRANSPORT_FORCE_H1") != "false"
 }
 
 // NewRoundTripper 构造使用 uTLS DialTLSContext 的 http.RoundTripper。
@@ -41,9 +59,13 @@ func NewRoundTripper(template *ClientHelloTemplate) http.RoundTripper {
 		// Phase A 保持直连。Go 的 HTTPS proxy 路径不会调用
 		// DialTLSContext，若暴露 *http.Transport 会把 uTLS 旁路掉。
 		inner: &http.Transport{
-			DialContext:           dialer.NetDialer.DialContext,
-			DialTLSContext:        dialer.DialTLS,
-			ForceAttemptHTTP2:     true,
+			DialContext:    dialer.NetDialer.DialContext,
+			DialTLSContext: dialer.DialTLS,
+			// 出口走 uTLS 自定义握手,返回 *utls.UConn 非标准库 *tls.Conn,
+			// Go 内置 h2 升级路径接不住它,故此布尔对实际协议无支配力;
+			// 显式置 false 消除"意图含糊",与 sidecar_client.go 的姿态对齐。
+			// 真正决定 H1/H2 的是握手 ALPN(见 UtlsDialer.ForceH1)。
+			ForceAttemptHTTP2:     false,
 			MaxIdleConns:          256,
 			MaxIdleConnsPerHost:   64, // DM-17
 			IdleConnTimeout:       90 * time.Second,
@@ -108,7 +130,7 @@ func (d *UtlsDialer) DialTLS(ctx context.Context, network, addr string) (net.Con
 	if err != nil {
 		return nil, err
 	}
-	cfg := d.tlsConfig(host)
+	cfg := d.tlsConfig(host, d.ForceH1)
 	preset := ""
 	if d.Template != nil {
 		preset = d.Template.Preset
@@ -116,12 +138,21 @@ func (d *UtlsDialer) DialTLS(ctx context.Context, network, addr string) (net.Con
 	var conn *utls.UConn
 	if id, ok := clientHelloIDForPreset(preset); ok {
 		// UTLS-05: uTLS 内置浏览器 ClientHello (真实当前 Chrome/...)。
+		// 内置 hello 的 ALPN 烘焙在 parrot 里(如 Chrome 广告 h2),force-h1 在此
+		// 路径只能靠上面 tlsConfig 设的 cfg.NextProtos 兜底,无法改写 parrot 扩展。
 		conn = utls.UClient(raw, cfg, id)
 	} else {
 		spec, serr := d.Template.utlsSpec(host)
 		if serr != nil {
 			raw.Close()
 			return nil, serr
+		}
+		// 自定义模板路径:force-h1 时把 spec 里的 ALPN 扩展收窄成只剩 http/1.1。
+		// ApplyPreset 会用 spec 的 ALPN 同时改写线缆广告与 uc.config.NextProtos,
+		// 故在此收窄即可让 ClientHello 只广告 http/1.1、且 checkALPN 只接受 http/1.1。
+		// 不改 d.Template(保持真抓包保真值,捕获回归测试不破)。
+		if d.ForceH1 {
+			narrowSpecALPNToHTTP1(spec)
 		}
 		conn = utls.UClient(raw, cfg, utls.HelloCustom)
 		if perr := conn.ApplyPreset(spec); perr != nil {
@@ -142,7 +173,7 @@ func (d *UtlsDialer) DialTLS(ctx context.Context, network, addr string) (net.Con
 	return conn, nil
 }
 
-func (d *UtlsDialer) tlsConfig(serverName string) *utls.Config {
+func (d *UtlsDialer) tlsConfig(serverName string, forceH1 bool) *utls.Config {
 	var cfg *utls.Config
 	if d.TLSConfig != nil {
 		cfg = d.TLSConfig.Clone()
@@ -152,10 +183,29 @@ func (d *UtlsDialer) tlsConfig(serverName string) *utls.Config {
 	if cfg.ServerName == "" {
 		cfg.ServerName = serverName
 	}
-	if len(cfg.NextProtos) == 0 && len(d.Template.ALPNProtocols) > 0 {
+	if forceH1 {
+		// 强制 H1:Go 侧 ALPN 意图只剩 http/1.1。内置 parrot 路径不走 ApplyPreset
+		// 的 ALPN 改写,此处是该路径唯一能收窄 ALPN 的兜底点;自定义模板路径则由
+		// narrowSpecALPNToHTTP1 在 spec 上权威收窄(会覆盖这里)。
+		cfg.NextProtos = []string{"http/1.1"}
+	} else if len(cfg.NextProtos) == 0 && len(d.Template.ALPNProtocols) > 0 {
 		cfg.NextProtos = append([]string(nil), d.Template.ALPNProtocols...)
 	}
 	return cfg
+}
+
+// narrowSpecALPNToHTTP1 把 uTLS spec 里的 ALPN 扩展原地收窄成只剩 http/1.1。
+// 只动 spec(拨号期临时构造物),不动模板结构体,从而真抓包保真度与捕获回归
+// 测试不受影响。spec 内无 ALPN 扩展则不操作(不凭空注入)。
+func narrowSpecALPNToHTTP1(spec *utls.ClientHelloSpec) {
+	if spec == nil {
+		return
+	}
+	for _, ext := range spec.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			alpn.AlpnProtocols = []string{"http/1.1"}
+		}
+	}
 }
 
 // UTLSSpec 按模板构造 uTLS 规格；serverName 用占位主机保证 SNI 扩展可见。
@@ -316,9 +366,10 @@ func (rt *roundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) 
 	dialer.ProxyDialer = pd
 	return &roundTripper{
 		inner: &http.Transport{
-			DialContext:           pd,
-			DialTLSContext:        dialer.DialTLS,
-			ForceAttemptHTTP2:     true,
+			DialContext:    pd,
+			DialTLSContext: dialer.DialTLS,
+			// 同直连路径:uTLS UConn 接不住 Go 内置 h2,显式 false 去含糊。
+			ForceAttemptHTTP2:     false,
 			MaxIdleConns:          256,
 			MaxIdleConnsPerHost:   64, // DM-17
 			IdleConnTimeout:       90 * time.Second,
