@@ -1,0 +1,67 @@
+# HUAKAI 生产反向代理 + 自动 HTTPS(Caddy)。
+#
+# 运维只需在 .env 设 HUAKAI_PUBLIC_DOMAIN=你的域名,并把该域名的 A/AAAA 记录解析到本机、
+# 放行入站 80/443;Caddy 会在首次启动时自动签发并定期续期 Let's Encrypt 证书,无需 certbot/cron。
+# 证书持久化在 caddy-data 卷,重启不会重签(避免触发 Let's Encrypt 速率限制)。
+#
+# 本地无公网域名联调时,可设 HUAKAI_PUBLIC_DOMAIN=localhost —— Caddy 发本地自签证书(仅供联调,
+# 浏览器会提示不受信)。
+#
+# 想要 Let's Encrypt 到期/恢复通知,可在文件顶部加全局块: { email 你的邮箱 }
+
+{$HUAKAI_PUBLIC_DOMAIN} {
+	# 安全响应头(对所有响应生效):强制 HTTPS(HSTS)、防 MIME 嗅探、限制 referrer、隐去 Server 头。
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# /internal/* 是面向 compose 内网调用方(runner / hermes 等经内网直连 gateway)的端点,
+	# 绝不应从公网经 Caddy 进来;在边缘直接 404,恢复网络隔离语义(纵深防御)。
+	# 合法的内网调用方走 compose 网络直连 gateway:8080,不经本反代,不受影响。
+	handle /internal/* {
+		respond "Not Found" 404
+	}
+
+	# 其余流量反代到内网 gateway(同 compose 网络;gateway 不再对宿主暴露明文端口)。
+	handle {
+		reverse_proxy gateway:8080 {
+			# 健康检查:只把请求发给健康的后端。
+			health_uri /healthz
+			health_interval 10s
+			health_timeout 3s
+			# 真实客户端 IP:Caddy 默认把客户端 IP 追加到 X-Forwarded-For;gateway 经
+			# HUAKAI_TRUSTED_PROXY_CIDRS 信任本 compose 内网,clientip 从右往左取最右侧非可信
+			# 地址 = 真实客户端,客户端预置的伪造 XFF 排在左侧被忽略,故 per-IP 限流按真实
+			# 客户端 IP 计算。这里再显式 set 一个 X-Real-IP(覆盖客户端可能伪造的值)便于后端取用。
+			header_up X-Real-IP {remote_host}
+		}
+	}
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 【多级代理 / 白标域名未来预留 · 默认不启用】
+# 代理模型上线后,若每个代理自带域名做白标,可启用 on-demand TLS:任何解析到本机的域名在
+# 首次 TLS 握手时自动签发证书,无需逐域名配置。**务必**配 ask 授权端点,只给已授权的代理
+# 域名签发,否则会被任意域名触发签发(Let's Encrypt 速率限制 / 资源滥用)。示例(勿原样放开):
+#
+# {
+#   on_demand_tls {
+#     ask http://gateway:8080/internal/tls/authorize
+#   }
+# }
+# :443 {
+#   tls {
+#     on_demand
+#   }
+#   header {
+#     Strict-Transport-Security "max-age=31536000; includeSubDomains"
+#   }
+#   reverse_proxy gateway:8080 {
+#     header_up X-Forwarded-For {remote_host}
+#     header_up X-Real-IP {remote_host}
+#   }
+# }
+# ─────────────────────────────────────────────────────────────────────────────

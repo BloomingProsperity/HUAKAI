@@ -61,18 +61,35 @@ HUAKAI_RELEASE_MODE=production docker compose -f docker-compose.prod.yml up -d
 
 > 若新增了别的正 id 工作租户,需同样为它们各自配齐 SMTP,否则 production email 门不过。
 
-## 5. 验证
+## 5. HTTPS / 反向代理(Caddy 自动 TLS,已内置)
+
+prod compose 内置 `caddy` 服务做 TLS 终结 + 反代,**gateway 不再对宿主暴露明文端口**,外部流量一律经
+Caddy 走 HTTPS。上线只需:
+
+1. 在 `.env` 设 `HUAKAI_PUBLIC_DOMAIN=你的域名`(见 `.env.prod.example`)。
+2. 把该域名的 A/AAAA 记录解析到本机公网 IP;放行入站 **80 与 443**(Caddy 经 80 完成 ACME 验证、443 提供服务)。
+3. `docker compose -f docker-compose.prod.yml up -d` —— Caddy 首次启动自动签发并续期 Let's Encrypt 证书,
+   证书持久化在 caddy-data 卷(重启不重签,避免触发速率限制)。
+
+`per-IP` 限流按真实客户端 IP 计算:gateway 经 `HUAKAI_TRUSTED_PROXY_CIDRS`(默认本 compose 固定子网)
+信任 Caddy 转发的 `X-Forwarded-For`;对非可信来源的 XFF 一律忽略(fail-closed 防伪造)。
+
+> 本地无公网域名联调:`HUAKAI_PUBLIC_DOMAIN=localhost`(Caddy 发本地自签证书,浏览器提示不受信,仅联调)。
+> 多级代理上线后若要每个代理自带白标域名,Caddyfile 末尾已预留 on-demand TLS 模板(需配 ask 授权端点,默认不启用)。
+
+## 6. 验证
 
 ```bash
-curl -s http://127.0.0.1:8080/healthz          # {"status":"ok"}
-docker compose -f docker-compose.prod.yml ps    # gateway 应 healthy、migrate 应 Exited(0)
+docker compose -f docker-compose.prod.yml ps     # gateway/caddy 应 healthy、migrate 应 Exited(0)
+# 容器内 gateway 健康(它不再对宿主暴露端口):
+docker compose -f docker-compose.prod.yml exec gateway wget -qO- http://127.0.0.1:8080/healthz
+# 经 Caddy 的对外 HTTPS(证书签好后):
+curl -s https://<你的域名>/healthz               # {"status":"ok"}
 ```
 
 接着接上游账号池、建 API key、手动 admin 充值,即可跑通 relay。
 
-## 6. 尚未覆盖(部署侧待办,Owner-gated)
+## 7. 尚未覆盖(部署侧待办,Owner-gated)
 
-- **TLS / 反向代理**:gateway 仅裸 HTTP `:8080`。对外暴露需在前面放反代(Caddy/nginx/Traefik)终止 TLS;
-  自用可先限定 localhost / 内网 / VPN。
 - **运维控制台 UI**:尚未实现;当前 API-only。
 - **真支付 provider**:可选;手动 admin 充值已可替代。
