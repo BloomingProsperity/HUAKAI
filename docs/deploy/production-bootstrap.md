@@ -6,6 +6,24 @@
 
 > 说明:本文是运维对照,涉及 deploy/prod 改动按仓库规则属 Owner-gated。
 
+## 0. 部署形态选择(域名 / 无域名,两选一,运维自决)
+
+HUAKAI **不强制有域名**。我们提供两种平级形态,你自己选——我们不替你做决定:
+
+| 形态 | compose / env | 对外协议 | 适用 | TLS |
+|---|---|---|---|---|
+| **A. 域名 + 自动 HTTPS** | `docker-compose.prod.yml` + `.env.prod.example` | HTTPS(Caddy 自动签发 Let's Encrypt) | 对公网卖额度给陌生人,零证书运维 | 内置 Caddy 自动签发/续期 |
+| **B. 无域名 / IP 直连** | `docker-compose.direct.yml` + `.env.direct.example` | 默认明文 HTTP | 自测 / 内网,或运维自带反代(nginx/LB/宝塔)在前面终结 TLS | 由运维自理(自带反代,或纯内网明文) |
+
+> ⚠ **安全权衡(选 B 必读)**:无域名 = 纯 HTTP,意味着 `hk_key` 在网络上**明文传输**,可被同网段 /
+> 运营商 / 公共 Wi-Fi 嗅探盗用。
+> - 自测 / 内网(可信网络):形态 B 直接用。
+> - **对公网卖额度**:要么用形态 A(域名 + 自动 HTTPS),要么形态 B 前面**自己加一层 TLS**
+>   (你的 nginx / Caddy / LB / 宝塔 + 证书)。**不要"无域名 + 纯 HTTP + 对公网卖额度"裸跑。**
+>
+> 本文 §1–§6 讲形态 A(域名)的完整首启;形态 B(无域名)见 §7。两者首启的密钥 / 迁移 / email 门逻辑一致,
+> 区别只在"前面有没有 Caddy / 要不要域名"。
+
 ## 1. 前置
 
 - 已装 Docker + Docker Compose。
@@ -89,7 +107,34 @@ curl -s https://<你的域名>/healthz               # {"status":"ok"}
 
 接着接上游账号池、建 API key、手动 admin 充值,即可跑通 relay。
 
-## 7. 尚未覆盖(部署侧待办,Owner-gated)
+## 7. 无域名 / IP 直连形态(形态 B)
+
+用 `docker-compose.direct.yml`,不含 Caddy、不需要域名,gateway 直接发布到宿主端口,用「服务器IP:端口」访问。
+
+```bash
+cd backend
+cp .env.direct.example .env
+# 按 .env 顶部注释生成:CREDENTIAL_KEY / SESSION_SIGNING_KEY / ADMIN_BOOTSTRAP_TOKEN / POSTGRES_PASSWORD
+# 选 HUAKAI_RELEASE_MODE:dev(自测最省事)或 production(对外硬化,需补审计私钥,见 .env 注释)
+docker compose -f docker-compose.direct.yml up -d
+```
+
+- **自测 / 内网(dev)**:设 `HUAKAI_RELEASE_MODE=dev` 即可,审计走内存 + 临时签名密钥,**无需任何私钥文件**,
+  一条命令起栈。访问 `http://<服务器IP>:${HUAKAI_HTTP_PORT:-8080}`。
+- **对外但自带反代(production)**:设 `HUAKAI_RELEASE_MODE=production`,按 `.env.direct.example` 的"对外硬化"段
+  生成审计私钥、设齐三个 `HUAKAI_AUDIT_*`(BACKEND=postgres / PATH=容器内读取路径 / HOST=宿主源路径)、取消 compose 里
+  gateway 的 volumes 审计挂载段注释;email 门首启序列同 §4(把命令里的 compose 文件换成 `docker-compose.direct.yml`)。
+  TLS 由你前置的 nginx / LB / 宝塔 终结。
+- **绑定网卡**:`HUAKAI_HTTP_BIND=127.0.0.1` 可让 gateway 只绑本机(同机另起反代回源时用);默认 `0.0.0.0` 对外可达。
+
+验证:
+
+```bash
+docker compose -f docker-compose.direct.yml ps          # gateway 应 healthy、migrate 应 Exited(0)
+curl -s http://127.0.0.1:${HUAKAI_HTTP_PORT:-8080}/healthz   # {"status":"ok"}
+```
+
+## 8. 尚未覆盖(部署侧待办,Owner-gated)
 
 - **运维控制台 UI**:尚未实现;当前 API-only。
 - **真支付 provider**:可选;手动 admin 充值已可替代。
