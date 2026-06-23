@@ -48,8 +48,11 @@ openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem   # production 审
 
 `HUAKAI_RELEASE_MODE=production` 下,gateway 启动期 fail-loud 自检,任一不过即拒启(这是有意的安全护栏):
 
-1. **数据库迁移**:gateway 不自管迁移;prod compose 的 `migrate` 一次性服务会在 gateway 之前把
+1. **数据库迁移**:gateway 默认不自管迁移;prod compose 的 `migrate` 一次性服务会在 gateway 之前把
    `sql/migrations` 应用到空库。漏了迁移,gateway 会因缺表崩溃。
+   > 裸二进制单实例(不走 compose)可设 `HUAKAI_AUTO_MIGRATE=true`,让 gateway 启动时进程内自迁移,
+   > 省去手动跑迁移这一步(与 compose one-shot 共用同一张 `schema_migrations`、幂等、advisory lock 防竞态);
+   > 多副本部署仍建议保持默认关、由 one-shot 受控迁移。
 2. **审计**:要求 `HUAKAI_AUDIT_LEDGER_BACKEND=postgres` + `HUAKAI_AUDIT_PRIVATE_KEY_PATH` 指向有效
    ed25519 私钥(上面已生成并由 compose 挂载)。
 3. **email 就绪门(默认已软化,不再拦启动)**:从 2026-06-23 起,production 默认**不再因租户未配 SMTP

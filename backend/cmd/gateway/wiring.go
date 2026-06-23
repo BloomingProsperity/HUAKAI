@@ -44,6 +44,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
+	"github.com/BloomingProsperity/HUAKAI/internal/dbmigrate"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/emailsendlimit"
@@ -105,6 +106,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
+	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 )
 
 // deps is the live dependency tree handlers receive after run() boots.
@@ -698,6 +700,15 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	pgPool, err := db.Open(ctx, dbPoolConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
+	}
+	// 可选进程内自迁移(HUAKAI_AUTO_MIGRATE=true,默认关):在任何代码用表之前把 schema 升到最新,
+	// 供裸二进制单实例部署省去"先手动跑迁移再起 gateway"那一步。默认关时迁移仍外置(compose
+	// 的 migrate one-shot 受控跑、多副本防竞态);两路共用同一张 schema_migrations、互相幂等不撞表。
+	if autoMigrateEnabled() {
+		logger.Info("HUAKAI_AUTO_MIGRATE=true:启动时进程内自迁移到最新")
+		if err := dbmigrate.Up(sqlmigrations.Files, cfg.DatabaseURL); err != nil {
+			return nil, fmt.Errorf("auto-migrate: %w", err)
+		}
 	}
 	rt := &gatewayRuntime{pgPool: pgPool}
 	ready := false
