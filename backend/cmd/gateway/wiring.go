@@ -836,8 +836,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
 	if releaseModeProduction() {
-		if err := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys); err != nil {
+		// production 邮箱门:默认软化为不拦启动(对齐成熟中转站的请求时惰性做法),未配齐 SMTP/邮箱验证的
+		// 租户其验证邮件功能在请求时惰性失败;设 HUAKAI_REQUIRE_EMAIL_GATE=true 恢复"必须配齐才放行"的旧行为。
+		gateErr := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys)
+		if err := emailGateStartupError(gateErr, requireEmailReleaseGate()); err != nil {
 			return nil, fmt.Errorf("production email release gate: %w", err)
+		}
+		if gateErr != nil {
+			logger.Warn("production 邮箱门未满足:未配齐 SMTP/邮箱验证的租户,其验证邮件相关功能将在请求时惰性返回错误"+
+				"(注册按\"验证关闭\"放行,用户直接 active);如需恢复\"必须配齐才放行\"的旧行为,设 HUAKAI_REQUIRE_EMAIL_GATE=true",
+				zap.Error(gateErr))
 		}
 	}
 	authEmailSender, err := buildAuthEmailSender(cfg, emailSettingsStore, credentialKeys, logger, outboxStore)
