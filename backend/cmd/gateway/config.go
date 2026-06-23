@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -220,7 +221,7 @@ func loadCredentialKeyProvider() (credentialstore.KeyProvider, error) {
 	return credentialstore.NewStaticKeyProvider(keyID, material)
 }
 
-func loadSessionSigningKey() ([]byte, error) {
+func loadSessionSigningKey(logger *zap.Logger) ([]byte, error) {
 	b64Names := []string{"HUAKAI_SESSION_SIGNING_KEY_B64", "HUAKAI_SESSION_HMAC_KEY_B64"}
 	for _, name := range b64Names {
 		raw := strings.TrimSpace(os.Getenv(name))
@@ -249,7 +250,22 @@ func loadSessionSigningKey() ([]byte, error) {
 		}
 		return key, nil
 	}
-	return nil, fmt.Errorf("HUAKAI_SESSION_SIGNING_KEY_B64 or HUAKAI_SESSION_SIGNING_KEY_HEX is required")
+	// 无任何显式配置(上面 B64/HEX 都未设)。production 仍强制 fail-loud——跨重启稳定的会话签名
+	// 必须由运维显式提供持久 key。非生产模式(dev/development/test)则自动生成一把临时随机 key:
+	// 仅省本地开发"没设 key 就起不来"的摩擦,不持久化(重启即换、旧会话失效,本地无所谓)。
+	// 安全姿态:production 行为完全不变;此分支绝不在 production 触发。
+	if releaseModeProduction() {
+		return nil, fmt.Errorf("HUAKAI_SESSION_SIGNING_KEY_B64 or HUAKAI_SESSION_SIGNING_KEY_HEX is required")
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("生成临时 session 签名 key 失败: %w", err)
+	}
+	if logger != nil {
+		logger.Warn("非生产模式未设 HUAKAI_SESSION_SIGNING_KEY:已自动生成临时 key(重启即换、会话失效);" +
+			"如需跨重启稳定,显式设 HUAKAI_SESSION_SIGNING_KEY_B64")
+	}
+	return key, nil
 }
 
 func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
