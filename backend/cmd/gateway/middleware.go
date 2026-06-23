@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,7 +88,17 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router.Use(middleware.RealIP)
 	router.Use(privacy.Recoverer(privacyLogger))
 	router.Use(aiAwareTimeout(60 * time.Second))
-	router.Use(privacy.Middleware(8 << 20))
+	// relay 入站请求体上限(env 可配,MB 单位,默认 32MiB 抬到中转站量级):gatewayhttp 内 relay 请求体
+	// 上限共用 HUAKAI_MAX_REQUEST_BODY_MB。在 router 开始 serve 之前一次性设定 gatewayhttp 包级上限
+	// (set-once,之后只读)。
+	maxRequestBody := bodyLimitBytesFromEnv("HUAKAI_MAX_REQUEST_BODY_MB", 32<<20)
+	gatewayhttp.ConfigureBodyLimits(maxRequestBody)
+	// privacy.Middleware 在 auth 之前对所有路由全量缓冲 body 解析元数据。若给非 relay 的未认证端点
+	// (login/register 等)也用 relay 的大上限,会无谓抬高它们的 pre-auth 内存放大面。故按路径区分:
+	// 只有 relay 数据面(isAIRelayPath)才放宽到 maxRequestBody,其余维持 privacy 既有的小上限。
+	router.Use(privacy.MiddlewareFunc(func(r *http.Request) int {
+		return privacyBodyLimitForRequest(r, int(maxRequestBody), nonRelayPrivacyBodyLimitBytes)
+	}))
 	// U6-B: 把 client identity 写入 request ctx，必须早于后续 auth/quota/billing。
 	router.Use(clientid.Middleware(logger))
 
@@ -255,6 +266,31 @@ func streamDurationEnv(name string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+// bodyLimitBytesFromEnv 读取以 MB 为单位的容量上限 env(如 "32"),返回字节数;空或非法/非正回退默认。
+// 用 MB 单位对运维更友好(对齐成熟中转站习惯),内部转字节。
+func bodyLimitBytesFromEnv(name string, fallbackBytes int64) int64 {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		if mb, err := strconv.ParseInt(v, 10, 64); err == nil && mb > 0 {
+			return mb << 20
+		}
+	}
+	return fallbackBytes
+}
+
+// nonRelayPrivacyBodyLimitBytes 是非 relay 路由(login/register/admin 等)在 auth 前 privacy 缓冲的上限。
+// 取 8MiB——即抬高 relay 上限之前 privacy 一直用的值:relay 数据面放宽到大上限时,不把这放大波及到
+// 未认证控制面端点,使其 pre-auth 内存放大面维持原状(避免无谓扩大滥用面)。
+const nonRelayPrivacyBodyLimitBytes = 8 << 20
+
+// privacyBodyLimitForRequest 按路径选 privacy 缓冲上限:relay 数据面用 relayMax(随 HUAKAI_MAX_REQUEST_BODY_MB),
+// 其余路由用 nonRelayMax。把 relay 的大上限与未认证控制面端点的小上限解耦。
+func privacyBodyLimitForRequest(r *http.Request, relayMax, nonRelayMax int) int {
+	if r != nil && isAIRelayPath(r.URL.Path) {
+		return relayMax
+	}
+	return nonRelayMax
+}
+
 func buildGatewayTimeoutConfig() gateway.TimeoutConfig {
 	return gateway.TimeoutConfig{
 		FirstTokenTimeout:   streamDurationEnv("HUAKAI_STREAM_FIRST_TOKEN_TIMEOUT", 120*time.Second),
@@ -273,8 +309,10 @@ func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Sign
 		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
 		// 流超时改为 env 可配 + 调大默认,适配长跑推理请求:旧硬编码 First=5s/Inter=10s/
 		// Total=60s 会在上游还在思考时就被 HUAKAI 自己掐断。配合 KeepAlive 心跳避开反代空闲超时。
-		Timeouts:         buildGatewayTimeoutConfig(),
-		ScannerBufferCap: 1 << 20,
+		Timeouts: buildGatewayTimeoutConfig(),
+		// 上游 SSE 单事件扫描缓冲上限(env 可配,默认 16MiB;normalizeScannerCap 钳到 ≤64MiB 防内存爆)。
+		// 旧版硬写 1MiB 会把大单事件(大 tool-call / Gemini 大块)溢出砍流。
+		ScannerBufferCap: int(bodyLimitBytesFromEnv("HUAKAI_MAX_SSE_EVENT_MB", 16<<20)),
 		AuditLedger:      auditLedger,
 		AuditLedgerDLQ:   auditLedgerDLQ,
 		Signer:           auditSigner,
