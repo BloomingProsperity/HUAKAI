@@ -1133,7 +1133,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		passkeys:              passkeyService,
 		twoFactor:             twoFactorService,
 		loginThrottle:         loginThrottle,
-		userKeyService:        userkey.NewService(pgPool, nil, userkey.WithAuditSink(userAuditStore)),
+		userKeyService:        userkey.NewService(pgPool, nil, userkey.WithAuditSink(userAuditStore), userkey.WithDefaultKeyQuota(runtimeconfig.LoadDefaultKeyQuota())),
 		userAuditStore:        userAuditStore,
 		paymentService:        paymentService,
 		checkinService:        checkinService,
