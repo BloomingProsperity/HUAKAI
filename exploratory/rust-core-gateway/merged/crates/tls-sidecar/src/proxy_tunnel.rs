@@ -319,6 +319,11 @@ mod tests {
         assert_eq!(super::base64_encode(b"foobar"), "Zm9vYmFy");
         // Basic 认证常见组合:user:pass
         assert_eq!(super::base64_encode(b"alice:s3cr3t"), "YWxpY2U6czNjcjN0");
+        // 判别向量:钉死编码表末两位 index 62='+'、63='/'。前面 RFC4648 向量(f/fo/.../foobar、
+        // alice:s3cr3t)都不产生 + 或 /,故若把标准表误写成 URL-safe(-_)也抓不住;凭据含 > 或 ?
+        // 时(真实可能)会发错认证头致代理认证失败。这两条让表错位无处遁形。
+        assert_eq!(super::base64_encode(b"x:>>"), "eDo+Pg=="); // 含 '+'(index 62)
+        assert_eq!(super::base64_encode(b"x:??"), "eDo/Pw=="); // 含 '/'(index 63)
     }
 
     // 抓的缺陷:basic_proxy_authorization 在无 username 时必须返回 None(不发认证头),
