@@ -5,35 +5,39 @@ use serde_json::{Map, Number, Value};
 use thiserror::Error;
 
 pub const BUILTIN_PROFILES_TOML: &str = r#"
+# 数据来源:真抓包 Claude Code 2.1.187 native binary,2026-06-24 直接 ClientHello 捕获,
+# sub2 独立抓包双验证 ja4_a + ja4_b 完全一致(权威)。真值 = mimicry PhaseA 模板去掉 ECH
+# GREASE 扩展 65037 + grease=false + 14 个扩展;cipher 17 个、sigalgs 9 个、curves 29-23-24、
+# alpn 仅 http/1.1。标准 FoxIO JA4 = t13d1714h1_5b57614c22b0_43ade6aba3df。
 [[profile]]
 id = "anthropic-cli-mimicry-v1"
 target_hosts = ["api.anthropic.com"]
 grease = false
 supported_versions = [772, 771]
-cipher_suites = [4866, 4867, 4865, 49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393, 52392, 52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310, 49244, 49248, 49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161, 49171, 51, 50, 157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47]
-extensions = [65281, 0, 11, 10, 35, 16, 22, 23, 13, 43, 45, 51]
-supported_groups = [4588, 29, 23, 30, 24, 25, 256, 257]
-ec_point_formats = [0, 1, 2]
-key_share_groups = [4588, 29]
+cipher_suites = [4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 156, 157, 47, 53]
+extensions = [0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 21]
+supported_groups = [29, 23, 24]
+ec_point_formats = [0]
+key_share_groups = [29]
 psk_modes = [1]
-signature_algorithms = [2309, 2310, 2308, 1027, 1283, 1539, 2055, 2056, 2074, 2075, 2076, 2057, 2058, 2059, 2052, 2053, 2054, 1025, 1281, 1537, 771, 769, 770, 1026, 1282, 1538]
-cipher_list = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA"
-extension_order = [65281, 0, 11, 10, 35, 16, 22, 23, 13, 43, 45, 51]
-tls13_cipher_order = [4866, 4867, 4865]
+signature_algorithms = [1027, 2052, 1025, 1283, 2053, 1281, 2054, 1537, 513]
+cipher_list = "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA"
+extension_order = [0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 21]
+tls13_cipher_order = [4865, 4866, 4867]
 curves = "X25519:P-256:P-384"
-# raw signature_algorithms 由 signature_algorithms 数字列表驱动；sigalgs 字符串仅作空数字列表时的兼容 fallback。
-sigalgs = "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:ed25519:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512"
-alpn = ["h2", "http/1.1"]
-expected_ja3 = "772,4866-4867-4865-49199-49195-49200-49196-158-49191-103-49192-107-163-159-52393-52392-52394-49325-49311-49245-49249-49239-49235-162-49324-49310-49244-49248-49238-49234-49188-106-49187-64-49162-49172-57-56-49161-49171-51-50-157-49309-49233-156-49308-49232-61-60-53-47,65281-0-11-10-35-16-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2"
-ja4_a = "t13d5212"
-ja4_b = "ht"
-ja4_c = "9b003dc3eba7"
-ja4_d = "4e5c652b160e"
+# raw signature_algorithms 由 signature_algorithms 数字列表驱动;sigalgs 字符串仅作空数字列表时的兼容 fallback。
+# 字符串按 signature_algorithms 数组顺序映射:1027/2052/1025/1283/2053/1281/2054/1537/513。
+sigalgs = "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512:rsa_pkcs1_sha1"
+alpn = ["http/1.1"]
+expected_ja3 = "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-21,29-23-24,0"
+ja4_a = "t13d1714h1"
+ja4_b = "5b57614c22b0"
+ja4_c = "43ade6aba3df"
 
 [profile.client_hello_profile]
-ciphers = [49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393, 52392, 52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310, 49244, 49248, 49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161, 49171, 51, 50, 157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47]
-groups = [4588, 29, 23, 30, 24, 25, 256, 257]
-ec_points = [0, 1, 2]
+ciphers = [49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 156, 157, 47, 53]
+groups = [29, 23, 24]
+ec_points = [0]
 
 [profile.h2_settings]
 # TODO(Phase 3 real capture): fill these six values from decrypted Anthropic CLI H2 wire data.
@@ -65,7 +69,6 @@ pub struct TlsProfile {
     pub ja4_a: Option<String>,
     pub ja4_b: Option<String>,
     pub ja4_c: Option<String>,
-    pub ja4_d: Option<String>,
     pub h2_settings: crate::h2_settings::H2SettingsMap,
     pub h2_initial_connection_window_size: Option<u32>,
 }
@@ -202,7 +205,6 @@ struct ProfileToml {
     ja4_a: Option<String>,
     ja4_b: Option<String>,
     ja4_c: Option<String>,
-    ja4_d: Option<String>,
     h2_initial_connection_window_size: Option<u32>,
     #[serde(default)]
     h2_settings: BTreeMap<String, u32>,
@@ -234,7 +236,6 @@ fn parse_profile(section: BTreeMap<String, String>) -> Result<TlsProfile, Profil
         ja4_a: raw.ja4_a,
         ja4_b: raw.ja4_b,
         ja4_c: raw.ja4_c,
-        ja4_d: raw.ja4_d,
         h2_initial_connection_window_size: raw.h2_initial_connection_window_size,
         h2_settings,
     };
@@ -359,34 +360,28 @@ mod tests {
         assert_eq!(profile.target_hosts, ["api.anthropic.com"]);
         assert_eq!(
             profile.expected_ja3,
-            "772,4866-4867-4865-49199-49195-49200-49196-158-49191-103-49192-107-163-159-52393-52392-52394-49325-49311-49245-49249-49239-49235-162-49324-49310-49244-49248-49238-49234-49188-106-49187-64-49162-49172-57-56-49161-49171-51-50-157-49309-49233-156-49308-49232-61-60-53-47,65281-0-11-10-35-16-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2"
+            "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49161-49171-49162-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-21,29-23-24,0"
         );
-        assert_eq!(profile.alpn, ["h2", "http/1.1"]);
+        assert_eq!(profile.alpn, ["http/1.1"]);
         assert_eq!(
             profile.extension_order,
-            [65281, 0, 11, 10, 35, 16, 22, 23, 13, 43, 45, 51]
+            [0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 21]
         );
-        assert_eq!(profile.tls13_cipher_order, [4866, 4867, 4865]);
+        assert_eq!(profile.tls13_cipher_order, [4865, 4866, 4867]);
         assert_eq!(
             profile.client_hello_profile.ciphers,
             [
-                49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393, 52392,
-                52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310, 49244, 49248,
-                49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161, 49171, 51, 50,
-                157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47
+                49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 156, 157, 47,
+                53
             ]
         );
-        assert_eq!(
-            profile.client_hello_profile.groups,
-            [4588, 29, 23, 30, 24, 25, 256, 257]
-        );
-        assert_eq!(profile.client_hello_profile.ec_points, [0, 1, 2]);
-        assert_eq!(profile.key_share_groups, [4588, 29]);
+        assert_eq!(profile.client_hello_profile.groups, [29, 23, 24]);
+        assert_eq!(profile.client_hello_profile.ec_points, [0]);
+        assert_eq!(profile.key_share_groups, [29]);
         assert_eq!(profile.psk_modes, [1]);
-        assert_eq!(profile.ja4_a.as_deref(), Some("t13d5212"));
-        assert_eq!(profile.ja4_b.as_deref(), Some("ht"));
-        assert_eq!(profile.ja4_c.as_deref(), Some("9b003dc3eba7"));
-        assert_eq!(profile.ja4_d.as_deref(), Some("4e5c652b160e"));
+        assert_eq!(profile.ja4_a.as_deref(), Some("t13d1714h1"));
+        assert_eq!(profile.ja4_b.as_deref(), Some("5b57614c22b0"));
+        assert_eq!(profile.ja4_c.as_deref(), Some("43ade6aba3df"));
         assert!(profile.h2_settings.is_empty());
         assert_eq!(profile.h2_initial_connection_window_size, None);
     }
@@ -416,7 +411,6 @@ mod tests {
         assert!(profile.ja4_a.is_none());
         assert!(profile.ja4_b.is_none());
         assert!(profile.ja4_c.is_none());
-        assert!(profile.ja4_d.is_none());
     }
 
     #[test]
@@ -442,7 +436,7 @@ mod tests {
         assert!(profile.client_hello_profile.ciphers.is_empty());
         assert!(profile.client_hello_profile.groups.is_empty());
         assert!(profile.client_hello_profile.ec_points.is_empty());
-        assert_eq!(profile.key_share_groups, [4588, 29]);
+        assert_eq!(profile.key_share_groups, [29]);
         assert_eq!(profile.psk_modes, [1]);
     }
 

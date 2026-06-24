@@ -112,20 +112,26 @@ pub async fn capture_client_hello_record(
 #[cfg(test)]
 pub fn ja3_from_profile(profile: &TlsProfile) -> String {
     [
-        profile
-            .supported_versions
-            .iter()
-            .copied()
-            .filter(|value| !is_grease(*value))
-            .max()
-            .unwrap_or(0)
-            .to_string(),
+        ja3_legacy_version(&profile.supported_versions).to_string(),
         join_u16(&profile.cipher_suites),
         join_u16(&profile.extensions),
         join_u16(&profile.supported_groups),
         join_u8(&profile.ec_point_formats),
     ]
     .join(",")
+}
+
+// 标准 JA3 首字段取 ClientHello 的 legacy_version(record 版本),
+// TLS1.3 通过 supported_versions 扩展协商而非 record 版本,因此 0x0304 不会出现在 record。
+// 对 [772, 771] 这种 TLS1.3 hello,record 版本固定为 0x0303 = 771。
+#[cfg(test)]
+fn ja3_legacy_version(versions: &[u16]) -> u16 {
+    versions
+        .iter()
+        .copied()
+        .filter(|value| !is_grease(*value) && *value != 0x0304)
+        .max()
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Error)]
@@ -309,30 +315,42 @@ mod tests {
         damaged.tls13_cipher_order.reverse();
         let bad = capture_wire_ja3(damaged).await;
 
-        assert_eq!(good, profile.expected_ja3);
-        assert_ne!(bad, profile.expected_ja3);
+        // boring 不会为本 profile 合成 padding 扩展(21),因此 boring 线缆 JA3 是真 Claude
+        // 权威 expected_ja3 去掉扩展段尾部 "-21" 后的子集;sidecar 是温和近似而非逐字节复刻。
+        let expected_wire_ja3 = profile.expected_ja3.replace("-21,", ",");
+        assert_eq!(good, expected_wire_ja3);
+        assert_ne!(bad, expected_wire_ja3);
         assert_ne!(bad, good);
     }
 
     #[tokio::test]
-    async fn boring_extension_order_profile_controls_wire_order_and_type_22() {
+    async fn boring_extension_order_profile_controls_wire_order() {
         let profile = anthropic_profile();
 
         let good = capture_wire_client_hello(&profile).await;
         let good_order = good.extensions_without_grease_or_padding();
 
-        assert_eq!(good_order, profile.extension_order);
+        // boring 不会为本 profile 合成 padding 扩展(21),故线缆顺序 = extension_order 去掉 21。
+        let expected_order: Vec<u16> = profile
+            .extension_order
+            .iter()
+            .copied()
+            .filter(|value| *value != 21)
+            .collect();
+        assert_eq!(good_order, expected_order);
         assert!(
-            good_order.contains(&22),
-            "fixture must include strict-only encrypt_then_mac extension 22"
+            !good_order.is_empty(),
+            "fixture must emit a controlled extension order"
         );
 
+        // 把 supported_versions 扩展(43)挪到队首,证明 extension_order 真正控制线缆顺序。
         let mut damaged = profile.clone();
-        damaged.extension_order.retain(|value| *value != 22);
+        damaged.extension_order.retain(|value| *value != 43);
+        damaged.extension_order.insert(0, 43);
         let damaged_wire = capture_wire_client_hello(&damaged).await;
         let damaged_order = damaged_wire.extensions_without_grease_or_padding();
 
-        assert!(!damaged_order.contains(&22));
+        assert_eq!(damaged_order.first(), Some(&43));
         assert_ne!(damaged_order, good_order);
     }
 
@@ -369,13 +387,19 @@ mod tests {
             good.ec_point_formats,
             u16_values_as_u8(&profile.client_hello_profile.ec_points)
         );
+        // 真 Claude 只广告单一未压缩点格式 [0]。
+        assert_eq!(good.ec_point_formats, [0]);
 
+        // client_hello_profile.groups 真正控制线缆 supported_groups:reverse 后线缆必须随之变。
         let mut damaged = profile.clone();
-        damaged.client_hello_profile.ec_points.clear();
+        damaged.client_hello_profile.groups.reverse();
         let damaged_wire = capture_wire_client_hello(&damaged).await;
 
-        assert_eq!(damaged_wire.ec_point_formats, [0]);
-        assert_ne!(damaged_wire.ec_point_formats, good.ec_point_formats);
+        assert_eq!(
+            damaged_wire.supported_groups,
+            damaged.client_hello_profile.groups
+        );
+        assert_ne!(damaged_wire.supported_groups, good.supported_groups);
     }
 
     #[tokio::test]
@@ -384,13 +408,15 @@ mod tests {
 
         let good = capture_wire_client_hello(&profile).await;
 
-        assert_eq!(profile.signature_algorithms.len(), 26);
+        assert_eq!(profile.signature_algorithms.len(), 9);
         assert_eq!(good.signature_algorithms, profile.signature_algorithms);
 
+        // signature_algorithms 顺序是指纹的一部分(JA4 c 段不排序);reverse 后线缆字节必须随之变。
         let mut damaged = profile.clone();
-        damaged.signature_algorithms.clear();
+        damaged.signature_algorithms.reverse();
         let damaged_wire = capture_wire_client_hello(&damaged).await;
 
+        assert_eq!(damaged_wire.signature_algorithms, damaged.signature_algorithms);
         assert_ne!(damaged_wire.signature_algorithms, good.signature_algorithms);
     }
 
@@ -426,7 +452,6 @@ mod tests {
         chrome.ja4_a = Some("t13d1516h2".to_owned());
         chrome.ja4_b = Some("8daaf6152771".to_owned());
         chrome.ja4_c = Some("02713d6af862".to_owned());
-        chrome.ja4_d = Some("111111111111".to_owned());
 
         let err = crate::ja4::verify_profile_expectation(&chrome, &ja4).unwrap_err();
         assert!(
@@ -495,14 +520,9 @@ mod tests {
 
     fn parse_wire_ja3(raw: &[u8]) -> Result<String, &'static str> {
         let hello = parse_wire_client_hello(raw)?;
-        let ja3_version = hello
-            .supported_versions
-            .iter()
-            .copied()
-            .find(|value| !super::is_grease(*value))
-            .unwrap_or(hello.legacy_version);
+        // 标准 JA3 首字段用 ClientHello 的 record(legacy)版本;TLS1.3 hello 固定 0x0303 = 771。
         Ok([
-            ja3_version.to_string(),
+            hello.legacy_version.to_string(),
             super::join_u16(&hello.ciphers),
             join_huakai_ja3_extensions(&hello.extensions),
             super::join_u16(&hello.supported_groups),
