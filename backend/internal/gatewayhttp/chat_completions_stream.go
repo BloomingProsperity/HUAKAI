@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/mimicryidentity"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/trust"
@@ -123,6 +124,23 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 	}
 }
 
+// identityRewrite 对 dispatch 专用 body 拷贝施加 R7 身份改写(默认关 +
+// fail-open)。两条非流式 dispatch 路径共用本方法。external account id 暂为空
+// (provider.AccountInfo 未携带上游账号 UUID,把它接进 AccountInfo 会牵动
+// account 解析链,留作后续接线切片)→ 当前恒 fail-open 不改写,本切片零行为
+// 变更。**翻默认(默认开)是 Owner-gated 二阶段,不在本切片。**
+func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
+	if ex == nil || ex.r == nil {
+		return dispatchBody
+	}
+	return mimicryidentity.RewriteForDispatch(
+		dispatchBody,
+		ex.accInfo.AccountID,
+		"", // external account id 来源未接通 → fail-open
+		mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
+	)
+}
+
 func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
 	_ = ex.executeStreamingAttempt(w)
 }
@@ -141,9 +159,10 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 	}
 	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
-		ProtocolFamily:    ex.resolved.ProtocolFamily,
-		UpstreamModelID:   ex.upstreamModelID,
-		InboundBody:       ex.upstreamInboundBody(inboundBody),
+		ProtocolFamily:  ex.resolved.ProtocolFamily,
+		UpstreamModelID: ex.upstreamModelID,
+		// R7 身份改写(默认关 + fail-open,只动 dispatch 专用拷贝、不动 ex.body)。
+		InboundBody:       ex.identityRewrite(ex.upstreamInboundBody(inboundBody)),
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),
 		Account:           transportSelection.account,
@@ -678,7 +697,7 @@ func (a canonicalEventPointerClientAdapter) FinalizeClientStream(ctx context.Con
 }
 
 // ambiguousDeliveredEstimable 判断歧义用量流是否已交付可估内容：可估输出基数
-//（可见输出 + 可见 reasoning 文本）>0 即说明确有内容发给了用户。仅此种歧义流放行
+// （可见输出 + 可见 reasoning 文本）>0 即说明确有内容发给了用户。仅此种歧义流放行
 // 估算保守计费——reconciliation 是 refund-only/zero-finalize 永不补收，留歧义态会
 // 永久漏收（SM-05）；无可估内容的歧义流仍保留歧义态留待真对账。判据与 billing/
 // state.go AttemptFromGatewayDraft 的 Ambiguous 分支保持同口径。
