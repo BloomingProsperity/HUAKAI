@@ -266,7 +266,11 @@ type TLSProfileResolver interface {
 // 无绑定/非 mimicry/解析失败一律保持原 rt(builtin)。永不让 dispatch 失败 ——
 // 返回的 profile RT 实现 proxy-aware WithProxy,故 applyProxy 仍能正确叠加代理。
 func (d *UpstreamDispatcher) applyTLSProfile(ctx context.Context, rt http.RoundTripper, mode transport.TransportMode, accountID int64) http.RoundTripper {
-	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard {
+	// 全局伪装关闭时(HUAKAI_TRANSPORT_MIMICRY=false),DB profile 旁路也必须跳过:
+	// 否则绑定了 DB TLS profile 的账号会在 For 已把 mode 降级标准 transport 之后,
+	// 又被这里重新换上 uTLS profile RT,留下伪装死角。复用 transport.MimicryEnabled
+	// 保证与 factory.For 的开关判定完全一致。
+	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard || !transport.MimicryEnabled() {
 		return rt
 	}
 	if profileRT, err := d.TLSProfileResolver.ResolveRoundTripper(ctx, accountID); err == nil && profileRT != nil {
