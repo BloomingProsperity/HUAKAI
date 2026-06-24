@@ -68,6 +68,10 @@ type Scheduler struct {
 	rotationMaxAge time.Duration
 	rotationAlert  RotationAlert
 	rotationLimit  int
+	// CRED-288c: classifies each due credential as refreshable (OAuth/session →
+	// auto-heal via the refresh flow) vs static (api_key → alert only, never
+	// taken offline on age alone). nil → DefaultRefreshClassifier at scan time.
+	rotationClassifier RefreshClassifier
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -183,10 +187,11 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	for _, account := range accounts {
 		out = errors.Join(out, s.processAccount(ctx, account))
 	}
-	// CRED-288: after the refresh pass, flag credentials past their rotation
-	// max-age. No-op unless opt-in (WithRotationScan); a scan error joins the
-	// tick error without aborting the refresh work already done above.
-	if _, err := ScanRotationDue(ctx, s.rotationStore, s.rotationAlert, s.rotationMaxAge, s.now(), s.rotationLimit); err != nil {
+	// CRED-288/288c: after the refresh pass, route credentials past their
+	// rotation max-age into recovery (refreshable → re-mint via the refresh
+	// flow; static → alert only). No-op unless opt-in (WithRotationScan); a scan
+	// error joins the tick error without aborting the refresh work above.
+	if _, err := ScanRotationDue(ctx, s.rotationStore, s.rotationClassifier, s.rotationAlert, s.rotationMaxAge, s.now(), s.rotationLimit); err != nil {
 		out = errors.Join(out, err)
 	}
 	return out
