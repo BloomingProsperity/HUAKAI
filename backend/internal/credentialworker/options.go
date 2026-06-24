@@ -15,16 +15,34 @@ func WithAuditLedger(ledger auditledger.Ledger) Option {
 	return func(s *Scheduler) { s.AuditLedger = ledger }
 }
 
-// WithRotationScan enables the CRED-288 scheduled rotation-due scan: each tick,
-// after the refresh pass, active credentials whose issuance is older than maxAge
-// are flagged needs_rotation (+ optional alert). maxAge <= 0 keeps it OFF, so it
-// is strictly opt-in. limit caps rows flagged per tick (<=0 → store default).
+// WithRotationScan enables the CRED-288/288c scheduled rotation-due scan: each
+// tick, after the refresh pass, credentials whose issuance is older than maxAge
+// are routed into recovery — refreshable (OAuth/session) ones are pulled back
+// into the existing refresh flow so they re-mint a fresh token while staying in
+// service, and static API keys are alerted only (never taken offline on age
+// alone). maxAge <= 0 keeps it OFF, so it is strictly opt-in. limit caps rows
+// processed per tick (<=0 → store default). The default refreshability
+// classifier reads the canonical credentialstore mode-handler registry.
 func WithRotationScan(store RotationStore, maxAge time.Duration, limit int, alert RotationAlert) Option {
 	return func(s *Scheduler) {
 		s.rotationStore = store
 		s.rotationMaxAge = maxAge
 		s.rotationLimit = limit
 		s.rotationAlert = alert
+		if s.rotationClassifier == nil {
+			s.rotationClassifier = DefaultRefreshClassifier()
+		}
+	}
+}
+
+// withRotationClassifier overrides the refreshability classifier (test-only:
+// lets a unit test pin which (vendor, auth_mode) is treated as refreshable
+// without standing up the full mode-handler registry).
+func withRotationClassifier(classifier RefreshClassifier) Option {
+	return func(s *Scheduler) {
+		if classifier != nil {
+			s.rotationClassifier = classifier
+		}
 	}
 }
 
