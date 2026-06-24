@@ -1,10 +1,10 @@
-import { apiGet } from '../../lib/api'
+import { apiGet, apiSend } from '../../lib/api'
 import { buildAccountListQuery, type AccountListFilters } from './query'
-import type { ProviderAccountListResponse } from './types'
+import type { ProviderAccount, ProviderAccountListResponse } from './types'
 
 /*
  * 账号中心数据访问层。封装对 admin provider-accounts 端点的调用,页面只依赖本文件。
- * 端点:GET /admin/v1/provider-accounts(admin 鉴权,session + 租户 scope)。
+ * 端点:GET/PATCH/POST /admin/v1/provider-accounts*(admin 鉴权,session + 租户 scope)。
  */
 const ACCOUNTS_PATH = '/admin/v1/provider-accounts'
 
@@ -15,5 +15,25 @@ export async function listProviderAccounts(
   return apiGet<ProviderAccountListResponse>(ACCOUNTS_PATH, {
     query: buildAccountListQuery(filters),
     signal,
+  })
+}
+
+/** 取单个账号详情:GET /admin/v1/provider-accounts/{id}。 */
+export async function getProviderAccount(id: number, signal?: AbortSignal): Promise<ProviderAccount> {
+  return apiGet<ProviderAccount>(`${ACCOUNTS_PATH}/${id}`, { signal })
+}
+
+/** 启用/停用账号:PATCH /admin/v1/provider-accounts/{id}/enabled。reason 进审计。 */
+export async function setAccountEnabled(id: number, enabled: boolean, reason: string): Promise<ProviderAccount> {
+  return apiSend<ProviderAccount>('PATCH', `${ACCOUNTS_PATH}/${id}/enabled`, {
+    enabled,
+    reason: reason.trim() || undefined,
+  })
+}
+
+/** 清除账号限流态:POST /admin/v1/provider-accounts/{id}/clear-rate-limit。reason 进审计。 */
+export async function clearAccountRateLimit(id: number, reason: string): Promise<ProviderAccount> {
+  return apiSend<ProviderAccount>('POST', `${ACCOUNTS_PATH}/${id}/clear-rate-limit`, {
+    reason: reason.trim() || undefined,
   })
 }
