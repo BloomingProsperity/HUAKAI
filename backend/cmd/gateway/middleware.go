@@ -50,9 +50,6 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router.Use(middleware.RequestID)
 	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
 	router.Use(accesslog.Middleware(logger))
-	// 入站请求体透明解码 Content-Encoding(Codex CLI 0.125+ 默认发 zstd,delta-mine #8)。
-	// 解码后剥头+修正 ContentLength,下游各 handler 的 io.ReadAll 读到明文;带解压上限防炸弹。
-	router.Use(reqdecompress.Middleware(reqdecompress.DefaultMaxDecodedBytes))
 	// Explicit allowlist CORS, early (preflight answered before auth).
 	// Allowlist via HUAKAI_CORS_ALLOWED_ORIGINS (comma-separated); empty = deny.
 	// It runs before the limiter so a 429 to an allowlisted browser origin
@@ -93,6 +90,15 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	// (set-once,之后只读)。
 	maxRequestBody := bodyLimitBytesFromEnv("HUAKAI_MAX_REQUEST_BODY_MB", 32<<20)
 	gatewayhttp.ConfigureBodyLimits(maxRequestBody)
+	// 入站请求体透明解码 Content-Encoding(Codex CLI 0.125+ 默认发 zstd,delta-mine #8)。
+	// 解码后剥头+修正 ContentLength,下游各 handler 的 io.ReadAll 读到明文;带解压上限防炸弹。
+	// 【位置 codex #4】刻意放在 newRateLimiter + internalSourceGate + aiAwareTimeout 之后:
+	// 未认证洪泛/越权请求先被这些门 429/403 挡掉,避免在限流前就为攻击者的压缩体分配
+	// 解压缓冲(解码先于限流=未认证内存放大面)。非 relay 路径的慢解压还受 aiAwareTimeout
+	// 总超时约束;relay 路径被该超时刻意豁免(长跑推理),其解压由 DefaultMaxDecodedBytes
+	// (64MiB→413)兜底。仍在 privacy 缓冲 body 之前,故下游 handler 读到的是解码后明文。
+	// 对齐 sub2api:其请求体解码也在各 handler 内、限流之后(非全局 pre-限流)。
+	router.Use(reqdecompress.Middleware(reqdecompress.DefaultMaxDecodedBytes))
 	// privacy.Middleware 在 auth 之前对所有路由全量缓冲 body 解析元数据。若给非 relay 的未认证端点
 	// (login/register 等)也用 relay 的大上限,会无谓抬高它们的 pre-auth 内存放大面。故按路径区分:
 	// 只有 relay 数据面(isAIRelayPath)才放宽到 maxRequestBody,其余维持 privacy 既有的小上限。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strconv"
 	"strings"
 
@@ -26,13 +27,22 @@ type QuotaReserver interface {
 type Reserver struct {
 	budget Budget
 	quota  QuotaReserver
+	// failClosed 决定 budget 后端【基础设施故障】(非额度拒绝)时的取舍:false(默认)
+	// fail-open 放行不阻断业务;true fail-close 拒绝,quota 安全优先。运维 env 自决。
+	failClosed bool
 }
 
 func NewReserver(b Budget, q QuotaReserver) QuotaReserver {
 	if b == nil {
 		return q
 	}
-	return &Reserver{budget: b, quota: q}
+	return &Reserver{budget: b, quota: q, failClosed: budgetFailClosed()}
+}
+
+// budgetFailClosed 读运维开关 HUAKAI_BUDGET_FAIL_CLOSED(默认 false=fail-open,
+// 保持现有默认行为)。设 true 后 budget 后端故障即拒绝而非放行。
+func budgetFailClosed() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_BUDGET_FAIL_CLOSED")), "true")
 }
 
 func (r *Reserver) Reserve(ctx context.Context, req quota.ReserveRequest) (quota.ReserveResult, error) {
@@ -46,6 +56,11 @@ func (r *Reserver) Reserve(ctx context.Context, req quota.ReserveRequest) (quota
 			return quota.ReserveResult{Allowed: false, Decision: decision}, &quota.DenyError{Decision: decision, Cause: err}
 		}
 		if err != nil {
+			if r.failClosed {
+				// fail-close:budget 后端基础设施故障时拒绝而非放行(运维显式选 quota 安全优先)。
+				decision := quota.Decision{Kind: quota.DecisionDeny, Code: "budget_fail_closed"}
+				return quota.ReserveResult{Allowed: false, Decision: decision}, &quota.DenyError{Decision: decision, Cause: err}
+			}
 			return quota.ReserveResult{Allowed: true, Decision: quota.Decision{Kind: quota.DecisionAllow, Code: "budget_fail_open"}}, nil
 		}
 	}
