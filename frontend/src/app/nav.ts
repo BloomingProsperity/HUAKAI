@@ -28,7 +28,7 @@ export const PIPELINE_NAV: NavSection[] = [
     key: 'accounts',
     label: '上游账号池',
     hint: '把上游 Claude/OpenAI/Gemini 账号纳入可调度池',
-    items: [{ path: '/accounts', label: '账号中心', built: false }],
+    items: [{ path: '/accounts', label: '账号中心', built: true }],
   },
   {
     stage: 2,
