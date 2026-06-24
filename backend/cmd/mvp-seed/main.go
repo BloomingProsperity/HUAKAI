@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyns"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -67,7 +68,9 @@ func run() error {
 		return fmt.Errorf("user: %w", err)
 	}
 
-	bearer := "hk_test_" + uuid.NewString()
+	// 用配置前缀同源签发,免得运维设了 HUAKAI_API_KEY_PREFIX 后 seed 出的 key 被
+	// 入站校验拒掉(与 admin/keygen、auth/resolver 同一真相源)。
+	bearer := apikeyns.TestPrefix() + uuid.NewString()
 	keyPrefix := bearer
 	if len(keyPrefix) > 16 {
 		keyPrefix = keyPrefix[:16]

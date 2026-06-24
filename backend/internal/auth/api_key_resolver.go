@@ -36,6 +36,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeyipdeny"
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyns"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
@@ -225,9 +226,9 @@ func parseBearer(header string) (string, bool) {
 	return tok, true
 }
 
-// validBearerFormat enforces the HUAKAI bearer namespace: starts with
-// "hk_live_" or "hk_test_" (D2 in synthesized plan). This refuses
-// obviously-foreign tokens (e.g. "sk-...") before we waste a DB lookup.
+// validBearerFormat 校验入站 token 是否带合法客户前缀(<base>_live_/<base>_test_,
+// base 默认 hk、可由 HUAKAI_API_KEY_PREFIX 覆盖,与 admin/keygen 签发同源)。
+// 这是 DB 查询前的廉价过滤,拒掉明显异源 token(如 sk-...);真正鉴权是入库 bcrypt。
 func validBearerFormat(token string) bool {
-	return strings.HasPrefix(token, "hk_live_") || strings.HasPrefix(token, "hk_test_")
+	return apikeyns.ValidCustomerFormat(token)
 }
