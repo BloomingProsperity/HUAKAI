@@ -179,6 +179,7 @@ func vaultInactiveCredentialRecordValues(credentialRowCount int64) []any {
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
 		pgtype.Timestamptz{}, (*string)(nil), (*string)(nil), int32(0),
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		(*string)(nil), // external_account_id 列(迁移 0141),no_serving 分支返 NULL
 		int64(0), credentialRowCount, true,
 	}
 }

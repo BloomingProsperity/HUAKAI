@@ -125,10 +125,16 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 }
 
 // identityRewrite 对 dispatch 专用 body 拷贝施加 R7 身份改写(默认关 +
-// fail-open)。两条非流式 dispatch 路径共用本方法。external account id 暂为空
-// (provider.AccountInfo 未携带上游账号 UUID,把它接进 AccountInfo 会牵动
-// account 解析链,留作后续接线切片)→ 当前恒 fail-open 不改写,本切片零行为
-// 变更。**翻默认(默认开)是 Owner-gated 二阶段,不在本切片。**
+// fail-open)。两条非流式 dispatch 路径共用本方法。external account id 取自
+// 账号解析后填入的 ex.accInfo.ExternalAccountID(来源:credentialstore 凭据行的
+// external_account_id 列,迁移 0141,经 provider vault 投影进 AccountInfo)——
+// 非空时 R7 改写把它写进 metadata.user_id 的 account 组件;为空时 fail-open
+// 不改写(镜像 sub2api account_uuid=="" 跳过)。
+//
+// 安全姿态:运维开关 HUAKAI_MIMICRY_IDENTITY_REWRITE 默认仍关(operator opt-in);
+// operator 显式设 switch=true + HUAKAI_MIMICRY_IDENTITY_SECRET 后,带
+// external account id 的账号请求才真改写。**翻全局默认(默认开)是 Owner-gated
+// 二阶段,不在本切片。**
 func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
 	if ex == nil || ex.r == nil {
 		return dispatchBody
@@ -136,7 +142,7 @@ func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
 	return mimicryidentity.RewriteForDispatch(
 		dispatchBody,
 		ex.accInfo.AccountID,
-		"", // external account id 来源未接通 → fail-open
+		ex.accInfo.ExternalAccountID, // 上游账号标识;空 → fail-open 不改写
 		mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
 	)
 }

@@ -69,6 +69,12 @@ type AccountInfo struct {
 	AccountCredentialID int64
 	// CredentialVersion 是当前出站凭据版本，用于区分轮换前后的健康状态。
 	CredentialVersion int
+	// ExternalAccountID 是上游 provider 账号的稳定标识（如 Anthropic account
+	// uuid），凭据获取时自动提取、与凭据行 1:1 同生命周期存于
+	// account_credentials.external_account_id（迁移 0141）。账号管理元数据，
+	// **非鉴权/计费/配额输入**；仅供 R7 身份改写（mimicryidentity）把它投影进
+	// metadata.user_id 的 account 组件。未提取到时为空串 → 下游 fail-open 不改写。
+	ExternalAccountID string
 }
 
 // EndpointForCredential 按账号凭据决定上游 endpoint:

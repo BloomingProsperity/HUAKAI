@@ -91,6 +91,80 @@ func TestPostgresCredentialVaultWithStore_ActiveV2OverridesLegacy(t *testing.T) 
 	}
 }
 
+// TestPostgresCredentialVaultWithStore_ExternalAccountIDProjectedToAccountInfo 是
+// R7 身份改写穿线的【数据穿透】守卫(测试 D):凭据行的 external_account_id 列
+// (迁移 0141)经 ResolveActive → resolveFromStore 必须填进 AccountInfo.ExternalAccountID,
+// 供 R7 身份改写把它投影进 metadata.user_id。
+//
+// 变异证伪:把 resolveFromStore 里 ExternalAccountID 的赋值删掉(穿线丢字段)→
+// info.ExternalAccountID 退回空串 → 下面断言变红。本测试构造 external id 非空且与
+// 任何零值/默认值不同,确保"丢字段"必被发现(discriminating fixture)。
+func TestPostgresCredentialVaultWithStore_ExternalAccountIDProjectedToAccountInfo(t *testing.T) {
+	ctx := context.Background()
+	suffix := "ext-acct-id-projected"
+	f := setupFixture(ctx, t, suffix)
+	defer cleanupFixture(ctx, t, testDB, f)
+
+	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
+		f.tenantID, f.providerID, f.channelID,
+		"test-account-"+suffix, "api_key", true,
+		map[string]string{"api_key": "sk-legacy-ignored"})
+	store := newPostgresVaultCredentialStore(t)
+
+	const wantExternalID = "acc-xyz-from-credential-row"
+	_, err := store.Create(ctx, credentialstore.CreateCredentialInput{
+		TenantID:          f.tenantID,
+		ProviderAccountID: f.providerAccountID,
+		Vendor:            credentialstore.VendorOpenAI,
+		AuthMode:          credentialstore.AuthModeAPIKey,
+		Payload:           []byte(`{"api_key":"sk-v2-active"}`),
+		ActorID:           "owner",
+		ExternalAccountID: wantExternalID,
+	})
+	if err != nil {
+		t.Fatalf("Create v2 credential with external id: %v", err)
+	}
+
+	vault := NewPostgresCredentialVaultWithStore(testDB, store)
+	_, info, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if info.ExternalAccountID != wantExternalID {
+		t.Fatalf("AccountInfo.ExternalAccountID=%q, want %q —— 凭据行 external_account_id 未穿到 AccountInfo",
+			info.ExternalAccountID, wantExternalID)
+	}
+}
+
+// TestPostgresCredentialVaultWithStore_NoExternalAccountIDStaysEmpty 验证:凭据行
+// 未提取到 external_account_id(NULL)时,AccountInfo.ExternalAccountID 为空串
+// (= 下游 fail-open 不改写)。守 derefString 对 nil 的处理。
+//
+// 变异证伪:把 derefString 改成对 nil panic 或返回某占位非空值 → 本测试 panic/红。
+func TestPostgresCredentialVaultWithStore_NoExternalAccountIDStaysEmpty(t *testing.T) {
+	ctx := context.Background()
+	suffix := "no-ext-acct-id"
+	f := setupFixture(ctx, t, suffix)
+	defer cleanupFixture(ctx, t, testDB, f)
+
+	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
+		f.tenantID, f.providerID, f.channelID,
+		"test-account-"+suffix, "api_key", true,
+		map[string]string{"api_key": "sk-legacy-ignored"})
+	store := newPostgresVaultCredentialStore(t)
+	// 不传 ExternalAccountID → 列存 NULL。
+	createPostgresVaultAPIKeyCredential(t, ctx, store, f, "sk-v2-active")
+
+	vault := NewPostgresCredentialVaultWithStore(testDB, store)
+	_, info, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if info.ExternalAccountID != "" {
+		t.Fatalf("未提取到 external id 时 AccountInfo.ExternalAccountID 应为空,实际 %q", info.ExternalAccountID)
+	}
+}
+
 func newPostgresVaultCredentialStore(t *testing.T) *credentialstore.Store {
 	t.Helper()
 	return credentialstore.NewStore(testDB, mustVaultTestKeyProvider(t), credentialstore.DefaultHandlerRegistry())
