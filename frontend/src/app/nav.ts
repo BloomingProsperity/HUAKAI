@@ -42,7 +42,7 @@ export const PIPELINE_NAV: NavSection[] = [
     key: 'keys',
     label: 'API Key',
     hint: '把池子签发成可用/可售的密钥',
-    items: [{ path: '/keys', label: '我的密钥', built: false }],
+    items: [{ path: '/keys', label: '我的密钥', built: true }],
   },
   {
     stage: 4,

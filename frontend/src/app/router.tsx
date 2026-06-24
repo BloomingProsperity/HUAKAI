@@ -5,6 +5,7 @@ import { Dashboard } from '../pages/Dashboard'
 import { Placeholder } from '../pages/Placeholder'
 import { AccountsPage } from '../features/accounts/AccountsPage'
 import { AccountDetailPage } from '../features/accounts/AccountDetailPage'
+import { KeysPage } from '../features/keys/KeysPage'
 import { PIPELINE_NAV } from './nav'
 
 /*
@@ -14,6 +15,7 @@ import { PIPELINE_NAV } from './nav'
 // 已实现模块的 path→element 覆盖表;后续 P0 切片逐条追加。
 const BUILT_PAGES: Record<string, ReactElement> = {
   '/accounts': <AccountsPage />,
+  '/keys': <KeysPage />,
 }
 
 const domainRoutes = PIPELINE_NAV.flatMap((section) =>
