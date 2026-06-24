@@ -295,3 +295,35 @@ func TestClientTailMessageRole(t *testing.T) {
 		}
 	}
 }
+
+// TestActiveBindingSelectionMode 钉死 dispatch 级 selection_mode 取值:必须按当前请求命中的
+// binding(ex.attempt.PoolGroupID)取其 selection_mode 透传给 SelectionRequest,而非取错 binding
+// 或恒空。这是路由加权激活闭环在 dispatch 端的接线点。
+// MUTATION:若 activeBindingSelectionMode 恒返回 ""(漏接)→ 命中 priority_weighted binding 的请求
+// 也走默认 → 下面 weighted 断言红;若取错 binding(忽略 PoolGroupID)→ 多 binding 用例红。
+func TestActiveBindingSelectionMode(t *testing.T) {
+	ex := &chatExecution{
+		resolved: registry.Resolved{
+			BindingMetadata: []registry.BindingMetadata{
+				{BindingID: 1, PoolGroupID: 701, SelectionMode: "strict_priority"},
+				{BindingID: 2, PoolGroupID: 702, SelectionMode: "priority_weighted"},
+			},
+		},
+	}
+
+	// 命中 702 → 取到 priority_weighted。
+	ex.attempt = router.AttemptPlan{PoolGroupID: 702}
+	if got := ex.activeBindingSelectionMode(); got != "priority_weighted" {
+		t.Fatalf("命中 pool 702 selection_mode=%q, 期望 priority_weighted", got)
+	}
+	// 命中 701 → 取到 strict_priority(证明按 PoolGroupID 取对 binding,非取首条)。
+	ex.attempt = router.AttemptPlan{PoolGroupID: 701}
+	if got := ex.activeBindingSelectionMode(); got != "strict_priority" {
+		t.Fatalf("命中 pool 701 selection_mode=%q, 期望 strict_priority", got)
+	}
+	// 无 binding 元数据 → 空(默认 strict)。
+	empty := &chatExecution{}
+	if got := empty.activeBindingSelectionMode(); got != "" {
+		t.Fatalf("无 binding 时 selection_mode=%q, 期望空", got)
+	}
+}

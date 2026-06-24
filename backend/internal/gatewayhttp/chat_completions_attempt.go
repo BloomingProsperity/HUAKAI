@@ -22,8 +22,61 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
+
+// routerResolvedModelFromRegistry 把 registry 解析结果翻成 router 入参。从
+// chat_completions_dispatch.go 挪来(那文件已达 codebudget 单文件上限),职责=registry→router 翻译。
+func routerResolvedModelFromRegistry(resolved registry.Resolved) router.ResolvedModel {
+	return router.ResolvedModel{
+		PublicAlias:     resolved.PublicAlias,
+		InternalModelID: resolved.CanonicalModelID,
+		ProviderModelID: resolved.ProviderModelID,
+		ContextWindow:   resolved.ContextWindow,
+		Capabilities:    resolved.Capabilities,
+		PricingClass:    resolved.PricingClass,
+		ProtocolFamily:  resolved.ProtocolFamily,
+		PoolCandidates:  resolved.PoolCandidates,
+		PoolMetadata:    routerPoolMetadataFromRegistry(resolved),
+		SnapshotVersion: resolved.SnapshotVersion,
+	}
+}
+
+func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCandidateMeta {
+	if len(resolved.BindingMetadata) == 0 {
+		return nil
+	}
+	defaultProviderModelID := resolved.DefaultProviderModelID
+	if defaultProviderModelID == "" {
+		defaultProviderModelID = resolved.ProviderModelID
+	}
+	out := make([]router.PoolCandidateMeta, 0, len(resolved.BindingMetadata))
+	for _, binding := range resolved.BindingMetadata {
+		if binding.PoolGroupID == 0 {
+			continue
+		}
+		providerModelID := defaultProviderModelID
+		if binding.ProviderModelIDOverride != nil && *binding.ProviderModelIDOverride != "" {
+			providerModelID = *binding.ProviderModelIDOverride
+		}
+		out = append(out, router.PoolCandidateMeta{
+			PoolGroupID:     binding.PoolGroupID,
+			ProviderModelID: providerModelID,
+			// 透传 selection_mode:此前丢弃致 pool/router 加权分支永不可达(断点2)。
+			SelectionMode: binding.SelectionMode,
+		})
+	}
+	return out
+}
+
+// activeBindingSelectionMode 返回命中 binding 的 selection_mode(取不到则空=默认 strict_priority)。
+func (ex *chatExecution) activeBindingSelectionMode() string {
+	if binding, ok := ex.activeBindingMetadata(); ok {
+		return binding.SelectionMode
+	}
+	return ""
+}
 
 type attemptInput struct {
 	Plan             router.AttemptPlan

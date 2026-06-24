@@ -76,6 +76,13 @@ type SelectionRequest struct {
 	// 空字符串视同无限制 (向后兼容未接线 / 无订阅链路)。
 	UserGroup string
 
+	// SelectionMode 是本次请求命中 binding 的选号策略 (model_pool_bindings.selection_mode)，
+	// 由 dispatch 端从 activeBindingMetadata 透传:""/"strict_priority" = 同优先级账号均匀
+	// Shuffle (接线前一致行为);"priority_weighted" = 按账号 static_weight 加权选号。
+	// 生产 RoutingPolicySource 据此字段返回 RoutingPolicy.SelectionMode,opt-in 激活加权分支,
+	// 不设/默认时与接线前逐一字节一致 (非全局翻转)。
+	SelectionMode string
+
 	// EstimatedInputTokens 是本次请求 prompt 的输入 token 估算 (由 dispatch 端
 	// 用 tokenestimate 启发式按 ProtocolFamily 算出)。<=0 视为"未接线/无估算",
 	// ContextWindowGate 据此 fail-open。
