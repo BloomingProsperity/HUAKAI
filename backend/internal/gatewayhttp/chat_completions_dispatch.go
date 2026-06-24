@@ -341,46 +341,6 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 	return true
 }
 
-func routerResolvedModelFromRegistry(resolved registry.Resolved) router.ResolvedModel {
-	return router.ResolvedModel{
-		PublicAlias:     resolved.PublicAlias,
-		InternalModelID: resolved.CanonicalModelID,
-		ProviderModelID: resolved.ProviderModelID,
-		ContextWindow:   resolved.ContextWindow,
-		Capabilities:    resolved.Capabilities,
-		PricingClass:    resolved.PricingClass,
-		ProtocolFamily:  resolved.ProtocolFamily,
-		PoolCandidates:  resolved.PoolCandidates,
-		PoolMetadata:    routerPoolMetadataFromRegistry(resolved),
-		SnapshotVersion: resolved.SnapshotVersion,
-	}
-}
-
-func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCandidateMeta {
-	if len(resolved.BindingMetadata) == 0 {
-		return nil
-	}
-	defaultProviderModelID := resolved.DefaultProviderModelID
-	if defaultProviderModelID == "" {
-		defaultProviderModelID = resolved.ProviderModelID
-	}
-	out := make([]router.PoolCandidateMeta, 0, len(resolved.BindingMetadata))
-	for _, binding := range resolved.BindingMetadata {
-		if binding.PoolGroupID == 0 {
-			continue
-		}
-		providerModelID := defaultProviderModelID
-		if binding.ProviderModelIDOverride != nil && *binding.ProviderModelIDOverride != "" {
-			providerModelID = *binding.ProviderModelIDOverride
-		}
-		out = append(out, router.PoolCandidateMeta{
-			PoolGroupID:     binding.PoolGroupID,
-			ProviderModelID: providerModelID,
-		})
-	}
-	return out
-}
-
 func (ex *chatExecution) activeBindingMetadata() (registry.BindingMetadata, bool) {
 	if ex == nil || len(ex.resolved.BindingMetadata) == 0 {
 		return registry.BindingMetadata{}, false
@@ -610,6 +570,8 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		SessionHash:          ex.sessionHash,
 		Vendor:               pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 		UserGroup:            ex.ident.UserGroup,
+		// 命中 binding 的 selection_mode 透传给 selector(priority_weighted 才激活加权,否则均匀)。
+		SelectionMode:        ex.activeBindingSelectionMode(),
 		ModelContextWindow:   ctxWindow,
 		EstimatedInputTokens: estInput,
 		MaxOutputTokens:      maxOut,

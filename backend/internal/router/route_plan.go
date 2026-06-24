@@ -46,6 +46,11 @@ type ResolvedModel struct {
 type PoolCandidateMeta struct {
 	PoolGroupID     int64
 	ProviderModelID string
+	// SelectionMode 透传 binding 的同优先级选号策略
+	// (model_pool_bindings.selection_mode):""/"strict_priority" = 均匀 Shuffle,
+	// "priority_weighted" = 按账号 static_weight 加权。dispatch 端据此填
+	// SelectionRequest.SelectionMode,激活 pool/router 加权选号分支。
+	SelectionMode string
 }
 
 // RequestFeatures expresses what the request actually wants done. Used by

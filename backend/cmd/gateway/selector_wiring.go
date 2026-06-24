@@ -119,6 +119,10 @@ func buildSelector(
 		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
 		pool.WithClaimGate(pool.NewDBClaimGate(q)),
 		pool.WithStickyStore(pool.NewDBStickyStore(q)),
+		// 路由加权激活闭环:注入生产 RoutingPolicySource,据请求命中 binding 的 selection_mode
+		// 返回选号策略。此前缺该注入 → policy() 恒 nil → priority_weighted 分支永不可达(断点1)。
+		// 默认 strict_priority 行为不变(opt-in 激活,非全局翻转)。
+		pool.WithRoutingPolicySource(newBindingRoutingPolicySource()),
 	)
 
 	// 2. default mode: 直接返, 不启动 PASR 基础设施
