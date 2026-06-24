@@ -192,6 +192,13 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	return out
 }
 
+// RotationScanConfigForTest 暴露 CRED-288 轮换扫描装配后的 store/maxAge/limit,
+// 仅供测试断言"WithRotationScan option 是否真把扫描装上"(生产 wiring 的 gating 决策
+// 曾经缺失导致死开关)。生产代码不读它。
+func (s *Scheduler) RotationScanConfigForTest() (RotationStore, time.Duration, int) {
+	return s.rotationStore, s.rotationMaxAge, s.rotationLimit
+}
+
 func (s *Scheduler) RefreshHotPath(ctx context.Context, tenantID, accountID int64, vendorName string) error {
 	switch {
 	case s == nil:
