@@ -60,7 +60,7 @@ func TestSidecarClientDialTLSWritesLittleEndianControlAndReturnsPlaintextConn(t 
 	}()
 
 	client := NewSidecarClient("/tmp/tls-sidecar.sock")
-	conn, err := client.DialTLS(context.Background(), "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, false)
+	conn, err := client.DialTLS(context.Background(), "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, false, nil)
 	if err != nil {
 		t.Fatalf("DialTLS: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSidecarClientDialTLSBadSocketFailsClosedWithoutTargetFallback(t *testin
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	conn, err := client.DialTLS(ctx, "127.0.0.1", 443, SidecarProfileAnthropicCLIMimicryV1, false)
+	conn, err := client.DialTLS(ctx, "127.0.0.1", 443, SidecarProfileAnthropicCLIMimicryV1, false, nil)
 
 	if err == nil {
 		conn.Close()
@@ -130,7 +130,7 @@ func TestSidecarClientDialTLSNoAckTimesOutFailClosed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	conn, err := client.DialTLS(ctx, "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, false)
+	conn, err := client.DialTLS(ctx, "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, false, nil)
 
 	close(releaseServer)
 	if err == nil {

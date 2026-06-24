@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -38,11 +40,19 @@ func NewSidecarRoundTripper(client *SidecarClient, profileID string) http.RoundT
 // 标记。转发层(gateway.UpstreamDispatcher.applyTLSProfile)据此识别"该 RT 已走 sidecar、
 // 自带内置真指纹",短路 per-account DB uTLS profile 的整体替换,避免绑定 DB profile 的账号
 // 让 sidecar 永远轮不到用。内嵌 *http.Transport:RoundTrip 与连接池/DialTLSContext 行为
-// 全部继承(对 net/http 完全等价),代理探测见 provider.WrapTransportWithProxy——wrapper 不
-// 是裸 *http.Transport,会落到其 fail-loud 默认分支(行为与原 sidecar 路一致,代理仍不静默泄露)。
+// 全部继承(对 net/http 完全等价)。
+//
+// 代理穿透(②-3):sidecarTransport 实现 WithProxy 成为 provider.proxyAwareRoundTripper,
+// provider.WrapTransportWithProxy 命中该接口分支后,返回一个带 proxyURL 的新 sidecarTransport。
+// 拨号时把已校验的 proxyURL 转成 sidecarProxySpec 填进 control request,令 Rust 先经代理建隧道
+// 再在隧道之上握手——出口 IP 走代理,JA3/JA4 仍是伪装指纹。绑账号级代理的账号因此也能用 sidecar
+// (此前会落到 WrapTransportWithProxy 的 fail-loud 分支,根本不可用)。
 type sidecarTransport struct {
 	*http.Transport
 	profileID string
+	// boundRT 是驱动本 transport 拨号的 sidecarRoundTripper(承载 client/forceH1/可选 proxy)。
+	// WithProxy 据此派生带代理的新实例,无需从闭包里反解配置。
+	boundRT *sidecarRoundTripper
 }
 
 // SidecarProfileID 返回该 RT 绑定的 sidecar profile id,同时充当"我已走 sidecar"的导出标记。
@@ -50,6 +60,12 @@ func (s *sidecarTransport) SidecarProfileID() string { return s.profileID }
 
 func NewSidecarRoundTripperForceH1(client *SidecarClient, profileID string, forceH1 bool) http.RoundTripper {
 	rt := &sidecarRoundTripper{client: client, profileID: profileID, forceH1: forceH1}
+	return newSidecarTransportFromRT(rt)
+}
+
+// newSidecarTransportFromRT 用给定的 sidecarRoundTripper(承载 profileID/forceH1/可选 proxy)
+// 构造 sidecarTransport。WithProxy 复用它生成带代理的新实例,避免拨号参数重复。
+func newSidecarTransportFromRT(rt *sidecarRoundTripper) *sidecarTransport {
 	return &sidecarTransport{
 		Transport: &http.Transport{
 			DialTLSContext:      rt.DialTLSContext,
@@ -60,15 +76,42 @@ func NewSidecarRoundTripperForceH1(client *SidecarClient, profileID string, forc
 			IdleConnTimeout:     90 * time.Second,
 			TLSHandshakeTimeout: 10 * time.Second,
 		},
-		profileID: profileID,
+		profileID: rt.profileID,
+		boundRT:   rt,
 	}
+}
+
+// WithProxy 让 sidecarTransport 满足 provider.proxyAwareRoundTripper:把【已经过 proxyadmin
+// SSRF 校验的】proxyURL 转成 sidecarProxySpec,返回一个绑定该代理的新 sidecarTransport(不改
+// 原实例)。每次拨号都会把该 spec 填进 control request 下发给 Rust sidecar。
+//
+// scheme 校验:仅放行 http/https/socks5(socks5h 归一为 socks5)。不支持的 scheme **fail-loud
+// 返回 err**——经 provider.WrapTransportWithProxy 的 buildErr 路径仍 fail-closed(RoundTrip 返回
+// 该 err),绝不静默回退直连,杜绝真实出口 IP 泄露。SSRF 校验留在 Go proxyadmin 写时层,这里
+// 只透传已校验的 proxyURL。
+func (s *sidecarTransport) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) {
+	if proxyURL == nil {
+		// 无代理 = 不下发 proxy 字段,沿用当前 RT(零开销直连)。
+		return s, nil
+	}
+	spec, err := proxySpecFromURL(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	rt := &sidecarRoundTripper{
+		client:    s.boundRT.client,
+		profileID: s.profileID,
+		forceH1:   s.boundRT.forceH1,
+		proxy:     spec,
+	}
+	return newSidecarTransportFromRT(rt), nil
 }
 
 // DialTLS dials the Unix sidecar, sends one framed JSON control message, waits
 // for an ACK frame, then returns a plaintext stream over the sidecar-owned TLS
 // connection. Sidecar failure is fail-closed; this function never falls back to
 // uTLS or the standard transport.
-func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, profileID string, forceH1 bool) (net.Conn, error) {
+func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, profileID string, forceH1 bool, proxy *sidecarProxySpec) (net.Conn, error) {
 	if c == nil {
 		return nil, fmt.Errorf("mimicry sidecar: nil client")
 	}
@@ -94,6 +137,7 @@ func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, prof
 		Port:       uint16(port),
 		ProfileID:  profileID,
 		ForceH1:    forceH1Ptr(forceH1),
+		Proxy:      proxy,
 	}
 	if err := writeSidecarFrame(conn, req); err != nil {
 		conn.Close()
@@ -120,6 +164,9 @@ type sidecarRoundTripper struct {
 	profileID string
 	// forceH1 为 true 时,每次 DialTLS 都让 sidecar 握手只广告 ALPN=http/1.1。
 	forceH1 bool
+	// proxy 非 nil 时,每次 DialTLS 都把该代理 spec 填进 control request,令 Rust 先经代理建隧道
+	// 再握手(②-3 代理穿透)。nil = 直连目标(今日行为)。
+	proxy *sidecarProxySpec
 }
 
 func (rt *sidecarRoundTripper) DialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -134,7 +181,7 @@ func (rt *sidecarRoundTripper) DialTLSContext(ctx context.Context, network, addr
 	if err != nil {
 		return nil, fmt.Errorf("mimicry sidecar: parse target port %q: %w", portText, err)
 	}
-	return rt.client.DialTLS(ctx, host, port, rt.profileID, rt.forceH1)
+	return rt.client.DialTLS(ctx, host, port, rt.profileID, rt.forceH1, rt.proxy)
 }
 
 type sidecarControlRequest struct {
@@ -144,6 +191,77 @@ type sidecarControlRequest struct {
 	// ForceH1 仅在非 nil 时随 control frame 下发(omitempty + 指针);nil(默认,旧线缆)时
 	// JSON 不含 force_h1 键,与历史 Rust sidecar 完全兼容。Rust 侧 serde(default) 把缺省解为 None。
 	ForceH1 *bool `json:"force_h1,omitempty"`
+	// Proxy 仅在非 nil 时随 control frame 下发(omitempty + 指针);nil(默认,无账号级代理=直连)
+	// 时 JSON 不含 proxy 键,与历史 Rust sidecar 完全兼容。Rust 侧 serde(default) 把缺省解为 None。
+	Proxy *sidecarProxySpec `json:"proxy,omitempty"`
+}
+
+// sidecarProxySpec 是下发给 Rust sidecar 的结构化代理载荷,字段与 Rust proto::ProxySpec 对齐。
+// 结构化下发(而非原始 URL):password 等敏感段不混进一个可被整体打印的字符串。Username/Password
+// 仅在带认证时出现(omitempty),无认证时不写键。
+type sidecarProxySpec struct {
+	Scheme   string `json:"scheme"`
+	Host     string `json:"host"`
+	Port     uint16 `json:"port"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
+// proxySpecFromURL 把【已经过 proxyadmin SSRF 校验的】proxyURL 拆成 sidecarProxySpec。
+// scheme 仅放行 http/https/socks5(socks5h 归一为 socks5);其余 scheme **fail-loud 返回 err**,
+// 经 provider.WrapTransportWithProxy 仍 fail-closed,绝不静默直连。端口按 scheme 补默认值。
+func proxySpecFromURL(proxyURL *url.URL) (*sidecarProxySpec, error) {
+	if proxyURL == nil {
+		return nil, fmt.Errorf("mimicry sidecar: nil proxy url")
+	}
+	scheme := strings.ToLower(proxyURL.Scheme)
+	switch scheme {
+	case "http", "https":
+		// 保留原 scheme,Rust 侧据此决定是否对代理本身做 TLS。
+	case "socks5", "socks5h":
+		// socks5h 与 socks5 在我们的用法下等价(domain atyp 让代理端解析目标),归一化。
+		scheme = "socks5"
+	default:
+		return nil, fmt.Errorf("mimicry sidecar: 暂不支持的代理 scheme %q(仅支持 http/https/socks5)", proxyURL.Scheme)
+	}
+
+	host := proxyURL.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("mimicry sidecar: 代理 URL 缺少 host")
+	}
+	port, err := proxyPortForScheme(proxyURL, scheme)
+	if err != nil {
+		return nil, err
+	}
+
+	spec := &sidecarProxySpec{Scheme: scheme, Host: host, Port: port}
+	if u := proxyURL.User; u != nil {
+		spec.Username = u.Username()
+		if pw, ok := u.Password(); ok {
+			spec.Password = pw
+		}
+	}
+	return spec, nil
+}
+
+// proxyPortForScheme 取代理端口:URL 显式给端口则用之,否则按 scheme 补默认(https=443、
+// http=80、socks5=1080)。端口非法 fail-loud。
+func proxyPortForScheme(proxyURL *url.URL, scheme string) (uint16, error) {
+	if p := proxyURL.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n <= 0 || n > 65535 {
+			return 0, fmt.Errorf("mimicry sidecar: 代理端口非法 %q", p)
+		}
+		return uint16(n), nil
+	}
+	switch scheme {
+	case "https":
+		return 443, nil
+	case "socks5":
+		return 1080, nil
+	default:
+		return 80, nil
+	}
 }
 
 // forceH1Ptr 把 per-dial 的 forceH1 决策转成可省略的 *bool:false 时返回 nil(线缆不带该键,
