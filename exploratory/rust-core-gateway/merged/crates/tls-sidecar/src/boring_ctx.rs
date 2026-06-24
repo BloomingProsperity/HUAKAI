@@ -7,7 +7,20 @@ use tokio::{
 
 use crate::profile::TlsProfile;
 
+// build_connector 是无 ALPN 覆盖的公共构造器,保留以兼容既有调用方;crate 内部统一走
+// build_connector_with_alpn,故这里标注 allow(dead_code) 避免无引用告警。
+#[allow(dead_code)]
 pub fn build_connector(profile: &TlsProfile) -> Result<SslConnector, BoringCtxError> {
+    build_connector_with_alpn(profile, None)
+}
+
+// build_connector_with_alpn 在 build_connector 基础上支持 ALPN 覆盖。
+// alpn_override=Some(list) 时,握手广告的 ALPN 用 list 而非 profile.alpn——force_h1
+// 场景传 ["http/1.1"],从根上不广告 h2。None 时与历史行为完全一致(按 profile.alpn 广告)。
+pub fn build_connector_with_alpn(
+    profile: &TlsProfile,
+    alpn_override: Option<&[String]>,
+) -> Result<SslConnector, BoringCtxError> {
     let mut builder = SslConnector::builder(SslMethod::tls()).map_err(BoringCtxError::from)?;
     builder.set_grease_enabled(profile.grease);
     builder.set_permute_extensions(false);
@@ -35,7 +48,9 @@ pub fn build_connector(profile: &TlsProfile) -> Result<SslConnector, BoringCtxEr
             .set_client_hello_profile(&ciphers, &profile.client_hello_profile.groups, &ec_points)
             .map_err(BoringCtxError::from)?;
     }
-    let alpn = serialize_alpn(&profile.alpn)?;
+    // ALPN 来源:override 优先(force_h1 收窄为仅 http/1.1),否则按 profile.alpn 广告。
+    let alpn_protocols = alpn_override.unwrap_or(&profile.alpn);
+    let alpn = serialize_alpn(alpn_protocols)?;
     if !alpn.is_empty() {
         builder
             .set_alpn_protos(&alpn)
@@ -65,13 +80,38 @@ pub fn build_connector(profile: &TlsProfile) -> Result<SslConnector, BoringCtxEr
 }
 
 pub fn connect_config(profile: &TlsProfile) -> Result<ConnectConfiguration, BoringCtxError> {
-    let connector = build_connector(profile)?;
+    connect_config_with_alpn(profile, None)
+}
+
+// connect_config_force_h1 构造一个握手只广告 ALPN=http/1.1 的连接配置。
+// force_h1=true 时收窄 ALPN,服务端无从选 h2,connect.rs 的 selected_alpn 不可能等于 b"h2",
+// 必走 Raw 隧道,H2 bridge 分支被从根绕开;force_h1=false 时退回 profile.alpn(=今日行为)。
+pub fn connect_config_force_h1(
+    profile: &TlsProfile,
+    force_h1: bool,
+) -> Result<ConnectConfiguration, BoringCtxError> {
+    if force_h1 {
+        let http11 = [HTTP_1_1_ALPN.to_owned()];
+        connect_config_with_alpn(profile, Some(&http11))
+    } else {
+        connect_config_with_alpn(profile, None)
+    }
+}
+
+fn connect_config_with_alpn(
+    profile: &TlsProfile,
+    alpn_override: Option<&[String]>,
+) -> Result<ConnectConfiguration, BoringCtxError> {
+    let connector = build_connector_with_alpn(profile, alpn_override)?;
     let config = connector.configure().map_err(BoringCtxError::from)?;
     if profile.extensions.contains(&65037) {
         config.set_enable_ech_grease(true);
     }
     Ok(config)
 }
+
+// 强制 H1 时唯一广告的 ALPN 协议标识。
+const HTTP_1_1_ALPN: &str = "http/1.1";
 
 pub async fn validate_expected_ja4_before_connect(
     profile: &TlsProfile,
@@ -416,8 +456,51 @@ mod tests {
         damaged.signature_algorithms.reverse();
         let damaged_wire = capture_wire_client_hello(&damaged).await;
 
-        assert_eq!(damaged_wire.signature_algorithms, damaged.signature_algorithms);
+        assert_eq!(
+            damaged_wire.signature_algorithms,
+            damaged.signature_algorithms
+        );
         assert_ne!(damaged_wire.signature_algorithms, good.signature_algorithms);
+    }
+
+    // 抓的缺陷:force_h1=true 必须把线缆 ALPN 收窄为仅 http/1.1(不含 h2),否则服务端仍可能
+    // 选 h2,connect.rs 的 selected_alpn 等于 b"h2" 走 H2 bridge,force_h1 旋钮形同虚设。
+    // 注:生产内置 anthropic profile 本身 alpn=["http/1.1"](真 Claude Code 只走 H1),
+    // 故这里构造一个广告 [h2, http/1.1] 的 fixture profile,才能区分 force_h1 收窄前后,
+    // 同时也覆盖将来若有 h2 档案接入 sidecar 的场景。
+    // 自证:同一 fixture 在 force_h1=false 时线缆 ALPN 含 h2,force_h1=true 时只剩 http/1.1,
+    // 两者必须不同,证明 override 真正落到线缆。
+    #[tokio::test]
+    async fn boring_force_h1_narrows_wire_alpn_to_http11_only() {
+        let mut profile = anthropic_profile();
+        profile.alpn = vec!["h2".to_owned(), "http/1.1".to_owned()];
+        // 前提自检:fixture 确实广告 h2,否则本测试没有区分力。
+        assert!(
+            profile.alpn.iter().any(|p| p == "h2"),
+            "fixture profile 必须广告 h2,才能区分 force_h1 收窄前后"
+        );
+
+        let forced = capture_wire_client_hello_force_h1(&profile, true).await;
+        assert_eq!(
+            forced.alpn_protocols,
+            vec!["http/1.1".to_owned()],
+            "force_h1=true 时线缆 ALPN 必须只含 http/1.1"
+        );
+        assert!(
+            !forced.alpn_protocols.iter().any(|p| p == "h2"),
+            "force_h1=true 时线缆 ALPN 不得包含 h2"
+        );
+
+        let unforced = capture_wire_client_hello_force_h1(&profile, false).await;
+        assert!(
+            unforced.alpn_protocols.iter().any(|p| p == "h2"),
+            "force_h1=false 时必须保持 profile.alpn 含 h2(今日行为),实际={:?}",
+            unforced.alpn_protocols
+        );
+        assert_ne!(
+            forced.alpn_protocols, unforced.alpn_protocols,
+            "force_h1 开关前后线缆 ALPN 必须不同,证明 override 真正落到线缆"
+        );
     }
 
     #[tokio::test]
@@ -477,6 +560,23 @@ mod tests {
         let raw = super::capture_client_hello_record(profile, "api.anthropic.com")
             .await
             .unwrap();
+        parse_wire_client_hello(&raw).unwrap()
+    }
+
+    // 用 force_h1 开关构造连接配置并抓取线缆 ClientHello,供 force_h1 ALPN 断言用。
+    async fn capture_wire_client_hello_force_h1(
+        profile: &crate::profile::TlsProfile,
+        force_h1: bool,
+    ) -> WireClientHello {
+        let (client, server) = tokio::io::duplex(16 * 1024);
+        let capture = tokio::spawn(async move { read_first_tls_record(server).await });
+        let config = super::connect_config_force_h1(profile, force_h1).unwrap();
+        let _ = timeout(
+            Duration::from_secs(1),
+            tokio_boring::connect(config, "api.anthropic.com", client),
+        )
+        .await;
+        let raw = capture.await.unwrap();
         parse_wire_client_hello(&raw).unwrap()
     }
 
@@ -569,6 +669,7 @@ mod tests {
         let mut ec_points = Vec::new();
         let mut signature_algorithms = Vec::new();
         let mut supported_versions = Vec::new();
+        let mut alpn_protocols = Vec::new();
         if reader.remaining() > 0 {
             let extensions_len = reader.read_u16()? as usize;
             let extensions_end = reader.position() + extensions_len;
@@ -581,6 +682,7 @@ mod tests {
                     10 => groups = parse_u16_vector(data)?,
                     11 => ec_points = parse_u8_vector(data)?,
                     13 => signature_algorithms = parse_u16_vector(data)?,
+                    16 => alpn_protocols = parse_alpn_protocols(data)?,
                     43 => supported_versions = parse_supported_versions(data)?,
                     _ => {}
                 }
@@ -594,6 +696,7 @@ mod tests {
             ec_point_formats: ec_points,
             signature_algorithms,
             supported_versions,
+            alpn_protocols,
         })
     }
 
@@ -606,6 +709,7 @@ mod tests {
         ec_point_formats: Vec<u8>,
         signature_algorithms: Vec<u16>,
         supported_versions: Vec<u16>,
+        alpn_protocols: Vec<String>,
     }
 
     impl WireClientHello {
@@ -649,6 +753,23 @@ mod tests {
             return Err("invalid u8 vector");
         }
         Ok(reader.take(len)?.to_vec())
+    }
+
+    // 解析 ALPN 扩展(type 16):2 字节协议名列表总长,后接若干 (1 字节长度 + 协议字节)。
+    fn parse_alpn_protocols(data: &[u8]) -> Result<Vec<String>, &'static str> {
+        let mut reader = WireReader::new(data);
+        let list_len = reader.read_u16()? as usize;
+        if reader.remaining() < list_len {
+            return Err("invalid alpn list");
+        }
+        let end = reader.position() + list_len;
+        let mut out = Vec::new();
+        while reader.position() < end {
+            let name_len = reader.read_u8()? as usize;
+            let name = reader.take(name_len)?;
+            out.push(String::from_utf8_lossy(name).into_owned());
+        }
+        Ok(out)
     }
 
     fn parse_supported_versions(data: &[u8]) -> Result<Vec<u16>, &'static str> {

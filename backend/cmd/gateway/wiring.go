@@ -295,6 +295,8 @@ func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistr
 	if cfg != nil {
 		factory.SidecarSocketPath = cfg.TransportSidecarSocket
 		factory.SidecarFallbackEnabled = cfg.TransportSidecarFallback
+		// nil 时保持 factory 默认(沿用 mimicry env 默认强制 H1);非 nil 时运维显式覆盖。
+		factory.SidecarForceH1 = cfg.TransportSidecarForceH1
 	}
 	return factory
 }
