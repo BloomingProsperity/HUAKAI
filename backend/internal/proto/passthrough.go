@@ -6,8 +6,8 @@
 // HUAKAI 客户端永远看不到。本类型 + helpers 让任意未识别字段以 RawMessage
 // 形式被携带过整个 canonical pipeline，最终序列化时合并回输出。
 //
-// 与 portkey 的 extras 思路同方向但 HUAKAI 升级点：每个 extra field 都可
-// 走 FieldMatrix 查询 verdict（preserve / transform / drop），运维可观测。
+// HUAKAI 对每个 extra field 都可走 FieldMatrix 查询 verdict
+//（preserve / transform / drop），运维可观测。
 //
 // 使用模式（adapter 端）：
 //
@@ -126,7 +126,7 @@ func MergeExtrasInto(typedJSON []byte, env *PassthroughEnvelope) ([]byte, error)
 	return marshalMap(typedMap, env.Extra)
 }
 
-// attachPassthroughToEvents 把同一个上游 JSON chunk 的 unknown 字段复制到
+// AttachPassthroughToEvents 把同一个上游 JSON chunk 的 unknown 字段复制到
 // 该 chunk 产生的每条 canonical event。复制 map/value，避免下游修改一条
 // event 时影响同 chunk 的其它 event。
 func AttachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope) []CanonicalEvent {
@@ -168,10 +168,6 @@ func attachRequestPassthroughField(env *HCSF, field string, value json.RawMessag
 	}
 	copied := append(json.RawMessage(nil), value...)
 	env.Passthrough.Extra[field] = copied
-}
-
-func attachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope) []CanonicalEvent {
-	return AttachPassthroughToEvents(events, env)
 }
 
 func clonePassthroughEnvelope(env *PassthroughEnvelope) *PassthroughEnvelope {

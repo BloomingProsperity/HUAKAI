@@ -25,7 +25,6 @@ import (
 const (
 	endpointFamilyEmbeddings = "embeddings"
 	upstreamEmbeddingsPath   = "/v1/embeddings"
-	maxRequestBodyBytes      = 2 << 20
 	maxUpstreamBodyBytes     = 16 << 20
 )
 

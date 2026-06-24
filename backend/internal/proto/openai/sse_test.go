@@ -460,9 +460,7 @@ func scanOpenAIGoldenData(t *testing.T, fixture string) [][]byte {
 			continue
 		}
 		part := strings.TrimPrefix(line, "data:")
-		if strings.HasPrefix(part, " ") {
-			part = strings.TrimPrefix(part, " ")
-		}
+		part = strings.TrimPrefix(part, " ")
 		if data.Len() > 0 {
 			data.WriteByte('\n')
 		}

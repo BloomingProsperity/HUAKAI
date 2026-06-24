@@ -105,12 +105,12 @@ func effectiveGroupRatio(ratio decimal.Decimal) decimal.Decimal {
 	return ratio
 }
 
-// DefaultToolPrices returns the platform-level default ToolPrices for the
-// new-api / official upstream billing schedule (USD per 1000 calls, 1:1 with
-// HUAKAI billing — no QuotaPerUnit conversion needed):
+// DefaultToolPrices returns the platform-level default ToolPrices for official
+// upstream billing schedules (USD per 1000 calls, 1:1 with HUAKAI billing —
+// no QuotaPerUnit conversion needed):
 //
-//   - WebSearchPer1000:  $10.00  (new-api operation_setting web_search=10.0)
-//   - FileSearchPer1000: $ 2.50  (new-api operation_setting file_search=2.5)
+//   - WebSearchPer1000:  $10.00
+//   - FileSearchPer1000: $ 2.50
 //   - ImageGenerationPer1000: $0  (deferred to Stage D — upstream image-gen
 //     pricing is model/size-dependent and requires a separate price table)
 //

@@ -25,7 +25,6 @@ import (
 const (
 	endpointFamilyRerank = "rerank"
 	upstreamRerankPath   = "/v1/rerank"
-	maxRequestBodyBytes  = 2 << 20
 	maxUpstreamBodyBytes = 16 << 20
 	maxRerankDocuments   = 1000
 )

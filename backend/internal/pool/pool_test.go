@@ -5,6 +5,10 @@ package pool
 import (
 	"context"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +16,7 @@ import (
 )
 
 // =====================================================================
-// Sub2API-inheritable scenarios
+// 可继承行为场景
 // =====================================================================
 
 // AT-POOL-001: Layer 1 routing-config hit.
@@ -360,9 +364,44 @@ func TestAT_POOL_013_DefaultTopKCompatibility(t *testing.T) {
 	}
 }
 
-// AT-POOL-019: Cross-feature with F-OBS-001; deferred.
-func TestAT_POOL_019_Tx2Atomicity(t *testing.T) {
-	t.Skip("Cross-feature with F-OBS-001 settler; awaits slice 5 implementation.")
+func TestAT_POOL_NoPlaceholderSkipsRemain(t *testing.T) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "pool_test.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse pool_test.go: %v", err)
+	}
+	for _, decl := range parsed.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name == nil || !strings.HasPrefix(fn.Name.Name, "TestAT_POOL_") {
+			continue
+		}
+		if functionCallsPoolTestSkip(fn) {
+			t.Fatalf("%s still calls t.Skip/t.Skipf; AT-POOL acceptance tests must be executable", fn.Name.Name)
+		}
+	}
+}
+
+func functionCallsPoolTestSkip(fn *ast.FuncDecl) bool {
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil {
+			return true
+		}
+		recv, ok := sel.X.(*ast.Ident)
+		if ok && recv.Name == "t" && (sel.Sel.Name == "Skip" || sel.Sel.Name == "Skipf") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // =====================================================================

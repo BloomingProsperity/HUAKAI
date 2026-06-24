@@ -3,29 +3,9 @@
 package gateway
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
-
-// ---- helpers ----
-
-// mustMarshal encodes v to JSON and fails the test on error.
-func mustMarshal(t *testing.T, v interface{}) []byte {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("mustMarshal: %v", err)
-	}
-	return b
-}
-
-// bodyHasKey returns true if the raw JSON object at keyPath contains key.
-// keyPath uses simple dot notation for nested objects (not used here, but
-// the helper keeps things readable).
-func bodyHasKey(body []byte, key string) bool {
-	return strings.Contains(string(body), `"`+key+`"`)
-}
 
 // ---- Test 1: empty plan → byte semantics ----
 

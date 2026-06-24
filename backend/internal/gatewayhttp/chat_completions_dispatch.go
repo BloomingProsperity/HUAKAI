@@ -509,10 +509,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.reserveRes = reserveRes
-	if !ex.reserveQuota(w, reserveRes, predictedCost) {
-		return false
-	}
-	return true
+	return ex.reserveQuota(w, reserveRes, predictedCost)
 }
 
 func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing.ReserveResult, predictedCost decimal.Decimal) bool {

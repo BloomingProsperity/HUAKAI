@@ -731,40 +731,6 @@ func userReceiptBelongsToTenant(receipt UserCostReceipt, tenantID int64) bool {
 	}
 }
 
-func canonicalPayloadFromUserReceipt(receipt UserCostReceipt) audit.ReceiptCanonicalPayload {
-	return audit.ReceiptCanonicalPayload{
-		SchemaVersion:       receiptSchemaVersion(receipt),
-		RequestID:           strings.TrimSpace(receipt.RequestID),
-		ReceiptSequence:     receipt.ReceiptSequence,
-		TenantScopeRef:      strings.TrimSpace(receipt.TenantScopeRef),
-		Model:               strings.TrimSpace(receipt.Cost.Model),
-		InputTokens:         receipt.Cost.InputTokens,
-		OutputTokens:        receipt.Cost.OutputTokens,
-		CachedTokens:        receipt.Cost.CachedTokens,
-		CostTotalMicroUSD:   receipt.Cost.CostTotalMicroUSD,
-		RateTableSnapshotID: receipt.Cost.RateTableSnapshotID,
-		CreatedAt:           canonicalReceiptTime(receipt.OccurredAt),
-		ValidationState:     strings.TrimSpace(receipt.ValidationState),
-		Verdict:             strings.TrimSpace(receipt.Verdict),
-		AdjustmentRefs:      canonicalAdjustmentRefs(receipt.AdjustmentRefs),
-	}
-}
-
-func canonicalPayloadV1FromUserReceipt(receipt UserCostReceipt) audit.ReceiptCanonicalPayloadV1 {
-	return audit.ReceiptCanonicalPayloadV1{
-		SchemaVersion:       audit.ReceiptSchemaVersionV1,
-		RequestID:           strings.TrimSpace(receipt.RequestID),
-		TenantID:            receipt.TenantID,
-		Model:               strings.TrimSpace(receipt.Cost.Model),
-		InputTokens:         receipt.Cost.InputTokens,
-		OutputTokens:        receipt.Cost.OutputTokens,
-		CachedTokens:        receipt.Cost.CachedTokens,
-		CostTotalMicroUSD:   receipt.Cost.CostTotalMicroUSD,
-		RateTableSnapshotID: receipt.Cost.RateTableSnapshotID,
-		CreatedAt:           canonicalReceiptTime(receipt.OccurredAt),
-	}
-}
-
 func canonicalHashFromUserReceipt(ctx context.Context, receipt UserCostReceipt) ([]byte, error) {
 	_ = ctx
 	return canonicalBytesFromUserReceipt(receipt)
@@ -854,18 +820,6 @@ func canonicalAdjustmentRefs(refs []string) []string {
 		return []string{}
 	}
 	return out
-}
-
-func canonicalReceiptTime(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return value
-	}
-	return parsed.UTC().Format(time.RFC3339Nano)
 }
 
 func userReceiptTime(value string) time.Time {

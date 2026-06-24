@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 )
@@ -366,14 +365,14 @@ func TestConfidenceForTier(t *testing.T) {
 	}
 }
 
-// Body matching does not panic on nil body.
+// nil body 不应导致 panic，429 仍应落到通用限流分类。
 func TestClassify_NilBody(t *testing.T) {
 	c, err := Classify(429, nil, nil, "openai")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(c.Class), "upstream_") {
-		// Acceptable result is rate_limited.
+	if c.Class != ErrorClassRateLimited {
+		t.Fatalf("class=%s; want upstream_rate_limited", c.Class)
 	}
 }
 

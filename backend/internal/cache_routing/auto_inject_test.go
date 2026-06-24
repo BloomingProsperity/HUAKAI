@@ -217,7 +217,7 @@ func TestAutoInject_ArrayLastBlockNonObject_NoPanic(t *testing.T) {
 		}
 	}()
 	out := AutoInjectSystemCacheControl(body, 0)
-	if out == nil || len(out) == 0 {
+	if len(out) == 0 {
 		t.Errorf("应返回 body")
 	}
 }

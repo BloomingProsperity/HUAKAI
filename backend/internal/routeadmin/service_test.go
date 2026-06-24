@@ -459,7 +459,7 @@ func TestSetEnabled_DisableKeepsRouteListedThenReEnable(t *testing.T) {
 	}
 }
 
-// 守幂等: 把 enabled 设成当前值不报错, 照常返回快照(与 sub2api schedulable 动作幂等一致)。
+// 守幂等: 把 enabled 设成当前值不报错,照常返回快照。
 // mutation: 若实现对 same-value 报错/拒绝 → 任一段红。
 func TestSetEnabled_Idempotent(t *testing.T) {
 	svc := NewService(NewMemoryStore(), nil)

@@ -77,8 +77,8 @@ const (
 	// provider 默认。
 	TransportModeStandard TransportMode = "standard"
 	// 各 vendor 反转模式下的 mimicry transport 选项。每家伪装目标不同
-	// （TLS ClientHello + HTTP/2 SETTINGS + ALPN 等），由调用方按
-	// fingerprint template 配置 utls dialer。
+	// （TLS ClientHello + ALPN/HTTP 层约束等），由调用方按 fingerprint
+	// template 配置 utls dialer。
 	//
 	// Anthropic 路径的 mode 常量保留供未来重启用。
 	TransportModeMimicryClaudeCode TransportMode = "mimicry_claude_code"

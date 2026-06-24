@@ -431,7 +431,7 @@ func (f *StreamForwarder) drainWithAdapter(
 	acc *UsageAccumulator,
 ) DrainOutcome {
 	budgets := f.effectiveDrainBudgets()
-	deadline := time.NewTimer(budgets.MaxSeconds)
+	deadline := time.NewTimer(budgets.MaxDuration)
 	defer deadline.Stop()
 	var drainedBytes int64
 	for {
@@ -615,11 +615,11 @@ func (f *StreamForwarder) newClientState() any {
 
 func (f *StreamForwarder) effectiveDrainBudgets() DrainBudgets {
 	b := f.DrainBudgets
-	if b.MaxSeconds <= 0 {
-		b.MaxSeconds = f.Timeouts.DrainMaxSeconds
+	if b.MaxDuration <= 0 {
+		b.MaxDuration = f.Timeouts.DrainMaxDuration
 	}
-	if b.MaxSeconds <= 0 {
-		b.MaxSeconds = 30 * time.Second
+	if b.MaxDuration <= 0 {
+		b.MaxDuration = 30 * time.Second
 	}
 	if b.MaxBytes <= 0 {
 		b.MaxBytes = 1 << 20

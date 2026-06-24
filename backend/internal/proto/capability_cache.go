@@ -31,9 +31,9 @@ type CacheControlNode struct {
 	// CacheReadInputTokens 可选；映射 CanonicalUsage.CacheReadInputTokens。
 	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
 
-	// SanitizeSystemMetadata 必填；默认 true；防止动态 billing/header metadata 破坏 prefix cache。
-	// 对应 new-api#4678 cache_read=0 类问题的 issue-derived 需求。
-	SanitizeSystemMetadata bool `json:"sanitize_system_metadata"`
+		// SanitizeSystemMetadata 必填；默认 true；防止动态 billing/header metadata 破坏 prefix cache。
+		// 这是从真实 cache_read=0 场景沉淀出的需求。
+		SanitizeSystemMetadata bool `json:"sanitize_system_metadata"`
 
 	// LocalityHint 可选；PASR cache-aware 关联留位；P-0 仅记录，不在 P-0 触发 selector 行为。
 	// 取值建议：account_pin/account_recent/global。

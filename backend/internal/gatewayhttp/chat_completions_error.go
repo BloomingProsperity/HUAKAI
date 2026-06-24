@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
 	"os"
@@ -99,17 +98,6 @@ func setAbortFailedHeader(w http.ResponseWriter, ctx context.Context, requestID 
 	if w != nil {
 		w.Header().Set(headerHuakaiAbortFailed, clienterr.CodeAbortFailed)
 	}
-}
-
-func writeNormalizedUpstreamError(w http.ResponseWriter, status int, fallbackCode string, c gateway.Classification) {
-	code := fallbackCode
-	if c.Class != "" {
-		code = "upstream_" + string(c.Class)
-	}
-	if c.RetryAfterMs > 0 {
-		w.Header().Set("Retry-After", fmt.Sprintf("%d", (c.RetryAfterMs+999)/1000))
-	}
-	writeJSONError(w, status, code, "upstream request failed")
 }
 
 func clientStatusForUpstreamError(upstreamStatus int, class gateway.ErrorClass) int {

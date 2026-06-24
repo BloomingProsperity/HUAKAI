@@ -161,7 +161,7 @@ WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id)
 //
 // roadmap (widening 站点): enabled 现为裸布尔, 只表达「运营手动启/停」。若将来落地健康检查 auto-disable,
 // 须把它扩成小 enum(enabled / manual-disabled / auto-disabled)以区分运营手动 off 与系统自动 off —— 否则
-// 自动 re-enable 会覆盖运营的手动 off(new-api/CLIProxyAPI 用多态 status 正是防此)。
+// 自动 re-enable 会覆盖运营的手动 off。
 // 详见 docs/process/plans/2026-06-18-routes-enable-disable.md。
 func (s *PostgresStore) SetEnabled(ctx context.Context, tenantID, id int64, enabled bool) (Route, error) {
 	if s == nil || s.pool == nil {

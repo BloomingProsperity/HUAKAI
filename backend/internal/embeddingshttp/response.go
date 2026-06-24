@@ -29,7 +29,7 @@ func writeInsufficientQuotaError(w http.ResponseWriter) {
 }
 
 // writeInsufficientQuotaErrorRetryable 窗口配额拒绝时吐 Retry-After 头(秒)+
-// body 的 window_resets_at(RFC3339),让客户端按窗口边界智能退避(对齐 sub2api)。
+// body 的 window_resets_at(RFC3339),让客户端按窗口边界智能退避。
 func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time.Duration) {
 	w.Header().Set("Content-Type", "application/json")
 	errFields := map[string]string{

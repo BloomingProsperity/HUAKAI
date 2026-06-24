@@ -41,7 +41,7 @@ func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
 	}
 
 	// Non-hex letters must still round-trip (b/c real IDs include A-Z / a-z beyond f).
-	for _, tc := range []caseItem{
+	cases = append(cases, []caseItem{
 		{
 			name:     "lowercase-g",
 			upstream: UpstreamProtocolOpenAI,
@@ -62,9 +62,7 @@ func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
 			upstream: UpstreamProtocolBedrock,
 			raw:      "tool_id_with_G_G4",
 		},
-	} {
-		cases = append(cases, tc)
-	}
+	}...)
 
 	for _, tc := range cases {
 		canonical, err := ToCanonicalCallID(tc.raw, tc.upstream)

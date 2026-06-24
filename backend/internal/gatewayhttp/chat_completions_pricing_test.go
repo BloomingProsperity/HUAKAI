@@ -872,6 +872,7 @@ func TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields(t *t
 			}
 			if got.ConfidenceScore == nil {
 				t.Fatal("ConfidenceScore=nil want populated audit score")
+				return
 			}
 			if *got.ConfidenceScore != tt.wantConfidence {
 				t.Fatalf("ConfidenceScore=%v want %v", *got.ConfidenceScore, tt.wantConfidence)
@@ -1196,6 +1197,7 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 			draft := nonStreamingUsageDraft(env, tt.actualCost, nil)
 			if draft.ConfidenceScore == nil {
 				t.Fatal("ConfidenceScore=nil want populated audit score")
+				return
 			}
 			// Mutation guard: if CrossCheck is not wired (confidence hardcoded 1.0,
 			// pending false), the FAIL case asserts 0.5/true -> RED.

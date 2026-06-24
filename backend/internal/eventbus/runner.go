@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -146,6 +147,7 @@ func (r *handlerRunner) runJob(job handlerJob) error {
 	select {
 	case err := <-done:
 		if err != nil {
+			err = r.normalizeHandlerError(ctx, err)
 			r.bus.setState(job.event, r.handler.ID(), HandlerStateFailed, err)
 			r.bus.writeDLQ(job.event, r.handler, err)
 			return err
@@ -158,6 +160,16 @@ func (r *handlerRunner) runJob(job handlerJob) error {
 		r.bus.writeDLQ(job.event, r.handler, err)
 		return err
 	}
+}
+
+func (r *handlerRunner) normalizeHandlerError(ctx context.Context, err error) error {
+	if err == nil || ctx == nil {
+		return err
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %s", ErrHandlerTimeout, r.handler.ID())
+	}
+	return err
 }
 
 func (r *handlerRunner) finish(job handlerJob, err error) {

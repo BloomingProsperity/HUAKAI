@@ -148,7 +148,7 @@ func newForwarder() *StreamForwarder {
 			FirstTokenTimeout:  500 * time.Millisecond,
 			InterEventTimeout:  500 * time.Millisecond,
 			TotalStreamTimeout: 5 * time.Second,
-			DrainMaxSeconds:    100 * time.Millisecond,
+			DrainMaxDuration:   100 * time.Millisecond,
 		},
 		ScannerBufferCap: 1 << 20,
 	}
@@ -179,7 +179,7 @@ func anthropicForwardRequest(tenantID, accountID int64) ForwardRequest {
 }
 
 // =====================================================================
-// Sub2API-inheritable scenarios
+// 可继承行为场景
 // =====================================================================
 
 // AT-GW-002-01: 首个事件在 1s 内可被客户端观测到。
@@ -310,7 +310,7 @@ func TestAT_GW_002_09_DrainConsumesEventsAndExtractsUsage(t *testing.T) {
 	rec := &disconnectingWriter{after: 1}
 	writesBeforeDrain := rec.writes
 	f := newForwarder()
-	f.DrainBudgets = DrainBudgets{MaxSeconds: 200 * time.Millisecond, MaxBytes: 100}
+	f.DrainBudgets = DrainBudgets{MaxDuration: 200 * time.Millisecond, MaxBytes: 100}
 	draft, _ := f.Forward(context.Background(), bytes.NewReader(upstream), rec, anthropicForwardRequest(1, 100))
 
 	if draft.EndClass != ClientDisconnect {
@@ -344,7 +344,7 @@ func TestAT_GW_002_10_DrainCostCapTriggers(t *testing.T) {
 	rec := &disconnectingWriter{after: 1}
 	f := newForwarder()
 	f.DrainBudgets = DrainBudgets{
-		MaxSeconds:       1 * time.Second,
+		MaxDuration:      1 * time.Second,
 		MaxBytes:         1 << 20,
 		MaxEstimatedCost: decimal.NewFromFloat(0.10),
 	}

@@ -11,8 +11,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
-// 测试用 prefix。故意写成自定义文案而非 sub2api 的硬编码常量，确认 HUAKAI
-// 引擎对 PrefixText 的配置化处理是健全的。
+// 测试用 prefix。故意写成自定义文案，确认 HUAKAI 引擎对 PrefixText
+// 的配置化处理是健全的。
 const testRewritePrefix = "你正在通过 HUAKAI 网关访问。"
 
 func TestSystemPromptPlanFromBinding(t *testing.T) {

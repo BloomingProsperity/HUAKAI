@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// 守 streaming-P1:AI relay 数据面路径不被套连接级总超时(否则长流/长推理会被砍断,
-// 匹配 new-api/sub2api/CLIProxyAPI + OpenAI 官方);控制面路径保留总超时。
+// 守 streaming-P1:AI relay 数据面路径不被套连接级总超时，否则长流/长推理会被砍断；
+// 控制面路径保留总超时。
 // Mutation: 去掉 isAIRelayPath 豁免 → relay 路径也带 deadline → 本断言红。
 func TestAIAwareTimeout_ExemptsRelayPathsFromTotalTimeout(t *testing.T) {
 	mw := aiAwareTimeout(50 * time.Millisecond)

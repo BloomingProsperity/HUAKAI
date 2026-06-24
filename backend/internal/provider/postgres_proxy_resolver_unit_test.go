@@ -94,7 +94,8 @@ func TestPostgresProxyResolver_NilReceiverReturnsMisconfigured(t *testing.T) {
 	// nil receiver 是 DI 错误，必须 fail-loud 为 ErrProxyResolverMisconfigured
 	// （不混淆为 ErrAccountNotFound，避免 dispatcher fail-open 绕过代理）
 	var r *PostgresProxyResolver
-	_, err := r.Resolve(nil, 1) //nolint:staticcheck // 故意传 nil ctx 验证 nil receiver 短路
+	//lint:ignore SA1012 故意传 nil ctx 验证 nil receiver 短路不会触达 context 使用点。
+	_, err := r.Resolve(nil, 1)
 	if !errors.Is(err, ErrProxyResolverMisconfigured) {
 		t.Errorf("nil receiver 应返回 ErrProxyResolverMisconfigured，得到 %v", err)
 	}
@@ -106,7 +107,8 @@ func TestPostgresProxyResolver_NilReceiverReturnsMisconfigured(t *testing.T) {
 func TestPostgresProxyResolver_NilPoolReturnsMisconfigured(t *testing.T) {
 	// pool 字段为 nil（构造器传 nil） → 仍应短路为 ErrProxyResolverMisconfigured，不 panic
 	r := &PostgresProxyResolver{pool: nil}
-	_, err := r.Resolve(nil, 1) //nolint:staticcheck
+	//lint:ignore SA1012 故意传 nil ctx 验证 nil pool 短路不会触达 context 使用点。
+	_, err := r.Resolve(nil, 1)
 	if !errors.Is(err, ErrProxyResolverMisconfigured) {
 		t.Errorf("nil pool 应返回 ErrProxyResolverMisconfigured，得到 %v", err)
 	}

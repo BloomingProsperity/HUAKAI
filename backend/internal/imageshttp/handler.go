@@ -26,7 +26,6 @@ import (
 
 const (
 	endpointFamilyImages = "images"
-	maxRequestBodyBytes  = 4 << 20
 	maxUpstreamBodyBytes = 32 << 20
 )
 

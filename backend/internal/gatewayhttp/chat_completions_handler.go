@@ -188,9 +188,8 @@ type chatExecution struct {
 	attempt           router.AttemptPlan
 	routeID           string
 	currentAttemptSeq int
-	// modelFallbackEnabled mirrors resolver.Enabled() for this request; it gates
-	// the opt-in ROUTE-023 context-window pre-check feed in the dispatch path
-	// (default off => no pre-check, matching sub2api/new-api/CLIProxyAPI).
+	// modelFallbackEnabled 记录本请求的 resolver.Enabled() 结果；dispatch 路径用它控制
+	// ROUTE-023 context-window pre-check 是否接入。默认关闭时不做预检查。
 	modelFallbackEnabled bool
 
 	idempotencyHeader                string
@@ -498,9 +497,8 @@ func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 }
 
 func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts int) modelRunResult {
-	// SUB2-EGRESS-04: intercept Claude Code throwaway requests before billing.
-	// Gate is opt-in (default off); when off this block is a true no-op.
-	// Source: sub2api gateway_handler.go:359-369 / 613-623
+	// 预热拦截在计费前识别一次性探测请求。
+	// 开关默认关闭；关闭时这一段保持 no-op。
 	if warmupInterceptEnabled(ex.ctx, ex.d.PlatformSettings) {
 		isClaudeUA := warmupintercept.IsClaudeCodeUserAgent(ex.r.UserAgent())
 		maxTok := 0
@@ -713,7 +711,7 @@ func protocolAdapterForBuffered(f *gateway.StreamForwarder, protocolFamily strin
 	return adapters.For(protocolFamily)
 }
 
-const maxRawBufferedUpstreamBodyBytes = 1 << 20
+const maxRawBufferedUpstreamBodyBytes = gateway.MaxBufferedUpstreamResponseBytes
 
 var errRawBufferedUpstreamBodyTooLarge = errors.New("gatewayhttp: upstream buffered response exceeds 1MiB limit")
 

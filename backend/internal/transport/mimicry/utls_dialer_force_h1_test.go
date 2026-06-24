@@ -1,6 +1,9 @@
 package mimicry
 
 import (
+	"context"
+	"net"
+	"net/url"
 	"reflect"
 	"testing"
 
@@ -16,6 +19,25 @@ func specALPN(t *testing.T, spec *utls.ClientHelloSpec) []string {
 		}
 	}
 	return nil
+}
+
+// TestUtlsDialerDialTLSRejectsNilTemplateBeforeDial 守护构造错误的失败边界:
+// 模板为空时必须在网络拨号前 fail-loud。变异证伪:把 nil 模板检查放到 dialRaw
+// 之后,本测试的 ProxyDialer 哨兵会触发 t.Fatal。
+func TestUtlsDialerDialTLSRejectsNilTemplateBeforeDial(t *testing.T) {
+	dialer := &UtlsDialer{
+		ProxyDialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			t.Fatalf("nil 模板应在拨号前失败,不应进入 ProxyDialer: %s %s", network, addr)
+			return nil, nil
+		},
+	}
+	_, err := dialer.DialTLS(context.Background(), "tcp", "api.anthropic.com:443")
+	if err == nil {
+		t.Fatal("nil 模板 DialTLS 应返回错误")
+	}
+	if got, want := err.Error(), "mimicry: nil clienthello template"; got != want {
+		t.Fatalf("nil 模板错误=%q,want %q", got, want)
+	}
 }
 
 // TestForceH1NarrowsCustomSpecALPN 守护核心不变量:force-h1 把自定义模板的线缆
@@ -105,5 +127,27 @@ func TestNewRoundTripperDisablesAttemptHTTP2(t *testing.T) {
 	}
 	if rt.inner.ForceAttemptHTTP2 {
 		t.Fatal("NewRoundTripper 内层 Transport.ForceAttemptHTTP2 应为 false")
+	}
+}
+
+// TestProxyRoundTripperDisablesAttemptHTTP2 守护代理出口同直连出口保持一致:
+// uTLS 代理路径也必须显式关闭 Go 内置 h2 尝试。变异证伪:只把 WithProxy 内层
+// Transport 改回 true,直连测试仍绿,本测试转红。
+func TestProxyRoundTripperDisablesAttemptHTTP2(t *testing.T) {
+	base, ok := NewRoundTripper(AnthropicCLIMimicryV1Template()).(*roundTripper)
+	if !ok {
+		t.Fatalf("NewRoundTripper 返回类型非 *roundTripper")
+	}
+	proxyURL := &url.URL{Scheme: "http", Host: "127.0.0.1:8080"}
+	proxied, err := base.WithProxy(proxyURL)
+	if err != nil {
+		t.Fatalf("WithProxy: %v", err)
+	}
+	rt, ok := proxied.(*roundTripper)
+	if !ok {
+		t.Fatalf("WithProxy 返回类型非 *roundTripper")
+	}
+	if rt.inner.ForceAttemptHTTP2 {
+		t.Fatal("WithProxy 内层 Transport.ForceAttemptHTTP2 应为 false")
 	}
 }

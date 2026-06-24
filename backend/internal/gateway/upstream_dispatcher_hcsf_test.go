@@ -49,6 +49,132 @@ func testHCSFEnvelope() *proto.HCSF {
 	return env
 }
 
+func TestCloneHCSFDeepCopiesMutableFields(t *testing.T) {
+	env := testHCSFEnvelope()
+	strict := true
+	env.RequestControls.ToolChoice = json.RawMessage(`{"type":"auto"}`)
+	env.RequestControls.ResponseFormat = &proto.ResponseFormat{
+		Type:   "json_schema",
+		Schema: json.RawMessage(`{"name":"schema"}`),
+		Strict: &strict,
+	}
+	env.Extensions = map[string]json.RawMessage{
+		"vendor:opaque": json.RawMessage(`{"nested":"source"}`),
+	}
+	env.Passthrough = &proto.PassthroughEnvelope{Extra: map[string]json.RawMessage{
+		"request_only": json.RawMessage(`"drop"`),
+	}}
+	env.BufferedResponse = &proto.CanonicalResponse{
+		ID: "preclone",
+		Passthrough: &proto.PassthroughEnvelope{Extra: map[string]json.RawMessage{
+			"response_only": json.RawMessage(`"drop"`),
+		}},
+	}
+	env.StreamEvents = []proto.CanonicalEvent{{
+		Type: "message_delta",
+		Passthrough: &proto.PassthroughEnvelope{Extra: map[string]json.RawMessage{
+			"event_only": json.RawMessage(`"drop"`),
+		}},
+	}}
+	env.CapabilityGraph.ProtocolLoss = []proto.ProtocolLossEntry{{
+		Code:    "graph_loss",
+		Details: map[string]string{"scope": "graph"},
+	}}
+	env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, proto.CapabilityNode{
+		ID:          "n_tool_1",
+		Kind:        proto.CapabilityToolUse,
+		StreamReady: proto.StreamReadyNo,
+		ToolUse: &proto.ToolUseNode{
+			ToolCallID: "call_1",
+			Name:       "lookup",
+			Input:      json.RawMessage(`{"q":"source"}`),
+			Status:     proto.ToolNodeComplete,
+		},
+		ProtocolLoss: []proto.ProtocolLossEntry{{
+			Code:    "node_loss",
+			Details: map[string]string{"scope": "node"},
+		}},
+	})
+	env.Accounting.LiveUsage = &proto.LiveUsage{SessionDurationMS: 123}
+	env.Accounting.HopChain = []proto.HopAttestation{{
+		Hop:         proto.HopProvider,
+		FeatureRefs: []string{"f1"},
+		Detail:      json.RawMessage(`{"hop":"source"}`),
+	}}
+
+	cloned, err := cloneHCSF(env)
+	if err != nil {
+		t.Fatalf("cloneHCSF: %v", err)
+	}
+
+	*env.RequestControls.MaxTokens = 999
+	env.RequestControls.ToolChoice[0] = '['
+	env.RequestControls.ResponseFormat.Schema[0] = '['
+	*env.RequestControls.ResponseFormat.Strict = false
+	env.Messages[0].Content[0].Text = "mutated message"
+	env.CapabilityGraph.Nodes[0].Text.Block.Text = "mutated graph"
+	env.CapabilityGraph.Nodes[1].ToolUse.Input[0] = '['
+	env.CapabilityGraph.ProtocolLoss[0].Details["scope"] = "mutated graph"
+	env.CapabilityGraph.Nodes[1].ProtocolLoss[0].Details["scope"] = "mutated node"
+	env.Extensions["vendor:opaque"][0] = '['
+	env.Accounting.LiveUsage.SessionDurationMS = 999
+	env.Accounting.ModelChain.RouteDecided = "mutated-model"
+	env.Accounting.HopChain[0].FeatureRefs[0] = "mutated-feature"
+	env.Accounting.HopChain[0].Detail[0] = '['
+
+	if got := *cloned.RequestControls.MaxTokens; got != 64 {
+		t.Fatalf("cloned MaxTokens=%d want 64", got)
+	}
+	if string(cloned.RequestControls.ToolChoice) != `{"type":"auto"}` {
+		t.Fatalf("cloned ToolChoice mutated: %s", cloned.RequestControls.ToolChoice)
+	}
+	if string(cloned.RequestControls.ResponseFormat.Schema) != `{"name":"schema"}` {
+		t.Fatalf("cloned response schema mutated: %s", cloned.RequestControls.ResponseFormat.Schema)
+	}
+	if cloned.RequestControls.ResponseFormat.Strict == nil || !*cloned.RequestControls.ResponseFormat.Strict {
+		t.Fatalf("cloned response strict mutated: %+v", cloned.RequestControls.ResponseFormat.Strict)
+	}
+	if got := cloned.Messages[0].Content[0].Text; got != "raw fallback text" {
+		t.Fatalf("cloned message text=%q want original", got)
+	}
+	if got := cloned.CapabilityGraph.Nodes[0].Text.Block.Text; got != "graph text" {
+		t.Fatalf("cloned graph text=%q want original", got)
+	}
+	if string(cloned.CapabilityGraph.Nodes[1].ToolUse.Input) != `{"q":"source"}` {
+		t.Fatalf("cloned tool input mutated: %s", cloned.CapabilityGraph.Nodes[1].ToolUse.Input)
+	}
+	if got := cloned.CapabilityGraph.ProtocolLoss[0].Details["scope"]; got != "graph" {
+		t.Fatalf("cloned graph loss detail=%q want graph", got)
+	}
+	if got := cloned.CapabilityGraph.Nodes[1].ProtocolLoss[0].Details["scope"]; got != "node" {
+		t.Fatalf("cloned node loss detail=%q want node", got)
+	}
+	if string(cloned.Extensions["vendor:opaque"]) != `{"nested":"source"}` {
+		t.Fatalf("cloned extension mutated: %s", cloned.Extensions["vendor:opaque"])
+	}
+	if cloned.Passthrough != nil {
+		t.Fatalf("clone must keep prior JSON-clone semantics and clear HCSF passthrough: %+v", cloned.Passthrough)
+	}
+	if cloned.BufferedResponse == nil || cloned.BufferedResponse.Passthrough != nil {
+		t.Fatalf("clone must clear buffered response passthrough; got %+v", cloned.BufferedResponse)
+	}
+	if len(cloned.StreamEvents) != 1 || cloned.StreamEvents[0].Passthrough != nil {
+		t.Fatalf("clone must clear stream event passthrough; got %+v", cloned.StreamEvents)
+	}
+	if got := cloned.Accounting.LiveUsage.SessionDurationMS; got != 123 {
+		t.Fatalf("cloned live usage=%d want 123", got)
+	}
+	if got := cloned.Accounting.ModelChain.RouteDecided; got != "gpt-4o-upstream" {
+		t.Fatalf("cloned model chain route=%q want original", got)
+	}
+	if got := cloned.Accounting.HopChain[0].FeatureRefs[0]; got != "f1" {
+		t.Fatalf("cloned hop feature=%q want f1", got)
+	}
+	if string(cloned.Accounting.HopChain[0].Detail) != `{"hop":"source"}` {
+		t.Fatalf("cloned hop detail mutated: %s", cloned.Accounting.HopChain[0].Detail)
+	}
+}
+
 func hcsfCtx() context.Context {
 	return gatewayHCSFCtx(context.Background())
 }

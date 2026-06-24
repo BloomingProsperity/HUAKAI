@@ -28,7 +28,6 @@ const (
 	endpointFamilyCountTokens = "messages_count_tokens"
 	upstreamCompletionsPath   = "/v1/completions"
 	upstreamCountTokensPath   = "/v1/messages/count_tokens"
-	maxRequestBodyBytes       = 2 << 20
 	maxUpstreamBodyBytes      = 16 << 20
 )
 

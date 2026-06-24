@@ -2,8 +2,8 @@
 // 即 模型→pool 路由绑定:其列和 resolver 早已存在,却没有 admin 写入路径(典型的
 // "能力建了却够不着" inert gap)。
 //
-// 顶层资源 /admin/v1/model-pool-bindings(D1:对齐成熟参照把 channel/model 绑定做成
-// 顶层 admin CRUD 的惯例,并复用双角色门让 tenant_operator 能管自己租户的绑定 ——
+// 顶层资源 /admin/v1/model-pool-bindings(D1:把 channel/model 绑定做成
+// 顶层 admin CRUD,并复用双角色门让 tenant_operator 能管自己租户的绑定 ——
 // model-admin 那个 platform_admin-only 门会把它挡在外面)。门照 proxyadminhttp:
 // tenant_operator 自 scope,或 platform_admin 经 ?tenant_id + CanIssueForTenant。
 package modelbindingadminhttp

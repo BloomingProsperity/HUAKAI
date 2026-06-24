@@ -16,8 +16,8 @@ import (
 
 // user_delete.go — admin 软删终端用户(S4)。软删(deleted_at=now,status='deleted')
 // 非硬删,对齐 users 的 uq_users_tenant_email partial-index(WHERE deleted_at IS NULL),
-// 使删后同邮箱可复建。删除护栏:拒 target.role=='admin'(对齐 sub2api,禁经本面删
-// admin)。删除连带撤会话(usersession RevokeUser)——封号即时生效语义,否则被删
+// 使删后同邮箱可复建。删除护栏:拒 target.role=='admin',禁止经本面删除
+// admin。删除连带撤会话(usersession RevokeUser)——封号即时生效语义,否则被删
 // 用户持已签 session 仍可访问(越权窗口)。API key 失效由 api_key_resolver 联查
 // user_status!=active 天然达成(status='deleted'),无需显式撤 key。
 
@@ -57,8 +57,8 @@ func newDeleteUserHandler(d Deps) http.HandlerFunc {
 				fmt.Sprintf("get user failed: %v", err))
 			return
 		}
-		// 越权护栏(CMB-5 类):本面绝不能删 role='admin' 用户(对齐 sub2api 的
-		// 「cannot delete admin user」)。在 SoftDelete 之前拒,setter 不被调。
+			// 越权护栏(CMB-5 类):本面绝不能删 role='admin' 用户。
+			// 在 SoftDelete 之前拒,setter 不被调。
 		if before.Role == "admin" {
 			writeError(w, http.StatusForbidden, "admin_cannot_delete_admin",
 				"cannot delete an admin user via this endpoint")

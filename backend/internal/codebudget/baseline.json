@@ -6,6 +6,8 @@
     "auth/antigravity_token_provider.go": 684,
     "billing/settler.go": 1102,
     "channelhealth/service.go": 813,
+    "cmd/gateway/routes.go": 1096,
+    "cmd/gateway/wiring.go": 1793,
     "credentialacq/oauth_devicecode.go": 762,
     "credentialstore/postgres_store.go": 1377,
     "credentialworker/mode_refresh.go": 838,
@@ -42,6 +44,10 @@
     "voucher/store_postgres.go": 708
   },
   "packages": {
+    "cmd/gateway": [
+      6772,
+      35
+    ],
     "gateway": [
       8098,
       26

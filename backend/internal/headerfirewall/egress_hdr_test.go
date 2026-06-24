@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Egress anti-detection hygiene (parity with CLIProxyAPI/sub2api/AIClient-2-API).
+// Egress anti-detection hygiene for HUAKAI outbound relay requests.
 // MUTATION coverage:
 //   - making NormalizeEgressRequestHeaders a no-op leaves proxy-leak headers in the
 //     outbound request → the strip assertions go red.

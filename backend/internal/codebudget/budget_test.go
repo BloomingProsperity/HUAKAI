@@ -1,6 +1,6 @@
 // 包 codebudget — 反 god-package 软预算门(冻结规则 2026-06-10 软化的落地)。
 //
-// 背景:internal/{gatewayhttp,gateway,proto} 的「禁新增文件」硬冻结实测失败——
+// 背景:internal/{gatewayhttp,gateway,proto} 与 cmd/gateway 的「禁新增文件」硬冻结实测失败——
 // freeze 只挡新文件,把新逻辑逼进旧文件致其膨胀(gatewayhttp 33K 行/0 子包)。
 // 本门改为软预算:非测试 Go 文件 ≤ maxFileLines 行,单目录包非测试 ≤
 // maxPackageLines 行 / maxPackageFiles 文件;存量超标项按当前体量入基线豁免
@@ -31,45 +31,32 @@ const (
 )
 
 type baseline struct {
-	// Files: 相对 internal/ 的文件路径 → 入基线时的行数。
+	// Files: internal 下为相对 internal/ 的文件路径；cmd 下带 cmd/ 前缀。
 	Files map[string]int `json:"files"`
-	// Packages: 相对 internal/ 的目录 → 入基线时的 [行数, 文件数]。
+	// Packages: internal 下为相对 internal/ 的目录；cmd 下带 cmd/ 前缀。
 	Packages map[string][2]int `json:"packages"`
+}
+
+type budgetRoot struct {
+	dir    string
+	prefix string
 }
 
 func TestFileAndPackageBudgets(t *testing.T) {
 	root := filepath.Join("..", "..") // backend/
-	internalDir := filepath.Join(root, "internal")
+	roots := []budgetRoot{
+		{dir: filepath.Join(root, "internal")},
+		{dir: filepath.Join(root, "cmd"), prefix: "cmd/"},
+	}
 
 	fileLines := map[string]int{}
 	pkgLines := map[string]int{}
 	pkgFiles := map[string]int{}
 
-	err := filepath.Walk(internalDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	for _, root := range roots {
+		if err := scanBudgetRoot(root, fileLines, pkgLines, pkgFiles); err != nil {
+			t.Fatalf("walk %s: %v", root.dir, err)
 		}
-		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		lines := strings.Count(string(raw), "\n") + 1
-		rel, err := filepath.Rel(internalDir, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		dir := filepath.ToSlash(filepath.Dir(rel))
-		fileLines[rel] = lines
-		pkgLines[dir] += lines
-		pkgFiles[dir]++
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk internal/: %v", err)
 	}
 	if len(fileLines) < 100 {
 		t.Fatalf("scanned %d files want >=100(扫描面异常缩水,root 解析错了?)", len(fileLines))
@@ -122,6 +109,32 @@ func TestFileAndPackageBudgets(t *testing.T) {
 		sort.Strings(violations)
 		t.Fatalf("代码体量软预算超标 %d 项:\n%s\n(确属有意重构后体量下降可再生成基线:HUAKAI_REWRITE_CODE_BUDGET_BASELINE=1)", len(violations), strings.Join(violations, "\n"))
 	}
+}
+
+func scanBudgetRoot(root budgetRoot, fileLines, pkgLines, pkgFiles map[string]int) error {
+	return filepath.Walk(root.dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		lines := strings.Count(string(raw), "\n") + 1
+		rel, err := filepath.Rel(root.dir, path)
+		if err != nil {
+			return err
+		}
+		rel = root.prefix + filepath.ToSlash(rel)
+		dir := filepath.ToSlash(filepath.Dir(rel))
+		fileLines[rel] = lines
+		pkgLines[dir] += lines
+		pkgFiles[dir]++
+		return nil
+	})
 }
 
 func writeBaseline(t *testing.T, fileLines, pkgLines, pkgFiles map[string]int) {

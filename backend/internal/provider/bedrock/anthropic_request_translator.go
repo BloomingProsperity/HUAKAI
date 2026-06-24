@@ -141,8 +141,8 @@ func TranslateAnthropicAPIToBedrock(anthropicBody []byte) (AnthropicAPIToBedrock
 		delete(raw, "stream")
 	}
 
-	// Bedrock 对未知顶层字段返回 400 ValidationException(sub2api bf28a009 实测
-	// 结论,delta-mine #4):剥除 Anthropic 直连专有顶层字段。metadata 是重灾区
+		// Bedrock 对未知顶层字段返回 400 ValidationException:剥除 Anthropic
+		// 直连专有顶层字段。metadata 是重灾区
 	// ——Claude Code 客户端必带 metadata.user_id,不剥则默认 AutoTranslate 配置下
 	// 真实 CC 流量经 Bedrock 必 400,整条 Bedrock CC 闭环坏死。
 	delete(raw, "metadata")
@@ -174,8 +174,8 @@ func TranslateAnthropicAPIToBedrock(anthropicBody []byte) (AnthropicAPIToBedrock
 	}, nil
 }
 
-// bedrockSupportedBetaTokens 是 Bedrock 认识的 anthropic beta token 白名单
-// (对照 sub2api bedrockSupportedBetaTokens;不在名单的 token Bedrock 会 400)。
+// bedrockSupportedBetaTokens 是 Bedrock 认识的 anthropic beta token 白名单。
+// 不在名单的 token 会导致 Bedrock 400。
 var bedrockSupportedBetaTokens = map[string]struct{}{
 	"computer-use-2024-10-22":                {},
 	"computer-use-2025-01-24":                {},

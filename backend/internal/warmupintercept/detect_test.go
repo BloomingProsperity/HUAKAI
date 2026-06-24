@@ -1,5 +1,5 @@
 // warmupintercept 测试 —— 全部从行为规格推导(三种 Claude Code 一次性请求
-// 形状 + Anthropic Messages 应答形态),不依赖任何参照实现细节。
+// 形状 + Anthropic Messages 应答形态),不依赖外部实现细节。
 package warmupintercept
 
 import (

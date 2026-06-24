@@ -22,6 +22,98 @@ func TestRefreshFailureStateOperatorConfigRequiresAttention(t *testing.T) {
 	}
 }
 
+func TestScanCredentialRecordRowPreservesSharedColumnsAndExtras(t *testing.T) {
+	payloadFingerprint := "payload-fingerprint"
+	refreshFingerprint := "refresh-fingerprint"
+	lastOutcome := "success"
+	failureClass := "temporary"
+	ts := func(hour int) pgtype.Timestamptz {
+		return pgtype.Timestamptz{
+			Time:  time.Date(2026, 6, 23, hour, 0, 0, 0, time.FixedZone("scan-test", 8*60*60)),
+			Valid: true,
+		}
+	}
+	accessExp := ts(1)
+	refreshExp := ts(2)
+	refreshBefore := ts(3)
+	graceUntil := ts(4)
+	lastRefresh := ts(5)
+	nextAttempt := ts(6)
+	createdAt := ts(7)
+	updatedAt := ts(8)
+	deletedAt := ts(9)
+	values := []any{
+		int64(301), int64(7), int64(42), VendorGemini, AuthModeAIStudioAPIKey, StateActive,
+		int32(3), []byte("ciphertext"), "aes-256-gcm", "test-key",
+		[]byte("nonce"), "aad-hash", &payloadFingerprint, &refreshFingerprint,
+		accessExp, refreshExp, refreshBefore, graceUntil,
+		lastRefresh, &lastOutcome, &failureClass, int32(4),
+		nextAttempt, createdAt, updatedAt, deletedAt,
+		int64(11), true,
+	}
+	var extraCount int64
+	var extraFlag bool
+
+	rec, err := scanCredentialRecordRow(
+		credentialStoreRowValuesStub{values: values},
+		&extraCount, &extraFlag,
+	)
+	if err != nil {
+		t.Fatalf("scanCredentialRecordRow err=%v", err)
+	}
+	if rec.ID != 301 || rec.TenantID != 7 || rec.ProviderAccountID != 42 {
+		t.Fatalf("record identity=%d/%d/%d, want 301/7/42", rec.ID, rec.TenantID, rec.ProviderAccountID)
+	}
+	if rec.Vendor != VendorGemini || rec.AuthMode != AuthModeAIStudioAPIKey || rec.State != StateActive {
+		t.Fatalf("record mode=%s/%s/%s", rec.Vendor, rec.AuthMode, rec.State)
+	}
+	if rec.CredentialVersion != 3 ||
+		string(rec.EncryptedPayload) != "ciphertext" ||
+		rec.EncryptionScheme != "aes-256-gcm" ||
+		rec.KeyID != "test-key" {
+		t.Fatalf(
+			"record credential fields drifted: version=%d scheme=%s key=%s payload=%q",
+			rec.CredentialVersion,
+			rec.EncryptionScheme,
+			rec.KeyID,
+			rec.EncryptedPayload,
+		)
+	}
+	if string(rec.Nonce) != "nonce" || rec.AADHash != "aad-hash" {
+		t.Fatalf("record crypto fields drifted: nonce=%q aad=%q", rec.Nonce, rec.AADHash)
+	}
+	if rec.PayloadFingerprint == nil || *rec.PayloadFingerprint != payloadFingerprint {
+		t.Fatalf("payload fingerprint=%v", rec.PayloadFingerprint)
+	}
+	if rec.RefreshTokenFingerprint == nil || *rec.RefreshTokenFingerprint != refreshFingerprint {
+		t.Fatalf("refresh fingerprint=%v", rec.RefreshTokenFingerprint)
+	}
+	if rec.LastRefreshOutcome == nil || *rec.LastRefreshOutcome != lastOutcome {
+		t.Fatalf("last refresh outcome=%v", rec.LastRefreshOutcome)
+	}
+	if rec.FailureClass == nil || *rec.FailureClass != failureClass || rec.FailureCount != 4 {
+		t.Fatalf("failure class/count=%v/%d", rec.FailureClass, rec.FailureCount)
+	}
+	for name, gotWant := range map[string][2]time.Time{
+		"access":         {rec.AccessExpiresAt, accessExp.Time.UTC()},
+		"refresh":        {rec.RefreshExpiresAt, refreshExp.Time.UTC()},
+		"refresh_before": {rec.RefreshBeforeAt, refreshBefore.Time.UTC()},
+		"grace":          {rec.GraceUntil, graceUntil.Time.UTC()},
+		"last_refresh":   {rec.LastRefreshAt, lastRefresh.Time.UTC()},
+		"next_attempt":   {rec.NextAttemptAt, nextAttempt.Time.UTC()},
+		"created":        {rec.CreatedAt, createdAt.Time.UTC()},
+		"updated":        {rec.UpdatedAt, updatedAt.Time.UTC()},
+		"deleted":        {rec.DeletedAt, deletedAt.Time.UTC()},
+	} {
+		if !gotWant[0].Equal(gotWant[1]) {
+			t.Fatalf("%s time=%s, want %s", name, gotWant[0], gotWant[1])
+		}
+	}
+	if extraCount != 11 || !extraFlag {
+		t.Fatalf("extra scan values=%d/%v, want 11/true", extraCount, extraFlag)
+	}
+}
+
 func TestResolveActiveRejectsAmbiguousActiveCredentialModes(t *testing.T) {
 	calls := 0
 	db := &credentialStoreDBStub{
@@ -158,6 +250,60 @@ func TestResolveActiveReturnsNotFoundWhenNoCredentialRowsExist(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("ResolveActive QueryRow calls=%d, want 1 atomic query", calls)
+	}
+}
+
+func TestResolveActiveRecordsAuditBestEffortWithoutBlockingDataPlane(t *testing.T) {
+	ctx := context.Background()
+	db := &credentialStoreDBStub{}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+	env, err := store.cipher.Encrypt(ctx, []byte(`{"api_key":"sk-resolve-audit"}`), AAD{
+		TenantID: 7, ProviderAccountID: 42,
+		Vendor: VendorGemini, AuthMode: AuthModeAIStudioAPIKey, Version: 1,
+	})
+	if err != nil {
+		t.Fatalf("encrypt fixture: %v", err)
+	}
+	values := resolveActiveRecordValues(1)
+	values[7] = env.Ciphertext
+	values[8] = env.EncryptionScheme
+	values[9] = env.KeyID
+	values[10] = env.Nonce
+	values[11] = env.AADHash
+	db.queryRow = func(_ context.Context, sql string, args ...interface{}) pgx.Row {
+		if !strings.Contains(sql, "COUNT(*) OVER () AS active_mode_count") {
+			t.Fatalf("ResolveActive SQL missing active mode count:\n%s", sql)
+		}
+		if len(args) != 2 || args[0] != int64(42) || args[1] != int64(7) {
+			t.Fatalf("ResolveActive args=%#v, want account=42 tenant=7", args)
+		}
+		return credentialStoreRowValuesStub{values: values}
+	}
+	var execSQL string
+	var execArgs []interface{}
+	db.exec = func(_ context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+		execSQL = sql
+		execArgs = append([]interface{}(nil), args...)
+		return pgconn.CommandTag{}, errors.New("audit sink unavailable")
+	}
+
+	rec, err := store.ResolveActive(ctx, 7, 42)
+	if err != nil {
+		t.Fatalf("ResolveActive best-effort audit err=%v", err)
+	}
+	if string(rec.PlaintextPayload) != `{"api_key":"sk-resolve-audit"}` {
+		t.Fatalf("plaintext payload=%q", rec.PlaintextPayload)
+	}
+	if !strings.Contains(execSQL, "INSERT INTO credential_audit_events") {
+		t.Fatalf("ResolveActive did not attempt credential_resolved audit insert:\n%s", execSQL)
+	}
+	if len(execArgs) < 10 {
+		t.Fatalf("audit args len=%d want >=10", len(execArgs))
+	}
+	if execArgs[0] != int64(7) || execArgs[1] != int64(42) || execArgs[2] != int64(301) ||
+		execArgs[3] != "credential_resolved" || execArgs[4] != VendorGemini ||
+		execArgs[5] != AuthModeAIStudioAPIKey || execArgs[6] != int32(1) {
+		t.Fatalf("audit args=%#v", execArgs)
 	}
 }
 
@@ -301,9 +447,13 @@ func mustTestKeyProvider(t *testing.T) KeyProvider {
 type credentialStoreDBStub struct {
 	queryRow func(context.Context, string, ...interface{}) pgx.Row
 	query    func(context.Context, string, ...interface{}) (pgx.Rows, error)
+	exec     func(context.Context, string, ...interface{}) (pgconn.CommandTag, error)
 }
 
-func (s *credentialStoreDBStub) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
+func (s *credentialStoreDBStub) Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	if s.exec != nil {
+		return s.exec(ctx, sql, args...)
+	}
 	return pgconn.CommandTag{}, errors.New("unexpected Exec")
 }
 

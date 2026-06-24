@@ -1,4 +1,4 @@
-// Package relaybody 把出站请求体里的 "model" 字段改写成 registry 解析后的上游模型 id。
+// Package relaybody 提供 relay 请求体读取与出站请求体改写的公共工具。
 // 公共别名路由到不同上游模型时,出站 JSON/表单必须带真实上游 model,否则上游按别名执行错
 // 模型(或 404)、计费/审计与实际不符。chat 路径已在 gatewayhttp 内联改写;audio/image 复用本包。
 package relaybody
@@ -9,8 +9,33 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
 	"strings"
 )
+
+const defaultRequestBodyLimitBytes int64 = 32 << 20
+
+var requestBodyLimitBytes = defaultRequestBodyLimitBytes
+
+// ConfigureRequestBodyLimit 在启动 wiring 阶段设定 relay 入站请求体上限。
+// 传入 <=0 保留当前值，避免误配置把上限清零。
+func ConfigureRequestBodyLimit(limit int64) {
+	if limit > 0 {
+		requestBodyLimitBytes = limit
+	}
+}
+
+// RequestBodyLimit 返回当前 relay 入站请求体上限。
+func RequestBodyLimit() int64 {
+	return requestBodyLimitBytes
+}
+
+// ReadLimitedRequestBody 用 MaxBytesReader 包装并读取入站 relay 请求体。
+// 调用方保留自己的 JSON/multipart 校验和错误响应语义。
+func ReadLimitedRequestBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	return io.ReadAll(r.Body)
+}
 
 // RewriteModel 返回改写 "model" 后的请求体、对应 Content-Type、以及是否为 multipart 重编码。
 // 关键:仅当 body 里现有 model 与 upstreamModel **不同**(发生别名重映射)时才改写;相同则逐字

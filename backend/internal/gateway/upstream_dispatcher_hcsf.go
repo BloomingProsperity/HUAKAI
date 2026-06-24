@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
@@ -44,10 +45,11 @@ type envelopeRequestBuilder interface {
 	BuildRequestFromEnvelope(context.Context, provider.BuildInput, *proto.HCSF) (*http.Request, error)
 }
 
-// maxBufferedUpstreamResponseBytes 是 HCSF non-streaming buffered 上游响应的读取上限(1MiB)。
-// 与 gatewayhttp legacy raw 路径(maxRawBufferedUpstreamBodyBytes)同值，保证两条 buffered
-// 路径对超大响应行为一致。
-const maxBufferedUpstreamResponseBytes = 1 << 20
+// MaxBufferedUpstreamResponseBytes 是 non-streaming buffered 上游响应的统一读取上限。
+// HCSF 路径与 gatewayhttp legacy raw 路径共同使用这个值，避免两条 buffered 路径漂移。
+const MaxBufferedUpstreamResponseBytes = 1 << 20
+
+const maxBufferedUpstreamResponseBytes = MaxBufferedUpstreamResponseBytes
 
 // ErrUpstreamResponseTooLarge 表示上游 2xx 成功响应超过 buffered 读取上限。caller 应映射成
 // clienterr.CodeUpstreamResponseTooLarge(终止、不重试：重试不会变小)，而非把截断字节喂给
@@ -422,15 +424,67 @@ var hcsfBlockedOpenAIChatRawPassthroughFields = map[string]struct{}{
 }
 
 func cloneHCSF(env *proto.HCSF) (*proto.HCSF, error) {
-	b, err := json.Marshal(env)
-	if err != nil {
-		return nil, fmt.Errorf("dispatcher: clone HCSF marshal 失败: %w", err)
+	if env == nil {
+		return &proto.HCSF{}, nil
 	}
-	var out proto.HCSF
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, fmt.Errorf("dispatcher: clone HCSF unmarshal 失败: %w", err)
-	}
+	out := cloneReflectValue(reflect.ValueOf(*env)).Interface().(proto.HCSF)
+	clearHCSFNonWireFields(&out)
 	return &out, nil
+}
+
+func clearHCSFNonWireFields(env *proto.HCSF) {
+	if env == nil {
+		return
+	}
+	env.Passthrough = nil
+	if env.BufferedResponse != nil {
+		env.BufferedResponse.Passthrough = nil
+	}
+	for i := range env.StreamEvents {
+		env.StreamEvents[i].Passthrough = nil
+	}
+}
+
+func cloneReflectValue(v reflect.Value) reflect.Value {
+	if !v.IsValid() {
+		return v
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(cloneReflectValue(v.Elem()))
+		return out
+	case reflect.Struct:
+		out := reflect.New(v.Type()).Elem()
+		for i := 0; i < v.NumField(); i++ {
+			out.Field(i).Set(cloneReflectValue(v.Field(i)))
+		}
+		return out
+	case reflect.Slice:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(v.Index(i)))
+		}
+		return out
+	case reflect.Map:
+		if v.IsNil() {
+			return reflect.Zero(v.Type())
+		}
+		out := reflect.MakeMapWithSize(v.Type(), v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(iter.Key(), cloneReflectValue(iter.Value()))
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func fillUpstreamReported(env *proto.HCSF) {

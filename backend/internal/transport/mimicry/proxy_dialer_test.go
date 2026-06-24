@@ -3,22 +3,23 @@ package mimicry
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// PROXY-02a: per-account proxy must be dialed BENEATH the uTLS handshake so the
-// egress IP is the proxy's while the JA3 stays the mimicry fingerprint.
+// PROXY-02a:账号级代理必须在 uTLS 握手之下拨号,这样出口 IP 来自代理,
+// JA3 仍保持伪装指纹。
 
-// TestHTTPConnectDialer_TunnelsThroughProxy is the discriminating test: it spins
-// a minimal HTTP CONNECT proxy stub and asserts the dialer issues a CONNECT to
-// the intended target THROUGH the proxy (with Proxy-Authorization). If the dial
-// bypassed the proxy, the stub would never see the CONNECT and gotTarget stays
-// empty -> red.
+// TestHTTPConnectDialer_TunnelsThroughProxy 是判别式测试:启动一个最小 HTTP
+// CONNECT 代理桩,断言拨号器经代理向目标发 CONNECT(并携带 Proxy-Authorization)。
+// 若绕过代理直连,桩收不到 CONNECT,gotTarget 保持空值并转红。
 func TestHTTPConnectDialer_TunnelsThroughProxy(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -68,10 +69,85 @@ func TestHTTPConnectDialer_TunnelsThroughProxy(t *testing.T) {
 	}
 }
 
-// TestUtlsDialer_DialRawUsesProxyDialer guards the seam: with a ProxyDialer set,
-// dialRaw must route through it. MUTATION: making dialRaw ignore ProxyDialer
-// (revert to NetDialer) -> called stays false -> red, i.e. the real egress IP
-// would leak past the proxy.
+func TestHTTPConnectDialerSetDeadlineFailureClosesConn(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	wrapped := &proxySetDeadlineFailConn{Conn: clientConn}
+	oldDial := proxyDialContext
+	proxyDialContext = func(context.Context, string, string) (net.Conn, error) {
+		return wrapped, nil
+	}
+	defer func() { proxyDialContext = oldDial }()
+
+	pu, _ := url.Parse("http://proxy.local:8080")
+	dial := httpConnectDialer(pu)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	conn, err := dial(ctx, "tcp", "origin.test:443")
+
+	if err == nil {
+		conn.Close()
+		t.Fatal("设置 proxy deadline 失败时应返回错误")
+	}
+	if !strings.Contains(err.Error(), "set deadline") {
+		t.Fatalf("错误应标明 set deadline, got %v", err)
+	}
+	if wrapped.setDeadlineCalls != 1 {
+		t.Fatalf("setDeadlineCalls=%d,want 1", wrapped.setDeadlineCalls)
+	}
+	if wrapped.closeCalls != 1 {
+		t.Fatalf("closeCalls=%d,want 1", wrapped.closeCalls)
+	}
+}
+
+func TestHTTPConnectDialerClearDeadlineFailureClosesConn(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	wrapped := &proxyClearDeadlineFailConn{Conn: clientConn}
+	oldDial := proxyDialContext
+	proxyDialContext = func(context.Context, string, string) (net.Conn, error) {
+		return wrapped, nil
+	}
+	defer func() { proxyDialContext = oldDial }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		br := bufio.NewReader(serverConn)
+		if _, err := http.ReadRequest(br); err != nil {
+			t.Errorf("read CONNECT: %v", err)
+			return
+		}
+		_, _ = io.WriteString(serverConn, "HTTP/1.1 200 Connection established\r\n\r\n")
+	}()
+
+	pu, _ := url.Parse("http://proxy.local:8080")
+	dial := httpConnectDialer(pu)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	conn, err := dial(ctx, "tcp", "origin.test:443")
+
+	if err == nil {
+		conn.Close()
+		t.Fatal("清理 proxy deadline 失败时应返回错误")
+	}
+	if !strings.Contains(err.Error(), "clear deadline") {
+		t.Fatalf("错误应标明 clear deadline, got %v", err)
+	}
+	if wrapped.setDeadlineCalls < 2 {
+		t.Fatalf("未走到清理 deadline 分支,setDeadlineCalls=%d", wrapped.setDeadlineCalls)
+	}
+	if wrapped.closeCalls != 1 {
+		t.Fatalf("closeCalls=%d,want 1", wrapped.closeCalls)
+	}
+	<-done
+}
+
+// TestUtlsDialer_DialRawUsesProxyDialer 守护拨号边界:设置 ProxyDialer 后,
+// dialRaw 必须经它出站。变异证伪:若 dialRaw 忽略 ProxyDialer 回退到 NetDialer,
+// called 会保持 false 并转红,真实出口 IP 会绕过代理。
 func TestUtlsDialer_DialRawUsesProxyDialer(t *testing.T) {
 	srv, cli := net.Pipe()
 	defer srv.Close()
@@ -92,7 +168,7 @@ func TestUtlsDialer_DialRawUsesProxyDialer(t *testing.T) {
 	}
 }
 
-// PROXY-06: socks5 is now supported on the mimicry path.
+// PROXY-06:socks5 已在伪装链路上支持。
 func TestProxyDialerFromURL_Socks5Supported(t *testing.T) {
 	for _, raw := range []string{"socks5://127.0.0.1:1080", "socks5h://u:p@127.0.0.1:1080"} {
 		pu, _ := url.Parse(raw)
@@ -102,10 +178,55 @@ func TestProxyDialerFromURL_Socks5Supported(t *testing.T) {
 	}
 }
 
-// An unknown scheme still fails loud (never a silent direct connection).
+// 未知 scheme 必须 fail-loud,绝不能静默直连。
 func TestProxyDialerFromURL_RejectsUnknownScheme(t *testing.T) {
 	pu, _ := url.Parse("quic://127.0.0.1:1080")
 	if _, err := proxyDialerFromURL(pu); err == nil {
 		t.Fatal("unknown proxy scheme must fail-loud, not silently leak the egress IP")
 	}
+}
+
+type proxySetDeadlineFailConn struct {
+	net.Conn
+	mu               sync.Mutex
+	setDeadlineCalls int
+	closeCalls       int
+}
+
+func (c *proxySetDeadlineFailConn) SetDeadline(time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setDeadlineCalls++
+	return errors.New("set deadline failed")
+}
+
+func (c *proxySetDeadlineFailConn) Close() error {
+	c.mu.Lock()
+	c.closeCalls++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+type proxyClearDeadlineFailConn struct {
+	net.Conn
+	mu               sync.Mutex
+	setDeadlineCalls int
+	closeCalls       int
+}
+
+func (c *proxyClearDeadlineFailConn) SetDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setDeadlineCalls++
+	if deadline.IsZero() {
+		return errors.New("clear deadline failed")
+	}
+	return c.Conn.SetDeadline(deadline)
+}
+
+func (c *proxyClearDeadlineFailConn) Close() error {
+	c.mu.Lock()
+	c.closeCalls++
+	c.mu.Unlock()
+	return c.Conn.Close()
 }

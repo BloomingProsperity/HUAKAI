@@ -22,7 +22,7 @@ type UtlsDialer struct {
 	TLSConfig        *utls.Config
 	HandshakeTimeout time.Duration
 	// ForceH1 为 true 时,握手在线缆上只广告 ALPN=http/1.1,不广告 h2。
-	// 与 sub2api 的伪装拨号器默认姿态一致(只锁单一真实客户端档案的协议栈)。
+	// 默认只锁单一真实客户端档案的协议栈，避免混用不自洽的握手与 HTTP 层。
 	// 这同时是协议正确性约束:本路径返回的是 *utls.UConn(非标准库 *tls.Conn),
 	// Go 的内置 HTTP/2 升级路径在结构上接不住它,若仍广告 h2 且服务端选 h2,
 	// 会出现"服务端按 h2、客户端发 h1 帧"的握手后错乱。收窄 ALPN 从根上消除。
@@ -121,6 +121,9 @@ func decodeMimicryResponse(resp *http.Response) *http.Response {
 func (d *UtlsDialer) DialTLS(ctx context.Context, network, addr string) (net.Conn, error) {
 	if d == nil {
 		return nil, fmt.Errorf("mimicry: nil utls dialer")
+	}
+	if d.Template == nil {
+		return nil, fmt.Errorf("mimicry: nil clienthello template")
 	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -382,7 +385,7 @@ func (rt *roundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) 
 
 // clientHelloIDForPreset 把内置浏览器 preset 名映射到 uTLS ClientHelloID。uTLS
 // 生成真实当前浏览器 ClientHello (不手写/伪造 cipher 数组)。空/未知 -> (_, false)。
-// 参照 CLIProxyAPI utls_client.go 用 HelloChrome_Auto。
+// Chrome preset 使用 uTLS 的自动 Chrome ClientHello，随库内置指纹演进。
 func clientHelloIDForPreset(preset string) (utls.ClientHelloID, bool) {
 	switch strings.ToLower(strings.TrimSpace(preset)) {
 	case "chrome":

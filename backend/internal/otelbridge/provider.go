@@ -9,6 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/otlptranslator"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
@@ -27,7 +28,7 @@ func Setup(_ context.Context) (otelmetric.MeterProvider, http.Handler, func(cont
 	registry := prometheus.NewRegistry()
 	exporter, err := otelprom.New(
 		otelprom.WithRegisterer(registry),
-		otelprom.WithoutCounterSuffixes(),
+		otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithoutSuffixes),
 		otelprom.WithoutScopeInfo(),
 		otelprom.WithoutTargetInfo(),
 	)

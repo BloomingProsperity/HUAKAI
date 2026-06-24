@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HUAKAI · 看得见流动的 AI 网关</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap');
+    
+    :root {
+      --accent: #00f0ff;
+    }
+    
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    
+    .font-mono {
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    .cyber-bg {
+      background: #05070f;
+      background-image: 
+        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+    }
+
+    .glass {
+      background: rgba(10, 12, 26, 0.75);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .neon-cyan {
+      color: #00f0ff;
+      text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+    }
+
+    .neon-purple {
+      color: #a855f7;
+      text-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
+    }
+
+    .section-title {
+      font-size: 2.25rem;
+      line-height: 2.5rem;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+    }
+
+    .pipeline-node {
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .pipeline-node:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.3);
+    }
+
+    .flow-canvas {
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.4);
+      background: #0a0c1a;
+    }
+
+    .metric {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .code-particle {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9px;
+      letter-spacing: -0.3px;
+    }
+
+    .nav-link {
+      transition: color 0.1s ease;
+    }
+    .nav-link:hover {
+      color: #00f0ff;
+    }
+
+    .stat-number {
+      font-feature-settings: "tnum";
+    }
+
+    .glow-cyan {
+      box-shadow: 0 0 15px rgba(0, 240, 255, 0.15);
+    }
+    
+    .subtle-grid {
+      background-image: url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2260%22 height=%2260%22 fill=%22none%22%3E%3Cg fill-rule=%22evenodd%22%3E%3Cpath d=%22M59 59H1V1h58v58zM0 60V0h60v60H0z%22 fill=%22%23151a2e%22 fill-opacity=%220.4%22/%3E%3C/g%3E%3C/svg%27');
+      background-size: 60px 60px;
+    }
+
+    .node-glow {
+      box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2),
+                  0 0 20px rgba(0, 240, 255, 0.1);
+    }
+  </style>
+</head>
+<body class="bg-[#05070f] text-white overflow-x-hidden">
+  <!-- NAV -->
+  <nav class="sticky top-0 z-50 border-b border-white/10 bg-[#05070f]/95 backdrop-blur-xl">
+    <div class="max-w-7xl mx-auto px-8">
+      <div class="flex h-16 items-center justify-between">
+        <div class="flex items-center gap-x-3">
+          <div class="flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-[#00f0ff] to-[#a855f7] text-black font-bold text-xl tracking-tighter">HK</div>
+          <div>
+            <span class="font-semibold tracking-tight text-2xl">HUAKAI</span>
+          </div>
+        </div>
+
+        <div class="hidden md:flex items-center gap-x-9 text-sm">
+          <a href="#flow" class="nav-link text-white/80 hover:text-white font-medium">流动舱</a>
+          <a href="#how" class="nav-link text-white/80 hover:text-white font-medium">如何工作</a>
+          <a href="#features" class="nav-link text-white/80 hover:text-white font-medium">核心能力</a>
+          <a href="#demo" class="nav-link text-white/80 hover:text-white font-medium">实时演示</a>
+        </div>
+
+        <div class="flex items-center gap-x-3">
+          <button onclick="showConsoleModal()"
+                  class="px-4 py-2 text-sm font-medium rounded-xl border border-white/20 hover:bg-white/5 transition-colors">
+            控制台预览
+          </button>
+          <button onclick="window.location.href='#flow'"
+                  class="px-5 py-2 text-sm font-semibold rounded-xl bg-white text-black hover:bg-white/90 transition-all active:scale-[0.985]">
+            体验流动
+          </button>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <div class="max-w-5xl mx-auto px-8 pt-16 pb-12 text-center">
+    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs tracking-[1.5px] mb-6">
+      <div class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
+      <span class="text-white/70 font-medium">MIT • 自托管 • 生产就绪</span>
+    </div>
+    
+    <h1 class="text-7xl font-semibold tracking-tighter leading-none mb-4">
+      看得见<br>流动的 AI 网关
+    </h1>
+    <p class="max-w-md mx-auto text-xl text-white/70 mb-9 tracking-tight">
+      每一次请求都变成可见的代码河流。<br>
+      多账号池化 · 实时健康路由 · 完整审计链路
+    </p>
+
+    <div class="flex items-center justify-center gap-4">
+      <button onclick="document.getElementById('flow').scrollIntoView({ behavior: 'smooth' })" 
+              class="px-8 py-3.5 rounded-2xl bg-[#00f0ff] hover:bg-[#00d4e6] transition-all text-black font-semibold flex items-center gap-2 shadow-lg shadow-cyan-500/20 text-base">
+        <i class="fa-solid fa-play mr-1"></i>
+        进入代码流动舱
+      </button>
+      <button onclick="triggerDemoFlow(3)" 
+              class="px-8 py-3.5 rounded-2xl border border-white/25 hover:bg-white/5 transition-colors text-base font-medium flex items-center gap-2">
+        <i class="fa-solid fa-eye"></i>
+        <span>观看实时演示</span>
+      </button>
+    </div>
+    
+    <div class="flex justify-center gap-8 mt-12 text-xs text-white/50">
+      <div class="flex items-center gap-2"><i class="fa-solid fa-check"></i> <span>支持 OpenAI / Anthropic / Gemini / Bedrock</span></div>
+      <div class="flex items-center gap-2"><i class="fa-solid fa-check"></i> <span>精确 Token 计费</span></div>
+      <div class="flex items-center gap-2"><i class="fa-solid fa-check"></i> <span>HopChain 可验证审计</span></div>
+    </div>
+  </div>
+
+  <!-- THE STAR: CODE FLOW MODULE -->
+  <div id="flow" class="max-w-7xl mx-auto px-8 pb-14">
+    <div class="flex items-end justify-between mb-5 px-1">
+      <div>
+        <div class="uppercase tracking-[2px] text-xs text-[#00f0ff] font-semibold mb-1">实时可视化</div>
+        <div class="text-4xl font-semibold tracking-tighter">代码流动舱</div>
+        <div class="text-white/60 mt-1 text-[15px]">Gateway Pipeline · 每条脉冲都是真实请求的生命轨迹</div>
+      </div>
+      
+      <div class="hidden md:flex items-center gap-2 text-sm">
+        <div class="px-3 py-1 rounded-xl bg-white/5 border border-white/10 text-white/70 flex items-center gap-2">
+          <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+          <span id="live-rps">127</span> <span class="text-xs text-white/50">RPS</span>
+        </div>
+        <div class="px-3 py-1 rounded-xl bg-white/5 border border-white/10 text-white/70">
+          <span id="live-flows">14</span> <span class="text-xs text-white/50">活跃脉冲</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- FLOW CANVAS -->
+    <div class="relative rounded-3xl overflow-hidden border border-white/10 bg-[#0a0c1a] p-4 shadow-2xl">
+      <canvas id="flow-canvas" width="1200" height="420" class="flow-canvas w-full cursor-crosshair"></canvas>
+      
+      <!-- Canvas Overlay Controls -->
+      <div class="absolute top-6 right-6 flex flex-col gap-2">
+        <button onclick="toggleFlowAnimation()" 
+                id="pause-btn"
+                class="glass px-3 py-1.5 text-xs font-medium rounded-xl flex items-center gap-2 hover:bg-white/10 transition">
+          <i class="fa-solid fa-pause" id="pause-icon"></i>
+          <span id="pause-text">暂停</span>
+        </button>
+        
+        <button onclick="clearAllFlows()" 
+                class="glass px-3 py-1.5 text-xs font-medium rounded-xl flex items-center gap-2 hover:bg-white/10 transition">
+          <i class="fa-solid fa-eraser"></i>
+          <span>清空</span>
+        </button>
+      </div>
+
+      <!-- Bottom toolbar -->
+      <div class="absolute bottom-5 left-1/2 -translate-x-1/2 flex flex-wrap items-center justify-center gap-x-2 gap-y-2 px-3 py-1.5 rounded-2xl glass border border-white/10">
+        <div class="text-[10px] uppercase tracking-widest text-white/50 px-2">场景</div>
+        
+        <button onclick="spawnScenario('normal')" 
+                class="px-3.5 py-1 text-xs font-medium rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/25 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-bolt text-emerald-400"></i>
+          <span>正常</span>
+        </button>
+        
+        <button onclick="spawnScenario('cache')" 
+                class="px-3.5 py-1 text-xs font-medium rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/25 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-magic text-purple-400"></i>
+          <span>缓存命中</span>
+        </button>
+        
+        <button onclick="spawnScenario('ratelimit')" 
+                class="px-3.5 py-1 text-xs font-medium rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/25 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-hourglass-half text-amber-400"></i>
+          <span>速率限制</span>
+        </button>
+        
+        <button onclick="spawnScenario('fallback')" 
+                class="px-3.5 py-1 text-xs font-medium rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/25 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-random text-orange-400"></i>
+          <span>回退路径</span>
+        </button>
+        
+        <button onclick="spawnScenario('mimicry')" 
+                class="px-3.5 py-1 text-xs font-medium rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/25 transition flex items-center gap-1.5">
+          <i class="fa-solid fa-user-secret text-cyan-400"></i>
+          <span>伪装改写</span>
+        </button>
+        
+        <div class="w-px h-4 bg-white/15 mx-1"></div>
+        
+        <button onclick="autoBurst()" 
+                class="px-4 py-1 text-xs font-semibold rounded-xl bg-[#00f0ff] text-black hover:bg-white active:scale-[0.985] transition">
+          连续爆发
+        </button>
+      </div>
+    </div>
+
+    <!-- Node Legend -->
+    <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 px-2 text-[12px] text-white/60">
+      <div class="flex items-center gap-2"><span class="inline-block w-2 h-[1px] bg-white/60"></span> Ingress</div>
+      <div class="flex items-center gap-2"><span class="inline-block w-2 h-[1px] bg-white/60"></span> Auth + Registry</div>
+      <div class="flex items-center gap-2"><span class="inline-block w-2 h-[1px] bg-white/60"></span> Router</div>
+      <div class="flex items-center gap-2"><span class="inline-block w-2 h-[1px] bg-white/60"></span> ClaimGate + Pool</div>
+      <div class="flex items-center gap-2"><span class="inline-block w-2 h-[1px] bg-white/60"></span> Adapter → Stream → Settler</div>
+    </div>
+  </div>
+
+  <!-- HOW IT WORKS -->
+  <div id="how" class="max-w-6xl mx-auto px-8 py-12 border-t border-white/10">
+    <div class="grid md:grid-cols-2 gap-12 items-center">
+      <div>
+        <div class="text-[#00f0ff] text-sm font-medium tracking-[2px]">INTERNAL PIPELINE</div>
+        <h2 class="section-title tracking-tighter mt-2">每一次请求<br>都是一次完整的旅程</h2>
+        <p class="mt-4 text-white/70 leading-relaxed">HUAKAI 将网关内部的每一步处理都可视化。真实请求的代码片段会在管道中真实流动，完整还原从入口到结算的全部路径。</p>
+        
+        <div class="mt-8 space-y-4 text-sm">
+          <div class="flex gap-4"><div class="w-6 text-right text-white/50 font-mono text-xs pt-px">01</div> <div>Auth 解析 + 模型注册</div></div>
+          <div class="flex gap-4"><div class="w-6 text-right text-white/50 font-mono text-xs pt-px">02</div> <div>Router 生成 RoutePlan</div></div>
+          <div class="flex gap-4"><div class="w-6 text-right text-white/50 font-mono text-xs pt-px">03</div> <div>ClaimGate 资源占用 + 池选择</div></div>
+          <div class="flex gap-4"><div class="w-6 text-right text-white/50 font-mono text-xs pt-px">04</div> <div>Stream Forwarder 流式转发</div></div>
+          <div class="flex gap-4"><div class="w-6 text-right text-white/50 font-mono text-xs pt-px">05</div> <div>Billing + 观测结算</div></div>
+        </div>
+      </div>
+      
+      <div class="glass rounded-3xl p-7 border border-white/10 text-sm leading-relaxed">
+        <div class="font-medium mb-3 flex items-center gap-2">
+          <i class="fa-solid fa-link text-[#00f0ff]"></i> 
+          <span>HopChain 六跳信任链</span>
+        </div>
+        <div class="grid grid-cols-3 gap-3 text-xs">
+          <div class="rounded-2xl bg-black/40 p-3">Ingress → 入口认证</div>
+          <div class="rounded-2xl bg-black/40 p-3">Router → 路由决策</div>
+          <div class="rounded-2xl bg-black/40 p-3">Pool → 账号池索赔</div>
+          <div class="rounded-2xl bg-black/40 p-3">Account → 凭证执行</div>
+          <div class="rounded-2xl bg-black/40 p-3">Provider → 上游响应</div>
+          <div class="rounded-2xl bg-black/40 p-3">Response → 结算审计</div>
+        </div>
+        <div class="text-[11px] mt-4 text-white/50">点击流动舱中的任意节点即可查看该阶段的实时指标和 Hop 记录。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FEATURES -->
+  <div id="features" class="max-w-7xl mx-auto px-8 py-12">
+    <div class="text-center mb-10">
+      <div class="text-[#00f0ff] text-xs tracking-[2px] font-medium">FEATURES</div>
+      <h2 class="section-title tracking-tighter mt-1">不只是代理，是完整的运营中枢</h2>
+    </div>
+    
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div class="glass rounded-3xl p-6 border border-white/10 group">
+        <i class="fa-solid fa-layer-group text-3xl text-[#00f0ff] mb-4"></i>
+        <h3 class="font-semibold text-xl mb-1.5 tracking-tight">多账号池化</h3>
+        <p class="text-white/70 text-[14px]">将多个合法账号聚合成统一逻辑池。自动 Claim、负载均衡、粘性会话与公平分配。</p>
+      </div>
+      <div class="glass rounded-3xl p-6 border border-white/10 group">
+        <i class="fa-solid fa-heart-pulse text-3xl text-emerald-400 mb-4"></i>
+        <h3 class="font-semibold text-xl mb-1.5 tracking-tight">健康感知路由</h3>
+        <p class="text-white/70 text-[14px]">实时探测上游状态。熔断、冷却、自动回退。所有路径变化都在流动舱实时可见。</p>
+      </div>
+      <div class="glass rounded-3xl p-6 border border-white/10 group">
+        <i class="fa-solid fa-stream text-3xl text-purple-400 mb-4"></i>
+        <h3 class="font-semibold text-xl mb-1.5 tracking-tight">流式完整转发</h3>
+        <p class="text-white/70 text-[14px]">零损耗 SSE 转发。支持 Anthropic Messages 与 OpenAI Chat Completions 完整流式体验。</p>
+      </div>
+      <div class="glass rounded-3xl p-6 border border-white/10 group">
+        <i class="fa-solid fa-receipt text-3xl text-amber-400 mb-4"></i>
+        <h3 class="font-semibold text-xl mb-1.5 tracking-tight">精确计费与账本</h3>
+        <p class="text-white/70 text-[14px]">Token 级实时结算。双账本设计（用户侧 + Provider 侧），支持争议与对账。</p>
+      </div>
+      <div class="glass rounded-3xl p-6 border border-white/10 group">
+        <i class="fa-solid fa-shield-halved text-3xl text-cyan-400 mb-4"></i>
+        <h3 class="font-semibold text-xl mb-1.5 tracking-tight">R7 / R3 伪装</h3>
+        <p class="text-white/70 text-[14px]">应用层 6 步改写 + 可选传输层指纹。流动舱中会显示代码改写脉冲。</p>
+      </div>
+      <div class="glass rounded-3xl p-6 border border-white/10 group">
+        <i class="fa-solid fa-link text-3xl text-rose-400 mb-4"></i>
+        <h3 class="font-semibold text-xl mb-1.5 tracking-tight">HopChain 审计</h3>
+        <p class="text-white/70 text-[14px]">完整请求链路可验证。请求 → Claim → Attempt → 响应全路径一目了然。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- MINI DEMO / TEASER -->
+  <div id="demo" class="max-w-5xl mx-auto px-8 pb-16">
+    <div class="glass rounded-3xl p-8 border border-white/10">
+      <div class="flex flex-col md:flex-row gap-8 items-center">
+        <div class="flex-1">
+          <div class="text-xs uppercase tracking-[2px] text-[#a855f7]">PLAYGROUND TEASER</div>
+          <div class="text-3xl font-semibold tracking-tighter">发送一条真实请求<br>观察它如何流动</div>
+          <p class="mt-3 text-sm text-white/70">下方输入任意内容，点击发送。代码脉冲会立刻从流动舱入口开始真实旅行。</p>
+          
+          <div class="mt-6 flex gap-2">
+            <input id="demo-input" type="text" value="写一段关于量子计算的诗" 
+                   class="flex-1 bg-[#0a0c1a] border border-white/15 rounded-2xl px-5 py-3 text-sm outline-none focus:border-[#00f0ff]/60" />
+            <button onclick="sendDemoRequest()" 
+                    class="px-8 rounded-2xl bg-white text-black font-semibold flex items-center gap-2 active:bg-white/90">
+              <span>发送</span>
+              <i class="fa-solid fa-paper-plane"></i>
+            </button>
+          </div>
+        </div>
+        
+        <div class="flex-1 text-xs bg-black/40 rounded-2xl p-5 font-mono text-emerald-300/90 border border-white/10">
+          <div class="text-emerald-400/90 text-[10px] mb-1">LIVE TRACE</div>
+          <div id="live-trace" class="space-y-1 leading-tight text-[12.5px]">
+            <div class="text-white/40">等待请求...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRUST BAR -->
+  <div class="border-t border-white/10 py-9">
+    <div class="max-w-6xl mx-auto px-8 flex flex-wrap justify-center items-center gap-x-12 gap-y-4 text-xs text-white/50 tracking-widest">
+      <div>100% 自托管</div>
+      <div>MIT License</div>
+      <div>全链路可审计</div>
+      <div>支持 20+ 模型提供商</div>
+      <div>生产环境验证</div>
+    </div>
+  </div>
+
+  <footer class="text-center py-8 text-xs text-white/40 border-t border-white/10">
+    HUAKAI — Operator-side AI Gateway. Built for control, visibility and scale.
+  </footer>
+
+  <!-- Fake Console Modal -->
+  <div id="console-modal" onclick="hideConsoleModal()" class="hidden fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4">
+    <div onclick="event.stopImmediatePropagation()" class="glass w-full max-w-md rounded-3xl p-8 border border-white/10">
+      <div class="flex justify-between">
+        <div>
+          <div class="font-semibold text-xl">HUAKAI 控制台</div>
+          <div class="text-xs text-white/60">Operator Edition</div>
+        </div>
+        <button onclick="hideConsoleModal()" class="text-white/70 hover:text-white"><i class="fa-solid fa-times text-xl"></i></button>
+      </div>
+      
+      <div class="mt-8 space-y-3">
+        <div class="flex justify-between items-center py-2 px-3 text-sm bg-white/5 rounded-xl">
+          <div>当前 RPS</div><div class="font-mono text-[#00f0ff]">142</div>
+        </div>
+        <div class="flex justify-between items-center py-2 px-3 text-sm bg-white/5 rounded-xl">
+          <div>活跃账号池</div><div class="font-mono">7</div>
+        </div>
+        <div class="flex justify-between items-center py-2 px-3 text-sm bg-white/5 rounded-xl">
+          <div>今日已结算 Token</div><div class="font-mono">8.4m</div>
+        </div>
+      </div>
+      
+      <div class="mt-8 flex gap-3">
+        <button onclick="hideConsoleModal(); document.getElementById('flow').scrollIntoView({behavior:'smooth'})" 
+                class="flex-1 py-3 text-sm font-medium rounded-2xl bg-[#00f0ff] text-black">返回流动舱</button>
+        <button onclick="hideConsoleModal()" 
+                class="flex-1 py-3 text-sm font-medium rounded-2xl border border-white/20">稍后再看</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Tailwind script
+    function initTailwind() {
+      document.documentElement.style.setProperty('--accent', '#00f0ff');
+    }
+    
+    // ===== FLOW CANVAS CORE =====
+    const canvas = document.getElementById('flow-canvas');
+    const ctx = canvas.getContext('2d', { alpha: true });
+    
+    let isPaused = false;
+    let flows = [];
+    let nodes = [];
+    let lastTime = Date.now();
+    let rps = 127;
+    let activeFlows = 14;
+    
+    // Pipeline stages - accurate to HUAKAI architecture
+    const STAGES = [
+      { id: 'ingress', label: 'Ingress', sub: '入口', x: 70 },
+      { id: 'auth', label: 'Auth', sub: '认证', x: 200 },
+      { id: 'registry', label: 'Registry', sub: '模型', x: 330 },
+      { id: 'router', label: 'Router', sub: '路由', x: 470 },
+      { id: 'pool', label: 'ClaimGate', sub: '池选择', x: 620 },
+      { id: 'adapter', label: 'Adapter', sub: '适配', x: 770 },
+      { id: 'stream', label: 'Stream', sub: '转发', x: 910 },
+      { id: 'settle', label: 'Settle', sub: '结算', x: 1060 }
+    ];
+    
+    const CANVAS_WIDTH = 1200;
+    const CANVAS_HEIGHT = 420;
+    
+    function initNodes() {
+      nodes = STAGES.map((stage, i) => ({
+        ...stage,
+        y: 175,
+        index: i,
+        pulse: 0
+      }));
+    }
+    
+    // Sample realistic code fragments
+    function getRandomSnippet(scenario = 'normal') {
+      const snippets = {
+        normal: [
+          '{"model":"claude-3-5-sonnet","stream":true}',
+          'data: {"delta":{"content":"量子"}}',
+          'messages: [{role:"user",content:"..."}]',
+          'usage: {"prompt_tokens":184}'
+        ],
+        cache: [
+          'HIT: cache_token (ttl=3600)',
+          '{"cached":true,"content":"..."}',
+          'prompt_cache_hit: true'
+        ],
+        ratelimit: [
+          '429: rate_limit_exceeded',
+          'retry_after: 1.8s',
+          'cooldown: 850ms'
+        ],
+        fallback: [
+          'attempt #2',
+          'pool: primary → secondary',
+          'lease: 0x3fa2 → 0x8d1c'
+        ],
+        mimicry: [
+          'R7: system_rewrite',
+          'tool_name_obfuscated',
+          'cache_bp: injected'
+        ]
+      };
+      const arr = snippets[scenario] || snippets.normal;
+      return arr[Math.floor(Math.random() * arr.length)];
+    }
+    
+    function getColorForScenario(scenario) {
+      if (scenario === 'cache') return '#a855f7';
+      if (scenario === 'ratelimit') return '#f59e0b';
+      if (scenario === 'fallback') return '#fb923c';
+      if (scenario === 'mimicry') return '#67e8f9';
+      return '#00f0ff';
+    }
+    
+    class FlowPulse {
+      constructor(scenario = 'normal') {
+        this.progress = 0;           // 0 to 1 across the whole pipeline
+        this.speed = (scenario === 'ratelimit') ? 0.0045 : (Math.random() * 0.009 + 0.012);
+        this.color = getColorForScenario(scenario);
+        this.snippet = getRandomSnippet(scenario);
+        this.scenario = scenario;
+        this.size = (scenario === 'mimicry') ? 2.4 : 1.9;
+        this.opacity = 1;
+        this.trail = [];
+        this.finished = false;
+      }
+      
+      update() {
+        if (this.finished) return;
+        
+        this.progress += this.speed;
+        
+        // Update trail
+        const pos = this.getPosition();
+        this.trail.push({x: pos.x, y: pos.y});
+        if (this.trail.length > 9) this.trail.shift();
+        
+        if (this.progress >= 1) {
+          this.finished = true;
+          this.opacity = 0;
+        }
+      }
+      
+      getPosition() {
+        // Map progress to segment and local progress
+        const total = STAGES.length - 1;
+        const seg = Math.min(Math.floor(this.progress * total), total - 1);
+        const local = (this.progress * total) - seg;
+        
+        const n1 = nodes[seg];
+        const n2 = nodes[seg + 1];
+        
+        if (!n1 || !n2) return {x: 100, y: 180};
+        
+        // Nice curve between nodes
+        const x = n1.x + (n2.x - n1.x) * local;
+        const curve = Math.sin(local * Math.PI) * 18;  // gentle arc
+        const y = n1.y + curve + (Math.random() - 0.5) * 1.5;
+        
+        return {x, y, seg, local};
+      }
+      
+      draw() {
+        if (this.finished) return;
+        
+        const pos = this.getPosition();
+        
+        // Draw trail
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.25;
+        ctx.beginPath();
+        for (let i = 0; i < this.trail.length; i++) {
+          const p = this.trail[i];
+          if (i === 0) ctx.moveTo(p.x, p.y);
+          else ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+        
+        // Glowing head
+        ctx.globalAlpha = this.opacity * 0.9;
+        
+        // Outer glow
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, this.size * 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Core
+        ctx.globalAlpha = this.opacity;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, this.size, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Code snippet label (fades in and out)
+        if (this.progress > 0.08 && this.progress < 0.95) {
+          ctx.globalAlpha = this.opacity * Math.min(0.9, (1 - this.progress) * 1.8);
+          ctx.fillStyle = this.color;
+          ctx.font = '9.5px JetBrains Mono, monospace';
+          ctx.fillText(this.snippet, pos.x + 11, pos.y - 8);
+        }
+        
+        ctx.globalAlpha = 1;
+      }
+    }
+    
+    function drawBackground() {
+      ctx.fillStyle = '#0a0c1a';
+      ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+      
+      // Very subtle grid
+      ctx.strokeStyle = 'rgba(255,255,255,0.035)';
+      ctx.lineWidth = 1;
+      const step = 42;
+      for (let x = step; x < CANVAS_WIDTH; x += step) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, CANVAS_HEIGHT);
+        ctx.stroke();
+      }
+      for (let y = step; y < CANVAS_HEIGHT; y += step) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(CANVAS_WIDTH, y);
+        ctx.stroke();
+      }
+      
+      // faint horizontal pipeline guide line
+      ctx.strokeStyle = 'rgba(0, 240, 255, 0.07)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(40, 175);
+      ctx.quadraticCurveTo(600, 155, CANVAS_WIDTH - 40, 175);
+      ctx.stroke();
+    }
+    
+    function drawConnections() {
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      
+      for (let i = 0; i < nodes.length - 1; i++) {
+        const n1 = nodes[i];
+        const n2 = nodes[i + 1];
+        
+        ctx.beginPath();
+        ctx.moveTo(n1.x, n1.y);
+        const cpY = n1.y - 12;
+        ctx.quadraticCurveTo((n1.x + n2.x) / 2, cpY, n2.x, n2.y);
+        ctx.stroke();
+      }
+    }
+    
+    function drawNodes() {
+      nodes.forEach((node, index) => {
+        const x = node.x;
+        const y = node.y;
+        
+        // Node glow when recently pulsed
+        if (node.pulse > 0) {
+          ctx.globalAlpha = node.pulse * 0.55;
+          ctx.fillStyle = '#00f0ff';
+          ctx.beginPath();
+          ctx.arc(x, y, 37, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+          node.pulse *= 0.84;
+        }
+        
+        // Main capsule
+        ctx.fillStyle = 'rgba(20, 22, 36, 0.95)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+        ctx.lineWidth = 1.5;
+        
+        // Capsule shape
+        const w = 68;
+        const h = 48;
+        
+        ctx.beginPath();
+        ctx.roundRect(x - w/2, y - h/2, w, h, 22);
+        ctx.fill();
+        ctx.stroke();
+        
+        // Inner highlight ring
+        ctx.strokeStyle = 'rgba(0, 240, 255, 0.2)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(x - w/2 + 4, y - h/2 + 4, w - 8, h - 8, 16);
+        ctx.stroke();
+        
+        // Label
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 11px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(node.label, x, y - 3);
+        
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.font = '9px Inter, sans-serif';
+        ctx.fillText(node.sub, x, y + 12);
+        
+        ctx.textAlign = 'left';
+      });
+    }
+    
+    function drawBackgroundFlows() {
+      // Very subtle, slow moving background code rain inside the pipe
+      ctx.globalAlpha = 0.13;
+      ctx.fillStyle = '#64748b';
+      ctx.font = '9px JetBrains Mono, monospace';
+      
+      const time = Date.now() / 1400;
+      
+      for (let i = 0; i < 6; i++) {
+        const seg = (i * 1.3) % (STAGES.length - 1);
+        const s1 = nodes[Math.floor(seg)];
+        const s2 = nodes[Math.floor(seg) + 1];
+        if (!s1 || !s2) continue;
+        
+        const p = ((time * 0.3 + i * 1.7) % 1);
+        const bx = s1.x + (s2.x - s1.x) * p;
+        const by = s1.y + Math.sin(p * Math.PI) * 11;
+        
+        const texts = ['{ "model":', 'delta', 'stream:true', 'tokens:218', 'cache_hit'];
+        ctx.fillText(texts[i % texts.length], bx, by + 18);
+      }
+      ctx.globalAlpha = 1;
+    }
+    
+    function updateMetrics() {
+      // Simulate live metrics
+      activeFlows = Math.max(4, flows.filter(f => !f.finished).length + Math.floor(Math.random() * 3));
+      
+      // Slight RPS drift
+      rps = Math.max(82, Math.min(210, rps + (Math.random() - 0.5) * 2.3));
+      
+      document.getElementById('live-rps').innerText = Math.floor(rps);
+      document.getElementById('live-flows').innerText = activeFlows;
+    }
+    
+    function animate() {
+      if (isPaused) {
+        requestAnimationFrame(animate);
+        return;
+      }
+      
+      ctx.save();
+      drawBackground();
+      drawConnections();
+      drawBackgroundFlows();
+      
+      // Update + draw active flows
+      for (let i = flows.length - 1; i >= 0; i--) {
+        const flow = flows[i];
+        flow.update();
+        
+        if (flow.finished) {
+          // Pulse the last node
+          const finalNode = nodes[nodes.length - 1];
+          if (finalNode) finalNode.pulse = 1;
+          flows.splice(i, 1);
+        } else {
+          flow.draw();
+          
+          // Pulse nodes when flow passes
+          const pos = flow.getPosition();
+          if (pos.seg !== undefined) {
+            const currentNode = nodes[pos.seg];
+            if (currentNode && pos.local > 0.8 && pos.local < 0.95) {
+              currentNode.pulse = Math.max(currentNode.pulse || 0, 0.8);
+            }
+            // also pulse the next node
+            const nextNode = nodes[pos.seg + 1];
+            if (nextNode && pos.local > 0.2 && pos.local < 0.35) {
+              nextNode.pulse = Math.max(nextNode.pulse || 0, 0.7);
+            }
+          }
+        }
+      }
+      
+      drawNodes();
+      
+      ctx.restore();
+      
+      updateMetrics();
+      
+      requestAnimationFrame(animate);
+    }
+    
+    function spawnPulse(scenario = 'normal') {
+      const pulse = new FlowPulse(scenario);
+      flows.push(pulse);
+      
+      // Occasionally spawn a second pulse
+      if (Math.random() < 0.45) {
+        setTimeout(() => {
+          if (!isPaused) {
+            const p2 = new FlowPulse(scenario);
+            p2.speed *= 0.85;
+            flows.push(p2);
+          }
+        }, 180);
+      }
+    }
+    
+    function spawnScenario(type) {
+      const count = (type === 'fallback') ? 2 : 1;
+      for (let i = 0; i < count; i++) {
+        setTimeout(() => {
+          spawnPulse(type);
+        }, i * 220);
+      }
+      
+      // For mimicry, spawn a special secondary effect
+      if (type === 'mimicry') {
+        setTimeout(() => {
+          const p = new FlowPulse('mimicry');
+          p.speed = 0.008;
+          flows.push(p);
+        }, 420);
+      }
+    }
+    
+    function triggerDemoFlow(count = 1) {
+      for (let i = 0; i < count; i++) {
+        setTimeout(() => {
+          spawnPulse(['normal', 'cache', 'mimicry'][i % 3]);
+        }, i * 140);
+      }
+    }
+    
+    function autoBurst() {
+      for (let i = 0; i < 5; i++) {
+        setTimeout(() => {
+          if (!isPaused) {
+            const types = ['normal', 'cache', 'normal', 'fallback'];
+            spawnPulse(types[Math.floor(Math.random() * types.length)]);
+          }
+        }, i * 160);
+      }
+    }
+    
+    function clearAllFlows() {
+      flows = [];
+    }
+    
+    function toggleFlowAnimation() {
+      isPaused = !isPaused;
+      const btnText = document.getElementById('pause-text');
+      const icon = document.getElementById('pause-icon');
+      
+      if (isPaused) {
+        btnText.innerText = '继续';
+        icon.classList.remove('fa-pause');
+        icon.classList.add('fa-play');
+      } else {
+        btnText.innerText = '暂停';
+        icon.classList.remove('fa-play');
+        icon.classList.add('fa-pause');
+        // restart loop if needed
+        requestAnimationFrame(animate);
+      }
+    }
+    
+    function initCanvas() {
+      initNodes();
+      
+      // Initial gentle flows
+      setTimeout(() => {
+        spawnPulse('normal');
+        setTimeout(() => spawnPulse('cache'), 650);
+        setTimeout(() => spawnPulse('normal'), 1400);
+      }, 700);
+      
+      // Occasional ambient flows
+      setInterval(() => {
+        if (!isPaused && flows.length < 7 && Math.random() < 0.75) {
+          const types = ['normal', 'normal', 'cache'];
+          spawnPulse(types[Math.floor(Math.random() * types.length)]);
+        }
+      }, 2800);
+      
+      // Live metric drift
+      setInterval(() => {
+        if (!isPaused) updateMetrics();
+      }, 1200);
+      
+      // Start the loop
+      animate();
+      
+      // Allow clicking canvas to inject a pulse at approximate position
+      canvas.addEventListener('click', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+        
+        // Find nearest node
+        let closest = nodes[0];
+        let minDist = Infinity;
+        
+        nodes.forEach(n => {
+          const d = Math.abs(n.x - clickX);
+          if (d < minDist) { minDist = d; closest = n; }
+        });
+        
+        const pulse = new FlowPulse(Math.random() > 0.6 ? 'normal' : 'cache');
+        // jump start progress based on position
+        const progress = Math.max(0.05, Math.min(0.95, (clickX - 70) / 980));
+        pulse.progress = progress;
+        
+        flows.push(pulse);
+      });
+      
+      // Bonus: hover highlight
+      canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mx = (e.clientX - rect.left) * (CANVAS_WIDTH / rect.width);
+        
+        nodes.forEach(n => {
+          const dist = Math.abs(n.x - mx);
+          if (dist < 40) {
+            n.pulse = Math.max(n.pulse || 0, 0.5);
+          }
+        });
+      });
+      
+      // Keyboard shortcuts for fun
+      document.addEventListener('keydown', (e) => {
+        if (e.key === ' ') {
+          e.preventDefault();
+          toggleFlowAnimation();
+        }
+        if (e.key.toLowerCase() === 'r') {
+          spawnScenario('normal');
+        }
+      });
+      
+      console.log('%c[HUAKAI] Codeflow canvas initialized', 'color:#64748b');
+    }
+    
+    // Demo input drives the canvas
+    function sendDemoRequest() {
+      const input = document.getElementById('demo-input');
+      const value = input.value.trim() || '测试请求';
+      const traceEl = document.getElementById('live-trace');
+      
+      // Trigger visual flows
+      spawnPulse('normal');
+      setTimeout(() => spawnPulse('normal'), 180);
+      
+      if (Math.random() > 0.6) {
+        setTimeout(() => spawnPulse('cache'), 520);
+      }
+      
+      // Fake live trace
+      traceEl.innerHTML = `
+        <div class="text-emerald-400/90">→ 收到请求 · ${value.slice(0, 22)}</div>
+        <div class="text-white/60">→ Ingress authenticated</div>
+        <div class="text-[#00f0ff]">→ Router selected pool-03</div>
+      `;
+      
+      setTimeout(() => {
+        if (traceEl) {
+          traceEl.innerHTML += `<div class="text-purple-400">→ Streaming from claude-3-5-sonnet...</div>`;
+        }
+      }, 920);
+      
+      // Reset input a bit
+      setTimeout(() => {
+        input.value = '';
+      }, 1500);
+    }
+    
+    // Fake console modal
+    function showConsoleModal() {
+      document.getElementById('console-modal').classList.remove('hidden');
+      document.getElementById('console-modal').classList.add('flex');
+    }
+    
+    function hideConsoleModal() {
+      const modal = document.getElementById('console-modal');
+      modal.classList.remove('flex');
+      modal.classList.add('hidden');
+    }
+    
+    // Auto demo on load
+    function startAutoDemo() {
+      // Spawn a few more pulses after load for wow effect
+      setTimeout(() => {
+        if (flows.length < 2) spawnPulse('normal');
+      }, 2600);
+      
+      // Random nice bursts every 35s
+      setInterval(() => {
+        if (!isPaused && document.visibilityState === 'visible') {
+          if (Math.random() < 0.3) autoBurst();
+        }
+      }, 35000);
+    }
+    
+    // Boot everything
+    function boot() {
+      initTailwind();
+      initCanvas();
+      startAutoDemo();
+      
+      // Seed one fallback pulse for visual interest
+      setTimeout(() => {
+        if (flows.length < 4) spawnPulse('fallback');
+      }, 3200);
+      
+      // Make sure metrics are live
+      setTimeout(updateMetrics, 1000);
+      
+      // Keyboard hint in console
+      console.log('%c[HUAKAI Landing] Space = pause/resume | Click canvas = inject pulse | R = random flow', 'color:#64748b');
+    }
+    
+    // Launch
+    window.onload = boot;
+    
+    // Bonus global helpers for console tinkering
+    window.huakaiSpawn = spawnPulse;
+    window.huakaiBurst = autoBurst;
+  </script>
+</body>
+</html>

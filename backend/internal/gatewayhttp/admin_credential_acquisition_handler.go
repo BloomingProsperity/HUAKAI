@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -527,9 +526,4 @@ func firstReason(values ...string) string {
 		return got
 	}
 	return "credential acquisition"
-}
-
-func parsePositiveQueryInt64(r *http.Request, name string) int64 {
-	value, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get(name)), 10, 64)
-	return value
 }

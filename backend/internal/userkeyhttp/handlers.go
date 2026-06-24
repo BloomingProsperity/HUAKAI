@@ -228,7 +228,7 @@ func newRevokeHandler(d Deps) http.HandlerFunc {
 type patchRequest struct {
 	Name   *string `json:"name,omitempty"`
 	Status *string `json:"status,omitempty"`
-	// expires_at tri-state (CLAUDE.md #16, sub2api-style):
+		// expires_at tri-state:
 	//   absent / JSON null -> nil pointer = leave the deadline unchanged
 	//   empty string ""    -> clear the deadline (key becomes never-expiring)
 	//   RFC3339 string     -> set the deadline to that instant (parse failure -> 400)

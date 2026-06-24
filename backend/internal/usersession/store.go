@@ -47,6 +47,16 @@ func NewPostgresStore(database db.DBTX) *PostgresStore {
 	return &PostgresStore{db: database, cache: NewMemoryStore()}
 }
 
+func (s *PostgresStore) syncCacheBestEffort(sync func(*MemoryStore) error) {
+	if s == nil || s.cache == nil || sync == nil {
+		return
+	}
+	if err := sync(s.cache); err != nil {
+		// PostgreSQL 是权威源；旁路 cache 会在后续读取时由权威源重新灌入。
+		return
+	}
+}
+
 func (s *PostgresStore) CreateFamily(ctx context.Context, in CreateInput, now time.Time) (SessionFamily, error) {
 	if s == nil || s.db == nil {
 		return SessionFamily{}, ErrStoreNotConfigured
@@ -93,7 +103,9 @@ INSERT INTO session_tokens (id, tenant_id, family_id, token_hash, generation, ex
 VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7)
 `, token.ID, token.TenantID, token.FamilyID, token.TokenHash, token.Generation, token.ExpiresAt.UTC(), token.CreatedAt.UTC())
 	if err == nil && s.cache != nil {
-		_ = s.cache.InsertSessionToken(ctx, token)
+		s.syncCacheBestEffort(func(cache *MemoryStore) error {
+			return cache.InsertSessionToken(ctx, token)
+		})
 	}
 	return err
 }
@@ -151,7 +163,9 @@ WHERE tenant_id = $1 AND token_hash = $2 AND revoked_at IS NULL
 		return ErrTokenNotFound
 	}
 	if s.cache != nil {
-		_ = s.cache.RevokeSessionToken(ctx, tenantID, tokenHash, now)
+		s.syncCacheBestEffort(func(cache *MemoryStore) error {
+			return cache.RevokeSessionToken(ctx, tenantID, tokenHash, now)
+		})
 	}
 	return nil
 }
@@ -165,7 +179,9 @@ INSERT INTO refresh_tokens (id, tenant_id, family_id, token_hash, generation, st
 VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8)
 `, token.ID, token.TenantID, token.FamilyID, token.TokenHash, token.Generation, token.Status, token.ExpiresAt.UTC(), token.CreatedAt.UTC())
 	if err == nil && s.cache != nil {
-		_ = s.cache.InsertRefreshToken(ctx, token)
+		s.syncCacheBestEffort(func(cache *MemoryStore) error {
+			return cache.InsertRefreshToken(ctx, token)
+		})
 	}
 	return err
 }
@@ -219,15 +235,21 @@ func (s *PostgresStore) RotateRefreshToken(ctx context.Context, oldToken Refresh
 			return SessionFamily{}, err
 		}
 		if s.cache != nil {
-			_, _ = s.cache.RotateRefreshToken(ctx, oldToken, newToken, now)
-			s.cache.putFamily(family)
+			s.syncCacheBestEffort(func(cache *MemoryStore) error {
+				_, err := cache.RotateRefreshToken(ctx, oldToken, newToken, now)
+				cache.putFamily(family)
+				return err
+			})
 		}
 		return family, nil
 	}
 	family, err := rotateWithDB(ctx, s.db, oldToken, newToken, now)
 	if err == nil && s.cache != nil {
-		_, _ = s.cache.RotateRefreshToken(ctx, oldToken, newToken, now)
-		s.cache.putFamily(family)
+		s.syncCacheBestEffort(func(cache *MemoryStore) error {
+			_, err := cache.RotateRefreshToken(ctx, oldToken, newToken, now)
+			cache.putFamily(family)
+			return err
+		})
 	}
 	return family, err
 }
@@ -280,7 +302,9 @@ SET status = 'revoked',
 WHERE tenant_id = $1 AND token_hash = $2 AND status = 'active'
 `, tenantID, tokenHash, now.UTC())
 	if err == nil && s.cache != nil {
-		_ = s.cache.RevokeToken(ctx, tenantID, tokenHash, reason, now)
+		s.syncCacheBestEffort(func(cache *MemoryStore) error {
+			return cache.RevokeToken(ctx, tenantID, tokenHash, reason, now)
+		})
 	}
 	return err
 }
@@ -346,8 +370,11 @@ WHERE tenant_id = $1 AND family_id = $2::uuid AND revoked_at IS NULL
 `, tenantID, familyID, now.UTC())
 	}
 	if err == nil && s.cache != nil {
-		_, _ = s.cache.RevokeFamily(ctx, tenantID, familyID, reason, now)
-		s.cache.putFamily(family)
+		s.syncCacheBestEffort(func(cache *MemoryStore) error {
+			_, err := cache.RevokeFamily(ctx, tenantID, familyID, reason, now)
+			cache.putFamily(family)
+			return err
+		})
 	}
 	return family, err
 }
@@ -391,7 +418,10 @@ WHERE st.family_id = sf.id
 `, tenantID, userID, now.UTC())
 	}
 	if err == nil && s.cache != nil {
-		_, _ = s.cache.RevokeUser(ctx, tenantID, userID, reason, now)
+		s.syncCacheBestEffort(func(cache *MemoryStore) error {
+			_, err := cache.RevokeUser(ctx, tenantID, userID, reason, now)
+			return err
+		})
 	}
 	return tag.RowsAffected(), err
 }

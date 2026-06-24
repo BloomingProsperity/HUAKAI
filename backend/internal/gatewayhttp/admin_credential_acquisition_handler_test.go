@@ -621,11 +621,6 @@ func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialA
 	return newCredentialAcqHTTPFixtureWithRegistryAndLongLived(t, auth, registry, exchanger, false)
 }
 
-func newCredentialAcqHTTPFixtureWithLongLivedSetupToken(t *testing.T, auth AdminCredentialAuth, allow bool) *credentialAcqHTTPFixture {
-	t.Helper()
-	return newCredentialAcqHTTPFixtureWithBootstrapTTLs(t, auth, allow, 0, 0)
-}
-
 func newCredentialAcqHTTPFixtureWithBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, allow bool, shortTTL, longTTL time.Duration) *credentialAcqHTTPFixture {
 	t.Helper()
 	exchanger := &credentialAcqExchangerStub{
@@ -733,21 +728,6 @@ func (fx *credentialAcqHTTPFixture) seedOAuthFlow(t *testing.T, providerAccountI
 func (fx *credentialAcqHTTPFixture) seedOAuthFlowWithActor(t *testing.T, providerAccountID int64, actorID, actorRole string) seededCredentialAcqFlow {
 	t.Helper()
 	return fx.seedRawOAuthFlowWithActor(t, providerAccountID, credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, actorID, actorRole)
-}
-
-func (fx *credentialAcqHTTPFixture) seedOAuthFlowFor(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {
-	t.Helper()
-	result, err := credentialacq.StartOAuthFlow(context.Background(), fx.store, credentialacq.StartInput{
-		TenantID: 1, ProviderAccountID: providerAccountID,
-		Vendor: vendor, AuthMode: authMode,
-		ActorID: "11", ActorRole: "platform_admin",
-	}, credentialacq.OAuthClientConfig{
-		ClientID: "client-id", AuthURL: "https://auth.example.test/oauth", RedirectURI: "https://huakai.example.test/callback",
-	})
-	if err != nil {
-		t.Fatalf("seed oauth flow: %v", err)
-	}
-	return seededCredentialAcqFlow{ID: result.Session.ID, State: result.State}
 }
 
 func (fx *credentialAcqHTTPFixture) seedRawOAuthFlow(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {

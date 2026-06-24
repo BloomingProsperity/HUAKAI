@@ -721,11 +721,9 @@ func TestPostgresRegistry_EffectiveTimeWindow(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 13 — ProviderModelOverrideOnPrimary
-// Primary binding has provider_model_id_override → ResolvedModel.ProviderModelID
-// reflects the override, not the canonical model default.
-// (Mirrors one-api ModelMapping behavior per
-// model/channel.go @ 3915ce9 — verified WebFetch 2026-04-30T09:35Z.)
+// 测试 13:主绑定携带 provider_model_id_override 时,ResolvedModel.ProviderModelID
+// 使用覆盖值,而不是 canonical model 默认值。该场景固定模型映射覆盖语义,
+// 避免 registry 重构时回退。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_ProviderModelOverrideOnPrimary(t *testing.T) {

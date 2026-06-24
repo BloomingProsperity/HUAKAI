@@ -34,8 +34,10 @@ func TestWiring_TenantRetryBudgetEnvConfiguresLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadTenantRetryBudgetFromEnv configured: %v", err)
 	}
-	if !budget.Allow(7) || !budget.Allow(7) {
-		t.Fatal("first two configured retries should be allowed")
+	firstAllowed := budget.Allow(7)
+	secondAllowed := budget.Allow(7)
+	if !firstAllowed || !secondAllowed {
+		t.Fatalf("first two configured retries should be allowed, got first=%v second=%v", firstAllowed, secondAllowed)
 	}
 	if budget.Allow(7) {
 		t.Fatal("third configured retry should be denied")

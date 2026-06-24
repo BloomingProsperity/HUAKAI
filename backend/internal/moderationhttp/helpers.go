@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admintenant"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 )
 
@@ -27,38 +28,31 @@ func resolveAdmin(deps ModerationAdminDeps, w http.ResponseWriter, r *http.Reque
 }
 
 func requireTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) bool {
-	if tenantID <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid_tenant_id",
-			"tenant_id must be a positive int64")
-		return false
-	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
-		writeAdminError(w, err)
+	if _, err := admintenant.FromRequiredValue(ident, tenantID); err != nil {
+		writeTenantResolveError(w, err)
 		return false
 	}
 	return true
 }
 
 func tenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
-	raw := r.URL.Query().Get("tenant_id")
-	if raw == "" && ident.Role == admin.RoleTenantOperator {
-		return ident.ScopeTenantID, true
-	}
-	if raw == "" {
-		writeError(w, http.StatusBadRequest, "tenant_id_required",
-			"tenant_id query param required")
-		return 0, false
-	}
-	tenantID, err := strconv.ParseInt(raw, 10, 64)
+	tenantID, err := admintenant.FromQuery(r.URL.Query(), ident)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_tenant_id",
-			"tenant_id must be a positive int64")
-		return 0, false
-	}
-	if !requireTenant(w, ident, tenantID) {
+		writeTenantResolveError(w, err)
 		return 0, false
 	}
 	return tenantID, true
+}
+
+func writeTenantResolveError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, admintenant.ErrTenantIDRequired):
+		writeError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
+	case errors.Is(err, admintenant.ErrInvalidTenantID):
+		writeError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive int64")
+	default:
+		writeAdminError(w, err)
+	}
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {

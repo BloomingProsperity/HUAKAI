@@ -32,8 +32,8 @@ func validateCrossRefs(env *HCSFEnvelope) error {
 
 	// toolCallIDToNodeID 把 ToolUse.ToolCallID 映射到节点 ID，用于解析 ToolResult.ToolCallID。
 	//
-	// 同 envelope 内多个 ToolUse 共享同一 ToolCallID 视为歧义（issue-derived：sub2api#1552
-	// tool_args_lost 模式 — 重复 ID 导致 ToolResult 无法确定指向哪个 ToolUse），直接拒绝。
+		// 同 envelope 内多个 ToolUse 共享同一 ToolCallID 视为歧义：重复 ID 会导致
+		// ToolResult 无法确定指向哪个 ToolUse，直接拒绝。
 	toolCallIDToNodeID := make(map[string]string)
 	for i, n := range env.CapabilityGraph.Nodes {
 		if n.Kind == CapabilityToolUse && n.ToolUse != nil && n.ToolUse.ToolCallID != "" {
@@ -238,7 +238,7 @@ func validateMCPServerLabel(mcp *MCPServerNode, idx int) error {
 // validateToolResultToolCallRef 校验 ToolResult.ToolCallID 必须匹配同图 ToolUse +
 // 存在 requires edge（tool_result node → tool_use node）。
 //
-// 两步守门避免 issue mode sub2api#1552 / portkey#1579 / litellm#27468 的 silent drop：
+// 两步守门避免 ToolResult 引用关系不完整造成 silent drop：
 //
 //  1. ToolCallID 字符串匹配 — 保证语义对应
 //  2. requires edge 存在 — 保证 capability_graph 可寻址（projection / audit 路径都能拉到链）

@@ -10,12 +10,10 @@ import (
 // Background: applyClaudeDeviceProfile previously stamped ONE hardcoded
 // (User-Agent + X-Stainless-*) tuple on every account's egress, so N pooled
 // accounts presented a byte-identical fingerprint — a trivial clustering signal
-// for upstream WAFs. CLIProxyAPI (internal/runtime/executor/helps/
-// claude_device_profile.go) solves this with a per-auth 7-day cache + version-
-// floor monotonic upgrade seeded from each client's real inbound UA.
+// for upstream WAFs.
 //
 // HUAKAI's adapter does not receive the inbound client UA at this layer, so we
-// take a parity-OR-BETTER approach: DETERMINISTICALLY derive a stable, per-
+// DETERMINISTICALLY derive a stable, per-
 // account-distinct platform tuple from the account id. This is stronger than a
 // TTL cache for our case — there is no cold-start window where every account
 // shares the baseline, no eviction, and (critically) we NEVER invent a non-
@@ -37,9 +35,9 @@ type claudeDeviceProfile struct {
 	arch           string
 }
 
-// baselineClaudeDeviceProfile is the single known-real Claude Code fingerprint
-// (matches CLIProxyAPI defaults). It is the version FLOOR: per-account variation
-// never drops below it and never alters the software version, only the platform.
+// baselineClaudeDeviceProfile is the single known-real Claude Code fingerprint.
+// It is the version FLOOR: per-account variation never drops below it and never
+// alters the software version, only the platform.
 func baselineClaudeDeviceProfile() claudeDeviceProfile {
 	return claudeDeviceProfile{
 		userAgent:      claudeCodeUserAgent,

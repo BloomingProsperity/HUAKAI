@@ -22,8 +22,10 @@ func TestBudgetAllowScopesByTenantAndSlidingWindow(t *testing.T) {
 	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	budget := New(2, time.Minute, WithClock(func() time.Time { return now }))
 
-	if !budget.Allow(7) || !budget.Allow(7) {
-		t.Fatal("tenant 7 first two retries should be allowed")
+	firstAllowed := budget.Allow(7)
+	secondAllowed := budget.Allow(7)
+	if !firstAllowed || !secondAllowed {
+		t.Fatalf("tenant 7 first two retries should be allowed, got first=%v second=%v", firstAllowed, secondAllowed)
 	}
 	if budget.Allow(7) {
 		t.Fatal("tenant 7 third retry should be denied inside the same window")

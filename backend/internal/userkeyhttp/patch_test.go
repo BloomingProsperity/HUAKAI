@@ -126,7 +126,7 @@ func TestKeyPatchBothFields(t *testing.T) {
 	}
 }
 
-// expires_at tri-state decode (sub2api-style, CLAUDE.md #16). The handler must turn
+	// expires_at tri-state decode. The handler must turn
 // the wire *string into the service's value+clear split exactly.
 
 // SET: a non-empty RFC3339 string -> service receives the parsed deadline, ClearExpiry=false.

@@ -12,10 +12,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
-type credentialCreator interface {
-	Create(context.Context, credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error)
-}
-
 type fakeCredentialCreator struct {
 	mu    sync.Mutex
 	calls int

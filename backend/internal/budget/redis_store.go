@@ -12,7 +12,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const redisCounterTTLSeconds = 120
 const redisReservationTTL = 24 * time.Hour
 
 var checkAndIncrementScript = redis.NewScript(`

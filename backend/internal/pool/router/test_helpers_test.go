@@ -45,26 +45,6 @@ func (s *stubSticky) Lookup(_ context.Context, req SelectionRequest) (int64, boo
 	return 0, false, nil
 }
 
-// captureClaimGate records WriteAcquisition calls.
-type captureClaimGate struct {
-	mu    sync.Mutex
-	calls []claimWrite
-}
-
-type claimWrite struct {
-	TenantID  int64
-	ClaimID   int64
-	AccountID int64
-	Token     uuid.UUID
-}
-
-func (c *captureClaimGate) WriteAcquisition(_ context.Context, tenantID, claimID, accountID int64, token uuid.UUID) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.calls = append(c.calls, claimWrite{tenantID, claimID, accountID, token})
-	return nil
-}
-
 // memSlotManager hands out tokens; tracks releases.
 type memSlotManager struct {
 	mu         sync.Mutex
@@ -97,12 +77,6 @@ func (m *memSlotManager) releaseCount(tok uuid.UUID) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.releases[tok]
-}
-
-func (m *memSlotManager) releaseFor(tok uuid.UUID) ReleaseFunc {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.releaseFns[tok]
 }
 
 // snap is shorthand for an AccountSnapshot literal.

@@ -16,12 +16,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/google/uuid"
 )
 
 type recordingSettler struct {
 	calls           []billing.SettleRequest
 	aborts          []recordedAbort
-	cacheHitCommits []int64
+	cacheHitCommits []billing.SettleRequest
 }
 
 type recordedAbort struct {
@@ -51,7 +52,7 @@ func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, rea
 }
 
 func (s *recordingSettler) CommitCacheHit(_ context.Context, req billing.SettleRequest) error {
-	s.cacheHitCommits = append(s.cacheHitCommits, req.ClaimID)
+	s.cacheHitCommits = append(s.cacheHitCommits, req)
 	return nil
 }
 
@@ -97,6 +98,15 @@ func TestChatCompletionsL2CacheHitReturnsCachedWithoutUpstreamCall(t *testing.T)
 	}
 	if len(settler.cacheHitCommits) != 1 {
 		t.Fatalf("cache-hit commit calls=%d want 1 (命中走 CommitCacheHit 零成本结清)", len(settler.cacheHitCommits))
+	}
+	cacheHitReq := settler.cacheHitCommits[0]
+	if cacheHitReq.ClaimID == 0 || cacheHitReq.TenantID == 0 {
+		t.Fatalf("cache-hit commit missing claim/tenant ids: %+v", cacheHitReq)
+	}
+	if cacheHitReq.AccountID != 0 || cacheHitReq.ProviderAccountID != 0 ||
+		cacheHitReq.AcquisitionToken != uuid.Nil || cacheHitReq.AttemptSeq != 0 ||
+		cacheHitReq.EmitSchedulerOutbox {
+		t.Fatalf("cache-hit commit must be provider-less before pool acquisition: %+v", cacheHitReq)
 	}
 }
 

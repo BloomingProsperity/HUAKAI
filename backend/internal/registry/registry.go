@@ -60,9 +60,9 @@ type Resolved struct {
 	PoolCandidates  []int64
 	BindingMetadata []BindingMetadata
 
-	// Snapshot stamp (D6). Format: "registry:<tenant_id>:<version>".
-	// Router concatenates its own policy version when writing to
-	// RoutePlan.SnapshotVersion / usage_records.snapshot_version.
+	// 快照戳(D6),格式:"registry:<tenant_id>:<version>"。
+	// Router 写入 RoutePlan.SnapshotVersion / usage_records.snapshot_version 时
+	// 会拼接自身 policy version。
 	SnapshotVersion string
 }
 
@@ -74,14 +74,14 @@ type BindingMetadata struct {
 	Priority                int32
 	Weight                  int32
 	SelectionMode           string  // 'strict_priority' | 'priority_weighted'
-	ProviderModelIDOverride *string // nullable; one-api ModelMapping analogue
-	RPMLimit                *int32  // LiteLLM proxy/_types KeyRequestBase.rpm_limit analogue
+	ProviderModelIDOverride *string // 可空;主绑定可覆盖 provider model ID
+	RPMLimit                *int32  // 可空;每分钟请求上限
 	TPMLimit                *int32
-	MaxParallelRequests     *int32 // LiteLLM GenerateRequestBase.max_parallel_requests analogue
+	MaxParallelRequests     *int32 // 可空;最大并发请求数
 	FallbackClass           string // 'normal'|'context_window'|'safety'|'quota'|'manual'
 
-	// Channel-level request/response controls. These fields are in-memory only
-	// in this slice; zero values preserve the pre-existing behavior.
+	// 通道级请求/响应控制。本 slice 只在内存中携带这些字段;
+	// 零值保持既有行为。
 	SystemPrompt                         string
 	SystemPromptOverride                 bool
 	ForceFormat                          bool

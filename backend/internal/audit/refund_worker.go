@@ -209,10 +209,6 @@ type refundReceiptSinkInTx interface {
 	AppendRefundReceiptInTx(context.Context, pgx.Tx, *CostReceipt) error
 }
 
-type refundReceiptSequenceReader interface {
-	GetReceiptBySequence(context.Context, string, int64, int32) (*CostReceipt, error)
-}
-
 type refundReceiptLatestReader interface {
 	GetReceiptForAdmin(context.Context, string, int64) (*CostReceipt, error)
 }
@@ -672,30 +668,6 @@ func nextSequenceAfterMax(maxSequence, base int32) (int32, error) {
 	return maxSequence + 1, nil
 }
 
-func (w *MismatchRefundWorker) existingRefundReceipt(ctx context.Context, payload MismatchRefundPayload, sequence int32) (*CostReceipt, error) {
-	if w == nil || w.receiptSink == nil {
-		return nil, ErrReceiptStorageRequired
-	}
-	if reader, ok := w.receiptSink.(refundReceiptSequenceReader); ok {
-		receipt, err := reader.GetReceiptBySequence(ctx, payload.RequestID, payload.TenantID, sequence)
-		if err != nil {
-			return nil, err
-		}
-		return validateExistingRefundReceipt(receipt, payload, sequence)
-	}
-	if reader, ok := w.receiptSink.(refundReceiptLatestReader); ok {
-		receipt, err := reader.GetReceiptForAdmin(ctx, payload.RequestID, payload.TenantID)
-		if err != nil {
-			return nil, err
-		}
-		if receipt == nil || receipt.ReceiptSequence != sequence {
-			return nil, ErrReceiptNotFound
-		}
-		return validateExistingRefundReceipt(receipt, payload, sequence)
-	}
-	return nil, ErrReceiptStorageRequired
-}
-
 func (w *MismatchRefundWorker) existingRefundReceiptByIdempotency(ctx context.Context, payload MismatchRefundPayload) (*CostReceipt, error) {
 	if w == nil || w.receiptSink == nil {
 		return nil, ErrReceiptStorageRequired
@@ -710,21 +682,6 @@ func (w *MismatchRefundWorker) existingRefundReceiptByIdempotency(ctx context.Co
 		return nil, err
 	}
 	return validateExistingRefundReceiptByIdempotency(receipt, payload, key)
-}
-
-func validateExistingRefundReceipt(receipt *CostReceipt, payload MismatchRefundPayload, sequence int32) (*CostReceipt, error) {
-	if receipt == nil {
-		return nil, ErrReceiptNotFound
-	}
-	if strings.TrimSpace(receipt.RequestID) != strings.TrimSpace(payload.RequestID) ||
-		receipt.TenantID != payload.TenantID ||
-		receipt.ReceiptSequence != sequence {
-		return nil, fmt.Errorf("%w: refunded receipt duplicate mismatch", ErrReceiptInvalidDerivedData)
-	}
-	if NormalizeReceiptValidationState(receipt.ValidationState) != ReceiptValidationStateMismatchRefunded {
-		return nil, fmt.Errorf("%w: refunded receipt state mismatch", ErrReceiptInvalidDerivedData)
-	}
-	return receipt, nil
 }
 
 func validateExistingRefundReceiptByIdempotency(receipt *CostReceipt, payload MismatchRefundPayload, key string) (*CostReceipt, error) {

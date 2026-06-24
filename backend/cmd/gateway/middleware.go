@@ -35,6 +35,7 @@ import (
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
+	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 	"github.com/BloomingProsperity/HUAKAI/internal/reqdecompress"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/webui"
@@ -88,11 +89,12 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router.Use(middleware.RealIP)
 	router.Use(privacy.Recoverer(privacyLogger))
 	router.Use(aiAwareTimeout(60 * time.Second))
-	// relay 入站请求体上限(env 可配,MB 单位,默认 32MiB 抬到中转站量级):gatewayhttp 内 relay 请求体
-	// 上限共用 HUAKAI_MAX_REQUEST_BODY_MB。在 router 开始 serve 之前一次性设定 gatewayhttp 包级上限
+	// relay 入站请求体上限(env 可配,MB 单位,默认 32MiB 抬到中转站量级):chat 主链与兄弟
+	// relay handler 共用 HUAKAI_MAX_REQUEST_BODY_MB。在 router 开始 serve 之前一次性设定包级上限
 	// (set-once,之后只读)。
 	maxRequestBody := bodyLimitBytesFromEnv("HUAKAI_MAX_REQUEST_BODY_MB", 32<<20)
 	gatewayhttp.ConfigureBodyLimits(maxRequestBody)
+	relaybody.ConfigureRequestBodyLimit(maxRequestBody)
 	// privacy.Middleware 在 auth 之前对所有路由全量缓冲 body 解析元数据。若给非 relay 的未认证端点
 	// (login/register 等)也用 relay 的大上限,会无谓抬高它们的 pre-auth 内存放大面。故按路径区分:
 	// 只有 relay 数据面(isAIRelayPath)才放宽到 maxRequestBody,其余维持 privacy 既有的小上限。
@@ -296,7 +298,7 @@ func buildGatewayTimeoutConfig() gateway.TimeoutConfig {
 		FirstTokenTimeout:   streamDurationEnv("HUAKAI_STREAM_FIRST_TOKEN_TIMEOUT", 120*time.Second),
 		InterEventTimeout:   streamDurationEnv("HUAKAI_STREAM_INTER_EVENT_TIMEOUT", 60*time.Second),
 		TotalStreamTimeout:  streamDurationEnv("HUAKAI_STREAM_TOTAL_TIMEOUT", 600*time.Second),
-		DrainMaxSeconds:     streamDurationEnv("HUAKAI_STREAM_DRAIN_MAX", 15*time.Second),
+		DrainMaxDuration:    streamDurationEnv("HUAKAI_STREAM_DRAIN_MAX", 15*time.Second),
 		KeepAliveInterval:   streamDurationEnv("HUAKAI_STREAM_KEEPALIVE_INTERVAL", 15*time.Second),
 		HeaderToFirstByte:   streamDurationEnv("HUAKAI_UPSTREAM_HEADER_TIMEOUT", 15*time.Second),
 		RequestTotalTimeout: streamDurationEnv("HUAKAI_UPSTREAM_REQUEST_TIMEOUT", 120*time.Second),
@@ -450,8 +452,8 @@ func logAuditRefEscapeFlag(policy *eventbus.AuditRefPolicy, logger *zap.Logger) 
 // aiAwareTimeout 套连接级总超时,但豁免 AI 数据面 relay 路径。chi middleware.Timeout 会给
 // r.Context() 加一个总 deadline;对长流(SSE 推理/agent)与长非流推理,这会在 forwarder 自己
 // 的 first-token/inter-event/total 预算之前把合法长响应砍断(并误判为 TotalStreamTimeout)。
-// new-api / sub2api / CLIProxyAPI 与 OpenAI 官方在数据面都不设这种连接级总超时——只靠
-// first-byte + inter-token 空闲超时 + 客户端断连。故 relay 路径不套总 deadline(仍保留
+// AI 数据面通常只靠 first-byte + inter-token 空闲超时 + 客户端断连，不设连接级总超时。
+// 故 relay 路径不套总 deadline(仍保留
 // r.Context() 的客户端断连取消),控制面/admin 路径保留 60s(无 AI relay,长挂死应被砍)。
 func aiAwareTimeout(timeout time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
 
@@ -41,8 +42,7 @@ type tokenImageUsage struct {
 }
 
 func validateRequest(w http.ResponseWriter, r *http.Request, endpoint imageEndpoint) ([]byte, imageRequest, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err := relaybody.ReadLimitedRequestBody(w, r, relaybody.RequestBodyLimit())
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeBodyReadError, clienterr.MessageFor(clienterr.CodeBodyReadError))
 		return nil, imageRequest{}, false
@@ -70,8 +70,7 @@ func validateRequest(w http.ResponseWriter, r *http.Request, endpoint imageEndpo
 	}
 	if req.Stream != nil && *req.Stream {
 		// stream:true 原样透传会让上游回 SSE,token 计费解析失败 → abort 假 502 →
-		// 余额退款,但 vendor 已对生成扣费 = 平台漏钱。图片流式中继落地前显式拒绝
-		// (new-api d2576dd 已实现流式图片中继,完整能力另列)。
+		// 余额退款,但 vendor 已对生成扣费 = 平台漏钱。图片流式中继落地前显式拒绝。
 		writeJSONError(w, http.StatusBadRequest, "stream_not_supported", "images API does not support stream:true yet")
 		return nil, imageRequest{}, false
 	}

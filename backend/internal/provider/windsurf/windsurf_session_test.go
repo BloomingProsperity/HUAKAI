@@ -106,13 +106,9 @@ func TestWindsurfSessionAdapter_NormalSessionReversal_RequestMatchesCurrentPlace
 	}
 }
 
-func TestWindsurfSessionAdapter_ExpiredSessionTriggersReauthFlow(t *testing.T) {
-	t.Skip("Windsurf vendor-real endpoint/header/body 仍待 OCAW；401 reauth flow 尚未实现，不能用占位 adapter 冒充覆盖")
-}
-
-func TestWindsurfSessionAdapter_Upstream5xxEnqueuesDLQRetry(t *testing.T) {
-	t.Skip("Windsurf vendor-real 5xx 分类与 DLQ retry 仍待 dispatcher/channel-health 接入后补测")
-}
+// TODO(provider-session-response):Windsurf vendor-real endpoint/header/body 明确后,
+// 在真实响应处理层补 401 reauth flow 判别测试;不以占位 adapter 冒充覆盖。
+// TODO(dispatcher-channel-health):Windsurf 5xx 分类与 DLQ retry 应在 dispatcher/channel-health 层补测。
 
 func assertWindsurfPlaceholderRequest(t *testing.T, r *http.Request, wantBody []byte) {
 	t.Helper()

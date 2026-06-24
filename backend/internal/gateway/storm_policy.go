@@ -59,8 +59,8 @@ type StormPolicy struct {
 	accountSF       *SingleFlight
 }
 
-// stormPolicyResult is what the singleflight inner executor returns. The outer
-// Acquire unpacks this back into (val, err, denied).
+// stormPolicyResult 是 singleflight 内层执行器返回的载荷,外层 Acquire 会还原为
+// (val, denied, err)。
 type stormPolicyResult struct {
 	val    any
 	denied DenyReason
@@ -98,45 +98,42 @@ func (p *StormPolicy) endpointBucket(endpointKey string) *TokenBucket {
 	return actual.(*TokenBucket)
 }
 
-// Acquire enforces the three-scope policy and runs fn at most once per
-// concurrent same-account caller-set.
+// Acquire 执行三层刷新风暴策略,并保证同账号并发调用集最多只执行一次 fn。
 //
-// Returns:
-//   - (val, fn-err, DenyNone)        — fn executed (or its result was shared by a follower)
-//   - (nil, nil, DenyEndpoint)       — endpoint bucket exhausted; no fn run
-//   - (nil, nil, DenyGlobal)         — global bucket exhausted; no fn run
+// 返回:
+//   - (val, DenyNone, fn-err): fn 已执行,或 follower 共享了 leader 结果。
+//   - (nil, DenyEndpoint, nil): endpoint bucket 耗尽,不执行 fn。
+//   - (nil, DenyGlobal, nil): global bucket 耗尽,不执行 fn。
 //
-// Refund is fired only on bucket denial. fn errors keep tokens consumed so a
-// failed attempt does not reopen the storm window.
+// 只有 bucket 拒绝时才退还已消费 token。fn 自身失败仍保留 token 消耗,避免失败重试重新打开风暴窗口。
 func (p *StormPolicy) Acquire(
 	now time.Time,
 	accountID, endpointKey string,
 	fn func() (any, error),
-) (val any, err error, denied DenyReason) {
+) (val any, denied DenyReason, err error) {
 	eb := p.endpointBucket(endpointKey)
 
 	wrapped, fnErr, _ := p.accountSF.Do(accountID, func() (any, error) {
-		// Scope 2: endpoint
+		// 第二层:endpoint bucket。
 		if !eb.TryAcquire(now) {
 			return stormPolicyResult{denied: DenyEndpoint}, nil
 		}
-		// Scope 3: global — refund endpoint on global denial
+		// 第三层:global bucket;global 拒绝时退还 endpoint token。
 		if !p.globalBucket.TryAcquire(now) {
 			eb.Refund(now)
 			return stormPolicyResult{denied: DenyGlobal}, nil
 		}
-		// Both buckets admitted; run fn. If fn errors, tokens stay consumed
-		// (failed attempts must NOT reopen storm window).
+		// 两层 bucket 均放行后执行 fn;fn 失败仍保留 token 消耗。
 		v, e := fn()
 		return stormPolicyResult{val: v, denied: DenyNone}, e
 	})
 
 	result, ok := wrapped.(stormPolicyResult)
 	if !ok {
-		// Defensive: fn ran outside our wrapper somehow; surface raw value.
-		return wrapped, fnErr, DenyNone
+		// 防御性兜底:若 singleflight 返回了包装外值,直接透出原始值。
+		return wrapped, DenyNone, fnErr
 	}
-	return result.val, fnErr, result.denied
+	return result.val, result.denied, fnErr
 }
 
 // NextEligibleAt returns the earliest wall-clock time at which an Acquire for

@@ -3,9 +3,8 @@ package anthropic
 import "testing"
 
 // DEVPIN-01: per-account device-profile pinning (反封禁 anti-clustering).
-// Parity-or-better vs CLIProxyAPI claude_device_profile.go (deterministic
-// derivation replaces the TTL cache; software version pinned to the real
-// baseline floor — never invented).
+// Deterministic derivation keeps account-level stability; software version
+// pinned to the real baseline floor — never invented.
 
 func TestResolveAccountDeviceProfile_BaselineFallback(t *testing.T) {
 	base := baselineClaudeDeviceProfile()

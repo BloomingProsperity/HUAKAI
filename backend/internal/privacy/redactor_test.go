@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,43 @@ func TestATPRIV001002007008013014MiddlewareAndProofPolicy(t *testing.T) {
 	})
 	if ContainsForbiddenRawData(usage) {
 		t.Fatalf("usage metadata leaked content: %s", usage)
+	}
+}
+
+func TestSanitizeErrorUsesTokensAndPrivacySentinels(t *testing.T) {
+	ctx := context.Background()
+	redactor := DefaultRedactor()
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "nil", err: nil, want: ""},
+		{name: "wrapped unsafe payload", err: fmt.Errorf("audit blocked: %w", ErrUnsafePayload), want: ErrorClassPrivacyGuardHit},
+		{name: "timeout token", err: errors.New("upstream timeout while reading"), want: "network_timeout"},
+		{name: "timed out phrase", err: errors.New("dial timed out before headers"), want: "network_timeout"},
+		{name: "rate limit tokens", err: errors.New("provider rate limit reached"), want: "upstream_rate_limit"},
+		{name: "rate limited tokens", err: errors.New("provider rate limited request"), want: "upstream_rate_limit"},
+		{name: "forbidden token", err: errors.New("upstream forbidden by policy"), want: "upstream_forbidden"},
+		{name: "bad request phrase", err: errors.New("bad request from adapter"), want: "invalid_request"},
+		{name: "credential token", err: errors.New("credential lookup failed"), want: "credential_error"},
+		{name: "key unavailable phrase", err: errors.New("signing key unavailable"), want: "credential_error"},
+		{name: "upstream token", err: errors.New("upstream closed response"), want: "upstream_error"},
+		{name: "panic token", err: errors.New("panic recovered"), want: "panic"},
+		{name: "pirate limit is not rate limit", err: errors.New("pirate limit marker"), want: "internal_error"},
+		{name: "panic substring is not panic", err: errors.New("panicky but recovered"), want: "internal_error"},
+		{name: "credential substring is not credential", err: errors.New("credentialed helper returned"), want: "internal_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := redactor.SanitizeError(ctx, tc.err)
+			if err != nil {
+				t.Fatalf("SanitizeError err=%v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("class=%q want %q", got, tc.want)
+			}
+		})
 	}
 }
 

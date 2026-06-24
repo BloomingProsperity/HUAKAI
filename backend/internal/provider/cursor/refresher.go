@@ -308,6 +308,14 @@ func (e *RefreshError) Error() string {
 	return fmt.Sprintf("cursor refresh: failed outcome=%s%s", e.Outcome, status)
 }
 
+// RefreshFailureOutcome 返回供 credentialworker 归一化的刷新结果。
+func (e *RefreshError) RefreshFailureOutcome() string {
+	if e == nil {
+		return ""
+	}
+	return e.Outcome
+}
+
 func (e *RefreshError) Unwrap() error {
 	if e == nil {
 		return nil
@@ -452,15 +460,6 @@ func credentialString(cred map[string]any, key string) string {
 	default:
 		return ""
 	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if trimmed := strings.TrimSpace(v); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 func isCursorOAuthRecord(rec credentialstore.CredentialRecord) bool {

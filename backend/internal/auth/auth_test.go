@@ -531,7 +531,7 @@ func TestAT_SECURITY_W1_C02_RefreshFailureRedactsOAuthSecretsInRecordedError(t *
 }
 
 // =====================================================================
-// Sub2API-inheritable scenarios
+// 可继承行为场景
 // =====================================================================
 
 // AT-AUTH-005-001: pre-expiry refresh.

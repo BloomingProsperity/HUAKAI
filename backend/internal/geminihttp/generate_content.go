@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -31,7 +32,6 @@ const (
 	ActionCountTokens           = "countTokens"
 
 	endpointFamilyGenerateContent = "gemini_generate_content"
-	maxRequestBodyBytes           = 2 << 20
 	maxUpstreamBodyBytes          = 16 << 20
 )
 
@@ -339,8 +339,7 @@ func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx co
 }
 
 func readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err := relaybody.ReadLimitedRequestBody(w, r, relaybody.RequestBodyLimit())
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeBodyReadError, clienterr.MessageFor(clienterr.CodeBodyReadError))
 		return nil, false

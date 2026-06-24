@@ -214,13 +214,26 @@ func TestClassifyRefreshErrorClassUsesSafeSevenClasses(t *testing.T) {
 		want string
 	}{
 		{name: "invalid_grant", err: errors.New(`{"error":"invalid_grant"}`), want: "invalid_grant"},
+		{name: "invalid_grant_phrase", err: errors.New("invalid grant from provider"), want: "invalid_grant"},
 		{name: "rate_limit", err: errors.New("provider says rate_limit_exceeded"), want: "rate_limit_exceeded"},
+		{name: "status_429", err: errors.New("token endpoint returned status 429"), want: "rate_limit_exceeded"},
+		{name: "too_many_requests", err: errors.New("too many requests from provider"), want: "rate_limit_exceeded"},
 		{name: "risk_control", err: errors.New("risk_control_triggered by upstream"), want: "risk_control_triggered"},
+		{name: "risk_control_phrase", err: errors.New("risk control triggered by upstream"), want: "risk_control_triggered"},
 		{name: "account_disabled", err: errors.New("account_disabled by upstream"), want: "account_disabled"},
+		{name: "disabled_account_phrase", err: errors.New("disabled account by upstream"), want: "account_disabled"},
 		{name: "payload_invalid", err: adapters.ErrInvalidCredentialMaterial, want: "payload_invalid"},
 		{name: "operator_config", err: ErrOperatorOAuthConfigMissing, want: "operator_config_required"},
 		{name: "temporary", err: errors.New("temporary token service outage"), want: "temporary"},
 		{name: "decrypt_collapses_to_payload_invalid", err: errors.New("decrypt failed"), want: "payload_invalid"},
+		{name: "decrypt_substring_not_payload_invalid", err: errors.New("decryptology marker only"), want: "temporary"},
+		{name: "json_substring_not_payload_invalid", err: errors.New("jsonify marker only"), want: "temporary"},
+		{name: "disabled_account_substring_not_account_disabled", err: errors.New("disabled accountant marker"), want: "temporary"},
+		{name: "typed_auth_expired_without_keyword", err: typedRefreshOutcomeErr{outcome: string(OutcomeAuthExpired)}, want: "invalid_grant"},
+		{name: "typed_rate_limit_without_keyword", err: typedRefreshOutcomeErr{outcome: string(OutcomeRateLimit)}, want: "rate_limit_exceeded"},
+		{name: "typed_risk_control_without_keyword", err: typedRefreshOutcomeErr{outcome: string(OutcomeRiskControl)}, want: "risk_control_triggered"},
+		{name: "typed_account_disabled_without_keyword", err: typedRefreshOutcomeErr{outcome: string(OutcomeAccountDisabled)}, want: "account_disabled"},
+		{name: "typed_transient_without_keyword", err: typedRefreshOutcomeErr{outcome: string(OutcomeTransientError)}, want: "temporary"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,6 +242,18 @@ func TestClassifyRefreshErrorClassUsesSafeSevenClasses(t *testing.T) {
 			}
 		})
 	}
+}
+
+type typedRefreshOutcomeErr struct {
+	outcome string
+}
+
+func (e typedRefreshOutcomeErr) Error() string {
+	return "provider refresh failed without public classifier keyword"
+}
+
+func (e typedRefreshOutcomeErr) RefreshFailureOutcome() string {
+	return e.outcome
 }
 
 type dryRunCredentialStoreStub struct {

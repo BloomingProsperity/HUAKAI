@@ -186,8 +186,7 @@ var egressLeakRequestRules = []headerRule{
 // NormalizeEgressRequestHeaders strips proxy/forwarding/CDN-leak headers from the
 // OUTBOUND upstream request so the gateway is not trivially fingerprinted as a
 // relay by upstream WAFs. Egress anti-detection hygiene; safe for ALL paths (these
-// headers are never required by upstream and never carry auth). Parity with
-// CLIProxyAPI / sub2api / AIClient-2-API egress header normalization.
+// headers are never required by upstream and never carry auth).
 func NormalizeEgressRequestHeaders(h http.Header) {
 	if h == nil {
 		return

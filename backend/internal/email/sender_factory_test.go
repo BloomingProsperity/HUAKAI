@@ -113,10 +113,11 @@ func TestProductionGateFailsClosedOnEmptyActiveTenants(t *testing.T) {
 }
 
 func TestAT_EMAIL_008_SMTPSenderImplementsEmailSender(t *testing.T) {
-	var sender EmailSender = NewSMTPSender(SMTPSettings{})
-	if sender == nil {
-		t.Fatal("SMTPSender did not satisfy EmailSender")
+	smtpSender := NewSMTPSender(SMTPSettings{})
+	if smtpSender == nil {
+		t.Fatal("NewSMTPSender returned nil")
 	}
+	var _ EmailSender = smtpSender
 }
 
 func TestAT_EMAIL_009_VerificationEmailCooldown(t *testing.T) {

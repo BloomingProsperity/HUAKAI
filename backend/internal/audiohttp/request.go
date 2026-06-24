@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 )
 
 type audioRequest struct {
@@ -40,8 +41,7 @@ func validateAudioRequest(w http.ResponseWriter, r *http.Request, endpoint audio
 }
 
 func validateSpeechRequest(w http.ResponseWriter, r *http.Request) ([]byte, audioRequest, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err := relaybody.ReadLimitedRequestBody(w, r, maxJSONBodyBytes)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeBodyReadError, clienterr.MessageFor(clienterr.CodeBodyReadError))
 		return nil, audioRequest{}, false

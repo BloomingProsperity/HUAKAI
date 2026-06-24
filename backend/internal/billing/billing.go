@@ -29,17 +29,15 @@ type ClaimGate interface {
 	Reserve(ctx context.Context, req ReserveRequest) (*ReserveResult, error)
 }
 
-// Settler runs the Tx2 reconcile transaction per spec §Tx2.
+// Settler 运行 spec §Tx2 定义的结算 reconcile 事务。
 type Settler interface {
-	// Settle commits Usage Record + audit billing event + claim status flip
-	// + 5 atomic effects + cross-threshold scheduler outbox + Provider Account
-	// in_flight_count decrement, all in one transaction. HUAKAI's improvement
-	// over Sub2API which detaches Usage Record write.
+	// Settle 在一个事务内提交 Usage Record、audit billing event、claim 状态翻转、
+	// 5 类原子效果、cross-threshold scheduler outbox 以及 Provider Account
+	// in_flight_count 递减。HUAKAI 将用量记录写入同一结算事务,避免结算与审计分离。
 	Settle(ctx context.Context, req SettleRequest) (*SettleResult, error)
 
-	// Abort aborts the claim with zero cost. observedInputTokens is optional
-	// audit-only input usage for input-only interrupted streams; all costs stay
-	// zero. Tenant-scoped to prevent cross-tenant abort via stale claim id.
+	// Abort 以零成本终止 claim。observedInputTokens 仅用于输入阶段中断流的审计,
+	// 不产生任何成本。tenant 作用域用于阻止 stale claim id 跨租户 abort。
 	Abort(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error
 
 	// CommitCacheHit 把尚未 acquire pool account 的 reserving claim 以零成本

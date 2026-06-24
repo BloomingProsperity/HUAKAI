@@ -3,6 +3,8 @@ package budget
 import (
 	"context"
 	"log/slog"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -389,12 +391,43 @@ func errType(err error) string {
 	if err == nil {
 		return ""
 	}
-	return string([]byte(err.Error())[:minInt(len(err.Error()), 64)])
+	typ := reflect.TypeOf(err)
+	for typ.Kind() == reflect.Ptr {
+		typ = typ.Elem()
+	}
+	pkg := typ.PkgPath()
+	if idx := strings.LastIndex(pkg, "/"); idx >= 0 {
+		pkg = pkg[idx+1:]
+	}
+	name := typ.Name()
+	if pkg != "" {
+		name = pkg + "_" + name
+	}
+	return metricLabel(name)
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
+func metricLabel(in string) string {
+	const maxLen = 64
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range strings.ToLower(in) {
+		if b.Len() >= maxLen {
+			break
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if b.Len() == 0 || lastUnderscore {
+			continue
+		}
+		b.WriteByte('_')
+		lastUnderscore = true
 	}
-	return b
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "unknown_error"
+	}
+	return out
 }

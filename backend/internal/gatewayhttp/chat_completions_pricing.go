@@ -158,8 +158,7 @@ func snapshotWithEstimatedUsageBasis(snapshot string) string {
 // rate model already prices each dimension once. Every other family (OpenAI, Gemini,
 // and all OpenAI-compatible providers) reports prompt_tokens INCLUDING cached tokens,
 // so cached tokens must be removed from the billing input bucket to avoid charging
-// them twice -- once at the input rate and again at the cache rate. Mirrors new-api's
-// `!IsClaudeUsageSemantic` base-token subtraction (service/text_quota.go).
+// them twice -- once at the input rate and again at the cache rate.
 var cacheExclusiveInputFamilies = map[string]struct{}{
 	"anthropic_messages": {},
 	"bedrock_invoke":     {},
@@ -524,9 +523,9 @@ func parseRateVector(raw json.RawMessage) (completionRateVector, error) {
 	// input rate) but omits an explicit cache-read rate. Cache-inclusive upstreams
 	// (OpenAI / Gemini / OpenAI-compatible) report cached tokens for such models;
 	// without this the additive model would fail closed (pricing_unavailable -> 503)
-	// on every cache-hit response. Billing cached tokens at the input rate matches
-	// new-api's cache-ratio default (1.0). Models with an explicit cache-read rate keep
-	// it; truly unpriced models (no input rate) still fail closed.
+		// on every cache-hit response. Billing cached tokens at the input rate keeps
+		// zero-config cache hits billable. Models with an explicit cache-read rate keep
+		// it; truly unpriced models (no input rate) still fail closed.
 	if out.HasInput && !out.HasCacheRead {
 		out.CacheRead = out.Input
 		out.HasCacheRead = true

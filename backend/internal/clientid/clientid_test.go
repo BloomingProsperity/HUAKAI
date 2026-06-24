@@ -1,7 +1,7 @@
 // clientid_test.go — U6-A 测试: client identity detector 决策树覆盖。
 //
-// fixture 来自真实客户端 User-Agent 字符串 (公开 GitHub issue / changelog
-// 中观察到的形态)，不读 sub2api / 商业项目源码。
+// fixture 来自真实客户端 User-Agent 字符串(公开 GitHub issue / changelog
+// 中观察到的形态)，不读商业项目源码。
 package clientid
 
 import (
@@ -250,7 +250,8 @@ func TestIdentityContext_NoValueReturnsUnknown(t *testing.T) {
 }
 
 func TestIdentityContext_NilCtxSafe(t *testing.T) {
-	id, _ := IdentityFromContext(nil) //nolint:staticcheck // intentional nil test
+	//lint:ignore SA1012 IdentityFromContext 明确支持 nil，本测试锁定防御返回值。
+	id, _ := IdentityFromContext(nil)
 	if id != IdentityUnknown {
 		t.Errorf("nil ctx 应 IdentityUnknown，得 %q", id)
 	}

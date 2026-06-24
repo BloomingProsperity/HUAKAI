@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -18,7 +19,7 @@ const (
 
 var sidecarDialContext = (&net.Dialer{}).DialContext
 
-// SidecarClient connects Go's transport path to the local BoringSSL TLS sidecar.
+// SidecarClient 把 Go 传输链路接到本机 BoringSSL TLS sidecar。
 type SidecarClient struct {
 	socketPath string
 }
@@ -40,10 +41,9 @@ func NewSidecarRoundTripper(client *SidecarClient, profileID string) http.RoundT
 	}
 }
 
-// DialTLS dials the Unix sidecar, sends one framed JSON control message, waits
-// for an ACK frame, then returns a plaintext stream over the sidecar-owned TLS
-// connection. Sidecar failure is fail-closed; this function never falls back to
-// uTLS or the standard transport.
+// DialTLS 拨本机 Unix sidecar,发送一帧 JSON 控制消息,等待 ACK 帧,然后返回
+// sidecar 持有 TLS 连接之上的明文流。sidecar 失败必须 fail-closed,本函数
+// 绝不回退到 uTLS 或标准库传输。
 func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, profileID string) (net.Conn, error) {
 	if c == nil {
 		return nil, fmt.Errorf("mimicry sidecar: nil client")
@@ -86,7 +86,10 @@ func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, prof
 		}
 		return nil, fmt.Errorf("mimicry sidecar: %s", ack.Error)
 	}
-	_ = conn.SetDeadline(time.Time{})
+	if err := clearDeadline(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
@@ -96,6 +99,12 @@ type sidecarRoundTripper struct {
 }
 
 func (rt *sidecarRoundTripper) DialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if rt == nil {
+		return nil, fmt.Errorf("mimicry sidecar: nil round tripper")
+	}
+	if rt.client == nil {
+		return nil, fmt.Errorf("mimicry sidecar: nil client")
+	}
 	if network != "tcp" && network != "tcp4" && network != "tcp6" {
 		return nil, fmt.Errorf("mimicry sidecar: unsupported network %s", network)
 	}
@@ -131,10 +140,10 @@ func writeSidecarFrame(conn net.Conn, value any) error {
 	}
 	var prefix [4]byte
 	binary.LittleEndian.PutUint32(prefix[:], uint32(len(body)))
-	if _, err := conn.Write(prefix[:]); err != nil {
+	if _, err := writeFullConn(conn, prefix[:]); err != nil {
 		return err
 	}
-	_, err = conn.Write(body)
+	_, err = writeFullConn(conn, body)
 	return err
 }
 
@@ -162,8 +171,33 @@ func readFullConn(conn net.Conn, buf []byte) (int, error) {
 		if err != nil {
 			return read, err
 		}
+		if n == 0 {
+			return read, io.ErrNoProgress
+		}
 	}
 	return read, nil
+}
+
+func writeFullConn(conn net.Conn, buf []byte) (int, error) {
+	written := 0
+	for written < len(buf) {
+		n, err := conn.Write(buf[written:])
+		written += n
+		if err != nil {
+			return written, err
+		}
+		if n == 0 {
+			return written, io.ErrShortWrite
+		}
+	}
+	return written, nil
+}
+
+func clearDeadline(conn net.Conn) error {
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("mimicry sidecar: clear deadline: %w", err)
+	}
+	return nil
 }
 
 func setDeadlineFromContext(conn net.Conn, ctx context.Context) error {
@@ -172,7 +206,6 @@ func setDeadlineFromContext(conn net.Conn, ctx context.Context) error {
 		return nil
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
-		conn.Close()
 		return fmt.Errorf("mimicry sidecar: set deadline: %w", err)
 	}
 	return nil

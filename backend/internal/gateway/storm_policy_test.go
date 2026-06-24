@@ -16,7 +16,7 @@ func TestStormPolicy_HighBudgetAdmits(t *testing.T) {
 		PerEndpointRate: 1000, PerEndpointBurst: 100,
 	})
 	now := stormTime()
-	val, err, denied := p.Acquire(now, "acct-1", "ep-A", func() (any, error) {
+	val, denied, err := p.Acquire(now, "acct-1", "ep-A", func() (any, error) {
 		return "ok", nil
 	})
 	if err != nil || denied != DenyNone || val != "ok" {
@@ -30,7 +30,7 @@ func TestStormPolicy_GlobalDenialRefundsEndpoint(t *testing.T) {
 		PerEndpointRate: 100, PerEndpointBurst: 5,
 	})
 	now := stormTime()
-	val, err, denied := p.Acquire(now, "acct-1", "ep-A", func() (any, error) {
+	val, denied, err := p.Acquire(now, "acct-1", "ep-A", func() (any, error) {
 		return nil, errors.New("should not run")
 	})
 	if denied != DenyGlobal {
@@ -53,7 +53,7 @@ func TestStormPolicy_EndpointDenialDoesNotConsumeGlobal(t *testing.T) {
 		PerEndpointRate: 0, PerEndpointBurst: 0, // endpoint: never
 	})
 	now := stormTime()
-	_, _, denied := p.Acquire(now, "acct-1", "ep-A", func() (any, error) { return nil, nil })
+	_, denied, _ := p.Acquire(now, "acct-1", "ep-A", func() (any, error) { return nil, nil })
 	if denied != DenyEndpoint {
 		t.Fatalf("denied=%s; want DenyEndpoint", denied)
 	}
@@ -71,14 +71,14 @@ func TestStormPolicy_FailedFnKeepsTokensConsumed(t *testing.T) {
 	})
 	now := stormTime()
 	wantErr := errors.New("vendor down")
-	_, err, denied := p.Acquire(now, "acct-1", "ep-A", func() (any, error) {
+	_, denied, err := p.Acquire(now, "acct-1", "ep-A", func() (any, error) {
 		return nil, wantErr
 	})
 	if !errors.Is(err, wantErr) || denied != DenyNone {
 		t.Fatalf("err=%v denied=%s; want vendor-down + DenyNone", err, denied)
 	}
 	// Failed fn must NOT refund — second call should be denied (bucket empty)
-	_, _, denied2 := p.Acquire(now, "acct-2", "ep-A", func() (any, error) {
+	_, denied2, _ := p.Acquire(now, "acct-2", "ep-A", func() (any, error) {
 		return "should-not-run", nil
 	})
 	if denied2 == DenyNone {
@@ -159,17 +159,17 @@ func TestStormPolicy_DifferentEndpointsIndependentBudget(t *testing.T) {
 	})
 	now := stormTime()
 	// Drain ep-A
-	_, _, d1 := p.Acquire(now, "a1", "ep-A", func() (any, error) { return 1, nil })
+	_, d1, _ := p.Acquire(now, "a1", "ep-A", func() (any, error) { return 1, nil })
 	if d1 != DenyNone {
 		t.Fatalf("ep-A first acquire denied=%s", d1)
 	}
 	// ep-A second should fail
-	_, _, d2 := p.Acquire(now, "a2", "ep-A", func() (any, error) { return 2, nil })
+	_, d2, _ := p.Acquire(now, "a2", "ep-A", func() (any, error) { return 2, nil })
 	if d2 != DenyEndpoint {
 		t.Fatalf("ep-A second got %s; want DenyEndpoint", d2)
 	}
 	// ep-B independent — should succeed
-	_, _, d3 := p.Acquire(now, "a3", "ep-B", func() (any, error) { return 3, nil })
+	_, d3, _ := p.Acquire(now, "a3", "ep-B", func() (any, error) { return 3, nil })
 	if d3 != DenyNone {
 		t.Fatalf("ep-B independent budget; got %s", d3)
 	}
@@ -211,7 +211,7 @@ func TestStormPolicy_FnErrorReturnedToCaller(t *testing.T) {
 	})
 	now := stormTime()
 	wantErr := errors.New("upstream 500")
-	_, err, denied := p.Acquire(now, "a", "ep", func() (any, error) {
+	_, denied, err := p.Acquire(now, "a", "ep", func() (any, error) {
 		return nil, wantErr
 	})
 	if !errors.Is(err, wantErr) {

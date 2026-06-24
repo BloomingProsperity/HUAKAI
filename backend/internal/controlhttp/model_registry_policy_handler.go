@@ -2,7 +2,7 @@
 
 // Package controlhttp — 模型目录租户策略 admin 写面。inherit_global_catalog 此前只读(resolve 回落 +
 // /v1/models discovery live JOIN 消费)却无 admin 写路径(inert gap)。platform_admin only(经 adminGate):
-// 租户自行授予全局目录继承是提权风险, 该决策属平台, 与 sub2api 的 group 目录策略 platform-admin-only 先例一致。
+// 租户自行授予全局目录继承是提权风险, 该决策属平台, 只允许 platform admin 操作。
 package controlhttp
 
 import (

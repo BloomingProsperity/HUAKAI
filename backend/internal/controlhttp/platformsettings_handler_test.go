@@ -154,9 +154,9 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 	}
 }
 
-// TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret guards the new-api-like
-// config-time gate: operators may boot with a missing secret, but cannot turn on
-// CAPTCHA until this gateway process has the runtime secret configured. Mutation
+// TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret guards the config-time
+// gate: operators may boot with a missing secret, but cannot turn on CAPTCHA
+// until this gateway process has the runtime secret configured. Mutation
 // check: delete the guard and the enable request reaches Upsert while the disable
 // request still proves the check is not a blanket write blocker.
 func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {

@@ -7,7 +7,43 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+type noisyBudgetError struct{}
+
+func (noisyBudgetError) Error() string {
+	return strings.Repeat("预算后端错误:tenant=987654321 request=动态值 ", 8)
+}
+
+func TestErrTypeUsesStableASCIITypeLabel(t *testing.T) {
+	if got := errType(nil); got != "" {
+		t.Fatalf("nil errType=%q want empty", got)
+	}
+	std := errType(errors.New("redis 超时 tenant=123456 request=abc"))
+	if std != "errors_errorstring" {
+		t.Fatalf("standard errType=%q want errors_errorstring", std)
+	}
+	if strings.Contains(std, "redis") || strings.Contains(std, "123456") || strings.Contains(std, "request") {
+		t.Fatalf("standard errType leaked dynamic text: %q", std)
+	}
+	got := errType(noisyBudgetError{})
+	if got != "budget_noisybudgeterror" {
+		t.Fatalf("errType=%q want stable type label", got)
+	}
+	if strings.Contains(got, "tenant") || strings.Contains(got, "987654321") || strings.Contains(got, "request") {
+		t.Fatalf("errType leaked dynamic error text: %q", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("errType returned invalid UTF-8: %q", got)
+	}
+	for _, r := range got {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		t.Fatalf("errType contains non-label rune %q in %q", r, got)
+	}
+}
 
 func TestServiceRPMDenyIncludesRetryAfter(t *testing.T) {
 	// Mutation check: changing the limit comparison from ">" to ">=" rejects the

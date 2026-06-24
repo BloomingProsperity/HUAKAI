@@ -59,7 +59,7 @@ type TimeoutConfig struct {
 	InterEventTimeout   time.Duration `json:"inter_event_timeout"`
 	TotalStreamTimeout  time.Duration `json:"total_stream_timeout"`
 	IdleAfterTerminal   time.Duration `json:"idle_after_terminal"`
-	DrainMaxSeconds     time.Duration `json:"drain_max_seconds"`
+	DrainMaxDuration    time.Duration `json:"drain_max_seconds"`
 	ScannerReadTimeout  time.Duration `json:"scanner_read"`
 	HeaderToFirstByte   time.Duration `json:"header_to_first_byte"`
 	RequestTotalTimeout time.Duration `json:"request_total"`
@@ -71,7 +71,7 @@ type TimeoutConfig struct {
 
 // DrainBudgets 携带 F-GW-002 Phase C-bis drain 护栏参数。
 type DrainBudgets struct {
-	MaxSeconds       time.Duration   `json:"max_seconds"`
+	MaxDuration      time.Duration   `json:"max_seconds"`
 	MaxBytes         int64           `json:"max_bytes"`
 	MaxEstimatedCost decimal.Decimal `json:"max_estimated_cost"`
 }

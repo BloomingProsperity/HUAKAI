@@ -66,11 +66,5 @@ func (s *KeyControlService) GetKeyGroup(ctx context.Context, tenantID, userID, a
 		}
 		return KeyGroupView{}, fmt.Errorf("%w: get group: %v", ErrBackend, err)
 	}
-	return KeyGroupView{
-		APIKeyID:         row.APIKeyID,
-		GroupID:          row.GroupID,
-		GroupName:        row.GroupName,
-		GroupDescription: row.GroupDescription,
-		GroupEnabled:     row.GroupEnabled,
-	}, nil
+	return KeyGroupView(row), nil
 }

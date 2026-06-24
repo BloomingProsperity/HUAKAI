@@ -13,7 +13,6 @@ import (
 )
 
 const (
-	DispositionEnabled          = "enabled"
 	DispositionHiddenFlag       = "hidden-flag"
 	DispositionExperimental     = "experimental"
 	DispositionMandatoryRoadmap = "mandatory-roadmap"
@@ -168,10 +167,6 @@ func RequestedChannelDispositions() []ChannelDisposition {
 			RiskReasons: []string{"SSO acquisition, finalizer, and licensing posture require Owner-confirmed release gate"},
 		},
 	}
-}
-
-func enabledChannel(vendor, mode string) ChannelDisposition {
-	return ChannelDisposition{Vendor: vendor, AuthMode: mode, Disposition: DispositionEnabled}
 }
 
 func hiddenFlagChannel(vendor, mode string) ChannelDisposition {

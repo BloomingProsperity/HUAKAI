@@ -436,7 +436,9 @@ func TestAnthropicMessagesClient_D2_ToolUseBlock(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	var out map[string]any
-	_ = jsonUnmarshal(body, &out)
+	if err := jsonUnmarshal(body, &out); err != nil {
+		t.Fatalf("jsonUnmarshal: %v", err)
+	}
 	cnt := out["content"].([]any)
 	if len(cnt) != 2 {
 		t.Fatalf("content len: %d", len(cnt))
@@ -472,7 +474,9 @@ func TestAnthropicMessagesClient_D2_StopReasonMappings(t *testing.T) {
 				t.Fatalf("err: %v", err)
 			}
 			var out map[string]any
-			_ = jsonUnmarshal(body, &out)
+			if err := jsonUnmarshal(body, &out); err != nil {
+				t.Fatalf("jsonUnmarshal: %v", err)
+			}
 			got, _ := out["stop_reason"]
 			if tc.expected == "" {
 				if got != nil {

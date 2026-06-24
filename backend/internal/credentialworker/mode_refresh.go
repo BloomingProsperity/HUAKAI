@@ -801,37 +801,6 @@ func ClassifyRefreshErrorClass(err error) string {
 	return classifyModeRefreshError(err)
 }
 
-func classifyModeRefreshError(err error) string {
-	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) || errors.Is(err, adapters.ErrGeminiOAuthConfigRequired) ||
-		errors.Is(err, ErrOperatorOAuthConfigMissing) || errors.Is(err, ErrProviderAdapterMissing) {
-		return "operator_config_required"
-	}
-	if errors.Is(err, adapters.ErrInvalidCredentialMaterial) {
-		return "payload_invalid"
-	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "invalid_grant"):
-		return "invalid_grant"
-	case strings.Contains(msg, "rate_limit_exceeded") || strings.Contains(msg, "rate limit") ||
-		strings.Contains(msg, "rate_limit") || strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "status 429"):
-		return "rate_limit_exceeded"
-	case strings.Contains(msg, "risk_control_triggered") || strings.Contains(msg, "risk control") ||
-		strings.Contains(msg, "risk_control"):
-		return "risk_control_triggered"
-	case strings.Contains(msg, "account_disabled") || strings.Contains(msg, "account disabled") ||
-		strings.Contains(msg, "disabled account"):
-		return "account_disabled"
-	case strings.Contains(msg, "decrypt"):
-		return "payload_invalid"
-	case strings.Contains(msg, "payload") || strings.Contains(msg, "json"):
-		return "payload_invalid"
-	default:
-		return "temporary"
-	}
-}
-
 func sortStrings(values []string) {
 	for i := 1; i < len(values); i++ {
 		for j := i; j > 0 && values[j] < values[j-1]; j-- {

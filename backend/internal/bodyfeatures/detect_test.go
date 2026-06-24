@@ -21,8 +21,7 @@ func TestDetect_OpenAIChatVisionDiscriminates(t *testing.T) {
 	}
 }
 
-// TestDetect_VisionEmptyImageGuard 守空图误报: data URI base64 payload 为空时不算
-// 真图 (镜像 sub2api 的 empty-image guard)。
+// TestDetect_VisionEmptyImageGuard 守空图误报: data URI base64 payload 为空时不算真图。
 // mutation: 去掉 isEmptyDataURI 判定 -> 空图被当真图 -> 转红。
 func TestDetect_VisionEmptyImageGuard(t *testing.T) {
 	emptyDataURI := `{"messages":[{"role":"user","content":[` +

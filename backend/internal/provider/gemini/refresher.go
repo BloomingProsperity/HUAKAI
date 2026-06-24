@@ -340,6 +340,14 @@ func (e *RefreshError) Error() string {
 	return fmt.Sprintf("gemini refresh: failed outcome=%s%s%s", e.Outcome, status, body)
 }
 
+// RefreshFailureOutcome 返回供 credentialworker 归一化的刷新结果。
+func (e *RefreshError) RefreshFailureOutcome() string {
+	if e == nil {
+		return ""
+	}
+	return e.Outcome
+}
+
 func (e *RefreshError) Unwrap() error {
 	if e == nil {
 		return nil

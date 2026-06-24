@@ -1,7 +1,7 @@
 // Package thinkingnorm normalizes an Anthropic extended-thinking request so it
-// satisfies Anthropic's hard validity constraints before forwarding, mirroring
-// CLIProxyAPI: when thinking is enabled Anthropic REQUIRES temperature == 1 and
-// tool_choice of type auto/none -- any other value is a 400. Without this a
+// satisfies Anthropic's hard validity constraints before forwarding: when
+// thinking is enabled Anthropic REQUIRES temperature == 1 and tool_choice of
+// type auto/none -- any other value is a 400. Without this a
 // client's thinking request simply fails. This is a correctness normalization,
 // not a semantic change: the request could not have succeeded otherwise.
 package thinkingnorm

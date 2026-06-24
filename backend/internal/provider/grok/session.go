@@ -3,8 +3,7 @@
 // GrokSessionAdapter 把 grok.com 登录后的 sso cookie 反转成 API 形态出站到
 // grok.com/rest/app-chat,注入 grok 网页客户端的浏览器指纹头(静态 Chrome/macOS
 // DEFAULT_HEADERS + Origin grok.com + sentry baggage + 伪造 x-statsig-id)与
-// Cookie(sso / sso-rw + 可选 cf_clearance,过 Cloudflare 5 秒盾)。参照
-// grok2api_python (app.py DEFAULT_HEADERS / cookie 组装)。
+// Cookie(sso / sso-rw + 可选 cf_clearance,过 Cloudflare 5 秒盾)。
 //
 // 反封禁:必须开着(Owner 2026-06-08)。仅 session_token / upstream_passthrough
 // 凭据(拒 apikey)。Body 由 caller 组装成 grok 网页形态;adapter 透传不重塑。
@@ -27,7 +26,7 @@ import (
 // defaultGrokEndpoint grok.com 网页 app-chat 端点。可在 adapter 字段覆盖。
 const defaultGrokEndpoint = "https://grok.com/rest/app-chat/conversations/new"
 
-// grokStatsigID 是 grok 网页客户端的 x-statsig-id(grok2api 验证可用的伪造值)。
+// grokStatsigID 是 grok 网页客户端的 x-statsig-id 已知可用值。
 // grok 的 WAF 校验此头存在/形态而非内容,故沿用已知可用值。
 const grokStatsigID = "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGlsZE5vZGVzJyk="
 

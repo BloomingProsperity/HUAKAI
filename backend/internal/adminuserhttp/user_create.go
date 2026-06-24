@@ -19,8 +19,8 @@ import (
 // (越权提权护栏);密码 argon2id 散列、永不存明文;email NormalizeEmail 化 +
 // 租户内唯一冲突映 409;创建即审计(create_user)。租户隔离经 resolveTenantIdentity。
 
-// createUserMinPasswordLen 是创建口令最短长度。HUAKAI 取 8(严于 sub2api/new-api
-// 各自的 6),作为本平台 delta;弱口令 → 400 weak_password。
+// createUserMinPasswordLen 是创建口令最短长度。HUAKAI 取 8,弱口令 →
+// 400 weak_password。
 const createUserMinPasswordLen = 8
 
 // ErrUserAlreadyExists 由 store 在租户内同邮箱(未软删)唯一冲突时返回,

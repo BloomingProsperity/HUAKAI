@@ -11,8 +11,7 @@
 //   - 旧格式（Claude Code < 2.1.78）："user_<64位hex>_account_<UUID|空>_session_<UUID36>"
 //   - 新格式（Claude Code ≥ 2.1.78）：JSON {"device_id":"...","account_uuid":"...","session_id":"..."}
 //
-// 设计要点（HUAKAI 自有重写引擎；sub2api 等网关有同类伪装能力，
-// 仅机制参考，代码为本仓独立编写）：
+// 设计要点（HUAKAI 自有重写引擎）：
 //   - 替换组件由 plan 指定，与 user 表解耦
 //   - 纯函数形态：入参 bytes + plan → 出参 bytes + 审计信息
 //   - 不可解析时整体回退到 plan.FallbackUserID

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 )
 
 type rerankRequest struct {
@@ -19,8 +21,7 @@ type rerankRequest struct {
 }
 
 func validateRequest(w http.ResponseWriter, r *http.Request) ([]byte, rerankRequest, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err := relaybody.ReadLimitedRequestBody(w, r, relaybody.RequestBodyLimit())
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "body_read_error", "request body could not be read")
 		return nil, rerankRequest{}, false

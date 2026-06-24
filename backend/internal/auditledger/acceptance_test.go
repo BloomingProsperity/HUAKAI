@@ -141,10 +141,13 @@ func TestATTrust001004ChainContinuity100Entries(t *testing.T) {
 }
 
 func TestPostgresAdvisoryLockKeyIsTenantScoped(t *testing.T) {
-	if auditLedgerAdvisoryLockKey(1) == auditLedgerAdvisoryLockKey(2) {
+	tenantOneKey := auditLedgerAdvisoryLockKey(1)
+	tenantOneKeyAgain := auditLedgerAdvisoryLockKey(1)
+	tenantTwoKey := auditLedgerAdvisoryLockKey(2)
+	if tenantOneKey == tenantTwoKey {
 		t.Fatal("tenant advisory lock keys must differ")
 	}
-	if auditLedgerAdvisoryLockKey(1) != auditLedgerAdvisoryLockKey(1) {
+	if tenantOneKey != tenantOneKeyAgain {
 		t.Fatal("tenant advisory lock key must be stable")
 	}
 }

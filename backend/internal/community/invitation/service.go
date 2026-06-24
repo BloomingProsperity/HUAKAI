@@ -170,8 +170,7 @@ func validateGenerateParams(params GenerateInvitationParams) error {
 // is NOT gated by the monthly tenant quota: a personal referral code is user
 // identity, not campaign volume, so a pure GET of one's own code must never be
 // blocked once a shared single-tenant deployment has exhausted the campaign cap
-// for the month (new-api GetAffCode + sub2api both treat self codes as
-// quota-free identity; HUAKAI keeps the campaign cap and adds this exempt path).
+// for the month. HUAKAI keeps the campaign cap and adds this exempt path.
 // Idempotent: repeated calls return the same code via the reserved
 // self:<userID> idempotency key.
 func (s *Service) GetOrCreateSelfReferralCode(ctx context.Context, tenantID, inviterUserID int64, now time.Time) (GenerateInvitationOutput, error) {

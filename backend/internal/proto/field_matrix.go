@@ -8,8 +8,8 @@
 //     （不参与 passthrough 决策——adapter 当前无条件透传 envelope.Extra）
 //
 // PRESERVE-by-default 是核心升级语义：未在 matrix 显式登记的字段返回
-// FieldPreservedDefault，**不**是 FieldUnsupported。这是 HUAKAI 区别于
-// sub2api / new-api 的关键 — 后者 hardcode 已知字段，新字段必须改代码。
+// FieldPreservedDefault，**不**是 FieldUnsupported。vendor 加新字段时,
+// HUAKAI 默认保留未知字段而不是要求立即改代码。
 //
 // 设计综合：
 //   - 每条 entry 带 reason + 区分 lossy/lossless transform
@@ -32,7 +32,7 @@ const (
 	FieldDropped FieldVerdict = "dropped"
 
 	// FieldPreservedDefault 未在 matrix 登记 → 默认保留。
-	// 这是 HUAKAI 区别于 sub2api 的核心：vendor 加新字段不再丢失。
+	// vendor 加新字段时不应因 matrix 未更新而丢失。
 	FieldPreservedDefault FieldVerdict = "preserved_default"
 )
 

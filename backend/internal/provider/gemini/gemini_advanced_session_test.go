@@ -137,13 +137,9 @@ func TestGeminiAdvancedSessionAdapter_NormalSessionReversal_RequestMatchesSpec(t
 	}
 }
 
-func TestGeminiAdvancedSessionAdapter_ExpiredSessionTriggersReauthFlow(t *testing.T) {
-	t.Skip("provider.Adapter 只构造请求；401 过期 session 的 reauth flow 尚未接入 provider 层")
-}
-
-func TestGeminiAdvancedSessionAdapter_Upstream5xxEnqueuesDLQRetry(t *testing.T) {
-	t.Skip("provider.Adapter 不处理响应；5xx DLQ retry 与不挂账户语义应由 dispatcher/channel-health 层补测")
-}
+// TODO(provider-session-response):401 过期 session 的 reauth flow 应在真实响应处理层补判别测试。
+// 本 adapter 只构造请求,不以 skipped 测试函数冒充覆盖。
+// TODO(dispatcher-channel-health):5xx DLQ retry 与不挂账户语义应在 dispatcher/channel-health 层补测。
 
 func assertGeminiAdvancedRequestMatchesSpec(t *testing.T, r *http.Request, wantBody []byte) {
 	t.Helper()

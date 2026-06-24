@@ -241,33 +241,6 @@ type deps struct {
 	hermesInternalToolHandler *hermeschat.InternalToolHandler
 }
 
-type refundReceiptAppender interface {
-	AppendReceipt(context.Context, *auditreceipt.CostReceipt) error
-}
-
-type refundReceiptSequenceReader interface {
-	GetReceiptBySequence(context.Context, string, int64, int32) (*auditreceipt.CostReceipt, error)
-}
-
-type refundReceiptSink struct {
-	appender refundReceiptAppender
-}
-
-func (s refundReceiptSink) AppendRefundReceipt(ctx context.Context, receipt *auditreceipt.CostReceipt) error {
-	if s.appender == nil {
-		return auditreceipt.ErrReceiptStorageRequired
-	}
-	return s.appender.AppendReceipt(ctx, receipt)
-}
-
-func (s refundReceiptSink) GetReceiptBySequence(ctx context.Context, requestID string, tenantID int64, sequence int32) (*auditreceipt.CostReceipt, error) {
-	reader, ok := s.appender.(refundReceiptSequenceReader)
-	if !ok {
-		return nil, auditreceipt.ErrReceiptStorageRequired
-	}
-	return reader.GetReceiptBySequence(ctx, requestID, tenantID, sequence)
-}
-
 type runtimeOptions struct {
 	selector      *runtimeconfig.PoolSelectorConfig
 	obsDLQ        *runtimeconfig.ObsDLQConfig

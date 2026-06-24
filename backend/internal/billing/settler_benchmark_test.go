@@ -1,3 +1,5 @@
+//go:build integration_pg
+
 package billing
 
 import (

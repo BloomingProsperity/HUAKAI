@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admintenant"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 )
@@ -34,35 +35,32 @@ func resolveAdmin(deps AdminDeps, w http.ResponseWriter, r *http.Request) (admin
 }
 
 func tenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
-	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
-	if raw == "" && ident.Role == admin.RoleTenantOperator {
-		return tenantFromValue(w, ident, ident.ScopeTenantID)
-	}
-	if raw == "" {
-		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
-		return 0, false
-	}
-	tenantID, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || tenantID <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive int64")
-		return 0, false
-	}
-	return tenantFromValue(w, ident, tenantID)
-}
-
-func tenantFromValue(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) (int64, bool) {
-	if tenantID == 0 && ident.Role == admin.RoleTenantOperator {
-		tenantID = ident.ScopeTenantID
-	}
-	if tenantID <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
-		return 0, false
-	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
-		writeAdminError(w, err)
+	tenantID, err := admintenant.FromQuery(r.URL.Query(), ident)
+	if err != nil {
+		writeTenantResolveError(w, err)
 		return 0, false
 	}
 	return tenantID, true
+}
+
+func tenantFromValue(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) (int64, bool) {
+	resolved, err := admintenant.FromValue(ident, tenantID)
+	if err != nil {
+		writeTenantResolveError(w, err)
+		return 0, false
+	}
+	return resolved, true
+}
+
+func writeTenantResolveError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, admintenant.ErrTenantIDRequired):
+		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
+	case errors.Is(err, admintenant.ErrInvalidTenantID):
+		writeJSONError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive int64")
+	default:
+		writeAdminError(w, err)
+	}
 }
 
 func parsePage(w http.ResponseWriter, r *http.Request) (int, int, bool) {

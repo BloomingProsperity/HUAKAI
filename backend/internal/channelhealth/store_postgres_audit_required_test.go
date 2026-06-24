@@ -397,7 +397,7 @@ func (r auditAppendErrBatchResults) Query() (pgx.Rows, error) {
 }
 
 func (r auditAppendErrBatchResults) QueryRow() pgx.Row {
-	return auditAppendErrRow{err: r.err}
+	return auditAppendErrRow(r)
 }
 
 func (r auditAppendErrBatchResults) Close() error {

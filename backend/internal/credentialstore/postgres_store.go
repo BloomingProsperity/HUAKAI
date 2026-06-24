@@ -702,17 +702,10 @@ func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID i
 	if tenantID == 0 {
 		return CredentialRecord{}, fmt.Errorf("%w: tenantID required", ErrInvalidPayload)
 	}
-	var rec CredentialRecord
 	var activeModeCount, credentialRowCount int64
 	var noServingCredential bool
-	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
-	err := s.db.QueryRow(ctx, resolveActiveQuery, providerAccountID, tenantID).Scan(
-		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
-		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
-		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
-		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
-		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
-		&nextAttempt, &createdAt, &updatedAt, &deletedAt,
+	rec, err := scanCredentialRecordRow(
+		s.db.QueryRow(ctx, resolveActiveQuery, providerAccountID, tenantID),
 		&activeModeCount, &credentialRowCount, &noServingCredential,
 	)
 	if err != nil {
@@ -731,27 +724,27 @@ func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID i
 		return CredentialRecord{}, fmt.Errorf("%w: tenant_id=%d provider_account_id=%d active_modes=%d",
 			ErrCredentialAmbiguous, tenantID, providerAccountID, activeModeCount)
 	}
-	rec.AccessExpiresAt = pgTime(accessExp)
-	rec.RefreshExpiresAt = pgTime(refreshExp)
-	rec.RefreshBeforeAt = pgTime(refreshBefore)
-	rec.GraceUntil = pgTime(graceUntil)
-	rec.LastRefreshAt = pgTime(lastRefresh)
-	rec.NextAttemptAt = pgTime(nextAttempt)
-	rec.CreatedAt = pgTime(createdAt)
-	rec.UpdatedAt = pgTime(updatedAt)
-	rec.DeletedAt = pgTime(deletedAt)
 	plaintext, err := s.decryptRecord(ctx, rec)
 	if err != nil {
 		return CredentialRecord{}, err
 	}
 	rec.PlaintextPayload = plaintext
-	_ = s.InsertAuditEvent(ctx, AuditEvent{
+	s.recordCredentialResolvedAuditBestEffort(ctx, rec)
+	return rec, nil
+}
+
+// recordCredentialResolvedAuditBestEffort 只用于读取路径。读取凭据不改变凭据
+// 状态，审计表短暂故障不应熔断数据面；写入/轮换/删除路径仍走严格审计事务。
+func (s *Store) recordCredentialResolvedAuditBestEffort(ctx context.Context, rec CredentialRecord) {
+	if err := s.InsertAuditEvent(ctx, AuditEvent{
 		TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
 		EventType: "credential_resolved", Vendor: rec.Vendor, AuthMode: rec.AuthMode,
 		CredentialVersion: rec.CredentialVersion,
 		Payload:           map[string]any{"state": rec.State},
-	})
-	return rec, nil
+	}); err != nil {
+		// 读取路径保持 best-effort，避免把观测表故障升级为数据面故障。
+		return
+	}
 }
 
 func (s *Store) LoadForRefresh(ctx context.Context, providerAccountID int64) (CredentialRecord, error) {
@@ -799,23 +792,23 @@ LIMIT 1`
 	return rec, nil
 }
 
-func (s *Store) scanRecordForRefresh(ctx context.Context, query string, args ...any) (CredentialRecord, error) {
+type credentialRecordRow interface {
+	Scan(dest ...any) error
+}
+
+func scanCredentialRecordRow(row credentialRecordRow, extraDest ...any) (CredentialRecord, error) {
 	var rec CredentialRecord
 	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
-	var refreshLeadSeconds *int32
-	err := s.db.QueryRow(ctx, query, args...).Scan(
+	dest := []any{
 		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
 		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
 		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
 		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
 		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
 		&nextAttempt, &createdAt, &updatedAt, &deletedAt,
-		&refreshLeadSeconds,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return CredentialRecord{}, ErrCredentialNotFound
-		}
+	}
+	dest = append(dest, extraDest...)
+	if err := row.Scan(dest...); err != nil {
 		return CredentialRecord{}, err
 	}
 	rec.AccessExpiresAt = pgTime(accessExp)
@@ -827,6 +820,18 @@ func (s *Store) scanRecordForRefresh(ctx context.Context, query string, args ...
 	rec.CreatedAt = pgTime(createdAt)
 	rec.UpdatedAt = pgTime(updatedAt)
 	rec.DeletedAt = pgTime(deletedAt)
+	return rec, nil
+}
+
+func (s *Store) scanRecordForRefresh(ctx context.Context, query string, args ...any) (CredentialRecord, error) {
+	var refreshLeadSeconds *int32
+	rec, err := scanCredentialRecordRow(s.db.QueryRow(ctx, query, args...), &refreshLeadSeconds)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CredentialRecord{}, ErrCredentialNotFound
+		}
+		return CredentialRecord{}, err
+	}
 	rec.RefreshLeadSeconds = refreshLeadSeconds
 	return rec, nil
 }
@@ -1041,61 +1046,25 @@ func (s *Store) decryptRecord(ctx context.Context, rec CredentialRecord) ([]byte
 }
 
 func (s *Store) scanRecord(ctx context.Context, query string, args ...any) (CredentialRecord, error) {
-	var rec CredentialRecord
-	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
-	err := s.db.QueryRow(ctx, query, args...).Scan(
-		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
-		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
-		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
-		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
-		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
-		&nextAttempt, &createdAt, &updatedAt, &deletedAt,
-	)
+	rec, err := scanCredentialRecordRow(s.db.QueryRow(ctx, query, args...))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CredentialRecord{}, ErrCredentialNotFound
 		}
 		return CredentialRecord{}, err
 	}
-	rec.AccessExpiresAt = pgTime(accessExp)
-	rec.RefreshExpiresAt = pgTime(refreshExp)
-	rec.RefreshBeforeAt = pgTime(refreshBefore)
-	rec.GraceUntil = pgTime(graceUntil)
-	rec.LastRefreshAt = pgTime(lastRefresh)
-	rec.NextAttemptAt = pgTime(nextAttempt)
-	rec.CreatedAt = pgTime(createdAt)
-	rec.UpdatedAt = pgTime(updatedAt)
-	rec.DeletedAt = pgTime(deletedAt)
 	return rec, nil
 }
 
 func (s *Store) scanRecordWithCount(ctx context.Context, query string, args ...any) (CredentialRecord, int64, error) {
-	var rec CredentialRecord
 	var rowCount int64
-	var accessExp, refreshExp, refreshBefore, graceUntil, lastRefresh, nextAttempt, createdAt, updatedAt, deletedAt pgtype.Timestamptz
-	err := s.db.QueryRow(ctx, query, args...).Scan(
-		&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State,
-		&rec.CredentialVersion, &rec.EncryptedPayload, &rec.EncryptionScheme, &rec.KeyID,
-		&rec.Nonce, &rec.AADHash, &rec.PayloadFingerprint, &rec.RefreshTokenFingerprint,
-		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
-		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
-		&nextAttempt, &createdAt, &updatedAt, &deletedAt, &rowCount,
-	)
+	rec, err := scanCredentialRecordRow(s.db.QueryRow(ctx, query, args...), &rowCount)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CredentialRecord{}, 0, ErrCredentialNotFound
 		}
 		return CredentialRecord{}, 0, err
 	}
-	rec.AccessExpiresAt = pgTime(accessExp)
-	rec.RefreshExpiresAt = pgTime(refreshExp)
-	rec.RefreshBeforeAt = pgTime(refreshBefore)
-	rec.GraceUntil = pgTime(graceUntil)
-	rec.LastRefreshAt = pgTime(lastRefresh)
-	rec.NextAttemptAt = pgTime(nextAttempt)
-	rec.CreatedAt = pgTime(createdAt)
-	rec.UpdatedAt = pgTime(updatedAt)
-	rec.DeletedAt = pgTime(deletedAt)
 	return rec, rowCount, nil
 }
 

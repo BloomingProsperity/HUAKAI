@@ -4,7 +4,7 @@
 //
 //	本文件仅实现 Anthropic 官方 **API key 直通**（用 operator 合法持有
 //	的 sk-ant-api03-... 开发者 key 转发到 api.anthropic.com）。这是公开
-//	API 路径，不是 sub2api 那种"Pro/Max OAuth 反转"形态。
+//	API 路径，不是消费端 OAuth 反转形态。
 //	Pro/Max 反转 (R3 transport mimicry / R7 应用层伪装 / claude_token_provider
 //	等价物) 已 paused — 见 docs/process/plans/2026-05-06-r3-transport-mimicry-claude.md。
 package anthropic
@@ -127,7 +127,7 @@ func (a *PassthroughAdapter) acceptsCredential(t provider.CredentialType) bool {
 
 // Claude Code (Anthropic CLI) device-profile defaults — make the egress carry the
 // genuine Claude Code client signature so upstream sees the real client, not a bare
-// relay. Parity with CLIProxyAPI internal/runtime/executor/helps/claude_device_profile.go.
+// relay.
 // ON per Owner 2026-06-08「必须开着」(overrides CB-001 default-off).
 const (
 	claudeCodeUserAgent           = "claude-cli/2.1.63 (external, cli)"

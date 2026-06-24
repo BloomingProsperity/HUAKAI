@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admintenant"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/panelauth"
@@ -242,18 +243,17 @@ func adminIdentity(w http.ResponseWriter, r *http.Request, d AdminDeps) (admin.A
 }
 
 func resolveAdminTenantValue(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) (int64, bool) {
-	if tenantID == 0 && ident.Role == admin.RoleTenantOperator {
-		tenantID = ident.ScopeTenantID
-	}
-	if tenantID <= 0 {
+	resolved, err := admintenant.FromValue(ident, tenantID)
+	switch {
+	case err == nil:
+		return resolved, true
+	case errors.Is(err, admintenant.ErrTenantIDRequired), errors.Is(err, admintenant.ErrInvalidTenantID):
 		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
 		return 0, false
-	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
+	default:
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 		return 0, false
 	}
-	return tenantID, true
 }
 
 func parsePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {

@@ -349,22 +349,7 @@ func quotaPolicyFromUpsert(row dbuserkeycontrols.UpsertAPIKeyQuotaPolicyRow) (qu
 }
 
 func quotaPolicyFromGet(row dbuserkeycontrols.GetAPIKeyQuotaPolicyRow) (quotaPolicyRow, error) {
-	policy, err := quotaPolicyFromUpsert(dbuserkeycontrols.UpsertAPIKeyQuotaPolicyRow{
-		APIKeyID:      row.APIKeyID,
-		TenantID:      row.TenantID,
-		ID:            row.ID,
-		ScopeKind:     row.ScopeKind,
-		ScopeID:       row.ScopeID,
-		Metric:        row.Metric,
-		WindowKind:    row.WindowKind,
-		WindowSeconds: row.WindowSeconds,
-		LimitValue:    row.LimitValue,
-		Mode:          row.Mode,
-		Priority:      row.Priority,
-		Enabled:       row.Enabled,
-		ValidFrom:     row.ValidFrom,
-		ValidUntil:    row.ValidUntil,
-	})
+	policy, err := quotaPolicyFromUpsert(dbuserkeycontrols.UpsertAPIKeyQuotaPolicyRow(row))
 	if err != nil {
 		return quotaPolicyRow{}, err
 	}

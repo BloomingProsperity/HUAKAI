@@ -31,17 +31,6 @@ func hasSE(effects []SideEffect, t SideEffectType) bool {
 	return false
 }
 
-func metricVal(t *testing.T, effects []SideEffect, metric string) float64 {
-	t.Helper()
-	for _, e := range effects {
-		if e.Type == SideEffectEmitMetric && e.Metric == metric {
-			return e.Value
-		}
-	}
-	t.Fatalf("missing metric %s", metric)
-	return 0
-}
-
 // AT-STATE-001 core: 3 recent ambiguous errors trigger normal → degraded.
 func TestA22_NormalToDegraded_AfterThreeRecentAmbiguous(t *testing.T) {
 	now := a22Time()

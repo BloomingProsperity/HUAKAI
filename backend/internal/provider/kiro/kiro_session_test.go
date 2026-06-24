@@ -106,13 +106,9 @@ func TestKiroSessionAdapter_NormalSessionReversal_RequestMatchesCurrentPlacehold
 	}
 }
 
-func TestKiroSessionAdapter_ExpiredSessionTriggersReauthFlow(t *testing.T) {
-	t.Skip("Kiro vendor-real endpoint/header/body 仍待 OCAW；401 reauth flow 尚未实现，不能用占位 adapter 冒充覆盖")
-}
-
-func TestKiroSessionAdapter_Upstream5xxEnqueuesDLQRetry(t *testing.T) {
-	t.Skip("Kiro vendor-real 5xx 分类与 DLQ retry 仍待 dispatcher/channel-health 接入后补测")
-}
+// TODO(provider-session-response):Kiro vendor-real endpoint/header/body 明确后,
+// 在真实响应处理层补 401 reauth flow 判别测试;不以占位 adapter 冒充覆盖。
+// TODO(dispatcher-channel-health):Kiro 5xx 分类与 DLQ retry 应在 dispatcher/channel-health 层补测。
 
 func assertKiroPlaceholderRequest(t *testing.T, r *http.Request, wantBody []byte) {
 	t.Helper()

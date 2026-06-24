@@ -2,8 +2,7 @@
 // (连通性探测 / 标题生成预热 / SUGGESTION MODE),不让它们消耗池内上游账号
 // 的真实配额。
 //
-// 拦截的三种形状是 Claude Code 客户端的可观测行为事实(机制参照 sub2api 的
-// 同类能力,实现为本仓独立编写;行为对齐 + 客户端可见面更拟真):
+// 拦截的三种形状是 Claude Code 客户端的可观测行为事实；实现为本仓独立编写。
 //
 //  1. 连通性探测: max_tokens=1 + haiku 系模型 + 非流式 + claude-cli UA,
 //     真实上游会回一个 "#"(stop_reason=max_tokens)。

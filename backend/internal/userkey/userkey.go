@@ -21,8 +21,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/textsafe"
 
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -678,9 +676,9 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 		}
 		return PatchResult{APIKeyID: row.APIKeyID, Name: row.Name, Status: row.Status, ExpiresAt: row.ExpiresAt}, nil
 	}
-	// Reject a past deadline on set, consistent with the create path (Issue). This
-	// closes the silent-brick footgun both reference projects carry (sub2api/new-api
-	// accept past timestamps on update). Clearing has no instant to validate.
+		// Reject a past deadline on set, consistent with the create path. This
+		// avoids silently creating a key that is immediately unusable. Clearing has no
+		// instant to validate.
 	if req.ExpiresAt != nil && !req.ExpiresAt.After(s.now().UTC()) {
 		return PatchResult{}, ErrInvalidExpiry
 	}
@@ -770,12 +768,4 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 		return PatchResult{}, err
 	}
 	return out, nil
-}
-
-// randomHex 仅用于测试 fixture 生成 key_prefix / key_hash 占位;production
-// 路径用 admin.GenerateBearer + bcrypt.GenerateFromPassword。
-func randomHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

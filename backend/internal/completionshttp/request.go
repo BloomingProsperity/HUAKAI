@@ -12,6 +12,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
 
@@ -33,8 +34,7 @@ type completionUsage struct {
 }
 
 func validateCompletionRequest(w http.ResponseWriter, r *http.Request) ([]byte, completionRequest, []string, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err := relaybody.ReadLimitedRequestBody(w, r, relaybody.RequestBodyLimit())
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeBodyReadError, clienterr.MessageFor(clienterr.CodeBodyReadError))
 		return nil, completionRequest{}, nil, false
@@ -57,8 +57,7 @@ func validateCompletionRequest(w http.ResponseWriter, r *http.Request) ([]byte, 
 }
 
 func validateCountTokensRequest(w http.ResponseWriter, r *http.Request) ([]byte, countTokensRequest, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err := relaybody.ReadLimitedRequestBody(w, r, relaybody.RequestBodyLimit())
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeBodyReadError, clienterr.MessageFor(clienterr.CodeBodyReadError))
 		return nil, countTokensRequest{}, false

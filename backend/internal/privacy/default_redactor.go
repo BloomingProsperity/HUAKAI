@@ -65,25 +65,56 @@ func (r *AllowlistRedactor) SanitizeError(_ context.Context, err error) (string,
 	if err == nil {
 		return "", nil
 	}
-	text := strings.ToLower(err.Error())
+	if errors.Is(err, ErrUnsafePayload) || errors.Is(err, ErrFieldNotAllowed) || errors.Is(err, ErrFreeformString) {
+		return ErrorClassPrivacyGuardHit, nil
+	}
+	tokens := errorClassTokens(err.Error())
+	tokenSet := make(map[string]struct{}, len(tokens))
+	for _, token := range tokens {
+		tokenSet[token] = struct{}{}
+	}
 	switch {
-	case strings.Contains(text, "timeout") || strings.Contains(text, "deadline"):
+	case hasErrorToken(tokenSet, "timeout", "deadline") || hasErrorTokenPair(tokens, "timed", "out"):
 		return "network_timeout", nil
-	case strings.Contains(text, "rate") && strings.Contains(text, "limit"):
+	case hasErrorToken(tokenSet, "ratelimit") || hasErrorToken(tokenSet, "rate") && hasErrorToken(tokenSet, "limit", "limited"):
 		return "upstream_rate_limit", nil
-	case strings.Contains(text, "forbidden") || strings.Contains(text, "permission") || strings.Contains(text, "unauthorized"):
+	case hasErrorToken(tokenSet, "forbidden", "permission", "unauthorized"):
 		return "upstream_forbidden", nil
-	case strings.Contains(text, "panic"):
+	case hasErrorToken(tokenSet, "panic", "panicked"):
 		return "panic", nil
-	case strings.Contains(text, "invalid") || strings.Contains(text, "malformed") || strings.Contains(text, "bad request"):
+	case hasErrorToken(tokenSet, "invalid", "malformed") || hasErrorTokenPair(tokens, "bad", "request"):
 		return "invalid_request", nil
-	case strings.Contains(text, "credential") || strings.Contains(text, "decrypt") || strings.Contains(text, "key unavailable"):
+	case hasErrorToken(tokenSet, "credential", "credentials", "decrypt", "decryption") || hasErrorTokenPair(tokens, "key", "unavailable"):
 		return "credential_error", nil
-	case strings.Contains(text, "upstream"):
+	case hasErrorToken(tokenSet, "upstream"):
 		return "upstream_error", nil
 	default:
 		return "internal_error", nil
 	}
+}
+
+func errorClassTokens(text string) []string {
+	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+}
+
+func hasErrorToken(tokens map[string]struct{}, wants ...string) bool {
+	for _, want := range wants {
+		if _, ok := tokens[want]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasErrorTokenPair(tokens []string, first, second string) bool {
+	for i := 0; i+1 < len(tokens); i++ {
+		if tokens[i] == first && tokens[i+1] == second {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *AllowlistRedactor) AllowlistField(field string) bool {

@@ -69,13 +69,6 @@ func crossCheckAudit(reportedOutput, reasoningTokens, estimated, estimatedReason
 	return confidence, pending
 }
 
-func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
-	outcome := ex.executeNonStreamingAttempt(w)
-	if outcome.Success != nil {
-		writeAttemptSuccess(w, outcome)
-	}
-}
-
 func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attemptOutcome {
 	outcome := ex.baseAttemptOutcome()
 	bufferedEnv, failure, ok := ex.dispatchBufferedEnvelope(w)

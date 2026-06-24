@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"mime"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -100,5 +102,34 @@ func TestRewriteModel_SameModelForwardsVerbatim(t *testing.T) {
 	mb := in.Bytes()
 	if out, ct, isMulti := RewriteModel(mb, w.FormDataContentType(), "whisper-1"); isMulti || ct != w.FormDataContentType() || !bytes.Equal(out, mb) {
 		t.Fatalf("multipart same-model must be verbatim (original boundary): isMulti=%v", isMulti)
+	}
+}
+
+func TestConfigureRequestBodyLimit(t *testing.T) {
+	t.Cleanup(func() { requestBodyLimitBytes = defaultRequestBodyLimitBytes })
+
+	ConfigureRequestBodyLimit(7 << 20)
+	if got := RequestBodyLimit(); got != 7<<20 {
+		t.Fatalf("RequestBodyLimit()=%d,want %d", got, int64(7<<20))
+	}
+	ConfigureRequestBodyLimit(0)
+	if got := RequestBodyLimit(); got != 7<<20 {
+		t.Fatalf("ConfigureRequestBodyLimit(0) 不应清零,got %d", got)
+	}
+}
+
+func TestReadLimitedRequestBodyHonorsConfiguredLimit(t *testing.T) {
+	reqOver := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(strings.Repeat("x", 20)))
+	if _, err := ReadLimitedRequestBody(httptest.NewRecorder(), reqOver, 10); err == nil {
+		t.Fatal("超过传入上限的 body 应返回 error")
+	}
+
+	reqUnder := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(strings.Repeat("x", 8)))
+	body, err := ReadLimitedRequestBody(httptest.NewRecorder(), reqUnder, 10)
+	if err != nil {
+		t.Fatalf("未超过传入上限的 body 不应报错:%v", err)
+	}
+	if len(body) != 8 {
+		t.Fatalf("body len=%d,want 8", len(body))
 	}
 }

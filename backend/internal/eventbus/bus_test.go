@@ -121,9 +121,9 @@ func TestBusTimeoutAndPanicGoToDLQ(t *testing.T) {
 		IsCritical:     true,
 		HandlerTimeout: 10 * time.Millisecond,
 		HandlerDLQKind: dlq.EventKindUsageRecord,
-		Fn: func(context.Context, eventbus.RequestCompletionEvent) error {
-			time.Sleep(50 * time.Millisecond)
-			return nil
+		Fn: func(ctx context.Context, _ eventbus.RequestCompletionEvent) error {
+			<-ctx.Done()
+			return ctx.Err()
 		},
 	})
 	err := bus.Emit(context.Background(), testEvent("evt-timeout"))
@@ -287,9 +287,9 @@ func TestBusHandlerTimeoutUsesErrHandlerTimeoutSanitizedCode(t *testing.T) {
 		IsCritical:     true,
 		HandlerTimeout: 10 * time.Millisecond,
 		HandlerDLQKind: dlq.EventKindUsageRecord,
-		Fn: func(context.Context, eventbus.RequestCompletionEvent) error {
-			time.Sleep(50 * time.Millisecond)
-			return nil
+		Fn: func(ctx context.Context, _ eventbus.RequestCompletionEvent) error {
+			<-ctx.Done()
+			return ctx.Err()
 		},
 	})
 

@@ -604,9 +604,8 @@ func TestAdminPoolAccounts_UpdateProviderAccountFull(t *testing.T) {
 func TestAdminPoolAccounts_ClearRateLimit(t *testing.T) {
 	store := &adminPoolStoreStub{}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
-	// Parity-or-better: the endpoint now returns the reactivated account row
-	// (200 + body) instead of an opaque 204 so the operator UI sees the
-	// account is unbenched (mirrors sub2api's recovered-account response).
+		// 操作员清理限流后需要拿到重新激活的账号快照；返回 200 + body
+		// 比 opaque 204 更利于 UI 立即刷新账号状态。
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
