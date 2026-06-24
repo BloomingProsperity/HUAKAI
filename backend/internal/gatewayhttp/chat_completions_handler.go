@@ -734,9 +734,10 @@ func readRawBufferedUpstreamBody(r io.Reader) ([]byte, error) {
 func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
 	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
-		ProtocolFamily:       ex.resolved.ProtocolFamily,
-		UpstreamModelID:      ex.upstreamModelID,
-		InboundBody:          ex.upstreamInboundBody(ex.body),
+		ProtocolFamily:  ex.resolved.ProtocolFamily,
+		UpstreamModelID: ex.upstreamModelID,
+		// R7 身份改写(默认关 + fail-open,只动 dispatch 专用拷贝、不动 ex.body)。
+		InboundBody:          ex.identityRewrite(ex.upstreamInboundBody(ex.body)),
 		BodyControls:         ex.activeDispatchBodyControls(),
 		InboundBetaTokens:    ex.clientBetaTokens(),
 		Account:              transportSelection.account,
