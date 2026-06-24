@@ -169,8 +169,11 @@ func TestFactory_For_MimicrySidecarSocketUsesSidecarRoundTripper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid fake sidecar should produce sidecar RoundTripper: %v", err)
 	}
-	if _, ok := rt.(*http.Transport); !ok {
-		t.Fatalf("sidecar branch should return *http.Transport from NewSidecarRoundTripperForMode, got %T", rt)
+	// sidecar 分支返回带 SidecarProfileID() 标记的 wrapper(内嵌 *http.Transport),转发层
+	// (gateway.applyTLSProfile)据此短路 per-account DB profile 替换。这条断言是 ②-2b 的
+	// 真实接线守卫:必须验【生产构造器的输出真满足标记接口】,而非手搓 marker 的假绿。
+	if _, ok := rt.(interface{ SidecarProfileID() string }); !ok {
+		t.Fatalf("sidecar branch should return a sidecar-marked RoundTripper (impl SidecarProfileID), got %T", rt)
 	}
 	if probeCalls != 1 {
 		t.Fatalf("probe calls=%d want 1", probeCalls)

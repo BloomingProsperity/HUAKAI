@@ -34,16 +34,33 @@ func NewSidecarRoundTripper(client *SidecarClient, profileID string) http.RoundT
 // NewSidecarRoundTripperForceH1 在 NewSidecarRoundTripper 基础上显式指定 forceH1。
 // forceH1=true 时,每次拨号的 control request 携带 force_h1,令 Rust sidecar 握手只广告
 // ALPN=http/1.1,从根消除 h2 升级(与 Go uTLS 路 utls_dialer.go 的 ForceH1 姿态一致)。
+// sidecarTransport 包装走 Rust tls-sidecar 的 *http.Transport,并暴露 SidecarProfileID()
+// 标记。转发层(gateway.UpstreamDispatcher.applyTLSProfile)据此识别"该 RT 已走 sidecar、
+// 自带内置真指纹",短路 per-account DB uTLS profile 的整体替换,避免绑定 DB profile 的账号
+// 让 sidecar 永远轮不到用。内嵌 *http.Transport:RoundTrip 与连接池/DialTLSContext 行为
+// 全部继承(对 net/http 完全等价),代理探测见 provider.WrapTransportWithProxy——wrapper 不
+// 是裸 *http.Transport,会落到其 fail-loud 默认分支(行为与原 sidecar 路一致,代理仍不静默泄露)。
+type sidecarTransport struct {
+	*http.Transport
+	profileID string
+}
+
+// SidecarProfileID 返回该 RT 绑定的 sidecar profile id,同时充当"我已走 sidecar"的导出标记。
+func (s *sidecarTransport) SidecarProfileID() string { return s.profileID }
+
 func NewSidecarRoundTripperForceH1(client *SidecarClient, profileID string, forceH1 bool) http.RoundTripper {
 	rt := &sidecarRoundTripper{client: client, profileID: profileID, forceH1: forceH1}
-	return &http.Transport{
-		DialTLSContext:      rt.DialTLSContext,
-		ForceAttemptHTTP2:   false,
-		DisableCompression:  false,
-		MaxIdleConns:        256,
-		MaxIdleConnsPerHost: 64, // DM-17:默认 2 在网关负载下复用近失效
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
+	return &sidecarTransport{
+		Transport: &http.Transport{
+			DialTLSContext:      rt.DialTLSContext,
+			ForceAttemptHTTP2:   false,
+			DisableCompression:  false,
+			MaxIdleConns:        256,
+			MaxIdleConnsPerHost: 64, // DM-17:默认 2 在网关负载下复用近失效
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+		},
+		profileID: profileID,
 	}
 }
 
