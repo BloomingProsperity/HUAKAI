@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -205,6 +206,12 @@ func (s *Service) LoginFinish(ctx context.Context, in LoginFinishInput) (LoginFi
 	}
 	updated, err := s.store.UpdateCredentialUsage(ctx, in.TenantID, stored.CredentialID, result.Credential.SignCount, result.Credential.CloneWarning, s.now())
 	if err != nil {
+		// 并发竞态:两个登录都过了上面的应用层 signCountRegressed,其中一个在
+		// store 的 CAS 处失败返回 ErrCloneDetected。与上面单请求路径对齐——也置位
+		// clone_warning,否则这条防克隆信号在竞态路径下丢失(可观测性缺口)。
+		if errors.Is(err, ErrCloneDetected) {
+			_ = s.store.FlagCredentialCloneWarning(ctx, in.TenantID, stored.CredentialID, s.now())
+		}
 		return LoginFinishResult{}, err
 	}
 	return LoginFinishResult{User: result.User.User, Credential: updated}, nil
