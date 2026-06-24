@@ -4,6 +4,7 @@ import { AppShell } from '../shell/AppShell'
 import { Dashboard } from '../pages/Dashboard'
 import { Placeholder } from '../pages/Placeholder'
 import { AccountsPage } from '../features/accounts/AccountsPage'
+import { AccountDetailPage } from '../features/accounts/AccountDetailPage'
 import { PIPELINE_NAV } from './nav'
 
 /*
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
     element: <AppShell />,
     children: [
       { index: true, element: <Dashboard /> },
+      { path: '/accounts/:id', element: <AccountDetailPage /> },
       ...domainRoutes,
       { path: '*', element: <Navigate to="/" replace /> },
     ],

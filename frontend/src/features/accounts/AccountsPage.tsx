@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, healthTone, type BadgeTone } from '../../ui/StatusBadge'
 import { listProviderAccounts } from './api'
@@ -239,7 +240,9 @@ function AccountsTable({ rows, dim }: { rows: ProviderAccount[]; dim: boolean })
             <tr key={a.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
               <td style={tdStyle}>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{a.name}</span>
+                  <Link to={`/accounts/${a.id}`} style={{ fontWeight: 600, color: 'var(--hk-primary-700)' }}>
+                    {a.name}
+                  </Link>
                   {a.tags.length > 0 && (
                     <span style={{ color: 'var(--hk-ink-300)', fontSize: 11 }}>{a.tags.join(' · ')}</span>
                   )}
