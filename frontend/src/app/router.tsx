@@ -9,6 +9,7 @@ import { KeysPage } from '../features/keys/KeysPage'
 import { UsagePage } from '../features/usage/UsagePage'
 import { RoutingPage } from '../features/routing/RoutingPage'
 import { UsersPage } from '../features/users/UsersPage'
+import { UserDetailPage } from '../features/users/UserDetailPage'
 import { AuditPage } from '../features/audit/AuditPage'
 import { SystemPage } from '../features/system/SystemPage'
 import { ModelsPage } from '../features/models/ModelsPage'
@@ -52,6 +53,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Dashboard /> },
       { path: '/accounts/:id', element: <AccountDetailPage /> },
+      { path: '/users/:id', element: <UserDetailPage /> },
       ...domainRoutes,
       { path: '*', element: <Navigate to="/" replace /> },
     ],
