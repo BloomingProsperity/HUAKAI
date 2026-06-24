@@ -165,6 +165,16 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 	if err := ValidateModeForProvider(provider, mode); err != nil {
 		return nil, err
 	}
+	// 全局伪装运维开关:HUAKAI_TRANSPORT_MIMICRY=false 时,把所有 mimicry mode
+	// 整体降级为标准 transport——用于排障,或伪装实现出故障时一键回退到标准
+	// net/http。默认开(空或非 "false" 视为开),不改现有生产行为。放在
+	// ValidateModeForProvider 之后:校验仍按真实 (provider, mode) 进行;降级目标
+	// standard 对任何曾允许 mimicry 的 provider 必然合法(allowedModesByProvider
+	// 中每个含 mimicry 的 provider 同时允许 standard),故降级后不触发非法组合。
+	// 该降级覆盖 dispatcher / HCSF / OAuth 全部出站路径——它们都经本 For。
+	if mode.isMimicry() && !MimicryEnabled() {
+		mode = TransportModeStandard
+	}
 	switch mode {
 	case TransportModeStandard:
 		return f.standardRoundTripper(), nil
