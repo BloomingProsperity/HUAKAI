@@ -92,6 +92,22 @@ func Reserve(ctx context.Context, tx pgx.Tx, p ReserveParams) (Snapshot, error) 
 	return newSnapshot(reserve), nil
 }
 
+// HoldCapturable 报告 claimID 对应的预扣 hold 当前是否处于可结算的 "held" 态。
+// 用于追扣等场景在调用 Capture 前判别:hold 已 released/captured(或根本不存在)时
+// Capture 是 no-op(只读余额、绝不动钱),调用方据此避免把"未真正发生的扣费"误报成
+// 已扣。必须在与随后 Capture 同一事务内调用——同事务 FOR UPDATE 锁保证两次读到一致状态。
+func HoldCapturable(ctx context.Context, tx pgx.Tx, claimID int64) (bool, error) {
+	q := dbbilling.New(tx)
+	hold, err := q.GetBalanceHoldForUpdate(ctx, claimID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get hold: %w", err)
+	}
+	return hold.State == "held", nil
+}
+
 func Capture(ctx context.Context, tx pgx.Tx, claimID int64, actualCost decimal.Decimal) (Snapshot, error) {
 	var zero Snapshot
 	q := dbbilling.New(tx)
