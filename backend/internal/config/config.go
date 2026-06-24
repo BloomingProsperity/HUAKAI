@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyns"
 )
 
 // Config is the typed snapshot of all settings the gateway needs at boot.
@@ -143,6 +145,11 @@ var ErrMissingRequired = errors.New("config: missing required env var")
 // backed inbound auth (auth.APIKeyResolver). Rolling back to env-injected
 // auth requires a code revert (no build-tag escape hatch).
 func Load() (*Config, error) {
+	// 客户 API key 前缀(HUAKAI_API_KEY_PREFIX,默认 hk):若运维设了非法值,启动期
+	// fail-loud,免得静默回落默认后所有客户端被拒还查不出原因。空=用默认,无误。
+	if err := apikeyns.ConfiguredBaseError(); err != nil {
+		return nil, err
+	}
 	paymentHMACSecrets, err := loadPaymentHMACSecrets()
 	if err != nil {
 		return nil, err
