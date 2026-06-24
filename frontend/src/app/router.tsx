@@ -11,6 +11,7 @@ import { RoutingPage } from '../features/routing/RoutingPage'
 import { UsersPage } from '../features/users/UsersPage'
 import { AuditPage } from '../features/audit/AuditPage'
 import { SystemPage } from '../features/system/SystemPage'
+import { ModelsPage } from '../features/models/ModelsPage'
 import { LoginPage } from '../auth/LoginPage'
 import { RequireAuth } from '../auth/RequireAuth'
 import { PIPELINE_NAV } from './nav'
@@ -28,6 +29,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/users': <UsersPage />,
   '/security': <AuditPage />,
   '/system': <SystemPage />,
+  '/models': <ModelsPage />,
 }
 
 const domainRoutes = PIPELINE_NAV.flatMap((section) =>
