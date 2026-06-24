@@ -533,6 +533,13 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	d.CacheCreation5mTokens = acc.Usage.CacheCreationInputTokens5m
 	d.CacheCreation1hTokens = acc.Usage.CacheCreationInputTokens1h
 	d.CacheReadTokens = acc.Usage.CacheReadInputTokens
+	// 流式服务端工具调用次数(web_search/file_search/image_generation):累加器在 SSE
+	// content_block_start 已按次累加进 acc.Usage,此处必须随其余用量字段一并落入 draft——
+	// 否则 usageFromDraft 取到的工具计数恒 0,ApplyToolCallSurcharge 判 IsZero 直接跳过,
+	// 流式工具调用的上游按次附加费永不向租户计收(我方付了上游成本却对客户收 $0)。
+	d.WebSearchCalls = acc.Usage.WebSearchCalls
+	d.FileSearchCalls = acc.Usage.FileSearchCalls
+	d.ImageGenerationCalls = acc.Usage.ImageGenerationCalls
 	d.DeliveredTokenCount = acc.DeliveredTokenCount()
 	d.StreamProtocolLoss = acc.StreamProtocolLoss
 	// 流式 token 交叉校验信号(审计-only,settle 时在 gatewayhttp 比对):隐藏 reasoning、
