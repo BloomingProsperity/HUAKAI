@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
-import { listApiKeys, revokeApiKey } from './api'
+import { batchRevokeApiKeys, listApiKeys, revokeApiKey } from './api'
+import { buildBatchRevoke, isSelectable, summarizeBatchResult, toggleSelected } from './batch'
 import { CreateKeyModal } from './CreateKeyModal'
 import { EditKeyModal } from './EditKeyModal'
 import type { ApiKeyView } from './types'
@@ -18,6 +19,9 @@ export function KeysPage() {
   const [editing, setEditing] = useState<ApiKeyView | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [flash, setFlash] = useState<string | null>(null)
 
   const load = useCallback((signal: AbortSignal) => {
     setLoading(true)
@@ -50,6 +54,33 @@ export function KeysPage() {
       setError(e instanceof ApiError ? `${e.message}(${e.code})` : '撤销失败')
     } finally {
       setBusyId(null)
+    }
+  }
+
+  // 仅活跃 Key 可被批量选中;勾选集随之过滤,避免对已撤销项操作。
+  const selectableIds = keys.filter(isSelectable).map((k) => k.api_key_id)
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id))
+
+  const batchRevoke = async () => {
+    const ids = [...selected]
+    const built = buildBatchRevoke(ids, '')
+    if ('error' in built) {
+      setError(built.error)
+      return
+    }
+    if (!window.confirm(`确认批量撤销 ${ids.length} 个 Key?撤销后不可恢复。`)) return
+    setBatchBusy(true)
+    setError(null)
+    setFlash(null)
+    try {
+      const resp = await batchRevokeApiKeys(built.ids, built.reason)
+      setFlash(summarizeBatchResult(resp))
+      setSelected(new Set())
+      setRefreshNonce((n) => n + 1)
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '批量撤销失败')
+    } finally {
+      setBatchBusy(false)
     }
   }
 
@@ -86,6 +117,22 @@ export function KeysPage() {
           {error}
         </div>
       )}
+      {flash && (
+        <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>
+          {flash}
+        </div>
+      )}
+      {selected.size > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-2) var(--hk-space-4)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }}>
+          <span style={{ fontSize: 13, color: 'var(--hk-ink-700)' }}>已选 {selected.size} 个</span>
+          <button type="button" disabled={batchBusy} onClick={batchRevoke} style={revokeBtn}>
+            {batchBusy ? '撤销中…' : '批量撤销'}
+          </button>
+          <button type="button" onClick={() => setSelected(new Set())} style={{ border: 'none', background: 'transparent', color: 'var(--hk-ink-500)', fontSize: 13, cursor: 'pointer' }}>
+            清空选择
+          </button>
+        </div>
+      )}
 
       <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
         {loading && keys.length === 0 ? (
@@ -97,6 +144,14 @@ export function KeysPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr>
+                  <th style={{ ...th, width: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      aria-label="全选活跃 Key"
+                      onChange={(e) => setSelected(e.target.checked ? new Set(selectableIds) : new Set())}
+                    />
+                  </th>
                   {['名称', '前缀', '状态', '过期', '最近使用', '创建时间', ''].map((h) => (
                     <th key={h} style={th}>
                       {h}
@@ -107,6 +162,16 @@ export function KeysPage() {
               <tbody>
                 {keys.map((k) => (
                   <tr key={k.api_key_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                    <td style={{ ...td, textAlign: 'center' }}>
+                      {isSelectable(k) && (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(k.api_key_id)}
+                          aria-label={`选择 ${k.name}`}
+                          onChange={() => setSelected((s) => toggleSelected(s, k.api_key_id))}
+                        />
+                      )}
+                    </td>
                     <td style={td}>
                       <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{k.name}</span>
                     </td>

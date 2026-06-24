@@ -24,3 +24,8 @@ export async function revokeApiKey(id: number, reason: string): Promise<RevokeRe
 export async function updateApiKey(id: number, body: object): Promise<unknown> {
   return apiSend<unknown>('PATCH', `${KEYS_PATH}/${id}`, body)
 }
+
+/** 批量撤销:POST /v1/api-keys/batch-revoke {ids,reason} → {revoked[],not_found[]}。 */
+export async function batchRevokeApiKeys(ids: number[], reason: string): Promise<{ revoked: number[]; not_found: number[] }> {
+  return apiSend<{ revoked: number[]; not_found: number[] }>('POST', `${KEYS_PATH}/batch-revoke`, { ids, reason })
+}
