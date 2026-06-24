@@ -43,10 +43,11 @@ func serverSecret() string {
 //
 // 入参 dispatchBody 必须是 dispatch 专用拷贝,**不得是参与缓存键计算的原始
 // 客户端 body**。
-func RewriteForDispatch(dispatchBody []byte, accountID int64, externalAccountID, cliVersion string) []byte {
+func RewriteForDispatch(dispatchBody []byte, accountID int64, externalAccountID, clientSessionID, cliVersion string) []byte {
 	id := AccountIdentity{
 		AccountID:         accountID,
 		ExternalAccountID: externalAccountID,
+		ClientSessionID:   clientSessionID,
 		ClientCLIVersion:  cliVersion,
 	}
 	out, _ := RewriteInboundBody(dispatchBody, id, serverSecret())

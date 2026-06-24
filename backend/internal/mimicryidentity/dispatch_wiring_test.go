@@ -13,7 +13,7 @@ func TestRewriteForDispatch_默认关字节等价(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "")
 	t.Setenv(envServerSecret, "fixed-secret")
 	body := fixtureBody(t)
-	out := RewriteForDispatch(body, 42, testExternalAccountUUID, "2.1.78")
+	out := RewriteForDispatch(body, 42, testExternalAccountUUID, "", "2.1.78")
 	if !bytes.Equal(out, body) {
 		t.Fatalf("默认关时 dispatch body 必须字节等价\n原: %s\n出: %s", body, out)
 	}
@@ -31,14 +31,14 @@ func TestRewriteForDispatch_开启有身份改写_自证(t *testing.T) {
 	// 路径一:开关开 + 密钥就绪 → 改写发生。
 	t.Setenv(envIdentityRewrite, "true")
 	t.Setenv(envServerSecret, "fixed-secret")
-	rewritten := RewriteForDispatch(body, 42, testExternalAccountUUID, "2.1.78")
+	rewritten := RewriteForDispatch(body, 42, testExternalAccountUUID, "", "2.1.78")
 	if bytes.Equal(rewritten, body) {
 		t.Fatalf("开关开 + 密钥就绪 + 非空 external id,本应改写却字节等价")
 	}
 
 	// 路径二:同样开关开但派生密钥缺失 → fail-open 字节等价(证明改写依赖密钥)。
 	t.Setenv(envServerSecret, "")
-	failOpen := RewriteForDispatch(body, 42, testExternalAccountUUID, "2.1.78")
+	failOpen := RewriteForDispatch(body, 42, testExternalAccountUUID, "", "2.1.78")
 	if !bytes.Equal(failOpen, body) {
 		t.Fatalf("密钥缺失时必须 fail-open 字节等价\n原: %s\n出: %s", body, failOpen)
 	}

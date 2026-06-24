@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
 // identityRewriteFixtureBody 构造含 metadata.user_id 的请求 body,account_uuid
@@ -57,18 +58,58 @@ func extractMetadataAccountUUID(t *testing.T, body []byte) string {
 }
 
 // newIdentityRewriteExec 构造一个最小 chatExecution,带 Claude Code UA + 指定
-// AccountInfo,供直接调用 identityRewrite。
+// AccountInfo,供直接调用 identityRewrite。上游协议族默认 anthropic_messages
+// (R7 改写仅对 Anthropic 形 body 合法;协议族门控见 newIdentityRewriteExecFamily)。
 func newIdentityRewriteExec(externalAccountID string) *chatExecution {
+	return newIdentityRewriteExecFamily(externalAccountID, "anthropic_messages")
+}
+
+// newIdentityRewriteExecFamily 同上但可指定上游协议族,供协议族门控测试用。
+func newIdentityRewriteExecFamily(externalAccountID, protocolFamily string) *chatExecution {
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(""))
 	req.Header.Set("User-Agent", "claude-cli/2.1.78 (external, cli)")
 	return &chatExecution{
-		r: req,
+		r:        req,
+		resolved: registry.Resolved{ProtocolFamily: protocolFamily},
 		accInfo: provider.AccountInfo{
 			AccountID:         42,
 			Platform:          "anthropic",
 			AccountType:       "apikey",
 			ExternalAccountID: externalAccountID,
 		},
+	}
+}
+
+// TestIdentityRewrite_协议族门控_非Anthropic不改写 修 R7 S2:R7 身份改写写的是
+// metadata.user_id(Claude Code/Anthropic 专属语义),只有上游协议族是
+// anthropic_messages 时 dispatchBody 才是 Anthropic 形请求体、注入才合法。此前
+// identityRewrite 仅以 ExternalAccountID!="" 为闸、无协议族判断 —— 运维开 R7 后,
+// 池中带 external_account_id 的 OpenAI/Gemini 账号请求会被强注入 Anthropic 形顶层
+// metadata.user_id,被上游拒(Gemini 未知顶层字段 400、OpenAI metadata 语义错配)。
+//
+// 变异证伪:删 identityRewrite 里 `ex.resolved.ProtocolFamily != "anthropic_messages"`
+// 守卫 → 非 Anthropic body 被注入 metadata → 下面"字节等价"断言变红。
+func TestIdentityRewrite_协议族门控_非Anthropic不改写(t *testing.T) {
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "true")
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_SECRET", "fixed-secret-for-test")
+
+	// 一个无 metadata 的 OpenAI 形 body(若守卫失效会被强注入顶层 metadata.user_id)。
+	openAIBody := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)
+
+	// 关键:协议族为 openai_chat(非 anthropic_messages),即便开关开 + secret 设 +
+	// external id 非空,也必须 fail-open 不改写。
+	ex := newIdentityRewriteExecFamily("acc-xyz", "openai_chat")
+	out := ex.identityRewrite(openAIBody)
+	if string(out) != string(openAIBody) {
+		t.Fatalf("非 Anthropic 协议族(openai_chat)必须 fail-open 字节等价,绝不注入 Anthropic 形 metadata\n原: %s\n出: %s", openAIBody, out)
+	}
+
+	// 对照:同样配置但协议族为 anthropic_messages 时,改写确实发生(证明门控不是把
+	// 所有路都堵死,而是精确按族放行)。
+	exAnthropic := newIdentityRewriteExecFamily("acc-xyz", "anthropic_messages")
+	outA := exAnthropic.identityRewrite(anthropicMarshalledBodyNoMetadata())
+	if string(outA) == string(anthropicMarshalledBodyNoMetadata()) {
+		t.Fatalf("anthropic_messages 族本应改写,却字节等价(门控误伤 Anthropic 路)")
 	}
 }
 
