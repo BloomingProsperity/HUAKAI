@@ -34,3 +34,14 @@ LEFT JOIN LATERAL (
 WHERE pa.tenant_id = sqlc.arg(tenant_id)::bigint
   AND pa.id = sqlc.arg(id)::bigint
   AND pa.deleted_at IS NULL;
+
+-- name: TouchProviderAccountProbe :exec
+-- 由异步 eventbus account_health_probe handler 调用:每次请求完成在对应池账号上
+-- 盖一个"最近探测时间"戳,点亮运维健康面板的 last_probe_at 列(迁移 0110 早已加列,
+-- 但此前全仓零写入,该列恒 NULL)。纯可观测写,单行 PK 定位,不碰钱/auth/health_state。
+-- last_probe_latency_ms 暂留 follow-up(请求延迟分散在多个发射点,见计划工件)。
+UPDATE provider_accounts
+SET last_probe_at = sqlc.arg(probed_at)::timestamptz
+WHERE id = sqlc.arg(id)::bigint
+  AND tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL;

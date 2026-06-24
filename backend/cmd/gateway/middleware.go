@@ -27,6 +27,7 @@ import (
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
@@ -34,6 +35,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/observability"
+	"github.com/BloomingProsperity/HUAKAI/internal/observability/accounthealthprobe"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/reqdecompress"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -382,14 +384,14 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 		auditreceipt.WithReceiptHookReferralQualifier(referralQualifier),
 		auditreceipt.WithReceiptHookReferralRewardIssuer(referralRewardIssuer),
 		auditreceipt.WithReceiptHookReferralRewardSettings(referralRewardSettings))
-	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, dlqService, auditRefPolicy, logger)
+	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, pgPool, dlqService, auditRefPolicy, logger)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build completion eventbus: %w", err)
 	}
 	return settler, receiptStore, receiptFormatter, refundQueue, billing.NewPGXRateTableSource(pgPool), completionBus, nil
 }
 
-func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.Settler, dlqService *legacydlq.Service, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger) (*eventbus.Bus, error) {
+func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.Settler, pgPool *pgxpool.Pool, dlqService *legacydlq.Service, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger) (*eventbus.Bus, error) {
 	logAuditRefEscapeFlag(auditRefPolicy, logger)
 	if cfg == nil || !cfg.Enabled {
 		return nil, nil
@@ -405,6 +407,15 @@ func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.
 		}
 	}))
 	reconciler := observability.NewDualRunReconciler(observability.DefaultDualRunWindow)
+	// 接线 account health probe 死开关:此前 probe 传 nil → handler 每次请求完成都被触发
+	// 但空转,provider_accounts.last_probe_at 永远为 NULL、健康面板恒空。这里注入一个真实
+	// 的 pgxpool 支撑写,盖 last_probe_at 戳点亮面板。纯可观测、异步、单行 PK update,
+	// 不在请求转发热路径上。pgPool 为 nil 时(理论上 eventbus 已 Enabled 不应发生)退回
+	// 空转,保持旧行为不致启动失败。
+	var healthProbe func(context.Context, observability.AccountHealthSignal) error
+	if pgPool != nil {
+		healthProbe = accounthealthprobe.NewPostgresProbe(admindb.New(pgPool))
+	}
 	handlers := []eventbus.Handler{
 		observability.NewBillingPersisterHandler(settler, cfg.HandlerTimeout,
 			observability.WithBillingPersisterReconciler(reconciler)),
@@ -412,7 +423,7 @@ func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.
 			observability.WithRequiredAuditRef(),
 			observability.WithAuditRefPolicy(auditRefPolicy)),
 		observability.NewReconciliationHandler(cfg.HandlerTimeout, reconciler),
-		observability.NewAccountHealthProbeHandler(cfg.HandlerTimeout, nil),
+		observability.NewAccountHealthProbeHandler(cfg.HandlerTimeout, healthProbe),
 		observability.NewMetricsAggregatorHandler(cfg.HandlerTimeout),
 	}
 	for _, h := range handlers {

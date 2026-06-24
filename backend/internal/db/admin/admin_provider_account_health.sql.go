@@ -96,3 +96,22 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 	)
 	return i, err
 }
+
+const touchProviderAccountProbe = `-- name: TouchProviderAccountProbe :exec
+UPDATE provider_accounts
+SET last_probe_at = $1::timestamptz
+WHERE id = $2::bigint
+  AND tenant_id = $3::bigint
+  AND deleted_at IS NULL
+`
+
+type TouchProviderAccountProbeParams struct {
+	ProbedAt pgtype.Timestamptz `db:"probed_at" json:"probed_at"`
+	ID       int64              `db:"id" json:"id"`
+	TenantID int64              `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) TouchProviderAccountProbe(ctx context.Context, arg TouchProviderAccountProbeParams) error {
+	_, err := q.db.Exec(ctx, touchProviderAccountProbe, arg.ProbedAt, arg.ID, arg.TenantID)
+	return err
+}
