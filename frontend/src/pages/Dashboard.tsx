@@ -1,10 +1,11 @@
 import { Link } from 'react-router-dom'
 import { PIPELINE_NAV } from '../app/nav'
+import { DashboardMetrics } from '../features/dashboard/DashboardMetrics'
 
 /*
  * 控制台首页(管线总览)。
- * 以"管线卡片"呈现 8 个阶段,每张卡显示该站定位与入口,呼应管线即导航的反克隆方向。
- * 这是脚手架阶段的概览页;后续可叠加实时指标(账号健康/今日用量/余额等)。
+ * 顶部=真数据指标条(账号/Key/模型/配额,各卡独立加载、无权限端点降级显"—");
+ * 下方="管线卡片"呈现 8 个阶段,呼应管线即导航的反克隆方向。
  */
 export function Dashboard() {
   return (
@@ -15,6 +16,7 @@ export function Dashboard() {
           沿中转站数据管线运维:从上游账号池,到路由选号,到签发 Key,直至用量计费。
         </p>
       </header>
+      <DashboardMetrics />
       <div
         style={{
           display: 'grid',
