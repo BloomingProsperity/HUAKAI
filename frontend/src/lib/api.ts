@@ -9,6 +9,9 @@
  * (credentials:include);若上层显式传 bearer 则加 Authorization 头。
  */
 
+import { getTokens } from '../auth/store'
+import { tokenForPath } from '../auth/tokenForPath'
+
 // API_BASE 默认空串=同源相对路径(生产期);dev 期 vite proxy 把 /api 转发到本地网关。
 const API_BASE = ''
 
@@ -64,15 +67,18 @@ async function parse<T>(resp: Response): Promise<T> {
   return body as T
 }
 
-function authHeaders(bearer?: string): HeadersInit {
-  return bearer ? { Authorization: `Bearer ${bearer}` } : {}
+// authHeaders 决定本次请求带哪个 Bearer:opts.bearer 显式覆盖;否则按路径从 auth store
+// 选用 admin / session token(tokenForPath)。无可用 token 时不带 Authorization(后端 401)。
+function authHeaders(path: string, bearer?: string): HeadersInit {
+  const token = bearer ?? tokenForPath(path, getTokens())
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 export async function apiGet<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const resp = await fetch(buildURL(path, opts.query), {
     method: 'GET',
     credentials: 'include',
-    headers: { Accept: 'application/json', ...authHeaders(opts.bearer) },
+    headers: { Accept: 'application/json', ...authHeaders(path, opts.bearer) },
     signal: opts.signal,
   })
   return parse<T>(resp)
@@ -90,7 +96,7 @@ export async function apiSend<T>(
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json',
-      ...authHeaders(opts.bearer),
+      ...authHeaders(path, opts.bearer),
     },
     body: payload === undefined ? undefined : JSON.stringify(payload),
     signal: opts.signal,

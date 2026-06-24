@@ -8,6 +8,8 @@ import { AccountDetailPage } from '../features/accounts/AccountDetailPage'
 import { KeysPage } from '../features/keys/KeysPage'
 import { UsagePage } from '../features/usage/UsagePage'
 import { RoutingPage } from '../features/routing/RoutingPage'
+import { LoginPage } from '../auth/LoginPage'
+import { RequireAuth } from '../auth/RequireAuth'
 import { PIPELINE_NAV } from './nav'
 
 /*
@@ -30,9 +32,15 @@ const domainRoutes = PIPELINE_NAV.flatMap((section) =>
 )
 
 export const router = createBrowserRouter([
+  // 登录页在壳外、无需鉴权;其余路由经 RequireAuth 守卫(未登录跳 /login)。
+  { path: '/login', element: <LoginPage /> },
   {
     path: '/',
-    element: <AppShell />,
+    element: (
+      <RequireAuth>
+        <AppShell />
+      </RequireAuth>
+    ),
     children: [
       { index: true, element: <Dashboard /> },
       { path: '/accounts/:id', element: <AccountDetailPage /> },
