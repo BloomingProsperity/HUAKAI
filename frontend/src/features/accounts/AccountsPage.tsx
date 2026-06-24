@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, healthTone, type BadgeTone } from '../../ui/StatusBadge'
 import { listProviderAccounts } from './api'
+import { CreateAccountModal } from './CreateAccountModal'
 import {
   ACCOUNT_STATE_OPTIONS,
   ACCOUNTS_PAGE_LIMIT,
@@ -34,6 +35,9 @@ export function AccountsPage() {
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  // 创建成功后自增以强制重拉列表。
+  const [refreshNonce, setRefreshNonce] = useState(0)
 
   const currentCursor = cursorStack[cursorStack.length - 1]
 
@@ -64,7 +68,7 @@ export function AccountsPage() {
     const ctrl = new AbortController()
     load({ ...filters, cursor: currentCursor }, ctrl.signal)
     return () => ctrl.abort()
-  }, [filters, currentCursor, load])
+  }, [filters, currentCursor, load, refreshNonce])
 
   const applyFilters = () => {
     setCursorStack([null])
@@ -99,13 +103,25 @@ export function AccountsPage() {
 
   return (
     <div style={{ padding: PAGE, display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>账号中心</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          管线第 1 站 · 上游账号池。共 {visible.length} 条
-          {nameQuery.trim() && items.length !== visible.length ? `(本页内按名称过滤自 ${items.length})` : ''}。
-        </p>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+          <h1 style={{ fontSize: 22 }}>账号中心</h1>
+          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+            管线第 1 站 · 上游账号池。共 {visible.length} 条
+            {nameQuery.trim() && items.length !== visible.length ? `(本页内按名称过滤自 ${items.length})` : ''}。
+          </p>
+        </div>
+        <button type="button" onClick={() => setCreateOpen(true)} style={newAccountBtn}>
+          ＋ 新建账号
+        </button>
       </header>
+
+      {createOpen && (
+        <CreateAccountModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={() => setRefreshNonce((n) => n + 1)}
+        />
+      )}
 
       <FilterBar
         draftState={draftState}
@@ -354,6 +370,18 @@ const primaryBtn: React.CSSProperties = {
   fontSize: 13,
   fontWeight: 600,
   cursor: 'pointer',
+}
+const newAccountBtn: React.CSSProperties = {
+  height: 36,
+  padding: '0 var(--hk-space-4)',
+  border: '1px solid var(--hk-primary-600)',
+  borderRadius: 'var(--hk-radius-md)',
+  background: 'var(--hk-primary-500)',
+  color: '#fff',
+  fontSize: 14,
+  fontWeight: 600,
+  cursor: 'pointer',
+  flexShrink: 0,
 }
 const ghostBtn: React.CSSProperties = {
   height: 32,
