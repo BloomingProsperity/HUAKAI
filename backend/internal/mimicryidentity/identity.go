@@ -56,6 +56,12 @@ type AccountIdentity struct {
 	// ExternalAccountID 是上游账号的稳定标识(如 Anthropic account uuid),
 	// 写入 metadata.user_id 的 account 组件。**为空时 fail-open:不改写。**
 	ExternalAccountID string
+	// ClientSessionID 是本次请求的客户端会话标识(从会话头/openai 顶层抽取),
+	// 参与 session 组件派生 seed。**作用**:让落到同一池账号的不同客户端会话派生出
+	// 不同的 upstream session_id,避免"同账号跨会话共用同一 session"被上游观测成
+	// 异常会话模式(同 session 塞进互相矛盾的跨用户上下文)反触发会话级风控。
+	// 空串时 session 退回账号级派生(仍是合法 UUID,只是同账号稳定)。
+	ClientSessionID string
 	// ClientCLIVersion 是客户端 Claude Code CLI 版本(从 UA 解析),决定写回
 	// user_id 用 JSON 新格式还是 legacy 拼接格式。空串按旧版处理。
 	ClientCLIVersion string
@@ -119,7 +125,7 @@ func RewriteInboundBody(body []byte, id AccountIdentity, serverSecret string) ([
 // 整体写入,保证缺/坏 user_id 也能被投影成账号一致的身份。
 func BuildPlan(id AccountIdentity, serverSecret string) gateway.MimicryPlan {
 	device := deriveDeviceID(serverSecret, id.AccountID)
-	session := deriveSessionUUID(serverSecret, id.AccountID)
+	session := deriveSessionUUID(serverSecret, id.AccountID, id.ClientSessionID)
 	useNewFormat := gateway.IsNewMetadataFormatVersion(id.ClientCLIVersion)
 	fallback := gateway.FormatMetadataUserID(device, id.ExternalAccountID, session, useNewFormat)
 
@@ -143,10 +149,15 @@ func deriveDeviceID(serverSecret string, accountID int64) string {
 	return hex.EncodeToString(sum[:]) // 32 字节 → 64 hex
 }
 
-// deriveSessionUUID 用 SHA256(serverSecret::accountID::session) 派生成 UUID
-// 形态(8-4-4-4-12)。确定性、免存储。取摘要前 16 字节投影成 UUID 串。
-func deriveSessionUUID(serverSecret string, accountID int64) string {
-	sum := deriveDigest(serverSecret, accountID, "session")
+// deriveSessionUUID 用 SHA256(serverSecret::accountID::session::clientSessionID)
+// 派生成 UUID 形态(8-4-4-4-12)。确定性、免存储。取摘要前 16 字节投影成 UUID 串。
+//
+// clientSessionID 纳入 seed:同一池账号下不同客户端会话派生不同 session_id(避免
+// 同账号跨会话共用同一 upstream session 被风控);同一(账号, 客户端会话)稳定派生
+// 同值(保上游会话亲和)。clientSessionID 为空时退回账号级派生(scope 尾部为空,
+// 仍是确定性合法 UUID,只是同账号稳定)。
+func deriveSessionUUID(serverSecret string, accountID int64, clientSessionID string) string {
+	sum := deriveDigest(serverSecret, accountID, "session::"+clientSessionID)
 	h := hex.EncodeToString(sum[:16]) // 16 字节 → 32 hex
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
