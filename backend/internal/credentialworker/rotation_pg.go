@@ -21,21 +21,24 @@ func NewPostgresRotationStore(pool *pgxpool.Pool) *PostgresRotationStore {
 }
 
 // DueForRotation returns up to limit active, non-deleted account credentials
-// whose issuance (created_at) is older than olderThan — the credentials a TTL
-// rotation policy should rotate. Oldest first so a small per-tick limit drains
-// the most overdue credentials first. vendor/auth_mode are returned so the scan
-// can classify each candidate as refreshable (auto-heal) vs static (alert-only).
+// whose 有效上次刷新时间(COALESCE(last_refresh_at, created_at))早于 olderThan ——
+// 即"距上次成功刷新已超过 maxAge"的凭据。用 COALESCE 而非裸 created_at 至关重要:
+// 恢复闭环刷新成功后 last_refresh_at 会被刷成 NOW(见 SaveRefreshSuccess),凭据因此
+// 立刻掉出"超期"集合,下个扫描 tick 不会再被选中——这保证扫描【幂等】、不会因为
+// created_at(签发时间,永不变)而把一把"老但刚刷过"的凭据每个 tick 反复强刷、锤上游。
+// 从没刷过的凭据(last_refresh_at IS NULL)回退按 created_at 计,仍能抓到静默老化。
+// 最旧优先,小 per-tick 上限先清最逾期的。vendor/auth_mode 用于分类可刷新(自愈)vs 静态(仅告警)。
 func (s *PostgresRotationStore) DueForRotation(ctx context.Context, olderThan time.Time, limit int) ([]RotationCandidate, error) {
 	if s == nil || s.pool == nil {
 		return nil, nil
 	}
 	const q = `
-SELECT id, tenant_id, provider_account_id, vendor, auth_mode, created_at
+SELECT id, tenant_id, provider_account_id, vendor, auth_mode, COALESCE(last_refresh_at, created_at)
 FROM account_credentials
 WHERE state = 'active'
   AND deleted_at IS NULL
-  AND created_at < $1
-ORDER BY created_at ASC
+  AND COALESCE(last_refresh_at, created_at) < $1
+ORDER BY COALESCE(last_refresh_at, created_at) ASC
 LIMIT $2`
 	rows, err := s.pool.Query(ctx, q, olderThan, limit)
 	if err != nil {

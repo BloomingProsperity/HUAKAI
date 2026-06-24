@@ -254,3 +254,48 @@ func TestPostgresRotationStore_RefreshRecoveryClosure(t *testing.T) {
 		t.Fatalf("soft-deleted credential must stay untouched (refresh_before_at NULL), got %v", rb)
 	}
 }
+
+// TestPostgresRotationStore_KeysOnLastRefreshNotCreatedAt 证明 DueForRotation 按
+// COALESCE(last_refresh_at, created_at) 判超期,而非裸 created_at。这是 CRED-288 扫描
+// 默认开启后【不造成刷新风暴】的关键:一把签发很久、但最近刚成功刷新过的凭据绝不能
+// 被判为超期——否则恢复闭环会每个扫描 tick 把它的 refresh_before_at 反复拉到 now、
+// 反复强刷,锤爆上游 OAuth 端点(created_at 永不变,裸按它判会永远 due)。
+//
+// 变异:把 DueForRotation 的 WHERE/SELECT 改回裸 created_at,refreshed 凭据被错误判 due
+// → 第一个 t.Fatalf 变红。该 fixture 对"按 created_at 还是按 last_refresh"有判别力。
+func TestPostgresRotationStore_KeysOnLastRefreshNotCreatedAt(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialWorkerTestPool(t, ctx)
+	defer pool.Close()
+
+	run := time.Now().UnixNano()
+	tA, paA := seedCredentialWorkerProviderAccount(t, ctx, pool, fmt.Sprintf("rot288d-%d-refreshed", run))
+	tB, paB := seedCredentialWorkerProviderAccount(t, ctx, pool, fmt.Sprintf("rot288d-%d-stale", run))
+	now := time.Now().UTC()
+
+	// A:签发 200 天前,但 last_refresh_at=1 小时前(最近刚刷过)→ 按有效刷新时间应【不超期】。
+	refreshedID := insertCredentialWithCreatedAt(t, ctx, pool, tA, paA, "refreshed", now.Add(-200*24*time.Hour))
+	if _, err := pool.Exec(ctx, `UPDATE account_credentials SET last_refresh_at = $1 WHERE id = $2`,
+		now.Add(-1*time.Hour), refreshedID); err != nil {
+		t.Fatalf("set last_refresh_at: %v", err)
+	}
+	// B:签发 200 天前,last_refresh_at=NULL(从没刷过)→ COALESCE 回退按 created_at,应【超期】。
+	staleID := insertCredentialWithCreatedAt(t, ctx, pool, tB, paB, "stale", now.Add(-200*24*time.Hour))
+
+	store := NewPostgresRotationStore(pool)
+	cutoff := now.Add(-90 * 24 * time.Hour)
+	due, err := store.DueForRotation(ctx, cutoff, 100)
+	if err != nil {
+		t.Fatalf("DueForRotation: %v", err)
+	}
+	seen := map[int64]bool{}
+	for _, c := range due {
+		seen[c.CredentialID] = true
+	}
+	if seen[refreshedID] {
+		t.Fatalf("1 小时前刚刷新过的凭据 %d 绝不能判为超期(否则默认开启后每 tick 强刷=刷新风暴锤上游)", refreshedID)
+	}
+	if !seen[staleID] {
+		t.Fatalf("从没刷新过(last_refresh_at NULL)、签发 200 天的凭据 %d 必须按 created_at 回退判为超期", staleID)
+	}
+}
