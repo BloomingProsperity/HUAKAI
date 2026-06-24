@@ -379,17 +379,27 @@ func (m *identityHookCapturingDispatcher) DispatchHCSF(ctx context.Context, requ
 }
 
 // identityWiredDeps 在 clientAdapterDeps 基础上把池账号补上 ExternalAccountID,
-// 让 R7 开关开后改写非空。
+// 让 R7 开关开后改写非空。协议族用 anthropic_messages —— R7 身份改写仅对 Anthropic
+// 形 body 合法(协议族门控,见 TestIdentityRewrite_协议族门控_非Anthropic不改写),
+// 故验证 HCSF 接线点真触发改写必须走 Anthropic 族。
 func identityWiredDeps(t *testing.T, externalAccountID string) ChatHandlerDeps {
 	t.Helper()
 	d := clientAdapterDeps(t)
+	// 覆盖 stub registry 为 Anthropic 族(clientAdapterDeps 默认 openai_chat)。
+	d.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias:      "claude-3-5-sonnet",
+		CanonicalModelID: "anthropic/claude-3-5-sonnet",
+		ProviderModelID:  "claude-3-5-sonnet",
+		ProtocolFamily:   "anthropic_messages",
+		PoolCandidates:   []int64{42},
+	}}
 	vault := provider.NewStaticVault()
 	if err := vault.Set(1, provider.Credential{
 		Type:  provider.CredentialTypeAPIKey,
 		Value: "sk-test",
 	}, provider.AccountInfo{
 		AccountID:           1,
-		Platform:            "openai",
+		Platform:            "anthropic",
 		AccountType:         "apikey",
 		AccountCredentialID: 9001,
 		CredentialVersion:   1,

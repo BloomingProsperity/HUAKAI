@@ -124,25 +124,24 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 	}
 }
 
-// identityRewrite 对 dispatch 专用 body 拷贝施加 R7 身份改写(默认关 +
-// fail-open)。两条非流式 dispatch 路径共用本方法。external account id 取自
-// 账号解析后填入的 ex.accInfo.ExternalAccountID(来源:credentialstore 凭据行的
-// external_account_id 列,迁移 0141,经 provider vault 投影进 AccountInfo)——
-// 非空时 R7 改写把它写进 metadata.user_id 的 account 组件;为空时 fail-open
-// 不改写(镜像 sub2api account_uuid=="" 跳过)。
-//
-// 安全姿态:运维开关 HUAKAI_MIMICRY_IDENTITY_REWRITE 默认仍关(operator opt-in);
-// operator 显式设 switch=true + HUAKAI_MIMICRY_IDENTITY_SECRET 后,带
-// external account id 的账号请求才真改写。**翻全局默认(默认开)是 Owner-gated
-// 二阶段,不在本切片。**
+// identityRewrite 对 dispatch 专用 body 施加 R7 身份改写(默认关 + fail-open),
+// 三条 dispatch 路径共用本方法。默认关/fail-open/external id 空跳过等语义全由
+// mimicryidentity 子包保证(详见该包文档)。翻全局默认是 Owner-gated 二阶段。
 func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
 	if ex == nil || ex.r == nil {
+		return dispatchBody
+	}
+	// 协议族门控:R7 改写写 metadata.user_id(Anthropic 专属语义),仅当上游族是
+	// anthropic_messages 时 dispatchBody 才是 Anthropic 形、注入才合法。其余族
+	// (OpenAI/Gemini/Bedrock)强注入会被上游拒(400/语义错配),故 fail-open 返回原 body。
+	if ex.resolved.ProtocolFamily != "anthropic_messages" {
 		return dispatchBody
 	}
 	return mimicryidentity.RewriteForDispatch(
 		dispatchBody,
 		ex.accInfo.AccountID,
-		ex.accInfo.ExternalAccountID, // 上游账号标识;空 → fail-open 不改写
+		ex.accInfo.ExternalAccountID, // 空 → fail-open 不改写
+		ex.clientSessionID,           // 参与 session 派生,避免同账号跨会话共用 upstream session
 		mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
 	)
 }

@@ -170,7 +170,7 @@ func TestC_开启且有身份_user_id被改写成派生值(t *testing.T) {
 	// 期望派生值:account 组件必须等于外部账号 id;device/session 等于确定性
 	// 派生函数的产出。新格式 → JSON。
 	wantDevice := deriveDeviceID(testServerSecret, accountID)
-	wantSession := deriveSessionUUID(testServerSecret, accountID)
+	wantSession := deriveSessionUUID(testServerSecret, accountID, "") // id.ClientSessionID 为空
 	wantUserID := gateway.FormatMetadataUserID(wantDevice, testExternalAccountUUID, wantSession, true)
 	if gotUserID != wantUserID {
 		t.Fatalf("改写后 user_id 与期望派生值不符\n得到: %s\n期望: %s", gotUserID, wantUserID)
@@ -193,6 +193,30 @@ func TestC_开启且有身份_user_id被改写成派生值(t *testing.T) {
 	}
 }
 
+// TestSession按客户端会话派生 修 R7 S2:此前 session 仅以 accountID 为 seed,落到同一
+// 池账号的所有请求(不同终端、不同对话)写给上游的 session_id 完全相同,上游观测成
+// "同 session 塞进互相矛盾的跨用户上下文"反触发会话级风控。修复后 clientSessionID
+// 纳入 seed:不同客户端会话派生不同 session_id,同(账号,会话)稳定。
+//
+// 变异证伪:把 deriveSessionUUID 的 seed 退回不含 clientSessionID(忽略入参)→
+// 两个不同客户端会话派生相同 → 第一段断言变红。
+func TestSession按客户端会话派生(t *testing.T) {
+	const acct int64 = 42
+	sA := deriveSessionUUID(testServerSecret, acct, "client-session-aaa")
+	sB := deriveSessionUUID(testServerSecret, acct, "client-session-bbb")
+	if sA == sB {
+		t.Fatalf("同账号不同客户端会话本应派生不同 session_id,却相同: %s", sA)
+	}
+	// 稳定性:同(账号, 客户端会话)重复派生同值(保上游会话亲和)。
+	if again := deriveSessionUUID(testServerSecret, acct, "client-session-aaa"); again != sA {
+		t.Fatalf("同(账号, 客户端会话)派生应稳定: %s != %s", again, sA)
+	}
+	// 空客户端会话退回账号级派生,仍是合法 UUID 形态(8-4-4-4-12 = 36 字符)。
+	if sEmpty := deriveSessionUUID(testServerSecret, acct, ""); len(sEmpty) != 36 {
+		t.Fatalf("空客户端会话应仍派生 UUID 形态(36 字符),实际 %d: %s", len(sEmpty), sEmpty)
+	}
+}
+
 // TestC2_派生确定性 验证:同 (serverSecret, accountID) 多次派生结果稳定;
 // 不同 accountID 派生不同(免存储、确定性、可复现)。
 //
@@ -208,8 +232,8 @@ func TestC2_派生确定性(t *testing.T) {
 	if d1 == dOther {
 		t.Fatalf("不同账号 device 派生本应不同,却相同: %s", d1)
 	}
-	s1 := deriveSessionUUID(testServerSecret, 42)
-	sOther := deriveSessionUUID(testServerSecret, 43)
+	s1 := deriveSessionUUID(testServerSecret, 42, "")
+	sOther := deriveSessionUUID(testServerSecret, 43, "")
 	if s1 == sOther {
 		t.Fatalf("不同账号 session 派生本应不同,却相同: %s", s1)
 	}
