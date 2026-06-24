@@ -1,7 +1,6 @@
 package mimicry
 
 import (
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -161,10 +160,13 @@ func TestClientHelloTemplate_ValidateStubVsReal(t *testing.T) {
 // MUTATION: mimicry 两条出站(sidecar/uTLS)漏 MaxIdleConnsPerHost → 红(DM-17)。
 func TestMimicryTransportsPoolTuning(t *testing.T) {
 	srt := NewSidecarRoundTripper(NewSidecarClient("/tmp/x.sock"), "p1")
-	tr, ok := srt.(*http.Transport)
+	// ②-2b 起 sidecar RT 是内嵌 *http.Transport 的 sidecarTransport wrapper(带 SidecarProfileID
+	// 标记供转发层短路 DB profile);池参数仍在内嵌 transport 上,从 wrapper 取出来验。
+	st, ok := srt.(*sidecarTransport)
 	if !ok {
-		t.Fatalf("sidecar RoundTripper 应是 *http.Transport, got %T", srt)
+		t.Fatalf("sidecar RoundTripper 应是 *sidecarTransport(内嵌 *http.Transport), got %T", srt)
 	}
+	tr := st.Transport
 	if tr.MaxIdleConnsPerHost != 64 || tr.MaxIdleConns != 256 {
 		t.Fatalf("sidecar pool: per-host=%d total=%d, want 64/256", tr.MaxIdleConnsPerHost, tr.MaxIdleConns)
 	}
