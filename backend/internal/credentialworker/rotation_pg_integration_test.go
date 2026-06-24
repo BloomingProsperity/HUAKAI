@@ -228,4 +228,29 @@ func TestPostgresRotationStore_RefreshRecoveryClosure(t *testing.T) {
 	if !foundOAuth {
 		t.Fatalf("recovered OAuth credential (pa=%d) must be picked up by the existing refresh flow", paOAuth)
 	}
+
+	// TOCTOU 直测(红线 1+4):即便候选在扫描后被并发 revoke/delete,直接对其调用
+	// MarkForRefreshRecovery 也必须是 no-op —— 绝不把已失效凭据拖回刷新流。
+	// Mutation 注入:删掉 MarkForRefreshRecovery SQL 里的 state='active'/deleted_at
+	// 守卫 → revoked/deleted 凭据的 refresh_before_at 被写非空 → 本断言 red。
+	revokedCand := RotationCandidate{TenantID: tRevoked, ProviderAccountID: paRevoked, CredentialID: revokedID,
+		Vendor: "anthropic", AuthMode: "claude_code"}
+	if err := store.MarkForRefreshRecovery(ctx, revokedCand, now); err != nil {
+		t.Fatalf("MarkForRefreshRecovery on revoked: %v", err)
+	}
+	if rb := credentialRefreshBefore(t, ctx, pool, revokedID); rb != nil {
+		t.Fatalf("revoked credential must stay untouched (refresh_before_at NULL), got %v", rb)
+	}
+	if got := credentialState(t, ctx, pool, revokedID); got != "revoked" {
+		t.Fatalf("revoked credential state must stay revoked, got %q", got)
+	}
+
+	deletedCand := RotationCandidate{TenantID: tDeleted, ProviderAccountID: paDeleted, CredentialID: deletedID,
+		Vendor: "anthropic", AuthMode: "claude_code"}
+	if err := store.MarkForRefreshRecovery(ctx, deletedCand, now); err != nil {
+		t.Fatalf("MarkForRefreshRecovery on deleted: %v", err)
+	}
+	if rb := credentialRefreshBefore(t, ctx, pool, deletedID); rb != nil {
+		t.Fatalf("soft-deleted credential must stay untouched (refresh_before_at NULL), got %v", rb)
+	}
 }
