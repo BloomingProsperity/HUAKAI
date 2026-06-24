@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
 import { createUser, listUsers, setUserStatus, unlockUser } from './api'
@@ -124,7 +125,9 @@ export function UsersPage() {
                   <tr key={u.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
                     <td style={td}>
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{u.email}</span>
+                        <Link to={`/users/${u.id}`} style={{ fontWeight: 600, color: 'var(--hk-primary-700)', textDecoration: 'none' }}>
+                          {u.email}
+                        </Link>
                         {u.display_name && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{u.display_name}</span>}
                       </div>
                     </td>
