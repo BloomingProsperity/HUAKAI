@@ -1130,10 +1130,12 @@ func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) 
 	if len(got.PoolMetadata) != 3 {
 		t.Fatalf("PoolMetadata len=%d want 3", len(got.PoolMetadata))
 	}
+	// 路由加权激活闭环:routerPoolMetadataFromRegistry 现透传 binding.SelectionMode,
+	// 故期望值带上各 binding 的 selection_mode(此处三条均为 strict_priority)。
 	want := []router.PoolCandidateMeta{
-		{PoolGroupID: 701, ProviderModelID: "pool-a-upstream"},
-		{PoolGroupID: 702, ProviderModelID: "pool-b-upstream"},
-		{PoolGroupID: 703, ProviderModelID: "default-upstream"},
+		{PoolGroupID: 701, ProviderModelID: "pool-a-upstream", SelectionMode: "strict_priority"},
+		{PoolGroupID: 702, ProviderModelID: "pool-b-upstream", SelectionMode: "strict_priority"},
+		{PoolGroupID: 703, ProviderModelID: "default-upstream", SelectionMode: "strict_priority"},
 	}
 	for i := range want {
 		if got.PoolMetadata[i] != want[i] {

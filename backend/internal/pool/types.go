@@ -26,6 +26,15 @@ type RoutingPolicySource = router.RoutingPolicySource
 type StickyStore = router.StickyStore
 type ClaimGate = router.ClaimGate
 
+// SelectionMode 与其常量 re-export,供 cmd/gateway 装配生产 RoutingPolicySource 时
+// 按 binding selection_mode 返回对应策略,无需直引 pool/router 内部包。
+type SelectionMode = router.SelectionMode
+
+const (
+	SelectionModeStrictPriority   = router.SelectionModeStrictPriority
+	SelectionModePriorityWeighted = router.SelectionModePriorityWeighted
+)
+
 type GateFailureReason = router.GateFailureReason
 
 const (
