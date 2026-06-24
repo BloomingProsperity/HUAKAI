@@ -169,7 +169,20 @@ func (v *PostgresCredentialVault) resolveFromStore(
 		AccountType:         rec.AuthMode,
 		AccountCredentialID: rec.ID,
 		CredentialVersion:   int(rec.CredentialVersion),
+		// 把凭据行上的上游账号标识(迁移 0141 列)投影进 AccountInfo,供 R7 身份
+		// 改写把它写进 metadata.user_id 的 account 组件。nil(未提取到)→ 空串 →
+		// 下游 fail-open 不改写,与 sub2api account_uuid=="" 跳过同义。
+		ExternalAccountID: derefString(rec.ExternalAccountID),
 	}, true, nil
+}
+
+// derefString 解引用 *string;nil 返回空串。用于把可空的上游账号标识列投影成
+// AccountInfo 的非指针字段(空串语义 = 未提取到 = 下游 fail-open)。
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func (v *PostgresCredentialVault) loadProviderAccountExtra(ctx context.Context, tenantID, accountID int64) (map[string]string, error) {
