@@ -41,6 +41,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/orphanreconcilehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
@@ -891,6 +892,13 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Get("/admin/v1/quota-policies/{id}", adminquotahttp.NewGetHandler(quotaPolicyDeps))
 	r.Put("/admin/v1/quota-policies/{id}", adminquotahttp.NewUpdateHandler(quotaPolicyDeps))
 	r.Delete("/admin/v1/quota-policies/{id}", adminquotahttp.NewDeleteHandler(quotaPolicyDeps))
+	// 孤儿对账闭环 admin 面:只读列表(可视化) + 显式手动对账动作。复用既有 admin 鉴权
+	// (d.adminAuth)。追扣走既有 billing settle、Manual-First、幂等防双扣(详见 orphanreconcilehttp)。
+	if d.mediaTaskStore != nil {
+		orphanDeps := orphanreconcilehttp.Deps{Auth: d.adminAuth, Store: d.mediaTaskStore}
+		r.Get("/admin/v1/media-task-orphans", orphanreconcilehttp.NewListHandler(orphanDeps))
+		r.Post("/admin/v1/media-task-orphans/{id}/reconcile", orphanreconcilehttp.NewReconcileHandler(orphanDeps))
+	}
 	channelTestTemplateDeps := adminhttp.AdminChannelTestTemplateDeps{
 		Auth:  d.adminAuth,
 		Store: d.adminQueries,

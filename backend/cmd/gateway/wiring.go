@@ -158,6 +158,9 @@ type deps struct {
 	userNoticeService        *usernotice.Service
 	mediaTaskService         *mediatask.Service
 	mediaTaskWorker          *mediatask.Worker
+	// mediaTaskStore 既供 worker/service 用,也供孤儿对账 admin 面(orphanreconcilehttp)
+	// 复用其只读列表 + 单一动钱入口 ReconcileOrphan(Manual-First,复用既有 billing settle)。
+	mediaTaskStore *mediatask.PostgresStore
 	routeAdminService        *routeadmin.Service
 	panelAuthResolver        *panelauth.Resolver
 	invitationService        *communityinvitation.Service
@@ -1236,6 +1239,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		userNoticeService:     userNoticeService,
 		mediaTaskService:      mediaTaskService,
 		mediaTaskWorker:       mediaTaskWorker,
+		mediaTaskStore:        mediaTaskStore,
 		routeAdminService:     routeadmin.NewService(routeadmin.NewPostgresStore(pgPool), nil),
 		panelAuthResolver:     panelauth.NewResolver(panelauth.NewPostgresRoleStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
