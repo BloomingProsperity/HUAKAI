@@ -12,6 +12,8 @@
 // 凭据安全:错误信息只暴露 scheme://host:port,绝不打印 username/password;ProxySpec 的
 // password 字段只在握手字节里使用,不进任何日志/错误串。
 
+use std::time::Duration;
+
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -19,6 +21,20 @@ use tokio::{
 };
 
 use crate::proto::ProxySpec;
+
+// DEFAULT_PROXY_TIMEOUT_MS 是代理整连(拨号代理 + CONNECT/SOCKS5 握手全程)的默认超时上限。
+// env HUAKAI_SIDECAR_PROXY_TIMEOUT_MS 可覆盖(>0 的毫秒数)。
+const DEFAULT_PROXY_TIMEOUT_MS: u64 = 30_000;
+
+// proxy_timeout 读 env 决定代理整连超时;缺省/非法/<=0 一律退回默认 30s。
+fn proxy_timeout() -> Duration {
+    let ms = std::env::var("HUAKAI_SIDECAR_PROXY_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(DEFAULT_PROXY_TIMEOUT_MS);
+    Duration::from_millis(ms)
+}
 
 #[derive(Debug, Error)]
 pub enum ProxyTunnelError {
@@ -35,6 +51,33 @@ pub enum ProxyTunnelError {
 // TcpStream(已穿过代理,后续读写即与目标对话)。scheme 归一化后分派到 HTTP CONNECT 或
 // SOCKS5 握手。任何失败都 fail-closed 向上抛错,绝不直连目标。
 pub async fn connect_through_proxy(
+    proxy: &ProxySpec,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream, ProxyTunnelError> {
+    connect_through_proxy_with_timeout(proxy, target_host, target_port, proxy_timeout()).await
+}
+
+// connect_through_proxy_with_timeout 用显式超时整体包裹隧道建立(修 S2):拨号代理 +
+// CONNECT/SOCKS5 握手全程任一步挂死(恶意/慢/无响应代理),都被有界地变成 Rejected 错误
+// 向上抛,fail-closed(connect.rs 据此整连失败,绝不回退直连目标),不再永久 await 占住
+// sidecar 连接 + tokio 任务而被并发请求逐步耗尽。超时入参显式传入便于测试用短值。
+async fn connect_through_proxy_with_timeout(
+    proxy: &ProxySpec,
+    target_host: &str,
+    target_port: u16,
+    dur: Duration,
+) -> Result<TcpStream, ProxyTunnelError> {
+    match tokio::time::timeout(dur, connect_through_proxy_inner(proxy, target_host, target_port)).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(ProxyTunnelError::Rejected(format!(
+            "代理拨号/握手超时({}ms),fail-closed 绝不直连目标",
+            dur.as_millis()
+        ))),
+    }
+}
+
+async fn connect_through_proxy_inner(
     proxy: &ProxySpec,
     target_host: &str,
     target_port: u16,
@@ -635,6 +678,53 @@ mod tests {
         assert!(
             err.to_string().contains("rep=2"),
             "fail-closed 错误应携带 rep 码,实际 {err}"
+        );
+    }
+
+    // 抓的缺陷【S2 可用性】:代理拨号/握手全程无超时,挂死/恶意/无响应代理可令隧道建立
+    // 永久 await,逐步耗尽 sidecar 连接 + tokio 任务 = 网关级 DoS。修复后整体 timeout 把
+    // "代理静默挂死"也纳入有界 fail-closed。
+    // 自证:对一个"接受 TCP 后永不回 CONNECT 响应"的挂死代理,带 300ms 超时的隧道建立必须
+    // 在 5s 测试守护内返回 Rejected(超时),而非永久 await。
+    // 变异:把 connect_through_proxy_with_timeout 改成直接调 connect_through_proxy_inner
+    // (去掉 timeout 包裹)→ 挂死代理令 inner 永久 await → 5s 测试守护超时 → 下面断言变红。
+    #[tokio::test]
+    async fn proxy_hang_is_bounded_by_timeout_fail_closed() {
+        // 挂死代理:accept 后持有连接、永不写回任何字节(模拟接受 TCP 后不回 CONNECT 响应)。
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            drop(sock);
+        });
+
+        let spec = ProxySpec {
+            scheme: "http".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port,
+            username: None,
+            password: None,
+        };
+
+        // 生产超时取 300ms;外层 5s 测试守护把"未被生产超时拦住的永久挂死"暴露成测试超时。
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::connect_through_proxy_with_timeout(
+                &spec,
+                "api.anthropic.com",
+                443,
+                std::time::Duration::from_millis(300),
+            ),
+        )
+        .await;
+
+        let inner =
+            outcome.expect("代理挂死必须被 300ms 生产超时拦住,不得永久 await 触发 5s 测试守护");
+        let err = inner.expect_err("挂死代理隧道建立必须 fail-closed 返回 error,绝不返回可用流/直连");
+        assert!(
+            err.to_string().contains("超时"),
+            "fail-closed 错误应表明是超时,实际 {err}"
         );
     }
 }
