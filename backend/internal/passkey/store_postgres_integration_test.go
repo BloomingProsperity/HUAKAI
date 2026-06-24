@@ -157,6 +157,58 @@ func TestPGCredentialRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPGCredentialUsageCASRejectsRegression 守护 sign_count CAS:UpdateCredentialUsage
+// 只允许严格递增(或双 0)的写入,挡并发竞态下绕过克隆检测的非递增盲写。
+// 变异证伪:摘掉 UPDATE 的 `AND (sign_count < $3 OR (sign_count=0 AND $3=0))`,则
+// asserted=3 对 stored=5 会盲写成功(sign_count 被改成 3)→ 本测试转红。
+// 另一变异:摘掉 ErrNoRows 后的 credentialExists 区分,则不存在凭据也返回
+// ErrCloneDetected → 末段 NotFound 断言转红。
+func TestPGCredentialUsageCASRejectsRegression(t *testing.T) {
+	ctx := context.Background()
+	store, pool := passkeyPGStore(t, ctx)
+	f := seedPasskeyFixture(t, ctx, pool)
+	now := time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC)
+	credID := []byte("cred-" + uuid.NewString())
+	if _, err := store.SaveCredential(ctx, CredentialRecord{
+		TenantID: f.tenantID, UserID: f.userA, CredentialID: credID, PublicKey: []byte("pk-cas"),
+		SignCount: 5, AttestationType: "none", Transports: []string{"internal"}, Name: "k", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveCredential: %v", err)
+	}
+
+	// 回退(asserted=3 < stored=5):CAS 失败,凭据存在 → ErrCloneDetected。
+	if _, err := store.UpdateCredentialUsage(ctx, f.tenantID, credID, 3, false, now.Add(time.Hour)); !errors.Is(err, ErrCloneDetected) {
+		t.Fatalf("回退计数 err=%v want ErrCloneDetected", err)
+	}
+	// 关键不变量:盲写没发生,库内 sign_count 仍是 5。
+	if got, err := store.GetCredentialByCredentialID(ctx, f.tenantID, credID); err != nil || got.SignCount != 5 {
+		t.Fatalf("CAS 失败后 sign_count 应仍为 5,got=%d err=%v", got.SignCount, err)
+	}
+	// 重放(asserted=5 == stored=5,非双 0):同样 CAS 失败 → ErrCloneDetected。
+	if _, err := store.UpdateCredentialUsage(ctx, f.tenantID, credID, 5, false, now.Add(time.Hour)); !errors.Is(err, ErrCloneDetected) {
+		t.Fatalf("等值重放 err=%v want ErrCloneDetected", err)
+	}
+	// 正常递增(asserted=10 > 5):成功。
+	if updated, err := store.UpdateCredentialUsage(ctx, f.tenantID, credID, 10, false, now.Add(2*time.Hour)); err != nil || updated.SignCount != 10 {
+		t.Fatalf("递增写应成功,got=%d err=%v", updated.SignCount, err)
+	}
+	// 不存在的凭据:必须区分成 NotFound,不能误报 CloneDetected。
+	if _, err := store.UpdateCredentialUsage(ctx, f.tenantID, []byte("nope-"+uuid.NewString()), 1, false, now); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("不存在凭据 err=%v want ErrCredentialNotFound", err)
+	}
+	// 0 计数设备(不支持计数):stored=0 + asserted=0 允许写。
+	zeroID := []byte("cred0-" + uuid.NewString())
+	if _, err := store.SaveCredential(ctx, CredentialRecord{
+		TenantID: f.tenantID, UserID: f.userB, CredentialID: zeroID, PublicKey: []byte("pk0"),
+		SignCount: 0, AttestationType: "none", Transports: []string{"internal"}, Name: "k0", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveCredential 0计数: %v", err)
+	}
+	if _, err := store.UpdateCredentialUsage(ctx, f.tenantID, zeroID, 0, false, now.Add(time.Hour)); err != nil {
+		t.Fatalf("0计数设备 0→0 应允许,err=%v", err)
+	}
+}
+
 func TestPGCredentialTenantIsolation(t *testing.T) {
 	ctx := context.Background()
 	store, pool := passkeyPGStore(t, ctx)

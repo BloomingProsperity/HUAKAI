@@ -128,19 +128,46 @@ func (s *PostgresStore) UpdateCredentialUsage(ctx context.Context, tenantID int6
 	if s == nil || s.db == nil {
 		return CredentialRecord{}, ErrStoreNotConfigured
 	}
+	// CAS 守卫:把 service 层 signCountRegressed 的判定原子化到这条 UPDATE 上,
+	// 防并发 ceremony 竞态绕过克隆检测——两个并发登录都读到旧 sign_count、都过了
+	// 应用层 check,若无守卫则后写的会盲覆盖。守卫 `sign_count < $3 OR (sign_count=0
+	// AND $3=0)` 与 signCountRegressed 完全对偶:仅当新计数严格大于库内值(或双方
+	// 均为 0 的"不支持计数"设备)才写,克隆/重放的非递增计数 0 行命中。
 	record, err := scanCredential(s.db.QueryRow(ctx, `
 UPDATE passkey_credentials
 SET sign_count = $3,
-    clone_warning = $4,
+    clone_warning = clone_warning OR $4,
     last_used_at = $5
 WHERE tenant_id = $1 AND credential_id = $2
+  AND (sign_count < $3 OR (sign_count = 0 AND $3 = 0))
 RETURNING id, tenant_id, user_id, credential_id, public_key, sign_count, aaguid,
           attestation_type, transports, clone_warning, name, created_at, last_used_at
 `, tenantID, credentialID, int64(signCount), cloneWarning, now.UTC()))
 	if errors.Is(err, pgx.ErrNoRows) {
+		// 0 行有两种成因:凭据不存在,或 CAS 失败(并发竞态下 sign_count 已被另一
+		// 请求推进=克隆/重放)。用一次存在性查询区分,避免把克隆误报成"凭据不存在"。
+		exists, exErr := s.credentialExists(ctx, tenantID, credentialID)
+		if exErr != nil {
+			return CredentialRecord{}, exErr
+		}
+		if exists {
+			return CredentialRecord{}, ErrCloneDetected
+		}
 		return CredentialRecord{}, ErrCredentialNotFound
 	}
 	return record, err
+}
+
+// credentialExists 报告 (tenant_id, credential_id) 行是否存在,用于 CAS 失败后
+// 区分"克隆/重放"与"凭据不存在"。
+func (s *PostgresStore) credentialExists(ctx context.Context, tenantID int64, credentialID []byte) (bool, error) {
+	var exists bool
+	if err := s.db.QueryRow(ctx, `
+SELECT EXISTS(SELECT 1 FROM passkey_credentials WHERE tenant_id = $1 AND credential_id = $2)
+`, tenantID, credentialID).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (s *PostgresStore) FlagCredentialCloneWarning(ctx context.Context, tenantID int64, credentialID []byte, _ time.Time) error {
