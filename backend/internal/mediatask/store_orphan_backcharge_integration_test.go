@@ -9,7 +9,111 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 )
+
+// TestReconcileOrphanBackChargeNoOpWhenHoldReleased 守 S2:hold 已被 Release 后追扣静默
+// 失效却把孤儿标 reconciled、漏扣被永久掩盖。
+//
+// 场景(孤儿对账要追回的真实漏扣):提交任务预扣 1.23(held)→ 模拟 ExpireTask→abortTask→
+// billing.Release 把预扣退还客户(held→0, balance 复原, hold.State=released)→ 但上游实际
+// 跑完扣了平台账号的钱 → admin 带 back_charge=true 对账。此时 billing.Capture 因 hold 非
+// "held" 是 no-op、0 扣。
+//
+// 修复后正确行为:不假报已扣、不推进 reconciled 终态,孤儿保持 pending(可重试),
+// outcome=hold_not_held。
+//
+// 变异举证(去掉 captureOrphanHold 里的 HoldCapturable 先验守卫 → 退回直接 Capture+无条件
+// 返回 estimated_cents):captured_cents 变 123、advanced 变 true、孤儿被标 reconciled →
+// 下面四段断言(advanced=false / captured=0 / outcome / 仍 pending)全部 RED。
+func TestReconcileOrphanBackChargeNoOpWhenHoldReleased(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "orphan-holdreleased")
+	svc := newIntegrationService(pool)
+	store := svc.store.(*PostgresStore)
+
+	// 1) 提交任务:预扣 1.23(held)。
+	task, err := svc.Submit(ctx, seed.tenantID, seed.userID, submitInput("req-orphan-released"))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// 2) 模拟 ExpireTask→abortTask→billing.Release:预扣退还客户,hold.State=released。
+	var holdRef string
+	if err := pool.QueryRow(ctx, `SELECT hold_ref FROM media_tasks WHERE id=$1`, task.ID).Scan(&holdRef); err != nil {
+		t.Fatalf("read hold_ref: %v", err)
+	}
+	claimID, err := claimIDFromHoldRef(holdRef)
+	if err != nil {
+		t.Fatalf("claimIDFromHoldRef(%q): %v", holdRef, err)
+	}
+	releaseHoldInTx(t, ctx, pool, claimID)
+	if bal, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID); !bal.Equal(decimal.RequireFromString("10.00")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("释放后 balance/held=%s/%s want 10.00/0", bal, held)
+	}
+
+	// 3) 持久化孤儿线索。
+	if err := store.PersistOrphan(ctx, OrphanRecord{
+		TaskID: task.ID, TenantID: seed.tenantID, UserID: seed.userID, Provider: "http",
+		ProviderTaskID: "up-orphan-released", LeaseOwner: "it-released-owner", ObservedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PersistOrphan: %v", err)
+	}
+	orphanID := mustOrphanID(t, ctx, pool, task.ID, "up-orphan-released")
+
+	// 4) admin 带 back_charge=true 对账:hold 已 released → Capture no-op、0 扣。
+	res, advanced, err := store.ReconcileOrphan(ctx, orphanID, "reconciled", true, time.Now().UTC(), nil)
+	if err != nil {
+		t.Fatalf("ReconcileOrphan err=%v", err)
+	}
+
+	// 判别核心①:追扣未真发生,绝不推进 reconciled 终态。
+	if advanced {
+		t.Fatalf("hold 已 released、追扣未发生,绝不应推进 reconciled(advanced 应为 false)")
+	}
+	// ②:0 扣,不得假报已扣(否则漏扣被掩盖)。
+	if res.CapturedCents != 0 {
+		t.Fatalf("hold released 时 0 扣,captured_cents 应为 0,实际 %d(假报已扣=漏扣被静默掩盖)", res.CapturedCents)
+	}
+	// ③:outcome 明确告知为何 0 扣。
+	if res.BackChargeOutcome != "hold_not_held" {
+		t.Fatalf("outcome 应为 hold_not_held,实际 %q", res.BackChargeOutcome)
+	}
+	// ④:孤儿必须仍 pending(可重试),不得被标 reconciled 永久掩盖漏扣。
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT reconcile_status FROM media_task_orphans WHERE id=$1`, orphanID).Scan(&status); err != nil {
+		t.Fatalf("read orphan status: %v", err)
+	}
+	if status != "pending" {
+		t.Fatalf("追扣未发生时孤儿必须保持 pending(可重试),实际 %q", status)
+	}
+	// 余额本就没扣到,必须保持释放后状态。
+	if bal, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID); !bal.Equal(decimal.RequireFromString("10.00")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("追扣未发生时余额不应变 balance/held=%s/%s want 10.00/0", bal, held)
+	}
+}
+
+// releaseHoldInTx 在独立事务里对 claimID 的预扣 hold 调 billing.Release(模拟任务过期/中止
+// 退还客户),使 hold.State 变 released。
+func releaseHoldInTx(t *testing.T, ctx context.Context, pool interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, claimID int64) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := billing.Release(ctx, tx, claimID); err != nil {
+		t.Fatalf("billing.Release: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit release: %v", err)
+	}
+}
 
 // TestReconcileOrphanBackChargeIdempotent 是防双扣亏钱的判别测试(命门 C)。
 //

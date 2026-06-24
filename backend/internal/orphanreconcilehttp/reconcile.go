@@ -35,6 +35,8 @@ type reconcileResponse struct {
 	Advanced      bool   `json:"advanced"`
 	BackCharged   bool   `json:"back_charged"`
 	CapturedCents int64  `json:"captured_cents"`
+	// BackChargeOutcome 仅追扣请求时回显:captured=真扣到;其余值=未扣到(孤儿保持 pending)。
+	BackChargeOutcome string `json:"back_charge_outcome,omitempty"`
 }
 
 func newReconcileHandler(d Deps) http.HandlerFunc {
@@ -83,9 +85,20 @@ func newReconcileHandler(d Deps) http.HandlerFunc {
 			writeReconcileError(w, err)
 			return
 		}
+		// 追扣请求但未真正扣到钱(hold 已 released / 行归档 / 估算非正 / holdref 不可解析):
+		// 孤儿保持 pending,返回 409 + outcome 明确告知,绝不静默 200 让 admin 误以为已追回。
+		if req.BackCharge && !advanced && result.BackChargeOutcome != "" && result.BackChargeOutcome != "captured" {
+			writeJSON(w, http.StatusConflict, reconcileResponse{
+				OrphanID: orphanID, Status: "pending", Advanced: false,
+				BackCharged: result.BackCharged, CapturedCents: result.CapturedCents,
+				BackChargeOutcome: result.BackChargeOutcome,
+			})
+			return
+		}
 		writeJSON(w, http.StatusOK, reconcileResponse{
 			OrphanID: orphanID, Status: req.Status, Advanced: advanced,
 			BackCharged: result.BackCharged, CapturedCents: result.CapturedCents,
+			BackChargeOutcome: result.BackChargeOutcome,
 		})
 	}
 }
