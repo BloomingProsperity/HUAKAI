@@ -31,14 +31,23 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 		if result.ActualCents < 0 {
 			return fmt.Errorf("%w: actual_cents", ErrInvalidInput)
 		}
-		if result.ActualCents > locked.EstimatedCents {
-			return ErrActualExceedsEstimate
+		// 保守止血:上游真把任务跑成功、但实际成本超过预扣的预估时,不再回滚整事务
+		// (旧逻辑返回 ErrActualExceedsEstimate),因为那会让成功任务卡死在 in_progress
+		// 反复轮询,直到 TaskTimeout→ExpireTask 把【全额】预扣释放、平台白吃真实上游成本。
+		// 改为把【结算金额】clamp 到预扣的预估上限:成功任务正常推进到终态 succeeded,
+		// 按预估结算(收费不超过预扣,不超收客户),平台只吸收"超出预估"这部分有界差额。
+		// 注:此处仅 clamp 计费金额;media_tasks.actual_cents 仍记录真实上游成本(见
+		// updateTaskSuccess),供运维核对平台吸收了多少。超收客户 / 转 failure 的更激进
+		// 策略属 money-policy,留待 Owner 拍板,本处只做保守版。
+		billedCents := result.ActualCents
+		if billedCents > locked.EstimatedCents {
+			billedCents = locked.EstimatedCents
 		}
 		claimID, err := claimIDFromHoldRef(locked.HoldRef)
 		if err != nil {
 			return err
 		}
-		actual := centsToUSD(result.ActualCents)
+		actual := centsToUSD(billedCents)
 		qtx := dbbilling.New(tx)
 		if rows, err := qtx.UpdateClaimCommitted(ctx, dbbilling.UpdateClaimCommittedParams{
 			ID: claimID, ActualCost: decimal.NullDecimal{Decimal: actual, Valid: true}, TenantID: locked.TenantID,

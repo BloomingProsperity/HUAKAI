@@ -97,6 +97,57 @@ func TestMediaTaskSuccessSettlesActual(t *testing.T) {
 	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("0.77"))
 }
 
+// TestMediaTaskSuccessOverEstimateClampsToEstimate 锁住"成功任务的实际成本超过预估"
+// 这条亏钱缺陷的修复:上游真把任务跑成功、但 ActualCents(200) 高于预扣的
+// EstimatedCents(123) 时,必须把成功任务推进到终态 succeeded,并按【预扣的预估】
+// 结算(收费 clamp 到预估上限,平台吸收有界超出部分),而不是回滚整事务、把成功
+// 任务卡死在 in_progress、最终被 TaskTimeout→ExpireTask 全额释放预扣致平台白吃上游成本。
+//
+// 变异证:把 store_money.go 的处理改回旧逻辑
+//
+//	if result.ActualCents > locked.EstimatedCents { return ErrActualExceedsEstimate }
+//
+// (即回滚而非 clamp 推进终态),本测试必然变红 —— CompleteSuccess 会返回
+// ErrActualExceedsEstimate,ok=false,任务停在 in_progress、预扣 1.23 不释放,
+// 下面对 balance=8.77 / held=0 / status=succeeded / claim=committed@1.23 的断言全部失败。
+func TestMediaTaskSuccessOverEstimateClampsToEstimate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "over-estimate")
+	svc := newIntegrationService(pool)
+	store := svc.store.(*PostgresStore)
+
+	task := submitAndMarkSubmitted(t, ctx, svc, store, seed, "req-over-estimate")
+	leased := leaseTaskForTest(t, ctx, pool, task.ID, "worker-over")
+	// ActualCents=200 严格大于预扣的 EstimatedCents=123,触发"超估价"分支。
+	ok, err := store.CompleteSuccess(ctx, leased, "worker-over", PollResult{Status: StatusSucceeded, Progress: 100, ActualCents: 200, Result: []byte(`{"ok":true}`)}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CompleteSuccess(超估价): %v", err)
+	}
+	if !ok {
+		t.Fatal("CompleteSuccess(超估价) ok=false,任务未走到终态")
+	}
+
+	// 结算 clamp 到预估:扣 1.23(而非 2.00,不超收客户),held 清零。
+	balance, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
+	if !balance.Equal(decimal.RequireFromString("8.77")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("balance/held=%s/%s want 8.77/0(按预估 1.23 结算且不残留预扣)", balance, held)
+	}
+	// 终态必须是成功(而非卡死或被超时释放成 expired)。
+	assertTaskStatus(t, ctx, pool, task.ID, StatusSucceeded)
+	// claim 入账成本 clamp 到预估 0.77... 即 1.23;actual_cents 仍按真实 200 落媒体任务行做对账留痕。
+	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("1.23"))
+	// 媒体任务行的 actual_cents 保留真实上游成本(200),供运维核对平台吸收了多少。
+	var actualCents int64
+	if err := pool.QueryRow(ctx, `SELECT actual_cents FROM media_tasks WHERE id=$1`, task.ID).Scan(&actualCents); err != nil {
+		t.Fatalf("read media_tasks.actual_cents: %v", err)
+	}
+	if actualCents != 200 {
+		t.Fatalf("media_tasks.actual_cents=%d want 200(保留真实上游成本做对账)", actualCents)
+	}
+}
+
 func TestMediaTaskFailureRefundsFull(t *testing.T) {
 	// MUTATION: use Capture(0) instead of Release on failure; claim may commit and failure audit is wrong.
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
