@@ -6,6 +6,7 @@ import { Placeholder } from '../pages/Placeholder'
 import { AccountsPage } from '../features/accounts/AccountsPage'
 import { AccountDetailPage } from '../features/accounts/AccountDetailPage'
 import { KeysPage } from '../features/keys/KeysPage'
+import { UsagePage } from '../features/usage/UsagePage'
 import { PIPELINE_NAV } from './nav'
 
 /*
@@ -16,6 +17,7 @@ import { PIPELINE_NAV } from './nav'
 const BUILT_PAGES: Record<string, ReactElement> = {
   '/accounts': <AccountsPage />,
   '/keys': <KeysPage />,
+  '/usage': <UsagePage />,
 }
 
 const domainRoutes = PIPELINE_NAV.flatMap((section) =>
