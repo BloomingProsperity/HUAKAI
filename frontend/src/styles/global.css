@@ -1,0 +1,44 @@
+@import "./tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--hk-font-sans);
+  color: var(--hk-ink-900);
+  background: var(--hk-canvas);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--hk-primary-600);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--hk-primary-700);
+}
+
+code,
+.hk-mono {
+  font-family: var(--hk-font-mono);
+}
+
+h1,
+h2,
+h3 {
+  color: var(--hk-ink-900);
+  margin: 0;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
