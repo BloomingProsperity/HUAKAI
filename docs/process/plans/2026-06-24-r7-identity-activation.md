@@ -2,12 +2,44 @@
 
 ## 0. 一句话
 
-PR#115 已把 `mimicryidentity` 子包接进两条 dispatch 路径,但接线点传给它的 `ExternalAccountID`
+PR#115 已把 `mimicryidentity` 子包接进 dispatch 路径,但接线点传给它的 `ExternalAccountID`
 **恒为空**(`chat_completions_stream.go:139` 硬编 `""`),致**双重 inert**:即便 operator 开
 `HUAKAI_MIMICRY_IDENTITY_REWRITE=true` + 设 `HUAKAI_MIMICRY_IDENTITY_SECRET`,也因 external account
 id 为空恒 fail-open 不改写。本切片把 credentialstore 里已存的上游账号 UUID(`account_credentials.
 external_account_id`,迁移 0141 列)穿到 `provider.AccountInfo`,再喂进 dispatch 调用点,**让 operator
 显式启用后 metadata.user_id 真被改写成含该上游 UUID 的派生身份**。
+
+## 0.1 追加(2026-06-24 同切片):补全 HCSF canonical 路覆盖 = 三路径闭环
+
+**对抗审查抓出的 S2(已亲核)**:上面接线只覆盖了【流式路】(`chat_completions_stream.go:171`)与
+【legacy raw 缓冲路】(`chat_completions_handler.go:740`,仅 HCSF 关时走)。但 `hcsfDispatchEnabled()`
+**默认开**(`HUAKAI_DISPATCH_HCSF!="0"`),非流式请求默认走 `dispatchCanonicalBuffered`
+(`chat_completions_dispatch.go:727`)→ `DispatchHCSF`。该路上游真实 body 由
+`MarshalToProviderRequest` 从 canonical 结构【重新 marshal】出来:亲核证实
+`RequestToCanonical`(anthropic,`anthropic_messages_request.go:329-330`)把客户端 `metadata`
+**整段丢弃**(仅记 `d1_metadata_not_yet_implemented` loss),`marshalAnthropicMessages`
+(`hcsf_graph_marshal.go:108-199`)又**根本不产 metadata 字段**,`mergeHCSFRawPassthroughFields`
+(`upstream_dispatcher_hcsf.go:373`)只对 `openai_chat` ingress 合并 raw 字段、对 anthropic 不合并。
+
+**结论**:在 dispatch 入口对 `ex.body` 做 identityRewrite【流不过去】(canonical 往返把 metadata 丢了)。
+故本切片把改写【施加在 marshal 出的最终上游 body 上】:`HCSFDispatchInput` 新增
+`IdentityRewrite func([]byte) []byte` 钩子(实参 = `ex.identityRewrite`,与流式/raw 同一来源,
+保改写逻辑单一来源),`buildHCSFProviderRequest` 在 native-raw 子路与 canonical-marshal 子路的
+`in.InboundBody = body` 之前各施加一次 `applyIdentityRewrite(body, identityRewrite)`。anthropic 的
+marshal 产物无 metadata,`RewriteMetadataUserID` 在 `MetadataInjectRewrite` 模式下走 fallback
+**注入**(reason `injected`),补出含池账号身份的 `metadata.user_id`。
+
+**至此三路径全覆盖:流式 + legacy raw + HCSF canonical**(此前文档"两路径"表述不准,已更正)。
+
+安全:钩子默认关时 = `ex.identityRewrite` 的 no-op(返回入参拷贝)→ HCSF 路上游 body **字节等价**
+(anthropic 仍无 metadata),与不接线时一致;external id / secret 空 → fail-open 不注入。CCH 缓存键
+在 dispatch 前用 `ex.body` 算,本钩子只作用于 dispatcher 内已 marshal 的【dispatch 专用 body】,
+**不碰 ex.body / 不污染缓存键**。未翻全局默认,仍 operator opt-in。
+
+本追加动的生产文件:`backend/internal/gateway/upstream_dispatcher_hcsf.go`(新增钩子字段 +
+`applyIdentityRewrite` + 两子路施加点 + 导出 `HCSFDispatchInputFromContext` 供接线断言)、
+`backend/internal/gatewayhttp/chat_completions_dispatch.go`(`HCSFDispatchInput` 加
+`IdentityRewrite: ex.identityRewrite`)。
 
 ## 1. 范围(只动这 4 个生产文件 + 测试)
 
@@ -107,6 +139,28 @@ operator 设 `HUAKAI_MIMICRY_IDENTITY_REWRITE=true` + `HUAKAI_MIMICRY_IDENTITY_S
   `AccountInfo.ExternalAccountID == credential 的值`。变异:穿线丢字段 → 红。fake 必须能让"丢字段"变红。
 - 读 DB 的测试走 `integration_pg`(本地 huakai 库,0141 已 apply);无则 fake store 验穿线。
   读运行时 env/文件的测试 `-count=1`。
+
+## 7.1 HCSF 三路覆盖追加测试(同切片,变异证伪)
+
+落在 `backend/internal/gateway/upstream_dispatcher_hcsf_identity_test.go`(gateway 包,直驱
+`buildHCSFProviderRequest` = marshal + 钩子真实接线点,`stubAdapter.lastInput.InboundBody` 即
+发往上游的真实 body)与 `backend/internal/gatewayhttp/`(端到端驱 `dispatchCanonicalBuffered`):
+
+- **HCSF-A 覆盖点亮**:anthropic canonical 路 + 改写钩子 → 上游 body 出现含池账号 UUID 的
+  `metadata.user_id`。**变异**:删 canonical-marshal 子路的 `applyIdentityRewrite` 调用(重现 S2 漏覆盖)
+  → 上游 body 退回无 metadata 的 marshal 原貌 → 红(已实测 RED)。
+- **HCSF-B 默认关零变更**:钩子 nil(= R7 默认关时 `ex.identityRewrite` 的 no-op)→ 上游 body 与
+  不接钩子字节等价、绝无 metadata 字段。**变异**:默认关也强行注入 metadata → 红(已实测 RED)。
+- **HCSF-C fail-open**:钩子拿空 external id → 不注入 metadata、与默认关等价。**变异**:空也强行
+  marshal 注入 → 红(已实测 RED)。
+- **HCSF 接线证据(端到端)**:`TestChatCompletions_HCSF路真接R7改写钩子`——R7 开 + 账号带
+  `ExternalAccountID` 时,经真实 `dispatchCanonicalBuffered` 后,自定义 dispatcher 从 ctx 取回的
+  `HCSFDispatchInput.IdentityRewrite` 非 nil,且对无 metadata 的 anthropic body 施加后 account 组件
+  == 上游 id。**变异**:删 `chat_completions_dispatch.go` 的 `IdentityRewrite: ex.identityRewrite`
+  接线行 → 钩子 nil → 红(已实测 RED,精确锚住 S2 漏接线)。
+- **三路一致(gatewayhttp)**:`TestIdentityRewrite_HCSF三路一致_marshal后body被注入身份`——同一个
+  `ex.identityRewrite` 闭环对【无 metadata 的 HCSF marshal 产物】走 inject、对【自带 metadata 的客户端
+  body(流式/raw 形态)】走 rewrite,两形态最终 account 组件都落到同一上游 id。
 
 ## 8. 工程流程门
 

@@ -139,3 +139,48 @@ func TestIdentityRewrite_默认关_零变更(t *testing.T) {
 		t.Fatalf("默认关时必须字节等价\n原: %s\n出: %s", body, out)
 	}
 }
+
+// anthropicMarshalledBodyNoMetadata 模拟 HCSF canonical 路 MarshalToProviderRequest
+// 对 anthropic 产出的【无 metadata 字段】上游 body(marshalAnthropicMessages 只产
+// model/messages/stream/system,绝不带 metadata)。这是 R7 第三路改写钩子的真实
+// 作用对象 —— 与流式/legacy raw 路的"客户端原 body 自带 metadata"形态不同。
+func anthropicMarshalledBodyNoMetadata() []byte {
+	return []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stream":false}`)
+}
+
+// TestIdentityRewrite_HCSF三路一致_marshal后body被注入身份 验证【C:三路一致】的
+// 关键一环 —— 同一个 ex.identityRewrite 闭环(HCSF 接线点 dispatch.go 传给
+// HCSFDispatchInput.IdentityRewrite 的就是它),施加在 HCSF canonical marshal 产物
+// (无 metadata 的 anthropic body)上时,能把池账号身份【注入】成 metadata.user_id,
+// 与流式/raw 路对自带 metadata 的客户端 body 改写后落到同一含上游 id 的身份。
+//
+// 这坐实:HCSF 路虽然在入口改 ex.body 流不过去(canonical 往返丢 metadata),但
+// 把【同一闭环】挪到 marshal 后施加即闭环 —— 三路最终都让上游看到含池账号 id 的
+// metadata.user_id(account 组件 == ExternalAccountID)。
+//
+// 变异证伪:把 RewriteInboundBody 的 MetadataInjectRewrite 在无 user_id 时的
+// fallback 注入路径删掉(无 metadata 就不注入)→ HCSF 路 marshal 后 body 仍无
+// metadata → 下面"已注入 + account 组件==上游 id"断言变红。
+func TestIdentityRewrite_HCSF三路一致_marshal后body被注入身份(t *testing.T) {
+	const externalID = "acc-xyz"
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "true")
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_SECRET", "fixed-secret-for-test")
+
+	ex := newIdentityRewriteExec(externalID)
+
+	// 1) HCSF 路:无 metadata 的 marshal 产物 → 闭环注入 metadata.user_id。
+	hcsfOut := ex.identityRewrite(anthropicMarshalledBodyNoMetadata())
+	hcsfUUID := extractMetadataAccountUUID(t, hcsfOut)
+	if hcsfUUID != externalID {
+		t.Fatalf("HCSF 路 marshal 后 body 应被注入含上游 id 的 metadata.user_id,account 组件实际 %q", hcsfUUID)
+	}
+
+	// 2) 流式/raw 路:自带 metadata 的客户端 body → 改写同一 account 组件。
+	rawOut := ex.identityRewrite(identityRewriteFixtureBody(t))
+	rawUUID := extractMetadataAccountUUID(t, rawOut)
+
+	// 三路一致:两种入参形态最终 account 组件都落到同一上游 id。
+	if rawUUID != externalID || hcsfUUID != rawUUID {
+		t.Fatalf("三路应一致改写到同一上游 id %q:HCSF=%q raw=%q", externalID, hcsfUUID, rawUUID)
+	}
+}

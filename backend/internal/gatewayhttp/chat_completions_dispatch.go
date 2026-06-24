@@ -773,6 +773,8 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		RawBody:           ex.upstreamInboundBody(ex.body),
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),
+		// R7 三路闭环第三路:HCSF canonical 非流式(默认走)。改写施加在 dispatcher marshal 出的最终上游 body 上(anthropic 往返丢 metadata,入口改 ex.body 流不过去);默认关 no-op 字节等价、不污染缓存键。
+		IdentityRewrite: ex.identityRewrite,
 	})
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
 	// DispatchHCSF 内 MarshalToProviderRequest 会原地往 canonicalReq.CapabilityGraph.ProtocolLoss
