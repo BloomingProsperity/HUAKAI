@@ -50,7 +50,7 @@ export const PIPELINE_NAV: NavSection[] = [
     label: '用量与计费',
     hint: '余额、充值、订单、兑换、用量统计',
     items: [
-      { path: '/usage', label: '用量与日志', built: false },
+      { path: '/usage', label: '用量与日志', built: true },
       { path: '/wallet', label: '钱包与充值', built: false },
     ],
   },
