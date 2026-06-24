@@ -87,7 +87,10 @@ func (s *PostgresStore) insertReservedTask(ctx context.Context, tx pgx.Tx, input
 		RequestFingerprint: fingerprint, APIKeyID: apiKeyID, UserID: input.UserID,
 		LogicalRequestID: input.RequestID, EndpointFamily: "media_tasks", RequestedModel: input.TaskType,
 		BillingPolicyVersion: version, RequestClass: requestClass, PredictedCost: centsToUSD(input.EstimatedCents),
-		CurrencyCode: "USD", LeaseExpiresAt: pgtype.Timestamptz{Time: time.Now().UTC().Add(90 * time.Second), Valid: true},
+		// claim 孤儿回收租约必须 > 媒体任务最大生命周期(TaskTimeout)。原硬编码 90s 远
+		// 短于 TaskTimeout(默认 15min),会让跑得久的合法任务 claim 被 billing LeaseSweeper
+		// 提前 abort、完成时无法计费致亏钱。改用 resolveClaimLeaseWindow(覆盖任务生命周期)。
+		CurrencyCode: "USD", LeaseExpiresAt: pgtype.Timestamptz{Time: time.Now().UTC().Add(resolveClaimLeaseWindow(input.ClaimLeaseWindow)), Valid: true},
 	})
 	if err != nil {
 		return Task{}, err

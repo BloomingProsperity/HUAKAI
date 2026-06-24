@@ -72,6 +72,11 @@ type CreateTaskInput struct {
 	EstimatedCents       int64
 	BillingPolicyVersion string
 	RequestClass         string
+	// ClaimLeaseWindow 是 billing claim 的孤儿回收租约窗口,必须 > 媒体任务最大
+	// 生命周期(TaskTimeout)。否则跑得久的合法任务的 claim 会被 billing LeaseSweeper
+	// 提前误 abort、预扣费释放,任务完成时无法 commit 计费致亏钱。<=0 时 store 回退到
+	// defaultMediaClaimLeaseWindow。见 resolveClaimLeaseWindow。
+	ClaimLeaseWindow time.Duration
 }
 
 type Task struct {
@@ -171,10 +176,34 @@ func (c Config) withDefaults() Config {
 		c.PollInterval = 5 * time.Second
 	}
 	if c.TaskTimeout <= 0 {
-		c.TaskTimeout = 15 * time.Minute
+		c.TaskTimeout = defaultTaskTimeout
 	}
 	if c.RequestClass == "" {
 		c.RequestClass = "standard"
 	}
 	return c
+}
+
+const (
+	// defaultTaskTimeout 是 TaskTimeout 缺省值的单一真相源,withDefaults 与
+	// defaultMediaClaimLeaseWindow 共用,避免两处字面量失同步(改一处即可)。
+	defaultTaskTimeout = 15 * time.Minute
+	// claimLeaseGrace 是 billing claim 孤儿回收租约在媒体任务超时之外额外预留的余量,
+	// 确保 mediatask 自身的 TaskTimeout 超时处理(worker ExpireTask)总是先于 billing
+	// LeaseSweeper 动作,避免合法长任务的 claim 被 sweeper 提前 abort(亏钱)。
+	claimLeaseGrace = 5 * time.Minute
+	// defaultMediaClaimLeaseWindow 是 ClaimLeaseWindow 缺省(<=0)时的回退值,取默认
+	// TaskTimeout + grace。必须 > 默认 TaskTimeout,杜绝回退到过短窗口。
+	defaultMediaClaimLeaseWindow = defaultTaskTimeout + claimLeaseGrace
+)
+
+// resolveClaimLeaseWindow 返回 billing claim 的孤儿回收租约窗口:调用方传入的窗口
+// (通常 = TaskTimeout + grace);<=0 时回退到 defaultMediaClaimLeaseWindow。永不返回
+// 过短窗口,杜绝 90s 那种 < TaskTimeout 导致合法长任务 claim 被 LeaseSweeper 提前
+// abort 的 money 缺陷。
+func resolveClaimLeaseWindow(requested time.Duration) time.Duration {
+	if requested <= 0 {
+		return defaultMediaClaimLeaseWindow
+	}
+	return requested
 }
