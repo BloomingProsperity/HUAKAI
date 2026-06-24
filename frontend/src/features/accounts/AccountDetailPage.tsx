@@ -4,6 +4,7 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge, healthTone } from '../../ui/StatusBadge'
 import { clearAccountRateLimit, getProviderAccount, setAccountEnabled } from './api'
 import { accountAvailableActions } from './detail'
+import { EditAccountModal } from './EditAccountModal'
 import type { ProviderAccount } from './types'
 
 /*
@@ -20,6 +21,7 @@ export function AccountDetailPage() {
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [flash, setFlash] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
 
   const fetchAccount = useCallback(
     (signal?: AbortSignal) => {
@@ -86,6 +88,18 @@ export function AccountDetailPage() {
       {flash && <Banner tone="ok">{flash}</Banner>}
       {error && <Banner tone="danger">{error}</Banner>}
 
+      {editing && (
+        <EditAccountModal
+          account={account}
+          onClose={() => setEditing(false)}
+          onSaved={(updated) => {
+            setAccount(updated)
+            setEditing(false)
+            setFlash('已更新账号参数')
+          }}
+        />
+      )}
+
       <Card title="运维动作">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
           <label style={{ fontSize: 12, color: 'var(--hk-ink-500)', display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -121,6 +135,9 @@ export function AccountDetailPage() {
                 清除限流态
               </button>
             )}
+            <button type="button" disabled={busy} onClick={() => setEditing(true)} style={ghostBtn}>
+              编辑参数
+            </button>
             {account.rate_limit_reason && (
               <span style={{ fontSize: 12, color: 'var(--hk-warn)', alignSelf: 'center' }}>
                 限流原因:{account.rate_limit_reason}

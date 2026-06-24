@@ -37,3 +37,8 @@ export async function clearAccountRateLimit(id: number, reason: string): Promise
     reason: reason.trim() || undefined,
   })
 }
+
+/** 通用编辑账号(池调优旋钮):PATCH /admin/v1/provider-accounts/{id}。仅下发改动字段。 */
+export async function updateProviderAccount(id: number, body: object): Promise<ProviderAccount> {
+  return apiSend<ProviderAccount>('PATCH', `${ACCOUNTS_PATH}/${id}`, body)
+}
