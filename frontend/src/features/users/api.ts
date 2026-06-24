@@ -31,3 +31,21 @@ export async function setUserStatus(id: number, status: string): Promise<unknown
 export async function unlockUser(id: number): Promise<unknown> {
   return apiSend<unknown>('POST', `${PATH}/${id}/unlock`, {})
 }
+
+/** 用户详情:GET /admin/v1/users/{id}。 */
+export async function getUser(id: number, signal?: AbortSignal): Promise<import('./detail').UserDetail> {
+  return apiGet<import('./detail').UserDetail>(`${PATH}/${id}`, { signal })
+}
+
+/** 余额历史(只读台账):GET /admin/v1/users/{id}/balance-history。 */
+export async function getBalanceHistory(
+  id: number,
+  offset = 0,
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<import('./detail').BalanceHistoryResponse> {
+  return apiGet<import('./detail').BalanceHistoryResponse>(`${PATH}/${id}/balance-history`, {
+    query: { offset, limit },
+    signal,
+  })
+}
