@@ -790,7 +790,9 @@ func TestWiring_BuildCompletionEventBusWarnsWhenAuditRefEscapeFlagActive(t *test
 		AllowMissingMoneyRef: true,
 	}
 
-	bus, err := buildCompletionEventBus(nil, nil, nil, policy, logger)
+	// 第三个参数是新增的 *pgxpool.Pool(account health probe 接线);cfg=nil 时函数提前返回,
+	// 不触及 pgPool,故此处传 nil 安全。
+	bus, err := buildCompletionEventBus(nil, nil, nil, nil, policy, logger)
 	if err != nil {
 		t.Fatalf("buildCompletionEventBus: %v", err)
 	}
