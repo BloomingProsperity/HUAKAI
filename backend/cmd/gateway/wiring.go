@@ -413,10 +413,9 @@ const (
 	// 把签发 (created_at) 超过 maxAge 的 active 凭据置为 needs_rotation。
 	// 默认 OFF(maxAge 留空 => 0 => 关),因为 needs_rotation 不是 serving 状态
 	// (resolveActiveQuery / LoadForRefresh 都排除它),且没有自动恢复路径——
-	// 一旦置标该凭据停止被服务、需运维手动重新签发/轮换。因此把它做成运维显式
-	// opt-in 的开关(置一个正的 maxAge 才启用),避免在生产里默认翻转行为把
-	// 老凭据集体下线造成可用性/计费回退(默认行为翻转属 Owner-gated)。
-	// 取值:Go duration("2160h"=90 天)或裸秒数;0/留空=关。
+	// CRED-288c 恢复闭环落地后默认【开启】(留空=90 天窗口):超期凭据不再被粗暴下线
+	// ——可刷新凭据保持在线自愈、静态 key 仅告警,故默认开不造成可用性/计费回退。
+	// 取值:Go duration("2160h"=90 天)或裸秒数;显式设 0 关闭;留空=默认 90 天。
 	credentialRotationMaxAgeEnv = "HUAKAI_CREDENTIAL_ROTATION_MAX_AGE"
 	// 每个 tick 最多置标的行数上限(<=0 => 走 store 默认 100),用于把"超期积压"
 	// 分摊到多个 tick、避免一次性把大量账号打入 needs_rotation。
@@ -648,12 +647,20 @@ type credentialRotationScanConfig struct {
 // Enabled 报告扫描是否被运维显式打开(必须配置一个正的 maxAge)。
 func (c credentialRotationScanConfig) Enabled() bool { return c.MaxAge > 0 }
 
+// defaultCredentialRotationMaxAge 是 CRED-288 凭据轮换扫描的默认 maxAge(90 天)。
+// 之所以默认【开启】而非 opt-in:恢复闭环(CRED-288c)落地后,扫描对超期凭据不再
+// 粗暴下线——可刷新(OAuth)凭据保持 active 在线、只被推进既有刷新流自愈,静态 key
+// 仅告警不下线,故"默认开"不会再造成可用性/计费回退。配合 DueForRotation 按
+// COALESCE(last_refresh_at, created_at) 判超期(幂等、刷过即掉出),默认开是安全的。
+// 运维可显式设 HUAKAI_CREDENTIAL_ROTATION_MAX_AGE=0 关闭,或设其它正 duration 调节窗口。
+const defaultCredentialRotationMaxAge = 90 * 24 * time.Hour
+
 // loadCredentialRotationScanFromEnv 解析 CRED-288 凭据轮换扫描的开关。
-// HUAKAI_CREDENTIAL_ROTATION_MAX_AGE 留空/0 => 关(默认,保持现有行为不翻转);
-// 配一个正的 duration(如 "2160h" 90 天)才启用。malformed => fail-loud。
-// HUAKAI_CREDENTIAL_ROTATION_LIMIT 控制每个 tick 置标上限,<=0 => 走 store 默认。
+// HUAKAI_CREDENTIAL_ROTATION_MAX_AGE 留空 => 默认 90 天(启用);显式设 0 => 关闭;
+// 配其它正 duration(如 "2160h")=> 自定义窗口。malformed => fail-loud。
+// HUAKAI_CREDENTIAL_ROTATION_LIMIT 控制每个 tick 处理上限,<=0 => 走 store 默认。
 func loadCredentialRotationScanFromEnv() (credentialRotationScanConfig, error) {
-	maxAge, err := envDurationDisable0Default(credentialRotationMaxAgeEnv, 0)
+	maxAge, err := envDurationDisable0Default(credentialRotationMaxAgeEnv, defaultCredentialRotationMaxAge)
 	if err != nil {
 		return credentialRotationScanConfig{}, err
 	}

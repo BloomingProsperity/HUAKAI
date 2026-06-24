@@ -43,10 +43,11 @@ func TestLoadCredentialRotationScan_EnabledByEnv(t *testing.T) {
 	}
 }
 
-// TestLoadCredentialRotationScan_DisabledByDefault 证明:env 留空时扫描保持关闭
-// (Enabled()==false),即 wiring 不注入 WithRotationScan、生产行为不翻转。
-// 变异:把默认 fallback 从 0 改成一个正值(默认翻转开启),Enabled() 变 true → 红。
-func TestLoadCredentialRotationScan_DisabledByDefault(t *testing.T) {
+// TestLoadCredentialRotationScan_EnabledByDefault 证明:env 留空时扫描【默认开启】
+// 且 MaxAge=90 天(CRED-288c 恢复闭环落地后,默认开不再造成 brownout)。
+// 变异:把默认 fallback 从 defaultCredentialRotationMaxAge 改回 0(回到 opt-in 死开关),
+// Enabled() 变 false / MaxAge 变 0 → 红。这条守住"激活"这个默认行为决策不被悄悄回退。
+func TestLoadCredentialRotationScan_EnabledByDefault(t *testing.T) {
 	t.Setenv(credentialRotationMaxAgeEnv, "")
 	t.Setenv(credentialRotationLimitEnv, "")
 
@@ -54,8 +55,11 @@ func TestLoadCredentialRotationScan_DisabledByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadCredentialRotationScanFromEnv: %v", err)
 	}
-	if cfg.Enabled() {
-		t.Fatalf("env 未设时扫描必须默认关闭 (Enabled()==false),got MaxAge=%v", cfg.MaxAge)
+	if !cfg.Enabled() {
+		t.Fatal("env 未设时扫描必须默认开启 (Enabled()==true) —— CRED-288 激活")
+	}
+	if cfg.MaxAge != 90*24*time.Hour {
+		t.Fatalf("默认 maxAge 必须等于 90 天,got %v", cfg.MaxAge)
 	}
 }
 
