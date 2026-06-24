@@ -407,6 +407,18 @@ const (
 	stormGlobalBurstEnv   = "HUAKAI_STORM_GLOBAL_BURST"
 	tenantRetryBudgetEnv  = "HUAKAI_TENANT_RETRY_BUDGET"
 	tenantRetryWindowEnv  = "HUAKAI_TENANT_RETRY_WINDOW"
+	// CRED-288 凭据轮换扫描:credentialworker 每个 tick 在 refresh pass 之后
+	// 把签发 (created_at) 超过 maxAge 的 active 凭据置为 needs_rotation。
+	// 默认 OFF(maxAge 留空 => 0 => 关),因为 needs_rotation 不是 serving 状态
+	// (resolveActiveQuery / LoadForRefresh 都排除它),且没有自动恢复路径——
+	// 一旦置标该凭据停止被服务、需运维手动重新签发/轮换。因此把它做成运维显式
+	// opt-in 的开关(置一个正的 maxAge 才启用),避免在生产里默认翻转行为把
+	// 老凭据集体下线造成可用性/计费回退(默认行为翻转属 Owner-gated)。
+	// 取值:Go duration("2160h"=90 天)或裸秒数;0/留空=关。
+	credentialRotationMaxAgeEnv = "HUAKAI_CREDENTIAL_ROTATION_MAX_AGE"
+	// 每个 tick 最多置标的行数上限(<=0 => 走 store 默认 100),用于把"超期积压"
+	// 分摊到多个 tick、避免一次性把大量账号打入 needs_rotation。
+	credentialRotationLimitEnv = "HUAKAI_CREDENTIAL_ROTATION_LIMIT"
 )
 
 func buildPaymentProviderBindings(cfg *Config) (map[string]paymenthttp.ProviderBinding, error) {
@@ -621,6 +633,50 @@ func validateStormScopePair(scope string, rate, burst float64) error {
 		return nil // scope fully configured
 	default:
 		return fmt.Errorf("storm %s scope half-configured: rate=%v burst=%v (need both rate>0 and burst>=1, or both unset)", scope, rate, burst)
+	}
+}
+
+// credentialRotationScanConfig 是 CRED-288 凭据轮换扫描的运维配置。
+// MaxAge<=0 表示关闭(默认);>0 才启用扫描。
+type credentialRotationScanConfig struct {
+	MaxAge time.Duration
+	Limit  int
+}
+
+// Enabled 报告扫描是否被运维显式打开(必须配置一个正的 maxAge)。
+func (c credentialRotationScanConfig) Enabled() bool { return c.MaxAge > 0 }
+
+// loadCredentialRotationScanFromEnv 解析 CRED-288 凭据轮换扫描的开关。
+// HUAKAI_CREDENTIAL_ROTATION_MAX_AGE 留空/0 => 关(默认,保持现有行为不翻转);
+// 配一个正的 duration(如 "2160h" 90 天)才启用。malformed => fail-loud。
+// HUAKAI_CREDENTIAL_ROTATION_LIMIT 控制每个 tick 置标上限,<=0 => 走 store 默认。
+func loadCredentialRotationScanFromEnv() (credentialRotationScanConfig, error) {
+	maxAge, err := envDurationDisable0Default(credentialRotationMaxAgeEnv, 0)
+	if err != nil {
+		return credentialRotationScanConfig{}, err
+	}
+	limit, err := envIntDisable0Default(credentialRotationLimitEnv, 0)
+	if err != nil {
+		return credentialRotationScanConfig{}, err
+	}
+	return credentialRotationScanConfig{MaxAge: maxAge, Limit: limit}, nil
+}
+
+// buildRotationScanOptions 把轮换扫描配置转成 scheduler option。disabled(MaxAge<=0)
+// 时返回空切片——即不注入 WithRotationScan,保持现有行为不翻转;enabled 时返回恰好
+// 一个 WithRotationScan,装上传入的 store 与 maxAge/limit。把这条 gating 决策抽成独立
+// 函数,既给生产 wiring 用,也让测试能直接断言"死开关是否被救活"。
+func buildRotationScanOptions(cfg credentialRotationScanConfig, store credentialworker.RotationStore) []credentialworker.Option {
+	if !cfg.Enabled() {
+		return nil
+	}
+	return []credentialworker.Option{
+		credentialworker.WithRotationScan(
+			store,
+			cfg.MaxAge,
+			cfg.Limit,
+			nil, // alert 可选;运维通过 needs_rotation 状态 + 既有 health 告警感知
+		),
 	}
 }
 
@@ -1320,6 +1376,22 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		// CRED-293: fire an operator alert through the notify pipeline when a
 		// refresh drives an account into a terminal/unhealthy state (Alert flag).
 		credentialworker.WithProviderAccountDownDeliverer(providerAccountDownDeliverer{notifier: notifier}),
+	}
+	// CRED-288:把凭据轮换扫描接进 scheduler。运维 opt-in(配一个正的 maxAge 才启用);
+	// 默认关闭以避免把超期凭据集体打入 needs_rotation 这一非 serving 状态(可用性回退)。
+	rotationScanCfg, err := loadCredentialRotationScanFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load credential rotation scan config: %w", err)
+	}
+	if rotationScanCfg.Enabled() {
+		credentialSchedulerOptions = append(
+			credentialSchedulerOptions,
+			buildRotationScanOptions(rotationScanCfg, credentialworker.NewPostgresRotationStore(pgPool))...,
+		)
+		logger.Info("credential rotation-due scan enabled",
+			zap.Duration("max_age", rotationScanCfg.MaxAge),
+			zap.Int("limit", rotationScanCfg.Limit),
+		)
 	}
 	credentialSchedulerOptions = append(
 		credentialSchedulerOptions,
