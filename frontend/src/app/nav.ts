@@ -66,7 +66,7 @@ export const PIPELINE_NAV: NavSection[] = [
     key: 'models',
     label: '模型与定价',
     hint: '模型目录、倍率定价、公开价目',
-    items: [{ path: '/models', label: '模型与定价', built: false }],
+    items: [{ path: '/models', label: '模型与定价', built: true }],
   },
   {
     stage: 7,
