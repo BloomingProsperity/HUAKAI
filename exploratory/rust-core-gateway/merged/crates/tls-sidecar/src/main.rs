@@ -5,6 +5,7 @@ mod h2_settings;
 mod ja4;
 mod profile;
 mod proto;
+mod proxy_tunnel;
 
 use std::{env, path::PathBuf};
 
