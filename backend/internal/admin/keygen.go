@@ -20,6 +20,8 @@ import (
 	"encoding/base32"
 	"fmt"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyns"
 )
 
 // PrefixLen mirrors auth.APIKeyPrefixLen so the inbound resolver's
@@ -38,11 +40,13 @@ const (
 func (e Environment) namespace() string {
 	switch e {
 	case EnvLive:
-		return "hk_live_"
+		// 客户 live/test 前缀 base 可由运维 env 覆盖(默认 hk),与入站校验同源。
+		return apikeyns.LivePrefix()
 	case EnvTest:
-		return "hk_test_"
+		return apikeyns.TestPrefix()
 	case EnvAdmin:
-		return "hk_admin_"
+		// admin 前缀不可配(operator 权限边界)。
+		return apikeyns.AdminPrefix
 	default:
 		return ""
 	}
