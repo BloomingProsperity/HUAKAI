@@ -47,6 +47,10 @@ type Config struct {
 	// TransportSidecarFallback is explicit opt-in. Default false keeps production
 	// fail-closed when Rust sidecar is configured but unavailable.
 	TransportSidecarFallback bool
+	// TransportSidecarForceH1 控制 Rust sidecar 握手是否只广告 ALPN=http/1.1。
+	// nil(env 未设)时沿用 transport 层默认(默认强制 H1,与 Go uTLS 路一致);
+	// 非 nil 时由运维 HUAKAI_TRANSPORT_FORCE_H1 显式覆盖(仅 "false" 关)。
+	TransportSidecarForceH1 *bool
 
 	// QuotaEnforce wires the quota reservation/finalization path into chat
 	// admission. Default false leaves the hot path unchanged.
@@ -245,6 +249,7 @@ func Load() (*Config, error) {
 		RequestClass:                   envDefault("HUAKAI_REQUEST_CLASS", "standard"),
 		TransportSidecarSocket:         os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
 		TransportSidecarFallback:       transportSidecarFallback,
+		TransportSidecarForceH1:        envOptionalForceH1("HUAKAI_TRANSPORT_FORCE_H1"),
 		QuotaEnforce:                   quotaEnforce,
 		Budget:                         budgetCfg,
 		VendorOAuth:                    loadVendorOAuthConfigs(),
@@ -419,6 +424,19 @@ func envBoolDefault(name string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s must be a boolean, got %q: %w", name, raw, err)
 	}
 	return v, nil
+}
+
+// envOptionalForceH1 解析 HUAKAI_TRANSPORT_FORCE_H1,语义与 mimicry.forceH1Enabled
+// 完全一致:env 未设时返回 nil(由 transport 层 env 默认决定,默认开),已设时返回
+// 显式 *bool——非 "false" 一律视为开,仅显式 "false" 关。返回指针是为了区分"未配置"
+// 与"显式 false",避免运维想关却被默认开覆盖。
+func envOptionalForceH1(name string) *bool {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+	enabled := strings.TrimSpace(raw) != "false"
+	return &enabled
 }
 
 func envOptionalDurationSeconds(name string) (time.Duration, error) {

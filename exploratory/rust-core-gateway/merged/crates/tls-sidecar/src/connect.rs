@@ -31,13 +31,17 @@ where
         return Ok(());
     }
 
-    let upstream = match connect_upstream(&request.target_host, request.port, &profile).await {
-        Ok(tls) => tls,
-        Err(error) => {
-            proto::write_control_ack(&mut ipc, &ControlAck::error(error.to_string())).await?;
-            return Ok(());
-        }
-    };
+    // force_h1=Some(true) 收窄 ALPN 为仅 http/1.1,从根消除 h2 升级;缺省(老客户端不发)= None
+    // = 今日行为,由 profile.alpn 决定。
+    let force_h1 = request.force_h1.unwrap_or(false);
+    let upstream =
+        match connect_upstream(&request.target_host, request.port, &profile, force_h1).await {
+            Ok(tls) => tls,
+            Err(error) => {
+                proto::write_control_ack(&mut ipc, &ControlAck::error(error.to_string())).await?;
+                return Ok(());
+            }
+        };
     proto::write_control_ack(&mut ipc, &ControlAck::ok()).await?;
     match upstream {
         ConnectedUpstream::Raw(mut tls) => {
@@ -63,8 +67,9 @@ async fn connect_upstream(
     target_host: &str,
     port: u16,
     profile: &crate::profile::TlsProfile,
+    force_h1: bool,
 ) -> Result<ConnectedUpstream<tokio_boring::SslStream<TcpStream>>, ConnectError> {
-    let tls = connect_tls_upstream(target_host, port, profile).await?;
+    let tls = connect_tls_upstream(target_host, port, profile, force_h1).await?;
     let selected_alpn = tls
         .ssl()
         .selected_alpn_protocol()
@@ -76,10 +81,13 @@ async fn connect_tls_upstream(
     target_host: &str,
     port: u16,
     profile: &crate::profile::TlsProfile,
+    force_h1: bool,
 ) -> Result<tokio_boring::SslStream<TcpStream>, ConnectError> {
     boring_ctx::validate_expected_ja4_before_connect(profile, target_host).await?;
     let tcp = TcpStream::connect((target_host, port)).await?;
-    let config = boring_ctx::connect_config(profile)?;
+    // force_h1 时握手只广告 ALPN=http/1.1,服务端无从选 h2;selected_alpn 因此不可能等于 b"h2",
+    // finish_upstream_connect 必走 Raw 隧道,H2 bridge 从根被绕开。
+    let config = boring_ctx::connect_config_force_h1(profile, force_h1)?;
     tokio_boring::connect(config, target_host, tcp)
         .await
         .map_err(|error| ConnectError::Handshake(error.to_string()))
@@ -139,7 +147,8 @@ pub(crate) async fn connect_h2_upstream(
     ),
     ConnectError,
 > {
-    let tls = connect_tls_upstream(target_host, port, profile).await?;
+    // 本 helper 专为 h2 路径,固定 force_h1=false 保持广告 profile.alpn(含 h2)。
+    let tls = connect_tls_upstream(target_host, port, profile, false).await?;
     start_profile_h2_connection(tls, profile).await
 }
 
@@ -215,6 +224,7 @@ mod tests {
             target_host: "127.0.0.1".to_owned(),
             port: 443,
             profile_id: "missing-profile".to_owned(),
+            force_h1: None,
         };
 
         crate::proto::write_control_request(&mut client, &req)
