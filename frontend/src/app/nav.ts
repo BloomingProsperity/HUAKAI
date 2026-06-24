@@ -73,7 +73,7 @@ export const PIPELINE_NAV: NavSection[] = [
     key: 'system',
     label: '系统',
     hint: '系统设置、公告、运维诊断',
-    items: [{ path: '/system', label: '系统设置', built: false }],
+    items: [{ path: '/system', label: '系统设置', built: true }],
   },
   {
     stage: 8,
