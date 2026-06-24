@@ -1,0 +1,103 @@
+import { useState } from 'react'
+import { ApiError } from '../../lib/api'
+import { updateApiKey } from './api'
+import { buildKeyUpdate, formFromKey, type ExpiryMode, type KeyEditForm } from './edit'
+import type { ApiKeyView } from './types'
+
+/*
+ * Key 编辑模态(P1)。PATCH /v1/api-keys/{id}:改名 + 到期三态(保持不变 / 永不过期 / 设定日期)。
+ * 仅下发改动字段(buildKeyUpdate);无改动直接关闭。绝不回显明文 key(只展示 prefix)。
+ */
+export function EditKeyModal({
+  apiKey,
+  onClose,
+  onSaved,
+}: {
+  apiKey: ApiKeyView
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [form, setForm] = useState<KeyEditForm>(formFromKey(apiKey))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const set = <K extends keyof KeyEditForm>(k: K, v: KeyEditForm[K]) => setForm((f) => ({ ...f, [k]: v }))
+
+  const submit = async () => {
+    const built = buildKeyUpdate(apiKey, form)
+    if ('error' in built) {
+      setError(built.error)
+      return
+    }
+    if ('noop' in built) {
+      onClose()
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await updateApiKey(apiKey.api_key_id, built)
+      onSaved()
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '保存失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const modes: Array<{ value: ExpiryMode; label: string }> = [
+    { value: 'keep', label: '保持不变' },
+    { value: 'never', label: '永不过期' },
+    { value: 'date', label: '设定日期' },
+  ]
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(28,38,34,0.4)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 'var(--hk-space-6)', zIndex: 'var(--hk-z-overlay)' as unknown as number, overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(440px,100%)', background: 'var(--hk-surface)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-3)', padding: 'var(--hk-space-5)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+        <h2 style={{ fontSize: 18 }}>编辑 Key</h2>
+        <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', margin: 0 }}>
+          <code style={{ fontFamily: 'var(--hk-font-mono)' }}>{apiKey.key_prefix}</code>
+        </p>
+        <Field label="名称">
+          <input value={form.name} onChange={(e) => set('name', e.target.value)} style={inp} />
+        </Field>
+        <Field label="到期">
+          <div style={{ display: 'flex', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
+            {modes.map((m) => (
+              <label key={m.value} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, cursor: 'pointer' }}>
+                <input type="radio" name="expiry-mode" checked={form.expiryMode === m.value} onChange={() => set('expiryMode', m.value)} />
+                {m.label}
+              </label>
+            ))}
+          </div>
+        </Field>
+        {form.expiryMode === 'date' && (
+          <Field label="到期时间">
+            <input type="datetime-local" value={form.expiryDate} onChange={(e) => set('expiryDate', e.target.value)} style={inp} />
+          </Field>
+        )}
+        {error && <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{error}</div>}
+        <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onClose} style={ghost}>
+            取消
+          </button>
+          <button type="button" disabled={busy} onClick={submit} style={primary}>
+            {busy ? '保存中…' : '保存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
+      {label}
+      {children}
+    </label>
+  )
+}
+
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+const primary: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const ghost: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }

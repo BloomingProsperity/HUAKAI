@@ -3,6 +3,7 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
 import { listApiKeys, revokeApiKey } from './api'
 import { CreateKeyModal } from './CreateKeyModal'
+import { EditKeyModal } from './EditKeyModal'
 import type { ApiKeyView } from './types'
 
 /*
@@ -14,6 +15,7 @@ export function KeysPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
+  const [editing, setEditing] = useState<ApiKeyView | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [busyId, setBusyId] = useState<number | null>(null)
 
@@ -68,6 +70,16 @@ export function KeysPage() {
       {createOpen && (
         <CreateKeyModal onClose={() => setCreateOpen(false)} onCreated={() => setRefreshNonce((n) => n + 1)} />
       )}
+      {editing && (
+        <EditKeyModal
+          apiKey={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null)
+            setRefreshNonce((n) => n + 1)
+          }}
+        />
+      )}
 
       {error && (
         <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>
@@ -107,11 +119,16 @@ export function KeysPage() {
                     <td style={td}>{fmt(k.expires_at) || '永不'}</td>
                     <td style={td}>{fmt(k.last_used_at) || '从未'}</td>
                     <td style={td}>{fmt(k.created_at)}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>
+                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                       {k.status === 'active' && (
-                        <button type="button" disabled={busyId === k.api_key_id} onClick={() => revoke(k)} style={revokeBtn}>
-                          撤销
-                        </button>
+                        <>
+                          <button type="button" disabled={busyId === k.api_key_id} onClick={() => setEditing(k)} style={editBtn}>
+                            编辑
+                          </button>
+                          <button type="button" disabled={busyId === k.api_key_id} onClick={() => revoke(k)} style={revokeBtn}>
+                            撤销
+                          </button>
+                        </>
                       )}
                     </td>
                   </tr>
@@ -164,3 +181,4 @@ const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3)
 const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle', whiteSpace: 'nowrap', color: 'var(--hk-ink-700)' }
 const newBtn: React.CSSProperties = { height: 36, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
 const revokeBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-danger)', fontSize: 12, cursor: 'pointer' }
+const editBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', marginRight: 'var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-primary-700)', fontSize: 12, cursor: 'pointer' }
