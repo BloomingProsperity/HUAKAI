@@ -1,0 +1,166 @@
+import { useCallback, useEffect, useState } from 'react'
+import { ApiError } from '../../lib/api'
+import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
+import { listApiKeys, revokeApiKey } from './api'
+import { CreateKeyModal } from './CreateKeyModal'
+import type { ApiKeyView } from './types'
+
+/*
+ * API Key · 我的密钥(P0)。/v1/api-keys 列表 + 创建(一次性明文)+ 撤销。
+ * 仅展示 key_prefix(脱敏),绝不回显明文(后端存 hash,物理不可逆)。
+ */
+export function KeysPage() {
+  const [keys, setKeys] = useState<ApiKeyView[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [refreshNonce, setRefreshNonce] = useState(0)
+  const [busyId, setBusyId] = useState<number | null>(null)
+
+  const load = useCallback((signal: AbortSignal) => {
+    setLoading(true)
+    setError(null)
+    listApiKeys(0, 100, signal)
+      .then((resp) => setKeys(resp.api_keys))
+      .catch((e: unknown) => {
+        if (signal.aborted) return
+        setError(e instanceof ApiError ? `${e.message}(${e.code})` : '加载密钥列表失败')
+      })
+      .finally(() => {
+        if (!signal.aborted) setLoading(false)
+      })
+  }, [])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    load(ctrl.signal)
+    return () => ctrl.abort()
+  }, [load, refreshNonce])
+
+  const revoke = async (k: ApiKeyView) => {
+    if (!window.confirm(`确认撤销 Key「${k.name}」(${k.key_prefix})?撤销后不可恢复。`)) return
+    setBusyId(k.api_key_id)
+    setError(null)
+    try {
+      await revokeApiKey(k.api_key_id, '')
+      setRefreshNonce((n) => n + 1)
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '撤销失败')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  return (
+    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+          <h1 style={{ fontSize: 22 }}>我的密钥</h1>
+          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+            管线第 3 站 · 把账号池签发成可用密钥。共 {keys.length} 个。
+          </p>
+        </div>
+        <button type="button" onClick={() => setCreateOpen(true)} style={newBtn}>
+          ＋ 新建 Key
+        </button>
+      </header>
+
+      {createOpen && (
+        <CreateKeyModal onClose={() => setCreateOpen(false)} onCreated={() => setRefreshNonce((n) => n + 1)} />
+      )}
+
+      {error && (
+        <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+        {loading && keys.length === 0 ? (
+          <Empty>加载中…</Empty>
+        ) : keys.length === 0 ? (
+          <Empty>还没有密钥。点击右上角「新建 Key」创建第一个。</Empty>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {['名称', '前缀', '状态', '过期', '最近使用', '创建时间', ''].map((h) => (
+                    <th key={h} style={th}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {keys.map((k) => (
+                  <tr key={k.api_key_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                    <td style={td}>
+                      <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{k.name}</span>
+                    </td>
+                    <td style={td}>
+                      <code style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{k.key_prefix}</code>
+                    </td>
+                    <td style={td}>
+                      <StatusBadge tone={statusTone(k.status)}>{statusLabel(k.status)}</StatusBadge>
+                    </td>
+                    <td style={td}>{fmt(k.expires_at) || '永不'}</td>
+                    <td style={td}>{fmt(k.last_used_at) || '从未'}</td>
+                    <td style={td}>{fmt(k.created_at)}</td>
+                    <td style={{ ...td, textAlign: 'right' }}>
+                      {k.status === 'active' && (
+                        <button type="button" disabled={busyId === k.api_key_id} onClick={() => revoke(k)} style={revokeBtn}>
+                          撤销
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function statusTone(status: string): BadgeTone {
+  switch (status) {
+    case 'active':
+      return 'ok'
+    case 'revoked':
+      return 'muted'
+    case 'expired':
+      return 'danger'
+    default:
+      return 'muted'
+  }
+}
+function statusLabel(status: string): string {
+  switch (status) {
+    case 'active':
+      return '活跃'
+    case 'revoked':
+      return '已撤销'
+    case 'expired':
+      return '已过期'
+    default:
+      return status
+  }
+}
+
+function fmt(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false })
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+}
+
+const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
+const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle', whiteSpace: 'nowrap', color: 'var(--hk-ink-700)' }
+const newBtn: React.CSSProperties = { height: 36, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
+const revokeBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-danger)', fontSize: 12, cursor: 'pointer' }
