@@ -124,10 +124,12 @@ type ChatHandlerDeps struct {
 	// CacheScope 决定 L2 缓存键 principal 隔离粒度(tenant|apikey|user); 空 → "apikey"。
 	CacheScope string
 
-	// ToolPricingTable holds the per-(tenant, model) tool-call surcharge price
-	// table (NAPI-BILLING-01 Stage A). nil = default-off: no surcharge is added
-	// regardless of tool call counts. Configure via runtime settings to enable.
-	ToolPricingTable toolpricing.Table
+	// ToolPricingTable 提供 per-(tenant, model) 工具调用附加费价表查询。
+	// 类型为 toolpricing.Source 接口:既能吃裸 Table(纯 override / 测试),也能吃
+	// 带平台默认价回落的 platformSource(生产装配)。nil = default-off:无论工具调用
+	// 多少次都不加附加费(旧行为,运维关闭开关时的退路)。生产装配按
+	// HUAKAI_TOOL_SURCHARGE_ENABLED 注入 platformSource 启用按官方价计费。
+	ToolPricingTable toolpricing.Source
 }
 
 type channelHealthRecorder interface {

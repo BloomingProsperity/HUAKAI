@@ -57,6 +57,49 @@ func (t Table) Lookup(tenantID int64, modelID string) ToolPrices {
 	return t[tableKey{TenantID: tenantID, ModelID: modelID}]
 }
 
+// Source 是工具附加费价表的查询契约。给定 (tenantID, modelID) 返回一组 ToolPrices;
+// 找不到配置时必须返回零价(安全默认 = 不加附加费)。
+//
+// 抽出接口的目的:让 gatewayhttp 的消费点既能吃裸 Table(测试 / 纯 override 配置),
+// 也能吃带平台默认回落的 platformSource(生产装配)。注意 Table 已有值接收者方法
+// Lookup,天然满足 Source,无需任何改动即可作为 Source 传入。
+type Source interface {
+	Lookup(tenantID int64, modelID string) ToolPrices
+}
+
+// platformSource 是带「平台默认价 + 可选 per-(tenant,model) override」两层回落的 Source 实现。
+//
+// 解析顺序:
+//  1. 若 overrides 命中且该条目非零价 → 用 override 价(运营者为特定租户/模型定的覆盖价)。
+//  2. 否则 → 回落 defaults(平台默认价,通常来自 DefaultToolPrices())。
+//
+// 这样未配置任何 override 的生产环境也能按平台默认价对工具调用计费,
+// 而不是像之前价表恒 nil 那样漏收(加 $0)。
+type platformSource struct {
+	// defaults 是无 override 命中时使用的平台默认价。
+	defaults ToolPrices
+	// overrides 是可选的 per-(tenant,model) 覆盖价;nil / 空 = 始终用 defaults。
+	overrides Table
+}
+
+// Lookup 实现 Source:先查 overrides,命中非零价用之,否则回落 defaults。
+func (s platformSource) Lookup(tenantID int64, modelID string) ToolPrices {
+	if s.overrides != nil {
+		if override := s.overrides.Lookup(tenantID, modelID); !override.IsZero() {
+			return override
+		}
+	}
+	return s.defaults
+}
+
+// NewPlatformSource 构造一个带平台默认价 + 可选 override 的 Source。
+//
+// defaults 通常传 DefaultToolPrices();overrides 传 nil 表示「全部走平台默认价」。
+// 返回的 Source 永不为 nil:调用方据此判断「附加费已启用」。
+func NewPlatformSource(defaults ToolPrices, overrides Table) Source {
+	return platformSource{defaults: defaults, overrides: overrides}
+}
+
 // Set stores prices for the given tenant and model. Used for testing and for
 // loading configuration.
 func (t Table) Set(tenantID int64, modelID string, prices ToolPrices) {
