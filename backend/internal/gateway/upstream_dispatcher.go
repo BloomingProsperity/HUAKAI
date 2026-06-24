@@ -273,6 +273,13 @@ func (d *UpstreamDispatcher) applyTLSProfile(ctx context.Context, rt http.RoundT
 	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard || !transport.MimicryEnabled() {
 		return rt
 	}
+	// 收编 DB TLS profile 旁路:若传入的 rt 已经是走 Rust tls-sidecar 的 RT(自带内置
+	// 真指纹),绝不能用 per-account DB uTLS profile 整体替换它——否则绑定 DB profile 的
+	// 账号会让 sidecar 永远轮不到用、退回 Go uTLS 占位指纹。sidecar RT 通过 SidecarProfileID()
+	// 自证(仅 mimicry.sidecarRoundTripper 实现该方法,检测精确,不会误伤非 sidecar RT)。
+	if _, ok := rt.(interface{ SidecarProfileID() string }); ok {
+		return rt
+	}
 	if profileRT, err := d.TLSProfileResolver.ResolveRoundTripper(ctx, accountID); err == nil && profileRT != nil {
 		return profileRT
 	}
