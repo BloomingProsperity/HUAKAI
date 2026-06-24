@@ -1,10 +1,22 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import { clearAll, useAuth } from '../auth/store'
+import { logout } from '../auth/api'
 
 /*
- * 顶栏:品牌 + 命令面板入口(Cmd-K 签名交互的挂载点,脚手架阶段先放可视入口,
- * 后续切片接全局快捷导航/动作)。
+ * 顶栏:品牌 + 命令面板入口(Cmd-K 签名交互挂载点)+ 当前用户 / 登出。
  */
 export function TopBar() {
+  const auth = useAuth()
+  const nav = useNavigate()
+  const onLogout = async () => {
+    await logout()
+    clearAll()
+    nav('/login', { replace: true })
+  }
+  return innerTopBar(auth.user?.email, onLogout)
+}
+
+function innerTopBar(email: string | undefined, onLogout: () => void) {
   return (
     <header
       style={{
@@ -43,37 +55,47 @@ export function TopBar() {
         />
         HUAKAI 控制台
       </Link>
-      <button
-        type="button"
-        aria-label="命令面板"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--hk-space-2)',
-          padding: 'var(--hk-space-1) var(--hk-space-3)',
-          fontSize: 13,
-          color: 'var(--hk-ink-500)',
-          background: 'var(--hk-surface-sunken)',
-          border: '1px solid var(--hk-line)',
-          borderRadius: 'var(--hk-radius-md)',
-          cursor: 'pointer',
-        }}
-      >
-        快速跳转
-        <kbd
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
+        <button
+          type="button"
+          aria-label="命令面板"
           style={{
-            fontFamily: 'var(--hk-font-mono)',
-            fontSize: 11,
-            color: 'var(--hk-ink-700)',
-            background: 'var(--hk-surface)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--hk-space-2)',
+            padding: 'var(--hk-space-1) var(--hk-space-3)',
+            fontSize: 13,
+            color: 'var(--hk-ink-500)',
+            background: 'var(--hk-surface-sunken)',
             border: '1px solid var(--hk-line)',
-            borderRadius: 'var(--hk-radius-sm)',
-            padding: '0 4px',
+            borderRadius: 'var(--hk-radius-md)',
+            cursor: 'pointer',
           }}
         >
-          ⌘K
-        </kbd>
-      </button>
+          快速跳转
+          <kbd
+            style={{
+              fontFamily: 'var(--hk-font-mono)',
+              fontSize: 11,
+              color: 'var(--hk-ink-700)',
+              background: 'var(--hk-surface)',
+              border: '1px solid var(--hk-line)',
+              borderRadius: 'var(--hk-radius-sm)',
+              padding: '0 4px',
+            }}
+          >
+            ⌘K
+          </kbd>
+        </button>
+        {email && <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>{email}</span>}
+        <button
+          type="button"
+          onClick={onLogout}
+          style={{ height: 30, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }}
+        >
+          登出
+        </button>
+      </div>
     </header>
   )
 }
