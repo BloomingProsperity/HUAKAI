@@ -1,0 +1,66 @@
+/*
+ * HUAKAI 设计 token — 反克隆基线。
+ *
+ * 调研定论(见 docs:frontend-anticlone-design-direction):一眼像 one-api/new-api 抄袭的"克隆味"
+ * 集中在 6 个默认 token(主色/圆角/阴影/字体/图标/间距),而非布局。故本文件刻意离开框架默认值:
+ *  - 主色取玉青(jade,呼应"华开"语义)而非 one-api 系的科技蓝;
+ *  - 圆角偏大且统一阶梯;阴影走"低饱和柔光"而非默认硬阴影;
+ *  - 间距用 4px 基数的非线性阶梯;字体显式声明中文优先的栈。
+ * 所有组件只准引用这些变量,禁写魔法色值,以保证"离默认"一致可控。
+ */
+:root {
+  /* 主色:玉青阶梯 */
+  --hk-primary-50: #e9f6f1;
+  --hk-primary-100: #c9e9dd;
+  --hk-primary-300: #6cc3a6;
+  --hk-primary-500: #0e7c66;
+  --hk-primary-600: #0b6553;
+  --hk-primary-700: #084e40;
+
+  /* 中性:暖灰(偏暖,区别于纯冷灰的框架默认) */
+  --hk-ink-900: #1c2622;
+  --hk-ink-700: #3a4641;
+  --hk-ink-500: #66756e;
+  --hk-ink-300: #aab4af;
+  --hk-line: #e2e8e4;
+  --hk-surface: #ffffff;
+  --hk-surface-sunken: #f5f8f6;
+  --hk-canvas: #eef2f0;
+
+  /* 语义状态 */
+  --hk-success: #1f9d6b;
+  --hk-warn: #c98a16;
+  --hk-danger: #c0463a;
+  --hk-info: #2f6f9e;
+
+  /* 圆角阶梯(偏大,统一) */
+  --hk-radius-sm: 6px;
+  --hk-radius-md: 10px;
+  --hk-radius-lg: 16px;
+  --hk-radius-pill: 999px;
+
+  /* 间距 4px 基数阶梯 */
+  --hk-space-1: 4px;
+  --hk-space-2: 8px;
+  --hk-space-3: 12px;
+  --hk-space-4: 16px;
+  --hk-space-5: 24px;
+  --hk-space-6: 32px;
+  --hk-space-8: 48px;
+
+  /* 阴影:低饱和柔光(非框架硬阴影) */
+  --hk-shadow-1: 0 1px 2px rgba(28, 38, 34, 0.06);
+  --hk-shadow-2: 0 4px 16px rgba(28, 38, 34, 0.08);
+  --hk-shadow-3: 0 12px 32px rgba(28, 38, 34, 0.12);
+
+  /* 字体:中文优先栈 + 等宽用于 key/数值 */
+  --hk-font-sans: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui,
+    -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --hk-font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, Menlo,
+    Consolas, monospace;
+
+  /* 层级 */
+  --hk-z-rail: 20;
+  --hk-z-topbar: 30;
+  --hk-z-overlay: 100;
+}
