@@ -25,6 +25,30 @@ type HCSFDispatchInput struct {
 	RawBody           []byte
 	BodyControls      DispatchBodyControls
 	InboundBetaTokens []string
+	// IdentityRewrite 是 R7 身份改写钩子(默认关 + fail-open),由接线方
+	// (gatewayhttp)注入。HCSF canonical 非流式路径里,上游真实 body 由
+	// MarshalToProviderRequest 从 canonical 结构重新 marshal 出来 —— anthropic
+	// marshal 不带 metadata 字段(且 RequestToCanonical 把 metadata 整段丢弃,
+	// 仅记 d1_metadata_not_yet_implemented loss),故在 dispatch 入口对 ex.body
+	// 做改写【流不过去】。本钩子把改写施加在【已 marshal 出的最终上游 body】上,
+	// 让 R7 也覆盖默认走的 HCSF 非流式路径(与流式 / legacy raw 两路并成三路闭环)。
+	//
+	// 语义保持单一来源:钩子实参就是 gatewayhttp 的 ex.identityRewrite —— 默认关
+	// 时它返回入参 body 的逐字节拷贝(no-op),故默认关时本路径字节等价;开关开 +
+	// 账号带 external id + secret 时才把 metadata.user_id 投影成池账号身份(对
+	// anthropic marshal 出的无 metadata body 走 inject 路径补出 metadata.user_id)。
+	// nil 时不施加(零行为变化)。
+	IdentityRewrite func([]byte) []byte
+}
+
+// applyIdentityRewrite 对已构造的上游 body 施加 R7 身份改写钩子(nil / 空 body 时
+// 原样返回)。改写逻辑与 fail-open / 默认关短路全由钩子自身保证,本函数只负责
+// "钩子存在且 body 非空时调用它"。
+func applyIdentityRewrite(body []byte, rewrite func([]byte) []byte) []byte {
+	if rewrite == nil || len(body) == 0 {
+		return body
+	}
+	return rewrite(body)
 }
 
 type hcsfDispatchInputKey struct{}
@@ -38,6 +62,13 @@ func hcsfDispatchInputFromContext(ctx context.Context) HCSFDispatchInput {
 		return in
 	}
 	return HCSFDispatchInput{}
+}
+
+// HCSFDispatchInputFromContext 是 hcsfDispatchInputFromContext 的导出形式,供
+// 接线方(gatewayhttp)的 dispatcher 实现在 DispatchHCSF 内取回本次 dispatch 的
+// 输入(含 R7 IdentityRewrite 钩子),以断言接线真发生。生产路径不依赖它。
+func HCSFDispatchInputFromContext(ctx context.Context) HCSFDispatchInput {
+	return hcsfDispatchInputFromContext(ctx)
 }
 
 type envelopeRequestBuilder interface {
@@ -112,7 +143,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		Credential:        in.Credential,
 		Account:           account,
 		InboundBetaTokens: in.InboundBetaTokens,
-	}, env, ingressFamily, endpointFamily, in.RawBody, in.BodyControls)
+	}, env, ingressFamily, endpointFamily, in.RawBody, in.IdentityRewrite, in.BodyControls)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequestFromEnvelope/BuildRequest 失败: %w", err)
 	}
@@ -206,7 +237,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	return out, nil
 }
 
-func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, ingressFamily string, endpointFamily string, nativeRawBody []byte, controlsOpt ...DispatchBodyControls) (*http.Request, error) {
+func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, ingressFamily string, endpointFamily string, nativeRawBody []byte, identityRewrite func([]byte) []byte, controlsOpt ...DispatchBodyControls) (*http.Request, error) {
 	var controls DispatchBodyControls
 	if len(controlsOpt) > 0 {
 		controls = controlsOpt[0]
@@ -233,6 +264,9 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		// tool_choice auto) before forwarding, else upstream 400; no-op (byte-
 		// identical) when the body has no active thinking field.
 		body = thinkingnorm.NormalizeThinkingValidity(body)
+		// R7 身份改写施加在最终上游 body 上(native-raw 子路:bedrock/codex)。
+		// 默认关时钩子 no-op = 字节等价。
+		body = applyIdentityRewrite(body, identityRewrite)
 		in.InboundBody = body
 		return a.BuildRequest(ctx, in)
 	}
@@ -248,6 +282,11 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 	if err != nil {
 		return nil, err
 	}
+	// R7 身份改写施加在最终上游 body 上(canonical-marshal 子路;anthropic 默认走此)。
+	// 此处 body 是 MarshalToProviderRequest 的产物 —— anthropic marshal 不带 metadata,
+	// 钩子开关开时走 inject 路径补出含池账号身份的 metadata.user_id;默认关时 no-op
+	// = 字节等价,保 HCSF 默认路径零行为变化。
+	body = applyIdentityRewrite(body, identityRewrite)
 	in.InboundBody = body
 	return a.BuildRequest(ctx, in)
 }

@@ -350,6 +350,9 @@ func (r credentialStoreRowValuesStub) Scan(dest ...interface{}) error {
 
 func resolveActiveRecordValues(activeModeCount int64) []any {
 	values := credentialRecordBaseValues()
+	// external_account_id 列(迁移 0141)在 resolveActiveQuery 末段位于 deleted_at
+	// 之后、active_mode_count 之前;mock 行须对齐此顺序,否则 Scan 计数不符。
+	values = append(values, (*string)(nil))
 	return append(values, activeModeCount, int64(1), false)
 }
 
@@ -372,6 +375,7 @@ func resolveInactiveRecordValues(credentialRowCount int64) []any {
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
 		pgtype.Timestamptz{}, (*string)(nil), (*string)(nil), int32(0),
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		(*string)(nil), // external_account_id 占位(no_serving_credential 分支返 NULL)
 		int64(0), credentialRowCount, true,
 	}
 }

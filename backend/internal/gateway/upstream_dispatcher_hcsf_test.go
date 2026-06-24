@@ -194,7 +194,7 @@ func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testi
 				UpstreamModelID: tc.model,
 				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
 				Account:         provider.AccountInfo{AccountID: 12, Platform: tc.provider, AccountType: "native"},
-			}, env, tc.family, tc.family, []byte(`{"raw_client_marker":"`+tc.marker+`"}`))
+			}, env, tc.family, tc.family, []byte(`{"raw_client_marker":"`+tc.marker+`"}`), nil)
 			if err != nil {
 				t.Fatalf("buildHCSFProviderRequest %s: %v", tc.family, err)
 			}
@@ -240,7 +240,7 @@ func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 				UpstreamModelID: "m",
 				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
 				Account:         provider.AccountInfo{AccountID: 12, Platform: "native", AccountType: "native"},
-			}, env, tc.ingressFamily, tc.endpointFamily, []byte(`{"raw":"body"}`))
+			}, env, tc.ingressFamily, tc.endpointFamily, []byte(`{"raw":"body"}`), nil)
 
 			if tc.wantErr && err == nil {
 				t.Fatalf("ingress=%q endpoint=%q 应 fail-closed,got nil err(垃圾 body 将直发上游)", tc.ingressFamily, tc.endpointFamily)
@@ -285,7 +285,7 @@ func TestBuildHCSFProviderRequestVertexFamiliesProduceCorrectOutboundBody(t *tes
 				Extra: map[string]string{"project_id": "p", "auth_header": "Authorization"},
 			},
 			Account: provider.AccountInfo{AccountID: 1, Platform: "vertex", AccountType: "vertex_sa"},
-		}, env, "vertex_gemini", "vertex_gemini", nil)
+		}, env, "vertex_gemini", "vertex_gemini", nil, nil)
 		if err != nil {
 			t.Fatalf("buildHCSFProviderRequest(vertex_gemini): %v", err)
 		}
@@ -321,7 +321,7 @@ func TestBuildHCSFProviderRequestVertexFamiliesProduceCorrectOutboundBody(t *tes
 				Extra: map[string]string{"project_id": "p", "location": "us-east5", "auth_header": "Authorization"},
 			},
 			Account: provider.AccountInfo{AccountID: 2, Platform: "vertex", AccountType: "vertex_anthropic"},
-		}, env, "vertex_anthropic", "vertex_anthropic", nil)
+		}, env, "vertex_anthropic", "vertex_anthropic", nil, nil)
 		if err != nil {
 			t.Fatalf("buildHCSFProviderRequest(vertex_anthropic): %v", err)
 		}

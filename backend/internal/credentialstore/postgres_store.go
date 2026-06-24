@@ -108,6 +108,10 @@ type CredentialRecord struct {
 	UpdatedAt               time.Time
 	DeletedAt               time.Time
 	PlaintextPayload        []byte
+	// ExternalAccountID 是上游 provider 账号标识（账号管理元数据，非密文，迁移
+	// 0141 列 account_credentials.external_account_id）。nil 表示未提取到。
+	// 由 ResolveActive 选出，供 provider vault 投影进 AccountInfo 供 R7 身份改写用。
+	ExternalAccountID *string
 }
 
 type CredentialMetadata struct {
@@ -618,6 +622,7 @@ WITH scoped_credentials AS (
 	       ac.access_expires_at, ac.refresh_expires_at, ac.refresh_before_at, ac.grace_until,
 	       ac.last_refresh_at, ac.last_refresh_outcome, ac.failure_class, ac.failure_count,
 	       ac.next_attempt_at, ac.created_at, ac.updated_at, ac.deleted_at,
+	       ac.external_account_id,
 	       pa.enabled AS provider_account_enabled
 		FROM account_credentials ac
 		JOIN provider_accounts pa
@@ -636,6 +641,7 @@ WITH scoped_credentials AS (
 		       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
 		       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
 		       next_attempt_at, created_at, updated_at, deleted_at,
+		       external_account_id,
 		       COUNT(*) OVER () AS active_mode_count
 		FROM scoped_credentials
 		WHERE provider_account_enabled
@@ -651,6 +657,7 @@ WITH scoped_credentials AS (
 		       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
 		       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
 		       next_attempt_at, created_at, updated_at, deleted_at,
+		       external_account_id,
 		       active_mode_count,
 		       (SELECT COUNT(*) FROM scoped_credentials) AS credential_row_count,
 		       FALSE AS no_serving_credential
@@ -670,7 +677,8 @@ WITH scoped_credentials AS (
 		       NULL::text AS last_refresh_outcome, NULL::text AS failure_class,
 		       0::integer AS failure_count, NULL::timestamptz AS next_attempt_at,
 		       NULL::timestamptz AS created_at, NULL::timestamptz AS updated_at,
-		       NULL::timestamptz AS deleted_at, 0::bigint AS active_mode_count,
+		       NULL::timestamptz AS deleted_at, NULL::text AS external_account_id,
+		       0::bigint AS active_mode_count,
 		       (SELECT COUNT(*) FROM scoped_credentials) AS credential_row_count,
 		       TRUE AS no_serving_credential
 		WHERE NOT EXISTS (SELECT 1 FROM selected_credential)
@@ -681,6 +689,7 @@ WITH scoped_credentials AS (
 	       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
 	       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
 	       next_attempt_at, created_at, updated_at, deleted_at,
+	       external_account_id,
 	       active_mode_count, credential_row_count, no_serving_credential
 	FROM selected_credential
 	UNION ALL
@@ -690,6 +699,7 @@ WITH scoped_credentials AS (
 	       access_expires_at, refresh_expires_at, refresh_before_at, grace_until,
 	       last_refresh_at, last_refresh_outcome, failure_class, failure_count,
 	       next_attempt_at, created_at, updated_at, deleted_at,
+	       external_account_id,
 	       active_mode_count, credential_row_count, no_serving_credential
 		FROM no_serving_credential`
 
@@ -713,6 +723,7 @@ func (s *Store) ResolveActive(ctx context.Context, tenantID, providerAccountID i
 		&accessExp, &refreshExp, &refreshBefore, &graceUntil,
 		&lastRefresh, &rec.LastRefreshOutcome, &rec.FailureClass, &rec.FailureCount,
 		&nextAttempt, &createdAt, &updatedAt, &deletedAt,
+		&rec.ExternalAccountID,
 		&activeModeCount, &credentialRowCount, &noServingCredential,
 	)
 	if err != nil {
