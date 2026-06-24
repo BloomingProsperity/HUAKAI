@@ -19,3 +19,8 @@ export async function createApiKey(body: CreateKeyRequest): Promise<CreateKeyRes
 export async function revokeApiKey(id: number, reason: string): Promise<RevokeResponse> {
   return apiSend<RevokeResponse>('DELETE', `${KEYS_PATH}/${id}`, { reason: reason.trim() || undefined })
 }
+
+/** 编辑 Key(PATCH 改名 + 到期三态):仅下发改动字段。 */
+export async function updateApiKey(id: number, body: object): Promise<unknown> {
+  return apiSend<unknown>('PATCH', `${KEYS_PATH}/${id}`, body)
+}
