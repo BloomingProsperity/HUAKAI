@@ -35,7 +35,7 @@ export const PIPELINE_NAV: NavSection[] = [
     key: 'routing',
     label: '路由与池',
     hint: '分组、权重、选号策略、健康与亲和',
-    items: [{ path: '/routing', label: '路由与池管理', built: false }],
+    items: [{ path: '/routing', label: '路由与池管理', built: true }],
   },
   {
     stage: 3,
