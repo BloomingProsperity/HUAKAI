@@ -34,14 +34,22 @@ where
     // force_h1=Some(true) 收窄 ALPN 为仅 http/1.1,从根消除 h2 升级;缺省(老客户端不发)= None
     // = 今日行为,由 profile.alpn 决定。
     let force_h1 = request.force_h1.unwrap_or(false);
-    let upstream =
-        match connect_upstream(&request.target_host, request.port, &profile, force_h1).await {
-            Ok(tls) => tls,
-            Err(error) => {
-                proto::write_control_ack(&mut ipc, &ControlAck::error(error.to_string())).await?;
-                return Ok(());
-            }
-        };
+    // proxy=Some 时,先经代理建隧道再在隧道之上握手;None=直连目标(今日行为)。
+    let upstream = match connect_upstream(
+        &request.target_host,
+        request.port,
+        &profile,
+        force_h1,
+        request.proxy.as_ref(),
+    )
+    .await
+    {
+        Ok(tls) => tls,
+        Err(error) => {
+            proto::write_control_ack(&mut ipc, &ControlAck::error(error.to_string())).await?;
+            return Ok(());
+        }
+    };
     proto::write_control_ack(&mut ipc, &ControlAck::ok()).await?;
     match upstream {
         ConnectedUpstream::Raw(mut tls) => {
@@ -68,8 +76,9 @@ async fn connect_upstream(
     port: u16,
     profile: &crate::profile::TlsProfile,
     force_h1: bool,
+    proxy: Option<&crate::proto::ProxySpec>,
 ) -> Result<ConnectedUpstream<tokio_boring::SslStream<TcpStream>>, ConnectError> {
-    let tls = connect_tls_upstream(target_host, port, profile, force_h1).await?;
+    let tls = connect_tls_upstream(target_host, port, profile, force_h1, proxy).await?;
     let selected_alpn = tls
         .ssl()
         .selected_alpn_protocol()
@@ -82,11 +91,23 @@ async fn connect_tls_upstream(
     port: u16,
     profile: &crate::profile::TlsProfile,
     force_h1: bool,
+    proxy: Option<&crate::proto::ProxySpec>,
 ) -> Result<tokio_boring::SslStream<TcpStream>, ConnectError> {
     boring_ctx::validate_expected_ja4_before_connect(profile, target_host).await?;
-    let tcp = TcpStream::connect((target_host, port)).await?;
+    // TCP 底座来源二选一:
+    //   - proxy=Some:经代理建隧道(HTTP CONNECT / SOCKS5),底层仍是一条 TcpStream(穿过代理),
+    //     出口 IP 走代理。隧道建立失败直接 `?` 向上抛错,**绝不**回退直连目标——否则真实出口 IP
+    //     泄露,破坏账号级 IP 隔离。这是本路径唯一的 TCP 建立点,不存在任何直连旁路。
+    //   - proxy=None:直连目标(今日行为)。
+    let tcp = match proxy {
+        Some(spec) => crate::proxy_tunnel::connect_through_proxy(spec, target_host, port).await?,
+        None => TcpStream::connect((target_host, port)).await?,
+    };
     // force_h1 时握手只广告 ALPN=http/1.1,服务端无从选 h2;selected_alpn 因此不可能等于 b"h2",
     // finish_upstream_connect 必走 Raw 隧道,H2 bridge 从根被绕开。
+    // 关键不变量:无论 tcp 来自直连还是代理隧道,这里的 config 与 target_host(SNI)完全相同,
+    // TLS 握手始终在该 TCP 底座【之上】进行——故指纹(JA3/JA4)与 validate_expected_ja4 逻辑
+    // 不因走代理而改变。
     let config = boring_ctx::connect_config_force_h1(profile, force_h1)?;
     tokio_boring::connect(config, target_host, tcp)
         .await
@@ -147,8 +168,8 @@ pub(crate) async fn connect_h2_upstream(
     ),
     ConnectError,
 > {
-    // 本 helper 专为 h2 路径,固定 force_h1=false 保持广告 profile.alpn(含 h2)。
-    let tls = connect_tls_upstream(target_host, port, profile, false).await?;
+    // 本 helper 专为 h2 路径,固定 force_h1=false 保持广告 profile.alpn(含 h2);proxy=None 直连。
+    let tls = connect_tls_upstream(target_host, port, profile, false, None).await?;
     start_profile_h2_connection(tls, profile).await
 }
 
@@ -190,6 +211,10 @@ pub enum ConnectError {
     H2(#[from] h2_settings::H2SettingsError),
     #[error(transparent)]
     H2Bridge(#[from] crate::h2_bridge::H2BridgeError),
+    // 代理隧道建立失败(拨号代理失败 / CONNECT 非 200 / SOCKS5 拒绝)。
+    // 经此向上抛错即 fail-closed:整连失败,绝不回退直连目标。
+    #[error(transparent)]
+    ProxyTunnel(#[from] crate::proxy_tunnel::ProxyTunnelError),
 }
 
 #[cfg(test)]
@@ -225,6 +250,7 @@ mod tests {
             port: 443,
             profile_id: "missing-profile".to_owned(),
             force_h1: None,
+            proxy: None,
         };
 
         crate::proto::write_control_request(&mut client, &req)
@@ -235,6 +261,72 @@ mod tests {
         assert!(!ack.ok);
         assert!(ack.error.unwrap_or_default().contains("unknown profile"));
         task.await.unwrap().unwrap();
+    }
+
+    // 抓的缺陷【安全核心 — 编排层 fail-closed,IP 不泄露的变异证】:
+    // 当拨号路径带 proxy 但代理连不上时,connect_tls_upstream 必须返回 error,且【绝不】绕过
+    // 代理直连目标(否则真实出口 IP 泄露,破坏账号级 IP 隔离)。这是代理分支所在的同一函数,
+    // 也是任何"代理失败 → 回退直连"旁路唯一可能被引入的地方。
+    // 设计:proxy.host 指向一个无人监听的端口(必失败);target 指向一个我们自己起的、真实
+    // 可达的本地监听器——若该函数在代理失败后回退 TcpStream::connect(target),该监听器就会被
+    // 连上(target_reached=true)。本测试断言函数返回 error 且 target 从未被连。
+    // 为让流程真正抵达代理分支(而非被前置 JA4 校验拦下),用一个【清空 JA4 期望】的 profile
+    // 克隆——JA4 期望另有 boring_ctx 专测覆盖,此处专注 fail-closed 不泄露。
+    // 变异证:把代理分支改成"代理失败 → TcpStream::connect(target)"(回退直连),本测试会因
+    // target_reached=true 而变红。
+    #[tokio::test]
+    async fn connect_tls_upstream_proxy_failure_fails_closed_no_direct_target() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let mut profile = profiles.get("anthropic-cli-mimicry-v1").unwrap().clone();
+        // 清空 JA4 期望,让 validate_expected_ja4_before_connect 早返回,流程抵达代理分支。
+        profile.ja4_a = None;
+        profile.ja4_b = None;
+        profile.ja4_c = None;
+
+        // 真实可达的"目标":若发生直连就会被连上。
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let target_reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tr = Arc::clone(&target_reached);
+        tokio::spawn(async move {
+            if target.accept().await.is_ok() {
+                tr.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        // 占一个端口再释放,得到一个几乎肯定无人监听的代理端口(连接会被拒)。
+        let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_port = dead.local_addr().unwrap().port();
+        drop(dead);
+
+        let proxy = crate::proto::ProxySpec {
+            scheme: "http".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: dead_port,
+            username: None,
+            password: None,
+        };
+        let target_host = target_addr.ip().to_string();
+        let result = super::connect_tls_upstream(
+            &target_host,
+            target_addr.port(),
+            &profile,
+            false,
+            Some(&proxy),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "代理连不上时必须 fail-closed 返回 error,绝不直连目标"
+        );
+        // 给可能存在的(错误的)直连一点时间命中目标监听器,再断言目标从未被连。
+        sleep(Duration::from_millis(50)).await;
+        assert!(
+            !target_reached.load(std::sync::atomic::Ordering::SeqCst),
+            "代理失败后绝不允许直连目标(真实出口 IP 泄露,破坏账号级 IP 隔离)"
+        );
     }
 
     #[tokio::test]
