@@ -1449,6 +1449,84 @@ func TestToolSurcharge_ConfiguredFires(t *testing.T) {
 	}
 }
 
+// TestToolSurcharge_PlatformSourceFiresEndToEnd 是【止漏端到端】测试,走真实生产
+// 装配会注入的 toolpricing.Source —— platformSource(平台默认价 + 无 override),
+// 而不是测试专用的裸 Table。它断言:WebSearch>0 时,带 source 的 Total 比无附加费的
+// token-only Total【严格变大】,且差值正好是按官方默认 $10/1000 计的附加费。
+//
+// 这一条覆盖了字段类型从 Table 改成 Source 之后,生产真正用的那种 source 也能把
+// 附加费打进 Total —— 即「漏钱被止住」。判别性 fixture:WebSearch=4 + 默认 $10/1000
+// → 附加费 0.04 ≠ 0,token-only Total 与 with-surcharge Total 必不相等。
+//
+// 变异:把 ToolPricingTable 改成 nil(或运维开关关 → 生产注入 nil)→ 附加费不再打进
+// Total、Total 退回 token-only 值,本测试 RED(严格变大断言失败)。
+func TestToolSurcharge_PlatformSourceFiresEndToEnd(t *testing.T) {
+	// 生产装配同款 source:平台默认价(web_search $10/1000)+ 无 override。
+	source := toolpricing.NewPlatformSource(toolpricing.DefaultToolPrices(), nil)
+
+	rateTables := &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+
+	withSurcharge := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables:           rateTables,
+			BillingPolicyVersion: "test-policy",
+			ToolPricingTable:     source,
+		},
+		ident:           auth.Identity{TenantID: 7, APIKeyID: 11},
+		req:             chatRequest{Model: "gpt-4o"},
+		upstreamModelID: "gpt-4o",
+		cacheVendor:     "openai",
+	}
+
+	// 同样 token 量、同样 4 次 web_search,但 source 为 nil(模拟开关关 / 旧漏钱行为)。
+	withoutSurcharge := &chatExecution{
+		ctx: withSurcharge.ctx,
+		d: ChatHandlerDeps{
+			RateTables:           rateTables,
+			BillingPolicyVersion: "test-policy",
+			ToolPricingTable:     nil,
+		},
+		ident:           withSurcharge.ident,
+		req:             withSurcharge.req,
+		upstreamModelID: withSurcharge.upstreamModelID,
+		cacheVendor:     withSurcharge.cacheVendor,
+	}
+
+	usage := completionUsageForCost{
+		InputTokens:  100,
+		OutputTokens: 200,
+		ToolCallCounts: toolpricing.ToolCallCounts{
+			WebSearch: 4, // 判别性:非零次数,附加费 = 10/1000 * 4 = 0.04 ≠ 0
+		},
+	}
+
+	withCost, err := withSurcharge.completionCost(usage)
+	if err != nil {
+		t.Fatalf("带 platformSource 计费出错: %v", err)
+	}
+	withoutCost, err := withoutSurcharge.completionCost(usage)
+	if err != nil {
+		t.Fatalf("无附加费(nil source)计费出错: %v", err)
+	}
+
+	// 1) 严格变大:带 source 的 Total 必须 > 无附加费的 Total(止漏的直接证据)。
+	if !withCost.Total.GreaterThan(withoutCost.Total) {
+		t.Fatalf("止漏失败:带 platformSource 的 Total(%s) 未严格大于无附加费 Total(%s) —— 工具调用仍加 $0",
+			withCost.Total, withoutCost.Total)
+	}
+
+	// 2) 差值精确:附加费 = 10.0/1000 * 4 * groupRatio(1.0) = 0.04。
+	gotSurcharge := withCost.Total.Sub(withoutCost.Total)
+	wantSurcharge := decimal.RequireFromString("0.04")
+	if !gotSurcharge.Equal(wantSurcharge) {
+		t.Fatalf("附加费差值=%s want %s(web_search 4 次 @ $10/1000)", gotSurcharge, wantSurcharge)
+	}
+}
+
 // estimateInputTokens must route the pre-request estimate through the real
 // tokenizer (default on) so an OpenAI model's predicted cost / quota reservation
 // reflect tiktoken, while the legacy path stays the byte estimate.

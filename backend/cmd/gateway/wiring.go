@@ -95,6 +95,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpresolve"
+	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
@@ -202,6 +203,10 @@ type deps struct {
 	usageRetentionWorker *usageretention.Worker
 	sessionCapRegistry   *sessioncap.Registry
 	recentReqRing        *recentreq.Ring
+	// toolPriceSource 提供工具调用附加费价表来源(NAPI-BILLING-01)。按运维开关
+	// HUAKAI_TOOL_SURCHARGE_ENABLED 构建:启用 → 带平台默认价的 platformSource;
+	// 关闭 → nil(退回旧 $0 行为)。接入 chatHandlerDeps 的 ToolPricingTable。
+	toolPriceSource toolpricing.Source
 	// moduleRegistry is the WAVE H2 runtime module-knowledge spine queried by the
 	// admin /admin/v1/modules endpoint and (later) the Hermes ops assistant. It is
 	// off every request hot path; populated near the end of buildGatewayRuntime
@@ -1194,6 +1199,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		selector:              selector,
 		sessionCapRegistry:    sessionCapRegistry,
 		recentReqRing:         recentReqRing,
+		toolPriceSource:       buildToolPriceSource(),
 		channelHealth:         channelHealthService,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool))),
