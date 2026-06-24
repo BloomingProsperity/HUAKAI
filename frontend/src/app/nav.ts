@@ -59,7 +59,7 @@ export const PIPELINE_NAV: NavSection[] = [
     key: 'tenants',
     label: '用户与租户',
     hint: '注册登录、权限、租户作用域',
-    items: [{ path: '/users', label: '用户与权限', built: false }],
+    items: [{ path: '/users', label: '用户与权限', built: true }],
   },
   {
     stage: 6,
