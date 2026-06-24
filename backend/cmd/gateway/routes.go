@@ -678,6 +678,10 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		ClientIPResolver:       d.clientIPResolver,
 		SessionCapRegistry:     d.sessionCapRegistry,
 		RecentReqRing:          d.recentReqRing,
+		// 工具调用附加费价表来源(NAPI-BILLING-01 止漏装配)。之前此字段从不赋值 →
+		// 生产恒 nil → 工具调用加 $0 漏钱;现按 HUAKAI_TOOL_SURCHARGE_ENABLED 接入
+		// platformSource(默认开,计费默认翻转,Owner 已授权)。
+		ToolPricingTable: d.toolPriceSource,
 	}
 }
 
