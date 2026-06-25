@@ -4,10 +4,25 @@ import { pathNeedsAdmin, tokenForPath } from './tokenForPath'
 const tokens = { sessionToken: 'sess-abc', adminToken: 'adm-xyz' }
 
 describe('tokenForPath', () => {
-  it('/v1/auth/* 不带 token(登录注册本身换取 token)', () => {
-    // 判别核心:登录端点必须不带 token。变异(去掉该分支)→ 会带 sessionToken,本断言 RED。
+  it('/v1/auth 公开端点(登录/注册/找回/验证/OAuth/Passkey登录)不带 token', () => {
+    // 判别核心:换取 token 前的端点必须不带 token。变异(去掉该分支)→ 会带 sessionToken,RED。
     expect(tokenForPath('/v1/auth/login', tokens)).toBeNull()
+    expect(tokenForPath('/v1/auth/login/2fa', tokens)).toBeNull()
     expect(tokenForPath('/v1/auth/register', tokens)).toBeNull()
+    expect(tokenForPath('/v1/auth/reset-password', tokens)).toBeNull()
+    expect(tokenForPath('/v1/auth/verify-email', tokens)).toBeNull()
+    expect(tokenForPath('/v1/auth/oauth-callback', tokens)).toBeNull()
+    expect(tokenForPath('/v1/auth/passkey/login/begin', tokens)).toBeNull()
+  })
+
+  it('/v1/auth 的 session 端点(me/2fa/logout)带 session token,不是公开', () => {
+    // 判别核心:这些是登录后端点,必须带 session token。变异(整段 /v1/auth→null)→ 个人资料/2FA 恒 401,RED。
+    expect(tokenForPath('/v1/auth/me', tokens)).toBe('sess-abc')
+    expect(tokenForPath('/v1/auth/me/password', tokens)).toBe('sess-abc')
+    expect(tokenForPath('/v1/auth/me/profile', tokens)).toBe('sess-abc')
+    expect(tokenForPath('/v1/auth/2fa/status', tokens)).toBe('sess-abc')
+    expect(tokenForPath('/v1/auth/2fa/enable', tokens)).toBe('sess-abc')
+    expect(tokenForPath('/v1/auth/logout', tokens)).toBe('sess-abc')
   })
 
   it('/admin/* 用 admin token', () => {
