@@ -1,28 +1,82 @@
 #!/usr/bin/env bash
 # quality-gate.sh — block NEW staticcheck findings or NEW deadcode vs committed baseline.
 # Ratchet: existing findings grandfathered (baseline files); only NEW issues fail CI.
-# Regenerate baseline after a cleanup:  scripts/quality-gate.sh --update
+#
+# baseline 只能下降(2026-06-25 加固,对应 renew 审查 S1「质量门允许 --update 洗 baseline」):
+#   - SC_MAX/DC_MAX 是 baseline 行数硬上限常量(=当前提交值)。baseline 一旦膨胀超过上限,
+#     正常 gate 直接失败 —— 杜绝用 `--update` 把新债洗进基线绕过门禁。
+#   - 上限只能在本脚本里显式调低(清债后);若确需调高,必须在 PR diff 里显式改这两个常量
+#     (= Owner 可见可审的批准面),并在 docs/process/reviews/DEFERRED-*.md 记录理由。
+#   - `--update` 在 CI 中被拒;本地也必须显式 HUAKAI_ALLOW_BASELINE_REWRITE=1 才能重写,
+#     且重写【不】自动调高上限 —— 膨胀的重写仍会被上限拦下,逼人要么修、要么显式改常量。
+# Regenerate baseline after a real cleanup(本地):
+#   HUAKAI_ALLOW_BASELINE_REWRITE=1 scripts/quality-gate.sh --update
 set -uo pipefail
-cd "$(cd "$(dirname "$0")/.." && pwd)"   # -> backend/
+cd "$(cd "$(dirname "$0")/.." && pwd)" # -> backend/
 export GOFLAGS=-buildvcs=false
 SC_BASE="scripts/staticcheck-baseline.txt"
 DC_BASE="scripts/deadcode-baseline.txt"
+# baseline 行数硬上限(只能在此显式调低;调高 = Owner-gated,见文件头注释)。
+# 2026-06-25 Owner 拍板「re-baseline 吸收+装锁+排清债」:把已红一阵、被 PR 无视合并的存量
+# 270 项新发现一次性吸收进 baseline(staticcheck 93→174 / deadcode 787→907),恢复 CI 真跑
+# go test;上限锁在吸收后的值防再膨胀;存量债排进 DEFERRED 排清(见 docs/process/reviews/)。
+SC_MAX=174
+DC_MAX=907
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
-command -v "$GOBIN/deadcode"    >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1
+command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1
 # normalize: strip :line:col so the baseline tolerates code movement; drop VCS/compile noise
-norm_sc(){ "$GOBIN/staticcheck" ./... 2>/dev/null | grep -vE "error obtaining VCS status|buildvcs|\(compile\)$" | sed -E "s/:[0-9]+:[0-9]+:/: /" | sort -u; }
-norm_dc(){ "$GOBIN/deadcode" ./... 2>/dev/null | sed -E "s/:[0-9]+:[0-9]+:/: /" | sort -u; }
+norm_sc() { "$GOBIN/staticcheck" ./... 2>/dev/null | grep -vE "error obtaining VCS status|buildvcs|\(compile\)$" | sed -E "s/:[0-9]+:[0-9]+:/: /" | sort -u; }
+norm_dc() { "$GOBIN/deadcode" ./... 2>/dev/null | sed -E "s/:[0-9]+:[0-9]+:/: /" | sort -u; }
+
 if [ "${1:-}" = "--update" ]; then
-  norm_sc > "$SC_BASE"; norm_dc > "$DC_BASE"
-  echo "updated baselines: staticcheck=$(wc -l < "$SC_BASE") deadcode=$(wc -l < "$DC_BASE")"; exit 0
+  # CI 中一律拒绝重写 baseline(GitHub Actions 自动设 CI=true),杜绝在流水线里洗债。
+  if [ -n "${CI:-}" ]; then
+    echo "REFUSED: 禁止在 CI 中用 --update 重写 baseline(会把债务洗白)。请本地修复后再提交。"
+    exit 2
+  fi
+  # 本地也要显式 opt-in,避免随手 --update 把债务祖父化。
+  if [ "${HUAKAI_ALLOW_BASELINE_REWRITE:-}" != "1" ]; then
+    echo "REFUSED: 重写 baseline 需显式 HUAKAI_ALLOW_BASELINE_REWRITE=1(确保是清债后的有意为之)。"
+    exit 2
+  fi
+  norm_sc >"$SC_BASE"
+  norm_dc >"$DC_BASE"
+  sc_n=$(wc -l <"$SC_BASE")
+  dc_n=$(wc -l <"$DC_BASE")
+  echo "updated baselines: staticcheck=$sc_n deadcode=$dc_n"
+  if [ "$sc_n" -gt "$SC_MAX" ] || [ "$dc_n" -gt "$DC_MAX" ]; then
+    echo "WARNING: 重写后 baseline 超过上限(SC_MAX=$SC_MAX DC_MAX=$DC_MAX),正常 gate 会失败。"
+    echo "         请改为清债;若确需放宽,显式调高脚本中 SC_MAX/DC_MAX 并在 DEFERRED 文档记录理由。"
+  fi
+  exit 0
 fi
+
 fail=0
+
+# 上限闸:baseline 行数不得超过硬上限(只能降)。膨胀(洗债)立即拦下。
+sc_n=$(wc -l <"$SC_BASE" 2>/dev/null || echo 0)
+dc_n=$(wc -l <"$DC_BASE" 2>/dev/null || echo 0)
+if [ "$sc_n" -gt "$SC_MAX" ]; then
+  echo "FAIL: staticcheck baseline 膨胀($sc_n > 上限 $SC_MAX)。baseline 只能下降;修复新增 finding,勿洗进基线。"
+  fail=1
+else echo "OK staticcheck baseline 行数 $sc_n ≤ 上限 $SC_MAX"; fi
+if [ "$dc_n" -gt "$DC_MAX" ]; then
+  echo "FAIL: deadcode baseline 膨胀($dc_n > 上限 $DC_MAX)。baseline 只能下降;接线/删除死代码,勿洗进基线。"
+  fail=1
+else echo "OK deadcode baseline 行数 $dc_n ≤ 上限 $DC_MAX"; fi
+
 new_sc=$(comm -23 <(norm_sc) <(sort -u "$SC_BASE" 2>/dev/null))
-if [ -n "$new_sc" ]; then echo "FAIL: new staticcheck findings (not in baseline):"; echo "$new_sc" | sed "s/^/  + /"; fail=1
-else echo "OK staticcheck: no new findings (baseline $(wc -l < "$SC_BASE"))"; fi
+if [ -n "$new_sc" ]; then
+  echo "FAIL: new staticcheck findings (not in baseline):"
+  echo "$new_sc" | sed "s/^/  + /"
+  fail=1
+else echo "OK staticcheck: no new findings (baseline $sc_n)"; fi
 new_dc=$(comm -23 <(norm_dc) <(sort -u "$DC_BASE" 2>/dev/null))
-if [ -n "$new_dc" ]; then echo "FAIL: new deadcode (not in baseline):"; echo "$new_dc" | sed "s/^/  + /"; fail=1
-else echo "OK deadcode: no new unreachable symbols (baseline $(wc -l < "$DC_BASE"))"; fi
+if [ -n "$new_dc" ]; then
+  echo "FAIL: new deadcode (not in baseline):"
+  echo "$new_dc" | sed "s/^/  + /"
+  fail=1
+else echo "OK deadcode: no new unreachable symbols (baseline $dc_n)"; fi
 [ "$fail" = 0 ] && echo "quality-gate PASS" || echo "quality-gate FAIL — fix new issues or justify+rebaseline"
 exit $fail
