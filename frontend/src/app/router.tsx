@@ -11,7 +11,7 @@ import { RoutingPage } from '../features/routing/RoutingPage'
 import { UsersPage } from '../features/users/UsersPage'
 import { UserDetailPage } from '../features/users/UserDetailPage'
 import { AuditPage } from '../features/audit/AuditPage'
-import { SystemPage } from '../features/system/SystemPage'
+import { SettingsCenterPage } from '../features/settings/SettingsCenterPage'
 import { ModelsPage } from '../features/models/ModelsPage'
 import { OpsPage } from '../features/ops/OpsPage'
 import { HealthPage } from '../features/health/HealthPage'
@@ -70,7 +70,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/admin/announcements': <AnnouncementsPage />,
   '/admin/moderation': <ModerationPage />,
   '/admin/pricing': <PricingAdminPage />,
-  '/system': <SystemPage />,
+  '/system': <SettingsCenterPage />,
   '/ops': <OpsPage />,
   '/health': <HealthPage />,
   '/security': <AuditPage />,
