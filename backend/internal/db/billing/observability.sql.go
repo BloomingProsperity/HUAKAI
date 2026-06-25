@@ -607,6 +607,7 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
   AND ($4::text IS NULL OR p.code = $4::text)
   AND ($5::bigint IS NULL OR blc.pooling_group_id = $5::bigint)
   AND ($6::bigint IS NULL OR ur.api_key_id = $6::bigint)
+  AND ($15::bigint IS NULL OR ur.user_id = $15::bigint)
   AND ($7::bigint IS NULL OR ur.provider_account_id = $7::bigint)
   AND ($8::text IS NULL OR ur.requested_model = $8::text)
   AND (
@@ -648,6 +649,8 @@ type ListUsageRecordsParams struct {
 	CursorCreatedAt           pgtype.Timestamptz `db:"cursor_created_at" json:"cursor_created_at"`
 	CursorID                  int64              `db:"cursor_id" json:"cursor_id"`
 	PageLimit                 int32              `db:"page_limit" json:"page_limit"`
+	// UserID:会话级用量端点新增的末位 narg($15);手改追加,不 renumber 现有 $1-$14。
+	UserID                    *int64             `db:"user_id" json:"user_id"`
 }
 
 type ListUsageRecordsRow struct {
@@ -705,6 +708,7 @@ func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsPara
 		arg.CursorCreatedAt,
 		arg.CursorID,
 		arg.PageLimit,
+		arg.UserID,
 	)
 	if err != nil {
 		return nil, err

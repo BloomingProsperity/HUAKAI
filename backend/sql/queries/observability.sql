@@ -29,6 +29,8 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
   AND (sqlc.narg(provider)::text IS NULL OR p.code = sqlc.narg(provider)::text)
   AND (sqlc.narg(pool_id)::bigint IS NULL OR blc.pooling_group_id = sqlc.narg(pool_id)::bigint)
   AND (sqlc.narg(api_key_id)::bigint IS NULL OR ur.api_key_id = sqlc.narg(api_key_id)::bigint)
+  -- user_id 过滤:供会话级用量端点按调用者用户(跨其所有 key)收敛,与 api_key_id 互补。
+  AND (sqlc.narg(user_id)::bigint IS NULL OR ur.user_id = sqlc.narg(user_id)::bigint)
   AND (sqlc.narg(provider_account_id)::bigint IS NULL OR ur.provider_account_id = sqlc.narg(provider_account_id)::bigint)
   AND (sqlc.narg(model)::text IS NULL OR ur.requested_model = sqlc.narg(model)::text)
   AND (
