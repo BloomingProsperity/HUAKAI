@@ -51,6 +51,7 @@ import { ForgotPasswordPage } from '../auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '../auth/ResetPasswordPage'
 import { EmailVerifyPage } from '../auth/EmailVerifyPage'
 import { RequireAuth } from '../auth/RequireAuth'
+import { ErrorFallback } from '../ui/ErrorFallback'
 import { PIPELINE_NAV } from './nav'
 
 /*
@@ -107,16 +108,20 @@ const domainRoutes = PIPELINE_NAV.flatMap((section) =>
   })),
 )
 
+// errorElement 挂在各路由:任一组件渲染期抛错时,react-router 用 ErrorFallback 替换该子树,
+// 而非让整个 SPA 白屏。根 `/` 路由的 errorElement 覆盖 AppShell 及全部认证子页。
+const errEl = <ErrorFallback />
+
 export const router = createBrowserRouter([
   // 公开壳:登录/找回/重置/邮箱验证/模型排行,壳外、无需鉴权。
-  { path: '/login', element: <LoginPage /> },
-  { path: '/oauth/callback', element: <OAuthCallbackPage /> },
-  { path: '/forgot-password', element: <ForgotPasswordPage /> },
-  { path: '/reset-password', element: <ResetPasswordPage /> },
-  { path: '/email-verify', element: <EmailVerifyPage /> },
-  { path: '/rankings', element: <RankingsPage /> },
-  { path: '/welcome', element: <LandingPage /> },
-  { path: '/legal', element: <LegalPage /> },
+  { path: '/login', element: <LoginPage />, errorElement: errEl },
+  { path: '/oauth/callback', element: <OAuthCallbackPage />, errorElement: errEl },
+  { path: '/forgot-password', element: <ForgotPasswordPage />, errorElement: errEl },
+  { path: '/reset-password', element: <ResetPasswordPage />, errorElement: errEl },
+  { path: '/email-verify', element: <EmailVerifyPage />, errorElement: errEl },
+  { path: '/rankings', element: <RankingsPage />, errorElement: errEl },
+  { path: '/welcome', element: <LandingPage />, errorElement: errEl },
+  { path: '/legal', element: <LegalPage />, errorElement: errEl },
   {
     path: '/',
     element: (
@@ -124,6 +129,7 @@ export const router = createBrowserRouter([
         <AppShell />
       </RequireAuth>
     ),
+    errorElement: errEl,
     children: [
       { index: true, element: <Dashboard /> },
       { path: '/accounts/:id', element: <AccountDetailPage /> },
