@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ApiError } from '../lib/api'
 import { login, loginTwoFactor, register } from './api'
-import { setAdminToken, setSession, useAuth } from './store'
+import { setAdminToken, setSessionTokens, useAuth, type AuthUser } from './store'
 
 /*
  * 登录 / 注册页(demo 链入口)。用户态登录拿 session_token 存入 auth store;运维者可另配 admin
@@ -21,6 +21,8 @@ export function LoginPage() {
   const [inviteCode, setInviteCode] = useState('')
   const [code, setCode] = useState('')
   const [challengeId, setChallengeId] = useState('')
+  // 2FA 第一步拿到的 user,完成第二步时写入 store(2FA 完成响应本身不含 user)。
+  const [pendingUser, setPendingUser] = useState<AuthUser | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -35,10 +37,11 @@ export function LoginPage() {
       const r = await login(tid(), email.trim(), password)
       if (r.kind === '2fa') {
         setChallengeId(r.challengeId)
+        setPendingUser(r.user)
         setMode('2fa')
         return
       }
-      setSession(r.token, r.user)
+      setSessionTokens(r.tokens, r.user ?? undefined)
       nav('/', { replace: true })
     } catch (e) {
       setError(authErr(e))
@@ -52,7 +55,7 @@ export function LoginPage() {
     setError(null)
     try {
       const r = await loginTwoFactor(challengeId, code.trim())
-      setSession(r.token, r.user)
+      setSessionTokens(r.tokens, pendingUser ?? undefined)
       nav('/', { replace: true })
     } catch (e) {
       setError(authErr(e))
