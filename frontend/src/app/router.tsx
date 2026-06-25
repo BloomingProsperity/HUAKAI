@@ -31,6 +31,7 @@ import { AffiliateAdminPage } from '../features/affiliateadmin/AffiliateAdminPag
 import { ModerationPage } from '../features/moderation/ModerationPage'
 import { ProfilePage } from '../features/profile/ProfilePage'
 import { NotificationsPage } from '../features/notifications/NotificationsPage'
+import { MediaTasksPage } from '../features/mediatasks/MediaTasksPage'
 import { AvailableChannelsPage } from '../features/availablechannels/AvailableChannelsPage'
 import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
 import { GroupsPage } from '../features/groups/GroupsPage'
@@ -58,6 +59,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/overview': <OverviewPage />,
   '/keys': <KeysPage />,
   '/usage': <UsagePage />,
+  '/media-tasks': <MediaTasksPage />,
   '/subscriptions': <SubscriptionsPage />,
   '/orders': <OrdersPage />,
   '/wallet': <WalletPage />,
