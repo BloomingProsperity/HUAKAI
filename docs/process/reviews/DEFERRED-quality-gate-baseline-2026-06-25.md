@@ -41,12 +41,24 @@ baseline 行数变化(staticcheck 2025.1.1 + deadcode,与 CI 同版本生成):
   的**零值初始化被 if/else 两分支必然覆盖**(非 money bug,newExpires 后续正常用于设过期),改 `var newExpires time.Time`
   纯重构、**money 行为不变**;subscription 单测 + 集成测试(含 store_postgres_admin_ops_integration)全通过。
 
-**批1 剩余(下批继续核实):**
-- `internal/gateway/dispatch_body_controls_test.go`、`internal/sensitiveobfuscate/*`:ST1018(字符串含 U+200B
-  零宽字符)——多为有意测试零宽字符,逐个核实后决定 escape 还是豁免。
-- `internal/provider/anthropic/session_id_test.go`、`internal/tlsfpresolve/resolver_test.go`:SA4000(`!=`/`==`
-  两侧表达式相同)——测试自反性写法,核实是否笔误。
-- `internal/rate/error_rule_eval_test.go`:SA1012(传 nil Context)——改 context.TODO()。
+**✅ 批2 已清(2026-06-25,staticcheck baseline 168→162,SC_MAX 同步降至 162):**
+
+- ✅ ST1018(零宽字符 U+200B):核实后——`sensitiveobfuscate/obfuscate.go`(生产)的 `zwsp` 常量 +
+  `obfuscate_test.go` 的同名常量 + `dispatch_body_controls_test.go` 的 `"b<ZWSP>anned"` 都是**有意**用零宽字符
+  (混淆器拿 ZWSP 把敏感词切开)。改用 `\u200b` 转义字面(字节序列完全相同),消除源码里不可见字符的隐患;
+  sensitiveobfuscate 单测全过、行为不变。
+- ✅ SA1012(传 nil Context)分两类:
+  - `error_rule_eval_test.go` ×5:惰性 nil ctx(`HandleUpstreamError` 内 `_ = ctx` 显式弃用),改 `context.TODO()`、行为不变。
+  - `clientid_test.go` / `postgres_proxy_resolver_unit_test.go` ×3:**有意 nil 安全测试**(测 nil-context/nil-receiver 不 panic、
+    不 fail-open),保留 nil,把无效的 `//nolint:staticcheck`(本仓无 golangci、对 standalone staticcheck 无效)改成
+    staticcheck 原生 `//lint:ignore SA1012`,使豁免真正生效。
+
+**批2 剩余(下批):**
+- `cmd/gateway/retry_budget_wiring_test.go`、`internal/auditledger/acceptance_test.go`、
+  `internal/provider/anthropic/session_id_test.go`、`internal/retrybudget/budget_test.go`、
+  `internal/tlsfpresolve/resolver_test.go`:SA4000(`!=`/`==` 两侧表达式相同)——已初步核实**均非笔误**(都是
+  有副作用的有状态调用 budget.Allow/cachedSessionID,或确定性守卫 auditLedgerAdvisoryLockKey/pickIndex 的
+  `f(x) != f(x)`),留下批用「两次调用各存变量再比」重构消除(避免 budget.Allow `||` 短路细节风险,故未混入本批)。
 
 ### B. 未接线的 money-coupled 子系统(Owner-gated 取舍)— deadcode
 

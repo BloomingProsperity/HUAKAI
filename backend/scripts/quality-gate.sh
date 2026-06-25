@@ -22,7 +22,10 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # go test;上限锁在吸收后的值防再膨胀;存量债排进 DEFERRED 排清(见 docs/process/reviews/)。
 # 2026-06-25 DEFERRED 批1 清债:修 gemini(SA4017/SA4006/ST1005)+ subscription newExpires(SA4006×2)
 # + sql/embed.go 注释假阳(SA9009),staticcheck baseline 174→168,上限同步调低。
-SC_MAX=168
+# 2026-06-25 DEFERRED 批2 清债:SA1012 nil ctx(error_rule_eval 5 处惰性 nil→context.TODO();
+# clientid/postgres 有意 nil 测试 //nolint 改 //lint:ignore SA1012)+ ST1018 把零宽字符 ZWSP
+# 字面改用 backslash-u200b 转义(obfuscate 生产 + 2 测试),baseline 168->162,上限同步调低。
+SC_MAX=162
 DC_MAX=907
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1

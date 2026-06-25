@@ -250,7 +250,8 @@ func TestIdentityContext_NoValueReturnsUnknown(t *testing.T) {
 }
 
 func TestIdentityContext_NilCtxSafe(t *testing.T) {
-	id, _ := IdentityFromContext(nil) //nolint:staticcheck // intentional nil test
+	//lint:ignore SA1012 故意传 nil 验证 nil-context 安全(测试本意,见函数名 NilCtxSafe)
+	id, _ := IdentityFromContext(nil)
 	if id != IdentityUnknown {
 		t.Errorf("nil ctx 应 IdentityUnknown，得 %q", id)
 	}

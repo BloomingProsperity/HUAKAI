@@ -21,7 +21,7 @@ import (
 	"unicode/utf8"
 )
 
-const zwsp = "​"
+const zwsp = "\u200b"
 
 // Matcher holds a compiled sensitive-word pattern. A zero-value Matcher (or
 // one built from an empty word list) is a safe no-op.
