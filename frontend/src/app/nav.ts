@@ -52,7 +52,10 @@ export const PIPELINE_NAV: NavSection[] = [
     shell: 'user',
     label: '用量与配额',
     hint: '调用日志、配额窗口',
-    items: [{ path: '/usage', label: '用量与日志', built: true }],
+    items: [
+      { path: '/usage', label: '用量与日志', built: true },
+      { path: '/available-channels', label: '可用渠道', built: true },
+    ],
   },
   {
     stage: 4,
@@ -68,6 +71,14 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/checkin', label: '每日签到', built: true },
       { path: '/affiliate', label: '推广返利', built: true },
     ],
+  },
+  {
+    stage: 5,
+    key: 'profile',
+    shell: 'user',
+    label: '账户',
+    hint: '个人资料、安全、2FA、通行密钥',
+    items: [{ path: '/profile', label: '个人资料·安全', built: true }],
   },
   // ── 运营台壳(admin token,平台运营) ──
   {
@@ -100,7 +111,10 @@ export const PIPELINE_NAV: NavSection[] = [
     shell: 'operator',
     label: '模型与定价',
     hint: '模型目录、倍率定价、公开价目',
-    items: [{ path: '/models', label: '模型与定价', built: true }],
+    items: [
+      { path: '/models', label: '模型与定价', built: true },
+      { path: '/admin/pricing', label: '定价设置', built: true },
+    ],
   },
   {
     stage: 5,
