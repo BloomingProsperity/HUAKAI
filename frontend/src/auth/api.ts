@@ -127,6 +127,26 @@ export async function oauthInit(
   return { authUrl: body.auth_url, provider: body.provider, state: body.state }
 }
 
+/**
+ * 完成社交登录(OAuth 回调第二步):POST /v1/auth/oauth-callback {tenant_id, provider, state, code}
+ * → {user, session}。后端用 state cookie 比对(防 CSRF)后用 code 向上游换取身份并建立本地会话。
+ * 返回 tokens + user 供 setSessionTokens。state/code 来自上游回跳 URL,provider/tenant 来自发起时暂存。
+ */
+export async function completeOAuth(
+  tenantId: number,
+  provider: string,
+  state: string,
+  code: string,
+): Promise<LoginResult> {
+  const body = await apiSend<LoginSuccess>('POST', '/v1/auth/oauth-callback', {
+    tenant_id: tenantId,
+    provider,
+    state,
+    code,
+  })
+  return { kind: 'ok', tokens: tokensFromSession(body.session), user: normUser(body.user) }
+}
+
 /** passkey login begin 响应(passkey.BeginResponse:session_id + public_key(WebAuthn 选项 JSON))。 */
 export interface PasskeyLoginBegin {
   session_id: string
