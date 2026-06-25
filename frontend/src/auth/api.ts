@@ -44,11 +44,19 @@ function tokensFromSession(session: RawIssuedTokens): SessionTokens {
   return tokens
 }
 
-export async function login(tenantId: number, email: string, password: string): Promise<LoginResult> {
+export async function login(
+  tenantId: number,
+  email: string,
+  password: string,
+  // 可选 captcha token:仅在站点启用人机验证且前端拿到 token 时传(后端 authLoginRequest.captcha_token,omitempty)。
+  // 省略/空白则该字段缺席,基础邮箱密码登录的请求体与增强前完全一致。
+  captchaToken?: string,
+): Promise<LoginResult> {
   const body = await apiSend<LoginSuccess | LoginTwoFactor>('POST', '/v1/auth/login', {
     tenant_id: tenantId,
     email,
     password,
+    captcha_token: captchaToken?.trim() || undefined,
   })
   if ('two_factor_required' in body && body.two_factor_required) {
     return { kind: '2fa', challengeId: body.challenge_id, user: normUser(body.user) }
@@ -75,6 +83,8 @@ export async function register(
   password: string,
   displayName: string,
   inviteCode: string,
+  // 可选 captcha token:同 login,仅启用人机验证且拿到 token 时传(authRegisterRequest.captcha_token,omitempty)。
+  captchaToken?: string,
 ): Promise<void> {
   await apiSend<unknown>('POST', '/v1/auth/register', {
     tenant_id: tenantId,
@@ -82,7 +92,72 @@ export async function register(
     password,
     display_name: displayName.trim() || undefined,
     invite_code: inviteCode.trim() || undefined,
+    captcha_token: captchaToken?.trim() || undefined,
   })
+}
+
+/*
+ * ============================ 增强:社交登录 / 通行密钥 ============================
+ * 以下端点均为登录前的公开端点(tokenForPath 对 /v1/auth/oauth、/v1/auth/passkey 返回 null,
+ * 不带 token),独立于基础邮箱密码登录;任一失败只影响该增强按钮,不影响基础流程。
+ */
+
+/** oauth-init 响应(auth_handler.go newAuthOAuthInitHandler → userauth.OAuthInitResult)。 */
+interface OAuthInitResponse {
+  provider: string
+  state: string
+  auth_url: string
+  expires_at?: string
+}
+
+/**
+ * 发起社交登录:POST /v1/auth/oauth-init {tenant_id, provider, redirect_uri?} → 返回授权跳转 URL。
+ * 调用方拿到 auth_url 后 window.location 跳转到上游授权页;后端已 set state cookie 防 CSRF。
+ */
+export async function oauthInit(
+  tenantId: number,
+  provider: string,
+  redirectUri?: string,
+): Promise<{ authUrl: string; provider: string; state: string }> {
+  const body = await apiSend<OAuthInitResponse>('POST', '/v1/auth/oauth-init', {
+    tenant_id: tenantId,
+    provider,
+    redirect_uri: redirectUri?.trim() || undefined,
+  })
+  return { authUrl: body.auth_url, provider: body.provider, state: body.state }
+}
+
+/** passkey login begin 响应(passkey.BeginResponse:session_id + public_key(WebAuthn 选项 JSON))。 */
+export interface PasskeyLoginBegin {
+  session_id: string
+  /** WebAuthn PublicKeyCredentialRequestOptions(内部 challenge/id 为 base64url 串)。 */
+  public_key: unknown
+  expires_at?: string
+}
+
+/**
+ * 通行密钥登录第一步:POST /v1/auth/passkey/login/begin {tenant_id} → WebAuthn 选项 + session_id。
+ * 公开端点(登录前),不带 token。
+ */
+export async function passkeyLoginBegin(tenantId: number): Promise<PasskeyLoginBegin> {
+  return apiSend<PasskeyLoginBegin>('POST', '/v1/auth/passkey/login/begin', { tenant_id: tenantId })
+}
+
+/**
+ * 通行密钥登录第二步:POST /v1/auth/passkey/login/finish {tenant_id, session_id, credential}
+ * → {user, session}(session 同登录的 IssuedTokens)。返回 tokens + user 供 setSessionTokens。
+ */
+export async function passkeyLoginFinish(
+  tenantId: number,
+  sessionId: string,
+  credential: unknown,
+): Promise<LoginResult> {
+  const body = await apiSend<LoginSuccess>('POST', '/v1/auth/passkey/login/finish', {
+    tenant_id: tenantId,
+    session_id: sessionId,
+    credential,
+  })
+  return { kind: 'ok', tokens: tokensFromSession(body.session), user: normUser(body.user) }
 }
 
 export async function logout(): Promise<void> {
