@@ -56,6 +56,7 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/usage', label: '用量与日志', built: true },
       { path: '/media-tasks', label: '媒体任务', built: true },
       { path: '/available-channels', label: '可用渠道', built: true },
+      { path: '/my-groups', label: '分组与倍率', built: true },
     ],
   },
   {
