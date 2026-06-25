@@ -40,6 +40,7 @@ import { UpstreamModelsPage } from '../features/upstreammodels/UpstreamModelsPag
 import { LandingPage } from '../features/landing/LandingPage'
 import { LegalPage } from '../features/legal/LegalPage'
 import { LoginPage } from '../auth/LoginPage'
+import { OAuthCallbackPage } from '../auth/OAuthCallbackPage'
 import { ForgotPasswordPage } from '../auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '../auth/ResetPasswordPage'
 import { EmailVerifyPage } from '../auth/EmailVerifyPage'
@@ -97,6 +98,7 @@ const domainRoutes = PIPELINE_NAV.flatMap((section) =>
 export const router = createBrowserRouter([
   // 公开壳:登录/找回/重置/邮箱验证/模型排行,壳外、无需鉴权。
   { path: '/login', element: <LoginPage /> },
+  { path: '/oauth/callback', element: <OAuthCallbackPage /> },
   { path: '/forgot-password', element: <ForgotPasswordPage /> },
   { path: '/reset-password', element: <ResetPasswordPage /> },
   { path: '/email-verify', element: <EmailVerifyPage /> },

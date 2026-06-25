@@ -13,6 +13,7 @@ import {
   validateRegisterForm,
   webAuthnSupported,
 } from './loginEnhance'
+import { writePendingOAuth } from './oauthCallback'
 
 /*
  * 登录 / 注册页。基础三流程(邮箱密码登录 / 2FA / 注册)保持原样,只在其上【叠加】增强:
@@ -135,7 +136,9 @@ export function LoginPage() {
     setBusy(true)
     setError(null)
     try {
-      const { authUrl } = await oauthInit(tid(), provider)
+      const { authUrl, state } = await oauthInit(tid(), provider)
+      // 上游回跳只带 code+state,不带 provider/tenant;先暂存上下文,回调页(/oauth/callback)取回完成换会话。
+      writePendingOAuth({ provider, tenantId: tid(), state })
       // 跳转到上游授权页;回调由后端 /v1/auth/oauth-callback 处理后再回前端。
       window.location.assign(authUrl)
     } catch (e) {
