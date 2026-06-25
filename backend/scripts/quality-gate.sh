@@ -25,7 +25,9 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # 2026-06-25 DEFERRED 批2 清债:SA1012 nil ctx(error_rule_eval 5 处惰性 nil→context.TODO();
 # clientid/postgres 有意 nil 测试 //nolint 改 //lint:ignore SA1012)+ ST1018 把零宽字符 ZWSP
 # 字面改用 backslash-u200b 转义(obfuscate 生产 + 2 测试),baseline 168->162,上限同步调低。
-SC_MAX=162
+# 2026-06-25 DEFERRED 批3 清债:SA4000 自反比较 ×6(均非笔误,有状态 budget.Allow/cachedSessionID
+# 或确定性守卫 auditLedgerAdvisoryLockKey/pickIndex)改「两次调用各存变量再比」,baseline 162->156,上限同步调低。
+SC_MAX=156
 DC_MAX=907
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1

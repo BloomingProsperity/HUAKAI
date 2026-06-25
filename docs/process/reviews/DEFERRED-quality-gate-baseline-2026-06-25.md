@@ -53,12 +53,22 @@ baseline 行数变化(staticcheck 2025.1.1 + deadcode,与 CI 同版本生成):
     不 fail-open),保留 nil,把无效的 `//nolint:staticcheck`(本仓无 golangci、对 standalone staticcheck 无效)改成
     staticcheck 原生 `//lint:ignore SA1012`,使豁免真正生效。
 
-**批2 剩余(下批):**
-- `cmd/gateway/retry_budget_wiring_test.go`、`internal/auditledger/acceptance_test.go`、
-  `internal/provider/anthropic/session_id_test.go`、`internal/retrybudget/budget_test.go`、
-  `internal/tlsfpresolve/resolver_test.go`:SA4000(`!=`/`==` 两侧表达式相同)——已初步核实**均非笔误**(都是
-  有副作用的有状态调用 budget.Allow/cachedSessionID,或确定性守卫 auditLedgerAdvisoryLockKey/pickIndex 的
-  `f(x) != f(x)`),留下批用「两次调用各存变量再比」重构消除(避免 budget.Allow `||` 短路细节风险,故未混入本批)。
+**✅ 批3 已清(2026-06-25,staticcheck baseline 162→156,SC_MAX 同步降至 156):**
+
+- ✅ SA4000(`!=`/`==`/`||` 两侧表达式相同)×6:`cmd/gateway/retry_budget_wiring_test.go`、
+  `internal/auditledger/acceptance_test.go`、`internal/provider/anthropic/session_id_test.go`(×2)、
+  `internal/retrybudget/budget_test.go`、`internal/tlsfpresolve/resolver_test.go`。核实**均非笔误**:都是
+  有副作用的有状态调用(budget.Allow 消费配额、cachedSessionID 缓存)或确定性守卫(auditLedgerAdvisoryLockKey/
+  pickIndex 须 `f(x)==f(x)`)。改用「两次调用各存变量再比」(`a:=f(); b:=f(); if a!=b`)消除假阳,
+  行为不变(受影响 5 包单测全过)。
+
+**⚠ 本批副产物:修了 #166 引入的 CI 失败回归。** 跑 cmd/gateway 测试时发现 `openapi_consistency_test`
+自 #166 起一直 fail——#166 加的 `/v1/me/usage-records` 路由没补进 `docs/openapi/openapi.yaml`(impl_only 非空)。
+已在 spec 补该端点声明(镜像 `/v1/me/usage`,改 session 鉴权+跨全部 key 描述),cmd/gateway 测试恢复绿。
+教训:**worktree 里裸 `staticcheck ./...` 因 buildvcs 报错跳过 cmd/gateway(被 norm_sc 的 `(compile)` 滤掉),
+须带 `GOFLAGS=-buildvcs=false` 或用 quality-gate.sh 才看得全;且加后端路由后必跑 `go test ./cmd/gateway/`(openapi 一致性)。**
+
+**staticcheck 类 A/批1-3 清债至此收尾**(剩类 B referral_reward money-coupled + 类 C deadcode,均 Owner-gated/需逐个判断)。
 
 ### B. 未接线的 money-coupled 子系统(Owner-gated 取舍)— deadcode
 

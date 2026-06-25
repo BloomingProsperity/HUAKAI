@@ -9,14 +9,19 @@ import (
 func TestCachedSessionID(t *testing.T) {
 	// MUTATION GUARD: ignoring the cache (fresh每次) makes the same account return
 	// different ids -> red (real Claude Code keeps one session id per session).
-	if cachedSessionID(7) != cachedSessionID(7) {
+	// 同账号两次取须命中缓存得同 id(有状态);分别捕获再判,避免 SA4000 误判为自反比较。
+	stableID7A := cachedSessionID(7)
+	stableID7B := cachedSessionID(7)
+	if stableID7A != stableID7B {
 		t.Fatal("session id must be stable per account")
 	}
 	if cachedSessionID(7) == cachedSessionID(8) {
 		t.Fatal("distinct accounts must get distinct session ids")
 	}
 	// accountID<=0 -> fresh each call
-	if cachedSessionID(0) == cachedSessionID(0) {
+	fresh0A := cachedSessionID(0)
+	fresh0B := cachedSessionID(0)
+	if fresh0A == fresh0B {
 		t.Fatal("accountID<=0 must yield a fresh id each call")
 	}
 	id := cachedSessionID(7)

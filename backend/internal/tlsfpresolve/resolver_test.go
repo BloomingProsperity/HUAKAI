@@ -105,7 +105,10 @@ func TestResolver_ZeroAccount_Builtin(t *testing.T) {
 
 func TestPickIndex_DeterministicAndSpread(t *testing.T) {
 	for _, id := range []int64{1, 2, 99} {
-		if pickIndex(id, 4) != pickIndex(id, 4) {
+		// 同入参两次调用须得同 index(确定性守卫);分别捕获再判,避免 SA4000 误判为自反比较。
+		idxA := pickIndex(id, 4)
+		idxB := pickIndex(id, 4)
+		if idxA != idxB {
 			t.Fatalf("pickIndex not deterministic for account %d", id)
 		}
 	}
