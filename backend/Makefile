@@ -1,9 +1,11 @@
 .PHONY: build test perf fmt vet tidy generate migrate-up migrate-down run docker-build clean help \
-	db-up db-down db-reset db-migrate db-psql test-integration
+	db-up db-down db-reset db-migrate db-psql test-integration embed-assets build-embed
 
 GO          ?= go
 BIN_DIR     := bin
 GATEWAY_BIN := $(BIN_DIR)/huakai-gateway
+# 仓库根目录(本 Makefile 位于 backend/ 下)。
+REPO_ROOT   := $(abspath ..)
 
 # Database URL for migrations (override per environment)
 DATABASE_URL ?= postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable
@@ -14,6 +16,13 @@ help: ## Show this help.
 build: ## Build the gateway binary.
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -o $(GATEWAY_BIN) ./cmd/gateway
+
+embed-assets: ## Build the frontend SPA and copy it into the go:embed dist dir.
+	$(REPO_ROOT)/scripts/build-frontend-embed.sh
+
+build-embed: embed-assets ## Build the gateway binary with the embedded SPA (-tags embed).
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -tags embed -o $(GATEWAY_BIN) ./cmd/gateway
 
 test: ## Run all tests.
 	$(GO) test ./... -race -count=1
