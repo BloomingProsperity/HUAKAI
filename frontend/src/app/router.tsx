@@ -31,6 +31,7 @@ import { AffiliateAdminPage } from '../features/affiliateadmin/AffiliateAdminPag
 import { ModerationPage } from '../features/moderation/ModerationPage'
 import { ProfilePage } from '../features/profile/ProfilePage'
 import { NotificationsPage } from '../features/notifications/NotificationsPage'
+import { UserActivityPage } from '../features/useractivity/UserActivityPage'
 import { MediaTasksPage } from '../features/mediatasks/MediaTasksPage'
 import { AvailableChannelsPage } from '../features/availablechannels/AvailableChannelsPage'
 import { AlertingPage } from '../features/alerting/AlertingPage'
@@ -70,6 +71,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/available-channels': <AvailableChannelsPage />,
   '/profile': <ProfilePage />,
   '/notifications': <NotificationsPage />,
+  '/activity': <UserActivityPage />,
   // 运营台壳
   '/accounts': <AccountsPage />,
   '/routing': <RoutingPage />,
