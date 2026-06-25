@@ -76,6 +76,7 @@ export const PIPELINE_NAV: NavSection[] = [
     items: [
       { path: '/system', label: '系统设置', built: true },
       { path: '/ops', label: '运维大屏', built: true },
+      { path: '/health', label: '系统健康', built: true },
     ],
   },
   {
