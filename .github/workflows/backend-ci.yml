@@ -71,6 +71,9 @@ jobs:
       - name: go test -race -count=1
         working-directory: backend
         env:
+          # 同时注入两个 env 名:多数 DB 测试读 HUAKAI_DATABASE_URL,少数读 HUAKAI_TEST_DATABASE_URL。
+          # 早前只设后者,导致读前者的测试在 CI 里因 env 缺失而静默 t.Skip(假绿)。两个都设消除歧义。
+          HUAKAI_DATABASE_URL: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
           HUAKAI_TEST_DATABASE_URL: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
           HUAKAI_SKIP_PERF_LATENCY_GATE: "1"
         run: go test -race -count=1 -timeout 5m ./...
@@ -81,5 +84,52 @@ jobs:
           HUAKAI_TEST_DATABASE_URL: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
         run: bash scripts/perf-gate.sh
 
-# 注:首版 CI 只跑 test + race + migration round-trip。
+  # 独立 job:带 integration_pg 标签的钱路/退款/配额/跨租户测试。早前主 CI 不带 tag,
+  # 这 55 个包(124 测试文件)从不在 CI 编译运行 = 假绿。本 job 用 scripts/integration-pg.sh
+  # 为每个包克隆一份纯净迁移库串行跑(这些测试假设独占纯净库,共享一个库会跨包污染假阳)。
+  integration-pg:
+    name: integration_pg (per-package isolated DB; money/quota/cross-tenant)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: huakai
+          POSTGRES_PASSWORD: huakai
+          POSTGRES_DB: huakai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U huakai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.11'
+          cache: true
+
+      - name: Install golang-migrate
+        run: |
+          curl -L https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-amd64.tar.gz \
+            -o /tmp/migrate.tar.gz
+          tar -xzf /tmp/migrate.tar.gz -C /tmp
+          sudo mv /tmp/migrate /usr/local/bin/migrate
+
+      - name: integration_pg (每包独占纯净迁移库,串行,带 race)
+        working-directory: backend
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: huakai
+          PGPASSWORD: huakai
+          HUAKAI_IT_TIMEOUT: 5m
+        run: bash scripts/integration-pg.sh
+
+# 注:首版 CI 跑 test + race + migration round-trip + integration_pg(独立 job)。
 # golangci-lint 后续加(需先有 .golangci.yml 配置避免一次性 N 千警告)。
