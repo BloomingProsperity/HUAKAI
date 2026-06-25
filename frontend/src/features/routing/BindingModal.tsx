@@ -7,6 +7,7 @@ import {
   EMPTY_CREATE_BINDING,
   editFormFromBinding,
   FALLBACK_CLASSES,
+  hasBindingChanges,
   SELECTION_MODES,
   type BindingCreateForm,
   type BindingEditForm,
@@ -43,13 +44,13 @@ export function BindingModal({
     setError(null)
     try {
       if (editing && binding) {
-        const patch = buildBindingUpdate(binding, editForm)
-        if (Object.keys(patch).length === 0) {
+        if (!hasBindingChanges(binding, editForm)) {
           setError('未修改任何字段')
           setBusy(false)
           return
         }
-        await updateBinding(binding.id, patch)
+        // 回填全字段(后端 PATCH 是整行覆盖,只发 diff 会重置省略字段)。
+        await updateBinding(binding.id, buildBindingUpdate(binding, editForm))
       } else {
         const built = buildBindingCreate(createForm)
         if ('error' in built) {

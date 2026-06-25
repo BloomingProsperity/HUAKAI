@@ -49,18 +49,40 @@ function parseInt0(s: string): number | undefined {
 }
 
 /**
- * 构造 PATCH 体:只发与原绑定【不同】的字段(避免无谓写入);priority/weight 非负整数才带。
+ * 构造 PATCH 体。**后端把 PATCH 当整行覆盖、省略字段重置默认**(见 UpdateBindingRequest 注释),
+ * 所以这里【回填当前全部已知字段】+ 套用表单改动,而不是只发 diff —— 否则单字段编辑会把
+ * 其它字段静默重置(weight→1、selection_mode→strict_priority 等)造成数据损坏。
+ * priority/weight 表单值非法时回退到原值(不把非法值写下去)。
+ * 注:后端还有 max_parallel_requests/disabled_reason/生效窗等字段当前列表 DTO 不返回,前端无从回填,
+ * 这些仍会被后端清空——属残留,需后端改 COALESCE 部分更新(本前端修复覆盖所有 UI 可见字段)。
  */
 export function buildBindingUpdate(original: PoolBinding, form: BindingEditForm): UpdateBindingRequest {
-  const req: UpdateBindingRequest = {}
   const priority = parseInt0(form.priority)
-  if (priority !== undefined && priority !== original.priority) req.priority = priority
   const weight = parseInt0(form.weight)
-  if (weight !== undefined && weight !== original.weight) req.weight = weight
-  if (form.selectionMode && form.selectionMode !== original.selection_mode) req.selection_mode = form.selectionMode
-  if (form.fallbackClass && form.fallbackClass !== original.fallback_class) req.fallback_class = form.fallbackClass
-  if (form.enabled !== original.enabled) req.enabled = form.enabled
-  return req
+  return {
+    priority: priority ?? original.priority,
+    weight: weight ?? original.weight,
+    selection_mode: form.selectionMode || original.selection_mode,
+    fallback_class: form.fallbackClass || original.fallback_class,
+    enabled: form.enabled,
+    // 回填可空字段的当前值,避免被后端整行覆盖时清空。
+    provider_model_id_override: original.provider_model_id_override ?? null,
+    rpm_limit: original.rpm_limit ?? null,
+    tpm_limit: original.tpm_limit ?? null,
+  }
+}
+
+/** 是否有可见字段改动(供模态判断"无改动则跳过提交",因 buildBindingUpdate 现在恒返回全字段)。 */
+export function hasBindingChanges(original: PoolBinding, form: BindingEditForm): boolean {
+  const priority = parseInt0(form.priority)
+  const weight = parseInt0(form.weight)
+  return (
+    (priority !== undefined && priority !== original.priority) ||
+    (weight !== undefined && weight !== original.weight) ||
+    form.selectionMode !== original.selection_mode ||
+    form.fallbackClass !== original.fallback_class ||
+    form.enabled !== original.enabled
+  )
 }
 
 export interface BindingCreateForm {
