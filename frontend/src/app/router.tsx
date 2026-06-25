@@ -33,6 +33,11 @@ import { ModerationPage } from '../features/moderation/ModerationPage'
 import { ProfilePage } from '../features/profile/ProfilePage'
 import { AvailableChannelsPage } from '../features/availablechannels/AvailableChannelsPage'
 import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
+import { GroupsPage } from '../features/groups/GroupsPage'
+import { ModelRegistryPage } from '../features/modelregistry/ModelRegistryPage'
+import { VersionPage } from '../features/version/VersionPage'
+import { LogsDiagPage } from '../features/logsdiag/LogsDiagPage'
+import { UpstreamModelsPage } from '../features/upstreammodels/UpstreamModelsPage'
 import { LandingPage } from '../features/landing/LandingPage'
 import { LegalPage } from '../features/legal/LegalPage'
 import { LoginPage } from '../auth/LoginPage'
@@ -70,6 +75,11 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/admin/announcements': <AnnouncementsPage />,
   '/admin/moderation': <ModerationPage />,
   '/admin/pricing': <PricingAdminPage />,
+  '/admin/groups': <GroupsPage />,
+  '/admin/model-registry': <ModelRegistryPage />,
+  '/admin/model-sync': <UpstreamModelsPage />,
+  '/admin/version': <VersionPage />,
+  '/admin/logs': <LogsDiagPage />,
   '/system': <SettingsCenterPage />,
   '/ops': <OpsPage />,
   '/health': <HealthPage />,
