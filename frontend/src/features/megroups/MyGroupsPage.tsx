@@ -1,0 +1,112 @@
+import { useEffect, useState } from 'react'
+import { ApiError } from '../../lib/api'
+import { StatusBadge } from '../../ui/StatusBadge'
+import { getMyGroups } from './api'
+import { ratioDisplay, ratioTone, userGroupLabel } from './megroups'
+import type { MeGroupItem } from './types'
+
+/*
+ * 我的分组与倍率(用户门户 · 用量与配额)。只读展示当前用户等级(user_group)及其可达的模型分组,
+ * 含计费倍率(仅运维标记公开者显示,否则「未公开」、绝不臆造默认值)。session 鉴权,身份后端派生。
+ * 真码端点:backend/internal/megroupshttp/handler.go:66、backend/cmd/gateway/routes.go:208。
+ */
+export function MyGroupsPage() {
+  const [userGroup, setUserGroup] = useState('')
+  const [items, setItems] = useState<MeGroupItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshNonce, setRefreshNonce] = useState(0)
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    getMyGroups(ctrl.signal)
+      .then((resp) => {
+        setUserGroup(resp.user_group)
+        setItems(resp.items)
+      })
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return
+        setError(e instanceof ApiError ? `${e.message}(${e.code})` : '加载分组信息失败')
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [refreshNonce])
+
+  return (
+    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+          <h1 style={{ fontSize: 22 }}>分组与倍率</h1>
+          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+            你的等级可调度的模型分组及计费倍率。倍率仅在运营方公开时展示。
+          </p>
+        </div>
+        <button type="button" onClick={() => setRefreshNonce((n) => n + 1)} style={ghostBtn} disabled={loading}>
+          刷新
+        </button>
+      </header>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 13, color: 'var(--hk-ink-700)' }}>
+        <span style={{ color: 'var(--hk-ink-500)' }}>当前等级</span>
+        {loading && !userGroup ? <span style={{ color: 'var(--hk-ink-300)' }}>…</span> : <StatusBadge tone="ok">{userGroupLabel(userGroup)}</StatusBadge>}
+      </div>
+
+      {error && <div style={errBox}>{error}</div>}
+
+      <div style={card}>
+        {loading && items.length === 0 ? (
+          <Empty>加载中…</Empty>
+        ) : items.length === 0 ? (
+          <Empty>当前等级暂无可调度的模型分组。如需更高权益,请联系运营方或升级套餐。</Empty>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {['分组名称', '分组 ID', '计费倍率'].map((h) => (
+                    <th key={h} style={th}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((g) => (
+                  <tr key={g.pool_group_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                    <td style={td}>
+                      <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{g.name || `分组 #${g.pool_group_id}`}</span>
+                    </td>
+                    <td style={{ ...td, color: 'var(--hk-ink-500)' }}>
+                      <code style={{ fontSize: 12 }}>{g.pool_group_id}</code>
+                    </td>
+                    <td style={td}>
+                      <StatusBadge tone={ratioTone(g)}>{ratioDisplay(g)}</StatusBadge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <p style={{ color: 'var(--hk-ink-300)', fontSize: 12, margin: 0 }}>
+        计费倍率作用于该分组的基础价上;「未公开」表示运营方未对外披露该分组倍率。
+      </p>
+    </div>
+  )
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+}
+
+const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
+const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
+const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
+const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
