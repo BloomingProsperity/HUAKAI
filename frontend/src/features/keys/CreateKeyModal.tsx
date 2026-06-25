@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { createApiKey } from './api'
+import { KeyIntegrations } from './KeyIntegrations'
 import {
   buildCreateKeyRequest,
   EMPTY_KEY_FORM,
@@ -75,6 +76,7 @@ export function CreateKeyModal({ onClose, onCreated }: { onClose: () => void; on
             <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>
               前缀 <code>{created.key_prefix}</code> · 状态 {created.status}
             </div>
+            <KeyIntegrations plaintext={created.plaintext} keyName={form.name} />
             <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
               <button type="button" onClick={copy} style={ghost}>
                 {copied ? '已复制' : '复制明文'}
