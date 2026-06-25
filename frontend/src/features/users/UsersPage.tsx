@@ -5,11 +5,11 @@ import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
 import { createUser, listUsers, setUserStatus, unlockUser } from './api'
 import {
   buildCreateUser,
+  CREATE_USER_ROLES,
   EMPTY_CREATE_USER,
   roleLabel,
   statusLabel,
   toggleStatusTarget,
-  USER_ROLES,
   type CreateUserForm,
 } from './users'
 import type { AdminUser } from './types'
@@ -128,7 +128,6 @@ export function UsersPage() {
                         <Link to={`/users/${u.id}`} style={{ fontWeight: 600, color: 'var(--hk-primary-700)', textDecoration: 'none' }}>
                           {u.email}
                         </Link>
-                        {u.display_name && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{u.display_name}</span>}
                       </div>
                     </td>
                     <td style={td}>{roleLabel(u.role)}</td>
@@ -198,7 +197,7 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
         </Field>
         <Field label="角色">
           <select value={form.role} onChange={(e) => set('role', e.target.value)} style={inp}>
-            {USER_ROLES.map((r) => (
+            {CREATE_USER_ROLES.map((r) => (
               <option key={r.value} value={r.value}>
                 {r.label}
               </option>

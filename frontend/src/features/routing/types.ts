@@ -33,11 +33,20 @@ export interface CreateBindingRequest {
   fallback_class?: string
 }
 
-/** 局部更新(PATCH):只发改了的字段。 */
+/**
+ * 更新(PATCH)。**重要**:后端把 PATCH 当整行覆盖,省略字段会被重置成硬编码默认值
+ * (priority→100/weight→1/selection_mode→strict_priority/fallback_class→normal/enabled→true,
+ * 且 provider_model_id_override/rpm_limit/tpm_limit 等省略即清空)。因此前端必须回填【当前全部
+ * 已知字段】再带上改动,不能只发 diff,否则单字段编辑会静默抹掉其它字段(数据损坏)。
+ */
 export interface UpdateBindingRequest {
-  priority?: number
-  weight?: number
-  selection_mode?: string
-  fallback_class?: string
-  enabled?: boolean
+  priority: number
+  weight: number
+  selection_mode: string
+  fallback_class: string
+  enabled: boolean
+  // 可空字段也回填当前值,避免被后端清空(null 表示当前即为空)。
+  provider_model_id_override?: string | null
+  rpm_limit?: number | null
+  tpm_limit?: number | null
 }

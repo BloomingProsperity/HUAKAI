@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { buildBindingCreate, buildBindingUpdate, editFormFromBinding, EMPTY_CREATE_BINDING } from './selection'
+import {
+  buildBindingCreate,
+  buildBindingUpdate,
+  editFormFromBinding,
+  EMPTY_CREATE_BINDING,
+  hasBindingChanges,
+} from './selection'
 import type { PoolBinding } from './types'
 
 const binding: PoolBinding = {
@@ -13,28 +19,55 @@ const binding: PoolBinding = {
   enabled: true,
 }
 
-describe('buildBindingUpdate', () => {
-  it('未改任何字段 → 空 PATCH(不无谓写入)', () => {
-    const req = buildBindingUpdate(binding, editFormFromBinding(binding))
-    expect(req).toEqual({})
-  })
+// 带可空字段的绑定:用于验证回填不会清空它们。
+const richBinding: PoolBinding = {
+  ...binding,
+  provider_model_id_override: 'gpt-4o-real',
+  rpm_limit: 60,
+  tpm_limit: 90000,
+}
 
-  it('只发改了的字段:切到加权 + 改权重', () => {
+describe('buildBindingUpdate(整行回填,防后端覆盖重置)', () => {
+  it('只改权重 → 仍回填其它当前字段(防 selection_mode/fallback/enabled 被重置默认)', () => {
     const req = buildBindingUpdate(binding, {
       priority: '0',
       weight: '5',
-      selectionMode: 'priority_weighted',
+      selectionMode: 'strict_priority',
       fallbackClass: 'normal',
       enabled: true,
     })
-    // 判别核心:只带 weight + selection_mode,不带 priority/fallback/enabled(未变)。
-    expect(req).toEqual({ weight: 5, selection_mode: 'priority_weighted' })
-    expect('priority' in req).toBe(false)
+    // 判别核心:即便只改 weight,其它字段也必须回填当前值,不能省略(省略=后端重置默认)。
+    expect(req.weight).toBe(5)
+    expect(req.priority).toBe(0)
+    expect(req.selection_mode).toBe('strict_priority')
+    expect(req.fallback_class).toBe('normal')
+    expect(req.enabled).toBe(true)
   })
 
-  it('停用 → 只带 enabled:false', () => {
-    const req = buildBindingUpdate(binding, { ...editFormFromBinding(binding), enabled: false })
-    expect(req).toEqual({ enabled: false })
+  it('回填可空字段当前值(provider_model_id_override/rpm/tpm),不被清空', () => {
+    // 判别核心:富字段绑定改 priority 时必须回填 override/rpm/tpm,否则后端整行覆盖会清空。
+    const req = buildBindingUpdate(richBinding, { ...editFormFromBinding(richBinding), priority: '3' })
+    expect(req.priority).toBe(3)
+    expect(req.provider_model_id_override).toBe('gpt-4o-real')
+    expect(req.rpm_limit).toBe(60)
+    expect(req.tpm_limit).toBe(90000)
+  })
+
+  it('priority/weight 表单非法 → 回退原值(不写非法值)', () => {
+    const req = buildBindingUpdate(binding, { ...editFormFromBinding(binding), priority: 'abc', weight: '-2' })
+    expect(req.priority).toBe(0)
+    expect(req.weight).toBe(1)
+  })
+})
+
+describe('hasBindingChanges', () => {
+  it('完全未改 → false', () => {
+    expect(hasBindingChanges(binding, editFormFromBinding(binding))).toBe(false)
+  })
+  it('改了任一可见字段 → true', () => {
+    expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), weight: '5' })).toBe(true)
+    expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), enabled: false })).toBe(true)
+    expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), selectionMode: 'priority_weighted' })).toBe(true)
   })
 })
 
