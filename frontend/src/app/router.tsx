@@ -34,6 +34,7 @@ import { NotificationsPage } from '../features/notifications/NotificationsPage'
 import { UserActivityPage } from '../features/useractivity/UserActivityPage'
 import { MediaTasksPage } from '../features/mediatasks/MediaTasksPage'
 import { AvailableChannelsPage } from '../features/availablechannels/AvailableChannelsPage'
+import { MyGroupsPage } from '../features/megroups/MyGroupsPage'
 import { AlertingPage } from '../features/alerting/AlertingPage'
 import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
 import { GroupsPage } from '../features/groups/GroupsPage'
@@ -69,6 +70,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/checkin': <CheckinPage />,
   '/affiliate': <AffiliatePage />,
   '/available-channels': <AvailableChannelsPage />,
+  '/my-groups': <MyGroupsPage />,
   '/profile': <ProfilePage />,
   '/notifications': <NotificationsPage />,
   '/activity': <UserActivityPage />,
