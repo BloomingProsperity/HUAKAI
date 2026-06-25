@@ -9,7 +9,7 @@ export interface AdminUser {
   status: string
   balance: string
   created_at: string
-  display_name?: string
+  // 注:列表端点 userBody 不返回 display_name(routes.go),故列表项不含该字段,避免死读。
 }
 
 export interface UserListResponse {

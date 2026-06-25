@@ -23,12 +23,18 @@ export async function getProviderAccount(id: number, signal?: AbortSignal): Prom
   return apiGet<ProviderAccount>(`${ACCOUNTS_PATH}/${id}`, { signal })
 }
 
-/** 启用/停用账号:PATCH /admin/v1/provider-accounts/{id}/enabled。reason 进审计。 */
+/**
+ * 启用/停用账号:PATCH /admin/v1/provider-accounts/{id}/enabled。reason 进审计。
+ * 注:该端点只回精简 {id, enabled}(非完整账号 DTO),不能直接拿来替换详情页的 account
+ * (否则 tags/model_allow_list/capability_flags 等字段丢失,渲染读 .length 会崩)。
+ * 故启停成功后重新拉取完整账号返回,保证调用方拿到完整 DTO。
+ */
 export async function setAccountEnabled(id: number, enabled: boolean, reason: string): Promise<ProviderAccount> {
-  return apiSend<ProviderAccount>('PATCH', `${ACCOUNTS_PATH}/${id}/enabled`, {
+  await apiSend<{ id: number; enabled: boolean }>('PATCH', `${ACCOUNTS_PATH}/${id}/enabled`, {
     enabled,
     reason: reason.trim() || undefined,
   })
+  return getProviderAccount(id)
 }
 
 /** 清除账号限流态:POST /admin/v1/provider-accounts/{id}/clear-rate-limit。reason 进审计。 */
