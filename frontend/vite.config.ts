@@ -13,6 +13,15 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        // 把 React 运行时与路由库拆成独立 vendor chunk:它们极少变动,与频繁迭代的应用代码分离后,
+        // 浏览器可跨应用更新长期缓存 vendor(应用代码改了不必重下 React),首屏主包也随之变小。
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,
