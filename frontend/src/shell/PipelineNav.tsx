@@ -1,11 +1,13 @@
+import { Fragment } from 'react'
 import { NavLink } from 'react-router-dom'
-import { PIPELINE_NAV } from '../app/nav'
+import { PIPELINE_NAV, SHELL_LABEL } from '../app/nav'
 
 /*
- * 管线导航栏(pipeline-as-navigation)。命名刻意避开通用 "Sidebar":这是按数据管线阶段
- * 组织的纵向导航,每个 section 带"管线刻度"序号,视觉上呈现"请求从账号流到计费"的链路。
+ * 三壳管线导航栏。命名刻意避开通用 "Sidebar"。按壳(用户门户 / 运营台)分组,
+ * 组内每个 section 带刻度序号;切换壳时插入壳标题分隔。
  */
 export function PipelineNav() {
+  let lastShell: string | null = null
   return (
     <nav
       aria-label="管线导航"
@@ -20,8 +22,26 @@ export function PipelineNav() {
         zIndex: 'var(--hk-z-rail)' as unknown as number,
       }}
     >
-      {PIPELINE_NAV.map((section) => (
-        <div key={section.key} style={{ marginBottom: 'var(--hk-space-4)' }}>
+      {PIPELINE_NAV.map((section) => {
+        const showShellHeader = section.shell !== lastShell
+        lastShell = section.shell
+        return (
+        <Fragment key={section.key}>
+          {showShellHeader && (
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                color: 'var(--hk-ink-300)',
+                padding: '0 var(--hk-space-2)',
+                margin: 'var(--hk-space-2) 0 var(--hk-space-1)',
+              }}
+            >
+              {SHELL_LABEL[section.shell]}
+            </div>
+          )}
+          <div style={{ marginBottom: 'var(--hk-space-4)' }}>
           <div
             style={{
               display: 'flex',
@@ -68,8 +88,10 @@ export function PipelineNav() {
               )}
             </NavLink>
           ))}
-        </div>
-      ))}
+          </div>
+        </Fragment>
+        )
+      })}
     </nav>
   )
 }
