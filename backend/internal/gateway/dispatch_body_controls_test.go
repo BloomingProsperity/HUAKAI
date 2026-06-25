@@ -37,7 +37,7 @@ func TestDispatchBodyControls_WithObfuscateWords(t *testing.T) {
 	if bytes.Equal(body, out) {
 		t.Fatal("non-empty ObfuscateWords must transform the body")
 	}
-	if !strings.Contains(string(out), "b​anned") {
+	if !strings.Contains(string(out), "b\u200banned") {
 		t.Fatalf("expected ZWSP-cloaked word in output, got: %s", out)
 	}
 }
