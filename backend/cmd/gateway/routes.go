@@ -187,6 +187,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Auth:  mequotahttp.SessionResolver{},
 			Store: quota.NewPostgresStore(d.pgPool),
 		}))
+		// 会话级用量明细:跨当前用户全部 key 的逐请求日志(session 鉴权,按 user_id 收敛)。
+		// 区别于顶层 /v1/me/usage(API-key 鉴权、单 key 维度)。
+		r.Get("/usage-records", meusagehttp.NewSessionHandler(d.billingQueries))
 		meexporthttp.MountRoutes(r, meexporthttp.Deps{Store: d.billingQueries})
 		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
 		userauditloghttp.MountRoutes(r, userauditloghttp.Deps{Store: d.userAuditStore})
