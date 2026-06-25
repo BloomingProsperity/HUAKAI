@@ -1,4 +1,6 @@
 import { apiGet, ApiError } from '../../lib/api'
+import { getTokens } from '../../auth/store'
+import { tokenForPath } from '../../auth/tokenForPath'
 import type { ProviderAccount } from './types'
 import type {
   AccountModesResponse,
@@ -11,6 +13,22 @@ import type {
 /*
  * 新建账号向导的数据访问层:三目录读取 + 创建(含混合渠道风险识别)。
  */
+
+const CREATE_PATH = '/admin/v1/provider-accounts'
+
+/**
+ * 创建请求的请求头。【关键】此处必须显式注入 admin Bearer:创建走裸 fetch(为读"混合渠道风险"
+ * 的字符串哨兵响应体,无法借 lib/api 自动注入),若漏注则后端 admin 中间件恒 401(只认
+ * Authorization、不吃 cookie),新建账号生产中提交不成功。token 为空时不带头(后端自然 401),
+ * 不伪造。抽成纯函数便于单测。
+ */
+export function createRequestHeaders(token: string | null): HeadersInit {
+  return {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
+}
 export async function fetchAccountModes(signal?: AbortSignal): Promise<AccountModesResponse> {
   return apiGet<AccountModesResponse>('/admin/v1/account-modes', { signal })
 }
@@ -31,10 +49,12 @@ export async function fetchChannels(signal?: AbortSignal): Promise<ChannelCatalo
 export async function createProviderAccount(
   body: CreateAccountRequest,
 ): Promise<ProviderAccount | MixedRiskRequired> {
-  const resp = await fetch('/admin/v1/provider-accounts', {
+  // 按路径选 admin token(与 lib/api 同一机制),显式注入到裸 fetch。
+  const token = tokenForPath(CREATE_PATH, getTokens())
+  const resp = await fetch(CREATE_PATH, {
     method: 'POST',
     credentials: 'include',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    headers: createRequestHeaders(token),
     body: JSON.stringify(body),
   })
   const text = await resp.text()
