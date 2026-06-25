@@ -370,7 +370,7 @@ func (m *memoryStore) ExtendSubscription(_ context.Context, rec extendRecord) (U
 	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
 		return UserSubscription{}, ErrSubscriptionNotActive
 	}
-	newExpires := time.Time{}
+	var newExpires time.Time
 	if rec.Until != nil {
 		newExpires = rec.Until.UTC()
 	} else {
