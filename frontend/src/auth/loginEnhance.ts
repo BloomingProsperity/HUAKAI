@@ -89,10 +89,29 @@ const PROVIDER_LABELS: Record<string, string> = {
   wechat: '微信',
   qq: 'QQ',
   dingtalk: '钉钉',
+  nodeseek: 'NodeSeek',
   linuxdo: 'LINUX DO',
   oidc: 'OIDC',
   telegram: 'Telegram',
 }
+
+/*
+ * 后端支持的全部社交 provider(userauth/social_login.go 的 SocialProvider* 常量,共 10 家)。
+ * providerLabel 必须为每一家给出友好展示名 —— 这是 parity 守卫(Owner:别人有的我也要有)。
+ * 新增/删除后端 provider 时,本表与 PROVIDER_LABELS 必须同步,否则 loginEnhance.test.ts 转红。
+ */
+export const BACKEND_SOCIAL_PROVIDERS = [
+  'google',
+  'github',
+  'qq',
+  'wechat',
+  'dingtalk',
+  'nodeseek',
+  'linuxdo',
+  'oidc',
+  'discord',
+  'telegram',
+] as const
 
 /** 社交 provider 的展示名:已知的用友好名,未知的首字母大写兜底。 */
 export function providerLabel(provider: string): string {

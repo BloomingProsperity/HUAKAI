@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseSiteConfig } from './siteConfig'
 import {
+  BACKEND_SOCIAL_PROVIDERS,
   base64urlToBuffer,
   bufferToBase64url,
   captchaWidgetRenderable,
@@ -73,6 +74,20 @@ describe('providerLabel', () => {
     expect(providerLabel('github')).toBe('GitHub')
     expect(providerLabel('GOOGLE')).toBe('Google')
     expect(providerLabel('custom')).toBe('Custom')
+  })
+  it('parity 守卫:后端全部 10 家社交 provider 都有专属友好名(非首字母兜底)', () => {
+    // 判别核心:Owner 硬规则"别人有的我也要有"。后端任一 provider 漏配展示名时,
+    // providerLabel 会退化成首字母大写兜底(如 nodeseek→Nodeseek),此处必须转红提醒补表。
+    // 变异(从 PROVIDER_LABELS 删任一家)→ 该家走兜底、与期望友好名不等 → RED。
+    const expected: Record<string, string> = {
+      google: 'Google', github: 'GitHub', qq: 'QQ', wechat: '微信', dingtalk: '钉钉',
+      nodeseek: 'NodeSeek', linuxdo: 'LINUX DO', oidc: 'OIDC', discord: 'Discord', telegram: 'Telegram',
+    }
+    expect(BACKEND_SOCIAL_PROVIDERS.length).toBe(10)
+    for (const p of BACKEND_SOCIAL_PROVIDERS) {
+      // 兜底输出必为首字母大写;专属名必须与之不同(QQ/OIDC 已是大写,用 expected 显式校验避免误判)。
+      expect(providerLabel(p)).toBe(expected[p])
+    }
   })
 })
 
