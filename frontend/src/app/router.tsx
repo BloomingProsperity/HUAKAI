@@ -30,6 +30,11 @@ import { OrdersAdminPage } from '../features/ordersadmin/OrdersAdminPage'
 import { SubscriptionsAdminPage } from '../features/subscriptionsadmin/SubscriptionsAdminPage'
 import { AffiliateAdminPage } from '../features/affiliateadmin/AffiliateAdminPage'
 import { ModerationPage } from '../features/moderation/ModerationPage'
+import { ProfilePage } from '../features/profile/ProfilePage'
+import { AvailableChannelsPage } from '../features/availablechannels/AvailableChannelsPage'
+import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
+import { LandingPage } from '../features/landing/LandingPage'
+import { LegalPage } from '../features/legal/LegalPage'
 import { LoginPage } from '../auth/LoginPage'
 import { ForgotPasswordPage } from '../auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '../auth/ResetPasswordPage'
@@ -51,6 +56,8 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/redeem': <RedeemPage />,
   '/checkin': <CheckinPage />,
   '/affiliate': <AffiliatePage />,
+  '/available-channels': <AvailableChannelsPage />,
+  '/profile': <ProfilePage />,
   // 运营台壳
   '/accounts': <AccountsPage />,
   '/routing': <RoutingPage />,
@@ -62,6 +69,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/admin/affiliates': <AffiliateAdminPage />,
   '/admin/announcements': <AnnouncementsPage />,
   '/admin/moderation': <ModerationPage />,
+  '/admin/pricing': <PricingAdminPage />,
   '/system': <SystemPage />,
   '/ops': <OpsPage />,
   '/health': <HealthPage />,
@@ -82,6 +90,8 @@ export const router = createBrowserRouter([
   { path: '/reset-password', element: <ResetPasswordPage /> },
   { path: '/email-verify', element: <EmailVerifyPage /> },
   { path: '/rankings', element: <RankingsPage /> },
+  { path: '/welcome', element: <LandingPage /> },
+  { path: '/legal', element: <LegalPage /> },
   {
     path: '/',
     element: (
