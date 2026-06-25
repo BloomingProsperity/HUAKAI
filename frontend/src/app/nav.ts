@@ -77,8 +77,11 @@ export const PIPELINE_NAV: NavSection[] = [
     key: 'profile',
     shell: 'user',
     label: '账户',
-    hint: '个人资料、安全、2FA、通行密钥',
-    items: [{ path: '/profile', label: '个人资料·安全', built: true }],
+    hint: '个人资料、安全、2FA、通行密钥、站内信',
+    items: [
+      { path: '/profile', label: '个人资料·安全', built: true },
+      { path: '/notifications', label: '站内信', built: true },
+    ],
   },
   // ── 运营台壳(admin token,平台运营) ──
   {
