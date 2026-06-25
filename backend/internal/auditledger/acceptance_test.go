@@ -144,7 +144,10 @@ func TestPostgresAdvisoryLockKeyIsTenantScoped(t *testing.T) {
 	if auditLedgerAdvisoryLockKey(1) == auditLedgerAdvisoryLockKey(2) {
 		t.Fatal("tenant advisory lock keys must differ")
 	}
-	if auditLedgerAdvisoryLockKey(1) != auditLedgerAdvisoryLockKey(1) {
+	// 同入参两次调用须得同值(确定性守卫);分别捕获再判,避免 SA4000 把确定性断言误判为自反比较。
+	stableKeyA := auditLedgerAdvisoryLockKey(1)
+	stableKeyB := auditLedgerAdvisoryLockKey(1)
+	if stableKeyA != stableKeyB {
 		t.Fatal("tenant advisory lock key must be stable")
 	}
 }

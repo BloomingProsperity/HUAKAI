@@ -14,7 +14,6 @@
 	internal/gatewayhttp/chat_completions_pricing_test.go:  this check suggests that the pointer can be nil
 	{
 	},
-cmd/gateway/retry_budget_wiring_test.go:  identical expressions on the left and right side of the '||' operator (SA4000)
 cmd/gateway/routes_systemhealth.go:  field tenantIDFn is unused (U1000)
 cmd/gateway/wiring.go:  field usageRetentionWorker is unused (U1000)
 cmd/gateway/wiring.go:  func refundReceiptSink.AppendRefundReceipt is unused (U1000)
@@ -28,7 +27,6 @@ internal/audit/refund_worker.go:  func (*MismatchRefundWorker).existingRefundRec
 internal/audit/refund_worker.go:  func validateExistingRefundReceipt is unused (U1000)
 internal/audit/refund_worker.go:  type refundReceiptSequenceReader is unused (U1000)
 internal/auditexporthttp/handler_test.go:  func ledgerRequestIDs is unused (U1000)
-internal/auditledger/acceptance_test.go:  identical expressions on the left and right side of the '!=' operator (SA4000)
 internal/auditledger/prepared_json_test.go:  struct type 'github.com/BloomingProsperity/HUAKAI/internal/auditledger.PreparedEntry' doesn't have any exported fields, nor custom marshaling (SA9005)
 internal/auth/antigravity_token_provider.go:  transport.DialTLS has been deprecated since Go 1.14: Use DialTLSContext instead, which allows the transport to cancel dials as soon as they are no longer needed. If both are set, DialTLSContext takes priority.  (SA1019)
 internal/auth/auth_test.go:  transport.DialTLS has been deprecated since Go 1.14: Use DialTLSContext instead, which allows the transport to cancel dials as soon as they are no longer needed. If both are set, DialTLSContext takes priority.  (SA1019)
@@ -147,15 +145,11 @@ internal/proto/gemini/sse_test.go:  should replace this if statement with an unc
 internal/proto/openai/sse_test.go:  should replace this if statement with an unconditional strings.TrimPrefix (S1017)
 internal/proto/passthrough.go:  func attachPassthroughToEvents is unused (U1000)
 internal/proto/proto_test.go:  should replace loop with cases = append(cases, []caseItem{
-internal/provider/anthropic/session_id_test.go:  identical expressions on the left and right side of the '!=' operator (SA4000)
-internal/provider/anthropic/session_id_test.go:  identical expressions on the left and right side of the '==' operator (SA4000)
 internal/provider/cursor/refresher.go:  func firstNonEmpty is unused (U1000)
 internal/provider/passthrough_endpoint_guard.go:  clone.DialTLS has been deprecated since Go 1.14: Use DialTLSContext instead, which allows the transport to cancel dials as soon as they are no longer needed. If both are set, DialTLSContext takes priority.  (SA1019)
 internal/provider/windsurf/refresher.go:  func firstNonEmpty is unused (U1000)
 internal/quota/service_settle.go:  should use 'return !errors.As(err, &invalid)' instead of 'if errors.As(err, &invalid) { return false }; return true' (S1008)
 internal/quota/service_settle.go:  this value of releaseValue is never used (SA4006)
-internal/retrybudget/budget_test.go:  identical expressions on the left and right side of the '||' operator (SA4000)
-internal/tlsfpresolve/resolver_test.go:  identical expressions on the left and right side of the '!=' operator (SA4000)
 internal/userkey/userkey.go:  func randomHex is unused (U1000)
 internal/userkeycontrols/key_group_service.go:  should convert row (type keyGroupRow) to KeyGroupView instead of using struct literal (S1016)
 internal/userkeycontrols/store.go:  should convert row (type github.com/BloomingProsperity/HUAKAI/internal/db/userkeycontrols.GetAPIKeyQuotaPolicyRow) to github.com/BloomingProsperity/HUAKAI/internal/db/userkeycontrols.UpsertAPIKeyQuotaPolicyRow instead of using struct literal (S1016)

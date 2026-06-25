@@ -34,7 +34,10 @@ func TestWiring_TenantRetryBudgetEnvConfiguresLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadTenantRetryBudgetFromEnv configured: %v", err)
 	}
-	if !budget.Allow(7) || !budget.Allow(7) {
+	// 两次独立的 budget.Allow(7) 调用各自消费配额(有副作用),分别捕获再判,避免 SA4000 把它误判为自反比较。
+	allow1 := budget.Allow(7)
+	allow2 := budget.Allow(7)
+	if !allow1 || !allow2 {
 		t.Fatal("first two configured retries should be allowed")
 	}
 	if budget.Allow(7) {

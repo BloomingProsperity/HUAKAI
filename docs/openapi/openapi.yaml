@@ -1547,6 +1547,50 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/usage-records:
+    get:
+      tags: [user-audit]
+      summary: End-user self-service consumption records across all the caller's API keys
+      operationId: listMyUsageRecords
+      x-huakai-spec-source:
+        - backend/internal/meusagehttp/session_handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        Returns immutable per-request usage records for the authenticated session
+        user, scoped by user_id across ALL of the caller's API keys (unlike
+        `/v1/me/usage`, which is API-key auth and scoped to a single key). Tenant
+        and user scope come only from the validated session identity; client-supplied
+        tenant_id, api_key_id, or user_id query parameters are ignored and cannot
+        widen the read. Response records intentionally omit tenant_id, api_key_id,
+        user_id, prompt, body, and message payloads.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned as `next_cursor`.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Session-scoped consumption records for the caller across all their API keys.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeUsageListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/quota:
     get:
       tags: [user-quota]
