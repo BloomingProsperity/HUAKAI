@@ -19,6 +19,10 @@ export function OAuthCallbackPage() {
   const ran = useRef(false)
 
   useEffect(() => {
+    // 只用 ran ref 一道闸防 code 被重复消费(StrictMode 下 effect 跑两次、第二次直接 return)。
+    // 不再用 cleanup 翻转的局部 alive 标志:那会让 StrictMode 的 cleanup#1 把第一次在飞 promise
+    // 的 alive 置 false,导致成功(setSessionTokens+nav)与失败(setError)两条路径全被吞、永久卡
+    // spinner(开发期自测必现)。真正卸载后 setState 在 React18 是静默 no-op,无需 alive 兜底。
     if (ran.current) return
     ran.current = true
 
@@ -31,11 +35,9 @@ export function OAuthCallbackPage() {
       return
     }
 
-    let alive = true
     completeOAuth(outcome.tenantId, outcome.provider, outcome.state, outcome.code)
       .then((r) => {
         clearPendingOAuth()
-        if (!alive) return
         // 社交登录回调后端直接发会话(不走 2FA),恒为 ok;narrow 以满足类型并防御异常分支。
         if (r.kind !== 'ok') {
           setError('社交登录返回异常,请重新登录')
@@ -46,7 +48,6 @@ export function OAuthCallbackPage() {
       })
       .catch((e: unknown) => {
         clearPendingOAuth()
-        if (!alive) return
         setError(
           e instanceof ApiError
             ? e.status === 401
@@ -55,9 +56,6 @@ export function OAuthCallbackPage() {
             : '社交登录完成失败,请重新登录',
         )
       })
-    return () => {
-      alive = false
-    }
   }, [nav])
 
   return (
