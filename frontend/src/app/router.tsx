@@ -33,6 +33,7 @@ import { ProfilePage } from '../features/profile/ProfilePage'
 import { NotificationsPage } from '../features/notifications/NotificationsPage'
 import { MediaTasksPage } from '../features/mediatasks/MediaTasksPage'
 import { AvailableChannelsPage } from '../features/availablechannels/AvailableChannelsPage'
+import { AlertingPage } from '../features/alerting/AlertingPage'
 import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
 import { GroupsPage } from '../features/groups/GroupsPage'
 import { ModelRegistryPage } from '../features/modelregistry/ModelRegistryPage'
@@ -90,6 +91,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/ops': <OpsPage />,
   '/health': <HealthPage />,
   '/security': <AuditPage />,
+  '/admin/alerting': <AlertingPage />,
 }
 
 const domainRoutes = PIPELINE_NAV.flatMap((section) =>
