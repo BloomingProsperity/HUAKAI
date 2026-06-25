@@ -7,6 +7,7 @@ import { AccountsPage } from '../features/accounts/AccountsPage'
 import { AccountDetailPage } from '../features/accounts/AccountDetailPage'
 import { KeysPage } from '../features/keys/KeysPage'
 import { UsagePage } from '../features/usage/UsagePage'
+import { UsageRecordsPage } from '../features/usagerecords/UsageRecordsPage'
 import { RoutingPage } from '../features/routing/RoutingPage'
 import { UsersPage } from '../features/users/UsersPage'
 import { UserDetailPage } from '../features/users/UserDetailPage'
@@ -62,6 +63,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/overview': <OverviewPage />,
   '/keys': <KeysPage />,
   '/usage': <UsagePage />,
+  '/usage-records': <UsageRecordsPage />,
   '/media-tasks': <MediaTasksPage />,
   '/subscriptions': <SubscriptionsPage />,
   '/orders': <OrdersPage />,
