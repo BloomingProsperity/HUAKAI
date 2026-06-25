@@ -10,16 +10,18 @@ export interface TokenSet {
   adminToken: string | null
 }
 
+/** 该路径是否走运维(admin token)鉴权。后端两种前缀同属一套 adminGate(platform_admin
+ *  RBAC,校验 admin token):规范前缀 /admin/v1/*,以及若干 /v1/admin/*(platform-settings、
+ *  usage、system/health 等)。两者都必须带 admin token,否则恒 401 admin_unauthorized。 */
+export function pathNeedsAdmin(path: string): boolean {
+  return path.startsWith('/admin/') || path.startsWith('/v1/admin/')
+}
+
 export function tokenForPath(path: string, tokens: TokenSet): string | null {
   // 公开认证端点:绝不带 token(避免把过期/错误 token 干扰登录)。
   if (path.startsWith('/v1/auth/')) return null
-  // 运维端点用 admin token。
-  if (path.startsWith('/admin/')) return tokens.adminToken
+  // 运维端点用 admin token(两种 admin 前缀都算)。
+  if (pathNeedsAdmin(path)) return tokens.adminToken
   // 其余用户态端点用 session token。
   return tokens.sessionToken
-}
-
-/** 该路径是否需要 token(用于路由守卫判定能否访问)。 */
-export function pathNeedsAdmin(path: string): boolean {
-  return path.startsWith('/admin/')
 }
