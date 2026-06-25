@@ -155,8 +155,9 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 	}
 
 	requestID := uuid.NewString()
+	// 请求 ID 通过显式 ctx 向下游传播(resolveModel/planRoute 均直接收 ctx),
+	// 无需回写 r.Context();原 r = r.WithContext(ctx) 的回写值从未被读取,已移除(SA4006/SA4017)。
 	ctx := context.WithValue(r.Context(), middleware.RequestIDKey, requestID)
-	r = r.WithContext(ctx)
 	w.Header().Set(middleware.RequestIDHeader, requestID)
 
 	resolved, ok := relay.resolveModel(w, ctx, model, ident)
@@ -364,7 +365,7 @@ func readUpstreamBody(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	if len(raw) > maxUpstreamBodyBytes {
-		return nil, errors.New("Gemini upstream response exceeds size limit")
+		return nil, errors.New("gemini upstream response exceeds size limit")
 	}
 	return raw, nil
 }

@@ -116,7 +116,7 @@ func (s *PostgresStore) extendSubscriptionOnce(ctx context.Context, rec extendRe
 	if sub.Status != StatusActive || !sub.ExpiresAt.After(rec.Now) {
 		return UserSubscription{}, ErrSubscriptionNotActive
 	}
-	newExpires := time.Time{}
+	var newExpires time.Time
 	if rec.Until != nil {
 		newExpires = rec.Until.UTC()
 	} else {
