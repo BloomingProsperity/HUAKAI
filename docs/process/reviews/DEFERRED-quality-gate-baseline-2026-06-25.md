@@ -1,0 +1,70 @@
+# DEFERRED:quality-gate baseline 存量债与排清计划(2026-06-25)
+
+| 项 | 内容 |
+| --- | --- |
+| 触发 | 后端 renew 审查(2026-06-24)S1「质量门允许 --update 洗 baseline」+ 实测发现后端 CI `test` job 已红一阵 |
+| Owner 决策 | 2026-06-25 拍板「re-baseline 吸收 + 装锁 + 排清债」(三选一) |
+| 关联 PR | PR-2(quality-gate baseline 锁死)+ 本文档 |
+
+## 背景:为什么 baseline 被调高(Owner 批准的债吸收)
+
+实测发现:后端 CI 的 `Go test + race + vet` job 在**所有分支**已 fail 一阵——根因是 `quality gate`
+step 发现大量新 staticcheck/deadcode 不在 baseline 而 fail,**且该 step 一 fail,后续
+`go test -race`、migration round-trip、perf gate 全被 skip**。即后端单元测试在 CI 里**根本没在跑**,
+PR 一直无视红 CI 合并(CI 非强制门)。这比审查文档记录的"假绿"更糟。
+
+Owner 拍板路线一:一次性把存量发现吸收进 baseline,**当场恢复 CI 真跑 go test**,同时装上"只降"
+上限锁防再膨胀,存量债排进本文档分批清。
+
+baseline 行数变化(staticcheck 2025.1.1 + deadcode,与 CI 同版本生成):
+
+| baseline | 吸收前 | 吸收后 | 上限锁(SC_MAX/DC_MAX) |
+| --- | --- | --- | --- |
+| staticcheck | 93 | 174 | 174 |
+| deadcode | 787 | 907 | 907 |
+
+**这是一次 Owner 批准的债吸收,不是常态。** 上限锁后,baseline 只能降;调高需再次 Owner 批准 +
+更新本文档。
+
+## 存量债分类与排清优先级
+
+### A. 真缺陷(优先清,非故意)— staticcheck
+
+- `internal/geminihttp/generate_content.go`:SA4017(`WithContext` 返回值被忽略,可能 context 未生效)、
+  SA4006(`r` 的值从未被使用)、ST1005(error 字符串首字母大写)。**疑似真 bug,最高优先。**
+- `sql/embed.go`:SA9009(`// go:embed` 有多余空格 → 指令失效)。需核实该 embed 是否真失效(若失效=真 bug)。
+- `internal/subscription/store_memory.go` + `store_postgres_admin_ops.go`:SA4006(`newExpires` 值从未被使用)。
+- `internal/gateway/dispatch_body_controls_test.go`、`internal/sensitiveobfuscate/*`:ST1018(字符串含 U+200B
+  零宽字符)——多为有意测试零宽字符,逐个核实后决定 escape 还是豁免。
+- `internal/provider/anthropic/session_id_test.go`、`internal/tlsfpresolve/resolver_test.go`:SA4000(`!=`/`==`
+  两侧表达式相同)——测试自反性写法,核实是否笔误。
+- `internal/rate/error_rule_eval_test.go`:SA1012(传 nil Context)——改 context.TODO()。
+
+### B. 未接线的 money-coupled 子系统(Owner-gated 取舍)— deadcode
+
+- `internal/community/invitation/referral_reward_*.go`:整套推荐奖励(referral reward)实现 unreachable
+  (config/store/qualification 共数十个 unreachable func/const/type)。**money-coupled**(兑付 credit 余额 +
+  billing ledger)。去留(接线启用 还是 删除)属 Owner-gated,不在排清里擅自动;待 Owner 单独定。
+
+### C. 故意保留的备用实现 — deadcode
+
+- 各 `*/memory_store.go`(alerting/announcement/channelhealth/passkey/subscription/usernotice/voucher/
+  routeadmin 等):内存版 store 作为 postgres store 的对照/测试替身,生产未接线。多为有意保留。
+  排清时决定:要么有测试消费(保留)、要么删。
+- 各 `With*` options(WithClock/WithNow/WithCeremonyEngine 等):测试注入点,部分未被消费。
+- 未接线的 `MountRoutes`/`NewRouter`(adminhttp channel/provider catalog、proxyadminhttp、
+  modelbindingadminhttp、orphanreconcilehttp 等):建了未挂载的 admin 路由,属 §6 碰撞包/Owner-gated 路由波,
+  按既有排期处理,不在本清债里擅自接线。
+
+## 排清计划(分批,baseline 只降)
+
+1. **批1(真 bug,本类 A)**:逐个核实 + 修 gemini/embed/subscription 的 SA 类真缺陷,修一项 baseline 减一项,
+   每批后 `HUAKAI_ALLOW_BASELINE_REWRITE=1 scripts/quality-gate.sh --update` 并把 SC_MAX/DC_MAX **调低**。
+2. **批2(故意 deadcode,本类 C)**:有测试消费的保留并加豁免说明;无消费的删除。baseline 随之下降。
+3. **referral_reward(本类 B)**:单独 surface Owner 决定接线 or 删除(money-gated),不混入常规清债。
+
+## 不变量
+
+- baseline 只能降;任何调高 = 再次 Owner 批准 + 更新本文档(脚本 SC_MAX/DC_MAX 是审批面)。
+- `quality-gate.sh --update` 在 CI 中被拒,本地需 `HUAKAI_ALLOW_BASELINE_REWRITE=1` 显式 opt-in。
+- 排清只让 baseline 下降,不得借机吸收新债。
