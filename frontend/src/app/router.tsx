@@ -30,6 +30,7 @@ import { SubscriptionsAdminPage } from '../features/subscriptionsadmin/Subscript
 import { AffiliateAdminPage } from '../features/affiliateadmin/AffiliateAdminPage'
 import { ModerationPage } from '../features/moderation/ModerationPage'
 import { ProfilePage } from '../features/profile/ProfilePage'
+import { NotificationsPage } from '../features/notifications/NotificationsPage'
 import { AvailableChannelsPage } from '../features/availablechannels/AvailableChannelsPage'
 import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
 import { GroupsPage } from '../features/groups/GroupsPage'
@@ -65,6 +66,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/affiliate': <AffiliatePage />,
   '/available-channels': <AvailableChannelsPage />,
   '/profile': <ProfilePage />,
+  '/notifications': <NotificationsPage />,
   // 运营台壳
   '/accounts': <AccountsPage />,
   '/routing': <RoutingPage />,
