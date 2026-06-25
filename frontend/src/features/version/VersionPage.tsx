@@ -1,0 +1,204 @@
+import { useEffect, useState } from 'react'
+import { ApiError } from '../../lib/api'
+import { StatusBadge } from '../../ui/StatusBadge'
+import { getBuildInfo, sendSmtpTest } from './api'
+import {
+  buildSmtpTest,
+  displayBuildTime,
+  displayCommit,
+  displayVersion,
+  EMPTY_SMTP_TEST,
+  isDevBuild,
+  type SmtpTestForm,
+} from './version'
+import type { BuildInfo } from './types'
+
+/*
+ * 版本与维护(运维台/admin)。两块只读/动作面板:
+ *  1) 构建版本信息卡:GET /v1/admin/version → version/commit/build_time/go_version。
+ *  2) SMTP 连接测试:POST /v1/admin/email/test,用当前已配 SMTP 设置向指定邮箱发一封测试信。
+ * 纯只读 + 一个发信测试动作,不写任何配置(SMTP 设置在别处维护)。零 console、不打印密钥。
+ */
+export function VersionPage() {
+  const [info, setInfo] = useState<BuildInfo | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    setLoading(true)
+    setLoadError(null)
+    getBuildInfo(ctrl.signal)
+      .then((b) => setInfo(b))
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return
+        setLoadError(e instanceof ApiError ? `${e.message}(${e.code})` : '加载版本信息失败')
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [])
+
+  return (
+    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
+      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+        <h1 style={{ fontSize: 22 }}>版本与维护</h1>
+        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+          运维台 · 查看当前网关构建版本,验证 SMTP 邮件链路是否可用。
+        </p>
+      </header>
+
+      <BuildInfoCard info={info} loading={loading} error={loadError} />
+      <SmtpTestCard />
+    </div>
+  )
+}
+
+function BuildInfoCard({ info, loading, error }: { info: BuildInfo | null; loading: boolean; error: string | null }) {
+  return (
+    <section style={card}>
+      <div style={cardHead}>
+        <h2 style={cardTitle}>构建版本</h2>
+        {info && isDevBuild(info) && <StatusBadge tone="warn">未打标本地构建</StatusBadge>}
+      </div>
+      {error && <div style={errBox}>{error}</div>}
+      {loading ? (
+        <div style={emptyBox}>加载中…</div>
+      ) : info ? (
+        <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: 'var(--hk-space-2) var(--hk-space-5)', margin: 0 }}>
+          <Row label="版本">{displayVersion(info.version)}</Row>
+          <Row label="Commit" mono>
+            {displayCommit(info.commit)}
+          </Row>
+          <Row label="构建时间">{displayBuildTime(info.build_time)}</Row>
+          <Row label="Go 运行时" mono>
+            {info.go_version || '—'}
+          </Row>
+        </dl>
+      ) : (
+        !error && <div style={emptyBox}>暂无版本信息。</div>
+      )}
+    </section>
+  )
+}
+
+function SmtpTestCard() {
+  const [form, setForm] = useState<SmtpTestForm>(EMPTY_SMTP_TEST)
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState<{ tone: 'ok' | 'danger'; text: string } | null>(null)
+
+  const set = <K extends keyof SmtpTestForm>(k: K, v: SmtpTestForm[K]) => setForm((f) => ({ ...f, [k]: v }))
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setResult(null)
+    const built = buildSmtpTest(form)
+    if ('error' in built) {
+      setResult({ tone: 'danger', text: built.error })
+      return
+    }
+    setSending(true)
+    try {
+      const resp = await sendSmtpTest(built)
+      setResult({
+        tone: 'ok',
+        text: resp.sent ? `测试信已发送至 ${built.to}(租户 ${resp.tenant_id})。` : '请求成功但未确认发送。',
+      })
+    } catch (err) {
+      setResult({
+        tone: 'danger',
+        text: err instanceof ApiError ? `发送失败:${err.message}(${err.code})` : '发送失败',
+      })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <section style={card}>
+      <div style={cardHead}>
+        <h2 style={cardTitle}>SMTP 连接测试</h2>
+      </div>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--hk-ink-500)' }}>
+        用当前已保存的 SMTP 配置向下方邮箱发一封测试信。本页不修改 SMTP 设置,仅验证链路。
+      </p>
+      <form onSubmit={onSubmit} style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-3)', alignItems: 'flex-end' }}>
+        <label style={fieldLabel}>
+          收件邮箱
+          <input
+            type="email"
+            value={form.to}
+            onChange={(e) => set('to', e.target.value)}
+            placeholder="ops@example.com"
+            style={{ ...inp, minWidth: 240 }}
+          />
+        </label>
+        <label style={fieldLabel}>
+          租户号(留空=0)
+          <input
+            value={form.tenantId}
+            onChange={(e) => set('tenantId', e.target.value)}
+            inputMode="numeric"
+            placeholder="0"
+            style={{ ...inp, width: 120 }}
+          />
+        </label>
+        <button type="submit" disabled={sending} style={primaryBtn}>
+          {sending ? '发送中…' : '发送测试信'}
+        </button>
+      </form>
+      {result && (
+        <div
+          style={{
+            padding: 'var(--hk-space-3)',
+            borderRadius: 'var(--hk-radius-md)',
+            fontSize: 13,
+            ...(result.tone === 'ok'
+              ? { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
+              : { color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }),
+          }}
+        >
+          {result.text}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function Row({ label, mono, children }: { label: string; mono?: boolean; children: React.ReactNode }) {
+  return (
+    <>
+      <dt style={{ fontSize: 12, color: 'var(--hk-ink-500)', alignSelf: 'center' }}>{label}</dt>
+      <dd
+        style={{
+          margin: 0,
+          fontSize: 13,
+          color: 'var(--hk-ink-900)',
+          fontFamily: mono ? 'var(--hk-font-mono)' : undefined,
+          wordBreak: 'break-all',
+        }}
+      >
+        {children}
+      </dd>
+    </>
+  )
+}
+
+const card: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--hk-space-3)',
+  background: 'var(--hk-surface)',
+  border: '1px solid var(--hk-line)',
+  borderRadius: 'var(--hk-radius-lg)',
+  boxShadow: 'var(--hk-shadow-1)',
+  padding: 'var(--hk-space-5)',
+}
+const cardHead: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--hk-space-3)' }
+const cardTitle: React.CSSProperties = { margin: 0, fontSize: 15, fontWeight: 600, color: 'var(--hk-ink-900)' }
+const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+const emptyBox: React.CSSProperties = { padding: 'var(--hk-space-6)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }
+const fieldLabel: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }
+const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }

@@ -95,7 +95,10 @@ export const PIPELINE_NAV: NavSection[] = [
     shell: 'operator',
     label: '路由与池',
     hint: '分组、权重、选号策略、健康与亲和',
-    items: [{ path: '/routing', label: '路由与池管理', built: true }],
+    items: [
+      { path: '/routing', label: '路由与池管理', built: true },
+      { path: '/admin/groups', label: '分组管理', built: true },
+    ],
   },
   {
     stage: 3,
@@ -114,6 +117,8 @@ export const PIPELINE_NAV: NavSection[] = [
     items: [
       { path: '/models', label: '模型与定价', built: true },
       { path: '/admin/pricing', label: '定价设置', built: true },
+      { path: '/admin/model-registry', label: '模型注册', built: true },
+      { path: '/admin/model-sync', label: '厂商同步', built: true },
     ],
   },
   {
@@ -150,6 +155,8 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/system', label: '系统设置', built: true },
       { path: '/ops', label: '运维大屏', built: true },
       { path: '/health', label: '系统健康', built: true },
+      { path: '/admin/version', label: '版本与维护', built: true },
+      { path: '/admin/logs', label: '日志与诊断', built: true },
     ],
   },
   {
