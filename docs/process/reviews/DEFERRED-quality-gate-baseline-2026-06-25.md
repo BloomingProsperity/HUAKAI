@@ -30,10 +30,18 @@ baseline 行数变化(staticcheck 2025.1.1 + deadcode,与 CI 同版本生成):
 
 ### A. 真缺陷(优先清,非故意)— staticcheck
 
-- `internal/geminihttp/generate_content.go`:SA4017(`WithContext` 返回值被忽略,可能 context 未生效)、
-  SA4006(`r` 的值从未被使用)、ST1005(error 字符串首字母大写)。**疑似真 bug,最高优先。**
-- `sql/embed.go`:SA9009(`// go:embed` 有多余空格 → 指令失效)。需核实该 embed 是否真失效(若失效=真 bug)。
-- `internal/subscription/store_memory.go` + `store_postgres_admin_ops.go`:SA4006(`newExpires` 值从未被使用)。
+**✅ 批1 已清(2026-06-25,staticcheck baseline 174→168,SC_MAX 同步降至 168):**
+
+- ✅ `internal/geminihttp/generate_content.go`:核实后——`r = r.WithContext(ctx)` 的回写值**确实从未被读取**
+  (下游 resolveModel/planRoute 均直接收显式 `ctx`),非 context 失效,属死代码,已移除(SA4006+SA4017 消除);
+  ST1005 error 串 "Gemini..."→"gemini..." 小写化。受影响包单测通过。
+- ✅ `sql/embed.go`:SA9009 核实为**假阳性**——line 4 是包注释 prose(以「// go:embed」开头被误判),真 embed
+  指令在 line 12 `//go:embed migrations/*.sql`(无空格、真生效)。改注释「go:embed」→「embed 指令」消除误报,embed 未受影响。
+- ✅ `internal/subscription/store_memory.go` + `store_postgres_admin_ops.go`:SA4006 核实为 `newExpires := time.Time{}`
+  的**零值初始化被 if/else 两分支必然覆盖**(非 money bug,newExpires 后续正常用于设过期),改 `var newExpires time.Time`
+  纯重构、**money 行为不变**;subscription 单测 + 集成测试(含 store_postgres_admin_ops_integration)全通过。
+
+**批1 剩余(下批继续核实):**
 - `internal/gateway/dispatch_body_controls_test.go`、`internal/sensitiveobfuscate/*`:ST1018(字符串含 U+200B
   零宽字符)——多为有意测试零宽字符,逐个核实后决定 escape 还是豁免。
 - `internal/provider/anthropic/session_id_test.go`、`internal/tlsfpresolve/resolver_test.go`:SA4000(`!=`/`==`
