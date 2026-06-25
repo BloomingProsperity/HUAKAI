@@ -169,6 +169,9 @@ export const PIPELINE_NAV: NavSection[] = [
     shell: 'operator',
     label: '安全审计',
     hint: '审计账本、告警、风控',
-    items: [{ path: '/security', label: '安全与审计', built: true }],
+    items: [
+      { path: '/security', label: '安全与审计', built: true },
+      { path: '/admin/alerting', label: '告警控制台', built: true },
+    ],
   },
 ]
