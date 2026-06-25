@@ -1,6 +1,7 @@
 package rate
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -177,7 +178,7 @@ func TestHandleUpstreamError_NilProvider_NoOp(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	svc := NewUpstreamRateService(func() time.Time { return now }, time.Minute)
 	body := []byte(`{"error":"unusual activity"}`)
-	dec, err := svc.HandleUpstreamError(nil, 101, 403, nil, body)
+	dec, err := svc.HandleUpstreamError(context.TODO(), 101, 403, nil, body)
 	if err != nil {
 		t.Fatalf("HandleUpstreamError: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestHandleUpstreamError_ProviderAllDisabled_NoOp(t *testing.T) {
 		WithAccountErrorRulesProvider(provider),
 	)
 	body := []byte(`{"error":"unusual activity detected"}`)
-	dec, err := svc.HandleUpstreamError(nil, 42, 403, nil, body)
+	dec, err := svc.HandleUpstreamError(context.TODO(), 42, 403, nil, body)
 	if err != nil {
 		t.Fatalf("HandleUpstreamError: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestHandleUpstreamError_RuleMatch_TempUnsched(t *testing.T) {
 		WithAccountErrorRulesProvider(provider),
 	)
 	body := []byte(`{"error":"Unusual Activity triggered"}`)
-	dec, err := svc.HandleUpstreamError(nil, 42, 403, nil, body)
+	dec, err := svc.HandleUpstreamError(context.TODO(), 42, 403, nil, body)
 	if err != nil {
 		t.Fatalf("HandleUpstreamError: %v", err)
 	}
@@ -249,7 +250,7 @@ func TestHandleUpstreamError_CustomCode_NonZeroCooldown(t *testing.T) {
 		func() time.Time { return now }, defaultCooldown,
 		WithAccountErrorRulesProvider(provider),
 	)
-	dec, err := svc.HandleUpstreamError(nil, 42, 403, nil, []byte(`{}`))
+	dec, err := svc.HandleUpstreamError(context.TODO(), 42, 403, nil, []byte(`{}`))
 	if err != nil {
 		t.Fatalf("HandleUpstreamError: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestHandleUpstreamError_429_Unaffected(t *testing.T) {
 	)
 	headers := http.Header{"Retry-After": []string{"3600"}}
 	body := []byte(`{"error":"rate limited"}`)
-	dec, err := svc.HandleUpstreamError(nil, 42, 429, headers, body)
+	dec, err := svc.HandleUpstreamError(context.TODO(), 42, 429, headers, body)
 	if err != nil {
 		t.Fatalf("HandleUpstreamError: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/sensitiveobfuscate"
 )
 
-const zwsp = "​"
+const zwsp = "\u200b"
 
 // ---- Matcher / obfuscateString unit tests ----
 
