@@ -82,6 +82,7 @@ export const PIPELINE_NAV: NavSection[] = [
     items: [
       { path: '/profile', label: '个人资料·安全', built: true },
       { path: '/notifications', label: '站内信', built: true },
+      { path: '/activity', label: '安全日志', built: true },
     ],
   },
   // ── 运营台壳(admin token,平台运营) ──
