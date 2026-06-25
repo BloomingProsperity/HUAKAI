@@ -64,8 +64,8 @@ export const PIPELINE_NAV: NavSection[] = [
     label: '充值与权益',
     hint: '钱包、订单、订阅、兑换、签到、推广',
     items: [
-      { path: '/wallet', label: '钱包与充值', built: false },
-      { path: '/orders', label: '我的订单', built: false },
+      { path: '/wallet', label: '钱包与充值', built: true },
+      { path: '/orders', label: '我的订单', built: true },
       { path: '/subscriptions', label: '订阅套餐', built: true },
       { path: '/redeem', label: '兑换码', built: true },
       { path: '/checkin', label: '每日签到', built: true },
