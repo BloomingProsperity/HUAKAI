@@ -9,7 +9,9 @@
  * (credentials:include);若上层显式传 bearer 则加 Authorization 头。
  */
 
-import { getTokens } from '../auth/store'
+import { shouldRefresh } from '../auth/refresh'
+import { ensureFreshSession } from '../auth/refreshClient'
+import { getSessionExpiry, getTokens } from '../auth/store'
 import { tokenForPath } from '../auth/tokenForPath'
 
 // API_BASE 默认空串=同源相对路径(生产期);dev 期 vite proxy 把 /api 转发到本地网关。
@@ -74,7 +76,30 @@ function authHeaders(path: string, bearer?: string): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+// session token TTL 短(默认 15 分钟);到期前这个提前量内的请求先主动换新,避免请求打到过期 token
+// 而被踢。single-flight 合并并发刷新,失败静默(原请求照常发,后端 401 由上层处理)。
+const REFRESH_BUFFER_MS = 120_000 // 2 分钟提前量
+
+// 仅对「走 session token 且非会话管理端点(刷新/撤销自身)」的请求做主动刷新前置。
+function usesSessionToken(path: string, bearer?: string): boolean {
+  if (bearer !== undefined) return false // 显式 bearer(如 hk_key)不参与 session 刷新
+  if (path.startsWith('/v1/sessions/')) return false // 刷新/撤销端点自身不触发,避免递归/无谓刷新
+  const tokens = getTokens()
+  return !!tokens.sessionToken && tokenForPath(path, tokens) === tokens.sessionToken
+}
+
+async function maybeProactiveRefresh(path: string, bearer?: string): Promise<void> {
+  if (!usesSessionToken(path, bearer)) return
+  if (!shouldRefresh(getSessionExpiry(), Date.now(), REFRESH_BUFFER_MS)) return
+  try {
+    await ensureFreshSession()
+  } catch {
+    /* 刷新异常不阻断原请求 */
+  }
+}
+
 export async function apiGet<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  await maybeProactiveRefresh(path, opts.bearer)
   const resp = await fetch(buildURL(path, opts.query), {
     method: 'GET',
     credentials: 'include',
@@ -90,6 +115,7 @@ export async function apiSend<T>(
   payload?: unknown,
   opts: RequestOptions = {},
 ): Promise<T> {
+  await maybeProactiveRefresh(path, opts.bearer)
   const resp = await fetch(buildURL(path, opts.query), {
     method,
     credentials: 'include',

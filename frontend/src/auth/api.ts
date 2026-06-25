@@ -1,16 +1,12 @@
 import { apiSend } from '../lib/api'
+import { parseIssuedTokens, type RawIssuedTokens, type SessionTokens } from './refresh'
 import type { AuthUser } from './store'
 
 /*
  * 认证数据访问层。端点 /v1/auth/*(公开)+ /v1/sessions/revoke(登出,需 session)。
- * 登录成功返回 {user, session:{session_token,...}};需 2FA 时返回 {two_factor_required, challenge_id}。
+ * 登录成功返回 {user, session:{session_token,refresh_token,session_expires_at,...}};
+ * 需 2FA 时返回 {two_factor_required, challenge_id}。
  */
-
-interface SessionTokens {
-  session_token: string
-  refresh_token?: string
-  session_expires_at?: string
-}
 
 interface PublicUser {
   user_id?: number
@@ -21,7 +17,7 @@ interface PublicUser {
 
 interface LoginSuccess {
   user: PublicUser
-  session: SessionTokens
+  session: RawIssuedTokens
 }
 
 interface LoginTwoFactor {
@@ -31,11 +27,21 @@ interface LoginTwoFactor {
 }
 
 export type LoginResult =
-  | { kind: 'ok'; token: string; user: AuthUser }
-  | { kind: '2fa'; challengeId: string }
+  | { kind: 'ok'; tokens: SessionTokens; user: AuthUser | null }
+  // 2FA 第一步返回 user(后端 auth_handler.go:297 含 user),需带回供第二步完成后写入 store
+  // —— 因为 2FA 完成响应(auth_handler.go:365)只回 {session} 不含 user。
+  | { kind: '2fa'; challengeId: string; user: AuthUser | null }
 
-function normUser(u: PublicUser): AuthUser {
+function normUser(u: PublicUser | undefined): AuthUser | null {
+  if (!u) return null
   return { user_id: u.user_id ?? u.id ?? 0, email: u.email, display_name: u.display_name }
+}
+
+/** 从登录响应的 session 字段抽出完整 token 组;后端契约保证含 session_token,缺失则报错。 */
+function tokensFromSession(session: RawIssuedTokens): SessionTokens {
+  const tokens = parseIssuedTokens(session)
+  if (!tokens) throw new Error('登录响应缺少会话 token')
+  return tokens
 }
 
 export async function login(tenantId: number, email: string, password: string): Promise<LoginResult> {
@@ -45,18 +51,22 @@ export async function login(tenantId: number, email: string, password: string): 
     password,
   })
   if ('two_factor_required' in body && body.two_factor_required) {
-    return { kind: '2fa', challengeId: body.challenge_id }
+    return { kind: '2fa', challengeId: body.challenge_id, user: normUser(body.user) }
   }
   const ok = body as LoginSuccess
-  return { kind: 'ok', token: ok.session.session_token, user: normUser(ok.user) }
+  return { kind: 'ok', tokens: tokensFromSession(ok.session), user: normUser(ok.user) }
 }
 
-export async function loginTwoFactor(challengeId: string, code: string): Promise<{ token: string; user: AuthUser }> {
-  const body = await apiSend<LoginSuccess>('POST', '/v1/auth/login/2fa', {
+/**
+ * 完成 2FA 登录。后端响应只含 {session} 不含 user(auth_handler.go:365),故这里只回 tokens;
+ * user 由第一步(challenge)的 LoginResult.user 带过来在 store 写入。
+ */
+export async function loginTwoFactor(challengeId: string, code: string): Promise<{ tokens: SessionTokens }> {
+  const body = await apiSend<{ session: RawIssuedTokens }>('POST', '/v1/auth/login/2fa', {
     challenge_id: challengeId,
     code,
   })
-  return { token: body.session.session_token, user: normUser(body.user) }
+  return { tokens: tokensFromSession(body.session) }
 }
 
 export async function register(

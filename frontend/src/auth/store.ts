@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import type { SessionTokens } from './refresh'
 import type { TokenSet } from './tokenForPath'
 
 /*
@@ -14,24 +15,34 @@ export interface AuthUser {
 
 interface AuthState {
   sessionToken: string | null
+  /** refresh token(husr_),用于在 session 到期前换新;长 TTL。 */
+  refreshToken: string | null
+  /** session token 到期时刻(RFC3339),驱动主动刷新。 */
+  sessionExpiresAt: string | null
   adminToken: string | null
   user: AuthUser | null
 }
 
 const LS_SESSION = 'hk_session_token'
+const LS_REFRESH = 'hk_refresh_token'
+const LS_EXPIRY = 'hk_session_expiry'
 const LS_ADMIN = 'hk_admin_token'
 const LS_USER = 'hk_user'
+
+const EMPTY: AuthState = { sessionToken: null, refreshToken: null, sessionExpiresAt: null, adminToken: null, user: null }
 
 function readLS(): AuthState {
   try {
     const userRaw = localStorage.getItem(LS_USER)
     return {
       sessionToken: localStorage.getItem(LS_SESSION),
+      refreshToken: localStorage.getItem(LS_REFRESH),
+      sessionExpiresAt: localStorage.getItem(LS_EXPIRY),
       adminToken: localStorage.getItem(LS_ADMIN),
       user: userRaw ? (JSON.parse(userRaw) as AuthUser) : null,
     }
   } catch {
-    return { sessionToken: null, adminToken: null, user: null }
+    return { ...EMPTY }
   }
 }
 
@@ -45,6 +56,8 @@ function emit() {
 function persist() {
   try {
     state.sessionToken ? localStorage.setItem(LS_SESSION, state.sessionToken) : localStorage.removeItem(LS_SESSION)
+    state.refreshToken ? localStorage.setItem(LS_REFRESH, state.refreshToken) : localStorage.removeItem(LS_REFRESH)
+    state.sessionExpiresAt ? localStorage.setItem(LS_EXPIRY, state.sessionExpiresAt) : localStorage.removeItem(LS_EXPIRY)
     state.adminToken ? localStorage.setItem(LS_ADMIN, state.adminToken) : localStorage.removeItem(LS_ADMIN)
     state.user ? localStorage.setItem(LS_USER, JSON.stringify(state.user)) : localStorage.removeItem(LS_USER)
   } catch {
@@ -56,8 +69,28 @@ export function getTokens(): TokenSet {
   return { sessionToken: state.sessionToken, adminToken: state.adminToken }
 }
 
-export function setSession(token: string, user: AuthUser) {
-  state = { ...state, sessionToken: token, user }
+/** 当前 refresh token(供刷新客户端读取);无则 null。 */
+export function getRefreshToken(): string | null {
+  return state.refreshToken
+}
+
+/** 当前 session token 到期时刻(RFC3339);供主动刷新判定。 */
+export function getSessionExpiry(): string | null {
+  return state.sessionExpiresAt
+}
+
+/**
+ * 写入登录/刷新返回的完整会话 token 组。user 省略时保留现有 user
+ * (刷新响应不带 user,只换 token)。
+ */
+export function setSessionTokens(tokens: SessionTokens, user?: AuthUser) {
+  state = {
+    ...state,
+    sessionToken: tokens.sessionToken,
+    refreshToken: tokens.refreshToken,
+    sessionExpiresAt: tokens.sessionExpiresAt,
+    user: user ?? state.user,
+  }
   persist()
   emit()
 }
@@ -69,13 +102,13 @@ export function setAdminToken(token: string | null) {
 }
 
 export function clearSession() {
-  state = { ...state, sessionToken: null, user: null }
+  state = { ...state, sessionToken: null, refreshToken: null, sessionExpiresAt: null, user: null }
   persist()
   emit()
 }
 
 export function clearAll() {
-  state = { sessionToken: null, adminToken: null, user: null }
+  state = { ...EMPTY }
   persist()
   emit()
 }
