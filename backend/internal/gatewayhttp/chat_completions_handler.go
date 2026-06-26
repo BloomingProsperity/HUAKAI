@@ -958,7 +958,7 @@ func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err er
 		return ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, 0, ex.protocolLoss)
 	}
 	switch {
-	case errors.Is(err, pool.ErrKeyRateLimited):
+	case errors.Is(err, pool.ErrKeyRateLimited), errors.Is(err, pool.ErrBindingRateLimited):
 		if e := abort("key_rate_limited"); e != nil && w != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
 		}

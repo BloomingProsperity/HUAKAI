@@ -152,6 +152,14 @@ func NewKeyRateLimitSelector(inner Selector, counter *precheck.Counter, rpm, tpm
 	return router.NewKeyRateLimitSelector(inner, counter, rpm, tpm)
 }
 
+// NewBindingRateLimitSelector wraps inner with a per-binding RPM/TPM budget enforced
+// before selection. Limits are carried per-request on SelectionRequest (each binding has
+// its own model_pool_bindings.rpm_limit/tpm_limit); a nil counter / BindingID<=0 / zero
+// limits make it a transparent pass-through. Over-budget returns ErrBindingRateLimited (-> 429).
+func NewBindingRateLimitSelector(inner Selector, counter *precheck.Counter) Selector {
+	return router.NewBindingRateLimitSelector(inner, counter)
+}
+
 func WithRoutingPolicySource(v RoutingPolicySource) SelectorOption {
 	return router.WithRoutingPolicySource(v)
 }

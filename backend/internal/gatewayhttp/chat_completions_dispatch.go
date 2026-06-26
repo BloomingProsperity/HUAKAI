@@ -380,6 +380,23 @@ func (ex *chatExecution) activeForceFormat() bool {
 	return ok && binding.ForceFormat
 }
 
+// activeBindingRateLimits 取命中 binding 的 per-binding RPM/TPM 限额(model_pool_bindings.rpm_limit/
+// tpm_limit),透传给 BindingRateLimitSelector 做预算闸。无 binding 或未设限额 → 0(该维度不限)。
+func (ex *chatExecution) activeBindingRateLimits() (bindingID, rpm, tpm int64) {
+	binding, ok := ex.activeBindingMetadata()
+	if !ok {
+		return 0, 0, 0
+	}
+	return binding.BindingID, deref32OrZero(binding.RPMLimit), deref32OrZero(binding.TPMLimit)
+}
+
+func deref32OrZero(p *int32) int64 {
+	if p == nil {
+		return 0
+	}
+	return int64(*p)
+}
+
 func (ex *chatExecution) remapClientStatusForUpstream(upstreamStatus int, currentClientStatus int) int {
 	mapping := ex.activeStatusCodeMapping()
 	if len(mapping) == 0 {
@@ -554,6 +571,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		estInput = tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily)
 		maxOut = derefIntOrZero(ex.req.MaxTokens)
 	}
+	bindingID, bindingRPM, bindingTPM := ex.activeBindingRateLimits()
 	selRes, err := ex.d.Selector.Select(ex.ctx, pool.SelectionRequest{
 		TenantID:             ex.ident.TenantID,
 		UserID:               ex.ident.UserID,
@@ -575,6 +593,10 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		ModelContextWindow:   ctxWindow,
 		EstimatedInputTokens: estInput,
 		MaxOutputTokens:      maxOut,
+		// 命中 binding 的 per-binding RPM/TPM 限额透传给 BindingRateLimitSelector(env 门控 + 限额>0 才强制)。
+		BindingID:            bindingID,
+		BindingRPMLimit:      bindingRPM,
+		BindingTPMLimit:      bindingTPM,
 	})
 	// Map any pool selection error (incl. SEC-249/250 per-key rate limit) to the
 	// right HTTP failure + claim abort. Extracted to chat_completions_pool_errors.go.

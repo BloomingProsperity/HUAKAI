@@ -95,15 +95,30 @@ func buildSelector(
 		logger.Info("SEC-249/250 per-API-key rate limit ENABLED", zap.Int64("rpm", keyRPM), zap.Int64("tpm", keyTPM))
 	}
 
-	// wrapRecording composes the opt-in selector wrappers (both inert when off):
-	// KeyRateLimit (per-key, outermost, rejects before selection) over
-	// Recording (per-account budget consume, ROUTE-121).
+	// per-binding RPM/TPM limit, keyed on the resolved BindingID. Unlike the per-key cap (one
+	// GLOBAL config limit) this reads each binding's own model_pool_bindings.rpm_limit/tpm_limit
+	// carried per-request on SelectionRequest. Opt-in via env (default OFF → nil counter →
+	// BindingRateLimitSelector pass-through = exact current behavior); even enabled, a binding
+	// with no configured limit stays inert. Its own counter instance → no key collision with
+	// the per-account / per-key counters even if a BindingID equals some AccountID/APIKeyID.
+	var bindingRateCounter *precheck.Counter
+	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_BINDING_RATE_LIMIT_ENABLED")); on {
+		bindingRateCounter = pool.NewRatePrecheckCounter()
+		logger.Info("per-binding RPM/TPM rate limit ENABLED (opt-in via model_pool_bindings.rpm_limit/tpm_limit)")
+	}
+
+	// wrapRecording composes the opt-in selector wrappers (all inert when off):
+	// BindingRateLimit (per-binding, outermost) over KeyRateLimit (per-key, rejects before
+	// selection) over Recording (per-account budget consume, ROUTE-121).
 	wrapRecording := func(s pool.Selector) pool.Selector {
 		if ratePrecheckCounter != nil {
 			s = pool.NewRecordingSelector(s, ratePrecheckCounter)
 		}
 		if keyRateCounter != nil {
 			s = pool.NewKeyRateLimitSelector(s, keyRateCounter, keyRPM, keyTPM)
+		}
+		if bindingRateCounter != nil {
+			s = pool.NewBindingRateLimitSelector(s, bindingRateCounter)
 		}
 		return s
 	}
