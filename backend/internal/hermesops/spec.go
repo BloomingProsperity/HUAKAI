@@ -41,6 +41,9 @@ const (
 	ToolDLQInspect            = "dlq_inspect"
 	ToolAuditLookup           = "audit_lookup"
 	ToolLogAnalyze            = "log_analyze"
+	// ToolChannelHealthList(0152 迁移准入)是逐通道健康列表的只读诊断工具,租户级、可按 state 过滤,
+	// 补 account_health_diagnose(单账号)缺的"跨账号看哪些通道不健康"。只读 → 仅写 hermes_tool_calls。
+	ToolChannelHealthList = "channel_health_list"
 
 	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
 	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory

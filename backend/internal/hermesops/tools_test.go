@@ -500,3 +500,62 @@ func TestAccountHealthDiagnoseChannelsBackwardCompat(t *testing.T) {
 		t.Fatalf("ChannelList nil 时不应出现 channels(向后兼容): %v", res.Summary["channels"])
 	}
 }
+
+// TestChannelHealthListSpec 守新只读工具:整租户逐通道列表 + state 过滤 + by_state 聚合 + no-leak。
+// Mutation:删 state 过滤 → cooling_down 查询返全部 3 条 → count 转红;删投影 no-leak → 哨兵泄露转红。
+func TestChannelHealthListSpec(t *testing.T) {
+	deps := ChannelHealthListDeps{
+		List: func(_ context.Context, tenantID int64, limit, offset int) ([]channelhealth.Record, error) {
+			if tenantID != 7 {
+				t.Fatalf("scope leaked: tenantID=%d want 7", tenantID)
+			}
+			return []channelhealth.Record{
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-a", ProviderAccountID: 5}, State: "cooling_down", ManualPauseReason: "SENTINEL-must-not-leak"},
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-b", ProviderAccountID: 6}, State: "active"},
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-c", ProviderAccountID: 7}, State: "cooling_down"},
+			}, nil
+		},
+	}
+	spec := ChannelHealthListSpec(deps)
+
+	// 无过滤:全部 3 条。
+	res, err := spec.Run(context.Background(), req(7))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Summary["channel_count"].(int) != 3 {
+		t.Fatalf("channel_count want 3, got %v", res.Summary["channel_count"])
+	}
+	items := res.Summary["items"].([]map[string]any)
+	if len(items) != 3 {
+		t.Fatalf("无过滤应 3 条, got %d", len(items))
+	}
+	// no-leak:自由文本字段不投影。
+	for _, c := range items {
+		if _, has := c["manual_pause_reason"]; has {
+			t.Fatalf("泄露自由文本 manual_pause_reason: %v", c)
+		}
+	}
+
+	// state 过滤:只 cooling_down(2 条);by_state 仍统计全部 3。
+	r2 := req(7)
+	r2.Args["state"] = "cooling_down"
+	res2, err := spec.Run(context.Background(), r2)
+	if err != nil {
+		t.Fatalf("run filtered: %v", err)
+	}
+	items2 := res2.Summary["items"].([]map[string]any)
+	if len(items2) != 2 {
+		t.Fatalf("cooling_down 过滤应 2 条, got %d(过滤被破坏会返全部)", len(items2))
+	}
+	if res2.Summary["channel_count"].(int) != 3 {
+		t.Fatalf("channel_count 应仍是全部 3(by_state 过滤前统计), got %v", res2.Summary["channel_count"])
+	}
+}
+
+func TestChannelHealthListNilDep(t *testing.T) {
+	_, err := ChannelHealthListSpec(ChannelHealthListDeps{}).Run(context.Background(), req(7))
+	if !errors.Is(err, ErrDependencyUnwired) {
+		t.Fatalf("nil dep 应 ErrDependencyUnwired, got %v", err)
+	}
+}
