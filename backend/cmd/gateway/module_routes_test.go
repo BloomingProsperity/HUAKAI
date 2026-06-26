@@ -10,6 +10,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 )
@@ -115,5 +117,55 @@ func TestModulesEndpointCategoryFilterForAdmin(t *testing.T) {
 			ids[i] = m.ID
 		}
 		t.Fatalf("money-path filter -> %v want [billing.service]", ids)
+	}
+}
+
+// TestModulesRegistryWiresChannelHealthAndDLQ — Hermes 模块感知扩展:channelhealth + dlq
+// 必须注册进 module spine(Hermes 经 GET /v1/hermes/context 看到),探针随服务接线 OK/degraded,
+// 且 seedCatalogJoin 把静态 catalog overlay 接上。
+// 判别:① 若 buildModuleRegistry 停止注册任一 → "未注册" RED;② 若探针 nil-guard 反了
+// (服务 nil 仍报 OK)→ degraded 断言 RED;③ 若 seedCatalogJoin 漏接 → overlay nil RED。
+func TestModulesRegistryWiresChannelHealthAndDLQ(t *testing.T) {
+	fetch := func(d *deps) map[string]modulehttp.ModuleView {
+		src := newModuleSource(buildModuleRegistry(d))
+		h := modulehttp.NewModulesHandler(src)
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil))
+		var resp modulehttp.ModulesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out := map[string]modulehttp.ModuleView{}
+		for _, m := range resp.Modules {
+			out[m.ID] = m
+		}
+		return out
+	}
+
+	// wired:服务非 nil(零值指针即可,探针只判 nil)→ 探针 StatusOK + catalog overlay 接上。
+	wired := fetch(&deps{channelHealth: &channelhealth.Service{}, dlqService: &legacydlq.Service{}})
+	for _, id := range []string{"channelhealth.service", "dlq.service"} {
+		m, ok := wired[id]
+		if !ok {
+			t.Fatalf("%s 未注册进 module registry(Hermes 看不到该模块)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusOK {
+			t.Fatalf("%s 服务接线时探针应 StatusOK,got %v", id, m.LiveProbe.Status)
+		}
+		if m.Catalog == nil {
+			t.Fatalf("%s 缺 catalog overlay(seedCatalogJoin 未接)", id)
+		}
+	}
+
+	// degraded:服务 nil → 探针 StatusDegraded(身份仍注册;nil-guard 判别)。
+	degraded := fetch(&deps{})
+	for _, id := range []string{"channelhealth.service", "dlq.service"} {
+		m, ok := degraded[id]
+		if !ok {
+			t.Fatalf("%s 应仍注册(身份与健康无关)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusDegraded {
+			t.Fatalf("%s 服务未接线时探针应 StatusDegraded,got %v", id, m.LiveProbe.Status)
+		}
 	}
 }
