@@ -14,6 +14,7 @@ import (
 	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
 // hermesToolDeps bundles the EXISTING read-only stores the WAVE H3 diagnostic
@@ -31,6 +32,9 @@ type hermesToolDeps struct {
 	// idempotency-keyed) the WAVE H4 dlq_replay tool wraps. Nil => the tool fails
 	// closed on its dependency check.
 	dlqService *dlq.Service
+	// modelRegistry exposes the EXISTING read-only ResolveModel the model_resolve_diagnose
+	// tool wraps (alias -> canonical/pool-binding routing). Nil => the tool fails closed.
+	modelRegistry *registry.PostgresRegistry
 }
 
 // buildHermesToolRegistry assembles the read-only diagnostic-tool registry by
@@ -77,6 +81,16 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 		chListDeps.List = d.channelHealth.ListChannelHealth
 	}
 	reg.Register(hermesops.ChannelHealthListSpec(chListDeps))
+
+	// model_resolve_diagnose -> registry.PostgresRegistry.ResolveModel(只读解析,
+	// REPEATABLE READ + read-only TX,不写任何状态)。0153 迁移已把 model_resolve_diagnose 加进
+	// hermes_tool_calls.tool_name CHECK。投影 safe-by-construction,绝不露 binding 上的
+	// SystemPrompt/SensitiveWords/ParamOverride 等自由文本(见 hermesops.modelResolveShape)。
+	mrDeps := hermesops.ModelResolveDiagnoseDeps{}
+	if d.modelRegistry != nil {
+		mrDeps.Resolve = d.modelRegistry.ResolveModel
+	}
+	reg.Register(hermesops.ModelResolveDiagnoseSpec(mrDeps))
 
 	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
 	// admin reads on billingQueries.

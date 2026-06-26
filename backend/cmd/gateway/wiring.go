@@ -112,55 +112,55 @@ import (
 
 // deps is the live dependency tree handlers receive after run() boots.
 type deps struct {
-	cfg                      *Config
-	clientIPResolver         *clientip.Resolver
-	pgPool                   *pgxpool.Pool
-	adminQueries             *admindb.Queries
-	billingQueries           *dbbilling.Queries
-	billingPolicyStore       billing.PolicyStore
-	billingPolicyResolver    *billing.PolicyResolver
-	selector                 pool.Selector
-	channelHealth            *channelhealth.Service
-	modelCooldowns           *ratelimit.ModelCooldownService
-	upstreamRate             ratelimit.Service
-	retryBudget              *retrybudget.Budget
-	claimGate                billing.ClaimGate
-	settler                  billing.Settler
-	quotaReserver            quotaenforce.Reserver
-	replayStore              billing.ReplayStore
-	forwarder                *gateway.StreamForwarder
-	credentialVault          provider.CredentialVault
-	credentialStore          *credentialstore.Store
-	credentialKeys           credentialstore.KeyProvider
-	credentialAcqStore       *credentialacq.PostgresSessionStore
-	credentialExchangers     *credentialacq.ExchangerRegistry
-	credentialScheduler      *credentialworker.Scheduler
-	emailSettings            *mailinfra.PostgresSettingsStore
-	authEmailSender          gatewayhttp.AuthEmailSender
-	emailSendLimit           *emailsendlimit.Limiter
-	userAuth                 *userauth.Service
-	userSessions             *usersession.Service
-	passkeys                 *passkey.Service
-	twoFactor                *twofa.Service
-	loginThrottle            *loginthrottle.Limiter
-	userKeyService           *userkey.Service
-	userAuditStore           *userauditlog.PostgresStore
-	paymentService           *payment.Service
-	checkinService           *checkin.Service
-	paymentProviders         map[string]paymenthttp.ProviderBinding
-	paymentRefundRequests    paymenthttp.RefundRequestRecorder
-	voucherService           *voucher.Service
-	subscriptionService      *subscription.Service
-	subExpiryWorker          *subscription.ExpiryWorker
-	subReminderWorker        *subscription.ReminderWorker
-	notificationSettings     *notify.Service
-	announcementService      *announcement.Service
-	userNoticeService        *usernotice.Service
-	mediaTaskService         *mediatask.Service
-	mediaTaskWorker          *mediatask.Worker
+	cfg                   *Config
+	clientIPResolver      *clientip.Resolver
+	pgPool                *pgxpool.Pool
+	adminQueries          *admindb.Queries
+	billingQueries        *dbbilling.Queries
+	billingPolicyStore    billing.PolicyStore
+	billingPolicyResolver *billing.PolicyResolver
+	selector              pool.Selector
+	channelHealth         *channelhealth.Service
+	modelCooldowns        *ratelimit.ModelCooldownService
+	upstreamRate          ratelimit.Service
+	retryBudget           *retrybudget.Budget
+	claimGate             billing.ClaimGate
+	settler               billing.Settler
+	quotaReserver         quotaenforce.Reserver
+	replayStore           billing.ReplayStore
+	forwarder             *gateway.StreamForwarder
+	credentialVault       provider.CredentialVault
+	credentialStore       *credentialstore.Store
+	credentialKeys        credentialstore.KeyProvider
+	credentialAcqStore    *credentialacq.PostgresSessionStore
+	credentialExchangers  *credentialacq.ExchangerRegistry
+	credentialScheduler   *credentialworker.Scheduler
+	emailSettings         *mailinfra.PostgresSettingsStore
+	authEmailSender       gatewayhttp.AuthEmailSender
+	emailSendLimit        *emailsendlimit.Limiter
+	userAuth              *userauth.Service
+	userSessions          *usersession.Service
+	passkeys              *passkey.Service
+	twoFactor             *twofa.Service
+	loginThrottle         *loginthrottle.Limiter
+	userKeyService        *userkey.Service
+	userAuditStore        *userauditlog.PostgresStore
+	paymentService        *payment.Service
+	checkinService        *checkin.Service
+	paymentProviders      map[string]paymenthttp.ProviderBinding
+	paymentRefundRequests paymenthttp.RefundRequestRecorder
+	voucherService        *voucher.Service
+	subscriptionService   *subscription.Service
+	subExpiryWorker       *subscription.ExpiryWorker
+	subReminderWorker     *subscription.ReminderWorker
+	notificationSettings  *notify.Service
+	announcementService   *announcement.Service
+	userNoticeService     *usernotice.Service
+	mediaTaskService      *mediatask.Service
+	mediaTaskWorker       *mediatask.Worker
 	// mediaTaskStore 既供 worker/service 用,也供孤儿对账 admin 面(orphanreconcilehttp)
 	// 复用其只读列表 + 单一动钱入口 ReconcileOrphan(Manual-First,复用既有 billing settle)。
-	mediaTaskStore *mediatask.PostgresStore
+	mediaTaskStore           *mediatask.PostgresStore
 	routeAdminService        *routeadmin.Service
 	panelAuthResolver        *panelauth.Resolver
 	invitationService        *communityinvitation.Service
@@ -1041,6 +1041,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealth:  channelHealthService,
 		dlqStore:       dlqStore,
 		dlqService:     dlqService,
+		// model_resolve_diagnose 的只读解析依赖。此 hermes 工具注册早于下方 1150 行的 canonical
+		// modelRegistry 构造(它给 model registry admin/router 用),故这里就地构造一份专用实例:
+		// PostgresRegistry 是 pgPool 的无状态包装(noopCache),ResolveModel 每次自开只读 TX,
+		// 两份实例语义等价且彼此隔离,避免为接线而重排这个 god-file 的 100+ 行依赖顺序。
+		modelRegistry: registry.NewPostgresRegistry(pgPool, nil),
 	}, hermesMutateGuard.orchestratorOptions()...)
 	// S2 (c): the per-operator-token rate limiter, enforced in the mutate handler.
 	hermesMutateRateLimiter := hermesMutateGuard.newRateLimiter()
