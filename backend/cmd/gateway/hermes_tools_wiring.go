@@ -139,6 +139,17 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.AlertEventListSpec(alertEvtDeps))
 
+	// provider_catalog_list / channel_catalog_list -> admindb.Queries 的按租户目录读(SELECT-only,
+	// SQL 含 tenant_id 过滤 + deleted_at IS NULL)。0159 迁移已把两名加进 hermes_tool_calls.tool_name CHECK。
+	provCatDeps := hermesops.ProviderCatalogListDeps{}
+	chanCatDeps := hermesops.ChannelCatalogListDeps{}
+	if d.adminQueries != nil {
+		provCatDeps.List = d.adminQueries.ListAdminProvidersByTenant
+		chanCatDeps.List = d.adminQueries.ListAdminChannelsByTenant
+	}
+	reg.Register(hermesops.ProviderCatalogListSpec(provCatDeps))
+	reg.Register(hermesops.ChannelCatalogListSpec(chanCatDeps))
+
 	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
 	// admin reads on billingQueries.
 	obsDeps := hermesops.ObservabilityDeps{}
