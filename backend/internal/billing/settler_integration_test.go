@@ -114,6 +114,79 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 	}
 }
 
+// TestAT_OBS_004_RollbackOnSlotReleaseMiss 是 AT-OBS-004 / AT-POOL-019 的强(回滚)变体:Tx2 必须
+// all-or-nothing。注入一个 mid-Tx2 失败——把 slot 提前置为非 'acquired',使 Settle 内的
+// ReleaseSlotAndDecrementInFlight 返 0 → ErrSlotReleaseMissed(settler.go),而这发生在 billing_event
+// + usage_record 已在同一事务写入之后。验证那两笔更早的写入被**完整回滚**(无孤儿 usage_record /
+// 无新增 billing_event / claim 未 committed)。这正是 phase-b5/integration-sprint 计划要求过、但一直
+// 缺失的 "kill mid-Tx2 → no partial rows" 测试,也是 pool AT-POOL-019(Tx2 原子性)的实质覆盖。
+//
+// Mutation:若 settler 把 billing_event/usage 写在独立事务(破坏单 Serializable Tx 原子性),回滚
+// 不生效 → "无 usage_record" 断言转红。
+func TestAT_OBS_004_RollbackOnSlotReleaseMiss(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-rollback")
+	settler := NewSettler(pool)
+
+	// 同 claim 当前的 billing_events 基线(seed 可能已写过 reserve 类事件)。
+	var eventsBefore int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing_events WHERE claim_id=$1`, seed.claimID).Scan(&eventsBefore); err != nil {
+		t.Fatalf("count billing_events before: %v", err)
+	}
+
+	// 注入 mid-Tx2 失败:把 slot 提前置为非 'acquired',ReleaseSlotAndDecrementInFlight 将返 0。
+	if _, err := pool.Exec(ctx,
+		`UPDATE pool_slot_acquisitions SET status='released_success', released_at=NOW() WHERE acquisition_token=$1`,
+		seed.acquisitionToken); err != nil {
+		t.Fatalf("预置 slot 为 released: %v", err)
+	}
+
+	actualCost := decimal.RequireFromString("0.02000000")
+	if _, err := settler.Settle(ctx, settleRequest(seed, actualCost)); !errors.Is(err, ErrSlotReleaseMissed) {
+		t.Fatalf("slot 非 acquired 时 Settle 应返回 ErrSlotReleaseMissed,got %v", err)
+	}
+
+	// 回滚验证 1:usage_record 必须为 0(它在 ReleaseSlot 失败前已写入同事务,失败后整体回滚;
+	// 非原子=会留下孤儿 usage_record)。
+	var usageCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM usage_records WHERE claim_id=$1`, seed.claimID).Scan(&usageCount); err != nil {
+		t.Fatalf("count usage_records: %v", err)
+	}
+	if usageCount != 0 {
+		t.Fatalf("Tx2 失败后不应有 usage_record(单 Tx 回滚被破坏=孤儿写),got %d", usageCount)
+	}
+
+	// 回滚验证 2:billing_events 数量不变(settle 写的事件被回滚,回到基线)。
+	var eventsAfter int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing_events WHERE claim_id=$1`, seed.claimID).Scan(&eventsAfter); err != nil {
+		t.Fatalf("count billing_events after: %v", err)
+	}
+	if eventsAfter != eventsBefore {
+		t.Fatalf("Tx2 失败后 billing_events 应回滚回基线 %d,got %d", eventsBefore, eventsAfter)
+	}
+
+	// 回滚验证 3:claim 不应 committed(整事务回滚,状态保持)。
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM billing_ledger_claims WHERE id=$1`, seed.claimID).Scan(&status); err != nil {
+		t.Fatalf("read claim status: %v", err)
+	}
+	if status == "committed" {
+		t.Fatalf("Tx2 失败后 claim 不应 committed,got %q", status)
+	}
+
+	// 回滚验证 4(slot 维度强判别):ReleaseSlot 命中 0 行即不减 in_flight,且整事务回滚,
+	// 故 provider_accounts.in_flight_count 必须保持 seed 的 2 不变(非幂等/非原子减会被抓)。
+	var inFlightAfter int
+	if err := pool.QueryRow(ctx, `SELECT in_flight_count FROM provider_accounts WHERE id=$1`, seed.providerAccountID).Scan(&inFlightAfter); err != nil {
+		t.Fatalf("read in_flight after failed settle: %v", err)
+	}
+	if inFlightAfter != 2 {
+		t.Fatalf("ReleaseSlot 失败后 in_flight_count 不应递减,应保持 2,got %d", inFlightAfter)
+	}
+}
+
 func TestSettler_SettlePersistsCacheTierTokensAndCosts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
