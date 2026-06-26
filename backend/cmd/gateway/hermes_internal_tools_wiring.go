@@ -13,29 +13,52 @@ import (
 // sees) and builds the internal tool-execute handler the runner calls back into
 // mid-conversation. No new tool logic — it reuses the H3 registry + audit store.
 
-// readOnlyCatalogProvider adapts *hermesops.Registry into the bridge's
-// hermeschat.ToolCatalogProvider. It surfaces ONLY the read-only catalog (a
-// mutating tool is structurally excluded by Registry.ReadOnlyCatalog), marshaled
-// into the generic map shape the bridge injects without importing hermesops.
-type readOnlyCatalogProvider struct {
-	reg *hermesops.Registry
+// hermesToolCatalogProvider 把 *hermesops.Registry 适配成 bridge 的 hermeschat.ToolCatalogProvider,
+// 把目录塑形成 bridge 注入用的通用 map(从而 bridge 无需 import hermesops)。注入哪个目录由
+// proposeEnabled(Phase B 提议 KNOB)决定:
+//   - proposeEnabled=false(默认):注入 ReadOnlyCatalog——只含只读诊断工具,mutating 工具被
+//     Registry.ReadOnlyCatalog 结构性排除;注入内容与提议接入前逐字节一致(零行为变)。
+//   - proposeEnabled=true:注入 ProposableCatalog——只读工具 PLUS 可提议的 B 级 mutating 工具,
+//     每个 mutating 条目带 mutating / requires_confirmation 标志,好让 runner 知道要走 mode=propose
+//     并渲染运营者确认;不可提议的 mutating(A 级 / 不可逆)仍被结构性排除。
+//
+// 该 KNOB 与 internal_tool_handler 的 propose 分支共用同一个开关(HUAKAI_HERMES_LLM_PROPOSE_ENABLED),
+// 保证"目录暴露什么"与"handler 接受提议什么"一致。bridge 侧的 toolLoopEnabled(KNOB B)是更上位的门:
+// 它关闭时根本不注入任何目录。
+type hermesToolCatalogProvider struct {
+	reg            *hermesops.Registry
+	proposeEnabled bool
 }
 
-// ReadOnlyToolCatalog returns the read-only tools as marshalable maps. A nil
-// registry yields nil (no catalog injected) — the chat still works, the LLM just
-// has no tools to call.
-func (p readOnlyCatalogProvider) ReadOnlyToolCatalog() []map[string]any {
+// ToolCatalog 返回注入给 LLM 的工具目录(已塑形成可 marshal 的 map)。registry 为 nil 时返回 nil
+//(不注入目录)——聊天照常工作,LLM 只是没有可调用的工具。proposeEnabled 决定用只读目录还是可提议
+// 目录(见类型注释)。
+func (p hermesToolCatalogProvider) ToolCatalog() []map[string]any {
 	if p.reg == nil {
 		return nil
 	}
-	tools := p.reg.ReadOnlyCatalog()
+	var tools []hermesops.CatalogTool
+	if p.proposeEnabled {
+		tools = p.reg.ProposableCatalog()
+	} else {
+		tools = p.reg.ReadOnlyCatalog()
+	}
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		out = append(out, map[string]any{
+		entry := map[string]any{
 			"name":         t.Name,
 			"description":  t.Description,
 			"input_schema": t.InputSchema,
-		})
+		}
+		// 只给可提议的 mutating 工具带上标志(只读条目不带这些键 => proposeEnabled=false 时注入内容
+		// 与提议接入前逐字节一致)。runner 据此对带 mutating 的工具发 mode=propose 并渲染确认步骤。
+		if t.Mutating {
+			entry["mutating"] = true
+		}
+		if t.RequiresConfirmation {
+			entry["requires_confirmation"] = true
+		}
+		out = append(out, entry)
 	}
 	return out
 }

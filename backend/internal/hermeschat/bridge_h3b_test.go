@@ -12,7 +12,7 @@ type stubCatalog struct {
 	entries []map[string]any
 }
 
-func (s stubCatalog) ReadOnlyToolCatalog() []map[string]any { return s.entries }
+func (s stubCatalog) ToolCatalog() []map[string]any { return s.entries }
 
 func TestPrepareRequestBindsOperatorAndInjectsCatalogForAdminSession(t *testing.T) {
 	// 回归:对于 ADMIN 会话(已设置 operator),PrepareRequest 必须(a)把 operator 绑定

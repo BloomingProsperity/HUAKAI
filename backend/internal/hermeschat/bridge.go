@@ -88,9 +88,10 @@ func WithSessionBindings(b2 *SessionBindings) Option {
 	}
 }
 
-// WithToolCatalog 挂载只读工具目录提供方。设置后,PrepareRequest 会把经清洗的目录注入
-// runner 的聊天 payload,使 LLM 知道它可以调用哪些诊断工具(并据此使回答有据可依)。
-// 该提供方只返回只读工具;mutating 工具绝不会被描述。
+// WithToolCatalog 挂载工具目录提供方。设置后,PrepareRequest 会把经清洗的目录注入 runner 的
+// 聊天 payload,使 LLM 知道它可以调用哪些诊断工具(并据此使回答有据可依)。默认提供方只返回只读
+// 工具;在 Phase B 提议 KNOB 打开时,提供方还会带上可提议的 B 级 mutating 工具(每个都打了
+// mutating / requires_confirmation 标志,只供 LLM 提议、绝不直接执行)。
 func WithToolCatalog(provider ToolCatalogProvider) Option {
 	return func(b *Bridge) {
 		b.toolCatalog = provider
@@ -108,13 +109,14 @@ func WithToolLoopEnabled(enabled bool) Option {
 	}
 }
 
-// ToolCatalogProvider 返回注入聊天 payload 的、面向 LLM 的只读工具目录。
-// *hermesops.Registry 的 ReadOnlyCatalog 可通过一层薄适配器满足此接口;bridge 只依赖
-// marshal 后的结构形状,因此不 import hermesops。
+// ToolCatalogProvider 返回注入聊天 payload 的、面向 LLM 的工具目录。
+// *hermesops.Registry 可通过一层薄适配器满足此接口;bridge 只依赖 marshal 后的结构形状,因此不
+// import hermesops。
 type ToolCatalogProvider interface {
-	// ReadOnlyToolCatalog 以已可 marshal 的值(name + description + input_schema)返回
-	// 目录条目。它必须排除 mutating 工具。
-	ReadOnlyToolCatalog() []map[string]any
+	// ToolCatalog 以已可 marshal 的值返回目录条目。只读条目为 {name, description, input_schema};
+	// 可提议的 mutating 条目额外带 mutating / requires_confirmation 标志。具体注入哪一种(只读目录 vs
+	// 可提议目录)由提供方按 Phase B 提议 KNOB 决定;不可提议的 mutating 工具永不出现。
+	ToolCatalog() []map[string]any
 }
 
 type Bridge struct {
