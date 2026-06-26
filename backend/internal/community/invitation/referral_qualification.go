@@ -9,26 +9,6 @@ type referralQualificationStore interface {
 	qualifyPendingReferral(context.Context, int64, int64, int64, time.Time) error
 }
 
-type qualifyReferralInput struct {
-	TenantID        int64
-	RefereeUserID   int64
-	BillingEventID  int64
-	RewardUSDMicros int64
-	QualifiedAt     time.Time
-	TierThresholds  referralTierThresholds
-}
-
-type referralTierThresholds struct {
-	Silver   int
-	Gold     int
-	Platinum int
-}
-
-type referralRewardConfig struct {
-	RewardUSDMicros int64
-	TierThresholds  referralTierThresholds
-}
-
 func (s *Service) QualifyPendingReferral(ctx context.Context, tenantID, refereeUserID, billingEventID int64) error {
 	if tenantID <= 0 || refereeUserID <= 0 || billingEventID <= 0 {
 		return ErrInvalidInput
