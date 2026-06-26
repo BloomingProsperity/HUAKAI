@@ -78,37 +78,6 @@ func TestQualifyPendingReferralAlreadyQualifiedIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestQualifyPendingReferralRemainsQualifyOnly(t *testing.T) {
-	// Mutation: calling the old invitation-local reward path from QualifyPendingReferral makes rewardCalls nonzero.
-	store := &qualificationStore{
-		referrals: []qualificationReferral{{
-			id:             91,
-			tenantID:       7,
-			refereeUserID:  7001,
-			referrerUserID: 42,
-			status:         "pending",
-		}},
-		rewardedReferralIDs: map[int64]bool{},
-		referrerBalances:    map[int64]int64{},
-		tierProgress:        map[int64]qualificationTierProgress{},
-	}
-	service := NewService(store, WithNow(func() time.Time {
-		return time.Date(2026, 6, 5, 9, 0, 0, 0, time.UTC)
-	}))
-
-	if err := service.QualifyPendingReferral(context.Background(), 7, 7001, 4242); err != nil {
-		t.Fatalf("QualifyPendingReferral: %v", err)
-	}
-
-	got := store.referral(7, 7001)
-	if got.status != "qualified" {
-		t.Fatalf("referral status=%q want qualified", got.status)
-	}
-	if store.rewardCalls != 0 || len(store.rewards) != 0 || store.referrerBalances[42] != 0 {
-		t.Fatalf("qualify-only touched reward path: rewardCalls=%d rewards=%+v balances=%+v", store.rewardCalls, store.rewards, store.referrerBalances)
-	}
-}
-
 func TestReferralSummaryCountsQualifiedRewardedAndRewardCents(t *testing.T) {
 	store := &summaryStore{summary: ReferralSummary{
 		QualifiedCount:     2,
@@ -158,29 +127,7 @@ type qualificationReferral struct {
 }
 
 type qualificationStore struct {
-	referrals           []qualificationReferral
-	rewardCalls         int
-	rewards             []qualificationReward
-	rewardAudits        []qualificationRewardAudit
-	rewardedReferralIDs map[int64]bool
-	referrerBalances    map[int64]int64
-	tierProgress        map[int64]qualificationTierProgress
-}
-
-type qualificationReward struct {
-	referralID      int64
-	referrerUserID  int64
-	amountUSDMicros int64
-}
-
-type qualificationRewardAudit struct {
-	eventType string
-	reason    string
-}
-
-type qualificationTierProgress struct {
-	totalQualifiedReferrals int
-	currentTier             string
+	referrals []qualificationReferral
 }
 
 type summaryStore struct {
@@ -244,50 +191,6 @@ func (s *qualificationStore) qualifyPendingReferral(_ context.Context, tenantID,
 			row.qualifiedAt = qualifiedAt
 			return nil
 		}
-	}
-	return nil
-}
-
-func (s *qualificationStore) qualifyPendingReferralWithReward(_ context.Context, input qualifyReferralInput) error {
-	s.rewardCalls++
-	for i := range s.referrals {
-		row := &s.referrals[i]
-		if row.tenantID != input.TenantID || row.refereeUserID != input.RefereeUserID || row.status != "pending" {
-			continue
-		}
-		row.status = "qualified"
-		row.firstBillingEventID = input.BillingEventID
-		row.qualifiedAt = input.QualifiedAt
-		if input.RewardUSDMicros <= 0 || row.referrerUserID <= 0 {
-			s.rewardAudits = append(s.rewardAudits, qualificationRewardAudit{eventType: "REWARD_SKIPPED", reason: "reward_not_issued"})
-			return nil
-		}
-		if s.rewardedReferralIDs == nil {
-			s.rewardedReferralIDs = map[int64]bool{}
-		}
-		if s.rewardedReferralIDs[row.id] {
-			return nil
-		}
-		s.rewardedReferralIDs[row.id] = true
-		row.status = "rewarded"
-		s.rewards = append(s.rewards, qualificationReward{
-			referralID:      row.id,
-			referrerUserID:  row.referrerUserID,
-			amountUSDMicros: input.RewardUSDMicros,
-		})
-		if s.referrerBalances == nil {
-			s.referrerBalances = map[int64]int64{}
-		}
-		s.referrerBalances[row.referrerUserID] += input.RewardUSDMicros
-		if s.tierProgress == nil {
-			s.tierProgress = map[int64]qualificationTierProgress{}
-		}
-		progress := s.tierProgress[row.referrerUserID]
-		progress.totalQualifiedReferrals++
-		progress.currentTier = tierForQualifiedReferralCount(progress.totalQualifiedReferrals, input.TierThresholds)
-		s.tierProgress[row.referrerUserID] = progress
-		s.rewardAudits = append(s.rewardAudits, qualificationRewardAudit{eventType: "REWARD_ISSUED"})
-		return nil
 	}
 	return nil
 }
