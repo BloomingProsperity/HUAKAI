@@ -170,7 +170,7 @@ func TestUsageOutcomeInvalid(t *testing.T) {
 	store := &obsStoreStub{}
 	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage?outcome=bogus")
 	assertStatus(t, rec, http.StatusBadRequest)
-	// MUTATION: accepting any outcome reaches the store and returns a non-invalid_outcome response.
+	// 变异:接受任意 outcome 会触达 store 并返回一个非 invalid_outcome 的响应。
 	if !strings.Contains(rec.Body.String(), "invalid_outcome") || store.usageCountCalls != 0 || store.usageListCalls != 0 {
 		t.Fatalf("invalid outcome response/body/store calls mismatch: status=%d body=%s countCalls=%d listCalls=%d", rec.Code, rec.Body.String(), store.usageCountCalls, store.usageListCalls)
 	}
@@ -183,7 +183,7 @@ func TestUsageOutcomeDefaultAll(t *testing.T) {
 	}}
 	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage")
 	assertStatus(t, rec, http.StatusOK)
-	// MUTATION: defaulting absent outcome to error or success changes the threaded query value.
+	// 变异:把缺省的 outcome 默认成 error 或 success,会改变贯穿传递的 query 值。
 	if store.usageArg.Outcome == nil || *store.usageArg.Outcome != "all" || store.usageCountArg.Outcome == nil || *store.usageCountArg.Outcome != "all" {
 		t.Fatalf("default outcome params mismatch: count=%+v list=%+v", store.usageCountArg, store.usageArg)
 	}

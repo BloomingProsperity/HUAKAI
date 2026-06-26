@@ -4,7 +4,7 @@
 //  3. TestAT_GW_002_18 的 f.UpstreamAdapter 赋值改为通过 stubSingleAdapterRegistry 注入。
 //  4. 新增 stubSingleAdapterRegistry 辅助函数，将任意 proto.UpstreamAdapter 包装成注册表。
 //
-// F-GW-002 contract tests AT-GW-002-01..19 against the StreamForwarder pipeline.
+// F-GW-002 针对 StreamForwarder 管线的契约测试 AT-GW-002-01..19。
 package gateway
 
 import (
@@ -37,7 +37,7 @@ import (
 )
 
 // =====================================================================
-// Helpers
+// 辅助工具
 // =====================================================================
 
 // sseBytes 将 Anthropic 风格的 SSE 事件序列化为 wire payload。
@@ -179,7 +179,7 @@ func anthropicForwardRequest(tenantID, accountID int64) ForwardRequest {
 }
 
 // =====================================================================
-// Sub2API-inheritable scenarios
+// 可从 Sub2API 继承的场景
 // =====================================================================
 
 // AT-GW-002-01: 首个事件在 1s 内可被客户端观测到。
@@ -290,7 +290,7 @@ func TestAT_GW_002_08_LastNonZeroWinsPerField(t *testing.T) {
 }
 
 // =====================================================================
-// HUAKAI-design scenarios
+// HUAKAI 自有设计场景
 // =====================================================================
 
 // AT-GW-002-09: 有界 drain — drain 必须消费上游事件、提取 partial usage、
@@ -393,14 +393,12 @@ func TestAT_GW_002_11b_FirstTokenTimeout(t *testing.T) {
 	}
 }
 
-// TestForwarderEmitsKeepaliveDuringLongTTFT guards the CF/long-run fix: during a long
-// silent upstream wait (slow codex/o1 thinking before first token), the forwarder must
-// write periodic SSE keepalive comments to the client so a fronting Cloudflare/proxy does
-// not drop the idle connection (~100s 524) before the answer arrives.
+// TestForwarderEmitsKeepaliveDuringLongTTFT 守住 CF/长任务修复：在上游长时间静默等待期间
+// （慢速 codex/o1 在产出首 token 前思考），forwarder 必须周期性向客户端写入 SSE keepalive
+// 注释，让前置的 Cloudflare/代理不会在答案到达前丢弃空闲连接（约 100s 触发 524）。
 //
-// Mutation check: delete the keepaliveTimer select case in Forward and no ": hk" comment is
-// ever written → this assertion fails. The interval (20ms) is well under the first-token
-// timeout (200ms) so multiple keepalives fire during the wait.
+// 变异：删除 Forward 中的 keepaliveTimer select 分支后再也不会写出任何 ": hk" 注释 → 该断言
+// 变红。间隔（20ms）远小于首 token 超时（200ms），所以等待期间会触发多次 keepalive。
 func TestForwarderEmitsKeepaliveDuringLongTTFT(t *testing.T) {
 	silent := newSlowReader(300 * time.Millisecond)
 	f := newForwarder()
@@ -416,19 +414,18 @@ func TestForwarderEmitsKeepaliveDuringLongTTFT(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), ": hk") {
 		t.Fatalf("expected SSE keepalive comments during long TTFT to keep the proxy connection alive; body=%q", rec.Body.String())
 	}
-	// once a heartbeat has been written the response is committed (HTTP 200 +
-	// bytes on the wire), so deliveryTracker.started() flips true and the upstream caller can no
-	// longer turn the first-token timeout into a retryable failure / HTTP error status. To avoid
-	// handing the client a silent, comment-only 200 stream, Forward must emit an explicit in-band
-	// SSE error event on the terminating error. Mutation check: delete the keepaliveCommitted
-	// error-emit block in Forward and this assertion goes red (only ": hk" comments, no error).
+	// 一旦写出过一次心跳，响应即已提交（HTTP 200 + 字节已上线），于是 deliveryTracker.started()
+	// 翻为 true，上游调用方就无法再把首 token 超时转成可重试失败 / HTTP 错误状态。为避免把一个
+	// 静默的、只含注释的 200 流交给客户端，Forward 必须在终止错误上发出一个显式的 in-band
+	// SSE error 事件。变异：删除 Forward 中 keepaliveCommitted 的发错块后该断言变红（只剩
+	// ": hk" 注释、没有 error）。
 	if !strings.Contains(rec.Body.String(), "event: error") {
 		t.Fatalf("expected an explicit in-band SSE error event after keepalive-committed first-token timeout (not a silent comment-only 200); body=%q", rec.Body.String())
 	}
 }
 
-// TestForwarderKeepaliveDisabledWhenIntervalZero proves KeepAliveInterval=0 is OFF (no
-// stray keepalive frames injected when the operator disables it), so the feature is opt-out.
+// TestForwarderKeepaliveDisabledWhenIntervalZero 证明 KeepAliveInterval=0 即关闭（运维禁用时
+// 不会注入任何多余的 keepalive 帧），故该特性可选退出。
 func TestForwarderKeepaliveDisabledWhenIntervalZero(t *testing.T) {
 	silent := newSlowReader(200 * time.Millisecond)
 	f := newForwarder()
@@ -443,17 +440,14 @@ func TestForwarderKeepaliveDisabledWhenIntervalZero(t *testing.T) {
 	}
 }
 
-// TestForwarderInterEventTimeoutFiresAfterFirstEvent guards
-// select case must NOT cannibalise the inter-event-timeout case. After the upstream delivers its
-// first event and then stalls (sparse/stuck stream), InterEventTimeout must still fire on its own
-// short deadline — the heartbeat keeps the connection warm but must not reset interTimer or mask
-// the stall.
+// TestForwarderInterEventTimeoutFiresAfterFirstEvent 守住：keepalive 的 select 分支绝不能吞掉
+// inter-event-timeout 分支。上游产出首事件后随即卡死（稀疏/卡住的流）时，InterEventTimeout 仍
+// 必须按自己的短 deadline 触发——心跳让连接保持温热,但绝不能重置 interTimer 或掩盖卡死。
 //
-// Mutation check: remove the `case <-timerC(interTimer)` branch in Forward. interTimer is
-// still armed after the event but nothing selects on it, so the stall runs
-// to the much longer TotalStreamTimeout instead → err becomes ErrTotalStreamTimeout and this test
-// goes red on both assertions. Discriminating fixture: InterEventTimeout (50ms) is 40× shorter
-// than TotalStreamTimeout (2s), so the two outcomes are unambiguous.
+// 变异：移除 Forward 中的 `case <-timerC(interTimer)` 分支。首事件后 interTimer 仍处于 armed,
+// 但没有任何 select 监听它,于是卡死会一直拖到长得多的 TotalStreamTimeout → err 变成
+// ErrTotalStreamTimeout,两条断言都变红。区分性 fixture：InterEventTimeout（50ms）比
+// TotalStreamTimeout（2s）短 40 倍,两种结果毫无歧义。
 func TestForwarderInterEventTimeoutFiresAfterFirstEvent(t *testing.T) {
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
@@ -477,13 +471,13 @@ func TestForwarderInterEventTimeoutFiresAfterFirstEvent(t *testing.T) {
 	}
 }
 
-// TestForwarderKeepaliveDoesNotResetInterEventTimeout proves the heartbeat is a pure liveness
-// signal: with keepalive ON and firing several times inside one inter-event gap, the stall is
-// still detected at InterEventTimeout — the heartbeat must NOT push the inter-event deadline out.
+// TestForwarderKeepaliveDoesNotResetInterEventTimeout 证明心跳是纯粹的存活信号：开启 keepalive
+// 且在一个 inter-event 间隙内触发数次时,卡死仍会在 InterEventTimeout 处被检出——心跳绝不能把
+// inter-event 的 deadline 往后推。
 //
-// Mutation check: add `stopTimer(interTimer); interTimer = newTimer(...)` to the keepalive case
-// (i.e. let the heartbeat reset the stall detector). Then the heartbeat (15ms) keeps re-arming the
-// 60ms inter-event timer forever and the stream runs to TotalStreamTimeout → red.
+// 变异：给 keepalive 分支加上 `stopTimer(interTimer); interTimer = newTimer(...)`（即让心跳重置
+// 卡死检测器）。于是心跳（15ms）会不断重新 arm 那个 60ms 的 inter-event 计时器,流一路拖到
+// TotalStreamTimeout → 变红。
 func TestForwarderKeepaliveDoesNotResetInterEventTimeout(t *testing.T) {
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
@@ -559,7 +553,7 @@ func TestUsageAccumulatorUpdatePropagatesCacheTokensToFinishDraft(t *testing.T) 
 		CacheReadInputTokens:       200,
 	})
 
-	// MUTATION: if Update drops cache token fields, these assert 0 -> RED.
+	// 变异：若 Update 丢掉 cache token 字段,这些断言会得到 0 → 变红。
 	if acc.Usage.CacheCreationInputTokens5m != 100 {
 		t.Fatalf("expected cache_creation_input_tokens_5m=100; got %d", acc.Usage.CacheCreationInputTokens5m)
 	}
@@ -592,7 +586,7 @@ func TestUsageAccumulatorEmptyTreatsCacheOnlyUsageAsNonEmpty(t *testing.T) {
 	acc := UsageAccumulator{}
 	acc.Update(UsageSourceReported, proto.CanonicalUsage{CacheReadInputTokens: 200})
 
-	// MUTATION: if Empty() ignores cache fields, this returns true -> RED.
+	// 变异：若 Empty() 忽略 cache 字段,此处返回 true → 变红。
 	if acc.Empty() {
 		t.Fatalf("expected cache-only usage to be non-empty")
 	}
@@ -711,9 +705,9 @@ func TestStreamingLedgerSubmitAfterForwardHasEntry(t *testing.T) {
 }
 
 func TestStreamingLedgerCallbackAtStreamTerminal(t *testing.T) {
-	// Risk killed: C-13 must not emit the streaming ledger at first byte.
-	// Mutation self-check: restoring Write/WriteHeader ledger emission makes
-	// firstWriteCallbackSeen true and fails this test.
+	// 已消除风险：C-13 绝不能在首字节时就发出流式 ledger。
+	// 变异自检：把 Write/WriteHeader 的 ledger 发出逻辑恢复回去会让
+	// firstWriteCallbackSeen 变 true,导致本测试失败。
 	ctx := context.Background()
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -761,10 +755,9 @@ func TestStreamingLedgerCallbackAtStreamTerminal(t *testing.T) {
 }
 
 func TestStreamingLedgerPersistsAfterClientContextCancel(t *testing.T) {
-	// Risk killed: a client disconnect after partial delivery must not cancel
-	// the terminal streaming ledger write. Mutation self-check: replacing the
-	// detached ledger context with the request ctx makes Append observe
-	// context.Canceled, leaves the callback non-Persisted, and this test fails.
+	// 已消除风险：部分交付后客户端断连绝不能取消终态流式 ledger 的写入。
+	// 变异自检：把脱离的 ledger context 换回请求 ctx 会让 Append 观测到
+	// context.Canceled,callback 停在非 Persisted 状态,本测试随之失败。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	signer, err := sign.GenerateKey()
@@ -812,9 +805,9 @@ func TestStreamingLedgerPersistsAfterClientContextCancel(t *testing.T) {
 }
 
 func TestStreamingLedgerCompletionTimeUsesTerminalTime(t *testing.T) {
-	// Risk killed: C-13 must record true stream completion time, not first-byte
-	// time. Mutation self-check: moving ledger emission back to first write
-	// makes the response-hop timestamp too close to firstWriteAt and fails.
+	// 已消除风险：C-13 必须记录真正的流完成时间,而非首字节时间。
+	// 变异自检：把 ledger 发出逻辑挪回首次写入处,会让 response-hop 时间戳
+	// 太接近 firstWriteAt 而失败。
 	ctx := context.Background()
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -882,10 +875,9 @@ func TestStreamingNilLedgerGracefulSkip(t *testing.T) {
 }
 
 func TestStreamingLedgerAppendFailureEnqueuesDLQAndCallbacksDeferred(t *testing.T) {
-	// Risk killed: C-14 Append failure must not be warning-only; it must enqueue
-	// the prepared intent and give the caller a Deferred result. Mutation
-	// self-check: deleting the DLQ enqueue leaves events empty and callback
-	// state unset, so this test fails while the stream itself can still finish.
+	// 已消除风险：C-14 的 Append 失败不能只发警告;它必须把已准备好的 intent
+	// 入队,并给调用方一个 Deferred 结果。变异自检：删除 DLQ 入队会让 events
+	// 为空、callback state 未设置,于是本测试失败,而流本身仍能跑完。
 	ctx := context.Background()
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -1036,14 +1028,13 @@ func TestAT_GW_002_PF_03_UnknownProtocolFamilyReturnsError(t *testing.T) {
 }
 
 // =====================================================================
-// Retired skip guards and forwarder-owned AT-GW-002 coverage
+// 已退役的 skip 守卫,以及 forwarder 自身负责的 AT-GW-002 覆盖
 // =====================================================================
 
 func TestAT_GW_002_NoRetiredPlaceholderSkipsRemain(t *testing.T) {
-	// Risk killed: found false-green AT-GW-002 acceptance placeholders
-	// implemented only as t.Skip. Mutation self-check: reintroducing t.Skip or
-	// t.Skipf in any retired AT function below makes this parser guard fail even
-	// though Go would otherwise report the skipped test file as PASS.
+	// 已消除风险：曾发现只用 t.Skip 实现的假绿 AT-GW-002 验收占位测试。
+	// 变异自检：在下面任一已退役的 AT 函数里重新引入 t.Skip 或 t.Skipf,
+	// 都会让这个 parser 守卫失败——即使 Go 本会把被跳过的测试文件报为 PASS。
 	targets := map[string]struct{}{
 		"TestAT_GW_002_03_PreStreamFailoverList":                          {},
 		"TestAT_GW_002_04_PreStreamSanitizedError":                        {},
@@ -1087,10 +1078,9 @@ func TestAT_GW_002_NoRetiredPlaceholderSkipsRemain(t *testing.T) {
 }
 
 func TestAT_GW_002_03_PreStreamFailoverList(t *testing.T) {
-	// Risk killed: pre-delivery upstream failures must classify into retryable
-	// attempt decisions before the handler executor chooses the next account.
-	// Mutation self-check: disabling RetryableBeforeDelivery or SwitchAccount
-	// in decisionFromHTTPClassification turns the affected table row red.
+	// 已消除风险：交付前的上游失败必须在 handler 执行器选下一个账号之前,
+	// 被归类为可重试的尝试决策。变异自检：在 decisionFromHTTPClassification 里
+	// 禁用 RetryableBeforeDelivery 或 SwitchAccount,会让受影响的表行变红。
 	tests := []struct {
 		name       string
 		status     int
@@ -1132,10 +1122,9 @@ func TestAT_GW_002_03_PreStreamFailoverList(t *testing.T) {
 }
 
 func TestAT_GW_002_04_PreStreamSanitizedError(t *testing.T) {
-	// Risk killed: upstream error bodies must remain available for internal
-	// classification while staying out of the public error string.
-	// Mutation self-check: formatting UpstreamHTTPError.Error with Body leaks the
-	// marker; dropping Body prevents the iron-clad class assertion.
+	// 已消除风险：上游错误 body 必须供内部分类使用,同时绝不能出现在对外的
+	// 错误字符串里。变异自检：把 Body 拼进 UpstreamHTTPError.Error 会泄露
+	// marker;丢掉 Body 则无法做那条铁板钉钉的类别断言。
 	const marker = "SENSITIVE_UPSTREAM_MARKER"
 	upstreamErr := &UpstreamHTTPError{
 		StatusCode: http.StatusUnauthorized,
@@ -1155,11 +1144,10 @@ func TestAT_GW_002_04_PreStreamSanitizedError(t *testing.T) {
 }
 
 func TestAT_GW_002_05_BufferedMissingMessageStart(t *testing.T) {
-	// Risk killed: an Anthropic-shaped buffered SSE body that starts with content
-	// but never establishes message_start must not be reconstructed into a valid
-	// buffered response.
-	// Mutation self-check: accepting content deltas before message_start produces
-	// a non-nil response and this test fails.
+	// 已消除风险：一个 Anthropic 形态的 buffered SSE body 若以内容开头却始终未
+	// 建立 message_start,绝不能被重建成一个有效的 buffered 响应。
+	// 变异自检：在 message_start 之前就接受 content delta 会产生非 nil 响应,
+	// 本测试随之失败。
 	raw := []byte(strings.Join([]string{
 		`event: content_block_delta`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphan"}}`,
@@ -1179,12 +1167,10 @@ func TestAT_GW_002_05_BufferedMissingMessageStart(t *testing.T) {
 }
 
 func TestAT_GW_002_13_MidStreamFailoverBlocked(t *testing.T) {
-	// Risk killed: once content has been delivered, the forwarder must return a
-	// partial draft for settlement/recovery instead of presenting the failure as
-	// a clean pre-delivery retry candidate.
-	// Mutation self-check: if delivered chunks are no longer tracked before the
-	// scanner error, DeliveredTokenCount becomes zero and the handler can mistake
-	// the stream for a pre-delivery failure.
+	// 已消除风险：一旦内容已交付,forwarder 必须返回一份用于结算/恢复的 partial
+	// draft,而不能把这次失败当作干净的交付前重试候选呈现。
+	// 变异自检：若 scanner 报错之前不再跟踪已交付的 chunk,DeliveredTokenCount
+	// 会变成零,handler 就可能把该流误判为交付前失败。
 	scanners := NewStaticStreamScannerRegistry()
 	scanners.MustRegister("anthropic_messages", scannerEventsThenError{
 		events: []SSEEvent{
@@ -1257,7 +1243,7 @@ func (s scannerEventsThenError) Scan(context.Context, io.Reader, int) iter.Seq2[
 }
 
 // =====================================================================
-// Test helpers（与原文件相同，保留完整）
+// 测试辅助（与原文件相同，保留完整）
 // =====================================================================
 
 // disconnectingWriter 模拟 http.ResponseWriter 在 N 次写入后报错。

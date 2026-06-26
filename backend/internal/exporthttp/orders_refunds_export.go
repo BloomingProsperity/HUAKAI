@@ -35,8 +35,8 @@ type RefundsExporterDep interface {
 	ExportRefunds(context.Context, payment.RefundExportFilter) ([]payment.RefundRecord, error)
 }
 
-// NewOrdersExportHandler returns GET /v1/admin/orders/export.csv.
-// Read-only; no billing side effects. Excludes sensitive columns (CMB-5).
+// NewOrdersExportHandler 返回 GET /v1/admin/orders/export.csv 的 handler。
+// 只读; 无任何计费副作用。排除敏感列(CMB-5)。
 func NewOrdersExportHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID, ok := resolveTenantScope(w, r, d.Auth)
@@ -101,8 +101,8 @@ func NewOrdersExportHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// NewRefundsExportHandler returns GET /v1/admin/refunds/export.csv.
-// Read-only; no billing side effects. Excludes sensitive columns (CMB-5).
+// NewRefundsExportHandler 返回 GET /v1/admin/refunds/export.csv 的 handler。
+// 只读; 无任何计费副作用。排除敏感列(CMB-5)。
 func NewRefundsExportHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID, ok := resolveTenantScope(w, r, d.Auth)
@@ -165,8 +165,8 @@ func NewRefundsExportHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// orderExportRecord builds a CSV row for an order.
-// Deliberately omits provider_order_ref, request_fingerprint, compliance_*, failure_message (CMB-5).
+// orderExportRecord 为一条订单构造一行 CSV。
+// 刻意省略 provider_order_ref、request_fingerprint、compliance_*、failure_message(CMB-5)。
 func orderExportRecord(o payment.Order) []string {
 	return []string{
 		strconv.FormatInt(o.ID, 10),
@@ -181,7 +181,7 @@ func orderExportRecord(o payment.Order) []string {
 	}
 }
 
-// refundExportRecord builds a CSV row for a refund. No key/secret columns.
+// refundExportRecord 为一条退款构造一行 CSV。不含任何 key/secret 列。
 func refundExportRecord(ref payment.RefundRecord) []string {
 	return []string{
 		strconv.FormatInt(ref.ID, 10),

@@ -13,13 +13,13 @@ func precheckClock() func() time.Time {
 	return func() time.Time { return base }
 }
 
-// At the RPM budget the gate excludes the account; mutation guard: if the
-// Counter.Check result is ignored this MUST go red.
+// 到达 RPM 预算时 gate 会剔除该账号;变异守卫:若 Counter.Check 的结果
+// 被忽略,此处必须变红。
 func TestRatePrecheckGate_AtRPM_Excludes(t *testing.T) {
 	c := precheck.New(time.Minute, precheckClock())
 	acc := &AccountSnapshot{ID: 42, RPMLimit: 3}
 	g := RatePrecheckGate{Counter: c}
-	// Fill the budget by recording 3 requests for this account.
+	// 为该账号记录 3 次请求以填满预算。
 	for i := 0; i < 3; i++ {
 		c.Record(42, 0)
 	}
@@ -27,14 +27,14 @@ func TestRatePrecheckGate_AtRPM_Excludes(t *testing.T) {
 	if err != nil || ok || reason != GateFailureRatePrecheck {
 		t.Fatalf("at-budget account must be excluded, got ok=%v reason=%q err=%v", ok, reason, err)
 	}
-	// Discriminating: a different account that hasn't spent its budget is allowed.
+	// 区分性:另一个尚未用掉预算的账号会被放行。
 	other := &AccountSnapshot{ID: 99, RPMLimit: 3}
 	if ok, _, _ := g.Allow(context.Background(), other, SelectionRequest{}); !ok {
 		t.Fatalf("untouched account must still be allowed")
 	}
 }
 
-// Below the budget the gate allows.
+// 在预算之下时 gate 放行。
 func TestRatePrecheckGate_UnderBudget_Allows(t *testing.T) {
 	c := precheck.New(time.Minute, precheckClock())
 	acc := &AccountSnapshot{ID: 7, RPMLimit: 5}
@@ -45,8 +45,8 @@ func TestRatePrecheckGate_UnderBudget_Allows(t *testing.T) {
 	}
 }
 
-// TPM uses the request's EstimatedInputTokens so an oversized single request is
-// pre-excluded before it can provoke an upstream token-rate 429.
+// TPM 使用请求的 EstimatedInputTokens,因此单个超大请求会在引发上游
+// token-rate 429 之前就被预先剔除。
 func TestRatePrecheckGate_TPM_UsesEstimatedTokens(t *testing.T) {
 	c := precheck.New(time.Minute, precheckClock())
 	acc := &AccountSnapshot{ID: 8, TPMLimit: 100}
@@ -60,10 +60,10 @@ func TestRatePrecheckGate_TPM_UsesEstimatedTokens(t *testing.T) {
 	}
 }
 
-// Fail-open: no configured limit, nil counter, and nil account all allow.
+// Fail-open:未配置 limit、nil counter、nil account 三种情况都放行。
 func TestRatePrecheckGate_FailOpen(t *testing.T) {
 	c := precheck.New(time.Minute, precheckClock())
-	// account with no limit set → always allowed even after heavy spend
+	// 未设置 limit 的账号 → 即使大量消耗后也始终放行
 	noLimit := &AccountSnapshot{ID: 5}
 	for i := 0; i < 1000; i++ {
 		c.Record(5, 1000)
@@ -75,14 +75,14 @@ func TestRatePrecheckGate_FailOpen(t *testing.T) {
 	if ok, _, _ := (RatePrecheckGate{}).Allow(context.Background(), &AccountSnapshot{ID: 1, RPMLimit: 1}, SelectionRequest{}); !ok {
 		t.Fatalf("nil counter must fail-open")
 	}
-	// nil account → allow
+	// nil account → 放行
 	if ok, _, _ := (RatePrecheckGate{Counter: c}).Allow(context.Background(), nil, SelectionRequest{}); !ok {
 		t.Fatalf("nil account must allow")
 	}
 }
 
-// The default chain carries a fail-open RatePrecheck gate and the gate sits in
-// the ordered chain (so the wiring is real, not dangling).
+// 默认 chain 携带一个 fail-open 的 RatePrecheck gate,且该 gate 位于
+// 有序 chain 中(因此接线是真实的,而非悬空)。
 func TestRatePrecheckGate_InDefaultChainFailOpen(t *testing.T) {
 	chain := DefaultGateChain()
 	if chain.RatePrecheck == nil {
@@ -97,7 +97,7 @@ func TestRatePrecheckGate_InDefaultChainFailOpen(t *testing.T) {
 	if !found {
 		t.Fatalf("RatePrecheck gate must be in the ordered chain")
 	}
-	// Default chain (nil counter) must not exclude a budgeted account.
+	// 默认 chain(nil counter)不得剔除有预算的账号。
 	ok, _, err := chain.Allow(context.Background(), &AccountSnapshot{ID: 3, RPMLimit: 1}, SelectionRequest{})
 	if err != nil || !ok {
 		t.Fatalf("default chain must fail-open for rate precheck, got ok=%v err=%v", ok, err)

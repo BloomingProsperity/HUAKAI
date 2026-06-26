@@ -129,7 +129,7 @@ func TestAT_CH_002_014_ChannelHealthListPaginationTenantScope(t *testing.T) {
 }
 
 func TestChannelHealthSummaryHandler_CountsByState(t *testing.T) {
-	// MUTATION: register /summary after /{channel_id}, group by the wrong field, or collapse all rows into one state; exact uneven counts and total go RED.
+	// 变异:把 /summary 注册到 /{channel_id} 之后、按错误的字段分组、或把所有行塌缩成同一个 state;精确的不均计数与总数会变红。
 	store := channelhealth.NewMemoryStore()
 	svc := channelhealth.NewService(store, channelhealth.DefaultPolicy(), nil)
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
@@ -176,7 +176,7 @@ func TestChannelHealthSummaryHandler_CountsByState(t *testing.T) {
 }
 
 func TestChannelHealthSummary_AdminAuthRequired(t *testing.T) {
-	// MUTATION: allow tenant_operator/non-admin roles or call the summary controller before auth; this returns 200 or records a controller call.
+	// 变异:放行 tenant_operator/非 admin 角色,或在鉴权之前就调用 summary 控制器;这会返回 200 或记录一次控制器调用。
 	ctrl := &channelHealthControllerStub{summary: channelhealth.ChannelHealthSummary{
 		ByState: map[channelhealth.HealthState]int64{channelhealth.StateActive: 1},
 		Total:   1,

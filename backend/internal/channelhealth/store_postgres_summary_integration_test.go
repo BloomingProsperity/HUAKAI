@@ -15,7 +15,7 @@ import (
 )
 
 func TestChannelHealthSummary_CountsByState(t *testing.T) {
-	// MUTATION: GROUP BY vendor/account instead of state, or count every tenant row under active; uneven by_state counts and total go RED.
+	// 变异:把 GROUP BY 改成按 vendor/account 而非 state,或把该 tenant 的每一行都计入 active;不均衡的 by_state 计数与 total 会变红。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openChannelHealthSummaryPool(t, ctx)
@@ -57,7 +57,7 @@ func TestChannelHealthSummary_CountsByState(t *testing.T) {
 }
 
 func TestChannelHealthSummary_TenantScoped(t *testing.T) {
-	// MUTATION: drop WHERE tenant_id=$1 from the aggregate query; tenant B rows inflate tenant A's total and state buckets.
+	// 变异:从聚合查询中去掉 WHERE tenant_id=$1;tenant B 的行会撑大 tenant A 的 total 与各 state 桶。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openChannelHealthSummaryPool(t, ctx)

@@ -41,9 +41,9 @@ func newNotifyTypeCache(ttl time.Duration) *notifyTypeCache {
 	}
 }
 
-// disabled reports whether a fresh cache entry says notifications are off for
-// this (tenant,user). Only a fresh TypeNone entry returns true; everything else
-// (miss, stale, or an active channel) returns false so the caller reads the DB.
+// disabled 报告一个新鲜的缓存条目是否表明该 (tenant,user) 已关闭通知。
+// 只有新鲜的 TypeNone 条目返回 true;其它一切(未命中、过期或活跃渠道)
+// 都返回 false,以便调用方去读数据库。
 func (c *notifyTypeCache) disabled(tenantID, userID int64, now time.Time) bool {
 	if c == nil {
 		return false
@@ -62,7 +62,7 @@ func (c *notifyTypeCache) disabled(tenantID, userID int64, now time.Time) bool {
 	return entry.notifyType == TypeNone
 }
 
-// store records the freshly observed notify_type for this (tenant,user).
+// store 记录该 (tenant,user) 最新观测到的 notify_type。
 func (c *notifyTypeCache) store(tenantID, userID int64, notifyType Type, now time.Time) {
 	if c == nil {
 		return

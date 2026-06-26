@@ -1,15 +1,15 @@
-// Package obs implements F-OBS-001 observability layer (Usage Record query,
-// audit event query, DLQ replay).
+// Package obs 实现 F-OBS-001 可观测性层(Usage Record 查询、
+// 审计事件查询、DLQ 重放)。
 //
-// Closely coupled with internal/billing for Tx2 atomic settlement.
-// See docs/specs/observability-billing.md for the released spec.
-// The package includes a sqlc-backed read-side Reader in repository.go.
+// 与 internal/billing 紧密耦合,用于 Tx2 原子结算。
+// 已发布规格见 docs/specs/observability-billing.md。
+// 本包在 repository.go 中包含一个由 sqlc 支撑的读侧 Reader。
 package obs
 
 import "context"
 
-// Repository exposes operator query operations over usage_records,
-// billing_ledger_claims, audit-event tables, and usage_record_dlq.
+// Repository 暴露针对 usage_records、billing_ledger_claims、审计事件表
+// 以及 usage_record_dlq 的运营者查询操作。
 type Repository interface {
 	QueryUsageRecords(ctx context.Context, filter UsageFilter) (*UsagePage, error)
 	QueryClaims(ctx context.Context, filter ClaimFilter) (*ClaimPage, error)
@@ -17,7 +17,7 @@ type Repository interface {
 	ReplayDLQ(ctx context.Context, dlqID int64, actorID string) error
 }
 
-// UsageFilter, ClaimFilter, AuditFilter mirror admin API query parameters.
+// UsageFilter、ClaimFilter、AuditFilter 对应 admin API 的查询参数。
 type UsageFilter struct {
 	TenantID                  int64
 	From, To                  string // RFC3339
@@ -39,23 +39,23 @@ type ClaimFilter struct {
 
 type AuditFilter struct {
 	TenantID   int64
-	EventClass string // pool_routing | rate_limit | oauth_refresh
+	EventClass string // pool_routing | rate_limit | oauth_refresh(事件类别)
 	ActorID    string
 	From       string
 	Cursor     string
 	Limit      int
 }
 
-// PageMeta per docs/openapi/openapi.yaml.
+// PageMeta 参见 docs/openapi/openapi.yaml。
 type PageMeta struct {
 	Cursor     string `json:"cursor,omitempty"`
 	NextCursor string `json:"next_cursor,omitempty"`
 	HasMore    bool   `json:"has_more"`
 }
 
-// UsagePage / ClaimPage / AuditPage are paginated result envelopes.
+// UsagePage / ClaimPage / AuditPage 是分页结果信封。
 type UsagePage struct {
-	Items []byte // raw JSON array; typed shape generated from openapi.yaml
+	Items []byte // 原始 JSON 数组;带类型的形态由 openapi.yaml 生成
 	Page  PageMeta
 }
 

@@ -199,7 +199,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		out.APIKeyID = row.ID
 		out.CreatedAt = row.CreatedAt.Time
 
-		// Audit payload:prefix + tenant + user + environment。
+		// 审计 payload:prefix + tenant + user + environment。
 		// 【绝不】包含明文 bearer 或 hash。
 		payloadBytes, _ := json.Marshal(map[string]any{
 			"key_prefix":  prefix,

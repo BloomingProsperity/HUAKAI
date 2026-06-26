@@ -33,8 +33,8 @@ func TestSystemPromptPlanFromBinding(t *testing.T) {
 		t.Fatalf("RewriteSystem override: %v", err)
 	}
 	overrideSystem := readSystemString(t, overrideResult.Body)
-	// MUTATION: if override stops replacing the old system text, this remains
-	// prefixed/appended and the exact equality below goes red.
+	// 变异：若 override 不再替换旧的 system 文本，则其会保留为前缀/追加，
+	// 下面的精确相等断言随之变红。
 	if overrideSystem != "X" {
 		t.Fatalf("override system=%q want exactly X", overrideSystem)
 	}

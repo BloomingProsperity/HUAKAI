@@ -79,7 +79,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, fmt.Errorf("openai passthrough: 构造请求失败: %w", err)
 	}
 
-	// Authorization header
+	// Authorization 头
 	switch in.Credential.Type {
 	case provider.CredentialTypeAPIKey:
 		req.Header.Set("Authorization", "Bearer "+in.Credential.Value)

@@ -47,9 +47,9 @@ type optionalUsageWindow struct {
 	to   *time.Time
 }
 
-// NewKeyUsageSummaryHandler serves GET /v1/me/keys/{id}/usage-summary for a
-// session-authenticated user. Ownership is checked through userkey.Service.Get
-// before any usage aggregation, and non-owned/missing keys collapse to 404.
+// NewKeyUsageSummaryHandler 为一个会话已认证的用户提供
+// GET /v1/me/keys/{id}/usage-summary。在做任何用量聚合之前，先经
+// userkey.Service.Get 校验归属权；不属于本人/不存在的 key 一律归并为 404。
 func NewKeyUsageSummaryHandler(d KeyUsageSummaryDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Store == nil || d.Keys == nil {

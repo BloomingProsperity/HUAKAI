@@ -96,8 +96,8 @@ func planVendorCatalogApply(catalog modelsync.Catalog, current []vendorAliasStat
 	return out, nil
 }
 
-// ApplyVendorCatalog applies one vendor's complete model-list snapshot to the
-// global model catalog. It never edits tenant aliases, pool bindings, or pricing.
+// ApplyVendorCatalog 把某个 vendor 的完整 model-list 快照应用到全局 model
+// catalog。它绝不会改动 tenant alias、pool binding 或定价。
 func (r *PostgresRegistry) ApplyVendorCatalog(ctx context.Context, catalog modelsync.Catalog, opts modelsync.ApplyOptions) (modelsync.ApplyResult, error) {
 	results, err := r.ApplyVendorCatalogs(ctx, []modelsync.Catalog{catalog}, opts)
 	if err != nil {

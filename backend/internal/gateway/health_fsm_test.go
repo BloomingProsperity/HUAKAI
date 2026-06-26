@@ -42,7 +42,7 @@ func metricVal(t *testing.T, effects []SideEffect, metric string) float64 {
 	return 0
 }
 
-// AT-STATE-001 core: 3 recent ambiguous errors trigger normal → degraded.
+// AT-STATE-001 核心:近期 3 次 ambiguous 错误触发 normal → degraded。
 func TestA22_NormalToDegraded_AfterThreeRecentAmbiguous(t *testing.T) {
 	now := a22Time()
 	ev := ambiguousEvent(now)
@@ -53,18 +53,18 @@ func TestA22_NormalToDegraded_AfterThreeRecentAmbiguous(t *testing.T) {
 	}
 }
 
-// 2 recent + 0 = below threshold (3) → stay normal.
+// 2 次近期 + 0 = 低于阈值(3)→ 维持 normal。
 func TestA22_NormalStaysBelowThreshold(t *testing.T) {
 	now := a22Time()
 	ev := ambiguousEvent(now)
-	ev.Health.RecentErrorTimes = []time.Time{now.Add(-10 * time.Second)} // 1 recent + 1 current = 2
+	ev.Health.RecentErrorTimes = []time.Time{now.Add(-10 * time.Second)} // 1 次近期 + 1 次当前 = 2
 	next, _ := Transition(HealthStateNormal, ev, now)
 	if next != HealthStateNormal {
 		t.Fatalf("got %s; want normal (2 < threshold 3)", next)
 	}
 }
 
-// Iron-clad keyword 401 invalid_grant → disabled with notify.
+// Iron-clad 关键字 401 invalid_grant → disabled 并通知。
 func TestA22_NormalIronCladDisables(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -86,7 +86,7 @@ func TestA22_NormalIronCladDisables(t *testing.T) {
 	}
 }
 
-// Cooling trigger sets cooldown + probe.
+// Cooling 触发会设置 cooldown + probe。
 func TestA22_NormalCoolingTrigger(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -109,7 +109,7 @@ func TestA22_NormalCoolingTrigger(t *testing.T) {
 	}
 }
 
-// OAuth refresh path → needs_refresh.
+// OAuth 刷新路径 → needs_refresh。
 func TestA22_NormalOAuthRefresh(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -129,7 +129,7 @@ func TestA22_NormalOAuthRefresh(t *testing.T) {
 	}
 }
 
-// AT-STATE-002 hysteresis gap: 9 successes is NOT enough.
+// AT-STATE-002 滞回区间:9 次成功还不够。
 func TestA22_DegradedNineCleanSuccessesNotEnough(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -143,7 +143,7 @@ func TestA22_DegradedNineCleanSuccessesNotEnough(t *testing.T) {
 	}
 }
 
-// AT-STATE-002 hysteresis gap: 10 successes recovers.
+// AT-STATE-002 滞回区间:10 次成功即恢复。
 func TestA22_DegradedTenCleanSuccessesRecovers(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -157,7 +157,7 @@ func TestA22_DegradedTenCleanSuccessesRecovers(t *testing.T) {
 	}
 }
 
-// Ambiguous count >= threshold → needs_manual_recovery.
+// Ambiguous 计数 >= 阈值 → needs_manual_recovery。
 func TestA22_DegradedAmbiguousThresholdEscalates(t *testing.T) {
 	now := a22Time()
 	ev := ambiguousEvent(now)
@@ -171,7 +171,7 @@ func TestA22_DegradedAmbiguousThresholdEscalates(t *testing.T) {
 	}
 }
 
-// Cooling trigger from degraded.
+// 从 degraded 触发 cooling。
 func TestA22_DegradedCoolingTrigger(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -194,7 +194,7 @@ func TestA22_DegradedCoolingTrigger(t *testing.T) {
 	}
 }
 
-// CoolingDown expired with low score: stay cooling, enqueue probe.
+// CoolingDown 过期但分数偏低:维持 cooling,入队 probe。
 func TestA22_CoolingDownExpiredLowScoreStays(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -210,7 +210,7 @@ func TestA22_CoolingDownExpiredLowScoreStays(t *testing.T) {
 	}
 }
 
-// Clean probe after cooldown exits to degraded (not jumping to normal).
+// cooldown 后探测干净则退出到 degraded(而非直接跳回 normal)。
 func TestA22_CoolingDownExitsToDegraded(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -224,7 +224,7 @@ func TestA22_CoolingDownExitsToDegraded(t *testing.T) {
 	}
 }
 
-// Refresh success returns to normal.
+// 刷新成功则回到 normal。
 func TestA22_NeedsRefreshSuccess(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -238,7 +238,7 @@ func TestA22_NeedsRefreshSuccess(t *testing.T) {
 	}
 }
 
-// Refresh exhausted escalates to manual recovery.
+// 刷新次数耗尽则升级到 manual recovery。
 func TestA22_NeedsRefreshExhausted(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -255,7 +255,7 @@ func TestA22_NeedsRefreshExhausted(t *testing.T) {
 	}
 }
 
-// Operator clear from manual recovery → degraded.
+// operator 从 manual recovery 清除 → degraded。
 func TestA22_ManualRecoveryOperatorClear(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -269,7 +269,7 @@ func TestA22_ManualRecoveryOperatorClear(t *testing.T) {
 	}
 }
 
-// Operator re-enable from disabled → manual recovery.
+// operator 从 disabled 重新启用 → manual recovery。
 func TestA22_DisabledOperatorReenable(t *testing.T) {
 	now := a22Time()
 	ev := Event{
@@ -286,7 +286,7 @@ func TestA22_DisabledOperatorReenable(t *testing.T) {
 	}
 }
 
-// §6.6 HARD FLOOR INVARIANT: ambiguous tier never reaches disabled, from any state.
+// §6.6 硬底线不变量:ambiguous 档位从任何状态都绝不会进入 disabled。
 func TestA22_SixSixInvariant_AmbiguousNeverDisabled(t *testing.T) {
 	now := a22Time()
 	states := []HealthState{
@@ -302,8 +302,8 @@ func TestA22_SixSixInvariant_AmbiguousNeverDisabled(t *testing.T) {
 			Classification: FSMClassification{
 				RuleID:        "R-AMBI",
 				ErrorClass:    "upstream_5xx",
-				FsmTransition: FsmTransitionDisabled, // attempt to disable
-				Tier:          TierAmbiguous,         // but ambiguous → §6.6 must block
+				FsmTransition: FsmTransitionDisabled, // 尝试 disable
+				Tier:          TierAmbiguous,         // 但 ambiguous → §6.6 必须拦截
 			},
 			Health: HealthSnapshot{
 				HealthScore:         0.50,
@@ -320,7 +320,7 @@ func TestA22_SixSixInvariant_AmbiguousNeverDisabled(t *testing.T) {
 	}
 }
 
-// Score decay 10-min half-life.
+// 分数衰减,10 分钟半衰期。
 func TestA22_ScoreDecayHalfLife(t *testing.T) {
 	now := a22Time()
 	high := DecayHealthScore(1.0, now, now.Add(10*time.Minute))
@@ -333,7 +333,7 @@ func TestA22_ScoreDecayHalfLife(t *testing.T) {
 	}
 }
 
-// Score decay applies before classification penalty.
+// 分数衰减在分类扣分之前生效。
 func TestA22_ScoreDecayBeforePenalty(t *testing.T) {
 	now := a22Time()
 	ev := ambiguousEvent(now.Add(10 * time.Minute))
@@ -344,7 +344,7 @@ func TestA22_ScoreDecayBeforePenalty(t *testing.T) {
 	}
 }
 
-// ToFSMClassification bridge: gateway.Classification → FSMClassification.
+// ToFSMClassification 桥接:gateway.Classification → FSMClassification。
 func TestA22_ToFSMClassification_Bridge(t *testing.T) {
 	gc := Classification{
 		Class:         ErrorClassOAuthInvalidGrant,
@@ -365,7 +365,7 @@ func TestA22_ToFSMClassification_Bridge(t *testing.T) {
 	}
 }
 
-// ToFSMClassification: ambiguous tier severity 1.0.
+// ToFSMClassification:ambiguous 档位 severity 为 1.0。
 func TestA22_ToFSMClassification_AmbiguousSeverity(t *testing.T) {
 	gc := Classification{
 		Class: ErrorClassRateLimited, Tier: TierAmbiguous,
@@ -380,7 +380,7 @@ func TestA22_ToFSMClassification_AmbiguousSeverity(t *testing.T) {
 	}
 }
 
-// Score clamping invariants.
+// 分数钳制不变量。
 func TestA22_ScoreClamping(t *testing.T) {
 	if clamp01(-1) != 0 || clamp01(0.5) != 0.5 || clamp01(2) != 1 {
 		t.Fatal("clamp01 broken")

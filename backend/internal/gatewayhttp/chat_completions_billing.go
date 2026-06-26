@@ -28,7 +28,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
 
-// Above the heuristic estimator's own noise floor; sub-floor deltas are false-positive-dominated.
+// 高于启发式估算器自身的噪声底线; 低于该底线的 delta 以误报为主。
 const crossCheckMinAbsTokenDelta = 50
 
 // crossCheckAudit 计算 token 交叉校验的审计信号(confidence_score / pending_reconciliation)。

@@ -9,8 +9,8 @@ import (
 )
 
 func TestValidateModelFallbackChains_RejectsUnknownBucket(t *testing.T) {
-	// Mutation: keep the generic validateJSONObjectValue dispatch and this
-	// object-shaped config is accepted instead of failing loud at write time.
+	// 变异:保留通用的 validateJSONObjectValue 分派,则这个对象形态的配置
+	// 会被接受,而不是在写入时显式报错。
 	value := `{"enabled":true,"max_depth":2,"foo":{"gpt-4o":["gpt-4o-mini"]}}`
 	_, err := platformsettings.ValidateValue(platformsettings.KeyModelFallbackChains, value)
 	if !errors.Is(err, platformsettings.ErrInvalidValue) {
@@ -19,8 +19,8 @@ func TestValidateModelFallbackChains_RejectsUnknownBucket(t *testing.T) {
 }
 
 func TestValidateModelFallbackChains_RejectsNonStringArrayChain(t *testing.T) {
-	// Mutation: skip typed chain assertion and malformed chain payloads pass,
-	// letting runtime normalization silently erase the intended fallback.
+	// 变异:跳过 chain 的类型断言,则畸形的 chain 载荷会通过,
+	// 让运行时规范化静默抹掉本应生效的 fallback。
 	cases := []struct {
 		name  string
 		value string
@@ -40,8 +40,8 @@ func TestValidateModelFallbackChains_RejectsNonStringArrayChain(t *testing.T) {
 }
 
 func TestValidateModelFallbackChains_RejectsCycleOrSelfRef(t *testing.T) {
-	// Mutation: skip bucket-local cycle checks and admin save accepts chains
-	// that can only fall back to already-tried models.
+	// 变异:跳过 bucket 内的环检测,则 admin 保存会接受只能回退到
+	// 已尝试过的 model 的 chain。
 	cases := []struct {
 		name  string
 		value string
@@ -60,8 +60,8 @@ func TestValidateModelFallbackChains_RejectsCycleOrSelfRef(t *testing.T) {
 }
 
 func TestValidateModelFallbackChains_RejectsEmptyModelName(t *testing.T) {
-	// Mutation: trim-free or missing empty-name checks allow runtime
-	// normalization to discard a configured source or fallback target.
+	// 变异:缺少 trim 或缺少空名检查,会让运行时规范化丢弃已配置的
+	// source 或 fallback 目标。
 	cases := []struct {
 		name  string
 		value string
@@ -80,8 +80,8 @@ func TestValidateModelFallbackChains_RejectsEmptyModelName(t *testing.T) {
 }
 
 func TestValidateModelFallbackChains_AcceptsValid(t *testing.T) {
-	// Mutation: over-tight validation rejects supported per-error-class buckets
-	// or breaks the runtime parser shape used by modelfallback.ParseConfig.
+	// 变异:过严的校验会拒绝受支持的 per-error-class bucket,
+	// 或破坏 modelfallback.ParseConfig 所用的运行时解析器形态。
 	value := `{"enabled":true,"max_depth":3,"general":{"gpt-4o":["gpt-4o-mini","gpt-4.1-mini"]},"context_window":{"gpt-4o":["gpt-4.1"]},"content_policy":{"*":["policy-safe-model"]}}`
 	got, err := platformsettings.ValidateValue(platformsettings.KeyModelFallbackChains, value)
 	if err != nil {
@@ -109,8 +109,8 @@ func TestValidateModelFallbackChains_AcceptsValid(t *testing.T) {
 }
 
 func TestValidateModelFallbackChains_DepthBounds(t *testing.T) {
-	// Mutation: skip max_depth bounds and oversized or negative fallback depth
-	// is stored, making retry behavior depend on runtime defaulting/tolerance.
+	// 变异:跳过 max_depth 的边界检查,则超大或负的 fallback 深度会被存下,
+	// 使重试行为依赖运行时的默认值/容错处理。
 	cases := []struct {
 		name  string
 		value string

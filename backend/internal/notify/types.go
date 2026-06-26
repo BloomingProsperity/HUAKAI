@@ -62,11 +62,10 @@ type Event struct {
 	OccurredAt     time.Time       `json:"occurred_at"`
 }
 
-// ProviderAccountDownInfo carries the operator-facing context for a provider
-// account that a credential refresh has driven into a terminal/unhealthy state
-// (token revoked, risk-control trip, quota exhausted, auto-disabled). It is the
-// broadcast payload for EventProviderAccountDown, fanned out across every active
-// tenant notification channel just like AlertFiringInfo.
+// ProviderAccountDownInfo 携带面向运维的上下文,描述某个被凭证刷新推入
+// 终态/不健康状态的 provider 账号(token 被吊销、风控触发、配额耗尽、自动停用)。
+// 它是 EventProviderAccountDown 的广播载荷,会像 AlertFiringInfo 一样,
+// 扇出到每一个活跃租户的通知渠道。
 type ProviderAccountDownInfo struct {
 	ProviderAccountID int64     `json:"provider_account_id"`
 	VendorName        string    `json:"vendor_name,omitempty"`

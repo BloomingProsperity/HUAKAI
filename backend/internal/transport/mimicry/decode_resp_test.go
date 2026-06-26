@@ -37,7 +37,7 @@ func TestDecodeMimicryResponse_DecodesBrAndStripsHeaders(t *testing.T) {
 	resp := decodeMimicryResponse(brResp(t, payload, "br"))
 	got, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	// MUTATION GUARD: if decode is skipped, got is the raw brotli bytes != payload -> red.
+	// 变异守卫:如果跳过解码,got 就是未解压的 brotli 原始字节 != payload -> 变红。
 	if string(got) != payload {
 		t.Fatalf("decoded=%q want %q", string(got), payload)
 	}
@@ -54,7 +54,7 @@ func TestDecodeMimicryResponse_DecodesBrAndStripsHeaders(t *testing.T) {
 
 func TestDecodeMimicryResponse_PassthroughUnsupported(t *testing.T) {
 	const payload = "plain body not compressed"
-	resp := decodeMimicryResponse(brResp(t, payload, "")) // no Content-Encoding
+	resp := decodeMimicryResponse(brResp(t, payload, "")) // 无 Content-Encoding
 	got, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if string(got) != payload {

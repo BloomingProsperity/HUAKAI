@@ -154,11 +154,10 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 	}
 }
 
-// TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret guards the new-api-like
-// config-time gate: operators may boot with a missing secret, but cannot turn on
-// CAPTCHA until this gateway process has the runtime secret configured. Mutation
-// check: delete the guard and the enable request reaches Upsert while the disable
-// request still proves the check is not a blanket write blocker.
+// TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret 守护这一配置期闸门:
+// 运维可以在缺失 secret 的情况下启动,但在本网关进程配置好运行时 secret 之前,
+// 不能开启 CAPTCHA。变异检查:删掉该守卫后,启用请求会到达 Upsert,而禁用请求
+// 仍然证明这个检查不是一刀切的写入拦截器。
 func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 	svc := &platformSettingsServiceStub{
 		upsertResult: platformsettings.StoredSetting{
@@ -193,10 +192,9 @@ func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 	}
 }
 
-// TestHandlerGETCaptchaEnabledShowsMissingSecretHealth gives admins the runtime
-// misconfiguration signal that replaced fail-boot. Mutation check: remove health
-// decoration and the response still returns the setting but lacks the degraded
-// missing-secret marker.
+// TestHandlerGETCaptchaEnabledShowsMissingSecretHealth 给管理员提供这个运行时
+// 配置错误信号,它取代了原先的启动失败。变异检查:移除健康状态装饰后,响应仍会
+// 返回该设置,但缺少降级的「缺失 secret」标记。
 func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
 	svc := &platformSettingsServiceStub{
 		getResult: platformsettings.StoredSetting{

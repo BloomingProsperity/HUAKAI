@@ -1,11 +1,11 @@
-// R7.2: Anthropic Messages API cache_control mutator.
-// Sister function to R7.1 inspector (cache_control.go).
-// Spec: docs/specs/upstream-credential-management.md §F-AUTH-005 Phase H /
-// docs/reference_delta/2026-05-06/vendor-drift-audit.md (D5 TTL constraints).
+// R7.2：Anthropic Messages API 的 cache_control 变更器。
+// R7.1 探测器（cache_control.go）的姊妹函数。
+// 规格：docs/specs/upstream-credential-management.md §F-AUTH-005 Phase H /
+// docs/reference_delta/2026-05-06/vendor-drift-audit.md（D5 TTL 约束）。
 //
-// Pure JSON mutation — no IO, no network, no credential contact.
-// Applies cache_control breakpoints as planned by SuggestBreakpoints (R7.1).
-// Invariant: InspectCacheControl(result.Body).Count ==
+// 纯 JSON 变更 —— 无 IO、无网络、不接触凭证。
+// 按 SuggestBreakpoints（R7.1）规划好的方案插入 cache_control 断点。
+// 不变量：InspectCacheControl(result.Body).Count ==
 //
 //	InspectCacheControl(originalBody).Count + len(result.Applied)
 package gateway
@@ -17,56 +17,52 @@ import (
 	"sort"
 )
 
-// BreakpointApplyResult is the output of ApplyBreakpoints and
-// ApplyBreakpointsWithTTLOrdering. Body is always a fresh allocation;
-// the original input slice is never mutated.
+// BreakpointApplyResult 是 ApplyBreakpoints 与
+// ApplyBreakpointsWithTTLOrdering 的输出。Body 始终是新分配的内存；
+// 原始输入切片绝不会被改动。
 type BreakpointApplyResult struct {
 	Body    []byte
 	Applied []CacheControlLocation
 	Skipped []SkipReason
 }
 
-// SkipReason pairs a location with a human-readable explanation of why
-// ApplyBreakpoints declined to insert cache_control there.
+// SkipReason 把一个位置与一段人类可读的说明配对，解释为何
+// ApplyBreakpoints 拒绝在该处插入 cache_control。
 type SkipReason struct {
 	Location CacheControlLocation
 	Reason   string
 }
 
-// skipReasonAlreadyHas is returned when the target block already carries
-// a cache_control field.
+// skipReasonAlreadyHas 在目标 block 已携带 cache_control 字段时返回。
 const skipReasonAlreadyHas = "already has cache_control"
 
-// skipReasonNotFound is returned when the requested path/index does not
-// exist in the body.
+// skipReasonNotFound 在请求的 path/index 在 body 中不存在时返回。
 const skipReasonNotFound = "location not found in body"
 
-// skipReasonExceedsCap is returned when applying the breakpoint would push
-// the total count past CacheControlMaxAllowed.
+// skipReasonExceedsCap 在插入断点会使总数超过 CacheControlMaxAllowed 时返回。
 const skipReasonExceedsCap = "would exceed cap"
 
-// ApplyBreakpoints applies the cache_control breakpoints described by plan
-// to a copy of body. It never mutates the caller's slice.
+// ApplyBreakpoints 把 plan 描述的 cache_control 断点插入到 body 的副本中。
+// 它绝不改动调用方的切片。
 //
-// For each location in plan.Add:
-//   - If the block already has cache_control → Skipped ("already has cache_control").
-//   - If the path/index does not resolve → Skipped ("location not found in body").
-//   - If applying would exceed CacheControlMaxAllowed → Skipped ("would exceed cap").
-//   - Otherwise the cache_control object is inserted and the location is
-//     recorded in Applied.
+// 对 plan.Add 中的每个位置：
+//   - 若该 block 已有 cache_control → Skipped（"already has cache_control"）。
+//   - 若 path/index 无法解析 → Skipped（"location not found in body"）。
+//   - 若插入会超过 CacheControlMaxAllowed → Skipped（"would exceed cap"）。
+//   - 否则插入 cache_control 对象，并将该位置记入 Applied。
 //
-// TTL="" produces {"type":"ephemeral"}; TTL="1h" produces
-// {"type":"ephemeral","ttl":"1h"}.
+// TTL="" 产生 {"type":"ephemeral"}；TTL="1h" 产生
+// {"type":"ephemeral","ttl":"1h"}。
 //
-// The returned Body is re-serialized from the parsed representation; key
-// ordering within objects may change relative to the input.
+// 返回的 Body 是从解析后的表示重新序列化的；对象内部的键顺序
+// 相对输入可能发生变化。
 func ApplyBreakpoints(body []byte, plan BreakpointSuggestion) (BreakpointApplyResult, error) {
 	root, err := decodeMessagesRequest(body)
 	if err != nil {
 		return BreakpointApplyResult{}, err
 	}
 
-	// Count existing breakpoints so we know how much cap remains.
+	// 统计已有断点数，以便知道还剩多少配额。
 	snapshot, err := inspectCacheControlRoot(root)
 	if err != nil {
 		return BreakpointApplyResult{}, err
@@ -76,7 +72,7 @@ func ApplyBreakpoints(body []byte, plan BreakpointSuggestion) (BreakpointApplyRe
 	currentCount := snapshot.Count
 
 	for _, loc := range plan.Add {
-		// Cap guard.
+		// 配额上限守卫。
 		if currentCount >= CacheControlMaxAllowed {
 			result.Skipped = append(result.Skipped, SkipReason{Location: loc, Reason: skipReasonExceedsCap})
 			continue
@@ -91,19 +87,19 @@ func ApplyBreakpoints(body []byte, plan BreakpointSuggestion) (BreakpointApplyRe
 			continue
 		}
 
-		// Already occupied guard.
+		// 已占用守卫。
 		if hasCacheControl(block) {
 			result.Skipped = append(result.Skipped, SkipReason{Location: loc, Reason: skipReasonAlreadyHas})
 			continue
 		}
 
-		// Insert cache_control.
+		// 插入 cache_control。
 		block["cache_control"] = buildCacheControlObject(loc.TTL)
 		currentCount++
 		result.Applied = append(result.Applied, loc)
 	}
 
-	// Re-serialize.
+	// 重新序列化。
 	out, err := json.Marshal(root)
 	if err != nil {
 		return BreakpointApplyResult{}, fmt.Errorf("cache_control apply: re-serialization failed: %w", err)
@@ -112,20 +108,20 @@ func ApplyBreakpoints(body []byte, plan BreakpointSuggestion) (BreakpointApplyRe
 	return result, nil
 }
 
-// ApplyBreakpointsWithTTLOrdering behaves identically to ApplyBreakpoints
-// but first sorts plan.Add so that longer-TTL entries ("1h") precede
-// shorter-TTL entries ("") before applying. This satisfies the Anthropic
-// requirement that longer-TTL breakpoints appear earlier in the request.
+// ApplyBreakpointsWithTTLOrdering 行为与 ApplyBreakpoints 完全相同，
+// 但在插入前会先对 plan.Add 排序，使较长 TTL 的条目（"1h"）排在
+// 较短 TTL 的条目（""）之前。这满足 Anthropic 要求：较长 TTL 的
+// 断点必须在请求中更靠前。
 //
-// If the sorted plan still cannot produce a valid ordering (e.g. the
-// pre-existing breakpoints already violate ordering), an error is returned.
+// 若排序后的方案仍无法产生合法的顺序（例如既有断点本身已违反顺序），
+// 则返回 error。
 func ApplyBreakpointsWithTTLOrdering(body []byte, plan BreakpointSuggestion) (BreakpointApplyResult, error) {
 	if len(plan.Add) == 0 {
 		return ApplyBreakpoints(body, plan)
 	}
 
-	// Sort: "1h" (long) before "" (short). Stable sort preserves relative
-	// order within each TTL tier.
+	// 排序："1h"（长）排在 ""（短）之前。稳定排序保留同一 TTL 层级内的
+	// 相对顺序。
 	sorted := make([]CacheControlLocation, len(plan.Add))
 	copy(sorted, plan.Add)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -142,7 +138,7 @@ func ApplyBreakpointsWithTTLOrdering(body []byte, plan BreakpointSuggestion) (Br
 		return BreakpointApplyResult{}, err
 	}
 
-	// Validate that the resulting body respects TTL ordering.
+	// 校验最终 body 是否遵守 TTL 顺序。
 	if len(result.Body) > 0 {
 		finalSnap, err := InspectCacheControl(result.Body)
 		if err != nil {
@@ -156,8 +152,8 @@ func ApplyBreakpointsWithTTLOrdering(body []byte, plan BreakpointSuggestion) (Br
 	return result, nil
 }
 
-// ttlRank maps TTL strings to a sortable integer so that longer-TTL values
-// sort higher. Unknown TTL strings sort lower than "".
+// ttlRank 把 TTL 字符串映射为可排序的整数，使较长 TTL 的值排名更高。
+// 未知 TTL 字符串排名低于 ""。
 func ttlRank(ttl string) int {
 	switch ttl {
 	case "1h":
@@ -169,8 +165,8 @@ func ttlRank(ttl string) int {
 	}
 }
 
-// buildCacheControlObject constructs the cache_control map to insert.
-// TTL="" → {"type":"ephemeral"}; TTL="1h" → {"type":"ephemeral","ttl":"1h"}.
+// buildCacheControlObject 构造要插入的 cache_control map。
+// TTL="" → {"type":"ephemeral"}；TTL="1h" → {"type":"ephemeral","ttl":"1h"}。
 func buildCacheControlObject(ttl string) map[string]interface{} {
 	obj := map[string]interface{}{"type": "ephemeral"}
 	if ttl != "" {
@@ -179,16 +175,16 @@ func buildCacheControlObject(ttl string) map[string]interface{} {
 	return obj
 }
 
-// resolveBlock navigates root to find the map[string]interface{} targeted by
-// loc. Returns (block, notFound=true, nil) when the path/index is absent.
-// Returns (nil, false, err) on structural errors (e.g. wrong JSON types).
+// resolveBlock 在 root 中导航，找到 loc 指向的 map[string]interface{}。
+// 当 path/index 不存在时返回 (block, notFound=true, nil)。
+// 遇结构错误（例如 JSON 类型不对）时返回 (nil, false, err)。
 //
-// Supported paths:
-//   - "system" with Index=-1  → system as a single object
-//   - "system" with Index>=0  → system as array element
-//   - "messages" with Index   → messages[Index] content's last block (or the
-//     message itself when content is a string)
-//   - "tools"   with Index    → tools[Index]
+// 支持的 path：
+//   - "system" 且 Index=-1  → system 作为单个对象
+//   - "system" 且 Index>=0  → system 作为数组元素
+//   - "messages" 且 Index   → messages[Index] content 的最后一个 block
+//     （content 为字符串时则是 message 自身）
+//   - "tools"   且 Index    → tools[Index]
 func resolveBlock(root map[string]interface{}, loc CacheControlLocation) (block map[string]interface{}, notFound bool, err error) {
 	switch loc.Path {
 	case "system":
@@ -198,7 +194,7 @@ func resolveBlock(root map[string]interface{}, loc CacheControlLocation) (block 
 	case "tools":
 		return resolveToolBlock(root, loc.Index)
 	default:
-		return nil, true, nil // unknown path → treat as not found
+		return nil, true, nil // 未知 path → 当作未找到处理
 	}
 }
 
@@ -246,24 +242,23 @@ func resolveMessageBlock(root map[string]interface{}, index int) (map[string]int
 		return nil, false, err
 	}
 
-	// The cache_control belongs on the last content block (array case) or
-	// directly on the message object (string content case). For the mutator
-	// we need to return the block that should receive cache_control. When
-	// content is an array we target the last element; when content is a
-	// string we cannot attach cache_control — return notFound.
+	// cache_control 应放在最后一个 content block 上（数组情形），或直接放在
+	// message 对象上（content 为字符串情形）。对于变更器，我们需要返回那个
+	// 应当接收 cache_control 的 block。content 为数组时取最后一个元素；
+	// content 为字符串时无法附加 cache_control —— 返回 notFound。
 	content, contentOK := message["content"]
 	if !contentOK {
 		return nil, true, nil
 	}
 	switch blocks := content.(type) {
 	case string:
-		// String content: cache_control cannot be placed here.
+		// 字符串 content：此处无法放置 cache_control。
 		return nil, true, nil
 	case []interface{}:
 		if len(blocks) == 0 {
 			return nil, true, nil
 		}
-		// Target the last content block.
+		// 定位最后一个 content block。
 		last := blocks[len(blocks)-1]
 		block, err := objectAt(last, fmt.Sprintf("messages[%d].content[%d]", index, len(blocks)-1))
 		if err != nil {
@@ -294,30 +289,29 @@ func resolveToolBlock(root map[string]interface{}, index int) (map[string]interf
 	return block, false, nil
 }
 
-// EnforceCacheControlLimit trims excess client-supplied cache_control
-// breakpoints so that the body contains at most maxBlocks of them before it is
-// forwarded to Anthropic (which hard-caps at CacheControlMaxAllowed=4 and 400s
-// any request that carries more).
+// EnforceCacheControlLimit 裁剪客户端提供的多余 cache_control 断点，
+// 使 body 在转发给 Anthropic 之前最多携带 maxBlocks 个断点（Anthropic 硬性
+// 上限为 CacheControlMaxAllowed=4，超出的请求一律 400）。
 //
-// Strategy: "earliest-first preserved" — walk system blocks then
-// messages[].content blocks in document order and keep the FIRST maxBlocks
-// blocks that carry cache_control; delete the "cache_control" key from every
-// block beyond that. This mirrors the priority order used by InspectCacheControl.
+// 策略："保留最靠前"—— 按文档顺序遍历 system blocks，再遍历
+// messages[].content blocks，保留携带 cache_control 的前 maxBlocks 个 block；
+// 其余 block 上的 "cache_control" 键全部删除。这与 InspectCacheControl 使用的
+// 优先级顺序一致。
 //
-// Invariants:
-//   - If InspectCacheControl(body).Count <= maxBlocks the original slice is
-//     returned byte-identical (no allocation, no re-serialization).
-//   - On any decode error the original slice is returned together with the
-//     error; the caller may ignore the error and forward raw (fail-open).
-//   - The input slice is never mutated.
+// 不变量：
+//   - 若 InspectCacheControl(body).Count <= maxBlocks，则原切片以字节级
+//     完全相同的形式返回（不分配、不重新序列化）。
+//   - 遇任何解码错误时，连同 error 一起返回原切片；调用方可忽略 error 直接
+//     原样转发（fail-open）。
+//   - 输入切片绝不会被改动。
 func EnforceCacheControlLimit(body []byte, maxBlocks int) ([]byte, error) {
 	snap, err := InspectCacheControl(body)
 	if err != nil {
-		// Fail-open: cannot parse → return original unchanged.
+		// Fail-open：无法解析 → 原样返回原始 body。
 		return body, err
 	}
 	if snap.Count <= maxBlocks {
-		// Common case: already within limit — byte-identical passthrough.
+		// 常见情形：已在上限内 —— 字节级完全相同地直通。
 		return body, nil
 	}
 
@@ -328,7 +322,7 @@ func EnforceCacheControlLimit(body []byte, maxBlocks int) ([]byte, error) {
 
 	kept := 0
 
-	// Walk system blocks in document order.
+	// 按文档顺序遍历 system blocks。
 	if system, ok := root["system"]; ok {
 		switch s := system.(type) {
 		case map[string]interface{}:
@@ -354,7 +348,7 @@ func EnforceCacheControlLimit(body []byte, maxBlocks int) ([]byte, error) {
 		}
 	}
 
-	// Walk messages[].content blocks in document order.
+	// 按文档顺序遍历 messages[].content blocks。
 	if msgs, ok := root["messages"].([]interface{}); ok {
 		for _, msgRaw := range msgs {
 			msg, ok := msgRaw.(map[string]interface{})

@@ -18,11 +18,11 @@ import (
 // TestOutputTokensForAttemptIgnoresDeliveredFrames 守 C1(frames/tokens 消歧):usage_records.tokens_output
 // 只反映真实输出 token,绝不用 DeliveredTokenCount(SSE 帧/chunk 投递计数)回退充当。缺真实 usage 时
 // (TokensOutput==0)即便投递了 40 帧也记 0(帧数另由 delivered_token_count 列承载);有真实 usage 时照实记。
-// 这恢复了"tokens_output==0 ⇔ 无真实输出 token"的可靠信号(reconcile 行识别 R4-P2 依赖它)。self-proving 双路。
+// 这恢复了"tokens_output==0 ⇔ 无真实输出 token"的可靠信号(reconcile 行识别 R4-P2 依赖它)。双路自证。
 func TestOutputTokensForAttemptIgnoresDeliveredFrames(t *testing.T) {
 	// 缺 usage:上游报告输出 0,但投递了 40 帧。
-	// MUTATION: 恢复 `if attempt.DeliveredTokenCount > output { output = attempt.DeliveredTokenCount }`
-	// → 返回 40(帧数被当成 token)→ RED。
+	// 变异:恢复 `if attempt.DeliveredTokenCount > output { output = attempt.DeliveredTokenCount }`
+	// → 返回 40(帧数被当成 token)→ 变红。
 	if got := outputTokensForAttempt(
 		gateway.UsageRecordDraft{TokensOutput: 0},
 		Attempt{DeliveredTokenCount: 40},
@@ -220,7 +220,7 @@ func (r refundSettlerRow) Scan(dest ...any) error {
 //   - 输入 == MaxInt32 → 返 MaxInt32   (边界保留)
 //   - 输入正常         → 返原值        (功能不退化)
 //
-// Mutation:
+// 变异:
 //   - 把 helper 改回 `return int32(v)` 时 over/negative 用例必红
 //   - 把 over 分支改成 return 0 时 over 用例必红
 //   - 把 negative 分支改成 return v 时 negative 用例必红

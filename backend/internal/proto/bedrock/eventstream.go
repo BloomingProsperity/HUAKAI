@@ -101,7 +101,7 @@ func (s *EventStreamAdapter) ProviderEventToCanonicalEvents(ctx context.Context,
 }
 
 // FinalizeUpstreamStream 在流终止（EOF / 异常 / cancel）时补齐未结束的
-// content_block_stop + message_stop。per-call delegate anthropic.Adapter。
+// content_block_stop + message_stop。每次调用都委派给 anthropic.Adapter。
 func (s *EventStreamAdapter) FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error) {
 	return s.innerDelegate().FinalizeUpstreamStream(ctx, state)
 }
@@ -114,6 +114,6 @@ var _ proto.UpstreamAdapter = (*EventStreamAdapter)(nil)
 //   - backend/internal/proto/proto.go (proto.UpstreamAdapter 接口)
 //   - backend/internal/proto/hcsf.go (CanonicalEvent 类型)
 //   - backend/internal/gateway/bedrock_stream_scanner.go (A3，emit shape 参考)
-//   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (Bedrock chunk envelope)
+//   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (Bedrock chunk 信封)
 // 通道：claude
 // 时间：2026-05-08T<UTC>

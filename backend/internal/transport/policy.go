@@ -106,8 +106,7 @@ const (
 	TransportModeDiagnosticsOnly TransportMode = "diagnostics_only"
 )
 
-// ErrModeNotAllowedForProvider 表示当前 (provider, mode) 组合被策略
-// reject。
+// ErrModeNotAllowedForProvider 表示当前 (provider, mode) 组合被策略拒绝。
 var ErrModeNotAllowedForProvider = errors.New("transport: mode not allowed for provider")
 
 // ErrUnknownProvider 表示 provider code 不在已注册列表中。

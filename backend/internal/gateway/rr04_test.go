@@ -1,4 +1,4 @@
-// RR-04 tests: EnforceCacheControlLimit
+// RR-04 测试:EnforceCacheControlLimit
 package gateway
 
 import (
@@ -7,18 +7,18 @@ import (
 	"testing"
 )
 
-// ---- helpers for RR-04 tests ----
+// ---- RR-04 测试辅助函数 ----
 
-// buildRR04Body constructs a Messages body with:
+// buildRR04Body 构造一个 Messages body,参数:
 //
-//	systemCC:  number of system blocks that carry cache_control (always first)
-//	msgCC:     number of message content blocks that carry cache_control (appended in order)
+//	systemCC:  携带 cache_control 的 system block 数(总是排在最前)
+//	msgCC:     携带 cache_control 的 message content block 数(按序追加)
 //
-// Total CC = systemCC + msgCC.
+// 总 CC 数 = systemCC + msgCC。
 func buildRR04Body(t *testing.T, systemCC, systemTotal, msgCC, msgTotal int) []byte {
 	t.Helper()
 
-	// Build system array.
+	// 构造 system 数组。
 	systemBlocks := make([]interface{}, systemTotal)
 	for i := 0; i < systemTotal; i++ {
 		b := map[string]interface{}{"type": "text", "text": "sys"}
@@ -28,7 +28,7 @@ func buildRR04Body(t *testing.T, systemCC, systemTotal, msgCC, msgTotal int) []b
 		systemBlocks[i] = b
 	}
 
-	// Build one message with msgTotal content blocks.
+	// 构造一条带 msgTotal 个 content block 的 message。
 	contentBlocks := make([]interface{}, msgTotal)
 	for i := 0; i < msgTotal; i++ {
 		b := map[string]interface{}{"type": "text", "text": "msg"}
@@ -57,14 +57,14 @@ func buildRR04Body(t *testing.T, systemCC, systemTotal, msgCC, msgTotal int) []b
 	return out
 }
 
-// ---- Test: 5 breakpoints -> trimmed to 4, LAST one removed ----
+// ---- 测试:5 个断点 -> 裁剪到 4 个,移除最后一个 ----
 
 func TestEnforceCacheControlLimit_5to4(t *testing.T) {
-	// 1 system CC + 4 message CC blocks = 5 total.
-	// After enforce: first 4 kept (1 system + 3 msg), last msg block loses CC.
+	// 1 个 system CC + 4 个 message CC block = 共 5 个。
+	// enforce 后:保留前 4 个(1 个 system + 3 个 msg),最后一个 msg block 失去 CC。
 	body := buildRR04Body(t, 1, 1, 4, 4)
 
-	// Verify precondition.
+	// 校验前置条件。
 	snap, err := InspectCacheControl(body)
 	if err != nil {
 		t.Fatalf("precondition inspect: %v", err)
@@ -86,8 +86,8 @@ func TestEnforceCacheControlLimit_5to4(t *testing.T) {
 		t.Fatalf("after enforce: want 4 CC blocks, got %d", snapAfter.Count)
 	}
 
-	// The LAST (4th, 0-indexed index=3) message content block should have lost cache_control.
-	// Parse and verify directly.
+	// 最后一个(第 4 个,0 基 index=3)message content block 应已失去 cache_control。
+	// 直接解析并校验。
 	var root map[string]interface{}
 	if err := json.Unmarshal(out, &root); err != nil {
 		t.Fatalf("unmarshal out: %v", err)
@@ -98,22 +98,22 @@ func TestEnforceCacheControlLimit_5to4(t *testing.T) {
 	if len(content) != 4 {
 		t.Fatalf("expected 4 content blocks, got %d", len(content))
 	}
-	// Blocks 0,1,2 should keep CC (indices 1,2,3 of the 5 original CC sequence —
-	// after the 1 system CC block consumed slot 0).
+	// block 0、1、2 应保留 CC(对应原始 5 个 CC 序列里的 index 1、2、3 ——
+	// 因为那 1 个 system CC block 占用了 slot 0)。
 	for i := 0; i < 3; i++ {
 		blk := content[i].(map[string]interface{})
 		if _, has := blk["cache_control"]; !has {
 			t.Errorf("content[%d] should still have cache_control (kept)", i)
 		}
 	}
-	// Block index 3 is the removed one.
+	// index 3 的 block 是被移除的那个。
 	blkLast := content[3].(map[string]interface{})
 	if _, has := blkLast["cache_control"]; has {
 		t.Errorf("content[3] should have cache_control REMOVED (excess), but still has it")
 	}
 }
 
-// ---- Test: exactly 4 -> byte-identical ----
+// ---- 测试:恰好 4 个 -> 逐字节相同 ----
 
 func TestEnforceCacheControlLimit_Exactly4_ByteIdentical(t *testing.T) {
 	body := buildRR04Body(t, 1, 1, 3, 3) // 1+3=4
@@ -136,10 +136,10 @@ func TestEnforceCacheControlLimit_Exactly4_ByteIdentical(t *testing.T) {
 	}
 }
 
-// ---- Test: 0 breakpoints -> byte-identical ----
+// ---- 测试:0 个断点 -> 逐字节相同 ----
 
 func TestEnforceCacheControlLimit_Zero_ByteIdentical(t *testing.T) {
-	body := buildRR04Body(t, 0, 2, 0, 2) // 0 CC
+	body := buildRR04Body(t, 0, 2, 0, 2) // 0 个 CC
 
 	out, err := EnforceCacheControlLimit(body, CacheControlMaxAllowed)
 	if err != nil {
@@ -150,7 +150,7 @@ func TestEnforceCacheControlLimit_Zero_ByteIdentical(t *testing.T) {
 	}
 }
 
-// ---- Test: 2 breakpoints -> byte-identical ----
+// ---- 测试:2 个断点 -> 逐字节相同 ----
 
 func TestEnforceCacheControlLimit_Two_ByteIdentical(t *testing.T) {
 	body := buildRR04Body(t, 0, 1, 2, 2) // 0+2=2
@@ -164,17 +164,17 @@ func TestEnforceCacheControlLimit_Two_ByteIdentical(t *testing.T) {
 	}
 }
 
-// ---- Test: malformed JSON -> passthrough unchanged ----
+// ---- 测试:畸形 JSON -> 原样透传不变 ----
 
 func TestEnforceCacheControlLimit_MalformedJSON_Passthrough(t *testing.T) {
 	bad := []byte(`{not valid json`)
 
 	out, err := EnforceCacheControlLimit(bad, CacheControlMaxAllowed)
-	// Must return original bytes unchanged.
+	// 必须原样返回原始字节。
 	if !bytes.Equal(bad, out) {
 		t.Fatalf("malformed JSON: expected original bytes back\ngot: %s", out)
 	}
-	// Error must be non-nil.
+	// 错误必须非 nil。
 	if err == nil {
 		t.Fatalf("malformed JSON: expected non-nil error, got nil")
 	}

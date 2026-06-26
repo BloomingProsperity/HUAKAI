@@ -6,24 +6,23 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 )
 
-// GateFailureWindowCost is the failure reason when an account is pulled from
-// rotation because its 5-hour session window spend has reached the operator
-// configured limit.
+// GateFailureWindowCost 是当某账号因其 5 小时会话窗口的花费达到运营者
+// 配置的上限而被移出轮换时的失败原因。
 const GateFailureWindowCost GateFailureReason = "window_cost_limit"
 
-// WindowCostGate implements Gate. It excludes an account from selection when:
-//   - the account has a positive WindowCostLimitCents, AND
-//   - the cache has a fresh entry for the account, AND
-//   - the cached cost >= the limit.
+// WindowCostGate 实现 Gate。当满足以下全部条件时，它将账号排除在选择之外：
+//   - 该账号的 WindowCostLimitCents 为正，且
+//   - cache 中存在该账号的新鲜条目，且
+//   - 缓存的花费 >= 上限。
 //
-// In all other cases (limit==0, cache miss, stale entry, nil reader) the gate
-// is a no-op — fail-open by design so a bug can only make the cap less
-// effective, never wrongly bench a healthy account.
+// 其余所有情况（limit==0、cache miss、过期条目、nil reader）该 gate 都是
+// 空操作 —— 设计上 fail-open，使得 bug 至多让上限失效，绝不会错误地把
+// 健康账号挤下场。
 type WindowCostGate struct {
-	Reader windowcost.CostReader // nil → always allow (fail-open)
+	Reader windowcost.CostReader // nil → 始终放行（fail-open）
 }
 
-// WindowCostGateInterface is a named gate interface for the chain slot.
+// WindowCostGateInterface 是链路槽位上的具名 gate 接口。
 type WindowCostGateInterface interface{ Gate }
 
 func (g WindowCostGate) Allow(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (bool, GateFailureReason, error) {
@@ -32,16 +31,16 @@ func (g WindowCostGate) Allow(_ context.Context, account *AccountSnapshot, _ Sel
 	}
 	limit := account.WindowCostLimitCents
 	if limit <= 0 {
-		// opt-in: limit not set → always eligible
+		// 按需开启：未设置上限 → 始终合格
 		return true, "", nil
 	}
 	if g.Reader == nil {
-		// no cache injected → fail-open
+		// 未注入 cache → fail-open
 		return true, "", nil
 	}
 	cents, fresh := g.Reader.CurrentCost(account.ID)
 	if !fresh {
-		// cache miss or stale → fail-open
+		// cache miss 或已过期 → fail-open
 		return true, "", nil
 	}
 	if cents >= limit {

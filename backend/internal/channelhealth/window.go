@@ -53,8 +53,8 @@ func summarizeSamples(samples []SignalSample) WindowSummary {
 		case SignalLocalGateway5xx:
 			out.LocalGateway5xxHits++
 		case SignalClientMalformed, SignalSuccess, SignalLatencyP99, SignalNone:
-			// Client malformed and local gateway failures are not charged to
-			// channel health. Latency is evaluated separately.
+			// 客户端格式错误与本地网关故障不计入 channel health。
+			// 延迟单独评估。
 		default:
 			if isBanSignal(sample.Class) {
 				out.BanSignals++

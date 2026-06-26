@@ -9,8 +9,8 @@ import (
 	"testing/fstest"
 )
 
-// testDist is an in-memory stand-in for the embedded frontend so the handler is
-// fully testable under the default (!embed) build, with no real dist present.
+// testDist 是内嵌前端的内存替身,使 handler 在默认的 (!embed) 构建下、
+// 无真实 dist 存在时也完全可测。
 func testDist() fs.FS {
 	return fstest.MapFS{
 		"index.html":    {Data: []byte("<!doctype html><title>spa-shell</title><div id=root>")},
@@ -26,8 +26,8 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
-// A real built asset is served as-is. Mutation: break assetName/fileExists and a
-// known asset 404s instead of returning its bytes.
+// 真实构建的 asset 原样提供。变异:破坏 assetName/fileExists 后,
+// 已知 asset 返回 404 而非其字节。
 func TestHandlerServesStaticAsset(t *testing.T) {
 	rec := get(t, Handler(testDist()), "/assets/app.js")
 	if rec.Code != http.StatusOK {
@@ -38,9 +38,9 @@ func TestHandlerServesStaticAsset(t *testing.T) {
 	}
 }
 
-// An unknown (non-API, non-file) path is a client route → serve index.html, NOT
-// 404. Mutation: drop the serveIndex fallback and this path 404s → red. The
-// fixture's shell marker differs from any 404 body, so it discriminates.
+// 一个未知的(非 API、非文件)路径属于客户端路由 → 提供 index.html,而非
+// 404。变异:去掉 serveIndex 兜底后,该路径返回 404 → 变红。
+// fixture 的 shell 标记与任何 404 body 都不同,故有区分度。
 func TestHandlerSPAFallbackToIndex(t *testing.T) {
 	rec := get(t, Handler(testDist()), "/dashboard/settings/deep-link")
 	if rec.Code != http.StatusOK {
@@ -51,8 +51,8 @@ func TestHandlerSPAFallbackToIndex(t *testing.T) {
 	}
 }
 
-// The SPA must never answer for the API/operational surface. Mutation: remove the
-// isAPIPath guard and these paths fall through to index.html (200 HTML) → red.
+// SPA 绝不能应答 API/运维面。变异:移除 isAPIPath 护栏后,
+// 这些路径会落到 index.html(200 HTML)→ 变红。
 func TestHandlerNeverShadowsAPIPaths(t *testing.T) {
 	h := Handler(testDist())
 	for _, p := range []string{
@@ -71,10 +71,10 @@ func TestHandlerNeverShadowsAPIPaths(t *testing.T) {
 	}
 }
 
-// The root path serves the shell WITH no-cache, so a redeploy's new hashed asset
-// names are always re-fetched. Mutation: serve "/" via the file server (no
-// no-cache header) and this goes red. Guards the canonical entry that most users
-// hit, which TestHandlerRootServesShell alone does not.
+// 根路径在 no-cache 下提供 shell,这样重新部署后新的带 hash 的 asset
+// 名总会被重新拉取。变异:改为通过 file server 提供 "/"(无
+// no-cache header),本测试变红。它守护了大多数用户命中的规范入口,
+// 这是 TestHandlerRootServesShell 单独无法覆盖的。
 func TestHandlerRootServesShellNoCache(t *testing.T) {
 	rec := get(t, Handler(testDist()), "/")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "spa-shell") {
@@ -85,9 +85,9 @@ func TestHandlerRootServesShellNoCache(t *testing.T) {
 	}
 }
 
-// A path that merely shares a prefix with an exact API endpoint (/metrics,
-// /healthz) is a client route, not the API — it must get the SPA, not a 404.
-// Mutation: match /metrics by prefix instead of exactly and this goes red.
+// 一个仅与精确 API 端点(/metrics、/healthz)共享前缀的路径属于客户端路由,
+// 而非 API —— 它必须得到 SPA,而非 404。
+// 变异:把 /metrics 改成按前缀而非精确匹配,本测试变红。
 func TestHandlerExactAPIEndpointsDoNotOvermatch(t *testing.T) {
 	h := Handler(testDist())
 	for _, p := range []string{"/metrics-overview", "/healthz-status"} {
@@ -98,16 +98,16 @@ func TestHandlerExactAPIEndpointsDoNotOvermatch(t *testing.T) {
 	}
 }
 
-// nil fsys (frontend not embedded) → nil handler, so the caller keeps the default
-// 404. Mutation: return a non-nil handler for nil fsys and this fails.
+// nil fsys(前端未内嵌)→ nil handler,这样调用方保留默认的
+// 404。变异:对 nil fsys 返回非 nil handler,本测试失败。
 func TestHandlerNilWhenNotEmbedded(t *testing.T) {
 	if Handler(nil) != nil {
 		t.Fatalf("Handler(nil) must be nil so the router keeps its default NotFound")
 	}
 }
 
-// Path traversal is rejected by fs.ValidPath via assetName; a traversal attempt
-// is treated as a client route (shell), never an escape.
+// 路径穿越经由 assetName 被 fs.ValidPath 拒绝;穿越尝试
+// 被当作客户端路由(shell)处理,绝不会逃逸。
 func TestHandlerRejectsTraversal(t *testing.T) {
 	if name := assetName("/../../etc/passwd"); name != "" {
 		t.Fatalf("assetName(traversal)=%q want empty (fs.ValidPath rejects)", name)

@@ -283,7 +283,7 @@ func TestUserChangePlanDowngradeRejectedAsConflict(t *testing.T) {
 	svc := &fakeChangePlanService{err: subscription.ErrDowngradeNotAllowed}
 	router := newSubUserTestRouter(UserDeps{Service: svc})
 
-	// MUTATION that makes this RED: user route allows downgrades or maps the guard to 503.
+	// 会让本测试变红的变异:user 路由允许降级, 或把该防护映射成 503。
 	req := httptest.NewRequest(http.MethodPost, "/subs/change-plan", bytes.NewReader([]byte(`{"new_plan_id":4}`)))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)

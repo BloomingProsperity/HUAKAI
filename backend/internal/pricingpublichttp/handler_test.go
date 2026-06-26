@@ -56,8 +56,8 @@ func (s *publicPricingPricerStub) PublicModelPrices(_ context.Context, tenantID 
 	return s.table, s.err
 }
 
-// Mutation: adding any auth resolver/gate to GET /v1/pricing/page would turn
-// this no-header request into 401 and make the test fail.
+// 变异:给 GET /v1/pricing/page 加入任何 auth resolver/gate,都会把
+// 这个不带请求头的请求变成 401,使测试失败。
 func TestPublicPricingNoAuth(t *testing.T) {
 	catalog, pricer := publicPricingFixture()
 	handler := NewHandler(Deps{Catalog: catalog, Pricing: pricer})
@@ -81,9 +81,9 @@ func TestPublicPricingNoAuth(t *testing.T) {
 	}
 }
 
-// Mutation: projecting a raw rate-table field such as actual_cost, a caller
-// identity field such as user_id/api_key_id, or provider_account_id would put
-// that field name in the response body and make this test fail.
+// 变异:投射任何 raw rate-table 字段(如 actual_cost)、caller 身份
+// 字段(如 user_id/api_key_id)或 provider_account_id,都会把
+// 该字段名带进响应体,使本测试失败。
 func TestPublicPricingProjection_NoCostOrIdentity(t *testing.T) {
 	catalog, pricer := publicPricingFixture()
 	handler := NewHandler(Deps{Catalog: catalog, Pricing: pricer})
@@ -124,8 +124,8 @@ func TestPublicPricingProjection_NoCostOrIdentity(t *testing.T) {
 	}
 }
 
-// Mutation: bypassing the registry's enabled-model projection or appending
-// disabled catalog rows would include disabled-preview in the body and fail.
+// 变异:绕过 registry 的 enabled-model 投射,或追加 disabled 的 catalog
+// 行,都会把 disabled-preview 带进响应体并导致失败。
 func TestPublicPricingListsEnabledModels(t *testing.T) {
 	created := time.Unix(1704067200, 0).UTC()
 	catalog := &publicPricingCatalogStub{fixtures: []publicPricingModelFixture{
@@ -176,8 +176,8 @@ func TestPublicPricingListsEnabledModels(t *testing.T) {
 	}
 }
 
-// Mutation: requiring the historical rate-table version query parameter would
-// return 400 for this plain /v1/pricing/page request and make the test fail.
+// 变异:把历史 rate-table 的 version 查询参数设为必填,会让这个
+// 朴素的 /v1/pricing/page 请求返回 400,使测试失败。
 func TestPublicPricingNoParamsRequired(t *testing.T) {
 	catalog, pricer := publicPricingFixture()
 	handler := NewHandler(Deps{Catalog: catalog, Pricing: pricer})
@@ -286,10 +286,10 @@ func assertPublicPricingErrorCode(t *testing.T, rec *httptest.ResponseRecorder, 
 	}
 }
 
-// Mutation: dropping any of the four catalog-metadata projections in handler.go
-// (owned_by / mode / max_output_tokens / capabilities) leaves the corresponding
-// response field at its zero value, which differs from the discriminating fixture
-// values seeded below, so each assertion below goes RED on that defect.
+// 变异:在 handler.go 中去掉四个 catalog-metadata 投射中的任意一个
+// (owned_by / mode / max_output_tokens / capabilities),会让对应的
+// 响应字段停在零值,与下面 seed 的判别性 fixture 值不同,
+// 因此下面每条断言都会因该缺陷而变红。
 func TestPublicPricingProjectsCatalogMetadata(t *testing.T) {
 	catalog, pricer := publicPricingFixture()
 	handler := NewHandler(Deps{Catalog: catalog, Pricing: pricer})

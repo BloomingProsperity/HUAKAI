@@ -325,7 +325,7 @@ func TestChannelHealth_AT013_LatencyCooldownThenRecoveryWithoutDisable(t *testin
 }
 
 func TestChannelHealthSummaryMemory_CountsByStateTenantScopeAndOldestCooldown(t *testing.T) {
-	// MUTATION: count every row under one state, ignore zero-count states, or include another tenant; exact counts and total go RED.
+	// 变异:把每一行都计到同一个 state 下、忽略零计数的 state、或纳入另一个租户;精确计数与 total 都会变红。
 	ctx := context.Background()
 	store := NewMemoryStore()
 	svc := NewService(store, testPolicy(), &fixedClock{now: time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)})
@@ -479,8 +479,8 @@ func (s *failingAuditStore) WithTx(ctx context.Context, fn func(Store) error) er
 // TestChannelHealth_RampRollbackExponentialBackoffAndReset 守卫两半:
 // (1) 连续 ramp 回滚的 cooldown 随 RampFailureCount 指数升级(非固定系数);
 // (2) ramp 完全恢复到 StateActive 时 RampFailureCount 清零。
-// Mutation guard: rollbackRamp 改回固定 d*factor → 升级断言红;default case 去掉
-// RampFailureCount=0 → 重置断言红。
+// 变异守卫:rollbackRamp 改回固定 d*factor → 升级断言变红;default 分支去掉
+// RampFailureCount=0 → 重置断言变红。
 func TestChannelHealth_RampRollbackExponentialBackoffAndReset(t *testing.T) {
 	ctx, svc, store, clock := testService()
 	key := testKey()

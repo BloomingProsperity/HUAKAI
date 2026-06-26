@@ -622,13 +622,13 @@ func TestDispatcher_ProxyConsultedInDispatchPath(t *testing.T) {
 	}
 }
 
-// anthropic auto-breakpoint injection tests (cache-p0b)
+// anthropic 自动 breakpoint 注入测试(cache-p0b)
 //
-// These drive the full Dispatch path and assert on the exact bytes that reach
-// the adapter's BuildRequest (stubAdapter.lastInput.InboundBody), which is the
-// real outbound body. They are discriminating: removing the
-// "client already brought cache_control → skip" guard turns
-// TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas red.
+// 这些测试驱动完整的 Dispatch 路径,并断言到达 adapter BuildRequest 的
+// 确切字节(stubAdapter.lastInput.InboundBody),即真实的出站 body。
+// 它们有区分度:移除
+// "客户端已自带 cache_control → 跳过" 这条护栏后,
+// TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas 会变红。
 
 func anthropicDispatchInput(body string) DispatchInput {
 	return DispatchInput{
@@ -644,7 +644,7 @@ func anthropicDispatchInput(body string) DispatchInput {
 	}
 }
 
-// (1) opt-in ON + client sent no cache_control → outbound body is injected.
+// (1) opt-in 开 + 客户端未发 cache_control → 出站 body 被注入。
 func TestDispatcher_AnthropicAutoBreakpoints_InjectsWhenAbsent(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
 	adapter := &stubAdapter{platform: "anthropic"}
@@ -669,8 +669,8 @@ func TestDispatcher_AnthropicAutoBreakpoints_InjectsWhenAbsent(t *testing.T) {
 	}
 }
 
-// (2) opt-in ON + client already carries cache_control → outbound body is
-// byte-for-byte identical to the inbound body (planner must not run).
+// (2) opt-in 开 + 客户端已带 cache_control → 出站 body 与 inbound body
+// 逐字节相同(planner 必须不运行)。
 func TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
 	adapter := &stubAdapter{platform: "anthropic"}
@@ -696,13 +696,13 @@ func TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas(t *testing.T) {
 	}
 }
 
-// (3) opt-in OFF → planner never runs, body passes through unchanged even with
-// no client cache_control.
+// (3) opt-in 关 → planner 从不运行,即便没有客户端 cache_control,
+// body 也原样穿过。
 func TestDispatcher_AnthropicAutoBreakpoints_DisabledNeverInjects(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
 	adapter := &stubAdapter{platform: "anthropic"}
 	d := newDispatcherForTest(adapter, doer)
-	// AnthropicAutoBreakpoints left at zero value (false).
+	// AnthropicAutoBreakpoints 保持零值(false)。
 
 	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
 		`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
@@ -715,7 +715,7 @@ func TestDispatcher_AnthropicAutoBreakpoints_DisabledNeverInjects(t *testing.T) 
 	}
 }
 
-// (bonus) opt-in ON but non-anthropic family → never injected.
+// (附加) opt-in 开但非 anthropic 族 → 永不注入。
 func TestDispatcher_AnthropicAutoBreakpoints_OnlyAnthropicFamily(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
 	adapter := &stubAdapter{platform: "openai"}
@@ -733,7 +733,7 @@ func TestDispatcher_AnthropicAutoBreakpoints_OnlyAnthropicFamily(t *testing.T) {
 	}
 }
 
-// MUTATION: Dispatch 丢掉 InboundBetaTokens→BuildInput 映射 → 红——
+// 变异:Dispatch 丢掉 InboundBetaTokens→BuildInput 映射 → 红——
 // 客户端 anthropic-beta 透传链(DM-03)在 raw dispatch 层断裂。
 func TestDispatcher_PassesInboundBetaTokensToAdapter(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "{}"}
@@ -761,7 +761,7 @@ func TestDispatcher_PassesInboundBetaTokensToAdapter(t *testing.T) {
 // DispatchInput.ClientStreamIntent 必须原样到达 provider.BuildInput——gemini-shaped
 // 族(gemini_messages/vertex_gemini/gemini_code_assist)的流式端点选择依赖它,
 // 断链则 openai/anthropic 客户端的流式请求错选非流 :generateContent。
-// MUTATION: 删 Dispatch 里 BuildInput 的 ClientStreamIntent 赋值 → 本测试红。
+// 变异:删 Dispatch 里 BuildInput 的 ClientStreamIntent 赋值 → 本测试红。
 func TestDispatcher_PassesClientStreamIntentToAdapter(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "{}"}
 	adapter := &stubAdapter{platform: "gemini"}

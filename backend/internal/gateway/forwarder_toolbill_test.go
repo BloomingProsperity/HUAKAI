@@ -6,11 +6,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// TestUsageAccumulator_ToolCallsAccumulate verifies that WebSearchCalls /
-// FileSearchCalls / ImageGenerationCalls are ACCUMULATED (+=) across Update
-// calls, not overwritten.
+// TestUsageAccumulator_ToolCallsAccumulate 验证 WebSearchCalls /
+// FileSearchCalls / ImageGenerationCalls 在多次 Update 调用间是被累加（+=）的，
+// 而不是被覆盖。
 //
-// MUTATION: change += to = in Update => count becomes 1 after 3 calls => RED.
+// 变异：把 Update 里的 += 改成 = => 三次调用后计数变成 1 => 变红。
 func TestUsageAccumulator_ToolCallsAccumulate(t *testing.T) {
 	var acc UsageAccumulator
 
@@ -36,8 +36,8 @@ func TestUsageAccumulator_ToolCallsAccumulate(t *testing.T) {
 	}
 }
 
-// TestUsageAccumulator_ToolCallsRespectTerminalLock verifies that once
-// Freeze() is called, subsequent Updates do NOT accumulate tool counts.
+// TestUsageAccumulator_ToolCallsRespectTerminalLock 验证一旦调用 Freeze()，
+// 后续的 Update 就不再累加工具调用计数。
 func TestUsageAccumulator_ToolCallsRespectTerminalLock(t *testing.T) {
 	var acc UsageAccumulator
 
@@ -50,8 +50,8 @@ func TestUsageAccumulator_ToolCallsRespectTerminalLock(t *testing.T) {
 	}
 }
 
-// TestUsageAccumulator_TokensStillSetToLatest verifies that the += change for
-// tool counts does NOT break the existing set-to-latest behaviour for tokens.
+// TestUsageAccumulator_TokensStillSetToLatest 验证针对工具计数的 += 改动不会
+// 破坏 token 既有的"取最新值"行为。
 func TestUsageAccumulator_TokensStillSetToLatest(t *testing.T) {
 	var acc UsageAccumulator
 

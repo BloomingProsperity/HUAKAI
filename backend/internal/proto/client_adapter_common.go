@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// P-2 D0 shared foundation for ClientAdapter（client wire ↔ canonical）。
+// P-2 D0 ClientAdapter 的共享基础设施（client wire ↔ canonical）。
 //
 // 范围（按 P-2 ClientAdapter synthesis §5.1 Q5 决策 A）：
 //   - RequestMetaSeed + context 注入；client adapter 的 RequestToCanonical
@@ -195,7 +195,7 @@ func (r *ClientAdapterRegistry) Protocols() []ClientProtocol {
 }
 
 // ----------------------------------------------------------------------------
-// SSE emit helpers
+// SSE 输出辅助函数
 // ----------------------------------------------------------------------------
 
 // EmitSSEEvent 拼装一个具名 SSE event：

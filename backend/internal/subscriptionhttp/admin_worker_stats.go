@@ -9,18 +9,18 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 )
 
-// WorkerStatsReader reads in-process subscription worker counters.
+// WorkerStatsReader 读取进程内的订阅 worker 计数器。
 type WorkerStatsReader interface {
 	ReadWorkerStats() WorkerStats
 }
 
-// AdminWorkerStatsDeps holds the admin stats endpoint dependencies.
+// AdminWorkerStatsDeps 持有 admin stats 端点的依赖。
 type AdminWorkerStatsDeps struct {
 	Auth   AdminAuth
 	Reader WorkerStatsReader
 }
 
-// WorkerStats is the JSON response for subscription notification workers.
+// WorkerStats 是订阅通知 worker 的 JSON 响应。
 type WorkerStats struct {
 	Reminder ReminderWorkerStats `json:"reminder"`
 	Expiry   ExpiryWorkerStats   `json:"expiry"`
@@ -38,7 +38,7 @@ type ExpiryWorkerStats struct {
 	FailedTicks  uint64 `json:"failed_ticks"`
 }
 
-// NewAdminWorkerStatsHandler returns current in-process worker counters.
+// NewAdminWorkerStatsHandler 返回当前进程内的 worker 计数器。
 func NewAdminWorkerStatsHandler(d AdminWorkerStatsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil || d.Reader == nil {

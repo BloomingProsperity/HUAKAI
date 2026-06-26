@@ -81,15 +81,15 @@ func DefaultGateChain() GateChain {
 	return GateChain{
 		Tenant: g, Lifecycle: g, Channel: g, Protocol: protocolFamilyGate{}, Model: modelRateLimitGate{}, Capability: g,
 		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{}, Pinned: pinnedAccountGate{},
-		// WindowCost defaults to nil; WithWindowCostGate sets it. nil == AllowAll (fail-open).
+		// WindowCost 默认为 nil;由 WithWindowCostGate 设置。nil == AllowAll(fail-open)。
 		WindowCost: WindowCostGate{},
-		// SessionCount defaults to nil registry; fail-open.
+		// SessionCount 默认为 nil registry;fail-open。
 		SessionCount: SessionCountGate{},
-		// ContextWindow zero value is fail-open (allows unless both
-		// ModelContextWindow>0 and EstimatedInputTokens>0 and overflow).
+		// ContextWindow 零值即 fail-open(除非同时满足
+		// ModelContextWindow>0 且 EstimatedInputTokens>0 且发生溢出,否则放行)。
 		ContextWindow: ContextWindowGate{},
-		// RatePrecheck defaults to a nil-counter gate (fail-open); the wiring
-		// layer injects a precheck.Counter to activate ROUTE-121.
+		// RatePrecheck 默认是一个 nil-counter 的 gate(fail-open);由 wiring
+		// 层注入 precheck.Counter 以激活 ROUTE-121。
 		RatePrecheck: RatePrecheckGate{},
 	}
 }
@@ -287,8 +287,8 @@ func (g ProviderAccountHealthGate) Allow(_ context.Context, account *AccountSnap
 	if account == nil {
 		return false, GateFailureHealth, nil
 	}
-	// TOKLIFE-02: operator escape hatch — skip health/cooldown bench for flagged accounts.
-	// Only activates when disable_cooling=TRUE; default false preserves existing behavior exactly.
+	// TOKLIFE-02:operator 的紧急豁免口 —— 对打了标记的账号跳过 health/cooldown 检查。
+	// 仅当 disable_cooling=TRUE 时生效;默认 false,完全保持原有行为。
 	if account.DisableCooling {
 		return true, "", nil
 	}

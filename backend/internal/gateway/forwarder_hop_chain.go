@@ -12,9 +12,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// ApplyForwardRequestHopChain writes the T3 four-hop gateway chain onto an
-// HCSF envelope. Detail is intentionally left empty so request/response content
-// cannot leak into hop attestations.
+// ApplyForwardRequestHopChain 把 T3 四跳网关链写入一个 HCSF
+// envelope。Detail 故意留空,这样请求/响应内容
+// 不会泄露进 hop attestation。
 func ApplyForwardRequestHopChain(env *proto.HCSF, req ForwardRequest) {
 	if env == nil {
 		return
@@ -51,8 +51,8 @@ func BuildHopChain(req ForwardRequest, providerEndpoint string, startedAt, compl
 	return chain
 }
 
-// FinalizeUpstream calls the upstream adapter finalizer and annotates any HCSF
-// envelopes it returns with the same hop chain used by Forward.
+// FinalizeUpstream 调用 upstream adapter 的 finalizer,并用与 Forward
+// 相同的 hop 链,给它返回的所有 HCSF envelope 加上标注。
 func (f *StreamForwarder) FinalizeUpstream(ctx context.Context, adapter proto.UpstreamAdapter, state any, req ForwardRequest) ([]any, error) {
 	if adapter == nil {
 		return nil, nil

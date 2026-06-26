@@ -1,30 +1,24 @@
-// Package cacheplan holds non-frozen helpers that support the gateway
-// cache_control breakpoint planner without living in the frozen
-// internal/gateway package.
+// Package cacheplan 存放非冻结的辅助函数, 用于支撑 gateway 的 cache_control
+// breakpoint 规划器, 同时又不必放进冻结的 internal/gateway 包。
 //
-// The single responsibility here is a self-contained detector that answers:
-// "did the client already place any cache_control field anywhere in this
-// Anthropic Messages request body?" The gateway egress path consults this
-// before auto-injecting breakpoints, so a client that manages its own
-// cache_control is never touched.
+// 这里的唯一职责是一个自包含的探测器, 回答一个问题:
+// 「客户端是否已经在这份 Anthropic Messages 请求 body 的任意位置放置了
+// cache_control 字段?」gateway 出口路径在自动注入 breakpoint 之前会查询它,
+// 这样自行管理 cache_control 的客户端就永远不会被改动。
 //
-// This package intentionally does NOT import internal/gateway: gateway
-// imports cacheplan (one direction), so the detection logic must be wholly
-// self-contained JSON traversal — no network, no IO, no body mutation.
+// 本包刻意不 import internal/gateway: 是 gateway import cacheplan(单向),
+// 因此探测逻辑必须是完全自包含的 JSON 遍历 —— 不联网、不做 IO、不改 body。
 package cacheplan
 
 import "encoding/json"
 
-// HasAnyCacheControl reports whether the Anthropic Messages request body
-// carries at least one cache_control field in system, any message content
-// block, or any tool definition.
+// HasAnyCacheControl 报告 Anthropic Messages 请求 body 是否在 system、任意消息
+// content block 或任意 tool 定义中, 至少携带一个 cache_control 字段。
 //
-// It is deliberately permissive: any JSON object reachable under the
-// inspected paths that contains a "cache_control" key counts as
-// client-supplied, regardless of that object's shape or value. On invalid or
-// empty JSON it returns false (no client cache_control detected) — the caller
-// then leaves such bodies untouched anyway, and a malformed body is the
-// upstream's problem, not ours to mutate.
+// 它刻意宽松: 在被检查路径下可达的、含有 "cache_control" 键的任意 JSON 对象,
+// 无论其形状或取值如何, 都算作客户端提供。JSON 非法或为空时返回 false(未检测到
+// 客户端 cache_control)—— 反正调用方也会原样保留这类 body, 而格式错误的 body
+// 是 upstream 的问题, 不该由我们去改。
 func HasAnyCacheControl(body []byte) bool {
 	if len(body) == 0 {
 		return false
@@ -38,8 +32,8 @@ func HasAnyCacheControl(body []byte) bool {
 		toolsHaveCacheControl(root["tools"])
 }
 
-// systemHasCacheControl handles the three legal system shapes: plain string
-// (never has cache_control), single content-block object, or array of blocks.
+// systemHasCacheControl 处理 system 的三种合法形状: 纯字符串
+// (绝不会带 cache_control)、单个 content-block 对象, 或 block 数组。
 func systemHasCacheControl(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return false
@@ -53,8 +47,8 @@ func systemHasCacheControl(raw json.RawMessage) bool {
 	return false
 }
 
-// messagesHaveCacheControl walks every message and, for array-form content,
-// every content block, looking for a cache_control field.
+// messagesHaveCacheControl 遍历每条消息, 并对数组形式的 content 遍历每个
+// content block, 查找 cache_control 字段。
 func messagesHaveCacheControl(raw json.RawMessage) bool {
 	arr, ok := decodeArray(raw)
 	if !ok {
@@ -65,7 +59,7 @@ func messagesHaveCacheControl(raw json.RawMessage) bool {
 		if !ok {
 			continue
 		}
-		// A cache_control directly on the message object also counts.
+		// 直接挂在消息对象上的 cache_control 也算数。
 		if objectHasCacheControl(message) {
 			return true
 		}
@@ -77,7 +71,7 @@ func messagesHaveCacheControl(raw json.RawMessage) bool {
 	return false
 }
 
-// toolsHaveCacheControl inspects each tool definition object.
+// toolsHaveCacheControl 检查每个 tool 定义对象。
 func toolsHaveCacheControl(raw json.RawMessage) bool {
 	arr, ok := decodeArray(raw)
 	if !ok {

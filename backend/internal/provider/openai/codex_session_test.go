@@ -43,7 +43,7 @@ func TestCodexSessionAdapter_AcceptableCredentialTypes(t *testing.T) {
 	}
 }
 
-// ── BuildRequest happy path：session token → Authorization Bearer + endpoint ─
+// ── BuildRequest 正常路径：session token → Authorization Bearer + endpoint ─
 
 func TestCodexSessionAdapter_BuildRequest_SessionToken(t *testing.T) {
 	a := &CodexSessionAdapter{}

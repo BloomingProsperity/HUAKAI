@@ -15,14 +15,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
-// PostgresRefundRequestRecorder persists user refund requests and admin decisions.
+// PostgresRefundRequestRecorder 持久化用户退款申请与 admin 决策。
 type PostgresRefundRequestRecorder struct {
 	pool   *pgxpool.Pool
 	refund refundRequestMoneyService
 	now    func() time.Time
 }
 
-// NewPostgresRefundRequestRecorder constructs the production refund-request recorder.
+// NewPostgresRefundRequestRecorder 构造生产用的退款申请记录器。
 func NewPostgresRefundRequestRecorder(pool *pgxpool.Pool, refund refundRequestMoneyService) *PostgresRefundRequestRecorder {
 	return &PostgresRefundRequestRecorder{
 		pool:   pool,
@@ -160,9 +160,9 @@ func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context,
 		}
 		return req, nil
 	}
-	// Closes the visible split-transaction approval window: if money already moved,
-	// a still-pending request must not be relabeled rejected. Full approve atomicity
-	// needs a future RefundOrder external-transaction refactor.
+	// 关闭可见的拆分事务审批窗口:如果钱已经动了,一个仍处于 pending 的
+	// 申请绝不能被重新标记为 rejected。完整的审批原子性需要将来对
+	// RefundOrder 做外部事务重构。
 	alreadyRefunded, err := refundRequestHasRefundFactTx(ctx, tx, req)
 	if err != nil {
 		return RefundRequest{}, err

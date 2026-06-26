@@ -125,8 +125,8 @@ func TestPostgresStoreAuditInsertFailureRollsBackRatioMutation(t *testing.T) {
 	if db.commitCount != 0 || db.rollbackCount != 1 {
 		t.Fatalf("tx outcome commit=%d rollback=%d want 0/1", db.commitCount, db.rollbackCount)
 	}
-	// Mutation check: if the ratio update commits before audit insert, the ratio
-	// becomes 0.30000000 and this test fails.
+	// 变异检查:若 ratio 更新在 audit insert 之前提交,ratio 会变成
+	// 0.30000000,本测试就会失败。
 }
 
 func fixedRatioAuditNow() time.Time {

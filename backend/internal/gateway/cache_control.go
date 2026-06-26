@@ -1,25 +1,23 @@
-// R7.1: Anthropic Messages API cache_control state analyzer.
-// Spec: docs/specs/upstream-credential-management.md §F-AUTH-005 Phase H /
-// docs/specs/protocol-translation.md (Anthropic Messages shape).
+// R7.1：Anthropic Messages API 的 cache_control 状态分析器。
+// 规格:docs/specs/upstream-credential-management.md §F-AUTH-005 Phase H /
+// docs/specs/protocol-translation.md(Anthropic Messages 形态)。
 //
-// Read-only inspector + breakpoint planner. Pure JSON traversal — no IO,
-// no network, no credential contact, no body mutation. R7.2 (mutator) is
-// the next atomic piece.
+// 只读检查器 + 断点规划器。纯 JSON 遍历——无 IO、无网络、不接触凭据、
+// 不修改请求体。R7.2(变换器)是下一个原子步骤。
 //
-// Anthropic documents a hard cap of 4 cache_control breakpoints per request.
-// This module surfaces that cap to callers and helps choose where to place
-// new breakpoints when room remains.
+// Anthropic 文档规定每个请求最多 4 个 cache_control 断点。
+// 本模块向调用方暴露该上限,并在仍有余量时帮助选择放置新断点的位置。
 //
-// D5 (2026-05-06): Added TTL field to CacheControlLocation. Anthropic now
-// supports {"type":"ephemeral"} (5 min default) and {"type":"ephemeral","ttl":"1h"}
-// (1 hour). Longer-TTL entries must precede shorter-TTL entries in the request.
-// ValidateTTLOrdering enforces this constraint.
+// D5(2026-05-06):为 CacheControlLocation 增加了 TTL 字段。Anthropic 现已
+// 支持 {"type":"ephemeral"}(默认 5 分钟)与 {"type":"ephemeral","ttl":"1h"}
+// (1 小时)。在请求中,TTL 较长的条目必须排在 TTL 较短的条目之前。
+// ValidateTTLOrdering 强制执行该约束。
 //
-// D6 (2026-05-06): Added per-model minimum cacheable token thresholds.
-// ModelMinCacheableTokens maps model IDs to their documented minimums.
-// MinCacheableTokensForModel provides lookup with conservative fallback.
-// SuggestBreakpoints accepts optional estimatedBlockTokens to skip blocks
-// below the per-model threshold.
+// D6(2026-05-06):增加了每个模型的最小可缓存 token 阈值。
+// ModelMinCacheableTokens 把模型 ID 映射到其文档化的最小值。
+// MinCacheableTokensForModel 提供带保守回退的查询。
+// SuggestBreakpoints 接受可选的 estimatedBlockTokens,以跳过低于
+// 每模型阈值的块。
 //
 package gateway
 
@@ -29,41 +27,41 @@ import (
 	"fmt"
 )
 
-// CacheControlMaxAllowed is the Anthropic-documented per-request breakpoint cap.
+// CacheControlMaxAllowed 是 Anthropic 文档化的每请求断点上限。
 const CacheControlMaxAllowed = 4
 
-// CacheControlLocation identifies where a cache_control field was found.
+// CacheControlLocation 标识 cache_control 字段被发现的位置。
 type CacheControlLocation struct {
 	Path  string // "system" | "messages" | "tools"
-	Index int    // array index; -1 means top-level (e.g. system as a single object)
-	Type  string // cache_control type (e.g. "ephemeral")
-	TTL   string // cache_control ttl: "" = 5 min default, "1h" = 1 hour
+	Index int    // 数组下标;-1 表示顶层(例如作为单一对象的 system)
+	Type  string // cache_control 类型(例如 "ephemeral")
+	TTL   string // cache_control 的 ttl:"" = 默认 5 分钟,"1h" = 1 小时
 }
 
-// CacheControlSnapshot summarizes all cache_control occurrences in a request.
+// CacheControlSnapshot 汇总一个请求中所有 cache_control 的出现情况。
 type CacheControlSnapshot struct {
 	Count      int
 	Locations  []CacheControlLocation
 	MaxAllowed int
 }
 
-// BreakpointSuggestion describes which positions to add cache_control to and
-// which positions were skipped due to the MaxAllowed cap or token threshold.
-// Both fields are human-actionable plans only — body is never mutated.
+// BreakpointSuggestion 描述应在哪些位置添加 cache_control,以及哪些位置
+// 因 MaxAllowed 上限或 token 阈值而被跳过。
+// 两个字段都仅是供人执行的计划——绝不修改请求体。
 type BreakpointSuggestion struct {
 	Add     []CacheControlLocation
 	Skipped []string
 }
 
-// ModelMinCacheableTokens maps Anthropic model IDs to their documented minimum
-// cacheable token thresholds. Source: platform.claude.com/docs/en/docs/build-with-claude/prompt-caching
-// fetched 2026-05-06.
+// ModelMinCacheableTokens 把 Anthropic 模型 ID 映射到其文档化的最小可缓存
+// token 阈值。来源:platform.claude.com/docs/en/docs/build-with-claude/prompt-caching
+// 取自 2026-05-06。
 var ModelMinCacheableTokens = map[string]int{
-	// Opus 4.x series
+	// Opus 4.x 系列
 	"claude-opus-4-5": 4096,
 	"claude-opus-4-6": 4096,
 	"claude-opus-4-7": 4096,
-	// Opus 4.1 / 4 (earlier generation)
+	// Opus 4.1 / 4(更早一代)
 	"claude-opus-4-1": 1024,
 	"claude-opus-4":   1024,
 	// Sonnet 4.6
@@ -78,8 +76,8 @@ var ModelMinCacheableTokens = map[string]int{
 	"claude-haiku-3-5": 2048,
 }
 
-// MinCacheableTokensForModel returns the minimum cacheable token threshold for
-// the given model. Falls back to a conservative 4096 if the model is unknown.
+// MinCacheableTokensForModel 返回给定模型的最小可缓存 token 阈值。
+// 若模型未知,回退到保守的 4096。
 func MinCacheableTokensForModel(model string) int {
 	if threshold, ok := ModelMinCacheableTokens[model]; ok {
 		return threshold
@@ -87,14 +85,13 @@ func MinCacheableTokensForModel(model string) int {
 	return 4096
 }
 
-// ValidateTTLOrdering checks that within a snapshot, any longer-TTL ("1h")
-// locations precede all shorter-TTL ("" = 5 min default) locations. Anthropic
-// requires longer-TTL breakpoints to appear earlier in the request than
-// shorter-TTL ones.
+// ValidateTTLOrdering 检查在一个快照内,所有 TTL 较长("1h")的位置都排在
+// 所有 TTL 较短("" = 默认 5 分钟)的位置之前。Anthropic 要求 TTL 较长的
+// 断点在请求中出现得比 TTL 较短的更靠前。
 //
-// Returns nil if the ordering is valid, or a descriptive error on violation.
+// 顺序有效时返回 nil,违规时返回描述性错误。
 func ValidateTTLOrdering(snapshot CacheControlSnapshot) error {
-	// Once we see a short-TTL entry, no long-TTL entry may follow.
+	// 一旦看到短 TTL 条目,后面就不允许再出现长 TTL 条目。
 	sawShortTTL := false
 	for i, loc := range snapshot.Locations {
 		isLong := loc.TTL == "1h"
@@ -113,9 +110,9 @@ func ValidateTTLOrdering(snapshot CacheControlSnapshot) error {
 	return nil
 }
 
-// InspectCacheControl parses an Anthropic Messages API request body and
-// returns the cache_control snapshot. Returns an error on invalid JSON or
-// schema (e.g. missing messages, wrong role/content types).
+// InspectCacheControl 解析一个 Anthropic Messages API 请求体并返回
+// cache_control 快照。当 JSON 或 schema 非法(例如缺少 messages、
+// role/content 类型错误)时返回错误。
 func InspectCacheControl(body []byte) (CacheControlSnapshot, error) {
 	root, err := decodeMessagesRequest(body)
 	if err != nil {
@@ -124,17 +121,14 @@ func InspectCacheControl(body []byte) (CacheControlSnapshot, error) {
 	return inspectCacheControlRoot(root)
 }
 
-// SuggestBreakpoints recommends where to add cache_control given the current
-// snapshot. Priority order: last system block → last tool definition →
-// last user message. Body is never mutated. Already-occupied positions are
-// skipped. Candidates beyond MaxAllowed go to Skipped.
+// SuggestBreakpoints 根据当前快照推荐在何处添加 cache_control。
+// 优先顺序:最后一个 system 块 → 最后一个 tool 定义 → 最后一条 user 消息。
+// 绝不修改请求体。已被占用的位置会被跳过。超出 MaxAllowed 的候选进入 Skipped。
 //
-// estimatedBlockTokens is an optional map from CacheControlLocation to
-// estimated token count for that block. When provided, candidates whose
-// estimated token count is below the per-model threshold (derived from the
-// "model" field in the request body, or MinCacheableTokensForModel fallback)
-// are placed in Skipped instead of Add. Pass nil to disable threshold
-// filtering (preserves backward compatibility).
+// estimatedBlockTokens 是一个可选映射,把 CacheControlLocation 映射到该块的
+// 估算 token 数。提供时,估算 token 数低于每模型阈值(取自请求体中的 "model"
+// 字段,或回退到 MinCacheableTokensForModel)的候选会进入 Skipped 而非 Add。
+// 传 nil 可禁用阈值过滤(保持向后兼容)。
 func SuggestBreakpoints(body []byte, snapshot CacheControlSnapshot, estimatedBlockTokens map[CacheControlLocation]int) (BreakpointSuggestion, error) {
 	root, err := decodeMessagesRequest(body)
 	if err != nil {
@@ -158,7 +152,7 @@ func SuggestBreakpoints(body []byte, snapshot CacheControlSnapshot, estimatedBlo
 		remaining = 0
 	}
 
-	// Determine per-model threshold when token estimates are provided.
+	// 提供了 token 估算时,确定每模型阈值。
 	var tokenThreshold int
 	if estimatedBlockTokens != nil {
 		model, _ := root["model"].(string)
@@ -167,7 +161,7 @@ func SuggestBreakpoints(body []byte, snapshot CacheControlSnapshot, estimatedBlo
 
 	var suggestion BreakpointSuggestion
 	for _, candidate := range candidates {
-		// Check token threshold first (before cap check).
+		// 先检查 token 阈值(在上限检查之前)。
 		if estimatedBlockTokens != nil {
 			tokens, hasEstimate := estimatedBlockTokens[candidate]
 			if hasEstimate && tokens < tokenThreshold {
@@ -231,10 +225,10 @@ func inspectCacheControlRoot(root map[string]interface{}) (CacheControlSnapshot,
 func inspectSystem(value interface{}, snapshot *CacheControlSnapshot) error {
 	switch system := value.(type) {
 	case string:
-		// Plain-string system: no cache_control possible.
+		// 纯字符串形式的 system:不可能有 cache_control。
 		return nil
 	case map[string]interface{}:
-		// Single-object system: top-level (Index=-1) cache_control if present.
+		// 单对象形式的 system:若存在,记为顶层(Index=-1)的 cache_control。
 		return appendCacheControl(snapshot, system, CacheControlLocation{Path: "system", Index: -1}, "system")
 	case []interface{}:
 		for i, item := range system {
@@ -330,8 +324,8 @@ func appendCacheControl(snapshot *CacheControlSnapshot, block map[string]interfa
 	return nil
 }
 
-// cacheControlType extracts the type and ttl from a cache_control object.
-// Returns (type, ttl, error). ttl is "" for 5-min default, "1h" for 1-hour.
+// cacheControlType 从一个 cache_control 对象中提取 type 与 ttl。
+// 返回 (type, ttl, error)。ttl 为 "" 表示默认 5 分钟,"1h" 表示 1 小时。
 func cacheControlType(value interface{}, where string) (string, string, error) {
 	control, ok := value.(map[string]interface{})
 	if !ok {
@@ -341,13 +335,13 @@ func cacheControlType(value interface{}, where string) (string, string, error) {
 	if !ok || cacheType == "" {
 		return "", "", fmt.Errorf("cache_control: %s.cache_control.type must be a non-empty string", where)
 	}
-	// ttl is optional; "" means 5-min default.
+	// ttl 是可选的;"" 表示默认 5 分钟。
 	ttl, _ := control["ttl"].(string)
 	return cacheType, ttl, nil
 }
 
-// breakpointCandidates returns ordered candidates: at each round, system →
-// tools → messages, walking each list backward (last block has highest priority).
+// breakpointCandidates 返回有序的候选:每一轮按 system → tools → messages,
+// 每个列表从后往前遍历(最后一个块优先级最高)。
 func breakpointCandidates(root map[string]interface{}) ([]CacheControlLocation, error) {
 	system, err := systemCandidates(root)
 	if err != nil {

@@ -82,7 +82,7 @@ func TestVoucherHandlersAdminAndUserRoutes(t *testing.T) {
 	}
 }
 
-// sourceIPCapturingVoucherService records the SourceIP the handler passes into Redeem.
+// sourceIPCapturingVoucherService 记录 handler 传入 Redeem 的 SourceIP。
 type sourceIPCapturingVoucherService struct{ lastSourceIP string }
 
 func (c *sourceIPCapturingVoucherService) Create(context.Context, voucher.CreateInput) (voucher.CreateResult, error) {
@@ -105,13 +105,13 @@ func (c *sourceIPCapturingVoucherService) GetBatch(context.Context, int64, int64
 	return voucher.GetBatchResult{}, nil
 }
 
-// TestVoucherUserRedeemUsesTrustedProxyClientIP proves the redeem handler routes the
-// request through the trusted-proxy-aware ClientIPResolver, not raw RemoteAddr. The socket peer
-// (10.1.2.3) is a trusted proxy and the real client (198.51.100.9) is in X-Forwarded-For, so the
-// SourceIP recorded for burst/anomaly purposes must be the forwarded client.
+// TestVoucherUserRedeemUsesTrustedProxyClientIP 证明 redeem handler 让请求经过
+// 能识别可信代理的 ClientIPResolver，而非裸用 RemoteAddr。socket 对端
+// (10.1.2.3) 是可信代理，真实客户端 (198.51.100.9) 在 X-Forwarded-For 中，所以
+// 出于突发/异常用途记录的 SourceIP 必须是被转发的客户端。
 //
-// Mutation check: revert the call site to RemoteAddr (or drop ClientIPResolver from the deps so the
-// nil-safe resolver falls back to the socket peer) → recorded SourceIP becomes "10.1.2.3" → red.
+// 变异:检查:把调用点改回 RemoteAddr(或从 deps 中去掉 ClientIPResolver，使
+// nil-safe 的 resolver 退回到 socket 对端)→ 记录的 SourceIP 变成 "10.1.2.3" → 变红。
 func TestVoucherUserRedeemUsesTrustedProxyClientIP(t *testing.T) {
 	svc := &sourceIPCapturingVoucherService{}
 	resolver, err := clientip.NewResolver([]string{"10.0.0.0/8"})

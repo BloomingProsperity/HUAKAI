@@ -461,7 +461,7 @@ func TestUserKey_PatchExpiry_TriStateAndRejectPast(t *testing.T) {
 	}
 	id := res.APIKeyID
 
-	// SET future → PatchResult + Get both reflect it.
+	// 设置未来时刻 → PatchResult 与 Get 都应反映出来。
 	future := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
 	pr, err := svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, ExpiresAt: &future})
 	if err != nil {
@@ -476,7 +476,7 @@ func TestUserKey_PatchExpiry_TriStateAndRejectPast(t *testing.T) {
 		t.Fatalf("set: Get.ExpiresAt=%v want %v", got.ExpiresAt, future)
 	}
 
-	// CLEAR (ClearExpiry) → PatchResult + Get show nil.
+	// 清除(ClearExpiry)→ PatchResult 与 Get 都显示 nil。
 	pr, err = svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, ClearExpiry: true})
 	if err != nil {
 		t.Fatalf("Patch clear: %v", err)
@@ -490,12 +490,12 @@ func TestUserKey_PatchExpiry_TriStateAndRejectPast(t *testing.T) {
 		t.Fatalf("clear: Get.ExpiresAt=%v want nil", got.ExpiresAt)
 	}
 
-	// Re-set a future deadline so the past/no-op cases have a value to protect.
+	// 重新设置一个未来截止时间,好让 past/no-op 用例有个值可保护。
 	if _, err := svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, ExpiresAt: &future}); err != nil {
 		t.Fatalf("Patch re-set: %v", err)
 	}
 
-	// PAST on set → ErrInvalidExpiry, and the deadline is NOT changed (still future).
+	// 设置为过去时刻 → ErrInvalidExpiry,且截止时间不被改动(仍是未来)。
 	past := time.Now().Add(-time.Hour)
 	if _, err := svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, ExpiresAt: &past}); !errors.Is(err, ErrInvalidExpiry) {
 		t.Fatalf("past: want ErrInvalidExpiry; got %v", err)
@@ -506,7 +506,7 @@ func TestUserKey_PatchExpiry_TriStateAndRejectPast(t *testing.T) {
 		t.Fatalf("past rejected but deadline changed: Get.ExpiresAt=%v want %v", got.ExpiresAt, future)
 	}
 
-	// NO-OP (all nil) → returns current state and preserves the deadline.
+	// 空操作(全为 nil)→ 返回当前状态并保留截止时间。
 	pr, err = svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id})
 	if err != nil {
 		t.Fatalf("Patch no-op: %v", err)
@@ -520,10 +520,10 @@ func TestUserKey_PatchExpiry_TriStateAndRejectPast(t *testing.T) {
 		t.Fatalf("no-op changed the deadline: Get.ExpiresAt=%v want %v", got.ExpiresAt, future)
 	}
 
-	// COMBINED name + expires_at in ONE patch. Single-field cases above only ever exercise
-	// the expires_at placeholder at argIdx==1; here name = $1 pushes expires_at to $2 with
-	// WHERE at $3/$4/$5 — locking the dynamic-UPDATE argIdx arithmetic that a mis-index
-	// would silently break (a mis-placed deadline bricks/un-bricks a key at auth time).
+	// 在同一个 patch 里组合 name + expires_at。上面的单字段用例只会用到
+	// argIdx==1 处的 expires_at 占位符;这里 name = $1 把 expires_at 挤到 $2,
+	// WHERE 在 $3/$4/$5 —— 锁死动态 UPDATE 的 argIdx 算术,一旦索引错位会被
+	// 静默破坏(截止时间放错位置会在 auth 时让 key 失效/复活)。
 	rename := "renamed"
 	future2 := time.Now().Add(72 * time.Hour).UTC().Truncate(time.Second)
 	pr, err = svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, Name: &rename, ExpiresAt: &future2})
@@ -539,9 +539,9 @@ func TestUserKey_PatchExpiry_TriStateAndRejectPast(t *testing.T) {
 		t.Fatalf("name+expires: Get name=%q expires=%v want renamed/%v", got.Name, got.ExpiresAt, future2)
 	}
 
-	// COMBINED name + status + expires_at. The status clause emits an extra revoked_at CASE
-	// arg, pushing expires_at to the highest index ($4, WHERE $5/$6/$7) — exercises the full
-	// argIdx path. status="active" keeps the key usable (revoked_at CASE -> ELSE no change).
+	// 组合 name + status + expires_at。status 子句会多发一个 revoked_at CASE
+	// 参数,把 expires_at 挤到最高索引($4,WHERE $5/$6/$7)—— 完整走一遍
+	// argIdx 路径。status="active" 让 key 保持可用(revoked_at CASE -> ELSE 不变)。
 	future3 := time.Now().Add(96 * time.Hour).UTC().Truncate(time.Second)
 	status := "active"
 	pr, err = svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, Name: &rename, Status: &status, ExpiresAt: &future3})
@@ -627,7 +627,7 @@ func TestUserKey_StaleParent_FailClosed(t *testing.T) {
 		t.Fatalf("active baseline list: err=%v len=%d", err, len(list))
 	}
 
-	// disable tenant → fail-closed
+	// 禁用 tenant → fail-closed
 	if _, err := pool.Exec(ctx, `UPDATE tenants SET status='disabled' WHERE id=$1`, f.tenantID); err != nil {
 		t.Fatalf("disable tenant: %v", err)
 	}

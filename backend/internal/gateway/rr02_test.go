@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// RR-02: derive cooldown from the error BODY when no Retry-After header (Codex
-// usage_limit_reached only puts resets_at / resets_in_seconds in the body).
+// RR-02: 当没有 Retry-After header 时,从错误的 BODY 推导 cooldown(Codex
+// 的 usage_limit_reached 只把 resets_at / resets_in_seconds 放在 body 里)。
 func TestRetryAfterFromBody(t *testing.T) {
 	now := time.Unix(1000, 0)
 	cases := []struct {
@@ -14,15 +14,15 @@ func TestRetryAfterFromBody(t *testing.T) {
 		want int64
 	}{
 		{`{"error":{"resets_in_seconds":30}}`, 30000},
-		{`{"error":{"resets_at":1060}}`, 60000}, // 60s in the future
-		{`{"error":{"resets_at":900}}`, 0},      // already past -> 0
-		{`{"error":{"message":"nope"}}`, 0},     // no reset fields
-		{`not json`, 0},                         // unparseable
-		{``, 0},                                 // empty
+		{`{"error":{"resets_at":1060}}`, 60000}, // 未来 60s
+		{`{"error":{"resets_at":900}}`, 0},      // 已过去 -> 0
+		{`{"error":{"message":"nope"}}`, 0},     // 无 reset 字段
+		{`not json`, 0},                         // 无法解析
+		{``, 0},                                 // 空
 	}
 	for _, c := range cases {
-		// MUTATION GUARD: making retryAfterFromBody ignore the body (return 0)
-		// collapses every non-zero case -> red.
+		// 变异守卫:让 retryAfterFromBody 忽略 body(返回 0)会让每个非零
+		// 用例都坍塌 -> 变红。
 		if got := retryAfterFromBody([]byte(c.body), now); got != c.want {
 			t.Fatalf("retryAfterFromBody(%q)=%d want %d", c.body, got, c.want)
 		}

@@ -44,7 +44,7 @@ func TestSingleFlight_FiveConcurrentSameKeyExecutesOnce(t *testing.T) {
 			sharedFlags[i] = shared
 		}(i)
 	}
-	// Let goroutines all park on Do
+	// 让所有 goroutine 都在 Do 上停泊
 	time.Sleep(20 * time.Millisecond)
 	close(gate)
 	wg.Wait()
@@ -146,7 +146,7 @@ func TestSingleFlight_InFlightLifecycle(t *testing.T) {
 		})
 		close(done)
 	}()
-	// give goroutine time to park
+	// 给 goroutine 一点时间停泊
 	time.Sleep(20 * time.Millisecond)
 	if !sf.InFlight("k") {
 		t.Fatal("expected InFlight=true during execution")
@@ -177,7 +177,7 @@ func TestSingleFlight_PanicRecoversAndWakesFollowers(t *testing.T) {
 	}
 	time.Sleep(20 * time.Millisecond)
 	close(gate)
-	wg.Wait() // if panic deadlocks, this blocks forever (test timeout)
+	wg.Wait() // 如果 panic 导致死锁,这里会永久阻塞(测试超时)
 	for _, e := range errs {
 		if e == nil || !strings.Contains(e.Error(), "panicked") {
 			t.Fatalf("expected panic-error; got %v", e)

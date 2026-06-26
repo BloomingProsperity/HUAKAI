@@ -176,7 +176,7 @@ func socks5Handshake(conn net.Conn, user *url.Userinfo, host string, port int) e
 	}
 	switch sel[1] {
 	case 0x00:
-		// no auth
+		// 无需认证
 	case 0x02:
 		if !hasAuth {
 			return fmt.Errorf("socks5: server demands auth but no credentials")

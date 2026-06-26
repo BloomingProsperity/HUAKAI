@@ -461,8 +461,8 @@ func TestAnthropicMessagesClient_D2_StopReasonMappings(t *testing.T) {
 		{CanonicalStopMaxTokens, "max_tokens", false},
 		{CanonicalStopSequence, "stop_sequence", false},
 		{CanonicalStopToolUse, "tool_use", false},
-		{CanonicalStopRefusal, "end_turn", true}, // downgrade
-		{CanonicalStopUnknown, "", true},         // null
+		{CanonicalStopRefusal, "end_turn", true}, // 降级
+		{CanonicalStopUnknown, "", true},         // null(空值)
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.canon), func(t *testing.T) {
@@ -778,7 +778,7 @@ func TestAnthropicMessages_D4_FinalizeIdempotent(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// D1.x continuations: cache_control / image / thinking
+// D1.x 后续:cache_control / image / thinking
 // --------------------------------------------------------------------------
 
 func TestAnthropicMessages_D1x_CacheControlOnTextBlock(t *testing.T) {

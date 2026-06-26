@@ -42,7 +42,7 @@ func TestDefaultSelectorProtocolFamilyGateRejectsPriorityFirstWrongFamily(t *tes
 	if res == nil || res.AcquisitionToken == uuid.Nil {
 		t.Fatalf("Select returned no acquisition result: %+v", res)
 	}
-	// Mutation: deleting the protocol-family gate selects priority-first account 101.
+	// 变异:删掉 protocol-family gate 会按优先级优先选中账号 101。
 	if res.AccountID != 202 {
 		t.Fatalf("selected AccountID=%d, want anthropic family account 202", res.AccountID)
 	}

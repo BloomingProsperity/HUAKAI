@@ -116,7 +116,7 @@ type RenewTriggerDeps struct {
 // RenewTriggerSpec 构建 renew_trigger 改动型工具:它把某个 provider account 的凭证轮换到
 // 新 payload,使上一版失效。scope:platform_admin 或目标租户内的 tenant_operator。Args:
 // { "account_id": <int64>, "credential_id": <int64>, "credentials": <object> }。
-// PRIVACY:新凭证材料("credentials")会被接收,但它是敏感参数(在审计行里被脱敏);
+// 隐私:新凭证材料("credentials")会被接收,但它是敏感参数(在审计行里被脱敏);
 // 轮换后的材料绝不返回 —— 只返回结果版本 + state。
 func RenewTriggerSpec(deps RenewTriggerDeps) ToolSpec {
 	return ToolSpec{
@@ -199,7 +199,7 @@ func RenewTriggerSpec(deps RenewTriggerDeps) ToolSpec {
 			if err != nil {
 				return ToolResult{}, err
 			}
-			// PRIVACY:只露出结果版本 + state —— 绝不露轮换后的 payload
+			// 隐私:只露出结果版本 + state —— 绝不露轮换后的 payload
 			// (CredentialMetadata 本身就不带 payload 字段)。
 			return ToolResult{Summary: map[string]any{
 				"credential_id":    plan.TargetID,

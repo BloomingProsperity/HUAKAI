@@ -656,9 +656,8 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
 			return
 		}
-		// Return the reactivated account row (the UPDATE...RETURNING already
-		// gives us the post-clear state) so the operator UI sees the account is
-		// no longer benched, instead of an opaque 204.
+		// 返回重新激活后的 account 行（UPDATE...RETURNING 已经给到清除后的状态），
+		// 让运维 UI 看到该账号不再被停用，而不是一个不透明的 204。
 		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
 	}
 }
@@ -719,12 +718,11 @@ func resolveProviderAccountAdmin(w http.ResponseWriter, r *http.Request, d Admin
 		}
 		return ident, ident.ScopeTenantID, true
 	case admin.RolePlatformAdmin:
-		// Global platform_admin holds no implicit tenant scope: it MUST name the
-		// target tenant explicitly via ?tenant_id=N. Silently defaulting to
-		// tenant 1 both (a) blocked global admins from ever reaching tenant>1
-		// (the body tenant_id guard rejected anything != 1) and (b) risked
-		// mutating tenant 1's accounts by accident. This mirrors the explicit
-		// tenant-scope requirement in provider/channel catalog + api-keys.
+		// 全局 platform_admin 不持有任何隐式 tenant 作用域：它必须通过
+		// ?tenant_id=N 显式指明目标 tenant。静默默认到 tenant 1 既会 (a) 让全局
+		// admin 永远够不到 tenant>1（body 的 tenant_id 守卫会拒绝任何 != 1 的值），
+		// 又会 (b) 冒着误改 tenant 1 账号的风险。这与 provider/channel catalog +
+		// api-keys 中的显式 tenant 作用域要求保持一致。
 		if ident.ScopeTenantID > 0 {
 			return ident, ident.ScopeTenantID, true
 		}

@@ -69,8 +69,8 @@ func TestWrapDecodesEachEncoding(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: read err: %v", c.enc, err)
 		}
-		// MUTATION GUARD: if Wrap returns the raw compressed body instead of a
-		// decoder for this encoding, got != payload -> red.
+		// 变异守卫:若 Wrap 对该 encoding 返回的是原始压缩 body 而非
+		// decoder,则 got != payload -> 变红。
 		if string(got) != payload {
 			t.Fatalf("%s: decoded=%q want %q", c.enc, string(got), payload)
 		}

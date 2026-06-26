@@ -100,10 +100,10 @@ func TestRegenerateBackupCodesRequiresFreshCodeProof(t *testing.T) {
 	}
 }
 
-// TestDisableRequiresFreshCodeProofAndKeeps2FAEnabled guards the stolen-session
-// regression: a bearer session alone must not be enough to turn off 2FA. Mutation
-// check: revert /disable to call Disable without VerifyLogin and the first case
-// returns 200 and flips enabled=false, making both assertions red.
+// TestDisableRequiresFreshCodeProofAndKeeps2FAEnabled 守护"被盗会话"回归:
+// 仅凭一个 bearer session 不足以关闭 2FA。变异:检查:把 /disable 改回不带
+// VerifyLogin 直接调用 Disable，第一个用例就会返回 200 并把 enabled 翻成 false，
+// 使两条断言都变红。
 func TestDisableRequiresFreshCodeProofAndKeeps2FAEnabled(t *testing.T) {
 	now := time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)
 	service := twofa.NewService(twofa.NewMemoryStore(), mustHTTPKeyProvider(t), twofa.WithNow(func() time.Time { return now }))
@@ -150,10 +150,9 @@ func TestDisableRequiresFreshCodeProofAndKeeps2FAEnabled(t *testing.T) {
 	}
 }
 
-// TestTwoFAStateChangesRevokeOtherSessions proves successful 2FA state changes
-// invalidate other sessions while keeping the current authenticated family. Mutation
-// check: call the user-wide revoker or omit CurrentFamilyID and this test goes red
-// without weakening the state-change assertions.
+// TestTwoFAStateChangesRevokeOtherSessions 证明成功的 2FA 状态变更会作废其他
+// 会话，同时保留当前已认证的 family。变异:检查:改为调用 user-wide 的 revoker，
+// 或省略 CurrentFamilyID，在不削弱状态变更断言的前提下此测试就会变红。
 func TestTwoFAStateChangesRevokeOtherSessions(t *testing.T) {
 	now := time.Date(2026, 6, 4, 9, 30, 0, 0, time.UTC)
 	service := twofa.NewService(twofa.NewMemoryStore(), mustHTTPKeyProvider(t), twofa.WithNow(func() time.Time { return now }))
@@ -187,11 +186,11 @@ func TestTwoFAStateChangesRevokeOtherSessions(t *testing.T) {
 	}
 }
 
-// TestDisableKeepsCurrentSessionAndRevokesOtherSessions is the user-visible
-// regression test for the over-fix: after a valid disable proof, the browser that
-// made the request must stay logged in while a second session is invalidated.
-// Mutation check: use RevokeUser in the handler path and the current Validate call
-// returns ErrFamilyRevoked; remove revocation and the other-session assertion fails.
+// TestDisableKeepsCurrentSessionAndRevokesOtherSessions 是针对"过度修复"的
+// 用户可见回归测试:在通过有效的 disable 证明后，发起请求的那个浏览器必须保持
+// 登录状态，而第二个会话被作废。变异:检查:在 handler 路径里改用 RevokeUser，
+// 当前的 Validate 调用就会返回 ErrFamilyRevoked;若去掉作废逻辑，则"其他会话"
+// 那条断言失败。
 func TestDisableKeepsCurrentSessionAndRevokesOtherSessions(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 4, 11, 30, 0, 0, time.UTC)

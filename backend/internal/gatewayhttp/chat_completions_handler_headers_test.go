@@ -474,7 +474,7 @@ func TestWriteStreamBillingHeaders(t *testing.T) {
 // Mutation 自检:保留旧 `if result.State != Persisted return` 行 → A 路径
 // X-HUAKAI-Ledger-DLQ-Ref 是空 → 本用例 red。
 func TestWriteHuakaiHeaders_NonStreamingDeferredWritesDLQRef(t *testing.T) {
-	// fixture A:Deferred + DLQRef="audit_ledger_dlq:42"
+	// 夹具 A:Deferred + DLQRef="audit_ledger_dlq:42"
 	hA := http.Header{}
 	resultA := auditledger.AuditLedgerResult{
 		State:  auditledger.LedgerResultStateDeferred,

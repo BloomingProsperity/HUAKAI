@@ -233,21 +233,20 @@ func TestReceiptVerifyMarksRevokedKeyAsUnverified(t *testing.T) {
 	}
 }
 
-// TestReceiptVerifyRejectsSignatureOutsideKeyWindow guards on the cost-receipt
-// path: /v1/receipts/{id}/verify must reject a stored receipt whose occurred_at is
-// outside the signing key's [EffectiveFrom, EffectiveTo] window — even with a valid
-// ed25519 signature. This is the leaked rotated-key attack mirrored on the user receipt
-// endpoint.
+// TestReceiptVerifyRejectsSignatureOutsideKeyWindow 守住 cost-receipt 路径：
+// /v1/receipts/{id}/verify 必须拒绝一条 occurred_at 落在签名密钥
+// [EffectiveFrom, EffectiveTo] 窗口之外的已存 receipt——即便 ed25519 签名有效。
+// 这是泄露的轮换密钥攻击在用户 receipt endpoint 上的镜像。
 //
-// Mutation check: remove the SignatureOutsideKeyWindow branch in verifyReceiptTrustSignature
-// and the "outside" case flips to valid=true status="signed-only" → red. The in-window
-// sub-case proves the check is discriminating, not a blanket reject.
+// 变异：移除 verifyReceiptTrustSignature 中的 SignatureOutsideKeyWindow 分支后，
+// "outside" 用例会翻成 valid=true status="signed-only" → 变红。窗口内的子用例
+// 证明该检查具有区分性，而非一刀切拒绝。
 func TestReceiptVerifyRejectsSignatureOutsideKeyWindow(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	receipt := signedGatewayReceipt(t, signer, 7, "req-window") // occurred_at == CreatedAt 2026-05-18
 	store := newReceiptStoreStub(receipt)
 
-	// rotated key valid only 2026-05-01 .. 2026-05-10; receipt dated 2026-05-18 is AFTER EffectiveTo.
+	// 轮换密钥仅在 2026-05-01 .. 2026-05-10 有效；receipt 日期 2026-05-18 在 EffectiveTo 之后。
 	outKey := mustGatewayReceiptPubkey(t, signer)
 	outTo := time.Date(2026, 5, 10, 0, 0, 0, 0, time.UTC)
 	outKey.EffectiveTo = &outTo
@@ -270,7 +269,7 @@ func TestReceiptVerifyRejectsSignatureOutsideKeyWindow(t *testing.T) {
 		t.Fatalf("receipt signed outside key window must be rejected: %+v", got)
 	}
 
-	// Control: same receipt, key window extended past occurred_at → still verifies.
+	// 对照组：同一 receipt，把密钥窗口延伸到 occurred_at 之后 → 仍能校验通过。
 	inKey := mustGatewayReceiptPubkey(t, signer)
 	inTo := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
 	inKey.EffectiveTo = &inTo

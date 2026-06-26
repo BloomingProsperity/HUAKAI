@@ -1,14 +1,12 @@
-// Package recentreq implements MGMT-RECENTREQ-01: per-provider-account
-// recent-request observability for incident triage.
+// Package recentreq 实现 MGMT-RECENTREQ-01: 按 provider 账号维度的近期请求
+// 可观测性, 用于事故定级排查。
 //
-// An in-memory ring buffer (cap 64) of request outcomes is maintained per
-// account. Callers record outcomes at dispatch time; the admin health endpoint
-// exposes a Summary for each account.
+// 每个账号维护一个内存 ring buffer(容量 64)记录请求结果。调用方在 dispatch
+// 时记录结果; admin 健康端点为每个账号暴露一个 Summary。
 //
-// Per-process caveat: each gateway instance tracks its own requests. In a
-// multi-instance deployment the summary reflects only the traffic handled by
-// this process. This is consistent with sessioncap.Registry and is safe given
-// the fail-open, observability-only nature of this feature.
+// 进程级注意点: 每个 gateway 实例只跟踪自己的请求。在多实例部署中, 该汇总只
+// 反映本进程处理的流量。这与 sessioncap.Registry 一致, 鉴于此特性是 fail-open
+// 且仅用于可观测性, 这样做是安全的。
 package recentreq
 
 import (
@@ -16,20 +14,20 @@ import (
 	"time"
 )
 
-// ringCap is the number of entries retained per account.
+// ringCap 是每个账号保留的 entry 数量。
 const ringCap = 64
 
-// entry is one recorded request outcome.
+// entry 是一条记录下来的请求结果。
 type entry struct {
 	at time.Time
 	ok bool
 }
 
-// ringBuf is a fixed-size circular buffer of entries.
+// ringBuf 是一个由 entry 组成的固定大小环形缓冲区。
 type ringBuf struct {
 	entries [ringCap]entry
-	head    int // next write position
-	count   int // total entries filled, capped at ringCap
+	head    int // 下一个写入位置
+	count   int // 已填充的 entry 总数, 上限为 ringCap
 }
 
 func (b *ringBuf) record(at time.Time, ok bool) {
@@ -40,7 +38,7 @@ func (b *ringBuf) record(at time.Time, ok bool) {
 	}
 }
 
-// Summary holds aggregated counts for one account's ring.
+// Summary 保存某个账号 ring 的聚合计数。
 type Summary struct {
 	Total   int
 	Success int
@@ -66,23 +64,23 @@ func (b *ringBuf) summary() Summary {
 	return s
 }
 
-// Ring is a thread-safe in-memory store of recent request outcomes per
-// provider account. A nil *Ring is safe to use; all operations are no-ops.
-// Zero value is NOT usable; use NewRing.
+// Ring 是一个线程安全的内存 store, 按 provider 账号保存近期请求结果。
+// nil 的 *Ring 可安全使用; 所有操作都是 no-op。
+// 零值不可用; 请使用 NewRing。
 type Ring struct {
 	mu      sync.RWMutex
 	buffers map[int64]*ringBuf
 }
 
-// NewRing constructs a ready-to-use Ring.
+// NewRing 构造一个可直接使用的 Ring。
 func NewRing() *Ring {
 	return &Ring{
 		buffers: make(map[int64]*ringBuf),
 	}
 }
 
-// Record appends one outcome for accountID. Evicts the oldest entry when the
-// ring is full. Safe to call on a nil *Ring (no-op).
+// Record 为 accountID 追加一条结果。ring 满时淘汰最旧的 entry。
+// 在 nil 的 *Ring 上调用是安全的(no-op)。
 func (r *Ring) Record(accountID int64, ok bool) {
 	if r == nil {
 		return
@@ -97,8 +95,8 @@ func (r *Ring) Record(accountID int64, ok bool) {
 	b.record(time.Now(), ok)
 }
 
-// Summary returns aggregated counts for accountID. Returns an empty Summary
-// when the ring is nil or no data has been recorded for the account.
+// Summary 返回 accountID 的聚合计数。当 ring 为 nil 或该账号尚无数据时,
+// 返回空的 Summary。
 func (r *Ring) Summary(accountID int64) Summary {
 	if r == nil {
 		return Summary{}

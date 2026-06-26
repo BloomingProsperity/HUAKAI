@@ -28,9 +28,9 @@ var state = struct {
 	inflight: map[string]*inflightCall{},
 }
 
-// GetOrLoad returns a non-expired cached value for key, or runs loader once for
-// concurrent cache misses on the same key. Loader errors are returned but never
-// cached, so later calls can retry the backend.
+// GetOrLoad 返回 key 对应的未过期缓存值;若同一个 key 上发生并发缓存未命中,
+// 则只运行一次 loader。loader 的错误会被返回但绝不缓存,这样后续调用还能重试
+// 后端。
 func GetOrLoad(key string, ttl time.Duration, loader func() (any, error)) (any, bool, error) {
 	if loader == nil {
 		return nil, false, errNilLoader

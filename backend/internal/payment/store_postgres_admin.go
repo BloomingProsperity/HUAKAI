@@ -147,7 +147,7 @@ func dashboardWhere(filter DashboardFilter) (string, []any) {
 	return "WHERE tenant_id=$1 AND created_at >= $2 AND created_at < $3", []any{filter.TenantID, filter.From, filter.To}
 }
 
-// AdminExportRefunds returns refund records for CSV export (read-only).
+// AdminExportRefunds 返回用于 CSV 导出的退款记录(只读)。
 func (s *PostgresStore) AdminExportRefunds(ctx context.Context, filter RefundExportFilter) ([]RefundRecord, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured

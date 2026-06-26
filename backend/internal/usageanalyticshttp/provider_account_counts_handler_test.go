@@ -10,7 +10,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// MUTATION: call the query without from/to window or collapse provider accounts -> JSON contract fails -> RED.
+// 变异:在不带 from/to 窗口的情况下调用查询,或把各 provider account 合并 -> JSON 契约失败 -> 变红。
 func TestProviderAccountCountsHandler(t *testing.T) {
 	store := &providerAccountCountsStoreStub{rows: []dbbilling.AggregateUsageCountsByProviderAccountRow{
 		{ProviderAccountID: 1001, RequestCount: 2, TotalInputTokens: 40, TotalOutputTokens: 60, TotalCost: "3.00000000"},

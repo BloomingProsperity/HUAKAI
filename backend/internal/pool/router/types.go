@@ -52,11 +52,11 @@ type SelectionRequest struct {
 	APIKeyID       int64
 	PoolGroupID    int64
 	RequestedModel string
-	// ModelCooldownKey is the upstream/provider model key used by
-	// provider_accounts.model_rate_limits. Empty falls back to RequestedModel.
+	// ModelCooldownKey 是 provider_accounts.model_rate_limits 使用的
+	// upstream/provider 模型键。为空时回退到 RequestedModel。
 	ModelCooldownKey string
-	// ProtocolFamily is the exact upstream protocol requested by registry
-	// resolution, matching providers.upstream_protocol.
+	// ProtocolFamily 是 registry 解析所请求的确切上游协议,
+	// 与 providers.upstream_protocol 对应。
 	ProtocolFamily   string
 	EndpointFamily   string
 	CapabilityFlags  []string
@@ -143,8 +143,8 @@ type AccountSnapshot struct {
 	TenantID       int64
 	ProtocolFamily string
 	Priority       int
-	// Weight controls priority_weighted tie-band selection. 0/unset is
-	// treated as 1 so legacy account sources keep uniform behavior.
+	// Weight 控制 priority_weighted 同分带的选号。0/未设置会被当作 1,
+	// 使旧的账号来源保持均匀行为。
 	Weight           int32
 	LoadRate         float64
 	LastUsedAt       time.Time
@@ -154,21 +154,20 @@ type AccountSnapshot struct {
 	HealthState      string
 	HealthStateUntil time.Time
 	ModelRateLimits  map[string]ModelRateLimit
-	// WindowCostLimitCents is the operator-configured 5-hour session window
-	// spend cap in cents (1/100 USD). 0 or negative means unlimited (opt-in).
+	// WindowCostLimitCents 是运营者配置的 5 小时会话窗口消费上限,单位为分
+	// (1/100 美元)。0 或负数表示不限(选择性开启)。
 	WindowCostLimitCents int64
-	// MaxSessions is the operator-configured maximum concurrent active sessions
-	// for this account. 0 means unlimited (opt-in, default safety).
+	// MaxSessions 是运营者为该账号配置的最大并发活跃会话数。
+	// 0 表示不限(选择性开启,默认安全)。
 	MaxSessions int
-	// DisableCooling bypasses the health/cooldown gate for this account when true.
-	// Default false = exact existing behavior. Opt-in escape hatch for high-value accounts.
+	// DisableCooling 为 true 时让该账号绕过健康/冷却闸门。
+	// 默认 false = 与既有行为逐字节一致。用于高价值账号的选择性逃生通道。
 	DisableCooling bool
-	// RPMLimit is the operator-configured proactive requests-per-minute budget
-	// for this account (ROUTE-121). 0 or negative means unlimited (opt-in), so an
-	// account with no configured budget keeps its exact current behavior.
+	// RPMLimit 是运营者为该账号配置的主动 requests-per-minute 预算(ROUTE-121)。
+	// 0 或负数表示不限(选择性开启),因此未配置预算的账号保持其当前行为完全不变。
 	RPMLimit int64
-	// TPMLimit is the operator-configured proactive tokens-per-minute budget for
-	// this account (ROUTE-121). 0 or negative means unlimited (opt-in).
+	// TPMLimit 是运营者为该账号配置的主动 tokens-per-minute 预算(ROUTE-121)。
+	// 0 或负数表示不限(选择性开启)。
 	TPMLimit int64
 }
 

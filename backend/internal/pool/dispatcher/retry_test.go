@@ -23,7 +23,7 @@ func TestCanFallbackAfterPASRError(t *testing.T) {
 }
 
 func TestSlotAcquireRetryRetriesSerializationFailure(t *testing.T) {
-	// Mutation check: remove the SQLSTATE 40001 retry and this test returns the first wrapped error.
+	// 变异检查:去掉对 SQLSTATE 40001 的重试,本测试就会返回第一个被包装的错误。
 	want := &AcquireResult{AcquisitionToken: uuid.New()}
 	attempts := 0
 

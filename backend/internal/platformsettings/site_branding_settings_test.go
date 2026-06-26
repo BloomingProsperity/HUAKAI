@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// TestSiteBrandingKeysRegisteredWithEmptyDefault: the four extended-branding
-// keys are allow-listed and default empty, so an unconfigured deployment shows
-// no subtitle/contact/doc/api-base string.
-// Regression caught: if a key were left out of orderedSettingKeys /
-// defaultSettingValueMap, DefaultValue/IsAllowedKey go false here.
+// TestSiteBrandingKeysRegisteredWithEmptyDefault:这四个扩展品牌化 key 都在
+// 白名单中且默认为空,因此未配置的部署不会显示任何 subtitle/contact/doc/api-base
+// 字符串。
+// 捕获的回归:若某个 key 漏写进 orderedSettingKeys / defaultSettingValueMap,
+// 这里 DefaultValue/IsAllowedKey 会返回 false。
 func TestSiteBrandingKeysRegisteredWithEmptyDefault(t *testing.T) {
 	for _, key := range []SettingKey{KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL} {
 		v, ok := DefaultValue(key)
@@ -25,13 +25,12 @@ func TestSiteBrandingKeysRegisteredWithEmptyDefault(t *testing.T) {
 	}
 }
 
-// TestSiteBrandingTextValidation: subtitle/contact are OPTIONAL public text.
-// Empty must be accepted (proves the optional routing) and plain text passes,
-// but a control character is rejected (proves the text validator runs).
-// Regression caught: drop KeySiteSubtitle/KeySiteContactInfo from the
-// optional-public-text branch and Validate(key,"") hits the value=="" guard and
-// is REJECTED -> the empty-accept assertion goes red; route them to a no-op and
-// the control-char case is accepted -> that assertion goes red.
+// TestSiteBrandingTextValidation:subtitle/contact 是可选的公开文本。
+// 空值必须被接受(证明可选路由生效),纯文本能通过,但控制字符会被拒绝
+// (证明文本校验器确实在跑)。
+// 捕获的回归:把 KeySiteSubtitle/KeySiteContactInfo 从可选公开文本分支里去掉,
+// Validate(key,"") 会撞上 value=="" 守卫而被拒绝 -> 空值接受断言变红;若把它们
+// 路由到空操作,控制字符用例就会被接受 -> 那条断言变红。
 func TestSiteBrandingTextValidation(t *testing.T) {
 	for _, key := range []SettingKey{KeySiteSubtitle, KeySiteContactInfo} {
 		if v, err := ValidateValue(key, ""); err != nil || v != "" {
@@ -46,12 +45,11 @@ func TestSiteBrandingTextValidation(t *testing.T) {
 	}
 }
 
-// TestSiteBrandingURLValidation: doc/api-base are OPTIONAL http(s) URLs. Empty
-// accepted, http(s) accepted, but a non-URL / non-http scheme is rejected.
-// Regression caught: route these to optional-text instead of the URL validator
-// and "not-a-url" / "javascript:alert(1)" would be ACCEPTED -> red here. The
-// discriminating fixture: a bare token and a non-http scheme both pass a text
-// validator but must fail the URL validator.
+// TestSiteBrandingURLValidation:doc/api-base 是可选的 http(s) URL。空值接受、
+// http(s) 接受,但非 URL / 非 http scheme 会被拒绝。
+// 捕获的回归:把它们路由到可选文本而非 URL 校验器,"not-a-url" /
+// "javascript:alert(1)" 就会被接受 -> 这里变红。判别性 fixture:裸 token 与
+// 非 http scheme 都能通过文本校验器,但必须在 URL 校验器处失败。
 func TestSiteBrandingURLValidation(t *testing.T) {
 	for _, key := range []SettingKey{KeySiteDocURL, KeySiteAPIBaseURL} {
 		if v, err := ValidateValue(key, ""); err != nil || v != "" {
@@ -61,10 +59,10 @@ func TestSiteBrandingURLValidation(t *testing.T) {
 			t.Fatalf("%s https URL rejected: %q err=%v", key, v, err)
 		}
 		for _, bad := range []string{
-			"not-a-url",               // no scheme/host
-			"javascript:alert(1)",     // non-http scheme (XSS vector if surfaced)
-			"ftp://files.example.com", // non-http scheme
-			"//host/path",             // scheme-relative, no scheme
+			"not-a-url",               // 无 scheme/host
+			"javascript:alert(1)",     // 非 http scheme(若被展示则成 XSS 向量)
+			"ftp://files.example.com", // 非 http scheme
+			"//host/path",             // scheme 相对、无 scheme
 		} {
 			if _, err := ValidateValue(key, bad); !errors.Is(err, ErrInvalidValue) {
 				t.Fatalf("%s must reject %q as ErrInvalidValue, got err=%v", key, bad, err)

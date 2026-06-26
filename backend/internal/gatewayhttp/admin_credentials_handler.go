@@ -44,9 +44,9 @@ type credentialWriteRequest struct {
 	AuthMode    string          `json:"auth_mode"`
 	Credentials json.RawMessage `json:"credentials"`
 	Reason      string          `json:"reason,omitempty"`
-	// ExternalAccountID/ExternalAccountEmail are the operator-supplied upstream account
-	// identity for the manual create path. Auto-extraction at OAuth token exchange is the
-	// primary source; these are the manual override/fallback used when no OAuth flow ran.
+	// ExternalAccountID/ExternalAccountEmail 是运营者在手动创建路径中提供的上游账号
+	// 身份。OAuth token 交换时的自动提取是主要来源；当没有走 OAuth 流程时，
+	// 这两个字段作为手动覆盖/兜底。
 	ExternalAccountID    string `json:"external_account_id,omitempty"`
 	ExternalAccountEmail string `json:"external_account_email,omitempty"`
 }

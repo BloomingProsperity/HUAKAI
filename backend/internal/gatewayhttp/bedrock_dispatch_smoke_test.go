@@ -86,7 +86,7 @@ func encodeBedrockEventFrame(headers map[string]string, payload []byte) []byte {
 // {"bytes":"<base64-of-inner-json>"}。
 func chunkPayload(innerJSON string) []byte {
 	enc := bytes.NewBufferString(`{"bytes":"`)
-	// base64 encode innerJSON
+	// 对 innerJSON 做 base64 编码
 	const tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	src := []byte(innerJSON)
 	for i := 0; i < len(src); i += 3 {

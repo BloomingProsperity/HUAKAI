@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// All 6 auth-class ErrorClasses → UpstreamAuthFailure.
+// 全部 6 个 auth 类 ErrorClass → UpstreamAuthFailure。
 func TestStreamEndClass_AuthClassesCollapseToAuthFailure(t *testing.T) {
 	authClasses := []ErrorClass{
 		ErrorClassOAuthInvalidGrant,
@@ -24,7 +24,7 @@ func TestStreamEndClass_AuthClassesCollapseToAuthFailure(t *testing.T) {
 	}
 }
 
-// Other class → end-class mappings.
+// 其它 class → end-class 的映射。
 func TestStreamEndClass_OtherMappings(t *testing.T) {
 	cases := []struct {
 		ec   ErrorClass
@@ -45,7 +45,7 @@ func TestStreamEndClass_OtherMappings(t *testing.T) {
 	}
 }
 
-// JSON payload contains all 8 fields with correct values.
+// JSON payload 包含全部 8 个字段且取值正确。
 func TestApplyClassification_JSONPayload(t *testing.T) {
 	d := &UsageRecordDraft{}
 	c := Classification{
@@ -72,9 +72,9 @@ func TestApplyClassification_JSONPayload(t *testing.T) {
 	}
 }
 
-// Apply sets EndClass when zero value.
+// EndClass 为零值时 Apply 会设置它。
 func TestApply_SetsEndClassWhenZero(t *testing.T) {
-	d := &UsageRecordDraft{} // EndClass is zero value ""
+	d := &UsageRecordDraft{} // EndClass 为零值 ""
 	c := Classification{Class: ErrorClassRateLimited, RuleID: "R-013"}
 	ApplyClassificationToDraft(d, c)
 	if d.EndClass != UpstreamRateLimit {
@@ -82,7 +82,7 @@ func TestApply_SetsEndClassWhenZero(t *testing.T) {
 	}
 }
 
-// Apply sets EndClass when current is UnknownTermination.
+// 当前为 UnknownTermination 时 Apply 会设置 EndClass。
 func TestApply_OverwritesUnknown(t *testing.T) {
 	d := &UsageRecordDraft{EndClass: UnknownTermination}
 	c := Classification{Class: ErrorClassOAuthInvalidGrant}
@@ -92,7 +92,7 @@ func TestApply_OverwritesUnknown(t *testing.T) {
 	}
 }
 
-// Apply does NOT overwrite an already-set EndClass (preserves prior determination).
+// Apply 不会覆盖已设置的 EndClass(保留先前的判定)。
 func TestApply_PreservesNonUnknownEndClass(t *testing.T) {
 	d := &UsageRecordDraft{EndClass: ClientDisconnect}
 	c := Classification{Class: ErrorClassRateLimited}
@@ -100,13 +100,13 @@ func TestApply_PreservesNonUnknownEndClass(t *testing.T) {
 	if d.EndClass != ClientDisconnect {
 		t.Fatalf("EndClass=%s; should preserve ClientDisconnect", d.EndClass)
 	}
-	// RoutingReason still gets written
+	// RoutingReason 仍然会被写入
 	if len(d.RoutingReason) == 0 {
 		t.Fatal("RoutingReason should still be written even when EndClass preserved")
 	}
 }
 
-// Apply does NOT overwrite UpstreamError4xx (a prior forwarder determination).
+// Apply 不会覆盖 UpstreamError4xx(forwarder 先前的判定)。
 func TestApply_PreservesError4xx(t *testing.T) {
 	d := &UsageRecordDraft{EndClass: UpstreamError4xx}
 	c := Classification{Class: ErrorClassOAuthInvalidGrant}
@@ -116,7 +116,7 @@ func TestApply_PreservesError4xx(t *testing.T) {
 	}
 }
 
-// Nil draft: silent no-op (does not panic).
+// draft 为 nil:静默空操作(不 panic)。
 func TestApply_NilDraftNoOp(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -126,7 +126,7 @@ func TestApply_NilDraftNoOp(t *testing.T) {
 	ApplyClassificationToDraft(nil, Classification{})
 }
 
-// ClassifyAndApply nil draft returns error.
+// ClassifyAndApply 在 draft 为 nil 时返回 error。
 func TestClassifyAndApply_NilDraftReturnsError(t *testing.T) {
 	_, err := ClassifyAndApply(nil, 401, nil, []byte("invalid_grant"), "openai")
 	if err == nil {
@@ -134,7 +134,7 @@ func TestClassifyAndApply_NilDraftReturnsError(t *testing.T) {
 	}
 }
 
-// ClassifyAndApply happy path: classify + apply, draft updated, classification returned.
+// ClassifyAndApply 正常路径:classify + apply,draft 被更新,返回 classification。
 func TestClassifyAndApply_HappyPath(t *testing.T) {
 	d := &UsageRecordDraft{}
 	c, err := ClassifyAndApply(d, 401, nil, []byte("invalid_grant"), "openai")
@@ -152,7 +152,7 @@ func TestClassifyAndApply_HappyPath(t *testing.T) {
 	}
 }
 
-// ClassifyAndApply Classify error: returned, draft not mutated.
+// ClassifyAndApply 的 Classify 出错:错误被返回,draft 不被改动。
 func TestClassifyAndApply_ClassifyErrorPropagated(t *testing.T) {
 	d := &UsageRecordDraft{}
 	_, err := ClassifyAndApply(d, -1, nil, nil, "openai")
@@ -164,7 +164,7 @@ func TestClassifyAndApply_ClassifyErrorPropagated(t *testing.T) {
 	}
 }
 
-// Nil headers + nil body: no panic, classifies via wildcard.
+// headers 与 body 均为 nil:不 panic,通过通配规则分类。
 func TestClassifyAndApply_NilHeadersAndBody(t *testing.T) {
 	d := &UsageRecordDraft{}
 	c, err := ClassifyAndApply(d, 429, nil, nil, "openai")
@@ -179,7 +179,7 @@ func TestClassifyAndApply_NilHeadersAndBody(t *testing.T) {
 	}
 }
 
-// Empty headers + empty body: no panic.
+// headers 与 body 均为空:不 panic。
 func TestApply_EmptyHeadersAndBody(t *testing.T) {
 	d := &UsageRecordDraft{}
 	c, _ := Classify(429, http.Header{}, []byte{}, "openai")
@@ -189,7 +189,7 @@ func TestApply_EmptyHeadersAndBody(t *testing.T) {
 	}
 }
 
-// Retry-After header propagates into JSON payload.
+// Retry-After 头会传递进 JSON payload。
 func TestApply_RetryAfterPropagates(t *testing.T) {
 	d := &UsageRecordDraft{}
 	h := http.Header{"Retry-After": []string{"45"}}
@@ -206,7 +206,7 @@ func TestApply_RetryAfterPropagates(t *testing.T) {
 	}
 }
 
-// 500 server error → UpstreamError5xx + warn_only / degraded.
+// 500 服务端错误 → UpstreamError5xx + warn_only / degraded。
 func TestApply_5xxMapping(t *testing.T) {
 	d := &UsageRecordDraft{}
 	_, _ = ClassifyAndApply(d, 502, nil, []byte("bad gateway"), "openai")
@@ -215,7 +215,7 @@ func TestApply_5xxMapping(t *testing.T) {
 	}
 }
 
-// Anthropic 403 with validation → UpstreamError4xx (platform_policy mapping).
+// Anthropic 403 携带 validation → UpstreamError4xx(platform_policy 映射)。
 func TestApply_PlatformPolicyMapping(t *testing.T) {
 	d := &UsageRecordDraft{}
 	_, _ = ClassifyAndApply(d, 403, nil, []byte("validation failed"), "anthropic")

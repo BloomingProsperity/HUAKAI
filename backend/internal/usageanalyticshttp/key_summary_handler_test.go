@@ -64,9 +64,9 @@ func mountKeySummaryWithSession(t *testing.T, d KeyUsageSummaryDeps, ident sessi
 	return r
 }
 
-// TestKeyUsageSummary_OwnershipEnforced is the key security regression test.
-// Mutation: skip KeyOwner.Get and aggregate by path id only -> user B can read
-// user A's key totals -> this test goes red because it expects 404 and no store call.
+// TestKeyUsageSummary_OwnershipEnforced 是关键的安全回归测试。
+// 变异:跳过 KeyOwner.Get 而仅按路径 id 聚合 -> 用户 B 能读到用户 A 的 key
+// 汇总 -> 本测试变红,因为它期望 404 且不发生 store 调用。
 func TestKeyUsageSummary_OwnershipEnforced(t *testing.T) {
 	owner := &keySummaryOwnerStub{err: userkey.ErrNotFound}
 	store := &keySummaryStoreStub{row: dbbilling.AggregateMyUsageTotalsRow{TotalCost: "9.99000000", RequestCount: 9}}
@@ -86,9 +86,9 @@ func TestKeyUsageSummary_OwnershipEnforced(t *testing.T) {
 	}
 }
 
-// TestKeyUsageSummary_Totals proves the selected owned key, not all caller keys,
-// drives the aggregate. Mutation: drop the api_key_id filter in SQL or pass
-// another key id -> totals/arg assertions go red.
+// TestKeyUsageSummary_Totals 证明驱动聚合的是被选中且属于调用者的那把 key,
+// 而非调用者的所有 key。变异:去掉 SQL 中的 api_key_id 过滤或传入另一个 key id
+// -> totals/arg 断言变红。
 func TestKeyUsageSummary_Totals(t *testing.T) {
 	owner := &keySummaryOwnerStub{}
 	store := &keySummaryStoreStub{row: dbbilling.AggregateMyUsageTotalsRow{
@@ -145,9 +145,9 @@ func TestKeyUsageSummary_Totals(t *testing.T) {
 	}
 }
 
-// TestKeyUsageSummary_TenantScoped proves cross-tenant key ids collapse to 404
-// before aggregation. Mutation: drop tenant scope from the ownership lookup ->
-// a same-id key from another tenant is treated as owned and the store is called.
+// TestKeyUsageSummary_TenantScoped 证明跨租户的 key id 会在聚合前坍缩为 404。
+// 变异:从所有权查询中去掉租户作用域 -> 来自另一租户的同 id key 被当作己有,
+// store 被调用。
 func TestKeyUsageSummary_TenantScoped(t *testing.T) {
 	owner := &keySummaryOwnerStub{err: userkey.ErrNotFound}
 	store := &keySummaryStoreStub{}
@@ -167,9 +167,9 @@ func TestKeyUsageSummary_TenantScoped(t *testing.T) {
 	}
 }
 
-// TestKeyUsageSummary_AuthRequired covers the session-only mount contract.
-// Mutation: remove SessionFromContext validation -> the handler queries with
-// zero tenant/user and this test goes red by observing a non-401 response.
+// TestKeyUsageSummary_AuthRequired 覆盖仅限会话的挂载契约。
+// 变异:移除 SessionFromContext 校验 -> handler 以零 tenant/user 查询,
+// 本测试因观察到非 401 响应而变红。
 func TestKeyUsageSummary_AuthRequired(t *testing.T) {
 	owner := &keySummaryOwnerStub{}
 	store := &keySummaryStoreStub{}
@@ -186,9 +186,9 @@ func TestKeyUsageSummary_AuthRequired(t *testing.T) {
 	}
 }
 
-// TestKeyUsageSummary_OmittedWindowQueriesFullHistory locks the optional
-// from/to contract. Mutation: reuse the time-series parseWindow requiring both
-// bounds -> this request returns 400 and the test goes red.
+// TestKeyUsageSummary_OmittedWindowQueriesFullHistory 锁定可选的 from/to 契约。
+// 变异:复用要求两个边界都存在的时间序列 parseWindow -> 该请求返回 400,
+// 测试变红。
 func TestKeyUsageSummary_OmittedWindowQueriesFullHistory(t *testing.T) {
 	owner := &keySummaryOwnerStub{}
 	store := &keySummaryStoreStub{row: dbbilling.AggregateMyUsageTotalsRow{TotalCost: "0.00000000"}}

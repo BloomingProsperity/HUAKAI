@@ -37,9 +37,9 @@ type providerAccountCountsResponse struct {
 	Counts []providerAccountCount `json:"counts"`
 }
 
-// NewProviderAccountCountsHandler serves a read-only admin usage count/cost
-// aggregation by provider account. It never touches settlement, usage-record
-// writes, billing ledger rows, or quota state.
+// NewProviderAccountCountsHandler 提供只读的 admin 用量计数/费用聚合，
+// 按 provider account 维度汇总。它绝不触碰结算、usage-record 写入、
+// billing ledger 行或 quota 状态。
 func NewProviderAccountCountsHandler(q ProviderAccountCountsQuerier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
