@@ -101,6 +101,16 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.PoolListSpec(poolDeps))
 
+	// provider_account_list -> admindb.Queries.ListAdminProviderAccounts(按 tenant_id SELECT-only,
+	// SQL 含 deleted_at IS NULL 只返活跃账号)。0155 迁移已把 provider_account_list 加进
+	// hermes_tool_calls.tool_name CHECK。providerAccountShape 投影绝不露 Extra/RateLimitReason/Tags 值/
+	// ProxyGroupID,且本行根本不含凭证 token 明文。
+	paDeps := hermesops.ProviderAccountListDeps{}
+	if d.adminQueries != nil {
+		paDeps.List = d.adminQueries.ListAdminProviderAccounts
+	}
+	reg.Register(hermesops.ProviderAccountListSpec(paDeps))
+
 	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
 	// admin reads on billingQueries.
 	obsDeps := hermesops.ObservabilityDeps{}
