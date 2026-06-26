@@ -11,6 +11,7 @@ import (
 )
 
 // --- fake pgx tx + beginner -------------------------------------------------
+// (伪 pgx 事务 + beginner)
 
 type fakeMutateTx struct {
 	rec *txRecorder
@@ -23,13 +24,11 @@ type txRecorder struct {
 	adminInsert    int
 	commitCount    int
 	rollbackCount  int
-	// rollbackLiveCtx counts rollbacks invoked with a NON-cancelled context.
-	// The orchestrator must roll back on an INDEPENDENT ctx, not the dead
-	// deadline ctx — otherwise the rollback itself is cancelled and the pool
-	// connection + advisory lock leak. A rollback seen with a cancelled ctx
-	// means that independence was lost.
+	// rollbackLiveCtx 计数那些以 NON-cancelled(未被取消)context 调用的回滚。orchestrator
+	// 必须在一个 INDEPENDENT(独立)ctx 上回滚,而非那个已死的截止 ctx——否则回滚本身就会被取消,
+	// 连接池连接 + advisory lock 就会泄漏。一次以已取消 ctx 看到的回滚,意味着那份独立性丢失了。
 	rollbackLiveCtx int
-	// injected failures
+	// 注入的失败
 	toolCallErr error
 	adminErr    error
 	commitErr   error
@@ -102,7 +101,7 @@ func (tx *fakeMutateTx) Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 func (tx *fakeMutateTx) Conn() *pgx.Conn { return nil }
 
-// toolCallRow scans the InsertHermesToolCall RETURNING id, called_at.
+// toolCallRow 扫描 InsertHermesToolCall 的 RETURNING id, called_at。
 type toolCallRow struct{}
 
 func (toolCallRow) Scan(dest ...any) error {
@@ -114,7 +113,7 @@ func (toolCallRow) Scan(dest ...any) error {
 	return nil
 }
 
-// adminAuditRow scans the InsertAdminAuditEvent RETURNING id, occurred_at.
+// adminAuditRow 扫描 InsertAdminAuditEvent 的 RETURNING id, occurred_at。
 type adminAuditRow struct{}
 
 func (adminAuditRow) Scan(dest ...any) error {
@@ -131,6 +130,7 @@ type errRow struct{ err error }
 func (r errRow) Scan(...any) error { return r.err }
 
 // --- tests ------------------------------------------------------------------
+// (测试)
 
 func baseRecord() MutationAuditRecord {
 	return MutationAuditRecord{
@@ -143,10 +143,9 @@ func baseRecord() MutationAuditRecord {
 }
 
 func TestOrchestrator_CommitsMutationWithAuditAndLock(t *testing.T) {
-	// Regression (L3+L4): a confirmed mutation commits the mutation + tool_calls
-	// row + admin_audit row together, after acquiring the advisory lock. Mutation
-	// check: dropping the pg_advisory_xact_lock Exec leaves lockAcquired=false;
-	// dropping either audit insert drops its counter below 1.
+	// 回归(L3+L4):一个已确认的 mutation 在获取 advisory lock 之后,把 mutation + tool_calls 行 +
+	// admin_audit 行一并提交。变异检查:去掉 pg_advisory_xact_lock 的 Exec 会让 lockAcquired=false;
+	// 去掉任一审计 insert 会让其计数器降到 1 以下。
 	rec := &txRecorder{}
 	o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
 	mutated := 0
@@ -175,11 +174,10 @@ func TestOrchestrator_CommitsMutationWithAuditAndLock(t *testing.T) {
 }
 
 func TestOrchestrator_AuditFailureAbortsMutation(t *testing.T) {
-	// Regression (L3 / P1 fail-closed, DISCRIMINATING): if the admin_audit insert
-	// fails, the mutation MUST NOT run and the tx rolls back — the account stays
-	// enabled. With a best-effort (non-atomic) path the mutate callback would run
-	// and the account would be paused with no audit row. Mutation check: move the
-	// mutate() call BEFORE the audit inserts and `mutated` becomes 1 (RED).
+	// 回归(L3 / P1 fail-closed、有区分度):若 admin_audit insert 失败,mutation MUST NOT(绝不能)
+	// 运行,且 tx 回滚——账号保持启用。换成尽力而为(非原子)的路径,mutate 回调就会运行,账号会在
+	// 没有审计行的情况下被暂停。变异检查:把 mutate() 调用挪到审计 insert BEFORE(之前),`mutated`
+	// 就变成 1(变红)。
 	rec := &txRecorder{adminErr: errors.New("audit check violation")}
 	o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
 	mutated := 0
@@ -199,10 +197,8 @@ func TestOrchestrator_AuditFailureAbortsMutation(t *testing.T) {
 }
 
 func TestOrchestrator_ToolCallAuditFailureAbortsMutation(t *testing.T) {
-	// Regression (L3): a tool_calls audit insert failure also aborts before the
-	// mutation (the tool-call ledger is the authoritative trail). Mutation check:
-	// swap the insert order so the mutation precedes the tool_calls insert and
-	// `mutated` becomes 1.
+	// 回归(L3):一次 tool_calls 审计 insert 失败同样会在 mutation 之前中止(tool-call 流水是
+	// 权威轨迹)。变异检查:调换 insert 次序,让 mutation 先于 tool_calls insert,`mutated` 就变成 1。
 	rec := &txRecorder{toolCallErr: errors.New("tool_call insert failed")}
 	o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
 	mutated := 0
@@ -222,10 +218,8 @@ func TestOrchestrator_ToolCallAuditFailureAbortsMutation(t *testing.T) {
 }
 
 func TestOrchestrator_MutationFailureRollsBack(t *testing.T) {
-	// Regression: if the mutation itself fails after the audit rows are staged,
-	// the whole tx rolls back so no orphan audit row persists for a mutation that
-	// did not happen. Mutation check: change the defer to commit-on-error and the
-	// commitCount assertion fails.
+	// 回归:若 mutation 本身在审计行已就绪之后失败,整个 tx 回滚,这样就不会有孤儿审计行为一个未发生
+	// 的 mutation 持久化下来。变异检查:把 defer 改成 commit-on-error,commitCount 的断言就会失败。
 	rec := &txRecorder{}
 	o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
 	_, err := o.Execute(context.Background(), "lock:3", baseRecord(), func(context.Context, pgx.Tx) (ToolResult, error) {
@@ -240,18 +234,15 @@ func TestOrchestrator_MutationFailureRollsBack(t *testing.T) {
 }
 
 func TestOrchestrator_CommitFailureAfterOwnTxMutationIsCommitUncertain(t *testing.T) {
-	// Regression (H4 S2, DISCRIMINATING): the mutation succeeds (mErr=nil) but the
-	// FINAL orchestrator commit fails. For an OWN-TX tool (dlq_replay/renew_trigger)
-	// the mutation already committed in its own tx, so the returned error MUST wrap
-	// ErrCommitAfterOwnTxMutation (-> commit_uncertain). For an IN-TX tool
-	// (account_pause/resume) the same fault rolls the mutation back atomically, so
-	// it must NOT carry the sentinel (-> mutation_failed).
+	// 回归(H4 S2、有区分度):mutation 成功(mErr=nil),但 FINAL(最终)的 orchestrator 提交失败。
+	// 对一个 OWN-TX 工具(dlq_replay/renew_trigger),mutation 已在它自己的 tx 中提交,所以返回的
+	// error MUST(必须)包裹 ErrCommitAfterOwnTxMutation(-> commit_uncertain)。对一个 IN-TX 工具
+	// (account_pause/resume),同样的故障会把 mutation 原子地回滚,所以它必须 NOT(不)携带该哨兵
+	// (-> mutation_failed)。
 	//
-	// Mutation check (self-proving): the test runs the EXACT same forced commit
-	// fault for OwnTx=true and OwnTx=false and asserts the sentinel presence
-	// DIFFERS. If Execute ignored rec.OwnTx and wrapped (or did not wrap) the
-	// sentinel unconditionally, the own and in-tx legs would agree and the
-	// `ownWrapped == inWrapped` guard goes RED.
+	// 变异检查(自证):本测试对 OwnTx=true 与 OwnTx=false 运行 EXACT(完全)相同的强制提交故障,
+	// 并断言哨兵的存在性 DIFFERS(不同)。如果 Execute 忽略 rec.OwnTx 而无条件地包裹(或不包裹)该哨兵,
+	// own 与 in-tx 两条腿就会一致,`ownWrapped == inWrapped` 的断言就会变红。
 	run := func(ownTx bool) error {
 		rec := &txRecorder{commitErr: errors.New("connection reset by peer")}
 		o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
@@ -269,7 +260,7 @@ func TestOrchestrator_CommitFailureAfterOwnTxMutationIsCommitUncertain(t *testin
 			t.Fatalf("ownTx=%v: mutate ran %d times want 1 (mutation runs before the failing commit)", ownTx, mutated)
 		}
 		if rec.commitCount != 1 || rec.rollbackCount != 1 {
-			// commit is attempted once (fails) then the defer rolls back.
+			// commit 被尝试一次(失败),随后 defer 回滚。
 			t.Fatalf("ownTx=%v: commit=%d rollback=%d want 1/1", ownTx, rec.commitCount, rec.rollbackCount)
 		}
 		return err
@@ -293,8 +284,8 @@ func TestOrchestrator_CommitFailureAfterOwnTxMutationIsCommitUncertain(t *testin
 }
 
 func TestOrchestrator_NilBeginnerFailsClosed(t *testing.T) {
-	// Regression: a mutating tool must never proceed without the atomic audit
-	// transaction. A nil beginner returns an error and never runs the mutation.
+	// 回归:没有原子审计事务,mutating 工具绝不能继续。nil 的 beginner 返回一个 error,且永不运行
+	// mutation。
 	o := NewMutateOrchestrator(nil)
 	ran := false
 	_, err := o.Execute(context.Background(), "lock", baseRecord(), func(context.Context, pgx.Tx) (ToolResult, error) {

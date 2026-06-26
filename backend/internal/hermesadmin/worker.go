@@ -11,28 +11,25 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/email"
 )
 
-// MessageSender is the narrow slice of the gateway notification email sender the
-// worker needs. The live *email.AuthSender satisfies it via SendTenantMessage —
-// the SAME tenant-aware send path (load SMTP settings, validate, SMTP dispatch,
-// transient-failure -> outbox/DLQ retry) that subscription reminders reuse. The
-// worker builds NO new transport.
+// MessageSender 是 worker 所需的网关通知邮件发送方的窄子集。线上的
+// *email.AuthSender 通过 SendTenantMessage 满足它——这与订阅提醒所复用的是同一条
+// 租户感知的发送路径（加载 SMTP 设置、校验、SMTP 派发、短暂失败 -> outbox/DLQ
+// 重试）。worker 不会构建任何新的传输。
 type MessageSender interface {
 	SendTenantMessage(ctx context.Context, tenantID int64, msg email.Message) error
 }
 
-// RunRecorder records the outcome of each inspection run (sent / failed). The
-// default implementation is a structured zap log — no schema is added this wave
-// (a log carries the same sanitized enums/counts an audit row would, and the
-// report is emitted as an email regardless, so a DB row adds storage + a CHECK
-// migration with no operator-visible benefit here). Injectable so tests can
-// assert what is (and is NOT) recorded.
+// RunRecorder 记录每次巡检运行的结果（已发送 / 失败）。默认实现是一条结构化 zap
+// 日志——本波次不新增任何 schema（一条日志携带的脱敏 enums/counts 与审计行相同，
+// 而无论如何报告都会以邮件形式发出，因此一行 DB 记录只会增加存储 + 一个 CHECK
+// 迁移，在这里对运维并无可见收益）。可注入，以便测试断言哪些被记录了、哪些没有。
 type RunRecorder interface {
 	RecordRun(ctx context.Context, outcome RunOutcome)
 }
 
-// RunOutcome is the sanitized per-run record. It carries ONLY enums/counts and a
-// fixed recipient-shape flag — never the report body, never the raw recipient
-// address (only whether one resolved), never any diagnostic detail string.
+// RunOutcome 是每次运行的脱敏记录。它仅携带 enums/counts 以及一个固定的收件人形态
+// 标志——绝不携带报告正文、绝不携带原始收件人地址（只携带是否解析出收件人）、
+// 绝不携带任何诊断细节字符串。
 type RunOutcome struct {
 	At            time.Time
 	Sent          bool
@@ -40,10 +37,10 @@ type RunOutcome struct {
 	CriticalCount int
 	SourceErrors  int
 	HasRecipient  bool
-	FailureClass  string // "" on success; a fixed class on failure (no error text)
+	FailureClass  string // 成功时为 ""；失败时为一个固定分类（不含错误文本）
 }
 
-// zapRecorder is the default structured-log recorder.
+// zapRecorder 是默认的结构化日志记录器。
 type zapRecorder struct{ log *zap.Logger }
 
 func (z zapRecorder) RecordRun(_ context.Context, o RunOutcome) {
@@ -60,10 +57,9 @@ func (z zapRecorder) RecordRun(_ context.Context, o RunOutcome) {
 	)
 }
 
-// InspectionWorker is the ExpiryWorker-pattern scheduled worker: a single
-// ticker goroutine that, on each tick, runs the inspection, formats the report,
-// and mails it to the resolved recipient. It never panics; a send failure logs +
-// counts and the loop continues.
+// InspectionWorker 是采用 ExpiryWorker 模式的定时 worker：一个单独的 ticker
+// goroutine，在每个 tick 运行巡检、格式化报告，并将其邮件发送给解析出的收件人。
+// 它绝不 panic；发送失败会记录日志 + 计数，循环继续。
 type InspectionWorker struct {
 	svc       *InspectionService
 	sender    MessageSender
@@ -78,26 +74,25 @@ type InspectionWorker struct {
 	stop    chan struct{}
 	done    chan struct{}
 
-	running     atomic.Bool   // re-entrance guard
-	tickCount   atomic.Uint64 // total ticks
-	reportsSent atomic.Uint64 // successful sends
-	failedTicks atomic.Uint64 // ticks where the send failed
+	running     atomic.Bool   // 重入保护
+	tickCount   atomic.Uint64 // 总 tick 数
+	reportsSent atomic.Uint64 // 成功发送数
+	failedTicks atomic.Uint64 // 发送失败的 tick 数
 }
 
-// InspectionWorkerConfig constructs the worker.
+// InspectionWorkerConfig 用于构造 worker。
 type InspectionWorkerConfig struct {
 	Service   *InspectionService
 	Sender    MessageSender
-	Recorder  RunRecorder // nil => structured zap log
+	Recorder  RunRecorder // nil => 结构化 zap 日志
 	Recipient string
 	TenantID  int64
 	Interval  time.Duration // <=0 => DefaultInterval
 	Logger    *zap.Logger
 }
 
-// NewInspectionWorker builds the worker. It does NOT validate the recipient — the
-// caller (wiring) resolves + checks the recipient and only constructs the worker
-// when one exists, so an unconfigured deployment never reaches Start.
+// NewInspectionWorker 构建 worker。它不校验收件人——由调用方（接线层）解析并检查
+// 收件人，仅在存在收件人时才构造 worker，因此未经配置的部署永远不会走到 Start。
 func NewInspectionWorker(cfg InspectionWorkerConfig) *InspectionWorker {
 	interval := cfg.Interval
 	if interval <= 0 {
@@ -126,10 +121,9 @@ func NewInspectionWorker(cfg InspectionWorkerConfig) *InspectionWorker {
 	}
 }
 
-// Start launches the ticker goroutine. Repeated Start is a no-op; Stop then Start
-// restarts. It refuses to start if the service/sender/recipient is missing — a
-// hard fail-safe so a half-wired worker never spins burning ticks with no send
-// target.
+// Start 启动 ticker goroutine。重复 Start 是空操作；先 Stop 再 Start 会重启。
+// 若 service/sender/recipient 缺失则拒绝启动——这是一个硬性故障安全机制，
+// 使一个半接线的 worker 绝不会在没有发送目标的情况下空转、白白消耗 tick。
 func (w *InspectionWorker) Start(ctx context.Context) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -144,9 +138,8 @@ func (w *InspectionWorker) Start(ctx context.Context) {
 
 func (w *InspectionWorker) loop(ctx context.Context) {
 	defer close(w.done)
-	// On exit, emit the cumulative run metrics so an operator can see how the
-	// daily-inspection worker fared over its lifetime (ticks / reports accepted
-	// for delivery / failed ticks) without a separate metrics surface.
+	// 退出时输出累计的运行指标，使运维无需单独的指标面板即可了解每日巡检 worker
+	// 在其生命周期内的表现（tick 数 / 已被接受投递的报告数 / 失败的 tick 数）。
 	defer func() {
 		w.log.Info("hermes daily inspection worker stopped",
 			zap.Uint64("ticks", w.TickCount()),
@@ -156,7 +149,7 @@ func (w *InspectionWorker) loop(ctx context.Context) {
 	}()
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
-	w.tick(ctx) // run once immediately on start
+	w.tick(ctx) // 启动时立即运行一次
 	for {
 		select {
 		case <-ctx.Done():
@@ -169,9 +162,8 @@ func (w *InspectionWorker) loop(ctx context.Context) {
 	}
 }
 
-// tick runs one inspection -> format -> send cycle. The re-entrance guard makes a
-// slow tick skip rather than overlap. A panic anywhere in the cycle is recovered
-// so one bad run can never crash the loop.
+// tick 运行一次 巡检 -> 格式化 -> 发送 的周期。重入保护会让慢 tick 被跳过而非重叠。
+// 周期内任何位置的 panic 都会被 recover，使单次出错的运行绝不会让循环崩溃。
 func (w *InspectionWorker) tick(ctx context.Context) {
 	if !w.running.CompareAndSwap(false, true) {
 		return
@@ -214,8 +206,7 @@ func (w *InspectionWorker) tick(ctx context.Context) {
 	w.recorder.RecordRun(ctx, outcome)
 }
 
-// Stop gracefully stops the loop and waits for it to exit. Repeated Stop is a
-// no-op.
+// Stop 优雅地停止循环并等待其退出。重复 Stop 是空操作。
 func (w *InspectionWorker) Stop() {
 	w.mu.Lock()
 	if !w.started {
@@ -231,11 +222,11 @@ func (w *InspectionWorker) Stop() {
 	}
 }
 
-// TickCount returns the total ticks.
+// TickCount 返回总 tick 数。
 func (w *InspectionWorker) TickCount() uint64 { return w.tickCount.Load() }
 
-// ReportsSent returns the count of successful sends.
+// ReportsSent 返回成功发送的计数。
 func (w *InspectionWorker) ReportsSent() uint64 { return w.reportsSent.Load() }
 
-// FailedTicks returns the count of ticks whose send failed (or panicked).
+// FailedTicks 返回发送失败（或发生 panic）的 tick 计数。
 func (w *InspectionWorker) FailedTicks() uint64 { return w.failedTicks.Load() }

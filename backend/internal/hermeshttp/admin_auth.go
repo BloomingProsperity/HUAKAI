@@ -11,48 +11,43 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
-// AdminAuthResolver authenticates an operator bearer (hk_admin_) against
-// admin_tokens and returns its resolved identity. *admin.AdminResolver
-// satisfies it; the interface keeps the middleware unit-testable with injected
-// identities (mirrors cmd/gateway.adminIdentityResolver).
+// AdminAuthResolver 用 admin_tokens 校验 operator bearer(hk_admin_),
+// 并返回其解析出的身份。*admin.AdminResolver 实现了该接口;此接口使中间件
+// 可以注入身份进行单元测试(对应 cmd/gateway.adminIdentityResolver)。
 type AdminAuthResolver interface {
 	Resolve(ctx context.Context, r *http.Request) (admin.AdminIdentity, error)
 }
 
-// adminActorContextKey carries the resolved operator identity so the audit path
-// can attribute the real admin actor even though actor_user_id still points at
-// the tenant user whose ops context the operator is acting within.
+// adminActorContextKey 携带解析出的 operator 身份,使审计路径即便 actor_user_id
+// 仍指向 operator 当前所操作 ops context 所属的 tenant user,也能把动作归因到
+// 真正的 admin actor。
 type adminActorContextKey struct{}
 
-// adminActor is the operator attribution recorded alongside an admin-mode
-// Hermes action. It is distinct from the threaded sessionauth.Identity, which
-// continues to carry (tenant_id, user_id) so the existing users FK holds.
+// adminActor 是与 admin 模式 Hermes 动作一并记录的 operator 归因信息。它区别于
+// 贯穿传递的 sessionauth.Identity——后者仍携带 (tenant_id, user_id),以保证既有的
+// users FK 成立。
 type adminActor struct {
 	TokenID int64
 	Role    string
 }
 
-// AdminAuthMiddleware gates Hermes routes to authenticated ADMIN/OPERATOR
-// callers under the admin-only repositioning. It mirrors cmd/gateway.adminGate's
-// status mapping (401 on credential failure, 503 on backend / nil resolver) and
-// then derives the tenant + the tenant user whose Hermes ops context the
-// operator acts within, enforcing CanIssueForTenant BEFORE the request reaches
-// any tenant-scoped handler.
+// AdminAuthMiddleware 在 admin-only 重定位下,把 Hermes 路由限制给已认证的
+// ADMIN/OPERATOR 调用方。它对齐 cmd/gateway.adminGate 的状态码映射(凭证失败 401、
+// backend 故障 / resolver 为 nil 时 503),随后推导出 tenant 以及 operator 当前所操作
+// Hermes ops context 所属的 tenant user,并在请求到达任何 tenant 范围的 handler
+// 之前先执行 CanIssueForTenant。
 //
-// Tenant derivation:
-//   - tenant_operator  => tenant_id is the token's ScopeTenantID. A ?tenant_id
-//     query param, if present, must match it (else 403) — an operator can never
-//     reach outside its scope.
-//   - platform_admin   => tenant_id MUST be supplied via ?tenant_id (a
-//     platform admin has no implicit tenant; omitting it is a 400, never a
-//     silent cross-tenant default).
+// Tenant 推导:
+//   - tenant_operator  => tenant_id 取 token 的 ScopeTenantID。若带了 ?tenant_id
+//     query 参数,必须与之相等(否则 403)——operator 永远无法越出自身 scope。
+//   - platform_admin   => tenant_id 必须通过 ?tenant_id 提供(platform admin 没有
+//     隐含 tenant;缺省即 400,绝不静默地默认成某个跨 tenant 的值)。
 //
-// Actor user derivation: the operator must name which tenant user's Hermes ops
-// context is being acted on via ?as_user_id. That id becomes the threaded
-// sessionauth.Identity.UserID, which the existing composite FK
-// (tenant_id, owner_user_id/actor_user_id) -> users(tenant_id, id) requires to
-// resolve to a real users row. The operator's own token id is recorded
-// separately as the admin actor for audit attribution.
+// Actor user 推导:operator 必须通过 ?as_user_id 指明所操作的是哪个 tenant user 的
+// Hermes ops context。该 id 成为贯穿传递的 sessionauth.Identity.UserID,而既有的
+// 复合 FK (tenant_id, owner_user_id/actor_user_id) -> users(tenant_id, id) 要求它能
+// 解析到一条真实的 users 行。operator 自己的 token id 则单独记录为 admin actor,
+// 用于审计归因。
 func AdminAuthMiddleware(resolver AdminAuthResolver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,16 +69,16 @@ func AdminAuthMiddleware(resolver AdminAuthResolver) func(http.Handler) http.Han
 			if !ok {
 				return
 			}
-			// A non-positive resolved tenant (e.g. an operator token with no
-			// scope and no ?tenant_id) can never name a real tenant; reject it
-			// before CanIssueForTenant rather than threading a zero tenant.
+			// 解析出的 tenant 非正(例如既无 scope 又无 ?tenant_id 的 operator
+			// token)永远无法指向一个真实 tenant;在 CanIssueForTenant 之前就拒绝,
+			// 而不是把一个 0 值 tenant 继续传下去。
 			if tenantID <= 0 {
 				writeError(w, http.StatusForbidden, "hermes_admin_forbidden_scope", "operator token has no usable tenant scope")
 				return
 			}
-			// Enforce scope BEFORE any tenant-scoped op. This is the SINGLE
-			// authority for tenant scoping: tenant_operator may only touch its
-			// ScopeTenantID; platform_admin may touch any tenant.
+			// 在任何 tenant 范围的操作之前先执行 scope 校验。这里是 tenant
+			// scoping 的唯一权威:tenant_operator 只能触及自身 ScopeTenantID;
+			// platform_admin 可触及任意 tenant。
 			if err := id.CanIssueForTenant(tenantID); err != nil {
 				writeError(w, http.StatusForbidden, "hermes_admin_forbidden_scope", "operator may not access this tenant's hermes resources")
 				return
@@ -102,14 +97,12 @@ func AdminAuthMiddleware(resolver AdminAuthResolver) func(http.Handler) http.Han
 	}
 }
 
-// deriveAdminTenantID resolves the REQUESTED target tenant from the operator
-// identity and the optional ?tenant_id query param. It does NOT itself enforce
-// the operator scope — CanIssueForTenant in the middleware is the single
-// authority that authorizes the resolved tenant, so a tenant_operator that
-// requests a foreign ?tenant_id is resolved here and then rejected there
-// (keeping the scope rule in exactly one place). This function only enforces
-// the platform_admin no-implicit-tenant rule (platform admins have no scope to
-// default to, so omitting ?tenant_id is a 400, never a silent default).
+// deriveAdminTenantID 根据 operator 身份与可选的 ?tenant_id query 参数,解析出
+// 请求的目标 tenant。它本身不执行 operator scope 校验——中间件里的
+// CanIssueForTenant 才是授权该 tenant 的唯一权威,因此 tenant_operator 请求一个外部
+// ?tenant_id 时,这里会先解析出来、再由那里拒绝(把 scope 规则集中在唯一一处)。
+// 本函数只执行 platform_admin 的「无隐含 tenant」规则(platform admin 没有可默认的
+// scope,故缺省 ?tenant_id 即 400,绝不静默默认)。
 func deriveAdminTenantID(w http.ResponseWriter, r *http.Request, id admin.AdminIdentity) (int64, bool) {
 	paramTenant, hasParam, ok := parseOptionalPositiveQuery(w, r, "tenant_id")
 	if !ok {
@@ -123,16 +116,15 @@ func deriveAdminTenantID(w http.ResponseWriter, r *http.Request, id admin.AdminI
 		}
 		return paramTenant, true
 	case admin.RoleTenantOperator:
-		// An explicit ?tenant_id is honored as the REQUESTED tenant (even a
-		// foreign one) so that CanIssueForTenant can reject it; when omitted,
-		// default to the operator's own scope.
+		// 显式的 ?tenant_id 会被当作请求的 tenant(哪怕是外部 tenant),以便
+		// CanIssueForTenant 能拒绝它;缺省时则默认为 operator 自身的 scope。
 		if hasParam {
 			return paramTenant, true
 		}
 		return id.ScopeTenantID, true
 	default:
-		// Unknown role: resolve the requested/zero tenant and let
-		// CanIssueForTenant reject it (it maps unknown roles to unauthorized).
+		// 未知 role:解析出请求的 tenant(或 0),交由 CanIssueForTenant 拒绝
+		// (它把未知 role 映射为 unauthorized)。
 		if hasParam {
 			return paramTenant, true
 		}
@@ -140,9 +132,9 @@ func deriveAdminTenantID(w http.ResponseWriter, r *http.Request, id admin.AdminI
 	}
 }
 
-// parseAsUserID requires the ?as_user_id query param naming the tenant user
-// whose Hermes ops context the operator acts within. It must be a positive
-// int64 so the (tenant_id, user_id) users FK can resolve.
+// parseAsUserID 要求 ?as_user_id query 参数,用以指明 operator 当前所操作 Hermes
+// ops context 所属的 tenant user。它必须是正 int64,这样 (tenant_id, user_id) 的
+// users FK 才能解析。
 func parseAsUserID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	value, has, ok := parseOptionalPositiveQuery(w, r, "as_user_id")
 	if !ok {
@@ -155,9 +147,9 @@ func parseAsUserID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return value, true
 }
 
-// parseOptionalPositiveQuery parses an optional positive-int64 query param.
-// Returns (value, present, ok). A present-but-malformed/non-positive value is a
-// 400 (ok=false); absent is (0, false, true).
+// parseOptionalPositiveQuery 解析一个可选的正 int64 query 参数。返回
+// (value, present, ok)。存在但格式错误/非正的值即 400(ok=false);缺省则为
+// (0, false, true)。
 func parseOptionalPositiveQuery(w http.ResponseWriter, r *http.Request, name string) (int64, bool, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get(name))
 	if raw == "" {
@@ -171,8 +163,8 @@ func parseOptionalPositiveQuery(w http.ResponseWriter, r *http.Request, name str
 	return value, true, true
 }
 
-// adminActorFromContext returns the operator attribution injected by
-// AdminAuthMiddleware, if the request was authenticated in admin mode.
+// adminActorFromContext 返回 AdminAuthMiddleware 注入的 operator 归因信息
+// (前提是该请求以 admin 模式完成认证)。
 func adminActorFromContext(ctx context.Context) (adminActor, bool) {
 	actor, ok := ctx.Value(adminActorContextKey{}).(adminActor)
 	return actor, ok

@@ -21,48 +21,42 @@ const proposeMode = "propose"
 // 一个 OPERATOR 确认。LLM 把 correlation_id 转达给 operator,但自己无法确认。
 const proposeStatusNeedsConfirmation = "needs_confirmation"
 
-// internal_tool_handler.go is the gateway-side authority for the conversational
-// READ-ONLY tool loop (WAVE H3b, Option B). The Python runner's ops assistant
-// calls back into the gateway mid-conversation to run a diagnostic tool; this
-// handler is the ONLY place that authorizes + executes + audits that call.
+// internal_tool_handler.go 是会话式只读工具循环(WAVE H3b,方案 B)的 gateway 侧权威。
+// Python runner 的 ops 助手会在对话中途回调进 gateway 来运行一个诊断工具;本 handler 是
+// 唯一负责授权 + 执行 + 审计该调用的地方。
 //
-// SAFETY CONTRACT (every item is enforced here, fail-closed):
-//  1. Authentication: the caller MUST present a valid internal_token (the same
-//     HMAC tenant|user|request_id|exp the bridge minted for this session). An
-//     invalid/expired token => 401, no tool runs.
-//  2. Session binding: the token's request_id MUST resolve to a bound operator
-//     identity (role + tenant scope + admin_token_id). No binding => 401.
-//  3. Identity consistency: the token's tenant/user MUST match the bound
-//     session's tenant/user. A mismatch => 401 (a token for session A can never
-//     drive session B's operator scope).
-//  4. READ-ONLY filter (the structural mutation guard): the requested tool MUST
-//     be registered AND non-mutating. A mutating tool name (account_pause,
-//     dlq_replay, renew_trigger, ...) is REJECTED before dispatch — and even if
-//     this check were removed, hermesops.Registry.Run itself refuses a mutating
-//     tool with ErrNotMutating. Two independent gates; a mutation is unreachable.
-//  5. RBAC role floor: Registry.Run authorizes the bound operator's role against
-//     the tool's RequiredRole. Below floor => denied (recorded).
-//  6. Tenant scope: the tool ALWAYS runs with the bound session's TenantID. The
-//     runner cannot name a tenant; there is no tenant arg. A tool can never read
-//     another tenant's data through this path.
-//  7. Audit: every call (ok / error / denied / rejected) records a sanitized
-//     hermes_tool_calls row with the operator attribution (admin_actor_token_id).
-//  8. Privacy: only the tool's sanitized Summary (enums/counts/ids) crosses back
-//     to the runner; the store re-sanitizes args + summary as defense in depth.
+// 安全契约(每一项都在此 fail-closed 地强制执行):
+//  1. 认证:调用方必须出示一个有效的 internal_token(即 bridge 为本会话铸造的那同一份
+//     HMAC tenant|user|request_id|exp)。无效/过期的 token => 401,不运行任何工具。
+//  2. 会话绑定:token 的 request_id 必须能解析到一个已绑定的 operator 身份(role +
+//     tenant 范围 + admin_token_id)。无绑定 => 401。
+//  3. 身份一致性:token 的 tenant/user 必须与已绑定会话的 tenant/user 匹配。不匹配 =>
+//     401(会话 A 的 token 绝不能驱动会话 B 的 operator 范围)。
+//  4. 只读过滤(结构性 mutation 守卫):请求的工具必须已注册且为非 mutating。mutating
+//     工具名(account_pause、dlq_replay、renew_trigger 等)在 dispatch 之前即被拒绝——
+//     即便去掉这个检查,hermesops.Registry.Run 本身也会以 ErrNotMutating 拒绝 mutating
+//     工具。两道独立闸门;mutation 无法触达。
+//  5. RBAC role 下限:Registry.Run 拿已绑定 operator 的 role 对照工具的 RequiredRole 做
+//     授权。低于下限 => denied(已记录)。
+//  6. tenant 范围:工具始终以已绑定会话的 TenantID 运行。runner 无法指定 tenant;没有
+//     tenant 参数。工具绝不能通过此路径读取另一个 tenant 的数据。
+//  7. 审计:每次调用(ok / error / denied / rejected)都记录一行带 operator 归属
+//     (admin_actor_token_id)的脱敏 hermes_tool_calls。
+//  8. 隐私:只有工具脱敏后的 Summary(枚举/计数/id)会回传给 runner;store 还会对 args +
+//     summary 再次脱敏作为纵深防御。
 
-// ReadOnlyToolRunner is the narrow read-only dispatch surface this handler needs
-// from the tool registry. *hermesops.Registry satisfies it. It deliberately does
-// NOT expose AuthorizeMutating / Resolve / Mutate — the mutating capability is
-// structurally absent from this handler's dependency, so there is no method here
-// that could run a mutation even if mis-called.
+// ReadOnlyToolRunner 是本 handler 从工具 registry 所需的那个窄只读 dispatch 面。
+// *hermesops.Registry 满足它。它刻意不暴露 AuthorizeMutating / Resolve / Mutate——mutating
+// 能力在结构上不存在于本 handler 的依赖中,因此即便被误调用,这里也没有任何方法能运行
+// mutation。
 type ReadOnlyToolRunner interface {
-	// Get reports a registered spec (used only to classify a name as mutating for
-	// the explicit pre-dispatch rejection + audit). It never executes anything.
+	// Get 报告一个已注册的 spec(仅用于把某个名字归类为 mutating,以便做显式的 dispatch
+	// 前拒绝 + 审计)。它从不执行任何东西。
 	Get(name string) (hermesops.ToolSpec, bool)
-	// Run authorizes (role floor) + dispatches a READ-ONLY tool. It refuses a
-	// mutating tool with ErrNotMutating, so it is itself a mutation guard.
+	// Run 对一个只读工具做授权(role 下限)+ dispatch。它会以 ErrNotMutating 拒绝 mutating
+	// 工具,因此它本身就是一道 mutation 守卫。
 	Run(ctx context.Context, name string, req hermesops.ToolRequest) (hermesops.ToolResult, error)
-	// ReadOnlyCatalog returns the LLM-facing read-only tool catalog.
+	// ReadOnlyCatalog 返回面向 LLM 的只读工具目录。
 	ReadOnlyCatalog() []hermesops.CatalogTool
 }
 
@@ -80,18 +74,16 @@ type ProposalResolver interface {
 	ResolveProposal(ctx context.Context, name, actorRole string, req hermesops.ToolRequest) (hermesops.MutationPlan, error)
 }
 
-// InternalToolHandler serves the runner's mid-conversation tool calls.
+// InternalToolHandler 处理 runner 在对话中途的工具调用。
 type InternalToolHandler struct {
 	secret    []byte
 	bindings  *SessionBindings
 	tools     ReadOnlyToolRunner
 	toolCalls hermesops.ToolCallInserter
 	now       func() time.Time
-	// toolLoopEnabled is KNOB B's runner-callback gate. When false, ServeHTTP
-	// refuses every call (403 llm_toolloop_disabled) before resolving the operator,
-	// so the LLM conversational tool loop is fully off even if a session were bound.
-	// The bridge-side gate (no catalog injection) is the cooperating half; this is
-	// the enforcing half.
+	// toolLoopEnabled 是 KNOB B 的 runner 回调闸门。为 false 时,ServeHTTP 在解析 operator
+	// 之前就拒绝每次调用(403 llm_toolloop_disabled),因此即便会话已绑定,LLM 会话式工具
+	// 循环也完全关闭。bridge 侧闸门(不注入目录)是协同的一方;这里是强制执行的一方。
 	toolLoopEnabled bool
 	// proposer 是 Phase B 的 DRY-RUN 解析面(仅 ResolveProposal)。提议路径未接线时它为 nil,此时
 	// 一个 propose 调用 fail-closed(503)。它刻意不暴露任何 Mutate 句柄——见 ProposalResolver。
@@ -106,10 +98,9 @@ type InternalToolHandler struct {
 	proposeEnabled bool
 }
 
-// NewInternalToolHandler wires the handler. secret is the internal-token HMAC
-// secret (same as the bridge's). A nil registry / inserter / bindings makes the
-// handler fail closed (503 / 401) rather than panic. toolLoopEnabled is KNOB B:
-// when false the handler refuses every call (403) before touching the token.
+// NewInternalToolHandler 接线 handler。secret 是 internal-token 的 HMAC 密钥(与 bridge 的
+// 相同)。registry / inserter / bindings 为 nil 会让 handler fail closed(503 / 401)而非
+// panic。toolLoopEnabled 是 KNOB B:为 false 时 handler 在碰 token 之前就拒绝每次调用(403)。
 //
 // 末尾三个参数接入 Phase B LLM-提议路径:proposer 是 DRY-RUN 解析面(nil => propose fail-closed
 // 503),confirmCache 是 operator 确认路径也读取的共享 correlation-id store(nil => 503),
@@ -132,10 +123,9 @@ func NewInternalToolHandler(secret []byte, bindings *SessionBindings, tools Read
 	}
 }
 
-// internalToolRequest is the runner -> gateway tool-call request body. It carries
-// ONLY a tool name + args. It deliberately has NO tenant / role / actor field:
-// the operator scope comes from the verified session binding, never from the
-// runner, so the runner cannot escalate scope or impersonate another operator.
+// internalToolRequest 是 runner -> gateway 的工具调用请求体。它只携带工具名 + args。它刻意
+// 不含 tenant / role / actor 字段:operator 范围来自经验证的会话绑定,绝不来自 runner,因此
+// runner 无法越权扩大范围或冒充另一个 operator。
 type internalToolRequest struct {
 	ToolName string         `json:"tool_name"`
 	Args     map[string]any `json:"args"`
@@ -145,9 +135,8 @@ type internalToolRequest struct {
 	Mode string `json:"mode,omitempty"`
 }
 
-// internalToolResponse is the gateway -> runner tool-result body. It returns the
-// sanitized diagnostic summary the agent feeds back into the conversation. On a
-// denial / error it carries a short status + error_class (no PII, no secrets).
+// internalToolResponse 是 gateway -> runner 的工具结果体。它返回 agent 要喂回对话的脱敏
+// 诊断 summary。在拒绝 / 错误时,它携带一个简短的 status + error_class(无 PII、无 secret)。
 type internalToolResponse struct {
 	ToolName   string         `json:"tool_name"`
 	Status     string         `json:"status"`
@@ -164,13 +153,11 @@ type internalToolResponse struct {
 	TargetID         int64          `json:"target_id,omitempty"`
 }
 
-// ServeHTTP handles POST <internal_base>/tool-execute. It shares the gateway's
-// listener with the runner's other /internal/* callbacks (bootstrap/refresh/keys);
-// the protection is the application-layer internal_token (HMAC-SHA256, short TTL,
-// constant-time compare), NOT network isolation — the route is on the same public
-// listener, so the token gate is the only thing standing between a caller and a
-// tool. A separate loopback listener / source ACL on /internal/* is a hardening
-// follow-up.
+// ServeHTTP 处理 POST <internal_base>/tool-execute。它与 runner 的其它 /internal/* 回调
+//(bootstrap/refresh/keys)共用 gateway 的 listener;防护来自应用层的 internal_token
+//(HMAC-SHA256、短 TTL、constant-time 比较),而非网络隔离——该路由位于同一个公网 listener
+// 上,因此 token 闸门是横亘在调用方与工具之间的唯一屏障。为 /internal/* 单独设 loopback
+// listener / 来源 ACL 是后续的加固工作。
 func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || len(h.secret) == 0 || h.bindings == nil || h.tools == nil {
 		writeInternalToolError(w, http.StatusServiceUnavailable, "tool_spine_unavailable")
@@ -181,17 +168,16 @@ func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// KNOB B (runtime kill-switch): when the LLM conversational tool loop is
-	// disabled, refuse every call BEFORE resolving the operator — no token is
-	// inspected, no tool runs, no audit row is written for a refused-by-policy call.
-	// Plain /v1/hermes/chat is unaffected (it never reaches this handler).
+	// KNOB B(运行时 kill-switch):当 LLM 会话式工具循环被禁用时,在解析 operator 之前就
+	// 拒绝每次调用——不检查 token、不运行工具、不为这种被策略拒绝的调用写审计行。
+	// 普通的 /v1/hermes/chat 不受影响(它永远不会到达本 handler)。
 	if !h.toolLoopEnabled {
 		writeInternalToolError(w, http.StatusForbidden, "llm_toolloop_disabled")
 		return
 	}
 
-	// (1) Authenticate the runner via the internal_token. The bridge minted it for
-	// THIS session; an invalid/expired token never reaches a tool.
+	// (1) 经 internal_token 认证 runner。bridge 是为本会话铸造它的;无效/过期的 token
+	// 永远到不了工具。
 	op, ok := h.resolveOperator(r)
 	if !ok {
 		writeInternalToolError(w, http.StatusUnauthorized, "unauthorized")
@@ -221,21 +207,18 @@ func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// (4) READ-ONLY filter — the structural mutation guard. Symmetric with the
-	// catalog's allow-test (catalog.go): a tool is dispatchable ONLY if it is
-	// explicitly ReadOnly AND not Mutating. Rejecting on (Mutating || !ReadOnly)
-	// also excludes any future tool that is neither (an unset ReadOnly flag),
-	// fail-safe by default. The LLM cannot reach account_pause / dlq_replay /
-	// renew_trigger (or any non-read-only tool) here.
+	// (4) 只读过滤——结构性 mutation 守卫。与目录的 allow-test(catalog.go)对称:一个工具
+	// 只有在被显式标记为 ReadOnly 且非 Mutating 时才可 dispatch。以 (Mutating || !ReadOnly)
+	// 拒绝,也会排除任何二者皆非的未来工具(ReadOnly 标志未设置),默认 fail-safe。LLM 在此
+	// 无法触达 account_pause / dlq_replay / renew_trigger(或任何非只读工具)。
 	if spec, found := h.tools.Get(req.ToolName); found && (spec.Mutating || !spec.ReadOnly) {
 		h.recordCall(r, op, req, hermesops.ResultDenied, nil, "mutating_tool_rejected")
 		writeInternalToolError(w, http.StatusForbidden, "mutating_tool_forbidden")
 		return
 	}
 
-	// (5)(6) Dispatch through the read-only Run: it enforces the role floor and
-	// refuses a mutating tool (ErrNotMutating) as the SECOND independent guard.
-	// TenantID is pinned to the bound session — the runner supplied no tenant.
+	// (5)(6) 经只读 Run dispatch:它强制 role 下限,并作为第二道独立守卫以 ErrNotMutating
+	// 拒绝 mutating 工具。TenantID 被钉死为已绑定会话——runner 没提供任何 tenant。
 	toolReq := hermesops.ToolRequest{
 		TenantID:    op.TenantID,
 		ActorUserID: op.ActorUserID,
@@ -248,8 +231,7 @@ func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// (7) Record the ok row with operator attribution; (8) return only the
-	// sanitized summary to the runner.
+	// (7) 记录带 operator 归属的 ok 行;(8) 只把脱敏后的 summary 返回给 runner。
 	h.recordCall(r, op, req, hermesops.ResultOK, result.Summary, result.ErrorClass)
 	writeInternalToolJSON(w, http.StatusOK, internalToolResponse{
 		ToolName:   req.ToolName,
@@ -361,10 +343,9 @@ func (h *InternalToolHandler) writeProposeError(w http.ResponseWriter, r *http.R
 	}
 }
 
-// resolveOperator verifies the internal_token and resolves the bound operator.
-// It enforces (1) token validity, (2) a present+unexpired binding, and (3)
-// tenant/user consistency between the token and the binding. Any failure returns
-// (zero, false) so the caller fails closed with 401.
+// resolveOperator 验证 internal_token 并解析出已绑定的 operator。它强制(1)token 有效性、
+//(2)绑定存在且未过期、(3)token 与绑定之间的 tenant/user 一致性。任何失败都返回(零值,
+// false),使调用方 fail closed 返回 401。
 func (h *InternalToolHandler) resolveOperator(r *http.Request) (SessionOperator, bool) {
 	token := bearerFromRequest(r)
 	if token == "" {
@@ -378,23 +359,21 @@ func (h *InternalToolHandler) resolveOperator(r *http.Request) (SessionOperator,
 	if !ok {
 		return SessionOperator{}, false
 	}
-	// Identity consistency: a token issued for (tenant,user) must match the bound
-	// session's (tenant,user). Prevents a valid token for one session from being
-	// paired with another session's request_id binding.
+	// 身份一致性:为某个 (tenant,user) 签发的 token 必须与已绑定会话的 (tenant,user) 匹配。
+	// 防止某会话的有效 token 被配上另一个会话的 request_id 绑定。
 	if op.TenantID != claims.TenantID || op.ActorUserID != claims.UserID {
 		return SessionOperator{}, false
 	}
-	// The conversational path is admin-only: a binding with no operator role / no
-	// admin actor token can never authorize a tool.
+	// 会话式路径仅限 admin:一个没有 operator role / 没有 admin actor token 的绑定绝不能
+	// 授权工具。
 	if strings.TrimSpace(op.Role) == "" || op.AdminActorTokenID <= 0 {
 		return SessionOperator{}, false
 	}
 	return op, true
 }
 
-// writeRunError maps a Run error to a status + audited denied/error row. A role
-// or mutating-guard rejection is a denied row (RBAC outcome); a dependency /
-// args / execution failure is an error row.
+// writeRunError 把 Run 的错误映射成状态码 + 一条经审计的 denied/error 行。role 或 mutating
+// 守卫的拒绝记为 denied 行(RBAC 结果);依赖 / args / 执行失败记为 error 行。
 func (h *InternalToolHandler) writeRunError(w http.ResponseWriter, r *http.Request, op SessionOperator, req internalToolRequest, runErr error) {
 	switch {
 	case errors.Is(runErr, hermesops.ErrToolUnknown):
@@ -404,8 +383,8 @@ func (h *InternalToolHandler) writeRunError(w http.ResponseWriter, r *http.Reque
 		h.recordCall(r, op, req, hermesops.ResultDenied, nil, "role_forbidden")
 		writeInternalToolError(w, http.StatusForbidden, "tool_forbidden")
 	case errors.Is(runErr, hermesops.ErrNotMutating):
-		// The registry's own mutation guard fired (a mutating tool reached Run).
-		// Recorded distinctly so the audit shows the second gate caught it.
+		// registry 自身的 mutation 守卫触发了(一个 mutating 工具到达了 Run)。单独记录,
+		// 使审计显示是第二道闸门抓住了它。
 		h.recordCall(r, op, req, hermesops.ResultDenied, nil, "mutating_tool_rejected")
 		writeInternalToolError(w, http.StatusForbidden, "mutating_tool_forbidden")
 	case errors.Is(runErr, hermesops.ErrInvalidArgs):
@@ -420,10 +399,9 @@ func (h *InternalToolHandler) writeRunError(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// recordCall appends one sanitized hermes_tool_calls row with the operator
-// attribution. Best-effort: a transient audit-write failure is swallowed (the
-// tool result is already computed) — it must not surface the operator's data or
-// block the conversation. The store sanitizes args + summary before insert.
+// recordCall 追加一行带 operator 归属的脱敏 hermes_tool_calls。Best-effort:瞬时的审计写入
+// 失败会被吞掉(工具结果已计算完成)——它不得暴露 operator 的数据或阻塞对话。store 在 insert
+// 之前会对 args + summary 脱敏。
 func (h *InternalToolHandler) recordCall(r *http.Request, op SessionOperator, req internalToolRequest, status hermesops.ResultStatus, summary map[string]any, errorClass string) {
 	h.appendToolCall(r, op, req, status, summary, errorClass, false)
 }

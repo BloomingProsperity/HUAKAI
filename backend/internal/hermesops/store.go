@@ -12,26 +12,25 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
 
-// ErrAuditStoreUnavailable is returned when the tool-call audit store is unwired.
+// ErrAuditStoreUnavailable 在 tool-call 审计 store 未接线时返回。
 var ErrAuditStoreUnavailable = errors.New("hermesops: tool-call audit store unavailable")
 
-// ToolCallInserter is the narrow write surface for the hermes_tool_calls ledger.
-// *hermestoolsdb.Queries satisfies it; the interface keeps the recorder
-// unit-testable with a fake and lets the HTTP layer pass either the pool-backed
-// Queries or a tx-bound one.
+// ToolCallInserter 是 hermes_tool_calls 流水的窄写表面。*hermestoolsdb.Queries 满足它;
+// 该接口让 recorder 可用一个 fake 做单元测试,并让 HTTP 层既能传入由连接池支撑的 Queries、
+// 也能传入受事务约束的那个。
 type ToolCallInserter interface {
 	InsertHermesToolCall(ctx context.Context, arg hermestoolsdb.InsertHermesToolCallParams) (hermestoolsdb.InsertHermesToolCallRow, error)
 }
 
-// ToolCallAudit is the sanitized record of one tool invocation (or denial).
+// ToolCallAudit 是一次工具调用(或拒绝)的已脱敏记录。
 type ToolCallAudit struct {
 	TenantID          int64
 	ActorUserID       int64
-	AdminActorTokenID int64 // 0 => not an admin-mode actor (recorded NULL)
+	AdminActorTokenID int64 // 0 => 非 admin 模式 actor(记录为 NULL)
 	ToolName          string
-	// Args is the RAW request arg map; the recorder sanitizes it before insert.
+	// Args 是 RAW(原始)的请求参数 map;recorder 在 insert 前脱敏它。
 	Args map[string]any
-	// ResultSummary is the tool's structured summary; sanitized before insert.
+	// ResultSummary 是工具的结构化 summary;insert 前脱敏。
 	ResultSummary map[string]any
 	Status        ResultStatus
 	ErrorClass    string
@@ -39,17 +38,15 @@ type ToolCallAudit struct {
 	RequestID     string
 	CalledAt      time.Time
 	ReturnedAt    time.Time
-	// DryRun marks a WAVE H4 mutating-tool PREVIEW row (true) vs a real execution
-	// / read-only row (false). Read-only tools always leave it false.
+	// DryRun 标记一条 WAVE H4 mutating 工具的 PREVIEW(预览)行(true),区别于一条真正执行 /
+	// 只读的行(false)。只读工具始终把它留为 false。
 	DryRun bool
 }
 
-// RecordToolCall sanitizes the args + summary and appends one hermes_tool_calls
-// row. It is the single persistence path: success, error, AND denial all flow
-// through here so every invocation is recorded. Sanitization (hermes.SanitizeArgs)
-// is applied as defense-in-depth even though tools already emit diagnostic-only
-// summaries — a tool that accidentally surfaced a "token"/"secret"/"password"
-// key would still be redacted before it touches the row.
+// RecordToolCall 脱敏 args + summary,并追加一条 hermes_tool_calls 行。它是唯一的持久化路径:
+// 成功、出错 AND(以及)拒绝都流经此处,这样每一次调用都被记录。脱敏(hermes.SanitizeArgs)作为
+// 纵深防御施加,即便工具已经只输出诊断性的 summary——某个工具若意外暴露了 "token"/"secret"/
+// "password" 键,在它触及该行之前仍会被打码。
 func RecordToolCall(ctx context.Context, inserter ToolCallInserter, rec ToolCallAudit) error {
 	if inserter == nil {
 		return ErrAuditStoreUnavailable
@@ -94,8 +91,8 @@ func RecordToolCall(ctx context.Context, inserter ToolCallInserter, rec ToolCall
 	return err
 }
 
-// sanitizedJSON applies the hermes sensitive-key sanitizer then JSON-encodes.
-// A nil/empty map yields nil bytes (persisted as SQL NULL).
+// sanitizedJSON 先施加 hermes 的敏感键 sanitizer,再做 JSON 编码。nil/空 map 产出 nil 字节
+// (持久化为 SQL NULL)。
 func sanitizedJSON(m map[string]any) ([]byte, error) {
 	if len(m) == 0 {
 		return nil, nil

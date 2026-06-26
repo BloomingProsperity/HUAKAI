@@ -21,13 +21,11 @@ type Request struct {
 	RequestID     string
 	CorrelationID string
 	Body          []byte
-	// Operator carries the admin actor that opened the chat (role + admin token
-	// id) so the conversational READ-ONLY tool loop (WAVE H3b) can enforce the
-	// SAME RBAC role floor + tenant scope and record the SAME operator attribution
-	// as the explicit H3 tool-execute endpoint. It is bound to the session's
-	// request_id so the runner's mid-conversation tool callbacks resolve to this
-	// operator. Zero-value (no role / no token id) => the session is not bound and
-	// the conversational tool loop is unavailable for that chat (fail closed).
+	// Operator 携带开启聊天的 admin actor(role + admin token id),使会话式只读工具
+	// 循环(WAVE H3b)能强制执行与显式 H3 tool-execute 端点相同的 RBAC role 下限 +
+	// tenant 范围,并记录相同的 operator 归属。它被绑定到会话的 request_id,使 runner
+	// 在对话中途的工具回调能解析到此 operator。零值(无 role / 无 token id)=> 会话未
+	// 绑定,该聊天无法使用会话式工具循环(fail closed)。
 	Operator SessionOperator
 }
 
@@ -39,9 +37,8 @@ type PreparedRequest struct {
 	ConversationID      int64
 	CreatedConversation bool
 	Body                []byte
-	// BoundOperator is true when PrepareRequest registered a WAVE H3b session
-	// binding for this request_id. The caller (startChat) releases it after the
-	// stream finishes so a binding does not outlive its session.
+	// BoundOperator 为 true 表示 PrepareRequest 已为此 request_id 注册了一个 WAVE H3b
+	// 会话绑定。调用方(startChat)会在流结束后释放它,使绑定不会比其会话存活更久。
 	BoundOperator bool
 }
 
@@ -101,12 +98,10 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 		return PreparedRequest{}, err
 	}
 
-	// WAVE H3b: bind the session operator to this request_id and inject the
-	// read-only tool catalog. Both are gated on a usable operator (role + admin
-	// token id) AND the bindings store being wired — if either is absent the chat
-	// proceeds WITHOUT a tool loop (fail closed: the internal endpoint rejects an
-	// unbound session). The binding's expiry tracks the internal_token's expiry so
-	// the two die together.
+	// WAVE H3b:将会话 operator 绑定到此 request_id 并注入只读工具目录。两者都以一个可用的
+	// operator(role + admin token id)以及已接线的绑定存储为前提——若任一缺失,聊天将在
+	// 没有工具循环的情况下继续(fail closed:内部端点会拒绝未绑定的会话)。绑定的过期时间
+	// 跟随 internal_token 的过期时间,使两者同生共死。
 	boundOperator := false
 	if b.sessionBindings != nil && req.Operator.Role != "" && req.Operator.AdminActorTokenID > 0 {
 		op := req.Operator
@@ -115,10 +110,9 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 		op.ExpiresAt = claims.ExpiresAt
 		b.sessionBindings.Bind(requestID, op)
 		boundOperator = true
-		// Inject the catalog ONLY for a bound (admin) session — the LLM should not
-		// be told about tools it cannot call. KNOB B: when the conversational tool
-		// loop is disabled at runtime, skip injection entirely so the LLM is told
-		// about no tools (the internal tool-execute endpoint is also gated off).
+		// 仅为已绑定的(admin)会话注入目录——不应让 LLM 知道它无法调用的工具。KNOB B:
+		// 当会话式工具循环在运行时被禁用时,完全跳过注入,使 LLM 被告知没有任何工具
+		//(内部 tool-execute 端点同样被闸门关闭)。
 		if b.toolLoopEnabled && b.toolCatalog != nil {
 			catalog := b.toolCatalog.ReadOnlyToolCatalog()
 			if catalog != nil {

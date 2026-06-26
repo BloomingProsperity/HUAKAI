@@ -10,16 +10,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 )
 
-// This file exercises the S2 (c) handler-side per-operator-token rate limiter:
-// it counts only REAL confirmed executes (previews/denials do not), it is keyed
-// per operator TOKEN (not per tenant), and with NO knobs set the whole mutating
-// path is byte-for-byte legacy behavior. The fixed clock makes the window
-// deterministic. Fakes (fakeMutator / mutatingRegistry / mutateCounters /
-// buildMutateHandler / mutateRequest / operator / decodeBody) are reused from
-// tools_mutate_handler_test.go + tools_handler_test.go in this package.
+// 本文件检验 S2 (c) handler 侧的 per-operator-token 限流器:它只对真正已确认的执行
+// 计数(preview/denial 不计),按 operator TOKEN(而非按 tenant)划分 key,且在未设置
+// 任何 knob 时,整个 mutating 路径与旧行为逐字节一致。固定时钟使窗口确定性。fake
+// (fakeMutator / mutatingRegistry / mutateCounters / buildMutateHandler /
+// mutateRequest / operator / decodeBody)复用自本包内的 tools_mutate_handler_test.go
+// + tools_handler_test.go。
 
-// fixedClock returns a Now func that advances only when the test ticks it, so the
-// sliding window does not drift during the test.
+// fixedClock 返回一个 Now 函数,只有当测试推动它时才前进,使滑动窗口在测试期间
+// 不会漂移。
 type fixedClock struct {
 	mu sync.Mutex
 	t  time.Time
@@ -31,16 +30,16 @@ func (c *fixedClock) Now() time.Time {
 	return c.t
 }
 
-// operatorTok builds an operator identity with a specific admin token id so a
-// test can drive two DIFFERENT operator tokens within the SAME tenant.
+// operatorTok 构造一个带指定 admin token id 的 operator 身份,使测试能在同一 tenant
+// 内驱动两个不同的 operator token。
 func operatorTok(tenant, tokenID int64) (sessionauth.Identity, adminActor) {
 	ident, actor := operator(tenant)
 	actor.TokenID = tokenID
 	return ident, actor
 }
 
-// confirmOnce runs a full preview+confirm for account_pause and returns the
-// confirm response recorder.
+// confirmOnce 为 account_pause 跑一整套 preview+confirm,并返回 confirm 的响应
+// recorder。
 func confirmOnce(t *testing.T, h handler, ident sessionauth.Identity, actor adminActor) (status int) {
 	t.Helper()
 	preview := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5}}`)
@@ -52,26 +51,25 @@ func confirmOnce(t *testing.T, h handler, ident sessionauth.Identity, actor admi
 	return confirm.Code
 }
 
-// --- Test 6: per-token rate limit, per-token NOT per-tenant ------------------
+// --- 测试 6:per-token 限流,按 token 而非按 tenant ------------------
 
 func TestS2_RateLimitPerTokenNotPerTenant(t *testing.T) {
-	// Regression (S2 c, DISCRIMINATING): PER_TOKEN=2 with an injected clock. Token A
-	// gets two confirms (both pass) and a third confirm -> 429. Token B (SAME
-	// tenant, different token) gets its FIRST confirm -> passes, proving the budget
-	// is per operator TOKEN, not per tenant.
+	// 回归(S2 c,区分性):注入时钟下 PER_TOKEN=2。Token A 得到两次 confirm
+	// (均通过),第三次 confirm -> 429。Token B(同一 tenant、不同 token)的首次
+	// confirm -> 通过,证明配额按 operator TOKEN 划分,而非按 tenant。
 	//
-	// Mutation check (run + RED confirmed, then restored):
-	//   - key the limiter on tenant id instead of actor.TokenID -> token B's first
-	//     confirm is throttled by token A's budget -> the `bFirst==200` guard RED;
-	//   - delete the limiter check in confirmMutation -> token A's THIRD confirm
-	//     passes (200) -> the `aThird==429` guard RED.
+	// 变异检查(已运行 + 确认变红,随后恢复):
+	//   - 把限流器 key 改用 tenant id 而非 actor.TokenID -> token B 的首次 confirm
+	//     会被 token A 的配额限流 -> `bFirst==200` 防护变红;
+	//   - 删掉 confirmMutation 里的限流检查 -> token A 的第三次 confirm 通过(200)
+	//     -> `aThird==429` 防护变红。
 	clock := &fixedClock{t: time.Unix(1_700_000_000, 0)}
 	c := &mutateCounters{}
 	h := buildMutateHandler(mutatingRegistry(c), &fakeToolCalls{}, &fakeMutator{})
 	h.mutateRateLimiter = mutateguard.NewRateLimiter(2, time.Minute, 0, clock.Now)
 
 	identA, actorA := operatorTok(7, 1001)
-	identB, actorB := operatorTok(7, 2002) // same tenant 7, different token
+	identB, actorB := operatorTok(7, 2002) // 同一 tenant 7,不同 token
 
 	if s := confirmOnce(t, h, identA, actorA); s != http.StatusOK {
 		t.Fatalf("token A confirm #1 status=%d want 200", s)
@@ -89,18 +87,17 @@ func TestS2_RateLimitPerTokenNotPerTenant(t *testing.T) {
 	}
 }
 
-// --- Test 7: rate limit counts only real executes, not previews -------------
+// --- 测试 7:限流只对真实执行计数,不对 preview 计数 -------------
 
 func TestS2_RateLimitCountsOnlyConfirmedNotPreviews(t *testing.T) {
-	// Regression (S2 c, DISCRIMINATING): with PER_TOKEN=2, five dry-run PREVIEWS
-	// must NOT burn budget; the two subsequent CONFIRMS both pass. The limiter is
-	// checked AFTER the confirm-id consume, so previews never reach it.
+	// 回归(S2 c,区分性):PER_TOKEN=2 时,五次 dry-run PREVIEW 不得消耗配额;
+	// 随后两次 CONFIRM 均通过。限流器在 confirm-id 消费之后才检查,因此 preview 永远
+	// 到不了它。
 	//
-	// Mutation check (run + RED confirmed, then restored): move the limiter check
-	// ABOVE the `if !req.Confirm { previewMutation } ` branch (e.g. into
-	// executeMutatingTool before the confirm split, or before the consume) so
-	// previews burn budget; then 5 previews exhaust the budget of 2 and the first
-	// confirm returns 429 -> the `c1==200` guard goes RED.
+	// 变异检查(已运行 + 确认变红,随后恢复):把限流检查上移到
+	// `if !req.Confirm { previewMutation }` 分支之上(例如移到 executeMutatingTool
+	// 里 confirm 分流之前,或消费之前),使 preview 也消耗配额;于是 5 次 preview
+	// 耗尽 2 的配额,首次 confirm 返回 429 -> `c1==200` 防护变红。
 	clock := &fixedClock{t: time.Unix(1_700_000_000, 0)}
 	c := &mutateCounters{}
 	h := buildMutateHandler(mutatingRegistry(c), &fakeToolCalls{}, &fakeMutator{})
@@ -108,7 +105,7 @@ func TestS2_RateLimitCountsOnlyConfirmedNotPreviews(t *testing.T) {
 
 	ident, actor := operatorTok(7, 3003)
 
-	// 5 previews (dry-run, confirm=false) — these must NOT count.
+	// 5 次 preview(dry-run、confirm=false)——这些不得计数。
 	for i := 0; i < 5; i++ {
 		preview := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5}}`)
 		if preview.Code != http.StatusOK || decodeBody(t, preview)["dry_run"] != true {
@@ -124,28 +121,25 @@ func TestS2_RateLimitCountsOnlyConfirmedNotPreviews(t *testing.T) {
 	}
 }
 
-// --- Test 8: all knobs unset == byte-for-byte legacy behavior ----------------
+// --- 测试 8:所有 knob 未设置 == 与旧行为逐字节一致 ----------------
 
 func TestS2_AllKnobsUnsetIsLegacyBehavior(t *testing.T) {
-	// Regression (S2, DEFAULT-CONSERVATIVE / DISCRIMINATING): with NO guard wired —
-	// handler built by buildMutateHandler (no rate limiter) over an orchestrator
-	// with NO concurrency cap, NO tx deadline — the mutating path behaves exactly
-	// like the legacy path: many confirms in a row all succeed (no 429 busy / no
-	// rate-limit rejection), and no SET LOCAL statement_timeout is issued.
+	// 回归(S2,默认保守 / 区分性):在未接入任何 guard 时——由 buildMutateHandler
+	// 构造的 handler(无限流器)、其下的 orchestrator 无并发上限、无 tx deadline——
+	// mutating 路径表现与旧路径完全一致:接连多次 confirm 全部成功(没有 429 busy /
+	// 没有限流拒绝),也不发出任何 SET LOCAL statement_timeout。
 	//
-	// Mutation check (run + RED confirmed, then restored): make any guard's default
-	// non-disable when its sentinel is unset — e.g. have NewMutateOrchestrator
-	// default txDeadline to 90s even with no WithTxDeadline option, or have
-	// NewRateLimiter treat limit<=0 as "default 30" instead of disabled. Then a
-	// legacy deployment starts issuing statement_timeout / 429s and these
-	// all-success guards go RED.
+	// 变异检查(已运行 + 确认变红,随后恢复):让任何 guard 在其哨兵未设置时默认变成
+	// 「非禁用」——例如让 NewMutateOrchestrator 即便没有 WithTxDeadline 选项也默认把
+	// txDeadline 设为 90s,或让 NewRateLimiter 把 limit<=0 当作「默认 30」而非禁用。
+	// 那样一来,旧部署就会开始发出 statement_timeout / 429,这些「全成功」防护即变红。
 
-	// Handler with no rate limiter -> no 429 across many confirms; the
-	// orchestrator's own legacy behavior (no statement_timeout, no ErrMutateBusy
-	// with no options) is proven in internal/hermesops/mutate_guard_test.go.
+	// 无限流器的 handler -> 多次 confirm 都不会出现 429;orchestrator 自身的旧行为
+	// (无选项时无 statement_timeout、无 ErrMutateBusy)在
+	// internal/hermesops/mutate_guard_test.go 中证明。
 	c := &mutateCounters{}
 	h := buildMutateHandler(mutatingRegistry(c), &fakeToolCalls{}, &fakeMutator{})
-	// h.mutateRateLimiter left nil (disabled sentinel).
+	// h.mutateRateLimiter 保持 nil(禁用哨兵)。
 	ident, actor := operator(7)
 	for i := 0; i < 20; i++ {
 		if s := confirmOnce(t, h, ident, actor); s != http.StatusOK {

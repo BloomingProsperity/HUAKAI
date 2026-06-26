@@ -19,9 +19,8 @@ const toolTestSecret = "internal-tool-secret-32-bytes-minimum-x"
 
 var toolTestClock = time.Unix(1700000000, 0).UTC
 
-// fakeRunner records which tool ran with which tenant, and classifies a name as
-// mutating via its mutating set. It mirrors *hermesops.Registry's read-only
-// dispatch contract for the handler.
+// fakeRunner 记录哪个工具以哪个租户运行,并通过它的 mutating 集合把某个名字归类为 mutating。
+// 它为 handler 镜像 *hermesops.Registry 的只读 dispatch 契约。
 type fakeRunner struct {
 	mutating map[string]bool
 	ranTool  string
@@ -31,15 +30,14 @@ type fakeRunner struct {
 }
 
 func (f *fakeRunner) Get(name string) (hermesops.ToolSpec, bool) {
-	// Model the real registry faithfully: a non-mutating tool is ReadOnly=true,
-	// a mutating tool is ReadOnly=false. The handler's read-only filter requires
-	// ReadOnly && !Mutating, so the fake must set ReadOnly to exercise it.
+	// 忠实地模拟真实 registry:非 mutating 工具 ReadOnly=true,mutating 工具 ReadOnly=false。
+	// handler 的只读过滤要求 ReadOnly && !Mutating,故此 fake 必须设置 ReadOnly 才能跑到该逻辑。
 	mutating := f.mutating[name]
 	return hermesops.ToolSpec{Name: name, Mutating: mutating, ReadOnly: !mutating}, true
 }
 
 func (f *fakeRunner) Run(_ context.Context, name string, req hermesops.ToolRequest) (hermesops.ToolResult, error) {
-	// Mirror the registry's own mutation guard so the test exercises BOTH gates.
+	// 镜像 registry 自身的 mutation 守卫,使测试同时跑到两道闸门。
 	if f.mutating[name] {
 		return hermesops.ToolResult{}, hermesops.ErrNotMutating
 	}
@@ -53,7 +51,7 @@ func (f *fakeRunner) Run(_ context.Context, name string, req hermesops.ToolReque
 
 func (f *fakeRunner) ReadOnlyCatalog() []hermesops.CatalogTool { return nil }
 
-// recordingInserter captures the persisted tool-call row.
+// recordingInserter 捕获被持久化的 tool-call 行。
 type recordingInserter struct {
 	rows []hermestoolsdb.InsertHermesToolCallParams
 }
@@ -71,8 +69,8 @@ func newToolHandler(t *testing.T, runner ReadOnlyToolRunner, inserter hermesops.
 	return NewInternalToolHandler([]byte(toolTestSecret), bindings, runner, inserter, toolTestClock, true, nil, nil, false)
 }
 
-// signSessionToken mints an internal_token for (tenant,user,requestID) matching
-// the handler's secret + clock, and binds the operator to it.
+// bindSession 为 (tenant,user,requestID) 铸造一个与 handler 的 secret + 时钟匹配的
+// internal_token,并把 operator 绑定到它。
 func bindSession(t *testing.T, b *SessionBindings, tenantID, userID, adminTokenID int64, role, requestID string) string {
 	t.Helper()
 	exp := toolTestClock().Add(InternalTokenTTL)
@@ -98,12 +96,10 @@ func toolRequest(token, toolName string, args map[string]any) *http.Request {
 }
 
 func TestInternalToolHandlerRejectsMutatingTool(t *testing.T) {
-	// Regression (SAFETY, the headline guard): a mutating tool name submitted
-	// through the conversational/internal path MUST be rejected — the LLM can never
-	// invoke account_pause / dlq_replay / renew_trigger. Mutation: if the read-only
-	// filter (and the Run ErrNotMutating guard) are dropped, this goes RED because
-	// the mutating tool would dispatch and return 200. We assert 403 + a denied
-	// audit row + that the tool body never ran.
+	// 回归(安全,头牌守卫):经会话/内部路径提交的 mutating 工具名必须被拒绝——LLM 绝不能
+	// 调用 account_pause / dlq_replay / renew_trigger。变异:若去掉只读过滤(以及 Run 的
+	// ErrNotMutating 守卫),这会变红,因为 mutating 工具会被 dispatch 并返回 200。我们断言
+	// 403 + 一条 denied 审计行 + 工具主体从未运行。
 	bindings := NewSessionBindings(toolTestClock)
 	runner := &fakeRunner{mutating: map[string]bool{"account_pause": true}}
 	ins := &recordingInserter{}
@@ -128,21 +124,17 @@ func TestInternalToolHandlerRejectsMutatingTool(t *testing.T) {
 }
 
 func TestInternalToolHandlerPinsSessionTenantScope(t *testing.T) {
-	// Regression (SAFETY): a conversational tool call MUST run with the SESSION's
-	// tenant — the runner cannot name a tenant. Mutation: if the handler read a
-	// tenant from the request body instead of the bound session, a cross-tenant
-	// read would be possible. We bind tenant 7 and assert the dispatched
-	// ToolRequest.TenantID is 7 regardless of any body content (the body has no
-	// tenant field, and even an injected one is ignored). The fixture is
-	// discriminating: tenant 7 != a hardcoded 0/other.
+	// 回归(安全):会话式工具调用必须以会话的 tenant 运行——runner 无法指定 tenant。变异:
+	// 若 handler 从请求体而非已绑定会话读取 tenant,就可能发生跨 tenant 读取。我们绑定 tenant 7,
+	// 并断言无论 body 内容如何,被 dispatch 的 ToolRequest.TenantID 都是 7(body 没有 tenant
+	// 字段,即便注入一个也会被忽略)。该夹具具有判别性:tenant 7 != 硬编码的 0/其它值。
 	bindings := NewSessionBindings(toolTestClock)
 	runner := &fakeRunner{result: hermesops.ToolResult{Summary: map[string]any{"event_count": 2}}}
 	ins := &recordingInserter{}
 	h := newToolHandler(t, runner, ins, bindings)
 	token := bindSession(t, bindings, 7, 42, 99, "tenant_operator", "req-scope")
 
-	// Attempt to smuggle a foreign tenant in args — it must be ignored; the tool
-	// always runs against the bound tenant 7.
+	// 尝试在 args 里夹带一个外部 tenant——它必须被忽略;工具始终针对已绑定的 tenant 7 运行。
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, toolRequest(token, "audit_lookup", map[string]any{"tenant_id": 999}))
 
@@ -158,23 +150,21 @@ func TestInternalToolHandlerPinsSessionTenantScope(t *testing.T) {
 }
 
 func TestInternalToolHandlerRejectsTokenSessionTenantMismatch(t *testing.T) {
-	// Regression (SAFETY): a valid token for session A's (tenant,user) must not be
-	// usable to drive a binding registered for a DIFFERENT (tenant,user). Mutation:
-	// if the token<->binding identity-consistency check is removed, a token minted
-	// for tenant 8 could pair with a tenant-7 binding under the same request_id. We
-	// bind tenant 7 but present a token signed for tenant 8 on the same request_id
-	// and assert 401 + no dispatch.
+	// 回归(安全):会话 A 的 (tenant,user) 的有效 token 不得用于驱动为不同 (tenant,user)
+	// 注册的绑定。变异:若去掉 token<->绑定 的身份一致性检查,为 tenant 8 铸造的 token 就能
+	// 在同一 request_id 下配上 tenant 7 的绑定。我们绑定 tenant 7,却在同一 request_id 上出示
+	// 一个为 tenant 8 签名的 token,并断言 401 + 不 dispatch。
 	bindings := NewSessionBindings(toolTestClock)
 	runner := &fakeRunner{}
 	ins := &recordingInserter{}
 	h := newToolHandler(t, runner, ins, bindings)
 
-	// Bind operator for tenant 7 under request id "req-x".
+	// 在 request id "req-x" 下为 tenant 7 绑定 operator。
 	bindings.Bind("req-x", SessionOperator{
 		TenantID: 7, ActorUserID: 42, AdminActorTokenID: 99, Role: "platform_admin",
 		ExpiresAt: toolTestClock().Add(InternalTokenTTL),
 	})
-	// But mint a token for tenant 8 / user 50 on the SAME request id.
+	// 但在同一 request id 上为 tenant 8 / user 50 铸造一个 token。
 	mismatchToken, err := SignInternalToken([]byte(toolTestSecret), InternalTokenClaims{
 		TenantID: 8, UserID: 50, RequestID: "req-x", ExpiresAt: toolTestClock().Add(InternalTokenTTL),
 	})
@@ -194,11 +184,10 @@ func TestInternalToolHandlerRejectsTokenSessionTenantMismatch(t *testing.T) {
 }
 
 func TestInternalToolHandlerReadOnlySuccessRecordsOperatorAttribution(t *testing.T) {
-	// Regression: a read-only tool call returns the sanitized summary AND records a
-	// hermes_tool_calls row carrying the operator attribution (admin_actor_token_id)
-	// + the session tenant/actor. Mutation: if recordCall drops the operator token
-	// id, the audit trail loses operator attribution. We assert the row's
-	// AdminActorTokenID == 99 and status == ok.
+	// 回归:只读工具调用返回脱敏后的 summary,并记录一行携带 operator 归属
+	//(admin_actor_token_id)+ 会话 tenant/actor 的 hermes_tool_calls。变异:若 recordCall
+	// 丢掉 operator token id,审计轨迹就失去 operator 归属。我们断言该行的 AdminActorTokenID == 99
+	// 且 status == ok。
 	bindings := NewSessionBindings(toolTestClock)
 	runner := &fakeRunner{result: hermesops.ToolResult{Summary: map[string]any{"event_count": 4}, ErrorClass: ""}}
 	ins := &recordingInserter{}
@@ -234,11 +223,10 @@ func TestInternalToolHandlerReadOnlySuccessRecordsOperatorAttribution(t *testing
 }
 
 func TestInternalToolHandlerRejectsUnboundSession(t *testing.T) {
-	// Regression (FAIL-CLOSED): a valid internal_token whose request_id has NO
-	// operator binding must be rejected — a tool can never run without a resolved
-	// operator. Mutation: if Lookup's miss were treated as "allow", an unbound
-	// session could run tools with no role/scope. We present a correctly-signed
-	// token but never call Bind, and assert 401 + no dispatch.
+	// 回归(FAIL-CLOSED):一个有效的 internal_token,若其 request_id 没有 operator 绑定,
+	// 必须被拒绝——工具绝不能在缺少已解析 operator 的情况下运行。变异:若把 Lookup 的未命中
+	// 当作"允许",未绑定的会话就能在无 role/范围 的情况下运行工具。我们出示一个正确签名的
+	// token 但从不调用 Bind,并断言 401 + 不 dispatch。
 	bindings := NewSessionBindings(toolTestClock)
 	runner := &fakeRunner{}
 	h := newToolHandler(t, runner, &recordingInserter{}, bindings)
@@ -261,10 +249,9 @@ func TestInternalToolHandlerRejectsUnboundSession(t *testing.T) {
 }
 
 func TestInternalToolHandlerRejectsInvalidToken(t *testing.T) {
-	// Regression: an invalid/forged internal_token must be rejected before any
-	// binding lookup or dispatch. Mutation: if VerifyInternalToken's result is not
-	// checked, a forged token would authorize. We tamper the signature and assert
-	// 401 + no dispatch.
+	// 回归:一个无效/伪造的 internal_token 必须在任何绑定 lookup 或 dispatch 之前被拒绝。
+	// 变异:若不检查 VerifyInternalToken 的结果,伪造的 token 就能通过授权。我们篡改签名并
+	// 断言 401 + 不 dispatch。
 	bindings := NewSessionBindings(toolTestClock)
 	runner := &fakeRunner{}
 	h := newToolHandler(t, runner, &recordingInserter{}, bindings)
@@ -292,18 +279,16 @@ func flipLast(s string) string {
 	return "0"
 }
 
-// --- KNOB B: HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED runtime kill-switch ----------
+// --- KNOB B:HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED 运行时 kill-switch -----------
 
 func TestKnobB_ToolLoopDisabledRefusesEveryCall403(t *testing.T) {
-	// Defect this catches: if the runtime tool-loop kill-switch were not enforced
-	// in the runner callback, the LLM conversational tool loop would stay reachable
-	// while HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED=false. With the switch off, a fully
-	// valid bound session + valid token + READ-ONLY tool must be refused 403
-	// llm_toolloop_disabled, before any token inspection or dispatch.
+	// 本测试捕获的缺陷:若运行时 tool-loop kill-switch 没有在 runner 回调中被强制执行,那么
+	// 在 HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED=false 时,LLM 会话式工具循环仍可触达。在开关关闭
+	// 时,一个完全有效的绑定会话 + 有效 token + 只读工具,必须在任何 token 检查或 dispatch
+	// 之前就被拒 403 llm_toolloop_disabled。
 	//
-	// Mutation check (run + RED confirmed): delete the `if !h.toolLoopEnabled { ...
-	// return }` early-return in ServeHTTP and this call returns 200 (the tool
-	// dispatches) — the 403 + no-dispatch assertions go RED.
+	// 变异检查(已跑且确认变红):删除 ServeHTTP 里 `if !h.toolLoopEnabled { ... return }`
+	// 的早返回,这个调用就会返回 200(工具被 dispatch)——403 + 不 dispatch 的断言随之变红。
 	bindings := NewSessionBindings(toolTestClock)
 	runner := &fakeRunner{result: hermesops.ToolResult{Summary: map[string]any{"event_count": 1}}}
 	ins := &recordingInserter{}
@@ -323,18 +308,16 @@ func TestKnobB_ToolLoopDisabledRefusesEveryCall403(t *testing.T) {
 	if runner.ranTool != "" {
 		t.Fatalf("tool ran despite tool loop disabled (ran=%q)", runner.ranTool)
 	}
-	// No audit row for a policy-refused-by-kill-switch call (it short-circuits
-	// before operator resolution / dispatch).
+	// 被 kill-switch 按策略拒绝的调用不写审计行(它在 operator 解析 / dispatch 之前就短路了)。
 	if len(ins.rows) != 0 {
 		t.Fatalf("disabled tool loop recorded %d rows, want 0", len(ins.rows))
 	}
 }
 
 func TestKnobB_ToolLoopEnabledByDefaultStillDispatches(t *testing.T) {
-	// Positive control: with KNOB B enabled (toolLoopEnabled=true) the SAME bound
-	// session + token + read-only tool dispatches 200. This proves the 403 above is
-	// caused by the kill-switch, not a broken token/binding, and that the default
-	// (enabled) is zero behavior change.
+	// 阳性对照:在 KNOB B 启用(toolLoopEnabled=true)时,同样的绑定会话 + token + 只读工具
+	// 会 dispatch 并返回 200。这证明上面的 403 是由 kill-switch 引起的,而非 token/绑定 损坏,
+	// 并且默认值(启用)是零行为变。
 	bindings := NewSessionBindings(toolTestClock)
 	runner := &fakeRunner{result: hermesops.ToolResult{Summary: map[string]any{"event_count": 1}}}
 	h := NewInternalToolHandler([]byte(toolTestSecret), bindings, runner, &recordingInserter{}, toolTestClock, true, nil, nil, false)

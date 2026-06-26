@@ -14,7 +14,7 @@ import (
 )
 
 func TestListConversationsByOwnerPassesTenantOwnerAndPagination(t *testing.T) {
-	// Regression: conversation list must be tenant+owner scoped; removing either filter leaks another user's history.
+	// 回归守护:会话列表必须按 tenant+owner 限定范围;去掉任一过滤条件都会泄露其他用户的历史记录。
 	store := &hermesStoreSpy{
 		listConversationsRows: []dbhermes.HermesConversation{{
 			ID: 101, TenantID: 7, OwnerUserID: 42, Title: stringPtrForTest("own"),
@@ -28,7 +28,7 @@ func TestListConversationsByOwnerPassesTenantOwnerAndPagination(t *testing.T) {
 		t.Fatalf("ListConversationsByOwner: %v", err)
 	}
 
-	// Mutation check: zeroing OwnerUserID or TenantID, or ignoring pagination, makes this assertion fail.
+	// 变异检测:将 OwnerUserID 或 TenantID 置零,或忽略分页,都会使此断言失败。
 	if !store.listConversationsCalled ||
 		store.listConversationsArg.TenantID != 7 ||
 		store.listConversationsArg.OwnerUserID != 42 ||
@@ -73,7 +73,7 @@ func TestGetConversationRejectsCrossOwnerAndReportsDeleted(t *testing.T) {
 
 			_, err := service.GetConversation(context.Background(), 7, tc.row.ID, 42)
 
-			// Mutation check: removing the owner or deleted_at guard returns nil and fails this assertion.
+			// 变异检测:去掉 owner 或 deleted_at 守卫会返回 nil 并使此断言失败。
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err=%v want %v", err, tc.wantErr)
 			}
@@ -82,7 +82,7 @@ func TestGetConversationRejectsCrossOwnerAndReportsDeleted(t *testing.T) {
 }
 
 func TestListMessagesByConversationRejectsCrossOwnerBeforeListing(t *testing.T) {
-	// Regression: message history must not return an empty 200 for a foreign conversation id; it must be non-enumerating 404.
+	// 回归守护:对他人拥有的 conversation id,消息历史不能返回空的 200;必须是不可枚举的 404。
 	store := &hermesStoreSpy{conversationRow: dbhermes.HermesConversation{
 		ID: 301, TenantID: 7, OwnerUserID: 99,
 		CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
@@ -91,7 +91,7 @@ func TestListMessagesByConversationRejectsCrossOwnerBeforeListing(t *testing.T) 
 
 	_, err := service.ListMessagesByConversation(context.Background(), 7, 301, 42, 50, 0)
 
-	// Mutation check: calling ListMessagesByConversation without first validating owner will set listMessagesCalled and return nil.
+	// 变异检测:未先校验 owner 就调用 ListMessagesByConversation 会置 listMessagesCalled 为 true 并返回 nil。
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err=%v want ErrNotFound", err)
 	}
@@ -101,7 +101,7 @@ func TestListMessagesByConversationRejectsCrossOwnerBeforeListing(t *testing.T) 
 }
 
 func TestListMessagesByConversationPassesOwnerToStore(t *testing.T) {
-	// Regression: the SQLC call must receive owner_user_id so the join can enforce ownership.
+	// 回归守护:SQLC 调用必须接收 owner_user_id,这样 join 才能强制校验归属权。
 	store := &hermesStoreSpy{
 		conversationRow: dbhermes.HermesConversation{
 			ID: 302, TenantID: 7, OwnerUserID: 42,
@@ -119,7 +119,7 @@ func TestListMessagesByConversationPassesOwnerToStore(t *testing.T) {
 		t.Fatalf("ListMessagesByConversation: %v", err)
 	}
 
-	// Mutation check: dropping OwnerUserID from params makes this assertion fail even if tenant/conversation still match.
+	// 变异检测:即便 tenant/conversation 仍匹配,从参数中丢掉 OwnerUserID 也会使此断言失败。
 	if !store.listMessagesCalled ||
 		store.listMessagesArg.TenantID != 7 ||
 		store.listMessagesArg.ConversationID != 302 ||
@@ -135,7 +135,7 @@ func TestListMessagesByConversationPassesOwnerToStore(t *testing.T) {
 }
 
 func TestListMessagesByConversationDecryptsCiphertextAndKeepsLegacyPlaintext(t *testing.T) {
-	// Regression: new Hermes rows must read from encrypted content, while pre-0091 plaintext rows remain readable until retention purges them.
+	// 回归守护:新的 Hermes 记录必须从加密内容读取,而 0091 之前的明文记录在保留期清理掉之前仍保持可读。
 	keys := mustHermesContentKeys(t)
 	encryptedPlain := []byte(`{"type":"text","text":"HERMES_READ_SENTINEL_from_ciphertext"}`)
 	ciphertext, err := EncodeMessageContent(context.Background(), keys, 7, 302, encryptedPlain)
@@ -176,7 +176,7 @@ func TestListMessagesByConversationDecryptsCiphertextAndKeepsLegacyPlaintext(t *
 	if string(got[1].Content) != `{"type":"text","text":"legacy plaintext still readable"}` {
 		t.Fatalf("legacy row content=%s", string(got[1].Content))
 	}
-	// Mutation check: if messageFromRow ignores content_ciphertext, row 401 returns the placeholder instead of encryptedPlain.
+	// 变异检测:若 messageFromRow 忽略 content_ciphertext,row 401 会返回占位符而非 encryptedPlain。
 	if string(got[0].Content) == EncryptedMessageContentPlaceholder {
 		t.Fatalf("encrypted row leaked placeholder instead of decrypted content")
 	}
@@ -216,7 +216,7 @@ func TestSoftDeleteConversationWithAuditIsAtomicAndIdempotent(t *testing.T) {
 				t.Fatalf("SoftDeleteConversationWithAudit: %v", err)
 			}
 
-			// Mutation check: moving audit outside withTx or skipping it on second delete breaks tx/audit assertions.
+			// 变异检测:把审计移出 withTx,或在第二次删除时跳过它,都会破坏 tx/audit 断言。
 			if tx.calls != 1 || !tx.committed {
 				t.Fatalf("tx calls=%d committed=%v want one committed transaction", tx.calls, tx.committed)
 			}
@@ -250,7 +250,7 @@ func TestSoftDeleteConversationWithAuditRejectsCrossOwnerBeforeDelete(t *testing
 		Action: ActionConversationDelete,
 	})
 
-	// Mutation check: deleting before owner check would set softDeleteCalled and auditCalled for a foreign row.
+	// 变异检测:在 owner 检查之前就删除,会对他人拥有的记录置 softDeleteCalled 和 auditCalled 为 true。
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err=%v want ErrNotFound", err)
 	}
@@ -263,7 +263,7 @@ func TestSoftDeleteConversationWithAuditRejectsCrossOwnerBeforeDelete(t *testing
 }
 
 func TestActionConversationDeleteIsValidAuditAction(t *testing.T) {
-	// Regression: DB CHECK migration and local whitelist must both accept conversation delete audit rows.
+	// 回归守护:DB CHECK 迁移和本地白名单都必须接受会话删除审计记录。
 	store := &hermesStoreSpy{}
 	service := NewService(store)
 

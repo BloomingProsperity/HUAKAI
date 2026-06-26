@@ -26,13 +26,13 @@ func newBoundedTestRunner(t *testing.T, url string, httpClient *http.Client) *Ru
 	return c
 }
 
-// TestRunnerClient_DefaultEgressIsBounded proves the production fallback is the
-// bounded client, NOT http.DefaultClient: a Transport with connect/TLS/
-// response-header timeouts and crucially NO total Client.Timeout (which would
-// truncate the SSE stream). MUTATION: revert the NewRunnerClient fallback to
-// http.DefaultClient -> Transport is nil / Timeout assertions fail -> RED.
+// TestRunnerClient_DefaultEgressIsBounded 证明生产中的回退是
+// 有界 client,而非 http.DefaultClient:一个带有连接/TLS/
+// 响应头超时,并且关键在于不设总 Client.Timeout(它会
+// 截断 SSE 流)的 Transport。变异:把 NewRunnerClient 的回退改回
+// http.DefaultClient -> Transport 为 nil / Timeout 断言失败 -> 变红。
 func TestRunnerClient_DefaultEgressIsBounded(t *testing.T) {
-	c := newBoundedTestRunner(t, "http://runner.local", nil) // no injected client -> fallback
+	c := newBoundedTestRunner(t, "http://runner.local", nil) // 不注入 client -> 走回退
 
 	if c.httpClient == http.DefaultClient {
 		t.Fatal("runner egress must not fall back to the unbounded http.DefaultClient")
@@ -52,23 +52,23 @@ func TestRunnerClient_DefaultEgressIsBounded(t *testing.T) {
 	}
 }
 
-// TestRunnerClient_ResponseHeaderTimeoutFiresOnHungRunner is the self-proving
-// behavioral test: against a runner that accepts the connection but stalls
-// before sending response headers, the BOUNDED client must fail fast (at its
-// response-header timeout) while the UNBOUNDED http.DefaultClient would wait for
-// the full stall. Proves the timeout actually protects the shared resources.
-// MUTATION: drop ResponseHeaderTimeout (use DefaultClient) -> the bounded branch
-// also waits the full stall -> the "fast" assertion fails -> RED.
+// TestRunnerClient_ResponseHeaderTimeoutFiresOnHungRunner 是自证式的
+// 行为测试:面对一个接受连接但在
+// 发送响应头之前卡住的 runner,有界 client 必须快速失败(在其
+// 响应头超时处),而无界的 http.DefaultClient 则会等满
+// 整个卡顿时间。证明该超时确实在保护共享资源。
+// 变异:去掉 ResponseHeaderTimeout(用 DefaultClient)-> 有界分支
+// 也会等满整个卡顿时间 -> “快速失败”断言失败 -> 变红。
 func TestRunnerClient_ResponseHeaderTimeoutFiresOnHungRunner(t *testing.T) {
 	const stall = 600 * time.Millisecond
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(stall) // hang before writing any response header
+		time.Sleep(stall) // 在写出任何响应头之前挂起
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
-	// Bounded client with a tiny response-header timeout (proves the mechanism
-	// deterministically without waiting the real 50s production bound).
+	// 一个带极小响应头超时的有界 client(无需等待真实的 50s 生产边界,
+	// 即可确定性地证明该机制)。
 	bounded := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 50 * time.Millisecond}}
 	c := newBoundedTestRunner(t, srv.URL, bounded)
 
@@ -88,9 +88,9 @@ func TestRunnerClient_ResponseHeaderTimeoutFiresOnHungRunner(t *testing.T) {
 		t.Fatalf("bounded client must fail FAST (<%v), took %v", stall, elapsed)
 	}
 
-	// Control (self-proving): the unbounded DefaultClient would NOT fail fast —
-	// it waits out the stall and gets a 200. This is exactly the brown-out
-	// behavior the bounded client removes.
+	// 对照组(自证):无界的 DefaultClient 不会快速失败——
+	// 它会等满卡顿时间然后拿到 200。这正是有界 client
+	// 所消除的资源拖垮(brown-out)行为。
 	ctrl := newBoundedTestRunner(t, srv.URL, http.DefaultClient)
 	cstart := time.Now()
 	cresp, cerr := ctrl.Chat(context.Background(), 1, 1, []byte(`{}`))

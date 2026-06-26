@@ -14,16 +14,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 )
 
-// This file exercises the S2 orchestrator guards: the concurrency semaphore
-// (acquired BEFORE BeginTx) and the tx deadline (client ctx + own-tx UNCERTAIN
-// classification). The handler-side per-token rate limiter lives in
-// internal/hermeshttp. Fakes (fakeBeginner / fakeMutateTx / txRecorder / errRow)
-// are reused from mutate_tx_test.go in this package.
+// 本文件演练 S2 orchestrator 的 guard:并发 semaphore(在 BeginTx BEFORE(之前)获取)与 tx
+// 截止(客户端 ctx + own-tx 的 UNCERTAIN 分类)。handler 侧的每 token 限流器位于
+// internal/hermeshttp。各 fake(fakeBeginner / fakeMutateTx / txRecorder / errRow)复用自本包
+// 的 mutate_tx_test.go。
 
-// statementTimeoutTx wraps the package fake tx and records whether a
-// `SET LOCAL statement_timeout` Exec was issued (so a legacy/disabled test can
-// prove it was NOT) and the millis value (so the deadline test can prove the cap
-// equals the tx deadline).
+// statementTimeoutTx 包裹本包的 fake tx,记录是否发出过 `SET LOCAL statement_timeout` 的 Exec
+// (这样 legacy/disabled 测试就能证明它 NOT(没有)发出)以及 millis 值(这样截止测试就能证明该上限
+// 等于 tx 截止)。
 type statementTimeoutTx struct {
 	*fakeMutateTx
 	setStatementTimeout bool
@@ -46,8 +44,8 @@ func (tx *statementTimeoutTx) Exec(ctx context.Context, sql string, args ...any)
 	return tx.fakeMutateTx.Exec(ctx, sql, args...)
 }
 
-// statementTimeoutBeginner hands out a statementTimeoutTx so a single test can
-// inspect the SET LOCAL behavior of the one tx it opened.
+// statementTimeoutBeginner 交出一个 statementTimeoutTx,这样单个测试就能检视它所开的那一个 tx
+// 的 SET LOCAL 行为。
 type statementTimeoutBeginner struct {
 	rec *txRecorder
 	tx  *statementTimeoutTx
@@ -58,22 +56,20 @@ func (b *statementTimeoutBeginner) BeginTx(context.Context, pgx.TxOptions) (pgx.
 	return b.tx, nil
 }
 
-// --- Test 1: semaphore caps concurrency below N -----------------------------
+// --- 测试 1:semaphore 把并发上限压在 N 之下 -----------------------------
 
 func TestS2_SemaphoreCapsConcurrencyBelowN(t *testing.T) {
-	// Regression (S2 a): with a concurrency cap of N, at most N mutations may reach
-	// BeginTx at once; the extras get ErrMutateBusy after the bounded acquire wait
-	// rather than all piling onto the pool. The mutate() callback blocks on a
-	// release channel so the first N hold their slot while the extras try to enter.
+	// 回归(S2 a):并发上限为 N 时,同时最多有 N 个 mutation 能到达 BeginTx;多出来的那些会在有界的
+	// 获取等待之后拿到 ErrMutateBusy,而非全部压向连接池。mutate() 回调阻塞在一个 release 通道上,
+	// 这样前 N 个就在持有各自槽位的同时,让多余的去尝试进入。
 	//
-	// Mutation check (run + RED confirmed, then restored): remove the
-	// sem.Acquire-before-BeginTx call in Execute and ALL N+2 reach BeginTx (no
-	// ErrMutateBusy), so the `busy == 2` / `beginsWhileBlocked <= N` guards go RED.
+	// 变异检查(已运行 + 确认变红,随后还原):移除 Execute 中 sem.Acquire-before-BeginTx 的调用,
+	// 全部 N+2 都会到达 BeginTx(没有 ErrMutateBusy),于是 `busy == 2` / `beginsWhileBlocked <= N`
+	// 的断言变红。
 	const N = 3
 	const extra = 2
-	// Each concurrent Execute gets its OWN tx recorder (countingBeginner mints a
-	// fresh one per BeginTx) so the only shared state is the atomic begin counter —
-	// no fixture data race under -race.
+	// 每个并发的 Execute 都拿到自己 OWN(独立)的 tx recorder(countingBeginner 每次 BeginTx 新铸
+	// 一个),这样唯一的共享状态就是那个原子的 begin 计数器——在 -race 下无 fixture 数据竞争。
 	beginner := &countingBeginner{}
 	sem := mutateguard.NewSemaphore(N)
 	o := NewMutateOrchestrator(beginner,
@@ -90,7 +86,7 @@ func TestS2_SemaphoreCapsConcurrencyBelowN(t *testing.T) {
 			defer wg.Done()
 			_, err := o.Execute(context.Background(), "lock", baseRecord(), func(context.Context, pgx.Tx) (ToolResult, error) {
 				entered <- struct{}{}
-				<-release // hold the slot until the test releases everyone
+				<-release // 持有该槽位,直到测试放行所有人
 				return ToolResult{}, nil
 			})
 			if errors.Is(err, ErrMutateBusy) {
@@ -99,8 +95,8 @@ func TestS2_SemaphoreCapsConcurrencyBelowN(t *testing.T) {
 		}()
 	}
 
-	// Wait until N callbacks are inside mutate() (holding their slot). The extras
-	// cannot acquire, so they must time out with ErrMutateBusy.
+	// 等到有 N 个回调进入 mutate() 内部(持有各自的槽位)。多出来的那些无法获取,所以它们必须以
+	// ErrMutateBusy 超时。
 	for i := 0; i < N; i++ {
 		select {
 		case <-entered:
@@ -108,7 +104,7 @@ func TestS2_SemaphoreCapsConcurrencyBelowN(t *testing.T) {
 			t.Fatalf("only %d/%d mutations entered before timeout", i, N)
 		}
 	}
-	// The extras should fail busy within ~acquireWait; give them margin.
+	// 多出来的那些应在 ~acquireWait 内以 busy 失败;给它们留余量。
 	deadline := time.After(2 * time.Second)
 	for atomic.LoadInt64(&busy) < extra {
 		select {
@@ -124,16 +120,15 @@ func TestS2_SemaphoreCapsConcurrencyBelowN(t *testing.T) {
 		t.Fatalf("busy=%d want %d (N+%d concurrent, cap=%d)", got, extra, extra, N)
 	}
 	if begins := atomic.LoadInt64(&beginner.begins); begins > N {
-		// Only the N admitted mutations may reach BeginTx while the extras are
-		// blocked busy. If the semaphore were not acquired before BeginTx, all N+2
-		// would have begun.
+		// 当多出来的那些被 busy 阻塞时,只有 N 个被准入的 mutation 可以到达 BeginTx。如果 semaphore
+		// 没在 BeginTx 之前获取,那 N+2 个就都会开始。
 		t.Fatalf("beginCount=%d exceeded the concurrency cap %d — sem not acquired before BeginTx", begins, N)
 	}
 }
 
-// countingBeginner counts BeginTx calls atomically (the package fakeBeginner is
-// not concurrency-safe). Each call returns a fake tx over its OWN fresh recorder
-// so concurrent Executes never share mutable fixture state (race-clean).
+// countingBeginner 原子地计数 BeginTx 调用(本包的 fakeBeginner 不是并发安全的)。每次调用返回
+// 一个基于它自己 OWN(全新)recorder 的 fake tx,这样并发的 Execute 就永不共享可变的 fixture 状态
+// (race 干净)。
 type countingBeginner struct {
 	begins int64
 }
@@ -143,16 +138,14 @@ func (b *countingBeginner) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, erro
 	return &fakeMutateTx{rec: &txRecorder{}}, nil
 }
 
-// --- Test 2: acquire-timeout is a clean busy, not a hang --------------------
+// --- 测试 2:获取超时是干净的 busy,而非挂起 --------------------
 
 func TestS2_AcquireTimeoutIsCleanBusyNotHang(t *testing.T) {
-	// Regression (S2 a): N=1, the slot held by a blocked mutation, a SECOND Execute
-	// returns ErrMutateBusy within ~acquireWait — a clean back-pressure signal, not
-	// a hang. The whole test must finish well under its own deadline.
+	// 回归(S2 a):N=1,槽位被一个阻塞的 mutation 持有,第二个(SECOND)Execute 在 ~acquireWait 内
+	// 返回 ErrMutateBusy——一个干净的背压信号,而非挂起。整个测试必须远在自身截止之内完成。
 	//
-	// Mutation check (run + RED confirmed, then restored): change Semaphore.Acquire
-	// to use context.Background() (no acquireWait bound) and the 2nd Execute blocks
-	// forever — this test's 2s wall-clock guard trips RED.
+	// 变异检查(已运行 + 确认变红,随后还原):把 Semaphore.Acquire 改为使用 context.Background()
+	// (无 acquireWait 界),第二个 Execute 就会永远阻塞——本测试 2s 的墙钟保护会触发变红。
 	rec := &txRecorder{}
 	sem := mutateguard.NewSemaphore(1)
 	o := NewMutateOrchestrator(&fakeBeginner{rec: rec},
@@ -167,7 +160,7 @@ func TestS2_AcquireTimeoutIsCleanBusyNotHang(t *testing.T) {
 			return ToolResult{}, nil
 		})
 	}()
-	<-holding // the single slot is now held
+	<-holding // 这唯一的槽位现在已被持有
 
 	done := make(chan error, 1)
 	go func() {
@@ -188,25 +181,22 @@ func TestS2_AcquireTimeoutIsCleanBusyNotHang(t *testing.T) {
 	close(release)
 }
 
-// --- Test 3: tx-deadline aborts a STUCK mutation + releases conn/lock --------
+// --- 测试 3:tx 截止中止一个 STUCK(卡住)的 mutation + 释放 conn/lock --------
 
 func TestS2_TxDeadlineAbortsStuckMutationAndRollsBack(t *testing.T) {
-	// Regression (S2 b): a mutation that runs past the tx deadline is cut — the
-	// mutate() sees mutCtx.Done(), Execute surfaces a deadline error, and the defer
-	// rolls the tx back (releasing the conn + advisory lock). The mutation does NOT
-	// commit.
+	// 回归(S2 b):一个运行超过 tx 截止的 mutation 被切断——mutate() 看到 mutCtx.Done(),Execute
+	// 呈现一个截止 error,defer 把 tx 回滚(释放 conn + advisory lock)。该 mutation NOT(不)提交。
 	//
-	// Mutation check (run + RED confirmed, then restored): drop the
-	// context.WithTimeout(ctx, txDeadline) in Execute (so mutCtx == ctx, never
-	// cancelled); the mutate() below then runs to completion and the tx COMMITS —
-	// the `rollbackCount==1` / `commitCount==0` / deadline-error guards go RED.
+	// 变异检查(已运行 + 确认变红,随后还原):去掉 Execute 中的 context.WithTimeout(ctx, txDeadline)
+	// (这样 mutCtx == ctx,永不被取消);下面的 mutate() 就会跑完,tx COMMITS(提交)——于是
+	// `rollbackCount==1` / `commitCount==0` / 截止 error 的断言变红。
 	rec := &txRecorder{}
 	o := NewMutateOrchestrator(&fakeBeginner{rec: rec},
 		WithTxDeadline(50*time.Millisecond))
 
 	in := baseRecord()
 	_, err := o.Execute(context.Background(), "lock", in, func(ctx context.Context, _ pgx.Tx) (ToolResult, error) {
-		// Sleep past the deadline; honor cancellation so the abort is observed.
+		// 睡过截止;尊重取消,这样中止才被观测到。
 		select {
 		case <-ctx.Done():
 			return ToolResult{}, ctx.Err()
@@ -226,48 +216,43 @@ func TestS2_TxDeadlineAbortsStuckMutationAndRollsBack(t *testing.T) {
 	if rec.rollbackCount != 1 {
 		t.Fatalf("rollbackCount=%d want 1 (deadline must roll back to release conn + advisory lock)", rec.rollbackCount)
 	}
-	// The rollback MUST run on an independent (non-cancelled) ctx — "the whole
-	// point": if it derived from the dead deadline ctx it would itself be
-	// cancelled and the pool connection + advisory lock would leak. MUTATION:
-	// thread the dead mutCtx into the rollback defer instead of the independent
-	// 5s ctx -> rollbackLiveCtx==0 here -> RED. (review S2 close)
+	// 回滚 MUST(必须)在一个独立的(未被取消的)ctx 上运行——这才是"关键所在":如果它从那个
+	// 已死的截止 ctx 派生,它自己就会被取消,连接池连接 + advisory lock 就会泄漏。变异:把已死的
+	// mutCtx 穿进回滚 defer,而非那个独立的 5s ctx -> 这里 rollbackLiveCtx==0 -> 变红。(review S2 收口)
 	if rec.rollbackLiveCtx != 1 {
 		t.Fatalf("rollbackLiveCtx=%d want 1 (rollback must use an INDEPENDENT live ctx, not the dead deadline ctx, or the conn+lock leak)", rec.rollbackLiveCtx)
 	}
 }
 
-// --- Test 4: deadline does NOT cut a legit slow replay (90s headroom) --------
+// --- 测试 4:截止 NOT(不会)切断一个合法的慢 replay(90s 余量)--------
 
 func TestS2_DeadlineDoesNotCutLegitSlowReplay(t *testing.T) {
-	// Regression (S2 b — the load-bearing 90s headroom): the DEFAULT tx deadline
-	// (90s, 3x the 30s dlq_replay inner claim lease) must NOT cut a legitimately
-	// slow settlement. A replay that takes ~40s (well under 90s, but longer than a
-	// naive 30s = lease deadline would tolerate) COMMITS.
+	// 回归(S2 b——承重的 90s 余量):DEFAULT(默认)的 tx 截止(90s,是 30s dlq_replay 内层 claim
+	// lease 的 3 倍)必须 NOT(不)切断一个合法的慢结算。一个耗时约 40s 的 replay(远在 90s 之内,但
+	// 比一个朴素的 30s = lease 截止所能容忍的更长)会 COMMITS(提交)。
 	//
-	// This test compresses time: it uses the config's DEFAULT-derived headroom
-	// ratio rather than literally sleeping 40s. The deadline is set to 3x a
-	// simulated lease (mirroring 90s = 3x30s); the fake replay takes 1.33x the
-	// lease (mirroring 40s = 1.33x30s) — under the 3x deadline, so it commits.
+	// 本测试压缩了时间:它用 config 由 DEFAULT 推导出的余量比例,而非真的睡 40s。截止被设为一个模拟
+	// lease 的 3 倍(镜像 90s = 3x30s);fake replay 耗时 1.33 倍 lease(镜像 40s = 1.33x30s)——
+	// 在 3 倍截止之内,所以它提交。
 	//
-	// Mutation check (run + RED confirmed, then restored): lower the deadline to 1x
-	// the lease (mirroring "default tightened to 30s"); the 1.33x replay is then cut
-	// and the `commitCount==1` guard goes RED — proving the 3x (90s) headroom is
-	// load-bearing, not cosmetic.
-	const lease = 30 * time.Millisecond  // stands in for the real 30s claim lease
-	const deadline = 3 * lease           // stands in for the 90s default (3x lease)
-	const replayDuration = lease * 4 / 3 // ~1.33x lease (stands in for a 40s replay)
+	// 变异检查(已运行 + 确认变红,随后还原):把截止降到 1 倍 lease(镜像"默认被收紧到 30s");
+	// 那么 1.33 倍的 replay 就会被切断,`commitCount==1` 的断言变红——证明 3 倍(90s)余量是承重的,
+	// 而非装饰。
+	const lease = 30 * time.Millisecond  // 代表真实的 30s claim lease
+	const deadline = 3 * lease           // 代表 90s 默认(3 倍 lease)
+	const replayDuration = lease * 4 / 3 // ~1.33 倍 lease(代表一个 40s 的 replay)
 
 	rec := &txRecorder{}
 	o := NewMutateOrchestrator(&fakeBeginner{rec: rec}, WithTxDeadline(deadline))
 
 	dlqReplayRec := baseRecord()
 	dlqReplayRec.ToolName = ToolDLQReplay
-	dlqReplayRec.OwnTx = true // dlq_replay is own-tx
+	dlqReplayRec.OwnTx = true // dlq_replay 是 own-tx
 
 	_, err := o.Execute(context.Background(), "lock", dlqReplayRec, func(ctx context.Context, _ pgx.Tx) (ToolResult, error) {
 		select {
 		case <-ctx.Done():
-			return ToolResult{}, ctx.Err() // cut early == defect
+			return ToolResult{}, ctx.Err() // 过早切断 == 缺陷
 		case <-time.After(replayDuration):
 			return ToolResult{Summary: map[string]any{"status": "delivered"}}, nil
 		}
@@ -280,21 +265,18 @@ func TestS2_DeadlineDoesNotCutLegitSlowReplay(t *testing.T) {
 	}
 }
 
-// --- Test 5: own-tx timeout classified UNCERTAIN, not falsely rolled-back ----
+// --- 测试 5:own-tx 超时被分类为 UNCERTAIN,而非被错误地报告为已回滚 ----
 
 func TestS2_OwnTxDeadlineClassifiedUncertainNotRolledBack(t *testing.T) {
-	// Regression (S2 b CORRECTNESS, DISCRIMINATING): a dlq_replay (OWN-TX) whose
-	// inner own-tx ALREADY committed before the tx deadline tripped a later step
-	// MUST surface ErrMutateTimeoutUncertain (-> error_class mutate_timeout_uncertain,
-	// reconciliation needed), NEVER a clean rolled-back mutation_failed. An IN-TX
-	// tool's deadline rolls the mutation back atomically and stays a plain deadline
-	// (mutation_failed/mutate_timeout). The danger guarded: falsely telling the
-	// operator a replay "did not happen" when it actually persisted.
+	// 回归(S2 b 正确性、有区分度):一个 dlq_replay(OWN-TX),其内层 own-tx 在 tx 截止触发某个后续
+	// 步骤之前 ALREADY(已经)提交,MUST(必须)呈现 ErrMutateTimeoutUncertain(-> error_class
+	// mutate_timeout_uncertain,需要对账),NEVER(绝不)呈现干净的、已回滚的 mutation_failed。一个
+	// IN-TX 工具的截止会把 mutation 原子地回滚,仍是一个普通的截止(mutation_failed/mutate_timeout)。
+	// 它防范的危险:在 replay 实际上已持久化时,错误地告诉运营者它"没有发生"。
 	//
-	// Mutation check (run + RED confirmed, then restored): in classifyMutateErr,
-	// remove the `!rec.OwnTx` short-circuit so EVERY deadline error is wrapped (or
-	// drop the wrap entirely so none are) — either way own and in-tx agree and the
-	// `ownWrapped != inWrapped` self-proving guard goes RED.
+	// 变异检查(已运行 + 确认变红,随后还原):在 classifyMutateErr 中移除 `!rec.OwnTx` 短路,这样
+	// EVERY(每一个)截止 error 都被包裹(或彻底去掉包裹,这样一个都不被包裹)——无论哪种,own 与 in-tx
+	// 都会一致,`ownWrapped != inWrapped` 这个自证断言就会变红。
 	run := func(ownTx bool) error {
 		rec := &txRecorder{}
 		o := NewMutateOrchestrator(&fakeBeginner{rec: rec}, WithTxDeadline(time.Hour))
@@ -303,9 +285,8 @@ func TestS2_OwnTxDeadlineClassifiedUncertainNotRolledBack(t *testing.T) {
 		if ownTx {
 			audit.ToolName = ToolDLQReplay
 		}
-		// Simulate the inner own-tx having committed, then a later step hitting the
-		// deadline: mutate() returns context.DeadlineExceeded directly (the tx
-		// deadline is huge here so only this injected error drives the path).
+		// 模拟内层 own-tx 已提交、随后某个后续步骤触发截止:mutate() 直接返回
+		// context.DeadlineExceeded(这里 tx 截止设得很大,所以只有这个注入的 error 驱动该路径)。
 		_, err := o.Execute(context.Background(), "lock", audit, func(context.Context, pgx.Tx) (ToolResult, error) {
 			return ToolResult{}, context.DeadlineExceeded
 		})
@@ -330,20 +311,18 @@ func TestS2_OwnTxDeadlineClassifiedUncertainNotRolledBack(t *testing.T) {
 	if ownUncertain == inUncertain {
 		t.Fatalf("tx-mode did not change the classification (own=%v in=%v) — rec.OwnTx not threaded into the deadline path", ownUncertain, inUncertain)
 	}
-	// The in-tx deadline must still be a plain deadline error (handler maps it to a
-	// clean timeout, not uncertain).
+	// in-tx 截止仍必须是一个普通的截止 error(handler 把它映射到一个干净的 timeout,而非 uncertain)。
 	if !errors.Is(inErr, context.DeadlineExceeded) {
 		t.Fatalf("in-tx deadline err=%v want context.DeadlineExceeded", inErr)
 	}
 }
 
-// --- statement_timeout: enabled sets it; disabled does NOT (legacy) ----------
+// --- statement_timeout:启用时设置它;禁用时 NOT(不)设置(legacy)----------
 
 func TestS2_TxDeadlineSetsStatementTimeoutScopedToTx(t *testing.T) {
-	// Regression (S2 b): when the tx deadline is enabled, Execute issues a
-	// `SET LOCAL statement_timeout` = the deadline millis on THIS tx (server-side
-	// cap, auto-reset at tx end). With the deadline DISABLED (0), it must NOT issue
-	// it — proving the legacy path is untouched.
+	// 回归(S2 b):当 tx 截止被启用时,Execute 在 THIS(本)tx 上发出一个
+	// `SET LOCAL statement_timeout` = 截止 millis(服务端上限,tx 结束时自动复位)。当截止被
+	// DISABLED(禁用,为 0)时,它必须 NOT(不)发出它——证明 legacy 路径未被触动。
 	t.Run("enabled sets statement_timeout = deadline millis", func(t *testing.T) {
 		rec := &txRecorder{}
 		b := &statementTimeoutBeginner{rec: rec}
@@ -364,7 +343,7 @@ func TestS2_TxDeadlineSetsStatementTimeoutScopedToTx(t *testing.T) {
 	t.Run("disabled does NOT issue statement_timeout (legacy)", func(t *testing.T) {
 		rec := &txRecorder{}
 		b := &statementTimeoutBeginner{rec: rec}
-		o := NewMutateOrchestrator(b) // no deadline option == disabled
+		o := NewMutateOrchestrator(b) // 不带截止选项 == 禁用
 		_, err := o.Execute(context.Background(), "lock", baseRecord(), func(context.Context, pgx.Tx) (ToolResult, error) {
 			return ToolResult{}, nil
 		})

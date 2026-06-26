@@ -12,7 +12,7 @@ import (
 )
 
 func TestInternalTokenMatchesRunnerPipeFormat(t *testing.T) {
-	// Regression guarded: gateway-signed tokens must match the runner's pipe-format HMAC verifier.
+	// 守护的回归:gateway 签发的 token 必须能被 runner 的 pipe-format HMAC 验证器接受。
 	now := time.Unix(1700000000, 0).UTC()
 	token, err := SignInternalToken([]byte(testInternalSecret), InternalTokenClaims{
 		TenantID: 7, UserID: 42, RequestID: "req-runner-format",
@@ -35,7 +35,7 @@ func TestInternalTokenMatchesRunnerPipeFormat(t *testing.T) {
 }
 
 func TestInternalTokenRejectsLegacyBase64Format(t *testing.T) {
-	// Mutation check: if gateway signing regresses to hki_v1.<base64-json>.<base64-hmac>, verification must go red.
+	// 变异检查:若 gateway 签名退回到 hki_v1.<base64-json>.<base64-hmac>,验证必须变红。
 	legacy := "hki_v1.eyJ0ZW5hbnRfaWQiOjcsInVzZXJfaWQiOjQyLCJyZXF1ZXN0X2lkIjoicmVxIiwiZXhwIjoxNzAwMDAwMzAwfQ.deadbeef"
 	if _, err := VerifyInternalToken(legacy, []byte(testInternalSecret), time.Unix(1700000000, 0).UTC()); err == nil {
 		t.Fatalf("VerifyInternalToken accepted legacy hki_v1 token")

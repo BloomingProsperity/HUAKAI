@@ -22,10 +22,10 @@ const (
 	ActionMessageSend        = "hermes.message.send"
 	ActionConversationDelete = "hermes.conversation.delete"
 
-	// WAVE H3 read-only diagnostic tool actions (hermes.tool.<name>). The
-	// tool-execute handler mirrors each invocation into hermes_audit_events
-	// under these. The matching DB CHECK is extended in migration 0145; H4
-	// mutating tools add their own actions (validAction + CHECK) when built.
+	// WAVE H3 只读诊断工具的 action(hermes.tool.<name>)。
+	// tool-execute handler 会把每次调用按这些 action 镜像写入 hermes_audit_events。
+	// 对应的 DB CHECK 在 migration 0145 中扩展;H4 的
+	// mutating 工具在落地时会自带各自的 action(validAction + CHECK)。
 	ActionToolCredentialDiagnose    = "hermes.tool.credential_diagnose"
 	ActionToolAccountHealthDiagnose = "hermes.tool.account_health_diagnose"
 	ActionToolRequestDiagnose       = "hermes.tool.request_diagnose"
@@ -87,12 +87,12 @@ func SanitizeArgs(in map[string]any) map[string]any {
 	return out
 }
 
-// sanitizeValue recurses into a value so a sensitive key nested anywhere inside
-// a collection is still redacted. The common map[string]any / []any shapes are
-// handled directly for speed; ALL other map / slice / array kinds (e.g.
-// map[string]int64, []map[string]any, [N]any) are walked via reflection so a
-// secret under a sensitive key in a typed collection cannot slip through
-// unredacted. Scalars and unsupported kinds (chan/func/etc.) are returned as-is.
+// sanitizeValue 递归进入某个值,使得嵌套在 collection 任意深处的敏感 key
+// 仍能被 redact。常见的 map[string]any / []any 形态直接处理以提升速度;
+// 其余所有 map / slice / array 类型(例如
+// map[string]int64、[]map[string]any、[N]any)都通过反射遍历,
+// 这样 typed collection 里某个敏感 key 下的 secret 也无法绕过 redact 漏出。
+// 标量及不支持的类型(chan/func 等)原样返回。
 func sanitizeValue(v any) any {
 	switch typed := v.(type) {
 	case nil:
@@ -110,13 +110,13 @@ func sanitizeValue(v any) any {
 	}
 }
 
-// sanitizeReflect handles arbitrary map / slice / array kinds via reflection. A
-// map with string keys has each key checked against sensitiveKey (so e.g.
-// map[string]int64{"api_key": 7} redacts the value); maps with non-string keys
-// still have their values recursed. Slices and arrays recurse per element. Any
-// other kind (scalar, struct, pointer, chan, func) is returned unchanged — the
-// audit args are JSON-shaped, so structs/pointers do not occur in practice and
-// returning them verbatim preserves the prior non-collection behavior.
+// sanitizeReflect 通过反射处理任意 map / slice / array 类型。
+// 对于 string key 的 map,每个 key 都会用 sensitiveKey 检查(因此例如
+// map[string]int64{"api_key": 7} 会 redact 其值);非 string key 的 map
+// 仍会递归处理其值。slice 与 array 逐元素递归。其余任何
+// 类型(标量、struct、pointer、chan、func)原样返回——
+// audit args 是 JSON 形态,实践中不会出现 struct/pointer,
+// 原样返回也保持了此前对非 collection 的行为。
 func sanitizeReflect(v any) any {
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
@@ -135,8 +135,8 @@ func sanitizeReflect(v any) any {
 		}
 		return out
 	case reflect.Slice, reflect.Array:
-		// []byte is data, not a collection of audit values; leave it for the
-		// JSON encoder to base64 rather than exploding it into per-byte ints.
+		// []byte 是数据,而非 audit 值的 collection;交给
+		// JSON encoder 走 base64,而不是把它展开成逐字节的整数。
 		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
 			return v
 		}
@@ -150,8 +150,8 @@ func sanitizeReflect(v any) any {
 	}
 }
 
-// mapKeyString renders a reflected map key as a string so the sanitized output
-// is a uniform map[string]any (JSON object keys are always strings anyway).
+// mapKeyString 把反射得到的 map key 渲染成字符串,使得 sanitize 后的输出
+// 是统一的 map[string]any(反正 JSON object 的 key 本就都是字符串)。
 func mapKeyString(key reflect.Value) string {
 	if key.Kind() == reflect.String {
 		return key.String()
@@ -169,13 +169,13 @@ func sensitiveKey(key string) bool {
 		strings.Contains(k, "token") ||
 		strings.Contains(k, "password") ||
 		strings.Contains(k, "secret") ||
-		// "credentials" (PLURAL) is the raw new-credential payload arg of the
-		// renew_trigger mutating tool — redact the whole value regardless of its
-		// inner shape so rotated material never lands in an audit row, even when
-		// supplied as a raw string (where the nested-key recursion can't help).
-		// Matched on the plural "credentials" specifically so the SINGULAR,
-		// non-secret diagnostic fields (credential_id / credential_version /
-		// credential_state / credential_ok) still survive into tool summaries.
+		// "credentials"(复数)是 renew_trigger mutating 工具的原始
+		// new-credential payload 参数——无论其内部形态如何都整体 redact,
+		// 使轮换出来的凭据材料绝不落入 audit row,即便它是以原始字符串
+		// 形式提供(此时嵌套 key 的递归也无能为力)。
+		// 这里专门匹配复数的 "credentials",从而让单数的、
+		// 非密的诊断字段(credential_id / credential_version /
+		// credential_state / credential_ok)仍能保留进工具摘要。
 		strings.Contains(k, "credentials")
 }
 
@@ -190,9 +190,9 @@ func validAction(action string) bool {
 	}
 }
 
-// ToolAuditAction maps a hermesops tool name to its hermes_audit_events action.
-// Returns ("", false) for an unknown tool so the handler fails closed rather
-// than recording an audit row under an unwhitelisted action.
+// ToolAuditAction 把 hermesops 工具名映射到它对应的 hermes_audit_events action。
+// 对未知工具返回 ("", false),使 handler fail closed,
+// 而不是用未在白名单内的 action 写入一条 audit row。
 func ToolAuditAction(toolName string) (string, bool) {
 	switch toolName {
 	case "credential_diagnose":

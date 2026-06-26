@@ -17,7 +17,7 @@ const testTenant = 1
 
 func fixedNow() time.Time { return time.Date(2026, 6, 13, 9, 0, 0, 0, time.UTC) }
 
-// healthySources returns sources whose every read reports a clean deployment.
+// healthySources 返回一组 Sources，其每次读取都报告一个干净的部署。
 func healthySources() Sources {
 	return Sources{
 		ChannelSummary: func(_ context.Context, _ int64) (channelhealth.ChannelHealthSummary, error) {
@@ -55,11 +55,10 @@ type fakeSnapshotter struct {
 
 func (f fakeSnapshotter) Snapshot(_ context.Context) []moduleregistry.ModuleSnapshot { return f.snaps }
 
-// TestInspectAllClear: a fully-healthy deployment yields zero issues, no source
-// errors, AllClear()==true, and the OK headline.
-// Regression caught: if a section's severity logic mis-flags a healthy input as
-// warn/critical (e.g. counts "active" channels as down), AllClear flips false and
-// this test goes red.
+// TestInspectAllClear：一个完全健康的部署会产出零问题、无源错误、
+// AllClear()==true，以及 OK 标题。
+// 捕获的回归：若某段的严重级别逻辑把健康输入误判为 warn/critical（例如把
+// "active" 渠道算成 down），AllClear 会翻转为 false，该测试随之变红。
 func TestInspectAllClear(t *testing.T) {
 	svc := NewInspectionService(healthySources(), testTenant, fixedNow)
 	rep := svc.Inspect(context.Background())
@@ -73,20 +72,19 @@ func TestInspectAllClear(t *testing.T) {
 	if got := Headline(rep); got != "All clear" {
 		t.Fatalf("expected all-clear headline, got %q", got)
 	}
-	// All five sections must be present (composed), proven by non-nil maps.
+	// 五个段都必须存在（已组合），由非 nil 的 map 来证明。
 	if rep.AccountPool.ByState == nil || rep.Credentials.ByState == nil ||
 		rep.DLQ.ByLane == nil || rep.ErrorTrend.ByEndClass == nil || rep.Modules.ByStatus == nil {
 		t.Fatalf("a section was not composed: %+v", rep)
 	}
 }
 
-// TestInspectIssuesNeedAttention: a deployment with a down account + failed
-// credential + DLQ backlog + module error yields critical severity, a non-zero
-// issue count, AllClear()==false, and the "issues need attention" headline.
-// Self-proving: it asserts the issues-headline DIFFERS from the all-clear
-// headline produced by the healthy input above.
-// Regression caught: if down-account / failed-credential / pending-DLQ detection
-// is neutered, the report would still read "All clear" on a broken deployment.
+// TestInspectIssuesNeedAttention：一个带有 宕掉账号 + 失败凭证 + DLQ 积压 +
+// 模块错误 的部署会产出 critical 严重级别、非零的问题数、AllClear()==false，
+// 以及「issues need attention」标题。
+// 自证：它断言「issues 标题」不同于上面健康输入所产出的「all-clear 标题」。
+// 捕获的回归：若 宕掉账号 / 失败凭证 / 待处理 DLQ 的检测被改坏，报告在一个已损坏
+// 的部署上仍会显示为「All clear」。
 func TestInspectIssuesNeedAttention(t *testing.T) {
 	fail := "failure"
 	failClass := "invalid_grant"
@@ -96,7 +94,7 @@ func TestInspectIssuesNeedAttention(t *testing.T) {
 			Total: 3,
 			ByState: map[channelhealth.HealthState]int64{
 				channelhealth.StateActive:   1,
-				channelhealth.StateDisabled: 2, // 2 down
+				channelhealth.StateDisabled: 2, // 2 个 down
 			},
 		}, nil
 	}
@@ -139,17 +137,17 @@ func TestInspectIssuesNeedAttention(t *testing.T) {
 	if !strings.Contains(head, "need attention") || !strings.Contains(head, "critical") {
 		t.Fatalf("expected issues+critical headline, got %q", head)
 	}
-	// Self-proving: the two distinct inputs MUST produce distinct headlines.
+	// 自证：两个不同的输入必须产出不同的标题。
 	if head == Headline(NewInspectionService(healthySources(), testTenant, fixedNow).Inspect(context.Background())) {
 		t.Fatalf("broken and healthy inputs produced the same headline %q — non-discriminating", head)
 	}
 }
 
-// TestSourceErrorDegradesNotPanics: a read that errors degrades that one section
-// to a SourceError and the rest of the report still composes; AllClear()==false
-// because a blind section cannot be claimed healthy.
-// Regression caught: if a source error were swallowed (no SourceError appended),
-// the report would falsely read all-clear on data it never read.
+// TestSourceErrorDegradesNotPanics：一次出错的读取会把对应那一段降级为
+// SourceError，而报告其余部分仍会组合出来；AllClear()==false，因为失明的段
+// 不能被宣称为健康。
+// 捕获的回归：若某个源错误被吞掉（未追加 SourceError），报告会对它从未读到的
+// 数据错误地显示为 all-clear。
 func TestSourceErrorDegradesNotPanics(t *testing.T) {
 	src := healthySources()
 	src.DLQList = func(_ context.Context, _ dlq.ListFilter) ([]dlq.Record, error) {
@@ -172,10 +170,9 @@ func TestSourceErrorDegradesNotPanics(t *testing.T) {
 	}
 }
 
-// TestNeedRenewalDetection: a credential whose refresh_before_at is in the past
-// is counted as need_renewal (warn), distinct from a failed refresh (critical).
-// Regression caught: flipping the Before/After comparison would miss imminent
-// renewals and under-report the warn severity.
+// TestNeedRenewalDetection：一个 refresh_before_at 已成为过去的凭证会被计为
+// need_renewal（warn），与刷新失败（critical）相区分。
+// 捕获的回归：颠倒 Before/After 比较会漏掉临近的续期，并低报 warn 严重级别。
 func TestNeedRenewalDetection(t *testing.T) {
 	past := fixedNow().Add(-time.Hour)
 	ok := "success"

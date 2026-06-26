@@ -9,8 +9,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/email"
 )
 
-// fakeSender records every send call (tenant, recipient, subject, body) and can
-// be configured to fail.
+// fakeSender 记录每一次发送调用（租户、收件人、主题、正文），并可被配置为失败。
 type fakeSender struct {
 	mu    sync.Mutex
 	calls []email.Message
@@ -46,11 +45,10 @@ func newTestWorker(sender MessageSender, recipient string) *InspectionWorker {
 	})
 }
 
-// TestWorkerTickSendsOnce: one tick runs the inspection and calls the sender
-// exactly once with the resolved recipient + a non-empty body; reports_sent
-// increments, failed stays 0.
-// Regression caught: if the tick double-sent (e.g. once per section) or sent to
-// the wrong recipient, the call count / recipient assertion goes red.
+// TestWorkerTickSendsOnce：一次 tick 运行巡检，并以解析出的收件人 + 非空正文
+// 恰好调用一次发送方；reports_sent 自增，failed 保持为 0。
+// 捕获的回归：若该 tick 重复发送（例如每段发一次）或发给了错误的收件人，
+// 调用计数 / 收件人断言就会变红。
 func TestWorkerTickSendsOnce(t *testing.T) {
 	sender := &fakeSender{}
 	w := newTestWorker(sender, "ops@huakai.test")
@@ -74,11 +72,10 @@ func TestWorkerTickSendsOnce(t *testing.T) {
 	}
 }
 
-// TestWorkerSendErrorCountsAndContinues: a send error increments failed_ticks,
-// leaves reports_sent at 0, and the loop survives a second tick (no panic / no
-// stop).
-// Regression caught: if a send error propagated as a panic or stopped the loop,
-// the second tick would not run and TickCount would be 1 not 2.
+// TestWorkerSendErrorCountsAndContinues：一次发送错误会让 failed_ticks 自增、
+// 使 reports_sent 保持为 0，且循环能撑过第二次 tick（无 panic / 不停止）。
+// 捕获的回归：若发送错误以 panic 形式传播或停掉了循环，第二次 tick 就不会运行，
+// TickCount 会是 1 而非 2。
 func TestWorkerSendErrorCountsAndContinues(t *testing.T) {
 	sender := &fakeSender{err: errors.New("smtp down")}
 	w := newTestWorker(sender, "ops@huakai.test")
@@ -97,11 +94,10 @@ func TestWorkerSendErrorCountsAndContinues(t *testing.T) {
 	}
 }
 
-// TestWorkerRecorderReceivesSanitizedOutcome: the recorder is invoked with the
-// run outcome and the failure class is the fixed "send_failed" enum, never the
-// underlying error text.
-// Regression caught: if the worker passed err.Error() into the outcome, the raw
-// "smtp down" text (a potential leak vector) would appear instead of the enum.
+// TestWorkerRecorderReceivesSanitizedOutcome：recorder 会以运行结果被调用，
+// 且失败分类是固定的 "send_failed" 枚举，绝不会是底层错误文本。
+// 捕获的回归：若 worker 把 err.Error() 塞进了结果，原始的 "smtp down" 文本
+//（一个潜在的泄露途径）就会出现，而非那个枚举。
 func TestWorkerRecorderReceivesSanitizedOutcome(t *testing.T) {
 	var got RunOutcome
 	rec := captureRecorder{out: &got}
@@ -122,10 +118,10 @@ func TestWorkerRecorderReceivesSanitizedOutcome(t *testing.T) {
 	}
 }
 
-// TestWorkerNotStartedWhenNoRecipient: Start with an empty recipient is a no-op
-// (the loop never runs), even though the worker is otherwise wired. No panic.
-// Regression caught: if Start did not gate on the recipient, an enabled-but-
-// unconfigured deployment would start ticking and attempt sends to "".
+// TestWorkerNotStartedWhenNoRecipient：在收件人为空时调用 Start 是空操作
+//（循环永不运行），即便 worker 其余部分都已接线。不会 panic。
+// 捕获的回归：若 Start 不对收件人做门控，一个已启用但未经配置的部署就会开始
+// tick 并尝试向 "" 发送。
 func TestWorkerNotStartedWhenNoRecipient(t *testing.T) {
 	sender := &fakeSender{}
 	w := newTestWorker(sender, "")
@@ -140,8 +136,9 @@ func TestWorkerNotStartedWhenNoRecipient(t *testing.T) {
 	}
 }
 
-// TestWorkerNotStartedWhenSenderNil: Start with a nil sender is a no-op (fail-
-// safe). Regression caught: a nil-sender Start would later nil-panic on send.
+// TestWorkerNotStartedWhenSenderNil：在 sender 为 nil 时调用 Start 是空操作
+//（故障安全）。捕获的回归：sender 为 nil 时若仍 Start，之后发送时会发生
+// nil-panic。
 func TestWorkerNotStartedWhenSenderNil(t *testing.T) {
 	w := NewInspectionWorker(InspectionWorkerConfig{
 		Service:   NewInspectionService(healthySources(), testTenant, fixedNow),
@@ -154,20 +151,19 @@ func TestWorkerNotStartedWhenSenderNil(t *testing.T) {
 	}
 }
 
-// TestWorkerStartStopLifecycle: Start runs the immediate tick (>=1 send), Stop
-// returns cleanly, and a restart works.
-// Regression caught: a Stop that deadlocked or a Start that did not run the
-// immediate tick would hang or leave sent=0.
+// TestWorkerStartStopLifecycle：Start 会运行立即 tick（>=1 次发送），Stop
+// 干净返回，且重启可用。
+// 捕获的回归：会死锁的 Stop，或不运行立即 tick 的 Start，都会卡住或让 sent=0。
 func TestWorkerStartStopLifecycle(t *testing.T) {
 	sender := &fakeSender{}
 	w := newTestWorker(sender, "ops@huakai.test")
 	w.Start(context.Background())
-	// Stop waits for the loop to exit; the immediate tick has run by then.
+	// Stop 会等待循环退出；到那时立即 tick 已经运行过了。
 	w.Stop()
 	if w.ReportsSent() < 1 {
 		t.Fatalf("expected the immediate-on-start tick to send at least once, got %d", w.ReportsSent())
 	}
-	// Restart must work (Start after Stop).
+	// 重启必须可用（Stop 之后再 Start）。
 	w.Start(context.Background())
 	w.Stop()
 	if w.ReportsSent() < 2 {

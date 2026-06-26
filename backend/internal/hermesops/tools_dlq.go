@@ -6,19 +6,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 )
 
-// DLQInspectDeps is the read-only dependency the dlq_inspect tool wraps. List is
-// the SELECT-only dead-letter-queue read; the mutating Replay is intentionally
-// NOT referenced here — this wave is read-only, so inspection cannot trigger a
-// replay.
+// DLQInspectDeps 是 dlq_inspect 工具包装的只读依赖。List 是对死信队列的 SELECT-only 读取;
+// 有改动性的 Replay 在这里被有意不引用 —— 本批次是只读的,所以检视不能触发 replay。
 type DLQInspectDeps struct {
 	List func(ctx context.Context, filter dlq.ListFilter) ([]dlq.Record, error)
 }
 
-// DLQInspectSpec builds the read-only dlq_inspect tool. It lists dead-lettered
-// events for the tenant (optionally filtered by event_kind / status) and returns
-// the operational shape only: kind / lane / status / replay attempts / ids /
-// timestamps. It DROPS the raw event Payload (which carries the original request
-// body) — that never enters a tool result.
+// DLQInspectSpec 构建只读 dlq_inspect 工具。它列出该租户的死信事件
+// (可按 event_kind / status 过滤),仅返回运营结构:kind / lane / status /
+// replay 次数 / ids / 时间戳。它丢弃原始事件 Payload(携带原始请求体)—— 它绝不会进入工具结果。
 //
 // Args: { "event_kind": <string, optional>, "status": <string, optional> }
 func DLQInspectSpec(deps DLQInspectDeps) ToolSpec {
@@ -67,11 +63,10 @@ func DLQInspectSpec(deps DLQInspectDeps) ToolSpec {
 	}
 }
 
-// dlqDiagnosticShape projects a DLQ record into operational-diagnostic fields. It
-// DROPS Payload (the raw event body — the highest-risk field) and surfaces
-// kind / lane / status / replay attempts / replica status / ids / timestamps.
-// failure_reason is the system-generated failure classification (no request
-// body), retained for root-cause use.
+// dlqDiagnosticShape 把一条 DLQ 记录投影成运营诊断字段。它丢弃 Payload
+// (原始事件体 —— 风险最高的字段),只露出 kind / lane / status / replay 次数 /
+// 副本状态 / ids / 时间戳。failure_reason 是系统生成的失败分类(不含请求体),
+// 保留以供根因分析。
 func dlqDiagnosticShape(r dlq.Record) map[string]any {
 	return map[string]any{
 		"id":                    r.ID,

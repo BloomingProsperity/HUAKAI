@@ -16,19 +16,18 @@ func okSpec(name, role string) ToolSpec {
 }
 
 func TestRoleAllowedFloor(t *testing.T) {
-	// Regression (mutation: make RoleAllowed always return true): the role floor
-	// must reject an actor whose rank is below the tool's required role, and an
-	// unknown/empty role must never satisfy any tool.
+	// 回归(变异:让 RoleAllowed 总是返回 true):角色下限必须拒绝一个 rank 低于工具要求角色的 actor,
+	// 且未知/空角色必须永远无法满足任何工具。
 	cases := []struct {
 		actor, required string
 		want            bool
 	}{
-		{RolePlatformAdmin, RoleTenantOperator, true},  // higher clears lower
-		{RolePlatformAdmin, RolePlatformAdmin, true},   // equal clears
-		{RoleTenantOperator, RoleTenantOperator, true}, // equal clears
-		{RoleTenantOperator, RolePlatformAdmin, false}, // lower cannot clear higher
-		{"", RoleTenantOperator, false},                // unknown role denied
-		{"superuser", RoleTenantOperator, false},       // bogus role denied
+		{RolePlatformAdmin, RoleTenantOperator, true},  // 更高者可通过更低者
+		{RolePlatformAdmin, RolePlatformAdmin, true},   // 相等可通过
+		{RoleTenantOperator, RoleTenantOperator, true}, // 相等可通过
+		{RoleTenantOperator, RolePlatformAdmin, false}, // 更低者无法通过更高者
+		{"", RoleTenantOperator, false},                // 未知角色被拒
+		{"superuser", RoleTenantOperator, false},       // 伪造角色被拒
 	}
 	for _, c := range cases {
 		if got := RoleAllowed(c.actor, c.required); got != c.want {
@@ -38,8 +37,8 @@ func TestRoleAllowedFloor(t *testing.T) {
 }
 
 func TestRegistryAuthorizeUnknownTool(t *testing.T) {
-	// Regression: an unregistered tool name must surface ErrToolUnknown (mapped to
-	// 404 by the handler), not silently dispatch a nil Run.
+	// 回归:一个未注册的工具名必须呈现 ErrToolUnknown(由 handler 映射到 404),而不是静默地
+	// dispatch 一个 nil 的 Run。
 	reg := NewRegistry()
 	reg.Register(okSpec("a", RoleTenantOperator))
 	if _, err := reg.Authorize("does_not_exist", RolePlatformAdmin); !errors.Is(err, ErrToolUnknown) {
@@ -48,10 +47,9 @@ func TestRegistryAuthorizeUnknownTool(t *testing.T) {
 }
 
 func TestRegistryAuthorizeRoleFloor(t *testing.T) {
-	// Regression (mutation: skip the RoleAllowed check in Authorize): a
-	// tenant_operator must be denied a platform_admin-only tool with
-	// ErrToolForbidden, while a platform_admin clears it. This is the RBAC
-	// authority the tool-execute denial path depends on.
+	// 回归(变异:在 Authorize 中跳过 RoleAllowed 检查):一个 tenant_operator 对仅 platform_admin
+	// 可用的工具必须被以 ErrToolForbidden 拒绝,而 platform_admin 可通过。这是 tool-execute 拒绝
+	// 路径所依赖的 RBAC 权威。
 	reg := NewRegistry()
 	reg.Register(okSpec("admin_only", RolePlatformAdmin))
 
@@ -64,9 +62,8 @@ func TestRegistryAuthorizeRoleFloor(t *testing.T) {
 }
 
 func TestRegistryRunDeniesBeforeDispatch(t *testing.T) {
-	// Regression: Run must authorize BEFORE calling spec.Run — a forbidden caller
-	// must never reach the tool body (which could touch a store). We prove the
-	// body did not run by having it flip a sentinel.
+	// 回归:Run 必须在调用 spec.Run BEFORE(之前)授权——一个被禁止的调用方必须永远到不了工具体
+	// (它可能触及某个 store)。我们让工具体翻转一个哨兵,以此证明它没有运行。
 	ran := false
 	reg := NewRegistry()
 	reg.Register(ToolSpec{
@@ -86,8 +83,7 @@ func TestRegistryRunDeniesBeforeDispatch(t *testing.T) {
 }
 
 func TestRegistryListSorted(t *testing.T) {
-	// Regression: List must return a stable, name-sorted set so GET /tools output
-	// is deterministic.
+	// 回归:List 必须返回一个稳定的、按 name 排序的集合,这样 GET /tools 输出才是确定的。
 	reg := NewRegistry()
 	reg.Register(okSpec("zeta", RoleTenantOperator))
 	reg.Register(okSpec("alpha", RoleTenantOperator))
