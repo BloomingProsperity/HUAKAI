@@ -7,17 +7,16 @@ import (
 	"testing"
 )
 
-// featureTreePath is the project feature tree relative to this package dir
-// (backend/internal/modulecatalog -> repo root docs/...).
+// featureTreePath 是相对于本包目录的项目 feature tree
+//(backend/internal/modulecatalog -> 仓库根 docs/...)。
 const featureTreePath = "../../../docs/process/feature-tree/feature-tree.json"
 
-// committedCatalogPath is the embedded artifact's on-disk location.
+// committedCatalogPath 是嵌入产物在磁盘上的位置。
 const committedCatalogPath = "module-catalog.json"
 
-// TestEmbeddedCatalogParses — the committed artifact must load and be non-empty.
-// Regression: if module-catalog.json is hand-edited into invalid JSON, or the
-// generator emits a shape the loader can't decode, Load() errors -> RED. The
-// non-empty assertion also catches an accidentally-blanked artifact.
+// TestEmbeddedCatalogParses —— 已签入的产物必须能加载且非空。
+// 回归:若 module-catalog.json 被手改成非法 JSON,或生成器产出 loader 无法
+// 解码的形状,Load() 会报错 -> 转红。非空断言还能捕获意外被清空的产物。
 func TestEmbeddedCatalogParses(t *testing.T) {
 	c, err := Load()
 	if err != nil {
@@ -26,17 +25,17 @@ func TestEmbeddedCatalogParses(t *testing.T) {
 	if len(c.Modules) == 0 {
 		t.Fatalf("embedded catalog has 0 modules — generator regression or blanked artifact")
 	}
-	// A known money-path package must be present so Lookup is exercised against
-	// real data (the seed convention depends on billing being catalogued).
+	// 必须存在一个已知的 money-path 包,以便 Lookup 能针对真实数据被演练
+	//(seed 约定依赖 billing 被编入 catalog)。
 	if _, ok := c.Lookup("billing"); !ok {
 		t.Fatalf("catalog missing 'billing' entry; Lookup over real data failed")
 	}
 }
 
-// TestGeneratorOutputParsesAndMapsSection — generator output is well-formed and
-// carries the section/feature mapping (not just bare pkg names).
-// Regression: if GenerateFromBytes dropped the section/feature_id wiring (e.g.
-// stopped copying lf.section), the billing entry's Section would be empty -> RED.
+// TestGeneratorOutputParsesAndMapsSection —— 生成器输出格式良好,且携带
+// section/feature 映射(而不仅是裸的 pkg 名)。
+// 回归:若 GenerateFromBytes 丢弃了 section/feature_id 的接线(例如停止复制
+// lf.section),billing 条目的 Section 会为空 -> 转红。
 func TestGeneratorOutputParsesAndMapsSection(t *testing.T) {
 	cat, err := GenerateFromFile(featureTreePath)
 	if err != nil {
@@ -52,21 +51,18 @@ func TestGeneratorOutputParsesAndMapsSection(t *testing.T) {
 	if m.Section == "" || m.FeatureID == "" {
 		t.Fatalf("billing entry missing section/feature mapping: %+v", m)
 	}
-	// Synthetic non-Go markers must NOT be indexed as modules.
+	// 合成的非 Go 标记绝不能被索引为模块。
 	if _, ok := cat.Lookup("(rust)"); ok {
 		t.Fatalf("synthetic pkg '(rust)' leaked into catalog as a module")
 	}
 }
 
-// TestCatalogStalenessGuard — THE drift guard. It regenerates the catalog in
-// memory from the live feature tree and byte-compares against the committed
-// module-catalog.json.
+// TestCatalogStalenessGuard —— 漂移守卫。它从实时 feature tree 在内存中重新
+// 生成 catalog,并与已签入的 module-catalog.json 做逐字节比较。
 //
-// One-sentence regression: if someone edits docs/.../feature-tree.json (adds a
-// module, changes a status/parity) but forgets to re-run modulecatalog-gen, the
-// committed artifact no longer matches the fresh regeneration and this test goes
-// RED — so the static catalog can never silently drift out of sync with the
-// feature tree.
+// 一句话回归:若有人编辑了 docs/.../feature-tree.json(新增模块、改了
+// status/parity)却忘记重跑 modulecatalog-gen,已签入的产物就不再匹配全新的
+// 重新生成,此测试转红 —— 这样静态 catalog 永远不会与 feature tree 悄悄失同步。
 func TestCatalogStalenessGuard(t *testing.T) {
 	cat, err := GenerateFromFile(featureTreePath)
 	if err != nil {

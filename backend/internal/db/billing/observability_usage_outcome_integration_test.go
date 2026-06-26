@@ -33,7 +33,7 @@ func TestUsageOutcomeErrorFilter(t *testing.T) {
 	errorOnly := "error"
 	all := "all"
 
-	// MUTATION: ignoring outcome drops the WHERE and makes the error query return success rows.
+	// 变异:忽略 outcome 会丢掉 WHERE,让 error 查询返回成功行。
 	errorRows, err := q.ListUsageRecords(ctx, ListUsageRecordsParams{TenantID: &fixture.tenantID, Outcome: &errorOnly, PageLimit: 20})
 	if err != nil {
 		t.Fatalf("list error outcome: %v", err)

@@ -21,8 +21,8 @@ func TestAffinityGjsonKeySource(t *testing.T) {
 	if ruleName != "body-key" {
 		t.Fatalf("ruleName=%q want body-key", ruleName)
 	}
-	// MUTATION: make gjson extraction always return empty; this assertion
-	// must fail because the derived key would be empty or unmatched.
+	// 变异:让 gjson 提取永远返回空;此断言必须失败,因为派生出的 key
+	// 会变成空或无法匹配。
 	if affinityKey != "abc" {
 		t.Fatalf("affinityKey=%q want abc", affinityKey)
 	}
@@ -49,8 +49,8 @@ func TestAffinityHeaderKeySource(t *testing.T) {
 	if !matched {
 		t.Fatal("Match matched=false want true")
 	}
-	// MUTATION: read the wrong request header; this must fail because the
-	// expected key is sourced only from X-Affinity-Key.
+	// 变异:读取错误的请求头;此断言必须失败,因为期望的 key 只来源于
+	// X-Affinity-Key。
 	if affinityKey != "hdr" {
 		t.Fatalf("affinityKey=%q want hdr", affinityKey)
 	}
@@ -77,8 +77,8 @@ func TestAffinityModelRegexGate(t *testing.T) {
 		t.Fatalf("claude request matched=%v key=%q want true/stable", matched, key)
 	}
 
-	// MUTATION: make model regex checks always pass; gpt-4 would incorrectly
-	// match this claude-only rule.
+	// 变异:让 model 正则检查永远通过;gpt-4 会错误地匹配上这条
+	// 仅限 claude 的规则。
 	_, key, matched = rules.Match(MatchRequest{Model: "gpt-4", Header: header})
 	if matched || key != "" {
 		t.Fatalf("gpt request matched=%v key=%q want false/empty", matched, key)

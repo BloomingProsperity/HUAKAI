@@ -8,20 +8,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PostgresRotationStore is the production RotationStore (CRED-288b/288c). It is a
-// thin raw-pgx adapter on purpose: adding a new sqlc query is avoided while the
-// committed sqlc output is drifted from a clean regen.
+// PostgresRotationStore 是生产用的 RotationStore(CRED-288b/288c)。它刻意做成一个
+// 薄薄的 raw-pgx adapter:在已提交的 sqlc 输出相对干净重生成已漂移期间,避免新增
+// 一条 sqlc query。
 type PostgresRotationStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresRotationStore builds the rotation scan store over a pgx pool.
+// NewPostgresRotationStore 在一个 pgx pool 之上构建 rotation 扫描 store。
 func NewPostgresRotationStore(pool *pgxpool.Pool) *PostgresRotationStore {
 	return &PostgresRotationStore{pool: pool}
 }
 
-// DueForRotation returns up to limit active, non-deleted account credentials
-// whose 有效上次刷新时间(COALESCE(last_refresh_at, created_at))早于 olderThan ——
+// DueForRotation 返回至多 limit 条 active、未删除的 account credential,这些凭据的
+// 有效上次刷新时间(COALESCE(last_refresh_at, created_at))早于 olderThan ——
 // 即"距上次成功刷新已超过 maxAge"的凭据。用 COALESCE 而非裸 created_at 至关重要:
 // 恢复闭环刷新成功后 last_refresh_at 会被刷成 NOW(见 SaveRefreshSuccess),凭据因此
 // 立刻掉出"超期"集合,下个扫描 tick 不会再被选中——这保证扫描【幂等】、不会因为
@@ -59,23 +59,21 @@ LIMIT $2`
 	return out, nil
 }
 
-// MarkForRefreshRecovery is the CRED-288c recovery closure for an "old but still
-// refreshable" credential. It does NOT change state: the row stays 'active' so
-// it keeps being served while its access token is still valid, and only pulls
-// refresh_before_at down to refreshBeforeAt (now) so the existing refresh scan
-// (which serves the active/refreshing_with_grace/temp_unschedulable/needs_rotation
-// states with a non-null, due refresh_before_at) selects it next tick and
-// re-mints the token through the audited SaveRefreshSuccess path.
+// MarkForRefreshRecovery 是针对"年龄大但仍可刷新"凭据的 CRED-288c 恢复闭环。它不
+// 改变 state:该行保持 'active',因此在其 access token 仍有效期间继续被服务;它只把
+// refresh_before_at 拉低到 refreshBeforeAt(当前时刻),使现有的 refresh 扫描(它服务
+// active/refreshing_with_grace/temp_unschedulable/needs_rotation 这些状态、且
+// refresh_before_at 非空且到期的行)在下一个 tick 挑中它,并通过经过审计的
+// SaveRefreshSuccess 路径重新铸造 token。
 //
-// Safety:
-//   - id+tenant+provider-account scoped and 'active'-gated, so a concurrently
-//     revoked/deleted/refreshing row is a safe no-op (a revoked credential is
-//     never dragged back into the refresh flow).
-//   - it never advances next_attempt_at backwards: the existing backoff window
-//     (next_attempt_at) is preserved, so a credential already cooling down after
-//     a failed refresh is not re-attempted early and the upstream is not hammered.
-//   - it never moves refresh_before_at later, so it cannot push a credential that
-//     is already due further into the future.
+// 安全性:
+//   - 以 id+tenant+provider-account 限定作用域并以 'active' 为门控,因此一个并发被
+//     revoke/delete/refreshing 的行是一次安全的 no-op(一个被撤销的凭据绝不会被拖回
+//     refresh 流)。
+//   - 它绝不把 next_attempt_at 往回拨:现有的退避窗口(next_attempt_at)被保留,因此
+//     一个在刷新失败后已处于冷却中的凭据不会被提前重试,上游也不会被锤。
+//   - 它绝不把 refresh_before_at 往后移,因此它不会把一个已经到期的凭据进一步推到
+//     未来。
 func (s *PostgresRotationStore) MarkForRefreshRecovery(ctx context.Context, c RotationCandidate, refreshBeforeAt time.Time) error {
 	if s == nil || s.pool == nil {
 		return nil
@@ -92,15 +90,14 @@ WHERE id = $1 AND tenant_id = $2 AND provider_account_id = $3
 	return nil
 }
 
-// FlagNeedsRotation idempotently transitions an active credential into
-// needs_rotation. It is scoped by id+tenant+provider-account and only flips an
-// 'active' row, so a re-scan or a concurrently-changed row is a safe no-op.
+// FlagNeedsRotation 幂等地把一个 active 凭据转入 needs_rotation。它以
+// id+tenant+provider-account 限定作用域,且只翻转 'active' 行,因此一次重扫或一个
+// 并发被改动的行是一次安全的 no-op。
 //
-// Reserved for explicit operator force-rotate / suspected-compromise: it takes a
-// credential OFFLINE (needs_rotation is excluded from serving and refresh). The
-// age scan does NOT route static keys here, because aging alone never
-// invalidates a static API key and offlining it would brown out the account with
-// no automatic path back.
+// 保留给显式的 operator force-rotate / 疑似泄露场景:它会把一个凭据下线
+// (needs_rotation 被排除在服务与刷新之外)。年龄扫描不会把静态 key 路由到这里,
+// 因为年龄本身绝不会使一个静态 API key 失效,而把它下线会使账号陷入无自动回路的
+// 降级。
 func (s *PostgresRotationStore) FlagNeedsRotation(ctx context.Context, c RotationCandidate) error {
 	if s == nil || s.pool == nil {
 		return nil

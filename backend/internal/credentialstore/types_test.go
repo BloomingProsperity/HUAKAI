@@ -131,8 +131,8 @@ func TestVertexRuntimeMaterialSurfacesLocation(t *testing.T) {
 }
 
 func TestXAIOAuthHandlerSpec(t *testing.T) {
-	// Mutation: remove the grok/xai_oauth handlerSpec, make it session-token
-	// runtime, or accept session_token-only payloads and this test must go red.
+	// 变异:删除 grok/xai_oauth 的 handlerSpec、将其改为 session-token runtime,
+	// 或接受仅含 session_token 的 payload,本测试都必须变红。
 	handler, ok := DefaultHandlerRegistry().Lookup(VendorGrok, AuthModeXAIOAuth)
 	if !ok {
 		t.Fatal("missing grok/xai_oauth handler")
@@ -169,8 +169,8 @@ func TestXAIOAuthHandlerSpec(t *testing.T) {
 }
 
 func TestKimiHandlerSpecRefreshable(t *testing.T) {
-	// Mutation: remove refreshable or drop access_token/refresh_token from the
-	// Kimi handler anyOf list; this test must go RED on either regression.
+	// 变异:从 Kimi handler 的 anyOf 列表中移除 refreshable 或去掉
+	// access_token/refresh_token;任一回归都必须使本测试变红。
 	registry := DefaultHandlerRegistry()
 	handler, err := registry.MustLookup(VendorKimi, AuthModeKimiOAuth)
 	if err != nil {

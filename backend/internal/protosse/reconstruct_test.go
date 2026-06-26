@@ -93,9 +93,8 @@ data: {"response":{"candidates":[{"content":{"parts":[{"text":""}],"role":"model
 }
 
 func TestReconstructBufferedFromSSEOpenAITextAndUsage(t *testing.T) {
-	// Removing the SSE sniff/fallback makes this test go red: the raw body is
-	// not one JSON object, so the normal buffered parser cannot recover content
-	// or usage from it.
+	// 移除 SSE 嗅探/兜底会让本测试变红:原始响应体不是单个 JSON 对象,
+	// 普通缓冲解析器无法从中恢复出内容或 usage。
 	raw := []byte(`
 data: {"id":"chatcmpl-sse","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"rescued text"},"finish_reason":null}]}
 
@@ -204,9 +203,9 @@ func TestReconstructBufferedFromSSEAnthropicPreservesInputAndCacheTokens(t *test
 }
 
 func TestReconstructBufferedFromSSEMissingMessageStartDoesNotReturnResponse(t *testing.T) {
-	// Risk killed: buffered fallback must not turn an Anthropic content delta
-	// without message_start into a successful response. Mutation self-check:
-	// removing the content-before-start guard returns a BufferedResponse here.
+	// 已堵风险:缓冲兜底绝不能把缺少 message_start 的 Anthropic content delta
+	// 变成一个成功响应。变异自检:移除 content-before-start 守门后此处会返回
+	// 一个 BufferedResponse。
 	raw := []byte(strings.Join([]string{
 		`event: content_block_delta`,
 		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphan"}}`,

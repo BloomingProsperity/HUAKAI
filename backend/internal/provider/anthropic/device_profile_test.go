@@ -2,10 +2,9 @@ package anthropic
 
 import "testing"
 
-// DEVPIN-01: per-account device-profile pinning (反封禁 anti-clustering).
-// Parity-or-better vs CLIProxyAPI claude_device_profile.go (deterministic
-// derivation replaces the TTL cache; software version pinned to the real
-// baseline floor — never invented).
+// DEVPIN-01:按账号固定设备 profile(反封禁 anti-clustering)。
+// 相比 CLIProxyAPI 的 claude_device_profile.go 持平甚至更优(用确定性派生取代
+// TTL 缓存;软件版本钉死在真实 baseline 下限上——绝不臆造)。
 
 func TestResolveAccountDeviceProfile_BaselineFallback(t *testing.T) {
 	base := baselineClaudeDeviceProfile()
@@ -27,10 +26,9 @@ func TestResolveAccountDeviceProfile_Deterministic(t *testing.T) {
 }
 
 func TestResolveAccountDeviceProfile_PerAccountDistinct(t *testing.T) {
-	// MUTATION GUARD: collapsing the per-account hash to a constant index makes
-	// every account share one platform -> this distinctness assertion goes red,
-	// i.e. the anti-clustering fingerprint is gone (back to the original bug
-	// where 1000 accounts emit a byte-identical fingerprint).
+	// MUTATION GUARD:把按账号的哈希塌缩成一个常量索引会让所有账号共享同一个
+	// 平台 -> 这条区分性断言变红,即 anti-clustering 指纹消失(退回到原始
+	// bug:1000 个账号发出逐字节相同的指纹)。
 	seen := map[string]bool{}
 	for id := int64(1); id <= 64; id++ {
 		p := resolveAccountDeviceProfile(id)
@@ -49,12 +47,12 @@ func TestResolveAccountDeviceProfile_CoherentAndNeverInventsVersion(t *testing.T
 	}
 	for id := int64(1); id <= 200; id++ {
 		p := resolveAccountDeviceProfile(id)
-		// platform must be a real allowlisted tuple (no MacOS+x86 nonsense)
+		// 平台必须是白名单里真实的元组(不会出现 MacOS+x86 这种荒唐组合)
 		if !allowed[p.os+"/"+p.arch] {
 			t.Fatalf("accountID %d incoherent platform %s/%s", id, p.os, p.arch)
 		}
-		// software version is NEVER invented: pinned to the known-real baseline
-		// floor so a fabricated claude-cli version can never become a tell.
+		// 软件版本绝不臆造:钉死在已知真实的 baseline 下限上,这样捏造出来的
+		// claude-cli 版本永远不会成为破绽。
 		if p.userAgent != base.userAgent || p.packageVersion != base.packageVersion || p.runtimeVersion != base.runtimeVersion {
 			t.Fatalf("accountID %d altered software fingerprint: %+v (baseline %+v)", id, p, base)
 		}

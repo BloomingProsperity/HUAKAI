@@ -8,7 +8,7 @@
 //   - 启动期失败 → fail-fast 让 main 退出 (LoadPoolSelector 已守门, 这里再一次
 //     Validate; misconfigure 不允许 silent 退化)
 //   - shadow / canary / pasr-* 模式才启动 PASR 基础设施: SegmentTable +
-//     AgingWorker (1 min ticker) + RegisterPASRCacheFeedback (cachemetrics
+//     AgingWorker (每分钟 ticker) + RegisterPASRCacheFeedback (cachemetrics
 //     全局 observer)
 //   - shadow 实例 Slots=nil + Claims=nil + ReadOnlySegments=true (段表只读
 //   - 三层防御之一)
@@ -38,7 +38,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 )
 
-// envInt64 reads a non-negative int64 config value; missing/invalid/negative → 0.
+// envInt64 读取一个非负的 int64 配置值;缺失/非法/为负 → 0。
 func envInt64(key string) int64 {
 	v, err := strconv.ParseInt(os.Getenv(key), 10, 64)
 	if err != nil || v < 0 {
@@ -75,18 +75,18 @@ func buildSelector(
 		return nil, nil, fmt.Errorf("buildSelector: invalid config: %w", err)
 	}
 
-	// ROUTE-121: opt-in proactive RPM/TPM limiter. Off by default → nil counter
-	// (gate fail-open + RecordingSelector pass-through = exact current behavior).
-	// One shared counter feeds both the gate (reads budget while selecting) and
-	// the RecordingSelector (consumes budget at dispatch), across all 5 modes.
+	// ROUTE-121:opt-in 的主动 RPM/TPM 限流器。默认关闭 → counter 为 nil
+	//(gate fail-open + RecordingSelector 透传 = 与现状完全一致)。
+	// 同一个共享 counter 同时供给 gate(选号时读取预算)和
+	// RecordingSelector(在 dispatch 时消耗预算),覆盖全部 5 个 mode。
 	var ratePrecheckCounter *precheck.Counter
 	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_RATE_PRECHECK_ENABLED")); on {
 		ratePrecheckCounter = pool.NewRatePrecheckCounter()
 		logger.Info("ROUTE-121 proactive RPM/TPM rate pre-check ENABLED (per-account, opt-in via rpm_limit/tpm_limit)")
 	}
 
-	// SEC-249/250: opt-in GLOBAL per-API-key RPM/TPM limit, keyed on the resolved
-	// APIKeyID (can't be bypassed by rotating IPs). 0 limits = OFF by default.
+	// SEC-249/250:opt-in 的全局按 API-key RPM/TPM 限额,以解析出的
+	// APIKeyID 为键(无法通过轮换 IP 绕过)。限额为 0 = 默认关闭。
 	keyRPM := envInt64("HUAKAI_KEY_RPM_LIMIT")
 	keyTPM := envInt64("HUAKAI_KEY_TPM_LIMIT")
 	var keyRateCounter *precheck.Counter
@@ -95,21 +95,21 @@ func buildSelector(
 		logger.Info("SEC-249/250 per-API-key rate limit ENABLED", zap.Int64("rpm", keyRPM), zap.Int64("tpm", keyTPM))
 	}
 
-	// per-binding RPM/TPM limit, keyed on the resolved BindingID. Unlike the per-key cap (one
-	// GLOBAL config limit) this reads each binding's own model_pool_bindings.rpm_limit/tpm_limit
-	// carried per-request on SelectionRequest. Opt-in via env (default OFF → nil counter →
-	// BindingRateLimitSelector pass-through = exact current behavior); even enabled, a binding
-	// with no configured limit stays inert. Its own counter instance → no key collision with
-	// the per-account / per-key counters even if a BindingID equals some AccountID/APIKeyID.
+	// 按 binding 的 RPM/TPM 限额,以解析出的 BindingID 为键。与按 key 的封顶(一份
+	// 全局配置限额)不同,这里读取每个 binding 自身的 model_pool_bindings.rpm_limit/tpm_limit,
+	// 由 SelectionRequest 随每次请求携带。经 env opt-in(默认关闭 → counter 为 nil →
+	// BindingRateLimitSelector 透传 = 与现状完全一致);即便启用,未配置限额的 binding
+	// 也保持惰性。它有自己独立的 counter 实例 → 即便某个 BindingID 恰好等于某个
+	// AccountID/APIKeyID,也不会与按账号/按 key 的 counter 发生键碰撞。
 	var bindingRateCounter *precheck.Counter
 	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_BINDING_RATE_LIMIT_ENABLED")); on {
 		bindingRateCounter = pool.NewRatePrecheckCounter()
 		logger.Info("per-binding RPM/TPM rate limit ENABLED (opt-in via model_pool_bindings.rpm_limit/tpm_limit)")
 	}
 
-	// wrapRecording composes the opt-in selector wrappers (all inert when off):
-	// BindingRateLimit (per-binding, outermost) over KeyRateLimit (per-key, rejects before
-	// selection) over Recording (per-account budget consume, ROUTE-121).
+	// wrapRecording 组合这些 opt-in 的 selector 包装层(全部在关闭时惰性):
+	// BindingRateLimit(按 binding,最外层)套在 KeyRateLimit(按 key,在选号前就拒绝)外,
+	// 再套在 Recording(按账号消耗预算,ROUTE-121)外。
 	wrapRecording := func(s pool.Selector) pool.Selector {
 		if ratePrecheckCounter != nil {
 			s = pool.NewRecordingSelector(s, ratePrecheckCounter)
@@ -229,20 +229,19 @@ func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthSer
 		subscriptionenforce.WithFailOpenObserver(newGroupPolicyFailOpenObserver(logger)),
 		subscriptionenforce.WithFailClosedObserver(newGroupPolicyFailClosedObserver(logger)),
 	)
-	// SUB2-EGRESS-03: per-account 5h window spend cap gate.
-	// windowCostReader nil → WindowCostGate is fail-open (AllowAll equivalent).
+	// SUB2-EGRESS-03:按账号的 5 小时窗口消费封顶 gate。
+	// windowCostReader 为 nil → WindowCostGate 为 fail-open(等价 AllowAll)。
 	gates.WindowCost = pool.WindowCostGate{Reader: windowCostReader}
-	// SUB2-EGRESS-02: per-account max concurrent sessions cap gate.
-	// sessionCapRegistry nil -> SessionCountGate is fail-open.
+	// SUB2-EGRESS-02:按账号的最大并发会话封顶 gate。
+	// sessionCapRegistry 为 nil → SessionCountGate 为 fail-open。
 	gates.SessionCount = pool.SessionCountGate{Registry: sessionCapRegistry}
-	// ROUTE-023: per-model context-window admission gate. No injected dependency
-	// (reads only SelectionRequest fields); explicit set keeps a wiring
-	// regression test-catchable rather than silently relying on the default.
+	// ROUTE-023:按模型的上下文窗口准入 gate。无注入依赖
+	//(只读 SelectionRequest 字段);显式设置可让接线回归被测试抓到,
+	// 而非默默依赖默认值。
 	gates.ContextWindow = pool.ContextWindowGate{}
-	// ROUTE-121: proactive per-account RPM/TPM pre-check. nil counter → the gate
-	// is fail-open (default off); buildSelector injects a counter only when
-	// HUAKAI_RATE_PRECHECK_ENABLED is set, and pairs it with a RecordingSelector
-	// so the budget is consumed at dispatch.
+	// ROUTE-121:按账号的主动 RPM/TPM 预检。counter 为 nil → gate 为
+	// fail-open(默认关闭);buildSelector 仅在设置了 HUAKAI_RATE_PRECHECK_ENABLED 时
+	// 才注入 counter,并把它与一个 RecordingSelector 配对,这样预算会在 dispatch 时消耗。
 	gates.RatePrecheck = pool.RatePrecheckGate{Counter: ratePrecheckCounter}
 	return gates
 }

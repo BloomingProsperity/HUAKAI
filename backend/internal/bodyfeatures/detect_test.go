@@ -135,7 +135,7 @@ func TestDetect_AudioInputPartDiscriminates(t *testing.T) {
 	if !a {
 		t.Fatalf("audio: input_audio part present, want audio=true")
 	}
-	// input_audio must NOT leak into the other three flags — it is audio-only.
+	// input_audio 绝不能泄漏到其它三个标志 —— 它只属于 audio。
 	if v || tl || j {
 		t.Fatalf("audio: input_audio must flip audio only, got (v=%v,tl=%v,j=%v)", v, tl, j)
 	}
@@ -196,33 +196,33 @@ func TestDetect_PlainTextNoAudio(t *testing.T) {
 // mutation: 去掉任一 ok-assert / type-guard -> panic -> 转红。
 func TestDetect_DefensiveNeverPanics(t *testing.T) {
 	cases := []string{
-		``,                       // empty bytes
+		``,                       // 空字节
 		`null`,                   // JSON null
-		`{`,                      // truncated
-		`not json at all`,        // garbage
-		`{"messages":"bare"}`,    // messages as a string
-		`{"messages":123}`,       // messages as a number
-		`{"messages":[123,"x"]}`, // message elements wrong type
-		`{"messages":[{"content":"plain string"}]}`,         // content string
-		`{"messages":[{"content":42}]}`,                     // content number
-		`{"messages":[{"content":[1,2,3]}]}`,                // parts as numbers
-		`{"messages":[{"content":["a","b"]}]}`,              // parts as strings
-		`{"messages":[{"content":[{"type":123}]}]}`,         // part type wrong
-		`{"tools":"a string not array"}`,                    // tools wrong type
-		`{"tools":{"k":"v"}}`,                               // tools as object
-		`{"functions":42}`,                                  // functions wrong type
-		`{"response_format":"json"}`,                        // response_format string
-		`{"response_format":[]}`,                            // response_format array
-		`{"text":"hi"}`,                                     // text as string
-		`{"input":42}`,                                      // input wrong type
-		`{"input":[{"image_url":{"url":42}}]}`,              // nested url wrong type
-		`{"messages":[{"content":[{"type":"image_url"}]}]}`, // image_url part missing payload
-		`{"deeply":{"nested":{"junk":[null,{},[]]}}}`,       // unrelated junk
-		`{"modalities":"audio"}`,                            // modalities as a bare string
-		`{"modalities":{"audio":true}}`,                     // modalities as an object
-		`{"modalities":42}`,                                 // modalities as a number
-		`{"modalities":[1,2,3]}`,                            // modalities elements non-string
-		`{"messages":[{"content":[{"type":"input_audio"}]}]}`, // input_audio part missing payload
+		`{`,                      // 被截断
+		`not json at all`,        // 垃圾数据
+		`{"messages":"bare"}`,    // messages 是字符串
+		`{"messages":123}`,       // messages 是数字
+		`{"messages":[123,"x"]}`, // message 元素类型错误
+		`{"messages":[{"content":"plain string"}]}`,         // content 是字符串
+		`{"messages":[{"content":42}]}`,                     // content 是数字
+		`{"messages":[{"content":[1,2,3]}]}`,                // parts 是数字
+		`{"messages":[{"content":["a","b"]}]}`,              // parts 是字符串
+		`{"messages":[{"content":[{"type":123}]}]}`,         // part type 错误
+		`{"tools":"a string not array"}`,                    // tools 类型错误
+		`{"tools":{"k":"v"}}`,                               // tools 是对象
+		`{"functions":42}`,                                  // functions 类型错误
+		`{"response_format":"json"}`,                        // response_format 是字符串
+		`{"response_format":[]}`,                            // response_format 是数组
+		`{"text":"hi"}`,                                     // text 是字符串
+		`{"input":42}`,                                      // input 类型错误
+		`{"input":[{"image_url":{"url":42}}]}`,              // 嵌套 url 类型错误
+		`{"messages":[{"content":[{"type":"image_url"}]}]}`, // image_url part 缺少载荷
+		`{"deeply":{"nested":{"junk":[null,{},[]]}}}`,       // 无关垃圾
+		`{"modalities":"audio"}`,                            // modalities 是裸字符串
+		`{"modalities":{"audio":true}}`,                     // modalities 是对象
+		`{"modalities":42}`,                                 // modalities 是数字
+		`{"modalities":[1,2,3]}`,                            // modalities 元素非字符串
+		`{"messages":[{"content":[{"type":"input_audio"}]}]}`, // input_audio part 缺少载荷
 	}
 	for _, body := range cases {
 		func() {

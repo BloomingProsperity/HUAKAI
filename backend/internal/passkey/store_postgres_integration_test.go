@@ -67,8 +67,8 @@ func saveCeremony(t *testing.T, ctx context.Context, store *PostgresStore, s Cer
 }
 
 func TestPGCeremonySessionSingleUse(t *testing.T) {
-	// Mutation killed: replacing the DELETE...RETURNING in ConsumeCeremonySession
-	// with a read-only SELECT lets the second consume succeed -> this test fails.
+	// 杀掉的变异: 把 ConsumeCeremonySession 里的 DELETE...RETURNING 换成
+	// 只读 SELECT, 会让第二次 consume 也成功 -> 本测试失败。
 	ctx := context.Background()
 	store, pool := passkeyPGStore(t, ctx)
 	f := seedPasskeyFixture(t, ctx, pool)
@@ -96,8 +96,8 @@ func TestPGCeremonySessionExpired(t *testing.T) {
 }
 
 func TestPGCeremonySessionPurposeScope(t *testing.T) {
-	// A register-purpose session (bound to a user) must not be consumable via the
-	// wrong purpose, nor via the login scope (user_id IS NULL).
+	// register 用途的 session (绑定到某个 user) 不能通过错误的 purpose
+	// 被消费, 也不能通过 login scope (user_id IS NULL) 被消费。
 	ctx := context.Background()
 	store, pool := passkeyPGStore(t, ctx)
 	f := seedPasskeyFixture(t, ctx, pool)
@@ -223,8 +223,8 @@ func TestPGCredentialTenantIsolation(t *testing.T) {
 }
 
 func TestPGCrossUserDeleteRejected(t *testing.T) {
-	// Mutation killed: dropping user_id from DeleteCredential's WHERE clause lets
-	// userA delete userB's credential -> the survival assertion fails.
+	// 杀掉的变异: 从 DeleteCredential 的 WHERE 子句去掉 user_id, 会让
+	// userA 能删除 userB 的 credential -> 存活断言失败。
 	ctx := context.Background()
 	store, pool := passkeyPGStore(t, ctx)
 	f := seedPasskeyFixture(t, ctx, pool)

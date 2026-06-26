@@ -1,8 +1,8 @@
-// Package auth tests the F-AUTH-005 implementation against the contract
-// in docs/specs/upstream-credential-management.md.
+// 本包对照 docs/specs/upstream-credential-management.md 中的契约
+// 测试 F-AUTH-005 实现。
 //
-// All tests use in-memory stubs (auth_helpers_test.go) + httptest.Server
-// for upstream OAuth refresh; no external dependencies required.
+// 所有测试都使用内存版桩 (auth_helpers_test.go) + httptest.Server
+// 来模拟上游 OAuth refresh; 无需任何外部依赖。
 package auth
 
 import (
@@ -22,7 +22,7 @@ import (
 )
 
 // =====================================================================
-// Helpers
+// 辅助工具
 // =====================================================================
 
 type rig struct {
@@ -36,8 +36,8 @@ type rig struct {
 	client   *http.Client
 }
 
-// newRig builds a fully-wired test provider. The upstream OAuth server is
-// configurable via the upstreamHandler arg.
+// newRig 构建一个完整接线的测试 provider。上游 OAuth server 可通过
+// upstreamHandler 参数配置。
 func newRig(t *testing.T, upstreamHandler http.HandlerFunc) *rig {
 	t.Helper()
 	store := newMemStore()
@@ -101,7 +101,7 @@ type remoteAddrConn struct {
 
 func (c remoteAddrConn) RemoteAddr() net.Addr { return c.remote }
 
-// addAccount inserts a Provider Account with the given credential body.
+// addAccount 用给定的 credential body 插入一个 Provider Account。
 func (r *rig) addAccount(tenantID, accountID int64, accountType string, credJSON []byte) {
 	r.store.put(ProviderAccountCredential{
 		TenantID:       tenantID,
@@ -155,9 +155,9 @@ func okOAuthHandler(returnAccessToken, returnRefreshToken string, expiresInSecon
 }
 
 // TestAT_SECURITY_W1_C01_AntigravityRefreshRejectsSSRFEndpointsBeforeSendingSecrets
-// kills the risk that tenant-controlled oauth_endpoint can make the gateway POST
-// refresh_token/client_secret to metadata, loopback, link-local, private, or
-// non-HTTPS destinations.
+// 消除如下风险: 租户可控的 oauth_endpoint 让 gateway 把
+// refresh_token/client_secret POST 到 metadata、loopback、link-local、private 或
+// 非 HTTPS 的目标。
 func TestAT_SECURITY_W1_C01_AntigravityRefreshRejectsSSRFEndpointsBeforeSendingSecrets(t *testing.T) {
 	var bodies []string
 	var mu sync.Mutex
@@ -205,8 +205,8 @@ func TestAT_SECURITY_W1_C01_AntigravityRefreshRejectsSSRFEndpointsBeforeSendingS
 	}
 }
 
-// TestAT_SECURITY_W1_C01_AntigravityRefreshAllowsPublicHTTPS kills the risk
-// that the SSRF guard blocks legitimate public HTTPS OAuth refresh endpoints.
+// TestAT_SECURITY_W1_C01_AntigravityRefreshAllowsPublicHTTPS 消除如下风险:
+// SSRF guard 把合法的公网 HTTPS OAuth refresh endpoint 也挡掉。
 func TestAT_SECURITY_W1_C01_AntigravityRefreshAllowsPublicHTTPS(t *testing.T) {
 	upstream, client := newMappedHTTPSServer(t, okOAuthHandler("new"+goodToken, "rt"+goodToken, 3600), nil)
 	defer upstream.Close()
@@ -496,10 +496,9 @@ func TestAT_SECURITY_W1_C01_AntigravityRefreshDoesNotFollowRedirects(t *testing.
 	}
 }
 
-// TestAT_SECURITY_W1_C02_RefreshFailureRedactsOAuthSecretsInRecordedError kills
-// the risk that upstream OAuth error echoes expose client_secret,
-// client_assertion, password, secret, or authorization in returned errors and
-// refresh audit fields.
+// TestAT_SECURITY_W1_C02_RefreshFailureRedactsOAuthSecretsInRecordedError 消除如下风险:
+// 上游 OAuth 错误回显在返回的错误和 refresh 审计字段中暴露 client_secret、
+// client_assertion、password、secret 或 authorization。
 func TestAT_SECURITY_W1_C02_RefreshFailureRedactsOAuthSecretsInRecordedError(t *testing.T) {
 	secretBody := `{"client_secret":"json-secret","client_assertion":"json-assert","password":"json-pass","authorization":"Bearer json-auth"} ` +
 		`client_secret=form-secret&client_assertion=form-assert&password=form-pass&secret=form-generic ` +
@@ -531,13 +530,13 @@ func TestAT_SECURITY_W1_C02_RefreshFailureRedactsOAuthSecretsInRecordedError(t *
 }
 
 // =====================================================================
-// Sub2API-inheritable scenarios
+// Sub2API 可继承的场景
 // =====================================================================
 
-// AT-AUTH-005-001: pre-expiry refresh.
+// AT-AUTH-005-001: 过期前 refresh。
 func TestAT_AUTH_005_001_PreExpiryRefresh(t *testing.T) {
 	r := newRig(t, okOAuthHandler("new"+goodToken, "newrefresh"+goodToken, 3600))
-	expired := time.Now().Add(2 * time.Minute) // < 3min skew → triggers refresh
+	expired := time.Now().Add(2 * time.Minute) // < 3min skew → 触发 refresh
 	r.addAccount(1, 100, oauthAccountType, oauthCredJSON(t, "old"+goodToken, "rt"+goodToken, r.upstream.URL, expired))
 
 	tok, err := r.provider.GetAccessToken(context.Background(), 1, 100)
@@ -556,7 +555,7 @@ func TestAT_AUTH_005_001_PreExpiryRefresh(t *testing.T) {
 	}
 }
 
-// AT-AUTH-005-002: same-account refresh lock serialization.
+// AT-AUTH-005-002: 同账号 refresh 锁串行化。
 func TestAT_AUTH_005_002_RefreshLockSerialization(t *testing.T) {
 	var refreshCount int
 	var mu sync.Mutex
@@ -564,7 +563,7 @@ func TestAT_AUTH_005_002_RefreshLockSerialization(t *testing.T) {
 		mu.Lock()
 		refreshCount++
 		mu.Unlock()
-		// simulate slow upstream so concurrent refreshes overlap
+		// 模拟慢上游, 让并发 refresh 相互重叠
 		time.Sleep(150 * time.Millisecond)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "new" + goodToken, "refresh_token": "rt" + goodToken, "expires_in": 3600,
@@ -573,7 +572,7 @@ func TestAT_AUTH_005_002_RefreshLockSerialization(t *testing.T) {
 	r := newRig(t, handler)
 	r.addAccount(2, 200, oauthAccountType, oauthCredJSON(t, "old"+goodToken, "rt"+goodToken, r.upstream.URL, time.Now().Add(1*time.Minute)))
 
-	// Spec AT-AUTH-005-002: 100 concurrent requests; exactly 1 acquires lock; others wait/use stale.
+	// 规范 AT-AUTH-005-002: 100 个并发请求; 恰好 1 个抢到锁; 其余等待/使用 stale 值。
 	const N = 100
 	var wg sync.WaitGroup
 	wg.Add(N)
@@ -591,18 +590,18 @@ func TestAT_AUTH_005_002_RefreshLockSerialization(t *testing.T) {
 	}
 }
 
-// AT-AUTH-005-003: CAS conflict on token_version → other goroutine uses winner's token.
+// AT-AUTH-005-003: token_version 上发生 CAS 冲突 → 另一个 goroutine 使用 winner 的 token。
 func TestAT_AUTH_005_003_TokenVersionCAS(t *testing.T) {
 	r := newRig(t, okOAuthHandler("new"+goodToken, "rt"+goodToken, 3600))
 	r.addAccount(3, 300, oauthAccountType, oauthCredJSON(t, "old"+goodToken, "rt"+goodToken, r.upstream.URL, time.Now().Add(1*time.Minute)))
 
-	// Pre-conflict: bump the stored token_version externally, simulating a winner already wrote.
+	// 冲突前置: 从外部抬高存储的 token_version, 模拟某个 winner 已经写过。
 	cur := r.store.get(3, 300)
 	cur.TokenVersion = 5
 	r.store.put(*cur)
 
-	// First refresh attempt loads with TokenVersion=5; SaveRefreshedCredential will succeed
-	// because store CAS treats 5 as current. To actually trigger CAS-lost, race two goroutines:
+	// 第一次 refresh 尝试以 TokenVersion=5 加载; SaveRefreshedCredential 会成功,
+	// 因为 store CAS 把 5 视作当前值。要真正触发 CAS-lost, 让两个 goroutine 竞争:
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); _, _ = r.provider.GetAccessToken(context.Background(), 3, 300) }()
@@ -614,12 +613,12 @@ func TestAT_AUTH_005_003_TokenVersionCAS(t *testing.T) {
 	}
 }
 
-// AT-AUTH-005-004: refresh failure on request path bounded by 8s context timeout.
+// AT-AUTH-005-004: 请求路径上的 refresh 失败受 8s context timeout 约束。
 func TestAT_AUTH_005_004_RequestPathTimeout(t *testing.T) {
 	t.Skip("Bounded timeout test exercises real 8s wait; skip in fast suite. Phase 4.5 long-test target.")
 }
 
-// AT-AUTH-005-006: static credential support — no refresh, just return api_key.
+// AT-AUTH-005-006: 静态 credential 支持 —— 不 refresh, 直接返回 api_key。
 func TestAT_AUTH_005_006_StaticCredential(t *testing.T) {
 	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Errorf("static credential should NOT call upstream OAuth endpoint")
@@ -638,16 +637,16 @@ func TestAT_AUTH_005_006_StaticCredential(t *testing.T) {
 }
 
 // =====================================================================
-// HUAKAI-design scenarios
+// HUAKAI 设计的场景
 // =====================================================================
 
-// AT-AUTH-005-007: tenant isolation — cache key MUST include tenant_id.
+// AT-AUTH-005-007: 租户隔离 —— cache key 必须包含 tenant_id。
 func TestAT_AUTH_005_007_TenantIsolation(t *testing.T) {
 	r := newRig(t, okOAuthHandler(goodToken, "rt"+goodToken, 3600))
 	r.addAccount(7, 777, staticAccountType, staticCredJSON(t, "secret-tenant7-"+goodToken))
 	r.addAccount(8, 777, staticAccountType, staticCredJSON(t, "secret-tenant8-"+goodToken))
 
-	// Both tenants share the same accountID=777; tokens MUST be different.
+	// 两个租户共享同一 accountID=777; token 必须不同。
 	tok7, err := r.provider.GetAccessToken(context.Background(), 7, 777)
 	if err != nil {
 		t.Fatalf("tenant 7: %v", err)
@@ -664,7 +663,7 @@ func TestAT_AUTH_005_007_TenantIsolation(t *testing.T) {
 	}
 }
 
-// AT-AUTH-005-009: token shape attestation rejects malformed.
+// AT-AUTH-005-009: token shape 校验拒绝畸形 token。
 func TestAT_AUTH_005_009_TokenShapeAttestation(t *testing.T) {
 	r := newRig(t, okOAuthHandler("garbage with spaces!", "rt"+goodToken, 3600))
 	r.addAccount(9, 900, oauthAccountType, oauthCredJSON(t, "old"+goodToken, "rt"+goodToken, r.upstream.URL, time.Now().Add(1*time.Minute)))
@@ -686,7 +685,7 @@ func TestAT_AUTH_005_009_TokenShapeAttestation(t *testing.T) {
 	}
 }
 
-// AT-AUTH-005-010: refresh token rotation audit records old/new fingerprints (NOT plaintext).
+// AT-AUTH-005-010: refresh token 轮换审计记录 old/new fingerprint (不是明文)。
 func TestAT_AUTH_005_010_RefreshRotationAudit(t *testing.T) {
 	r := newRig(t, okOAuthHandler("new"+goodToken, "rotated-refresh-"+goodToken, 3600))
 	r.addAccount(10, 1000, oauthAccountType, oauthCredJSON(t, "old"+goodToken, "old-refresh-"+goodToken, r.upstream.URL, time.Now().Add(1*time.Minute)))
@@ -709,7 +708,7 @@ func TestAT_AUTH_005_010_RefreshRotationAudit(t *testing.T) {
 	}
 }
 
-// AT-AUTH-005-011: token-leakage-safe sanitizer redacts token-shaped patterns.
+// AT-AUTH-005-011: 防 token 泄露的 sanitizer 会脱敏 token 形态的串。
 func TestAT_AUTH_005_011_TokenLeakageSafeSanitizer(t *testing.T) {
 	s := OAuthErrorSanitizer{}
 	cases := []string{
@@ -720,7 +719,7 @@ func TestAT_AUTH_005_011_TokenLeakageSafeSanitizer(t *testing.T) {
 	}
 	for _, in := range cases {
 		out := s.SanitizeError(makeErr(in)).Error()
-		// Sanitizer should contain [REDACTED] for token-shaped values.
+		// 对 token 形态的值, sanitizer 输出里应当含 [REDACTED]。
 		if !strings.Contains(out, "[REDACTED]") {
 			t.Errorf("sanitizer left token-shaped pattern in: %q", out)
 		}
@@ -805,14 +804,14 @@ func TestAT_AUTH_005_011_SanitizerRedactsSecretLabels(t *testing.T) {
 	}
 }
 
-// AT-AUTH-005-012: CAS conflict loser uses winner's token + db_version_conflict audit.
-// Forces CAS-loss path by wrapping memStore to fake `RowsAffected=0` with a known winner.
+// AT-AUTH-005-012: CAS 冲突的败者使用 winner 的 token + db_version_conflict 审计。
+// 通过包裹 memStore 伪造 `RowsAffected=0` 并给出一个已知 winner, 强制走 CAS-loss 路径。
 func TestAT_AUTH_005_012_CASLoserUsesWinnerToken(t *testing.T) {
 	winnerToken := "winner" + goodToken
 	r := newRig(t, okOAuthHandler("loser"+goodToken, "rt"+goodToken, 3600))
 	r.addAccount(12, 1200, oauthAccountType, oauthCredJSON(t, "old"+goodToken, "rt"+goodToken, r.upstream.URL, time.Now().Add(1*time.Minute)))
 
-	// Override the inner store with a forcing wrapper.
+	// 用一个强制 wrapper 覆盖内层 store。
 	winnerCred := antigravityCredential{AccessToken: winnerToken, RefreshToken: "rt" + goodToken, ExpiresAt: time.Now().Add(1 * time.Hour), OAuthEndpoint: r.upstream.URL}
 	winnerJSON, err := json.Marshal(winnerCred)
 	if err != nil {
@@ -839,8 +838,8 @@ func TestAT_AUTH_005_012_CASLoserUsesWinnerToken(t *testing.T) {
 	}
 }
 
-// casForcingStore wraps memStore to force RowsAffected=0 (CAS-loss) on the first
-// SaveRefreshedCredential call, returning a known winning credential.
+// casForcingStore 包裹 memStore, 在首次 SaveRefreshedCredential 调用时
+// 强制 RowsAffected=0 (CAS-loss), 并返回一个已知的 winning credential。
 type casForcingStore struct {
 	inner   *memStore
 	winning *ProviderAccountCredential
@@ -864,10 +863,10 @@ func (s *casForcingStore) SaveRefreshedCredential(ctx context.Context, u Refresh
 }
 
 // =====================================================================
-// Storm controller (three scopes: DB account + in-memory endpoint/global)
+// Storm controller (三个 scope: DB account + 内存版 endpoint/global)
 // =====================================================================
 
-// TestStormControllerSmoke verifies the constructor doesn't panic.
+// TestStormControllerSmoke 校验构造函数不会 panic。
 func TestStormControllerSmoke(t *testing.T) {
 	c := NewStormController(nil)
 	if c == nil {
@@ -875,31 +874,31 @@ func TestStormControllerSmoke(t *testing.T) {
 	}
 }
 
-// TestStormControllerUnconfiguredScopesAdmitWithoutPanic proves that with no
-// endpoint/global budget configured (the default account-scope-only controller)
-// both scopes ADMIT (non-nil func, no outcome, no error) and never panic. This is
-// the opt-in-additive-throttle contract: an unconfigured throttle must not block
-// refresh — the always-on DB account budget stays the guard.
+// TestStormControllerUnconfiguredScopesAdmitWithoutPanic 证明: 在未配置
+// endpoint/global budget 时 (默认的 account-scope-only controller),
+// 两个 scope 都 ADMIT (非 nil 的 func、无 outcome、无 error) 且绝不 panic。这就是
+// 可选叠加式限流的契约: 未配置的限流绝不能阻塞 refresh —— 始终在线的
+// DB account budget 仍是那道 guard。
 //
-// Mutation check: make AcquireProviderEndpoint return a denial outcome when the
-// scope is disabled → the outcome assertion goes red.
+// 变异检查: 让 AcquireProviderEndpoint 在 scope 被禁用时返回一个拒绝 outcome
+// → outcome 断言变红。
 func TestStormControllerUnconfiguredScopesAdmitWithoutPanic(t *testing.T) {
 	c := NewStormController(nil)
 	refund, outcome, err := c.AcquireProviderEndpoint(context.Background(), 1, "p", "f")
 	if err != nil || outcome != "" || refund == nil {
 		t.Fatalf("unconfigured endpoint scope: refund!=nil=%v outcome=%q err=%v, want admit", refund != nil, outcome, err)
 	}
-	refund() // must not panic
+	refund() // 不得 panic
 	gRefund, outcome, err := c.AcquireGlobal(context.Background(), 1)
 	if err != nil || outcome != "" || gRefund == nil {
 		t.Fatalf("unconfigured global scope: refund!=nil=%v outcome=%q err=%v, want admit", gRefund != nil, outcome, err)
 	}
-	gRefund() // must not panic
+	gRefund() // 不得 panic
 }
 
 // TestAT_SECURITY_W1_O1_StormControllerAccountScopeMissingStateReturnsError
-// kills the risk that the production credentialworker account-scope path panics
-// when SQL state is missing or wiring is nil.
+// 消除如下风险: 在 SQL state 缺失或接线为 nil 时, 生产 credentialworker
+// 的 account-scope 路径发生 panic。
 func TestAT_SECURITY_W1_O1_StormControllerAccountScopeMissingStateReturnsError(t *testing.T) {
 	c := NewStormController(nil)
 	if _, _, err := c.Acquire(context.Background(), 1, 1); !errors.Is(err, ErrStormControllerUnavailable) {
@@ -915,14 +914,14 @@ func TestAT_SECURITY_W1_O1_StormControllerAccountScopeMissingStateReturnsError(t
 // Smoke
 // =====================================================================
 
-func TestPackageCompiles(t *testing.T) {
+func TestPackageCompiles(t *testing.T) { // 冒烟: 包能编译
 	if time.Now().Year() < 2026 {
 		t.Fatalf("clock skew")
 	}
 }
 
 // =====================================================================
-// helpers
+// 辅助工具
 // =====================================================================
 
 type stubErr struct{ msg string }

@@ -155,4 +155,4 @@ func (a *WindsurfSessionAdapter) acceptsCredential(t provider.CredentialType) bo
 	return false
 }
 
-// Source files read: /c/HUAKAI/repo/backend/internal/provider/openai/codex_session.go; Lane: claude; Time: 2026-05-06T00:00:00Z
+// 已读源文件: /c/HUAKAI/repo/backend/internal/provider/openai/codex_session.go; Lane: claude; Time: 2026-05-06T00:00:00Z

@@ -136,8 +136,8 @@ func TestMemoryLedger_GetByRequestID(t *testing.T) {
 }
 
 func TestAT_SECURITY_W1_B14_MemoryLedgerTenantScopedLookup(t *testing.T) {
-	// Risk killed: a request_id lookup must include tenant scope so a caller
-	// cannot read another tenant's ledger entry by guessing request_id.
+	// 消除的风险：request_id 查询必须带上 tenant scope，使得调用方
+	// 无法通过猜测 request_id 读取到另一个 tenant 的 ledger entry。
 	signer, _ := sign.GenerateKey()
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
@@ -165,8 +165,8 @@ func TestAT_SECURITY_W1_B14_MemoryLedgerTenantScopedLookup(t *testing.T) {
 }
 
 func TestMemoryLedger_ListByRangeTenantScopedAndBounded(t *testing.T) {
-	// Mutation: remove the tenant_scope_ref comparison inside ListByRange; this
-	// test fails because tenant B's request appears in tenant A's export rows.
+	// 变异：删掉 ListByRange 内部的 tenant_scope_ref 比对；本测试会失败，
+	// 因为 tenant B 的请求出现在了 tenant A 的导出行里。
 	signer, _ := sign.GenerateKey()
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
@@ -197,8 +197,8 @@ func TestMemoryLedger_ListByRangeTenantScopedAndBounded(t *testing.T) {
 }
 
 func TestMemoryLedger_ListByRequestIDsTenantScoped(t *testing.T) {
-	// Mutation: drop tenant filtering in ListByRequestIDs; this test fails
-	// because req_b leaks into tenant A's selected proof entries.
+	// 变异：去掉 ListByRequestIDs 里的 tenant 过滤；本测试会失败，
+	// 因为 req_b 泄漏进了 tenant A 选中的证明条目里。
 	signer, _ := sign.GenerateKey()
 	l, _ := NewMemoryLedger(signer)
 	ctx := context.Background()
@@ -291,10 +291,10 @@ func TestMemoryLedger_VerifySignaturesIndependently(t *testing.T) {
 }
 
 func TestPrepareEntry_FieldLevelRedactionReturnsSanitizedPreparedEntry(t *testing.T) {
-	// Risk killed: PrepareEntry must keep the sanitized payload when a redactor
-	// reports field-level loss, not silently pass raw sensitive fields to Append.
-	// Mutation self-check: bypass sanitizeLedgerEntry and this test fails because
-	// forbidden_marker remains in HopChain.Detail.
+	// 消除的风险：当 redactor 报告字段级丢弃时，PrepareEntry 必须保留
+	// 脱敏后的 payload，而不能悄悄把原始敏感字段透传给 Append。
+	// 变异自检：绕过 sanitizeLedgerEntry，本测试就会失败，因为
+	// forbidden_marker 仍留在 HopChain.Detail 中。
 	const marker = "w4a-prepare-field-marker-sk-never-persist"
 	previousRedactor := ledgerRedactor
 	ledgerRedactor = func() ledgerPayloadRedactor {
@@ -338,10 +338,10 @@ func TestPrepareEntry_FieldLevelRedactionReturnsSanitizedPreparedEntry(t *testin
 }
 
 func TestPrepareEntry_RedactionFailureReturnsSentinelPreparedEntry(t *testing.T) {
-	// Risk killed: if redaction is unusable, PrepareEntry must produce a safe
-	// redaction_dropped intent with nil error so callers can still append it.
-	// Mutation self-check: returning the raw entry on ErrLedgerSanitizeUnusable
-	// makes this test fail because the sensitive marker remains in HopChain.
+	// 消除的风险：若脱敏结果不可用，PrepareEntry 必须产出一个安全的
+	// redaction_dropped 意图并返回 nil error，使调用方仍能 append 它。
+	// 变异自检：在 ErrLedgerSanitizeUnusable 时返回原始 entry，本测试
+	// 就会失败，因为敏感 marker 仍留在 HopChain 中。
 	const marker = "w4a-prepare-failure-marker-sk-never-persist"
 	previousRedactor := ledgerRedactor
 	ledgerRedactor = func() ledgerPayloadRedactor {
@@ -383,8 +383,8 @@ func TestPrepareEntry_RedactionFailureReturnsSentinelPreparedEntry(t *testing.T)
 }
 
 func TestPreparedEntry_AsLedgerEntryReturnsDeepCopy(t *testing.T) {
-	// Risk killed: mutating a read projection must not poison the sealed
-	// PreparedEntry that Append trusts without re-sanitizing.
+	// 消除的风险：修改一个只读投影不能污染那个已封箱的 PreparedEntry，
+	// Append 在不重新脱敏的情况下信任它。
 	const detailMarker = "w4a_projection_alias_marker"
 	const featureMarker = "F-POLLUTED"
 	const pollutedModel = "polluted-model"
@@ -442,10 +442,10 @@ func TestPreparedEntry_AsLedgerEntryReturnsDeepCopy(t *testing.T) {
 }
 
 func TestPrepareEntry_MissingRequestIDReturnsError(t *testing.T) {
-	// Risk killed: callers must not get a PreparedEntry that Append cannot tie
-	// to a stable request_id; without this guard future DLQ intents are unsafe.
-	// Mutation self-check: deleting the RequestID precondition makes this test
-	// fail because PrepareEntry returns nil error.
+	// 消除的风险：调用方不能拿到一个 Append 无法绑定到稳定 request_id
+	// 的 PreparedEntry；没有这个守卫，将来的 DLQ 意图就不安全。
+	// 变异自检：删掉 RequestID 前置条件，本测试就会失败，因为
+	// PrepareEntry 返回了 nil error。
 	_, err := PrepareEntry(context.Background(), LedgerEntry{
 		TenantID: 7,
 		HopChain: []proto.HopAttestation{{
@@ -459,10 +459,10 @@ func TestPrepareEntry_MissingRequestIDReturnsError(t *testing.T) {
 }
 
 func TestAuditLedgerResultValidateEnforcesStateInvariants(t *testing.T) {
-	// Risk killed: W4a-3 callers must not represent Deferred entries as signed
-	// ledger rows or allow production Disabled results. Mutation self-check:
-	// relaxing any per-state field check below makes the matching invalid case
-	// pass and this table test fail.
+	// 消除的风险：W4a-3 的调用方不能把 Deferred 条目表示成已签名的
+	// ledger 行，也不能允许生产环境出现 Disabled 结果。变异自检：放松
+	// 下面任意一个按状态划分的字段检查，都会让对应的非法用例通过，从而
+	// 让这个表驱动测试失败。
 	tests := []struct {
 		name            string
 		result          AuditLedgerResult
@@ -584,10 +584,10 @@ func TestAuditLedgerResultValidateEnforcesStateInvariants(t *testing.T) {
 }
 
 func TestEnqueuePreparedEntryToDLQBuildsAuditLedgerEnvelope(t *testing.T) {
-	// Risk killed: Append failure must enqueue the exact sanitized append intent
-	// with the W4a-3 envelope. Mutation self-check: changing EventKind,
-	// IdempotencyKey, ReplicaStatus, SourceTable, or DLQRef format makes this
-	// test fail before any request can silently settle without a durable intent.
+	// 消除的风险：Append 失败时必须把那条精确的、脱敏后的 append 意图
+	// 连同 W4a-3 envelope 一起入队。变异自检：改动 EventKind、
+	// IdempotencyKey、ReplicaStatus、SourceTable 或 DLQRef 的格式，都会让
+	// 本测试失败，从而避免任何请求在没有持久化意图的情况下悄悄结算。
 	ctx := context.Background()
 	prepared := mustPrepareForAppend(t, ctx, LedgerEntry{
 		RequestID: "req-dlq-producer",
@@ -649,8 +649,8 @@ func (e *recordingAuditLedgerDLQEnqueuer) Enqueue(_ context.Context, event dlq.E
 }
 
 func TestMemoryLedger_RedactionFailureWritesSignedSentinel(t *testing.T) {
-	// Risk killed: if ledger redaction fails, append-only storage must not keep
-	// the original privacy-sensitive hop chain forever.
+	// 消除的风险：若 ledger 脱敏失败，append-only 存储不能把原始的、
+	// 涉及隐私的 hop chain 永久保留下来。
 	const marker = "w4b-sensitive-marker-sk-never-persist"
 	previousRedactor := ledgerRedactor
 	ledgerRedactor = func() ledgerPayloadRedactor {
@@ -685,8 +685,8 @@ func TestMemoryLedger_RedactionFailureWritesSignedSentinel(t *testing.T) {
 }
 
 func TestAppendInTransaction_RedactionFailureWritesSignedSentinel(t *testing.T) {
-	// Risk killed: the production Postgres append path must not persist the raw
-	// hop_chain when ledger redaction fails before entry hashing/signing.
+	// 消除的风险：当 ledger 脱敏在 entry 哈希 / 签名之前失败时，生产环境
+	// 的 Postgres append 路径不能把原始 hop_chain 持久化下来。
 	const marker = "w4b-postgres-sensitive-marker-sk-never-persist"
 	previousRedactor := ledgerRedactor
 	ledgerRedactor = func() ledgerPayloadRedactor {
@@ -733,9 +733,8 @@ func TestAppendInTransaction_RedactionFailureWritesSignedSentinel(t *testing.T) 
 }
 
 func TestAppendInTransaction_FieldLevelRedactionPreservesSanitizedHopChain(t *testing.T) {
-	// Risk killed: field-level redaction returns sanitized bytes plus
-	// ErrUnsafePayload; that must not be misclassified as total redaction
-	// failure and replaced with the redaction_dropped sentinel.
+	// 消除的风险：字段级脱敏会返回脱敏后的 bytes 加上 ErrUnsafePayload；
+	// 这不能被误判为整体脱敏失败，进而被替换成 redaction_dropped 哨兵。
 	const marker = "w4b-field-redaction-marker-sk-never-persist"
 	previousRedactor := ledgerRedactor
 	ledgerRedactor = func() ledgerPayloadRedactor {
@@ -785,12 +784,11 @@ func TestAppendInTransaction_FieldLevelRedactionPreservesSanitizedHopChain(t *te
 }
 
 func TestAppendInTransactionRequestIDUniqueViolationReturnsDuplicateRequestID(t *testing.T) {
-	// Risk killed: DLQ replay treats ErrDuplicateRequestID as the successful
-	// concurrent-worker race. Postgres must expose the same contract as
-	// MemoryLedger when the request_id unique constraint fires.
-	// Mutation self-check: remove the 23505 request_id constraint translation
-	// and this test fails because errors.Is no longer matches
-	// ErrDuplicateRequestID.
+	// 消除的风险：DLQ 重放把 ErrDuplicateRequestID 视为并发 worker 竞争
+	// 成功的情况。当 request_id 唯一约束触发时，Postgres 必须暴露与
+	// MemoryLedger 相同的契约。
+	// 变异自检：删除对 23505 request_id 约束的转译，本测试就会失败，
+	// 因为 errors.Is 不再匹配 ErrDuplicateRequestID。
 	signer, _ := sign.GenerateKey()
 	db := &appendTxTestDB{
 		insertErr: &pgconn.PgError{
@@ -876,8 +874,8 @@ func assertRedactionDroppedSignedEntry(t *testing.T, signer *sign.Signer, out Le
 }
 
 func TestScanLedgerEntryCorruptBadHopChainJSON(t *testing.T) {
-	// Risk killed: a corrupt hop_chain JSON row must not be silently converted
-	// into a normal entry with an empty hop chain.
+	// 消除的风险：一行损坏的 hop_chain JSON 不能被悄悄转换成一个
+	// hop chain 为空的正常 entry。
 	tenantID := int64(7)
 	row := validScanLedgerEntryTestRow()
 	row.tenantID = &tenantID
@@ -891,8 +889,8 @@ func TestScanLedgerEntryCorruptBadHopChainJSON(t *testing.T) {
 }
 
 func TestScanLedgerEntryCorruptBadModelChainJSON(t *testing.T) {
-	// Risk killed: a corrupt model_chain JSON row must not return a half-parsed
-	// entry whose hop_chain can be mistaken for verified ledger content.
+	// 消除的风险：一行损坏的 model_chain JSON 不能返回一个半解析的
+	// entry，其 hop_chain 可能被误认为已验证的 ledger 内容。
 	tenantID := int64(7)
 	row := validScanLedgerEntryTestRow()
 	row.tenantID = &tenantID
@@ -906,8 +904,8 @@ func TestScanLedgerEntryCorruptBadModelChainJSON(t *testing.T) {
 }
 
 func TestScanLedgerEntryCorruptShortMerkleRoot(t *testing.T) {
-	// Risk killed: a structurally invalid persisted Merkle root must not be
-	// accepted as the zero root.
+	// 消除的风险：一个结构上非法的、已持久化的 Merkle root 不能被
+	// 当成 zero root 接受。
 	tenantID := int64(7)
 	row := validScanLedgerEntryTestRow()
 	row.tenantID = &tenantID
@@ -921,9 +919,9 @@ func TestScanLedgerEntryCorruptShortMerkleRoot(t *testing.T) {
 }
 
 func TestPostgresScopedLookupHidesCorruptRowsFromOtherTenants(t *testing.T) {
-	// Risk killed: a public verify lookup must not reveal that another tenant's
-	// request_id exists just because the row is corrupt and would otherwise map
-	// to ledger_corrupt/500 instead of not found/404.
+	// 消除的风险：公开的 verify 查询不能仅因为某行损坏（否则会映射成
+	// ledger_corrupt/500 而非 not found/404）就泄露出另一个 tenant 的
+	// request_id 存在的事实。
 	tenantA := int64(7)
 	tenantB := int64(8)
 	row := validScanLedgerEntryTestRow()
@@ -952,8 +950,8 @@ func TestPostgresScopedLookupHidesCorruptRowsFromOtherTenants(t *testing.T) {
 }
 
 func TestScanLedgerEntryAcceptsValidThirtyTwoByteRoots(t *testing.T) {
-	// Risk killed: the corrupt detector must distinguish actual malformed
-	// roots from the normal 32-byte roots used by every persisted row.
+	// 消除的风险：损坏检测器必须把真正畸形的 root 与每条持久化行
+	// 都在用的正常 32 字节 root 区分开。
 	row := validScanLedgerEntryTestRow()
 
 	got, err := scanLedgerEntry(row)
@@ -1013,9 +1011,9 @@ type fieldLevelLedgerPayloadRedactor struct {
 }
 
 func TestFieldLevelLedgerPayloadRedactorDoesNotMutateInput(t *testing.T) {
-	// Risk killed: this fixture must prove PrepareEntry used the sanitized
-	// return bytes. If the fixture mutates its input, a bad PrepareEntry that
-	// ignores those bytes can still pass because rawEntry was already cleaned.
+	// 消除的风险：这个 fixture 必须证明 PrepareEntry 用的是脱敏后返回的
+	// bytes。若 fixture 修改了它的输入，那么一个忽略这些 bytes 的、有缺陷
+	// 的 PrepareEntry 仍可能通过，因为 rawEntry 早已被清理过了。
 	const marker = "w4a-fixture-mutation-marker-sk-never-persist"
 	payload := redactedLedgerPayload{
 		TenantScopeRef: TenantScopeRef(7),

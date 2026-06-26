@@ -96,13 +96,13 @@ type Service struct {
 	// 不接受任何 caller 提供的 redirect_uri,只能用各 provider 服务端配置的固定 RedirectURI,fail-closed 防
 	// open-redirect / 授权码外泄。
 	AllowedRedirectURIs []string
-	// SignupBonusFn, if non-nil, is called after every successful new-user
-	// registration (password + social paths) to issue a signup welcome credit.
-	// Nil = feature absent = no-op. Set by the caller; default-OFF.
+	// SignupBonusFn 若非 nil, 会在每次新用户注册成功后
+	// (password + social 路径) 被调用, 发放一笔注册欢迎额度。
+	// Nil = 功能缺席 = no-op。由调用方设置; 默认关闭。
 	SignupBonusFn func(ctx context.Context, tenantID, userID int64) error
-	// InviteeRewardFn, if non-nil, is called after an invite binding is applied
-	// at registration to issue a wallet credit to the new user (referee reward).
-	// Nil = feature absent = no-op. Set by the caller; default-OFF.
+	// InviteeRewardFn 若非 nil, 会在注册时应用 invite 绑定之后
+	// 被调用, 给新用户发放一笔钱包额度 (被邀请人奖励)。
+	// Nil = 功能缺席 = no-op。由调用方设置; 默认关闭。
 	InviteeRewardFn func(ctx context.Context, tenantID, userID int64) error
 }
 
@@ -467,8 +467,8 @@ func (s *Service) PreparePasswordReset(ctx context.Context, in PasswordResetConf
 	return store.PreparePasswordResetTokenUser(ctx, in.TenantID, HashToken(in.Token), s.now())
 }
 
-// Clock exposes the service injected clock so HTTP handlers thread the same
-// time source (deterministic tests; production uses the default time.Now).
+// Clock 暴露 service 注入的时钟, 这样 HTTP handler 能沿用同一个
+// 时间源 (确定性测试; 生产使用默认的 time.Now)。
 func (s *Service) Clock() time.Time { return s.now() }
 
 func (s *Service) now() time.Time {
@@ -488,9 +488,9 @@ func (s *Service) requireEmailVerification(ctx context.Context, tenantID int64) 
 	return s == nil || s.RequireVerified
 }
 
-// issueSignupCredits fires the optional signup-time wallet credits after a
-// successful new-user registration. Both fns are nil by default (feature off).
-// Errors are silently swallowed: a credit failure must not roll back registration.
+// issueSignupCredits 在新用户注册成功后发放可选的注册时钱包额度。
+// 两个 fn 默认都为 nil (功能关闭)。错误会被静默吞掉: 发放额度失败
+// 绝不能回滚注册。
 func (s *Service) issueSignupCredits(ctx context.Context, tenantID, userID int64, hadInvite bool) {
 	if s == nil {
 		return

@@ -65,7 +65,7 @@ func UnmarshalWithExtras(raw []byte, typed any, dst *PassthroughEnvelope) error 
 		return nil
 	}
 
-	// Pass 1: typed unmarshal
+	// 第 1 遍：typed unmarshal
 	if typed != nil {
 		if err := json.Unmarshal(raw, typed); err != nil {
 			return fmt.Errorf("proto.UnmarshalWithExtras: typed: %w", err)
@@ -75,7 +75,7 @@ func UnmarshalWithExtras(raw []byte, typed any, dst *PassthroughEnvelope) error 
 		return nil
 	}
 
-	// Pass 2: full raw → map
+	// 第 2 遍：完整 raw → map
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &all); err != nil {
 		// 顶层不是 JSON object（数组 / 标量） — typed 已尝试解，extras 不适用

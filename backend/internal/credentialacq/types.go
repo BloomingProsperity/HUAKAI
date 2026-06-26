@@ -1,4 +1,4 @@
-// Package credentialacq owns F-CRED-001 credential acquisition flow state.
+// Package credentialacq 负责 F-CRED-001 凭据获取流程的状态。
 package credentialacq
 
 import (
@@ -165,10 +165,10 @@ type CredentialCandidate struct {
 	Payload           []byte
 	ActorID           string
 	RedactedContext   map[string]any
-	// ExternalAccountID/ExternalAccountEmail/AccountIDSource carry the upstream
-	// provider account identity auto-extracted at token exchange (accountident).
-	// They are non-secret account-management metadata, never an authorization input,
-	// and are empty when extraction yielded nothing (manual/operator value wins).
+	// ExternalAccountID/ExternalAccountEmail/AccountIDSource 携带在 token 交换时
+	// 自动提取出的上游 provider 账号身份(accountident)。
+	// 它们属于非机密的账号管理元数据,绝非授权输入,
+	// 当提取无结果时为空(手工/operator 值优先)。
 	ExternalAccountID    string
 	ExternalAccountEmail string
 	AccountIDSource      string

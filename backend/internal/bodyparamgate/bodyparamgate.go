@@ -7,12 +7,11 @@ import (
 
 const nestedIncludeObfuscationKey = "stream_options.include_obfuscation"
 
-// StripBodyParams removes opt-in channel-gated request fields from a JSON
-// object. An empty strip list is a strict no-op and returns body unchanged.
+// StripBodyParams 从一个 JSON 对象中移除按渠道开关启用(opt-in)的请求
+// 字段。空的 strip 列表是严格的空操作,会原样返回 body。
 //
-// Caution: stripping "store" is useful for privacy/compliance controls, but it
-// can change Codex-style conversation persistence semantics for callers that
-// rely on upstream storage.
+// 注意:剥除 "store" 对隐私/合规管控很有用,但对于依赖上游存储的调用方,
+// 它可能改变 Codex 风格的会话持久化语义。
 func StripBodyParams(body []byte, stripKeys []string) ([]byte, error) {
 	if len(stripKeys) == 0 {
 		return body, nil
@@ -38,9 +37,8 @@ func StripBodyParams(body []byte, stripKeys []string) ([]byte, error) {
 	return out, nil
 }
 
-// ApplyParamOverride sets top-level request fields from an opt-in channel
-// override map. An empty override map is a strict no-op and returns body
-// unchanged.
+// ApplyParamOverride 根据按渠道开关启用(opt-in)的 override map 设置顶层
+// 请求字段。空的 override map 是严格的空操作,会原样返回 body。
 func ApplyParamOverride(body []byte, override map[string]json.RawMessage) ([]byte, error) {
 	if len(override) == 0 {
 		return body, nil

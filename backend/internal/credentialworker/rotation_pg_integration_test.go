@@ -11,9 +11,9 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// insertCredentialWithCreatedAt seeds one account_credentials row with an
-// explicit created_at (and optional state/vendor/auth_mode) so the rotation-age
-// cutoff and recovery routing can be exercised deterministically.
+// insertCredentialWithCreatedAt 种入一条带显式 created_at(以及可选
+// state/vendor/auth_mode)的 account_credentials 行,使 rotation-age 截止与恢复
+// 路由可以被确定性地演练。
 func insertCredentialWithCreatedAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, paID int64, suffix string, createdAt time.Time) int64 {
 	t.Helper()
 	return insertCredentialFull(t, ctx, pool, tenantID, paID, suffix, "anthropic", "api_key", "active", createdAt, nil)
@@ -55,10 +55,9 @@ func credentialRefreshBefore(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	return ts
 }
 
-// CRED-288b end-to-end against a real Postgres: a credential older than the
-// rotation cutoff is selected (with its vendor/auth_mode) and a fresh one is not;
-// the explicit operator force-rotate FlagNeedsRotation still works and is
-// idempotent.
+// CRED-288b 针对真实 Postgres 的端到端验证:一个年龄早于 rotation 截止的凭据会被
+// 选中(携带其 vendor/auth_mode),而一个新鲜的不会;显式的 operator force-rotate
+// FlagNeedsRotation 仍然有效且幂等。
 func TestPostgresRotationStore_DueAndFlag(t *testing.T) {
 	ctx := context.Background()
 	pool := openCredentialWorkerTestPool(t, ctx)
@@ -88,7 +87,7 @@ func TestPostgresRotationStore_DueAndFlag(t *testing.T) {
 	if _, ok := seen[freshID]; ok {
 		t.Fatalf("1d-old credential %d must NOT be due for rotation", freshID)
 	}
-	// DueForRotation must carry the classifier inputs.
+	// DueForRotation 必须携带分类器所需的输入。
 	if oc := seen[oldID]; oc.Vendor != "anthropic" || oc.AuthMode != "api_key" {
 		t.Fatalf("due candidate must carry vendor/auth_mode, got vendor=%q auth_mode=%q", oc.Vendor, oc.AuthMode)
 	}
@@ -111,7 +110,7 @@ func TestPostgresRotationStore_DueAndFlag(t *testing.T) {
 	}
 }
 
-// CRED-288c recovery closure end-to-end against a real Postgres.
+// CRED-288c 恢复闭环针对真实 Postgres 的端到端验证。
 //
 // 抓什么缺陷:超期但【可刷新】的 OAuth 凭据,经 MarkForRefreshRecovery 后必须保持
 // active 在线、refresh_before_at 被拉到 now,且能被既有刷新流(ListAccountsForRefresh)

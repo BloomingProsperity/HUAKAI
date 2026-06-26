@@ -14,15 +14,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 )
 
-// DevMockUpstreamEnv, when truthy AND the gateway is NOT in production mode,
-// injects a fake upstream HTTP doer so the full request loop (dispatch → forward
-// → bill → usage) runs locally with NO real provider credential or network. It
-// exists for local MVP demos and the smoke test; it is hard-gated off in
-// production so a real deployment can never silently fabricate upstream traffic.
+// DevMockUpstreamEnv 为真值且网关不在 production 模式时,注入一个假的上游 HTTP doer,
+// 让完整请求回路(dispatch → forward → bill → usage)在本地无需任何真实 provider 凭据
+// 或网络即可跑通。它仅供本地 MVP 演示和 smoke 测试使用;在 production 下被硬性禁用,
+// 确保真实部署绝不会静默伪造上游流量。
 const DevMockUpstreamEnv = "HUAKAI_DEV_MOCK_UPSTREAM"
 
-// devMockUpstreamDoer returns the fake doer when enabled, else nil. A nil doer
-// leaves UpstreamDispatcher on its real transport/proxy/TLS path untouched.
+// devMockUpstreamDoer 在启用时返回假 doer,否则返回 nil。返回 nil 时
+// UpstreamDispatcher 保持在其真实的 transport/proxy/TLS 路径上,不受影响。
 func devMockUpstreamDoer() gateway.HTTPDoer {
 	if releaseModeProduction() {
 		return nil
@@ -35,10 +34,9 @@ func devMockUpstreamDoer() gateway.HTTPDoer {
 
 type mockUpstreamDoer struct{}
 
-// Do fabricates a deterministic provider SSE stream in the protocol shape the
-// outbound request targets (Anthropic Messages vs OpenAI Chat), so the matching
-// vendor adapter in the forwarder parses a non-zero usage draft and billing
-// commits exactly as it would against a real provider.
+// Do 按出站请求所针对的协议形态(Anthropic Messages 还是 OpenAI Chat)伪造一段
+// 确定性的 provider SSE 流,使 forwarder 中匹配的厂商适配器解析出非零的 usage 草稿,
+// 计费提交的行为与对接真实 provider 时完全一致。
 func (mockUpstreamDoer) Do(req *http.Request) (*http.Response, error) {
 	const inTok, outTok = 12, 8
 	var body []byte
@@ -55,8 +53,8 @@ func (mockUpstreamDoer) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-// mockOpenAIChatSSE emits a 2-chunk + [DONE] OpenAI chat.completion.chunk stream
-// whose final chunk carries a usage block, mirroring a real streaming response.
+// mockOpenAIChatSSE 输出一段「2 个 chunk + [DONE]」的 OpenAI chat.completion.chunk 流,
+// 其最后一个 chunk 携带 usage 块,模拟真实的流式响应。
 func mockOpenAIChatSSE(inTok, outTok int) []byte {
 	var b bytes.Buffer
 	delta := map[string]any{

@@ -54,9 +54,9 @@ func TestLogLevel_PutSetsGlobalLevel_PlatformAdmin(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
-	// MUTATION GUARD: if the handler delegates to a throwaway AtomicLevel
-	// instead of the real process-wide loglevel.Level, the global level stays
-	// info and this assertion goes red.
+	// 变异防护:如果 handler 委托给一个临时丢弃的 AtomicLevel,
+	// 而不是真正进程级的 loglevel.Level,全局级别会停留在
+	// info,这条断言就会变红。
 	if loglevel.Level.Level() != zapcore.DebugLevel {
 		t.Fatalf("after PUT, global level=%v want debug", loglevel.Level.Level())
 	}

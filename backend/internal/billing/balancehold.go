@@ -27,7 +27,7 @@ func (m EnforcementMode) effective() EnforcementMode {
 	return EnforcementModeMandatory
 }
 
-// ReserveParams defines a single hold reservation request.
+// ReserveParams 定义单次 hold 预扣请求。
 type ReserveParams struct {
 	TenantID        int64
 	UserID          int64
@@ -36,7 +36,7 @@ type ReserveParams struct {
 	EnforcementMode EnforcementMode
 }
 
-// Snapshot mirrors the latest known balance/held pair for a user in Tx scope.
+// Snapshot 反映某用户在 Tx 作用域内最新已知的 balance/held 取值对。
 type Snapshot struct {
 	Balance decimal.Decimal
 	Held    decimal.Decimal

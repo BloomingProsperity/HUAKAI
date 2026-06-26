@@ -18,7 +18,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Stubs
+// 桩件(Stubs)
 // ---------------------------------------------------------------------------
 
 type stubUpstreamModelsAuth struct {
@@ -48,8 +48,8 @@ func (s *stubUpstreamModelsCredStore) LoadForProviderAccountTest(_ context.Conte
 	return s.rec, s.err
 }
 
-// allowAllTransportWrapper returns the base transport unchanged (no IP guard),
-// allowing httptest.Server (127.0.0.1) to be reached in tests.
+// allowAllTransportWrapper 原样返回基础传输层(不做 IP 守卫),
+// 以便测试中能访问到 httptest.Server(127.0.0.1)。
 func allowAllTransportWrapper(rt http.RoundTripper) (http.RoundTripper, error) {
 	return rt, nil
 }
@@ -66,7 +66,7 @@ func upstreamStaticPayload(baseURL, authHeader string) []byte {
 	return b
 }
 
-// buildModelsRouter wires the handler under /{id}/upstream-models.
+// buildModelsRouter 把处理器挂载到 /{id}/upstream-models。
 func buildModelsRouter(d UpstreamModelsDeps) *chi.Mux {
 	r := chi.NewRouter()
 	MountProviderAccountUpstreamModelsRoutes(r, d)
@@ -74,11 +74,11 @@ func buildModelsRouter(d UpstreamModelsDeps) *chi.Mux {
 }
 
 // ---------------------------------------------------------------------------
-// Test: happy path with stub upstream
+// 测试:使用桩上游的正常路径
 // ---------------------------------------------------------------------------
 
 func TestUpstreamModelsHandler_HappyPath(t *testing.T) {
-	// Stub upstream returning two models.
+	// 桩上游返回两个 model。
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
@@ -88,9 +88,9 @@ func TestUpstreamModelsHandler_HappyPath(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// The account base_url is https (production scheme); this test injects a
-	// transport wrapper that proxies every upstream call to the http httptest
-	// server, so the real SSRF guard is exercised separately in the guard test.
+	// 账号的 base_url 是 https(生产 scheme);本测试注入了一个
+	// transport wrapper,把每次上游调用都代理到 http 的 httptest
+	// 服务器,因此真实的 SSRF 守卫会在守卫测试中单独验证。
 	proxyRT := &proxyToTestServerRT{target: upstream.URL}
 	d := UpstreamModelsDeps{
 		Auth: &stubUpstreamModelsAuth{ident: platformAdminIdent()},
@@ -128,8 +128,8 @@ func TestUpstreamModelsHandler_HappyPath(t *testing.T) {
 	}
 }
 
-// proxyToTestServerRT redirects all requests to the given target URL
-// (for handler tests that need to reach an httptest.Server).
+// proxyToTestServerRT 把所有请求重定向到指定的 target URL
+//(用于需要访问 httptest.Server 的处理器测试)。
 type proxyToTestServerRT struct {
 	target string
 	base   http.RoundTripper
@@ -147,11 +147,11 @@ func (p *proxyToTestServerRT) RoundTrip(req *http.Request) (*http.Response, erro
 }
 
 // ---------------------------------------------------------------------------
-// Test: guard-blocked upstream returns 422
+// 测试:被守卫拦截的上游返回 422
 // ---------------------------------------------------------------------------
 
 func TestUpstreamModelsHandler_GuardBlocked(t *testing.T) {
-	// Transport wrapper that simulates the SSRF guard rejecting the connection.
+	// 模拟 SSRF 守卫拒绝连接的 transport wrapper。
 	d := UpstreamModelsDeps{
 		Auth: &stubUpstreamModelsAuth{ident: platformAdminIdent()},
 		Accounts: &stubUpstreamModelsAccountStore{
@@ -185,7 +185,7 @@ func TestUpstreamModelsHandler_GuardBlocked(t *testing.T) {
 	}
 }
 
-// blockedRT simulates a transport that returns ErrUnsafePassthroughEndpoint.
+// blockedRT 模拟一个返回 ErrUnsafePassthroughEndpoint 的传输层。
 type blockedRT struct{}
 
 func (b *blockedRT) RoundTrip(_ *http.Request) (*http.Response, error) {
@@ -193,7 +193,7 @@ func (b *blockedRT) RoundTrip(_ *http.Request) (*http.Response, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: account not found returns 404
+// 测试:账号未找到返回 404
 // ---------------------------------------------------------------------------
 
 func TestUpstreamModelsHandler_AccountNotFound(t *testing.T) {
@@ -213,7 +213,7 @@ func TestUpstreamModelsHandler_AccountNotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: missing base_url returns 422
+// 测试:缺少 base_url 返回 422
 // ---------------------------------------------------------------------------
 
 func TestUpstreamModelsHandler_MissingBaseURL(t *testing.T) {
@@ -240,7 +240,7 @@ func TestUpstreamModelsHandler_MissingBaseURL(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Unit tests for buildModelsURL
+// buildModelsURL 的单元测试
 // ---------------------------------------------------------------------------
 
 func TestBuildModelsURL(t *testing.T) {
@@ -271,7 +271,7 @@ func TestBuildModelsURL(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Unit tests for parseModelsResponse
+// parseModelsResponse 的单元测试
 // ---------------------------------------------------------------------------
 
 func TestParseModelsResponse(t *testing.T) {
@@ -280,7 +280,7 @@ func TestParseModelsResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// De-duplicated: gpt-4 appears once despite two entries.
+	// 已去重:gpt-4 虽出现两次,结果中只出现一次。
 	if len(models) != 2 {
 		t.Errorf("expected 2 unique models, got %d: %v", len(models), models)
 	}
@@ -294,15 +294,15 @@ func TestParseModelsResponse_InvalidJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Unit tests for the SSRF guard IP predicate (real provider package logic)
+// SSRF 守卫 IP 判定逻辑的单元测试(使用真实的 provider 包逻辑)
 // ---------------------------------------------------------------------------
 
-// TestSSRFGuard_IPPredicate exercises publicPassthroughIP / passthroughIPAllowedForHost
-// directly through the exported ErrUnsafePassthroughEndpoint sentinel.
-// We use WrapPassthroughEndpointTransport: it must reject 127.0.0.1 and
-// private IPs, and must accept a public IP.
+// TestSSRFGuard_IPPredicate 通过导出的 ErrUnsafePassthroughEndpoint 哨兵错误,
+// 直接验证 publicPassthroughIP / passthroughIPAllowedForHost。
+// 我们使用 WrapPassthroughEndpointTransport:它必须拒绝 127.0.0.1 和
+// 私有 IP,并且必须接受公网 IP。
 func TestSSRFGuard_RealTransportWrapperRejectsPrivateIP(t *testing.T) {
-	// Dial to 127.0.0.1 must be refused by the guarded transport.
+	// 经守卫的传输层必须拒绝对 127.0.0.1 的拨号。
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	base.Proxy = nil
 	rt, err := provider.WrapPassthroughEndpointTransport(base)
@@ -319,7 +319,7 @@ func TestSSRFGuard_RealTransportWrapperRejectsPrivateIP(t *testing.T) {
 	}
 }
 
-// TestSSRFGuard_PrivateIPBlocked checks the IP predicate for 10.0.0.1 (private).
+// TestSSRFGuard_PrivateIPBlocked 验证针对 10.0.0.1(私有)的 IP 判定逻辑。
 func TestSSRFGuard_PrivateIPTransportBlocked(t *testing.T) {
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	base.Proxy = nil
@@ -337,12 +337,12 @@ func TestSSRFGuard_PrivateIPTransportBlocked(t *testing.T) {
 	}
 }
 
-// TestSSRFGuard_MutationVerification documents the mutation test.
-// To mutate: change WrapPassthroughEndpointTransport to allow private IPs ??// this test goes RED. This test documents the expected guard behaviour
-// but does not modify production code (the mutation is done externally).
+// TestSSRFGuard_MutationVerification 记录了变异测试。
+// 变异方式:将 WrapPassthroughEndpointTransport 改为允许私有 IP ??// 此测试就会变红。本测试记录了守卫的预期行为,
+// 但不会修改生产代码(变异是在外部进行的)。
 func TestSSRFGuard_MutationVerification(t *testing.T) {
-	// If the guard is correctly blocking private IPs, dialing 192.168.1.1
-	// must return ErrUnsafePassthroughEndpoint.
+	// 如果守卫正确地拦截了私有 IP,那么对 192.168.1.1 的拨号
+	// 必须返回 ErrUnsafePassthroughEndpoint。
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	base.Proxy = nil
 	rt, err := provider.WrapPassthroughEndpointTransport(base)

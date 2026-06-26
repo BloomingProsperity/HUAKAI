@@ -57,7 +57,7 @@ func TestGeminiBodyPassthroughByteForByte(t *testing.T) {
 }
 
 // TestGeminiStreamURL 抓的回归:Gemini 流式 → streamGenerateContent + ?alt=sse。
-// Mutation:把 stream action 改回 generateContent 或漏 alt=sse → 断言红。
+// 变异:把 stream action 改回 generateContent 或漏 alt=sse → 断言红。
 func TestGeminiStreamURL(t *testing.T) {
 	a := &PassthroughAdapter{Mode: ModeGemini}
 	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
@@ -78,7 +78,7 @@ func TestGeminiStreamURL(t *testing.T) {
 }
 
 // TestLocationGlobalNoRegionPrefix 抓的回归:location=global → host 无区域前缀。
-// Mutation:翻转 global 分支 → host 变 "global-aiplatform..." 断言红。
+// 变异:翻转 global 分支 → host 变 "global-aiplatform..." 断言红。
 func TestLocationGlobalNoRegionPrefix(t *testing.T) {
 	a := &PassthroughAdapter{Mode: ModeGemini}
 	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
@@ -95,7 +95,7 @@ func TestLocationGlobalNoRegionPrefix(t *testing.T) {
 }
 
 // TestLocationDefaultsToUSCentral1 抓的回归:location 空 → 默认 us-central1。
-// Mutation:删默认值 → location 段为空、host 变 "-aiplatform..." 断言红。
+// 变异:删默认值 → location 段为空、host 变 "-aiplatform..." 断言红。
 func TestLocationDefaultsToUSCentral1(t *testing.T) {
 	a := &PassthroughAdapter{Mode: ModeGemini}
 	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
@@ -115,7 +115,7 @@ func TestLocationDefaultsToUSCentral1(t *testing.T) {
 }
 
 // TestLocationInvalidRejected 抓的回归:非法 location 被 ^[a-z0-9-]+$ 拒。
-// 这是 SSRF/path-injection 判别器。Mutation:删 regex 校验 → 恶意 location
+// 这是 SSRF/path-injection 判别器。变异:删 regex 校验 → 恶意 location
 // 不报错、断言红。
 func TestLocationInvalidRejected(t *testing.T) {
 	bad := []string{
@@ -186,7 +186,7 @@ func TestAnthropicStreamURL(t *testing.T) {
 // 客户端 raw body 直通到此仍带 "stream":true。adapter 必须据 body 选
 // streamRawPredict——否则 Claude-on-Vertex 流式整条建非流 URL,forwarder 收到
 // buffered JSON 无法解析(主路径不可用)。
-// Mutation:删 BuildRequest 的 inboundRequestsStream 回退 → 建 rawPredict、
+// 变异:删 BuildRequest 的 inboundRequestsStream 回退 → 建 rawPredict、
 // 无 ?alt=sse,本测试红。
 func TestStreamFromInboundBodyWhenExtraUnset(t *testing.T) {
 	a := &PassthroughAdapter{Mode: ModeAnthropic}
@@ -230,7 +230,7 @@ func TestNonStreamBodyKeepsNonStreamURL(t *testing.T) {
 
 // TestAnthropicDatedModelSurvives 抓的回归:dated model 形 name@YYYYMMDD 的 @
 // 必须在 URL path 段里原样存活（白名单含 @，不转义）。
-// Mutation:从 validModelID 白名单删 '@' → BuildRequest 拒该 model、或改回
+// 变异:从 validModelID 白名单删 '@' → BuildRequest 拒该 model、或改回
 // PathEscape 使 @ 变 %40，本测试红。
 func TestAnthropicDatedModelSurvives(t *testing.T) {
 	a := &PassthroughAdapter{Mode: ModeAnthropic}
@@ -290,7 +290,7 @@ func TestAnthropicBadJSONFailsClosed(t *testing.T) {
 
 // TestAuthHeaderNoDoubleBearer 抓的回归:Value 已是 "Bearer tok" 时注入
 // Authorization 不能变成双 Bearer；X-Goog-User-Project 必须等于 project_id。
-// Mutation:删 X-Goog-User-Project set → 断言红。
+// 变异:删 X-Goog-User-Project set → 断言红。
 func TestAuthHeaderNoDoubleBearer(t *testing.T) {
 	a := &PassthroughAdapter{Mode: ModeGemini}
 	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
@@ -377,7 +377,7 @@ func readBody(t *testing.T, req *http.Request) []byte {
 // TestGeminiCrossProtocolStreamIntent 守卫跨协议流式兜底:openai/anthropic
 // ingress→vertex_gemini 无 Extra["stream"],marshal 的 gemini body 无顶层
 // stream 字段(body 探测恒 false),端点选择只能靠 BuildInput.ClientStreamIntent。
-// MUTATION: 删 stream 判定的 ClientStreamIntent 分支 → 错选非流 :generateContent
+// 变异: 删 stream 判定的 ClientStreamIntent 分支 → 错选非流 :generateContent
 // → 本测试红。
 func TestGeminiCrossProtocolStreamIntent(t *testing.T) {
 	a := &PassthroughAdapter{Mode: ModeGemini}

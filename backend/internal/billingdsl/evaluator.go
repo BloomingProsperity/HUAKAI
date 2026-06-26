@@ -7,13 +7,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// ErrPricingUnavailable is returned when the tier expression cannot produce a
-// money-safe cost for nonzero usage.
+// ErrPricingUnavailable 在分层表达式无法为非零用量产出金额安全的成本时
+// 返回。
 var ErrPricingUnavailable = errors.New("billingdsl: pricing unavailable")
 
 var microUSDDivisor = decimal.NewFromInt(1_000_000)
 
-// Evaluate computes the USD cost for one request using the tier expression.
+// Evaluate 使用分层表达式计算单次请求的 USD 成本。
 func Evaluate(spec ExpressionSpec, input EvalInput, fallback FlatRateFallback) (EvalResult, error) {
 	multiplier, err := normalizedMultiplier(fallback.Multiplier)
 	if err != nil {

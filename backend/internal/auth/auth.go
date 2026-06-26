@@ -1,40 +1,40 @@
-// Package auth implements inbound API-key resolution plus F-AUTH-005 upstream
-// Provider Account credential management (OAuth refresh, token cache, storm
-// prevention, mimicry policy).
+// Package auth 实现入站 API-key 解析, 外加 F-AUTH-005 上游
+// Provider Account 凭证管理 (OAuth refresh、token cache、storm
+// 防护、mimicry policy)。
 //
-// See docs/specs/upstream-credential-management.md for the released upstream
-// credential spec. Current slice includes table-backed inbound API key auth,
-// Antigravity token-provider building blocks, and account-scope storm budget;
-// other provider adapters and wider storm scopes remain Phase E+ work.
+// 已发布的上游凭证规格见 docs/specs/upstream-credential-management.md。
+// 当前切片包含基于数据表的入站 API key 鉴权、Antigravity token-provider
+// 构件、以及 account-scope storm budget;
+// 其它 provider adapter 与更广的 storm scope 留待 Phase E+ 完成。
 package auth
 
 import "context"
 
-// TokenProvider returns a valid access_token for an upstream Provider Account.
-// Implementation runs the Phase A-H pipeline per spec.
+// TokenProvider 为某个上游 Provider Account 返回有效的 access_token。
+// 实现按规格运行 Phase A-H 流水线。
 type TokenProvider interface {
-	// GetAccessToken either returns the cached token, refreshes, or returns
-	// error if the Account is in temp-unsched / disabled state.
+	// GetAccessToken 返回已缓存的 token、执行刷新, 或在 Account 处于
+	// temp-unsched / disabled 状态时返回 error。
 	GetAccessToken(ctx context.Context, tenantID, accountID int64) (string, error)
 }
 
-// MimicryEngine applies Claude Code mimicry per F-AUTH-005 §Phase H, ONLY
-// when the per-Pool mimicry_policy.enabled = true AND legal_review_id present.
+// MimicryEngine 按 F-AUTH-005 §Phase H 应用 Claude Code mimicry, 仅
+// 当 per-Pool 的 mimicry_policy.enabled = true 且存在 legal_review_id 时生效。
 type MimicryEngine interface {
-	// ApplyToBody returns the transformed request body + audit attributes.
-	// 6-step transform: system rewrite + cache_control strip + breakpoints +
-	// tool name obfuscation + metadata user_id injection + tools[-1] breakpoint.
+	// ApplyToBody 返回变换后的请求 body + 审计属性。
+	// 6 步变换: 改写 system + 剥离 cache_control + breakpoints +
+	// 混淆 tool name + 注入 metadata user_id + tools[-1] breakpoint。
 	ApplyToBody(ctx context.Context, accountID int64, originalBody []byte) (
 		transformed []byte, audit MimicryAudit, err error)
 }
 
-// MimicryAudit records what was applied for the audit-event row.
+// MimicryAudit 记录为审计事件行实际应用了哪些内容。
 type MimicryAudit struct {
 	ComponentsApplied    []string
 	MimicryPolicyVersion string
 }
 
-// Outcome enumerates audit outcomes per spec §Phase E + H + storm budget.
+// Outcome 按规格 §Phase E + H + storm budget 枚举审计结果。
 type Outcome string
 
 const (
@@ -52,5 +52,5 @@ const (
 	OutcomeMimicryApplied            Outcome = "mimicry_applied"
 )
 
-// OpenAI/Gemini/Anthropic adapters, complete provider-endpoint/global storm
-// scopes, and wire mimicry policy enforcement.
+// OpenAI/Gemini/Anthropic adapter、完整的 provider-endpoint/global storm
+// scope, 以及 mimicry policy 强制的接线。

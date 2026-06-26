@@ -163,7 +163,7 @@ func TestPGSoftDeleteSelfLastAdminProtection(t *testing.T) {
 	}
 }
 
-// --- helpers ----------------------------------------------------------------
+// --- 辅助工具 ----------------------------------------------------------------
 
 func selfAccountTestService(store Store) *Service {
 	svc := NewService(store)

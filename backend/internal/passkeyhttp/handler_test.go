@@ -20,8 +20,8 @@ import (
 )
 
 func TestPasskeyStepUpRequiredForRegisterDelete(t *testing.T) {
-	// Mutation killed: removing VerifyStepUp from register begin/finish/delete
-	// lets an attacker with a stolen bearer session add or delete passkeys.
+	// 杀掉的变异: 从 register begin/finish/delete 移除 VerifyStepUp,
+	// 会让持有被盗 bearer session 的攻击者得以添加或删除 passkey。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 11, 0, 0, 0, time.UTC)
 	users := httpFakeUsers{rows: map[httpUserKey]userauth.User{
@@ -77,8 +77,8 @@ func TestPasskeyStepUpRequiredForRegisterDelete(t *testing.T) {
 }
 
 func TestPasskeyLoginMintsSessionLikePassword(t *testing.T) {
-	// Mutation killed: replacing usersession.Service.Create with a parallel
-	// token minter yields a response token that Validate cannot use.
+	// 杀掉的变异: 用另一套并行的 token 铸造器替换 usersession.Service.Create,
+	// 产生的响应 token 是 Validate 无法使用的。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 11, 10, 0, 0, time.UTC)
 	user := httpTestUser(1, 101, "alice@example.test")

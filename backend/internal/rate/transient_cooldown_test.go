@@ -7,7 +7,7 @@ import (
 )
 
 func TestTransientCooldown(t *testing.T) {
-	// MUTATION: returning ok=false for 502 must make this assertion red.
+	// 变异:对 502 返回 ok=false 必须让此断言转红。
 	d, reason, ok := TransientCooldown(http.StatusBadGateway, TransientCooldownConfig{Duration: 30 * time.Second})
 	if !ok {
 		t.Fatal("502 transient cooldown ok=false, want true")
@@ -24,7 +24,7 @@ func TestTransientCooldown(t *testing.T) {
 		t.Fatalf("200 transient cooldown=(%s,%s,%v), want zero/false", d, reason, ok)
 	}
 
-	// GUARD: zero duration disables the additive transient cooldown path.
+	// 守卫:零 duration 会禁用附加的瞬态冷却路径。
 	d, reason, ok = TransientCooldown(http.StatusBadGateway, TransientCooldownConfig{})
 	if ok || d != 0 || reason != "" {
 		t.Fatalf("disabled cfg transient cooldown=(%s,%s,%v), want zero/false", d, reason, ok)

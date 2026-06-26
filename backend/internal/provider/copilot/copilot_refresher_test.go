@@ -14,9 +14,9 @@ import (
 )
 
 func TestCopilotRefreshParsesEndpointAPIAndRoutesSessionAdapter(t *testing.T) {
-	// Regression killed: the service-token response endpoint.api must be kept
-	// and later used for routing. Mutation self-check: deleting endpoint parsing
-	// makes endpoint_api empty and the request falls back to api.githubcopilot.com.
+	// 消除的回归:service-token 响应里的 endpoint.api 必须被保留,并在后续
+	// 用于路由。变异自检:若删掉 endpoint 解析,endpoint_api 会变空,请求就会
+	// 回退到 api.githubcopilot.com。
 	now := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodGet {
@@ -72,9 +72,9 @@ func TestCopilotRefreshParsesEndpointAPIAndRoutesSessionAdapter(t *testing.T) {
 }
 
 func TestCopilotRefreshRejectsTokenWithoutEndpointAPI(t *testing.T) {
-	// Regression killed: a service token without endpoint.api is not routable.
-	// Mutation self-check: accepting this response makes HUAKAI silently send the
-	// token to the wrong host, so this test requires a hard error.
+	// 消除的回归:缺少 endpoint.api 的 service token 无法路由。
+	// 变异自检:若接受这种响应,HUAKAI 就会静默地把 token 发到错误的 host,
+	// 因此本测试要求返回硬错误。
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return copilotJSONResponse(http.StatusOK, `{"token":"copilot-service-token","expires_in":900}`), nil
 	})}
@@ -90,10 +90,9 @@ func TestCopilotRefreshRejectsTokenWithoutEndpointAPI(t *testing.T) {
 }
 
 func TestCopilotRefresherRecordsAuthExpiredOn401(t *testing.T) {
-	// Regression killed: a 401 from GitHub's Copilot token exchange must be
-	// classified for the credential-worker audit path. Mutation self-check:
-	// treating 401 as transient or skipping the sidecar failure hook leaves no
-	// auth_expired evidence and this test turns red.
+	// 消除的回归:GitHub Copilot token 交换返回的 401 必须被归类,送入
+	// credential-worker 审计路径。变异自检:若把 401 当作瞬时错误,或跳过
+	// sidecar 失败钩子,就不会留下 auth_expired 证据,本测试随即变红。
 	store := &memoryCopilotRefreshStore{raw: []byte(`{"github_access_token":"expired-github-token"}`)}
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return copilotJSONResponse(http.StatusUnauthorized, `{"message":"bad credentials"}`), nil
@@ -209,9 +208,9 @@ func TestCopilotRefresherRedactsTokenMaterialFromRecordedFailure(t *testing.T) {
 }
 
 func TestCopilotRefresherRecordsRateLimitOn429(t *testing.T) {
-	// Regression killed: 429 from the service-token endpoint must persist the
-	// shared rate-limit outcome. Mutation self-check: forcing the classifier
-	// bridge to unknown leaves refresh_failed and this test turns red.
+	// 消除的回归:service-token endpoint 返回的 429 必须持久化为共享的
+	// rate-limit 结果。变异自检:若强行让分类桥接返回 unknown,结果会停留在
+	// refresh_failed,本测试随即变红。
 	store := &memoryCopilotRefreshStore{raw: []byte(`{"github_access_token":"rate-limited-github-token"}`)}
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return copilotJSONResponse(http.StatusTooManyRequests, `{"message":"too many requests"}`), nil
@@ -238,10 +237,9 @@ func TestCopilotRefresherRecordsRateLimitOn429(t *testing.T) {
 }
 
 func TestCopilotRefresherRecordsRiskControlOn403RiskBody(t *testing.T) {
-	// Regression killed: 403 risk-control bodies must not be flattened into
-	// generic refresh_failed. Mutation self-check: dropping the safe response
-	// body from the classified error leaves outcome unknown and this test turns
-	// red.
+	// 消除的回归:403 风控响应体不得被压平成通用的 refresh_failed。
+	// 变异自检:若从已分类错误中丢掉安全的响应体,结果会变成 unknown,
+	// 本测试随即变红。
 	store := &memoryCopilotRefreshStore{raw: []byte(`{"github_access_token":"risk-github-token"}`)}
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return copilotJSONResponse(http.StatusForbidden, `{"message":"risk control triggered"}`), nil
@@ -268,8 +266,8 @@ func TestCopilotRefresherRecordsRiskControlOn403RiskBody(t *testing.T) {
 }
 
 func TestCopilotSessionAdapterIntegrationIDRequiredByMockBackend(t *testing.T) {
-	// Regression killed: Copilot-Integration-Id is required by strict upstreams.
-	// Mutation self-check: removing the header makes the mock backend return 400.
+	// 消除的回归:严格的上游要求必须带 Copilot-Integration-Id 请求头。
+	// 变异自检:若移除该请求头,mock 后端会返回 400。
 	req, err := (&CopilotSessionAdapter{Endpoint: "https://copilot-upstream.test/chat/completions"}).BuildRequest(context.Background(), provider.BuildInput{
 		UpstreamModelID: "gpt-4o",
 		InboundBody:     []byte(`{"messages":[]}`),

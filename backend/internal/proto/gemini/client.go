@@ -11,7 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// GeminiClient implements Gemini native v1beta client-protocol translation.
+// GeminiClient 实现 Gemini 原生 v1beta 客户端协议的转换。
 type GeminiClient struct{}
 
 var _ proto.ClientAdapter = (*GeminiClient)(nil)
@@ -74,7 +74,7 @@ type geminiInlineData struct {
 	Data     string `json:"data,omitempty"`
 }
 
-// RequestToCanonical converts Gemini generateContent JSON into HCSF.
+// RequestToCanonical 把 Gemini generateContent 的 JSON 转换为 HCSF。
 func (c *GeminiClient) RequestToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
 	seed, ok := proto.RequestMetaSeedFromContext(ctx)
 	if !ok {
@@ -166,7 +166,7 @@ func (c *GeminiClient) RequestToCanonical(ctx context.Context, raw []byte) (*pro
 	return env, losses, nil
 }
 
-// CanonicalToClientResponse converts an HCSF buffered response into Gemini JSON.
+// CanonicalToClientResponse 把 HCSF 的 buffered response 转换为 Gemini JSON。
 func (c *GeminiClient) CanonicalToClientResponse(ctx context.Context, canonical *proto.HCSF) ([]byte, []proto.ProtocolLossEntry, error) {
 	_ = ctx
 	if canonical == nil {
@@ -218,7 +218,7 @@ func geminiClientStreamStateRef(state any) (*GeminiClientStreamState, error) {
 	return s, nil
 }
 
-// CanonicalEventToClientChunk converts canonical events into Gemini SSE chunks.
+// CanonicalEventToClientChunk 把 canonical 事件转换为 Gemini SSE chunk。
 func (c *GeminiClient) CanonicalEventToClientChunk(ctx context.Context, canonicalEvt any, state any) ([][]byte, []proto.ProtocolLossEntry, error) {
 	_ = ctx
 	s, err := geminiClientStreamStateRef(state)

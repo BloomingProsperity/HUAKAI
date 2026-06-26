@@ -2,16 +2,15 @@ package userauth
 
 import "testing"
 
-// TestNewOAuthHTTPProviderRejectsUnsafeEndpoints guards social OAuth token-exchange/JWKS/
-// GitHub user&emails calls carry OAuth codes, client_secret and bearer tokens, so an
-// operator-configurable endpoint that is plain-http or points at a private/loopback/metadata literal
-// IP must be refused at construction — preventing those credentials from being dialed to
-// internal/metadata hosts (defense-in-depth alongside the dial-time SSRF client wired in
-// buildOAuthProvider).
+// TestNewOAuthHTTPProviderRejectsUnsafeEndpoints 守护一点: 社交 OAuth 的
+// token-exchange/JWKS/GitHub user&emails 调用携带 OAuth code、client_secret 和 bearer token,
+// 因此运营者可配置的 endpoint 若是 plain-http, 或指向 private/loopback/metadata 这类字面
+// IP, 必须在构造时被拒 —— 防止那些凭证被拨号到内网/metadata 主机 (与
+// buildOAuthProvider 接入的拨号期 SSRF client 一起构成纵深防御)。
 //
-// Mutation check: delete the validateOAuthEndpointURL loop in NewOAuthHTTPProvider and every reject
-// case constructs successfully → red. The accepted case proves we did not over-reject legitimate
-// https public config.
+// 变异检查: 删掉 NewOAuthHTTPProvider 里的 validateOAuthEndpointURL 循环, 那么每个 reject
+// case 都会构造成功 → 红。被接受的 case 证明我们没有过度拒绝合法的
+// https 公网配置。
 func TestNewOAuthHTTPProviderRejectsUnsafeEndpoints(t *testing.T) {
 	base := func() OAuthConfig {
 		return OAuthConfig{
@@ -30,8 +29,8 @@ func TestNewOAuthHTTPProviderRejectsUnsafeEndpoints(t *testing.T) {
 		{"token_metadata", func(c *OAuthConfig) { c.TokenURL = "https://169.254.169.254/token" }},
 		{"jwks_private", func(c *OAuthConfig) { c.JWKSURL = "https://10.0.0.5/certs" }},
 		{"auth_link_local", func(c *OAuthConfig) { c.AuthURL = "https://169.254.1.2/auth" }},
-		// special-use / non-public ranges that a naive loopback+private+link-local check misses but the
-		// shared auth.IsPublicOAuthIP policy denies: CGNAT 100.64/10 + benchmark 198.18/15.
+		// special-use / 非公网网段: 朴素的 loopback+private+link-local 检查会漏掉,
+		// 但共享的 auth.IsPublicOAuthIP 策略会拒绝它们: CGNAT 100.64/10 + benchmark 198.18/15。
 		{"token_cgnat", func(c *OAuthConfig) { c.TokenURL = "https://100.100.100.200/token" }},
 		{"jwks_benchmark", func(c *OAuthConfig) { c.JWKSURL = "https://198.18.0.1/certs" }},
 	}

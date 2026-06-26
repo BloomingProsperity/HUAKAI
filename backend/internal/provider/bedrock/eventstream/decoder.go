@@ -328,8 +328,8 @@ func (d *Decoder) effectiveLimits() Limits {
 	return l
 }
 
-// Source files read:
-//   - https://docs.aws.amazon.com/transcribe/latest/dg/event-stream.html (event stream wire format public spec)
-//   - https://docs.aws.amazon.com/AmazonS3/latest/API/RESTSelectObjectAppendix.html#api-eventstream-format (header value types)
-// Lane: claude
-// Time: 2026-05-07T<UTC>
+// 参阅的资料来源:
+//   - https://docs.aws.amazon.com/transcribe/latest/dg/event-stream.html (event stream wire format 公开规范)
+//   - https://docs.aws.amazon.com/AmazonS3/latest/API/RESTSelectObjectAppendix.html#api-eventstream-format (header value 类型)
+// 通道: claude
+// 时间: 2026-05-07T<UTC>

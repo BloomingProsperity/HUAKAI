@@ -9,7 +9,7 @@ import (
 )
 
 // ----------------------------------------------------------------------------
-// D7 CanonicalEventToClientChunk — canonical event → OpenAI Chat SSE chunk
+// D7 CanonicalEventToClientChunk — canonical event → OpenAI Chat SSE chunk 转换
 // ----------------------------------------------------------------------------
 
 // OpenAIChatStreamState 是 openai_chat client adapter 的 per-stream 状态。
@@ -59,8 +59,8 @@ func (s *OpenAIChatStreamState) openAIChunkBase() map[string]any {
 	}
 }
 
-// ForceOpenAIChatChunkFormat optionally fills the minimum OpenAI Chat SSE JSON
-// chunk keys expected by strict clients. force=false returns an exact copy.
+// ForceOpenAIChatChunkFormat 可选地补齐严格客户端期望的最小 OpenAI Chat
+// SSE JSON chunk 键。force=false 时返回原样副本。
 func ForceOpenAIChatChunkFormat(raw []byte, force bool) ([]byte, error) {
 	if !force {
 		return append([]byte(nil), raw...), nil

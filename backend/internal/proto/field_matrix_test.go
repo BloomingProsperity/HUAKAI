@@ -21,20 +21,20 @@ func TestFieldMatrix_LookupKnownField(t *testing.T) {
 		wantVerdict  FieldVerdict
 		wantTransKnd FieldTransformKind
 	}{
-		// OpenAI typed-known
+		// OpenAI typed-struct 已知字段
 		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "id", FieldPreserved, FieldTransformNone},
 		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "model", FieldPreserved, FieldTransformNone},
-		// OpenAI transformed (lossy: enum 映射多对一)
+		// OpenAI 做转换的字段（lossy：enum 映射多对一）
 		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "finish_reason", FieldTransformed, FieldTransformLossy},
-		// OpenAI vendor passthrough
+		// OpenAI vendor 透传字段
 		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "system_fingerprint", FieldPreserved, FieldTransformNone},
 		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "service_tier", FieldPreserved, FieldTransformNone},
 		{ClientProtocolOpenAIChat, UpstreamProtocolOpenAI, "prompt_filter_results", FieldPreserved, FieldTransformNone},
-		// Anthropic typed-known
+		// Anthropic typed-struct 已知字段
 		{ClientProtocolAnthropicMessages, UpstreamProtocolAnthropic, "type", FieldPreserved, FieldTransformNone},
-		// Anthropic transformed (lossy: mapStopReason 有 default→Unknown 分支)
+		// Anthropic 做转换的字段（lossy：mapStopReason 有 default→Unknown 分支）
 		{ClientProtocolAnthropicMessages, UpstreamProtocolAnthropic, "stop_reason", FieldTransformed, FieldTransformLossy},
-		// Anthropic vendor passthrough
+		// Anthropic vendor 透传字段
 		{ClientProtocolAnthropicMessages, UpstreamProtocolAnthropic, "cache_creation_input_tokens", FieldPreserved, FieldTransformNone},
 		{ClientProtocolAnthropicMessages, UpstreamProtocolAnthropic, "cache_read_input_tokens", FieldPreserved, FieldTransformNone},
 		// Bedrock-on-Anthropic 路径

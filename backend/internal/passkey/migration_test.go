@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-// collapseWS normalizes runs of whitespace to a single space so the structural
-// assertions below tolerate cosmetic SQL column alignment (e.g. "JSONB   NOT
-// NULL") while still detecting removal of the actual constraint/index/CHECK.
+// collapseWS 把连续空白归一成单个空格, 这样下面的结构性断言
+// 能容忍 SQL 列对齐这类美观性的空白 (例如 "JSONB   NOT
+// NULL"), 同时仍能检测出 constraint/index/CHECK 被实际删除。
 func collapseWS(s string) string {
 	return strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(s, " "))
 }
 
 func TestMigration0098PasskeyCredentialsShape(t *testing.T) {
-	// Mutation killed: removing the tenant-scoped credential uniqueness or
-	// tenant/user index allows cross-tenant credential collision or slow owner lists.
+	// 杀掉的变异: 移除 tenant 维度的 credential 唯一性或
+	// tenant/user 索引, 会导致跨租户 credential 碰撞或 owner 列表变慢。
 	up, err := os.ReadFile("../../sql/migrations/0098_passkey_credentials.up.sql")
 	if err != nil {
 		t.Fatalf("read migration up: %v", err)
@@ -40,8 +40,8 @@ func TestMigration0098PasskeyCredentialsShape(t *testing.T) {
 }
 
 func TestMigration0098RollbackRefusesCredentialData(t *testing.T) {
-	// Mutation killed: dropping the rollback guard allows destructive rollback
-	// while real passkey credentials still exist.
+	// 杀掉的变异: 去掉 rollback guard, 会在仍存在真实 passkey credential 时
+	// 允许破坏性的 rollback。
 	down, err := os.ReadFile("../../sql/migrations/0098_passkey_credentials.down.sql")
 	if err != nil {
 		t.Fatalf("read migration down: %v", err)

@@ -22,8 +22,8 @@ const defaultProviderAccountHealthPlatformTenantID = int64(1)
 type ProviderAccountHealthDeps struct {
 	Auth  providerAccountHealthAuth
 	Store providerAccountHealthStore
-	// RecentReqRing exposes in-process recent request outcomes (MGMT-RECENTREQ-01).
-	// nil is safe: recent_requests field will be omitted from the response.
+	// RecentReqRing 暴露进程内的近期请求结果(MGMT-RECENTREQ-01)。
+	// 传 nil 是安全的:此时响应中会省略 recent_requests 字段。
 	RecentReqRing *recentreq.Ring
 }
 
@@ -52,12 +52,12 @@ type providerAccountHealthResponseBody struct {
 	Enabled               bool    `json:"enabled"`
 	RequiresAction        bool    `json:"requires_action"`
 	UpdatedAt             string  `json:"updated_at"`
-	// RecentRequests is omitted when no in-process data is available (nil ring or
-	// no recorded requests). Zero-value is not emitted.
+	// 当没有进程内数据可用时(ring 为 nil 或没有记录到请求),
+	// RecentRequests 会被省略。零值不会被输出。
 	RecentRequests *recentRequestsSummary `json:"recent_requests,omitempty"`
 }
 
-// recentRequestsSummary is the JSON shape for in-process recent request counts.
+// recentRequestsSummary 是进程内近期请求计数对应的 JSON 结构。
 type recentRequestsSummary struct {
 	Total   int    `json:"total"`
 	Success int    `json:"success"`
@@ -175,9 +175,9 @@ func requiredProviderAccountHealthTime(ts pgtype.Timestamptz) string {
 	return ts.Time.UTC().Format(time.RFC3339)
 }
 
-// recentRequestsSummaryFor builds the optional recent_requests payload from an
-// in-process ring. Returns nil when the ring is nil or has no data for the account
-// (preserves omitempty: the field is absent from the JSON response).
+// recentRequestsSummaryFor 从进程内 ring 构建可选的 recent_requests 载荷。
+// 当 ring 为 nil 或该账号没有数据时返回 nil
+//(保留 omitempty 语义:该字段会从 JSON 响应中缺省)。
 func recentRequestsSummaryFor(ring *recentreq.Ring, accountID int64) *recentRequestsSummary {
 	if ring == nil {
 		return nil

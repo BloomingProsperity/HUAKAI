@@ -26,7 +26,7 @@ func TestListEligibleAccountsByPoolGroupSQLFiltersProviderProtocolFamily(t *test
 		"p.deleted_at IS NULL",
 		"p.upstream_protocol = $4",
 	} {
-		// Mutation: dropping the provider-family predicate lets both provider families through.
+		// 变异:去掉 provider-family 谓词会让两个 provider 协议族都被放行。
 		if !strings.Contains(sql, want) {
 			t.Fatalf("ListEligibleAccountsByPoolGroup SQL missing provider protocol filter %q in %q", want, sql)
 		}
@@ -72,8 +72,8 @@ func TestUsageLeaderboardSQLUsesWindowSortAndLimit(t *testing.T) {
 			"ORDER BY sum(ur.actual_cost) DESC",
 			"LIMIT $2::int",
 		} {
-			// Mutation checks: dropping the window admits old high-cost rows,
-			// dropping DESC misranks spend, and dropping LIMIT overreturns.
+			// 变异检查:去掉时间窗口会放进旧的高成本行,去掉 DESC 会让消费排序错乱,
+			// 去掉 LIMIT 会返回过多行。
 			if !strings.Contains(sql, want) {
 				t.Fatalf("%s leaderboard SQL missing %q in %q", name, want, sql)
 			}
@@ -91,9 +91,8 @@ func TestUsageLeaderboardByApiKeySQLGroupsAndScopes(t *testing.T) {
 		"ORDER BY sum(ur.actual_cost) DESC",
 		"LIMIT $3::int",
 	} {
-		// Mutation checks: GROUP BY user_id merges distinct keys owned by the
-		// same user, dropping the tenant predicate leaks cross-tenant keys,
-		// dropping DESC misranks spend, and dropping LIMIT overreturns.
+		// 变异检查:GROUP BY user_id 会把同一用户名下的不同 key 合并,去掉 tenant
+		// 谓词会泄漏跨租户的 key,去掉 DESC 会让消费排序错乱,去掉 LIMIT 会返回过多行。
 		if !strings.Contains(sql, want) {
 			t.Fatalf("api_key leaderboard SQL missing %q in %q", want, sql)
 		}
@@ -117,10 +116,10 @@ func TestUsagePerformanceSQLUsesSafeLatencyThroughputAndErrorAggregates(t *testi
 			"ORDER BY count(*) DESC",
 			"LIMIT $2::int",
 		} {
-			// Mutation checks: dropping FILTER admits nil first-byte rows into
-			// TTFT, dropping NULLIF allows zero-duration TPS division, dropping
-			// the success end_class filter turns all successes into errors, and
-			// dropping request-count DESC/LIMIT misranks the ops panel.
+			// 变异检查:去掉 FILTER 会把 first-byte 为空的行算进
+			// TTFT,去掉 NULLIF 会允许零时长的 TPS 除法,
+			// 去掉成功 end_class 过滤会把所有成功都变成错误,
+			// 去掉按请求数的 DESC/LIMIT 会让运维面板排序错乱。
 			if !strings.Contains(sql, want) {
 				t.Fatalf("%s performance SQL missing %q in %q", name, want, sql)
 			}
@@ -138,9 +137,8 @@ func TestUsageOverviewSQLUsesWindowDistinctSuccessAndDayBucket(t *testing.T) {
 		"count(DISTINCT ur.api_key_id)::bigint AS active_api_keys",
 		"count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count",
 	} {
-		// Mutation checks: dropping the window admits old high-cost rows,
-		// changing DISTINCT to COUNT inflates active users/keys, and dropping
-		// the success end_class filter makes every request look successful.
+		// 变异检查:去掉时间窗口会放进旧的高成本行,把 DISTINCT 改成 COUNT 会虚增
+		// 活跃用户 / key 数,去掉成功 end_class 过滤会让每个请求都显得成功。
 		if !strings.Contains(totalsSQL, want) {
 			t.Fatalf("overview totals SQL missing %q in %q", want, totalsSQL)
 		}
@@ -153,9 +151,8 @@ func TestUsageOverviewSQLUsesWindowDistinctSuccessAndDayBucket(t *testing.T) {
 		"GROUP BY 1",
 		"ORDER BY 1 ASC",
 	} {
-		// Mutation checks: dropping UTC day bucketing collapses chart points,
-		// dropping the window admits old usage, and changing order destabilizes
-		// the overview trend contract.
+		// 变异检查:去掉 UTC 按天分桶会把图表点合并,去掉时间窗口会放进旧用量,
+		// 改变排序会破坏概览趋势契约。
 		if !strings.Contains(trendSQL, want) {
 			t.Fatalf("overview trend SQL missing %q in %q", want, trendSQL)
 		}
@@ -172,9 +169,8 @@ func TestRecentUsageRollupByTenantSQLScopesWindowAndOutcome(t *testing.T) {
 		"WHERE ur.tenant_id = $1::bigint",
 		"ur.settled_at >= $2::timestamptz",
 	} {
-		// Mutation checks: dropping tenant_id leaks cross-tenant alert inputs,
-		// dropping the window admits stale incidents, and changing the success
-		// classifier makes error-rate alerts non-discriminating.
+		// 变异检查:去掉 tenant_id 会泄漏跨租户的告警输入,去掉时间窗口会放进
+		// 过时的事件,改变成功分类器会让错误率告警失去判别力。
 		if !strings.Contains(sql, want) {
 			t.Fatalf("recent tenant rollup SQL missing %q in %q", want, sql)
 		}
@@ -201,9 +197,8 @@ func TestMyUsageTimeSeriesSQLUsesRequestedGranularityAndCallerScope(t *testing.T
 				"ur.settled_at < $4::timestamptz",
 				"GROUP BY 1, 2",
 			} {
-				// Mutation checks: using day for week/month returns two buckets
-				// for same-week usage; dropping tenant/api_key/window widens the
-				// caller's self-serve scope.
+				// 变异检查:对 week/month 用 day 会让同一周的用量返回两个桶;
+				// 去掉 tenant/api_key/窗口会扩大调用方的自助查询范围。
 				if !strings.Contains(sql, want) {
 					t.Fatalf("%s time-series SQL missing %q in %q", tc.name, want, sql)
 				}
@@ -226,9 +221,8 @@ func TestMyUsageTotalsSQLUsesCallerSelectedKeyScope(t *testing.T) {
 		"COALESCE(sum(ur.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens",
 		"count(*)::bigint AS request_count",
 	} {
-		// Mutation checks: dropping tenant_id leaks cross-tenant usage, dropping
-		// api_key_id aggregates all of the user's keys, and making from/to
-		// mandatory breaks the full-history summary contract.
+		// 变异检查:去掉 tenant_id 会泄漏跨租户用量,去掉 api_key_id 会把该用户的
+		// 所有 key 聚合在一起,把 from/to 改成必填会破坏全历史汇总契约。
 		if !strings.Contains(sql, want) {
 			t.Fatalf("my usage totals SQL missing %q in %q", want, sql)
 		}
@@ -246,8 +240,8 @@ func TestGetUsageRecordByRequestIDSQLScopesToCaller(t *testing.T) {
 		"ur.api_key_id = $3::bigint",
 		"blc.logical_request_id = $4::text",
 	} {
-		// Mutation: dropping api_key_id lets one key read another key's
-		// same-user request; dropping tenant/user/request widens the lookup.
+		// 变异:去掉 api_key_id 会让一个 key 读到同一用户另一个 key 的请求;
+		// 去掉 tenant/user/request 会扩大查询范围。
 		if !strings.Contains(sql, want) {
 			t.Fatalf("GetUsageRecordByRequestID SQL missing caller scope %q in %q", want, sql)
 		}
@@ -264,8 +258,8 @@ func TestGetUsageRecordByRequestIDSQLAggregatesLogicalRequest(t *testing.T) {
 		"sum(cache_read_tokens)::integer AS cache_read_tokens",
 		"sum(actual_cost)::numeric AS actual_cost",
 	} {
-		// Mutation: reverting to ORDER BY ... LIMIT 1 reports one settlement row
-		// instead of the logical request total, so these aggregate markers vanish.
+		// 变异:退回到 ORDER BY ... LIMIT 1 会报告单条结算行而非逻辑请求总额,
+		// 这些聚合标记就会消失。
 		if !strings.Contains(sql, want) {
 			t.Fatalf("GetUsageRecordByRequestID SQL missing aggregate marker %q in %q", want, sql)
 		}

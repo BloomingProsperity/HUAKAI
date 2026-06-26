@@ -33,8 +33,8 @@ func (s *receiptOrderStub) GetOrder(_ context.Context, tenantID, orderID int64) 
 	return s.order, nil
 }
 
-// receiptReadonlyService intentionally has no credit/debit/refund methods. If the handler
-// dependency grows beyond GetOrder, this compile-time assignment fails.
+// receiptReadonlyService 有意不带任何 credit/debit/refund 方法。如果 handler
+// 的依赖超出 GetOrder,这个编译期赋值就会失败。
 type receiptReadonlyService interface {
 	GetOrder(context.Context, int64, int64) (payment.Order, error)
 }
@@ -78,7 +78,7 @@ func TestReceiptRendersOrder(t *testing.T) {
 		"paid_at: 2026-06-01T12:30:00Z",
 		"completed_at: 2026-06-01T12:35:00Z",
 	} {
-		// MUTATION: hard-code or omit real order fields in the renderer; this assertion turns red.
+		// 变异:在渲染器里硬编码或漏掉真实订单字段;此断言会变红。
 		if !strings.Contains(body, want) {
 			t.Fatalf("receipt body missing %q:\n%s", want, body)
 		}
@@ -108,7 +108,7 @@ func TestReceiptOwnershipGuard(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-user receipt status=%d body=%s want 404", rec.Code, rec.Body.String())
 	}
-	// MUTATION: remove ownership guard; the other user's out_trade_no leaks in a 200 body.
+	// 变异:移除归属校验;另一用户的 out_trade_no 会泄漏到 200 响应体里。
 	if strings.Contains(rec.Body.String(), "other-user-order") {
 		t.Fatalf("cross-user receipt leaked another user's order: %s", rec.Body.String())
 	}

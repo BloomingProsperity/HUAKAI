@@ -9,18 +9,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PostgresLister implements Lister over a pgx pool.
+// PostgresLister 基于 pgx pool 实现 Lister。
 type PostgresLister struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresLister constructs a PostgresLister.
+// NewPostgresLister 构造一个 PostgresLister。
 func NewPostgresLister(pool *pgxpool.Pool) *PostgresLister {
 	return &PostgresLister{pool: pool}
 }
 
-// ListLimitedAccounts returns accounts with window_cost_limit_cents > 0 and
-// a non-null session_window_5h_start (active window).
+// ListLimitedAccounts 返回 window_cost_limit_cents > 0 且
+// session_window_5h_start 非空(活动窗口)的账号。
 func (l *PostgresLister) ListLimitedAccounts(ctx context.Context) ([]AccountRecord, error) {
 	const q = `
 SELECT id, tenant_id, session_window_5h_start
@@ -51,19 +51,19 @@ WHERE window_cost_limit_cents > 0
 	return out, nil
 }
 
-// PostgresAggregator implements Aggregator over a pgx pool.
+// PostgresAggregator 基于 pgx pool 实现 Aggregator。
 type PostgresAggregator struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresAggregator constructs a PostgresAggregator.
+// NewPostgresAggregator 构造一个 PostgresAggregator。
 func NewPostgresAggregator(pool *pgxpool.Pool) *PostgresAggregator {
 	return &PostgresAggregator{pool: pool}
 }
 
-// SumWindowCost sums usage_records.actual_cost for the account since
-// windowStart. actual_cost is numeric(20,8) in USD; we convert to cents
-// (multiply by 100, truncate) for integer comparison in the gate.
+// SumWindowCost 汇总该账号自 windowStart 起的 usage_records.actual_cost。
+// actual_cost 是以 USD 表示的 numeric(20,8);为了在 gate 中做整数比较,
+// 我们将其换算为分(乘以 100,截断取整)。
 func (a *PostgresAggregator) SumWindowCost(ctx context.Context, accountID int64, windowStart time.Time) (int64, error) {
 	const q = `
 SELECT COALESCE(SUM(actual_cost), 0)::numeric(20,8)::text
@@ -75,12 +75,12 @@ WHERE provider_account_id = $1
 	if err := a.pool.QueryRow(ctx, q, accountID, windowStart).Scan(&raw); err != nil {
 		return 0, fmt.Errorf("windowcost: sum window cost account=%d: %w", accountID, err)
 	}
-	// Parse the numeric text and convert to cents (truncate, not round).
+	// 解析 numeric 文本并换算为分(截断,而非四舍五入)。
 	f, ok := new(big.Float).SetString(raw)
 	if !ok {
 		return 0, fmt.Errorf("windowcost: parse cost %q for account=%d", raw, accountID)
 	}
-	// Multiply by 100 to get cents.
+	// 乘以 100 得到分。
 	cents, _ := new(big.Float).Mul(f, big.NewFloat(100)).Int64()
 	return cents, nil
 }

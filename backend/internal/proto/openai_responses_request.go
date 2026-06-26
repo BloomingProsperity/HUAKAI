@@ -72,7 +72,7 @@ func (o *OpenAIResponsesClient) RequestToCanonical(ctx context.Context, raw []by
 		"preset",
 	)
 
-	// Tools: first-class function tools + native_required for built-ins
+	// Tools：一等公民 function 工具 + 内置工具走 native_required
 	if len(req.Tools) > 0 {
 		tools, toolLosses, err := convertOpenAIResponsesTools(req.Tools)
 		if err != nil {
@@ -104,7 +104,7 @@ func (o *OpenAIResponsesClient) RequestToCanonical(ctx context.Context, raw []by
 		losses = append(losses, loss)
 	}
 
-	// Stream
+	// Stream 标志
 	if req.Stream != nil && *req.Stream {
 		env.StreamPlan.Mode = StreamModeStreaming
 	}

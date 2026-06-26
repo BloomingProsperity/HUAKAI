@@ -90,9 +90,9 @@ type CreateInput struct {
 }
 
 type RefreshInput struct {
-	// TenantID and UserID are optional. When both are set, refresh enforces that the
-	// presented refresh token belongs to that caller; when both are zero, the refresh
-	// token itself is the trust root.
+	// TenantID 和 UserID 是可选的。两者都设置时, refresh 会强制
+	// 所出示的 refresh token 属于该调用方; 两者都为零时, refresh
+	// token 自身即为信任根。
 	TenantID     int64         `json:"tenant_id"`
 	UserID       int64         `json:"user_id,omitempty"`
 	RefreshToken string        `json:"refresh_token"`

@@ -126,21 +126,20 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 	}
 }
 
-// TestCompleteOAuthCallbackRejectsTerminalFlows guards the production CompleteOAuthCallback must
-// reject a callback landing on a terminal flow (cancelled/failed/expired-by-status) as ErrFlowReplay,
-// BEFORE running the state/expiry/PKCE checks — a dead flow cannot be resurrected back to
-// callback_received→validated by replaying the original state+code.
+// TestCompleteOAuthCallbackRejectsTerminalFlows 守护:生产环境的 CompleteOAuthCallback 必须
+// 在执行 state/expiry/PKCE 检查之前,把落在终态 flow(cancelled/failed/expired-by-status)上的回调
+// 当作 ErrFlowReplay 拒绝 —— 死 flow 不能通过重放原始 state+code 被复活回
+// callback_received→validated。
 //
-// It exercises the *production* CompleteOAuthCallback (not the in-memory completeOAuthCallback helper in
-// this file, which is a parallel reimplementation that does not prove the production guard). Discriminating
-// design: each terminal flow is hit with a MISMATCHED state. With the terminal guard the call returns
-// ErrFlowReplay (guard fires first); the `started` control (non-terminal) instead proceeds to the state
-// check and returns ErrStateMismatch — proving the guard is status-precise, not a blanket reject.
+// 它驱动的是*生产*版 CompleteOAuthCallback(而非本文件内的内存版 completeOAuthCallback helper,
+// 后者是并行重实现,并不能证明生产守卫)。区分性设计:每个终态 flow 都用一个不匹配的 state 去打。
+// 有终态守卫时,调用返回 ErrFlowReplay(守卫先触发);而 `started` 对照组(非终态)则继续走到 state
+// 检查并返回 ErrStateMismatch —— 证明守卫是按状态精确判定的,而非一刀切拒绝。
 //
-// Mutation check: revert oauth.go's guard to `session.Status == StatusFinalized` (dropping
-// isTerminalStatus). The cancelled/failed/expired cases then fall through to the state check and return
-// ErrStateMismatch instead of ErrFlowReplay → those assertions go red. The `started` control stays green
-// (it always reaches the state check), confirming the test isolates the terminal-status regression.
+// 变异检查:把 oauth.go 的守卫还原为 `session.Status == StatusFinalized`(丢弃
+// isTerminalStatus)。cancelled/failed/expired 这几种情况就会穿透到 state 检查并返回
+// ErrStateMismatch 而非 ErrFlowReplay → 那些断言变红。`started` 对照组保持绿色
+// (它总会到达 state 检查),证明本测试隔离的正是终态状态这一回归。
 func TestCompleteOAuthCallbackRejectsTerminalFlows(t *testing.T) {
 	now := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{9}, 32))
@@ -315,9 +314,9 @@ func TestWindsurfAcquisitionUsesTokenExchangeNotOAuthFake(t *testing.T) {
 }
 
 func TestDefaultExchangerRegistryIncludesGeminiOAuth(t *testing.T) {
-	// Regression killed: generic Gemini OAuth callback must not fall through
-	// to exchanger_missing. Mutation self-check: deleting the registry line
-	// makes lookup fail and callback completion cannot persist captured tokens.
+	// 回归保护:通用的 Gemini OAuth callback 不能穿透到
+	// exchanger_missing。变异自检:删除注册行
+	// 会使 lookup 失败,回调完成时无法持久化捕获到的 token。
 	registry := DefaultExchangerRegistry()
 	if _, ok := registry.Lookup("gemini/oauth"); !ok {
 		t.Fatal("gemini/oauth exchanger missing")

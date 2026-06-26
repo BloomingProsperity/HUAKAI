@@ -19,7 +19,7 @@ const (
 	xaiOAuthScope    = "openid profile email offline_access grok-cli:access api:access"
 )
 
-// Exported for credentialworker token-refresh reuse (single source of truth).
+// 导出供 credentialworker 做 token 刷新复用(单一事实来源)。
 const (
 	XAIOAuthTokenURL = xaiOAuthTokenURL
 	XAIOAuthClientID = xaiOAuthClientID

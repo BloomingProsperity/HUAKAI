@@ -343,11 +343,10 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		return err
 	}
 
-	// Audit-grade Usage Record on abort path: every Tx2 commit,
-	// including aborted final disposition, produces a usage_record so aborts
-	// remain queryable consistently with committed requests.
-	// Only writable when Pool wrote back provider_account_id (NOT NULL on
-	// usage_records); pre-acquire aborts skip the record.
+	// abort 路径上的审计级用量记录:每次 Tx2 提交(含 aborted 终态)都产出一条
+	// usage_record,使 abort 与 committed 请求一样可一致地查询。
+	// 仅当 Pool 已回写 provider_account_id 时才可写(usage_records 上该列 NOT NULL);
+	// pre-acquire 阶段的 abort 跳过该记录。
 	if providerAccountID != nil && acquisitionToken.Valid {
 		var tokAbort uuid.UUID
 		copy(tokAbort[:], acquisitionToken.Bytes[:])
@@ -386,9 +385,8 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		}
 	}
 
-	// Idempotently release pool slot + decrement in_flight if Pool wrote back
-	// the acquisition_token (Pattern B). When the claim aborts BEFORE Pool
-	// acquired (token NULL), there's nothing to release.
+	// 若 Pool 已回写 acquisition_token(Pattern B),则幂等地释放 pool slot 并递减
+	// in_flight。当 claim 在 Pool acquire 之前就 abort(token 为 NULL)时,无可释放之物。
 	if acquisitionToken.Valid {
 		releaseReason := "settled_aborted"
 		var tokUUID uuid.UUID

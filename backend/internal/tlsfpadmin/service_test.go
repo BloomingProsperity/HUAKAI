@@ -48,10 +48,10 @@ func (m *mockQ) ListTLSFingerprintProfilesByTenant(context.Context, int64) ([]ad
 	return m.listRows, m.listErr
 }
 
-// HOLE-1/HOLE-3 (critique must-fix): SoftDelete is `:exec` and returns nil on zero
-// rows. The service MUST pre-flight Get to detect not-found. Mutation: drop the
-// pre-flight Get and call SoftDelete directly -> SoftDelete returns nil -> Delete
-// returns nil -> this test goes red (errors.Is fails AND softDeleteCalls != 0).
+// HOLE-1/HOLE-3(评审必修项):SoftDelete 是 `:exec`,零行时返回 nil。
+// service 必须先做预检 Get 来检测 not-found。变异方式:去掉预检 Get,
+// 直接调用 SoftDelete -> SoftDelete 返回 nil -> Delete 返回 nil ->
+// 本测试转红(errors.Is 失败,且 softDeleteCalls != 0)。
 func TestDelete_NotFound_PreflightCatchesIt(t *testing.T) {
 	m := &mockQ{getErr: pgx.ErrNoRows}
 	err := New(m).Delete(context.Background(), 7, 9)
@@ -64,7 +64,7 @@ func TestDelete_NotFound_PreflightCatchesIt(t *testing.T) {
 }
 
 func TestDelete_Existing_CallsSoftDelete(t *testing.T) {
-	m := &mockQ{} // getErr nil => found
+	m := &mockQ{} // getErr 为 nil => 视为已找到
 	if err := New(m).Delete(context.Background(), 7, 9); err != nil {
 		t.Fatalf("Delete err = %v; want nil", err)
 	}
@@ -73,7 +73,7 @@ func TestDelete_Existing_CallsSoftDelete(t *testing.T) {
 	}
 }
 
-// HOLE-2 (critique must-fix): SetStatus is `:exec`; pre-flight Get detects not-found.
+// HOLE-2(评审必修项):SetStatus 是 `:exec`;预检 Get 用于检测 not-found。
 func TestSetStatus_NotFound_PreflightCatchesIt(t *testing.T) {
 	m := &mockQ{getErr: pgx.ErrNoRows}
 	_, err := New(m).SetStatus(context.Background(), SetStatusInput{TenantID: 1, ID: 2, Status: "disabled"})
@@ -85,7 +85,7 @@ func TestSetStatus_NotFound_PreflightCatchesIt(t *testing.T) {
 	}
 }
 
-// drift_detected is drift-worker-only; admin SetStatus must reject it before any DB call.
+// drift_detected 仅由 drift worker 设置;管理端 SetStatus 必须在任何 DB 调用前就拒绝它。
 func TestSetStatus_DriftDetected_RejectedBeforeDB(t *testing.T) {
 	m := &mockQ{}
 	_, err := New(m).SetStatus(context.Background(), SetStatusInput{TenantID: 1, ID: 2, Status: "drift_detected"})

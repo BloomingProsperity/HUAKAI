@@ -115,11 +115,10 @@ func (e claudeAIOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, 
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
 		RedactedContext: map[string]any{"client_identity_source": claudeAIOAuthApprovedProfileSource},
 	}
-	// Auto-capture the upstream Anthropic account identity carried inline in the
-	// token-exchange response body (account.uuid / account.email_address); an empty
-	// uuid falls back to manual binding and never blocks acquisition. This is the
-	// live-path twin of the chatgpt/codex/gemini id_token seams so all four vendors
-	// capture upstream account metadata at acquisition.
+	// 自动捕获内联在 token-exchange 响应体里的上游 Anthropic 账户身份
+	//（account.uuid / account.email_address）；uuid 为空时回退到 manual 绑定，
+	// 且绝不阻断获取。这是 chatgpt/codex/gemini id_token 接缝在实时路径上的孪生实现，
+	// 使全部四家 vendor 都在获取时捕获上游账户元数据。
 	AttachIdentity(&candidate, accountident.ExtractAnthropic(token.Account.UUID, token.Account.EmailAddress, token.Email))
 	return candidate, nil
 }

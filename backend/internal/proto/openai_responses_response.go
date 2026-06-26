@@ -9,7 +9,7 @@ import (
 )
 
 // ----------------------------------------------------------------------------
-// D10 CanonicalToClientResponse — HCSF buffered → OpenAI Responses JSON
+// D10 CanonicalToClientResponse — HCSF buffered → OpenAI Responses JSON 序列化
 // ----------------------------------------------------------------------------
 
 // canonicalToResponsesStatus 映射 canonical stop → OpenAI Responses status

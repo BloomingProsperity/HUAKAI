@@ -128,9 +128,9 @@ func (e codexWebOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, 
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
 		RedactedContext: map[string]any{"client_identity_source": codexWebApprovedProfileSource},
 	}
-	// Auto-extract the upstream account identity from the id_token JWT (sub claim),
-	// mirroring chatgpt_oauth; codex web tokens share the ChatGPT JWT shape. Empty
-	// id_token -> empty Identity -> AttachIdentity no-ops (defensive, never blocks).
+	// 从 id_token JWT（sub claim）自动提取上游账户身份，与 chatgpt_oauth 保持一致；
+	// codex web token 与 ChatGPT 的 JWT 形态相同。id_token 为空 -> 空 Identity ->
+	// AttachIdentity 变为 no-op（防御性处理，绝不阻断）。
 	AttachIdentity(&candidate, accountident.ExtractChatGPT(token.IDToken, ""))
 	return candidate, nil
 }

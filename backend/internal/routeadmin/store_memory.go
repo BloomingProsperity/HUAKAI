@@ -15,8 +15,8 @@ type MemoryStore struct {
 	seq     int64
 	routes  map[int64]Route
 	deleted map[int64]bool
-	// poolGroups 非 nil 时模拟 FK + 租户归属: id→owning tenant。
-	// 创建时 pool_group 不存在 或 owning tenant ≠ 入参 tenant → ErrPoolGroupNotFound。
+	// poolGroups 非 nil 时模拟 FK + 租户归属: id→所属租户。
+	// 创建时 pool_group 不存在 或 所属租户 ≠ 入参 tenant → ErrPoolGroupNotFound。
 	poolGroups map[int64]int64
 	now        time.Time
 }

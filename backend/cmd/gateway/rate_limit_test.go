@@ -1,12 +1,12 @@
-// Per-IP inbound rate limit (token-bucket, two tiers).
+// 按 IP 的入站限流(令牌桶,两级)。
 //
-// Discriminating intent: these tests assert the SPECIFIC 429 exhaustion + per-IP
-// isolation behavior, not a status class the login path would already return.
-// The login route here is a stub that always returns 200, so any 429 observed is
-// produced ONLY by the limiter — if the limiter is removed or its burst widened,
-// the "request burst+1 is 429" assertion goes red (the mutation check). Likewise,
-// a different source IP under the limit must NOT see 429, proving the bucket key
-// is per-IP and not a shared/global counter.
+// 区分性意图:这些测试断言的是特定的 429 耗尽 + 按 IP 隔离行为,
+// 而非登录路径本就会返回的某类状态码。
+// 这里的登录路由是一个始终返回 200 的桩,因此观察到的任何 429 都
+// 只可能由限流器产生——如果移除限流器或放宽其 burst,
+//「请求 burst+1 应为 429」的断言就会变红(即变异检查)。同样地,
+// 限额之内的另一个来源 IP 必须不会看到 429,以证明桶的 key
+// 是按 IP 而非共享/全局计数器。
 package main
 
 import (
@@ -21,9 +21,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 )
 
-// stubOKHandler stands in for the real auth handler: it ALWAYS returns 200, so a
-// 429 in these tests can only come from the limiter (discriminating fixture —
-// the expected output differs from what unguarded code produces).
+// stubOKHandler 代替真实的鉴权处理器:它始终返回 200,因此这些测试中的
+// 429 只可能来自限流器(区分性夹具——其预期输出与未加防护的代码
+// 所产生的输出不同)。
 func stubOKHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -31,11 +31,10 @@ func stubOKHandler() http.Handler {
 	})
 }
 
-// clearRateLimitEnv neutralizes every HUAKAI_RL_* override so the limiter is built
-// from the package defaults regardless of the ambient developer/CI environment.
-// Several assertions assume the default thresholds (and that the auth tier is
-// narrower than the global tier), so the tests must be hermetic against exported
-// overrides.
+// clearRateLimitEnv 中和每一个 HUAKAI_RL_* 覆盖项,使限流器无论处于何种
+// 开发/CI 环境都从包内默认值构建。
+// 若干断言依赖默认阈值(以及 auth 级比 global 级更窄这一点),因此这些
+// 测试必须对外部导出的覆盖项保持封闭隔离。
 func clearRateLimitEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
@@ -50,10 +49,10 @@ func clearRateLimitEnv(t *testing.T) {
 	}
 }
 
-// fixedClockLimiter builds a limiter whose clock never advances, so no token
-// refill masks the exhaustion under test. A nil resolver keys on the socket peer
-// (RemoteAddr), which these tests set explicitly. Env overrides are cleared so the
-// default thresholds the assertions rely on are in effect.
+// fixedClockLimiter 构建一个时钟永不前进的限流器,这样就没有令牌补充会
+// 掩盖被测的耗尽状态。nil 的 resolver 以套接字对端(RemoteAddr)为 key,
+// 这些测试会显式设置该值。环境覆盖项被清空,使断言所依赖的默认阈值
+// 真正生效。
 func fixedClockLimiter(t *testing.T) *rateLimiter {
 	t.Helper()
 	clearRateLimitEnv(t)
@@ -63,8 +62,8 @@ func fixedClockLimiter(t *testing.T) *rateLimiter {
 	return rl
 }
 
-// doLogin sends one POST /v1/auth/login from the given source address through the
-// limiter-wrapped stub handler and returns the status code.
+// doLogin 从给定来源地址,经由被限流器包裹的桩处理器发送一次
+// POST /v1/auth/login,并返回状态码。
 func doLogin(rl *rateLimiter, remoteAddr string) int {
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
 	req.RemoteAddr = remoteAddr
@@ -73,19 +72,17 @@ func doLogin(rl *rateLimiter, remoteAddr string) int {
 	return rec.Code
 }
 
-// TestRateLimit_AuthLogin_BurstThen429 fires burst+k rapid requests from ONE IP
-// at the login path: the first `burst` pass (non-429), and requests
-// burst+1..burst+k are 429. A request from a DIFFERENT IP under the limit is NOT
-// 429 (per-IP isolation).
+// TestRateLimit_AuthLogin_BurstThen429 从同一个 IP 向登录路径快速发起
+// burst+k 个请求:前 `burst` 个通过(非 429),而 burst+1..burst+k 个
+// 为 429。来自限额之内的另一个 IP 的请求不会是 429(按 IP 隔离)。
 //
-// Mutation check: remove `router.Use(newRateLimiter().middleware)` wiring OR
-// widen the login burst to a huge number and the "want 429" assertions below go
-// red.
+// 变异检查:移除 `router.Use(newRateLimiter().middleware)` 接线,或
+// 将登录 burst 放大到一个极大值,下方的「want 429」断言就会变红。
 func TestRateLimit_AuthLogin_BurstThen429(t *testing.T) {
 	rl := fixedClockLimiter(t)
 
-	// The login class default is 20/min => burst 20. Read it from the live tier
-	// so the test tracks the configured policy rather than a hard-coded copy.
+	// 登录类的默认值是 20/min => burst 20。从活动的级别中读取它,
+	// 使测试跟随已配置的策略,而非硬编码的副本。
 	tier := rl.authStrict["/v1/auth/login"]
 	if tier == nil {
 		t.Fatal("login auth-strict tier not configured")
@@ -98,34 +95,33 @@ func TestRateLimit_AuthLogin_BurstThen429(t *testing.T) {
 	const ipA = "203.0.113.7:51000"
 	const k = 5
 
-	// First `burst` requests from ipA must pass (not 429). The global tier
-	// (burst 180) is wider than the login burst, so the login tier is the binding
-	// constraint here.
+	// 来自 ipA 的前 `burst` 个请求必须通过(非 429)。global 级
+	//(burst 180)比登录 burst 更宽,因此此处登录级才是起约束作用的
+	// 限制条件。
 	for i := 0; i < burst; i++ {
 		if code := doLogin(rl, ipA); code == http.StatusTooManyRequests {
 			t.Fatalf("request %d/%d from ipA unexpectedly 429 (within burst)", i+1, burst)
 		}
 	}
 
-	// Requests burst+1..burst+k from the SAME ip must be 429.
+	// 来自同一个 ip 的 burst+1..burst+k 个请求必须是 429。
 	for i := 0; i < k; i++ {
 		if code := doLogin(rl, ipA); code != http.StatusTooManyRequests {
 			t.Fatalf("request %d past burst from ipA: want 429 got %d", burst+i+1, code)
 		}
 	}
 
-	// Per-IP isolation: a DIFFERENT ip, under its own limit, must NOT be 429 even
-	// though ipA is exhausted. If the key were global/shared this would be 429.
+	// 按 IP 隔离:即便 ipA 已耗尽,另一个处于自身限额之内的 ip 也
+	// 必须不是 429。如果 key 是全局/共享的,这里就会是 429。
 	const ipB = "198.51.100.42:42000"
 	if code := doLogin(rl, ipB); code == http.StatusTooManyRequests {
 		t.Fatalf("request from ipB (different IP, under limit) was 429 — per-IP isolation broken")
 	}
 }
 
-// TestRateLimit_429HasJSONBodyAndRetryAfter proves the exhaustion response is the
-// gateway JSON error shape with the rate_limited code and a Retry-After header —
-// not a bare status. Mutation: drop the body write / Retry-After in reject() and
-// the matching assertion goes red.
+// TestRateLimit_429HasJSONBodyAndRetryAfter 证明耗尽响应是带有 rate_limited
+// 错误码和 Retry-After 头的网关 JSON 错误结构,而非裸状态码。
+// 变异:去掉 reject() 中的响应体写入 / Retry-After,对应断言就会变红。
 func TestRateLimit_429HasJSONBodyAndRetryAfter(t *testing.T) {
 	rl := fixedClockLimiter(t)
 	tier := rl.authStrict["/v1/auth/login"]
@@ -156,10 +152,10 @@ func TestRateLimit_429HasJSONBodyAndRetryAfter(t *testing.T) {
 	}
 }
 
-// TestRateLimit_GlobalTier_FloodsNonAuthPath proves the global front-door tier
-// caps a flood on a NON-auth path (the auth-strict tier never engages there, so
-// only the global bucket can produce 429). Mutation: remove the global.allow
-// check in middleware() and this goes red.
+// TestRateLimit_GlobalTier_FloodsNonAuthPath 证明全局前门级会对非 auth
+// 路径上的洪泛设上限(auth-strict 级在那里从不介入,因此只有 global 桶
+// 能产生 429)。变异:移除 middleware() 中的 global.allow 检查,本测试
+// 就会变红。
 func TestRateLimit_GlobalTier_FloodsNonAuthPath(t *testing.T) {
 	rl := fixedClockLimiter(t)
 	globalBurst := int(rl.global.burst)
@@ -186,9 +182,9 @@ func TestRateLimit_GlobalTier_FloodsNonAuthPath(t *testing.T) {
 	}
 }
 
-// TestRateLimit_RegistryBound proves the per-IP registry has a hard ceiling so an
-// IP-spoofed flood can't grow it without limit. Mutation: remove the cap reset in
-// bucketFor and len(buckets) exceeds maxEntries.
+// TestRateLimit_RegistryBound 证明按 IP 的注册表有一个硬上限,使得伪造 IP
+// 的洪泛无法令其无限增长。变异:移除 bucketFor 中的上限重置,
+// len(buckets) 就会超过 maxEntries。
 func TestRateLimit_RegistryBound(t *testing.T) {
 	reg := newIPBucketRegistry(1, 1)
 	reg.maxEntries = 4
@@ -201,22 +197,21 @@ func TestRateLimit_RegistryBound(t *testing.T) {
 	}
 }
 
-// TestRateLimit_WiredIntoRouter drives the REAL newRouter() middleware chain (not
-// a hand-built limiter) and floods the login path until it sees 429. This guards
-// the production wiring directly: if `router.Use(newRateLimiter(...).middleware)`
-// is deleted from newRouter, the login flood reaches the route handler instead of
-// being shed and this assertion goes red.
+// TestRateLimit_WiredIntoRouter 驱动真实的 newRouter() 中间件链(而非
+// 手工搭建的限流器),并对登录路径洪泛直至看到 429。它直接守护生产
+// 接线:如果从 newRouter 中删掉 `router.Use(newRateLimiter(...).middleware)`,
+// 登录洪泛就会抵达路由处理器而非被丢弃,此断言便会变红。
 //
-// Mutation check: delete the limiter router.Use line in newRouter and this test
-// fails (no 429 within the burst+slack window).
+// 变异检查:删掉 newRouter 中的限流器 router.Use 那一行,本测试就会
+// 失败(在 burst+余量窗口内没有出现 429)。
 func TestRateLimit_WiredIntoRouter(t *testing.T) {
 	clearRateLimitEnv(t)
 	router := newRouter(minimalDeps(), zap.NewNop())
 
 	const ip = "203.0.113.200:7000"
-	// Login burst default is 20; fire enough to exhaust it well within one second
-	// (refill ~0.33 tok/s, negligible across a tight loop). The global tier (180)
-	// is wider, so login is the binding constraint here.
+	// 登录 burst 默认是 20;发送足够的请求以在一秒内将其耗尽
+	//(补充约 0.33 token/s,在紧凑循环中可忽略不计)。global 级(180)
+	// 更宽,因此此处登录才是起约束作用的限制条件。
 	saw429 := false
 	for i := 0; i < int(defaultAuthLoginPerMin)+10; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
@@ -232,11 +227,11 @@ func TestRateLimit_WiredIntoRouter(t *testing.T) {
 		t.Fatal("login flood through real router never hit 429 — limiter not wired into newRouter")
 	}
 
-	// End-to-end spoof resistance: the SAME socket peer is now exhausted; rotating
-	// X-Forwarded-For (which chi's RealIP would otherwise promote to RemoteAddr)
-	// must NOT mint a fresh bucket. Because the limiter runs BEFORE RealIP and the
-	// peer is not a trusted proxy, the forged header is ignored and these stay 429.
-	// Mutation: wire the limiter AFTER RealIP and these forged waves pass (no 429).
+	// 端到端的抗伪造能力:同一个套接字对端现已耗尽;轮换
+	// X-Forwarded-For(chi 的 RealIP 否则会将其提升为 RemoteAddr)
+	// 必须不会铸造出一个新桶。由于限流器在 RealIP 之前运行,且该对端
+	// 不是受信任代理,伪造的头会被忽略,这些请求仍保持 429。
+	// 变异:把限流器接在 RealIP 之后,这些伪造波次就会通过(无 429)。
 	for i := 0; i < 5; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
 		req.RemoteAddr = ip
@@ -249,12 +244,12 @@ func TestRateLimit_WiredIntoRouter(t *testing.T) {
 	}
 }
 
-// TestRateLimit_429CarriesCORSHeadersForAllowlistedOrigin proves a 429 to an
-// allowlisted browser origin still carries Access-Control-Allow-Origin (the
-// frontend sees the JSON 429 + Retry-After, not an opaque CORS failure). This
-// guards the middleware ORDER: corsMiddleware must run before the limiter's
-// early-exit. Mutation: move corsMiddleware after the limiter in newRouter and
-// the ACAO assertion on the 429 goes red.
+// TestRateLimit_429CarriesCORSHeadersForAllowlistedOrigin 证明对一个在允许
+// 名单内的浏览器 origin 返回的 429 仍带有 Access-Control-Allow-Origin
+//(前端看到的是 JSON 的 429 + Retry-After,而非一个不透明的 CORS 失败)。
+// 它守护中间件顺序:corsMiddleware 必须在限流器的提前退出之前运行。
+// 变异:在 newRouter 中把 corsMiddleware 移到限流器之后,针对 429 的
+// ACAO 断言就会变红。
 func TestRateLimit_429CarriesCORSHeadersForAllowlistedOrigin(t *testing.T) {
 	const origin = "https://app.example.com"
 	clearRateLimitEnv(t)
@@ -282,9 +277,9 @@ func TestRateLimit_429CarriesCORSHeadersForAllowlistedOrigin(t *testing.T) {
 	}
 }
 
-// TestRateLimit_DisableEnvBypassesWiring proves HUAKAI_RL_DISABLE removes the
-// limiter from the chain (so a flood is NOT shed). Pairs with the test above:
-// together they pin the always-on default AND the documented kill switch.
+// TestRateLimit_DisableEnvBypassesWiring 证明 HUAKAI_RL_DISABLE 会把限流器
+// 从链中移除(因此洪泛不会被丢弃)。与上面的测试成对:两者一起锁定了
+// 默认始终开启以及文档中记载的紧急关闭开关。
 func TestRateLimit_DisableEnvBypassesWiring(t *testing.T) {
 	clearRateLimitEnv(t)
 	t.Setenv("HUAKAI_RL_DISABLE", "true")
@@ -302,17 +297,17 @@ func TestRateLimit_DisableEnvBypassesWiring(t *testing.T) {
 	}
 }
 
-// TestRateLimit_KeyIgnoresForgedForwardingHeaders proves the bucket key cannot be
-// reset by forging X-Forwarded-For when the socket peer is NOT a trusted proxy.
-// With no trusted proxies configured, the resolver keys on the socket peer, so
-// rotating XFF does not mint fresh buckets and an exhausted peer stays 429.
+// TestRateLimit_KeyIgnoresForgedForwardingHeaders 证明当套接字对端不是
+// 受信任代理时,无法通过伪造 X-Forwarded-For 来重置桶的 key。
+// 在未配置任何受信任代理的情况下,resolver 以套接字对端为 key,因此
+// 轮换 XFF 不会铸造出新桶,已耗尽的对端仍保持 429。
 //
-// Mutation: if clientKey keyed on a forged header / RealIP-rewritten value
-// instead of the resolver's trusted-peer output, the second IP-spoofed wave would
-// pass (no 429) and this assertion would go red.
+// 变异:如果 clientKey 以伪造的头 / RealIP 重写后的值为 key,而非
+// resolver 的受信任对端输出,则第二波伪造 IP 的请求就会通过(无 429),
+// 此断言便会变红。
 func TestRateLimit_KeyIgnoresForgedForwardingHeaders(t *testing.T) {
 	clearRateLimitEnv(t)
-	resolver, err := clientip.NewResolver(nil) // no trusted proxies => socket peer only
+	resolver, err := clientip.NewResolver(nil) // 无受信任代理 => 仅用套接字对端
 	if err != nil {
 		t.Fatalf("NewResolver: %v", err)
 	}
@@ -340,9 +335,9 @@ func TestRateLimit_KeyIgnoresForgedForwardingHeaders(t *testing.T) {
 			t.Fatalf("request %d/%d unexpectedly 429 within burst", i+1, burst)
 		}
 	}
-	// Same socket peer, but forge a brand-new client IP per request. An untrusted
-	// peer's XFF must be ignored: the peer's bucket is exhausted, so each remains
-	// 429 regardless of the forged header.
+	// 同一个套接字对端,但每个请求都伪造一个全新的客户端 IP。不受信任
+	// 对端的 XFF 必须被忽略:该对端的桶已耗尽,因此无论伪造的头如何,
+	// 每个请求都仍是 429。
 	for i := 0; i < 5; i++ {
 		forged := "10.0.0." + itoa(i+1)
 		if code := send(forged); code != http.StatusTooManyRequests {
@@ -351,14 +346,14 @@ func TestRateLimit_KeyIgnoresForgedForwardingHeaders(t *testing.T) {
 	}
 }
 
-// TestRateLimit_EnvOverrideRejectsNonFiniteAndSubToken proves a malformed
-// HUAKAI_RL_* override cannot silently disable or brick the always-on limiter:
-// NaN/Inf/<=0 fall back to the safe default, and a sub-token global burst falls
-// back rather than rejecting every request.
+// TestRateLimit_EnvOverrideRejectsNonFiniteAndSubToken 证明格式错误的
+// HUAKAI_RL_* 覆盖项无法静默地禁用或卡死这个始终开启的限流器:
+// NaN/Inf/<=0 回退到安全默认值,而小于一个令牌的 global burst 会回退,
+// 而非拒绝每一个请求。
 //
-// Mutation: drop the math.IsNaN/IsInf guard in envFloat and the NaN case below
-// yields the bricked-open default-less value; drop the envBurst floor and the
-// 0.5 case bricks the global tier closed.
+// 变异:去掉 envFloat 中的 math.IsNaN/IsInf 防护,下方的 NaN 用例就会
+// 产生卡成全开、无默认值的取值;去掉 envBurst 的下限,0.5 用例就会把
+// global 级卡成全关闭。
 func TestRateLimit_EnvOverrideRejectsNonFiniteAndSubToken(t *testing.T) {
 	for _, bad := range []string{"NaN", "Inf", "+Inf", "-Inf", "0", "-5", "abc"} {
 		t.Setenv("HUAKAI_RL_TEST_FLOAT", bad)
@@ -366,42 +361,41 @@ func TestRateLimit_EnvOverrideRejectsNonFiniteAndSubToken(t *testing.T) {
 			t.Errorf("envFloat(%q) did not fall back to default (got %v)", bad, got)
 		}
 	}
-	// Sub-token burst must fall back to the default (a (0,1) burst rejects all).
+	// 小于一个令牌的 burst 必须回退到默认值((0,1) 区间的 burst 会拒绝所有请求)。
 	t.Setenv("HUAKAI_RL_TEST_BURST", "0.5")
 	if got := envBurst("HUAKAI_RL_TEST_BURST", 180); got != 180 {
 		t.Errorf("envBurst(0.5) = %v, want fallback 180", got)
 	}
-	// A valid override is honored.
+	// 一个有效的覆盖项会被采纳。
 	t.Setenv("HUAKAI_RL_TEST_BURST", "50")
 	if got := envBurst("HUAKAI_RL_TEST_BURST", 180); got != 50 {
 		t.Errorf("envBurst(50) = %v, want 50", got)
 	}
 }
 
-// minimalDeps builds the smallest deps that lets newRouter()/mountRoutes() mount
-// without nil-panicking at mount time. Only cfg is dereferenced eagerly (by
-// chatHandlerDeps); every other field is consumed lazily as a nil-safe interface
-// value. The limiter rejects the login flood before any handler touches these.
+// minimalDeps 构建能让 newRouter()/mountRoutes() 在挂载时不发生 nil 崩溃的
+// 最小 deps。只有 cfg 会被(chatHandlerDeps)提前解引用;其余每个字段都
+// 作为 nil 安全的接口值被惰性消费。限流器会在任何处理器触及这些字段之前
+// 拒绝登录洪泛。
 func minimalDeps() *deps {
 	return &deps{cfg: &Config{BillingPolicyVersion: "test", RequestClass: "standard"}}
 }
 
-// TestRateLimit_NonPostDoesNotDrainAuthStrict proves only POST is charged to the
-// tight auth-strict bucket: a flood of OPTIONS (CORS preflight) AND GET (cheap
-// cross-site, which the POST-only route would 405) to the login path leaves the
-// login bucket full, so a subsequent burst of real POSTs is not pre-throttled.
+// TestRateLimit_NonPostDoesNotDrainAuthStrict 证明只有 POST 才会计入收紧的
+// auth-strict 桶:向登录路径发送一波 OPTIONS(CORS 预检)以及 GET(廉价的
+// 跨站请求,仅接受 POST 的路由会对其返回 405)不会消耗登录桶,因此
+// 随后一波真正的 POST 不会被预先限流。
 //
-// Mutation: change the `r.Method != http.MethodPost` guard in authStrictFor to
-// only exclude OPTIONS and the GET wave drains the login bucket, making the
-// trailing POST assertion go red.
+// 变异:把 authStrictFor 中的 `r.Method != http.MethodPost` 防护改成只排除
+// OPTIONS,那波 GET 就会消耗登录桶,使尾部的 POST 断言变红。
 func TestRateLimit_NonPostDoesNotDrainAuthStrict(t *testing.T) {
 	rl := fixedClockLimiter(t)
 	tier := rl.authStrict["/v1/auth/login"]
 	burst := int(tier.registry.burst)
 
 	const ip = "203.0.113.123:9000"
-	// Fire more OPTIONS + GET than the login burst; none must be 429 (they are well
-	// under the wider global burst, and must not touch the auth-strict tier).
+	// 发送比登录 burst 更多的 OPTIONS + GET;它们都必须不是 429(它们远低于
+	// 更宽的 global burst,且必须不触及 auth-strict 级)。
 	for _, method := range []string{http.MethodOptions, http.MethodGet, http.MethodHead} {
 		for i := 0; i < burst+5; i++ {
 			req := httptest.NewRequest(method, "/v1/auth/login", nil)
@@ -413,7 +407,7 @@ func TestRateLimit_NonPostDoesNotDrainAuthStrict(t *testing.T) {
 			}
 		}
 	}
-	// The login bucket must be untouched: a full burst of real POSTs still passes.
+	// 登录桶必须未被消耗:一整波真正的 POST 仍然通过。
 	for i := 0; i < burst; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
 		req.RemoteAddr = ip
@@ -425,14 +419,14 @@ func TestRateLimit_NonPostDoesNotDrainAuthStrict(t *testing.T) {
 	}
 }
 
-// TestRateLimit_OAuthClassSharesOneBucket proves the two OAuth routes share a
-// single per-class bucket (one HUAKAI_RL_AUTH_OAUTH_PER_MIN knob), so alternating
-// between /v1/auth/oauth-init and /v1/auth/oauth-callback does NOT double the
-// allowed OAuth budget.
+// TestRateLimit_OAuthClassSharesOneBucket 证明两个 OAuth 路由共享同一个
+// 按类的桶(同一个 HUAKAI_RL_AUTH_OAUTH_PER_MIN 旋钮),因此在
+// /v1/auth/oauth-init 与 /v1/auth/oauth-callback 之间交替不会使所允许的
+// OAuth 配额翻倍。
 //
-// Mutation: give each OAuth path its own registry (revert the shared-class wiring)
-// and the alternating flood below stays under each path's separate burst, so the
-// "must 429 by burst+1 combined" assertion goes red.
+// 变异:给每个 OAuth 路径各自一个注册表(撤销共享类接线),下方的交替
+// 洪泛就会各自停留在每条路径单独的 burst 之内,使「合计在 burst+1 处
+// 必为 429」的断言变红。
 func TestRateLimit_OAuthClassSharesOneBucket(t *testing.T) {
 	rl := fixedClockLimiter(t)
 	initTier := rl.authStrict["/v1/auth/oauth-init"]
@@ -445,7 +439,7 @@ func TestRateLimit_OAuthClassSharesOneBucket(t *testing.T) {
 
 	const ip = "203.0.113.140:9100"
 	paths := []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback", "/v1/auth/telegram-login"}
-	// Alternate paths for `burst` total requests: all must pass (one shared bucket).
+	// 在各路径间交替,共发送 `burst` 个请求:全部必须通过(同一个共享桶)。
 	for i := 0; i < burst; i++ {
 		req := httptest.NewRequest(http.MethodPost, paths[i%2], nil)
 		req.RemoteAddr = ip
@@ -455,8 +449,8 @@ func TestRateLimit_OAuthClassSharesOneBucket(t *testing.T) {
 			t.Fatalf("alternating OAuth request %d/%d unexpectedly 429 within shared burst", i+1, burst)
 		}
 	}
-	// The very next alternating request must be 429 — the shared bucket is drained,
-	// proving the budget was NOT doubled across the two paths.
+	// 紧接着的下一个交替请求必须是 429——共享桶已被耗尽,
+	// 这证明配额没有跨两条路径翻倍。
 	req := httptest.NewRequest(http.MethodPost, paths[burst%2], nil)
 	req.RemoteAddr = ip
 	rec := httptest.NewRecorder()
@@ -466,12 +460,12 @@ func TestRateLimit_OAuthClassSharesOneBucket(t *testing.T) {
 	}
 }
 
-// TestRateLimit_RetryAfterTracksConfiguredRate proves the 429 Retry-After hint is
-// derived from the configured rate, not a stale hard-coded default: tuning
-// register down to 1/min yields ~60s, not the default's small value.
+// TestRateLimit_RetryAfterTracksConfiguredRate 证明 429 的 Retry-After 提示
+// 来自已配置的速率,而非一个陈旧的硬编码默认值:把 register 调低到
+// 1/min 会得到约 60s,而非默认值的那个较小值。
 //
-// Mutation: revert retryAfterForRate to a constant and the tuned-rate assertion
-// (want 60) goes red.
+// 变异:把 retryAfterForRate 改回一个常量,针对调整后速率的断言
+//(want 60)就会变红。
 func TestRateLimit_RetryAfterTracksConfiguredRate(t *testing.T) {
 	clearRateLimitEnv(t)
 	t.Setenv("HUAKAI_RL_AUTH_REGISTER_PER_MIN", "1")
@@ -480,7 +474,7 @@ func TestRateLimit_RetryAfterTracksConfiguredRate(t *testing.T) {
 	rl.nowFn = func() time.Time { return frozen }
 
 	const ip = "203.0.113.150:9200"
-	// burst is clamped to >= 1; the first request passes, the second is 429.
+	// burst 被钳制到 >= 1;第一个请求通过,第二个为 429。
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", nil)
 		req.RemoteAddr = ip
@@ -528,11 +522,11 @@ func TestRateLimit_InviteValidateSharesRegisterBucket(t *testing.T) {
 	}
 }
 
-// TestRateLimit_GlobalRetryAfterTracksConfiguredRate proves the GLOBAL-tier 429
-// Retry-After is derived from HUAKAI_RL_GLOBAL_RATE, not a hard-coded 1s: at
-// 0.1 req/s the next token is ~10s away.
+// TestRateLimit_GlobalRetryAfterTracksConfiguredRate 证明 global 级 429 的
+// Retry-After 来自 HUAKAI_RL_GLOBAL_RATE,而非硬编码的 1s:在 0.1 req/s 时,
+// 下一个令牌大约还有 10s。
 //
-// Mutation: hard-code retryAfterS=1 and the want-10 assertion goes red.
+// 变异:把 retryAfterS 硬编码为 1,want-10 断言就会变红。
 func TestRateLimit_GlobalRetryAfterTracksConfiguredRate(t *testing.T) {
 	clearRateLimitEnv(t)
 	t.Setenv("HUAKAI_RL_GLOBAL_RATE", "0.1")
@@ -542,7 +536,7 @@ func TestRateLimit_GlobalRetryAfterTracksConfiguredRate(t *testing.T) {
 	rl.nowFn = func() time.Time { return frozen }
 
 	const ip = "203.0.113.160:9300"
-	// Use a non-auth path so only the global tier can 429.
+	// 使用一个非 auth 路径,使得只有 global 级才能产生 429。
 	send := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/v1/pricing/rate-table", nil)
 		req.RemoteAddr = ip
@@ -550,7 +544,7 @@ func TestRateLimit_GlobalRetryAfterTracksConfiguredRate(t *testing.T) {
 		rl.middleware(stubOKHandler()).ServeHTTP(rec, req)
 		return rec
 	}
-	_ = send() // consume the single burst token
+	_ = send() // 消耗掉单个 burst 令牌
 	rec := send()
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("second global request at 0.1 req/s: want 429 got %d", rec.Code)
@@ -581,12 +575,12 @@ func TestMediaPerIPLimit(t *testing.T) {
 			t.Fatalf("media request %d unexpectedly 429 within configured burst", i+1)
 		}
 	}
-	// MUTATION: not wiring media paths to the media class lets the third request through.
+	// 变异:不把媒体路径接到媒体类上,会让第三个请求通过。
 	if code := send("/v1/audio/speech"); code != http.StatusTooManyRequests {
 		t.Fatalf("third media request: want 429 got %d", code)
 	}
 
-	// GUARD: unset/zero env disables the additive media tier, preserving old behavior.
+	// 防护:未设置/为零的环境变量会禁用附加的媒体级,保留旧有行为。
 	clearRateLimitEnv(t)
 	disabled := newRateLimiter(nil, nil)
 	disabled.nowFn = func() time.Time { return frozen }
@@ -601,11 +595,10 @@ func TestMediaPerIPLimit(t *testing.T) {
 	}
 }
 
-// TestRateLimit_DenialEmitsOperatorEvidence proves a rate-limit denial emits
-// operator-visible evidence (AT-SEC-001): a structured log carrying the tier and
-// client IP, so operators can review bursts and distinguish abuse from false
-// positives. Mutation: remove the rl.denied(...) call on the denial path and the
-// "expected one denial log" assertion goes red.
+// TestRateLimit_DenialEmitsOperatorEvidence 证明一次限流拒绝会产出运维可见
+// 的证据(AT-SEC-001):一条携带级别与客户端 IP 的结构化日志,使运维能够
+// 复查突发流量并区分滥用与误报。变异:移除拒绝路径上的 rl.denied(...) 调用,
+//「期望一条拒绝日志」的断言就会变红。
 func TestRateLimit_DenialEmitsOperatorEvidence(t *testing.T) {
 	clearRateLimitEnv(t)
 	core, logs := observer.New(zap.WarnLevel)
@@ -616,7 +609,7 @@ func TestRateLimit_DenialEmitsOperatorEvidence(t *testing.T) {
 	tier := rl.authStrict["/v1/auth/login"]
 	burst := int(tier.registry.burst)
 	const ip = "203.0.113.170:9400"
-	// Exhaust the login bucket, then trigger one denial.
+	// 耗尽登录桶,然后触发一次拒绝。
 	for i := 0; i < burst+1; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
 		req.RemoteAddr = ip

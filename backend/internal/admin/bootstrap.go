@@ -1,20 +1,19 @@
-// Bootstrap-admin token loader.
+// Bootstrap-admin token 加载器。
 //
-// Problem: /admin/v1/api-keys is a real endpoint, but issuing
-// the FIRST admin token requires authenticating as an admin first —
-// chicken-and-egg. Solution: read HUAKAI_ADMIN_BOOTSTRAP_TOKEN at boot;
-// if set AND admin_tokens is empty, INSERT a single platform_admin row
-// with bootstrap=true. Operator uses this once to issue real admin
-// tokens, then rotates / disables the bootstrap row.
+// 问题:/admin/v1/api-keys 是一个真实端点,但要签发第一个 admin token
+// 必须先以 admin 身份认证 —— 鸡生蛋问题。解决方案:启动时读取
+// HUAKAI_ADMIN_BOOTSTRAP_TOKEN;若已设置【且】admin_tokens 为空,
+// 则 INSERT 一行 bootstrap=true 的 platform_admin。运维用它一次性签发
+// 真正的 admin token,随后轮换 / 禁用该 bootstrap 行。
 //
-// Security posture:
-//   - The env var holds plaintext. Operators MUST treat it as a Secret
-//     (k8s Secret, sealed-secret, vault) — not a ConfigMap.
-//   - We intentionally accept ONLY when admin_tokens is empty. Setting
-//     the env after a real admin exists is a no-op (logged, not crashed,
-//     so accidental config drift doesn't break boot).
-//   - The bootstrap row is marked bootstrap=true so admin tooling can
-//     surface "rotate me" warnings in the dashboard later.
+// 安全姿态:
+//   - 该 env var 持有明文。运维【必须】将其视作 Secret
+//    (k8s Secret、sealed-secret、vault)—— 不能放进 ConfigMap。
+//   - 我们刻意仅在 admin_tokens 为空时接受。在已存在真实 admin 之后再
+//     设置该 env 是一个 no-op(记日志,不 crash,这样意外的配置漂移
+//     不会破坏启动)。
+//   - bootstrap 行标记 bootstrap=true,以便日后 admin 工具能在 dashboard
+//     上呈现"请轮换我"的告警。
 
 package admin
 
@@ -32,21 +31,20 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// BootstrapEnv is the environment variable read at boot. The value is
-// the plaintext bearer for the first admin token.
+// BootstrapEnv 是启动时读取的环境变量。其值为第一个 admin token 的
+// 明文 bearer。
 const BootstrapEnv = "HUAKAI_ADMIN_BOOTSTRAP_TOKEN"
 
-// MaybeBootstrap inserts a bootstrap admin token row when:
-//  1. HUAKAI_ADMIN_BOOTSTRAP_TOKEN is set and non-empty
-//  2. admin_tokens has no rows yet
+// MaybeBootstrap 在满足以下条件时插入一行 bootstrap admin token:
+//  1. HUAKAI_ADMIN_BOOTSTRAP_TOKEN 已设置且非空
+//  2. admin_tokens 中尚无任何行
 //
-// Returns nil for "no-op" (env unset or table non-empty); error only on
-// datastore / bcrypt failures (which should fail boot).
+// 对"no-op"(env 未设置或表非空)返回 nil;仅在数据存储 / bcrypt 故障
+//(应令启动失败)时返回 error。
 //
-// count + insert run inside a TX with a constant
-// advisory lock so two gateway instances starting against an empty DB
-// can't both observe count=0 and double-insert. Lock is released
-// automatically on commit/rollback.
+// count + insert 在一个持有常量 advisory lock 的 TX 内运行,这样两个
+// 针对空 DB 启动的 gateway 实例不会都观测到 count=0 而双重插入。锁在
+// commit/rollback 时自动释放。
 func MaybeBootstrap(ctx context.Context, pool *pgxpool.Pool, logger *zap.Logger) error {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -73,20 +71,18 @@ func MaybeBootstrap(ctx context.Context, pool *pgxpool.Pool, logger *zap.Logger)
 		return fmt.Errorf("%w: count admin_tokens: %v", ErrAdminBackend, err)
 	}
 	if count > 0 {
-		// count INCLUDES disabled/revoked
-		// rows so bootstrap stays one-shot. Skip ALL further work — no
-		// validation, no bcrypt, no slice — so a stale env value (which
-		// could be too long for bcrypt or shorter than PrefixLen) cannot
-		// crash a healthy boot.
+		// count 把 disabled/revoked 行也算进来,
+		// 这样 bootstrap 保持一次性。跳过【所有】后续工作 —— 不校验、
+		// 不 bcrypt、不切片 —— 这样一个陈旧的 env 值(可能对 bcrypt 来说
+		// 太长,或比 PrefixLen 还短)无法让一个健康的启动 crash。
 		logger.Info("admin bootstrap skipped: admin_tokens has prior rows",
 			zap.Int64("token_row_count", count))
 		return nil
 	}
 
-	// Validate full generated bearer shape only after we know we'd
-	// actually insert. hk_admin_ namespace + 24-char base32 suffix = 33
-	// chars total. Earlier passes raised this before the count check
-	// which broke the no-op contract for populated DBs.
+	// 仅在确知我们确实会插入之后,才校验生成 bearer 的完整形态。
+	// hk_admin_ namespace + 24 字符 base32 suffix = 共 33 字符。早期版本
+	// 在 count 检查之前就抛这个错,破坏了对已填充 DB 的 no-op 契约。
 	const adminNamespace = "hk_admin_"
 	const expectedLen = len(adminNamespace) + 24
 	if len(bearer) != expectedLen || bearer[:len(adminNamespace)] != adminNamespace {
@@ -119,4 +115,4 @@ func MaybeBootstrap(ctx context.Context, pool *pgxpool.Pool, logger *zap.Logger)
 	return nil
 }
 
-var _ = errors.New // future expansion
+var _ = errors.New // 预留未来扩展

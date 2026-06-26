@@ -136,8 +136,8 @@ func TestPostgresLedger_GetNotFound(t *testing.T) {
 }
 
 func TestAT_SECURITY_W1_B14_PostgresLedgerTenantScopedLookup(t *testing.T) {
-	// Risk killed: the database lookup must constrain request_id by tenant scope
-	// so a known request_id cannot disclose another tenant's ledger row.
+	// 消除的风险：数据库查询必须用 tenant scope 约束 request_id，使得
+	// 一个已知的 request_id 无法泄露出另一个 tenant 的 ledger 行。
 	pool := openTestPool(t)
 	defer pool.Close()
 	truncateLedger(t, pool)
@@ -182,8 +182,8 @@ func TestAT_SECURITY_W1_B14_PostgresLedgerTenantScopedLookup(t *testing.T) {
 }
 
 func TestPostgresLedger_ListByRangeTenantScopedAndBounded(t *testing.T) {
-	// Mutation: remove the SQL tenant_id predicate after resolving tenant scope;
-	// this test fails because tenant B's in-range request leaks into tenant A.
+	// 变异：在解析出 tenant scope 之后删掉 SQL 中的 tenant_id 谓词；
+	// 本测试会失败，因为 tenant B 落在区间内的请求泄漏进了 tenant A。
 	pool := openTestPool(t)
 	defer pool.Close()
 	truncateLedger(t, pool)
@@ -219,8 +219,8 @@ func TestPostgresLedger_ListByRangeTenantScopedAndBounded(t *testing.T) {
 }
 
 func TestPostgresLedger_ListByRequestIDsTenantScoped(t *testing.T) {
-	// Mutation: remove tenant_id filtering from ListByRequestIDs; this test fails
-	// because a requested tenant B row leaks into tenant A's audit bundle.
+	// 变异：从 ListByRequestIDs 中删掉 tenant_id 过滤；本测试会失败，
+	// 因为一行被请求的 tenant B 行泄漏进了 tenant A 的 audit bundle。
 	pool := openTestPool(t)
 	defer pool.Close()
 	truncateLedger(t, pool)

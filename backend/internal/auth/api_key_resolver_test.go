@@ -15,9 +15,9 @@ import (
 )
 
 func TestAPIKeyResolverIPAllowlistUsesTrustedClientIP(t *testing.T) {
-	// Mutation check: remove the post-bcrypt IP guard and the denied/spoof
-	// rows resolve successfully. Trust raw X-Forwarded-For and the spoof row
-	// resolves successfully even though the socket peer is not trusted.
+	// 变异检查: 移除 bcrypt 后的 IP guard, 被拒/伪造的行就会解析成功。
+	// 信任原始 X-Forwarded-For, 那么即便 socket peer 不可信, 伪造行
+	// 也会解析成功。
 	token := "hk_test_ip_allowlist_token"
 	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
 	if err != nil {
@@ -114,9 +114,9 @@ func TestAPIKeyResolverIPAllowlistUsesTrustedClientIP(t *testing.T) {
 }
 
 func TestAPIKeyResolverCarriesModelAllowlist(t *testing.T) {
-	// Mutation check: omit ak.allowed_models from LookupAPIKeysByPrefix or
-	// forget to copy it into Identity, and the dispatch layer cannot enforce
-	// per-key model restrictions.
+	// 变异检查: 在 LookupAPIKeysByPrefix 中漏掉 ak.allowed_models, 或
+	// 忘记把它拷进 Identity, dispatch 层就无法强制
+	// per-key 模型限制。
 	token := "hk_test_model_allowlist_token"
 	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
 	if err != nil {

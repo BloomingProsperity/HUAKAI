@@ -1,4 +1,4 @@
-// OpenAI passthrough adapter — 表格驱动测试。
+// OpenAI passthrough 适配器 — 表格驱动测试。
 package openai
 
 import (

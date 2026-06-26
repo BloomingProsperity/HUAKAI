@@ -1,4 +1,4 @@
-// Package main is the HUAKAI gateway entry point.
+// Package main 是 HUAKAI 网关的入口。
 package main
 
 import (
@@ -16,15 +16,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
-// smokeBuildStamp is overridden via -ldflags during smoke test builds to
-// produce a unique binary hash per run, dodging Smart App Control's
-// per-hash block cache. Empty in normal/production builds.
+// smokeBuildStamp 在 smoke 测试构建期间通过 -ldflags 覆盖,
+// 用于让每次运行产生唯一的二进制哈希,从而绕开 Smart App Control 的
+// 按哈希拦截缓存。在常规/生产构建中为空。
 var smokeBuildStamp string
 
 func main() {
-	_ = smokeBuildStamp // referenced only by the smoke build to defeat dead-code elimination
+	_ = smokeBuildStamp // 仅供 smoke 构建引用,用于规避死代码消除
 	loggerCfg := zap.NewProductionConfig()
-	loggerCfg.Level = loglevel.Level // runtime-adjustable via /admin/v1/loglevel
+	loggerCfg.Level = loglevel.Level // 可通过 /admin/v1/loglevel 在运行时调整
 	logger, err := loggerCfg.Build()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "logger init failed: %v\n", err)

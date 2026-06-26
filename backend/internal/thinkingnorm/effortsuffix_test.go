@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// fakeResolver answers Resolve from two maps: resolves[name] -> known, and
-// reasoning[name] -> reasoning-capable. It also counts calls so a test can prove
-// the no-suffix / cheap-pre-check path makes ZERO resolver calls.
+// fakeResolver 用两个 map 来回答 Resolve:resolves[name] -> 已知,以及
+// reasoning[name] -> 具备推理能力。它还对调用次数计数,以便测试能证明
+// 无后缀 / 廉价预检查的路径会执行零次 resolver 调用。
 type fakeResolver struct {
 	resolves  map[string]bool
 	reasoning map[string]bool
@@ -30,17 +30,16 @@ func bodyField(t *testing.T, body []byte, key string) (interface{}, bool) {
 	return v, ok
 }
 
-// REGRESSION: a real shipped model whose name ends in "-medium" (yi-medium,
-// pricing seed migration 0131) must NEVER be stripped to "yi"; because the FULL
-// name resolves, the caller never even enters the strip path. Here we model that
-// the caller only calls NormalizeEffortSuffix after the full name failed to
-// resolve, AND additionally prove that if it WERE called, an unresolved base
-// ("yi") leaves it unchanged. Mutation: replace registry-aware strip with a
-// pure string strip -> "yi-medium" -> "yi" -> RED here.
+// 回归:一个真实上线、名称以 "-medium" 结尾的模型(yi-medium,pricing seed
+// 迁移 0131)绝不能被剥除成 "yi";因为完整名能解析,调用方根本不会进入剥除
+// 路径。这里我们模拟调用方只在完整名解析失败之后才调用
+// NormalizeEffortSuffix,并额外证明:即便它真的被调用,一个无法解析的 base
+//("yi")也会使其保持不变。变异:把感知注册表的剥除替换为纯字符串剥除 ->
+// "yi-medium" -> "yi" -> 此处转红。
 func TestNormalizeEffortSuffix_YiMediumNotStrippedWhenBaseUnresolved(t *testing.T) {
 	body := []byte(`{"model":"yi-medium","messages":[]}`)
 	resolver := &fakeResolver{
-		resolves:  map[string]bool{}, // base "yi" does NOT resolve
+		resolves:  map[string]bool{}, // base "yi" 无法解析
 		reasoning: map[string]bool{},
 	}
 	out, gotBody := NormalizeEffortSuffix("yi-medium", body, IngressOpenAIChat, resolver)
@@ -55,14 +54,13 @@ func TestNormalizeEffortSuffix_YiMediumNotStrippedWhenBaseUnresolved(t *testing.
 	}
 }
 
-// REGRESSION: even if a base "yi" happened to resolve but is NOT reasoning-
-// capable, the suffix must not be stripped (a non-reasoning model can't take an
-// effort param). Mutation: drop the reasoning-capable gate -> RED.
+// 回归:即便一个 base "yi" 恰好能解析,但不具备推理能力,后缀也不能被剥除
+//(非推理模型无法接受 effort 参数)。变异:去掉 reasoning-capable 门控 -> 转红。
 func TestNormalizeEffortSuffix_BaseResolvesButNotReasoning(t *testing.T) {
 	body := []byte(`{"model":"yi-medium","messages":[]}`)
 	resolver := &fakeResolver{
 		resolves:  map[string]bool{"yi": true},
-		reasoning: map[string]bool{}, // resolves but NOT reasoning-capable
+		reasoning: map[string]bool{}, // 能解析但不具备推理能力
 	}
 	out, gotBody := NormalizeEffortSuffix("yi-medium", body, IngressOpenAIChat, resolver)
 	if out.Normalized {
@@ -73,9 +71,8 @@ func TestNormalizeEffortSuffix_BaseResolvesButNotReasoning(t *testing.T) {
 	}
 }
 
-// REGRESSION: a genuine "<reasoning-model>-<effort>" — base resolves AND is
-// reasoning-capable — is stripped and the effort emitted. Mutation: skip the
-// strip -> BaseModel stays suffixed -> RED.
+// 回归:一个真正的 "<reasoning-model>-<effort>" —— base 能解析且具备推理
+// 能力 —— 会被剥除并发出 effort。变异:跳过剥除 -> BaseModel 仍带后缀 -> 转红。
 func TestNormalizeEffortSuffix_GptThinkingHighStrippedAndEffort(t *testing.T) {
 	body := []byte(`{"model":"gpt-5-thinking-high","messages":[]}`)
 	resolver := &fakeResolver{
@@ -92,12 +89,11 @@ func TestNormalizeEffortSuffix_GptThinkingHighStrippedAndEffort(t *testing.T) {
 	}
 }
 
-// REGRESSION (S2 cross-protocol effort loss): "claude-...-high" arriving at the
-// OPENAI-CHAT ingress must emit reasoning_effort (which the openai-chat parser
-// reads), NOT a top-level thinking object (which that parser drops). The emitted
-// param is keyed off the INGRESS, not the model-name family. Mutation: key the
-// param off the model name (claude -> thinking) -> a thinking object on an
-// openai-chat body -> RED here.
+// 回归(S2 跨协议 effort 丢失):到达 OPENAI-CHAT 入口的 "claude-...-high"
+// 必须发出 reasoning_effort(openai-chat 解析器会读取它),而不是顶层
+// thinking 对象(该解析器会丢弃它)。所发出的参数取决于入口,而非模型名
+// 族系。变异:让参数取决于模型名(claude -> thinking)-> openai-chat body
+// 上出现 thinking 对象 -> 此处转红。
 func TestNormalizeEffortSuffix_ClaudeViaOpenAIChatIngressEmitsReasoningEffort(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-8-high","messages":[]}`)
 	resolver := &fakeResolver{
@@ -116,8 +112,8 @@ func TestNormalizeEffortSuffix_ClaudeViaOpenAIChatIngressEmitsReasoningEffort(t 
 	}
 }
 
-// Symmetric: "gpt-...-high" arriving at the ANTHROPIC ingress emits a top-level
-// thinking object (which the anthropic parser reads), not reasoning_effort.
+// 对称:到达 ANTHROPIC 入口的 "gpt-...-high" 发出顶层 thinking 对象
+//(anthropic 解析器会读取它),而非 reasoning_effort。
 func TestNormalizeEffortSuffix_GptViaAnthropicIngressEmitsThinking(t *testing.T) {
 	body := []byte(`{"model":"gpt-5-thinking-high","messages":[]}`)
 	resolver := &fakeResolver{
@@ -141,9 +137,9 @@ func TestNormalizeEffortSuffix_GptViaAnthropicIngressEmitsThinking(t *testing.T)
 	}
 }
 
-// REGRESSION: anthropic thinking budget is clamped DOWN under the request's own
-// max output budget. high -> 24576, but max_tokens=2000 clamps it to 2000.
-// Mutation: drop the clamp -> 24576 -> RED.
+// 回归:anthropic thinking 预算会被下钳到请求自身的 max output 预算之下。
+// high -> 24576,但 max_tokens=2000 会把它钳到 2000。变异:去掉钳制 ->
+// 24576 -> 转红。
 func TestNormalizeEffortSuffix_AnthropicBudgetClampedUnderMax(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-8-high","max_tokens":2000,"messages":[]}`)
 	resolver := &fakeResolver{
@@ -158,9 +154,9 @@ func TestNormalizeEffortSuffix_AnthropicBudgetClampedUnderMax(t *testing.T) {
 	}
 }
 
-// REGRESSION (zero-impact): a model with NO effort suffix leaves model + body
-// byte-identical AND makes ZERO resolver calls. Mutation: call the resolver
-// before the cheap pre-check -> calls>0 -> RED.
+// 回归(零影响):一个没有 effort 后缀的模型会让 model + body 逐字节相同,
+// 且执行零次 resolver 调用。变异:在廉价预检查之前调用 resolver ->
+// calls>0 -> 转红。
 func TestNormalizeEffortSuffix_NoSuffixZeroImpactZeroResolverCalls(t *testing.T) {
 	body := []byte(`{"model":"gpt-4o","temperature":0.7,"messages":[{"role":"user","content":"hi"}]}`)
 	resolver := &fakeResolver{resolves: map[string]bool{}, reasoning: map[string]bool{}}
@@ -179,9 +175,9 @@ func TestNormalizeEffortSuffix_NoSuffixZeroImpactZeroResolverCalls(t *testing.T)
 	}
 }
 
-// REGRESSION (precedence): a recognized suffix OVERWRITES an explicit body-level
-// reasoning_effort. Self-proving: body says low, suffix says high; result must
-// be high. Mutation: honor the body over the suffix -> low -> RED.
+// 回归(优先级):一个已识别的后缀会覆盖显式的 body 级 reasoning_effort。
+// 自证:body 写 low,后缀写 high;结果必须是 high。变异:让 body 优先于
+// 后缀 -> low -> 转红。
 func TestNormalizeEffortSuffix_SuffixWinsOverExplicitBody(t *testing.T) {
 	body := []byte(`{"model":"gpt-5-thinking-high","reasoning_effort":"low","messages":[]}`)
 	resolver := &fakeResolver{
@@ -194,8 +190,8 @@ func TestNormalizeEffortSuffix_SuffixWinsOverExplicitBody(t *testing.T) {
 	}
 }
 
-// REGRESSION: "-none" disables reasoning. For openai-chat that removes
-// reasoning_effort; for anthropic it disables thinking.
+// 回归:"-none" 禁用推理。对 openai-chat 而言会移除 reasoning_effort;
+// 对 anthropic 而言会禁用 thinking。
 func TestNormalizeEffortSuffix_NoneDisables(t *testing.T) {
 	bodyOA := []byte(`{"model":"gpt-5-thinking-none","reasoning_effort":"high","messages":[]}`)
 	resolver := &fakeResolver{
@@ -220,18 +216,17 @@ func TestNormalizeEffortSuffix_NoneDisables(t *testing.T) {
 	}
 }
 
-// REGRESSION: a foreign / real suffix on a name whose base is not a known
-// reasoning model is NOT false-stripped. E.g. gemini-2.5-flash (no token),
-// grok-4-max (token -max, but base grok-4 unresolved here). Mutation: pure
-// string strip -> grok-4-max -> grok-4 -> RED.
+// 回归:对于 base 不是已知推理模型的名称,外来 / 真实后缀不会被误剥除。
+// 例如 gemini-2.5-flash(无 token)、grok-4-max(有 -max token,但此处
+// base grok-4 无法解析)。变异:纯字符串剥除 -> grok-4-max -> grok-4 -> 转红。
 func TestNormalizeEffortSuffix_ForeignSuffixNotFalseStripped(t *testing.T) {
 	resolver := &fakeResolver{resolves: map[string]bool{}, reasoning: map[string]bool{}}
 	for _, name := range []string{
-		"gemini-2.5-flash",  // no effort token at all
-		"gpt-4o-latest",     // no effort token
-		"deepseek-chat-max", // -max token but base unresolved
-		"grok-4-max",        // -max token but base unresolved
-		"claude-3-5-sonnet", // no effort token
+		"gemini-2.5-flash",  // 完全没有 effort token
+		"gpt-4o-latest",     // 没有 effort token
+		"deepseek-chat-max", // 有 -max token,但 base 无法解析
+		"grok-4-max",        // 有 -max token,但 base 无法解析
+		"claude-3-5-sonnet", // 没有 effort token
 	} {
 		body := []byte(`{"model":"` + name + `","messages":[]}`)
 		out, gotBody := NormalizeEffortSuffix(name, body, IngressOpenAIChat, resolver)
@@ -247,7 +242,7 @@ func TestNormalizeEffortSuffix_ForeignSuffixNotFalseStripped(t *testing.T) {
 	}
 }
 
-// REGRESSION: an unmodeled ingress (e.g. gemini) never strips a suffix.
+// 回归:未建模的入口(例如 gemini)永远不会剥除后缀。
 func TestNormalizeEffortSuffix_OtherIngressLeavesUnchanged(t *testing.T) {
 	body := []byte(`{"model":"gpt-5-thinking-high","messages":[]}`)
 	resolver := &fakeResolver{
@@ -266,8 +261,8 @@ func TestNormalizeEffortSuffix_OtherIngressLeavesUnchanged(t *testing.T) {
 	}
 }
 
-// REGRESSION: a non-object body still strips the base model (so routing/pricing
-// see the base) but leaves the body untouched — never crashes.
+// 回归:非对象 body 仍会剥除 base 模型(让路由/定价看到 base),但保持
+// body 不动 —— 永不崩溃。
 func TestNormalizeEffortSuffix_NonObjectBodyStripsModelOnly(t *testing.T) {
 	body := []byte(`"not-an-object"`)
 	resolver := &fakeResolver{
@@ -283,7 +278,7 @@ func TestNormalizeEffortSuffix_NonObjectBodyStripsModelOnly(t *testing.T) {
 	}
 }
 
-// level->budget table pin so a future edit to a budget value is a conscious change.
+// 钉住 level->budget 表,使将来对某个预算值的修改是一次有意识的变更。
 func TestNormalizeEffortSuffix_LevelBudgetTablePin(t *testing.T) {
 	want := map[effortLevel]int{
 		effortMinimal: 512,

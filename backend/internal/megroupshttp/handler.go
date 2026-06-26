@@ -15,34 +15,33 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 )
 
-// matchAllModels asks the routes repo for every pool group reachable by the
-// caller's tier regardless of model. ModelPatternMatches treats "*" as a
-// wildcard, so passing it yields the tier's full reachable group set.
+// matchAllModels 向 routes repo 请求调用方所在 tier 可达的每个 pool group,
+// 不区分 model。ModelPatternMatches 把 "*" 视为通配符,因此传入它会得到该
+// tier 的完整可达 group 集合。
 const matchAllModels = "*"
 
-// AuthResolver derives the caller identity from the request. The session-backed
-// implementation rejects anything that is not a valid logged-in user, so the
-// tenant/user pair used downstream cannot be influenced by request input.
+// AuthResolver 从请求中推导调用方身份。基于会话的实现会拒绝任何不是有效
+// 已登录用户的请求,因此下游使用的 tenant/user 对无法被请求输入影响。
 type AuthResolver interface {
 	Resolve(context.Context, *http.Request) (auth.Identity, error)
 }
 
-// UserGroupReader returns the caller's current routing tier (users.user_group).
+// UserGroupReader 返回调用方当前的路由 tier(users.user_group)。
 type UserGroupReader interface {
 	UserGroup(ctx context.Context, tenantID, userID int64) (string, error)
 }
 
-// RoutesRepo reports which pool groups the caller's tier may reach.
+// RoutesRepo 报告调用方所在 tier 可以到达哪些 pool group。
 type RoutesRepo interface {
 	GroupRoutes(ctx context.Context, tenantID int64, userGroup, model string) (subscriptionenforce.GroupRoutes, error)
 }
 
-// RatioLister returns the tenant's configured pool-group multipliers.
+// RatioLister 返回该 tenant 已配置的 pool-group 倍率。
 type RatioLister interface {
 	ListRatios(ctx context.Context, tenantID int64) ([]pricingcatalog.GroupPricingRatio, error)
 }
 
-// PoolNameLister returns display names for the tenant's pool groups, keyed by id.
+// PoolNameLister 返回该 tenant 各 pool group 的展示名,按 id 索引。
 type PoolNameLister interface {
 	PoolNames(ctx context.Context, tenantID int64) (map[int64]string, error)
 }
@@ -93,8 +92,8 @@ func NewHandler(d Deps) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		// Tenant + user come only from the session identity; never from the
-		// request, so a caller cannot read another tenant's groups (CMB-5).
+		// tenant + user 只取自会话身份;绝不取自请求,因此调用方无法读取
+		// 另一个 tenant 的 group(CMB-5)。
 		userGroup, err := d.UserGroups.UserGroup(ctx, ident.TenantID, ident.UserID)
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "me_groups_unavailable", "user group lookup unavailable")
@@ -136,10 +135,10 @@ func NewHandler(d Deps) http.HandlerFunc {
 		}
 		for _, poolGroupID := range allowed {
 			view := groupView{PoolGroupID: poolGroupID, Name: names[poolGroupID]}
-			// Disclose the multiplier only when the operator marked this group's
-			// ratio public. Non-public internal cost multipliers are withheld and
-			// has_public_ratio stays false, so users never see internal pricing or
-			// a misleading default for an unconfigured group.
+			// 只有当运营者把该 group 的 ratio 标记为 public 时才披露倍率。
+			// 非公开的内部成本倍率会被隐去,has_public_ratio 保持 false,
+			// 这样用户永远看不到内部定价,也看不到某个未配置 group 的误导性
+			// 默认值。
 			if row, ok := ratioByGroup[poolGroupID]; ok && row.PublicRatio {
 				view.Ratio = row.RatioString()
 				view.HasPublicRatio = true
@@ -150,9 +149,8 @@ func NewHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// SessionResolver adapts the validated /v1/me session context into the
-// AuthResolver shape, rejecting any request that lacks a fully-identified
-// session user.
+// SessionResolver 把已校验的 /v1/me 会话上下文适配为 AuthResolver 形状,
+// 拒绝任何缺少完整身份标识会话用户的请求。
 type SessionResolver struct{}
 
 func (SessionResolver) Resolve(ctx context.Context, _ *http.Request) (auth.Identity, error) {
@@ -163,9 +161,8 @@ func (SessionResolver) Resolve(ctx context.Context, _ *http.Request) (auth.Ident
 	return auth.Identity{TenantID: ident.TenantID, UserID: ident.UserID}, nil
 }
 
-// PostgresUserGroupReader reads users.user_group with a plain (non-locking)
-// SELECT so this read-only endpoint never contends with subscription
-// upgrade/downgrade transactions that lock the same user row.
+// PostgresUserGroupReader 用普通(非加锁)的 SELECT 读取 users.user_group,
+// 这样此只读端点永远不会与锁住同一 user 行的订阅升级/降级事务发生争用。
 type PostgresUserGroupReader struct {
 	pool *pgxpool.Pool
 }
@@ -184,8 +181,8 @@ func (r *PostgresUserGroupReader) UserGroup(ctx context.Context, tenantID, userI
 		tenantID, userID,
 	).Scan(&group)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// A valid session with no user row is treated as the default tier rather
-		// than a hard error; downstream routing yields an empty allowed set.
+		// 一个没有 user 行的有效会话会被当作默认 tier,而非硬错误;下游路由
+		// 会产出一个空的 allowed 集合。
 		return "default", nil
 	}
 	if err != nil {
@@ -194,8 +191,8 @@ func (r *PostgresUserGroupReader) UserGroup(ctx context.Context, tenantID, userI
 	return group, nil
 }
 
-// PostgresPoolNameLister maps pool_group_id to display name for the tenant's
-// live (enabled, not soft-deleted) groups.
+// PostgresPoolNameLister 把 pool_group_id 映射到该 tenant 处于活跃状态
+//(已启用、未软删除)的 group 的展示名。
 type PostgresPoolNameLister struct {
 	pool *pgxpool.Pool
 }

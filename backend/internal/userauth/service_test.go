@@ -553,13 +553,13 @@ func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 	}
 }
 
-// TestStartOAuthRedirectAllowlist guards a caller-supplied redirect_uri must be rejected
-// unless it exactly matches the configured allowlist (fail-closed); an empty redirect_uri is allowed
-// and falls back to the provider's server-side RedirectURI. Prevents open-redirect / authorization
-// -code hijack to attacker-controlled callbacks.
+// TestStartOAuthRedirectAllowlist 守护一点: 调用方提供的 redirect_uri 必须被拒,
+// 除非它与配置的 allowlist 精确匹配 (fail-closed); 空的 redirect_uri 允许,
+// 此时回退到 provider 的服务端 RedirectURI。防止 open-redirect / 授权码
+// 被劫持到攻击者可控的 callback。
 //
-// Mutation check: delete the validateOAuthRedirectURI call in StartOAuth and the "not in allowlist"
-// case is accepted → red. Discriminating: same provider/tenant, only the redirect_uri + allowlist vary.
+// 变异检查: 删掉 StartOAuth 里的 validateOAuthRedirectURI 调用, "不在 allowlist 内"
+// 的 case 就会被接受 → 红。判别性: provider/tenant 相同, 只有 redirect_uri + allowlist 变化。
 func TestStartOAuthRedirectAllowlist(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 10, 30, 0, 0, time.UTC)
@@ -573,15 +573,15 @@ func TestStartOAuthRedirectAllowlist(t *testing.T) {
 		s.AllowedRedirectURIs = allow
 		return s
 	}
-	// (1) caller redirect_uri not in (empty) allowlist → rejected fail-closed.
+	// (1) 调用方的 redirect_uri 不在 (空的) allowlist 内 → fail-closed 被拒。
 	if _, err := newSvc().StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle, RedirectURI: "https://evil.example.test/steal"}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("caller redirect_uri not in allowlist must be rejected; got %v", err)
 	}
-	// (2) caller redirect_uri exactly in allowlist → accepted.
+	// (2) 调用方的 redirect_uri 精确命中 allowlist → 接受。
 	if _, err := newSvc("https://app.example.test/cb").StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle, RedirectURI: "https://app.example.test/cb"}); err != nil {
 		t.Fatalf("allowlisted redirect_uri must be accepted; got %v", err)
 	}
-	// (3) empty redirect_uri → accepted (server-side default callback used).
+	// (3) 空的 redirect_uri → 接受 (使用服务端默认 callback)。
 	if _, err := newSvc().StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle}); err != nil {
 		t.Fatalf("empty redirect_uri must be accepted (server default); got %v", err)
 	}
@@ -732,8 +732,8 @@ func TestApplyVerifiedSocialIdentityRejectsTelegramSyntheticEmailPendingVerifica
 		Provider: SocialProviderTelegram,
 		Subject:  "424242",
 		Email:    SyntheticOAuthEmail(SocialProviderTelegram, "424242"),
-		// Telegram login-widget does not prove email ownership. This must stay
-		// false so the shared pending-email path rejects instead of creating a user.
+		// Telegram login-widget 并不能证明对 email 的所有权。这里必须保持
+		// false, 让共享的 pending-email 路径拒绝, 而不是创建一个用户。
 		EmailVerified: false,
 	})
 	if !errors.Is(err, ErrOAuthPendingEmailRequired) {

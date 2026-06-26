@@ -9,16 +9,14 @@ import (
 	"testing"
 )
 
-// PROXY-02b(lite): a transport that manages its own TLS via DialTLSContext (the
-// mimicry sidecar) makes net/http IGNORE the Proxy func, so Clone()+Proxy would
-// SILENTLY drop the per-account proxy and leak the real egress IP. The wrapper
-// must fail loud instead.
+// PROXY-02b(lite)：通过 DialTLSContext 自管 TLS 的 transport(即
+// mimicry sidecar)会让 net/http 【忽略】Proxy func，于是 Clone()+Proxy 会
+// 【静默】丢弃账号级代理并泄露真实出口 IP。wrapper 必须改为 fail-loud。
 
-// TestWrapTransportWithProxy_CustomTLSTransportFailsLoud is the discriminating
-// test. WITH the guard: ErrProxyUnsupportedTransport is returned without dialing.
-// WITHOUT the guard (mutation): Clone()+Proxy ignores Proxy and dials via the
-// custom DialTLSContext -> the sentinel error surfaces -> assertion red, proving
-// the real egress IP would have leaked.
+// TestWrapTransportWithProxy_CustomTLSTransportFailsLoud 是判别性测试。
+// 【带】guard：返回 ErrProxyUnsupportedTransport 且不发起拨号。
+// 【不带】guard(变异):Clone()+Proxy 忽略 Proxy 并经自定义 DialTLSContext
+// 拨号 -> sentinel 错误浮现 -> 断言变红，证明真实出口 IP 本会泄露。
 func TestWrapTransportWithProxy_CustomTLSTransportFailsLoud(t *testing.T) {
 	sentinel := errors.New("dialed via custom DialTLSContext (proxy bypassed = IP LEAK)")
 	tr := &http.Transport{
@@ -35,7 +33,7 @@ func TestWrapTransportWithProxy_CustomTLSTransportFailsLoud(t *testing.T) {
 	}
 }
 
-// A plain *http.Transport (no custom TLS dial) still gets the proxy injected.
+// 普通 *http.Transport(无自定义 TLS 拨号)仍会被注入代理。
 func TestWrapTransportWithProxy_PlainTransportGetsProxy(t *testing.T) {
 	tr := &http.Transport{}
 	u, _ := url.Parse("http://proxy.test:8080")

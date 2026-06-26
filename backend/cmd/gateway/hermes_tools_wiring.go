@@ -19,10 +19,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
-// hermesToolDeps bundles the EXISTING read-only stores the WAVE H3 diagnostic
-// tools wrap. Each field is a store/service already constructed in
-// buildGatewayRuntime; this wiring only adapts their existing read methods into
-// the hermesops tool dependency shape — it adds no new query logic.
+// hermesToolDeps 打包了 WAVE H3 诊断工具所封装的、已存在的只读存储。
+// 每个字段都是已在 buildGatewayRuntime 中构造好的 store/service;本接线
+// 只是把它们已有的读方法适配成 hermesops 工具依赖的形状——
+// 不新增任何查询逻辑。
 type hermesToolDeps struct {
 	pool           *pgxpool.Pool
 	adminQueries   *admindb.Queries
@@ -30,29 +30,27 @@ type hermesToolDeps struct {
 	credentialStr  *credentialstore.Store
 	channelHealth  *channelhealth.Service
 	dlqStore       *dlq.Store
-	// dlqService exposes the EXISTING Replay mutation (re-claim + re-deliver,
-	// idempotency-keyed) the WAVE H4 dlq_replay tool wraps. Nil => the tool fails
-	// closed on its dependency check.
+	// dlqService 暴露 WAVE H4 dlq_replay 工具所封装的、已存在的 Replay 变更操作
+	//(重新 claim + 重新投递,以幂等键标识)。Nil => 该工具在依赖检查处
+	// fail closed。
 	dlqService *dlq.Service
-	// modelRegistry exposes the EXISTING read-only ResolveModel the model_resolve_diagnose
-	// tool wraps (alias -> canonical/pool-binding routing). Nil => the tool fails closed.
+	// modelRegistry 暴露 model_resolve_diagnose 工具所封装的、已存在的只读 ResolveModel
+	//(alias -> canonical/pool-binding 路由)。Nil => 该工具 fail closed。
 	modelRegistry *registry.PostgresRegistry
 }
 
-// buildHermesToolRegistry assembles the read-only diagnostic-tool registry by
-// wiring each tool's Run to the corresponding EXISTING read function. Every tool
-// is read-only; no mutating method is referenced. Returns the registry + the
-// tool-call audit inserter (pool-backed). A nil pool yields a registry with the
-// tools still registered but failing closed on dependency checks.
+// buildHermesToolRegistry 组装只读诊断工具的 registry,做法是把每个工具的 Run
+// 接到对应的、已存在的读函数上。每个工具都是只读的;不引用任何变更方法。
+// 返回 registry + 工具调用的审计 inserter(由 pool 支撑)。pool 为 nil 时,
+// 返回的 registry 中工具仍会注册,但在依赖检查处 fail closed。
 //
-// mutateOpts are the additive S2 orchestrator guards (concurrency cap + tx
-// deadline). With no options the orchestrator is byte-for-byte the legacy
-// unbounded behavior.
+// mutateOpts 是附加式的 S2 orchestrator 守卫(并发上限 + tx 超时)。
+// 不传任何选项时,orchestrator 在字节层面等同于旧版的无界行为。
 func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOption) (*hermesops.Registry, *hermestoolsdb.Queries, *hermesops.MutateOrchestrator) {
 	reg := hermesops.NewRegistry()
 
 	// credential_diagnose -> credentialworker.DryRunProviderAccountCredential
-	// (non-persistent validation) + credentialstore.Store.ListRenewStatus (read).
+	//(非持久化的校验)+ credentialstore.Store.ListRenewStatus(读)。
 	credDeps := hermesops.CredentialDiagnoseDeps{
 		DryRun:   credentialworker.DryRunProviderAccountCredential,
 		Registry: credentialworker.DefaultModeAdapterRegistry(),
@@ -63,9 +61,9 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.CredentialDiagnoseSpec(credDeps))
 
-	// account_health_diagnose -> admindb.GetAdminProviderAccountHealth (read) +
-	// channelhealth.Service.SummarizeChannelHealth (aggregate read) +
-	// channelhealth.Service.ListChannelHealth (本账号逐通道明细,只读 Record 无 payload)。
+	// account_health_diagnose -> admindb.GetAdminProviderAccountHealth(读)+
+	// channelhealth.Service.SummarizeChannelHealth(聚合读)+
+	// channelhealth.Service.ListChannelHealth(本账号逐通道明细,只读 Record 无 payload)。
 	healthDeps := hermesops.AccountHealthDeps{}
 	if d.adminQueries != nil {
 		healthDeps.ProviderAccountHealth = d.adminQueries.GetAdminProviderAccountHealth
@@ -150,8 +148,8 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	reg.Register(hermesops.ProviderCatalogListSpec(provCatDeps))
 	reg.Register(hermesops.ChannelCatalogListSpec(chanCatDeps))
 
-	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
-	// admin reads on billingQueries.
+	// request_diagnose / audit_lookup / log_analyze -> billingQueries 上
+	// F-OBS-001 的仅 SELECT 管理读。
 	obsDeps := hermesops.ObservabilityDeps{}
 	if d.billingQueries != nil {
 		obsDeps.ListUsage = d.billingQueries.ListUsageRecords
@@ -162,25 +160,25 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	reg.Register(hermesops.AuditLookupSpec(obsDeps))
 	reg.Register(hermesops.LogAnalyzeSpec(obsDeps))
 
-	// dlq_inspect -> dlq.Store.List (read only; Replay is NOT referenced).
+	// dlq_inspect -> dlq.Store.List(只读;不引用 Replay)。
 	dlqDeps := hermesops.DLQInspectDeps{}
 	if d.dlqStore != nil {
 		dlqDeps.List = d.dlqStore.List
 	}
 	reg.Register(hermesops.DLQInspectSpec(dlqDeps))
 
-	// ---- WAVE H4 MUTATING tools ----------------------------------------------
-	// Each wraps an EXISTING mutation behind the 5-layer safety contract. They are
-	// registered with Mutating=true so the read-only dispatch refuses them; they
-	// run only through the confirm-gated mutate path + the orchestrator.
+	// ---- WAVE H4 MUTATING 工具 ----------------------------------------------
+	// 每个工具都把一个已存在的变更操作封装在 5 层安全契约之后。它们以
+	// Mutating=true 注册,因此只读 dispatch 会拒绝它们;它们只通过
+	// confirm 把关的 mutate 路径 + orchestrator 运行。
 
-	// account_pause / account_resume -> UpdateProviderAccountEnabled (tx-bound by
-	// the orchestrator). Resolve reads via GetAdminProviderAccount. The
-	// channelhealth manual-override coordination needs a credential-scoped
-	// ChannelKey (vendor + credential id + version) that the account row alone
-	// does not carry, so Coordinate is left nil this wave: enabled=false is the
-	// dispatcher's source of truth and effects the pause; channel-health
-	// coordination from the account id is a documented follow-up.
+	// account_pause / account_resume -> UpdateProviderAccountEnabled(由
+	// orchestrator 绑定到 tx)。Resolve 通过 GetAdminProviderAccount 读取。
+	// channelhealth 的手动覆盖协调需要一个凭证维度的
+	// ChannelKey(vendor + credential id + version),而单凭账号行
+	// 并不携带它,因此本波次中 Coordinate 留空(nil):enabled=false 才是
+	// dispatcher 的事实来源,它生效暂停;从账号 id 出发的 channel-health
+	// 协调是一项有记录在案的后续事项。
 	accountDeps := hermesops.AccountMutationDeps{}
 	if d.adminQueries != nil {
 		accountDeps.GetAccount = d.adminQueries.GetAdminProviderAccount
@@ -188,10 +186,10 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	reg.Register(hermesops.AccountPauseSpec(accountDeps))
 	reg.Register(hermesops.AccountResumeSpec(accountDeps))
 
-	// dlq_replay -> dlq.Service.Replay (platform_admin only). Lookup finds the
-	// target record within the tenant by a direct tenant-scoped by-id read, so
-	// Resolve can preview + re-check tenant ownership even for records older than
-	// any bounded List window.
+	// dlq_replay -> dlq.Service.Replay(仅 platform_admin)。Lookup 通过一次
+	// 直接的、限定在租户内的按 id 读,在该租户内找到目标记录,从而
+	// Resolve 即便对那些早于任何有界 List 窗口的记录,也能预览 +
+	// 重新校验租户归属。
 	dlqReplayDeps := hermesops.DLQReplayDeps{}
 	if d.dlqStore != nil {
 		dlqReplayDeps.Lookup = dlqLookupByID(d.dlqStore.GetByID)
@@ -201,8 +199,8 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.DLQReplaySpec(dlqReplayDeps))
 
-	// renew_trigger -> credentialstore.Store.Rotate (atomically supersedes the
-	// prior version). Resolve reads the credential metadata via ListByAccount.
+	// renew_trigger -> credentialstore.Store.Rotate(原子地取代上一版本)。
+	// Resolve 通过 ListByAccount 读取凭证元数据。
 	renewDeps := hermesops.RenewTriggerDeps{}
 	if d.credentialStr != nil {
 		renewDeps.ListByAccount = d.credentialStr.ListByAccount
@@ -219,11 +217,11 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	return reg, inserter, mutator
 }
 
-// dlqLookupByID adapts the tenant-scoped dlq by-id read into the hermesops
-// Lookup shape (id, tenantID order). It is read-only target resolution for the
-// dlq_replay preview/confirm path. A record that does not exist for the tenant
-// (including a wrong-tenant id) maps the store's ErrNotFound to
-// hermesops.ErrTargetResolution so the HTTP layer returns 404 rather than 5xx.
+// dlqLookupByID 把限定在租户内的、按 id 的 dlq 读适配成 hermesops
+// 的 Lookup 形状(参数顺序为 id、tenantID)。它是 dlq_replay 预览/确认
+// 路径中的只读目标解析。对该租户而言不存在的记录
+//(包括错误租户的 id)会把 store 的 ErrNotFound 映射为
+// hermesops.ErrTargetResolution,从而让 HTTP 层返回 404 而非 5xx。
 func dlqLookupByID(getByID func(ctx context.Context, tenantID, id int64) (dlq.Record, error)) func(ctx context.Context, id, tenantID int64) (dlq.Record, error) {
 	return func(ctx context.Context, id, tenantID int64) (dlq.Record, error) {
 		rec, err := getByID(ctx, tenantID, id)

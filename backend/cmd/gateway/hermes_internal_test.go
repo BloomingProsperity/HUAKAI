@@ -28,7 +28,7 @@ import (
 )
 
 func TestInternalRunnerBootstrapRequiresHMACAndIssuesVerifiableJWT(t *testing.T) {
-	// Regression: bootstrap must authenticate the internal caller before issuing a gateway-signed runner JWT.
+	// 回归：bootstrap 在签发由网关签名的 runner JWT 之前，必须先对内部调用方完成认证。
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -84,7 +84,7 @@ func TestInternalRunnerBootstrapRequiresHMACAndIssuesVerifiableJWT(t *testing.T)
 }
 
 func TestInternalRunnerBootstrapRequiresPositiveSignedAuditIdentity(t *testing.T) {
-	// Regression: body tenant/user must not backfill audit identity; missing or zero internal headers cannot issue JWT.
+	// 回归：请求体中的 tenant/user 不得回填审计身份；内部头缺失或为零值时不能签发 JWT。
 	d, auditStore, _, _ := newHermesInternalTestDeps(t)
 	r := chi.NewRouter()
 	mountRoutes(r, d, zap.NewNop())
@@ -130,7 +130,7 @@ func TestInternalRunnerBootstrapRequiresPositiveSignedAuditIdentity(t *testing.T
 }
 
 func TestInternalRunnerRefreshRequiresPositiveSignedAuditIdentity(t *testing.T) {
-	// Regression: refresh audit identity must come from internal headers, not optional body fields.
+	// 回归：refresh 时的审计身份必须来自内部头，而非可选的请求体字段。
 	d, auditStore, _, now := newHermesInternalTestDeps(t)
 	issuedAt := *now
 	token, err := d.hermesBootstrapIssuer.IssueBootstrapJWT(context.Background(), "runner-7")
@@ -205,7 +205,7 @@ func TestInternalRunnerRefreshRequiresPositiveSignedAuditIdentity(t *testing.T) 
 }
 
 func TestInternalRunnerKeysRequiresHMACProof(t *testing.T) {
-	// Regression: active JWT public keys must not be readable by callers that can only spoof internal headers.
+	// 回归：只能伪造内部头的调用方，不得读取到活跃的 JWT 公钥。
 	d, _, _, _ := newHermesInternalTestDeps(t)
 	r := chi.NewRouter()
 	mountRoutes(r, d, zap.NewNop())
@@ -245,7 +245,7 @@ func TestInternalRunnerKeysRequiresHMACProof(t *testing.T) {
 }
 
 func TestBuildHermesChatBridgeRequiresDedicatedInternalTokenSecret(t *testing.T) {
-	// Regression: /chat must fail closed when the runner shared secret exists but the bridge token secret is absent.
+	// 回归：当 runner 共享密钥存在但 bridge token 密钥缺失时，/chat 必须 fail closed。
 	t.Setenv(hermeschat.InternalTokenSecretEnv, "")
 
 	keys := mustGatewayHermesContentKeys(t)

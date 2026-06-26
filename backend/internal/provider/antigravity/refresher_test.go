@@ -22,10 +22,10 @@ import (
 )
 
 func TestAntigravityRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
-	// Regression killed: attacker-controlled credential JSON must not decide
-	// the token endpoint, client ID, client secret, or scope used for refresh.
-	// Mutation self-check: reading any of those credential fields sends at
-	// least one attacker value and turns this test red.
+	// 消除的回归:由攻击者控制的凭证 JSON 不得决定刷新所用的
+	// token endpoint、client ID、client secret 或 scope。
+	// 变异自检:只要读取了上述任一凭证字段,就会至少发送一个攻击者值,
+	// 从而使本测试变红。
 	now := time.Date(2026, 5, 24, 15, 0, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if got := r.URL.String(); got != "https://operator.antigravity.example.test/oauth/token" {
@@ -99,9 +99,9 @@ func TestAntigravityRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
 }
 
 func TestAntigravityRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *testing.T) {
-	// Regression killed: credential-supplied OAuth endpoints must fail closed
-	// when operator token_url is absent. Mutation self-check: using the
-	// credential endpoint makes the HTTP client run and this test fails.
+	// 消除的回归:当运营方未配置 token_url 时,凭证里携带的 OAuth endpoint
+	// 必须 fail closed(直接失败)。变异自检:一旦使用凭证里的 endpoint,
+	// HTTP 客户端就会被调用,从而使本测试失败。
 	called := false
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		called = true
@@ -125,9 +125,9 @@ func TestAntigravityRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *test
 }
 
 func TestAntigravityRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
-	// Regression killed: Antigravity refresh failures must preserve distinct
-	// audit outcomes. Mutation self-check: flattening status/body handling
-	// breaks at least one of 401, 429, or risk-triggering 403.
+	// 消除的回归:Antigravity 刷新失败必须保留各自不同的审计结果。
+	// 变异自检:若把 status/body 的处理压平成一种,401、429 或触发风控的 403
+	// 中至少有一个会失败。
 	tests := []struct {
 		name       string
 		statusCode int
@@ -225,8 +225,8 @@ func TestAntigravityRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) 
 }
 
 func TestAntigravityRefresherAcceptsExistingCredentialStoreMode(t *testing.T) {
-	// Regression killed: adding antigravity/oauth must not strand existing
-	// gemini/antigravity credentials that credentialstore already supports.
+	// 消除的回归:新增 antigravity/oauth 不得让 credentialstore 已经支持的
+	// 现有 gemini/antigravity 凭证被搁置失效。
 	calls := []string{}
 	store := &recordingAntigravityRefreshStore{
 		calls: &calls,

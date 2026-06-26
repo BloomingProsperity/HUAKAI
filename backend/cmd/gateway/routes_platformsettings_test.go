@@ -9,11 +9,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
-// TestPlatformSettingsRouteServiceFallsBackWhenServicePointerNil guards the
-// typed-nil trap in mountPlatformSettingsRoutes. Mutation check: assign
-// d.platformSettings to the service interface first and then test `service ==
-// nil`; the nil *platformsettings.Service becomes a non-nil interface, the
-// pgPool fallback is skipped, and this test sees a typed-nil service.
+// TestPlatformSettingsRouteServiceFallsBackWhenServicePointerNil 守护
+// mountPlatformSettingsRoutes 里的 typed-nil 陷阱。变异检查:先把
+// d.platformSettings 赋给 service 接口,再去判断 `service ==
+// nil`;此时 nil 的 *platformsettings.Service 会变成一个非 nil 的接口,
+// pgPool 回退被跳过,本测试便会看到一个 typed-nil 的 service。
 func TestPlatformSettingsRouteServiceFallsBackWhenServicePointerNil(t *testing.T) {
 	var typedNil *platformsettings.Service
 

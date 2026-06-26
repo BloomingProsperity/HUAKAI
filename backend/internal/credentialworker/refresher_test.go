@@ -141,10 +141,9 @@ func TestCodexRefreshReusesOpenAIHTTPRoundTrip(t *testing.T) {
 }
 
 func TestCodexRefreshRejectsCredentialSuppliedOAuthConfig(t *testing.T) {
-	// Regression killed: the production credentialworker Codex adapter must
-	// fail closed when operator endpoint/client/scope are absent. Mutation
-	// self-check: falling back to credential oauth_token_endpoint calls the
-	// HTTP client and turns this test red.
+	// 修掉的回归:生产的 credentialworker Codex adapter 在缺少 operator
+	// endpoint/client/scope 时必须 fail closed。Mutation 自检:回退到 credential
+	// oauth_token_endpoint 会调用 HTTP 客户端,使本测试转红。
 	called := false
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		called = true

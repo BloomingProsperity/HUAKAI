@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// When enabled via WithRotationScan, RunOnce runs the rotation scan after the
-// refresh pass: it queries with the configured limit and a now-maxAge cutoff and
-// routes a due refreshable candidate into refresh recovery. Mutation guard: drop
-// the ScanRotationDue call in RunOnce and the store is never touched → red.
+// 经 WithRotationScan 启用后,RunOnce 在 refresh 过程之后运行 rotation 扫描:它以
+// 配置的 limit 与一个 now-maxAge 的截止点查询,并把一个到期的可刷新候选路由进
+// refresh 恢复。Mutation guard:删掉 RunOnce 中的 ScanRotationDue 调用,store 就
+// 永不被触碰 → 转红。
 func TestRunOnce_RunsRotationScanWhenEnabled(t *testing.T) {
 	store := &fakeRotationStore{due: []RotationCandidate{oauthCand(3)}}
 	s := newTestScheduler(nil, &stormSpy{}, &refresherSpy{}, WithRotationScan(store, 90*24*time.Hour, 10, nil))
@@ -26,12 +26,12 @@ func TestRunOnce_RunsRotationScanWhenEnabled(t *testing.T) {
 	}
 }
 
-// With no WithRotationScan (rotationMaxAge stays 0) the scan is skipped entirely
-// even if a store is present — strictly opt-in, zero behavior change by default.
+// 在没有 WithRotationScan 时(rotationMaxAge 保持为 0),即使 store 存在,扫描也会被
+// 完全跳过——严格 opt-in,默认零行为变更。
 func TestRunOnce_SkipsRotationScanByDefault(t *testing.T) {
 	store := &fakeRotationStore{due: []RotationCandidate{oauthCand(1)}}
 	s := newTestScheduler(nil, &stormSpy{}, &refresherSpy{})
-	s.rotationStore = store // store set, but maxAge left 0 → disabled
+	s.rotationStore = store // store 已设置,但 maxAge 留为 0 → 禁用
 
 	if err := s.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)

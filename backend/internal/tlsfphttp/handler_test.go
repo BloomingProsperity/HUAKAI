@@ -104,7 +104,7 @@ func TestCreate_TrailingJSONReturns400(t *testing.T) {
 	}
 }
 
-// PUT must not accept a status field (status goes through POST /{id}/status only).
+// PUT 不得接受 status 字段(status 只走 POST /{id}/status)。
 func TestUpdate_StatusInBody_Returns400(t *testing.T) {
 	if rec := do(adminDeps(mockSvc{}), "PUT", "/5?tenant_id=1", `{"name":"x","status":"disabled"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("code = %d; want 400 (status is an unknown field in the PUT body)", rec.Code)

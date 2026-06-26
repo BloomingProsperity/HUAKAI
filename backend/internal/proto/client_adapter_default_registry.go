@@ -31,10 +31,9 @@ type defaultClientAdapterFactory struct {
 	factory  func() ClientAdapter
 }
 
-// RegisterDefaultClientAdapterFactory lets protocol subpackages add built-in
-// client adapters without making the parent proto package import its child
-// packages. It must be called from package init before DefaultClientAdapterRegistry
-// is first used.
+// RegisterDefaultClientAdapterFactory 让各协议子包注册内置的 client adapter，
+// 而无需让父级 proto 包反向 import 其子包。必须在 package init 中、在
+// DefaultClientAdapterRegistry 首次使用之前调用。
 func RegisterDefaultClientAdapterFactory(protocol ClientProtocol, factory func() ClientAdapter) {
 	if protocol == "" || factory == nil {
 		panic("proto: invalid default client adapter factory")

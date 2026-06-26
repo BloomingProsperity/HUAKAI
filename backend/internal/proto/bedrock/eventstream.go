@@ -73,10 +73,9 @@ func (s *EventStreamAdapter) CanonicalToProviderRequest(ctx context.Context, can
 	return nil, nil, proto.ErrNotImplemented
 }
 
-// ProviderResponseToCanonical translates Bedrock-on-Anthropic InvokeModel
-// responses. The non-streaming body is the same Anthropic Messages response
-// shape used by the native Anthropic adapter, with Bedrock-specific top-level
-// fields preserved through passthrough.
+// ProviderResponseToCanonical 翻译 Bedrock-on-Anthropic InvokeModel 响应。
+// 非流式 body 与 native Anthropic 适配器使用的 Anthropic Messages 响应
+// 形态一致，Bedrock 特有的顶层字段通过 passthrough 保留。
 func (s *EventStreamAdapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
 	return s.innerDelegate().ProviderResponseToCanonical(ctx, raw)
 }

@@ -241,10 +241,9 @@ func geminiPartToCanonicalEvents(part geminiPart, state *UpstreamState) ([]proto
 	}
 
 	if len(bytes.TrimSpace(part.InlineData)) > 0 {
-		// Emit the inline image as a canonical image block (mirrors the buffered
-		// path in client.go) instead of dropping it. Streaming image generation
-		// (e.g. gemini-2.5-flash-image via generateContent) previously lost the
-		// image entirely while still billing the output tokens.
+		// 把 inline 图片作为 canonical image block 输出（与 client.go 里的 buffered
+		// 路径一致）而不是丢弃。流式图片生成（如 gemini-2.5-flash-image 走
+		// generateContent）此前会把图片整个丢失，却仍按 output tokens 计费。
 		imageIndex := state.NextBlockIndex
 		state.NextBlockIndex++
 		imageBlock := proto.CanonicalContentBlock{Type: "image", Image: cloneRaw(part.InlineData)}

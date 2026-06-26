@@ -9,9 +9,9 @@ import (
 )
 
 func TestWindsurfOAuthConfigRequiresOperatorVerifiedEndpoints(t *testing.T) {
-	// Regression killed: Windsurf OAuth endpoints/client/scopes must not be
-	// guessed. Mutation self-check: hardcoding any default endpoint, client_id,
-	// or scope makes this test fail before Owner capture/provenance exists.
+	// 守住的回归：Windsurf 的 OAuth endpoints/client/scopes 绝不能靠猜。
+	// 变异自检：在 Owner 抓取/溯源建立之前，硬编码任何默认 endpoint、client_id
+	// 或 scope 都会让本测试失败。
 	cfg := DefaultOAuthConfig()
 
 	if cfg.AuthURL != "" || cfg.TokenURL != "" || cfg.ClientID != "" {
@@ -29,8 +29,8 @@ func TestWindsurfOAuthConfigRequiresOperatorVerifiedEndpoints(t *testing.T) {
 }
 
 func TestWindsurfOAuthAuthorizeURLUsesConfiguredPKCES256(t *testing.T) {
-	// Regression killed: operator-supplied Windsurf OAuth values must flow into
-	// the PKCE authorize URL without relying on unverified defaults.
+	// 守住的回归：operator 提供的 Windsurf OAuth 值必须流入 PKCE authorize URL，
+	// 不依赖任何未经验证的默认值。
 	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
 		AuthURL:     "https://windsurf-oauth.example.test/authorize",
 		TokenURL:    "https://windsurf-oauth.example.test/token",

@@ -8,16 +8,16 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 )
 
-// mountModuleRegistryRoutes wires the WAVE H2 read-only module-knowledge endpoint
-// behind adminGate (platform-admin RBAC), mirroring routes_systemhealth.go.
+// mountModuleRegistryRoutes 接线 WAVE H2 只读的模块知识（module-knowledge）端点，
+// 置于 adminGate（platform-admin RBAC）之后，与 routes_systemhealth.go 保持一致。
 //
-// GET /admin/v1/modules            — merged identity + capabilities + status + live probe
-// GET /admin/v1/modules?category=  — filter to one category
+// GET /admin/v1/modules            — 合并的身份 + 能力 + 状态 + 实时探测
+// GET /admin/v1/modules?category=  — 过滤到单一类别
 //
-// Gating: reuses the SAME admin auth as every other /admin/v1/* route — the
-// adminGate(adminIdentityResolver, handler) wrapper backed by d.adminAuth
-// (*admin.AdminResolver), identical to how mountSystemHealthRoutes gates
-// /admin/v1/system/health. No new auth is introduced.
+// 门控：复用与其它每个 /admin/v1/* 路由完全相同的 admin 鉴权 —— 由 d.adminAuth
+// （*admin.AdminResolver）支撑的 adminGate(adminIdentityResolver, handler) 包装器，
+// 与 mountSystemHealthRoutes 对 /admin/v1/system/health 的门控方式完全相同。
+// 不引入任何新的鉴权。
 func mountModuleRegistryRoutes(r chi.Router, d *deps) {
 	if d == nil {
 		return

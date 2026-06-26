@@ -62,8 +62,8 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 		t.Fatalf("expected one usage_record with claim_id=%d; got %d", seed.claimID, usageCount)
 	}
 
-	// The success-path usage row carries the
-	// router+registry stamp from migration 0008's snapshot_version column.
+	// 成功路径的 usage 行携带来自迁移 0008 的 snapshot_version 列的
+	// router+registry 标记。
 	var snapshot *string
 	if err := pool.QueryRow(ctx,
 		`SELECT snapshot_version FROM usage_records WHERE claim_id=$1`,
@@ -217,8 +217,8 @@ func TestSettler_SettlePersistsCacheTierTokensAndCosts(t *testing.T) {
 		t.Fatalf("read cache-tier usage_record fields: %v", err)
 	}
 
-	// Mutation guard: reverting settler cache-tier fields to hardcoded zero makes
-	// each persisted value differ from these inputs, so this test goes red.
+	// 变异守卫:把 settler 的 cache-tier 字段还原成硬编码零值,会使每个持久化值
+	// 都与这些输入不同,于是本测试转红。
 	if got5m != 100 {
 		t.Fatalf("cache_creation_5m_tokens=%d want 100", got5m)
 	}
@@ -269,7 +269,7 @@ func TestSettler_SettleZerosCacheBucketCostsForNonChargeableAttempt(t *testing.T
 		t.Fatalf("read cache-tier cost fields: %v", err)
 	}
 
-	// MUTATION: if cache bucket costs are not gated by CostForAttempt, cache_creation_cost stays nonzero while actual_cost=0 -> RED.
+	// 变异:若 cache 桶成本未经 CostForAttempt 门控,cache_creation_cost 会保持非零而 actual_cost=0 -> RED。
 	if !actualCost.IsZero() {
 		t.Fatalf("actual_cost=%s want 0", actualCost)
 	}
@@ -419,8 +419,8 @@ func TestSettler_AbortWritesProtocolLossEvidence(t *testing.T) {
 }
 
 func TestSettler_SettleWritesProtocolLossEvidence(t *testing.T) {
-	// Mutation: settler hardcoding []byte("[]") (the pre-fix bug) instead
-	// of reading req.ProtocolLoss → Settle persists [] ≠ want → RED.
+	// 变异:settler 硬编码 []byte("[]")(修复前的 bug)而非读取 req.ProtocolLoss
+	// → Settle 持久化的是 [] ≠ want → RED。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openPool(t, ctx)

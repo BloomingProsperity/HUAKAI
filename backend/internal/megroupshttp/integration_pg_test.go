@@ -138,14 +138,14 @@ func (f *meGroupsFixture) get() *httptest.ResponseRecorder {
 	return rec
 }
 
-// TestMeGroupsPublicRatioVisibility seeds a real premium tier with two pool
-// groups: a public-ratio group whose multiplier must surface and a private one
-// whose multiplier must be withheld. The public-ratio toggle is the exact lever
-// guarding money/competitive-intel disclosure end-to-end through the real store.
+// TestMeGroupsPublicRatioVisibility 用一个真实的 premium tier 预置两个 pool
+// group:一个 public-ratio group(其倍率必须浮现)和一个 private group
+//(其倍率必须被隐去)。public-ratio 开关正是端到端、贯穿真实存储地守护
+// 金钱/竞争情报披露的那个杠杆。
 //
-// MUTATION: flip the public group's public_ratio seed to false (or remove the
-// handler's public gate). The ratio "2.00000000" then either disappears (seed
-// side) or the hidden "9.90000000" surfaces (handler side) — both assertions go RED.
+// 变异:把 public group 的 public_ratio seed 翻成 false(或移除 handler 的
+// public 门控)。那样 ratio "2.00000000" 要么消失(seed 侧),要么隐藏的
+// "9.90000000" 浮现(handler 侧)—— 两个断言都会转红。
 func TestMeGroupsPublicRatioVisibility(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -201,30 +201,29 @@ func TestMeGroupsPublicRatioVisibility(t *testing.T) {
 	}
 }
 
-// TestMeGroupsTierAndTenantIsolation proves the tier whitelist AND tenant
-// isolation against the real routes JOIN: a second tenant's group and a
-// foreign-tier group in the same tenant must both be invisible.
+// TestMeGroupsTierAndTenantIsolation 针对真实的 routes JOIN 证明 tier 白名单
+// 与 tenant 隔离:第二个 tenant 的 group,以及同一 tenant 内异 tier 的 group,
+// 二者都必须不可见。
 //
-// MUTATION: drop GroupRoutes filtering (list all priced groups) — the
-// foreign-tier group surfaces; or trust a request tenant — tenant 2's group
-// surfaces. Either way the absence assertions go RED.
+// 变异:去掉 GroupRoutes 过滤(列出所有已定价 group)—— 异 tier group 浮现;
+// 或信任请求里的 tenant —— tenant 2 的 group 浮现。无论哪种,缺席断言都会转红。
 func TestMeGroupsTierAndTenantIsolation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMeGroupsPool(t, ctx)
 	f := newMeGroupsFixture(t, ctx, pool)
 
-	// Allowed: premium tier group.
+	// 允许:premium tier 的 group。
 	allowed := f.seedPoolGroup(f.tenant, "allowed")
 	f.seedRoute(f.tenant, allowed, "premium", "route-allowed")
 	f.seedRatio(f.tenant, allowed, "1.5", true)
 
-	// Same tenant, different tier (basic) — must not appear for a premium user.
+	// 同一 tenant,不同 tier(basic)—— 对 premium 用户绝不能出现。
 	foreignTier := f.seedPoolGroup(f.tenant, "basic")
 	f.seedRoute(f.tenant, foreignTier, "basic", "route-basic")
 	f.seedRatio(f.tenant, foreignTier, "3.3", true)
 
-	// Different tenant entirely — must never appear.
+	// 完全不同的 tenant —— 绝不能出现。
 	otherTenant := f.seedTenant("other")
 	otherGroup := f.seedPoolGroup(otherTenant, "other-secret")
 	f.seedRoute(otherTenant, otherGroup, "premium", "route-other")

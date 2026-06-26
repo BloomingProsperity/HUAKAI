@@ -1,4 +1,4 @@
-// Package adminuserhttp exposes tenant-scoped admin user visibility and recovery endpoints.
+// Package adminuserhttp 暴露按租户隔离的 admin 用户可见性与账号恢复端点。
 package adminuserhttp
 
 import (
@@ -628,9 +628,9 @@ func timestamp(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-// newForceDisable2FAHandler lets a tenant operator force-clear a locked-out user's
-// TOTP 2FA (account recovery), mirroring newUnlockHandler. Tenant-scoped + audited
-// (action=force_disable_2fa). AUTH-108b.
+// newForceDisable2FAHandler 让 tenant operator 强制清除被锁定用户的 TOTP 2FA
+//(账号恢复),镜像 newUnlockHandler。按租户隔离 + 审计
+//(action=force_disable_2fa)。AUTH-108b。
 func newForceDisable2FAHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
@@ -666,9 +666,9 @@ func newForceDisable2FAHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// newResetPasskeyHandler force-clears ALL of a user's passkeys (admin account
-// recovery), mirroring newForceDisable2FAHandler. Tenant-scoped + audited
-// (action=reset_passkey). AUTH-098.
+// newResetPasskeyHandler 强制清除某用户的全部 passkey(admin 账号恢复),
+// 镜像 newForceDisable2FAHandler。按租户隔离 + 审计
+//(action=reset_passkey)。AUTH-098。
 func newResetPasskeyHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
@@ -709,12 +709,12 @@ type setUserGroupRequest struct {
 	Group string `json:"group"`
 }
 
-// postgresUserGroupStore sets users.user_group (routing entitlement) for a tenant user.
+// postgresUserGroupStore 为某租户用户设置 users.user_group(路由权益)。
 type postgresUserGroupStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresUserGroupStore wires the admin user-group setter.
+// NewPostgresUserGroupStore 接线 admin 用户分组 setter。
 func NewPostgresUserGroupStore(pool *pgxpool.Pool) userGroupSetter {
 	if pool == nil {
 		return nil
@@ -727,9 +727,9 @@ func (s postgresUserGroupStore) SetUserGroupForTenant(ctx context.Context, tenan
 	return err
 }
 
-// newSetUserGroupHandler lets a tenant operator set a user's routing group
-// (users.user_group), mirroring newForceDisable2FAHandler. Tenant-scoped + audited
-// (action=set_user_group). AUTH-031. Additive admin-management; default-preserving.
+// newSetUserGroupHandler 让 tenant operator 设置某用户的路由分组
+//(users.user_group),镜像 newForceDisable2FAHandler。按租户隔离 + 审计
+//(action=set_user_group)。AUTH-031。增量式 admin 管理;保留默认行为。
 func newSetUserGroupHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
@@ -788,7 +788,7 @@ type postgresUserRemarkStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresUserRemarkStore wires the admin user-remark setter.
+// NewPostgresUserRemarkStore 接线 admin 用户备注 setter。
 func NewPostgresUserRemarkStore(pool *pgxpool.Pool) userRemarkSetter {
 	if pool == nil {
 		return nil
@@ -801,9 +801,9 @@ func (s postgresUserRemarkStore) SetUserRemarkForTenant(ctx context.Context, ten
 	return err
 }
 
-// newSetUserRemarkHandler lets a tenant operator set a free-text admin note on a
-// user (users.remark), mirroring newSetUserGroupHandler. Tenant-scoped + audited
-// (action=set_user_remark). AUTH-030. Additive admin-management; default-preserving.
+// newSetUserRemarkHandler 让 tenant operator 为某用户设置自由文本 admin 备注
+//(users.remark),镜像 newSetUserGroupHandler。按租户隔离 + 审计
+//(action=set_user_remark)。AUTH-030。增量式 admin 管理;保留默认行为。
 func newSetUserRemarkHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, tenantID, ok := resolveTenantIdentity(w, r, d)

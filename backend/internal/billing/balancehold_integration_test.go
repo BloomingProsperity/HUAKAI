@@ -21,8 +21,8 @@ import (
 )
 
 func TestBalanceHold_ConcurrentOverspendDiscriminating(t *testing.T) {
-	// Mutation check: remove `(balance - held) >= @cost` from ReserveBalanceHold.
-	// Without guard, all 5 goroutines succeed and held becomes 15.
+	// 变异检查:从 ReserveBalanceHold 中移除 `(balance - held) >= @cost`。
+	// 没有该守卫时,全部 5 个 goroutine 都会成功,held 会变成 15。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -87,8 +87,8 @@ func TestBalanceHold_ConcurrentOverspendDiscriminating(t *testing.T) {
 }
 
 func TestBalanceHold_CaptureChargesActualAndIdempotent(t *testing.T) {
-	// Mutation check: use predicted amount in ApplyBalanceHoldCapture instead of actual.
-	// With mutation, final balance becomes 5 for predicted=5/actual=3.
+	// 变异检查:在 ApplyBalanceHoldCapture 中用 predicted 金额代替 actual。
+	// 变异后,predicted=5/actual=3 时最终 balance 会变成 5。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -128,8 +128,8 @@ func TestBalanceHold_CaptureChargesActualAndIdempotent(t *testing.T) {
 }
 
 func TestBalanceHold_ReleaseStateIdempotent(t *testing.T) {
-	// Mutation check: remove state guard in ApplyBalanceHoldRelease.
-	// Without guard, second release makes held negative.
+	// 变异检查:移除 ApplyBalanceHoldRelease 中的 state 守卫。
+	// 没有该守卫时,第二次 release 会使 held 变成负值。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -217,9 +217,9 @@ func TestBalanceHold_MissingRowAllowsOptIn(t *testing.T) {
 }
 
 func TestBalanceHold_MissingRowMandatoryRejects(t *testing.T) {
-	// Mutation check: treating mandatory the same as opt-in lets a no-balance
-	// user through and fails both the ErrBalanceHoldInsufficientBalance assertion and the
-	// "no hold row" guard.
+	// 变异检查:把 mandatory 当作 opt-in 一样处理,会放过无余额用户,
+	// 从而同时令 ErrBalanceHoldInsufficientBalance 断言与
+	// "无 hold 行" 守卫两处失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -259,9 +259,9 @@ func TestBalanceHold_MissingRowMandatoryRejects(t *testing.T) {
 }
 
 func TestBalanceHold_BackfillHistoricalVoucherUserCanReserveMandatory(t *testing.T) {
-	// Mutation check: deleting the 0065 voucher_redemption backfill statement,
-	// filtering out USD redemptions, or forgetting cents->USD conversion leaves
-	// no usable $100 balance and Reserve returns ErrBalanceHoldInsufficientBalance.
+	// 变异检查:删除 0065 的 voucher_redemption 回填语句、把 USD 兑付过滤掉、
+	// 或漏掉 cents->USD 换算,都会导致没有可用的 $100 余额,
+	// 于是 Reserve 返回 ErrBalanceHoldInsufficientBalance。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -340,10 +340,9 @@ func TestBalanceHold_BackfillHistoricalVoucherUserCanReserveMandatory(t *testing
 }
 
 func TestBalanceHold_BackfillReconcilesExistingWalletRows(t *testing.T) {
-	// Mutation check: keeping a NOT EXISTS(user_balances) filter in the
-	// backfill leaves this user at the existing $50 recharge row, so a $150
-	// mandatory reserve fails even though the durable ledger says $100 voucher
-	// credit + $50 recharge credit are spendable.
+	// 变异检查:在回填中保留 NOT EXISTS(user_balances) 过滤会让该用户停留在
+	// 已有的 $50 充值行上,于是即便持久账本表明 $100 代金券额度 + $50 充值额度
+	// 可花费,$150 的 mandatory reserve 仍会失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

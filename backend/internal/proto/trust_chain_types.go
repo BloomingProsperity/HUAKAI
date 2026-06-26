@@ -35,9 +35,8 @@ const (
 //     绝不能放 prompt / completion / tool 内容。
 type HopAttestation struct {
 	// SchemaVersion / HopIndex / HopKind / Actor / StartedAt / EndedAt /
-	// DecisionRef are the F-TRUST-001 receipt-facing fields. Older gateway
-	// paths may still fill the compact Hop/Timestamp fields below during
-	// transition.
+	// DecisionRef 是 F-TRUST-001 面向 receipt 的字段。过渡期内较旧的 gateway
+	// 路径可能仍然填写下面紧凑的 Hop/Timestamp 字段。
 	SchemaVersion string   `json:"schema_version,omitempty"`
 	HopIndex      int      `json:"hop_index,omitempty"`
 	HopKind       string   `json:"hop_kind,omitempty"`

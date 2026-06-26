@@ -31,8 +31,8 @@ func TestStripBodyParams(t *testing.T) {
 	if _, ok := obj["messages"].([]any); !ok {
 		t.Fatalf("messages not preserved as array: %s", stripped)
 	}
-	// MUTATION: making StripBodyParams a no-op leaves service_tier present.
-	// GUARD: nil strip list must preserve the original body byte-for-byte.
+	// 变异:把 StripBodyParams 改成空操作会导致 service_tier 仍然存在。
+	// 守卫:nil strip 列表必须逐字节保留原始 body。
 }
 
 func TestApplyParamOverride(t *testing.T) {
@@ -62,8 +62,8 @@ func TestApplyParamOverride(t *testing.T) {
 	if _, ok := obj["messages"].([]any); !ok {
 		t.Fatalf("messages not preserved as array: %s", overridden)
 	}
-	// MUTATION: making ApplyParamOverride a no-op leaves temperature at 0.9.
-	// GUARD: nil override must preserve the original body byte-for-byte.
+	// 变异:把 ApplyParamOverride 改成空操作会导致 temperature 仍是 0.9。
+	// 守卫:nil override 必须逐字节保留原始 body。
 }
 
 func TestNestedStrip(t *testing.T) {
@@ -84,7 +84,7 @@ func TestNestedStrip(t *testing.T) {
 	if _, ok := streamOptions["include_usage"]; !ok {
 		t.Fatalf("include_usage sibling stripped: %s", stripped)
 	}
-	// MUTATION: deleting the whole stream_options object removes include_usage.
+	// 变异:删除整个 stream_options 对象会把 include_usage 也一并移除。
 }
 
 func decodeTestObject(t *testing.T, body []byte) map[string]any {

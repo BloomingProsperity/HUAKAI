@@ -32,11 +32,10 @@ type L2CacheConfig struct {
 
 func LoadL2Cache() (*L2CacheConfig, error) {
 	cfg := &L2CacheConfig{
-		// Enabled defaults ON (F-CACHE-001 activated 2026-06-19, Owner-authorized): the
-		// exact-key non-streaming response cache serves repeat requests at $0 settlement
-		// (a hit commits the claim at zero cost with a full audit/usage row). Operators
-		// disable per deployment with HUAKAI_CACHE_L2_ENABLED=0. In-memory + per-instance,
-		// scope=apikey isolation; streaming requests are never cached.
+		// Enabled 默认开启(F-CACHE-001 于 2026-06-19 激活, 经 Owner 授权):
+		// 精确键的非流式响应缓存让重复请求以 $0 结算(命中时以零成本提交 claim,
+		// 并保留完整的 audit/usage 行)。运维可按部署用 HUAKAI_CACHE_L2_ENABLED=0
+		// 关闭。内存级 + 每实例独立, scope=apikey 隔离;流式请求永不缓存。
 		Enabled:   true,
 		SizeBytes: defaultL2CacheSizeBytes,
 		TTL:       defaultL2CacheTTL,

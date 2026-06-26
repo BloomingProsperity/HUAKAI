@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// newRegistryWithClock constructs a Registry with a controlled clock.
+// newRegistryWithClock 用一个受控时钟构造一个 Registry。
 func newRegistryWithClock(idleTTL time.Duration, now func() time.Time) *Registry {
 	r := NewRegistry(idleTTL)
 	r.now = now

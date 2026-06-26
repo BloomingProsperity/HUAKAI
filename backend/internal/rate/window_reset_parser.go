@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// ParseMultiWindowReset extracts vendor multi-window reset hints for 429
-// cooldown refinement. It returns ok=false when no exceeded window is proven.
+// ParseMultiWindowReset 提取厂商的多窗口 reset 提示,用于细化 429 的冷却。
+// 当无法证明有任何已超限的窗口时返回 ok=false。
 func ParseMultiWindowReset(headers http.Header, now time.Time) (time.Time, Reason, bool) {
 	if headers == nil {
 		return time.Time{}, "", false

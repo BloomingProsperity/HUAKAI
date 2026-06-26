@@ -15,11 +15,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
-// hermesAdminDeps bundles the EXISTING read-only stores + email sender the WAVE
-// H5 daily inspection reuses. Every field is a service already constructed in
-// buildGatewayRuntime; this wiring only adapts their existing read methods into
-// the hermesadmin source shape — the SAME underlying reads the H3 diagnostic
-// tools wrap. It adds no new query logic and no new transport.
+// hermesAdminDeps 打包 WAVE H5 每日巡检复用的「现有」只读 store + email sender。
+// 其每个字段都是已在 buildGatewayRuntime 中构造好的服务;本接线只是把它们现有的读方法
+// 适配成 hermesadmin 的 source 形态 —— 与 H3 诊断工具所封装的是「同一批」底层读操作。
+// 它不增加任何新查询逻辑,也不引入任何新 transport。
 type hermesAdminDeps struct {
 	settings       *platformsettings.Service
 	emailSender    *email.AuthSender
@@ -31,12 +30,10 @@ type hermesAdminDeps struct {
 	logger         *zap.Logger
 }
 
-// buildHermesInspectionWorker resolves the daily-inspection config and, only when
-// the feature is opt-in enabled AND an admin recipient resolves, constructs the
-// scheduled worker. It returns nil (worker not started) for the unconfigured /
-// disabled / no-recipient cases, logging the reason — a fail-safe so an
-// unconfigured deployment never emails. The caller Start()s a non-nil worker and
-// stores it on the runtime for graceful Stop().
+// buildHermesInspectionWorker 解析每日巡检配置,且仅当该功能被显式启用(opt-in)
+// 且能解析出 admin 收件人时,才构造定时 worker。对未配置 / 已禁用 / 无收件人的情况
+// 返回 nil(worker 不启动)并记录原因 —— 这是一个 fail-safe:未配置的部署绝不会发邮件。
+// 调用方对非 nil 的 worker 执行 Start(),并把它存到 runtime 上以便优雅 Stop()。
 func buildHermesInspectionWorker(ctx context.Context, d hermesAdminDeps) *hermesadmin.InspectionWorker {
 	log := d.logger
 	if log == nil {
@@ -53,7 +50,7 @@ func buildHermesInspectionWorker(ctx context.Context, d hermesAdminDeps) *hermes
 		return nil
 	}
 	if cfg.Recipient == "" {
-		// Enabled but no recipient resolves: fail-safe — warn and do NOT start.
+		// 已启用但解析不出收件人:fail-safe —— 打 warn 且「不」启动。
 		log.Warn("hermes daily inspection enabled but no admin recipient resolved; worker not started",
 			zap.String("recipient_source", cfg.RecipientSource))
 		return nil

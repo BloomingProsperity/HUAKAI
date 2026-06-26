@@ -8,7 +8,7 @@ import (
 )
 
 // ----------------------------------------------------------------------------
-// D6 CanonicalToClientResponse — HCSF buffered → OpenAI Chat completion JSON
+// D6 CanonicalToClientResponse — HCSF buffered → OpenAI Chat completion JSON 序列化
 // ----------------------------------------------------------------------------
 
 type openAIChatCompletion struct {
@@ -28,7 +28,7 @@ type openAIChatChoice struct {
 
 type openAIChatChoiceMsg struct {
 	Role      string                       `json:"role"`
-	Content   *string                      `json:"content"` // null when tool_calls present
+	Content   *string                      `json:"content"` // 存在 tool_calls 时为 null
 	ToolCalls []openAIChatResponseToolCall `json:"tool_calls,omitempty"`
 }
 

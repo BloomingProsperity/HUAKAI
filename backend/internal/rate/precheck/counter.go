@@ -1,15 +1,12 @@
-// Package precheck holds the in-memory RPM/TPM budget tracker used by the
-// proactive rate pre-check selection gate (ROUTE-121). It lets the router skip
-// an upstream account that is about to exceed its per-minute request or token
-// budget, so the platform avoids provoking a user-visible 429 instead of merely
-// reacting to one after the fact.
+// Package precheck 持有内存中的 RPM/TPM 预算跟踪器,供主动式限流预检查
+// 选择门(ROUTE-121)使用。它让 router 跳过一个即将超出其每分钟请求或 token
+// 预算的上游账号,这样平台便能避免引发用户可见的 429,而不只是事后被动应对。
 //
-// The tracker is a fixed-window counter keyed by upstream account id with two
-// independent windows: requests-per-minute and tokens-per-minute. A zero limit
-// means "unlimited" (the account is never blocked on that dimension), so an
-// account with no configured budget keeps its current behaviour. A nil *Counter
-// is safe to use: Check allows and Record is a no-op, which keeps the gate
-// fail-open when the tracker is not wired.
+// 该跟踪器是一个按上游 account id 索引的固定窗口计数器,有两个独立窗口:
+// 每分钟请求数(requests-per-minute)和每分钟 token 数(tokens-per-minute)。
+// 零 limit 表示「无限制」(该账号在该维度上永不被阻塞),因此没有配置预算的
+// 账号保持其当前行为。nil 的 *Counter 可安全使用:Check 放行,Record 是空操作,
+// 从而在跟踪器未接线时让该门保持 fail-open。
 package precheck
 
 import (
@@ -17,11 +14,10 @@ import (
 	"time"
 )
 
-// DefaultWindow is the budget window length when New is given a non-positive one.
+// DefaultWindow 是当向 New 传入非正窗口时所用的预算窗口长度。
 const DefaultWindow = time.Minute
 
-// Limits is one account's per-window budget. A zero (or negative) value on a
-// dimension means that dimension is unlimited.
+// Limits 是单个账号的每窗口预算。某维度上为零(或负)值表示该维度无限制。
 type Limits struct {
 	RPM int64
 	TPM int64
@@ -30,25 +26,25 @@ type Limits struct {
 func (l Limits) rpmLimited() bool { return l.RPM > 0 }
 func (l Limits) tpmLimited() bool { return l.TPM > 0 }
 
-// Dimension names the budget a Decision tripped on.
+// Dimension 标识某个 Decision 是在哪个预算维度上触发的。
 type Dimension string
 
 const (
-	// DimensionNone means the request fits the budget.
+	// DimensionNone 表示请求符合预算。
 	DimensionNone Dimension = ""
-	// DimensionRPM means the requests-per-minute budget is full.
+	// DimensionRPM 表示每分钟请求数预算已满。
 	DimensionRPM Dimension = "rpm"
-	// DimensionTPM means the tokens-per-minute budget is full.
+	// DimensionTPM 表示每分钟 token 数预算已满。
 	DimensionTPM Dimension = "tpm"
 )
 
-// Decision is the outcome of a budget pre-check for a single account.
+// Decision 是对单个账号进行预算预检查的结果。
 type Decision struct {
 	Allowed   bool
 	Dimension Dimension
 }
 
-// Counter is a concurrency-safe fixed-window RPM/TPM budget tracker.
+// Counter 是一个并发安全的固定窗口 RPM/TPM 预算跟踪器。
 type Counter struct {
 	window time.Duration
 	now    func() time.Time
@@ -63,8 +59,8 @@ type windowCount struct {
 	count int64
 }
 
-// New returns a Counter using the given window length and clock. A non-positive
-// window falls back to DefaultWindow; a nil clock falls back to time.Now.
+// New 返回一个使用给定窗口长度和时钟的 Counter。非正窗口回退到
+// DefaultWindow;nil 时钟回退到 time.Now。
 func New(window time.Duration, now func() time.Time) *Counter {
 	if window <= 0 {
 		window = DefaultWindow
@@ -80,10 +76,9 @@ func New(window time.Duration, now func() time.Time) *Counter {
 	}
 }
 
-// Check reports whether one more request of estTokens estimated tokens would
-// fit account accountID's budget, WITHOUT consuming any of it. The caller that
-// actually dispatches the request must follow up with Record. Check on a nil
-// Counter, an account id <= 0, or fully-unlimited limits always allows.
+// Check 报告再来一个估算为 estTokens 个 token 的请求是否能容入账号 accountID
+// 的预算,但不消耗其中任何额度。真正派发该请求的调用方必须随后调用 Record。
+// 在 nil Counter、account id <= 0,或完全无限制的 limits 上,Check 总是放行。
 func (c *Counter) Check(accountID int64, lim Limits, estTokens int64) Decision {
 	if c == nil || accountID <= 0 || (!lim.rpmLimited() && !lim.tpmLimited()) {
 		return Decision{Allowed: true, Dimension: DimensionNone}
@@ -107,8 +102,8 @@ func (c *Counter) Check(accountID int64, lim Limits, estTokens int64) Decision {
 	return Decision{Allowed: true, Dimension: DimensionNone}
 }
 
-// Record consumes one request and tokens worth of budget for accountID in the
-// current window. It is a no-op on a nil Counter or an account id <= 0.
+// Record 在当前窗口为 accountID 消耗一个请求以及相应 tokens 的预算。在 nil
+// Counter 或 account id <= 0 时为空操作。
 func (c *Counter) Record(accountID int64, tokens int64) {
 	if c == nil || accountID <= 0 {
 		return
@@ -123,8 +118,8 @@ func (c *Counter) Record(accountID int64, tokens int64) {
 	c.live(c.toks, accountID, now).count += tokens
 }
 
-// live returns the current window bucket for accountID, resetting it when the
-// clock has crossed into a new fixed window. Callers must hold c.mu.
+// live 返回 accountID 的当前窗口桶,并在时钟跨入一个新的固定窗口时重置它。
+// 调用方必须持有 c.mu。
 func (c *Counter) live(m map[int64]*windowCount, accountID int64, now time.Time) *windowCount {
 	start := now.Truncate(c.window)
 	wc := m[accountID]

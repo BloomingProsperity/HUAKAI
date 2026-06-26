@@ -8,8 +8,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeycontrolshttp"
 )
 
-// mountUserKeyControlsRoutes expects r to be scoped to /v1/api-keys inside
-// the existing session-protected user API key route group.
+// mountUserKeyControlsRoutes 期望 r 已被限定到现有受 session 保护的用户
+// API key 路由组内的 /v1/api-keys 之下。
 func mountUserKeyControlsRoutes(r chi.Router, d *deps) {
 	var controlsSvc userkeycontrolshttp.ControlsService
 	if d != nil {

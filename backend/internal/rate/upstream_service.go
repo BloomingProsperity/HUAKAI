@@ -37,11 +37,10 @@ type SessionWindowStore interface {
 	UpdateProviderAccountSessionWindow5h(context.Context, SessionWindowUpdate) error
 }
 
-// CooldownStateStore atomically clears every cooldown-state column on a single
-// account so a benched upstream account becomes schedulable again. It carries
-// no tenant scope: ClearCascade callers are system-trusted (or have already
-// performed their own tenant ownership guard before delegating), so the impl
-// keys solely on account id.
+// CooldownStateStore 原子地清除单个账号上的每一个冷却状态列,使一个被下场
+//(benched)的上游账号重新变为可调度。它不带 tenant 作用域:ClearCascade 的
+// 调用方是系统可信的(或在委派前已自行做过 tenant 归属守卫),因此该实现
+// 仅按 account id 寻址。
 type CooldownStateStore interface {
 	ClearCooldownCascade(ctx context.Context, accountID int64) error
 }
@@ -62,10 +61,10 @@ type upstreamRateService struct {
 	now             func() time.Time
 	defaultCooldown time.Duration
 	sessionWindows  SessionWindowStore
-	cooldownState   CooldownStateStore // nil = no-op (default)
+	cooldownState   CooldownStateStore // nil = 空操作(默认)
 	transient       TransientCooldownConfig
 	disableCooling  bool
-	rulesProvider   AccountErrorRulesProvider // nil = no-op (default)
+	rulesProvider   AccountErrorRulesProvider // nil = 空操作(默认)
 }
 
 type UpstreamRateServiceOption func(*upstreamRateService)
@@ -82,18 +81,18 @@ func WithTransientCooldown(duration time.Duration) UpstreamRateServiceOption {
 	}
 }
 
-// WithAccountErrorRulesProvider injects a provider for per-account
-// temp-unschedulable rules and custom error codes. A nil provider (the
-// default) preserves zero-config no-op behaviour.
+// WithAccountErrorRulesProvider 注入一个为按账号 temp-unschedulable 规则和
+// custom error codes 提供数据的 provider。nil 的 provider(默认)保留零配置的
+// 空操作行为。
 func WithAccountErrorRulesProvider(p AccountErrorRulesProvider) UpstreamRateServiceOption {
 	return func(s *upstreamRateService) {
 		s.rulesProvider = p
 	}
 }
 
-// WithCooldownStateStore injects the store that backs ClearCascade. A nil
-// store (the default) preserves zero-config no-op behaviour, so ClearCascade
-// stays a safe no-op until production wires a real store.
+// WithCooldownStateStore 注入支撑 ClearCascade 的 store。nil 的 store(默认)
+// 保留零配置的空操作行为,因此在生产接入真实 store 之前,ClearCascade 保持
+// 为安全的空操作。
 func WithCooldownStateStore(store CooldownStateStore) UpstreamRateServiceOption {
 	return func(s *upstreamRateService) {
 		s.cooldownState = store
@@ -144,13 +143,12 @@ func NewPostgresCooldownStateStore(db sessionWindowDB) *PostgresCooldownStateSto
 	return &PostgresCooldownStateStore{db: db}
 }
 
-// ClearCooldownCascade clears every cooldown-state column on one account in a
-// single atomic UPDATE: rate-limit (3 cols), overload (1), temp-unschedulable
-// (3), model_rate_limits jsonb, and the OpenAI-403 counter window (2). This is
-// the same column set the tenant-scoped admin clear-rate-limit path resets;
-// here the WHERE is id-only (no tenant) because the caller is system-trusted
-// or has already enforced ownership. Clearing already-clear columns is a safe
-// idempotent no-op.
+// ClearCooldownCascade 在单条原子 UPDATE 中清除一个账号上的每个冷却状态列:
+// rate-limit(3 列)、overload(1 列)、temp-unschedulable(3 列)、
+// model_rate_limits jsonb,以及 OpenAI-403 计数窗口(2 列)。这与 tenant 作用域
+// 的 admin clear-rate-limit 路径所重置的是同一组列;此处 WHERE 仅按 id(无
+// tenant),因为调用方是系统可信的,或已自行强制做过归属校验。清除本就已清空
+// 的列是一个安全、幂等的空操作。
 func (s *PostgresCooldownStateStore) ClearCooldownCascade(ctx context.Context, accountID int64) error {
 	if s == nil || s.db == nil || accountID <= 0 {
 		return nil
@@ -178,10 +176,10 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 	_ = ctx
 	now := s.now().UTC()
 
-	// F-RATE-001 §1.6: evaluate per-account temp-unschedulable rules and
-	// custom error codes when the feature is enabled on this account.
-	// This is ADDITIVE — evaluated first, before the existing 429/529 path,
-	// so operators can classify any upstream status code including 403.
+	// F-RATE-001 §1.6:当该账号上启用了此特性时,评估按账号的
+	// temp-unschedulable 规则和 custom error codes。
+	// 这是增量式的 —— 先于现有的 429/529 路径评估,这样运营者就能对任意
+	// 上游状态码(包括 403)进行分类。
 	if s.rulesProvider != nil {
 		rules, customCodes := s.rulesProvider.GetAccountErrorRules(accountID)
 		if len(rules) > 0 || len(customCodes) > 0 {
@@ -247,12 +245,11 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 	return dec, nil
 }
 
-// ClearCascade honors the rate.Service contract (rate.go §ClearCascade):
-// atomically clear all cooldown state for one account. It delegates to the
-// injected CooldownStateStore. A nil store (the zero-config default) keeps it a
-// safe no-op so an unwired Service does not error. actorID is carried for the
-// contract signature and audit symmetry but the store clears by id only — the
-// admin HTTP path owns the tenant-scoped audit row.
+// ClearCascade 遵守 rate.Service 契约(rate.go §ClearCascade):原子地清除
+// 一个账号的全部冷却状态。它委托给注入的 CooldownStateStore。nil 的 store
+//(零配置默认)使其保持为安全的空操作,因此未接线的 Service 不会报错。
+// actorID 是为契约签名和审计对称性而携带的,但 store 只按 id 清除 ——
+// tenant 作用域的审计行由 admin HTTP 路径负责。
 func (s *upstreamRateService) ClearCascade(ctx context.Context, accountID int64, actorID string) error {
 	_ = actorID
 	if s == nil || s.cooldownState == nil || accountID <= 0 {

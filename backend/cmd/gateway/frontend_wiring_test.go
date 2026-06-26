@@ -1,14 +1,14 @@
 //go:build smoke
 
-// Frontend wiring test: boots the real gateway (dev-mock upstream) and drives
-// the EXACT endpoints + request shapes the user-portal frontend calls, asserting
-// the EXACT response fields the frontend parses. One subtest per frontend module
-// (login / api-keys / usage / playground). If the backend renames a field the
-// frontend depends on (e.g. api-key create's `plaintext`, login's `session`), the
-// matching subtest goes red — i.e. it fails on the real wiring defect it guards.
+// 前端接线测试:启动真实网关(dev-mock 上游),并精确地驱动
+// 用户门户前端所调用的那些端点 + 请求形状,断言前端解析的
+// 那些精确响应字段。每个前端模块一个子测试
+//(login / api-keys / usage / playground)。如果后端把前端
+// 依赖的某个字段改名(例如 api-key 创建的 `plaintext`、login 的 `session`),
+// 对应的子测试就会变红——也就是说,它会因其守护的真实接线缺陷而失败。
 //
-// Reuses the smoke harness (buildGateway/startGateway/seedSmokeGraph/...) from
-// smoke_test.go. Run: go test -tags smoke -run TestFrontendWiring ./cmd/gateway
+// 复用 smoke_test.go 里的 smoke 测试脚手架
+//(buildGateway/startGateway/seedSmokeGraph/...)。运行:go test -tags smoke -run TestFrontendWiring ./cmd/gateway
 
 package main
 
@@ -46,7 +46,7 @@ func TestFrontendWiring(t *testing.T) {
 
 	seed := seedSmokeGraph(t, ctx, pgPool)
 
-	// Session/verification tables live outside seedSmokeGraph's tenant cleanup.
+	// session/verification 这几张表不在 seedSmokeGraph 的租户清理范围内。
 	t.Cleanup(func() {
 		c := context.Background()
 		_, _ = pgPool.Exec(c, `DELETE FROM session_tokens WHERE tenant_id=$1`, seed.tenantID)
@@ -55,8 +55,8 @@ func TestFrontendWiring(t *testing.T) {
 		_, _ = pgPool.Exec(c, `DELETE FROM admin_tokens WHERE name LIKE 'wire-admin-%'`)
 	})
 
-	// Seed a tenant_operator admin token scoped to the seed tenant, so admin-console
-	// endpoints (admin-token track, not session) are wire-testable without ?tenant_id.
+	// 播种一个限定在 seed 租户内的 tenant_operator admin token,
+	// 这样管理控制台端点(走 admin-token 轨道而非 session)无需 ?tenant_id 即可做接线测试。
 	adminBearer := "hk_admin_" + uuid.NewString()[:12]
 	adminPrefix := adminBearer
 	if len(adminPrefix) > 16 {
@@ -73,8 +73,8 @@ func TestFrontendWiring(t *testing.T) {
 		t.Fatalf("seed admin_token: %v", err)
 	}
 
-	// Some admin surfaces (global channel-health / ops usage) require platform_admin
-	// (scope_tenant_id NULL). Seed one too for those subtests.
+	// 某些管理面(全局 channel-health / ops usage)要求 platform_admin
+	//(scope_tenant_id 为 NULL)。也为这些子测试播种一个。
 	adminPlatformBearer := "hk_admin_" + uuid.NewString()[:12]
 	adminPlatPrefix := adminPlatformBearer
 	if len(adminPlatPrefix) > 16 {
@@ -91,11 +91,11 @@ func TestFrontendWiring(t *testing.T) {
 		t.Fatalf("seed platform admin_token: %v", err)
 	}
 
-	// Global platform-setting defaults would block this password-auth test:
-	// registration_enabled defaults false, invitation_required true, and
-	// two_factor_enabled true while this gateway assembly leaves the 2FA service
-	// unwired (authTwoFactorRequired → 503). Configure password-login-friendly
-	// values (global scope; harmless on the dev DB).
+	// 全局 platform-setting 的默认值会拦住这个密码认证测试:
+	// registration_enabled 默认 false、invitation_required 为 true、
+	// two_factor_enabled 为 true,而本次网关组装并未接线 2FA 服务
+	//(authTwoFactorRequired → 503)。配置成对密码登录友好的
+	// 值(global 作用域;在 dev DB 上无害)。
 	for k, v := range map[string]string{
 		"registration_enabled": "true",
 		"invitation_required":  "false",
@@ -123,28 +123,28 @@ func TestFrontendWiring(t *testing.T) {
 	email := "wire-" + unique + "@example.com"
 	password := "Huakai-Wire-Test-123!"
 
-	var sessionToken string // captured by the login subtest, consumed downstream
-	var createdKey string   // hk_ plaintext from the api-keys subtest
-	var createdKeyID int64  // its api_key_id (for the usage-summary wire)
+	var sessionToken string // 由 login 子测试捕获,供下游消费
+	var createdKey string   // 来自 api-keys 子测试的 hk_ 明文
+	var createdKeyID int64  // 它的 api_key_id(用于 usage-summary 接线)
 
-	// ---- MODULE: login page (register → login → me) ----
+	// ---- 模块:login 页(register → login → me)----
 	t.Run("login_page_auth_ring", func(t *testing.T) {
-		// register (public). The frontend posts {tenant_id,email,display_name,password}.
+		// register(public)。前端 POST {tenant_id,email,display_name,password}。
 		st, body, _ := doJSON(t, ctx, http.MethodPost, base+"/v1/auth/register", "", map[string]any{
 			"tenant_id": seed.tenantID, "email": email, "display_name": "Wire User", "password": password,
 		})
 		if st != http.StatusOK && st != http.StatusCreated {
 			t.Fatalf("register expected 200/201; got %d body=%s", st, body)
 		}
-		// Make the account login-able regardless of the tenant's email-verification policy
-		// (we test the auth WIRING contract, not the verification gate).
+		// 让该账号无论租户的邮箱验证策略如何都能登录
+		//(我们测的是认证「接线」契约,而非验证闸门)。
 		if _, err := pgPool.Exec(ctx,
 			`UPDATE users SET email_verified=true, status='active' WHERE tenant_id=$1 AND email=$2`,
 			seed.tenantID, email); err != nil {
 			t.Fatalf("flip email_verified: %v", err)
 		}
 
-		// login (public). Frontend parses resp.session.session_token + resp.user.
+		// login(public)。前端解析 resp.session.session_token + resp.user。
 		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/auth/login", "", map[string]any{
 			"tenant_id": seed.tenantID, "email": email, "password": password,
 		})
@@ -164,9 +164,9 @@ func TestFrontendWiring(t *testing.T) {
 		}
 		sessionToken = tok
 
-		// GET /v1/auth/me with the session token (Header.tsx + fetchMe()).
-		// Real contract: { panel, user_id, tenant_id, display_name } — note user_id
-		// (not id) and NO email. fetchMe() maps user_id→id and keeps the login email.
+		// 带 session token 调 GET /v1/auth/me(Header.tsx + fetchMe())。
+		// 真实契约:{ panel, user_id, tenant_id, display_name }——注意是 user_id
+		//(而非 id)且「没有」email。fetchMe() 会把 user_id→id 并保留登录时的 email。
 		st, body, me := doJSON(t, ctx, http.MethodGet, base+"/v1/auth/me", sessionToken, nil)
 		if st != http.StatusOK {
 			t.Fatalf("/v1/auth/me expected 200; got %d body=%s", st, body)
@@ -183,9 +183,9 @@ func TestFrontendWiring(t *testing.T) {
 		t.Fatal("login subtest did not yield a session token; downstream session modules cannot run")
 	}
 
-	// ---- MODULE: API Keys page (create → list) ----
+	// ---- 模块:API Keys 页(create → list)----
 	t.Run("api_keys_page", func(t *testing.T) {
-		// create. Frontend apiKeys.ts reads the one-time `plaintext` field.
+		// create。前端 apiKeys.ts 读取一次性的 `plaintext` 字段。
 		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/api-keys", sessionToken, map[string]any{
 			"name": "wire-key-" + unique, "environment": "test",
 		})
@@ -204,7 +204,7 @@ func TestFrontendWiring(t *testing.T) {
 			createdKeyID = int64(idf)
 		}
 
-		// list. Frontend reads { api_keys: [...], count }.
+		// list。前端读取 { api_keys: [...], count }。
 		st, body, list := doJSON(t, ctx, http.MethodGet, base+"/v1/api-keys", sessionToken, nil)
 		if st != http.StatusOK {
 			t.Fatalf("list api-keys expected 200; got %d body=%s", st, body)
@@ -216,7 +216,7 @@ func TestFrontendWiring(t *testing.T) {
 		if len(arr) == 0 {
 			t.Fatalf("list api-keys: expected the just-created key; got empty array")
 		}
-		// the created key must be present by prefix
+		// 刚创建的 key 必须能按前缀匹配到
 		found := false
 		for _, it := range arr {
 			row, _ := it.(map[string]any)
@@ -228,8 +228,8 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("list api-keys: created key not found in list; body=%s", body)
 		}
 
-		// Per-key usage summary — the api-keys page row-expand panel calls
-		// GET /v1/me/keys/{id}/usage-summary (SESSION auth). Reads api_key_id/total_cost/request_count.
+		// 单 key 的用量汇总——api-keys 页的行展开面板会调用
+		// GET /v1/me/keys/{id}/usage-summary(SESSION 认证)。读取 api_key_id/total_cost/request_count。
 		if createdKeyID != 0 {
 			st, body, sum := doJSON(t, ctx, http.MethodGet,
 				fmt.Sprintf("%s/v1/me/keys/%d/usage-summary", base, createdKeyID), sessionToken, nil)
@@ -244,9 +244,9 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// ---- MODULE: usage page (quota[session] + usage[apikey] + time-series[apikey]) ----
+	// ---- 模块:usage 页(quota[session] + usage[apikey] + time-series[apikey])----
 	t.Run("usage_page", func(t *testing.T) {
-		// /v1/me/quota — SESSION auth. Frontend reads { items: [...] }.
+		// /v1/me/quota —— SESSION 认证。前端读取 { items: [...] }。
 		st, body, q := doJSON(t, ctx, http.MethodGet, base+"/v1/me/quota", sessionToken, nil)
 		if st != http.StatusOK {
 			t.Fatalf("/v1/me/quota expected 200; got %d body=%s", st, body)
@@ -255,7 +255,7 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("/v1/me/quota: missing `items` (QuotaWindowsCard maps over items); body=%s", body)
 		}
 
-		// /v1/me/usage — API-KEY auth (seed bearer). Frontend reads { items, next_cursor }.
+		// /v1/me/usage —— API-KEY 认证(seed bearer)。前端读取 { items, next_cursor }。
 		st, body, u := doJSON(t, ctx, http.MethodGet, base+"/v1/me/usage?limit=20", seed.bearer, nil)
 		if st != http.StatusOK {
 			t.Fatalf("/v1/me/usage expected 200; got %d body=%s", st, body)
@@ -267,7 +267,7 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("/v1/me/usage: missing `next_cursor` (cursor pagination depends on it); body=%s", body)
 		}
 
-		// /v1/me/analytics/time-series — API-KEY auth, from/to required (<=31d). Reads { items, period }.
+		// /v1/me/analytics/time-series —— API-KEY 认证,from/to 必填(<=31d)。读取 { items, period }。
 		now := time.Now().UTC()
 		from := now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
 		to := now.Format(time.RFC3339)
@@ -283,8 +283,8 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("time-series: missing `period`; body=%s", body)
 		}
 
-		// CSV export — the usage page's 导出 button hits /v1/me/usage/export.csv
-		// (SESSION auth, account-scoped — NOT the api-key path). Assert 200.
+		// CSV 导出 —— usage 页的「导出」按钮请求 /v1/me/usage/export.csv
+		//(SESSION 认证,账号维度——而非 api-key 路径)。断言 200。
 		exReq, _ := http.NewRequestWithContext(ctx, http.MethodGet,
 			base+"/v1/me/usage/export.csv?format=csv&from="+from+"&to="+to, nil)
 		exReq.Header.Set("Authorization", "Bearer "+sessionToken)
@@ -299,9 +299,9 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// ---- MODULE: playground (models[apikey] + chat stream[apikey]) ----
+	// ---- 模块:playground(models[apikey] + chat stream[apikey])----
 	t.Run("playground_page", func(t *testing.T) {
-		// GET /v1/models with seed key — frontend models.ts reads { object:"list", data:[{id}] }.
+		// 用 seed key 调 GET /v1/models —— 前端 models.ts 读取 { object:"list", data:[{id}] }。
 		st, body, m := doJSON(t, ctx, http.MethodGet, base+"/v1/models", seed.bearer, nil)
 		if st != http.StatusOK {
 			t.Fatalf("/v1/models expected 200; got %d body=%s", st, body)
@@ -321,7 +321,7 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("/v1/models: seeded alias gpt-4.1-mini not listed (model select would be empty); body=%s", body)
 		}
 
-		// POST /v1/chat/completions stream — playground's send path (SSE + usage).
+		// POST /v1/chat/completions 流式 —— playground 的发送路径(SSE + usage)。
 		chatBody := `{"model":"gpt-4.1-mini","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}`
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/chat/completions", strings.NewReader(chatBody))
 		req.Header.Set("Content-Type", "application/json")
@@ -344,7 +344,7 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// ---- BRIDGE: the just-created key is a real, usable inference credential ----
+	// ---- 衔接:刚创建的 key 是一个真实、可用的推理凭证 ----
 	t.Run("created_key_is_usable", func(t *testing.T) {
 		if createdKey == "" {
 			t.Skip("no created key (api_keys subtest failed)")
@@ -358,17 +358,17 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// ============ BATCH 1: portal-completion modules (session auth) ============
-	// Fresh registered user → empty data, but every endpoint must return 200 + the
-	// envelope shape the frontend lib parses. Asserts the wire (route mounted, auth
-	// accepted, shape correct) for redeem / subscriptions / notifications / account.
+	// ============ 批次 1:门户补全模块(session 认证)============
+	// 刚注册的用户 → 数据为空,但每个端点都必须返回 200 + 前端 lib
+	// 解析的那种 envelope 形状。为 redeem / subscriptions / notifications / account
+	// 断言接线(路由已挂载、认证被接受、形状正确)。
 
-	// MODULE: redeem (vouchers) — history GET + redeem error-path (route wired).
+	// 模块:redeem(vouchers)—— history GET + redeem 错误路径(路由已接线)。
 	t.Run("redeem_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/v1/me/voucher-redemptions", sessionToken, "redemptions")
 		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/users/me/vouchers/redeem", sessionToken,
 			map[string]any{"code": "WIRE-NOPE-" + unique})
-		// No such voucher → expect a STRUCTURED {error} (handler ran), not a chi 404 route-miss.
+		// 没有这张 voucher → 期望一个「结构化」的 {error}(说明 handler 已执行),而非 chi 的 404 路由未命中。
 		if st != http.StatusOK {
 			if _, ok := obj["error"].(map[string]any); !ok {
 				t.Fatalf("redeem bad-code: expected structured {error} (route wired); got %d body=%s", st, body)
@@ -376,7 +376,7 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// MODULE: subscriptions — current / list / plans (progress may 503 if quota unconfigured).
+	// 模块:subscriptions —— current / list / plans(若 quota 未配置,progress 可能返回 503)。
 	t.Run("subscriptions_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/v1/users/me/subscriptions/", sessionToken, "subscriptions")
 		getOK(t, ctx, base+"/v1/users/me/subscriptions/me", sessionToken, "auto_renew")
@@ -387,7 +387,7 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// MODULE: notifications + announcements + per-user notify settings.
+	// 模块:notifications + announcements + 每用户的 notify 设置。
 	t.Run("notifications_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/v1/notifications", sessionToken, "items")
 		getOK(t, ctx, base+"/v1/notifications/unread-count", sessionToken, "count")
@@ -395,10 +395,10 @@ func TestFrontendWiring(t *testing.T) {
 		getOK(t, ctx, base+"/v1/users/me/notifications", sessionToken, "notify_type")
 	})
 
-	// MODULE: account (groups / invitations / invite-code / checkin / referrals / rewards).
-	// invite-code/referrals/rewards depend on the invitation+referral feature config,
-	// which this minimal dev assembly leaves unconfigured → structured 503. We assert
-	// the WIRE (route mounted, auth accepted, structured response), tolerating that 503.
+	// 模块:account(groups / invitations / invite-code / checkin / referrals / rewards)。
+	// invite-code/referrals/rewards 依赖 invitation+referral 功能配置,
+	// 而这套最小 dev 组装并未配置它 → 结构化 503。我们断言
+	// 接线(路由已挂载、认证被接受、响应结构化),并容忍该 503。
 	t.Run("account_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/v1/me/groups", sessionToken, "items")
 		getOK(t, ctx, base+"/v1/me/invitations", sessionToken, "qualified_count")
@@ -408,44 +408,44 @@ func TestFrontendWiring(t *testing.T) {
 		getOKorUnavailable(t, ctx, base+"/v1/me/referrals/rewards", sessionToken, "total_reward_usd")
 	})
 
-	// ============ BATCH 2: portal-depth modules ============
+	// ============ 批次 2:门户纵深模块 ============
 
-	// MODULE: billing (balance / config / orders — all session).
+	// 模块:billing(balance / config / orders —— 均为 session)。
 	t.Run("billing_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/v1/users/me/payments/balance", sessionToken, "balance")
 		getOK(t, ctx, base+"/v1/users/me/payments/config", sessionToken, "config")
 		getOK(t, ctx, base+"/v1/users/me/payments/orders", sessionToken, "orders")
 	})
 
-	// MODULE: account security (2FA status / passkeys / oauth-bindings — all session).
+	// 模块:account security(2FA status / passkeys / oauth-bindings —— 均为 session)。
 	t.Run("security_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/v1/auth/2fa/status", sessionToken, "available")
 		getOK(t, ctx, base+"/v1/me/passkeys", sessionToken, "passkeys")
 		getOK(t, ctx, base+"/v1/users/me/oauth-bindings", sessionToken, "bindings")
 	})
 
-	// MODULE: pricing (public; page is an ARRAY, may 503 if catalog unconfigured in dev).
+	// 模块:pricing(public;page 是一个「数组」,若 dev 中目录未配置则可能返回 503)。
 	t.Run("pricing_page", func(t *testing.T) {
 		assertReachable(t, ctx, base+"/v1/pricing/page", "")
 		assertReachable(t, ctx, base+"/v1/pricing/snapshots", "")
 	})
 
-	// MODULE: audit & receipts (HUAKAI moat — receipt get / disputes / audit pubkey).
+	// 模块:audit & receipts(HUAKAI 护城河 —— receipt get / disputes / audit pubkey)。
 	t.Run("audit_page", func(t *testing.T) {
-		// receipt by a non-existent id → structured error (route wired), not chi route-miss.
+		// 用一个不存在的 id 取 receipt → 结构化错误(路由已接线),而非 chi 路由未命中。
 		st, body, obj := doJSON(t, ctx, http.MethodGet, base+"/v1/receipts/wire-nope-"+unique, sessionToken, nil)
 		if st != http.StatusOK {
 			if _, ok := obj["error"].(map[string]any); !ok {
 				t.Fatalf("receipt get bad-id: expected structured {error} (route wired); got %d body=%s", st, body)
 			}
 		}
-		getOK(t, ctx, base+"/v1/me/disputes", sessionToken)        // list reachable (200, shape varies)
-		assertReachable(t, ctx, base+"/v1/audit/pubkey", "")       // public; 200 or structured 503 (signer)
+		getOK(t, ctx, base+"/v1/me/disputes", sessionToken)        // 列表可达(200,形状不固定)
+		assertReachable(t, ctx, base+"/v1/audit/pubkey", "")       // public;200 或结构化 503(signer)
 	})
 
-	// ============ BATCH 3: admin-console core (admin-token track) ============
-	// Uses the seeded tenant_operator admin token (NOT session). Proves the admin
-	// pages' wires hit real /admin/v1 + /v1/admin routes with admin auth accepted.
+	// ============ 批次 3:管理控制台核心(admin-token 轨道)============
+	// 使用播种的 tenant_operator admin token(而非 session)。证明管理
+	// 页面的接线确实命中真实的 /admin/v1 + /v1/admin 路由,且 admin 认证被接受。
 
 	t.Run("admin_users_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/admin/v1/users", adminBearer, "items")
@@ -455,7 +455,7 @@ func TestFrontendWiring(t *testing.T) {
 		getOK(t, ctx, base+"/admin/v1/provider-accounts", adminBearer, "items")
 	})
 
-	// channel-health + ops/usage are platform_admin global surfaces.
+	// channel-health + ops/usage 是 platform_admin 的全局管理面。
 	t.Run("admin_channels_page", func(t *testing.T) {
 		assertReachable(t, ctx, fmt.Sprintf("%s/v1/admin/channel-health/?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
 	})
@@ -464,7 +464,7 @@ func TestFrontendWiring(t *testing.T) {
 		assertReachable(t, ctx, base+"/v1/admin/usage/overview?window=24h", adminPlatformBearer)
 	})
 
-	// ============ BATCH 4: admin-console depth ============
+	// ============ 批次 4:管理控制台纵深 ============
 	t.Run("admin_credentials_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/admin/v1/credentials/renew-status", adminPlatformBearer, "items")
 	})
@@ -480,11 +480,11 @@ func TestFrontendWiring(t *testing.T) {
 		assertWired(t, ctx, base+"/admin/v1/modules", adminPlatformBearer)
 	})
 
-	// ============ CLOSEOUT modules ============
-	// (overview /dashboard reuses already-asserted endpoints: balance/quota/api-keys/
-	//  checkin/time-series — no new wire to assert.)
+	// ============ 收尾模块 ============
+	//(overview /dashboard 复用已断言过的端点:balance/quota/api-keys/
+	//  checkin/time-series —— 没有新的接线需要断言。)
 
-	// MODULE: sessions — active session families list (POST, session auth).
+	// 模块:sessions —— 活跃 session family 列表(POST,session 认证)。
 	t.Run("sessions_page", func(t *testing.T) {
 		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/sessions/list", sessionToken, map[string]any{})
 		if st != http.StatusOK {
@@ -495,9 +495,9 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// MODULE: hermes (admin assistant). /v1/hermes is mounted only when hermesService
-	// AND hermesRunner are wired (routes.go) — the minimal dev gateway wires neither,
-	// so the route is absent (404). Skip honestly there; assert the wire where mounted.
+	// 模块:hermes(管理助手)。/v1/hermes 仅在 hermesService
+	// 「与」hermesRunner 都已接线时才挂载(routes.go)—— 最小 dev 网关二者皆未接线,
+	// 因此该路由不存在(404)。这种情况下如实 skip;在已挂载处则断言接线。
 	t.Run("hermes_page", func(t *testing.T) {
 		url := fmt.Sprintf("%s/v1/hermes/settings?as_user_id=%d&tenant_id=%d", base, seed.userID, seed.tenantID)
 		st, _, _ := doJSON(t, ctx, http.MethodGet, url, adminPlatformBearer, nil)
@@ -507,7 +507,7 @@ func TestFrontendWiring(t *testing.T) {
 		assertWired(t, ctx, url, adminPlatformBearer)
 	})
 
-	// MODULE: inference console — embeddings route wired (no embeddings model seeded → structured error OK).
+	// 模块:inference console —— embeddings 路由已接线(未播种 embeddings 模型 → 结构化错误亦可接受)。
 	t.Run("console_page", func(t *testing.T) {
 		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/embeddings", seed.bearer,
 			map[string]any{"model": "gpt-4.1-mini", "input": "wire test"})
@@ -519,8 +519,8 @@ func TestFrontendWiring(t *testing.T) {
 	})
 }
 
-// doJSON sends an optional JSON body with an optional Bearer token and returns
-// (status, rawBody, parsedObject). parsedObject is nil for non-object responses.
+// doJSON 发送一个可选的 JSON body 并附带可选的 Bearer token,返回
+//(status、rawBody、parsedObject)。对于非 object 的响应,parsedObject 为 nil。
 func doJSON(t *testing.T, ctx context.Context, method, url, bearer string, body any) (int, []byte, map[string]any) {
 	t.Helper()
 	var reader io.Reader
@@ -548,12 +548,12 @@ func doJSON(t *testing.T, ctx context.Context, method, url, bearer string, body 
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	var obj map[string]any
-	_ = json.Unmarshal(raw, &obj) // nil for arrays/non-objects; callers assert as needed
+	_ = json.Unmarshal(raw, &obj) // 对数组/非 object 为 nil;由调用方按需断言
 	return resp.StatusCode, raw, obj
 }
 
-// getOK asserts GET url (with bearer) returns 200 and the parsed object contains
-// every required key, then returns the object. Used for the breadth wiring checks.
+// getOK 断言 GET url(带 bearer)返回 200,且解析出的 object 包含
+// 每一个必需的 key,然后返回该 object。用于覆盖面层面的接线检查。
 func getOK(t *testing.T, ctx context.Context, url, bearer string, keys ...string) map[string]any {
 	t.Helper()
 	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
@@ -568,10 +568,10 @@ func getOK(t *testing.T, ctx context.Context, url, bearer string, keys ...string
 	return obj
 }
 
-// getOKorUnavailable is getOK that also accepts a STRUCTURED 503 — for endpoints
-// whose backend feature is left unconfigured in the minimal dev assembly. It still
-// proves the wire (route mounted, auth accepted, structured response shape); a chi
-// route-miss (404, no {error}) or wrong shape still fails.
+// getOKorUnavailable 是同时也接受「结构化」503 的 getOK —— 用于那些
+// 后端功能在最小 dev 组装中未配置的端点。它依然能证明
+// 接线(路由已挂载、认证被接受、响应结构化形状);而 chi 的
+// 路由未命中(404、无 {error})或形状错误仍会失败。
 func getOKorUnavailable(t *testing.T, ctx context.Context, url, bearer string, keys ...string) {
 	t.Helper()
 	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
@@ -592,9 +592,9 @@ func getOKorUnavailable(t *testing.T, ctx context.Context, url, bearer string, k
 	}
 }
 
-// assertReachable accepts 200 (any body shape — array or object) OR a structured
-// 503. For public/array endpoints where a key check doesn't apply but we still want
-// to prove the route is mounted and not a chi 404 route-miss.
+// assertReachable 接受 200(任意 body 形状 —— 数组或 object)「或」一个结构化
+// 503。用于那些不适用 key 检查、但我们仍想证明路由已挂载
+// 而非 chi 404 路由未命中的 public/数组端点。
 func assertReachable(t *testing.T, ctx context.Context, url, bearer string) {
 	t.Helper()
 	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
@@ -611,10 +611,10 @@ func assertReachable(t *testing.T, ctx context.Context, url, bearer string) {
 	t.Fatalf("GET %s expected 200 or structured 503; got %d body=%s", url, st, body)
 }
 
-// assertWired is the most lenient wire proof: 200, OR any 4xx/5xx that carries a
-// STRUCTURED {error} (route mounted + handler ran + structured response — not a chi
-// route-miss). For admin-depth endpoints whose exact role/tenant nuance we don't
-// fully satisfy in this minimal seed, but whose wire we still want to prove.
+// assertWired 是最宽松的接线证明:200,「或」任何携带
+// 「结构化」{error} 的 4xx/5xx(路由已挂载 + handler 已执行 + 响应结构化 —— 而非 chi
+// 路由未命中)。用于那些精确的角色/租户细节在本最小播种中
+// 未能完全满足、但我们仍想证明其接线的管理纵深端点。
 func assertWired(t *testing.T, ctx context.Context, url, bearer string) {
 	t.Helper()
 	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)

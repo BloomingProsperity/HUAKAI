@@ -5,9 +5,9 @@ import (
 	"errors"
 )
 
-// GateConfig controls opt-in stripping of channel-gated request parameters.
-// The zero value is a strict no-op: StripGatedFields returns the original body
-// bytes copied, without parsing or re-serializing.
+// GateConfig 控制对按渠道开关启用(opt-in)的请求参数的剥除。零值是
+// 严格的空操作:StripGatedFields 返回原始 body 字节的拷贝,既不解析也不
+// 重新序列化。
 type GateConfig struct {
 	StripServiceTier                     bool
 	StripInferenceGeo                    bool
@@ -26,9 +26,8 @@ func (c GateConfig) Enabled() bool {
 		c.StripStore
 }
 
-// StripGatedFields removes only fields whose corresponding config flag is
-// true. With all flags false it preserves HUAKAI's existing passthrough
-// behavior byte-for-byte except for returning a defensive copy.
+// StripGatedFields 只移除其对应 config 标志为 true 的字段。当所有标志均为
+// false 时,它逐字节保留 HUAKAI 现有的透传行为,只是返回一个防御性拷贝。
 func StripGatedFields(body []byte, cfg GateConfig) ([]byte, error) {
 	if !cfg.Enabled() {
 		return append([]byte(nil), body...), nil

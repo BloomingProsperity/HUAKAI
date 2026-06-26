@@ -11,17 +11,17 @@ func mkMembers(n int) []proxyFields {
 	return out
 }
 
-// PROXY-05: rotation must be deterministic per account (sticky residential IP)
-// yet spread different accounts across the pool (anti-clustering).
+// PROXY-05：轮换必须对每个账号是确定性的（住宅 IP 粘定），同时又要把不同账号
+// 散布到整个代理池中（防聚集）。
 func TestPickGroupMember(t *testing.T) {
 	members := mkMembers(4)
 
-	// empty pool -> nil (caller fail-closes)
+	// 空池 -> nil（由调用方 fail-closed）
 	if pickGroupMember(7, nil) != nil {
 		t.Fatal("empty member list must return nil")
 	}
 
-	// deterministic: same account -> same member
+	// 确定性：同一账号 -> 同一成员
 	for _, id := range []int64{1, 42, 9999} {
 		a := pickGroupMember(id, members)
 		b := pickGroupMember(id, members)
@@ -30,8 +30,8 @@ func TestPickGroupMember(t *testing.T) {
 		}
 	}
 
-	// MUTATION GUARD: hardcoding the index collapses rotation to one IP for every
-	// account (defeats anti-clustering) -> this spread assertion goes red.
+	// 变异哨兵：若把索引写死，会让所有账号的轮换坍缩到同一个 IP
+	// （破坏防聚集）-> 此散布断言会变红。
 	seen := map[string]bool{}
 	for id := int64(1); id <= 64; id++ {
 		m := pickGroupMember(id, members)
@@ -44,7 +44,7 @@ func TestPickGroupMember(t *testing.T) {
 		t.Fatalf("rotation must spread accounts across the pool, collapsed to %d", len(seen))
 	}
 
-	// picked member is always in the pool
+	// 选中的成员必须始终在池中
 	for id := int64(1); id <= 20; id++ {
 		m := pickGroupMember(id, members)
 		ok := false

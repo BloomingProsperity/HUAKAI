@@ -13,8 +13,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/systemhealthhttp"
 )
 
-// mountSystemHealthRoutes wires ADMIN-042 read-only system health aggregation
-// behind adminGate (platform-admin RBAC). Mirrors routes_usageadmin.go pattern.
+// mountSystemHealthRoutes 接线 ADMIN-042 只读的系统健康聚合，
+// 置于 adminGate（platform-admin RBAC）之后。沿用 routes_usageadmin.go 的模式。
 func mountSystemHealthRoutes(r chi.Router, d *deps) {
 	if d == nil {
 		return
@@ -29,14 +29,14 @@ func mountSystemHealthRoutes(r chi.Router, d *deps) {
 	r.Method(http.MethodGet, "/admin/v1/system/health", adminGate(resolver, h))
 }
 
-// gatewaySystemHealthSource adapts live deps fields to SystemHealthSource.
-// All reads are read-only snapshots; zero billing side effects.
+// gatewaySystemHealthSource 把运行期 deps 字段适配到 SystemHealthSource。
+// 所有读取都是只读快照；零计费副作用。
 type gatewaySystemHealthSource struct {
 	pool       *pgxpool.Pool
 	chService  *channelhealth.Service
 	dlqService *legacydlq.Service
 	alertSvc   *alerting.Service
-	tenantIDFn func() int64 // returns 0 for platform-admin (cross-tenant query not needed: uses 0 for global)
+	tenantIDFn func() int64 // 对 platform-admin 返回 0（无需跨租户查询：用 0 表示全局）
 }
 
 func buildSystemHealthSource(d *deps) systemhealthhttp.SystemHealthSource {
@@ -52,7 +52,7 @@ func buildSystemHealthSource(d *deps) systemhealthhttp.SystemHealthSource {
 
 func (s *gatewaySystemHealthSource) DBPing(ctx context.Context) error {
 	if s.pool == nil {
-		return nil // no pool configured — treated as healthy (standalone mode)
+		return nil // 未配置连接池 —— 视为健康（standalone 单机模式）
 	}
 	return s.pool.Ping(ctx)
 }
@@ -61,9 +61,9 @@ func (s *gatewaySystemHealthSource) ChannelHealthSummary(ctx context.Context) (t
 	if s.chService == nil {
 		return 0, 0, nil
 	}
-	// SummarizeChannelHealth uses tenantID=0 for cross-tenant platform view.
-	// In practice callers should scope to a platform-wide sentinel tenant; 0 is
-	// the convention used by existing gatewayhttp channel health admin routes.
+	// SummarizeChannelHealth 使用 tenantID=0 表示跨租户的平台视图。
+	// 实际上调用方应限定到平台级的哨兵租户；0 是现有 gatewayhttp 渠道健康
+	// 管理路由所采用的约定。
 	summary, err := s.chService.SummarizeChannelHealth(ctx, 0)
 	if err != nil {
 		return 0, 0, err
@@ -82,7 +82,7 @@ func (s *gatewaySystemHealthSource) DLQPendingDepth(ctx context.Context) (int64,
 	}
 	records, err := s.dlqService.List(ctx, legacydlq.ListFilter{
 		Status: legacydlq.StatusPending,
-		Limit:  10000, // cap; exact depth not required, just non-zero signal
+		Limit:  10000, // 上限；不要求精确深度，只需非零信号即可
 	})
 	if err != nil {
 		return 0, err
@@ -91,8 +91,8 @@ func (s *gatewaySystemHealthSource) DLQPendingDepth(ctx context.Context) (int64,
 }
 
 func (s *gatewaySystemHealthSource) AlertingFiringCount(ctx context.Context) (int64, error) {
-	// alertSvc is optional — not all deploys configure alerting.
-	// Return 0 (healthy) if unset.
+	// alertSvc 是可选的 —— 并非所有部署都配置告警（alerting）。
+	// 未设置时返回 0（视为健康）。
 	if s.alertSvc == nil {
 		return 0, nil
 	}

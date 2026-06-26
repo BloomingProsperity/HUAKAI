@@ -54,11 +54,10 @@ func TestDBAuditWriter_NilQueriesReturnsErrAuditWriterMissing(t *testing.T) {
 }
 
 func TestAccountCredentialRefreshQueriesSQLFiltersUnsafeProviderAccountHealth(t *testing.T) {
-	// Non-PG guard for: production wiring uses
-	// AccountCredentialRefreshQueries, so its scan SQL must carry the same
-	// provider-account health predicate as the real-PG fixture below. Mutation:
-	// remove the predicate from NewAccountCredentialRefreshQueries and this test
-	// fails even when HUAKAI_DATABASE_URL is unset.
+	// 非 PG 守卫:生产 wiring 使用 AccountCredentialRefreshQueries,因此它的扫描
+	// SQL 必须携带与下方真 PG fixture 相同的 provider-account health 谓词。
+	// Mutation:从 NewAccountCredentialRefreshQueries 删掉该谓词,即使
+	// HUAKAI_DATABASE_URL 未设置,本测试也会失败。
 	db := &refreshListQueryDBStub{}
 	_, err := NewAccountCredentialRefreshQueries(db).ListAccountsForRefresh(context.Background(), dbbilling.ListAccountsForRefreshParams{
 		RefreshBefore: pgTimestamptz(time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)),
@@ -73,12 +72,11 @@ func TestAccountCredentialRefreshQueriesSQLFiltersUnsafeProviderAccountHealth(t 
 }
 
 func TestListAccountsForRefreshSkipsUnsafeProviderAccountHealthPG(t *testing.T) {
-	// refresh scans must not hammer provider accounts already revoked
-	// or still cooling down. Mutation check: remove the provider-account health
-	// predicate from either refresh list query and the revoked/future-cooldown
-	// IDs below appear in the result set, turning this test red. The expired
-	// cooldown control proves the guard is not an over-broad health_state='healthy'
-	// filter that strands capacity after a transient cooldown deadline passes.
+	// refresh 扫描绝不能反复打已被撤销或仍在冷却中的 provider account。
+	// Mutation check:从任一 refresh list query 删掉 provider-account health 谓词,
+	// 下方 revoked/future-cooldown 的 ID 就会出现在结果集中,使本测试转红。expired
+	// cooldown 这一对照证明该守卫并非一个过宽的 health_state='healthy' 过滤——后者会在
+	// 瞬态冷却截止时刻过去后仍把容量搁置不用。
 	ctx := context.Background()
 	pool := openCredentialWorkerTestPool(t, ctx)
 	suffix := uuid.NewString()
@@ -450,10 +448,9 @@ func TestRecordAudit_TxCommit_HappyPath(t *testing.T) {
 }
 
 func TestRecordAuditString_NewOutcomePersistsToPG(t *testing.T) {
-	// Regression killed: S2 refreshers pass classified outcomes as strings;
-	// the audit append helper must persist both legacy and new 4-class values.
-	// Mutation self-check: mapping unknown strings to permanent_disable makes
-	// the SELECT below miss the exact row.
+	// 修掉的回归:S2 refresher 以字符串形式传入已分类的 outcome;audit append
+	// helper 必须同时持久化 legacy 与新的 4-class 取值。Mutation 自检:把未知字符串
+	// 映射成 permanent_disable 会让下方 SELECT 取不到精确那一行。
 	ctx := context.Background()
 	pool := openCredentialWorkerTestPool(t, ctx)
 	suffix := uuid.NewString()
@@ -490,10 +487,9 @@ func TestRecordAuditString_NewOutcomePersistsToPG(t *testing.T) {
 }
 
 func TestRecordAudit_HealthStateTransitionRoundTripPG(t *testing.T) {
-	// Regression killed: audit outcomes must update provider_accounts health
-	// state in the same local DB path, not only append audit rows. Mutation
-	// self-check: deleting the health update leaves the SELECT below at the
-	// seeded/default state and this test turns red.
+	// 修掉的回归:audit outcome 必须在同一条本地 DB 路径里更新 provider_accounts
+	// 的 health state,而不仅仅是追加 audit 行。Mutation 自检:删掉 health 更新会让
+	// 下方 SELECT 停留在 seed/默认状态,本测试转红。
 	ctx := context.Background()
 	pool := openCredentialWorkerTestPool(t, ctx)
 	suffix := uuid.NewString()
@@ -506,10 +502,10 @@ func TestRecordAudit_HealthStateTransitionRoundTripPG(t *testing.T) {
 	if err := s.recordAuditString(ctx, row, "auth_expired", "account", errors.New("expired refresh")); err != nil {
 		t.Fatalf("record auth_expired: %v", err)
 	}
-	// auth_expired is terminal — it must persist health_state_until as NULL so the
-	// eligibility CTE (which only normalizes rows WHERE health_state_until IS NOT NULL AND <= NOW)
-	// can never auto-recover a grant-loss account on a 30-minute timer. Mutation check: restore the
-	// now+cooldown deadline and the `until != nil` assertion below goes red.
+	// auth_expired 是终态——它必须把 health_state_until 持久化为 NULL,这样
+	// eligibility CTE(只规范化 WHERE health_state_until IS NOT NULL AND <= NOW 的行)
+	// 就绝不会靠一个 30 分钟定时器自动恢复一个已失授权的账号。Mutation check:还原
+	// now+cooldown 截止时间,下方 `until != nil` 断言就会转红。
 	var state string
 	var until *time.Time
 	if err := pool.QueryRow(ctx,
@@ -538,18 +534,16 @@ func TestRecordAudit_HealthStateTransitionRoundTripPG(t *testing.T) {
 	}
 }
 
-// TestUpdateProviderAccountHealthTerminalStickyAgainstTransientPG guards a
-// transient (throttled + deadline) health write must NOT downgrade an account that is already
-// terminally revoked (revoked + NULL deadline). Without the CASE guard in
-// updateProviderAccountHealthSQL, a stray rate_limit retry on a still-grant-lost account would
-// rewrite it to throttled+3m, after which the eligibility CTE auto-heals it back to healthy with no
-// successful refresh or operator action — reopening exactly the timer-recovery path the terminal
-// state exists to close.
+// TestUpdateProviderAccountHealthTerminalStickyAgainstTransientPG 守卫:一次
+// 瞬态(throttled + deadline)的 health 写入绝不能降级一个已经终态撤销
+// (revoked + NULL deadline)的账号。若 updateProviderAccountHealthSQL 中没有 CASE
+// 守卫,一次对仍失授权账号的偶发 rate_limit 重试会把它改写成 throttled+3m,之后
+// eligibility CTE 会在没有任何成功刷新或 operator 动作的情况下把它自愈回 healthy
+// ——重新打开了终态本要关闭的那条定时恢复通道。
 //
-// Mutation check: replace the two CASE expressions with the unconditional $3/$4 assignment and the
-// "terminal revocation downgraded" assertion goes red. The non-terminal control proves the guard
-// targets only terminal rows (it does NOT blanket-block throttling), and the success step proves the
-// recovery path (healthy clears terminal) is preserved.
+// Mutation check:把两个 CASE 表达式换成无条件的 $3/$4 赋值,"terminal revocation
+// downgraded" 断言就会转红。non-terminal 对照证明该守卫只针对终态行(它不会一刀切
+// 地阻止 throttling),success 步骤证明恢复路径(healthy 清除终态)得以保留。
 func TestUpdateProviderAccountHealthTerminalStickyAgainstTransientPG(t *testing.T) {
 	ctx := context.Background()
 	pool := openCredentialWorkerTestPool(t, ctx)
@@ -576,22 +570,22 @@ func TestUpdateProviderAccountHealthTerminalStickyAgainstTransientPG(t *testing.
 		return state, until
 	}
 
-	// 1) Terminal revocation (auth_expired / risk_control_triggered style): revoked + NULL deadline.
+	// 1) 终态撤销(auth_expired / risk_control_triggered 风格):revoked + NULL deadline。
 	setHealth("revoked", nil)
-	// 2) A later rate_limit retry on the same (still grant-lost) account classifies transient.
+	// 2) 之后对同一个(仍失授权)账号的一次 rate_limit 重试被分类为瞬态。
 	cooldown := time.Now().UTC().Add(3 * time.Minute)
 	setHealth("throttled", &cooldown)
 	if state, until := readHealth(); state != "revoked" || until != nil {
 		t.Fatalf("terminal revocation downgraded by transient write: state=%q until=%v, want revoked/NULL", state, until)
 	}
-	// 3) Recovery preserved: a successful refresh (healthy, no deadline) DOES clear the terminal state.
+	// 3) 恢复得以保留:一次成功刷新(healthy,无 deadline)确实会清除终态。
 	setHealth("healthy", nil)
 	if state, until := readHealth(); state != "healthy" || until != nil {
 		t.Fatalf("successful refresh failed to clear terminal: state=%q until=%v, want healthy/NULL", state, until)
 	}
 
-	// Control (discriminating): a non-terminal (healthy) account MUST still be throttled by a transient
-	// write — the guard targets terminal rows only, it does not blanket-suppress throttling.
+	// 对照(有区分力):一个 non-terminal(healthy)账号在一次瞬态写入下必须仍被
+	// throttle——该守卫只针对终态行,不会一刀切地抑制 throttling。
 	setHealth("throttled", &cooldown)
 	if state, until := readHealth(); state != "throttled" || until == nil {
 		t.Fatalf("transient throttle wrongly suppressed on non-terminal account: state=%q until=%v, want throttled/deadline", state, until)

@@ -33,10 +33,9 @@ const (
 	geminiOAuthClientIDEnv     = "HUAKAI_GEMINI_OAUTH_CLIENT_ID"
 	geminiOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
 
-	// ineffectiveRefreshBackoff is applied when a refresh "succeeds" but the
-	// resulting token is still immediately due for refresh (upstream returned a
-	// near-stale token), or when no refresh was required. It prevents a tight
-	// re-attempt loop against the upstream provider.
+	// ineffectiveRefreshBackoff 在以下情形施加:刷新"成功"但得到的 token 仍然立即
+	// 又到了需要刷新的时刻(上游返回了一个接近过期的 token),或者根本不需要刷新。
+	// 它防止对上游 provider 形成紧密的重试循环。
 	ineffectiveRefreshBackoff = credentialstore.IneffectiveRefreshBackoff
 )
 
@@ -247,9 +246,8 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 	})
 	if err != nil {
 		if errors.Is(err, ErrNoRefreshRequired) {
-			// No refresh was required, but we still throttle the next attempt to
-			// avoid a tight re-attempt loop. We only set next_attempt_at without
-			// changing state, failure_class, or failure_count.
+			// 不需要刷新,但我们仍然限流下一次尝试,以避免紧密的重试循环。
+			// 我们只设置 next_attempt_at,不改动 state、failure_class 或 failure_count。
 			if throttleErr := txStore.SetNextAttemptThrottle(ctx, rec, r.now().Add(ineffectiveRefreshBackoff)); throttleErr != nil {
 				return throttleErr
 			}
@@ -628,10 +626,10 @@ func (a windsurfManualModeAdapter) RefreshCredential(ctx context.Context, in Mod
 	return ModeRefreshResult{}, err
 }
 
-// builtinRefreshTokenModeAdapter refreshes upstream OAuth credentials whose provider
-// exposes a standard OAuth2 refresh_token grant at a fixed, compile-time token endpoint
-// with a built-in public client_id (xAI/Grok, Kimi/Moonshot). The token endpoint is
-// never payload-controlled and all egress uses the SSRF-protected OAuth client.
+// builtinRefreshTokenModeAdapter 刷新这样一类上游 OAuth 凭据:其 provider 在一个
+// 固定的、编译期确定的 token endpoint 上暴露标准 OAuth2 refresh_token grant,并带有
+// 内置的公开 client_id(xAI/Grok、Kimi/Moonshot)。token endpoint 绝不由 payload 控制,
+// 所有出站都使用受 SSRF 保护的 OAuth 客户端。
 type builtinRefreshTokenModeAdapter struct {
 	providerName string
 	tokenURL     string
