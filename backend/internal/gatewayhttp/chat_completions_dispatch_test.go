@@ -451,6 +451,33 @@ func TestResponsesPreviousResponseIDPreservesSessionHashThroughDispatch(t *testi
 	}
 }
 
+func TestDispatch_EstimatedInputTokensPopulatedWhenModelFallbackOff(t *testing.T) {
+	// 抓 S2(对抗 bug-hunt):EstimatedInputTokens 是 per-key / per-binding / per-account(ROUTE-121)的
+	// TPM 限流器按 token 累积窗口的增量源。此前它只在 model-fallback 开启时才估算 → 默认(fallback 关)
+	// 恒 0 → 三个 TPM 限流器的窗口永不累积、配置的 TPM 上限被静默绕过。修后无条件估算。
+	// 本测试在 fallback 关(默认:未设 ModelFallbackSettings → FromSettings 返回 Enabled=false)下发一个
+	// 有内容的请求,断言传给 selector 的 EstimatedInputTokens > 0。
+	// 变异(已验证转红):把 estInput 估算移回 `if ex.modelFallbackEnabled` 分支 → fallback 关时恒 0 → 此处红。
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	selector := &recordingSelectionRequestSelector{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.Selector = selector
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions",
+		`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"a reasonably long prompt with several words to estimate tokens"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 1 {
+		t.Fatalf("selector requests=%d want 1", len(selector.requests))
+	}
+	if got := selector.requests[0].EstimatedInputTokens; got <= 0 {
+		t.Fatalf("EstimatedInputTokens=%d want >0(model-fallback 关时也须估算,否则 per-key/binding/account TPM 限流静默失效)", got)
+	}
+}
+
 func TestResponsesPreviousResponseIDDoesNotReplacePromptHashAffinity(t *testing.T) {
 	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
 	dispatcher := &mockCanonicalBufferedDispatcher{}

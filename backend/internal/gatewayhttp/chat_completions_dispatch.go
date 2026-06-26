@@ -563,11 +563,15 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	if excludedAccounts == nil {
 		excludedAccounts = map[int64]struct{}{}
 	}
-	// ROUTE-023 方案 B:选择性开启的 context-window 预检(默认关闭——见提交)。
-	var ctxWindow, estInput, maxOut int
+	// estInput 是 per-key / per-binding / per-account(ROUTE-121)TPM 限流器按 token 累积窗口的增量源,
+	// 必须**无条件估算**:此前它只在 model-fallback 开启时算,默认(fallback 关)恒 0 → 三个 TPM 限流器
+	// 的窗口永不累积、配置的 TPM 上限被静默绕过(对抗 bug-hunt S2 数据/限额正确性缺陷)。
+	// tokenestimate.Estimate 是廉价的单次字符分类扫描。ctxWindow / maxOut 仅服务 ROUTE-023 的
+	// context-window 预检(它对 ctxWindow<=0 / estInput<=0 fail-open),故仍随 model-fallback 门控。
+	var ctxWindow, maxOut int
+	estInput := tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily)
 	if ex.modelFallbackEnabled {
 		ctxWindow = ex.resolved.ContextWindow
-		estInput = tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily)
 		maxOut = derefIntOrZero(ex.req.MaxTokens)
 	}
 	bindingID, bindingRPM, bindingTPM := ex.activeBindingRateLimits()
