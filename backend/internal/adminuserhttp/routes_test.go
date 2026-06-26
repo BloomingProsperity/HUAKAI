@@ -55,12 +55,11 @@ func TestAdminListUsers_PaginationCapsAndOffset(t *testing.T) {
 	}
 }
 
-// TestAdminUsers_ProjectUserGroupAndRemark guards U18/U19: both the admin user
-// LIST and the single-user GET must project the already-stored users.user_group
-// and users.remark columns, so an operator sees a user's routing group and
-// admin note without opening each record. Mutation: drop the UserGroup/Remark
-// mapping in either handler (or the column from the SELECT) -> the matching
-// response field is empty -> RED. Two sub-cases cover both distinct handlers.
+// TestAdminUsers_ProjectUserGroupAndRemark 守护 U18/U19:admin 用户 LIST 与
+// 单用户 GET 都必须投影已存储的 users.user_group 与 users.remark 列,
+// 使运营者无需打开每条记录即可看到用户的路由分组与 admin 备注。
+// 变异:在任一 handler 去掉 UserGroup/Remark 映射(或从 SELECT 去掉该列)
+// → 对应响应字段为空 → 红。两个子用例覆盖两个不同 handler。
 func TestAdminUsers_ProjectUserGroupAndRemark(t *testing.T) {
 	t.Run("list projects group+remark", func(t *testing.T) {
 		store := &usersStoreStub{

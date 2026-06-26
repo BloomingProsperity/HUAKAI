@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// TestRouter_Plan_RejectsMissingRequestID enforces every request
-// must carry a request_id by the time Router runs.
+// TestRouter_Plan_RejectsMissingRequestID 强制要求每个请求在 Router
+// 运行时都必须携带 request_id。
 func TestRouter_Plan_RejectsMissingRequestID(t *testing.T) {
 	r := NewDefaultRouter()
 	_, err := r.Plan(context.Background(), PlanInput{
@@ -24,8 +24,8 @@ func TestRouter_Plan_RejectsMissingRequestID(t *testing.T) {
 	}
 }
 
-// TestRouter_Plan_RejectsMissingTenant enforces Router
-// must fail closed when Auth has not run.
+// TestRouter_Plan_RejectsMissingTenant 强制要求当 Auth 尚未运行时
+// Router 必须 fail closed。
 func TestRouter_Plan_RejectsMissingTenant(t *testing.T) {
 	r := NewDefaultRouter()
 	_, err := r.Plan(context.Background(), PlanInput{
@@ -38,13 +38,13 @@ func TestRouter_Plan_RejectsMissingTenant(t *testing.T) {
 	}
 }
 
-// TestRouter_Plan_RejectsUnknownModel ensures Router refuses to plan when
-// Registry has not classified the model's protocol family.
+// TestRouter_Plan_RejectsUnknownModel 确保当 Registry 尚未对 model 的
+// protocol family 做分类时，Router 拒绝规划。
 func TestRouter_Plan_RejectsUnknownModel(t *testing.T) {
 	r := NewDefaultRouter()
 	_, err := r.Plan(context.Background(), PlanInput{
 		Context: RequestContext{RequestID: "r1", TenantID: 99},
-		Model:   ResolvedModel{PoolCandidates: []int64{42}}, // no ProtocolFamily
+		Model:   ResolvedModel{PoolCandidates: []int64{42}}, // 没有 ProtocolFamily
 	})
 	var pe *PlanError
 	if !errors.As(err, &pe) || pe.Code != "model_unsupported" {
@@ -52,15 +52,15 @@ func TestRouter_Plan_RejectsUnknownModel(t *testing.T) {
 	}
 }
 
-// TestRouter_Plan_RequiresPoolCandidates verifies the Router fails closed
-// when Registry surfaces an empty PoolCandidates list. Registry should
-// have already returned ErrTenantNoAccess upstream — this is defense in
-// depth (N+5b synthesized plan §"requestPoolGroupID rewrite").
+// TestRouter_Plan_RequiresPoolCandidates 验证当 Registry 暴露出一个空的
+// PoolCandidates 列表时，Router 会 fail closed。Registry 在上游本应
+// 已经返回 ErrTenantNoAccess —— 这是纵深防御
+//（N+5b 合成 plan §"requestPoolGroupID rewrite"）。
 func TestRouter_Plan_RequiresPoolCandidates(t *testing.T) {
 	r := NewDefaultRouter()
 	_, err := r.Plan(context.Background(), PlanInput{
 		Context: RequestContext{RequestID: "rNP", TenantID: 7},
-		Model:   ResolvedModel{ProtocolFamily: "anthropic_messages"}, // no PoolCandidates
+		Model:   ResolvedModel{ProtocolFamily: "anthropic_messages"}, // 没有 PoolCandidates
 	})
 	var pe *PlanError
 	if !errors.As(err, &pe) || pe.Code != "no_eligible_pool" {
@@ -226,9 +226,8 @@ func TestRouter_Plan_RetryableEndClassesMatchPreDeliveryFailures(t *testing.T) {
 	}
 }
 
-// TestRouter_Plan_StampsConcatenatedSnapshot verifies the registry+router
-// snapshot is concatenated onto RoutePlan.SnapshotVersion in the format
-// documented in migration 0008.
+// TestRouter_Plan_StampsConcatenatedSnapshot 验证 registry+router 快照
+// 按 migration 0008 中记录的格式拼接到 RoutePlan.SnapshotVersion 上。
 func TestRouter_Plan_StampsConcatenatedSnapshot(t *testing.T) {
 	r := NewDefaultRouter()
 	plan, err := r.Plan(context.Background(), PlanInput{
@@ -248,9 +247,9 @@ func TestRouter_Plan_StampsConcatenatedSnapshot(t *testing.T) {
 	}
 }
 
-// TestRouter_Plan_StampsFallbackOnEmptyRegistryStamp covers the defensive
-// branch where Resolved.SnapshotVersion is empty (legacy / boot edge).
-// The stamp must never start with a bare semicolon.
+// TestRouter_Plan_StampsFallbackOnEmptyRegistryStamp 覆盖
+// Resolved.SnapshotVersion 为空（遗留 / 启动边界）时的防御分支。
+// 该 stamp 绝不能以一个孤立的分号开头。
 func TestRouter_Plan_StampsFallbackOnEmptyRegistryStamp(t *testing.T) {
 	r := NewDefaultRouter()
 	plan, err := r.Plan(context.Background(), PlanInput{
@@ -258,7 +257,7 @@ func TestRouter_Plan_StampsFallbackOnEmptyRegistryStamp(t *testing.T) {
 		Model: ResolvedModel{
 			ProtocolFamily: "anthropic_messages",
 			PoolCandidates: []int64{42},
-			// SnapshotVersion intentionally empty
+			// SnapshotVersion 故意留空
 		},
 	})
 	if err != nil {
@@ -340,9 +339,9 @@ func TestRequiredCapabilities_AudioTokenDiscriminates(t *testing.T) {
 		t.Fatalf("WantsAudio-only request must emit exactly [audio]; got %v", caps)
 	}
 
-	// Negative arm: a request that does NOT want audio must never carry the
-	// audio constraint (otherwise every text-only call would be pinned to
-	// audio-class accounts and starve). Run a correct-vs-baseline contrast.
+	// 反向分支：一个不需要 audio 的请求绝不能携带 audio 约束（否则
+	// 每个纯文本调用都会被钉死在 audio 类账号上而被饿死）。
+	// 做一次正确值与基线的对照。
 	noAudio := requiredCapabilities(RequestFeatures{Stream: true, WantsVision: true})
 	for _, c := range noAudio {
 		if c == "audio" {

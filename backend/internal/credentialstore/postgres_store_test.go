@@ -162,12 +162,11 @@ func TestResolveActiveReturnsNotFoundWhenNoCredentialRowsExist(t *testing.T) {
 }
 
 func TestLoadForRefreshQueryFiltersUnsafeProviderAccountHealth(t *testing.T) {
-	// locked reread guard LoadForRefresh is called before adapter work
-	// and again inside the refresh transaction. Its SQL must refuse revoked and
-	// still-cooling provider accounts, otherwise a row revoked after the scan can
-	// still reach the upstream refresh adapter. Mutation check: delete the
-	// provider-account health predicate from LoadForRefresh and this SQL-shape
-	// guard goes red even when real-PG tests are skipped locally.
+	// 加锁重读守护:LoadForRefresh 在 adapter 工作之前会被调用,在 refresh 事务内
+	// 又会再次被调用。它的 SQL 必须拒绝 revoked 以及仍在 cooling 的 provider 账号,
+	// 否则一行在扫描后被 revoked 的记录仍可能抵达上游 refresh adapter。变异检查:
+	// 从 LoadForRefresh 删除 provider-account health 谓词,即使本地跳过真实 PG 测试,
+	// 这个 SQL 形状守护也会变红。
 	db := &credentialStoreDBStub{
 		queryRow: func(_ context.Context, sql string, _ ...interface{}) pgx.Row {
 			for _, required := range []string{

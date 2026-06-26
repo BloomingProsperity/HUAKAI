@@ -32,7 +32,7 @@ func TestAdminListUsers_TenantScoped(t *testing.T) {
 	a2 := f.seedUser("a-two", "disabled", "admin", "20.00000000")
 	b1 := f.seedOtherTenantUser("b-one", "active", "user", "99.00000000")
 
-	// MUTATION: remove u.tenant_id/sqlc tenant filter from AdminListUsersForTenant -> tenant B user leaks into tenant A list -> RED.
+	// 变异:从 AdminListUsersForTenant 移除 u.tenant_id/sqlc 租户过滤 → 租户 B 用户泄漏进租户 A 列表 → 红。
 	rec := invokeAdminUsers(t, Deps{
 		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
 		Store: admindb.New(pool),
@@ -61,7 +61,7 @@ func TestAdminListUsers_Pagination(t *testing.T) {
 		f.seedUser(fmt.Sprintf("page-%03d", i), "active", "user", "0.00000000")
 	}
 
-	// MUTATION: pass the unbounded requested limit through instead of capping at 100 -> this returns 120 rows -> RED.
+	// 变异:把无上限的请求 limit 直接透传而不封顶到 100 → 返回 120 行 → 红。
 	rec := invokeAdminUsers(t, Deps{
 		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
 		Store: admindb.New(pool),
@@ -82,7 +82,7 @@ func TestAdminGetUser_TenantScoped(t *testing.T) {
 	_ = f.seedUser("tenant-a", "active", "user", "1.00000000")
 	b1 := f.seedOtherTenantUser("tenant-b", "active", "user", "2.00000000")
 
-	// MUTATION: drop tenant_id predicate from AdminGetUserForTenant -> globally unique tenant B id is readable by tenant A admin -> RED.
+	// 变异:从 AdminGetUserForTenant 去掉 tenant_id 谓词 → 全局唯一的租户 B id 可被租户 A admin 读到 → 红。
 	rec := invokeAdminUsers(t, Deps{
 		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
 		Store: admindb.New(pool),
@@ -106,7 +106,7 @@ func TestAdminBalanceHistory_ScopedNewestFirst(t *testing.T) {
 	f.seedPaymentCreditEvent(otherSameTenant, "same-tenant-other", "13.00000000", newAt.Add(time.Hour))
 	f.seedOtherTenantPaymentCreditEvent(otherTenant, "other-tenant", "99.00000000", newAt.Add(2*time.Hour))
 
-	// MUTATION: drop tenant/user source filters from AdminListUserBalanceHistoryForTenant -> other users' newer ledger rows leak or reorder result -> RED.
+	// 变异:从 AdminListUserBalanceHistoryForTenant 去掉 tenant/user 来源过滤 → 其他用户更新的账本行泄漏或扰乱结果顺序 → 红。
 	rec := invokeAdminUsers(t, Deps{
 		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
 		Store: admindb.New(pool),
@@ -143,7 +143,7 @@ func TestTwoFAStats_TenantScoped(t *testing.T) {
 	f.seedOtherTenantTwoFASetting(b1, true)
 	f.seedOtherTenantTwoFASetting(b2, true)
 
-	// MUTATION: remove the enabled-count tenant predicate or ignore ScopeTenantID in the handler -> tenant B enabled rows leak into tenant A stats -> RED.
+	// 变异:去掉 enabled-count 的租户谓词,或在 handler 中忽略 ScopeTenantID → 租户 B 的启用行泄漏进租户 A 统计 → 红。
 	rec := invokeAdminUsers(t, Deps{
 		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
 		Store: admindb.New(pool),

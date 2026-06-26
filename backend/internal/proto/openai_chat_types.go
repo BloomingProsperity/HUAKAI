@@ -34,10 +34,10 @@ type openAIChatMsg struct {
 
 type openAIChatToolCall struct {
 	ID       string `json:"id"`
-	Type     string `json:"type"` // "function"
+	Type     string `json:"type"` // "function"（工具调用类型）
 	Function struct {
 		Name      string `json:"name"`
-		Arguments string `json:"arguments"` // JSON-encoded string
+		Arguments string `json:"arguments"` // JSON 编码后的字符串
 	} `json:"function"`
 }
 

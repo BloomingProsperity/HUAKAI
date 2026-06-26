@@ -1,71 +1,64 @@
-// Package moduleregistry holds the in-process, runtime module-knowledge spine
-// that the (admin-gated) ops assistant queries for fast root-cause: each HUAKAI
-// subsystem registers a ModuleDescriptor describing its identity, capabilities,
-// and an OPTIONAL read-only liveness probe.
+// Package moduleregistry 持有进程内、运行时的模块知识主干,供(管理员门控的)
+// 运维助手查询以快速定位根因:每个 HUAKAI 子系统注册一个 ModuleDescriptor,
+// 描述其身份、能力以及一个可选的只读存活探针(liveness probe)。
 //
-// Boundaries (intentional, enforced by tests):
-//   - ADDITIVE: this package is off every request hot path. Probes run only when
-//     an operator asks for a Snapshot; nothing here is touched per-request.
-//   - PRIVACY: probe results carry system-diagnostic enums/counts ONLY — never
-//     secrets, tokens, or user data. ProbeResult.Detail is for operator triage,
-//     not for echoing inputs. Callers must respect the privacy redaction
-//     boundary that governs the rest of the gateway.
-//   - NON-BLOCKING: a probe must never block startup and must never panic the
-//     caller. Snapshot runs probes concurrently with a per-probe timeout; a slow
-//     or erroring probe degrades to a status, it does not hang the snapshot.
+// 边界(刻意设计,由测试强制保证):
+//   - 增量式:本包不在任何请求热路径上。探针仅在运维人员请求 Snapshot 时
+//     才运行;此处的任何东西都不会被逐请求触及。
+//   - 隐私:探针结果只携带系统诊断用的枚举/计数 —— 绝不含密钥、token 或
+//     用户数据。ProbeResult.Detail 用于运维分诊,而非回显输入。调用方必须
+//     遵守约束网关其余部分的隐私脱敏边界。
+//   - 非阻塞:探针绝不能阻塞启动,也绝不能让调用方 panic。Snapshot 以每探针
+//     超时并发运行各探针;缓慢或出错的探针只会降级为一个状态,而不会让
+//     snapshot 挂起。
 package moduleregistry
 
 import "context"
 
-// ProbeStatus is the closed enum a HealthProbe may report. It is deliberately
-// small so an operator (or assistant) can reason about it without parsing free
-// text. Anything a probe cannot determine is "unknown", which is distinct from
-// an actively failing "error".
+// ProbeStatus 是 HealthProbe 可上报的封闭枚举。它刻意做得很小,以便运维人员
+//(或助手)无需解析自由文本即可对其进行推理。探针无法确定的任何情况都归为
+// "unknown",这与一个正在失败的 "error" 截然不同。
 type ProbeStatus string
 
 const (
-	// StatusOK — the module is wired and its cheap read-only check passed.
+	// StatusOK —— 模块已接线且其廉价的只读检查通过。
 	StatusOK ProbeStatus = "ok"
-	// StatusDegraded — wired but a non-fatal check is unhappy (e.g. pool empty).
+	// StatusDegraded —— 已接线,但某个非致命检查不满意(例如池为空)。
 	StatusDegraded ProbeStatus = "degraded"
-	// StatusUnknown — no probe registered, or the probe timed out / was skipped.
-	// Unknown is NOT an error: it means "we could not determine", which is the
-	// correct, non-alarming state for a slow probe under timeout.
+	// StatusUnknown —— 未注册探针,或探针超时 / 被跳过。
+	// Unknown 不是错误:它表示「我们无法确定」,这是缓慢探针在超时下的
+	// 正确且不引发警报的状态。
 	StatusUnknown ProbeStatus = "unknown"
-	// StatusError — the probe ran and reported an actual failure.
+	// StatusError —— 探针已运行并报告了一个实际的失败。
 	StatusError ProbeStatus = "error"
 )
 
-// ProbeResult is the read-only outcome of a HealthProbe. Detail is a short,
-// operator-facing diagnostic string built from enums/counts — never secrets or
-// user data.
+// ProbeResult 是 HealthProbe 的只读结果。Detail 是一个简短的、面向运维人员的
+// 诊断字符串,由枚举/计数构造而成 —— 绝不含密钥或用户数据。
 type ProbeResult struct {
 	Status ProbeStatus `json:"status"`
 	Detail string      `json:"detail,omitempty"`
 }
 
-// HealthProbe is an OPTIONAL, read-only liveness check. It must be cheap and
-// side-effect-free, must honor ctx cancellation/deadline, and must never panic.
-// If a probe panics, Snapshot recovers it into a StatusError result so one bad
-// probe cannot take down the operator view.
+// HealthProbe 是一个可选的只读存活检查。它必须廉价且无副作用,必须尊重 ctx
+// 的取消/截止时间,并且绝不能 panic。若某个探针 panic,Snapshot 会恢复它并
+// 转为 StatusError 结果,这样一个坏探针就无法拖垮运维视图。
 type HealthProbe func(ctx context.Context) ProbeResult
 
-// ModuleDescriptor is the static identity of a HUAKAI subsystem plus an optional
-// live probe. IDs are stable, dotted strings (e.g. "billing.service") so they
-// survive refactors and can be referenced from docs, the static catalog, and the
-// assistant's context.
+// ModuleDescriptor 是一个 HUAKAI 子系统的静态身份,外加一个可选的实时探针。
+// ID 是稳定的点分字符串(例如 "billing.service"),因此能在重构中存活,并能
+// 从文档、静态 catalog 和助手的上下文中被引用。
 type ModuleDescriptor struct {
-	// ID is the stable identifier (dotted, lower-case). Required; Register
-	// rejects an empty ID.
+	// ID 是稳定标识符(点分、小写)。必填;Register 会拒绝空 ID。
 	ID string `json:"id"`
-	// Category groups modules for operator filtering, e.g. "money-path",
-	// "routing", "credentials", "observability".
+	// Category 为运维人员的过滤而对模块分组,例如 "money-path"、
+	// "routing"、"credentials"、"observability"。
 	Category string `json:"category"`
-	// Title is a short human-readable name.
+	// Title 是一个简短的、人类可读的名称。
 	Title string `json:"title"`
-	// Capabilities is a short list of what the module does, in operator terms.
+	// Capabilities 用运维人员的术语简短列出该模块做什么。
 	Capabilities []string `json:"capabilities,omitempty"`
-	// HealthProbe is optional. When nil, Snapshot reports StatusUnknown for this
-	// module (no probe is not an error).
+	// HealthProbe 是可选的。为 nil 时,Snapshot 对该模块报告 StatusUnknown
+	//(没有探针不算错误)。
 	HealthProbe HealthProbe `json:"-"`
 }

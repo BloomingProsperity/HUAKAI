@@ -53,7 +53,7 @@ func TestBuildRequestModelSegmentsEscapedIndividually(t *testing.T) {
 
 // TestBuildRequestPreferWaitHeader 计费正确性守卫:删 Prefer: wait → 上游
 // 立刻返回 status=starting,本侧单次读取 settle 会对未生成的图计费。
-// Mutation:去掉该头本断言必红。
+// 变异:去掉该头本断言必红。
 func TestBuildRequestPreferWaitHeader(t *testing.T) {
 	a := &Adapter{}
 	req, err := a.BuildRequest(context.Background(), apikeyBuildInput("o/m"))

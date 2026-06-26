@@ -132,7 +132,7 @@ func TestOpenAIResponsesClient_HappyPath_InputArrayWithMessage(t *testing.T) {
 	if env.RequestControls.SystemPrompt != "You are helpful." {
 		t.Errorf("SystemPrompt: %q", env.RequestControls.SystemPrompt)
 	}
-	// expect 1 system + 1 user text node
+	// 期望 1 个 system + 1 个 user 文本节点
 	if len(env.CapabilityGraph.Nodes) != 2 {
 		t.Errorf("expected 2 text nodes (system + user), got %d", len(env.CapabilityGraph.Nodes))
 	}
@@ -405,7 +405,7 @@ func TestOpenAIResponses_D11_TextLifecycle(t *testing.T) {
 	if err != nil || len(chunks) < 3 {
 		t.Fatalf("message_stop chunks=%d err=%v", len(chunks), err)
 	}
-	// chunks should be: content_part.done + output_item.done + response.completed
+	// chunks 应为：content_part.done + output_item.done + response.completed
 	lastChunk := string(chunks[len(chunks)-1])
 	if !strings.Contains(lastChunk, "response.completed") {
 		t.Errorf("final chunk should be response.completed, got: %s", lastChunk)
@@ -509,7 +509,7 @@ func TestOpenAIResponses_D12_FinalizeBeforeStartEmpty(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// D10 CanonicalToClientResponse tests
+// D10 CanonicalToClientResponse 测试
 // --------------------------------------------------------------------------
 
 func makeOpenAIResponsesBufferedEnv(content []CanonicalContentBlock, stop CanonicalStopReason) *HCSF {
@@ -579,7 +579,7 @@ func TestOpenAIResponsesClient_D10_FunctionCallOutputItem(t *testing.T) {
 	var out map[string]any
 	_ = jsonUnmarshal(body, &out)
 	outputs := out["output"].([]any)
-	// expect message item + function_call item = 2 items
+	// 期望 message item + function_call item = 2 个 item
 	if len(outputs) != 2 {
 		t.Fatalf("output len: %d", len(outputs))
 	}

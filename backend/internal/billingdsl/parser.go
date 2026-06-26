@@ -20,7 +20,7 @@ type rawTierSpec struct {
 	RateMicroUSD json.RawMessage `json:"rate_micro_usd"`
 }
 
-// ParsePricingExpression parses a tier_rules JSONB blob into ExpressionSpec.
+// ParsePricingExpression 把一个 tier_rules JSONB blob 解析成 ExpressionSpec。
 func ParsePricingExpression(raw json.RawMessage) (ExpressionSpec, error) {
 	if len(strings.TrimSpace(string(raw))) == 0 {
 		return ExpressionSpec{}, pricingUnavailable("tier_rules empty")

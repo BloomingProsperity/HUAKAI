@@ -1,14 +1,13 @@
-// AdminResolver authenticates an operator's bearer against admin_tokens.
+// AdminResolver 将运维的 bearer 对 admin_tokens 进行认证。
 //
-// Pipeline (mirrors auth.APIKeyResolver):
+// 流水线(与 auth.APIKeyResolver 对应):
 //
-//	parse Bearer header -> derive 16-char key_prefix -> LookupAdminTokenByPrefix
-//	(<= 5 candidates) -> bcrypt.CompareHashAndPassword on each -> check
-//	status + expires_at -> return AdminIdentity{TokenID, Role, ScopeTenantID}
+//	解析 Bearer header -> 派生 16 字符的 key_prefix -> LookupAdminTokenByPrefix
+//	(<= 5 个候选)-> 对每个执行 bcrypt.CompareHashAndPassword -> 检查
+//	status + expires_at -> 返回 AdminIdentity{TokenID, Role, ScopeTenantID}
 //
-// this resolver lives in internal/admin and is never imported from
-// internal/router or auth's hot path. errors NEVER include the
-// plaintext bearer or hash.
+// 该 resolver 位于 internal/admin,绝不被 internal/router 或 auth 的热路径
+// 引入。错误信息【绝不】包含明文 bearer 或 hash。
 
 package admin
 
@@ -25,9 +24,9 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// AdminIdentity is the resolved operator context produced by AdminResolver.
-// ScopeTenantID is non-zero only when Role==RoleTenantOperator; for
-// platform_admin the field is 0 and the handler RBAC permits cross-tenant.
+// AdminIdentity 是 AdminResolver 产出的已解析运维上下文。
+// ScopeTenantID 仅在 Role==RoleTenantOperator 时非零;对 platform_admin
+// 该字段为 0,且 handler 的 RBAC 允许跨 tenant。
 type AdminIdentity struct {
 	TokenID       int64
 	Role          string
@@ -35,20 +34,19 @@ type AdminIdentity struct {
 	Bootstrap     bool
 }
 
-// AdminResolver authenticates inbound admin requests against admin_tokens.
+// AdminResolver 将入站 admin 请求对 admin_tokens 进行认证。
 type AdminResolver struct {
 	q *admindb.Queries
 }
 
-// NewAdminResolver wraps a sqlc.Queries handle.
+// NewAdminResolver 包装一个 sqlc.Queries 句柄。
 func NewAdminResolver(q *admindb.Queries) *AdminResolver {
 	return &AdminResolver{q: q}
 }
 
-// Resolve parses the Authorization header and authenticates the operator.
-// Returns AdminIdentity on success; ErrAdminUnauthorized for any
-// credential failure mode (D1 anti-enumeration); ErrAdminBackend for
-// transient datastore failures.
+// Resolve 解析 Authorization header 并认证运维。
+// 成功时返回 AdminIdentity;对任何凭证失败模式返回 ErrAdminUnauthorized
+//(D1 反枚举);对瞬时数据存储故障返回 ErrAdminBackend。
 func (r *AdminResolver) Resolve(ctx context.Context, req *http.Request) (AdminIdentity, error) {
 	if r == nil || r.q == nil {
 		return AdminIdentity{}, fmt.Errorf("%w: resolver not configured", ErrAdminBackend)
@@ -58,7 +56,7 @@ func (r *AdminResolver) Resolve(ctx context.Context, req *http.Request) (AdminId
 		return AdminIdentity{}, ErrAdminUnauthorized
 	}
 	if !strings.HasPrefix(bearer, "hk_admin_") {
-		// Customer keys (hk_live_/hk_test_) are not admin credentials.
+		// 客户 key(hk_live_/hk_test_)不是 admin 凭证。
 		return AdminIdentity{}, ErrAdminUnauthorized
 	}
 	if len(bearer) < PrefixLen {
@@ -95,9 +93,9 @@ func (r *AdminResolver) Resolve(ctx context.Context, req *http.Request) (AdminId
 	return AdminIdentity{}, ErrAdminUnauthorized
 }
 
-// parseAdminBearer extracts the token from "Authorization: Bearer <token>".
-// Same shape as auth.parseBearer but kept local to avoid import
-// of internal/auth from this package.
+// parseAdminBearer 从 "Authorization: Bearer <token>" 中提取 token。
+// 与 auth.parseBearer 形态相同,但保留为本地实现,以避免本包从
+// internal/auth 引入。
 func parseAdminBearer(header string) (string, bool) {
 	const prefix = "Bearer "
 	if !strings.HasPrefix(header, prefix) {
@@ -110,12 +108,12 @@ func parseAdminBearer(header string) (string, bool) {
 	return tok, true
 }
 
-// CanIssueForTenant returns nil if the identity is allowed to issue a key
-// for tenantID, or ErrAdminForbidden otherwise.
+// CanIssueForTenant 在该身份被允许为 tenantID 签发 key 时返回 nil,
+// 否则返回 ErrAdminForbidden。
 //
-// Rules:
-//   - platform_admin may issue for any tenant.
-//   - tenant_operator may issue only for its ScopeTenantID.
+// 规则:
+//   - platform_admin 可为任意 tenant 签发。
+//   - tenant_operator 只可为其 ScopeTenantID 签发。
 func (i AdminIdentity) CanIssueForTenant(tenantID int64) error {
 	switch i.Role {
 	case RolePlatformAdmin:
@@ -130,4 +128,4 @@ func (i AdminIdentity) CanIssueForTenant(tenantID int64) error {
 	}
 }
 
-var _ = errors.New // keep errors import live for future expansion
+var _ = errors.New // 保持 errors import 存活以备未来扩展

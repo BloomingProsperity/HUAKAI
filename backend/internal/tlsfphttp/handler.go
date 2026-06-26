@@ -1,9 +1,8 @@
-// Package tlsfphttp exposes admin HTTP CRUD for TLS fingerprint profiles.
-// Routes are mounted by cmd/gateway/routes.go under /v1/admin/tls-fingerprint-profiles.
-// Only platform_admin may access. tenant_id for by-id operations is taken from
-// the ?tenant_id query parameter (consistent with routeadminhttp); create takes
-// tenant_id from the body. status changes go through POST /{id}/status only —
-// PUT rejects a status field via DisallowUnknownFields.
+// Package tlsfphttp 暴露 TLS 指纹 profile 的管理端 HTTP CRUD。
+// 路由由 cmd/gateway/routes.go 挂载在 /v1/admin/tls-fingerprint-profiles 下。
+// 仅 platform_admin 可访问。按 id 操作时的 tenant_id 取自 ?tenant_id
+// query 参数(与 routeadminhttp 保持一致);create 则从请求体取 tenant_id。
+// 状态变更只走 POST /{id}/status——PUT 会通过 DisallowUnknownFields 拒绝 status 字段。
 package tlsfphttp
 
 import (
@@ -23,13 +22,13 @@ import (
 
 const maxBodyBytes = 1 << 20 // 1 MiB
 
-// AdminAuth resolves inbound admin credentials.
+// AdminAuth 解析入站的管理员凭证。
 type AdminAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-// Service is the tlsfpadmin capability subset the handlers depend on
-// (implemented by *tlsfpadmin.Service). Declared as an interface for testability.
+// Service 是 handler 依赖的 tlsfpadmin 能力子集
+//(由 *tlsfpadmin.Service 实现)。声明为接口以便测试。
 type Service interface {
 	List(context.Context, int64) ([]tlsfpadmin.Profile, error)
 	Get(context.Context, int64, int64) (tlsfpadmin.Profile, error)
@@ -39,7 +38,7 @@ type Service interface {
 	Delete(context.Context, int64, int64) error
 }
 
-// AdminDeps holds handler dependencies.
+// AdminDeps 保存 handler 的依赖项。
 type AdminDeps struct {
 	Auth    AdminAuth
 	Service Service
@@ -62,8 +61,8 @@ type createRequest struct {
 	ExpectedJA3Hash      string   `json:"expected_ja3_hash"`
 }
 
-// updateRequest deliberately omits tenant_id (from query), id (from path), and
-// status (POST /{id}/status only). DisallowUnknownFields rejects a smuggled status.
+// updateRequest 刻意省略 tenant_id(来自 query)、id(来自 path)以及
+// status(只走 POST /{id}/status)。DisallowUnknownFields 会拒绝夹带进来的 status。
 type updateRequest struct {
 	Name                 string   `json:"name"`
 	Description          *string  `json:"description"`
@@ -84,7 +83,7 @@ type setStatusRequest struct {
 	Status string `json:"status"`
 }
 
-// MountTLSFPAdminRoutes mounts the six CRUD endpoints on r.
+// MountTLSFPAdminRoutes 在 r 上挂载六个 CRUD 端点。
 func MountTLSFPAdminRoutes(r chi.Router, d AdminDeps) {
 	r.Get("/", listHandler(d))
 	r.Post("/", createHandler(d))
@@ -304,8 +303,8 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
-// writeTLSFPError maps tlsfpadmin sentinels to HTTP status codes. It never echoes
-// the raw error: ErrBackend yields a fixed generic message.
+// writeTLSFPError 把 tlsfpadmin 的 sentinel 错误映射为 HTTP 状态码。
+// 它绝不回显原始错误:ErrBackend 一律返回固定的通用消息。
 func writeTLSFPError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, tlsfpadmin.ErrInvalidInput):

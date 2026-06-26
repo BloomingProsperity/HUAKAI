@@ -22,10 +22,10 @@ import (
 )
 
 func TestOpenAICodexRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
-	// Regression killed: attacker-controlled credential JSON must not decide
-	// the token endpoint, client ID, or scope used for refresh. Mutation
-	// self-check: reading oauth_token_endpoint/client_id/scope from credential
-	// sends at least one attacker value and turns this test red.
+	// 防回归：攻击者可控的凭据 JSON 绝不能决定刷新所用的 token endpoint、
+	// client ID 或 scope。变异自检：若从凭据中读取
+	// oauth_token_endpoint/client_id/scope，就会发出至少一个攻击者提供的值，
+	// 使本测试变红。
 	now := time.Date(2026, 5, 24, 13, 0, 0, 0, time.UTC)
 	calledURL := ""
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -96,9 +96,9 @@ func TestOpenAICodexRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
 }
 
 func TestOpenAICodexRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *testing.T) {
-	// Regression killed: credential-supplied OAuth endpoints must fail closed
-	// when operator token_url is absent. Mutation self-check: using the
-	// credential endpoint makes the HTTP client run and this test fails.
+	// 防回归：当缺少运维方提供的 token_url 时，凭据自带的 OAuth endpoint 必须
+	// fail-closed（拒绝放行）。变异自检：若使用凭据里的 endpoint，HTTP client
+	// 就会发起请求，本测试随即失败。
 	called := false
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		called = true
@@ -121,9 +121,9 @@ func TestOpenAICodexRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *test
 }
 
 func TestOpenAICodexRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
-	// Regression killed: OpenAI Codex refresh failures must preserve distinct
-	// audit outcomes. Mutation self-check: flattening status/body handling
-	// breaks at least one of 401, 429, or risk-triggering 403.
+	// 防回归：OpenAI Codex 的刷新失败必须保留各自不同的审计结果。变异自检：
+	// 若把 status/body 的处理逻辑压平合并，401、429 或触发风控的 403 中至少
+	// 会有一个判定出错。
 	tests := []struct {
 		name       string
 		statusCode int
@@ -163,8 +163,8 @@ func TestOpenAICodexRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 }
 
 func TestOpenAICodexRefreshErrorBodyIsCapped(t *testing.T) {
-	// Regression killed: refresh audit text should carry enough sanitized
-	// context for classification without embedding a large upstream body.
+	// 防回归：刷新审计文本应携带足够的脱敏上下文以供分类，同时不能嵌入
+	// 过大的上游响应 body。
 	largeBody := `{"message":"risk control triggered ` + strings.Repeat("x", 8192) + `"}`
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return openAICodexJSONResponse(http.StatusForbidden, largeBody), nil

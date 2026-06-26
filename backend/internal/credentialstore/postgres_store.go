@@ -64,9 +64,8 @@ type CreateCredentialInput struct {
 	AuthMode          string
 	Payload           []byte
 	ActorID           string
-	// ExternalAccountID/ExternalAccountEmail are the upstream provider account
-	// identity auto-extracted at acquisition (non-secret, queryable metadata).
-	// Empty values are stored as SQL NULL, not empty string.
+	// ExternalAccountID/ExternalAccountEmail 是在 acquisition 时自动提取的上游 provider
+	// 账号标识(非密钥,可查询的元数据)。空值以 SQL NULL 存储,而非空字符串。
 	ExternalAccountID    string
 	ExternalAccountEmail string
 }
@@ -128,8 +127,8 @@ type CredentialMetadata struct {
 	LastRefreshOutcome *string    `json:"last_refresh_outcome,omitempty"`
 	FailureClass       *string    `json:"failure_class,omitempty"`
 	FailureCount       int32      `json:"failure_count"`
-	// ExternalAccountID/ExternalAccountEmail surface the auto-extracted upstream
-	// provider account identity for admin APIs/UI. nil when not captured.
+	// ExternalAccountID/ExternalAccountEmail 向 admin API/UI 暴露自动提取的上游 provider
+	// 账号标识。未捕获到时为 nil。
 	ExternalAccountID    *string   `json:"external_account_id,omitempty"`
 	ExternalAccountEmail *string   `json:"external_account_email,omitempty"`
 	CreatedAt            time.Time `json:"created_at"`
@@ -890,10 +889,9 @@ func (s *Store) LoadForProviderAccountTest(ctx context.Context, tenantID, provid
 	return rec, nil
 }
 
-// effectiveRefreshLead returns the lead duration to use when computing
-// refresh_before_at. When the per-account override (perAccount) is non-nil
-// and positive it takes precedence; otherwise the global window is returned
-// unchanged, preserving the exact existing behavior for NULL accounts.
+// effectiveRefreshLead 返回计算 refresh_before_at 时所用的提前量时长。当 per-account
+// 覆盖值(perAccount)非 nil 且为正时,它优先生效;否则原样返回全局 window,从而为
+// NULL 账号保持完全一致的既有行为。
 func effectiveRefreshLead(perAccount *int32, global time.Duration) time.Duration {
 	if perAccount != nil && *perAccount > 0 {
 		return time.Duration(*perAccount) * time.Second
@@ -955,9 +953,9 @@ WHERE id = $12
   AND deleted_at IS NULL
   AND credential_version = $15`
 	now := time.Now().UTC()
-	// Compute next_attempt_at: NULL for a normal effective refresh, throttled for ineffective.
-	// refreshBeforeAt is zero when accessExpiresAt is zero (no expiry info); treat as effective.
-	var nextAttemptAt time.Time // zero -> NULL via nullableTime
+	// 计算 next_attempt_at:正常有效 refresh 时为 NULL,无效时做节流。
+	// 当 accessExpiresAt 为零(无过期信息)时 refreshBeforeAt 为零;此时视为有效。
+	var nextAttemptAt time.Time // 零值 -> 经 nullableTime 转为 NULL
 	if !prepared.refreshBeforeAt.IsZero() {
 		nextAttemptAt = ineffectiveRefreshNextAttempt(prepared.refreshBeforeAt, now, time.Time{})
 	}
@@ -1302,8 +1300,8 @@ func (r credentialMetadataRow) metadata() CredentialMetadata {
 	}
 }
 
-// trimmedNonEmpty returns the pointer only when it points at a non-empty trimmed
-// string; otherwise nil so an empty column surfaces as omitted JSON, not "".
+// trimmedNonEmpty 仅当指针指向去除空白后非空的字符串时才返回该指针;否则返回 nil,
+// 以便空列在 JSON 中表现为被省略,而非 ""。
 func trimmedNonEmpty(in *string) *string {
 	if in == nil {
 		return nil

@@ -182,8 +182,8 @@ func TestOpenAPI_ChatCompletionsMethodMatchesRuntimePOST(t *testing.T) {
 }
 
 func TestCodexResponsesIngressRouteMounted(t *testing.T) {
-	// MUTATION: omit r.Post("/backend-api/codex/responses", ...); chi returns
-	// 404 for Codex CLI instead of reaching the shared Responses handler.
+	// 变异:省略 r.Post("/backend-api/codex/responses", ...);chi 会对 Codex CLI
+	// 返回 404,而非到达共享的 Responses handler。
 	r := buildTestRouter(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/backend-api/codex/responses",
@@ -777,11 +777,11 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	}
 }
 
-// TestQuotaPoliciesRoutesAndOpenAPISchemasStayInSync is the wiring tripwire for
-// BILL-122: it asserts all 5 quota-policy routes exist in BOTH the chi impl and
-// openapi.yaml, plus the spec carries the schema/enum snippets. Forgetting the
-// openapi entry would otherwise only fire the impl-only TestOpenAPI_Implementation
-// Consistency hard failure; this gives a named, targeted failure instead.
+// TestQuotaPoliciesRoutesAndOpenAPISchemasStayInSync 是 BILL-122 的接线绊线:
+// 它断言全部 5 条 quota-policy 路由在 chi 实现与 openapi.yaml 中都存在,
+// 并且 spec 中带有相应的 schema/enum 片段。若忘了写 openapi 条目,否则只会
+// 触发 impl-only 的 TestOpenAPI_ImplementationConsistency 硬失败;这里改为给出
+// 一个具名的、针对性的失败。
 func TestQuotaPoliciesRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	r := buildTestRouter(t)
 	implOps := openapicheck.WalkChiOperations(r)
@@ -857,8 +857,8 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	if !hasOperationEquivalent(implOps, http.MethodPost, "/admin/v1/users/{id}/unlock") {
 		t.Fatalf("runtime missing POST /admin/v1/users/{id}/unlock")
 	}
-	// S4 single-tenant out-of-box: admin user create + soft-delete are now
-	// intentional mutations on this slice.
+	// S4 单租户开箱即用:admin 创建用户 + 软删除现在是本切片上
+	// 刻意保留的 mutation。
 	if !hasOperationEquivalent(implOps, http.MethodPost, "/admin/v1/users") {
 		t.Fatalf("runtime missing POST /admin/v1/users (admin create user)")
 	}
@@ -1009,13 +1009,12 @@ func TestModelCapabilitiesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
 	}
 }
 
-// TestPublicPricingPageItemSchemaListsCatalogMetadata binds the public pricing page
-// response shape to its OpenAPI schema. The handler projects owned_by/mode/
-// max_output_tokens/capabilities onto the response, and PublicPricingPageItem is
-// additionalProperties:false — so if those properties are dropped from the schema
-// while the handler keeps emitting them, the documented contract silently diverges.
-// Mutation: delete any of the four property lines from the PublicPricingPageItem block
-// in openapi.yaml and this test goes red (the block no longer contains that field).
+// TestPublicPricingPageItemSchemaListsCatalogMetadata 把公开定价页的响应形状
+// 绑定到其 OpenAPI schema。handler 会把 owned_by/mode/max_output_tokens/capabilities
+// 投影到响应上,而 PublicPricingPageItem 是 additionalProperties:false——所以若这些
+// property 从 schema 中被删掉、handler 却仍在产出它们,文档化的契约就会悄悄偏离。
+// 变异:从 openapi.yaml 的 PublicPricingPageItem 块中删掉这四条 property 中的任意一条,
+// 本测试即变红(该块不再包含那个字段)。
 func TestPublicPricingPageItemSchemaListsCatalogMetadata(t *testing.T) {
 	r := buildTestRouter(t)
 	if !hasOperation(openapicheck.WalkChiOperations(r), http.MethodGet, "/v1/pricing/page") {
@@ -1041,8 +1040,8 @@ func TestPublicPricingPageItemSchemaListsCatalogMetadata(t *testing.T) {
 	}
 }
 
-// yamlSchemaBlock returns the YAML text of a named schema (from its 4-space-indented
-// header line down to the next sibling schema at the same indentation), or "" if absent.
+// yamlSchemaBlock 返回某个具名 schema 的 YAML 文本(从其缩进 4 空格的头行起,
+// 到同一缩进层级的下一个兄弟 schema 为止);不存在则返回 ""。
 func yamlSchemaBlock(spec, header string) string {
 	lines := strings.Split(spec, "\n")
 	start := -1
@@ -1058,7 +1057,7 @@ func yamlSchemaBlock(spec, header string) string {
 	end := len(lines)
 	for i := start + 1; i < len(lines); i++ {
 		ln := lines[i]
-		// next sibling schema = exactly 4 leading spaces, non-space at column 5, ends with ':'
+		// 下一个兄弟 schema = 恰好 4 个前导空格、第 5 列为非空格、且以 ':' 结尾
 		if len(ln) > 4 && ln[:4] == "    " && ln[4] != ' ' && strings.HasSuffix(strings.TrimSpace(ln), ":") {
 			end = i
 			break
@@ -1067,12 +1066,11 @@ func yamlSchemaBlock(spec, header string) string {
 	return strings.Join(lines[start:end], "\n")
 }
 
-// TestMeUsageRecordSchemaListsStreamShapeAndTiming binds the self-service usage record
-// response shape to its OpenAPI schema. The handler projects stream/stream_terminated_reason/
-// requested_at, and MeUsageRecord is additionalProperties:false — so dropping any of those
-// properties from the schema while the handler keeps emitting them silently diverges the
-// documented contract. Mutation: delete one of the three property lines from the MeUsageRecord
-// block in openapi.yaml and this test goes red.
+// TestMeUsageRecordSchemaListsStreamShapeAndTiming 把自助用量记录的响应形状
+// 绑定到其 OpenAPI schema。handler 会投影 stream/stream_terminated_reason/requested_at,
+// 而 MeUsageRecord 是 additionalProperties:false——所以若这些 property 从 schema 中被删掉、
+// handler 却仍在产出它们,文档化的契约就会悄悄偏离。变异:从 openapi.yaml 的 MeUsageRecord
+// 块中删掉这三条 property 中的任意一条,本测试即变红。
 func TestMeUsageRecordSchemaListsStreamShapeAndTiming(t *testing.T) {
 	r := buildTestRouter(t)
 	if !hasOperation(openapicheck.WalkChiOperations(r), http.MethodGet, "/v1/me/usage") {

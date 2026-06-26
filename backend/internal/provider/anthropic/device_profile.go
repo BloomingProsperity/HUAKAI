@@ -5,30 +5,26 @@ import (
 	"strconv"
 )
 
-// Per-account Claude Code device-profile pinning (anti-clustering / 反封禁).
+// 按账号固定 Claude Code 设备指纹(anti-clustering / 反封禁)。
 //
-// Background: applyClaudeDeviceProfile previously stamped ONE hardcoded
-// (User-Agent + X-Stainless-*) tuple on every account's egress, so N pooled
-// accounts presented a byte-identical fingerprint — a trivial clustering signal
-// for upstream WAFs. CLIProxyAPI (internal/runtime/executor/helps/
-// claude_device_profile.go) solves this with a per-auth 7-day cache + version-
-// floor monotonic upgrade seeded from each client's real inbound UA.
+// 背景:applyClaudeDeviceProfile 之前给每个账号的出口流量都打上同一组硬编码的
+//(User-Agent + X-Stainless-*)元组,于是 N 个池账号呈现出逐字节相同的指纹——
+// 对上游 WAF 来说这是一个极易识别的聚类信号。CLIProxyAPI(internal/runtime/
+// executor/helps/claude_device_profile.go)通过 per-auth 的 7 天缓存 + 以每个
+// 客户端真实入站 UA 为种子的版本下限单调升级来解决此问题。
 //
-// HUAKAI's adapter does not receive the inbound client UA at this layer, so we
-// take a parity-OR-BETTER approach: DETERMINISTICALLY derive a stable, per-
-// account-distinct platform tuple from the account id. This is stronger than a
-// TTL cache for our case — there is no cold-start window where every account
-// shares the baseline, no eviction, and (critically) we NEVER invent a non-
-// existent claude-cli version: the UA / package / runtime stay pinned to the
-// known-real baseline floor, so a fabricated version can never become a tell.
-// Only the OS/Arch platform tuple (all real Claude Code targets) varies, giving
-// per-account distinctness while each account stays byte-stable over time.
+// HUAKAI 的 adapter 在这一层拿不到入站客户端 UA,所以我们采取一种持平甚至更优的
+// 做法:从 account id 确定性地派生出一个稳定、按账号区分的平台元组。对我们这个
+// 场景而言它比 TTL 缓存更强——既不存在所有账号共享 baseline 的冷启动窗口,也没有
+// 驱逐,而且(关键)我们绝不臆造一个不存在的 claude-cli 版本:UA / package /
+// runtime 始终钉死在已知真实的 baseline 下限上,这样捏造出来的版本永远不会成为
+// 破绽。只有 OS/Arch 平台元组(全部是真实 Claude Code 的目标平台)会变化,从而既
+// 保证按账号区分,又让每个账号随时间逐字节稳定。
 //
-// ON per Owner 2026-06-08「必须开着」. AccountID<=0 (e.g. the official API-key
-// path with no pooled account) falls back to the exact baseline, so behavior
-// there is unchanged.
+// 按 Owner 2026-06-08「必须开着」默认开启。AccountID<=0(如无池账号的官方
+// API-key 路径)回退到精确的 baseline,因此那条路径行为不变。
 
-// claudeDeviceProfile is one resolved Claude Code device fingerprint.
+// claudeDeviceProfile 是一份解析出的 Claude Code 设备指纹。
 type claudeDeviceProfile struct {
 	userAgent      string
 	packageVersion string
@@ -37,9 +33,9 @@ type claudeDeviceProfile struct {
 	arch           string
 }
 
-// baselineClaudeDeviceProfile is the single known-real Claude Code fingerprint
-// (matches CLIProxyAPI defaults). It is the version FLOOR: per-account variation
-// never drops below it and never alters the software version, only the platform.
+// baselineClaudeDeviceProfile 是唯一一份已知真实的 Claude Code 指纹(与
+// CLIProxyAPI 默认值一致)。它是版本下限:按账号的变化永远不会低于它,也永远
+// 不改动软件版本,只改动平台。
 func baselineClaudeDeviceProfile() claudeDeviceProfile {
 	return claudeDeviceProfile{
 		userAgent:      claudeCodeUserAgent,
@@ -50,21 +46,20 @@ func baselineClaudeDeviceProfile() claudeDeviceProfile {
 	}
 }
 
-// claudeDevicePlatforms is the allowlist of REAL Claude Code (Stainless SDK)
-// OS/Arch tuples (values match CPA mapStainlessOS/mapStainlessArch). Index 0 is
-// the baseline platform. Each entry is internally coherent — no MacOS+x86
-// nonsense — so a derived profile is always a plausible real machine.
+// claudeDevicePlatforms 是真实 Claude Code(Stainless SDK)OS/Arch 元组的白名单
+//(取值与 CPA 的 mapStainlessOS/mapStainlessArch 一致)。索引 0 是 baseline 平台。
+// 每一项内部自洽——不会出现 MacOS+x86 这种荒唐组合——所以派生出的 profile 始终
+// 是一台貌似真实的机器。
 var claudeDevicePlatforms = [][2]string{
-	{claudeStainlessOS, claudeStainlessArch}, // MacOS / arm64 (baseline)
+	{claudeStainlessOS, claudeStainlessArch}, // MacOS / arm64(baseline)
 	{"MacOS", "x64"},
 	{"Linux", "x64"},
 	{"Windows", "x64"},
 }
 
-// resolveAccountDeviceProfile returns a deterministic, per-account-stable device
-// profile. The same accountID always yields the same profile (byte-stable over
-// time); distinct accountIDs generally differ in their OS/Arch platform
-// (anti-clustering). accountID<=0 returns the exact baseline unchanged.
+// resolveAccountDeviceProfile 返回一个确定性的、按账号稳定的设备 profile。同一个
+// accountID 始终产出同一个 profile(随时间逐字节稳定);不同的 accountID 一般在
+// OS/Arch 平台上有所区别(anti-clustering)。accountID<=0 时原样返回精确的 baseline。
 func resolveAccountDeviceProfile(accountID int64) claudeDeviceProfile {
 	p := baselineClaudeDeviceProfile()
 	if accountID <= 0 {

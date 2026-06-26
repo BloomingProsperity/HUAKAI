@@ -1,18 +1,17 @@
 //go:build integration_pg
 
-// Slice 2 integration tests for the admin issuance pipeline.
-// Validates the full flow:
-//   1. Bootstrap admin token from env var → first AdminIdentity exists
-//   2. Issuer.Issue(...) writes api_keys row + admin_audit_events row
-//   3. Returned plaintext authenticates via the customer APIKeyResolver
-//   4. Revoker.Revoke(...) flips status; subsequent resolve fails
-//   5. Cross-tenant tenant_operator → ErrAdminForbidden
-//   6. Rate limit (30/h) blocks 31st issuance
-//   7. Audit payload jsonb NEVER contains plaintext bearer or key_hash
+// admin 签发流水线的 Slice 2 集成测试。
+// 校验完整流程:
+//   1. 从 env var 加载 bootstrap admin token → 第一个 AdminIdentity 存在
+//   2. Issuer.Issue(...) 写入 api_keys 行 + admin_audit_events 行
+//   3. 返回的明文能通过客户的 APIKeyResolver 认证
+//   4. Revoker.Revoke(...) 翻转状态;后续 resolve 失败
+//   5. 跨 tenant 的 tenant_operator → ErrAdminForbidden
+//   6. 速率限制(30/h)挡住第 31 次签发
+//   7. Audit payload jsonb【绝不】包含明文 bearer 或 key_hash
 //
-// assertion is the security-critical regression test;
-// it grep's the persisted payload for the substring of the plaintext
-// that was issued.
+// 该断言是安全关键的回归测试;
+// 它在持久化的 payload 中检索所签发明文的子串。
 
 package admin
 
@@ -35,8 +34,8 @@ import (
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
-// silence unused import false-positive: zap removed from this file's
-// helpers but kept in package via bootstrap_test.
+// 消除未使用 import 的误报:zap 已从本文件的 helper 中移除,但通过
+// bootstrap_test 仍保留在包内。
 var _ = strconv.Itoa
 
 func openIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -59,7 +58,7 @@ type adminFixture struct {
 	tenantID     int64
 	userID       int64
 	adminTokenID int64
-	adminBearer  string // platform_admin plaintext, used to forge auth header
+	adminBearer  string // platform_admin 明文,用于伪造 auth header
 	suffix       string
 }
 
@@ -67,7 +66,7 @@ func newAdminFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *adm
 	t.Helper()
 	f := &adminFixture{t: t, pool: pool, suffix: uuid.NewString()}
 
-	// Seed tenant + user (target for issuance).
+	// 播种 tenant + user(签发的目标)。
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
 		"admin-tenant-"+f.suffix,
@@ -81,8 +80,8 @@ func newAdminFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *adm
 		t.Fatalf("seed user: %v", err)
 	}
 
-	// Seed a platform_admin token directly (bypasses MaybeBootstrap to
-	// avoid env-var coupling; the bootstrap path has its own test).
+	// 直接播种一个 platform_admin token(绕过 MaybeBootstrap 以避免
+	// env-var 耦合;bootstrap 路径有自己的测试)。
 	bearer, prefix, err := GenerateBearer(EnvAdmin)
 	if err != nil {
 		t.Fatalf("generate admin bearer: %v", err)
@@ -115,7 +114,7 @@ func newAdminFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *adm
 }
 
 // -----------------------------------------------------------------------------
-// Test 1 — HappyPath: issue + customer-resolver auth round-trip
+// Test 1 — HappyPath:签发 + 客户 resolver 认证往返
 // -----------------------------------------------------------------------------
 
 func TestAdminIssue_HappyPath(t *testing.T) {
@@ -158,9 +157,9 @@ func TestAdminIssue_HappyPath(t *testing.T) {
 		t.Errorf("KeyPrefix bad: %q (len=%d, want %d)", result.KeyPrefix, len(result.KeyPrefix), PrefixLen)
 	}
 
-	// Issued plaintext must authenticate via the CUSTOMER resolver — the
-	// whole point is that admin-issued keys behave identically to
-	// hand-SQL'd ones from the customer resolver's perspective.
+	// 已签发的明文必须能通过【客户】resolver 认证 —— 全部要点就在于,
+	// 从客户 resolver 的视角看,admin 签发的 key 与手工 SQL 插入的 key
+	// 行为完全一致。
 	custResolver := auth.NewAPIKeyResolver(dbauth.New(pool))
 	custReq := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	custReq.Header.Set("Authorization", "Bearer "+result.Plaintext)
@@ -175,7 +174,7 @@ func TestAdminIssue_HappyPath(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 2 — RevokeBlocksAuth: revoked key fails customer resolver
+// Test 2 — RevokeBlocksAuth:已吊销的 key 在客户 resolver 处失败
 // -----------------------------------------------------------------------------
 
 func TestAdminRevoke_BlocksAuth(t *testing.T) {
@@ -204,7 +203,7 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	// Customer resolver works pre-revoke.
+	// 吊销前客户 resolver 正常工作。
 	custResolver := auth.NewAPIKeyResolver(dbauth.New(pool))
 	custReq := httptest.NewRequest("POST", "/", nil)
 	custReq.Header.Set("Authorization", "Bearer "+result.Plaintext)
@@ -225,7 +224,7 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 		t.Fatal("first revoke should not be AlreadyRevoked")
 	}
 
-	// Idempotent second revoke.
+	// 幂等的第二次吊销。
 	revRes2, err := revoker.Revoke(ctx, RevokeRequest{
 		Caller:   ident,
 		APIKeyID: result.APIKeyID,
@@ -239,7 +238,7 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 		t.Fatal("second revoke should set AlreadyRevoked=true")
 	}
 
-	// Customer resolver now rejects.
+	// 客户 resolver 现在拒绝。
 	custReq2 := httptest.NewRequest("POST", "/", nil)
 	custReq2.Header.Set("Authorization", "Bearer "+result.Plaintext)
 	if _, err := custResolver.Resolve(ctx, custReq2); err == nil {
@@ -248,7 +247,7 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 3 — AuditNeverContainsPlaintext (regression)
+// Test 3 — AuditNeverContainsPlaintext(回归)
 // -----------------------------------------------------------------------------
 
 func TestAdminIssue_AuditNeverContainsPlaintext(t *testing.T) {
@@ -273,8 +272,8 @@ func TestAdminIssue_AuditNeverContainsPlaintext(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	// Read every audit row touching this tenant + check none of them
-	// contain the plaintext bearer string anywhere in the payload jsonb.
+	// 读取所有触及该 tenant 的 audit 行 + 检查它们的 payload jsonb 中
+	// 任何位置都不包含明文 bearer 字符串。
 	rows, err := pool.Query(ctx,
 		`SELECT payload::text FROM admin_audit_events WHERE tenant_id = $1`,
 		f.tenantID,
@@ -291,7 +290,7 @@ func TestAdminIssue_AuditNeverContainsPlaintext(t *testing.T) {
 		if strings.Contains(payload, result.Plaintext) {
 			t.Fatalf("CMB-5 violation: plaintext bearer leaked into audit payload: %s", payload)
 		}
-		// Also check for the bcrypt hash prefix shape ($2a$).
+		// 同时检查 bcrypt hash 的前缀形态($2a$)。
 		if strings.Contains(payload, "$2a$") {
 			t.Fatalf("CMB-5 violation: bcrypt hash leaked into audit payload: %s", payload)
 		}
@@ -300,6 +299,7 @@ func TestAdminIssue_AuditNeverContainsPlaintext(t *testing.T) {
 
 // -----------------------------------------------------------------------------
 // Test 4 — TenantOperatorCrossTenantBlocked
+//(tenant_operator 跨 tenant 被拦截)
 // -----------------------------------------------------------------------------
 
 func TestAdminIssue_TenantOperatorCrossTenantBlocked(t *testing.T) {
@@ -308,8 +308,8 @@ func TestAdminIssue_TenantOperatorCrossTenantBlocked(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
 
-	// Seed a SECOND tenant — the tenant_operator below will be scoped to
-	// f.tenantID but try to issue for tenantB, which must be blocked.
+	// 播种【第二个】tenant —— 下面的 tenant_operator 将被限定在
+	// f.tenantID,但试图为 tenantB 签发,这必须被拦截。
 	var tenantB int64
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
@@ -321,7 +321,7 @@ func TestAdminIssue_TenantOperatorCrossTenantBlocked(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE id=$1`, tenantB)
 	})
 
-	// Seed a tenant_operator scoped to f.tenantID.
+	// 播种一个限定在 f.tenantID 的 tenant_operator。
 	bearer, prefix, _ := GenerateBearer(EnvAdmin)
 	hash, _ := bcryptHashForTest(bearer)
 	var opID int64
@@ -344,11 +344,11 @@ func TestAdminIssue_TenantOperatorCrossTenantBlocked(t *testing.T) {
 		t.Fatalf("Resolve operator: %v", err)
 	}
 
-	// Try to issue for tenantB — must fail with ErrAdminForbidden.
+	// 试图为 tenantB 签发 —— 必须以 ErrAdminForbidden 失败。
 	issuer := NewKeyIssuer(pool)
 	_, err = issuer.Issue(ctx, IssueRequest{
 		Caller:      ident,
-		TenantID:    tenantB, // wrong scope
+		TenantID:    tenantB, // 错误的 scope
 		UserID:      1,
 		Name:        "should-fail",
 		Environment: EnvLive,
@@ -362,7 +362,7 @@ func TestAdminIssue_TenantOperatorCrossTenantBlocked(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Helpers
+// 辅助函数
 // -----------------------------------------------------------------------------
 
 func bcryptHashForTest(plaintext string) (string, error) {

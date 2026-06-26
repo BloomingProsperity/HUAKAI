@@ -4,7 +4,7 @@ import "encoding/json"
 
 type openAIResponsesRequest struct {
 	Model                string            `json:"model"`
-	Input                json.RawMessage   `json:"input"` // string or array
+	Input                json.RawMessage   `json:"input"` // string 或 array
 	Instructions         string            `json:"instructions,omitempty"`
 	Stream               *bool             `json:"stream"`
 	MaxOutputTokens      *int              `json:"max_output_tokens"`
@@ -33,16 +33,16 @@ type openAIResponsesRequest struct {
 
 type openAIResponsesInputItem struct {
 	Type             string                         `json:"type"`
-	ID               string                         `json:"id,omitempty"`                // reasoning item
-	Status           string                         `json:"status,omitempty"`            // reasoning item
-	EncryptedContent string                         `json:"encrypted_content,omitempty"` // reasoning item
-	Summary          []openAIResponsesReasoningPart `json:"summary,omitempty"`           // reasoning item
-	Role             string                         `json:"role,omitempty"`              // message item
-	Content          json.RawMessage                `json:"content,omitempty"`           // message / reasoning item
+	ID               string                         `json:"id,omitempty"`                // reasoning 项
+	Status           string                         `json:"status,omitempty"`            // reasoning 项
+	EncryptedContent string                         `json:"encrypted_content,omitempty"` // reasoning 项
+	Summary          []openAIResponsesReasoningPart `json:"summary,omitempty"`           // reasoning 项
+	Role             string                         `json:"role,omitempty"`              // message 项
+	Content          json.RawMessage                `json:"content,omitempty"`           // message / reasoning 项
 	CallID           string                         `json:"call_id,omitempty"`           // function_call / function_call_output
 	Name             string                         `json:"name,omitempty"`              // function_call
 	Arguments        string                         `json:"arguments,omitempty"`         // function_call
-	Output           string                         `json:"output,omitempty"`            // function_call_output
+	Output           string                         `json:"output,omitempty"`            // function_call_output 用
 }
 
 type openAIResponsesReasoningPart struct {

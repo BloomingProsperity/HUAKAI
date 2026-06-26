@@ -8,8 +8,8 @@ import (
 	"net/http"
 )
 
-// OpenAICompatPassthroughAdapter forwards OpenAI Chat Completions-shaped
-// requests to a platform-specific compatible endpoint.
+// OpenAICompatPassthroughAdapter 把 OpenAI Chat Completions 形态的请求转发到
+// 各平台特定的兼容 endpoint。
 type OpenAICompatPassthroughAdapter struct {
 	PlatformName string
 	Endpoint     string

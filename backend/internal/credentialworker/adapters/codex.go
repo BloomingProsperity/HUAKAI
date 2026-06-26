@@ -12,8 +12,8 @@ import (
 
 var ErrCodexOAuthConfigRequired = errors.New("codex refresh: operator OAuth config required")
 
-// CodexRefresh uses OpenAI-compatible refresh token exchange, but it does not
-// accept OAuth endpoint/client/scope from credential JSON.
+// CodexRefresh 使用与 OpenAI 兼容的 refresh token 交换，但不接受来自 credential
+// JSON 的 OAuth endpoint/client/scope。
 type CodexRefresh struct {
 	OpenAI OpenAIRefresh
 }

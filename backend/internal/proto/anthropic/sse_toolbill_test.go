@@ -10,7 +10,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Helpers
+// 辅助函数
 // ---------------------------------------------------------------------------
 
 func bufferedResp(t *testing.T, content []map[string]any) []byte {
@@ -36,7 +36,7 @@ func bufferedResp(t *testing.T, content []map[string]any) []byte {
 
 // ---------------------------------------------------------------------------
 // TestAnthropicBuffered_ServerToolUseCounted
-// 2x web_search server_tool_use + 1x file_search => WebSearchCalls=2 FileSearchCalls=1
+// 2 个 web_search server_tool_use + 1 个 file_search => WebSearchCalls=2 FileSearchCalls=1
 // ---------------------------------------------------------------------------
 
 func TestAnthropicBuffered_ServerToolUseCounted(t *testing.T) {
@@ -64,11 +64,11 @@ func TestAnthropicBuffered_ServerToolUseCounted(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// TestAnthropicBuffered_ClientToolUseNotCounted  ⭐ THE NO-OVERCHARGE TEST
-// N type=="tool_use" (client function) blocks => WebSearchCalls=0 FileSearchCalls=0
+// TestAnthropicBuffered_ClientToolUseNotCounted  ⭐ 防多计费测试
+// N 个 type=="tool_use"（客户端函数）块 => WebSearchCalls=0 FileSearchCalls=0
 //
-// MUTATION: if the count predicate is changed to also match "tool_use" blocks,
-// this test goes RED — proving no conflation between server and client tools.
+// 变异判据：若把计数判定改成也匹配 "tool_use" 块，
+// 本测试会 RED——证明 server 工具与 client 工具不被混淆。
 // ---------------------------------------------------------------------------
 
 func TestAnthropicBuffered_ClientToolUseNotCounted(t *testing.T) {
@@ -84,7 +84,7 @@ func TestAnthropicBuffered_ClientToolUseNotCounted(t *testing.T) {
 		t.Fatalf("ProviderResponseToCanonical: %v", err)
 	}
 	usage := env.Accounting.Usage
-	// ALL counts must be zero — client tool_use blocks are FREE and MUST NOT be billed.
+	// 所有计数必须为零——客户端 tool_use 块是免费的，绝不能计费。
 	if usage.WebSearchCalls != 0 {
 		t.Errorf("WebSearchCalls: want 0 (client tool_use must NOT be counted), got %d", usage.WebSearchCalls)
 	}
@@ -95,10 +95,10 @@ func TestAnthropicBuffered_ClientToolUseNotCounted(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TestAnthropicStreaming_ServerToolUseAccumulated
-// 3x content_block_start with server_tool_use "web_search" =>
+// 3 个携带 server_tool_use "web_search" 的 content_block_start =>
 // AccumulatedUsage.WebSearchCalls == 3
 //
-// MUTATION: change += to = in UsageAccumulator.Update => count becomes 1 => RED.
+// 变异判据：把 UsageAccumulator.Update 里的 += 改成 = => 计数变 1 => RED。
 // ---------------------------------------------------------------------------
 
 func TestAnthropicStreaming_ServerToolUseAccumulated(t *testing.T) {
@@ -137,7 +137,7 @@ func TestAnthropicStreaming_ServerToolUseAccumulated(t *testing.T) {
 	for _, e := range evts {
 		out, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), e, state)
 		if err != nil {
-			// message_stop after unknown events is ok; continue
+			// 未知事件之后的 message_stop 没问题；继续
 			continue
 		}
 		for _, x := range out {
@@ -146,8 +146,8 @@ func TestAnthropicStreaming_ServerToolUseAccumulated(t *testing.T) {
 				continue
 			}
 			if ev.Usage != nil {
-				// Simulate UsageAccumulator += accumulation for tool counts.
-				// Token fields use set-to-latest; tool counts use +=.
+				// 模拟 UsageAccumulator 对工具计数的 += 累加。
+				// token 字段用"取最新值"；工具计数用 +=。
 				if ev.Usage.WebSearchCalls > 0 {
 					accUsage.WebSearchCalls += ev.Usage.WebSearchCalls
 				}
@@ -168,13 +168,13 @@ func TestAnthropicStreaming_ServerToolUseAccumulated(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // TestAnthropicStreaming_ParityWithBuffered
-// Same logical response: streaming path accumulated counts == buffered path counts.
+// 同一逻辑响应：流式路径累加计数 == 缓冲路径计数。
 // ---------------------------------------------------------------------------
 
 func TestAnthropicStreaming_ParityWithBuffered(t *testing.T) {
 	adapter := &anthropic.Adapter{}
 
-	// Buffered path: 1 web_search + 1 file_search
+	// 缓冲路径：1 个 web_search + 1 个 file_search
 	rawBuf := bufferedResp(t, []map[string]any{
 		{"type": "server_tool_use", "id": "sstu_01", "name": "web_search", "input": map[string]any{"q": "x"}},
 		{"type": "server_tool_use", "id": "sstu_02", "name": "file_search", "input": map[string]any{"q": "y"}},
@@ -184,7 +184,7 @@ func TestAnthropicStreaming_ParityWithBuffered(t *testing.T) {
 		t.Fatalf("buffered parse: %v", err)
 	}
 
-	// Streaming path: same 2 blocks emitted as content_block_start events
+	// 流式路径：同样 2 个块以 content_block_start 事件发出
 	buildCBS := func(index int, name string) []byte {
 		raw, _ := json.Marshal(map[string]any{
 			"type":  "content_block_start",

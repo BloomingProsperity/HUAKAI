@@ -45,7 +45,7 @@ func TestRequestMetaSeed_ApplyToRequestMeta_Required(t *testing.T) {
 	cases := []struct {
 		name  string
 		seed  RequestMetaSeed
-		want  string // expected substring in error；空 = 期望成功
+		want  string // error 中期望包含的子串；空 = 期望成功
 	}{
 		{
 			name: "missing request id",

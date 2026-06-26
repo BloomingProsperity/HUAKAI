@@ -53,8 +53,8 @@ func TestForceFormatSynthesizesChunk(t *testing.T) {
 	if len(got.Choices) != 1 || got.Choices[0].Index != 0 {
 		t.Fatalf("choices/index not synthesized correctly: %+v body=%s", got.Choices, forced)
 	}
-	// MUTATION: if force=true stops synthesizing required keys, object remains
-	// empty or choice index is omitted and this test goes red.
+	// MUTATION：若 force=true 不再合成必填键，object 会留空或 choice index
+	// 被省略，本测试即红。
 }
 
 func TestOpenAIChatClient_HappyPath_Text(t *testing.T) {
@@ -361,7 +361,7 @@ func TestOpenAIChatClient_NegativeMissingSeed(t *testing.T) {
 // D7/D8 测试在下方专属 section；旧 stub-ErrNotImplemented 期望已废弃。
 
 // --------------------------------------------------------------------------
-// D7 / D8 streaming tests
+// D7 / D8 流式测试
 // --------------------------------------------------------------------------
 
 func TestOpenAIChat_D7_RoleDeltaThenTextThenFinishThenDONE(t *testing.T) {

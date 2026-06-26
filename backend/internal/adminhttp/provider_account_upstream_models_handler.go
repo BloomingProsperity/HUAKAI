@@ -28,21 +28,21 @@ const (
 	upstreamModelsMaxBodyBytes            = 1 << 20 // 1 MiB
 )
 
-// UpstreamModelsIPPredicate controls which resolved IPs are blocked at dial
-// time. The default (nil) uses the real provider.WrapPassthroughEndpointTransport
-// guard. Tests inject an allow-all predicate to reach httptest servers.
+// upstreamModelsTransportWrapper 控制在拨号时哪些已解析的 IP 会被拦截。
+// 默认值(nil)使用真实的 provider.WrapPassthroughEndpointTransport 守卫。
+// 测试会注入一个全放行的判定函数,以便能访问到 httptest 服务器。
 //
-// It is expressed as a DialContext wrapper factory rather than an IP predicate
-// so that we reuse the existing, tested transport wrapper in production.
+// 它表现为一个 DialContext 包装器工厂,而非一个 IP 判定函数,
+// 这样在生产环境中我们就能复用现有的、已经过测试的传输层包装器。
 type upstreamModelsTransportWrapper func(rt http.RoundTripper) (http.RoundTripper, error)
 
-// UpstreamModelsDeps holds all dependencies for the upstream-models handler.
+// UpstreamModelsDeps 持有 upstream-models 处理器的全部依赖。
 type UpstreamModelsDeps struct {
 	Auth      upstreamModelsAuth
 	Accounts  upstreamModelsAccountStore
 	Creds     upstreamModelsCredentialStore
-	// TransportWrapper overrides the SSRF-guarded transport in tests.
-	// Production code MUST leave this nil so the real guard is used.
+	// TransportWrapper 在测试中覆盖经过 SSRF 守卫的传输层。
+	// 生产代码必须保持其为 nil,以便使用真实的守卫。
 	TransportWrapper upstreamModelsTransportWrapper
 }
 
@@ -58,13 +58,13 @@ type upstreamModelsCredentialStore interface {
 	LoadForProviderAccountTest(context.Context, int64, int64) (credentialstore.CredentialRecord, error)
 }
 
-// upstreamModelsListResponse is the JSON response body.
+// upstreamModelsListResponse 是 JSON 响应体。
 type upstreamModelsListResponse struct {
 	Models []string `json:"models"`
 	Count  int      `json:"count"`
 }
 
-// MountProviderAccountUpstreamModelsRoutes registers GET /{id}/upstream-models.
+// MountProviderAccountUpstreamModelsRoutes 注册 GET /{id}/upstream-models。
 func MountProviderAccountUpstreamModelsRoutes(r chi.Router, d UpstreamModelsDeps) {
 	r.Get("/{id}/upstream-models", newProviderAccountUpstreamModelsHandler(d))
 }
@@ -81,7 +81,7 @@ func newProviderAccountUpstreamModelsHandler(d UpstreamModelsDeps) http.HandlerF
 			return
 		}
 
-		// Fetch the provider account row (authoritative tenant scope check).
+		// 拉取 provider account 行(权威的租户范围校验)。
 		_, err := d.Accounts.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{
 			ID: id, TenantID: tenantID,
 		})
@@ -94,7 +94,7 @@ func newProviderAccountUpstreamModelsHandler(d UpstreamModelsDeps) http.HandlerF
 			return
 		}
 
-		// Load and decrypt the credential.
+		// 加载并解密凭证。
 		rec, err := d.Creds.LoadForProviderAccountTest(r.Context(), tenantID, id)
 		if err != nil {
 			if errors.Is(err, credentialstore.ErrCredentialNotFound) {
@@ -106,8 +106,8 @@ func newProviderAccountUpstreamModelsHandler(d UpstreamModelsDeps) http.HandlerF
 		}
 		defer privacy.Zeroize(rec.PlaintextPayload)
 
-		// Map plaintext bytes ??provider.Credential using the account's auth mode.
-		// upstream_static accounts carry base_url + auth_header_value.
+		// 根据账号的认证模式,把明文字节映射为 provider.Credential。
+		// upstream_static 账号携带 base_url + auth_header_value。
 		cred, err := mapProviderCredential(rec)
 		if err != nil {
 			writeError(w, http.StatusUnprocessableEntity, "credential_format_invalid", "stored credential payload cannot be decoded")
@@ -134,7 +134,7 @@ func newProviderAccountUpstreamModelsHandler(d UpstreamModelsDeps) http.HandlerF
 			return
 		}
 
-		// Build SSRF-guarded HTTP client.
+		// 构建经过 SSRF 守卫的 HTTP 客户端。
 		client, err := buildUpstreamModelsClient(d.TransportWrapper)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "upstream_blocked",
@@ -161,10 +161,10 @@ func newProviderAccountUpstreamModelsHandler(d UpstreamModelsDeps) http.HandlerF
 	}
 }
 
-// errUpstreamBlocked is returned when the SSRF guard rejects the dial.
+// errUpstreamBlocked 在 SSRF 守卫拒绝拨号时返回。
 var errUpstreamBlocked = errors.New("upstream_blocked")
 
-// resolveUpstreamModelsTenant mirrors resolveProviderAccountTestTenant.
+// resolveUpstreamModelsTenant 与 resolveProviderAccountTestTenant 对应一致。
 func resolveUpstreamModelsTenant(w http.ResponseWriter, r *http.Request, d UpstreamModelsDeps) (admin.AdminIdentity, int64, bool) {
 	if d.Auth == nil || d.Accounts == nil || d.Creds == nil {
 		writeError(w, http.StatusServiceUnavailable, "gateway_not_configured", "upstream models dependency unset")
@@ -202,12 +202,12 @@ func parseUpstreamModelsAccountID(w http.ResponseWriter, r *http.Request) (int64
 	return id, true
 }
 
-// mapProviderCredential converts a CredentialRecord's PlaintextPayload into a
-// provider.Credential using the account's AuthMode as account_type selector.
-// This mirrors how postgres_vault.go / credentialworker maps credentials.
+// mapProviderCredential 把 CredentialRecord 的 PlaintextPayload 转换成
+// provider.Credential,使用账号的 AuthMode 作为 account_type 选择器。
+// 这与 postgres_vault.go / credentialworker 映射凭证的方式保持一致。
 func mapProviderCredential(rec credentialstore.CredentialRecord) (provider.Credential, error) {
-	// AuthMode in credentialstore maps to account_type in postgres_vault.
-	// For upstream_static accounts AuthMode == "upstream_static".
+	// credentialstore 中的 AuthMode 对应 postgres_vault 中的 account_type。
+	// 对 upstream_static 账号而言,AuthMode == "upstream_static"。
 	switch rec.AuthMode {
 	case "upstream_static":
 		return mapUpstreamStaticCredential(rec.PlaintextPayload)
@@ -240,10 +240,10 @@ func mapUpstreamStaticCredential(payload []byte) (provider.Credential, error) {
 	}, nil
 }
 
-// buildModelsURL appends /v1/models to the base URL, respecting whether the
-// base already carries a path. Uses the same base-URL logic as adapter.go:
-// if base is scheme+host only (or ends with /), append /v1/models directly;
-// otherwise trust the operator's custom path and append /models.
+// buildModelsURL 在 base URL 后追加 /v1/models,并考虑 base 是否已经带有路径。
+// 采用与 adapter.go 相同的 base-URL 逻辑:
+// 如果 base 仅为 scheme+host(或以 / 结尾),则直接追加 /v1/models;
+// 否则信任运维设置的自定义路径,并追加 /models。
 func buildModelsURL(base string) (string, error) {
 	u, err := url.Parse(strings.TrimRight(base, "/"))
 	if err != nil || u.Host == "" || u.Scheme != "https" {
@@ -256,15 +256,15 @@ func buildModelsURL(base string) (string, error) {
 	case strings.HasSuffix(path, "/v1"):
 		u.Path = path + "/models"
 	default:
-		// Custom base path: operator manages the full path; append /models.
+		// 自定义 base 路径:由运维管理完整路径;追加 /models。
 		u.Path = strings.TrimRight(path, "/") + "/models"
 	}
 	return u.String(), nil
 }
 
-// buildUpstreamModelsClient constructs an *http.Client with the SSRF-guarded
-// transport. In production, wrapper is nil and provider.WrapPassthroughEndpointTransport
-// is used. Tests inject an allow-all wrapper.
+// buildUpstreamModelsClient 构造一个带有 SSRF 守卫传输层的 *http.Client。
+// 在生产环境中,wrapper 为 nil,使用 provider.WrapPassthroughEndpointTransport。
+// 测试会注入一个全放行的 wrapper。
 func buildUpstreamModelsClient(wrapper upstreamModelsTransportWrapper) (*http.Client, error) {
 	if wrapper == nil {
 		wrapper = provider.WrapPassthroughEndpointTransport
@@ -281,16 +281,16 @@ func buildUpstreamModelsClient(wrapper upstreamModelsTransportWrapper) (*http.Cl
 	}, nil
 }
 
-// openAIModelsResponse is the shape returned by OpenAI-compatible /v1/models.
+// openAIModelsResponse 是 OpenAI 兼容的 /v1/models 返回的结构。
 type openAIModelsResponse struct {
 	Data []struct {
 		ID string `json:"id"`
 	} `json:"data"`
 }
 
-// fetchUpstreamModels GETs the models endpoint, parses the response, and
-// returns a sorted, de-duplicated list of model IDs.
-// It NEVER logs the Authorization header value or the raw body (CMB-5).
+// fetchUpstreamModels 以 GET 请求访问 models 端点,解析响应,
+// 并返回一个已去重的 model ID 列表。
+// 它绝不会记录 Authorization header 的值或原始响应体(CMB-5)。
 func fetchUpstreamModels(ctx context.Context, client *http.Client, modelsURL, authHeader string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
@@ -310,7 +310,7 @@ func fetchUpstreamModels(ctx context.Context, client *http.Client, modelsURL, au
 	}
 	defer resp.Body.Close()
 
-	// Read with a size cap to prevent memory exhaustion from a malicious upstream.
+	// 限制读取大小,防止恶意上游导致内存耗尽。
 	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamModelsMaxBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("read upstream response: %w", err)
@@ -323,12 +323,12 @@ func fetchUpstreamModels(ctx context.Context, client *http.Client, modelsURL, au
 	return parseModelsResponse(body)
 }
 
-// isBlockedErr reports whether err comes from the SSRF passthrough guard.
+// isBlockedErr 报告 err 是否来自 SSRF passthrough 守卫。
 func isBlockedErr(err error) bool {
 	return errors.Is(err, provider.ErrUnsafePassthroughEndpoint)
 }
 
-// parseModelsResponse parses OpenAI-compatible {data:[{id}]} responses.
+// parseModelsResponse 解析 OpenAI 兼容的 {data:[{id}]} 响应。
 func parseModelsResponse(body []byte) ([]string, error) {
 	var r openAIModelsResponse
 	if err := json.Unmarshal(body, &r); err != nil {

@@ -143,8 +143,8 @@ func TestProviderCatalogResponseWhitelistAndPagination(t *testing.T) {
 	})
 }
 
-// Mutation: remove the admin role check or allow unknown roles to mutate; this
-// test must turn red with a 2xx/4xx-other response or a store mutation call.
+// 变异:移除 admin 角色检查,或允许未知角色执行修改操作;此时
+// 本测试必须因为出现 2xx/其他 4xx 响应或 store 修改调用而变红。
 func TestProviderCatalogAdminAuthRequired(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -187,9 +187,9 @@ func TestProviderCatalogAdminAuthRequired(t *testing.T) {
 	}
 }
 
-// Mutation: drop tenant_id from create uniqueness/scope handling; same-tenant
-// duplicate must map to 409, while the same code under another tenant must stay
-// a valid create path instead of colliding globally.
+// 变异:在创建的唯一性/范围处理中去掉 tenant_id;同租户内的
+// 重复必须映射为 409,而另一个租户下使用相同 code 必须仍是一条
+// 合法的创建路径,而不是在全局范围内冲突。
 func TestCreateProvider_TenantScopedUnique(t *testing.T) {
 	t.Run("tenant operator create uses scope tenant and writes audit", func(t *testing.T) {
 		queries := newProviderCatalogQueriesStub()
@@ -253,8 +253,8 @@ func TestCreateProvider_TenantScopedUnique(t *testing.T) {
 	})
 }
 
-// Mutation: accept empty code/display name or an unknown upstream protocol; this
-// test must turn red by observing a store call for invalid catalog data.
+// 变异:接受空的 code/display name 或未知的 upstream protocol;此时
+// 本测试必须因为观察到针对非法 catalog 数据的 store 调用而变红。
 func TestCreateProviderValidatesRequiredFields(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -291,8 +291,8 @@ func TestCreateProviderValidatesRequiredFields(t *testing.T) {
 	}
 }
 
-// Mutation: drop tenant checks before mutation; tenant operator 7 would mutate
-// tenant 8 and this test must turn red by observing a store call.
+// 变异:在执行修改前去掉租户检查;此时 tenant operator 7 将能修改
+// tenant 8,而本测试必须因为观察到一次 store 调用而变红。
 func TestProviderCrud_TenantIsolation(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -335,9 +335,9 @@ func TestProviderCrud_TenantIsolation(t *testing.T) {
 	}
 }
 
-// Mutation: ignore the `{code}` path scope or treat no updated row as success;
-// the not-found branch must stay 404 and successful updates must reflect the
-// requested display_name/enabled values.
+// 变异:忽略 `{code}` 路径范围,或把没有更新到任何行也当作成功;
+// not-found 分支必须保持 404,而成功的更新必须反映出请求中的
+// display_name/enabled 值。
 func TestUpdateProvider(t *testing.T) {
 	t.Run("updates display protocol and enabled", func(t *testing.T) {
 		queries := newProviderCatalogQueriesStub()
@@ -378,9 +378,8 @@ func TestUpdateProvider(t *testing.T) {
 	})
 }
 
-// Mutation: hard-delete or soft-delete providers that still have active
-// provider_accounts; this test must turn red by returning success instead of
-// 409 for the active-account guard.
+// 变异:对仍有活跃 provider_accounts 的 provider 执行硬删除或软删除;
+// 此时本测试必须因为针对活跃账号守卫返回成功而非 409 而变红。
 func TestDeleteProvider_GuardOrSoftDelete(t *testing.T) {
 	t.Run("soft deletes provider when no active accounts reference it", func(t *testing.T) {
 		queries := newProviderCatalogQueriesStub()

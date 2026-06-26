@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// TestLoadL2CacheDefaultsOn guards the F-CACHE-001 activation: with no env override the cache
-// is ENABLED by default (size/ttl/scope at their defaults).
-// MUTATION: revert the default to Enabled:false -> this assertion goes RED.
+// TestLoadL2CacheDefaultsOn 守住 F-CACHE-001 的激活:在无 env 覆盖时,缓存默认开启
+//(size/ttl/scope 均取各自默认值)。
+// MUTATION:把默认值改回 Enabled:false → 本断言变红。
 func TestLoadL2CacheDefaultsOn(t *testing.T) {
 	clearL2CacheEnv(t)
 	cfg, err := LoadL2Cache()
@@ -29,10 +29,10 @@ func TestLoadL2CacheDefaultsOn(t *testing.T) {
 	}
 }
 
-// TestLoadL2CacheEnvOverrideOff guards that operators can still DISABLE the now-default-on cache
-// via HUAKAI_CACHE_L2_ENABLED=0 (the env override must beat the new default).
-// MUTATION: if the env-override branch stops applying, Enabled stays true -> RED. Discriminating
-// only because the default is now ON — a false expected value the override must flip back to false.
+// TestLoadL2CacheEnvOverrideOff 守住运维仍可通过 HUAKAI_CACHE_L2_ENABLED=0 关闭这个现已默认
+// 开启的缓存(env 覆盖必须压过新默认值)。
+// MUTATION:若 env 覆盖分支不再生效, Enabled 会保持 true → 变红。之所以有区分力, 正因为现在默认
+// 是开启的——这是一个 false 的期望值, 覆盖必须把它翻回 false。
 func TestLoadL2CacheEnvOverrideOff(t *testing.T) {
 	clearL2CacheEnv(t)
 	for _, off := range []string{"0", "false", "off", "no"} {

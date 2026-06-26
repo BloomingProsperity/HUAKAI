@@ -7,24 +7,23 @@ import (
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quota"
 )
 
-// Current-window read projections, grouped in a focused file. pg_store.go was 588 lines at
-// HEAD; adding the new multi-metric read there would push it to 611 — past the 600-line
-// per-file cap (CLAUDE.md #13) — so these read methods live here instead. The cost-only read
-// serves subscription progress and key-control; the multi-metric read serves /quota status.
+// 当前窗口的只读投影, 集中放在这个专门文件里。pg_store.go 在 HEAD 处已有 588 行;
+// 若把新的多 metric 读取也加进去会涨到 611 行, 超过每文件 600 行上限(CLAUDE.md #13),
+// 所以这些读取方法改放在这里。cost-only 读取服务于 subscription 进度与 key-control;
+// 多 metric 读取服务于 /quota 状态。
 
-// ListCurrentWindowsForScope returns the COST-only current quota windows for a scope.
-// It pins the metric filter to cost_usd so existing callers (subscription progress,
-// key-control) keep their exact original behaviour — `= ANY({cost_usd})` is identical
-// to the prior `= 'cost_usd'` predicate. Multi-metric self-service reads use
-// ListCurrentWindowsForScopeMetrics instead.
+// ListCurrentWindowsForScope 返回某 scope 仅 COST 维度的当前 quota 窗口。
+// 它把 metric 过滤固定为 cost_usd, 让既有调用方(subscription 进度、
+// key-control)保持完全一致的原始行为——`= ANY({cost_usd})` 与之前的
+// `= 'cost_usd'` 谓词等价。多 metric 自助读取改用
+// ListCurrentWindowsForScopeMetrics。
 func (s *PostgresStore) ListCurrentWindowsForScope(ctx context.Context, tenantID int64, scopeKind ScopeKind, scopeID string, at time.Time) ([]CurrentWindowRead, error) {
 	return s.listCurrentWindows(ctx, tenantID, scopeKind, scopeID, at, []string{string(MetricCostUSD)})
 }
 
-// ListCurrentWindowsForScopeMetrics returns the current quota windows for a scope across
-// the requested metrics (the self-service /quota read passes the window-shaped metrics:
-// requests, cost_usd, tokens_estimated). Concurrency is intentionally excluded — it is a
-// slot-based metric, not a window-accumulation counter, so it never produces a window row.
+// ListCurrentWindowsForScopeMetrics 返回某 scope 在所请求 metric 集合上的当前 quota 窗口
+// (自助 /quota 读取传入的是窗口型 metric: requests、cost_usd、tokens_estimated)。
+// concurrency 被有意排除——它是基于 slot 的 metric, 不是窗口累加计数, 因此永远不会产生窗口行。
 func (s *PostgresStore) ListCurrentWindowsForScopeMetrics(ctx context.Context, tenantID int64, scopeKind ScopeKind, scopeID string, at time.Time, metrics []Metric) ([]CurrentWindowRead, error) {
 	metricStrs := make([]string, len(metrics))
 	for i, m := range metrics {

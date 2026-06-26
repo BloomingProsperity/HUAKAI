@@ -14,8 +14,8 @@ import (
 )
 
 func TestRedisStoreUsesServerMinuteAndResetsOnBoundary(t *testing.T) {
-	// Mutation check: if keys are built from local caller time instead of Lua
-	// TIME, skewed callers land in different windows and both pass under limit 1.
+	// 变异检查:如果 key 用本地调用方时间而非 Lua TIME 构造,时钟偏差的调用方
+	// 会落到不同窗口,两者在 limit 1 下都会通过。
 	ctx := context.Background()
 	store := redisStoreForTest(t)
 	svc := NewService(store, StaticLimitsProvider{
@@ -41,8 +41,8 @@ func TestRedisStoreUsesServerMinuteAndResetsOnBoundary(t *testing.T) {
 }
 
 func TestRedisStoreConcurrentLimitIsExact(t *testing.T) {
-	// Mutation check: replacing Lua with GET+INCR admits more than 50 under
-	// concurrent load because contenders race between read and increment.
+	// 变异检查:把 Lua 换成 GET+INCR 在并发负载下会放行超过 50 个,因为竞争者
+	// 在读取和自增之间发生竞态。
 	ctx := context.Background()
 	store := redisStoreForTest(t)
 	svc := NewService(store, StaticLimitsProvider{

@@ -15,7 +15,7 @@ import (
 )
 
 func TestSettler_SettleAppliesCaptureAndReturnsUpdatedBalance(t *testing.T) {
-	// Mutation check: capture path writes usage/billing row but never debits user balance.
+	// 变异检查:capture 路径写入 usage/billing 行但从不扣减用户余额。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -51,8 +51,8 @@ func TestSettler_SettleAppliesCaptureAndReturnsUpdatedBalance(t *testing.T) {
 }
 
 func TestSettler_CacheHitCapturesZeroAndReleasesHold(t *testing.T) {
-	// Mutation check: skip BalanceHold.Capture in CommitCacheHit.
-	// Without capture, held would remain 0.01 on a success L2 hit.
+	// 变异检查:在 CommitCacheHit 中跳过 BalanceHold.Capture。
+	// 不做 capture 时,L2 命中成功后 held 会停留在 0.01。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -94,8 +94,8 @@ func TestSettler_CacheHitCapturesZeroAndReleasesHold(t *testing.T) {
 }
 
 func TestSettler_AbortReleasesHold(t *testing.T) {
-	// Mutation check: omit Release in Abort.
-	// Without Release the held budget remains non-zero and future claims overdraw.
+	// 变异检查:在 Abort 中省略 Release。
+	// 不做 Release 时,held 预算保持非零,后续 claim 会透支。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -131,7 +131,7 @@ func TestSettler_AbortReleasesHold(t *testing.T) {
 }
 
 func TestSettler_LeaseSweepAbortsExpiredClaims(t *testing.T) {
-	// Mutation check: sweep selects only stale claims or never aborts them.
+	// 变异检查:sweep 只选取陈旧 claim,或从不 abort 它们。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -170,7 +170,7 @@ func TestSettler_LeaseSweepAbortsExpiredClaims(t *testing.T) {
 }
 
 func TestSettler_LeaseSweepReclaimsExpiredSlotAcquisitions(t *testing.T) {
-	// Mutation check: remove orphan slot sweeping and the slot stays acquired with in_flight_count=1.
+	// 变异检查:移除孤儿 slot 的回收,slot 会保持 acquired 且 in_flight_count=1。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -227,7 +227,7 @@ func TestSettler_LeaseSweepReclaimsExpiredSlotAcquisitions(t *testing.T) {
 }
 
 func TestSettler_LeaseSweepReclaimsExpiredSlotFromPriorAttempt(t *testing.T) {
-	// Mutation check: remove attempt_seq from the live-claim guard and the prior-attempt slot remains acquired.
+	// 变异检查:从 live-claim 守卫中移除 attempt_seq,上一次尝试的 slot 会保持 acquired。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -307,7 +307,7 @@ func TestSettler_LeaseSweepReclaimsExpiredSlotFromPriorAttempt(t *testing.T) {
 }
 
 func TestSettler_RefundCreditsUserBalance(t *testing.T) {
-	// Mutation check: remove refund UPDATE to user_balances.
+	// 变异检查:移除对 user_balances 的退款 UPDATE。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

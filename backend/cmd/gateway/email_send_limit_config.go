@@ -6,7 +6,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/emailsendlimit"
 )
 
-// Email-send per-IP limit env keys. Unset values use emailsendlimit.DefaultConfig.
+// 邮件发送的每 IP 限流相关 env key。未设置的值回退到 emailsendlimit.DefaultConfig。
 const (
 	emailSendLimitWindowEnv  = "HUAKAI_EMAIL_SEND_LIMIT_WINDOW"
 	emailSendLimitLimitEnv   = "HUAKAI_EMAIL_SEND_LIMIT_LIMIT"

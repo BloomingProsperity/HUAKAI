@@ -30,7 +30,7 @@ func TestRecentUsageRollupByTenant(t *testing.T) {
 	seedUsageOutcomeRecord(t, ctx, tx, tenantA, "old-outside-window", "upstream_error_5xx", base.Add(-2*time.Hour))
 
 	q := New(tx)
-	// MUTATION: remove tenant_id or settled_at filter -> tenant B or old tenant A rows inflate this rollup -> RED.
+	// 变异:去掉 tenant_id 或 settled_at 过滤 -> 租户 B 或租户 A 的旧行会虚增这个汇总 -> 变红。
 	got, err := q.RecentUsageRollupByTenant(ctx, RecentUsageRollupByTenantParams{
 		TenantID: tenantA.tenantID,
 		SettledSince: pgtype.Timestamptz{
@@ -55,12 +55,11 @@ func TestRecentUsageRollupByTenant(t *testing.T) {
 	}
 }
 
-// TTFT (first_byte_at - requested_at) p95/p99 must be computed over only the
-// rows that recorded a first byte, and a tenant with no recorded first byte must
-// COALESCE to 0 (not NULL -> scan error). Three extra rows carry distinct TTFTs
-// of 1000/2000/3000 ms, whose percentile_cont(0.95)=2900 and (0.99)=2980 are
-// distinct -- so a query that emitted the same percentile for both columns goes
-// RED, and an all-NULL tenant that returned NULL instead of 0 fails the scan.
+// TTFT(first_byte_at - requested_at)的 p95/p99 只能在记录了 first byte 的行上
+// 计算,而没有记录任何 first byte 的租户必须 COALESCE 成 0(而非 NULL -> scan 报错)。
+// 额外三行带有不同的 TTFT,分别是 1000/2000/3000 ms,其 percentile_cont(0.95)=2900
+// 和 (0.99)=2980 是不同的 —— 所以一个对两列都输出相同百分位的查询会变红,
+// 而一个全为 NULL 的租户若返回 NULL 而非 0 则会让 scan 失败。
 func TestRecentUsageRollupByTenant_LatencyPercentiles(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -76,7 +75,7 @@ func TestRecentUsageRollupByTenant_LatencyPercentiles(t *testing.T) {
 	withLatency := seedUsageOutcomeFixture(t, ctx, tx)
 	noLatency := seedUsageOutcomeFixture(t, ctx, tx)
 
-	// usage_records is append-only, so the first byte time is fixed at insert.
+	// usage_records 是仅追加的,所以 first byte 时间在插入时就固定了。
 	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	seedUsageRecordTTFT(t, ctx, tx, withLatency, "ttft-1000", base.Add(10*time.Second), 1000*time.Millisecond)
 	seedUsageRecordTTFT(t, ctx, tx, withLatency, "ttft-2000", base.Add(11*time.Second), 2000*time.Millisecond)
@@ -95,7 +94,7 @@ func TestRecentUsageRollupByTenant_LatencyPercentiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecentUsageRollupByTenant(withLatency): %v", err)
 	}
-	// 3 fixture rows (no first byte) + 3 TTFT rows = 6; percentiles see only the 3.
+	// 3 条 fixture 行(无 first byte) + 3 条 TTFT 行 = 6;百分位只看那 3 条。
 	if got.RequestCount != 6 {
 		t.Fatalf("request_count=%d want 6", got.RequestCount)
 	}
@@ -109,7 +108,7 @@ func TestRecentUsageRollupByTenant_LatencyPercentiles(t *testing.T) {
 		t.Fatalf("p95=%v must be < p99=%v (distinct percentiles)", got.LatencyP95Ms, got.LatencyP99Ms)
 	}
 
-	// A tenant whose rows never recorded a first byte must report 0, not NULL.
+	// 一个所有行都从未记录 first byte 的租户必须报告 0,而非 NULL。
 	gotNull, err := q.RecentUsageRollupByTenant(ctx, RecentUsageRollupByTenantParams{
 		TenantID:     noLatency.tenantID,
 		SettledSince: since,
@@ -125,9 +124,9 @@ func TestRecentUsageRollupByTenant_LatencyPercentiles(t *testing.T) {
 	}
 }
 
-// seedUsageRecordTTFT inserts a committed claim + usage record whose first_byte_at
-// is settledAt's requested_at plus ttft, so the rollup's TTFT percentile sees a
-// known latency. usage_records is append-only so the value is set at insert time.
+// seedUsageRecordTTFT 插入一条已提交的 claim + usage record,其 first_byte_at
+// 等于 settledAt 对应的 requested_at 加上 ttft,这样汇总的 TTFT 百分位就能看到
+// 一个已知的延迟。usage_records 是仅追加的,所以该值在插入时就设定。
 func seedUsageRecordTTFT(t *testing.T, ctx context.Context, tx pgx.Tx, f usageOutcomeFixture, logicalRequestID string, settledAt time.Time, ttft time.Duration) {
 	t.Helper()
 	acquisitionToken := uuid.New()

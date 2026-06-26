@@ -29,8 +29,8 @@ func oauthStubResponse(status int, body, contentType string) *http.Response {
 	}
 }
 
-// Mutation guards: JSON-only token parsing breaks querystring_token; skipping
-// callback unwrap breaks /me; using nickname instead of openid breaks subject.
+// 变异 guard: 只用 JSON 解析 token 会破坏 querystring_token; 跳过
+// callback 拆包会破坏 /me; 用 nickname 而非 openid 会破坏 subject。
 func TestOAuthQQAuthorizationAndIdentityExtraction(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -143,8 +143,8 @@ func TestOAuthQQAuthorizationAndIdentityExtraction(t *testing.T) {
 	}
 }
 
-// Mutation guard: using openId instead of unionId fails because the fixture
-// sets those to different values.
+// 变异 guard: 用 openId 而非 unionId 会失败, 因为 fixture
+// 把二者设成了不同的值。
 func TestOAuthDingTalkUsesUnionIDAsSubject(t *testing.T) {
 	var sawToken, sawUser bool
 	client := &http.Client{Transport: oauthRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -232,8 +232,8 @@ func TestOAuthDingTalkUsesUnionIDAsSubject(t *testing.T) {
 	}
 }
 
-// Mutation guard: ignoring the configured subject field fails because id and
-// sub intentionally carry different values.
+// 变异 guard: 忽略配置的 subject 字段会失败, 因为 id 和
+// sub 有意带不同的值。
 func TestOAuthNodeSeekGenericProviderUsesConfiguredSubjectField(t *testing.T) {
 	var sawToken, sawUser bool
 	client := &http.Client{Transport: oauthRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -321,9 +321,9 @@ func TestOAuthNodeSeekGenericProviderUsesConfiguredSubjectField(t *testing.T) {
 	}
 }
 
-// Mutation guards: deleting the generic numeric-claim gate accepts low-trust
-// LinuxDo users; changing the comparison from < to <= rejects the exact
-// threshold case.
+// 变异 guard: 删掉通用的 numeric-claim gate 会接受低信任的
+// LinuxDo 用户; 把比较从 < 改成 <= 会拒绝恰好等于
+// 阈值的情况。
 func TestLinuxDoTrustLevelGate(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -429,9 +429,9 @@ func TestLinuxDoTrustLevelGate(t *testing.T) {
 	}
 }
 
-// Mutation guards: omitting the Discord dispatch or using a non-bearer userinfo
-// request makes this standard OAuth2 flow fail; using only global_name loses the
-// username fallback when Discord returns global_name=null.
+// 变异 guard: 漏掉 Discord dispatch, 或对 userinfo 用 non-bearer 请求,
+// 会让这套标准 OAuth2 流程失败; 只用 global_name 会在 Discord 返回
+// global_name=null 时丢掉对 username 的回退。
 func TestOAuthDiscordUsesGenericBearerUserInfo(t *testing.T) {
 	var sawToken, sawUser bool
 	client := &http.Client{Transport: oauthRoundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -509,8 +509,8 @@ func TestOAuthDiscordUsesGenericBearerUserInfo(t *testing.T) {
 	}
 }
 
-// Mutation guards: removing provider errcode logging makes required substrings
-// disappear; logging raw upstream/request payloads leaks the forbidden sentinels.
+// 变异 guard: 移除 provider errcode 日志会让必需的子串
+// 消失; 记录原始的上游/请求 payload 会泄露被禁止的 sentinel。
 func TestOAuthProviderUpstreamErrorsLogSanitizedDetails(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -618,8 +618,8 @@ func TestOAuthProviderUpstreamErrorsLogSanitizedDetails(t *testing.T) {
 	}
 }
 
-// Mutation guards: removing state consumption calls provider exchange on an
-// attacker state; bypassing ensureSocialLoginUserAllowed accepts disabled users.
+// 变异 guard: 移除 state consumption 会对攻击者构造的 state 也调用
+// provider exchange; 绕过 ensureSocialLoginUserAllowed 会接受被禁用的用户。
 func TestOAuthNewProviderSecurityRegressionGuards(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
@@ -667,8 +667,8 @@ func TestOAuthNewProviderSecurityRegressionGuards(t *testing.T) {
 	}
 }
 
-// Mutation guard: swallowing LinkSocialIdentity's unique-constraint rejection
-// would let an already-linked provider subject attach to a second local user.
+// 变异 guard: 吞掉 LinkSocialIdentity 的 unique-constraint 拒绝,
+// 会让一个已绑定的 provider subject 再附加到第二个本地用户上。
 func TestOAuthLinkCollisionRejectsAccountTakeover(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 4, 12, 15, 0, 0, time.UTC)
@@ -696,8 +696,8 @@ func TestOAuthLinkCollisionRejectsAccountTakeover(t *testing.T) {
 	}
 }
 
-// Mutation guard: deleting NewOAuthHTTPProvider endpoint validation makes the
-// loopback token URL construct successfully.
+// 变异 guard: 删掉 NewOAuthHTTPProvider 的 endpoint 校验, 会让
+// loopback 的 token URL 构造成功。
 func TestOAuthNewProviderEndpointGuardRejectsInternalAddresses(t *testing.T) {
 	_, err := NewOAuthHTTPProvider(OAuthConfig{
 		Provider:     SocialProviderNodeSeek,
@@ -713,8 +713,8 @@ func TestOAuthNewProviderEndpointGuardRejectsInternalAddresses(t *testing.T) {
 	}
 }
 
-// Mutation guard: registering empty provider slots makes StartOAuth proceed
-// instead of returning ErrOAuthProviderMissing.
+// 变异 guard: 注册空的 provider slot 会让 StartOAuth 继续往下走,
+// 而不是返回 ErrOAuthProviderMissing。
 func TestOAuthNewProvidersFailClosedWhenNotRegistered(t *testing.T) {
 	svc := NewService(newMemoryAuthStore(time.Date(2026, 6, 4, 12, 30, 0, 0, time.UTC)))
 	svc.OAuth = NewOAuthService()

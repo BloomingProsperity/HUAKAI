@@ -10,9 +10,8 @@ import (
 )
 
 func TestServiceRPMDenyIncludesRetryAfter(t *testing.T) {
-	// Mutation check: changing the limit comparison from ">" to ">=" rejects the
-	// first request; deleting RetryAfter leaves a deterministic 429 without
-	// client backoff guidance.
+	// 变异检查:把 limit 比较从 ">" 改成 ">=" 会拒掉第一个请求;删掉 RetryAfter
+	// 则留下一个确定的 429,但缺少给客户端的退避指引。
 	clock := fixedClock(time.Unix(120, 0).UTC())
 	svc := NewService(NewMemoryStore(clock), StaticLimitsProvider{
 		Default: LimitPair{RPM: 1},
@@ -39,9 +38,8 @@ func TestServiceRPMDenyIncludesRetryAfter(t *testing.T) {
 }
 
 func TestServiceTPMAccumulationAndSettlementDelta(t *testing.T) {
-	// Mutation check: replacing INCRBY with SET lets the second request overwrite
-	// the first and incorrectly pass; applying settlement delta to "now" instead
-	// of the reserved minute leaves the original minute at the wrong value.
+	// 变异检查:把 INCRBY 换成 SET 会让第二个请求覆盖第一个并错误地通过;把结算
+	// delta 应用到 "now" 而非预留的那一分钟,会让原分钟停在错误的值上。
 	clock := fixedClock(time.Unix(180, 0).UTC())
 	store := NewMemoryStore(clock)
 	svc := NewService(store, StaticLimitsProvider{
@@ -69,8 +67,8 @@ func TestServiceTPMAccumulationAndSettlementDelta(t *testing.T) {
 }
 
 func TestServiceAbortRefundIsIdempotent(t *testing.T) {
-	// Mutation check: deleting the release marker makes the second abort drive
-	// the counter negative; deleting refund leaves phantom TPM in the minute.
+	// 变异检查:删掉 release 标记会让第二次 abort 把计数器压成负数;删掉退款则
+	// 在该分钟留下幽灵 TPM。
 	clock := fixedClock(time.Unix(240, 0).UTC())
 	store := NewMemoryStore(clock)
 	svc := NewService(store, StaticLimitsProvider{
@@ -96,8 +94,8 @@ func TestServiceAbortRefundIsIdempotent(t *testing.T) {
 }
 
 func TestServiceWindowUsesStoreClockNotCallerClock(t *testing.T) {
-	// Mutation check: deriving the key from caller time puts the second reserve
-	// in a different minute and incorrectly allows it, despite shared store time.
+	// 变异检查:从调用方时间派生 key 会把第二次 reserve 放到不同分钟并错误放行,
+	// 尽管 store 时间是共享的。
 	serverClock := fixedClock(time.Unix(300, 0).UTC())
 	svc := NewService(NewMemoryStore(serverClock), StaticLimitsProvider{
 		Default: LimitPair{RPM: 1},
@@ -115,8 +113,8 @@ func TestServiceWindowUsesStoreClockNotCallerClock(t *testing.T) {
 }
 
 func TestServiceFailModes(t *testing.T) {
-	// Mutation check: treating infrastructure errors as deterministic denies in
-	// open mode or as allows in closed mode flips these assertions.
+	// 变异检查:在 open 模式下把基础设施错误当作确定性拒绝,或在 closed 模式下
+	// 当作放行,都会让这些断言翻转。
 	ctx := context.Background()
 	req := reserveFixture(505, 1, 50, 100)
 
@@ -149,8 +147,8 @@ func TestServiceFailModes(t *testing.T) {
 }
 
 func TestServiceClaimIDRetryCountsOnce(t *testing.T) {
-	// Mutation check: counting every attempt instead of the logical claim makes
-	// the retry consume RPM and deny the next distinct claim.
+	// 变异检查:对每次尝试都计数而不是按逻辑 claim 计数,会让重试消耗 RPM 并
+	// 拒掉下一个不同的 claim。
 	clock := fixedClock(time.Unix(360, 0).UTC())
 	store := NewMemoryStore(clock)
 	svc := NewService(store, StaticLimitsProvider{
@@ -174,8 +172,8 @@ func TestServiceClaimIDRetryCountsOnce(t *testing.T) {
 }
 
 func TestServiceSettlementCanRunOnDifferentInstance(t *testing.T) {
-	// Mutation check: keeping reservation metadata only on the service object
-	// makes a second instance unable to apply the actual-token delta.
+	// 变异检查:把预留元数据只保存在 service 对象上,会让第二个实例无法应用
+	// actual-token delta。
 	clock := fixedClock(time.Unix(390, 0).UTC())
 	store := NewMemoryStore(clock)
 	limits := StaticLimitsProvider{Default: LimitPair{TPM: 1000}}
@@ -195,8 +193,8 @@ func TestServiceSettlementCanRunOnDifferentInstance(t *testing.T) {
 }
 
 func TestServiceUserHardCapAppliesWhenKeyUnlimited(t *testing.T) {
-	// Mutation check: an else-chain that stops at unlimited key scope bypasses
-	// the user hard cap and admits the second request.
+	// 变异检查:在无限制的 key 作用域处就停下的 else 链会绕过用户硬上限并
+	// 放行第二个请求。
 	clock := fixedClock(time.Unix(420, 0).UTC())
 	svc := NewService(NewMemoryStore(clock), StaticLimitsProvider{
 		Default: LimitPair{},
@@ -218,8 +216,8 @@ func TestServiceUserHardCapAppliesWhenKeyUnlimited(t *testing.T) {
 }
 
 func TestServiceAllOrNothingRefundsEarlierScopes(t *testing.T) {
-	// Mutation check: removing the compensating refund leaves the key scope at
-	// +1 after group denial, creating a phantom budget debit.
+	// 变异检查:移除补偿性退款会让 key 作用域在分组拒绝后停在 +1,造成幽灵
+	// 预算扣减。
 	clock := fixedClock(time.Unix(480, 0).UTC())
 	store := NewMemoryStore(clock)
 	svc := NewService(store, StaticLimitsProvider{
@@ -248,8 +246,8 @@ func TestServiceAllOrNothingRefundsEarlierScopes(t *testing.T) {
 }
 
 func TestScopeEncodingRejectsInjectionAndKeepsHashTag(t *testing.T) {
-	// Mutation check: concatenating raw IDs/model strings lets ':'/'{}'/newlines
-	// alter the Redis key shape or cluster hash-tag.
+	// 变异检查:直接拼接原始 ID / model 字符串会让 ':'/'{}'/换行符 改变 Redis
+	// key 形状或集群 hash-tag。
 	scope := Scope{TenantID: 909, Kind: ScopeAPIKey, ID: "12:{evil}\n", Model: "gpt:{4}\nmini"}
 	encoded, err := EncodeScope(scope)
 	if err != nil {
@@ -268,8 +266,8 @@ func TestScopeEncodingRejectsInjectionAndKeepsHashTag(t *testing.T) {
 }
 
 func TestMemoryStoreConcurrentLimitIsExact(t *testing.T) {
-	// Mutation check: replacing the store lock with GET+INCR style logic admits
-	// more than 50 under a 100 goroutine race.
+	// 变异检查:把 store 锁换成 GET+INCR 风格的逻辑在 100 goroutine 竞态下会
+	// 放行超过 50 个。
 	clock := fixedClock(time.Unix(540, 0).UTC())
 	svc := NewService(NewMemoryStore(clock), StaticLimitsProvider{
 		Default: LimitPair{RPM: 50},

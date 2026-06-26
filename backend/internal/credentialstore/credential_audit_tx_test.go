@@ -264,9 +264,9 @@ func (c credentialAuditTxFakeCredential) metadataValues() []any {
 	}
 }
 
-// createMetadataValues mirrors the Create RETURNING list, which surfaces the two
-// external-identity columns (external_account_id, external_account_email) ahead of the
-// created_at/updated_at tail. Rotate's RETURNING omits them, so it keeps metadataValues.
+// createMetadataValues 与 Create 的 RETURNING 列表保持一致:它在 created_at/updated_at
+// 末尾之前先暴露两个 external-identity 列(external_account_id、external_account_email)。
+// Rotate 的 RETURNING 省略了它们,因此 Rotate 沿用 metadataValues。
 func (c credentialAuditTxFakeCredential) createMetadataValues() []any {
 	now := pgtype.Timestamptz{Time: time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC), Valid: true}
 	emptyTime := pgtype.Timestamptz{}

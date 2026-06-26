@@ -33,12 +33,12 @@ func SessionFromContext(ctx context.Context) (SessionIdentity, bool) {
 	return ident, ok
 }
 
-// SessionMiddleware validates the bearer session and stamps the identity into the request
-// context. The resolver derives the client IP used for session drift/anomaly checks; it MUST
-// be the same trusted-proxy-aware resolver used at login (usersession.Create) and refresh, or
-// behind a reverse proxy the stored baseline IP (real client) and the validation IP (proxy
-// socket) diverge and DetectDrift can falsely revoke a valid session. A nil resolver
-// is safe and falls back to RemoteAddr — matching previous behavior for direct exposure.
+// SessionMiddleware 校验 bearer session 并把 identity 盖进请求
+// context。resolver 推导用于 session drift/anomaly 检查的 client IP; 它必须
+// 与登录 (usersession.Create) 和 refresh 时使用的、感知可信代理的同一个 resolver
+// 一致, 否则在反向代理之后, 存储的基线 IP (真实客户端) 与校验 IP (代理
+// socket) 会发生分歧, 导致 DetectDrift 误吊销一个有效 session。resolver 为 nil
+// 是安全的, 会回退到 RemoteAddr —— 与直接暴露时的旧行为一致。
 func SessionMiddleware(validator SessionValidator, resolver *clientip.Resolver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

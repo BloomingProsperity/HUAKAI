@@ -1,4 +1,4 @@
-// In-memory test stubs for F-AUTH-005 contract tests.
+// F-AUTH-005 契约测试用的内存版测试桩。
 package auth
 
 import (
@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// memCache is an in-memory TokenCache.
+// memCache 是内存版 TokenCache。
 type memCache struct {
 	mu     sync.Mutex
 	values map[string]string
@@ -37,7 +37,7 @@ func (c *memCache) Set(_ context.Context, key, token string, ttl time.Duration) 
 	return nil
 }
 
-// memLock is an in-memory RefreshLock.
+// memLock 是内存版 RefreshLock。
 type memLock struct {
 	mu   sync.Mutex
 	held map[string]time.Time
@@ -64,7 +64,7 @@ func (l *memLock) Release(_ context.Context, key string) error {
 	return nil
 }
 
-// memStore is an in-memory AccountCredentialStore.
+// memStore 是内存版 AccountCredentialStore。
 type memStore struct {
 	mu       sync.Mutex
 	accounts map[string]*ProviderAccountCredential
@@ -120,7 +120,7 @@ func storeKey(tenantID, accountID int64) string {
 	return string(rune(tenantID)) + ":" + string(rune(accountID))
 }
 
-// memMarker is an in-memory AccountStateMarker capturing temp-unsched + operator-attention calls.
+// memMarker 是内存版 AccountStateMarker, 捕获 temp-unsched + operator-attention 调用。
 type memMarker struct {
 	mu                 sync.Mutex
 	tempUnsched        map[string]time.Time
@@ -152,7 +152,7 @@ func (m *memMarker) MarkOperatorAttention(_ context.Context, tenantID, accountID
 	return nil
 }
 
-// memAudit captures audit entries for assertions.
+// memAudit 捕获审计条目以供断言。
 type memAudit struct {
 	mu      sync.Mutex
 	entries []RefreshAuditEntry
@@ -179,5 +179,5 @@ func (m *memAudit) byOutcome(o Outcome) []RefreshAuditEntry {
 	return out
 }
 
-// goodToken is a 32-char alphanumeric value that passes attestTokenShape.
+// goodToken 是一个能通过 attestTokenShape 的 32 字符字母数字值。
 const goodToken = "abcdef1234567890ABCDEF1234567890XX"

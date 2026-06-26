@@ -11,11 +11,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 )
 
-// TestExchangeCapturesUpstreamAccountIdentity proves the token-exchange path threads the
-// upstream account identity (account.uuid + email) into the candidate's RedactedContext
-// when the response carries account.uuid, AND that a response WITHOUT account.uuid still
-// produces a valid candidate with no upstream id and no secret leakage. Both paths run in
-// one test so a regression in either is visible: this is self-proving correct-vs-degraded.
+// TestExchangeCapturesUpstreamAccountIdentity 证明：当响应携带 account.uuid 时，
+// token-exchange 路径会把上游账户身份（account.uuid + email）写入 candidate 的 RedactedContext；
+// 并且证明：当响应不含 account.uuid 时，仍会产出一个有效的 candidate，既无上游 id 也无密钥泄露。
+// 两条路径在同一个 test 中运行，因此任一路径出现回归都能被看到：这是自证的「正确 vs 降级」对照。
 func TestExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 	t.Run("with_account_uuid", func(t *testing.T) {
 		candidate := runAnthropicExchange(t, map[string]any{
@@ -27,8 +26,8 @@ func TestExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 		})
 		gotID, _ := candidate.RedactedContext[credentialacq.RedactedKeyUpstreamAccountID].(string)
 		if gotID != "acc-uuid-1" {
-			// MUTATION: drop the new Account.UUID json field (or stop calling
-			// ExtractAnthropic) and this id is empty -> red.
+			// MUTATION: 删掉新增的 Account.UUID json 字段（或不再调用
+			// ExtractAnthropic），此 id 就会为空 -> 变红。
 			t.Fatalf("upstream_account_id = %q, want acc-uuid-1", gotID)
 		}
 		if candidate.ExternalAccountID != "acc-uuid-1" {
@@ -52,7 +51,7 @@ func TestExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 			"expires_in":    3600,
 			"account":       map[string]any{"email_address": "owner2@example.test"},
 		})
-		// Degraded path: still a valid candidate, but no upstream id is fabricated.
+		// 降级路径：仍是有效的 candidate，但不会凭空捏造上游 id。
 		if candidate.ExternalAccountID != "" {
 			t.Fatalf("ExternalAccountID = %q, want empty when account.uuid absent", candidate.ExternalAccountID)
 		}
@@ -66,8 +65,8 @@ func TestExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 	})
 }
 
-// runAnthropicExchange drives StartOAuthFlow + CompleteOAuthCallback against a stubbed
-// token endpoint returning respBody, and returns the resulting credential candidate.
+// runAnthropicExchange 针对一个返回 respBody 的桩 token endpoint 驱动
+// StartOAuthFlow + CompleteOAuthCallback，并返回最终得到的 credential candidate。
 func runAnthropicExchange(t *testing.T, respBody map[string]any) credentialacq.CredentialCandidate {
 	t.Helper()
 	now := time.Date(2026, 5, 24, 11, 0, 0, 0, time.UTC)
@@ -100,8 +99,8 @@ func runAnthropicExchange(t *testing.T, respBody map[string]any) credentialacq.C
 	return candidate
 }
 
-// assertNoSecretLeak proves the identity metadata in RedactedContext carries no secret
-// marker and no raw token substring — only the extracted non-secret id/email.
+// assertNoSecretLeak 证明 RedactedContext 中的身份元数据既不含密钥标记，
+// 也不含任何原始 token 子串 —— 只有提取出来的非密钥 id/email。
 func assertNoSecretLeak(t *testing.T, candidate credentialacq.CredentialCandidate) {
 	t.Helper()
 	raw, err := json.Marshal(candidate.RedactedContext)
@@ -112,9 +111,8 @@ func assertNoSecretLeak(t *testing.T, candidate credentialacq.CredentialCandidat
 	if strings.Contains(s, "[REDACTED]") {
 		t.Fatalf("redacted context tripped secret scrubber: %s", s)
 	}
-	// The raw access/refresh tokens and the id_token JWT must never appear in the
-	// non-secret metadata context. These fixtures use distinctive token values that do
-	// not collide with the legitimate account uuid / email being asserted elsewhere.
+	// 原始的 access/refresh token 以及 id_token JWT 绝不应出现在非密钥的元数据 context 中。
+	// 这些 fixture 使用了有辨识度的 token 取值，不会与别处断言的合法 account uuid / email 冲突。
 	for _, secret := range []string{"access-1", "access-2", "refresh-1", "refresh-2", `"id_token"`} {
 		if strings.Contains(s, secret) {
 			t.Fatalf("redacted context leaked secret substring %q: %s", secret, s)

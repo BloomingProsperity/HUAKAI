@@ -13,8 +13,8 @@ func TestDBPoolConfigMapsOperatorOverrides(t *testing.T) {
 		DBMaxConnLifetime: 45 * time.Minute,
 		DBMaxConnIdleTime: 2 * time.Minute,
 	}
-	// Guards the wiring: operator pool overrides must reach db.PoolConfig.
-	// Mutation (revert dbPoolConfig to only set DSN) makes these fail.
+	// 守护接线：运维设置的连接池覆盖值必须传达到 db.PoolConfig。
+	// 变异（把 dbPoolConfig 退回成只设置 DSN）会让这些断言失败。
 	got := dbPoolConfig(cfg)
 	if got.DSN != cfg.DatabaseURL {
 		t.Fatalf("DSN = %q, want %q", got.DSN, cfg.DatabaseURL)
@@ -35,8 +35,8 @@ func TestDBPoolConfigMapsOperatorOverrides(t *testing.T) {
 
 func TestDBPoolConfigZeroOverridesPreserveDefaults(t *testing.T) {
 	cfg := &Config{DatabaseURL: "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable"}
-	// Default-preserving: with no overrides only DSN is set; the db package then
-	// applies its built-in defaults (16/2/30m/5m).
+	// 保留默认值：没有任何覆盖时只设置 DSN；随后 db 包会
+	// 应用其内置默认值（16/2/30m/5m）。
 	got := dbPoolConfig(cfg)
 	if got.MaxConns != 0 || got.MinConns != 0 || got.MaxConnLifetime != 0 || got.MaxConnIdleTime != 0 {
 		t.Fatalf("expected zero overrides, got %d/%d/%s/%s", got.MaxConns, got.MinConns, got.MaxConnLifetime, got.MaxConnIdleTime)

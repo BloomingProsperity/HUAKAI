@@ -46,43 +46,43 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	router := chi.NewRouter()
 	privacyRedactor := privacy.DefaultRedactor()
 	privacyLogger := privacy.NewStdoutSystemLogger(privacyRedactor)
-	// Security headers go FIRST so even early-exit responses (e.g. the
-	// RequestIDLengthLimiter 400) carry the browser security-header contract.
+	// 安全响应头放在最前,这样即便是提前退出的响应(例如
+	// RequestIDLengthLimiter 返回的 400)也携带浏览器安全响应头契约。
 	router.Use(securityHeaders)
 	router.Use(middleware.RequestID)
 	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
 	router.Use(accesslog.Middleware(logger))
-	// Explicit allowlist CORS, early (preflight answered before auth).
-	// Allowlist via HUAKAI_CORS_ALLOWED_ORIGINS (comma-separated); empty = deny.
-	// It runs before the limiter so a 429 to an allowlisted browser origin
-	// still carries Access-Control-Allow-Origin/Vary (the frontend sees the JSON
-	// 429 + Retry-After, not an opaque CORS failure), and an allowlisted preflight
-	// is answered 204 before the limiter even runs. corsMiddleware reads only
-	// Origin/Method, never RemoteAddr, so this is independent of RealIP ordering.
+	// 显式白名单 CORS,尽早执行(预检在 auth 之前应答)。
+	// 白名单经由 HUAKAI_CORS_ALLOWED_ORIGINS(逗号分隔);为空 = 拒绝。
+	// 它运行在限流器之前,这样对白名单内浏览器源返回的 429
+	// 仍携带 Access-Control-Allow-Origin/Vary(前端看到的是 JSON
+	// 429 + Retry-After,而非不透明的 CORS 失败),并且白名单内的预检
+	// 在限流器尚未运行前就以 204 应答。corsMiddleware 只读
+	// Origin/Method,从不读 RemoteAddr,故与 RealIP 的顺序无关。
 	router.Use(corsMiddleware(parseAllowedOrigins(os.Getenv("HUAKAI_CORS_ALLOWED_ORIGINS"))))
-	// Always-on per-IP inbound rate limit. It runs BEFORE middleware.RealIP
-	// on purpose: chi's RealIP overwrites RemoteAddr from client-supplied
-	// True-Client-IP/X-Real-IP/X-Forwarded-For with NO trusted-proxy check, so a
-	// limiter keyed off the post-RealIP RemoteAddr would let an attacker mint fresh
-	// per-IP buckets by rotating those headers. Running before RealIP lets the
-	// gateway's fail-closed trusted-proxy resolver derive the key from the genuine
-	// socket peer (honoring forwarded hops only when the peer is an allowlisted
-	// proxy). Floods (including the expensive argon2 auth path) are shed with
-	// 429 before any route handler / quota / provider-account use. Additive: it does
-	// not change the securityHeaders/corsMiddleware behavior, only slots in
-	// after CORS. HUAKAI_RL_DISABLE turns it off.
+	// 始终开启的按 IP 入站限流。它刻意运行在 middleware.RealIP 之前:
+	// chi 的 RealIP 会用客户端提供的
+	// True-Client-IP/X-Real-IP/X-Forwarded-For 覆盖 RemoteAddr,且不做可信代理校验,
+	// 所以一个以 RealIP 处理之后的 RemoteAddr 为键的限流器,会让攻击者通过轮换这些请求头
+	// 凭空铸造出新的按 IP 桶。运行在 RealIP 之前可让
+	// 网关的 fail-closed 可信代理解析器从真实的
+	// socket 对端推导出键(仅在对端是白名单内代理时才采信转发跳数)。
+	// 洪泛(包括开销很大的 argon2 auth 路径)会在任何路由 handler / 配额 / 上游账号
+	// 使用之前以 429 卸掉。增量式:它不改变
+	// securityHeaders/corsMiddleware 的行为,只是嵌在
+	// CORS 之后。HUAKAI_RL_DISABLE 可将其关闭。
 	if !rateLimitDisabled() {
 		router.Use(newRateLimiter(d.clientIPResolver, logger).middleware)
 	}
-	// /internal/* (Hermes runner bootstrap/keys/refresh, the read-only
-	// tool-execute callback, the internal OpenAI egress) is the internal control
-	// plane. Gate it to trusted source networks (loopback + RFC1918 private +
-	// link-local by default; add CIDRs via HUAKAI_HERMES_INTERNAL_EXTRA_ALLOW_CIDRS)
-	// so it cannot be reached from the public internet on this shared listener —
-	// the app-layer internal_token is no longer the sole barrier (audit B2). MUST
-	// run BEFORE RealIP (same X-Forwarded-For spoof reason as the rate limiter): it
-	// judges the genuine socket peer, which a `X-Forwarded-For: 127.0.0.1` cannot
-	// forge.
+	// /internal/*(Hermes runner 引导/密钥/刷新、只读的
+	// tool-execute 回调、内部 OpenAI 出口)是内部控制
+	// 面。把它限制到可信来源网络(默认 loopback + RFC1918 私网 +
+	// link-local;通过 HUAKAI_HERMES_INTERNAL_EXTRA_ALLOW_CIDRS 追加 CIDR),
+	// 使其无法从公网经由这个共享监听器被访问——
+	// 应用层的 internal_token 不再是唯一屏障(审计 B2)。必须
+	// 运行在 RealIP 之前(与限流器同样的 X-Forwarded-For 伪造原因):它
+	// 判定真实的 socket 对端,这是 `X-Forwarded-For: 127.0.0.1` 无法
+	// 伪造的。
 	router.Use(internalSourceGate(parseInternalAllowCIDRs(os.Getenv(internalAllowCIDRsEnv)), logger))
 	router.Use(middleware.RealIP)
 	router.Use(privacy.Recoverer(privacyLogger))
@@ -124,19 +124,19 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 		router.Handle("/metrics", adminGate(adminResolver, d.metricsHandler))
 	}
 	mountRoutes(router, d, logger)
-	// Serve the embedded single-page frontend for any path that matched no API
-	// route. Enabled only in builds compiled with `-tags embed` (a real dist);
-	// the default build returns a nil handler here, leaving chi's plain 404.
+	// 对任何未命中 API 路由的路径,提供内嵌的单页前端。
+	// 仅在以 `-tags embed` 编译的构建(包含真实 dist)中启用;
+	// 默认构建在此返回 nil handler,保留 chi 的原始 404。
 	if spa := webui.Handler(webui.Dist()); spa != nil {
 		router.NotFound(spa.ServeHTTP)
 	}
 	return router
 }
 
-// adminIdentityResolver resolves an admin credential to its identity (or error).
-// adminGate depends on this interface — not the concrete *admin.AdminResolver — so
-// the gate's RBAC is unit-testable with injected identities. *admin.AdminResolver
-// satisfies it.
+// adminIdentityResolver 把一个 admin 凭据解析为其身份(或错误)。
+// adminGate 依赖这个接口——而非具体的 *admin.AdminResolver——这样
+// gate 的 RBAC 可以用注入的身份做单元测试。*admin.AdminResolver
+// 满足该接口。
 type adminIdentityResolver interface {
 	Resolve(ctx context.Context, req *http.Request) (admin.AdminIdentity, error)
 }
@@ -191,8 +191,8 @@ func writeAdminGateError(w http.ResponseWriter, status int, code, message string
 	_, _ = w.Write(body)
 }
 
-// parseAllowedOrigins parses a comma-separated CORS allowlist (HUAKAI_CORS_ALLOWED_ORIGINS).
-// Empty => no cross-origin browser access is granted (default-deny).
+// parseAllowedOrigins 解析逗号分隔的 CORS 白名单(HUAKAI_CORS_ALLOWED_ORIGINS)。
+// 为空 => 不授予任何跨源浏览器访问(默认拒绝)。
 func parseAllowedOrigins(raw string) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, o := range strings.Split(raw, ",") {
@@ -203,18 +203,18 @@ func parseAllowedOrigins(raw string) map[string]struct{} {
 	return out
 }
 
-// securityHeaders installs the browser security-header contract on every response
-// The gateway is a JSON API behind browser-facing /v1/auth, /v1/sessions,
-// /v1/api-keys, /v1/admin routes that previously shipped zero security headers.
-// HSTS is only emitted when the edge is TLS (r.TLS or X-Forwarded-Proto=https) so
-// it is never wrongly asserted over plaintext.
+// securityHeaders 在每个响应上安装浏览器安全响应头契约。
+// 该网关是一个 JSON API,背后是面向浏览器的 /v1/auth、/v1/sessions、
+// /v1/api-keys、/v1/admin 路由,这些此前一个安全响应头都没有。
+// HSTS 仅在边缘为 TLS 时(r.TLS 或 X-Forwarded-Proto=https)才发出,
+// 因此绝不会在明文上被错误声明。
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
-		// API responses are JSON, never a document context: lock the page down hard.
+		// API 响应是 JSON,绝非文档上下文:把页面彻底锁死。
 		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
@@ -223,17 +223,17 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// corsMiddleware enforces an explicit, allowlist-based CORS policy. It echoes ONLY
-// an allowlisted Origin back (never "*"), so credentialed cross-origin requests are
-// scoped to vetted front-ends — the wildcard-with-credentials anti-pattern is
-// structurally impossible. A disallowed/absent Origin gets no CORS headers
-// (browser blocks). Preflight (OPTIONS) is answered 204 here, before auth.
+// corsMiddleware 强制执行一套显式的、基于白名单的 CORS 策略。它【只】回显
+// 白名单内的 Origin(绝不回 "*"),因此携带凭据的跨源请求被
+// 限定到经过审核的前端——「通配符 + 携带凭据」这一反模式在
+// 结构上不可能出现。被拒绝/缺失的 Origin 拿不到任何 CORS 响应头
+// (浏览器拦截)。预检(OPTIONS)在此处以 204 应答,先于 auth。
 func corsMiddleware(allowed map[string]struct{}) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Vary: Origin on EVERY response this middleware touches — a shared
-			// cache must never reuse a no-origin/disallowed response (without CORS
-			// headers) for a later allowlisted browser request.
+			// 在此中间件经手的【每个】响应上加 Vary: Origin——共享
+			// 缓存绝不能把一个无源/被拒绝的响应(不含 CORS
+			// 响应头)复用给后续白名单内浏览器请求。
 			w.Header().Add("Vary", "Origin")
 			origin := r.Header.Get("Origin")
 			if origin != "" {
@@ -253,7 +253,7 @@ func corsMiddleware(allowed map[string]struct{}) func(http.Handler) http.Handler
 						return
 					}
 				} else if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-					// Disallowed origin preflight: deny with no CORS headers.
+					// 被拒绝来源的预检:不带任何 CORS 响应头直接拒绝。
 					w.WriteHeader(http.StatusForbidden)
 					return
 				}

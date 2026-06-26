@@ -37,7 +37,7 @@ func TestProviderAccountHealthUnauthorized(t *testing.T) {
 
 func TestProviderAccountHealthTenantScopeIgnoresQueryTenantID(t *testing.T) {
 	// 判别防串租户:query tenant_id=8 必须被忽略,查询只能使用 admin identity 的 tenant 7。
-	// Mutation:从 query/body 收 tenant_id 或漏 tenant predicate 时会命中 tenant 8 row 并返回 200。
+	// 变异:从 query/body 收 tenant_id 或漏 tenant predicate 时会命中 tenant 8 row 并返回 200。
 	store := newProviderAccountHealthStoreStub()
 	store.put(providerAccountHealthRow(8, 200))
 
@@ -113,7 +113,7 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 
 func TestProviderAccountHealthJoinsLatestRefreshMetadata(t *testing.T) {
 	// 判别 refresh join:health 来自 provider_accounts,refresh outcome/failure 来自最新凭据。
-	// Mutation:漏掉 account_credentials join 或选旧 credential_version,这些断言会红。
+	// 变异:漏掉 account_credentials join 或选旧 credential_version,这些断言会红。
 	store := newProviderAccountHealthStoreStub()
 	row := providerAccountHealthRow(7, 101)
 	row.HealthState = "throttled"
@@ -292,7 +292,7 @@ func providerAccountHealthKey(tenantID, accountID int64) string {
 }
 
 func TestProviderAccountHealthRecentRequestsPopulated(t *testing.T) {
-	// Pre-populate ring with 3 success + 1 failure for account 99.
+	// 预先为账号 99 在 ring 中填入 3 次成功 + 1 次失败。
 	ring := recentreq.NewRing()
 	ring.Record(99, true)
 	ring.Record(99, true)
@@ -340,14 +340,14 @@ func TestProviderAccountHealthRecentRequestsPopulated(t *testing.T) {
 }
 
 func TestProviderAccountHealthRecentRequestsNilRingOmitted(t *testing.T) {
-	// nil ring -> recent_requests absent from JSON (omitempty).
+	// ring 为 nil -> recent_requests 在 JSON 中缺省(omitempty)。
 	store := newProviderAccountHealthStoreStub()
 	store.put(providerAccountHealthRow(7, 99))
 
 	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
 		Auth:  providerAccountHealthAuthStub{ident: tenantOperator(7)},
 		Store: store,
-		// RecentReqRing deliberately nil
+		// RecentReqRing 故意置为 nil
 	}, "/admin/v1/provider-accounts/99/health")
 
 	if rec.Code != http.StatusOK {
@@ -359,9 +359,9 @@ func TestProviderAccountHealthRecentRequestsNilRingOmitted(t *testing.T) {
 }
 
 func TestProviderAccountHealthRecentRequestsEmptyRingOmitted(t *testing.T) {
-	// Ring with no data for this account -> recent_requests absent.
+	// ring 中没有该账号的数据 -> recent_requests 缺省。
 	ring := recentreq.NewRing()
-	// Record for a DIFFERENT account
+	// 为另一个不同的账号记录
 	ring.Record(9999, true)
 
 	store := newProviderAccountHealthStoreStub()
@@ -381,8 +381,8 @@ func TestProviderAccountHealthRecentRequestsEmptyRingOmitted(t *testing.T) {
 	}
 }
 
-// invokeProviderAccountHealthWithRing is like invokeProviderAccountHealth but
-// mounts at the real path pattern so the handler receives the {id} URL param.
+// invokeProviderAccountHealthWithRing 与 invokeProviderAccountHealth 类似,但
+// 挂载在真实的路径模式上,使 handler 能够接收到 {id} URL 参数。
 func invokeProviderAccountHealthWithRing(t *testing.T, deps ProviderAccountHealthDeps, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()

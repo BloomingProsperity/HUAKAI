@@ -5,28 +5,26 @@ import (
 	"time"
 )
 
-// IneffectiveRefreshBackoff is the throttle applied when a refresh "succeeds"
-// but the resulting token is still immediately due for refresh (ineffective), or
-// when no refresh was required. This prevents tight refresh storms against the
-// upstream provider.
+// IneffectiveRefreshBackoff 是当一次 refresh "成功" 但产出的 token 仍立即到期需要再次
+// refresh(无效刷新),或当本不需要 refresh 时,所施加的节流时长。它防止对上游 provider
+// 形成密集的 refresh 风暴。
 const IneffectiveRefreshBackoff = 30 * time.Second
 
-// ineffectiveRefreshNextAttempt returns the next_attempt_at value to persist
-// after a refresh success. If the freshly-computed refreshBeforeAt is already
-// <= now the refresh was ineffective (upstream returned a near-stale token), so
-// we throttle the next attempt. Otherwise the normal value (normalNext) is
-// returned unchanged — this is the DEFAULT/SAFE path and MUST NOT be altered.
+// ineffectiveRefreshNextAttempt 返回一次 refresh 成功后要持久化的 next_attempt_at 值。
+// 若刚计算出的 refreshBeforeAt 已 <= now,说明本次 refresh 是无效的(上游返回了一个
+// 接近过期的 token),因此我们对下一次尝试做节流。否则原样返回正常值(normalNext)
+// ——这是 DEFAULT/SAFE 路径,绝不可改动。
 func ineffectiveRefreshNextAttempt(refreshBeforeAt, now time.Time, normalNext time.Time) time.Time {
 	if !refreshBeforeAt.After(now) {
-		// Token is still immediately due for refresh: throttle.
+		// token 仍立即到期需要 refresh:节流。
 		return now.Add(IneffectiveRefreshBackoff)
 	}
 	return normalNext
 }
 
-// SetNextAttemptThrottle sets next_attempt_at on the credential record without
-// changing its state, failure_class, or failure_count. It is called on the
-// ErrNoRefreshRequired path to prevent a tight re-attempt loop.
+// SetNextAttemptThrottle 在不改变 credential 记录的 state、failure_class 或 failure_count
+// 的前提下设置其 next_attempt_at。它在 ErrNoRefreshRequired 路径上被调用,以防止密集的
+// 重试循环。
 func (s *Store) SetNextAttemptThrottle(ctx context.Context, rec CredentialRecord, nextAttemptAt time.Time) error {
 	if err := s.validateReady(); err != nil {
 		return err

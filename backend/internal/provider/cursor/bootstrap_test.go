@@ -9,9 +9,9 @@ import (
 )
 
 func TestCursorOAuthConfigRequiresOperatorVerifiedEndpoints(t *testing.T) {
-	// Regression killed: Cursor OAuth endpoints are not verified in current
-	// allowed references. Mutation self-check: hardcoding a guessed endpoint,
-	// client_id, or scope makes this test fail instead of silently shipping it.
+	// 消除的回归:当前允许的参考资料中并未核实过 Cursor OAuth endpoint。
+	// 变异自检:若硬编码一个臆测的 endpoint、client_id 或 scope,本测试会失败,
+	// 而不是让它静默上线。
 	cfg := DefaultOAuthConfig()
 
 	if cfg.AuthURL != "" || cfg.TokenURL != "" || cfg.ClientID != "" {
@@ -29,8 +29,8 @@ func TestCursorOAuthConfigRequiresOperatorVerifiedEndpoints(t *testing.T) {
 }
 
 func TestCursorOAuthConfigRejectsMissingEachOperatorField(t *testing.T) {
-	// Mutation guard (CLAUDE.md #14): if ValidateOAuthConfig stops checking any
-	// one of auth_url / token_url / client_id / redirect_uri, that subtest goes red.
+	// 变异守卫(CLAUDE.md #14):一旦 ValidateOAuthConfig 不再检查
+	// auth_url / token_url / client_id / redirect_uri 中的任意一个,对应子测试就会变红。
 	fullValid := credentialacq.OAuthClientConfig{
 		AuthURL:     "https://cursor-oauth.example.test/authorize",
 		TokenURL:    "https://cursor-oauth.example.test/token",
@@ -62,8 +62,8 @@ func TestCursorOAuthConfigRejectsMissingEachOperatorField(t *testing.T) {
 }
 
 func TestCursorOAuthAuthorizeURLUsesConfiguredPKCES256(t *testing.T) {
-	// Regression killed: configured Cursor OAuth values must flow into the
-	// standard PKCE authorize URL without relying on unverified defaults.
+	// 消除的回归:已配置的 Cursor OAuth 值必须流入标准 PKCE authorize URL,
+	// 而不依赖任何未经核实的默认值。
 	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
 		AuthURL:     "https://cursor-oauth.example.test/authorize",
 		TokenURL:    "https://cursor-oauth.example.test/token",

@@ -16,8 +16,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
-// openCredentialAcqTestPool opens the local dev Postgres for integration_pg-style tests; it skips when
-// HUAKAI_DATABASE_URL is unset (same env-gated pattern as the credentialworker pg tests).
+// openCredentialAcqTestPool 为 integration_pg 风格的测试打开本地 dev Postgres;当
+// HUAKAI_DATABASE_URL 未设置时跳过(与 credentialworker pg 测试相同的 env 门控模式)。
 func openCredentialAcqTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")
@@ -32,9 +32,9 @@ func openCredentialAcqTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool 
 	return p
 }
 
-// seedCredentialAcqProviderAccount seeds the tenant -> pool_group -> channel -> provider ->
-// provider_account FK chain that credential_acquisition_flow_sessions requires, returning
-// (tenantID, providerAccountID) with a cleanup that unwinds the chain plus any sessions created.
+// seedCredentialAcqProviderAccount 播种 credential_acquisition_flow_sessions 所需的
+// tenant -> pool_group -> channel -> provider -> provider_account FK 链,返回
+// (tenantID, providerAccountID),并注册 cleanup 回收整条链以及创建的所有 session。
 func seedCredentialAcqProviderAccount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string) (int64, int64) {
 	t.Helper()
 	var tenantID int64
@@ -105,16 +105,16 @@ func seedCredentialAcqAccountCredential(t *testing.T, ctx context.Context, pool 
 	return credentialID
 }
 
-// TestCreateRejectsCrossTenantProviderAccountPG guards against real Postgres:
-// credential_acquisition_flow_sessions must enforce that its tenant_id matches the
-// referenced Provider Account's tenant. The broken schema used only
-// provider_account_id REFERENCES provider_accounts(id), so tenant A could create a
-// flow row pointing at tenant B's account; finalization checks were too late to
-// protect the flow state itself.
+// TestCreateRejectsCrossTenantProviderAccountPG 针对真实 Postgres 做守护:
+// credential_acquisition_flow_sessions 必须强制其 tenant_id 与所引用
+// Provider Account 的 tenant 一致。出错的 schema 只用了
+// provider_account_id REFERENCES provider_accounts(id),于是 tenant A 能创建一条
+// 指向 tenant B 账号的 flow 行;最终化检查为时已晚,无法
+// 保护 flow 状态本身。
 //
-// Mutation check: replace the composite FK with the old single-column FK and the
-// cross-tenant insert succeeds (err==nil) -> red. Control: tenant B with tenant
-// B's account still creates a normal flow.
+// 变异检查:把复合 FK 换回旧的单列 FK,跨租户
+// 插入就会成功(err==nil)→ 变红。对照:tenant B 用 tenant
+// B 自己的账号仍能创建一个正常的 flow。
 func TestCreateRejectsCrossTenantProviderAccountPG(t *testing.T) {
 	ctx := context.Background()
 	pool := openCredentialAcqTestPool(t, ctx)
@@ -169,20 +169,20 @@ func TestCreateRejectsCrossTenantProviderAccountPG(t *testing.T) {
 	}
 }
 
-// TestBeginFinalizeCallbackOAuthGatePG guards against real Postgres: it exercises the
-// actual BeginFinalize SQL predicate
+// TestBeginFinalizeCallbackOAuthGatePG 针对真实 Postgres 做守护:它驱动
+// 真正的 BeginFinalize SQL predicate
 //
 //	AND (flow_kind <> 'oauth' OR auth_type IN ('device_code', 'sso') OR status = 'validated')
 //
-// which the fake test double cannot prove (the fake reimplements the rule in Go, so it would stay green
-// even if the SQL clause were deleted). A callback-style PKCE OAuth flow still at status=started must be
-// excluded by the UPDATE and fall through to ErrOAuthRequiresCallback — otherwise a started OAuth flow
-// could be finalized with a hand-written credentials body, skipping callback/state/exchange.
+// 这是 fake test double 无法证明的(fake 在 Go 里重实现了该规则,因此即便 SQL 子句被删
+// 它也会保持绿色)。一个仍处于 status=started 的 callback 式 PKCE OAuth flow 必须
+// 被 UPDATE 排除并穿透到 ErrOAuthRequiresCallback —— 否则一个 started 的 OAuth flow
+// 就能用手写的 credentials 体来 finalize,跳过 callback/state/exchange。
 //
-// Mutation check: remove the `AND (flow_kind <> 'oauth' ...)` line from updateProviderAccountHealth's
-// sibling BeginFinalize SQL in session_store.go and case (a) finalizes (err==nil) → red. Discriminating
-// controls: (b) a validated callback flow finalizes; (c) a device_code flow at waiting_for_user is
-// EXEMPT (auth_type=device_code) and finalizes — proving the gate is precise, not a blanket OAuth block.
+// 变异检查:从 session_store.go 中 BeginFinalize 的 SQL 里删除 `AND (flow_kind <> 'oauth' ...)`
+// 这一行,情形 (a) 就会 finalize(err==nil)→ 变红。区分性
+// 对照:(b) 已 validated 的 callback flow 能 finalize;(c) 处于 waiting_for_user 的 device_code flow
+// 是豁免的(auth_type=device_code)也能 finalize —— 证明此闸门是精确的,而非对 OAuth 一刀切阻断。
 func TestBeginFinalizeCallbackOAuthGatePG(t *testing.T) {
 	ctx := context.Background()
 	pool := openCredentialAcqTestPool(t, ctx)
@@ -218,42 +218,42 @@ func TestBeginFinalizeCallbackOAuthGatePG(t *testing.T) {
 		return id
 	}
 
-	// (a) callback PKCE OAuth (auth_type defaults to 'pkce') still at started → real SQL excludes it.
+	// (a) callback PKCE OAuth(auth_type 默认为 'pkce')仍处于 started → 真实 SQL 将其排除。
 	a := mk("11111111-1111-1111-1111-111111111111", StatusStarted, false)
 	if _, err := store.BeginFinalize(ctx, a); !errors.Is(err, ErrOAuthRequiresCallback) {
 		t.Fatalf("started PKCE OAuth: err=%v, want ErrOAuthRequiresCallback", err)
 	}
-	// (b) callback OAuth advanced to validated → finalize proceeds.
+	// (b) callback OAuth 推进到 validated → finalize 可继续。
 	b := mk("22222222-2222-2222-2222-222222222222", StatusValidated, false)
 	if _, err := store.BeginFinalize(ctx, b); err != nil {
 		t.Fatalf("validated callback OAuth must finalize: %v", err)
 	}
-	// (c) device_code flow at waiting_for_user → EXEMPT, finalize proceeds (no device-code regression).
+	// (c) 处于 waiting_for_user 的 device_code flow → 豁免,finalize 可继续(无 device-code 回归)。
 	c := mk("33333333-3333-3333-3333-333333333333", StatusWaitingForUser, true)
 	if _, err := store.BeginFinalize(ctx, c); err != nil {
 		t.Fatalf("device_code flow must be exempt from callback-validation gate: %v", err)
 	}
 }
 
-// TestUpdateStatusAndCancelRejectTerminalFlowsPG guards against real Postgres: it proves the two
-// CAS predicates the fake test double cannot prove (the fake reimplements the rule in Go via
-// isTerminalStatus, so it stays green even if the SQL were deleted):
+// TestUpdateStatusAndCancelRejectTerminalFlowsPG 针对真实 Postgres 做守护:它证明了
+// fake test double 无法证明的两个 CAS predicate(fake 通过
+// isTerminalStatus 在 Go 里重实现了该规则,因此即便 SQL 被删它也保持绿色):
 //
 //	UpdateStatus: WHERE ... AND status NOT IN ('finalized','cancelled','expired','failed')
 //
-// Cancel: WHERE... AND status NOT IN ('finalized','cancelled','expired','failed') // 'failed' added by
+// Cancel: WHERE... AND status NOT IN ('finalized','cancelled','expired','failed') // 后续补入了 'failed'
 //
-// Without these, the Get→write TOCTOU lets a concurrent Cancel/expire be overwritten — e.g.
-// CompleteOAuthCallback's UpdateStatus(callback_received/validated) would resurrect an already-cancelled
-// flow, and a failed flow could be flipped to cancelled.
+// 没有它们,Get→write 的 TOCTOU 会让并发的 Cancel/expire 被覆盖 —— 例如
+// CompleteOAuthCallback 的 UpdateStatus(callback_received/validated)会复活一个已 cancelled 的
+// flow,而一个 failed 的 flow 也可能被翻成 cancelled。
 //
-// Mutation checks:
-//   - delete `AND status NOT IN (...)` from UpdateStatus's SQL → case (b) updates the cancelled row
-//     (err==nil) → red.
-//   - drop `'failed'` from Cancel's NOT IN set → case (c) cancels the failed row (err==nil) → red.
+// 变异检查:
+//   - 从 UpdateStatus 的 SQL 中删除 `AND status NOT IN (...)` → 情形 (b) 会更新已 cancelled 的行
+//     (err==nil)→ 变红。
+//   - 从 Cancel 的 NOT IN 集合中去掉 `'failed'` → 情形 (c) 会 cancel 已 failed 的行(err==nil)→ 变红。
 //
-// Discriminating controls (a)/(d) prove the predicates are precise, not blanket: an active flow is still
-// cancellable, and a started flow can still be advanced.
+// 区分性对照 (a)/(d) 证明这些 predicate 是精确的而非一刀切:一个活跃 flow 仍然
+// 可被 cancel,一个 started flow 仍然可以被推进。
 func TestUpdateStatusAndCancelRejectTerminalFlowsPG(t *testing.T) {
 	ctx := context.Background()
 	pool := openCredentialAcqTestPool(t, ctx)
@@ -280,7 +280,7 @@ func TestUpdateStatusAndCancelRejectTerminalFlowsPG(t *testing.T) {
 		return id
 	}
 
-	// (a) control: an active (started) flow is cancellable.
+	// (a) 对照:一个活跃(started)的 flow 可被 cancel。
 	active := mk(StatusStarted)
 	cancelled, err := store.Cancel(ctx, active)
 	if err != nil {
@@ -289,12 +289,12 @@ func TestUpdateStatusAndCancelRejectTerminalFlowsPG(t *testing.T) {
 	if cancelled.Status != StatusCancelled {
 		t.Fatalf("Cancel(active).Status=%q want cancelled", cancelled.Status)
 	}
-	// (b) UpdateStatus must not resurrect the now-cancelled flow.
+	// (b) UpdateStatus 不得复活这个已 cancelled 的 flow。
 	if _, err := store.UpdateStatus(ctx, active, StatusCallbackReceived, "", ""); !errors.Is(err, ErrFlowReplay) {
 		t.Fatalf("UpdateStatus on cancelled flow: err=%v want ErrFlowReplay", err)
 	}
 
-	// (c) a failed flow must not be Cancel-able (terminal→terminal flip blocked; 'failed' added by).
+	// (c) 一个 failed 的 flow 不得被 Cancel(终态→终态的翻转被阻断;后续补入了 'failed')。
 	failedID := mk(StatusStarted)
 	if _, err := store.MarkFailed(ctx, failedID, "exchange_failed", "redacted"); err != nil {
 		t.Fatalf("MarkFailed of started flow: %v", err)
@@ -303,7 +303,7 @@ func TestUpdateStatusAndCancelRejectTerminalFlowsPG(t *testing.T) {
 		t.Fatalf("Cancel on failed flow: err=%v want ErrFlowReplay", err)
 	}
 
-	// (d) control: a started flow can still be advanced by UpdateStatus.
+	// (d) 对照:一个 started 的 flow 仍可被 UpdateStatus 推进。
 	advancing := mk(StatusStarted)
 	waiting, err := store.UpdateStatus(ctx, advancing, StatusWaitingForUser, "", "")
 	if err != nil {
@@ -314,16 +314,16 @@ func TestUpdateStatusAndCancelRejectTerminalFlowsPG(t *testing.T) {
 	}
 }
 
-// TestCancelFinalizeRaceGuardsPG guards the real SQL CAS predicates for a finalize/cancel race:
-// once BeginFinalize has consumed a flow, Cancel must not flip it to cancelled while the credential
-// is being created; and once a flow is already cancelled, MarkFinalized must not overwrite it with a
-// credential id. Normal finalize and same-credential idempotent finalize remain allowed.
+// TestCancelFinalizeRaceGuardsPG 守护 finalize/cancel 竞态下真实的 SQL CAS predicate:
+// 一旦 BeginFinalize 消费了一个 flow,在凭据创建过程中 Cancel 不得把它翻成 cancelled;
+// 一旦一个 flow 已 cancelled,MarkFinalized 不得用一个
+// credential id 覆盖它。正常 finalize 和同凭据的幂等 finalize 仍然允许。
 //
-// Mutation checks:
-//   - delete `AND consumed_at IS NULL` from Cancel SQL → case (a) cancels the consumed row, so the
-//     ErrFlowReplay assertion goes red.
-//   - delete `AND status NOT IN ('cancelled', 'expired', 'failed')` from MarkFinalized SQL → case
-//     (b) overwrites cancelled as finalized, so the ErrFlowReplay/status/result assertions go red.
+// 变异检查:
+//   - 从 Cancel SQL 删除 `AND consumed_at IS NULL` → 情形 (a) 会 cancel 已 consumed 的行,使
+//     ErrFlowReplay 断言变红。
+//   - 从 MarkFinalized SQL 删除 `AND status NOT IN ('cancelled', 'expired', 'failed')` → 情形
+//     (b) 会把 cancelled 覆盖成 finalized,使 ErrFlowReplay/status/result 断言变红。
 func TestCancelFinalizeRaceGuardsPG(t *testing.T) {
 	ctx := context.Background()
 	pool := openCredentialAcqTestPool(t, ctx)
@@ -347,7 +347,7 @@ func TestCancelFinalizeRaceGuardsPG(t *testing.T) {
 		return id
 	}
 
-	// (a) BeginFinalize consumes the flow; a concurrent Cancel must be rejected as replay.
+	// (a) BeginFinalize 消费该 flow;并发的 Cancel 必须被当作 replay 拒绝。
 	consumedID := mk("consumed_then_cancel")
 	if _, err := store.BeginFinalize(ctx, consumedID); err != nil {
 		t.Fatalf("BeginFinalize consumed_then_cancel: %v", err)
@@ -363,7 +363,7 @@ func TestCancelFinalizeRaceGuardsPG(t *testing.T) {
 		t.Fatalf("finalized consumed flow=(status=%q credential=%d), want finalized/%d", finalized.Status, finalized.ResultAccountCredentialID, credID)
 	}
 
-	// (b) A flow cancelled before finalize must not be overwritten as finalized.
+	// (b) 在 finalize 之前已 cancelled 的 flow 不得被覆盖成 finalized。
 	cancelledID := mk("cancelled_then_finalize")
 	cancelled, err := store.Cancel(ctx, cancelledID)
 	if err != nil {
@@ -383,7 +383,7 @@ func TestCancelFinalizeRaceGuardsPG(t *testing.T) {
 		t.Fatalf("cancelled flow after MarkFinalized=(status=%q credential=%d), want cancelled/0", reloaded.Status, reloaded.ResultAccountCredentialID)
 	}
 
-	// (c) Normal BeginFinalize -> MarkFinalized still succeeds; same-credential retry is accepted.
+	// (c) 正常的 BeginFinalize -> MarkFinalized 仍然成功;同凭据的重试被接受。
 	normalID := mk("normal_finalize")
 	if _, err := store.BeginFinalize(ctx, normalID); err != nil {
 		t.Fatalf("BeginFinalize normal: %v", err)

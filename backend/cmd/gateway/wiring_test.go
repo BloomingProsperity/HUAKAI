@@ -1,6 +1,5 @@
-// Package main wiring tests guard the two production-mode env-gated
-// helpers (`buildAuditLedger` + `loadAuditSigner`) against silent
-// regressions.
+// Package main 的 wiring 测试守护两个 production 模式下 env 门控的
+// helper(`buildAuditLedger` + `loadAuditSigner`),防止它们悄悄回归。
 //
 // 不连真实 DB：production 模式下的 postgres 后端只验证 wiring 是否进入
 // 持久化分支（构造期错误 / 不会 silently fallback 到 memory），不要求
@@ -45,7 +44,7 @@ import (
 )
 
 // ---------------------------------------------------------------
-// Audit-ref policy wiring: 2 case
+// Audit-ref policy 接线:2 个用例
 // ---------------------------------------------------------------
 
 func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
@@ -89,7 +88,7 @@ func TestWiring_CompletionEventBusConfigCarriesMaxStates(t *testing.T) {
 }
 
 func TestWiring_AlertingEvaluatorDefaultDisabled(t *testing.T) {
-	// MUTATION: start the alerting evaluator regardless of cfg.AlertingEvalEnabled; this observes an unexpected Run call.
+	// 变异:无视 cfg.AlertingEvalEnabled 直接启动 alerting evaluator;这会观察到一次预期之外的 Run 调用。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner := newWiringAlertingRunner()
@@ -108,7 +107,7 @@ func TestWiring_AlertingEvaluatorDefaultDisabled(t *testing.T) {
 }
 
 func TestWiring_AlertingEvaluatorEnabledStopsWithRuntime(t *testing.T) {
-	// MUTATION: start with context.Background instead of the runtime ctx; stop does not cancel the scheduler.
+	// 变异:用 context.Background 而非 runtime ctx 启动;stop 无法取消 scheduler。
 	runner := newWiringAlertingRunner()
 	stop := startAlertingEvaluator(context.Background(), &Config{AlertingEvalEnabled: true}, runner, zaptest.NewLogger(t))
 	if stop == nil {
@@ -131,7 +130,7 @@ func TestWiring_AlertingEvaluatorEnabledStopsWithRuntime(t *testing.T) {
 }
 
 func TestWiring_APIKeyExpiryWorkerDisabledDoesNotStart(t *testing.T) {
-	// MUTATION: start the expiry worker even when disabled; this observes an unexpected Start call.
+	// 变异:即便已禁用也启动 expiry worker;这会观察到一次预期之外的 Start 调用。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	worker := newWiringAPIKeyExpiryWorker()
@@ -150,7 +149,7 @@ func TestWiring_APIKeyExpiryWorkerDisabledDoesNotStart(t *testing.T) {
 }
 
 func TestWiring_APIKeyExpiryWorkerEnabledStopsWithRuntime(t *testing.T) {
-	// MUTATION: forget to save/return Stop; runtime shutdown cannot stop the expiry worker.
+	// 变异:忘记保存/返回 Stop;runtime 关停时无法停止 expiry worker。
 	worker := newWiringAPIKeyExpiryWorker()
 	stop := startAPIKeyExpiryWorker(context.Background(), &Config{APIKeyExpirySweepEnabled: true}, worker)
 	if stop == nil {
@@ -268,9 +267,8 @@ func (w *wiringAPIKeyExpiryWorker) Stop() {
 }
 
 func TestContentModerationRuntimeEnabledDefaultsOff(t *testing.T) {
-	// Mutation: defaulting the moderation request-path gate to enabled wires a
-	// DB-backed screener into chat and adds moderation lookup latency to every
-	// unconfigured tenant request.
+	// 变异:把 moderation 请求路径 gate 默认设为启用,会把一个依赖 DB 的
+	// screener 接进 chat,并给每个未配置租户的请求都加上 moderation 查表延迟。
 	t.Setenv(contentModerationEnabledEnv, "")
 	if contentModerationRuntimeEnabled() {
 		t.Fatal("content moderation runtime gate enabled by default; want opt-in")
@@ -325,8 +323,8 @@ func TestWiring_QuotaEnforceOnWrapsSettlerAndProvidesReserver(t *testing.T) {
 }
 
 func TestWiring_BudgetWrapsOutsideQuotaWhenEnabled(t *testing.T) {
-	// Mutation check: wiring budget inside quota, or replacing quota entirely,
-	// changes the returned reserver type and loses durable quota enforcement.
+	// 变异检查:把 budget 接进 quota 内部,或整体替换 quota,都会改变
+	// 返回的 reserver 类型并丢失持久化的配额强制。
 	plain := &wiringRecordingSettler{}
 
 	settler, reserver := buildQuotaEnforcement(&Config{
@@ -648,10 +646,9 @@ func TestWiring_InstallChatGPTThreadsAdminCallbackAllowlist(t *testing.T) {
 }
 
 func TestWiring_GeminiPublicCLIOAuthMissingSecretIsLazyFeatureGate(t *testing.T) {
-	// Regression killed: non-Gemini deployments must boot without the Gemini
-	// public CLI client secret, while Gemini public CLI OAuth remains disabled
-	// at the feature boundary. Mutation check: reverting either loader or
-	// installer to reject blank secrets makes this test red before StartOAuthFlow.
+	// 消灭的回归:非 Gemini 的部署必须在没有 Gemini public CLI client secret 时
+	// 也能启动,同时 Gemini public CLI OAuth 在特性边界上保持禁用。变异检查:
+	// 把 loader 或 installer 任一改回拒绝空 secret,都会让本测试在 StartOAuthFlow 之前变红。
 	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " ")
 	secret, err := loadGeminiPublicCLIOAuthClientSecretFromEnv()
 	if err != nil {
@@ -701,10 +698,9 @@ func (f wiringRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) 
 }
 
 func TestWiring_BuildVendorRefreshersSkipsBlankTokenURL(t *testing.T) {
-	// Regression killed: operator config with blank TokenURL must not install
-	// a zero-value vendor refresher into Scheduler.vendorRefreshers. Mutation
-	// self-check: force-adding cursor despite empty token_url makes this test
-	// see cursor in the binding list and turn red.
+	// 消灭的回归:TokenURL 为空的运维配置绝不能把一个零值的 vendor refresher
+	// 装进 Scheduler.vendorRefreshers。变异自检:无视空 token_url 强行加入 cursor,
+	// 会让本测试在 binding 列表里看到 cursor 而变红。
 	bindings := buildVendorRefresherBindings(runtimeconfig.VendorOAuthConfigs{
 		runtimeconfig.VendorOAuthCursor: {
 			ClientID: "cursor-client",
@@ -813,7 +809,7 @@ func TestWiring_BuildCompletionEventBusWarnsWhenAuditRefEscapeFlagActive(t *test
 }
 
 // ---------------------------------------------------------------
-// loadAuditSigner: 4 case
+// loadAuditSigner:4 个用例
 // ---------------------------------------------------------------
 
 // dev 模式 + 无 path → 自动生成 ephemeral key，附 warn 日志，调用方拿到可用 signer。
@@ -915,7 +911,7 @@ func TestWiring_LoadAuditSigner_LoadsBase64Path(t *testing.T) {
 }
 
 // ---------------------------------------------------------------
-// buildAuditLedger: 3 case
+// buildAuditLedger:3 个用例
 // ---------------------------------------------------------------
 
 // dev 模式 + 无 backend env → memory ledger（warn 日志），调用方拿到可用 Ledger。

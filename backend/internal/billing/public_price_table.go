@@ -14,9 +14,8 @@ import (
 
 var publicPriceMicroDivisor = decimal.NewFromInt(1_000_000)
 
-// PublicPrice is the customer-facing per-token USD price for model discovery.
-// It deliberately excludes internal cost, cache-tier, markup, and multiplier
-// details from the public shape.
+// PublicPrice 是用于模型发现的、面向客户的每 token 美元价格。
+// 它有意将内部成本、缓存档位、加价以及倍率等细节从公开结构中排除。
 type PublicPrice struct {
 	InputPerToken  decimal.Decimal
 	OutputPerToken decimal.Decimal

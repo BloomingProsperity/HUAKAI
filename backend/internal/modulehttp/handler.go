@@ -6,19 +6,18 @@ import (
 	"net/http"
 )
 
-// ModulesResponse is the JSON body of GET /admin/v1/modules.
+// ModulesResponse 是 GET /admin/v1/modules 的 JSON body。
 type ModulesResponse struct {
 	Modules []ModuleView `json:"modules"`
 }
 
-// NewModulesHandler returns the read-only modules handler. It is intentionally
-// behind adminGate (the caller's responsibility, mirroring the system-health
-// route) — the handler itself performs NO auth, so its tests stay focused on the
-// merge/filter behavior while the gating is asserted at the route layer.
+// NewModulesHandler 返回只读的 modules handler。它刻意置于 adminGate 之后
+//(由调用方负责,与 system-health 路由对称)—— handler 自身不做任何鉴权,
+// 因此其测试可专注于 merge/filter 行为,而门控则在路由层断言。
 //
-// Query param:
+// 查询参数:
 //
-//	?category=<cat>  filter to one category (e.g. money-path); empty = all.
+//	?category=<cat>  过滤到单个 category(例如 money-path);为空 = 全部。
 func NewModulesHandler(src Source) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if src == nil {

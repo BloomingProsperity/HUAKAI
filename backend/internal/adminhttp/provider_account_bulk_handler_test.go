@@ -15,7 +15,7 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// stubBulkAuth resolves a fixed AdminIdentity.
+// stubBulkAuth 返回一个固定的 AdminIdentity。
 type stubBulkAuth struct {
 	ident admin.AdminIdentity
 	err   error
@@ -25,18 +25,18 @@ func (s *stubBulkAuth) Resolve(_ context.Context, _ *http.Request) (admin.AdminI
 	return s.ident, s.err
 }
 
-// stubBulkStore is a discriminating stub: it only returns accounts when TagFilter matches "flaky".
+// stubBulkStore 是一个判别式 stub:只有当 TagFilter 等于 "flaky" 时才返回账号。
 type stubBulkStore struct {
-	// recorded calls to UpdateAdminProviderAccount
+	// 记录对 UpdateAdminProviderAccount 的调用
 	updateCalls []admindb.UpdateAdminProviderAccountParams
-	// count of InsertAdminAuditEvent calls
+	// InsertAdminAuditEvent 的调用次数
 	auditCount int
-	// simulate an update error on request
+	// 按需模拟一个更新错误
 	updateErr error
 }
 
 func (s *stubBulkStore) ListAdminProviderAccounts(_ context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
-	// DISCRIMINATING: only return results when TagFilter is exactly "flaky".
+	// 判别式:只有当 TagFilter 正好是 "flaky" 时才返回结果。
 	if arg.TagFilter != "flaky" {
 		return nil, nil
 	}
@@ -108,7 +108,7 @@ func TestProviderAccountBulk_HappyPath(t *testing.T) {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
 
-	// Verify response body
+	// 校验响应体
 	var resp providerAccountBulkResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
@@ -119,7 +119,7 @@ func TestProviderAccountBulk_HappyPath(t *testing.T) {
 	if len(resp.AffectedIDs) != 2 {
 		t.Errorf("len(affected_ids)=%d want 2", len(resp.AffectedIDs))
 	}
-	// Verify the IDs are the ones the stub returned
+	// 校验这些 ID 正是 stub 返回的那些
 	idSet := map[int64]bool{101: true, 202: true}
 	for _, id := range resp.AffectedIDs {
 		if !idSet[id] {
@@ -127,7 +127,7 @@ func TestProviderAccountBulk_HappyPath(t *testing.T) {
 		}
 	}
 
-	// Discriminating: exactly 2 UpdateAdminProviderAccount calls
+	// 判别式:恰好 2 次 UpdateAdminProviderAccount 调用
 	if len(store.updateCalls) != 2 {
 		t.Fatalf("UpdateAdminProviderAccount call count=%d want 2", len(store.updateCalls))
 	}
@@ -138,7 +138,7 @@ func TestProviderAccountBulk_HappyPath(t *testing.T) {
 		}
 	}
 
-	// Discriminating: exactly 2 audit events
+	// 判别式:恰好 2 条审计事件
 	if store.auditCount != 2 {
 		t.Errorf("InsertAdminAuditEvent call count=%d want 2", store.auditCount)
 	}
@@ -179,9 +179,9 @@ func TestProviderAccountBulk_NoFieldToSet_Returns400(t *testing.T) {
 	}
 }
 
-// TestProviderAccountBulk_TagFilterPassedThrough verifies the handler
-// actually passes TagFilter to ListAdminProviderAccounts. If the handler
-// ignores TagFilter, the stub returns 0 accounts and count==0 (should be 2).
+// TestProviderAccountBulk_TagFilterPassedThrough 校验 handler
+// 确实把 TagFilter 传给了 ListAdminProviderAccounts。如果 handler
+// 忽略 TagFilter,stub 会返回 0 个账号,count==0(应为 2)。
 func TestProviderAccountBulk_TagFilterPassedThrough(t *testing.T) {
 	const tenantID = int64(1)
 	store := &stubBulkStore{}
@@ -199,7 +199,7 @@ func TestProviderAccountBulk_TagFilterPassedThrough(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	// If TagFilter was not passed (empty), the stub returns 0 results.
+	// 如果 TagFilter 没有被传递(为空),stub 会返回 0 条结果。
 	if resp.Count != 2 {
 		t.Errorf("count=%d want 2: handler must pass TagFilter='flaky' to ListAdminProviderAccounts", resp.Count)
 	}

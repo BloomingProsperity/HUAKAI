@@ -64,8 +64,8 @@ func TestSettlerSettleDoesNotFinalizeQuotaWhenBillingFails(t *testing.T) {
 }
 
 func TestSettlerSettleIgnoresMissingQuotaReservationAfterFailOpen(t *testing.T) {
-	// Mutation check: propagating quota.ErrReservationNotFound from quota
-	// settle makes this return an error after billing succeeds.
+	// 变异检查:把 quota settle 抛出的 quota.ErrReservationNotFound 向上传播,
+	// 会让本函数在 billing 成功后仍返回错误。
 	inner := &recordingBillingSettler{}
 	finalizer := &recordingQuotaFinalizer{settleErr: quota.ErrReservationNotFound}
 	settler := NewSettler(inner, finalizer)

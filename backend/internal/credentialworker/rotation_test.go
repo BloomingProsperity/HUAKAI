@@ -61,9 +61,8 @@ func staticCand(credID int64) RotationCandidate {
 		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeAPIKey}
 }
 
-// Disabled (maxAge<=0) must not touch the store at all — opt-in, default off.
-// Mutation guard: if the maxAge<=0 short-circuit is removed, DueForRotation gets
-// called and gotLimit becomes non-zero → red.
+// 禁用时(maxAge<=0)绝不能触碰 store——opt-in,默认关闭。Mutation guard:若移除
+// maxAge<=0 的短路,DueForRotation 会被调用,gotLimit 变为非零 → 转红。
 func TestScanRotationDue_DisabledByDefault(t *testing.T) {
 	f := &fakeRotationStore{due: []RotationCandidate{oauthCand(1)}}
 	for _, maxAge := range []time.Duration{0, -time.Hour} {
@@ -155,8 +154,8 @@ func TestScanRotationDue_MixedBatchSplitsByRefreshability(t *testing.T) {
 	}
 }
 
-// A recovery error stops the scan and surfaces — a transient DB fault is not
-// swallowed, and the count reflects only what was actually processed.
+// 一个恢复错误会停止扫描并被暴露——一次瞬态 DB 故障不被吞掉,计数只反映实际
+// 已处理的数量。
 func TestScanRotationDue_StopsOnRecoverError(t *testing.T) {
 	f := &fakeRotationStore{
 		due:          []RotationCandidate{oauthCand(1), oauthCand(2), oauthCand(3)},
@@ -171,7 +170,7 @@ func TestScanRotationDue_StopsOnRecoverError(t *testing.T) {
 	}
 }
 
-// A DueForRotation error surfaces without processing anything.
+// 一个 DueForRotation 错误会被暴露,且不处理任何东西。
 func TestScanRotationDue_QueryErrorSurfaces(t *testing.T) {
 	f := &fakeRotationStore{dueErr: errors.New("db down")}
 	n, err := ScanRotationDue(context.Background(), f, nil, nil, time.Hour, rotNow, 50)
@@ -180,14 +179,14 @@ func TestScanRotationDue_QueryErrorSurfaces(t *testing.T) {
 	}
 }
 
-// nil store is a safe no-op (never panics).
+// nil store 是一次安全的 no-op(绝不 panic)。
 func TestScanRotationDue_NilStore(t *testing.T) {
 	if n, err := ScanRotationDue(context.Background(), nil, nil, nil, time.Hour, rotNow, 50); err != nil || n != 0 {
 		t.Fatalf("nil store must be a no-op, got n=%d err=%v", n, err)
 	}
 }
 
-// A non-positive limit is clamped to a safe default rather than fetching 0 rows.
+// 一个非正的 limit 会被钳到一个安全默认值,而不是抓取 0 行。
 func TestScanRotationDue_DefaultLimit(t *testing.T) {
 	f := &fakeRotationStore{}
 	ScanRotationDue(context.Background(), f, nil, nil, time.Hour, rotNow, 0)
@@ -196,8 +195,8 @@ func TestScanRotationDue_DefaultLimit(t *testing.T) {
 	}
 }
 
-// nil classifier falls back to DefaultRefreshClassifier: an OAuth candidate is
-// still recovered without the caller passing a classifier explicitly.
+// classifier 为 nil 时回退到 DefaultRefreshClassifier:即便调用方不显式传入
+// classifier,一个 OAuth 候选仍会被恢复。
 func TestScanRotationDue_NilClassifierDefaults(t *testing.T) {
 	f := &fakeRotationStore{due: []RotationCandidate{oauthCand(40)}}
 	if _, err := ScanRotationDue(context.Background(), f, nil, nil, time.Hour, rotNow, 50); err != nil {
@@ -208,8 +207,8 @@ func TestScanRotationDue_NilClassifierDefaults(t *testing.T) {
 	}
 }
 
-// DefaultRefreshClassifier discriminates: OAuth modes are refreshable, static
-// secret modes are not, and an unknown mode is conservatively non-refreshable.
+// DefaultRefreshClassifier 具有区分力:OAuth mode 可刷新,静态密钥 mode 不可刷新,
+// 未知 mode 保守地视为不可刷新。
 func TestDefaultRefreshClassifier_Discriminates(t *testing.T) {
 	classify := DefaultRefreshClassifier()
 	if !classify(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode) {

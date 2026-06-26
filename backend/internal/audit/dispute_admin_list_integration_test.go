@@ -14,8 +14,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
-// Mutation: drop tenant_id from ListDisputesForAdmin WHERE.
-// Tenant B's dispute would leak into tenant A's admin list.
+// 变异：从 ListDisputesForAdmin 的 WHERE 里去掉 tenant_id。
+// 这样 tenant B 的争议就会泄漏进 tenant A 的 admin 列表。
 func TestAdminListDisputes_TenantScoped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -47,8 +47,8 @@ func TestAdminListDisputes_TenantScoped(t *testing.T) {
 	}
 }
 
-// Mutation: ignore status_filter in ListDisputesForAdmin.
-// Open/rejected disputes would appear in a resolved-only page.
+// 变异：在 ListDisputesForAdmin 里忽略 status_filter。
+// 这样 open/rejected 的争议就会出现在只应展示 resolved 的页面里。
 func TestAdminListDisputes_StatusFilter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -71,8 +71,8 @@ func TestAdminListDisputes_StatusFilter(t *testing.T) {
 	}
 }
 
-// Mutation: ignore the store limit cap or offset_rows.
-// A limit above the cap would return all rows, or offset=1 would still return the newest row.
+// 变异：忽略 store 的 limit 上限或 offset_rows。
+// 超过上限的 limit 会返回全部行，或者 offset=1 仍然返回最新一行。
 func TestAdminListDisputes_Pagination(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -101,8 +101,8 @@ func TestAdminListDisputes_Pagination(t *testing.T) {
 	}
 }
 
-// Mutation: implement admin list by calling ListUserCostDisputes with one user's id.
-// The tenant admin would see only that user's dispute instead of all tenant users.
+// 变异：把 admin 列表实现成用某个 user 的 id 调用 ListUserCostDisputes。
+// 这样 tenant admin 就只能看到那一个用户的争议，而不是该 tenant 全部用户的。
 func TestAdminListDisputes_AdminListMustNotBeUserScoped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -1,16 +1,15 @@
 //go:build integration_pg
 
-// Phase L0 minimum integration tests for APIKeyResolver against
-// real PostgreSQL. Validates:
-//   - happy path (matching bearer → Identity)
-//   - wrong bearer → ErrUnauthorized (401)
-//   - revoked / expired key → ErrUnauthorized
-//   - cross-tenant probe (tenant A's bearer never resolves elsewhere)
-//   - prefix-collision: multiple candidates, bcrypt picks the right one
-//   - bcrypt fanout cap: SQL LIMIT 5 keeps DOS bounded
+// 针对真实 PostgreSQL 的 APIKeyResolver Phase L0 最小集成测试。校验:
+//   - happy path (匹配的 bearer → Identity)
+//   - 错误 bearer → ErrUnauthorized (401)
+//   - 已吊销/已过期的 key → ErrUnauthorized
+//   - 跨租户探测 (租户 A 的 bearer 绝不在别处解析成功)
+//   - 前缀碰撞: 多个候选, bcrypt 挑出正确的那个
+//   - bcrypt fanout 上限: SQL LIMIT 5 把 DOS 控制在可控范围
 //
-// All failure paths must return ErrUnauthorized (not a discriminated
-// error) per D10 (no enumeration leakage).
+// 按 D10 (无枚举泄露), 所有失败路径都必须返回 ErrUnauthorized
+// (而非区分性的错误)。
 
 package auth
 
@@ -291,7 +290,7 @@ func TestAPIKeyResolver_WrongBearer(t *testing.T) {
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
 
 	r := NewAPIKeyResolver(dbauth.New(pool))
-	// Same prefix but wrong suffix → bcrypt mismatch
+	// 前缀相同但后缀错误 → bcrypt 不匹配
 	bad := seed.plaintext[:APIKeyPrefixLen] + "_WRONG_SUFFIX_HERE"
 	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+bad))
 	if !errors.Is(err, ErrUnauthorized) {
@@ -327,10 +326,10 @@ func TestAPIKeyResolver_ExpiredKey(t *testing.T) {
 }
 
 func TestAPIKeyResolver_CrossTenantProbeRejected(t *testing.T) {
-	// Even though the bearer is valid for tenantA, the resolver does not
-	// expose a way to ask "does this bearer belong to tenantB?" — every
-	// failure mode collapses to ErrUnauthorized. We verify the resolver
-	// returns the bearer's actual tenant (not the probe target).
+	// 即便该 bearer 对 tenantA 有效, resolver 也不会暴露任何途径
+	// 去询问 "这个 bearer 是否属于 tenantB?" —— 每种失败模式
+	// 都坍缩为 ErrUnauthorized。我们校验 resolver 返回的是
+	// bearer 真实所属的租户 (而非探测的目标租户)。
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := openIntegrationPool(t, ctx)
@@ -348,9 +347,9 @@ func TestAPIKeyResolver_CrossTenantProbeRejected(t *testing.T) {
 }
 
 func TestAPIKeyResolver_PrefixCollisionPicksRightRow(t *testing.T) {
-	// Seed two api_keys with the same key_prefix (shared first 16 chars)
-	// but different suffix. Resolver must bcrypt-compare each candidate
-	// and return the matching one — not the first row.
+	// 种入两条 key_prefix 相同 (共享前 16 字符) 但后缀不同的
+	// api_keys。Resolver 必须对每个候选做 bcrypt 比对,
+	// 返回匹配的那条 —— 而非第一行。
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := openIntegrationPool(t, ctx)
@@ -376,9 +375,9 @@ func TestAPIKeyResolver_PrefixCollisionPicksRightRow(t *testing.T) {
 		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id=$1`, tenantID)
 	})
 
-	prefix := "hk_test_collide" // 15 chars + 1 -> 16
+	prefix := "hk_test_collide" // 15 字符 + 1 -> 16
 	prefix = prefix + "X"
-	// Seed two keys both starting with `prefix` but differing afterward.
+	// 种入两条都以 `prefix` 开头、但之后不同的 key。
 	plaintexts := []string{prefix + "AAAAAAAAAAA", prefix + "BBBBBBBBBBB"}
 	var ids []int64
 	for i, p := range plaintexts {
@@ -398,8 +397,8 @@ func TestAPIKeyResolver_PrefixCollisionPicksRightRow(t *testing.T) {
 	}
 
 	r := NewAPIKeyResolver(dbauth.New(pool))
-	// Resolve the SECOND plaintext — verify resolver returns the second
-	// row's id, not the first.
+	// 解析第二个明文 —— 校验 resolver 返回的是第二行的
+	// id, 而非第一行。
 	ident, err := r.Resolve(ctx, newRequest(t, "Bearer "+plaintexts[1]))
 	if err != nil {
 		t.Fatalf("Resolve collide: %v", err)
@@ -439,15 +438,15 @@ func TestAPIKeyResolver_NilQueriesReturnsMisconfigured(t *testing.T) {
 	}
 }
 
-// A disabled user with an active API key must NOT
-// authenticate. The resolver looks up users.status after bcrypt match.
+// 即便 API key 处于 active, 被禁用的 user 也绝不能
+// 通过鉴权。Resolver 在 bcrypt 匹配后查 users.status。
 func TestAPIKeyResolver_DisabledUserRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := openIntegrationPool(t, ctx)
-	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{}) // active key + active user
+	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{}) // active 的 key + active 的 user
 
-	// Flip user.status to 'disabled' AFTER seed.
+	// 种入后把 user.status 翻成 'disabled'。
 	if _, err := pool.Exec(ctx,
 		`UPDATE users SET status='disabled' WHERE id=$1`, seed.userID,
 	); err != nil {
@@ -461,8 +460,8 @@ func TestAPIKeyResolver_DisabledUserRejected(t *testing.T) {
 	}
 }
 
-// A disabled tenant must NOT authenticate even if
-// their user + API key are both active.
+// 即便 user + API key 都是 active, 被禁用的租户
+// 也绝不能通过鉴权。
 func TestAPIKeyResolver_DisabledTenantRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -482,9 +481,9 @@ func TestAPIKeyResolver_DisabledTenantRejected(t *testing.T) {
 	}
 }
 
-// A soft-deleted tenant must NOT authenticate.
-// Note: api_keys row would normally be cascade-handled in a real
-// admin flow; this test sets deleted_at=NOW() on tenants directly.
+// 被软删除的租户绝不能通过鉴权。
+// 注意: 在真实 admin 流程中 api_keys 行通常会被级联处理;
+// 本测试直接在 tenants 上设置 deleted_at=NOW()。
 func TestAPIKeyResolver_SoftDeletedTenantRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -504,8 +503,8 @@ func TestAPIKeyResolver_SoftDeletedTenantRejected(t *testing.T) {
 	}
 }
 
-// A soft-deleted user must NOT authenticate even if
-// their API key remains active.
+// 即便 API key 仍处于 active, 被软删除的 user
+// 也绝不能通过鉴权。
 func TestAPIKeyResolver_SoftDeletedUserRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

@@ -45,8 +45,8 @@ type RequestMetaSeed struct {
 	// IngressPath 必填；如 /v1/chat/completions、/v1/messages、/v1/responses。
 	IngressPath string
 
-	// Model 可选；path-scoped native protocols such as Gemini v1beta carry the
-	// model in the URL rather than the JSON body.
+	// Model 可选；path-scoped 的 native 协议（如 Gemini v1beta）把模型名带在
+	// URL 里而不是 JSON body 里。
 	Model string
 
 	// TenantID 可选；0 表示无租户上下文。

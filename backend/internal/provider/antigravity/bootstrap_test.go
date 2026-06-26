@@ -9,9 +9,8 @@ import (
 )
 
 func TestAntigravityOAuthConfigRequiresOperatorVerifiedPKCEConfig(t *testing.T) {
-	// Regression killed: Antigravity OAuth endpoints, client ID, and scopes
-	// are not public-contract inputs yet. Mutation self-check: hardcoding any
-	// default endpoint/client/scope turns this test red.
+	// 已堵回归:Antigravity 的 OAuth endpoint、client ID 和 scope 还不是公开
+	// 契约输入。变异自检:硬编码任意默认 endpoint/client/scope 都会让本测试变红。
 	cfg := DefaultOAuthConfig()
 
 	if cfg.AuthURL != "" || cfg.TokenURL != "" || cfg.ClientID != "" {
@@ -29,9 +28,8 @@ func TestAntigravityOAuthConfigRequiresOperatorVerifiedPKCEConfig(t *testing.T) 
 }
 
 func TestAntigravityOAuthAuthorizeURLUsesOperatorPKCEValues(t *testing.T) {
-	// Regression killed: PKCE authorize URLs must be built only from operator
-	// config. Mutation self-check: guessed Antigravity endpoints or scopes
-	// produce a different URL/query and fail here.
+	// 已堵回归:PKCE 授权 URL 必须仅由 operator 配置构建。变异自检:臆测的
+	// Antigravity endpoint 或 scope 会产出不同的 URL/query 并在此处失败。
 	override := credentialacq.OAuthClientConfig{
 		AuthURL:     "https://operator.antigravity.example.test/oauth/authorize",
 		TokenURL:    "https://operator.antigravity.example.test/oauth/token",
@@ -64,7 +62,7 @@ func TestAntigravityOAuthAuthorizeURLUsesOperatorPKCEValues(t *testing.T) {
 }
 
 func TestAntigravityOAuthConfigRejectsNonOperatorSource(t *testing.T) {
-	// Regression killed: source=operator_config is enforced, not cosmetic.
+	// 已堵回归:source=operator_config 是强制校验的,不是装饰性的。
 	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
 		AuthURL:     "https://operator.antigravity.example.test/oauth/authorize",
 		TokenURL:    "https://operator.antigravity.example.test/oauth/token",

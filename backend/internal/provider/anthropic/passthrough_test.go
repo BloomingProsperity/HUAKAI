@@ -196,9 +196,9 @@ func TestPassthroughAdapter_AcceptableCredentialTypes(t *testing.T) {
 	}
 }
 
-// Item #2 of the anti-ban parity program (Owner「都要·必须开着」). MUTATION: removing
-// the applyClaudeDeviceProfile call leaves these headers empty → the genuine Claude
-// Code client signature is absent → upstream can fingerprint us as not-the-real-client.
+// 反封禁持平方案的第 2 项(Owner「都要·必须开着」)。MUTATION:去掉
+// applyClaudeDeviceProfile 调用会让这些头为空 → 真实的 Claude Code 客户端签名
+// 缺失 → 上游可据此把我们识别成非真实客户端。
 func TestPassthroughAdapter_BuildRequest_ClaudeDeviceProfile(t *testing.T) {
 	a := &PassthroughAdapter{}
 	in := provider.BuildInput{

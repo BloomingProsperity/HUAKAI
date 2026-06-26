@@ -14,8 +14,8 @@ import (
 	dbaudit "github.com/BloomingProsperity/HUAKAI/internal/db/audit"
 )
 
-// Mutation: remove UNIQUE(tenant_id, user_id, request_id) from migration 0084.
-// This test must go red because duplicate user disputes would otherwise be accepted.
+// 变异：从迁移 0084 里移除 UNIQUE(tenant_id, user_id, request_id)。
+// 该测试必须变红，否则重复的用户争议就会被接受。
 func TestCostDisputesMigrationHasUserScopedUniqueConstraint(t *testing.T) {
 	raw, err := os.ReadFile("../../sql/migrations/0084_cost_disputes.up.sql")
 	if err != nil {
@@ -27,8 +27,8 @@ func TestCostDisputesMigrationHasUserScopedUniqueConstraint(t *testing.T) {
 	}
 }
 
-// Mutation: remove user_id from ListUserCostDisputes WHERE.
-// The list endpoint would then leak another user's disputes; this query text check catches that.
+// 变异：从 ListUserCostDisputes 的 WHERE 里移除 user_id。
+// 这样列表端点就会泄漏别的用户的争议；这个查询文本检查能抓到它。
 func TestCostDisputesQueryListScopesTenantAndUser(t *testing.T) {
 	raw, err := os.ReadFile("../../sql/queries/cost_disputes.sql")
 	if err != nil {
@@ -41,8 +41,8 @@ func TestCostDisputesQueryListScopesTenantAndUser(t *testing.T) {
 	}
 }
 
-// Mutation: remove tenant_id from ListDisputesForAdmin WHERE.
-// The admin endpoint would leak another tenant's disputes; this query text check catches that.
+// 变异：从 ListDisputesForAdmin 的 WHERE 里移除 tenant_id。
+// 这样 admin 端点就会泄漏别的 tenant 的争议；这个查询文本检查能抓到它。
 func TestCostDisputesQueryAdminListScopesTenantAndDoesNotScopeUser(t *testing.T) {
 	raw, err := os.ReadFile("../../sql/queries/cost_disputes.sql")
 	if err != nil {
@@ -66,8 +66,8 @@ func TestCostDisputesQueryAdminListScopesTenantAndDoesNotScopeUser(t *testing.T)
 	}
 }
 
-// Mutation: ignore status_filter, limit_rows, or offset_rows in ListDisputesForAdmin.
-// Admin operations need status narrowing and stable pagination over tenant-scoped rows.
+// 变异：在 ListDisputesForAdmin 里忽略 status_filter、limit_rows 或 offset_rows。
+// admin 操作需要按状态收窄，并在 tenant 范围内的行上做稳定分页。
 func TestCostDisputesQueryAdminListSupportsStatusAndPagination(t *testing.T) {
 	raw, err := os.ReadFile("../../sql/queries/cost_disputes.sql")
 	if err != nil {
@@ -89,8 +89,8 @@ func TestCostDisputesQueryAdminListSupportsStatusAndPagination(t *testing.T) {
 	}
 }
 
-// Mutation: drop the 23505 mapping in Store.CreateDispute.
-// The handler would return a backend 503 instead of duplicate 409.
+// 变异：去掉 Store.CreateDispute 里对 23505 的映射。
+// handler 就会返回后端 503，而不是重复对应的 409。
 func TestDisputeStoreMapsUserRequestDuplicate(t *testing.T) {
 	q := &fakeDisputeQueries{
 		createErr: &pgconn.PgError{
@@ -107,8 +107,8 @@ func TestDisputeStoreMapsUserRequestDuplicate(t *testing.T) {
 	}
 }
 
-// Mutation: pass zero/wrong user_id to sqlc ListUserCostDisputes.
-// The fake records the exact args so the test fails when auth-derived scope is lost.
+// 变异：给 sqlc 的 ListUserCostDisputes 传入零值/错误的 user_id。
+// fake 记录了精确的入参，因此当从鉴权派生的 scope 丢失时测试会失败。
 func TestDisputeStoreListUserDisputesPassesTenantAndUserScope(t *testing.T) {
 	q := &fakeDisputeQueries{listRows: []dbaudit.CostDispute{
 		dbCostDispute(1, 7, 42, "req-a", DisputeStatusOpen, ""),
@@ -126,8 +126,8 @@ func TestDisputeStoreListUserDisputesPassesTenantAndUserScope(t *testing.T) {
 	}
 }
 
-// Mutation: pass zero/wrong tenant_id, ignore status, or fail to cap limit before sqlc ListDisputesForAdmin.
-// The fake records exact args, so the test fails when admin scope/filter/pagination drift.
+// 变异：在调用 sqlc 的 ListDisputesForAdmin 前传入零值/错误的 tenant_id、忽略 status，或没有对 limit 做封顶。
+// fake 记录了精确的入参，因此当 admin 的 scope/filter/分页发生漂移时测试会失败。
 func TestDisputeStoreListForAdminPassesTenantStatusAndPagination(t *testing.T) {
 	q := &fakeDisputeQueries{adminListRows: []dbaudit.CostDispute{
 		dbCostDispute(1, 7, 42, "req-a", DisputeStatusResolved, ""),
@@ -149,8 +149,8 @@ func TestDisputeStoreListForAdminPassesTenantStatusAndPagination(t *testing.T) {
 	}
 }
 
-// Mutation: accept an unknown status before querying.
-// Invalid filters must fail closed instead of becoming a broad tenant list.
+// 变异：在查询前接受一个未知的 status。
+// 非法 filter 必须 fail closed，而不能退化成宽泛的 tenant 列表。
 func TestDisputeStoreListForAdminRejectsInvalidStatus(t *testing.T) {
 	q := &fakeDisputeQueries{}
 	store := NewCostDisputeStoreFromQueries(q)
@@ -163,8 +163,8 @@ func TestDisputeStoreListForAdminRejectsInvalidStatus(t *testing.T) {
 	}
 }
 
-// Mutation: make ResolveDispute keep the old status/operator note.
-// Operator recovery must visibly move state and persist the note.
+// 变异：让 ResolveDispute 保留旧的 status/operator note。
+// operator 的恢复操作必须明显地推进状态，并把备注持久化下来。
 func TestDisputeStoreResolveUpdatesStatusAndNote(t *testing.T) {
 	resolvedAt := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	q := &fakeDisputeQueries{resolveRow: dbCostDisputeResolved(9, 7, 42, "req-r", DisputeStatusResolved, "receipt checked", resolvedAt)}

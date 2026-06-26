@@ -97,9 +97,9 @@ func (s *Service) List(ctx context.Context, tenantID, userID int64) ([]SessionFa
 	return s.Store.ListFamilies(ctx, tenantID, userID)
 }
 
-// FamilyBelongsToUser reports whether the given session family is owned by
-// (tenantID, userID). It uses an index-backed store lookup instead of
-// materializing the user's entire family list.
+// FamilyBelongsToUser 报告给定的 session family 是否归 (tenantID, userID)
+// 所有。它使用索引支持的 store 查找, 而不是把该用户的整个 family
+// 列表都物化出来。
 func (s *Service) FamilyBelongsToUser(ctx context.Context, tenantID, userID int64, familyID string) (bool, error) {
 	if s == nil || s.Store == nil {
 		return false, ErrStoreNotConfigured

@@ -7,13 +7,12 @@ import (
 	"testing"
 )
 
-// TestProxyTypeIsSecretFree is a structural defense-in-depth assertion (review
-// F1): the secret-free guarantee of the read surface ultimately rests on the
-// Proxy type never carrying a credential field. If someone adds an AuthSecret
-// (or any "*secret*"/"*password*"/"*credential*") field to Proxy, the encrypted
-// proxy credential could be one careless mapper away from a response. This test
-// fails the moment such a field appears, before any leak can ship.
-// MUTATION: add `AuthSecret *string` to Proxy -> RED.
+// TestProxyTypeIsSecretFree 是一项结构层面的纵深防御断言(审查 F1):读取面
+// 的"不含凭据"保证最终落在 Proxy 类型永远不携带凭据字段上。一旦有人给 Proxy
+// 加上 AuthSecret(或任何含 "*secret*"/"*password*"/"*credential*" 的字段),
+// 加密后的代理凭据离泄露进响应就只差一次粗心的 mapper。该测试在此类字段一出现
+// 时就转红,赶在任何泄露上线之前。
+// 变异:给 Proxy 加 `AuthSecret *string` → 转红。
 func TestProxyTypeIsSecretFree(t *testing.T) {
 	rt := reflect.TypeOf(Proxy{})
 	for i := 0; i < rt.NumField(); i++ {
@@ -26,17 +25,17 @@ func TestProxyTypeIsSecretFree(t *testing.T) {
 	}
 }
 
-// TestValidatePortUpperBound guards review F3: a proxy port must be in 1..65535.
-// Before the fix only port<=0 was rejected, so 70000 (or any >65535) was accepted
-// and would later fail at connect time or drift from the OpenAPI maximum:65535.
-// MUTATION: drop the `|| port > 65535` clause in validateCommon -> the 70000
-// cases below are accepted -> RED.
+// TestValidatePortUpperBound 守护审查 F3:代理端口必须落在 1..65535。
+// 修复前只拒绝 port<=0,故 70000(或任何 >65535)会被放行,日后在连接时才失败,
+// 或与 OpenAPI 的 maximum:65535 产生漂移。
+// 变异:删掉 validateCommon 里的 `|| port > 65535` 子句 → 下面的 70000
+// 用例被放行 → 转红。
 func TestValidatePortUpperBound(t *testing.T) {
 	ctx := context.Background()
 	keys := testKeys(t)
 	base := CreateInput{TenantID: 7, Name: "p", Protocol: "http", Host: "h"}
 
-	// Above the 16-bit ceiling: rejected at validation, before any DB call.
+	// 超过 16 位上限:在校验阶段即被拒绝,先于任何 DB 调用。
 	in := base
 	in.Port = 70000
 	if _, err := New(&mockProxyQuerier{}, keys).Create(ctx, in); err != ErrInvalidInput {
@@ -47,8 +46,8 @@ func TestValidatePortUpperBound(t *testing.T) {
 		t.Fatalf("update port 70000 must be ErrInvalidInput, got %v", err)
 	}
 
-	// The exact upper boundary 65535 stays valid (discriminating: proves the
-	// guard is `> 65535`, not an off-by-one `>= 65535`).
+	// 恰好的上界 65535 仍然有效(区分性:证明守卫是 `> 65535`,
+	// 而非差一错误 `>= 65535`)。
 	ok := base
 	ok.Port = 65535
 	if _, err := New(&mockProxyQuerier{}, keys).Create(ctx, ok); err != nil {

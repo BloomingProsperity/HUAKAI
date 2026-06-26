@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// MUTATION: GROUP BY tenant_id instead of provider_account_id -> A/B rows merge -> RED.
+// 变异:用 GROUP BY tenant_id 代替 provider_account_id -> A/B 两行会合并 -> 变红。
 func TestUsageCountsByChannel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -60,8 +60,8 @@ func TestUsageCountsByChannel(t *testing.T) {
 	}
 }
 
-// MUTATION: remove ak.tenant_id=ur.tenant_id or u.tenant_id=ur.tenant_id -> SQL text guard catches it,
-// while this integration test verifies the happy path returns only same-tenant display names.
+// 变异:去掉 ak.tenant_id=ur.tenant_id 或 u.tenant_id=ur.tenant_id -> SQL 文本守卫会抓到它,
+// 而本集成测试则验证正常路径只返回同租户的显示名。
 func TestListUsageRecordsWithNamesTenantScope(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

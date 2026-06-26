@@ -156,7 +156,7 @@ type WindowCounter struct {
 	Version       int
 }
 
-// CurrentWindowRead is the read-only subscription/admin projection for a policy's current window.
+// CurrentWindowRead 是某条 policy 当前窗口的只读 subscription/admin 投影视图。
 type CurrentWindowRead struct {
 	TenantID      int64
 	PolicyID      int64

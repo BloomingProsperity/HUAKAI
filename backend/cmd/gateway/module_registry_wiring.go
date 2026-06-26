@@ -7,32 +7,31 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 )
 
-// buildModuleRegistry constructs the runtime module-knowledge spine and seeds it
-// with the three high-value domains for WAVE H2: the billing/money-path service,
-// the routing selector, and the credentials/credentialworker subsystem.
+// buildModuleRegistry 构建运行时的模块知识脊柱,并用 WAVE H2 的三个高价值域
+// 给它播种:billing/money-path 服务、routing selector,以及
+// credentials/credentialworker 子系统。
 //
-// REGISTRATION CONVENTION (lowest-churn, chosen for H2):
-// modules are registered HERE, centrally, from the live deps already assembled
-// in buildGatewayRuntime — one Register call per module, each carrying a stable
-// dotted ID, a category, a title, capabilities, and an optional cheap read-only
-// HealthProbe. This avoids per-package init() hooks (which would add import
-// edges and run at unpredictable times) and keeps the wiring auditable in one
-// place. A new module joins the spine by adding ONE Register call below (or, for
-// a self-contained subsystem, a one-line helper that returns its descriptor) —
-// no schema change, no hot-path coupling.
+// 注册约定(churn 最小,为 H2 选定):
+// 模块在这里集中注册,源自 buildGatewayRuntime 中已组装好的 live deps——
+// 每个模块一次 Register 调用,各自带一个稳定的点分 ID、一个 category、一个
+// title、capabilities,以及一个可选的、廉价的只读 HealthProbe。这避免了
+// 各包的 init() 钩子(会增加 import 边并在不可预测的时刻运行),并把接线
+// 集中在一处以便审计。新模块加入脊柱只需在下方添加一次 Register 调用(或者,
+// 对于自包含的子系统,加一个返回其 descriptor 的单行 helper)——无需改 schema,
+// 不与热路径耦合。
 //
-// PROBES are READ-ONLY and privacy-safe: they report "is the subsystem wired"
-// and at most a coarse count, never secrets or user data. They run only on an
-// operator Snapshot, never on startup or any request path.
+// 各 PROBE 都是只读且隐私安全的:它们只报告「该子系统是否已接线」,
+// 至多再带一个粗粒度计数,绝不含密钥或用户数据。它们仅在运维触发 Snapshot 时运行,
+// 绝不在启动或任何请求路径上运行。
 func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 	reg := moduleregistry.New()
 	if d == nil {
 		return reg
 	}
 
-	// ── money-path: billing settlement service ───────────────────────────────
-	// Probe: the money path is wired iff the settler + claim gate + reserver are
-	// all present. We report wired/degraded only — no balances, no user data.
+	// ── money-path: 计费结算服务 ───────────────────────────────
+	// Probe: 当且仅当 settler + claim gate + reserver 全部存在时,money path 才算已接线。
+	// 我们只报 wired/degraded——不含余额,不含用户数据。
 	settler := d.settler
 	claimGate := d.claimGate
 	reserver := d.quotaReserver
@@ -56,7 +55,7 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
-	// ── routing: upstream account selector ───────────────────────────────────
+	// ── routing: 上游账号 selector ───────────────────────────────────
 	selector := d.selector
 	_ = reg.Register(moduleregistry.ModuleDescriptor{
 		ID:       "routing.selector",
@@ -74,9 +73,9 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
-	// ── credentials: credential worker / acquisition subsystem ───────────────
+	// ── credentials: 凭据 worker / 获取子系统 ───────────────
 	credStore := d.credentialStore
-	credScheduler := d.credentialScheduler // may be set later in buildGatewayRuntime
+	credScheduler := d.credentialScheduler // 可能在 buildGatewayRuntime 中稍后才被设置
 	_ = reg.Register(moduleregistry.ModuleDescriptor{
 		ID:       "credentials.worker",
 		Category: "credentials",
@@ -257,7 +256,7 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
-	// ── auth: WebAuthn passkey ────────────────────────────────────────────────
+	// ── auth: WebAuthn passkey 通行密钥 ────────────────────────────────────────────────
 	// Probe: passkey 服务接线即 wired。只报 wired/degraded,不含任何凭据明细。
 	passkeys := d.passkeys
 	_ = reg.Register(moduleregistry.ModuleDescriptor{
@@ -338,10 +337,9 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 	return reg
 }
 
-// seedCatalogJoin maps each seeded live-module ID to the feature-tree catalog
-// package short-name it should be enriched with. An ID absent from this map is
-// treated as live-only (no static overlay), so the spine never fabricates a
-// catalog entry for an unmapped module.
+// seedCatalogJoin 把每个已播种的 live-module ID 映射到它应被补充的
+// feature-tree catalog 包短名。不在此 map 中的 ID 被视为 live-only
+//(无静态叠加层),因此脊柱绝不会为未映射的模块凭空捏造一条 catalog 记录。
 var seedCatalogJoin = map[string]string{
 	"billing.service":       "billing",
 	"routing.selector":      "pool",
@@ -355,8 +353,8 @@ var seedCatalogJoin = map[string]string{
 	// payment.service / subscription.service / auth.passkey / auth.twofa:catalog 无对应 pkg → live-only。
 }
 
-// moduleSource adapts the live registry + embedded static catalog to
-// modulehttp.Source for the admin endpoint and the Hermes context feed.
+// moduleSource 把 live registry + 内嵌静态 catalog 适配为 modulehttp.Source,
+// 供 admin 端点与 Hermes 上下文馈送使用。
 type moduleSource struct {
 	reg     *moduleregistry.Registry
 	catalog modulecatalog.Catalog

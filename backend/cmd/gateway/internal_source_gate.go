@@ -13,10 +13,9 @@ const (
 	internalAllowCIDRsEnv = "HUAKAI_HERMES_INTERNAL_EXTRA_ALLOW_CIDRS"
 )
 
-// parseInternalAllowCIDRs parses a comma-separated list of extra CIDRs that may
-// reach the /internal/* routes, on top of the always-allowed loopback + private
-// (RFC1918) + link-local ranges. Unparseable entries are skipped (a bad CIDR is
-// simply not added). Empty input -> nil.
+// parseInternalAllowCIDRs 解析一个逗号分隔的额外 CIDR 列表,这些 CIDR 在「始终放行的
+// loopback + 私网(RFC1918)+ link-local 段」之外,额外允许访问 /internal/* 路由。
+// 无法解析的条目会被跳过(坏的 CIDR 直接不加入)。输入为空 → 返回 nil。
 func parseInternalAllowCIDRs(raw string) []*net.IPNet {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -35,24 +34,20 @@ func parseInternalAllowCIDRs(raw string) []*net.IPNet {
 	return out
 }
 
-// internalSourceGate rejects requests to /internal/* — the Hermes control plane
-// (runner bootstrap/refresh/keys, the read-only tool-execute callback, and the
-// internal OpenAI egress) — unless the TRUE socket peer is on a trusted network:
-// loopback, RFC1918 private, link-local, or an operator-configured extra CIDR.
-// This adds a network-origin barrier so the internal control plane is not
-// reachable from the public internet on the shared listener; the app-layer
-// internal_token / runner HMAC is no longer the SOLE gate (audit B2).
+// internalSourceGate 拒绝对 /internal/* 的请求 —— 即 Hermes 控制面(runner
+// bootstrap/refresh/keys、只读的 tool-execute 回调,以及内部 OpenAI 出口)——
+// 除非「真实」的 socket 对端处于可信网络:loopback、RFC1918 私网、link-local,
+// 或运维配置的额外 CIDR。这增加了一道网络来源屏障,使内部控制面无法经共享 listener
+// 从公网直达;应用层的 internal_token / runner HMAC 不再是唯一的门(audit B2)。
 //
-// It MUST be installed BEFORE middleware.RealIP. RealIP overwrites RemoteAddr
-// from client-supplied X-Forwarded-For/X-Real-IP with no trusted-proxy check, so
-// a gate reading the post-RealIP RemoteAddr would let an attacker spoof a
-// loopback source by sending `X-Forwarded-For: 127.0.0.1`. Running first, the
-// gate judges the genuine TCP peer (r.RemoteAddr), which cannot be forged
-// off-box — the same ordering rationale the per-IP rate limiter uses.
+// 它必须装在 middleware.RealIP 之前。RealIP 会用客户端提供的
+// X-Forwarded-For/X-Real-IP 覆盖 RemoteAddr 且不做 trusted-proxy 校验,因此若一个门
+// 读取 RealIP 之后的 RemoteAddr,攻击者只需发送 `X-Forwarded-For: 127.0.0.1` 即可
+// 伪造成 loopback 来源。本门先跑,判定的是真实的 TCP 对端(r.RemoteAddr),它无法在
+// 机器外被伪造 —— 与每 IP 限流器采用的排序理由一致。
 //
-// Non-/internal/ paths pass through untouched. A rejected request gets 404 (the
-// internal routes are invisible to untrusted sources) plus a WARN log of the
-// real peer for attack visibility / misconfiguration diagnosis.
+// 非 /internal/ 路径原样放行。被拒请求返回 404(内部路由对不可信来源不可见),
+// 并打一条 WARN 日志记录真实对端,便于攻击可见性 / 配置错误诊断。
 func internalSourceGate(extra []*net.IPNet, logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,9 +68,8 @@ func internalSourceGate(extra []*net.IPNet, logger *zap.Logger) func(http.Handle
 	}
 }
 
-// internalSourceAllowed reports whether a socket peer address (host:port form, as
-// in http.Request.RemoteAddr) may reach the internal routes. An unparseable peer
-// fails closed.
+// internalSourceAllowed 判断一个 socket 对端地址(host:port 形式,如
+// http.Request.RemoteAddr)是否可以访问内部路由。无法解析的对端 fail-closed(拒绝)。
 func internalSourceAllowed(remoteAddr string, extra []*net.IPNet) bool {
 	host := remoteAddr
 	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {

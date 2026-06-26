@@ -1,16 +1,15 @@
-// Package sessioncap implements SUB2-EGRESS-02: per-account concurrent session
-// cap. An in-memory Registry tracks distinct active sessionHash values per
-// account; a pool gate rejects a new session when the account is already at
-// its configured cap.
+// 包 sessioncap 实现 SUB2-EGRESS-02: per-account 并发 session 上限。
+// 内存版 Registry 按账号追踪不同的活跃 sessionHash 值; 当账号已达到
+// 其配置的上限时, pool gate 会拒绝新 session。
 //
-// Safety design:
-//   - Opt-in via max_sessions > 0 on provider_accounts (0 = unlimited = today's
-//     behavior, a TRUE no-op).
-//   - Fail-open: nil registry, or any error -> account stays eligible.
-//   - Existing session always allowed: WouldExceed excludes the current
-//     sessionHash from the count, so a re-binding request is never rejected.
-//   - Per-process only: each gateway instance tracks its own sessions.
-//     fail-open + opt-in make this safe in a multi-instance deployment.
+// 安全设计:
+//   - 通过 provider_accounts 上的 max_sessions > 0 显式开启 (0 = 无限 = 当前
+//     的行为, 一个真正的 no-op)。
+//   - Fail-open: registry 为 nil 或发生任何错误 -> 账号仍保持可调度。
+//   - 既有 session 始终放行: WouldExceed 在计数时排除当前
+//     sessionHash, 因此 re-binding 请求绝不会被拒。
+//   - 仅进程级: 每个 gateway 实例只追踪自己的 session。
+//     fail-open + 显式开启使其在多实例部署中也安全。
 package sessioncap
 
 import (
@@ -18,26 +17,26 @@ import (
 	"time"
 )
 
-// DefaultIdleTTL is the duration after which an idle session entry expires.
+// DefaultIdleTTL 是空闲 session entry 过期前的时长。
 const DefaultIdleTTL = 5 * time.Minute
 
-// entry holds the last-seen timestamp for one session.
+// entry 持有某个 session 的 last-seen 时间戳。
 type entry struct {
 	lastSeen time.Time
 }
 
-// Registry is a thread-safe in-memory store of active sessions per account.
-// Zero value is NOT usable; use NewRegistry.
+// Registry 是按账号存储活跃 session 的线程安全内存存储。
+// 零值不可用; 请使用 NewRegistry。
 type Registry struct {
 	mu sync.RWMutex
-	// sessions maps accountID -> sessionHash -> entry
+	// sessions 映射 accountID -> sessionHash -> entry
 	sessions map[int64]map[string]entry
 	idleTTL  time.Duration
 	now      func() time.Time
 }
 
-// NewRegistry constructs a Registry with the given idle TTL.
-// idleTTL <= 0 uses DefaultIdleTTL.
+// NewRegistry 用给定的 idle TTL 构造一个 Registry。
+// idleTTL <= 0 时使用 DefaultIdleTTL。
 func NewRegistry(idleTTL time.Duration) *Registry {
 	if idleTTL <= 0 {
 		idleTTL = DefaultIdleTTL
@@ -49,8 +48,8 @@ func NewRegistry(idleTTL time.Duration) *Registry {
 	}
 }
 
-// Register adds or refreshes the session for (accountID, sessionHash).
-// Idempotent: calling multiple times for the same pair only updates lastSeen.
+// Register 为 (accountID, sessionHash) 添加或刷新 session。
+// 幂等: 对同一对多次调用只会更新 lastSeen。
 func (r *Registry) Register(accountID int64, sessionHash string) {
 	if sessionHash == "" {
 		return
@@ -65,15 +64,15 @@ func (r *Registry) Register(accountID int64, sessionHash string) {
 	m[sessionHash] = entry{lastSeen: r.now()}
 }
 
-// WouldExceed reports whether adding sessionHash as a NEW session would cause
-// the account to exceed max concurrent sessions.
+// WouldExceed 报告把 sessionHash 作为一个新 session 加入后, 是否会让
+// 该账号超过最大并发 session 数。
 //
-// The current sessionHash is excluded from the count -- a session already
-// active on this account (or re-binding via stickiness) is never rejected.
-// Only a genuinely new session when the account already has max distinct
-// others is rejected.
+// 当前 sessionHash 会被排除在计数之外 —— 该账号上已经活跃的
+// session (或通过 stickiness 进行 re-binding 的) 绝不会被拒。
+// 只有当账号已有 max 个不同的其它 session 时, 真正的新 session
+// 才会被拒。
 //
-// TTL expiry is applied lazily during this call (expired entries removed).
+// TTL 过期在本次调用中惰性应用 (过期 entry 会被移除)。
 func (r *Registry) WouldExceed(accountID int64, sessionHash string, max int) bool {
 	if max <= 0 {
 		return false
@@ -90,12 +89,12 @@ func (r *Registry) WouldExceed(accountID int64, sessionHash string, max int) boo
 	count := 0
 	for hash, e := range m {
 		if now.Sub(e.lastSeen) > r.idleTTL {
-			// lazy TTL expiry
+			// 惰性 TTL 过期
 			delete(m, hash)
 			continue
 		}
 		if hash == sessionHash {
-			// existing session: exclude from cap count
+			// 既有 session: 从上限计数中排除
 			continue
 		}
 		count++

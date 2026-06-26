@@ -1,6 +1,6 @@
-// Package adminhttp builds the reviewed account-mode catalog exposed to
-// admin UI. It derives visibility from credentialacq ModePlan plus
-// credentialstore finalizer support and fails closed on incomplete modes.
+// Package adminhttp 构建供 admin UI 使用的、经过审定的 account-mode 目录(catalog)。
+// 它依据 credentialacq 的 ModePlan 以及 credentialstore 的 finalizer 支持情况来推导可见性,
+// 对不完整的 mode 采取 fail closed。
 package adminhttp
 
 import (

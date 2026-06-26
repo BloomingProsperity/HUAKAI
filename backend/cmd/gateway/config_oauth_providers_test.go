@@ -6,8 +6,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
-// Mutation guard: registering providers with only half the required credentials
-// or without NodeSeek's configured subject field makes this test fail.
+// 变异守卫：只配置一半必需凭证、或缺少 NodeSeek 配置的 subject 字段时注册 provider，
+// 会让本测试失败。
 func TestBuildUserOAuthServiceNewProvidersFailClosedWithoutCompleteCredentials(t *testing.T) {
 	clearSocialOAuthProviderEnv(t)
 	t.Setenv("HUAKAI_QQ_OAUTH_CLIENT_ID", "qq-id")
@@ -35,8 +35,8 @@ func TestBuildUserOAuthServiceNewProvidersFailClosedWithoutCompleteCredentials(t
 	}
 }
 
-// Mutation guard: omitting any new provider registration branch makes the
-// corresponding Provider lookup fail despite complete config.
+// 变异守卫：遗漏任何一个新 provider 的注册分支，会使得即便配置完整，
+// 对应的 Provider 查找也会失败。
 func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkNodeSeekAndLinuxDo(t *testing.T) {
 	clearSocialOAuthProviderEnv(t)
 	t.Setenv("HUAKAI_QQ_OAUTH_CLIENT_ID", "qq-id")
@@ -84,8 +84,8 @@ func TestBuildUserOAuthServiceRegistersConfiguredQQDingTalkNodeSeekAndLinuxDo(t 
 	}
 }
 
-// Mutation guard: accidentally wiring removed providers makes this inert
-// names appear in OAuthService.Provider.
+// 变异守卫：误把已移除的 provider 接进来，会让这些废弃名字
+// 出现在 OAuthService.Provider 中。
 func TestBuildUserOAuthServiceDoesNotWireRemovedProviders(t *testing.T) {
 	clearSocialOAuthProviderEnv(t)
 	t.Setenv("HUAKAI_WECHAT_OAUTH_CLIENT_ID", "wechat-id")

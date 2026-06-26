@@ -15,10 +15,9 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// Strong real-Postgres tests for the proxyadmin closed-loop. Unit tests use a
-// stub Querier; these prove the SECURITY properties against the real DB +
-// real encryption + real tenant filtering — the harm surfaces the unit stubs
-// cannot reach. Run: HUAKAI_DATABASE_URL=<gate dsn> go test -tags=integration_pg
+// 针对 proxyadmin 闭环的强真实 Postgres 测试。单元测试用桩 Querier;这些测试
+// 针对真实 DB + 真实加密 + 真实租户过滤来证明安全属性——即单元桩触达不到的危害面。
+// 运行:HUAKAI_DATABASE_URL=<gate dsn> go test -tags=integration_pg
 //   -p 1 ./internal/proxyadmin/...
 
 func openProxyPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -54,10 +53,9 @@ func seedProxyTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, labe
 
 func strptr(s string) *string { return &s }
 
-// TestProxy_SecretEncryptedAtRest proves the proxy auth_secret is encrypted
-// before it hits the column — a plaintext secret must NEVER be readable in the
-// proxies table. MUTATION: bypass encryptAuthSecret (store raw) -> the raw
-// column equals the plaintext -> RED.
+// TestProxy_SecretEncryptedAtRest 证明代理 auth_secret 在落列之前已被加密——
+// 明文凭据在 proxies 表里绝不可被读出。变异:绕过 encryptAuthSecret(存原文)→
+// 该列原文等于明文 → 转红。
 func TestProxy_SecretEncryptedAtRest(t *testing.T) {
 	ctx := context.Background()
 	pool := openProxyPool(t, ctx)
@@ -88,9 +86,9 @@ func TestProxy_SecretEncryptedAtRest(t *testing.T) {
 	}
 }
 
-// TestProxy_CrossTenantIsolation is the core security test: tenant B must not be
-// able to see, read, mutate, or delete tenant A's proxy. MUTATION: drop the
-// tenant_id predicate from any proxy query -> B leaks/mutates A's row -> RED.
+// TestProxy_CrossTenantIsolation 是核心安全测试:租户 B 绝不能看到、读取、修改
+// 或删除租户 A 的代理。变异:从任一代理查询中删掉 tenant_id 谓词 → B 泄露/修改
+// A 的行 → 转红。
 func TestProxy_CrossTenantIsolation(t *testing.T) {
 	ctx := context.Background()
 	pool := openProxyPool(t, ctx)
@@ -106,7 +104,7 @@ func TestProxy_CrossTenantIsolation(t *testing.T) {
 		t.Fatalf("create A: %v", err)
 	}
 
-	// B's list must not contain A's proxy.
+	// B 的列表绝不能含 A 的代理。
 	bList, err := svc.List(ctx, tenantB)
 	if err != nil {
 		t.Fatalf("list B: %v", err)
@@ -117,12 +115,12 @@ func TestProxy_CrossTenantIsolation(t *testing.T) {
 		}
 	}
 
-	// B cannot read A's proxy.
+	// B 无法读取 A 的代理。
 	if _, err := svc.Get(ctx, tenantB, a.ID); err != ErrNotFound {
 		t.Fatalf("cross-tenant Get must be ErrNotFound, got %v", err)
 	}
 
-	// B's delete of A's id is a no-op; A's proxy survives.
+	// B 删除 A 的 id 是 no-op;A 的代理存活。
 	if err := svc.Delete(ctx, tenantB, a.ID); err != nil {
 		t.Fatalf("cross-tenant delete should be a tenant-scoped no-op, got err %v", err)
 	}
@@ -130,7 +128,7 @@ func TestProxy_CrossTenantIsolation(t *testing.T) {
 		t.Fatalf("tenant A proxy must survive B's delete attempt, got %v", err)
 	}
 
-	// B's status flip of A's id is a no-op; A's status unchanged (still active).
+	// B 翻转 A 的 id 状态是 no-op;A 的状态不变(仍为 active)。
 	if err := svc.SetStatus(ctx, tenantB, a.ID, "disabled"); err != nil {
 		t.Fatalf("cross-tenant set-status should be a no-op, got err %v", err)
 	}
@@ -143,10 +141,9 @@ func TestProxy_CrossTenantIsolation(t *testing.T) {
 	}
 }
 
-// TestProxy_LifecycleAndSecretFreeReads exercises the real create->status->delete
-// state machine and proves the read structs surface the non-secret fields. The
-// Proxy type is structurally secret-free (no field), so a leak cannot occur in
-// the returned struct; this confirms the values round-trip correctly via real DB.
+// TestProxy_LifecycleAndSecretFreeReads 演练真实的 create->status->delete 状态机,
+// 并证明读取结构体暴露的是非凭据字段。Proxy 类型在结构上不含凭据(无该字段),
+// 故返回的结构体不可能发生泄露;本测试确认这些值经真实 DB 正确往返。
 func TestProxy_LifecycleAndSecretFreeReads(t *testing.T) {
 	ctx := context.Background()
 	pool := openProxyPool(t, ctx)

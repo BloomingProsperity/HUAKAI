@@ -153,8 +153,8 @@ func TestMeQuotaSelfScope(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
 	}
-	// MUTATION: handler hard-codes userB scopeID, passes "", or accepts query scope;
-	// user A sees userB/all windows and this assertion goes RED.
+	// 变异:handler 硬编码 userB 的 scopeID、传 "",或接受 query 里的 scope;
+	// user A 就会看到 userB/全部窗口,此断言转红。
 	if len(body.Items) != 1 {
 		t.Fatalf("items len=%d want only user A quota window; body=%s", len(body.Items), rec.Body.String())
 	}
@@ -167,13 +167,12 @@ func TestMeQuotaSelfScope(t *testing.T) {
 	}
 }
 
-// TestMeQuotaMultiMetricWindows_Integration is the end-to-end F-OPS-001 proof against a
-// real DB: a user with requests + cost_usd + tokens_estimated policies sees all three
-// windows tagged by metric. It also guards "不能偏移": the cost-only store method that
-// subscription/key-control depend on still returns ONLY cost_usd with the other policies
-// present.
-// MUTATION: revert the query filter to a single metric -> the multi-metric read returns
-//   <3 -> RED; widen the cost-only method's metric set -> it returns >1 -> RED.
+// TestMeQuotaMultiMetricWindows_Integration 是针对真实 DB 的端到端 F-OPS-001
+// 证明:一个带有 requests + cost_usd + tokens_estimated 策略的用户能看到全部
+// 三个窗口、各按 metric 标记。它还守护「不能偏移」:订阅/key-control 所依赖的
+// cost-only store 方法,在其它策略也存在时仍只返回 cost_usd。
+// 变异:把查询过滤回退为单个 metric -> 多 metric 读取返回 <3 -> 转红;
+//   放宽 cost-only 方法的 metric 集合 -> 它返回 >1 -> 转红。
 func TestMeQuotaMultiMetricWindows_Integration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -184,7 +183,7 @@ func TestMeQuotaMultiMetricWindows_Integration(t *testing.T) {
 	f.seedQuotaWindowMetric(f.tenantA, f.userA, "cost_usd", at, "10", "0", "3.5")
 	f.seedQuotaWindowMetric(f.tenantA, f.userA, "tokens_estimated", at, "1000000", "0", "45000")
 
-	// End-to-end: the handler returns all three windows, each tagged by its metric.
+	// 端到端:handler 返回全部三个窗口,各按其 metric 标记。
 	h := NewHandler(Deps{
 		Auth:  authStub{identity: auth.Identity{TenantID: f.tenantA, UserID: f.userA}},
 		Store: quota.NewPostgresStore(pool),
@@ -211,8 +210,8 @@ func TestMeQuotaMultiMetricWindows_Integration(t *testing.T) {
 		}
 	}
 
-	// 不能偏移: the cost-only store method (subscription progress + key-control) must still
-	// return ONLY the cost_usd window despite the requests/tokens policies now existing.
+	// 不能偏移:cost-only store 方法(订阅进度 + key-control)即便现在存在
+	// requests/tokens 策略,也必须仍只返回 cost_usd 窗口。
 	store := quota.NewPostgresStore(pool)
 	scopeID := strconv.FormatInt(f.userA, 10)
 	costOnly, err := store.ListCurrentWindowsForScope(ctx, f.tenantA, quota.ScopeUser, scopeID, at)
@@ -232,22 +231,24 @@ func TestMeQuotaMultiMetricWindows_Integration(t *testing.T) {
 	}
 }
 
-// TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly pins the "不能偏移" invariant at the
-// MONEY-BEARING api_key scope. key-control's UsedUSD (userkeycontrols/key_control_service.go)
-// calls ListCurrentWindowsForScope with ScopeAPIKey and sums settled+reserved over EVERY
-// returned window with no Go-side metric filter — so if the cost-only method ever widened to
-// non-cost metrics, UsedUSD would be corrupted (a request count + a token count added to USD).
-// The ScopeUser guard in the multi-metric test above does NOT cover this scope.
-// MUTATION: widen the cost-only metric set in pg_store_window_reads.go to include
-//   requests/tokens -> this returns 3 windows at the api_key scope -> RED.
+// TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly 在涉及金钱的 api_key scope 上
+// 钉住「不能偏移」不变量。key-control 的 UsedUSD
+//(userkeycontrols/key_control_service.go)以 ScopeAPIKey 调用
+// ListCurrentWindowsForScope,并对返回的每个窗口求 settled+reserved 之和,
+// 且 Go 侧没有 metric 过滤 —— 因此一旦 cost-only 方法放宽到非 cost 的 metric,
+// UsedUSD 就会被污染(一个 request 计数 + 一个 token 计数被加进 USD)。
+// 上面多 metric 测试里的 ScopeUser 守卫覆盖不到这个 scope。
+// 变异:在 pg_store_window_reads.go 中把 cost-only 的 metric 集合放宽到包含
+//   requests/tokens -> 在 api_key scope 这里会返回 3 个窗口 -> 转红。
 func TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := openMeQuotaPool(t, ctx)
 	f := newMeQuotaFixture(t, ctx, pool)
 	at := time.Now().UTC()
-	// quota scope_id is free text and normalizeScopeID is identity for api_key, so an
-	// arbitrary key id needs no real api_keys row. Seed all three metrics at THIS scope.
+	// quota 的 scope_id 是自由文本,且对 api_key 而言 normalizeScopeID 是恒等
+	// 映射,因此任意的 key id 都无需真实的 api_keys 行。在这个 scope 上预置全部
+	// 三个 metric。
 	const keyScope = "777"
 	f.seedScopeQuotaWindowMetric(f.tenantA, "api_key", keyScope, "requests", at, "1000", "0", "120")
 	f.seedScopeQuotaWindowMetric(f.tenantA, "api_key", keyScope, "cost_usd", at, "10", "0", "3.5")
@@ -261,7 +262,7 @@ func TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly(t *testing.T) {
 	if len(costOnly) != 1 || costOnly[0].Metric != quota.MetricCostUSD {
 		t.Fatalf("cost-only method at api_key scope returned %d windows (%v); key-control UsedUSD must see cost_usd ONLY", len(costOnly), metricsOf(costOnly))
 	}
-	// The single window is the cost row (settled 3.5), not a count row — proves no metric mixing.
+	// 唯一的窗口是 cost 行(settled 3.5),而非计数行 —— 证明没有 metric 混入。
 	if costOnly[0].SettledValue.String() != "3.5" {
 		t.Fatalf("cost window settled=%s want 3.5 (a count row would be 120/45000)", costOnly[0].SettledValue.String())
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// UpstreamState tracks Anthropic SSE translation state from spec section 3 Phase C.
+// UpstreamState 跟踪 Anthropic SSE 转换状态，对应规范第 3 节 Phase C。
 //
 // AccountID（Track P）: forwarder 注入选定的 provider_account_id, 让 adapter
 // 在终态调 cachemetrics.ObserveByAccount 累计 per-account 维度。零值表示
@@ -39,7 +39,7 @@ type UpstreamState struct {
 	TenantID int64
 }
 
-// Adapter translates Anthropic SSE events through proto.HCSF per spec section 3 Phase C.
+// Adapter 经由 proto.HCSF 转换 Anthropic SSE 事件，对应规范第 3 节 Phase C。
 type Adapter struct {
 	CarryForwardSignatureDelta bool
 }
@@ -194,8 +194,8 @@ func (s *Adapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope,
 		state.BlocksInProgress[env.Index] = true
 		block, losses := canonicalBlock(env.ContentBlock)
 		ev := proto.CanonicalEvent{Type: "content_block_start", Index: env.Index, ContentBlock: &block}
-		// Stage B: emit a CanonicalUsage with the server tool call count so the
-		// UsageAccumulator can accumulate it (+=). ONLY server_tool_use is billable.
+		// Stage B：发出一个携带 server tool 调用计数的 CanonicalUsage，
+		// 让 UsageAccumulator 能累加它（+=）。仅 server_tool_use 计费。
 		if env.ContentBlock.Type == "server_tool_use" {
 			var svcUsage proto.CanonicalUsage
 			switch {
@@ -203,7 +203,7 @@ func (s *Adapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope,
 				svcUsage.WebSearchCalls = 1
 			case strings.Contains(env.ContentBlock.Name, "file_search") || strings.Contains(env.ContentBlock.Name, "document_search"):
 				svcUsage.FileSearchCalls = 1
-				// Unknown server tool names: not bucketed — avoid mis-billing.
+				// 未知的 server tool 名称：不归桶——避免误计费。
 			}
 			if svcUsage.WebSearchCalls > 0 || svcUsage.FileSearchCalls > 0 {
 				ev.Usage = &svcUsage
@@ -385,9 +385,9 @@ func anthropicResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, 
 		losses = append(losses, blockLosses...)
 		out.Content = append(out.Content, block)
 	}
-	// Stage B: count server-side built-in tool invocations for per-call surcharge.
-	// ONLY type=="server_tool_use" is billable; type=="tool_use" is a free client
-	// function-call and MUST NOT be counted (over-charge prevention).
+	// Stage B：统计服务端内建工具调用次数，用于按次附加计费。
+	// 仅 type=="server_tool_use" 计费；type=="tool_use" 是免费的客户端
+	// 函数调用，绝不能计入（防止多计费）。
 	for _, rawBlock := range resp.Content {
 		var blk struct {
 			Type string `json:"type"`
@@ -401,7 +401,7 @@ func anthropicResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, 
 			out.Usage.WebSearchCalls++
 		case strings.Contains(blk.Name, "file_search") || strings.Contains(blk.Name, "document_search"):
 			out.Usage.FileSearchCalls++
-			// Unknown server tool names: intentionally not bucketed to avoid mis-billing.
+			// 未知的 server tool 名称：刻意不归桶，避免误计费。
 		}
 	}
 	return out, losses, nil

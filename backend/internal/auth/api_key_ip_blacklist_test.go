@@ -14,7 +14,7 @@ import (
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
-// fakeIPBlacklistQueries is a minimal apiKeyQueries stub for blacklist tests.
+// fakeIPBlacklistQueries 是用于黑名单测试的最小化 apiKeyQueries 桩。
 type fakeIPBlacklistQueries struct {
 	rows []dbauth.LookupAPIKeysByPrefixRow
 }
@@ -40,7 +40,7 @@ func makeBlacklistRow(t *testing.T, bearer string, ipBlacklist *string) dbauth.L
 		KeyHash:       string(hash),
 		KeyStatus:     "active",
 		ExpiresAt:     pgtype.Timestamptz{Valid: false},
-		IpAllowlist:   nil, // no allowlist restriction
+		IpAllowlist:   nil, // 无 allowlist 限制
 		IpBlacklist:   ipBlacklist,
 		AllowedModels: nil,
 		UserStatus:    "active",
@@ -52,15 +52,15 @@ func makeBlacklistRow(t *testing.T, bearer string, ipBlacklist *string) dbauth.L
 func buildResolverRequest(bearer string, remoteAddr string) *http.Request {
 	req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)
-	// nil clientIPResolver falls back to RemoteAddr — set it directly.
+	// clientIPResolver 为 nil 时回退到 RemoteAddr —— 这里直接设置它。
 	req.RemoteAddr = remoteAddr + ":12345"
 	return req
 }
 
-// TestIPBlacklistDeny is the discriminating test for KEY-016.
+// TestIPBlacklistDeny 是 KEY-016 的判别性测试。
 //
-// MUTATION: move deny check AFTER allowlist check (allowlist nil -> allow-all
-// short-circuits before the deny can fire) -> 1.2.3.4 would be allowed -> RED.
+// MUTATION: 把 deny 检查挪到 allowlist 检查之后 (allowlist 为 nil -> allow-all
+// 在 deny 能触发前短路) -> 1.2.3.4 就会被放行 -> RED。
 func TestIPBlacklistDeny(t *testing.T) {
 	const bearer = "hk_live_blacklisttest0001"
 	blacklisted := "1.2.3.4/32"

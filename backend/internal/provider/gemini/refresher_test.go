@@ -23,10 +23,9 @@ import (
 )
 
 func TestGeminiRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
-	// Regression killed: attacker-controlled credential JSON must not decide
-	// the token endpoint, client ID, or scope used for refresh. Mutation
-	// self-check: reading oauth_token_endpoint/client_id/scope from credential
-	// sends at least one attacker value and turns this test red.
+	// 锁定回归：攻击者可控的凭据 JSON 不得决定刷新所用的 token endpoint、
+	// client ID 或 scope。变异自检：若从凭据读取 oauth_token_endpoint/client_id/scope，
+	// 就会发送至少一个攻击者值，使本测试变红。
 	now := time.Date(2026, 5, 24, 14, 0, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if got := r.URL.String(); got != "https://operator.google.example.test/oauth/token" {
@@ -97,10 +96,9 @@ func TestGeminiRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
 }
 
 func TestGeminiRefreshAdapterPostsOperatorClientSecretForConfidentialClient(t *testing.T) {
-	// Regression killed: confidential OAuth refresh must carry the operator
-	// client_secret from OAuthConfig through the adapter into the token form.
-	// Mutation self-check: dropping client_secret from RefreshAdapter or the
-	// POST form makes this test fail before the token response is accepted.
+	// 锁定回归：confidential OAuth 刷新必须把 operator 的 client_secret 从
+	// OAuthConfig 经 adapter 一路带进 token form。变异自检：从 RefreshAdapter 或
+	// POST form 里去掉 client_secret，会让本测试在 token 响应被接受前就失败。
 	now := time.Date(2026, 5, 24, 14, 15, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(r.Body)
@@ -148,9 +146,9 @@ func TestGeminiRefreshAdapterPostsOperatorClientSecretForConfidentialClient(t *t
 }
 
 func TestGeminiRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *testing.T) {
-	// Regression killed: credential-supplied OAuth endpoints must fail closed
-	// when operator token_url is absent. Mutation self-check: using the
-	// credential endpoint makes the HTTP client run and this test fails.
+	// 锁定回归：当 operator token_url 缺失时，凭据提供的 OAuth endpoint 必须
+	// fail closed。变异自检：若使用凭据里的 endpoint，会让 HTTP client 实际发起
+	// 请求，使本测试失败。
 	called := false
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		called = true
@@ -174,9 +172,8 @@ func TestGeminiRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *testing.T
 }
 
 func TestGeminiRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
-	// Regression killed: Gemini refresh failures must preserve distinct audit
-	// outcomes. Mutation self-check: flattening status/body handling breaks at
-	// least one of 401, 429, or risk-triggering 403.
+	// 锁定回归：Gemini 刷新失败必须保留各自不同的审计 outcome。变异自检：把
+	// status/body 处理压平会破坏 401、429 或触发风控的 403 中至少一个。
 	tests := []struct {
 		name       string
 		statusCode int

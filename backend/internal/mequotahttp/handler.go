@@ -27,8 +27,8 @@ type Deps struct {
 	Store Store
 }
 
-// SessionResolver adapts the validated /v1/me session context into the same
-// AuthResolver shape used by API-key scoped self-service handlers.
+// SessionResolver 把已校验的 /v1/me 会话上下文适配为与 API-key 作用域的
+// 自助 handler 所用相同的 AuthResolver 形状。
 type SessionResolver struct{}
 
 func (SessionResolver) Resolve(ctx context.Context, _ *http.Request) (auth.Identity, error) {
@@ -85,7 +85,7 @@ func NewHandler(d Deps) http.HandlerFunc {
 			quota.ScopeUser,
 			strconv.FormatInt(ident.UserID, 10),
 			now,
-			// Window-shaped metrics only; concurrency is slot-based (no window row).
+			// 仅限窗口形态的 metric;并发是基于槽位的(无窗口行)。
 			[]quota.Metric{quota.MetricRequests, quota.MetricCostUSD, quota.MetricTokensEstimated},
 		)
 		if err != nil {

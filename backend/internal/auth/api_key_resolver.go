@@ -1,25 +1,25 @@
-// Phase L0 minimum: table-backed inbound auth resolver.
-// Replaces the SmokeAuthResolver path used during Phase C v0.1.
+// Phase L0 最小实现: 基于数据表的入站鉴权 resolver。
+// 取代 Phase C v0.1 期间使用的 SmokeAuthResolver 路径。
 //
-// Pipeline per docs/process/plans/2026-04-30-n4-l0-minimum.md (synthesized):
+// 流水线参见 docs/process/plans/2026-04-30-n4-l0-minimum.md (综合方案):
 //
-//	parse Bearer header → derive 16-char key_prefix → LookupAPIKeysByPrefix
-//	(<= 5 candidates) → bcrypt.CompareHashAndPassword on each → check
-//	status + expires_at → return Identity{TenantID, APIKeyID, UserID}
+//	解析 Bearer header → 推导 16 字符 key_prefix → LookupAPIKeysByPrefix
+//	(<= 5 个候选) → 对每个候选执行 bcrypt.CompareHashAndPassword → 检查
+//	status + expires_at → 返回 Identity{TenantID, APIKeyID, UserID}
 //
-// Boundary contracts (docs/specs/_invariants/cross-module-boundaries.md):
-// This is the Auth layer; the layered call order is
-//     Auth → Registry → Router. Resolver does NOT import router or call
-//     Pool/Adapter/Ledger.
-// Plaintext bearer is never logged. Errors return only the
-//     key_prefix (never the suffix or full token) for debugging.
-// The only write in this package is best-effort auth telemetry:
-//     last_used_at is touched after successful verification, and touch
-//     failure must not reject otherwise valid credentials.
+// 边界契约 (docs/specs/_invariants/cross-module-boundaries.md):
+// 这是 Auth 层; 分层调用顺序为
+//     Auth → Registry → Router。Resolver 不 import router, 也不调用
+//     Pool/Adapter/Ledger。
+// 明文 bearer 永不记录日志。出错时只返回
+//     key_prefix (绝不返回后缀或完整 token) 供调试。
+// 本包唯一的写操作是尽力而为的鉴权遥测:
+//     成功验证后会 touch last_used_at, 且 touch
+//     失败不得拒绝原本有效的凭证。
 //
-// All authentication failures map to a single ErrUnauthorized return
-// (D10 in synthesized plan) so the handler can map to HTTP 401 without
-// leaking enumeration signal (revoked vs expired vs not-found).
+// 所有鉴权失败都收敛为同一个 ErrUnauthorized 返回
+// (综合方案中的 D10), 这样 handler 能映射成 HTTP 401, 而不会
+// 泄露枚举信号 (已吊销 vs 已过期 vs 未找到)。
 
 package auth
 
@@ -41,17 +41,16 @@ import (
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
-// Identity is the resolved inbound auth context produced by Resolve.
-// Mirrors the fields the chat handler needs to populate
-// router.RequestContext + ledger ReserveRequest. Fields are populated
-// only on success; partial values are never returned.
+// Identity 是 Resolve 产出的、已解析的入站鉴权上下文。
+// 与 chat handler 填充 router.RequestContext + ledger ReserveRequest
+// 所需的字段对应。字段仅在成功时填充; 绝不返回半成品值。
 type Identity struct {
 	TenantID int64
 	APIKeyID int64
 	UserID   int64
-	// AllowedModels is the raw comma-separated per-key model allowlist.
-	// Nil/blank means unrestricted; model-bearing ingress handlers enforce it
-	// after they parse the request model.
+	// AllowedModels 是逗号分隔的 per-key 模型 allowlist 原始串。
+	// Nil/空白表示不限制; 带模型的 ingress handler 在解析出请求模型后
+	// 再执行该限制。
 	AllowedModels *string
 	// UserGroup 是该用户当前订阅档位 (users.user_group, 默认 'default')。
 	// 供 R-SUB-WIRE-1 分组→路由的 GroupPolicyGate 在 pool 选择时限制可用渠道。
@@ -59,49 +58,47 @@ type Identity struct {
 	UserGroup string
 }
 
-// APIKeyPrefixLen is the number of leading characters of the bearer
-// token that are stored verbatim in api_keys.key_prefix and used for
-// indexed lookup. 16 chars (covers "hk_live_" or "hk_test_" plus 8
-// chars of randomness) keeps lookup selective enough to bound the
-// bcrypt-verify-fanout caused by colliding prefixes.
+// APIKeyPrefixLen 是 bearer token 中按原样存入 api_keys.key_prefix
+// 并用于索引查找的前导字符数。16 字符 (覆盖 "hk_live_" 或 "hk_test_"
+// 加 8 字符随机部分) 让查找足够有选择性, 从而限制前缀碰撞引发的
+// bcrypt-verify-fanout。
 const APIKeyPrefixLen = 16
 
-// MaxBcryptFanout caps how many candidate rows a single Resolve call
-// will bcrypt-compare. The SQL query also LIMITs to this value; the
-// constant exists so the cap is visible at the resolver layer too.
+// MaxBcryptFanout 限制单次 Resolve 调用最多对多少个候选行做 bcrypt
+// 比对。SQL 查询同样 LIMIT 到该值; 这个常量的存在是为了让该上限
+// 在 resolver 层也可见。
 const MaxBcryptFanout = 5
 
-// lastUsedTouchTimeout keeps best-effort telemetry from coupling auth
-// availability to row locks or slow writes on api_keys.
+// lastUsedTouchTimeout 让尽力而为的遥测不把鉴权可用性
+// 耦合到 api_keys 上的行锁或慢写。
 const lastUsedTouchTimeout = 100 * time.Millisecond
 
-// ErrUnauthorized is returned for ANY CREDENTIAL-LEVEL failure: bad
-// header, malformed bearer, prefix miss, bcrypt mismatch, key revoked,
-// key expired, user disabled. The handler maps this to HTTP 401.
+// ErrUnauthorized 对任何凭证级失败返回: header 错误、
+// bearer 格式错误、前缀未命中、bcrypt 不匹配、key 已吊销、
+// key 已过期、用户被禁用。handler 将其映射为 HTTP 401。
 //
-// Discriminating credential failure modes externally would leak account
-// enumeration signal (D10 in synthesized plan). Operators see the
-// distinction in audit logs only.
+// 对外区分凭证失败的具体模式会泄露账号
+// 枚举信号 (综合方案中的 D10)。运营者只能在审计日志中
+// 看到这种区别。
 var ErrUnauthorized = errors.New("auth: unauthorized")
 
-// ErrForbidden is returned after a credential is valid but the authenticated
-// key's policy forbids the request, such as an IP allowlist miss. Handlers map
-// it to HTTP 403.
+// ErrForbidden 在凭证有效、但已鉴权的 key 的策略禁止该请求时返回,
+// 例如 IP allowlist 未命中。handler 将其映射为
+// HTTP 403。
 var ErrForbidden = errors.New("auth: forbidden")
 
-// ErrAuthMisconfigured signals the resolver was constructed without a
-// valid dbauth.Queries handle. The handler maps this to HTTP 503 (D9).
+// ErrAuthMisconfigured 表示 resolver 构造时未传入
+// 有效的 dbauth.Queries 句柄。handler 将其映射为 HTTP 503 (D9)。
 var ErrAuthMisconfigured = errors.New("auth: resolver not configured")
 
-// ErrAuthBackend signals a transient datastore failure during auth
-// lookup (PG connection broken, context cancelled mid-query, missing
-// table). The handler maps this to HTTP 503 — NOT 401 — so legitimate
-// clients are not told their valid credentials are invalid during an
-// infrastructure outage.
+// ErrAuthBackend 表示鉴权查找期间数据存储发生暂时性故障
+// (PG 连接断开、查询中途 context 被取消、表缺失)。
+// handler 将其映射为 HTTP 503 —— 而非 401 —— 这样在
+// 基础设施中断期间, 合法客户端不会被告知其有效凭证无效。
 var ErrAuthBackend = errors.New("auth: backend datastore error")
 
-// APIKeyResolver authenticates inbound requests against the api_keys
-// table. Construct via NewAPIKeyResolver.
+// APIKeyResolver 对照 api_keys 表对入站请求做鉴权。
+// 通过 NewAPIKeyResolver 构造。
 type APIKeyResolver struct {
 	q                apiKeyQueries
 	clientIPResolver *clientip.Resolver
@@ -112,8 +109,8 @@ type apiKeyQueries interface {
 	TouchAPIKeyLastUsed(context.Context, int64) error
 }
 
-// NewAPIKeyResolver wraps a sqlc.Queries handle. Pool/connection
-// lifecycle is the caller's responsibility.
+// NewAPIKeyResolver 封装一个 sqlc.Queries 句柄。Pool/连接的
+// 生命周期由调用方负责。
 func NewAPIKeyResolver(q *dbauth.Queries) *APIKeyResolver {
 	return &APIKeyResolver{q: q}
 }
@@ -122,10 +119,10 @@ func NewAPIKeyResolverWithClientIPResolver(q *dbauth.Queries, resolver *clientip
 	return &APIKeyResolver{q: q, clientIPResolver: resolver}
 }
 
-// Resolve parses the Authorization header and authenticates the request.
-// On success, returns Identity populated from the matching api_keys row.
-// On any failure, returns ErrUnauthorized — the handler chooses the
-// HTTP status (401 for ErrUnauthorized, 503 for ErrAuthMisconfigured).
+// Resolve 解析 Authorization header 并对请求做鉴权。
+// 成功时返回由匹配的 api_keys 行填充的 Identity。
+// 任何失败都返回 ErrUnauthorized —— 由 handler 选择
+// HTTP 状态码 (ErrUnauthorized 对应 401, ErrAuthMisconfigured 对应 503)。
 func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identity, error) {
 	if r == nil || r.q == nil {
 		return Identity{}, ErrAuthMisconfigured
@@ -144,8 +141,8 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 
 	rows, err := r.q.LookupAPIKeysByPrefix(ctx, prefix)
 	if err != nil {
-		// Do not collapse infra failures to credential
-		// failure. Handler maps ErrAuthBackend to 503.
+		// 不要把基础设施故障坍缩成凭证
+		// 失败。handler 把 ErrAuthBackend 映射为 503。
 		return Identity{}, fmt.Errorf("%w: lookup: %v", ErrAuthBackend, err)
 	}
 	now := time.Now().UTC()
@@ -156,9 +153,9 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 		if row.ExpiresAt.Valid && !row.ExpiresAt.Time.After(now) {
 			continue
 		}
-		// Tenant + user status checked
-		// per-row via INNER JOIN (deleted_at IS NULL filters parents at
-		// SQL layer; status is enforced here). One DB roundtrip total.
+		// Tenant + user 状态通过 INNER JOIN 逐行检查
+		// (deleted_at IS NULL 在 SQL 层过滤掉父记录; status 在这里
+		// 强制)。总共一次 DB 往返。
 		if row.UserStatus != "active" {
 			continue
 		}
@@ -168,8 +165,8 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 		if err := bcrypt.CompareHashAndPassword([]byte(row.KeyHash), []byte(bearer)); err != nil {
 			continue
 		}
-		// KEY-016: deny check runs BEFORE allowlist (deny takes precedence).
-		// NULL ip_blacklist -> DeniesCSV false -> zero behavior change.
+		// KEY-016: deny 检查在 allowlist 之前执行 (deny 优先)。
+		// ip_blacklist 为 NULL -> DeniesCSV 为 false -> 行为零变化。
 		denied, err := apikeyipdeny.DeniesCSV(row.IpBlacklist, r.clientIPResolver.ClientIP(req))
 		if err != nil {
 			slog.WarnContext(ctx, "api_key_ip_blacklist_invalid",
@@ -212,8 +209,8 @@ func (r *APIKeyResolver) Resolve(ctx context.Context, req *http.Request) (Identi
 	return Identity{}, ErrUnauthorized
 }
 
-// parseBearer extracts the token from "Authorization: Bearer <token>".
-// Returns ("", false) when the header is missing or malformed.
+// parseBearer 从 "Authorization: Bearer <token>" 中提取 token。
+// 当 header 缺失或格式错误时返回 ("", false)。
 func parseBearer(header string) (string, bool) {
 	const prefix = "Bearer "
 	if !strings.HasPrefix(header, prefix) {

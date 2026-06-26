@@ -67,12 +67,12 @@ func (NoopLedger) GetByRequestIDAndTenantScope(ctx context.Context, requestID, t
 	return LedgerEntry{}, ErrLedgerEntryNotFound
 }
 
-// ListByRange returns no rows for a disabled ledger.
+// ListByRange 对禁用的 ledger 不返回任何行。
 func (NoopLedger) ListByRange(ctx context.Context, tenantScopeRef string, from, to time.Time, limit int) ([]LedgerEntry, error) {
 	return nil, nil
 }
 
-// ListByRequestIDs returns no rows for a disabled ledger.
+// ListByRequestIDs 对禁用的 ledger 不返回任何行。
 func (NoopLedger) ListByRequestIDs(ctx context.Context, tenantScopeRef string, requestIDs []string, limit int) ([]LedgerEntry, error) {
 	return nil, nil
 }
@@ -219,8 +219,8 @@ func (m *MemoryLedger) GetByRequestIDAndTenantScope(ctx context.Context, request
 	return entry, nil
 }
 
-// ListByRange returns tenant-scoped entries whose timestamp is inside
-// [from, to], preserving append order and stopping at limit rows.
+// ListByRange 返回 timestamp 落在 [from, to] 区间内、按 tenant 范围过滤的
+// entry，保持 append 顺序，并在达到 limit 行时停止。
 func (m *MemoryLedger) ListByRange(ctx context.Context, tenantScopeRef string, from, to time.Time, limit int) ([]LedgerEntry, error) {
 	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
 	if tenantScopeRef == "" || limit <= 0 {
@@ -248,7 +248,7 @@ func (m *MemoryLedger) ListByRange(ctx context.Context, tenantScopeRef string, f
 	return out, nil
 }
 
-// ListByRequestIDs returns tenant-scoped request ids in append order.
+// ListByRequestIDs 按 append 顺序返回经 tenant 范围过滤的 request id。
 func (m *MemoryLedger) ListByRequestIDs(ctx context.Context, tenantScopeRef string, requestIDs []string, limit int) ([]LedgerEntry, error) {
 	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
 	wanted := requestIDSet(requestIDs)

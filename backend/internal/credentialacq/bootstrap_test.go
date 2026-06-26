@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// Defect guarded: long_lived_requested was stored but never changed the flow
-// expiry window. Mutation: return DefaultFlowTTL for both branches; the long
-// branch below must fail because 10m and 7d are intentionally far apart.
+// 守护的缺陷：long_lived_requested 被存了下来，却从未改变 flow 的过期窗口。
+// 变异：两个分支都返回 DefaultFlowTTL；下面的 long 分支必然失败，因为 10m 与 7d
+// 被有意设得相距很远。
 func TestSelectBootstrapTTLDefaults(t *testing.T) {
 	short := SelectBootstrapTTL(false)
 	long := SelectBootstrapTTL(true)
