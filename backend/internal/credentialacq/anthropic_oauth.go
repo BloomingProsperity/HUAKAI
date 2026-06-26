@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -310,6 +311,15 @@ func trimmedFields(values []string) []string {
 	return out
 }
 
+// maxOAuthErrorPreview 是非标准错误响应体在摘要里保留的最大 rune 数。
+const maxOAuthErrorPreview = 200
+
+// oauthErrorSummary 把 OAuth token 端点的错误响应体提炼成一行简短摘要,供拼进面向操作者的错误信息。
+// 标准 OAuth 错误(error / error_description 字段)按原样返回——它们是规范定义、面向操作者的诊断字段。
+// 非标准响应体(HTML 错误页、代理错误页、限流页等)**绝不逐字回显**:仅返回有界、单行、去控制字符的短预览
+// (≤maxOAuthErrorPreview rune)加原始字节数。这避免把上游任意字节(最大可达上游响应体读取上限)整条反射
+// 进操作者可见的错误里——secret-mask(上游若回显了请求内容/内部细节不被原样带出)+ 防日志注入(折叠换行)
+// + 防错误信息无界膨胀。原始响应体如需深度排障应由调用方按需在内部日志单独记录,不混入返回的 error 串。
 func oauthErrorSummary(raw []byte) string {
 	var decoded struct {
 		Error            string `json:"error"`
@@ -325,9 +335,36 @@ func oauthErrorSummary(raw []byte) string {
 			return decoded.ErrorDescription
 		}
 	}
-	text := strings.TrimSpace(string(raw))
-	if text == "" {
+	if strings.TrimSpace(string(raw)) == "" {
 		return "empty response body"
 	}
-	return text
+	return boundedOAuthErrorPreview(raw)
+}
+
+// boundedOAuthErrorPreview 把非标准响应体压成单行、去控制字符、长度有界的预览,并标注原始字节数。
+func boundedOAuthErrorPreview(raw []byte) string {
+	// strings.Fields 按空白切分并丢弃空白(含换行/制表/多空格)→ 单空格重连,折叠多行。
+	collapsed := strings.Join(strings.Fields(string(raw)), " ")
+	// 剔除剩余的非打印控制字符(防日志注入与终端转义)。
+	collapsed = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, collapsed)
+	runes := []rune(collapsed)
+	truncated := false
+	if len(runes) > maxOAuthErrorPreview {
+		runes = runes[:maxOAuthErrorPreview]
+		truncated = true
+	}
+	preview := string(runes)
+	if preview == "" {
+		return fmt.Sprintf("non-standard error response (%d bytes)", len(raw))
+	}
+	ellipsis := ""
+	if truncated {
+		ellipsis = "…"
+	}
+	return fmt.Sprintf("non-standard error response (%d bytes): %s%s", len(raw), preview, ellipsis)
 }
