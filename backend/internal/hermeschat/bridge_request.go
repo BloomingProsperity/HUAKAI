@@ -114,7 +114,7 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 		// 当会话式工具循环在运行时被禁用时,完全跳过注入,使 LLM 被告知没有任何工具
 		//(内部 tool-execute 端点同样被闸门关闭)。
 		if b.toolLoopEnabled && b.toolCatalog != nil {
-			catalog := b.toolCatalog.ReadOnlyToolCatalog()
+			catalog := b.toolCatalog.ToolCatalog()
 			if catalog != nil {
 				if err := setJSONField(body, "tool_catalog", catalog); err != nil {
 					b.sessionBindings.Release(requestID)

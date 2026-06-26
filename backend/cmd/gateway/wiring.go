@@ -1070,7 +1070,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	hermesSessionBindings := hermeschat.NewSessionBindings(nil)
 	var hermesChatBridge *hermeschat.Bridge
 	if hermesRunner != nil {
-		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesSessionBindings, hermesToolRegistry, hermesToolLoopEnabled)
+		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesSessionBindings, hermesToolRegistry, hermesToolLoopEnabled, hermesProposeEnabled)
 		if err != nil {
 			return nil, err
 		}
@@ -1563,7 +1563,7 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	})
 }
 
-func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, bindings *hermeschat.SessionBindings, toolRegistry *hermesops.Registry, toolLoopEnabled bool) (*hermeschat.Bridge, error) {
+func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, bindings *hermeschat.SessionBindings, toolRegistry *hermesops.Registry, toolLoopEnabled bool, proposeEnabled bool) (*hermeschat.Bridge, error) {
 	if hermesService == nil {
 		return nil, nil
 	}
@@ -1588,7 +1588,10 @@ func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.
 		opts = append(opts, hermeschat.WithSessionBindings(bindings))
 	}
 	if toolRegistry != nil {
-		opts = append(opts, hermeschat.WithToolCatalog(readOnlyCatalogProvider{reg: toolRegistry}))
+		// Phase B:proposeEnabled 打开时注入 ProposableCatalog(含可提议的 mutating 工具 + 标志),
+		// 否则注入 ReadOnlyCatalog(默认,零行为变)。与 internal_tool_handler 的 propose 分支共用
+		// 同一个 KNOB。
+		opts = append(opts, hermeschat.WithToolCatalog(hermesToolCatalogProvider{reg: toolRegistry, proposeEnabled: proposeEnabled}))
 	}
 	// KNOB B:当 LLM 对话式工具循环在运行时被禁用时,bridge 不注入任何
 	// tool_catalog(上面的 WithToolCatalog provider 仍接着,但 gate 抑制注入),
