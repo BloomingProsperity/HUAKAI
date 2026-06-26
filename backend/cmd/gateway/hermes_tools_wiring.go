@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
@@ -120,6 +121,15 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 		quotaDeps.List = dbquota.New(d.pool).ListQuotaPoliciesForAdmin
 	}
 	reg.Register(hermesops.QuotaPolicyListSpec(quotaDeps))
+
+	// alert_rule_list -> alerting.PostgresStore.ListRules(按 tenant_id SELECT-only)。就地用 d.pool 构造
+	// 只读 store(同 routes_alerting.go 的 NewPostgresStore 用法;读路径无需 deliverer/scheduler)。
+	// 0157 迁移已把 alert_rule_list 加进 hermes_tool_calls.tool_name CHECK。
+	alertDeps := hermesops.AlertRuleListDeps{}
+	if d.pool != nil {
+		alertDeps.List = alerting.NewPostgresStore(d.pool).ListRules
+	}
+	reg.Register(hermesops.AlertRuleListSpec(alertDeps))
 
 	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
 	// admin reads on billingQueries.
