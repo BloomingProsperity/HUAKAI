@@ -54,6 +54,17 @@ func (g *PoolGate) Allow(ctx context.Context, account *pool.AccountSnapshot, req
 	if err != nil {
 		return false, pool.GateFailureHealth, err
 	}
+	// disable_cooling 运维逃生阀(TOKLIFE-02):被 flag 的账号豁免"冷却/渐进放量"这类**流量抑制**,
+	// 直接满流量放行。生产门链的 Health gate 被覆盖成本 channelhealth PoolGate(selector_wiring),
+	// 而原本唯一读 DisableCooling 的 ProviderAccountHealthGate 在生产不跑——故该开关在生产此前是死的;
+	// 这里补上读侧消费让它真生效。**只豁免 cooling_down/ramping**:disabled/manual_paused 这类硬停
+	// (ban 信号即时禁用、运维手动暂停)必须仍然拦截,不能被 disable_cooling 绕过。默认 false → 行为不变。
+	if account.DisableCooling {
+		switch rec.State {
+		case StateCoolingDown, StateRamping:
+			return true, "", nil
+		}
+	}
 	ok := IsEligible(rec, RampAdmissionKey(req, account.ID), g.clock.Now())
 	if !ok {
 		return false, pool.GateFailureHealth, nil

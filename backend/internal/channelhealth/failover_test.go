@@ -156,3 +156,71 @@ func TestChannelHealth_PoolGateRampUnwiredExpiredCooldownAdmits(t *testing.T) {
 		t.Fatalf("ramp 未接线不应转移状态,实得 %s(放行应来自 IsEligible 而非 ramp)", rec.State)
 	}
 }
+
+// disable_cooling 运维逃生阀:被 flag 账号在 channelhealth gate 豁免**未到期冷却**(满流量放行),
+// 但**仍尊重 disabled(ban 硬停)**。这把生产里此前死掉的 DisableCooling 真正点亮(生产 Health gate
+// 是 channelhealth PoolGate,原本唯一读它的 ProviderAccountHealthGate 不跑)。
+// 变异:删 Allow 里 `if account.DisableCooling` 豁免块 → "exempt 放行" 断言转红。
+func TestChannelHealth_DisableCoolingBypassesCooldownNotBan(t *testing.T) {
+	ctx, svc, store, clock := testService()
+	key := testKey()
+	rec, _ := svc.EnsureDefaultActive(ctx, key)
+	future := clock.Now().Add(time.Hour) // 未到期冷却:正常会被拦
+	rec.State = StateCoolingDown
+	rec.CooldownUntil = &future
+	_, _ = store.UpsertRecord(ctx, rec)
+
+	gate := NewPoolGate(store, clock) // ramp 未接线;未到期冷却本会被 IsEligible 拦
+	req := pool.SelectionRequest{TenantID: key.TenantID, RequestedModel: "m"}
+
+	// baseline:disable_cooling=false → 未到期冷却被拦(行为不变)。
+	cooled := &pool.AccountSnapshot{ID: key.ProviderAccountID, TenantID: key.TenantID, DisableCooling: false}
+	if ok, _, _ := gate.Allow(ctx, cooled, req); ok {
+		t.Fatal("disable_cooling=false 的未到期冷却应被拦")
+	}
+	// 主修:disable_cooling=true → 豁免冷却,放行。
+	exempt := &pool.AccountSnapshot{ID: key.ProviderAccountID, TenantID: key.TenantID, DisableCooling: true}
+	if ok, why, _ := gate.Allow(ctx, exempt, req); !ok {
+		t.Fatalf("disable_cooling=true 应豁免未到期冷却放行,why=%s", why)
+	}
+	// 安全边界:即便 disable_cooling=true,disabled(ban 硬停)仍必须被拦——不可被逃生阀绕过。
+	rec, _ = store.Get(ctx, key)
+	rec.State = StateDisabled
+	rec.CooldownUntil = nil
+	_, _ = store.UpsertRecord(ctx, rec)
+	if ok, _, _ := gate.Allow(ctx, exempt, req); ok {
+		t.Fatal("disable_cooling 不能绕过 disabled(ban 硬停),必须仍拦")
+	}
+}
+
+// disable_cooling 同样豁免 ramping(渐进放量也是流量抑制,逃生阀=满流量)。
+// 用一个 1% ramp 会拒绝的 req 做判别;变异删豁免块 → 该 req 被 AdmitRamp 拒 → 断言转红。
+func TestChannelHealth_DisableCoolingBypassesRamping(t *testing.T) {
+	ctx, svc, store, clock := testService()
+	key := testKey()
+	rec, _ := svc.EnsureDefaultActive(ctx, key)
+	rec.State = StateRamping
+	rec.RampStagePct = 1 // 1%:绝大多数 admissionKey 被拒
+	rec.CooldownUntil = nil
+	_, _ = store.UpsertRecord(ctx, rec)
+
+	// 找一个会被 1% ramp 拒绝的 req(否则偶然命中 admission 会让测试失去判别力)。
+	var deniedReq pool.SelectionRequest
+	found := false
+	for i := 0; i < 10000; i++ {
+		r := pool.SelectionRequest{TenantID: key.TenantID, RequestedModel: fmt.Sprintf("deny-%d", i)}
+		if !AdmitRamp(RampAdmissionKey(r, key.ProviderAccountID), 1) {
+			deniedReq, found = r, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("找不到会被 1% ramp 拒绝的 req")
+	}
+
+	gate := NewPoolGate(store, clock)
+	exempt := &pool.AccountSnapshot{ID: key.ProviderAccountID, TenantID: key.TenantID, DisableCooling: true}
+	if ok, why, _ := gate.Allow(ctx, exempt, deniedReq); !ok {
+		t.Fatalf("disable_cooling=true 应豁免 ramping 满流量放行,why=%s", why)
+	}
+}
