@@ -246,6 +246,11 @@ type deps struct {
 	// runner's /internal/hermes/tool-execute callback is refused (403
 	// llm_toolloop_disabled), while plain /v1/hermes/chat keeps streaming.
 	hermesToolLoopEnabled bool
+	// hermesProposeEnabled 是 Phase B 提议 KNOB(默认 FALSE,HUAKAI_HERMES_LLM_PROPOSE_ENABLED)。
+	// 为 false 时,internal handler 在任何 dry-run 解析之前拒绝每个 mode=propose 调用
+	//(403 llm_propose_disabled),故 LLM 无法提议任何 mutating 工具。默认关意味着接入提议路径在
+	// Owner 翻开它之前是零生产行为变。额外受 hermesToolLoopEnabled(KNOB B)门控。
+	hermesProposeEnabled bool
 	// WAVE H3b conversational READ-ONLY tool loop: the shared session-binding store
 	// (operator identity per chat session, keyed by the internal_token request_id)
 	// and the internal tool-execute handler the runner calls back into. The handler
@@ -843,6 +848,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+	// Phase B 提议 KNOB(默认禁用 => 未设置即零行为变:在 Owner 显式打开它之前,LLM 无法提议任何
+	// mutating 工具)。
+	hermesProposeEnabled, err := hermesBoolEnabledDefaultFalse(hermesLLMProposeEnabledEnv)
+	if err != nil {
+		return nil, err
+	}
 	if !hermesMutatingEnabled {
 		logger.Warn("Hermes MUTATING tools disabled at runtime — account_pause/account_resume/dlq_replay/renew_trigger are refused; read-only diagnostics + chat remain live",
 			zap.String("knob", hermesMutatingEnabledEnv+"=false"))
@@ -850,6 +861,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if !hermesToolLoopEnabled {
 		logger.Warn("Hermes LLM conversational tool loop disabled at runtime — no tool catalog is injected and the internal tool-execute callback is refused; plain chat keeps streaming",
 			zap.String("knob", hermesLLMToolLoopEnabledEnv+"=false"))
+	}
+	if hermesProposeEnabled {
+		// 默认关的特权面:LLM-提议路径被激活时大声记日志,使激活可审计。LLM 现在可以提议可逆的
+		// B 级 mutating 工具(仅 dry-run);执行仍需一个独立的 OPERATOR 确认——提议本身从不 mutate。
+		logger.Warn("Hermes LLM-propose path ENABLED at runtime — the assistant may now propose Proposable mutating tools (dry-run + operator confirm required to execute)",
+			zap.String("knob", hermesLLMProposeEnabledEnv+"=true"))
 	}
 	// S2: bound the Hermes MUTATING path (concurrency cap + tx deadline +
 	// per-operator-token rate limit). Defaults are conservative; every knob carries
@@ -1305,6 +1322,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesMutateRateLimiter:  hermesMutateRateLimiter,
 		hermesMutatingEnabled:    hermesMutatingEnabled,
 		hermesToolLoopEnabled:    hermesToolLoopEnabled,
+		hermesProposeEnabled:     hermesProposeEnabled,
 		hermesSessionBindings:    hermesSessionBindings,
 	}
 	rt.deps = d
@@ -1486,6 +1504,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		if internalSecret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv)); internalSecret != "" {
 			d.hermesInternalToolHandler = buildHermesInternalToolHandler(
 				[]byte(internalSecret), d.hermesSessionBindings, d.hermesToolRegistry, d.hermesToolCalls, d.hermesToolLoopEnabled,
+				d.hermesConfirmCache, d.hermesProposeEnabled,
 			)
 		}
 	}
@@ -1666,6 +1685,29 @@ const hermesMutatingEnabledEnv = "HUAKAI_HERMES_MUTATING_ENABLED"
 // /v1/hermes/chat keeps streaming. Orthogonal to HUAKAI_HERMES_ADMIN_ONLY and to
 // the mutating kill-switch above.
 const hermesLLMToolLoopEnabledEnv = "HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED"
+
+// hermesLLMProposeEnabledEnv 是 Phase B 提议 KNOB(默认禁用)。未设置/false 时,internal handler
+// 在任何 dry-run 解析之前拒绝每个 mode=propose 调用(403),故 LLM 无法提议任何 mutating 工具——
+// 接入提议路径是零行为变。设为 true(Owner-gated 激活)可让助手提议可逆的 B 级 mutating 工具;
+// 执行仍需一个独立的 OPERATOR 确认。额外受 tool-loop kill-switch(HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)
+// 与 per-tool 的 Proposable 标志门控。
+const hermesLLMProposeEnabledEnv = "HUAKAI_HERMES_LLM_PROPOSE_ENABLED"
+
+// hermesBoolEnabledDefaultFalse 解析一个默认 FALSE 的运行时布尔 knob(hermesBoolEnabledDefaultTrue
+// 的镜像):unset/空 => 默认(false、禁用);任何可解析的 bool 被采纳;格式错误的值是 fail-loud
+// boot error(绝不静默回退而悄悄启用 operator 未选择开启的特权面)。用于 Phase B 提议 KNOB,其
+// 安全默认是关。
+func hermesBoolEnabledDefaultFalse(envName string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(envName))
+	if raw == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean, got %q: %w", envName, raw, err)
+	}
+	return enabled, nil
+}
 
 // hermesBoolEnabledDefaultTrue resolves a DEFAULT-TRUE runtime boolean knob,
 // mirroring hermesAdminOnlyFromEnv's parse style: unset/empty => the default

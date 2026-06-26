@@ -8,8 +8,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
+
+// proposeMode 是 internalToolRequest.Mode 选择 Phase B LLM-提议路径的取值(LLM 在对话里提议的
+// mutating 工具会被 DRY-RUN 解析、返回 needs_confirmation,绝不在此执行)。其它任何 mode 取值
+//("" / "execute")走旧的只读 dispatch 路径,故不带 mode 的旧 runner 行为不变。
+const proposeMode = "propose"
+
+// proposeStatusNeedsConfirmation 是提议路径返回给 runner 的状态:提议已解析(dry-run),现等待
+// 一个 OPERATOR 确认。LLM 把 correlation_id 转达给 operator,但自己无法确认。
+const proposeStatusNeedsConfirmation = "needs_confirmation"
 
 // internal_tool_handler.go is the gateway-side authority for the conversational
 // READ-ONLY tool loop (WAVE H3b, Option B). The Python runner's ops assistant
@@ -56,6 +66,20 @@ type ReadOnlyToolRunner interface {
 	ReadOnlyCatalog() []hermesops.CatalogTool
 }
 
+// ProposalResolver 是 Phase B 提议分支所需的窄 DRY-RUN 面。它只暴露 ResolveProposal——一个
+// 返回 MutationPlan、绝不返回 Mutate 句柄的只读解析。*hermesops.Registry 满足它。
+//
+// 与 ReadOnlyToolRunner 一样,它刻意不含 Mutate / Resolve / AuthorizeMutating:handler 没有任何
+// 能执行 state change 的方法,所以 LLM-提议路径是结构性只读的——它至多产出一个 dry-run 预览 +
+// 一个单次 correlation_id,由一条独立的、operator 认证的路径(H1 确认端点)随后消费来执行真正的
+// mutation。守门的是这里"没有 Mutate 句柄"这一结构事实,而非 handler 可跳过的运行时检查。
+type ProposalResolver interface {
+	// ResolveProposal 对 LLM 提议的某个 MUTATING 工具做授权(角色下限)+ DRY-RUN 解析,只返回
+	// 只读的 MutationPlan。它 fail-closed 地拒绝:只读工具(ErrNotMutating)、未标记 Proposable 的
+	// mutating 工具(ErrNotProposable)、以及角色不足(ErrToolForbidden)。它从不执行任何东西。
+	ResolveProposal(ctx context.Context, name, actorRole string, req hermesops.ToolRequest) (hermesops.MutationPlan, error)
+}
+
 // InternalToolHandler serves the runner's mid-conversation tool calls.
 type InternalToolHandler struct {
 	secret    []byte
@@ -69,13 +93,29 @@ type InternalToolHandler struct {
 	// The bridge-side gate (no catalog injection) is the cooperating half; this is
 	// the enforcing half.
 	toolLoopEnabled bool
+	// proposer 是 Phase B 的 DRY-RUN 解析面(仅 ResolveProposal)。提议路径未接线时它为 nil,此时
+	// 一个 propose 调用 fail-closed(503)。它刻意不暴露任何 Mutate 句柄——见 ProposalResolver。
+	proposer ProposalResolver
+	// confirmCache 是共享的单次 correlation-id store。提议路径在此 Issue 一个 correlation_id;
+	// operator H1 确认路径从同一实例 Consume 它,故 operator 确认的正是 LLM 所提的那条提议。
+	// nil => propose fail-closed(503)。
+	confirmCache *hermesconfirm.Cache
+	// proposeEnabled 是 Phase B 提议 KNOB。默认关:mode=propose 调用在任何解析之前即被拒
+	//(403 llm_propose_disabled),故接入提议路径在 Owner 翻开它之前是零生产行为变。与
+	// toolLoopEnabled 正交(且额外受其门控)。
+	proposeEnabled bool
 }
 
 // NewInternalToolHandler wires the handler. secret is the internal-token HMAC
 // secret (same as the bridge's). A nil registry / inserter / bindings makes the
 // handler fail closed (503 / 401) rather than panic. toolLoopEnabled is KNOB B:
 // when false the handler refuses every call (403) before touching the token.
-func NewInternalToolHandler(secret []byte, bindings *SessionBindings, tools ReadOnlyToolRunner, toolCalls hermesops.ToolCallInserter, now func() time.Time, toolLoopEnabled bool) *InternalToolHandler {
+//
+// 末尾三个参数接入 Phase B LLM-提议路径:proposer 是 DRY-RUN 解析面(nil => propose fail-closed
+// 503),confirmCache 是 operator 确认路径也读取的共享 correlation-id store(nil => 503),
+// proposeEnabled 是提议 KNOB(调用点默认关 => 零行为变)。proposer/cache 为 nil 或
+// proposeEnabled=false 时,handler 完全保持其既有只读行为不变。
+func NewInternalToolHandler(secret []byte, bindings *SessionBindings, tools ReadOnlyToolRunner, toolCalls hermesops.ToolCallInserter, now func() time.Time, toolLoopEnabled bool, proposer ProposalResolver, confirmCache *hermesconfirm.Cache, proposeEnabled bool) *InternalToolHandler {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
@@ -86,6 +126,9 @@ func NewInternalToolHandler(secret []byte, bindings *SessionBindings, tools Read
 		toolCalls:       toolCalls,
 		now:             now,
 		toolLoopEnabled: toolLoopEnabled,
+		proposer:        proposer,
+		confirmCache:    confirmCache,
+		proposeEnabled:  proposeEnabled,
 	}
 }
 
@@ -96,6 +139,10 @@ func NewInternalToolHandler(secret []byte, bindings *SessionBindings, tools Read
 type internalToolRequest struct {
 	ToolName string         `json:"tool_name"`
 	Args     map[string]any `json:"args"`
+	// Mode 选择 dispatch 路径。"" / "execute" => 旧的只读工具路径(Phase B 之前唯一的路径)。
+	// "propose" => LLM-提议路径:mutating 工具被 DRY-RUN 解析(从不执行),返回一个单次
+	// correlation_id 供之后 OPERATOR 确认。不带该字段的旧 runner 解码为 Mode="",行为不变。
+	Mode string `json:"mode,omitempty"`
 }
 
 // internalToolResponse is the gateway -> runner tool-result body. It returns the
@@ -106,6 +153,15 @@ type internalToolResponse struct {
 	Status     string         `json:"status"`
 	Result     map[string]any `json:"result,omitempty"`
 	ErrorClass string         `json:"error_class,omitempty"`
+	// 提议路径字段(仅当 Status == "needs_confirmation" 时填)。它们是 LLM 转达给 operator 的
+	// 确认句柄:一个单次、短 TTL 的 correlation_id、它的寿命、脱敏后的 dry-run 预览、以及目标身份。
+	// LLM 无法用它们确认——确认是 operator-only 的。全部 omitempty,故只读响应与 Phase B 之前
+	// 字节级一致。
+	CorrelationID    string         `json:"correlation_id,omitempty"`
+	ExpiresInSeconds int            `json:"expires_in_seconds,omitempty"`
+	Preview          map[string]any `json:"preview,omitempty"`
+	TargetType       string         `json:"target_type,omitempty"`
+	TargetID         int64          `json:"target_id,omitempty"`
 }
 
 // ServeHTTP handles POST <internal_base>/tool-execute. It shares the gateway's
@@ -155,6 +211,16 @@ func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		req.Args = map[string]any{}
 	}
 
+	// Phase B —— LLM-提议分支。当 runner 把调用标记为 mode=propose(LLM 在对话里提议的某个
+	// mutating 工具),对它做 DRY-RUN 解析并返回 needs_confirmation 句柄;在此绝不执行(本 handler
+	// 没有 Mutate)。真正的 state change 只发生在之后——OPERATOR 经独立的 operator 认证 H1 确认
+	// 路径确认时。它分支在下面的只读过滤之前(否则那个 mutating 工具名会被 403),且本身受
+	// serveProposal 内的 proposeEnabled KNOB(默认关)门控。
+	if req.Mode == proposeMode {
+		h.serveProposal(w, r, op, req)
+		return
+	}
+
 	// (4) READ-ONLY filter — the structural mutation guard. Symmetric with the
 	// catalog's allow-test (catalog.go): a tool is dispatchable ONLY if it is
 	// explicitly ReadOnly AND not Mutating. Rejecting on (Mutating || !ReadOnly)
@@ -191,6 +257,108 @@ func (h *InternalToolHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		Result:     result.Summary,
 		ErrorClass: result.ErrorClass,
 	})
+}
+
+// serveProposal 处理 mode=propose 调用:对 LLM 提议的某个 mutating 工具做 DRY-RUN 解析并返回
+// needs_confirmation 句柄。它绝不执行——本路径没有 Mutate 句柄。operator 之后经独立的 operator
+// 认证 H1 确认端点确认这个 correlation_id,该端点从同一个共享 cache 里 Consume 它。
+func (h *InternalToolHandler) serveProposal(w http.ResponseWriter, r *http.Request, op SessionOperator, req internalToolRequest) {
+	// KNOB(默认关):LLM-提议路径在 Owner 激活它之前是惰性的。禁用时一个 propose 调用在任何
+	// 解析之前即被拒(403)——无 dry-run、无 correlation_id、无审计行——故合并本路径是零生产
+	// 行为变。
+	if !h.proposeEnabled {
+		writeInternalToolError(w, http.StatusForbidden, "llm_propose_disabled")
+		return
+	}
+	// Fail closed:提议路径同时需要只读的提议解析器和共享 confirm cache(operator 经同一个 cache
+	// 确认所发的 correlation_id)。任一依赖为 nil => 503,绝不产出无法解析或无法确认的提议。
+	if h.proposer == nil || h.confirmCache == nil {
+		writeInternalToolError(w, http.StatusServiceUnavailable, "propose_unavailable")
+		return
+	}
+
+	// TenantID 钉死为绑定会话的租户——runner 没提供任何租户,故 LLM 无法对另一个租户的目标提议
+	// mutation。
+	toolReq := hermesops.ToolRequest{
+		TenantID:    op.TenantID,
+		ActorUserID: op.ActorUserID,
+		Role:        op.Role,
+		Args:        req.Args,
+	}
+	// 只读 dry-run 解析。ResolveProposal 强制角色下限,拒绝只读工具(ErrNotMutating)以及未标记
+	// Proposable 的 mutating 工具(ErrNotProposable——如 renew_trigger 凭证轮换),只返回
+	// MutationPlan。它不持有任何 Mutate 句柄,故此处绝不能改变 state。
+	plan, err := h.proposer.ResolveProposal(r.Context(), req.ToolName, op.Role, toolReq)
+	if err != nil {
+		h.writeProposeError(w, r, op, req, err)
+		return
+	}
+
+	// Issue 一个单次、短 TTL 的 correlation_id,绑定到精确的(工具、租户、actor-user、operator-token、
+	// target)。因为同一个共享 cache 也支撑 operator H1 确认路径,只有会话本人的 operator 之后才能
+	// 确认这条提议——六元组绑定会拒绝任何其它 actor。
+	correlationID, issueErr := h.confirmCache.Issue(hermesconfirm.PendingConfirmation{
+		ToolName: req.ToolName,
+		TenantID: op.TenantID,
+		ActorID:  op.ActorUserID,
+		TokenID:  op.AdminActorTokenID,
+		TargetID: plan.TargetID,
+	})
+	if issueErr != nil {
+		h.recordCall(r, op, req, hermesops.ResultError, nil, "propose_failed")
+		writeInternalToolError(w, http.StatusServiceUnavailable, "tool_unavailable")
+		return
+	}
+	// 把 dry-run 记到审计账本(status ok、dry_run=true),镜像 operator H1 预览。Best-effort:提议
+	// 没有 mutate,故瞬时账本错误不得阻塞返回提议。
+	h.recordProposalDryRun(r, op, req, plan.Preview)
+
+	writeInternalToolJSON(w, http.StatusOK, internalToolResponse{
+		ToolName:         req.ToolName,
+		Status:           proposeStatusNeedsConfirmation,
+		CorrelationID:    correlationID,
+		ExpiresInSeconds: int(hermesconfirm.ConfirmTTL.Seconds()),
+		Preview:          plan.Preview,
+		TargetType:       plan.TargetType,
+		TargetID:         plan.TargetID,
+	})
+}
+
+// writeProposeError 把 ResolveProposal 的错误映射成状态码 + 一条审计 denied/error 行。角色 /
+// 非 mutating / 非 Proposable 拒绝记为 denied 行(授权结果);args / target / 依赖失败记为
+// error 行。它镜像 writeRunError,但补上提议路径独有的拒绝(ErrNotProposable + ErrTargetResolution)。
+// 本路径从未运行过任何 mutation。
+func (h *InternalToolHandler) writeProposeError(w http.ResponseWriter, r *http.Request, op SessionOperator, req internalToolRequest, err error) {
+	switch {
+	case errors.Is(err, hermesops.ErrToolUnknown):
+		h.recordCall(r, op, req, hermesops.ResultDenied, nil, "unknown_tool")
+		writeInternalToolError(w, http.StatusNotFound, "unknown_tool")
+	case errors.Is(err, hermesops.ErrToolForbidden):
+		h.recordCall(r, op, req, hermesops.ResultDenied, nil, "role_forbidden")
+		writeInternalToolError(w, http.StatusForbidden, "tool_forbidden")
+	case errors.Is(err, hermesops.ErrNotMutating):
+		// 经 mode=propose 提议了一个只读工具——提议路径只面向 mutating 工具。拒绝(未执行任何东西;
+		// 记 denied)。
+		h.recordCall(r, op, req, hermesops.ResultDenied, nil, "tool_not_mutating")
+		writeInternalToolError(w, http.StatusBadRequest, "tool_not_mutating")
+	case errors.Is(err, hermesops.ErrNotProposable):
+		// 头牌提议门:未标记 Proposable 的 mutating 工具(如 renew_trigger 凭证轮换)绝不能被 LLM
+		// 提议。operator 仍可经 H1 确认路径直接驱动它。
+		h.recordCall(r, op, req, hermesops.ResultDenied, nil, "tool_not_proposable")
+		writeInternalToolError(w, http.StatusForbidden, "tool_not_proposable")
+	case errors.Is(err, hermesops.ErrInvalidArgs):
+		h.recordCall(r, op, req, hermesops.ResultError, nil, "invalid_args")
+		writeInternalToolError(w, http.StatusBadRequest, "invalid_args")
+	case errors.Is(err, hermesops.ErrTargetResolution):
+		h.recordCall(r, op, req, hermesops.ResultError, nil, "target_resolution_failed")
+		writeInternalToolError(w, http.StatusNotFound, "target_not_found")
+	case errors.Is(err, hermesops.ErrDependencyUnwired):
+		h.recordCall(r, op, req, hermesops.ResultError, nil, "dependency_unwired")
+		writeInternalToolError(w, http.StatusServiceUnavailable, "tool_unavailable")
+	default:
+		h.recordCall(r, op, req, hermesops.ResultError, nil, "propose_failed")
+		writeInternalToolError(w, http.StatusServiceUnavailable, "tool_failed")
+	}
 }
 
 // resolveOperator verifies the internal_token and resolves the bound operator.
@@ -257,6 +425,19 @@ func (h *InternalToolHandler) writeRunError(w http.ResponseWriter, r *http.Reque
 // tool result is already computed) — it must not surface the operator's data or
 // block the conversation. The store sanitizes args + summary before insert.
 func (h *InternalToolHandler) recordCall(r *http.Request, op SessionOperator, req internalToolRequest, status hermesops.ResultStatus, summary map[string]any, errorClass string) {
+	h.appendToolCall(r, op, req, status, summary, errorClass, false)
+}
+
+// recordProposalDryRun 把 Phase B 的 dry-run 提议记成一行 hermes_tool_calls(status ok、
+// dry_run=true),镜像 operator H1 预览行。summary 是脱敏后的 plan Preview。与 recordCall 一样
+// best-effort:提议没有 mutate,故瞬时账本错误不得阻塞返回提议。
+func (h *InternalToolHandler) recordProposalDryRun(r *http.Request, op SessionOperator, req internalToolRequest, preview map[string]any) {
+	h.appendToolCall(r, op, req, hermesops.ResultOK, preview, "", true)
+}
+
+// appendToolCall 是 recordCall(dry_run=false)与 recordProposalDryRun(dry_run=true)共享的
+// best-effort 写入器。inserter 为 nil 时是 no-op;store 在 insert 前会对 args + summary 脱敏。
+func (h *InternalToolHandler) appendToolCall(r *http.Request, op SessionOperator, req internalToolRequest, status hermesops.ResultStatus, summary map[string]any, errorClass string, dryRun bool) {
 	if h.toolCalls == nil {
 		return
 	}
@@ -274,6 +455,7 @@ func (h *InternalToolHandler) recordCall(r *http.Request, op SessionOperator, re
 		RequestID:         strings.TrimSpace(r.Header.Get("X-Request-ID")),
 		CalledAt:          now,
 		ReturnedAt:        now,
+		DryRun:            dryRun,
 	})
 }
 

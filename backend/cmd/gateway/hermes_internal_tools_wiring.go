@@ -3,6 +3,7 @@ package main
 import (
 	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
 
@@ -39,13 +40,16 @@ func (p readOnlyCatalogProvider) ReadOnlyToolCatalog() []map[string]any {
 	return out
 }
 
-// buildHermesInternalToolHandler constructs the runner-facing READ-ONLY
-// tool-execute handler. It is wired with the SAME internal-token secret as the
-// bridge (so it verifies the session's internal_token), the shared session
-// bindings (so it resolves the operator), the read-only registry (Run refuses a
-// mutation), and the hermes_tool_calls inserter (audit). A nil registry / nil
-// inserter / nil bindings makes the handler fail closed at request time.
-func buildHermesInternalToolHandler(secret []byte, bindings *hermeschat.SessionBindings, reg *hermesops.Registry, inserter *hermestoolsdb.Queries, toolLoopEnabled bool) *hermeschat.InternalToolHandler {
+// buildHermesInternalToolHandler 构造面向 runner 的 tool-execute handler。它用与 bridge 相同的
+// internal-token secret(以校验会话的 internal_token)、共享的会话 bindings(以解析 operator)、
+// 只读 registry(Run 拒绝 mutation)、以及 hermes_tool_calls inserter(审计)接线。registry /
+// inserter / bindings 为 nil 时,handler 在请求期 fail-closed。
+//
+// 末尾两个参数接入 Phase B LLM-提议路径:confirmCache 是共享的 correlation-id store(与 operator
+// H1 确认路径读取的是同一个实例,故 operator 确认的正是 LLM 所提的那条提议),proposeEnabled 是
+// 提议 KNOB(默认关 => 激活前提议分支惰性 / 403)。同一个 registry 兼作 ProposalResolver(它同时
+// 满足两个接口);它的 ResolveProposal 只读、不持有任何 Mutate 句柄。
+func buildHermesInternalToolHandler(secret []byte, bindings *hermeschat.SessionBindings, reg *hermesops.Registry, inserter *hermestoolsdb.Queries, toolLoopEnabled bool, confirmCache *hermesconfirm.Cache, proposeEnabled bool) *hermeschat.InternalToolHandler {
 	if reg == nil || bindings == nil || len(secret) == 0 {
 		return nil
 	}
@@ -53,9 +57,13 @@ func buildHermesInternalToolHandler(secret []byte, bindings *hermeschat.SessionB
 	if inserter != nil {
 		calls = inserter
 	}
+	// reg 经 Registry.ResolveProposal 满足 hermeschat.ProposalResolver(只读 dry-run、不暴露任何
+	// Mutate 句柄)。confirmCache 为 nil 或 proposeEnabled=false 时,提议分支保持 fail-closed
+	//(503 / 403)——零行为变。
+	var proposer hermeschat.ProposalResolver = reg
 	// KNOB B: thread the runtime tool-loop kill-switch into the handler. When
 	// disabled, the handler refuses every runner callback (403) regardless of the
 	// bound session. The handler is still constructed (not nil) so a disabled-state
 	// call gets a clean 403 rather than a 404 from an unmounted route.
-	return hermeschat.NewInternalToolHandler(secret, bindings, reg, calls, nil, toolLoopEnabled)
+	return hermeschat.NewInternalToolHandler(secret, bindings, reg, calls, nil, toolLoopEnabled, proposer, confirmCache, proposeEnabled)
 }
