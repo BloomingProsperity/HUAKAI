@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { parseTenantInput, probeSummary, statusTone } from './proxies'
+import { parseTenantInput, probeSummary, statusTone, validateCreateForm, type CreateProxyForm } from './proxies'
 import type { ProbeResult } from './types'
+
+function form(p: Partial<CreateProxyForm>): CreateProxyForm {
+  return { name: 'p1', protocol: 'http', host: '1.2.3.4', port: '8080', auth_username: '', auth_secret: '', status: 'active', ...p }
+}
 
 function result(p: Partial<ProbeResult>): ProbeResult {
   return { object: 'proxy_probe', ok: false, latency_ms: 0, probed_at: '2026-06-26T00:00:00Z', ...p }
@@ -40,5 +44,22 @@ describe('parseTenantInput', () => {
     expect(parseTenantInput('9')).toBe(9)
     expect(parseTenantInput('0')).toBe(1)
     expect(parseTenantInput('x')).toBe(1)
+  })
+})
+
+describe('validateCreateForm', () => {
+  it('合法表单 → null', () => {
+    expect(validateCreateForm(form({}))).toBeNull()
+    expect(validateCreateForm(form({ status: '' }))).toBeNull() // status 可空
+    expect(validateCreateForm(form({ port: '65535' }))).toBeNull()
+  })
+  it('各非法输入返回对应错误(变异:任一校验缺失则该非法漏过返 null)', () => {
+    expect(validateCreateForm(form({ name: '  ' }))).toContain('名称')
+    expect(validateCreateForm(form({ protocol: 'ftp' }))).toContain('协议')
+    expect(validateCreateForm(form({ host: '' }))).toContain('主机')
+    expect(validateCreateForm(form({ port: '0' }))).toContain('端口')
+    expect(validateCreateForm(form({ port: '70000' }))).toContain('端口')
+    expect(validateCreateForm(form({ port: 'abc' }))).toContain('端口')
+    expect(validateCreateForm(form({ status: 'weird' }))).toContain('状态')
   })
 })

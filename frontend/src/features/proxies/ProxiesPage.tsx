@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
-import { listProxies, testProxy } from './api'
-import { DEFAULT_TENANT_ID, parseTenantInput, probeSummary, statusTone, type ProbeSummary } from './proxies'
+import { deleteProxy, listProxies, setProxyStatus, testProxy } from './api'
+import { DEFAULT_TENANT_ID, parseTenantInput, probeSummary, STATUSES, statusTone, type ProbeSummary } from './proxies'
+import { ProxyCreateForm } from './ProxyCreateForm'
 import type { Proxy } from './types'
 
 /*
- * 出口代理池(运营台 · 路由与池)。只读列出租户出口代理 + 行内「测试连通」主动质检:
- * 经该代理建隧道到服务端固定 canary,测真实出站连通 + 延迟(区别于被动 TCP 存活)。
- * 本页不做 CRUD(编辑/新建后续切片),只列表 + 测试。数据走 /admin/v1/proxies(admin token)。
- * 真码:backend/internal/proxyadminhttp、backend/cmd/gateway/routes_proxy_probe.go(双 SSRF 守卫)。
+ * 出口代理池(运营台 · 路由与池)。列出租户出口代理 + 新建 + 行内删除/状态切换 + 「测试连通」主动质检
+ * (经该代理建隧道到服务端固定 canary,测真实出站连通 + 延迟,区别于被动 TCP 存活)。
+ * 编辑(改 host/凭据)留作后续切片(update 的 auth_secret 留空会清空凭据,需专门 UX 处理)。
+ * 数据走 /admin/v1/proxies(admin token)。真码:backend/internal/proxyadminhttp、
+ * backend/cmd/gateway/routes_proxy_probe.go(双 SSRF 守卫)。
  */
 
 type RowProbe = { testing: boolean; summary?: ProbeSummary }
@@ -24,6 +26,8 @@ export function ProxiesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [probes, setProbes] = useState<Record<number, RowProbe>>({})
+  const [reloadKey, setReloadKey] = useState(0)
+  const reload = () => setReloadKey((k) => k + 1)
 
   useEffect(() => {
     const ac = new AbortController()
@@ -41,7 +45,26 @@ export function ProxiesPage() {
         if (!ac.signal.aborted) setLoading(false)
       })
     return () => ac.abort()
-  }, [tenantId])
+  }, [tenantId, reloadKey])
+
+  async function onDelete(p: Proxy) {
+    if (!window.confirm(`确定删除代理「${p.name}」(${p.host}:${p.port})?`)) return
+    try {
+      await deleteProxy(tenantId, p.id)
+      reload()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '删除失败')
+    }
+  }
+
+  async function onStatusChange(p: Proxy, status: string) {
+    try {
+      await setProxyStatus(tenantId, p.id, status)
+      reload()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '状态更新失败')
+    }
+  }
 
   async function runTest(id: number) {
     setProbes((m) => ({ ...m, [id]: { testing: true } }))
@@ -62,8 +85,8 @@ export function ProxiesPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
           <h1 style={{ fontSize: 22 }}>出口代理池</h1>
           <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-            运营台 · 租户出口代理列表。点「测试连通」经该代理建隧道到固定探测目标,验真实出站连通 + 延迟
-            (非裸 TCP 存活)。编辑/新建为后续切片。
+            运营台 · 租户出口代理。新建 / 删除 / 切换状态;点「测试连通」经该代理建隧道到固定探测目标,
+            验真实出站连通 + 延迟(非裸 TCP 存活)。
           </p>
         </div>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
@@ -76,6 +99,8 @@ export function ProxiesPage() {
           />
         </label>
       </header>
+
+      <ProxyCreateForm tenantId={tenantId} onCreated={reload} />
 
       {loading && <p style={{ color: 'var(--hk-ink-500)' }}>加载中…</p>}
       {error && (
@@ -108,7 +133,15 @@ export function ProxiesPage() {
                     <td style={td}>{p.name}</td>
                     <td style={td}>{p.protocol}</td>
                     <td style={{ ...td, fontVariantNumeric: 'tabular-nums' }}>{p.host}:{p.port}</td>
-                    <td style={{ ...td, color: toneColor[statusTone(p.status)] }}>{p.status}</td>
+                    <td style={td}>
+                      <select
+                        value={p.status}
+                        onChange={(e) => onStatusChange(p, e.target.value)}
+                        style={{ color: toneColor[statusTone(p.status)], border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', padding: '2px 6px', fontSize: 12, background: 'transparent' }}
+                      >
+                        {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </td>
                     <td style={{ ...td, color: probe?.summary ? toneColor[probe.summary.tone] : 'var(--hk-ink-500)' }}>
                       {probe?.testing ? '测试中…' : probe?.summary ? probe.summary.label : '—'}
                     </td>
@@ -127,6 +160,22 @@ export function ProxiesPage() {
                         }}
                       >
                         {probe?.testing ? '测试中' : '测试连通'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDelete(p)}
+                        style={{
+                          marginLeft: 8,
+                          padding: '4px 10px',
+                          border: '1px solid var(--hk-danger, #c0392b)',
+                          borderRadius: 'var(--hk-radius-2)',
+                          background: 'transparent',
+                          color: 'var(--hk-danger, #c0392b)',
+                          cursor: 'pointer',
+                          fontSize: 12,
+                        }}
+                      >
+                        删除
                       </button>
                     </td>
                   </tr>

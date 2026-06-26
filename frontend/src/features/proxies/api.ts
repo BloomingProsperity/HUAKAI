@@ -1,5 +1,5 @@
 import { apiGet, apiSend } from '../../lib/api'
-import type { ProbeResult, ProxyListResponse } from './types'
+import type { CreateProxyInput, ProbeResult, Proxy, ProxyListResponse } from './types'
 
 /*
  * 出口代理池数据访问层。端点 /admin/v1/proxies(admin 鉴权,apiGet/apiSend 经 authHeaders
@@ -21,4 +21,19 @@ export async function listProxies(tenantId: number, signal?: AbortSignal): Promi
  */
 export async function testProxy(tenantId: number, id: number): Promise<ProbeResult> {
   return apiSend<ProbeResult>('POST', `${PATH}/${id}/test`, undefined, { query: { tenant_id: tenantId } })
+}
+
+/** 新建代理。auth_secret 仅此处发送(后端加密存),返回新代理(secret-free)。 */
+export async function createProxy(tenantId: number, input: CreateProxyInput): Promise<Proxy> {
+  return apiSend<Proxy>('POST', PATH, input, { query: { tenant_id: tenantId } })
+}
+
+/** 删除代理(软删,幂等)。后端返回 204 无体。 */
+export async function deleteProxy(tenantId: number, id: number): Promise<void> {
+  await apiSend<void>('DELETE', `${PATH}/${id}`, undefined, { query: { tenant_id: tenantId } })
+}
+
+/** 切换代理生命周期状态(active/disabled/dead)。 */
+export async function setProxyStatus(tenantId: number, id: number, status: string): Promise<void> {
+  await apiSend<void>('PUT', `${PATH}/${id}/status`, { status }, { query: { tenant_id: tenantId } })
 }
