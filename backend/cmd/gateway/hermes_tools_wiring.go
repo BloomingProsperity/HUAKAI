@@ -92,6 +92,15 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.ModelResolveDiagnoseSpec(mrDeps))
 
+	// pool_list -> dbbilling.Queries.ListPools(按租户 SELECT-only,SQL 含 deleted_at IS NULL 只返活跃池)。
+	// 0154 迁移已把 pool_list 加进 hermes_tool_calls.tool_name CHECK。PoolGroup 全结构化配置无自由文本/PII,
+	// poolShape 仍显式列举投影。
+	poolDeps := hermesops.PoolListDeps{}
+	if d.billingQueries != nil {
+		poolDeps.List = d.billingQueries.ListPools
+	}
+	reg.Register(hermesops.PoolListSpec(poolDeps))
+
 	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
 	// admin reads on billingQueries.
 	obsDeps := hermesops.ObservabilityDeps{}
