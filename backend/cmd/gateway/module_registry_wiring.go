@@ -98,6 +98,46 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	// ── channel-health: 健康状态机 / 熔断 / ramp 恢复 ──────────────────────────
+	// Probe: 状态机服务接线即 wired。只报 wired/degraded,不含任何 channel 健康明细。
+	channelHealth := d.channelHealth
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "channelhealth.service",
+		Category: "channel-health",
+		Title:    "Channel health state machine & failover",
+		Capabilities: []string{
+			"health state machine (active/degraded/cooling_down/ramping/disabled)",
+			"adaptive cooldown + lazy ramp recovery",
+			"pool gate flow admission",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if channelHealth == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "channel-health service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	// ── reliability: 死信队列 / 重放 ──────────────────────────────────────────
+	// Probe: dlq 重放服务接线即 wired。只报 wired/degraded,不含任何队列内容。
+	dlqService := d.dlqService
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "dlq.service",
+		Category: "reliability",
+		Title:    "Dead-letter queue & replay",
+		Capabilities: []string{
+			"failed async-effect capture",
+			"idempotency-keyed replay (re-claim + re-deliver)",
+			"priority lanes + bounded drain",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if dlqService == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "dlq service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	return reg
 }
 
@@ -106,9 +146,11 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 // treated as live-only (no static overlay), so the spine never fabricates a
 // catalog entry for an unmapped module.
 var seedCatalogJoin = map[string]string{
-	"billing.service":    "billing",
-	"routing.selector":   "pool",
-	"credentials.worker": "credentialworker",
+	"billing.service":       "billing",
+	"routing.selector":      "pool",
+	"credentials.worker":    "credentialworker",
+	"channelhealth.service": "channelhealth",
+	"dlq.service":           "dlq",
 }
 
 // moduleSource adapts the live registry + embedded static catalog to
