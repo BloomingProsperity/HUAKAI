@@ -1,4 +1,4 @@
-//! HUAKAI SSE (Server-Sent Events) parser.
+//! HUAKAI SSE (Server-Sent Events) parser。
 //!
 //! 按 WHATWG/W3C EventSource 协议解析 `text/event-stream` 响应。该实现只依赖
 //! 协议文本与 HUAKAI 本地需求，不读取第三方 SSE parser 源码。
@@ -18,7 +18,7 @@ pub struct SseFrame {
     pub retry_ms: Option<u32>,
 }
 
-/// HUAKAI SSE parser.
+/// HUAKAI SSE parser。
 ///
 /// 输入为任意切分的 `Bytes` chunk，例如 hyper body chunk。`feed` 会累积跨 chunk
 /// 边界的半行，只有遇到空行完成帧时才返回 `SseFrame`。

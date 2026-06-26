@@ -1,4 +1,4 @@
-// M-rust-8 attempt reporter
+// M-rust-8 attempt 上报器 (attempt reporter)
 // 职责: 非阻塞收集 attempt 终态, 异步上报 mock Go control plane, 失败时在内存队列内重试。
 
 use std::{

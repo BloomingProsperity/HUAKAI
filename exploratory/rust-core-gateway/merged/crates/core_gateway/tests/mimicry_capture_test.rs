@@ -1,4 +1,4 @@
-// D3 burn-the-boats: no fallback to hyper-rustls, fix mimicry path instead
+// D3 burn-the-boats: 不回退到 hyper-rustls, 而是直接修复 mimicry 路径
 
 mod common;
 
