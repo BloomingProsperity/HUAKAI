@@ -178,6 +178,65 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	// ── payments: 充值订单生命周期(中转站 SaaS 变现入口)────────────────────────
+	// Probe: 支付服务接线即 wired。只报 wired/degraded,不含任何订单/余额明细。
+	paymentService := d.paymentService
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "payment.service",
+		Category: "payments",
+		Title:    "Topup order lifecycle & balance",
+		Capabilities: []string{
+			"topup order lifecycle (create/cancel/refund/fulfill)",
+			"admin manual confirm-paid crediting",
+			"user balance + order history + per-order audit",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if paymentService == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "payment service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	// ── subscription: 订阅档管理 + 用户订阅生命周期 ───────────────────────────
+	// Probe: 订阅服务接线即 wired。只报 wired/degraded,不含任何订阅明细。
+	subscriptionService := d.subscriptionService
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "subscription.service",
+		Category: "subscription",
+		Title:    "Subscription plans & user subscriptions",
+		Capabilities: []string{
+			"plan management (create/update/disable)",
+			"user subscription assign/cancel/extend",
+			"windowed quota reset",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if subscriptionService == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "subscription service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	// ── promo: 兑换码(voucher)铸造与兑付 ────────────────────────────────────
+	// Probe: 兑换码服务接线即 wired。只报 wired/degraded,不含任何码/兑付明细。
+	voucherService := d.voucherService
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "voucher.service",
+		Category: "promo",
+		Title:    "Redemption codes (voucher)",
+		Capabilities: []string{
+			"redemption code mint (single + batch)",
+			"code redemption → balance / subscription grant",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if voucherService == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "voucher service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	return reg
 }
 
@@ -193,6 +252,8 @@ var seedCatalogJoin = map[string]string{
 	"dlq.service":           "dlq",
 	"registry.model":        "registry",
 	"router.planner":        "router",
+	"voucher.service":       "voucher",
+	// payment.service / subscription.service:catalog 无对应 pkg → live-only(无静态 overlay,仍合法)。
 }
 
 // moduleSource adapts the live registry + embedded static catalog to

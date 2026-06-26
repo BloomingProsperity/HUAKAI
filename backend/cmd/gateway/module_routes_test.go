@@ -14,8 +14,11 @@ import (
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
+	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
+	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
 // TestModulesEndpointIsAdminGated — a no-credential request to /admin/v1/modules
@@ -210,6 +213,64 @@ func TestModulesRegistryWiresRoutingStack(t *testing.T) {
 	// degraded:nil → StatusDegraded(身份仍注册)。
 	degraded := fetch(&deps{})
 	for _, id := range []string{"registry.model", "router.planner"} {
+		m, ok := degraded[id]
+		if !ok {
+			t.Fatalf("%s 应仍注册(身份与健康无关)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusDegraded {
+			t.Fatalf("%s 未接线时探针应 StatusDegraded,got %v", id, m.LiveProbe.Status)
+		}
+	}
+}
+
+// TestModulesRegistryWiresCommerce — Hermes 感知扩展第 3 批:money/变现域(中转站 SaaS 卖额度的核心)。
+// payment/subscription/voucher 三服务注册 + 探针 wired/degraded。voucher 有 catalog overlay;
+// payment/subscription 是 live-only(catalog 无对应 pkg → Catalog 应为 nil,不夸大成有静态条目)。
+func TestModulesRegistryWiresCommerce(t *testing.T) {
+	fetch := func(d *deps) map[string]modulehttp.ModuleView {
+		src := newModuleSource(buildModuleRegistry(d))
+		h := modulehttp.NewModulesHandler(src)
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil))
+		var resp modulehttp.ModulesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out := map[string]modulehttp.ModuleView{}
+		for _, m := range resp.Modules {
+			out[m.ID] = m
+		}
+		return out
+	}
+
+	ids := []string{"payment.service", "subscription.service", "voucher.service"}
+
+	// wired:三服务非 nil → 探针 StatusOK。
+	wired := fetch(&deps{
+		paymentService:      &payment.Service{},
+		subscriptionService: &subscription.Service{},
+		voucherService:      &voucher.Service{},
+	})
+	for _, id := range ids {
+		m, ok := wired[id]
+		if !ok {
+			t.Fatalf("%s 未注册进 module registry(Hermes 看不到该模块)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusOK {
+			t.Fatalf("%s 接线时探针应 StatusOK,got %v", id, m.LiveProbe.Status)
+		}
+	}
+	// voucher 有 catalog overlay(catalog 有 voucher pkg);payment/subscription live-only(Catalog 应 nil)。
+	if wired["voucher.service"].Catalog == nil {
+		t.Fatal("voucher.service 缺 catalog overlay(seedCatalogJoin 未接)")
+	}
+	if wired["payment.service"].Catalog != nil || wired["subscription.service"].Catalog != nil {
+		t.Fatalf("payment/subscription 应 live-only(catalog 无 pkg),不应有 overlay")
+	}
+
+	// degraded:nil → StatusDegraded(身份仍注册)。
+	degraded := fetch(&deps{})
+	for _, id := range ids {
 		m, ok := degraded[id]
 		if !ok {
 			t.Fatalf("%s 应仍注册(身份与健康无关)", id)
