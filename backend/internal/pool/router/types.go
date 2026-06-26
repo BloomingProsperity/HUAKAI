@@ -96,6 +96,14 @@ type SelectionRequest struct {
 	// ContextWindowGate 加进 EstimatedInputTokens 后再与 ModelContextWindow 比较,
 	// 保证为输出留位; 0 (未指定) 时不影响判定。
 	MaxOutputTokens int
+
+	// BindingID / BindingRPMLimit / BindingTPMLimit 是命中 binding 的 per-binding 限流上下文
+	// (model_pool_bindings.id / rpm_limit / tpm_limit),由 dispatch 端从 activeBindingMetadata
+	// 透传,供 BindingRateLimitSelector 做 per-binding RPM/TPM 预算闸。与 SelectionMode 同款透传:
+	// 仅携带数据,是否真强制由该 selector 的计数器(env 门控)+ 限额是否 >0 决定。<=0 视为无该维度限额。
+	BindingID       int64
+	BindingRPMLimit int64
+	BindingTPMLimit int64
 }
 
 // StickyState 标记一次 Select 相对 sticky binding 的结果(DM-07)。
