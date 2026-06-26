@@ -58,13 +58,15 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	reg.Register(hermesops.CredentialDiagnoseSpec(credDeps))
 
 	// account_health_diagnose -> admindb.GetAdminProviderAccountHealth (read) +
-	// channelhealth.Service.SummarizeChannelHealth (aggregate read).
+	// channelhealth.Service.SummarizeChannelHealth (aggregate read) +
+	// channelhealth.Service.ListChannelHealth (本账号逐通道明细,只读 Record 无 payload)。
 	healthDeps := hermesops.AccountHealthDeps{}
 	if d.adminQueries != nil {
 		healthDeps.ProviderAccountHealth = d.adminQueries.GetAdminProviderAccountHealth
 	}
 	if d.channelHealth != nil {
 		healthDeps.ChannelSummary = d.channelHealth.SummarizeChannelHealth
+		healthDeps.ChannelList = d.channelHealth.ListChannelHealth
 	}
 	reg.Register(hermesops.AccountHealthDiagnoseSpec(healthDeps))
 
