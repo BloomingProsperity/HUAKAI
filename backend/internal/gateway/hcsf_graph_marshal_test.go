@@ -557,6 +557,102 @@ func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *te
 	}
 }
 
+// TestInjectGeminiResponseFormatJSONSchema 守 structured_output 能力缝:inbound OpenAI Chat
+// response_format={"type":"json_schema","json_schema":{"schema":{...}}} 打到 Gemini 上游时,必须
+// 翻译成 generationConfig.responseMimeType="application/json" + responseSchema=<schema>。此前 Gemini
+// marshal 只认 Gemini 形键,OpenAI 形被静默丢弃。Mutation:删 openAIResponseFormatToGemini 映射块 →
+// responseSchema/responseMimeType 缺失 → 本用例红。
+func TestInjectGeminiResponseFormatJSONSchema(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object","properties":{"age":{"type":"integer"}}}}}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw}},
+	}
+	out, err := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+	if err != nil {
+		t.Fatalf("injectRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	gen, ok := body["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("缺 generationConfig: body=%+v", body)
+	}
+	if gen["responseMimeType"] != "application/json" {
+		t.Fatalf("responseMimeType=%v want application/json", gen["responseMimeType"])
+	}
+	schema, ok := gen["responseSchema"].(map[string]any)
+	if !ok {
+		t.Fatalf("responseSchema 缺失/非对象(OpenAI json_schema 被静默丢弃): %+v", gen["responseSchema"])
+	}
+	if schema["type"] != "object" {
+		t.Fatalf("responseSchema 应是被请求的 schema 本体: %+v", schema)
+	}
+}
+
+// TestInjectGeminiResponseFormatJSONObject:inbound {"type":"json_object"} → Gemini JSON 模式
+// (responseMimeType=application/json,无 responseSchema)。
+func TestInjectGeminiResponseFormatJSONObject(t *testing.T) {
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: json.RawMessage(`{"type":"json_object"}`)}},
+	}
+	out, _ := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+	var body map[string]any
+	_ = json.Unmarshal(out, &body)
+	gen, _ := body["generationConfig"].(map[string]any)
+	if gen == nil || gen["responseMimeType"] != "application/json" {
+		t.Fatalf("json_object 应映射 responseMimeType=application/json,got %+v", gen)
+	}
+	if _, has := gen["responseSchema"]; has {
+		t.Fatalf("json_object 无 schema,不应出现 responseSchema: %+v", gen)
+	}
+}
+
+// TestInjectGeminiResponseFormatNativePassthrough:inbound 已是 Gemini 形时仍 1:1 直传,
+// 不被 OpenAI 翻译分支干扰/覆盖。
+func TestInjectGeminiResponseFormatNativePassthrough(t *testing.T) {
+	raw := json.RawMessage(`{"responseMimeType":"text/x.enum","responseSchema":{"type":"string","enum":["A","B"]}}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw}},
+	}
+	out, _ := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+	var body map[string]any
+	_ = json.Unmarshal(out, &body)
+	gen, _ := body["generationConfig"].(map[string]any)
+	if gen == nil || gen["responseMimeType"] != "text/x.enum" {
+		t.Fatalf("Gemini 原生 responseMimeType 应直传 text/x.enum,got %+v", gen)
+	}
+	schema, ok := gen["responseSchema"].(map[string]any)
+	if !ok || schema["type"] != "string" {
+		t.Fatalf("Gemini 原生 responseSchema 应直传,got %+v", gen["responseSchema"])
+	}
+}
+
+// TestInjectGeminiResponseFormatJSONSchemaNoSchema:边界——json_schema 但缺 schema 字段时,
+// 退化为 Gemini JSON 模式(只设 responseMimeType,不注入坏/空 responseSchema → 不会让 Gemini 4xx)。
+func TestInjectGeminiResponseFormatJSONSchemaNoSchema(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"json_schema","json_schema":{}}`,
+		`{"type":"json_schema"}`,
+		`{"type":"json_schema","json_schema":{"schema":null}}`,
+	} {
+		env := &proto.HCSF{
+			RequestControls: proto.RequestControls{ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: json.RawMessage(raw)}},
+		}
+		out, _ := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+		var body map[string]any
+		_ = json.Unmarshal(out, &body)
+		gen, _ := body["generationConfig"].(map[string]any)
+		if gen == nil || gen["responseMimeType"] != "application/json" {
+			t.Fatalf("缺 schema 应退化为 JSON 模式 responseMimeType=application/json,raw=%s got=%+v", raw, gen)
+		}
+		if _, has := gen["responseSchema"]; has {
+			t.Fatalf("缺 schema 不应注入 responseSchema(否则 Gemini 4xx),raw=%s got=%+v", raw, gen)
+		}
+	}
+}
+
 func TestInjectRequestControlsMergesRequestPassthrough(t *testing.T) {
 	max := 12
 	env := &proto.HCSF{
