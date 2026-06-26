@@ -1,7 +1,6 @@
-// Cross-feature integration test: pool selector + auth.TokenProvider via
-// AuthCredentialGate. Verifies the boundary the slice-1+2 reviewer flagged
-// as untested — "pool selector calls auth.TokenProvider" was previously
-// stubbed on both sides.
+// 跨功能集成测试：pool selector + auth.TokenProvider，经由
+// AuthCredentialGate。验证 slice-1+2 评审者标记为未测的边界 ——
+//「pool selector 调用 auth.TokenProvider」此前两侧都被打桩。
 package pool
 
 import (
@@ -16,10 +15,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
-// AT-XFEAT-001: malformed upstream token causes CredentialGate to reject
-// the holding account; pool selector falls over to the next eligible
-// account whose credential is valid. Validates the CredentialGate ↔
-// GetAccessToken contract.
+// AT-XFEAT-001：畸形的上游 token 导致 CredentialGate 拒绝持有它的账号；
+// pool selector 故障转移到下一个凭证有效的合格账号。验证 CredentialGate ↔
+// GetAccessToken 契约。
 func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
 	refreshClient := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		// 返回 malformed token, 触发 auth.ErrTokenMalformed, 但不在测试里监听本地端口。
@@ -43,8 +41,8 @@ func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
 	authStore.put(authCredFor(t, 1, 200, "valid-static-token-32chars-abcdef0123", "", "", time.Time{}))
 
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
-		snap(100, 1, 100, 0.10, time.Now().Add(-2*time.Hour)), // priority-better but credential-malformed
-		snap(200, 1, 200, 0.50, time.Now().Add(-1*time.Hour)), // priority-worse but credential-valid (static)
+		snap(100, 1, 100, 0.10, time.Now().Add(-2*time.Hour)), // 优先级更优但凭证畸形
+		snap(200, 1, 200, 0.50, time.Now().Add(-1*time.Hour)), // 优先级更差但凭证有效（静态）
 	}}
 	policy := &stubPolicy{p: &RoutingPolicy{TopKDefault: 1}}
 
@@ -66,7 +64,7 @@ func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
 		t.Fatalf("CredentialGate must reject malformed-token account 100 and fail over to 200; got %d", res.AccountID)
 	}
 
-	// Verify the gate failure reason is in the routing reason payload.
+	// 验证 gate 失败原因已写入 routing reason payload。
 	var rr map[string]any
 	if err := json.Unmarshal(res.RoutingReasonJSON, &rr); err != nil {
 		t.Fatalf("routing reason JSON: %v", err)
@@ -84,7 +82,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // =====================================================================
-// auth-package in-memory stubs (duplicated for cross-package access)
+// auth 包的内存桩（为跨包访问而复制一份）
 // =====================================================================
 
 type authMemStore struct {

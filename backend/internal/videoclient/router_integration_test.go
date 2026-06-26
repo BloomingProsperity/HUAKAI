@@ -22,8 +22,8 @@ import (
 )
 
 func TestVideoSubmitFetchRoundTrip(t *testing.T) {
-	// MUTATION: fetch looks up the wrong id or submit persists a different
-	// task type/provider; the fetched task assertions below go red.
+	// 变异:让 fetch 查错 id,或让 submit 持久化成不同的 task type/provider;
+	// 下面对所取 task 的断言就会变红。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openVideoPool(t, ctx)

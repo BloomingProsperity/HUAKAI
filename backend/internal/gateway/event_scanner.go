@@ -16,14 +16,14 @@ const (
 	maxScannerBufferCap     = 64 << 20
 )
 
-// SSEEvent is the F-GW-002 Phase A bounded upstream event envelope.
+// SSEEvent 是 F-GW-002 Phase A 中有界的 upstream event 信封。
 type SSEEvent struct {
 	Type       string    `json:"type"`
 	Data       []byte    `json:"data"`
 	ObservedAt time.Time `json:"observed_at"`
 }
 
-// ScanSSEEvents scans F-GW-002 Phase A SSE events with a bounded buffer.
+// ScanSSEEvents 用一个有界缓冲区扫描 F-GW-002 Phase A 的 SSE event。
 func ScanSSEEvents(ctx context.Context, r io.Reader, bufferCap int) iter.Seq2[SSEEvent, error] {
 	return func(yield func(SSEEvent, error) bool) {
 		capBytes := normalizeScannerCap(bufferCap)

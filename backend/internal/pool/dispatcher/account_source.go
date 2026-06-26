@@ -1,13 +1,12 @@
-// Phase C.2 production adapter: DB-backed pool.AccountSource.
+// Phase C.2 生产适配器:基于 DB 的 pool.AccountSource。
 //
-// Bridges the selector's account-listing seam to a pool-group-keyed sqlc
-// query. The previous DBRepository.ListEligibleAccounts was channel-keyed;
-// for the chat-completions hot path we want a single round-trip from
-// pool_group → eligible accounts.
+// 把 selector 的 account 列举接缝桥接到以 pool_group 为键的 sqlc 查询。
+// 之前的 DBRepository.ListEligibleAccounts 是以 channel 为键的;对于
+// chat-completions 热路径,我们希望从 pool_group → eligible accounts
+// 只走一次往返。
 //
-// LoadRate is computed as in_flight_count / cap_concurrency. Capacity rows
-// at zero capacity are treated as load=1.0 (excluded by upstream gates,
-// not silently division-by-zero).
+// LoadRate 计算为 in_flight_count / cap_concurrency。容量为零的容量行
+// 被当作 load=1.0(由上游 gate 排除,而非悄悄触发除零)。
 
 package dispatcher
 
@@ -21,18 +20,18 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// DBAccountSource implements AccountSource over the
-// ListEligibleAccountsByPoolGroup sqlc query.
+// DBAccountSource 基于 ListEligibleAccountsByPoolGroup sqlc 查询实现
+// AccountSource。
 type DBAccountSource struct {
 	q *dbbilling.Queries
 }
 
-// NewDBAccountSource constructs the adapter from a sqlc.Queries handle.
+// NewDBAccountSource 从 sqlc.Queries 句柄构造适配器。
 func NewDBAccountSource(q *dbbilling.Queries) *DBAccountSource {
 	return &DBAccountSource{q: q}
 }
 
-// ListAccounts implements AccountSource.
+// ListAccounts 实现 AccountSource。
 func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest) ([]*AccountSnapshot, error) {
 	if s == nil || s.q == nil {
 		return nil, fmt.Errorf("pool: DBAccountSource not configured")
@@ -68,13 +67,13 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 			Weight:         r.StaticWeight,
 			MaxConcurrency: int(r.CapConcurrency),
 			LoadRate:       loadRate(r.InFlightCount, r.CapConcurrency),
-			// MaxWaiting feeds the selector's WaitPlan fallback path
-			// (selector.go fallbackWaitPlan). cap_queue_fallback is the
-			// per-account cap on the fallback queue length.
+			// MaxWaiting 供给 selector 的 WaitPlan 回落路径
+			//(selector.go fallbackWaitPlan)。cap_queue_fallback 是
+			// 每账号在回落队列长度上的上限。
 			MaxWaiting: int(r.CapQueueFallback),
-			// WaitTimeoutMS left at 0 — selector overrides with
-			// RoutingPolicy.FallbackTimeoutMS when the policy is set.
-			// Per-account timeout override is a Phase E refinement.
+			// WaitTimeoutMS 保持 0 —— 当设置了 policy 时,selector 会用
+			// RoutingPolicy.FallbackTimeoutMS 覆盖它。
+			// 每账号的超时 override 是 Phase E 的精化项。
 			HealthState:          r.HealthState,
 			ModelRateLimits:      modelRateLimits,
 			WindowCostLimitCents: r.WindowCostLimitCents,
@@ -132,9 +131,8 @@ func decodeModelRateLimits(raw []byte) (map[string]ModelRateLimit, error) {
 	return out, nil
 }
 
-// loadRate maps in-flight count to a [0,1] load fraction. Zero-capacity
-// accounts are reported as load=1 so upstream gates exclude them rather
-// than triggering division-by-zero.
+// loadRate 把 in-flight 计数映射为 [0,1] 的负载比例。容量为零的账号
+// 被报告为 load=1,从而让上游 gate 把它们排除,而不是触发除零。
 func loadRate(inFlight, cap int32) float64 {
 	if cap <= 0 {
 		return 1.0

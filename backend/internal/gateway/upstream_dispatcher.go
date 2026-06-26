@@ -49,8 +49,8 @@ type DispatchInput struct {
 	UpstreamModelID string
 	// InboundBody 客户原始请求 body 字节。
 	InboundBody []byte
-	// BodyControls are optional per-channel pre-dispatch JSON transforms.
-	// Zero value is a no-op.
+	// BodyControls 是可选的 per-channel 出站前 JSON 变换。
+	// 零值为 no-op。
 	BodyControls DispatchBodyControls
 	// InboundContentType 是入口请求 Content-Type。空值保持 adapter 默认；
 	// multipart audio 透传时必须带原 boundary。
@@ -66,9 +66,9 @@ type DispatchInput struct {
 	// TransportMode 决定走 standard / mimicry / diagnostics RoundTripper。
 	// 零值 ("") 视为 TransportModeStandard。
 	TransportMode transport.TransportMode
-	// NonStreamingBuffered enables the non-streaming outbound hard timeouts.
-	// Streaming callers leave this false so stream-specific timeout axes stay
-	// owned by StreamForwarder.
+	// NonStreamingBuffered 启用非流式出站的硬超时。
+	// 流式调用方保持其为 false,使流式专属的超时维度仍由
+	// StreamForwarder 掌管。
 	NonStreamingBuffered bool
 	// ClientStreamIntent 客户端流式意图,原样穿给 provider.BuildInput(语义见
 	// 彼处注释)。gemini-shaped 族跨协议流式的端点选择依赖它。
@@ -116,17 +116,15 @@ type UpstreamDispatcher struct {
 	// 指纹(未绑定/非 active/profile 非法)。仅 mimicry mode + HTTPClient 为 nil
 	// 的生产路径生效。
 	TLSProfileResolver TLSProfileResolver
-	// Timeouts applies only to non-streaming buffered dispatches.
+	// Timeouts 仅作用于非流式 buffered dispatch。
 	Timeouts TimeoutConfig
-	// AnthropicAutoBreakpoints opts into automatic cache_control breakpoint
-	// planning on the live Anthropic Messages egress path. Default false keeps
-	// the body byte-for-byte. When true, a request whose protocol family is
-	// "anthropic_messages" AND that carries no client-supplied cache_control
-	// gets ephemeral breakpoints injected at planner-chosen positions just
-	// before BuildRequest. A client that brings its own cache_control is never
-	// touched. Any planning/serialization error is swallowed and the original
-	// body is used unchanged — caching is an optimization, never a hard
-	// dependency of a live request.
+	// AnthropicAutoBreakpoints 选择在实时 Anthropic Messages 出站路径上
+	// 启用自动的 cache_control breakpoint 规划。默认 false 保持 body 逐字节不变。
+	// 为 true 时,protocol family 为 "anthropic_messages" 且未携带任何
+	// 客户端提供的 cache_control 的请求,会在 BuildRequest 之前于 planner 选定的
+	// 位置注入 ephemeral breakpoints。自带 cache_control 的客户端永不被触碰。
+	// 任何 planning/序列化错误都会被吞掉并改用原始 body —— 缓存是优化,
+	// 绝非实时请求的硬依赖。
 	AnthropicAutoBreakpoints bool
 }
 
@@ -155,17 +153,16 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	}
 	in.InboundBody = controlledBody
 
-	// RR-04: trim client-supplied excess cache_control breakpoints to
-	// CacheControlMaxAllowed before forwarding. Anthropic 400s requests
-	// with >4 cache_control blocks. Fail-open: on decode error the body
-	// is forwarded unchanged.
+	// RR-04:转发前把客户端提供的多余 cache_control breakpoints 裁剪到
+	// CacheControlMaxAllowed。Anthropic 对带 >4 个 cache_control block 的
+	// 请求返回 400。Fail-open:解码出错时 body 原样转发。
 	if trimmed, _ := EnforceCacheControlLimit(in.InboundBody, CacheControlMaxAllowed); len(trimmed) > 0 {
 		in.InboundBody = trimmed
 	}
 
-	// 1.5 Optional Anthropic cache_control breakpoint planning. Replaces the
-	// local inbound body only for the anthropic_messages family and only when
-	// opted in; see maybeInjectAnthropicBreakpoints.
+	// 1.5 可选的 Anthropic cache_control breakpoint 规划。仅对
+	// anthropic_messages 族、且仅在已 opt-in 时替换本地 inbound body;
+	// 详见 maybeInjectAnthropicBreakpoints。
 	in.InboundBody = d.maybeInjectAnthropicBreakpoints(in.ProtocolFamily, in.InboundBody)
 
 	// 2. 构造出站请求
@@ -324,22 +321,18 @@ func validatePassthroughEndpointTarget(ctx context.Context, cred provider.Creden
 	return nil
 }
 
-// maybeInjectAnthropicBreakpoints plans and applies ephemeral cache_control
-// breakpoints on an Anthropic Messages request body just before it is built
-// into an outbound HTTP request. It is a no-op (returns body unchanged) when
-// any of these hold:
-//   - AnthropicAutoBreakpoints is not enabled on the dispatcher;
-//   - the protocol family is not "anthropic_messages";
-//   - the client already supplied at least one cache_control field anywhere
-//     in the request (system / message content / tools) — we never override
-//     a client that manages its own caching;
-//   - the planner produces no positions, or any inspect/plan/apply step
-//     errors. Caching is an optimization; a planning failure must never
-//     break a live request, so on error the original body is returned.
+// maybeInjectAnthropicBreakpoints 在 Anthropic Messages 请求 body 被构造成
+// 出站 HTTP 请求之前,对其规划并应用 ephemeral cache_control breakpoints。
+// 当满足以下任一条件时,它是 no-op(返回 body 不变):
+//   - dispatcher 上未启用 AnthropicAutoBreakpoints;
+//   - protocol family 不是 "anthropic_messages";
+//   - 客户端已在请求任何位置(system / message content / tools)提供了
+//     至少一个 cache_control 字段 —— 我们绝不覆盖自管缓存的客户端;
+//   - planner 未产出任何位置,或 inspect/plan/apply 任一步骤出错。
+//     缓存是优化;planning 失败绝不能破坏实时请求,故出错时返回原始 body。
 //
-// The returned slice is either the original body (untouched) or a freshly
-// allocated, re-serialized body from ApplyBreakpoints; the caller's slice is
-// never mutated in place.
+// 返回的切片要么是原始 body(原封不动),要么是 ApplyBreakpoints
+// 新分配并重新序列化的 body;调用方的切片绝不会被原地修改。
 func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(protocolFamily string, body []byte) []byte {
 	if d == nil || !d.AnthropicAutoBreakpoints {
 		return body
@@ -350,7 +343,7 @@ func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(protocolFamily stri
 	if len(body) == 0 {
 		return body
 	}
-	// Client already brought its own cache_control: leave the body verbatim.
+	// 客户端已自带 cache_control:body 原样保留。
 	if cacheplan.HasAnyCacheControl(body) {
 		return body
 	}

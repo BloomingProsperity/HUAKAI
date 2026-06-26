@@ -28,7 +28,7 @@ func TestSocks5Dialer_TunnelsThroughProxy(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		// greeting:ver、nmethods、methods...
+		// 握手问候:ver、nmethods、methods...
 		g := make([]byte, 2)
 		if _, err := io.ReadFull(c, g); err != nil {
 			return
@@ -37,7 +37,7 @@ func TestSocks5Dialer_TunnelsThroughProxy(t *testing.T) {
 		_, _ = io.ReadFull(c, methods)
 		// 选择 user/pass auth(0x02)
 		_, _ = c.Write([]byte{0x05, 0x02})
-		// auth:ver、ulen、user、plen、pass
+		// 认证:ver、ulen、user、plen、pass
 		ah := make([]byte, 2)
 		_, _ = io.ReadFull(c, ah)
 		ub := make([]byte, int(ah[1]))
@@ -49,7 +49,7 @@ func TestSocks5Dialer_TunnelsThroughProxy(t *testing.T) {
 		_, _ = io.ReadFull(c, pb)
 		gotPass = string(pb)
 		_, _ = c.Write([]byte{0x01, 0x00}) // auth 成功
-		// connect:ver、cmd、rsv、atyp(0x03 domain)、len、host、port
+		// 连接:ver、cmd、rsv、atyp(0x03 domain)、len、host、port
 		h := make([]byte, 4)
 		_, _ = io.ReadFull(c, h)
 		if h[3] == 0x03 {

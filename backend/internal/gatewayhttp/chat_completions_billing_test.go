@@ -76,8 +76,8 @@ func TestNonStreamingUsageDraftCarriesCostSnapshot(t *testing.T) {
 
 	draft := nonStreamingUsageDraft(env, actualCost, nil)
 
-	// Mutation: dropping the non-streaming draft CostSnapshot assignment leaves
-	// cost correct but loses auditability for the model that charged the row.
+	// 变异：去掉非流式 draft 的 CostSnapshot 赋值会让 cost 仍正确，但丢失对该行
+	// 按哪个 model 计费的可审计性。
 	if draft.CostSnapshot != "tiered:vtest-policy" {
 		t.Fatalf("CostSnapshot=%q want tiered:vtest-policy", draft.CostSnapshot)
 	}
@@ -156,10 +156,9 @@ func TestChatCompletions_AuditLedgerAppendWritesHeaders(t *testing.T) {
 }
 
 func TestChatCompletions_AuditLedgerAppendFailureEnqueuesDLQAndDelivers(t *testing.T) {
-	// Risk killed: GW-07 Append failure must persist a DLQ intent and still
-	// deliver the buffered response. Mutation self-check: deleting the DLQ
-	// enqueue path leaves events empty and this test fails even if the handler
-	// still returns 200.
+	// 已消除风险：GW-07 的 Append 失败必须持久化一条 DLQ intent，同时仍交付
+	// buffered 响应。变异自检：删除 DLQ 入队路径会让 events 为空，即使 handler
+	// 仍返回 200，本测试也会失败。
 	enableHCSFDispatchForTest(t)
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -192,10 +191,9 @@ func TestChatCompletions_AuditLedgerAppendFailureEnqueuesDLQAndDelivers(t *testi
 }
 
 func TestChatCompletions_AuditLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T) {
-	// Risk killed: when both Append and DLQ enqueue fail in production, the
-	// request must fail closed before positive settlement. Mutation self-check:
-	// returning Deferred despite enqueue failure makes status 200 and records a
-	// settle call, so this test fails.
+	// 已消除风险：当生产环境里 Append 与 DLQ 入队都失败时，请求必须在做出正向
+	// 结算之前 fail closed。变异自检：在入队失败时仍返回 Deferred 会让状态变 200
+	// 并记录一次 settle 调用，于是本测试失败。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	enableHCSFDispatchForTest(t)
 	signer, err := sign.GenerateKey()
@@ -227,8 +225,8 @@ func TestChatCompletions_AuditLedgerAppendAndDLQFailureProductionDoesNotSettle(t
 }
 
 func TestChatCompletions_AuditLedgerDuplicateRequestIDStillSettlesDeliveredCharge(t *testing.T) {
-	// Mutation: keeping the old ErrDuplicateRequestID Abort+500 branch makes
-	// the second delivered request return 500 with only one non-zero settle.
+	// 变异：保留旧的 ErrDuplicateRequestID Abort+500 分支会让第二次已交付的
+	// 请求返回 500，且只有一次非零 settle。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	enableHCSFDispatchForTest(t)
 	signer, err := sign.GenerateKey()

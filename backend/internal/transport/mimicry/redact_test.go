@@ -6,8 +6,7 @@ import (
 	"testing"
 )
 
-// PROXYHDR-01: proxy URL redaction must never let a basic-auth password reach a
-// log line.
+// PROXYHDR-01:proxy URL 脱敏绝不能让 basic-auth 密码出现在日志行里。
 func TestRedactProxyURL(t *testing.T) {
 	cases := map[string]string{
 		"socks5://u:secret@h:1080":   "socks5://redacted@h:1080",
@@ -18,8 +17,8 @@ func TestRedactProxyURL(t *testing.T) {
 	for raw, want := range cases {
 		u, _ := url.Parse(raw)
 		got := RedactProxyURL(u)
-		// MUTATION GUARD: emitting the raw userinfo (password) instead of
-		// 'redacted' leaks the secret -> red.
+		// 变异守卫:输出原始 userinfo(密码)而非
+		// 'redacted' 会泄露密钥 -> 变红。
 		if got != want {
 			t.Fatalf("RedactProxyURL(%q)=%q want %q", raw, got, want)
 		}

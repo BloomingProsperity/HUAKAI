@@ -4,7 +4,6 @@ package webui
 
 import "io/fs"
 
-// Dist returns nil in the default build: no frontend is embedded, so the gateway
-// keeps its plain 404 for unmatched paths. Build with `-tags embed` (after
-// producing the static dist) to include the SPA.
+// Dist 在默认构建中返回 nil:没有内嵌前端，所以 gateway 对未匹配的路径保持
+// 朴素的 404。用 `-tags embed`(在生成静态 dist 之后)构建即可内嵌 SPA。
 func Dist() fs.FS { return nil }

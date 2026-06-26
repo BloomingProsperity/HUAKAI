@@ -111,7 +111,7 @@ func sortOrdersForAdmin(orders []Order) {
 	})
 }
 
-// AdminExportRefunds returns refund records for CSV export (read-only).
+// AdminExportRefunds 返回用于 CSV 导出的退款记录(只读)。
 func (m *MemoryStore) AdminExportRefunds(_ context.Context, filter RefundExportFilter) ([]RefundRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

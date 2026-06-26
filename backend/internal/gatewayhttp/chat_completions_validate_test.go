@@ -91,8 +91,8 @@ func TestReadChatRequestBodyErrorDoesNotLeakReaderError(t *testing.T) {
 }
 
 func TestValidateChatCompletionsRequestServerRequestIDIgnoresClientHeader(t *testing.T) {
-	// Mutation: reverting canonical RequestID to middleware.GetReqID(ctx)
-	// makes both canonical IDs equal "dup-1" and this test fails.
+	// 变异:把规范 RequestID 改回 middleware.GetReqID(ctx),会让两个规范 ID
+	// 都等于 "dup-1",本测试就会失败。
 	first := validateChatRequestThroughRequestIDMiddleware(t, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"first"}]}`, "dup-1")
 	second := validateChatRequestThroughRequestIDMiddleware(t, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"second"}]}`, "dup-1")
 

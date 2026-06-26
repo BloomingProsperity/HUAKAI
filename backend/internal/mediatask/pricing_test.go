@@ -8,8 +8,8 @@ import (
 )
 
 func TestEstimateCentsUsesPricingEvalPerUnitScaling(t *testing.T) {
-	// Mutation: treat cents as micro-USD directly instead of converting cents to
-	// micro-USD; this returns 0 cents for the 123-cent fixture and must go red.
+	// 变异:把 cents 直接当作 micro-USD,而不是把 cents 转换成 micro-USD;
+	// 这会让 123 分的样例返回 0 cents,必须变红。
 	cfg := Config{DefaultEstimatedCents: map[string]int64{"image_generation": 123}}
 
 	got, err := EstimateCents(context.Background(), cfg, "image_generation")

@@ -1,9 +1,9 @@
 //go:build integration_pg
 
-// Postgres adapters tested vs real PostgreSQL: DBClaimGate,
-// DBSlotManager, DBAccountSource. The contract these enforce is the
-// production-time bridge from the selector to billing_ledger_claims +
-// pool_slot_acquisitions + provider_accounts.
+// 针对真实 PostgreSQL 测试的 Postgres 适配器:DBClaimGate、
+// DBSlotManager、DBAccountSource。它们要保证的契约是生产期
+// 从 selector 到 billing_ledger_claims + pool_slot_acquisitions +
+// provider_accounts 的桥接。
 
 package pool
 
@@ -46,8 +46,8 @@ type adapterSeed struct {
 	claimID           int64
 }
 
-// seedAdapterGraph mirrors settler_integration_test seed but lives in the
-// pool package to stay below the test-cycle limit.
+// seedAdapterGraph 镜像 settler_integration_test 的 seed,但放在
+// pool 包内,以保持在测试 cycle 限制之下。
 func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string) *adapterSeed {
 	t.Helper()
 	seed := &adapterSeed{}
@@ -59,11 +59,11 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 	).Scan(&seed.tenantID); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
-	// Slice 2: real users + api_keys rows replace the
-	// previous synthetic-id pattern. Migration 0009 added composite FKs
-	// from billing_ledger_claims/usage_records/billing_ledger_archive
-	// (tenant_id, api_key_id) -> api_keys, so claim seeds must reference
-	// real api_keys rows.
+	// 切片 2:用真实的 users + api_keys 行替代
+	// 之前的合成 id 方案。Migration 0009 为
+	// billing_ledger_claims/usage_records/billing_ledger_archive 的
+	// (tenant_id, api_key_id) -> api_keys 增加了复合 FK,因此 claim 的 seed
+	// 必须引用真实的 api_keys 行。
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
 		seed.tenantID, "adapter-user-"+unique,
@@ -82,9 +82,9 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 
 	t.Cleanup(func() {
 		ctx := context.Background()
-		// FK chain after migration 0009: pool_slot_acquisitions -> claims;
+		// migration 0009 之后的 FK 链:pool_slot_acquisitions -> claims;
 		//                      claims/usage/archive -> api_keys/users;
-		//                      api_keys -> users.
+		//                      api_keys -> users。
 		_, _ = pool.Exec(ctx, `DELETE FROM usage_records WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM billing_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, seed.tenantID)
@@ -308,7 +308,7 @@ func TestDBAccountSource_ListByPoolGroup(t *testing.T) {
 	pgPool := openIntegrationPool(t, ctx)
 	seed := seedAdapterGraph(t, ctx, pgPool, "src-pg")
 
-	// Add a second account in the same pool_group via a second channel.
+	// 通过第二个 channel 在同一个 pool_group 内追加第二个 account。
 	var secondChannelID, secondAccountID int64
 	suffix := uuid.NewString()
 	if err := pgPool.QueryRow(ctx,
@@ -393,7 +393,7 @@ func TestStaticWeightSelection(t *testing.T) {
 		counts[res.AccountID]++
 	}
 	share := float64(counts[heavyAccountID]) / 1000.0
-	// MUTATION: DBAccountSource 不把 static_weight 写入 AccountSnapshot.Weight 时,
+	// 变异:DBAccountSource 不把 static_weight 写入 AccountSnapshot.Weight 时,
 	// 两个同优先级账号退化为约 50/50, 不会落在 70%-85% 窗口。
 	if share < 0.70 || share > 0.85 {
 		t.Fatalf("heavy account selected %d/1000 (share %.3f), want weight-4 share in [0.70,0.85]; counts=%v",
@@ -442,7 +442,7 @@ func TestDBAccountSource_ListByPoolGroupFiltersProtocolFamily(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAccounts: %v", err)
 	}
-	// Mutation: dropping the upstream_protocol predicate returns both empty-allow-list accounts.
+	// 变异:去掉 upstream_protocol 谓词会返回两个 allow-list 为空的 account。
 	if len(accounts) != 1 || accounts[0].ID != anthropicAccountID {
 		t.Fatalf("accounts=%+v; want only anthropic protocol account %d", accounts, anthropicAccountID)
 	}

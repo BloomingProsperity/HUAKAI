@@ -1,9 +1,7 @@
-// Package channelhealth implements F-CH-002 channel health auto-disable.
+// 包 channelhealth 实现 F-CH-002 渠道健康自动停用。
 //
-// The package is intentionally vendor-neutral. It stores only tenant-scoped
-// credential identity, safe reason classes, rolling counts, and state-machine
-// evidence. Raw upstream response text and credential material are not part of
-// the API surface.
+// 该包刻意保持供应商中立。它只存储 tenant 范围内的凭据身份、安全的原因类别、滚动计数
+// 以及状态机证据。原始上游响应文本和凭据材料不属于 API 暴露面。
 package channelhealth
 
 import (
@@ -244,8 +242,7 @@ type Signal struct {
 	At               time.Time
 	RequestID        string
 	RateLimitResetAt *time.Time
-	// RawUpstreamText is accepted for classification tests only. Service logic
-	// deliberately never stores or echoes this value.
+	// RawUpstreamText 仅用于分类测试而接收。Service 逻辑刻意从不存储或回显该值。
 	RawUpstreamText string
 }
 

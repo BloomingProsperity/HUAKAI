@@ -1,14 +1,14 @@
 //go:build integration_pg
 
-// Slice 2 integration tests for PostgresRegistry against real
-// PostgreSQL. Validates the 14 original cases enumerated in
-// docs/process/plans/2026-04-30-n5-model-registry.md §"Test Plan":
+// PostgresRegistry 针对真实 PostgreSQL 的 Slice 2 集成测试。
+// 验证 docs/process/plans/2026-04-30-n5-model-registry.md §"Test Plan"
+// 列举的 14 个原始用例:
 //
 //   1.  HappyPath
 //   2.  UnknownAlias
 //   3.  DisabledAlias
 //   4.  DisabledModel
-//   5.  TenantDisabledBlocksGlobal  (D3 explicit-deny invariant)
+//   5.  TenantDisabledBlocksGlobal  (D3 显式拒绝不变量)
 //   6.  InheritGlobalActive
 //   7.  InheritOff
 //   8.  NoBindings
@@ -38,7 +38,7 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// fixture helpers
+// fixture 辅助函数
 // -----------------------------------------------------------------------------
 
 func openIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -61,11 +61,11 @@ type registryFixture struct {
 	pool     *pgxpool.Pool
 	suffix   string
 	tenantID int64
-	// pool group owned by tenant; reused as binding target.
+	// 租户拥有的 pool group;复用为 binding 目标。
 	poolGroupID int64
-	// Auxiliary tenant (used by cross-tenant probe assertions, if any).
+	// 辅助租户(若有跨租户探测断言则会用到)。
 	otherTenantID int64
-	// IDs created by helpers, batched for cleanup.
+	// 由辅助函数创建的 ID,批量记录以便清理。
 	modelIDs          []int64
 	aliasIDs          []int64
 	bindingIDs        []int64
@@ -105,16 +105,16 @@ func newFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *registry
 
 func (f *registryFixture) cleanup() {
 	c := context.Background()
-	// Tenant-scoped rows: bindings always tenant-scoped.
+	// 租户作用域的行:binding 始终是租户作用域。
 	_, _ = f.pool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id = $1`, f.tenantID)
-	// Capabilities/aliases/models: tenant-scoped + opt-in scope='global'
-	// rows seeded by tests that exercise inheritance (test/).
+	// Capabilities/aliases/models:租户作用域 + 由演练继承的测试主动播种的
+	// scope='global' 行(test/)。
 	_, _ = f.pool.Exec(c, `DELETE FROM model_registry_capabilities WHERE tenant_id = $1`, f.tenantID)
 	_, _ = f.pool.Exec(c, `DELETE FROM model_aliases WHERE tenant_id = $1`, f.tenantID)
 	_, _ = f.pool.Exec(c, `DELETE FROM models WHERE tenant_id = $1`, f.tenantID)
 	if f.createdGlobalRows {
-		// Inheritance tests seed scope='global' rows with public_alias
-		// values that include f.suffix; clean those by foreign-key chain.
+		// 继承测试播种的 scope='global' 行带有包含 f.suffix 的 public_alias
+		// 值;沿外键链清理这些行。
 		_, _ = f.pool.Exec(c, `DELETE FROM model_registry_capabilities WHERE scope = 'global' AND model_id IN (SELECT id FROM models WHERE scope = 'global' AND canonical_id LIKE '%' || $1 || '%')`, f.suffix)
 		_, _ = f.pool.Exec(c, `DELETE FROM model_aliases WHERE scope = 'global' AND public_alias_normalized LIKE 'claude-%' AND model_id IN (SELECT id FROM models WHERE scope = 'global' AND canonical_id LIKE '%' || $1 || '%')`, f.suffix)
 		_, _ = f.pool.Exec(c, `DELETE FROM models WHERE scope = 'global' AND canonical_id LIKE '%' || $1 || '%'`, f.suffix)
@@ -127,7 +127,7 @@ func (f *registryFixture) cleanup() {
 }
 
 type modelOpts struct {
-	scope            string // "tenant" or "global"; defaults "tenant"
+	scope            string // "tenant" 或 "global";默认 "tenant"
 	canonicalID      string
 	providerModelID  string
 	protocolFamily   string
@@ -186,7 +186,7 @@ func (f *registryFixture) seedModel(o modelOpts) int64 {
 }
 
 type aliasOpts struct {
-	scope                 string // defaults "tenant"
+	scope                 string // 默认 "tenant"
 	modelID               int64
 	publicAliasNormalized string
 	publicAliasDisplay    string
@@ -226,9 +226,9 @@ func (f *registryFixture) seedAlias(o aliasOpts) int64 {
 }
 
 type bindingOpts struct {
-	// Bindings are ALWAYS tenant-scoped.
-	// modelID may point at a global-scope model — that is the inheritance
-	// path: tenant T sets up its own binding to a globally-shared model.
+	// binding 始终是租户作用域。
+	// modelID 可以指向 global 作用域的 model —— 这就是继承路径:
+	// 租户 T 为一个全局共享的 model 建立自己的 binding。
 	modelID               int64
 	poolGroupID           int64
 	priority              int32
@@ -319,7 +319,7 @@ func (f *registryFixture) setSnapshot(version int64) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 1 — HappyPath
+// 测试 1 — HappyPath
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_HappyPath(t *testing.T) {
@@ -327,9 +327,9 @@ func TestPostgresRegistry_HappyPath(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newFixture(t, ctx, pool)
 
-	// Current top-tier Anthropic model per verified WebFetch 2026-04-30T10:08Z
-	// @ https://platform.claude.com/docs/en/docs/about-claude/models/overview.
-	// See docs/process/plans/2026-04-30-n5-model-registry.md Appendix B.
+	// 根据 2026-04-30T10:08Z 已核实的 WebFetch 得到的当前 Anthropic 顶级 model
+	// @ https://platform.claude.com/docs/en/docs/about-claude/models/overview。
+	// 参见 docs/process/plans/2026-04-30-n5-model-registry.md 附录 B。
 	mid := f.seedModel(modelOpts{
 		canonicalID:     "anthropic/claude-opus-4-7-" + f.suffix,
 		providerModelID: "claude-opus-4-7",
@@ -369,7 +369,7 @@ func TestPostgresRegistry_HappyPath(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 2 — UnknownAlias
+// 测试 2 — UnknownAlias
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_UnknownAlias(t *testing.T) {
@@ -385,7 +385,7 @@ func TestPostgresRegistry_UnknownAlias(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 3 — DisabledAlias
+// 测试 3 — DisabledAlias
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_DisabledAlias(t *testing.T) {
@@ -409,7 +409,7 @@ func TestPostgresRegistry_DisabledAlias(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 4 — DisabledModel (alias active, model disabled)
+// 测试 4 — DisabledModel(alias 启用,model 禁用)
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_DisabledModel(t *testing.T) {
@@ -429,11 +429,11 @@ func TestPostgresRegistry_DisabledModel(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 5 — TenantDisabledBlocksGlobal (D3 explicit-deny invariant)
-// Tenant has DISABLED alias for "claude-x".
-// Global has ACTIVE alias for "claude-x".
-// inherit_global_catalog = TRUE.
-// MUST return ErrModelDisabled, never fall through to global.
+// 测试 5 — TenantDisabledBlocksGlobal(D3 显式拒绝不变量)
+// 租户对 "claude-x" 有 DISABLED 的 alias。
+// 全局对 "claude-x" 有 ACTIVE 的 alias。
+// inherit_global_catalog = TRUE。
+// 必须返回 ErrModelDisabled,绝不能回落到全局。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_TenantDisabledBlocksGlobal(t *testing.T) {
@@ -459,9 +459,9 @@ func TestPostgresRegistry_TenantDisabledBlocksGlobal(t *testing.T) {
 		modelID:               globalMid,
 		publicAliasNormalized: "claude-x",
 	})
-	// Tenant-scoped binding to the global model — present so that IF the
-	// explicit-deny invariant were broken, fallback would actually succeed
-	// (sharpening the assertion). Bindings are tenant-scoped.
+	// 指向全局 model 的租户作用域 binding —— 故意存在,这样【如果】
+	// 显式拒绝不变量被破坏,回落就会真的成功(让断言更锐利)。
+	// binding 是租户作用域。
 	f.seedBinding(bindingOpts{
 		modelID: globalMid, poolGroupID: f.poolGroupID, priority: 100,
 	})
@@ -475,11 +475,11 @@ func TestPostgresRegistry_TenantDisabledBlocksGlobal(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 6 — InheritGlobalActive
-// Tenant has NO row.
-// Global has ACTIVE row.
-// inherit = TRUE.
-// MUST resolve via global path.
+// 测试 6 — InheritGlobalActive
+// 租户没有任何行。
+// 全局有 ACTIVE 的行。
+// inherit = TRUE。
+// 必须通过全局路径解析成功。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_InheritGlobalActive(t *testing.T) {
@@ -493,9 +493,8 @@ func TestPostgresRegistry_InheritGlobalActive(t *testing.T) {
 		modelID:               gmid,
 		publicAliasNormalized: "claude-y",
 	})
-	// Tenant-scoped binding pointing at the GLOBAL model — this is the
-	// inheritance shape: the global catalog is shared at the model/alias
-	// layer, but every tenant declares its own routing target.
+	// 指向全局 model 的租户作用域 binding —— 这就是继承的形态:
+	// 全局目录在 model/alias 层共享,但每个租户声明自己的路由目标。
 	f.seedBinding(bindingOpts{
 		modelID: gmid, poolGroupID: f.poolGroupID, priority: 100,
 	})
@@ -512,9 +511,9 @@ func TestPostgresRegistry_InheritGlobalActive(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 7 — InheritOff
-// No tenant row, no policy row (or inherit=false), MUST be ErrUnknownModel
-// even if global has the alias.
+// 测试 7 — InheritOff
+// 没有租户行,也没有 policy 行(或 inherit=false),即使全局有该 alias,
+// 也必须返回 ErrUnknownModel。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_InheritOff(t *testing.T) {
@@ -528,12 +527,12 @@ func TestPostgresRegistry_InheritOff(t *testing.T) {
 		modelID:               gmid,
 		publicAliasNormalized: "claude-z",
 	})
-	// Tenant binding seeded to make the assertion sharper: even with a
-	// route ready to go, no-inherit must short-circuit at alias lookup.
+	// 播种租户 binding 让断言更锐利:即使路由已就绪,
+	// no-inherit 也必须在 alias 查找处短路。
 	f.seedBinding(bindingOpts{
 		modelID: gmid, poolGroupID: f.poolGroupID, priority: 100,
 	})
-	// No setInheritPolicy → policy row absent → resolver treats as false.
+	// 不调用 setInheritPolicy → policy 行缺失 → resolver 视为 false。
 
 	r := NewPostgresRegistry(pool, nil)
 	_, err := r.ResolveModel(ctx, "claude-z", f.tenantID)
@@ -543,7 +542,7 @@ func TestPostgresRegistry_InheritOff(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 8 — NoBindings
+// 测试 8 — NoBindings
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_NoBindings(t *testing.T) {
@@ -553,7 +552,7 @@ func TestPostgresRegistry_NoBindings(t *testing.T) {
 
 	mid := f.seedModel(modelOpts{})
 	f.seedAlias(aliasOpts{modelID: mid, publicAliasNormalized: "naked"})
-	// No binding seeded.
+	// 不播种任何 binding。
 
 	r := NewPostgresRegistry(pool, nil)
 	_, err := r.ResolveModel(ctx, "naked", f.tenantID)
@@ -563,9 +562,9 @@ func TestPostgresRegistry_NoBindings(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 9 — MultipleBindingsOrdered
-// Three bindings with priorities 200 / 50 / 100.
-// PoolCandidates should be [50, 100, 200] (priority asc, then id asc).
+// 测试 9 — MultipleBindingsOrdered
+// 三个 binding,优先级分别为 200 / 50 / 100。
+// PoolCandidates 应为 [50, 100, 200](优先级升序,再按 id 升序)。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_MultipleBindingsOrdered(t *testing.T) {
@@ -573,7 +572,7 @@ func TestPostgresRegistry_MultipleBindingsOrdered(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newFixture(t, ctx, pool)
 
-	// Need three pool groups owned by the same tenant.
+	// 需要同一租户拥有的三个 pool group。
 	var pg2, pg3 int64
 	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name) VALUES ($1, $2) RETURNING id`,
 		f.tenantID, "pg2-"+f.suffix).Scan(&pg2); err != nil {
@@ -642,9 +641,9 @@ func TestPostgresRegistry_SkipsDisabledOrDeletedPoolGroups(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 10 — CaseInsensitive
-// Alias seeded as "Claude-3-5-Sonnet" (display) / normalized lower.
-// Resolve with "CLAUDE-3-5-SONNET" must match.
+// 测试 10 — CaseInsensitive
+// alias 以 "Claude-3-5-Sonnet"(display)/ 小写 normalized 播种。
+// 用 "CLAUDE-3-5-SONNET" 解析必须能匹配。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_CaseInsensitive(t *testing.T) {
@@ -671,7 +670,7 @@ func TestPostgresRegistry_CaseInsensitive(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 11 — SoftDeletedAliasInvisible
+// 测试 11 — SoftDeletedAliasInvisible
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_SoftDeletedAliasInvisible(t *testing.T) {
@@ -696,8 +695,8 @@ func TestPostgresRegistry_SoftDeletedAliasInvisible(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 12 — EffectiveTimeWindow
-// Binding effective_until in the past → excluded → ErrTenantNoAccess.
+// 测试 12 — EffectiveTimeWindow
+// binding 的 effective_until 在过去 → 被排除 → ErrTenantNoAccess。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_EffectiveTimeWindow(t *testing.T) {
@@ -721,11 +720,11 @@ func TestPostgresRegistry_EffectiveTimeWindow(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 13 — ProviderModelOverrideOnPrimary
-// Primary binding has provider_model_id_override → ResolvedModel.ProviderModelID
-// reflects the override, not the canonical model default.
-// (Mirrors one-api ModelMapping behavior per
-// model/channel.go @ 3915ce9 — verified WebFetch 2026-04-30T09:35Z.)
+// 测试 13 — ProviderModelOverrideOnPrimary
+// 主 binding 带有 provider_model_id_override → ResolvedModel.ProviderModelID
+// 反映该 override,而非 canonical model 的默认值。
+// (对照参考项目的 model mapping 行为,见
+// model/channel.go @ 3915ce9 —— 已于 2026-04-30T09:35Z 经 WebFetch 核实。)
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_ProviderModelOverrideOnPrimary(t *testing.T) {
@@ -820,7 +819,7 @@ func TestPostgresRegistry_ChannelSensitiveWordsMetadata(t *testing.T) {
 		t.Fatalf("BindingMetadata len=%d want 1", len(got.BindingMetadata))
 	}
 	binding := got.BindingMetadata[0]
-	// LATERAL aggregation uses array_agg(DISTINCT sw ORDER BY sw) -> sorted ascending.
+	// LATERAL 聚合使用 array_agg(DISTINCT sw ORDER BY sw) -> 升序排列。
 	wantWords := []string{"banned", "secret"}
 	if !reflect.DeepEqual(binding.SensitiveWords, wantWords) {
 		t.Fatalf("SensitiveWords=%v want %v", binding.SensitiveWords, wantWords)
@@ -828,8 +827,8 @@ func TestPostgresRegistry_ChannelSensitiveWordsMetadata(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 14 — SnapshotVersionStamp
-// snapshot row version = 42 → SnapshotVersion contains ":42".
+// 测试 14 — SnapshotVersionStamp
+// snapshot 行 version = 42 → SnapshotVersion 包含 ":42"。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_SnapshotVersionStamp(t *testing.T) {
@@ -857,9 +856,9 @@ func TestPostgresRegistry_SnapshotVersionStamp(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Test 15 — ListModelsDiscoverySurface
-// ListModels returns only aliases the tenant can actually route: active alias,
-// active model, enabled in-window binding, and explicit global inheritance.
+// 测试 15 — ListModelsDiscoverySurface
+// ListModels 仅返回租户真正可路由的 alias:启用的 alias、启用的 model、
+// 启用且在时间窗内的 binding,以及显式的全局继承。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_ListModelsDiscoverySurface(t *testing.T) {

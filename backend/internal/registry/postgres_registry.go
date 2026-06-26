@@ -1,29 +1,26 @@
-// Postgres-backed Registry implementation.
+// 基于 Postgres 的 Registry 实现。
 //
-// Resolve flow per docs/process/plans/2026-04-30-n5-model-registry.md §"Resolve query":
+// Resolve 流程见 docs/process/plans/2026-04-30-n5-model-registry.md §"Resolve query":
 //
-//   1. Normalize alias.
-//   2. Open a REPEATABLE READ + read-only TX so all reads observe one
-//      consistent snapshot — avoids stamping a SnapshotVersion that
-//      doesn't describe the rows used.
-//   3. Look up tenant-scoped alias row.
-//   4. If row exists with status='active', proceed to model lookup.
-//   5. If row exists with status='disabled' -> ErrModelDisabled (D3
-//      explicit deny — does NOT fall through to global).
-//   6. If no tenant row, consult model_registry_tenant_policies; if
-//      inherit_global_catalog=true, look up scope='global' alias.
-//   7. Otherwise ErrUnknownModel.
-//   8. Resolve canonical model row scoped to (tenant_id OR global) —
-//      defends against alias-misconfigured-to-foreign-tenant model.
-//   9. Concurrently load capabilities + bindings + snapshot version
-//      INSIDE the same TX.
-//  10. If bindings list empty -> ErrTenantNoAccess.
-//  11. Build Resolved and commit (read-only commit is harmless).
+//   1. 规范化 alias。
+//   2. 开启一个 REPEATABLE READ + 只读 TX,使所有读取都观察到同一份
+//      一致快照 —— 避免盖上一个并不描述所用行的 SnapshotVersion。
+//   3. 查找 tenant 级的 alias 行。
+//   4. 若该行存在且 status='active',继续做 model 查找。
+//   5. 若该行存在且 status='disabled' -> ErrModelDisabled(D3
+//      显式拒绝 —— 不会回退到 global)。
+//   6. 若没有 tenant 行,查询 model_registry_tenant_policies;若
+//      inherit_global_catalog=true,则查找 scope='global' 的 alias。
+//   7. 否则返回 ErrUnknownModel。
+//   8. 解析限定在 (tenant_id 或 global) 范围内的 canonical model 行 ——
+//      防御被误配到外租户 model 的 alias。
+//   9. 在同一个 TX 内并发加载 capabilities + bindings + snapshot version。
+//  10. 若 bindings 列表为空 -> ErrTenantNoAccess。
+//  11. 构建 Resolved 并提交(只读提交无害)。
 //
-// Removed in this revision: the
-// `scope` column on `model_pool_bindings`. Bindings are ALWAYS tenant-
-// scoped because pool_groups are tenant-owned; a "global binding" was
-// a conceptual mistake that leaked pool ids across tenants.
+// 本次修订中移除的内容:`model_pool_bindings` 上的
+// `scope` 列。bindings 永远是 tenant 级的,因为 pool_groups 由 tenant 所有;
+// "global binding" 是一个概念性错误,会让 pool id 跨租户泄露。
 
 package registry
 
@@ -40,16 +37,16 @@ import (
 	dbregistry "github.com/BloomingProsperity/HUAKAI/internal/db/registry"
 )
 
-// PostgresRegistry resolves aliases against the model_registry_* tables.
-// Construct via NewPostgresRegistry. Cache lifecycle is owned by the
-// caller; pass nil to use the no-op cache (default at L0).
+// PostgresRegistry 针对 model_registry_* 表解析 alias。
+// 通过 NewPostgresRegistry 构造。Cache 的生命周期由调用方负责;
+// 传 nil 则使用 no-op 缓存(L0 默认)。
 type PostgresRegistry struct {
 	pool  *pgxpool.Pool
 	cache Cache
 }
 
-// NewPostgresRegistry wraps a pgxpool. The cache argument may be nil; at
-// L0 it always is (per D2 — cache lands in Slice 5).
+// NewPostgresRegistry 包装一个 pgxpool。cache 参数可以为 nil;在
+// L0 阶段它始终为 nil(依据 D2 —— cache 在 Slice 5 才落地)。
 func NewPostgresRegistry(pool *pgxpool.Pool, cache Cache) *PostgresRegistry {
 	if cache == nil {
 		cache = noopCache{}
@@ -57,7 +54,7 @@ func NewPostgresRegistry(pool *pgxpool.Pool, cache Cache) *PostgresRegistry {
 	return &PostgresRegistry{pool: pool, cache: cache}
 }
 
-// ResolveModel implements Registry.
+// ResolveModel 实现 Registry。
 func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string, tenantID int64) (Resolved, error) {
 	if r == nil || r.pool == nil {
 		return Resolved{}, ErrRegistryBackend
@@ -67,9 +64,8 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		return Resolved{}, ErrUnknownModel
 	}
 
-	// REPEATABLE READ + read-only: all reads see a single point-in-time
-	// snapshot of the registry, so the version we stamp truly describes
-	// the rows used to build Resolved.
+	// REPEATABLE READ + 只读:所有读取都看到 registry 的同一份时间点
+	// 快照,因此我们盖上的 version 能真正描述用于构建 Resolved 的那些行。
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
@@ -95,12 +91,12 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Alias points at a model row not visible to this tenant.
-			// Either the model is genuinely missing or it belongs to
-			// another tenant (defended by the tenant/scope WHERE clause).
-			// Either way the resolver returns ErrModelDisabled rather
-			// than ErrUnknownModel so audit logs show the alias->model
-			// dangling state without leaking enumeration signal.
+			// alias 指向了一个对该 tenant 不可见的 model 行。
+			// 要么 model 确实缺失,要么它属于另一个 tenant
+			//(由 tenant/scope 的 WHERE 子句防御)。
+			// 两种情况解析器都返回 ErrModelDisabled 而非
+			// ErrUnknownModel,使审计日志能显示 alias->model 的
+			// 悬空状态,同时不泄露枚举信号。
 			return Resolved{}, ErrModelDisabled
 		}
 		return Resolved{}, fmt.Errorf("%w: get model: %v", ErrRegistryBackend, err)
@@ -133,8 +129,8 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return Resolved{}, fmt.Errorf("%w: snapshot: %v", ErrRegistryBackend, err)
 		}
-		// Missing snapshot row = tenant has had no admin writes yet;
-		// treat as version 1 (matches the schema DEFAULT).
+		// 缺少 snapshot 行 = 该 tenant 尚未有过任何 admin 写入;
+		// 按 version 1 处理(与 schema 的 DEFAULT 一致)。
 		version = 1
 	}
 
@@ -173,9 +169,9 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 			return Resolved{}, fmt.Errorf("%w: decode param_override: %v", ErrRegistryBackend, err)
 		}
 		out.PoolCandidates = append(out.PoolCandidates, b.PoolGroupID)
-		// Binding-level provider model rename takes precedence over the
-		// model's default; first non-nil override wins for the primary
-		// candidate. Per-attempt overrides can replace this later.
+		// binding 级的 provider model 重命名优先于 model 的默认值;
+		// 对主候选项,第一个非 nil 的 override 生效。
+		// 后续的 per-attempt override 可以再替换它。
 		if b.ProviderModelIDOverride != nil && len(out.PoolCandidates) == 1 {
 			out.ProviderModelID = *b.ProviderModelIDOverride
 		}
@@ -240,8 +236,8 @@ func decodeBindingParamOverride(raw string) (map[string]json.RawMessage, error) 
 	return override, nil
 }
 
-// resolvedAliasRow is the common shape of LookupTenantAlias /
-// LookupGlobalAlias rows — both produce the same five fields.
+// resolvedAliasRow 是 LookupTenantAlias / LookupGlobalAlias 行的
+// 公共形态 —— 两者产出相同的五个字段。
 type resolvedAliasRow struct {
 	aliasID            int64
 	modelID            int64
@@ -250,10 +246,10 @@ type resolvedAliasRow struct {
 	publicAliasDisplay string
 }
 
-// lookupAlias runs the two-step tenant-then-global resolution per D3
-// (explicit-deny invariant: tenant-disabled blocks global fallback).
-// All reads use the caller-supplied Queries (which is bound to the
-// outer REPEATABLE READ tx for snapshot consistency).
+// lookupAlias 依据 D3 执行 tenant-then-global 的两步解析
+//(显式拒绝不变量:tenant 被禁用会阻断 global 回退)。
+// 所有读取都使用调用方提供的 Queries(它绑定到外层的
+// REPEATABLE READ tx 以保证快照一致性)。
 func (r *PostgresRegistry) lookupAlias(ctx context.Context, q *dbregistry.Queries, tenantID int64, aliasLower string) (resolvedAliasRow, error) {
 	tenantRow, err := q.LookupTenantAlias(ctx, dbregistry.LookupTenantAliasParams{
 		TenantID:   tenantID,
@@ -272,13 +268,13 @@ func (r *PostgresRegistry) lookupAlias(ctx context.Context, q *dbregistry.Querie
 		return resolvedAliasRow{}, fmt.Errorf("%w: tenant alias: %v", ErrRegistryBackend, err)
 	}
 
-	// Tenant miss — check inheritance policy.
+	// tenant 未命中 —— 检查继承策略。
 	inherit, err := q.GetTenantInheritGlobal(ctx, tenantID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return resolvedAliasRow{}, fmt.Errorf("%w: tenant policy: %v", ErrRegistryBackend, err)
 		}
-		// No policy row = no inheritance.
+		// 没有策略行 = 不继承。
 		inherit = false
 	}
 	if !inherit {
@@ -301,5 +297,5 @@ func (r *PostgresRegistry) lookupAlias(ctx context.Context, q *dbregistry.Querie
 	}, nil
 }
 
-// Compile-time assertion that PostgresRegistry implements Registry.
+// 编译期断言:PostgresRegistry 实现了 Registry。
 var _ Registry = (*PostgresRegistry)(nil)

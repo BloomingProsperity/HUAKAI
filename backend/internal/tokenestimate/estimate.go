@@ -68,10 +68,10 @@ func weightsFor(v vendorClass) classWeights {
 	}
 }
 
-// classForProtocolFamily maps a HUAKAI protocol-family literal (the same values
-// produced by registry resolution, e.g. "anthropic_messages", "openai_chat",
-// "gemini_messages") onto a tokenizer vendor class. Unknown families fall back
-// to the OpenAI-style table, matching the gate's fail-open philosophy.
+// classForProtocolFamily 把一个 HUAKAI protocol-family 字面量（即 registry 解析
+// 产出的那些值，如 "anthropic_messages"、"openai_chat"、"gemini_messages"）映射到
+// 一个 tokenizer vendor class。未知 family 回落到 OpenAI 风格的权重表，与该闸门
+// fail-open 的理念一致。
 func classForProtocolFamily(family string) vendorClass {
 	switch {
 	case strings.HasPrefix(family, "anthropic"), strings.HasPrefix(family, "claude"):
@@ -83,17 +83,15 @@ func classForProtocolFamily(family string) vendorClass {
 	}
 }
 
-// Estimate approximates the input-token count of body for the given protocol
-// family. An empty body estimates 0. The estimate is monotonic in body length
-// (appending content never lowers the estimate) and is vendor-weighted, so a
-// run of CJK glyphs estimates differently from an equal-length run of latin
-// words.
+// Estimate 近似估算 body 在指定 protocol family 上的 input-token 数。空 body
+// 估为 0。该估值随 body 长度单调（追加内容绝不会降低估值），且按 vendor 加权，
+// 因此一串 CJK 字形与等长的一串 latin 单词估出的结果不同。
 func Estimate(body []byte, protocolFamily string) int {
 	return EstimateString(string(body), protocolFamily)
 }
 
-// EstimateString is Estimate over a string. It is the scanning core; Estimate
-// is a thin []byte adapter.
+// EstimateString 是作用于字符串的 Estimate。它是扫描核心；Estimate 只是一层
+// 薄薄的 []byte 适配器。
 func EstimateString(text, protocolFamily string) int {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -125,8 +123,8 @@ func EstimateString(text, protocolFamily string) int {
 			current = runNone
 			total += w.emoji
 		case unicode.IsLetter(r):
-			// A latin/alphabetic run is charged once at its start; interior
-			// letters of the same run are free, modelling subword merging.
+			// 一个 latin/字母串在其起始处计费一次；同一串内部的字母不计费，
+			// 以此模拟 subword 合并。
 			if current != runWord {
 				total += w.wordRun
 				current = runWord
@@ -154,27 +152,26 @@ func EstimateString(text, protocolFamily string) int {
 	return int(math.Ceil(total)) + w.floor
 }
 
-// isCJKGlyph reports whether r is a Chinese/Japanese/Korean (or related) glyph
-// that most tokenizers charge per-character.
+// isCJKGlyph 报告 r 是否是一个多数 tokenizer 按字符计费的中文/日文/韩文
+// （或相关）字形。
 func isCJKGlyph(r rune) bool {
 	switch {
-	case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
+	case r >= 0x4E00 && r <= 0x9FFF: // CJK 统一表意文字
 		return true
-	case r >= 0x3400 && r <= 0x4DBF: // CJK Extension A
+	case r >= 0x3400 && r <= 0x4DBF: // CJK 扩展 A
 		return true
-	case r >= 0x3040 && r <= 0x30FF: // Hiragana + Katakana
+	case r >= 0x3040 && r <= 0x30FF: // 平假名 + 片假名
 		return true
-	case r >= 0xAC00 && r <= 0xD7AF: // Hangul syllables
+	case r >= 0xAC00 && r <= 0xD7AF: // 谚文音节
 		return true
-	case r >= 0xF900 && r <= 0xFAFF: // CJK compatibility ideographs
+	case r >= 0xF900 && r <= 0xFAFF: // CJK 兼容表意文字
 		return true
 	default:
 		return false
 	}
 }
 
-// isPictograph reports whether r sits in one of the common emoji / pictograph
-// blocks.
+// isPictograph 报告 r 是否落在常见的 emoji / 象形文字区块之一。
 func isPictograph(r rune) bool {
 	switch {
 	case r >= 0x1F300 && r <= 0x1FAFF:
@@ -188,8 +185,8 @@ func isPictograph(r rune) bool {
 	}
 }
 
-// isMathSymbol reports whether r is a mathematical operator/symbol that
-// tokenizers tend to charge more for than ordinary punctuation.
+// isMathSymbol 报告 r 是否是一个数学运算符/符号——tokenizer 往往对它比对普通
+// 标点收更高费用。
 func isMathSymbol(r rune) bool {
 	if unicode.Is(unicode.Sm, r) {
 		return true
@@ -202,8 +199,8 @@ func isMathSymbol(r rune) bool {
 	}
 }
 
-// isPathDelim reports whether r is a url/path delimiter that common tokenizers
-// handle cheaply.
+// isPathDelim 报告 r 是否是一个 url/path 分隔符——常见 tokenizer 对它处理得
+// 比较便宜。
 func isPathDelim(r rune) bool {
 	switch r {
 	case '/', ':', '?', '&', '=', '#', '%':

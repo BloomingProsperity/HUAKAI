@@ -70,8 +70,8 @@ func TestMeExportSelfScoped(t *testing.T) {
 		t.Fatalf("session export must not use caller-supplied api_key_id scope, got %d", *store.got.APIKeyID)
 	}
 	records := readCSV(t, rec.Body.String())
-	// MUTATION: scope from query string instead of session ident -> store reads tenant 8 / api key 31 and this no longer returns only req-a.
-	// MUTATION: drop the ident TenantID+UserID row filter -> req-same-tenant-user-b leaks into the CSV and this test goes red.
+	// 变异:从查询字符串而非 session ident 取 scope -> store 读到 tenant 8 / api key 31,就不再只返回 req-a。
+	// 变异:去掉按 ident TenantID+UserID 过滤行 -> req-same-tenant-user-b 泄露进 CSV,本测试变红。
 	if len(records) != 2 {
 		t.Fatalf("records=%v want header + user A row only", records)
 	}
@@ -102,7 +102,7 @@ func TestMeExportCSVShape(t *testing.T) {
 		t.Fatalf("Content-Disposition=%q want me usage attachment", got)
 	}
 	records := readCSV(t, rec.Body.String())
-	// MUTATION: omit the header row write; records[0] becomes req-shape and this assertion fails.
+	// 变异:省略表头行的写入;records[0] 变成 req-shape,本断言失败。
 	assertCSVRow(t, records[0], []string{"request_id", "model", "tokens_input", "tokens_output", "cost_usd", "created_at", "status"})
 	if len(records) != 2 {
 		t.Fatalf("records=%v want header + one data row", records)
@@ -121,7 +121,7 @@ func TestMeExportInjectionGuard(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 	records := readCSV(t, rec.Body.String())
-	// MUTATION: bypass SafeCSVCell when writing export cells; the model cell starts with '=' and this assertion fails.
+	// 变异:写导出单元格时绕过 SafeCSVCell;model 单元格以 '=' 开头,本断言失败。
 	if got := records[1][1]; got != "'=cmd|' /C calc'!A0" {
 		t.Fatalf("model cell=%q want formula guard prefix", got)
 	}

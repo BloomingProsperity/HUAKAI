@@ -68,10 +68,10 @@ func TestRerankSearchUnitsBilling(t *testing.T) {
 			if len(env.settler.aborts) != 0 {
 				t.Fatalf("abort calls=%d want 0", len(env.settler.aborts))
 			}
-			// Mutation: billing by len(query) tokens or document count instead of
-			// ceil(documents/100) makes the predicted/actual cost assertions red.
-			// Mutation: recomputing a different actual cost after upstream success
-			// makes the reserve-vs-settle equality assertions red.
+			// 变异:按 len(query) token 数或文档数计费, 而非
+			// ceil(documents/100), 会让 predicted/actual 成本断言变红。
+			// 变异:在 upstream 成功后重算出不同的 actual 成本,
+			// 会让 reserve 与 settle 相等的断言变红。
 		})
 	}
 }
@@ -108,8 +108,8 @@ func TestRerankReserveThenSettle_HappyPath(t *testing.T) {
 	if got := len(env.settler.aborts); got != 0 {
 		t.Fatalf("abort calls=%d want 0", got)
 	}
-	// Mutation: changing EndpointPath back to /v1/embeddings or rebuilding the
-	// request body instead of forwarding raw JSON makes this test red.
+	// 变异:把 EndpointPath 改回 /v1/embeddings, 或重新构造请求 body 而非
+	// 原样转发 raw JSON, 会让本测试变红。
 }
 
 func TestRerankUpstreamErrorAborts(t *testing.T) {
@@ -132,8 +132,8 @@ func TestRerankUpstreamErrorAborts(t *testing.T) {
 		t.Fatalf("abort reason=%q want upstream_dispatch_error", env.settler.aborts[0].reason)
 	}
 	env.assertNoHangingClaims(t)
-	// Mutation: skipping Settler.Abort on dispatcher error leaves the claim
-	// reserved and makes this test red.
+	// 变异:在 dispatcher 出错时跳过 Settler.Abort, 会让 claim 一直处于
+	// reserved 状态, 从而让本测试变红。
 }
 
 func TestRerankInsufficientBalance(t *testing.T) {
@@ -152,8 +152,8 @@ func TestRerankInsufficientBalance(t *testing.T) {
 	if got := len(env.settler.aborts); got != 0 {
 		t.Fatalf("abort calls=%d want 0 before reservation succeeds", got)
 	}
-	// Mutation: dispatching before ClaimGate.Reserve or swallowing
-	// ErrInsufficientBalance makes this test red.
+	// 变异:在 ClaimGate.Reserve 之前就 dispatch, 或吞掉
+	// ErrInsufficientBalance, 会让本测试变红。
 }
 
 func TestRerankValidation(t *testing.T) {
@@ -180,8 +180,8 @@ func TestRerankValidation(t *testing.T) {
 			if got := len(env.dispatcher.calls); got != 0 {
 				t.Fatalf("dispatch calls=%d want 0", got)
 			}
-			// Mutation: allowing empty query/documents or validating after reserve
-			// makes this test red.
+			// 变异:允许空的 query/documents, 或在 reserve 之后才校验,
+			// 会让本测试变红。
 		})
 	}
 }
@@ -199,7 +199,7 @@ func TestRerankUnknownModelReturnsModelNotAvailableBeforeReserve(t *testing.T) {
 	if got := len(env.dispatcher.calls); got != 0 {
 		t.Fatalf("dispatch calls=%d want 0", got)
 	}
-	// Mutation: fail-open when no rerank model is registered makes this test red.
+	// 变异:在未注册任何 rerank 模型时 fail-open, 会让本测试变红。
 }
 
 func TestRerankTenantScoped(t *testing.T) {
@@ -228,8 +228,8 @@ func TestRerankTenantScoped(t *testing.T) {
 	if env.settler.settles[0].TenantID != 7 || env.settler.settles[0].UserID != 13 || env.settler.settles[0].APIKeyID != 11 {
 		t.Fatalf("settle identity=%+v want tenant/user/api key 7/13/11", env.settler.settles[0])
 	}
-	// Mutation: resolving model, pool account, credential, reserve, or settle
-	// without the authenticated tenant identity makes this test red.
+	// 变异:在没有已认证 tenant 身份的情况下去解析 model、pool 账号、
+	// credential, 或执行 reserve/settle, 会让本测试变红。
 }
 
 func TestRerankAuthRequired(t *testing.T) {
@@ -245,8 +245,8 @@ func TestRerankAuthRequired(t *testing.T) {
 	if got := len(env.dispatcher.calls); got != 0 {
 		t.Fatalf("dispatch calls=%d want 0", got)
 	}
-	// Mutation: validating/reserving before auth or treating missing auth as
-	// anonymous success makes this test red.
+	// 变异:在鉴权之前就校验/reserve, 或把缺失鉴权当成匿名成功,
+	// 会让本测试变红。
 }
 
 type rerankTestEnv struct {

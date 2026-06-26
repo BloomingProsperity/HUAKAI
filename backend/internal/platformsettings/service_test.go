@@ -385,8 +385,8 @@ func TestResponseHeaderFirewallSettingsAllowEmptyAndValidateHeaderLists(t *testi
 }
 
 func TestBudgetLimitsSettingIsNonSecretJSONObject(t *testing.T) {
-	// Mutation check: omitting the allow-list entry rejects the PM-approved
-	// non-secret budget_limits document before it reaches the settings store.
+	// 变异:省略 allow-list 条目会让 PM 批准的非密
+	// budget_limits 文档在到达 settings store 之前就被拒绝。
 	value := `{"default":{"rpm":60,"tpm":12000},"users":{"42":{"rpm":10}}}`
 	got, err := ValidateValue(KeyBudgetLimits, value)
 	if err != nil {

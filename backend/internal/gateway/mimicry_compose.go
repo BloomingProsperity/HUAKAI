@@ -9,12 +9,12 @@
 //
 // 步骤映射：
 //
-//	step 1: system rewrite                    →  RewriteSystem            (R7.3)
-//	step 2: system cache_control strip        →  内嵌 stripSystemCacheControl
-//	step 3: cache_control breakpoints inject  →  ApplyBreakpoints[WithTTLOrdering] (R7.2)
-//	step 4: tool name obfuscation             →  RewriteToolNames         (R7.4)
-//	step 5: metadata user_id injection        →  RewriteMetadataUserID    (R7.5)
-//	step 6: tools[-1] cache breakpoint        →  内嵌 applyToolsTailCacheBreakpoint
+//	步骤 1:重写 system                         →  RewriteSystem            (R7.3)
+//	步骤 2:剥除 system cache_control            →  内嵌 stripSystemCacheControl
+//	步骤 3:注入 cache_control 断点              →  ApplyBreakpoints[WithTTLOrdering] (R7.2)
+//	步骤 4:工具名混淆                           →  RewriteToolNames         (R7.4)
+//	步骤 5:注入 metadata user_id               →  RewriteMetadataUserID    (R7.5)
+//	步骤 6:tools[-1] 缓存断点                   →  内嵌 applyToolsTailCacheBreakpoint
 //
 // step 2 与 step 6 是 composer-内置的小辅助，未单独开 atomic：
 //   - step 2 仅遍历 system 数组并在每个块上删除 cache_control 字段；
@@ -127,7 +127,7 @@ func ApplyMimicryPlan(body []byte, plan MimicryPlan) (MimicryResult, error) {
 		return out, nil
 	}
 
-	// step 1: system rewrite
+	// 步骤 1:重写 system
 	if plan.SystemRewrite != nil {
 		r, err := RewriteSystem(out.Body, *plan.SystemRewrite)
 		out.Steps = append(out.Steps, MimicryStepResult{
@@ -144,7 +144,7 @@ func ApplyMimicryPlan(body []byte, plan MimicryPlan) (MimicryResult, error) {
 		out.Steps = append(out.Steps, MimicryStepResult{Step: MimicryStepSystemRewrite, Skipped: true, Reason: mimicryStepSkippedReason})
 	}
 
-	// step 2: strip system cache_control
+	// 步骤 2:剥除 system 的 cache_control
 	if plan.StripSystemCacheControl {
 		newBody, applied, reason, err := stripSystemCacheControl(out.Body)
 		out.Steps = append(out.Steps, MimicryStepResult{
@@ -161,7 +161,7 @@ func ApplyMimicryPlan(body []byte, plan MimicryPlan) (MimicryResult, error) {
 		out.Steps = append(out.Steps, MimicryStepResult{Step: MimicryStepStripSystemCC, Skipped: true, Reason: mimicryStepSkippedReason})
 	}
 
-	// step 3: cache_control breakpoints injection
+	// 步骤 3:注入 cache_control 断点
 	if plan.CacheBreakpoints != nil {
 		var r BreakpointApplyResult
 		var err error
@@ -189,7 +189,7 @@ func ApplyMimicryPlan(body []byte, plan MimicryPlan) (MimicryResult, error) {
 		out.Steps = append(out.Steps, MimicryStepResult{Step: MimicryStepCacheBreakpoints, Skipped: true, Reason: mimicryStepSkippedReason})
 	}
 
-	// step 4: tool name obfuscation
+	// 步骤 4:工具名混淆
 	if plan.ToolNames != nil {
 		r, err := RewriteToolNames(out.Body, *plan.ToolNames)
 		out.Steps = append(out.Steps, MimicryStepResult{
@@ -206,7 +206,7 @@ func ApplyMimicryPlan(body []byte, plan MimicryPlan) (MimicryResult, error) {
 		out.Steps = append(out.Steps, MimicryStepResult{Step: MimicryStepToolNames, Skipped: true, Reason: mimicryStepSkippedReason})
 	}
 
-	// step 5: metadata user_id injection
+	// 步骤 5:注入 metadata user_id
 	if plan.MetadataUserID != nil {
 		r, err := RewriteMetadataUserID(out.Body, *plan.MetadataUserID)
 		out.Steps = append(out.Steps, MimicryStepResult{
@@ -223,7 +223,7 @@ func ApplyMimicryPlan(body []byte, plan MimicryPlan) (MimicryResult, error) {
 		out.Steps = append(out.Steps, MimicryStepResult{Step: MimicryStepMetadataUserID, Skipped: true, Reason: mimicryStepSkippedReason})
 	}
 
-	// step 6: tools[-1] cache breakpoint
+	// 步骤 6:tools[-1] 缓存断点
 	if plan.ApplyToolsTailCacheBP {
 		newBody, applied, reason, err := applyToolsTailCacheBreakpoint(out.Body, plan.ToolsTailTTL)
 		out.Steps = append(out.Steps, MimicryStepResult{

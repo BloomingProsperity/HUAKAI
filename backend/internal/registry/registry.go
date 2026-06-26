@@ -1,25 +1,25 @@
-// Package registry resolves a public model alias and tenant id into a
-// router.ResolvedModel — Slice 2 of the HUAKAI model registry plan.
+// Package registry 把公开模型别名与租户 id 解析为
+// router.ResolvedModel——HUAKAI 模型注册表计划的第 2 个切片。
 //
-// Pipeline per docs/process/plans/2026-04-30-n5-model-registry.md:
+// 流水线参见 docs/process/plans/2026-04-30-n5-model-registry.md:
 //
-//	parse alias -> AliasNormalize -> LookupTenantAlias
-//	  IF tenant alias active   -> use it
-//	  IF tenant alias disabled -> ErrModelDisabled (D3 explicit deny)
-//	  IF tenant alias missing  -> if inherit_global_catalog
+//	解析 alias -> AliasNormalize -> LookupTenantAlias
+//	  若 tenant alias 处于 active   -> 使用它
+//	  若 tenant alias 处于 disabled -> ErrModelDisabled(D3 显式拒绝)
+//	  若 tenant alias 缺失          -> 若 inherit_global_catalog
 //	                              -> LookupGlobalAlias
-//	                              else ErrUnknownModel
-//	GetModelByID -> check status -> ListCapabilities -> ListBindings
-//	-> stamp snapshot version -> ResolvedModel
+//	                              否则 ErrUnknownModel
+//	GetModelByID -> 检查 status -> ListCapabilities -> ListBindings
+//	-> 盖上 snapshot version -> ResolvedModel
 //
-// Boundary contracts (docs/specs/_invariants/cross-module-boundaries.md):
-//   - registry NEVER reads provider_accounts.credentials, OAuth
-//     tokens, or api_keys.key_hash. Returns metadata only.
-//   - rate caps (rpm_limit/tpm_limit/max_parallel_requests) are
-//     integer counts NOT decimal cost. Pool still computes no cost.
-//   - PostgresRegistry.ResolveModel is SELECT-only. Admin writers
-//     bump model_registry_snapshots.version in their own TX,
-//     outside this package.
+// 边界契约(docs/specs/_invariants/cross-module-boundaries.md):
+//   - registry 绝不读取 provider_accounts.credentials、OAuth
+//     token 或 api_keys.key_hash。仅返回元数据。
+//   - 速率上限(rpm_limit/tpm_limit/max_parallel_requests)是
+//     整数计数,而非小数成本。Pool 仍不计算成本。
+//   - PostgresRegistry.ResolveModel 只做 SELECT。Admin 写入方在
+//     自己的事务中递增 model_registry_snapshots.version,
+//     位于本包之外。
 
 package registry
 
@@ -28,27 +28,27 @@ import (
 	"encoding/json"
 )
 
-// Registry is the interface implemented by PostgresRegistry. Mirrors the
-// auth.APIKeyResolver shape so deps wiring stays uniform across layers.
+// Registry 是由 PostgresRegistry 实现的接口。它对齐 auth.APIKeyResolver
+// 的形态,使各层之间的依赖接线保持统一。
 type Registry interface {
 	ResolveModel(ctx context.Context, publicAlias string, tenantID int64) (Resolved, error)
 }
 
-// Resolved is the registry-specific view of a resolved alias. The chat
-// handler converts it into router.ResolvedModel + binding metadata.
+// Resolved 是已解析别名在 registry 层的专用视图。chat handler 会把它
+// 转换为 router.ResolvedModel + binding 元数据。
 //
 // 为什么保留独立类型：router.ResolvedModel 是 router 输入契约，只携带
 // planner-safe 的 binding 元数据。Rate/quota 字段留在 registry 层，
 // 供 rate gate 消费，避免扩大 router 职责面。
 type Resolved struct {
-	// Identity (mapped into router.ResolvedModel.PublicAlias /
-	// InternalModelID / ProviderModelID).
+	// 身份(映射到 router.ResolvedModel.PublicAlias /
+	// InternalModelID / ProviderModelID)。
 	PublicAlias            string
 	CanonicalModelID       string
 	DefaultProviderModelID string
 	ProviderModelID        string
 
-	// Capabilities + protocol — plain metadata fed into router.
+	// Capabilities + 协议——喂给 router 的纯元数据。
 	ContextWindow    int
 	Capabilities     []string
 	PricingClass     string
@@ -60,9 +60,9 @@ type Resolved struct {
 	PoolCandidates  []int64
 	BindingMetadata []BindingMetadata
 
-	// Snapshot stamp (D6). Format: "registry:<tenant_id>:<version>".
-	// Router concatenates its own policy version when writing to
-	// RoutePlan.SnapshotVersion / usage_records.snapshot_version.
+	// 快照标记(D6)。格式:"registry:<tenant_id>:<version>"。
+	// Router 在写入 RoutePlan.SnapshotVersion / usage_records.snapshot_version
+	// 时会拼接其自身的 policy version。
 	SnapshotVersion string
 }
 
@@ -74,14 +74,14 @@ type BindingMetadata struct {
 	Priority                int32
 	Weight                  int32
 	SelectionMode           string  // 'strict_priority' | 'priority_weighted'
-	ProviderModelIDOverride *string // nullable; one-api ModelMapping analogue
-	RPMLimit                *int32  // LiteLLM proxy/_types KeyRequestBase.rpm_limit analogue
+	ProviderModelIDOverride *string // 可空;类比上游的 ModelMapping
+	RPMLimit                *int32  // 类比 LiteLLM proxy/_types KeyRequestBase.rpm_limit
 	TPMLimit                *int32
-	MaxParallelRequests     *int32 // LiteLLM GenerateRequestBase.max_parallel_requests analogue
+	MaxParallelRequests     *int32 // 类比 LiteLLM GenerateRequestBase.max_parallel_requests
 	FallbackClass           string // 'normal'|'context_window'|'safety'|'quota'|'manual'
 
-	// Channel-level request/response controls. These fields are in-memory only
-	// in this slice; zero values preserve the pre-existing behavior.
+	// 渠道级请求/响应控制。在本切片中这些字段仅存于内存;
+	// 零值保持既有行为不变。
 	SystemPrompt                         string
 	SystemPromptOverride                 bool
 	ForceFormat                          bool
@@ -94,5 +94,5 @@ type BindingMetadata struct {
 	StripStore                           bool
 	BodyParamStrips                      []string
 	ParamOverride                        map[string]json.RawMessage
-	SensitiveWords                       []string // opt-in keyword obfuscation; empty = disabled
+	SensitiveWords                       []string // 选择性开启的关键词混淆;空 = 禁用
 }

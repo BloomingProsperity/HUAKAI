@@ -26,9 +26,8 @@ func TestPinnedAccountGate(t *testing.T) {
 			}
 			continue
 		}
-		// MUTATION: invert the predicate or replace the pinned gate with
-		// AllowAllGate; non-pinned accounts would pass instead of returning
-		// GateFailurePinnedAccount.
+		// 变异:把谓词取反，或用 AllowAllGate 替换 pinned gate；这样未 pin 的
+		// 账号会通过，而不是返回 GateFailurePinnedAccount。
 		if ok || reason != GateFailurePinnedAccount {
 			t.Fatalf("non-pinned account Allow(%d)=(%v,%q), want reject %q",
 				account.ID, ok, reason, GateFailurePinnedAccount)

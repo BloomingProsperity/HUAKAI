@@ -271,7 +271,7 @@ func (r *PgxReader) ListBillingEvents(ctx context.Context, tenantID int64, event
 	return out, nil
 }
 
-// CountClaimsByStatus implements Reader.
+// CountClaimsByStatus 实现 Reader 接口。
 func (r *PgxReader) CountClaimsByStatus(ctx context.Context, tenantID int64) (map[string]int64, error) {
 	rows, err := r.q.CountClaimsByStatus(ctx, tenantID)
 	if err != nil {

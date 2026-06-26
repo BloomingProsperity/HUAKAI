@@ -68,13 +68,12 @@ type usageRecord struct {
 	RequestedAt            string      `json:"requested_at,omitempty"`
 }
 
-// usageTokens surfaces the per-request token breakdown already stored in
-// usage_records (input/output always present; cache counts emitted only when
-// non-zero). This is the genuine residual of the "relay request log" feature:
-// GET /v1/me/usage already served model / cost / status / provider / verify_hint
-// with keyset pagination and self-scoped relay-key auth, so we surface the token
-// columns ListUsageRecords already SELECTs — instead of building a redundant
-// relay_request_logs table plus a fail-open money-path settler hook.
+// usageTokens 暴露每次请求的 token 明细，这些数据已存于 usage_records
+//（input/output 始终存在；cache 计数仅在非零时输出）。这是「中转请求日志」
+// 功能真正剩下的部分：GET /v1/me/usage 已经提供 model / cost / status /
+// provider / verify_hint，配合 keyset 分页与自我作用域的 relay-key 鉴权，
+// 因此我们只是暴露 ListUsageRecords 早已 SELECT 出来的 token 列 ——
+// 而不是另建一张冗余的 relay_request_logs 表外加一个 fail-open 的资金路径结算钩子。
 type usageTokens struct {
 	Input         int32 `json:"input"`
 	Output        int32 `json:"output"`

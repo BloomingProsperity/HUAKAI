@@ -17,8 +17,8 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
-// Mutation: skip GetReceiptForUser or call it with the wrong user_id.
-// User A would be able to create a dispute for user B's receipt; this must go red.
+// 变异:跳过 GetReceiptForUser 或用错误的 user_id 调用它。
+// 用户 A 将能为用户 B 的 receipt 创建 dispute;此处必须变红。
 func TestCreateDisputeRejectsReceiptOwnedByAnotherUser(t *testing.T) {
 	receipts := &disputeFakeReceiptReader{err: audit.ErrReceiptNotFound}
 	store := &disputeFakeStore{}
@@ -38,8 +38,8 @@ func TestCreateDisputeRejectsReceiptOwnedByAnotherUser(t *testing.T) {
 	}
 }
 
-// Mutation: take tenant_id/user_id from JSON or query instead of session.
-// The created dispute would be scoped to attacker-supplied identity.
+// 变异:从 JSON 或 query 取 tenant_id/user_id 而非从 session 取。
+// 创建出的 dispute 将被限定到攻击者提供的身份。
 func TestCreateDisputeUsesSessionScopeAndRejectsDuplicate(t *testing.T) {
 	receipts := &disputeFakeReceiptReader{receipt: &audit.CostReceipt{TenantID: 7, UserID: 42, RequestID: "req-own"}}
 	store := &disputeFakeStore{createErr: audit.ErrDisputeDuplicate}
@@ -58,8 +58,8 @@ func TestCreateDisputeUsesSessionScopeAndRejectsDuplicate(t *testing.T) {
 	}
 }
 
-// Mutation: handler passes zero/wrong user_id to DisputeStore.ListUserDisputes.
-// The fake store filters by the supplied args; wrong scope leaks or drops the discriminating row.
+// 变异:handler 把零值/错误的 user_id 传给 DisputeStore.ListUserDisputes。
+// fake store 按传入参数过滤;错误的 scope 会泄露或丢掉那条区分行。
 func TestListMyDisputesIsScopedToSessionUser(t *testing.T) {
 	store := &disputeFakeStore{rows: []audit.CostDispute{
 		dispute(1, 7, 42, "req-a", audit.DisputeStatusOpen),
@@ -90,8 +90,8 @@ func TestListMyDisputesIsScopedToSessionUser(t *testing.T) {
 	}
 }
 
-// Mutation: resolve handler ignores status/operator_note or keeps old status.
-// Operator recovery must persist the state transition visibly.
+// 变异:resolve handler 忽略 status/operator_note 或保留旧 status。
+// 运营者恢复操作必须可见地持久化这次状态迁移。
 func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
 	store := &disputeFakeStore{
 		resolveReturn: disputeResolved(55, 7, 42, "req-r", audit.DisputeStatusResolved, "receipt checked"),
@@ -121,8 +121,8 @@ func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
 	}
 }
 
-// Mutation: omit ident.CanIssueForTenant before resolve.
-// A tenant operator for tenant 7 could resolve tenant 8 disputes.
+// 变异:在 resolve 之前省略 ident.CanIssueForTenant。
+// tenant 7 的租户运营者将能 resolve tenant 8 的 dispute。
 func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
 	store := &disputeFakeStore{}
 	router := disputeAdminRouter(DisputeAdminDeps{
@@ -141,8 +141,8 @@ func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
 	}
 }
 
-// Mutation: reuse ListUserDisputes or otherwise pass a user_id filter for admin list.
-// A tenant admin must see disputes from multiple users in the same tenant.
+// 变异:在 admin 列表中复用 ListUserDisputes 或以其它方式传入 user_id 过滤。
+// 租户 admin 必须能看到同一 tenant 内多个用户的 dispute。
 func TestAdminListDisputesSeesMultipleUsersInTenant(t *testing.T) {
 	store := &disputeFakeStore{rows: []audit.CostDispute{
 		dispute(1, 7, 42, "req-user-a", audit.DisputeStatusOpen),
@@ -192,8 +192,8 @@ func TestAdminListDisputesSeesMultipleUsersInTenant(t *testing.T) {
 	}
 }
 
-// Mutation: ignore status query parameter before calling the store.
-// The fake store filters by the supplied status; an empty status would return open and resolved rows.
+// 变异:调用 store 之前忽略 status query 参数。
+// fake store 按传入的 status 过滤;空 status 会返回 open 和 resolved 的行。
 func TestAdminListDisputesStatusFilter(t *testing.T) {
 	store := &disputeFakeStore{rows: []audit.CostDispute{
 		dispute(1, 7, 42, "req-open", audit.DisputeStatusOpen),
@@ -227,8 +227,8 @@ func TestAdminListDisputesStatusFilter(t *testing.T) {
 	}
 }
 
-// Mutation: do not cap limit or ignore offset.
-// The handler must send capped limit=500 and offset=2 to the store.
+// 变异:不对 limit 封顶或忽略 offset。
+// handler 必须把封顶后的 limit=500 和 offset=2 发给 store。
 func TestAdminListDisputesPaginationCapsLimitAndPassesOffset(t *testing.T) {
 	store := &disputeFakeStore{rows: []audit.CostDispute{
 		dispute(1, 7, 42, "req-0", audit.DisputeStatusOpen),
@@ -251,8 +251,8 @@ func TestAdminListDisputesPaginationCapsLimitAndPassesOffset(t *testing.T) {
 	}
 }
 
-// Mutation: skip admin role validation after auth resolves an unsupported role.
-// A resolved but non-admin role must be rejected before the store runs.
+// 变异:在 auth 解析出不受支持的 role 之后跳过 admin role 校验。
+// 已解析但非 admin 的 role 必须在 store 运行前被拒绝。
 func TestAdminListDisputesAuthRequired(t *testing.T) {
 	store := &disputeFakeStore{}
 	router := disputeAdminRouter(DisputeAdminDeps{

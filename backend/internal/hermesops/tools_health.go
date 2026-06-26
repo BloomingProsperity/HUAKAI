@@ -89,9 +89,9 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 				}
 			}
 
-			// Fold in THIS account's per-channel detail(按 account_id 过滤)when ChannelList
-			// wired — 给出聚合 summary 缺的通道级"为什么"(cooling/disabled/paused + reason)。
-			// 用 ListChannelHealth(不含 AuditEvent payload),channelHealthShape 安全投影。
+			// 当 ChannelList 已接线时,折叠进「本账号」的逐通道明细(按 account_id 过滤)
+			// —— 给出聚合 summary 缺失的通道级「为什么」(cooling/disabled/paused + reason)。
+			// 用 ListChannelHealth(不含 AuditEvent payload),由 channelHealthShape 安全投影。
 			if deps.ChannelList != nil {
 				rows, cerr := deps.ChannelList(ctx, req.TenantID, channelHealthListLimit, 0)
 				if cerr != nil {

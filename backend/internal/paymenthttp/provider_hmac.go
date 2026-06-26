@@ -1,4 +1,4 @@
-// Package paymenthttp exposes user recharge and provider webhook HTTP routes.
+// 包 paymenthttp 暴露用户充值与 provider webhook 的 HTTP 路由。
 //
 // 本包只处理 HTTP 边界、provider 验签和 tenant 反查；真实入账、订单状态机、
 // 幂等和审计仍由 internal/payment 承担。

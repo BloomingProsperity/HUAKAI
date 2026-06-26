@@ -12,18 +12,18 @@ import (
 )
 
 // ============================================================
-// Signup Bonus tests
+// 注册奖励(Signup Bonus)测试
 // ============================================================
 
 func TestSignupBonusDefaultOff(t *testing.T) {
-	// Mutation: drop the cents<=0 guard in IssueSignupBonus -> credit is issued even when amount=0.
+	// 变异:去掉 IssueSignupBonus 里的 cents<=0 守卫 -> 即使 amount=0 也发放 credit。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
 	f := newPaymentFixture(t, ctx, pool)
 	svc := NewService(NewPostgresStore(pool))
 
-	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 0} // DEFAULT OFF
+	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 0} // 默认关闭
 	res, err := svc.IssueSignupBonus(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
 		t.Fatalf("IssueSignupBonus amount=0: %v", err)
@@ -37,7 +37,7 @@ func TestSignupBonusDefaultOff(t *testing.T) {
 }
 
 func TestSignupBonusIssuedOnce(t *testing.T) {
-	// Mutation: drop insertOrderTx unique constraint or out_trade_no fingerprint -> can double-issue.
+	// 变异:去掉 insertOrderTx 的唯一约束或 out_trade_no 指纹 -> 可能重复发放。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
@@ -46,7 +46,7 @@ func TestSignupBonusIssuedOnce(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 500_000} // 50 cents
+	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 500_000} // 50 美分
 	res, err := svc.IssueSignupBonus(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
 		t.Fatalf("IssueSignupBonus: %v", err)
@@ -60,14 +60,14 @@ func TestSignupBonusIssuedOnce(t *testing.T) {
 	if res.BillingEventID <= 0 {
 		t.Fatalf("billing_event_id=%d want >0", res.BillingEventID)
 	}
-	// Verify DB state
+	// 校验 DB 状态
 	if got := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND user_id=$2`, f.tenantA, f.userA); got != 1 {
 		t.Fatalf("payment_credits=%d want 1", got)
 	}
 	if got := sumPaymentCredits(t, ctx, pool, f.tenantA, f.userA); got != 50 {
 		t.Fatalf("sum credits=%d want 50", got)
 	}
-	// Verify fingerprint
+	// 校验指纹
 	if got := f.countInt(`SELECT count(*) FROM payment_orders WHERE tenant_id=$1 AND out_trade_no=$2`,
 		f.tenantA, signupBonusRequestKey(f.tenantA, f.userA)); got != 1 {
 		t.Fatalf("orders with signup_bonus key=%d want 1", got)
@@ -75,7 +75,7 @@ func TestSignupBonusIssuedOnce(t *testing.T) {
 }
 
 func TestSignupBonusIdempotent(t *testing.T) {
-	// Mutation: remove the orderExistsByOutTradeNoTx check or out_trade_no unique -> second call double-credits.
+	// 变异:移除 orderExistsByOutTradeNoTx 检查或 out_trade_no 唯一约束 -> 第二次调用会重复入账。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
@@ -84,7 +84,7 @@ func TestSignupBonusIdempotent(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 250_000} // 25 cents
+	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 250_000} // 25 美分
 
 	first, err := svc.IssueSignupBonus(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestSignupBonusIdempotent(t *testing.T) {
 		t.Fatalf("second call: want Issued=false AlreadyIssued=true, got %+v", second)
 	}
 
-	// Still exactly one credit row and 25 cents total.
+	// 仍然恰好一条 credit 行,总计 25 美分。
 	if got := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND user_id=$2`, f.tenantA, f.userA); got != 1 {
 		t.Fatalf("payment_credits after double call=%d want 1", got)
 	}
@@ -112,7 +112,7 @@ func TestSignupBonusIdempotent(t *testing.T) {
 }
 
 func TestSignupBonusAtomic_CreditFailureRollsBack(t *testing.T) {
-	// Mutation: committing after order insert but before credit leaves orphan order row.
+	// 变异:在插入 order 之后、入账之前提交,会留下孤儿 order 行。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
@@ -139,18 +139,18 @@ func TestSignupBonusAtomic_CreditFailureRollsBack(t *testing.T) {
 }
 
 // ============================================================
-// Invitee Reward tests
+// 被邀请人奖励(Invitee Reward)测试
 // ============================================================
 
 func TestInviteeRewardDefaultOff(t *testing.T) {
-	// Mutation: drop the cents<=0 guard in IssueInviteeReward -> credit issued even when amount=0.
+	// 变异:去掉 IssueInviteeReward 里的 cents<=0 守卫 -> 即使 amount=0 也发放 credit。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
 	f := newPaymentFixture(t, ctx, pool)
 	svc := NewService(NewPostgresStore(pool))
 
-	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 0} // DEFAULT OFF
+	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 0} // 默认关闭
 	res, err := svc.IssueInviteeReward(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
 		t.Fatalf("IssueInviteeReward amount=0: %v", err)
@@ -172,7 +172,7 @@ func TestInviteeRewardIssuedOnce(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 1_000_000} // 100 cents = $1
+	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 1_000_000} // 100 美分 = $1
 	res, err := svc.IssueInviteeReward(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
 		t.Fatalf("IssueInviteeReward: %v", err)
@@ -192,7 +192,7 @@ func TestInviteeRewardIssuedOnce(t *testing.T) {
 	if got := sumPaymentCredits(t, ctx, pool, f.tenantA, f.userA); got != 100 {
 		t.Fatalf("sum credits=%d want 100", got)
 	}
-	// Verify fingerprint key
+	// 校验指纹 key
 	if got := f.countInt(`SELECT count(*) FROM payment_orders WHERE tenant_id=$1 AND out_trade_no=$2`,
 		f.tenantA, inviteeRewardRequestKey(f.tenantA, f.userA)); got != 1 {
 		t.Fatalf("orders with invitee_reward key=%d want 1", got)
@@ -200,7 +200,7 @@ func TestInviteeRewardIssuedOnce(t *testing.T) {
 }
 
 func TestInviteeRewardIdempotent(t *testing.T) {
-	// Mutation: remove orderExistsByOutTradeNoTx check -> second call double-credits.
+	// 变异:移除 orderExistsByOutTradeNoTx 检查 -> 第二次调用会重复入账。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
@@ -209,7 +209,7 @@ func TestInviteeRewardIdempotent(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 750_000} // 75 cents
+	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 750_000} // 75 美分
 
 	first, err := svc.IssueInviteeReward(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
@@ -262,7 +262,7 @@ func TestInviteeRewardAtomic_CreditFailureRollsBack(t *testing.T) {
 }
 
 // ============================================================
-// Cross-feature: signup bonus and invitee reward are independent credits
+// 跨功能:注册奖励与被邀请人奖励是相互独立的 credit
 // ============================================================
 
 func TestSignupBonusAndInviteeRewardAreIndependent(t *testing.T) {
@@ -274,8 +274,8 @@ func TestSignupBonusAndInviteeRewardAreIndependent(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	bonusCfg := SignupInviteeConfig{SignupBonusUSDMicros: 300_000}    // 30 cents
-	inviteeCfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 200_000} // 20 cents
+	bonusCfg := SignupInviteeConfig{SignupBonusUSDMicros: 300_000}    // 30 美分
+	inviteeCfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 200_000} // 20 美分
 
 	_, err := svc.IssueSignupBonus(ctx, bonusCfg, f.tenantA, f.userA)
 	if err != nil {
@@ -286,14 +286,14 @@ func TestSignupBonusAndInviteeRewardAreIndependent(t *testing.T) {
 		t.Fatalf("IssueInviteeReward: %v", err)
 	}
 
-	// Two distinct credit rows, total 50 cents.
+	// 两条不同的 credit 行,总计 50 美分。
 	if got := f.countInt(`SELECT count(*) FROM payment_credits WHERE tenant_id=$1 AND user_id=$2`, f.tenantA, f.userA); got != 2 {
 		t.Fatalf("payment_credits=%d want 2 (bonus + invitee)", got)
 	}
 	if got := sumPaymentCredits(t, ctx, pool, f.tenantA, f.userA); got != 50 {
 		t.Fatalf("sum credits=%d want 50 (30+20)", got)
 	}
-	// Each has its own out_trade_no.
+	// 各自有独立的 out_trade_no。
 	if got := f.countInt(`SELECT count(*) FROM payment_orders WHERE tenant_id=$1 AND request_fingerprint=$2`, f.tenantA, signupBonusFingerprint); got != 1 {
 		t.Fatalf("signup_bonus orders=%d want 1", got)
 	}

@@ -167,7 +167,7 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return m
 }
 
-// --- L2 dry-run + confirm ---------------------------------------------------
+// --- L2 dry-run + confirm（试运行 + 确认）---------------------------------------------------
 
 func TestMutate_DryRunPreviewsWithoutMutating(t *testing.T) {
 	// 回归(L2):confirm=false 返回 preview + correlation_id 且不做变更。变异检查:

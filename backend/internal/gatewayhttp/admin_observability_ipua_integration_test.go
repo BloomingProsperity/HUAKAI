@@ -17,19 +17,17 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// TestAdminObsUsageProjectsClientIPAndUA — audit close-loop proof (real PG).
+// TestAdminObsUsageProjectsClientIPAndUA —— 审计闭环证明（真实 PG）。
 //
-// The defect this guards: ip_address/user_agent are persisted on usage_records
-// (migration 0112) but the admin observability usage list never projected them.
-// This test seeds a usage_record carrying KNOWN ip/ua, drives the REAL admin
-// usage handler (real ListUsageRecords query → real mapUsageRow projection over
-// a real *pgxpool.Pool store) and asserts the JSON response carries the exact
-// values.
+// 它守护的缺陷：ip_address/user_agent 已持久化在 usage_records 上
+//（迁移 0112），但 admin 可观测性 usage 列表从未把它们投影出来。
+// 本测试播种一条携带已知 ip/ua 的 usage_record，驱动真实的 admin usage
+// handler（真实 ListUsageRecords 查询 → 真实 mapUsageRow 投影，基于真实的
+// *pgxpool.Pool store），并断言 JSON 响应携带完全一致的值。
 //
-// Discriminating fixture: the seeded ip/ua ("203.0.113.7" / "probe-UA/1.0") are
-// distinctive sentinels — a projection that drops the columns, emits "" / nil,
-// or scans the wrong column yields a body that does NOT contain both sentinels,
-// so the assertions go red. (Mutation-verified by blanking mapUsageRow output.)
+// 判别性夹具：播种的 ip/ua（"203.0.113.7" / "probe-UA/1.0"）是有辨识度的
+// 哨兵值 —— 若投影丢掉这些列、输出 "" / nil 或扫描了错误的列，则响应体
+// 不会同时包含这两个哨兵，断言便会变红。（已通过清空 mapUsageRow 输出做变异验证。）
 func TestAdminObsUsageProjectsClientIPAndUA(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -64,17 +62,17 @@ func TestAdminObsUsageProjectsClientIPAndUA(t *testing.T) {
 	if got := jsonString(item["user_agent"]); got != wantUA {
 		t.Fatalf("admin usage user_agent=%q want %q (close-loop projection broken) item=%v", got, wantUA, item)
 	}
-	// client_tool (migration 0137) rides the same close-loop: persisted but
-	// unprojected until wired into ListUsageRecords + mapUsageRow. Sentinel
-	// "claude_code" — blanking the mapUsageRow client_tool key sends this red.
+	// client_tool（迁移 0137）走同一条闭环：已持久化但在接入
+	// ListUsageRecords + mapUsageRow 之前未被投影。哨兵值为
+	// "claude_code" —— 清空 mapUsageRow 的 client_tool 键会让此处变红。
 	if got := jsonString(item["client_tool"]); got != wantClientTool {
 		t.Fatalf("admin usage client_tool=%q want %q (close-loop projection broken) item=%v", got, wantClientTool, item)
 	}
 }
 
-// obsRealDepsStub backs the admin observability handler with a real Queries
-// store over a real pool, and a fixed tenant-operator identity scoped to the
-// seeded tenant so parseTenantScope accepts the request.
+// obsRealDepsStub 为 admin 可观测性 handler 提供基于真实 pool 的真实 Queries
+// store，以及一个固定的 tenant-operator 身份（范围限定在播种的租户），
+// 使 parseTenantScope 接受该请求。
 type obsRealDepsStub struct {
 	tenantID int64
 	store    AdminObservabilityStore

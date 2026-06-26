@@ -16,14 +16,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 )
 
-// TestWriteJSONErrorProducesValidJSONForControlChars guards the gateway error writer must
-// emit RFC-valid JSON even when code/message carry control bytes (an admin create with
-// vendor="\x01" flows err.Error() into message). The old hand-formatter used fmt %q, which emits
-// Go literal escapes like \x01 — valid Go, invalid JSON — so strict SDK/proxy/log parsers fail.
+// TestWriteJSONErrorProducesValidJSONForControlChars 守护 gateway error writer:
+// 即便 code/message 带有控制字节(admin create 时 vendor="\x01" 会把 err.Error()
+// 流进 message),也必须发出 RFC 合法的 JSON。旧的手写格式化用 fmt %q,会输出
+// 像 \x01 这样的 Go 字面量转义 —— 合法 Go、非法 JSON —— 因此严格的 SDK/proxy/日志
+// 解析器会失败。
 //
-// Mutation check: restore `fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, ...)` in
-// writeJSONError; json.Valid goes false on the \x01 byte AND the round-trip message equality
-// fails (the literal escape does not decode back to the original bytes) → this test goes red.
+// 变异:在 writeJSONError 中恢复 `fmt.Fprintf(w, `{"error":{"code":%q,"message":%q}}`, ...)`;
+// json.Valid 会因 \x01 字节而变 false,且 message 的往返相等性
+// 失败(字面量转义无法解码回原始字节)→ 本测试变红。
 func TestWriteJSONErrorProducesValidJSONForControlChars(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()

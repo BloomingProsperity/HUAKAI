@@ -10,7 +10,7 @@
 // decimal 字段（cost 归属于 Ledger），也绝不能写数据库（Router 不写任何东西）。
 //
 // 本包是 import-pure 的：调用方的流程为
-//   Auth → Registry → Router.Plan(...) → Executor loop → Pool.Claim(...)
+//   Auth → Registry → Router.Plan(...) → Executor 循环 → Pool.Claim(...)
 
 package router
 

@@ -2,45 +2,43 @@ package toolpricing
 
 import "github.com/shopspring/decimal"
 
-// ToolCallCounts holds the number of server-side built-in tool calls made in a
-// single completion. All fields default to zero, which means no surcharge.
+// ToolCallCounts 持有单次 completion 中发生的服务端内置工具调用次数。
+// 所有字段默认为零,表示不收附加费。
 //
-// Upstreams (OpenAI / Anthropic) charge a flat per-CALL fee for built-in tools
-// (web_search, file_search, image_generation) independent of tokens. This struct
-// carries the extracted call counts so the surcharge step can compute the delta.
+// 上游(OpenAI / Anthropic)对内置工具(web_search、file_search、
+// image_generation)按 per-CALL 收取一笔与 token 无关的固定费用。
+// 本 struct 携带抽取出的调用次数,供附加费步骤计算增量。
 type ToolCallCounts struct {
 	WebSearch       int64
 	FileSearch      int64
 	ImageGeneration int64
 }
 
-// IsZero reports whether all call counts are zero (no tool calls = no surcharge).
+// IsZero 报告所有调用次数是否都为零(没有工具调用 = 不收附加费)。
 func (c ToolCallCounts) IsZero() bool {
 	return c.WebSearch == 0 && c.FileSearch == 0 && c.ImageGeneration == 0
 }
 
-// ToolPrices holds per-tool USD prices per 1000 calls for a single
-// (tenant, model) configuration entry. A zero price means the tool is unpriced
-// (no surcharge for that tool).
+// ToolPrices 持有单个 (tenant, model) 配置条目下每个工具按每 1000 次调用
+// 计的美元单价。零价表示该工具未定价(对该工具不收附加费)。
 type ToolPrices struct {
-	// WebSearchPer1000 is the USD charge per 1000 web_search tool calls.
+	// WebSearchPer1000 是每 1000 次 web_search 工具调用的美元收费。
 	WebSearchPer1000 decimal.Decimal
-	// FileSearchPer1000 is the USD charge per 1000 file_search tool calls.
+	// FileSearchPer1000 是每 1000 次 file_search 工具调用的美元收费。
 	FileSearchPer1000 decimal.Decimal
-	// ImageGenerationPer1000 is the USD charge per 1000 image_generation calls.
+	// ImageGenerationPer1000 是每 1000 次 image_generation 调用的美元收费。
 	ImageGenerationPer1000 decimal.Decimal
 }
 
-// IsZero reports whether all prices are zero (no surcharge will be added).
+// IsZero 报告所有价格是否都为零(不会加任何附加费)。
 func (p ToolPrices) IsZero() bool {
 	return p.WebSearchPer1000.IsZero() &&
 		p.FileSearchPer1000.IsZero() &&
 		p.ImageGenerationPer1000.IsZero()
 }
 
-// Table maps (tenantID, modelID) to ToolPrices. An empty Table (nil or no
-// entries) returns zero prices for every lookup, guaranteeing the default
-// behavior is zero surcharge.
+// Table 把 (tenantID, modelID) 映射到 ToolPrices。空 Table(nil 或无条目)
+// 对每次查询都返回零价,保证默认行为是不收附加费。
 type Table map[tableKey]ToolPrices
 
 type tableKey struct {
@@ -48,8 +46,8 @@ type tableKey struct {
 	ModelID  string
 }
 
-// Lookup returns the ToolPrices for the given tenant and model. If no entry is
-// found, zero prices are returned (safe default: no surcharge).
+// Lookup 返回给定 tenant 和 model 的 ToolPrices。若找不到条目,
+// 返回零价(安全默认:不收附加费)。
 func (t Table) Lookup(tenantID int64, modelID string) ToolPrices {
 	if t == nil {
 		return ToolPrices{}
@@ -100,25 +98,24 @@ func NewPlatformSource(defaults ToolPrices, overrides Table) Source {
 	return platformSource{defaults: defaults, overrides: overrides}
 }
 
-// Set stores prices for the given tenant and model. Used for testing and for
-// loading configuration.
+// Set 为给定 tenant 和 model 存储价格。用于测试与加载配置。
 func (t Table) Set(tenantID int64, modelID string, prices ToolPrices) {
 	t[tableKey{TenantID: tenantID, ModelID: modelID}] = prices
 }
 
 var per1000 = decimal.NewFromInt(1000)
 
-// Surcharge computes the total tool-call surcharge in USD.
+// Surcharge 计算工具调用附加费总额(美元)。
 //
-// Formula per tool: price_per_1000 / 1000 * count * groupRatio
+// 每个工具的公式:price_per_1000 / 1000 * count * groupRatio
 //
-// Invariants that guarantee the default-zero safety property:
-//   - zero counts  -> zero surcharge (no calls = no charge)
-//   - zero prices  -> zero surcharge (unconfigured = no charge)
-//   - empty Table  -> zero surcharge (no config = no charge)
+// 保证「默认为零」安全属性的不变量:
+//   - 次数为零  -> 附加费为零(无调用 = 不收费)
+//   - 价格为零  -> 附加费为零(未配置 = 不收费)
+//   - 空 Table  -> 附加费为零(无配置 = 不收费)
 //
-// groupRatio mirrors the pricingeval GroupRatio semantics: zero is treated as
-// 1.0 (identity), matching pricingeval.pricingGroupRatio behaviour.
+// groupRatio 与 pricingeval 的 GroupRatio 语义一致:零被当作
+// 1.0(恒等),与 pricingeval.pricingGroupRatio 的行为相同。
 func Surcharge(prices ToolPrices, counts ToolCallCounts, groupRatio decimal.Decimal) decimal.Decimal {
 	if prices.IsZero() || counts.IsZero() {
 		return decimal.Zero
@@ -131,8 +128,8 @@ func Surcharge(prices ToolPrices, counts ToolCallCounts, groupRatio decimal.Deci
 	return total.Mul(ratio)
 }
 
-// toolFee computes price_per_1000 / 1000 * count for a single tool.
-// Returns zero when count <= 0 or price is zero.
+// toolFee 为单个工具计算 price_per_1000 / 1000 * count。
+// 当 count <= 0 或价格为零时返回零。
 func toolFee(pricePer1000 decimal.Decimal, count int64) decimal.Decimal {
 	if count <= 0 || pricePer1000.IsZero() {
 		return decimal.Zero
@@ -140,7 +137,7 @@ func toolFee(pricePer1000 decimal.Decimal, count int64) decimal.Decimal {
 	return pricePer1000.Div(per1000).Mul(decimal.NewFromInt(count))
 }
 
-// effectiveGroupRatio returns a safe group ratio: zero -> 1 (identity).
+// effectiveGroupRatio 返回一个安全的 group ratio:零 -> 1(恒等)。
 func effectiveGroupRatio(ratio decimal.Decimal) decimal.Decimal {
 	if ratio.IsZero() {
 		return decimal.NewFromInt(1)
@@ -148,21 +145,20 @@ func effectiveGroupRatio(ratio decimal.Decimal) decimal.Decimal {
 	return ratio
 }
 
-// DefaultToolPrices returns the platform-level default ToolPrices for the
-// new-api / official upstream billing schedule (USD per 1000 calls, 1:1 with
-// HUAKAI billing — no QuotaPerUnit conversion needed):
+// DefaultToolPrices 返回平台级默认 ToolPrices,对应官方上游的计费表
+//(美元每 1000 次调用,与 HUAKAI 计费 1:1 —— 无需 QuotaPerUnit 换算):
 //
-//   - WebSearchPer1000:  $10.00  (new-api operation_setting web_search=10.0)
-//   - FileSearchPer1000: $ 2.50  (new-api operation_setting file_search=2.5)
-//   - ImageGenerationPer1000: $0  (deferred to Stage D — upstream image-gen
-//     pricing is model/size-dependent and requires a separate price table)
+//   - WebSearchPer1000:  $10.00  (web_search 默认 10.0)
+//   - FileSearchPer1000: $ 2.50  (file_search 默认 2.5)
+//   - ImageGenerationPer1000: $0  (推迟到 Stage D —— 上游图像生成
+//     价格随 model / size 变化,需要单独的价表)
 //
-// Callers that want tenant-level overrides should use Table.Lookup; this
-// function is the zero-config fallback constant.
+// 想要 tenant 级 override 的调用方应使用 Table.Lookup;本函数是
+// 零配置回落常量。
 func DefaultToolPrices() ToolPrices {
 	return ToolPrices{
 		WebSearchPer1000:       decimal.NewFromFloat(10.0),
 		FileSearchPer1000:      decimal.NewFromFloat(2.5),
-		ImageGenerationPer1000: decimal.Zero, // Stage D: model/size-based pricing deferred
+		ImageGenerationPer1000: decimal.Zero, // Stage D:基于 model/size 的定价推迟
 	}
 }

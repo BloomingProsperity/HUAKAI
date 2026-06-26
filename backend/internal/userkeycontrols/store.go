@@ -27,7 +27,7 @@ type controlsStore interface {
 	GetAPIKeyIPAllowlist(context.Context, int64, int64, int64) (keyIPAllowlistRow, error)
 	SetAPIKeyModelAllowlist(context.Context, modelAllowlistAssignment) (int64, error)
 	GetAPIKeyModelAllowlist(context.Context, int64, int64, int64) (keyModelAllowlistRow, error)
-	// KEY-016: IP blacklist (parallel to allowlist)
+	// KEY-016:IP blacklist(与 allowlist 对称)
 	SetAPIKeyIPBlacklist(context.Context, ipBlacklistAssignment) (int64, error)
 	GetAPIKeyIPBlacklist(context.Context, int64, int64, int64) (keyIPBlacklistRow, error)
 }
@@ -116,7 +116,7 @@ type keyModelAllowlistRow struct {
 	AllowedModels *string
 }
 
-// KEY-016: IP blacklist store types (parallel to allowlist)
+// KEY-016:IP blacklist 的 store 类型(与 allowlist 对称)
 type ipBlacklistAssignment struct {
 	TenantID    int64
 	UserID      int64
@@ -132,7 +132,7 @@ type keyIPBlacklistRow struct {
 type PostgresStore struct {
 	pool *pgxpool.Pool
 	q    dbuserkeycontrols.Querier
-	db   dbuserkeycontrols.DBTX // raw DBTX for hand-written queries (blacklist)
+	db   dbuserkeycontrols.DBTX // 供手写查询(blacklist)使用的原始 DBTX
 }
 
 func newPGControlsStore(pool *pgxpool.Pool) *PostgresStore {

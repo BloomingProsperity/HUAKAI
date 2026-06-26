@@ -19,7 +19,7 @@ import (
 
 const handlerSecretSentinel = "sk-HANDLER-LEAK-7c1d"
 
-// --- fakes ------------------------------------------------------------------
+// --- 伪实现 ------------------------------------------------------------------
 
 // fakeToolCalls 捕获每一次 hermes_tool_calls 插入(权威的 tool-call 账本),
 // 使测试能断言每条路径上记录了什么。
@@ -149,7 +149,7 @@ func operator(tenant int64) (sessionauth.Identity, adminActor) {
 	return sessionauth.Identity{TenantID: tenant, UserID: 42}, adminActor{TokenID: 99, Role: admin.RoleTenantOperator}
 }
 
-// --- tests ------------------------------------------------------------------
+// --- 测试 ------------------------------------------------------------------
 
 func TestToolExecuteRecordsOkRowAndMirrorsAudit(t *testing.T) {
 	// 回归:一次成功的工具调用必须 (1) 返回 200 及结构化结果,(2) 恰好记录一条

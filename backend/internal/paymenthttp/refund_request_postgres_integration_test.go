@@ -72,9 +72,9 @@ func TestPostgresRefundRequestApproveRejectListAndTenantIsolation(t *testing.T) 
 	}
 }
 
-// Reject must not be able to overwrite a pending request after its refund fact exists.
-// This simulates the crash window where RefundOrder committed but ApproveRefundRequest
-// had not yet updated payment_refund_requests.status.
+// 在退款事实已存在之后，Reject 不得覆盖一个 pending 请求。
+// 这模拟了如下崩溃窗口：RefundOrder 已提交，但 ApproveRefundRequest
+// 尚未更新 payment_refund_requests.status。
 func TestPostgresRefundRequestRejectAfterRefundFactIsRefused(t *testing.T) {
 	ctx := context.Background()
 	pool := openPaymentHTTPPool(t, ctx)

@@ -139,7 +139,7 @@ func TestPostAPIKeys_Success(t *testing.T) {
 //
 // 判别 fixture:这是 [[feedback_no_fake_pass]] 防御 — 防有人改 decodeJSON
 // 取消 DisallowUnknownFields 后接受 body 的 tenant_id/user_id 越权字段。
-// Mutation 自检:去掉 DisallowUnknownFields → 这个测试 red。
+// 变异自检:去掉 DisallowUnknownFields → 这个测试 red。
 func TestPostAPIKeys_BodyTenantUserIDIgnored(t *testing.T) {
 	svc := &stubService{
 		issueReturn: userkey.IssueResult{
@@ -228,7 +228,7 @@ func TestListAPIKeys_PassesSessionAndPagination(t *testing.T) {
 //
 // 判别 fixture:Service 返 ErrNotFound,handler 返 404 + 公开 code 是
 // "api_key_not_found"(不是 "forbidden" 不是 "wrong_owner")— 防 ID 枚举。
-// Mutation 自检:改成返 403 → 攻击者可区分"键 ID 存在但归别人"还是"不存在"
+// 变异自检:改成返 403 → 攻击者可区分"键 ID 存在但归别人"还是"不存在"
 // → ID 枚举攻击面打开 → 本测试 red。
 func TestGetAPIKeys_NotFoundCodeIsGeneric(t *testing.T) {
 	svc := &stubService{getErr: userkey.ErrNotFound}
@@ -251,7 +251,7 @@ func TestGetAPIKeys_NotFoundCodeIsGeneric(t *testing.T) {
 // T6: GET 调用把 session (tenant, user) + path id 一起传给 service.Get。
 //
 // 判别 fixture:断言传入 tenant 和 user 来自 session ident,id 来自 path;
-// Mutation 自检:把 ident.UserID 改成 0 / 把 path id 改成 0 → assertion 红。
+// 变异自检:把 ident.UserID 改成 0 / 把 path id 改成 0 → assertion 红。
 func TestGetAPIKeys_ScopeFromSessionAndPath(t *testing.T) {
 	svc := &stubService{getReturn: userkey.KeyDescriptor{APIKeyID: 55, Name: "x", KeyPrefix: "hk_live_xxxxxxxx", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}
 	mux := mountWithSession(t, svc, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)
@@ -332,7 +332,7 @@ func TestDeleteAPIKeys_MalformedBodyRejected(t *testing.T) {
 // T9: ErrActiveKeyCapHit → 409 (Conflict),不是 503。
 //
 // 判别 fixture:cap 命中是用户输入问题不是后端故障;mapping 错 → 用户拿到 503
-// 后无法理解原因。Mutation:把 cap mapping 改成 default 503 → 测试 red。
+// 后无法理解原因。变异:把 cap mapping 改成 default 503 → 测试 red。
 func TestPostAPIKeys_CapMappedToConflict(t *testing.T) {
 	svc := &stubService{issueErr: userkey.ErrActiveKeyCapHit}
 	mux := mountWithSession(t, svc, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)
@@ -364,7 +364,7 @@ func TestPostAPIKeys_InvalidExpiresAt(t *testing.T) {
 // T11: Service nil → 503 (fail-closed)。
 //
 // 判别 fixture:防 wiring 漏装 Service 时 handler 默默崩或返 200/204。
-// Mutation 自检:去掉 resolveSession 里 d.Service == nil 检查 → service.Issue
+// 变异自检:去掉 resolveSession 里 d.Service == nil 检查 → service.Issue
 // nil-pointer panic → 测试是 500 / panic 不是 503 → red。
 func TestPostAPIKeys_NilServiceFailsClosed(t *testing.T) {
 	mux := mountWithSession(t, nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)

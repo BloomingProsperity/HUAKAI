@@ -68,7 +68,7 @@ func TestQuotaPolicyListSpec(t *testing.T) {
 	if p0["scope_kind"] != "tenant" || p0["metric"] != "tokens" || p0["mode"] != "hard" {
 		t.Fatalf("policy[0] 投影错: %v", p0)
 	}
-	// Numeric → float64。
+	// 数值 → float64。
 	if p0["limit_value"].(float64) != 1000000 {
 		t.Fatalf("limit_value 应 1000000(float64), got %v(%T)", p0["limit_value"], p0["limit_value"])
 	}

@@ -6,7 +6,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// AccountRepository is the Phase 4.5 persistence seam for account selection.
+// AccountRepository 是账号选择的 Phase 4.5 持久化接缝。
 type AccountRepository interface {
 	ListEligibleAccounts(ctx context.Context, arg dbbilling.ListEligibleAccountsParams) ([]dbbilling.ListEligibleAccountsRow, error)
 	GetAccountForRevalidation(ctx context.Context, arg dbbilling.GetAccountForRevalidationParams) (dbbilling.GetAccountForRevalidationRow, error)
@@ -15,21 +15,21 @@ type AccountRepository interface {
 	GetModelRoutingForGroup(ctx context.Context, arg dbbilling.GetModelRoutingForGroupParams) ([]dbbilling.GetModelRoutingForGroupRow, error)
 }
 
-// SlotAcquisitionRepository persists acquired slots for idempotent release.
+// SlotAcquisitionRepository 持久化已获取的 slot，以支持幂等释放。
 type SlotAcquisitionRepository interface {
 	InsertSlotAcquisition(ctx context.Context, arg dbbilling.InsertSlotAcquisitionParams) (int64, error)
 	ReleaseSlotAcquisition(ctx context.Context, arg dbbilling.ReleaseSlotAcquisitionParams) error
 	ListOrphanedAcquisitions(ctx context.Context) ([]dbbilling.PoolSlotAcquisition, error)
 }
 
-// StickyBindingRepository stores session-to-account affinity.
+// StickyBindingRepository 存储 session 到账号的亲和性(affinity)。
 type StickyBindingRepository interface {
 	GetStickyBinding(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error)
 	UpsertStickyBinding(ctx context.Context, arg dbbilling.UpsertStickyBindingParams) error
 	DeleteExpiredStickyBindings(ctx context.Context) error
 }
 
-// AuditRepository writes pool routing audit events.
+// AuditRepository 写入 pool routing 审计事件。
 type AuditRepository interface {
 	InsertPoolRoutingAuditEvent(ctx context.Context, arg dbbilling.InsertPoolRoutingAuditEventParams) error
 }

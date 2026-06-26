@@ -8,8 +8,8 @@ import (
 )
 
 func TestModerationExternalSettingsDefaultOffAndValidate(t *testing.T) {
-	// Mutation: omitting any key from the allow-list hides it from admin settings;
-	// defaulting enabled/image_enabled true changes runtime behavior before rollout.
+	// 变异:从白名单中漏掉任一 key 会使其在 admin 设置中不可见;
+	// 把 enabled/image_enabled 默认成 true 会在上线前改变运行时行为。
 	expectedDefaults := map[SettingKey]string{
 		KeyModerationExternalEnabled:      "false",
 		KeyModerationExternalBaseURL:      "",
@@ -90,8 +90,8 @@ func TestModerationExternalSettingsAcceptValidValues(t *testing.T) {
 }
 
 func TestModerationExternalAPIKeysRedactedFromAuditPayload(t *testing.T) {
-	// Mutation: serializing previous/new values directly leaks provider API keys
-	// into admin audit payload and makes this red.
+	// 变异:直接序列化旧值/新值会把 provider API key 泄漏进 admin 审计载荷,
+	// 使本测试变红。
 	payload, err := platformSettingAuditPayload(AuditParams{
 		Key:       KeyModerationExternalAPIKeys,
 		OldValue:  `["sk-old-secret"]`,

@@ -614,7 +614,7 @@ func TestAdminPoolsUpdate_AuditFailureRollsBackPool(t *testing.T) {
 	adapter := NewAdminPoolsStoreAdapter(dbbilling.New(pool), admindb.New(pool), pool)
 	poolName := "tx-update-baseline-" + suffix
 
-	// seed a pool 行,直接走 InsertPool (非 tx 版本) — baseline
+	// 种一条 pool 行,直接走 InsertPool(非 tx 版本)—— baseline
 	seeded, err := dbbilling.New(pool).InsertPool(ctx, dbbilling.InsertPoolParams{
 		TenantID:          tenantID,
 		Name:              poolName,

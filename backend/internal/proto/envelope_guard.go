@@ -30,7 +30,7 @@ import "fmt"
 // 调用示例：
 //
 //	if err := proto.ValidateEnvelopeVersionGuard(env); err != nil {
-//	    // log & 拒绝；不要 panic（hot path）
+//	    // 记录日志并拒绝；不要 panic（hot path）
 //	    return err
 //	}
 func ValidateEnvelopeVersionGuard(env *HCSFEnvelope) error {

@@ -70,21 +70,20 @@ const (
 	KeySiteLogo                       SettingKey = "site_logo"
 	KeySiteFooter                     SettingKey = "site_footer"
 	KeySiteHomeContent                SettingKey = "site_home_content"
-	// KeySiteSubtitle is a short public tagline shown under the site name.
+	// KeySiteSubtitle 是显示在站点名下方的一句公开短标语。
 	KeySiteSubtitle SettingKey = "site_subtitle"
-	// KeySiteContactInfo is a public operator contact string (email, IM handle,
-	// or free text) shown to users; non-secret, plain display text.
+	// KeySiteContactInfo 是展示给用户的公开运营者联系方式字符串（邮箱、IM 账号
+	// 或自由文本）；非机密、纯展示文本。
 	KeySiteContactInfo SettingKey = "site_contact_info"
-	// KeySiteDocURL is the public documentation link surfaced in the UI.
+	// KeySiteDocURL 是 UI 中露出的公开文档链接。
 	KeySiteDocURL SettingKey = "site_doc_url"
-	// KeySiteAPIBaseURL is the public gateway base URL shown to users for client
-	// import/config (e.g. the OpenAI-compatible base they point a client at). It
-	// is a public endpoint address, never a secret.
+	// KeySiteAPIBaseURL 是展示给用户用于客户端导入/配置的公开网关 base URL
+	// （例如客户端要指向的 OpenAI 兼容 base）。它是一个公开 endpoint 地址，
+	// 绝非机密。
 	KeySiteAPIBaseURL SettingKey = "site_api_base_url"
-	// KeyAdminNotificationEmail is the operator address the daily ops-inspection
-	// report is mailed to. Empty by default: an unconfigured deployment resolves
-	// no recipient and the inspection worker stays off (fail-safe). An env
-	// fallback also exists at the worker layer.
+	// KeyAdminNotificationEmail 是每日运维巡检报告寄送到的运营者地址。默认为空：
+	// 未配置的部署解析不出收件人，巡检 worker 保持关闭（fail-safe）。worker 层
+	// 还另有一处 env 回退。
 	KeyAdminNotificationEmail SettingKey = "admin_notification_email"
 )
 
@@ -265,12 +264,10 @@ func validateOptionalPublicTextValue(key SettingKey, value string) (string, erro
 	return validatePublicTextValue(key, value)
 }
 
-// validateOptionalEmailValue accepts an empty value (the safe default that keeps
-// the daily-inspection worker off) or a single, syntactically plausible email
-// address. It rejects control characters, internal whitespace, multi-address
-// lists, and addresses missing a local-part/host around exactly one "@" — enough
-// to stop a malformed recipient from reaching the SMTP header without pulling in
-// a full RFC 5322 parser.
+// validateOptionalEmailValue 接受空值（让每日巡检 worker 保持关闭的安全默认）
+// 或单个语法上看似合理的邮箱地址。它拒绝控制字符、内部空白、多地址列表，以及
+// 在恰好一个 "@" 两侧缺 local-part/host 的地址——这足以挡住格式错误的收件人进入
+// SMTP header，又不必引入一个完整的 RFC 5322 解析器。
 func validateOptionalEmailValue(key SettingKey, value string) (string, error) {
 	if value == "" {
 		return "", nil

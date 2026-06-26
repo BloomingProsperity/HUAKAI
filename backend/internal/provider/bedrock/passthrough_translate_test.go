@@ -201,7 +201,7 @@ func TestAutoTranslate_NonStreamBody_RoutesToInvoke(t *testing.T) {
 	a.AutoTranslateAnthropicAPIBody = true
 
 	in := validSigV4Input()
-	// stream=false in body
+	// body 中 stream=false
 	in.InboundBody = []byte(`{"model":"x","messages":[],"max_tokens":100}`)
 	delete(in.Credential.Extra, "stream")
 

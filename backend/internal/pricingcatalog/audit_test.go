@@ -93,15 +93,15 @@ func TestPricingRatioAuditSignedChainDetectsTamperAndDelete(t *testing.T) {
 
 	tampered := cloneAuditEntriesForTest(entries)
 	*tampered[1].NewRatio = "0.30000000"
-	// Mutation check: if verification trusts stored entry_hash/signature without
-	// recomputing canonical data, this tamper stays green and the test fails.
+	// 变异检查:若校验直接信任已存的 entry_hash/signature 而不重算规范化数据,
+	// 这次篡改会保持变绿,从而让本测试失败。
 	if result := VerifyPricingRatioAuditEntries(ctx, signer.PublicKey(), tampered); result.OK || result.RowID != 2 || !strings.Contains(result.Reason, "entry_hash") {
 		t.Fatalf("tamper result=%+v want row 2 entry_hash failure", result)
 	}
 
 	deletedMiddle := []PricingRatioAuditEntry{entries[0], entries[2]}
-	// Mutation check: if prev_hash chaining is removed, deleting row 2 is not
-	// detected and this assertion fails.
+	// 变异检查:若移除 prev_hash 链式串联,删除 row 2 将无法被检测到,
+	// 该断言会失败。
 	if result := VerifyPricingRatioAuditEntries(ctx, signer.PublicKey(), deletedMiddle); result.OK || result.RowID != 3 || !strings.Contains(result.Reason, "prev_hash") {
 		t.Fatalf("deleted-middle result=%+v want row 3 prev_hash failure", result)
 	}

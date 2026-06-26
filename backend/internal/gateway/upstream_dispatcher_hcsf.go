@@ -260,9 +260,9 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		if err != nil {
 			return nil, err
 		}
-		// RR-03: enforce Anthropic extended-thinking validity (temperature=1 /
-		// tool_choice auto) before forwarding, else upstream 400; no-op (byte-
-		// identical) when the body has no active thinking field.
+		// RR-03: 转发前强制 Anthropic extended-thinking 的有效性(temperature=1 /
+		// tool_choice auto), 否则会被 upstream 返回 400; 当 body 没有激活的
+		// thinking 字段时为 no-op(字节等价)。
 		body = thinkingnorm.NormalizeThinkingValidity(body)
 		// R7 身份改写施加在最终上游 body 上(native-raw 子路:bedrock/codex)。
 		// 默认关时钩子 no-op = 字节等价。

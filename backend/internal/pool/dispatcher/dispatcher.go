@@ -181,9 +181,9 @@ func (d *SelectorDispatcher) Select(ctx context.Context, req SelectionRequest) (
 	case DispatchModeCanary:
 		return d.dispatchCanary(ctx, req)
 	case DispatchModePASRPrimary:
-		return d.dispatchPASR(ctx, req, false /* not strict */)
+		return d.dispatchPASR(ctx, req, false /* 非严格 */)
 	case DispatchModePASRStrict:
-		return d.dispatchPASR(ctx, req, true /* strict */)
+		return d.dispatchPASR(ctx, req, true /* 严格 */)
 	default:
 		// LoadPoolSelector + Validate 已守门, 此分支理论不可达; 兜底返 default
 		return d.defaultSel.Select(ctx, req)
@@ -367,7 +367,7 @@ func (d *SelectorDispatcher) stopShadowWorker(drainTimeout time.Duration) {
 		if d.shadowAbortCancel != nil {
 			d.shadowAbortCancel()
 		}
-		dropped := 1 + drainShadowQueue(d.shadowQueue) // include likely in-flight job
+		dropped := 1 + drainShadowQueue(d.shadowQueue) // 计入很可能正在处理中的那个 job
 		slog.Warn("dispatcher stop drain timeout",
 			"reason_class", "shadow_drain_timeout",
 			"dropped_count", dropped,

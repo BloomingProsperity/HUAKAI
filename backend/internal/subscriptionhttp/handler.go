@@ -67,8 +67,8 @@ type AdminDeps struct {
 // UserDeps 用户路由依赖。
 type UserDeps struct {
 	Service Service
-	// Quota is used only by GET /me/progress to read the caller's current subscription usage.
-	// nil is tolerated for routes that do not expose usage; an active progress request returns 503.
+	// Quota 仅由 GET /me/progress 用来读取调用者当前订阅的用量。
+	// 对不暴露用量的路由可容忍为 nil;此时一个活跃的 progress 请求返回 503。
 	Quota QuotaProgressStore
 	// Payment 用于订阅自助购买 (POST /purchase): 复用支付建单, 造一张 subscription 类型订单,
 	// 待 confirm/webhook 履约后才真正 grant 订阅。nil 时该端点回 503, 不影响只读端点。

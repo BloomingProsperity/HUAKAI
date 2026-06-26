@@ -10,7 +10,7 @@ import (
 
 // TestStatusVocabularyAcceptsOnlyTrustAWireValues
 //
-// 守 TRUST-A-1：wire status 只能是 5 个。Mutation 自检：
+// 守 TRUST-A-1：wire status 只能是 5 个。变异自检：
 // 新增/拼错 wire 值或把 unknown 当合法状态，本测试会 red。
 func TestStatusVocabularyAcceptsOnlyTrustAWireValues(t *testing.T) {
 	for _, status := range []Status{StatusVerified, StatusSignedOnly, StatusUnverified, StatusMissing, StatusMismatch} {
@@ -28,7 +28,7 @@ func TestStatusVocabularyAcceptsOnlyTrustAWireValues(t *testing.T) {
 // TestResponseHeadersUseDispatchMetadataAndDefaultUnverified
 //
 // 守 TRUST-A-2：header provider/model/request_id 来自响应 dispatch metadata，
-// 状态默认 unverified。Mutation 自检：删任何一个 header Set 调用都会 red。
+// 状态默认 unverified。变异自检：删任何一个 header Set 调用都会 red。
 func TestResponseHeadersUseDispatchMetadataAndDefaultUnverified(t *testing.T) {
 	h := http.Header{}
 	meta := ResponseMetadata{Provider: "anthropic", Model: "claude-opus-4", RequestID: "req-trust-a"}
@@ -52,7 +52,7 @@ func TestResponseHeadersUseDispatchMetadataAndDefaultUnverified(t *testing.T) {
 // TestResponseStatusMismatchWhenLedgerMetadataDiffers
 //
 // 守 TRUST-A-2 mismatch：ledger snapshot 与 response header metadata 任一
-// 不同都必须标 mismatch。Mutation 自检：只校非空、不校相等会 red。
+// 不同都必须标 mismatch。变异自检：只校非空、不校相等会 red。
 func TestResponseStatusMismatchWhenLedgerMetadataDiffers(t *testing.T) {
 	meta := ResponseMetadata{Provider: "anthropic", Model: "claude-opus-4", RequestID: "req-1"}
 	result := auditledger.AuditLedgerResult{
@@ -72,7 +72,7 @@ func TestResponseStatusMismatchWhenLedgerMetadataDiffers(t *testing.T) {
 // TestMetadataFromLedgerEntryUsesProviderHopAndRouteModel
 //
 // 守 provider/model 派生规则：provider 取 provider hop，model 取路由决策模型。
-// Mutation 自检：改成 requested/upstream_reported 或取错 hop 会 red。
+// 变异自检：改成 requested/upstream_reported 或取错 hop 会 red。
 func TestMetadataFromLedgerEntryUsesProviderHopAndRouteModel(t *testing.T) {
 	entry := auditledger.LedgerEntry{
 		RequestID: "req-2",
@@ -97,7 +97,7 @@ func TestMetadataFromLedgerEntryUsesProviderHopAndRouteModel(t *testing.T) {
 //
 // 守 TRUST-B-2 provisional inline 语义：签名只把已持久化且默认 unverified 的
 // 响应升到 signed-only；mismatch/missing 等风险状态不能被签名覆盖。
-// Mutation 自检：无条件返回 signed-only 会让 mismatch case red；忽略签名存在性
+// 变异自检：无条件返回 signed-only 会让 mismatch case red；忽略签名存在性
 // 会让 no-signature case red。
 func TestUpgradeStatusOnSignatureOnlyPromotesUnverified(t *testing.T) {
 	tests := []struct {

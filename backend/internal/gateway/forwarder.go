@@ -58,8 +58,8 @@ type StreamForwarder struct {
 	// ClientAdapter 将 canonical event 转换为客户端协议块（可选）。
 	// 若为 nil，则透传原始 SSE 给客户端。
 	ClientAdapter proto.ClientAdapter
-	// ForceOpenAIChatFormat opt-in fills required OpenAI Chat chunk keys on
-	// client-bound SSE data frames. Default false preserves previous passthrough.
+	// ForceOpenAIChatFormat 为可选开启项,会在面向客户端的 SSE data 帧上补齐
+	// OpenAI Chat chunk 必需的键。默认 false,保持原有的透传行为。
 	ForceOpenAIChatFormat bool
 
 	Timeouts         TimeoutConfig

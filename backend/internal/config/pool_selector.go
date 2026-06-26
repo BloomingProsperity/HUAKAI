@@ -1,4 +1,4 @@
-// pool_selector.go — PASR-lite main-wire M1 atomic: typed config + ENV parse。
+// pool_selector.go — PASR-lite 主接线 M1 原子项:类型化 config + ENV 解析。
 //
 // 五个 mode 字面量与 PASR-lite synthesis §3.5 + D6 决策一致:
 //

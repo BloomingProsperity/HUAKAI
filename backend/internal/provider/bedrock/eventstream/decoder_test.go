@@ -24,7 +24,7 @@ import (
 //
 // 参数：
 //   - headers: name → string value（按 map iteration 顺序写入；测试不依赖顺序）
-//   - payload: raw bytes
+//   - payload: 原始字节
 func encodeTestFrame(headers map[string]string, payload []byte) []byte {
 	// 1. 编码 headers 段
 	var hbuf bytes.Buffer
@@ -199,7 +199,7 @@ func TestDecoder_EmptyPayload(t *testing.T) {
 func TestDecoder_UnknownHeaderTypeFailLoud(t *testing.T) {
 	// 手工拼一帧，带一个 type=99 (未支持) 的 header
 	headers := []byte{}
-	// header: name_len=1 + name='x' + type=99 + (0 byte value)
+	// header：name_len=1 + name='x' + type=99 +（0 字节 value）
 	headers = append(headers, 1, 'x', 99)
 	headersLen := uint32(len(headers))
 	totalLen := uint32(preludeSize + int(headersLen) + 0 + messageCRCSize)
@@ -233,9 +233,9 @@ func TestDecoder_ExplicitByteFixture(t *testing.T) {
 	//   total_length=16  → 00 00 00 10
 	//   headers_length=0 → 00 00 00 00
 	//   prelude_crc      = CRC32-IEEE(00 00 00 10 00 00 00 00)
-	//   headers          = (empty)
-	//   payload          = (empty)
-	//   message_crc      = CRC32-IEEE(prelude all 12 bytes)
+	//   headers          =（空）
+	//   payload          =（空）
+	//   message_crc      = CRC32-IEEE(prelude 全部 12 字节)
 	pre := []byte{0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00}
 	preCRC := crc32.ChecksumIEEE(pre)
 	full := make([]byte, 0, 16)
@@ -278,7 +278,7 @@ func TestDecoder_NumericHeaderTypes(t *testing.T) {
 	// 这里只测一种代表（integer），其它分支由 ExplicitByteFixture + happy
 	// path 间接覆盖；遗漏的分支风险接受（A4 引 production 用法时再加）。
 	var hb bytes.Buffer
-	hb.WriteByte(3) // name_len = 3
+	hb.WriteByte(3) // name_len = 3（名称长度）
 	hb.WriteString("num")
 	hb.WriteByte(byte(HeaderTypeInteger))
 	var v [4]byte

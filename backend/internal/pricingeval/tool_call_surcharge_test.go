@@ -136,7 +136,7 @@ func TestResolve_WithEmptyToolPrices_TotalUnchanged(t *testing.T) {
 		InputTokens:    10,
 		ToolCallCounts: toolpricing.ToolCallCounts{WebSearch: 5},
 	}
-	emptyPrices := toolpricing.ToolPrices{} // default: no tool prices configured
+	emptyPrices := toolpricing.ToolPrices{} // 默认: 未配置任何 tool 价格
 
 	res, err := Resolve(context.Background(), raw, usage, flat, "price-v1")
 	if err != nil {
@@ -150,8 +150,8 @@ func TestResolve_WithEmptyToolPrices_TotalUnchanged(t *testing.T) {
 	}
 }
 
-// TestResolve_WithZeroToolCallCounts_TotalUnchanged proves the default-zero
-// path when ToolCallCounts is zero-valued (default struct).
+// TestResolve_WithZeroToolCallCounts_TotalUnchanged 证明当 ToolCallCounts 为
+// 零值(默认 struct)时走的默认零值路径。
 func TestResolve_WithZeroToolCallCounts_TotalUnchanged(t *testing.T) {
 	raw := json.RawMessage(`{"input_micro_usd":1000}`)
 	flat := FlatRateFallback{
@@ -159,7 +159,7 @@ func TestResolve_WithZeroToolCallCounts_TotalUnchanged(t *testing.T) {
 		Multiplier: decimal.NewFromInt(1),
 		HasInput:   true,
 	}
-	usage := Usage{InputTokens: 10} // ToolCallCounts zero-valued by default
+	usage := Usage{InputTokens: 10} // ToolCallCounts 默认为零值
 	prices := toolpricing.ToolPrices{
 		WebSearchPer1000: decimal.RequireFromString("10"),
 	}

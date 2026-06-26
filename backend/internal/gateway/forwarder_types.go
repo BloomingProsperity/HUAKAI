@@ -93,9 +93,9 @@ type UsageRecordDraft struct {
 	ImageSize             *string         `json:"image_size,omitempty"`
 	ImageSizeBreakdown    []byte          `json:"image_size_breakdown,omitempty"`
 
-	// WebSearchCalls / FileSearchCalls / ImageGenerationCalls mirror
-	// proto.CanonicalUsage for the streaming path: populated by upstream
-	// response parse (Stage B+), default zero = no surcharge.
+	// WebSearchCalls / FileSearchCalls / ImageGenerationCalls 为流式路径
+	// 镜像 proto.CanonicalUsage:由上游响应解析填充(Stage B+),
+	// 默认零 = 无附加费。
 	WebSearchCalls       int `json:"web_search_calls,omitempty"`
 	FileSearchCalls      int `json:"file_search_calls,omitempty"`
 	ImageGenerationCalls int `json:"image_generation_calls,omitempty"`
@@ -223,9 +223,9 @@ func (a *UsageAccumulator) Update(source UsageSource, usage proto.CanonicalUsage
 	if usage.CacheReadInputTokens != 0 {
 		a.Usage.CacheReadInputTokens = usage.CacheReadInputTokens
 	}
-	// Stage B: tool-call counts are ADDITIVE across stream events (one
-	// content_block_start per invocation), unlike tokens which are set-to-latest.
-	// Guard: TerminalLocked is already checked at the top of Update().
+	// Stage B:tool-call 计数在各流式事件间是【累加】的(每次调用一个
+	// content_block_start),不同于 token 那种「置为最新值」。
+	// 守卫:TerminalLocked 已在 Update() 开头检查过。
 	a.Usage.WebSearchCalls += usage.WebSearchCalls
 	a.Usage.FileSearchCalls += usage.FileSearchCalls
 	a.Usage.ImageGenerationCalls += usage.ImageGenerationCalls

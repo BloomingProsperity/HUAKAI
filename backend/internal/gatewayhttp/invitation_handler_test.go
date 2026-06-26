@@ -164,13 +164,12 @@ func assertInvitationStatus(t *testing.T, rec *httptest.ResponseRecorder, want i
 	}
 }
 
-// TestMyReferralCodeHandlerExemptFromQuota is the handler-level discriminating
-// guard for the reporter's bug: GET /v1/me/invitation-code must return 200 with
-// the user's own code even when the campaign path is at quota. The stub's
-// campaign Generate is wired to ErrQuotaExceeded while the self path returns a
-// code; the handler must route through the self path. MUTATION: pointing the
-// handler at Generate (the quota-gated path) → the stub returns ErrQuotaExceeded
-// → 429 → RED.
+// TestMyReferralCodeHandlerExemptFromQuota 是针对报告者所述 bug 的 handler 级
+// 鉴别守卫:即使 campaign 路径已达配额上限,GET /v1/me/invitation-code 也必须
+// 返回 200 并带上用户自己的码。桩对象的 campaign Generate 接成了
+// ErrQuotaExceeded,而 self 路径返回一个码;handler 必须走 self 路径。变异:
+// 把 handler 指向 Generate(受配额限制的路径)→ 桩返回 ErrQuotaExceeded
+// → 429 → 变红。
 func TestMyReferralCodeHandlerExemptFromQuota(t *testing.T) {
 	stub := &invitationServiceStub{
 		err:     invitation.ErrQuotaExceeded,

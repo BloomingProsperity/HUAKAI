@@ -34,9 +34,9 @@ type SetKeyQuotaResult struct {
 	ValidFrom     time.Time        `json:"valid_from"`
 }
 
-// KeyQuotaView is the read projection returned by GetKeyQuota.
-// UsedUSD is settled + reserved consumed in the current window (0 when no window exists).
-// RemainingUSD is LimitUSD - UsedUSD; nil when LimitUSD is zero (unlimited).
+// KeyQuotaView 是 GetKeyQuota 返回的只读投影。
+// UsedUSD 是当前窗口内已结算 + 已预留消耗之和(无窗口时为 0)。
+// RemainingUSD 是 LimitUSD - UsedUSD;当 LimitUSD 为零(无限额)时为 nil。
 type KeyQuotaView struct {
 	APIKeyID      int64            `json:"api_key_id"`
 	PolicyID      int64            `json:"policy_id"`
@@ -47,18 +47,17 @@ type KeyQuotaView struct {
 	WindowKind    quota.WindowKind `json:"window_kind"`
 	WindowSeconds int32            `json:"window_seconds"`
 	Mode          quota.Mode       `json:"mode"`
-	// Priority is the resolution tiebreaker: when several quota policies overlap a
-	// request, the lowest-priority policy wins (quota/policy.go). Surfaced read-only so
-	// the user can see which policy takes precedence.
+	// Priority 是解析时的决胜项:当多个 quota policy 对同一请求重叠时,
+	// priority 最低的 policy 胜出(quota/policy.go)。以只读形式暴露,
+	// 便于用户看到哪个 policy 优先。
 	Priority  int32     `json:"priority"`
 	ValidFrom time.Time `json:"valid_from"`
-	// KEY-007: additive usage fields
+	// KEY-007:新增的用量字段
 	UsedUSD      decimal.Decimal  `json:"used_usd"`
 	RemainingUSD *decimal.Decimal `json:"remaining_usd,omitempty"`
-	// WindowEnd is the reset boundary of the current quota window — when the consumed
-	// usage rolls over and frees up. Soonest end across the current cost windows; nil
-	// when no window exists yet. Matches the absolute-timestamp form of the broader
-	// self-service /quota view.
+	// WindowEnd 是当前 quota 窗口的重置边界 —— 即已消耗用量翻滚并被释放的时刻。
+	// 取当前各 cost 窗口中最早结束的那个;尚无窗口时为 nil。
+	// 与更宽泛的自助 /quota 视图所用的绝对时间戳形式一致。
 	WindowEnd *time.Time `json:"window_end,omitempty"`
 }
 
@@ -95,7 +94,7 @@ type SetKeyIPAllowlistResult struct {
 
 type KeyIPAllowlistView = SetKeyIPAllowlistResult
 
-// KEY-016: IP blacklist types (parallel to allowlist)
+// KEY-016:IP 黑名单类型(与白名单平行)
 type SetKeyIPBlacklistRequest struct {
 	TenantID    int64
 	UserID      int64

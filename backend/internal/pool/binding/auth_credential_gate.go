@@ -7,11 +7,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
-// AuthCredentialGate adapts an auth.TokenProvider into a pool.CredentialGate
-// per the spec §Phase B "Credential gate: Account credential state in
-// {valid, refreshing-with-grace}". This is the cross-feature wiring between
-// F-AUTH-005 and F-POOL-001 — pool selector calls auth on the request path
-// to verify the account has a usable token before scheduling.
+// AuthCredentialGate 按规范 §Phase B "Credential gate: Account credential
+// state in {valid, refreshing-with-grace}"，把 auth.TokenProvider 适配成
+// pool.CredentialGate。这是 F-AUTH-005 与 F-POOL-001 之间的跨功能接线 ——
+// pool selector 在请求路径上调用 auth，在调度前确认账号持有可用 token。
 type AuthCredentialGate struct {
 	Provider auth.TokenProvider
 }

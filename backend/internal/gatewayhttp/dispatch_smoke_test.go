@@ -364,12 +364,12 @@ func TestChatCompletionsMixedLoadP95(t *testing.T) {
 		t.Skip("HUAKAI_SKIP_PERF_LATENCY_GATE=1; broad race suite skips latency gate")
 	}
 
-	// Mutation self-checks for PM shell verification:
-	// 1. Wrap the handler call path in a package-global sync.Mutex: wallClock
-	//    should grow toward totalRequests*soloLatency, speedup should fall
-	//    toward 1, and the speedup >= 4 assertion should fail.
-	// 2. Start one goroutine per request without returning it: the post-load
-	//    goroutine bound should fail.
+	// 供 PM 壳验证用的变异自检:
+	// 1. 把 handler 调用路径用一个 package 级 sync.Mutex 包起来:wallClock
+	//    应当趋向 totalRequests*soloLatency,speedup 应当趋向 1,而
+	//    speedup >= 4 的断言应当失败。
+	// 2. 每个请求起一个 goroutine 却不让它返回:负载后的 goroutine 上界
+	//    断言应当失败。
 	baselineGoroutines := runtime.NumGoroutine()
 	harness := newFullChainChatHarness(t)
 	defer harness.Close()

@@ -78,8 +78,7 @@ func (f *userKeyControlsFixture) cleanup() {
 }
 
 func TestSetGetModelAllowlist(t *testing.T) {
-	// MUTATION: ignore the setter input or read the wrong column and the exact
-	// stored CSV assertion goes red.
+	// 变异:若忽略 setter 输入或读错列,精确的存储 CSV 断言会变红。
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := openUserKeyControlsPool(t, ctx)
@@ -104,8 +103,8 @@ func TestSetGetModelAllowlist(t *testing.T) {
 }
 
 func TestPerKeyRequestMetric(t *testing.T) {
-	// MUTATION: hard-code cost_usd in SetKeyQuota and ResolvePolicies will not
-	// return the per-key MetricRequests policy.
+	// 变异:在 SetKeyQuota 里硬编码 cost_usd,ResolvePolicies 就不会
+	// 返回这条按 key 的 MetricRequests 策略。
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := openUserKeyControlsPool(t, ctx)
