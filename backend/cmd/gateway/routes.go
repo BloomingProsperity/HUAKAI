@@ -282,7 +282,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
-		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver})
+		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver, PlatformSettings: d.platformSettings})
 	})
 	r.Route("/v1/users/me/oauth-bindings", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))

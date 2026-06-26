@@ -107,7 +107,7 @@ var (
 		KeyCaptchaProvider:                "",
 		KeyCaptchaSiteKey:                 "",
 		KeyOAuthProvidersEnabled:          "",
-		KeyPromoEnabled:                   "false",
+		KeyPromoEnabled:                   "true",
 		KeyStreamTimeoutSeconds:           "120",
 		KeyCooldown429Seconds:             "60",
 		KeyCooldown529Seconds:             "300",

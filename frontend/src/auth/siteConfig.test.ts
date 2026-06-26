@@ -41,6 +41,11 @@ describe('parseSiteConfig', () => {
     expect(parseSiteConfig({ password_login_enabled: false }).passwordLoginEnabled).toBe(false)
     expect(parseSiteConfig({ password_login_enabled: true }).passwordLoginEnabled).toBe(true)
   })
+  it('promoEnabled 行为保持:缺省/true → true,仅显式 false → false(变异 ===true 则缺省变 false → RED)', () => {
+    expect(parseSiteConfig({}).promoEnabled).toBe(true)
+    expect(parseSiteConfig({ promo_enabled: true }).promoEnabled).toBe(true)
+    expect(parseSiteConfig({ promo_enabled: false }).promoEnabled).toBe(false)
+  })
   it('captcha_provider 归一小写', () => {
     expect(parseSiteConfig({ captcha_provider: 'TurnStile' }).captchaProvider).toBe('turnstile')
   })
