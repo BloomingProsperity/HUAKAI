@@ -1,6 +1,6 @@
 # 前端 SPA 嵌入单二进制 —— 构建链补齐 + Dockerfile gated 改动
 
-日期:2026-06-25 · 作者:Claude(/loop 自驱)· 状态:本地构建链已落地;Dockerfile 改动待 Owner 拍板
+日期:2026-06-25 · 作者:Claude(/loop 自驱)· 状态:✅ 已完成(2026-06-26 Owner「解锁所有」后落地 Dockerfile + compose context;真 docker build 验证镜像内二进制确含真前端 SPA 与 assets)
 
 ## 背景与缺口(核源码确认)
 
