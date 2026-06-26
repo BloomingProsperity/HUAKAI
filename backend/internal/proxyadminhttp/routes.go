@@ -41,10 +41,25 @@ type proxyService interface {
 }
 
 // Deps wires the admin proxy surface. Auth is the shared admin resolver; Service is
-// the proxyadmin business layer.
+// the proxyadmin business layer; Prober(可选)执行主动 probe-through 质检。
 type Deps struct {
 	Auth    adminAuth
 	Service proxyService
+	Prober  Prober
+}
+
+// Prober 抽象"经该代理建隧道到固定 canary 的主动质检"。实现在 cmd/gateway 组合
+// proxyadmin.DialTarget(解密拨号 URL)+ proxyhealth.ProbeThrough(SSRF 守卫 + 隧道 + TLS 握手)。
+// 凭据全程留在实现内,本接口只回不含凭据的结果。导出以便接线层返回接口类型(规避 typed-nil 陷阱)。
+type Prober interface {
+	Probe(ctx context.Context, tenantID, id int64) (ProbeOutcome, error)
+}
+
+// ProbeOutcome 是一次主动质检的不含凭据结果(error_class 为粗粒度枚举,绝不含原始错误/代理细节)。
+type ProbeOutcome struct {
+	OK         bool
+	LatencyMS  int64
+	ErrorClass string
 }
 
 // MountRoutes registers the proxy admin endpoints on r. Callers mount it under
@@ -56,6 +71,7 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Patch("/{id}", newUpdateHandler(d))
 	r.Delete("/{id}", newDeleteHandler(d))
 	r.Put("/{id}/status", newSetStatusHandler(d))
+	r.Post("/{id}/test", newTestHandler(d))
 }
 
 // NewRouter returns a standalone router with the proxy admin endpoints mounted at

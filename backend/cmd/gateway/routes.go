@@ -856,6 +856,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		proxyadminhttp.MountRoutes(r, proxyadminhttp.Deps{
 			Auth:    d.adminAuth,
 			Service: proxyadmin.New(d.adminQueries, d.credentialKeys),
+			Prober:  buildProxyProber(d),
 		})
 	})
 	// Model -> pool binding admin surface: closes the inert write-path gap
