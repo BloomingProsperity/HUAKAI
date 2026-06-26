@@ -12,6 +12,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkey"
@@ -326,6 +328,53 @@ func TestModulesRegistryWiresAuth(t *testing.T) {
 	}
 	if wired["auth.passkey"].Catalog != nil || wired["auth.twofa"].Catalog != nil {
 		t.Fatalf("passkey/twofa 应 live-only(catalog 无 pkg),不应有 overlay")
+	}
+
+	degraded := fetch(&deps{})
+	for _, id := range ids {
+		m, ok := degraded[id]
+		if !ok {
+			t.Fatalf("%s 应仍注册(身份与健康无关)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusDegraded {
+			t.Fatalf("%s 未接线时探针应 StatusDegraded,got %v", id, m.LiveProbe.Status)
+		}
+	}
+}
+
+// TestModulesRegistryWiresSyncAndMedia — Hermes 感知扩展第 5 批(收尾):registry.modelsync(上游
+// 模型目录同步,陈旧则路由错)+ media.task(异步媒体)。均 live-only(catalog 无 pkg → Catalog 应 nil)。
+func TestModulesRegistryWiresSyncAndMedia(t *testing.T) {
+	fetch := func(d *deps) map[string]modulehttp.ModuleView {
+		src := newModuleSource(buildModuleRegistry(d))
+		h := modulehttp.NewModulesHandler(src)
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil))
+		var resp modulehttp.ModulesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out := map[string]modulehttp.ModuleView{}
+		for _, m := range resp.Modules {
+			out[m.ID] = m
+		}
+		return out
+	}
+
+	ids := []string{"registry.modelsync", "media.task"}
+
+	wired := fetch(&deps{modelSync: &modelsync.Service{}, mediaTaskService: &mediatask.Service{}})
+	for _, id := range ids {
+		m, ok := wired[id]
+		if !ok {
+			t.Fatalf("%s 未注册进 module registry", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusOK {
+			t.Fatalf("%s 接线时探针应 StatusOK,got %v", id, m.LiveProbe.Status)
+		}
+		if m.Catalog != nil {
+			t.Fatalf("%s 应 live-only(catalog 无 pkg),不应有 overlay", id)
+		}
 	}
 
 	degraded := fetch(&deps{})
