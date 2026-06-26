@@ -27,8 +27,10 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # 字面改用 backslash-u200b 转义(obfuscate 生产 + 2 测试),baseline 168->162,上限同步调低。
 # 2026-06-25 DEFERRED 批3 清债:SA4000 自反比较 ×6(均非笔误,有状态 budget.Allow/cachedSessionID
 # 或确定性守卫 auditLedgerAdvisoryLockKey/pickIndex)改「两次调用各存变量再比」,baseline 162->156,上限同步调低。
-SC_MAX=156
-DC_MAX=907
+# 2026-06-26 删 referral_reward 平行死实现(community/invitation/referral_reward_store+config.go,零生产消费的
+# 休眠双花地雷):连带移除其 staticcheck findings(156->94)与 deadcode 条目(907->873),两上限同步调低。
+SC_MAX=94
+DC_MAX=873
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1
