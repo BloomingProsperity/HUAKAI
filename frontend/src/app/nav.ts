@@ -105,6 +105,7 @@ export const PIPELINE_NAV: NavSection[] = [
     items: [
       { path: '/routing', label: '路由与池管理', built: true },
       { path: '/admin/groups', label: '分组管理', built: true },
+      { path: '/admin/proxies', label: '出口代理池', built: true },
     ],
   },
   {
