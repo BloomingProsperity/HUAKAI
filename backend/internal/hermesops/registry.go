@@ -124,3 +124,33 @@ func (r *Registry) AuthorizeMutating(name, actorRole string) (ToolSpec, error) {
 	}
 	return spec, nil
 }
+
+// ResolveProposal authorizes + DRY-RUN-resolves a MUTATING tool for the LLM-propose
+// path and returns ONLY the read-only MutationPlan. It deliberately returns NEITHER
+// the ToolSpec NOR any handle to Mutate, so the caller (the conversational internal
+// tool handler) has no route to a state change — the LLM-propose path is
+// STRUCTURALLY read-only (the gate is the absence of a Mutate handle, not a runtime
+// check the caller could skip). The real mutation runs ONLY later, when the OPERATOR
+// confirms via the separate operator-authenticated H1 confirm path.
+//
+// It refuses, fail-closed:
+//   - a read-only tool (ErrNotMutating, via AuthorizeMutating);
+//   - a mutating tool NOT marked Proposable (ErrNotProposable) — e.g. credential
+//     rotation: an operator may drive it directly, the LLM never proposes it;
+//   - an insufficient role (ErrToolForbidden, via the role floor).
+//
+// The returned plan carries the sanitized Preview + TargetType/TargetID the caller
+// pins into the single-use correlation_id. Tenant scope is enforced inside Resolve
+// (it re-checks the target row belongs to req.TenantID).
+func (r *Registry) ResolveProposal(ctx context.Context, name, actorRole string, req ToolRequest) (MutationPlan, error) {
+	spec, err := r.AuthorizeMutating(name, actorRole)
+	if err != nil {
+		return MutationPlan{}, err
+	}
+	if !spec.Proposable {
+		return MutationPlan{}, ErrNotProposable
+	}
+	// READ-ONLY dry-run ONLY. spec.Mutate is never referenced on this path; the
+	// state change happens only at operator-confirm time, through a different entry.
+	return spec.Resolve(ctx, req)
+}

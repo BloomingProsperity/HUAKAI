@@ -69,9 +69,11 @@ func (r *Registry) ReadOnlyCatalog() []CatalogTool {
 }
 
 // ProposableCatalog returns the catalog of tools the LLM may PROPOSE in the
-// conversational ops path: all read-only diagnostic tools PLUS the mutating
-// (B-level) tools, with each mutating entry explicitly flagged Mutating +
-// RequiresConfirmation. Sorted by name.
+// conversational ops path: all read-only diagnostic tools PLUS the PROPOSABLE
+// mutating tools (spec.Proposable — reversible B-level only), with each mutating
+// entry explicitly flagged Mutating + RequiresConfirmation. Sorted by name. A
+// mutating tool that is NOT Proposable (irreversible / A-level, e.g. credential
+// rotation) is structurally excluded — the LLM never sees it.
 //
 // Unlike ReadOnlyCatalog, this DOES include mutating tools — but ONLY so the LLM
 // can PROPOSE one. It can never EXECUTE one: the LLM-propose path
@@ -104,13 +106,17 @@ func (r *Registry) ProposableCatalog() []CatalogTool {
 			InputSchema: copyStringMap(schema),
 		}
 		switch {
-		case s.Mutating:
-			// A mutating tool is proposable but flagged: the LLM may name it, the
-			// runner renders a confirmation step, and execution is gated on the
-			// operator. (A tool flagged BOTH mutating + read-only is treated as
-			// mutating here — fail safe toward "needs confirmation".)
+		case s.Mutating && s.Proposable:
+			// A PROPOSABLE mutating tool (reversible B-level): the LLM may name it,
+			// the runner renders a confirmation step, and execution is gated on the
+			// operator confirm. Flagged so the runner/LLM know it needs confirmation.
 			entry.Mutating = true
 			entry.RequiresConfirmation = true
+		case s.Mutating:
+			// Mutating but NOT proposable (irreversible / A-level, e.g. credential
+			// rotation): operator-only via the H1 confirm path. NEVER shown to the
+			// LLM — structurally excluded from the proposable catalog. Fail closed.
+			continue
 		case s.ReadOnly:
 			// read-only diagnostic: proposable with no flags, runs directly.
 		default:

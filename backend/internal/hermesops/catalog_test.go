@@ -7,12 +7,14 @@ import (
 	"testing"
 )
 
-// mutatingSpec builds a minimal MUTATING spec (Mutating=true) so the catalog
-// filter has a real mutating tool to exclude. A mutating tool sets Resolve/Mutate
-// (not Run); here they are non-nil stubs so the spec is well-formed.
+// mutatingSpec builds a minimal PROPOSABLE MUTATING spec (Mutating=true,
+// Proposable=true, like account_pause/resume) so the catalog filters have a real
+// mutating tool. A mutating tool sets Resolve/Mutate (not Run); here they are
+// non-nil stubs so the spec is well-formed.
 func mutatingSpec(name string) ToolSpec {
 	return ToolSpec{
 		Name: name, Category: CategoryMutating, Mutating: true, RequiresConfirmation: true,
+		Proposable:   true,
 		RequiredRole: RolePlatformAdmin,
 		Resolve: func(_ context.Context, _ ToolRequest) (MutationPlan, error) {
 			return MutationPlan{}, nil
@@ -21,6 +23,15 @@ func mutatingSpec(name string) ToolSpec {
 			return ToolResult{}, nil
 		},
 	}
+}
+
+// nonProposableMutatingSpec builds a MUTATING spec that is NOT LLM-proposable
+// (Proposable=false, like renew_trigger / credential rotation): an operator may
+// drive it via the H1 confirm path, but the LLM must never see or propose it.
+func nonProposableMutatingSpec(name string) ToolSpec {
+	s := mutatingSpec(name)
+	s.Proposable = false
+	return s
 }
 
 func TestReadOnlyCatalogExcludesMutatingTools(t *testing.T) {
