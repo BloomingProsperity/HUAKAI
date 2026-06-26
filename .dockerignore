@@ -1,0 +1,55 @@
+# 仓库根 .dockerignore。backend/Dockerfile 现以仓库根为 build context(需把 frontend/ 一起
+# 纳入,以便在镜像内构建并 go:embed 进单二进制)。这里排除不参与构建或会拖慢/撑大 context 的东西。
+
+# 版本控制与本地状态
+.git
+.gitignore
+
+# 环境/密钥文件:绝不进 build context(防真 .env 泄密;.env.*.example 模板镜像也用不到)
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+
+# 依赖与构建产物(镜像内会重新 npm ci / vite build / go build)
+**/node_modules
+**/dist
+**/bin
+**/out
+**/tmp
+**/temp
+**/.cache
+**/coverage
+coverage*.out
+*.cover
+*.prof
+*.test
+*.tmp
+*.log
+
+# 测试报告
+**/reports
+**/test-results
+junit*.xml
+*.lcov
+
+# 外部参考源码 / 探索目录(clean-room 参考仓,可能很大,绝不进镜像)
+reference/
+references/
+refs/
+reference_deep_dive/
+exploratory/
+third_party/
+vendor/
+
+# 文档(运行时不需要)
+docs/
+docs_zh/
+
+# 前端本地工具缓存
+**/.npm
+**/.pnpm-store
+**/.yarn
+
+# 残留的旧前端框架痕迹
+**/.next
