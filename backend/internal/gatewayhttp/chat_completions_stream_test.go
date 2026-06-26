@@ -6,8 +6,8 @@ package gatewayhttp
 // 测试逻辑:Type:"raw" 时 marshal 必须 1:1 还原 Schema 整体,不能再包
 // {"type":"raw","schema":...}。
 //
-// Mutation:改回 raw-wrap 逻辑时两 用例必红 — response_format.type 变 "raw"
-// 而非 inbound 'json_object',或 text.format 嵌套出多一层 schema 包壳。
+// 变异:改回 raw-wrap 逻辑时两个用例必红 —— response_format.type 变成 "raw"
+// 而非 inbound 的 'json_object',或 text.format 嵌套出多一层 schema 包壳。
 
 import (
 	"bytes"
@@ -195,7 +195,7 @@ func (d *recordingStreamingDoer) Do(req *http.Request) (*http.Response, error) {
 // ClientStreamIntent 的 gatewayhttp 接线点(F4 修复主线):openai 客户端流式
 // 请求 → gemini_messages 上游,非 gemini ingress 无 Extra["stream"]、marshal 的
 // gemini body 无顶层 stream 字段,出站 URL 必须仍选 :streamGenerateContent。
-// MUTATION: 删 executeStreamingAttempt 里 DispatchInput 的
+// 变异:删 executeStreamingAttempt 里 DispatchInput 的
 // ClientStreamIntent: ex.req.Stream 接线 → 出站 URL 退回非流 :generateContent
 // → 本测试红(评审 M6:链条两端有锁、源头裸奔的缺口由此补上)。
 func TestHandleStreamingResponse_CrossProtocolGeminiSelectsStreamAction(t *testing.T) {
@@ -287,9 +287,9 @@ func (rt *selectiveTransportRoundTripper) RoundTrip(req *http.Request) (*http.Re
 }
 
 func TestChatCompletions_ReverseSessionUsesMimicryTransport(t *testing.T) {
-	// Mutation check: if chatExecution stops passing TransportMode into either
-	// Dispatch or DispatchHCSF, these cases take the standard transport and fail
-	// before delivery instead of returning the fixture response.
+	// 变异:若 chatExecution 不再把 TransportMode 传入 Dispatch 或 DispatchHCSF,
+	// 这些用例就会走 standard transport,在交付前失败,
+	// 而非返回 fixture 响应。
 	t.Run("streaming raw dispatch", func(t *testing.T) {
 		standard, mimicry, dispatcher := copilotTransportModeDispatcher(t, openAIStreamingFixture())
 		reqBody := []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
@@ -624,10 +624,9 @@ func TestAT_GW_002_14_StreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.
 }
 
 func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T) {
-	// Risk killed: streaming Append+DLQ double failure must not become a
-	// chargeable 200 with no audit row. Mutation self-check: removing the
-	// post-Forward ledger-result settle gate records a settle for this fixture;
-	// removing trailer reconciliation leaves StreamState=partial instead of failed.
+	// 已消除风险:流式 Append+DLQ 双重失败绝不能变成无审计行的可计费 200。
+	// 变异自检:移除 Forward 之后的 ledger-result settle 门控,会为本 fixture
+	// 记录一次 settle;移除 trailer 对账则会让 StreamState 停在 partial 而非 failed。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -667,10 +666,10 @@ func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T)
 }
 
 func TestStreamingPersistedLedgerIDIsTrailerOnly(t *testing.T) {
-	// Risk killed: C-13 moves streaming ledger emission after body bytes, so
-	// LedgerID must be a declared trailer, not an ordinary header. Mutation
-	// self-check: writing the old ordinary header before first byte leaves
-	// Result().Header populated and Result().Trailer empty.
+	// 已消除风险:C-13 把流式 ledger 的发出挪到 body 字节之后,因此
+	// LedgerID 必须是声明过的 trailer,而非普通 header。变异自检:
+	// 在首字节前按旧方式写普通 header,会让 Result().Header 有值
+	// 而 Result().Trailer 为空。
 	signer, err := sign.GenerateKey()
 	if err != nil {
 		t.Fatalf("signer: %v", err)
@@ -768,9 +767,9 @@ func TestStreamingLedgerCallback_PersistedSetsVerifyAndFingerprintTrailers(t *te
 }
 
 func TestStreamingDeferredLedgerDLQRefIsTrailer(t *testing.T) {
-	// Risk killed: C-13 rev2 requires Deferred streaming results to expose
-	// DLQRef in its own trailer, never mixed into LedgerID. Mutation
-	// self-check: omitting the Deferred trailer writer leaves DLQRef empty.
+	// 已消除风险:C-13 rev2 要求 Deferred 流式结果在自己的 trailer 中暴露
+	// DLQRef,绝不混进 LedgerID。变异自检:
+	// 省略 Deferred trailer 写入器会让 DLQRef 为空。
 	signer, err := sign.GenerateKey()
 	if err != nil {
 		t.Fatalf("signer: %v", err)
@@ -798,9 +797,9 @@ func TestStreamingDeferredLedgerDLQRefIsTrailer(t *testing.T) {
 }
 
 func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testing.T) {
-	// Risk killed: duplicate request_id is never recoverable by DLQ replay.
-	// Mutation self-check: removing the duplicate special-case enqueues DLQ,
-	// sends a Deferred callback, and the handler settles this chargeable stream.
+	// 已消除风险:重复的 request_id 永远无法通过 DLQ replay 恢复。
+	// 变异自检:移除重复值的特例处理后,会入队 DLQ、
+	// 发出 Deferred 回调,并让 handler 对这条可计费流式结算。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -1006,8 +1005,8 @@ func TestAT_GW_002_19_TokenizerFallbackInferredUsage(t *testing.T) {
 	// 新契约（usage 估算兜底）：EOF 无终帧但交付了可见内容的流按逐事件估算终局
 	// 计费——正成本 + 估算 token 基数 + usage_basis 快照标记，且不挂 pending
 	//（no-usage 定稿 SQL 只认全零记录，挂上即永久 pending）。
-	// MUTATION: 去掉估算兜底（恢复零结算 + pending 旧路径）→ ActualCost==0 且
-	// pending==true → 下面三条断言 RED。
+	// 变异:去掉估算兜底（恢复零结算 + pending 旧路径）→ ActualCost==0 且
+	// pending==true → 下面三条断言变红。
 	if draft.PendingReconciliation {
 		t.Fatal("estimated settle is final; PendingReconciliation must be false for estimable delivered stream")
 	}
@@ -1060,10 +1059,9 @@ func TestAT_GW_002_19_TokenizerFallbackInferredUsage(t *testing.T) {
 }
 
 func TestAT_GW_002_17_TenantIsolationUnderLoad(t *testing.T) {
-	// Risk killed: replay persistence is keyed by tenant_id + claim_id under
-	// concurrent streams. Mutation self-check: removing tenant_id from the replay
-	// key causes shared claim IDs below to collide and body-marker assertions turn
-	// red for at least one tenant.
+	// 已消除风险:并发流式下,replay 持久化以 tenant_id + claim_id 为键。
+	// 变异自检:从 replay 键中移除 tenant_id 后,下面共享的 claim ID 会冲突,
+	// 至少一个租户的 body-marker 断言会变红。
 	const (
 		tenants          = 5
 		streamsPerTenant = 20
@@ -1261,9 +1259,9 @@ func TestStreamingIdempotencyReplaySettlesAmbiguousUsageWithDeliveredContent(t *
 	// SM-05 端到端铁证:歧义用量但已交付可估内容(fixture 发出 "partial" 文本 →
 	// forwarder 累出 EstimatedOutputTokens>0)。内容已发给用户,reconciliation 是
 	// refund-only 永不补收 → 须按估算保守正收,非零收漏钱。
-	// MUTATION: 还原任一闸(state.go 对 Ambiguous 恒判 Failed,或 stream.go 守卫排除
-	// Ambiguous)→ State 退回 Failed(非 Chargeable)且 ActualCost 回零 → 下列断言 RED;
-	// 两闸放行则 State=Partial 且估出正成本 → GREEN。
+	// 变异:还原任一闸(state.go 对 Ambiguous 恒判 Failed,或 stream.go 守卫排除
+	// Ambiguous)→ State 退回 Failed(非 Chargeable)且 ActualCost 回零 → 下列断言变红;
+	// 两闸放行则 State=Partial 且估出正成本 → 变绿。
 	if !settler.calls[0].StreamAttempt.State.Chargeable() {
 		t.Fatalf("歧义+已交付可估内容须可计费(Partial); StreamAttempt=%#v", settler.calls[0].StreamAttempt)
 	}
@@ -1796,7 +1794,7 @@ func assertLogOmits(t *testing.T, logs *bytes.Buffer, forbiddens ...string) {
 // 与非流式 hcsf_graph_marshal_test.go 中同名用例同源:Type:"raw" 时 marshal
 // 必须 1:1 还原 Schema 整体,不再包 {"type":"raw","schema":...}。
 //
-// Mutation:把流式 helper 改回原 wrap 逻辑时本用例必红 — body["response_format"]
+// 变异:把流式 helper 改回原 wrap 逻辑时本用例必红 — body["response_format"]
 // 会变成 {"type":"raw","schema":{"type":"json_object"}},.type != "json_object"。
 func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing.T) {
 	raw := json.RawMessage(`{"type":"json_object"}`)
@@ -1828,7 +1826,7 @@ func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat(t
 // TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses
 // 守 P2-B 修复在 Responses 流式 marshal 路径。
 //
-// Mutation:同上,改回原 wrap 时 body["text"] 会成
+// 变异:同上,改回原 wrap 时 body["text"] 会成
 // {"format":{"type":"raw","schema":...}} 而非 inbound 原 text 整体。
 func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *testing.T) {
 	raw := json.RawMessage(`{"format":{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object"}}}}`)
@@ -1903,7 +1901,7 @@ func TestInjectStreamingRequestControlsMergesRequestPassthrough(t *testing.T) {
 //  3. 留 fail-closed 的族(openai_codex/cursor_session/gemini_advanced_session)
 //     在此报错,不产出 body。
 //
-// Mutation:删掉 streamingProviderRequestBody 开头的形态归一行 → 2 必红
+// 变异:删掉 streamingProviderRequestBody 开头的形态归一行 → 2 必红
 // (response_format 缺失);把归一改错成恒等 → 同红。
 func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 	newEnv := func() *proto.HCSF {
@@ -1953,7 +1951,7 @@ func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 // (1) forceStreamingRequest 注顶层 stream:true、(2) injectStreamingRequestControls
 // 注 max_tokens 等 openai 形 controls,任一发生都是协议污染;且被丢弃的
 // MaxTokens 控制必须在 marshal 内记 loss 而非静默蒸发。
-// Mutation:从 streamingProviderRequestBody 的跳过分支删掉 dify_chat → 顶层
+// 变异:从 streamingProviderRequestBody 的跳过分支删掉 dify_chat → 顶层
 // stream 断言红;从 injectStreamingRequestControls 删掉 dify_chat 早退 →
 // max_tokens 断言红。
 func TestStreamingProviderRequestBodyDifyChat(t *testing.T) {
@@ -2003,7 +2001,7 @@ func TestStreamingProviderRequestBodyDifyChat(t *testing.T) {
 // (num_predict),injectStreamingRequestControls 注顶层 max_tokens 即协议污染;
 // stream 字段由 marshal 按 StreamPlan 显式写,真相源必须唯一(forceStreaming
 // 跳过为单源纪律,其 true 写入与 marshal 幂等,判别断言落在 controls 注入)。
-// Mutation:从 injectStreamingRequestControls 删掉 ollama_native 早退 →
+// 变异:从 injectStreamingRequestControls 删掉 ollama_native 早退 →
 // 顶层 max_tokens 断言红。
 func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
@@ -2053,7 +2051,7 @@ func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
 // 走 HCSF 翻译会被静默丢),也是此前全部兼容族流式 501 的根因(返回 true 后
 // MarshalToProviderRequest 不认这些族)。真跨协议(anthropic→kimi、
 // openai→anthropic)仍须翻译。
-// Mutation:删掉 needsStreamingHCSFTranslation 的同形态 fast-path → 兼容族
+// 变异:删掉 needsStreamingHCSFTranslation 的同形态 fast-path → 兼容族
 // 用例红;把 fast-path 错写成无条件 false → 跨协议用例红。
 func TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough(t *testing.T) {
 	cases := []struct {

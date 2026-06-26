@@ -209,10 +209,10 @@ func TestOverviewTotalsTrendWindowAndRatesAreDiscriminating(t *testing.T) {
 	if body.Totals.SuccessRate != "0.7500" {
 		t.Fatalf("success_rate=%s want 0.7500; mutation dropping success end_class filter returns 1.0000", body.Totals.SuccessRate)
 	}
-	// Raw success/error counts must be surfaced, not just the rate. The 0.7500 rate alone
-	// cannot distinguish 3-success/1-error-of-4 from 75/25-of-100; the raw integers can.
-	// MUTATION: drop the SuccessCount mapping -> 0 != 3 RED; derive ErrorCount wrongly
-	// (e.g. = SuccessCount) -> 3 != 1 RED.
+	// 必须暴露原始的成功/错误计数,而不只是比率。仅凭 0.7500 这个比率
+	// 无法区分「4 个里 3 成功/1 错误」和「100 个里 75/25」;原始整数则可以。
+	// 变异:去掉 SuccessCount 映射 -> 0 != 3 变红;把 ErrorCount 算错
+	//(例如 = SuccessCount)-> 3 != 1 变红。
 	if body.Totals.SuccessCount != 3 || body.Totals.ErrorCount != 1 {
 		t.Fatalf("success_count=%d error_count=%d want 3/1 (4 in-window requests, 1 upstream_5xx); raw counts must be surfaced not just the rate",
 			body.Totals.SuccessCount, body.Totals.ErrorCount)

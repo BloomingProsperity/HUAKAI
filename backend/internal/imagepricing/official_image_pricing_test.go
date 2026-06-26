@@ -7,15 +7,14 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// dallEOfficialCatalog is the exact provider/model JSON seeded by migration
-// 0133_openai_image_pricing into the default pricing version. Keep it in sync with
-// sql/migrations/0133_openai_image_pricing.up.sql; the DB gate cross-checks the
-// seeded row, and this test cross-checks that the multiplier matrix yields the
-// official OpenAI per-image USD prices.
+// dallEOfficialCatalog 是 migration 0133_openai_image_pricing 写入默认 pricing
+// 版本的那份完全一致的 provider/model JSON。要与
+// sql/migrations/0133_openai_image_pricing.up.sql 保持同步；DB 闸门会交叉核对
+// 写入的行，本测试则交叉核对乘数矩阵是否产出官方 OpenAI 的 per-image USD 价格。
 const dallEOfficialCatalog = `{"providers":{"openai":{"models":{"dall-e-3":{"pricing_scheme":"per_image","image_base_micro_usd":"40000","image_size_multipliers":{"1024x1024":"1","1024x1792":"2","1792x1024":"2"},"image_quality_multipliers":{"standard":"1","hd":"2","hd@1024x1792":"1.5","hd@1792x1024":"1.5"},"image_amount_range":{"min":1,"max":1},"image_prompt_max_chars":4000},"dall-e-2":{"pricing_scheme":"per_image","image_base_micro_usd":"16000","image_size_multipliers":{"256x256":"1","512x512":"1.125","1024x1024":"1.25"},"image_quality_multipliers":{"standard":"1"},"image_amount_range":{"min":1,"max":10},"image_prompt_max_chars":1000}}}}}`
 
-// TestCatalog_DallEOfficialPerImagePrices verifies the seeded DALL-E matrix bills
-// the official OpenAI per-image prices (micro_usd = USD/image * 1e6).
+// TestCatalog_DallEOfficialPerImagePrices 验证写入的 DALL-E 矩阵按官方 OpenAI
+// 的 per-image 价格计费（micro_usd = USD/image * 1e6）。
 func TestCatalog_DallEOfficialPerImagePrices(t *testing.T) {
 	c, err := NewCatalog(json.RawMessage(dallEOfficialCatalog))
 	if err != nil {

@@ -16,8 +16,8 @@ type WorkerConfig struct {
 	IdleSleep     time.Duration
 }
 
-// depthRefresher is implemented by *Store and allows the Worker to
-// refresh the dlq_depth expvar gauge without coupling to the concrete type.
+// depthRefresher 由 *Store 实现,允许 Worker 在不耦合具体类型的前提下
+// 刷新 dlq_depth expvar 仪表。
 type depthRefresher interface {
 	UpdateDLQDepthGauge(context.Context) error
 }
@@ -25,7 +25,7 @@ type depthRefresher interface {
 type Worker struct {
 	service      *Service
 	cfg          WorkerConfig
-	depthRefresh depthRefresher // optional; set via WithDepthRefresher
+	depthRefresh depthRefresher // 可选;通过 WithDepthRefresher 设置
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -50,13 +50,13 @@ func NewWorker(service *Service, cfg WorkerConfig) *Worker {
 	return &Worker{service: service, cfg: cfg}
 }
 
-// WithDepthRefresher wires a depth-gauge refresher (typically *Store) into the
-// Worker so that the dlq_depth expvar map is kept fresh for alerting.
+// WithDepthRefresher 把一个深度仪表刷新器(通常是 *Store)接入 Worker,
+// 以便 dlq_depth expvar map 为告警保持新鲜。
 func WithDepthRefresher(r depthRefresher) func(*Worker) {
 	return func(w *Worker) { w.depthRefresh = r }
 }
 
-// ApplyWorkerOptions applies functional options after construction.
+// ApplyWorkerOptions 在构造之后应用各个函数式选项。
 func (w *Worker) ApplyWorkerOptions(opts ...func(*Worker)) {
 	for _, opt := range opts {
 		if opt != nil {
@@ -143,12 +143,12 @@ func (w *Worker) startLane(ctx context.Context, lane Lane, n int) {
 	}
 }
 
-// runDepthRefresh periodically calls UpdateDLQDepthGauge so the dlq_depth
-// expvar map stays fresh. It runs every 30 seconds until ctx is cancelled.
+// runDepthRefresh 周期性调用 UpdateDLQDepthGauge,使 dlq_depth expvar map
+// 保持新鲜。它每 30 秒运行一次,直到 ctx 被取消。
 func (w *Worker) runDepthRefresh(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	// Refresh once immediately on startup.
+	// 启动时立即刷新一次。
 	if err := w.depthRefresh.UpdateDLQDepthGauge(ctx); err != nil && ctx.Err() == nil {
 		slog.WarnContext(ctx, "dlq depth gauge refresh failed", "error", err.Error())
 	}

@@ -1,4 +1,4 @@
-// In-memory test stubs for F-POOL-001 contract tests.
+// 用于 F-POOL-001 契约测试的内存 test stub。
 package router
 
 import (
@@ -9,13 +9,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// stubAccountSource returns a fixed account list.
+// stubAccountSource 返回一份固定的账号列表。
 type stubAccountSource struct {
 	accounts []*AccountSnapshot
 }
 
 func (s *stubAccountSource) ListAccounts(_ context.Context, req SelectionRequest) ([]*AccountSnapshot, error) {
-	// Mirror production SQL query (sql/queries/pool_accounts.sql ListEligibleAccounts):
+	// 镜像生产 SQL 查询(sql/queries/pool_accounts.sql ListEligibleAccounts):
 	// WHERE tenant_id = $1 AND enabled = true AND deleted_at IS NULL ...
 	out := make([]*AccountSnapshot, 0, len(s.accounts))
 	for _, a := range s.accounts {
@@ -26,14 +26,14 @@ func (s *stubAccountSource) ListAccounts(_ context.Context, req SelectionRequest
 	return out, nil
 }
 
-// stubPolicy returns a fixed RoutingPolicy.
+// stubPolicy 返回一个固定的 RoutingPolicy。
 type stubPolicy struct{ p *RoutingPolicy }
 
 func (s *stubPolicy) GetRoutingPolicy(_ context.Context, _ SelectionRequest) (*RoutingPolicy, error) {
 	return s.p, nil
 }
 
-// stubSticky resolves session_hash → accountID.
+// stubSticky 把 session_hash 解析为 accountID。
 type stubSticky struct {
 	bindings map[string]int64
 }
@@ -45,7 +45,7 @@ func (s *stubSticky) Lookup(_ context.Context, req SelectionRequest) (int64, boo
 	return 0, false, nil
 }
 
-// captureClaimGate records WriteAcquisition calls.
+// captureClaimGate 记录 WriteAcquisition 的调用。
 type captureClaimGate struct {
 	mu    sync.Mutex
 	calls []claimWrite
@@ -65,7 +65,7 @@ func (c *captureClaimGate) WriteAcquisition(_ context.Context, tenantID, claimID
 	return nil
 }
 
-// memSlotManager hands out tokens; tracks releases.
+// memSlotManager 发放 token; 并跟踪释放。
 type memSlotManager struct {
 	mu         sync.Mutex
 	releases   map[uuid.UUID]int
@@ -105,7 +105,7 @@ func (m *memSlotManager) releaseFor(tok uuid.UUID) ReleaseFunc {
 	return m.releaseFns[tok]
 }
 
-// snap is shorthand for an AccountSnapshot literal.
+// snap 是构造 AccountSnapshot 字面量的简写。
 func snap(id, tenant int64, prio int, load float64, lastUsed time.Time) *AccountSnapshot {
 	return &AccountSnapshot{
 		ID:             id,

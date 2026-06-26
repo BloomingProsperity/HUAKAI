@@ -1,15 +1,14 @@
-// Phase C.2 production adapter: DB-backed pool.SlotManager.
+// Phase C.2 生产适配器：基于 DB 的 pool.SlotManager。
 //
-// Real Acquire/Release path:
-//   - Acquire opens a Serializable Tx that increments
-//     provider_accounts.in_flight_count and inserts a fresh
-//     pool_slot_acquisitions row (status='acquired') in the same Tx.
-//     On cap_concurrency overflow IncrementInFlightCount returns 0 rows,
-//     which we map to ErrNoSlotAvailable.
-//   - Release returns an idempotent ReleaseFunc that calls the same
-//     ReleaseSlotAndDecrementInFlight CTE used by the settler. Calling
-//     twice is a no-op because the CTE only flips status='acquired'
-//     rows and only-then decrements.
+// 真实的 Acquire/Release 路径：
+//   - Acquire 开启一个 Serializable Tx，在同一个 Tx 内递增
+//     provider_accounts.in_flight_count 并插入一行新的
+//     pool_slot_acquisitions（status='acquired'）。
+//     当 cap_concurrency 溢出时，IncrementInFlightCount 返回 0 行，
+//     我们将其映射为 ErrNoSlotAvailable。
+//   - Release 返回一个幂等的 ReleaseFunc，调用结算器所用的同一个
+//     ReleaseSlotAndDecrementInFlight CTE。调用两次是空操作，因为该 CTE
+//     只翻转 status='acquired' 的行，且仅在翻转后才递减。
 
 package dispatcher
 
@@ -27,19 +26,19 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// DefaultLeaseDuration is the slot lease grace window before orphan-slot
-// recovery can reclaim it.
+// DefaultLeaseDuration 是 slot 租约的宽限窗口，超过后孤儿 slot 回收
+// 才能将其回收。
 const DefaultLeaseDuration = 90 * time.Second
 
-// DBSlotManager binds the selector's slot acquire/release seam to real
-// pool_slot_acquisitions + provider_accounts rows.
+// DBSlotManager 把 selector 的 slot acquire/release 接缝绑定到真实的
+// pool_slot_acquisitions + provider_accounts 行上。
 type DBSlotManager struct {
 	pool *pgxpool.Pool
 	q    *dbbilling.Queries
 }
 
-// NewDBSlotManager constructs the adapter from a pgx pool. The pool is
-// required because Acquire opens its own Tx for the increment+insert atom.
+// NewDBSlotManager 从一个 pgx pool 构造该适配器。pool 是必需的，
+// 因为 Acquire 会为「递增+插入」这个原子操作开启自己的 Tx。
 func NewDBSlotManager(pool *pgxpool.Pool) *DBSlotManager {
 	if pool == nil {
 		return &DBSlotManager{}
@@ -116,10 +115,10 @@ func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapsho
 	}, nil
 }
 
-// releaseFunc returns the closure that reverses Acquire idempotently.
-// The CTE inside ReleaseSlotAndDecrementInFlight only flips slots whose
-// status is still 'acquired', so concurrent calls (e.g. settler vs
-// selector cleanup) cannot double-decrement.
+// releaseFunc 返回幂等地回滚 Acquire 的闭包。
+// ReleaseSlotAndDecrementInFlight 内部的 CTE 只翻转 status 仍为
+// 'acquired' 的 slot，因此并发调用（如结算器 vs selector 清理）
+// 不会重复递减。
 func (m *DBSlotManager) releaseFunc(token uuid.UUID) ReleaseFunc {
 	return func(ctx context.Context) error {
 		reason := "selector_release"

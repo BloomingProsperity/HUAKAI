@@ -45,9 +45,9 @@ type overviewResponse struct {
 	Trend  []overviewTrendPoint `json:"trend"`
 }
 
-// NewOverviewHandler serves GET /v1/admin/usage/overview after the caller
-// wires it behind platform-admin RBAC. It is read-only and intentionally
-// reports actual_cost for operator spend analysis.
+// NewOverviewHandler 在调用方将其接到平台管理员 RBAC 之后，
+// 提供 GET /v1/admin/usage/overview。它是只读的，并有意上报
+// actual_cost 供运营者做花费分析。
 func NewOverviewHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
@@ -126,8 +126,8 @@ func overviewTotalsFromRow(row dbbilling.AggregateUsageOverviewTotalsRow) (overv
 	if err != nil {
 		return overviewTotals{}, err
 	}
-	// Successful requests are a filtered subset of total requests, so this stays
-	// non-negative; clamp defensively for symmetry with the perf-metrics handler.
+	// 成功请求是总请求的过滤子集，因此该值保持非负；为与 perf-metrics
+	// handler 对称起见，仍做防御性钳制。
 	errorCount := row.RequestCount - row.SuccessCount
 	if errorCount < 0 {
 		errorCount = 0

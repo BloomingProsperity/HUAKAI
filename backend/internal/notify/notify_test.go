@@ -275,7 +275,7 @@ func TestNotifyTypeNoneShortCircuitsRepeatDBReads(t *testing.T) {
 }
 
 func TestNotifyAlertFiringDispatches(t *testing.T) {
-	// MUTATION: drop the alert firing dispatch call after resolving active settings; no outbound request is recorded.
+	// 变异:在解析出生效设置后去掉 alert firing 的派发调用;则不会记录到任何出站请求。
 	now := time.Date(2026, 6, 7, 9, 30, 0, 0, time.UTC)
 	store := fakeStore{activeSettings: []Settings{
 		{
@@ -344,9 +344,9 @@ func TestNotifyAlertFiringDispatches(t *testing.T) {
 }
 
 func TestNotifyProviderAccountDownBroadcastsToAllChannels(t *testing.T) {
-	// MUTATION: setting the webhook EventType/header to EventAlertFiring instead of
-	// EventProviderAccountDown turns the event-header assertion red; the test asserts
-	// the exact new wire event_type, not merely a 2xx.
+	// 变异:把 webhook 的 EventType/header 设为 EventAlertFiring 而非
+	// EventProviderAccountDown,会使 event-header 断言变红;本测试断言的是
+	// 具体的新 wire event_type,而不只是 2xx。
 	now := time.Date(2026, 6, 12, 9, 30, 0, 0, time.UTC)
 	store := fakeStore{activeSettings: []Settings{
 		{
@@ -417,8 +417,8 @@ func TestNotifyProviderAccountDownBroadcastsToAllChannels(t *testing.T) {
 }
 
 func TestNotifyProviderAccountDownRateLimited(t *testing.T) {
-	// MUTATION: removing the limiter.Allow check in broadcast lets the second call
-	// re-send and the request count becomes 2 -> red.
+	// 变异:在 broadcast 中移除 limiter.Allow 检查,会让第二次调用
+	// 再次发送,请求计数变成 2 → 变红。
 	now := time.Date(2026, 6, 12, 9, 30, 0, 0, time.UTC)
 	store := fakeStore{activeSettings: []Settings{{
 		TenantID:      7,
@@ -449,8 +449,8 @@ func TestNotifyProviderAccountDownRateLimited(t *testing.T) {
 }
 
 func TestNotifyProviderAccountDownSkipsTypeNone(t *testing.T) {
-	// MUTATION: dropping the TypeNone continue in broadcast would attempt a delivery
-	// for a disabled recipient -> red.
+	// 变异:在 broadcast 中去掉 TypeNone 的 continue,会尝试向一个
+	// 已禁用的接收方投递 → 变红。
 	now := time.Date(2026, 6, 12, 9, 30, 0, 0, time.UTC)
 	store := fakeStore{activeSettings: []Settings{DefaultSettings(7, 42)}}
 	httpCalls := &recordingRoundTripper{status: http.StatusNoContent}

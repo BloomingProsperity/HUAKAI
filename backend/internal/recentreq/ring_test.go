@@ -9,7 +9,7 @@ func TestRingRecordAndSummary(t *testing.T) {
 	r := NewRing()
 	const accountID = int64(42)
 
-	// no data yet
+	// 还没有数据
 	s := r.Summary(accountID)
 	if s.Total != 0 || s.Success != 0 || s.Failure != 0 {
 		t.Fatalf("empty summary=%+v want zeros", s)
@@ -40,11 +40,11 @@ func TestRingEvictsOldestAtCap(t *testing.T) {
 	r := NewRing()
 	const accountID = int64(7)
 
-	// fill to cap: all failures
+	// 填满到容量上限：全是失败
 	for i := 0; i < ringCap; i++ {
 		r.Record(accountID, false)
 	}
-	// one more: evicts oldest failure, adds success
+	// 再来一条：挤出最旧的失败，加入一次成功
 	r.Record(accountID, true)
 
 	s := r.Summary(accountID)

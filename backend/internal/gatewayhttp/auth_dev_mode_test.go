@@ -67,15 +67,15 @@ func TestAuthPasswordResetDevModeReturnsResetToken(t *testing.T) {
 	}
 }
 
-// TestAuthRegisterDevTokenSuppressedInProduction guards defense-in-depth: even if the dev
-// echo flag is mistakenly left on, a production release mode must NOT leak the one-time verification
-// secret into the public register response (the startup gate is authoritative; this is the in-handler
-// backstop for a runtime-flipped env).
+// TestAuthRegisterDevTokenSuppressedInProduction 守护纵深防御:即使 dev
+// echo 标志被误留为开启,production 发布模式也绝不能把一次性的 verification
+// 密文泄露进公开的 register 响应(启动门控是权威;此处是运行时被翻转的 env 的
+// in-handler 兜底)。
 //
-// Mutation check: remove the production short-circuit in devAuthReturnTokenEnabled and the response
-// regains verification_token under production → this assertion goes red. Discriminating vs the dev
-// test above: identical flag, only HUAKAI_RELEASE_MODE differs, and the expected body differs (key
-// absent in prod vs present in dev).
+// 变异检查:移除 devAuthReturnTokenEnabled 中的 production 短路,响应就会在
+// production 下重新带上 verification_token → 该断言变红。与上面的 dev 测试的
+// 区分点:标志相同,仅 HUAKAI_RELEASE_MODE 不同,且期望的响应体不同
+//(该 key 在 prod 下缺失,在 dev 下存在)。
 func TestAuthRegisterDevTokenSuppressedInProduction(t *testing.T) {
 	t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "true")
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")

@@ -25,18 +25,18 @@ type PanelResolver interface {
 	PanelForUser(ctx context.Context, tenantID, userID int64) (panelauth.Panel, error)
 }
 
-// AuthProfileService reads and updates the authenticated user's own profile.
+// AuthProfileService 读取并更新已认证用户自己的 profile。
 type AuthProfileService interface {
 	GetProfile(ctx context.Context, tenantID, userID int64) (userauth.User, error)
 	UpdateProfile(ctx context.Context, tenantID, userID int64, displayName string) (userauth.User, error)
 }
 
-// AuthSocialLinkService removes authenticated users' social login bindings.
+// AuthSocialLinkService 移除已认证用户的社交登录绑定。
 type AuthSocialLinkService interface {
 	UnlinkSocialIdentity(ctx context.Context, tenantID, userID int64, provider string) (bool, error)
 }
 
-// AuthSessionRevoker revokes authenticated user sessions.
+// AuthSessionRevoker 撤销已认证用户的 session。
 type AuthSessionRevoker interface {
 	Revoke(ctx context.Context, in usersession.RevokeInput) (int64, error)
 }

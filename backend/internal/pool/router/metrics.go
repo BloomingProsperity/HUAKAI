@@ -31,7 +31,7 @@ const (
 	pasrKeySegmentCreatesTotal = "pasr_segment_creates_total"
 	pasrKeyCacheHitObs         = "pasr_cache_hit_observations"
 	pasrKeyCacheCreationObs    = "pasr_cache_creation_obs"
-	// cache-aware A3 metrics:
+	// cache-aware A3 指标:
 	pasrKeyMissObsTotal = "pasr_miss_obs_total" // observe(cache_creation==0 && cache_read==0)
 	pasrKeyDemoteTotal  = "pasr_demote_total"   // 连续 miss 达阈值, 段成员 hasCache 被清
 )

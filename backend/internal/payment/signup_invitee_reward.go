@@ -205,7 +205,7 @@ func (s *PostgresStore) ApplySignupBonus(ctx context.Context, input signupBonusI
 			continue
 		}
 		if isUniqueViolation(err) {
-			// out_trade_no unique conflict = already issued; treat as idempotent.
+			// out_trade_no 唯一约束冲突 = 已发放;按幂等处理。
 			return SignupBonusResult{AlreadyIssued: true}, nil
 		}
 		return SignupBonusResult{}, err
@@ -226,7 +226,7 @@ func (s *PostgresStore) applySignupBonusOnce(ctx context.Context, input signupBo
 
 	requestKey := signupBonusRequestKey(input.TenantID, input.UserID)
 
-	// Check for existing order (idempotency replay).
+	// 检查是否已存在订单(幂等重放)。
 	found, err := orderExistsByOutTradeNoTx(ctx, tx, input.TenantID, requestKey)
 	if err != nil {
 		return SignupBonusResult{}, err
@@ -433,7 +433,7 @@ RETURNING`+orderSelectColumns, input.TenantID, order.ID, input.Now)
 }
 
 // ============================================================
-// Request key helpers
+// Request key 辅助函数
 // ============================================================
 
 func signupBonusRequestKey(tenantID, userID int64) string {
@@ -445,11 +445,11 @@ func inviteeRewardRequestKey(tenantID, userID int64) string {
 }
 
 // ============================================================
-// Helper: check whether out_trade_no already exists
+// 辅助函数:检查 out_trade_no 是否已存在
 // ============================================================
 
-// orderExistsByOutTradeNoTx returns true if a payment_order with the given
-// out_trade_no already exists for the tenant (within a transaction).
+// orderExistsByOutTradeNoTx 在事务内,若该 tenant 下已存在带给定 out_trade_no 的
+// payment_order,则返回 true。
 func orderExistsByOutTradeNoTx(ctx context.Context, tx pgx.Tx, tenantID int64, outTradeNo string) (bool, error) {
 	var exists bool
 	err := tx.QueryRow(ctx,

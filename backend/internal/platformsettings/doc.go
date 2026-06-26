@@ -1,7 +1,7 @@
-// Package platformsettings owns platform-wide admin settings.
+// Package platformsettings 负责平台级的 admin 设置。
 //
-// Boundary notes:
-//   - settings here are allow-listed non-secret values only. Do not add
-//     provider credentials, plaintext tokens, passwords, or bearer keys.
-//   - This package writes only platform_settings and admin audit events.
+// 边界说明:
+//   - 此处的设置只允许放入白名单内的非机密值。不要加入 provider 凭据、
+//     明文 token、密码或 bearer key。
+//   - 本包只写入 platform_settings 与 admin 审计事件。
 package platformsettings

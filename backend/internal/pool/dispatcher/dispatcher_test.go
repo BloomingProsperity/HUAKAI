@@ -12,7 +12,7 @@
 //	T-M4-8  canary 命中桶 → PASR actual, 失败 pre-mutation → fallback default
 //	T-M4-9  canary post-mutation fail → fail closed (不 fallback)
 //	T-M4-10 canary miss 桶 → DefaultSelector
-//	T-M4-11 pasr-primary pre-mutation fail → fallback default
+//	T-M4-11 pasr-primary 在 pre-mutation 阶段失败 → fallback 到 default
 //	T-M4-12 pasr-strict 任何错误 → fail closed (不 fallback)
 //	T-M4-13 shouldSample deterministic (同 SessionHash 永远落同侧)
 //	T-M4-14 shouldSample 分布在 5/25/100 接近期望

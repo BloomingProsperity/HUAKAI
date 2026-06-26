@@ -285,7 +285,7 @@ func openAIResponsesPreviousResponseID(rawBody []byte) string {
 }
 
 func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
-	// resolveModelWithEffortSuffix folds registry-aware effort-suffix normalization into resolution.
+	// resolveModelWithEffortSuffix 把感知 registry 的 effort 后缀规范化折入解析过程。
 	resolved, err := ex.resolveModelWithEffortSuffix()
 	if errors.Is(err, registry.ErrRegistryBackend) {
 		writeJSONError(w, http.StatusServiceUnavailable, "registry_backend_error",
@@ -305,10 +305,9 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 	ex.resolved = resolved
 	resolvedModel := routerResolvedModelFromRegistry(resolved)
 
-	// Derive the request's capability needs from the raw body once, before
-	// any attempt — they are stable across retries — so the Router can demand
-	// matching account capability_flags (vision/tools/json/audio). Stream
-	// stays driven by the parsed request flag.
+	// 在任何尝试之前,从原始请求体一次性推导出请求的能力需求——它们在重试间
+	// 是稳定的——这样 Router 就能要求匹配的账号 capability_flags
+	// (vision/tools/json/audio)。Stream 仍由已解析的请求标志驱动。
 	wantsVision, wantsToolUse, wantsJSON, wantsAudio := bodyfeatures.Detect(ex.body)
 	plan, err := ex.d.Router.Plan(ex.ctx, router.PlanInput{
 		Context: router.RequestContext{
@@ -564,7 +563,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	if excludedAccounts == nil {
 		excludedAccounts = map[int64]struct{}{}
 	}
-	// ROUTE-023 Option B: opt-in context-window pre-check (default off — see commit).
+	// ROUTE-023 方案 B:选择性开启的 context-window 预检(默认关闭——见提交)。
 	var ctxWindow, estInput, maxOut int
 	if ex.modelFallbackEnabled {
 		ctxWindow = ex.resolved.ContextWindow
@@ -598,8 +597,8 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		BindingRPMLimit:      bindingRPM,
 		BindingTPMLimit:      bindingTPM,
 	})
-	// Map any pool selection error (incl. SEC-249/250 per-key rate limit) to the
-	// right HTTP failure + claim abort. Extracted to chat_completions_pool_errors.go.
+	// 把任何池选号错误(含 SEC-249/250 的 per-key 限流)映射到对应的 HTTP 失败
+	// + claim 终止。已抽取到 chat_completions_pool_errors.go。
 	if failure := ex.classifyPoolSelectFailure(w, err); failure != nil {
 		return failure
 	}
@@ -620,17 +619,17 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	ex.selRes = selRes
 	ex.acquiredAccountID = selRes.AccountID
 	ex.acquisitionToken = selRes.AcquisitionToken
-	// SUB2-EGRESS-02: register the session against the acquired account so
-	// the SessionCountGate has an up-to-date view on the next selection.
+	// SUB2-EGRESS-02:把会话登记到已获取的账号上,使 SessionCountGate
+	// 在下次选号时拥有最新视图。
 	if ex.d.SessionCapRegistry != nil && ex.sessionHash != "" {
 		ex.d.SessionCapRegistry.Register(ex.acquiredAccountID, ex.sessionHash)
 	}
 	return nil
 }
 
-// derefIntOrZero returns *p when p is non-nil and positive, else 0. Used to
-// translate the optional client max_tokens into the context-window gate's
-// output reservation without padding when unspecified.
+// derefIntOrZero 在 p 非 nil 且为正时返回 *p,否则返回 0。用于把可选的
+// 客户端 max_tokens 转换为 context-window 闸门的输出预留,
+// 未指定时不做填充。
 func derefIntOrZero(p *int) int {
 	if p == nil || *p < 0 {
 		return 0

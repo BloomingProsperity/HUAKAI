@@ -17,7 +17,7 @@ import (
 
 const (
 	UsageRetentionDaysEnv = "HUAKAI_USAGE_RETENTION_DAYS"
-	// Default 0 means permanent retention; operators must opt in explicitly.
+	// 默认 0 表示永久保留;运维必须显式启用。
 	DefaultUsageRetentionDays   = 0
 	defaultUsageRetentionBatch  = int32(1000)
 	defaultUsageRetentionTicker = time.Hour

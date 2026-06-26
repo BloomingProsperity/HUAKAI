@@ -7,29 +7,25 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/rate/precheck"
 )
 
-// ErrKeyRateLimited is returned by KeyRateLimitSelector when the authenticated
-// API key has exhausted its per-minute request (RPM) or token (TPM) budget. The
-// gateway maps it to HTTP 429. SEC-249/250.
+// ErrKeyRateLimited 由 KeyRateLimitSelector 返回:当已认证的 API key 用尽了
+// 其每分钟请求(RPM)或 token(TPM)预算时。网关把它映射成 HTTP 429。SEC-249/250。
 var ErrKeyRateLimited = errors.New("pool: per-key rate limit exceeded")
 
-// KeyRateLimitSelector enforces a per-authenticated-API-key RPM/TPM budget
-// BEFORE account selection (SEC-249/250). Because the budget is keyed on the
-// resolved APIKeyID — not the client IP — a caller cannot bypass it by rotating
-// IPs, which the reactive IP-based path allowed. Limits are global (the same cap
-// applies to every key) and sourced from config; a zero limit means unlimited,
-// so the limiter is strictly opt-in and OFF by default.
+// KeyRateLimitSelector 在账号选择之前(SEC-249/250)对每个已认证 API key 强制
+// RPM/TPM 预算。由于预算以解析出的 APIKeyID —— 而非客户端 IP —— 为键,调用方无法
+// 靠轮换 IP 绕过它,而此前响应式的按 IP 路径是允许这么绕的。限额是全局的(同一上限
+// 适用于每个 key),来源于配置;限额为零表示无限,因此该限流器严格按需启用、默认关闭。
 //
-// On a successful selection the request is recorded against the key's budget
-// (reserve-on-select). A nil counter or APIKeyID<=0 makes the wrapper a
-// transparent pass-through.
+// 选择成功后,该请求会被记入该 key 的预算(选中即预留)。counter 为 nil 或
+// APIKeyID<=0 时,该包装器变成透明直通。
 type KeyRateLimitSelector struct {
 	inner   Selector
 	counter *precheck.Counter
 	limits  precheck.Limits
 }
 
-// NewKeyRateLimitSelector wraps inner with a per-key RPM/TPM budget. rpm/tpm <=0
-// means that dimension is unlimited; both <=0 makes the wrapper inert.
+// NewKeyRateLimitSelector 用每 key 的 RPM/TPM 预算包装 inner。rpm/tpm <=0
+// 表示该维度无限;两者都 <=0 时该包装器为惰性(不生效)。
 func NewKeyRateLimitSelector(inner Selector, counter *precheck.Counter, rpm, tpm int64) *KeyRateLimitSelector {
 	return &KeyRateLimitSelector{inner: inner, counter: counter, limits: precheck.Limits{RPM: rpm, TPM: tpm}}
 }

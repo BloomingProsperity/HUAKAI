@@ -12,7 +12,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// MUTATION: log RequestURI or URL.String() instead of URL.Path -> query secret appears -> RED.
+// 变异:记录 RequestURI 或 URL.String() 而非 URL.Path -> query 里的密钥泄出 -> 变红。
 func TestAccessLogNoQuery(t *testing.T) {
 	core, recorded := observer.New(zap.InfoLevel)
 	logger := zap.New(core)

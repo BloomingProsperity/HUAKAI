@@ -429,10 +429,10 @@ func TestTenantRetryBudgetFirstAttemptDoesNotConsumeBudget(t *testing.T) {
 }
 
 func TestAT_GW_002_04_PreStreamFinalErrorSanitizesUpstreamBody(t *testing.T) {
-	// Risk killed: when every pre-delivery attempt fails, the client receives a
-	// typed sanitized error while the raw upstream body is used only for internal
-	// classification. Mutation self-check: writing upstreamErr.Body to the client
-	// leaks SENSITIVE_UPSTREAM_MARKER and turns this test red.
+	// 消除的风险:当每一次交付前的尝试都失败时,客户端收到的是
+	// 一个带类型的、已脱敏的错误,而原始 upstream body 只用于内部
+	// 分类。变异自检:把 upstreamErr.Body 写给客户端会
+	// 泄露 SENSITIVE_UPSTREAM_MARKER,使本测试变红。
 	enableHCSFDispatchForTest(t)
 	const marker = "SENSITIVE_UPSTREAM_MARKER"
 	selector := newPR5Selector(t, 451)
@@ -581,10 +581,10 @@ func TestPR5StreamDispatchTimeoutAbortReasonMatchesRetryDecision(t *testing.T) {
 }
 
 func TestPR5StreamRetryClearsDeferredLedgerDLQTrailerBeforeSuccess(t *testing.T) {
-	// Risk killed: a Deferred ledger result from a pre-delivery failed attempt
-	// must not leak X-HUAKAI-Ledger-DLQ-Ref into the later successful streamed
-	// response. Mutation self-check: removing the DLQ trailer from retry
-	// cleanup leaves audit_ledger_dlq:729 in the final response trailer.
+	// 消除的风险:某次交付前失败尝试产生的 Deferred ledger 结果,
+	// 绝不能把 X-HUAKAI-Ledger-DLQ-Ref 泄露进后续成功的流式
+	// 响应。变异自检:从重试清理中移除 DLQ trailer,会让
+	// audit_ledger_dlq:729 残留在最终响应 trailer 里。
 	signer, err := sign.GenerateKey()
 	if err != nil {
 		t.Fatalf("signer: %v", err)
@@ -1545,7 +1545,7 @@ func TestPR5NonStreamTransient5xxForceCooldownWhenEnabled(t *testing.T) {
 	if selector.calls != 2 {
 		t.Fatalf("selector calls=%d want 2 (failover to 2nd account)", selector.calls)
 	}
-	// MUTATION: keeping the caller prefilter at only 429/529 leaves this at zero.
+	// 变异:把 caller 预过滤器仍限定为只匹配 429/529,会让这里停在零。
 	if len(health.forceCooldowns) != 1 {
 		t.Fatalf("ForceCooldown calls=%d want 1 for enabled 502 transient cooldown", len(health.forceCooldowns))
 	}

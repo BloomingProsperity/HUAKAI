@@ -162,9 +162,9 @@ func yieldBedrockProtocolError(kind, value string, payload []byte, yield func(SS
 	return false
 }
 
-// Source files read:
-//   - https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModelWithResponseStream.html (Bedrock streaming response shape)
-//   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (chunk envelope: bytes field, base64-encoded inner JSON)
-//   - HUAKAI internal: backend/internal/provider/bedrock/eventstream/decoder.go (A2 atomic)
+// 参阅的来源文件:
+//   - https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModelWithResponseStream.html (Bedrock 流式响应形态)
+//   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (chunk envelope:bytes 字段,base64 编码的内层 JSON)
+//   - HUAKAI 内部:backend/internal/provider/bedrock/eventstream/decoder.go (A2 atomic)
 // Lane: claude
 // Time: 2026-05-07T<UTC>

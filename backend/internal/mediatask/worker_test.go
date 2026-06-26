@@ -9,8 +9,8 @@ import (
 )
 
 func TestWorkerQueuedTaskSubmitsProviderOnce(t *testing.T) {
-	// Mutation: call Poll before Submit for a queued task; provider.submitCalls
-	// stays zero and this test fails.
+	// 变异:对一个 queued 任务在 Submit 之前先 Poll;provider.submitCalls
+	// 会保持为零,本测试失败。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	store := newWorkerStore(Task{ID: 1, TenantID: 7, UserID: 42, RequestID: "req-1", TaskType: "image_generation", Provider: "http", Status: StatusQueued, CreatedAt: now})
 	provider := &workerProvider{submitID: "up-1"}
@@ -32,8 +32,8 @@ func TestWorkerQueuedTaskSubmitsProviderOnce(t *testing.T) {
 }
 
 func TestWorkerSuccessSettlesOnceAcrossConcurrentRunOnce(t *testing.T) {
-	// Mutation: remove lease_owner / terminal-status guard in CompleteSuccess;
-	// both workers settle and completeCalls becomes 2.
+	// 变异:去掉 CompleteSuccess 里的 lease_owner / 终态守卫;
+	// 两个 worker 都会结算,completeCalls 变成 2。
 	now := time.Date(2026, 6, 6, 12, 5, 0, 0, time.UTC)
 	store := newWorkerStore(Task{
 		ID: 2, TenantID: 7, UserID: 42, RequestID: "req-2", TaskType: "image_generation",
@@ -62,8 +62,8 @@ func TestWorkerSuccessSettlesOnceAcrossConcurrentRunOnce(t *testing.T) {
 }
 
 func TestWorkerFailureRefundsTerminally(t *testing.T) {
-	// Mutation: map provider failed to progress update instead of terminal
-	// failure; failureCalls remains zero and held money would not be released.
+	// 变异:把 provider 的 failed 映射成进度更新而非终态失败;
+	// failureCalls 保持为零,被冻结的款项不会被释放。
 	now := time.Date(2026, 6, 6, 12, 10, 0, 0, time.UTC)
 	store := newWorkerStore(Task{ID: 3, TenantID: 7, UserID: 42, TaskType: "image_generation", Provider: "http", ProviderTaskID: "up-3", Status: StatusInProgress, CreatedAt: now})
 	provider := &workerProvider{poll: PollResult{Status: StatusFailed, Progress: 20, ErrorClass: "provider_failed"}}
@@ -78,8 +78,8 @@ func TestWorkerFailureRefundsTerminally(t *testing.T) {
 }
 
 func TestWorkerTimeoutExpiresAndRefunds(t *testing.T) {
-	// Mutation: check updated_at instead of created_at for timeout; this stale
-	// task is polled instead of expired and expireCalls remains zero.
+	// 变异:超时判定时检查 updated_at 而非 created_at;这个陈旧任务
+	// 会被 poll 而非过期,expireCalls 保持为零。
 	base := time.Date(2026, 6, 6, 12, 15, 0, 0, time.UTC)
 	cfg := testConfig()
 	cfg.TaskTimeout = time.Minute

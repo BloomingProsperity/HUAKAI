@@ -9,8 +9,8 @@ import (
 
 const maxCompactRequestBodyBytes = 1 << 20
 
-// NewCompactHandler rejects streaming compact requests, removes any non-true
-// top-level stream flag, then delegates to the canonical Responses pipeline.
+// NewCompactHandler 拒绝流式的 compact 请求,移除任何非 true 的顶层
+// stream 标志,然后委派给 canonical Responses 管线。
 func NewCompactHandler(delegate http.Handler, canonicalPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if delegate == nil {

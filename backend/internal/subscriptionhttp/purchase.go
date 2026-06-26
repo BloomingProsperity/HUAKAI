@@ -25,7 +25,7 @@ type PaymentOrderService interface {
 	CreateOrder(context.Context, payment.CreateOrderInput) (payment.CreateOrderResult, error)
 }
 
-// QuotaProgressStore exposes the read-only quota projection needed by the self-scoped progress endpoint.
+// QuotaProgressStore 暴露自助进度端点所需的只读 quota 投影。
 type QuotaProgressStore interface {
 	ListCurrentWindowsForScope(ctx context.Context, tenantID int64, scopeKind quota.ScopeKind, scopeID string, at time.Time) ([]quota.CurrentWindowRead, error)
 }
@@ -72,13 +72,13 @@ type subscriptionProgressView struct {
 	WindowStart  time.Time `json:"window_start"`
 	WindowEnd    time.Time `json:"window_end"`
 
-	// Derived read-side fields (purely computed from the existing window data above;
-	// no new query / schema / mutation). All money figures stay in the same USD
-	// decimal unit as Cap/Consumed (numeric(20,8)); see toSubscriptionProgressView.
-	UsagePercent    float64 `json:"usage_percent"`     // consumed/cap*100; 0 when cap==0 (no divide-by-zero); allowed to exceed 100 on overage
-	ResetsInSeconds int64   `json:"resets_in_seconds"` // max(0, window_end − now); 0 once the window has elapsed
+	// 读侧派生字段(纯由上面已有的 window 数据计算得出；
+	// 不新增 query / schema / mutation)。所有金额都与 Cap/Consumed 保持相同的
+	// USD 小数单位(numeric(20,8));参见 toSubscriptionProgressView。
+	UsagePercent    float64 `json:"usage_percent"`     // consumed/cap*100；cap==0 时为 0(不做除法);超限时允许超过 100
+	ResetsInSeconds int64   `json:"resets_in_seconds"` // max(0, window_end − now);窗口结束后为 0
 	OverLimit       bool    `json:"over_limit"`        // consumed > cap
-	OverLimitAmount string  `json:"over_limit_amount"` // max(0, consumed − cap), same USD decimal unit as Consumed ("0" when not over). Distinct from the persisted ledger Overage field above.
+	OverLimitAmount string  `json:"over_limit_amount"` // max(0, consumed − cap)，与 Consumed 同一 USD 小数单位(未超时为 "0")。区别于上面持久化的 ledger Overage 字段。
 }
 
 func toPurchaseOrderView(o payment.Order) purchaseOrderView {
@@ -109,11 +109,11 @@ func currentActiveSubscription(subs []subscription.UserSubscription, now time.Ti
 	return best
 }
 
-// toSubscriptionProgressView projects one current quota window into the user-facing
-// progress view. The derived fields (usage_percent / resets_in_seconds / over_limit /
-// over_limit_amount) are computed purely from the window data plus the supplied now
-// clock — no new query, schema, or money mutation. now is threaded from the handler so
-// resets_in_seconds is deterministic under test (no fresh time.Now here).
+// toSubscriptionProgressView 把一个当前 quota window 投影成面向用户的进度视图。
+// 派生字段(usage_percent / resets_in_seconds / over_limit / over_limit_amount)
+// 纯由 window 数据加上传入的 now 时钟计算得出 —— 不新增 query、schema 或资金
+// mutation。now 由 handler 一路传入，使 resets_in_seconds 在测试下具有确定性
+// (此处不再现取 time.Now)。
 func toSubscriptionProgressView(w quota.CurrentWindowRead, now time.Time) subscriptionProgressView {
 	cap := w.LimitValue
 	consumed := w.SettledValue.Add(w.ReservedValue)
@@ -122,24 +122,24 @@ func toSubscriptionProgressView(w quota.CurrentWindowRead, now time.Time) subscr
 		remaining = decimal.Zero
 	}
 
-	// usage_percent = consumed/cap*100. Guard cap==0 (no division) → 0 rather than
-	// NaN/Inf. Not clamped at 100: an over-limit window reports >100 so callers can
-	// surface overage. DivRound keeps a fixed scale so the float is stable.
+	// usage_percent = consumed/cap*100。对 cap==0 做防护(不做除法)→ 返回 0 而非
+	// NaN/Inf。不在 100 处截断:超限窗口报告 >100，便于调用方呈现超额量。
+	// DivRound 保持固定标度，使浮点结果稳定。
 	usagePercent := 0.0
 	if !cap.IsZero() {
 		usagePercent = consumed.DivRound(cap, 8).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
 
-	// over_limit / over_limit_amount = max(0, consumed − cap), same USD decimal unit as
-	// consumed. Distinct from the persisted ledger OverageValue (accumulated billing
-	// overage); this is the live snapshot of how far past cap the window currently sits.
+	// over_limit / over_limit_amount = max(0, consumed − cap)，与 consumed 同一 USD
+	// 小数单位。区别于持久化的 ledger OverageValue(累计计费超额);此处是窗口当前
+	// 超出 cap 多少的实时快照。
 	overLimit := consumed.GreaterThan(cap)
 	overLimitAmount := consumed.Sub(cap)
 	if overLimitAmount.IsNegative() {
 		overLimitAmount = decimal.Zero
 	}
 
-	// resets_in_seconds = max(0, window_end − now); clamps to 0 once the window elapsed.
+	// resets_in_seconds = max(0, window_end − now);窗口结束后截断为 0。
 	resetsInSeconds := int64(0)
 	if d := w.Window.End.Sub(now); d > 0 {
 		resetsInSeconds = int64(d.Seconds())
@@ -174,7 +174,7 @@ func subscriptionAllowsProgressWindow(s subscription.UserSubscription, kind quot
 	}
 }
 
-// ---- handlers ----
+// ---- handler ----
 
 // newUserCurrentSubscriptionHandler GET /me: 当前生效订阅 + 持久化 auto_renew。
 func newUserCurrentSubscriptionHandler(d UserDeps) http.HandlerFunc {
@@ -198,7 +198,7 @@ func newUserCurrentSubscriptionHandler(d UserDeps) http.HandlerFunc {
 	}
 }
 
-// newUserSubscriptionProgressHandler GET /me/progress: current subscription cap usage by quota window.
+// newUserSubscriptionProgressHandler GET /me/progress: 按 quota window 返回当前订阅 cap 的用量。
 func newUserSubscriptionProgressHandler(d UserDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := resolveSession(w, r, d)
@@ -261,8 +261,8 @@ func newUserCancelRenewHandler(d UserDeps) http.HandlerFunc {
 	}
 }
 
-// newUserChangePlanHandler POST /change-plan {new_plan_id}: self-service
-// plan change is upgrade-only; downgrades require an admin override.
+// newUserChangePlanHandler POST /change-plan {new_plan_id}: 自助换套餐
+// 只允许升级；降级需要 admin 覆盖。
 func newUserChangePlanHandler(d UserDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := resolveSession(w, r, d)

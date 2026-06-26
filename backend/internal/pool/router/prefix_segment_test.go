@@ -326,7 +326,7 @@ func TestSegmentTable_EmptyRing(t *testing.T) {
 }
 
 // =====================================================================
-// cache-aware A1: aging 5min default + ExtendedCacheTTL 1h
+// cache-aware A1:默认老化 5min + ExtendedCacheTTL 1h
 // =====================================================================
 
 // TestA1_DefaultSegmentMaxAge_Is5Min 锁定常量值, 防回归到 30min。
@@ -443,7 +443,7 @@ func TestA1_MixedTTL_PerSegmentEffective(t *testing.T) {
 	}
 
 	// 推进到 70min (从原始时刻): ext 段也过期
-	clock = clock.Add(40 * time.Minute) // total now = 70min after start
+	clock = clock.Add(40 * time.Minute) // 此刻总计 = 起始后 70min
 	evicted2 := tbl.EvictExpired(clock)
 	if evicted2 != 1 {
 		t.Fatalf("70min 后 ext 段也应 evict, 实 %d", evicted2)

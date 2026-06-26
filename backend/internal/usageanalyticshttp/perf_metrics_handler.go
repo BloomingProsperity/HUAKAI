@@ -85,8 +85,8 @@ type healthScoreSignals struct {
 	TTFTP99MS float64 `json:"ttft_p99_ms"`
 }
 
-// NewPerfMetricsSummaryHandler serves a read-only platform-admin performance
-// summary with global/requested_model latency percentiles.
+// NewPerfMetricsSummaryHandler 提供只读的平台管理员性能汇总，
+// 包含 global/requested_model 维度的延迟分位数。
 func NewPerfMetricsSummaryHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
@@ -106,8 +106,8 @@ func NewPerfMetricsSummaryHandler(q Querier) http.HandlerFunc {
 	}
 }
 
-// NewPerfMetricsByBucketHandler serves read-only requested_model performance
-// metrics grouped by hour/day requested_at buckets.
+// NewPerfMetricsByBucketHandler 提供只读的 requested_model 性能指标，
+// 按小时/天的 requested_at 桶分组。
 func NewPerfMetricsByBucketHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
@@ -141,8 +141,8 @@ func NewPerfMetricsByBucketHandler(q Querier) http.HandlerFunc {
 	}
 }
 
-// NewHealthScoreHandler serves a read-only 0-100 health score using recent
-// business-visible error rate and TTFT p99.
+// NewHealthScoreHandler 提供只读的 0-100 健康分，依据近期
+// 业务可见的错误率与 TTFT p99 计算。
 func NewHealthScoreHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {

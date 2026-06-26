@@ -192,9 +192,9 @@ func TestMarshalToolUseAndResultOpenAIResponses(t *testing.T) {
 	}
 }
 
-// TestMarshalGeminiMessages guards the Gemini egress graph projection.
-// MUTATION: leaving assistant as "assistant" instead of Gemini "model", or
-// dropping functionCall/functionResponse parts, must make this test fail.
+// TestMarshalGeminiMessages 守护 Gemini 出口图投射。
+// 变异:把 assistant 保留为 "assistant" 而不改成 Gemini 的 "model",
+// 或丢弃 functionCall/functionResponse part,都必须使本测试失败。
 func TestMarshalGeminiMessages(t *testing.T) {
 	temp := 0.25
 	topP := 0.75
@@ -287,10 +287,10 @@ func TestMarshalGeminiMessages(t *testing.T) {
 	}
 }
 
-// TestGeminiIngressToAnthropicUpstream proves Gemini-native ingress produces
-// canonical roles that can be projected into a non-Gemini upstream.
-// MUTATION: keeping Gemini's "model" role instead of canonical assistant must
-// make the Anthropic upstream role assertion fail.
+// TestGeminiIngressToAnthropicUpstream 证明 Gemini 原生入口产生的
+// 规范化角色,可投射到非 Gemini 的 upstream。
+// 变异:保留 Gemini 的 "model" 角色而不转成规范化的 assistant,
+// 必须使 Anthropic upstream 的角色断言失败。
 func TestGeminiIngressToAnthropicUpstream(t *testing.T) {
 	client := &geminiproto.GeminiClient{}
 	ctx := proto.ContextWithRequestMetaSeed(context.Background(), proto.RequestMetaSeed{
@@ -490,7 +490,7 @@ func TestMarshalOpenAIResponsesNativeExtensionPassthrough(t *testing.T) {
 // 因为 ResponseFormat 注入是 dispatcher path (upstream_dispatcher_hcsf.go:173)
 // 才调的,marshalBody 跳过该步。
 //
-// Mutation:把 injectRequestControls 改回原 wrap 逻辑时本用例必红 —
+// 变异:把 injectRequestControls 改回原 wrap 逻辑时本用例必红 —
 // response_format.type 变 "raw",response_format.schema 会出现。
 func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing.T) {
 	raw := json.RawMessage(`{"type":"json_object"}`)
@@ -524,7 +524,7 @@ func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing
 // {"format":{"type":"json_schema","json_schema":{...}}} 时出站 body 的 text
 // 字段必须 1:1 还原,不能被包成 {"format":{"type":"raw","schema":...}}。
 //
-// Mutation:改回原 wrap 逻辑时 text.format.type 会变 "raw" 而非 inbound
+// 变异:改回原 wrap 逻辑时 text.format.type 会变 "raw" 而非 inbound
 // 'json_schema',或多嵌套一层 'schema' 包壳。
 func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *testing.T) {
 	raw := json.RawMessage(`{"format":{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object"}}}}`)
@@ -560,7 +560,7 @@ func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *te
 // TestInjectGeminiResponseFormatJSONSchema 守 structured_output 能力缝:inbound OpenAI Chat
 // response_format={"type":"json_schema","json_schema":{"schema":{...}}} 打到 Gemini 上游时,必须
 // 翻译成 generationConfig.responseMimeType="application/json" + responseSchema=<schema>。此前 Gemini
-// marshal 只认 Gemini 形键,OpenAI 形被静默丢弃。Mutation:删 openAIResponseFormatToGemini 映射块 →
+// marshal 只认 Gemini 形键,OpenAI 形被静默丢弃。变异:删 openAIResponseFormatToGemini 映射块 →
 // responseSchema/responseMimeType 缺失 → 本用例红。
 func TestInjectGeminiResponseFormatJSONSchema(t *testing.T) {
 	raw := json.RawMessage(`{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object","properties":{"age":{"type":"integer"}}}}}`)
@@ -731,7 +731,7 @@ func TestMarshalOpenAIChatReasoningEffortRequestControl(t *testing.T) {
 // marshal 失败 → 501,投递前就挂。
 // 判别性:断言输出与 openai_chat 投影逐字节相等——映射错指到别的形态族
 // (anthropic/gemini)会产生不同 body,必红;漏映射直接 error,必红。
-// Mutation:从 hcsfProviderRequestModelFamily 删任一族 → 对应子断言红。
+// 变异:从 hcsfProviderRequestModelFamily 删任一族 → 对应子断言红。
 func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 	env := graphEnv(textNode("n1", "user", "hello"))
 	want, err := MarshalToProviderRequest(env, "openai_chat")
@@ -762,7 +762,7 @@ func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 // temperature/tools)注进 Dify body——Dify 无 per-request 参数,marshal 已对
 // controls 记 loss,注入=协议污染且与 loss 记账自相矛盾。流式孪生跳过由
 // gatewayhttp 的 TestStreamingProviderRequestBodyDifyChat 钉,本测试钉非流式。
-// Mutation:删 injectRequestControls 的 dify_chat 早退 → 本测试红。
+// 变异:删 injectRequestControls 的 dify_chat 早退 → 本测试红。
 func TestInjectRequestControlsSkipsDifyChat(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
 	max := 42
@@ -784,7 +784,7 @@ func TestInjectRequestControlsSkipsDifyChat(t *testing.T) {
 // 的采样控制已由 marshal 嵌进 options{}(num_predict),顶层二次注入=协议
 // 污染(上游静默忽略顶层字段,且 body 双真相源)。流式孪生跳过由 gatewayhttp
 // 的 TestStreamingProviderRequestBodyOllamaNative 钉,本测试钉非流式。
-// Mutation:删 injectRequestControls 的 ollama_native 早退 → 本测试红。
+// 变异:删 injectRequestControls 的 ollama_native 早退 → 本测试红。
 func TestInjectRequestControlsSkipsOllamaNative(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
 	max := 42
@@ -861,7 +861,7 @@ func TestMarshalSupportsEveryRegisteredProtocolFamily(t *testing.T) {
 // 的主循环因此不迭代它,fail-closed 例外表对未注册族也没有反向断言可挂)。
 // 若运营把 chat 模型 binding 错配到 replicate_image,/v1/chat/completions 的
 // 流式/非流式路径都收敛到 marshal → 必须报错,不得投影成任何 JSON 出站
-// (Replicate 端点只认 {"input":{...}} prediction 形)。Mutation:有人在
+// (Replicate 端点只认 {"input":{...}} prediction 形)。变异:有人在
 // hcsfProviderRequestModelFamily 把 replicate_image 映到 openai_chat,或注册
 // 入站 adapter 而不同步表态 marshal 支持 → 对应断言红,逼出显式决策。
 func TestMarshalReplicateImageFamilyFailsClosedOnChatLane(t *testing.T) {

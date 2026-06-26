@@ -226,8 +226,8 @@ func TestAdminModerationUnban_PassesActorReasonAndReturnsAudit(t *testing.T) {
 }
 
 func TestAdminModerationUnban_AdminAuthRequired(t *testing.T) {
-	// Mutation: bypass resolveAdmin and call Store.UnbanAPIKey directly; this test
-	// would return 200 and increment unbanCalls instead of preserving the 403.
+	// 变异：绕过 resolveAdmin 直接调用 Store.UnbanAPIKey；这时本测试会返回 200
+	// 并使 unbanCalls 自增，而不是保住 403。
 	store := &adminStoreStub{}
 	rec := invokeModerationAdmin(t, ModerationAdminDeps{
 		Auth:  adminAuthStub{err: admin.ErrAdminForbidden},
@@ -242,8 +242,8 @@ func TestAdminModerationUnban_AdminAuthRequired(t *testing.T) {
 }
 
 func TestBulkAdminAuthRequired(t *testing.T) {
-	// Mutation: mount bulk handlers outside resolveAdmin or call Store before
-	// auth; these requests return 200 and increment bulk store calls instead of 403.
+	// 变异：把 bulk handler 挂在 resolveAdmin 之外，或在鉴权之前就调用 Store；
+	// 这些请求会返回 200 并使 bulk store 调用数自增，而不是 403。
 	for _, tc := range []struct {
 		name string
 		path string

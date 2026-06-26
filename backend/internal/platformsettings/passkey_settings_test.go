@@ -7,8 +7,8 @@ import (
 )
 
 func TestPasskeySettingsAreAllowListedAndFailClosedByDefault(t *testing.T) {
-	// Mutation killed: omitting a passkey key from orderedSettingKeys hides it
-	// from admin settings, while default true enables auth changes before RP config.
+	// 已消除变异：把某个 passkey key 从 orderedSettingKeys 里漏掉会让它在
+	// admin 设置里不可见，而默认 true 又会在 RP 配置完成之前就启用鉴权变更。
 	for _, key := range []SettingKey{
 		KeyPasskeyEnabled,
 		KeyPasskeyRegistrationEnabled,
@@ -30,8 +30,8 @@ func TestPasskeySettingsAreAllowListedAndFailClosedByDefault(t *testing.T) {
 }
 
 func TestPasskeyRPOriginsMustBeJSONStringArray(t *testing.T) {
-	// Mutation killed: accepting plain text origins makes origin allow-list
-	// parsing ambiguous and can accidentally authorize request-controlled input.
+	// 已消除变异：接受纯文本 origin 会让 origin 白名单的解析产生歧义，可能误把
+	// 请求可控的输入授权放行。
 	valid := `["https://app.example.test","https://admin.example.test"]`
 	if got, err := ValidateValue(KeyPasskeyRPOrigins, valid); err != nil || got != valid {
 		t.Fatalf("ValidateValue valid origins got=%q err=%v", got, err)

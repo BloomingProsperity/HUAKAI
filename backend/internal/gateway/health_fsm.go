@@ -1,13 +1,12 @@
-// A22 Account Health Hysteresis FSM.
-// Spec: docs/specs/rate-limiting.md §A22 / DR-009 §6.6 / synthesis §1 A22.
+// A22 账号健康度滞回(Hysteresis)状态机。
+// 规范:docs/specs/rate-limiting.md §A22 / DR-009 §6.6 / synthesis §1 A22。
 //
-// Hard floor (DR-009 §6.6): the FSM must never auto-transition to StateDisabled
-// on an ambiguous-tier classification. Only TierIronClad classification (with
-// FsmTransitionDisabled) OR explicit operator action may cross into Disabled.
-// Enforced structurally by isIronCladDisable() — every code path that produces
-// HealthStateDisabled goes through that predicate.
+// 硬底线(DR-009 §6.6):FSM 绝不能在 ambiguous-tier 的分类上自动转入
+// StateDisabled。只有 TierIronClad 分类(带 FsmTransitionDisabled)或显式的
+// operator 动作才能跨入 Disabled。由 isIronCladDisable() 在结构上强制保证 ——
+// 每条产生 HealthStateDisabled 的代码路径都经过该谓词。
 //
-// Notes: docs/process/plans/2026-05-04-a22-codeparallel-synthesis.md.
+// 注:docs/process/plans/2026-05-04-a22-codeparallel-synthesis.md。
 package gateway
 
 import (
@@ -15,7 +14,7 @@ import (
 	"time"
 )
 
-// HealthState is the A22 6-state enum.
+// HealthState 是 A22 的 6 态枚举。
 type HealthState string
 
 const (
@@ -27,7 +26,7 @@ const (
 	HealthStateDisabled            HealthState = "disabled"
 )
 
-// Hysteresis thresholds — non-overlapping by design (§A22 invariant).
+// 滞回阈值 —— 按设计互不重叠(§A22 不变量)。
 const (
 	DefaultUpgradeStreak           = 10
 	DefaultDegradedErrorThreshold  = 3
@@ -42,7 +41,7 @@ const (
 	neutralHealthScore             = 0.5
 )
 
-// EventType discriminates input events to the FSM.
+// EventType 区分输入到 FSM 的事件。
 type EventType string
 
 const (
@@ -51,10 +50,9 @@ const (
 	EventProbeResult    EventType = "probe_result"
 )
 
-// FSMClassification is the FSM-input view of an A13 Classification, augmented
-// with the few extras the FSM needs (severity, refresh hint, optional cooldown
-// override). Callers build this from a gateway.Classification via
-// ToFSMClassification().
+// FSMClassification 是 A13 Classification 的 FSM 输入视图,额外补充了 FSM
+// 所需的少量字段(severity、refresh 提示、可选的 cooldown override)。调用方
+// 通过 ToFSMClassification() 从 gateway.Classification 构造它。
 type FSMClassification struct {
 	RuleID        string
 	ErrorClass    string
@@ -66,7 +64,7 @@ type FSMClassification struct {
 	NeedsRefresh  bool
 }
 
-// ProbeResult carries the outcome of an out-of-band probe back to the FSM.
+// ProbeResult 把带外 probe 的结果回传给 FSM。
 type ProbeResult struct {
 	Clean              bool
 	RefreshSuccess     bool
@@ -79,8 +77,8 @@ type ProbeResult struct {
 	CleanSuccessStreak int
 }
 
-// HealthSnapshot is the per-account persisted state the FSM consumes;
-// the FSM is a pure function and never mutates the snapshot.
+// HealthSnapshot 是 FSM 消费的每账号持久化状态;
+// FSM 是纯函数,绝不修改该 snapshot。
 type HealthSnapshot struct {
 	HealthScore         float64
 	LastScoredAt        time.Time
@@ -90,7 +88,7 @@ type HealthSnapshot struct {
 	CooldownUntil       time.Time
 }
 
-// Event is the FSM Transition input.
+// Event 是 FSM Transition 的输入。
 type Event struct {
 	Type           EventType
 	Classification FSMClassification
@@ -99,7 +97,7 @@ type Event struct {
 	Health         HealthSnapshot
 }
 
-// SideEffectType enumerates the deferred actions returned by Transition.
+// SideEffectType 枚举 Transition 返回的延迟动作。
 type SideEffectType string
 
 const (
@@ -109,7 +107,7 @@ const (
 	SideEffectNotifyOperator   SideEffectType = "notify_operator"
 )
 
-// SideEffect is a single deferred action; the FSM does not execute side effects.
+// SideEffect 是单个延迟动作;FSM 不执行 side effect。
 type SideEffect struct {
 	Type    SideEffectType
 	Until   time.Time
@@ -121,8 +119,8 @@ type SideEffect struct {
 	Message string
 }
 
-// ToFSMClassification bridges a gateway.Classification (R6 output) into the
-// FSM-input view. Derives NeedsRefresh from ErrorClass and Severity from Tier.
+// ToFSMClassification 把 gateway.Classification(R6 输出)桥接为 FSM 输入视图。
+// 从 ErrorClass 推导 NeedsRefresh,从 Tier 推导 Severity。
 func ToFSMClassification(c Classification) FSMClassification {
 	severity := 1.0
 	if c.Tier == TierIronClad {
@@ -130,8 +128,8 @@ func ToFSMClassification(c Classification) FSMClassification {
 	}
 	needsRefresh := false
 	if c.Class == ErrorClassOAuthInvalidGrant && c.RetryAction == RetryActionCooldown {
-		// OAuth refresh path: A07 storm controller / F-AUTH-005 owns the actual
-		// refresh; FSM signals NeedsRefresh state so callers route to that path.
+		// OAuth refresh 路径:实际刷新由 A07 storm controller / F-AUTH-005 负责;
+		// FSM 仅给出 NeedsRefresh 状态信号,让调用方路由到那条路径。
 		needsRefresh = true
 	}
 	cooldown := time.Duration(0)
@@ -149,8 +147,8 @@ func ToFSMClassification(c Classification) FSMClassification {
 	}
 }
 
-// Transition is the pure FSM step function. It never mutates inputs;
-// callers persist the new state and execute SideEffects.
+// Transition 是纯粹的 FSM 步进函数。它绝不修改输入;
+// 由调用方持久化新状态并执行 SideEffect。
 func Transition(state HealthState, event Event, now time.Time) (HealthState, []SideEffect) {
 	now = effectiveNow(event, now)
 	score := healthScoreAfterEvent(event, now)
@@ -321,8 +319,8 @@ func enterCoolingDown(now time.Time, c FSMClassification, effects []SideEffect) 
 	return HealthStateCoolingDown, effects
 }
 
-// HealthScoreAfterEvent is exported for callers that need to predict the score
-// after an event without changing the state machine.
+// HealthScoreAfterEvent 导出给需要在不改变状态机的前提下预测某事件后
+// 健康度分值的调用方使用。
 func HealthScoreAfterEvent(event Event, now time.Time) float64 {
 	return healthScoreAfterEvent(event, effectiveNow(event, now))
 }
@@ -352,8 +350,8 @@ func healthScoreAfterEvent(event Event, now time.Time) float64 {
 	return score
 }
 
-// DecayHealthScore exponentially relaxes a score toward the neutral value over
-// the configured half-life. Exported for callers that maintain the snapshot.
+// DecayHealthScore 在配置的半衰期内,把分值按指数衰减松弛向中性值。
+// 导出给维护 snapshot 的调用方使用。
 func DecayHealthScore(score float64, lastScoredAt time.Time, now time.Time) float64 {
 	score = clamp01(score)
 	if lastScoredAt.IsZero() || !now.After(lastScoredAt) {
@@ -381,9 +379,9 @@ func isErrorClassification(c FSMClassification) bool {
 		c.NeedsRefresh
 }
 
-// isIronCladDisable is the §6.6 hard-floor predicate: only TierIronClad +
-// FsmTransitionDisabled may auto-cross into HealthStateDisabled. Every code
-// path that produces HealthStateDisabled goes through this predicate.
+// isIronCladDisable 是 §6.6 的硬底线谓词:只有 TierIronClad +
+// FsmTransitionDisabled 才能自动跨入 HealthStateDisabled。每条产生
+// HealthStateDisabled 的代码路径都经过该谓词。
 func isIronCladDisable(c FSMClassification) bool {
 	return c.FsmTransition == FsmTransitionDisabled && c.Tier == TierIronClad
 }

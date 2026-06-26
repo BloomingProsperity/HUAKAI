@@ -52,9 +52,9 @@ type performanceRow struct {
 	errorCount   int64
 }
 
-// NewPerformanceHandler serves GET /v1/admin/usage/performance after the
-// caller wires it behind platform-admin RBAC. It is read-only and returns no
-// cost fields: only latency, throughput, request count, and error rate.
+// NewPerformanceHandler 在调用方将其接到 platform-admin RBAC 之后, 提供
+// GET /v1/admin/usage/performance。它是只读的, 不返回任何成本字段:
+// 只有延迟、吞吐、请求数和错误率。
 func NewPerformanceHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {

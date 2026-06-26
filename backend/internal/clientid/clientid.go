@@ -102,7 +102,7 @@ func SignalFromRequest(r *http.Request) Signal {
 //  2. 检查 User-Agent 已知 token 子串（次强）
 //  3. 检查 Origin / Referer（弱信号，仅 chat UI 类）
 //  4. 检查 User-Agent 是否典型脚本默认串
-//  5. fallback IdentityUnknown
+//  5. 兜底 IdentityUnknown
 //
 // confidence 含义:
 //   - 1.0: 显式 X-Client-Name 或多信号一致

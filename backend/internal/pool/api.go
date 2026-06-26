@@ -130,32 +130,32 @@ func NewDefaultSelector(accounts AccountSource, opts ...SelectorOption) *Default
 	return router.NewDefaultSelector(accounts, opts...)
 }
 
-// RatePrecheckCounter is the in-memory RPM/TPM budget tracker shared by the
-// RatePrecheckGate (reads) and a RecordingSelector (writes). ROUTE-121.
+// RatePrecheckCounter 是由 RatePrecheckGate(读)和 RecordingSelector(写)
+// 共享的内存 RPM/TPM 预算跟踪器。ROUTE-121。
 type RatePrecheckCounter = precheck.Counter
 
-// NewRatePrecheckCounter builds a budget tracker with the default 1-minute
-// window and wall clock. Returns nil-safe usage when the limiter is disabled.
+// NewRatePrecheckCounter 构建一个带默认 1 分钟窗口和墙钟的预算跟踪器。
+// 当限流器被禁用时,其用法是 nil-safe 的。
 func NewRatePrecheckCounter() *RatePrecheckCounter { return precheck.New(0, nil) }
 
-// NewRecordingSelector wraps inner so a successful Select consumes one request
-// (and its estimated input tokens) of the account's RPM/TPM budget (ROUTE-121).
-// A nil counter makes it a transparent pass-through.
+// NewRecordingSelector 包装 inner,使一次成功的 Select 消费该账号 RPM/TPM
+// 预算中的一个请求(及其估算的输入 token)(ROUTE-121)。counter 为 nil
+// 时它是透明的直通。
 func NewRecordingSelector(inner Selector, counter *precheck.Counter) Selector {
 	return router.NewRecordingSelector(inner, counter)
 }
 
-// NewKeyRateLimitSelector wraps inner with a per-authenticated-API-key RPM/TPM
-// budget enforced before selection (SEC-249/250). rpm/tpm <= 0 = unlimited
-// (inert). Over-budget selection returns ErrKeyRateLimited (-> HTTP 429).
+// NewKeyRateLimitSelector 用「每个已认证 API key 的 RPM/TPM 预算」包装 inner,
+// 在选号前强制执行(SEC-249/250)。rpm/tpm <= 0 = 无限制(inert)。
+// 超预算的选号返回 ErrKeyRateLimited(-> HTTP 429)。
 func NewKeyRateLimitSelector(inner Selector, counter *precheck.Counter, rpm, tpm int64) Selector {
 	return router.NewKeyRateLimitSelector(inner, counter, rpm, tpm)
 }
 
-// NewBindingRateLimitSelector wraps inner with a per-binding RPM/TPM budget enforced
-// before selection. Limits are carried per-request on SelectionRequest (each binding has
-// its own model_pool_bindings.rpm_limit/tpm_limit); a nil counter / BindingID<=0 / zero
-// limits make it a transparent pass-through. Over-budget returns ErrBindingRateLimited (-> 429).
+// NewBindingRateLimitSelector 用「每个 binding 的 RPM/TPM 预算」包装 inner,
+// 在选号前强制执行。limit 随每个请求携带在 SelectionRequest 上(每个 binding 有
+// 自己的 model_pool_bindings.rpm_limit/tpm_limit);counter 为 nil / BindingID<=0 /
+// limit 为零时它是透明的直通。超预算返回 ErrBindingRateLimited(-> 429)。
 func NewBindingRateLimitSelector(inner Selector, counter *precheck.Counter) Selector {
 	return router.NewBindingRateLimitSelector(inner, counter)
 }

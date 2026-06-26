@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-// PROXY-04: hysteresis must require N consecutive fails to mark dead and M
-// consecutive successes to recover, so a flapping proxy never oscillates.
+// PROXY-04: 迟滞机制必须要求连续 N 次失败才标记为 dead、连续 M 次成功才恢复,
+// 这样抖动的 proxy 永远不会来回振荡。
 func TestDecideStatus_Hysteresis(t *testing.T) {
 	c := &counters{}
-	// active stays active until deadThreshold consecutive fails
+	// active 在连续 deadThreshold 次失败之前一直保持 active
 	for i := 1; i < deadThreshold; i++ {
 		if got := decideStatus("active", false, c); got != "" {
 			t.Fatalf("fail #%d should not flip yet, got %q", i, got)
@@ -20,7 +20,7 @@ func TestDecideStatus_Hysteresis(t *testing.T) {
 		t.Fatalf("fail #%d should flip active->dead, got %q", deadThreshold, got)
 	}
 
-	// dead recovers after recoverThreshold consecutive successes
+	// dead 在连续 recoverThreshold 次成功后恢复
 	c2 := &counters{}
 	for i := 1; i < recoverThreshold; i++ {
 		if got := decideStatus("dead", true, c2); got != "" {
@@ -31,8 +31,8 @@ func TestDecideStatus_Hysteresis(t *testing.T) {
 		t.Fatalf("success #%d should recover dead->active, got %q", recoverThreshold, got)
 	}
 
-	// MUTATION GUARD: a success resets the fail counter (and vice versa), so pure
-	// flapping never transitions. Removing the counter reset would flip here.
+	// 变异:防护。一次成功会重置失败计数器(反之亦然), 因此纯抖动永远不会触发
+	// 状态转移。去掉计数器重置就会在这里翻车。
 	c3 := &counters{}
 	for i := 0; i < 6; i++ {
 		if got := decideStatus("active", false, c3); got != "" {
@@ -104,8 +104,8 @@ func TestWorker_Tick_RecoversAfterThreshold(t *testing.T) {
 	}
 }
 
-// No transition -> Touch advances last_check_at (so the oldest-checked ordering
-// makes progress and the proxy is re-probed).
+// 无状态转移 -> Touch 推进 last_check_at(这样「最久未检查优先」的排序能向前
+// 推进, 该 proxy 也会被重新探测)。
 func TestWorker_Tick_TouchesWhenNoChange(t *testing.T) {
 	store := &fakeStore{}
 	w := NewWorker(

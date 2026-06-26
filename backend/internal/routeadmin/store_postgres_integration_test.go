@@ -71,7 +71,7 @@ func TestPG_RouteCRUD(t *testing.T) {
 	store := NewPostgresStore(pool)
 	svc := NewService(store, nil)
 
-	// create
+	// 创建
 	created, err := svc.Create(ctx, CreateInput{TenantID: tenantA, Name: "premium-claude-" + sfx, UserGroupMatch: "premium", ModelPatternMatch: "claude-*", PoolGroupID: pgA, AdminID: 1})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -80,7 +80,7 @@ func TestPG_RouteCRUD(t *testing.T) {
 		t.Fatalf("created route unexpected: %+v (want id!=0, prio=100 default, enabled)", created)
 	}
 
-	// get
+	// 读取
 	got, err := svc.Get(ctx, tenantA, created.ID)
 	if err != nil || got.ID != created.ID || got.PoolGroupID != pgA {
 		t.Fatalf("get: route=%+v err=%v", got, err)

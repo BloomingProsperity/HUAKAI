@@ -114,12 +114,10 @@ func NewInvitationSummaryHandler(d InvitationDeps) http.HandlerFunc {
 	}
 }
 
-// NewMyReferralCodeHandler serves GET /v1/me/invitation-code: the caller's
-// single stable self-service referral code, lazily minted on first call. It is
-// a pure read of one's own identity code and is NOT subject to the monthly
-// campaign quota — a logged-in user must always be able to fetch their own code
-// even after a shared single-tenant deployment exhausts the campaign cap for
-// the month (the defect this endpoint must not reproduce).
+// NewMyReferralCodeHandler 处理 GET /v1/me/invitation-code:调用者唯一稳定的自助邀请
+// 码,在首次调用时惰性铸造。它是对自己身份码的纯读取,且「不」受每月活动配额约束——
+// 已登录用户必须始终能取到自己的码,即使共享的单租户部署当月已耗尽活动上限(本端点
+// 不得复现的那个缺陷)。
 func NewMyReferralCodeHandler(d InvitationDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Service == nil {

@@ -74,9 +74,9 @@ type leaderboardRow struct {
 	requestCount int64
 }
 
-// NewLeaderboardHandler serves GET /v1/admin/usage/leaderboard after the
-// caller wires it behind platform-admin RBAC. It is read-only and intentionally
-// reports actual_cost for operator spend analysis.
+// NewLeaderboardHandler 在调用方将其接在 platform-admin RBAC 之后后,
+// 服务 GET /v1/admin/usage/leaderboard。它是只读的,并刻意报告 actual_cost
+// 以供运维做开销分析。
 func NewLeaderboardHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {

@@ -87,12 +87,11 @@ type SystemRewriteResult struct {
 type DispatchBodyControls struct {
 	SystemPrompt   *SystemRewritePlan
 	ParamGate      paramgate.GateConfig
-	ObfuscateWords []string // opt-in; empty = no-op
+	ObfuscateWords []string // 选择性开启;空 = no-op
 }
 
-// SystemPromptPlanFromBinding converts optional channel metadata into a
-// RewriteSystem plan. Empty metadata returns ok=false so callers can skip JSON
-// parsing and preserve the original body byte-for-byte.
+// SystemPromptPlanFromBinding 把可选的渠道元数据转换为一个 RewriteSystem 计划。
+// 元数据为空时返回 ok=false,使调用方可以跳过 JSON 解析并逐字节保留原始请求体。
 func SystemPromptPlanFromBinding(binding registry.BindingMetadata) (SystemRewritePlan, bool) {
 	if binding.SystemPrompt == "" {
 		return SystemRewritePlan{}, false

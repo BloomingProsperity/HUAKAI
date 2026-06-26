@@ -432,7 +432,7 @@ func newPortalRefundRequestHandler(d UserDeps) http.HandlerFunc {
 			return
 		}
 		var req portalRefundRequestBody
-		// requestBody is optional (OpenAPI required:false); only decode when a body is present
+		// requestBody 是可选的(OpenAPI required:false);仅在存在 body 时才解码
 		if r.ContentLength != 0 && r.Body != http.NoBody {
 			if !decodeJSON(w, r, &req) {
 				return

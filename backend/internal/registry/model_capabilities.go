@@ -320,7 +320,7 @@ func normalizeCapabilityParamsRaw(raw json.RawMessage) json.RawMessage {
 }
 
 var knownModelCapabilityBindings = map[string]struct{}{
-	// Public model discovery descriptors.
+	// 公开 model 发现描述符。
 	"vision":           {},
 	"function_calling": {},
 	"tool_choice":      {},
@@ -328,7 +328,7 @@ var knownModelCapabilityBindings = map[string]struct{}{
 	"prompt_caching":   {},
 	"response_schema":  {},
 
-	// HCSF capability families.
+	// HCSF 能力族。
 	"text":              {},
 	"tool_use":          {},
 	"tool_result":       {},
@@ -345,7 +345,7 @@ var knownModelCapabilityBindings = map[string]struct{}{
 	"mcp_server":        {},
 	"data_retention":    {},
 
-	// Protocol capability matrix feature names.
+	// 协议能力 matrix 的 feature 名。
 	"text_streaming":           {},
 	"parallel_tool_calls":      {},
 	"structured_output_schema": {},
@@ -361,7 +361,7 @@ var knownModelCapabilityBindings = map[string]struct{}{
 	"multi_role_messages":      {},
 	"reasoning_summary":        {},
 
-	// Existing registry/model-sync vocabulary and compatibility aliases.
+	// 现有 registry/model-sync 词表与兼容性别名。
 	"stream":              {},
 	"tools":               {},
 	"chat":                {},

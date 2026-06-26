@@ -10,7 +10,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
 
-// fakeProgressReader is a minimal quota.ProgressReadStore for unit testing KEY-007.
+// fakeProgressReader 是用于 KEY-007 单元测试的最小 quota.ProgressReadStore。
 type fakeProgressReader struct {
 	windows []quota.CurrentWindowRead
 }
@@ -19,22 +19,22 @@ func (f *fakeProgressReader) ListCurrentWindowsForScope(_ context.Context, _ int
 	return f.windows, nil
 }
 
-// TestKeyQuotaUsed is the discriminating test for KEY-007.
+// TestKeyQuotaUsed 是 KEY-007 的判别性测试。
 //
-// MUTATION: reader sums only SettledValue (drops ReservedValue) -> used_usd would
-// be 2.5 instead of 3.5 -> RED.
+// 变异:reader 只求和 SettledValue(丢掉 ReservedValue)-> used_usd 会变成
+// 2.5 而非 3.5 -> 变红。
 func TestKeyQuotaUsed(t *testing.T) {
-	// fakeStore.GetAPIKeyQuotaPolicy returns LimitUSD=1 by default; we'll
-	// use settled=0.5 + reserved=0.5 = 1.0 used so remaining = 0.
-	// To test with meaningful numbers, drive settled=0.25 + reserved=0.25 = 0.5 used.
+	// fakeStore.GetAPIKeyQuotaPolicy 默认返回 LimitUSD=1;我们将用
+	// settled=0.5 + reserved=0.5 = 1.0 used 使 remaining = 0。
+	// 为用有意义的数字测试,设 settled=0.25 + reserved=0.25 = 0.5 used。
 	settledDec := decimal.RequireFromString("0.25")
 	reservedDec := decimal.RequireFromString("0.25")
 	wantUsed := decimal.RequireFromString("0.5")
-	// fakeStore returns LimitUSD=1
+	// fakeStore 返回 LimitUSD=1
 	wantRemaining := decimal.RequireFromString("0.5")
-	// Two cost windows: window_end must surface the SOONEST reset boundary, and the
-	// earlier end sits on the SECOND window so the assertion fails a naive windows[0]
-	// pick (order-independence) as well as a wrong-direction (latest) pick.
+	// 两个成本窗口:window_end 必须呈现「最近」的重置边界,而较早的 end 落在
+	// 「第二个」窗口上,因此该断言既能让朴素的 windows[0] 取法失败(顺序无关),
+	// 也能让取错方向(取最晚)的取法失败。
 	wantWindowEnd := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
 	laterWindowEnd := wantWindowEnd.Add(48 * time.Hour)
 
@@ -74,9 +74,9 @@ func TestKeyQuotaUsed(t *testing.T) {
 	if !view.RemainingUSD.Equal(wantRemaining) {
 		t.Errorf("remaining_usd = %s, want %s", *view.RemainingUSD, wantRemaining)
 	}
-	// window_end must surface the soonest reset boundary across the windows.
-	// MUTATION: drop the WindowEnd populate -> nil -> RED; pick the latest/first window
-	// instead of the earliest -> laterWindowEnd != wantWindowEnd -> RED.
+	// window_end 必须呈现各窗口中最近的重置边界。
+	// 变异:不填充 WindowEnd -> nil -> 变红;取最晚/第一个窗口而非最早的
+	// -> laterWindowEnd != wantWindowEnd -> 变红。
 	if view.WindowEnd == nil {
 		t.Fatal("window_end must be set when a quota window exists")
 	}
@@ -84,7 +84,7 @@ func TestKeyQuotaUsed(t *testing.T) {
 		t.Errorf("window_end = %s, want %s (soonest reset across windows, order-independent)", view.WindowEnd, wantWindowEnd)
 	}
 
-	// No window rows -> used = 0
+	// 无窗口行 -> used = 0
 	svc2 := newServiceForTest(store, nil)
 	svc2.progressRead = &fakeProgressReader{windows: nil}
 	view2, err := svc2.GetKeyQuota(context.Background(), 11, 22, 33)

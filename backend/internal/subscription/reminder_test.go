@@ -172,8 +172,8 @@ func TestReminder_DedupAcrossTicks(t *testing.T) {
 	}
 }
 
-// TestReminder_ConcurrentReplicasClaimBeforeSend forces two reminder services to
-// race the same subscription tier after both have observed no existing reminder.
+// TestReminder_ConcurrentReplicasClaimBeforeSend 让两个 reminder service 在
+// 都观察到不存在既有 reminder 之后,去竞争同一个 subscription tier。
 // 判别性: 把 claim 移回 SendReminder 之后时, 两个副本都会先发邮件, mailer calls=2 -> 红。
 func TestReminder_ConcurrentReplicasClaimBeforeSend(t *testing.T) {
 	assignNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)

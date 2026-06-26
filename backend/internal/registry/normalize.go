@@ -1,8 +1,8 @@
-// Package registry: alias normalization (D14).
+// Package registry:别名规范化(D14)。
 //
-// Public model aliases are operator identifiers, not case-sensitive
-// secrets. Normalize for unique-index lookup; preserve as-seeded casing
-// in `public_alias_display` for audit/`/models` endpoint output.
+// 公开模型别名是运营者标识符,而非区分大小写的密钥。规范化以用于唯一索引
+// 查询;在 `public_alias_display` 中按种子录入时的大小写原样保留,供审计
+// 与 `/models` 端点输出使用。
 
 package registry
 
@@ -13,16 +13,15 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// AliasNormalize maps a public alias string to its lookup form.
+// AliasNormalize 把公开别名字符串映射为其查询形式。
 //
-// Steps:
-//  1. Trim leading/trailing whitespace (operators paste from docs).
-//  2. NFC-normalize so accent-composition variants collapse.
-//  3. Lower-case.
+// 步骤:
+//  1. 去掉首尾空白(运营者常从文档粘贴)。
+//  2. 做 NFC 规范化,使重音组合的变体合并。
+//  3. 转小写。
 //
-// The result is what `model_aliases.public_alias_normalized` stores and
-// what the lookup query matches against. Original casing is preserved by
-// the caller and stored in `public_alias_display`.
+// 结果即 `model_aliases.public_alias_normalized` 所存储、且查询所匹配的值。
+// 原始大小写由调用方保留并存于 `public_alias_display`。
 func AliasNormalize(alias string) string {
 	if alias == "" {
 		return ""

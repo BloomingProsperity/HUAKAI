@@ -16,8 +16,8 @@ import (
 )
 
 func TestVideoSubmitTranslate(t *testing.T) {
-	// MUTATION: translate drops duration or changes Provider away from video;
-	// the captured mediatask input below must no longer match the contract.
+	// 变异:translate 丢掉 duration 或把 Provider 改成非 video;
+	// 下面捕获的 mediatask input 将不再符合契约。
 	body := `{"model":"kling-v1","prompt":"wide cinematic skyline","duration":5}`
 	service := &serviceStub{submitResult: taskFixture(501, json.RawMessage(body))}
 	mux := mountWithSession(service)
@@ -53,8 +53,8 @@ func TestVideoSubmitTranslate(t *testing.T) {
 }
 
 func TestVideoFetchQueryUsesMediaTaskID(t *testing.T) {
-	// MUTATION: /video/fetch ignores the query id and calls Status with zero or
-	// a different task id; the captured service id below catches the regression.
+	// 变异:/video/fetch 忽略 query 中的 id,并用零值或不同的 task id 调用 Status;
+	// 下面捕获的 service id 会抓到这次回归。
 	service := &serviceStub{statusResult: taskFixture(777, json.RawMessage(`{"prompt":"x"}`))}
 	mux := mountWithSession(service)
 	rec := httptest.NewRecorder()

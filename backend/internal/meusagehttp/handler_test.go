@@ -95,10 +95,9 @@ func (s *generationStoreStub) GetUsageRecordByRequestID(_ context.Context, arg d
 	return dbbilling.GetUsageRecordByRequestIDRow{}, pgx.ErrNoRows
 }
 
-// TestGenerationLookupScopesToAuthenticatedUserByRequestID guards the
-// OpenRouter-compatible single-request attribution path. Mutation check:
-// remove the SQL user_id predicate and the R_B lookup can return user B's row
-// to user A; this test's A-vs-B fixture must stay discriminating.
+// TestGenerationLookupScopesToAuthenticatedUserByRequestID 守护
+// OpenRouter 兼容的单请求归属路径。变异:移除 SQL user_id 谓词后,
+// R_B 查询可能把用户 B 的行返给用户 A;本测试的 A-vs-B fixture 必须保持区分度。
 func TestGenerationLookupScopesToAuthenticatedUserByRequestID(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	userB := auth.Identity{TenantID: 7, APIKeyID: 31, UserID: 41}
@@ -148,7 +147,7 @@ func TestGenerationLookupScopesToAuthenticatedUserByRequestID(t *testing.T) {
 }
 
 func TestGenerationLookupScopesToAuthenticatedAPIKey(t *testing.T) {
-	// 同一 tenant/user 的不同 key 不能互查 generation。Mutation: store/SQL 只按
+	// 同一 tenant/user 的不同 key 不能互查 generation。变异:store/SQL 只按
 	// tenant+user+request_id 查，这个 key-B fixture 会 200 泄漏 ledger-b。
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	rowB := generationUsageRow(2, userA.TenantID, 31, userA.UserID, "R_KEY_B", "ledger-b", "openai")
@@ -286,11 +285,10 @@ func TestMeUsageAuthErrorsMatchInboundAPIKeyPath(t *testing.T) {
 	}
 }
 
-// TestMeUsageExposesPerRequestTokenCounts is the discriminating test for the
-// "relay request log" residual. usage_records already stores token counts and
-// ListUsageRecords already SELECTs them, but the DTO dropped them. Mutation:
-// remove the Tokens mapping (or the DTO field) -> item["tokens"] is absent ->
-// this test goes red.
+// TestMeUsageExposesPerRequestTokenCounts 是 "relay 请求日志" 残留缺口的
+// 区分性测试。usage_records 已存储 token 计数,ListUsageRecords 也已 SELECT 它们,
+// 但 DTO 把它们丢弃了。变异:移除 Tokens 映射(或 DTO 字段)后,
+// item["tokens"] 缺失 -> 本测试变红。
 func TestMeUsageExposesPerRequestTokenCounts(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
@@ -321,12 +319,12 @@ func TestMeUsageExposesPerRequestTokenCounts(t *testing.T) {
 	}
 }
 
-// TestMeUsageExposesStreamShapeAndTiming — request-shape/timing residual for the
-// self-service usage record. usage_records already stores stream / stream_terminated_reason
-// / requested_at and ListUsageRecords already SELECTs them; the DTO dropped them.
-// These are the caller's own request attributes (and are already on the admin view),
-// not third-party PII like ip/user_agent. Mutation: drop any of the three projections
-// (or DTO fields) -> stream reads false / the omitempty string keys go absent -> red.
+// TestMeUsageExposesStreamShapeAndTiming —— 自助用量记录的请求形态/时序残留缺口。
+// usage_records 已存储 stream / stream_terminated_reason / requested_at,
+// ListUsageRecords 也已 SELECT 它们;但 DTO 把它们丢弃了。
+// 这些是调用方自己的请求属性(且已在 admin 视图中),
+// 而非 ip/user_agent 这类第三方 PII。变异:丢掉这三个投影中任一个
+//(或 DTO 字段)-> stream 读出 false / 那些 omitempty 字符串键缺失 -> 变红。
 func TestMeUsageExposesStreamShapeAndTiming(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
@@ -356,11 +354,11 @@ func TestMeUsageExposesStreamShapeAndTiming(t *testing.T) {
 	}
 }
 
-// TestGenerationExposesStreamShapeAndTiming guards the /v1/generation projection of
-// stream/stream_terminated_reason/requested_at. mapGenerationUsageRecord plumbs them
-// from GetUsageRecordByRequestIDRow; the list-path test does not exercise this path.
-// Mutation: zero the gen-path plumb lines -> the single-record response loses the
-// fields (stream reads false, the omitempty keys go absent) -> this test goes red.
+// TestGenerationExposesStreamShapeAndTiming 守护 /v1/generation 对
+// stream/stream_terminated_reason/requested_at 的投影。mapGenerationUsageRecord
+// 把它们从 GetUsageRecordByRequestIDRow 接出;list 路径的测试不会走到本路径。
+// 变异:把 gen 路径的接线行清零 -> 单条记录响应丢失这些字段
+//(stream 读出 false,那些 omitempty 键缺失)-> 本测试变红。
 func TestGenerationExposesStreamShapeAndTiming(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	row := generationUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "R_A", "ledger-a", "anthropic")
@@ -387,19 +385,18 @@ func TestGenerationExposesStreamShapeAndTiming(t *testing.T) {
 	}
 }
 
-// TestMeUsageDoesNotLeakClientIPOrUserAgent — PII boundary guard.
+// TestMeUsageDoesNotLeakClientIPOrUserAgent —— PII 边界守卫。
 //
-// The shared ListUsageRecordsRow now carries ip_address/user_agent (projected
-// into the ADMIN observability list as an audit close-loop). The user-facing
-// "me" usage mapper must NEVER surface these: a relay caller may not see the
-// client IP/UA captured at settlement. This test seeds DISTINCTIVE sentinels on
-// the row and asserts neither the sentinel nor any ip/ua JSON key appears in the
-// me response body.
+// 共享的 ListUsageRecordsRow 现在带有 ip_address/user_agent(作为审计闭环
+// 投影进 ADMIN 可观测列表)。面向用户的 "me" 用量 mapper 绝不能暴露这些:
+// relay 调用方不应看到 settlement 时捕获的客户端 IP/UA。本测试在行上播种
+// 独特的 sentinel,并断言 sentinel 本身以及任何 ip/ua JSON 键都不会出现在
+// me 响应 body 中。
 //
-// Discriminating: the sentinels ("203.0.113.7" / "probe-UA/1.0") never occur in
-// the legitimate me payload (model/cost/tokens/provider/verify_hint), so if the
-// me mapper ever copied either field through, the substring assertion goes red.
-// (Mutation-verified by adding the field to usageRecord + mapUsageRecord.)
+// 区分度:这些 sentinel("203.0.113.7" / "probe-UA/1.0")绝不会出现在合法的
+// me payload(model/cost/tokens/provider/verify_hint)里,因此一旦 me mapper
+// 把任一字段透传出去,子串断言就会变红。
+//(已通过把该字段加进 usageRecord + mapUsageRecord 做变异验证。)
 func TestMeUsageDoesNotLeakClientIPOrUserAgent(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
@@ -424,9 +421,9 @@ func TestMeUsageDoesNotLeakClientIPOrUserAgent(t *testing.T) {
 	if strings.Contains(body, "ip_address") || strings.Contains(body, "user_agent") {
 		t.Fatalf("PII LEAK: me usage response exposed an ip/ua JSON key; body=%s", body)
 	}
-	// client_tool (migration 0137) is also admin-only attribution: the me mapper
-	// shape stays frozen, so neither the value nor the key may appear here. If a
-	// later change adds client_tool to the me surface, this flags it for review.
+	// client_tool(迁移 0137)同样是 admin-only 归属:me mapper 的形态保持冻结,
+	// 因此其值与键都不得出现在这里。若日后改动把 client_tool 加进 me 面,
+	// 本断言会把它标出来供复查。
 	if strings.Contains(body, sentinelTool) || strings.Contains(body, "client_tool") {
 		t.Fatalf("BOUNDARY DRIFT: me usage response exposed client_tool; body=%s", body)
 	}

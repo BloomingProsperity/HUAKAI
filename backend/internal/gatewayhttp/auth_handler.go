@@ -522,8 +522,8 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeAuthError(w, err)
 			return
 		}
-		// PreparePasswordReset validates the token and places the user behind a login barrier before
-		// revocation, so no old-password login can create a fresh session between revoke and commit.
+		// PreparePasswordReset 会校验 token，并在吊销之前把该用户挡在一道登录屏障之后，
+		// 这样在 revoke 与 commit 之间，旧密码登录无法创建出新的 session。
 		revoked, revErr := d.Sessions.Revoke(r.Context(), usersession.RevokeInput{
 			TenantID: subject.TenantID, UserID: subject.ID, Reason: "password_reset",
 		})
@@ -1058,8 +1058,8 @@ func writeLoginThrottled(w http.ResponseWriter, retryAfter time.Duration) {
 	writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many login attempts; please retry later")
 }
 
-// writeEmailSendThrottled is the auth email-send limiter response: 429 + coarse
-// Retry-After, without exposing per-email state or remaining quota.
+// writeEmailSendThrottled 是鉴权邮件发送限流器的响应：429 + 粗粒度的
+// Retry-After，不暴露 per-email 状态或剩余配额。
 func writeEmailSendThrottled(w http.ResponseWriter, retryAfter time.Duration) {
 	if retryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))

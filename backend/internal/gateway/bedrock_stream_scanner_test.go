@@ -228,8 +228,8 @@ func TestBedrockScanner_UnknownMessageTypeTerminates(t *testing.T) {
 }
 
 func TestBedrockScanner_InitialResponseEventSkipped(t *testing.T) {
-	// Smithy Event Stream RPC protocols can send initial-response control events.
-	// They are not Bedrock model output and can be skipped without hiding errors.
+	// Smithy Event Stream RPC 协议可能发送 initial-response 控制事件。
+	// 它们不是 Bedrock 模型输出，可以跳过而不会掩盖错误。
 	control := encodeBedrockFrame(
 		map[string]string{":message-type": "event", ":event-type": "initial-response"},
 		[]byte(`{"requestId":"control"}`),

@@ -44,12 +44,11 @@ func TestTemplateFromProfileFields_Valid(t *testing.T) {
 	}
 }
 
-// MUTATION GUARD: dropping the uint16 range check lets an out-of-range cipher id
-// silently truncate into the ClientHello (corrupt JA3 / broken handshake) ->
-// this assertion (expecting an error) goes red.
+// 变异守卫:去掉 uint16 范围检查会让一个越界的 cipher id 静默截断后写入
+// ClientHello(损坏 JA3 / 破坏握手)-> 这条(期望返回 error 的)断言会变红。
 func TestTemplateFromProfileFields_RejectsOutOfRangeUint16(t *testing.T) {
 	f := validProfileFields()
-	f.CipherSuites = []int{0x1301, 0x10000} // 65536 > uint16 max
+	f.CipherSuites = []int{0x1301, 0x10000} // 65536 > uint16 最大值
 	if _, err := TemplateFromProfileFields(f); err == nil {
 		t.Fatal("expected out-of-range cipher id to fail loud (-> caller falls back to builtin), got nil")
 	}
@@ -57,7 +56,7 @@ func TestTemplateFromProfileFields_RejectsOutOfRangeUint16(t *testing.T) {
 
 func TestTemplateFromProfileFields_RejectsOutOfRangeUint8(t *testing.T) {
 	f := validProfileFields()
-	f.EcPointFormats = []int{256} // > uint8 max
+	f.EcPointFormats = []int{256} // > uint8 最大值
 	if _, err := TemplateFromProfileFields(f); err == nil {
 		t.Fatal("expected out-of-range ec point format to fail loud, got nil")
 	}

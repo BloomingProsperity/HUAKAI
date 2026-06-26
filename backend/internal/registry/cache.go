@@ -1,13 +1,11 @@
-// Package registry: cache stub for Slice 5.
+// 包 registry:为 Slice 5 预留的 cache 桩。
 //
-// Round-2 synthesis (D2 + D13): registry resolves SELECT-only at L0 with
-// NO process cache. Cache lands in Slice 5 along with admin-writer-driven
-// snapshot version bumps; key will be (tenant_id, alias_normalized,
-// registry_version) so a stale entry self-invalidates on the next
-// version-mismatched read.
+// 第二轮综合(D2 + D13):registry 在 L0 仅做 SELECT 解析,「不带」进程内缓存。缓存
+// 随 Slice 5 与 admin-writer 驱动的快照版本号递增一起落地;键将为 (tenant_id,
+// alias_normalized, registry_version),这样陈旧条目会在下一次版本不匹配的读取时自我
+// 失效。
 //
-// This file exists only to reserve the interface surface. Concrete impl
-// is intentionally empty; the resolver does not consult Cache at L0.
+// 本文件仅用于预留接口面。具体实现刻意留空;解析器在 L0 不查询 Cache。
 
 package registry
 
@@ -17,9 +15,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
-// Cache is the interface the resolver will consult once Slice 5 lands.
-// At L0 this is unused — registry.NewPostgresRegistry constructs a
-// noopCache by default, so all Resolves go straight to Postgres.
+// Cache 是 Slice 5 落地后解析器将查询的接口。在 L0 它未被使用——
+// registry.NewPostgresRegistry 默认构造一个 noopCache,因此所有 Resolve 都直接走
+// Postgres。
 type Cache interface {
 	Get(ctx context.Context, tenantID int64, aliasLower string, version int64) (router.ResolvedModel, bool)
 	Put(ctx context.Context, tenantID int64, aliasLower string, version int64, m router.ResolvedModel)

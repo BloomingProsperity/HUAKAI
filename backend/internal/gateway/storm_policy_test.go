@@ -26,7 +26,7 @@ func TestStormPolicy_HighBudgetAdmits(t *testing.T) {
 
 func TestStormPolicy_GlobalDenialRefundsEndpoint(t *testing.T) {
 	p := NewStormPolicy(StormPolicyConfig{
-		GlobalRate: 0, GlobalBurst: 0, // global: never
+		GlobalRate: 0, GlobalBurst: 0, // 全局:永不放行
 		PerEndpointRate: 100, PerEndpointBurst: 5,
 	})
 	now := stormTime()
@@ -39,7 +39,7 @@ func TestStormPolicy_GlobalDenialRefundsEndpoint(t *testing.T) {
 	if err != nil || val != nil {
 		t.Fatalf("denied call should not run fn: val=%v err=%v", val, err)
 	}
-	// Endpoint bucket should still be at full burst (refunded after global denial)
+	// endpoint 桶应仍处于满 burst(全局拒绝后已退还)
 	eb := p.endpointBucket("ep-A")
 	tokens, _ := eb.Snapshot()
 	if tokens != 5 {
@@ -50,14 +50,14 @@ func TestStormPolicy_GlobalDenialRefundsEndpoint(t *testing.T) {
 func TestStormPolicy_EndpointDenialDoesNotConsumeGlobal(t *testing.T) {
 	p := NewStormPolicy(StormPolicyConfig{
 		GlobalRate: 100, GlobalBurst: 10,
-		PerEndpointRate: 0, PerEndpointBurst: 0, // endpoint: never
+		PerEndpointRate: 0, PerEndpointBurst: 0, // endpoint:永不放行
 	})
 	now := stormTime()
 	_, _, denied := p.Acquire(now, "acct-1", "ep-A", func() (any, error) { return nil, nil })
 	if denied != DenyEndpoint {
 		t.Fatalf("denied=%s; want DenyEndpoint", denied)
 	}
-	// Global bucket should be untouched
+	// 全局桶应保持不动
 	tokens, _ := p.globalBucket.Snapshot()
 	if tokens != 10 {
 		t.Fatalf("global must not consume on endpoint denial; tokens=%.1f want 10", tokens)
@@ -77,7 +77,7 @@ func TestStormPolicy_FailedFnKeepsTokensConsumed(t *testing.T) {
 	if !errors.Is(err, wantErr) || denied != DenyNone {
 		t.Fatalf("err=%v denied=%s; want vendor-down + DenyNone", err, denied)
 	}
-	// Failed fn must NOT refund — second call should be denied (bucket empty)
+	// 失败的 fn 必须不退还 —— 第二次调用应被拒绝(桶已空)
 	_, _, denied2 := p.Acquire(now, "acct-2", "ep-A", func() (any, error) {
 		return "should-not-run", nil
 	})
@@ -88,7 +88,7 @@ func TestStormPolicy_FailedFnKeepsTokensConsumed(t *testing.T) {
 
 func TestStormPolicy_SameAccountDedupsToOneFnCall(t *testing.T) {
 	p := NewStormPolicy(StormPolicyConfig{
-		GlobalRate: 1, GlobalBurst: 1, // only 1 token total
+		GlobalRate: 1, GlobalBurst: 1, // 总共只有 1 个令牌
 		PerEndpointRate: 1, PerEndpointBurst: 1,
 	})
 	now := stormTime()
@@ -120,7 +120,7 @@ func TestStormPolicy_SameAccountDedupsToOneFnCall(t *testing.T) {
 			t.Fatalf("follower got wrong result: %v", r)
 		}
 	}
-	// Critical: only 1 token should be consumed (followers don't pay)
+	// 关键:应只消耗 1 个令牌(跟随者不付费)
 	gtokens, _ := p.globalBucket.Snapshot()
 	if gtokens != 0 {
 		t.Fatalf("dedup: global should consume only 1; tokens=%.1f", gtokens)
@@ -158,17 +158,17 @@ func TestStormPolicy_DifferentEndpointsIndependentBudget(t *testing.T) {
 		PerEndpointRate: 0.1, PerEndpointBurst: 1,
 	})
 	now := stormTime()
-	// Drain ep-A
+	// 耗尽 ep-A
 	_, _, d1 := p.Acquire(now, "a1", "ep-A", func() (any, error) { return 1, nil })
 	if d1 != DenyNone {
 		t.Fatalf("ep-A first acquire denied=%s", d1)
 	}
-	// ep-A second should fail
+	// ep-A 第二次应失败
 	_, _, d2 := p.Acquire(now, "a2", "ep-A", func() (any, error) { return 2, nil })
 	if d2 != DenyEndpoint {
 		t.Fatalf("ep-A second got %s; want DenyEndpoint", d2)
 	}
-	// ep-B independent — should succeed
+	// ep-B 独立 —— 应成功
 	_, _, d3 := p.Acquire(now, "a3", "ep-B", func() (any, error) { return 3, nil })
 	if d3 != DenyNone {
 		t.Fatalf("ep-B independent budget; got %s", d3)
@@ -181,9 +181,9 @@ func TestStormPolicy_NextEligibleAtMaxOfTwoBuckets(t *testing.T) {
 		PerEndpointRate: 2, PerEndpointBurst: 1,
 	})
 	now := stormTime()
-	// Drain both
+	// 两个桶都耗尽
 	_, _, _ = p.Acquire(now, "a", "ep-A", func() (any, error) { return nil, nil })
-	// Now: global needs 1.0s, endpoint needs 0.5s → max = 1.0s
+	// 此时:global 需要 1.0s,endpoint 需要 0.5s → 取最大值 = 1.0s
 	next := p.NextEligibleAt(now, "ep-A")
 	gNext := p.globalBucket.NextAvailableAt(now)
 	if !next.Equal(gNext) {
@@ -192,7 +192,7 @@ func TestStormPolicy_NextEligibleAtMaxOfTwoBuckets(t *testing.T) {
 }
 
 func TestStormPolicy_NextEligibleAtZeroPropagation(t *testing.T) {
-	// Global rate 0 → empty bucket NextAvailable=zero
+	// 全局速率为 0 → 空桶的 NextAvailable=zero
 	p := NewStormPolicy(StormPolicyConfig{
 		GlobalRate: 0, GlobalBurst: 0,
 		PerEndpointRate: 100, PerEndpointBurst: 100,

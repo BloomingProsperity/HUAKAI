@@ -316,9 +316,9 @@ func TestResponsesRoute200RoundTrip(t *testing.T) {
 }
 
 func TestCodexResponsesIngressRouted(t *testing.T) {
-	// MUTATION: leave /backend-api/codex/responses out of
-	// ClientProtocolByIngressPath; validateClientProtocol returns 404
-	// unknown_route and the Responses dispatcher is never called.
+	// 变异：把 /backend-api/codex/responses 从 ClientProtocolByIngressPath 里
+	// 漏掉；validateClientProtocol 会返回 404 unknown_route，Responses dispatcher
+	// 永不被调用。
 	enableHCSFDispatchForTest(t)
 	const codexPath = "/backend-api/codex/responses"
 	dispatcher := &mockCanonicalBufferedDispatcher{}
@@ -377,8 +377,8 @@ func TestResponsesFamilySetEndpointFamily(t *testing.T) {
 }
 
 func TestCodexResponsesBilled(t *testing.T) {
-	// MUTATION: bypass the normal Responses settle path for the Codex ingress;
-	// the HTTP response can still be 200 but no SettleRequest is recorded.
+	// 变异：让 Codex ingress 绕过正常的 Responses settle 路径；HTTP 响应仍可能
+	// 是 200，但不会记录任何 SettleRequest。
 	enableHCSFDispatchForTest(t)
 	const codexPath = "/backend-api/codex/responses"
 	dispatcher := &mockCanonicalBufferedDispatcher{}
@@ -408,8 +408,8 @@ func TestCodexResponsesBilled(t *testing.T) {
 }
 
 func TestCodexResponsesAuthRequired(t *testing.T) {
-	// MUTATION: route Codex ingress around NewResponsesHandler auth; the mock
-	// dispatcher would be called and the response would be 200 instead of 401.
+	// 变异：让 Codex ingress 绕过 NewResponsesHandler 的鉴权；mock dispatcher
+	// 会被调用，响应会变成 200 而非 401。
 	enableHCSFDispatchForTest(t)
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	d := responsesClientAdapterDeps(t)
@@ -512,8 +512,8 @@ func TestSessionHashHonorsExplicitClientSessionID(t *testing.T) {
 	if gotA == "" || gotB == "" {
 		t.Fatalf("explicit session hash must be non-empty: %q %q", gotA, gotB)
 	}
-	// MUTATION: ignore the explicit id and always use the prefix hash; these
-	// distinct prompt prefixes would produce different sticky session hashes.
+	// 变异：忽略显式 id、总是用 prefix hash；这些不同的 prompt 前缀会产生
+	// 不同的 sticky session hash。
 	if gotA != gotB {
 		t.Fatalf("same X-Session-ID produced different SessionHash values: %q vs %q", gotA, gotB)
 	}
@@ -542,8 +542,8 @@ func TestSessionHashFallbackUnchanged(t *testing.T) {
 	if len(selector.requests) != 1 {
 		t.Fatalf("selector requests = %d; want 1", len(selector.requests))
 	}
-	// MUTATION: always take the explicit-id hash path, even when the id is
-	// absent; the empty-id hash would differ from the pre-change prompt hash.
+	// 变异：即便 id 缺失也总走显式 id 的 hash 路径；空 id 的 hash 会与改动前的
+	// prompt hash 不同。
 	if got := selector.requests[0].SessionHash; got != want {
 		t.Fatalf("selector SessionHash=%q want unchanged prompt hash %q", got, want)
 	}
@@ -583,8 +583,8 @@ func TestAffinityRulesOverrideDefaultSessionHashWhenConfigured(t *testing.T) {
 	if len(selector.requests) != 1 {
 		t.Fatalf("selector requests = %d; want 1", len(selector.requests))
 	}
-	// MUTATION: keep using the legacy requestSessionHash cascade before
-	// affinity rules; this would return the client-session hash instead.
+	// 变异：在 affinity 规则之前仍沿用旧的 requestSessionHash 级联；这会改而
+	// 返回 client-session hash。
 	if got := selector.requests[0].SessionHash; got != "cache:rule-key" {
 		t.Fatalf("selector SessionHash=%q want cache:rule-key", got)
 	}
@@ -619,8 +619,8 @@ func TestAffinityRulesNoMatchFallsBackToExistingSessionHash(t *testing.T) {
 	if len(selector.requests) != 1 {
 		t.Fatalf("selector requests = %d; want 1", len(selector.requests))
 	}
-	// MUTATION: treat a configured but unmatched rule set as authoritative;
-	// this would drop or replace the old prompt-hash fallback.
+	// 变异：把一个已配置但未命中的规则集当作权威；这会丢弃或替换掉旧的
+	// prompt-hash 回退。
 	if got := selector.requests[0].SessionHash; got != want {
 		t.Fatalf("selector SessionHash=%q want existing fallback %q", got, want)
 	}
@@ -644,8 +644,8 @@ func TestSessionHashHeaderPriority(t *testing.T) {
 			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
 		}
 		want := expectedClientSessionHashForTest("header-thread")
-		// MUTATION: prefer body conversation_id over X-Session-ID; the observed
-		// sticky hash would equal the body-thread hash instead of header-thread.
+		// 变异：把 body 里的 conversation_id 置于 X-Session-ID 之上；观测到的
+		// sticky hash 会变成 body-thread 的 hash 而非 header-thread 的。
 		if got := selector.requests[0].SessionHash; got != want {
 			t.Fatalf("selector SessionHash=%q want X-Session-ID hash %q", got, want)
 		}
@@ -666,8 +666,8 @@ func TestSessionHashHeaderPriority(t *testing.T) {
 			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
 		}
 		want := expectedClientSessionHashForTest("body-thread")
-		// MUTATION: accept control characters in the header id; the observed
-		// sticky hash would be derived from the invalid header value.
+		// 变异：接受 header id 里的控制字符；观测到的 sticky hash 会从这个
+		// 非法 header 值派生。
 		if got := selector.requests[0].SessionHash; got != want {
 			t.Fatalf("selector SessionHash=%q want body conversation_id hash %q", got, want)
 		}
@@ -689,9 +689,9 @@ func TestSessionHashHeaderPriority(t *testing.T) {
 			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
 		}
 		want := expectedClientSessionHashForTest(sessionID)
-		// MUTATION: skip metadata.user_id or hash the full user id instead of
-		// the Claude-Code session suffix; the session hash would fall back to
-		// prompt hash or use a different client-session hash.
+		// 变异：跳过 metadata.user_id，或对完整 user id 而非 Claude-Code 的
+		// session 后缀做 hash；session hash 会回退到 prompt hash 或用上一个
+		// 不同的 client-session hash。
 		if got := selector.requests[0].SessionHash; got != want {
 			t.Fatalf("selector SessionHash=%q want metadata.user_id session hash %q", got, want)
 		}
@@ -730,8 +730,8 @@ func TestSessionHashHeaderPriority(t *testing.T) {
 			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
 		}
 		want = expectedClientSessionHashForTest("primary-thread")
-		// MUTATION: move X-Client-Request-Id ahead of existing session headers;
-		// it would steal priority from X-Session-ID here.
+		// 变异：把 X-Client-Request-Id 排在既有 session header 之前；它会在
+		// 这里抢走 X-Session-ID 的优先级。
 		if got := selector.requests[0].SessionHash; got != want {
 			t.Fatalf("selector SessionHash=%q want existing header priority hash %q", got, want)
 		}
@@ -756,8 +756,8 @@ func TestSessionHashHeaderPriority(t *testing.T) {
 		if len(selector.requests) != 1 {
 			t.Fatalf("selector requests = %d; want 1", len(selector.requests))
 		}
-		// MUTATION: accept an over-length explicit id; the observed sticky hash
-		// would be derived from session_id instead of the existing prompt hash.
+		// 变异：接受一个超长的显式 id；观测到的 sticky hash 会从 session_id
+		// 派生，而非沿用既有的 prompt hash。
 		if got := selector.requests[0].SessionHash; got != want {
 			t.Fatalf("selector SessionHash=%q want prompt hash fallback %q", got, want)
 		}
@@ -787,9 +787,8 @@ func TestHandler_WaitPlanReturnsQueueWait(t *testing.T) {
 }
 
 func TestHandler_ReserveClaimRaceReturns409RetryAfterWithoutAbort(t *testing.T) {
-	// Mutation check: deleting the reserve-phase ErrClaimRace branch falls
-	// through to the generic reserve_error path, yielding 500 without
-	// Retry-After; the 409 assertion below must catch that regression.
+	// 变异：删掉 reserve 阶段的 ErrClaimRace 分支会落到通用 reserve_error 路径，
+	// 产出不带 Retry-After 的 500；下面的 409 断言必须抓住这个回归。
 	settler := &stubSettler{}
 	d := minimalDeps()
 	d.ClaimGate = reserveClaimRaceClaimGate{}
@@ -817,9 +816,8 @@ func TestHandler_ReserveClaimRaceReturns409RetryAfterWithoutAbort(t *testing.T) 
 }
 
 func TestHandler_QuotaDenyAbortsBillingClaimAndReturns429(t *testing.T) {
-	// Mutation check: deleting the quota deny branch lets the request continue
-	// through the buffered happy path, producing 200 and no quota_denied billing
-	// abort; both assertions below must turn red.
+	// 变异：删掉 quota deny 分支会让请求继续走 buffered 的顺利路径，产出 200
+	// 且没有 quota_denied 计费 abort；下面两条断言都必须变红。
 	enableHCSFDispatchForTest(t)
 	claimGate := &recordingClaimGate{claimID: 99001}
 	quotaReserver := &recordingQuotaReserver{
@@ -883,7 +881,7 @@ func TestHandler_QuotaDenyAbortsBillingClaimAndReturns429(t *testing.T) {
 func TestHandler_QuotaReserveFeedsInputTokenEstimate(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	claimGate := &recordingClaimGate{claimID: 99010}
-	quotaReserver := &recordingQuotaReserver{} // allow
+	quotaReserver := &recordingQuotaReserver{} // 放行
 	d := clientAdapterDeps(t)
 	d.ClaimGate = claimGate
 	d.QuotaReserver = quotaReserver
@@ -892,8 +890,8 @@ func TestHandler_QuotaReserveFeedsInputTokenEstimate(t *testing.T) {
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 	invokeHandlerPath(t, d, "/v1/chat/completions", body)
 
-	// gpt-4o flows through the real tokenizer; the same model the handler reads
-	// from the body must be used here so the estimate matches the reserved tokens.
+	// gpt-4o 走真实 tokenizer；这里必须用 handler 从 body 读到的同一个 model，
+	// 估值才能与预留的 token 数对上。
 	want := int64(estimateInputTokens("gpt-4o", []byte(body)))
 	if want <= 0 {
 		t.Fatalf("fixture non-discriminating: estimateInputTokens=%d must be >0", want)
@@ -986,9 +984,8 @@ func TestHandler_QuotaDenyEmitsWindowKind(t *testing.T) {
 }
 
 func TestHandler_QuotaReserveInfraErrorFailsOpenAndKeepsBillingClaim(t *testing.T) {
-	// Mutation check: restoring the old quota_reserve_error abort+500 branch
-	// makes this return 500 and increments abortCalls, so the status and abort
-	// assertions must turn red.
+	// 变异：恢复旧的 quota_reserve_error abort+500 分支会让这里返回 500 并使
+	// abortCalls 自增，于是状态与 abort 断言都必须变红。
 	enableHCSFDispatchForTest(t)
 	before := quotaReserveFailedOpenCount(t)
 	claimGate := &recordingClaimGate{claimID: 99004}
@@ -1388,8 +1385,8 @@ func TestPrepareRoute_ThreadsBodyDerivedCapabilities(t *testing.T) {
 		t.Fatalf("baseline arm RequiredCapabilities should be empty; got %v", baseCaps)
 	}
 
-	// Self-proving: the two arms MUST differ. Without the :313 wiring both
-	// would collapse to {stream}/{} and this guard goes red.
+	// 自证：两个分支必须不同。没有 :313 处的接线，两者都会塌缩成 {stream}/{}，
+	// 这个守卫就会变红。
 	if len(richCaps) == len(baseCaps) {
 		t.Fatalf("rich and baseline arms must differ; rich=%v baseline=%v", richCaps, baseCaps)
 	}

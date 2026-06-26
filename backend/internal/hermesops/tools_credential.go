@@ -31,7 +31,7 @@ type CredentialDiagnoseDeps struct {
 // CredentialDiagnoseSpec 构建只读 credential_diagnose 工具。它在不持久化任何东西的前提下
 // (dry-run)校验某个 provider account 已存储的凭证,并把该租户的 SELECT-only 续期状态合并进来。
 //
-// Args: { "account_id": <int> }  (required)
+// 入参: { "account_id": <int> }  (必填)
 //
 // 结果 summary(仅系统诊断):dry-run 的 ok/error_class,以及指定 account 的续期 state /
 // 失败分类 / 失败计数 —— 不含任何密钥、凭证字节、refresh token。

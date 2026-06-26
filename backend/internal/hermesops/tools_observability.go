@@ -27,7 +27,7 @@ type ObservabilityDeps struct {
 // 把某租户的 usage records + billing claims 关联起来,只返回诊断结构:end/status 分类、
 // token 计数、stream 状态、attempt seq、claim 状态 —— 不含费用金额、原始报文、prompt。
 //
-// Args: { "request_id": <string>, "claim_id": <int, optional> }
+// 参数: { "request_id": <string>, "claim_id": <int, 可选> }
 func RequestDiagnoseSpec(deps ObservabilityDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolRequestDiagnose,
@@ -145,7 +145,7 @@ func claimDiagnosticShape(c dbbilling.ListBillingClaimsRow) map[string]any {
 // 只投影系统诊断字段 —— 它显式丢弃自由文本的 payload blob 和 reason 字符串
 // (可能携带非诊断内容),只露出 event_class / event_type / severity / ids。
 //
-// Args: { "event_class": <string, optional>, "severity": <string, optional> }
+// 参数: { "event_class": <string, 可选>, "severity": <string, 可选> }
 func AuditLookupSpec(deps ObservabilityDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolAuditLookup,
@@ -208,7 +208,7 @@ func auditDiagnosticShape(e dbbilling.ListAuditEventsRow) map[string]any {
 // end_class 趋势(仅系统诊断枚举)。它绝不读取或暴露原始报文、prompt 或 completion ——
 // 它只统计隐私边界已经允许的现有分类枚举。
 //
-// Args: none(分析该租户最近的用量窗口)。
+// 参数: 无(分析该租户最近的用量窗口)。
 func LogAnalyzeSpec(deps ObservabilityDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolLogAnalyze,

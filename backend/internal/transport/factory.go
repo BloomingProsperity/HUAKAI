@@ -68,8 +68,8 @@ func TransportErrorClassOf(err error) TransportErrorClass {
 // standardRoundTripper），以剥离 HTTP_PROXY/HTTPS_PROXY env 对账号绑定
 // 代理隔离的破坏。
 type Factory struct {
-	// SidecarSocketPath enables the Rust/BoringSSL TLS sidecar for mimicry
-	// modes. Empty keeps the existing Go uTLS path for backwards compatibility.
+	// SidecarSocketPath 为 mimicry 模式启用 Rust/BoringSSL TLS sidecar。
+	// 为空则保留既有的 Go uTLS 路径以向后兼容。
 	SidecarSocketPath string
 	// SidecarFallbackEnabled 只有显式打开时才允许 Rust sidecar 不可用后回退
 	// Go-native mimicry transport。默认 false，生产 fail-closed，防静默丢失
@@ -96,8 +96,8 @@ type Factory struct {
 	sidecarByMode    map[TransportMode]http.RoundTripper
 	sidecarMandatory map[TransportMode]bool
 	sidecarFallbacks atomic.Uint64
-	// sidecarProbeTimeout bounds startup/request-time sidecar readiness checks.
-	// Zero uses defaultSidecarProbeTimeout.
+	// sidecarProbeTimeout 限定启动时/请求时的 sidecar 就绪检查时长。
+	// 为零则使用 defaultSidecarProbeTimeout。
 	sidecarProbeTimeout time.Duration
 	sidecarProbe        func(context.Context, string, mimicry.TransportMode, string) error
 	// diagnostics 是仅做连通性诊断的 RoundTripper。nil 表示尚未实施。

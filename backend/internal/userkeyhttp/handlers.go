@@ -48,7 +48,7 @@ func MountUserAPIKeyRoutes(r chi.Router, d Deps) {
 	r.Post("/batch-revoke", newBatchRevokeHandler(d))
 }
 
-// ---- request / response DTO ----
+// ---- request / response DTO 定义 ----
 
 type createRequest struct {
 	Name        string  `json:"name"`
@@ -223,7 +223,7 @@ func newRevokeHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// ---- KEY-026: PATCH partial update ----
+// ---- KEY-026: PATCH 部分更新 ----
 
 type patchRequest struct {
 	Name   *string `json:"name,omitempty"`
@@ -301,7 +301,7 @@ func newPatchHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// ---- helpers ----
+// ---- 辅助函数 ----
 
 // resolveSession 取 session ident;Service nil → 503;无 session → 401。
 //

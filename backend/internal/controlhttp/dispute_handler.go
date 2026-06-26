@@ -1,4 +1,4 @@
-// Package controlhttp exposes F-AUDIT-001 cost dispute HTTP endpoints.
+// Package controlhttp 暴露 F-AUDIT-001 费用争议 HTTP 端点。
 package controlhttp
 
 import (

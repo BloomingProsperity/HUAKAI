@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// ListedModel is the minimal OpenAI-compatible discovery projection for a
-// model alias visible to a tenant.
+// ListedModel 是某 tenant 可见的 model alias 的最小化、OpenAI 兼容的
+// 发现投影。
 type ListedModel struct {
 	ID              string
 	CreatedAt       time.Time
@@ -113,8 +113,8 @@ WHERE EXISTS (
 ORDER BY sort_key ASC, id ASC;
 `
 
-// ListModels returns the OpenAI-compatible model discovery projection for one
-// tenant. It is SELECT-only and does not read credentials or billing state.
+// ListModels 返回单个 tenant 的 OpenAI 兼容 model 发现投影。
+// 它只做 SELECT,不读取凭证或计费状态。
 func (r *PostgresRegistry) ListModels(ctx context.Context, tenantID int64) ([]ListedModel, error) {
 	if r == nil || r.pool == nil {
 		return nil, ErrRegistryBackend

@@ -9,15 +9,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/thinkingnorm"
 )
 
-// resolveModelWithEffortSuffix resolves the requested model, folding in
-// registry-aware effort-suffix normalization. It first resolves the FULL
-// requested name (the existing routing/pricing resolution). ONLY when that name
-// is unknown does it consider a reasoning/thinking effort suffix
-// (e.g. "gpt-5-thinking-high"): it strips to the base, and if the base resolves
-// as a reasoning-capable model, normalizes ex.req.Model + ex.body in place and
-// re-resolves the base. A real shipped model that merely ends in an
-// effort-looking token (e.g. "yi-medium") resolves as the full name on the first
-// call, so it is never touched and no extra registry lookup is made.
+// resolveModelWithEffortSuffix 解析请求的模型,并融入 registry 感知的 effort 后缀
+// 归一化。它先解析「完整」的请求名(沿用已有的路由/计价解析)。「仅当」该名称
+// 未知时,才考虑 reasoning/thinking 的 effort 后缀(例如 "gpt-5-thinking-high"):
+// 剥离到基名,若基名解析为具备 reasoning 能力的模型,则就地归一化 ex.req.Model 与
+// ex.body 并重新解析基名。一个真实上架的模型若只是恰好以看似 effort 的 token 结尾
+// (例如 "yi-medium"),在首次调用时即作为完整名解析成功,因此从不被改动,也不会发起
+// 额外的 registry 查询。
 func (ex *chatExecution) resolveModelWithEffortSuffix() (registry.Resolved, error) {
 	resolved, err := ex.d.Registry.ResolveModel(ex.ctx, ex.req.Model, ex.ident.TenantID)
 	if errors.Is(err, registry.ErrUnknownModel) && ex.applyEffortSuffixNormalization() {
@@ -26,19 +24,16 @@ func (ex *chatExecution) resolveModelWithEffortSuffix() (registry.Resolved, erro
 	return resolved, err
 }
 
-// applyEffortSuffixNormalization is the registry-aware effort-suffix hook, run
-// from prepareRoute ONLY after the full requested model name has already failed
-// to resolve (registry.ErrUnknownModel). It strips a recognized reasoning/
-// thinking effort suffix off ex.req.Model, and — only when the BASE name
-// resolves as a reasoning-capable model — rewrites ex.req.Model to the base and
-// ex.body so the canonical thinking/reasoning parameter (selected by the INGRESS
-// protocol, not the model family) carries that effort upstream. It returns true
-// iff it mutated the request, so the caller re-resolves with the base.
+// applyEffortSuffixNormalization 是 registry 感知的 effort 后缀钩子,「仅」在完整
+// 请求模型名已经解析失败(registry.ErrUnknownModel)之后由 prepareRoute 调用。它
+// 从 ex.req.Model 上剥离一个识别出的 reasoning/thinking effort 后缀,并「仅当」
+// 「基名」解析为具备 reasoning 能力的模型时,把 ex.req.Model 改写为基名,并改写
+// ex.body,使规范的 thinking/reasoning 参数(由「ingress」协议而非模型族选定)把该
+// effort 携带到上游。当且仅当它改动了请求时返回 true,以便调用方用基名重新解析。
 //
-// Cost shape: the cheap pre-check (HasEffortSuffix) short-circuits with ZERO
-// registry calls when the name has no effort token. A registry lookup for the
-// base happens only on the suffix-bearing, full-unresolved path; the resolved
-// common path and the no-suffix path make NO extra registry calls.
+// 成本形态:廉价的前置检查(HasEffortSuffix)在名称不含 effort token 时以「零」次
+// registry 调用短路返回。仅在带后缀且完整名未解析的路径上才会对基名发起一次
+// registry 查询;已解析的常规路径与无后缀路径都「不」发起额外的 registry 调用。
 func (ex *chatExecution) applyEffortSuffixNormalization() bool {
 	if !thinkingnorm.HasEffortSuffix(ex.req.Model) {
 		return false
@@ -58,20 +53,16 @@ func (ex *chatExecution) applyEffortSuffixNormalization() bool {
 	return true
 }
 
-// ingressProtocolForEffort maps the gateway's ingress client protocol to the
-// effort-parameter shape the downstream canonical parser for that ingress reads.
-// The emitted parameter is keyed off the INGRESS PATH's protocol (which selects
-// the request parser), NOT the model-name family: the openai chat-completions
-// ingress parser reads a top-level reasoning_effort string; the anthropic
-// messages ingress parser reads a top-level thinking object.
+// ingressProtocolForEffort 把网关的 ingress 客户端协议映射到该 ingress 下游规范解析
+// 器所读取的 effort 参数形态。所发出的参数以「ingress 路径」的协议(它选定请求解析
+// 器)为准,而「非」模型名族:openai chat-completions ingress 解析器读取顶层的
+// reasoning_effort 字符串;anthropic messages ingress 解析器读取顶层的 thinking 对象。
 //
-// The OpenAI Responses ingress is deliberately left unmodeled (IngressOther): its
-// canonical parser consumes a NESTED reasoning object, not a top-level
-// reasoning_effort, so emitting the chat shape there would be silently dropped
-// during canonicalization. Leaving it unmodeled means a Responses request with an
-// effort suffix is not rewritten and behaves exactly as before (no silent effort
-// loss). Native Responses effort wiring is a follow-up. Any other ingress is also
-// left unmodeled so its request is never rewritten.
+// OpenAI Responses ingress 被刻意不建模(IngressOther):它的规范解析器消费的是
+// 「嵌套」的 reasoning 对象,而非顶层 reasoning_effort,所以在那里发出 chat 形态会在
+// 规范化过程中被静默丢弃。不建模意味着带 effort 后缀的 Responses 请求不会被改写,行为
+// 与改动前完全一致(不会静默丢失 effort)。原生 Responses effort 接线是后续工作。任何
+// 其它 ingress 也都不建模,因此其请求从不被改写。
 func ingressProtocolForEffort(p proto.ClientProtocol) thinkingnorm.IngressProtocol {
 	switch p {
 	case proto.ClientProtocolOpenAIChat:
@@ -83,12 +74,11 @@ func ingressProtocolForEffort(p proto.ClientProtocol) thinkingnorm.IngressProtoc
 	}
 }
 
-// effortSuffixResolver adapts the model registry to thinkingnorm.ModelResolver.
-// It answers "does this name resolve, and is it reasoning/thinking capable?" by
-// running the same ResolveModel the route preparation already uses, so a base
-// name is judged by exactly the routing/pricing registry view. Resolution errors
-// (unknown / disabled / no-access / transient) all mean "not a usable base", so
-// the effort suffix is left in place and the request 404s as before.
+// effortSuffixResolver 把模型 registry 适配为 thinkingnorm.ModelResolver。它通过运行
+// 路由准备已经使用的同一个 ResolveModel,回答「这个名称能否解析,以及是否具备
+// reasoning/thinking 能力?」,因此基名是按完全相同的路由/计价 registry 视角来判定的。
+// 解析错误(unknown / disabled / no-access / transient)都意味着「不是可用的基名」,
+// 因此 effort 后缀原样保留,请求仍按改动前一样返回 404。
 type effortSuffixResolver struct {
 	ctx      context.Context
 	registry registry.Registry
@@ -106,10 +96,9 @@ func (r effortSuffixResolver) Resolve(name string) (resolves bool, reasoningCapa
 	return true, hasReasoningCapability(resolved.Capabilities)
 }
 
-// hasReasoningCapability reports whether a resolved model's capability list
-// marks it reasoning/thinking capable. Both registry capability vocabularies are
-// honored: "reasoning" (public discovery descriptor) and "thinking" (HCSF
-// capability family).
+// hasReasoningCapability 报告已解析模型的能力列表是否标记其具备 reasoning/thinking
+// 能力。两套 registry 能力词汇都被认可:"reasoning"(公开发现描述符)与 "thinking"
+// (HCSF 能力族)。
 func hasReasoningCapability(capabilities []string) bool {
 	for _, c := range capabilities {
 		if c == "reasoning" || c == "thinking" {

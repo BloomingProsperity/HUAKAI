@@ -911,7 +911,7 @@ func TestAT_SECURITY_W1_O1_StormControllerAccountScopeMissingStateReturnsError(t
 }
 
 // =====================================================================
-// Smoke
+// 冒烟测试
 // =====================================================================
 
 func TestPackageCompiles(t *testing.T) { // 冒烟: 包能编译

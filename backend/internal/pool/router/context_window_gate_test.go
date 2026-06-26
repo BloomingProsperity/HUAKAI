@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// ctxWindowReq builds a SelectionRequest carrying the three context-window
-// inputs the gate reads.
+// ctxWindowReq 构造一个携带 gate 所读取的三个 context-window
+// 输入的 SelectionRequest。
 func ctxWindowReq(estimate, window, maxOut int) SelectionRequest {
 	return SelectionRequest{
 		TenantID:             1,
@@ -17,16 +17,16 @@ func ctxWindowReq(estimate, window, maxOut int) SelectionRequest {
 	}
 }
 
-// TestContextWindowGate_OverBudget_Excluded proves the gate adds the reserved
-// output room to the input estimate before comparing against the window.
+// TestContextWindowGate_OverBudget_Excluded 证明 gate 在与 window 比较前,
+// 会把预留的输出空间加到输入估算值上。
 //
-// Mutation guard: drop the "+ MaxOutputTokens" term and 195000 alone (< 200000)
-// wrongly allows the second case → red. Correct vs broken differ exactly on the
-// output-reservation term.
+// 变异:去掉 "+ MaxOutputTokens" 这一项后,单凭 195000(< 200000)
+// 就会错误地放行第二个用例 → 变红。正确与被破坏的差异恰好就在
+// 输出预留这一项上。
 func TestContextWindowGate_OverBudget_Excluded(t *testing.T) {
 	gate := ContextWindowGate{}
 
-	// 190000 input + 8192 output = 198192 < 200000 → allow.
+	// 190000 输入 + 8192 输出 = 198192 < 200000 → 放行。
 	ok, _, err := gate.Allow(context.Background(), nil, ctxWindowReq(190000, 200000, 8192))
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestContextWindowGate_OverBudget_Excluded(t *testing.T) {
 		t.Fatal("198192 fits in 200000 → must allow")
 	}
 
-	// 195000 input + 8192 output = 203192 > 200000 → exclude.
+	// 195000 输入 + 8192 输出 = 203192 > 200000 → 剔除。
 	ok, reason, err := gate.Allow(context.Background(), nil, ctxWindowReq(195000, 200000, 8192))
 	if err != nil {
 		t.Fatal(err)
@@ -48,11 +48,11 @@ func TestContextWindowGate_OverBudget_Excluded(t *testing.T) {
 	}
 }
 
-// TestContextWindowGate_UnknownWindow_FailOpen proves a zero/unset per-model
-// window never benches an account, however large the estimate.
+// TestContextWindowGate_UnknownWindow_FailOpen 证明 per-model window 为零/未设置时,
+// 无论估算值多大都不会把账号下架。
 //
-// Mutation guard: change the window<=0 guard to treat 0 as a real cap and the
-// huge estimate would overflow 0 → red.
+// 变异:把 window<=0 的护栏改成将 0 当作真实上限处理,巨大的估算值就会
+// 溢出 0 → 变红。
 func TestContextWindowGate_UnknownWindow_FailOpen(t *testing.T) {
 	gate := ContextWindowGate{}
 	ok, _, err := gate.Allow(context.Background(), nil, ctxWindowReq(10_000_000, 0, 0))
@@ -64,15 +64,15 @@ func TestContextWindowGate_UnknownWindow_FailOpen(t *testing.T) {
 	}
 }
 
-// TestContextWindowGate_NoEstimate_FailOpen proves a zero/unwired estimate never
-// benches an account, even when the reserved output alone exceeds the window.
+// TestContextWindowGate_NoEstimate_FailOpen 证明估算值为零/未接线时不会把账号下架,
+// 即便单是预留的输出就已超过 window。
 //
-// Mutation guard: remove the estimate<=0 short-circuit so 0+output (output>cap)
-// overflows → red.
+// 变异:移除 estimate<=0 的短路,使 0+输出(输出>上限)
+// 溢出 → 变红。
 func TestContextWindowGate_NoEstimate_FailOpen(t *testing.T) {
 	gate := ContextWindowGate{}
-	// estimate=0, window=1000, output=5000: without the estimate short-circuit,
-	// 0+5000 > 1000 would wrongly exclude.
+	// estimate=0, window=1000, output=5000:若没有估算值短路,
+	// 0+5000 > 1000 就会错误地剔除。
 	ok, _, err := gate.Allow(context.Background(), nil, ctxWindowReq(0, 1000, 5000))
 	if err != nil {
 		t.Fatal(err)
@@ -82,13 +82,13 @@ func TestContextWindowGate_NoEstimate_FailOpen(t *testing.T) {
 	}
 }
 
-// TestContextWindowGate_AtExactBoundary_Allowed pins the strict-greater-than
-// boundary: a request that fits exactly is allowed.
+// TestContextWindowGate_AtExactBoundary_Allowed 钉死严格大于的边界:
+// 恰好放得下的请求会被放行。
 //
-// Mutation guard: flip > to >= and the exact-fit case excludes → red.
+// 变异:把 > 改成 >=,恰好放得下的用例就会被剔除 → 变红。
 func TestContextWindowGate_AtExactBoundary_Allowed(t *testing.T) {
 	gate := ContextWindowGate{}
-	// 191808 + 8192 == 200000 exactly.
+	// 191808 + 8192 == 200000,恰好相等。
 	ok, _, err := gate.Allow(context.Background(), nil, ctxWindowReq(191808, 200000, 8192))
 	if err != nil {
 		t.Fatal(err)
@@ -98,9 +98,9 @@ func TestContextWindowGate_AtExactBoundary_Allowed(t *testing.T) {
 	}
 }
 
-// TestContextWindowGate_IgnoresAccount proves the gate decision is independent
-// of the candidate account (context window is per-model, not per-account): the
-// same overflowing request excludes regardless of which account is passed.
+// TestContextWindowGate_IgnoresAccount 证明 gate 的判定与候选账号无关
+//(context window 是 per-model 而非 per-account):同一个溢出请求
+// 无论传入哪个账号都会被剔除。
 func TestContextWindowGate_IgnoresAccount(t *testing.T) {
 	gate := ContextWindowGate{}
 	req := ctxWindowReq(250000, 200000, 0)
@@ -118,14 +118,14 @@ func TestContextWindowGate_IgnoresAccount(t *testing.T) {
 	}
 }
 
-// TestContextWindowGate_ChainOrdering_RecordsReason proves the gate is wired
-// into DefaultGateChain's ordered() slot with the GateFailureContextWindow
-// fallback reason — i.e. running the full chain on an overflowing request
-// surfaces the context-window reason, not an empty/wrong one.
+// TestContextWindowGate_ChainOrdering_RecordsReason 证明该 gate 已接入
+// DefaultGateChain 的 ordered() 槽位,并带上 GateFailureContextWindow
+// 兜底 reason —— 即对一个溢出请求跑完整条 chain 时,
+// 暴露的是 context-window reason,而非空的/错误的 reason。
 //
-// Mutation guard: forget the ordered() entry and the chain never runs the gate
-// → an overflowing request is allowed → red on the !ok assertion; if the
-// fallback reason is wrong, the reason assertion goes red.
+// 变异:漏掉 ordered() 条目后,chain 永远不会运行该 gate
+// → 溢出请求被放行 → 在 !ok 断言处变红;若兜底 reason 写错,
+// reason 断言会变红。
 func TestContextWindowGate_ChainOrdering_RecordsReason(t *testing.T) {
 	chain := DefaultGateChain()
 	prepared := chain.ForSelection(context.Background(), ctxWindowReq(300000, 200000, 0))
@@ -141,15 +141,15 @@ func TestContextWindowGate_ChainOrdering_RecordsReason(t *testing.T) {
 	}
 }
 
-// TestSelect_AllCandidatesOverflow_TriggersNoEligible proves the end-to-end
-// graceful-degradation contract: when the single candidate's per-model window
-// can't fit the request, Select returns ErrNoEligibleAccount (the no-capacity
-// signal that drives the dispatch-layer model-fallback loop) — NOT a raw error.
+// TestSelect_AllCandidatesOverflow_TriggersNoEligible 证明端到端的
+// 优雅降级契约:当唯一候选的 per-model window 放不下该请求时,
+// Select 返回 ErrNoEligibleAccount(驱动 dispatch 层 model-fallback 循环的
+// 无容量信号)—— 而非裸 error。
 //
-// Mutation guard: if the gate hard-returned an error instead of (false,reason),
-// Select would bubble that raw error and errors.Is(err, ErrNoEligibleAccount)
-// would be false → red. If the gate were not in the chain, the account would be
-// selected and err would be nil → red.
+// 变异:若 gate 硬返回一个 error 而非 (false,reason),
+// Select 会把该裸 error 冒泡上来,errors.Is(err, ErrNoEligibleAccount)
+// 就会为 false → 变红。若该 gate 不在 chain 中,账号会被选中、
+// err 为 nil → 变红。
 func TestSelect_AllCandidatesOverflow_TriggersNoEligible(t *testing.T) {
 	accounts := []*AccountSnapshot{
 		{
@@ -181,8 +181,8 @@ func TestSelect_AllCandidatesOverflow_TriggersNoEligible(t *testing.T) {
 		t.Fatalf("all candidates overflow must yield ErrNoEligibleAccount, got %v", err)
 	}
 
-	// Control: a fitting request on the SAME setup must select the account,
-	// proving the no-eligible above is caused by the overflow, not the fixture.
+	// 对照:在完全相同的配置下,一个放得下的请求必须选中该账号,
+	// 以证明上面的 no-eligible 是由溢出导致,而非 fixture 本身。
 	res, err := sel.Select(context.Background(), SelectionRequest{
 		TenantID:             7,
 		RequestedModel:       "claude-3-5-sonnet",

@@ -70,8 +70,8 @@ func TestResolve_FlatDataUsesLegacySplitCacheMath(t *testing.T) {
 		t.Fatalf("Resolve() error = %v", err)
 	}
 
-	// Mutation guard: routing this flat data through billingdsl's aggregate
-	// fallback would charge 30 * 1500 = 0.045, not the legacy split 0.0525.
+	// 变异守卫:把这份 flat 数据走 billingdsl 的 aggregate 回落路径,
+	// 会按 30 * 1500 = 0.045 计费,而非旧的拆分计法 0.0525。
 	assertPricingDecimal(t, "Total", got.Total, "0.0525")
 	assertPricingDecimal(t, "CacheCreationCost", got.CacheCreationCost, "0.0525")
 	if got.CostSnapshot != "flat" {

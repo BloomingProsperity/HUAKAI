@@ -64,10 +64,9 @@ type ChatHandlerDeps struct {
 	Registry registry.Registry
 	Router   router.Router
 
-	// AffinityRules optionally derives the sticky key from request header/body
-	// signals before the legacy session-hash cascade. Nil or empty preserves
-	// the existing behavior. TODO: persist this per binding/channel once the
-	// registry schema owns CRED-205..212/216 configuration.
+	// AffinityRules 可选地在旧的 session-hash 级联之前，从请求头/请求体
+	// 信号推导出粘滞 key。为 nil 或为空时保持既有行为。TODO: 待 registry
+	// schema 接管 CRED-205..212/216 配置后，按 binding/channel 持久化此项。
 	AffinityRules affinityrules.AffinityRuleSet
 
 	ClaimGate             billing.ClaimGate
@@ -101,19 +100,19 @@ type ChatHandlerDeps struct {
 	RetryBudget            retryBudgetGate
 	CredentialHotRefresher CredentialHotRefresher
 	ModelFallbackSettings  modelfallback.SettingsReader
-	// PlatformSettings provides access to platform-wide feature flags.
-	// Required for warmup_intercept_enabled gate (SUB2-EGRESS-04).
+	// PlatformSettings 提供对平台级 feature flag 的读取访问。
+	// warmup_intercept_enabled 开关(SUB2-EGRESS-04)需要它。
 	PlatformSettings     platformSettingsReader
 	BillingPolicyVersion string
 	RequestClass         string
 	ClientIPResolver     *clientip.Resolver
 
-	// SessionCapRegistry is used to register session hashes at dispatch
-	// success (SUB2-EGRESS-02). nil is safe (registration is skipped).
+	// SessionCapRegistry 用于在 dispatch 成功时注册 session hash
+	// (SUB2-EGRESS-02)。nil 是安全的(跳过注册)。
 	SessionCapRegistry *sessioncap.Registry
 
-	// RecentReqRing records per-account request outcomes for incident triage
-	// (MGMT-RECENTREQ-01). nil is safe (recording is skipped).
+	// RecentReqRing 记录 per-account 的请求结果，供事故定位使用
+	// (MGMT-RECENTREQ-01)。nil 是安全的(跳过记录)。
 	RecentReqRing *recentreq.Ring
 
 	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
@@ -190,9 +189,9 @@ type chatExecution struct {
 	attempt           router.AttemptPlan
 	routeID           string
 	currentAttemptSeq int
-	// modelFallbackEnabled mirrors resolver.Enabled() for this request; it gates
-	// the opt-in ROUTE-023 context-window pre-check feed in the dispatch path
-	// (default off => no pre-check, matching sub2api/new-api/CLIProxyAPI).
+	// modelFallbackEnabled 对本次请求镜像 resolver.Enabled()；它控制
+	// dispatch 路径上 opt-in 的 ROUTE-023 上下文窗口预检喂入
+	// (默认关 => 不做预检，与各上游参考实现一致)。
 	modelFallbackEnabled bool
 
 	idempotencyHeader                string
@@ -347,8 +346,8 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 	}
 }
 
-// NativeClientRequest is a prevalidated native client-protocol request. The
-// raw HTTP body remains on r.Body and is read by the shared gateway pipeline.
+// NativeClientRequest 是一个已预校验的原生客户端协议请求。原始 HTTP
+// body 仍保留在 r.Body 上，由共享的 gateway pipeline 读取。
 type NativeClientRequest struct {
 	Model          string
 	Action         string
@@ -358,10 +357,9 @@ type NativeClientRequest struct {
 	EndpointFamily string
 }
 
-// NativeClientGateway exposes the shared chat execution pipeline for native
-// path-scoped client protocols such as Gemini v1beta. It avoids body rewrites:
-// model and stream come from the native URL/action, while the body is passed to
-// the selected ClientAdapter as originally received.
+// NativeClientGateway 为原生的、按路径限定的客户端协议(如 Gemini v1beta)
+// 暴露共享的 chat 执行 pipeline。它避免对 body 做改写：model 和 stream 来自
+// 原生 URL/action，而 body 按原样收到后原封不动传给所选的 ClientAdapter。
 type NativeClientGateway struct {
 	d ChatHandlerDeps
 }
@@ -500,9 +498,8 @@ func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 }
 
 func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts int) modelRunResult {
-	// SUB2-EGRESS-04: intercept Claude Code throwaway requests before billing.
-	// Gate is opt-in (default off); when off this block is a true no-op.
-	// Source: sub2api gateway_handler.go:359-369 / 613-623
+	// SUB2-EGRESS-04: 在计费前拦截 Claude Code 的一次性预热(throwaway)请求。
+	// 该开关 opt-in(默认关)；关闭时此代码块是真正的 no-op。
 	if warmupInterceptEnabled(ex.ctx, ex.d.PlatformSettings) {
 		isClaudeUA := warmupintercept.IsClaudeCodeUserAgent(ex.r.UserAgent())
 		maxTok := 0
@@ -860,14 +857,14 @@ func NewResponsesHandler(d ChatHandlerDeps) http.HandlerFunc {
 	return NewChatCompletionsHandler(d)
 }
 
-// platformSettingsReader is the minimal interface for reading a single platform setting.
-// *platformsettings.Service satisfies this interface.
+// platformSettingsReader 是读取单个平台设置的最小接口。
+// *platformsettings.Service 满足此接口。
 type platformSettingsReader interface {
 	Get(ctx context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
 
-// warmupInterceptEnabled reports whether warmup interception is enabled.
-// Returns false (safe default) when PlatformSettings is nil or the setting is absent/invalid.
+// warmupInterceptEnabled 报告预热拦截是否启用。
+// 当 PlatformSettings 为 nil，或该设置缺失/无效时，返回 false(安全默认)。
 func warmupInterceptEnabled(ctx context.Context, settings platformSettingsReader) bool {
 	if settings == nil {
 		return false
@@ -946,10 +943,9 @@ func clientTailMessageRole(clientProtocol proto.ClientProtocol, body []byte) str
 	}
 }
 
-// classifyPoolSelectFailure maps a pool.Selector error to its HTTP failure and
-// claim abort (incl. the SEC-249/250 per-key rate-limit 429). nil err → nil.
-// Kept here rather than in its own file to stay within the gatewayhttp
-// package's file-count budget.
+// classifyPoolSelectFailure 把 pool.Selector 的错误映射为对应的 HTTP 失败和
+// claim abort(含 SEC-249/250 per-key 限流的 429)。err 为 nil → 返回 nil。
+// 放在这里而非单独文件，是为了不突破 gatewayhttp 包的文件数预算。
 func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err error) *classifiedAttemptFailure {
 	if err == nil {
 		return nil

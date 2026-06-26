@@ -820,9 +820,9 @@ func TestAT_AUTH_007_009_SocialIdentityChangeRevokesExistingSessions(t *testing.
 	}
 }
 
-// Mutation guard: deleting the callback cookie-state check lets the mismatched
-// callback exchange the provider code; omitting the cleanup leaves the state
-// cookie reusable after a successful callback.
+// 变异:防护测。删掉 callback 的 cookie-state 校验会让不匹配的 callback
+// 也能换取 provider code; 省掉清理则会让 state cookie 在一次成功 callback 后
+// 仍可复用。
 func TestOAuthCallbackRequiresStateCookieBeforeProviderExchange(t *testing.T) {
 	now := time.Date(2026, 6, 4, 14, 0, 0, 0, time.UTC)
 	authStore := newGatewayMemoryAuthStore(now)
@@ -1600,9 +1600,9 @@ func lastAuthEventType(t *testing.T, events *captureAuthEventSink) string {
 	return events.events[len(events.events)-1].EventType
 }
 
-// flakyRevokeSessionStore embeds a working memory store but forces the first user-scope revoke to
-// fail, driving the "revoke failed before password change" path while proving the same reset
-// token can be retried after the session backend recovers.
+// flakyRevokeSessionStore 内嵌一个可用的内存 store, 但强制第一次 user 范围的 revoke
+// 失败, 以驱动「改密前 revoke 失败」这条路径, 同时证明在 session 后端恢复后, 同一个
+// reset token 仍可重试。
 type flakyRevokeSessionStore struct {
 	usersession.Store
 	failures           int
@@ -1643,8 +1643,8 @@ func (s *postCommitRevokeFailSessionStore) RevokeUser(ctx context.Context, tenan
 	return s.Store.RevokeUser(ctx, tenantID, userID, reason, now)
 }
 
-// resetConfirmTestSetup registers + verifies a user and returns a live router plus the captured
-// reset token, so reset-confirm tests can exercise the real handler path.
+// resetConfirmTestSetup 注册并验证一个用户, 返回一个真实可用的 router 以及捕获到的
+// reset token, 这样 reset-confirm 测试就能走到真实的 handler 路径。
 func resetConfirmTestSetup(t *testing.T, sessions *usersession.Service) (http.Handler, *captureAuthEmail, *userauth.Service) {
 	t.Helper()
 	now := time.Date(2026, 5, 17, 11, 0, 0, 0, time.UTC)
@@ -1665,18 +1665,16 @@ func resetConfirmTestSetup(t *testing.T, sessions *usersession.Service) (http.Ha
 	return r, email, authSvc
 }
 
-// TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails guards reset-confirm must place
-// the reset subject behind a login barrier, then refuse to consume the one-time token or change the
-// password unless old sessions were revoked first. The injected store fails ONLY the first
-// RevokeUser, then simulates an in-flight old-password login by creating a new active family after
-// the first successful revoke. The fixture distinguishes a correct fail-closed/retryable handler
-// with a post-commit sweep from the broken post-reset best-effort revoke path and from a pre-revoke
-// implementation that leaves old-password login open while waiting for retry.
+// TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails 钉住: reset-confirm 必须先把
+// reset 的目标账号置于登录屏障之后, 然后在旧 session 被先行 revoke 之前, 拒绝消费一次性
+// token、也拒绝改密。注入的 store 只让第一次 RevokeUser 失败, 接着在第一次成功 revoke 之后
+// 创建一个新的活跃 family, 模拟一次进行中的旧口令登录。该 fixture 用以区分:带提交后清扫
+// 的正确 fail-closed/可重试 handler、错误的「改密后尽力 revoke」路径, 以及在等待重试时仍
+// 开放旧口令登录的「revoke 前」实现。
 //
-// Mutation check: move ResetPassword before Revoke, ignore the Revoke error, or remove the reset
-// login barrier, or remove the post-commit revoke sweep; either the first response becomes 2xx, the
-// new password authenticates too early, old-password login remains possible before retry, or the
-// injected race family remains active after retry -> red.
+// 变异:检查。把 ResetPassword 移到 Revoke 之前、忽略 Revoke 的 error、移除 reset 登录屏障,
+// 或移除提交后的 revoke 清扫;则要么第一次响应变成 2xx、要么新口令过早可认证、要么重试前
+// 旧口令登录仍可用、要么注入的竞态 family 在重试后仍活跃 -> 变红。
 func TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails(t *testing.T) {
 	sessionStore := &flakyRevokeSessionStore{Store: usersession.NewMemoryStore(), failures: 1, injectAfterSuccess: true}
 	sessionSvc := usersession.NewService(sessionStore)
@@ -1735,12 +1733,12 @@ func TestAuthPasswordResetConfirmFailsClosedWhenRevokeFails(t *testing.T) {
 	}
 }
 
-// TestAuthPasswordResetConfirmPostSweepFailureIsDegradedSuccess guards the committed-token half of
-// once ResetPassword has changed the password and consumed the one-time token, a later
-// post-commit sweep failure must be reported as a degraded reset success, not as a retryable 5xx.
+// TestAuthPasswordResetConfirmPostSweepFailureIsDegradedSuccess 钉住「token 已提交」这一半:
+// 一旦 ResetPassword 已经改了口令并消费了一次性 token, 之后的提交后清扫失败必须被报告为
+// 降级的 reset 成功, 而不是可重试的 5xx。
 //
-// Mutation check: return writeSessionError after ResetPassword or always report "revoked"; the
-// status/session_revocation assertions go red while the new password proves the token was consumed.
+// 变异:检查。在 ResetPassword 之后返回 writeSessionError, 或始终报告 "revoked";则
+// status/session_revocation 断言变红, 而新口令证明 token 已被消费。
 func TestAuthPasswordResetConfirmPostSweepFailureIsDegradedSuccess(t *testing.T) {
 	sessionStore := &postCommitRevokeFailSessionStore{Store: usersession.NewMemoryStore()}
 	sessionSvc := usersession.NewService(sessionStore)
@@ -1782,15 +1780,15 @@ func TestAuthPasswordResetConfirmPostSweepFailureIsDegradedSuccess(t *testing.T)
 	}
 }
 
-// TestAuthPasswordResetConfirmRequiresSessions guards when no session store is wired,
-// reset-confirm must refuse (it cannot revoke sessions) and must NOT change the password — the
-// guard runs BEFORE ResetPassword. The old code skipped revocation when Sessions==nil yet still
-// reset the password and reported success with SessionPolicy "revoked".
+// TestAuthPasswordResetConfirmRequiresSessions 钉住: 当没有接入 session store 时,
+// reset-confirm 必须拒绝(它无法 revoke session)且绝不能改密 —— 该防护在 ResetPassword
+// 之前执行。旧代码在 Sessions==nil 时跳过 revoke, 却仍然改了密并以 SessionPolicy "revoked"
+// 报告成功。
 //
-// Mutation check: remove the `if d.Sessions == nil` guard; the password is then changed (old
-// password stops working) → the "old password still authenticates" assertion goes red.
+// 变异:检查。移除 `if d.Sessions == nil` 防护;口令于是被改(旧口令失效)→「旧口令仍可
+// 认证」断言变红。
 func TestAuthPasswordResetConfirmRequiresSessions(t *testing.T) {
-	r, email, authSvc := resetConfirmTestSetup(t, nil) // no session store wired
+	r, email, authSvc := resetConfirmTestSetup(t, nil) // 未接入 session store
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{"tenant_id": 1, "email": "reset@example.test"})
 	assertHTTPStatus(t, rec, http.StatusAccepted)
@@ -1803,21 +1801,21 @@ func TestAuthPasswordResetConfirmRequiresSessions(t *testing.T) {
 	if rec.Code/100 == 2 {
 		t.Fatalf("reset-confirm without a session store must refuse, not succeed; got %d body=%s", rec.Code, rec.Body.String())
 	}
-	// The real discriminator: the password must be UNCHANGED (guard ran before ResetPassword).
+	// 真正的判别点: 口令必须保持不变(防护在 ResetPassword 之前已执行)。
 	if _, err := authSvc.Authenticate(context.Background(), userauth.LoginInput{TenantID: 1, Email: "reset@example.test", Password: "secret-old"}); err != nil {
 		t.Fatalf("old password must still authenticate — reset must not change the password when sessions cannot be revoked; got %v", err)
 	}
 }
 
-// TestAuthPasswordResetConfirmRefusesWhenSessionStoreUnset guards a non-nil
-// session Service whose backing Store is unset (NewService(nil)) must STILL be rejected before the
-// password is changed — a bare service-pointer check is insufficient, because Revoke would then fail
-// with ErrStoreNotConfigured only after the one-time token is consumed and the password changed.
+// TestAuthPasswordResetConfirmRefusesWhenSessionStoreUnset 钉住: 一个非 nil 的 session
+// Service, 但其底层 Store 未设置(NewService(nil)), 仍必须在口令被改之前被拒 —— 仅检查
+// service 指针是不够的, 因为那样 Revoke 只会在一次性 token 已被消费、口令已被改之后才以
+// ErrStoreNotConfigured 失败。
 //
-// Mutation check: drop the `|| d.Sessions.Store == nil` clause from the guard; the reset proceeds
-// (old password stops working) → the "old password still authenticates" assertion goes red.
+// 变异:检查。从防护中去掉 `|| d.Sessions.Store == nil` 子句;reset 继续执行
+// (旧口令失效)→「旧口令仍可认证」断言变红。
 func TestAuthPasswordResetConfirmRefusesWhenSessionStoreUnset(t *testing.T) {
-	r, email, authSvc := resetConfirmTestSetup(t, usersession.NewService(nil)) // service set, backing store unset
+	r, email, authSvc := resetConfirmTestSetup(t, usersession.NewService(nil)) // service 已设置, 底层 store 未设置
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/reset-password", map[string]any{"tenant_id": 1, "email": "reset@example.test"})
 	assertHTTPStatus(t, rec, http.StatusAccepted)

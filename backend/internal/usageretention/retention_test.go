@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// MUTATION: treat RetentionDays=0 as "delete immediately" -> store is called -> RED.
+// 变异:把 RetentionDays=0 当作「立即删除」-> store 被调用 -> 变红。
 func TestUsageRetentionDefault0KeepsAll(t *testing.T) {
 	store := &fakeUsagePurgeStore{}
 	worker := NewUsageRetentionWorker(Config{

@@ -15,7 +15,7 @@ import (
 // 即使 credential payload 写着
 // oauth_token_endpoint=http://attacker.test, refresh 出站只能打 operator
 // 配置 (r.Endpoint) 或 HUAKAI 硬编 defaultAnthropicTokenEndpoint。
-// 自检 mutation: 把 endpoint 选取改回
+// 自检变异: 把 endpoint 选取改回
 // firstNonEmpty(r.Endpoint, credentialString(cred, "oauth_token_endpoint"),
 // defaultAnthropicTokenEndpoint), capturedURL 会变成 attacker token endpoint,
 // 该 test 立刻变红。

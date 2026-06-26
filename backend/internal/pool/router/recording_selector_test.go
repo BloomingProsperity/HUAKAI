@@ -22,9 +22,8 @@ func recCounter() *precheck.Counter {
 	return precheck.New(time.Minute, func() time.Time { return base })
 }
 
-// A concrete selection consumes one request of the account's budget. Mutation
-// guard: if RecordingSelector stops calling Record, the post-select Check stays
-// Allowed and this test goes red.
+// 一次确定的选号消费该账号预算中的一个请求。变异守卫:如果 RecordingSelector
+// 停止调用 Record,选号后的 Check 仍为 Allowed,本测试变红。
 func TestRecordingSelector_RecordsOnValidSelection(t *testing.T) {
 	c := recCounter()
 	rs := NewRecordingSelector(fakeRecSelector{res: &SelectionResult{AccountID: 5}}, c)
@@ -40,7 +39,7 @@ func TestRecordingSelector_RecordsOnValidSelection(t *testing.T) {
 	}
 }
 
-// estimated input tokens are recorded against TPM.
+// 估算的输入 token 被计入 TPM。
 func TestRecordingSelector_RecordsTokens(t *testing.T) {
 	c := recCounter()
 	rs := NewRecordingSelector(fakeRecSelector{res: &SelectionResult{AccountID: 9}}, c)
@@ -50,8 +49,8 @@ func TestRecordingSelector_RecordsTokens(t *testing.T) {
 	}
 }
 
-// Wait-plan admissions (Layer-3 queue) and errors do NOT consume budget — only a
-// committed concrete account does.
+// wait-plan 准入(Layer-3 队列)和错误都不消费预算 —— 只有已落定的
+// 确定账号才消费。
 func TestRecordingSelector_SkipsWaitPlanAndError(t *testing.T) {
 	t.Run("wait plan", func(t *testing.T) {
 		c := recCounter()
@@ -70,8 +69,7 @@ func TestRecordingSelector_SkipsWaitPlanAndError(t *testing.T) {
 	})
 }
 
-// A nil counter makes the wrapper a transparent pass-through (no panic, inner
-// result returned unchanged).
+// counter 为 nil 时,包装器成为透明直通(不 panic,原样返回 inner 的结果)。
 func TestRecordingSelector_NilCounter_PassThrough(t *testing.T) {
 	want := &SelectionResult{AccountID: 7}
 	got, err := NewRecordingSelector(fakeRecSelector{res: want}, nil).Select(context.Background(), SelectionRequest{})

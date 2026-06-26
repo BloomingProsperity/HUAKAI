@@ -18,7 +18,7 @@ import (
 )
 
 func TestBroadcast_AdminAuthRequired(t *testing.T) {
-	// MUTATION: skip admin auth or role check; anonymous/viewer caller can broadcast rows.
+	// 变异：跳过 admin 鉴权或角色检查；匿名/viewer 调用方就能广播通知行。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc, store := newNoticeHTTPService(&now)
 	store.AddActiveUser(7, 101)
@@ -39,7 +39,7 @@ func TestBroadcast_AdminAuthRequired(t *testing.T) {
 }
 
 func TestBroadcast_Validation(t *testing.T) {
-	// MUTATION: bypass HTTP/service validation; empty title/body or bad severity broadcasts rows instead of returning 400.
+	// 变异：绕过 HTTP/service 校验；空 title/body 或非法 severity 会广播通知行而非返回 400。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc, store := newNoticeHTTPService(&now)
 	store.AddActiveUser(7, 101)
@@ -62,7 +62,7 @@ func TestBroadcast_Validation(t *testing.T) {
 }
 
 func TestListNotifications_SelfScopedUnreadFirst(t *testing.T) {
-	// MUTATION: handler trusts query/body user scope or service drops user_id; user A sees user B rows or read rows in unread-only mode.
+	// 变异：handler 信任 query/body 中的 user 作用域，或 service 丢掉 user_id；用户 A 会看到用户 B 的行，或在 unread-only 模式下看到已读行。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc, store := newNoticeHTTPService(&now)
 	store.AddActiveUser(7, 101)
@@ -97,7 +97,7 @@ func TestListNotifications_SelfScopedUnreadFirst(t *testing.T) {
 }
 
 func TestMarkRead_OwnOnly(t *testing.T) {
-	// MUTATION: drop user_id from MarkRead service call; user A marks user B's notification read.
+	// 变异：在 MarkRead 的 service 调用里丢掉 user_id；用户 A 会把用户 B 的通知标记为已读。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc, store := newNoticeHTTPService(&now)
 	store.AddActiveUser(7, 101)
@@ -124,7 +124,7 @@ func TestMarkRead_OwnOnly(t *testing.T) {
 }
 
 func TestUnreadCountRequiresSession(t *testing.T) {
-	// MUTATION: allow anonymous inbox count; caller can probe notification state without a user session.
+	// 变异：允许匿名查询收件箱计数；调用方不需用户 session 就能探测通知状态。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc, _ := newNoticeHTTPService(&now)
 
