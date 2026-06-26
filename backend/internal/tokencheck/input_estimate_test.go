@@ -81,16 +81,14 @@ func TestEstimateRequestInputTokensFloorsAtOne(t *testing.T) {
 	}
 }
 
-// EstimateRequestInputTokensWith must route plain-text leaves through the injected
-// counter while still capping base64/binary blobs with the built-in heuristic (a
-// real tokenizer must never be handed a 1MB data-URI).
-// MUTATION: have estimateStringLeaf send blobs through textCounter too, and the
-// sentinel counter (which returns a huge fixed value per call) would balloon the
-// blob's contribution -> the upper-bound assertion goes RED.
+// EstimateRequestInputTokensWith 必须让纯文本叶子走注入的计数器,同时仍用内置
+// 启发式给 base64/二进制大块封顶(绝不能把 1MB 的 data-URI 交给真实 tokenizer)。
+// MUTATION:若让 estimateStringLeaf 也把大块送进 textCounter,那个哨兵计数器
+//(每次调用返回一个巨大的固定值)就会把大块的贡献撑爆 -> 上界断言转红。
 func TestEstimateRequestInputTokensWith_InjectedCounterButBlobsCapped(t *testing.T) {
 	const perText = 100000
 	textOnly := []byte(`{"a":"hello","b":"world"}`)
-	// Two text leaves -> 2 * perText via the injected counter.
+	// 两个文本叶子 -> 经注入计数器得到 2 * perText。
 	if got := EstimateRequestInputTokensWith(textOnly, func(string) int { return perText }); got != 2*perText {
 		t.Fatalf("injected counter not used for text leaves: got %d want %d", got, 2*perText)
 	}
@@ -105,7 +103,7 @@ func TestEstimateRequestInputTokensWith_InjectedCounterButBlobsCapped(t *testing
 		t.Fatalf("blob estimate %d exceeds cap %d", got, blobTokenCap)
 	}
 
-	// A nil counter must behave exactly like the default heuristic entrypoint.
+	// nil 计数器的行为必须与默认启发式入口完全一致。
 	if EstimateRequestInputTokensWith(textOnly, nil) != EstimateRequestInputTokens(textOnly) {
 		t.Fatal("nil counter must fall back to the default heuristic")
 	}

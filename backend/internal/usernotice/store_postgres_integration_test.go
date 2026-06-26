@@ -17,7 +17,7 @@ import (
 )
 
 func TestBroadcast_FansOutToTenantUsers(t *testing.T) {
-	// MUTATION: drop tenant_id/status/deleted_at filter in fan-out INSERT; disabled/deleted/cross-tenant users receive rows.
+	// 变异:在 fan-out INSERT 中去掉 tenant_id/status/deleted_at 过滤;disabled/deleted/跨租户用户会收到行。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openUserNoticePool(t, ctx)
@@ -47,7 +47,7 @@ func TestBroadcast_FansOutToTenantUsers(t *testing.T) {
 }
 
 func TestListNotifications_SelfScopedUnreadFirst(t *testing.T) {
-	// MUTATION: drop user_id scope or unread_only predicate from ListForUser; user A sees user B rows or read rows in unread-only mode.
+	// 变异:从 ListForUser 去掉 user_id 作用域或 unread_only 谓词;user A 会看到 user B 的行,或在 unread-only 模式下看到已读行。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openUserNoticePool(t, ctx)
@@ -92,7 +92,7 @@ func TestListNotifications_SelfScopedUnreadFirst(t *testing.T) {
 }
 
 func TestMarkRead_OwnOnly(t *testing.T) {
-	// MUTATION: drop user_id scope from MarkRead UPDATE; user A marks user B's notification read.
+	// 变异:从 MarkRead 的 UPDATE 去掉 user_id 作用域;user A 会把 user B 的通知标记为已读。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openUserNoticePool(t, ctx)
@@ -119,7 +119,7 @@ func TestMarkRead_OwnOnly(t *testing.T) {
 }
 
 func TestMigration0104(t *testing.T) {
-	// MUTATION: omit user_notifications table, severity CHECK, tenant/user/read index, composite FK, or down DROP; these schema probes fail.
+	// 变异:省略 user_notifications 表、severity CHECK、tenant/user/read 索引、复合 FK 或 down DROP;这些 schema 探测都会失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openUserNoticePool(t, ctx)

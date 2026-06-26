@@ -147,9 +147,8 @@ func validateGenerateParams(params GenerateInvitationParams) error {
 	if params.TenantID <= 0 || params.InviterUserID <= 0 {
 		return ErrInvalidInput
 	}
-	// The self-referral marker is server-reserved: a campaign caller must not be
-	// able to supply a self-prefixed idempotency key, which would otherwise let
-	// the resulting row escape the campaign quota counter (quota bypass).
+	// 自荐标记由服务端保留：活动调用方不得能够提供带 self 前缀的幂等键，
+	// 否则生成的那一行会逃过活动配额计数器（绕过配额）。
 	if params.ClientIdempotencyKey != nil && strings.HasPrefix(*params.ClientIdempotencyKey, SelfReferralIdempotencyPrefix) {
 		return ErrReservedIdempotencyKey
 	}
@@ -165,15 +164,12 @@ func validateGenerateParams(params GenerateInvitationParams) error {
 	return nil
 }
 
-// GetOrCreateSelfReferralCode returns the caller's single stable self-service
-// referral code, lazily minting one on first call. Unlike campaign Generate it
-// is NOT gated by the monthly tenant quota: a personal referral code is user
-// identity, not campaign volume, so a pure GET of one's own code must never be
-// blocked once a shared single-tenant deployment has exhausted the campaign cap
-// for the month (new-api GetAffCode + sub2api both treat self codes as
-// quota-free identity; HUAKAI keeps the campaign cap and adds this exempt path).
-// Idempotent: repeated calls return the same code via the reserved
-// self:<userID> idempotency key.
+// GetOrCreateSelfReferralCode 返回调用方那唯一且稳定的自助推荐码，首次调用
+// 时惰性铸造。与活动 Generate 不同，它不受每月租户配额的限制：个人推荐码是
+// 用户身份，而不是活动量，因此当某个共享的单租户部署已耗尽本月活动上限后，
+// 仅仅获取自己的码也绝不能被拦截（new-api 的 GetAffCode 与 sub2api 都把自荐码
+// 视为免配额的身份；HUAKAI 保留活动上限并额外加上这条豁免路径）。
+// 幂等：重复调用会通过保留的 self:<userID> 幂等键返回同一个码。
 func (s *Service) GetOrCreateSelfReferralCode(ctx context.Context, tenantID, inviterUserID int64, now time.Time) (GenerateInvitationOutput, error) {
 	if s == nil || s.store == nil {
 		return GenerateInvitationOutput{}, ErrStoreNotConfigured
@@ -218,8 +214,8 @@ func (s *Service) GetOrCreateSelfReferralCode(ctx context.Context, tenantID, inv
 		if serr == nil {
 			return outputFromInvitation(row), nil
 		}
-		// A racing first call may have inserted the self row under the same
-		// idempotency key; re-resolve it so both callers converge on one code.
+		// 并发的第一次调用可能已用同一个幂等键插入了 self 行；
+		// 重新解析它，使两个调用方都收敛到同一个码。
 		if reread, rerr := s.store.GetByClientIdempotencyKey(ctx, tenantID, idemKey); rerr == nil {
 			return outputFromInvitation(reread), nil
 		}

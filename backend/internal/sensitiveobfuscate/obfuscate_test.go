@@ -11,7 +11,7 @@ import (
 
 const zwsp = "\u200b"
 
-// ---- Matcher / obfuscateString unit tests ----
+// ---- Matcher / obfuscateString 单元测试 ----
 
 func TestObfuscateSingleWord(t *testing.T) {
 	m := sensitiveobfuscate.BuildSensitiveWordMatcher([]string{"banned"})
@@ -36,16 +36,16 @@ func TestCaseInsensitive(t *testing.T) {
 }
 
 func TestLongestMatchFirst(t *testing.T) {
-	// words ["ban","banned"]: "banned" should get ONE insertion, not two.
+	// 词表 ["ban","banned"]："banned" 应只被插入一次，而非两次。
 	m := sensitiveobfuscate.BuildSensitiveWordMatcher([]string{"ban", "banned"})
 	body := makeBody(`"banned text"`, nil)
 	out := sensitiveobfuscate.ObfuscateSensitiveWords(body, m)
 	got := extractSystemString(t, out)
-	// Exactly one ZWSP in the word "banned"
+	// 单词 "banned" 中恰好一个 ZWSP
 	if strings.Count(got, zwsp) != 1 {
 		t.Fatalf("expected exactly 1 ZWSP insertion, got %d in %q", strings.Count(got, zwsp), got)
 	}
-	// The insertion should be after 'b'
+	// 插入位置应在 'b' 之后
 	if !strings.Contains(got, "b"+zwsp+"anned") {
 		t.Fatalf("expected b<zwsp>anned, got %q", got)
 	}
@@ -120,7 +120,7 @@ func TestWalksSystemStringAndMessages(t *testing.T) {
 	if !strings.Contains(content0, "b"+zwsp+"anned") {
 		t.Errorf("messages[0] not obfuscated: %q", content0)
 	}
-	// clean message should be unchanged
+	// 干净的消息应保持不变
 	var msg1 map[string]json.RawMessage
 	json.Unmarshal(msgs[1], &msg1)
 	var content1 string
@@ -147,7 +147,7 @@ func TestWalksContentBlocks(t *testing.T) {
 	if err := json.Unmarshal(out, &root); err != nil {
 		t.Fatalf("output not valid JSON: %v", err)
 	}
-	// system block
+	// system 块
 	var sysBlocks []map[string]json.RawMessage
 	json.Unmarshal(root["system"], &sysBlocks)
 	var sysText string
@@ -155,7 +155,7 @@ func TestWalksContentBlocks(t *testing.T) {
 	if !strings.Contains(sysText, "b"+zwsp+"anned") {
 		t.Errorf("system block not obfuscated: %q", sysText)
 	}
-	// messages content block
+	// messages 内容块
 	var msgs []json.RawMessage
 	json.Unmarshal(root["messages"], &msgs)
 	var msg map[string]json.RawMessage
@@ -169,13 +169,12 @@ func TestWalksContentBlocks(t *testing.T) {
 	}
 }
 
-// ---- Mutation test ----
-// (see TestMutation in mutation_test.go — inline here to keep one file)
+// ---- 变异测试 ----
+//（参见 mutation_test.go 里的 TestMutation —— 这里内联是为了保持单文件）
 
-// TestMutation_Red documents that if BuildSensitiveWordMatcher were a no-op
-// (identity), the obfuscation test would fail. This test verifies the
-// production implementation IS active. We verify by checking the output does
-// contain the ZWSP.
+// TestMutation_Red 记录这样一点：若 BuildSensitiveWordMatcher 是 no-op
+//（恒等映射），混淆测试就会失败。本测试验证生产实现确实是活跃的。
+// 验证方式是检查输出确实包含 ZWSP。
 func TestMutation_ActiveImplementation(t *testing.T) {
 	m := sensitiveobfuscate.BuildSensitiveWordMatcher([]string{"banned"})
 	body := makeBody(`"this is banned content"`, nil)
@@ -189,10 +188,10 @@ func TestMutation_ActiveImplementation(t *testing.T) {
 	}
 }
 
-// ---- helpers ----
+// ---- 辅助函数 ----
 
-// makeBody builds a minimal Anthropic Messages JSON with the given system raw
-// value and optional messages list.
+// makeBody 用给定的 system raw 值和可选的 messages 列表构造一个最小的
+// Anthropic Messages JSON。
 func makeBody(systemRawJSON string, messages []map[string]string) []byte {
 	buf := strings.Builder{}
 	buf.WriteString(`{"model":"claude-3-5-sonnet-20241022","system":`)

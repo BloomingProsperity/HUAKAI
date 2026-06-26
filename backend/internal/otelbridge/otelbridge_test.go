@@ -59,11 +59,11 @@ func TestPrometheusExporterEnabledBridgesGroupPolicyFailClosed(t *testing.T) {
 	assertPromMetricValue(t, body, "huakai_group_policy_failclosed_total", "4")
 }
 
-// TestPrometheusExporterEnabledBridgesBudgetFailOpen guards that the budget/rate
-// enforcement fail-open counter is bridged to the Prometheus scrape, so an operator
-// can alert when enforcement is silently bypassed by a backend error.
-// MUTATION: drop the huakai_budget_failopen_total entry from bridgeCounters() (or map
-// the wrong expvar key) -> the scrape body omits the metric -> assertPromMetricValue RED.
+// TestPrometheusExporterEnabledBridgesBudgetFailOpen 守护预算/限流强制执行的
+// fail-open 计数器被桥接到 Prometheus scrape,这样当强制执行被后端错误静默绕过时,
+// 运维能据此告警。
+// 变异:从 bridgeCounters() 删除 huakai_budget_failopen_total 条目(或映射到
+// 错误的 expvar key)-> scrape body 缺失该指标 -> assertPromMetricValue 变红。
 func TestPrometheusExporterEnabledBridgesBudgetFailOpen(t *testing.T) {
 	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "true")
 
@@ -136,7 +136,7 @@ func TestBillingMetricBridgeInOutput(t *testing.T) {
 }
 
 func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
-	// MUTATION: build the alerting snapshot from a stale hard-coded map or wrong key names; rules never see the live bridged metric value.
+	// 变异:用陈旧的硬编码 map 或错误的 key 名构造告警快照;规则永远看不到实时桥接的指标值。
 	setExpvarMapInt(t, "billing_settings", "resolver_db_read_fail_total", 11)
 	setExpvarInt(t, "group_policy_fail_open_total", 4)
 	setExpvarInt(t, "budget_fail_open_total", 6)
@@ -152,19 +152,19 @@ func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
 	if got := snapshot["huakai_group_policy_failopen_total"]; got != 4 {
 		t.Fatalf("huakai_group_policy_failopen_total=%v want 4", got)
 	}
-	// Alert path: the budget fail-open counter must reach the rule-evaluation snapshot.
-	// MUTATION: remove the budget bridge entry -> key absent -> got==0 != 6 -> RED.
+	// 告警路径:budget fail-open 计数器必须能到达规则求值快照。
+	// 变异:移除 budget 桥接条目 -> key 缺失 -> got==0 != 6 -> 变红。
 	if got := snapshot["huakai_budget_failopen_total"]; got != 6 {
 		t.Fatalf("huakai_budget_failopen_total=%v want 6", got)
 	}
 }
 
-// TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot guards that the per-(vendor,model)
-// labeled L2 response-cache expvar maps are aggregated into flat totals on BOTH the Prometheus
-// scrape and the alert-rule snapshot, so an operator can alert on cache hit-rate / size after
-// enabling the cache. Two labels per map prove the bridge SUMS across labels (not reads one).
-// MUTATION: drop an L2 entry from bridgeCounters() -> metric absent (snapshot 0 / scrape
-// missing) -> RED; make readExpvarMapSum read a single key instead of summing -> 3 or 4 != 7 -> RED.
+// TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot 守护按 (vendor,model) 打标签的
+// L2 响应缓存 expvar map 在 Prometheus scrape 和 alert-rule 快照两处都被聚合成扁平总数,
+// 这样运维在启用缓存后就能对缓存命中率 / 容量告警。每个 map 用两个标签,证明桥接是
+// 跨标签求和(而非只读一个)。
+// 变异:从 bridgeCounters() 删除某个 L2 条目 -> 指标缺失(快照为 0 / scrape 中缺失)
+// -> 变红;让 readExpvarMapSum 只读单个 key 而非求和 -> 3 或 4 != 7 -> 变红。
 func TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot(t *testing.T) {
 	setExpvarMapInt(t, "huakai_cache_l2_hit_total", "vendor=a,model=x", 3)
 	setExpvarMapInt(t, "huakai_cache_l2_hit_total", "vendor=b,model=y", 4) // sum 7
@@ -173,7 +173,7 @@ func TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot(t *testing.T) {
 	setExpvarMapInt(t, "huakai_cache_l2_size_bytes", "vendor=a,model=x", 1000)
 	setExpvarMapInt(t, "huakai_cache_l2_size_bytes", "vendor=b,model=y", 2000) // sum 3000
 
-	// Alert-snapshot leg: the flat map the alert engine evaluates rules against.
+	// 告警快照这一支:alert 引擎据以求值规则的扁平 map。
 	snap, err := ExpvarMetricSource{}.Snapshot(context.Background(), 0)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
@@ -188,7 +188,7 @@ func TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot(t *testing.T) {
 		t.Errorf("snapshot size_bytes=%v want 3000 (sum across labels)", got)
 	}
 
-	// Prometheus-scrape leg.
+	// Prometheus scrape 这一支。
 	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "true")
 	mp, handler, shutdown, err := Setup(context.Background())
 	if err != nil {

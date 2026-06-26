@@ -33,13 +33,13 @@ type SchedulerTicker interface {
 	Stop()
 }
 
-// LeaderLock gates a single evaluation tick so that, across multiple gateway
-// replicas, only the leader fires alerts for a given tick — otherwise every
-// replica evaluates the same rules and emits duplicate notifications. OBS-193.
+// LeaderLock 把单次评估 tick 控制为：在多个网关副本之间，对于给定的某个
+// tick 只有 leader 才会发出告警——否则每个副本都会评估相同的规则并发出
+// 重复通知。OBS-193。
 type LeaderLock interface {
-	// TryAcquire is non-blocking: (true, release, nil) when this replica is the
-	// tick leader (caller must call release after evaluating), (false, nil, nil)
-	// when another replica holds it, or a non-nil error on a lock fault.
+	// TryAcquire 是非阻塞的：当本副本是 tick leader 时返回 (true, release, nil)
+	//（调用方在评估完后必须调用 release）；当另一个副本持有锁时返回
+	//（false, nil, nil）；锁故障时返回非 nil 的 error。
 	TryAcquire(ctx context.Context) (acquired bool, release func(), err error)
 }
 
@@ -49,8 +49,7 @@ type SchedulerConfig struct {
 	MetricSource MetricSource
 	Interval     time.Duration
 	NewTicker    func(time.Duration) SchedulerTicker
-	// LeaderLock is optional; nil = evaluate every tick (single-replica default,
-	// exact current behavior).
+	// LeaderLock 可选；nil = 每个 tick 都评估（单副本默认值，与当前行为完全一致）。
 	LeaderLock LeaderLock
 }
 
@@ -106,10 +105,9 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 func (s *Scheduler) evaluateOnce(ctx context.Context) {
-	// OBS-193: with a leader lock configured, only the replica that wins the
-	// non-blocking lock evaluates this tick — preventing duplicate alerts across
-	// replicas. On a lock fault we fail OPEN (evaluate anyway): a duplicate alert
-	// is better than silently dropping alerting.
+	// OBS-193：配置了 leader lock 后，只有抢到该非阻塞锁的副本才评估这个
+	// tick——从而避免多副本间的重复告警。锁故障时我们 fail OPEN（照样评估）：
+	// 重复一条告警也好过悄悄丢掉告警。
 	if s.leaderLock != nil {
 		acquired, release, err := s.leaderLock.TryAcquire(ctx)
 		if err != nil {

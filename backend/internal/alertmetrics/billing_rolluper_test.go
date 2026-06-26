@@ -8,7 +8,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// MUTATION: pass tenantID 0 or a stale settledSince to sqlc -> alert metrics are no longer tenant/window scoped -> RED.
+// 变异:给 sqlc 传 tenantID 0 或过期的 settledSince → 告警指标不再按租户/窗口限定 → 红。
 func TestBillingRecentUsageRolluperCallsTenantScopedQuery(t *testing.T) {
 	since := time.Date(2026, 6, 7, 12, 45, 0, 0, time.UTC)
 	querier := &stubBillingRollupQuerier{
@@ -40,8 +40,8 @@ func TestBillingRecentUsageRolluperCallsTenantScopedQuery(t *testing.T) {
 	if got.RequestCount != 8 || got.SuccessCount != 5 || got.ErrorCount != 3 || got.TotalCostUSD != 2.5 {
 		t.Fatalf("rollup=%+v want counts 8/5/3 cost 2.5", got)
 	}
-	// MUTATION: drop row.LatencyP95Ms/P99Ms from the mapping -> these go 0 -> RED.
-	// p95 and p99 are distinct so a swapped mapping also fails.
+	// 变异:把 row.LatencyP95Ms/P99Ms 从映射里去掉 → 这两个值变 0 → 红。
+	// p95 与 p99 取不同值,所以映射被交换时也会失败。
 	if got.LatencyP95MS != 910.5 || got.LatencyP99MS != 1750.75 {
 		t.Fatalf("rollup latency=%v/%v want 910.5/1750.75", got.LatencyP95MS, got.LatencyP99MS)
 	}

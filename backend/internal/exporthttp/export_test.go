@@ -79,7 +79,7 @@ func TestPaymentsExportCSVShape(t *testing.T) {
 		t.Fatalf("payment filter=%+v want tenant 7 status completed limit max+1", payments.got)
 	}
 	records := readCSV(t, rec.Body.String())
-	// MUTATION: omit the header row write in the payments handler; this assertion fails because records[0] becomes the first data row.
+	// MUTATION：在 payments handler 中省略表头行的写入；这条断言会失败，因为 records[0] 变成了第一条数据行。
 	wantHeader := []string{"order_id", "user_id", "provider", "status", "amount", "currency", "created_at", "out_trade_no", "order_kind"}
 	assertCSVRow(t, records[0], wantHeader)
 	if len(records) != 3 {
@@ -106,7 +106,7 @@ func TestExportTenantScoped(t *testing.T) {
 		t.Fatalf("tenant filter=%d want 7", payments.got.TenantID)
 	}
 	records := readCSV(t, rec.Body.String())
-	// MUTATION: drop the tenant filter / tenant-row guard; tenant-b-leak appears in the CSV and this test turns red.
+	// MUTATION：去掉租户过滤 / 租户行守卫；tenant-b-leak 会出现在 CSV 中，本测试转红。
 	if len(records) != 2 {
 		t.Fatalf("records=%v want header + tenant A row only", records)
 	}
@@ -129,7 +129,7 @@ func TestExportCSVInjectionGuard(t *testing.T) {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
 	records := readCSV(t, rec.Body.String())
-	// MUTATION: remove SafeCSVCell from string cells; the out_trade_no cell starts with '=' and this assertion fails.
+	// MUTATION：从字符串单元格中移除 SafeCSVCell；out_trade_no 单元格以 '=' 开头，这条断言会失败。
 	if got := records[1][7]; got != "'=cmd|' /C calc'!A0" {
 		t.Fatalf("out_trade_no cell=%q want quote-prefixed formula guard", got)
 	}
@@ -176,7 +176,7 @@ func TestUsageExportCSVShape(t *testing.T) {
 		t.Fatalf("usage filter=%+v want tenant 7 and max+1 limit", usage.got)
 	}
 	records := readCSV(t, rec.Body.String())
-	// MUTATION: omit the usage header row; this assertion fails because records[0] becomes req-usage-1.
+	// MUTATION：省略 usage 表头行；这条断言会失败，因为 records[0] 变成了 req-usage-1。
 	assertCSVRow(t, records[0], []string{"request_id", "user_id", "model", "tokens_input", "tokens_output", "cost_usd", "created_at"})
 	if len(records) != 2 {
 		t.Fatalf("records=%v want header + 1 data row", records)

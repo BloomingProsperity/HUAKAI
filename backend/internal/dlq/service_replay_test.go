@@ -46,14 +46,14 @@ func newReplayService(store recordStore, handler Handler) *Service {
 	}
 }
 
-// TestServiceReplaySurfacesMarkFailedError guards when a manual replay's handler fails AND
-// the subsequent MarkFailed state write ALSO fails, Replay must SURFACE the persistence error
-// (matching the worker path ProcessClaim) instead of discarding it with `_ =`. Otherwise the DLQ
-// row can stay inflight with a stale manual lease / retry-count and the operator only ever sees the
-// handler error, never learning the recovery system failed to persist its own failure state.
+// TestServiceReplaySurfacesMarkFailedError 守:当手动 replay 的 handler 失败、且
+// 随后的 MarkFailed 状态写入也失败时,Replay 必须把持久化错误暴露出来
+//(与 worker 路径 ProcessClaim 一致),而不是用 `_ =` 丢弃。否则该 DLQ 行会
+// 带着过期的手动 lease / retry-count 停留在 inflight,运营者只会看到 handler 错误,
+// 永远不知道 recovery 系统连自己的失败状态都没能落盘。
 //
-// Mutation check: revert Replay to `_ = s.store.MarkFailed(...); return rec, err`; the returned
-// error is then only the handler error, so errors.Is(err, errReplayMarkFailed) is false → red.
+// 变异检查:把 Replay 改回 `_ = s.store.MarkFailed(...); return rec, err`;此时返回的
+// 错误就只剩 handler 错误,于是 errors.Is(err, errReplayMarkFailed) 为 false → 红。
 func TestServiceReplaySurfacesMarkFailedError(t *testing.T) {
 	store := &fakeReplayStore{rec: &Record{EventKind: "k"}, markFailedErr: errReplayMarkFailed}
 	s := newReplayService(store, func(context.Context, Record) error { return errReplayHandlerBoom })
@@ -74,9 +74,9 @@ func TestServiceReplaySurfacesMarkFailedError(t *testing.T) {
 	}
 }
 
-// TestServiceReplayHandlerFailMarkFailedOK confirms the unchanged path: when MarkFailed succeeds,
-// Replay returns just the handler error (the fix only adds behavior on the MarkFailed-also-failed
-// branch, so the common handler-failure case must not regress).
+// TestServiceReplayHandlerFailMarkFailedOK 确认未改变的路径:当 MarkFailed 成功时,
+// Replay 只返回 handler 错误(本次修复只在 MarkFailed 也失败的分支上新增行为,
+// 所以常见的 handler 失败场景不能回退)。
 func TestServiceReplayHandlerFailMarkFailedOK(t *testing.T) {
 	store := &fakeReplayStore{rec: &Record{EventKind: "k"}, markFailedErr: nil}
 	s := newReplayService(store, func(context.Context, Record) error { return errReplayHandlerBoom })

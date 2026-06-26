@@ -17,7 +17,7 @@ type ControlsService interface {
 	GetKeyIPAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyIPAllowlistView, error)
 	SetKeyModelAllowlist(context.Context, userkeycontrols.SetKeyModelAllowlistRequest) (userkeycontrols.SetKeyModelAllowlistResult, error)
 	GetKeyModelAllowlist(context.Context, int64, int64, int64) (userkeycontrols.KeyModelAllowlistView, error)
-	// KEY-016: IP blacklist (parallel to allowlist)
+	// KEY-016:IP 黑名单(与白名单并行)
 	SetKeyIPBlacklist(context.Context, userkeycontrols.SetKeyIPBlacklistRequest) (userkeycontrols.SetKeyIPBlacklistResult, error)
 	GetKeyIPBlacklist(context.Context, int64, int64, int64) (userkeycontrols.KeyIPBlacklistView, error)
 }

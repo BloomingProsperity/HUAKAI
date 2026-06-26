@@ -22,8 +22,8 @@ import (
 )
 
 func TestMJSubmitFetchRoundTrip(t *testing.T) {
-	// MUTATION: fetch looks up a different task id; the returned task id below
-	// will not match the submitted id.
+	// 变异: fetch 查询了不同的 task id；下面返回的 task id 就不会与提交时的
+	// id 匹配。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMJPool(t, ctx)

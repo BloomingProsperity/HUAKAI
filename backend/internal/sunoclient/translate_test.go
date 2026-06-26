@@ -16,8 +16,7 @@ import (
 )
 
 func TestSunoSubmitTranslate(t *testing.T) {
-	// MUTATION: drop mv while translating the request; the preservation
-	// assertion below must go red because VPARM-004 callers depend on it.
+	// 变异:翻译请求时把 mv 丢掉;下面的保留性断言必然变红,因为 VPARM-004 的调用方依赖它。
 	body := `{"prompt":"write a synthpop chorus","mv":"chirp-v4","title":"Night Relay"}`
 	service := &serviceStub{submitResult: taskFixture(501, "suno_generate", json.RawMessage(body))}
 	mux := mountWithSession(service)
@@ -47,8 +46,7 @@ func TestSunoSubmitTranslate(t *testing.T) {
 }
 
 func TestSunoCustomModeVariant(t *testing.T) {
-	// MUTATION: drop notify_hook for the GoAPI-style variant; this test must
-	// fail because callback metadata must pass through untouched.
+	// 变异:对 GoAPI 风格的变体丢掉 notify_hook;本测试必然失败,因为 callback 元数据必须原样透传。
 	body := `{"custom_mode":true,"input":"Verse one\nChorus hook","notify_hook":"https://hook.example/suno","tags":"electropop","make_instrumental":false}`
 	service := &serviceStub{submitResult: taskFixture(502, "suno_custom", json.RawMessage(body))}
 	mux := mountWithSession(service)

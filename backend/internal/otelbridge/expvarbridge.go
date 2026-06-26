@@ -12,8 +12,8 @@ import (
 
 const meterName = "github.com/BloomingProsperity/HUAKAI/internal/otelbridge"
 
-// processStart approximates process boot time: this package initializes at gateway
-// startup, so the runtime uptime gauge is derived from it.
+// processStart 近似为进程启动时刻:本包在 gateway 启动时初始化,
+// 因此运行时 uptime 仪表盘据此推算。
 var processStart = time.Now()
 
 type bridgeCounter struct {
@@ -22,9 +22,9 @@ type bridgeCounter struct {
 	read        func() int64
 }
 
-// RegisterBridge exports selected expvar counters as OTel observable counters.
-// Values are read inside the scrape callback, so no background goroutine or
-// duplicate counter state is introduced.
+// RegisterBridge 将选定的一组 expvar 计数器导出为 OTel observable counter。
+// 计数值在 scrape 回调内部读取,因此不会引入后台 goroutine,
+// 也不会产生重复的计数器状态。
 func RegisterBridge(_ context.Context, mp otelmetric.MeterProvider) error {
 	if mp == nil {
 		return fmt.Errorf("nil meter provider")
@@ -154,16 +154,16 @@ func bridgeCounters() []bridgeCounter {
 			description: "Subscription group policy fail-closed decisions.",
 			read:        func() int64 { return readExpvarInt("group_policy_fail_closed_total") },
 		},
-		// Budget/rate-limit enforcement fail-open: when the budget store errors on
-		// reserve/settle/release, the gateway allows the request through rather than
-		// reject it. Bridging this counter (peer of group_policy_fail_open above) lets
-		// operators alert when enforcement is silently bypassed by backend failure.
+		// 预算/限流强制执行的 fail-open:当 budget store 在
+		// reserve/settle/release 上出错时,gateway 会放行该请求而非
+		// 拒绝它。把这个计数器(与上面 group_policy_fail_open 同列)桥接出来,
+		// 让运维能在强制执行被后端故障静默绕过时告警。
 		{
 			name:        "huakai_budget_failopen_total",
 			description: "Budget/rate enforcement fail-open events (store error bypassed enforcement; request allowed).",
 			read:        func() int64 { return readExpvarInt("budget_fail_open_total") },
 		},
-		// OPS-002: provider health counters bridged from channelhealth.Service transitions.
+		// OPS-002:从 channelhealth.Service 状态迁移桥接出来的 provider 健康计数器。
 		{
 			name:        "huakai_provider_error_total",
 			description: "Provider channel health error-rate or ban transitions (cooling_down / disabled).",
@@ -174,7 +174,7 @@ func bridgeCounters() []bridgeCounter {
 			description: "Provider channel health degraded transitions.",
 			read:        func() int64 { return readExpvarMapInt("provider_health", "degraded_total") },
 		},
-		// OPS-003: DLQ pending depth gauges per lane.
+		// OPS-003:按 lane 划分的 DLQ pending 深度仪表盘。
 		{
 			name:        "huakai_dlq_pending_depth_high",
 			description: "Pending DLQ rows in the HIGH lane.",
@@ -190,13 +190,12 @@ func bridgeCounters() []bridgeCounter {
 			description: "Pending DLQ rows in the LOW lane.",
 			read:        func() int64 { return readExpvarMapInt("dlq_depth", "depth_LOW") },
 		},
-		// F-GW-003 Phase 2: live process runtime-resource gauges, read directly from the
-		// Go runtime (not expvar-backed). Bridged through the same snapshot path as the
-		// counters above so an operator can target the gateway's own footprint with the
-		// existing alert-rule CRUD — heap_alloc as a memory-leak budget, goroutines as a
-		// goroutine-leak signal, uptime to catch crash-loop / restart. Only heap reads
-		// MemStats (one stop-the-world per scrape; the composite snapshot caches it), so
-		// the cost stays negligible.
+		// F-GW-003 第 2 阶段:实时进程运行时资源仪表盘,直接从 Go runtime 读取
+		// (而非 expvar 支撑)。通过与上面计数器相同的快照路径桥接,这样运维就能用
+		// 现有的 alert-rule CRUD 对 gateway 自身的资源占用设阈值告警 —— heap_alloc 作为
+		// 内存泄漏预算,goroutines 作为 goroutine 泄漏信号,uptime 用于捕捉 crash-loop /
+		// 重启。只有 heap 会读 MemStats(每次 scrape 一次 stop-the-world;复合快照会缓存它),
+		// 因此开销可忽略不计。
 		{
 			name:        "huakai_runtime_heap_alloc_bytes",
 			description: "Live Go heap-allocated bytes (process memory-budget signal).",
@@ -238,10 +237,10 @@ func bridgeCounters() []bridgeCounter {
 			description: "计价解析器按阶梯费率收费的请求数(阶梯降级比率的分母)。",
 			read:        func() int64 { return readExpvarMapInt("billing_pricing_eval", "tiered_charged_total") },
 		},
-		// F-CACHE-001 activation observability: aggregate the per-(vendor,model)-labeled
-		// L2 response-cache counters into flat totals so the cache's health is alertable
-		// (hit-rate collapse, size pressure) before/while an operator enables it. hit/miss
-		// are monotonic; size_bytes is a gauge bridged like the dlq depth gauges above.
+		// F-CACHE-001 激活可观测性:把按 (vendor,model) 打标签的 L2 响应缓存计数器
+		// 聚合成扁平总数,这样在运维启用缓存之前/期间,缓存健康度就是可告警的
+		// (命中率坍塌、容量压力)。hit/miss 是单调递增的;size_bytes 是一个仪表盘,
+		// 桥接方式与上面的 dlq 深度仪表盘相同。
 		{
 			name:        "huakai_cache_l2_hit_total",
 			description: "L2 response-cache hits, summed across vendor/model labels.",
@@ -280,9 +279,9 @@ func readExpvarMapInt(mapName, key string) int64 {
 	return value.Value()
 }
 
-// readExpvarMapSum totals every *expvar.Int entry in a labeled expvar.Map — used to
-// collapse a per-(vendor,model)-labeled cache counter into one flat metric for the
-// Prometheus export and the flat alert-rule snapshot.
+// readExpvarMapSum 对一个带标签的 expvar.Map 中每个 *expvar.Int 条目求和 —— 用于
+// 把按 (vendor,model) 打标签的缓存计数器折叠成一个扁平指标,供
+// Prometheus 导出和扁平的 alert-rule 快照使用。
 func readExpvarMapSum(name string) int64 {
 	metricMap, ok := expvar.Get(name).(*expvar.Map)
 	if !ok || metricMap == nil {

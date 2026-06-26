@@ -1,4 +1,4 @@
-// Package ssrfpolicy parses operator-controlled passthrough SSRF policy.
+// Package ssrfpolicy 解析由运营者控制的透传(passthrough)SSRF 策略。
 package ssrfpolicy
 
 import (
@@ -14,11 +14,10 @@ const (
 	DomainDenylistEnv      = "HUAKAI_PASSTHROUGH_DOMAIN_DENYLIST"
 	DomainAllowlistEnv     = "HUAKAI_PASSTHROUGH_DOMAIN_ALLOWLIST"
 	AllowPrivateIPHostsEnv = "HUAKAI_PASSTHROUGH_ALLOW_PRIVATE_IP_HOSTS"
-	// PrivateIPsEnabledEnv is the master kill-switch for the private-IP passthrough
-	// escape hatch (SEC-084). Unset or true keeps the per-host allowlist
-	// (AllowPrivateIPHostsEnv) behaviour unchanged; an explicit false force-denies
-	// every private-IP host regardless of the allowlist — an emergency lockdown
-	// that can only tighten policy, never widen it.
+	// PrivateIPsEnabledEnv 是私网 IP 透传逃生口(SEC-084)的总开关(master kill-switch)。
+	// 未设置或为 true 时,保持按主机的 allowlist(AllowPrivateIPHostsEnv)行为不变;
+	// 显式为 false 时,无视 allowlist 强制拒绝每一个私网 IP 主机——这是一种只会收紧、
+	// 绝不会放宽策略的紧急封锁。
 	PrivateIPsEnabledEnv = "HUAKAI_PASSTHROUGH_PRIVATE_IPS_ENABLED"
 )
 
@@ -27,9 +26,8 @@ type Policy struct {
 	domainDenylist     []hostPattern
 	domainAllowlist    []hostPattern
 	allowPrivateIPHost map[string]struct{}
-	// privateIPsDisabled is the master kill-switch (SEC-084). Its zero value is
-	// false (not disabled), so a zero Policy keeps the prior fail-closed-by-empty
-	// allowlist behaviour.
+	// privateIPsDisabled 是总开关(SEC-084)。其零值为 false(即未禁用),
+	// 因此零值的 Policy 仍保持先前"空 allowlist 即 fail-closed"的行为。
 	privateIPsDisabled bool
 }
 
@@ -98,9 +96,9 @@ func Parse(portAllowlist, domainDenylist, domainAllowlist, allowPrivateIPHosts, 
 	}, nil
 }
 
-// parsePrivateIPsDisabled reads the master kill-switch. Empty defaults to enabled
-// (not disabled) so the private-IP escape hatch keeps its prior behaviour; an
-// explicit false disables it. The env names the ALLOW state, so disabled = !allow.
+// parsePrivateIPsDisabled 读取总开关。空值默认为启用(即未禁用),这样私网 IP 逃生口
+// 保持其先前行为;显式为 false 则将其禁用。该 env 命名的是 ALLOW 状态,
+// 因此 disabled = !allow。
 func parsePrivateIPsDisabled(raw string) (bool, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -140,8 +138,7 @@ func (p Policy) AllowsHost(host string) bool {
 }
 
 func (p Policy) AllowsPrivateIPHost(host string) bool {
-	// SEC-084 master kill-switch: when the escape hatch is disabled, deny every
-	// private-IP host regardless of the per-host allowlist.
+	// SEC-084 总开关:当逃生口被禁用时,无视按主机的 allowlist,拒绝每一个私网 IP 主机。
 	if p.privateIPsDisabled {
 		return false
 	}

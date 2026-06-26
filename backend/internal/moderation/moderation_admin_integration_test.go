@@ -17,8 +17,8 @@ import (
 )
 
 func TestListModerationLog_TenantScopedPaginated(t *testing.T) {
-	// Mutation: drop the tenant predicate from ListModerationLog; the tenant B
-	// newest row wins page 1 and this test observes the wrong tenant/api key.
+	// 变异:把 tenant 谓词从 ListModerationLog 里去掉；租户 B
+	// 最新的那行会占据第 1 页,本用例就会看到错误的 tenant/api key。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))
@@ -52,8 +52,8 @@ func TestListModerationLog_TenantScopedPaginated(t *testing.T) {
 }
 
 func TestListBannedKeys(t *testing.T) {
-	// Mutation: list all disabled/active api_keys without the moderation
-	// violation evidence join; active and manually disabled keys leak into the list.
+	// 变异:不做 moderation 违规凭证 join,直接列出所有 disabled/active 的
+	// api_keys；active 和手动 disabled 的 key 就会泄漏进列表。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))
@@ -78,8 +78,8 @@ func TestListBannedKeys(t *testing.T) {
 }
 
 func TestUnbanReEnablesModerationDisabledKey(t *testing.T) {
-	// Mutation: remove the moderation_log insert from EnableModerationAPIKey;
-	// status flips active but the admin_unban audit assertion below goes red.
+	// 变异:把 EnableModerationAPIKey 里的 moderation_log 插入去掉；
+	// status 会翻成 active,但下面的 admin_unban 审计断言会变红。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))
@@ -110,9 +110,9 @@ func TestUnbanReEnablesModerationDisabledKey(t *testing.T) {
 }
 
 func TestUnbanRejectsNonModerationDisabledKey(t *testing.T) {
-	// Mutation: enable by id/status only, or accept any historical violation
-	// without the moderation-disable timestamp tie; this manually disabled key
-	// incorrectly becomes active.
+	// 变异:只按 id/status 启用,或者接受任意历史违规
+	// 而不绑定 moderation-disable 时间戳；这个手动 disabled 的 key
+	// 就会被错误地变成 active。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))
@@ -139,8 +139,8 @@ func TestUnbanRejectsNonModerationDisabledKey(t *testing.T) {
 }
 
 func TestUnbanTenantIsolation(t *testing.T) {
-	// Mutation: drop tenant_id from EnableModerationAPIKey; tenant A can enable
-	// tenant B's disabled key by id and this status assertion goes red.
+	// 变异:把 tenant_id 从 EnableModerationAPIKey 里去掉；租户 A 就能凭 id
+	// 启用租户 B 的 disabled key,本 status 断言随之变红。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))

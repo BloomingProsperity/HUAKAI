@@ -23,10 +23,10 @@ func EstimateRequestInputTokens(body []byte) int {
 	return EstimateRequestInputTokensWith(body, estimateText)
 }
 
-// EstimateRequestInputTokensWith is EstimateRequestInputTokens with an injectable
-// counter for plain-text string leaves (BILL-086/TOK-008). A real tokenizer can be
-// supplied for OpenAI-family text while base64/binary blobs stay capped exactly as
-// the default heuristic caps them. A nil counter falls back to the CJK heuristic.
+// EstimateRequestInputTokensWith 是 EstimateRequestInputTokens 的可注入版本,
+// 允许为纯文本字符串叶子传入自定义计数器(BILL-086/TOK-008)。可以为
+// OpenAI 系列文本注入真实 tokenizer,同时 base64/二进制大块仍按默认启发式
+// 的上限封顶。传入 nil 计数器时回退到 CJK 启发式。
 func EstimateRequestInputTokensWith(body []byte, textCounter func(string) int) int {
 	if textCounter == nil {
 		textCounter = estimateText
@@ -75,8 +75,8 @@ func estimateJSONValue(v any, textCounter func(string) int) int {
 
 func estimateStringLeaf(s string, textCounter func(string) int) int {
 	if len(s) >= blobMinLen && looksLikeBinaryBlob(s) {
-		// base64/binary blobs are never fed to a real tokenizer: encoding a 1MB
-		// data-URI would be both slow and meaningless. Cap them as a heuristic.
+		// base64/二进制大块绝不喂给真实 tokenizer:对 1MB 的 data-URI 做编码
+		// 既慢又毫无意义。作为启发式直接封顶。
 		estimate := (len(s) + 3) / 4
 		if estimate > blobTokenCap {
 			return blobTokenCap

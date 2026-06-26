@@ -1,22 +1,22 @@
-// Package main is the `modulecatalog-gen` tool: it reads the project feature
-// tree (docs/process/feature-tree/feature-tree.json) and emits the checked-in
-// static module catalog consumed by internal/modulecatalog via go:embed.
+// Package main 是 `modulecatalog-gen` 工具：它读取项目功能树
+// (docs/process/feature-tree/feature-tree.json)，生成签入仓库的
+// 静态模块目录，供 internal/modulecatalog 通过 go:embed 消费。
 //
-// Usage (from backend/):
+// 用法（在 backend/ 目录下）：
 //
 //	go run ./cmd/modulecatalog-gen
 //	go run ./cmd/modulecatalog-gen \
 //	    --feature-tree ../docs/process/feature-tree/feature-tree.json \
 //	    --out internal/modulecatalog/module-catalog.json
 //
-// Exit codes:
+// 退出码：
 //
-//	0 = catalog written (or already up to date)
-//	1 = generation / IO error
+//	0 = 已写出目录（或本已是最新）
+//	1 = 生成 / IO 错误
 //
-// The staleness guard (internal/modulecatalog staleness test) regenerates in
-// memory and diffs against the committed module-catalog.json, so editing the
-// feature tree without re-running this tool fails the unit gate.
+// 陈旧性守卫（internal/modulecatalog 的 staleness 测试）会在内存中重新生成，
+// 并与签入的 module-catalog.json 做 diff，因此改了功能树却没重跑本工具，
+// 会让单元测试门失败。
 package main
 
 import (

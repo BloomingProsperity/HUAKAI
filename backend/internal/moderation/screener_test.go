@@ -119,9 +119,9 @@ func TestScreener_AllowsCleanRequest(t *testing.T) {
 }
 
 func TestScreener_ExternalBlocksOverThreshold(t *testing.T) {
-	// Mutation: changing threshold comparison from >= to >, or ignoring
-	// category thresholds and trusting only flagged, leaves this exact-boundary
-	// violation unblocked and makes the decision/audit assertions red.
+	// 变异:把阈值比较从 >= 改成 >,或者忽略
+	// 类别阈值而只信任 flagged,都会让这条恰好压在边界上的
+	// 违规没被拦截,使 decision/audit 断言变红。
 	audit := &auditSpy{}
 	ban := &banCounterSpy{}
 	provider := NewExternalModerator(ExternalModeratorDeps{
@@ -179,8 +179,8 @@ func TestScreener_ExternalBlocksOverThreshold(t *testing.T) {
 }
 
 func TestScreener_ExternalDisabledNoCall(t *testing.T) {
-	// Mutation: calling the external screener when External.Enabled=false
-	// increments the spy and turns this default-off regression red.
+	// 变异:在 External.Enabled=false 时仍调用外部 screener,
+	// 会让 spy 自增,使这条「默认关闭」的回归用例变红。
 	external := &externalModeratorStub{err: errors.New("must not call external")}
 	s := NewScreener(ScreenerDeps{
 		Config: configStub{cfg: ModerationConfig{
@@ -214,8 +214,8 @@ func TestScreener_ExternalDisabledNoCall(t *testing.T) {
 }
 
 func TestScreener_ExternalFailOpenOnErrorAudits(t *testing.T) {
-	// Mutation: treating external provider outage as fail-closed, or returning
-	// pass without an audit event, makes the decision/audit assertions red.
+	// 变异:把外部 provider 故障当成 fail-closed,或者放行
+	// 但不写审计事件,都会让 decision/audit 断言变红。
 	audit := &auditSpy{}
 	ban := &banCounterSpy{}
 	external := &externalModeratorStub{err: errors.New("upstream moderation down")}
@@ -260,8 +260,8 @@ func TestScreener_ExternalFailOpenOnErrorAudits(t *testing.T) {
 }
 
 func TestScreener_KeywordBoundaryDoesNotMatchInsideWord(t *testing.T) {
-	// Mutation: restoring substring matching makes "ass" match "passage",
-	// turning this clean request into a false positive block.
+	// 变异:恢复 substring 匹配会让 "ass" 命中 "passage",
+	// 把这条干净请求误判成拦截。
 	s := NewScreener(ScreenerDeps{
 		Config:   configStub{cfg: ModerationConfig{Enabled: true, FailClosed: true}},
 		Keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 21, Keyword: "ass"}}},
@@ -323,8 +323,8 @@ func TestScreener_KeywordMatchNoBoundaryScriptsBySubstring(t *testing.T) {
 }
 
 func TestScreener_KeywordMatchNormalizesNFKCAndZeroWidth(t *testing.T) {
-	// Mutation: deleting NFKC normalization or zero-width stripping leaves this
-	// visually obvious "attack" unblocked.
+	// 变异:删掉 NFKC 归一化或零宽字符剥离,会让这个
+	// 肉眼一看就是 "attack" 的内容没被拦截。
 	s := NewScreener(ScreenerDeps{
 		Config:   configStub{cfg: ModerationConfig{Enabled: true, FailClosed: true}},
 		Keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 22, Keyword: "attack"}}},

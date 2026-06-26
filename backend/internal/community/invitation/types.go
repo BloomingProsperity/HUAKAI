@@ -13,15 +13,14 @@ const (
 	MonthlyTenantQuota  = 100
 	MaxGenerateAttempts = 64
 
-	// SelfReferralIdempotencyPrefix marks a user's single stable self-service
-	// referral code in client_idempotency_key. It is server-set only: the
-	// campaign Generate path rejects any caller-supplied key with this prefix
-	// (validateGenerateParams), so a user cannot forge the marker to dodge the
-	// monthly campaign quota. Self-coded rows are quota-exempt AND excluded from
-	// the campaign quota counter (CountTenantInvitationsSince).
+	// SelfReferralIdempotencyPrefix 在 client_idempotency_key 中标记用户那唯一
+	// 且稳定的自助推荐码。它仅由服务端设置：活动 Generate 路径会拒绝任何带此
+	// 前缀的调用方提供的键（validateGenerateParams），因此用户无法伪造该标记
+	// 来规避每月活动配额。自荐行既免配额，也被排除在活动配额计数器之外
+	//（CountTenantInvitationsSince）。
 	SelfReferralIdempotencyPrefix = "self:"
-	// selfReferralExpiryYears keeps a personal referral code effectively
-	// permanent (it is identity, not a time-boxed campaign code).
+	// selfReferralExpiryYears 让个人推荐码实际上永久有效
+	//（它是身份，而非有时限的活动码）。
 	selfReferralExpiryYears = 100
 )
 
@@ -34,8 +33,8 @@ var (
 	ErrExpired                    = errors.New("invitation: expired")
 	ErrExhausted                  = errors.New("invitation: exhausted")
 	ErrStoreNotConfigured         = errors.New("invitation: store not configured")
-	// ErrReservedIdempotencyKey rejects a caller-supplied client_idempotency_key
-	// that collides with the server-reserved self-referral prefix.
+	// ErrReservedIdempotencyKey 拒绝与服务端保留的自荐前缀冲突的、由调用方
+	// 提供的 client_idempotency_key。
 	ErrReservedIdempotencyKey = errors.New("invitation: reserved idempotency key prefix")
 )
 
@@ -87,8 +86,8 @@ type generateRecord struct {
 	ExpiresAt            time.Time
 	MaxUsage             int
 	ClientIdempotencyKey *string
-	// QuotaExempt skips the monthly campaign quota recheck inside the store
-	// insert. Set only by the self-referral get-or-create path; the campaign
-	// Generate path leaves it false so the cap still applies there.
+	// QuotaExempt 在 store 插入时跳过每月活动配额的复检。仅由自荐的
+	// get-or-create 路径设置；活动 Generate 路径保持其为 false，使上限在那里
+	// 仍然生效。
 	QuotaExempt bool
 }

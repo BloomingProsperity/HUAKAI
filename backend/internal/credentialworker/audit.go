@@ -14,8 +14,8 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// ErrAuditWriterMissing 表示 production 缺审计 writer (queries nil) — 不再
-// silent return nil 让审计字段悄悄丢 (RR-W5-002 修复)。
+// ErrAuditWriterMissing 表示 production 缺审计 writer (queries 为 nil) — 不再
+// 静默返回 nil 让审计字段悄悄丢 (RR-W5-002 修复)。
 var ErrAuditWriterMissing = errors.New("credentialworker: audit writer queries unset; production must wire dbauth.Queries")
 
 // recordAudit:
@@ -74,7 +74,7 @@ func (s *Scheduler) recordAudit(ctx context.Context, account dbbilling.ListAccou
 		return err
 	}
 
-	// Legacy 2-step path (dev/test).production wiring 必须把 tx 三件套装上。
+	// 旧版两步路径 (dev/test)。production wiring 必须把 tx 三件套装上。
 	var healthErr error
 	if hasHealthChange && s.healthStore != nil {
 		healthErr = s.healthStore.UpdateProviderAccountHealth(ctx, healthChange)
@@ -121,7 +121,7 @@ type dbAuditWriter struct {
 	queries *dbauth.Queries
 }
 
-// WriteRefreshAudit:queries nil 不再 silent return nil — RR-W5-002 步骤 2,
+// WriteRefreshAudit:queries 为 nil 时不再静默返回 nil — RR-W5-002 步骤 2,
 // production 误用 nil writer 时必须显式失败,防 audit fail-closed 静默丢字段。
 func (w dbAuditWriter) WriteRefreshAudit(ctx context.Context, entry *auth.RefreshAuditEntry) error {
 	if w.queries == nil {

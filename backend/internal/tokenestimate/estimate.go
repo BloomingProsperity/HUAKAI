@@ -1,16 +1,12 @@
-// Package tokenestimate provides a fast, dependency-free heuristic that
-// approximates the number of input tokens a request body will consume on a
-// given upstream vendor, without invoking a real tokenizer.
+// 包 tokenestimate 提供一个快速、无依赖的启发式算法，在不调用真实 tokenizer
+// 的前提下，近似估算一个请求 body 在指定上游 vendor 上会消耗的 input token 数。
 //
-// The heuristic walks the body rune-by-rune, classifies each rune into a small
-// number of character classes (CJK glyphs, latin word runs, digit runs,
-// whitespace/newlines, emoji, and several punctuation buckets), and accumulates
-// a per-class weight. Different vendors tokenize the same text differently —
-// CJK glyphs are cheap on some tokenizers and expensive on others, latin words
-// rarely map 1:1 to tokens — so the weight table is selected from the request's
-// protocol family. The result is deliberately an estimate: it is consumed by a
-// pre-dispatch routing gate that can only make a routing decision slightly more
-// or less conservative, never a billing or correctness decision.
+// 该启发式逐个 rune 扫描 body，把每个 rune 归入少数几个字符类（CJK 字形、latin
+// 单词串、数字串、空白/换行、emoji 以及若干标点桶），并按类累加权重。不同 vendor
+// 对同一段文本的分词方式不同——CJK 字形在某些 tokenizer 上便宜、在另一些上昂贵，
+// latin 单词很少与 token 一一对应——所以权重表按请求的 protocol family 选取。
+// 结果刻意只是个估计值：它被一个 pre-dispatch 路由闸门消费，该闸门至多只能让路由
+// 决策稍微更保守或更激进，绝不参与计费或正确性决策。
 package tokenestimate
 
 import (
@@ -19,25 +15,24 @@ import (
 	"unicode"
 )
 
-// classWeights holds the per-character-class multipliers used while scanning a
-// body. Values are intentionally fractional: a latin word of several letters
-// contributes roughly one weight unit, a CJK glyph contributes its own unit,
-// and whitespace contributes very little.
+// classWeights 保存扫描 body 时各字符类的乘数。这些值刻意取小数：由若干字母组成
+// 的一个 latin 单词大致贡献一个权重单位，一个 CJK 字形贡献自己的一个单位，空白
+// 贡献极少。
 type classWeights struct {
-	wordRun    float64 // one latin alphabetic run (a "word")
-	numberRun  float64 // one contiguous digit run
-	cjkGlyph   float64 // each individual CJK glyph
-	punct      float64 // ordinary punctuation rune
-	mathPunct  float64 // mathematical operators/symbols
-	pathPunct  float64 // url/path delimiters (/ : ? & = # %)
-	atSign     float64 // '@' (tends to split words)
-	emoji      float64 // each emoji / pictograph rune
-	newline    float64 // newline or tab
-	space      float64 // ordinary space
-	floor      int     // additive baseline once any content is present
+	wordRun    float64 // 一个 latin 字母串（一个"单词"）
+	numberRun  float64 // 一个连续数字串
+	cjkGlyph   float64 // 每个单独的 CJK 字形
+	punct      float64 // 普通标点 rune
+	mathPunct  float64 // 数学运算符/符号
+	pathPunct  float64 // url/path 分隔符 (/ : ? & = # %)
+	atSign     float64 // '@'（倾向于拆分单词）
+	emoji      float64 // 每个 emoji / 象形文字 rune
+	newline    float64 // 换行或 tab
+	space      float64 // 普通空格
+	floor      int     // 一旦有内容就加上的基线增量
 }
 
-// vendorClass groups protocol families that share tokenizer behaviour.
+// vendorClass 把分词行为相同的 protocol family 归为一类。
 type vendorClass int
 
 const (
@@ -46,11 +41,10 @@ const (
 	vendorGemini
 )
 
-// weightsFor returns the weight table for a vendor class. The numbers below are
-// hand-tuned approximations chosen so that (a) longer text always estimates
-// higher, and (b) CJK-heavy text estimates differently from latin-word text on
-// every vendor — the two properties the routing gate relies on. They are not
-// copied from any reference table; they are independent round-number choices.
+// weightsFor 返回某个 vendor class 的权重表。下面这些数字是手工调出的近似值，
+// 选取它们是为了让 (a) 文本越长估值总是越高，且 (b) 在每家 vendor 上 CJK 密集文本
+// 的估值都与 latin 单词文本不同——这正是路由闸门依赖的两个性质。它们不是从任何
+// 参考表抄来的，而是独立选定的整齐数值。
 func weightsFor(v vendorClass) classWeights {
 	switch v {
 	case vendorAnthropic:
@@ -65,7 +59,7 @@ func weightsFor(v vendorClass) classWeights {
 			mathPunct: 1.1, pathPunct: 1.2, atSign: 2.5, emoji: 1.1,
 			newline: 1.1, space: 0.2, floor: 1,
 		}
-	default: // vendorOpenAI and any unknown family fall back here
+	default: // vendorOpenAI 及任何未知 family 落到这里
 		return classWeights{
 			wordRun: 1.05, numberRun: 1.5, cjkGlyph: 0.85, punct: 0.4,
 			mathPunct: 2.0, pathPunct: 1.0, atSign: 2.0, emoji: 2.0,

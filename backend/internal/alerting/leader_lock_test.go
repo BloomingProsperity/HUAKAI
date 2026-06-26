@@ -37,8 +37,8 @@ func newLeaderLockScheduler(lock LeaderLock) (*Scheduler, *schedulerMetricSource
 	}), metric
 }
 
-// evaluated() is true iff evaluateOnce reached the per-tenant work (the metric
-// source was snapshotted).
+// evaluated() 当且仅当 evaluateOnce 进入了按租户处理的逻辑（即 metric
+// source 被快照过）时返回 true。
 func evaluated(m *schedulerMetricSourceStub) bool { return len(m.tenants()) > 0 }
 
 func TestScheduler_LeaderLock_LeaderEvaluatesAndReleases(t *testing.T) {
@@ -53,8 +53,8 @@ func TestScheduler_LeaderLock_LeaderEvaluatesAndReleases(t *testing.T) {
 	}
 }
 
-// MUTATION: removing the `else if !acquired { return }` branch makes a non-leader
-// replica evaluate too — this goes red (metric snapshotted when it must not be).
+// MUTATION：移除 `else if !acquired { return }` 分支会让非 leader 副本
+// 也去评估——本测试转红（在本不该快照时 metric 被快照了）。
 func TestScheduler_LeaderLock_NonLeaderSkips(t *testing.T) {
 	lock := &fakeLeaderLock{acquired: false}
 	s, metric := newLeaderLockScheduler(lock)
@@ -67,8 +67,7 @@ func TestScheduler_LeaderLock_NonLeaderSkips(t *testing.T) {
 	}
 }
 
-// A lock fault must fail OPEN — evaluate anyway rather than silently dropping
-// alerting.
+// 锁故障必须 fail OPEN——照样评估，而不是悄悄丢掉告警。
 func TestScheduler_LeaderLock_FailsOpenOnError(t *testing.T) {
 	lock := &fakeLeaderLock{err: errors.New("lock backend down")}
 	s, metric := newLeaderLockScheduler(lock)
@@ -78,7 +77,7 @@ func TestScheduler_LeaderLock_FailsOpenOnError(t *testing.T) {
 	}
 }
 
-// No lock configured = exact current single-replica behavior (always evaluate).
+// 未配置锁 = 与当前单副本行为完全一致（总是评估）。
 func TestScheduler_LeaderLock_NilEvaluates(t *testing.T) {
 	s, metric := newLeaderLockScheduler(nil)
 	s.evaluateOnce(context.Background())
@@ -87,21 +86,20 @@ func TestScheduler_LeaderLock_NilEvaluates(t *testing.T) {
 	}
 }
 
-// PostgresLeaderLock with a nil pool is a safe sole-leader pass-through.
+// 池为 nil 的 PostgresLeaderLock 是一个安全的唯一-leader 透传。
 func TestPostgresLeaderLock_NilPool(t *testing.T) {
 	var l *PostgresLeaderLock
 	got, release, err := l.TryAcquire(context.Background())
 	if err != nil || !got || release == nil {
 		t.Fatalf("nil PostgresLeaderLock must act as sole leader, got=%v err=%v", got, err)
 	}
-	release() // must not panic
+	release() // 不得 panic
 }
 
-// Against a real Postgres the advisory lock is mutually exclusive: while one
-// holder owns it a second TryAcquire returns false, and after release the lock
-// becomes available again. This is the property that dedups alerts across
-// replicas. Mutation guard: if TryAcquire ignored the pg_try_advisory_lock
-// result and always returned true, the held-case assertion goes red.
+// 针对真实 Postgres，advisory lock 是互斥的：当一个持有者占有它时，第二次
+// TryAcquire 返回 false，释放之后该锁再次可用。这正是用来在多副本间对告警
+// 去重的特性。变异守卫：如果 TryAcquire 忽略 pg_try_advisory_lock 的结果而
+// 总是返回 true，则“已持有”这一断言会转红。
 func TestPostgresLeaderLock_MutualExclusionPG(t *testing.T) {
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")
 	if dsn == "" {

@@ -1,8 +1,8 @@
 package clienterr
 
-// Public error catalog.
+// 对外错误目录。
 //
-// code | HTTP status | fixed message | covering test
+// 错误码 | HTTP 状态 | 固定消息 | 覆盖测试
 // registry_unknown_error | 500 | model registry failed | TestMessageForKnownCodesAndFallback
 // router_plan_error | 500 | route planning failed | TestMessageForKnownCodesAndFallback
 // pricing_unavailable | 503 | pricing is temporarily unavailable | TestMessageForKnownCodesAndFallback

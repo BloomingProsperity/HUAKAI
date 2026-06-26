@@ -1,5 +1,4 @@
-// Package userauditlog persists append-only user-facing audit events for
-// self-service API key management.
+// 包 userauditlog 为自助式 API key 管理持久化只追加的、面向用户的审计事件。
 package userauditlog
 
 import (
@@ -33,10 +32,10 @@ var (
 	ErrBackend        = errors.New("userauditlog: backend datastore error")
 )
 
-// Event is the append-only row written by the userkey service.
+// Event 是 userkey 服务写入的只追加行。
 //
-// It intentionally has no plaintext or key_hash fields. Callers may pass only
-// KeyPrefix for API key correlation.
+// 它有意不包含明文或 key_hash 字段。调用方只能传 KeyPrefix
+// 用于 API key 关联。
 type Event struct {
 	TenantID   int64
 	UserID     int64
@@ -49,7 +48,7 @@ type Event struct {
 	OccurredAt time.Time
 }
 
-// EventRecord is the persisted read model returned to a session user.
+// EventRecord 是返回给 session 用户的持久化读模型。
 type EventRecord struct {
 	ID         int64
 	TenantID   int64
@@ -70,12 +69,12 @@ type ListRequest struct {
 	Offset   int
 }
 
-// UserAuditSink is the write-side dependency injected into userkey.Service.
+// UserAuditSink 是注入到 userkey.Service 的写侧依赖。
 type UserAuditSink interface {
 	Record(ctx context.Context, event Event) error
 }
 
-// NoopSink preserves userkey behavior when durable audit storage is not wired.
+// NoopSink 在未接线持久化审计存储时,保持 userkey 的行为不变。
 type NoopSink struct{}
 
 func (NoopSink) Record(context.Context, Event) error { return nil }

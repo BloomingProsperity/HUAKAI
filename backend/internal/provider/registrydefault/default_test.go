@@ -67,7 +67,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 // dispatcher 取 RoundTripper 时 ErrUnknownProvider,即便 marshal/三注册表
 // 全对也整族不可用(kimi/qwen/glm/yi/baichuan/doubao/ernie/step/hunyuan/
 // minimax/cohere/ollama 12 平台曾如此)。占位 session 族开 env 后一并校验。
-// Mutation:从 transport/policy.go 删任一平台条目 → 对应子断言红。
+// 变异:从 transport/policy.go 删任一平台条目 → 对应子断言红。
 func TestEveryRegisteredPlatformHasTransportPolicy(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	for _, env := range []string{
@@ -415,7 +415,7 @@ func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
 // TestBuild_GeminiCodeAssistEnvGated 守卫 gemini_code_assist 出站注册的
 // env-gate 姿态:默认 off(不注册,避免把真实 OAuth session credential 默认发
 // 到 Google 内部 cloudcode-pa 端点);开 env 后注册且 Platform()=="gemini_code_assist"。
-// Mutation:把 registrydefault 的注册改成无条件 → 默认 off 子断言红;删注册 →
+// 变异:把 registrydefault 的注册改成无条件 → 默认 off 子断言红;删注册 →
 // 开 env 子断言红。
 func TestBuild_GeminiCodeAssistEnvGated(t *testing.T) {
 	t.Run("default off not registered", func(t *testing.T) {

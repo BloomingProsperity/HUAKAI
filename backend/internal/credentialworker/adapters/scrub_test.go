@@ -89,5 +89,5 @@ func TestMergeTokenResponseScrubsHostileCredentialFields(t *testing.T) {
 			t.Fatalf("scrub 后 marshal 仍含 %q: %s", hostileSubstring, rawStr)
 		}
 	}
-	_ = time.Now // keep time import (resp.ExpiresIn 间接用到)
+	_ = time.Now // 保留 time import（resp.ExpiresIn 间接用到）
 }

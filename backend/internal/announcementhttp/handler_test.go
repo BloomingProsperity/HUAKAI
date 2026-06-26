@@ -19,7 +19,7 @@ import (
 )
 
 func TestAnnounceUserSeesActiveOnly(t *testing.T) {
-	// MUTATION: ignore active/expires_at/published_at filters in ListActive; inactive, expired, or future rows leak into this response.
+	// 变异:ListActive 忽略 active/expires_at/published_at 过滤;未激活、已过期或尚未发布的行会泄漏到本响应中。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
 	mustCreateAnnouncement(t, svc, announcement.CreateInput{TenantID: 7, Title: "active-now", Body: "visible", PublishedAt: ptrTime(now.Add(-time.Hour))})
@@ -38,7 +38,7 @@ func TestAnnounceUserSeesActiveOnly(t *testing.T) {
 }
 
 func TestAnnounceTenantScoped(t *testing.T) {
-	// MUTATION: drop tenant_id predicate from ListActive; tenant B's row appears for tenant A.
+	// 变异:从 ListActive 去掉 tenant_id 谓词;租户 B 的行会出现在租户 A 处。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
 	mustCreateAnnouncement(t, svc, announcement.CreateInput{TenantID: 7, Title: "tenant-a", Body: "a"})
@@ -55,7 +55,7 @@ func TestAnnounceTenantScoped(t *testing.T) {
 }
 
 func TestAnnounceAdminCRUD(t *testing.T) {
-	// MUTATION: admin create/update/delete do not share the same store/list path as user fetch; one of the follow-up reads goes stale.
+	// 变异:admin 的 create/update/delete 与用户读取没有共用同一条 store/list 路径;后续某次读取会读到陈旧数据。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
 	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
@@ -111,7 +111,7 @@ func TestAnnounceAdminCRUD(t *testing.T) {
 }
 
 func TestAnnounceValidation(t *testing.T) {
-	// MUTATION: bypass HTTP/service validation; bad payloads persist instead of returning 400.
+	// 变异:绕过 HTTP/service 校验;非法 payload 被持久化而非返回 400。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
 	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
@@ -135,7 +135,7 @@ func TestAnnounceValidation(t *testing.T) {
 }
 
 func TestAnnounceAdminAuthRequired(t *testing.T) {
-	// MUTATION: treat any resolved admin token as authorized; non-admin role can create/update/delete.
+	// 变异:把任何已解析出的 admin token 都当作有权限;非 admin 角色也能 create/update/delete。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
 	existing := mustCreateAnnouncement(t, svc, announcement.CreateInput{TenantID: 7, Title: "locked", Body: "body"})
@@ -158,7 +158,7 @@ func TestAnnounceAdminAuthRequired(t *testing.T) {
 }
 
 func TestAnnounceUserSessionScopeTakesPrecedenceOverPublicTenantQuery(t *testing.T) {
-	// MUTATION: prefer public tenant_id query over authenticated session scope; tenant 8 data is returned to tenant 7's session.
+	// 变异:优先用公开的 tenant_id query 而非已认证 session 的 scope;租户 8 的数据被返回给租户 7 的 session。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
 	mustCreateAnnouncement(t, svc, announcement.CreateInput{TenantID: 7, Title: "session-tenant", Body: "a"})
@@ -176,7 +176,7 @@ func TestAnnounceUserSessionScopeTakesPrecedenceOverPublicTenantQuery(t *testing
 }
 
 func TestAnnounceUserBearerSessionScopeTakesPrecedenceOverPublicTenantQuery(t *testing.T) {
-	// MUTATION: ignore a valid session bearer and trust public tenant_id query; tenant 8 data is returned to tenant 7's session.
+	// 变异:忽略有效的 session bearer 而信任公开的 tenant_id query;租户 8 的数据被返回给租户 7 的 session。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
 	mustCreateAnnouncement(t, svc, announcement.CreateInput{TenantID: 7, Title: "bearer-tenant", Body: "a"})

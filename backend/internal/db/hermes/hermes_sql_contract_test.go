@@ -6,7 +6,7 @@ import (
 )
 
 func TestListConversationsByOwnerSQLHasTenantOwnerAndActiveFilters(t *testing.T) {
-	// Regression: deleting owner_user_id or deleted_at filters leaks cross-owner or deleted conversation rows.
+	// 回归:删掉 owner_user_id 或 deleted_at 过滤会泄露跨 owner 或已删除的会话行。
 	for _, required := range []string{
 		"WHERE tenant_id = $1::bigint",
 		"AND owner_user_id = $2::bigint",
@@ -19,7 +19,7 @@ func TestListConversationsByOwnerSQLHasTenantOwnerAndActiveFilters(t *testing.T)
 }
 
 func TestListMessagesByConversationSQLHasOwnerAndActiveConversationJoin(t *testing.T) {
-	// Regression: message history must join the parent conversation with owner and deleted filters, not only tenant/conversation ids.
+	// 回归:消息历史必须在 join 父会话时带上 owner 和已删除过滤，而不仅仅是 tenant/conversation id。
 	for _, required := range []string{
 		"INNER JOIN hermes_conversations c",
 		"AND c.deleted_at IS NULL",
@@ -33,7 +33,7 @@ func TestListMessagesByConversationSQLHasOwnerAndActiveConversationJoin(t *testi
 }
 
 func TestAppendMessageSQLRequiresActiveParentConversation(t *testing.T) {
-	// Regression: stream completion after DELETE must not insert messages into a soft-deleted conversation.
+	// 回归:DELETE 之后的流式补全绝不能往已软删除的会话里插入消息。
 	for _, required := range []string{
 		"content_ciphertext",
 		"FROM hermes_conversations c",
@@ -46,14 +46,14 @@ func TestAppendMessageSQLRequiresActiveParentConversation(t *testing.T) {
 }
 
 func TestUpdateConversationLastMessageAtSQLRequiresActiveConversation(t *testing.T) {
-	// Regression: stream completion after DELETE must not touch last_message_at on a soft-deleted conversation.
+	// 回归:DELETE 之后的流式补全绝不能触碰已软删除会话的 last_message_at。
 	if !strings.Contains(updateConversationLastMessageAt, "AND deleted_at IS NULL") {
 		t.Fatalf("UpdateConversationLastMessageAt SQL missing deleted_at guard:\n%s", updateConversationLastMessageAt)
 	}
 }
 
 func TestPurgeMessagesBeforeSQLHardDeletesExpiredRows(t *testing.T) {
-	// Regression: retention must be a true purge of expired message rows, not a parent soft-delete or no-op scan.
+	// 回归:保留期清理必须是对过期消息行的真删除，而不是父级软删除或空操作扫描。
 	for _, required := range []string{
 		"DELETE FROM hermes_messages",
 		"created_at < $1::timestamptz",

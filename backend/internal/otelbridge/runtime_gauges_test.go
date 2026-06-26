@@ -5,16 +5,14 @@ import (
 	"testing"
 )
 
-// TestRuntimeGaugesBridgedToAlertSnapshot verifies the live process runtime-resource
-// gauges (heap-allocated bytes, goroutine count, uptime seconds) are exposed through the
-// ExpvarMetricSource snapshot — the same metric map the alert engine evaluates rules
-// against — so an operator can threshold the gateway's own footprint via the existing
-// alert-rule CRUD (F-GW-003 Phase 2).
+// TestRuntimeGaugesBridgedToAlertSnapshot 验证实时进程运行时资源仪表盘
+// (heap 分配字节数、goroutine 数、uptime 秒数)通过 ExpvarMetricSource 快照
+// 暴露出来 —— 这正是 alert 引擎据以求值规则的那个指标 map —— 这样运维就能通过
+// 现有的 alert-rule CRUD 对 gateway 自身的资源占用设阈值(F-GW-003 第 2 阶段)。
 //
-// MUTATION: drop any of the three runtime entries from bridgeCounters() → its key is absent
-// from the snapshot → the assertion for that key goes RED. The live invariants (heap > 0,
-// goroutines >= 1) cannot be satisfied by the map's zero value, and uptime is guarded by an
-// explicit presence check (its >= 0 bound alone would pass the zero value).
+// 变异:从 bridgeCounters() 删除这三个运行时条目中的任一个 → 它的 key 在快照中缺失
+// → 针对该 key 的断言变红。实时不变量(heap > 0、goroutines >= 1)无法被 map 的零值
+// 满足,而 uptime 由一个显式的存在性检查守护(单凭它 >= 0 的下界,零值也会通过)。
 func TestRuntimeGaugesBridgedToAlertSnapshot(t *testing.T) {
 	snap, err := ExpvarMetricSource{}.Snapshot(context.Background(), 0)
 	if err != nil {

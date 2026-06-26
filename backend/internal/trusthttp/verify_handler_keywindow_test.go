@@ -8,23 +8,21 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 )
 
-// receipt verification must reject a receipt whose occurred_at falls outside the
-// signing key's [EffectiveFrom, EffectiveTo] window — even though the ed25519
-// signature is cryptographically valid. This is the leaked-rotated-key attack: an
-// old key valid only Jan–Mar 2026 signs a NEW receipt dated May 2026.
+// receipt 校验必须拒绝 occurred_at 落在签名 key 的 [EffectiveFrom, EffectiveTo] 窗口之外
+// 的 receipt——即便 ed25519 签名在密码学上有效。这就是泄漏的轮换 key 攻击:一把仅在
+// 2026 年 1–3 月有效的旧 key,去签一份日期为 2026 年 5 月的新 receipt。
 //
-// Mutation check: delete the SignatureOutsideKeyWindow branch in verify() and the
-// "outside" sub-assertion flips to valid=true status="signed-only" → red. The
-// "inside" control proves a receipt dated within the window still verifies, so the
-// check is discriminating (not a blanket reject).
+// 变异自检:删掉 verify() 里的 SignatureOutsideKeyWindow 分支,"outside" 子断言会翻成
+// valid=true status="signed-only" → 红。"inside" 对照证明落在窗口内的 receipt 仍然通过,
+// 因此该检查具有判别性(不是一刀切拒绝)。
 func TestVerifyHandlerRejectsReceiptSignedOutsideKeyWindow(t *testing.T) {
 	signer := mustTestSigner(t)
 	key := mustPubkeyFromSigner(t, signer, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	effectiveTo := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	key.EffectiveTo = &effectiveTo // rotated: valid only 2026-01-01 .. 2026-03-01
+	key.EffectiveTo = &effectiveTo // 已轮换:仅 2026-01-01 .. 2026-03-01 有效
 	handler := NewVerifyHandler(VerifyDeps{Registry: auditledger.NewMemoryPubkeyRegistry(key)})
 
-	// Attack: same (rotated) key signs a receipt dated AFTER its EffectiveTo.
+	// 攻击:同一把(已轮换的)key 去签一份日期晚于其 EffectiveTo 的 receipt。
 	outside := sampleTrustReceipt()
 	outside.OccurredAt = time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	canonOut := mustCanonicalReceipt(t, outside)
@@ -41,7 +39,7 @@ func TestVerifyHandlerRejectsReceiptSignedOutsideKeyWindow(t *testing.T) {
 		t.Fatalf("receipt signed outside key window must be rejected, got %+v", gotOut)
 	}
 
-	// Control: a receipt dated INSIDE the window still verifies.
+	// 对照:日期落在窗口之内的 receipt 仍然通过。
 	inside := sampleTrustReceipt()
 	inside.OccurredAt = time.Date(2026, 2, 15, 12, 0, 0, 0, time.UTC)
 	canonIn := mustCanonicalReceipt(t, inside)
@@ -56,22 +54,21 @@ func TestVerifyHandlerRejectsReceiptSignedOutsideKeyWindow(t *testing.T) {
 	}
 }
 
-// TestVerifyHandlerSignerOnlyDoesNotWindowRejectHistoricalReceipt guards the S1-032a
-// in signer-only mode (no registry), lookupKey fabricates the
-// key with EffectiveFrom = verification time, so a naive window check would reject every
-// historical receipt (occurred_at < now). The fix only enforces the window when a real
-// registry is present. Here a receipt dated 2026-05-27 is verified at "now"=2026-06-01
-// via Signer-only deps and MUST still verify.
+// TestVerifyHandlerSignerOnlyDoesNotWindowRejectHistoricalReceipt 守护 S1-032a:
+// 在仅 signer 模式(无 registry)下,lookupKey 会捏造一把 EffectiveFrom = 校验时刻的 key,
+// 因此幼稚的窗口检查会拒绝每一份历史 receipt(occurred_at < now)。修复方案只在存在真实
+// registry 时才强制窗口。这里一份日期为 2026-05-27 的 receipt 在 "now"=2026-06-01 时
+// 经由仅 Signer 的 deps 校验,必须仍然通过。
 //
-// Mutation check: drop the `h.deps.Registry != nil` guard on the window check and this
-// receipt flips to valid=false reason="signature_outside_key_window" → red.
+// 变异自检:去掉窗口检查上的 `h.deps.Registry != nil` 守卫,这份 receipt 会翻成
+// valid=false reason="signature_outside_key_window" → 红。
 func TestVerifyHandlerSignerOnlyDoesNotWindowRejectHistoricalReceipt(t *testing.T) {
 	signer := mustTestSigner(t)
 	handler := NewVerifyHandler(VerifyDeps{
 		Signer: signer,
 		Now:    func() time.Time { return time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC) },
 	})
-	receipt := sampleTrustReceipt() // OccurredAt 2026-05-27, before the fabricated EffectiveFrom
+	receipt := sampleTrustReceipt() // OccurredAt 2026-05-27,早于被捏造的 EffectiveFrom
 	canonical := mustCanonicalReceipt(t, receipt)
 	req := verifyRequestBody(t,
 		base64.StdEncoding.EncodeToString(canonical),
@@ -84,18 +81,18 @@ func TestVerifyHandlerSignerOnlyDoesNotWindowRejectHistoricalReceipt(t *testing.
 	}
 }
 
-// TestVerifyHandlerRevocationTakesPrecedenceOverKeyWindow guards the
-// P2 fix: when a key is BOTH CRL-revoked AND signed a receipt outside its effective window,
-// the response must report the REVOCATION (key_revoked / key_status=revoked), not mask it as
-// signature_outside_key_window — operators must still see that a compromised key was revoked.
+// TestVerifyHandlerRevocationTakesPrecedenceOverKeyWindow 守护 P2 修复:当一把 key 既被
+// CRL 撤销、又签了一份落在其有效窗口之外的 receipt 时,响应必须报告撤销
+//(key_revoked / key_status=revoked),而不是把它掩盖成 signature_outside_key_window——
+// 运维必须仍能看到一把被攻陷的 key 已被撤销。
 //
-// Mutation check: move the window check before the revoked branch (the pre-fix order) and
-// this asserts key_revoked but gets signature_outside_key_window → red.
+// 变异自检:把窗口检查移到 revoked 分支之前(修复前的顺序),本测试断言 key_revoked
+// 却得到 signature_outside_key_window → 红。
 func TestVerifyHandlerRevocationTakesPrecedenceOverKeyWindow(t *testing.T) {
 	signer := mustTestSigner(t)
 	key := mustPubkeyFromSigner(t, signer, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	effectiveTo := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	key.EffectiveTo = &effectiveTo // sample receipt (2026-05-27) is outside this window
+	key.EffectiveTo = &effectiveTo // 样例 receipt(2026-05-27)落在此窗口之外
 	handler := NewVerifyHandler(VerifyDeps{
 		Registry: auditledger.NewMemoryPubkeyRegistry(key),
 		Revocations: Revocations{

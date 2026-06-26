@@ -420,8 +420,8 @@ func TestAPIKeyResolver_RejectsForeignFormat(t *testing.T) {
 		"Bearer sk-1234567890abcdef",
 		"Bearer xyz_random_token_here",
 		"NotBearer hk_live_xyz",
-		"Bearer ", // empty
-		"",        // missing header
+		"Bearer ", // 空
+		"",        // 缺失 header
 	} {
 		_, err := r.Resolve(ctx, newRequest(t, bad))
 		if !errors.Is(err, ErrUnauthorized) {

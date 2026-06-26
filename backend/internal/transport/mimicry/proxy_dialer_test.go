@@ -11,14 +11,13 @@ import (
 	"time"
 )
 
-// PROXY-02a: per-account proxy must be dialed BENEATH the uTLS handshake so the
-// egress IP is the proxy's while the JA3 stays the mimicry fingerprint.
+// PROXY-02a:每账号代理必须在 uTLS 握手【之下】拨号,从而出口 IP 是代理的,
+// 而 JA3 仍是伪装指纹。
 
-// TestHTTPConnectDialer_TunnelsThroughProxy is the discriminating test: it spins
-// a minimal HTTP CONNECT proxy stub and asserts the dialer issues a CONNECT to
-// the intended target THROUGH the proxy (with Proxy-Authorization). If the dial
-// bypassed the proxy, the stub would never see the CONNECT and gotTarget stays
-// empty -> red.
+// TestHTTPConnectDialer_TunnelsThroughProxy 是有区分力的测试:它起一个最小的
+// HTTP CONNECT 代理桩,断言 dialer 经代理向目标发出 CONNECT(带
+// Proxy-Authorization)。若拨号绕过了代理,桩永远收不到 CONNECT,gotTarget 保持
+// 为空 -> 转红。
 func TestHTTPConnectDialer_TunnelsThroughProxy(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -68,10 +67,9 @@ func TestHTTPConnectDialer_TunnelsThroughProxy(t *testing.T) {
 	}
 }
 
-// TestUtlsDialer_DialRawUsesProxyDialer guards the seam: with a ProxyDialer set,
-// dialRaw must route through it. MUTATION: making dialRaw ignore ProxyDialer
-// (revert to NetDialer) -> called stays false -> red, i.e. the real egress IP
-// would leak past the proxy.
+// TestUtlsDialer_DialRawUsesProxyDialer 守护这道接缝:设置了 ProxyDialer 时,
+// dialRaw 必须经它路由。变异:让 dialRaw 忽略 ProxyDialer(回退到 NetDialer)->
+// called 保持 false -> 转红,即真实出口 IP 会越过代理泄露。
 func TestUtlsDialer_DialRawUsesProxyDialer(t *testing.T) {
 	srv, cli := net.Pipe()
 	defer srv.Close()
@@ -92,7 +90,7 @@ func TestUtlsDialer_DialRawUsesProxyDialer(t *testing.T) {
 	}
 }
 
-// PROXY-06: socks5 is now supported on the mimicry path.
+// PROXY-06:伪装路现已支持 socks5。
 func TestProxyDialerFromURL_Socks5Supported(t *testing.T) {
 	for _, raw := range []string{"socks5://127.0.0.1:1080", "socks5h://u:p@127.0.0.1:1080"} {
 		pu, _ := url.Parse(raw)
@@ -102,7 +100,7 @@ func TestProxyDialerFromURL_Socks5Supported(t *testing.T) {
 	}
 }
 
-// An unknown scheme still fails loud (never a silent direct connection).
+// 未知 scheme 仍然 fail-loud(绝不静默直连)。
 func TestProxyDialerFromURL_RejectsUnknownScheme(t *testing.T) {
 	pu, _ := url.Parse("quic://127.0.0.1:1080")
 	if _, err := proxyDialerFromURL(pu); err == nil {

@@ -12,8 +12,8 @@ import (
 )
 
 func TestExternalMultiKeyFreeze(t *testing.T) {
-	// Mutation: removing per-key freeze after 429 makes the third request reuse
-	// key-a inside its freeze window, so the authorization sequence assertion is red.
+	// 变异:去掉 429 之后的 per-key 冻结,会让第三个请求在冻结窗口内
+	// 复用 key-a,于是 authorization 序列断言变红。
 	now := time.Date(2026, 6, 6, 1, 2, 3, 0, time.UTC)
 	var authHeaders []string
 	provider := NewExternalModerator(ExternalModeratorDeps{
@@ -59,8 +59,8 @@ func TestExternalMultiKeyFreeze(t *testing.T) {
 }
 
 func TestExternalImageByteCap(t *testing.T) {
-	// Mutation: enforcing caps after the HTTP request, or checking only decoded
-	// raw bytes and ignoring data-URL length, increments calls and fails this test.
+	// 变异:在 HTTP 请求之后才执行上限校验,或只检查解码后的
+	// raw 字节而忽略 data-URL 长度,都会让 calls 自增并使本用例失败。
 	calls := 0
 	provider := NewExternalModerator(ExternalModeratorDeps{
 		HTTPClient: &http.Client{Transport: moderationRoundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -90,8 +90,8 @@ func TestExternalImageByteCap(t *testing.T) {
 }
 
 func TestExternalThresholdRequiresReturnedCategoryScore(t *testing.T) {
-	// Mutation: reading a missing score as Go's zero value makes threshold 0
-	// block a category the provider did not score.
+	// 变异:把缺失的分数当作 Go 的零值读取,会让阈值 0
+	// 拦截一个 provider 根本没有打分的类别。
 	provider := NewExternalModerator(ExternalModeratorDeps{
 		HTTPClient: &http.Client{Transport: moderationRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 			body := `{"results":[{"flagged":false,"categories":{},"category_scores":{"violence":0.12}}]}`
@@ -113,8 +113,8 @@ func TestExternalThresholdRequiresReturnedCategoryScore(t *testing.T) {
 }
 
 func TestExternalSSRF(t *testing.T) {
-	// Mutation: replacing the default SSRF-protected client with http.DefaultClient
-	// attempts to dial loopback instead of returning ErrOAuthEndpointBlocked.
+	// 变异:把默认的 SSRF 防护客户端换成 http.DefaultClient,
+	// 会尝试拨号 loopback,而不是返回 ErrOAuthEndpointBlocked。
 	provider := NewExternalModerator(ExternalModeratorDeps{})
 	_, err := provider.ScreenExternal(context.Background(), ScreenRequest{
 		Body: []byte("ssrf fixture"),

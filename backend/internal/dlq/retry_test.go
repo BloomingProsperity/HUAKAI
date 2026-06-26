@@ -65,11 +65,10 @@ func TestLaneForKind(t *testing.T) {
 }
 
 func TestReplicaStatusForKindAuditLedgerEntryNone(t *testing.T) {
-	// Risk killed: audit_ledger_entry is a primary write intent, not a replica.
-	// If it starts as pending, MarkDelivered/MarkFailed will not clear it and
-	// operators see a misleading stuck replica state.
-	// Mutation self-check: returning ReplicaStatusPending for this kind makes
-	// this assertion fail.
+	// 消除的风险：audit_ledger_entry 是一个主写入意图，而非副本。
+	// 若它初始为 pending，MarkDelivered/MarkFailed 不会清除它，运营者会看到
+	// 一个误导性的卡住副本状态。
+	// 变异自检：对该 kind 返回 ReplicaStatusPending 会让本断言失败。
 	if got := ReplicaStatusForKind(EventKindAuditLedgerEntry); got != ReplicaStatusNone {
 		t.Fatalf("audit ledger entry replica status=%q want %q", got, ReplicaStatusNone)
 	}

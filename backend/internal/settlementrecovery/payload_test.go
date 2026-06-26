@@ -87,7 +87,7 @@ func fixtureCompletionEvent(t *testing.T) eventbus.RequestCompletionEvent {
 // TestPayload_RoundTrip 守 payload 字段对齐 — FromCompletionEvent + Encode +
 // Decode + ToSettleRequest 后所有非 func 字段必须 byte-identical 回 SettleRequest。
 //
-// Mutation:把 FromCompletionEvent 漏一个字段(比如 SnapshotVersion 不赋值),
+// 变异:把 FromCompletionEvent 漏一个字段(比如 SnapshotVersion 不赋值),
 // ToSettleRequest 出来的 req 该字段为空 → 本用例必红。
 func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 	event := fixtureCompletionEvent(t)
@@ -157,7 +157,7 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 		t.Fatalf("EmitSchedulerOutbox=%v want %v", got.EmitSchedulerOutbox, original.EmitSchedulerOutbox)
 	}
 	// item 1: protocol_loss 必须存活 DLQ replay round-trip,否则重放写 "[]"。
-	// Mutation: 删 FromCompletionEvent 或 ToSettleRequest 的 ProtocolLoss 赋值 → 空 → RED。
+	// 变异: 删 FromCompletionEvent 或 ToSettleRequest 的 ProtocolLoss 赋值 → 空 → 红。
 	if !containsCode(lossCodes(t, got.ProtocolLoss), "dlq_protocol_loss_roundtrip") {
 		t.Fatalf("ProtocolLoss lost in round-trip: got codes=%v want contains dlq_protocol_loss_roundtrip (raw=%s)",
 			lossCodes(t, got.ProtocolLoss), got.ProtocolLoss)
@@ -167,7 +167,7 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 // outbox intent 必须是可 JSON 持久化的 bool,post-delivery settle replay 成功
 // 时才能补写原本应该跟 Tx2 同事务产生的 scheduler_outbox 行。
 //
-// Mutation:删 FromCompletionEvent 或 ToSettleRequest 的 EmitSchedulerOutbox
+// 变异:删 FromCompletionEvent 或 ToSettleRequest 的 EmitSchedulerOutbox
 // 赋值 → worker 重放不 emit outbox → 本用例必红。
 func TestPayload_ToSettleRequest_SchedulerOutboxIntentPreserved(t *testing.T) {
 	event := fixtureCompletionEvent(t)
@@ -209,7 +209,7 @@ func TestPayload_JSONShape_UsesSerializableOutboxIntent(t *testing.T) {
 	}
 }
 
-// TestValidate_RejectsInvalidSource Mutation: 把 switch case 改成 default 接受
+// TestValidate_RejectsInvalidSource 变异: 把 switch case 改成 default 接受
 // → 本用例必红。
 func TestValidate_RejectsInvalidSource(t *testing.T) {
 	p := Payload{Source: "bogus", Settle: settleRequestPersisted{ClaimID: 1, TenantID: 1}}
@@ -218,7 +218,7 @@ func TestValidate_RejectsInvalidSource(t *testing.T) {
 	}
 }
 
-// TestValidate_RejectsMissingClaimID Mutation: 删 ClaimID==0 check → 红。
+// TestValidate_RejectsMissingClaimID 变异: 删 ClaimID==0 check → 红。
 func TestValidate_RejectsMissingClaimID(t *testing.T) {
 	p := Payload{Source: SourceStream, Settle: settleRequestPersisted{ClaimID: 0, TenantID: 1}}
 	if err := p.Validate(); err == nil {
@@ -226,7 +226,7 @@ func TestValidate_RejectsMissingClaimID(t *testing.T) {
 	}
 }
 
-// TestValidate_RejectsMissingTenantID Mutation: 删 TenantID==0 check → 红。
+// TestValidate_RejectsMissingTenantID 变异: 删 TenantID==0 check → 红。
 func TestValidate_RejectsMissingTenantID(t *testing.T) {
 	p := Payload{Source: SourceStream, Settle: settleRequestPersisted{ClaimID: 1, TenantID: 0}}
 	if err := p.Validate(); err == nil {
@@ -242,7 +242,7 @@ func TestValidate_RejectsMissingTenantID(t *testing.T) {
 // 在栈本地副本上补,recovery payload 取的是外层 event,会得到空 audit_request_id
 // → worker 重放写 NULL → audit/receipt 链断。
 //
-// Mutation 自检:删 FromCompletionEvent 里的 `if auditRequestID == "" { = event.RequestID }`
+// 变异自检:删 FromCompletionEvent 里的 `if auditRequestID == "" { = event.RequestID }`
 // → payload.Settle.AuditRequestID 为空,本用例必 red。
 func TestPayload_FromCompletionEvent_NormalizesEmptyAuditRequestID(t *testing.T) {
 	event := fixtureCompletionEvent(t)
@@ -281,7 +281,7 @@ func TestPayload_FromCompletionEvent_NormalizesEmptyAuditRequestID(t *testing.T)
 // (chat_completions_handler_headers.go:264)/billing_persister_handler 都
 // 自己规范化过 SettleRequest.AuditRequestID,FromCompletionEvent 不应再二次覆盖。
 //
-// Mutation 自检:把 normalize 改成 `auditRequestID = event.RequestID` 无条件赋值
+// 变异自检:把 normalize 改成 `auditRequestID = event.RequestID` 无条件赋值
 // → 本用例必 red (preserve 失效)。
 func TestPayload_FromCompletionEvent_PreservesExplicitAuditRequestID(t *testing.T) {
 	event := fixtureCompletionEvent(t)
