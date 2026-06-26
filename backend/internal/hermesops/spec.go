@@ -45,6 +45,12 @@ const (
 	// 补 account_health_diagnose(单账号)缺的"跨账号看哪些通道不健康"。只读 → 仅写 hermes_tool_calls。
 	ToolChannelHealthList = "channel_health_list"
 
+	// ToolModelResolveDiagnose(0153 迁移准入)诊断一个公开模型别名在调用方租户内的路由解析:
+	// 落到哪些上游池(pool group)、各 binding 的优先级/权重/选号模式/限流/fallback,以及该模型的
+	// 能力/上下文窗口/协议族。只读 → 仅写 hermes_tool_calls。投影 safe-by-construction:绝不露 binding
+	// 上的 SystemPrompt/SensitiveWords/ParamOverride 等自由文本运营配置(只降级为存在标记/计数)。
+	ToolModelResolveDiagnose = "model_resolve_diagnose"
+
 	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
 	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory
 	// lock, idempotency). They are registered with Mutating=true so the read-only
