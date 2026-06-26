@@ -43,8 +43,11 @@ export const PIPELINE_NAV: NavSection[] = [
     key: 'keys',
     shell: 'user',
     label: 'API Key',
-    hint: '签发、接入客户端、撤销',
-    items: [{ path: '/keys', label: '我的密钥', built: true }],
+    hint: '签发、接入客户端、撤销、在线调试',
+    items: [
+      { path: '/keys', label: '我的密钥', built: true },
+      { path: '/playground', label: '在线调试台', built: true },
+    ],
   },
   {
     stage: 3,
