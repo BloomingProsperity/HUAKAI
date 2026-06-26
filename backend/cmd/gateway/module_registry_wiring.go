@@ -297,6 +297,44 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	// ── registry: 上游模型目录同步 ────────────────────────────────────────────
+	// Probe: 同步服务接线即 wired。只报 wired/degraded,不含任何模型明细。
+	modelSync := d.modelSync
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "registry.modelsync",
+		Category: "registry",
+		Title:    "Upstream model catalog sync",
+		Capabilities: []string{
+			"upstream model catalog sync",
+			"actor-attributed manual sync",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if modelSync == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "model sync service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	// ── media: 异步媒体任务(图像等)────────────────────────────────────────────
+	// Probe: 媒体任务服务接线即 wired。只报 wired/degraded,不含任何任务/用户明细。
+	mediaTaskService := d.mediaTaskService
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "media.task",
+		Category: "media",
+		Title:    "Async media tasks",
+		Capabilities: []string{
+			"async media task submit/status/list",
+			"pluggable async media providers",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if mediaTaskService == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "media task service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	return reg
 }
 
