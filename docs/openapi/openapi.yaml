@@ -2027,6 +2027,53 @@ paths:
         '403': { description: Insufficient role. }
         '503': { description: Health source not configured. }
 
+  /v1/admin/backup/manifest:
+    get:
+      summary: Read-only backup manifest (metadata only)
+      description: >
+        只读"可备份清单":表名 + 行数估算(pg_class.reltuples)+ schema/迁移版本 +
+        脱敏策略声明。NOT a data export — 不返回任何业务数据、零写入、零凭据外泄。
+        platform_admin only(全库元数据属平台级)。真正的数据导出 bundle 与恢复(写入)是后续
+        Owner-gated 切片。
+      operationId: getAdminBackupManifest
+      tags: [admin, observability]
+      x-huakai-spec-source:
+        - backend/internal/backuphttp/store.go
+        - backend/internal/backuphttp/handler.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Backup manifest metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, schema_version, schema_dirty, estimate_basis, table_count, tables, redaction_policy]
+                properties:
+                  object: { type: string }
+                  schema_version: { type: integer, format: int64 }
+                  schema_dirty: { type: boolean }
+                  estimate_basis: { type: string }
+                  table_count: { type: integer }
+                  tables:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, estimated_rows]
+                      properties:
+                        name: { type: string }
+                        estimated_rows: { type: integer, format: int64 }
+                  redaction_policy:
+                    type: object
+                    properties:
+                      note: { type: string }
+                      redacted_columns:
+                        type: array
+                        items: { type: string }
+        '401': { description: Missing or invalid admin credential. }
+        '403': { description: platform_admin role required. }
+        '503': { description: Backup manifest backend unavailable. }
+
   /admin/v1/risk/overview:
     get:
       tags: [admin-risk]

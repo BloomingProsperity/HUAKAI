@@ -164,6 +164,7 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/health', label: '系统健康', built: true },
       { path: '/admin/version', label: '版本与维护', built: true },
       { path: '/admin/logs', label: '日志与诊断', built: true },
+      { path: '/admin/backup', label: '备份与恢复', built: true },
     ],
   },
   {

@@ -798,6 +798,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	mountPlatformSettingsRoutes(r, d)
 	mountUsageAdminRoutes(r, d)
 	mountSystemHealthRoutes(r, d)   // ADMIN-042
+	mountBackupRoutes(r, d)         // 只读备份 manifest(platform_admin)
 	mountModuleRegistryRoutes(r, d) // WAVE H2 module-knowledge spine
 	var adminResolver adminIdentityResolver
 	if d.adminAuth != nil {

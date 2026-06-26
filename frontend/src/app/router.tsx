@@ -38,6 +38,7 @@ import { AvailableChannelsPage } from '../features/availablechannels/AvailableCh
 import { MyGroupsPage } from '../features/megroups/MyGroupsPage'
 import { AlertingPage } from '../features/alerting/AlertingPage'
 import { RiskOverviewPage } from '../features/risk/RiskOverviewPage'
+import { BackupPage } from '../features/backup/BackupPage'
 import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
 import { GroupsPage } from '../features/groups/GroupsPage'
 import { ModelRegistryPage } from '../features/modelregistry/ModelRegistryPage'
@@ -101,6 +102,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/security': <AuditPage />,
   '/admin/alerting': <AlertingPage />,
   '/admin/risk': <RiskOverviewPage />,
+  '/admin/backup': <BackupPage />,
 }
 
 const domainRoutes = PIPELINE_NAV.flatMap((section) =>
