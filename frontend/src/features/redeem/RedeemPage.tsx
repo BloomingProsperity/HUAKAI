@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { fetchSiteConfig } from '../../auth/siteConfig'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
 import { listRedemptions, redeemVoucher } from './api'
@@ -28,6 +29,22 @@ export function RedeemPage() {
   const [historyLoading, setHistoryLoading] = useState(true)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
+  // promo 总开关:默认 true 避免加载时闪烁;仅站点配置**显式** false 才关闭兑换入口(行为保持)。
+  const [promoEnabled, setPromoEnabled] = useState(true)
+
+  useEffect(() => {
+    let alive = true
+    fetchSiteConfig()
+      .then((cfg) => {
+        if (alive) setPromoEnabled(cfg.promoEnabled)
+      })
+      .catch(() => {
+        /* 取站点配置失败不拦兑换(后端门控仍是最终防线) */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // 同一次输入意图绑定同一个幂等键:输入框内容变化前复用, 提交成功后轮换。
   // 这样「连点提交」走同一个 key 被后端合并, 而「兑完再兑下一张」拿到新 key。
@@ -111,11 +128,16 @@ export function RedeemPage() {
         <label htmlFor="redeem-code" style={{ fontSize: 13, fontWeight: 600, color: 'var(--hk-ink-700)' }}>
           兑换码
         </label>
+        {!promoEnabled && (
+          <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-warn-bg, #fff8e1)', border: '1px solid var(--hk-warn, #b8860b)', color: 'var(--hk-ink-700)' }}>
+            兑换功能当前已由运营者关闭,暂不可兑换。
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'stretch' }}>
           <input
             id="redeem-code"
             value={code}
-            disabled={submitting}
+            disabled={submitting || !promoEnabled}
             placeholder="粘贴或输入兑换码"
             autoComplete="off"
             spellCheck={false}
@@ -136,7 +158,7 @@ export function RedeemPage() {
               letterSpacing: '0.04em',
             }}
           />
-          <button type="button" disabled={submitting} onClick={submit} style={submitBtn}>
+          <button type="button" disabled={submitting || !promoEnabled} onClick={submit} style={submitBtn}>
             {submitting ? '兑换中…' : '兑换'}
           </button>
         </div>

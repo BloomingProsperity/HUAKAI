@@ -55,6 +55,9 @@ export interface SiteConfig {
   captchaSiteKey: string
   /** 是否启用通行密钥登录。 */
   passkeyEnabled: boolean
+  /** 兑换码(promo)总开关。**行为保持**:缺省/未下发视为开启,仅运营者显式 false 才关闭兑换入口
+   *  ——与后端 redeem 门控语义一致(Owner A 方案),故不用 fail-closed 的 asBool。 */
+  promoEnabled: boolean
   /** 启用的社交登录 provider 列表(已去空白/去重/小写归一)。 */
   oauthProviders: string[]
   /** 品牌/法律链接(用于条款、文档入口);缺省为空串。 */
@@ -113,6 +116,8 @@ export function parseSiteConfig(raw: RawSiteConfig | null | undefined): SiteConf
     captchaProvider: asStr(r.captcha_provider).toLowerCase(),
     captchaSiteKey: asStr(r.captcha_site_key),
     passkeyEnabled: asBool(r.passkey_enabled),
+    // promo 行为保持:仅显式 false 才关闭(同 passwordLoginEnabled 思路),与后端门控一致。
+    promoEnabled: r.promo_enabled !== false,
     oauthProviders: parseOauthProviders(r.oauth_providers_enabled),
     siteName: asStr(r.site_name),
     siteDocUrl: asStr(r.site_doc_url),

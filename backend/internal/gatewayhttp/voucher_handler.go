@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
@@ -37,6 +38,24 @@ type VoucherAdminDeps struct {
 type VoucherUserDeps struct {
 	Service          VoucherService
 	ClientIPResolver *clientip.Resolver
+	// PlatformSettings 供 promo 总开关读取(promo_enabled)。nil 时视为开启(行为保持)。
+	PlatformSettings platformSettingsReader
+}
+
+// promoRedeemEnabled 报告兑换码是否开启(promo 总开关)。
+// 语义遵循 Owner 选定的「A 方案」——**行为保持 + 一个能用的开关**:
+//   - 默认值为 "true"(platformsettings 默认翻转后),即不设置时兑换照常可用;
+//   - 仅运营者**显式**把 promo_enabled 设为 "false" 时才关闭兑换;
+//   - PlatformSettings 未接线(nil)或读取出错时一律视为开启,绝不因门控读取失败误伤正常兑换。
+func promoRedeemEnabled(ctx context.Context, settings platformSettingsReader) bool {
+	if settings == nil {
+		return true
+	}
+	s, err := settings.Get(ctx, platformsettings.KeyPromoEnabled)
+	if err != nil {
+		return true
+	}
+	return s.Value != "false"
 }
 
 type voucherCreateRequest struct {
@@ -218,6 +237,11 @@ func newVoucherRedeemHandler(d VoucherUserDeps) http.HandlerFunc {
 		ident, ok := sessionauth.SessionFromContext(r.Context())
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
+			return
+		}
+		// promo 总开关:运营者显式关闭兑换时 fail-closed 拒兑(默认开启,行为保持)。
+		if !promoRedeemEnabled(r.Context(), d.PlatformSettings) {
+			writeJSONError(w, http.StatusForbidden, "promo_disabled", "voucher redemption is currently disabled")
 			return
 		}
 		var req voucherRedeemRequest
