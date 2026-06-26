@@ -12,6 +12,7 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
+	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -110,6 +111,15 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 		paDeps.List = d.adminQueries.ListAdminProviderAccounts
 	}
 	reg.Register(hermesops.ProviderAccountListSpec(paDeps))
+
+	// quota_policy_list -> dbquota.Queries.ListQuotaPoliciesForAdmin(按 tenant_id SELECT-only)。
+	// 就地用 d.pool 构造 dbquota 查询器(同 routes.go 的 NewQuotaPolicyStoreAdapter,无状态、读路径)。
+	// 0156 迁移已把 quota_policy_list 加进 hermes_tool_calls.tool_name CHECK。
+	quotaDeps := hermesops.QuotaPolicyListDeps{}
+	if d.pool != nil {
+		quotaDeps.List = dbquota.New(d.pool).ListQuotaPoliciesForAdmin
+	}
+	reg.Register(hermesops.QuotaPolicyListSpec(quotaDeps))
 
 	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
 	// admin reads on billingQueries.
