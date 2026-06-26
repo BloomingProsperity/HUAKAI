@@ -141,7 +141,7 @@ func (w *Worker) loop(ctx context.Context) {
 		if err == nil {
 			interval = cfg.withDefaults().PollInterval
 		}
-		_, _ = w.RunOnce(ctx)
+		w.runOnceRecovered(ctx)
 		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
@@ -153,6 +153,19 @@ func (w *Worker) loop(ctx context.Context) {
 		case <-timer.C:
 		}
 	}
+}
+
+// runOnceRecovered 包一层 recover:单次 RunOnce(含 provider.Submit/Poll 与 store 调用)的 panic 不会杀死
+// worker goroutine。否则 panic 会触发 loop 的 defer close(w.done) 但 w.running 仍为 true=「已死却自认在
+// 运行」僵态,媒体任务永久停滞、已 Reserve 的预扣久挂(靠 billing LeaseSweeper 兜底)。与仓内既定范式
+// (hermesadmin InspectionWorker.tick 的 recover)一致;panic 仅当作本轮失败,下一轮照常继续。
+func (w *Worker) runOnceRecovered(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			w.logger.Error("mediatask worker RunOnce panicked; recovered to keep worker alive", slog.Any("recover", rec))
+		}
+	}()
+	_, _ = w.RunOnce(ctx)
 }
 
 func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now time.Time) error {
