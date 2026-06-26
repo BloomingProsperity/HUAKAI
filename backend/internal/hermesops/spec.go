@@ -51,6 +51,12 @@ const (
 	// 上的 SystemPrompt/SensitiveWords/ParamOverride 等自由文本运营配置(只降级为存在标记/计数)。
 	ToolModelResolveDiagnose = "model_resolve_diagnose"
 
+	// ToolPoolList(0154 迁移准入)列出本租户的 pool group(路由池)及其配置:名称、路由策略版本、
+	// top-k/能力默认、各类等待/超时/限流参数、启用状态。补全 model_resolve_diagnose 开的"模型→池→账号"
+	// 路由拓扑里"池本身有哪些、怎么配的"一环。只读 → 仅写 hermes_tool_calls。PoolGroup 全是结构化配置、
+	// 无自由文本/PII(Name 是运营自取的池标签)。
+	ToolPoolList = "pool_list"
+
 	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
 	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory
 	// lock, idempotency). They are registered with Mutating=true so the read-only
