@@ -430,3 +430,73 @@ func TestDLQInspectFailsClosedOnNilDep(t *testing.T) {
 
 // ensure pgtype stays referenced for fixtures that need a valid timestamp.
 var _ = pgtype.Timestamptz{Valid: true}
+
+// TestAccountHealthDiagnoseFoldsAccountChannels 守增强:account_health_diagnose 折叠**本账号**
+// (account_id 匹配 ProviderAccountID)的逐通道明细 + 只露安全投影字段;别账号通道绝不混入。
+// Mutation:删 channelHealthShape 折叠里的 account_id 过滤 → 别账号通道也进 channels → count 转红。
+func TestAccountHealthDiagnoseFoldsAccountChannels(t *testing.T) {
+	deps := AccountHealthDeps{
+		ProviderAccountHealth: func(_ context.Context, p admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
+			return admindb.GetAdminProviderAccountHealthRow{ID: 5, TenantID: 7, HealthState: "active", Enabled: true}, nil
+		},
+		ChannelList: func(_ context.Context, tenantID int64, limit, offset int) ([]channelhealth.Record, error) {
+			if tenantID != 7 {
+				t.Fatalf("scope leaked: tenantID=%d want 7", tenantID)
+			}
+			return []channelhealth.Record{
+				// ManualPauseReason 设哨兵:operator 自填自由文本,**绝不能进 LLM 可见输出**。
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-a", ProviderAccountID: 5, Vendor: "openai"}, State: "cooling_down", ReasonClass: "rate_limit", ManualPauseReason: "SENTINEL-free-text-must-not-leak"},
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-b", ProviderAccountID: 5}, State: "active"},
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-other", ProviderAccountID: 99}, State: "disabled"}, // 别账号:不应出现
+			}, nil
+		},
+	}
+	spec := AccountHealthDiagnoseSpec(deps)
+	r := req(7)
+	r.Args["account_id"] = float64(5)
+	res, err := spec.Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	chans, ok := res.Summary["channels"].([]map[string]any)
+	if !ok {
+		t.Fatalf("channels 缺失或类型不对: %T", res.Summary["channels"])
+	}
+	if len(chans) != 2 {
+		t.Fatalf("应只折叠本账号(id=5)的 2 条通道,got %d(account_id 过滤被破坏会带进别账号)", len(chans))
+	}
+	for _, c := range chans {
+		if c["provider_account_id"].(int64) != 5 {
+			t.Fatalf("混入别账号通道: %v", c)
+		}
+		if _, has := c["state"]; !has {
+			t.Fatalf("投影缺 state: %v", c)
+		}
+		// safe-by-construction:绝不投影自由文本字段(防 operator 笔记泄露进 LLM)。
+		if _, has := c["manual_pause_reason"]; has {
+			t.Fatalf("投影泄露了自由文本 manual_pause_reason(应只露枚举/时间戳/ids/计数): %v", c)
+		}
+		if _, has := c["recovery_blocked_reason"]; has {
+			t.Fatalf("投影泄露了自由文本 recovery_blocked_reason: %v", c)
+		}
+	}
+}
+
+// TestAccountHealthDiagnoseChannelsBackwardCompat:ChannelList nil 时退化为不返 channels(向后兼容)。
+func TestAccountHealthDiagnoseChannelsBackwardCompat(t *testing.T) {
+	deps := AccountHealthDeps{
+		ProviderAccountHealth: func(_ context.Context, p admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
+			return admindb.GetAdminProviderAccountHealthRow{ID: 5, TenantID: 7, HealthState: "active", Enabled: true}, nil
+		},
+		// ChannelList 故意 nil
+	}
+	r := req(7)
+	r.Args["account_id"] = float64(5)
+	res, err := AccountHealthDiagnoseSpec(deps).Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, has := res.Summary["channels"]; has {
+		t.Fatalf("ChannelList nil 时不应出现 channels(向后兼容): %v", res.Summary["channels"])
+	}
+}
