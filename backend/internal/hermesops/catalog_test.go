@@ -2,6 +2,8 @@ package hermesops
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +68,68 @@ func TestReadOnlyCatalogIsNameSortedAndSchemaCopied(t *testing.T) {
 	catalog[1].InputSchema["k"] = "tampered"
 	if got, _ := reg.Get("zeta"); got.InputSchema["k"] != "v" {
 		t.Fatalf("registry schema mutated through catalog copy: %q", got.InputSchema["k"])
+	}
+}
+
+func TestProposableCatalogIncludesMutatingWithFlags(t *testing.T) {
+	// ProposableCatalog (Phase B) DOES include mutating tools — but each is flagged
+	// Mutating + RequiresConfirmation so the runner/LLM render a confirmation step.
+	// Read-only tools are included with NO flags. DISCRIMINATING: if the flag-set
+	// on the mutating branch is dropped, the mutating entry would look like a
+	// directly-runnable read-only tool — this test goes RED.
+	reg := NewRegistry()
+	reg.Register(okSpec("audit_lookup", RoleTenantOperator)) // read-only
+	reg.Register(mutatingSpec("account_pause"))              // mutating
+
+	cat := reg.ProposableCatalog()
+	if len(cat) != 2 {
+		t.Fatalf("proposable catalog size=%d want 2 (read-only + mutating)", len(cat))
+	}
+	byName := map[string]CatalogTool{}
+	for _, c := range cat {
+		byName[c.Name] = c
+	}
+	ro, ok := byName["audit_lookup"]
+	if !ok {
+		t.Fatal("read-only audit_lookup missing from proposable catalog")
+	}
+	if ro.Mutating || ro.RequiresConfirmation {
+		t.Fatalf("read-only tool must NOT be flagged mutating/requires_confirmation: %+v", ro)
+	}
+	mut, ok := byName["account_pause"]
+	if !ok {
+		t.Fatal("mutating account_pause missing from proposable catalog (it must be PROPOSABLE)")
+	}
+	if !mut.Mutating || !mut.RequiresConfirmation {
+		t.Fatalf("mutating tool must be flagged Mutating+RequiresConfirmation: %+v", mut)
+	}
+}
+
+func TestReadOnlyCatalogJSONUnchangedByNewFields(t *testing.T) {
+	// SAFETY/COMPAT: adding Mutating/RequiresConfirmation (omitempty) must leave
+	// ReadOnlyCatalog's wire output byte-identical — a read-only entry must NOT
+	// serialize the new keys. DISCRIMINATING: drop the omitempty tag and this RED.
+	reg := NewRegistry()
+	reg.Register(okSpec("audit_lookup", RoleTenantOperator))
+	blob, err := json.Marshal(reg.ReadOnlyCatalog())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, k := range []string{"mutating", "requires_confirmation"} {
+		if strings.Contains(string(blob), k) {
+			t.Fatalf("ReadOnlyCatalog JSON leaked new key %q (omitempty broken): %s", k, blob)
+		}
+	}
+
+	// And ProposableCatalog's mutating entry DOES serialize the flags.
+	reg.Register(mutatingSpec("account_pause"))
+	pblob, err := json.Marshal(reg.ProposableCatalog())
+	if err != nil {
+		t.Fatalf("marshal proposable: %v", err)
+	}
+	for _, k := range []string{"mutating", "requires_confirmation"} {
+		if !strings.Contains(string(pblob), k) {
+			t.Fatalf("ProposableCatalog JSON missing flag key %q: %s", k, pblob)
+		}
 	}
 }
