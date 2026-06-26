@@ -23,12 +23,37 @@ export function canSend(apiKey: string, model: string, message: string): boolean
   return apiKey.trim() !== '' && model.trim() !== '' && message.trim() !== ''
 }
 
-/** buildChatRequest 组装非流式 chat 请求体。system 非空时前置一条 system 消息。 */
-export function buildChatRequest(model: string, system: string, message: string): ChatRequest {
+/** buildMessages 组装消息数组:system 非空时前置一条 system 消息,再附 user 消息。 */
+export function buildMessages(system: string, message: string): ChatMessage[] {
   const messages: ChatMessage[] = []
   if (system.trim() !== '') {
     messages.push({ role: 'system', content: system })
   }
   messages.push({ role: 'user', content: message })
-  return { model: model.trim(), messages, stream: false }
+  return messages
+}
+
+/** buildChatRequest 组装 chat 请求体。stream 默认 false(非流式)。 */
+export function buildChatRequest(model: string, system: string, message: string, stream = false): ChatRequest {
+  return { model: model.trim(), messages: buildMessages(system, message), stream }
+}
+
+/**
+ * extractSSEContent 解析一行 SSE `data:` 文本,取增量内容。OpenAI 流式:
+ * `data: {"choices":[{"delta":{"content":"x"}}]}` → {done:false, content:"x"};`data: [DONE]` → {done:true}。
+ * 非 data 行 / 空 / 无 delta / 解析失败 → {done:false, content:""}(健壮跳过,不抛)。
+ */
+export function extractSSEContent(line: string): { done: boolean; content: string } {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('data:')) return { done: false, content: '' }
+  const payload = trimmed.slice('data:'.length).trim()
+  if (payload === '') return { done: false, content: '' }
+  if (payload === '[DONE]') return { done: true, content: '' }
+  try {
+    const obj = JSON.parse(payload)
+    const content = obj?.choices?.[0]?.delta?.content
+    return { done: false, content: typeof content === 'string' ? content : '' }
+  } catch {
+    return { done: false, content: '' }
+  }
 }

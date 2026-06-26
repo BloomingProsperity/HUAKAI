@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildChatRequest, canSend, extractReply, formatUsage } from './playground'
+import { buildChatRequest, buildMessages, canSend, extractReply, extractSSEContent, formatUsage } from './playground'
 import type { ChatResponse } from './types'
 
 describe('extractReply', () => {
@@ -48,5 +48,32 @@ describe('buildChatRequest', () => {
   it('无 system → 仅 [user](变异:若总加 system 则长度=2)', () => {
     const req = buildChatRequest('gpt-4o', '   ', '你好')
     expect(req.messages.map((m) => m.role)).toEqual(['user'])
+  })
+  it('stream=true 时请求体 stream 为 true', () => {
+    expect(buildChatRequest('gpt-4o', '', '你好', true).stream).toBe(true)
+  })
+})
+
+describe('buildMessages', () => {
+  it('有 system 前置 system,再 user', () => {
+    expect(buildMessages('你是助手', '你好').map((m) => m.role)).toEqual(['system', 'user'])
+  })
+  it('空 system 仅 user', () => {
+    expect(buildMessages('  ', '你好').map((m) => m.role)).toEqual(['user'])
+  })
+})
+
+describe('extractSSEContent', () => {
+  it('data + delta.content → 取增量(变异:若不读 delta.content 则空)', () => {
+    expect(extractSSEContent('data: {"choices":[{"delta":{"content":"你"}}]}')).toEqual({ done: false, content: '你' })
+  })
+  it('data: [DONE] → done=true', () => {
+    expect(extractSSEContent('data: [DONE]')).toEqual({ done: true, content: '' })
+  })
+  it('非 data 行 / 空 / 无 delta / 坏 JSON → 健壮空增量不抛', () => {
+    expect(extractSSEContent(': comment')).toEqual({ done: false, content: '' })
+    expect(extractSSEContent('')).toEqual({ done: false, content: '' })
+    expect(extractSSEContent('data: {"choices":[{"delta":{"role":"assistant"}}]}')).toEqual({ done: false, content: '' })
+    expect(extractSSEContent('data: {not json')).toEqual({ done: false, content: '' })
   })
 })
