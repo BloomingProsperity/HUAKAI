@@ -18,6 +18,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
@@ -65,8 +66,10 @@ type handler struct {
 	contextSource  ContextSource
 	// mutator + confirmCache back the WAVE H4 mutating-tool path. When mutator is
 	// nil, mutating tools are rejected (503) — the read-only path is unaffected.
+	// confirmCache 现为 hermesconfirm 共享单例(可经 RouterDeps 注入,以便未来 Phase B 的 LLM 提议侧
+	// 与 operator 确认侧共用同一实例);未注入时本构造回退新建一个(行为同旧 newConfirmCache())。
 	mutator      MutateOrchestrator
-	confirmCache *confirmCache
+	confirmCache *hermesconfirm.Cache
 	// mutatingDisabled is KNOB A inverted: the runtime kill-switch for ALL mutating
 	// tools. Stored in DISABLED form so the handler's zero value means ENABLED
 	// (current behavior) — white-box handler tests that build a handler{} directly
@@ -107,6 +110,13 @@ type RouterDeps struct {
 	// clarity; the handler stores its inverse so a zero-value handler{} (built
 	// directly in tests) keeps mutation ENABLED.
 	MutatingEnabled bool
+	// ConfirmCache is the shared dry-run→confirm correlation-id store. Optional:
+	// when nil, NewRouterWithDeps constructs a fresh per-router instance (identical
+	// to the legacy behavior). The gateway wiring injects a process-wide singleton
+	// so the (future Phase B) LLM-propose side and this operator-confirm side share
+	// one cache — a correlation_id issued by a proposal can be consumed by the
+	// operator confirm. A nil cache always fails closed (confirm → 400, never executes).
+	ConfirmCache *hermesconfirm.Cache
 	// MutateGuard is the optional S2 bound-the-mutating-path bundle. Its
 	// handler-side piece is the per-operator-token rate limiter; the concurrency
 	// semaphore + tx deadline are applied on the orchestrator at wiring time. The
@@ -142,10 +152,16 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 		toolCalls:      d.ToolCalls,
 		contextSource:  d.ContextSource,
 		mutator:        d.Mutator,
-		confirmCache:   newConfirmCache(),
+		// 注入共享 Cache;未注入则回退新建(行为同旧 newConfirmCache(),保证 NewRouter()/白盒测试不变)。
+		confirmCache: d.ConfirmCache,
 		// KNOB A: store the inverse so a zero-value handler{} (test white-box) keeps
 		// mutation enabled; the wiring passes MutatingEnabled (default true).
 		mutatingDisabled: !d.MutatingEnabled,
+	}
+	// 未注入共享 Cache 时回退新建一个(行为同旧 newConfirmCache():每路由一份),保证 NewRouter()
+	// 与白盒 handler 测试无需注入即可工作。
+	if h.confirmCache == nil {
+		h.confirmCache = hermesconfirm.NewCache()
 	}
 	// S2 (c): the per-operator-token rate limiter, when the guard bundle is wired.
 	// A nil bundle (or nil limiter) leaves h.mutateRateLimiter nil = disabled.

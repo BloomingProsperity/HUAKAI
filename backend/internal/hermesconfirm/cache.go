@@ -1,4 +1,12 @@
-package hermeshttp
+// Package hermesconfirm holds the in-process single-use correlation-id store
+// (Cache) backing Hermes 的 mutating-tool 的 dry-run→confirm 安全原语(L2)。
+//
+// 它从 internal/hermeshttp 提取到独立共享包,**纯重构、行为零变**:这样 operator 确认侧
+// (hermeshttp)与未来 LLM 提议侧(hermeschat,Phase B)能注入**同一个 Cache 实例**——
+// hermeshttp 单向 import hermeschat,故确认/提议共用的类型必须落在两者都能 import 的中立包,
+// 否则会构成 import 环。逻辑与原 confirmCache 逐字保留(单次消费 + 六元组绑定 + 5 分钟 TTL +
+// crypto 随机 id),仅大小写导出 + 改包名。
+package hermesconfirm
 
 import (
 	"crypto/rand"
@@ -7,18 +15,18 @@ import (
 	"time"
 )
 
-// confirmTTL is the window within which a dry-run preview's correlation_id can
+// ConfirmTTL is the window within which a dry-run preview's correlation_id can
 // be re-submitted with confirm=true to actually execute. After this, the
 // correlation is stale and a confirm=true request is rejected (400) — never
 // executed. Kept short so a leaked/observed correlation_id has a small blast
 // window.
-const confirmTTL = 5 * time.Minute
+const ConfirmTTL = 5 * time.Minute
 
-// pendingConfirmation is one outstanding dry-run preview awaiting confirmation.
+// PendingConfirmation is one outstanding dry-run preview awaiting confirmation.
 // It pins the EXACT tool + tenant + actor + target the preview was computed for,
 // so a confirm cannot be redirected to a different tool/tenant/target than the
 // one the operator previewed (a confirm with mismatched fields is rejected).
-type pendingConfirmation struct {
+type PendingConfirmation struct {
 	ToolName  string
 	TenantID  int64
 	ActorID   int64
@@ -27,7 +35,7 @@ type pendingConfirmation struct {
 	ExpiresAt time.Time
 }
 
-// confirmCache is the in-process single-use correlation-id store backing L2
+// Cache is the in-process single-use correlation-id store backing L2
 // (dry-run-first + confirmation). A correlation_id is issued on a dry-run and
 // CONSUMED (deleted) the moment it is taken for execution, so it can drive at
 // most one mutation (a re-used correlation_id finds nothing and is rejected).
@@ -37,28 +45,29 @@ type pendingConfirmation struct {
 // dry-run if it hits a different replica (the preview is cheap + read-only); a
 // shared cache is a documented follow-up, not a safety hole (a missing
 // correlation_id always fails closed → 400, never executes).
-type confirmCache struct {
+type Cache struct {
 	mu      sync.Mutex
-	entries map[string]pendingConfirmation
+	entries map[string]PendingConfirmation
 	now     func() time.Time
 }
 
-func newConfirmCache() *confirmCache {
-	return &confirmCache{
-		entries: make(map[string]pendingConfirmation),
+// NewCache constructs an empty Cache backed by the real clock.
+func NewCache() *Cache {
+	return &Cache{
+		entries: make(map[string]PendingConfirmation),
 		now:     time.Now,
 	}
 }
 
-// issue stores a pending confirmation and returns a fresh, unguessable
+// Issue stores a pending confirmation and returns a fresh, unguessable
 // correlation_id. The id is 128 bits of crypto-random hex so it cannot be
 // predicted or enumerated by a caller who never saw the preview.
-func (c *confirmCache) issue(p pendingConfirmation) (string, error) {
+func (c *Cache) Issue(p PendingConfirmation) (string, error) {
 	id, err := randomCorrelationID()
 	if err != nil {
 		return "", err
 	}
-	p.ExpiresAt = c.now().Add(confirmTTL)
+	p.ExpiresAt = c.now().Add(ConfirmTTL)
 	c.mu.Lock()
 	c.entries[id] = p
 	// Opportunistically evict expired entries so the map cannot grow unbounded
@@ -68,35 +77,35 @@ func (c *confirmCache) issue(p pendingConfirmation) (string, error) {
 	return id, nil
 }
 
-// consume atomically looks up AND removes the correlation_id (single-use). It
+// Consume atomically looks up AND removes the correlation_id (single-use). It
 // returns (entry, true) only when the id exists, is unexpired, and matches the
 // supplied tool/tenant/actor binding; otherwise (zero, false). Because the
 // delete happens under the same lock as the lookup, two concurrent confirms on
 // the same id can never both succeed — at most one consumes it.
-func (c *confirmCache) consume(id, toolName string, tenantID, actorID, tokenID int64) (pendingConfirmation, bool) {
+func (c *Cache) Consume(id, toolName string, tenantID, actorID, tokenID int64) (PendingConfirmation, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[id]
 	if !ok {
-		return pendingConfirmation{}, false
+		return PendingConfirmation{}, false
 	}
 	// Remove first so even a mismatched/expired hit is single-use (a guessed id
 	// cannot be probed repeatedly).
 	delete(c.entries, id)
 	if c.now().After(entry.ExpiresAt) {
-		return pendingConfirmation{}, false
+		return PendingConfirmation{}, false
 	}
 	// Bind the confirm to the EXACT operator that previewed: tool + tenant +
 	// actor-user + the operator's admin TokenID. Without the TokenID check a
 	// different operator (distinct admin token) acting in the same tenant-user
 	// context could consume another operator's preview and execute the mutation.
 	if entry.ToolName != toolName || entry.TenantID != tenantID || entry.ActorID != actorID || entry.TokenID != tokenID {
-		return pendingConfirmation{}, false
+		return PendingConfirmation{}, false
 	}
 	return entry, true
 }
 
-func (c *confirmCache) evictExpiredLocked() {
+func (c *Cache) evictExpiredLocked() {
 	now := c.now()
 	for id, e := range c.entries {
 		if now.After(e.ExpiresAt) {

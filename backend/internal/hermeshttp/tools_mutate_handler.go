@@ -12,6 +12,7 @@ import (
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
 
@@ -110,7 +111,7 @@ func (h handler) previewMutation(w http.ResponseWriter, r *http.Request, ident s
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_unavailable", "confirmation cache unavailable")
 		return
 	}
-	correlationID, err := h.confirmCache.issue(pendingConfirmation{
+	correlationID, err := h.confirmCache.Issue(hermesconfirm.PendingConfirmation{
 		ToolName: spec.Name,
 		TenantID: ident.TenantID,
 		ActorID:  ident.UserID,
@@ -132,7 +133,7 @@ func (h handler) previewMutation(w http.ResponseWriter, r *http.Request, ident s
 		"dry_run":               true,
 		"requires_confirmation": true,
 		"correlation_id":        correlationID,
-		"expires_in_seconds":    int(confirmTTL.Seconds()),
+		"expires_in_seconds":    int(hermesconfirm.ConfirmTTL.Seconds()),
 		"preview":               plan.Preview,
 	})
 }
@@ -154,7 +155,7 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 	// wrong-actor-user / wrong-operator-token correlation_id finds nothing and is
 	// rejected — no mutation. actor.TokenID binds the confirm to the SAME operator
 	// admin token that issued the preview (not just the tenant-user context).
-	entry, ok := h.confirmCache.consume(req.CorrelationID, spec.Name, ident.TenantID, ident.UserID, actor.TokenID)
+	entry, ok := h.confirmCache.Consume(req.CorrelationID, spec.Name, ident.TenantID, ident.UserID, actor.TokenID)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_invalid", "correlation_id is stale, unknown, or does not match this tool")
 		return
