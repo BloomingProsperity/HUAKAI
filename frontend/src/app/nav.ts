@@ -175,6 +175,7 @@ export const PIPELINE_NAV: NavSection[] = [
     items: [
       { path: '/security', label: '安全与审计', built: true },
       { path: '/admin/alerting', label: '告警控制台', built: true },
+      { path: '/admin/risk', label: '风控总览', built: true },
     ],
   },
 ]

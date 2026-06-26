@@ -1094,6 +1094,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	mountAlertingAdminRoutes(r, d)
+	mountRiskAdminRoutes(r, d)
 	mountModerationAdminRoutes(r, d)
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
 	r.Get("/admin/v1/billing/claims", gatewayhttp.NewClaimsHandler(d))
