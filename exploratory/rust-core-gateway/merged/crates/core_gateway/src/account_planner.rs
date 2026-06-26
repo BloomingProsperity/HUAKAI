@@ -1,4 +1,4 @@
-// M-rust-5 account planner
+// M-rust-5 账号规划器 (account planner)
 // 职责: 将 listener 请求映射为 route query, 校验 per-attempt plan, 并维护 attempt 状态机。
 
 use std::{

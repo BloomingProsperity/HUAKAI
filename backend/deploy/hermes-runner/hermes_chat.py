@@ -28,8 +28,7 @@ HERMES_HOME_ROOT = "/var/lib/huakai/hermes"
 INTERNAL_BASE_URL_ENV = "HUAKAI_HERMES_INTERNAL_LLM_BASE_URL"
 INTERNAL_TOKEN_SECRET_ENV = "HUAKAI_HERMES_INTERNAL_TOKEN_SECRET"
 INTERNAL_TOKEN_MAX_TTL_SECONDS = 5 * 60
-# Bounds one conversational tool call's round-trip to the gateway. Diagnostic
-# reads are fast; a hung gateway must not stall the chat indefinitely.
+# 给单次对话工具调用到网关的一次往返设上界。诊断读很快;卡死的网关不能让对话无限期停滞。
 TOOL_EXECUTE_TIMEOUT_SECONDS = 15
 
 _DONE = object()
@@ -175,12 +174,9 @@ class _StreamCallback:
 async def _invoke_run_conversation(agent: Any, payload: ChatPayload, callback: Callable[[Any], Any]) -> Any:
     method = agent.run_conversation
     kwargs = _conversation_kwargs(payload, callback)
-    # WAVE H3b: inject the READ-ONLY tool catalog + a tool executor ONLY when the
-    # loaded agent's run_conversation accepts them (signature-aware), so an agent
-    # that does not support tools is unaffected and the supply-chain surface is not
-    # widened. The executor merely FORWARDS the model's chosen tool call to the
-    # gateway over the internal token — it performs NO authorization itself; the
-    # gateway authorizes (read-only filter + RBAC + tenant scope) + audits.
+    # WAVE H3b:仅当所加载 agent 的 run_conversation 接受这些参数时(感知签名),才注入"只读"工具目录
+    # 与工具执行器,使不支持工具的 agent 不受影响、供应链面也不被扩大。执行器只是把模型选中的工具调用
+    # 经 internal token 转发给网关——它自己不做任何授权;授权(只读过滤 + RBAC + 租户隔离)与审计都在网关。
     _inject_tool_kwargs(method, kwargs, payload)
 
     if inspect.iscoroutinefunction(method):
@@ -189,10 +185,9 @@ async def _invoke_run_conversation(agent: Any, payload: ChatPayload, callback: C
 
 
 def _inject_tool_kwargs(method: Callable[..., Any], kwargs: dict[str, Any], payload: ChatPayload) -> None:
-    """Add tool_catalog + tool_executor to kwargs iff (a) a non-empty catalog was
-    injected by the gateway AND (b) run_conversation declares the matching
-    parameter (or **kwargs). Fail-safe: if the signature cannot be introspected,
-    inject nothing rather than risk a TypeError that aborts the chat."""
+    """仅当 (a) 网关注入了非空目录 且 (b) run_conversation 声明了对应参数(或 **kwargs)时,才把
+    tool_catalog + tool_executor 加进 kwargs。安全失败:若签名无法内省,则什么也不注入,而不是冒着
+    TypeError 中断对话的风险。"""
     if not payload.tool_catalog:
         return
     try:
@@ -230,10 +225,9 @@ def _build_tool_executor(payload: ChatPayload) -> Callable[[str, dict[str, Any]]
 
 
 def _internal_tool_execute_url(internal_base_url: str) -> str:
-    """Derive the gateway's tool-execute endpoint from the internal LLM base URL.
-    The base URL points at the gateway's internal listener (e.g.
-    http://host:8080/internal/v1/openai); the tool endpoint is a sibling fixed
-    path on the SAME origin so it inherits the listener's network isolation."""
+    """从 internal LLM base URL 推导网关的 tool-execute 端点。base URL 指向网关的内部监听器(例如
+    http://host:8080/internal/v1/openai);工具端点是"同一 origin"上的固定同级路径,从而继承该监听器
+    的网络隔离。"""
     from urllib.parse import urlsplit, urlunsplit
 
     parts = urlsplit(internal_base_url)
@@ -267,13 +261,13 @@ def _post_tool_execute(url: str, token: str, tool_name: str, args: dict[str, Any
     except urllib.error.HTTPError as exc:
         return _tool_execute_http_error(exc)
     except Exception:
-        # Never leak the token or a stack trace into the conversation surface.
+        # 绝不把 token 或堆栈信息泄露到对话面。
         return {"status": "error", "error_class": "tool_execute_failed"}
 
 
 def _tool_execute_http_error(exc: Any) -> dict[str, Any]:
-    """Map a non-2xx gateway response to a structured error dict. The gateway's
-    error body is a small {"error": "<code>"} enum (no PII), safe to surface."""
+    """把非 2xx 的网关响应映射成结构化 error dict。网关的 error body 是个小的 {"error": "<code>"} 枚举
+    (不含 PII),可安全暴露。"""
     code = "tool_execute_failed"
     try:
         detail = json_loads_safe(exc.read())

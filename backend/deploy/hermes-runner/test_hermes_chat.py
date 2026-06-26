@@ -410,9 +410,8 @@ class HermesChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frames[-1], 'event: done\ndata: {"finish_reason":"stop","total_tokens":3}\n\n')
 
     async def test_tool_aware_agent_receives_catalog_and_working_executor(self):
-        # Regression: if the runner stops shaping the tool_call request or stops
-        # parsing the gateway's tool_result, a tool-aware agent gets no usable
-        # diagnostic data and grounds its answer on nothing.
+        # 变异:若 runner 不再塑形 tool_call 请求、或不再解析网关的 tool_result,具备工具能力的 agent
+        # 就拿不到可用的诊断数据,其回答便无所凭据。
         constants = _FakeHermesConstants()
         seen = {}
         captured_request = {}
@@ -444,9 +443,8 @@ class HermesChatTests(unittest.IsolatedAsyncioTestCase):
                 stream_callback("grounded")
                 return {"finish_reason": "stop", "total_tokens": 2}
 
-        # Pin the env base URL (the runner ALWAYS derives the internal base from
-        # env, ignoring the body — an SSRF guard) so the tool-execute URL is
-        # deterministic for this assertion.
+        # 固定 env base URL(runner "始终"从 env 推导 internal base、忽略请求体——这是一道 SSRF 防护),
+        # 使本断言里的 tool-execute URL 确定可预期。
         self._set_env("HUAKAI_HERMES_INTERNAL_LLM_BASE_URL", "http://gw.internal:8080/internal/v1/openai")
         token = _signed_internal_token(7, 42, "req-tool")
         payload = _payload(token, base_url="http://attacker.example/internal/v1/openai")
@@ -457,16 +455,15 @@ class HermesChatTests(unittest.IsolatedAsyncioTestCase):
         frames = await _collect(payload, tenant_id=7, user_id=42, agent_cls=ToolAwareAgent, constants_module=constants)
 
         self.assertEqual(seen["catalog"], [{"name": "audit_lookup", "description": "read audit events", "input_schema": {"severity": "str"}}])
-        # The executor shaped the request: name + args forwarded; token carried.
+        # 执行器塑形了请求:name + args 已转发;token 已携带。
         self.assertEqual(captured_request["tool_name"], "audit_lookup")
         self.assertEqual(captured_request["args"], {"severity": "error"})
         self.assertEqual(captured_request["token"], token)
         # 只读工具(目录无 mutating 标志)以空 mode 转发 —— 走只读路径,不触发提议。
         self.assertEqual(captured_request["mode"], "")
-        # And the gateway origin + fixed tool-execute path were derived from the
-        # ENV base URL (not the attacker-controlled body), defeating SSRF.
+        # 且网关 origin + 固定的 tool-execute 路径是从 ENV base URL(而非攻击者可控的请求体)推导出来的,挫败 SSRF。
         self.assertEqual(captured_request["url"], "http://gw.internal:8080/internal/hermes/tool-execute")
-        # The agent consumed the sanitized result.
+        # agent 消费了脱敏后的结果。
         self.assertEqual(seen["result"], {"tool_name": "audit_lookup", "status": "ok", "result": {"event_count": 3}})
         self.assertIn('event: token\ndata: {"delta":"grounded"}\n\n', frames)
 
@@ -562,10 +559,8 @@ class HermesChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(mut.get("requires_confirmation"))
 
     async def test_strict_signature_agent_does_not_receive_tool_kwargs(self):
-        # Regression: if tool-kwarg injection were not signature-aware, a loaded
-        # agent that does not declare tool_catalog/tool_executor would crash with a
-        # TypeError (or the runner would widen its supply-chain contract). It must
-        # be left completely unaffected even when a catalog is present.
+        # 变异:若 tool-kwarg 注入不感知签名,一个未声明 tool_catalog/tool_executor 的已加载 agent
+        # 就会因 TypeError 崩溃(或 runner 会扩大其供应链契约)。即便目录存在,它也必须完全不受影响。
         constants = _FakeHermesConstants()
         observed = {}
 
@@ -591,13 +586,12 @@ class HermesChatTests(unittest.IsolatedAsyncioTestCase):
 
         frames = await _collect(payload, tenant_id=7, user_id=42, agent_cls=StrictSignatureAgent, constants_module=constants)
 
-        # It ran successfully (no TypeError) without ever being handed tool kwargs.
+        # 它成功运行(无 TypeError),且从未被传入 tool kwargs。
         self.assertTrue(observed.get("ran"))
         self.assertEqual(frames[-1], 'event: done\ndata: {"finish_reason":"stop","total_tokens":1}\n\n')
 
     def test_tool_execute_url_is_sibling_path_on_same_origin(self):
-        # Regression: a wrong derivation (e.g. appending to the /v1/openai path)
-        # would point tool calls at a non-existent route and every tool 404s.
+        # 变异:错误的推导(例如往 /v1/openai 路径上追加)会把工具调用指向不存在的路由,使每个工具都 404。
         self.assertEqual(
             hermes_chat._internal_tool_execute_url("http://127.0.0.1:8080/internal/v1/openai"),
             "http://127.0.0.1:8080/internal/hermes/tool-execute",
@@ -608,15 +602,14 @@ class HermesChatTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_parse_tool_catalog_drops_malformed_entries(self):
-        # Regression: a malformed catalog entry must be dropped, not crash payload
-        # parsing — a bad gateway entry can never break the conversation.
+        # 变异:畸形的目录条目必须被丢弃,而不能崩掉 payload 解析——坏的网关条目绝不能破坏对话。
         catalog = hermes_chat._parse_tool_catalog(
             [
                 {"name": "audit_lookup", "description": "ok", "input_schema": {"a": "b"}},
                 {"name": "", "description": "blank name dropped"},
                 "not-a-dict",
                 {"description": "no name dropped"},
-                {"name": "log_analyze"},  # missing description/schema => defaulted
+                {"name": "log_analyze"},  # 缺 description/schema => 取默认值
             ]
         )
         self.assertEqual(

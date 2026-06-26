@@ -1,4 +1,4 @@
-// L2-A2 test-only TLS ClientHello capture helper.
+// L2-A2 仅测试用的 TLS ClientHello capture helper。
 // 只解析首条明文 TLS handshake record, 用于本地 baseline/diff 自检；不完成 TLS 握手。
 
 #[cfg(feature = "mimicry-openssl")]

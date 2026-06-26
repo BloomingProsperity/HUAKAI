@@ -181,10 +181,10 @@ fn assert_vendor_backend_blocked(builtin: BuiltinProfile) {
     }
 }
 
-// R-1 deferred test preserved as history: OpenSSL Rust public API auto-injects
-// native extensions `[1, 2]` and cannot byte-level reorder per profile sample.
-// R-2-B-4 is covered by `anthropic_boring_client_hello_byte_level_matches_profile`;
-// this OpenSSL path remains ignored because the mismatch is fundamental.
+// R-1 作为历史保留的 deferred 测试: OpenSSL 的 Rust 公开 API 会自动注入
+// native extensions `[1, 2]`, 无法按 profile 采样做字节级重排。
+// R-2-B-4 已由 `anthropic_boring_client_hello_byte_level_matches_profile` 覆盖;
+// 此 OpenSSL 路径因这一不匹配是根本性的而保持 ignore。
 #[cfg(feature = "mimicry-openssl")]
 #[ignore = "superseded by anthropic_boring_client_hello_byte_level_matches_profile (R-2-B-4); OpenSSL public API cannot byte-level reorder"]
 #[tokio::test]
