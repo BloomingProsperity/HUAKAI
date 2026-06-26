@@ -64,6 +64,12 @@ const (
 	// 且**绝无凭证/token 明文**(原始凭证存 credentialstore,本行根本不含)。
 	ToolProviderAccountList = "provider_account_list"
 
+	// ToolQuotaPolicyList(0156 迁移准入)列出本租户的配额策略(quota policy)及其配置:scope/metric/
+	// 窗口/限额/burst/模式/优先级/启用/生效区间。让 Hermes 能回答"我的配额怎么配的、对谁、限多少"。只读 →
+	// 仅写 hermes_tool_calls。QuotaPolicy 全是结构化配置;投影排 CreatedByActor/LastModifiedByActor
+	// (actor 标识)与 TenantID。
+	ToolQuotaPolicyList = "quota_policy_list"
+
 	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
 	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory
 	// lock, idempotency). They are registered with Mutating=true so the read-only
