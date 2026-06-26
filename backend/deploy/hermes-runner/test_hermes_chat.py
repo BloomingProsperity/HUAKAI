@@ -417,9 +417,9 @@ class HermesChatTests(unittest.IsolatedAsyncioTestCase):
         seen = {}
         captured_request = {}
 
-        def fake_post(url, token, tool_name, args):
-            captured_request.update({"url": url, "token": token, "tool_name": tool_name, "args": args})
-            # Stand in for the gateway's sanitized tool_result.
+        def fake_post(url, token, tool_name, args, mode=""):
+            captured_request.update({"url": url, "token": token, "tool_name": tool_name, "args": args, "mode": mode})
+            # 代替网关返回的脱敏 tool_result。
             return {"tool_name": tool_name, "status": "ok", "result": {"event_count": 3}}
 
         original_post = hermes_chat._post_tool_execute
@@ -461,12 +461,105 @@ class HermesChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured_request["tool_name"], "audit_lookup")
         self.assertEqual(captured_request["args"], {"severity": "error"})
         self.assertEqual(captured_request["token"], token)
+        # 只读工具(目录无 mutating 标志)以空 mode 转发 —— 走只读路径,不触发提议。
+        self.assertEqual(captured_request["mode"], "")
         # And the gateway origin + fixed tool-execute path were derived from the
         # ENV base URL (not the attacker-controlled body), defeating SSRF.
         self.assertEqual(captured_request["url"], "http://gw.internal:8080/internal/hermes/tool-execute")
         # The agent consumed the sanitized result.
         self.assertEqual(seen["result"], {"tool_name": "audit_lookup", "status": "ok", "result": {"event_count": 3}})
         self.assertIn('event: token\ndata: {"delta":"grounded"}\n\n', frames)
+
+    def test_executor_sends_propose_for_mutating_and_relays_needs_confirmation(self):
+        # 抓的缺陷(Phase B 提议接线的头牌):被网关目录标记 mutating 的工具,executor 必须以
+        # mode=propose 转发(网关只做 dry-run、返回 needs_confirmation),而只读工具仍以空 mode 转发;
+        # 且 needs_confirmation 结果要原样回灌给模型(runner 绝不自动确认)。
+        # 变异(已验证转红):把 mode 计算改成恒 "" → account_pause 不再走 propose,mode 断言红。
+        seen = {}
+
+        def fake_post(url, token, tool_name, args, mode=""):
+            seen[tool_name] = mode
+            if mode == "propose":
+                return {"status": "needs_confirmation", "correlation_id": "hmc_x", "preview": {"to": "paused"}}
+            return {"status": "ok", "result": {}}
+
+        original_post = hermes_chat._post_tool_execute
+        hermes_chat._post_tool_execute = fake_post
+        self.addCleanup(lambda: setattr(hermes_chat, "_post_tool_execute", original_post))
+
+        payload = hermes_chat.ChatPayload(
+            messages=[],
+            internal_base_url="http://gw.internal:8080/internal/v1/openai",
+            internal_token="tok",
+            tool_catalog=(
+                {"name": "audit_lookup", "description": "d", "input_schema": {}},
+                {"name": "account_pause", "description": "d", "input_schema": {}, "mutating": True, "requires_confirmation": True},
+            ),
+        )
+        execute = hermes_chat._build_tool_executor(payload)
+        execute("audit_lookup", {})
+        prop = execute("account_pause", {"account_id": 5})
+
+        self.assertEqual(seen.get("audit_lookup"), "")          # 只读 → 空 mode(只读路径)
+        self.assertEqual(seen.get("account_pause"), "propose")  # mutating → mode=propose
+        self.assertEqual(prop.get("status"), "needs_confirmation")  # needs_confirmation 原样回灌
+        self.assertEqual(prop.get("correlation_id"), "hmc_x")
+
+    def test_post_tool_execute_writes_mode_only_when_set(self):
+        # 抓的缺陷:mode 非空时必须进请求体(网关据此走 propose 分支),空时绝不写 mode 键(只读请求体
+        # 与提议接入前逐字节一致)。
+        # 变异(已验证转红):去掉 `if mode: body_obj["mode"]=mode` → propose 请求体缺 mode → 断言红。
+        import json as _json
+        import urllib.request as _ur
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"status":"needs_confirmation","correlation_id":"hmc_x"}'
+
+        def fake_urlopen(req, timeout=None):
+            captured["data"] = req.data
+            return _Resp()
+
+        original = _ur.urlopen
+        _ur.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(_ur, "urlopen", original))
+
+        out = hermes_chat._post_tool_execute(
+            "http://gw.internal:8080/internal/hermes/tool-execute", "tok", "account_pause", {"account_id": 5}, "propose"
+        )
+        body = _json.loads(captured["data"].decode("utf-8"))
+        self.assertEqual(body.get("mode"), "propose")
+        self.assertEqual(out, {"status": "needs_confirmation", "correlation_id": "hmc_x"})
+
+        hermes_chat._post_tool_execute(
+            "http://gw.internal:8080/internal/hermes/tool-execute", "tok", "audit_lookup", {}, ""
+        )
+        body_ro = _json.loads(captured["data"].decode("utf-8"))
+        self.assertNotIn("mode", body_ro)  # 空 mode 不写键
+
+    def test_parse_tool_catalog_preserves_mutating_flags(self):
+        # 抓的缺陷:网关注入的 mutating / requires_confirmation 标志必须被保留(否则 executor 无从判断
+        # 该走 propose);只读条目则不应凭空多出这些键。
+        # 变异(已验证转红):不保留 mutating 标志 → mut.get("mutating") 为 None → 断言红。
+        raw = [
+            {"name": "audit_lookup", "description": "d", "input_schema": {}},
+            {"name": "account_pause", "description": "d", "input_schema": {}, "mutating": True, "requires_confirmation": True},
+        ]
+        parsed = hermes_chat._parse_tool_catalog(raw)
+        ro = next(t for t in parsed if t["name"] == "audit_lookup")
+        mut = next(t for t in parsed if t["name"] == "account_pause")
+        self.assertNotIn("mutating", ro)
+        self.assertNotIn("requires_confirmation", ro)
+        self.assertTrue(mut.get("mutating"))
+        self.assertTrue(mut.get("requires_confirmation"))
 
     async def test_strict_signature_agent_does_not_receive_tool_kwargs(self):
         # Regression: if tool-kwarg injection were not signature-aware, a loaded
