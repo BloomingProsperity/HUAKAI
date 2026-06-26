@@ -70,6 +70,14 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.AccountHealthDiagnoseSpec(healthDeps))
 
+	// channel_health_list -> channelhealth.Service.ListChannelHealth(整租户逐通道明细,只读 Record 无 payload)。
+	// 0152 迁移已把 channel_health_list 加进 hermes_tool_calls.tool_name CHECK。
+	chListDeps := hermesops.ChannelHealthListDeps{}
+	if d.channelHealth != nil {
+		chListDeps.List = d.channelHealth.ListChannelHealth
+	}
+	reg.Register(hermesops.ChannelHealthListSpec(chListDeps))
+
 	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
 	// admin reads on billingQueries.
 	obsDeps := hermesops.ObservabilityDeps{}
