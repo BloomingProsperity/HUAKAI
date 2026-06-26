@@ -70,6 +70,13 @@ const (
 	// (actor 标识)与 TenantID。
 	ToolQuotaPolicyList = "quota_policy_list"
 
+	// ToolAlertRuleList(0157 迁移准入)列出本租户的告警规则(alert rule)及其配置:名称、metric、
+	// 比较器/阈值、严重度、窗口/持续/冷却秒、是否邮件通知、filters(运营自定义的过滤标签)、是否启用、
+	// 上次触发时间。让 Hermes 能回答"我配了哪些告警、对什么 metric、阈值多少、上次什么时候触发"。只读 →
+	// 仅写 hermes_tool_calls。AlertRule 全是结构化配置;Filters 是运营自填的规则过滤标签(规则定义的一部分,
+	// 非用户内容);投影排 TenantID。
+	ToolAlertRuleList = "alert_rule_list"
+
 	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
 	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory
 	// lock, idempotency). They are registered with Mutating=true so the read-only
