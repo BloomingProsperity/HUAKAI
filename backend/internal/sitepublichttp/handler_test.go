@@ -71,7 +71,8 @@ func TestSiteConfigProjectsCompiledDefaults(t *testing.T) {
 		"captcha_enabled":           false,
 		"two_factor_enabled":        true,
 		"passkey_enabled":           false,
-		"promo_enabled":             false,
+		// promo_enabled 默认翻转 false→true(Owner A 方案:行为保持 + 一个能用的开关)。
+		"promo_enabled": true,
 	}
 	for field, want := range wantBool {
 		if got, ok := body[field].(bool); !ok || got != want {
