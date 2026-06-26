@@ -57,6 +57,13 @@ const (
 	// 无自由文本/PII(Name 是运营自取的池标签)。
 	ToolPoolList = "pool_list"
 
+	// ToolProviderAccountList(0155 迁移准入)列出本租户的上游 provider account 清册(整租户俯瞰,可按
+	// state 过滤),补 account_health_diagnose(单账号)缺的"我有哪些账号、各自启用/健康/凭证/限流状态、
+	// 路由权重/容量"。只读 → 仅写 hermes_tool_calls。投影 safe-by-construction:绝不露 Extra(原始 JSON
+	// blob)、RateLimitReason(可能夹带上游错误文本)、Tags 值(运营自由标签→只露 count)、ProxyGroupID 文本;
+	// 且**绝无凭证/token 明文**(原始凭证存 credentialstore,本行根本不含)。
+	ToolProviderAccountList = "provider_account_list"
+
 	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
 	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory
 	// lock, idempotency). They are registered with Mutating=true so the read-only
