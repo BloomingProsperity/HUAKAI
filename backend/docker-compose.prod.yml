@@ -16,8 +16,9 @@
 services:
   gateway:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # context 上移到仓库根:Dockerfile 需把 frontend/ 一并 COPY 进镜像并 go:embed 进二进制。
+      context: ..
+      dockerfile: backend/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
