@@ -89,8 +89,8 @@ func newDeleteUserHandler(d Deps) http.HandlerFunc {
 			}
 		}
 		ai := buildUnlockAuditInput(r, ident, before.Status)
-		// admin_audit_events.payload is NOT NULL; record the prior status so the
-		// audit row is self-describing (and the insert does not 23502).
+		// admin_audit_events.payload 是 NOT NULL;记录此前状态使审计行
+		// 自描述(且插入不会触发 23502)。
 		payload, err := json.Marshal(map[string]string{"prior_status": before.Status})
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",

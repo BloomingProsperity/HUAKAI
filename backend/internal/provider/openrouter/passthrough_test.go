@@ -1,4 +1,4 @@
-// OpenRouter passthrough adapter 单元测试。
+// OpenRouter passthrough 适配器单元测试。
 package openrouter
 
 import (

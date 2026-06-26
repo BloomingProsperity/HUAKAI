@@ -18,12 +18,11 @@ func field(t *testing.T, body []byte, key string) interface{} {
 func TestThinkingForcesTemperatureOne(t *testing.T) {
 	in := []byte(`{"model":"claude","thinking":{"type":"enabled"},"temperature":0.5,"messages":[]}`)
 	out := NormalizeThinkingValidity(in)
-	// MUTATION GUARD: if the temperature rewrite is skipped, temperature stays
-	// 0.5 and this assertion goes red.
+	// 变异守卫:若跳过 temperature 改写,temperature 会保持 0.5,此断言转红。
 	if got := field(t, out, "temperature"); got != float64(1) {
 		t.Fatalf("temperature=%v want 1", got)
 	}
-	// other fields preserved
+	// 其它字段被保留
 	if got := field(t, out, "model"); got != "claude" {
 		t.Fatalf("model dropped: %v", got)
 	}
@@ -41,7 +40,7 @@ func TestThinkingForcesToolChoiceAuto(t *testing.T) {
 func TestValidThinkingUnchanged(t *testing.T) {
 	in := []byte(`{"thinking":{"type":"enabled"},"temperature":1,"tool_choice":{"type":"auto"}}`)
 	out := NormalizeThinkingValidity(in)
-	// already valid -> must be byte-identical (no needless re-encode / fingerprint churn)
+	// 已经合法 -> 必须逐字节相同(不做无谓的重新编码 / 指纹漂移)
 	if !bytes.Equal(in, out) {
 		t.Fatalf("valid thinking request must be unchanged; got %s", out)
 	}
@@ -50,7 +49,7 @@ func TestValidThinkingUnchanged(t *testing.T) {
 func TestNoThinkingUnchanged(t *testing.T) {
 	in := []byte(`{"model":"claude","temperature":0.3,"tool_choice":{"type":"any"}}`)
 	out := NormalizeThinkingValidity(in)
-	// no thinking field -> constraints do not apply -> byte-identical
+	// 没有 thinking 字段 -> 不施加约束 -> 逐字节相同
 	if !bytes.Equal(in, out) {
 		t.Fatalf("non-thinking request must be unchanged; got %s", out)
 	}

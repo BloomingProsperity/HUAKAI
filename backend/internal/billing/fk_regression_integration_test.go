@@ -1,9 +1,8 @@
 //go:build integration_pg
 
-// Slice 2 regression tests for the FK constraints added by
-// migration 0009. Each test exercises ONE invariant of the new
-// composite-FK shape and asserts the database rejects the bad write at
-// the SQL layer (not just at app-layer validation).
+// 针对迁移 0009 新增的 FK 约束的 Slice 2 回归测试。每个测试只验证新的
+// 复合 FK 形态的一个不变式,并断言数据库在 SQL 层(而非仅在应用层校验)
+// 拒绝错误写入。
 
 package billing
 
@@ -17,11 +16,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestN4b1_BlocksOrphanAPIKeyOnClaim asserts that inserting a
-// billing_ledger_claims row with an api_key_id that has no matching row
-// in api_keys fails with a foreign-key violation. Without 0009 the
-// insert silently succeeded and the synthetic-id pattern obscured the
-// gap.
+// TestN4b1_BlocksOrphanAPIKeyOnClaim 断言:插入一条 api_key_id 在 api_keys 中
+// 没有对应行的 billing_ledger_claims 行,会因外键违例而失败。在 0009 之前,
+// 这种插入会静默成功,而合成 id 模式掩盖了这一缺口。
 func TestN4b1_BlocksOrphanAPIKeyOnClaim(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -52,10 +49,9 @@ func TestN4b1_BlocksOrphanAPIKeyOnClaim(t *testing.T) {
 	}
 }
 
-// TestN4b1_BlocksCrossTenantAPIKeyOnClaim is the cross-tenant defense
-// case. Tenant A's api_keys row referenced from tenant B's claim must
-// fail the COMPOSITE (tenant_id, api_key_id) FK. Single-column FK would
-// have allowed it.
+// TestN4b1_BlocksCrossTenantAPIKeyOnClaim 是跨租户防御用例。从租户 B 的 claim
+// 引用租户 A 的 api_keys 行必须被复合 (tenant_id, api_key_id) FK 拒绝。单列 FK
+// 本会放行。
 func TestN4b1_BlocksCrossTenantAPIKeyOnClaim(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -63,9 +59,9 @@ func TestN4b1_BlocksCrossTenantAPIKeyOnClaim(t *testing.T) {
 	tenantA, apiKeyA, _ := seedTenant(t, ctx, pool, "n4b1-tenantA-"+uuid.NewString())
 	tenantB, _, userB := seedTenant(t, ctx, pool, "n4b1-tenantB-"+uuid.NewString())
 
-	// Tenant B's claim referencing tenant A's api_key_id — composite FK
-	// requires (tenant_id=B, api_key_id=apiKeyA) to exist in api_keys, but
-	// the row exists only as (tenant_id=A, id=apiKeyA).
+	// 租户 B 的 claim 引用租户 A 的 api_key_id —— 复合 FK 要求
+	// (tenant_id=B, api_key_id=apiKeyA) 在 api_keys 中存在,但该行只以
+	// (tenant_id=A, id=apiKeyA) 形式存在。
 	_, err := pool.Exec(ctx,
 		`INSERT INTO billing_ledger_claims (
 			tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
@@ -89,9 +85,9 @@ func TestN4b1_BlocksCrossTenantAPIKeyOnClaim(t *testing.T) {
 	}
 }
 
-// TestN4b1_RestrictsDeleteOfReferencedAPIKey asserts that DELETE on an
-// api_keys row that's referenced from billing_ledger_claims fails with
-// RESTRICT. Operators must use status='revoked' instead of DELETE.
+// TestN4b1_RestrictsDeleteOfReferencedAPIKey 断言:对被 billing_ledger_claims
+// 引用的 api_keys 行执行 DELETE 会因 RESTRICT 而失败。运维必须改用
+// status='revoked' 而非 DELETE。
 func TestN4b1_RestrictsDeleteOfReferencedAPIKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -123,10 +119,9 @@ func TestN4b1_RestrictsDeleteOfReferencedAPIKey(t *testing.T) {
 	}
 }
 
-// seedProviderGraph seeds a tenant-scoped provider_account graph for tests
-// that need to insert pool_slot_acquisitions rows. Cleanup is registered
-// in FK-correct order so the seedTenant cleanup that runs AFTER us can
-// drop the parent tenant successfully.
+// seedProviderGraph 为需要插入 pool_slot_acquisitions 行的测试播种一个
+// 租户范围的 provider_account 图。清理逻辑按 FK 正确顺序注册,使在我们之后
+// 运行的 seedTenant 清理能成功删除父 tenant。
 func seedProviderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, suffix string) (providerID, channelID, accountID int64) {
 	t.Helper()
 	short := suffix
@@ -164,7 +159,7 @@ func seedProviderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, te
 	}
 	t.Cleanup(func() {
 		c := context.Background()
-		// FK-ordered: provider_accounts -> channels -> pool_groups -> providers.
+		// 按 FK 顺序:provider_accounts -> channels -> pool_groups -> providers。
 		_, _ = pool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, tenantID)
@@ -174,10 +169,9 @@ func seedProviderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, te
 	return providerID, channelID, accountID
 }
 
-// TestN4b1_BlocksOrphanClaimOnPoolSlotAcquisition asserts that the new
-// pool_slot_acquisitions.(tenant_id, claim_id) FK rejects orphan claim_id
-// values. (The original migration 0001 left this as a deferred-FK
-// comment for over a year.)
+// TestN4b1_BlocksOrphanClaimOnPoolSlotAcquisition 断言:新的
+// pool_slot_acquisitions.(tenant_id, claim_id) FK 拒绝孤儿 claim_id 值。
+//(最初的迁移 0001 把它当作一条 deferred-FK 注释搁置了一年多。)
 func TestN4b1_BlocksOrphanClaimOnPoolSlotAcquisition(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -201,11 +195,10 @@ func TestN4b1_BlocksOrphanClaimOnPoolSlotAcquisition(t *testing.T) {
 	}
 }
 
-// TestN4b1_BlocksCrossTenantClaimOnUsageRecord asserts that the composite
-// (tenant_id, claim_id) FK on usage_records (replacing the single-column
-// claim_id FK from migration 0002) rejects tenant B writing a usage row
-// pointing at tenant A's claim. Same defense as
-// pool_slot_acquisitions, broader scope.
+// TestN4b1_BlocksCrossTenantClaimOnUsageRecord 断言:usage_records 上的复合
+// (tenant_id, claim_id) FK(取代迁移 0002 的单列 claim_id FK)拒绝租户 B 写入
+// 一条指向租户 A 的 claim 的 usage 行。与 pool_slot_acquisitions 同样的防御,
+// 范围更广。
 func TestN4b1_BlocksCrossTenantClaimOnUsageRecord(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -232,11 +225,10 @@ func TestN4b1_BlocksCrossTenantClaimOnUsageRecord(t *testing.T) {
 
 	tenantB, apiKeyB, userB := seedTenant(t, ctx, pool, "n4b1-uB-"+uuid.NewString())
 	_, _, accountB := seedProviderGraph(t, ctx, pool, tenantB, "n4b1-acctB-"+uuid.NewString())
-	// Tenant B writes a usage_records row referencing tenant A's claim.
-	// Composite FK on (tenant_id, claim_id) rejects this; api_key/user
-	// FKs are satisfied by tenant B's own keys, so the only schema gate
-	// is the new composite claim FK. Without it, tenant isolation for
-	// immutable billing data is silently broken.
+	// 租户 B 写入一条引用租户 A 的 claim 的 usage_records 行。
+	// (tenant_id, claim_id) 上的复合 FK 拒绝它;api_key/user 的 FK 由租户 B
+	// 自己的 key 满足,所以唯一的 schema 门就是新的复合 claim FK。没有它,
+	// 不可变计费数据的租户隔离会被静默破坏。
 	_, err := pool.Exec(ctx,
 		`INSERT INTO usage_records (
 			tenant_id, claim_id, api_key_id, user_id, provider_account_id,
@@ -255,17 +247,16 @@ func TestN4b1_BlocksCrossTenantClaimOnUsageRecord(t *testing.T) {
 	}
 }
 
-// TestN4b1_BlocksCrossTenantClaimOnPoolSlotAcquisition asserts that the
-// composite (tenant_id, claim_id) FK rejects tenant B binding a slot to
-// tenant A's claim. A single-column FK would have
-// allowed this footgun.
+// TestN4b1_BlocksCrossTenantClaimOnPoolSlotAcquisition 断言:复合
+// (tenant_id, claim_id) FK 拒绝租户 B 把一个 slot 绑定到租户 A 的 claim。
+// 单列 FK 本会放行这种自伤式操作。
 func TestN4b1_BlocksCrossTenantClaimOnPoolSlotAcquisition(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	pool := openPool(t, ctx)
 
-	// Tenant A: real api_key + insert one billing_ledger_claims row to
-	// borrow as the cross-tenant target.
+	// 租户 A:真实 api_key + 插入一条 billing_ledger_claims 行,
+	// 用作跨租户目标。
 	tenantA, apiKeyA, userA := seedTenant(t, ctx, pool, "n4b1-tA-"+uuid.NewString())
 	var claimAID int64
 	if err := pool.QueryRow(ctx,
@@ -286,7 +277,7 @@ func TestN4b1_BlocksCrossTenantClaimOnPoolSlotAcquisition(t *testing.T) {
 		t.Fatalf("seed tenant A claim: %v", err)
 	}
 
-	// Tenant B: own provider graph; try to bind slot to tenant A's claim.
+	// 租户 B:自己的 provider 图;尝试把 slot 绑定到租户 A 的 claim。
 	tenantB, _, _ := seedTenant(t, ctx, pool, "n4b1-tB-"+uuid.NewString())
 	_, _, accountBID := seedProviderGraph(t, ctx, pool, tenantB, uuid.NewString())
 

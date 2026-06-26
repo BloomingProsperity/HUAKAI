@@ -90,12 +90,12 @@ func TestDisableCooling(t *testing.T) {
 	if dec.Reason != ReasonRateLimitRPM {
 		t.Fatalf("Reason=%s want %s", dec.Reason, ReasonRateLimitRPM)
 	}
-	// MUTATION: still setting CooldownUntil when disable-cooling is active must go red.
+	// 变异:在 disable-cooling 生效时仍设置 CooldownUntil 必然转红。
 	if !dec.CooldownUntil.IsZero() {
 		t.Fatalf("CooldownUntil=%s want zero when cooling disabled", dec.CooldownUntil)
 	}
 
-	// GUARD: default false keeps existing cooldown behavior unchanged.
+	// 守卫:默认 false 保持现有冷却行为不变。
 	defaultSvc := NewUpstreamRateService(func() time.Time { return now }, time.Minute)
 	defaultDec, err := defaultSvc.HandleUpstreamError(context.Background(), 101, http.StatusTooManyRequests, headers, nil)
 	if err != nil {

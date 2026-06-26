@@ -12,8 +12,8 @@ var (
 	ErrInvalidCredentialMaterial          = errors.New("credentialworker: invalid credential material")
 )
 
-// WindsurfManualTokenRefresh validates the stored manual token shape and then
-// reports that there is no automatic OAuth refresh path in this.
+// WindsurfManualTokenRefresh 校验已存储的手动 token 的形态，然后
+// 报告这里不存在自动 OAuth refresh 路径。
 type WindsurfManualTokenRefresh struct{}
 
 func (WindsurfManualTokenRefresh) RefreshForProvider(_ context.Context, accountID int64, _ string, currentCredential []byte) ([]byte, time.Time, error) {

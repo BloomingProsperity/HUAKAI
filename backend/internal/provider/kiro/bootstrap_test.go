@@ -8,9 +8,9 @@ import (
 )
 
 func TestKiroSSOConfigRequiresOperatorVerifiedEndpoints(t *testing.T) {
-	// Regression killed: Kiro AWS SSO endpoint/client values must not be guessed.
-	// Mutation self-check: hardcoding any default endpoint or client credential
-	// makes this test fail before source/Owner-captured provenance exists.
+	// 锁定回归：Kiro AWS SSO 的 endpoint/client 值不得靠猜测得来。变异自检：
+	// 硬编码任何默认 endpoint 或 client 凭据，会让本测试在 source/Owner 采集的
+	// 来源凭证存在之前就失败。
 	cfg := DefaultSSOConfig()
 
 	if cfg.AuthURL != "" || cfg.TokenURL != "" || cfg.ClientID != "" || cfg.ClientSecret != "" {

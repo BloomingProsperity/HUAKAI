@@ -9,9 +9,8 @@ import (
 )
 
 func TestOpenAICodexOAuthConfigRequiresOperatorDeviceCodeConfig(t *testing.T) {
-	// Regression killed: OpenAI Codex device-code OAuth must not ship guessed
-	// endpoints, client IDs, or scopes. Operator config is the only source of
-	// authority for those values.
+	// 防回归：OpenAI Codex 的 device-code OAuth 绝不能内置猜测出来的
+	// endpoint、client ID 或 scope。这些值的唯一权威来源是运维方配置。
 	cfg := DefaultOAuthConfig()
 
 	if cfg.AuthURL != "" || cfg.TokenURL != "" || cfg.ClientID != "" {
@@ -29,8 +28,8 @@ func TestOpenAICodexOAuthConfigRequiresOperatorDeviceCodeConfig(t *testing.T) {
 }
 
 func TestOpenAICodexOAuthConfigCopiesOperatorDeviceCodeValues(t *testing.T) {
-	// Regression killed: device-code start, token endpoint, client ID, and
-	// scope must be supplied by trusted operator config and copied defensively.
+	// 防回归：device-code 起始地址、token endpoint、client ID 与 scope 都必须
+	// 由可信的运维方配置提供，并做防御性拷贝。
 	override := credentialacq.OAuthClientConfig{
 		AuthURL:  "https://auth.openai.example.test/oauth/device/code",
 		TokenURL: "https://auth.openai.example.test/oauth/token",
@@ -58,9 +57,9 @@ func TestOpenAICodexOAuthConfigCopiesOperatorDeviceCodeValues(t *testing.T) {
 }
 
 func TestOpenAICodexOAuthConfigRejectsNonOperatorSource(t *testing.T) {
-	// Regression killed: source=operator_config is an enforcement point, not
-	// display metadata. Mutation self-check: accepting public_cli_client here
-	// lets caller-controlled config masquerade as trusted operator config.
+	// 防回归：source=operator_config 是一个强制校验点，而非展示用的元数据。
+	// 变异自检：此处若接受 public_cli_client，会让调用方控制的配置冒充可信的
+	// 运维方配置。
 	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
 		AuthURL:  "https://auth.openai.example.test/oauth/device/code",
 		TokenURL: "https://auth.openai.example.test/oauth/token",

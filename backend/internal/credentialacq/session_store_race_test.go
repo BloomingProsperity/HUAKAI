@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// TestSessionStoreCancelFinalizeRaceGuards keeps the in-package fake aligned with the real SQL
-// contract. The SQL-discriminating proof is TestCancelFinalizeRaceGuardsPG; this local test gives a
-// no-Postgres red/green signal for the same behavior.
+// TestSessionStoreCancelFinalizeRaceGuards 保持包内 fake 与真实 SQL
+// 契约对齐。SQL 级的区分性证明在 TestCancelFinalizeRaceGuardsPG;本地这个测试为同一行为提供
+// 一个无需 Postgres 的红/绿信号。
 func TestSessionStoreCancelFinalizeRaceGuards(t *testing.T) {
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })

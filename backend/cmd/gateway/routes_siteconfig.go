@@ -7,10 +7,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 )
 
-// mountSiteConfigRoute wires the anonymous GET /v1/site/config bootstrap
-// endpoint. It uses the concrete *platformsettings.Service pointer check to
-// avoid the typed-nil interface trap (a nil pointer assigned to an interface
-// compares != nil); the handler's own nil guard then degrades to 503.
+// mountSiteConfigRoute 接线匿名的 GET /v1/site/config 引导（bootstrap）端点。
+// 它使用具体的 *platformsettings.Service 指针判空，以避免 typed-nil 接口陷阱
+// （把 nil 指针赋给接口后，与 nil 比较结果为 != nil）；随后 handler 自身的
+// nil 守卫会降级返回 503。
 func mountSiteConfigRoute(r chi.Router, d *deps) {
 	var settings sitepublichttp.Settings
 	if d != nil && d.platformSettings != nil {

@@ -13,7 +13,7 @@ import (
 
 const contentModerationEnabledEnv = "HUAKAI_CONTENT_MODERATION_ENABLED"
 
-// mountModerationAdminRoutes wires the moderation admin control plane.
+// mountModerationAdminRoutes 接线内容审核（moderation）的管理控制面。
 func mountModerationAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1/moderation", func(r chi.Router) {
 		store := moderation.NewSQLStore(dbmoderation.New(d.pgPool))

@@ -2,7 +2,7 @@ package proto
 
 import "encoding/json"
 
-// CanonicalRequest is the HCSF request envelope from spec sections 1-3.
+// CanonicalRequest 是规范第 1-3 节定义的 HCSF 请求 envelope。
 //
 // Passthrough（U7-B）：携带上游 / 客户端 JSON 中 HUAKAI 当前 typed 结构未
 // 声明的字段。ClientAdapter 与 UpstreamAdapter 在 unmarshal 阶段用
@@ -26,20 +26,20 @@ type CanonicalRequest struct {
 	Passthrough *PassthroughEnvelope `json:"-"`
 }
 
-// CanonicalTool is an HCSF tool declaration carried by CanonicalRequest from spec sections 1-3.
+// CanonicalTool 是 CanonicalRequest 携带的 HCSF 工具声明，来自规范第 1-3 节。
 type CanonicalTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 }
 
-// CanonicalMessage is an HCSF role-scoped message from spec sections 1-3.
+// CanonicalMessage 是规范第 1-3 节定义的、按 role 划分的 HCSF 消息。
 type CanonicalMessage struct {
 	Role    string                  `json:"role"`
 	Content []CanonicalContentBlock `json:"content,omitempty"`
 }
 
-// CanonicalContentBlock is the HCSF tagged content union from spec sections 1-3.
+// CanonicalContentBlock 是规范第 1-3 节定义的 HCSF 带标签内容 union。
 type CanonicalContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
@@ -59,7 +59,7 @@ type CanonicalContentBlock struct {
 	Raw json.RawMessage `json:"raw,omitempty"`
 }
 
-// CanonicalEvent is the HCSF streaming event union from spec sections 1-3.
+// CanonicalEvent 是规范第 1-3 节定义的 HCSF 流式事件 union。
 //
 // Passthrough（U7-B）：上游 vendor 在事件 JSON 顶层携带的 unknown 字段
 // （system_fingerprint / service_tier / cache_creation_input_tokens 等）。
@@ -73,14 +73,14 @@ type CanonicalEvent struct {
 	Delta        *CanonicalContentDelta `json:"delta,omitempty"`
 	Usage        *CanonicalUsage        `json:"usage,omitempty"`
 	StopReason   CanonicalStopReason    `json:"stop_reason,omitempty"`
-	// NativeFinishReason preserves the upstream provider's raw streaming finish
-	// reason when it differs from or is more specific than CanonicalStopReason.
+	// NativeFinishReason 在上游 provider 的原始流式 finish reason 与
+	// CanonicalStopReason 不同、或比它更具体时，保留该原始值。
 	NativeFinishReason string `json:"native_finish_reason,omitempty"`
 
 	Passthrough *PassthroughEnvelope `json:"-"`
 }
 
-// CanonicalContentDelta is the HCSF content_block_delta payload from spec sections 1-3.
+// CanonicalContentDelta 是规范第 1-3 节定义的 HCSF content_block_delta payload。
 type CanonicalContentDelta struct {
 	Type          string          `json:"type"`
 	Text          string          `json:"text,omitempty"`
@@ -89,7 +89,7 @@ type CanonicalContentDelta struct {
 	Signature     string          `json:"signature,omitempty"`
 }
 
-// CanonicalResponse is the HCSF buffered response envelope from spec sections 1-3.
+// CanonicalResponse 是规范第 1-3 节定义的 HCSF buffered 响应 envelope。
 //
 // Passthrough（U7-B）：non-streaming 上游响应 JSON 顶层 unknown 字段。
 // nil 表示无 unknown 字段。
@@ -105,7 +105,7 @@ type CanonicalResponse struct {
 	Passthrough *PassthroughEnvelope `json:"-"`
 }
 
-// CanonicalUsage is the HCSF usage update payload from spec sections 1-3.
+// CanonicalUsage 是规范第 1-3 节定义的 HCSF usage 更新 payload。
 type CanonicalUsage struct {
 	InputTokens  int `json:"input_tokens,omitempty"`
 	OutputTokens int `json:"output_tokens,omitempty"`
@@ -129,13 +129,13 @@ type CanonicalUsage struct {
 	CacheCreationInputTokens5m int `json:"cache_creation_input_tokens_5m,omitempty"`
 	CacheCreationInputTokens1h int `json:"cache_creation_input_tokens_1h,omitempty"`
 
-	// WebSearchCalls, FileSearchCalls, ImageGenerationCalls are billable
-	// server-side built-in tool-call COUNTS (per call), populated by upstream
-	// response parse in a later slice (Stage B+).
+	// WebSearchCalls、FileSearchCalls、ImageGenerationCalls 是可计费的
+	// 服务端内置工具调用次数（按次计），由后续切片（Stage B+）的上游
+	// 响应解析填充。
 	//
-	// IMPORTANT: these are call counts, NOT tokens. They MUST NOT enter the
-	// UsageHasValue / token cross-check helper — doing so would cause spurious
-	// usage-nonzero signals for token-less tool calls and break reconciliation.
+	// 重要：这些是调用次数，不是 token。它们绝不能进入 UsageHasValue /
+	// token 交叉校验 helper——否则会让无 token 的工具调用产生虚假的
+	// usage-nonzero 信号，破坏对账。
 	WebSearchCalls       int `json:"web_search_calls,omitempty"`
 	FileSearchCalls      int `json:"file_search_calls,omitempty"`
 	ImageGenerationCalls int `json:"image_generation_calls,omitempty"`
@@ -147,7 +147,7 @@ func UsageHasValue(usage CanonicalUsage) bool {
 		usage.CacheCreationInputTokens5m != 0 || usage.CacheCreationInputTokens1h != 0
 }
 
-// CanonicalStopReason is the HCSF stop reason enum from spec sections 1-3.
+// CanonicalStopReason 是规范第 1-3 节定义的 HCSF 终止原因枚举。
 type CanonicalStopReason string
 
 const (

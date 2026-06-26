@@ -22,8 +22,8 @@ import (
 )
 
 func TestCursorRefreshAdapterSuccessMergesTokenAndPreservesConfig(t *testing.T) {
-	// Regression killed: refreshed Cursor access material must become the
-	// runtime session token while preserving operator-supplied OAuth config.
+	// 锁定回归：刷新后的 Cursor 访问凭据必须成为运行时 session token，
+	// 同时保留 operator 提供的 OAuth 配置。
 	now := time.Date(2026, 5, 24, 10, 0, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {
@@ -81,10 +81,9 @@ func TestCursorRefreshAdapterSuccessMergesTokenAndPreservesConfig(t *testing.T) 
 
 func TestCursorRefreshAdapterRejectsCredentialSuppliedOAuthConfig(t *testing.T) {
 	t.Run("token endpoint from credential is ignored", func(t *testing.T) {
-		// Regression killed: attacker-controlled credential JSON must not decide
-		// where the refresh token is POSTed. Mutation self-check: reading
-		// oauth_token_endpoint/token_endpoint from credential calls this HTTP
-		// client and turns the test red.
+		// 锁定回归：攻击者可控的凭据 JSON 不得决定 refresh token POST 到何处。
+		// 变异自检：若从凭据读取 oauth_token_endpoint/token_endpoint，就会调用本
+		// HTTP client，使测试变红。
 		calledURL := ""
 		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			calledURL = r.URL.String()
@@ -159,10 +158,9 @@ func TestCursorRefreshAdapterRejectsCredentialSuppliedOAuthConfig(t *testing.T) 
 }
 
 func TestCursorRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
-	// Regression killed: Cursor refresh failures must map to distinct worker
-	// outcomes. Mutation self-check: removing body parsing makes the 400
-	// invalid_grant case become unknown; flattening status handling breaks at
-	// least one of 401, 429, or 5xx.
+	// 锁定回归：Cursor 刷新失败必须映射到不同的 worker outcome。变异自检：
+	// 去掉 body 解析会让 400 invalid_grant 退化为 unknown；把 status 处理压平
+	// 会破坏 401、429、5xx 中至少一个。
 	tests := []struct {
 		name       string
 		statusCode int
@@ -203,9 +201,8 @@ func TestCursorRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 }
 
 func TestCursorRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
-	// Regression killed: provider-specific refresher must record the precise
-	// failure class in the credential transaction, not save a stale credential
-	// or collapse every failure to a generic transient state.
+	// 锁定回归：provider 专属 refresher 必须在凭据事务中记录精确的失败类别，
+	// 不能保存陈旧凭据，也不能把所有失败都坍缩成通用的 transient 状态。
 	calls := []string{}
 	store := &recordingCursorRefreshStore{
 		calls: &calls,

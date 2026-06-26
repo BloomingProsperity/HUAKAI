@@ -1,9 +1,8 @@
 package auth
 
-// NewAPIKeyResolverWithFakeQueries constructs a resolver backed by an arbitrary
-// apiKeyQueries implementation. Used by external test packages (auth_test) that
-// need to inject fake query results without a real database.
-// A nil clientIPResolver is valid and falls back to RemoteAddr-only resolution.
+// NewAPIKeyResolverWithFakeQueries 用任意 apiKeyQueries 实现构造一个 resolver。
+// 供需要在无真实数据库的情况下注入 fake 查询结果的外部测试包 (auth_test) 使用。
+// clientIPResolver 为 nil 是合法的, 此时回退到仅用 RemoteAddr 解析。
 func NewAPIKeyResolverWithFakeQueries(q apiKeyQueries) *APIKeyResolver {
 	return &APIKeyResolver{q: q, clientIPResolver: nil}
 }

@@ -31,7 +31,7 @@ func (s *PostgresStore) Create(ctx context.Context, in CreateInput) (Route, erro
 	}
 	// 目标 pool_group 必须属于同租户且未软删: 单列 FK(REFERENCES pool_groups(id)) 拦不住跨租户引用
 	// —— tenant A 可建指向 tenant B pool_group 的路由。热路径 gate 的 JOIN 虽会运行时过滤掉这种目标,
-	// 但写侧必须 fail-closed 不落脏数据(防御纵深 + 防 tenant B 内部 id 经 routes 列表泄给 A)。
+	// 但写侧必须失败即关闭(fail-closed)不落脏数据(防御纵深 + 防 tenant B 内部 id 经 routes 列表泄给 A)。
 	// 条件 INSERT ... SELECT ... WHERE EXISTS 原子完成: 归属不成立 → 插 0 行 → pgx.ErrNoRows → ErrPoolGroupNotFound。
 	// MatchPriority 为 nil 时传 NULL, COALESCE 回落 DB 默认 100。
 	row := s.pool.QueryRow(ctx, `
@@ -159,9 +159,9 @@ WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id)
 // 该检查只属于改 pool_group 的 Update。RETURNING 0 行 → pgx.ErrNoRows → ErrRouteNotFound。
 // 幂等: 把 enabled 设成当前值, UPDATE 仍命中该行(WHERE 不含 enabled 条件)并返回快照, 不报错。
 //
-// roadmap (widening 站点): enabled 现为裸布尔, 只表达「运营手动启/停」。若将来落地健康检查 auto-disable,
-// 须把它扩成小 enum(enabled / manual-disabled / auto-disabled)以区分运营手动 off 与系统自动 off —— 否则
-// 自动 re-enable 会覆盖运营的手动 off(new-api/CLIProxyAPI 用多态 status 正是防此)。
+// 路线图(后续扩展点): enabled 现为裸布尔, 只表达「运营手动启/停」。若将来落地健康检查自动停用(auto-disable),
+// 须把它扩成小枚举(enabled / manual-disabled / auto-disabled)以区分运营手动停用与系统自动停用 —— 否则
+// 自动重新启用会覆盖运营的手动停用(new-api/CLIProxyAPI 用多态 status 正是防此)。
 // 详见 docs/process/plans/2026-06-18-routes-enable-disable.md。
 func (s *PostgresStore) SetEnabled(ctx context.Context, tenantID, id int64, enabled bool) (Route, error) {
 	if s == nil || s.pool == nil {

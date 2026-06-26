@@ -16,9 +16,8 @@ import (
 )
 
 const (
-	// Public client IDs are intentionally not hardcoded until the Phase B
-	// verifier lane records current approved public sources. Operator config
-	// and per-account override remain available production paths.
+	// 在 Phase B 校验通道记录当前已批准的公开来源之前,公共 client ID 刻意不做硬编码。
+	// operator 配置与按账号覆盖仍是可用的生产路径。
 	OpenAICodexPublicClientID  = ""
 	GoogleGeminiPublicClientID = ""
 )

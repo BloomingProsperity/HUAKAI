@@ -233,8 +233,8 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 }
 
 func TestKimiRuntimeAdapterRegistered(t *testing.T) {
-	// Mutation: drop ProtocolKimiChat registration or change its endpoint/platform;
-	// this test must go RED before any gateway route can silently target Kimi.
+	// 变异：删除 ProtocolKimiChat 注册或改其 endpoint/platform；
+	// 在任何 gateway 路由能静默指向 Kimi 之前，本测试必须变红。
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
@@ -263,7 +263,7 @@ func TestKimiRuntimeAdapterRegistered(t *testing.T) {
 	}
 }
 
-// TestVertexRuntimeAdapterRegistered 是 vertex 出站注册的 mutation 守卫:删任一
+// TestVertexRuntimeAdapterRegistered 是 vertex 出站注册的变异守卫:删任一
 // MustRegister(vertex_*) 或改其 Mode/平台 → 本测试红。判别性:断言两族产出的
 // 完整 URL（含 publisher google vs anthropic、action generateContent vs
 // rawPredict）+ 平台 + Authorization 头无双 Bearer。

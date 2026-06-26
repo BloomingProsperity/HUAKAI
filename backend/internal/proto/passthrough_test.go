@@ -296,8 +296,8 @@ func TestPassthroughRoundtrip_RealOpenAIFields(t *testing.T) {
 	_ = json.Unmarshal(merged, &got)
 
 	required := []string{
-		"id", "model", // typed
-		"system_fingerprint", "service_tier", "logprobs", "prompt_filter_results", // vendor
+		"id", "model", // typed 字段
+		"system_fingerprint", "service_tier", "logprobs", "prompt_filter_results", // vendor 字段
 	}
 	for _, k := range required {
 		if _, ok := got[k]; !ok {

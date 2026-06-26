@@ -1,4 +1,4 @@
-// Package proto tests F-PROTO-002 shared contracts per docs/specs/protocol-translation.md.
+// Package proto 按 docs/specs/protocol-translation.md 测试 F-PROTO-002 共享契约。
 package proto
 
 import (
@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// AT-PROTO-002-12: Tool-call ID round-trip bijection (extended; multi-upstream).
+// AT-PROTO-002-12：tool-call ID 往返双射（扩展版；覆盖多上游）。
 func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
 	type caseItem struct {
 		name     string
@@ -16,7 +16,7 @@ func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
 		raw      string
 	}
 
-	// If we revert validation to hex-only, the real provider IDs below will fail, and this test turns red.
+	// 若把校验退回仅 hex，下面这些真实 provider ID 会失败，本测试即红。
 	cases := []caseItem{
 		{
 			name:     "anthropic-real-id",
@@ -40,7 +40,7 @@ func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
 		},
 	}
 
-	// Non-hex letters must still round-trip (b/c real IDs include A-Z / a-z beyond f).
+	// 非 hex 字母也必须能往返（因真实 ID 含 f 之外的 A-Z / a-z）。
 	for _, tc := range []caseItem{
 		{
 			name:     "lowercase-g",
@@ -113,7 +113,7 @@ func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
 	}
 }
 
-// AT-PROTO-002-15: Capability matrix matches reality (every cell asserted via property test).
+// AT-PROTO-002-15：capability 矩阵与现实一致（每个单元格用 property 测试断言）。
 func TestAT_PROTO_002_15_CapabilityMatrixWellFormed(t *testing.T) {
 	m := DefaultMatrix()
 	clients := []ClientProtocol{ClientProtocolOpenAIChat, ClientProtocolOpenAIResponses, ClientProtocolAnthropicMessages}
@@ -137,7 +137,7 @@ func TestAT_PROTO_002_15_CapabilityMatrixWellFormed(t *testing.T) {
 	}
 }
 
-// AT-PROTO-002-16: protocol_loss field populated when conversion is LOSSY.
+// AT-PROTO-002-16：转换为 LOSSY 时 protocol_loss 字段必须被填充。
 func TestAT_PROTO_002_16_ProtocolLossPopulatedOnLossy(t *testing.T) {
 	m := DefaultMatrix()
 	req := CanonicalRequest{

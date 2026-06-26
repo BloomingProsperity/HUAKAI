@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// TestStreamDurationEnv guards the env-configurable stream timeouts: valid duration strings
-// override, empty/invalid fall back to the default (never panic, never zero-out a timeout).
+// TestStreamDurationEnv 守护可经环境变量配置的流式超时:合法的 duration 字符串
+// 会覆盖默认值,空/非法值则回退到默认值(永不 panic,永不把超时清零)。
 func TestStreamDurationEnv(t *testing.T) {
 	const key = "HUAKAI_STREAM_TEST_DUR"
 	def := 600 * time.Second
@@ -29,10 +29,10 @@ func TestStreamDurationEnv(t *testing.T) {
 	}
 }
 
-// TestBuildStreamForwarderHasLongDefaults guards the CF/long-run fix at the wiring level:
-// production stream-timeout DEFAULTS must be long enough for reasoning/agentic models and
-// must NOT regress to the old hardcoded 5s/10s/60s that aborted long-running requests before
-// the upstream even finished thinking; keepalive must default ON and under a proxy idle window.
+// TestBuildStreamForwarderHasLongDefaults 在接线层守护 CF/长任务那项修复:
+// production 流式超时的*默认值*必须长到足以承载推理/agentic 模型,且
+// 绝不能回退到旧的硬编码 5s/10s/60s——那会在上游还没思考完之前就中止长时请求;
+// keepalive 必须默认开启且短于代理的空闲窗口。
 func TestBuildStreamForwarderHasLongDefaults(t *testing.T) {
 	// 钉死的是"默认值",所以必须把所有 HUAKAI_STREAM_* override 清空,否则在某些有意设了更短
 	// override 的开发/CI shell(如 HUAKAI_STREAM_TOTAL_TIMEOUT=60s)里会误红——那其实是 override

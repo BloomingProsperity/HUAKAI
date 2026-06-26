@@ -1,4 +1,4 @@
-// Package credentialstore owns F-AUTH-005 encrypted upstream credentials.
+// Package credentialstore 负责 F-AUTH-005 加密的上游凭据。
 package credentialstore
 
 import (

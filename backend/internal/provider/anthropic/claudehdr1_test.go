@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// CLAUDEHDR-01: the static Claude Code / Stainless header set real clients always
-// send. Their absence is a relay tell.
+// CLAUDEHDR-01:真实客户端总会发送的那组静态 Claude Code / Stainless 请求头。
+// 缺失这些头就是中转站的破绽。
 func TestStampClaudeCodeStaticHeaders(t *testing.T) {
 	h := http.Header{}
 	stampClaudeCodeStaticHeaders(h)
@@ -25,7 +25,7 @@ func TestStampClaudeCodeStaticHeaders(t *testing.T) {
 	}
 }
 
-// MUTATION GUARD: SetIfEmpty must NOT overwrite a caller-supplied value.
+// MUTATION GUARD:SetIfEmpty 绝不能覆盖调用方已提供的值。
 func TestStampClaudeCodeStaticHeaders_PreservesCaller(t *testing.T) {
 	h := http.Header{}
 	h.Set("X-Stainless-Runtime", "deno")
@@ -37,7 +37,7 @@ func TestStampClaudeCodeStaticHeaders_PreservesCaller(t *testing.T) {
 	if h.Get("Connection") != "close" {
 		t.Fatalf("caller Connection overwritten: %q", h.Get("Connection"))
 	}
-	// an unset one is still filled
+	// 未设置的字段仍会被填上
 	if h.Get("X-App") != "cli" {
 		t.Fatalf("X-App not filled: %q", h.Get("X-App"))
 	}

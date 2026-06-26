@@ -8,9 +8,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// PreparedEntry is a sealed privacy-safe append intent. It contains only
-// fields that are known before Append chooses the final ledger id, Merkle
-// roots, signer fingerprint, and signature.
+// PreparedEntry 是一个已封箱的、隐私安全的 append 意图。它只包含在
+// Append 选定最终 ledger id、Merkle root、signer fingerprint 与 signature
+// 之前就已知的字段。
 type PreparedEntry struct {
 	requestID      string
 	tenantID       int64
@@ -20,10 +20,9 @@ type PreparedEntry struct {
 	modelChain     *proto.ModelChain
 }
 
-// PrepareEntry sanitizes a raw ledger entry into the explicit append intent
-// accepted by Append. Unusable redaction output is converted into the
-// redaction_dropped sentinel; only structural precondition failures return an
-// error.
+// PrepareEntry 把一条原始 ledger entry 脱敏成 Append 所接受的显式 append
+// 意图。不可用的脱敏结果会被转换为 redaction_dropped 哨兵；只有结构性
+// 前置条件失败才会返回错误。
 func PrepareEntry(ctx context.Context, rawEntry LedgerEntry) (PreparedEntry, error) {
 	if rawEntry.RequestID == "" {
 		return PreparedEntry{}, fmt.Errorf("auditledger: RequestID required for PrepareEntry")
@@ -46,9 +45,9 @@ func preparedEntryFromLedgerEntry(entry LedgerEntry) PreparedEntry {
 	}
 }
 
-// AsLedgerEntry returns a read-only value projection of the sealed append
-// intent. LedgerID, Merkle roots, signer fingerprint, and signature remain
-// zero-valued so Append can derive them.
+// AsLedgerEntry 返回这个已封箱 append 意图的一个只读值投影。LedgerID、
+// Merkle root、signer fingerprint 与 signature 保持零值，以便 Append 推导
+// 它们。
 func (entry PreparedEntry) AsLedgerEntry() LedgerEntry {
 	return LedgerEntry{
 		Timestamp:      entry.createdAt,

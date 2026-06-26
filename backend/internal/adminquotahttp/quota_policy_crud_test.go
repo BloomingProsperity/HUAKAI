@@ -15,10 +15,9 @@ import (
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
 )
 
-// quotaStoreStub is a fake quotaPolicyStore for the handler unit tests: it
-// records calls and returns configurable rows/errors without a database. The
-// SQL-level tenant fence, unique index, and FK RESTRICT are exercised by the
-// integration test.
+// quotaStoreStub 是供 handler 单元测试用的伪 quotaPolicyStore:它记录调用,
+// 并在没有数据库的情况下返回可配置的行/错误。SQL 层面的租户围栏、唯一索引
+// 以及 FK RESTRICT 由集成测试来演练。
 type quotaStoreStub struct {
 	listRows  []dbquota.QuotaPolicy
 	getRow    dbquota.QuotaPolicy
@@ -149,12 +148,11 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 const validCreateBody = `{"scope_kind":"user","scope_id":"42","metric":"cost_usd","window_kind":"calendar_day","limit_value":"10.00000000","mode":"enforce"}`
 
-// TestCreateHappyPathPersistsAndAudits proves create returns 201 with the
-// persisted row AND that the audit input carries action=create_quota_policy /
-// target_type=quota_policy. MUTATION: drop the InsertAdminAuditEvent call in
-// the adapter -> at the handler level the audit input still flows, so this
-// test pins the contract that a create MUST emit a quota_policy audit; the
-// integration test asserts the row actually lands.
+// TestCreateHappyPathPersistsAndAudits 证明 create 返回 201 并带回持久化的行,
+// 且审计输入携带 action=create_quota_policy / target_type=quota_policy。
+// 变异:在 adapter 里去掉 InsertAdminAuditEvent 调用 —— 在 handler 层审计输入
+// 仍然会流过,所以本测试钉住的契约是"一次 create 必须发出一条 quota_policy
+// 审计";至于该行是否真的落库,由集成测试断言。
 func TestCreateHappyPathPersistsAndAudits(t *testing.T) {
 	store := &quotaStoreStub{createRow: dbquota.QuotaPolicy{
 		ID: 901, TenantID: 7, ScopeKind: "user", ScopeID: "42", Metric: "cost_usd",
@@ -185,10 +183,10 @@ func TestCreateHappyPathPersistsAndAudits(t *testing.T) {
 	}
 }
 
-// TestCreateMetricValidation proves a bogus metric is rejected Go-side with
-// 400 invalid_metric BEFORE the DB write. MUTATION: removing the validMetrics
-// allowlist lets "bogus" reach Postgres (CHECK 500/503), so this test asserting
-// 400 + invalid_metric goes red. Discriminating: the store must not be called.
+// TestCreateMetricValidation 证明非法 metric 在写库之前就被 Go 侧以
+// 400 invalid_metric 拒绝。变异:去掉 validMetrics 白名单会让 "bogus" 到达
+// Postgres(CHECK 500/503),于是这个断言 400 + invalid_metric 的测试就会变红。
+// 区分度:store 一定不能被调用。
 func TestCreateMetricValidation(t *testing.T) {
 	store := &quotaStoreStub{}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
@@ -203,8 +201,8 @@ func TestCreateMetricValidation(t *testing.T) {
 	}
 }
 
-// TestCreateValidationMatrix covers the rest of the Go-side union validation:
-// each bad input must 400 without touching the store.
+// TestCreateValidationMatrix 覆盖 Go 侧并集校验的其余部分:每个非法输入都必须
+// 返回 400,且不触及 store。
 func TestCreateValidationMatrix(t *testing.T) {
 	cases := map[string]struct {
 		body string
@@ -236,8 +234,8 @@ func TestCreateValidationMatrix(t *testing.T) {
 	}
 }
 
-// TestCreateAcceptsFullUnion proves every superset enum value validates and is
-// passed through to the insert params (no value silently dropped).
+// TestCreateAcceptsFullUnion 证明每个超集枚举值都能通过校验,并被透传进
+// insert params(没有任何值被悄悄丢弃)。
 func TestCreateAcceptsFullUnion(t *testing.T) {
 	scopeKinds := []string{"global", "user", "api_key", "channel", "pool_group", "provider_account"}
 	metrics := []string{"requests", "tokens_estimated", "cost_usd", "concurrency"}
@@ -271,10 +269,10 @@ func TestCreateAcceptsFullUnion(t *testing.T) {
 	}
 }
 
-// TestGuardRejectsNonAdminAndAnon proves the role switch default-case denies a
-// user-role credential (403 admin_forbidden_scope) and an unauthenticated
-// request (401) — both before the store. MUTATION: making the role switch
-// default-case fall through to allow makes the 403 assertion red.
+// TestGuardRejectsNonAdminAndAnon 证明 role switch 的 default 分支会拒绝
+// user 角色的凭证(403 admin_forbidden_scope)以及未认证的请求(401)——
+// 二者都发生在触及 store 之前。变异:让 role switch 的 default 分支 fall through
+// 到放行,会使 403 断言变红。
 func TestGuardRejectsNonAdminAndAnon(t *testing.T) {
 	t.Run("user role 403", func(t *testing.T) {
 		store := &quotaStoreStub{}
@@ -301,8 +299,8 @@ func TestGuardRejectsNonAdminAndAnon(t *testing.T) {
 	})
 }
 
-// TestPlatformAdminTenantScoping mirrors adminuserhttp: platform_admin must
-// pass ?tenant_id (400 without) and the resolved tenant_id flows into the read.
+// TestPlatformAdminTenantScoping 与 adminuserhttp 保持一致:platform_admin
+// 必须传 ?tenant_id(不传则 400),且解析出的 tenant_id 会流入读取操作。
 func TestPlatformAdminTenantScoping(t *testing.T) {
 	t.Run("requires tenant_id", func(t *testing.T) {
 		store := &quotaStoreStub{}
@@ -324,9 +322,9 @@ func TestPlatformAdminTenantScoping(t *testing.T) {
 	})
 }
 
-// TestGetCrossTenantForbidden proves a tenant_operator cannot fetch another
-// tenant's policy: ?tenant_id=8 with operator scoped to 7 -> 403 before store.
-// MUTATION: dropping CanIssueForTenant lets the cross-tenant read through.
+// TestGetCrossTenantForbidden 证明 tenant_operator 无法取到另一租户的 policy:
+// operator 作用域为 7 却带 ?tenant_id=8 -> 在触及 store 之前返回 403。
+// 变异:去掉 CanIssueForTenant 会让跨租户读取通过。
 func TestGetCrossTenantForbidden(t *testing.T) {
 	store := &quotaStoreStub{getRow: dbquota.QuotaPolicy{ID: 1, TenantID: 8}}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
@@ -337,7 +335,7 @@ func TestGetCrossTenantForbidden(t *testing.T) {
 	}
 }
 
-// TestGetNotFound proves a missing row maps to 404 quota_policy_not_found.
+// TestGetNotFound 证明缺失的行会映射为 404 quota_policy_not_found。
 func TestGetNotFound(t *testing.T) {
 	store := &quotaStoreStub{getErr: pgx.ErrNoRows}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
@@ -351,10 +349,10 @@ func TestGetNotFound(t *testing.T) {
 	}
 }
 
-// TestDeleteInUseMapsTo409 proves the FK RESTRICT sentinel (errQuotaPolicyInUse,
-// raised from SQLSTATE 23503) is surfaced as 409 quota_policy_in_use, NOT 503.
-// MUTATION: mapping errQuotaPolicyInUse to the default 503 case makes the 409 +
-// quota_policy_in_use assertion red.
+// TestDeleteInUseMapsTo409 证明 FK RESTRICT 哨兵错误(errQuotaPolicyInUse,
+// 由 SQLSTATE 23503 抛出)会被表现为 409 quota_policy_in_use,而非 503。
+// 变异:把 errQuotaPolicyInUse 映射到默认的 503 分支,会使 409 +
+// quota_policy_in_use 断言变红。
 func TestDeleteInUseMapsTo409(t *testing.T) {
 	store := &quotaStoreStub{deleteErr: errQuotaPolicyInUse}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
@@ -365,8 +363,8 @@ func TestDeleteInUseMapsTo409(t *testing.T) {
 	}
 }
 
-// TestDeleteCleanReturns200 proves a clean delete returns 200 {deleted:true}
-// and the audit input carries action=delete_quota_policy.
+// TestDeleteCleanReturns200 证明一次干净的删除返回 200 {deleted:true},
+// 且审计输入携带 action=delete_quota_policy。
 func TestDeleteCleanReturns200(t *testing.T) {
 	store := &quotaStoreStub{deleteID: 55}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
@@ -387,8 +385,8 @@ func TestDeleteCleanReturns200(t *testing.T) {
 	}
 }
 
-// TestCreateConflictMapsTo409 proves the live-policy unique-index sentinel is
-// surfaced as 409 quota_policy_conflict, not an opaque 503.
+// TestCreateConflictMapsTo409 证明 live-policy 唯一索引的哨兵错误会被表现为
+// 409 quota_policy_conflict,而不是一个含糊的 503。
 func TestCreateConflictMapsTo409(t *testing.T) {
 	store := &quotaStoreStub{createErr: errQuotaPolicyConflict}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
@@ -399,8 +397,8 @@ func TestCreateConflictMapsTo409(t *testing.T) {
 	}
 }
 
-// TestUpdateEnabledToggle proves PUT flows enabled=false into the update params
-// (the reserve-path filter relies on this column).
+// TestUpdateEnabledToggle 证明 PUT 会把 enabled=false 流入 update params
+//(reserve 路径的过滤依赖这一列)。
 func TestUpdateEnabledToggle(t *testing.T) {
 	store := &quotaStoreStub{updateRow: dbquota.QuotaPolicy{ID: 55, TenantID: 7, Enabled: false,
 		LimitValue: numericFromString(t, "1"), BurstValue: numericFromString(t, "0"),
@@ -417,9 +415,9 @@ func TestUpdateEnabledToggle(t *testing.T) {
 	}
 }
 
-// TestListAdminIgnoresValidityAndModeFilters proves the admin list passes only
-// the explicit filters (scope/metric/enabled) and never injects a mode or
-// valid_until filter — operators must see disabled+expired+shadow rows.
+// TestListAdminIgnoresValidityAndModeFilters 证明 admin list 只传递显式的过滤
+//(scope/metric/enabled),绝不注入 mode 或 valid_until 过滤 —— 运维必须能看到
+// disabled+过期+shadow 的行。
 func TestListAdminFiltersPassThrough(t *testing.T) {
 	store := &quotaStoreStub{}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},

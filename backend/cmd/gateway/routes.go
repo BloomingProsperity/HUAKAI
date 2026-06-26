@@ -84,7 +84,7 @@ func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
 	return d.dlqService
 }
 
-// mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
+// mountRoutes 按 docs/openapi/openapi.yaml 接线 HTTP 路由。
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	liveness := healthhttp.NewLivenessHandler()
 	r.Method(http.MethodGet, "/healthz", liveness)
@@ -331,11 +331,11 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		mountUserKeyControlsRoutes(r, d)
 	})
 	if d.hermesService != nil && d.hermesRunner != nil {
-		// WAVE H1: Hermes is repositioned to an admin/operator ops assistant.
-		// When HUAKAI_HERMES_ADMIN_ONLY is true (the default), mount behind the
-		// admin-token middleware (admin_tokens auth + tenant-scope enforcement).
-		// When false, the legacy end-user customer-key path is preserved verbatim
-		// for clean rollback.
+		// WAVE H1:Hermes 被重新定位为面向 admin/operator 的运维助手。
+		// 当 HUAKAI_HERMES_ADMIN_ONLY 为 true(默认)时,挂在
+		// admin-token 中间件之后(admin_tokens 鉴权 + 租户作用域强制)。
+		// 为 false 时,旧的终端用户 customer-key 路径被逐字保留,
+		// 以便干净回滚。
 		hermesAuth := hermeshttp.APIKeyMiddleware(d.inboundAuth)
 		if d.hermesAdminOnly {
 			hermesAuth = hermeshttp.AdminAuthMiddleware(d.adminAuth)
@@ -347,15 +347,14 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			HeaderSettings: d.platformSettings,
 			// 注入共享 confirm Cache 单例(同一实例后续也会注入 hermeschat 提议侧)。
 			ConfirmCache: d.hermesConfirmCache,
-			// KNOB A: the runtime mutating-tool kill-switch. The handler enforces it
-			// at the top of the mutating branch (covers preview AND confirm); the
-			// belt-and-suspenders below also withholds the orchestrator when off.
+			// KNOB A:运行时 mutating-tool 总开关。handler 在 mutating 分支顶端
+			// 强制它(覆盖 preview 与 confirm);下方的双保险在它关闭时
+			// 还会扣住 orchestrator 不接线。
 			MutatingEnabled: d.hermesMutatingEnabled,
 		}
-		// WAVE H3 read-only ops spine. Only attach the tool/context deps when the
-		// admin-only repositioning is active — the legacy end-user customer-key
-		// path must not expose operator diagnostics. The handlers also fail
-		// closed (503) if any dep is nil.
+		// WAVE H3 只读运维脊柱。仅在 admin-only 重定位生效时才挂上
+		// tool/context 依赖——旧的终端用户 customer-key 路径绝不得暴露
+		// 运维诊断。任一依赖为 nil 时,handler 也会 fail closed(503)。
 		if d.hermesAdminOnly {
 			if d.hermesToolRegistry != nil {
 				hermesRouterDeps.Tools = d.hermesToolRegistry
@@ -366,15 +365,15 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			if d.hermesModuleSource != nil {
 				hermesRouterDeps.ContextSource = d.hermesModuleSource
 			}
-			// WAVE H4 mutating-tool orchestrator (atomic-audit + advisory-lock).
-			// KNOB A belt-and-suspenders: when the mutating kill-switch is off, the
-			// orchestrator is NOT wired, so even if the handler's flag check were
-			// bypassed a direct confirm path 503s (nil mutator) rather than mutating.
+			// WAVE H4 mutating-tool orchestrator(原子审计 + advisory-lock)。
+			// KNOB A 双保险:当 mutating 总开关关闭时,orchestrator 不被接线,
+			// 因此即便 handler 的标志检查被绕过,直接走 confirm 路径也会
+			// 503(mutator 为 nil)而非真的去改动。
 			if d.hermesMutator != nil && d.hermesMutatingEnabled {
 				hermesRouterDeps.Mutator = d.hermesMutator
-				// S2 (c): the per-operator-token rate limiter rides with the mutator
-				// (same admin-only + mutating-enabled gate). A nil/disabled limiter is
-				// the legacy unbounded behavior.
+				// S2 (c):按 operator-token 的限流器随 mutator 一起挂载
+				//(同样的 admin-only + mutating-enabled 门控)。limiter 为 nil/禁用
+				// 即旧的无界行为。
 				hermesRouterDeps.MutateGuard = &hermeshttp.MutateGuardDeps{
 					RateLimiter: d.hermesMutateRateLimiter,
 				}
@@ -386,11 +385,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/internal/runner/bootstrap", d.handleRunnerBootstrap)
 	r.Post("/internal/runner/refresh", d.handleRunnerRefresh)
 	r.Get("/internal/keys", d.handleRunnerKeys)
-	// WAVE H3b: the runner's mid-conversation READ-ONLY tool-execute callback. It
-	// is authenticated by the session's internal_token (verified inside the
-	// handler) — the SAME HMAC the runner uses for LLM completions on this internal
-	// listener — and dispatches ONLY read-only tools with the bound operator's
-	// scope. Mounted only when the handler is wired (admin-only + chat bridge).
+	// WAVE H3b:runner 在对话中途的只读 tool-execute 回调。它由 session 的
+	// internal_token 鉴权(在 handler 内部校验)——与 runner 在这个内部
+	// 监听器上做 LLM completions 所用的是同一个 HMAC——并且只用绑定 operator 的
+	// 作用域派发只读工具。仅在该 handler 已接线时(admin-only + chat bridge)挂载。
 	if d.hermesInternalToolHandler != nil {
 		r.Method(http.MethodPost, "/internal/hermes/tool-execute", d.hermesInternalToolHandler)
 	}
@@ -802,7 +800,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	mountUsageAdminRoutes(r, d)
 	mountSystemHealthRoutes(r, d)   // ADMIN-042
 	mountBackupRoutes(r, d)         // 只读备份 manifest(platform_admin)
-	mountModuleRegistryRoutes(r, d) // WAVE H2 module-knowledge spine
+	mountModuleRegistryRoutes(r, d) // WAVE H2 模块知识脊柱
 	var adminResolver adminIdentityResolver
 	if d.adminAuth != nil {
 		adminResolver = d.adminAuth
@@ -852,9 +850,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1/users", func(r chi.Router) {
 		adminuserhttp.MountRoutes(r, adminUserDeps)
 	})
-	// Outbound proxy-pool admin surface (F-FP-POOL): list/create/update/delete/
-	// set-status over the secret-free proxyadmin.Service. Tenant-scoped via the
-	// shared admin gate; auth_secret is write-only and never projected.
+	// 出站代理池 admin 面(F-FP-POOL):在无密钥的 proxyadmin.Service 之上提供
+	// list/create/update/delete/set-status。经共享 admin gate 做租户作用域;
+	// auth_secret 只写,绝不向外投影。
 	r.Route("/admin/v1/proxies", func(r chi.Router) {
 		proxyadminhttp.MountRoutes(r, proxyadminhttp.Deps{
 			Auth:    d.adminAuth,
@@ -862,9 +860,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Prober:  buildProxyProber(d),
 		})
 	})
-	// Model -> pool binding admin surface: closes the inert write-path gap
-	// (columns + resolver existed, no admin CRUD). Top-level resource, dual-role
-	// gate, snapshot.version bumped in-Tx by registry.PostgresRegistry.
+	// Model -> pool 绑定 admin 面:补上之前的死写路径缺口
+	//(列 + resolver 早已存在,但没有 admin CRUD)。顶层资源,双角色
+	// gate,snapshot.version 由 registry.PostgresRegistry 在 Tx 内自增。
 	r.Route("/admin/v1/model-pool-bindings", func(r chi.Router) {
 		modelbindingadminhttp.MountRoutes(r, modelbindingadminhttp.Deps{
 			Auth:    d.adminAuth,
@@ -1037,8 +1035,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Auth:     d.adminAuth,
 		Payments: d.paymentService,
 		Usage:    d.billingQueries,
-		Orders:   d.paymentService, // OPS-005: order CSV export (read-only)
-		Refunds:  d.paymentService, // OPS-005: refund CSV export (read-only)
+		Orders:   d.paymentService, // OPS-005:订单 CSV 导出(只读)
+		Refunds:  d.paymentService, // OPS-005:退款 CSV 导出(只读)
 	})
 	r.Route("/v1/admin/payments", func(r chi.Router) {
 		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{

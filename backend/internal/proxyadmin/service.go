@@ -81,8 +81,8 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (Proxy, error) {
 	return fromUpdate(row), nil
 }
 
-// List returns every non-deleted proxy for a tenant, secret-free. The encrypted
-// auth_secret on the underlying rows is never mapped into the result.
+// List 返回某租户全部未删除的代理,不含凭据。底层行上加密的 auth_secret
+// 永远不会被映射进结果。
 func (s *Service) List(ctx context.Context, tenantID int64) ([]Proxy, error) {
 	if tenantID <= 0 {
 		return nil, ErrInvalidInput
@@ -98,8 +98,8 @@ func (s *Service) List(ctx context.Context, tenantID int64) ([]Proxy, error) {
 	return out, nil
 }
 
-// Get returns a single tenant-scoped proxy, secret-free. A missing or
-// cross-tenant id yields ErrNotFound (the query filters by tenant_id).
+// Get 返回单个按租户收敛的代理,不含凭据。不存在或跨租户的 id
+// 会得到 ErrNotFound(查询本身按 tenant_id 过滤)。
 func (s *Service) Get(ctx context.Context, tenantID, id int64) (Proxy, error) {
 	if tenantID <= 0 || id <= 0 {
 		return Proxy{}, ErrInvalidInput
@@ -114,8 +114,8 @@ func (s *Service) Get(ctx context.Context, tenantID, id int64) (Proxy, error) {
 	return fromGet(row), nil
 }
 
-// Delete soft-deletes a tenant-scoped proxy. The underlying UPDATE is tenant +
-// not-already-deleted scoped; it is idempotent (a second delete is a no-op).
+// Delete 对按租户收敛的代理执行软删除。底层 UPDATE 同时按租户与"尚未删除"收敛;
+// 它是幂等的(再删一次是 no-op)。
 func (s *Service) Delete(ctx context.Context, tenantID, id int64) error {
 	if tenantID <= 0 || id <= 0 {
 		return ErrInvalidInput
@@ -126,8 +126,8 @@ func (s *Service) Delete(ctx context.Context, tenantID, id int64) error {
 	return nil
 }
 
-// SetStatus flips a proxy's lifecycle status (active/disabled/dead) for a tenant
-// and stamps last_check_at. Invalid status values are rejected before the write.
+// SetStatus 为某租户翻转代理的生命周期状态(active/disabled/dead)并打上
+// last_check_at 时间戳。非法的 status 值在写入前即被拒绝。
 func (s *Service) SetStatus(ctx context.Context, tenantID, id int64, status string) error {
 	if tenantID <= 0 || id <= 0 {
 		return ErrInvalidInput

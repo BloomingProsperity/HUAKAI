@@ -22,8 +22,8 @@ import (
 
 // OpenAIChatClient 实现 ClientAdapter；零值可用。
 type OpenAIChatClient struct {
-	// ForceFormat makes OpenAI Chat stream chunks fill canonical required keys
-	// before reaching the client. The zero value preserves previous output.
+	// ForceFormat 让 OpenAI Chat 流式 chunk 在到达客户端前补齐 canonical
+	// 必填键。零值保持原有输出不变。
 	ForceFormat bool
 }
 

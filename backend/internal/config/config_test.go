@@ -143,12 +143,11 @@ func TestLoadIncludesTransportSidecarFallbackFlag(t *testing.T) {
 	}
 }
 
-// BILL-121/123: quota enforcement defaults ON. The engine is safe by default
-// (no-ops where no policy exists, observe policies never block, fails open on
-// infra error), so default-on activates configured enforce policies without
-// breaking un-configured deployments.
-// MUTATION: revert Load to envBool("HUAKAI_QUOTA_ENFORCE") (unset -> false) and
-// this assertion goes RED.
+// BILL-121/123:配额强制执行默认开启。引擎默认就是安全的
+//(无策略时 no-op, observe 策略从不阻塞, 基础设施错误时 fail open),
+// 所以默认开启会激活已配置的 enforce 策略, 而不会破坏未配置的部署。
+// MUTATION:把 Load 改回 envBool("HUAKAI_QUOTA_ENFORCE")(未设置 -> false),
+// 本断言即变红。
 func TestLoadQuotaEnforceDefaultOn(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_QUOTA_ENFORCE", "")
@@ -165,7 +164,7 @@ func TestLoadQuotaEnforceDefaultOn(t *testing.T) {
 func TestLoadQuotaEnforceFlag(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 
-	// Explicit true keeps it on.
+	// 显式 true 保持开启。
 	t.Setenv("HUAKAI_QUOTA_ENFORCE", "true")
 	cfg, err := Load()
 	if err != nil {
@@ -175,8 +174,8 @@ func TestLoadQuotaEnforceFlag(t *testing.T) {
 		t.Fatal("QuotaEnforce=false want true from HUAKAI_QUOTA_ENFORCE=true")
 	}
 
-	// Explicit false is the operator escape hatch and must still disable it even
-	// though the default is now on. MUTATION: ignore the env value -> RED.
+	// 显式 false 是运维的逃生出口, 即便现在默认是开启的也必须仍能关闭它。
+	// MUTATION:忽略该 env 值 -> 变红。
 	t.Setenv("HUAKAI_QUOTA_ENFORCE", "false")
 	cfg, err = Load()
 	if err != nil {
@@ -432,8 +431,8 @@ func TestLoadPaymentExpireSweepReadsEnv(t *testing.T) {
 }
 
 func TestLoadAPIKeyExpirySweepDefaultsEnabledBounded(t *testing.T) {
-	// AUTH-150: default boot should materialize expired key status without
-	// operator ceremony, while still bounding cadence and rows per batch.
+	// AUTH-150:默认启动应当无需运维繁琐操作即可让过期 key 的状态生效,
+	// 同时仍限制扫描频率与每批处理的行数。
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED", "")
 	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_INTERVAL", "")
@@ -455,8 +454,8 @@ func TestLoadAPIKeyExpirySweepDefaultsEnabledBounded(t *testing.T) {
 }
 
 func TestLoadAPIKeyExpirySweepReadsEnvAndCanDisable(t *testing.T) {
-	// MUTATION: ignore HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED=false; operators
-	// cannot pause the display-state worker during incident response.
+	// MUTATION:忽略 HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED=false;运维在事故响应
+	// 期间将无法暂停这个显示状态 worker。
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_ENABLED", "false")
 	t.Setenv("HUAKAI_API_KEY_EXPIRY_SWEEP_INTERVAL", "30s")
@@ -478,7 +477,7 @@ func TestLoadAPIKeyExpirySweepReadsEnvAndCanDisable(t *testing.T) {
 }
 
 func TestLoadAlertingEvalDefaultsDisabled(t *testing.T) {
-	// MUTATION: default AlertingEvalEnabled to true; fresh installs start the alert evaluator without operator opt-in.
+	// MUTATION:把 AlertingEvalEnabled 默认改成 true;全新安装会在运维未主动开启的情况下就启动告警评估器。
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_ALERTING_EVAL_ENABLED", "")
 	t.Setenv("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", "")
@@ -496,7 +495,7 @@ func TestLoadAlertingEvalDefaultsDisabled(t *testing.T) {
 }
 
 func TestLoadAlertingEvalReadsEnv(t *testing.T) {
-	// MUTATION: ignore HUAKAI_ALERTING_EVAL_* env; operator opt-in never starts the evaluator at the requested cadence.
+	// MUTATION:忽略 HUAKAI_ALERTING_EVAL_* env;运维主动开启也永远无法以指定频率启动评估器。
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_ALERTING_EVAL_ENABLED", "true")
 	t.Setenv("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", "15")
@@ -525,7 +524,7 @@ func TestLoadRejectsInvalidAlertingEvalConfig(t *testing.T) {
 		{name: "interval garbage", env: "HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", raw: "soon"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// MUTATION: accept malformed alert eval env; boot silently runs with an unintended lifecycle.
+			// MUTATION:接受格式错误的 alert eval env;启动会静默地以非预期的生命周期运行。
 			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 			t.Setenv(tc.env, tc.raw)
 
@@ -585,8 +584,8 @@ func TestLoadRejectsInvalidAPIKeyExpirySweepConfig(t *testing.T) {
 		{name: "batch garbage", env: "HUAKAI_API_KEY_EXPIRY_SWEEP_BATCH_LIMIT", raw: "many"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// MUTATION: accept malformed worker env; boot silently runs with
-			// an unintended expiry sweep lifecycle.
+			// MUTATION:接受格式错误的 worker env;启动会静默地以非预期的过期扫描
+			// 生命周期运行。
 			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 			t.Setenv(tc.env, tc.raw)
 
@@ -630,8 +629,8 @@ func TestLoadDBPoolDefaultsZeroWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	// Default-preserving contract: unset pool envs leave all fields zero so the
-	// db package keeps its defaults (16/2/30m/5m).
+	// 保留默认值的约定:未设置连接池 env 时所有字段保持为零, 这样 db 包
+	// 沿用它的默认值(16/2/30m/5m)。
 	if cfg.DBMaxConns != 0 || cfg.DBMinConns != 0 || cfg.DBMaxConnLifetime != 0 || cfg.DBMaxConnIdleTime != 0 {
 		t.Fatalf("expected zero overrides when unset, got %d/%d/%s/%s", cfg.DBMaxConns, cfg.DBMinConns, cfg.DBMaxConnLifetime, cfg.DBMaxConnIdleTime)
 	}
@@ -664,7 +663,7 @@ func TestLoadDBPoolReadsEnv(t *testing.T) {
 func TestLoadDBMaxConnsInvalidIsError(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_DB_MAX_CONNS", "abc")
-	// Fail-loud: a malformed pool size aborts boot, not silently default.
+	// 显式失败:格式错误的连接池大小会中止启动, 而不是静默走默认值。
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for invalid HUAKAI_DB_MAX_CONNS, got nil")
 	}

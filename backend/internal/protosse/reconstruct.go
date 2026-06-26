@@ -16,9 +16,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
 
-// ReconstructBufferedFromSSE converts an SSE-shaped buffered upstream body into
-// a buffered HCSF response by replaying each data payload through the existing
-// upstream streaming adapter.
+// ReconstructBufferedFromSSE 把一个 SSE 形态的缓冲上游响应体转换成缓冲式 HCSF
+// 响应:逐条把每个 data 负载通过现有的上游流式 adapter 重放一遍。
 func ReconstructBufferedFromSSE(adapter proto.UpstreamAdapter, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, bool) {
 	if !looksLikeSSE(raw) {
 		return nil, nil, false

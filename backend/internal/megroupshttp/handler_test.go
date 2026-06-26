@@ -15,7 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 )
 
-// --- stubs -----------------------------------------------------------------
+// --- 桩 --------------------------------------------------------------------
 
 type authStub struct {
 	identity auth.Identity
@@ -48,8 +48,8 @@ func (s *userGroupStub) UserGroup(_ context.Context, tenantID, userID int64) (st
 	return s.group, nil
 }
 
-// routesStub returns the allowed pool-group set only for the exact
-// (tenant, userGroup) it was seeded with; anything else yields an empty set.
+// routesStub 只为它被预置的那个精确 (tenant, userGroup) 返回 allowed 的
+// pool-group 集合;其它任何情况都产出空集合。
 type routesStub struct {
 	tenantID  int64
 	userGroup string
@@ -80,7 +80,7 @@ func (s *routesStub) GroupRoutes(_ context.Context, tenantID int64, userGroup, m
 }
 
 type ratioStub struct {
-	rows map[int64][]pricingcatalog.GroupPricingRatio // keyed by tenant
+	rows map[int64][]pricingcatalog.GroupPricingRatio // 按 tenant 索引
 	err  error
 }
 
@@ -92,7 +92,7 @@ func (s *ratioStub) ListRatios(_ context.Context, tenantID int64) ([]pricingcata
 }
 
 type poolNameStub struct {
-	names map[int64]map[int64]string // tenant -> id -> name
+	names map[int64]map[int64]string // tenant -> id -> 名称
 	err   error
 }
 
@@ -141,16 +141,16 @@ func itemByID(items []map[string]any, id int64) map[string]any {
 	return nil
 }
 
-// --- tests -----------------------------------------------------------------
+// --- 测试 ------------------------------------------------------------------
 
-// TestPublicRatioGate guards the money/competitive-intel leak: a group whose
-// ratio row is public_ratio=false must NEVER serialize its multiplier.
+// TestPublicRatioGate 守护金钱/竞争情报泄漏:ratio 行为 public_ratio=false 的
+// group 绝不能序列化其倍率。
 //
-// Fixtures are discriminating — group B's hidden ratio "9.90000000" differs both
-// from an omitted field and from the default 1.0, so a leak is unmistakable.
+// fixture 有区分度 —— group B 的隐藏 ratio "9.90000000" 既不同于被省略的字段,
+// 也不同于默认的 1.0,因此泄漏会一目了然。
 //
-// MUTATION: drop the `row.PublicRatio` guard in handler.go (always emit ratio).
-// Then group B serializes "9.90000000" and the leak assertion goes RED.
+// 变异:去掉 handler.go 中的 `row.PublicRatio` 守卫(总是输出 ratio)。那样
+// group B 会序列化出 "9.90000000",泄漏断言转红。
 func TestPublicRatioGate(t *testing.T) {
 	ident := auth.Identity{TenantID: 1, UserID: 42}
 	d := Deps{
@@ -159,8 +159,8 @@ func TestPublicRatioGate(t *testing.T) {
 		RoutesRepo: &routesStub{tenantID: 1, userGroup: "default", allowed: []int64{7, 12}},
 		Ratios: &ratioStub{rows: map[int64][]pricingcatalog.GroupPricingRatio{
 			1: {
-				ratio(1, 12, "1.50000000", true), // A: public
-				ratio(1, 7, "9.90000000", false), // B: hidden internal multiplier
+				ratio(1, 12, "1.50000000", true), // A:公开
+				ratio(1, 7, "9.90000000", false), // B:隐藏的内部倍率
 			},
 		}},
 		Pools: &poolNameStub{names: map[int64]map[int64]string{
@@ -195,21 +195,20 @@ func TestPublicRatioGate(t *testing.T) {
 	if b["has_public_ratio"] != false {
 		t.Fatalf("non-public group has_public_ratio=%v want false", b["has_public_ratio"])
 	}
-	// Defense in depth: the hidden multiplier must not appear anywhere in the wire body.
+	// 纵深防御:隐藏的倍率绝不能出现在传输 body 的任何地方。
 	if got := rec.Body.String(); contains(got, "9.90000000") {
 		t.Fatalf("hidden internal multiplier leaked into response body: %s", got)
 	}
 }
 
-// TestTenantUserScoping guards CMB-5 cross-tenant read. The session is
-// (tenant=1,user=42); the routes stub only returns groups for that exact pair.
-// Tenant 2 has groups {99} but the handler must derive tenant from the session,
-// so tenant 2's group can never appear.
+// TestTenantUserScoping 守护 CMB-5 跨 tenant 读取。会话是 (tenant=1,user=42);
+// routes 桩只为这个精确的对返回 group。tenant 2 有 group {99},但 handler 必须
+// 从会话推导 tenant,因此 tenant 2 的 group 永远不会出现。
 //
-// MUTATION: have the handler pass a request-derived or zero tenant id into
-// GroupRoutes/UserGroup. The (tenant,userGroup) match fails (or matches tenant 2),
-// and either the items go empty-where-expected or tenant 2's group 99 surfaces —
-// the recorded store-call tenant assertion + the "no group 99" assertion go RED.
+// 变异:让 handler 把一个来自请求或为零的 tenant id 传入 GroupRoutes/UserGroup。
+// 那样 (tenant,userGroup) 匹配会失败(或匹配到 tenant 2),要么 items 在本应
+// 有值处变空,要么 tenant 2 的 group 99 浮现 —— 记录的 store 调用 tenant 断言
+// + 「没有 group 99」断言都会转红。
 func TestTenantUserScoping(t *testing.T) {
 	ident := auth.Identity{TenantID: 1, UserID: 42}
 	ug := &userGroupStub{group: "default"}
@@ -240,7 +239,7 @@ func TestTenantUserScoping(t *testing.T) {
 	if itemByID(items, 7) == nil {
 		t.Fatalf("own-tenant group 7 missing: %v", items)
 	}
-	// The downstream stores must have been queried with the SESSION tenant/user only.
+	// 下游存储必须只用会话的 tenant/user 被查询。
 	if len(ug.calls) != 1 || ug.calls[0].tenantID != 1 || ug.calls[0].userID != 42 {
 		t.Fatalf("user_group lookup scope=%v want one call tenant:1 user:42", ug.calls)
 	}
@@ -252,14 +251,13 @@ func TestTenantUserScoping(t *testing.T) {
 	}
 }
 
-// TestTierFiltering guards functional correctness: items reflect only the
-// tier's allowed pool groups, not every priced group. The tenant has a ratio
-// row for group 99 (a different tier's group), but the caller's tier allows
-// only {7,12}.
+// TestTierFiltering 守护功能正确性:items 只反映该 tier 允许的 pool group,
+// 而非每个已定价的 group。该 tenant 有一条 group 99(另一个 tier 的 group)的
+// ratio 行,但调用方所在 tier 只允许 {7,12}。
 //
-// MUTATION: skip GroupRoutes and list every ratio/pool instead. Then group 99
-// appears and the "99 must be absent" assertion goes RED. 99 is a foreign-tier
-// group (not an empty-set artifact), so the fixture is discriminating.
+// 变异:跳过 GroupRoutes 而改为列出每条 ratio/pool。那样 group 99 会出现,
+// 「99 必须缺席」断言转红。99 是一个异 tier 的 group(而非空集副产物),
+// 因此该 fixture 有区分度。
 func TestTierFiltering(t *testing.T) {
 	ident := auth.Identity{TenantID: 1, UserID: 42}
 	d := Deps{
@@ -270,7 +268,7 @@ func TestTierFiltering(t *testing.T) {
 			1: {
 				ratio(1, 7, "1.10000000", true),
 				ratio(1, 12, "1.20000000", true),
-				ratio(1, 99, "8.80000000", true), // priced but belongs to another tier
+				ratio(1, 99, "8.80000000", true), // 已定价但属于另一个 tier
 			},
 		}},
 		Pools: &poolNameStub{names: map[int64]map[int64]string{
@@ -289,18 +287,16 @@ func TestTierFiltering(t *testing.T) {
 	if itemByID(items, 99) != nil {
 		t.Fatalf("foreign-tier group 99 leaked: %v", items)
 	}
-	// Ordering: pool_group_id ASC.
+	// 排序:pool_group_id 升序。
 	if got := int64(items[0]["pool_group_id"].(float64)); got != 7 {
 		t.Fatalf("items[0]=%d want 7 (ascending order)", got)
 	}
 }
 
-// TestUnauthenticated guards the auth gate: no/invalid session yields 401 and
-// never touches downstream stores.
+// TestUnauthenticated 守护鉴权门:无效/缺失会话产出 401,且永不触达下游存储。
 //
-// MUTATION: drop the `ident.UserID <= 0` / error check. Then the handler would
-// proceed with a zero identity and return 200, flipping this to RED. The stub
-// call-count assertion further proves no store was reached.
+// 变异:去掉 `ident.UserID <= 0` / 错误检查。那样 handler 会带着零身份继续
+// 并返回 200,使此处转红。桩的调用计数断言进一步证明没有触达任何存储。
 func TestUnauthenticated(t *testing.T) {
 	ug := &userGroupStub{group: "default"}
 	d := Deps{
@@ -320,21 +316,21 @@ func TestUnauthenticated(t *testing.T) {
 	}
 }
 
-// TestAllowedGroupWithoutRatioRow guards the "unconfigured = no misleading
-// default" rule: an allowed group with no ratio row must report
-// has_public_ratio=false and omit ratio entirely — not crash and not invent 1.0.
+// TestAllowedGroupWithoutRatioRow 守护「未配置 = 不给误导性默认值」规则:
+// 一个没有 ratio 行的 allowed group 必须报告 has_public_ratio=false 并完全省略
+// ratio —— 既不崩溃,也不凭空造出 1.0。
 //
-// MUTATION: have the handler default an unpriced group to ratio "1.00000000"
-// /has_public_ratio=true. Then this group would carry a (misleading) ratio and
-// the "ratio absent + has_public_ratio false" assertion goes RED. A nil-deref
-// on the missing map entry would 500 and also fail.
+// 变异:让 handler 把未定价 group 默认成 ratio "1.00000000" /
+// has_public_ratio=true。那样该 group 会带上一个(误导性的)ratio,
+// 「ratio 缺席 + has_public_ratio 为 false」断言转红。对缺失 map 条目的
+// nil 解引用会返回 500,同样会失败。
 func TestAllowedGroupWithoutRatioRow(t *testing.T) {
 	ident := auth.Identity{TenantID: 1, UserID: 42}
 	d := Deps{
 		Auth:       authStub{identity: ident},
 		UserGroups: &userGroupStub{group: "default"},
 		RoutesRepo: &routesStub{tenantID: 1, userGroup: "default", allowed: []int64{7}},
-		Ratios:     &ratioStub{rows: map[int64][]pricingcatalog.GroupPricingRatio{1: {}}}, // no rows
+		Ratios:     &ratioStub{rows: map[int64][]pricingcatalog.GroupPricingRatio{1: {}}}, // 无行
 		Pools: &poolNameStub{names: map[int64]map[int64]string{
 			1: {7: "unpriced-pool"},
 		}},
@@ -360,7 +356,7 @@ func TestAllowedGroupWithoutRatioRow(t *testing.T) {
 	}
 }
 
-// TestDependencyUnset guards the 503 wiring guard.
+// TestDependencyUnset 守护 503 接线守卫。
 func TestDependencyUnset(t *testing.T) {
 	rec := invoke(NewHandler(Deps{}))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -368,8 +364,8 @@ func TestDependencyUnset(t *testing.T) {
 	}
 }
 
-// TestBackendErrorIsServiceUnavailable guards that a transient store failure
-// surfaces as 503 rather than a panic/200.
+// TestBackendErrorIsServiceUnavailable 守护:瞬态存储失败应呈现为 503,
+// 而非 panic/200。
 func TestBackendErrorIsServiceUnavailable(t *testing.T) {
 	ident := auth.Identity{TenantID: 1, UserID: 42}
 	d := Deps{

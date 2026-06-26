@@ -30,8 +30,8 @@ var (
 	ErrUnsupportedSigner       = errors.New("auditledger: unsupported signer")
 )
 
-// Signer signs and verifies ledger payload bytes. Production KMS adapters can
-// implement this interface without exposing private key material to the writer.
+// Signer 对 ledger payload 字节进行签名与验签。生产环境的 KMS 适配器
+// 可以实现这个接口，而无需把私钥材料暴露给 writer。
 type Signer interface {
 	Sign(ctx context.Context, payload []byte) (signature []byte, pubkeyFingerprint string, err error)
 	Verify(ctx context.Context, payload []byte, sig []byte, pubkeyFingerprint string) (bool, error)
@@ -43,9 +43,9 @@ type legacySigner interface {
 	PublicKey() ed25519.PublicKey
 }
 
-// PublicKeyRecord is the local representation of one published trust-ledger
-// public key. ValidUntil is metadata for API surfaces; verification accepts any
-// configured fingerprint so historical entries remain verifiable.
+// PublicKeyRecord 是一个已发布的 trust-ledger 公钥在本地的表示。
+// ValidUntil 是供 API 表面使用的元数据；验签会接受任何已配置的
+// fingerprint，从而让历史 entry 始终可验证。
 type PublicKeyRecord struct {
 	Fingerprint  string
 	PublicKey    ed25519.PublicKey
@@ -55,8 +55,8 @@ type PublicKeyRecord struct {
 	PubkeyBase64 string
 }
 
-// LocalEd25519Signer is the local KMS-compatible implementation for dev/test
-// and single-node deployments.
+// LocalEd25519Signer 是面向 dev / test 及单节点部署的、与 KMS 兼容的
+// 本地实现。
 type LocalEd25519Signer struct {
 	private ed25519.PrivateKey
 	active  PublicKeyRecord

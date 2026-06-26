@@ -11,7 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 )
 
-// fakeSource is a controllable Source for unit tests (no DB, no real wiring).
+// fakeSource 是单元测试用的可控 Source(无 DB、无真实接线)。
 type fakeSource struct {
 	snaps   []moduleregistry.ModuleSnapshot
 	catalog map[string]modulecatalog.CatalogModule
@@ -50,16 +50,16 @@ func newFakeSource() *fakeSource {
 		},
 		idToPkg: map[string]string{
 			"billing.service": "billing",
-			// routing.selector intentionally UNmapped -> live-only, no overlay.
+			// routing.selector 刻意未映射 -> 纯实时,无覆盖层。
 		},
 	}
 }
 
-// TestMergeJoinsLiveAndCatalog — the merge must fold the static overlay onto the
-// matching live module AND carry the live probe through.
-// Regression: if Merge stopped calling CatalogLookup/CatalogPkgFor (overlay
-// dropped), billing's Catalog would be nil; if it dropped the probe, LiveProbe
-// status would be empty. Either goes RED.
+// TestMergeJoinsLiveAndCatalog —— 合并必须把静态覆盖层叠加到匹配的实时模块
+// 上,并把实时探针传递下来。
+// 回归:若 Merge 停止调用 CatalogLookup/CatalogPkgFor(覆盖层被丢弃),
+// billing 的 Catalog 会为 nil;若它丢弃了探针,LiveProbe 状态会为空。
+// 两者任一都会转红。
 func TestMergeJoinsLiveAndCatalog(t *testing.T) {
 	views := Merge(context.Background(), newFakeSource(), "")
 	if len(views) != 2 {
@@ -80,7 +80,7 @@ func TestMergeJoinsLiveAndCatalog(t *testing.T) {
 	if billing.LiveProbe.Status != moduleregistry.StatusOK {
 		t.Fatalf("billing live probe=%q want ok (probe not carried through)", billing.LiveProbe.Status)
 	}
-	// routing.selector is unmapped: it must appear live-only with NO overlay.
+	// routing.selector 未映射:它必须以纯实时形式出现,且无覆盖层。
 	for _, v := range views {
 		if v.ID == "routing.selector" && v.Catalog != nil {
 			t.Fatalf("unmapped module got a spurious catalog overlay: %+v", v.Catalog)
@@ -88,9 +88,9 @@ func TestMergeJoinsLiveAndCatalog(t *testing.T) {
 	}
 }
 
-// TestHandlerReturnsSeededModules — the endpoint returns the live modules.
-// Regression: if the handler returned an empty body or 500 on a valid source,
-// the count assertion or status assertion goes RED.
+// TestHandlerReturnsSeededModules —— 端点返回实时模块。
+// 回归:若 handler 在有效 source 上返回空 body 或 500,计数断言或状态断言
+// 会转红。
 func TestHandlerReturnsSeededModules(t *testing.T) {
 	h := NewModulesHandler(newFakeSource())
 	rec := httptest.NewRecorder()
@@ -108,11 +108,10 @@ func TestHandlerReturnsSeededModules(t *testing.T) {
 	}
 }
 
-// TestHandlerCategoryFilter — ?category= filters to one category.
-// Regression: if the handler ignored the query param (passed "" to Merge always)
-// both modules would return for ?category=money-path and the count goes RED;
-// this is a discriminating fixture because the two seeds have DIFFERENT
-// categories, so a broken filter produces 2, a correct filter produces 1.
+// TestHandlerCategoryFilter —— ?category= 过滤到单个 category。
+// 回归:若 handler 忽略查询参数(始终向 Merge 传 ""),?category=money-path
+// 会返回两个模块,计数转红;这是一个有区分度的 fixture,因为两个 seed 有
+// 不同的 category,所以坏掉的过滤会产出 2,正确的过滤会产出 1。
 func TestHandlerCategoryFilter(t *testing.T) {
 	h := NewModulesHandler(newFakeSource())
 	rec := httptest.NewRecorder()
@@ -130,8 +129,8 @@ func TestHandlerCategoryFilter(t *testing.T) {
 	}
 }
 
-// TestHandlerNilSourceFailsClosed — a nil source must not panic; it returns 503
-// with an empty list, never a 200 implying "zero modules exist".
+// TestHandlerNilSourceFailsClosed —— nil source 绝不能 panic;它返回 503
+// 并带一个空列表,绝不返回暗示「存在零个模块」的 200。
 func TestHandlerNilSourceFailsClosed(t *testing.T) {
 	h := NewModulesHandler(nil)
 	rec := httptest.NewRecorder()

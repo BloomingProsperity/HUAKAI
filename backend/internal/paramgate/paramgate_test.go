@@ -54,8 +54,7 @@ func TestParamGateOptIn(t *testing.T) {
 	if _, ok := streamOptions["include_usage"]; !ok {
 		t.Fatalf("sibling stream_options.include_usage was stripped: %s", nested)
 	}
-	// MUTATION: default stripping without checking flags makes the all-false
-	// preservation assertions fail.
+	// 变异:不检查标志就默认剥除,会让 all-false 的保留断言失败。
 }
 
 func decodeObject(t *testing.T, body []byte) map[string]any {

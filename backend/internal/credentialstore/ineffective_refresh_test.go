@@ -12,28 +12,27 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Pure-helper unit tests (no DB required)
+// 纯 helper 单元测试(无需 DB)
 // ---------------------------------------------------------------------------
 
-// TestIneffectiveRefreshNextAttemptEffective verifies the DEFAULT/SAFE path:
-// when refreshBeforeAt is in the future the helper returns normalNext unchanged.
-// Mutation self-check: if the helper returns now+backoff even in the effective
-// case this test goes RED.
+// TestIneffectiveRefreshNextAttemptEffective 验证 DEFAULT/SAFE 路径:
+// 当 refreshBeforeAt 在未来时,该 helper 原样返回 normalNext。
+// 变异自检:若该 helper 即便在有效场景下也返回 now+backoff,本测试会变红。
 func TestIneffectiveRefreshNextAttemptEffective(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
-	refreshBeforeAt := now.Add(5 * time.Minute) // in the future -> effective
-	normalNext := time.Time{}                   // NULL / zero sentinel
+	refreshBeforeAt := now.Add(5 * time.Minute) // 在未来 -> 有效
+	normalNext := time.Time{}                   // NULL / 零值哨兵
 	got := ineffectiveRefreshNextAttempt(refreshBeforeAt, now, normalNext)
 	if got != normalNext {
 		t.Fatalf("effective refresh: got next_attempt_at=%v, want normalNext=%v (MUST be unchanged)", got, normalNext)
 	}
 }
 
-// TestIneffectiveRefreshNextAttemptIneffectiveExact verifies refreshBeforeAt == now
-// (boundary: exactly now) is treated as ineffective.
+// TestIneffectiveRefreshNextAttemptIneffectiveExact 验证 refreshBeforeAt == now
+// (边界:恰好等于 now)被视为无效。
 func TestIneffectiveRefreshNextAttemptIneffectiveExact(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
-	refreshBeforeAt := now // == now -> immediately due -> ineffective
+	refreshBeforeAt := now // == now -> 立即到期 -> 无效
 	got := ineffectiveRefreshNextAttempt(refreshBeforeAt, now, time.Time{})
 	want := now.Add(IneffectiveRefreshBackoff)
 	if got != want {
@@ -41,11 +40,11 @@ func TestIneffectiveRefreshNextAttemptIneffectiveExact(t *testing.T) {
 	}
 }
 
-// TestIneffectiveRefreshNextAttemptIneffectivePast verifies refreshBeforeAt in
-// the past is treated as ineffective.
+// TestIneffectiveRefreshNextAttemptIneffectivePast 验证位于过去的 refreshBeforeAt
+// 被视为无效。
 func TestIneffectiveRefreshNextAttemptIneffectivePast(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
-	refreshBeforeAt := now.Add(-1 * time.Minute) // past -> ineffective
+	refreshBeforeAt := now.Add(-1 * time.Minute) // 过去 -> 无效
 	got := ineffectiveRefreshNextAttempt(refreshBeforeAt, now, time.Time{})
 	want := now.Add(IneffectiveRefreshBackoff)
 	if got != want {
@@ -53,8 +52,8 @@ func TestIneffectiveRefreshNextAttemptIneffectivePast(t *testing.T) {
 	}
 }
 
-// TestIneffectiveRefreshBackoffValue asserts the const is exactly 30s so a
-// reviewer immediately sees a drift if changed carelessly.
+// TestIneffectiveRefreshBackoffValue 断言该常量恰好为 30s,这样若被随意改动,
+// 评审者能立即察觉漂移。
 func TestIneffectiveRefreshBackoffValue(t *testing.T) {
 	if IneffectiveRefreshBackoff != 30*time.Second {
 		t.Fatalf("IneffectiveRefreshBackoff=%v want 30s", IneffectiveRefreshBackoff)
@@ -62,7 +61,7 @@ func TestIneffectiveRefreshBackoffValue(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Integration test — requires HUAKAI_DATABASE_URL (skipped otherwise)
+// 集成测试 —— 需要 HUAKAI_DATABASE_URL(否则跳过)
 // ---------------------------------------------------------------------------
 
 func TestSaveRefreshSuccessIneffectiveSetsNextAttemptAt(t *testing.T) {
@@ -81,7 +80,7 @@ func TestSaveRefreshSuccessIneffectiveSetsNextAttemptAt(t *testing.T) {
 		t.Fatalf("pg ping: %v", err)
 	}
 
-	// Seed minimal fixture.
+	// 准备最小化的 fixture。
 	suffix := fmt.Sprintf("ineff-%d", time.Now().UnixNano())
 	var tenantID, providerID, poolGroupID, channelID, providerAccountID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO tenants (name) VALUES ($1) RETURNING id`, "ineff-"+suffix).Scan(&tenantID); err != nil {
@@ -129,8 +128,8 @@ func TestSaveRefreshSuccessIneffectiveSetsNextAttemptAt(t *testing.T) {
 	}
 
 	before := time.Now()
-	// Pass an accessExpiresAt that is only 1 minute in the future — well inside
-	// the 15-minute RefreshWindow — so refreshBeforeAt will be < now (ineffective).
+	// 传入一个仅在未来 1 分钟的 accessExpiresAt —— 远在 15 分钟的 RefreshWindow 之内 ——
+	// 这样 refreshBeforeAt 会 < now(无效)。
 	ineffectiveExpiry := time.Now().Add(1 * time.Minute)
 	if err := store.SaveRefreshSuccess(ctx, rec, []byte(`{"api_key":"sk-ineff-test"}`), ineffectiveExpiry, "refresh_succeeded"); err != nil {
 		t.Fatalf("SaveRefreshSuccess: %v", err)
@@ -146,7 +145,7 @@ func TestSaveRefreshSuccessIneffectiveSetsNextAttemptAt(t *testing.T) {
 		t.Fatal("ineffective SaveRefreshSuccess: next_attempt_at is NULL, want ~now+30s")
 	}
 	lo := before.Add(IneffectiveRefreshBackoff)
-	hi := after.Add(IneffectiveRefreshBackoff).Add(2 * time.Second) // small fuzz
+	hi := after.Add(IneffectiveRefreshBackoff).Add(2 * time.Second) // 少量容差
 	if nextAttemptAt.Before(lo) || nextAttemptAt.After(hi) {
 		t.Fatalf("next_attempt_at=%v want in [%v, %v]", nextAttemptAt, lo, hi)
 	}

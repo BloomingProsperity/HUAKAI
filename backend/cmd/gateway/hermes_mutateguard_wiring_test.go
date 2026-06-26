@@ -5,11 +5,11 @@ import (
 	"time"
 )
 
-// TestHermesMutateGuardConfig_UnsetIsDefaults proves that with NO
-// HUAKAI_HERMES_MUTATE_* env set, the parsed config is the conservative built-in
-// defaults — and that the orchestrator options + limiter built from it are
-// ENABLED (the deployment default), NOT disabled. Mutation: change a default to 0
-// (its disable sentinel) and the matching assertion goes RED.
+// TestHermesMutateGuardConfig_UnsetIsDefaults 证明：在未设置任何
+// HUAKAI_HERMES_MUTATE_* 环境变量时，解析出的 config 即为保守的内置
+// 默认值——并且由它构建出的 orchestrator options + limiter 是
+// 启用（ENABLED，部署默认）而非禁用的。变异：把某个默认值改成 0
+//（其禁用哨兵值），对应的断言就会变红（RED）。
 func TestHermesMutateGuardConfig_UnsetIsDefaults(t *testing.T) {
 	for _, env := range []string{
 		hermesMutateMaxConcurrencyEnv, hermesMutateAcquireWaitEnv,
@@ -44,8 +44,8 @@ func TestHermesMutateGuardConfig_UnsetIsDefaults(t *testing.T) {
 	}
 }
 
-// TestHermesMutateGuardConfig_ZeroDisablesEachGuard proves the explicit-0 disable
-// sentinel: an operator who sets a knob to 0 turns OFF exactly that guard.
+// TestHermesMutateGuardConfig_ZeroDisablesEachGuard 证明显式置 0 的禁用
+// 哨兵值：运维把某个旋钮设为 0，就恰好关闭对应的那一项守卫。
 func TestHermesMutateGuardConfig_ZeroDisablesEachGuard(t *testing.T) {
 	t.Setenv(hermesMutateMaxConcurrencyEnv, "0")
 	t.Setenv(hermesMutateTxDeadlineEnv, "0")
@@ -68,8 +68,8 @@ func TestHermesMutateGuardConfig_ZeroDisablesEachGuard(t *testing.T) {
 	}
 }
 
-// TestHermesMutateGuardConfig_FailsLoudOnGarbage proves a malformed knob is a
-// boot error, never a silent fallback (which could mis-bound the path).
+// TestHermesMutateGuardConfig_FailsLoudOnGarbage 证明：格式错误的旋钮值会
+// 触发启动报错，绝不会静默回退（那可能给路径设错边界）。
 func TestHermesMutateGuardConfig_FailsLoudOnGarbage(t *testing.T) {
 	t.Setenv(hermesMutateMaxConcurrencyEnv, "not-a-number")
 	if _, err := hermesMutateGuardConfigFromEnv(); err == nil {
@@ -82,10 +82,10 @@ func TestHermesMutateGuardConfig_FailsLoudOnGarbage(t *testing.T) {
 	}
 }
 
-// TestHermesMutateGuardConfig_ParsesDurationOrSeconds proves both forms parse.
+// TestHermesMutateGuardConfig_ParsesDurationOrSeconds 证明两种形式都能解析。
 func TestHermesMutateGuardConfig_ParsesDurationOrSeconds(t *testing.T) {
 	t.Setenv(hermesMutateTxDeadlineEnv, "120s")
-	t.Setenv(hermesMutateRateWindowEnv, "30") // bare seconds
+	t.Setenv(hermesMutateRateWindowEnv, "30") // 裸秒数
 	cfg, err := hermesMutateGuardConfigFromEnv()
 	if err != nil {
 		t.Fatalf("err=%v want nil", err)

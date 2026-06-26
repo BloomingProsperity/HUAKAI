@@ -9,7 +9,7 @@
 //   - user-facing verify endpoint（T5）用 PubkeyFingerprint 在公开
 //     `/.well-known/huakai-pubkey.json` 索引到对应公钥，验签。
 //
-// Why ed25519 not RSA / ECDSA：
+// 为何选 ed25519 而非 RSA / ECDSA：
 //   - 64-byte signature（短，HTTP header 不臃肿）
 //   - constant-time（侧信道安全）
 //   - 性能：~70μs sign，~200μs verify（per stdlib bench）

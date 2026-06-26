@@ -40,7 +40,7 @@ func durationProvider(minutes int) time.Duration {
 
 const testDefaultCooldown = 5 * time.Minute
 
-// TC1: keyword match -> StateTempUnsched WITH non-zero CooldownUntil.
+// TC1:keyword 匹配 -> StateTempUnsched 且 CooldownUntil 非零。
 func TestEvalAccountErrorRules_KeywordMatch(t *testing.T) {
 	rules := []TempUnschedulableRule{
 		{ErrorCode: 403, Keywords: []string{"unusual activity"}, DurationMinutes: 30},
@@ -65,7 +65,7 @@ func TestEvalAccountErrorRules_KeywordMatch(t *testing.T) {
 	}
 }
 
-// TC2: body WITHOUT keyword -> no-op.
+// TC2:body 中没有 keyword -> 空操作。
 func TestEvalAccountErrorRules_KeywordMismatch(t *testing.T) {
 	rules := []TempUnschedulableRule{
 		{ErrorCode: 403, Keywords: []string{"unusual activity"}, DurationMinutes: 30},
@@ -77,7 +77,7 @@ func TestEvalAccountErrorRules_KeywordMismatch(t *testing.T) {
 	}
 }
 
-// TC3: status mismatch -> no-op.
+// TC3:status 不匹配 -> 空操作。
 func TestEvalAccountErrorRules_StatusMismatch(t *testing.T) {
 	rules := []TempUnschedulableRule{
 		{ErrorCode: 403, Keywords: []string{"unusual activity"}, DurationMinutes: 30},
@@ -89,7 +89,7 @@ func TestEvalAccountErrorRules_StatusMismatch(t *testing.T) {
 	}
 }
 
-// TC4: nil rules + nil codes -> no-op.
+// TC4:nil rules + nil codes -> 空操作。
 func TestEvalAccountErrorRules_NilRules_NoOp(t *testing.T) {
 	body := []byte(`{"error":"unusual activity"}`)
 	dec := evalAccountErrorRules(403, body, nil, nil, durationProvider, testDefaultCooldown, fixedNow(), false)
@@ -98,7 +98,7 @@ func TestEvalAccountErrorRules_NilRules_NoOp(t *testing.T) {
 	}
 }
 
-// TC5: custom_error_codes match -> StateTempUnsched WITH non-zero CooldownUntil (FIX 3).
+// TC5:custom_error_codes 匹配 -> StateTempUnsched 且 CooldownUntil 非零(修复 3)。
 func TestEvalAccountErrorRules_CustomErrorCode(t *testing.T) {
 	customCodes := []int32{418, 503}
 	body := []byte(`{}`)
@@ -118,7 +118,7 @@ func TestEvalAccountErrorRules_CustomErrorCode(t *testing.T) {
 	}
 }
 
-// TC6: code NOT in custom list -> no-op.
+// TC6:code 不在 custom 列表中 -> 空操作。
 func TestEvalAccountErrorRules_CustomErrorCode_Miss(t *testing.T) {
 	customCodes := []int32{418}
 	dec := evalAccountErrorRules(503, nil, nil, customCodes, durationProvider, testDefaultCooldown, fixedNow(), false)
@@ -127,7 +127,7 @@ func TestEvalAccountErrorRules_CustomErrorCode_Miss(t *testing.T) {
 	}
 }
 
-// TC7: empty keywords = wildcard.
+// TC7:空 keywords = 通配。
 func TestEvalAccountErrorRules_EmptyKeywords_Wildcard(t *testing.T) {
 	rules := []TempUnschedulableRule{
 		{ErrorCode: 403, Keywords: []string{}, DurationMinutes: 10},
@@ -139,7 +139,7 @@ func TestEvalAccountErrorRules_EmptyKeywords_Wildcard(t *testing.T) {
 	}
 }
 
-// TC8 (FIX 2): temp_unschedulable_enabled=false -> empty rules even with rows present.
+// TC8(修复 2):temp_unschedulable_enabled=false -> 即便存在行也返回空 rules。
 func TestProvider_TempUnschedulableDisabled_EmptyRules(t *testing.T) {
 	p := &staticRulesProvider{
 		tempEnabled:   false,
@@ -156,7 +156,7 @@ func TestProvider_TempUnschedulableDisabled_EmptyRules(t *testing.T) {
 	}
 }
 
-// TC9 (FIX 2): custom_error_codes_enabled=false -> empty codes even with codes present.
+// TC9(修复 2):custom_error_codes_enabled=false -> 即便存在 codes 也返回空 codes。
 func TestProvider_CustomCodesDisabled_EmptyCodes(t *testing.T) {
 	p := &staticRulesProvider{
 		tempEnabled:   true,
@@ -173,7 +173,7 @@ func TestProvider_CustomCodesDisabled_EmptyCodes(t *testing.T) {
 	}
 }
 
-// TC10: nil provider -> no-op.
+// TC10:nil provider -> 空操作。
 func TestHandleUpstreamError_NilProvider_NoOp(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	svc := NewUpstreamRateService(func() time.Time { return now }, time.Minute)
@@ -187,7 +187,7 @@ func TestHandleUpstreamError_NilProvider_NoOp(t *testing.T) {
 	}
 }
 
-// TC11: both flags disabled -> no-op.
+// TC11:两个标志都禁用 -> 空操作。
 func TestHandleUpstreamError_ProviderAllDisabled_NoOp(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	provider := &staticRulesProvider{
@@ -210,7 +210,7 @@ func TestHandleUpstreamError_ProviderAllDisabled_NoOp(t *testing.T) {
 	}
 }
 
-// TC12: rule matches -> StateTempUnsched with non-zero CooldownUntil.
+// TC12:规则匹配 -> StateTempUnsched 且 CooldownUntil 非零。
 func TestHandleUpstreamError_RuleMatch_TempUnsched(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	provider := &staticRulesProvider{
@@ -238,7 +238,7 @@ func TestHandleUpstreamError_RuleMatch_TempUnsched(t *testing.T) {
 	}
 }
 
-// TC13 (FIX 3): custom code match via service -> non-zero CooldownUntil using defaultCooldown.
+// TC13(修复 3):经由 service 的自定义 code 匹配 -> 使用 defaultCooldown 的非零 CooldownUntil。
 func TestHandleUpstreamError_CustomCode_NonZeroCooldown(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	defaultCooldown := 7 * time.Minute
@@ -269,7 +269,7 @@ func TestHandleUpstreamError_CustomCode_NonZeroCooldown(t *testing.T) {
 	}
 }
 
-// TC14: existing 429 behaviour untouched.
+// TC14:现有 429 行为不受影响。
 func TestHandleUpstreamError_429_Unaffected(t *testing.T) {
 	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 	provider := &staticRulesProvider{

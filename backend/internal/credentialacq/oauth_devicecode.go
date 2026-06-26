@@ -32,7 +32,7 @@ const (
 	kimiOAuthTokenURL               = "https://auth.kimi.com/api/oauth/token"
 )
 
-// Exported for credentialworker token-refresh reuse (single source of truth).
+// 导出供 credentialworker 做 token 刷新复用(单一事实来源)。
 const (
 	KimiOAuthTokenURL = kimiOAuthTokenURL
 	KimiOAuthClientID = kimiOAuthClientID

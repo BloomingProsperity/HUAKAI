@@ -138,9 +138,8 @@ func EndpointForCredential(adapterDefault string, cred Credential) (string, erro
 	return combined.String(), nil
 }
 
-// EndpointForBuildInput applies an optional endpoint path override before the
-// existing credential-specific endpoint selection. Empty EndpointPath preserves
-// legacy adapter behavior.
+// EndpointForBuildInput 在现有的凭据相关 endpoint 选择之前,先套用一个可选的
+// endpoint path 覆盖。EndpointPath 为空时保持 adapter 的既有行为。
 func EndpointForBuildInput(adapterDefault string, in BuildInput) (string, error) {
 	defaultEndpoint := strings.TrimSpace(adapterDefault)
 	if path := strings.TrimSpace(in.EndpointPath); path != "" {
@@ -225,9 +224,8 @@ type BuildInput struct {
 	// InboundBody 客户原始请求 body 字节（HUAKAI 协议入口已统一形态，
 	// 但每家 vendor 适配器决定是否 reshape）。
 	InboundBody []byte
-	// InboundContentType carries the caller's parsed Content-Type when the
-	// original body must be forwarded byte-for-byte, e.g. multipart audio.
-	// Empty keeps legacy JSON passthrough behavior.
+	// InboundContentType 在原始 body 必须逐字节透传时(如 multipart audio)
+	// 携带调用方解析出的 Content-Type。为空时保持既有的 JSON 透传行为。
 	InboundContentType string
 	// EndpointPath 可选覆盖 adapter 默认 endpoint path。空值保持 adapter
 	// 默认；OpenAI-compatible embeddings passthrough 使用 "/v1/embeddings"。

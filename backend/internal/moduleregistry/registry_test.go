@@ -7,10 +7,9 @@ import (
 	"time"
 )
 
-// TestRegisterGetListByCategory — exercises the core CRUD-ish surface.
-// Regression it catches: if List/ListByCategory stopped filtering or sorting
-// (e.g. ListByCategory returned every module regardless of cat), the category
-// count assertion goes RED.
+// TestRegisterGetListByCategory —— 演练核心的类 CRUD 接口面。
+// 它能捕获的回归:若 List/ListByCategory 停止过滤或排序(例如 ListByCategory
+// 不分 cat 地返回每个模块),category 计数断言会转红。
 func TestRegisterGetListByCategory(t *testing.T) {
 	r := New()
 	mustRegister(t, r, ModuleDescriptor{ID: "billing.service", Category: "money-path", Title: "Billing"})
@@ -26,7 +25,7 @@ func TestRegisterGetListByCategory(t *testing.T) {
 	if all := r.List(); len(all) != 3 {
 		t.Fatalf("List len=%d want 3", len(all))
 	}
-	// List must be sorted by ID — billing < credentials < routing.
+	// List 必须按 ID 排序 —— billing < credentials < routing。
 	all := r.List()
 	if all[0].ID != "billing.service" || all[2].ID != "routing.selector" {
 		t.Fatalf("List not sorted by ID: %v", idsOf(all))
@@ -40,9 +39,9 @@ func TestRegisterGetListByCategory(t *testing.T) {
 	}
 }
 
-// TestRegisterEmptyIDRejected — an empty ID is a programming error.
-// Regression: if Register stopped guarding ID=="" the registry would hold an
-// unaddressable module and this returns nil instead of ErrEmptyID -> RED.
+// TestRegisterEmptyIDRejected —— 空 ID 是编程错误。
+// 回归:若 Register 停止守卫 ID=="",registry 会持有一个无法寻址的模块,
+// 此处会返回 nil 而非 ErrEmptyID -> 转红。
 func TestRegisterEmptyIDRejected(t *testing.T) {
 	r := New()
 	if err := r.Register(ModuleDescriptor{ID: "", Title: "ghost"}); err != ErrEmptyID {
@@ -53,10 +52,9 @@ func TestRegisterEmptyIDRejected(t *testing.T) {
 	}
 }
 
-// TestRegisterDupIDLastWins — documented dup policy is last-wins/idempotent.
-// Regression: if Register were changed to first-wins (ignore re-register) the
-// Title would still read the OLD value and this assertion goes RED; if it were
-// changed to error-on-dup the err!=nil branch fires. Either deviation is caught.
+// TestRegisterDupIDLastWins —— 文档化的重复策略是后者胜出/幂等。
+// 回归:若 Register 被改成前者胜出(忽略重新注册),Title 仍会读到旧值,
+// 此断言转红;若被改成对重复报错,则会触发 err!=nil 分支。两种偏离都能被捕获。
 func TestRegisterDupIDLastWins(t *testing.T) {
 	r := New()
 	mustRegister(t, r, ModuleDescriptor{ID: "billing.service", Title: "old"})
@@ -72,12 +70,12 @@ func TestRegisterDupIDLastWins(t *testing.T) {
 	}
 }
 
-// TestSnapshotNoProbeIsUnknown — a module without a probe is "unknown", not
-// "error" or "ok". Regression: if runProbe/Snapshot defaulted a no-probe module
-// to StatusOK, the operator would see a false-healthy and this goes RED.
+// TestSnapshotNoProbeIsUnknown —— 没有探针的模块是 "unknown",而非
+// "error" 或 "ok"。回归:若 runProbe/Snapshot 把无探针模块默认成 StatusOK,
+// 运维人员会看到假健康,此处转红。
 func TestSnapshotNoProbeIsUnknown(t *testing.T) {
 	r := New()
-	mustRegister(t, r, ModuleDescriptor{ID: "x", Title: "x"}) // no probe
+	mustRegister(t, r, ModuleDescriptor{ID: "x", Title: "x"}) // 无探针
 	snaps := r.Snapshot(context.Background())
 	if len(snaps) != 1 {
 		t.Fatalf("snap len=%d want 1", len(snaps))
@@ -87,12 +85,11 @@ func TestSnapshotNoProbeIsUnknown(t *testing.T) {
 	}
 }
 
-// TestSnapshotSlowProbeTimesOutToUnknown — THE core timeout guarantee. A probe
-// that blocks far longer than the per-probe timeout must resolve to "unknown"
-// WITHOUT hanging the snapshot.
-// Regression: if runProbe waited on the probe instead of racing it against the
-// timeout (delete the `case <-ctx.Done()` branch), Snapshot would block ~2s and
-// this test's own 1s deadline-style assertion + status assertion go RED.
+// TestSnapshotSlowProbeTimesOutToUnknown —— 核心的超时保证。阻塞远超每探针
+// 超时的探针必须解析为 "unknown",且不挂起 snapshot。
+// 回归:若 runProbe 等待探针而非让它与超时赛跑(删掉 `case <-ctx.Done()`
+// 分支),Snapshot 会阻塞约 2s,此测试自身类似 1s 截止的断言 + 状态断言都
+// 会转红。
 func TestSnapshotSlowProbeTimesOutToUnknown(t *testing.T) {
 	r := NewWithProbeTimeout(50 * time.Millisecond)
 	slowStarted := make(chan struct{})
@@ -101,13 +98,12 @@ func TestSnapshotSlowProbeTimesOutToUnknown(t *testing.T) {
 		Title: "slow",
 		HealthProbe: func(ctx context.Context) ProbeResult {
 			close(slowStarted)
-			// Block far past the 50ms probe timeout; honor ctx so the goroutine
-			// is not truly leaked.
+			// 阻塞远超 50ms 的探针超时;尊重 ctx,这样 goroutine 不会真正泄漏。
 			select {
 			case <-time.After(2 * time.Second):
 			case <-ctx.Done():
 			}
-			return ProbeResult{Status: StatusOK} // would be a LIE if returned
+			return ProbeResult{Status: StatusOK} // 若真返回则是谎报
 		},
 	})
 
@@ -115,7 +111,7 @@ func TestSnapshotSlowProbeTimesOutToUnknown(t *testing.T) {
 	snaps := r.Snapshot(context.Background())
 	elapsed := time.Since(start)
 
-	<-slowStarted // probe really ran
+	<-slowStarted // 探针确实运行了
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("Snapshot blocked %v on slow probe; want ~timeout (50ms), not a hang", elapsed)
 	}
@@ -124,14 +120,14 @@ func TestSnapshotSlowProbeTimesOutToUnknown(t *testing.T) {
 	}
 }
 
-// TestSnapshotRunsProbesConcurrently — N probes each sleeping D must finish in
-// well under N*D wall-time, proving they run in parallel not serially.
-// Regression: if Snapshot ran probes serially (remove the goroutine / wg), 4
-// probes * 60ms would take >240ms and exceed the 200ms ceiling -> RED.
+// TestSnapshotRunsProbesConcurrently —— N 个各睡 D 的探针必须在远低于 N*D 的
+// 墙钟时间内完成,证明它们是并行而非串行运行。
+// 回归:若 Snapshot 串行运行探针(移除 goroutine / wg),4 个探针 * 60ms 会
+// 耗时 >240ms 并超过 200ms 上限 -> 转红。
 func TestSnapshotRunsProbesConcurrently(t *testing.T) {
 	const n = 4
 	const each = 60 * time.Millisecond
-	r := NewWithProbeTimeout(2 * time.Second) // generous: not testing timeout here
+	r := NewWithProbeTimeout(2 * time.Second) // 宽松:此处不测试超时
 	var ran int32
 	for i := 0; i < n; i++ {
 		mustRegister(t, r, ModuleDescriptor{
@@ -161,10 +157,10 @@ func TestSnapshotRunsProbesConcurrently(t *testing.T) {
 	}
 }
 
-// TestSnapshotProbePanicBecomesError — a panicking probe must not crash the
-// operator path; it degrades to StatusError.
-// Regression: remove the recover() in runProbe and this test panics the test
-// binary instead of asserting StatusError -> RED (crash).
+// TestSnapshotProbePanicBecomesError —— panic 的探针绝不能让运维路径崩溃;
+// 它会降级为 StatusError。
+// 回归:移除 runProbe 中的 recover(),此测试会让测试二进制 panic,而非断言
+// StatusError -> 转红(崩溃)。
 func TestSnapshotProbePanicBecomesError(t *testing.T) {
 	r := New()
 	mustRegister(t, r, ModuleDescriptor{

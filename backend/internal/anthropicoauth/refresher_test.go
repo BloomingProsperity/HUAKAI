@@ -55,10 +55,10 @@ func TestRefresherInvalidGrantRecordsAuthExpiredInRefreshTransaction(t *testing.
 }
 
 func TestRefresherUnauthorizedStatusRecordsAuthExpiredViaOutcomeClassifier(t *testing.T) {
-	// Regression killed: Anthropic 401 must use the shared refresh outcome
-	// classifier, not only the legacy invalid_grant body parser. Mutation
-	// self-check: forcing the classifier bridge to return unknown records
-	// non_retryable and this test turns red.
+	// 杜绝的回归：Anthropic 的 401 必须走共享的 refresh outcome
+	// classifier，而不能只靠 legacy 的 invalid_grant body 解析。Mutation
+	// 自检：强制让 classifier bridge 返回 unknown，就会被记成
+	// non_retryable，本 test 随之变红。
 	now := time.Date(2026, 5, 24, 10, 32, 0, 0, time.UTC)
 	store := newMemoryRefreshStore()
 	client := &http.Client{Transport: refreshRoundTripFunc(func(r *http.Request) (*http.Response, error) {

@@ -27,9 +27,9 @@ func TestIsBrowserUserAgent(t *testing.T) {
 	}
 }
 
-// MUTATION GUARD: removing the isBrowserUserAgent rewrite in BuildRequest lets a
-// browser UA leak to the OpenAI/Codex upstream -> this assertion goes red (the
-// upstream WAF would then fingerprint us as a non-official client).
+// 变异哨兵：若移除 BuildRequest 中的 isBrowserUserAgent 改写，浏览器型 UA 会
+// 泄漏到 OpenAI/Codex 上游 —— 此断言会变红（届时上游 WAF 会把我们指纹识别为
+// 非官方客户端）。
 func TestCodexSession_BrowserUAScrubbed(t *testing.T) {
 	a := &CodexSessionAdapter{}
 	in := provider.BuildInput{
@@ -50,7 +50,7 @@ func TestCodexSession_BrowserUAScrubbed(t *testing.T) {
 	}
 }
 
-// A legit non-browser (CLI-style) UA passes through unchanged.
+// 合法的非浏览器（CLI 风格）UA 应原样透传不被改写。
 func TestCodexSession_LegitUAPreserved(t *testing.T) {
 	a := &CodexSessionAdapter{}
 	const legit = "codex_cli_rs/0.5.0 (Linux x86_64)"

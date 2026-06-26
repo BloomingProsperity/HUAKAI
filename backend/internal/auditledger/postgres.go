@@ -105,8 +105,8 @@ func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
 	return lock.Unlock
 }
 
-// AppendInTransaction appends an audit ledger entry using the caller-owned
-// database transaction. The caller is responsible for commit/rollback.
+// AppendInTransaction 使用调用方自有的数据库 transaction 追加一条 audit
+// ledger entry。commit / rollback 由调用方负责。
 func AppendInTransaction(ctx context.Context, q DBTX, signer any, prepared PreparedEntry) (LedgerEntry, error) {
 	normalized, err := normalizeSigner(signer)
 	if err != nil {
@@ -243,9 +243,9 @@ func (l *PostgresLedger) GetByRequestIDAndTenantScope(ctx context.Context, reque
 	return getByRequestIDAndTenantScope(ctx, requestID, tenantScopeRef, l.GetByRequestID)
 }
 
-// ListByRange returns tenant-scoped ledger entries in append order for the
-// supplied time range. The public tenant scope is resolved to the historical
-// tenant_id from ledger rows, then the final query constrains tenant_id.
+// ListByRange 针对给定时间区间，按 append 顺序返回经 tenant 范围过滤的
+// ledger entry。先把公开的 tenant scope 解析为 ledger 行中历史的
+// tenant_id，再让最终查询约束 tenant_id。
 func (l *PostgresLedger) ListByRange(ctx context.Context, tenantScopeRef string, from, to time.Time, limit int) ([]LedgerEntry, error) {
 	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
 	if tenantScopeRef == "" || limit <= 0 {
@@ -273,8 +273,8 @@ func (l *PostgresLedger) ListByRange(ctx context.Context, tenantScopeRef string,
 	return scanLedgerEntries(rows)
 }
 
-// ListByRequestIDs returns requested tenant-scoped ledger entries in append
-// order. Unknown ids and ids belonging to other tenants are omitted.
+// ListByRequestIDs 按 append 顺序返回所请求的、经 tenant 范围过滤的
+// ledger entry。未知的 id 以及属于其他 tenant 的 id 都会被略去。
 func (l *PostgresLedger) ListByRequestIDs(ctx context.Context, tenantScopeRef string, requestIDs []string, limit int) ([]LedgerEntry, error) {
 	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
 	requestIDs = normalizeRequestIDs(requestIDs)

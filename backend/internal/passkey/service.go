@@ -370,9 +370,8 @@ func optionsJSON(options CeremonyOptions) json.RawMessage {
 	return json.RawMessage(options)
 }
 
-// AdminClearCredentials force-removes ALL of a user's passkeys for admin account
-// recovery, reusing the owner-scoped list+delete primitives; returns the count
-// cleared. AUTH-098.
+// AdminClearCredentials 为 admin 账号找回强制删除某用户的所有 passkey,
+// 复用 owner 维度的 list+delete 原语; 返回清除的数量。AUTH-098。
 func (s *Service) AdminClearCredentials(ctx context.Context, tenantID, userID int64) (int, error) {
 	summaries, err := s.ListCredentials(ctx, tenantID, userID)
 	if err != nil {

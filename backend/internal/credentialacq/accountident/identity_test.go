@@ -7,10 +7,9 @@ import (
 	"testing"
 )
 
-// buildJWT assembles a compact 3-segment JWT whose payload base64url-encodes the given
-// claims. The header/signature segments are inert placeholders (signature is never
-// verified by the extractor). padPayload=false strips trailing padding so the fixture
-// exercises the padding-restore branch; padPayload=true keeps standard padding.
+// buildJWT 拼装一个紧凑的 3 段式 JWT，其 payload 以 base64url 编码给定的 claims。
+// header/signature 段是惰性占位符（提取器从不验证 signature）。padPayload=false 会
+// 剥掉尾部 padding，使该 fixture 触发 padding 还原分支；padPayload=true 则保留标准 padding。
 func buildJWT(t *testing.T, claims map[string]any, stripPadding bool) string {
 	t.Helper()
 	raw, err := json.Marshal(claims)
@@ -26,9 +25,8 @@ func buildJWT(t *testing.T, claims map[string]any, stripPadding bool) string {
 }
 
 func TestParseJWTClaimsUnverified_DecodesPayload(t *testing.T) {
-	// Discriminating fixture: the marshaled payload length is deliberately not a
-	// multiple of 4 once padding is stripped, so the padding-restore branch is the
-	// only thing that lets the decode succeed. Confirm that property holds.
+	// 有区分力的 fixture：剥掉 padding 后，序列化得到的 payload 长度被有意设成
+	// 不是 4 的倍数，因此只有 padding 还原分支才能让解码成功。确认该性质成立。
 	claims := map[string]any{
 		"sub":   "u-123",
 		"email": "a@b.com",
@@ -44,8 +42,8 @@ func TestParseJWTClaimsUnverified_DecodesPayload(t *testing.T) {
 
 	got, err := ParseJWTClaimsUnverified(token)
 	if err != nil {
-		// MUTATION: dropping the padding-restore branch in decodeBase64URLSegment
-		// makes URLEncoding.DecodeString reject this segment -> this assertion goes red.
+		// 变异：删掉 decodeBase64URLSegment 中的 padding 还原分支，会让
+		// URLEncoding.DecodeString 拒绝这个段 -> 该断言变红。
 		t.Fatalf("ParseJWTClaimsUnverified: unexpected error %v (padding-restore branch likely missing)", err)
 	}
 	if got["sub"] != "u-123" {
@@ -64,8 +62,8 @@ func TestParseJWTClaimsUnverified_DecodesPayload(t *testing.T) {
 }
 
 func TestExtractChatGPT_PrefersJWTClaimOverBodyAndSub(t *testing.T) {
-	// All three candidate sources carry DISTINCT values so a wrong-precedence bug
-	// cannot accidentally pass: only reading the JWT auth claim yields acct-FROM-JWT.
+	// 三个候选来源各携带不同的值，因此优先级错误的 bug 不可能侥幸通过：
+	// 只有读取 JWT auth claim 才会得到 acct-FROM-JWT。
 	claims := map[string]any{
 		"sub":   "u-sub",
 		"email": "jwt@example.com",
@@ -77,7 +75,7 @@ func TestExtractChatGPT_PrefersJWTClaimOverBodyAndSub(t *testing.T) {
 
 	id := ExtractChatGPT(token, "acct-FROM-BODY")
 	if id.AccountID != "acct-FROM-JWT" {
-		// MUTATION: returning the body value or sub instead of the claim -> red.
+		// 变异：返回 body 值或 sub 而非该 claim -> 变红。
 		t.Fatalf("AccountID = %q, want acct-FROM-JWT (claim must win over body and sub)", id.AccountID)
 	}
 	if id.Source != SourceChatGPTJWTClaim {
@@ -89,7 +87,7 @@ func TestExtractChatGPT_PrefersJWTClaimOverBodyAndSub(t *testing.T) {
 }
 
 func TestExtractChatGPT_FallsBackToBodyThenSub(t *testing.T) {
-	// No auth claim -> body wins over sub.
+	// 没有 auth claim -> body 优先于 sub。
 	claims := map[string]any{"sub": "u-sub"}
 	token := buildJWT(t, claims, false)
 	id := ExtractChatGPT(token, "acct-FROM-BODY")
@@ -97,7 +95,7 @@ func TestExtractChatGPT_FallsBackToBodyThenSub(t *testing.T) {
 		t.Fatalf("AccountID = %q, want acct-FROM-BODY (body must win over sub when claim absent)", id.AccountID)
 	}
 
-	// No auth claim, no body -> sub is the last resort.
+	// 没有 auth claim、也没有 body -> sub 作为最后兜底。
 	id = ExtractChatGPT(token, "")
 	if id.AccountID != "u-sub" {
 		t.Fatalf("AccountID = %q, want u-sub (sub is last-resort)", id.AccountID)
@@ -107,8 +105,8 @@ func TestExtractChatGPT_FallsBackToBodyThenSub(t *testing.T) {
 func TestExtractAnthropic_UsesAccountUUIDAndEmail(t *testing.T) {
 	id := ExtractAnthropic("acc-uuid-1", "acc@x.com", "" /* topEmail empty */)
 	if id.AccountID != "acc-uuid-1" {
-		// MUTATION: reverting exchanger.go to drop the new uuid field passes ""
-		// here -> AccountID empty -> red.
+		// 变异：把 exchanger.go 回退为去掉新增的 uuid 字段，会在此传入 ""
+		// -> AccountID 为空 -> 变红。
 		t.Fatalf("AccountID = %q, want acc-uuid-1", id.AccountID)
 	}
 	if id.Email != "acc@x.com" {
@@ -127,28 +125,28 @@ func TestExtractAnthropic_EmailPrefersAccountThenTop(t *testing.T) {
 }
 
 func TestExtract_FailClosedToManual(t *testing.T) {
-	// Malformed / empty id_token must never abort acquisition: each extractor returns
-	// an empty manual Identity (no AccountID), and ParseJWTClaimsUnverified itself
-	// reports the error so the in-test contract is explicit.
+	// 格式错误/为空的 id_token 绝不能中止获取流程：每个提取器都返回一个空的
+	// manual Identity（无 AccountID），而 ParseJWTClaimsUnverified 自身会报告 error，
+	// 使测试中的契约显式可见。
 	for _, bad := range []string{"", "not.a.jwt.x", "onlyonesegment", "two.segments"} {
 		if _, err := ParseJWTClaimsUnverified(bad); err == nil {
 			t.Fatalf("ParseJWTClaimsUnverified(%q): expected error", bad)
 		}
 
-		// ChatGPT with no body fallback -> manual.
+		// ChatGPT 且无 body 回退 -> manual。
 		if id := ExtractChatGPT(bad, ""); id.Source != SourceManual || id.AccountID != "" {
-			// MUTATION: if the extractor propagated the decode error or returned a
-			// non-manual identity here, this goes red.
+			// 变异：若提取器在此处把解码 error 传播出去，或返回了一个
+			// 非 manual 的 identity，则此处变红。
 			t.Fatalf("ExtractChatGPT(%q): got %+v, want empty manual identity", bad, id)
 		}
 
-		// Gemini -> manual.
+		// Gemini -> manual。
 		if id := ExtractGemini(bad, ""); id.Source != SourceManual || id.AccountID != "" {
 			t.Fatalf("ExtractGemini(%q): got %+v, want empty manual identity", bad, id)
 		}
 	}
 
-	// Anthropic with empty uuid -> manual (no error type exists; just empty result).
+	// Anthropic 且 uuid 为空 -> manual（不存在 error 类型；只是空结果）。
 	if id := ExtractAnthropic("", "any@x.com", ""); id.Source != SourceManual || id.AccountID != "" {
 		t.Fatalf("ExtractAnthropic empty uuid: got %+v, want empty manual identity", id)
 	}
@@ -168,7 +166,7 @@ func TestExtractGemini_UsesSubAndEmail(t *testing.T) {
 		t.Fatalf("Source = %q, want %q", id.Source, SourceGoogleIDTokenSub)
 	}
 
-	// No email claim -> userinfo fallback.
+	// 没有 email claim -> 回退到 userinfo。
 	token2 := buildJWT(t, map[string]any{"sub": "g-sub-2"}, false)
 	id2 := ExtractGemini(token2, "userinfo@x.com")
 	if id2.Email != "userinfo@x.com" {

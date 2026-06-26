@@ -7,11 +7,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
 
-// hermes_internal_tools_wiring.go wires the WAVE H3b conversational READ-ONLY
-// tool loop: it adapts the EXISTING read-only tool registry into the bridge's
-// catalog-provider shape (so the chat payload can carry the tool catalog the LLM
-// sees) and builds the internal tool-execute handler the runner calls back into
-// mid-conversation. No new tool logic — it reuses the H3 registry + audit store.
+// hermes_internal_tools_wiring.go 接线 WAVE H3b 的对话式「只读」工具回路:它把「现有」的
+// 只读工具 registry 适配成 bridge 的 catalog-provider 形态(使 chat payload 能携带 LLM
+// 所看到的工具目录),并构造 runner 在对话中途回调的内部 tool-execute handler。无任何新工具
+// 逻辑 —— 它复用 H3 的 registry + 审计 store。
 
 // hermesToolCatalogProvider 把 *hermesops.Registry 适配成 bridge 的 hermeschat.ToolCatalogProvider,
 // 把目录塑形成 bridge 注入用的通用 map(从而 bridge 无需 import hermesops)。注入哪个目录由
@@ -84,9 +83,8 @@ func buildHermesInternalToolHandler(secret []byte, bindings *hermeschat.SessionB
 	// Mutate 句柄)。confirmCache 为 nil 或 proposeEnabled=false 时,提议分支保持 fail-closed
 	//(503 / 403)——零行为变。
 	var proposer hermeschat.ProposalResolver = reg
-	// KNOB B: thread the runtime tool-loop kill-switch into the handler. When
-	// disabled, the handler refuses every runner callback (403) regardless of the
-	// bound session. The handler is still constructed (not nil) so a disabled-state
-	// call gets a clean 403 rather than a 404 from an unmounted route.
+	// KNOB B:把运行期工具回路的 kill-switch 接入 handler。禁用时,无论会话绑定如何,
+	// handler 都拒绝每一次 runner 回调(403)。handler 仍会被构造(非 nil),使禁用态下的
+	// 调用拿到一个干净的 403,而非未挂载路由的 404。
 	return hermeschat.NewInternalToolHandler(secret, bindings, reg, calls, nil, toolLoopEnabled, proposer, confirmCache, proposeEnabled)
 }

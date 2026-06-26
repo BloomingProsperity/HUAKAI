@@ -1,43 +1,41 @@
 package router
 
-// RequestContext is the resolved auth context — output of
-// auth.ResolveInboundAuth. Plain struct, no methods. Router treats it as
-// read-only metadata.
+// RequestContext 是已解析的鉴权上下文 —— auth.ResolveInboundAuth 的输出。
+// 它是纯粹的 struct，没有方法。Router 把它当作只读元数据处理。
 type RequestContext struct {
 	TenantID  int64
 	UserID    int64
 	APIKeyID  int64
-	RequestID string // chi middleware-set; must be non-empty when Plan is called
+	RequestID string // 由 chi middleware 设置；调用 Plan 时必须非空
 }
 
-// ResolvedModel is the registry-resolved model identity — output of
-// registry.ResolveModel. Populated entirely by the Registry as of N+5b;
-// the legacy PlanInput.ExplicitPoolGroupID escape hatch is gone.
+// ResolvedModel 是 registry 解析出的 model 身份 —— registry.ResolveModel
+// 的输出。自 N+5b 起完全由 Registry 填充；遗留的
+// PlanInput.ExplicitPoolGroupID 后门已被移除。
 type ResolvedModel struct {
-	PublicAlias     string   // what the client asked for, e.g. "claude-3-5-sonnet"
-	InternalModelID string   // canonical id, e.g. "anthropic/claude-3.5-sonnet-20241022"
-	ProviderModelID string   // upstream provider's id (may differ per provider)
-	ContextWindow   int      // max tokens
+	PublicAlias     string   // 客户端请求的名字，例如 "claude-3-5-sonnet"
+	InternalModelID string   // 规范 id，例如 "anthropic/claude-3.5-sonnet-20241022"
+	ProviderModelID string   // 上游 provider 的 id（不同 provider 可能不同）
+	ContextWindow   int      // 最大 token 数
 	Capabilities    []string // "stream" / "tools" / "vision" / "json"
-	PricingClass    string   // free-form tag for pricing-table lookup; not a number
-	ProtocolFamily  string   // "openai_chat" / "anthropic_messages" / etc.
+	PricingClass    string   // 用于 pricing-table 查找的自由格式 tag；不是数字
+	ProtocolFamily  string   // "openai_chat" / "anthropic_messages" 等
 
-	// PoolCandidates is the ordered list of pool_group_id values the
-	// Registry resolved for this (alias, tenant) pair, sorted by binding
-	// priority then id. Index 0 is the primary candidate. As of N+5b
-	// this is the ONLY pool carrier into Router.Plan; the legacy
-	// ExplicitPoolGroupID escape hatch is gone.
+	// PoolCandidates 是 Registry 为这个 (alias, tenant) 对解析出的
+	// pool_group_id 有序列表，先按 binding priority 再按 id 排序。
+	// 下标 0 是主候选。自 N+5b 起，这是进入 Router.Plan 的唯一 pool
+	// 载体；遗留的 ExplicitPoolGroupID 后门已被移除。
 	PoolCandidates []int64
 
 	// PoolMetadata 按 PoolGroupID 对齐可选 binding 元数据。为空时
 	// Router 必须只按 PoolCandidates 顺序规划。
 	PoolMetadata []PoolCandidateMeta
 
-	// SnapshotVersion is the Registry-portion stamp produced by
-	// registry.ResolveModel: "registry:<tenant_id>:<version>". The Router
-	// concatenates its own policy version when writing
-	// RoutePlan.SnapshotVersion. Audit replay reads this back from
-	// usage_records.snapshot_version (added in migration 0008).
+	// SnapshotVersion 是 registry.ResolveModel 生成的 Registry 部分
+	// stamp："registry:<tenant_id>:<version>"。Router 在写入
+	// RoutePlan.SnapshotVersion 时会拼接上它自己的策略版本。审计回放
+	// 从 usage_records.snapshot_version（在 migration 0008 中加入）
+	// 读回该值。
 	SnapshotVersion string
 }
 
@@ -53,8 +51,8 @@ type PoolCandidateMeta struct {
 	SelectionMode string
 }
 
-// RequestFeatures expresses what the request actually wants done. Used by
-// the Router to filter pools / providers that lack a capability.
+// RequestFeatures 表达这次请求实际想要完成什么。Router 用它来过滤掉
+// 缺少某项 capability 的 pool / provider。
 type RequestFeatures struct {
 	Stream       bool
 	WantsToolUse bool
@@ -63,57 +61,56 @@ type RequestFeatures struct {
 	WantsAudio   bool
 }
 
-// RoutePlan is the Router's output — an ordered list of attempts the
-// Executor should try in sequence. Each attempt names a pool group; the
-// pool then decides which specific account inside that group to claim.
+// RoutePlan 是 Router 的输出 —— 一个有序的 attempt 列表，Executor 应当
+// 按顺序逐个尝试。每个 attempt 指定一个 pool group；之后由该 pool 决定
+// claim 组内具体哪个 account。
 type RoutePlan struct {
-	// Attempts is non-empty when Plan succeeds. Order is significant: the
-	// Executor tries Attempts[0] first, then [1] on retryable failure, etc.
+	// Attempts 在 Plan 成功时非空。顺序很重要：Executor 先尝试
+	// Attempts[0]，遇到可重试失败后再尝试 [1]，依此类推。
 	Attempts []AttemptPlan
 
-	// AttemptBudget caps total attempts the Executor will make. The list
-	// length may exceed this when Router enumerates more candidates than
-	// the per-tenant retry budget allows; the Executor stops at this cap.
+	// AttemptBudget 限定 Executor 总共会做的 attempt 数。当 Router
+	// 枚举的候选数超过每租户重试预算允许的数量时，列表长度可能超过它；
+	// Executor 在该上限处停止。
 	AttemptBudget int
 
-	// RetryableEndClasses is the set of F-GW-002 stream end classes the
-	// Executor MAY retry on. Anything outside this set terminates the
-	// loop with the original error. Nil means "no retry, attempt 1 only".
+	// RetryableEndClasses 是 Executor 可以重试的 F-GW-002 流式 end class
+	// 集合。集合之外的任何情况都会用原始错误终止循环。Nil 表示
+	// “不重试，只做第 1 次 attempt”。
 	RetryableEndClasses []string
 
-	// SnapshotVersion identifies the Registry/policy snapshot used to
-	// build this plan. Recorded on every usage_record/billing_event for
+	// SnapshotVersion 标识用于构建该 plan 的 Registry/策略快照。记录在
+	// 每条 usage_record/billing_event 上
 	SnapshotVersion string
 }
 
-// AttemptPlan describes one upstream try. The Executor receives this,
-// asks the Pool to Claim a resource matching the Plan, then asks the
-// Adapter to Forward via that resource.
+// AttemptPlan 描述一次上游尝试。Executor 收到它后，请求 Pool 去 Claim
+// 一个匹配该 Plan 的资源，然后请求 Adapter 经由该资源 Forward。
 type AttemptPlan struct {
-	// Index in the parent RoutePlan.Attempts slice. Stable across the
-	// request lifecycle — used as part of the attempt_id derivation
-	// pending the Slice 3 schema migration that adds a real attempt_id
-	// column on usage_records.
+	// Index 是在父 RoutePlan.Attempts 切片中的下标。在整个请求生命周期
+	// 内保持稳定 —— 在 Slice 3 的 schema migration（会在 usage_records
+	// 上新增一个真正的 attempt_id 列）落地前，它被用作 attempt_id
+	// 推导的一部分。
 	Index int
 
-	// PoolGroupID is the route-level decision: which pool to enter. The
-	// Pool then runs its 9-gate intra-pool selection.
+	// PoolGroupID 是路由层级的决策：进入哪个 pool。之后由该 Pool 运行
+	// 它的 9-gate 池内选号。
 	PoolGroupID int64
 
-	// RequiredCapabilities is the subset of ResolvedModel.Capabilities
-	// the Pool must enforce when filtering accounts. Stored separately
-	// because some attempts may relax capability requirements (e.g.
-	// fallback to a non-vision model on retry).
+	// RequiredCapabilities 是 Pool 在过滤 account 时必须强制要求的
+	// ResolvedModel.Capabilities 子集。之所以单独存储，是因为某些
+	// attempt 可能放宽 capability 要求（例如重试时回退到一个非 vision
+	// 的 model）。
 	RequiredCapabilities []string
 
-	// MaxConcurrencyHint can be used to prefer accounts under a cap
-	// when multiple are eligible. Hint, not constraint — Pool may
-	// override based on intra-pool health/load.
+	// MaxConcurrencyHint 可用于在多个 account 都 eligible 时，优先选择
+	// 处于并发上限以内的 account。它是提示而非约束 —— Pool 可以基于
+	// 池内健康/负载将其覆盖。
 	MaxConcurrencyHint int
 
-	// Reason is a short tag describing why this attempt is in the plan
-	// (e.g. "primary", "fallback_after_5xx", "cheaper_alt"). Recorded
-	// in audit; not enforced.
+	// Reason 是描述该 attempt 为何出现在 plan 中的简短 tag
+	// （例如 "primary"、"fallback_after_5xx"、"cheaper_alt"）。记录在
+	// 审计中；不做强制。
 	Reason string
 
 	// UpstreamModelID 是本次 pool binding 对应的真实上游 model id。

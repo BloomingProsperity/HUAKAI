@@ -11,9 +11,9 @@ import (
 )
 
 func TestOAuthBootstrapSlowDownExtendsPollingInterval(t *testing.T) {
-	// Regression killed: RFC 8628 slow_down must increase the next poll interval.
-	// Mutation self-check: replacing slow_down handling with a fixed sleep changes
-	// the second observed delay from 7s to 2s, so this test turns red.
+	// 消除的回归:RFC 8628 的 slow_down 必须增大下一次轮询间隔。
+	// 变异自检:若把 slow_down 处理替换成固定 sleep,第二次观测到的延迟
+	// 会从 7s 变成 2s,从而使本测试变红。
 	var tokenPolls int
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {
@@ -87,9 +87,8 @@ func TestOAuthBootstrapSlowDownExtendsPollingInterval(t *testing.T) {
 }
 
 func TestOAuthBootstrapRejectsMissingVerificationURL(t *testing.T) {
-	// Regression killed: a device-code response without a verification URL must
-	// not enter the polling loop. Mutation self-check: dropping this validation
-	// makes the test observe an unexpected access-token request.
+	// 消除的回归:缺少 verification URL 的 device-code 响应不得进入轮询循环。
+	// 变异自检:若去掉这条校验,本测试就会观测到一次意料之外的 access-token 请求。
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/login/oauth/access_token" {
 			t.Fatal("must not poll when device-code response is incomplete")

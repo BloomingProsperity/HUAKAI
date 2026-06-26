@@ -16,7 +16,7 @@ func baseInput() CreateInput {
 	return CreateInput{TenantID: 5, Name: "r1", UserGroupMatch: "premium", ModelPatternMatch: "claude-*", PoolGroupID: 9, AdminID: 77}
 }
 
-// 守 mid-string 通配拒绝(retro S3): 'a*b' 等会被 gate 当精确串静默失配, 创建期必须拒。
+// 守中段通配拒绝(retro S3): 'a*b' 等会被 gate 当精确串静默失配, 创建期必须拒。
 // mutation: service.Create 删掉 ValidateModelPattern 调用 → 'a*b' 被接受落库 → 本测红。
 func TestCreate_RejectsMidStringWildcard(t *testing.T) {
 	svc := NewService(NewMemoryStore(), nil)
@@ -44,7 +44,7 @@ func TestCreate_AcceptsValidPatterns(t *testing.T) {
 	}
 }
 
-// 守拒绝形态与 gate 语义对齐: 被拒的 mid-string 通配, 若真落库, 会被
+// 守拒绝形态与 gate 语义对齐: 被拒的中段通配, 若真落库, 会被
 // subscriptionenforce.ModelPatternMatches 当精确串 → 对"看似该命中"的 model 失配。
 // 本测自证: 'a*b' 对 'axb' 不命中(证明拒绝是对的, 不是过度严格)。
 func TestRejectedPatternsWouldSilentlyMisbehaveInGate(t *testing.T) {
@@ -213,7 +213,7 @@ func TestUpdate_MatchPriorityNilResetsToDefault(t *testing.T) {
 	}
 }
 
-// 守 mid-string 通配在 Update 也被拒(与 Create 同), 且被拒的非法值绝不落库。
+// 守中段通配在 Update 也被拒(与 Create 同), 且被拒的非法值绝不落库。
 // mutation: Service.Update 删 ValidateModelPattern 调用 → 'a*b' 被接受 → Get 返 'a*b' → 红。
 func TestUpdate_RejectsMidStringWildcard(t *testing.T) {
 	svc := NewService(NewMemoryStore(), nil)

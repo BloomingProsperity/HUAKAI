@@ -26,26 +26,26 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
-// TestModulesEndpointIsAdminGated — a no-credential request to /admin/v1/modules
-// is handled by the SAME admin middleware as every other /admin/v1 route.
+// TestModulesEndpointIsAdminGated —— 对 /admin/v1/modules 的无凭据请求,
+// 由与其它每条 /admin/v1 路由相同的 admin 中间件处理。
 //
-// Regression (mutation: drop adminGate from routes_modules.go and mount the bare
-// handler): with adminGate present and a nil-queries admin resolver, the request
-// fails closed as 503 admin_backend_error — a code only the admin gate emits. If
-// the gate were removed, the bare handler would return 200 with a modules body
-// instead, and BOTH the status and the missing-code assertions go RED. This is
-// the discriminating fixture: gated => 503/admin_backend_error; ungated => 200.
+// 回归(变异:从 routes_modules.go 去掉 adminGate 并挂载裸 handler):
+// 在有 adminGate 且 admin resolver 的 queries 为 nil 时,请求会 fail closed
+// 返回 503 admin_backend_error——这是只有 admin gate 才发出的 code。若 gate
+// 被移除,裸 handler 反而会返回 200 加一个 modules 响应体,届时状态码断言
+// 和缺失 code 断言都会变红。这是有区分力的 fixture:有 gate => 503/admin_backend_error;
+// 无 gate => 200。
 func TestModulesEndpointIsAdminGated(t *testing.T) {
 	d := &deps{
-		// nil queries -> Resolve returns ErrAdminBackend (fail-closed 503),
-		// exactly as the Hermes admin-gate test relies on.
+		// queries 为 nil -> Resolve 返回 ErrAdminBackend(fail-closed 503),
+		// 与 Hermes admin-gate 测试所依赖的行为完全一致。
 		adminAuth:      admin.NewAdminResolver(nil),
 		moduleRegistry: moduleregistry.New(),
 	}
 	r := chi.NewRouter()
-	// Mount ONLY the module-registry routes (the real adminGate wrapper is
-	// exercised here); mountAdminRoutes as a whole nil-derefs on a minimal deps
-	// because it wires dozens of DB-backed subsystems unrelated to this test.
+	// 只挂载 module-registry 路由(这里真正走到了 adminGate 包装器);
+	// 整体的 mountAdminRoutes 在最小化 deps 上会发生 nil 解引用,因为它会接线
+	// 数十个与本测试无关的、依赖 DB 的子系统。
 	mountModuleRegistryRoutes(r, d)
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil)
@@ -60,24 +60,23 @@ func TestModulesEndpointIsAdminGated(t *testing.T) {
 	}
 }
 
-// TestModulesEndpointReturnsSeededModulesForAdmin — with the gate satisfied (an
-// injected platform-admin identity), the merged handler returns the live seeds.
-// This exercises the handler+source wiring with a REAL registry seeded by
-// buildModuleRegistry, not a fake, so a regression in the seed registrations
-// (e.g. a missing Register call) goes RED here.
+// TestModulesEndpointReturnsSeededModulesForAdmin —— 在 gate 被满足时
+//(注入了一个 platform-admin 身份),合并后的 handler 返回 live 播种项。
+// 这用一个由 buildModuleRegistry 播种的真实 registry(而非 fake)来检验
+// handler+source 的接线,因此播种注册中的回归(例如漏了一次 Register 调用)
+// 会在这里变红。
 //
-// Regression: if buildModuleRegistry stopped registering the three seeds, the
-// count assertion (>=3) goes RED; if the handler dropped the body, decode fails.
+// 回归:若 buildModuleRegistry 停止注册这三个播种项,计数断言(>=3)变红;
+// 若 handler 丢掉响应体,decode 会失败。
 func TestModulesEndpointReturnsSeededModulesForAdmin(t *testing.T) {
-	// Build a real seeded registry from a minimal deps (probe-referenced fields
-	// left nil -> probes report degraded, which is fine: we assert identity, not
-	// health, here).
+	// 用最小化 deps 构建一个真实的、已播种的 registry(probe 引用到的字段
+	// 留 nil -> probe 报告 degraded,这没问题:这里断言的是身份而非健康)。
 	d := &deps{}
 	reg := buildModuleRegistry(d)
 	src := newModuleSource(reg)
 
-	// Call the handler directly (gate is asserted separately above); this keeps
-	// the positive test free of DB-backed admin resolution.
+	// 直接调用 handler(gate 已在上面单独断言);这样正向测试就不必
+	// 依赖 DB 支撑的 admin 解析。
 	h := modulehttp.NewModulesHandler(src)
 	req := httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil)
 	rec := httptest.NewRecorder()
@@ -93,7 +92,7 @@ func TestModulesEndpointReturnsSeededModulesForAdmin(t *testing.T) {
 	if len(resp.Modules) < 3 {
 		t.Fatalf("modules=%d want >=3 seeded (billing/routing/credentials)", len(resp.Modules))
 	}
-	// The billing seed must carry its static catalog overlay (join wired).
+	// billing 播种项必须带上它的静态 catalog 叠加层(join 已接线)。
 	var sawBillingOverlay bool
 	for _, m := range resp.Modules {
 		if m.ID == "billing.service" && m.Catalog != nil && m.Catalog.FeatureID != "" {
@@ -105,10 +104,9 @@ func TestModulesEndpointReturnsSeededModulesForAdmin(t *testing.T) {
 	}
 }
 
-// TestModulesEndpointCategoryFilterForAdmin — ?category= narrows the live seeds.
-// Regression: if the handler ignored ?category=, money-path would return all 3
-// seeds instead of just billing.service -> RED. Discriminating because the seeds
-// span three DISTINCT categories.
+// TestModulesEndpointCategoryFilterForAdmin —— ?category= 把 live 播种项收窄。
+// 回归:若 handler 忽略 ?category=,money-path 会返回全部 3 个播种项而非
+// 仅 billing.service -> 红。之所以有区分力,是因为这些播种项横跨三个不同的 category。
 func TestModulesEndpointCategoryFilterForAdmin(t *testing.T) {
 	src := newModuleSource(buildModuleRegistry(&deps{}))
 	h := modulehttp.NewModulesHandler(src)

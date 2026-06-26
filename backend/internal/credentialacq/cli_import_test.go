@@ -64,18 +64,18 @@ func TestCLIImportRejectsEmptyInput(t *testing.T) {
 	}
 }
 
-// TestCLIImportRejectsMalformedJSONLine guards a line that clearly intends structured JSON
-// (starts with { or [) but fails to parse must be rejected, not silently stored as a raw session
-// token — which previously made imports "succeed" with unusable credential text.
+// TestCLIImportRejectsMalformedJSONLine 守护这样一类行：明显意图写结构化 JSON
+//（以 { 或 [ 开头）但解析失败，必须被拒绝，而不是被静默存成 raw session token ——
+// 后者此前会让导入"看似成功"，实则得到不可用的凭据文本。
 //
-// Mutation check: drop the jsonLikeLine branch and each malformed line is accepted as a token
-// (err==nil) → the "expect ErrInvalidImportBody" assertions go red. The trailing raw-token case
-// proves we did NOT regress legitimate non-JSON token import.
+// 变异检查：删掉 jsonLikeLine 分支后，每条畸形行都会被当作 token 接受
+//（err==nil）→ "expect ErrInvalidImportBody" 的断言变红。末尾的 raw-token 用例
+// 证明我们没有让合法的非 JSON token 导入发生回归。
 func TestCLIImportRejectsMalformedJSONLine(t *testing.T) {
 	malformed := []string{
-		`{"session_token":"abc"`,    // missing closing brace
-		`[{"session_token":"abc"}`,  // missing closing bracket
-		`{"vendor":"openai", oops}`, // unquoted garbage
+		`{"session_token":"abc"`,    // 缺少右花括号
+		`[{"session_token":"abc"}`,  // 缺少右方括号
+		`{"vendor":"openai", oops}`, // 未加引号的垃圾内容
 	}
 	for _, in := range malformed {
 		if _, err := ParseImportContent(in, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth); err != ErrInvalidImportBody {

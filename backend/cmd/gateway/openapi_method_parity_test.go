@@ -67,17 +67,17 @@ func TestOpenAPI_ProxyAdminMethodParity(t *testing.T) {
 	}
 	implOps := openapicheck.WalkChiOperations(buildTestRouter(t))
 
-	// chi.Walk renders the collection root (r.Get("/")) with a trailing slash
-	// (/admin/v1/proxies/), while the OpenAPI path is slash-free; item paths match
-	// on both sides. hasOperation is exact-match, so carry impl + spec paths
-	// separately (same pattern as the provider-accounts checks above).
+	// chi.Walk 把集合根(r.Get("/"))渲染成带尾斜杠的形式
+	//(/admin/v1/proxies/),而 OpenAPI 的 path 不带斜杠;item 路径两侧一致。
+	// hasOperation 是精确匹配,所以分别携带 impl + spec 路径
+	//(与上面 provider-accounts 检查相同的模式)。
 	const item = "/admin/v1/proxies/{id}"
 	mutating := []struct {
 		method, implPath, specPath string
 	}{
-		{http.MethodPost, "/admin/v1/proxies/", "/admin/v1/proxies"}, // create — shares path with GET list
-		{http.MethodPatch, item, item},                               // update — shares path with GET/DELETE
-		{http.MethodDelete, item, item},                              // soft-delete — destructive, shares path
+		{http.MethodPost, "/admin/v1/proxies/", "/admin/v1/proxies"}, // create —— 与 GET list 共用路径
+		{http.MethodPatch, item, item},                               // update —— 与 GET/DELETE 共用路径
+		{http.MethodDelete, item, item},                              // soft-delete —— 破坏性,共用路径
 	}
 	for _, op := range mutating {
 		if !hasOperation(implOps, op.method, op.implPath) {

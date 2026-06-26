@@ -48,7 +48,7 @@ func TestUsageOutcomeSQLFilterContracts(t *testing.T) {
 		"count": countUsageRecords,
 	} {
 		t.Run(name, func(t *testing.T) {
-			// MUTATION: dropping this block makes outcome=error return success rows and makes total disagree with the list.
+			// 变异:去掉这个块会让 outcome=error 返回成功行,并让总数与列表不一致。
 			if !strings.Contains(normalizeSQLForPendingQueryTest(query), outcomeBlock) {
 				t.Fatalf("%s query must include outcome end_class filter block", name)
 			}

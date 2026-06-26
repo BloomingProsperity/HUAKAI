@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// --- fakes ---
+// --- 假实现(fakes) ---
 
 type fakeListLimited struct {
 	accounts []AccountRecord
@@ -30,7 +30,7 @@ func (f *fakeAggregator) SumWindowCost(_ context.Context, accountID int64, _ tim
 	return f.cents[accountID], nil
 }
 
-// --- cache unit tests ---
+// --- cache 单元测试 ---
 
 func TestCache_FreshEntry(t *testing.T) {
 	c := NewCache()
@@ -54,7 +54,7 @@ func TestCache_Miss(t *testing.T) {
 
 func TestCache_Stale(t *testing.T) {
 	c := NewCache()
-	// Manually insert a stale entry by backdating.
+	// 通过回拨时间手动插入一条陈旧条目。
 	c.mu.Lock()
 	c.entries[7] = entry{cents: 100, updatedAt: time.Now().Add(-staleDuration - time.Second)}
 	c.mu.Unlock()
@@ -65,7 +65,7 @@ func TestCache_Stale(t *testing.T) {
 	}
 }
 
-// --- worker tick tests ---
+// --- worker tick 测试 ---
 
 func TestWorker_TickPopulatesCache(t *testing.T) {
 	windowStart := time.Now().Add(-1 * time.Hour)
@@ -90,12 +90,12 @@ func TestWorker_TickListerError_FailOpen(t *testing.T) {
 	lister := &fakeListLimited{err: errors.New("db down")}
 	agg := &fakeAggregator{}
 	cache := NewCache()
-	cache.Set(1, 999) // pre-existing entry
+	cache.Set(1, 999) // 预先存在的条目
 
 	w := NewWorker(lister, agg, cache, 0, nil)
 	w.tick(context.Background())
 
-	// Cache must NOT be cleared; lister error → leave as-is (fail-open).
+	// 缓存绝不能被清空;lister 出错 → 维持原样(fail-open)。
 	cents, fresh := cache.CurrentCost(1)
 	if !fresh {
 		t.Fatal("expected cache untouched on lister error (fail-open)")
@@ -112,7 +112,7 @@ func TestWorker_TickAggregatorError_FailOpen(t *testing.T) {
 	}}
 	agg := &fakeAggregator{err: errors.New("query failed")}
 	cache := NewCache()
-	cache.Set(2, 800) // pre-existing value must be preserved
+	cache.Set(2, 800) // 预先存在的值必须被保留
 
 	w := NewWorker(lister, agg, cache, 0, nil)
 	w.tick(context.Background())
@@ -128,7 +128,7 @@ func TestWorker_TickAggregatorError_FailOpen(t *testing.T) {
 
 func TestWorker_TickZeroWindowStart_Skipped(t *testing.T) {
 	lister := &fakeListLimited{accounts: []AccountRecord{
-		{ID: 3, TenantID: 10, SessionWindow5hStart: time.Time{}}, // zero
+		{ID: 3, TenantID: 10, SessionWindow5hStart: time.Time{}}, // 零值
 	}}
 	agg := &fakeAggregator{cents: map[int64]int64{3: 1000}}
 	cache := NewCache()

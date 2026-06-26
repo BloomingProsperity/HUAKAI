@@ -7,7 +7,7 @@ import (
 
 var ErrUnsupportedFeature = errors.New("proto: unsupported feature for selected upstream")
 
-// ClientProtocol is the client-side protocol enum from spec section 4.1.
+// ClientProtocol 是客户端侧协议枚举，对应规范第 4.1 节。
 type ClientProtocol string
 
 const (
@@ -17,7 +17,7 @@ const (
 	ClientProtocolGemini            ClientProtocol = "gemini"
 )
 
-// UpstreamProtocol is the upstream protocol enum from spec section 4.1.
+// UpstreamProtocol 是上游协议枚举，对应规范第 4.1 节。
 type UpstreamProtocol string
 
 const (
@@ -28,7 +28,7 @@ const (
 	UpstreamProtocolAntigravity UpstreamProtocol = "antigravity"
 )
 
-// FeatureName is the protocol capability feature enum from spec section 4.1.
+// FeatureName 是协议能力特性枚举，对应规范第 4.1 节。
 type FeatureName string
 
 const (
@@ -57,7 +57,7 @@ var allFeatures = []FeatureName{
 	FeatureSignatureDelta, FeatureSystemPromptArray, FeatureMultiRoleMessages,
 }
 
-// CapabilityMatrix is the in-memory protocol matrix from spec section 4.1.
+// CapabilityMatrix 是内存中的协议矩阵，对应规范第 4.1 节。
 type CapabilityMatrix map[ClientProtocol]map[UpstreamProtocol]map[FeatureName]Verdict
 
 func (m CapabilityMatrix) Lookup(client ClientProtocol, upstream UpstreamProtocol, feature FeatureName) Verdict {

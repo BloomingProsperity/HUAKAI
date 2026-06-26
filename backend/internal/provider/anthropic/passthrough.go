@@ -125,10 +125,10 @@ func (a *PassthroughAdapter) acceptsCredential(t provider.CredentialType) bool {
 	return false
 }
 
-// Claude Code (Anthropic CLI) device-profile defaults — make the egress carry the
-// genuine Claude Code client signature so upstream sees the real client, not a bare
-// relay. Parity with CLIProxyAPI internal/runtime/executor/helps/claude_device_profile.go.
-// ON per Owner 2026-06-08「必须开着」(overrides CB-001 default-off).
+// Claude Code(Anthropic CLI)设备 profile 默认值——让出口流量带上真实的 Claude
+// Code 客户端签名,使上游看到的是真实客户端而非裸中转。与 CLIProxyAPI 的
+// internal/runtime/executor/helps/claude_device_profile.go 持平。
+// 按 Owner 2026-06-08「必须开着」默认开启(覆盖 CB-001 的默认关闭)。
 const (
 	claudeCodeUserAgent           = "claude-cli/2.1.63 (external, cli)"
 	claudeStainlessPackageVersion = "0.74.0"

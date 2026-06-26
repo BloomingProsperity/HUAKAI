@@ -7,9 +7,9 @@ import (
 // DefaultRouter 生成保守路由计划：保留 registry 候选顺序，
 // 将 attempt 上限压到 3，并把账号选择与健康 gate 留给 executor/pool 层。
 type DefaultRouter struct {
-	// SnapshotVersion identifies the Router policy at planning time;
-	// concatenated onto the Registry stamp in plan.SnapshotVersion so
-	// audit replay can reconstruct both layers from one column.
+	// SnapshotVersion 标识规划时刻的 Router 策略版本；它会拼接到
+	// plan.SnapshotVersion 里的 Registry stamp 之后，使审计回放
+	// 能从一列里重建两层信息。
 	SnapshotVersion string
 }
 
@@ -130,11 +130,10 @@ func upstreamModelIDForPool(model ResolvedModel, metadata map[int64]PoolCandidat
 	return model.ProviderModelID
 }
 
-// stampSnapshot concatenates the Registry stamp (e.g. "registry:42:7")
-// with the Router policy version (e.g. "v0.1-phase-c") into the audit
-// replay format documented in migration 0008
-// (registry:<tid>:<v>;router:<router_policy_v>). Empty model stamp falls
-// back to "registry:unknown" so the format is never broken.
+// stampSnapshot 把 Registry stamp（例如 "registry:42:7"）与 Router 策略
+// 版本（例如 "v0.1-phase-c"）拼接成 migration 0008 中记录的审计回放格式
+// （registry:<tid>:<v>;router:<router_policy_v>）。当 model stamp 为空时
+// 回退为 "registry:unknown"，从而保证格式永远不会被破坏。
 func stampSnapshot(modelStamp, routerVersion string) string {
 	if modelStamp == "" {
 		modelStamp = "registry:unknown"
@@ -142,8 +141,8 @@ func stampSnapshot(modelStamp, routerVersion string) string {
 	return modelStamp + ";router:" + routerVersion
 }
 
-// requiredCapabilities maps Features into the capability strings the
-// Pool's intra-pool gate uses. Order is stable so audit comparisons work.
+// requiredCapabilities 把 Features 映射成 Pool 的池内 gate 所使用的
+// capability 字符串。顺序是稳定的，以便审计比对能正常工作。
 func requiredCapabilities(f RequestFeatures) []string {
 	caps := make([]string, 0, 5)
 	if f.Stream {
@@ -173,5 +172,5 @@ func copyStrings(in []string) []string {
 	return out
 }
 
-// Compile-time assertion that DefaultRouter implements Router.
+// 编译期断言：DefaultRouter 实现了 Router 接口。
 var _ Router = (*DefaultRouter)(nil)

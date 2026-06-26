@@ -25,10 +25,10 @@ func runGate(t *testing.T, gate func(http.Handler) http.Handler, remoteAddr, pat
 	return reached, rec.Code
 }
 
-// TestInternalSourceGate_RejectsPublicAllowsTrusted: /internal/* is reachable
-// from loopback / RFC1918 / link-local peers but NOT from a public-internet peer;
-// non-/internal paths are never gated. MUTATION: drop the IsLoopback/IsPrivate
-// allow -> trusted peers get 404; drop the prefix check -> public /v1 gets 404.
+// TestInternalSourceGate_RejectsPublicAllowsTrusted：/internal/* 可从
+// loopback / RFC1918 / link-local 对端访问，但不可从公网对端访问；
+// 非 /internal 路径永不受闸门管控。变异：去掉 IsLoopback/IsPrivate
+// 的放行 -> 可信对端得到 404；去掉前缀检查 -> 公网访问 /v1 得到 404。
 func TestInternalSourceGate_RejectsPublicAllowsTrusted(t *testing.T) {
 	gate := internalSourceGate(nil, nil)
 	cases := []struct {
@@ -55,10 +55,10 @@ func TestInternalSourceGate_RejectsPublicAllowsTrusted(t *testing.T) {
 	}
 }
 
-// TestInternalSourceGate_IgnoresXForwardedForSpoof is the security tripwire: a
-// public peer that sets `X-Forwarded-For: 127.0.0.1` must STILL be rejected — the
-// gate judges the real socket RemoteAddr, never the spoofable header. MUTATION:
-// make the gate read X-Forwarded-For instead of RemoteAddr -> this passes -> RED.
+// TestInternalSourceGate_IgnoresXForwardedForSpoof 是安全绊线：一个
+// 设置了 `X-Forwarded-For: 127.0.0.1` 的公网对端依然必须被拒绝——闸门
+// 依据真实的 socket RemoteAddr 判断，绝不依据可伪造的头。变异：
+// 让闸门读取 X-Forwarded-For 而非 RemoteAddr -> 本测试通过 -> 红。
 func TestInternalSourceGate_IgnoresXForwardedForSpoof(t *testing.T) {
 	gate := internalSourceGate(nil, nil)
 	reached, status := runGate(t, gate, "203.0.113.7:51000", "/internal/keys",
@@ -71,21 +71,21 @@ func TestInternalSourceGate_IgnoresXForwardedForSpoof(t *testing.T) {
 	}
 }
 
-// TestInternalSourceGate_RunsBeforeRealIP guards the ORDERING invariant: the gate
-// must sit BEFORE chi's middleware.RealIP, which rewrites RemoteAddr from
-// X-Forwarded-For with no trusted-proxy check. With the correct order
-// gate(RealIP(next)), a public peer spoofing XFF=127.0.0.1 is rejected by the
-// gate before RealIP can rewrite the address. MUTATION: invert to
-// RealIP(gate(next)) -> RealIP rewrites RemoteAddr to 127.0.0.1, the gate then
-// sees a loopback peer and admits it -> next reached -> RED.
+// TestInternalSourceGate_RunsBeforeRealIP 守护「顺序」不变式：闸门
+// 必须位于 chi 的 middleware.RealIP 之前——后者会在不做可信代理检查的
+// 情况下，依据 X-Forwarded-For 改写 RemoteAddr。在正确顺序
+// gate(RealIP(next)) 下，伪造 XFF=127.0.0.1 的公网对端会在 RealIP
+// 改写地址之前就被闸门拒绝。变异：反转为
+// RealIP(gate(next)) -> RealIP 把 RemoteAddr 改写成 127.0.0.1，闸门随后
+// 看到的是 loopback 对端并予以放行 -> 抵达 next -> 红。
 func TestInternalSourceGate_RunsBeforeRealIP(t *testing.T) {
 	reached := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true })
 
-	// Correct order: gate first, then RealIP.
+	// 正确顺序：先闸门，再 RealIP。
 	handler := internalSourceGate(nil, nil)(middleware.RealIP(next))
 	req := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
-	req.RemoteAddr = "203.0.113.7:51000" // public socket peer
+	req.RemoteAddr = "203.0.113.7:51000" // 公网 socket 对端
 	req.Header.Set("X-Forwarded-For", "127.0.0.1")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -98,8 +98,8 @@ func TestInternalSourceGate_RunsBeforeRealIP(t *testing.T) {
 	}
 }
 
-// TestInternalSourceAllowed_ExtraCIDR: an operator-configured extra CIDR widens
-// the allow-set; a public IP outside it stays rejected.
+// TestInternalSourceAllowed_ExtraCIDR：运维配置的额外 CIDR 会扩大
+// 放行集合；落在该集合之外的公网 IP 仍被拒绝。
 func TestInternalSourceAllowed_ExtraCIDR(t *testing.T) {
 	_, allowed, _ := net.ParseCIDR("198.51.100.0/24")
 	extra := parseInternalAllowCIDRs("198.51.100.0/24")
@@ -117,16 +117,16 @@ func TestInternalSourceAllowed_ExtraCIDR(t *testing.T) {
 	}
 }
 
-// TestInternalSourceAllowed_IPClassificationEdges locks the IP-classification
-// edge cases a network gate must get right: an IPv4-mapped IPv6 of a PUBLIC
-// address must NOT be admitted (Go unmaps before classifying), while genuine
-// IPv6 ULA (fc00::/7) and v4-mapped private/loopback are trusted. A regression
-// here is a silent public-internet bypass.
+// TestInternalSourceAllowed_IPClassificationEdges 锁定网络闸门必须处理对的
+// IP 分类边界用例：一个公网地址的「IPv4-mapped IPv6」绝不能被放行
+//（Go 在分类前会先去映射），而真正的 IPv6 ULA（fc00::/7）以及
+// v4-mapped 的私网/loopback 才是可信的。此处一旦回归，
+// 就是一次静默的公网绕过。
 func TestInternalSourceAllowed_IPClassificationEdges(t *testing.T) {
 	rejected := []string{
-		"[::ffff:203.0.113.7]:9000", // IPv4-mapped IPv6 of a PUBLIC v4 — must stay rejected
-		"[2001:db8::1]:9000",        // public IPv6
-		"[100.64.0.1]:0",            // CGNAT (not RFC1918) — rejected without an explicit CIDR
+		"[::ffff:203.0.113.7]:9000", // 公网 v4 的 IPv4-mapped IPv6 —— 必须保持被拒
+		"[2001:db8::1]:9000",        // 公网 IPv6
+		"[100.64.0.1]:0",            // CGNAT(非 RFC1918)—— 没有显式 CIDR 时被拒
 	}
 	for _, a := range rejected {
 		if internalSourceAllowed(a, nil) {
@@ -134,8 +134,8 @@ func TestInternalSourceAllowed_IPClassificationEdges(t *testing.T) {
 		}
 	}
 	allowed := []string{
-		"[fd12:3456::1]:9000",     // IPv6 ULA (private)
-		"[::ffff:10.0.0.5]:9000",  // v4-mapped private
+		"[fd12:3456::1]:9000",     // IPv6 ULA(私网)
+		"[::ffff:10.0.0.5]:9000",  // v4-mapped 私网
 		"[::ffff:127.0.0.1]:9000", // v4-mapped loopback
 		"[fe80::1]:9000",          // link-local
 	}

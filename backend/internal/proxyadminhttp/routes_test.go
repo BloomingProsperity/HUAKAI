@@ -15,10 +15,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 )
 
-// proxyServiceStub records every call and returns canned values. It deliberately
-// fabricates Proxy values WITHOUT any secret field (the type has none) so the tests
-// can prove the transport layer cannot leak auth_secret even when the create/update
-// input carried one.
+// proxyServiceStub 记录每一次调用并返回预设值。它刻意构造不带任何凭据字段的
+// Proxy 值(该类型本就没有),以便测试能证明:即使 create/update 输入携带了
+// auth_secret,传输层也无法泄露它。
 type proxyServiceStub struct {
 	listCalls  int
 	listTenant int64
@@ -136,9 +135,9 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	}
 }
 
-// TestListProjectsNonSecretFieldsAndScopesTenant: LIST returns the secret-free fields
-// for the resolved tenant. MUTATION: forward the wrong tenant to Service.List ->
-// listTenant assertion RED; drop a projected field -> body assertion RED.
+// TestListProjectsNonSecretFieldsAndScopesTenant:LIST 为解析出的租户返回不含凭据
+// 的字段。变异:把错误的租户透传给 Service.List → listTenant 断言转红;
+// 删掉某个被投影的字段 → body 断言转红。
 func TestListProjectsNonSecretFieldsAndScopesTenant(t *testing.T) {
 	user := "proxy-user"
 	checked := time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC)
@@ -178,11 +177,10 @@ func TestListProjectsNonSecretFieldsAndScopesTenant(t *testing.T) {
 	}
 }
 
-// TestResponseNeverContainsAuthSecret is the leak tripwire. The create input carries
-// a plaintext auth_secret; the stub echoes a Proxy (which structurally has no secret
-// field). The response JSON must contain neither the key "auth_secret" nor the secret
-// VALUE. MUTATION: add an auth_secret field to proxyResponse (or echo the input
-// secret) -> the substring assertions go RED.
+// TestResponseNeverContainsAuthSecret 是泄露绊线。create 输入携带明文 auth_secret;
+// 桩回显一个 Proxy(它在结构上没有凭据字段)。响应 JSON 既不能含键 "auth_secret",
+// 也不能含该凭据的值。变异:给 proxyResponse 加一个 auth_secret 字段
+//(或回显输入的凭据)→ 子串断言转红。
 func TestResponseNeverContainsAuthSecret(t *testing.T) {
 	const secret = "PLAINTEXT-PROXY-SECRET-9c1f"
 	user := "u"
@@ -228,8 +226,8 @@ func TestResponseNeverContainsAuthSecret(t *testing.T) {
 			}
 		})
 	}
-	// Cross-check the write paths actually received the secret (so the absence above
-	// is genuine redaction, not a dropped field): a fresh create run.
+	// 交叉核对写入路径确实收到了凭据(以证明上面的缺失是真正的脱敏,而非字段被丢弃):
+	// 再跑一次全新的 create。
 	svc := &proxyServiceStub{createRet: proxyadmin.Proxy{ID: 1, Name: "p", Protocol: "http", Host: "h", Port: 1, Status: "active"}}
 	invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodPost, "/admin/v1/proxies",
 		`{"name":"p","protocol":"http","host":"h","port":3128,"auth_secret":"`+secret+`"}`)
@@ -238,10 +236,9 @@ func TestResponseNeverContainsAuthSecret(t *testing.T) {
 	}
 }
 
-// TestAuthGateFiresBeforeService: unauth -> 401 and resolved non-admin -> 403, both
-// BEFORE the service is consulted (the stub records zero calls). MUTATION: move the
-// Resolve call after the service call, or drop the default 403 branch -> calls()!=0
-// or wrong status -> RED.
+// TestAuthGateFiresBeforeService:未鉴权 -> 401、解析出的非管理员 -> 403,二者都
+// 发生在咨询 service 之前(桩记录到零次调用)。变异:把 Resolve 调用挪到 service
+// 调用之后,或删掉默认的 403 分支 → calls()!=0 或状态码错误 → 转红。
 func TestAuthGateFiresBeforeService(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -271,13 +268,12 @@ func TestAuthGateFiresBeforeService(t *testing.T) {
 	}
 }
 
-// TestTenantScoping covers the three RBAC paths the gate must enforce:
-//   - tenant_operator with no ?tenant_id falls back to own scope;
-//   - platform_admin without ?tenant_id -> 400 (must name a tenant), no service touch;
-//   - tenant_operator naming a DIFFERENT ?tenant_id -> 403, no service touch.
+// TestTenantScoping 覆盖管理门必须强制执行的三条 RBAC 路径:
+//   - tenant_operator 未带 ?tenant_id 时回退到自身作用域;
+//   - platform_admin 未带 ?tenant_id -> 400(必须指明租户),不触达 service;
+//   - tenant_operator 指明了不同的 ?tenant_id -> 403,不触达 service。
 //
-// MUTATION: drop the CanIssueForTenant check -> cross-tenant case reaches the service
-// with tenant 8 -> RED.
+// 变异:删掉 CanIssueForTenant 校验 → 跨租户用例以 tenant 8 抵达 service → 转红。
 func TestTenantScoping(t *testing.T) {
 	t.Run("tenant_operator uses own scope", func(t *testing.T) {
 		svc := &proxyServiceStub{}
@@ -316,9 +312,8 @@ func TestTenantScoping(t *testing.T) {
 	})
 }
 
-// TestServiceErrorMapping: the proxyadmin sentinels project onto the documented
-// status codes. MUTATION: collapse the ErrNotFound branch into the default -> the
-// not-found case returns 503 -> RED.
+// TestServiceErrorMapping:proxyadmin 的 sentinel 错误投影到文档化的状态码。
+// 变异:把 ErrNotFound 分支并入 default → not-found 用例返回 503 → 转红。
 func TestServiceErrorMapping(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -347,9 +342,8 @@ func TestServiceErrorMapping(t *testing.T) {
 	}
 }
 
-// TestSetStatusForwardsScopeAndValue: PUT /{id}/status passes the tenant, id and
-// status value through to the service. MUTATION: hardcode a status or swap id/tenant
-// -> assertion RED.
+// TestSetStatusForwardsScopeAndValue:PUT /{id}/status 把 tenant、id 和 status 值
+// 透传给 service。变异:硬编码某个 status,或对调 id/tenant → 断言转红。
 func TestSetStatusForwardsScopeAndValue(t *testing.T) {
 	svc := &proxyServiceStub{}
 	rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc},
@@ -361,9 +355,9 @@ func TestSetStatusForwardsScopeAndValue(t *testing.T) {
 	}
 }
 
-// TestCreateValidationRejectsMissingFields: create with a blank required field is a
-// 400 BEFORE the service. MUTATION: drop the handler-side required-field guard ->
-// the empty-name request reaches Create -> createCalls != 0 -> RED.
+// TestCreateValidationRejectsMissingFields:必填字段为空的 create 在抵达 service
+// 之前就是 400。变异:删掉 handler 侧的必填字段守卫 → 空 name 请求抵达 Create →
+// createCalls != 0 → 转红。
 func TestCreateValidationRejectsMissingFields(t *testing.T) {
 	svc := &proxyServiceStub{}
 	rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc},
@@ -374,7 +368,7 @@ func TestCreateValidationRejectsMissingFields(t *testing.T) {
 	}
 }
 
-// TestDeleteReturns204: successful delete is 204 No Content and forwards the scope.
+// TestDeleteReturns204:成功删除返回 204 No Content,并透传作用域。
 func TestDeleteReturns204(t *testing.T) {
 	svc := &proxyServiceStub{}
 	rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc},
@@ -388,9 +382,9 @@ func TestDeleteReturns204(t *testing.T) {
 	}
 }
 
-// TestCreateForwardsTenantFromScope: the create input carries the gate-resolved
-// tenant, not anything from the body. MUTATION: read tenant from the request body ->
-// createIn.TenantID would not be 7 -> RED.
+// TestCreateForwardsTenantFromScope:create 输入携带的是管理门解析出的租户,
+// 而非请求体里的任何内容。变异:从请求体读取 tenant → createIn.TenantID 将不为 7 →
+// 转红。
 func TestCreateForwardsTenantFromScope(t *testing.T) {
 	svc := &proxyServiceStub{createRet: proxyadmin.Proxy{ID: 1, Name: "p", Protocol: "http", Host: "h", Port: 1, Status: "active"}}
 	rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc},

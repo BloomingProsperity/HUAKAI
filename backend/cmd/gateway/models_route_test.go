@@ -20,8 +20,8 @@ func TestModelsRouteMounted(t *testing.T) {
 }
 
 func TestPublicPricingPageRouteMountedWithoutAuthGate(t *testing.T) {
-	// Mutation: wrapping /v1/pricing/page in API-key or session middleware
-	// would return an auth error body instead of the handler's nil-deps guard.
+	// 变异:把 /v1/pricing/page 包进 API-key 或 session 中间件,
+	// 会返回一个 auth 错误响应体,而不是 handler 的 nil-deps 守卫。
 	r := buildTestRouter(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/pricing/page", nil)
@@ -40,9 +40,9 @@ func TestPublicPricingPageRouteMountedWithoutAuthGate(t *testing.T) {
 }
 
 func TestPublicRankingsRouteMountedWithoutAuthGate(t *testing.T) {
-	// Mutation: wrapping /v1/public/rankings in API-key, session, or admin
-	// middleware would return an auth error body instead of the handler's
-	// nil-deps guard.
+	// 变异:若把 /v1/public/rankings 包进 API-key、session 或 admin
+	// 中间件,会返回鉴权错误响应体,而非 handler 的
+	// nil-deps 守卫。
 	r := buildTestRouter(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/public/rankings", nil)
@@ -116,14 +116,14 @@ func TestAdminModelCapabilityBindingsRouteMountedBehindAdminGate(t *testing.T) {
 	}
 }
 
-// adminGate is the SOLE privilege barrier for the tenant-policy write face (the handler
-// trusts the context-injected identity for actor attribution and has no auth of its own).
-// buildTestRouter wires a nil admin resolver, so adminGate short-circuits to
-// 503 admin_gate_not_configured BEFORE the handler. Mutation: remount the bare handler
-// without adminGate → the GET/PUT handler runs and emits its own body (never
-// admin_gate_not_configured) → red. This catches a gate-drop regression that would let a
-// tenant flip another tenant's inherit_global_catalog (the exact privilege escalation the
-// platform-admin-only design prevents).
+// adminGate 是 tenant-policy 写入面的唯一权限屏障(handler
+// 信任 context 注入的身份做 actor 归属,自身不带任何鉴权)。
+// buildTestRouter 注入一个 nil 的 admin resolver,因此 adminGate 会在
+// handler 之前短路返回 503 admin_gate_not_configured。变异:把裸 handler
+// 不经 adminGate 重新挂载 → GET/PUT handler 运行并产出自己的响应体(绝不会是
+// admin_gate_not_configured)→ 红。这能抓住「丢掉 gate」的回归,否则一个
+// tenant 就能翻动另一个 tenant 的 inherit_global_catalog(正是
+// platform-admin-only 设计要防的越权)。
 func TestAdminTenantPolicyGetRouteMountedBehindAdminGate(t *testing.T) {
 	r := buildTestRouter(t)
 	rec := httptest.NewRecorder()

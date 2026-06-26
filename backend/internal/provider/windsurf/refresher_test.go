@@ -22,8 +22,8 @@ import (
 )
 
 func TestWindsurfRefreshAdapterSuccessMergesTokenAndPreservesConfig(t *testing.T) {
-	// Regression killed: refreshed Windsurf access material must become the
-	// runtime session token while preserving operator-supplied OAuth config.
+	// 守住的回归：刷新后的 Windsurf 访问凭据必须成为运行时 session token，
+	// 同时保留 operator 提供的 OAuth 配置。
 	now := time.Date(2026, 5, 24, 11, 0, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {
@@ -80,10 +80,9 @@ func TestWindsurfRefreshAdapterSuccessMergesTokenAndPreservesConfig(t *testing.T
 }
 
 func TestWindsurfRefreshAdapterRequiresConfiguredTokenEndpoint(t *testing.T) {
-	// Regression killed: attacker-controlled credential JSON must not decide
-	// where the refresh token is POSTed. Mutation self-check: reading
-	// oauth_token_endpoint/token_endpoint from credential calls this HTTP client
-	// and turns the test red.
+	// 守住的回归：攻击者可控的 credential JSON 不得决定 refresh token POST 到哪里。
+	// 变异自检：从 credential 读取 oauth_token_endpoint/token_endpoint 会调用本
+	// HTTP client，使测试变红。
 	calledURL := ""
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		calledURL = "http-called"
@@ -159,10 +158,9 @@ func TestWindsurfRefreshAdapterRejectsCredentialSuppliedClientIDAndScope(t *test
 }
 
 func TestWindsurfRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
-	// Regression killed: Windsurf refresh failures must map to distinct worker
-	// outcomes. Mutation self-check: removing body parsing makes the 400
-	// invalid_grant case become unknown; flattening status handling breaks at
-	// least one of 401, 429, or 5xx.
+	// 守住的回归：Windsurf 刷新失败必须映射到互不相同的 worker outcome。
+	// 变异自检：去掉 body 解析会让 400 invalid_grant 这一 case 变成 unknown；
+	// 把 status 处理压平会破坏 401、429、5xx 中至少一个。
 	tests := []struct {
 		name       string
 		statusCode int
@@ -203,9 +201,9 @@ func TestWindsurfRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 }
 
 func TestWindsurfRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
-	// Regression killed: provider-specific refresher must record the precise
-	// failure class in the credential transaction, not save a stale credential
-	// or collapse every failure to a generic transient state.
+	// 守住的回归：provider 专用的 refresher 必须在 credential 事务中记录精确的
+	// failure class，而不是保存一份过期 credential、或把每种失败都坍缩成笼统的
+	// transient 状态。
 	calls := []string{}
 	store := &recordingWindsurfRefreshStore{
 		calls: &calls,

@@ -178,8 +178,8 @@ func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 }
 
 func TestXAIOAuthModePlan(t *testing.T) {
-	// Mutation: remove the grok/xai_oauth ModePlan seed or expose it as a paste
-	// helper and this test must go red.
+	// 变异:移除 grok/xai_oauth 的 ModePlan 播种,或把它暴露为 paste
+	// helper,本测试就必须变红。
 	plan, ok := LookupModePlan(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth)
 	if !ok {
 		t.Fatal("DefaultModePlans missing grok/xai_oauth")

@@ -22,8 +22,8 @@ func TestGrokSession_BuildRequest_SessionTokenWithCFClearance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// MUTATION GUARD (headers): dropping applyGrokWebHeaders leaves these empty ->
-	// grok's WAF fingerprints us as a non-browser client -> red.
+	// 变异守卫（头部）：去掉 applyGrokWebHeaders 会让这些头为空 ->
+	// grok 的 WAF 把我们指纹识别为非浏览器客户端 -> 红。
 	if req.Header.Get("Origin") != "https://grok.com" {
 		t.Fatalf("Origin=%q want https://grok.com", req.Header.Get("Origin"))
 	}
@@ -33,8 +33,8 @@ func TestGrokSession_BuildRequest_SessionTokenWithCFClearance(t *testing.T) {
 	if !strings.Contains(req.Header.Get("User-Agent"), "Chrome/133") {
 		t.Fatalf("User-Agent not grok-web Chrome: %q", req.Header.Get("User-Agent"))
 	}
-	// MUTATION GUARD (cookie): dropping the cf_clearance branch drops the 5s-shield
-	// bypass token -> red.
+	// 变异守卫（cookie）：去掉 cf_clearance 分支会丢掉过 5 秒盾的
+	// bypass token -> 红。
 	cookie := req.Header.Get("Cookie")
 	for _, want := range []string{"sso=ssotok123", "sso-rw=ssotok123", "cf_clearance=cfval456"} {
 		if !strings.Contains(cookie, want) {

@@ -1,10 +1,9 @@
-// Package proto implements F-PROTO-002: protocol translation across provider
-// pairs (OpenAI Chat / Responses / Anthropic Messages × upstream protocols)
-// via HUAKAI Canonical Stream Format (HCSF).
+// Package proto 实现 F-PROTO-002：通过 HUAKAI Canonical Stream Format（HCSF）
+// 在 provider 配对（OpenAI Chat / Responses / Anthropic Messages × 各上游协议）
+// 之间做协议转换。
 //
-// See docs/specs/protocol-translation.md for the released spec.
-// The package has shared protocol contracts plus an Anthropic streaming
-// adapter path used by the gateway smoke flow.
+// 已发布的规范见 docs/specs/protocol-translation.md。
+// 本包包含共享的协议契约，以及供网关 smoke 流程使用的 Anthropic 流式适配路径。
 package proto
 
 import "context"
@@ -19,7 +18,7 @@ import "context"
 // 触发完整 校验。
 type HCSF = HCSFEnvelope
 
-// ClientAdapter handles client-protocol ↔ canonical translation.
+// ClientAdapter 负责 client 协议 ↔ canonical 的转换。
 type ClientAdapter interface {
 	RequestToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error)
 	CanonicalToClientResponse(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error)
@@ -27,7 +26,7 @@ type ClientAdapter interface {
 	FinalizeClientStream(ctx context.Context, state any) ([][]byte, error)
 }
 
-// UpstreamAdapter handles canonical ↔ upstream-protocol translation.
+// UpstreamAdapter 负责 canonical ↔ upstream 协议的转换。
 type UpstreamAdapter interface {
 	CanonicalToProviderRequest(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error)
 	ProviderResponseToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error)
@@ -37,7 +36,7 @@ type UpstreamAdapter interface {
 
 // ProtocolLossEntry v0.3 stub 已迁移至 protocol_loss.go（v0.4 升级，含 v0.3 兼容字段）。
 
-// Verdict per spec §4.0 capability decision criteria.
+// Verdict 对应规范 §4.0 capability 裁决标准。
 type Verdict string
 
 const (
@@ -46,7 +45,7 @@ const (
 	VerdictUnsupported Verdict = "UNSUPPORTED"
 )
 
-// Direction per spec §4.2.
+// Direction 对应规范 §4.2。
 type Direction string
 
 const (

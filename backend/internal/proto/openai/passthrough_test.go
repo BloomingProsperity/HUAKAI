@@ -144,7 +144,7 @@ func TestOpenAI_DoneMarker_NoPassthrough(t *testing.T) {
 	}
 }
 
-// TestOpenAI_BufferedResponse_PassthroughCaptured non-streaming
+// TestOpenAI_BufferedResponse_PassthroughCaptured 校验非流式
 // chat.completion 响应顶层 unknown 字段进 CanonicalResponse.Passthrough。
 func TestOpenAI_BufferedResponse_PassthroughCaptured(t *testing.T) {
 	resp := `{

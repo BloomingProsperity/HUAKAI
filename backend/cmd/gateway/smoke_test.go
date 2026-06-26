@@ -1,11 +1,11 @@
 //go:build smoke
 
-// Phase C.4 end-to-end smoke test. Builds the gateway binary, runs it in
-// a subprocess pointed at the dev PostgreSQL container, posts one chat
-// completions request, and asserts BOTH HTTP correctness AND PG row state.
+// Phase C.4 端到端冒烟测试。构建网关二进制,在子进程中运行它,
+// 指向开发用的 PostgreSQL 容器,发送一次 chat completions 请求,
+// 同时断言 HTTP 正确性与 PG 行状态两方面。
 //
-// This is the gating gate for Phase C — if all 5 PG-state assertions pass
-// the binary is genuinely billing through real DB rows.
+// 这是 Phase C 的把关门 —— 如果全部 5 项 PG 状态断言都通过,
+// 说明二进制确实是在通过真实的数据库行进行计费。
 
 package main
 
@@ -32,12 +32,12 @@ import (
 )
 
 const (
-	// Phase L0 minimum: smoke uses real api_keys row
-	// instead of env-injected single bearer. The bearer prefix must match
-	// auth.APIKeyResolver's namespace check (`hk_live_` or `hk_test_`).
+	// Phase L0 最小集:冒烟测试使用真实的 api_keys 行,
+	// 而不是通过环境变量注入的单个 bearer。bearer 前缀必须匹配
+	// auth.APIKeyResolver 的命名空间检查(`hk_live_` 或 `hk_test_`)。
 	smokeBearerPrefix = "hk_test_"
-	// Renamed to dodge cached SAC reputation block on the prior
-	// hash chain. If SAC blocks this name too, rotate the suffix again.
+	// 重命名以规避先前哈希链上被缓存的 SAC(Smart App Control,智能应用控制)
+	// 信誉拦截。如果 SAC 也拦截这个名字,就再次轮换后缀。
 	smokeBinaryName    = "gateway-smoke-l0.exe"
 	smokeBootRetries   = 30
 	smokeBootRetryWait = 200 * time.Millisecond
@@ -68,11 +68,11 @@ func TestPhaseC_Smoke_ChatCompletions(t *testing.T) {
 
 	waitForGateway(t, addr)
 
-	// POST request. Slice 2: the gateway no longer
-	// accepts pool_group_id in the body — Registry resolves the pool
-	// from the model alias seeded in seedSmokeGraph below.
+	// POST 请求。Slice 2:网关不再接受请求体中的 pool_group_id ——
+	// Registry 会根据下方 seedSmokeGraph 种入的 model 别名来解析出
+	// 对应的池。
 	body := `{"model":"gpt-4.1-mini","messages":[{"role":"user","content":"hi"}],"stream":true}`
-	_ = seed.poolGroupID // retained for PG state assertions only
+	_ = seed.poolGroupID // 仅保留用于 PG 状态断言
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"http://"+addr+"/v1/chat/completions", bytes.NewBufferString(body))
 	if err != nil {
@@ -105,7 +105,7 @@ func TestPhaseC_Smoke_ChatCompletions(t *testing.T) {
 		t.Fatalf("response body has no SSE data: lines: %s", respBody)
 	}
 
-	// Assert PG state. Must look up the seeded tenant's claim row.
+	// 断言 PG 状态。必须查出种入租户的 claim 行。
 	checkPGState(t, ctx, pgPool, seed)
 }
 
@@ -117,12 +117,12 @@ type smokeSeed struct {
 	poolGroupID       int64
 	channelID         int64
 	providerAccountID int64
-	// Slice 2: Registry rows that resolve the request
-	// body's `model` alias into the seeded pool group.
+	// Slice 2:用于把请求体中的 `model` 别名解析到
+	// 种入池组的 Registry 行。
 	modelID int64
 	aliasID int64
-	// Phase L0 minimum: plaintext bearer generated at seed time;
-	// matched against the bcrypt hash stored in api_keys.key_hash.
+	// Phase L0 最小集:在种数据时生成的明文 bearer;
+	// 与存储在 api_keys.key_hash 中的 bcrypt 哈希进行匹配。
 	bearer string
 }
 
@@ -138,16 +138,16 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		t.Fatalf("seed tenant: %v", err)
 	}
 
-	// Phase L0 minimum: real users + api_keys rows replace synthetic
-	// (apiKeyID = tenantID*100+1) IDs. The plaintext bearer is held only
-	// in this test for the POST request; the DB stores the bcrypt hash.
+	// Phase L0 最小集:用真实的 users 与 api_keys 行替换合成的
+	// (apiKeyID = tenantID*100+1)ID。明文 bearer 只在本测试内
+	// 持有以发起 POST 请求;数据库存储的是 bcrypt 哈希。
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
 		s.tenantID, "smoke-user-"+unique,
 	).Scan(&s.userID); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
-	s.bearer = smokeBearerPrefix + unique // "hk_test_<uuid36>" — well above 16-char prefix
+	s.bearer = smokeBearerPrefix + unique // "hk_test_<uuid36>" —— 远超 16 字符的前缀长度
 	keyPrefix := s.bearer
 	if len(keyPrefix) > 16 {
 		keyPrefix = keyPrefix[:16]
@@ -164,9 +164,9 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		t.Fatalf("seed api_key: %v", err)
 	}
 
-	// Grant the user a balance so the billing claim's balance-hold reserve
-	// (mandatory by default) can hold the predicted cost; without a balance row
-	// the request 402s with insufficient_balance.
+	// 给用户充上余额,以便计费 claim 的余额预扣保留(默认强制开启)
+	// 能够冻结预估成本;若没有余额行,该请求会返回 402 并报
+	// insufficient_balance。
 	if _, err := pgPool.Exec(ctx,
 		`INSERT INTO user_balances (tenant_id, user_id, balance, held, version, updated_at)
 		 VALUES ($1, $2, 100.00, 0, 1, now())`,
@@ -177,11 +177,11 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 
 	t.Cleanup(func() {
 		c := context.Background()
-		// Cleanup order respects FKs. Slice 2 prepends registry
-		// rows BEFORE pool_groups (model_pool_bindings has a composite FK
-		// (tenant_id, pool_group_id) → pool_groups). model_aliases and
-		// model_registry_capabilities reference models(id), so models
-		// goes last among registry tables.
+		// 清理顺序遵循外键约束。Slice 2 把 registry 行排在
+		// pool_groups 之前删除(model_pool_bindings 有一个复合外键
+		// (tenant_id, pool_group_id) → pool_groups)。model_aliases 和
+		// model_registry_capabilities 引用 models(id),因此 models
+		// 在所有 registry 表中放在最后删除。
 		_, _ = pgPool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, s.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, s.tenantID)
@@ -233,9 +233,9 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		t.Fatalf("seed provider account: %v", err)
 	}
 
-	// Seed a decryptable credential so the vault resolves one. The dev mock
-	// upstream ignores the value, but the row must exist AND decrypt under the
-	// gateway's key (32 zero bytes / key_id local-v1, matching startGateway env).
+	// 种入一条可解密的凭证,以便密钥库能解析出一条。开发用的 mock
+	// 上游会忽略该值,但这一行必须存在,且能在网关的密钥下解密
+	// (32 个零字节 / key_id 为 local-v1,与 startGateway 的环境变量一致)。
 	credKP, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
 	if err != nil {
 		t.Fatalf("cred key provider: %v", err)
@@ -255,9 +255,9 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		t.Fatalf("seed credential: %v", err)
 	}
 
-	// Slice 2: seed Registry rows so the smoke alias
-	// resolves to the seeded pool group end-to-end. Mirrors the rows the
-	// admin endpoint (Phase E) will write.
+	// Slice 2:种入 Registry 行,使冒烟用的别名能端到端地
+	// 解析到种入的池组。这与 admin 端点(Phase E)将来写入的行
+	// 保持一致。
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
 		                     default_provider_model_id, default_context_window, status)
@@ -297,17 +297,17 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 func buildGateway(t *testing.T) string {
 	t.Helper()
 	moduleRoot := goModuleRoot(t)
-	// Build into the module root so ./gateway-smoke.exe is findable from
-	// any cwd where the binary subprocess starts. The build is robust
-	// against both `go test ./cmd/gateway` (cwd=cmd/gateway) and
-	// `go test -c + manual ./smoke.test.exe` (cwd=$pwd), covering both
-	// wrong-cwd scenarios.
+	// 构建到模块根目录,这样无论二进制子进程从哪个 cwd 启动,
+	// ./gateway-smoke.exe 都能被找到。该构建对两种情形都稳健:
+	// `go test ./cmd/gateway`(cwd=cmd/gateway)以及
+	// `go test -c + 手动 ./smoke.test.exe`(cwd=$pwd),覆盖了两种
+	// 错误 cwd 的场景。
 	binPath := moduleRoot + "/" + smokeBinaryName
-	// Inject a per-run timestamp via ldflags so each smoke build produces
-	// a unique binary hash. Smart App Control (Win11) caches block decisions
-	// per binary hash; without this, a single SAC block would persist
-	// across all subsequent runs until a content change. See
-	// docs/01_APPLOCKER_DEFENDER_RESOLUTION.md.
+	// 通过 ldflags 注入每次运行的时间戳,使每次冒烟构建产生
+	// 唯一的二进制哈希。Smart App Control(Win11)按二进制哈希
+	// 缓存拦截决策;若不这样做,单次 SAC 拦截会在之后的所有运行中
+	// 一直持续,直到内容发生变化。参见
+	// docs/01_APPLOCKER_DEFENDER_RESOLUTION.md。
 	stamp := fmt.Sprintf("smoke-%d", time.Now().UnixNano())
 	cmd := exec.Command("go", "build",
 		"-ldflags", "-X main.smokeBuildStamp="+stamp,
@@ -331,7 +331,7 @@ func goModuleRoot(t *testing.T) string {
 	if gomod == "" || gomod == "/dev/null" {
 		t.Fatalf("not in a Go module")
 	}
-	// gomod is .../go.mod; strip the trailing /go.mod.
+	// gomod 形如 .../go.mod;去掉末尾的 /go.mod。
 	const suffix = "/go.mod"
 	const winSuffix = `\go.mod`
 	switch {
@@ -345,11 +345,11 @@ func goModuleRoot(t *testing.T) string {
 	}
 }
 
-// reserveLocalPort opens a TCP listener on a random localhost port,
-// closes it, and returns the addr the gateway should bind to. There is
-// a TOCTOU race between Close() and the gateway re-binding, but the
-// alternative (the gateway picking a port and writing it to stdout) is
-// more code for a Phase C smoke test.
+// reserveLocalPort 在随机的 localhost 端口上开一个 TCP 监听器,
+// 然后关闭它,并返回网关应当绑定的地址。Close() 与网关重新绑定
+// 之间存在 TOCTOU(检查时机与使用时机之间的竞态)竞态,但替代方案
+// (让网关自己挑端口并写到 stdout)对一个 Phase C 冒烟测试来说
+// 代码量更多。
 func reserveLocalPort(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -370,15 +370,15 @@ func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, se
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
 		"HUAKAI_RELEASE_MODE=dev",
-		// Credential encryption key (32 zero bytes, base64) — required since the
-		// gateway gained a mandatory key; dev-only fixed value.
+		// 凭证加密密钥(32 个零字节,base64)—— 自从网关引入了
+		// 强制密钥后即为必需;仅供开发使用的固定值。
 		"HUAKAI_CREDENTIAL_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-		// Dev mock upstream: fabricate the provider SSE so the loop runs with no
-		// real provider/network (replaces the pre-Phase-E built-in mock).
+		// 开发用 mock 上游:伪造上游的 SSE,使整个循环无需真实的
+		// 上游/网络即可运行(替代 Phase E 之前内置的 mock)。
 		"HUAKAI_DEV_MOCK_UPSTREAM=true",
-		// Phase L0 minimum: SMOKE env vars no longer set; auth
-		// resolves via api_keys table seeded by seedSmokeGraph above.
+		// Phase L0 最小集:不再设置 SMOKE 环境变量;鉴权改为
+		// 通过上方 seedSmokeGraph 种入的 api_keys 表来解析。
 	)
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
@@ -418,7 +418,7 @@ func stopGateway(cmd *exec.Cmd) {
 func waitForGateway(t *testing.T, addr string) {
 	t.Helper()
 	for i := 0; i < smokeBootRetries; i++ {
-		// We don't have /healthz; use a non-API GET that should 404 quickly.
+		// 我们没有 /healthz;改用一个非 API 的 GET,它应当很快返回 404。
 		resp, err := http.Get("http://" + addr + "/")
 		if err == nil {
 			_ = resp.Body.Close()
@@ -471,7 +471,7 @@ func checkPGState(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed 
 	).Scan(&inFlight); err != nil {
 		t.Fatalf("PG check 4 (in_flight_count): %v", err)
 	}
-	// seed had in_flight=2; +1 acquire then -1 release on settle = back to 2.
+	// 种入时 in_flight=2;获取时 +1,结算释放时 -1 = 回到 2。
 	if inFlight != 2 {
 		t.Fatalf("PG check 4: expected in_flight 2 (round-trip); got %d", inFlight)
 	}
@@ -486,9 +486,9 @@ func checkPGState(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed 
 		t.Fatalf("PG check 5: expected 1 released_success slot; got %d", slotCount)
 	}
 
-	// PG check 6: the success-path usage row must carry
-	// the registry+router snapshot stamp from migration 0008. Format
-	// "registry:<tenant_id>:<v>;router:<router_policy_v>".
+	// PG check 6:成功路径上的 usage 行必须带有来自迁移 0008 的
+	// registry + router 快照戳记。格式为
+	// "registry:<tenant_id>:<v>;router:<router_policy_v>"。
 	var snapshot *string
 	if err := pgPool.QueryRow(ctx,
 		`SELECT snapshot_version FROM usage_records WHERE claim_id=$1`, claimID,

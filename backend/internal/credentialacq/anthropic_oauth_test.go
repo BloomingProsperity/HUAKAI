@@ -209,13 +209,12 @@ func TestClaudeAIOAuthExchangeUsesJSONBody(t *testing.T) {
 	}
 }
 
-// TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity is the discriminating,
-// self-proving guard for the live-path Anthropic account-identity seam: the same
-// exchange code runs once with account.uuid/email_address present in the token
-// response (correct path) and once with the account object absent (degraded path),
-// and asserts the two diverge exactly on the captured identity. Deleting the
-// AttachIdentity call in anthropic_oauth.go flips the correct-path assertions red
-// while the degraded path stays green — non-discriminating fixtures cannot.
+// TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity 是针对实时路径
+// Anthropic 账户身份接缝的、有区分力且自证明的守卫：同一段 exchange 代码运行两次，
+// 一次 token 响应中存在 account.uuid/email_address（正确路径），一次 account 对象缺失
+//（降级路径），并断言两者恰好在所捕获的身份上出现分叉。删掉 anthropic_oauth.go 中的
+// AttachIdentity 调用会让正确路径的断言变红，而降级路径仍为绿 —— 没有区分力的 fixture
+// 做不到这一点。
 func TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 	const (
 		wantUUID  = "acct-uuid-7f3a"
@@ -273,8 +272,8 @@ func TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("CompleteOAuthCallbackWithRegistry: %v", err)
 			}
-			// Both paths must still yield a usable credential — identity capture is
-			// metadata only and must never block acquisition.
+			// 两条路径都必须仍能产出可用的凭据 —— 身份捕获只是元数据，
+			// 绝不能阻断获取。
 			var payload map[string]any
 			if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
 				t.Fatalf("candidate payload JSON: %v", err)
@@ -296,7 +295,7 @@ func TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 			} else if gotRedactID != "" {
 				t.Fatalf("RedactedContext[%s]=%q want absent on degraded path", RedactedKeyUpstreamAccountID, gotRedactID)
 			}
-			// The raw id_token / account object must never leak into RedactedContext.
+			// 原始 id_token / account 对象绝不能泄露进 RedactedContext。
 			if v, ok := candidate.RedactedContext["account"]; ok {
 				t.Fatalf("RedactedContext leaked raw account object: %v", v)
 			}

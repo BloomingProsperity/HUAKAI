@@ -101,7 +101,7 @@ type openAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
 	TotalTokens      int `json:"total_tokens,omitempty"`
-	// OpenAI prompt caching: usage.prompt_tokens_details.cached_tokens
+	// OpenAI prompt 缓存：usage.prompt_tokens_details.cached_tokens
 	// 表示该请求命中缓存的 prompt token 数。OpenAI 没有"创建缓存"的概念
 	// （implicit caching），只暴露读命中。映射到 proto.CanonicalUsage.CacheReadInputTokens。
 	// (sonnet F4 MEDIUM 修复: 缺失 OpenAI cache 观测)

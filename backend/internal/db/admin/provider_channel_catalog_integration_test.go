@@ -73,9 +73,8 @@ func TestProviderChannelCatalogQueriesAreTenantScoped(t *testing.T) {
 	}
 }
 
-// Mutation: remove tenant_id from provider uniqueness/scope handling; same code
-// in tenant B must remain insertable, while tenant A duplicate must stay a
-// unique-conflict error.
+// 变异:从 provider 的唯一性/作用域处理中去掉 tenant_id;租户 B 里相同的 code
+// 必须仍可插入,而租户 A 的重复 code 必须仍触发唯一冲突错误。
 func TestCreateProvider_TenantScopedUnique(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -119,9 +118,8 @@ func TestCreateProvider_TenantScopedUnique(t *testing.T) {
 	}
 }
 
-// Mutation: ignore tenant_id/code in UPDATE or treat no rows as success; the
-// updated provider must reflect requested fields and missing code must surface
-// pgx.ErrNoRows.
+// 变异:在 UPDATE 中忽略 tenant_id/code,或把无命中行当成功处理;更新后的
+// provider 必须反映出请求的字段,而不存在的 code 必须暴露 pgx.ErrNoRows。
 func TestUpdateProvider(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -156,9 +154,8 @@ func TestUpdateProvider(t *testing.T) {
 	}
 }
 
-// Mutation: hard-delete or unguarded soft-delete a provider with active
-// provider_accounts; this must turn red by either deleting the provider or
-// returning success instead of pgx.ErrNoRows.
+// 变异:对一个有活跃 provider_accounts 的 provider 执行硬删除或无守卫的软删除;
+// 无论是删掉该 provider 还是返回成功(而非 pgx.ErrNoRows),测试都必须变红。
 func TestDeleteProvider_GuardOrSoftDelete(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -311,14 +308,13 @@ func insertCatalogChannel(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	return id
 }
 
-// TestChannelCRUD_TenantScopedAndUnique exercises the channel CRUD sqlc queries
-// against a real Postgres: the tenant_id fence on update/delete, the
-// (tenant,pool_group,name) unique constraint, the pool-group cross-tenant
-// EXISTS guard on create/update, and soft-delete name reuse.
+// TestChannelCRUD_TenantScopedAndUnique 针对真实 Postgres 演练 channel CRUD 的
+// sqlc 查询:update/delete 上的 tenant_id 围栏、(tenant,pool_group,name) 唯一
+// 约束、create/update 上的 pool-group 跨租户 EXISTS 守卫,以及软删后 name 的复用。
 //
-// Mutation guards: dropping `tenant_id = $` from UpdateChannel/SoftDeleteChannel
-// makes the cross-tenant assertions return a row (red); dropping the EXISTS
-// pool-group guard makes the cross-tenant pool create succeed (red).
+// 变异守卫:从 UpdateChannel/SoftDeleteChannel 去掉 `tenant_id = $` 会让跨租户
+// 断言返回一行(变红);去掉 EXISTS pool-group 守卫会让跨租户 pool 的 create
+// 成功(变红)。
 func TestChannelCRUD_TenantScopedAndUnique(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -334,7 +330,7 @@ func TestChannelCRUD_TenantScopedAndUnique(t *testing.T) {
 	pgB := insertCatalogPoolGroup(t, ctx, pool, tenantB, "pg-b-"+suffix)
 	codes := []int32{401, 429}
 
-	// Create in tenantA's own pool group succeeds.
+	// 在租户 A 自己的 pool group 里创建成功。
 	row, err := q.CreateChannel(ctx, CreateChannelParams{
 		TenantID: tenantA, PoolGroupID: pgA, Name: "primary", FailoverStatusCodes: codes, Enabled: true,
 	})
@@ -346,28 +342,28 @@ func TestChannelCRUD_TenantScopedAndUnique(t *testing.T) {
 	}
 	chID := row.ID
 
-	// Pool-group cross-tenant guard: tenantA cannot attach tenantB's pool group.
+	// pool-group 跨租户守卫:租户 A 不能挂载租户 B 的 pool group。
 	if _, err := q.CreateChannel(ctx, CreateChannelParams{
 		TenantID: tenantA, PoolGroupID: pgB, Name: "x-tenant", FailoverStatusCodes: codes, Enabled: true,
 	}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("cross-tenant pool create: err=%v want pgx.ErrNoRows (EXISTS guard)", err)
 	}
 
-	// Unique (tenant, pool_group, name) among non-deleted rows.
+	// 在未删除行中,(tenant, pool_group, name) 唯一。
 	if _, err := q.CreateChannel(ctx, CreateChannelParams{
 		TenantID: tenantA, PoolGroupID: pgA, Name: "primary", FailoverStatusCodes: codes, Enabled: true,
 	}); !isChannelUniqueViolation(err) {
 		t.Fatalf("duplicate name create: err=%v want uq_channels_tenant_pool_name 23505", err)
 	}
 
-	// Tenant fence on update: tenantB cannot update tenantA's channel.
+	// update 上的租户围栏:租户 B 不能更新租户 A 的 channel。
 	if _, err := q.UpdateChannel(ctx, UpdateChannelParams{
 		TenantID: tenantB, ID: chID, PoolGroupID: pgB, Name: "hijack", FailoverStatusCodes: codes, Enabled: true,
 	}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("cross-tenant update: err=%v want pgx.ErrNoRows (tenant fence)", err)
 	}
 
-	// Owner update succeeds.
+	// 属主更新成功。
 	upd, err := q.UpdateChannel(ctx, UpdateChannelParams{
 		TenantID: tenantA, ID: chID, PoolGroupID: pgA, Name: "renamed", FailoverStatusCodes: []int32{500}, Enabled: false,
 	})
@@ -378,12 +374,12 @@ func TestChannelCRUD_TenantScopedAndUnique(t *testing.T) {
 		t.Fatalf("update row wrong: %+v", upd)
 	}
 
-	// Tenant fence on delete: tenantB cannot delete tenantA's channel.
+	// delete 上的租户围栏:租户 B 不能删除租户 A 的 channel。
 	if _, err := q.SoftDeleteChannel(ctx, SoftDeleteChannelParams{TenantID: tenantB, ID: chID}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("cross-tenant delete: err=%v want pgx.ErrNoRows (tenant fence)", err)
 	}
 
-	// Owner soft-delete succeeds, then the name is reusable (partial unique index).
+	// 属主软删除成功,随后 name 可被复用(部分唯一索引)。
 	if _, err := q.SoftDeleteChannel(ctx, SoftDeleteChannelParams{TenantID: tenantA, ID: chID}); err != nil {
 		t.Fatalf("owner soft delete: %v", err)
 	}

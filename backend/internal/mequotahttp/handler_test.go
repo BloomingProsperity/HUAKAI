@@ -86,7 +86,7 @@ func TestMeQuotaProjectionMath(t *testing.T) {
 			t.Fatalf("quota item missing %q: %#v", field, item)
 		}
 	}
-	// MUTATION: remaining = Limit.Add(consumed) produces 15 instead of 5.
+	// 变异:remaining = Limit.Add(consumed) 会得到 15 而非 5。
 	assertStringField(t, item, "cap", "10")
 	assertStringField(t, item, "consumed", "5")
 	assertStringField(t, item, "remaining", "5")
@@ -127,13 +127,13 @@ func TestMeQuotaStoreErrorIsServiceUnavailable(t *testing.T) {
 	assertMeQuotaStatus(t, rec, http.StatusServiceUnavailable)
 }
 
-// TestMeQuotaMultiMetricWindows guards the F-OPS-001 multi-metric surface: the handler
-// must request the three window-shaped metrics (requests/cost_usd/tokens_estimated),
-// NEVER concurrency (slot-based, deferred), and project each window's metric + dimension
-// value into the response. Fixtures are discriminating — each metric's consumed value is
-// distinct, so dropping the metric projection or collapsing to cost-only goes red.
-// MUTATION: drop `Metric` from windowView -> byMetric keys are "" -> lookups fail -> RED;
-//           pass wrong metrics to the store -> the metrics assertion -> RED.
+// TestMeQuotaMultiMetricWindows 守护 F-OPS-001 多 metric 接口面:handler
+// 必须请求三个窗口形态的 metric(requests/cost_usd/tokens_estimated),
+// 绝不请求并发(基于槽位、已推迟),并把每个窗口的 metric + 维度值投影到
+// 响应中。fixture 有区分度 —— 每个 metric 的 consumed 值各不相同,因此
+// 丢弃 metric 投影或塌缩成只剩 cost 都会转红。
+// 变异:从 windowView 去掉 `Metric` -> byMetric 的 key 变成 "" -> 查找失败
+//       -> 转红;向 store 传入错误的 metrics -> metrics 断言 -> 转红。
 func TestMeQuotaMultiMetricWindows(t *testing.T) {
 	user := auth.Identity{TenantID: 7, UserID: 40}
 	scopeID := strconv.FormatInt(user.UserID, 10)
@@ -163,14 +163,14 @@ func TestMeQuotaMultiMetricWindows(t *testing.T) {
 		m, _ := it["metric"].(string)
 		byMetric[m] = it
 	}
-	// Each window carries its own metric tag, with a distinct consumed/cap per dimension.
+	// 每个窗口都带自己的 metric 标记,每个维度有各自不同的 consumed/cap。
 	assertStringField(t, byMetric["requests"], "consumed", "120")
 	assertStringField(t, byMetric["requests"], "cap", "1000")
 	assertStringField(t, byMetric["cost_usd"], "consumed", "3.5")
 	assertStringField(t, byMetric["tokens_estimated"], "consumed", "45000")
 	assertStringField(t, byMetric["tokens_estimated"], "cap", "1000000")
 
-	// The handler requests exactly the three window-shaped metrics, never concurrency.
+	// handler 恰好请求那三个窗口形态的 metric,绝不请求并发。
 	if len(store.calls) != 1 {
 		t.Fatalf("store calls=%d want 1", len(store.calls))
 	}

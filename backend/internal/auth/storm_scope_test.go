@@ -6,17 +6,17 @@ import (
 	"time"
 )
 
-// fixedClockController builds a scope-budgeted controller whose clock is the
-// dereferenced *clk, so a test can advance time deterministically.
+// fixedClockController 构建一个带 scope budget 的 controller, 其时钟取自
+// 解引用的 *clk, 这样测试可以确定性地推进时间。
 func fixedClockController(cfg StormScopeConfig, clk *time.Time) *StormController {
 	c := NewStormControllerWithScopeBudget(nil, cfg)
 	c.now = func() time.Time { return *clk }
 	return c
 }
 
-// TestStormControllerEndpointScopeDeniesWhenBudgetExhausted: with endpoint burst=2,
-// the third same-endpoint acquire in the same instant is denied. Mutation: make
-// scopeBucket.tryAcquire always return true → the third acquire admits → red.
+// TestStormControllerEndpointScopeDeniesWhenBudgetExhausted: endpoint burst=2 时,
+// 同一时刻对同一 endpoint 的第三次 acquire 被拒绝。变异: 让
+// scopeBucket.tryAcquire 永远返回 true → 第三次 acquire 准入 → 红。
 func TestStormControllerEndpointScopeDeniesWhenBudgetExhausted(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c := fixedClockController(StormScopeConfig{PerEndpointRate: 1, PerEndpointBurst: 2}, &now)
@@ -31,9 +31,9 @@ func TestStormControllerEndpointScopeDeniesWhenBudgetExhausted(t *testing.T) {
 	}
 }
 
-// TestStormControllerEndpointScopeRefillsOverTime: burst=1 rate=1/s. Acquire, deny
-// immediately, advance 1s, acquire again. Mutation: skip the elapsed-time refill in
-// refillLocked → the post-advance acquire denies → red.
+// TestStormControllerEndpointScopeRefillsOverTime: burst=1 rate=1/s。acquire,
+// 立即被拒, 推进 1s, 再次 acquire。变异: 在 refillLocked 中跳过基于经过时间的
+// 补充 → 推进后的 acquire 被拒 → 红。
 func TestStormControllerEndpointScopeRefillsOverTime(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c := fixedClockController(StormScopeConfig{PerEndpointRate: 1, PerEndpointBurst: 1}, &now)
@@ -49,9 +49,9 @@ func TestStormControllerEndpointScopeRefillsOverTime(t *testing.T) {
 	}
 }
 
-// TestStormControllerEndpointBucketsIndependentPerProvider: provider A exhausted
-// must not deny provider B. Mutation: key every endpoint to one shared bucket →
-// provider B denies → red.
+// TestStormControllerEndpointBucketsIndependentPerProvider: provider A 耗尽
+// 不得拒绝 provider B。变异: 把每个 endpoint 都映射到同一个共享 bucket →
+// provider B 被拒 → 红。
 func TestStormControllerEndpointBucketsIndependentPerProvider(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c := fixedClockController(StormScopeConfig{PerEndpointRate: 1, PerEndpointBurst: 1}, &now)
@@ -66,9 +66,9 @@ func TestStormControllerEndpointBucketsIndependentPerProvider(t *testing.T) {
 	}
 }
 
-// TestStormControllerEndpointRefundReturnsToken: with burst=1 the first acquire
-// consumes the token, refund returns it, the next acquire admits. Mutation: make
-// scopeBucket.refund a no-op → the post-refund acquire denies → red.
+// TestStormControllerEndpointRefundReturnsToken: burst=1 时, 第一次 acquire
+// 消费掉 token, refund 退回它, 下一次 acquire 准入。变异: 让
+// scopeBucket.refund 变成 no-op → refund 后的 acquire 被拒 → 红。
 func TestStormControllerEndpointRefundReturnsToken(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c := fixedClockController(StormScopeConfig{PerEndpointRate: 1, PerEndpointBurst: 1}, &now)
@@ -82,9 +82,9 @@ func TestStormControllerEndpointRefundReturnsToken(t *testing.T) {
 	}
 }
 
-// TestStormControllerGlobalScopeDeniesWhenExhausted: global burst=1 admits once
-// then denies. Mutation: skip the global bucket check in AcquireGlobal → the second
-// acquire admits → red.
+// TestStormControllerGlobalScopeDeniesWhenExhausted: global burst=1 准入一次
+// 然后拒绝。变异: 在 AcquireGlobal 中跳过 global bucket 检查 → 第二次
+// acquire 准入 → 红。
 func TestStormControllerGlobalScopeDeniesWhenExhausted(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c := fixedClockController(StormScopeConfig{GlobalRate: 1, GlobalBurst: 1}, &now)
@@ -96,10 +96,10 @@ func TestStormControllerGlobalScopeDeniesWhenExhausted(t *testing.T) {
 	}
 }
 
-// TestStormControllerSubUnitBurstTreatedAsDisabled: a burst < 1 can never admit a
-// whole token, so the layer treats the scope as OFF (admit-all) rather than
-// every refresh. Mutation: loosen endpointEnabled to accept burst>0 → acquires route
-// into a 0.5-token bucket and deny → red.
+// TestStormControllerSubUnitBurstTreatedAsDisabled: burst < 1 永远无法准入一个
+// 完整 token, 所以本层把该 scope 视作关闭 (admit-all), 而不是拒绝
+// 每一次 refresh。变异: 放宽 endpointEnabled 接受 burst>0 → acquire 落入
+// 一个 0.5-token 的 bucket 并被拒 → 红。
 func TestStormControllerSubUnitBurstTreatedAsDisabled(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c := fixedClockController(StormScopeConfig{PerEndpointRate: 1, PerEndpointBurst: 0.5}, &now)
@@ -110,8 +110,8 @@ func TestStormControllerSubUnitBurstTreatedAsDisabled(t *testing.T) {
 	}
 }
 
-// TestStormControllerNilSafeScopes proves a nil controller admits both scopes
-// without panicking (defensive: a misconfigured caller must not crash the worker).
+// TestStormControllerNilSafeScopes 证明 nil controller 对两个 scope 都一律 admit
+// 且不 panic (防御性: 配置错误的调用方不得让 worker 崩溃)。
 func TestStormControllerNilSafeScopes(t *testing.T) {
 	var c *StormController
 	if r, outcome, err := c.AcquireProviderEndpoint(context.Background(), 1, "anthropic", ""); r == nil || outcome != "" || err != nil {

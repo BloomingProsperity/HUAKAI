@@ -15,9 +15,8 @@ var (
 	ErrUnsafeHost = errors.New("proxyadmin: unsafe proxy host")
 )
 
-// Proxy is the secret-free projection of a proxy row. It deliberately omits
-// auth_secret: the encrypted credential is write-only and is never returned by
-// any read path (list/get), so a proxy secret cannot leak through this surface.
+// Proxy 是代理行的"不含凭据"投影。它刻意省略 auth_secret:加密后的凭据是只写的,
+// 任何读取路径(list/get)都绝不返回它,因此代理凭据无法经此面泄露。
 type Proxy struct {
 	ID           int64
 	TenantID     int64

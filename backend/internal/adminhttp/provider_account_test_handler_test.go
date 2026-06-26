@@ -38,7 +38,7 @@ func TestProviderAccountTestUnauthorized(t *testing.T) {
 
 func TestProviderAccountTestCrossTenantBodyTenantIDIgnored(t *testing.T) {
 	// 判别防串租户:body.tenant_id=8 必须被忽略,查询只能用 admin identity 的 tenant 7。
-	// Mutation:从 body 收 tenant_id 或不按 identity scope 查询,会命中 tenant 8 account 并返回 200。
+	// 变异:从 body 收 tenant_id 或不按 identity scope 查询,会命中 tenant 8 account 并返回 200。
 	accounts := newProviderAccountTestAccountStoreStub()
 	accounts.put(providerAccountTestRow(8, 200))
 	credentials, registry := newProviderAccountTestCredentialDeps(t, credentialstore.CredentialRecord{
@@ -106,7 +106,7 @@ func TestProviderAccountTestPlatformAdminCanUseDefaultTenantScope(t *testing.T) 
 
 func TestProviderAccountTestInvalidGrantDoesNotLeakSecretMarker(t *testing.T) {
 	// 判别 secret leak:adapter 错误含上游 body + secret marker,HTTP 响应只能暴露 error_class。
-	// Mutation:把 raw err 或 raw upstream body 塞进 message,marker 断言会红。
+	// 变异:把 raw err 或 raw upstream body 塞进 message,marker 断言会红。
 	secretMarker := "sk-live-secret-marker"
 	accounts := newProviderAccountTestAccountStoreStub()
 	accounts.put(providerAccountTestRow(7, 99))
@@ -158,7 +158,7 @@ func TestProviderAccountTestInvalidGrantDoesNotLeakSecretMarker(t *testing.T) {
 
 func TestProviderAccountTestFailureDoesNotChangeCredentialOrAccountState(t *testing.T) {
 	// DRY-RUN 核心判别:失败校验不得持久化 health/failure/next_attempt/token_version。
-	// Mutation:改成调用 SaveRefreshFailure 或账号健康写回,下方 before/after 会红。
+	// 变异:改成调用 SaveRefreshFailure 或账号健康写回,下方 before/after 会红。
 	accounts := newProviderAccountTestAccountStoreStub()
 	account := providerAccountTestRow(7, 99)
 	account.HealthState = "healthy"
@@ -237,8 +237,8 @@ func TestProviderAccountTestSuccessReturnsOK(t *testing.T) {
 }
 
 func TestProviderAccountTestUsesProbeModelWhenConfigured(t *testing.T) {
-	// MUTATION: handler 忽略 provider_accounts.probe_model 时 tester 收到空
-	// probe model, 无法按账号指定探测目标。
+	// 变异:handler 忽略 provider_accounts.probe_model 时 tester 收到空
+	// probe model,无法按账号指定探测目标。
 	accounts := newProviderAccountTestAccountStoreStub()
 	row := providerAccountTestRow(7, 99)
 	probeModel := "claude-3-5-sonnet-probe"

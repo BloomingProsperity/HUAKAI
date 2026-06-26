@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseMultiWindowReset(t *testing.T) {
-	// MUTATION: ignoring the 5h reset headers must make until/reason wrong.
+	// 变异:忽略 5h 的 reset 头必然让 until/reason 出错。
 	now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
 	reset5h := now.Add(30 * time.Minute)
 	headers := http.Header{}
@@ -26,7 +26,7 @@ func TestParseMultiWindowReset(t *testing.T) {
 		t.Fatalf("reason=%s want %s", reason, ReasonRateLimit5h)
 	}
 
-	// GUARD: no exceeded-window marker means the parser must not refine cooldown.
+	// 守卫:没有「窗口已超限」标记时,parser 不得细化冷却。
 	guardHeaders := http.Header{}
 	guardHeaders.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(reset5h.Unix(), 10))
 	until, reason, ok = ParseMultiWindowReset(guardHeaders, now)

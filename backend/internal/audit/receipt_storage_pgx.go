@@ -206,7 +206,7 @@ LIMIT 1`,
 	return receipt, nil
 }
 
-// GetReceipt preserves the legacy admin-only storage semantics until callers split.
+// GetReceipt 在调用方拆分前，保留仅限 admin 的历史存储语义。
 func (rs *PGXReceiptStorage) GetReceipt(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
 	return rs.GetReceiptForAdmin(ctx, requestID, tenantID)
 }

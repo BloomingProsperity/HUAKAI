@@ -179,9 +179,8 @@ func TestOAuthExchangerRegistryRejectsWrongVendorTokenShape(t *testing.T) {
 }
 
 func TestDefaultExchangerRegistryHasOpenAICodexDeviceCodeAliases(t *testing.T) {
-	// Regression killed: callers may address the OpenAI Codex device-code flow
-	// by provider-code alias. Mutation self-check: removing either alias makes
-	// this lookup fail while the legacy openai/codex_cli_oauth key still passes.
+	// 回归保护:调用方可以用 provider-code 别名定位 OpenAI Codex device-code flow。
+	// 变异自检:移除任一别名都会使此 lookup 失败,而旧的 openai/codex_cli_oauth 键仍能通过。
 	registry := DefaultExchangerRegistry()
 	for _, name := range []string{
 		"openai/codex_cli_oauth",
@@ -195,8 +194,8 @@ func TestDefaultExchangerRegistryHasOpenAICodexDeviceCodeAliases(t *testing.T) {
 }
 
 func TestKimiDeviceExchangerRegistered(t *testing.T) {
-	// Mutation: delete the kimi/kimi_oauth registration in DefaultExchangerRegistry;
-	// this lookup must go RED while unrelated device-code aliases still pass.
+	// 变异:删除 DefaultExchangerRegistry 中的 kimi/kimi_oauth 注册;
+	// 此 lookup 必须变红,而无关的 device-code 别名仍能通过。
 	registry := DefaultExchangerRegistry()
 	if _, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth)); !ok {
 		t.Fatalf("missing Kimi device-code exchanger for %s", credentialstore.ModeKey(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth))
@@ -204,8 +203,8 @@ func TestKimiDeviceExchangerRegistered(t *testing.T) {
 }
 
 func TestKimiDeviceConfigConstants(t *testing.T) {
-	// Mutation: change the Kimi client_id, device endpoint, token endpoint, or
-	// device-code grant string; start/poll request assertions below must go RED.
+	// 变异:改动 Kimi 的 client_id、device endpoint、token endpoint 或
+	// device-code grant 字符串;下方 start/poll 请求断言必须变红。
 	now := time.Date(2026, 6, 7, 9, 0, 0, 0, time.UTC)
 	var startURL string
 	var startClientID string
@@ -283,8 +282,8 @@ func TestKimiDeviceConfigConstants(t *testing.T) {
 }
 
 func TestKimiSSRFHost(t *testing.T) {
-	// Mutation: remove the Kimi endpoint host check or allow arbitrary public
-	// HTTPS hosts; this fake attacker endpoint will be called and the test goes RED.
+	// 变异:移除 Kimi 端点 host 校验或放行任意公网 HTTPS host;
+	// 此伪造的攻击者端点将被调用,测试随之变红。
 	called := false
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		called = true
@@ -313,10 +312,10 @@ func TestKimiSSRFHost(t *testing.T) {
 }
 
 func TestOpenAICodexDeviceCodeStartRequiresOperatorConfig(t *testing.T) {
-	// Regression killed: the registered OpenAI Codex device-code exchanger
-	// must enforce operator_config before any HTTP call. Mutation self-check:
-	// delegating straight to the generic device-code exchanger calls this
-	// client and accepts public_cli_client.
+	// 回归保护:已注册的 OpenAI Codex device-code exchanger
+	// 必须在任何 HTTP 调用前强制 operator_config。变异自检:
+	// 若直接委派给通用 device-code exchanger,就会调用此
+	// client 并接受 public_cli_client。
 	called := false
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		called = true
@@ -342,8 +341,8 @@ func TestOpenAICodexDeviceCodeStartRequiresOperatorConfig(t *testing.T) {
 }
 
 func TestOpenAICodexDeviceCodeAliasCanonicalizesCredentialMode(t *testing.T) {
-	// Regression killed: provider-code aliases must create and poll canonical
-	// credentialstore vendor/auth_mode so finalization can validate the result.
+	// 回归保护:provider-code 别名必须以规范的 credentialstore vendor/auth_mode
+	// 创建并轮询,使最终化(finalization)能够校验结果。
 	now := time.Date(2026, 5, 24, 14, 10, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {

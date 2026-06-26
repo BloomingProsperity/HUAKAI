@@ -109,7 +109,7 @@ func TestServiceReserve_NoPolicyAllows(t *testing.T) {
 	service := NewService(NewPostgresStore(pool))
 
 	now := time.Date(2026, 6, 14, 9, 30, 0, 0, time.UTC)
-	// Intentionally seed NO policy for any scope.
+	// 有意不为任何 scope 配置策略。
 	claimID := f.seedClaim("reserve-no-policy")
 
 	result, err := service.Reserve(ctx, ReserveRequest{

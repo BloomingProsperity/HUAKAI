@@ -1,9 +1,8 @@
-// Package adminquotahttp exposes tenant-scoped admin CRUD for quota policies
-// (/admin/v1/quota-policies). This is anti-abuse OPERATIONAL config: it never
-// touches user_balances or the billing ledger. It mirrors adminuserhttp /
-// adminhttp channel-catalog: platform_admin/tenant_operator guard, explicit
-// tenant scoping, and an admin_audit_events row written atomically with every
-// mutation.
+// Package adminquotahttp 暴露按租户作用域的、针对 quota policies 的 admin CRUD
+//(/admin/v1/quota-policies)。这属于防滥用的运维配置:它绝不触碰 user_balances
+// 或计费账本。它与 adminuserhttp / adminhttp 的 channel-catalog 保持一致:
+// platform_admin/tenant_operator 守卫、显式的租户作用域,以及每次变更都原子写入
+// 一行 admin_audit_events。
 package adminquotahttp
 
 import (
@@ -27,8 +26,8 @@ const (
 	maxPageLimit     = int32(100)
 )
 
-// Deps is the dependency set for the quota-policy admin surface. Auth resolves
-// the admin identity; Store runs reads and the audited mutations.
+// Deps 是 quota-policy admin 接口面所需的依赖集合。Auth 负责解析 admin 身份;
+// Store 负责执行读取以及带审计的变更。
 type Deps struct {
 	Auth  adminAuth
 	Store quotaPolicyStore
@@ -38,10 +37,9 @@ type adminAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-// quotaPolicyStore combines the admin reads with the audited mutation methods.
-// The reads accept the sqlc-generated params directly; the mutations take a
-// neutral params struct plus the audit row so the adapter can run both inside
-// one transaction.
+// quotaPolicyStore 把 admin 读取与带审计的变更方法组合在一起。读取直接接受
+// sqlc 生成的 params;变更接受一个中立的 params 结构外加审计行,以便 adapter
+// 能把二者放进同一个事务里执行。
 type quotaPolicyStore interface {
 	ListQuotaPoliciesForAdmin(context.Context, dbquota.ListQuotaPoliciesForAdminParams) ([]dbquota.QuotaPolicy, error)
 	GetQuotaPolicyByID(context.Context, dbquota.GetQuotaPolicyByIDParams) (dbquota.QuotaPolicy, error)
@@ -50,27 +48,27 @@ type quotaPolicyStore interface {
 	DeleteQuotaPolicyWithAudit(context.Context, quotaPolicyDeleteParams, auditInput) (int64, error)
 }
 
-// MountRoutes registers the id-scoped quota-policy CRUD subtree (GET/PUT/DELETE
-// /{id}). The collection GET/POST are mounted at the bare path by the caller
-// (see cmd/gateway/routes.go), mirroring how adminuserhttp is wired so chi
-// reports the canonical no-trailing-slash collection path.
+// MountRoutes 注册按 id 作用域的 quota-policy CRUD 子树(GET/PUT/DELETE
+// /{id})。集合级的 GET/POST 由调用方挂载在裸路径上(见 cmd/gateway/routes.go),
+// 与 adminuserhttp 的接线方式一致,这样 chi 报告的就是规范的、不带尾斜杠的
+// 集合路径。
 func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/{id}", newGetHandler(d))
 	r.Put("/{id}", newUpdateHandler(d))
 	r.Delete("/{id}", newDeleteHandler(d))
 }
 
-// The exported constructors let the gateway mount each route inline (no
-// chi.Route subtree) so the path walker reports the canonical
-// no-trailing-slash paths, exactly like the channel-catalog block.
+// 这些导出的构造器让 gateway 可以内联挂载每条路由(不建 chi.Route 子树),
+// 这样路径遍历器报告的就是规范的、不带尾斜杠的路径,与 channel-catalog 那段
+// 完全一致。
 func NewListHandler(d Deps) http.HandlerFunc   { return newListHandler(d) }
 func NewCreateHandler(d Deps) http.HandlerFunc { return newCreateHandler(d) }
 func NewGetHandler(d Deps) http.HandlerFunc    { return newGetHandler(d) }
 func NewUpdateHandler(d Deps) http.HandlerFunc { return newUpdateHandler(d) }
 func NewDeleteHandler(d Deps) http.HandlerFunc { return newDeleteHandler(d) }
 
-// NewRouter builds a standalone router for tests: it wires the collection-level
-// GET/POST plus the id subtree exactly like the gateway mount.
+// NewRouter 为测试构建一个独立的 router:它接线集合级的 GET/POST 以及 id 子树,
+// 与 gateway 的挂载方式完全一致。
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", newListHandler(d))
@@ -79,10 +77,10 @@ func NewRouter(d Deps) http.Handler {
 	return r
 }
 
-// resolveTenantIdentity authenticates the caller and resolves the operating
-// tenant. tenant_operator may omit ?tenant_id (uses its scope); platform_admin
-// must pass ?tenant_id and is checked via CanIssueForTenant. Mirrors
-// adminuserhttp.resolveTenantIdentity so RBAC semantics stay identical.
+// resolveTenantIdentity 对调用方做认证并解析出操作所针对的租户。tenant_operator
+// 可省略 ?tenant_id(使用其自身作用域);platform_admin 必须传 ?tenant_id,并经
+// CanIssueForTenant 校验。它与 adminuserhttp.resolveTenantIdentity 保持一致,以使
+// RBAC 语义完全相同。
 func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admin.AdminIdentity, int64, bool) {
 	if d.Auth == nil || d.Store == nil {
 		writeError(w, http.StatusServiceUnavailable, "admin_quota_not_configured",
@@ -116,9 +114,8 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 	}
 }
 
-// tenantFromQueryOrScope resolves the target tenant: a present ?tenant_id is
-// validated through CanIssueForTenant (cross-tenant guard); absent it falls
-// back to a tenant_operator's own scope.
+// tenantFromQueryOrScope 解析目标租户:若带有 ?tenant_id,则通过 CanIssueForTenant
+//(跨租户守卫)校验;若不带,则回退到 tenant_operator 自身的作用域。
 func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	tenantParam := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	var tenantID int64

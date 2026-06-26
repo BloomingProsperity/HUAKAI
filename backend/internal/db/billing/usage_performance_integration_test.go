@@ -34,7 +34,7 @@ func TestLatencyPercentiles(t *testing.T) {
 	}
 
 	q := New(tx)
-	// MUTATION: changing percentile array to [0.5,0.5,0.5] makes P95/P99 collapse to P50 -> RED.
+	// 变异:把百分位数组改成 [0.5,0.5,0.5] 会让 P95/P99 坍缩成 P50 -> 变红。
 	got, err := q.AggregateUsageLatencyPercentiles(ctx, AggregateUsageLatencyPercentilesParams{
 		SettledSince: pgtype.Timestamptz{Time: base.Add(-time.Minute), Valid: true},
 		Model:        &model,
@@ -76,7 +76,7 @@ func TestPerfBucketed(t *testing.T) {
 	seedUsagePerformanceRecord(t, ctx, tx, fixture, model+"-h2-a", model, base.Add(time.Hour), base.Add(3*time.Hour), 300*time.Millisecond, 20, "upstream_error_5xx")
 
 	q := New(tx)
-	// MUTATION: removing date_trunc(bucket, requested_at) groups only by model and returns one row -> RED.
+	// 变异:去掉 date_trunc(bucket, requested_at) 会只按 model 分组并只返回一行 -> 变红。
 	rows, err := q.AggregateUsagePerformanceByModelBucketed(ctx, AggregateUsagePerformanceByModelBucketedParams{
 		SettledSince: pgtype.Timestamptz{Time: base.Add(-time.Minute), Valid: true},
 		Bucket:       "hour",

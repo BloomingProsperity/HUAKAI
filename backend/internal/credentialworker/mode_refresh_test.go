@@ -62,10 +62,9 @@ func TestDefaultModeAdapterRegistryRoutesSlice26OAuthModes(t *testing.T) {
 }
 
 func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
-	// Regression killed: windsurf/oauth credentials could be stored, but the
-	// refresh worker's mode registry missed the executor and marked the account
-	// adapter_missing. Mutation self-check: deleting the windsurf/oauth default
-	// registration makes this test fail with failure:88:adapter_missing.
+	// 修掉的回归:windsurf/oauth 凭据可以被存储,但 refresh worker 的 mode registry
+	// 缺少对应的执行器,从而把账号标为 adapter_missing。Mutation 自检:删掉
+	// windsurf/oauth 的默认注册会让本测试以 failure:88:adapter_missing 失败。
 	calls := []string{}
 	store := &recordingRefreshStore{
 		calls: &calls,
@@ -83,8 +82,8 @@ func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh returned %v, want no adapter_missing for windsurf/oauth", err)
 	}
-	// TOKLIFE-04: ErrNoRefreshRequired now sets next_attempt_at via SetNextAttemptThrottle
-	// to prevent a tight re-attempt loop; throttle:88 is expected in the call sequence.
+	// TOKLIFE-04:ErrNoRefreshRequired 现在通过 SetNextAttemptThrottle 设置
+	// next_attempt_at,以防止紧密的重试循环;调用序列中预期出现 throttle:88。
 	want := []string{"probe", "tx_begin", "lock:88", "reread", "throttle:88"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
@@ -128,8 +127,8 @@ func assertWindsurfManualModeAdapter(t *testing.T, adapter ModeRefreshAdapter) {
 }
 
 func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *testing.T) {
-	// Regression killed: the default scheduled Codex refresh path must not
-	// fall back to endpoint/client/scope embedded in credential JSON.
+	// 修掉的回归:默认的定时 Codex refresh 路径绝不能回退到嵌在 credential JSON
+	// 里的 endpoint/client/scope。
 	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
 	if !ok {
 		t.Fatal("Codex CLI OAuth mode adapter missing")
@@ -182,12 +181,10 @@ func TestGeminiAntigravityRefreshIsFailClosedUntilReactivation(t *testing.T) {
 }
 
 func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRefreshesSessionToken(t *testing.T) {
-	// Regression killed: gemini/oauth and antigravity/oauth scheduled refresh
-	// must use existing HUAKAI_GEMINI_OAUTH_* operator config and must replace
-	// stale session_token with the freshly refreshed access_token. Mutation
-	// self-checks: reading only the newer HERMES-specific env names fails before
-	// the request; deleting session_token synchronization leaves old-session in
-	// the saved payload and makes this test red.
+	// 修掉的回归:gemini/oauth 与 antigravity/oauth 的定时 refresh 必须使用现有的
+	// HUAKAI_GEMINI_OAUTH_* operator 配置,并且必须用刚刷新得到的 access_token 替换
+	// 陈旧的 session_token。Mutation 自检:只读取较新的 HERMES 专属 env 名会在请求前
+	// 失败;删掉 session_token 同步会让保存的 payload 残留 old-session,使本测试转红。
 	cases := []struct {
 		name     string
 		vendor   string
@@ -281,11 +278,10 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 }
 
 func TestWindsurfManualModeAdapterRejectsRefreshTokenOnlyCredential(t *testing.T) {
-	// Regression killed: a stored Windsurf OAuth payload with only refresh_token
-	// is unusable by the runtime session adapter, so scheduled refresh must
-	// fail closed instead of silently treating it as a manual no-op. Mutation
-	// self-check: deleting the session/access-token guard returns
-	// ErrNoRefreshRequired and makes this test red.
+	// 修掉的回归:一个只含 refresh_token 的已存储 Windsurf OAuth payload 无法被运行时
+	// session adapter 使用,因此定时 refresh 必须 fail closed,而不是悄悄把它当作一次
+	// 手动 no-op。Mutation 自检:删掉 session/access-token 守卫会返回
+	// ErrNoRefreshRequired,使本测试转红。
 	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth)
 	if !ok {
 		t.Fatal("missing windsurf/oauth mode adapter")
@@ -398,16 +394,15 @@ func TestMetadataTokenAdapterUsesStdlibMetadataRequest(t *testing.T) {
 	}
 }
 
-// assertSSRFBlocksLoopbackEndpoint runs a credential-driven token adapter with NO injected client
-// (forcing the production fallback) against a real loopback HTTP server that WOULD hand back a usable
-// access_token if reached. The SSRF-protected fallback must refuse to dial 127.0.0.1, so run() must
-// return a dial error and never capture the token. This is the discriminating fixture shared
-// by the mock and metadata adapters.
+// assertSSRFBlocksLoopbackEndpoint 在不注入 client(强制走生产 fallback)的情况下,
+// 用一个 credential 驱动的 token adapter 去打一个真实的 loopback HTTP 服务器——若被
+// 打到,该服务器会回交一个可用的 access_token。受 SSRF 保护的 fallback 必须拒绝拨号
+// 127.0.0.1,因此 run() 必须返回一个拨号错误且绝不捕获到 token。这是 mock 与
+// metadata adapter 共享的区分性 fixture。
 //
-// Mutation check: restore the bare `http.DefaultClient` fallback in either adapter — the request then
-// reaches the loopback server, RefreshCredential succeeds with a captured token, err is nil, and this
-// assertion goes red. The success path proves the regression is real token exfiltration, not a
-// cosmetic error.
+// Mutation check:在任一 adapter 中还原裸 `http.DefaultClient` fallback——请求随后会
+// 打到 loopback 服务器,RefreshCredential 成功并捕获到 token,err 为 nil,本断言转红。
+// 这条成功路径证明该回归是真实的 token 外泄,而非仅仅一个表面错误。
 func assertSSRFBlocksLoopbackEndpoint(t *testing.T, run func(endpoint string) error) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -521,13 +516,13 @@ func jsonResponse(body string) *http.Response {
 	}
 }
 
-// TestRefreshLockedRecordSurfacesSaveFailureError guards when persisting the refresh-failure
-// state itself fails, refreshLockedRecord must surface that error (joined with the cause), not drop
-// it with `_ =`. Otherwise the credential's failure state (cooldown / retry count / reason) is
-// silently lost and the scheduler keeps retrying on stale state.
+// TestRefreshLockedRecordSurfacesSaveFailureError 守卫:当持久化 refresh-failure
+// 状态本身失败时,refreshLockedRecord 必须把该错误暴露出来(与起因 join),而不是
+// 用 `_ =` 丢弃。否则凭据的失败状态(冷却 / 重试计数 / 原因)会被悄悄丢失,scheduler
+// 会按陈旧状态反复重试。
 //
-// Mutation check: restore `_ = txStore.SaveRefreshFailure(...)` and the returned error no longer
-// wraps the persistence sentinel → red. Uses the adapter-missing branch (no live adapter needed).
+// Mutation check:还原 `_ = txStore.SaveRefreshFailure(...)`,返回的错误就不再 wrap
+// 持久化 sentinel → 转红。使用 adapter-missing 分支(无需活的 adapter)。
 func TestRefreshLockedRecordSurfacesSaveFailureError(t *testing.T) {
 	saveErr := errors.New("save refresh failure write failed")
 	calls := []string{}
@@ -636,8 +631,8 @@ func (a recordingModeAdapter) RefreshCredential(_ context.Context, in ModeRefres
 }
 
 func TestDefaultModeAdapterRegistryRoutesUpstreamOAuthRefreshModes(t *testing.T) {
-	// Mutation: drop either register(...) for grok/xai_oauth or kimi/kimi_oauth,
-	// or point tokenURL/clientID at the wrong value; this test goes RED.
+	// Mutation:删掉 grok/xai_oauth 或 kimi/kimi_oauth 任一的 register(...),
+	// 或把 tokenURL/clientID 指向错误的值;本测试就会转红。
 	registry := DefaultModeAdapterRegistry()
 	cases := []struct {
 		vendor, authMode, wantTokenURL, wantClientID string
@@ -683,7 +678,7 @@ func TestBuiltinRefreshTokenModeAdapterRotatesTokens(t *testing.T) {
 	if err := json.Unmarshal(res.Payload, &fields); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	// Mutation: remove the refresh_token rotation in executeTokenRequest -> RED.
+	// Mutation:删掉 executeTokenRequest 中的 refresh_token 轮换 -> 转红。
 	if fields["access_token"] != "new-access" {
 		t.Fatalf("access_token=%v want new-access", fields["access_token"])
 	}
@@ -696,7 +691,7 @@ func TestBuiltinRefreshTokenModeAdapterRotatesTokens(t *testing.T) {
 }
 
 func TestBuiltinRefreshTokenModeAdapterNoRefreshTokenSkips(t *testing.T) {
-	// Mutation: treat missing refresh_token as an error instead of ErrNoRefreshRequired -> RED.
+	// Mutation:把缺失 refresh_token 当作错误而非 ErrNoRefreshRequired -> 转红。
 	adapter := builtinRefreshTokenModeAdapter{providerName: "kimi", tokenURL: "https://auth.kimi.com/api/oauth/token", clientID: "x"}
 	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{Payload: []byte(`{"access_token":"only"}`)})
 	if !errors.Is(err, ErrNoRefreshRequired) {

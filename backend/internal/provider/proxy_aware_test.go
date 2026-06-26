@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// PROXY-02a: WrapTransportWithProxy must let a proxy-aware RoundTripper (e.g. the
-// mimicry uTLS dialer) inject the proxy beneath its handshake, instead of
-// rejecting it as an unsupported transport.
+// PROXY-02a：WrapTransportWithProxy 必须允许一个 proxy-aware 的 RoundTripper
+// （例如伪装用的 uTLS dialer）在其握手之下注入代理，而不是把它当作不支持的
+// transport 直接拒绝。
 
 type fakeProxyAware struct {
 	got       *url.URL
@@ -25,8 +25,8 @@ func (f *fakeProxyAware) WithProxy(u *url.URL) (http.RoundTripper, error) {
 	return f, nil
 }
 
-// MUTATION: removing the proxyAwareRoundTripper branch in WrapTransportWithProxy
-// makes f.got stay nil (the RT is rejected via proxyWrappedRoundTripper) -> red.
+// 变异：若移除 WrapTransportWithProxy 中的 proxyAwareRoundTripper 分支，会让
+// f.got 保持 nil（该 RT 被走 proxyWrappedRoundTripper 拒绝）-> 测试变红。
 func TestWrapTransportWithProxy_ProxyAwareInjects(t *testing.T) {
 	f := &fakeProxyAware{}
 	u, _ := url.Parse("http://user:pass@proxy.test:8080")
@@ -39,8 +39,8 @@ func TestWrapTransportWithProxy_ProxyAwareInjects(t *testing.T) {
 	}
 }
 
-// When the proxy-aware RT cannot build (e.g. unsupported scheme), the wrapper
-// must fail-loud at RoundTrip (never a silent direct connection).
+// 当 proxy-aware 的 RT 无法构建时（例如不支持的 scheme），该 wrapper 必须在
+// RoundTrip 处 fail-loud（明确报错），绝不能悄悄退化成直连。
 func TestWrapTransportWithProxy_ProxyAwareBuildError(t *testing.T) {
 	wantErr := errProxyAwareTestBuild
 	f := &fakeProxyAware{returnErr: wantErr}
