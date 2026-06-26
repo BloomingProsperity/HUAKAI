@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { listModels, sendChat } from './api'
+import { listModels, sendChat, sendChatStream } from './api'
 import { canSend, extractReply, formatUsage } from './playground'
 import type { ChatResponse } from './types'
 
@@ -18,7 +18,9 @@ export function PlaygroundPage() {
   const [models, setModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
   const [sending, setSending] = useState(false)
+  const [streaming, setStreaming] = useState(true)
   const [reply, setReply] = useState<ChatResponse | null>(null)
+  const [streamText, setStreamText] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   async function loadModels() {
@@ -42,9 +44,13 @@ export function PlaygroundPage() {
     setSending(true)
     setError(null)
     setReply(null)
+    setStreamText('')
     try {
-      const res = await sendChat(apiKey, model, system, message)
-      setReply(res)
+      if (streaming) {
+        await sendChatStream(apiKey, model, system, message, (t) => setStreamText((prev) => prev + t))
+      } else {
+        setReply(await sendChat(apiKey, model, system, message))
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '请求失败')
     } finally {
@@ -98,11 +104,15 @@ export function PlaygroundPage() {
           onChange={(e) => setMessage(e.target.value)} style={{ ...inp, resize: 'vertical' }} />
       </label>
 
-      <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
         <button type="button" onClick={send} disabled={!ready}
           style={{ ...btn, opacity: ready ? 1 : 0.5, cursor: ready ? 'pointer' : 'default' }}>
           {sending ? '发送中…' : '发送'}
         </button>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--hk-ink-500)' }}>
+          <input type="checkbox" checked={streaming} onChange={(e) => setStreaming(e.target.checked)} />
+          流式逐字显示
+        </label>
       </div>
 
       {error && (
@@ -111,7 +121,16 @@ export function PlaygroundPage() {
         </p>
       )}
 
-      {reply && (
+      {streaming && (streamText || sending) && (
+        <section style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-3)', padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+          <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>回复{sending ? '(流式接收中…)' : ''}</div>
+          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit', fontSize: 14 }}>
+            {streamText || (sending ? '…' : '(空回复)')}
+          </pre>
+        </section>
+      )}
+
+      {!streaming && reply && (
         <section style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-3)', padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
           <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>
             回复{reply.model ? ` · ${reply.model}` : ''}{formatUsage(reply.usage) ? ` · ${formatUsage(reply.usage)}` : ''}
