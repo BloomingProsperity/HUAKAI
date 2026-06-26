@@ -360,10 +360,12 @@ func TestAT_POOL_013_DefaultTopKCompatibility(t *testing.T) {
 	}
 }
 
-// AT-POOL-019: Cross-feature with F-OBS-001; deferred.
-func TestAT_POOL_019_Tx2Atomicity(t *testing.T) {
-	t.Skip("Cross-feature with F-OBS-001 settler; awaits slice 5 implementation.")
-}
+// AT-POOL-019(Tx2 原子性:slot release + usage record + claim status 全或无)的依赖
+// "slice 5 / F-OBS-001 settler" 已实现(internal/billing.DefaultSettler.Settle 把 write+release+audit
+// 包在单个 Serializable Tx + 一次 Commit)。其覆盖现位于 settler 所有者包 internal/billing:
+//   - happy 五效应原子提交:TestAT_OBS_004_AtomicFiveEffect
+//   - mid-Tx2 失败 → 无部分行(回滚):TestAT_OBS_004_RollbackOnSlotReleaseMiss
+// 故此处不再保留跨包的 skipped 占位(避免误导性的"已跳过"测试)。
 
 // =====================================================================
 // Smoke
