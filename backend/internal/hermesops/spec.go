@@ -77,6 +77,13 @@ const (
 	// 非用户内容);投影排 TenantID。
 	ToolAlertRuleList = "alert_rule_list"
 
+	// ToolAlertEventList(0158 迁移准入)列出本租户的告警事件(alert event,可按 state 过滤):规则 id、
+	// 状态(firing/resolved/manual_resolved)、观测值/阈值/指标值、dimensions(触发时的规则过滤标签)、
+	// 触发/解决时间、是否已发邮件。补 alert_rule_list(规则配置)缺的"实际触发了什么"。让 Hermes 能回答
+	// "现在有什么告警在响、最近触发过什么"。只读 → 仅写 hermes_tool_calls。Dimensions 同 AlertRule.Filters
+	// 来源(规则过滤标签,运营自填);投影排 TenantID。
+	ToolAlertEventList = "alert_event_list"
+
 	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
 	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory
 	// lock, idempotency). They are registered with Mutating=true so the read-only

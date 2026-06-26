@@ -131,6 +131,14 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.AlertRuleListSpec(alertDeps))
 
+	// alert_event_list -> alerting.PostgresStore.ListEvents(按 tenant_id SELECT-only,可按 state 过滤)。
+	// 0158 迁移已把 alert_event_list 加进 hermes_tool_calls.tool_name CHECK。Dimensions 同 Filters 来源。
+	alertEvtDeps := hermesops.AlertEventListDeps{}
+	if d.pool != nil {
+		alertEvtDeps.List = alerting.NewPostgresStore(d.pool).ListEvents
+	}
+	reg.Register(hermesops.AlertEventListSpec(alertEvtDeps))
+
 	// request_diagnose / audit_lookup / log_analyze -> the F-OBS-001 SELECT-only
 	// admin reads on billingQueries.
 	obsDeps := hermesops.ObservabilityDeps{}
