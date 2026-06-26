@@ -52,3 +52,33 @@ export function parseTenantInput(raw: string): number {
   const v = Number.parseInt(raw, 10)
   return Number.isInteger(v) && v > 0 ? v : DEFAULT_TENANT_ID
 }
+
+// 后端支持的代理协议(transport/mimicry proxyDialerFromURL:http/https CONNECT + socks5)。
+export const PROTOCOLS = ['http', 'https', 'socks5', 'socks5h'] as const
+// 后端生命周期状态(proxyadmin validStatus:active/disabled/dead)。
+export const STATUSES = ['active', 'disabled', 'dead'] as const
+
+export interface CreateProxyForm {
+  name: string
+  protocol: string
+  host: string
+  port: string // 表单里是字符串,提交前转 int
+  auth_username: string
+  auth_secret: string
+  status: string
+}
+
+/**
+ * validateCreateForm 校验新建表单,返回首个错误文案或 null(通过)。
+ * 必填:name/host 非空、protocol 合法、port 是 1-65535 整数;auth 可选;status 合法或空。
+ * 变异:任一校验缺失会让对应非法输入漏过 → 测试转红。
+ */
+export function validateCreateForm(f: CreateProxyForm): string | null {
+  if (f.name.trim() === '') return '名称必填'
+  if (!PROTOCOLS.includes(f.protocol as (typeof PROTOCOLS)[number])) return '协议非法'
+  if (f.host.trim() === '') return '主机必填'
+  const port = Number.parseInt(f.port, 10)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口须为 1-65535 的整数'
+  if (f.status !== '' && !STATUSES.includes(f.status as (typeof STATUSES)[number])) return '状态非法'
+  return null
+}
