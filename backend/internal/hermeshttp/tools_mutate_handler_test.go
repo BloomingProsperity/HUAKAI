@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
 
@@ -131,7 +132,7 @@ func buildMutateHandler(reg ToolRegistry, calls *fakeToolCalls, mutator MutateOr
 		tools:        reg,
 		toolCalls:    calls,
 		mutator:      mutator,
-		confirmCache: newConfirmCache(),
+		confirmCache: hermesconfirm.NewCache(),
 	}
 }
 

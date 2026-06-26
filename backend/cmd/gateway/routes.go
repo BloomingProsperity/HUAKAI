@@ -345,6 +345,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Runner:         d.hermesRunner,
 			Bridge:         d.hermesChatBridge,
 			HeaderSettings: d.platformSettings,
+			// 注入共享 confirm Cache 单例(同一实例后续也会注入 hermeschat 提议侧)。
+			ConfirmCache: d.hermesConfirmCache,
 			// KNOB A: the runtime mutating-tool kill-switch. The handler enforces it
 			// at the top of the mutating branch (covers preview AND confirm); the
 			// belt-and-suspenders below also withholds the orchestrator when off.
