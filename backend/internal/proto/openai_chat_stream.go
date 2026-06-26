@@ -35,6 +35,25 @@ func NewOpenAIChatStreamState() *OpenAIChatStreamState {
 	return &OpenAIChatStreamState{ToolSlotIndex: make(map[string]int)}
 }
 
+// meaningfulToolInput 判定 content_block_start 携带的工具 Input 是否是"真入参"(需在 start 即投递),
+// 而非占位空对象。**关键区分**:gemini 上游在 start 携带完整真入参(无后续 delta)→ true,必须投递;
+// 而 Anthropic 流式协议在 start 恒发占位 `"input":{}`、真入参随后由 input_json_delta 流入 → 必须返回
+// false,否则会把 `{}` 当真入参与后续 delta 双发,拼成 `{}{...}` 损坏 JSON。空/null 同样不投递。
+func meaningfulToolInput(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return false
+	}
+	// 解析判空,对所有空白/换行变体鲁棒:`{}`、`{ }`、`{\n}` 均解析成空对象 = 占位,不投递
+	//(canonical Input 是 json.RawMessage 逐字保留上游字节、不归一化,故字面量比较会漏判带空白的空对象)。
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(t, &obj) == nil {
+		return len(obj) > 0
+	}
+	// 非对象(数组/标量)罕见——工具入参按契约是对象;保守视为有内容,不静默丢弃。
+	return true
+}
+
 func openAIChatStreamStateRef(state any) (*OpenAIChatStreamState, error) {
 	if state == nil {
 		return NewOpenAIChatStreamState(), nil
@@ -169,6 +188,14 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 			}
 			slot := len(s.ToolSlotIndex)
 			s.ToolSlotIndex[evt.ContentBlock.CallID] = slot
+			// gemini 等上游在 start 即携带完整工具入参(ContentBlock.Input,无后续 delta)。OpenAI 客户端
+			// 跨 chunk 拼接 function.arguments,故把 start 携带的入参直接放进首个 chunk 的 arguments=正确;
+			// anthropic/openai 上游 start 入参为空(走 delta),此处为 "" 不变。此前恒写 "" → 忽略 Input →
+			// gemini→openai_chat 跨协议流式工具入参整条丢失。
+			startArgs := ""
+			if meaningfulToolInput(evt.ContentBlock.Input) {
+				startArgs = string(evt.ContentBlock.Input)
+			}
 			chunk := s.openAIChunkBase()
 			chunk["choices"] = []any{
 				map[string]any{
@@ -181,7 +208,7 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 								"type":  "function",
 								"function": map[string]any{
 									"name":      evt.ContentBlock.Name,
-									"arguments": "",
+									"arguments": startArgs,
 								},
 							},
 						},
@@ -212,7 +239,9 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 			}
 			body := o.marshalChunk(ctx, chunk)
 			return [][]byte{EmitSSEDataLine(body)}, nil, nil
-		case "input_json_delta":
+		case "tool_input_delta", "input_json_delta":
+			// 上游解析器统一产出 canonical 类型 tool_input_delta;此前只认 input_json_delta → 跨协议
+			// 流式工具入参 delta 掉 default 被丢。两种拼写都接,输出仍为 OpenAI function.arguments 增量。
 			// 找 tool slot：评 evt.Index → 寻 reverse map（OpenAI partial 累积按 tool slot index）。
 			slot := evt.Index
 			partial := string(evt.Delta.PartialJSON)

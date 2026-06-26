@@ -243,9 +243,10 @@ func (o *OpenAIResponsesClient) CanonicalEventToClientChunk(ctx context.Context,
 			s.ToolCallID = evt.ContentBlock.CallID
 			s.ToolName = evt.ContentBlock.Name
 			s.ToolArgs = nil
-			// gemini 等上游在 start 即携带完整入参（无后续 delta），直接累积；
-			// anthropic 等上游 start 入参为空，由 input_json_delta 流上累积。
-			if len(evt.ContentBlock.Input) > 0 {
+			// gemini 等上游在 start 即携带完整入参（无后续 delta），直接累积；anthropic 等上游 start
+			// 发占位 `{}`、真入参由 input_json_delta 流上累积。用 meaningfulToolInput 排除占位 `{}`/null,
+			// 否则会把 `{}` 与后续真 delta 双发拼成损坏 JSON(对抗审查抓出的同类回归,一并收紧)。
+			if meaningfulToolInput(evt.ContentBlock.Input) {
 				s.ToolArgs = append(s.ToolArgs, evt.ContentBlock.Input...)
 			}
 			added := map[string]any{
@@ -311,7 +312,9 @@ func (o *OpenAIResponsesClient) CanonicalEventToClientChunk(ctx context.Context,
 			}
 			body, _ := json.Marshal(payload)
 			return [][]byte{EmitSSEEvent("response.output_text.delta", body)}, nil, nil
-		case "input_json_delta":
+		case "tool_input_delta", "input_json_delta":
+			// 上游解析器统一产出 canonical 类型 tool_input_delta;此前只认 input_json_delta → 跨协议
+			// 流式工具入参 delta 掉 default 被丢。两种拼写都接,输出仍为 Responses function_call_arguments.delta。
 			if !s.ToolItemOpen {
 				loss, _ := NewClientLossEntry(ProtocolLossWarning, "input_json_delta_without_open_function_call", "tool_args_delta_no_item", CapabilityToolUse, "")
 				return nil, []ProtocolLossEntry{loss}, nil
