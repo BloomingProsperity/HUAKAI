@@ -1,4 +1,4 @@
-package hermeshttp
+package hermesconfirm
 
 import "testing"
 
@@ -9,7 +9,7 @@ import "testing"
 // acting in the same (tenant, as_user_id) context could consume operator A's
 // preview and execute a privileged mutation.
 //
-// Regression caught: deleting `entry.TokenID != tokenID` from confirmCache.consume
+// Regression caught: deleting `entry.TokenID != tokenID` from Cache.Consume
 // makes the wrong-operator-token consume succeed — this test goes RED.
 func TestConfirmCacheBindsOperatorToken(t *testing.T) {
 	const (
@@ -20,10 +20,10 @@ func TestConfirmCacheBindsOperatorToken(t *testing.T) {
 		tokenB    = int64(200)
 		target    = int64(555)
 	)
-	c := newConfirmCache()
+	c := NewCache()
 
 	// Operator A (token 100) issues a preview.
-	id, err := c.issue(pendingConfirmation{
+	id, err := c.Issue(PendingConfirmation{
 		ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenA, TargetID: target,
 	})
 	if err != nil {
@@ -32,30 +32,30 @@ func TestConfirmCacheBindsOperatorToken(t *testing.T) {
 
 	// Operator B (token 200) — same tool/tenant/tenant-user — must NOT be able to
 	// consume A's correlation_id. (And the attempt still consumes it: single-use.)
-	if _, ok := c.consume(id, tool, tenantID, actorUser, tokenB); ok {
+	if _, ok := c.Consume(id, tool, tenantID, actorUser, tokenB); ok {
 		t.Fatal("operator B (different admin token) consumed operator A's confirmation — confirm is not bound to the operator token")
 	}
 
 	// The wrong-token attempt is single-use: even A can no longer consume it.
-	if _, ok := c.consume(id, tool, tenantID, actorUser, tokenA); ok {
+	if _, ok := c.Consume(id, tool, tenantID, actorUser, tokenA); ok {
 		t.Fatal("correlation_id survived a failed consume — single-use is broken")
 	}
 
 	// Sanity: a fresh preview consumed by the SAME operator token succeeds exactly once.
-	id2, err := c.issue(pendingConfirmation{
+	id2, err := c.Issue(PendingConfirmation{
 		ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenA, TargetID: target,
 	})
 	if err != nil {
 		t.Fatalf("issue 2: %v", err)
 	}
-	entry, ok := c.consume(id2, tool, tenantID, actorUser, tokenA)
+	entry, ok := c.Consume(id2, tool, tenantID, actorUser, tokenA)
 	if !ok {
 		t.Fatal("the issuing operator could not consume its own confirmation")
 	}
 	if entry.TargetID != target {
 		t.Fatalf("consumed entry target=%d want %d", entry.TargetID, target)
 	}
-	if _, ok := c.consume(id2, tool, tenantID, actorUser, tokenA); ok {
+	if _, ok := c.Consume(id2, tool, tenantID, actorUser, tokenA); ok {
 		t.Fatal("correlation_id was reusable after a successful consume — single-use is broken")
 	}
 }

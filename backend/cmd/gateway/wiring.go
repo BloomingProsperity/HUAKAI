@@ -53,6 +53,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
@@ -225,6 +226,10 @@ type deps struct {
 	// transaction. Nil when the pool is unset (mutating tools then fail closed).
 	// Built with the S2 concurrency cap + tx deadline orchestrator options.
 	hermesMutator *hermesops.MutateOrchestrator
+	// hermesConfirmCache 是 Hermes mutating-tool 的 dry-run→confirm 进程内单次令牌 store 的
+	// **共享单例**。构造一次,注入 hermeshttp 的 operator 确认侧(本 PR);后续 Phase B 会把同一实例
+	// 注入 hermeschat 的 LLM 提议侧,使提议发的 correlation_id 能被 operator 的确认消费(同一进程内)。
+	hermesConfirmCache *hermesconfirm.Cache
 	// hermesMutateRateLimiter is the S2 (c) per-operator-token sliding-window
 	// limiter, enforced in the mutate handler. Nil/disabled when the rate knob is 0
 	// (legacy unbounded). Mounted only when the admin-only mutator path is active.
@@ -1296,6 +1301,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesToolRegistry:       hermesToolRegistry,
 		hermesToolCalls:          hermesToolCalls,
 		hermesMutator:            hermesMutator,
+		hermesConfirmCache:       hermesconfirm.NewCache(),
 		hermesMutateRateLimiter:  hermesMutateRateLimiter,
 		hermesMutatingEnabled:    hermesMutatingEnabled,
 		hermesToolLoopEnabled:    hermesToolLoopEnabled,
