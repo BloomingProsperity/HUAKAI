@@ -19,14 +19,22 @@ func NewPostgresLister(pool *pgxpool.Pool) *PostgresLister {
 	return &PostgresLister{pool: pool}
 }
 
-// ListLimitedAccounts 返回 window_cost_limit_cents > 0 且
-// session_window_5h_start 非空(活动窗口)的账号。
+// ListLimitedAccounts 返回 window_cost_limit_cents > 0 且**窗口仍活动**(session_window_5h_start
+// 非空且 session_window_5h_end > now())的账号。
+//
+// **必须过滤 session_window_5h_end > now()**(对抗 bug-hunt S2):session_window_5h_start/end 只在收到
+// 上游新的 5h 限流头时被覆盖更新,窗口自然走完后这两列从不被清空/归零。若不加上界过滤,一个 5h 窗口
+// 已结束、本应进入全新空窗口(零花费)的健康账号,会被 worker 以陈旧 windowStart 聚合到上一个窗口
+// 整 5 小时的历史花费、判超限并持续下线(自增强卡死:被下线→收不到新流量→拿不到新窗口头→一直卡)。
+// 加上界后,窗口结束即不再列出→worker 停止刷新其缓存→staleDuration(3min)后条目陈旧→gate fail-open
+// 放行(账号自愈),恢复本包"绝不错误下线健康账号"的安全不变量。
 func (l *PostgresLister) ListLimitedAccounts(ctx context.Context) ([]AccountRecord, error) {
 	const q = `
 SELECT id, tenant_id, session_window_5h_start
 FROM provider_accounts
 WHERE window_cost_limit_cents > 0
   AND session_window_5h_start IS NOT NULL
+  AND session_window_5h_end > now()
   AND deleted_at IS NULL
 `
 	rows, err := l.pool.Query(ctx, q)
