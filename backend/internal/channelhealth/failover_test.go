@@ -113,3 +113,46 @@ func rampAdmittedRequest(t *testing.T, accountID int64) pool.SelectionRequest {
 	t.Fatal("could not find 1% ramp admission key")
 	return pool.SelectionRequest{}
 }
+
+// IsEligible 直测:cooling_down 且冷却已到期必须放行(自动恢复闸门);未到期 / 无截止时间保守拒绝。
+// 变异:把 StateCoolingDown 过期分支改回 return false → "已过期→放行" 断言转红。
+func TestChannelHealth_IsEligibleCooldownExpiryAdmits(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	past := now.Add(-time.Second)
+	future := now.Add(time.Minute)
+
+	if !IsEligible(Record{State: StateCoolingDown, CooldownUntil: &past}, "k", now) {
+		t.Fatal("冷却已到期应放行(自动恢复),实得拒绝——通道将永久卡死")
+	}
+	if IsEligible(Record{State: StateCoolingDown, CooldownUntil: &future}, "k", now) {
+		t.Fatal("冷却未到期应拒绝,实得放行")
+	}
+	if IsEligible(Record{State: StateCoolingDown, CooldownUntil: nil}, "k", now) {
+		t.Fatal("冷却无截止时间应保守拒绝,实得放行")
+	}
+}
+
+// Allow() 在 ramp 未接线(NewPoolGate,g.ramp==nil)时,过期冷却仍须经 IsEligible 放行,
+// 且记录保持 cooling_down——证明恢复来自 IsEligible 闸门而非 ramp 状态转移。这正是
+// TestChannelHealth_PoolGateLazyCooldownExpiryStartsRamp(走 NewServicePoolGate→ramp)
+// 漏覆盖的分支:bug 真正咬人处是 ramp 未接线的 gate。
+func TestChannelHealth_PoolGateRampUnwiredExpiredCooldownAdmits(t *testing.T) {
+	ctx, svc, store, clock := testService()
+	key := testKey()
+	rec, _ := svc.EnsureDefaultActive(ctx, key)
+	expired := clock.Now().Add(-time.Second)
+	rec.State = StateCoolingDown
+	rec.CooldownUntil = &expired
+	_, _ = store.UpsertRecord(ctx, rec)
+
+	gate := NewPoolGate(store, clock) // 关键:无 service → g.ramp == nil,不会发生 ramp 转移
+	ok, why, err := gate.Allow(ctx, &pool.AccountSnapshot{ID: key.ProviderAccountID, TenantID: key.TenantID},
+		pool.SelectionRequest{TenantID: key.TenantID, RequestedModel: "gpt-test"})
+	if err != nil || !ok {
+		t.Fatalf("ramp 未接线时过期冷却应放行 ok=%v why=%s err=%v", ok, why, err)
+	}
+	rec, _ = store.Get(ctx, key)
+	if rec.State != StateCoolingDown {
+		t.Fatalf("ramp 未接线不应转移状态,实得 %s(放行应来自 IsEligible 而非 ramp)", rec.State)
+	}
+}

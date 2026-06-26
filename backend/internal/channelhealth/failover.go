@@ -96,8 +96,13 @@ func IsEligible(rec Record, admissionKey string, now time.Time) bool {
 	case StateRamping:
 		return AdmitRamp(admissionKey, rec.RampStagePct)
 	case StateCoolingDown:
+		// 冷却已到期 → 放行,让通道在冷却结束后自动恢复(否则一旦进 cooling_down 即永久卡死)。
+		// 主流 Allow()/HealthStatus 会先由 maybeStartExpiredRamp 把"非 nil 且已过期"的记录转成
+		// ramping;但当 ramp 未接线(NewPoolGate,g.ramp==nil)或本函数被其它路径直达时,这里是
+		// 唯一的恢复闸门——必须放行已到期冷却。与 maybeStartExpiredRamp 的 guard(同样只对"非 nil
+		// 且已过期"动作)语义对齐:未到期 → 拒绝;无截止时间(nil)→ 保守拒绝(行为不变)。
 		if rec.CooldownUntil != nil && !rec.CooldownUntil.After(now) {
-			return false
+			return true
 		}
 		return false
 	case StateDisabled, StateManualPaused:
