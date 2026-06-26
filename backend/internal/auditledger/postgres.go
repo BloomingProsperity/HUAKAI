@@ -24,7 +24,15 @@ type PostgresLedger struct {
 	pool        *pgxpool.Pool
 	signer      Signer
 	tenantMu    sync.Mutex
-	tenantLocks map[int64]*sync.Mutex
+	tenantLocks map[int64]*tenantLockEntry
+}
+
+// tenantLockEntry 是某租户进程内写串行锁条目,带引用计数:refs 记录当前持有或等待该锁的写者数,
+// 归零时条目从 tenantLocks map 中删除,使 map 规模收敛到「当前并发活跃租户数」而非「历史出现过的全部
+// 租户数」(避免无界增长)。refs 受外层 tenantMu 保护,mu 是真正的 per-tenant 写锁。
+type tenantLockEntry struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // NewPostgresLedger 构造 PostgresLedger。signer / pool 均不能为 nil。
@@ -37,7 +45,7 @@ func NewPostgresLedger(pool *pgxpool.Pool, signer any) (*PostgresLedger, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &PostgresLedger{pool: pool, signer: normalized, tenantLocks: make(map[int64]*sync.Mutex)}, nil
+	return &PostgresLedger{pool: pool, signer: normalized, tenantLocks: make(map[int64]*tenantLockEntry)}, nil
 }
 
 // Append 把 prepared entry 写入 audit_ledger_entries；自动补 Timestamp / PrevMerkleRoot /
@@ -90,19 +98,39 @@ func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, prepared Pre
 	return AppendInTransaction(ctx, tx, l.signer, preparedEntryFromLedgerEntry(entry))
 }
 
+// lockTenantWriter 获取某租户的进程内写串行锁,返回释放函数。采用引用计数:无人持有/等待时该租户的锁条目
+// 会在释放时被回收,使 tenantLocks map 规模收敛到「当前并发活跃租户数」而非「历史出现过的全部租户数」
+// (避免无界增长)。注:跨进程的真串行由 AppendInTransaction 的 pg_advisory_xact_lock 保证,本进程内锁仅为
+// 减少 DB 端 advisory lock 等待的优化——故回收/重建锁条目不影响 append-only 链的正确性。
+//
+// 契约:返回的释放函数**必须且只能被调用一次**(惯例 `unlock := lockTenantWriter(id); defer unlock()`)。
+// 重复调用会解锁一把未持有的 mutex(panic)并使 refs 变负导致条目永不回收。
+// 正确性命门:e.refs++ 必须在释放 tenantMu 之前完成,否则持有者尚在时条目可能被并发删除/重建,
+// 出现同租户两把进程内锁并行(由 TestLockTenantWriter_NeverTwoHeldSameTenant 锁死)。
 func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
 	l.tenantMu.Lock()
 	if l.tenantLocks == nil {
-		l.tenantLocks = make(map[int64]*sync.Mutex)
+		l.tenantLocks = make(map[int64]*tenantLockEntry)
 	}
-	lock := l.tenantLocks[tenantID]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		l.tenantLocks[tenantID] = lock
+	e := l.tenantLocks[tenantID]
+	if e == nil {
+		e = &tenantLockEntry{}
+		l.tenantLocks[tenantID] = e
 	}
+	// refs 在 tenantMu 保护下自增,确保「将被使用」的条目绝不会被并发的释放路径删除。
+	e.refs++
 	l.tenantMu.Unlock()
-	lock.Lock()
-	return lock.Unlock
+
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		l.tenantMu.Lock()
+		e.refs--
+		if e.refs == 0 {
+			delete(l.tenantLocks, tenantID)
+		}
+		l.tenantMu.Unlock()
+	}
 }
 
 // AppendInTransaction 使用调用方自有的数据库 transaction 追加一条 audit
