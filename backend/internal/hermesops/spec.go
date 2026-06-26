@@ -149,6 +149,12 @@ var (
 	// read-only tool (or vice-versa), so a mutation can never sneak through the
 	// read-only dispatch and a read-only tool can never reach the confirm path.
 	ErrNotMutating = errors.New("hermesops: tool is not mutating")
+	// ErrNotProposable is returned when the LLM-propose path is asked to resolve a
+	// mutating tool that is not marked Proposable (irreversible / A-level, e.g.
+	// credential rotation). Such a tool may still be driven by an OPERATOR via the
+	// H1 confirm path; the LLM must never propose it. Distinct from ErrNotMutating
+	// (a read-only tool) and ErrToolForbidden (insufficient role).
+	ErrNotProposable = errors.New("hermesops: tool is not LLM-proposable")
 	// ErrTargetResolution is returned when a mutating tool cannot resolve its
 	// target (missing/foreign tenant, account not found). It is distinct from
 	// ErrInvalidArgs so the HTTP layer can map it to 404/403 rather than 400.
@@ -245,6 +251,13 @@ type ToolSpec struct {
 	// for every mutating tool (dry-run + confirm is mandatory this wave).
 	Mutating             bool
 	RequiresConfirmation bool
+	// Proposable marks a MUTATING tool the LLM may PROPOSE in conversation (it then
+	// goes through dry-run preview → operator confirm). It gates ResolveProposal and
+	// ProposableCatalog. Set true ONLY for reversible, B-level mutations (e.g. enable/
+	// disable an account). It is false (default) for irreversible / A-level mutations
+	// (e.g. credential rotation) — those stay operator-only via the H1 confirm path and
+	// are NEVER shown to, nor proposable by, the LLM. Read-only tools ignore this flag.
+	Proposable bool
 	// InputSchema is a small map describing accepted args (name -> human hint),
 	// surfaced by GET /v1/hermes/tools. It is documentation only, not validation.
 	InputSchema map[string]string

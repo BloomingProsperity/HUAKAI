@@ -70,6 +70,11 @@ func accountToggleSpec(name, description string, targetEnabled bool, deps Accoun
 		ReadOnly:             false,
 		Mutating:             true,
 		RequiresConfirmation: true,
+		// account enable/disable is a REVERSIBLE B-level mutation → LLM-proposable
+		// (the LLM may propose it; an operator still confirms before it runs). Contrast
+		// renew_trigger (credential rotation), which leaves Proposable false: operator
+		// may drive it directly, the LLM never proposes it.
+		Proposable: true,
 		// pause/resume are scoped: platform_admin OR a tenant_operator within the
 		// target's tenant (the H1 middleware + Resolve re-check enforce the tenant
 		// scope; this floor admits tenant_operator).
