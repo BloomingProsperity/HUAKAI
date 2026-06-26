@@ -40,6 +40,7 @@ import { AlertingPage } from '../features/alerting/AlertingPage'
 import { RiskOverviewPage } from '../features/risk/RiskOverviewPage'
 import { BackupPage } from '../features/backup/BackupPage'
 import { ProxiesPage } from '../features/proxies/ProxiesPage'
+import { PlaygroundPage } from '../features/playground/PlaygroundPage'
 import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
 import { GroupsPage } from '../features/groups/GroupsPage'
 import { ModelRegistryPage } from '../features/modelregistry/ModelRegistryPage'
@@ -105,6 +106,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/admin/risk': <RiskOverviewPage />,
   '/admin/backup': <BackupPage />,
   '/admin/proxies': <ProxiesPage />,
+  '/playground': <PlaygroundPage />,
 }
 
 const domainRoutes = PIPELINE_NAV.flatMap((section) =>
