@@ -14,6 +14,8 @@ import (
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
 // TestModulesEndpointIsAdminGated — a no-credential request to /admin/v1/modules
@@ -166,6 +168,54 @@ func TestModulesRegistryWiresChannelHealthAndDLQ(t *testing.T) {
 		}
 		if m.LiveProbe.Status != moduleregistry.StatusDegraded {
 			t.Fatalf("%s 服务未接线时探针应 StatusDegraded,got %v", id, m.LiveProbe.Status)
+		}
+	}
+}
+
+// TestModulesRegistryWiresRoutingStack — Hermes 感知扩展第 2 批:补全路由栈感知
+// (registry.model 解析 → router.planner 规划 → routing.selector 选号,selector 已有)。
+// 判别同 channelhealth/dlq:注册 + 探针 wired/degraded + catalog overlay。
+func TestModulesRegistryWiresRoutingStack(t *testing.T) {
+	fetch := func(d *deps) map[string]modulehttp.ModuleView {
+		src := newModuleSource(buildModuleRegistry(d))
+		h := modulehttp.NewModulesHandler(src)
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil))
+		var resp modulehttp.ModulesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out := map[string]modulehttp.ModuleView{}
+		for _, m := range resp.Modules {
+			out[m.ID] = m
+		}
+		return out
+	}
+
+	// wired:模型注册表 + 路由规划器非 nil → 探针 StatusOK + catalog overlay 接上。
+	wired := fetch(&deps{modelRegistry: &registry.PostgresRegistry{}, routePlanner: router.NewDefaultRouter()})
+	for _, id := range []string{"registry.model", "router.planner"} {
+		m, ok := wired[id]
+		if !ok {
+			t.Fatalf("%s 未注册进 module registry(Hermes 看不到该模块)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusOK {
+			t.Fatalf("%s 接线时探针应 StatusOK,got %v", id, m.LiveProbe.Status)
+		}
+		if m.Catalog == nil {
+			t.Fatalf("%s 缺 catalog overlay(seedCatalogJoin 未接)", id)
+		}
+	}
+
+	// degraded:nil → StatusDegraded(身份仍注册)。
+	degraded := fetch(&deps{})
+	for _, id := range []string{"registry.model", "router.planner"} {
+		m, ok := degraded[id]
+		if !ok {
+			t.Fatalf("%s 应仍注册(身份与健康无关)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusDegraded {
+			t.Fatalf("%s 未接线时探针应 StatusDegraded,got %v", id, m.LiveProbe.Status)
 		}
 	}
 }

@@ -138,6 +138,46 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	// ── registry: 模型注册表 / 模型→池绑定解析(路由栈第 1 层)──────────────────
+	// Probe: 注册表接线即 wired。只报 wired/degraded,不含任何模型/租户配置明细。
+	modelRegistry := d.modelRegistry
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "registry.model",
+		Category: "registry",
+		Title:    "Model registry & model→pool binding resolution",
+		Capabilities: []string{
+			"model alias → canonical resolution",
+			"model → pool-group binding resolution",
+			"capability graph projection",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if modelRegistry == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "model registry unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	// ── routing: 跨池路由规划(路由栈第 2 层,在 selector 选号之上)──────────────
+	// Probe: 路由规划器接线即 wired。只报 wired/degraded,不含任何路由决策明细。
+	routePlanner := d.routePlanner
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "router.planner",
+		Category: "routing",
+		Title:    "Cross-pool route planner",
+		Capabilities: []string{
+			"multi-attempt route plan (bounded attempt budget ≤3)",
+			"cross-pool candidate sequencing into attempt order",
+			"delegates account selection + health gating to pool/executor layer",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if routePlanner == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "route planner unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	return reg
 }
 
@@ -151,6 +191,8 @@ var seedCatalogJoin = map[string]string{
 	"credentials.worker":    "credentialworker",
 	"channelhealth.service": "channelhealth",
 	"dlq.service":           "dlq",
+	"registry.model":        "registry",
+	"router.planner":        "router",
 }
 
 // moduleSource adapts the live registry + embedded static catalog to
