@@ -340,6 +340,11 @@ func clientIP(r *http.Request) string {
 	return "unknown"
 }
 
+// ipRateLimiterMaxBuckets 限定 buckets map 的条目上限。公开匿名端点(/v1/trust/verify)被大量不同
+// 源 IP 打来时,若 buckets 只增不删会随独立 IP 数无界增长耗尽内存。与 cmd/gateway/rate_limit.go 的
+// maxBucketsPerTier(50000)及 loginthrottle 的 MaxKeys 上限做法一致。
+const ipRateLimiterMaxBuckets = 50000
+
 type ipRateLimiter struct {
 	mu      sync.Mutex
 	limit   int
@@ -362,9 +367,17 @@ func (l *ipRateLimiter) Allow(ip string, now time.Time) bool {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	bucket := l.buckets[ip]
+	bucket, existed := l.buckets[ip]
 	if bucket.start.IsZero() || now.Sub(bucket.start) >= l.window {
 		bucket = ipBucket{start: now, count: 0}
+	}
+	// 内存卫生:此前 buckets 只增不删 → 无界增长 DoS。新建条目前若已达上限,先惰性清扫过期桶;清扫后
+	// 仍满则整表丢弃(下个窗口重建,界定内存),镜像 rate_limit.go 的"满则 reset"。
+	if !existed && len(l.buckets) >= ipRateLimiterMaxBuckets {
+		l.evictExpiredLocked(now)
+		if len(l.buckets) >= ipRateLimiterMaxBuckets {
+			l.buckets = make(map[string]ipBucket)
+		}
 	}
 	if bucket.count >= l.limit {
 		l.buckets[ip] = bucket
@@ -373,4 +386,13 @@ func (l *ipRateLimiter) Allow(ip string, now time.Time) bool {
 	bucket.count++
 	l.buckets[ip] = bucket
 	return true
+}
+
+// evictExpiredLocked 删除所有已过窗口的桶。调用方须持 l.mu。
+func (l *ipRateLimiter) evictExpiredLocked(now time.Time) {
+	for ip, b := range l.buckets {
+		if now.Sub(b.start) >= l.window {
+			delete(l.buckets, ip)
+		}
+	}
 }
