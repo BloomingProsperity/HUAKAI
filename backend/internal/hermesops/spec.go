@@ -84,6 +84,16 @@ const (
 	// 来源(规则过滤标签,运营自填);投影排 TenantID。
 	ToolAlertEventList = "alert_event_list"
 
+	// ToolProviderCatalogList(0159 迁移准入)列出本租户的上游供应商目录(provider catalog):code、
+	// 显示名、上游协议、启用、创建时间。让 Hermes 能回答"我接了哪些供应商类型"。只读 → 仅写
+	// hermes_tool_calls。Row 全是结构化目录数据(无 PII/密钥,连 TenantID 都不含)。
+	ToolProviderCatalogList = "provider_catalog_list"
+
+	// ToolChannelCatalogList(0159 迁移准入)列出本租户的渠道目录(channel catalog):所属 pool group、
+	// 名称、failover 状态码、启用、创建时间。让 Hermes 能回答"我定义了哪些渠道、挂在哪个池"。只读 → 仅写
+	// hermes_tool_calls。Row 全是结构化目录数据(无 PII/密钥)。
+	ToolChannelCatalogList = "channel_catalog_list"
+
 	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
 	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory
 	// lock, idempotency). They are registered with Mutating=true so the read-only
