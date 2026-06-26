@@ -35,8 +35,8 @@ func TestEmailSendPerIPLimit(t *testing.T) {
 		t.Fatalf("same IP denial retryAfter=%s, want positive duration", retryAfter)
 	}
 
-	// Mutation guard: if handler wiring ever keys by email/global state instead of the resolved
-	// client IP, this different-IP request would be denied after ipA exhausts the window.
+	// 变异守卫:如果 handler 接线哪天改成按邮箱/全局状态作 key,而非按解析出的
+	// 客户端 IP,那么在 ipA 用尽窗口后,这个来自不同 IP 的请求就会被拒绝。
 	allowed, retryAfter = limiter.Allow("198.51.100.11")
 	if !allowed {
 		t.Fatalf("different IP denied in the same window; retryAfter=%s", retryAfter)

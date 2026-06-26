@@ -15,12 +15,12 @@ import (
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
-// TestSweepExpiredKeys guards AUTH-150: the sweeper may only materialize
-// already-expired active keys as status='expired'. It must not touch future
-// active keys or non-active keys whose expires_at is in the past.
+// TestSweepExpiredKeys 守护 AUTH-150：sweeper 只能把已经过期的 active key
+// 物化为 status='expired'。它不得动到未来才过期的 active key，也不得动到
+// expires_at 已在过去但非 active 的 key。
 //
-// MUTATION: remove the expires_at <= NOW() upper bound from the SQL predicate;
-// the future active key flips to expired and this test fails.
+// MUTATION：从 SQL 谓词中移除 expires_at <= NOW() 这一上界；未来才过期的
+// active key 会被翻成 expired，本测试随之失败。
 func TestSweepExpiredKeys(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

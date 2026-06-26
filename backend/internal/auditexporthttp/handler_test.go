@@ -19,8 +19,8 @@ import (
 )
 
 func TestAuditProofDownload_Attachment(t *testing.T) {
-	// Mutation: remove Content-Disposition from the proof download writer; this
-	// test fails because the response is no longer a browser download.
+	// 变异:从证明下载的写入器里去掉 Content-Disposition；本测试会失败，
+	// 因为响应不再是浏览器下载。
 	ctx := context.Background()
 	ledger, registry := newAuditExportTestLedger(t)
 	entry := appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{
@@ -59,9 +59,9 @@ func TestAuditProofDownload_Attachment(t *testing.T) {
 }
 
 func TestAuditExport_RangeBundleSelfAttests(t *testing.T) {
-	// Mutation: skip auditledger.VerifyChain before writing the bundle, or include
-	// a tampered ledger entry; this test fails because the tampered export must
-	// return 500 instead of a self-attesting attachment.
+	// 变异:写出 bundle 前跳过 auditledger.VerifyChain，或塞入一条被篡改的
+	// ledger 条目；本测试会失败，因为被篡改的导出必须返回 500，
+	// 而不是一个可自证的附件。
 	ledger, registry := newAuditExportTestLedger(t)
 	appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{RequestID: "req_export_1", TenantID: 7, Timestamp: "2026-06-02T10:00:00Z"})
 	appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{RequestID: "req_export_2", TenantID: 7, Timestamp: "2026-06-02T10:05:00Z"})
@@ -98,8 +98,8 @@ func TestAuditExport_RangeBundleSelfAttests(t *testing.T) {
 }
 
 func TestAuditExport_TenantScoped(t *testing.T) {
-	// Mutation: drop tenant_scope_ref filtering in the range reader; this test
-	// fails because tenant B's request appears in tenant A's export bundle.
+	// 变异:在范围读取器里去掉 tenant_scope_ref 过滤；本测试会失败，
+	// 因为租户 B 的请求会出现在租户 A 的导出 bundle 里。
 	ledger, registry := newAuditExportTestLedger(t)
 	appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{RequestID: "req_tenant_a_1", TenantID: 7, Timestamp: "2026-06-02T10:00:00Z"})
 	appendAuditExportEntry(t, ledger, auditledger.LedgerEntry{RequestID: "req_tenant_a_2", TenantID: 7, Timestamp: "2026-06-02T10:05:00Z"})
@@ -124,8 +124,8 @@ func TestAuditExport_TenantScoped(t *testing.T) {
 }
 
 func TestAuditExport_RangeValidation(t *testing.T) {
-	// Mutation: remove from>to or 366-day range checks; these requests return
-	// 200/503 instead of the required public 400 validation errors.
+	// 变异:去掉 from>to 或 366 天范围检查；这些请求会返回 200/503，
+	// 而不是要求的对外 400 校验错误。
 	ledger, registry := newAuditExportTestLedger(t)
 	cases := []string{
 		"/v1/audit/export?tenant_scope_ref=" + auditledger.TenantScopeRef(7) + "&from=2026-06-03T00:00:00Z&to=2026-06-02T00:00:00Z",

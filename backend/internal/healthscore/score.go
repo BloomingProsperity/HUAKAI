@@ -9,16 +9,16 @@ const (
 	ttftZeroMs       = 3000
 )
 
-// Business scores user-visible health from error rate and TTFT p99. A lower
-// error rate and lower p99 latency produce a higher score.
+// Business 根据错误率和 TTFT p99 给用户可见的健康度打分。错误率越低、
+// p99 延迟越低,得分越高。
 func Business(errorRate, ttftP99Ms float64) int {
 	errorScore := linearScore(errorRate, errorPerfectRate, errorZeroRate)
 	ttftScore := linearScore(ttftP99Ms, ttftPerfectMs, ttftZeroMs)
 	return clampScore(math.Round((errorScore + ttftScore) / 2))
 }
 
-// Overall combines business health and infrastructure health into a single
-// 0-100 score. Business impact carries the larger share.
+// Overall 把业务健康度与基础设施健康度合成为一个 0-100 的分数。
+// 业务影响占更大的权重。
 func Overall(businessScore, infraScore int) int {
 	return clampScore(math.Round((float64(clampInt(businessScore))*70 + float64(clampInt(infraScore))*30) / 100))
 }

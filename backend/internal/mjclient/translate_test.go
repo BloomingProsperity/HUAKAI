@@ -16,8 +16,8 @@ import (
 )
 
 func TestMJSubmitImagineTranslate(t *testing.T) {
-	// MUTATION: map every /mj/submit/{action} to mj_imagine; the describe
-	// subcase below must go red because the path action is the task contract.
+	// 变异: 把每个 /mj/submit/{action} 都映射成 mj_imagine；下面的 describe
+	// 子用例必须变红，因为 path 里的 action 就是 task 契约。
 	cases := []struct {
 		name     string
 		path     string
@@ -69,8 +69,8 @@ func TestMJSubmitImagineTranslate(t *testing.T) {
 }
 
 func TestMJSwapFace(t *testing.T) {
-	// MUTATION: drop targetBase64 while translating the swap request; the
-	// preservation assertion below catches the missing target image.
+	// 变异: 在翻译 swap 请求时丢掉 targetBase64；下面的保留性断言会捕捉到
+	// 缺失的目标图像。
 	body := `{"sourceBase64":"data:image/png;base64,source","targetBase64":"data:image/png;base64,target"}`
 	service := &serviceStub{submitResult: taskFixture(202, "mj_swap_face", json.RawMessage(body))}
 	mux := mountWithSession(service)

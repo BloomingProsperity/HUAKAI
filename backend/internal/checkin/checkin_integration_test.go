@@ -20,7 +20,7 @@ import (
 )
 
 func TestCheckinIdempotent_Concurrent(t *testing.T) {
-	// Mutation: removing ON CONFLICT from daily_checkin insert makes this test double-credit or return duplicate-key caller errors.
+	// 变异: 从 daily_checkin 的 insert 去掉 ON CONFLICT 会让本测试重复入账，或向调用方返回 duplicate-key 错误。
 	ctx := context.Background()
 	pool := openCheckinIntegrationPool(t, ctx)
 	f := newCheckinFixture(t, ctx, pool)
@@ -64,7 +64,7 @@ func TestCheckinIdempotent_Concurrent(t *testing.T) {
 }
 
 func TestCheckinReplay_SecondSameDay(t *testing.T) {
-	// Mutation: mapping AlreadyCheckedIn to a second payment call makes the balance assertion red.
+	// 变异: 把 AlreadyCheckedIn 映射成第二次 payment 调用会让余额断言变红。
 	ctx := context.Background()
 	pool := openCheckinIntegrationPool(t, ctx)
 	f := newCheckinFixture(t, ctx, pool)
@@ -84,7 +84,7 @@ func TestCheckinReplay_SecondSameDay(t *testing.T) {
 }
 
 func TestCheckinCrossDay(t *testing.T) {
-	// Mutation: using month instead of UTC date in the idempotency key makes the D+1 check-in red.
+	// 变异: 幂等键里用 month 而非 UTC date 会让 D+1 的签到变红。
 	ctx := context.Background()
 	pool := openCheckinIntegrationPool(t, ctx)
 	f := newCheckinFixture(t, ctx, pool)
@@ -105,7 +105,7 @@ func TestCheckinCrossDay(t *testing.T) {
 }
 
 func TestCheckinDisabled(t *testing.T) {
-	// Mutation: moving the enabled check after ApplyCheckinReward makes the no-row/no-credit assertions red.
+	// 变异: 把 enabled 检查挪到 ApplyCheckinReward 之后会让 no-row/no-credit 断言变红。
 	ctx := context.Background()
 	pool := openCheckinIntegrationPool(t, ctx)
 	f := newCheckinFixture(t, ctx, pool)

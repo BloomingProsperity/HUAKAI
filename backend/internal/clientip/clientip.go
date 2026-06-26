@@ -1,16 +1,13 @@
-// Package clientip resolves the real client IP of an inbound HTTP request behind a
-// reverse proxy / CDN / load balancer, fail-closed against X-Forwarded-For spoofing.
+// Package clientip 在反向代理 / CDN / 负载均衡之后解析入站 HTTP 请求的真实客户端 IP,
+// 并对 X-Forwarded-For 伪造采取 fail-closed 策略。
 //
-// IP-sensitive security paths (burst-limit keying, login anomaly evidence,
-// voucher redeem source) previously read net/http.Request.RemoteAddr only. Behind a
-// shared ingress (CDN/LB) every user collapses to the same RemoteAddr, causing
-// false-positive burst blocks and useless anomaly evidence. The naive fix — trusting
-// X-Forwarded-For — is itself a vulnerability, because any client can forge that
-// header. This resolver honors forwarded headers ONLY when the immediate socket peer
-// (and each successive upstream hop) is inside an operator-configured trusted-proxy
-// CIDR allowlist; otherwise it returns the socket peer. With no trusted proxies
-// configured it always returns RemoteAddr — the safe default for direct-exposure or
-// single-tenant deployments.
+// 对 IP 敏感的安全路径(突发限流 keying、登录异常取证、voucher 兑付来源)此前只读
+// net/http.Request.RemoteAddr。在共享入口(CDN/LB)之后,所有用户都坍缩到同一个
+// RemoteAddr,导致误报的突发封禁和毫无价值的异常取证。而幼稚的修法——直接信任
+// X-Forwarded-For——本身就是漏洞,因为任何客户端都能伪造该 header。本 resolver 仅当
+// 直接 socket 对端(以及每一级上游 hop)都落在运维配置的可信代理 CIDR allowlist 之内时
+// 才采信 forwarded header;否则返回 socket 对端。未配置任何可信代理时,它始终返回
+// RemoteAddr——这是直接暴露或单租户部署下的安全默认值。
 package clientip
 
 import (
@@ -21,17 +18,16 @@ import (
 	"strings"
 )
 
-// Resolver maps an HTTP request to its best-effort real client IP. The zero value and
-// a nil pointer are valid and behave as "no trusted proxies" (RemoteAddr only).
+// Resolver 把一个 HTTP 请求映射到尽力而为的真实客户端 IP。零值与 nil 指针都合法,
+// 表现为「无可信代理」(只取 RemoteAddr)。
 type Resolver struct {
 	trusted []netip.Prefix
 }
 
-// NewResolver builds a Resolver from CIDR or bare-IP strings (e.g. "10.0.0.0/8",
-// "192.168.1.1", "2001:db8::/32"). Blank entries are skipped; a bare IP is treated as
-// a single-host prefix. An unparseable entry returns an error so a misconfigured
-// allowlist fails loudly at boot rather than silently trusting nothing — or, worse,
-// being mistaken for "trust everything".
+// NewResolver 从 CIDR 或裸 IP 字符串构建 Resolver(例如 "10.0.0.0/8"、
+// "192.168.1.1"、"2001:db8::/32")。空白条目被跳过;裸 IP 被当作单主机 prefix。
+// 无法解析的条目返回 error,这样配置错误的 allowlist 会在启动时大声失败,
+// 而不是默默地谁都不信任——或者更糟,被误当成「信任所有人」。
 func NewResolver(cidrs []string) (*Resolver, error) {
 	var trusted []netip.Prefix
 	for _, raw := range cidrs {
@@ -53,9 +49,9 @@ func NewResolver(cidrs []string) (*Resolver, error) {
 	return &Resolver{trusted: trusted}, nil
 }
 
-// ClientIP returns the resolved client IP as a string. It is nil-safe: a nil Resolver,
-// or one with no trusted proxies, returns the socket peer (RemoteAddr host) and ignores
-// every forwarded header.
+// ClientIP 以字符串返回解析出的客户端 IP。它对 nil 安全:nil 的 Resolver,或没有
+// 配置任何可信代理的 Resolver,会返回 socket 对端(RemoteAddr 的 host),并忽略
+// 每一个 forwarded header。
 func (r *Resolver) ClientIP(req *http.Request) string {
 	if req == nil {
 		return ""
@@ -66,20 +62,18 @@ func (r *Resolver) ClientIP(req *http.Request) string {
 	}
 	peerAddr, err := netip.ParseAddr(peer)
 	if err != nil || !r.isTrusted(peerAddr) {
-		// The immediate peer is not a configured trusted proxy, so any forwarded
-		// header it presents is attacker-controlled. Trust only the socket address.
+		// 直接对端不是已配置的可信代理,因此它呈现的任何 forwarded header 都受攻击者控制。
+		// 只信任 socket 地址。
 		return peer
 	}
-	// Peer is a trusted proxy: X-Forwarded-For was appended by trusted hops. Walk it
-	// right-to-left, skipping trusted hops; the first (rightmost) untrusted address is
-	// the real client as seen by our outermost trusted proxy. Leftmost entries are
-	// client-spoofable, so they are never trusted on their own.
+	// 对端是可信代理:X-Forwarded-For 由可信 hop 追加。从右往左遍历,跳过可信 hop;
+	// 第一个(最右侧)非可信地址,就是我们最外层可信代理所看到的真实客户端。最左侧的条目
+	// 可被客户端伪造,因此绝不单独信任。
 	//
-	// A request may carry X-Forwarded-For as MULTIPLE header fields (RFC 7230 §3.2.2:
-	// repeated fields are equivalent to a single comma-joined field, preserving order).
-	// http.Header.Get returns only the first field — which can be the client's spoofed
-	// line, with our trusted proxy's real value in a later field. Join every field in
-	// order so the rightmost token is always the one our trusted proxy actually appended.
+	// 一个请求可能携带 X-Forwarded-For 作为多个 header field(RFC 7230 §3.2.2:
+	// 重复的 field 等价于单个逗号拼接的 field,且保持顺序)。http.Header.Get 只返回第一个
+	// field——它可能正是客户端伪造的那一行,而我们可信代理写入的真实值在后面的 field 里。
+	// 按顺序拼接每一个 field,这样最右侧的 token 永远是我们可信代理实际追加的那个。
 	xffValues := req.Header.Values("X-Forwarded-For")
 	if len(xffValues) == 0 {
 		return peer
@@ -92,8 +86,8 @@ func (r *Resolver) ClientIP(req *http.Request) string {
 		}
 		addr, err := netip.ParseAddr(hop)
 		if err != nil {
-			// A malformed hop means we can no longer trust anything to its left; stop
-			// at the nearest trusted boundary rather than return a spoofable value.
+			// 出现格式错误的 hop,意味着其左侧的内容我们都不能再信任;停在最近的可信边界,
+			// 而不是返回一个可被伪造的值。
 			return peer
 		}
 		addr = addr.Unmap()
@@ -102,7 +96,7 @@ func (r *Resolver) ClientIP(req *http.Request) string {
 		}
 		return addr.String()
 	}
-	// Every hop in the chain is itself a trusted proxy — no distinct client to report.
+	// 链中每一个 hop 本身都是可信代理——没有可单独报告的客户端。
 	return peer
 }
 

@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// Egress anti-detection hygiene (parity with CLIProxyAPI/sub2api/AIClient-2-API).
-// MUTATION coverage:
-//   - making NormalizeEgressRequestHeaders a no-op leaves proxy-leak headers in the
-//     outbound request → the strip assertions go red.
-//   - over-stripping (e.g. deleting Authorization/X-Api-Key) → the preserve assertions go red.
+// 出站反检测卫生措施(与 CLIProxyAPI/sub2api/AIClient-2-API 保持对齐)。
+// 变异覆盖:
+//   - 把 NormalizeEgressRequestHeaders 改成空操作,则 proxy-leak 头会残留在出站请求中
+//     → 剥离类断言变红。
+//   - 过度剥离(例如删掉 Authorization/X-Api-Key)→ 保留类断言变红。
 func TestNormalizeEgressRequestHeadersStripsProxyLeaks(t *testing.T) {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer secret")

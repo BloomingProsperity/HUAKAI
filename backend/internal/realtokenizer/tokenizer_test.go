@@ -9,11 +9,10 @@ import (
 	"github.com/tiktoken-go/tokenizer"
 )
 
-// An OpenAI-family model must count its plain-text JSON leaves with tiktoken, not
-// the byte/char heuristic. The expected value is recomputed independently from the
-// library so the assertion is self-proving and not a brittle magic number.
-// MUTATION: make codecForModel return (nil,false) for gpt models (so InputTokens
-// falls back to the heuristic) and got != want -> RED.
+// OpenAI 系模型必须用 tiktoken 而不是按字节/字符的启发式算法来对其纯文本 JSON 叶子节点计数。
+// 期望值是独立地用该库重新算出来的,因此断言能自证、不是脆弱的魔数。
+// 变异:让 codecForModel 对 gpt 系模型返回 (nil,false)(从而使 InputTokens 回退到启发式),
+// 则 got != want -> 变红。
 func TestInputTokens_OpenAIModelUsesTiktoken(t *testing.T) {
 	text := "The quick brown fox jumps over the lazy dog, repeatedly and at some length."
 	body := []byte(fmt.Sprintf(`{"model":"gpt-4o","messages":[{"role":"user","content":%q}]}`, text))
@@ -22,8 +21,8 @@ func TestInputTokens_OpenAIModelUsesTiktoken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForModel gpt-4o: %v", err)
 	}
-	// The JSON walk counts every string VALUE leaf: the model name, the role, and
-	// the content. Keys are not counted.
+	// JSON 遍历会对每个字符串 VALUE 叶子节点计数:模型名、role、以及 content。
+	// 键(key)不计入。
 	want := 0
 	for _, leaf := range []string{"gpt-4o", "user", text} {
 		n, err := codec.Count(leaf)
@@ -37,16 +36,14 @@ func TestInputTokens_OpenAIModelUsesTiktoken(t *testing.T) {
 	if got != want {
 		t.Fatalf("InputTokens(gpt-4o)=%d; want tiktoken sum %d", got, want)
 	}
-	// And it must differ from the heuristic — otherwise the test couldn't tell the
-	// real tokenizer apart from the fallback.
+	// 而且它必须与启发式结果不同——否则该测试就无法把真实分词器和回退算法区分开。
 	if heur := tokencheck.EstimateRequestInputTokens(body); got == heur {
 		t.Fatalf("tiktoken count %d coincidentally equals heuristic %d; pick a more discriminating fixture", got, heur)
 	}
 }
 
-// A non-OpenAI model has no tiktoken encoder, so InputTokens must use the shared
-// heuristic exactly. MUTATION: if a Claude model wrongly resolved a codec, the
-// result would diverge from the heuristic -> RED.
+// 非 OpenAI 模型没有 tiktoken 编码器,因此 InputTokens 必须精确地使用共享的启发式算法。
+// 变异:如果某个 Claude 模型被错误地解析出了 codec,结果就会偏离启发式 -> 变红。
 func TestInputTokens_NonOpenAIFallsBackToHeuristic(t *testing.T) {
 	body := []byte(`{"model":"claude-3-5-sonnet-20241022","messages":[{"role":"user","content":"hello there"}]}`)
 
@@ -60,12 +57,11 @@ func TestInputTokens_NonOpenAIFallsBackToHeuristic(t *testing.T) {
 	}
 }
 
-// A multimodal request must never feed a base64 blob to the tokenizer: the blob is
-// capped by tokencheck, so even an OpenAI model's estimate stays bounded far below
-// the raw byte/4 figure. MUTATION: route blobs through the counter (drop the cap)
-// and the estimate explodes toward len(blob)/4 -> RED.
+// 多模态请求绝不能把 base64 大块喂给分词器:该大块会被 tokencheck 截断,因此即便是
+// OpenAI 模型,其估算也会被限定在远低于原始 byte/4 数值的范围内。
+// 变异:让大块经过计数器(去掉截断),则估算会朝 len(blob)/4 暴涨 -> 变红。
 func TestInputTokens_BlobIsCappedNotTokenized(t *testing.T) {
-	blob := "data:image/png;base64," + strings.Repeat("A", 40000) // ~40KB; byte/4 ~= 10000
+	blob := "data:image/png;base64," + strings.Repeat("A", 40000) // ~40KB;byte/4 ~= 10000
 	body := []byte(fmt.Sprintf(`{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":%q}}]}]}`, blob))
 
 	got := InputTokens("gpt-4o", body)
@@ -77,7 +73,7 @@ func TestInputTokens_BlobIsCappedNotTokenized(t *testing.T) {
 	}
 }
 
-// MUTATION: flip any branch of parseEnabled and one of these goes RED.
+// 变异:翻转 parseEnabled 的任一分支,这些用例中就会有一个变红。
 func TestParseEnabled(t *testing.T) {
 	cases := map[string]bool{"": true, "true": true, "1": true, "false": false, "0": false, "garbage": true}
 	for raw, want := range cases {
@@ -87,10 +83,9 @@ func TestParseEnabled(t *testing.T) {
 	}
 }
 
-// The codec cache must return a stable result (including the negative result) so
-// the hot path does not re-resolve per request. MUTATION: never store the entry
-// and the second lookup would re-run ForModel (still correct here, but the cache
-// existence is the guard) — assert the cached value is identical.
+// codec 缓存必须返回稳定的结果(包括否定结果),这样热路径上每个请求都不必重新解析。
+// 变异:不存储该条目,则第二次查找会重新跑一遍 ForModel(此处结果仍正确,但缓存的存在
+// 才是要守护的不变量)——断言缓存到的值完全一致。
 func TestCodecForModel_Caches(t *testing.T) {
 	c1, ok1 := codecForModel("gpt-4o")
 	c2, ok2 := codecForModel("gpt-4o")

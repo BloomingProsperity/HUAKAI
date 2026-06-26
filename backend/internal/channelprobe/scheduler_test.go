@@ -11,7 +11,7 @@ import (
 )
 
 func TestSchedulerTicker(t *testing.T) {
-	// MUTATION: leave the tick branch empty or skip ActiveProbe; probe call count stays 0 instead of active channel count.
+	// 变异:把 tick 分支留空或跳过 ActiveProbe;那样 probe 调用次数会停在 0,而非活跃 channel 的数量。
 	ticker := newFakeSchedulerTicker()
 	lister := &activeChannelListerStub{channels: []ActiveChannel{
 		activeChannelFixture(7, "openai", 101, 1001, 1),

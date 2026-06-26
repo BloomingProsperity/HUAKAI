@@ -1,7 +1,7 @@
 // HUAKAI · iKun
 
-// Package emailsendlimit provides a process-local per-IP limiter for auth email send
-// routes. It is the IP layer in front of the existing per-email sender cooldown.
+// Package emailsendlimit 为认证邮件发送路由提供进程内的按 IP 限流器。
+// 它是叠在现有「按邮箱发件人冷却」之前的 IP 层。
 package emailsendlimit
 
 import (
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Config controls the rolling-window limiter. Zero values fall back to DefaultConfig.
+// Config 控制滑动窗口限流器。零值会回退到 DefaultConfig。
 type Config struct {
 	Window  time.Duration
 	Limit   int
@@ -18,8 +18,8 @@ type Config struct {
 	Now     func() time.Time
 }
 
-// DefaultConfig is intentionally wider than the per-email cooldown so normal users
-// behind shared NATs are not blocked by ordinary resend behavior.
+// DefaultConfig 故意比按邮箱冷却放得更宽,这样共享 NAT 后面的正常用户
+// 不会因普通的重发行为而被挡住。
 func DefaultConfig() Config {
 	return Config{
 		Window:  time.Minute,
@@ -34,8 +34,8 @@ type bucket struct {
 	lastSeen time.Time
 }
 
-// Limiter is a concurrency-safe in-memory rolling-window limiter. It has single-process
-// semantics; multi-replica deployments need a centralized implementation as a follow-up.
+// Limiter 是并发安全的内存滑动窗口限流器。它是单进程语义;
+// 多副本部署后续需要一个集中式实现。
 type Limiter struct {
 	mu      sync.Mutex
 	cfg     Config
@@ -43,7 +43,7 @@ type Limiter struct {
 	buckets map[string]*bucket
 }
 
-// New builds a limiter from cfg, replacing zero values with DefaultConfig.
+// New 根据 cfg 构造一个限流器,零值用 DefaultConfig 替换。
 func New(cfg Config) *Limiter {
 	d := DefaultConfig()
 	if cfg.Window <= 0 {
@@ -61,8 +61,8 @@ func New(cfg Config) *Limiter {
 	return &Limiter{cfg: cfg, now: cfg.Now, buckets: make(map[string]*bucket)}
 }
 
-// Allow records one auth email send attempt for clientIP. It returns false with a
-// coarse Retry-After when the IP has exhausted its configured rolling window.
+// Allow 为 clientIP 记录一次认证邮件发送尝试。当该 IP 用尽其配置的
+// 滑动窗口配额时,返回 false 并附带一个粗粒度的 Retry-After。
 func (l *Limiter) Allow(clientIP string) (bool, time.Duration) {
 	if l == nil {
 		return true, 0

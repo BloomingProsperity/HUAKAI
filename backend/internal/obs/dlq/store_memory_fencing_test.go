@@ -19,7 +19,7 @@ func TestMemoryOutbox_StaleOwnerCannotClobberReclaimed(t *testing.T) {
 		t.Fatalf("enqueue: %v", err)
 	}
 	base := ev.NextRetryAt
-	// worker A claim, visibility=1m
+	// worker A 领取,visibility=1m
 	evA, ok, err := box.Dequeue(ctx, DequeueOptions{Priority: PriorityAny, Now: base, WorkerID: "workerA", VisibilityTimeout: time.Minute})
 	if err != nil || !ok || evA.ID != ev.ID {
 		t.Fatalf("A dequeue: ok=%v id=%s err=%v", ok, evA.ID, err)

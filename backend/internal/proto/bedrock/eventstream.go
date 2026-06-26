@@ -109,11 +109,11 @@ func (s *EventStreamAdapter) FinalizeUpstreamStream(ctx context.Context, state a
 // 编译期接口断言。
 var _ proto.UpstreamAdapter = (*EventStreamAdapter)(nil)
 
-// Source files read:
+// 已阅读的源文件：
 //   - backend/internal/proto/anthropic/sse.go (HUAKAI 内部，anthropic.UpstreamState 复用)
 //   - backend/internal/proto/proto.go (proto.UpstreamAdapter 接口)
 //   - backend/internal/proto/hcsf.go (CanonicalEvent 类型)
 //   - backend/internal/gateway/bedrock_stream_scanner.go (A3，emit shape 参考)
 //   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (Bedrock chunk envelope)
-// Lane: claude
-// Time: 2026-05-08T<UTC>
+// 通道：claude
+// 时间：2026-05-08T<UTC>

@@ -10,8 +10,8 @@ import (
 )
 
 func TestHTTPProviderUsesInjectedClientAndMapsSubmitPoll(t *testing.T) {
-	// Mutation: replace the injected server client with http.DefaultClient or
-	// hard-code paths; this injected transport provider must fail.
+	// 变异：把注入的服务端 client 换成 http.DefaultClient 或写死路径；
+	// 这个注入 transport 的 provider 就必然失败。
 	var submitSeen bool
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var body any
@@ -136,8 +136,8 @@ func TestNoopProviderNeverReportsTerminalSuccess(t *testing.T) {
 }
 
 func TestHTTPProviderRegistryAcceptsMidjourneyAlias(t *testing.T) {
-	// MUTATION: leave the registry hard-coded to provider name "http"; MJ tasks
-	// translated with Provider=midjourney cannot reuse the async HTTP relay.
+	// 变异：让 registry 写死为 provider 名 "http"；以 Provider=midjourney 翻译的
+	// MJ 任务就无法复用异步 HTTP relay。
 	registry := NewHTTPProviderRegistry(StaticConfigSource{Config: Config{
 		Enabled: true, ProviderBaseURL: "http://provider.example",
 		DefaultEstimatedCents: map[string]int64{
@@ -151,9 +151,8 @@ func TestHTTPProviderRegistryAcceptsMidjourneyAlias(t *testing.T) {
 }
 
 func TestHTTPProviderRegistryAcceptsSunoAlias(t *testing.T) {
-	// MUTATION: leave the registry hard-coded to provider names "http" and
-	// "midjourney"; Suno tasks translated with Provider=suno cannot reuse the
-	// async HTTP relay.
+	// 变异：让 registry 写死为 provider 名 "http" 和 "midjourney"；以
+	// Provider=suno 翻译的 Suno 任务就无法复用异步 HTTP relay。
 	registry := NewHTTPProviderRegistry(StaticConfigSource{Config: Config{
 		Enabled: true, ProviderBaseURL: "http://provider.example",
 		DefaultEstimatedCents: map[string]int64{
@@ -166,8 +165,8 @@ func TestHTTPProviderRegistryAcceptsSunoAlias(t *testing.T) {
 	}
 }
 func TestHTTPProviderRegistryAcceptsVideoAliases(t *testing.T) {
-	// MUTATION: leave video providers out of the HTTP registry; /video/submit
-	// reaches mediatask.Service but fails before task creation.
+	// 变异：把 video 类 provider 排除在 HTTP registry 之外；/video/submit
+	// 能到达 mediatask.Service 但在任务创建前就失败。
 	registry := NewHTTPProviderRegistry(StaticConfigSource{Config: Config{
 		Enabled: true, ProviderBaseURL: "http://provider.example",
 		DefaultEstimatedCents: map[string]int64{

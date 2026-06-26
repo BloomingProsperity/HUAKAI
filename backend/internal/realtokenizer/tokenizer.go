@@ -1,9 +1,7 @@
-// Package realtokenizer sharpens input-token *estimates* with a real BPE
-// tokenizer (tiktoken) for OpenAI-family models, falling back to the shared
-// CJK-aware heuristic in internal/tokencheck for other vendors (Anthropic /
-// Gemini / unknown). It only feeds pre-request estimates — the predicted cost and
-// the quota reservation headroom — never the authoritative charge, which is always
-// the provider-reported usage. BILL-086/TOK-008.
+// Package realtokenizer 用真正的 BPE 分词器(tiktoken)为 OpenAI 系模型给出更精确的
+// 输入 token *估算*,对其它厂商(Anthropic / Gemini / 未知)则回退到 internal/tokencheck
+// 里共享的、对 CJK 敏感的启发式算法。它只用于请求前的估算——预测费用与配额预留余量——
+// 绝不充当权威计费,后者永远以上游上报的 usage 为准。BILL-086/TOK-008。
 package realtokenizer
 
 import (
@@ -16,16 +14,15 @@ import (
 	"github.com/tiktoken-go/tokenizer"
 )
 
-// EnabledEnv toggles the real-tokenizer estimate. Default on; set to false to fall
-// back to the legacy byte-count estimate.
+// EnabledEnv 用于开关真实分词器估算。默认开启;设为 false 时回退到旧的按字节数估算。
 const EnabledEnv = "HUAKAI_REAL_TOKENIZER_ENABLED"
 
 var (
 	enabledOnce sync.Once
 	enabledVal  bool
 
-	// codecCache memoizes the per-model codec resolution (including the negative
-	// "no codec" result) so ForModel/Get is not paid on every hot-path request.
+	// codecCache 缓存每个模型的 codec 解析结果(包括"无 codec"这一否定结果),
+	// 这样热路径上的每个请求都不必再付出 ForModel/Get 的开销。
 	codecCache sync.Map // model string -> codecEntry
 )
 
@@ -34,15 +31,15 @@ type codecEntry struct {
 	ok    bool
 }
 
-// Enabled reports whether the real-tokenizer estimate is active. Default on; an
-// unparseable value stays on (fails toward the more accurate default).
+// Enabled 报告真实分词器估算是否启用。默认开启;无法解析的取值仍保持开启
+//(向更精确的默认行为容错)。
 func Enabled() bool {
 	enabledOnce.Do(func() { enabledVal = parseEnabled(os.Getenv(EnabledEnv)) })
 	return enabledVal
 }
 
-// parseEnabled is the pure flag policy: empty defaults on, an explicit false
-// disables, and an unparseable value stays on (fails toward the better default).
+// parseEnabled 是纯粹的开关策略:空值默认开启,显式的 false 关闭,
+// 无法解析的取值仍保持开启(向更优的默认行为容错)。
 func parseEnabled(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -52,11 +49,11 @@ func parseEnabled(raw string) bool {
 	return err != nil || v
 }
 
-// InputTokens returns a sharpened input-token estimate for the raw request body.
-// For OpenAI-family models the plain-text JSON leaves are counted with tiktoken;
-// for other vendors, unknown models, or on any tokenizer error it uses the shared
-// CJK heuristic. Either way base64/binary blobs are capped by tokencheck so a
-// multimodal request is not estimated by its base64 volume.
+// InputTokens 为原始请求体返回更精确的输入 token 估算。
+// 对 OpenAI 系模型,纯文本 JSON 叶子节点用 tiktoken 计数;
+// 对其它厂商、未知模型,或遇到任何分词器错误时,使用共享的 CJK 启发式算法。
+// 无论哪种情况,base64/二进制大块都会被 tokencheck 截断,这样多模态请求
+// 就不会按其 base64 体积来估算。
 func InputTokens(model string, body []byte) int {
 	if counter, ok := textCounter(model); ok {
 		return tokencheck.EstimateRequestInputTokensWith(body, counter)
@@ -64,9 +61,9 @@ func InputTokens(model string, body []byte) int {
 	return tokencheck.EstimateRequestInputTokens(body)
 }
 
-// textCounter resolves a cached tiktoken counter for the model, or (nil,false)
-// when no encoder applies. The returned counter is fail-soft: a tokenizer error
-// counts as zero for that leaf rather than corrupting the whole estimate.
+// textCounter 为该模型解析出一个带缓存的 tiktoken 计数器,若无适用的编码器则返回
+//(nil,false)。返回的计数器是软容错的:遇到分词器错误时,该叶子节点按零计数,
+// 而不是污染整个估算。
 func textCounter(model string) (func(string) int, bool) {
 	codec, ok := codecForModel(model)
 	if !ok {

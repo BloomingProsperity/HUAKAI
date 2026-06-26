@@ -9,7 +9,7 @@ import (
 )
 
 func TestScheduler_EvaluatesEnabledRulesOnTick(t *testing.T) {
-	// MUTATION: leave the tick branch empty or skip EvaluateRules; this never records the per-tenant evaluations.
+	// MUTATION：把 tick 分支留空或跳过 EvaluateRules；这样就永远不会记录按租户的评估。
 	ticker := newFakeSchedulerTicker()
 	lister := &schedulerTenantListerStub{tenants: []int64{101, 202}}
 	source := &schedulerMetricSourceStub{snapshots: map[int64]map[string]float64{
@@ -51,7 +51,7 @@ func TestScheduler_EvaluatesEnabledRulesOnTick(t *testing.T) {
 }
 
 func TestScheduler_SkipsTenantsWithoutEnabledRules(t *testing.T) {
-	// MUTATION: evaluate a fixed/all-tenant list instead of ListTenantsWithEnabledRules; tenant 404 receives wasted evaluation.
+	// MUTATION：评估一个固定/全租户列表而非 ListTenantsWithEnabledRules；tenant 404 会收到无谓的评估。
 	ticker := newFakeSchedulerTicker()
 	lister := &schedulerTenantListerStub{tenants: []int64{303}}
 	source := &schedulerMetricSourceStub{snapshots: map[int64]map[string]float64{
@@ -85,7 +85,7 @@ func TestScheduler_SkipsTenantsWithoutEnabledRules(t *testing.T) {
 }
 
 func TestScheduler_UsesSourceAwareEvaluatorWhenAvailable(t *testing.T) {
-	// MUTATION: always pre-snapshot and call EvaluateRules; source-aware evaluators cannot pass rule filters through to the metric source.
+	// MUTATION：总是先快照再调用 EvaluateRules；感知数据源的 evaluator 就无法把规则过滤条件透传给 metric source。
 	ticker := newFakeSchedulerTicker()
 	lister := &schedulerTenantListerStub{tenants: []int64{303}}
 	source := &schedulerMetricSourceStub{snapshots: map[int64]map[string]float64{
@@ -118,7 +118,7 @@ func TestScheduler_UsesSourceAwareEvaluatorWhenAvailable(t *testing.T) {
 }
 
 func TestScheduler_StopsOnContextCancel(t *testing.T) {
-	// MUTATION: remove the ctx.Done select case; Run blocks forever and this test times out.
+	// MUTATION：移除 ctx.Done 这个 select 分支；Run 会永久阻塞，本测试随之超时。
 	ticker := newFakeSchedulerTicker()
 	tickerCreated := make(chan struct{})
 	scheduler := NewScheduler(SchedulerConfig{
@@ -146,7 +146,7 @@ func TestScheduler_StopsOnContextCancel(t *testing.T) {
 }
 
 func TestMemoryStore_ListTenantsWithEnabledRulesSkipsDisabledAndSorts(t *testing.T) {
-	// MUTATION: list all tenants with any rule or return unsorted duplicates; disabled-only tenants leak into scheduler work.
+	// MUTATION：列出所有含任意规则的租户、或返回未排序的重复项；只有禁用规则的租户会泄漏进调度器的工作集。
 	ctx := context.Background()
 	disabled := false
 	store := NewMemoryStore()

@@ -9,25 +9,22 @@ import (
 	"time"
 )
 
-// TestGetByID_ResolvesBeyondListWindowAndIsTenantScoped is the H4 S3
-// discriminating test for the tenant-scoped by-id DLQ read that backs the
-// dlq_replay target lookup.
+// TestGetByID_ResolvesBeyondListWindowAndIsTenantScoped 是支撑 dlq_replay 目标查找的
+// 租户作用域按 id 读 DLQ 的 H4 S3 判别性测试。
 //
-// It proves three properties the old List(limit)-and-match lookup could not:
-//  1. A record older than a bounded List window still resolves by id. We seed
-//     more rows than a small List window returns and confirm GetByID finds the
-//     OLDEST row while List(small window) (ordered failure_at DESC, id DESC)
-//     EXCLUDES it — so the resolution is window-independent.
-//  2. A wrong-tenant id does NOT resolve (tenant isolation): GetByID for the row
-//     under a DIFFERENT tenant returns ErrNotFound, never the foreign record.
-//  3. A non-existent id returns ErrNotFound.
+// 它证明旧的 List(limit) 取回再匹配的查找方式做不到的三条性质：
+//  1. 比有界 List 窗口更老的记录仍能按 id 解析出来。我们灌入比小 List 窗口
+//     返回数更多的行，并确认 GetByID 找到了【最老】的那行，而 List(小窗口)
+//     （按 failure_at DESC, id DESC 排序）会把它【排除】——因此解析与窗口无关。
+//  2. 错误租户的 id【无法】解析（租户隔离）：对【另一个】租户名下的行做
+//     GetByID 返回 ErrNotFound，绝不返回外租户记录。
+//  3. 不存在的 id 返回 ErrNotFound。
 //
-// MUTATION (self-proving):
-//   - If GetByID's SELECT dropped `AND d.tenant_id = $2`, the wrong-tenant lookup
-//     would RETURN the foreign record and the ErrNotFound assertion goes RED.
-//   - If GetByID matched within a bounded window instead of a direct id read, the
-//     oldest-row lookup (which sits outside the small List window) would fail and
-//     the resolve assertion goes RED.
+// 变异（自证）：
+//   - 如果 GetByID 的 SELECT 去掉 `AND d.tenant_id = $2`，错误租户的查找会
+//     【返回】外租户记录，ErrNotFound 断言会变红。
+//   - 如果 GetByID 改成在有界窗口内匹配而非直接按 id 读，最老行的查找
+//     （它落在小 List 窗口之外）会失败，解析断言会变红。
 func TestGetByID_ResolvesBeyondListWindowAndIsTenantScoped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -37,9 +34,9 @@ func TestGetByID_ResolvesBeyondListWindowAndIsTenantScoped(t *testing.T) {
 	tenantB := seedDLQTenant(t, ctx, pool)
 	store := NewStore(pool)
 
-	// Seed several rows for tenant A with strictly increasing failure_at so the
-	// List ordering (failure_at DESC, id DESC) is deterministic. The FIRST seeded
-	// row is the OLDEST -> it sorts LAST and is excluded by a small List window.
+	// 给租户 A 灌入若干行，failure_at 严格递增，使 List 排序
+	// （failure_at DESC, id DESC）确定。【第一】行灌入的是【最老】的
+	// -> 它排在【最后】，会被小 List 窗口排除。
 	const seeded = 6
 	base := time.Now().UTC().Add(-time.Hour)
 	ids := make([]int64, 0, seeded)
@@ -62,14 +59,14 @@ func TestGetByID_ResolvesBeyondListWindowAndIsTenantScoped(t *testing.T) {
 	}
 	oldestID := ids[0]
 
-	// A small List window (smaller than seeded) returns the NEWEST rows and
-	// EXCLUDES the oldest — this is precisely the gap the old lookup had.
+	// 小 List 窗口（小于灌入数）返回【最新】的几行，【排除】最老的那行
+	// ——这正是旧查找存在的缺口。
 	window := store.mustListWindow(t, ctx, tenantA, seeded-2)
 	if _, present := window[oldestID]; present {
 		t.Fatalf("test precondition broken: oldest id=%d unexpectedly inside the small List window", oldestID)
 	}
 
-	// 1. GetByID resolves the oldest row even though it is outside the List window.
+	// 1. 即便最老的行落在 List 窗口之外，GetByID 仍能解析它。
 	got, err := store.GetByID(ctx, tenantA, oldestID)
 	if err != nil {
 		t.Fatalf("GetByID(tenantA, oldest=%d) err=%v want the record (must resolve beyond the List window)", oldestID, err)
@@ -78,20 +75,19 @@ func TestGetByID_ResolvesBeyondListWindowAndIsTenantScoped(t *testing.T) {
 		t.Fatalf("GetByID returned id=%d tenant=%d want id=%d tenant=%d", got.ID, got.TenantID, oldestID, tenantA)
 	}
 
-	// 2. The SAME id under tenant B does NOT resolve (tenant-scoped).
+	// 2. 同一个 id 在租户 B 名下【无法】解析（租户作用域）。
 	if _, err := store.GetByID(ctx, tenantB, oldestID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID(tenantB, tenantA's id=%d) err=%v want ErrNotFound — must not cross tenants", oldestID, err)
 	}
 
-	// 3. A non-existent id returns ErrNotFound.
+	// 3. 不存在的 id 返回 ErrNotFound。
 	if _, err := store.GetByID(ctx, tenantA, oldestID+1_000_000); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID(tenantA, missing id) err=%v want ErrNotFound", err)
 	}
 }
 
-// mustListWindow returns the id-set of a bounded List read for the tenant — the
-// window the OLD lookup matched within. Used to prove the new by-id read finds
-// rows the bounded window excludes.
+// mustListWindow 返回该租户一次有界 List 读出的 id 集合——即旧查找在其内匹配的
+// 窗口。用于证明新的按 id 读能找到有界窗口排除掉的行。
 func (s *Store) mustListWindow(t *testing.T, ctx context.Context, tenantID int64, limit int) map[int64]struct{} {
 	t.Helper()
 	rows, err := s.List(ctx, ListFilter{TenantID: &tenantID, Limit: limit})

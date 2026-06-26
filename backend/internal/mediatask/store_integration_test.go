@@ -18,7 +18,7 @@ import (
 )
 
 func TestMediaTaskSubmitReservesOnce(t *testing.T) {
-	// MUTATION: remove billing.Reserve from CreateTask; held remains 0 instead of 1.23.
+	// 变异：从 CreateTask 移除 billing.Reserve；held 会停在 0 而非 1.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -39,7 +39,7 @@ func TestMediaTaskSubmitReservesOnce(t *testing.T) {
 }
 
 func TestMediaTaskIdempotentSubmit(t *testing.T) {
-	// MUTATION: skip the (tenant_id, request_id) lookup before reserve; second submit doubles held to 2.46.
+	// 变异：在 reserve 前跳过 (tenant_id, request_id) 查找；第二次提交会把 held 翻倍到 2.46。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -71,7 +71,7 @@ func TestMediaTaskIdempotentSubmit(t *testing.T) {
 }
 
 func TestMediaTaskSuccessSettlesActual(t *testing.T) {
-	// MUTATION: capture estimated cost instead of actual_cents; balance becomes 8.77 instead of 9.23.
+	// 变异：入账时用预估成本而非 actual_cents；balance 会变成 8.77 而非 9.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -149,7 +149,7 @@ func TestMediaTaskSuccessOverEstimateClampsToEstimate(t *testing.T) {
 }
 
 func TestMediaTaskFailureRefundsFull(t *testing.T) {
-	// MUTATION: use Capture(0) instead of Release on failure; claim may commit and failure audit is wrong.
+	// 变异：失败时用 Capture(0) 而非 Release；claim 可能被 commit 且失败审计出错。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -175,7 +175,7 @@ func TestMediaTaskFailureRefundsFull(t *testing.T) {
 }
 
 func TestMediaTaskTimeoutExpiresAndRefunds(t *testing.T) {
-	// MUTATION: mark timeout expired without billing.Release; held remains 1.23.
+	// 变异：标记超时为 expired 时不做 billing.Release；held 会停在 1.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -201,8 +201,8 @@ func TestMediaTaskTimeoutExpiresAndRefunds(t *testing.T) {
 }
 
 func TestMediaTaskWorkerFencing_NoDoubleSettle(t *testing.T) {
-	// MUTATION: remove SKIP LOCKED / lease_owner from AcquireLease or terminal update;
-	// two workers append two claim_committed events or debit twice.
+	// 变异：从 AcquireLease 或终态更新中移除 SKIP LOCKED / lease_owner；
+	// 两个 worker 会追加两条 claim_committed 事件或重复扣费。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -242,7 +242,7 @@ func TestMediaTaskWorkerFencing_NoDoubleSettle(t *testing.T) {
 }
 
 func TestMediaTaskSubmitAtomic_ReserveAndRowTogether(t *testing.T) {
-	// MUTATION: reserve outside the media task insert transaction; held remains 1.23 after injected insert failure.
+	// 变异：在媒体任务 insert 事务之外做 reserve；注入 insert 失败后 held 会停在 1.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -271,7 +271,7 @@ func TestMediaTaskSubmitAtomic_ReserveAndRowTogether(t *testing.T) {
 }
 
 func TestMediaTaskTenantIsolation(t *testing.T) {
-	// MUTATION: drop user_id from Get/List/idempotency guards; user B sees or replays user A's task.
+	// 变异：从 Get/List/幂等守卫中去掉 user_id；用户 B 会看到或重放用户 A 的任务。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -307,7 +307,7 @@ func TestMediaTaskTenantIsolation(t *testing.T) {
 }
 
 func TestMigration0099(t *testing.T) {
-	// MUTATION: omit unique(tenant_id, request_id) or runnable partial index; schema probes fail.
+	// 变异：省略 unique(tenant_id, request_id) 或可运行的部分索引；schema 探测会失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)

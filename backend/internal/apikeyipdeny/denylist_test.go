@@ -8,17 +8,17 @@ import (
 
 // TestIPBlacklistDeny 判别测试 KEY-016。
 //
-// MUTATION 1 (deny placed after allowlist): if the caller moves the deny check to
-// AFTER an allow-all nil-allowlist check, 1.2.3.4 would pass instead of being
-// denied -> this test would go RED.
+// 变异 1(deny 放到 allowlist 之后):如果调用方把 deny 检查挪到
+// 「allowlist 为 nil 即放行所有」的检查之后,1.2.3.4 就会被放行而非
+// 被拒 → 本测试变红。
 //
-// MUTATION 2 (nil blacklist returns true): DeniesCSV nil -> true means NULL keys
-// deny everyone -> zero-behavior-change promise violated -> RED.
+// 变异 2(nil 黑名单返回 true):DeniesCSV nil → true 意味着 NULL 的 key
+// 会拒绝所有人 → 违背「零行为变化」承诺 → 红。
 func TestIPBlacklistDeny(t *testing.T) {
 	blacklisted := "1.2.3.4/32"
 	raw := "1.2.3.4,10.0.0.0/8"
 
-	// nil/empty -> never deny (zero behavior change)
+	// nil/空 → 永不拒绝(零行为变化)
 	denied, err := apikeyipdeny.DeniesCSV(nil, "1.2.3.4")
 	if err != nil {
 		t.Fatalf("nil raw: unexpected error: %v", err)
@@ -36,7 +36,7 @@ func TestIPBlacklistDeny(t *testing.T) {
 		t.Errorf("MUTATION: empty raw must not deny any IP")
 	}
 
-	// blacklisted IP is denied
+	// 在黑名单中的 IP 被拒绝
 	denied, err = apikeyipdeny.DeniesCSV(&raw, "1.2.3.4")
 	if err != nil {
 		t.Fatalf("denied IP: unexpected error: %v", err)
@@ -45,7 +45,7 @@ func TestIPBlacklistDeny(t *testing.T) {
 		t.Errorf("MUTATION: 1.2.3.4 must be denied (in blacklist)")
 	}
 
-	// IP in blacklisted CIDR is denied
+	// 落在黑名单 CIDR 内的 IP 被拒绝
 	denied, err = apikeyipdeny.DeniesCSV(&raw, "10.1.2.3")
 	if err != nil {
 		t.Fatalf("denied CIDR IP: unexpected error: %v", err)
@@ -54,7 +54,7 @@ func TestIPBlacklistDeny(t *testing.T) {
 		t.Errorf("MUTATION: 10.1.2.3 must be denied (in 10.0.0.0/8)")
 	}
 
-	// IP not in blacklist is allowed
+	// 不在黑名单中的 IP 被放行
 	denied, err = apikeyipdeny.DeniesCSV(&raw, "9.9.9.9")
 	if err != nil {
 		t.Fatalf("allowed IP: unexpected error: %v", err)

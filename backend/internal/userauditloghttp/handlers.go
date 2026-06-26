@@ -1,4 +1,4 @@
-// Package userauditloghttp exposes session-scoped user audit events.
+// 包 userauditloghttp 对外暴露按 session 收敛的用户审计事件。
 package userauditloghttp
 
 import (

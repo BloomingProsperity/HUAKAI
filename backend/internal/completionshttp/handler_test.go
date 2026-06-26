@@ -79,8 +79,8 @@ func TestCompletionsUpstreamErrorAborts(t *testing.T) {
 	if got := len(env.settler.settles); got != 0 {
 		t.Fatalf("settle calls=%d want 0 on dispatch failure", got)
 	}
-	// Mutation: removing Abort after dispatcher error leaves a reserved claim open.
-	// This assertion must turn RED if the abort call is skipped.
+	// 变异：dispatcher 出错后去掉 Abort 会留下一个未释放的预留 claim。
+	// 若跳过 abort 调用，本断言必须变红。
 	if got := len(env.settler.aborts); got != 1 {
 		t.Fatalf("abort calls=%d want 1 on dispatch failure", got)
 	}
@@ -107,8 +107,8 @@ func TestCompletionsTokenBilling(t *testing.T) {
 	if settle.Draft.TokensInput != 2 || settle.Draft.TokensOutput != 9 {
 		t.Fatalf("tokens input/output=%d/%d want 2/9", settle.Draft.TokensInput, settle.Draft.TokensOutput)
 	}
-	// Mutation: billing a flat amount or using prompt_tokens only makes this RED
-	// because output_micro_usd=2000 and completion_tokens=9 dominate the total.
+	// 变异：按固定金额计费、或只用 prompt_tokens 都会让本测试变红，
+	// 因为 output_micro_usd=2000 与 completion_tokens=9 主导了总额。
 	if !settle.ActualCost.Equal(decimal.RequireFromString("0.020")) {
 		t.Fatalf("ActualCost=%s want 0.020 from upstream usage prompt+completion tokens", settle.ActualCost)
 	}
@@ -209,8 +209,8 @@ func TestCountTokensPassthroughNoBilling(t *testing.T) {
 	if got := strings.TrimSpace(rec.Body.String()); got != `{"input_tokens":42,"cache_creation_input_tokens":3}` {
 		t.Fatalf("body=%s want upstream count_tokens JSON verbatim", got)
 	}
-	// Mutation: charging count_tokens balance makes these RED; this endpoint is a
-	// free utility and must not reserve, settle, abort, or touch quota.
+	// 变异：对 count_tokens 计费余额会让这些断言变红；该端点是免费工具，
+	// 不得 reserve、settle、abort，也不得触碰 quota。
 	if got := len(env.claims.reserves); got != 0 {
 		t.Fatalf("reserve calls=%d want 0 for free count_tokens", got)
 	}

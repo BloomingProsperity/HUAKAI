@@ -59,8 +59,8 @@ func buildResolverRequest(bearer string, remoteAddr string) *http.Request {
 
 // TestIPBlacklistDeny 是 KEY-016 的判别性测试。
 //
-// MUTATION: 把 deny 检查挪到 allowlist 检查之后 (allowlist 为 nil -> allow-all
-// 在 deny 能触发前短路) -> 1.2.3.4 就会被放行 -> RED。
+// 变异: 把 deny 检查挪到 allowlist 检查之后 (allowlist 为 nil -> allow-all
+// 在 deny 能触发前短路) -> 1.2.3.4 就会被放行 -> 红。
 func TestIPBlacklistDeny(t *testing.T) {
 	const bearer = "hk_live_blacklisttest0001"
 	blacklisted := "1.2.3.4/32"

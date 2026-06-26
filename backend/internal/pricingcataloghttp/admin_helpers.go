@@ -15,9 +15,9 @@ type catalogPage struct {
 	Offset   int32
 }
 
-// SYNC: copied from internal/adminhttp/provider_catalog_handler.go and
-// internal/adminhttp/api_keys_handler.go because this slice is isolated in
-// internal/pricingcataloghttp instead of adding new adminhttp files.
+// SYNC:从 internal/adminhttp/provider_catalog_handler.go 与
+// internal/adminhttp/api_keys_handler.go 拷贝而来,因为这块切片独立在
+// internal/pricingcataloghttp 内,而不是新增 adminhttp 文件。
 func parseCatalogPage(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (catalogPage, bool) {
 	tenantID, ok := parseCatalogTenant(w, r, ident)
 	if !ok {

@@ -1,21 +1,20 @@
 //go:build integration_pg
 
-// TestMigrationFullRoundtrip proves every migration has a working,
-// ordering-correct rollback.  It requires a DEDICATED disposable database
-// (not the shared gate DB) because running all .down.sql files is
-// destructive.
+// TestMigrationFullRoundtrip 证明每个 migration 都有一个可用且顺序正确的回滚。
+// 它需要一个专用的一次性数据库（而非共享的 gate DB），因为跑完所有 .down.sql
+// 文件是破坏性操作。
 //
-// Usage:
+// 用法：
 //
-//	# provision a fresh DB first (example -adapt to your environment):
+//	# 先准备一个干净的 DB（示例 —— 按你的环境调整）：
 //	createdb huakai_roundtrip
 //	export HUAKAI_MIGRATE_ROUNDTRIP_DSN="postgres://huakai:huakai@localhost:5432/huakai_roundtrip?sslmode=disable"
 //
 //	go test -tags=integration_pg -run TestMigrationFullRoundtrip \
 //	    -timeout 300s ./internal/db/
 //
-// When HUAKAI_MIGRATE_ROUNDTRIP_DSN is unset the test is skipped cleanly
-// (mirrors the skip pattern in pgconn_integration_test.go).
+// 未设置 HUAKAI_MIGRATE_ROUNDTRIP_DSN 时本测试会被干净地跳过
+//（与 pgconn_integration_test.go 中的跳过模式一致）。
 package db
 
 import (
@@ -30,13 +29,12 @@ import (
 
 const roundtripDSNEnv = "HUAKAI_MIGRATE_ROUNDTRIP_DSN"
 
-// migrateBin is the path to the golang-migrate CLI installed on the host.
+// migrateBin 是宿主机上安装的 golang-migrate CLI 的路径。
 const migrateBin = "/usr/local/bin/migrate"
 
-// TestMigrationFullRoundtrip applies all .up.sql migrations in order,
-// rolls them all back in reverse order (down to version 0), then re-applies
-// them.  Each phase must succeed and the final schema_migrations.version
-// must equal the highest migration number on disk.
+// TestMigrationFullRoundtrip 按顺序应用全部 .up.sql migration，再按逆序全部
+// 回滚（降到 version 0），然后重新应用一遍。每个阶段都必须成功，且最终的
+// schema_migrations.version 必须等于磁盘上最高的 migration 编号。
 func TestMigrationFullRoundtrip(t *testing.T) {
 	roundtripDSN := os.Getenv(roundtripDSNEnv)
 	if roundtripDSN == "" {
@@ -44,30 +42,29 @@ func TestMigrationFullRoundtrip(t *testing.T) {
 	}
 
 	migDir := roundtripMigrationsDir(t)
-	highest := latestMigrationVersion(t) // defined in pgconn_integration_test.go
+	highest := latestMigrationVersion(t) // 定义在 pgconn_integration_test.go
 
 	t.Logf("migrations dir : %s", migDir)
 	t.Logf("highest version: %d", highest)
 
-	// Phase 1 -apply all migrations up.
+	// 阶段 1 —— 向上应用全部 migration。
 	t.Run("phase1_up", func(t *testing.T) {
 		runMigrateCLI(t, migDir, roundtripDSN, "up")
 	})
 
-	// Phase 2 -roll back all migrations down to version 0.
-	// golang-migrate "down N" with the total count rolls back everything.
+	// 阶段 2 —— 把全部 migration 回滚到 version 0。
+	// golang-migrate 的 "down N"（N 为总数）会回滚所有内容。
 	t.Run("phase2_down_all", func(t *testing.T) {
 		runMigrateCLI(t, migDir, roundtripDSN, "down", "-all")
 	})
 
-	// Phase 3 -re-apply all migrations; the schema must be re-creatable
-	// from scratch, proving no .down.sql leaves orphaned state that blocks .up.
+	// 阶段 3 —— 重新应用全部 migration；schema 必须能从零重建，
+	// 证明没有任何 .down.sql 残留会阻塞 .up 的孤立状态。
 	t.Run("phase3_re_up", func(t *testing.T) {
 		runMigrateCLI(t, migDir, roundtripDSN, "up")
 	})
 
-	// Final assertion: schema_migrations must reflect the highest version
-	// and must not be dirty.
+	// 最终断言：schema_migrations 必须反映最高 version 且不能是 dirty。
 	t.Run("final_version_check", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -95,8 +92,8 @@ func TestMigrationFullRoundtrip(t *testing.T) {
 	})
 }
 
-// runMigrateCLI executes /usr/local/bin/migrate with the given subcommand
-// and optional arguments.  A non-zero exit or CLI error fails the test.
+// runMigrateCLI 用给定的子命令和可选参数执行 /usr/local/bin/migrate。
+// 退出码非零或 CLI 报错都会让测试失败。
 func runMigrateCLI(t *testing.T, migDir, dsn string, args ...string) {
 	t.Helper()
 
@@ -116,8 +113,8 @@ func runMigrateCLI(t *testing.T, migDir, dsn string, args ...string) {
 	}
 }
 
-// roundtripMigrationsDir resolves the sql/migrations directory relative to
-// this test source file, independent of the working directory at test time.
+// roundtripMigrationsDir 相对于本测试源文件解析 sql/migrations 目录，
+// 不依赖测试运行时的工作目录。
 func roundtripMigrationsDir(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)

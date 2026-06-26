@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// Normalize deduplicates and normalizes a slice of IP/CIDR blacklist entries.
-// Each entry is either a bare IP (expanded to /32 or /128) or a CIDR prefix.
-// Blank entries are silently skipped. Returns an error on the first invalid entry.
+// Normalize 对一批 IP/CIDR 黑名单条目去重并归一化。
+// 每个条目要么是裸 IP(展开为 /32 或 /128),要么是 CIDR 前缀。
+// 空条目会被静默跳过。遇到第一个非法条目时返回错误。
 func Normalize(entries []string) ([]string, error) {
 	out := make([]string, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
@@ -29,13 +29,13 @@ func Normalize(entries []string) ([]string, error) {
 	return out, nil
 }
 
-// NormalizeCSV splits a comma-separated string and normalizes each entry.
+// NormalizeCSV 拆分逗号分隔的字符串,并对每个条目做归一化。
 func NormalizeCSV(raw string) ([]string, error) {
 	return Normalize(strings.Split(raw, ","))
 }
 
-// StorageText joins a normalized slice back to a nullable comma-separated string
-// for persistence. Returns nil when the slice is empty (clears the column).
+// StorageText 把归一化后的切片重新拼回可空的逗号分隔字符串以便持久化。
+// 当切片为空时返回 nil(清空该列)。
 func StorageText(entries []string) *string {
 	if len(entries) == 0 {
 		return nil
@@ -44,9 +44,9 @@ func StorageText(entries []string) *string {
 	return &value
 }
 
-// DeniesCSV checks whether the given clientIP is covered by any entry in the
-// raw comma-separated ip_blacklist column value. Returns (false, nil) when raw
-// is nil or blank — zero behavior change for keys with no blacklist set.
+// DeniesCSV 检查给定的 clientIP 是否被 raw(逗号分隔的 ip_blacklist 列值)
+// 中任一条目覆盖。当 raw 为 nil 或空白时返回 (false, nil)——对未设置
+// 黑名单的 key 行为零变化。
 func DeniesCSV(raw *string, clientIP string) (bool, error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return false, nil

@@ -42,7 +42,7 @@ func TestServiceValidationRejectsInvalidAnnouncementInput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// MUTATION: remove title/body/severity/expiry validation; this Create succeeds.
+			// 变异: 移除 title/body/severity/expiry 的校验，此 Create 就会成功。
 			if _, err := svc.Create(context.Background(), tt.in); !errors.Is(err, ErrInvalidInput) {
 				t.Fatalf("Create err=%v want ErrInvalidInput", err)
 			}

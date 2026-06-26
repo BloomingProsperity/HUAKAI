@@ -61,7 +61,7 @@ func TestSessionMiddlewareNilResolverFallsBackToRemoteAddr(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.RemoteAddr = "203.0.113.7:443"
 	req.Header.Set("Authorization", "Bearer sometoken")
-	req.Header.Set("X-Forwarded-For", "198.51.100.9") // untrusted (no resolver) → ignored
+	req.Header.Set("X-Forwarded-For", "198.51.100.9") // 不可信 (无 resolver) → 被忽略
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if v.gotIP != "203.0.113.7" {
 		t.Fatalf("nil resolver Validate IP=%q want socket peer 203.0.113.7", v.gotIP)

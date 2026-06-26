@@ -10,9 +10,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
 
-// TestApplyToolCallSurcharge_DefaultZero_EmptyPrices verifies the primary
-// safety invariant: an empty ToolPrices (default — no config) leaves Total
-// byte-identical to the token-only result.
+// TestApplyToolCallSurcharge_DefaultZero_EmptyPrices 验证首要安全不变量:
+// 空的 ToolPrices(默认——未配置)使 Total 与仅按 token 计费的结果逐字节一致。
 func TestApplyToolCallSurcharge_DefaultZero_EmptyPrices(t *testing.T) {
 	base := Result{
 		Total:             decimal.RequireFromString("0.10"),
@@ -20,7 +19,7 @@ func TestApplyToolCallSurcharge_DefaultZero_EmptyPrices(t *testing.T) {
 		CacheReadCost:     decimal.RequireFromString("0.02"),
 	}
 	counts := toolpricing.ToolCallCounts{WebSearch: 5}
-	prices := toolpricing.ToolPrices{} // zero — unconfigured
+	prices := toolpricing.ToolPrices{} // 零值——未配置
 
 	got := ApplyToolCallSurcharge(base, prices, counts, decimal.NewFromInt(1))
 	if !got.Total.Equal(base.Total) {
@@ -28,9 +27,8 @@ func TestApplyToolCallSurcharge_DefaultZero_EmptyPrices(t *testing.T) {
 	}
 }
 
-// TestApplyToolCallSurcharge_DefaultZero_ZeroCounts verifies the second safety
-// invariant: zero ToolCallCounts (no tool calls) leaves Total unchanged even
-// when prices are configured.
+// TestApplyToolCallSurcharge_DefaultZero_ZeroCounts 验证第二条安全不变量:
+// ToolCallCounts 为零(没有任何工具调用)时,即便配置了价格,Total 也保持不变。
 func TestApplyToolCallSurcharge_DefaultZero_ZeroCounts(t *testing.T) {
 	base := Result{
 		Total: decimal.RequireFromString("0.10"),
@@ -38,7 +36,7 @@ func TestApplyToolCallSurcharge_DefaultZero_ZeroCounts(t *testing.T) {
 	prices := toolpricing.ToolPrices{
 		WebSearchPer1000: decimal.RequireFromString("10"),
 	}
-	counts := toolpricing.ToolCallCounts{} // zero
+	counts := toolpricing.ToolCallCounts{} // 零值
 
 	got := ApplyToolCallSurcharge(base, prices, counts, decimal.NewFromInt(1))
 	if !got.Total.Equal(base.Total) {
@@ -46,11 +44,11 @@ func TestApplyToolCallSurcharge_DefaultZero_ZeroCounts(t *testing.T) {
 	}
 }
 
-// TestApplyToolCallSurcharge_AddsDeltaToTotal verifies that when both prices
-// and counts are non-zero, Total is increased by exactly the surcharge delta.
+// TestApplyToolCallSurcharge_AddsDeltaToTotal 验证当价格和次数都非零时,
+// Total 恰好增加附加费的增量。
 //
-// Setup: tokenTotal=0.10, web_search count=3, price=$10/1000, groupRatio=1.0
-// Expected: delta = ($10/1000)*3*1 = $0.03 -> Total = 0.13
+// 配置:tokenTotal=0.10,web_search 次数=3,价格=$10/1000,groupRatio=1.0
+// 预期:增量 = ($10/1000)*3*1 = $0.03 -> Total = 0.13
 func TestApplyToolCallSurcharge_AddsDeltaToTotal(t *testing.T) {
 	base := Result{
 		Total:             decimal.RequireFromString("0.10"),
@@ -64,17 +62,16 @@ func TestApplyToolCallSurcharge_AddsDeltaToTotal(t *testing.T) {
 
 	got := ApplyToolCallSurcharge(base, prices, counts, decimal.NewFromInt(1))
 	assertPricingDecimal(t, "Total", got.Total, "0.13")
-	// Non-total fields must be unchanged.
+	// 非 Total 字段必须保持不变。
 	assertPricingDecimal(t, "CacheCreationCost", got.CacheCreationCost, "0.03")
 	assertPricingDecimal(t, "CacheReadCost", got.CacheReadCost, "0.02")
 }
 
-// TestApplyToolCallSurcharge_GroupRatioScalesSurcharge verifies that groupRatio
-// is applied to the surcharge (mirroring cache_override + resolver GroupRatio
-// semantics).
+// TestApplyToolCallSurcharge_GroupRatioScalesSurcharge 验证 groupRatio
+// 会被施加到附加费上(与 cache_override + resolver 的 GroupRatio 语义一致)。
 //
-// Setup: web_search count=3, price=$10/1000, groupRatio=2.0
-// Surcharge = ($10/1000)*3*2.0 = $0.06 -> Total = 0.10 + 0.06 = 0.16
+// 配置:web_search 次数=3,价格=$10/1000,groupRatio=2.0
+// 附加费 = ($10/1000)*3*2.0 = $0.06 -> Total = 0.10 + 0.06 = 0.16
 func TestApplyToolCallSurcharge_GroupRatioScalesSurcharge(t *testing.T) {
 	base := Result{Total: decimal.RequireFromString("0.10")}
 	prices := toolpricing.ToolPrices{
@@ -87,16 +84,16 @@ func TestApplyToolCallSurcharge_GroupRatioScalesSurcharge(t *testing.T) {
 	assertPricingDecimal(t, "Total", got.Total, "0.16")
 }
 
-// TestResolve_WithToolCallSurcharge_TotalEqualsTokenPlusSurcharge exercises
-// the full Resolve path via a helper that applies the surcharge step.
-// This proves the end-to-end integration: tokenTotal + surcharge.
+// TestResolve_WithToolCallSurcharge_TotalEqualsTokenPlusSurcharge 通过一个施加
+// 附加费步骤的辅助函数,跑通完整的 Resolve 路径。
+// 这证明了端到端集成:tokenTotal + 附加费。
 //
-// Token billing: 10 input tokens * 1000 micro_usd/token = 10000 micros
+// Token 计费:10 个 input token * 1000 micro_usd/token = 10000 micros
 //
-//	= 10000 / 1_000_000 = 0.01 USD (flat, groupRatio=1)
+//	= 10000 / 1_000_000 = 0.01 USD(flat,groupRatio=1)
 //
-// Surcharge: web_search count=3, $10/1000, groupRatio=1 -> 0.03
-// Total expected: 0.04
+// 附加费:web_search 次数=3,$10/1000,groupRatio=1 -> 0.03
+// 预期 Total:0.04
 func TestResolve_WithToolCallSurcharge_TotalEqualsTokenPlusSurcharge(t *testing.T) {
 	raw := json.RawMessage(`{"input_micro_usd":1000}`)
 	flat := FlatRateFallback{
@@ -116,18 +113,18 @@ func TestResolve_WithToolCallSurcharge_TotalEqualsTokenPlusSurcharge(t *testing.
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	// Apply the surcharge step (mirrors chat_completions_pricing usage).
+	// 施加附加费步骤(与 chat_completions_pricing 的用法一致)。
 	res = ApplyToolCallSurcharge(res, prices, usage.ToolCallCounts, flat.GroupRatio)
 
 	assertPricingDecimal(t, "Total", res.Total, "0.04")
-	// Mutation guard: token-only total is 0.01, not 0.04.
+	// 变异守卫:仅按 token 计费的总额是 0.01,而非 0.04。
 	if res.Total.Equal(decimal.RequireFromString("0.01")) {
 		t.Fatal("surcharge was not added: Total equals token-only 0.01")
 	}
 }
 
-// TestResolve_WithEmptyToolPrices_TotalUnchanged proves the default-zero path:
-// empty ToolPrices -> Total == tokenTotal (no regression for existing billing).
+// TestResolve_WithEmptyToolPrices_TotalUnchanged 证明默认零值路径:
+// 空的 ToolPrices -> Total == tokenTotal(不影响现有计费)。
 func TestResolve_WithEmptyToolPrices_TotalUnchanged(t *testing.T) {
 	raw := json.RawMessage(`{"input_micro_usd":1000}`)
 	flat := FlatRateFallback{

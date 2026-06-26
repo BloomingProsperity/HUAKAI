@@ -300,7 +300,7 @@ func TestAdminReferralRewardsTenantScopedAndFiltered(t *testing.T) {
 	}).ServeHTTP(rec, req)
 
 	assertReferralHTTPStatus(t, rec, http.StatusOK)
-	// MUTATION: handler dropping tenant scope -> TenantID!=7; dropping referrer parse -> ReferrerUserID nil.
+	// 变异:handler 丢掉 tenant scope -> TenantID!=7;丢掉 referrer 解析 -> ReferrerUserID 为 nil。
 	if stub.adminRewardIn.TenantID != 7 || stub.adminRewardIn.ReferrerUserID == nil || *stub.adminRewardIn.ReferrerUserID != ref || stub.adminRewardIn.Limit != 100 {
 		t.Fatalf("admin reward input=%+v want tenant=7 referrer=42 limit-cap=100", stub.adminRewardIn)
 	}

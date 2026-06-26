@@ -11,26 +11,26 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
-// ordersCSVHeader — excludes all sensitive/key/PII columns (CMB-5).
+// ordersCSVHeader —— 排除所有敏感/密钥/PII 列（CMB-5）。
 var ordersCSVHeader = []string{
 	"order_id", "user_id", "status", "provider", "order_kind",
 	"amount", "currency", "out_trade_no", "created_at",
 }
 
-// refundsCSVHeader — no keys, no PII beyond user_id/order_id.
+// refundsCSVHeader —— 不含密钥，除 user_id/order_id 外不含 PII。
 var refundsCSVHeader = []string{
 	"refund_id", "order_id", "user_id",
 	"amount", "currency", "reason", "actor_kind", "created_at",
 }
 
-// OrdersExporterDep is the read-only order export source.
-// Satisfied by *payment.Service.
+// OrdersExporterDep 是只读的订单导出数据源。
+// 由 *payment.Service 实现。
 type OrdersExporterDep interface {
 	ExportOrders(context.Context, payment.OrderExportFilter) ([]payment.Order, error)
 }
 
-// RefundsExporterDep is the read-only refund export source.
-// Satisfied by *payment.Service.
+// RefundsExporterDep 是只读的退款导出数据源。
+// 由 *payment.Service 实现。
 type RefundsExporterDep interface {
 	ExportRefunds(context.Context, payment.RefundExportFilter) ([]payment.RefundRecord, error)
 }

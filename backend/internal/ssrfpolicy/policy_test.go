@@ -66,12 +66,11 @@ func TestParsePolicyEmptyDefaultsPreserveAllowAll(t *testing.T) {
 	}
 }
 
-// SEC-084: the master kill-switch must force-deny a host that the per-host
-// allowlist would otherwise admit, while leaving the default/enabled cases
-// exactly as before. The fixture pins the SAME allowlisted host across all three
-// toggle states so the toggle's effect is isolated.
-// MUTATION: drop the `if p.privateIPsDisabled { return false }` guard and the
-// disabled case admits the allowlisted host -> RED.
+// SEC-084:总开关必须强制拒绝一个本会被按主机 allowlist 放行的主机,
+// 同时让默认/启用的各种情形与之前完全一致。该测试夹具在全部三种开关状态下都固定使用
+// 同一个被 allowlist 的主机,从而隔离出开关本身的效果。
+// 变异:去掉 `if p.privateIPsDisabled { return false }` 守卫,则禁用情形会放行
+// 被 allowlist 的主机 -> 变红。
 func TestPrivateIPsMasterKillSwitch(t *testing.T) {
 	const host = "internal-proxy.example"
 	const allowlist = "10.0.0.5," + host
@@ -87,8 +86,8 @@ func TestPrivateIPsMasterKillSwitch(t *testing.T) {
 		t.Fatal("master kill-switch off must deny every allowlisted private host")
 	}
 
-	// Default (unset) and explicit-true must keep the allowlist behaviour: the
-	// same host is admitted. This proves the kill-switch is the only difference.
+	// 默认(未设置)与显式 true 必须保持 allowlist 行为:同一个主机被放行。
+	// 这证明 kill-switch 是唯一的差别。
 	for _, raw := range []string{"", "true"} {
 		enabled, err := Parse("", "", "", allowlist, raw)
 		if err != nil {

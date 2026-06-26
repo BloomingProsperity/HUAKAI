@@ -28,8 +28,8 @@ func (s *rankingStoreStub) AggregateUsageLeaderboardByModel(_ context.Context, a
 	return out, nil
 }
 
-// Mutation: adding an API-key, session, or admin auth gate to the public
-// rankings handler would turn this no-header request into 401 and fail.
+// 变异: 若给 public rankings handler 加上 API-key、session 或 admin 鉴权门，
+// 会把这个不带 header 的请求变成 401 而使测试失败。
 func TestPublicRankingsNoAuth(t *testing.T) {
 	store := &rankingStoreStub{rows: []dbbilling.AggregateUsageLeaderboardByModelRow{
 		{Key: "gpt-4.1-mini", TotalCost: "123.45000000", TotalTokens: 9000, RequestCount: 7},
@@ -52,9 +52,9 @@ func TestPublicRankingsNoAuth(t *testing.T) {
 	}
 }
 
-// Mutation: returning the raw aggregate row or adding total_cost, actual_cost,
-// user_id, api_key_id, or provider_account_id would put that forbidden field
-// name in the response JSON and fail.
+// 变异: 若返回原始聚合行，或加入 total_cost、actual_cost、user_id、
+// api_key_id、provider_account_id，会把这些被禁字段名带进响应 JSON
+// 而使测试失败。
 func TestPublicRankingsProjection_NoCostOrIdentity(t *testing.T) {
 	store := &rankingStoreStub{rows: []dbbilling.AggregateUsageLeaderboardByModelRow{
 		{Key: "model-with-private-cost", TotalCost: "999999.99000000", TotalTokens: 11, RequestCount: 3},
@@ -89,9 +89,8 @@ func TestPublicRankingsProjection_NoCostOrIdentity(t *testing.T) {
 	}
 }
 
-// Mutation: applying the client limit as the response size, or passing the
-// client limit through as the aggregate fetch limit before usage-volume sort,
-// would return more than 100 entries or use row_limit=1000 and fail.
+// 变异: 若把 client limit 当作响应条数，或在按用量排序前把 client limit
+// 透传为聚合拉取上限，会返回超过 100 条或使用 row_limit=1000 而使测试失败。
 func TestPublicRankingsLimitCap(t *testing.T) {
 	rows := make([]dbbilling.AggregateUsageLeaderboardByModelRow, 0, maxPublicRankingsLimit+5)
 	for i := 0; i < maxPublicRankingsLimit+5; i++ {
@@ -121,8 +120,8 @@ func TestPublicRankingsLimitCap(t *testing.T) {
 	}
 }
 
-// Mutation: preserving the admin aggregate's cost ordering instead of sorting
-// by public usage volume would rank expensive-rare first and fail.
+// 变异: 若保留 admin 聚合的成本排序而非按公开用量排序，会把 expensive-rare
+// 排在最前而使测试失败。
 func TestPublicRankingsOrdering(t *testing.T) {
 	store := &rankingStoreStub{rows: []dbbilling.AggregateUsageLeaderboardByModelRow{
 		{Key: "expensive-rare", TotalCost: "1000.00000000", TotalTokens: 10, RequestCount: 1},
@@ -149,8 +148,8 @@ func TestPublicRankingsOrdering(t *testing.T) {
 	}
 }
 
-// Mutation: removing the shared snapshot cache wrapper would call the store
-// twice and mark the second response as a cache miss.
+// 变异: 若移除共享的 snapshot cache 包装，会调用 store 两次，并把第二次响应
+// 标记为 cache miss。
 func TestPublicRankingsUsesSnapshotCache(t *testing.T) {
 	store := &rankingStoreStub{rows: []dbbilling.AggregateUsageLeaderboardByModelRow{
 		{Key: "cached-model", TotalCost: "1.00000000", TotalTokens: 100, RequestCount: 10},

@@ -14,9 +14,8 @@ import (
 
 const maxAliasRequestBodyBytes = 2 << 20
 
-// NewHandler injects the legacy /engines/{model}/embeddings path model into
-// request bodies that omit model, then delegates to the canonical embeddings
-// handler.
+// NewHandler 将旧版 /engines/{model}/embeddings 路径中的 model 注入到未携带
+// model 的请求体里，随后委派给规范的 embeddings handler。
 func NewHandler(next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if next == nil {

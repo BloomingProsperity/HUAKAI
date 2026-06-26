@@ -415,9 +415,9 @@ type adminReferralRewardsResponse struct {
 	Offset         int                       `json:"offset"`
 }
 
-// NewAdminReferralRewardsHandler is the tenant-scoped admin referral-reward ledger
-// (read-only). GET /v1/admin/referrals/rewards?referrer_user_id=&limit=&offset=.
-// F-RES-2 / AFF-019.
+// NewAdminReferralRewardsHandler 是按 tenant 限定的管理员 referral-reward 流水
+//(只读)。GET /v1/admin/referrals/rewards?referrer_user_id=&limit=&offset=。
+// F-RES-2 / AFF-019。
 func NewAdminReferralRewardsHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID, ok := resolveAdminTenant(w, r, d)
