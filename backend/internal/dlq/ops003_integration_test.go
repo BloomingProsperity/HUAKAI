@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-// TestOPS003_CountPendingByLaneAndDepthGauge is the OPS-003 discriminating test.
-// It seeds N pending rows across lanes, calls CountPendingByLane, and asserts:
-//  1. Per-lane counts match the seeded values exactly.
-//  2. UpdateDLQDepthGauge sets the dlq_depth expvar map entries to the correct values.
+// TestOPS003_CountPendingByLaneAndDepthGauge 是 OPS-003 的区分性测试。
+// 它在各个 lane 上播种 N 条 pending 行,调用 CountPendingByLane,并断言:
+//  1. 每个 lane 的计数与播种值完全一致。
+//  2. UpdateDLQDepthGauge 把 dlq_depth expvar map 的条目设为正确的值。
 //
-// MUTATION: if the WHERE status='pending' filter is removed from CountPendingByLane,
-// delivered/inflight rows are included and counts are wrong → RED.
+// 变异:如果从 CountPendingByLane 移除 WHERE status='pending' 过滤,
+// delivered/inflight 行会被计入,计数就错 → RED。
 func TestOPS003_CountPendingByLaneAndDepthGauge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -24,7 +24,7 @@ func TestOPS003_CountPendingByLaneAndDepthGauge(t *testing.T) {
 	tenantID := seedDLQTenant(t, ctx, pool)
 	store := NewStore(pool)
 
-	// Seed: 2 HIGH pending, 3 MED pending, 1 LOW pending.
+	// 播种:2 条 HIGH pending、3 条 MED pending、1 条 LOW pending。
 	seedPending := func(lane Lane, n int) {
 		t.Helper()
 		for i := 0; i < n; i++ {
@@ -48,7 +48,7 @@ func TestOPS003_CountPendingByLaneAndDepthGauge(t *testing.T) {
 	seedPending(LaneMed, 3)
 	seedPending(LaneLow, 1)
 
-	// Seed one delivered row in HIGH to verify it is NOT counted.
+	// 在 HIGH 播种一条 delivered 行,以验证它不会被计入。
 	idDel, err := store.Enqueue(ctx, Event{
 		TenantID:       tenantID,
 		EventKind:      EventKindUsageRecord,
@@ -71,7 +71,7 @@ func TestOPS003_CountPendingByLaneAndDepthGauge(t *testing.T) {
 		t.Fatalf("mark delivered: %v", err)
 	}
 
-	// --- Assert CountPendingByLane ---
+	// --- 断言 CountPendingByLane ---
 	counts, err := store.CountPendingByLane(ctx)
 	if err != nil {
 		t.Fatalf("CountPendingByLane: %v", err)
@@ -87,7 +87,7 @@ func TestOPS003_CountPendingByLaneAndDepthGauge(t *testing.T) {
 		}
 	}
 
-	// --- Assert UpdateDLQDepthGauge ---
+	// --- 断言 UpdateDLQDepthGauge ---
 	if err := store.UpdateDLQDepthGauge(ctx); err != nil {
 		t.Fatalf("UpdateDLQDepthGauge: %v", err)
 	}

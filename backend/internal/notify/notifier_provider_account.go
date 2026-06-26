@@ -11,10 +11,10 @@ import (
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 )
 
-// providerAccountDownPayload is the wire/JSON body for EventProviderAccountDown
-// webhook deliveries; it mirrors the alertFiringPayload shape (event_type +
-// tenant/user envelope + the domain fields) so existing webhook receivers can
-// switch on event_type without a new parser.
+// providerAccountDownPayload 是 EventProviderAccountDown webhook 投递的
+// 线缆/JSON 报文体;它沿用 alertFiringPayload 的形状(event_type +
+// tenant/user 信封 + 领域字段),这样现有 webhook 接收方无需新解析器即可
+// 根据 event_type 做分支处理。
 type providerAccountDownPayload struct {
 	EventType         string    `json:"event_type"`
 	TenantID          int64     `json:"tenant_id"`
@@ -27,12 +27,11 @@ type providerAccountDownPayload struct {
 	OccurredAt        time.Time `json:"occurred_at"`
 }
 
-// NotifyProviderAccountDown broadcasts a single provider-account-down transition
-// (a credential refresh that drove the account into a terminal/unhealthy state)
-// to every active tenant notification channel. It reuses the same fan-out +
-// per-(tenant,user,eventType) rate-limit + multi-channel dispatch internals as
-// NotifyAlertFiring via Notifier.broadcast, so email / webhook(HMAC-signed) /
-// bark / gotify all carry the EventProviderAccountDown event.
+// NotifyProviderAccountDown 将一次 provider-account-down 状态转移
+//(一次把账号推入终态/不健康状态的凭证刷新)广播到每个活跃的租户通知渠道。
+// 它通过 Notifier.broadcast 复用了与 NotifyAlertFiring 相同的扇出 +
+// per-(tenant,user,eventType) 限流 + 多渠道分发内部逻辑,因此
+// email / webhook(HMAC 签名) / bark / gotify 都会携带 EventProviderAccountDown 事件。
 func (n *Notifier) NotifyProviderAccountDown(ctx context.Context, tenantID int64, info ProviderAccountDownInfo) error {
 	if n == nil || n.store == nil {
 		return nil

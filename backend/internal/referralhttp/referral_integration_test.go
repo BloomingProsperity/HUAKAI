@@ -21,8 +21,8 @@ import (
 )
 
 func TestListUserReferrals_TenantUserScoped(t *testing.T) {
-	// Mutation: drop referrer_user_id filter -> user A sees user B's same-tenant referral.
-	// Mutation: drop tenant_id filter -> user A sees the cross-tenant row seeded with user A's referrer id.
+	// 变异:去掉 referrer_user_id 过滤 -> 用户 A 会看到同 tenant 下用户 B 的 referral。
+	// 变异:去掉 tenant_id 过滤 -> 用户 A 会看到用其 referrer id 种入的跨 tenant 记录。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openReferralIntegrationPool(t, ctx)
@@ -78,8 +78,8 @@ func TestListUserReferrals_TenantUserScoped(t *testing.T) {
 }
 
 func TestListUserReferralRewards_AmountConversion(t *testing.T) {
-	// Mutation: use divisor 100 or 10000 instead of 1000000 for amount_usd -> the exact USD string assertion goes red.
-	// Mutation: drop tenant_id/referrer_user_id predicates -> same-tenant other-user or cross-tenant reward rows enter the ledger.
+	// 变异:把 amount_usd 的除数从 1000000 改成 100 或 10000 -> 精确的 USD 字符串断言转红。
+	// 变异:去掉 tenant_id/referrer_user_id 谓词 -> 同 tenant 下其他用户或跨 tenant 的 reward 记录会进入流水。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openReferralIntegrationPool(t, ctx)
@@ -125,7 +125,7 @@ func TestListUserReferralRewards_AmountConversion(t *testing.T) {
 }
 
 func TestReferralOverview_Counts(t *testing.T) {
-	// Mutation: count every referral into one status bucket or sum all reward rows regardless of referral status -> counts/total_reward_usd go red.
+	// 变异:把每条 referral 都计入同一个状态桶,或不分 referral 状态地汇总所有 reward 记录 -> counts/total_reward_usd 转红。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openReferralIntegrationPool(t, ctx)
@@ -166,8 +166,8 @@ func TestReferralOverview_Counts(t *testing.T) {
 }
 
 func TestListReferralsAdmin_StatusFilter(t *testing.T) {
-	// Mutation: ignore status filter -> pending rows appear in qualified page; ignore offset -> first qualified row is returned instead of second.
-	// Mutation: do not cap limit at 100 -> pending page returns more than 100 rows.
+	// 变异:忽略 status 过滤 -> pending 记录出现在 qualified 页;忽略 offset -> 返回第一条 qualified 记录而非第二条。
+	// 变异:不把 limit 上限封到 100 -> pending 页返回超过 100 条记录。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openReferralIntegrationPool(t, ctx)

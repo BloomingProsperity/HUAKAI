@@ -187,8 +187,8 @@ func zeroReferralStatusCounts() map[string]int64 {
 	}
 }
 
-// ListReferralRewardsAdminInput is the tenant-scoped admin reward-ledger filter
-// (ReferrerUserID nil = all referrers in the tenant). F-RES-2 / AFF-019.
+// ListReferralRewardsAdminInput 是租户级的管理员奖励账本过滤条件
+//（ReferrerUserID 为 nil = 该租户内的全部 referrer）。F-RES-2 / AFF-019。
 type ListReferralRewardsAdminInput struct {
 	TenantID       int64
 	ReferrerUserID *int64
@@ -213,8 +213,8 @@ type AdminReferralRewardPage struct {
 	Offset         int
 }
 
-// ListReferralRewardsAdmin lists issued referral rewards for a tenant (read-only
-// admin ledger), optionally filtered to one referrer. No money mutation.
+// ListReferralRewardsAdmin 列出某租户已发放的推荐奖励（只读的管理员账本），
+// 可选地按单个 referrer 过滤。不涉及任何金额变更。
 func (s *Service) ListReferralRewardsAdmin(ctx context.Context, input ListReferralRewardsAdminInput) (AdminReferralRewardPage, error) {
 	if s == nil || s.store == nil {
 		return AdminReferralRewardPage{}, ErrStoreNotConfigured

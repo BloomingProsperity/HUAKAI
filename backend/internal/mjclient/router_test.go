@@ -11,8 +11,8 @@ import (
 )
 
 func TestMJFetchImageSeedAndListUseMediaTaskQueries(t *testing.T) {
-	// MUTATION: fetch uses the wrong path id or list ignores the bounded
-	// condition limit; captured service calls below must no longer match.
+	// 变异: fetch 用了错误的 path id，或 list 忽略了受限的 condition limit；
+	// 下面捕获的 service 调用就不应再匹配。
 	service := &serviceStub{
 		statusResult: taskFixture(303, "mj_imagine", json.RawMessage(`{"prompt":"x"}`)),
 		listResult:   []mediatask.Task{taskFixture(303, "mj_imagine", json.RawMessage(`{"prompt":"x"}`))},

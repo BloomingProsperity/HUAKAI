@@ -11,7 +11,7 @@ import (
 )
 
 func TestCheckinRewardBounds(t *testing.T) {
-	// Mutation: replacing randomRewardCents with `return max + 1` makes this bounds test red.
+	// 变异: 把 randomRewardCents 替换成 `return max + 1` 会让本上下界测试变红。
 	settings := fakeSettings{values: map[platformsettings.SettingKey]string{
 		platformsettings.KeyCheckinEnabled:  "true",
 		platformsettings.KeyCheckinMinCents: "7",

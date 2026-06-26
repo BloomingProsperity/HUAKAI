@@ -9,10 +9,10 @@ import (
 const DefaultRecentUsageWindow = 10 * time.Minute
 
 const (
-	// Tenant usage metric keys available to alert rules:
-	// usage.request_count, usage.request_rate_per_minute, usage.success_count,
-	// usage.success_rate, usage.error_count, usage.error_rate, usage.total_cost_usd,
-	// usage.latency_p95_ms, usage.latency_p99_ms.
+	// 告警规则可用的租户用量指标 key:
+	// usage.request_count、usage.request_rate_per_minute、usage.success_count、
+	// usage.success_rate、usage.error_count、usage.error_rate、usage.total_cost_usd、
+	// usage.latency_p95_ms、usage.latency_p99_ms。
 	MetricUsageRequestCount         = "usage.request_count"
 	MetricUsageRequestRatePerMinute = "usage.request_rate_per_minute"
 	MetricUsageSuccessCount         = "usage.success_count"
@@ -20,9 +20,9 @@ const (
 	MetricUsageErrorCount           = "usage.error_count"
 	MetricUsageErrorRate            = "usage.error_rate"
 	MetricUsageTotalCostUSD         = "usage.total_cost_usd"
-	// TTFT (first-byte) latency percentiles over the recent settled window, in
-	// milliseconds. Exposed so latency-SLO alert rules can fire on p95/p99
-	// regressions (OPS-002) — previously only success/error rates were alertable.
+	// 最近已结算窗口内的 TTFT(首字节)延迟分位值,单位毫秒。
+	// 暴露出来是为了让延迟 SLO 告警规则能在 p95/p99 劣化时触发
+	// (OPS-002)——此前只有 success/error 率可作为告警依据。
 	MetricUsageLatencyP95MS = "usage.latency_p95_ms"
 	MetricUsageLatencyP99MS = "usage.latency_p99_ms"
 )
@@ -48,8 +48,8 @@ type RecentUsageRollup struct {
 	SuccessCount int64
 	ErrorCount   int64
 	TotalCostUSD float64
-	// LatencyP95MS/LatencyP99MS are TTFT percentiles over the window in ms; 0 when
-	// no request in the window recorded a first byte.
+	// LatencyP95MS/LatencyP99MS 是窗口内的 TTFT 分位值,单位毫秒;当窗口内
+	// 没有任何请求记录到首字节时为 0。
 	LatencyP95MS float64
 	LatencyP99MS float64
 }

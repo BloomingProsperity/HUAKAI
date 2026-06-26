@@ -22,17 +22,16 @@ func mustResolver(t *testing.T, cidrs ...string) *Resolver {
 	return r
 }
 
-// TestResolverClientIP is the security core: forwarded headers are honored ONLY
-// when the immediate peer is a configured trusted proxy, and the real client is taken
-// as the RIGHTMOST untrusted hop (the address our outermost trusted proxy actually
-// observed) — never a client-controlled leftmost entry.
+// TestResolverClientIP 是安全核心:仅当直接对端是已配置的可信代理时才采信 forwarded
+// header,且真实客户端取自最右侧的非可信 hop(我们最外层可信代理实际观测到的地址)——
+// 绝不取客户端可控的最左侧条目。
 //
-// Mutation checks (each row that would flip):
-//   - drop the `len(r.trusted)==0 -> peer` guard: no_trusted_config / spoof_no_config flip.
-//   - drop the `!isTrusted(peer) -> peer` guard: untrusted_peer_spoof returns the forged
-//     client instead of the socket peer (the headline vuln) → red.
-//   - walk X-Forwarded-For left-to-right instead of right-to-left: multi_hop_spoof returns
-//     the forged leftmost 1.1.1.1 instead of the real 198.51.100.9 → red.
+// 变异自检(每一行会翻转):
+//   - 去掉 `len(r.trusted)==0 -> peer` 这道守卫:no_trusted_config / spoof_no_config 翻转。
+//   - 去掉 `!isTrusted(peer) -> peer` 这道守卫:untrusted_peer_spoof 返回伪造的客户端
+//     而非 socket 对端(头号漏洞)→ 红。
+//   - 把 X-Forwarded-For 从左往右遍历而非从右往左:multi_hop_spoof 返回伪造的最左侧
+//     1.1.1.1 而非真实的 198.51.100.9 → 红。
 func TestResolverClientIP(t *testing.T) {
 	trusted := mustResolver(t, "10.0.0.0/8", "2001:db8::/32")
 
@@ -43,29 +42,29 @@ func TestResolverClientIP(t *testing.T) {
 		xff      string
 		want     string
 	}{
-		// No trusted proxies configured: forwarded headers are ignored entirely.
+		// 未配置任何可信代理:forwarded header 被完全忽略。
 		{"no_trusted_config", mustResolver(t), "203.0.113.7:443", "198.51.100.9", "203.0.113.7"},
 		{"spoof_no_config", mustResolver(t), "203.0.113.7:443", "1.1.1.1", "203.0.113.7"},
 		{"nil_resolver", nil, "203.0.113.7:443", "1.1.1.1", "203.0.113.7"},
 
-		// Untrusted immediate peer: its forwarded header is attacker-controlled → ignored.
+		// 非可信的直接对端:其 forwarded header 受攻击者控制 → 忽略。
 		{"untrusted_peer_spoof", trusted, "203.0.113.7:443", "198.51.100.9", "203.0.113.7"},
 
-		// Trusted peer: honor the forwarded chain.
+		// 可信对端:采信 forwarded 链。
 		{"trusted_peer_single_client", trusted, "10.1.2.3:5000", "198.51.100.9", "198.51.100.9"},
 		{"trusted_peer_no_xff", trusted, "10.1.2.3:5000", "", "10.1.2.3"},
 		{"all_hops_trusted", trusted, "10.1.2.3:5000", "10.9.9.9, 10.8.8.8", "10.1.2.3"},
 
-		// Anti-spoof: a client that forges a leftmost XFF entry. Real chain as appended by
-		// our proxies is: [forged 1.1.1.1], realclient 198.51.100.9, trusted hop 10.9.9.9.
-		// Rightmost-untrusted walk returns the real client, never the forgery.
+		// 防伪造:客户端伪造了最左侧的 XFF 条目。我们代理实际追加得到的真实链是:
+		// [伪造的 1.1.1.1]、真实客户端 198.51.100.9、可信 hop 10.9.9.9。
+		// 「最右侧非可信」遍历返回真实客户端,绝不返回伪造值。
 		{"multi_hop_spoof", trusted, "10.1.2.3:5000", "1.1.1.1, 198.51.100.9, 10.9.9.9", "198.51.100.9"},
 
-		// Malformed rightmost hop (appended by our trusted proxy) → cannot trust the chain,
-		// fall back to the trusted peer rather than a spoofable value.
+		// 最右侧 hop(由我们可信代理追加)格式错误 → 无法信任整条链,
+		// 回退到可信对端而非一个可被伪造的值。
 		{"malformed_rightmost_hop", trusted, "10.1.2.3:5000", "198.51.100.9, garbage", "10.1.2.3"},
 
-		// IPv6 trusted peer + untrusted IPv6 client.
+		// IPv6 可信对端 + 非可信 IPv6 客户端。
 		{"ipv6_trusted_peer", trusted, "[2001:db8::1]:5000", "2606:4700::1234", "2606:4700::1234"},
 	}
 	for _, tc := range cases {
@@ -77,24 +76,24 @@ func TestResolverClientIP(t *testing.T) {
 	}
 }
 
-// TestResolverClientIPRepeatedXFFHeaders guards the repeated-header case: a request may carry
-// X-Forwarded-For as MULTIPLE header fields (RFC 7230 §3.2.2). A client can spoof the first
-// field; our trusted proxy appends the real client in a later field. The resolver must join all
-// fields in order before the right-to-left walk — http.Header.Get reads only the first.
+// TestResolverClientIPRepeatedXFFHeaders 守护重复 header 的场景:一个请求可能携带
+// X-Forwarded-For 作为多个 header field(RFC 7230 §3.2.2)。客户端能伪造第一个 field;
+// 我们的可信代理把真实客户端追加在后面的 field。resolver 必须先按顺序拼接所有 field,
+// 再做从右往左遍历——http.Header.Get 只读第一个。
 //
-// Mutation: revert to Header.Get("X-Forwarded-For") → only "1.1.1.1" is parsed and returned → red.
+// 变异:退回 Header.Get("X-Forwarded-For") → 只解析并返回 "1.1.1.1" → 红。
 func TestResolverClientIPRepeatedXFFHeaders(t *testing.T) {
 	trusted := mustResolver(t, "10.0.0.0/8")
 	r := &http.Request{RemoteAddr: "10.1.2.3:5000", Header: http.Header{}}
-	r.Header.Add("X-Forwarded-For", "1.1.1.1")      // client-supplied spoof (first field)
-	r.Header.Add("X-Forwarded-For", "198.51.100.9") // appended by our trusted proxy (later field)
+	r.Header.Add("X-Forwarded-For", "1.1.1.1")      // 客户端伪造(第一个 field)
+	r.Header.Add("X-Forwarded-For", "198.51.100.9") // 由我们的可信代理追加(后面的 field)
 	if got := trusted.ClientIP(r); got != "198.51.100.9" {
 		t.Fatalf("repeated XFF: got %q want 198.51.100.9 (must join all header fields, not just the first)", got)
 	}
 }
 
-// TestResolverBareIPTrust proves a bare-IP allowlist entry trusts exactly that host (/32),
-// not its neighbours. Mutation: widen the bare-IP prefix → the .4 peer would wrongly honor XFF.
+// TestResolverBareIPTrust 证明裸 IP 的 allowlist 条目只信任那一台主机(/32),
+// 而非其邻居。变异:放宽裸 IP 的 prefix → .4 对端会被错误地采信 XFF。
 func TestResolverBareIPTrust(t *testing.T) {
 	r := mustResolver(t, "10.1.2.3")
 	if got := r.ClientIP(req("10.1.2.3:5000", "198.51.100.9")); got != "198.51.100.9" {
@@ -105,14 +104,14 @@ func TestResolverBareIPTrust(t *testing.T) {
 	}
 }
 
-// TestNewResolverRejectsMalformedCIDR proves a bad allowlist entry fails loudly at boot
-// rather than being silently dropped (which could read as "trust nothing" or be confused
-// with "trust everything"). Mutation: swallow the parse error → this returns nil err → red.
+// TestNewResolverRejectsMalformedCIDR 证明非法的 allowlist 条目会在启动时大声失败,
+// 而不是被默默丢弃(那可能被理解成「谁都不信任」或与「信任所有人」混淆)。
+// 变异:吞掉解析 error → 此处返回 nil err → 红。
 func TestNewResolverRejectsMalformedCIDR(t *testing.T) {
 	if _, err := NewResolver([]string{"10.0.0.0/8", "not-an-ip"}); err == nil {
 		t.Fatal("NewResolver must reject a malformed trusted-proxy entry")
 	}
-	// Blank/whitespace entries are skipped, not errors.
+	// 空白/纯空格条目被跳过,而非报错。
 	if _, err := NewResolver([]string{"", "  "}); err != nil {
 		t.Fatalf("blank entries must be skipped, got %v", err)
 	}

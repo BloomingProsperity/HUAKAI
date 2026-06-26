@@ -48,8 +48,8 @@ type Deps struct {
 	Auth     Auth
 	Payments PaymentExporter
 	Usage    UsageExporter
-	Orders   OrdersExporterDep  // for /v1/admin/orders/export.csv
-	Refunds  RefundsExporterDep // for /v1/admin/refunds/export.csv
+	Orders   OrdersExporterDep  // 供 /v1/admin/orders/export.csv 使用
+	Refunds  RefundsExporterDep // 供 /v1/admin/refunds/export.csv 使用
 
 	MaxRows    int
 	FlushEvery int
@@ -68,7 +68,7 @@ type Range struct {
 func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/v1/admin/payments/export.csv", NewPaymentsExportHandler(d))
 	r.Get("/v1/admin/usage/export.csv", NewUsageExportHandler(d))
-	// OPS-005: order and refund CSV exports (read-only, no billing side effects)
+	// OPS-005：订单与退款的 CSV 导出（只读，无计费副作用）
 	r.Get("/v1/admin/orders/export.csv", NewOrdersExportHandler(d))
 	r.Get("/v1/admin/refunds/export.csv", NewRefundsExportHandler(d))
 }

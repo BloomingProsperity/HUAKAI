@@ -245,9 +245,9 @@ func moderationTokens(value string) []string {
 }
 
 func normalizeModerationText(value string) string {
-	// NFKC + zero-width stripping catches common width and invisible-character
-	// evasions. This remains token matching, not semantic filtering; cross-script
-	// confusables and language-specific segmentation need later classifiers.
+	// NFKC + 剥离零宽字符可拦住常见的全角/不可见字符绕过。
+	// 这仍是 token 匹配,不是语义过滤；跨脚本形近字
+	// 和语言相关的分词需要后续的分类器处理。
 	return strings.Map(func(r rune) rune {
 		if isZeroWidthRune(r) {
 			return -1

@@ -8,8 +8,8 @@ import (
 )
 
 func TestExternalSettingsConfigStoreMergesPlatformSettings(t *testing.T) {
-	// Mutation: wiring the screener to the SQL moderation config directly,
-	// without merging platformsettings, leaves External disabled and this red.
+	// 变异:把 screener 直接接到 SQL moderation 配置上,
+	// 不合并 platformsettings,会让 External 保持禁用,本用例随之变红。
 	settings := &externalSettingsStub{values: map[platformsettings.SettingKey]string{
 		platformsettings.KeyModerationExternalEnabled:      "true",
 		platformsettings.KeyModerationExternalBaseURL:      "https://moderation.example.test/v1/moderations",

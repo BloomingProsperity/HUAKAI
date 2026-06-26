@@ -22,8 +22,7 @@ import (
 )
 
 func TestSunoSubmitFetchRoundTrip(t *testing.T) {
-	// MUTATION: fetch looks up a different task id; the returned task id below
-	// will not match the submitted id.
+	// 变异:fetch 查的是另一个 task id;下面返回的 task id 就会和提交的 id 对不上。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openSunoPool(t, ctx)

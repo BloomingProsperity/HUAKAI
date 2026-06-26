@@ -3,8 +3,8 @@ package apikeymodelallow
 import "testing"
 
 func TestModelAllowlistMatcher(t *testing.T) {
-	// MUTATION: returning true for a non-empty allowlist miss makes the
-	// gpt-3.5 case go red; trimming/case regressions make the mixed-case case red.
+	// 变异:当非空 allowlist 未命中却返回 true,会让 gpt-3.5 用例转红;
+	// trim/大小写处理的回归则会让 mixed-case 用例转红。
 	allowGPT4AndClaude := "gpt-4o,claude-3"
 	mixedCase := " GPT-4O , Claude-3 "
 	empty := ""

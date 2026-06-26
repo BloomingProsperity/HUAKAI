@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// TestStripHopByHopRequestHeaders guards SEC-098: hop-by-hop request headers
-// (and any header named in Connection) must be removed before forwarding, while
-// ordinary end-to-end headers are preserved. MUTATION: skip the h.Del in the
-// hopByHopRequestHeaders loop -> Keep-Alive/Upgrade survive -> this test fails.
+// TestStripHopByHopRequestHeaders 守护 SEC-098:逐跳(hop-by-hop)请求头
+//(以及任何在 Connection 中点名的头)必须在转发前被移除,而普通的端到端(end-to-end)
+// 头则要保留。变异:跳过 hopByHopRequestHeaders 循环里的 h.Del -> Keep-Alive/Upgrade
+// 存活下来 -> 本测试失败。
 func TestStripHopByHopRequestHeaders(t *testing.T) {
 	h := http.Header{}
 	h.Set("Keep-Alive", "timeout=5")

@@ -194,10 +194,9 @@ func sameIdempotentTask(existing Task, input CreateTaskInput) bool {
 		jsonCanonicalEqual(existing.InputParams, input.InputParams)
 }
 
-// jsonCanonicalEqual compares two JSON payloads by value, tolerating the
-// representation changes PostgreSQL JSONB applies on round-trip (e.g. a space
-// after the key colon, key reordering). Falls back to byte equality for
-// non-JSON input.
+// jsonCanonicalEqual 按值比较两个 JSON payload,容忍 PostgreSQL JSONB
+// 在往返过程中施加的表示形态变化(例如 key 冒号后的空格、key 重排序)。
+// 对非 JSON 输入回退到字节相等比较。
 func jsonCanonicalEqual(a, b []byte) bool {
 	var av, bv any
 	if err := json.Unmarshal(a, &av); err != nil {

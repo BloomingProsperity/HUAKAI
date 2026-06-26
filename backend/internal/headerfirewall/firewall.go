@@ -162,10 +162,10 @@ func normalize(value string) string {
 	return strings.ToLower(http.CanonicalHeaderKey(strings.TrimSpace(value)))
 }
 
-// egressLeakRequestRules are proxy/forwarding/CDN headers that must NEVER leak to
-// upstream on the OUTBOUND request — they trivially identify the gateway as a
-// relay/proxy to upstream WAFs (Cloudflare/Akamai). Auth headers (Authorization,
-// X-API-Key, Anthropic-*) are deliberately NOT included.
+// egressLeakRequestRules 是一批 proxy/forwarding/CDN 头,在 OUTBOUND(出站)请求上
+// 绝不能泄露给上游——它们会轻易地向上游 WAF(Cloudflare/Akamai)暴露本网关是一个
+// 中继/代理(relay/proxy)。鉴权头(Authorization、X-API-Key、Anthropic-*)是
+// 故意不纳入的。
 var egressLeakRequestRules = []headerRule{
 	exactRule("X-Forwarded-For"),
 	exactRule("X-Forwarded-Host"),
@@ -183,11 +183,10 @@ var egressLeakRequestRules = []headerRule{
 	prefixRule("X-Amz-Cf-"),
 }
 
-// NormalizeEgressRequestHeaders strips proxy/forwarding/CDN-leak headers from the
-// OUTBOUND upstream request so the gateway is not trivially fingerprinted as a
-// relay by upstream WAFs. Egress anti-detection hygiene; safe for ALL paths (these
-// headers are never required by upstream and never carry auth). Parity with
-// CLIProxyAPI / sub2api / AIClient-2-API egress header normalization.
+// NormalizeEgressRequestHeaders 从 OUTBOUND(出站)上游请求中剥离 proxy/forwarding/CDN
+// 泄露头,使本网关不会被上游 WAF 轻易地指纹识别为中继(relay)。这是出站反检测的卫生措施;
+// 对所有路径都安全(这些头上游从不需要,也从不携带鉴权)。与 CLIProxyAPI / sub2api /
+// AIClient-2-API 的出站头规范化保持对齐。
 func NormalizeEgressRequestHeaders(h http.Header) {
 	if h == nil {
 		return

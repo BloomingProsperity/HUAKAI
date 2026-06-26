@@ -8,8 +8,7 @@ import (
 )
 
 func TestSunoFetchRoutesUseMediaTaskStatus(t *testing.T) {
-	// MUTATION: fetch reads the wrong path id or ignores the query id; captured
-	// service calls below must no longer match.
+	// 变异:fetch 读错了 path id 或忽略了 query id;下面记录到的 service 调用就会对不上。
 	service := &serviceStub{
 		statusResult: taskFixture(603, "suno_generate", json.RawMessage(`{"prompt":"x"}`)),
 	}

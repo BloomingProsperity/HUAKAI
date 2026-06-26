@@ -13,7 +13,7 @@ import (
 )
 
 // ============================================================
-// Fingerprints / config keys
+// 指纹 / 配置键
 // ============================================================
 
 const (
@@ -23,29 +23,28 @@ const (
 	envSignupBonusUSDMicros   = "HUAKAI_SIGNUP_BONUS_USD_MICROS"
 	envInviteeRewardUSDMicros = "HUAKAI_REFERRAL_INVITEE_USD_MICROS"
 
-	// signupInviteeMicrosPerCent: 1 USD = 100 cents = 1 000 000 micros => 1 cent = 10 000 micros
+	// signupInviteeMicrosPerCent: 1 USD = 100 美分 = 1 000 000 micros => 1 美分 = 10 000 micros
 	signupInviteeMicrosPerCent = 10_000
 )
 
 // ============================================================
-// Config
+// 配置
 // ============================================================
 
-// SignupInviteeConfig holds the bonus/reward amounts for the two signup-time
-// wallet credits. Both default to 0 (feature off). Amounts are in USD micros;
-// a positive value enables the credit.
+// SignupInviteeConfig 持有两笔注册时钱包入账的奖励金额。
+// 两者默认都为 0 (功能关闭)。金额单位为 USD micros; 正值即启用该入账。
 type SignupInviteeConfig struct {
-	// SignupBonusUSDMicros is the welcome credit issued to every new registrant.
-	// Env: HUAKAI_SIGNUP_BONUS_USD_MICROS (default 0 = disabled).
+	// SignupBonusUSDMicros 是发给每位新注册用户的欢迎入账。
+	// Env: HUAKAI_SIGNUP_BONUS_USD_MICROS (默认 0 = 禁用)。
 	SignupBonusUSDMicros int64
-	// ReferralInviteeUSDMicros is the credit issued to the new user when an
-	// invite binding is applied at registration.
-	// Env: HUAKAI_REFERRAL_INVITEE_USD_MICROS (default 0 = disabled).
+	// ReferralInviteeUSDMicros 是注册时应用邀请绑定后,
+	// 发给新用户的入账。
+	// Env: HUAKAI_REFERRAL_INVITEE_USD_MICROS (默认 0 = 禁用)。
 	ReferralInviteeUSDMicros int64
 }
 
-// SignupInviteeConfigFromEnv reads config from environment variables.
-// Missing or zero values leave the feature disabled (default-OFF safety).
+// SignupInviteeConfigFromEnv 从环境变量读取配置。
+// 缺失或为零值时功能保持禁用 (默认关闭的安全姿态)。
 func SignupInviteeConfigFromEnv() SignupInviteeConfig {
 	return SignupInviteeConfig{
 		SignupBonusUSDMicros:     parseEnvMicros(envSignupBonusUSDMicros),
@@ -65,24 +64,24 @@ func parseEnvMicros(key string) int64 {
 	return n
 }
 
-// signupInviteeCents converts USD micros to cents (integer division).
+// signupInviteeCents 把 USD micros 换算为美分 (整数除法)。
 func signupInviteeCents(micros int64) int64 {
 	return micros / signupInviteeMicrosPerCent
 }
 
 // ============================================================
-// Result types
+// 结果类型
 // ============================================================
 
-// SignupBonusResult is returned by IssueSignupBonus.
+// SignupBonusResult 由 IssueSignupBonus 返回。
 type SignupBonusResult struct {
-	Issued         bool  // true on first issue
-	AlreadyIssued  bool  // true when idempotent replay
-	NewBalance     int64 // cents
+	Issued         bool  // 首次发放时为 true
+	AlreadyIssued  bool  // 幂等重放时为 true
+	NewBalance     int64 // 美分
 	BillingEventID int64
 }
 
-// InviteeRewardResult is returned by IssueInviteeReward.
+// InviteeRewardResult 由 IssueInviteeReward 返回。
 type InviteeRewardResult struct {
 	Issued         bool
 	AlreadyIssued  bool
@@ -91,21 +90,21 @@ type InviteeRewardResult struct {
 }
 
 // ============================================================
-// Store interfaces
+// Store 接口
 // ============================================================
 
-// SignupBonusStore is implemented by PostgresStore.
+// SignupBonusStore 由 PostgresStore 实现。
 type SignupBonusStore interface {
 	ApplySignupBonus(context.Context, signupBonusInput) (SignupBonusResult, error)
 }
 
-// InviteeRewardStore is implemented by PostgresStore.
+// InviteeRewardStore 由 PostgresStore 实现。
 type InviteeRewardStore interface {
 	ApplyInviteeReward(context.Context, inviteeRewardInput) (InviteeRewardResult, error)
 }
 
 // ============================================================
-// Internal input types
+// 内部输入类型
 // ============================================================
 
 type signupBonusInput struct {
@@ -123,20 +122,19 @@ type inviteeRewardInput struct {
 }
 
 // ============================================================
-// Injectable credit functions (testable, mirrors checkin/referral)
+// 可注入的入账函数 (便于测试, 与 checkin/referral 同款)
 // ============================================================
 
 var insertSignupBonusTopupCreditTx = insertTopupCreditTx
 var insertInviteeRewardTopupCreditTx = insertTopupCreditTx
 
 // ============================================================
-// IssueSignupBonus — Service facade
+// IssueSignupBonus — Service 门面
 // ============================================================
 
-// IssueSignupBonus issues a one-time welcome wallet credit to a new user.
-// If cfg.SignupBonusUSDMicros <= 0 the call is a no-op (default-OFF safety).
-// On idempotency conflict the error is suppressed — safe for registration
-// retries and OAuth re-entry.
+// IssueSignupBonus 给新用户发放一次性的欢迎钱包入账。
+// 若 cfg.SignupBonusUSDMicros <= 0 则本次调用为 no-op (默认关闭的安全姿态)。
+// 遇幂等冲突时错误被吞掉 — 对注册重试和 OAuth 重入是安全的。
 func (s *Service) IssueSignupBonus(ctx context.Context, cfg SignupInviteeConfig, tenantID, userID int64) (SignupBonusResult, error) {
 	if s == nil || s.store == nil {
 		return SignupBonusResult{}, ErrStoreNotConfigured
@@ -160,12 +158,12 @@ func (s *Service) IssueSignupBonus(ctx context.Context, cfg SignupInviteeConfig,
 }
 
 // ============================================================
-// IssueInviteeReward — Service facade
+// IssueInviteeReward — Service 门面
 // ============================================================
 
-// IssueInviteeReward issues a one-time invite-based wallet credit to the
-// referee (new user) when an invite binding is applied at registration.
-// If cfg.ReferralInviteeUSDMicros <= 0 the call is a no-op.
+// IssueInviteeReward 在注册时应用邀请绑定后, 给被邀请人 (新用户)
+// 发放一次性的、基于邀请的钱包入账。
+// 若 cfg.ReferralInviteeUSDMicros <= 0 则本次调用为 no-op。
 func (s *Service) IssueInviteeReward(ctx context.Context, cfg SignupInviteeConfig, tenantID, userID int64) (InviteeRewardResult, error) {
 	if s == nil || s.store == nil {
 		return InviteeRewardResult{}, ErrStoreNotConfigured

@@ -17,8 +17,8 @@ import (
 )
 
 func TestBulkCreateKeywords_AllInserted(t *testing.T) {
-	// Mutation: insert only the first valid item; accepted becomes 1 and the
-	// stored keyword count/assertions below go red.
+	// 变异:只插入第一条有效项；accepted 会变成 1,下面的
+	// stored keyword 数量/断言随之变红。
 	ctx := context.Background()
 	pool := openModerationBulkIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))
@@ -55,8 +55,8 @@ func TestBulkCreateKeywords_AllInserted(t *testing.T) {
 }
 
 func TestBulkCreateKeywords_PartialSuccess(t *testing.T) {
-	// Mutation: validate by returning a top-level error or wrap the whole batch
-	// so one bad row rolls back all valid rows; accepted/new-row assertions go red.
+	// 变异:校验时返回顶层 error,或把整批包成一个事务,
+	// 让一条坏行回滚掉所有有效行；accepted/新增行断言随之变红。
 	ctx := context.Background()
 	pool := openModerationBulkIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))
@@ -100,8 +100,8 @@ func TestBulkCreateKeywords_PartialSuccess(t *testing.T) {
 }
 
 func TestBulkCreateHashes_RejectsNonSHA256(t *testing.T) {
-	// Mutation: skip hash_hex validation and send invalid rows to SQL; this test
-	// either observes a top-level CHECK failure or the bad hash row leaking in.
+	// 变异:跳过 hash_hex 校验,把非法行直接发给 SQL；本用例
+	// 要么观察到顶层 CHECK 失败,要么看到坏 hash 行泄漏进来。
 	ctx := context.Background()
 	pool := openModerationBulkIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))
@@ -139,8 +139,8 @@ func TestBulkCreateHashes_RejectsNonSHA256(t *testing.T) {
 }
 
 func TestBulk_TenantScoped(t *testing.T) {
-	// Mutation: drop tenant_id from the bulk insert/list path or dedupe globally;
-	// same keyword in two tenants collapses or leaks and these assertions go red.
+	// 变异:把 tenant_id 从 bulk 插入/列出路径里去掉,或者全局去重；
+	// 同一个 keyword 在两个租户里会被合并或泄漏,这些断言随之变红。
 	ctx := context.Background()
 	pool := openModerationBulkIntegrationPool(t, ctx)
 	store := NewSQLStore(dbmoderation.New(pool))

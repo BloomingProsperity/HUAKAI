@@ -17,7 +17,7 @@ import (
 )
 
 func TestAlertRuleAdminCRUD(t *testing.T) {
-	// MUTATION: create/update/delete/list are not wired to the same tenant-scoped service; disabled update or post-delete list assertions fail.
+	// 变异:create/update/delete/list 没有接到同一个按租户限定的服务上;禁用更新或删除后列表的断言失败。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
 	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
@@ -66,7 +66,7 @@ func TestAlertRuleAdminCRUD(t *testing.T) {
 }
 
 func TestAlertRuleAdminValidation(t *testing.T) {
-	// MUTATION: bypass HTTP/service validation; invalid comparator or severity returns 201 instead of 400.
+	// 变异:绕过 HTTP/service 校验;非法的 comparator 或 severity 返回 201 而非 400。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
 	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
@@ -88,7 +88,7 @@ func TestAlertRuleAdminValidation(t *testing.T) {
 }
 
 func TestAlertEventsAndSilencesAdmin(t *testing.T) {
-	// MUTATION: ignore rule_id/state event filters or silence delete tenant predicate; filtered list or post-delete silence list is wrong.
+	// 变异:忽略 rule_id/state 事件过滤,或忽略 silence 删除时的 tenant 谓词;过滤后的列表或删除后的 silence 列表会出错。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
 	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
@@ -154,7 +154,7 @@ func TestAlertEventsAndSilencesAdmin(t *testing.T) {
 }
 
 func TestAlertAdminTenantScope(t *testing.T) {
-	// MUTATION: trust tenant_id body/query without admin identity scope; tenant_operator for tenant 7 can create tenant 8 rules.
+	// 变异:不结合 admin 身份的 scope 就信任 body/query 里的 tenant_id;租户 7 的 tenant_operator 能创建租户 8 的规则。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := alerting.NewService(alerting.NewMemoryStore(), alerting.WithClock(func() time.Time { return now }))
 	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RoleTenantOperator, ScopeTenantID: 7}}

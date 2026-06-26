@@ -1,13 +1,13 @@
 //go:build integration_pg
 
-// Migration guard for 0145_hermes_tool_calls: proves the hermes_tool_calls table
-// + its tool_name / result_status CHECK constraints exist and are discriminating
-// (an unknown tool_name is rejected), and that the hermes_audit_events action
-// whitelist accepts the new hermes.tool.<name> actions after the migration.
+// 0145_hermes_tool_calls 迁移守卫:证明 hermes_tool_calls 表
+// 及其 tool_name / result_status CHECK 约束存在且具区分性
+// (未知的 tool_name 会被拒绝),并证明迁移后 hermes_audit_events 的 action
+// 白名单接受新增的 hermes.tool.<name> 动作。
 //
-// Requires HUAKAI_DATABASE_URL pointing at a migrated DB; skips cleanly when
-// unset (mirrors the repo's other integration_pg guards). Does NOT migrate or
-// mutate shared schema beyond inserting + deleting its own rows.
+// 需要 HUAKAI_DATABASE_URL 指向一个已迁移的 DB;未设置时干净跳过
+// (与仓库内其它 integration_pg 守卫一致)。除插入并删除自身行外,不会迁移或
+// 改动共享 schema。
 package hermestoolsdb
 
 import (
@@ -39,9 +39,9 @@ func openToolCallsPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	return p
 }
 
-// seedTenantUser creates a throwaway tenant + user so the (tenant_id,
-// actor_user_id) values reference plausible ids; hermes_tool_calls has no FK on
-// them but a real tenant/user keeps the row realistic. Returns ids + cleanup.
+// seedTenantUser 创建一个一次性的 tenant + user,使 (tenant_id,
+// actor_user_id) 的值引用合理的 id;hermes_tool_calls 对它们没有 FK,
+// 但真实的 tenant/user 让行更接近实际。返回 id 与 cleanup。
 func seedTenantUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (int64, int64) {
 	t.Helper()
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
@@ -53,9 +53,9 @@ func seedTenantUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (int6
 	var userID int64
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO users (tenant_id, email) VALUES ($1, $2) RETURNING id`, tenantID, "tc-"+suffix+"@example.test").Scan(&userID); err != nil {
-		// users schema may require more columns; fall back to a synthetic id —
-		// the table has no FK, so a non-existent user id is acceptable for the
-		// CHECK-discrimination assertions below.
+		// users schema 可能要求更多列;回退到一个合成 id ——
+		// 该表没有 FK,所以对下面的 CHECK 区分性断言而言,
+		// 不存在的 user id 也可接受。
 		userID = 1
 	}
 	t.Cleanup(func() {
@@ -74,7 +74,7 @@ func TestHermesToolCallsTableAndCheckExist(t *testing.T) {
 	tenantID, userID := seedTenantUser(t, ctx, pool)
 	q := New(pool)
 
-	// A whitelisted tool name + valid status inserts cleanly.
+	// 白名单内的 tool 名 + 合法 status 能干净插入。
 	row, err := q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 		TenantID:      tenantID,
 		ActorUserID:   userID,
@@ -91,10 +91,10 @@ func TestHermesToolCallsTableAndCheckExist(t *testing.T) {
 		t.Fatalf("returned id=%d want > 0", row.ID)
 	}
 
-	// DISCRIMINATING: an UNKNOWN tool name must be rejected by the CHECK. At the
-	// prior migration the table doesn't exist at all, so this insert would error
-	// differently — here, on the migrated schema, it must be a 23514 CHECK
-	// violation naming the tool_name constraint.
+	// 区分性:未知的 tool 名必须被 CHECK 拒绝。在上一个迁移版本下
+	// 该表根本不存在,所以这条插入会报出不同的错误 —— 而在
+	// 已迁移的 schema 上,它必须是一个点名 tool_name 约束的 23514 CHECK
+	// 违例。
 	_, err = q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 		TenantID:     tenantID,
 		ActorUserID:  userID,
@@ -110,7 +110,7 @@ func TestHermesToolCallsTableAndCheckExist(t *testing.T) {
 		t.Fatalf("unknown tool error=%v want 23514 hermes_tool_calls_tool_name_check", err)
 	}
 
-	// A bad result_status must also be rejected (its CHECK).
+	// 错误的 result_status 也必须被拒绝(其 CHECK)。
 	_, err = q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 		TenantID:     tenantID,
 		ActorUserID:  userID,
@@ -127,10 +127,10 @@ func TestHermesToolCallsTableAndCheckExist(t *testing.T) {
 }
 
 func TestHermesAuditActionWhitelistAcceptsToolActions(t *testing.T) {
-	// Regression: the migration must extend hermes_audit_events_action_check to
-	// admit the six hermes.tool.<name> actions; without it, the tool-execute
-	// audit mirror would violate the CHECK. DISCRIMINATING: a bogus hermes.tool.*
-	// action that is NOT one of the six must still be rejected.
+	// 回归:迁移必须扩展 hermes_audit_events_action_check 以
+	// 接纳六个 hermes.tool.<name> 动作;否则 tool-execute 的
+	// 审计镜像就会违反 CHECK。区分性:一个不属于这六个之一的
+	// 伪造 hermes.tool.* 动作仍必须被拒绝。
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pool := openToolCallsPool(t, ctx)
@@ -156,7 +156,7 @@ func TestHermesAuditActionWhitelistAcceptsToolActions(t *testing.T) {
 		}
 	}
 
-	// A non-whitelisted hermes.tool.* action must still be rejected.
+	// 不在白名单内的 hermes.tool.* 动作仍必须被拒绝。
 	err := insertAudit("hermes.tool.bogus_mutator")
 	if err == nil {
 		t.Fatalf("bogus hermes.tool.* action accepted; the whitelist is too permissive")

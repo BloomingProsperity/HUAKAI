@@ -262,7 +262,7 @@ func formatTypeIsJSON(raw json.RawMessage) bool {
 	}
 }
 
-// --- low-level tolerant helpers ---------------------------------------------
+// --- 底层宽容辅助函数 ---------------------------------------------
 
 // asArray 把 raw 解码为由 raw 元素组成的 JSON 数组,对 null、字符串、数字、
 // 对象或畸形输入返回 ok=false。

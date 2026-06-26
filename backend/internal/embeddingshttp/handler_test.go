@@ -412,10 +412,10 @@ func TestEmbeddingsHandler_SettleErrorReturns500WithoutDoubleClose(t *testing.T)
 	if got := len(env.settler.settles); got != 1 {
 		t.Fatalf("settle attempts=%d want 1", got)
 	}
-	// Settle-error path must NOT abort: aborting a claim whose Settle may have
-	// partially committed risks a double-close. The dangling reserve is instead
-	// reclaimed by claim lease-expiry + the reconciliation worker. Locks in the
-	// Owner-approved 2026-06-04 decision -- adding an abort here turns this RED.
+	// Settle 出错路径【不能】abort：对一个 Settle 可能已部分提交的 claim 做
+	// abort 有 double-close 风险。悬挂的 reserve 改由 claim lease 过期 +
+	// 对账 worker 回收。锁住 Owner 已批准的 2026-06-04 决策——在此处加 abort
+	// 会让本测试变红。
 	if got := len(env.settler.aborts); got != 0 {
 		t.Fatalf("abort calls=%d want 0 -- settle-error must not double-close", got)
 	}

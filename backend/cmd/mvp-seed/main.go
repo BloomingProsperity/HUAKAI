@@ -1,12 +1,11 @@
-// Command mvp-seed provisions a complete, persistent routing target for the
-// local MVP demo: a tenant + user (+ balance) + API key, and the full
+// 命令 mvp-seed 为本地 MVP 演示预置一个完整且持久的路由目标:一个 tenant +
+// user(+ balance)+ API key,以及一个 chat 请求解析与路由所需的完整
 // provider → channel → provider_account → pool_group → model → alias →
-// model_pool_binding → registry snapshot chain a chat request needs to resolve
-// and route. Unlike the smoke test's transient seed, it does NOT clean up, and
-// it prints the plaintext hk_ key so a human (or the frontend) can call the
-// gateway. Idempotent on the tenant name: re-running reuses the demo tenant.
+// model_pool_binding → registry snapshot 链条。与 smoke 测试的临时种子不同,
+// 它**不会**做清理,并且会打印明文 hk_ key,以便人工(或前端)调用网关。
+// 对 tenant 名称幂等:重跑会复用演示 tenant。
 //
-// Run: HUAKAI_DATABASE_URL=... go run ./cmd/mvp-seed
+// 运行:HUAKAI_DATABASE_URL=... go run ./cmd/mvp-seed
 package main
 
 import (
@@ -52,9 +51,8 @@ func run() error {
 
 	unique := uuid.NewString()[:8]
 
-	// Each run is a fresh isolated tenant so the alias/model/binding never collide
-	// on re-run. (Frontend integration later seeds the routing target under the
-	// registration tenant instead.)
+	// 每次运行都是一个全新隔离的 tenant,这样重跑时 alias/model/binding 永远不会
+	// 冲突。(后续前端集成改为在注册 tenant 下预置路由目标。)
 	var tenantID int64
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`, demoTenantName+"-"+unique).Scan(&tenantID); err != nil {
@@ -125,9 +123,9 @@ func run() error {
 		return fmt.Errorf("provider_account: %w", err)
 	}
 
-	// Seed a decryptable credential under the gateway's key so the vault can
-	// resolve one. The dev mock upstream ignores the value. The key (material +
-	// id) MUST match the gateway's HUAKAI_CREDENTIAL_KEY_B64 / _ID at runtime.
+	// 用网关的密钥种入一份可解密的 credential,以便 vault 能解析出一份。dev mock
+	// 上游会忽略其值。该密钥(material + id)在运行时**必须**与网关的
+	// HUAKAI_CREDENTIAL_KEY_B64 / _ID 匹配。
 	if err := seedCredential(ctx, pool, tenantID, accountID); err != nil {
 		return fmt.Errorf("credential: %w", err)
 	}
@@ -168,10 +166,10 @@ func run() error {
 	return nil
 }
 
-// seedCredential encrypts a dummy openai api_key credential under the gateway's
-// credential key (HUAKAI_CREDENTIAL_KEY_B64 / _ID, defaulting to 32 zero bytes /
-// "local-v1") and inserts an active account_credentials row, so the vault can
-// resolve a decryptable credential for the seeded account.
+// seedCredential 用网关的 credential 密钥(HUAKAI_CREDENTIAL_KEY_B64 / _ID,
+// 默认为 32 个零字节 / "local-v1")加密一份虚拟的 openai api_key credential,
+// 并插入一行 active 状态的 account_credentials 记录,以便 vault 能为种入的
+// account 解析出一份可解密的 credential。
 func seedCredential(ctx context.Context, pool *pgxpool.Pool, tenantID, accountID int64) error {
 	keyID := strings.TrimSpace(os.Getenv("HUAKAI_CREDENTIAL_KEY_ID"))
 	if keyID == "" {

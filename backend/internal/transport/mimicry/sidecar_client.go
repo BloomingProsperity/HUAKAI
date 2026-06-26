@@ -20,7 +20,7 @@ const (
 
 var sidecarDialContext = (&net.Dialer{}).DialContext
 
-// SidecarClient connects Go's transport path to the local BoringSSL TLS sidecar.
+// SidecarClient 把 Go 的 transport 路径接到本地 BoringSSL TLS sidecar。
 type SidecarClient struct {
 	socketPath string
 }
@@ -107,10 +107,9 @@ func (s *sidecarTransport) WithProxy(proxyURL *url.URL) (http.RoundTripper, erro
 	return newSidecarTransportFromRT(rt), nil
 }
 
-// DialTLS dials the Unix sidecar, sends one framed JSON control message, waits
-// for an ACK frame, then returns a plaintext stream over the sidecar-owned TLS
-// connection. Sidecar failure is fail-closed; this function never falls back to
-// uTLS or the standard transport.
+// DialTLS 拨号 Unix sidecar,发送一帧带帧长的 JSON 控制消息,等待一帧 ACK,
+// 随后在 sidecar 持有的 TLS 连接之上返回一条明文流。sidecar 失败时 fail-closed;
+// 本函数绝不回退到 uTLS 或标准库 transport。
 func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, profileID string, forceH1 bool, proxy *sidecarProxySpec) (net.Conn, error) {
 	if c == nil {
 		return nil, fmt.Errorf("mimicry sidecar: nil client")

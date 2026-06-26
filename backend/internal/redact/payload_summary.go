@@ -21,7 +21,7 @@ type PayloadLogSummary struct {
 	PayloadSnippet             string
 }
 
-// SafePayloadLogSummary returns correlation data without writing raw payload bytes.
+// SafePayloadLogSummary 返回用于关联分析的数据,且不会写入原始 payload 字节。
 func SafePayloadLogSummary(payload []byte) string {
 	summary := SafePayloadLogSummaryFields(payload)
 	return fmt.Sprintf(

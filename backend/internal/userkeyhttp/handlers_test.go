@@ -307,10 +307,10 @@ func TestDeleteAPIKeys_IdempotentBody(t *testing.T) {
 	}
 }
 
-// T8b: DELETE with malformed non-empty JSON must fail before Revoke.
+// T8b:DELETE 带非空但格式错误的 JSON 时,必须在 Revoke 之前失败。
 //
-// Mutation self-check: if the handler discards Decode errors again, this fixture
-// returns 200 and records one revoke call, so both load-bearing assertions go red.
+// 变异自检:如果 handler 再次丢弃 Decode 的 error,这个 fixture 会返回 200 并记录一次
+// revoke 调用,于是两条承重断言都会变红。
 func TestDeleteAPIKeys_MalformedBodyRejected(t *testing.T) {
 	svc := &stubService{revokeReturn: userkey.RevokeResult{APIKeyID: 88}}
 	mux := mountWithSession(t, svc, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)
@@ -396,9 +396,9 @@ func TestErrorMappingFallthrough(t *testing.T) {
 	}
 }
 
-// KEY-028. MUTATION: handler passing TenantID:0 (dropping session scope) makes the
-// revokeCalls fail the owner-scope assertion; treating ErrNotFound as fatal makes
-// the status/not_found assertion fail; only-first-id makes len(revoked)!=2.
+// KEY-028。变异:handler 传 TenantID:0(丢掉 session 作用域)会让 revokeCalls 的
+// owner-scope 断言失败;把 ErrNotFound 当致命错误会让 status/not_found 断言失败;
+// 只处理第一个 id 会让 len(revoked)!=2。
 func TestBatchRevokeOwnerScopedWithNotFound(t *testing.T) {
 	svc := &stubService{
 		revokeReturn:  userkey.RevokeResult{},
