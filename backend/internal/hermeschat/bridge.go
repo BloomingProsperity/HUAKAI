@@ -78,47 +78,42 @@ func WithMessageContentKeys(keys credentialstore.KeyProvider) Option {
 	}
 }
 
-// WithSessionBindings attaches the in-process operator-binding store used by the
-// conversational READ-ONLY tool loop (WAVE H3b). When set, PrepareRequest binds
-// each chat session's operator identity (keyed by the internal_token's
-// request_id) so the runner's mid-conversation tool callbacks resolve to the
-// session operator. When nil, the chat path is unchanged and no tool loop is
-// available (the internal tool endpoint fails closed on an absent binding).
+// WithSessionBindings 挂载会话式只读工具循环(WAVE H3b)所用的进程内 operator 绑定存储。
+// 设置后,PrepareRequest 会绑定每个聊天会话的 operator 身份(以 internal_token 的
+// request_id 为键),使 runner 在对话中途的工具回调能解析到该会话的 operator。为 nil 时,
+// 聊天路径保持不变,且没有可用的工具循环(内部工具端点在缺少绑定时 fail closed)。
 func WithSessionBindings(b2 *SessionBindings) Option {
 	return func(b *Bridge) {
 		b.sessionBindings = b2
 	}
 }
 
-// WithToolCatalog attaches the read-only tool catalog provider. When set,
-// PrepareRequest injects the sanitized catalog into the runner's chat payload so
-// the LLM knows which diagnostic tools it may call (and grounds its answers).
-// The provider returns ONLY read-only tools; a mutating tool is never described.
+// WithToolCatalog 挂载只读工具目录提供方。设置后,PrepareRequest 会把经清洗的目录注入
+// runner 的聊天 payload,使 LLM 知道它可以调用哪些诊断工具(并据此使回答有据可依)。
+// 该提供方只返回只读工具;mutating 工具绝不会被描述。
 func WithToolCatalog(provider ToolCatalogProvider) Option {
 	return func(b *Bridge) {
 		b.toolCatalog = provider
 	}
 }
 
-// WithToolLoopEnabled is KNOB B's bridge-side gate: the runtime kill-switch for
-// the LLM conversational tool loop's catalog injection. When false, PrepareRequest
-// sets NO tool_catalog field in the runner body even for a bound admin session, so
-// the LLM is told about no tools. Default true (set in NewBridge) => zero behavior
-// change when unset. Orthogonal to WithToolCatalog/WithSessionBindings: the catalog
-// provider can be wired and this still suppresses injection.
+// WithToolLoopEnabled 是 KNOB B 的 bridge 侧闸门:LLM 会话式工具循环目录注入的运行时
+// kill-switch。为 false 时,即便是已绑定的 admin 会话,PrepareRequest 也不会在 runner
+// body 中设置 tool_catalog 字段,因此 LLM 被告知没有任何工具。默认 true(在 NewBridge
+// 中设置)=> 未设置时行为零变。与 WithToolCatalog/WithSessionBindings 正交:即使已接线
+// 目录提供方,本闸门仍会抑制注入。
 func WithToolLoopEnabled(enabled bool) Option {
 	return func(b *Bridge) {
 		b.toolLoopEnabled = enabled
 	}
 }
 
-// ToolCatalogProvider returns the LLM-facing read-only tool catalog injected into
-// the chat payload. *hermesops.Registry's ReadOnlyCatalog satisfies a thin
-// adapter for this; the bridge depends only on the marshaled shape so it does
-// not import hermesops.
+// ToolCatalogProvider 返回注入聊天 payload 的、面向 LLM 的只读工具目录。
+// *hermesops.Registry 的 ReadOnlyCatalog 可通过一层薄适配器满足此接口;bridge 只依赖
+// marshal 后的结构形状,因此不 import hermesops。
 type ToolCatalogProvider interface {
-	// ReadOnlyToolCatalog returns the catalog entries as already-marshalable
-	// values (name + description + input_schema). It MUST exclude mutating tools.
+	// ReadOnlyToolCatalog 以已可 marshal 的值(name + description + input_schema)返回
+	// 目录条目。它必须排除 mutating 工具。
 	ReadOnlyToolCatalog() []map[string]any
 }
 
@@ -131,13 +126,13 @@ type Bridge struct {
 	auditDLQ            auditDLQ
 	headerSettings      headerfirewall.PlatformSettings
 	messageContentKeys  credentialstore.KeyProvider
-	// sessionBindings + toolCatalog back the conversational READ-ONLY tool loop
-	// (WAVE H3b). Both optional: when nil, the chat path is unchanged.
+	// sessionBindings + toolCatalog 支撑会话式只读工具循环(WAVE H3b)。两者均可选:
+	// 为 nil 时聊天路径保持不变。
 	sessionBindings *SessionBindings
 	toolCatalog     ToolCatalogProvider
-	// toolLoopEnabled is KNOB B's bridge-side gate. Default true (NewBridge). When
-	// false, no tool_catalog is injected into the runner body even for a bound
-	// admin session. Set via WithToolLoopEnabled.
+	// toolLoopEnabled 是 KNOB B 的 bridge 侧闸门。默认 true(NewBridge)。为 false 时,
+	// 即便是已绑定的 admin 会话也不会向 runner body 注入 tool_catalog。通过
+	// WithToolLoopEnabled 设置。
 	toolLoopEnabled bool
 }
 
@@ -146,8 +141,8 @@ func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
 		tx: tx, internalBaseURL: DefaultInternalBaseURL,
 		now:    func() time.Time { return time.Now().UTC() },
 		logger: stdWarningLogger{},
-		// KNOB B default: the LLM conversational tool loop is enabled unless a
-		// WithToolLoopEnabled(false) option flips it — zero behavior change unset.
+		// KNOB B 默认值:除非有 WithToolLoopEnabled(false) 选项翻转它,否则 LLM 会话式
+		// 工具循环处于启用状态——未设置时行为零变。
 		toolLoopEnabled: true,
 	}
 	for _, opt := range opts {
@@ -168,10 +163,9 @@ func NewBridge(tx txRunner, opts ...Option) (*Bridge, error) {
 	return b, nil
 }
 
-// ReleaseSession drops the WAVE H3b operator binding for a finished chat
-// session. It is safe to call with an empty request_id or when no bindings store
-// is wired (no-op). startChat defers it after the stream so a binding does not
-// outlive its session even before the expiry-based prune reclaims it.
+// ReleaseSession 为一个已结束的聊天会话丢弃其 WAVE H3b operator 绑定。在 request_id
+// 为空或未接线绑定存储时调用是安全的(空操作)。startChat 会在流结束后 defer 调用它,
+// 这样即使在基于过期的清理回收之前,绑定也不会比其会话存活更久。
 func (b *Bridge) ReleaseSession(requestID string) {
 	if b == nil || b.sessionBindings == nil {
 		return

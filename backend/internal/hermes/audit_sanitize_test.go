@@ -3,7 +3,7 @@ package hermes
 import "testing"
 
 func TestSanitizeArgs_RedactsAPIKey(t *testing.T) {
-	// Regression: audit args must not disclose API keys into hermes_audit_events.
+	// 回归:audit args 绝不能把 API key 泄露进 hermes_audit_events。
 	input := map[string]any{"api_key": "sk-secret-123"}
 
 	got := SanitizeArgs(input)
@@ -15,7 +15,7 @@ func TestSanitizeArgs_RedactsAPIKey(t *testing.T) {
 }
 
 func TestSanitizeArgs_RedactsTokens(t *testing.T) {
-	// Regression: access/refresh tokens must not leak through audit JSON.
+	// 回归:access/refresh token 绝不能通过 audit JSON 泄露。
 	input := map[string]any{
 		"access_token":  "access-secret",
 		"refresh_token": "refresh-secret",
@@ -30,7 +30,7 @@ func TestSanitizeArgs_RedactsTokens(t *testing.T) {
 }
 
 func TestSanitizeArgs_RedactsPasswordAndSecret(t *testing.T) {
-	// Regression: password/secret fields must not be persisted in audit metadata.
+	// 回归:password/secret 字段绝不能被持久化进 audit metadata。
 	input := map[string]any{
 		"password": "p@ssw0rd",
 		"secret":   "runner-secret",
@@ -45,7 +45,7 @@ func TestSanitizeArgs_RedactsPasswordAndSecret(t *testing.T) {
 }
 
 func TestSanitizeArgs_RecursesNestedMaps(t *testing.T) {
-	// Regression: nested tool args must be sanitized before audit write, or inner API keys leak.
+	// 回归:嵌套的 tool args 必须在 audit 写入前 sanitize,否则内层 API key 会泄露。
 	input := map[string]any{"outer": map[string]any{"api_key": "sk-nested-secret"}}
 
 	got := SanitizeArgs(input)
@@ -61,11 +61,11 @@ func TestSanitizeArgs_RecursesNestedMaps(t *testing.T) {
 }
 
 func TestSanitizeArgs_RedactsSensitiveKeyInTypedMap(t *testing.T) {
-	// Regression (P2): a sensitive key inside a TYPED map (map[string]int64) must
-	// be redacted. The old switch only recursed map[string]any, so this collection
-	// fell through unredacted. Mutation check: revert sanitizeValue's default
-	// branch to `return v` (the old switch) and the api_key value 7 survives as a
-	// number under "api_key" instead of "[REDACTED]" — this assertion goes RED.
+	// 回归(P2):typed map(map[string]int64)里的敏感 key 必须
+	// 被 redact。旧的 switch 只对 map[string]any 递归,因此这个 collection
+	// 会未经 redact 漏过。变异检查:把 sanitizeValue 的 default
+	// 分支还原成 `return v`(旧 switch),api_key 的值 7 就会以
+	// 数字形式保留在 "api_key" 下而非 "[REDACTED]"——此断言变红。
 	input := map[string]any{
 		"counts": map[string]int64{"api_key": 7, "requests": 9},
 	}
@@ -85,11 +85,11 @@ func TestSanitizeArgs_RedactsSensitiveKeyInTypedMap(t *testing.T) {
 }
 
 func TestSanitizeArgs_RedactsSensitiveKeyInSliceOfTypedMaps(t *testing.T) {
-	// Regression (P2): a secret under a sensitive key inside a []map[string]any
-	// element must be redacted. The old switch handled []any but not the concrete
-	// []map[string]any element type, so the inner map fell through. Mutation check:
-	// revert sanitizeValue to the old two-case switch and the inner secret_token
-	// survives verbatim in element 0 — this assertion goes RED.
+	// 回归(P2):[]map[string]any 元素里某个敏感 key 下的 secret
+	// 必须被 redact。旧的 switch 处理了 []any,却没处理具体的
+	// []map[string]any 元素类型,因此内层 map 会漏过。变异检查:
+	// 把 sanitizeValue 还原成旧的两分支 switch,内层 secret_token
+	// 就会原文保留在 element 0 中——此断言变红。
 	input := map[string]any{
 		"items": []map[string]any{
 			{"secret_token": "sk-typed-slice-leak", "ok": true},
@@ -118,14 +118,14 @@ func TestSanitizeArgs_RedactsSensitiveKeyInSliceOfTypedMaps(t *testing.T) {
 }
 
 func TestSanitizeArgs_RedactsCredentialsPayloadButKeepsDiagnosticFields(t *testing.T) {
-	// Regression (PRIVACY): the renew_trigger "credentials" payload arg must be
-	// fully redacted (even as a raw string, where nested-key recursion cannot
-	// help), while the SINGULAR non-secret diagnostic fields (credential_id /
-	// credential_version) must SURVIVE so read-only credential diagnostics aren't
-	// degraded. Mutation check: broaden the matcher to "credential" (singular) and
-	// credential_id is wrongly redacted (the survive-assertion goes RED); remove
-	// the "credentials" clause and the raw payload string leaks (the redact
-	// assertion goes RED).
+	// 回归(隐私):renew_trigger 的 "credentials" payload 参数必须
+	// 被完全 redact(即便是原始字符串,此时嵌套 key 的递归也无能
+	// 为力),而单数的非密诊断字段(credential_id /
+	// credential_version)必须保留,以免只读凭据诊断被
+	// 削弱。变异检查:把匹配放宽到 "credential"(单数),
+	// credential_id 就会被错误 redact(保留断言变红);移除
+	// "credentials" 子句,则原始 payload 字符串会泄露(redact
+	// 断言变红)。
 	input := map[string]any{
 		"credentials":        "raw-secret-blob-not-an-object",
 		"credential_id":      int64(3),
@@ -143,7 +143,7 @@ func TestSanitizeArgs_RedactsCredentialsPayloadButKeepsDiagnosticFields(t *testi
 }
 
 func TestSanitizeArgs_PreservesNonSensitive(t *testing.T) {
-	// Regression: audit sanitization must not corrupt non-sensitive routing/debug context.
+	// 回归:audit 的 sanitize 绝不能破坏非敏感的 routing/debug 上下文。
 	input := map[string]any{"tenant_id": int64(42), "name": "test"}
 
 	got := SanitizeArgs(input)

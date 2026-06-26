@@ -1,29 +1,24 @@
-// Package hermesops is the gateway-mediated tool-execution spine for the
-// admin-gated Hermes ops assistant (WAVE H3 read-only + WAVE H4 mutating).
+// Package hermesops 是受 admin 门控的 Hermes 运维助手的、由网关中介的工具执行主干
+// (WAVE H3 只读 + WAVE H4 mutating)。
 //
-// It exposes a registry of tools that wrap EXISTING gateway functions so an
-// operator (and later the assistant LLM) can run root-cause diagnostics AND
-// apply fixes through a single audited endpoint:
-//   - READ-ONLY diagnostic tools (H3): MUST NOT mutate state; dispatched via Run.
-//   - MUTATING ops tools (H4): replay / pause / resume / renew. Each wraps an
-//     existing mutation behind a 5-layer safety contract (RBAC floor, dry-run +
-//     confirm, atomic audit, advisory lock, idempotency) and is dispatched only
-//     through the confirm-gated mutate path — NEVER through Run.
+// 它暴露一个工具 registry,这些工具包裹 EXISTING(既有)的网关函数,好让运营者
+// (以及之后的助手 LLM)能通过单一的受审计端点运行根因诊断 AND(并)施加修复:
+//   - READ-ONLY 诊断工具(H3):MUST NOT(绝不能)改动状态;经 Run dispatch。
+//   - MUTATING 运维工具(H4):replay / pause / resume / renew。每个都把一项既有的 mutation
+//     包在五层安全契约后面(RBAC 下限、dry-run + confirm、atomic audit、advisory lock、
+//     幂等),并且只经 confirm 门控的 mutate 路径 dispatch——NEVER(绝不)经 Run。
 //
-// Design:
-//   - ToolSpec declares a tool's identity, category, min required role, and
-//     either a Run (read-only) or a Resolve + Mutate pair (mutating).
-//   - Registry holds the specs and performs RBAC + dispatch. It fails closed:
-//     an unknown tool is denied, a tool whose dependency is unwired returns an
-//     error (never a panic), a caller lacking the role is denied, and a mutating
-//     tool can never run through the read-only Run path (and vice-versa).
-//   - MutateOrchestrator (mutate_tx.go) owns the single transaction that ties
-//     the mutation to its hermes_tool_calls + admin_audit_events rows (L3) under
-//     a per-target advisory lock (L4).
-//   - Privacy: a tool result carries ONLY enums / counts / ids / fingerprints /
-//     state-names — never prompts, completions, raw bodies, secrets, PII, or
-//     rotated credential material. The persisting layer additionally routes the
-//     args and summary through the hermes sanitizer as defense in depth.
+// 设计:
+//   - ToolSpec 声明一个工具的身份、类别、最低要求角色,以及一个 Run(只读)或一对
+//     Resolve + Mutate(mutating)。
+//   - Registry 持有这些 spec 并执行 RBAC + dispatch。它 fail-closed:未知工具被拒,依赖
+//     未接线的工具返回 error(永不 panic),角色不足的调用方被拒,且 mutating 工具永远无法
+//     走只读 Run 路径运行(反之亦然)。
+//   - MutateOrchestrator(mutate_tx.go)拥有那个单一事务,它在每目标 advisory lock(L4)下
+//     把 mutation 与其 hermes_tool_calls + admin_audit_events 行(L3)绑在一起。
+//   - 隐私:一份工具结果 ONLY(只)携带枚举 / 计数 / id / 指纹 / 状态名——绝不携带 prompt、
+//     completion、原始 body、密钥、PII 或轮换后的凭证材料。持久化层还会作为纵深防御,把 args
+//     与 summary 再过一遍 hermes sanitizer。
 package hermesops
 
 import (
@@ -31,9 +26,8 @@ import (
 	"errors"
 )
 
-// Tool names. These are the authoritative identifiers; they MUST match the
-// hermes_tool_calls.tool_name CHECK list and the hermes.tool.<name> audit
-// actions. H4 mutating tools add new names via a DROP+ADD migration.
+// 工具名。这些是权威标识符;它们 MUST(必须)与 hermes_tool_calls.tool_name 的 CHECK 列表
+// 以及 hermes.tool.<name> 审计动作匹配。H4 mutating 工具通过 DROP+ADD 迁移加入新名字。
 const (
 	ToolCredentialDiagnose    = "credential_diagnose"
 	ToolAccountHealthDiagnose = "account_health_diagnose"
@@ -94,27 +88,23 @@ const (
 	// hermes_tool_calls。Row 全是结构化目录数据(无 PII/密钥)。
 	ToolChannelCatalogList = "channel_catalog_list"
 
-	// WAVE H4 MUTATING tool names. Each wraps an EXISTING admin mutation behind
-	// the 5-layer safety contract (RBAC, dry-run+confirm, atomic audit, advisory
-	// lock, idempotency). They are registered with Mutating=true so the read-only
-	// dispatch path can never run them.
+	// WAVE H4 MUTATING(可变更)工具名。每个都把一项 EXISTING(既有)的 admin mutation 包在
+	// 五层安全契约后面(RBAC、dry-run+confirm、atomic audit、advisory lock、幂等)。它们以
+	// Mutating=true 注册,所以只读 dispatch 路径永远无法运行它们。
 	ToolDLQReplay     = "dlq_replay"
 	ToolAccountPause  = "account_pause"
 	ToolAccountResume = "account_resume"
 	ToolRenewTrigger  = "renew_trigger"
 )
 
-// Roles mirror internal/admin role identifiers. Kept as local constants so this
-// package does not import the admin package for two strings (the RBAC check
-// itself is performed by the caller via admin.AdminIdentity.CanIssueForTenant,
-// which this package never bypasses).
+// Roles 镜像 internal/admin 的角色标识符。保留为本地常量,这样本包就不必为两个字符串去 import
+// admin 包(RBAC 校验本身由调用方经 admin.AdminIdentity.CanIssueForTenant 执行,本包永不绕过它)。
 const (
 	RolePlatformAdmin  = "platform_admin"
 	RoleTenantOperator = "tenant_operator"
 )
 
-// Category groups tools for listing/UX. H3 tools are diagnostic reads; H4 adds
-// mutating ops tools (the "fix" capability).
+// Category 给工具分组用于列表/UX。H3 工具是诊断读;H4 增加了 mutating 运维工具("修复"能力)。
 type Category string
 
 const (
@@ -122,7 +112,7 @@ const (
 	CategoryMutating   Category = "mutating"
 )
 
-// ResultStatus is the persisted hermes_tool_calls.result_status enum.
+// ResultStatus 是持久化的 hermes_tool_calls.result_status 枚举。
 type ResultStatus string
 
 const (
@@ -131,68 +121,57 @@ const (
 	ResultDenied ResultStatus = "denied"
 )
 
-// Sentinel errors. Tools and the registry return these so the HTTP layer can
-// map them to status codes without string matching.
+// 哨兵 error。工具与 registry 返回这些,好让 HTTP 层无需字符串匹配即可把它们映射到状态码。
 var (
-	// ErrToolUnknown is returned when a tool name is not registered.
+	// ErrToolUnknown 在工具名未注册时返回。
 	ErrToolUnknown = errors.New("hermesops: unknown tool")
-	// ErrToolForbidden is returned when the caller's role is below the tool's
-	// minimum required role. Tenant-scope denial is enforced separately by the
-	// caller via CanIssueForTenant and surfaces as a denied row too.
+	// ErrToolForbidden 在调用方角色低于工具最低要求角色时返回。租户作用域的拒绝由调用方经
+	// CanIssueForTenant 单独强制执行,也会同样呈现为一条 denied 行。
 	ErrToolForbidden = errors.New("hermesops: tool forbidden for role")
-	// ErrDependencyUnwired is returned by a tool whose underlying read
-	// dependency is nil. Tools MUST fail closed with this rather than panic.
+	// ErrDependencyUnwired 由其底层读依赖为 nil 的工具返回。工具 MUST(必须)以此 fail-closed
+	// 而非 panic。
 	ErrDependencyUnwired = errors.New("hermesops: tool dependency unwired")
-	// ErrInvalidArgs is returned for malformed / missing required tool args.
+	// ErrInvalidArgs 在工具参数格式错误 / 缺少必填项时返回。
 	ErrInvalidArgs = errors.New("hermesops: invalid tool args")
-	// ErrNotMutating is returned when a mutate/preview path is asked to run a
-	// read-only tool (or vice-versa), so a mutation can never sneak through the
-	// read-only dispatch and a read-only tool can never reach the confirm path.
+	// ErrNotMutating 在 mutate/preview 路径被要求运行一个只读工具(或反之)时返回,这样 mutation
+	// 永远无法从只读 dispatch 偷溜进来,只读工具也永远无法到达 confirm 路径。
 	ErrNotMutating = errors.New("hermesops: tool is not mutating")
-	// ErrNotProposable is returned when the LLM-propose path is asked to resolve a
-	// mutating tool that is not marked Proposable (irreversible / A-level, e.g.
-	// credential rotation). Such a tool may still be driven by an OPERATOR via the
-	// H1 confirm path; the LLM must never propose it. Distinct from ErrNotMutating
-	// (a read-only tool) and ErrToolForbidden (insufficient role).
+	// ErrNotProposable 在 LLM-propose 路径被要求 resolve 一个未标记 Proposable 的 mutating 工具
+	// (不可逆 / A 级,例如凭证轮换)时返回。这类工具仍可由 OPERATOR(运营者)经 H1 confirm 路径
+	// 驱动;但 LLM 永不提议它。区别于 ErrNotMutating(只读工具)与 ErrToolForbidden(角色不足)。
 	ErrNotProposable = errors.New("hermesops: tool is not LLM-proposable")
-	// ErrTargetResolution is returned when a mutating tool cannot resolve its
-	// target (missing/foreign tenant, account not found). It is distinct from
-	// ErrInvalidArgs so the HTTP layer can map it to 404/403 rather than 400.
+	// ErrTargetResolution 在 mutating 工具无法 resolve 其目标(租户缺失/异租户、账号未找到)时返回。
+	// 它区别于 ErrInvalidArgs,好让 HTTP 层把它映射到 404/403 而非 400。
 	ErrTargetResolution = errors.New("hermesops: target resolution failed")
 )
 
-// ToolRequest is the resolved, already-authorized invocation context handed to
-// a tool's Run. TenantID is the middleware-derived, scope-checked tenant; the
-// HTTP layer guarantees CanIssueForTenant passed before Run is called.
+// ToolRequest 是交给工具 Run 的、已 resolve 且已授权的调用上下文。TenantID 是由中间件推导、
+// 经作用域校验的租户;HTTP 层保证在调用 Run 之前 CanIssueForTenant 已通过。
 type ToolRequest struct {
-	// TenantID is the resolved tenant the tool must scope its reads to. Always
-	// > 0 (the HTTP layer rejects a non-positive tenant before dispatch).
+	// TenantID 是工具必须把其读操作限定到的、已 resolve 的租户。永远 > 0(HTTP 层会在 dispatch
+	// 之前拒绝非正的租户)。
 	TenantID int64
-	// ActorUserID is the tenant user whose ops context the operator acts within.
+	// ActorUserID 是运营者所在的、其运维上下文所属的租户用户。
 	ActorUserID int64
-	// Role is the operator's admin role (platform_admin / tenant_operator).
+	// Role 是运营者的 admin 角色(platform_admin / tenant_operator)。
 	Role string
-	// Args is the raw, decoded tool argument map from the request body. A tool
-	// reads only the keys it understands and ignores the rest. Never persisted
-	// raw — the store sanitizes it.
+	// Args 是来自请求 body 的、原始的、已解码的工具参数 map。工具只读它认识的键,其余忽略。
+	// 绝不以原样持久化——store 会脱敏它。
 	Args map[string]any
 }
 
-// ToolResult is a tool's structured, sanitized output. Summary holds ONLY
-// system-diagnostic enums / counts / ids; it is the body returned to the caller
-// and (after a second sanitize pass) persisted to hermes_tool_calls.result_summary.
+// ToolResult 是一个工具的结构化、已脱敏输出。Summary ONLY(只)持有系统诊断的枚举 / 计数 / id;
+// 它是返回给调用方的 body,并(在第二遍脱敏后)持久化到 hermes_tool_calls.result_summary。
 type ToolResult struct {
-	// Summary is the diagnostic payload (enums/counts/ids only).
+	// Summary 是诊断载荷(只含枚举/计数/id)。
 	Summary map[string]any
-	// ErrorClass is an optional non-PII classification when the diagnostic
-	// surfaced a problem (e.g. "invalid_grant", "rate_limit_exceeded"). It is a
-	// short enum, never a free-form message containing user data.
+	// ErrorClass 是诊断暴露出问题时的可选、非 PII 分类(例如 "invalid_grant"、
+	// "rate_limit_exceeded")。它是一个短枚举,绝不是含用户数据的自由文本消息。
 	ErrorClass string
 }
 
-// ArgInt extracts a positive int64 arg, returning ErrInvalidArgs when missing
-// or non-positive. JSON decodes numbers as float64, so both float64 and int64
-// are accepted.
+// ArgInt 提取一个正 int64 参数,缺失或非正时返回 ErrInvalidArgs。JSON 把数字解码为 float64,
+// 所以 float64 与 int64 都接受。
 func ArgInt(args map[string]any, key string) (int64, error) {
 	v, ok := args[key]
 	if !ok {
@@ -219,10 +198,9 @@ func ArgInt(args map[string]any, key string) (int64, error) {
 	}
 }
 
-// ArgString extracts a trimmed non-empty string arg (optional). Returns
-// ("", false) when absent; ("", false) for a non-string value (caller decides
-// whether absence is an error). It never returns user prompt content — callers
-// only pull identifier-shaped args (request_id, claim_id, status filters).
+// ArgString 提取一个去除首尾空白后非空的字符串参数(可选)。缺失时返回 ("", false);非字符串值
+// 时返回 ("", false)(由调用方决定缺失是否算错误)。它绝不返回用户 prompt 内容——调用方只拉取
+// 标识符形态的参数(request_id、claim_id、status 过滤条件)。
 func ArgString(args map[string]any, key string) (string, bool) {
 	v, ok := args[key]
 	if !ok {
@@ -238,67 +216,56 @@ func ArgString(args map[string]any, key string) (string, bool) {
 	return s, true
 }
 
-// ToolSpec declares one tool (read-only diagnostic OR mutating ops tool).
+// ToolSpec 声明一个工具(只读诊断 OR mutating 运维工具)。
 type ToolSpec struct {
 	Name         string
 	Category     Category
 	Description  string
 	ReadOnly     bool
 	RequiredRole string
-	// Mutating is true for the H4 "fix" tools. A mutating tool MUST set Resolve +
-	// Mutate (not Run) and is dispatched only through the confirm-gated mutate
-	// path; the read-only Run dispatch refuses it. RequiresConfirmation is true
-	// for every mutating tool (dry-run + confirm is mandatory this wave).
+	// Mutating 对 H4 的"修复"工具为 true。mutating 工具 MUST(必须)设置 Resolve + Mutate
+	// (而非 Run),并且只经 confirm 门控的 mutate 路径 dispatch;只读 Run dispatch 会拒绝它。
+	// 本波次每个 mutating 工具的 RequiresConfirmation 都为 true(dry-run + confirm 是强制的)。
 	Mutating             bool
 	RequiresConfirmation bool
-	// Proposable marks a MUTATING tool the LLM may PROPOSE in conversation (it then
-	// goes through dry-run preview → operator confirm). It gates ResolveProposal and
-	// ProposableCatalog. Set true ONLY for reversible, B-level mutations (e.g. enable/
-	// disable an account). It is false (default) for irreversible / A-level mutations
-	// (e.g. credential rotation) — those stay operator-only via the H1 confirm path and
-	// are NEVER shown to, nor proposable by, the LLM. Read-only tools ignore this flag.
+	// Proposable 标记一个 LLM 可在对话中 PROPOSE(提议)的 MUTATING 工具(随后它会走 dry-run
+	// preview → 运营者 confirm)。它门控 ResolveProposal 与 ProposableCatalog。ONLY(只)对
+	// 可逆的 B 级 mutation 置 true(例如启用/禁用一个账号)。对不可逆 / A 级 mutation(例如凭证
+	// 轮换)为 false(默认)——这类工具经 H1 confirm 路径保持运营者专属,且 NEVER(绝不)展示给
+	// LLM、也不可由 LLM 提议。只读工具忽略此标志。
 	Proposable bool
-	// InputSchema is a small map describing accepted args (name -> human hint),
-	// surfaced by GET /v1/hermes/tools. It is documentation only, not validation.
+	// InputSchema 是一个描述所接受参数的小 map(name -> 给人看的提示),由 GET /v1/hermes/tools
+	// 呈现。它仅供文档说明,不做校验。
 	InputSchema map[string]string
-	// Run wraps the underlying read function(s) for a READ-ONLY tool. It MUST NOT
-	// mutate state and MUST return an error (never panic) on a missing dependency.
-	// nil for a mutating tool.
+	// Run 为一个 READ-ONLY 工具包裹其底层读函数。它 MUST NOT(绝不能)改动状态,并且在依赖缺失时
+	// MUST(必须)返回 error(永不 panic)。对 mutating 工具为 nil。
 	Run func(ctx context.Context, req ToolRequest) (ToolResult, error)
-	// Resolve performs the READ-ONLY target resolution + dry-run preview for a
-	// MUTATING tool. It validates the target belongs to req.TenantID, reads its
-	// current state, and returns a MutationPlan describing the target + the
-	// intended change. It is called for BOTH the dry-run preview AND immediately
-	// before the real mutation, so the preview can never diverge from the action.
-	// It MUST NOT mutate state. nil for a read-only tool.
+	// Resolve 为一个 MUTATING 工具执行 READ-ONLY 的目标 resolve + dry-run preview。它校验目标
+	// 属于 req.TenantID、读取其当前状态,并返回一个描述目标 + 意图改动的 MutationPlan。它在 BOTH
+	// (两处)被调用——dry-run preview 时 AND 紧接真正 mutation 之前——所以 preview 永远不会与
+	// 实际动作分叉。它 MUST NOT(绝不能)改动状态。对只读工具为 nil。
 	Resolve func(ctx context.Context, req ToolRequest) (MutationPlan, error)
-	// Mutate executes the actual state change for a MUTATING tool, given the plan
-	// produced by Resolve. It is invoked exactly once, only on a confirmed
-	// request, while the per-target advisory lock is held. It returns the final
-	// post-mutation summary (enums/counts/ids/state-names only — NEVER secrets or
-	// rotated credential material). nil for a read-only tool.
+	// Mutate 在给定 Resolve 产出的 plan 后,为一个 MUTATING 工具执行真正的状态改动。它恰好被调用
+	// 一次,且只在已确认的请求上、在持有每目标 advisory lock 期间调用。它返回最终的 mutation 后
+	// summary(只含枚举/计数/id/状态名——NEVER(绝不)含密钥或轮换后的凭证材料)。对只读工具为 nil。
 	Mutate func(ctx context.Context, req ToolRequest, plan MutationPlan) (ToolResult, error)
 }
 
-// MutationPlan is the resolved, read-only description of a pending mutation: the
-// target's identity + current state + the intended change. It is the single
-// source of truth shared by the dry-run preview and the real execution (so the
-// preview cannot lie about what the action will do). TargetType/TargetID feed
-// the admin_audit_events row; Preview is the sanitized "what would change"
-// payload returned to the caller on a dry-run.
+// MutationPlan 是对一项待执行 mutation 的、已 resolve 的只读描述:目标身份 + 当前状态 +
+// 意图改动。它是 dry-run preview 与真正执行所共享的单一事实来源(这样 preview 无法对动作将做
+// 什么撒谎)。TargetType/TargetID 喂给 admin_audit_events 行;Preview 是 dry-run 时返回给
+// 调用方的、已脱敏的"将会改什么"载荷。
 type MutationPlan struct {
-	// TargetType is the admin_audit_events target_type (e.g. "provider_account",
-	// "account_credential", "dlq_event"). It MUST be in the migration whitelist.
+	// TargetType 是 admin_audit_events 的 target_type(例如 "provider_account"、
+	// "account_credential"、"dlq_event")。它 MUST(必须)在迁移白名单中。
 	TargetType string
-	// TargetID is the numeric id of the target row (the advisory-lock key + the
-	// audit target_id).
+	// TargetID 是目标行的数字 id(advisory-lock 键 + 审计 target_id)。
 	TargetID int64
-	// LockKey is the advisory-lock discriminator serializing concurrent mutations
-	// on the SAME target. Keyed on tenant + tool + target so two operators cannot
-	// race a pause/replay on one account. Empty => the orchestrator derives a
-	// default from (TenantID, ToolName, TargetID).
+	// LockKey 是 advisory-lock 判别符,用于串行化对 SAME(同一)目标的并发 mutation。以
+	// tenant + tool + target 为键,这样两个运营者无法对一个账号竞争 pause/replay。为空 =>
+	// orchestrator 从 (TenantID, ToolName, TargetID) 推导一个默认值。
 	LockKey string
-	// Preview is the sanitized current-state + intended-change payload returned to
-	// the caller on confirm=false. enums/counts/ids/state-names only.
+	// Preview 是 confirm=false 时返回给调用方的、已脱敏的当前状态 + 意图改动载荷。只含
+	// 枚举/计数/id/状态名。
 	Preview map[string]any
 }

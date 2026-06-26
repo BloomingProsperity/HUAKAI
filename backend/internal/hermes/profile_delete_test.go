@@ -7,13 +7,13 @@ import (
 )
 
 func TestDeleteProfile_BlockedByInUseSettings(t *testing.T) {
-	// Regression: deleting a profile still referenced by settings must not corrupt enabled Hermes users.
+	// 回归测试：删除仍被 settings 引用的 profile 不能破坏已启用 Hermes 的用户。
 	store := &hermesStoreSpy{profileInUse: true, deleteRows: 1}
 	service := NewService(store)
 
 	err := service.DeleteProfile(context.Background(), 99, 7)
 
-	// Mutation check: 删除 deleteProfileWithStore 的 ProfileInUse guard,此断言会得到 nil 并失败；删掉本断言 mutant 才会 PASS。
+	// 变异检查：删除 deleteProfileWithStore 的 ProfileInUse 守卫,此断言会得到 nil 并失败；删掉本断言变异体才会 PASS。
 	if !errors.Is(err, ErrProfileInUse) {
 		t.Fatalf("err=%v want ErrProfileInUse", err)
 	}
@@ -23,13 +23,13 @@ func TestDeleteProfile_BlockedByInUseSettings(t *testing.T) {
 }
 
 func TestDeleteProfile_AllowsUnused(t *testing.T) {
-	// Regression: the in-use guard must not block cleanup of an unused tenant-scoped profile.
+	// 回归测试：in-use 守卫不能阻止清理未被使用的、租户级的 profile。
 	store := &hermesStoreSpy{profileInUse: false, deleteRows: 1}
 	service := NewService(store)
 
 	err := service.DeleteProfile(context.Background(), 99, 7)
 
-	// Mutation check: 翻转 ProfileInUse 条件为 !inUse,unused profile 会错误返回 ErrProfileInUse 并失败。
+	// 变异检查：翻转 ProfileInUse 条件为 !inUse,未使用的 profile 会错误返回 ErrProfileInUse 并失败。
 	if err != nil {
 		t.Fatalf("DeleteProfile unused: %v", err)
 	}

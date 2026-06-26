@@ -1,5 +1,5 @@
-// Package hermesconfirm holds the in-process single-use correlation-id store
-// (Cache) backing Hermes 的 mutating-tool 的 dry-run→confirm 安全原语(L2)。
+// Package hermesconfirm 持有支撑 Hermes mutating-tool 的 dry-run→confirm 安全原语(L2)的
+// 进程内单次消费 correlation-id 存储(Cache)。
 //
 // 它从 internal/hermeshttp 提取到独立共享包,**纯重构、行为零变**:这样 operator 确认侧
 // (hermeshttp)与未来 LLM 提议侧(hermeschat,Phase B)能注入**同一个 Cache 实例**——
@@ -15,17 +15,14 @@ import (
 	"time"
 )
 
-// ConfirmTTL is the window within which a dry-run preview's correlation_id can
-// be re-submitted with confirm=true to actually execute. After this, the
-// correlation is stale and a confirm=true request is rejected (400) — never
-// executed. Kept short so a leaked/observed correlation_id has a small blast
-// window.
+// ConfirmTTL 是 dry-run 预览的 correlation_id 可以带 confirm=true 重新提交以真正执行的
+// 时间窗口。超过此窗口后,该关联已陈旧,confirm=true 的请求会被拒绝(400)——绝不执行。
+// 刻意保持短,这样泄露或被观测到的 correlation_id 影响窗口很小。
 const ConfirmTTL = 5 * time.Minute
 
-// PendingConfirmation is one outstanding dry-run preview awaiting confirmation.
-// It pins the EXACT tool + tenant + actor + target the preview was computed for,
-// so a confirm cannot be redirected to a different tool/tenant/target than the
-// one the operator previewed (a confirm with mismatched fields is rejected).
+// PendingConfirmation 表示一个尚待确认的 dry-run 预览。它锁定预览计算时所针对的
+// 确切 tool + tenant + actor + target,这样 confirm 不能被改向到与 operator 预览
+// 时不同的 tool/tenant/target(字段不匹配的 confirm 会被拒绝)。
 type PendingConfirmation struct {
 	ToolName  string
 	TenantID  int64
@@ -35,23 +32,21 @@ type PendingConfirmation struct {
 	ExpiresAt time.Time
 }
 
-// Cache is the in-process single-use correlation-id store backing L2
-// (dry-run-first + confirmation). A correlation_id is issued on a dry-run and
-// CONSUMED (deleted) the moment it is taken for execution, so it can drive at
-// most one mutation (a re-used correlation_id finds nothing and is rejected).
+// Cache 是支撑 L2(dry-run 优先 + 确认)的进程内单次消费 correlation-id 存储。
+// correlation_id 在 dry-run 时签发,并在被取用执行的瞬间被消费(删除),因此它最多
+// 只能驱动一次 mutation(重复使用的 correlation_id 找不到任何条目而被拒绝)。
 //
-// In-process is intentional for this wave: the confirm must land on the SAME
-// replica that issued the preview. A multi-replica operator UI re-issues the
-// dry-run if it hits a different replica (the preview is cheap + read-only); a
-// shared cache is a documented follow-up, not a safety hole (a missing
-// correlation_id always fails closed → 400, never executes).
+// 本阶段刻意采用进程内方案:confirm 必须落在签发预览的同一个 replica 上。多 replica
+// 的 operator UI 若命中了不同的 replica,会重新发起 dry-run(预览成本低且只读);
+// 共享缓存是已记录在案的后续工作,而非安全漏洞(缺失的 correlation_id 总是 fail
+// closed → 400,绝不执行)。
 type Cache struct {
 	mu      sync.Mutex
 	entries map[string]PendingConfirmation
 	now     func() time.Time
 }
 
-// NewCache constructs an empty Cache backed by the real clock.
+// NewCache 构造一个使用真实时钟的空 Cache。
 func NewCache() *Cache {
 	return &Cache{
 		entries: make(map[string]PendingConfirmation),
@@ -59,9 +54,8 @@ func NewCache() *Cache {
 	}
 }
 
-// Issue stores a pending confirmation and returns a fresh, unguessable
-// correlation_id. The id is 128 bits of crypto-random hex so it cannot be
-// predicted or enumerated by a caller who never saw the preview.
+// Issue 存储一条待确认记录并返回一个全新、不可猜测的 correlation_id。该 id 是 128 位
+// 的 crypto 随机 hex,因此没见过预览的调用方无法预测或枚举它。
 func (c *Cache) Issue(p PendingConfirmation) (string, error) {
 	id, err := randomCorrelationID()
 	if err != nil {
@@ -70,18 +64,15 @@ func (c *Cache) Issue(p PendingConfirmation) (string, error) {
 	p.ExpiresAt = c.now().Add(ConfirmTTL)
 	c.mu.Lock()
 	c.entries[id] = p
-	// Opportunistically evict expired entries so the map cannot grow unbounded
-	// from previews that are never confirmed.
+	// 顺手清理过期条目,避免 map 因从未被确认的预览而无限增长。
 	c.evictExpiredLocked()
 	c.mu.Unlock()
 	return id, nil
 }
 
-// Consume atomically looks up AND removes the correlation_id (single-use). It
-// returns (entry, true) only when the id exists, is unexpired, and matches the
-// supplied tool/tenant/actor binding; otherwise (zero, false). Because the
-// delete happens under the same lock as the lookup, two concurrent confirms on
-// the same id can never both succeed — at most one consumes it.
+// Consume 原子地查找并删除 correlation_id(单次消费)。仅当 id 存在、未过期且与传入的
+// tool/tenant/actor 绑定匹配时,才返回(entry, true);否则返回(零值, false)。由于删除
+// 与查找在同一把锁下进行,针对同一 id 的两个并发 confirm 不可能都成功——最多一个能消费它。
 func (c *Cache) Consume(id, toolName string, tenantID, actorID, tokenID int64) (PendingConfirmation, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -89,16 +80,14 @@ func (c *Cache) Consume(id, toolName string, tenantID, actorID, tokenID int64) (
 	if !ok {
 		return PendingConfirmation{}, false
 	}
-	// Remove first so even a mismatched/expired hit is single-use (a guessed id
-	// cannot be probed repeatedly).
+	// 先删除,使得即便是不匹配或已过期的命中也是单次消费(被猜中的 id 无法被反复探测)。
 	delete(c.entries, id)
 	if c.now().After(entry.ExpiresAt) {
 		return PendingConfirmation{}, false
 	}
-	// Bind the confirm to the EXACT operator that previewed: tool + tenant +
-	// actor-user + the operator's admin TokenID. Without the TokenID check a
-	// different operator (distinct admin token) acting in the same tenant-user
-	// context could consume another operator's preview and execute the mutation.
+	// 将 confirm 绑定到执行预览的那个确切 operator:tool + tenant + actor-user +
+	// operator 的 admin TokenID。若没有 TokenID 校验,在同一 tenant-user 上下文中操作的
+	// 另一个 operator(不同的 admin token)就能消费别人的预览并执行该 mutation。
 	if entry.ToolName != toolName || entry.TenantID != tenantID || entry.ActorID != actorID || entry.TokenID != tokenID {
 		return PendingConfirmation{}, false
 	}
