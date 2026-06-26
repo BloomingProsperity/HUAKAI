@@ -12004,6 +12004,54 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/proxies/{id}/test:
+    post:
+      tags: [admin-proxies]
+      summary: Active connectivity probe through a tenant-scoped outbound proxy
+      operationId: testAdminProxy
+      description: |
+        经该 stored 代理建隧道到一个**服务端固定 canary 目标**(api.anthropic.com:443)做一次
+        TLS 握手,测真实出站连通性 + 延迟,区别于被动 TCP 存活探测。探测目标是服务端常量,
+        请求体不参与目标决策(杜绝双跳 SSRF)。响应**绝不含**代理 URL/凭据/原始错误,只回
+        {ok, latency_ms, error_class, probed_at}。代理 host 指向内网/metadata 时返回
+        ok=false + error_class=unsafe_proxy_host。不写库,只返即时结果。
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/probe_handler.go
+        - backend/internal/proxyhealth/probe_through.go
+        - backend/internal/proxyadmin/dial_target.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Probe ran; result reflects connectivity (ok=false with error_class on failure).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, ok, latency_ms, probed_at]
+                properties:
+                  object: { type: string }
+                  ok: { type: boolean }
+                  latency_ms: { type: integer, format: int64 }
+                  error_class:
+                    type: string
+                    enum: [unsafe_proxy_host, target_denied, bad_proxy_url, dial_timeout, tunnel_refused, tls_fail]
+                  probed_at: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
 # ============================================================================
 # Components
 # ============================================================================

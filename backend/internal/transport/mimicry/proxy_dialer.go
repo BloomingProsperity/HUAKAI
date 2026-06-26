@@ -39,6 +39,13 @@ func proxyDialerFromURL(proxyURL *url.URL) (ProxyDialerFunc, error) {
 	}
 }
 
+// DialerFromURL 是 proxyDialerFromURL 的导出包装,供代理质检 probe(proxyhealth)复用同一套
+// 经代理建隧道的拨号逻辑(http/https CONNECT + socks5),避免在别处重复实现握手 → 减少凭据/握手 bug 面。
+// 返回的 ProxyDialerFunc 对调用方而言是"拨到 addr"——内部经 proxyURL 指定的代理建隧道。
+func DialerFromURL(proxyURL *url.URL) (ProxyDialerFunc, error) {
+	return proxyDialerFromURL(proxyURL)
+}
+
 // proxyHostPort 返回代理的 host:port,按 scheme 补默认端口。
 func proxyHostPort(proxyURL *url.URL) string {
 	host := proxyURL.Hostname()
