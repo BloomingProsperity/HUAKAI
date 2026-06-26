@@ -54,6 +54,18 @@ WHERE id = sqlc.arg(id)::bigint
   AND tenant_id = sqlc.arg(tenant_id)::bigint
   AND deleted_at IS NULL;
 
+-- name: UpdateProviderAccountFingerprintProfile :exec
+-- 绑定/解绑 provider account 的 TLS 指纹 profile。profile_id 为 NULL → 解绑回内置默认;
+-- 非 NULL → 绑定(DB 触发器 0038 校验 profile 属同租户,跨租户绑定被拒)。
+UPDATE provider_accounts
+SET
+    tls_fingerprint_profile_id = sqlc.narg(profile_id)::bigint,
+    updated_at = NOW(),
+    last_modified_by_actor = sqlc.narg(actor_id)::text
+WHERE id = sqlc.arg(id)::bigint
+  AND tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL;
+
 -- name: SoftDeleteProviderAccount :exec
 UPDATE provider_accounts
 SET

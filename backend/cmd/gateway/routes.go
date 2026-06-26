@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminquotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminuserhttp"
@@ -926,6 +927,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Accounts: d.adminQueries,
 			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialworker.DefaultModeAdapterRegistry()),
 		})
+		// 账号 TLS 指纹 profile 绑定/解绑(独立包 accountfphttp,§13 不塞进 god 包 gatewayhttp)。
+		accountfphttp.MountRoutes(r, accountfphttp.Deps{Auth: d.adminAuth, Store: d.adminQueries})
 		adminhttp.MountProviderAccountHealthRoutes(r, adminhttp.ProviderAccountHealthDeps{
 			Auth:          d.adminAuth,
 			Store:         d.adminQueries,

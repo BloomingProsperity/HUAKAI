@@ -9922,6 +9922,50 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/provider-accounts/{id}/fingerprint-profile:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    patch:
+      tags: [admin-accounts]
+      summary: Bind or unbind a Provider Account's TLS fingerprint profile
+      operationId: setProviderAccountFingerprintProfile
+      description: |
+        设置 provider account 绑定的 TLS 指纹 profile(provider_accounts.tls_fingerprint_profile_id)。
+        profile_id 为正整数 → 绑定该 profile;null/省略 → 解绑回内置默认。跨租户或不存在的 profile
+        被 DB 触发器/FK 拒绝(返回 400)。补此前的死缺口:profile 池建好但账号无绑定写入口。
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/admin_pool_accounts_handler.go
+        - backend/sql/migrations/0038_proxies_pool_and_account_links.up.sql
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                profile_id:
+                  type: integer
+                  format: int64
+                  nullable: true
+                  description: 正整数=绑定该 profile;null=解绑回内置默认。
+                reason: { type: string }
+      responses:
+        '200':
+          description: Fingerprint profile binding updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer, format: int64 }
+                  tls_fingerprint_profile_id: { type: integer, format: int64, nullable: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/credentials:
     parameters:
       - $ref: '#/components/parameters/ResourceId'

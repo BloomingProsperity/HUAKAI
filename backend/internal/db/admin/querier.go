@@ -171,6 +171,7 @@ type Querier interface {
 	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)
 	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
+	UpdateProviderAccountFingerprintProfile(ctx context.Context, arg UpdateProviderAccountFingerprintProfileParams) error
 	UpdateProxy(ctx context.Context, arg UpdateProxyParams) (UpdateProxyRow, error)
 	// 全字段更新; admin UI 修改时调用。updated_at 自动刷; status 走专用 SetStatus 端点。
 	UpdateTLSFingerprintProfile(ctx context.Context, arg UpdateTLSFingerprintProfileParams) (UpdateTLSFingerprintProfileRow, error)
