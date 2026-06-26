@@ -1,4 +1,4 @@
-//! SSE stream pipeline.
+//! SSE stream pipeline。
 //!
 //! 解析器只观察 upstream bytes, 不改变透传给客户端的 body。
 

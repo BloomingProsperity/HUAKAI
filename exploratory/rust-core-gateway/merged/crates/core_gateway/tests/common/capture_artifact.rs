@@ -1,4 +1,4 @@
-// R-D test-only artifact writer.
+// R-D 仅测试用的 artifact writer。
 // 只写入本地 capture 的 raw 字段和可复核派生字段；不把未实现的 JA3 hash/JA4 伪装成真值。
 
 use std::{

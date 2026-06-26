@@ -1,4 +1,4 @@
-//! HTTP/2 fork adapter for SETTINGS / pseudo-header order mimicry.
+//! 用于 SETTINGS / pseudo-header 顺序拟真的 HTTP/2 fork adapter。
 //!
 //! L2-A6 只暴露 feature-gated adapter 和本地 byte capture，不接入 ProxyEngine。
 

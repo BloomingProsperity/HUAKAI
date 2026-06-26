@@ -1,4 +1,4 @@
-// M-rust-5 planner + proxy integration tests.
+// M-rust-5 planner + proxy 集成测试。
 
 mod common;
 

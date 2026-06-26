@@ -196,7 +196,7 @@ impl FingerprintProfile {
                 BackendIntent::OpenSslAdapter
             }
             TlsBackend::Rustls => {
-                // D3 burn-the-boats: no fallback to hyper-rustls, fix mimicry path instead
+                // D3 burn-the-boats: 不回退到 hyper-rustls, 而是直接修复 mimicry 路径
                 BackendIntent::UnsupportedTemplate {
                     reason: "tls_backend=rustls is observation-only after D3; production dispatch must use the mimicry path"
                         .to_owned(),

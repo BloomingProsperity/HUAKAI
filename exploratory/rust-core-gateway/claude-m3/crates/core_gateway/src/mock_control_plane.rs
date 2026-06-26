@@ -1,4 +1,4 @@
-// M-rust-3: mock Go control plane — axum HTTP/JSON server
+// M-rust-3: mock Go control plane — 基于 axum 的 HTTP/JSON server
 // 职责: 在单元/集成测试中替代真实 Go control plane
 // 只供测试使用; 不连接真实 PG 或真实账号池
 //

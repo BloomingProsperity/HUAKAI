@@ -30,7 +30,7 @@ pub struct StartupConfig {
     pub control_plane_endpoint: Uri,
     /// Rust->Go route RPC transport baseline, 默认 UDS
     pub transport_baseline: TransportBaseline,
-    /// UDS baseline socket path
+    /// UDS baseline 的 socket 路径
     pub uds_socket_path: PathBuf,
     /// mTLS server name/SNI override; 未配置时使用 endpoint host
     pub mtls_domain_name: Option<String>,

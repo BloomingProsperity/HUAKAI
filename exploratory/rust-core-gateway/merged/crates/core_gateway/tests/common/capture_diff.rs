@@ -1,4 +1,4 @@
-// L2-A3 test-only TLS capture diff normalizer.
+// L2-A3 仅测试用的 TLS capture diff normalizer。
 // 这里只做字段级正向核验：每个模板字段都会进入 diff 结果，而不是只在失败时追加错误。
 
 use std::collections::BTreeSet;
@@ -168,7 +168,7 @@ where
     T: Clone + Ord,
 {
     match match_policy {
-        // Non-extension list fields keep exact set semantics for randomized samples.
+        // 非 extension 的列表字段对随机采样保持精确的集合语义。
         ProfileMatchPolicy::SampleSetRandomized => compare_set(expected, actual),
         ProfileMatchPolicy::ExactStable | ProfileMatchPolicy::KnownGapBlocked => {
             compare_ordered(expected, actual)
@@ -182,8 +182,8 @@ fn compare_extensions(
     match_policy: ProfileMatchPolicy,
 ) -> ExtensionsListStatus {
     match match_policy {
-        // Extensions use subset semantics: SampleSetRandomized SetMatch maps to
-        // Subset { unexpected: empty }, while runtime extras are recorded but non-fatal.
+        // extensions 使用子集语义: SampleSetRandomized 的 SetMatch 映射为
+        // Subset { unexpected: empty }, 而 runtime 多出的项会被记录但不致命。
         ProfileMatchPolicy::SampleSetRandomized => compare_extension_set(expected, actual),
         ProfileMatchPolicy::ExactStable | ProfileMatchPolicy::KnownGapBlocked => {
             compare_extension_ordered_subset(expected, actual)

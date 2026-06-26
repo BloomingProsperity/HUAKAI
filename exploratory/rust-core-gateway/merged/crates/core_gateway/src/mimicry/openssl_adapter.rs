@@ -1,6 +1,6 @@
 #![cfg(feature = "mimicry-openssl")]
 
-//! L2-A4/L2-A5 OpenSSL TLS mimicry backend skeleton.
+//! L2-A4/L2-A5 OpenSSL TLS mimicry backend 骨架。
 //!
 //! 本文件建立 native OpenSSL async handshake 边界，并先接入 L2-A5.1 的
 //! cipher_suites / ALPN profile 注入。生产 dispatch 接线留给后续 atom。

@@ -815,8 +815,8 @@ fn actual_wire_extensions_from_preflight(profile: &FingerprintProfile) -> Vec<u1
 }
 
 fn pick_missing_id_not_in_wire(actual: &[u16]) -> u16 {
-    // GREASE/reserved-style candidate IDs are only used when absent from the
-    // current runtime wire extensions, keeping the missing case runtime-derived.
+    // GREASE/reserved 风格的候选 ID 仅在当前 runtime wire extensions 中不存在时
+    // 才使用, 从而让 missing 场景保持 runtime 派生。
     const SYNTHETIC_EXTENSION_CANDIDATES: &[u16] = &[
         0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa,
         0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,

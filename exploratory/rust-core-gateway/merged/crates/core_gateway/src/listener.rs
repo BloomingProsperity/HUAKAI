@@ -1,4 +1,4 @@
-// M-rust-5 listener glue
+// M-rust-5 listener 粘合层 (listener glue)
 // 职责: 接收 vendor API 请求, 规划 account route, 调用 proxy engine。
 
 use axum::{

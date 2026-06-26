@@ -1,4 +1,4 @@
-// M-rust-5 proxy engine
+// M-rust-5 代理引擎 (proxy engine)
 // 职责: 连接 vendor endpoint, 透传请求/响应 body, 并处理取消与 timeout。
 
 use std::{
