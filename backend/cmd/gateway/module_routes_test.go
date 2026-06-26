@@ -14,10 +14,13 @@ import (
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
+	"github.com/BloomingProsperity/HUAKAI/internal/passkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
+	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
@@ -269,6 +272,62 @@ func TestModulesRegistryWiresCommerce(t *testing.T) {
 	}
 
 	// degraded:nil → StatusDegraded(身份仍注册)。
+	degraded := fetch(&deps{})
+	for _, id := range ids {
+		m, ok := degraded[id]
+		if !ok {
+			t.Fatalf("%s 应仍注册(身份与健康无关)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusDegraded {
+			t.Fatalf("%s 未接线时探针应 StatusDegraded,got %v", id, m.LiveProbe.Status)
+		}
+	}
+}
+
+// TestModulesRegistryWiresAuth — Hermes 感知扩展第 4 批:auth/identity 域(运营最关键——
+// auth 降级则全系统不可用)。userauth/passkey/twofa 三服务注册 + 探针 wired/degraded。
+// userauth 有 catalog overlay;passkey/twofa live-only(catalog 无 pkg → Catalog 应 nil)。
+func TestModulesRegistryWiresAuth(t *testing.T) {
+	fetch := func(d *deps) map[string]modulehttp.ModuleView {
+		src := newModuleSource(buildModuleRegistry(d))
+		h := modulehttp.NewModulesHandler(src)
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil))
+		var resp modulehttp.ModulesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out := map[string]modulehttp.ModuleView{}
+		for _, m := range resp.Modules {
+			out[m.ID] = m
+		}
+		return out
+	}
+
+	ids := []string{"auth.userauth", "auth.passkey", "auth.twofa"}
+
+	wired := fetch(&deps{
+		userAuth:  &userauth.Service{},
+		passkeys:  &passkey.Service{},
+		twoFactor: &twofa.Service{},
+	})
+	for _, id := range ids {
+		m, ok := wired[id]
+		if !ok {
+			t.Fatalf("%s 未注册进 module registry(Hermes 看不到该模块)", id)
+		}
+		if m.LiveProbe.Status != moduleregistry.StatusOK {
+			t.Fatalf("%s 接线时探针应 StatusOK,got %v", id, m.LiveProbe.Status)
+		}
+	}
+	// userauth 有 catalog overlay;passkey/twofa live-only(Catalog 应 nil)。
+	if wired["auth.userauth"].Catalog == nil {
+		t.Fatal("auth.userauth 缺 catalog overlay(seedCatalogJoin 未接)")
+	}
+	if wired["auth.passkey"].Catalog != nil || wired["auth.twofa"].Catalog != nil {
+		t.Fatalf("passkey/twofa 应 live-only(catalog 无 pkg),不应有 overlay")
+	}
+
 	degraded := fetch(&deps{})
 	for _, id := range ids {
 		m, ok := degraded[id]

@@ -237,6 +237,66 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	// ── auth: 用户登录/注册(密码 + 社交)──────────────────────────────────────
+	// Probe: 用户鉴权服务接线即 wired。只报 wired/degraded,不含任何用户/凭据明细。
+	userAuth := d.userAuth
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "auth.userauth",
+		Category: "auth",
+		Title:    "User authentication (password + social)",
+		Capabilities: []string{
+			"password login + registration",
+			"social login (10 providers: google/github/qq/…)",
+			"profile management + account unlock",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if userAuth == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "userauth service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	// ── auth: WebAuthn passkey ────────────────────────────────────────────────
+	// Probe: passkey 服务接线即 wired。只报 wired/degraded,不含任何凭据明细。
+	passkeys := d.passkeys
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "auth.passkey",
+		Category: "auth",
+		Title:    "WebAuthn passkeys",
+		Capabilities: []string{
+			"passkey registration + assertion login",
+			"credential listing / deletion",
+			"origin verification",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if passkeys == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "passkey service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	// ── auth: TOTP 两步验证 ───────────────────────────────────────────────────
+	// Probe: 2FA 服务接线即 wired。只报 wired/degraded,不含任何密钥/备份码。
+	twoFactor := d.twoFactor
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "auth.twofa",
+		Category: "auth",
+		Title:    "Two-factor authentication (TOTP)",
+		Capabilities: []string{
+			"TOTP 2FA setup/enable/disable",
+			"login challenge + verify",
+			"backup codes",
+		},
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if twoFactor == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "twofa service unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	return reg
 }
 
@@ -253,7 +313,8 @@ var seedCatalogJoin = map[string]string{
 	"registry.model":        "registry",
 	"router.planner":        "router",
 	"voucher.service":       "voucher",
-	// payment.service / subscription.service:catalog 无对应 pkg → live-only(无静态 overlay,仍合法)。
+	"auth.userauth":         "userauth",
+	// payment.service / subscription.service / auth.passkey / auth.twofa:catalog 无对应 pkg → live-only。
 }
 
 // moduleSource adapts the live registry + embedded static catalog to
