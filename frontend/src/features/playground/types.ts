@@ -25,7 +25,7 @@ export interface ChatMessage {
 export interface ChatRequest {
   model: string
   messages: ChatMessage[]
-  stream: false
+  stream: boolean
 }
 
 export interface ChatUsage {

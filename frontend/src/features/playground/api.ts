@@ -1,5 +1,5 @@
-import { apiGet, apiSend } from '../../lib/api'
-import { buildChatRequest } from './playground'
+import { ApiError, apiGet, apiSend } from '../../lib/api'
+import { buildChatRequest, extractSSEContent } from './playground'
 import type { ChatResponse, ModelListResponse } from './types'
 
 /*
@@ -29,4 +29,63 @@ export async function sendChat(
     bearer: apiKey.trim(),
     signal,
   })
+}
+
+/**
+ * sendChatStream 用该 Key 发**流式** chat 请求,逐增量回调 onDelta。⚠ 真实上游调用,消耗余额。
+ * 用带 Bearer 的同源 fetch(lib/api 无流式),Key 仅作 Authorization 头、不落库/日志。SSE 解析走纯函数
+ * extractSSEContent(已变异测试);跨 chunk 不完整尾行用 buffer 暂存。
+ */
+export async function sendChatStream(
+  apiKey: string,
+  model: string,
+  system: string,
+  message: string,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const resp = await fetch('/v1/chat/completions', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      Accept: 'text/event-stream',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey.trim()}`,
+    },
+    body: JSON.stringify(buildChatRequest(model, system, message, true)),
+    signal,
+  })
+  if (!resp.ok || !resp.body) {
+    const text = await resp.text().catch(() => '')
+    let code = `http_${resp.status}`
+    let msg = resp.statusText || '请求失败'
+    try {
+      const b = JSON.parse(text)
+      if (b?.error) {
+        code = b.error.code ?? code
+        msg = b.error.message ?? msg
+      }
+    } catch {
+      /* 非 JSON 错误体,沿用状态文案 */
+    }
+    throw new ApiError(resp.status, code, msg)
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? '' // 不完整尾行留到下一轮
+    for (const line of lines) {
+      const ev = extractSSEContent(line)
+      if (ev.done) return
+      if (ev.content) onDelta(ev.content)
+    }
+  }
+  const tail = extractSSEContent(buffer)
+  if (!tail.done && tail.content) onDelta(tail.content)
 }
