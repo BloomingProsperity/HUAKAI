@@ -128,7 +128,7 @@ func (w *Worker) startLane(ctx context.Context, lane Lane, n int) {
 					return
 				default:
 				}
-				processed, err := w.service.ProcessClaim(ctx, lane, workerID, w.cfg.LeaseTTL)
+				processed, err := w.processClaimRecovered(ctx, lane, workerID)
 				if err != nil || !processed {
 					timer := time.NewTimer(w.cfg.IdleSleep)
 					select {
@@ -141,6 +141,19 @@ func (w *Worker) startLane(ctx context.Context, lane Lane, n int) {
 			}
 		}()
 	}
+}
+
+// processClaimRecovered 包一层 recover:单次 ProcessClaim(含 handler)的 panic 不会杀死该泳道 worker
+// goroutine(否则该泳道永久静默、DLQ 不再消费)。panic 被当作本轮一次失败(返回 processed=false + err),
+// 使循环进入 IdleSleep 而非崩溃。与仓内既定 worker recover 范式一致。
+func (w *Worker) processClaimRecovered(ctx context.Context, lane Lane, workerID string) (processed bool, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("dlq: ProcessClaim panicked: %v", rec)
+			slog.ErrorContext(ctx, "dlq worker ProcessClaim panicked; recovered to keep lane alive", "lane", string(lane), "recover", rec)
+		}
+	}()
+	return w.service.ProcessClaim(ctx, lane, workerID, w.cfg.LeaseTTL)
 }
 
 // runDepthRefresh 周期性调用 UpdateDLQDepthGauge,使 dlq_depth expvar map

@@ -3,6 +3,7 @@ package dlq
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -145,7 +146,7 @@ func (w *Worker) runLane(ctx context.Context, priority Priority) {
 			return
 		default:
 		}
-		processed, err := w.RunOnce(ctx, priority, workerID)
+		processed, err := w.runOnceRecovered(ctx, priority, workerID)
 		if err != nil || !processed {
 			timer := time.NewTimer(w.cfg.IdleSleep)
 			select {
@@ -156,6 +157,19 @@ func (w *Worker) runLane(ctx context.Context, priority Priority) {
 			}
 		}
 	}
+}
+
+// runOnceRecovered 包一层 recover:单次 RunOnce(含 handler 调用)的 panic 不会杀死该优先级泳道的 goroutine
+//(否则该泳道永久静默、DLQ 积压不再被消费)。panic 被当作本轮一次失败(返回 processed=false + err),使循环
+// 进入 IdleSleep 而非崩溃。与仓内既定 worker recover 范式一致。
+func (w *Worker) runOnceRecovered(ctx context.Context, priority Priority, workerID string) (processed bool, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("obsdlq: RunOnce panicked: %v", rec)
+			slog.ErrorContext(ctx, "obs dlq worker RunOnce panicked; recovered to keep lane alive", "priority", string(priority), "recover", rec)
+		}
+	}()
+	return w.RunOnce(ctx, priority, workerID)
 }
 
 func (w *Worker) handle(ctx context.Context, ev OutboxEvent) error {
