@@ -24,7 +24,7 @@ import (
 )
 
 func TestBridgeDoneEventTriggersPersist(t *testing.T) {
-	// Regression: the gateway must not forward done until it has parsed token SSE and persisted the assistant message.
+	// 回归:gateway 在解析完 token SSE 并持久化 assistant 消息之前,不得转发 done。
 	store := newBridgeStore()
 	store.nextConversationID = 1001
 	bridge := mustBridge(t, store)
@@ -35,7 +35,7 @@ func TestBridgeDoneEventTriggersPersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
 	}
-	// Mutation check: if the happy path stops creating a conversation after validation, this fixture loses the gateway event.
+	// 变异检查:若正常路径在校验之后不再创建会话,本夹具就会丢失 gateway 事件。
 	if !store.createdConversation || len(store.conversations) != 1 {
 		t.Fatalf("created=%v conversations=%d want one conversation for valid new chat", store.createdConversation, len(store.conversations))
 	}
@@ -115,7 +115,7 @@ func TestBridgeDoneEventTriggersPersist(t *testing.T) {
 }
 
 func TestBridgePersistFailureEmitsErrorAndSuppressesDone(t *testing.T) {
-	// Regression: if message persistence fails at the done fence, clients must see error instead of a false done.
+	// 回归:若消息持久化在 done 栅栏处失败,客户端必须看到 error,而非一个虚假的 done。
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 55}] = dbhermes.HermesConversation{ID: 55, TenantID: 7, OwnerUserID: 42}
 	store.appendPanic = true
@@ -149,7 +149,7 @@ func TestBridgePersistFailureEmitsErrorAndSuppressesDone(t *testing.T) {
 }
 
 func TestBridgeDoesNotPersistDoneAfterConversationDelete(t *testing.T) {
-	// Regression: a stream that started before DELETE must not append a post-delete message or forward done.
+	// 回归:在 DELETE 之前已开始的流,不得追加删除后的消息,也不得转发 done。
 	store := newBridgeStore()
 	key := conversationKey{tenantID: 7, id: 66}
 	store.conversations[key] = dbhermes.HermesConversation{ID: 66, TenantID: 7, OwnerUserID: 42}
@@ -184,7 +184,7 @@ func TestBridgeDoesNotPersistDoneAfterConversationDelete(t *testing.T) {
 	if !strings.Contains(got, "event: error") || !strings.Contains(got, "persist_failed") {
 		t.Fatalf("body=%q want persist_failed error event after delete", got)
 	}
-	// Mutation check: if AppendMessage or the SQL active-conversation guard is removed, this records a post-delete message.
+	// 变异检查:若去掉 AppendMessage 或 SQL 的活跃会话守卫,这里就会记录一条删除后的消息。
 	if len(store.appended) != 0 || store.touchedConversationID != 0 || store.auditArg.Action != "" {
 		t.Fatalf("append/touch/audit=%d/%d/%q want no post-delete writes", len(store.appended), store.touchedConversationID, store.auditArg.Action)
 	}
@@ -194,7 +194,7 @@ func TestBridgeDoesNotPersistDoneAfterConversationDelete(t *testing.T) {
 }
 
 func TestBridgePersistDone_AuditInsertFailureAbortsTransaction(t *testing.T) {
-	// Regression: message persistence and primary audit must be atomic; audit failure must roll back message write.
+	// 回归:消息持久化与主审计必须原子;审计失败必须回滚消息写入。
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
 	store.auditErr = errors.New("audit insert failed")
@@ -211,7 +211,7 @@ func TestBridgePersistDone_AuditInsertFailureAbortsTransaction(t *testing.T) {
 		t.Fatalf("persistDone should fail on audit insert error")
 	}
 
-	// Mutation check: if RunHermesTx still ignores message-audit errors, commitCount becomes 1.
+	// 变异检查:若 RunHermesTx 仍忽略消息审计错误,commitCount 会变成 1。
 	if len(store.appended) != 0 {
 		t.Fatalf("persisted messages=%d want 0", len(store.appended))
 	}
@@ -224,7 +224,7 @@ func TestBridgePersistDone_AuditInsertFailureAbortsTransaction(t *testing.T) {
 }
 
 func TestBridgePersistDone_AuditInsertSuccessCommitsTransaction(t *testing.T) {
-	// Regression: normal path persists message and audit in one transaction and commits once.
+	// 回归:正常路径在一个事务里持久化消息与审计,并提交一次。
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
 	bridge := mustBridge(t, store)
@@ -255,7 +255,7 @@ func TestBridgePersistDone_AuditInsertSuccessCommitsTransaction(t *testing.T) {
 }
 
 func TestBridgePersistDoneEncryptsMessageContentBeforeStore(t *testing.T) {
-	// Regression: Hermes is allowed to retain user-visible chat history, but new rows must not persist message text in plaintext.
+	// 回归:Hermes 允许保留用户可见的聊天历史,但新写入的行不得以明文持久化消息文本。
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
 	keys := mustHermesChatContentKeys(t)
@@ -293,14 +293,14 @@ func TestBridgePersistDoneEncryptsMessageContentBeforeStore(t *testing.T) {
 	if err := json.Unmarshal(plain, &content); err != nil {
 		t.Fatalf("decrypted content json: %v", err)
 	}
-	// Mutation check: if persistDone writes plaintext or skips encryption, ciphertext is empty/plaintext and this exact round trip fails.
+	// 变异检查:若 persistDone 写明文或跳过加密,密文就会为空/为明文,这一次精确的往返就会失败。
 	if content["text"] != sentinel {
 		t.Fatalf("decrypted text=%q want sentinel", content["text"])
 	}
 }
 
 func TestBridgeRejectsRunnerConversationRetarget(t *testing.T) {
-	// Regression guarded: runner-supplied conversation ids must not retarget persisted messages across users.
+	// 守护的回归:runner 提供的会话 id 不得把已持久化的消息跨用户改向到别处。
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
 	store.conversations[conversationKey{tenantID: 7, id: 88}] = dbhermes.HermesConversation{ID: 88, TenantID: 7, OwnerUserID: 99}
@@ -339,7 +339,7 @@ func TestBridgeRejectsRunnerConversationRetarget(t *testing.T) {
 }
 
 func TestBridgeSuppressesRunnerConversationDuplicate(t *testing.T) {
-	// Regression: gateway already emits the prepared conversation id, so the runner echo must not reach clients.
+	// 回归:gateway 已经发出了准备好的会话 id,因此 runner 的回显不得到达客户端。
 	store := newBridgeStore()
 	store.nextConversationID = 1001
 	bridge := mustBridge(t, store)
@@ -377,7 +377,7 @@ func TestBridgeSuppressesRunnerConversationDuplicate(t *testing.T) {
 }
 
 func TestBridgeUsesTenantScopedConversationOwner(t *testing.T) {
-	// Regression: conversation ownership must be checked by tenant id, or same numeric ids can cross tenants.
+	// 回归:会话归属必须按 tenant id 校验,否则相同数字 id 可能跨 tenant 串号。
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 501}] = dbhermes.HermesConversation{ID: 501, TenantID: 7, OwnerUserID: 42}
 	store.conversations[conversationKey{tenantID: 8, id: 501}] = dbhermes.HermesConversation{ID: 501, TenantID: 8, OwnerUserID: 99}
@@ -400,7 +400,7 @@ func TestBridgeUsesTenantScopedConversationOwner(t *testing.T) {
 }
 
 func TestBridgePrepareRequestConversationIDContract(t *testing.T) {
-	// Regression: conversation_id=0 is a valid new-chat sentinel; only negative ids are bad input.
+	// 回归:conversation_id=0 是合法的"新聊天"哨兵值;只有负数 id 才是非法输入。
 	cases := []struct {
 		name      string
 		body      string
@@ -486,7 +486,7 @@ func TestBridgePrepareRequestConversationIDContract(t *testing.T) {
 }
 
 func TestBridgePrepareRequestRejectsInvalidChatPayloadBeforeCreate(t *testing.T) {
-	// Regression guarded: invalid chat inputs must be rejected before CreateConversation, or user history gets polluted.
+	// 守护的回归:非法的聊天输入必须在 CreateConversation 之前被拒绝,否则用户历史会被污染。
 	cases := []struct {
 		name      string
 		requestID string
@@ -530,7 +530,7 @@ func TestBridgePrepareRequestRejectsInvalidChatPayloadBeforeCreate(t *testing.T)
 			if !errors.Is(err, hermes.ErrInvalidInput) {
 				t.Fatalf("PrepareRequest error=%v want ErrInvalidInput", err)
 			}
-			// Mutation check: move validation after CreateConversation or treat negative conversation_id as absent, and this row-count assertion fails.
+			// 变异检查:把校验挪到 CreateConversation 之后,或把负数 conversation_id 当成缺省值,这条行数断言就会失败。
 			if store.createdConversation || len(store.conversations) != 0 {
 				t.Fatalf("created=%v conversations=%d want no row for invalid payload", store.createdConversation, len(store.conversations))
 			}
@@ -539,7 +539,7 @@ func TestBridgePrepareRequestRejectsInvalidChatPayloadBeforeCreate(t *testing.T)
 }
 
 func TestInternalTokenSignedAndVerifiesSecret(t *testing.T) {
-	// Regression: the runner-facing body must carry a signed internal token, not a bearer string that any secret accepts.
+	// 回归:面向 runner 的请求体必须携带一个已签名的 internal token,而非任何 secret 都接受的 bearer 字符串。
 	now := time.Unix(1700000000, 0).UTC()
 	token, err := SignInternalToken([]byte(testInternalSecret), InternalTokenClaims{
 		TenantID:  7,
@@ -564,7 +564,7 @@ func TestInternalTokenSignedAndVerifiesSecret(t *testing.T) {
 }
 
 func TestActionMessageSendIsValidAuditAction(t *testing.T) {
-	// Regression: hermes.message.send must be accepted by the local whitelist after the Slice 2.0 DB CHECK migration.
+	// 回归:在 Slice 2.0 的 DB CHECK 迁移之后,hermes.message.send 必须被本地白名单接受。
 	store := newBridgeStore()
 	svc := hermes.NewService(store)
 
@@ -626,7 +626,7 @@ func sseResponse(body string) *http.Response {
 }
 
 func TestBridgeDoesNotForwardRunnerFramingHeaders(t *testing.T) {
-	// Regression: gateway rewrites SSE bytes, so runner framing headers would make net/http truncate or reject the body.
+	// 回归:gateway 会重写 SSE 字节,因此 runner 的 framing 头会让 net/http 截断或拒绝 body。
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
 	bridge := mustBridge(t, store)
@@ -663,7 +663,7 @@ func TestBridgeDoesNotForwardRunnerFramingHeaders(t *testing.T) {
 }
 
 func TestBridgeStreamFiltersSensitiveRunnerHeaders(t *testing.T) {
-	// Regression: runner response headers must not smuggle credentials or infra metadata to clients.
+	// 回归:runner 的响应头不得把凭证或基础设施元数据夹带给客户端。
 	store := newBridgeStore()
 	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
 	bridge := mustBridge(t, store)

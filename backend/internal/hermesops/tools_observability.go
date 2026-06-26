@@ -7,27 +7,25 @@ import (
 )
 
 const (
-	// obsReadLimit bounds every diagnostic observability read. Small + fixed:
-	// these are root-cause lookups, not bulk export.
+	// obsReadLimit 限定每一次诊断型可观测性读取的上限。小而固定:
+	// 这些是根因排查的查询,而非批量导出。
 	obsReadLimit = 100
 )
 
-// ObservabilityDeps are the read-only dependencies the observability tools wrap.
-// All three are EXISTING SELECT-only reads (the F-OBS-001 admin read APIs):
-//   - ListUsage wraps Queries.ListUsageRecords.
-//   - ListClaims wraps Queries.ListBillingClaims.
-//   - ListAudit wraps Queries.ListAuditEvents.
+// ObservabilityDeps 是可观测性工具包装的只读依赖。三者都是已有的 SELECT-only 读取
+// (即 F-OBS-001 admin 读取 API):
+//   - ListUsage 包装 Queries.ListUsageRecords。
+//   - ListClaims 包装 Queries.ListBillingClaims。
+//   - ListAudit 包装 Queries.ListAuditEvents。
 type ObservabilityDeps struct {
 	ListUsage  func(ctx context.Context, params dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error)
 	ListClaims func(ctx context.Context, params dbbilling.ListBillingClaimsParams) ([]dbbilling.ListBillingClaimsRow, error)
 	ListAudit  func(ctx context.Context, params dbbilling.ListAuditEventsParams) ([]dbbilling.ListAuditEventsRow, error)
 }
 
-// RequestDiagnoseSpec builds the read-only request_diagnose tool. It correlates
-// usage records + billing claims for a tenant by request_id (and optionally
-// claim_id), returning the diagnostic shape only: end/status classes, token
-// counts, stream state, attempt seq, claim status — NO cost amounts, NO raw
-// bodies, NO prompts.
+// RequestDiagnoseSpec 构建只读 request_diagnose 工具。它按 request_id(以及可选的 claim_id)
+// 把某租户的 usage records + billing claims 关联起来,只返回诊断结构:end/status 分类、
+// token 计数、stream 状态、attempt seq、claim 状态 —— 不含费用金额、原始报文、prompt。
 //
 // Args: { "request_id": <string>, "claim_id": <int, optional> }
 func RequestDiagnoseSpec(deps ObservabilityDeps) ToolSpec {
@@ -64,7 +62,7 @@ func RequestDiagnoseSpec(deps ObservabilityDeps) ToolSpec {
 				return ToolResult{}, err
 			}
 
-			// Optional claim_id narrowing.
+			// 可选的 claim_id 收窄过滤。
 			claimFilter := int64(0)
 			if cid, cerr := ArgInt(req.Args, "claim_id"); cerr == nil {
 				claimFilter = cid
@@ -102,9 +100,8 @@ func RequestDiagnoseSpec(deps ObservabilityDeps) ToolSpec {
 	}
 }
 
-// usageDiagnosticShape projects a usage record into diagnostic-only fields. It
-// DROPS actual_cost (money) and the audit-chain blobs; keeps classes / counts /
-// ids / stream state.
+// usageDiagnosticShape 把一条 usage record 投影成仅诊断用的字段。它丢弃
+// actual_cost(钱)和审计链 blob;保留分类 / 计数 / ids / stream 状态。
 func usageDiagnosticShape(u dbbilling.ListUsageRecordsRow) map[string]any {
 	return map[string]any{
 		"id":                       u.ID,
@@ -128,9 +125,9 @@ func usageDiagnosticShape(u dbbilling.ListUsageRecordsRow) map[string]any {
 	}
 }
 
-// claimDiagnosticShape projects a billing claim into diagnostic-only fields. It
-// DROPS predicted_cost / actual_cost / currency (money) and aborted_reason
-// (free-form); keeps status / endpoint family / attempt seq / ids.
+// claimDiagnosticShape 把一条 billing claim 投影成仅诊断用的字段。它丢弃
+// predicted_cost / actual_cost / currency(钱)和 aborted_reason(自由文本);
+// 保留 status / endpoint family / attempt seq / ids。
 func claimDiagnosticShape(c dbbilling.ListBillingClaimsRow) map[string]any {
 	return map[string]any{
 		"id":                  c.ID,
@@ -144,10 +141,9 @@ func claimDiagnosticShape(c dbbilling.ListBillingClaimsRow) map[string]any {
 	}
 }
 
-// AuditLookupSpec builds the read-only audit_lookup tool. It reads observability
-// audit events for a tenant and projects ONLY system-diagnostic fields — it
-// explicitly DROPS the free-form payload blob and reason string (which may carry
-// non-diagnostic content), surfacing event_class / event_type / severity / ids.
+// AuditLookupSpec 构建只读 audit_lookup 工具。它读取某租户的可观测性审计事件,
+// 只投影系统诊断字段 —— 它显式丢弃自由文本的 payload blob 和 reason 字符串
+// (可能携带非诊断内容),只露出 event_class / event_type / severity / ids。
 //
 // Args: { "event_class": <string, optional>, "severity": <string, optional> }
 func AuditLookupSpec(deps ObservabilityDeps) ToolSpec {
@@ -190,10 +186,9 @@ func AuditLookupSpec(deps ObservabilityDeps) ToolSpec {
 	}
 }
 
-// auditDiagnosticShape projects an audit event into diagnostic-only fields. It
-// DROPS Payload (free-form blob) and Reason (free-form string) — these are the
-// fields most likely to carry non-diagnostic content and have no place in a
-// privacy-bounded operator tool result.
+// auditDiagnosticShape 把一条审计事件投影成仅诊断用的字段。它丢弃 Payload
+// (自由文本 blob)和 Reason(自由文本字符串)—— 这两个字段最可能携带非诊断内容,
+// 在受隐私边界约束的运营工具结果里没有立足之地。
 func auditDiagnosticShape(e dbbilling.ListAuditEventsRow) map[string]any {
 	return map[string]any{
 		"id":                  e.ID,
@@ -209,12 +204,11 @@ func auditDiagnosticShape(e dbbilling.ListAuditEventsRow) map[string]any {
 	}
 }
 
-// LogAnalyzeSpec builds the read-only log_analyze tool. It aggregates error_class
-// / end_class trends from usage records (system-diagnostic enums only). It NEVER
-// reads or surfaces raw bodies, prompts, or completions — it counts the existing
-// classification enums that the privacy boundary already permits.
+// LogAnalyzeSpec 构建只读 log_analyze 工具。它从 usage records 聚合 error_class /
+// end_class 趋势(仅系统诊断枚举)。它绝不读取或暴露原始报文、prompt 或 completion ——
+// 它只统计隐私边界已经允许的现有分类枚举。
 //
-// Args: none (analyzes the tenant's recent usage window).
+// Args: none(分析该租户最近的用量窗口)。
 func LogAnalyzeSpec(deps ObservabilityDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolLogAnalyze,
@@ -267,7 +261,7 @@ func int64PtrAny(v *int64) any {
 	return *v
 }
 
-// intCountMap converts an int-count map to an any-valued map for JSON encoding.
+// intCountMap 把 int 计数 map 转成 any 值的 map,以便 JSON 编码。
 func intCountMap(in map[string]int) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {

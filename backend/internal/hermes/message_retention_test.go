@@ -7,7 +7,7 @@ import (
 )
 
 func TestMessageRetentionWorkerRunOncePurgesOnlyRowsOlderThanRetention(t *testing.T) {
-	// Regression: 运维显式设置正整数 retention 后才允许硬删过期 Hermes 消息。
+	// 回归测试：运维显式设置正整数 retention 后才允许硬删过期 Hermes 消息。
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	store := &memoryMessagePurgeStore{
 		rows: []memoryMessageRow{
@@ -34,11 +34,11 @@ func TestMessageRetentionWorkerRunOncePurgesOnlyRowsOlderThanRetention(t *testin
 	if len(store.cutoffs) != 1 || !store.cutoffs[0].Equal(now.AddDate(0, 0, -91)) {
 		t.Fatalf("cutoffs=%+v want now minus 91 days", store.cutoffs)
 	}
-	// Mutation check: removing the purge call leaves id=1; inverting the cutoff deletes id=2.
+	// 变异检查：去掉 purge 调用会残留 id=1；翻转 cutoff 则会误删 id=2。
 }
 
 func TestMessageRetentionWorkerRunOnceDoesNotPurgeWhenRetentionDisabled(t *testing.T) {
-	// Regression: 默认 retention_days=0 表示永久保留，不能启动 90 天兜底硬删。
+	// 回归测试：默认 retention_days=0 表示永久保留，不能启动 90 天兜底硬删。
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	store := &memoryMessagePurgeStore{
 		rows: []memoryMessageRow{
@@ -65,7 +65,7 @@ func TestMessageRetentionWorkerRunOnceDoesNotPurgeWhenRetentionDisabled(t *testi
 	if len(store.cutoffs) != 0 {
 		t.Fatalf("cutoffs=%+v want purge store not called", store.cutoffs)
 	}
-	// Mutation check: restoring a 90 天 fallback deletes id=1 and records a cutoff.
+	// 变异检查：若恢复 90 天兜底清理会删掉 id=1 并记录一次 cutoff。
 }
 
 func TestMessageRetentionDaysFromEnvDefaultsToDisabled(t *testing.T) {

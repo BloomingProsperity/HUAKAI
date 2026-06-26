@@ -2,15 +2,13 @@ package hermesconfirm
 
 import "testing"
 
-// TestConfirmCacheBindsOperatorToken is the discriminating guard for the H4
-// review S1: a mutating-tool confirmation must be bound to the EXACT operator
-// admin token that issued the dry-run preview, not merely the tenant + tenant-
-// user context. Without the TokenID check, operator B (a distinct admin token)
-// acting in the same (tenant, as_user_id) context could consume operator A's
-// preview and execute a privileged mutation.
+// TestConfirmCacheBindsOperatorToken 是 H4 审查 S1 的判别式守卫:mutating-tool 的确认
+// 必须绑定到签发 dry-run 预览的那个确切 operator admin token,而不只是 tenant + tenant-
+// user 上下文。若没有 TokenID 校验,在同一 (tenant, as_user_id) 上下文中操作的 operator B
+//(不同的 admin token)就能消费 operator A 的预览并执行一次特权 mutation。
 //
-// Regression caught: deleting `entry.TokenID != tokenID` from Cache.Consume
-// makes the wrong-operator-token consume succeed — this test goes RED.
+// 捕获的回归:从 Cache.Consume 删除 `entry.TokenID != tokenID` 会让错误 operator token
+// 的消费成功——此测试随之变红。
 func TestConfirmCacheBindsOperatorToken(t *testing.T) {
 	const (
 		tool      = "account_pause"
@@ -22,7 +20,7 @@ func TestConfirmCacheBindsOperatorToken(t *testing.T) {
 	)
 	c := NewCache()
 
-	// Operator A (token 100) issues a preview.
+	// Operator A(token 100)签发一个预览。
 	id, err := c.Issue(PendingConfirmation{
 		ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenA, TargetID: target,
 	})
@@ -30,18 +28,18 @@ func TestConfirmCacheBindsOperatorToken(t *testing.T) {
 		t.Fatalf("issue: %v", err)
 	}
 
-	// Operator B (token 200) — same tool/tenant/tenant-user — must NOT be able to
-	// consume A's correlation_id. (And the attempt still consumes it: single-use.)
+	// Operator B(token 200)——相同的 tool/tenant/tenant-user——绝不能消费 A 的
+	// correlation_id。(而且这次尝试仍会消费掉它:单次消费。)
 	if _, ok := c.Consume(id, tool, tenantID, actorUser, tokenB); ok {
 		t.Fatal("operator B (different admin token) consumed operator A's confirmation — confirm is not bound to the operator token")
 	}
 
-	// The wrong-token attempt is single-use: even A can no longer consume it.
+	// 错误 token 的尝试是单次消费:即便是 A 也无法再消费它。
 	if _, ok := c.Consume(id, tool, tenantID, actorUser, tokenA); ok {
 		t.Fatal("correlation_id survived a failed consume — single-use is broken")
 	}
 
-	// Sanity: a fresh preview consumed by the SAME operator token succeeds exactly once.
+	// 完整性检查:由同一个 operator token 消费的全新预览恰好成功一次。
 	id2, err := c.Issue(PendingConfirmation{
 		ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenA, TargetID: target,
 	})

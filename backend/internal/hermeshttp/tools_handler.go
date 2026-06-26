@@ -10,9 +10,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
 
-// toolDescriptor is the GET /v1/hermes/tools list entry: a tool's identity +
-// input schema + required role + read-only flag, so an operator / the assistant
-// can discover what is callable without trial-and-error.
+// toolDescriptor 是 GET /v1/hermes/tools 列表中的一条目:某工具的身份 + 入参 schema
+// + 所需 role + read-only 标记,使 operator / assistant 无需反复试错即可发现哪些工具
+// 可调用。
 type toolDescriptor struct {
 	Name                 string            `json:"name"`
 	Category             string            `json:"category"`
@@ -24,9 +24,8 @@ type toolDescriptor struct {
 	InputSchema          map[string]string `json:"input_schema"`
 }
 
-// listTools serves GET /v1/hermes/tools. It is admin-gated by the H1 middleware
-// mount; here it just requires a resolved identity (which the middleware
-// guarantees) and lists every registered tool.
+// listTools 服务 GET /v1/hermes/tools。它由 H1 中间件挂载做 admin 门控;这里只要求
+// 一个已解析的身份(由中间件保证),并列出每一个已注册的工具。
 func (h handler) listTools(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireIdentity(w, r); !ok {
 		return
@@ -59,25 +58,22 @@ func (h handler) listTools(w http.ResponseWriter, r *http.Request) {
 type toolExecuteRequest struct {
 	ToolName string         `json:"tool_name"`
 	Args     map[string]any `json:"args"`
-	// Confirm + CorrelationID drive the WAVE H4 mutating-tool dry-run+confirm
-	// flow. They are ignored for read-only tools. Confirm=false (default) on a
-	// mutating tool returns a read-only preview + a correlation_id; Confirm=true
-	// with the matching correlation_id executes the mutation exactly once.
+	// Confirm + CorrelationID 驱动 WAVE H4 mutating 工具的 dry-run+confirm 流程。
+	// 对只读工具会被忽略。对 mutating 工具,Confirm=false(默认)返回只读 preview +
+	// 一个 correlation_id;Confirm=true 且 correlation_id 匹配时,恰好执行一次该变更。
 	Confirm       bool   `json:"confirm,omitempty"`
 	CorrelationID string `json:"correlation_id,omitempty"`
 }
 
-// executeTool serves POST /v1/hermes/tool-execute. It:
-//  1. resolves the (already scope-checked) identity + operator actor,
-//  2. authorizes the tool against the caller's role (RBAC floor),
-//  3. on denial — records a denied hermes_tool_calls row + 403,
-//  4. on allow — runs the read-only tool, records an ok/error hermes_tool_calls
-//     row AND mirrors the invocation into hermes_audit_events as
-//     hermes.tool.<name>, then returns the structured result.
+// executeTool 服务 POST /v1/hermes/tool-execute。它:
+//  1. 解析(已做过 scope 校验的)身份 + operator actor,
+//  2. 按调用方的 role 对该工具做授权(RBAC 下限),
+//  3. 拒绝时——记录一条 denied 的 hermes_tool_calls 行 + 403,
+//  4. 放行时——运行只读工具,记录一条 ok/error 的 hermes_tool_calls 行,并把本次
+//     调用以 hermes.tool.<name> 的形式镜像写入 hermes_audit_events,然后返回结构化结果。
 //
-// Every path records a tool-call row before returning, so success, error, and
-// denial are all auditable. A tool that mutates state cannot reach here — only
-// read-only tools are registered this wave.
+// 每条路径在返回前都会记录一条 tool-call 行,因此成功、错误、拒绝都可审计。会改动
+// 状态的工具无法到达此处——本 wave 只注册了只读工具。
 func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 	ident, ok := h.requireIdentity(w, r)
 	if !ok {
@@ -102,17 +98,15 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 
 	actor, _ := adminActorFromContext(r.Context())
 
-	// WAVE H4: a mutating tool is dispatched ONLY through the dry-run + confirm
-	// flow (5-layer safety). It must never reach the read-only Authorize/Run path
-	// below. Route it before the read-only RBAC so a mutation can never run
-	// without the confirm gate + advisory lock + atomic audit.
+	// WAVE H4:mutating 工具只能经由 dry-run + confirm 流程(5 层安全)派发。它绝不
+	// 应到达下方的只读 Authorize/Run 路径。在只读 RBAC 之前就把它分流出去,使得任何
+	// 变更都不可能绕过 confirm 门 + advisory lock + atomic audit 而运行。
 	if mutSpec, ok := h.tools.Get(req.ToolName); ok && mutSpec.Mutating {
-		// KNOB A (runtime kill-switch): when mutating tools are disabled, refuse the
-		// mutating branch HERE — before previewMutation OR confirmMutation — so a
-		// single choke covers both the dry-run preview and the confirmed execution.
-		// Record a denied hermes_tool_calls row (audit parity with the other L1
-		// denials, reusing the mutate handler's denial recorder) so a refused attempt
-		// is auditable, then 403. The read-only path below is unaffected.
+		// KNOB A(运行时 kill-switch):当 mutating 工具被禁用时,在这里拒绝 mutating
+		// 分支——在 previewMutation 或 confirmMutation 之前——使单一节流点同时覆盖
+		// dry-run preview 与已确认的执行。记录一条 denied 的 hermes_tool_calls 行
+		// (与其它 L1 denial 审计对齐,复用 mutate handler 的 denial 记录器),让被拒绝
+		// 的尝试可审计,然后 403。下方的只读路径不受影响。
 		if h.mutatingDisabled {
 			h.recordMutatingDenied(r, ident, actor, req)
 			writeError(w, http.StatusForbidden, "hermes_mutating_disabled", "hermes mutating tools are disabled at runtime")
@@ -122,10 +116,9 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RBAC: authorize the role floor. Tenant-scope was already enforced by the
-	// H1 middleware (CanIssueForTenant) before this handler ran — a cross-tenant
-	// caller never reaches here. An unknown tool or insufficient role is a
-	// denial recorded as a denied row.
+	// RBAC:校验 role 下限。tenant scope 在本 handler 运行前已由 H1 中间件
+	// (CanIssueForTenant)执行——跨 tenant 的调用方永远到不了这里。未知工具或权限
+	// 不足均视为拒绝,记录为一条 denied 行。
 	spec, authErr := h.tools.Authorize(req.ToolName, actor.Role)
 	if authErr != nil {
 		h.recordToolCall(r, ident, actor, req, hermesops.ResultDenied, nil, "")
@@ -153,8 +146,8 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Success: record the ok row (with sanitized summary) + mirror to the hermes
-	// audit ledger, then return the structured result.
+	// 成功:记录 ok 行(含脱敏后的 summary)+ 镜像写入 hermes 审计账本,然后返回
+	// 结构化结果。
 	h.recordToolCall(r, ident, actor, req, hermesops.ResultOK, result.Summary, result.ErrorClass)
 	h.mirrorToolAudit(r, ident, spec.Name, hermes.AuditResultSuccess)
 
@@ -166,11 +159,10 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// recordToolCall appends one sanitized hermes_tool_calls row. It best-effort
-// logs (does not fail the request) on a write error — the diagnostic result is
-// already computed and the audit-write transient failure should not mask it; the
-// hermes audit mirror provides a second trail. The summary is sanitized inside
-// hermesops.RecordToolCall (defense in depth on top of the diagnostic-only tools).
+// recordToolCall 追加一条脱敏后的 hermes_tool_calls 行。写入出错时它仅尽力记日志
+// (不让请求失败)——诊断结果已经算出,审计写入的瞬时故障不应将其掩盖;hermes 审计
+// 镜像提供了第二条轨迹。summary 在 hermesops.RecordToolCall 内部脱敏(在「仅诊断类
+// 工具」之上的纵深防御)。
 func (h handler) recordToolCall(r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest, status hermesops.ResultStatus, summary map[string]any, errorClass string) {
 	now := time.Now().UTC()
 	rec := hermesops.ToolCallAudit{
@@ -192,11 +184,10 @@ func (h handler) recordToolCall(r *http.Request, ident sessionauth.Identity, act
 	}
 }
 
-// mirrorToolAudit writes the per-action hermes_audit_events row (reusing the
-// existing RecordAudit path, which folds in the operator's admin_actor
-// attribution + sanitizes args). A tool with no whitelisted action (should never
-// happen for a registered tool) is skipped. A transient audit failure is logged,
-// not surfaced — the authoritative tool-call row is the hermes_tool_calls entry.
+// mirrorToolAudit 写入按动作的 hermes_audit_events 行(复用既有 RecordAudit 路径,
+// 后者会折入 operator 的 admin_actor 归因并脱敏 args)。没有白名单动作的工具(对已注册
+// 工具不应发生)会被跳过。瞬时审计故障只记日志、不向外暴露——权威的 tool-call 行是
+// hermes_tool_calls 那条记录。
 func (h handler) mirrorToolAudit(r *http.Request, ident sessionauth.Identity, toolName, result string) {
 	if h.svc == nil {
 		return

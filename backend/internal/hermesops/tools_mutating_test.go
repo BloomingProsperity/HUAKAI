@@ -14,13 +14,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 )
 
-// --- RBAC floor (L1) --------------------------------------------------------
+// --- RBAC 底线(L1)--------------------------------------------------------
 
 func TestDLQReplay_RBACFloorIsPlatformAdminOnly(t *testing.T) {
-	// Regression (L1): dlq_replay is platform_admin ONLY — a tenant_operator must
-	// be refused by AuthorizeMutating. Mutation check: change DLQReplaySpec's
-	// RequiredRole to RoleTenantOperator and the tenant_operator authorize passes
-	// (this assertion flips).
+	// 回归(L1):dlq_replay 仅限 platform_admin —— tenant_operator 必须被
+	// AuthorizeMutating 拒绝。变异检验:把 DLQReplaySpec 的 RequiredRole 改成
+	// RoleTenantOperator,则 tenant_operator 的鉴权会通过(此断言翻转)。
 	reg := NewRegistry()
 	reg.Register(DLQReplaySpec(DLQReplayDeps{
 		Lookup: func(context.Context, int64, int64) (dlq.Record, error) { return dlq.Record{}, nil },
@@ -35,10 +34,9 @@ func TestDLQReplay_RBACFloorIsPlatformAdminOnly(t *testing.T) {
 }
 
 func TestAccountPause_TenantOperatorAllowedAtFloor(t *testing.T) {
-	// Regression (L1): account_pause admits a tenant_operator at the role floor
-	// (tenant scope is enforced separately by the middleware + Resolve re-check).
-	// Mutation check: raise RequiredRole to RolePlatformAdmin and tenant_operator
-	// is forbidden here.
+	// 回归(L1):account_pause 在角色底线处放行 tenant_operator
+	// (租户 scope 由中间件 + Resolve 复检单独强制)。变异检验:把 RequiredRole
+	// 提升为 RolePlatformAdmin,则此处 tenant_operator 会被禁止。
 	reg := NewRegistry()
 	reg.Register(AccountPauseSpec(AccountMutationDeps{
 		GetAccount: func(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
@@ -54,8 +52,8 @@ func TestAccountPause_TenantOperatorAllowedAtFloor(t *testing.T) {
 }
 
 func TestAuthorizeMutating_RefusesReadOnlyTool(t *testing.T) {
-	// Regression: a read-only tool can never enter the mutate path. Mutation
-	// check: drop the !spec.Mutating guard in AuthorizeMutating and this returns nil.
+	// 回归:只读工具永远不能进入 mutate 路径。变异检验:去掉 AuthorizeMutating 里的
+	// !spec.Mutating 守卫,则此处会返回 nil。
 	reg := NewRegistry()
 	reg.Register(ToolSpec{Name: ToolDLQInspect, ReadOnly: true, RequiredRole: RoleTenantOperator,
 		Run: func(context.Context, ToolRequest) (ToolResult, error) { return ToolResult{}, nil }})
@@ -65,9 +63,9 @@ func TestAuthorizeMutating_RefusesReadOnlyTool(t *testing.T) {
 }
 
 func TestRun_RefusesMutatingTool(t *testing.T) {
-	// Regression: a mutating tool can never run through the read-only Run path
-	// (which skips dry-run/confirm/lock/atomic-audit). Mutation check: remove the
-	// spec.Mutating guard in Run and the mutate callback would be reachable.
+	// 回归:改动型工具永远不能走只读的 Run 路径
+	// (Run 会跳过 dry-run/confirm/lock/原子审计)。变异检验:去掉 Run 里的
+	// spec.Mutating 守卫,则 mutate 回调会变得可达。
 	reg := NewRegistry()
 	reg.Register(AccountPauseSpec(AccountMutationDeps{
 		GetAccount: func(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
@@ -79,17 +77,16 @@ func TestRun_RefusesMutatingTool(t *testing.T) {
 	}
 }
 
-// --- account toggle Resolve + Mutate ---------------------------------------
+// --- account toggle 的 Resolve + Mutate ---------------------------------------
 
 func TestAccountPause_ResolvePreviewAndTenantRecheck(t *testing.T) {
-	// Regression (L2 + cross-tenant): Resolve previews current->next enabled and
-	// rejects a target row whose tenant differs from the request tenant. Mutation
-	// check: drop the account.TenantID != req.TenantID guard and the foreign-row
-	// resolve returns a plan instead of ErrTargetResolution.
+	// 回归(L2 + 跨租户):Resolve 预览 current->next 的 enabled,并拒绝
+	// 那些租户与请求租户不一致的目标行。变异检验:去掉 account.TenantID != req.TenantID
+	// 守卫,则对外租户行的 resolve 会返回一个 plan 而不是 ErrTargetResolution。
 	deps := AccountMutationDeps{
 		GetAccount: func(_ context.Context, arg admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
-			// Simulate the DB returning a row whose tenant does not match (defense
-			// in depth — the query filters by tenant, but we re-check the row).
+			// 模拟 DB 返回一个租户不匹配的行(纵深防御 —— 查询本身按租户过滤,
+			// 但我们仍对返回的行复检)。
 			return admindb.AdminProviderAccountRow{ID: arg.ID, TenantID: 999, Enabled: true, HealthState: "healthy"}, nil
 		},
 	}
@@ -116,10 +113,9 @@ func TestAccountPause_ResolvePreviewAndTenantRecheck(t *testing.T) {
 }
 
 func TestAccountPause_MutateFlipsEnabledFalseViaRealPath(t *testing.T) {
-	// Regression: account_pause's Mutate flips enabled=false through the real
-	// UpdateProviderAccountEnabled query (issued on the tx) and records
-	// previous->next. account_resume flips back to true. Mutation check: hardcode
-	// targetEnabled=true in accountToggleSpec and the pause asserts fail.
+	// 回归:account_pause 的 Mutate 通过真实的 UpdateProviderAccountEnabled 查询
+	// (在 tx 上发出)把 enabled 翻成 false,并记录 previous->next。account_resume 则翻回 true。
+	// 变异检验:在 accountToggleSpec 里把 targetEnabled 写死为 true,则 pause 的断言会失败。
 	enabledRec := &enabledTxRecorder{}
 	tx := &enabledFakeTx{rec: enabledRec}
 	ctx := withMutationTx(context.Background(), tx)
@@ -149,14 +145,12 @@ func TestAccountPause_MutateFlipsEnabledFalseViaRealPath(t *testing.T) {
 	}
 }
 
-// --- dlq_replay idempotency (L5) -------------------------------------------
+// --- dlq_replay 幂等(L5)-------------------------------------------------
 
 func TestDLQReplay_IdempotencyDoesNotDoubleProcess(t *testing.T) {
-	// Regression (L5): a double dlq_replay does not double-process. Replay dedupes
-	// via the record's idempotency key (modeled here: the second replay sees an
-	// already-delivered record and returns it without re-running the handler).
-	// Mutation check: make the fake Replay re-run the handler unconditionally and
-	// processCount becomes 2.
+	// 回归(L5):两次 dlq_replay 不会重复处理。Replay 借记录的幂等键去重
+	// (这里建模为:第二次 replay 看到一条已投递的记录,直接返回它而不重新运行 handler)。
+	// 变异检验:让 fake 的 Replay 无条件重新运行 handler,则 processCount 会变成 2。
 	processCount := 0
 	delivered := false
 	deps := DLQReplayDeps{
@@ -165,7 +159,7 @@ func TestDLQReplay_IdempotencyDoesNotDoubleProcess(t *testing.T) {
 		},
 		Replay: func(_ context.Context, id int64, _ string) (*dlq.Record, error) {
 			if delivered {
-				// idempotency-key dedupe: already delivered, do not re-process.
+				// 幂等键去重:已投递,不重新处理。
 				return &dlq.Record{ID: id, Status: dlq.StatusDelivered}, nil
 			}
 			processCount++
@@ -185,14 +179,13 @@ func TestDLQReplay_IdempotencyDoesNotDoubleProcess(t *testing.T) {
 	}
 }
 
-// --- renew_trigger privacy --------------------------------------------------
+// --- renew_trigger 隐私 --------------------------------------------------
 
 func TestRenewTrigger_NeverReturnsCredentialMaterial(t *testing.T) {
-	// Regression (PRIVACY, DISCRIMINATING): renew_trigger calls Rotate and the
-	// summary surfaces ONLY the resulting version + state — never the rotated
-	// payload. We feed a secret payload in and assert it appears NOWHERE in the
-	// result summary. Mutation check: add `"payload": in.Payload` to the summary
-	// and the sentinel leaks (RED).
+	// 回归(PRIVACY,有区分度):renew_trigger 调用 Rotate,summary 只露出
+	// 结果版本 + state —— 绝不露轮换后的 payload。我们喂入一个 secret payload,
+	// 并断言它不出现在结果 summary 的任何地方。变异检验:往 summary 加上
+	// `"payload": in.Payload`,则该哨兵值会泄露(变红)。
 	const secret = "sk-ROTATED-NEW-MATERIAL-9f2a"
 	deps := RenewTriggerDeps{
 		ListByAccount: func(_ context.Context, tenant, account int64) ([]credentialstore.CredentialMetadata, error) {
@@ -218,7 +211,7 @@ func TestRenewTrigger_NeverReturnsCredentialMaterial(t *testing.T) {
 	if res.Summary["new_version"] != int32(5) || res.Summary["previous_version"] != int32(4) {
 		t.Fatalf("summary new=%v prev=%v want 5/4", res.Summary["new_version"], res.Summary["previous_version"])
 	}
-	// The rotated material must not be anywhere in the returned summary.
+	// 轮换后的材料绝不能出现在返回的 summary 的任何地方。
 	if summaryContains(res.Summary, secret) {
 		t.Fatalf("renew_trigger summary leaked rotated credential material")
 	}
@@ -233,7 +226,7 @@ func summaryContains(m map[string]any, needle string) bool {
 	return false
 }
 
-// --- fakes for the enabled flip --------------------------------------------
+// --- enabled 翻转用的 fake --------------------------------------------------
 
 type enabledTxRecorder struct {
 	lastEnabled *bool

@@ -40,6 +40,11 @@ or genuine forks. One PR per slice; report after each.
    commit message 正文、计划与 `docs/process` 文档,以及**派给 subagent 的指令和要求其返回的报告**,一律用中文。
    英文技术标识符(函数名 / 类型名 / 环境变量名 / SQL 关键字)保留英文,只是注释与散文用中文。派 subagent 时
    必须在 prompt 里**显式要求"代码注释用中文、返回报告用中文"**,否则它们会默认写英文。
+   **(2026-06-26 Owner 强化:范围=整个项目所有代码注释,含存量。)** 不仅新写/改动的代码,**存量代码的英文注释也要逐步全部转成中文**
+   (Go 后端、前端 TS、Rust 一律)。这是分批工程,按包逐步转、每批过构建+测试门;**排除项(不转,属正确性而非偏好)**:
+   ① 生成码(`*.sql.go` / `*.pb.go` / `*_gen.go` 等,会被重新生成);② vendor / `pkg/external` 第三方码(license/clean-room);
+   ③ 编译指令与工具指令(`//go:` / `//nolint` / `//lint:ignore` / build tags);④ LICENSE / 版权 / SPDX 头。
+   转换只改注释文字,不动任何代码逻辑、标识符、struct tag;保持 clean-room(不引入上游逐字标识符)。
 
 **Cadence per slice.** worktree (off latest base, claim lock) → §16 triple-mirror → plan in
 `docs/process/plans/` → Go build/vet → mutation-tested → adversarial review (0 S0/S1; S2 fix, S3 fix-in-place)

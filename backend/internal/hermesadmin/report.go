@@ -1,17 +1,14 @@
-// Package hermesadmin is the admin-gated daily ops-inspection (WAVE H5).
+// Package hermesadmin 是受管理员门控的每日运维巡检（WAVE H5）。
 //
-// It runs the EXISTING read-only diagnostics on a schedule, composes a
-// platform/operator-wide ops report from sanitized system-diagnostic data, and
-// emails it to the configured administrator. It is purely additive and off every
-// request hot path: nothing here runs per-request.
+// 它按计划运行既有的只读诊断，从经过脱敏的系统诊断数据组合出一份平台/运维全局的
+// 运维报告，并将其邮件发送给已配置的管理员。它是纯增量的，且远离每条请求的热路径：
+// 这里没有任何东西按请求运行。
 //
-// Privacy boundary (CRITICAL): every section of the report carries ONLY
-// system-diagnostic enums / counts / ids — never prompts, completions, raw
-// bodies, secrets, credential bytes, money amounts, or PII. The diagnostic
-// sources this package consumes are already sanitized (the H3 tools and the
-// underlying SELECT-only reads project to enums/counts), and InspectionService
-// projects again into a closed set of typed fields, so a new free-form field in
-// an upstream row can never silently flow into the email body.
+// 隐私边界（关键）：报告的每一段都仅携带系统诊断的 enums / counts / ids——
+// 绝不携带 prompt、completion、原始请求体、密钥、凭证字节、金额或 PII。本包消费的
+// 诊断源已经过脱敏（H3 工具及底层仅 SELECT 的读取都投影为 enums/counts），而
+// InspectionService 又再次投影为一组封闭的带类型字段，所以上游行中新增的自由格式
+// 字段永远无法悄悄流入邮件正文。
 package hermesadmin
 
 import (
@@ -20,22 +17,21 @@ import (
 	"time"
 )
 
-// Severity classifies how concerning a section's findings are. The headline is
-// derived from the worst severity across sections.
+// Severity 对某一段的发现有多需要关注进行分级。标题由各段中最严重的级别推导而来。
 type Severity string
 
 const (
-	// SeverityOK — nothing actionable in this section.
+	// SeverityOK——该段没有需要处理的事项。
 	SeverityOK Severity = "ok"
-	// SeverityWarn — a non-fatal signal an operator should glance at (e.g. a
-	// credential nearing renewal, a small DLQ backlog).
+	// SeverityWarn——一个非致命信号，运维应当扫一眼（例如一个临近续期的凭证、
+	// 一小撮 DLQ 积压）。
 	SeverityWarn Severity = "warn"
-	// SeverityCritical — an actively failing condition (down account, failed
-	// credential, dead-lettered events) that needs attention.
+	// SeverityCritical——一个正在发生的失败状况（账号宕掉、凭证失败、被投递到
+	// 死信的事件），需要关注。
 	SeverityCritical Severity = "critical"
 )
 
-// severityRank orders severities so the report headline can pick the worst.
+// severityRank 为各严重级别排序，使报告标题能挑出最严重的那个。
 func severityRank(s Severity) int {
 	switch s {
 	case SeverityCritical:
@@ -47,7 +43,7 @@ func severityRank(s Severity) int {
 	}
 }
 
-// worse returns the higher-severity of a and b.
+// worse 返回 a 与 b 中更严重的那个级别。
 func worse(a, b Severity) Severity {
 	if severityRank(b) > severityRank(a) {
 		return b
@@ -55,7 +51,7 @@ func worse(a, b Severity) Severity {
 	return a
 }
 
-// AccountPoolSection summarizes channel/account health (aggregate states only).
+// AccountPoolSection 汇总渠道/账号健康（仅聚合状态）。
 type AccountPoolSection struct {
 	Total    int64            `json:"total"`
 	ByState  map[string]int64 `json:"by_state"`
@@ -65,7 +61,7 @@ type AccountPoolSection struct {
 	Severity Severity         `json:"severity"`
 }
 
-// CredentialSection summarizes credential renewal status across the deployment.
+// CredentialSection 汇总整个部署的凭证续期状态。
 type CredentialSection struct {
 	Total        int            `json:"total"`
 	NeedRenewal  int            `json:"need_renewal"`
@@ -75,17 +71,17 @@ type CredentialSection struct {
 	Severity     Severity       `json:"severity"`
 }
 
-// DLQSection summarizes dead-letter-queue depth + oldest pending per lane.
+// DLQSection 汇总死信队列深度 + 每条 lane 上最旧的待处理项。
 type DLQSection struct {
 	Total           int               `json:"total"`
 	PendingTotal    int               `json:"pending_total"`
 	ByLane          map[string]int    `json:"by_lane"`
 	ByStatus        map[string]int    `json:"by_status"`
-	OldestPendingAt map[string]string `json:"oldest_pending_at"` // lane -> RFC3339 UTC
+	OldestPendingAt map[string]string `json:"oldest_pending_at"` // lane -> RFC3339 UTC 时间
 	Severity        Severity          `json:"severity"`
 }
 
-// ErrorTrendSection summarizes the top error/end classes over the recent window.
+// ErrorTrendSection 汇总近期窗口内排名靠前的 error/end 分类。
 type ErrorTrendSection struct {
 	SampleSize  int            `json:"sample_size"`
 	ByEndClass  map[string]int `json:"by_end_class"`
@@ -95,13 +91,13 @@ type ErrorTrendSection struct {
 	Severity    Severity       `json:"severity"`
 }
 
-// ClassCount is one (class, count) pair, used for the sorted top-N list.
+// ClassCount 是一个 (class, count) 键值对，用于排序后的 top-N 列表。
 type ClassCount struct {
 	Class string `json:"class"`
 	Count int    `json:"count"`
 }
 
-// ModuleSection summarizes the module-knowledge health snapshot.
+// ModuleSection 汇总模块知识（module-knowledge）健康快照。
 type ModuleSection struct {
 	Total    int            `json:"total"`
 	ByStatus map[string]int `json:"by_status"`
@@ -112,18 +108,16 @@ type ModuleSection struct {
 	Severity Severity       `json:"severity"`
 }
 
-// SourceError records that one diagnostic source failed to read. The report
-// still sends (degraded) so a single read failure never silences the whole
-// inspection; the operator sees which section is blind. It carries only the
-// section name + a fixed error class — never the underlying error text, which
-// could embed identifiers.
+// SourceError 记录某个诊断源读取失败。报告仍会（降级）发送，这样单次读取失败绝不
+// 会让整个巡检静默；运维能看到哪一段失明了。它只携带段名 + 一个固定的错误分类
+//——绝不携带底层错误文本，因为后者可能内嵌标识符。
 type SourceError struct {
 	Section string `json:"section"`
 	Class   string `json:"class"`
 }
 
-// InspectionReport is the structured, sanitized result of one inspection run.
-// Every field is system-diagnostic; nothing here is free-form user content.
+// InspectionReport 是一次巡检运行的结构化、已脱敏的结果。每个字段都是系统诊断数据；
+// 这里没有任何东西是自由格式的用户内容。
 type InspectionReport struct {
 	GeneratedAt  time.Time          `json:"generated_at"`
 	TenantID     int64              `json:"tenant_id"`
@@ -135,8 +129,8 @@ type InspectionReport struct {
 	SourceErrors []SourceError      `json:"source_errors,omitempty"`
 }
 
-// IssueCount counts the sections at or above warn severity (the "N issues need
-// attention" number in the headline).
+// IssueCount 统计严重级别达到或高于 warn 的段数（即标题中「N issues need
+// attention」那个数字）。
 func (r InspectionReport) IssueCount() int {
 	n := 0
 	for _, s := range []Severity{
@@ -150,7 +144,7 @@ func (r InspectionReport) IssueCount() int {
 	return n
 }
 
-// CriticalCount counts the sections at critical severity.
+// CriticalCount 统计处于 critical 严重级别的段数。
 func (r InspectionReport) CriticalCount() int {
 	n := 0
 	for _, s := range []Severity{
@@ -164,14 +158,13 @@ func (r InspectionReport) CriticalCount() int {
 	return n
 }
 
-// AllClear reports whether the run found nothing actionable AND every source
-// read succeeded. A blind section (source error) is NOT all-clear: we cannot
-// claim healthy on data we could not read.
+// AllClear 报告本次运行是否「没发现任何需要处理的事项，且每个源都读取成功」。
+// 失明的段（source error）不算 all-clear：我们不能对读不到的数据宣称健康。
 func (r InspectionReport) AllClear() bool {
 	return r.IssueCount() == 0 && len(r.SourceErrors) == 0
 }
 
-// Worst returns the highest severity across the report (drives the headline).
+// Worst 返回整份报告中最高的严重级别（驱动标题）。
 func (r InspectionReport) Worst() Severity {
 	w := SeverityOK
 	for _, s := range []Severity{
@@ -186,8 +179,8 @@ func (r InspectionReport) Worst() Severity {
 	return w
 }
 
-// topN returns the highest-count classes from m, sorted by count desc then name
-// asc (stable, deterministic output for tests + email).
+// topN 返回 m 中计数最高的若干分类，按 count 降序、再按 name 升序排序
+//（稳定、确定性的输出，便于测试 + 邮件）。
 func topN(m map[string]int, n int) []ClassCount {
 	out := make([]ClassCount, 0, len(m))
 	for k, v := range m {
@@ -205,8 +198,8 @@ func topN(m map[string]int, n int) []ClassCount {
 	return out
 }
 
-// limitContext bounds each diagnostic read inside an inspection tick so a single
-// slow source cannot stall the daily run past a sane budget.
+// limitContext 为一次巡检 tick 内的每次诊断读取设定边界，使单个慢源不会让每日运行
+// 拖延超过一个合理预算。
 const inspectionReadBudget = 30 * time.Second
 
 func withReadBudget(parent context.Context) (context.Context, context.CancelFunc) {

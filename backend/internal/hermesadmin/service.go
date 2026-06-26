@@ -12,8 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 )
 
-// Diagnostic-source read bounds. Small + fixed: the daily inspection is a
-// root-cause aggregate, not a bulk export.
+// 诊断源的读取上限。小而固定：每日巡检是面向根因的聚合，不是批量导出。
 const (
 	renewReadLimit = 500
 	dlqReadLimit   = 500
@@ -21,30 +20,28 @@ const (
 	topClassCount  = 5
 )
 
-// ModuleSnapshotter is the read-only module-knowledge probe surface the
-// inspection reads. The runtime moduleregistry.Registry and the H2 moduleSource
-// both satisfy it (Snapshot(ctx) []ModuleSnapshot), so wiring injects whichever
-// is live without this package importing the wiring layer.
+// ModuleSnapshotter 是巡检读取的只读模块知识探针接口。运行时的
+// moduleregistry.Registry 与 H2 的 moduleSource 都满足它（Snapshot(ctx)
+// []ModuleSnapshot），因此接线层会注入当前在用的那个，而本包无需 import 接线层。
 type ModuleSnapshotter interface {
 	Snapshot(ctx context.Context) []moduleregistry.ModuleSnapshot
 }
 
-// Sources bundles the EXISTING read-only diagnostic functions the inspection
-// reuses. Each field is the SAME underlying SELECT-only read that a WAVE H3 tool
-// wraps — this package re-runs them aggregate-wide, it does NOT reimplement any
-// diagnostic:
+// Sources 打包了巡检所复用的既有只读诊断函数。每个字段都是某个 WAVE H3 工具所
+// 封装的同一底层仅 SELECT 读取——本包以聚合全局范围重新运行它们，并不重新实现任何
+// 诊断逻辑：
 //
-//   - RenewStatus  == credentialstore.Store.ListRenewStatus (credential_diagnose's
-//     renew read); called with TenantID=nil for a platform-wide view.
+//   - RenewStatus  == credentialstore.Store.ListRenewStatus（credential_diagnose
+//     的续期读取）；以 TenantID=nil 调用以获得平台范围视图。
 //   - ChannelSummary == channelhealth.Service.SummarizeChannelHealth
-//     (account_health_diagnose's aggregate channel view).
-//   - DLQList       == dlq.Store.List (dlq_inspect's read; Replay is never wired).
-//   - ListUsage     == billingQueries.ListUsageRecords (log_analyze / request_diagnose
-//     read).
-//   - Modules       == the H2 moduleregistry snapshot.
+//     （account_health_diagnose 的聚合渠道视图）。
+//   - DLQList       == dlq.Store.List（dlq_inspect 的读取；Replay 从不接线）。
+//   - ListUsage     == billingQueries.ListUsageRecords（log_analyze /
+//     request_diagnose 的读取）。
+//   - Modules       == H2 的 moduleregistry 快照。
 //
-// A nil field degrades that one section to a SourceError; the rest of the report
-// still composes (fail-soft, never panic).
+// 某字段为 nil 会把对应那一段降级为 SourceError；报告的其余部分仍会组合出来
+//（软失败，绝不 panic）。
 type Sources struct {
 	RenewStatus    func(ctx context.Context, params credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error)
 	ChannelSummary func(ctx context.Context, tenantID int64) (channelhealth.ChannelHealthSummary, error)
@@ -53,19 +50,18 @@ type Sources struct {
 	Modules        ModuleSnapshotter
 }
 
-// InspectionService composes the daily ops report from the injected diagnostic
-// sources. It holds no DB handle of its own — every read is an injected func, so
-// it is trivially fakeable in tests and reuses the live wiring's reads in prod.
+// InspectionService 从注入的诊断源组合出每日运维报告。它自身不持有任何 DB 句柄
+//——每次读取都是注入进来的函数，因此在测试中极易打桩，而在生产中复用线上接线的
+// 读取。
 type InspectionService struct {
 	src      Sources
 	tenantID int64
 	now      func() time.Time
 }
 
-// NewInspectionService builds the service. tenantID scopes the tenant-bound reads
-// (channel-health / usage / DLQ) to the operator's deployment tenant; the
-// credential renew read is platform-wide (TenantID=nil). A non-positive tenantID
-// is clamped to 1 (the single-tenant deployment default).
+// NewInspectionService 构建该服务。tenantID 把按租户绑定的读取（渠道健康 /
+// 用量 / DLQ）限定到运维的部署租户；凭证续期读取是平台范围的（TenantID=nil）。
+// 非正数的 tenantID 会被夹取为 1（单租户部署的默认值）。
 func NewInspectionService(src Sources, tenantID int64, now func() time.Time) *InspectionService {
 	if tenantID <= 0 {
 		tenantID = 1
@@ -76,11 +72,9 @@ func NewInspectionService(src Sources, tenantID int64, now func() time.Time) *In
 	return &InspectionService{src: src, tenantID: tenantID, now: now}
 }
 
-// Inspect runs every wired diagnostic source and returns the composed, sanitized
-// report. It never returns an error for a single source failure — that source's
-// section is left at its zero (all-zero counts) and a SourceError is appended, so
-// the operator still gets the rest of the picture. It honors ctx cancellation via
-// a per-tick read budget.
+// Inspect 运行每一个已接线的诊断源，并返回组合好、已脱敏的报告。它绝不会因单个源
+// 失败而返回错误——那个源对应的段保持为零值（计数全为零），并追加一个 SourceError，
+// 这样运维仍能看到其余全貌。它通过每个 tick 的读取预算来尊重 ctx 取消。
 func (s *InspectionService) Inspect(ctx context.Context) InspectionReport {
 	ctx, cancel := withReadBudget(ctx)
 	defer cancel()
@@ -101,9 +95,9 @@ func (s *InspectionService) addSourceErr(rep *InspectionReport, section, class s
 	rep.SourceErrors = append(rep.SourceErrors, SourceError{Section: section, Class: class})
 }
 
-// accountPool reads the tenant channel-health summary and projects per-state
-// counts into healthy/degraded/down buckets. Down = disabled/manual_paused (the
-// states an operator must act on); degraded = degraded/cooling_down/ramping.
+// accountPool 读取租户渠道健康汇总，并把按状态的计数投影到 healthy/degraded/down
+// 三个桶。Down = disabled/manual_paused（运维必须处置的状态）；
+// degraded = degraded/cooling_down/ramping。
 func (s *InspectionService) accountPool(ctx context.Context, rep *InspectionReport) AccountPoolSection {
 	sec := AccountPoolSection{ByState: map[string]int64{}, Severity: SeverityOK}
 	if s.src.ChannelSummary == nil {
@@ -135,10 +129,9 @@ func (s *InspectionService) accountPool(ctx context.Context, rep *InspectionRepo
 	return sec
 }
 
-// credentials reads platform-wide renew status (TenantID=nil) and counts the
-// rows whose state indicates a failed refresh or an imminent renewal. The "needs
-// renewal" signal is the row's refresh_before_at being in the past (the worker's
-// own clock), independent of the upstream state string.
+// credentials 读取平台范围的续期状态（TenantID=nil），并统计其状态表明刷新失败或
+// 续期临近的行。「needs renewal」信号是指该行的 refresh_before_at 已成为过去
+//（以 worker 自身的时钟为准），与上游的状态字符串无关。
 func (s *InspectionService) credentials(ctx context.Context, rep *InspectionReport) CredentialSection {
 	sec := CredentialSection{ByState: map[string]int{}, TopFailClass: map[string]int{}, Severity: SeverityOK}
 	if s.src.RenewStatus == nil {
@@ -146,7 +139,7 @@ func (s *InspectionService) credentials(ctx context.Context, rep *InspectionRepo
 		return sec
 	}
 	rows, err := s.src.RenewStatus(ctx, credentialstore.ListRenewStatusParams{
-		TenantID: nil, // platform-wide
+		TenantID: nil, // 平台范围
 		Limit:    renewReadLimit,
 	})
 	if err != nil {
@@ -179,9 +172,9 @@ func (s *InspectionService) credentials(ctx context.Context, rep *InspectionRepo
 	return sec
 }
 
-// dlq reads the tenant DLQ and reports depth + oldest pending failure per lane.
-// "pending" here is the operator-actionable backlog (pending / operator_review /
-// dlq / quarantined) — delivered rows are not a problem.
+// dlq 读取租户 DLQ，并报告每条 lane 的深度 + 最旧的待处理失败。这里的「pending」
+// 指运维可处置的积压（pending / operator_review / dlq / quarantined）——
+// 已投递（delivered）的行不算问题。
 func (s *InspectionService) dlq(ctx context.Context, rep *InspectionReport) DLQSection {
 	sec := DLQSection{ByLane: map[string]int{}, ByStatus: map[string]int{}, OldestPendingAt: map[string]string{}, Severity: SeverityOK}
 	if s.src.DLQList == nil {
@@ -225,9 +218,9 @@ func isPendingDLQ(st dlq.Status) bool {
 	}
 }
 
-// errorTrend reads the recent usage window and aggregates end_class counts +
-// stream terminations + pending reconciliations — the SAME enums log_analyze
-// surfaces, never raw bodies. A non-success-dominated window is flagged warn.
+// errorTrend 读取近期用量窗口，并聚合 end_class 计数 + 流终止数 + 待对账数
+//——这些与 log_analyze 暴露的是同一批 enums，绝不涉及原始请求体。一个非成功占主导
+// 的窗口会被标记为 warn。
 func (s *InspectionService) errorTrend(ctx context.Context, rep *InspectionReport) ErrorTrendSection {
 	sec := ErrorTrendSection{ByEndClass: map[string]int{}, Severity: SeverityOK}
 	if s.src.ListUsage == nil {
@@ -251,8 +244,8 @@ func (s *InspectionService) errorTrend(ctx context.Context, rep *InspectionRepor
 		}
 	}
 	sec.TopClasses = topN(sec.ByEndClass, topClassCount)
-	// Any non-"ok" end class is an error signal worth a glance; a high stream-
-	// termination or pending-reconcile count is also a warn.
+	// 任何非 "ok" 的 end class 都是值得扫一眼的错误信号；较高的流终止数或待对账数
+	// 同样会触发 warn。
 	errClasses := 0
 	for cls, n := range sec.ByEndClass {
 		if !strings.EqualFold(cls, "ok") && !strings.EqualFold(cls, "success") {
@@ -265,8 +258,8 @@ func (s *InspectionService) errorTrend(ctx context.Context, rep *InspectionRepor
 	return sec
 }
 
-// modules reads the H2 module-knowledge snapshot and counts probe statuses. A
-// probe reporting error is critical; degraded is warn; unknown is informational.
+// modules 读取 H2 模块知识快照并统计探针状态。探针报告 error 为 critical；
+// degraded 为 warn；unknown 仅供参考。
 func (s *InspectionService) modules(ctx context.Context, rep *InspectionReport) ModuleSection {
 	sec := ModuleSection{ByStatus: map[string]int{}, Severity: SeverityOK}
 	if s.src.Modules == nil {

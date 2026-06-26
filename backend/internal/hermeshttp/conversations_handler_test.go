@@ -21,7 +21,7 @@ import (
 )
 
 func TestListConversationsReadsPostgresWithOwnerAndPagination(t *testing.T) {
-	// Regression: list must not proxy to runner and must preserve tenant+owner+bounded pagination in the PG call.
+	// 回归:list 不得代理到 runner,且必须在 PG 调用中保留 tenant+owner+有界分页。
 	store := &conversationHTTPStore{
 		listConversationsRows: []dbhermes.HermesConversation{{
 			ID: 701, TenantID: 7, OwnerUserID: 42, Title: stringPtrHTTPTest("own"),
@@ -34,7 +34,7 @@ func TestListConversationsReadsPostgresWithOwnerAndPagination(t *testing.T) {
 
 	router.ServeHTTP(resp, req)
 
-	// Mutation check: leaving proxy mode returns 503 because runner is nil; dropping owner/tenant/limit handling breaks arg assertions.
+	// 变异检查:若仍走代理模式,会因 runner 为 nil 而返回 503;去掉 owner/tenant/limit 处理会破坏参数断言。
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", resp.Code, resp.Body.String())
 	}
@@ -97,7 +97,7 @@ func TestGetConversationCrossOwner404AndDeleted410(t *testing.T) {
 
 			router.ServeHTTP(resp, req)
 
-			// Mutation check: missing owner/deleted checks returns 200 and fails this assertion.
+			// 变异检查:缺少 owner/deleted 检查会返回 200,从而使本断言失败。
 			if resp.Code != tc.wantStatus {
 				t.Fatalf("status=%d body=%s want %d", resp.Code, resp.Body.String(), tc.wantStatus)
 			}
@@ -106,7 +106,7 @@ func TestGetConversationCrossOwner404AndDeleted410(t *testing.T) {
 }
 
 func TestListConversationMessagesRejectsCrossOwner404(t *testing.T) {
-	// Regression: a foreign conversation id must not produce 200 with empty messages, which would disclose existence by behavior.
+	// 回归:对他人的 conversation id 不得返回 200 + 空 messages,那会通过行为泄露其存在性。
 	store := &conversationHTTPStore{conversationRow: dbhermes.HermesConversation{
 		ID: 901, TenantID: 7, OwnerUserID: 99,
 		CreatedAt: httpTestPGTime(), UpdatedAt: httpTestPGTime(),
@@ -117,7 +117,7 @@ func TestListConversationMessagesRejectsCrossOwner404(t *testing.T) {
 
 	router.ServeHTTP(resp, req)
 
-	// Mutation check: directly calling the list query and encoding an empty slice would return 200 instead of 404.
+	// 变异检查:直接调用 list 查询并编码一个空切片会返回 200 而非 404。
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s want 404", resp.Code, resp.Body.String())
 	}
@@ -127,7 +127,7 @@ func TestListConversationMessagesRejectsCrossOwner404(t *testing.T) {
 }
 
 func TestListConversationMessagesReadsPostgresWithOwner(t *testing.T) {
-	// Regression: message list must use the PG store with tenant, conversation id, and owner id.
+	// 回归:message list 必须使用带 tenant、conversation id 和 owner id 的 PG store。
 	store := &conversationHTTPStore{
 		conversationRow: dbhermes.HermesConversation{
 			ID: 902, TenantID: 7, OwnerUserID: 42,
@@ -144,7 +144,7 @@ func TestListConversationMessagesReadsPostgresWithOwner(t *testing.T) {
 
 	router.ServeHTTP(resp, req)
 
-	// Mutation check: leaving proxy mode returns 503; dropping owner/limit args breaks these assertions.
+	// 变异检查:若仍走代理模式会返回 503;去掉 owner/limit 参数会破坏这些断言。
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", resp.Code, resp.Body.String())
 	}
@@ -163,7 +163,7 @@ func TestListConversationMessagesReadsPostgresWithOwner(t *testing.T) {
 }
 
 func TestDeleteConversationUnknownWritesFailureAudit(t *testing.T) {
-	// Regression: destructive delete attempts against unknown ids must remain visible in the failure audit trail.
+	// 回归:针对未知 id 的破坏性删除尝试必须在失败审计轨迹中保持可见。
 	recorder := &conversationDeleteAuditRecorder{
 		existingConversationID: 1001,
 		existingTenantID:       7,
@@ -175,7 +175,7 @@ func TestDeleteConversationUnknownWritesFailureAudit(t *testing.T) {
 
 	router.ServeHTTP(resp, req)
 
-	// Mutation check: deleting the handler failure-audit call leaves auditEvents empty while the 404 still passes.
+	// 变异检查:删掉 handler 的失败审计调用会让 auditEvents 为空,而 404 仍然通过。
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s want 404", resp.Code, resp.Body.String())
 	}
@@ -191,7 +191,7 @@ func TestDeleteConversationUnknownWritesFailureAudit(t *testing.T) {
 }
 
 func TestDeleteConversationSuccessWritesSingleSuccessAudit(t *testing.T) {
-	// Regression: success audit is written atomically by SoftDeleteConversationWithAudit; the handler must not double-audit.
+	// 回归:成功审计由 SoftDeleteConversationWithAudit 原子写入;handler 不得重复审计。
 	recorder := &conversationDeleteAuditRecorder{
 		existingConversationID: 1002,
 		existingTenantID:       7,
@@ -203,7 +203,7 @@ func TestDeleteConversationSuccessWritesSingleSuccessAudit(t *testing.T) {
 
 	router.ServeHTTP(resp, req)
 
-	// Mutation check: adding a handler-level success audit produces two rows and fails this assertion.
+	// 变异检查:再加一个 handler 层的成功审计会产生两行,从而使本断言失败。
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s want 204", resp.Code, resp.Body.String())
 	}
@@ -219,7 +219,7 @@ func TestDeleteConversationSuccessWritesSingleSuccessAudit(t *testing.T) {
 }
 
 func TestDeleteConversationCrossTenantWritesFailureAudit(t *testing.T) {
-	// Regression: a delete probe for an id owned by another tenant must look like 404 and still emit failure audit evidence.
+	// 回归:对属于另一 tenant 的 id 做删除探测必须表现为 404,且仍要留下失败审计证据。
 	recorder := &conversationDeleteAuditRecorder{
 		existingConversationID: 1003,
 		existingTenantID:       8,
@@ -231,7 +231,7 @@ func TestDeleteConversationCrossTenantWritesFailureAudit(t *testing.T) {
 
 	router.ServeHTTP(resp, req)
 
-	// Mutation check: returning 204/omitting the failure audit would either disclose or hide the destructive probe.
+	// 变异检查:返回 204/省略失败审计,都会要么泄露、要么隐藏这次破坏性探测。
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s want 404", resp.Code, resp.Body.String())
 	}

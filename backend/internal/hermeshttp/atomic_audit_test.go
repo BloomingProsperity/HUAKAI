@@ -19,7 +19,7 @@ import (
 )
 
 func TestEnableForUser_AtomicWithAudit(t *testing.T) {
-	// Regression: enable must not commit settings when audit insert fails, or enablement has no evidence trail.
+	// 回归:audit 插入失败时,enable 不得提交 settings,否则启用动作没有证据轨迹。
 	recorder := &atomicSQLRecorder{auditErr: errors.New("audit insert failed")}
 	tx := &atomicTx{recorder: recorder}
 	beginner := &atomicBeginner{tx: tx}
@@ -47,7 +47,7 @@ func TestEnableForUser_AtomicWithAudit(t *testing.T) {
 }
 
 func TestProfileCreate_AtomicWithAudit(t *testing.T) {
-	// Regression: profile creation must roll back if audit insert fails, or stale profiles can exist without audit.
+	// 回归:audit 插入失败时,profile 创建必须回滚,否则会出现没有审计记录的残留 profile。
 	recorder := &atomicSQLRecorder{auditErr: errors.New("audit insert failed")}
 	tx := &atomicTx{recorder: recorder}
 	beginner := &atomicBeginner{tx: tx}
@@ -75,7 +75,7 @@ func TestProfileCreate_AtomicWithAudit(t *testing.T) {
 }
 
 func TestConversationDelete_AtomicWithAudit(t *testing.T) {
-	// Regression: conversation delete and hermes.conversation.delete audit must commit or roll back together.
+	// 回归:conversation 删除与 hermes.conversation.delete 审计必须一同提交或一同回滚。
 	recorder := &atomicSQLRecorder{conversationID: 901, conversationTenantID: 7, conversationOwnerUserID: 42}
 	tx := &atomicTx{recorder: recorder}
 	beginner := &atomicBeginner{tx: tx}
@@ -86,7 +86,7 @@ func TestConversationDelete_AtomicWithAudit(t *testing.T) {
 
 	router.ServeHTTP(resp, req)
 
-	// Mutation check: moving SoftDeleteConversation or InsertAuditEvent outside BeginTx increments baseQueries or loses tx counters.
+	// 变异检查:把 SoftDeleteConversation 或 InsertAuditEvent 移到 BeginTx 之外,会增加 baseQueries 或丢失 tx 计数。
 	if resp.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s want 204", resp.Code, resp.Body.String())
 	}
@@ -107,7 +107,7 @@ func TestConversationDelete_AtomicWithAudit(t *testing.T) {
 }
 
 func TestConversationDelete_SecondDeleteIsIdempotent(t *testing.T) {
-	// Regression: repeating DELETE on an owned conversation must not surface 410/404 to the client.
+	// 回归:对自己拥有的 conversation 重复 DELETE,不得向客户端暴露 410/404。
 	recorder := &atomicSQLRecorder{conversationID: 902, conversationTenantID: 7, conversationOwnerUserID: 42}
 	tx := &atomicTx{recorder: recorder}
 	beginner := &atomicBeginner{tx: tx}
@@ -125,7 +125,7 @@ func TestConversationDelete_SecondDeleteIsIdempotent(t *testing.T) {
 	secondResp := httptest.NewRecorder()
 	router.ServeHTTP(secondResp, secondReq)
 
-	// Mutation check: reusing GetConversation's ErrGone path for DELETE returns 410 and fails here.
+	// 变异检查:为 DELETE 复用 GetConversation 的 ErrGone 路径会返回 410,从而在此处失败。
 	if secondResp.Code != http.StatusNoContent {
 		t.Fatalf("second status=%d body=%s want 204 for idempotent delete", secondResp.Code, secondResp.Body.String())
 	}

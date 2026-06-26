@@ -10,11 +10,10 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// AccountHealthDeps are the read-only dependencies the account_health_diagnose
-// tool wraps. All are EXISTING SELECT-only reads:
-//   - ProviderAccountHealth wraps admindb.Queries.GetAdminProviderAccountHealth.
-//   - ChannelSummary wraps ChannelHealthController.SummarizeChannelHealth (aggregate).
-//   - ChannelList wraps ChannelHealthController.ListChannelHealth (per-channel records).
+// AccountHealthDeps 是 account_health_diagnose 工具包装的只读依赖。全部是已有的 SELECT-only 读取:
+//   - ProviderAccountHealth 包装 admindb.Queries.GetAdminProviderAccountHealth。
+//   - ChannelSummary 包装 ChannelHealthController.SummarizeChannelHealth(聚合)。
+//   - ChannelList 包装 ChannelHealthController.ListChannelHealth(逐通道记录)。
 //
 // 关于 per-channel 明细的隐私:**有意只用 ListChannelHealth(返回结构化 Record),不碰
 // GetChannelHealth**——后者额外返回 AuditEvent 列表、其 Payload 是自由 map 有泄露风险。再由
@@ -28,10 +27,9 @@ type AccountHealthDeps struct {
 	ChannelList func(ctx context.Context, tenantID int64, limit, offset int) ([]channelhealth.Record, error)
 }
 
-// AccountHealthDiagnoseSpec builds the read-only account_health_diagnose tool.
-// It reads one provider account's health row (scoped to the tenant) and the
-// tenant's channel-health summary, returning enums / counts / latency buckets
-// only — never raw bodies or secrets.
+// AccountHealthDiagnoseSpec 构建只读 account_health_diagnose 工具。
+// 它读取某个 provider account 的健康行(限定在该租户内)以及该租户的通道健康 summary,
+// 只返回 enum / 计数 / 延迟分桶 —— 绝不返回原始报文或密钥。
 //
 // Args: { "account_id": <int> }  (required)
 func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
@@ -80,8 +78,8 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 				errorClass = *row.FailureClass
 			}
 
-			// Fold in the tenant channel-health summary (aggregate states +
-			// counts only) when wired. Not fatal if absent.
+			// 当已接线时,把该租户的通道健康 summary(仅聚合状态 + 计数)合并进来。
+			// 缺失也不致命。
 			if deps.ChannelSummary != nil {
 				cs, cerr := deps.ChannelSummary(ctx, req.TenantID)
 				if cerr != nil {
@@ -114,8 +112,8 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 	}
 }
 
-// channelSummaryShape projects the aggregate channel-health summary into a
-// diagnostic-only map: per-state counts + total + oldest-cooldown timestamp.
+// channelSummaryShape 把聚合的通道健康 summary 投影成仅诊断用的 map:
+// 逐状态计数 + 总数 + 最早 cooldown 时间戳。
 func channelSummaryShape(cs channelhealth.ChannelHealthSummary) map[string]any {
 	byState := make(map[string]int64, len(cs.ByState))
 	for state, count := range cs.ByState {

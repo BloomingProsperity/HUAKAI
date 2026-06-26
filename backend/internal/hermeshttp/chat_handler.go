@@ -38,10 +38,10 @@ func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
 		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, args, err)
 		return
 	}
-	// WAVE H3b: thread the operator actor (role + admin token id) so the bridge
-	// can bind it to the session and the runner's mid-conversation READ-ONLY tool
-	// callbacks resolve to THIS operator's scope. An end-user-path request (no
-	// admin actor) leaves Operator zero-valued, so no tool loop is bound.
+	// WAVE H3b:把 operator actor(role + admin token id)贯穿传递下去,使 bridge
+	// 能把它绑定到 session,并让 runner 在会话过程中的只读工具回调解析到「本」
+	// operator 的 scope。终端用户路径的请求(无 admin actor)会让 Operator 保持 0 值,
+	// 因此不会绑定任何工具循环。
 	chatReq := hermeschat.Request{
 		TenantID: ident.TenantID, UserID: ident.UserID,
 		RequestID: requestID(r), CorrelationID: correlationID(r), Body: body,
