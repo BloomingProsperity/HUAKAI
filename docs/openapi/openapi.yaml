@@ -2027,6 +2027,47 @@ paths:
         '403': { description: Insufficient role. }
         '503': { description: Health source not configured. }
 
+  /admin/v1/risk/overview:
+    get:
+      tags: [admin-risk]
+      summary: Read-only platform risk overview (aggregated counts)
+      operationId: adminRiskOverview
+      x-huakai-spec-source:
+        - backend/internal/riskoverviewhttp/store.go
+        - backend/internal/riskoverviewhttp/handler.go
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      description: |
+        Read-only fan-out of already-wired risk signals into a single counts snapshot:
+        disabled API keys, firing alert events, disabled users, and keys with an IP
+        blacklist. Zero enforcement, zero writes. Tenant scope comes from the admin
+        identity; platform_admin must pass tenant_id, tenant_operator defaults to its
+        scoped tenant. No plaintext keys or full IPs are returned.
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Risk signal counts for the resolved tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, tenant_id, disabled_keys, firing_alerts, disabled_users, ip_blacklisted_keys]
+                properties:
+                  object: { type: string }
+                  tenant_id: { type: integer, format: int64 }
+                  disabled_keys: { type: integer, format: int64 }
+                  firing_alerts: { type: integer, format: int64 }
+                  disabled_users: { type: integer, format: int64 }
+                  ip_blacklisted_keys: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Caller cannot act on this tenant scope. }
+        '503': { description: Risk overview backend unavailable. }
+
   /admin/v1/system/health:
     get:
       summary: System health aggregation (alias)

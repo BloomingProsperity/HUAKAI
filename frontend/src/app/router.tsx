@@ -37,6 +37,7 @@ import { MediaTasksPage } from '../features/mediatasks/MediaTasksPage'
 import { AvailableChannelsPage } from '../features/availablechannels/AvailableChannelsPage'
 import { MyGroupsPage } from '../features/megroups/MyGroupsPage'
 import { AlertingPage } from '../features/alerting/AlertingPage'
+import { RiskOverviewPage } from '../features/risk/RiskOverviewPage'
 import { PricingAdminPage } from '../features/pricingadmin/PricingAdminPage'
 import { GroupsPage } from '../features/groups/GroupsPage'
 import { ModelRegistryPage } from '../features/modelregistry/ModelRegistryPage'
@@ -99,6 +100,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/health': <HealthPage />,
   '/security': <AuditPage />,
   '/admin/alerting': <AlertingPage />,
+  '/admin/risk': <RiskOverviewPage />,
 }
 
 const domainRoutes = PIPELINE_NAV.flatMap((section) =>
