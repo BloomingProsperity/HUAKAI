@@ -17,6 +17,14 @@ import (
 // DefaultWindow 是当向 New 传入非正窗口时所用的预算窗口长度。
 const DefaultWindow = time.Minute
 
+// defaultMaxKeys 是 reqs/toks 各自 map 的软上限。达到上限且要新增账号键时,先清扫已过期
+// 窗口的陈旧条目(它们下次访问本就会被重置,提前删除等价且释放内存),使 map 规模收敛到
+// 「当前窗口内活跃账号数」而非「历史出现过的全部账号数」——否则曾出现、后被删/长期不再请求
+// 的账号条目永不回收,map 单调增长(本计数器此前是该限流子系统唯一无界者)。
+// 本计数器 fail-open(纯限流预检优化,非安全闸),故清扫后即便仍达上限也照常放行新键,
+// 绝不因容量拒绝;这点与 loginthrottle 等 fail-closed 兄弟限流器不同(它们达上限拒绝)。
+const defaultMaxKeys = 100_000
+
 // Limits 是单个账号的每窗口预算。某维度上为零(或负)值表示该维度无限制。
 type Limits struct {
 	RPM int64
@@ -46,8 +54,9 @@ type Decision struct {
 
 // Counter 是一个并发安全的固定窗口 RPM/TPM 预算跟踪器。
 type Counter struct {
-	window time.Duration
-	now    func() time.Time
+	window  time.Duration
+	now     func() time.Time
+	maxKeys int
 
 	mu   sync.Mutex
 	reqs map[int64]*windowCount
@@ -69,10 +78,11 @@ func New(window time.Duration, now func() time.Time) *Counter {
 		now = time.Now
 	}
 	return &Counter{
-		window: window,
-		now:    now,
-		reqs:   make(map[int64]*windowCount),
-		toks:   make(map[int64]*windowCount),
+		window:  window,
+		now:     now,
+		maxKeys: defaultMaxKeys,
+		reqs:    make(map[int64]*windowCount),
+		toks:    make(map[int64]*windowCount),
 	}
 }
 
@@ -124,8 +134,24 @@ func (c *Counter) live(m map[int64]*windowCount, accountID int64, now time.Time)
 	start := now.Truncate(c.window)
 	wc := m[accountID]
 	if wc == nil || wc.start.Before(start) {
+		// 仅在「新增一个此前未见的账号键」且 map 已达上限时,先清扫陈旧条目;摊还 O(n)
+		// 清扫开销到稀有的扩容时刻,常规路径零额外成本。已存在但跨窗的键是就地重置、不增长
+		// map,无需清扫。
+		if wc == nil && c.maxKeys > 0 && len(m) >= c.maxKeys {
+			sweepStale(m, start)
+		}
 		wc = &windowCount{start: start}
 		m[accountID] = wc
 	}
 	return wc
+}
+
+// sweepStale 删除窗口起点早于 start 的陈旧条目(已不属于当前窗口,下次访问本会被重置,
+// 提前删除语义等价)。调用方必须持有 c.mu。
+func sweepStale(m map[int64]*windowCount, start time.Time) {
+	for id, wc := range m {
+		if wc.start.Before(start) {
+			delete(m, id)
+		}
+	}
 }
