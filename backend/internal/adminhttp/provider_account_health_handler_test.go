@@ -57,6 +57,38 @@ func TestProviderAccountHealthTenantScopeIgnoresQueryTenantID(t *testing.T) {
 	}
 }
 
+// TestProviderAccountHealthPlatformAdminRequiresExplicitTenant 守护 #9(health handler 侧):
+// 全局 platform_admin 不再被静默锁死到 tenant 1——无 ?tenant_id → 400 不触 store;?tenant_id=7 →
+// 按 tenant 7 解析(够得到 tenant>1 的账号)。与 test handler 的同名用例对称,防三 handler 未来独立漂移。
+// 判别:resolver 退回硬编码 tenant 1 时,(a) 无 query 落 tenant 1 → get(1,200) miss → 404 而非 400;
+// (b) ?tenant_id=7 仍解析成 tenant 1 → 404 而非 200。
+func TestProviderAccountHealthPlatformAdminRequiresExplicitTenant(t *testing.T) {
+	store := newProviderAccountHealthStoreStub()
+	store.put(providerAccountHealthRow(7, 200)) // 行位于 tenant 7(非 1)
+	deps := ProviderAccountHealthDeps{
+		Auth:  providerAccountHealthAuthStub{ident: admin.AdminIdentity{TokenID: 4, Role: admin.RolePlatformAdmin}},
+		Store: store,
+	}
+
+	// (a) 不带 ?tenant_id → 400,且不触达 store。
+	rec := invokeProviderAccountHealth(t, deps, "/admin/v1/provider-accounts/200/health")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("platform_admin 不带 ?tenant_id 应 400, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(store.getArgs) != 0 {
+		t.Fatalf("400 请求不应触达 store, getArgs=%+v", store.getArgs)
+	}
+
+	// (b) 带 ?tenant_id=7 → 200,且按 tenant 7 解析。
+	rec2 := invokeProviderAccountHealth(t, deps, "/admin/v1/provider-accounts/200/health?tenant_id=7")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("platform_admin 带 ?tenant_id=7 应 200, status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+	if len(store.getArgs) != 1 || store.getArgs[0].TenantID != 7 || store.getArgs[0].ID != 200 {
+		t.Fatalf("应按 ?tenant_id=7 解析 tenant, getArgs=%+v", store.getArgs)
+	}
+}
+
 func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.T) {
 	store := newProviderAccountHealthStoreStub()
 	row := providerAccountHealthRow(7, 99)

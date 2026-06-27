@@ -17,8 +17,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 )
 
-const defaultProviderAccountHealthPlatformTenantID = int64(1)
-
 type ProviderAccountHealthDeps struct {
 	Auth  providerAccountHealthAuth
 	Store providerAccountHealthStore
@@ -112,7 +110,11 @@ func resolveProviderAccountHealthTenant(w http.ResponseWriter, r *http.Request, 
 		if ident.ScopeTenantID > 0 {
 			return ident, ident.ScopeTenantID, true
 		}
-		return ident, defaultProviderAccountHealthPlatformTenantID, true
+		tenantID, ok := resolvePlatformAdminQueryTenant(w, r, ident)
+		if !ok {
+			return admin.AdminIdentity{}, 0, false
+		}
+		return ident, tenantID, true
 	default:
 		writeError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, 0, false
@@ -177,7 +179,7 @@ func requiredProviderAccountHealthTime(ts pgtype.Timestamptz) string {
 
 // recentRequestsSummaryFor 从进程内 ring 构建可选的 recent_requests 载荷。
 // 当 ring 为 nil 或该账号没有数据时返回 nil
-//(保留 omitempty 语义:该字段会从 JSON 响应中缺省)。
+// (保留 omitempty 语义:该字段会从 JSON 响应中缺省)。
 func recentRequestsSummaryFor(ring *recentreq.Ring, accountID int64) *recentRequestsSummary {
 	if ring == nil {
 		return nil

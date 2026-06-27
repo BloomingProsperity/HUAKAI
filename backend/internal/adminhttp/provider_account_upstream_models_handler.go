@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	defaultUpstreamModelsPlatformTenantID = int64(1)
 	upstreamModelsRequestTimeout          = 15 * time.Second
 	upstreamModelsMaxBodyBytes            = 1 << 20 // 1 MiB
 )
@@ -186,7 +185,11 @@ func resolveUpstreamModelsTenant(w http.ResponseWriter, r *http.Request, d Upstr
 		if ident.ScopeTenantID > 0 {
 			return ident, ident.ScopeTenantID, true
 		}
-		return ident, defaultUpstreamModelsPlatformTenantID, true
+		tenantID, ok := resolvePlatformAdminQueryTenant(w, r, ident)
+		if !ok {
+			return admin.AdminIdentity{}, 0, false
+		}
+		return ident, tenantID, true
 	default:
 		writeError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, 0, false
