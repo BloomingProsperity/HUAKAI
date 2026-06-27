@@ -47,6 +47,10 @@ const (
 	FeatureSignatureDelta         FeatureName = "signature_delta"
 	FeatureSystemPromptArray      FeatureName = "system_prompt_array"
 	FeatureMultiRoleMessages      FeatureName = "multi_role_messages"
+	// FeatureMultiCandidate 标记上游一次返回多个候选(Gemini candidateCount>1 等)。
+	// HUAKAI canonical 模型只承载单一主候选,非主候选被丢弃时记一条 lossy 损失。
+	// 矩阵未显式登记该 feature 的单元格 → Lookup 默认 VerdictUnsupported(语义正确:不支持多候选)。
+	FeatureMultiCandidate FeatureName = "multi_candidate"
 )
 
 var allFeatures = []FeatureName{
@@ -55,6 +59,7 @@ var allFeatures = []FeatureName{
 	FeatureAudioInput, FeatureImageOutput, FeatureMaxTokensFinishReason,
 	FeatureMaxCompletionTokens, FeatureStopSequenceEmit, FeatureCacheBreakpoints,
 	FeatureSignatureDelta, FeatureSystemPromptArray, FeatureMultiRoleMessages,
+	FeatureMultiCandidate,
 }
 
 // CapabilityMatrix 是内存中的协议矩阵，对应规范第 4.1 节。
