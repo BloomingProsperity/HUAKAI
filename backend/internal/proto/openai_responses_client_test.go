@@ -2,6 +2,7 @@ package proto
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -668,7 +669,9 @@ func TestOpenAIResponsesClient_D10_IncompleteOnMaxTokens(t *testing.T) {
 func TestOpenAIResponsesClient_D10_ReasoningTokensInUsageDetails(t *testing.T) {
 	adapter := &OpenAIResponsesClient{}
 	env := makeOpenAIResponsesBufferedEnv([]CanonicalContentBlock{{Type: "text", Text: "x"}}, CanonicalStopEndTurn)
-	env.Accounting.ReasoningTokens = 42
+	// 走真实非流式生产写路径: reasoning 落在 BufferedResponse.Usage(CanonicalUsage)上,
+	// 而非 Accounting 顶层标量(生产从不写,旧 fixture 写它属 §14 非判别假绿)。
+	env.BufferedResponse.Usage.ReasoningTokens = 42
 	body, _, err := adapter.CanonicalToClientResponse(context.Background(), env)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -679,6 +682,30 @@ func TestOpenAIResponsesClient_D10_ReasoningTokensInUsageDetails(t *testing.T) {
 	od := usage["output_tokens_details"].(map[string]any)
 	if od["reasoning_tokens"].(float64) != 42 {
 		t.Errorf("expected reasoning_tokens=42, got %v", od["reasoning_tokens"])
+	}
+}
+
+// TestOpenAIResponsesClient_NonStreamPassthroughMerged 守护 #4: 非流式 OpenAI Responses 响应必须把
+// 上游顶层透传字段(typed struct 未建模, 如 service_tier)合并回客户端响应体。判别性: 删除
+// CanonicalToClientResponse 末尾的 MergeExtrasInto 调用 → 字段丢失 → 本测试转红。
+func TestOpenAIResponsesClient_NonStreamPassthroughMerged(t *testing.T) {
+	adapter := &OpenAIResponsesClient{}
+	env := makeOpenAIResponsesBufferedEnv([]CanonicalContentBlock{{Type: "text", Text: "x"}}, CanonicalStopEndTurn)
+	env.BufferedResponse.Passthrough = &PassthroughEnvelope{Extra: map[string]json.RawMessage{
+		"service_tier": json.RawMessage(`"scale"`),
+	}}
+	body, _, err := adapter.CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var out map[string]any
+	_ = jsonUnmarshal(body, &out)
+	if out["service_tier"] != "scale" {
+		t.Fatalf("期望上游 service_tier=scale 被合并进响应, 实际 %v (body=%s)", out["service_tier"], body)
+	}
+	// typed 字段不被透传覆盖(仍是合法 responses 形态)。
+	if out["object"] != "response" {
+		t.Fatalf("typed object 字段被透传覆盖: %v", out["object"])
 	}
 }
 
