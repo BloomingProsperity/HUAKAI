@@ -9,8 +9,19 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
+
+// fakeChannelSummarizer 是 ChannelHealthSummarizer 的测试替身,回显预置的渠道健康分布/错误。
+type fakeChannelSummarizer struct {
+	summary channelhealth.ChannelHealthSummary
+	err     error
+}
+
+func (f fakeChannelSummarizer) SummarizeChannelHealth(context.Context, int64) (channelhealth.ChannelHealthSummary, error) {
+	return f.summary, f.err
+}
 
 type perfMetricsQueryStub struct {
 	calls []string
@@ -211,7 +222,7 @@ func TestHealthScoreHandlerCombinesOverviewErrorRateAndP99(t *testing.T) {
 		},
 	}
 
-	rec := invoke(NewHealthScoreHandler(store), "/v1/admin/usage/health-score?window=24h")
+	rec := invoke(NewHealthScoreHandler(store, nil), "/v1/admin/usage/health-score?window=24h")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d want 200 body=%s", rec.Code, rec.Body.String())
 	}
@@ -221,8 +232,9 @@ func TestHealthScoreHandlerCombinesOverviewErrorRateAndP99(t *testing.T) {
 		BusinessScore int    `json:"business_score"`
 		InfraScore    int    `json:"infra_score"`
 		Signals       struct {
-			ErrorRate string  `json:"error_rate"`
-			TTFTP99MS float64 `json:"ttft_p99_ms"`
+			ErrorRate              string  `json:"error_rate"`
+			TTFTP99MS              float64 `json:"ttft_p99_ms"`
+			ChannelHealthAvailable bool    `json:"channel_health_available"`
 		} `json:"signals"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -231,7 +243,63 @@ func TestHealthScoreHandlerCombinesOverviewErrorRateAndP99(t *testing.T) {
 	if body.Window != "24h" || body.Signals.ErrorRate != "0.1000" || body.Signals.TTFTP99MS != 3000 {
 		t.Fatalf("signals/window=%+v/%q want error_rate=0.1000 p99=3000 window=24h", body.Signals, body.Window)
 	}
-	if body.BusinessScore != 0 || body.InfraScore != 0 || body.OverallScore != 0 {
-		t.Fatalf("scores=%d/%d/%d want 0 at 10%% error and 3000ms p99", body.BusinessScore, body.InfraScore, body.OverallScore)
+	// 业务面 10% 错误 + 3000ms p99 → business=0。无 tenant_id/无渠道冲减器 → infra 保守满分降级 100
+	// (不再复制业务分=旧 bug),Overall=Overall(0,100)=30,channel_health_available=false。
+	if body.BusinessScore != 0 {
+		t.Fatalf("business=%d want 0", body.BusinessScore)
+	}
+	if body.InfraScore != 100 || body.Signals.ChannelHealthAvailable {
+		t.Fatalf("infra=%d available=%v want 100/false(无 tenant_id 降级、与业务分解耦)", body.InfraScore, body.Signals.ChannelHealthAvailable)
+	}
+	if body.OverallScore != 30 {
+		t.Fatalf("overall=%d want 30(=Overall(business=0, infra=100))", body.OverallScore)
+	}
+}
+
+// TestHealthScoreInfraIsPhysicallySeparateFromBusiness 钉死 Q3 修复:infra_score 与 business_score 喂的是
+// 物理不同源的输入——业务面=错误率/延迟,基础设施面=上游渠道健康分布。给"业务全好(0 错误、低延迟)但渠道
+// 大量冷却"的判别样本:business 应满分、infra 应明显偏低,二者必须不同。
+// 判别(§14):若把 infraScore 改回 healthscore.Business(同业务输入,旧 bug),infra 会变 100=business,
+// 下面"infra==40 且 != business"的断言转红。
+func TestHealthScoreInfraIsPhysicallySeparateFromBusiness(t *testing.T) {
+	store := &perfMetricsQueryStub{
+		overviewTotals: dbbilling.AggregateUsageOverviewTotalsRow{RequestCount: 100, SuccessCount: 100}, // 0% 错误
+		percentileRow:  dbbilling.AggregateUsageLatencyPercentilesRow{P99Ms: 500},                       // 低延迟
+	}
+	ch := fakeChannelSummarizer{summary: channelhealth.ChannelHealthSummary{
+		ByState: map[channelhealth.HealthState]int64{
+			channelhealth.StateActive:      2, // 健康
+			channelhealth.StateCoolingDown: 3, // 自动冷却(基础设施面失败)
+		},
+		Total: 5,
+	}}
+
+	rec := invoke(NewHealthScoreHandler(store, ch), "/v1/admin/usage/health-score?window=24h&tenant_id=7")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		BusinessScore int `json:"business_score"`
+		InfraScore    int `json:"infra_score"`
+		Signals       struct {
+			ChannelHealthAvailable bool  `json:"channel_health_available"`
+			HealthyChannels        int64 `json:"healthy_channels"`
+			ManagedChannels        int64 `json:"managed_channels"`
+		} `json:"signals"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body=%s err=%v", rec.Body.String(), err)
+	}
+	if body.BusinessScore != 100 {
+		t.Fatalf("business=%d want 100(业务全好)", body.BusinessScore)
+	}
+	if body.InfraScore != 40 {
+		t.Fatalf("infra=%d want 40(健康2/自动托管5),应明显低于业务分", body.InfraScore)
+	}
+	if body.BusinessScore == body.InfraScore {
+		t.Fatalf("business 与 infra 不应相同(物理不同源输入):both=%d", body.BusinessScore)
+	}
+	if !body.Signals.ChannelHealthAvailable || body.Signals.HealthyChannels != 2 || body.Signals.ManagedChannels != 5 {
+		t.Fatalf("infra signals=%+v want available healthy=2 managed=5", body.Signals)
 	}
 }
