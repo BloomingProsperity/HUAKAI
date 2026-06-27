@@ -40,6 +40,14 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 		// updateTaskSuccess),供运维核对平台吸收了多少。超收客户 / 转 failure 的更激进
 		// 策略属 money-policy,留待 Owner 拍板,本处只做保守版。
 		billedCents := result.ActualCents
+		// 下限锚定(bug ② 修复):上游 Poll 未回实际用量时 ActualCents 保持 0(图像/视频等
+		// 任务创建型上游普遍只回任务 ID/状态、不回 token 用量),若按 0 结算 = 任务成功却白吃
+		// 真实上游成本、等同给客户做了 $0 全额退式结算。此处锚定到预扣的预估额度
+		// locked.EstimatedCents(绝不归零;免费模型 EstimatedCents=0 时仍正确结 $0),对齐
+		// new-api"无可用用量时保持预扣的预估、差额重算带 ≤0 即不动账护栏"的做法。
+		if billedCents <= 0 {
+			billedCents = locked.EstimatedCents
+		}
 		if billedCents > locked.EstimatedCents {
 			billedCents = locked.EstimatedCents
 		}
