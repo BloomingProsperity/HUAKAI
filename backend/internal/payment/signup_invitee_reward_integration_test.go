@@ -23,7 +23,7 @@ func TestSignupBonusDefaultOff(t *testing.T) {
 	f := newPaymentFixture(t, ctx, pool)
 	svc := NewService(NewPostgresStore(pool))
 
-	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 0} // 默认关闭
+	cfg := SignupInviteeConfig{SignupBonusCents: 0} // 默认关闭
 	res, err := svc.IssueSignupBonus(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
 		t.Fatalf("IssueSignupBonus amount=0: %v", err)
@@ -46,7 +46,7 @@ func TestSignupBonusIssuedOnce(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 500_000} // 50 美分
+	cfg := SignupInviteeConfig{SignupBonusCents: 50} // 50 美分
 	res, err := svc.IssueSignupBonus(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
 		t.Fatalf("IssueSignupBonus: %v", err)
@@ -74,6 +74,31 @@ func TestSignupBonusIssuedOnce(t *testing.T) {
 	}
 }
 
+// TestSignupBonusOneCentNotTruncated 是本次修复(配置直接以美分、消除 micros/10_000 截断)的精准哨兵:
+// 1 美分是最小可表达奖励。旧实现下 1(被当 micros)/10_000 = 0 会让该配置静默变 no-op、丢钱;
+// 现在配置即美分,1 美分必须恰好入账 1 美分。
+// 判别:任何把该字段再除以 10_000(重新引入截断)的回归 → 入账 0 → 下方断言全红。
+func TestSignupBonusOneCentNotTruncated(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	svc := NewService(NewPostgresStore(pool))
+	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+
+	res, err := svc.IssueSignupBonus(ctx, SignupInviteeConfig{SignupBonusCents: 1}, f.tenantA, f.userA)
+	if err != nil {
+		t.Fatalf("IssueSignupBonus: %v", err)
+	}
+	if !res.Issued || res.NewBalance != 1 {
+		t.Fatalf("1 美分奖励应恰好入账(Issued=true,balance=1),实际 %+v", res)
+	}
+	if got := sumPaymentCredits(t, ctx, pool, f.tenantA, f.userA); got != 1 {
+		t.Fatalf("sum credits=%d want 1(1 美分不得被截断成 0)", got)
+	}
+}
+
 func TestSignupBonusIdempotent(t *testing.T) {
 	// 变异:移除 orderExistsByOutTradeNoTx 检查或 out_trade_no 唯一约束 -> 第二次调用会重复入账。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -84,7 +109,7 @@ func TestSignupBonusIdempotent(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	cfg := SignupInviteeConfig{SignupBonusUSDMicros: 250_000} // 25 美分
+	cfg := SignupInviteeConfig{SignupBonusCents: 25} // 25 美分
 
 	first, err := svc.IssueSignupBonus(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
@@ -125,7 +150,7 @@ func TestSignupBonusAtomic_CreditFailureRollsBack(t *testing.T) {
 	t.Cleanup(func() { insertSignupBonusTopupCreditTx = orig })
 
 	svc := NewService(NewPostgresStore(pool))
-	_, err := svc.IssueSignupBonus(ctx, SignupInviteeConfig{SignupBonusUSDMicros: 100_000}, f.tenantA, f.userA)
+	_, err := svc.IssueSignupBonus(ctx, SignupInviteeConfig{SignupBonusCents: 10}, f.tenantA, f.userA)
 	if err == nil {
 		t.Fatal("IssueSignupBonus with forced credit failure returned nil error")
 	}
@@ -150,7 +175,7 @@ func TestInviteeRewardDefaultOff(t *testing.T) {
 	f := newPaymentFixture(t, ctx, pool)
 	svc := NewService(NewPostgresStore(pool))
 
-	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 0} // 默认关闭
+	cfg := SignupInviteeConfig{ReferralInviteeCents: 0} // 默认关闭
 	res, err := svc.IssueInviteeReward(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
 		t.Fatalf("IssueInviteeReward amount=0: %v", err)
@@ -172,7 +197,7 @@ func TestInviteeRewardIssuedOnce(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 1_000_000} // 100 美分 = $1
+	cfg := SignupInviteeConfig{ReferralInviteeCents: 100} // 100 美分 = $1
 	res, err := svc.IssueInviteeReward(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
 		t.Fatalf("IssueInviteeReward: %v", err)
@@ -209,7 +234,7 @@ func TestInviteeRewardIdempotent(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	cfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 750_000} // 75 美分
+	cfg := SignupInviteeConfig{ReferralInviteeCents: 75} // 75 美分
 
 	first, err := svc.IssueInviteeReward(ctx, cfg, f.tenantA, f.userA)
 	if err != nil {
@@ -248,7 +273,7 @@ func TestInviteeRewardAtomic_CreditFailureRollsBack(t *testing.T) {
 	t.Cleanup(func() { insertInviteeRewardTopupCreditTx = orig })
 
 	svc := NewService(NewPostgresStore(pool))
-	_, err := svc.IssueInviteeReward(ctx, SignupInviteeConfig{ReferralInviteeUSDMicros: 200_000}, f.tenantA, f.userA)
+	_, err := svc.IssueInviteeReward(ctx, SignupInviteeConfig{ReferralInviteeCents: 20}, f.tenantA, f.userA)
 	if err == nil {
 		t.Fatal("IssueInviteeReward with forced credit failure returned nil error")
 	}
@@ -274,8 +299,8 @@ func TestSignupBonusAndInviteeRewardAreIndependent(t *testing.T) {
 	now := time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)
 	svc.now = func() time.Time { return now }
 
-	bonusCfg := SignupInviteeConfig{SignupBonusUSDMicros: 300_000}    // 30 美分
-	inviteeCfg := SignupInviteeConfig{ReferralInviteeUSDMicros: 200_000} // 20 美分
+	bonusCfg := SignupInviteeConfig{SignupBonusCents: 30}       // 30 美分
+	inviteeCfg := SignupInviteeConfig{ReferralInviteeCents: 20} // 20 美分
 
 	_, err := svc.IssueSignupBonus(ctx, bonusCfg, f.tenantA, f.userA)
 	if err != nil {
