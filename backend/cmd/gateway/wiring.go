@@ -1267,7 +1267,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		checkinService:        checkinService,
 		paymentProviders:      paymentProviders,
 		paymentRefundRequests: buildPaymentRefundRequestRecorder(pgPool, paymentService),
-		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool), voucher.WithAuditSink(voucher.PrivacyLogAuditSink{})),
+		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool), buildVoucherServiceOptions(cfg)...),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
 		notificationSettings:  notificationSettings,
 		announcementService:   announcementService,

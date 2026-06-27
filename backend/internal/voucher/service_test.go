@@ -249,6 +249,67 @@ func TestAT_BILL_002_008_BurstAntiFraudBlocksBeforeCredit(t *testing.T) {
 	}
 }
 
+// TestVoucherBurstCountsOnlyFailures 钉死"只计失败":连续成功兑换多张有效码绝不把合法用户推向限流,
+// 只有反复猜错码(ErrVoucherNotFound)才计数。判别(§14):若 CheckVoucherBurst 改回"每次尝试都增计数"
+// (旧 count-all 行为),在 Limit=2 下第 3 次成功兑换就会被拦成 ErrBurstLimited,本测试转红。
+func TestVoucherBurstCountsOnlyFailures(t *testing.T) {
+	ctx := context.Background()
+	now := fixedNow()
+	svc := NewService(NewMemoryStore(),
+		WithBurstLimiter(NewMemoryBurstLimiter(BurstPolicy{Limit: 2, Window: time.Minute, BlockPeriod: time.Minute})))
+	// 同一用户连续成功兑换 6 张不同有效码:成功不计数 → 绝不被限流。
+	for i := 0; i < 6; i++ {
+		c := mustCreateVoucher(t, svc, fmt.Sprintf("ok-%d", i), 100, now)
+		if _, err := svc.Redeem(ctx, RedeemInput{TenantID: 1, UserID: 5, Code: c.Code, SourceIP: "203.0.113.1", Now: now}); err != nil {
+			t.Fatalf("第 %d 次成功兑换不该失败/被限(成功不应计入失败计数):%v", i, err)
+		}
+	}
+}
+
+// TestVoucherBurstDoesNotCountExpiredFailures 钉死"只计猜码失败"的精度:对已存在但过期的码(合法用户持有
+// 真码却过期)的失败不计入限流,只有码不存在(猜码)才计。判别(§14):若把 service 的 ErrVoucherNotFound
+// 守卫放宽成"计所有失败",反复兑过期码会被误限,本测试转红。
+func TestVoucherBurstDoesNotCountExpiredFailures(t *testing.T) {
+	ctx := context.Background()
+	now := fixedNow()
+	svc := NewService(NewMemoryStore(),
+		WithBurstLimiter(NewMemoryBurstLimiter(BurstPolicy{Limit: 2, Window: time.Minute, BlockPeriod: time.Minute})))
+	// 建一张已过期的真码(窗口 until 在 now 之前;Create 只要求 until>from)。
+	expired := mustCreateVoucherWindow(t, svc, "expired-code", 100, now.Add(-2*time.Hour), now.Add(-time.Hour), now)
+	// 同一用户反复兑这张过期真码:每次 ErrVoucherExpired(非猜码),不计入限流;5 次都不该被 ErrBurstLimited。
+	for i := 0; i < 5; i++ {
+		_, err := svc.Redeem(ctx, RedeemInput{TenantID: 1, UserID: 5, Code: expired.Code, SourceIP: "203.0.113.8", Now: now})
+		if errors.Is(err, ErrBurstLimited) {
+			t.Fatalf("兑过期真码(非猜码失败)不该计入限流(第 %d 次被限)", i)
+		}
+		if !errors.Is(err, ErrVoucherExpired) {
+			t.Fatalf("第 %d 次应为 ErrVoucherExpired,实际 %v", i, err)
+		}
+	}
+}
+
+// TestMemoryBurstLimiterCheckDoesNotIncrement 钉死 CheckVoucherBurst 只读不增计数、RecordVoucherFailure 才增。
+// 先记 1 次失败建窗(attempts=1),再连续 Check:attempts 必须停在 1、始终放行;再补 2 次失败到 Limit=3 后 Check 拒。
+// 判别(§14):若 Check 内增计数,Check 后 d.Attempts 会 >1 或提前被限 → 第二段断言转红;若 RecordVoucherFailure
+// 不增计数,末尾"应被限"断言转红。
+func TestMemoryBurstLimiterCheckDoesNotIncrement(t *testing.T) {
+	ctx := context.Background()
+	l := NewMemoryBurstLimiter(BurstPolicy{Limit: 3, Window: time.Minute, BlockPeriod: time.Minute})
+	a := BurstAttempt{TenantID: 1, UserID: 5, SourceIPHash: "h", Now: fixedNow()}
+	_ = l.RecordVoucherFailure(ctx, a) // 建窗:attempts=1
+	for i := 0; i < 10; i++ {
+		d, _ := l.CheckVoucherBurst(ctx, a)
+		if !d.Allowed || d.Attempts != 1 {
+			t.Fatalf("纯 Check 不应增计数:第 %d 次 allowed=%v attempts=%d,want allowed=true attempts=1", i, d.Allowed, d.Attempts)
+		}
+	}
+	_ = l.RecordVoucherFailure(ctx, a) // attempts=2
+	_ = l.RecordVoucherFailure(ctx, a) // attempts=3 → 达 Limit
+	if d, _ := l.CheckVoucherBurst(ctx, a); d.Allowed {
+		t.Fatalf("3 次失败(Limit=3)后应被限,实际放行")
+	}
+}
+
 func TestAT_BILL_002_009_IdempotencyReturnsPriorResult(t *testing.T) {
 	ctx := context.Background()
 	now := fixedNow()
