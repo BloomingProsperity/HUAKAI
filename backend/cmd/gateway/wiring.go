@@ -1201,7 +1201,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		RequestClass:         cfg.RequestClass,
 		BalanceModeResolver:  billingPolicyResolver,
 	})
-	mediaTaskProviders := mediatask.NewHTTPProviderRegistry(mediaTaskConfig, http.DefaultClient)
+	// 媒体 provider 出站客户端必须带 Timeout(与同文件 modelsync fetcher 一致):裸 http.DefaultClient
+	// 无超时,慢上游/半开连接会让串行媒体 worker 永久挂起。worker 侧已对每次 Submit/Poll 加 context 硬超时
+	// 为主防线,此处 client.Timeout 作外层兜底(防 provider 实现忽略 ctx)。
+	mediaTaskProviders := mediatask.NewHTTPProviderRegistry(mediaTaskConfig, &http.Client{Timeout: 60 * time.Second})
 	mediaTaskService := mediatask.NewService(mediaTaskStore, mediaTaskConfig, mediaTaskProviders)
 	// OrphanReporter 把"租约丢失致 providerTaskID 未落库"的孤儿上游任务持久化到 media_task_orphans,
 	// 供对账消费者/运维查处(此前仅日志,易随轮转丢失)。logger 传 nil → 与 worker 同走 slog 默认实例。
