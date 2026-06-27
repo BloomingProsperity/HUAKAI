@@ -20,11 +20,8 @@ const (
 	signupBonusFingerprint   = "signup_bonus"
 	inviteeRewardFingerprint = "invitee_reward"
 
-	envSignupBonusUSDMicros   = "HUAKAI_SIGNUP_BONUS_USD_MICROS"
-	envInviteeRewardUSDMicros = "HUAKAI_REFERRAL_INVITEE_USD_MICROS"
-
-	// signupInviteeMicrosPerCent: 1 USD = 100 美分 = 1 000 000 micros => 1 美分 = 10 000 micros
-	signupInviteeMicrosPerCent = 10_000
+	envSignupBonusUSDCents   = "HUAKAI_SIGNUP_BONUS_USD_CENTS"
+	envInviteeRewardUSDCents = "HUAKAI_REFERRAL_INVITEE_USD_CENTS"
 )
 
 // ============================================================
@@ -32,27 +29,30 @@ const (
 // ============================================================
 
 // SignupInviteeConfig 持有两笔注册时钱包入账的奖励金额。
-// 两者默认都为 0 (功能关闭)。金额单位为 USD micros; 正值即启用该入账。
+// 两者默认都为 0 (功能关闭)。**金额单位直接为美分(cents)= 钱包入账的最小单位**,正值即启用。
+// 历史上配置用 USD micros 再 /10_000 换算成美分,会把非整万 micros 的亚分静默截断丢失;改为直接以
+// 美分配置后从源头消除该截断入口(对齐 new-api 奖励配置即最终整数单位的姿态)。钱包入账本以美分为
+// 最小单位,故"直接用美分"不丢任何可表达的奖励额。
 type SignupInviteeConfig struct {
-	// SignupBonusUSDMicros 是发给每位新注册用户的欢迎入账。
-	// Env: HUAKAI_SIGNUP_BONUS_USD_MICROS (默认 0 = 禁用)。
-	SignupBonusUSDMicros int64
-	// ReferralInviteeUSDMicros 是注册时应用邀请绑定后,
-	// 发给新用户的入账。
-	// Env: HUAKAI_REFERRAL_INVITEE_USD_MICROS (默认 0 = 禁用)。
-	ReferralInviteeUSDMicros int64
+	// SignupBonusCents 是发给每位新注册用户的欢迎入账(美分)。
+	// Env: HUAKAI_SIGNUP_BONUS_USD_CENTS (默认 0 = 禁用)。
+	SignupBonusCents int64
+	// ReferralInviteeCents 是注册时应用邀请绑定后, 发给新用户的入账(美分)。
+	// Env: HUAKAI_REFERRAL_INVITEE_USD_CENTS (默认 0 = 禁用)。
+	ReferralInviteeCents int64
 }
 
 // SignupInviteeConfigFromEnv 从环境变量读取配置。
 // 缺失或为零值时功能保持禁用 (默认关闭的安全姿态)。
 func SignupInviteeConfigFromEnv() SignupInviteeConfig {
 	return SignupInviteeConfig{
-		SignupBonusUSDMicros:     parseEnvMicros(envSignupBonusUSDMicros),
-		ReferralInviteeUSDMicros: parseEnvMicros(envInviteeRewardUSDMicros),
+		SignupBonusCents:     parseEnvCents(envSignupBonusUSDCents),
+		ReferralInviteeCents: parseEnvCents(envInviteeRewardUSDCents),
 	}
 }
 
-func parseEnvMicros(key string) int64 {
+// parseEnvCents 读取一个非负整数美分配置;缺失/非法/负值一律回落到 0(禁用)。
+func parseEnvCents(key string) int64 {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
 		return 0
@@ -62,11 +62,6 @@ func parseEnvMicros(key string) int64 {
 		return 0
 	}
 	return n
-}
-
-// signupInviteeCents 把 USD micros 换算为美分 (整数除法)。
-func signupInviteeCents(micros int64) int64 {
-	return micros / signupInviteeMicrosPerCent
 }
 
 // ============================================================
@@ -133,13 +128,13 @@ var insertInviteeRewardTopupCreditTx = insertTopupCreditTx
 // ============================================================
 
 // IssueSignupBonus 给新用户发放一次性的欢迎钱包入账。
-// 若 cfg.SignupBonusUSDMicros <= 0 则本次调用为 no-op (默认关闭的安全姿态)。
+// 若 cfg.SignupBonusCents <= 0 则本次调用为 no-op (默认关闭的安全姿态)。
 // 遇幂等冲突时错误被吞掉 — 对注册重试和 OAuth 重入是安全的。
 func (s *Service) IssueSignupBonus(ctx context.Context, cfg SignupInviteeConfig, tenantID, userID int64) (SignupBonusResult, error) {
 	if s == nil || s.store == nil {
 		return SignupBonusResult{}, ErrStoreNotConfigured
 	}
-	cents := signupInviteeCents(cfg.SignupBonusUSDMicros)
+	cents := cfg.SignupBonusCents
 	if cents <= 0 {
 		return SignupBonusResult{}, nil
 	}
@@ -163,12 +158,12 @@ func (s *Service) IssueSignupBonus(ctx context.Context, cfg SignupInviteeConfig,
 
 // IssueInviteeReward 在注册时应用邀请绑定后, 给被邀请人 (新用户)
 // 发放一次性的、基于邀请的钱包入账。
-// 若 cfg.ReferralInviteeUSDMicros <= 0 则本次调用为 no-op。
+// 若 cfg.ReferralInviteeCents <= 0 则本次调用为 no-op。
 func (s *Service) IssueInviteeReward(ctx context.Context, cfg SignupInviteeConfig, tenantID, userID int64) (InviteeRewardResult, error) {
 	if s == nil || s.store == nil {
 		return InviteeRewardResult{}, ErrStoreNotConfigured
 	}
-	cents := signupInviteeCents(cfg.ReferralInviteeUSDMicros)
+	cents := cfg.ReferralInviteeCents
 	if cents <= 0 {
 		return InviteeRewardResult{}, nil
 	}
