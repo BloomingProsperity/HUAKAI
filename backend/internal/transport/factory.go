@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -387,6 +388,64 @@ func (rt *sidecarFallbackRoundTripper) RoundTrip(req *http.Request) (*http.Respo
 		return nil, fmt.Errorf("transport: sidecar runtime fallback failed for mode=%s: %w; native fallback: %w", rt.mode, transportErr, fallbackErr)
 	}
 	return fallbackResp, nil
+}
+
+// proxyAwareRoundTripper 在本包内复刻 provider 侧消费的结构化代理接口,避免
+// 反向 import provider。WithProxy 的存在与否决定 provider.WrapTransportWithProxy
+// 走"账号绑定代理叠加"分支还是 fail-loud 分支。
+type proxyAwareRoundTripper interface {
+	WithProxy(proxyURL *url.URL) (http.RoundTripper, error)
+}
+
+// WithProxy 让 sidecarFallbackRoundTripper 也满足 provider.proxyAwareRoundTripper:
+// 把代理分别叠加到 primary(sidecar)与 fallback(Go-native uTLS)两条腿上,再用同一个
+// wrapper 重新封装返回。**必须实现此方法**——否则开启 SidecarFallbackEnabled 后,绑定了
+// 出口代理的 mimicry 账号会因 wrapper 不被识别为 proxy-aware,落到
+// WrapTransportWithProxy 的 fail-loud 分支(proxyWrappedRoundTripper),每个请求都返回
+// ErrProxyUnsupportedTransport,代理 mimicry 账号整体不可用(本就是 #11 要修的命门)。
+//
+// primary 在生产里恒为 mimicry.sidecarTransport(它实现 WithProxy);若某天不再是
+// proxy-aware,这里 fail-loud 返回 err,经 WrapTransportWithProxy 的 buildErr 路径仍
+// fail-closed,绝不静默丢代理导致真实出口 IP 泄露。fallback 为 Go uTLS native RT,同样
+// 实现 WithProxy;它若不支持也 fail-loud——两条腿必须都带上代理,否则回退路径会绕过
+// 账号级 IP 隔离。
+func (rt *sidecarFallbackRoundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) {
+	primaryPA, ok := rt.primary.(proxyAwareRoundTripper)
+	if !ok {
+		return nil, fmt.Errorf("transport: sidecar fallback primary 不支持 WithProxy,无法叠加账号代理 mode=%s", rt.mode)
+	}
+	primaryProxied, err := primaryPA.WithProxy(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	fallbackPA, ok := rt.fallback.(proxyAwareRoundTripper)
+	if !ok {
+		return nil, fmt.Errorf("transport: sidecar fallback native 不支持 WithProxy,无法叠加账号代理 mode=%s", rt.mode)
+	}
+	fallbackProxied, err := fallbackPA.WithProxy(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	return &sidecarFallbackRoundTripper{
+		primary:    primaryProxied,
+		fallback:   fallbackProxied,
+		factory:    rt.factory,
+		mode:       rt.mode,
+		socketPath: rt.socketPath,
+	}, nil
+}
+
+// SidecarProfileID 转发 primary 的 sidecar profile id,使 wrapper 同样携带"我已走
+// sidecar"的导出标记。**必须实现此方法**——否则开启 SidecarFallbackEnabled 后,绑定了
+// DB TLS profile 的账号在 dispatcher.applyTLSProfile 处不被识别为 sidecar RT,会被
+// per-account DB uTLS profile 整体替换,sidecar 永远轮不到、强伪装能力静默丢失。
+// 接口断言(interface{ SidecarProfileID() string })只看方法是否存在,故只要本方法
+// 存在,wrapper 即被 applyTLSProfile 正确短路保留。
+func (rt *sidecarFallbackRoundTripper) SidecarProfileID() string {
+	if p, ok := rt.primary.(interface{ SidecarProfileID() string }); ok {
+		return p.SidecarProfileID()
+	}
+	return ""
 }
 
 func newSidecarTransportError(class TransportErrorClass, mode TransportMode, socketPath string, err error) *TransportError {
