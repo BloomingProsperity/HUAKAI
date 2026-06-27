@@ -491,6 +491,12 @@ func geminiResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, []p
 	}
 
 	var losses []proto.ProtocolLossEntry
+	// 非流式同样只取主候选 Candidates[0];多候选(candidateCount>1)时非主候选被丢弃,
+	// 与流式路对称地记一条 lossy 损失(此前非流式静默丢弃、无审计痕迹)。canonical 模型
+	// 只承载单一主候选,故主答案完整返回、仅丢非主候选。
+	if len(resp.Candidates) > 1 {
+		losses = append(losses, proto.NewLossEntry(proto.FeatureMultiCandidate, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-primary Gemini candidate skipped (non-stream)"))
+	}
 	candidate := resp.Candidates[0]
 	out.StopReason = mapGeminiStopReason(candidate.FinishReason)
 	losses = append(losses, geminiStopLoss(candidate.FinishReason)...)
