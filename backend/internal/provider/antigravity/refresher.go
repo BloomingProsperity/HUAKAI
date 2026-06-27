@@ -306,7 +306,10 @@ func (a RefreshAdapter) httpClient() *http.Client {
 	if a.HTTPClient != nil {
 		return a.HTTPClient
 	}
-	return http.DefaultClient
+	// 与镜像兄弟 gemini/kiro/cursor/windsurf/openai_codex 的 RefreshAdapter 一致,未注入时回退 SSRF 防护
+	// client 而非裸 http.DefaultClient(防 env 代理外发凭据/无 IP 校验/不禁 3xx;S2-054 同款防线,补齐本镜像组
+	// 最后一个漏修点)。当前 antigravity OAuth wiring 待 Owner 重新接线,提前补好防线避免激活即漏。
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 func (a RefreshAdapter) now() time.Time {

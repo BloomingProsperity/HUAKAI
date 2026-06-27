@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 )
 
@@ -114,7 +115,11 @@ func (r GeminiRefresh) httpClient() *http.Client {
 	if r.HTTPClient != nil {
 		return r.HTTPClient
 	}
-	return http.DefaultClient
+	// 未注入 client 时(operator OAuth 路径 mode_refresh 不赋值 client)必须回退到 SSRF 防护 client,
+	// 而非裸 http.DefaultClient:OAuth refresh 携带 refresh_token/client_secret,裸 client 会读 HTTP_PROXY
+	// 经 env 代理外发密钥、且无拨号层目标 IP 校验(DNS-rebind/内网/metadata 无防护)、不禁 3xx。与同包
+	// OpenAIRefresh/ChatGPTRefresh 一致(S2-054 同款防线,此前 gemini/antigravity 漏修)。
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 func (r GeminiRefresh) fallbackFamilies(cred map[string]any, providerName string) (string, string) {
