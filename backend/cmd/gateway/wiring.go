@@ -1024,8 +1024,15 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		_, err := paymentService.IssueInviteeReward(ctx, signupInviteeCfg, tenantID, userID)
 		return err
 	}
+	// 退款配额冲减器:启用配额强制时,退款落库后把退款的实际金额从配额 settled_value 负向冲减
+	// (修补"退款只退钱包、配额计数没退→用户提前撞成本上限")。quota.Service 无状态,此处独立实例
+	// 与配额强制层用同一套 quota 表,功能等价;未启用配额强制则传 nil,退款不触发冲减(零行为变化)。
+	var refundQuotaReverser auditreceipt.QuotaReverser
+	if cfg != nil && cfg.QuotaEnforce {
+		refundQuotaReverser = quotaCostReverser{svc: quota.NewService(quota.NewPostgresStore(pgPool))}
+	}
 	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, completionBus, err := buildSettlementServices(
-		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger, paymentService, platformSettingsService,
+		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger, paymentService, platformSettingsService, refundQuotaReverser,
 	)
 	if err != nil {
 		return nil, err

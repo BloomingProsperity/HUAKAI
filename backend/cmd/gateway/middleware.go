@@ -341,7 +341,7 @@ func buildOutboxWorker(outboxStore obsoutbox.Outbox, outboxRuntime obsoutbox.Run
 	return outboxWorker
 }
 
-func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger, referralRewardIssuer auditreceipt.ReferralRewardIssuer, referralRewardSettings auditreceipt.ReferralRewardSettings) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, *billing.PGXRateTableSource, *eventbus.Bus, error) {
+func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger, referralRewardIssuer auditreceipt.ReferralRewardIssuer, referralRewardSettings auditreceipt.ReferralRewardSettings, quotaReverser auditreceipt.QuotaReverser) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, *billing.PGXRateTableSource, *eventbus.Bus, error) {
 	receiptStore, err := auditreceipt.NewPGXReceiptStorage(pgPool)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build receipt storage: %w", err)
@@ -365,6 +365,9 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 	}
 	if _, ok := auditLedger.(*auditledger.PostgresLedger); ok {
 		refundWorkerOpts = append(refundWorkerOpts, auditreceipt.WithRefundTxPool(pgPool))
+	}
+	if quotaReverser != nil {
+		refundWorkerOpts = append(refundWorkerOpts, auditreceipt.WithRefundQuotaReverser(quotaReverser))
 	}
 	refundWorker := auditreceipt.NewMismatchRefundWorker(refundPendingStore, baseSettler, receiptFormatter, refundWorkerOpts...)
 	dlqService.Register(legacydlq.EventKindAuditMismatchRefund, refundWorker.Handler())
