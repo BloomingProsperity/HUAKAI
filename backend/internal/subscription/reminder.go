@@ -187,7 +187,7 @@ func (r *ReminderService) processCandidate(ctx context.Context, now time.Time, c
 	if !ok {
 		return 0, nil
 	}
-	key := strconv.Itoa(tier)
+	key := reminderDedupKey(tier, c.ExpiresAt)
 
 	// 已记录该档 → 跳过 (正常路径去重)。
 	keys, err := r.store.SentReminderKeys(ctx, c.TenantID, c.SubscriptionID)
@@ -250,6 +250,21 @@ func reminderOutcomeName(outcome ReminderOutcome) string {
 	default:
 		return "unknown"
 	}
+}
+
+// reminderDedupKey 构造提醒去重键 = 档位天数 + 到期日(按 UTC 日截断)。
+//
+// 为何纳入到期日: 续期/延期是对同一 user_subscription 行原地 UPDATE expires_at(ID 不变),
+// 若去重键只用档位天数(如 "7"), 则新周期临近到期时, SentReminderKeys 仍命中上一周期已发的
+// "7" 键 → 三档全被跳过, 用户在新周期到期前永远收不到续订提醒。把到期日并入键后, 新周期(到期日
+// 后移)产生不同键, 在 (tenant_id, user_subscription_id, reminder_key) 唯一索引下天然写出独立行,
+// 无需改 schema。
+//
+// 为何按"日"截断而非到期时刻: 同一周期内 expires_at 稳定 → 键稳定 → 同周期内多 tick 不重发;
+// 同周期内对到期时刻的微调(几小时延期)仍归同一天 = 同键, 不会被误判成新周期而重复轰炸;
+// 真正跨日的续期才视为新周期。订阅有效期向前推进, 不同周期的到期日必然落在不同日期, 不会撞键。
+func reminderDedupKey(tier int, expiresAt time.Time) string {
+	return strconv.Itoa(tier) + "@" + expiresAt.UTC().Format("2006-01-02")
 }
 
 // currentReminderTier 返回剩余时长命中的提醒档位 (到期前天数) 及是否有适用档。
