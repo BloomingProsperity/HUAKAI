@@ -34,10 +34,14 @@ var (
 )
 
 type Config struct {
-	Enabled               bool
-	ProviderBaseURL       string
-	PollInterval          time.Duration
-	TaskTimeout           time.Duration
+	Enabled         bool
+	ProviderBaseURL string
+	PollInterval    time.Duration
+	TaskTimeout     time.Duration
+	// ProviderCallTimeout 是单次上游 Submit/Poll HTTP 调用的硬上限。媒体 provider 是真实外部服务,
+	// Submit/Poll 本应秒级返回(异步任务在 provider 侧跑,这里只提交/查状态);若不设上限,慢上游/半开连接
+	// 会让单 goroutine 串行 worker 永久挂起、整个媒体子系统停摆、预扣资金久冻(<=0 时 withDefaults 兜默认)。
+	ProviderCallTimeout   time.Duration
 	DefaultEstimatedCents map[string]int64
 	BillingPolicyVersion  string
 	RequestClass          string
@@ -178,16 +182,30 @@ func (c Config) withDefaults() Config {
 	if c.TaskTimeout <= 0 {
 		c.TaskTimeout = defaultTaskTimeout
 	}
+	if c.ProviderCallTimeout <= 0 {
+		c.ProviderCallTimeout = defaultProviderCallTimeout
+	}
 	if c.RequestClass == "" {
 		c.RequestClass = "standard"
 	}
 	return c
 }
 
+// providerCallTimeout 返回单次上游调用超时,即使 cfg 未经 withDefaults 也兜底(防御性,绝不返回 <=0)。
+func (c Config) providerCallTimeout() time.Duration {
+	if c.ProviderCallTimeout > 0 {
+		return c.ProviderCallTimeout
+	}
+	return defaultProviderCallTimeout
+}
+
 const (
 	// defaultTaskTimeout 是 TaskTimeout 缺省值的单一真相源,withDefaults 与
 	// defaultMediaClaimLeaseWindow 共用,避免两处字面量失同步(改一处即可)。
 	defaultTaskTimeout = 15 * time.Minute
+	// defaultProviderCallTimeout 是单次上游 Submit/Poll HTTP 调用的默认硬上限。取 20s:Submit/Poll 应秒级
+	// 返回,留足慢网络余量;且 < worker LeaseTTL(默认 30s),确保单次调用绝不会跨过租约导致重复提交/孤儿。
+	defaultProviderCallTimeout = 20 * time.Second
 	// claimLeaseGrace 是 billing claim 孤儿回收租约在媒体任务超时之外额外预留的余量,
 	// 确保 mediatask 自身的 TaskTimeout 超时处理(worker ExpireTask)总是先于 billing
 	// LeaseSweeper 动作,避免合法长任务的 claim 被 sweeper 提前 abort(亏钱)。
