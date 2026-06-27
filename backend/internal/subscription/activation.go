@@ -91,12 +91,22 @@ func ActivateOrRenewTx(ctx context.Context, tx pgx.Tx, in ActivateInput) (Activa
 	if err != nil {
 		return ActivateResult{}, err
 	}
-	// 关旧 caps 策略 → 按新套餐 caps 装新策略 (valid_until=newExpires)。
-	if err := closeCapsTx(ctx, tx, in.TenantID, existing.ID, in.Now); err != nil {
-		return ActivateResult{}, err
-	}
-	if err := installCapsTx(ctx, tx, updated, in.Now); err != nil {
-		return ActivateResult{}, err
+	// caps 处理按"旧订阅是否已过期"分叉:
+	//   - 已过期续期 = 新周期,合法重置:关旧装新(铸新 policy_id,用量从 0 起),与 base=now 的新窗口一致。
+	//   - 期中续期(未过期)= **绝不重置用量**:原地调和 caps(保留 policy_id 与 quota_windows 已用计数,
+	//     只顺延 valid_until、按升档调 limit)。修复点:此前无条件关旧装新使当月 cost_usd 计数归零,被自助
+	//     在自然月内复购同档套餐绕过月度护栏、白吃约一倍上游成本。对齐 sub2api 期中续期只顺延、不触碰已用计数。
+	if existing.IsExpiredAt(in.Now) {
+		if err := closeCapsTx(ctx, tx, in.TenantID, existing.ID, in.Now); err != nil {
+			return ActivateResult{}, err
+		}
+		if err := installCapsTx(ctx, tx, updated, in.Now); err != nil {
+			return ActivateResult{}, err
+		}
+	} else {
+		if err := reconcileCapsTx(ctx, tx, updated, in.Now); err != nil {
+			return ActivateResult{}, err
+		}
 	}
 	prev := existing.ExpiresAt
 	if err := insertSubAuditTx(ctx, tx, subAuditInsert{

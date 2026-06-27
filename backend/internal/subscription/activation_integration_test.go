@@ -74,6 +74,19 @@ WHERE tenant_id=$1 AND scope_id=$2 AND metric='cost_usd' AND window_kind='calend
   AND enabled=true AND limit_value=$3`, tenantID, strconv.FormatInt(userID, 10), limit)
 }
 
+// activeDayCapPolicyID 返回某订阅当前 active 的日历日 cap 策略 policy_id(无则 fail)。
+func (f *subFixture) activeDayCapPolicyID(tenantID, subID int64) int64 {
+	f.t.Helper()
+	var pid int64
+	if err := f.pool.QueryRow(f.ctx, `
+SELECT quota_policy_id FROM subscription_policy_links
+WHERE tenant_id=$1 AND user_subscription_id=$2 AND window_kind='calendar_day' AND status='active'`,
+		tenantID, subID).Scan(&pid); err != nil {
+		f.t.Fatalf("read active day cap policy id: %v", err)
+	}
+	return pid
+}
+
 // TestPG_ActivateNew 无同组 active → 新建订阅 + 装日历日 cap 策略 + 效果行 created。
 // 判别: 漏 installCapsTx → 日 cap 策略不存在 → activeDayCapCount=0 变红。
 func TestPG_ActivateNew(t *testing.T) {
@@ -203,27 +216,80 @@ func TestPG_SelfServiceDowngradeAllowedWhenExpired(t *testing.T) {
 
 // TestPG_UpgradeReplacesCaps 自助买高档 (处处≥) → 续期且 caps 真升级, 旧策略关新策略开。
 // 判别: 续期漏覆盖 caps → active 策略仍=10 → 断言 active cap=100 变红。
-func TestPG_UpgradeReplacesCaps(t *testing.T) {
+// TestPG_MidCycleUpgradeReconcilesCapsInPlace 期中(未过期)升档:caps 策略应**原地 UPDATE**
+// (同一 policy_id,limit 升到新值,仍 enabled),而非关旧装新铸新 policy_id。这样 quota_windows
+// 按 policy_id 记的已用量在升档后完整保留(对齐 sub2api 期中续期不重置用量)。
+// 判别:把 reconcileCapsTx 退回 closeCapsTx+installCapsTx → daily policy_id 变化 + 出现一条 disabled
+// limit=10 的旧策略 → 下方"policy_id 不变"与"无 disabled 旧策略"两个断言转红。
+func TestPG_MidCycleUpgradeReconcilesCapsInPlace(t *testing.T) {
 	f := newSubFixture(t, t.Context(), openIntegrationPool(t, t.Context()))
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	low := f.seedPlanIn(f.tenantA, "Low", "premium", 30, dec("10"), nil, nil)
 	high := f.seedPlanIn(f.tenantA, "High", "premium", 30, dec("100"), nil, nil)
 
-	if _, err := f.runActivate(adminInput(f.tenantA, f.userA, low.ID, now, true), nil, nil); err != nil {
+	res, err := f.runActivate(adminInput(f.tenantA, f.userA, low.ID, now, true), nil, nil)
+	if err != nil {
 		t.Fatalf("activate low: %v", err)
 	}
+	subID := res.Subscription.ID
+	pidBefore := f.activeDayCapPolicyID(f.tenantA, subID)
+
 	if _, err := f.runActivate(adminInput(f.tenantA, f.userA, high.ID, now.AddDate(0, 0, 1), true), nil, nil); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
 	if n := f.activeDayCapCount(f.tenantA, f.userA, "100"); n != 1 {
-		t.Fatalf("active daily cap=100 = %d, want 1 (upgraded)", n)
+		t.Fatalf("active daily cap=100 = %d, want 1 (upgraded in place)", n)
 	}
-	// 旧 10 那条应被关 (enabled=false)。
-	if n := f.countInt(`SELECT count(*) FROM quota_policies WHERE tenant_id=$1 AND scope_id=$2 AND window_kind='calendar_day' AND enabled=false AND limit_value=$3`, f.tenantA, strconv.FormatInt(f.userA, 10), "10"); n != 1 {
-		t.Fatalf("disabled old daily cap=10 = %d, want 1", n)
+	// policy_id 不变 = 原地 UPDATE(若退回关旧装新会换新 id)。
+	if pidAfter := f.activeDayCapPolicyID(f.tenantA, subID); pidAfter != pidBefore {
+		t.Fatalf("期中升档应原地更新同一 policy_id,before=%d after=%d(换 id=用量被重置)", pidBefore, pidAfter)
+	}
+	// 不应出现 disabled 的旧 limit=10 策略(原地更新不留旧残行)。
+	if n := f.countInt(`SELECT count(*) FROM quota_policies WHERE tenant_id=$1 AND scope_id=$2 AND window_kind='calendar_day' AND enabled=false`, f.tenantA, strconv.FormatInt(f.userA, 10)); n != 0 {
+		t.Fatalf("期中升档不应留 disabled 旧日 cap 策略, 实际 %d", n)
 	}
 	if n := f.countInt(`SELECT count(*) FROM user_subscriptions WHERE tenant_id=$1 AND user_id=$2 AND status='active' AND daily_cap_usd=$3`, f.tenantA, f.userA, "100"); n != 1 {
-		t.Fatalf("active sub with daily_cap=100 = %d, want 1 (snapshot caps replaced)", n)
+		t.Fatalf("active sub with daily_cap=100 = %d, want 1 (snapshot caps updated)", n)
+	}
+}
+
+// TestPG_MidCycleRepurchasePreservesUsageWindow 是 S2 护栏绕过 bug 的核心判别:自然月内复购同档
+// 套餐(期中、未过期)绝不能重置已用量。构造一条带 settled_value 的 quota_windows(模拟当期已用 $7),
+// 复购同档后断言:① 日 cap 策略仍是同一 policy_id;② 该 policy 的 quota_windows 已用计数仍为 7(未归零)。
+// 判别:把 reconcileCapsTx 退回 closeCapsTx+installCapsTx → 铸新 policy_id → 新窗口已用为 0、旧窗口
+// 被孤立 → 两个断言转红(这正是"复购清零护栏白吃成本"的资损路径)。
+func TestPG_MidCycleRepurchasePreservesUsageWindow(t *testing.T) {
+	f := newSubFixture(t, t.Context(), openIntegrationPool(t, t.Context()))
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	plan := f.seedPlanIn(f.tenantA, "Mid", "premium", 30, dec("50"), nil, nil)
+
+	res, err := f.runActivate(adminInput(f.tenantA, f.userA, plan.ID, now, true), nil, nil)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	subID := res.Subscription.ID
+	pid := f.activeDayCapPolicyID(f.tenantA, subID)
+
+	// 模拟当期已用 $7:给该 policy 写一条日历日窗口的 quota_windows。
+	winStart := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := f.pool.Exec(f.ctx, `
+INSERT INTO quota_windows (tenant_id, policy_id, window_start, window_end, settled_value, reserved_value)
+VALUES ($1, $2, $3, $4, 7, 0)`, f.tenantA, pid, winStart, winStart.AddDate(0, 0, 1)); err != nil {
+		t.Fatalf("seed quota_window: %v", err)
+	}
+
+	// 期中复购同档套餐(同 plan,未过期)。
+	if _, err := f.runActivate(adminInput(f.tenantA, f.userA, plan.ID, now.AddDate(0, 0, 1), true), nil, nil); err != nil {
+		t.Fatalf("repurchase: %v", err)
+	}
+
+	// ① 日 cap 策略仍是同一 policy_id(未铸新)。
+	if pidAfter := f.activeDayCapPolicyID(f.tenantA, subID); pidAfter != pid {
+		t.Fatalf("期中复购应保留同一 policy_id(否则用量被重置), before=%d after=%d", pid, pidAfter)
+	}
+	// ② 该 policy 的已用量仍为 7(未归零)。
+	if got := f.countInt(`SELECT count(*) FROM quota_windows WHERE tenant_id=$1 AND policy_id=$2 AND settled_value=7`, f.tenantA, pid); got != 1 {
+		t.Fatalf("期中复购后已用量应保留 settled_value=7(护栏不被清零), 命中 %d 行", got)
 	}
 }
 
