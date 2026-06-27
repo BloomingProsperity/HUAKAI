@@ -156,11 +156,12 @@ func (s *Service) Redeem(ctx context.Context, input RedeemInput) (RedeemResult, 
 	}
 	hash, fp := CodeHash(input.TenantID, NormalizeCode(input.Code))
 	ipHash := SourceIPHash(input.SourceIP)
+	burstAttempt := BurstAttempt{
+		TenantID: input.TenantID, UserID: input.UserID, SourceIPHash: ipHash,
+		CodeFingerprint: fp, RequestID: input.RequestID, Now: input.Now,
+	}
 	if s.limiter != nil {
-		decision, err := s.limiter.AllowVoucherAttempt(ctx, BurstAttempt{
-			TenantID: input.TenantID, UserID: input.UserID, SourceIPHash: ipHash,
-			CodeFingerprint: fp, RequestID: input.RequestID, Now: input.Now,
-		})
+		decision, err := s.limiter.CheckVoucherBurst(ctx, burstAttempt)
 		if err != nil {
 			return RedeemResult{}, err
 		}
@@ -185,6 +186,12 @@ func (s *Service) Redeem(ctx context.Context, input RedeemInput) (RedeemResult, 
 			EventType: AuditVoucherRedeemFailed, TenantID: input.TenantID, UserID: input.UserID,
 			RequestID: input.RequestID, ReasonClass: reason, CodeFingerprint: fp, OccurredAt: input.Now,
 		})
+		// 只对"猜码类"失败(码不存在)计入失败计数:反复猜错码者会被限流;持有效码却遇过期/已用/
+		// 基础设施错误的合法用户不计数(它们不是猜码信号)。这与 CheckVoucherBurst 的"只读判定"配套,
+		// 实现"只计失败"的反猜码限流。
+		if s.limiter != nil && errors.Is(err, ErrVoucherNotFound) {
+			_ = s.limiter.RecordVoucherFailure(ctx, burstAttempt)
+		}
 		if errors.Is(err, ErrVoucherExpired) {
 			_ = s.emit(ctx, AuditEvent{
 				EventType: AuditVoucherExpired, TenantID: input.TenantID, UserID: input.UserID,
