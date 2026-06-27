@@ -98,15 +98,12 @@ func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, prepared Pre
 	return AppendInTransaction(ctx, tx, l.signer, preparedEntryFromLedgerEntry(entry))
 }
 
-// lockTenantWriter 获取某租户的进程内写串行锁,返回释放函数。采用引用计数:无人持有/等待时该租户的锁条目
-// 会在释放时被回收,使 tenantLocks map 规模收敛到「当前并发活跃租户数」而非「历史出现过的全部租户数」
-// (避免无界增长)。注:跨进程的真串行由 AppendInTransaction 的 pg_advisory_xact_lock 保证,本进程内锁仅为
-// 减少 DB 端 advisory lock 等待的优化——故回收/重建锁条目不影响 append-only 链的正确性。
-//
-// 契约:返回的释放函数**必须且只能被调用一次**(惯例 `unlock := lockTenantWriter(id); defer unlock()`)。
-// 重复调用会解锁一把未持有的 mutex(panic)并使 refs 变负导致条目永不回收。
-// 正确性命门:e.refs++ 必须在释放 tenantMu 之前完成,否则持有者尚在时条目可能被并发删除/重建,
-// 出现同租户两把进程内锁并行(由 TestLockTenantWriter_NeverTwoHeldSameTenant 锁死)。
+// lockTenantWriter 获取某租户的进程内写串行锁,返回释放函数。引用计数:无人持有/等待时条目在释放时回收,
+// 使 tenantLocks map 收敛到「当前并发活跃租户数」(避免无界增长)。跨进程真串行由 AppendInTransaction 的
+// pg_advisory_xact_lock 保证,本进程内锁仅为减少 advisory lock 等待的优化,回收/重建条目不影响链正确性。
+// 契约:释放函数**必须且只能调用一次**(`unlock := lockTenantWriter(id); defer unlock()`);重复调用会
+// panic 并使 refs 变负致条目永不回收。正确性命门:e.refs++ 必须在释放 tenantMu 之前完成,否则持有者尚在时
+// 条目可能被并发删除/重建,出现同租户两把进程内锁并行(由 TestLockTenantWriter_NeverTwoHeldSameTenant 锁死)。
 func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
 	l.tenantMu.Lock()
 	if l.tenantLocks == nil {
