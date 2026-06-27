@@ -893,6 +893,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesService.WithMessageContentKeys(credentialKeys)
 	}
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
+	// 启动期凭证密钥自检(fail-closed):用当前 KEK 解一条既有 active 凭证,解不开则拒绝启动,
+	// 避免 operator 轮换密钥后在运行时全 relay 静默解密瘫痪而无启动信号。详见 VerifyKeySelfCheck。
+	if err := credentialStore.VerifyKeySelfCheck(ctx); err != nil {
+		return nil, err
+	}
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
 	credentialExchangers := credentialacq.DefaultExchangerRegistry()
 	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicoauth.DefaultHTTPClient()); err != nil {
