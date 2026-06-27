@@ -97,6 +97,40 @@ func TestMediaTaskSuccessSettlesActual(t *testing.T) {
 	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("0.77"))
 }
 
+// TestMediaTaskSuccessZeroActualAnchorsToEstimate 锁住 bug ② 修复:上游 Poll 未回实际用量
+// (ActualCents=0,图像/视频任务创建型上游的常态)时,成功任务必须按【预扣的预估】结算(锚定
+// EstimatedCents),绝不按 $0 结算,否则平台白吃真实上游成本、等同给客户做了全额退式 $0 结算。
+// 变异(§14):删掉 store_money.go 里 `if billedCents <= 0 { billedCents = locked.EstimatedCents }`
+// 这个下限,actual=0 会按 $0 入账 —— balance 停在 10.00(不扣费)、claim committed@0.00,下面对
+// balance=8.77 / claim committed@1.23 的断言必然全红。
+func TestMediaTaskSuccessZeroActualAnchorsToEstimate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "zeroactual")
+	svc := newIntegrationService(pool)
+	store := svc.store.(*PostgresStore)
+
+	task := submitAndMarkSubmitted(t, ctx, svc, store, seed, "req-zeroactual")
+	leased := leaseTaskForTest(t, ctx, pool, task.ID, "worker-zero")
+	// 上游回成功但不带用量:ActualCents 保持 0。
+	ok, err := store.CompleteSuccess(ctx, leased, "worker-zero", PollResult{Status: StatusSucceeded, Progress: 100, ActualCents: 0, Result: []byte(`{"ok":true}`)}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CompleteSuccess(零用量): %v", err)
+	}
+	if !ok {
+		t.Fatal("CompleteSuccess(零用量) ok=false,任务未走到终态")
+	}
+
+	// 锚定预估结算:扣 1.23(预扣的预估,而非 0),held 清零。
+	balance, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
+	if !balance.Equal(decimal.RequireFromString("8.77")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("balance/held=%s/%s want 8.77/0(actual=0 必须锚定预估 1.23 结算,不得 $0 白吃成本)", balance, held)
+	}
+	assertTaskStatus(t, ctx, pool, task.ID, StatusSucceeded)
+	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("1.23"))
+}
+
 // TestMediaTaskSuccessOverEstimateClampsToEstimate 锁住"成功任务的实际成本超过预估"
 // 这条亏钱缺陷的修复:上游真把任务跑成功、但 ActualCents(200) 高于预扣的
 // EstimatedCents(123) 时,必须把成功任务推进到终态 succeeded,并按【预扣的预估】
