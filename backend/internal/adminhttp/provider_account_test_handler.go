@@ -20,8 +20,6 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-const defaultProviderAccountTestPlatformTenantID = int64(1)
-
 type ProviderAccountTestDeps struct {
 	Auth     providerAccountTestAuth
 	Accounts providerAccountTestAccountStore
@@ -134,7 +132,11 @@ func resolveProviderAccountTestTenant(w http.ResponseWriter, r *http.Request, d 
 		if ident.ScopeTenantID > 0 {
 			return ident, ident.ScopeTenantID, true
 		}
-		return ident, defaultProviderAccountTestPlatformTenantID, true
+		tenantID, ok := resolvePlatformAdminQueryTenant(w, r, ident)
+		if !ok {
+			return admin.AdminIdentity{}, 0, false
+		}
+		return ident, tenantID, true
 	default:
 		writeError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, 0, false

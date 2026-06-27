@@ -82,25 +82,40 @@ func TestProviderAccountTestTenantOperatorWithoutScopeForbidden(t *testing.T) {
 	}
 }
 
-func TestProviderAccountTestPlatformAdminCanUseDefaultTenantScope(t *testing.T) {
+// TestProviderAccountTestPlatformAdminRequiresExplicitTenant 守护 #9:全局 platform_admin
+// 不再被静默锁死到 tenant 1——必须经 ?tenant_id=N 显式指明,且能据此触达 tenant>1 的账号。
+// 判别性:若退回硬编码默认 tenant 1,(a) 不带 ?tenant_id 会落到 tenant 1 → get(1,99) 命不中
+// 账号(它在 tenant 7)→ 404 而非期望的 400;(b) 带 ?tenant_id=7 仍解析成 tenant 1 → 404 而非
+// 200 且 getArgs.TenantID==1 != 7。两路断言均能在退化时转红。
+func TestProviderAccountTestPlatformAdminRequiresExplicitTenant(t *testing.T) {
 	accounts := newProviderAccountTestAccountStoreStub()
-	accounts.put(providerAccountTestRow(defaultProviderAccountTestPlatformTenantID, 99))
+	accounts.put(providerAccountTestRow(7, 99)) // 账号位于 tenant 7(非 1)
 	credentials, registry := newProviderAccountTestCredentialDeps(t, credentialstore.CredentialRecord{
-		ID: 59, TenantID: defaultProviderAccountTestPlatformTenantID, ProviderAccountID: 99,
+		ID: 59, TenantID: 7, ProviderAccountID: 99,
 		Vendor: "testvendor", AuthMode: "safe_refresh",
 		PlaintextPayload: []byte(`{"refresh_token":"rt-old"}`),
 	})
-
-	rec := invokeProviderAccountTest(t, ProviderAccountTestDeps{
+	deps := ProviderAccountTestDeps{
 		Auth:     testerAuthStub{ident: admin.AdminIdentity{TokenID: 4, Role: admin.RolePlatformAdmin}},
 		Accounts: accounts, Tester: NewProviderAccountCredentialTester(credentials, registry.registry), Now: fixedProviderAccountTestNow,
-	}, http.MethodPost, "/admin/v1/provider-accounts/99/test", "")
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(accounts.getArgs) != 1 || accounts.getArgs[0].TenantID != defaultProviderAccountTestPlatformTenantID {
-		t.Fatalf("platform_admin get args=%+v, want default tenant scope", accounts.getArgs)
+
+	// (a) 不带 ?tenant_id → 400,且不触达 store(不静默默认 tenant 1)。
+	rec := invokeProviderAccountTest(t, deps, http.MethodPost, "/admin/v1/provider-accounts/99/test", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("platform_admin 不带 ?tenant_id 应 400, 实际 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(accounts.getArgs) != 0 {
+		t.Fatalf("400 请求不应触达 store, getArgs=%+v", accounts.getArgs)
+	}
+
+	// (b) 带 ?tenant_id=7 → 200,且按 tenant 7 解析(够得到 tenant>1 的账号)。
+	rec2 := invokeProviderAccountTest(t, deps, http.MethodPost, "/admin/v1/provider-accounts/99/test?tenant_id=7", "")
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("platform_admin 带 ?tenant_id=7 应 200, 实际 status=%d body=%s", rec2.Code, rec2.Body.String())
+	}
+	if len(accounts.getArgs) != 1 || accounts.getArgs[0].TenantID != 7 {
+		t.Fatalf("platform_admin 应按 ?tenant_id=7 解析 tenant, 实际 getArgs=%+v", accounts.getArgs)
 	}
 }
 
