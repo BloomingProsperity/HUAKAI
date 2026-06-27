@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -310,24 +311,73 @@ func trimmedFields(values []string) []string {
 	return out
 }
 
+const (
+	// maxOAuthErrorPreview 是非标准错误响应体在摘要里保留的最大 rune 数(整条上游字节,从严)。
+	maxOAuthErrorPreview = 200
+	// maxOAuthErrorField 是规范 OAuth 字段(error / error_description)的上限 rune 数。这些是合规、面向
+	// 操作者的诊断文本,放宽到比 preview 更大,但仍设界并去控制字符——防被攻陷/异常上游借 error_description
+	// 注入换行或塞超长内容(这是比非标准 fallback 更常见的路径)。
+	maxOAuthErrorField = 512
+)
+
+// oauthErrorSummary 把 OAuth token 端点的错误响应体提炼成一行简短摘要,供拼进面向操作者的错误信息。
+// 两条路径都经「折叠为单行 + 去控制字符 + 按 rune 设界」处理,绝不把上游任意字节整条反射进操作者可见错误:
+//   - 规范 OAuth 错误(error / error_description)是合规诊断字段,设较宽上界 maxOAuthErrorField 后返回;
+//   - 非标准响应体(HTML 错误页、代理错误页、限流页等)设较严上界 maxOAuthErrorPreview 的预览 + 原始字节数。
+//
+// 目的:secret-mask(上游若回显请求内容/内部细节不被原样带出)+ 防日志注入(折叠换行/去控制字符)+ 防错误
+// 信息无界膨胀(最大可达上游响应体读取上限)。原始响应体如需深度排障由调用方按需在内部日志单独记录。
 func oauthErrorSummary(raw []byte) string {
 	var decoded struct {
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err == nil {
+		var field string
 		switch {
 		case decoded.Error != "" && decoded.ErrorDescription != "":
-			return decoded.Error + ": " + decoded.ErrorDescription
+			field = decoded.Error + ": " + decoded.ErrorDescription
 		case decoded.Error != "":
-			return decoded.Error
+			field = decoded.Error
 		case decoded.ErrorDescription != "":
-			return decoded.ErrorDescription
+			field = decoded.ErrorDescription
+		}
+		if field != "" {
+			return truncateRunes(collapseAndStripControl(field), maxOAuthErrorField)
 		}
 	}
-	text := strings.TrimSpace(string(raw))
-	if text == "" {
+	if strings.TrimSpace(string(raw)) == "" {
 		return "empty response body"
 	}
-	return text
+	return boundedOAuthErrorPreview(raw)
+}
+
+// collapseAndStripControl 把文本折叠为单行(strings.Fields 折叠所有空白含换行/制表/多空格)并删除剩余的
+// 非打印控制字符(防日志注入与终端转义)。
+func collapseAndStripControl(text string) string {
+	collapsed := strings.Join(strings.Fields(text), " ")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, collapsed)
+}
+
+// truncateRunes 把 s 按 rune 截断到 max,超长则加省略号(按 rune 计而非字节,多字节 UTF-8 不被切碎)。
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
+}
+
+// boundedOAuthErrorPreview 把非标准响应体压成单行、去控制字符、长度有界的预览,并标注原始字节数。
+func boundedOAuthErrorPreview(raw []byte) string {
+	preview := collapseAndStripControl(string(raw))
+	if preview == "" {
+		return fmt.Sprintf("non-standard error response (%d bytes)", len(raw))
+	}
+	return fmt.Sprintf("non-standard error response (%d bytes): %s", len(raw), truncateRunes(preview, maxOAuthErrorPreview))
 }
