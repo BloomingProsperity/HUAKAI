@@ -143,7 +143,7 @@ func TestSubscriptionPostgres_AdminResetQuota(t *testing.T) {
 	}
 }
 
-func TestSubscriptionPostgres_ChangePlanSwapsCapsAndPolicy(t *testing.T) {
+func TestSubscriptionPostgres_ChangePlanReconcilesCapsInPlace(t *testing.T) {
 	ctx := context.Background()
 	pool := openIntegrationPool(t, ctx)
 	f := newSubFixture(t, ctx, pool)
@@ -169,7 +169,10 @@ func TestSubscriptionPostgres_ChangePlanSwapsCapsAndPolicy(t *testing.T) {
 	}
 	oldPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
 
-	// 让其变红的变异:换计划时不关闭旧 policy,留下两个 active 的 policy/link。
+	// 模拟当期已用 $7:给旧 monthly policy 写一条 quota_windows。换套餐(期中)绝不能把它清零,
+	// 否则自助 /change-plan 成了绕过月度护栏白吃成本的第二扇门(与 ActivateOrRenewTx 同源)。
+	f.seedQuotaWindow(oldPolicy, clk.now(), "0", "7", 1)
+
 	changed, err := svc.ChangePlan(ctx, ChangePlanInput{
 		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
 		AllowDowngrade: false, ActorAdminID: 7, RequestID: "change-swap",
@@ -180,20 +183,25 @@ func TestSubscriptionPostgres_ChangePlanSwapsCapsAndPolicy(t *testing.T) {
 	if changed.PlanID != premium.ID || changed.MonthlyCapUSD == nil || !changed.MonthlyCapUSD.Equal(*dec("25")) {
 		t.Fatalf("changed subscription = %+v, want premium snapshot", changed)
 	}
-	if enabled := f.countInt(`SELECT count(*) FROM quota_policies WHERE tenant_id=$1 AND id=$2 AND enabled=true`, f.tenantA, oldPolicy); enabled != 0 {
-		t.Fatalf("old policy enabled count=%d, want 0", enabled)
+	// 期中换套餐 = 原地 reconcile:同一 policy_id、仍 enabled、limit 升到 25,不留 disabled 旧策略。
+	newPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
+	if newPolicy != oldPolicy {
+		t.Fatalf("期中换套餐应原地复用同一 policy_id(否则用量被重置), old=%d new=%d", oldPolicy, newPolicy)
 	}
 	if active := f.countInt(`SELECT count(*) FROM subscription_policy_links
 		WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'`,
 		f.tenantA, assigned.Subscription.ID); active != 1 {
-		t.Fatalf("active policy link count=%d, want 1 after swap", active)
+		t.Fatalf("active policy link count=%d, want 1", active)
 	}
-	newPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
-	if newPolicy == oldPolicy {
-		t.Fatalf("change plan reused old policy id=%d; want fresh policy", newPolicy)
+	if disabled := f.countInt(`SELECT count(*) FROM quota_policies WHERE tenant_id=$1 AND id=$2 AND enabled=false`, f.tenantA, oldPolicy); disabled != 0 {
+		t.Fatalf("期中换套餐不应 disable 旧 policy, 实际 %d", disabled)
 	}
 	if got := f.policyLimit(newPolicy); !got.Equal(decimal.NewFromInt(25)) {
-		t.Fatalf("active policy limit=%s, want 25", got.String())
+		t.Fatalf("active policy limit=%s, want 25 (原地升档)", got.String())
+	}
+	// 核心:已用量 settled_value=7 必须保留(护栏不被清零)。
+	if n := f.countInt(`SELECT count(*) FROM quota_windows WHERE tenant_id=$1 AND policy_id=$2 AND settled_value=7`, f.tenantA, oldPolicy); n != 1 {
+		t.Fatalf("换套餐后已用量应保留 settled_value=7, 命中 %d 行", n)
 	}
 	if n := f.countInt(`SELECT count(*) FROM subscription_audit_events
 		WHERE tenant_id=$1 AND user_subscription_id=$2 AND event_type=$3`,

@@ -305,10 +305,13 @@ func (s *PostgresStore) changePlanOnce(ctx context.Context, rec changePlanRecord
 	if err != nil {
 		return UserSubscription{}, err
 	}
-	if err := closeCapsTx(ctx, tx, rec.TenantID, sub.ID, rec.Now); err != nil {
-		return UserSubscription{}, err
-	}
-	if err := installCapsTx(ctx, tx, updated, rec.Now); err != nil {
+	// 换套餐恒发生在未过期订阅上(上方 :276 已要求 active 且 ExpiresAt>now),即恒为"期中"操作。
+	// 故 caps 一律走 reconcileCapsTx 原地调和(保留 policy_id 与 quota_windows 已用计数),绝不
+	// 关旧装新铸新 policy_id。修复点:自助 /change-plan 不收费、仅 capsDominate 闸(同档即放行),
+	// 此前 close+install 会把当月 cost_usd 计数归零——这是与 ActivateOrRenewTx 同源的护栏绕过第二扇门
+	// (用户用满月度 cap 后免费换到同档套餐即清零白吃成本)。reconcile 的"新增/移除窗口"分支天然
+	// 覆盖换套餐可能的窗口集合变化。
+	if err := reconcileCapsTx(ctx, tx, updated, rec.Now); err != nil {
 		return UserSubscription{}, err
 	}
 
