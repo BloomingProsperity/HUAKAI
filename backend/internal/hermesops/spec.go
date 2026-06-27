@@ -95,6 +95,15 @@ const (
 	ToolAccountPause  = "account_pause"
 	ToolAccountResume = "account_resume"
 	ToolRenewTrigger  = "renew_trigger"
+
+	// ToolAlertRuleEnable / ToolAlertRuleDisable(0160 迁移准入)是 Phase B"扩可提议覆盖面"
+	// 的首批新增 mutating 工具:启用/禁用本租户的一条告警规则(alert rule)。它们是**可逆的 B 级
+	// 运营操作**(翻 enabled 列,随时可翻回),因此 Proposable=true —— LLM 可在对话里提议,但
+	// RequiresConfirmation=true 意味着仍需 operator 一键确认才真正执行,LLM 绝不能直接执行。
+	// 与 0146 的四个 mutating 工具一样,经 confirm 门控的 mutate 路径 + orchestrator 原子运行
+	// (规则翻转与 hermes_tool_calls + admin_audit_events 行在同一事务内提交)。
+	ToolAlertRuleEnable  = "alert_rule_enable"
+	ToolAlertRuleDisable = "alert_rule_disable"
 )
 
 // Roles 镜像 internal/admin 的角色标识符。保留为本地常量,这样本包就不必为两个字符串去 import
