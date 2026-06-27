@@ -182,10 +182,14 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		return err
 	}
 	if task.ProviderTaskID == "" || task.Status == StatusQueued {
-		providerTaskID, err := provider.Submit(ctx, SubmitReq{
+		// 单次 Submit 加硬超时:慢上游/半开连接不会让串行 worker 永久挂起、整子系统停摆、预扣久冻。
+		// 超时 < LeaseTTL,保证单次调用绝不跨过租约。
+		submitCtx, cancelSubmit := context.WithTimeout(ctx, cfg.providerCallTimeout())
+		providerTaskID, err := provider.Submit(submitCtx, SubmitReq{
 			TaskID: task.ID, RequestID: task.RequestID, TaskType: task.TaskType, InputParams: task.InputParams,
 			IdempotencyKey: DeriveIdempotencyKey(task.ID, task.RequestID),
 		})
+		cancelSubmit()
 		if err != nil {
 			_, ferr := w.store.CompleteFailure(ctx, task, w.owner, "provider_submit_failed", now)
 			return errors.Join(err, ferr)
@@ -201,7 +205,10 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		}
 		return err
 	}
-	result, err := provider.Poll(ctx, task.ProviderTaskID)
+	// 单次 Poll 同样加硬超时(理由同 Submit)。
+	pollCtx, cancelPoll := context.WithTimeout(ctx, cfg.providerCallTimeout())
+	result, err := provider.Poll(pollCtx, task.ProviderTaskID)
+	cancelPoll()
 	if err != nil {
 		return err
 	}
