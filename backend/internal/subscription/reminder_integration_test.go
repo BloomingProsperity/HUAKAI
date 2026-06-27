@@ -66,8 +66,9 @@ func TestPG_ReminderFlow_SendsDedupsAndRecords(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT reminder_key, status, recipient FROM subscription_expiry_reminders WHERE tenant_id=$1 AND user_subscription_id=$2`, f.tenantA, subID).Scan(&key, &status, &recipient); err != nil {
 		t.Fatalf("read reminder row: %v", err)
 	}
-	if key != "3" || status != ReminderStatusSent || recipient != "alice@example.com" {
-		t.Fatalf("row = (key=%q status=%q recipient=%q), want (3, sent, alice@example.com)", key, status, recipient)
+	// 去重键含到期日(reminderDedupKey): sub 到期 2026-06-03 → 复合键 "3@2026-06-03"。
+	if key != "3@2026-06-03" || status != ReminderStatusSent || recipient != "alice@example.com" {
+		t.Fatalf("row = (key=%q status=%q recipient=%q), want (3@2026-06-03, sent, alice@example.com)", key, status, recipient)
 	}
 
 	// 第二次 tick: 去重, 不再发。
