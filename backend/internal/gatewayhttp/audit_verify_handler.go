@@ -25,9 +25,8 @@ type auditVerifyLedger interface {
 	Size(context.Context) int
 }
 
-// AuditVerifyDeps is the narrow dependency interface for user-facing audit
-// verification endpoints. Tests and future Postgres wiring can inject any
-// implementation with the same read surface.
+// AuditVerifyDeps 是面向用户的 audit 验签端点所需的窄依赖接口。测试与将来的 Postgres
+// 接线都可注入任意实现,只要提供相同的只读读取面。
 type AuditVerifyDeps interface {
 	AuditLedger() auditVerifyLedger
 }
