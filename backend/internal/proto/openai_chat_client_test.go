@@ -565,6 +565,30 @@ func makeOpenAIChatBufferedEnv(content []CanonicalContentBlock, stop CanonicalSt
 	return env
 }
 
+// TestOpenAIChatClient_NonStreamPassthroughMerged 守护 #4: 非流式 OpenAI Chat 响应必须把上游顶层
+// 透传字段(typed struct 未建模, 如 system_fingerprint)合并回客户端响应体。判别性: 删除
+// CanonicalToClientResponse 末尾的 MergeExtrasInto 调用 → 字段丢失 → 本测试转红。
+func TestOpenAIChatClient_NonStreamPassthroughMerged(t *testing.T) {
+	adapter := &OpenAIChatClient{}
+	env := makeOpenAIChatBufferedEnv([]CanonicalContentBlock{{Type: "text", Text: "x"}}, CanonicalStopEndTurn)
+	env.BufferedResponse.Passthrough = &PassthroughEnvelope{Extra: map[string]json.RawMessage{
+		"system_fingerprint": json.RawMessage(`"fp_abc123"`),
+	}}
+	body, _, err := adapter.CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var out map[string]any
+	_ = jsonUnmarshal(body, &out)
+	if out["system_fingerprint"] != "fp_abc123" {
+		t.Fatalf("期望上游 system_fingerprint 被合并进响应, 实际 %v (body=%s)", out["system_fingerprint"], body)
+	}
+	// typed 字段不被透传覆盖(仍是合法 chat.completion 形态)。
+	if out["object"] != "chat.completion" {
+		t.Fatalf("typed object 字段被透传覆盖: %v", out["object"])
+	}
+}
+
 func TestOpenAIChatClient_D6_HappyText(t *testing.T) {
 	adapter := &OpenAIChatClient{}
 	env := makeOpenAIChatBufferedEnv(
