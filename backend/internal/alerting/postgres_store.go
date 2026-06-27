@@ -79,6 +79,35 @@ RETURNING id, tenant_id, name, metric, COALESCE(metric_type,''), comparator, thr
 	return out, err
 }
 
+// SetRuleEnabledInTx 在传入的事务 tx 内、定向地翻转单条告警规则的 enabled 列(只改 enabled +
+// updated_at,不动规则的任何其它字段)。它**用 tx 而非 s.pool** 执行,这样规则的状态变化能在
+// Hermes orchestrator 的同一事务内,与 hermes_tool_calls + admin_audit_events 审计行原子提交。
+//
+// 租户 scope 在 SQL 的 WHERE tenant_id=$1 AND id=$2 处绑死(纵深防御的第二处:Resolve 已先按
+// 租户复检过目标行)——一个租户绝不能翻动另一个租户的规则,即便 id 撞上也命不中(返回 0 行 →
+// ErrNotFound)。RETURNING 列与 UpdateRule 完全一致,复用 scanRule。
+//
+// 这是加性新方法:不改构造器、不动现有的 UpdateRule(它仍走 s.pool 服务 HTTP 路径)。
+func (s *PostgresStore) SetRuleEnabledInTx(ctx context.Context, tx pgx.Tx, tenantID, id int64, enabled bool) (AlertRule, error) {
+	if tx == nil {
+		return AlertRule{}, ErrStoreNotConfigured
+	}
+	out, err := scanRule(tx.QueryRow(ctx, `
+UPDATE alert_rules
+SET enabled=$3,
+    updated_at=now()
+WHERE tenant_id=$1 AND id=$2
+RETURNING id, tenant_id, name, metric, COALESCE(metric_type,''), comparator, threshold::float8, severity,
+          window_seconds, sustained_seconds, cooldown_seconds, notify_email,
+          filters, last_triggered_at, enabled, created_at, updated_at`,
+		tenantID, id, enabled,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AlertRule{}, ErrNotFound
+	}
+	return out, err
+}
+
 func (s *PostgresStore) DeleteRule(ctx context.Context, tenantID, id int64) error {
 	if s == nil || s.pool == nil {
 		return ErrStoreNotConfigured

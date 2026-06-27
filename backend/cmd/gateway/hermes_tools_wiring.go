@@ -137,6 +137,19 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.AlertEventListSpec(alertEvtDeps))
 
+	// alert_rule_enable / alert_rule_disable -> alerting.PostgresStore.SetRuleEnabledInTx
+	// (由 orchestrator 绑定到 tx)。Resolve 通过 GetRule 读取当前状态 + 复检租户归属。
+	// 这是 Phase B 首批新增的可提议(Proposable)mutating 工具:可逆 B 级、LLM 可提议但仍需
+	// operator 确认。0160 迁移已把 alert_rule_enable/disable 加进 hermes_tool_calls.tool_name
+	// 与 admin_audit_events.action 的 CHECK。Nil pool => 两工具在依赖检查处 fail closed。
+	alertRuleMutDeps := hermesops.AlertRuleMutationDeps{}
+	if d.pool != nil {
+		alertRuleMutDeps.GetRule = alerting.NewPostgresStore(d.pool).GetRule
+		alertRuleMutDeps.SetEnabledInTx = alerting.NewPostgresStore(d.pool).SetRuleEnabledInTx
+	}
+	reg.Register(hermesops.AlertRuleEnableSpec(alertRuleMutDeps))
+	reg.Register(hermesops.AlertRuleDisableSpec(alertRuleMutDeps))
+
 	// provider_catalog_list / channel_catalog_list -> admindb.Queries 的按租户目录读(SELECT-only,
 	// SQL 含 tenant_id 过滤 + deleted_at IS NULL)。0159 迁移已把两名加进 hermes_tool_calls.tool_name CHECK。
 	provCatDeps := hermesops.ProviderCatalogListDeps{}
