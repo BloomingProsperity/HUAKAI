@@ -232,8 +232,10 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 }
 
 // mutatingAuditAction 把一个 mutating 工具名映射到它的 admin_audit_events 动作
-// (hermes.tool.<name>)。只有四个 H4 mutating 工具被映射;未知名返回 ""——会被
-// orchestrator 的 CHECK 拒绝(fail-closed)。
+// (hermes.tool.<name>)。每个 mutating 工具都必须在此映射出审计 action;未知名返回 ""——会被
+// orchestrator 的 admin_audit_events.action CHECK 拒绝(fail-closed:漏映射的工具其 confirm 执行
+// 会因空 action 违反 CHECK 而整事务回滚,绝不会无审计地落库)。新增 mutating 工具时必须同步补这里 +
+// 迁移把 hermes.tool.<name> 加进 action CHECK,二者缺一即该工具 confirm 必然失败。
 func mutatingAuditAction(toolName string) string {
 	switch toolName {
 	case hermesops.ToolDLQReplay:
@@ -244,6 +246,10 @@ func mutatingAuditAction(toolName string) string {
 		return "hermes.tool.account_resume"
 	case hermesops.ToolRenewTrigger:
 		return "hermes.tool.renew_trigger"
+	case hermesops.ToolAlertRuleEnable:
+		return "hermes.tool.alert_rule_enable"
+	case hermesops.ToolAlertRuleDisable:
+		return "hermes.tool.alert_rule_disable"
 	default:
 		return ""
 	}
