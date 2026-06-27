@@ -141,3 +141,59 @@ func TestCounter_RaceSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestCounter_EvictsStaleEntriesAtCap 守护有界性(#2): 达 maxKeys 上限后新增账号键时,
+// 必须清扫上一窗口遗留的陈旧条目, 使 map 收敛到当前窗口活跃账号数, 而非历史全部账号数。
+// 判别性: 删除 live() 里的 sweepStale 调用 → 陈旧条目不回收 → 跨窗后 reqs 仍含 1,2,3,4 共 4 条
+// → 下方断言 len==1 转红。
+func TestCounter_EvictsStaleEntriesAtCap(t *testing.T) {
+	clock, cur := fixedClock(windowBase)
+	c := New(time.Minute, clock)
+	c.maxKeys = 3 // 压低上限以免插入 10 万条; 仅测内存生命周期, 不改限流判定语义
+
+	// 窗口 W1: 账号 1/2/3 各记一次, map 填到上限。
+	for _, id := range []int64{1, 2, 3} {
+		c.Record(id, 0)
+	}
+	if got := len(c.reqs); got != 3 {
+		t.Fatalf("W1 后 reqs 应有 3 条, 实际 %d", got)
+	}
+
+	// 跨入下一个固定窗口 W2; 账号 1/2/3 自此变陈旧(下次访问本会被重置)。
+	*cur = windowBase.Add(time.Minute)
+
+	// 账号 4 是此前未见的新键, 此刻 len(reqs)=3 已达 maxKeys → 触发清扫陈旧的 1/2/3, 仅留 4。
+	c.Record(4, 0)
+	if got := len(c.reqs); got != 1 {
+		t.Fatalf("跨窗后新增键应清扫陈旧条目使 reqs 收敛到 1(仅账号4), 实际 %d", got)
+	}
+	if got := len(c.toks); got != 1 {
+		t.Fatalf("toks map 同样应被清扫到 1, 实际 %d", got)
+	}
+	// 账号 4 在 W2 的计数从 0 起算(限流判定不受清扫影响)。
+	if d := c.Check(4, Limits{RPM: 2}, 0); !d.Allowed {
+		t.Fatalf("新窗口账号 4 应在预算内, 实际 %+v", d)
+	}
+}
+
+// TestCounter_SweepKeepsCurrentWindowBucket 守护清扫的关键安全属性: 清扫只能删「陈旧」桶,
+// 绝不能误删当前窗口的活跃桶并清零其已累计计数——否则该账号当前窗口的 RPM/TPM 计数被重置,
+// 已用满预算的账号会被错误放行, 限流被绕过。
+// 判别性: 把 sweepStale 的 wc.start.Before(start) 误写成 <=(即 !After), 会连当前窗口活跃桶一并删,
+// 账号2 计数被清零 → 下方 Check 由「拒」变「放行」→ 本测试转红。
+func TestCounter_SweepKeepsCurrentWindowBucket(t *testing.T) {
+	clock, cur := fixedClock(windowBase)
+	c := New(time.Minute, clock)
+	c.maxKeys = 2
+
+	c.Record(1, 0)                     // W1: 账号1, 跨窗后将成陈旧清扫候选
+	*cur = windowBase.Add(time.Minute) // 跨入下一窗口 W2
+	c.Record(2, 0)                     // W2: 账号2 当前窗口活跃(已计 1 次); map={1(W1陈旧),2(W2活跃)} 达上限
+
+	c.Record(3, 0) // 新键触发 sweep: 应只删陈旧的账号1, 保留当前窗口活跃的账号2
+
+	// 账号2 当前窗口已记 1 次, RPM=1 下「再来一个」必须被拒——证明其活跃计数未被 sweep 误清零。
+	if d := c.Check(2, Limits{RPM: 1}, 0); d.Allowed {
+		t.Fatal("sweep 误删了当前窗口活跃桶: 账号2 的已累计计数被清零, 限流被绕过")
+	}
+}
