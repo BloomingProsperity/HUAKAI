@@ -114,8 +114,12 @@ func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, c
 	if resp.Usage.CacheReadInputTokens > 0 {
 		usage.InputTokensDetails = &openAIResponsesUsageInputDetails{CachedTokens: resp.Usage.CacheReadInputTokens}
 	}
-	if canonical.Accounting.ReasoningTokens > 0 {
-		usage.OutputTokensDetails = &openAIResponsesUsageOutputDetails{ReasoningTokens: canonical.Accounting.ReasoningTokens}
+	// reasoning_tokens 来自缓冲响应的 CanonicalUsage(与上方 input/output/cache 同源 resp.Usage),
+	// 非流式生产流(upstream_dispatcher_hcsf 把 BufferedResponse.Usage 落进 Accounting.Usage)只写
+	// 嵌套的 Usage.ReasoningTokens, 从不写 Accounting 的顶层标量 ReasoningTokens——后者在生产恒为 0,
+	// 导致 /v1/responses 非流式对推理模型永不输出 output_tokens_details.reasoning_tokens。改读 resp.Usage。
+	if resp.Usage.ReasoningTokens > 0 {
+		usage.OutputTokensDetails = &openAIResponsesUsageOutputDetails{ReasoningTokens: resp.Usage.ReasoningTokens}
 	}
 
 	out := openAIResponsesResponse{
@@ -130,6 +134,15 @@ func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, c
 	body, err := json.Marshal(out)
 	if err != nil {
 		return nil, nil, fmt.Errorf("proto: openai_responses marshal response: %w", err)
+	}
+	// 合并上游响应的顶层透传字段(如 service_tier 等 typed struct 未建模的键)。
+	// 与 anthropic_messages 序列化器对称: 非流式响应必经 CanonicalToClientResponse,
+	// 不补 merge 则这些字段被静默丢弃。MergeExtrasInto 保证 typed 字段优先、不覆盖已知键。
+	if resp.Passthrough != nil {
+		body, err = MergeExtrasInto(body, resp.Passthrough)
+		if err != nil {
+			return nil, nil, fmt.Errorf("proto: openai_responses merge response passthrough: %w", err)
+		}
 	}
 	return body, losses, nil
 }

@@ -165,5 +165,15 @@ func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canoni
 	if err != nil {
 		return nil, nil, fmt.Errorf("proto: openai_chat marshal response: %w", err)
 	}
+	// 合并上游响应的顶层透传字段(如 system_fingerprint / service_tier / prompt_filter_results
+	// 等 typed struct 未建模的键)。与 anthropic_messages 序列化器对称: 非流式响应必经
+	// CanonicalToClientResponse, 不补 merge 则这些字段被静默丢弃。MergeExtrasInto 保证 typed
+	// 字段优先、不覆盖已知键。
+	if resp.Passthrough != nil {
+		body, err = MergeExtrasInto(body, resp.Passthrough)
+		if err != nil {
+			return nil, nil, fmt.Errorf("proto: openai_chat merge response passthrough: %w", err)
+		}
+	}
 	return body, losses, nil
 }
