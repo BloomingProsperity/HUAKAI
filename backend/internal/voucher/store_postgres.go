@@ -105,13 +105,18 @@ RETURNING id, tenant_id, created_by_admin_id, requested_count, created_count, am
 	return b, vouchers, nil
 }
 
+// ListVouchers 返回某租户的券列表。status 列读时重算:对"时间已过期但 status 仍 'active'"的券
+// 显示 'expired'——因为兑换路径里那条惰性物化 UPDATE 在事务里总被回滚(见 Redeem 错误返回分支),
+// DB 列会滞留 'active'。读时按 valid_until 重算让 admin 列表不再误显示过期券为可用;exhausted/revoked
+// 等终态保持原状(只有 active 才可能被时间推成 expired)。
 func (s *PostgresStore) ListVouchers(ctx context.Context, input ListInput) ([]Voucher, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured
 	}
 	rows, err := s.pool.Query(ctx, `
 SELECT id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
-	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
+	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user,
+	CASE WHEN status = 'active' AND valid_until <= now() THEN 'expired' ELSE status END AS status,
 	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
 	grant_kind, subscription_plan_id
 FROM voucher
@@ -163,7 +168,8 @@ WHERE tenant_id=$1 AND id=$2`, tenantID, id).Scan(
 func (s *PostgresStore) listVouchersByBatch(ctx context.Context, tenantID, batchID int64) ([]Voucher, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
-	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
+	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user,
+	CASE WHEN status = 'active' AND valid_until <= now() THEN 'expired' ELSE status END AS status,
 	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
 	grant_kind, subscription_plan_id
 FROM voucher
