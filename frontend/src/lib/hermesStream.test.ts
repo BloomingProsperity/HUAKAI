@@ -3,6 +3,7 @@ import {
   dispatchEvent,
   parseErrorEnvelope,
   parseSSEBlocks,
+  streamChat,
   type SSEEvent,
   type SSEHandlers,
 } from './hermesStream'
@@ -173,5 +174,93 @@ describe('端到端:解析 + 分派组合', () => {
     expect(calls.conversation).toEqual([9])
     expect(calls.token.join('')).toBe('你好')
     expect(calls.done).toEqual([3])
+  })
+})
+
+describe('streamChat SSE 缓冲上限保护(防畸形流 OOM)', () => {
+  // 构造一个 fake fetch:body 先吐一个不含事件边界(\n\n)的超长块,再 done。
+  // 这种流永远凑不成完整事件,残留缓冲会一路增长——上限守卫必须中止并报 overflow。
+  function fakeFetchWithChunk(chunkChars: number): typeof fetch {
+    const chunk = new TextEncoder().encode('x'.repeat(chunkChars))
+    return (async () => {
+      let read = 0
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        body: {
+          getReader() {
+            return {
+              read: async () =>
+                read++ === 0
+                  ? { value: chunk, done: false }
+                  : { value: undefined, done: true },
+              cancel: async () => {},
+            }
+          },
+        },
+      } as unknown as Response
+    }) as unknown as typeof fetch
+  }
+
+  it('残留缓冲超过 maxBufferChars 时中止并报 hermes_stream_overflow(变异:删守卫则不报错)', async () => {
+    const orig = globalThis.fetch
+    globalThis.fetch = fakeFetchWithChunk(200) // 200 字符、无 \n\n
+    let errCode = ''
+    let errMsg = ''
+    try {
+      await streamChat({
+        adminToken: 't',
+        asUserId: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+        conversationId: null,
+        maxBufferChars: 100, // 上限 100 < 200,必触发
+        handlers: { onError: (c, m) => { errCode = c; errMsg = m } },
+      })
+    } finally {
+      globalThis.fetch = orig
+    }
+    // 若删掉 streamChat 里的上限守卫,这个块会被当未知/不完整流静默吞掉,onError 不触发 → 断言转红。
+    expect(errCode).toBe('hermes_stream_overflow')
+    expect(errMsg).not.toBe('')
+  })
+
+  it('缓冲未超上限时不误报 overflow(歧视性:证明守卫不是恒触发)', async () => {
+    const orig = globalThis.fetch
+    // 一个完整的 done 事件流(带 \n\n),正常结束,不应触发 overflow。
+    const ok = new TextEncoder().encode('event: done\ndata: {"total_tokens":1}\n\n')
+    globalThis.fetch = (async () => {
+      let read = 0
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        body: {
+          getReader() {
+            return {
+              read: async () =>
+                read++ === 0 ? { value: ok, done: false } : { value: undefined, done: true },
+              cancel: async () => {},
+            }
+          },
+        },
+      } as unknown as Response
+    }) as unknown as typeof fetch
+    let errCode = ''
+    let doneTotal = -1
+    try {
+      await streamChat({
+        adminToken: 't',
+        asUserId: 1,
+        messages: [{ role: 'user', content: 'hi' }],
+        conversationId: null,
+        maxBufferChars: 100,
+        handlers: { onError: (c) => { errCode = c }, onDone: (t) => { doneTotal = t ?? -1 } },
+      })
+    } finally {
+      globalThis.fetch = orig
+    }
+    expect(errCode).toBe('') // 没有误报 overflow
+    expect(doneTotal).toBe(1) // done 正常分派
   })
 })

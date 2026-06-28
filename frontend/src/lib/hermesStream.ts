@@ -20,6 +20,11 @@
 // API_BASE 同源(生产期前端由网关 go:embed 提供,与 API 同源)。
 const API_BASE = ''
 
+// SSE 累积缓冲的上限保护:畸形/恶意流若一直不发事件边界(\n\n),buffer 会无限增长直至 OOM。
+// 缺省 8M 字符——正常 Hermes 响应远小于此;超过即中止并经 onError 报错。仅测试需要时通过
+// StreamChatParams.maxBufferChars 下调。
+const DEFAULT_MAX_SSE_BUFFER_CHARS = 8 * 1024 * 1024
+
 /** 解析出的单个 SSE 事件:event 名 + 原始 data 文本(未 JSON 解析)。 */
 export interface SSEEvent {
   /** event: 行的值;缺省按 SSE 规范为空字符串(此时多按 "message" 处理,这里保留空)。 */
@@ -189,6 +194,8 @@ export interface StreamChatParams {
   conversationId: number | null
   handlers: SSEHandlers
   signal?: AbortSignal
+  /** SSE 累积缓冲上限(字符数);缺省 DEFAULT_MAX_SSE_BUFFER_CHARS,超过即中止报 hermes_stream_overflow。仅测试需要时下调。 */
+  maxBufferChars?: number
 }
 
 /**
@@ -199,6 +206,7 @@ export interface StreamChatParams {
  */
 export async function streamChat(params: StreamChatParams): Promise<void> {
   const { adminToken, asUserId, tenantId, messages, conversationId, handlers, signal } = params
+  const maxBufferChars = params.maxBufferChars ?? DEFAULT_MAX_SSE_BUFFER_CHARS
   const query = new URLSearchParams()
   query.set('as_user_id', String(asUserId))
   if (tenantId !== undefined) query.set('tenant_id', String(tenantId))
@@ -232,6 +240,16 @@ export async function streamChat(params: StreamChatParams): Promise<void> {
     buffer += decoder.decode(value, { stream: true })
     const { events, rest } = parseSSEBlocks(buffer)
     buffer = rest
+    // 上限保护:残留缓冲超过上限说明流畸形(始终无事件边界),中止防 OOM。
+    if (buffer.length > maxBufferChars) {
+      handlers.onError?.('hermes_stream_overflow', '响应流过大,已中止')
+      try {
+        await reader.cancel()
+      } catch {
+        /* 取消时的异常无害,忽略 */
+      }
+      return
+    }
     for (const ev of events) {
       const { terminal } = dispatchEvent(ev, handlers)
       if (terminal) {
