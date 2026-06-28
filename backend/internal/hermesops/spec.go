@@ -104,6 +104,16 @@ const (
 	// (规则翻转与 hermes_tool_calls + admin_audit_events 行在同一事务内提交)。
 	ToolAlertRuleEnable  = "alert_rule_enable"
 	ToolAlertRuleDisable = "alert_rule_disable"
+
+	// ToolModerationKeywordEnable / ToolModerationKeywordDisable(0161 迁移准入)继续 Phase B
+	// "扩可提议覆盖面":启用/禁用本租户的一条内容审核关键词规则(moderation keyword)。它们是
+	// **安全敏感但可逆的 B 级运营操作** —— disable 等于临时关掉一个内容过滤器,enable 再开回来,
+	// 翻 enabled 列、随时可翻回,因此 Proposable=true(LLM 可在对话里提议);但 RequiresConfirmation=true
+	// 意味着仍需 operator 一键确认才真正执行,LLM 绝不能直接执行。与 alert_rule_enable/disable 同构:
+	// 经 confirm 门控的 mutate 路径 + orchestrator 原子运行(关键词翻转与 hermes_tool_calls +
+	// admin_audit_events 行在同一事务内提交),且只对未软删(deleted_at IS NULL)的关键词 toggle。
+	ToolModerationKeywordEnable  = "moderation_keyword_enable"
+	ToolModerationKeywordDisable = "moderation_keyword_disable"
 )
 
 // Roles 镜像 internal/admin 的角色标识符。保留为本地常量,这样本包就不必为两个字符串去 import

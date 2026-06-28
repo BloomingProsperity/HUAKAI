@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
@@ -13,9 +14,11 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
+	dbmoderation "github.com/BloomingProsperity/HUAKAI/internal/db/moderation"
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
+	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -150,6 +153,39 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	reg.Register(hermesops.AlertRuleEnableSpec(alertRuleMutDeps))
 	reg.Register(hermesops.AlertRuleDisableSpec(alertRuleMutDeps))
 
+	// moderation_keyword_enable / moderation_keyword_disable -> dbmoderation 的
+	// GetModerationKeyword(读+租户复检+预览)+ SetModerationKeywordEnabled(由 orchestrator
+	// 绑定到 tx 翻转 enabled 列)。这是 Phase B 新增的可提议(Proposable)mutating 工具:安全敏感
+	// (disable=临时关掉一个内容过滤器)但可逆 —— LLM 可提议但仍需 operator 确认。0161 迁移已把
+	// moderation_keyword_enable/disable 加进 hermes_tool_calls.tool_name 与 admin_audit_events.action
+	// 的 CHECK,并把 moderation_keyword 加进 target_type CHECK。Nil pool => 两工具在依赖检查处 fail closed。
+	moderationKwMutDeps := hermesops.ModerationKeywordMutationDeps{}
+	if d.pool != nil {
+		moderationKwMutDeps.GetKeyword = func(ctx context.Context, tenantID, id int64) (moderation.KeywordRule, error) {
+			row, err := dbmoderation.New(d.pool).GetModerationKeyword(ctx, dbmoderation.GetModerationKeywordParams{TenantID: tenantID, ID: id})
+			if err != nil {
+				return moderation.KeywordRule{}, err
+			}
+			// 把生成码的 Row 适配成 moderation.KeywordRule;Resolve 只用到 TenantID/Keyword/
+			// ReasonCode/Enabled(时间戳 CreatedAt/UpdatedAt 预览不用,留零值即可)。
+			return moderation.KeywordRule{
+				ID:         row.ID,
+				TenantID:   row.TenantID,
+				Keyword:    row.Keyword,
+				ReasonCode: row.ReasonCode,
+				Enabled:    row.Enabled,
+			}, nil
+		}
+		moderationKwMutDeps.SetEnabledInTx = func(ctx context.Context, tx pgx.Tx, tenantID, id int64, enabled bool) error {
+			// 用 orchestrator 的 tx 构造查询器,使翻转与审计行在同一事务内原子提交;
+			// 租户 scope 第三处绑死在 SetModerationKeywordEnabled 的 SQL WHERE tenant_id。
+			_, err := dbmoderation.New(tx).SetModerationKeywordEnabled(ctx, dbmoderation.SetModerationKeywordEnabledParams{TenantID: tenantID, ID: id, Enabled: enabled})
+			return err
+		}
+	}
+	reg.Register(hermesops.ModerationKeywordEnableSpec(moderationKwMutDeps))
+	reg.Register(hermesops.ModerationKeywordDisableSpec(moderationKwMutDeps))
+
 	// provider_catalog_list / channel_catalog_list -> admindb.Queries 的按租户目录读(SELECT-only,
 	// SQL 含 tenant_id 过滤 + deleted_at IS NULL)。0159 迁移已把两名加进 hermes_tool_calls.tool_name CHECK。
 	provCatDeps := hermesops.ProviderCatalogListDeps{}
@@ -233,7 +269,7 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 // dlqLookupByID 把限定在租户内的、按 id 的 dlq 读适配成 hermesops
 // 的 Lookup 形状(参数顺序为 id、tenantID)。它是 dlq_replay 预览/确认
 // 路径中的只读目标解析。对该租户而言不存在的记录
-//(包括错误租户的 id)会把 store 的 ErrNotFound 映射为
+// (包括错误租户的 id)会把 store 的 ErrNotFound 映射为
 // hermesops.ErrTargetResolution,从而让 HTTP 层返回 404 而非 5xx。
 func dlqLookupByID(getByID func(ctx context.Context, tenantID, id int64) (dlq.Record, error)) func(ctx context.Context, id, tenantID int64) (dlq.Record, error) {
 	return func(ctx context.Context, id, tenantID int64) (dlq.Record, error) {

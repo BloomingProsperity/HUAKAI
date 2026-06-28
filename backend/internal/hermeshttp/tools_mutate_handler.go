@@ -250,6 +250,10 @@ func mutatingAuditAction(toolName string) string {
 		return "hermes.tool.alert_rule_enable"
 	case hermesops.ToolAlertRuleDisable:
 		return "hermes.tool.alert_rule_disable"
+	case hermesops.ToolModerationKeywordEnable:
+		return "hermes.tool.moderation_keyword_enable"
+	case hermesops.ToolModerationKeywordDisable:
+		return "hermes.tool.moderation_keyword_disable"
 	default:
 		return ""
 	}
