@@ -4,8 +4,9 @@ import { logout } from '../auth/api'
 
 /*
  * 顶栏:品牌 + 命令面板入口(Cmd-K 签名交互挂载点)+ 当前用户 / 登出。
+ * onOpenHermes:由 AppShell 在运营台壳注入,点击 Cmd-K 按钮唤起 Hermes 面板;非运营台壳为 undefined。
  */
-export function TopBar() {
+export function TopBar({ onOpenHermes }: { onOpenHermes?: () => void } = {}) {
   const auth = useAuth()
   const nav = useNavigate()
   const onLogout = async () => {
@@ -13,10 +14,10 @@ export function TopBar() {
     clearAll()
     nav('/login', { replace: true })
   }
-  return innerTopBar(auth.user?.email, onLogout)
+  return innerTopBar(auth.user?.email, onLogout, onOpenHermes)
 }
 
-function innerTopBar(email: string | undefined, onLogout: () => void) {
+function innerTopBar(email: string | undefined, onLogout: () => void, onOpenHermes?: () => void) {
   return (
     <header
       style={{
@@ -58,7 +59,9 @@ function innerTopBar(email: string | undefined, onLogout: () => void) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
         <button
           type="button"
-          aria-label="命令面板"
+          aria-label={onOpenHermes ? '唤起 Hermes 运维助手' : '命令面板'}
+          title={onOpenHermes ? 'Hermes 运维助手(⌘K)' : undefined}
+          onClick={onOpenHermes}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -72,7 +75,7 @@ function innerTopBar(email: string | undefined, onLogout: () => void) {
             cursor: 'pointer',
           }}
         >
-          快速跳转
+          {onOpenHermes ? 'Hermes' : '快速跳转'}
           <kbd
             style={{
               fontFamily: 'var(--hk-font-mono)',
