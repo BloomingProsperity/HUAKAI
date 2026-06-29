@@ -37,7 +37,53 @@ var (
 	ErrAnomalyRejected            = errors.New("usersession: session anomaly rejected")
 	ErrDeviceLimitExceeded        = errors.New("usersession: device limit exceeded")
 	ErrDeviceConfirmationRequired = errors.New("usersession: device confirmation required")
+	// ErrDeviceConfirmationNotFound: 确认 token 无对应 pending 记录 (不存在 / 已消费 / 跨租户)。
+	// 与 ErrTokenNotFound 同语义但独立 sentinel, 便于 handler 区分确认流与刷新流。
+	ErrDeviceConfirmationNotFound = errors.New("usersession: device confirmation not found")
 )
+
+// DeviceConfirmationStatus 是 device_confirmations.status 的合法取值。
+type DeviceConfirmationStatus string
+
+const (
+	DeviceConfirmationStatusPending   DeviceConfirmationStatus = "pending"
+	DeviceConfirmationStatusConfirmed DeviceConfirmationStatus = "confirmed"
+	DeviceConfirmationStatusExpired   DeviceConfirmationStatus = "expired"
+)
+
+// DeviceConfirmation 是一条新设备确认 pending 记录。只持有 TokenHash (sha256), 永不存原文 token。
+type DeviceConfirmation struct {
+	ID          int64                    `json:"id"`
+	TenantID    int64                    `json:"tenant_id"`
+	UserID      int64                    `json:"user_id"`
+	TokenHash   []byte                   `json:"-"`
+	DeviceInfo  map[string]any           `json:"device_info"`
+	IP          string                   `json:"ip"`
+	UserAgent   string                   `json:"user_agent"`
+	Status      DeviceConfirmationStatus `json:"status"`
+	CreatedAt   time.Time                `json:"created_at"`
+	ExpiresAt   time.Time                `json:"expires_at"`
+	ConfirmedAt *time.Time               `json:"confirmed_at,omitempty"`
+}
+
+// DeviceConfirmationRequiredError 在 DevicePolicy=confirm 达上限时由 Create 返回。它携带原文 token
+// (RawToken) 让 handler 据此发确认邮件, 但 Error() 绝不打印 RawToken (secret-mask)。Unwrap 返回
+// ErrDeviceConfirmationRequired, 使既有的 errors.Is(err, ErrDeviceConfirmationRequired) 分支继续生效。
+type DeviceConfirmationRequiredError struct {
+	// RawToken 是一次性原文确认 token, 仅供 handler 经邮件交付给用户。
+	RawToken string
+	// UserID 便于 handler 取用户信息发信 (不含敏感数据)。
+	UserID int64
+}
+
+func (e *DeviceConfirmationRequiredError) Error() string {
+	// 注意: 不得拼接 RawToken, 否则原文 token 会泄进日志/响应。
+	return ErrDeviceConfirmationRequired.Error()
+}
+
+func (e *DeviceConfirmationRequiredError) Unwrap() error {
+	return ErrDeviceConfirmationRequired
+}
 
 type SessionFamily struct {
 	ID            string         `json:"id"`

@@ -120,6 +120,32 @@ func (s *AuthSender) SendPasswordReset(ctx context.Context, user userauth.User, 
 	return err
 }
 
+// SendDeviceConfirmation 发新设备确认邮件 (DevicePolicy=confirm 达上限时)。复用 reset 的冷却闸,
+// 避免攻击者借确认流对某邮箱刷信。token 为空则不发 (no-op)。
+func (s *AuthSender) SendDeviceConfirmation(ctx context.Context, user userauth.User, token string) error {
+	if s == nil {
+		return ErrEmailBackendUnconfigured
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil
+	}
+	allowed, rollback := s.reserveCooldown("device", user.TenantID, user.Email, s.resetCooldown)
+	if !allowed {
+		return nil
+	}
+	err := s.sendForTenant(ctx, user.TenantID, Message{
+		TenantID: user.TenantID,
+		To:       user.Email,
+		Subject:  "HUAKAI new device confirmation",
+		HTMLBody: buildDeviceConfirmationBody(token),
+	})
+	if err != nil {
+		// 见 SendVerification:硬失败回滚 cooldown,避免冷却窗口吞掉合法重发。
+		rollback()
+	}
+	return err
+}
+
 func (s *AuthSender) EmailVerificationEnabled(ctx context.Context, tenantID int64) (bool, error) {
 	if s == nil || s.store == nil {
 		return false, ErrEmailBackendUnconfigured
@@ -245,6 +271,11 @@ func buildVerificationBody(token string) string {
 func buildPasswordResetBody(token string) string {
 	token = SanitizeHeaderValue(token)
 	return `<html><body><p>Use this one-time HUAKAI password reset token:</p><p><code>` + token + `</code></p><p>If you did not request this, ignore this email.</p></body></html>`
+}
+
+func buildDeviceConfirmationBody(token string) string {
+	token = SanitizeHeaderValue(token)
+	return `<html><body><p>A new device tried to sign in to your HUAKAI account. Use this one-time token to authorize it:</p><p><code>` + token + `</code></p><p>If this was not you, ignore this email and change your password.</p></body></html>`
 }
 
 type VerificationPolicy struct {
