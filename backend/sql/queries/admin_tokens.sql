@@ -82,3 +82,45 @@ SET status = 'revoked',
     revoked_reason = sqlc.arg(reason)::text,
     updated_at = NOW()
 WHERE id = sqlc.arg(id)::bigint AND status = 'active';
+
+-- name: ListAdminTokens :many
+-- Metadata-only listing of admin tokens for the operator console. NEVER
+-- selects key_hash — only key_prefix (insufficient on its own to
+-- authenticate) plus lifecycle columns. Soft-deleted rows are excluded.
+-- platform_admin scope sees every row; the handler-side RBAC decides who
+-- may call this read.
+SELECT
+    id,
+    name,
+    key_prefix,
+    role,
+    scope_tenant_id,
+    bootstrap,
+    status,
+    expires_at,
+    last_used_at,
+    revoked_at,
+    revoked_reason,
+    created_at
+FROM admin_tokens
+WHERE deleted_at IS NULL
+ORDER BY id DESC
+LIMIT sqlc.arg(page_limit)::int
+OFFSET sqlc.arg(page_offset)::int;
+
+-- name: GetAdminTokenByID :one
+-- Fetch a single admin token's metadata (no key_hash) for revoke
+-- pre-checks and idempotency decisions. Soft-deleted rows are excluded.
+SELECT
+    id,
+    name,
+    key_prefix,
+    role,
+    scope_tenant_id,
+    bootstrap,
+    status,
+    expires_at,
+    created_at
+FROM admin_tokens
+WHERE id = sqlc.arg(id)::bigint
+  AND deleted_at IS NULL;

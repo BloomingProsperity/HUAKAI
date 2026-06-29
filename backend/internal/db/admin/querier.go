@@ -96,6 +96,9 @@ type Querier interface {
 	// bootstrap rows should be auto-disabled so the env-var token is no
 	// longer accepted by the resolver. Idempotent.
 	DisableBootstrapAdminTokens(ctx context.Context) (int64, error)
+	// Fetch a single admin token's metadata (no key_hash) for revoke
+	// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
+	GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error)
 	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
 	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
@@ -118,6 +121,10 @@ type Querier interface {
 	// Drift worker 用; 只取 status='active' 且未软删。
 	ListActiveTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListActiveTLSFingerprintProfilesByTenantRow, error)
 	ListAdminChannelsByTenant(ctx context.Context, arg ListAdminChannelsByTenantParams) ([]ListAdminChannelsByTenantRow, error)
+	// Metadata-only listing of admin tokens for the operator console. NEVER
+	// selects key_hash — only key_prefix (insufficient on its own to
+	// authenticate) plus lifecycle columns. Soft-deleted rows are excluded.
+	ListAdminTokens(ctx context.Context, arg ListAdminTokensParams) ([]ListAdminTokensRow, error)
 	// P0 provider/channel admin catalog queries.
 	// Read-only directory data for admin UI. These SELECT lists intentionally
 	// exclude tenant_id and every credential-bearing provider_accounts column.
