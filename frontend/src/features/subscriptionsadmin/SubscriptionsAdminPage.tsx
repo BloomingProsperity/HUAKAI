@@ -3,26 +3,39 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   assignSubscription,
+  bulkAssign,
   cancelSubscription,
+  changePlan,
   createPlan,
+  createSubscriptionVoucher,
   disablePlan,
+  extendSubscription,
+  getPlan,
   listAssignments,
   listPlans,
   resetQuota,
+  revokeSubscription,
   updatePlan,
 } from './api'
 import {
+  buildExtendRequest,
   buildPlanRequest,
+  buildVoucherRequest,
   centsToUsd,
+  EMPTY_VOUCHER_FORM,
+  parseBulkUserIDs,
   planStatusLabel,
   planToForm,
   planTone,
   subscriptionTone,
+  type ExtendMode,
+  type VoucherFormState,
 } from './subscriptions'
 import {
   DEFAULT_TENANT_ID,
   EMPTY_PLAN_FORM,
   type AdminSubscription,
+  type BulkAssignUserResult,
   type Plan,
   type PlanFormState,
 } from './types'
@@ -39,6 +52,8 @@ export function SubscriptionsAdminPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ plan: Plan | null } | null>(null)
+  // 套餐详情:走独立的 GET /plans/{id} 端点拉取(列表已有数据,但详情端点单独验证)。
+  const [detailId, setDetailId] = useState<number | null>(null)
 
   const loadPlans = useCallback(
     (signal?: AbortSignal) => {
@@ -137,6 +152,9 @@ export function SubscriptionsAdminPage() {
                       <StatusBadge tone={planTone(p)}>{planStatusLabel(p)}</StatusBadge>
                     </td>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      <button type="button" style={linkBtn} onClick={() => setDetailId(p.id)}>
+                        详情
+                      </button>
                       <button type="button" style={linkBtn} onClick={() => setEditing({ plan: p })}>
                         编辑
                       </button>
@@ -161,6 +179,13 @@ export function SubscriptionsAdminPage() {
         onNotice={(m) => setNotice(m)}
       />
 
+      <VoucherPanel
+        tenantID={tenantID}
+        plans={plans}
+        onError={(m) => setError(m)}
+        onNotice={(m) => setNotice(m)}
+      />
+
       {editing && (
         <PlanModal
           tenantID={tenantID}
@@ -169,7 +194,65 @@ export function SubscriptionsAdminPage() {
           onSaved={onSaved}
         />
       )}
+
+      {detailId != null && (
+        <PlanDetailModal tenantID={tenantID} planId={detailId} onClose={() => setDetailId(null)} />
+      )}
     </div>
+  )
+}
+
+/* ---- 套餐详情(独立 GET /plans/{id} 端点) ---- */
+function PlanDetailModal({ tenantID, planId, onClose }: { tenantID: number; planId: number; onClose: () => void }) {
+  const [plan, setPlan] = useState<Plan | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    getPlan(planId, tenantID, ctrl.signal)
+      .then((resp) => setPlan(resp.plan))
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return
+        setErr(toMsg(e, '加载套餐详情失败'))
+      })
+    return () => ctrl.abort()
+  }, [planId, tenantID])
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ ...modal, width: 'min(440px, 92vw)' }}>
+        <h2 style={{ fontSize: 18, margin: 0 }}>套餐详情 #{planId}</h2>
+        {err && <Banner tone="danger">{err}</Banner>}
+        {!plan && !err ? (
+          <div style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>加载中…</div>
+        ) : plan ? (
+          <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', fontSize: 13, margin: 0 }}>
+            <DetailRow k="名称" v={plan.name} />
+            <DetailRow k="描述" v={plan.description || '—'} />
+            <DetailRow k="价格" v={`${centsToUsd(plan.price_cents)} ${plan.currency_code}`} />
+            <DetailRow k="有效天数" v={`${plan.validity_days} 天`} />
+            <DetailRow k="授予用户组" v={plan.granted_group || '—'} />
+            <DetailRow k="日/周/月封顶(USD)" v={capCol(plan)} />
+            <DetailRow k="状态" v={planStatusLabel(plan)} />
+            <DetailRow k="排序值" v={String(plan.sort_order)} />
+            <DetailRow k="创建时间" v={fmt(plan.created_at)} />
+            <DetailRow k="更新时间" v={fmt(plan.updated_at)} />
+          </dl>
+        ) : null}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onClose} style={ghostBtn}>关闭</button>
+        </div>
+      </div>
+    </Overlay>
+  )
+}
+
+function DetailRow({ k, v }: { k: string; v: string }) {
+  return (
+    <>
+      <dt style={{ color: 'var(--hk-ink-500)' }}>{k}</dt>
+      <dd style={{ margin: 0, color: 'var(--hk-ink-900)' }}>{v}</dd>
+    </>
   )
 }
 
@@ -284,6 +367,11 @@ function AssignmentPanel({
   const [subs, setSubs] = useState<AdminSubscription[]>([])
   const [busy, setBusy] = useState(false)
   const [queriedUser, setQueriedUser] = useState<number | null>(null)
+  // 批量分配:用户 ID 多值文本 + 套餐;结果逐用户展示。
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkResults, setBulkResults] = useState<BulkAssignUserResult[] | null>(null)
+  // 订阅级动作模态(延长 / 改套餐 / 撤销)。
+  const [acting, setActing] = useState<{ sub: AdminSubscription; kind: SubAction } | null>(null)
 
   const userID = (): number => Math.trunc(Number(userIdRaw.trim()))
   const validUser = Number.isInteger(userID()) && userID() > 0
@@ -369,8 +457,38 @@ function AssignmentPanel({
           <button type="button" style={primaryBtn} disabled={busy} onClick={assign}>
             分配套餐
           </button>
+          <button type="button" style={ghostBtn} disabled={busy} onClick={() => setBulkOpen(true)}>
+            批量分配
+          </button>
         </div>
       </div>
+
+      {bulkResults && (
+        <div style={{ padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--hk-space-2)' }}>
+            <h3 style={{ fontSize: 14, margin: 0 }}>批量分配结果</h3>
+            <button type="button" style={linkBtn} onClick={() => setBulkResults(null)}>关闭</button>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={table}>
+              <thead>
+                <tr>{['用户 ID', '结果', '说明'].map((h) => <th key={h} style={th}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {bulkResults.map((r) => (
+                  <tr key={r.user_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                    <td style={tdMono}>#{r.user_id}</td>
+                    <td style={td}>
+                      <StatusBadge tone={r.ok ? 'ok' : 'danger'}>{r.ok ? (r.idempotent ? '已存在(幂等)' : '成功') : '失败'}</StatusBadge>
+                    </td>
+                    <td style={{ ...td, color: 'var(--hk-ink-500)' }}>{r.ok ? `订阅 #${r.subscription?.id ?? '—'}` : r.error || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {queriedUser != null &&
         (subs.length === 0 ? (
@@ -401,8 +519,17 @@ function AssignmentPanel({
                       <button type="button" style={linkBtn} disabled={busy} onClick={() => act(resetQuota, s, '重置配额')}>
                         重置配额
                       </button>
+                      <button type="button" style={linkBtn} disabled={busy} onClick={() => setActing({ sub: s, kind: 'extend' })}>
+                        延长
+                      </button>
+                      <button type="button" style={linkBtn} disabled={busy} onClick={() => setActing({ sub: s, kind: 'change-plan' })}>
+                        改套餐
+                      </button>
                       <button type="button" style={linkBtnDanger} disabled={busy} onClick={() => act(cancelSubscription, s, '取消订阅')}>
                         取消
+                      </button>
+                      <button type="button" style={linkBtnDanger} disabled={busy} onClick={() => setActing({ sub: s, kind: 'revoke' })}>
+                        撤销
                       </button>
                     </td>
                   </tr>
@@ -411,7 +538,405 @@ function AssignmentPanel({
             </table>
           </div>
         ))}
+
+      {bulkOpen && (
+        <BulkAssignModal
+          tenantID={tenantID}
+          plans={plans}
+          onClose={() => setBulkOpen(false)}
+          onDone={(results) => {
+            setBulkOpen(false)
+            setBulkResults(results)
+            onNotice(`批量分配完成:${results.filter((r) => r.ok).length}/${results.length} 成功`)
+            if (validUser) void load()
+          }}
+        />
+      )}
+
+      {acting && (
+        <SubActionModal
+          tenantID={tenantID}
+          sub={acting.sub}
+          kind={acting.kind}
+          plans={plans}
+          onClose={() => setActing(null)}
+          onDone={(msg) => {
+            setActing(null)
+            onNotice(msg)
+            void load()
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/* ---- 订阅级动作:延长 / 改套餐 / 撤销(均 money,改权益) ---- */
+type SubAction = 'extend' | 'change-plan' | 'revoke'
+
+const SUB_ACTION_LABEL: Record<SubAction, string> = {
+  extend: '延长有效期',
+  'change-plan': '改套餐',
+  revoke: '撤销订阅',
+}
+
+function SubActionModal({
+  tenantID,
+  sub,
+  kind,
+  plans,
+  onClose,
+  onDone,
+}: {
+  tenantID: number
+  sub: AdminSubscription
+  kind: SubAction
+  plans: Plan[]
+  onClose: () => void
+  onDone: (msg: string) => void
+}) {
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  // extend
+  const [extMode, setExtMode] = useState<ExtendMode>('days')
+  const [days, setDays] = useState('30')
+  const [until, setUntil] = useState('')
+  // change-plan
+  const [newPlanId, setNewPlanId] = useState('')
+  const [allowDowngrade, setAllowDowngrade] = useState(false)
+  // revoke
+  const [reason, setReason] = useState('')
+
+  const submit = async () => {
+    setErr(null)
+    try {
+      if (kind === 'extend') {
+        const built = buildExtendRequest(extMode, tenantID, days, until)
+        if ('error' in built) {
+          setErr(built.error)
+          return
+        }
+        setBusy(true)
+        await extendSubscription(sub.id, built.request)
+        onDone(`已延长订阅 #${sub.id} 有效期`)
+        return
+      }
+      if (kind === 'change-plan') {
+        const pid = Math.trunc(Number(newPlanId.trim()))
+        if (!Number.isInteger(pid) || pid <= 0) {
+          setErr('请选择目标套餐')
+          return
+        }
+        setBusy(true)
+        await changePlan(sub.id, { tenant_id: tenantID, new_plan_id: pid, allow_downgrade: allowDowngrade })
+        onDone(`已为订阅 #${sub.id} 切换套餐`)
+        return
+      }
+      // revoke:破坏性,二次确认
+      const r = reason.trim()
+      if (r === '') {
+        setErr('撤销原因必填(将写入审计)')
+        return
+      }
+      if (!window.confirm(`确认撤销订阅 #${sub.id}(用户 #${sub.user_id})?\n此动作硬性终止订阅,不可恢复。`)) {
+        return
+      }
+      setBusy(true)
+      await revokeSubscription(sub.id, { tenant_id: tenantID, reason: r })
+      onDone(`已撤销订阅 #${sub.id}`)
+    } catch (e) {
+      setErr(toMsg(e, `${SUB_ACTION_LABEL[kind]}失败`))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ ...modal, width: 'min(480px, 92vw)' }}>
+        <h2 style={{ fontSize: 18, margin: 0 }}>
+          {SUB_ACTION_LABEL[kind]}(订阅 #{sub.id} · 用户 #{sub.user_id})
+        </h2>
+        <MoneyHint>
+          {kind === 'revoke'
+            ? '撤销将硬性终止该订阅,影响用户权益与计费,且不可恢复。'
+            : '该动作改变订阅权益(有效期 / 套餐配额),影响计费,谨慎执行。'}
+        </MoneyHint>
+        {err && <Banner tone="danger">{err}</Banner>}
+
+        {kind === 'extend' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+            <Field label="延长方式">
+              <select value={extMode} onChange={(e) => setExtMode(e.target.value as ExtendMode)} style={inp}>
+                <option value="days">按天数</option>
+                <option value="until">按到期时间</option>
+              </select>
+            </Field>
+            {extMode === 'days' ? (
+              <Field label="延长天数(正整数)">
+                <input value={days} onChange={(e) => setDays(e.target.value)} inputMode="numeric" style={inp} />
+              </Field>
+            ) : (
+              <Field label="新到期时间(ISO,如 2026-12-31T00:00:00Z)">
+                <input value={until} onChange={(e) => setUntil(e.target.value)} placeholder="须晚于当前时间" style={inp} />
+              </Field>
+            )}
+          </div>
+        )}
+
+        {kind === 'change-plan' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+            <Field label="目标套餐">
+              <select value={newPlanId} onChange={(e) => setNewPlanId(e.target.value)} style={inp}>
+                <option value="">选择套餐…</option>
+                {plans.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}({centsToUsd(p.price_cents)} {p.currency_code})
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--hk-ink-700)' }}>
+              <input type="checkbox" checked={allowDowngrade} onChange={(e) => setAllowDowngrade(e.target.checked)} />
+              允许降级(目标套餐权益更低时需勾选)
+            </label>
+          </div>
+        )}
+
+        {kind === 'revoke' && (
+          <Field label="撤销原因 *(写入审计)">
+            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="如:违规 / 退款" style={inp} />
+          </Field>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--hk-space-2)' }}>
+          <button type="button" onClick={onClose} style={ghostBtn}>取消</button>
+          <button type="button" disabled={busy} onClick={submit} style={kind === 'revoke' ? dangerBtn : primaryBtn}>
+            {busy ? '提交中…' : `确认${SUB_ACTION_LABEL[kind]}`}
+          </button>
+        </div>
+      </div>
+    </Overlay>
+  )
+}
+
+/* ---- 批量分配模态 ---- */
+function BulkAssignModal({
+  tenantID,
+  plans,
+  onClose,
+  onDone,
+}: {
+  tenantID: number
+  plans: Plan[]
+  onClose: () => void
+  onDone: (results: BulkAssignUserResult[]) => void
+}) {
+  const [userIds, setUserIds] = useState('')
+  const [planId, setPlanId] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const submit = async () => {
+    setErr(null)
+    const parsed = parseBulkUserIDs(userIds)
+    if ('error' in parsed) {
+      setErr(parsed.error)
+      return
+    }
+    const pid = Math.trunc(Number(planId.trim()))
+    if (!Number.isInteger(pid) || pid <= 0) {
+      setErr('请选择套餐')
+      return
+    }
+    setBusy(true)
+    try {
+      const resp = await bulkAssign({ tenant_id: tenantID, user_ids: parsed.ids, plan_id: pid })
+      onDone(resp.results ?? [])
+    } catch (e) {
+      setErr(toMsg(e, '批量分配失败'))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ ...modal, width: 'min(480px, 92vw)' }}>
+        <h2 style={{ fontSize: 18, margin: 0 }}>批量分配套餐</h2>
+        <MoneyHint>批量为多名用户分配同一套餐,逐用户结算,部分可能失败(逐条返回结果)。</MoneyHint>
+        {err && <Banner tone="danger">{err}</Banner>}
+        <Field label="用户 ID 列表(逗号 / 空格 / 换行分隔)">
+          <textarea
+            value={userIds}
+            onChange={(e) => setUserIds(e.target.value)}
+            rows={3}
+            placeholder="如:101, 102, 103"
+            style={{ ...inp, height: 'auto', padding: 'var(--hk-space-2) var(--hk-space-3)', fontFamily: 'var(--hk-font-mono)' }}
+          />
+        </Field>
+        <Field label="套餐">
+          <select value={planId} onChange={(e) => setPlanId(e.target.value)} style={inp}>
+            <option value="">选择套餐…</option>
+            {plans.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}({centsToUsd(p.price_cents)} {p.currency_code})
+              </option>
+            ))}
+          </select>
+        </Field>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--hk-space-2)' }}>
+          <button type="button" onClick={onClose} style={ghostBtn}>取消</button>
+          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+            {busy ? '提交中…' : '确认批量分配'}
+          </button>
+        </div>
+      </div>
+    </Overlay>
+  )
+}
+
+/* ---- 订阅兑换券面板 ---- */
+function VoucherPanel({
+  tenantID,
+  plans,
+  onError,
+  onNotice,
+}: {
+  tenantID: number
+  plans: Plan[]
+  onError: (m: string) => void
+  onNotice: (m: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [lastCode, setLastCode] = useState<string | null>(null)
+
+  return (
+    <div style={card}>
+      <div style={{ padding: 'var(--hk-space-4)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h2 style={{ fontSize: 16, margin: '0 0 2px' }}>订阅兑换券</h2>
+          <p style={{ margin: 0, fontSize: 12, color: 'var(--hk-ink-500)' }}>
+            生成可兑换为订阅套餐的券码;用户兑换后获得对应套餐权益。
+          </p>
+        </div>
+        <button type="button" style={primaryBtn} onClick={() => setOpen(true)}>
+          + 发兑换券
+        </button>
+      </div>
+
+      {lastCode && (
+        <div style={{ padding: '0 var(--hk-space-4) var(--hk-space-4)' }}>
+          <Banner tone="info">
+            券码已生成(仅此次显示,请复制保存):
+            <code style={{ marginLeft: 8, fontFamily: 'var(--hk-font-mono)', fontWeight: 600 }}>{lastCode}</code>
+          </Banner>
+        </div>
+      )}
+
+      {open && (
+        <VoucherModal
+          tenantID={tenantID}
+          plans={plans}
+          onClose={() => setOpen(false)}
+          onError={onError}
+          onCreated={(code) => {
+            setOpen(false)
+            setLastCode(code ?? '(后端未回显明文,见券码列表)')
+            onNotice('订阅兑换券已创建')
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function VoucherModal({
+  tenantID,
+  plans,
+  onClose,
+  onError,
+  onCreated,
+}: {
+  tenantID: number
+  plans: Plan[]
+  onClose: () => void
+  onError: (m: string) => void
+  onCreated: (code?: string) => void
+}) {
+  const [f, setF] = useState<VoucherFormState>(EMPTY_VOUCHER_FORM)
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const set = <K extends keyof VoucherFormState>(k: K, v: VoucherFormState[K]) => setF((s) => ({ ...s, [k]: v }))
+
+  const submit = async () => {
+    setErr(null)
+    const built = buildVoucherRequest(f, tenantID)
+    if ('error' in built) {
+      setErr(built.error)
+      return
+    }
+    setBusy(true)
+    try {
+      const resp = await createSubscriptionVoucher(built.request)
+      onCreated(resp.code)
+    } catch (e) {
+      const msg = toMsg(e, '建券失败')
+      setErr(msg)
+      onError(msg)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={modal}>
+        <h2 style={{ fontSize: 18, margin: 0 }}>发订阅兑换券</h2>
+        <MoneyHint>该券兑换后授予用户订阅套餐权益(money)。名义价仅信息展示,兑换不入余额。</MoneyHint>
+        {err && <Banner tone="danger">{err}</Banner>}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--hk-space-3)' }}>
+          <Field label="套餐 *">
+            <select value={f.planId} onChange={(e) => set('planId', e.target.value)} style={inp}>
+              <option value="">选择套餐…</option>
+              {plans.map((p) => (
+                <option key={p.id} value={String(p.id)}>
+                  {p.name}({centsToUsd(p.price_cents)} {p.currency_code})
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="券码(留空=自动生成)">
+            <input value={f.code} onChange={(e) => set('code', e.target.value)} style={inp} />
+          </Field>
+          <Field label="名义价(USD,信息性)">
+            <input value={f.amountUsd} onChange={(e) => set('amountUsd', e.target.value)} inputMode="decimal" placeholder="如 19.99" style={inp} />
+          </Field>
+          <Field label="货币代码">
+            <input value={f.currencyCode} onChange={(e) => set('currencyCode', e.target.value)} style={inp} />
+          </Field>
+          <Field label="生效时间 *(ISO)">
+            <input value={f.validFrom} onChange={(e) => set('validFrom', e.target.value)} placeholder="2026-06-29T00:00:00Z" style={inp} />
+          </Field>
+          <Field label="失效时间 *(ISO)">
+            <input value={f.validUntil} onChange={(e) => set('validUntil', e.target.value)} placeholder="2026-12-31T00:00:00Z" style={inp} />
+          </Field>
+          <Field label="最大兑换次数(留空=不限)">
+            <input value={f.maxRedemptions} onChange={(e) => set('maxRedemptions', e.target.value)} inputMode="numeric" style={inp} />
+          </Field>
+          <Field label="限定用户 ID(留空=不限)">
+            <input value={f.eligibleUserId} onChange={(e) => set('eligibleUserId', e.target.value)} inputMode="numeric" style={inp} />
+          </Field>
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--hk-ink-700)' }}>
+          <input type="checkbox" checked={f.singleUsePerUser} onChange={(e) => set('singleUsePerUser', e.target.checked)} />
+          每用户限兑一次(single_use_per_user)
+        </label>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--hk-space-2)' }}>
+          <button type="button" onClick={onClose} style={ghostBtn}>取消</button>
+          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+            {busy ? '提交中…' : '确认发券'}
+          </button>
+        </div>
+      </div>
+    </Overlay>
   )
 }
 
@@ -451,6 +976,15 @@ function Banner({ tone, children }: { tone: 'danger' | 'info'; children: React.R
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...s }}>{children}</div>
 }
 
+/** money 提示条:动权益 / 计费的动作统一加,提醒谨慎执行。 */
+function MoneyHint({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 12, color: '#8a5e0f', background: '#fbf3df', border: '1px solid #f0e2bd' }}>
+      {children}
+    </div>
+  )
+}
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
@@ -476,3 +1010,4 @@ const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
 const linkBtnDanger: React.CSSProperties = { ...linkBtn, color: '#8f322a' }
+const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #c0392b', borderRadius: 'var(--hk-radius-md)', background: '#c0392b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }

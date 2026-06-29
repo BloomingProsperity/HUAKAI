@@ -1,5 +1,11 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
-import type { Plan, PlanFormState, UpsertPlanRequest } from './types'
+import type {
+  CreateSubscriptionVoucherRequest,
+  ExtendAssignmentRequest,
+  Plan,
+  PlanFormState,
+  UpsertPlanRequest,
+} from './types'
 
 /*
  * 套餐管理纯逻辑(可单测):金额分↔美元换算、表单→请求体归一与校验、订阅状态配色。
@@ -133,4 +139,135 @@ export function planTone(plan: Plan): BadgeTone {
 export function planStatusLabel(plan: Plan): string {
   if (!plan.enabled) return '已停用'
   return plan.for_sale ? '在售' : '未上架'
+}
+
+/* ---- 批量分配 / 延长 / 撤销 / 兑换券 的纯逻辑校验 ---- */
+
+/**
+ * 解析批量用户 ID 文本(逗号/空格/换行分隔)→ 去重正整数数组。
+ * 判别核心:每个 token 必须是正整数,出现非法即整体失败(避免静默吞掉错误 ID 误分配)。
+ */
+export function parseBulkUserIDs(raw: string): { ids: number[] } | { error: string } {
+  const tokens = raw
+    .split(/[\s,]+/)
+    .map((t) => t.trim())
+    .filter((t) => t !== '')
+  if (tokens.length === 0) return { error: '请填写至少一个用户 ID' }
+  const ids: number[] = []
+  const seen = new Set<number>()
+  for (const t of tokens) {
+    if (!/^\d+$/.test(t)) return { error: `用户 ID「${t}」非法(必须为正整数)` }
+    const n = Number(t)
+    if (!Number.isInteger(n) || n <= 0) return { error: `用户 ID「${t}」非法(必须为正整数)` }
+    if (!seen.has(n)) {
+      seen.add(n)
+      ids.push(n)
+    }
+  }
+  return { ids }
+}
+
+/** 延长方式:按天数(days)或按到期时间(until)。 */
+export type ExtendMode = 'days' | 'until'
+
+/**
+ * 构造延长请求体。判别核心:
+ *  - days 模式:days 必须为正整数;
+ *  - until 模式:until 必须是可解析且未来(> now)的时间。
+ * 两者互斥,仅下发选中的那个字段(对齐后端 omitempty,避免同时传 days+until 语义歧义)。
+ */
+export function buildExtendRequest(
+  mode: ExtendMode,
+  tenantID: number,
+  daysRaw: string,
+  untilRaw: string,
+  now: number = Date.now(),
+): { request: ExtendAssignmentRequest } | { error: string } {
+  if (mode === 'days') {
+    const d = Number(daysRaw.trim())
+    if (!Number.isInteger(d) || d <= 0) return { error: '延长天数必须为正整数' }
+    return { request: { tenant_id: tenantID, days: d } }
+  }
+  const v = untilRaw.trim()
+  if (v === '') return { error: '请填写到期时间' }
+  const ts = Date.parse(v)
+  if (Number.isNaN(ts)) return { error: '到期时间格式非法' }
+  if (ts <= now) return { error: '到期时间必须晚于当前时间' }
+  return { request: { tenant_id: tenantID, until: new Date(ts).toISOString() } }
+}
+
+/** 撤销原因表单态。 */
+export interface VoucherFormState {
+  planId: string
+  code: string
+  amountUsd: string
+  currencyCode: string
+  validFrom: string
+  validUntil: string
+  maxRedemptions: string
+  singleUsePerUser: boolean
+  eligibleUserId: string
+}
+
+export const EMPTY_VOUCHER_FORM: VoucherFormState = {
+  planId: '',
+  code: '',
+  amountUsd: '',
+  currencyCode: 'USD',
+  validFrom: '',
+  validUntil: '',
+  maxRedemptions: '',
+  singleUsePerUser: true,
+  eligibleUserId: '',
+}
+
+/**
+ * 构造建券请求体并校验。判别核心:
+ *  - plan_id 必须为正整数;
+ *  - valid_from / valid_until 必须可解析,且 until > from;
+ *  - amount_cents 由名义价美元换算(可为 0,信息性);
+ *  - max_redemptions / eligible_user_id 填了才下发,且必须为正整数。
+ */
+export function buildVoucherRequest(
+  form: VoucherFormState,
+  tenantID: number,
+): { request: CreateSubscriptionVoucherRequest } | { error: string } {
+  const planId = Number(form.planId.trim())
+  if (!Number.isInteger(planId) || planId <= 0) return { error: '套餐 ID 必须为正整数' }
+
+  const cents = usdToCents(form.amountUsd)
+  if (cents === null) return { error: '名义价必须为非负数字' }
+
+  const fromTs = Date.parse(form.validFrom.trim())
+  if (Number.isNaN(fromTs)) return { error: '生效时间格式非法' }
+  const untilTs = Date.parse(form.validUntil.trim())
+  if (Number.isNaN(untilTs)) return { error: '失效时间格式非法' }
+  if (untilTs <= fromTs) return { error: '失效时间必须晚于生效时间' }
+
+  const req: CreateSubscriptionVoucherRequest = {
+    tenant_id: tenantID,
+    plan_id: planId,
+    amount_cents: cents,
+    valid_from: new Date(fromTs).toISOString(),
+    valid_until: new Date(untilTs).toISOString(),
+    single_use_per_user: form.singleUsePerUser,
+  }
+  const code = form.code.trim()
+  if (code !== '') req.code = code
+  const currency = form.currencyCode.trim()
+  if (currency !== '') req.currency_code = currency
+
+  const maxRaw = form.maxRedemptions.trim()
+  if (maxRaw !== '') {
+    const m = Number(maxRaw)
+    if (!Number.isInteger(m) || m <= 0) return { error: '最大兑换次数必须为正整数' }
+    req.max_redemptions = m
+  }
+  const eligRaw = form.eligibleUserId.trim()
+  if (eligRaw !== '') {
+    const u = Number(eligRaw)
+    if (!Number.isInteger(u) || u <= 0) return { error: '限定用户 ID 必须为正整数' }
+    req.eligible_user_id = u
+  }
+  return { request: req }
 }

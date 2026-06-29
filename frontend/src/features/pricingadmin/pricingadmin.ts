@@ -1,4 +1,4 @@
-import type { CacheOverrideScope, ToolSurchargeDefault } from './types'
+import type { CacheOverrideScope, ToolSurchargeDefault, UpdateBillingSettingsRequest } from './types'
 
 /*
  * 模型定价设置的纯逻辑(可单测)。把后端的计费约束投影成前端校验,提交前先挡住非法值,
@@ -122,3 +122,55 @@ export const TOOL_SURCHARGE_DEFAULTS: ReadonlyArray<ToolSurchargeDefault> = [
   { tool: 'file_search', label: '文件检索', perThousandUSD: '2.50', note: '官方平台默认价' },
   { tool: 'image_generation', label: '图像生成', perThousandUSD: '0.00', note: 'Stage D 延期(按模型/尺寸定价)' },
 ]
+
+/* ---- 计费策略 ----
+ * 流式仅输入后中断的结算策略(stream_input_only_interrupted_policy)。
+ * 后端真码:internal/billing/settings_policy.go —— 取值 no_bill / no_bill_record;
+ * bill_input 为路线图值,后端 PUT 会回 409 billing_policy_value_roadmap,前端先挡。
+ */
+
+/** 计费策略路线图值(当前阶段不可启用)。对齐后端 streamInputOnlyInterruptedPolicyBillInputRoadmap。 */
+export const BILLING_POLICY_ROADMAP_VALUE = 'bill_input'
+
+/** 策略值 → 中文展示名 + 说明。 */
+export function billingPolicyLabel(value: string): string {
+  switch (value) {
+    case 'no_bill':
+      return '不结算、不记录(默认)'
+    case 'no_bill_record':
+      return '不结算、但记录用量审计'
+    case 'bill_input':
+      return '按输入计费(路线图,未启用)'
+    default:
+      return value
+  }
+}
+
+/**
+ * 校验并构造计费策略更新请求体。判别核心:
+ *  - reason 必填(后端 reason_required);
+ *  - policy 必须落在 allowed 列表内(从后端响应取),且不能是路线图值(bill_input)。
+ * allowed 传入后端回的 allowed_values,避免前端硬编码与后端漂移。
+ */
+export function buildBillingSettingsUpdate(
+  tenantId: number,
+  policy: string,
+  reason: string,
+  allowed: string[],
+): { request: UpdateBillingSettingsRequest } | { error: string } {
+  const r = reason.trim()
+  if (r === '') return { error: '变更原因必填(将写入审计)' }
+  if (policy === BILLING_POLICY_ROADMAP_VALUE) {
+    return { error: 'bill_input 为路线图值,当前阶段不可启用' }
+  }
+  if (!allowed.includes(policy)) {
+    return { error: `策略值非法,必须是:${allowed.join(' / ')}` }
+  }
+  return {
+    request: {
+      tenant_id: tenantId,
+      stream_input_only_interrupted_policy: policy,
+      reason: r,
+    },
+  }
+}

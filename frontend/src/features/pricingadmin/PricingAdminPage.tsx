@@ -4,16 +4,20 @@ import { StatusBadge } from '../../ui/StatusBadge'
 import {
   deleteCacheOverride,
   deletePricingRatio,
+  getBillingSettings,
   listCacheOverrides,
   listPricingRatios,
   setCacheOverride,
+  updateBillingSettings,
   upsertPricingRatio,
   verifyRatioAudit,
 } from './api'
 import {
+  billingPolicyLabel,
+  buildBillingSettingsUpdate,
   CACHE_SCOPES,
-  TOOL_SURCHARGE_DEFAULTS,
   scopeLabel,
+  TOOL_SURCHARGE_DEFAULTS,
   validateCacheQualifier,
   validateMultiplier,
   validateRatio,
@@ -21,6 +25,7 @@ import {
   type CacheOverrideQualifier,
 } from './pricingadmin'
 import type {
+  BillingSettingsResponse,
   CacheOverride,
   CacheOverrideScope,
   PricingRatio,
@@ -41,13 +46,189 @@ export function PricingAdminPage() {
       <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
         <h1 style={{ fontSize: 22 }}>模型定价设置</h1>
         <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          分组倍率 · 缓存价覆盖 · 工具附加费。写动作直接影响计费,提交前请确认。
+          分组倍率 · 缓存价覆盖 · 计费策略 · 工具附加费。写动作直接影响计费,提交前请确认。
         </p>
       </header>
       <RatioSection />
       <CacheOverrideSection />
+      <BillingPolicySection />
       <ToolSurchargeSection />
     </div>
+  )
+}
+
+// ============ 计费策略 ============
+
+function BillingPolicySection() {
+  const [draftTenant, setDraftTenant] = useState('1')
+  const [tenantId, setTenantId] = useState<number | null>(null)
+  const [settings, setSettings] = useState<BillingSettingsResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [refreshNonce, setRefreshNonce] = useState(0)
+  const [editOpen, setEditOpen] = useState(false)
+
+  useEffect(() => {
+    if (tenantId === null) return
+    const ctrl = new AbortController()
+    setLoading(true)
+    setError(null)
+    getBillingSettings(tenantId, ctrl.signal)
+      .then((resp) => setSettings(resp))
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return
+        setError(e instanceof ApiError ? `${e.message}(${e.code})` : '加载计费策略失败')
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false)
+      })
+    return () => ctrl.abort()
+  }, [tenantId, refreshNonce])
+
+  const query = () => {
+    const v = validateTenantId(draftTenant)
+    if ('error' in v) {
+      setError(v.error)
+      return
+    }
+    setNotice(null)
+    setError(null)
+    setTenantId(v.value)
+  }
+
+  return (
+    <Section
+      title="计费策略"
+      subtitle="流式仅输入后中断场景的结算策略(stream_input_only_interrupted_policy)。改动直接影响计费,需 Owner 确认。"
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          query()
+        }}
+        style={toolbar}
+      >
+        <label style={fieldInline}>
+          租户 id
+          <input value={draftTenant} onChange={(e) => setDraftTenant(e.target.value)} style={inp} placeholder="如 1" />
+        </label>
+        <button type="submit" style={primaryBtn}>查询</button>
+        {settings && (
+          <button type="button" onClick={() => setEditOpen(true)} style={ghostBtn}>修改策略</button>
+        )}
+      </form>
+
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {notice && (
+        <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#235a82', background: '#e8f1f8', border: '1px solid #cfe0ee' }}>
+          {notice}
+        </div>
+      )}
+
+      {editOpen && settings && tenantId !== null && (
+        <BillingPolicyModal
+          tenantId={tenantId}
+          current={settings}
+          onClose={() => setEditOpen(false)}
+          onSaved={(updated) => {
+            setEditOpen(false)
+            setSettings(updated)
+            setNotice('计费策略已更新')
+            setRefreshNonce((n) => n + 1)
+          }}
+        />
+      )}
+
+      {tenantId === null ? (
+        <Empty>输入租户 id 后查询当前计费策略。</Empty>
+      ) : (
+        <Card>
+          {loading && !settings ? (
+            <Empty>加载中…</Empty>
+          ) : settings ? (
+            <Table head={['策略键', '当前值', '来源', '更新人', '更新时间']}>
+              <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
+                <td style={{ ...td, fontFamily: 'var(--hk-font-mono)' }}>{settings.key}</td>
+                <td style={td}>
+                  <StatusBadge tone="info">{billingPolicyLabel(settings.value)}</StatusBadge>
+                  <span style={{ marginLeft: 6, fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-500)' }}>
+                    ({settings.value})
+                  </span>
+                </td>
+                <td style={td}>
+                  <StatusBadge tone={settings.source === 'tenant' ? 'ok' : 'muted'}>
+                    {settings.source === 'tenant' ? '租户自定义' : '全局默认'}
+                  </StatusBadge>
+                </td>
+                <td style={td}>{settings.updated_by || '—'}</td>
+                <td style={td}>{fmt(settings.updated_at ?? undefined)}</td>
+              </tr>
+            </Table>
+          ) : (
+            <Empty>无数据。</Empty>
+          )}
+        </Card>
+      )}
+    </Section>
+  )
+}
+
+function BillingPolicyModal({
+  tenantId,
+  current,
+  onClose,
+  onSaved,
+}: {
+  tenantId: number
+  current: BillingSettingsResponse
+  onClose: () => void
+  onSaved: (updated: BillingSettingsResponse) => void
+}) {
+  const [policy, setPolicy] = useState(current.value)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async () => {
+    const built = buildBillingSettingsUpdate(tenantId, policy, reason, current.allowed_values)
+    if ('error' in built) {
+      setError(built.error)
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const updated = await updateBillingSettings(built.request)
+      onSaved(updated)
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '保存失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal onClose={onClose} title="修改计费策略">
+      <Field label="策略值">
+        <select value={policy} onChange={(e) => setPolicy(e.target.value)} style={inp}>
+          {current.allowed_values.map((v) => (
+            <option key={v} value={v}>{billingPolicyLabel(v)}({v})</option>
+          ))}
+        </select>
+      </Field>
+      {current.roadmap_values.length > 0 && (
+        <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>
+          路线图值(暂不可启用):{current.roadmap_values.join('、')}
+        </div>
+      )}
+      <Field label="变更原因(必填,写入审计)">
+        <input value={reason} onChange={(e) => setReason(e.target.value)} style={inp} placeholder="如:合规要求 / 业务调整" />
+      </Field>
+      <GatedHint />
+      {error && <ErrorBox>{error}</ErrorBox>}
+      <ModalActions onCancel={onClose} onConfirm={submit} busy={busy} />
+    </Modal>
   )
 }
 

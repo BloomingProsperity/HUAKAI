@@ -108,6 +108,95 @@ export interface UpsertPlanRequest {
   sort_order?: number
 }
 
+/* ---- 批量分配 / 延长 / 改套餐 / 撤销 / 兑换券 请求与响应(对齐后端 admin_ops.go 的 json tag) ---- */
+
+/** 批量分配请求(POST /assignments/bulk):同一套餐发给多个用户。 */
+export interface BulkAssignRequest {
+  tenant_id: number
+  user_ids: number[]
+  plan_id: number
+}
+
+/** 批量分配单用户结果(bulkAssignUserView)。OK=true 时带 subscription。 */
+export interface BulkAssignUserResult {
+  user_id: number
+  ok: boolean
+  error?: string
+  idempotent?: boolean
+  subscription?: AdminSubscription
+}
+
+/** POST /assignments/bulk 响应。 */
+export interface BulkAssignResponse {
+  results: BulkAssignUserResult[]
+}
+
+/**
+ * 延长订阅请求(POST /assignments/{id}/extend)。
+ * days 与 until 二选一(后端 extendAssignmentRequest:Days int / Until *time.Time)。
+ */
+export interface ExtendAssignmentRequest {
+  tenant_id: number
+  days?: number
+  /** RFC3339 时间串(到期时间);与 days 二选一。 */
+  until?: string
+}
+
+/** 改套餐请求(POST /assignments/{id}/change-plan)。new_plan_id 必填;降级需显式放行。 */
+export interface ChangePlanRequest {
+  tenant_id: number
+  new_plan_id: number
+  allow_downgrade?: boolean
+}
+
+/** 撤销订阅请求(POST /assignments/{id}/revoke)。硬性终止 admin 指派的订阅。 */
+export interface RevokeAssignmentRequest {
+  tenant_id: number
+  reason: string
+}
+
+/** 建订阅兑换券请求(POST /vouchers)。grant_kind 由端点强制 subscription,不传。 */
+export interface CreateSubscriptionVoucherRequest {
+  tenant_id: number
+  plan_id: number
+  code?: string
+  /** 名义价(分,信息性;兑换时不入余额)。 */
+  amount_cents: number
+  currency_code?: string
+  /** 券码可兑换窗口起(RFC3339)。 */
+  valid_from: string
+  /** 券码可兑换窗口止(RFC3339)。 */
+  valid_until: string
+  max_redemptions?: number
+  single_use_per_user?: boolean
+  eligible_user_id?: number
+}
+
+/** 订阅券视图(voucher.Voucher,只展示必要字段)。code_hash 等敏感字段后端不回传。 */
+export interface SubscriptionVoucher {
+  id: number
+  tenant_id: number
+  code_fingerprint: string
+  amount_cents: number
+  currency_code: string
+  valid_from: string
+  valid_until: string
+  max_redemptions: number
+  redeemed_count: number
+  single_use_per_user: boolean
+  grant_kind: string
+  subscription_plan_id?: number
+  status: string
+  created_at: string
+}
+
+/** POST /vouchers 响应:voucher 视图 + 明文 code(仅建券时回显一次)。 */
+export interface CreateVoucherResponse {
+  voucher: SubscriptionVoucher
+  /** 明文券码,仅本次返回(后端只在创建时回显)。 */
+  code?: string
+}
+
 /** 套餐编辑表单态(字符串承载数值输入,提交前归一)。 */
 export interface PlanFormState {
   name: string

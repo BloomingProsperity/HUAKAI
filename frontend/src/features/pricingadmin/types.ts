@@ -65,6 +65,35 @@ export interface SetCacheOverrideRequest {
   multiplier: string
 }
 
+/* ---- 计费策略(流式仅输入后中断的结算策略)---- */
+/* 后端真码:internal/gatewayhttp/admin_billing_settings_handler.go(adminBillingSettingsResponse / adminBillingSettingsPutRequest)
+ * 端点 GET/PUT /admin/v1/billing/settings;策略键固定 stream_input_only_interrupted_policy。 */
+
+/** GET/PUT /admin/v1/billing/settings 响应。 */
+export interface BillingSettingsResponse {
+  tenant_id: number
+  /** 策略键(固定 stream_input_only_interrupted_policy)。 */
+  key: string
+  /** 当前生效值(no_bill / no_bill_record)。 */
+  value: string
+  /** 取值来源:default=用全局默认;tenant=该租户已自定义。 */
+  source: string
+  /** 可选值(no_bill / no_bill_record)。 */
+  allowed_values: string[]
+  /** 路线图值(bill_input,当前阶段不可启用)。 */
+  roadmap_values: string[]
+  updated_at?: string | null
+  updated_by?: string | null
+}
+
+/** PUT /admin/v1/billing/settings 请求体。reason 必填(写入审计)。 */
+export interface UpdateBillingSettingsRequest {
+  tenant_id: number
+  /** 目标策略值(必须是 allowed_values 之一)。 */
+  stream_input_only_interrupted_policy: string
+  reason: string
+}
+
 /** 工具附加费默认价(USD / 1000 次调用)。来自后端 toolpricing.DefaultToolPrices,无写端点。 */
 export interface ToolSurchargeDefault {
   /** 工具标识(英文,后端标识符不翻译)。 */

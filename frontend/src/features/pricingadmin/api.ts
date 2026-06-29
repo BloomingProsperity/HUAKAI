@@ -1,5 +1,6 @@
 import { apiGet, apiSend } from '../../lib/api'
 import type {
+  BillingSettingsResponse,
   CacheOverride,
   CacheOverrideListResponse,
   CacheOverrideScope,
@@ -7,6 +8,7 @@ import type {
   PricingRatioListResponse,
   RatioAuditVerifyResponse,
   SetCacheOverrideRequest,
+  UpdateBillingSettingsRequest,
   UpsertRatioRequest,
 } from './types'
 
@@ -97,4 +99,30 @@ export async function deleteCacheOverride(
   if (qualifier?.model) query.model = qualifier.model
   if (qualifier?.tenantId) query.tenant_id = qualifier.tenantId
   return apiSend<unknown>('DELETE', `${CACHE_OVERRIDE_PATH}/${scope}`, undefined, { query })
+}
+
+// --- 计费策略 ---
+// 端点 /admin/v1/billing/settings(admin token,Mount 在 routes.go:1016 的 /admin/v1/billing 组 + handler 内 /settings)。
+// 真码:internal/gatewayhttp/admin_billing_settings_handler.go:67 MountAdminBillingSettingsRoutes。
+const BILLING_SETTINGS_PATH = '/admin/v1/billing/settings'
+
+/**
+ * 读取某租户的计费策略(流式仅输入后中断的结算策略)。
+ * 后端:tenant_operator 省略 tenant_id 时回落到自身 scope;platform_admin 需显式传 tenant_id。
+ */
+export async function getBillingSettings(
+  tenantId: number,
+  signal?: AbortSignal,
+): Promise<BillingSettingsResponse> {
+  return apiGet<BillingSettingsResponse>(BILLING_SETTINGS_PATH, {
+    query: { tenant_id: tenantId },
+    signal,
+  })
+}
+
+/** 更新计费策略(money-gated:仅 platform_admin / tenant_operator;reason 必填,写入审计)。 */
+export async function updateBillingSettings(
+  body: UpdateBillingSettingsRequest,
+): Promise<BillingSettingsResponse> {
+  return apiSend<BillingSettingsResponse>('PUT', BILLING_SETTINGS_PATH, body)
 }
