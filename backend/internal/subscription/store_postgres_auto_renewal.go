@@ -1,0 +1,233 @@
+// HUAKAI · iKun
+
+package subscription
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
+)
+
+// ListAutoRenewDue 扫到点 (expires_at<=now) 且 auto_renew=true 的 active 订阅 (worker 批处理)。
+// 与 ListDueExpiry 同形, 但多一个 auto_renew=true 过滤 —— 只对用户 opt-in 的订阅尝试续费。
+func (s *PostgresStore) ListAutoRenewDue(ctx context.Context, now time.Time, limit int) ([]UserSubscription, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrStoreNotConfigured
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `SELECT`+subscriptionSelectColumns+`
+FROM user_subscriptions
+WHERE status='active' AND auto_renew=true AND expires_at <= $1
+ORDER BY expires_at, id LIMIT $2`, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("subscription: list auto renew due: %w", err)
+	}
+	defer rows.Close()
+	var out []UserSubscription
+	for rows.Next() {
+		sub, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+// TryAutoRenewSubscription 单事务尝试自动续费, 见 Store 接口注释的不变量。
+// 瞬时序列化冲突 (40001/40P01) 内层重试; 幂等锚唯一冲突 (23505) 当"已续过"跳过。
+func (s *PostgresStore) TryAutoRenewSubscription(ctx context.Context, rec autoRenewRecord) (AutoRenewResult, error) {
+	if s == nil || s.pool == nil {
+		return AutoRenewResult{}, ErrStoreNotConfigured
+	}
+	var lastErr error
+	for attempt := 0; attempt < subscriptionTxRetryAttempts; attempt++ {
+		res, err := s.tryAutoRenewOnce(ctx, rec)
+		if err == nil {
+			return res, nil
+		}
+		if isPgRetryableTxConflict(err) {
+			lastErr = err
+			continue
+		}
+		// 并发 worker / 重试已为同 (订阅, 周期) 写了扣款行 → 幂等跳过, 不重复扣。
+		if isUniqueViolation(err) {
+			return AutoRenewResult{Renewed: false, SkipReason: AutoRenewSkipAlreadyRenewed}, nil
+		}
+		return AutoRenewResult{}, err
+	}
+	return AutoRenewResult{}, fmt.Errorf("subscription: auto renew exhausted retries: %w", lastErr)
+}
+
+func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecord) (AutoRenewResult, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return AutoRenewResult{}, fmt.Errorf("subscription: begin auto renew: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1) 锁订阅行重查仍 active + auto_renew + due (并发/重复防护)。
+	sub, err := getSubscriptionForUpdateTx(ctx, tx, rec.TenantID, rec.SubscriptionID)
+	if err != nil {
+		return AutoRenewResult{}, err
+	}
+	if sub.Status != StatusActive {
+		return skipNoCommit(ctx, tx, sub, AutoRenewSkipNotDue)
+	}
+	if !sub.AutoRenew {
+		return skipNoCommit(ctx, tx, sub, AutoRenewSkipAutoRenewOff)
+	}
+	if !sub.IsExpiredAt(rec.Now) {
+		// 到期日已被别的路径 (手动续期/延期) 推后, 本周期不再到点。
+		return skipNoCommit(ctx, tx, sub, AutoRenewSkipNotDue)
+	}
+
+	// 2) 续费周期标识 = 本次续费前订阅 expires_at; 同窗口幂等只续一次。
+	periodKey := sub.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	if exists, err := autoRenewalChargeExistsTx(ctx, tx, rec.TenantID, sub.ID, periodKey); err != nil {
+		return AutoRenewResult{}, err
+	} else if exists {
+		return skipNoCommit(ctx, tx, sub, AutoRenewSkipAlreadyRenewed)
+	}
+
+	// 3) 锁价: 续费价 = 套餐当前 price_cents (套餐停用/不存在 → 不续)。
+	plan, err := getPlanTx(ctx, tx, rec.TenantID, sub.PlanID)
+	if err != nil {
+		if errors.Is(err, ErrPlanNotFound) {
+			return skipNoCommit(ctx, tx, sub, AutoRenewSkipPlanUnavailable)
+		}
+		return AutoRenewResult{}, err
+	}
+	if !plan.Enabled {
+		return skipNoCommit(ctx, tx, sub, AutoRenewSkipPlanUnavailable)
+	}
+	priceCents := plan.PriceCents
+	if priceCents < 0 {
+		priceCents = 0
+	}
+
+	// 4) 扣钱包余额 (price>0 才扣)。条件 UPDATE 原子守卫: 余额不足 → 不扣 → 跳过。
+	if priceCents > 0 {
+		ok, err := debitUserBalanceTx(ctx, tx, rec.TenantID, sub.UserID, priceCents, rec.Now)
+		if err != nil {
+			return AutoRenewResult{}, err
+		}
+		if !ok {
+			// 余额不足: 绝不扣款, 不续期。回滚整事务零副作用。
+			return skipNoCommit(ctx, tx, sub, AutoRenewSkipInsufficientFund)
+		}
+	}
+
+	// 5) 续期 (同事务): 延长 expires_at + 刷新 caps 策略。EnforceUpgradeOnly=false: 续同档不触发降级闸。
+	res, err := ActivateOrRenewTx(ctx, tx, ActivateInput{
+		TenantID:           rec.TenantID,
+		UserID:             sub.UserID,
+		PlanID:             sub.PlanID,
+		SourceKind:         EffectSourceAdmin, // 系统自动续费, 走非订单/非券路径。
+		ActorKind:          ActorKindSystem,
+		EnforceUpgradeOnly: false,
+		Now:                rec.Now,
+	})
+	if err != nil {
+		return AutoRenewResult{}, err
+	}
+
+	// 6) 写幂等锚 + money 审计行 (同事务)。撞唯一索引 → 外层当"已续过"。
+	if err := insertAutoRenewalChargeTx(ctx, tx, autoRenewalCharge{
+		TenantID:           rec.TenantID,
+		UserID:             sub.UserID,
+		UserSubscriptionID: sub.ID,
+		PeriodKey:          periodKey,
+		PlanID:             sub.PlanID,
+		AmountCents:        priceCents,
+		PrevExpiresAt:      sub.ExpiresAt,
+		NewExpiresAt:       res.NewExpiresAt,
+	}); err != nil {
+		return AutoRenewResult{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return AutoRenewResult{}, fmt.Errorf("subscription: commit auto renew: %w", err)
+	}
+	return AutoRenewResult{
+		Subscription: res.Subscription,
+		Renewed:      true,
+		ChargedCents: priceCents,
+	}, nil
+}
+
+// skipNoCommit 提交一个无副作用的"跳过"结果。订阅状态/幂等命中等跳过分支不写任何行,
+// 但仍 commit (回滚也可, commit 更明确表达"已查证无需动作"); 不持有写, 安全。
+func skipNoCommit(ctx context.Context, tx pgx.Tx, sub UserSubscription, reason string) (AutoRenewResult, error) {
+	if err := tx.Commit(ctx); err != nil {
+		return AutoRenewResult{}, fmt.Errorf("subscription: commit auto renew skip: %w", err)
+	}
+	return AutoRenewResult{Subscription: sub, Renewed: false, SkipReason: reason}, nil
+}
+
+// debitUserBalanceTx 从可变钱包表 user_balances 条件扣减 (与退款扣款同表同形态)。
+// 守卫 balance-held>=amount 进 WHERE: 余额不足时 RowsAffected==0 (返回 false), 不扣分文。
+// cents → numeric(20,8) USD: cents/100 (与 payment 域 decimalFromCents 等价, 不跨包引私有 helper)。
+func debitUserBalanceTx(ctx context.Context, tx pgx.Tx, tenantID, userID, amountCents int64, now time.Time) (bool, error) {
+	amount := decimal.NewFromInt(amountCents).Div(decimal.NewFromInt(100))
+	tag, err := tx.Exec(ctx, `
+UPDATE user_balances
+SET balance = balance - $3,
+    version = version + 1,
+    updated_at = $4
+WHERE tenant_id=$1
+  AND user_id=$2
+  AND balance - held >= $3`, tenantID, userID, amount, now)
+	if err != nil {
+		return false, fmt.Errorf("subscription: debit wallet for auto renew: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// autoRenewalCharge 一条续费扣款账本行 (幂等锚 + money 审计)。
+type autoRenewalCharge struct {
+	TenantID           int64
+	UserID             int64
+	UserSubscriptionID int64
+	PeriodKey          string
+	PlanID             int64
+	AmountCents        int64
+	PrevExpiresAt      time.Time
+	NewExpiresAt       time.Time
+}
+
+func insertAutoRenewalChargeTx(ctx context.Context, tx pgx.Tx, c autoRenewalCharge) error {
+	if _, err := tx.Exec(ctx, `
+INSERT INTO subscription_auto_renewal_charges (
+	tenant_id, user_id, user_subscription_id, period_key, plan_id,
+	amount_cents, prev_expires_at, new_expires_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		c.TenantID, c.UserID, c.UserSubscriptionID, c.PeriodKey, c.PlanID,
+		c.AmountCents, c.PrevExpiresAt, c.NewExpiresAt); err != nil {
+		return fmt.Errorf("subscription: insert auto renewal charge: %w", err)
+	}
+	return nil
+}
+
+// autoRenewalChargeExistsTx 预查该 (订阅, 周期) 是否已扣过 (幂等命中即跳过)。
+// 唯一索引仍是双扣的最终防线 (并发两 tx 同时预查均未命中时, 后提交者撞 23505)。
+func autoRenewalChargeExistsTx(ctx context.Context, tx pgx.Tx, tenantID, subscriptionID int64, periodKey string) (bool, error) {
+	var one int
+	err := tx.QueryRow(ctx, `
+SELECT 1 FROM subscription_auto_renewal_charges
+WHERE tenant_id=$1 AND user_subscription_id=$2 AND period_key=$3
+LIMIT 1`, tenantID, subscriptionID, periodKey).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("subscription: check auto renewal charge: %w", err)
+	}
+	return true, nil
+}

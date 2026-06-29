@@ -572,6 +572,39 @@ func (m *memoryStore) ListDueExpiry(_ context.Context, now time.Time, limit int)
 	return out, nil
 }
 
+// ListAutoRenewDue 内存实现: 过滤 active + auto_renew=true + 到点 (expires_at<=now)。
+// 与 PG 同语义的过滤逻辑可在此被单测覆盖 (mutation: 去掉 auto_renew 过滤 → 含 false 行 → 红)。
+func (m *memoryStore) ListAutoRenewDue(_ context.Context, now time.Time, limit int) ([]UserSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	var out []UserSubscription
+	for _, sub := range m.subs {
+		if sub.Status == StatusActive && sub.AutoRenew && !sub.ExpiresAt.After(now) {
+			out = append(out, sub)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ExpiresAt.Equal(out[j].ExpiresAt) {
+			return out[i].ExpiresAt.Before(out[j].ExpiresAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// TryAutoRenewSubscription 内存实现: 钱包余额扣减 + 幂等锚是 PG (user_balances / 唯一索引) 专属,
+// 内存无法忠实复现 money 不变量, 故不在此假实现 (假实现会成 §14 非判别测试)。返回 not_due 跳过,
+// 续费 money 路径以 integration_pg 真 PG 测试为准。
+func (m *memoryStore) TryAutoRenewSubscription(_ context.Context, _ autoRenewRecord) (AutoRenewResult, error) {
+	return AutoRenewResult{Renewed: false, SkipReason: AutoRenewSkipNotDue}, nil
+}
+
 func (m *memoryStore) ListAuditEvents(_ context.Context, tenantID, subscriptionID int64) ([]AuditEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

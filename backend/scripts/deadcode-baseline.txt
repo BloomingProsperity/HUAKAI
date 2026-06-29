@@ -773,6 +773,7 @@ internal/subscription/store_memory.go:  unreachable func: memoryStore.ExtendSubs
 internal/subscription/store_memory.go:  unreachable func: memoryStore.GetPlan
 internal/subscription/store_memory.go:  unreachable func: memoryStore.GetSubscription
 internal/subscription/store_memory.go:  unreachable func: memoryStore.ListAuditEvents
+internal/subscription/store_memory.go:  unreachable func: memoryStore.ListAutoRenewDue
 internal/subscription/store_memory.go:  unreachable func: memoryStore.ListDueExpiry
 internal/subscription/store_memory.go:  unreachable func: memoryStore.ListDueReminder
 internal/subscription/store_memory.go:  unreachable func: memoryStore.ListPlans
@@ -783,6 +784,7 @@ internal/subscription/store_memory.go:  unreachable func: memoryStore.ResetQuota
 internal/subscription/store_memory.go:  unreachable func: memoryStore.RevokeSubscription
 internal/subscription/store_memory.go:  unreachable func: memoryStore.SentReminderKeys
 internal/subscription/store_memory.go:  unreachable func: memoryStore.SetAutoRenew
+internal/subscription/store_memory.go:  unreachable func: memoryStore.TryAutoRenewSubscription
 internal/subscription/store_memory.go:  unreachable func: memoryStore.UpdatePlan
 internal/subscription/store_memory.go:  unreachable func: memoryStore.appendAudit
 internal/subscription/store_memory.go:  unreachable func: memoryStore.closeMem
