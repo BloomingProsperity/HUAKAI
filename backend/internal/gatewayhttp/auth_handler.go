@@ -27,6 +27,8 @@ import (
 type AuthEmailSender interface {
 	SendVerification(context.Context, userauth.User, string) error
 	SendPasswordReset(context.Context, userauth.User, string) error
+	// SendDeviceConfirmation 发新设备确认邮件 (DevicePolicy=confirm 达上限时), 携带一次性原文 token。
+	SendDeviceConfirmation(context.Context, userauth.User, string) error
 }
 
 type AuthEmailSendLimiter interface {
@@ -67,6 +69,9 @@ type NoopAuthEmailSender struct{}
 
 func (NoopAuthEmailSender) SendVerification(context.Context, userauth.User, string) error { return nil }
 func (NoopAuthEmailSender) SendPasswordReset(context.Context, userauth.User, string) error {
+	return nil
+}
+func (NoopAuthEmailSender) SendDeviceConfirmation(context.Context, userauth.User, string) error {
 	return nil
 }
 
@@ -112,6 +117,11 @@ type authTwoFactorLoginRequest struct {
 }
 
 type authVerifyEmailRequest struct {
+	TenantID int64  `json:"tenant_id"`
+	Token    string `json:"token"`
+}
+
+type authConfirmDeviceRequest struct {
 	TenantID int64  `json:"tenant_id"`
 	Token    string `json:"token"`
 }
@@ -163,6 +173,7 @@ func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/login", newAuthLoginHandler(d))
 	r.Post("/login/2fa", newAuthTwoFactorLoginHandler(d))
 	r.Post("/verify-email", newAuthVerifyEmailHandler(d))
+	r.Post("/confirm-device", newAuthConfirmDeviceHandler(d))
 	r.Post("/reset-password", newAuthResetPasswordHandler(d))
 	r.Post("/oauth-init", newAuthOAuthInitHandler(d))
 	r.Post("/oauth-callback", newAuthOAuthCallbackHandler(d))
@@ -310,6 +321,9 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 				EventType: "user_login_session_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
 				ReasonClass: sessionReasonClass(err), AuthMethod: "password",
 			})
+			if handleDeviceConfirmationRequired(w, r, d, user, err) {
+				return
+			}
 			writeSessionError(w, err)
 			return
 		}
@@ -356,6 +370,9 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 				EventType: "user_login_session_failed", TenantID: result.TenantID, UserID: result.UserID, Outcome: "failure",
 				ReasonClass: sessionReasonClass(err), AuthMethod: authMethod,
 			})
+			if handleDeviceConfirmationRequiredByID(w, r, d, result.TenantID, result.UserID, err) {
+				return
+			}
 			writeSessionError(w, err)
 			return
 		}
@@ -623,6 +640,9 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 				Provider: safeProviderForEvent(req.Provider), Outcome: "failure", ReasonClass: sessionReasonClass(err),
 				AuthMethod: safeProviderForEvent(req.Provider),
 			})
+			if handleDeviceConfirmationRequired(w, r, d, user, err) {
+				return
+			}
 			writeSessionError(w, err)
 			return
 		}
@@ -676,6 +696,9 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 				Provider: userauth.SocialProviderTelegram, Outcome: "failure", ReasonClass: sessionReasonClass(err),
 				AuthMethod: userauth.SocialProviderTelegram,
 			})
+			if handleDeviceConfirmationRequired(w, r, d, user, err) {
+				return
+			}
 			writeSessionError(w, err)
 			return
 		}

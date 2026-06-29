@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
@@ -227,5 +229,85 @@ func sessionReasonClass(err error) string {
 		return "session_device_confirmation_required"
 	default:
 		return "session_backend_error"
+	}
+}
+
+// 新设备确认 (device confirmation) 流的 HTTP 集成: 登录侧拦截 + 确认端点。default-dormant:
+// usersession.Service.MaxActiveFamilies=0 时整条休眠, 这些函数永不被触发。
+
+// handleDeviceConfirmationRequired 检测 Sessions.Create 返回的设备确认错误: 命中则发确认邮件
+// (best-effort, 失败只记日志不致命) 并返回 403 device_confirmation_required (响应体绝不含 token),
+// 返回 true 表示已处理; 否则返回 false 让调用方按常规 writeSessionError 处理。
+// user 是已认证用户 (取其 email 发信); 调用方在各登录路径上已持有它, 无需重查库。
+func handleDeviceConfirmationRequired(w http.ResponseWriter, r *http.Request, d AuthHandlerDeps, user userauth.User, err error) bool {
+	var confirmErr *usersession.DeviceConfirmationRequiredError
+	if !errors.As(err, &confirmErr) {
+		return false
+	}
+	// 发信 best-effort: 即便邮件不可用也要回 403 让用户知道需确认, 不把发信失败升级成 5xx。
+	if sender := authEmailSender(d); sender != nil {
+		if sendErr := sender.SendDeviceConfirmation(r.Context(), user, confirmErr.RawToken); sendErr != nil {
+			slog.Warn("device confirmation email send failed",
+				"tenant_id", user.TenantID, "user_id", user.ID)
+		}
+	}
+	// 响应体只给状态码 + 通用文案, 绝不回显 token (token 仅经邮件交付)。
+	writeJSONError(w, http.StatusForbidden, "device_confirmation_required",
+		"a confirmation link has been sent to your email to authorize this new device")
+	return true
+}
+
+// handleDeviceConfirmationRequiredByID 与 handleDeviceConfirmationRequired 同语义, 但只持有
+// tenantID/userID (2FA 登录路径没有完整 User)。命中确认错误时按 ID 查用户取 email 发信; 查不到
+// 用户仍回 403 (不把发信前的查库失败升级成 5xx)。
+func handleDeviceConfirmationRequiredByID(w http.ResponseWriter, r *http.Request, d AuthHandlerDeps, tenantID, userID int64, err error) bool {
+	var confirmErr *usersession.DeviceConfirmationRequiredError
+	if !errors.As(err, &confirmErr) {
+		return false
+	}
+	var user userauth.User
+	if d.Auth != nil && d.Auth.Store != nil {
+		if u, lookupErr := d.Auth.Store.GetUserByID(r.Context(), tenantID, userID); lookupErr == nil {
+			user = u
+		}
+	}
+	return handleDeviceConfirmationRequired(w, r, d, user, err)
+}
+
+func newAuthConfirmDeviceHandler(d AuthHandlerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Sessions == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "session dependency unset")
+			return
+		}
+		var req authConfirmDeviceRequest
+		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		// 与 verify-email 同款: 无需已登录, token 即凭证。tenant_id + token 二者皆必填。
+		if req.TenantID <= 0 || strings.TrimSpace(req.Token) == "" {
+			writeJSONError(w, http.StatusBadRequest, "invalid_device_confirmation_request", "tenant_id and token are required")
+			return
+		}
+		if err := d.Sessions.ConfirmDevice(r.Context(), req.TenantID, req.Token); err != nil {
+			writeDeviceConfirmationError(w, err)
+			return
+		}
+		writeAuditJSON(w, http.StatusOK, map[string]any{"status": "device_confirmed"})
+	}
+}
+
+// writeDeviceConfirmationError 把 ConfirmDevice 的错误映射到 4xx (不泄露区分性细节给攻击者)。
+func writeDeviceConfirmationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, usersession.ErrInvalidInput):
+		writeJSONError(w, http.StatusBadRequest, "invalid_device_confirmation_request", "device confirmation request is invalid")
+	case errors.Is(err, usersession.ErrDeviceConfirmationNotFound), errors.Is(err, usersession.ErrRefreshReplay):
+		// token 不存在 / 跨租户 / 已被消费, 统一按 401 (避免枚举: 不存在与已用同一响应)。
+		writeJSONError(w, http.StatusUnauthorized, "device_confirmation_invalid", "device confirmation token is invalid or already used")
+	case errors.Is(err, usersession.ErrTokenExpired):
+		writeJSONError(w, http.StatusUnauthorized, "device_confirmation_expired", "device confirmation token is expired")
+	default:
+		writeJSONError(w, http.StatusServiceUnavailable, "device_confirmation_backend_error", "device confirmation backend transient failure")
 	}
 }

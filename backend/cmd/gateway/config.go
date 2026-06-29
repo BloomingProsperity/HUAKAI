@@ -177,6 +177,31 @@ func loadUserRegistrationModeFromEnv() (userauth.RegistrationMode, error) {
 	return mode, nil
 }
 
+// loadSessionDevicePolicyFromEnv 读新设备策略两旋钮, 注入 usersession.Service:
+//   - HUAKAI_SESSION_MAX_ACTIVE_DEVICES: 每用户活跃登录设备 (session family) 上限; 默认 0 = 策略休眠。
+//   - HUAKAI_SESSION_DEVICE_POLICY: 达上限时的处置 ("" / revoke_oldest / confirm); 默认 "" = 拒绝超限设备。
+//
+// fail-loud: 非法的数字 / 负数 / 未知 policy 取值一律返回 error 拒启, 不静默回落到休眠 (否则运维以为
+// 已开策略实则没开)。默认 (两个 env 都不设) 保持休眠 (max=0), 零生产行为变更。
+func loadSessionDevicePolicyFromEnv() (maxActiveDevices int, devicePolicy string, err error) {
+	rawMax := strings.TrimSpace(os.Getenv("HUAKAI_SESSION_MAX_ACTIVE_DEVICES"))
+	if rawMax != "" {
+		n, parseErr := strconv.Atoi(rawMax)
+		if parseErr != nil || n < 0 {
+			return 0, "", fmt.Errorf("HUAKAI_SESSION_MAX_ACTIVE_DEVICES=%q 必须是 >=0 的整数（0=设备策略休眠）", rawMax)
+		}
+		maxActiveDevices = n
+	}
+	devicePolicy = strings.TrimSpace(os.Getenv("HUAKAI_SESSION_DEVICE_POLICY"))
+	switch devicePolicy {
+	case "", "revoke_oldest", "confirm":
+		// 合法取值: "" = 达上限直接拒 (ErrDeviceLimitExceeded); revoke_oldest = 撤最老腾位; confirm = 走确认流。
+	default:
+		return 0, "", fmt.Errorf("HUAKAI_SESSION_DEVICE_POLICY=%q 不是已知取值（空 / revoke_oldest / confirm）", devicePolicy)
+	}
+	return maxActiveDevices, devicePolicy, nil
+}
+
 // validateDevAuthTokenFlag 在启动时 fail-closed:HUAKAI_DEV_AUTH_RETURN_TOKEN=true 会让公开的
 // 注册/密码重置接口把一次性明文 secret 直接回写进 JSON 响应体(addDevAuthToken),仅供本地/CI 调试。
 // 生产环境(HUAKAI_RELEASE_MODE=production)绝不能开启,否则每次注册/重置都会泄露令牌。

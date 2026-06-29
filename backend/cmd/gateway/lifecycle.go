@@ -338,6 +338,13 @@ func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, e
 	}
 	userSessionService := usersession.NewService(usersession.NewPostgresStore(pgPool))
 	userSessionService.SigningKey = sessionSigningKey
+	// 新设备策略两旋钮 (默认休眠 max=0, 零行为变更); 非法配置 fail-loud 拒启。
+	maxActiveDevices, devicePolicy, err := loadSessionDevicePolicyFromEnv()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load session device policy: %w", err)
+	}
+	userSessionService.MaxActiveFamilies = maxActiveDevices
+	userSessionService.DevicePolicy = devicePolicy
 	return userAuthService, userSessionService, nil
 }
 
