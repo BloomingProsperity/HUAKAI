@@ -1,6 +1,7 @@
 import { apiGet, apiSend } from '../../lib/api'
 import type {
   AssignResponse,
+  AssignmentDetailResponse,
   BulkAssignRequest,
   BulkAssignResponse,
   ChangePlanRequest,
@@ -26,6 +27,7 @@ import type {
  *  - POST   /plans/{id}/disable          停用套餐 → {disabled:true}
  *  - POST   /assignments                 给用户分配套餐 → {subscription,idempotent}
  *  - GET    /assignments?tenant_id&user_id  列某用户订阅 → {subscriptions}
+ *  - GET    /assignments/{id}?tenant_id=  单条分配详情 → {subscription,audit_events}
  *  - POST   /assignments/{id}/cancel     取消订阅 → {subscription}
  *  - POST   /assignments/{id}/reset-quota 重置配额 → {subscription}
  *  - POST   /assignments/bulk            批量分配 → {results}
@@ -69,6 +71,22 @@ export async function listAssignments(
 ): Promise<ListAssignmentsResponse> {
   return apiGet<ListAssignmentsResponse>(`${ROOT}/assignments`, {
     query: { tenant_id: tenantID, user_id: userID },
+    signal,
+  })
+}
+
+/**
+ * 单条分配详情:GET /assignments/{id}?tenant_id=(只读)。
+ * 返回订阅完整视图 + 审计事件流。后端 handler.go:459 newAdminGetAssignmentHandler
+ * 强制要求 tenant_id 查询参数(parsePositiveQuery),缺失返回 400。
+ */
+export async function getAssignment(
+  id: number,
+  tenantID: number,
+  signal?: AbortSignal,
+): Promise<AssignmentDetailResponse> {
+  return apiGet<AssignmentDetailResponse>(`${ROOT}/assignments/${id}`, {
+    query: { tenant_id: tenantID },
     signal,
   })
 }

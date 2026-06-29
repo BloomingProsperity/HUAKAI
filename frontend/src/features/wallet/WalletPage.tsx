@@ -3,8 +3,9 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listMyOrders } from '../orders/api'
 import type { UserOrder } from '../orders/types'
-import { getMyBalance } from './api'
-import { completedTopupCents, formatMoney, orderStatusLabel, orderStatusTone } from './wallet'
+import { getMyBalance, getPortalConfig } from './api'
+import type { PortalTopupConfig } from './types'
+import { completedTopupCents, formatCentsRange, formatMoney, orderStatusLabel, orderStatusTone, providerLabel } from './wallet'
 
 /*
  * 钱包与充值(用户门户)。余额卡(GET /v1/users/me/payments/balance)+ 累计已完成充值 +
@@ -17,16 +18,25 @@ export function WalletPage() {
   const [orders, setOrders] = useState<UserOrder[]>([])
   const [loading, setLoading] = useState(true)
   const [balanceErr, setBalanceErr] = useState<string | null>(null)
+  const [config, setConfig] = useState<PortalTopupConfig | null>(null)
+  const [configErr, setConfigErr] = useState<string | null>(null)
 
   useEffect(() => {
     const ctrl = new AbortController()
     setLoading(true)
-    // 余额与订单各自独立加载:任一失败不连累另一块。
+    // 余额、配置、订单各自独立加载:任一失败不连累其它块。
     getMyBalance(ctrl.signal)
       .then((r) => setBalanceCents(r.balance.amount_cents))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
         setBalanceErr(e instanceof ApiError ? `${e.message}(${e.code})` : '加载余额失败')
+      })
+    // 充值额度与支付方式配置(只读)。失败仅在该卡内提示,不阻断余额/订单。
+    getPortalConfig(ctrl.signal)
+      .then((r) => setConfig(r.config))
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return
+        setConfigErr(e instanceof ApiError ? `${e.message}(${e.code})` : '加载充值配置失败')
       })
     listMyOrders(20, ctrl.signal)
       .then((r) => setOrders(r.orders))
@@ -71,6 +81,80 @@ export function WalletPage() {
           当前支持<strong>手动充值</strong>:在「订阅/兑换」自助开单后按指引完成支付,或联系管理员为你的账户充值。
           充值到账后余额会即时更新。真在线支付网关(自动入账)为后续能力。
         </p>
+      </div>
+
+      {/* 充值额度与支付方式(只读卡):金额区间 + 预设金额 + 各渠道人工支付指引,全部从 config 端点动态拉。 */}
+      <div style={{ ...card, gap: 'var(--hk-space-3)' }}>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>充值额度与支付方式</span>
+        {configErr ? (
+          <span style={{ color: 'var(--hk-danger-600, #8f322a)', fontSize: 13 }}>{configErr}</span>
+        ) : config === null ? (
+          <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>加载中…</span>
+        ) : (
+          <>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-4)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+                <span style={statLabel}>单笔充值额度({config.currency_code})</span>
+                <span style={{ fontSize: 16, fontWeight: 600, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-900)' }}>
+                  {formatCentsRange(config.min_topup_cents, config.max_topup_cents, config.currency_code)}
+                </span>
+              </div>
+              {config.preset_amount_cents.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+                  <span style={statLabel}>预设金额</span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-2)' }}>
+                    {config.preset_amount_cents.map((c) => (
+                      <span
+                        key={c}
+                        style={{
+                          fontSize: 13,
+                          fontFamily: 'var(--hk-font-mono)',
+                          padding: '2px var(--hk-space-2)',
+                          background: 'var(--hk-surface-sunken)',
+                          border: '1px solid var(--hk-line)',
+                          borderRadius: 'var(--hk-radius-md)',
+                        }}
+                      >
+                        {config.currency_code === 'USD' ? '$' : ''}
+                        {formatMoney(c)}
+                        {config.currency_code === 'USD' ? '' : ` ${config.currency_code}`}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+              <span style={statLabel}>支付方式</span>
+              {config.providers.length === 0 ? (
+                <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>暂无可用支付渠道,请联系管理员。</span>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+                  {config.providers.map((p) => (
+                    <div
+                      key={p.provider}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2,
+                        padding: 'var(--hk-space-3)',
+                        background: 'var(--hk-surface-sunken)',
+                        border: '1px solid var(--hk-line)',
+                        borderRadius: 'var(--hk-radius-md)',
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--hk-ink-900)' }}>{providerLabel(p.provider)}</span>
+                      {p.instruction && (
+                        <span style={{ fontSize: 12, color: 'var(--hk-ink-500)', lineHeight: 1.6 }}>{p.instruction}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>

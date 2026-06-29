@@ -78,6 +78,34 @@ export interface ListAssignmentsResponse {
   subscriptions: AdminSubscription[]
 }
 
+/**
+ * 订阅审计事件视图(auditEventView):后端 toAuditEventViews 输出。
+ * 真码:internal/subscriptionhttp/handler.go:169(auditEventView struct)。
+ * event_type/actor_kind 字面值来自 internal/subscription/types.go:176/211。
+ */
+export interface AuditEvent {
+  /** 事件类型(subscription_created / subscription_extended / cancelled / ...)。 */
+  event_type: string
+  /** 操作者类别(admin / user / system)。 */
+  actor_kind: string
+  /** 操作者 ID(omitempty:系统事件可能缺省/为 0)。 */
+  actor_id?: number
+  /** 原因分类(omitempty:撤销等动作携带)。 */
+  reason_class?: string
+  /** 事件发生时间(RFC3339)。 */
+  occurred_at: string
+}
+
+/**
+ * GET /assignments/{id}?tenant_id= 响应(单条分配详情,只读)。
+ * 真码:internal/subscriptionhttp/handler.go:482(newAdminGetAssignmentHandler 输出键
+ * subscription + audit_events)。
+ */
+export interface AssignmentDetailResponse {
+  subscription: AdminSubscription
+  audit_events: AuditEvent[]
+}
+
 /** 写动作(分配/取消/重置/续期/改套餐)响应(单个订阅)。 */
 export interface SubscriptionResponse {
   subscription: AdminSubscription
