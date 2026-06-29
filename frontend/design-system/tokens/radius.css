@@ -1,0 +1,8 @@
+/* HUAKAI corner radii. Base --radius = 0.5rem (8px); sm/md derive from it. */
+:root {
+  --radius: 0.5rem;                       /* 8 — cards, panels, buttons */
+  --radius-lg: var(--radius);             /* 8 */
+  --radius-md: calc(var(--radius) - 2px); /* 6 — inputs, small controls */
+  --radius-sm: calc(var(--radius) - 4px); /* 4 — chips, code tags */
+  --radius-full: 9999px;                  /* pills, badges, status dots, avatars */
+}

@@ -1,0 +1,10 @@
+/* HUAKAI motion. Quiet, utilitarian — transitions are short colour/transform
+   fades; the only looping animation is a 200ms accordion + spinner on refresh. */
+:root {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* @kind other */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --dur-fast: 0.15s; /* @kind other */
+  --dur-base: 0.2s; /* @kind other */
+  --dur-slow: 0.3s; /* @kind other */
+  --lift-hover: -2px; /* @kind other */
+}

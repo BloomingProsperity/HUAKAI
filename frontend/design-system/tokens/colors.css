@@ -1,0 +1,106 @@
+/* HUAKAI color system.
+   Derived from frontend/tailwind.config.ts + app/globals.css.
+   Primary = teal (the brand accent). Neutral = "accent" = slate.
+   Console default theme is DARK; light values live on :root, dark on .dark / [data-theme="dark"]. */
+
+:root {
+  /* ---- Primary (teal) scale ---- */
+  --primary-50: #f0fdfa;
+  --primary-100: #ccfbf1;
+  --primary-200: #99f6e4;
+  --primary-300: #5eead4;
+  --primary-400: #2dd4bf;
+  --primary-500: #14b8a6; /* brand teal */
+  --primary-600: #0d9488;
+  --primary-700: #0f766e;
+  --primary-800: #115e59;
+  --primary-900: #134e4a;
+  --primary-950: #042f2e;
+
+  /* ---- Neutral "accent" (slate) scale ---- */
+  --neutral-50: #f8fafc;
+  --neutral-100: #f1f5f9;
+  --neutral-200: #e2e8f0;
+  --neutral-300: #cbd5e1;
+  --neutral-400: #94a3b8;
+  --neutral-500: #64748b;
+  --neutral-600: #475569;
+  --neutral-700: #334155;
+  --neutral-800: #1e293b;
+  --neutral-900: #0f172a;
+  --neutral-950: #020617;
+
+  /* ---- Semantic accents ---- */
+  --success: #10b981; /* emerald */
+  --success-fg: #047857;
+  --success-bg: #ecfdf5;
+  --success-border: #a7f3d0;
+
+  --warning: #f59e0b; /* amber */
+  --warning-fg: #92400e;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+
+  --danger: #ef4444; /* red */
+  --danger-fg: #b91c1c;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+
+  --info: #3b82f6; /* blue */
+  --violet: #8b5cf6; /* purple — used sparingly (MOCK badges, etc.) */
+
+  /* ---- Semantic aliases (LIGHT theme) ---- */
+  --bg-app: #f8fafc;          /* neutral-50 — page background */
+  --bg-surface: #ffffff;       /* card / panel surface */
+  --bg-surface-2: #f8fafc;     /* inset / muted surface */
+  --bg-surface-hover: #f1f5f9;
+
+  --text-strong: #020617;      /* headings (accent-950) */
+  --text-body: #0f172a;        /* primary body (accent-900) */
+  --text-muted: #64748b;       /* secondary (accent-500) */
+  --text-subtle: #94a3b8;      /* tertiary / hints (accent-400) */
+  --text-on-primary: #ffffff;
+
+  --border: #e2e8f0;           /* hairline (accent-200) */
+  --border-strong: #cbd5e1;    /* emphasized (accent-300) */
+  --ring: #14b8a6;             /* focus ring = primary */
+
+  --accent: #14b8a6;           /* the one brand accent */
+  --accent-hover: #0d9488;
+  --accent-soft-bg: #f0fdfa;   /* primary-50 tint */
+  --accent-soft-border: #ccfbf1;
+  --accent-soft-text: #0f766e;
+}
+
+/* ---- DARK theme (console default) ---- */
+.dark,
+[data-theme="dark"] {
+  --bg-app: #020617;           /* accent-950 */
+  --bg-surface: #0f172a;       /* accent-900 — cards sit ~70% opacity in app */
+  --bg-surface-2: #1e293b;     /* accent-800 inset */
+  --bg-surface-hover: #1e293b;
+
+  --text-strong: #ffffff;
+  --text-body: #f1f5f9;        /* accent-100 */
+  --text-muted: #94a3b8;       /* accent-400 */
+  --text-subtle: #64748b;      /* accent-500 */
+  --text-on-primary: #ffffff;
+
+  --border: #1e293b;           /* accent-800 */
+  --border-strong: #334155;    /* accent-700 */
+  --ring: #2dd4bf;
+
+  --accent-soft-bg: rgba(20, 184, 166, 0.10);
+  --accent-soft-border: rgba(20, 184, 166, 0.30);
+  --accent-soft-text: #5eead4;
+
+  --success-fg: #34d399;
+  --success-bg: rgba(16, 185, 129, 0.12);
+  --success-border: rgba(16, 185, 129, 0.35);
+  --warning-fg: #fbbf24;
+  --warning-bg: rgba(245, 158, 11, 0.12);
+  --warning-border: rgba(245, 158, 11, 0.35);
+  --danger-fg: #f87171;
+  --danger-bg: rgba(239, 68, 68, 0.12);
+  --danger-border: rgba(239, 68, 68, 0.35);
+}

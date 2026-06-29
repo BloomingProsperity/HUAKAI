@@ -1,0 +1,18 @@
+<!-- @dsCard group="Colors" viewport="700x160" name="Semantic states" subtitle="Health & status colours: success, warning, danger, info" -->
+<!DOCTYPE html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>
+  body{margin:0;background:var(--bg-app);font-family:var(--font-sans);padding:18px;color:var(--text-body)}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .cell{border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg-surface)}
+  .dot{width:14px;height:14px;border-radius:50%;margin-bottom:8px}
+  .n{font-size:13px;font-weight:600}
+  .h{font-size:11px;font-family:var(--font-mono);color:var(--text-muted);margin-top:2px}
+  .pill{display:inline-block;margin-top:8px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid}
+</style></head><body>
+<div class="grid">
+  <div class="cell"><div class="dot" style="background:#10b981"></div><div class="n">Success</div><div class="h">#10b981</div><span class="pill" style="background:var(--success-bg);color:var(--success-fg);border-color:var(--success-border)">健康</span></div>
+  <div class="cell"><div class="dot" style="background:#f59e0b"></div><div class="n">Warning</div><div class="h">#f59e0b</div><span class="pill" style="background:var(--warning-bg);color:var(--warning-fg);border-color:var(--warning-border)">冷却中</span></div>
+  <div class="cell"><div class="dot" style="background:#ef4444"></div><div class="n">Danger</div><div class="h">#ef4444</div><span class="pill" style="background:var(--danger-bg);color:var(--danger-fg);border-color:var(--danger-border)">失败</span></div>
+  <div class="cell"><div class="dot" style="background:#3b82f6"></div><div class="n">Info</div><div class="h">#3b82f6</div><span class="pill" style="background:rgba(59,130,246,.12);color:#60a5fa;border-color:rgba(59,130,246,.35)">L0</span></div>
+</div>
+</body></html>

@@ -1,0 +1,75 @@
+<!-- @dsCard group="Console" viewport="1280x780" name="HUAKAI 控制台" subtitle="Operations console — dashboard, accounts, chat debugger" -->
+<!-- @startingPoint section="Console" subtitle="Full HUAKAI admin console (sidebar + dashboard + accounts + chat)" viewport="1280x800" -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HUAKAI 控制台</title>
+<link rel="stylesheet" href="../../styles.css" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  html, body { margin: 0; }
+
+  /* ── Light theme for the console — clean data-admin look (sky-tinted neutrals, teal accent).
+     Scoped here via a :root override after styles.css; other surfaces are unaffected. ── */
+  :root {
+    --bg-app: #eef3f9;
+    --bg-surface: #ffffff;
+    --bg-surface-2: #f3f7fb;
+    --bg-surface-hover: #eef4fa;
+    --text-strong: #0d1b26;
+    --text-body: #243140;
+    --text-muted: #5c6b78;
+    --text-subtle: #8a98a4;
+    --border: #e2eaf2;
+    --border-strong: #cdd9e5;
+    --primary-300: #0f766e;
+    --primary-400: #0d9488;
+    --ring: #14b8a6;
+    --shadow-card: 0 1px 2px rgba(13,42,72,0.05), 0 1px 3px rgba(13,42,72,0.07);
+    --shadow-card-hover: 0 12px 32px rgba(13,42,72,0.12);
+    --shadow-glow: 0 0 18px rgba(20,184,166,0.22);
+  }
+
+  body { background: var(--bg-app); }
+  @keyframes hk-spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="data.js"></script>
+<script src="nav.js"></script>
+<script type="text/babel" src="icons.jsx" data-presets="react"></script>
+<script type="text/babel" src="Shell.jsx" data-presets="react"></script>
+<script type="text/babel" src="Dashboard.jsx" data-presets="react"></script>
+<script type="text/babel" src="Accounts.jsx" data-presets="react"></script>
+<script type="text/babel" src="Chat.jsx" data-presets="react"></script>
+<script type="text/babel" data-presets="react">
+  // Map IA ids to the rich views that exist; everything else falls to Placeholder.
+  const ROUTES = {
+    "ops:运营总览": window.Dashboard,
+    "ops:账号池:上游账号": window.Accounts,
+    "user:API Key:Playground": window.Chat,
+  };
+  function App() {
+    const [portal, setPortal] = React.useState("ops");
+    const [id, setId] = React.useState("ops:运营总览");
+    React.useEffect(() => { if (window.lucide) window.lucide.createIcons(); });
+    const loc = window.HK_NAV_FIND(id);
+    const onPortal = (p) => { setPortal(p); setId(p + ":" + window.HK_NAV[p].home); };
+    const View = ROUTES[id];
+    return (
+      <window.Shell portal={portal} portalLabel={loc.portalLabel} activeId={id} onSelect={setId} onPortal={onPortal} loc={loc}>
+        {View ? <View /> : <window.Placeholder loc={loc} />}
+      </window.Shell>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

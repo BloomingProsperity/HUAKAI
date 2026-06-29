@@ -1,0 +1,145 @@
+<!-- @dsCard group="Website" viewport="1440x900" name="HUAKAI 官网首页" subtitle="Self-hosted AI gateway landing — hero, providers, capabilities" -->
+<!-- @startingPoint section="Website" subtitle="HUAKAI product homepage (hero · providers · capability grid · self-host CTA)" viewport="1440x900" -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HUAKAI 华凯 · 自托管 AI 网关</title>
+<link rel="stylesheet" href="../../styles.css" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  html, body { margin: 0; }
+
+  /* ── Light sky-blue theme — gradient sampled from the reference, lime accent tuned for light.
+     Scoped to this homepage (:root override after styles.css); the console keeps its dark teal. ── */
+  :root {
+    /* sky-blue page gradient (sampled: #F8FDFF top → #A0DCFF bottom) */
+    --bg-app: linear-gradient(180deg, #F4FBFF 0%, #DCF1FF 38%, #C3E9FF 70%, #ABDFFF 100%);
+    --bg-surface: #ffffff;
+    --bg-surface-2: #eef6fc;
+    --bg-surface-hover: #f4f9fd;
+    --text-strong: #0d1b26;
+    --text-body: #233039;
+    --text-muted: #586a76;
+    --text-subtle: #8696a1;
+    --border: #d8e8f3;
+    --border-strong: #bdd4e4;
+    /* lime accent on light: vivid fill + dark text; deep lime for thin text */
+    --accent: #a8db22;
+    --accent-hover: #95c419;
+    --text-on-primary: #14210a;
+    --ring: #8fbf1a;
+    --primary-300: #6f9a12;
+    --primary-400: #5c8410;
+    --accent-soft-bg: rgba(140,190,30,0.16);
+    --accent-soft-border: rgba(120,165,25,0.40);
+    --accent-soft-text: #4c7011;
+    --shadow-card: 0 1px 3px rgba(13,42,72,0.06), 0 1px 2px rgba(13,42,72,0.08);
+    --shadow-card-hover: 0 14px 40px rgba(13,42,72,0.12);
+    --shadow-glow: 0 0 20px rgba(140,190,30,0.30);
+  }
+
+  body {
+    background: var(--bg-app); background-attachment: fixed;
+    color: var(--text-body); font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  }
+  ::selection { background: rgba(120,165,25,0.28); }
+
+  .hk-container { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- Hero ---- */
+  .hk-hero { position: relative; padding: clamp(48px, 8vh, 96px) 0 88px; overflow: hidden; }
+  .hk-hero::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(80% 50% at 50% -10%, rgba(255,255,255,0.55), transparent 60%);
+  }
+  .hk-hero::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.3;
+    background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 48px 48px;
+    -webkit-mask-image: radial-gradient(68% 58% at 50% 0%, #000, transparent 76%);
+    mask-image: radial-gradient(68% 58% at 50% 0%, #000, transparent 76%);
+  }
+  .hk-hero > .hk-container { position: relative; z-index: 1; }
+  .hk-hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: center; }
+  .hk-h1 { font-size: clamp(40px, 5.2vw, 62px); }
+
+  /* ---- Section typography ---- */
+  .hk-section { padding: clamp(44px, 6.5vh, 78px) 0; }
+  .hk-eyebrow { font-family: var(--font-mono); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--primary-400); }
+  .hk-h2 { margin: 12px 0 0; font-size: clamp(26px, 3.3vw, 36px); font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; color: var(--text-strong); }
+  .hk-lead { margin: 16px 0 0; font-size: 16px; line-height: 1.6; color: var(--text-muted); }
+  .hk-code { font-family: var(--font-mono); font-size: 0.85em; color: var(--primary-300); background: var(--accent-soft-bg); border: 1px solid var(--accent-soft-border); padding: 1px 6px; border-radius: 4px; margin: 0 2px; white-space: nowrap; }
+
+  /* ---- Grids ---- */
+  .hk-provider-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(208px, 1fr)); gap: 16px; }
+  .hk-feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .hk-footer-grid { display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr; gap: 32px; }
+
+  /* ---- Terminal cursor ---- */
+  .hk-cursor { display: inline-block; width: 7px; height: 14px; margin-left: 3px; vertical-align: -2px; border-radius: 1px; }
+
+  /* ---- Hover states (inline styles can't do :hover) ---- */
+  .hk-nav-link:hover { color: var(--text-body); background: var(--bg-surface-2); }
+  .hk-ghost-link:hover { border-color: var(--accent-soft-border); color: var(--primary-300); }
+  .hk-outline-btn:hover { border-color: var(--accent-soft-border); background: var(--accent-soft-bg); color: var(--accent-soft-text); }
+  .hk-foot-link:hover { color: var(--primary-300); }
+
+  /* ---- Motion (guarded so reduced-motion shows content) ---- */
+  @media (prefers-reduced-motion: no-preference) {
+    .hk-rise { opacity: 0; transform: translateY(12px); animation: hk-rise 0.55s var(--ease-out) forwards; }
+    .hk-cursor { animation: hk-blink 1.1s steps(1) infinite; }
+  }
+  @keyframes hk-rise { to { opacity: 1; transform: none; } }
+  @keyframes hk-blink { 50% { opacity: 0; } }
+
+  /* ---- Responsive ---- */
+  @media (max-width: 980px) {
+    .hk-hero-grid { grid-template-columns: 1fr; gap: 40px; }
+    .hk-feature-grid { grid-template-columns: repeat(2, 1fr); }
+    .hk-nav-links { display: none; }
+    .hk-float { position: static !important; right: auto !important; bottom: auto !important; width: auto !important; margin-top: 16px; box-shadow: var(--shadow-card) !important; }
+  }
+  @media (max-width: 600px) {
+    .hk-feature-grid { grid-template-columns: 1fr; }
+    .hk-hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" src="icons.jsx" data-presets="react"></script>
+<script type="text/babel" src="Nav.jsx" data-presets="react"></script>
+<script type="text/babel" src="Hero.jsx" data-presets="react"></script>
+<script type="text/babel" src="Providers.jsx" data-presets="react"></script>
+<script type="text/babel" src="Features.jsx" data-presets="react"></script>
+<script type="text/babel" src="CTA.jsx" data-presets="react"></script>
+<script type="text/babel" src="Footer.jsx" data-presets="react"></script>
+<script type="text/babel" data-presets="react">
+  function SiteApp() {
+    React.useEffect(() => { if (window.lucide) window.lucide.createIcons(); });
+    return (
+      <React.Fragment>
+        <window.SiteNav />
+        <main>
+          <window.SiteHero />
+          <window.SiteProviders />
+          <window.SiteFeatures />
+          <window.SiteDeploy />
+        </main>
+        <window.SiteFooter />
+      </React.Fragment>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById("root")).render(<SiteApp />);
+</script>
+</body>
+</html>

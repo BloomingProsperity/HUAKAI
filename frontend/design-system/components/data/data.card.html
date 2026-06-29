@@ -1,0 +1,61 @@
+<!-- @dsCard group="Components" viewport="700x320" name="Cards, Badges & Tables" subtitle="StatCard, health badges, account table" -->
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../../styles.css" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+  body { margin: 0; background: var(--bg-app); color: var(--text-body); font-family: var(--font-sans); padding: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const NS = window.HUAKAIDesignSystem_36f9be;
+  const { StatCard, Badge, Card, CardHeader, CardTitle, CardContent, Table, THead, TBody, TR, TH, TD } = NS;
+  const I = (name) => {
+    const ref = React.useRef(null);
+    React.useEffect(() => { if (ref.current && window.lucide) window.lucide.createIcons({ nameAttr: "data-i", attrs: { width: 16, height: 16 } }); });
+    return <i ref={ref} data-i={name}></i>;
+  };
+  function Demo() {
+    return (
+      <div className="grid">
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <StatCard title="今日 Token 用量" value="1,284,500" icon={<I name="database-zap" />} description="输入、输出、缓存合计" detail="输入 820,400 / 输出 464,100" tone="primary" />
+          <div className="badges">
+            <Badge variant="success">健康</Badge>
+            <Badge variant="warning">冷却中</Badge>
+            <Badge variant="destructive">失败</Badge>
+            <Badge variant="secondary">降级</Badge>
+            <Badge variant="outline">可调度</Badge>
+            <Badge variant="info">L0</Badge>
+          </div>
+        </div>
+        <Card>
+          <CardHeader><CardTitle><I name="layers" /> 供应商账号</CardTitle></CardHeader>
+          <CardContent style={{ padding: "0 0 6px" }}>
+            <Table>
+              <THead><TR hover={false}><TH>账号</TH><TH>供应商</TH><TH>健康</TH><TH>并发</TH></TR></THead>
+              <TBody>
+                <TR><TD>claude-01</TD><TD>Anthropic</TD><TD><Badge variant="success">健康</Badge></TD><TD mono>3/10</TD></TR>
+                <TR><TD>gpt-pool-a</TD><TD>OpenAI</TD><TD><Badge variant="warning">冷却中</Badge></TD><TD mono>8/8</TD></TR>
+                <TR><TD>vertex-eu</TD><TD>Google</TD><TD><Badge variant="destructive">失败</Badge></TD><TD mono>0/6</TD></TR>
+              </TBody>
+            </Table>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById("root")).render(<Demo />);
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+<!-- @dsCard group="Spacing" viewport="700x160" name="Radius & elevation" subtitle="8px radius, soft card shadow, teal glow for live states" -->
+<!DOCTYPE html><html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>
+  body{margin:0;background:var(--bg-app);font-family:var(--font-sans);padding:20px;color:var(--text-body)}
+  .row{display:flex;gap:16px;flex-wrap:wrap}
+  .box{width:130px;height:88px;background:var(--bg-surface);border:1px solid var(--border);display:flex;align-items:flex-end;padding:8px;font-size:11px;color:var(--text-muted)}
+  .lab{font-family:var(--font-mono)}
+</style></head><body>
+<div class="row">
+  <div class="box" style="border-radius:4px"><span class="lab">sm · 4px</span></div>
+  <div class="box" style="border-radius:6px"><span class="lab">md · 6px</span></div>
+  <div class="box" style="border-radius:8px"><span class="lab">lg · 8px</span></div>
+  <div class="box" style="border-radius:8px;box-shadow:var(--shadow-card)"><span class="lab">shadow-card</span></div>
+  <div class="box" style="border-radius:8px;box-shadow:var(--shadow-card-hover)"><span class="lab">card-hover</span></div>
+  <div class="box" style="border-radius:8px;border-color:var(--primary-500);box-shadow:var(--shadow-glow)"><span class="lab" style="color:#5eead4">glow (live)</span></div>
+</div>
+</body></html>

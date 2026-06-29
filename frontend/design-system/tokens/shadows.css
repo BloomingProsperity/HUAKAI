@@ -1,0 +1,15 @@
+/* HUAKAI elevation + glow.
+   Cards use a soft 2-layer "card" shadow; hover lifts to "card-hover".
+   The teal "glow" is reserved for live/active states (status dots, the HK logo,
+   the health progress bar) — not general decoration. */
+:root {
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-card-hover: 0 10px 40px rgba(0, 0, 0, 0.08);
+  --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --shadow-glass-sm: 0 4px 16px rgba(0, 0, 0, 0.06);
+  --shadow-glow: 0 0 20px rgba(20, 184, 166, 0.25);
+  --shadow-glow-lg: 0 0 40px rgba(20, 184, 166, 0.35);
+  --shadow-inner-glow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  /* focus ring */
+  --ring-focus: 0 0 0 2px var(--bg-surface), 0 0 0 4px var(--ring);
+}
