@@ -49,3 +49,40 @@ export async function getBalanceHistory(
     signal,
   })
 }
+
+// ── 用户运维动作(adminuserhttp.MountRoutes,均含审计 + 租户隔离) ──────────────
+
+/** 强制清除用户 TOTP 2FA:POST /{id}/2fa/force-disable。返回 {id, two_factor_enabled:false}。 */
+export async function forceDisable2FA(id: number): Promise<unknown> {
+  return apiSend<unknown>('POST', `${PATH}/${id}/2fa/force-disable`, {})
+}
+
+/** 清空用户全部通行密钥(passkey):DELETE /{id}/passkeys。返回 {id, cleared:<n>}。 */
+export async function resetPasskeys(id: number): Promise<{ id: number; cleared: number }> {
+  return apiSend<{ id: number; cleared: number }>('DELETE', `${PATH}/${id}/passkeys`)
+}
+
+/** 设用户组(路由权益/计费倍率随组变):PUT /{id}/group {group}。 */
+export async function setUserGroup(id: number, group: string): Promise<unknown> {
+  return apiSend<unknown>('PUT', `${PATH}/${id}/group`, { group })
+}
+
+/** 设用户备注:PUT /{id}/remark {remark}。 */
+export async function setUserRemark(id: number, remark: string): Promise<unknown> {
+  return apiSend<unknown>('PUT', `${PATH}/${id}/remark`, { remark })
+}
+
+/** 软删用户(deleted_at=now,撤会话):DELETE /{id}。返回 {id, deleted:true}。 */
+export async function softDeleteUser(id: number): Promise<unknown> {
+  return apiSend<unknown>('DELETE', `${PATH}/${id}`)
+}
+
+/** 解绑某社交登录绑定:DELETE /{id}/account-bindings/{provider}。返回 {unlinked:<n>}。 */
+export async function unlinkSocialIdentity(id: number, provider: string): Promise<{ unlinked: number }> {
+  return apiSend<{ unlinked: number }>('DELETE', `${PATH}/${id}/account-bindings/${encodeURIComponent(provider)}`)
+}
+
+/** 2FA 普及率统计(只读):GET /admin/v1/users/2fa-adoption-stats。 */
+export async function getTwoFAAdoptionStats(signal?: AbortSignal): Promise<import('./actions').TwoFAAdoptionStats> {
+  return apiGet<import('./actions').TwoFAAdoptionStats>(`${PATH}/2fa-adoption-stats`, { signal })
+}

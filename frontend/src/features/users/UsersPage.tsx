@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
-import { createUser, listUsers, setUserStatus, unlockUser } from './api'
+import { createUser, getTwoFAAdoptionStats, listUsers, setUserStatus, unlockUser } from './api'
+import { formatAdoptionRate, type TwoFAAdoptionStats } from './actions'
 import {
   buildCreateUser,
   CREATE_USER_ROLES,
@@ -27,6 +28,7 @@ export function UsersPage() {
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [createOpen, setCreateOpen] = useState(false)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [twoFA, setTwoFA] = useState<TwoFAAdoptionStats | null>(null)
 
   const load = useCallback(
     (signal: AbortSignal) => {
@@ -50,6 +52,17 @@ export function UsersPage() {
     load(ctrl.signal)
     return () => ctrl.abort()
   }, [load, refreshNonce])
+
+  // 2FA 普及率统计独立加载,失败静默(只是少一张统计卡,不连累列表)。
+  useEffect(() => {
+    const ctrl = new AbortController()
+    getTwoFAAdoptionStats(ctrl.signal)
+      .then((s) => setTwoFA(s))
+      .catch(() => {
+        /* 统计失败不提示 */
+      })
+    return () => ctrl.abort()
+  }, [refreshNonce])
 
   const refresh = () => setRefreshNonce((n) => n + 1)
 
@@ -81,6 +94,16 @@ export function UsersPage() {
       </header>
 
       {createOpen && <CreateUserModal onClose={() => setCreateOpen(false)} onCreated={refresh} />}
+
+      {twoFA && (
+        <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'baseline', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 13 }}>
+          <span style={{ color: 'var(--hk-ink-500)' }}>两步验证(2FA)普及率</span>
+          <strong style={{ fontSize: 18, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-900)' }}>{formatAdoptionRate(twoFA)}</strong>
+          <span style={{ color: 'var(--hk-ink-500)' }}>
+            {twoFA.enabled_users} / {twoFA.total_users} 名用户已开启
+          </span>
+        </div>
+      )}
 
       <form
         onSubmit={(e) => {

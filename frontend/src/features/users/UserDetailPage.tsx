@@ -5,6 +5,7 @@ import { StatusBadge } from '../../ui/StatusBadge'
 import { getBalanceHistory, getUser } from './api'
 import { balanceDirection, eventTypeLabel, signedAmount, type BalanceHistoryEntry, type UserDetail } from './detail'
 import { roleLabel, statusLabel } from './users'
+import { UserAdminActions } from './UserAdminActions'
 
 /*
  * 用户详情(运维台,P1)。GET /admin/v1/users/{id} 用户信息 + GET /{id}/balance-history 余额台账。
@@ -18,6 +19,8 @@ export function UserDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
+  // 运维动作(改组/备注/2FA/passkey/解绑/软删)成功后自增,触发重新拉详情。
+  const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
     if (!Number.isInteger(id) || id <= 0) {
@@ -45,7 +48,7 @@ export function UserDetailPage() {
         setHistoryError(e instanceof ApiError ? `${e.message}(${e.code})` : '加载余额历史失败')
       })
     return () => ctrl.abort()
-  }, [id])
+  }, [id, nonce])
 
   if (loading) return <Center>加载中…</Center>
   if (error && !user) return <Center tone="danger">{error}</Center>
@@ -70,7 +73,8 @@ export function UserDetailPage() {
         <Stat label="用户组" value={user.user_group || '—'} />
         <Stat label="创建时间" value={fmt(user.created_at)} />
       </div>
-      {user.remark && <Stat label="备注" value={user.remark} />}
+
+      <UserAdminActions user={user} onChanged={() => setNonce((n) => n + 1)} />
 
       <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
         <h2 style={{ fontSize: 15, color: 'var(--hk-ink-700)' }}>余额历史(台账)</h2>
