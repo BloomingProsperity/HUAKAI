@@ -46,8 +46,13 @@ func TestIPRateLimiter_StillRateLimitsAfterBoundChange(t *testing.T) {
 	// 回归:加上限后,核心限流语义不变——同一 IP 超 limit 即拒。
 	l := newIPRateLimiter(2, time.Minute)
 	now := time.Now()
-	if !l.Allow("198.51.100.1", now) || !l.Allow("198.51.100.1", now) {
-		t.Fatalf("前 2 次应放行(limit=2)")
+	// limit=2:前两次独立放行(拆成两次断言,避免 `!Allow || !Allow` 自反比较 SA4000;
+	// 语义不变——仍各调用一次,消耗两个令牌)。
+	if !l.Allow("198.51.100.1", now) {
+		t.Fatalf("第 1 次应放行(limit=2)")
+	}
+	if !l.Allow("198.51.100.1", now) {
+		t.Fatalf("第 2 次应放行(limit=2)")
 	}
 	if l.Allow("198.51.100.1", now) {
 		t.Fatalf("第 3 次应被拒(超 limit)")

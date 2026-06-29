@@ -80,6 +80,14 @@ func NewModeAdapterRegistry() *ModeAdapterRegistry {
 }
 
 func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
+	// 生产:operator OAuth 路径不注入 client(nil),经 GeminiRefresh.httpClient() 回退到
+	// auth.NewSSRFProtectedOAuthClient(拨号层校验目标 IP、禁代理、禁 3xx)。
+	// newDefaultModeAdapterRegistry 的 operatorOAuthClient 仅供测试注入 mock —— SSRF 防护
+	// 拨号会丢弃自定义 RoundTripper,无法用 http.DefaultClient mock 驱动 operator OAuth 刷新逻辑。
+	return newDefaultModeAdapterRegistry(nil)
+}
+
+func newDefaultModeAdapterRegistry(operatorOAuthClient *http.Client) *ModeAdapterRegistry {
 	r := NewModeAdapterRegistry()
 	register := func(vendor, authMode string, adapter ModeRefreshAdapter) {
 		_ = r.Register(vendor, authMode, adapter)
@@ -109,6 +117,7 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 		configVendor: appconfig.VendorOAuthGemini,
 		tokenURLName: geminiOAuthTokenURLEnv,
 		clientIDName: geminiOAuthClientIDEnv,
+		client:       operatorOAuthClient,
 		newAdapter: func(cfg operatorOAuthConfig) RefreshAdapter {
 			return adapters.GeminiRefresh{
 				Endpoint: cfg.TokenEndpoint, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
@@ -122,6 +131,7 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 		configVendor: appconfig.VendorOAuthGemini,
 		tokenURLName: geminiOAuthTokenURLEnv,
 		clientIDName: geminiOAuthClientIDEnv,
+		client:       operatorOAuthClient,
 		newAdapter: func(cfg operatorOAuthConfig) RefreshAdapter {
 			return adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{
 				Endpoint: cfg.TokenEndpoint, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
