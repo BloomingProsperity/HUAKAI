@@ -109,6 +109,15 @@ export interface BulkByTagResult {
   count: number
 }
 
+/**
+ * DELETE /{id} 硬删账号的响应:{id, deleted}。
+ * 真码:backend/internal/gatewayhttp/admin_pool_accounts_handler.go:695。
+ */
+export interface DeleteAccountResult {
+  id: number
+  deleted: boolean
+}
+
 /*
  * ---- 账号 TLS 指纹 profile 绑定 DTO ----
  * 对应 backend/internal/accountfphttp/fingerprint_handler.go:

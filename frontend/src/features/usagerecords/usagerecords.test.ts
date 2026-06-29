@@ -4,7 +4,11 @@ import {
   dayEndRFC3339,
   dayStartRFC3339,
   defaultExportRange,
+  disputeStatusLabel,
+  disputeStatusTone,
+  encodeReceiptRequestID,
   formatCost,
+  formatMicroUSD,
   hasMore,
   isSuccess,
   modelDisplay,
@@ -13,6 +17,9 @@ import {
   tokensSummary,
   totalTokens,
   validateExportRange,
+  verifyLabel,
+  verifyStatusLabel,
+  verifyTone,
 } from './usagerecords'
 
 describe('statusTone / statusLabel(镜像后端 usageStatus)', () => {
@@ -152,5 +159,81 @@ describe('defaultExportRange', () => {
     const r = defaultExportRange(30, now)
     expect(r.toDay).toBe('2026-06-30')
     expect(r.fromDay).toBe('2026-06-01')
+  })
+})
+
+describe('encodeReceiptRequestID(收据路由路径段编码)', () => {
+  it('无斜杠 → 整体编码', () => {
+    expect(encodeReceiptRequestID('req_abc123')).toBe('req_abc123')
+    // 段内特殊字符必须编码(防路径注入)。
+    expect(encodeReceiptRequestID('req a?b')).toBe('req%20a%3Fb')
+  })
+  it('含一个斜杠(host/tail)→ 斜杠保留为分隔符,两段分别编码', () => {
+    // 判别核心:斜杠必须是字面 '/'(命中后端双段路由),不能被编成 %2F。
+    expect(encodeReceiptRequestID('host.example/tail abc')).toBe('host.example/tail%20abc')
+    const out = encodeReceiptRequestID('a/b')
+    expect(out).toBe('a/b')
+    expect(out).not.toContain('%2F')
+  })
+  it('host 段内的特殊字符编码,但分隔斜杠不动', () => {
+    expect(encodeReceiptRequestID('h?x/t')).toBe('h%3Fx/t')
+  })
+})
+
+describe('formatMicroUSD(微美分→USD)', () => {
+  it('1_000_000 微美分 = $1', () => {
+    // 判别核心:必须除以 1e6(变异成不除 → $1000000 → RED)。
+    expect(formatMicroUSD(1_000_000)).toBe('$1')
+    expect(formatMicroUSD(10_000)).toBe('$0.01')
+    expect(formatMicroUSD(0)).toBe('$0')
+  })
+  it('最小整数微美分(1)= 恰 $0.000001,诚实展示不塌成 $0', () => {
+    // 1 micro-USD = 0.000001 USD,正好是可展示最小精度;不能被塌成 $0 误导用户。
+    expect(formatMicroUSD(1)).toBe('$0.000001')
+    expect(formatMicroUSD(1)).not.toBe('$0')
+  })
+  it('非有限值 → 占位', () => {
+    expect(formatMicroUSD(Number.NaN)).toBe('—')
+  })
+})
+
+describe('verifyTone / verifyLabel(验签整体结论)', () => {
+  it('valid=true → 可信(ok)', () => {
+    expect(verifyTone({ valid: true, signature_valid: true })).toBe('ok')
+    expect(verifyLabel({ valid: true, signature_valid: true })).toBe('已验签 · 可信')
+  })
+  it('签名有效但 valid=false(撤销/窗口外/哈希不符)→ warn,不误标可信', () => {
+    // 判别核心:必须先看 valid(变异成只看 signature_valid → key_revoked 误判可信 → RED)。
+    expect(verifyTone({ valid: false, signature_valid: true })).toBe('warn')
+    expect(verifyLabel({ valid: false, signature_valid: true })).toBe('签名有效但不被采信')
+  })
+  it('签名无效 → 验签失败(danger)', () => {
+    expect(verifyTone({ valid: false, signature_valid: false })).toBe('danger')
+    expect(verifyLabel({ valid: false, signature_valid: false })).toBe('验签失败')
+  })
+})
+
+describe('verifyStatusLabel', () => {
+  it('已知机器码 → 中文,未知码原样保留诊断', () => {
+    expect(verifyStatusLabel('signed-only')).toBe('已签名')
+    expect(verifyStatusLabel('unverified')).toBe('未采信')
+    expect(verifyStatusLabel('some_new_state')).toBe('some_new_state')
+    expect(verifyStatusLabel(undefined)).toBe('—')
+  })
+})
+
+describe('disputeStatusLabel / disputeStatusTone', () => {
+  it('解决类 → ok,驳回 → danger,进行中 → warn', () => {
+    expect(disputeStatusTone('resolved')).toBe('ok')
+    expect(disputeStatusTone('rejected')).toBe('danger')
+    expect(disputeStatusTone('open')).toBe('warn')
+    // 判别核心:rejected 不能落进「其它进行中 → warn」分支(变异成默认 warn → RED)。
+    expect(disputeStatusTone('rejected')).not.toBe('warn')
+  })
+  it('标签中文,大小写无关,未知码原样', () => {
+    expect(disputeStatusLabel('OPEN')).toBe('待处理')
+    expect(disputeStatusLabel('resolved')).toBe('已解决')
+    expect(disputeStatusLabel('weird_state')).toBe('weird_state')
+    expect(disputeStatusLabel('  ')).toBe('—')
   })
 })

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listPricing } from './api'
+import { RateVersionPanel } from './RateVersionPanel'
 import {
   applyFilters,
   capabilityList,
@@ -21,8 +22,11 @@ import type { PricingItem } from './types'
  * + 模型详情抽屉。纯只读对外门面。注:该端点仅返回已配置定价的模型,故不做"无价"维度。
  */
 type ViewMode = 'cards' | 'table'
+/** 页签:模型目录(当前价目)/ 费率版本(历史快照透明)。 */
+type Tab = 'catalog' | 'versions'
 
 export function ModelsPage() {
+  const [tab, setTab] = useState<Tab>('catalog')
   const [items, setItems] = useState<PricingItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -57,13 +61,24 @@ export function ModelsPage() {
 
   return (
     <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
         <h1 style={{ fontSize: 22 }}>模型与定价</h1>
         <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          管线第 6 站 · 公开价目表。共 {items.length} 个模型{filtered.length !== items.length ? `,筛选出 ${filtered.length} 个` : ''}。
+          {tab === 'catalog'
+            ? `管线第 6 站 · 公开价目表。共 ${items.length} 个模型${filtered.length !== items.length ? `,筛选出 ${filtered.length} 个` : ''}。`
+            : '费率版本透明 · 历史价格快照只读查询。'}
         </p>
+        <Toggle
+          options={[{ v: 'catalog', l: '模型目录' }, { v: 'versions', l: '费率版本' }]}
+          value={tab}
+          onChange={(v) => setTab(v as Tab)}
+        />
       </header>
 
+      {tab === 'versions' ? (
+        <RateVersionPanel />
+      ) : (
+      <>
       <div style={toolbar}>
         <input value={filters.query} onChange={(e) => setF('query', e.target.value)} placeholder="按模型名 / canonical / 厂商搜索" style={{ ...inp, flex: '1 1 220px', maxWidth: 320 }} />
         <Select value={filters.owner} onChange={(v) => setF('owner', v)} allLabel="全部厂商" options={owners} />
@@ -91,6 +106,8 @@ export function ModelsPage() {
       )}
 
       {selected && <ModelDrawer m={selected} unit={unit} onClose={() => setSelected(null)} />}
+      </>
+      )}
     </div>
   )
 }

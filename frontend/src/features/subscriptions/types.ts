@@ -57,6 +57,17 @@ export interface CurrentSubscriptionResponse {
   auto_renew: boolean
 }
 
+/**
+ * GET /(订阅历史):本人全部订阅记录(生效中/已过期/已取消/待生效都在内)。
+ * 真码 backend/internal/subscriptionhttp/handler.go:558 newUserListSubscriptionsHandler →
+ * ListUserSubscriptions → toUserSubscriptionViews(handler.go:211),
+ * 响应 {subscriptions: subscriptionView[]},每个元素与 GET /me 的 subscription 同形(SubscriptionView)。
+ * 该端点只读,身份取自 session(后端 ident.UserID),前端绝不传 user_id。
+ */
+export interface SubscriptionHistoryResponse {
+  subscriptions: SubscriptionView[]
+}
+
 /** GET /me/progress 的单个配额窗口进度项。 */
 export interface SubscriptionProgressView {
   /** 窗口类型:calendar_day / calendar_week / calendar_month。 */

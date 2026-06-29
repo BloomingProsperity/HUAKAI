@@ -5,15 +5,17 @@ import { buildExportRange, defaultExportRange, type ExportRangeForm } from './or
 import { errBox, Field, ghostBtn, inp, panel, primaryBtn } from './ui'
 
 /*
- * CSV 导出工具栏。三个只读导出端点(payments / orders / refunds 的 export.csv),
+ * CSV 导出工具栏。四个只读导出端点(payments / orders / refunds / usage 的 export.csv),
  * 走 admin token 的 blob 下载。注意:这些端点【不接受 tenant_id】,租户由 admin 凭据
  * ScopeTenantID 推导;from/to 为必填 RFC3339(前端用 datetime-local + buildExportRange 校验),
- * status 仅 payments/orders 接受(refunds 不消费)。
+ * status 仅 payments/orders 接受(refunds / usage 不消费)。
+ * usage 用量明细导出真码 export.go:70 路由 + export.go:141 NewUsageExportHandler。
  */
 const KINDS: Array<{ kind: ExportKind; label: string }> = [
   { kind: 'payments', label: '支付订单 CSV' },
   { kind: 'orders', label: '订单 CSV' },
   { kind: 'refunds', label: '退款 CSV' },
+  { kind: 'usage', label: '用量明细 CSV' },
 ]
 
 export function ExportToolbar() {

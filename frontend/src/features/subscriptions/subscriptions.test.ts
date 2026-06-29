@@ -14,6 +14,7 @@ import {
   isSubscriptionActive,
   purchaseGuidance,
   sortProgressWindows,
+  sortSubscriptionHistory,
   subscriptionStatusLabel,
   subscriptionStatusTone,
   validateChangePlan,
@@ -154,6 +155,37 @@ describe('sortProgressWindows', () => {
     const rows = [progressRow('calendar_month'), progressRow('calendar_day')]
     sortProgressWindows(rows)
     expect(rows[0].window_kind).toBe('calendar_month')
+  })
+})
+
+describe('sortSubscriptionHistory', () => {
+  function sub(id: number, createdAt: string): SubscriptionView {
+    return {
+      id,
+      plan_id: id,
+      status: 'expired',
+      starts_at: createdAt,
+      expires_at: createdAt,
+      created_at: createdAt,
+    }
+  }
+  it('按 created_at 倒序(最新在前)', () => {
+    // 判别核心:最新创建的订阅必须排最前。变异成正序(最旧在前)→ 顺序反 → RED。
+    const rows = [
+      sub(1, '2026-01-01T00:00:00Z'),
+      sub(3, '2026-06-01T00:00:00Z'),
+      sub(2, '2026-03-01T00:00:00Z'),
+    ]
+    expect(sortSubscriptionHistory(rows).map((r) => r.id)).toEqual([3, 2, 1])
+  })
+  it('不改原数组', () => {
+    const rows = [sub(1, '2026-01-01T00:00:00Z'), sub(2, '2026-06-01T00:00:00Z')]
+    sortSubscriptionHistory(rows)
+    expect(rows[0].id).toBe(1)
+  })
+  it('无效 created_at 当作最早,排最后,不抛错', () => {
+    const rows = [sub(1, 'not-a-date'), sub(2, '2026-06-01T00:00:00Z')]
+    expect(sortSubscriptionHistory(rows).map((r) => r.id)).toEqual([2, 1])
   })
 })
 

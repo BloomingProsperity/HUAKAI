@@ -164,3 +164,89 @@ export function defaultExportRange(days = 30, now: Date = new Date()): { fromDay
 function isoDay(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
+
+// ── 成本下钻 / 签名收据 / 我的争议(session 只读)纯逻辑 ──────────────────────────
+
+/**
+ * 把 request_id 编码成收据路由路径段。后端 /v1/receipts 同时挂了 {request_id} 与
+ * {request_id_host}/{request_id_tail} 两套路由,且校验「至多一个斜杠」(validateReceiptPathRequestID,
+ * cost_receipt_handler.go:654)。因此:
+ *  - 含一个斜杠(host/tail 形态)→ 按段 encodeURIComponent 后用「字面斜杠」拼回,命中双段路由;
+ *  - 无斜杠 → 整体 encodeURIComponent。
+ * 判别核心:斜杠必须保留为路径分隔符不能被编码成 %2F(变异成整体编码 → chi 不命中双段路由 →
+ * 404 → RED);各段内的特殊字符必须编码(防路径注入 / 多余斜杠绕过)。
+ */
+export function encodeReceiptRequestID(requestID: string): string {
+  const v = requestID.trim()
+  const idx = v.indexOf('/')
+  if (idx < 0) return encodeURIComponent(v)
+  const host = v.slice(0, idx)
+  const tail = v.slice(idx + 1)
+  return `${encodeURIComponent(host)}/${encodeURIComponent(tail)}`
+}
+
+/** 微美分(整数)→ USD 展示。复用 formatCost 的诚实性策略(微小额不塌成 $0)。 */
+export function formatMicroUSD(microUSD: number): string {
+  if (!Number.isFinite(microUSD)) return '—'
+  // 1 USD = 1_000_000 micro-USD;转成定点小数串再交 formatCost 统一格式化。
+  return formatCost((microUSD / 1_000_000).toFixed(8))
+}
+
+/**
+ * 验签整体结论 → 中文标签 + 配色。镜像后端 receiptVerifyResponse:
+ *  - valid=true                          → 已验签可信(ok)
+ *  - signature_valid=true 但 valid=false → 签名有效但收据不被采信(撤销/窗口外/哈希不符)(warn)
+ *  - 其余(签名无效 / 未签名 / 不匹配)   → 验签失败(danger)
+ * 判别核心:valid 与 signature_valid 必须分别判定(变异成只看 signature_valid → 把
+ * key_revoked/窗口外这类「签名有效但不可信」误标成可信 → RED)。
+ */
+export function verifyTone(resp: { valid: boolean; signature_valid: boolean }): Tone {
+  if (resp.valid) return 'ok'
+  if (resp.signature_valid) return 'warn'
+  return 'danger'
+}
+
+export function verifyLabel(resp: { valid: boolean; signature_valid: boolean }): string {
+  if (resp.valid) return '已验签 · 可信'
+  if (resp.signature_valid) return '签名有效但不被采信'
+  return '验签失败'
+}
+
+/** 验签 status 机器码 → 中文(取证用);未知码原样保留诊断信息。 */
+const VERIFY_STATUS_LABELS: Record<string, string> = {
+  'signed-only': '已签名',
+  unverified: '未采信',
+  mismatch: '不匹配',
+  missing: '缺失',
+}
+
+export function verifyStatusLabel(status: string | undefined): string {
+  const v = (status ?? '').trim()
+  if (!v) return '—'
+  return VERIFY_STATUS_LABELS[v] ?? v
+}
+
+/** 争议状态 → 中文 + 配色。镜像后端 status(open/resolved/rejected 等);未知码原样。 */
+const DISPUTE_STATUS_LABELS: Record<string, string> = {
+  open: '待处理',
+  pending: '待处理',
+  resolved: '已解决',
+  approved: '已批准',
+  rejected: '已驳回',
+  closed: '已关闭',
+}
+
+export function disputeStatusLabel(status: string): string {
+  const v = status.trim()
+  if (!v) return '—'
+  return DISPUTE_STATUS_LABELS[v.toLowerCase()] ?? v
+}
+
+export function disputeStatusTone(status: string): Tone {
+  const v = status.trim().toLowerCase()
+  if (!v) return 'muted'
+  if (v === 'resolved' || v === 'approved' || v === 'closed') return 'ok'
+  if (v === 'rejected') return 'danger'
+  // open / pending / 其它进行中态
+  return 'warn'
+}
