@@ -250,3 +250,27 @@ export function disputeStatusTone(status: string): Tone {
   // open / pending / 其它进行中态
   return 'warn'
 }
+
+// ── 发起争议(POST /v1/receipts/{request_id}/disputes)的纯逻辑 ──────────────────
+// 后端 validateCreateDispute(dispute_store.go:189)对 reason 的约束:
+//   ① 去空白后为空 → 400 invalid_dispute_request(ErrDisputeInvalid: reason required);
+//   ② 去空白后长度 > 4000 字节 → 400(ErrDisputeInvalid: reason too long)。
+// 语义:本端点只建 pending 争议记录,裁决/退款由 admin 侧 /v1/admin/disputes/{id}/resolve 处理,
+// 不立即动钱。前端先行校验避免无谓请求,并给二次确认文案明示「待运营审核、不会立即退款」。
+
+/** 争议原因最大长度(对齐后端 dispute_store.go:199 的 4000)。 */
+export const MAX_DISPUTE_REASON_LEN = 4000
+
+/**
+ * 校验争议原因(输入为用户填写的 reason)。通过返回 null,否则返回中文错误。
+ * 判别核心:去空白后为空必须拦下(变异成放行 → 后端 400 reason required → RED);
+ *          去空白后超 4000 字必须拦下(变异成放行 → 后端 400 reason too long → RED)。
+ * 注意:长度按「去空白后」计,与后端 len(strings.TrimSpace(in.Reason)) 一致——
+ * 仅靠首尾空白凑长度不能绕过(变异成按原始长度判 → 与后端不一致 → RED)。
+ */
+export function validateDisputeReason(reason: string): string | null {
+  const v = reason.trim()
+  if (!v) return '请填写争议原因'
+  if (v.length > MAX_DISPUTE_REASON_LEN) return `争议原因不能超过 ${MAX_DISPUTE_REASON_LEN} 字`
+  return null
+}

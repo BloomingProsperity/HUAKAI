@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_DISPUTE_REASON_LEN,
   buildExportQuery,
   dayEndRFC3339,
   dayStartRFC3339,
@@ -16,6 +17,7 @@ import {
   statusTone,
   tokensSummary,
   totalTokens,
+  validateDisputeReason,
   validateExportRange,
   verifyLabel,
   verifyStatusLabel,
@@ -235,5 +237,32 @@ describe('disputeStatusLabel / disputeStatusTone', () => {
     expect(disputeStatusLabel('resolved')).toBe('已解决')
     expect(disputeStatusLabel('weird_state')).toBe('weird_state')
     expect(disputeStatusLabel('  ')).toBe('—')
+  })
+})
+
+describe('validateDisputeReason(发起争议原因校验,镜像 dispute_store.go:197-200)', () => {
+  it('正常原因 → null', () => {
+    expect(validateDisputeReason('该请求未成功返回但被计费')).toBeNull()
+  })
+  it('空 / 纯空白 → 拦下(必填)', () => {
+    // 判别核心:去空白后为空必须拦(变异成放行 → 后端 400 reason required → RED)。
+    expect(validateDisputeReason('')).toContain('请填写')
+    expect(validateDisputeReason('   ')).toContain('请填写')
+    expect(validateDisputeReason('\n\t ')).toContain('请填写')
+  })
+  it('去空白后超 4000 字 → 拦下;恰 4000 → 放行', () => {
+    // 判别核心:长度按「去空白后」算(变异成按原始长度判 → 与后端不一致 → RED)。
+    // 恰好 4000 个有效字 + 首尾空白:去空白后正好 4000,应放行(边界含)。
+    const exactly4000 = '  ' + 'x'.repeat(MAX_DISPUTE_REASON_LEN) + '  '
+    expect(exactly4000.trim().length).toBe(MAX_DISPUTE_REASON_LEN)
+    expect(validateDisputeReason(exactly4000)).toBeNull()
+    // 4001 个有效字 → 必须拦(变异成放行 → 后端 400 reason too long → RED)。
+    expect(validateDisputeReason('y'.repeat(MAX_DISPUTE_REASON_LEN + 1))).toContain('4000')
+  })
+  it('仅靠首尾空白凑长度不能绕过(去空白后短才算短)', () => {
+    // 5 个有效字 + 一堆空白,去空白后只有 5 字,合法 → null(若按原始长度判会误拦或误放,RED)。
+    const padded = ' '.repeat(5000) + 'abcde' + ' '.repeat(5000)
+    expect(padded.length).toBeGreaterThan(MAX_DISPUTE_REASON_LEN)
+    expect(validateDisputeReason(padded)).toBeNull()
   })
 })

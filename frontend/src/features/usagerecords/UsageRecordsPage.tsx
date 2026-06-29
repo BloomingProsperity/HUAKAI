@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
 import {
+  createDispute,
   exportUsageCSV,
   getCostReceipt,
   listMyDisputes,
@@ -9,6 +10,7 @@ import {
   verifyCostReceipt,
 } from './api'
 import {
+  MAX_DISPUTE_REASON_LEN,
   defaultExportRange,
   disputeStatusLabel,
   disputeStatusTone,
@@ -19,6 +21,7 @@ import {
   statusLabel,
   statusTone,
   tokensSummary,
+  validateDisputeReason,
   validateExportRange,
   verifyLabel,
   verifyStatusLabel,
@@ -44,6 +47,8 @@ export function UsageRecordsPage() {
   const [refreshNonce, setRefreshNonce] = useState(0)
   // 当前展开「成本详情/收据」下钻的行键(同一时刻只展开一行,避免一次性拉太多详情)。
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
+  // 发起争议成功后自增,驱动「我的争议」列表重新拉取(子组件 sibling,故把刷新信号提到页面级)。
+  const [disputeNonce, setDisputeNonce] = useState(0)
 
   const loadFirst = useCallback(
     (signal: AbortSignal) => {
@@ -133,6 +138,7 @@ export function UsageRecordsPage() {
                       record={r}
                       expanded={expanded}
                       onToggle={() => setExpandedKey((cur) => (cur === rowKey ? null : rowKey))}
+                      onDisputeCreated={() => setDisputeNonce((n) => n + 1)}
                     />
                   )
                 })}
@@ -151,7 +157,7 @@ export function UsageRecordsPage() {
         </div>
       )}
 
-      <MyDisputes />
+      <MyDisputes refreshNonce={disputeNonce} />
     </div>
   )
 }
@@ -164,7 +170,17 @@ export function UsageRecordsPage() {
  *   POST /v1/receipts/<request_id>/verify    收据验签(只读密码学校验,空 body)
  * 无 request_id 的记录不提供下钻(收据/验签以 request_id 为取证锚点)。
  */
-function RecordRow({ record, expanded, onToggle }: { record: UsageRecord; expanded: boolean; onToggle: () => void }) {
+function RecordRow({
+  record,
+  expanded,
+  onToggle,
+  onDisputeCreated,
+}: {
+  record: UsageRecord
+  expanded: boolean
+  onToggle: () => void
+  onDisputeCreated: () => void
+}) {
   const reqID = record.request_id?.trim() ?? ''
   return (
     <>
@@ -203,7 +219,7 @@ function RecordRow({ record, expanded, onToggle }: { record: UsageRecord; expand
       {expanded && reqID && (
         <tr>
           <td colSpan={7} style={{ padding: 0, borderTop: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }}>
-            <RecordDrilldown record={record} requestID={reqID} />
+            <RecordDrilldown record={record} requestID={reqID} onDisputeCreated={onDisputeCreated} />
           </td>
         </tr>
       )}
@@ -217,7 +233,15 @@ function RecordRow({ record, expanded, onToggle }: { record: UsageRecord; expand
  * 注:逐请求成本端点 /v1/generation 走的是 API-key(inboundAuth)鉴权、非 session 不可达
  * (routes.go:130 顶层 d.inboundAuth),故不调它,改用行内已有的 actual_cost/tokens/model。
  */
-function RecordDrilldown({ record, requestID }: { record: UsageRecord; requestID: string }) {
+function RecordDrilldown({
+  record,
+  requestID,
+  onDisputeCreated,
+}: {
+  record: UsageRecord
+  requestID: string
+  onDisputeCreated: () => void
+}) {
   const [receipt, setReceipt] = useState<UserCostReceipt | null>(null)
   const [receiptErr, setReceiptErr] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -332,6 +356,9 @@ function RecordDrilldown({ record, requestID }: { record: UsageRecord; requestID
               </div>
             )}
           </section>
+
+          {/* 发起账单争议(write-only · 待运营审核 · 不立即退款) */}
+          <DisputePanel requestID={requestID} onDisputeCreated={onDisputeCreated} />
         </div>
       )}
     </div>
@@ -339,10 +366,122 @@ function RecordDrilldown({ record, requestID }: { record: UsageRecord; requestID
 }
 
 /**
- * 我的争议(只读列表)。GET /v1/me/disputes(dispute_handler.go:116)。
- * 只读列本人争议;发起争议(POST /v1/receipts/{id}/disputes)触发退款流程=money,Owner-gated,不在此提供。
+ * 对某条收据发起争议的面板。语义:仅提交一条 pending 争议记录(POST /v1/receipts/{id}/disputes),
+ * 裁决/退款由运营在 admin 侧处理、本端点不动钱——故文案如实说明「待运营审核、不会立即退款」,
+ * 并以二次确认拦住误点。reason 前端先行校验(必填 + ≤4000,对齐后端 dispute_store.go:197-200)。
+ * 成功后回调上层刷新「我的争议」列表,让用户立即看到这条 pending 记录。
  */
-function MyDisputes() {
+function DisputePanel({ requestID, onDisputeCreated }: { requestID: string; onDisputeCreated: () => void }) {
+  const [reason, setReason] = useState('')
+  // 流程:idle(填原因)→ confirm(二次确认)→ 提交。done=已提交成功(防重复提交,引导去列表查看)。
+  const [stage, setStage] = useState<'idle' | 'confirm' | 'done'>('idle')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const proceed = () => {
+    const invalid = validateDisputeReason(reason)
+    if (invalid) {
+      setError(invalid)
+      return
+    }
+    setError(null)
+    setStage('confirm')
+  }
+
+  const submit = async () => {
+    // 二次确认后仍再校验一次(防 confirm 阶段经由别的路径改了 reason)。
+    const invalid = validateDisputeReason(reason)
+    if (invalid) {
+      setError(invalid)
+      setStage('idle')
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      await createDispute(requestID, reason.trim())
+      setStage('done')
+      onDisputeCreated()
+    } catch (e) {
+      // 409 重复 / 404 收据不存在 / 400 原因不合法等都归一化成中文提示,留在确认态供修正或放弃。
+      setError(errText(e, '发起争议失败,请稍后再试'))
+      setStage('idle')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <section style={panel}>
+      <h3 style={panelTitle}>对此收据发起争议</h3>
+      {stage === 'done' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+          <StatusBadge tone={'ok' as BadgeTone}>已提交,待运营审核</StatusBadge>
+          <p style={{ ...subtle, margin: 0 }}>
+            争议已记录为待处理。运营审核后,结果会显示在下方「我的争议」。此操作不会立即退款。
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+          <p style={{ ...subtle, margin: 0 }}>
+            如认为此条计费有误,可填写原因提交争议。提交后仅生成一条待审核记录,
+            <strong style={{ color: 'var(--hk-ink-700)' }}>由运营人工审核裁决,不会立即退款</strong>。
+          </p>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
+            <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>争议原因</span>
+            <textarea
+              value={reason}
+              onChange={(e) => {
+                setReason(e.target.value)
+                if (error) setError(null)
+                // 编辑内容则退回填写态,确保二次确认始终对应当前文本。
+                if (stage === 'confirm') setStage('idle')
+              }}
+              disabled={submitting}
+              maxLength={MAX_DISPUTE_REASON_LEN}
+              rows={3}
+              placeholder="例如:该请求实际未成功返回,但被计费。"
+              aria-label="争议原因"
+              style={textarea}
+            />
+            <span style={{ fontSize: 11, color: 'var(--hk-ink-300)', alignSelf: 'flex-end' }}>
+              {reason.trim().length} / {MAX_DISPUTE_REASON_LEN}
+            </span>
+          </label>
+
+          {error && <div style={{ ...subtle, color: '#8f322a' }}>{error}</div>}
+
+          {stage === 'confirm' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+              <div style={confirmBox}>
+                确认提交此账单争议?将创建一条待运营审核的记录,
+                <strong>运营核实前不会退款、不影响余额</strong>。
+              </div>
+              <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
+                <button type="button" onClick={submit} disabled={submitting} style={primaryBtnSm}>
+                  {submitting ? '提交中…' : '确认提交'}
+                </button>
+                <button type="button" onClick={() => setStage('idle')} disabled={submitting} style={ghostBtnSm}>
+                  取消
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button type="button" onClick={proceed} disabled={submitting} style={ghostBtnSm}>
+              发起争议
+            </button>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/**
+ * 我的争议(列表)。GET /v1/me/disputes(dispute_handler.go:116)。列本人争议进度;
+ * 发起争议入口在上方各收据行的「成本详情 → 对此收据发起争议」。发起成功后 refreshNonce 自增触发重拉。
+ */
+function MyDisputes({ refreshNonce }: { refreshNonce: number }) {
   const [disputes, setDisputes] = useState<Dispute[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -362,7 +501,8 @@ function MyDisputes() {
         if (!ctrl.signal.aborted) setLoading(false)
       })
     return () => ctrl.abort()
-  }, [nonce])
+    // refreshNonce 来自父级(发起争议成功),nonce 来自本组件「刷新」按钮,任一变化都重拉。
+  }, [nonce, refreshNonce])
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
@@ -370,7 +510,7 @@ function MyDisputes() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
           <h2 style={{ fontSize: 18 }}>我的争议</h2>
           <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-            你对计费收据提起的争议进度(只读)。如需对某条请求发起争议,请联系运营。
+            你对计费收据提起的争议进度。如需发起争议,展开上方某条记录的「成本详情」即可提交。
           </p>
         </div>
         <button type="button" onClick={() => setNonce((n) => n + 1)} style={ghostBtn} disabled={loading}>
@@ -513,6 +653,9 @@ const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)'
 const tdTime: React.CSSProperties = { ...td, color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const ghostBtnSm: React.CSSProperties = { height: 26, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }
+const primaryBtnSm: React.CSSProperties = { height: 26, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-accent, #b23a2e)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-accent, #b23a2e)', color: '#fff', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }
+const textarea: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: 'var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', fontSize: 13, fontFamily: 'inherit', resize: 'vertical' }
+const confirmBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 12, color: 'var(--hk-ink-700)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)' }
 const panel: React.CSSProperties = { flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)', padding: 'var(--hk-space-4)', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }
 const panelTitle: React.CSSProperties = { fontSize: 14, margin: 0, color: 'var(--hk-ink-900)' }
 const dl: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)', margin: 0 }

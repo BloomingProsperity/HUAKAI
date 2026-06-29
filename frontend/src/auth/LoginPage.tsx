@@ -1,17 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ApiError } from '../lib/api'
-import { login, loginTwoFactor, oauthInit, passkeyLoginBegin, passkeyLoginFinish, register } from './api'
+import {
+  login,
+  loginTwoFactor,
+  oauthInit,
+  passkeyLoginBegin,
+  passkeyLoginFinish,
+  register,
+  validateInvitationCode,
+} from './api'
 import { setAdminToken, setSessionTokens, useAuth, type AuthUser } from './store'
 import { fetchSiteConfig, FALLBACK_SITE_CONFIG, type SiteConfig } from './siteConfig'
 import {
   captchaWidgetRenderable,
   deriveAffordances,
+  inviteHintFromResult,
+  INVITE_HINT_IDLE,
   providerLabel,
   serializeAssertion,
+  shouldValidateInvite,
   toPublicKeyRequestOptions,
   validateRegisterForm,
   webAuthnSupported,
+  type InviteHint,
 } from './loginEnhance'
 import { writePendingOAuth } from './oauthCallback'
 
@@ -34,6 +46,10 @@ export function LoginPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  // 邀请码实时预校验提示(只读,不阻断提交)。仅注册态、站点开启邀请门时失焦触发。
+  const [inviteHint, setInviteHint] = useState<InviteHint>(INVITE_HINT_IDLE)
+  // 预校验请求序号:失焦可能连发,只采纳最后一次结果,丢弃过期响应(防竞态闪烁)。
+  const inviteSeqRef = useRef(0)
   const [code, setCode] = useState('')
   const [challengeId, setChallengeId] = useState('')
   // 2FA 第一步拿到的 user,完成第二步时写入 store(2FA 完成响应本身不含 user)。
@@ -128,6 +144,31 @@ export function LoginPage() {
       setError(authErr(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  // ===== 增强:邀请码失焦实时预校验(只读提示,绝不阻断提交;后端 register 仍权威) =====
+  // 调 /v1/auth/validate-invitation-code(公开只读端点:不登录/不发 token/不消费邀请码/
+  // 不改任何鉴权状态)。空码或站点未开启邀请门时不触发,复位为 idle。
+  const onInviteBlur = async () => {
+    const value = inviteCode.trim()
+    if (!shouldValidateInvite(value, site.invitationRequired)) {
+      // 清空或无需校验:复位提示(避免遗留上一次的结果)。不发请求。
+      inviteSeqRef.current += 1 // 作废在途请求
+      setInviteHint(INVITE_HINT_IDLE)
+      return
+    }
+    const seq = ++inviteSeqRef.current
+    setInviteHint({ status: 'checking', message: '正在校验邀请码…' })
+    try {
+      const result = await validateInvitationCode(tid(), value)
+      // 仅当本次仍是最新请求时才采纳结果(防多次失焦的过期响应覆盖)。
+      if (seq !== inviteSeqRef.current) return
+      setInviteHint(inviteHintFromResult(result))
+    } catch {
+      // 校验服务不可用:给中性提示,绝不阻断提交(后端 register 权威校验)。
+      if (seq !== inviteSeqRef.current) return
+      setInviteHint({ status: 'unavailable', message: '邀请码校验暂不可用,可直接提交注册' })
     }
   }
 
@@ -267,7 +308,22 @@ export function LoginPage() {
                 )}
                 {mode === 'register' && (
                   <Field label={site.invitationRequired ? '邀请码(必填)' : '邀请码(可选)'}>
-                    <input value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} style={inp} />
+                    <input
+                      value={inviteCode}
+                      onChange={(e) => {
+                        setInviteCode(e.target.value)
+                        // 编辑即复位提示,避免旧结果与新输入不符;失焦后才重新校验。
+                        if (inviteHint.status !== 'idle') {
+                          inviteSeqRef.current += 1
+                          setInviteHint(INVITE_HINT_IDLE)
+                        }
+                      }}
+                      onBlur={onInviteBlur}
+                      style={inp}
+                    />
+                    {inviteHint.status !== 'idle' && (
+                      <span style={inviteHintStyle(inviteHint.status)}>{inviteHint.message}</span>
+                    )}
                   </Field>
                 )}
               </>
@@ -494,3 +550,10 @@ const ghost: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-3)',
 const socialBtn: React.CSSProperties = { flex: '1 1 auto', minWidth: 120, height: 34, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const linkBtn: React.CSSProperties = { alignSelf: 'flex-start', border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: 0 }
 const linkAnchor: React.CSSProperties = { color: 'var(--hk-primary-700)', textDecoration: 'none' }
+
+// 邀请码预校验提示文案样式:有效=主色,无效=危险色,校验中/不可用=次要灰。
+function inviteHintStyle(status: InviteHint['status']): React.CSSProperties {
+  const color =
+    status === 'ok' ? 'var(--hk-primary-700)' : status === 'invalid' ? '#8f322a' : 'var(--hk-ink-500)'
+  return { fontSize: 12, color, marginTop: 2 }
+}

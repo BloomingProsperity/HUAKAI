@@ -97,6 +97,37 @@ export async function register(
 }
 
 /*
+ * 邀请码实时预校验响应。后端 invitevalidatehttp/handler.go:30 的 validateResponse:
+ *   { valid: bool, reason: string }
+ * reason 取自 userauth.InviteCodeStatus(types.go:97):
+ *   valid / not_found / disabled / expired / used_or_exhausted。
+ * 这是【只读】端点(handler.go:36,挂 routes_invitevalidate.go:20),不发证、不消费邀请码、
+ * 不建立 session、不改任何鉴权状态;仅用于注册前给用户即时有效性提示。
+ */
+export interface InviteCodeValidation {
+  valid: boolean
+  reason: string
+}
+
+/**
+ * 邀请码实时预校验(只读):POST /v1/auth/validate-invitation-code {tenant_id, invite_code}
+ * → {valid, reason}。后端 backend/internal/invitevalidatehttp/handler.go:36。
+ *
+ * 仅做有效性提示,【不阻断】注册提交 —— 注册时后端 register 仍是权威校验。该端点不带 token
+ * (公开预校验,不登录/不发 token/不改 session);若站点未开启邀请门,后端恒返回
+ * {valid:true, reason:"disabled"}。本函数不吞异常:网络/服务错误由调用方按"提示不可用"处理。
+ */
+export async function validateInvitationCode(
+  tenantId: number,
+  inviteCode: string,
+): Promise<InviteCodeValidation> {
+  return apiSend<InviteCodeValidation>('POST', '/v1/auth/validate-invitation-code', {
+    tenant_id: tenantId,
+    invite_code: inviteCode,
+  })
+}
+
+/*
  * ============================ 增强:社交登录 / 通行密钥 ============================
  * 以下端点均为登录前的公开端点(tokenForPath 对 /v1/auth/oauth、/v1/auth/passkey 返回 null,
  * 不带 token),独立于基础邮箱密码登录;任一失败只影响该增强按钮,不影响基础流程。

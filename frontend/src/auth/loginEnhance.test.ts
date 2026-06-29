@@ -6,7 +6,9 @@ import {
   bufferToBase64url,
   captchaWidgetRenderable,
   deriveAffordances,
+  inviteHintFromResult,
   providerLabel,
+  shouldValidateInvite,
   validateRegisterForm,
 } from './loginEnhance'
 
@@ -35,6 +37,51 @@ describe('validateRegisterForm', () => {
   it('邮箱/密码为空各自拦截', () => {
     expect(validateRegisterForm({ ...base, email: '  ' })).toContain('邮箱')
     expect(validateRegisterForm({ ...base, password: '', confirmPassword: '' })).toContain('密码')
+  })
+})
+
+describe('shouldValidateInvite', () => {
+  it('站点未开启邀请门 → 即便有码也不校验', () => {
+    // 判别核心:invitationRequired=false 时不打扰(可选填)。
+    // 变异(去掉 invitationRequired 判定)→ 此处会误返回 true → RED。
+    expect(shouldValidateInvite('ABC', false)).toBe(false)
+  })
+  it('开启邀请门但邀请码空白 → 不校验', () => {
+    // 判别核心:空白码不发请求(由提交必填校验兜底)。
+    // 变异(去掉 trim().length>0 判定)→ 空白也会触发校验 → RED。
+    expect(shouldValidateInvite('   ', true)).toBe(false)
+    expect(shouldValidateInvite('', true)).toBe(false)
+  })
+  it('开启邀请门且邀请码非空 → 校验', () => {
+    expect(shouldValidateInvite('INV-1', true)).toBe(true)
+  })
+})
+
+describe('inviteHintFromResult', () => {
+  it('valid=true → ok(无论 reason)', () => {
+    // 判别核心:后端有效即可用,reason 不影响 ok 判定(disabled 在站点关门时 valid=true)。
+    // 变异(把 result.valid 改成 !result.valid)→ 有效码会被判 invalid → RED。
+    expect(inviteHintFromResult({ valid: true, reason: 'valid' }).status).toBe('ok')
+    expect(inviteHintFromResult({ valid: true, reason: 'disabled' }).status).toBe('ok')
+  })
+  it('valid=false 各 reason → invalid + 对应中文原因', () => {
+    // 判别核心:不同失败原因映射到不同中文文案。
+    // 变异(把 not_found 的映射删掉/改成兜底)→ 文案不再含"不存在" → RED。
+    expect(inviteHintFromResult({ valid: false, reason: 'not_found' }).message).toContain('不存在')
+    expect(inviteHintFromResult({ valid: false, reason: 'expired' }).message).toContain('过期')
+    expect(inviteHintFromResult({ valid: false, reason: 'used_or_exhausted' }).message).toContain('使用')
+    expect(inviteHintFromResult({ valid: false, reason: 'disabled' }).message).toContain('停用')
+  })
+  it('valid=false 且 reason 为后端未知值 → 通用兜底文案', () => {
+    // 判别核心:未知 reason 不应崩、给通用"无效"提示。
+    // 变异(去掉 ?? 兜底,改成直接索引)→ message 变 undefined,toContain 抛错 → RED。
+    const hint = inviteHintFromResult({ valid: false, reason: 'something_new' })
+    expect(hint.status).toBe('invalid')
+    expect(hint.message).toContain('无效')
+  })
+  it('valid=false 的状态恒为 invalid(非 ok/unavailable)', () => {
+    // 判别核心:无效结果一定是 invalid 态(才会渲染危险色提示)。
+    expect(inviteHintFromResult({ valid: false, reason: 'expired' }).status).toBe('invalid')
   })
 })
 
