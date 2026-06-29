@@ -1,5 +1,7 @@
 import { apiGet, apiSend } from '../../lib/api'
 import type {
+  AdminNotifyResponse,
+  AdminNotifyUpdate,
   AdminUser,
   BalanceAdjustmentRequest,
   BalanceAdjustmentResult,
@@ -102,4 +104,35 @@ export async function getTwoFAAdoptionStats(signal?: AbortSignal): Promise<impor
  */
 export async function adjustBalance(body: BalanceAdjustmentRequest): Promise<BalanceAdjustmentResult> {
   return apiSend<BalanceAdjustmentResult>('POST', '/admin/v1/balances/adjustments', body)
+}
+
+// ── 通知偏好(管理员代管)──────────────────────────────────────────────────────
+// 端点 /v1/admin/users/{user_id}/notifications(controlhttp notifyAdminHandler,admin token 鉴权)。
+// 真码:backend/internal/controlhttp/notify_handler.go:78-79(MountNotifyAdminRoutes),
+//       挂载于 backend/cmd/gateway/routes_notifications.go:37(NotifyAdminDeps)。
+// 路径以 /v1/admin 前缀打头,lib/api 的 tokenForPath 自动注入 admin Bearer,无需显式 bearer。
+// 目标用户身份走 path 参数 {user_id};目标租户走 ?tenant_id=(notifyAdminTarget,notify_handler.go:194):
+// platform_admin 必填,tenant_operator 省略则回落自身 scope。
+
+/** 读取某用户的通知偏好(代管)。secret/token 后端只回 *_configured 标志,不回显明文。 */
+export async function getAdminUserNotify(
+  userId: number,
+  tenantId?: number,
+  signal?: AbortSignal,
+): Promise<AdminNotifyResponse> {
+  return apiGet<AdminNotifyResponse>(`/v1/admin/users/${userId}/notifications`, {
+    query: { tenant_id: tenantId && tenantId > 0 ? tenantId : undefined },
+    signal,
+  })
+}
+
+/** 保存某用户的通知偏好(代管)。空 secret/token 由调用方剔除,但留空=后端清除现有密钥(见 store.go:209/213)。 */
+export async function putAdminUserNotify(
+  userId: number,
+  body: AdminNotifyUpdate,
+  tenantId?: number,
+): Promise<AdminNotifyResponse> {
+  return apiSend<AdminNotifyResponse>('PUT', `/v1/admin/users/${userId}/notifications`, body, {
+    query: { tenant_id: tenantId && tenantId > 0 ? tenantId : undefined },
+  })
 }

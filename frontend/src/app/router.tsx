@@ -58,6 +58,7 @@ import { CredentialRenewPage } from '../features/credentialrenew/CredentialRenew
 import { BroadcastPage } from '../features/broadcast/BroadcastPage'
 import { DisputesAdminPage } from '../features/disputesadmin/DisputesAdminPage'
 import { DlqPage } from '../features/dlq/DlqPage'
+import { BillingClaimsPage } from '../features/billingadmin/BillingClaimsPage'
 import { OrphanReconcilePage } from '../features/orphanreconcile/OrphanReconcilePage'
 import { LandingPage } from '../features/landing/LandingPage'
 import { LegalPage } from '../features/legal/LegalPage'
@@ -122,6 +123,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/admin/credential-renew': <CredentialRenewPage />,
   '/admin/broadcast': <BroadcastPage />,
   '/admin/disputes': <DisputesAdminPage />,
+  '/admin/billing-claims': <BillingClaimsPage />,
   '/system': <SettingsCenterPage />,
   '/ops': <OpsPage />,
   '/health': <HealthPage />,

@@ -4,6 +4,8 @@ import type {
   AccountHealth,
   AccountTestResult,
   BulkByTagResult,
+  FingerprintBindResult,
+  FingerprintProfileOption,
   ProviderAccount,
   ProviderAccountListResponse,
   UpstreamModelsResult,
@@ -96,4 +98,46 @@ export async function bulkUpdateAccountsByTag(body: {
   static_weight?: number
 }): Promise<BulkByTagResult> {
   return apiSend<BulkByTagResult>('POST', `${ACCOUNTS_PATH}/bulk-by-tag`, body)
+}
+
+/*
+ * ---- 账号 TLS 指纹 profile 绑定/解绑(出口拟真,非 money)----
+ * 后端独立包 accountfphttp:
+ *   PATCH /admin/v1/provider-accounts/{id}/fingerprint-profile
+ *   真码:backend/internal/accountfphttp/fingerprint_handler.go:48(MountRoutes)
+ *        + cmd/gateway/routes.go:940(accountfphttp.MountRoutes)+:975(组挂载)。
+ * 请求体 {profile_id:int64|null}:正整数=绑定该 profile;null=解绑(回内置默认)。
+ * 后端从鉴权 scope 推导 tenant_id;body 若带 tenant_id 必须与 scope 一致(此处不传,交后端推)。
+ * 响应:{id, tls_fingerprint_profile_id:int64|null}(fingerprint_handler.go:117)。
+ * profile 不存在 / 跨租户 → 400 invalid_fingerprint_profile(FK 23503 / 触发器 P0001)。
+ */
+export async function setAccountFingerprintProfile(
+  id: number,
+  profileId: number | null,
+  reason?: string,
+): Promise<FingerprintBindResult> {
+  // profile_id 必须显式出现(含 null):后端 setFingerprintRequest.ProfileID 是 *int64,
+  // 缺省与显式 null 不可混淆——null 表示解绑。reason 为空则不下发(后端默认中文文案)。
+  const body: { profile_id: number | null; reason?: string } = { profile_id: profileId }
+  const trimmed = reason?.trim()
+  if (trimmed) body.reason = trimmed
+  return apiSend<FingerprintBindResult>('PATCH', `${ACCOUNTS_PATH}/${id}/fingerprint-profile`, body)
+}
+
+/*
+ * 列某租户可绑定的 TLS 指纹 profile(供绑定下拉用)。
+ * 后端 tlsfphttp:GET /v1/admin/tls-fingerprint-profiles?tenant_id=N
+ *   真码:backend/internal/tlsfphttp/handler.go:96(listHandler)+ cmd/gateway/routes.go:1104。
+ * 这里只取下拉需要的轻量字段(id/name/status),不复用 tlsfp 包的全量 DTO(避免跨切片耦合)。
+ * platform_admin 角色下 tenant_id 必填且须为正整数(handler.go:101)。
+ */
+export async function listFingerprintProfileOptions(
+  tenantId: number,
+  signal?: AbortSignal,
+): Promise<FingerprintProfileOption[]> {
+  const resp = await apiGet<{ object: string; items: FingerprintProfileOption[] }>(
+    '/v1/admin/tls-fingerprint-profiles',
+    { query: { tenant_id: tenantId }, signal },
+  )
+  return resp.items ?? []
 }

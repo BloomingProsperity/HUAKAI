@@ -7,6 +7,7 @@ import { balanceDirection, eventTypeLabel, signedAmount, type BalanceHistoryEntr
 import { roleLabel, statusLabel } from './users'
 import { UserAdminActions } from './UserAdminActions'
 import { UserBalanceAdjust } from './UserBalanceAdjust'
+import { UserNotifyPrefs } from './UserNotifyPrefs'
 
 /*
  * 用户详情(运维台,P1)。GET /admin/v1/users/{id} 用户信息 + GET /{id}/balance-history 余额台账。
@@ -79,6 +80,9 @@ export function UserDetailPage() {
       <UserBalanceAdjust user={user} onChanged={() => setNonce((n) => n + 1)} />
 
       <UserAdminActions user={user} onChanged={() => setNonce((n) => n + 1)} />
+
+      {/* 通知偏好(代管):GET 回填 + PUT 保存,独立加载自身 tenant/user,不连累上方卡片。 */}
+      <UserNotifyPrefs userId={user.id} />
 
       <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
         <h2 style={{ fontSize: 15, color: 'var(--hk-ink-700)' }}>余额历史(台账)</h2>

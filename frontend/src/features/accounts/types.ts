@@ -108,3 +108,27 @@ export interface BulkByTagResult {
   affected_ids: number[]
   count: number
 }
+
+/*
+ * ---- 账号 TLS 指纹 profile 绑定 DTO ----
+ * 对应 backend/internal/accountfphttp/fingerprint_handler.go:
+ *   PATCH /{id}/fingerprint-profile 响应 {id, tls_fingerprint_profile_id}(:117)。
+ * 注意:账号详情/列表的 providerAccountResponse **不**暴露当前绑定的 profile id(已核源码),
+ * 故初次进入详情页时"当前绑定"未知;仅在本次保存成功后由本响应回显新值。
+ */
+export interface FingerprintBindResult {
+  id: number
+  /** 绑定后的 profile id;解绑(回内置默认)时为 null。 */
+  tls_fingerprint_profile_id: number | null
+}
+
+/**
+ * 绑定下拉用的轻量 profile 选项(取自 tlsfphttp 列表的子集)。
+ * 来源:GET /v1/admin/tls-fingerprint-profiles 的 items[](tlsfphttp/handler.go:110)。
+ * status 为 active / disabled / drift_detected;UI 据此标注(disabled/drift 仍可选但提示)。
+ */
+export interface FingerprintProfileOption {
+  id: number
+  name: string
+  status: string
+}

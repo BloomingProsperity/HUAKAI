@@ -152,6 +152,7 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/admin/vouchers', label: '兑换码管理', built: true },
       { path: '/admin/affiliates', label: '分销管理', built: true },
       { path: '/admin/disputes', label: '退款/扣费争议', built: true },
+      { path: '/admin/billing-claims', label: '用量与计费台账', built: true },
     ],
   },
   {
