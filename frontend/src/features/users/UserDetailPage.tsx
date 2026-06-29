@@ -6,6 +6,7 @@ import { getBalanceHistory, getUser } from './api'
 import { balanceDirection, eventTypeLabel, signedAmount, type BalanceHistoryEntry, type UserDetail } from './detail'
 import { roleLabel, statusLabel } from './users'
 import { UserAdminActions } from './UserAdminActions'
+import { UserBalanceAdjust } from './UserBalanceAdjust'
 
 /*
  * 用户详情(运维台,P1)。GET /admin/v1/users/{id} 用户信息 + GET /{id}/balance-history 余额台账。
@@ -73,6 +74,9 @@ export function UserDetailPage() {
         <Stat label="用户组" value={user.user_group || '—'} />
         <Stat label="创建时间" value={fmt(user.created_at)} />
       </div>
+
+      {/* 手动调额(money 敏感):成功后复用同一 nonce 刷新机制,重新拉余额 + 台账。 */}
+      <UserBalanceAdjust user={user} onChanged={() => setNonce((n) => n + 1)} />
 
       <UserAdminActions user={user} onChanged={() => setNonce((n) => n + 1)} />
 

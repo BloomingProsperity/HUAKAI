@@ -1,5 +1,11 @@
 import { apiGet, apiSend } from '../../lib/api'
-import type { AdminUser, CreateUserRequest, UserListResponse } from './types'
+import type {
+  AdminUser,
+  BalanceAdjustmentRequest,
+  BalanceAdjustmentResult,
+  CreateUserRequest,
+  UserListResponse,
+} from './types'
 
 /*
  * 用户管理数据访问层。端点 /admin/v1/users(admin token 鉴权)。
@@ -85,4 +91,15 @@ export async function unlinkSocialIdentity(id: number, provider: string): Promis
 /** 2FA 普及率统计(只读):GET /admin/v1/users/2fa-adoption-stats。 */
 export async function getTwoFAAdoptionStats(signal?: AbortSignal): Promise<import('./actions').TwoFAAdoptionStats> {
   return apiGet<import('./actions').TwoFAAdoptionStats>(`${PATH}/2fa-adoption-stats`, { signal })
+}
+
+/**
+ * 管理员手动调额(money 敏感):POST /admin/v1/balances/adjustments。
+ * 该端点挂在 /admin/v1/balances 前缀(routes.go:1025),由 adminhttp.MountBalanceCreditRoutes
+ * 的 r.Post("/adjustments") 拼成全路径(balance_credit_handler.go:34)。仅 platform_admin 可调
+ * (handler.go:66)。amount 符号即方向;返回入账后净余额。注:走 /admin/v1 前缀,tokenForPath
+ * 自动注入 admin Bearer,不手动设 token。
+ */
+export async function adjustBalance(body: BalanceAdjustmentRequest): Promise<BalanceAdjustmentResult> {
+  return apiSend<BalanceAdjustmentResult>('POST', '/admin/v1/balances/adjustments', body)
 }
