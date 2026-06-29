@@ -57,6 +57,8 @@ import { ModuleRegistryPage } from '../features/moduleregistry/ModuleRegistryPag
 import { CredentialRenewPage } from '../features/credentialrenew/CredentialRenewPage'
 import { BroadcastPage } from '../features/broadcast/BroadcastPage'
 import { DisputesAdminPage } from '../features/disputesadmin/DisputesAdminPage'
+import { DlqPage } from '../features/dlq/DlqPage'
+import { OrphanReconcilePage } from '../features/orphanreconcile/OrphanReconcilePage'
 import { LandingPage } from '../features/landing/LandingPage'
 import { LegalPage } from '../features/legal/LegalPage'
 import { LoginPage } from '../auth/LoginPage'
@@ -112,6 +114,8 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/admin/logs': <LogsDiagPage />,
   '/admin/modules': <ModuleRegistryPage />,
   '/admin/channel-health': <ChannelHealthPage />,
+  '/admin/dlq': <DlqPage />,
+  '/admin/orphan-reconcile': <OrphanReconcilePage />,
   '/admin/route-rules': <RouteRulesPage />,
   '/admin/quota-policies': <QuotaPoliciesPage />,
   '/admin/tls-fingerprints': <TLSFingerprintsPage />,
