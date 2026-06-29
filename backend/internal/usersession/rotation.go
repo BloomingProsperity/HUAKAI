@@ -16,6 +16,8 @@ import (
 const (
 	DefaultSessionTTL = 15 * time.Minute
 	DefaultRefreshTTL = 30 * 24 * time.Hour
+	// DefaultDeviceConfirmationTTL: 新设备确认 token 默认有效期 (DevicePolicy=confirm 时)。
+	DefaultDeviceConfirmationTTL = 24 * time.Hour
 )
 
 type Service struct {
@@ -25,7 +27,9 @@ type Service struct {
 	SigningKey        []byte
 	MaxActiveFamilies int
 	DevicePolicy      string
-	Now               func() time.Time
+	// DeviceConfirmationTTL 是确认 token 的有效期; 0 用 DefaultDeviceConfirmationTTL。
+	DeviceConfirmationTTL time.Duration
+	Now                   func() time.Time
 }
 
 func NewService(store Store) *Service {
@@ -44,7 +48,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (IssuedTokens, err
 	if in.TenantID <= 0 || in.UserID <= 0 {
 		return IssuedTokens{}, ErrInvalidInput
 	}
-	if err := s.enforceDevicePolicy(ctx, in.TenantID, in.UserID); err != nil {
+	if err := s.enforceDevicePolicy(ctx, in); err != nil {
 		return IssuedTokens{}, err
 	}
 	now := s.now()
@@ -287,11 +291,12 @@ func (s *Service) verifyPayload(token string) (signedSessionPayload, error) {
 	return payload, nil
 }
 
-func (s *Service) enforceDevicePolicy(ctx context.Context, tenantID, userID int64) error {
+func (s *Service) enforceDevicePolicy(ctx context.Context, in CreateInput) error {
+	// MaxActiveFamilies<=0 = 设备策略整体休眠 (默认), 直接放行, 零生产行为变更。
 	if s.MaxActiveFamilies <= 0 {
 		return nil
 	}
-	families, err := s.Store.ListActiveFamiliesForDevicePolicy(ctx, tenantID, userID, s.MaxActiveFamilies)
+	families, err := s.Store.ListActiveFamiliesForDevicePolicy(ctx, in.TenantID, in.UserID, s.MaxActiveFamilies)
 	if err != nil {
 		return err
 	}
@@ -301,13 +306,103 @@ func (s *Service) enforceDevicePolicy(ctx context.Context, tenantID, userID int6
 	switch strings.TrimSpace(s.DevicePolicy) {
 	case "revoke_oldest":
 		oldest := families[0]
-		_, err := s.Store.RevokeFamily(ctx, tenantID, oldest.ID, "device_limit_revoke_oldest", s.now())
+		_, err := s.Store.RevokeFamily(ctx, in.TenantID, oldest.ID, "device_limit_revoke_oldest", s.now())
 		return err
 	case "confirm":
-		return ErrDeviceConfirmationRequired
+		// 不再裸返回错误: 落一条 pending 确认记录并返回携带原文 token 的类型化错误,
+		// 让 handler 据此发确认邮件; errors.Is(err, ErrDeviceConfirmationRequired) 仍为真 (Unwrap)。
+		return s.requireDeviceConfirmation(ctx, in)
 	default:
 		return ErrDeviceLimitExceeded
 	}
+}
+
+// requireDeviceConfirmation 生成一次性确认 token、落 pending 记录, 返回带原文 token 的类型化错误。
+func (s *Service) requireDeviceConfirmation(ctx context.Context, in CreateInput) error {
+	raw, hash, err := GenerateDeviceConfirmationToken()
+	if err != nil {
+		return err
+	}
+	now := s.now()
+	ttl := s.DeviceConfirmationTTL
+	if ttl <= 0 {
+		ttl = DefaultDeviceConfirmationTTL
+	}
+	dc := DeviceConfirmation{
+		TenantID:   in.TenantID,
+		UserID:     in.UserID,
+		TokenHash:  hash,
+		DeviceInfo: normalizeDeviceInfo(in.DeviceInfo, in.UserAgent),
+		IP:         IPClass(in.IP),
+		UserAgent:  UserAgentClass(in.UserAgent),
+		Status:     DeviceConfirmationStatusPending,
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(ttl),
+	}
+	if err := s.Store.CreateDeviceConfirmation(ctx, dc); err != nil {
+		return err
+	}
+	return &DeviceConfirmationRequiredError{RawToken: raw, UserID: in.UserID}
+}
+
+// ConfirmDevice 校验用户出示的确认 token: 命中 pending 且未过期 → 条件 confirm → 撤最老 family 腾位。
+// 全程条件化 / 幂等: 二次确认 (已 confirmed) 命中 0 行, 直接返回"已用"语义, 绝不重复撤多个 family。
+func (s *Service) ConfirmDevice(ctx context.Context, tenantID int64, token string) error {
+	if s == nil || s.Store == nil {
+		return ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || strings.TrimSpace(token) == "" {
+		return ErrInvalidInput
+	}
+	now := s.now()
+	dc, err := s.Store.GetDeviceConfirmationByTokenHash(ctx, tenantID, HashDeviceConfirmationToken(token))
+	if err != nil {
+		return err
+	}
+	// 只有仍 pending 的记录可被消费; 已 confirmed/expired 一律按"不存在/已用"挡掉。
+	if dc.Status != DeviceConfirmationStatusPending {
+		return ErrDeviceConfirmationNotFound
+	}
+	if !dc.ExpiresAt.After(now) {
+		return ErrTokenExpired
+	}
+	// 条件 UPDATE pending→confirmed; 命中 0 行 = 并发下别处已消费 → 复用 refresh 的"已用"语义,
+	// 绝不继续往下腾位 (否则同一 token 并发两次确认会撤两个 family)。
+	ok, err := s.Store.MarkDeviceConfirmationConfirmed(ctx, dc.ID, now)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrRefreshReplay
+	}
+	// 确认通过, 撤最老 family 腾出一个设备槽。最老 = ListActiveFamiliesForDevicePolicy 按
+	// last_active_at ASC 的第 0 条。无活跃 family 时 (上限已被别处释放) 直接成功, 不报错。
+	families, err := s.Store.ListActiveFamiliesForDevicePolicy(ctx, tenantID, dc.UserID, 1)
+	if err != nil {
+		return err
+	}
+	if len(families) == 0 {
+		return nil
+	}
+	_, err = s.Store.RevokeFamily(ctx, tenantID, families[0].ID, "device_confirmation_revoke_oldest", now)
+	return err
+}
+
+// GenerateDeviceConfirmationToken 生成一次性确认 token (镜像 email_verify: crypto/rand 32B→base64url 原文,
+// sha256→hash)。返回 (原文, hash)。原文只经邮件交付, 库里只存 hash。
+func GenerateDeviceConfirmationToken() (string, []byte, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", nil, err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	return token, HashDeviceConfirmationToken(token), nil
+}
+
+// HashDeviceConfirmationToken 计算确认 token 的 sha256 hash (与 HashRefreshToken 同形态, 独立命名以示用途)。
+func HashDeviceConfirmationToken(token string) []byte {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return sum[:]
 }
 
 func (s *Service) now() time.Time {

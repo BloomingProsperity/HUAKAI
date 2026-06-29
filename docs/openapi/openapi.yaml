@@ -4032,6 +4032,32 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/auth/confirm-device:
+    post:
+      tags: [auth]
+      summary: Confirm a new device to free a session slot
+      operationId: authConfirmDevice
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      security: []
+      description: |
+        Consumes a one-time device confirmation token (delivered by email when the device policy is
+        `confirm` and the active-device limit is reached). On success the oldest session family is revoked
+        to free a slot so the user can sign in again. Token is the only credential; no prior login required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthConfirmDeviceRequest' }
+      responses:
+        '200':
+          description: Device confirmed and the oldest session slot freed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthConfirmDeviceResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/reset-password:
     post:
       tags: [auth]
@@ -12486,6 +12512,22 @@ components:
       properties:
         tenant_id: { type: integer, format: int64 }
         token: { type: string }
+
+    AuthConfirmDeviceRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      required: [tenant_id, token]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        token: { type: string }
+
+    AuthConfirmDeviceResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [device_confirmed] }
 
     AuthResetPasswordRequest:
       type: object

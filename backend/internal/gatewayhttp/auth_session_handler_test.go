@@ -989,8 +989,9 @@ func telegramGatewayCheckString(params map[string]string) string {
 }
 
 type captureAuthEmail struct {
-	verification string
-	reset        string
+	verification       string
+	reset              string
+	deviceConfirmation string
 }
 
 func (c *captureAuthEmail) SendVerification(_ context.Context, _ userauth.User, token string) error {
@@ -1000,6 +1001,11 @@ func (c *captureAuthEmail) SendVerification(_ context.Context, _ userauth.User, 
 
 func (c *captureAuthEmail) SendPasswordReset(_ context.Context, _ userauth.User, token string) error {
 	c.reset = token
+	return nil
+}
+
+func (c *captureAuthEmail) SendDeviceConfirmation(_ context.Context, _ userauth.User, token string) error {
+	c.deviceConfirmation = token
 	return nil
 }
 

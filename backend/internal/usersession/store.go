@@ -32,6 +32,10 @@ type Store interface {
 	RevokeUser(context.Context, int64, int64, string, time.Time) (int64, error)
 	ListActiveFamiliesForDevicePolicy(context.Context, int64, int64, int) ([]SessionFamily, error)
 	ListFamilies(context.Context, int64, int64) ([]SessionFamily, error)
+	// 新设备确认 (device confirmation) 流。实现见 device_confirmation_store.go。
+	CreateDeviceConfirmation(context.Context, DeviceConfirmation) error
+	GetDeviceConfirmationByTokenHash(context.Context, int64, []byte) (DeviceConfirmation, error)
+	MarkDeviceConfirmationConfirmed(context.Context, int64, time.Time) (bool, error)
 }
 
 type PostgresStore struct {
@@ -435,15 +439,21 @@ type MemoryStore struct {
 	byHash        map[string]string
 	sessionTokens map[string]SessionToken
 	sessionByHash map[string]string
+	// 新设备确认 pending 记录: deviceConfirmations 按自增 id 存; dcByHash 把 token_hash 映射到 id。
+	deviceConfirmations map[int64]DeviceConfirmation
+	dcByHash            map[string]int64
+	dcNextID            int64
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		families:      make(map[string]SessionFamily),
-		tokens:        make(map[string]RefreshToken),
-		byHash:        make(map[string]string),
-		sessionTokens: make(map[string]SessionToken),
-		sessionByHash: make(map[string]string),
+		families:            make(map[string]SessionFamily),
+		tokens:              make(map[string]RefreshToken),
+		byHash:              make(map[string]string),
+		sessionTokens:       make(map[string]SessionToken),
+		sessionByHash:       make(map[string]string),
+		deviceConfirmations: make(map[int64]DeviceConfirmation),
+		dcByHash:            make(map[string]int64),
 	}
 }
 
