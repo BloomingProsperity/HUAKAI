@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
-import { listUsageRecords } from './api'
-import { formatCost, hasMore, modelDisplay, statusLabel, statusTone, tokensSummary } from './usagerecords'
+import { exportUsageCSV, listUsageRecords } from './api'
+import {
+  defaultExportRange,
+  formatCost,
+  hasMore,
+  modelDisplay,
+  statusLabel,
+  statusTone,
+  tokensSummary,
+  validateExportRange,
+} from './usagerecords'
 import type { UsageRecord } from './types'
 
 const PAGE_LIMIT = 50
@@ -79,6 +88,8 @@ export function UsageRecordsPage() {
         </button>
       </header>
 
+      <ExportToolbar />
+
       {error && <div style={errBox}>{error}</div>}
 
       <div style={card}>
@@ -142,6 +153,53 @@ export function UsageRecordsPage() {
   )
 }
 
+/**
+ * 用量 CSV 导出工具条:选起止日期(默认最近 30 天)→ 校验范围 → 下载 export.csv。
+ * 范围校验在前端先行(对齐后端 from/to 必填 + ≤366 天),走带 session 头的 blob 下载。
+ */
+function ExportToolbar() {
+  const init = defaultExportRange(30)
+  const [fromDay, setFromDay] = useState(init.fromDay)
+  const [toDay, setToDay] = useState(init.toDay)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const doExport = async () => {
+    const invalid = validateExportRange(fromDay, toDay)
+    if (invalid) {
+      setError(invalid)
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await exportUsageCSV(fromDay, toDay)
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '导出失败,请稍后再试')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={exportBar}>
+      <span style={{ fontSize: 13, color: 'var(--hk-ink-700)', fontWeight: 600 }}>导出 CSV</span>
+      <label style={dateLabel}>
+        从
+        <input type="date" value={fromDay} max={toDay} onChange={(e) => setFromDay(e.target.value)} style={dateInput} aria-label="导出开始日期" />
+      </label>
+      <label style={dateLabel}>
+        到
+        <input type="date" value={toDay} min={fromDay} onChange={(e) => setToDay(e.target.value)} style={dateInput} aria-label="导出结束日期" />
+      </label>
+      <button type="button" onClick={doExport} disabled={busy} style={ghostBtn}>
+        {busy ? '导出中…' : '下载 CSV'}
+      </button>
+      {error && <span style={{ fontSize: 12, color: '#8f322a' }}>{error}</span>}
+    </div>
+  )
+}
+
 function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
 }
@@ -159,3 +217,6 @@ const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)'
 const tdTime: React.CSSProperties = { ...td, color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+const exportBar: React.CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-3) var(--hk-space-4)', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)' }
+const dateLabel: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 13, color: 'var(--hk-ink-500)' }
+const dateInput: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', fontSize: 13 }

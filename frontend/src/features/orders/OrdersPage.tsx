@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
-import { getMyOrder, listMyOrders } from './api'
+import { downloadReceiptText, fetchOrderReceipt, getMyOrder, listMyOrders } from './api'
 import {
   ORDER_STATUSES,
   buildTimeline,
@@ -10,6 +10,7 @@ import {
   formatMoney,
   orderKindLabel,
   providerLabel,
+  receiptEligible,
   statusCounts,
   statusLabel,
   statusTone,
@@ -204,6 +205,9 @@ function OrderDetailDrawer({ orderId, onClose }: { orderId: number; onClose: () 
               {order.expires_at && <Field label="过期时间" value={fmt(order.expires_at)} />}
             </section>
 
+            {/* 收据下载:仅对「已完成的充值/订阅订单」可得(与后端 invoicehttp 资格判定一致) */}
+            {receiptEligible(order) && <ReceiptSection order={order} />}
+
             <section>
               <h3 style={{ fontSize: 13, color: 'var(--hk-ink-500)', margin: '0 0 var(--hk-space-3)' }}>状态流转</h3>
               <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
@@ -239,6 +243,70 @@ function OrderDetailDrawer({ orderId, onClose }: { orderId: number; onClose: () 
         )}
       </aside>
     </div>
+  )
+}
+
+/* ---------------- 订单收据(获取文本 + 预览 + 下载) ---------------- */
+
+function ReceiptSection({ order }: { order: UserOrder }) {
+  const [content, setContent] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const text = await fetchOrderReceipt(order.id)
+      setContent(text)
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '获取收据失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const download = () => {
+    if (content == null) return
+    downloadReceiptText(order.id, order.out_trade_no, content)
+  }
+
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+      <h3 style={{ fontSize: 13, color: 'var(--hk-ink-500)', margin: 0 }}>收据</h3>
+      {error && <div style={errorBox}>{error}</div>}
+      {content == null ? (
+        <div>
+          <button type="button" onClick={load} disabled={loading} style={linkBtn}>
+            {loading ? '获取中…' : '查看收据'}
+          </button>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+          <pre
+            style={{
+              margin: 0,
+              padding: 'var(--hk-space-3)',
+              fontSize: 12,
+              fontFamily: 'var(--hk-font-mono)',
+              color: 'var(--hk-ink-700)',
+              background: 'var(--hk-surface-sunken)',
+              border: '1px solid var(--hk-line)',
+              borderRadius: 'var(--hk-radius-md)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+            }}
+          >
+            {content}
+          </pre>
+          <div>
+            <button type="button" onClick={download} style={linkBtn}>
+              下载收据(.txt)
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 

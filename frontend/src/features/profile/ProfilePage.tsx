@@ -27,6 +27,8 @@ import {
   type ChangePasswordForm,
 } from './profile'
 import { clearAll } from '../../auth/store'
+import { NotificationPrefsCard } from './NotificationPrefsCard'
+import { ActiveSessionsCard } from './ActiveSessionsCard'
 import type { MeResponse, OAuthBinding, PasskeyItem, TwoFASetupResult, TwoFAStatus } from './types'
 
 /*
@@ -44,8 +46,10 @@ export function ProfilePage() {
       <ProfileCard />
       <PasswordCard />
       <TwoFACard />
+      <ActiveSessionsCard />
       <PasskeyCard />
       <BindingsCard />
+      <NotificationPrefsCard />
       <DangerCard />
     </div>
   )

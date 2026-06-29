@@ -108,6 +108,18 @@ export function statusCounts(orders: ReadonlyArray<UserOrder>): Record<string, n
   return counts
 }
 
+/**
+ * 订单是否可下载收据 —— 与后端 invoicehttp/handler.go:60,64 的判定严格对齐:
+ *   ① order_kind ∈ {topup, subscription}(receiptEligibleKind);
+ *   ② status === 'completed'(仅已完成订单才出收据)。
+ * 两者皆满足才显示「下载收据」入口;否则后端会回 404/409,前端先行隐藏避免无效请求。
+ * 判别核心:必须同时校验 kind 与 status(变异成只看其一 → 对未完成/不合格订单也露入口 → RED)。
+ */
+export function receiptEligible(order: Pick<UserOrder, 'order_kind' | 'status'>): boolean {
+  const kindOk = order.order_kind === 'topup' || order.order_kind === 'subscription'
+  return kindOk && order.status === 'completed'
+}
+
 /** 时间线一步:label=步骤名,at=发生时刻(null=尚未发生),done=是否已发生。 */
 export interface TimelineStep {
   key: string
