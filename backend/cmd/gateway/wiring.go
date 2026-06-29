@@ -154,6 +154,7 @@ type deps struct {
 	subscriptionService   *subscription.Service
 	subExpiryWorker       *subscription.ExpiryWorker
 	subReminderWorker     *subscription.ReminderWorker
+	subAutoRenewWorker    *subscription.AutoRenewWorker
 	notificationSettings  *notify.Service
 	announcementService   *announcement.Service
 	userNoticeService     *usernotice.Service
@@ -706,7 +707,7 @@ func buildRotationScanOptions(cfg credentialRotationScanConfig, store credential
 
 // loadClientIPResolverFromEnv 从 trustedProxyCIDRsEnv(逗号分隔的 CIDR/IP)
 // 构建感知可信代理的 client IP resolver。格式错误的条目是一个硬性启动错误
-//(fail loud),而非默默降级 burst-limit / anomaly / voucher 的来源。
+// (fail loud),而非默默降级 burst-limit / anomaly / voucher 的来源。
 func loadClientIPResolverFromEnv() (*clientip.Resolver, error) {
 	return clientip.NewResolver(parseCSVAllowlistEnv(trustedProxyCIDRsEnv))
 }
@@ -1491,11 +1492,29 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	d.subExpiryWorker = subscriptionExpiryWorker
 	d.subReminderWorker = subscriptionReminderWorker
 
+	// 订阅自动续费 worker: money 动作 (扫到期 → 扣钱包余额 → 续期), 默认 KNOB 关 (零生产行为变),
+	// 仅 HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED=true 时构造并启动。非法值 fail-loud。
+	autoRenewEnabled, err := subscriptionAutoRenewEnabledFromEnv(subscriptionAutoRenewEnabledEnv)
+	if err != nil {
+		return nil, err
+	}
+	var subscriptionAutoRenewWorker *subscription.AutoRenewWorker
+	if autoRenewEnabled {
+		subscriptionAutoRenewWorker = subscription.NewAutoRenewWorker(subscription.AutoRenewWorkerConfig{Service: d.subscriptionService})
+		subscriptionAutoRenewWorker.Start(ctx)
+		if logger != nil {
+			logger.Info("订阅自动续费 worker 已启用 (将自动扣减钱包余额续期到期订阅)",
+				zap.String("enabled_by", subscriptionAutoRenewEnabledEnv+"=true"))
+		}
+	}
+	d.subAutoRenewWorker = subscriptionAutoRenewWorker
+
 	rt.credentialScheduler = credentialScheduler
 	rt.dlqWorker = dlqWorker
 	rt.outboxWorker = outboxWorker
 	rt.subscriptionExpiryWorker = subscriptionExpiryWorker
 	rt.subscriptionReminderWorker = subscriptionReminderWorker
+	rt.subscriptionAutoRenewWorker = subscriptionAutoRenewWorker
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
 	// WAVE H2:最后再构建模块知识脊柱,等所有 probe 引用的服务
 	//(settler、selector、credential store + scheduler)都接好之后,这样 seed
@@ -1681,14 +1700,14 @@ func hermesAdminOnlyFromEnv(logger *zap.Logger) (bool, error) {
 }
 
 // hermesMutatingEnabledEnv 是所有 Hermes mutating 工具
-//(account_pause/account_resume/dlq_replay/renew_trigger)的运行时总开关。
+// (account_pause/account_resume/dlq_replay/renew_trigger)的运行时总开关。
 // 它默认 ENABLED,因此未设置 env 即零行为变更;翻为 false 可在运行时
 // 禁用每个 mutating 工具,同时保持只读诊断 + 对话式 chat 完全在线。
 // 与 HUAKAI_HERMES_ADMIN_ONLY 正交。
 const hermesMutatingEnabledEnv = "HUAKAI_HERMES_MUTATING_ENABLED"
 
 // hermesLLMToolLoopEnabledEnv 是 LLM 对话式工具循环的运行时总开关
-//(向 chat 请求体注入只读工具 catalog + runner 在对话中途的
+// (向 chat 请求体注入只读工具 catalog + runner 在对话中途的
 // /internal/hermes/tool-execute 回调)。它默认 ENABLED;翻为 false 可禁用
 // 工具循环,同时普通的 /v1/hermes/chat 仍持续流式。与 HUAKAI_HERMES_ADMIN_ONLY
 // 以及上面的 mutating 总开关均正交。
@@ -1700,6 +1719,26 @@ const hermesLLMToolLoopEnabledEnv = "HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED"
 // 执行仍需一个独立的 OPERATOR 确认。额外受 tool-loop kill-switch(HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)
 // 与 per-tool 的 Proposable 标志门控。
 const hermesLLMProposeEnabledEnv = "HUAKAI_HERMES_LLM_PROPOSE_ENABLED"
+
+// subscriptionAutoRenewEnabledEnv 是订阅自动续费 worker 的启用开关。默认 FALSE:
+// 不设/空都解析为 false → worker 不启动 → 现有 auto_renew=true 订阅行为零变化
+// (合并即零生产行为变)。Owner 显式翻 true 才激活"扫到期 → 扣钱包余额 → 续期"的自动扣费。
+const subscriptionAutoRenewEnabledEnv = "HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED"
+
+// subscriptionAutoRenewEnabledFromEnv 解析 DEFAULT-FALSE 运行时布尔旋钮: 不设/空 => false
+// (默认关, money 安全); 任意可解析布尔被尊重; 非法值 fail-loud 启动报错 (绝不静默退回, 以免
+// 把本该关闭的自动扣费悄悄打开)。形态对称 hermesBoolEnabledDefaultFalse, 语义专属订阅自动续费。
+func subscriptionAutoRenewEnabledFromEnv(envName string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(envName))
+	if raw == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean, got %q: %w", envName, raw, err)
+	}
+	return enabled, nil
+}
 
 // hermesBoolEnabledDefaultFalse 解析一个默认 FALSE 的运行时布尔 knob(hermesBoolEnabledDefaultTrue
 // 的镜像):unset/空 => 默认(false、禁用);任何可解析的 bool 被采纳;格式错误的值是 fail-loud
@@ -1720,7 +1759,7 @@ func hermesBoolEnabledDefaultFalse(envName string) (bool, error) {
 // hermesBoolEnabledDefaultTrue 解析一个默认 TRUE 的运行时布尔 knob,
 // 镜像 hermesAdminOnlyFromEnv 的解析风格:unset/空 => 默认(true、启用);
 // 任何可解析的 bool 被采纳;格式错误的值是一个 fail-loud 启动错误
-//(绝不静默回退而禁用强制,或更糟地悄悄重新启用一个 operator 本想关掉的
+// (绝不静默回退而禁用强制,或更糟地悄悄重新启用一个 operator 本想关掉的
 // 特权面)。用于 Hermes 的两个运行时总开关。
 func hermesBoolEnabledDefaultTrue(envName string) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(envName))

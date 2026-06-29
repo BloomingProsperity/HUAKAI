@@ -34,6 +34,14 @@ const subscriptionSelectColumns = `
 	status, source, auto_renew, assigned_by_admin_id, prev_user_group,
 	starts_at, expires_at, cancelled_at, created_at, updated_at`
 
+// subscriptionSelectColumnsS 是 subscriptionSelectColumns 的 s. 限定版, 用于 UPDATE ... FROM
+// 带 CTE/join 的 RETURNING 子句: 此时 target CTE 也暴露 id, 裸 id 会触发 42702 列引用歧义。
+const subscriptionSelectColumnsS = `
+	s.id, s.tenant_id, s.user_id, s.plan_id, s.granted_group,
+	s.daily_cap_usd, s.weekly_cap_usd, s.monthly_cap_usd,
+	s.status, s.source, s.auto_renew, s.assigned_by_admin_id, s.prev_user_group,
+	s.starts_at, s.expires_at, s.cancelled_at, s.created_at, s.updated_at`
+
 // PostgresStore 订阅权威存储。配额策略写入共享的 quota_policies 表 (不 import internal/quota,
 // 与 payment 写 billing_events 同一"共享表 seam"模式), quota 引擎只读解析这些策略。
 type PostgresStore struct {
@@ -385,7 +393,7 @@ UPDATE user_subscriptions s
 SET auto_renew=$3, updated_at=now()
 FROM target
 WHERE s.tenant_id=$1 AND s.id=target.id
-RETURNING`+subscriptionSelectColumns, tenantID, userID, autoRenew)
+RETURNING`+subscriptionSelectColumnsS, tenantID, userID, autoRenew)
 	sub, err := scanSubscription(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UserSubscription{}, ErrSubscriptionNotFound
