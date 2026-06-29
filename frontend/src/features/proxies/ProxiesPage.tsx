@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { deleteProxy, listProxies, setProxyStatus, testProxy } from './api'
+import { EditProxyForm } from './EditProxyForm'
 import { DEFAULT_TENANT_ID, parseTenantInput, probeSummary, STATUSES, statusTone, type ProbeSummary } from './proxies'
 import { ProxyCreateForm } from './ProxyCreateForm'
 import type { Proxy } from './types'
 
 /*
- * 出口代理池(运营台 · 路由与池)。列出租户出口代理 + 新建 + 行内删除/状态切换 + 「测试连通」主动质检
+ * 出口代理池(运营台 · 路由与池)。列出租户出口代理 + 新建 + 行内删除/状态切换/编辑 + 「测试连通」主动质检
  * (经该代理建隧道到服务端固定 canary,测真实出站连通 + 延迟,区别于被动 TCP 存活)。
- * 编辑(改 host/凭据)留作后续切片(update 的 auth_secret 留空会清空凭据,需专门 UX 处理)。
+ * 编辑(PATCH /{id}):改 name/protocol/host/port/认证;auth_secret 留空=不改密钥(避免误清空)。
  * 数据走 /admin/v1/proxies(admin token)。真码:backend/internal/proxyadminhttp、
  * backend/cmd/gateway/routes_proxy_probe.go(双 SSRF 守卫)。
  */
@@ -26,6 +27,7 @@ export function ProxiesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [probes, setProbes] = useState<Record<number, RowProbe>>({})
+  const [editingId, setEditingId] = useState<number | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const reload = () => setReloadKey((k) => k + 1)
 
@@ -34,6 +36,7 @@ export function ProxiesPage() {
     setLoading(true)
     setError(null)
     setProbes({})
+    setEditingId(null)
     listProxies(tenantId, ac.signal)
       .then((d) => setProxies(d.items ?? []))
       .catch((e: unknown) => {
@@ -129,7 +132,8 @@ export function ProxiesPage() {
               {proxies.map((p) => {
                 const probe = probes[p.id]
                 return (
-                  <tr key={p.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                  <Fragment key={p.id}>
+                  <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
                     <td style={td}>{p.name}</td>
                     <td style={td}>{p.protocol}</td>
                     <td style={{ ...td, fontVariantNumeric: 'tabular-nums' }}>{p.host}:{p.port}</td>
@@ -163,6 +167,21 @@ export function ProxiesPage() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => setEditingId((id) => (id === p.id ? null : p.id))}
+                        style={{
+                          marginLeft: 8,
+                          padding: '4px 10px',
+                          border: '1px solid var(--hk-line)',
+                          borderRadius: 'var(--hk-radius-2)',
+                          background: 'transparent',
+                          cursor: 'pointer',
+                          fontSize: 12,
+                        }}
+                      >
+                        {editingId === p.id ? '收起编辑' : '编辑'}
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => onDelete(p)}
                         style={{
                           marginLeft: 8,
@@ -179,6 +198,22 @@ export function ProxiesPage() {
                       </button>
                     </td>
                   </tr>
+                  {editingId === p.id && (
+                    <tr>
+                      <td colSpan={6} style={{ padding: 'var(--hk-space-3) 12px', background: 'var(--hk-surface-sunken, transparent)' }}>
+                        <EditProxyForm
+                          tenantId={tenantId}
+                          proxy={p}
+                          onCancel={() => setEditingId(null)}
+                          onSaved={() => {
+                            setEditingId(null)
+                            reload()
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 )
               })}
             </tbody>

@@ -1,6 +1,13 @@
 import { apiGet, apiSend } from '../../lib/api'
 import { buildAccountListQuery, type AccountListFilters } from './query'
-import type { ProviderAccount, ProviderAccountListResponse } from './types'
+import type {
+  AccountHealth,
+  AccountTestResult,
+  BulkByTagResult,
+  ProviderAccount,
+  ProviderAccountListResponse,
+  UpstreamModelsResult,
+} from './types'
 
 /*
  * 账号中心数据访问层。封装对 admin provider-accounts 端点的调用,页面只依赖本文件。
@@ -47,4 +54,46 @@ export async function clearAccountRateLimit(id: number, reason: string): Promise
 /** 通用编辑账号(池调优旋钮):PATCH /admin/v1/provider-accounts/{id}。仅下发改动字段。 */
 export async function updateProviderAccount(id: number, body: object): Promise<ProviderAccount> {
   return apiSend<ProviderAccount>('PATCH', `${ACCOUNTS_PATH}/${id}`, body)
+}
+
+/**
+ * 账号凭证试运行:POST /admin/v1/provider-accounts/{id}/test。
+ * 后端做 dry-run 校验(不计费、进审计),回 {ok, error_class, message}。
+ * 真码:backend/internal/adminhttp/provider_account_test_handler.go:57。
+ */
+export async function testProviderAccount(id: number): Promise<AccountTestResult> {
+  return apiSend<AccountTestResult>('POST', `${ACCOUNTS_PATH}/${id}/test`)
+}
+
+/**
+ * 账号实时健康:GET /admin/v1/provider-accounts/{id}/health。
+ * 字段严格对齐 handler(health_state / failure_count / session_window_5h_* / recent_requests…)。
+ * 真码:backend/internal/adminhttp/provider_account_health_handler.go:67。
+ */
+export async function getProviderAccountHealth(id: number, signal?: AbortSignal): Promise<AccountHealth> {
+  return apiGet<AccountHealth>(`${ACCOUNTS_PATH}/${id}/health`, { signal })
+}
+
+/**
+ * 上游可用模型:GET /admin/v1/provider-accounts/{id}/upstream-models。
+ * 仅 upstream_passthrough(upstream_static)凭证支持;否则后端 422。回 {models, count}。
+ * 真码:backend/internal/adminhttp/provider_account_upstream_models_handler.go:68。
+ */
+export async function getProviderAccountUpstreamModels(id: number): Promise<UpstreamModelsResult> {
+  return apiGet<UpstreamModelsResult>(`${ACCOUNTS_PATH}/${id}/upstream-models`)
+}
+
+/**
+ * 按标签批量调参:POST /admin/v1/provider-accounts/bulk-by-tag。
+ * tag 必填;enabled/priority/static_weight 至少一项(只下发非 undefined 的字段),
+ * 后端逐条更新并写审计,回 {affected_ids, count}。
+ * 真码:backend/internal/adminhttp/provider_account_bulk_handler.go:48。
+ */
+export async function bulkUpdateAccountsByTag(body: {
+  tag: string
+  enabled?: boolean
+  priority?: number
+  static_weight?: number
+}): Promise<BulkByTagResult> {
+  return apiSend<BulkByTagResult>('POST', `${ACCOUNTS_PATH}/bulk-by-tag`, body)
 }

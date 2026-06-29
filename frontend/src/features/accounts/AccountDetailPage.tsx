@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, healthTone } from '../../ui/StatusBadge'
 import { clearAccountRateLimit, getProviderAccount, setAccountEnabled } from './api'
+import { AccountDiagnosticsCard } from './AccountDiagnosticsCard'
 import { accountAvailableActions } from './detail'
 import { EditAccountModal } from './EditAccountModal'
 import type { ProviderAccount } from './types'
@@ -146,6 +147,8 @@ export function AccountDetailPage() {
           </div>
         </div>
       </Card>
+
+      <AccountDiagnosticsCard id={account.id} />
 
       <Card title="调度与池">
         <Grid

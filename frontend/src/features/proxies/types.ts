@@ -31,6 +31,21 @@ export interface CreateProxyInput {
   status?: string
 }
 
+/*
+ * 编辑代理的请求体(PATCH /admin/v1/proxies/{id})。
+ * 后端 updateProxyRequest:name/protocol/host/port 必填(全部校验),auth_username/auth_secret 可选;
+ * 后端用 DisallowUnknownFields,故此处字段必须与 handler 完全一致(不能多带 status 等)。
+ * auth_secret 是 write-only:留空 = 不下发该字段(保留原凭据);仅在要改密钥时才下发。
+ */
+export interface UpdateProxyInput {
+  name: string
+  protocol: string
+  host: string
+  port: number
+  auth_username?: string
+  auth_secret?: string
+}
+
 /** error_class 枚举(与后端 proxyhealth 一致;ok 时缺省)。 */
 export type ProbeErrorClass =
   | 'unsafe_proxy_host'

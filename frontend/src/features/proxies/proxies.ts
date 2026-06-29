@@ -1,4 +1,4 @@
-import type { ProbeResult } from './types'
+import type { ProbeResult, UpdateProxyInput } from './types'
 
 /*
  * 出口代理池纯展示逻辑(与 React 解耦,便于 vitest 变异测试)。
@@ -81,4 +81,57 @@ export function validateCreateForm(f: CreateProxyForm): string | null {
   if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口须为 1-65535 的整数'
   if (f.status !== '' && !STATUSES.includes(f.status as (typeof STATUSES)[number])) return '状态非法'
   return null
+}
+
+/*
+ * 编辑代理表单。无 status 字段(后端 PATCH 用 DisallowUnknownFields,不接受 status;状态走独立的
+ * PUT /{id}/status)。⚠️ auth_secret 留空 = 清除认证密钥:后端 PATCH 缺省即写 SQL NULL
+ * (无 COALESCE),密钥又不回显无法 round-trip,故无法「只改其它字段而保留密钥」。
+ * 留空保存的二次确认在 EditProxyForm 里;要保留认证就重填密钥。
+ */
+export interface EditProxyForm {
+  name: string
+  protocol: string
+  host: string
+  port: string
+  auth_username: string
+  // 留空 = 清除密钥(见上;非「保留」)。
+  auth_secret: string
+}
+
+/**
+ * validateEditForm 校验编辑表单,返回首个错误文案或 null(通过)。
+ * 与新建同样必填 name/host/protocol/port,但不含 status。
+ * 变异:删任一校验则对应非法输入漏过 → 测试转红。
+ */
+export function validateEditForm(f: EditProxyForm): string | null {
+  if (f.name.trim() === '') return '名称必填'
+  if (!PROTOCOLS.includes(f.protocol as (typeof PROTOCOLS)[number])) return '协议非法'
+  if (f.host.trim() === '') return '主机必填'
+  const port = Number.parseInt(f.port, 10)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口须为 1-65535 的整数'
+  return null
+}
+
+/**
+ * buildUpdateInput 把编辑表单转成 PATCH 请求体。
+ * 关键约束(对齐后端 updateProxyRequest + DisallowUnknownFields):
+ * - 必带 name/protocol/host/port;
+ * - auth_username 总是下发(可清空成空串);
+ * - auth_secret 仅在非空时下发 —— 留空则不带该字段;**注意后端缺省即写 NULL,语义=清除**
+ *   (非保留),清除前的二次确认在 EditProxyForm。
+ * 变异:若把 auth_secret 无条件下发(留空也带),则"留空时不下发该字段"用例转红。
+ */
+export function buildUpdateInput(f: EditProxyForm): UpdateProxyInput {
+  const out: UpdateProxyInput = {
+    name: f.name.trim(),
+    protocol: f.protocol,
+    host: f.host.trim(),
+    port: Number.parseInt(f.port, 10),
+    auth_username: f.auth_username.trim() || undefined,
+  }
+  if (f.auth_secret !== '') {
+    out.auth_secret = f.auth_secret
+  }
+  return out
 }
