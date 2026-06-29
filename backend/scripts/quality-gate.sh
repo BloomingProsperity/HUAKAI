@@ -29,8 +29,13 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # 或确定性守卫 auditLedgerAdvisoryLockKey/pickIndex)改「两次调用各存变量再比」,baseline 162->156,上限同步调低。
 # 2026-06-26 删 referral_reward 平行死实现(community/invitation/referral_reward_store+config.go,零生产消费的
 # 休眠双花地雷):连带移除其 staticcheck findings(156->94)与 deadcode 条目(907->873),两上限同步调低。
+# 2026-06-29 订阅自动续费 worker(money,默认关 KNOB):Store 接口新增 ListAutoRenewDue/
+# TryAutoRenewSubscription,内存实现 memoryStore 经 `var _ Store` 编译断言被强制实现这两个方法,
+# 但 memoryStore 是 test-fake、从生产 main 不可达 → deadcode 必然命中(与已收录的 31 个 memoryStore
+# 兄弟方法同类,删不掉/不接生产)。按本文件头规定的 deferral 正路 +2 进 baseline 并显式调高 DC_MAX
+# 873->875(Owner 可见可审);非死代码堆积,是接口契约的内存实现。
 SC_MAX=94
-DC_MAX=873
+DC_MAX=875
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1

@@ -31,28 +31,29 @@ import (
 )
 
 type gatewayRuntime struct {
-	deps                       *deps
-	pgPool                     *pgxpool.Pool
-	selectorCleanup            func()
-	replayJanitorStop          func()
-	hermesRetentionWorker      *hermes.MessageRetentionWorker
-	usageRetentionWorker       *usageretention.Worker
-	leaseSweepStop             func()
-	paymentExpireSweepStop     func()
-	apiKeyExpirySweepStop      func()
-	pendingReconcileStop       func()
-	modelSyncStop              func()
-	alertingEvalStop           func()
-	closeReplica               func()
-	credentialScheduler        *credentialworker.Scheduler
-	dlqWorker                  *legacydlq.Worker
-	outboxWorker               *obsoutbox.Worker
-	subscriptionExpiryWorker   *subscription.ExpiryWorker
-	subscriptionReminderWorker *subscription.ReminderWorker
-	hermesInspectionWorker     *hermesadmin.InspectionWorker
-	mediaTaskWorker            *mediatask.Worker
-	obsDLQEnabled              bool
-	outboxRuntime              obsoutbox.RuntimeConfig
+	deps                        *deps
+	pgPool                      *pgxpool.Pool
+	selectorCleanup             func()
+	replayJanitorStop           func()
+	hermesRetentionWorker       *hermes.MessageRetentionWorker
+	usageRetentionWorker        *usageretention.Worker
+	leaseSweepStop              func()
+	paymentExpireSweepStop      func()
+	apiKeyExpirySweepStop       func()
+	pendingReconcileStop        func()
+	modelSyncStop               func()
+	alertingEvalStop            func()
+	closeReplica                func()
+	credentialScheduler         *credentialworker.Scheduler
+	dlqWorker                   *legacydlq.Worker
+	outboxWorker                *obsoutbox.Worker
+	subscriptionExpiryWorker    *subscription.ExpiryWorker
+	subscriptionReminderWorker  *subscription.ReminderWorker
+	subscriptionAutoRenewWorker *subscription.AutoRenewWorker
+	hermesInspectionWorker      *hermesadmin.InspectionWorker
+	mediaTaskWorker             *mediatask.Worker
+	obsDLQEnabled               bool
+	outboxRuntime               obsoutbox.RuntimeConfig
 }
 
 func (rt *gatewayRuntime) close() {
@@ -203,6 +204,10 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	// 提醒 worker 同理独立, 优雅停止。
 	if rt.subscriptionReminderWorker != nil {
 		rt.subscriptionReminderWorker.Stop()
+	}
+	// 自动续费 worker (默认关; 仅 KNOB 开时非 nil) 同理独立, 优雅停止。
+	if rt.subscriptionAutoRenewWorker != nil {
+		rt.subscriptionAutoRenewWorker.Stop()
 	}
 	// 每日巡检 worker 独立于 in-flight handler; Stop 在当前 tick 结束后立即返回。
 	if rt.hermesInspectionWorker != nil {
