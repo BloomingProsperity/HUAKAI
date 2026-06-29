@@ -10,6 +10,7 @@ import {
   createSubscriptionVoucher,
   disablePlan,
   extendSubscription,
+  getAssignment,
   getPlan,
   listAssignments,
   listPlans,
@@ -18,6 +19,8 @@ import {
   updatePlan,
 } from './api'
 import {
+  actorLabel,
+  auditEventLabel,
   buildExtendRequest,
   buildPlanRequest,
   buildVoucherRequest,
@@ -35,6 +38,7 @@ import {
   DEFAULT_TENANT_ID,
   EMPTY_PLAN_FORM,
   type AdminSubscription,
+  type AuditEvent,
   type BulkAssignUserResult,
   type Plan,
   type PlanFormState,
@@ -372,6 +376,8 @@ function AssignmentPanel({
   const [bulkResults, setBulkResults] = useState<BulkAssignUserResult[] | null>(null)
   // 订阅级动作模态(延长 / 改套餐 / 撤销)。
   const [acting, setActing] = useState<{ sub: AdminSubscription; kind: SubAction } | null>(null)
+  // 单条分配详情模态(只读):展示完整字段 + 审计事件流。
+  const [detailSubId, setDetailSubId] = useState<number | null>(null)
 
   const userID = (): number => Math.trunc(Number(userIdRaw.trim()))
   const validUser = Number.isInteger(userID()) && userID() > 0
@@ -516,6 +522,9 @@ function AssignmentPanel({
                     <td style={tdMono}>{fmt(s.starts_at)}</td>
                     <td style={tdMono}>{fmt(s.expires_at)}</td>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      <button type="button" style={linkBtn} onClick={() => setDetailSubId(s.id)}>
+                        详情
+                      </button>
                       <button type="button" style={linkBtn} disabled={busy} onClick={() => act(resetQuota, s, '重置配额')}>
                         重置配额
                       </button>
@@ -567,8 +576,126 @@ function AssignmentPanel({
           }}
         />
       )}
+
+      {detailSubId != null && (
+        <AssignmentDetailModal tenantID={tenantID} subId={detailSubId} onClose={() => setDetailSubId(null)} />
+      )}
     </div>
   )
+}
+
+/* ---- 单条分配详情(只读):完整字段 + 审计事件流 ---- */
+function AssignmentDetailModal({
+  tenantID,
+  subId,
+  onClose,
+}: {
+  tenantID: number
+  subId: number
+  onClose: () => void
+}) {
+  const [sub, setSub] = useState<AdminSubscription | null>(null)
+  const [events, setEvents] = useState<AuditEvent[]>([])
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    getAssignment(subId, tenantID, ctrl.signal)
+      .then((resp) => {
+        setSub(resp.subscription)
+        setEvents(resp.audit_events ?? [])
+      })
+      .catch((e: unknown) => {
+        if (ctrl.signal.aborted) return
+        setErr(toMsg(e, '加载订阅详情失败'))
+      })
+    return () => ctrl.abort()
+  }, [subId, tenantID])
+
+  return (
+    <Overlay onClose={onClose}>
+      <div style={{ ...modal, width: 'min(560px, 92vw)' }}>
+        <h2 style={{ fontSize: 18, margin: 0 }}>订阅详情 #{subId}</h2>
+        {err && <Banner tone="danger">{err}</Banner>}
+        {!sub && !err ? (
+          <div style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>加载中…</div>
+        ) : sub ? (
+          <>
+            <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 16px', fontSize: 13, margin: 0 }}>
+              <DetailRow k="用户 ID" v={`#${sub.user_id}`} />
+              <DetailRow k="套餐 ID" v={`#${sub.plan_id}`} />
+              <DetailRow k="状态" v={sub.status} />
+              <DetailRow k="来源" v={subSourceLabel(sub.source)} />
+              <DetailRow k="授予用户组" v={sub.granted_group || '—'} />
+              <DetailRow k="日/周/月封顶(USD)" v={subCapCol(sub)} />
+              <DetailRow k="生效时间" v={fmt(sub.starts_at)} />
+              <DetailRow k="到期时间" v={fmt(sub.expires_at)} />
+              <DetailRow k="取消时间" v={sub.cancelled_at ? fmt(sub.cancelled_at) : '—'} />
+              <DetailRow k="创建时间" v={fmt(sub.created_at)} />
+              <DetailRow k="分配管理员" v={sub.assigned_by_admin_id ? `#${sub.assigned_by_admin_id}` : '—'} />
+              <DetailRow k="原用户组" v={sub.prev_user_group || '—'} />
+            </dl>
+
+            <div>
+              <h3 style={{ fontSize: 14, margin: '0 0 var(--hk-space-2)' }}>审计事件({events.length})</h3>
+              {events.length === 0 ? (
+                <div style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>暂无审计事件。</div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={table}>
+                    <thead>
+                      <tr>
+                        {['事件', '操作者', '原因', '发生时间'].map((h) => (
+                          <th key={h} style={th}>
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {events.map((ev, i) => (
+                        <tr key={`${ev.event_type}-${ev.occurred_at}-${i}`} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                          <td style={td}>{auditEventLabel(ev.event_type)}</td>
+                          <td style={td}>{actorLabel(ev.actor_kind, ev.actor_id)}</td>
+                          <td style={{ ...td, color: 'var(--hk-ink-500)' }}>{ev.reason_class || '—'}</td>
+                          <td style={tdMono}>{fmt(ev.occurred_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>
+        ) : null}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onClose} style={ghostBtn}>关闭</button>
+        </div>
+      </div>
+    </Overlay>
+  )
+}
+
+/** 订阅来源 → 中文。字面值对齐后端 internal/subscription/types.go:34(SourceAdmin 等)。 */
+function subSourceLabel(source: string): string {
+  switch (source) {
+    case 'admin':
+      return '管理员分配'
+    case 'order':
+      return '订单购买'
+    case 'voucher':
+      return '兑换券'
+    default:
+      return source || '—'
+  }
+}
+
+/** 订阅级日/周/月封顶展示(null=不限,∞)。与 capCol(套餐版)同形,但取订阅字段。 */
+function subCapCol(s: AdminSubscription): string {
+  const d = s.daily_cap_usd ?? '∞'
+  const w = s.weekly_cap_usd ?? '∞'
+  const m = s.monthly_cap_usd ?? '∞'
+  return `${d} / ${w} / ${m}`
 }
 
 /* ---- 订阅级动作:延长 / 改套餐 / 撤销(均 money,改权益) ---- */

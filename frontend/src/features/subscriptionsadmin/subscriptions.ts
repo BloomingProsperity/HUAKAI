@@ -196,6 +196,69 @@ export function buildExtendRequest(
   return { request: { tenant_id: tenantID, until: new Date(ts).toISOString() } }
 }
 
+/* ---- 单条分配详情:审计事件展示的纯逻辑(只读) ---- */
+
+/**
+ * 审计事件类型 → 中文标签。字面值对齐后端 internal/subscription/types.go:176 起的
+ * Audit* 常量(subscription_created 等)。未知类型回退原始串(不吞掉,便于排查新事件)。
+ * 判别核心:已知键必须映射到对应中文,而非恒等返回原串。
+ */
+export function auditEventLabel(eventType: string): string {
+  switch (eventType) {
+    case 'subscription_created':
+      return '订阅创建'
+    case 'subscription_renewed':
+      return '订阅续期'
+    case 'subscription_plan_updated':
+      return '套餐变更'
+    case 'subscription_extended':
+      return '有效期延长'
+    case 'subscription_quota_reset':
+      return '配额重置'
+    case 'subscription_revoked':
+      return '订阅撤销'
+    case 'expired':
+      return '已过期'
+    case 'cancelled':
+      return '已取消'
+    case 'group_upgraded':
+      return '用户组升级'
+    case 'group_downgraded':
+      return '用户组降级'
+    case 'idempotent_replay':
+      return '幂等重放'
+    default:
+      return eventType
+  }
+}
+
+/**
+ * 操作者展示串:actor_kind(admin/user/system)→ 中文,带 actor_id(>0 才拼接)。
+ * 字面值对齐后端 types.go:211 ActorKind* 常量。
+ * 判别核心:① 已知 kind 映射为中文;② actor_id 为正才追加「#id」,0/缺省不拼
+ *(系统事件常无 actor_id,拼「#0」是误导)。
+ */
+export function actorLabel(actorKind: string, actorID?: number): string {
+  let kind: string
+  switch (actorKind) {
+    case 'admin':
+      kind = '管理员'
+      break
+    case 'user':
+      kind = '用户'
+      break
+    case 'system':
+      kind = '系统'
+      break
+    default:
+      kind = actorKind || '—'
+  }
+  if (typeof actorID === 'number' && actorID > 0) {
+    return `${kind} #${actorID}`
+  }
+  return kind
+}
+
 /** 撤销原因表单态。 */
 export interface VoucherFormState {
   planId: string

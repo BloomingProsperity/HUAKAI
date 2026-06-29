@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  actorLabel,
+  auditEventLabel,
   buildExtendRequest,
   buildPlanRequest,
   buildVoucherRequest,
@@ -249,5 +251,46 @@ describe('buildVoucherRequest', () => {
     expect('eligible_user_id' in ok.request).toBe(false)
     expect('error' in buildVoucherRequest(vform({ maxRedemptions: '0' }), 1)).toBe(true)
     expect('error' in buildVoucherRequest(vform({ eligibleUserId: '-1' }), 1)).toBe(true)
+  })
+})
+
+describe('auditEventLabel', () => {
+  it('已知事件类型映射为中文(非恒等返回)', () => {
+    // 判别核心:已知键必须翻译成对应中文,而不是把原始 event_type 直接吐回。
+    // 变异(default 直接返回原串、删掉某 case)→ 对应断言 RED;
+    // 同时断言「翻译结果 ≠ 原始串」可在整段 switch 被改成恒等返回时整体打红。
+    expect(auditEventLabel('subscription_created')).toBe('订阅创建')
+    expect(auditEventLabel('subscription_extended')).toBe('有效期延长')
+    expect(auditEventLabel('subscription_revoked')).toBe('订阅撤销')
+    expect(auditEventLabel('cancelled')).toBe('已取消')
+    expect(auditEventLabel('group_downgraded')).toBe('用户组降级')
+    expect(auditEventLabel('idempotent_replay')).toBe('幂等重放')
+    // 已知键的翻译必须与原始字面值不同(防 switch 被整体改成 return eventType)。
+    expect(auditEventLabel('subscription_created')).not.toBe('subscription_created')
+  })
+  it('未知事件类型回退原始串(不吞)', () => {
+    // 判别核心:未识别的新事件不能被吞成空串/固定占位,必须原样透出便于排查。
+    // 变异(default 返回 '—' 或 '')→ 此断言 RED。
+    expect(auditEventLabel('some_new_event')).toBe('some_new_event')
+  })
+})
+
+describe('actorLabel', () => {
+  it('actor_kind 映射中文 + 正 actor_id 拼接', () => {
+    // 判别核心:kind 翻译为中文,且 actor_id>0 才追加「#id」。
+    // 变异(去掉 kind 翻译)→ 第 1/2 条 RED;变异(无条件拼 id)→ 系统那条 RED。
+    expect(actorLabel('admin', 42)).toBe('管理员 #42')
+    expect(actorLabel('user', 7)).toBe('用户 #7')
+  })
+  it('actor_id 缺省 / 为 0 不拼「#id」', () => {
+    // 判别核心:系统事件常无 actor_id,拼「#0」是误导。
+    // 变异(把 >0 写成 >=0 或去掉判断)→ 这两条 RED。
+    expect(actorLabel('system')).toBe('系统')
+    expect(actorLabel('system', 0)).toBe('系统')
+  })
+  it('未知 kind 回退原串 / 空串回退占位', () => {
+    // 判别核心:未识别 kind 透出原值;完全空 kind 用「—」占位,避免空白。
+    expect(actorLabel('robot', 3)).toBe('robot #3')
+    expect(actorLabel('')).toBe('—')
   })
 })
