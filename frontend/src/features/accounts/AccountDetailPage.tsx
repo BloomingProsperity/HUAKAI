@@ -4,6 +4,7 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge, healthTone } from '../../ui/StatusBadge'
 import { clearAccountRateLimit, getProviderAccount, setAccountEnabled } from './api'
 import { AccountDiagnosticsCard } from './AccountDiagnosticsCard'
+import { AccountFingerprintBind } from './AccountFingerprintBind'
 import { accountAvailableActions } from './detail'
 import { EditAccountModal } from './EditAccountModal'
 import type { ProviderAccount } from './types'
@@ -149,6 +150,8 @@ export function AccountDetailPage() {
       </Card>
 
       <AccountDiagnosticsCard id={account.id} />
+
+      <AccountFingerprintBind accountId={account.id} tenantId={account.tenant_id} />
 
       <Card title="调度与池">
         <Grid
