@@ -47,6 +47,16 @@ import { ModelRegistryPage } from '../features/modelregistry/ModelRegistryPage'
 import { VersionPage } from '../features/version/VersionPage'
 import { LogsDiagPage } from '../features/logsdiag/LogsDiagPage'
 import { UpstreamModelsPage } from '../features/upstreammodels/UpstreamModelsPage'
+import { RouteRulesPage } from '../features/routeadmin/RouteRulesPage'
+import { QuotaPoliciesPage } from '../features/quotapolicies/QuotaPoliciesPage'
+import { ChannelHealthPage } from '../features/channelhealth/ChannelHealthPage'
+import { CatalogsPage } from '../features/catalogs/CatalogsPage'
+import { TLSFingerprintsPage } from '../features/tlsfp/TLSFingerprintsPage'
+import { ChannelTestTemplatesPage } from '../features/channeltesttemplates/ChannelTestTemplatesPage'
+import { ModuleRegistryPage } from '../features/moduleregistry/ModuleRegistryPage'
+import { CredentialRenewPage } from '../features/credentialrenew/CredentialRenewPage'
+import { BroadcastPage } from '../features/broadcast/BroadcastPage'
+import { DisputesAdminPage } from '../features/disputesadmin/DisputesAdminPage'
 import { LandingPage } from '../features/landing/LandingPage'
 import { LegalPage } from '../features/legal/LegalPage'
 import { LoginPage } from '../auth/LoginPage'
@@ -96,8 +106,18 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/admin/groups': <GroupsPage />,
   '/admin/model-registry': <ModelRegistryPage />,
   '/admin/model-sync': <UpstreamModelsPage />,
+  '/admin/catalogs': <CatalogsPage />,
+  '/admin/channel-test-templates': <ChannelTestTemplatesPage />,
   '/admin/version': <VersionPage />,
   '/admin/logs': <LogsDiagPage />,
+  '/admin/modules': <ModuleRegistryPage />,
+  '/admin/channel-health': <ChannelHealthPage />,
+  '/admin/route-rules': <RouteRulesPage />,
+  '/admin/quota-policies': <QuotaPoliciesPage />,
+  '/admin/tls-fingerprints': <TLSFingerprintsPage />,
+  '/admin/credential-renew': <CredentialRenewPage />,
+  '/admin/broadcast': <BroadcastPage />,
+  '/admin/disputes': <DisputesAdminPage />,
   '/system': <SettingsCenterPage />,
   '/ops': <OpsPage />,
   '/health': <HealthPage />,

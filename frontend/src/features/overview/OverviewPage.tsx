@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { AnnouncementBanner } from './AnnouncementBanner'
 import { getKeyUsageSummary, getQuota, listApiKeys } from './api'
 import {
   buildUsageBars,
@@ -26,6 +27,9 @@ import type { ApiKeyView, KeyUsageSummary, QuotaWindow } from './types'
 export function OverviewPage() {
   return (
     <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
+      {/* 用户公告横幅:拉 /v1/announcements,有生效公告才展示;无/失败则整体不渲染,不打扰主内容。 */}
+      <AnnouncementBanner />
+
       <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
         <h1 style={{ fontSize: 22, margin: 0 }}>概览</h1>
         <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>账户配额、近段用量与快捷入口的一屏速览。</p>

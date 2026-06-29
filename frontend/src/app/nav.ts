@@ -97,7 +97,10 @@ export const PIPELINE_NAV: NavSection[] = [
     shell: 'operator',
     label: '上游账号池',
     hint: '把上游 Claude/OpenAI/Gemini 账号纳入可调度池',
-    items: [{ path: '/accounts', label: '账号中心', built: true }],
+    items: [
+      { path: '/accounts', label: '账号中心', built: true },
+      { path: '/admin/credential-renew', label: '凭证续期监控', built: true },
+    ],
   },
   {
     stage: 2,
@@ -107,8 +110,11 @@ export const PIPELINE_NAV: NavSection[] = [
     hint: '分组、权重、选号策略、健康与亲和',
     items: [
       { path: '/routing', label: '路由与池管理', built: true },
+      { path: '/admin/route-rules', label: '请求路由规则', built: true },
+      { path: '/admin/quota-policies', label: '配额策略', built: true },
       { path: '/admin/groups', label: '分组管理', built: true },
       { path: '/admin/proxies', label: '出口代理池', built: true },
+      { path: '/admin/tls-fingerprints', label: 'TLS 指纹 Profile', built: true },
     ],
   },
   {
@@ -130,6 +136,8 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/admin/pricing', label: '定价设置', built: true },
       { path: '/admin/model-registry', label: '模型注册', built: true },
       { path: '/admin/model-sync', label: '厂商同步', built: true },
+      { path: '/admin/catalogs', label: '上游目录', built: true },
+      { path: '/admin/channel-test-templates', label: '渠道测试模板', built: true },
     ],
   },
   {
@@ -143,6 +151,7 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/admin/subscriptions', label: '套餐管理', built: true },
       { path: '/admin/vouchers', label: '兑换码管理', built: true },
       { path: '/admin/affiliates', label: '分销管理', built: true },
+      { path: '/admin/disputes', label: '退款/扣费争议', built: true },
     ],
   },
   {
@@ -153,6 +162,7 @@ export const PIPELINE_NAV: NavSection[] = [
     hint: '公告、内容审核风控',
     items: [
       { path: '/admin/announcements', label: '公告管理', built: true },
+      { path: '/admin/broadcast', label: '站内信广播', built: true },
       { path: '/admin/moderation', label: '内容审核', built: true },
     ],
   },
@@ -166,6 +176,8 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/system', label: '系统设置', built: true },
       { path: '/ops', label: '运维大屏', built: true },
       { path: '/health', label: '系统健康', built: true },
+      { path: '/admin/channel-health', label: '渠道健康台', built: true },
+      { path: '/admin/modules', label: '模块知识脊柱', built: true },
       { path: '/admin/version', label: '版本与维护', built: true },
       { path: '/admin/logs', label: '日志与诊断', built: true },
       { path: '/admin/backup', label: '备份与恢复', built: true },
