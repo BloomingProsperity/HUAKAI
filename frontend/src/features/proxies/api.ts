@@ -1,5 +1,5 @@
 import { apiGet, apiSend } from '../../lib/api'
-import type { CreateProxyInput, ProbeResult, Proxy, ProxyListResponse } from './types'
+import type { CreateProxyInput, ProbeResult, Proxy, ProxyListResponse, UpdateProxyInput } from './types'
 
 /*
  * 出口代理池数据访问层。端点 /admin/v1/proxies(admin 鉴权,apiGet/apiSend 经 authHeaders
@@ -26,6 +26,15 @@ export async function testProxy(tenantId: number, id: number): Promise<ProbeResu
 /** 新建代理。auth_secret 仅此处发送(后端加密存),返回新代理(secret-free)。 */
 export async function createProxy(tenantId: number, input: CreateProxyInput): Promise<Proxy> {
   return apiSend<Proxy>('POST', PATH, input, { query: { tenant_id: tenantId } })
+}
+
+/**
+ * 编辑代理:PATCH /admin/v1/proxies/{id}。改 name/host/port/protocol/认证。
+ * auth_secret write-only,仅当本次要改密钥时下发(留空则不发该字段、保留原凭据)。
+ * 真码:backend/internal/proxyadminhttp/routes.go:208(newUpdateHandler / updateProxyRequest)。
+ */
+export async function updateProxy(tenantId: number, id: number, input: UpdateProxyInput): Promise<Proxy> {
+  return apiSend<Proxy>('PATCH', `${PATH}/${id}`, input, { query: { tenant_id: tenantId } })
 }
 
 /** 删除代理(软删,幂等)。后端返回 204 无体。 */

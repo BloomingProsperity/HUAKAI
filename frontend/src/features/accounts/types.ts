@@ -55,3 +55,56 @@ export interface ProviderAccountListResponse {
     has_more: boolean
   }
 }
+
+/*
+ * 账号诊断/健康/上游模型 DTO —— 镜像后端 adminhttp 三个 handler 的 JSON 形态:
+ * - provider_account_test_handler.go:providerAccountTestResponseBody
+ * - provider_account_health_handler.go:providerAccountHealthResponseBody
+ * - provider_account_upstream_models_handler.go:upstreamModelsListResponse
+ */
+
+/** POST /{id}/test 凭证试运行结果。ok=true 即连通;error_class 为粗粒度枚举(失败时)。 */
+export interface AccountTestResult {
+  ok: boolean
+  error_class: string | null
+  message: string
+}
+
+/** GET /{id}/health 实时健康面板(字段名严格对齐 handler,非 recentReqRing)。 */
+export interface AccountHealth {
+  id: number
+  health_state: string
+  health_state_until?: string | null
+  last_probe_latency_ms: number | null
+  last_probe_at: string | null
+  model_sync_last_check_at: string | null
+  session_window_5h_start: string | null
+  session_window_5h_end: string | null
+  session_window_5h_status: string | null
+  last_refresh_at: string | null
+  last_refresh_outcome: string | null
+  failure_class: string | null
+  failure_count: number
+  enabled: boolean
+  requires_action: boolean
+  updated_at: string
+  /** 进程内近期请求计数。ring 为 nil 或无数据时后端省略该字段。 */
+  recent_requests?: {
+    total: number
+    success: number
+    failure: number
+    last_at?: string
+  }
+}
+
+/** GET /{id}/upstream-models 上游可用模型清单(OpenAI 兼容 /v1/models 去重后)。 */
+export interface UpstreamModelsResult {
+  models: string[]
+  count: number
+}
+
+/** POST /bulk-by-tag 批量调参的响应:受影响账号 ID + 计数。 */
+export interface BulkByTagResult {
+  affected_ids: number[]
+  count: number
+}

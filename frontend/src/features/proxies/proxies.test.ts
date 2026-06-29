@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { parseTenantInput, probeSummary, statusTone, validateCreateForm, type CreateProxyForm } from './proxies'
+import {
+  buildUpdateInput,
+  parseTenantInput,
+  probeSummary,
+  statusTone,
+  validateCreateForm,
+  validateEditForm,
+  type CreateProxyForm,
+  type EditProxyForm,
+} from './proxies'
 import type { ProbeResult } from './types'
+
+function editForm(p: Partial<EditProxyForm>): EditProxyForm {
+  return { name: 'p1', protocol: 'http', host: '1.2.3.4', port: '8080', auth_username: '', auth_secret: '', ...p }
+}
 
 function form(p: Partial<CreateProxyForm>): CreateProxyForm {
   return { name: 'p1', protocol: 'http', host: '1.2.3.4', port: '8080', auth_username: '', auth_secret: '', status: 'active', ...p }
@@ -61,5 +74,46 @@ describe('validateCreateForm', () => {
     expect(validateCreateForm(form({ port: '70000' }))).toContain('端口')
     expect(validateCreateForm(form({ port: 'abc' }))).toContain('端口')
     expect(validateCreateForm(form({ status: 'weird' }))).toContain('状态')
+  })
+})
+
+describe('validateEditForm', () => {
+  it('合法表单 → null', () => {
+    expect(validateEditForm(editForm({}))).toBeNull()
+    expect(validateEditForm(editForm({ auth_secret: '' }))).toBeNull() // 密钥可留空
+  })
+  it('各非法输入返回对应错误(变异:任一校验缺失则该非法漏过返 null)', () => {
+    expect(validateEditForm(editForm({ name: '  ' }))).toContain('名称')
+    expect(validateEditForm(editForm({ protocol: 'ftp' }))).toContain('协议')
+    expect(validateEditForm(editForm({ host: '' }))).toContain('主机')
+    expect(validateEditForm(editForm({ port: '0' }))).toContain('端口')
+    expect(validateEditForm(editForm({ port: '70000' }))).toContain('端口')
+  })
+})
+
+describe('buildUpdateInput', () => {
+  it('必带字段齐全,port 转 int,name/host 去空白', () => {
+    const out = buildUpdateInput(editForm({ name: ' p2 ', host: ' 5.6.7.8 ', port: '3128' }))
+    expect(out).toMatchObject({ name: 'p2', host: '5.6.7.8', port: 3128, protocol: 'http' })
+  })
+
+  it('auth_secret 留空 → 不下发该字段(后端缺省即清除,语义≠保留;变异:无条件下发则此断言红)', () => {
+    const out = buildUpdateInput(editForm({ auth_secret: '' }))
+    expect('auth_secret' in out).toBe(false)
+  })
+
+  it('auth_secret 非空 → 下发(本次改密钥)', () => {
+    const out = buildUpdateInput(editForm({ auth_secret: 'newpass' }))
+    expect(out.auth_secret).toBe('newpass')
+  })
+
+  it('auth_username 空白 → undefined(可清空);非空去空白后下发', () => {
+    expect(buildUpdateInput(editForm({ auth_username: '   ' })).auth_username).toBeUndefined()
+    expect(buildUpdateInput(editForm({ auth_username: ' user ' })).auth_username).toBe('user')
+  })
+
+  it('请求体不含 status 字段(后端 DisallowUnknownFields,带 status 会 400)', () => {
+    const out = buildUpdateInput(editForm({}))
+    expect('status' in out).toBe(false)
   })
 })

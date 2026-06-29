@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, healthTone, type BadgeTone } from '../../ui/StatusBadge'
 import { listProviderAccounts } from './api'
+import { AccountBulkByTag } from './AccountBulkByTag'
 import { CreateAccountModal } from './CreateAccountModal'
 import {
   ACCOUNT_STATE_OPTIONS,
@@ -135,6 +136,9 @@ export function AccountsPage() {
         onApply={applyFilters}
         onReset={resetFilters}
       />
+
+      {/* 按标签批量调参:批量启停/改优先级/改静态权重(POST /bulk-by-tag),应用后重拉列表。 */}
+      <AccountBulkByTag onApplied={() => setRefreshNonce((n) => n + 1)} />
 
       <div
         style={{
