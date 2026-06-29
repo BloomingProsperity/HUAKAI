@@ -1,9 +1,39 @@
 import { useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
-import { getLeaderboard, getOverview, getPerfMetrics } from './api'
-import { fmtInt, fmtLatencyMs, sparklinePoints, successRateTone } from './ops'
-import { OPS_WINDOWS, type LeaderboardResponse, type OverviewResponse, type PerfMetricsResponse } from './types'
+import {
+  getHealthScore,
+  getLeaderboard,
+  getOverview,
+  getPerfByBucket,
+  getPerfMetrics,
+  getPerformance,
+  getProviderAccountCounts,
+} from './api'
+import {
+  fmtFractionPct,
+  fmtInt,
+  fmtLatencyMs,
+  healthScoreTone,
+  sparklinePoints,
+  successRateTone,
+  totalTokens,
+  windowToRange,
+} from './ops'
+import {
+  OPS_WINDOWS,
+  PERF_BUCKETS,
+  PERF_DIMENSIONS,
+  type HealthScoreResponse,
+  type LeaderboardResponse,
+  type OverviewResponse,
+  type PerfBucketGranularity,
+  type PerfBucketResponse,
+  type PerfDimension,
+  type PerformanceResponse,
+  type PerfMetricsResponse,
+  type ProviderAccountCountsResponse,
+} from './types'
 
 /*
  * Ops 运维大屏(运维台,P1)。三块只读观测:总览 KPI + 内联 SVG 请求趋势、性能分位(p50/p95/p99)、
@@ -11,12 +41,22 @@ import { OPS_WINDOWS, type LeaderboardResponse, type OverviewResponse, type Perf
  */
 export function OpsPage() {
   const [window, setWindow] = useState('7d')
+  const [perfBy, setPerfBy] = useState<PerfDimension>('model')
+  const [bucketGran, setBucketGran] = useState<PerfBucketGranularity>('hour')
   const [overview, setOverview] = useState<OverviewResponse | null>(null)
   const [perf, setPerf] = useState<PerfMetricsResponse | null>(null)
   const [board, setBoard] = useState<LeaderboardResponse | null>(null)
+  const [perfRank, setPerfRank] = useState<PerformanceResponse | null>(null)
+  const [bucket, setBucket] = useState<PerfBucketResponse | null>(null)
+  const [health, setHealth] = useState<HealthScoreResponse | null>(null)
+  const [paCounts, setPaCounts] = useState<ProviderAccountCountsResponse | null>(null)
   const [errOverview, setErrOverview] = useState<string | null>(null)
   const [errPerf, setErrPerf] = useState<string | null>(null)
   const [errBoard, setErrBoard] = useState<string | null>(null)
+  const [errPerfRank, setErrPerfRank] = useState<string | null>(null)
+  const [errBucket, setErrBucket] = useState<string | null>(null)
+  const [errHealth, setErrHealth] = useState<string | null>(null)
+  const [errPaCounts, setErrPaCounts] = useState<string | null>(null)
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -25,11 +65,45 @@ export function OpsPage() {
     setErrOverview(null)
     setErrPerf(null)
     setErrBoard(null)
+    setErrHealth(null)
+    setErrPaCounts(null)
     getOverview(window, signal).then(setOverview).catch((e) => !signal.aborted && setErrOverview(errOf(e)))
     getPerfMetrics(window, signal).then(setPerf).catch((e) => !signal.aborted && setErrPerf(errOf(e)))
     getLeaderboard(window, signal).then(setBoard).catch((e) => !signal.aborted && setErrBoard(errOf(e)))
+    getHealthScore(window, signal).then(setHealth).catch((e) => !signal.aborted && setErrHealth(errOf(e)))
+    // provider-account-counts 只收绝对 [from,to](RFC3339),由 window 折算;to=now。
+    const { from, to } = windowToRange(window, new Date())
+    getProviderAccountCounts(from, to, signal)
+      .then(setPaCounts)
+      .catch((e) => !signal.aborted && setErrPaCounts(errOf(e)))
     return () => ctrl.abort()
   }, [window])
+
+  // 性能排行随 window + 维度(model / provider_account)切换重载。
+  useEffect(() => {
+    const ctrl = new AbortController()
+    const { signal } = ctrl
+    const errOf = (e: unknown) => (e instanceof ApiError ? `${e.message}(${e.code})` : '加载失败')
+    setErrPerfRank(null)
+    setPerfRank(null)
+    getPerformance(perfBy, window, signal)
+      .then(setPerfRank)
+      .catch((e) => !signal.aborted && setErrPerfRank(errOf(e)))
+    return () => ctrl.abort()
+  }, [window, perfBy])
+
+  // 分桶性能随 window + 粒度(hour / day)切换重载。
+  useEffect(() => {
+    const ctrl = new AbortController()
+    const { signal } = ctrl
+    const errOf = (e: unknown) => (e instanceof ApiError ? `${e.message}(${e.code})` : '加载失败')
+    setErrBucket(null)
+    setBucket(null)
+    getPerfByBucket(bucketGran, window, signal)
+      .then(setBucket)
+      .catch((e) => !signal.aborted && setErrBucket(errOf(e)))
+    return () => ctrl.abort()
+  }, [window, bucketGran])
 
   const trend = overview?.trend ?? []
   const trendValues = trend.map((p) => p.requests)
@@ -107,7 +181,8 @@ export function OpsPage() {
             <Kpi label="P99 延迟" value={perf ? fmtLatencyMs(perf.latency_percentiles_ms.p99) : '…'} mono small />
             <Kpi label="平均 TTFT" value={perf ? `${perf.summary.avg_ttft_ms}ms` : '…'} mono small />
             <Kpi label="平均 TPS" value={perf ? perf.summary.avg_tps : '…'} mono small />
-            <Kpi label="错误率" value={perf ? `${perf.summary.error_rate}%` : '…'} mono small />
+            {/* error_rate 是 0~1 小数(errorRateText=errorCount/requestCount StringFixed(4)),须 ×100 展示;原 `${x}%` 少算 100 倍。 */}
+            <Kpi label="错误率" value={perf ? fmtFractionPct(perf.summary.error_rate) : '…'} mono small />
           </div>
         )}
       </Card>
@@ -149,6 +224,198 @@ export function OpsPage() {
           </div>
         )}
       </Card>
+
+      {/* 用量 + 渠道健康综合分 */}
+      <Card title="健康分(用量业务面 + 渠道基础设施面)">
+        {errHealth ? (
+          <Banner>{errHealth}</Banner>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 'var(--hk-space-3)' }}>
+              <Kpi
+                label="综合分"
+                value={health ? String(health.overall_score) : '…'}
+                badge={health ? healthScoreTone(health.overall_score) : undefined}
+              />
+              <Kpi
+                label="业务面"
+                value={health ? String(health.business_score) : '…'}
+                badge={health ? healthScoreTone(health.business_score) : undefined}
+                small
+              />
+              <Kpi
+                label="基础设施面"
+                value={health ? String(health.infra_score) : '…'}
+                badge={health ? healthScoreTone(health.infra_score) : undefined}
+                small
+              />
+              <Kpi label="错误率" value={health ? fmtFractionPct(health.signals.error_rate) : '…'} mono small />
+              <Kpi label="TTFT P99" value={health ? fmtLatencyMs(health.signals.ttft_p99_ms) : '…'} mono small />
+            </div>
+            {health && (
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--hk-ink-300)' }}>
+                {health.signals.channel_health_available
+                  ? `渠道健康:可服务 ${fmtInt(health.signals.healthy_channels)} / 托管 ${fmtInt(health.signals.managed_channels)}`
+                  : '渠道健康信号未接入(平台级总览不绑租户),基础设施面按保守满分计。'}
+              </p>
+            )}
+          </>
+        )}
+      </Card>
+
+      {/* 性能排行(按模型 / Provider 账号) */}
+      <Card title="性能排行(延迟 / 吞吐 / 错误率)">
+        <Segmented options={PERF_DIMENSIONS} value={perfBy} onChange={setPerfBy} />
+        {errPerfRank ? (
+          <Banner>{errPerfRank}</Banner>
+        ) : !perfRank ? (
+          <Empty>加载中…</Empty>
+        ) : perfRank.entries.length === 0 ? (
+          <Empty>暂无数据。</Empty>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {['#', perfBy === 'model' ? '模型' : 'Provider 账号', '平均 TTFT', '平均 TPS', '请求数', '错误率'].map((h) => (
+                    <th key={h} style={th}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {perfRank.entries.map((e) => (
+                  <tr key={e.rank} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                    <td style={tdMono}>{e.rank}</td>
+                    <td style={td}>
+                      <code style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>{e.key || '—'}</code>
+                    </td>
+                    <td style={tdMono}>{e.avg_ttft_ms}ms</td>
+                    <td style={tdMono}>{e.avg_tps}</td>
+                    <td style={tdMono}>{fmtInt(e.request_count)}</td>
+                    <td style={tdMono}>{fmtFractionPct(e.error_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* 按时间桶的性能分布 */}
+      <Card title="性能分桶(按时间)">
+        <Segmented options={PERF_BUCKETS} value={bucketGran} onChange={setBucketGran} />
+        {errBucket ? (
+          <Banner>{errBucket}</Banner>
+        ) : !bucket ? (
+          <Empty>加载中…</Empty>
+        ) : bucket.entries.length === 0 ? (
+          <Empty>暂无数据。</Empty>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {['时间桶', '模型', '平均 TTFT', '平均 TPS', '请求数', '错误数', '错误率'].map((h) => (
+                    <th key={h} style={th}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {bucket.entries.map((e, i) => (
+                  <tr key={`${e.bucket}-${e.key}-${i}`} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                    <td style={tdMono}>{e.bucket}</td>
+                    <td style={td}>
+                      <code style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>{e.key || '—'}</code>
+                    </td>
+                    <td style={tdMono}>{e.avg_ttft_ms}ms</td>
+                    <td style={tdMono}>{e.avg_tps}</td>
+                    <td style={tdMono}>{fmtInt(e.request_count)}</td>
+                    <td style={tdMono}>{fmtInt(e.error_count)}</td>
+                    <td style={tdMono}>{fmtFractionPct(e.error_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* 各 Provider 账号用量分布 */}
+      <Card title="Provider 账号用量分布(请求 / Token / 费用)">
+        {errPaCounts ? (
+          <Banner>{errPaCounts}</Banner>
+        ) : !paCounts ? (
+          <Empty>加载中…</Empty>
+        ) : paCounts.counts.length === 0 ? (
+          <Empty>暂无数据。</Empty>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {['账号 ID', '请求数', '输入 Token', '输出 Token', '合计 Token', '费用'].map((h) => (
+                    <th key={h} style={th}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {paCounts.counts.map((c) => (
+                  <tr key={c.provider_account_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
+                    <td style={tdMono}>#{c.provider_account_id}</td>
+                    <td style={tdMono}>{fmtInt(c.request_count)}</td>
+                    <td style={tdMono}>{fmtInt(c.total_input_tokens)}</td>
+                    <td style={tdMono}>{fmtInt(c.total_output_tokens)}</td>
+                    <td style={tdMono}>{fmtInt(totalTokens(c))}</td>
+                    <td style={tdMono}>${c.total_cost}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  )
+}
+
+// Segmented 是一个轻量分段切换器,用于性能维度(model/provider_account)与分桶粒度(hour/day)。
+// 泛型 T 保证 onChange 回传的是受限字面量类型,避免在调用点丢类型。
+function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: ReadonlyArray<{ value: T; label: string }>
+  value: T
+  onChange: (v: T) => void
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 'var(--hk-space-2)', flexWrap: 'wrap' }}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          style={{
+            height: 28,
+            padding: '0 var(--hk-space-3)',
+            border: `1px solid ${value === o.value ? 'var(--hk-primary-600)' : 'var(--hk-line)'}`,
+            borderRadius: 'var(--hk-radius-md)',
+            background: value === o.value ? 'var(--hk-primary-500)' : 'var(--hk-surface)',
+            color: value === o.value ? '#fff' : 'var(--hk-ink-700)',
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          {o.label}
+        </button>
+      ))}
     </div>
   )
 }

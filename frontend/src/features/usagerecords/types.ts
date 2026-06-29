@@ -113,3 +113,11 @@ export interface Dispute {
 export interface DisputesResponse {
   disputes: Dispute[]
 }
+
+/**
+ * 发起争议响应(NewCreateDisputeHandler,dispute_handler.go:112)。
+ * 后端回 201 Created + {"dispute": disputeView};只建 pending 记录,裁决/退款走 admin 侧、不立即动钱。
+ */
+export interface CreateDisputeResponse {
+  dispute: Dispute
+}

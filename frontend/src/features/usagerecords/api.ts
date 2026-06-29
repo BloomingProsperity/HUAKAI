@@ -2,6 +2,7 @@ import { apiGet, apiSend, ApiError } from '../../lib/api'
 import { getTokens } from '../../auth/store'
 import { tokenForPath } from '../../auth/tokenForPath'
 import type {
+  CreateDisputeResponse,
   DisputesResponse,
   ReceiptVerifyResponse,
   UsageRecordsResponse,
@@ -114,11 +115,34 @@ export async function verifyCostReceipt(requestID: string, signal?: AbortSignal)
 /**
  * 我的争议列表:GET /v1/me/disputes(dispute_handler.go:116)。只读列本人争议。
  * limit 1-500(后端 parseLimit 校验),默认 100。
- * 注意:发起争议 POST /v1/receipts/{id}/disputes 触发退款流程=money,Owner-gated,本模块不接。
  */
 export async function listMyDisputes(limit?: number, signal?: AbortSignal): Promise<DisputesResponse> {
   return apiGet<DisputesResponse>('/v1/me/disputes', {
     query: { limit: limit ?? undefined },
     signal,
   })
+}
+
+/**
+ * 对某条成本收据发起争议:POST /v1/receipts/{request_id}/disputes
+ * (dispute_handler.go:75 NewCreateDisputeHandler,挂 routes.go:177/181,session 鉴权)。
+ * 语义(write-only · 不立即动钱):仅创建一条 pending 争议记录;裁决/退款由 admin 侧
+ * /v1/admin/disputes/{id}/resolve 人工处理(NewAdminResolveDisputeHandler,dispute_handler.go:172),
+ * 本端点绝不动余额。身份由后端从会话上下文派生(ident.TenantID/UserID),前端不传用户标识。
+ * request_id 经 encodeReceiptRequestID 适配单段 {request_id} / 双段 {host}/{tail} 两套路由。
+ * 后端先校验该收据归属当前用户(GetReceiptForUser),不存在→404 receipt_not_found;
+ * reason 必填且去空白后 ≤4000(dispute_store.go:197-200,否则 400 invalid_dispute_request);
+ * 同一收据重复发起→409 dispute_duplicate。成功回 201 + {dispute}。
+ */
+export async function createDispute(
+  requestID: string,
+  reason: string,
+  signal?: AbortSignal,
+): Promise<CreateDisputeResponse> {
+  return apiSend<CreateDisputeResponse>(
+    'POST',
+    `/v1/receipts/${encodeReceiptRequestID(requestID)}/disputes`,
+    { reason },
+    { signal },
+  )
 }
