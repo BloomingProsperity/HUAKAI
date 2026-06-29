@@ -1,19 +1,42 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
-import { cancelOrder, confirmOrder, getOrder, listOrders, retryOrder } from './api'
+import { cancelOrder, confirmOrder, getOrder, listOrders, refundOrder, retryOrder } from './api'
+import { DashboardCards } from './DashboardCards'
+import { ExportToolbar } from './ExportToolbar'
 import {
   buildOrderListQuery,
+  canRefund,
   EMPTY_ORDER_FILTER,
   formatCents,
   hasAnyAction,
   ORDER_STATUSES,
   orderActions,
+  parseRefundAmount,
   statusLabel,
   statusTone,
   type OrderFilterForm,
 } from './ordersadmin'
+import { RefundRequestsTab } from './RefundRequestsTab'
+import {
+  dangerBtn,
+  errBox,
+  Empty,
+  Field,
+  fmt,
+  ghostBtn,
+  inp,
+  linkBtn,
+  panel,
+  primaryBtn,
+  Row,
+  td,
+  tdNum,
+  th,
+} from './ui'
 import type { AdminOrder, OrderAuditEvent } from './types'
+
+type TabKey = 'orders' | 'refund-requests'
 
 /*
  * 订单管理台(运营台,admin 壳)。管线之「钱」侧只读+卡单处置。
@@ -24,6 +47,7 @@ import type { AdminOrder, OrderAuditEvent } from './types'
 const PAGE_SIZE = 50
 
 export function OrdersAdminPage() {
+  const [tab, setTab] = useState<TabKey>('orders')
   const [draft, setDraft] = useState<OrderFilterForm>(EMPTY_ORDER_FILTER)
   const [applied, setApplied] = useState<OrderFilterForm | null>(null)
   const [page, setPage] = useState(0)
@@ -85,9 +109,111 @@ export function OrdersAdminPage() {
       <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
         <h1 style={{ fontSize: 22 }}>订单管理台</h1>
         <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          运营台 · 充值/订阅订单的多维查询、状态机查看与卡单处置(确认到账 / 撤单 / 重试履约)。
+          运营台 · 充值/订阅订单的多维查询、状态机查看、卡单处置与退款工单审批(均接已有 admin 端点)。
         </p>
       </header>
+
+      {/* 页顶仪表盘汇总(已查询某租户时显示)。 */}
+      <DashboardCards tenantId={tenantId} />
+
+      {/* Tab 切换:订单列表 / 退款工单。 */}
+      <div style={{ display: 'flex', gap: 'var(--hk-space-1)', borderBottom: '1px solid var(--hk-line)' }}>
+        {([
+          { key: 'orders' as TabKey, label: '订单列表' },
+          { key: 'refund-requests' as TabKey, label: '退款工单' },
+        ]).map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTab(t.key)}
+            style={{
+              height: 36,
+              padding: '0 var(--hk-space-4)',
+              border: 'none',
+              borderBottom: tab === t.key ? '2px solid var(--hk-primary-600)' : '2px solid transparent',
+              background: 'transparent',
+              color: tab === t.key ? 'var(--hk-ink-900)' : 'var(--hk-ink-500)',
+              fontSize: 14,
+              fontWeight: tab === t.key ? 600 : 400,
+              cursor: 'pointer',
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'refund-requests' ? (
+        <RefundRequestsTab tenantId={tenantId} />
+      ) : (
+        <OrdersTab
+          draft={draft}
+          applied={applied}
+          page={page}
+          orders={orders}
+          loading={loading}
+          error={error}
+          setDetailId={setDetailId}
+          submitFilter={submitFilter}
+          set={set}
+          setDraft={setDraft}
+          setApplied={setApplied}
+          setOrders={setOrders}
+          setError={setError}
+          setPage={setPage}
+        />
+      )}
+
+      {detailId !== null && tenantId > 0 && (
+        <OrderDetailDrawer
+          id={detailId}
+          tenantId={tenantId}
+          onClose={() => setDetailId(null)}
+          onActed={() => {
+            setDetailId(null)
+            refresh()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function OrdersTab({
+  draft,
+  applied,
+  page,
+  orders,
+  loading,
+  error,
+  setDetailId,
+  submitFilter,
+  set,
+  setDraft,
+  setApplied,
+  setOrders,
+  setError,
+  setPage,
+}: {
+  draft: OrderFilterForm
+  applied: OrderFilterForm | null
+  page: number
+  orders: AdminOrder[]
+  loading: boolean
+  error: string | null
+  setDetailId: (id: number | null) => void
+  submitFilter: () => void
+  set: <K extends keyof OrderFilterForm>(k: K, v: OrderFilterForm[K]) => void
+  setDraft: (f: OrderFilterForm) => void
+  setApplied: (f: OrderFilterForm | null) => void
+  setOrders: (o: AdminOrder[]) => void
+  setError: (e: string | null) => void
+  setPage: React.Dispatch<React.SetStateAction<number>>
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
+      {/* CSV 导出工具栏(只读)。 */}
+      <ExportToolbar />
 
       <form
         onSubmit={(e) => {
@@ -202,18 +328,6 @@ export function OrdersAdminPage() {
           </button>
         </div>
       )}
-
-      {detailId !== null && tenantId > 0 && (
-        <OrderDetailDrawer
-          id={detailId}
-          tenantId={tenantId}
-          onClose={() => setDetailId(null)}
-          onActed={() => {
-            setDetailId(null)
-            refresh()
-          }}
-        />
-      )}
     </div>
   )
 }
@@ -236,6 +350,9 @@ function OrderDetailDrawer({
   const [actErr, setActErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [reason, setReason] = useState('')
+  // 退款专用输入(money 敏感):金额(元,空=全额)+ 退款理由。
+  const [refundAmount, setRefundAmount] = useState('')
+  const [refundReason, setRefundReason] = useState('')
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -270,6 +387,32 @@ function OrderDetailDrawer({
   }
 
   const actions = order ? orderActions(order.status) : { canConfirm: false, canCancel: false, canRetry: false }
+  const refundable = order ? canRefund(order.status) : false
+
+  // doRefund:money 敏感 + 破坏性。先用 parseRefundAmount 本地校验(空=全额、超额先拦),
+  // 再二次确认,确认后生成幂等 key 调用退款端点。
+  const doRefund = () => {
+    if (!order) return
+    const parsed = parseRefundAmount(refundAmount, order.amount_cents)
+    if ('error' in parsed) {
+      setActErr(parsed.error)
+      return
+    }
+    const isFull = parsed.amountCents === 0
+    const amountLabel = isFull
+      ? `全额(${formatCents(order.amount_cents, order.currency_code)})`
+      : formatCents(parsed.amountCents, order.currency_code)
+    if (
+      !window.confirm(
+        `确认对订单 #${order.id} 退款 ${amountLabel}?\n将退回上游并扣减用户 #${order.user_id} 余额,此操作动钱且不可撤销。`,
+      )
+    ) {
+      return
+    }
+    // 幂等 key:同订单 + 金额 + 时间戳;后端按 key 去重,避免误点重复退款。
+    const idempotencyKey = `admin-refund:${order.id}:${parsed.amountCents}:${Date.now()}`
+    void act(() => refundOrder(order.id, tenantId, parsed.amountCents, idempotencyKey, refundReason))
+  }
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(28,38,34,0.4)', display: 'flex', justifyContent: 'flex-end', zIndex: 'var(--hk-z-overlay)' as unknown as number }}>
@@ -351,6 +494,34 @@ function OrderDetailDrawer({
                 </div>
               </section>
             )}
+
+            {refundable && (
+              <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)', borderTop: '1px solid var(--hk-line)', paddingTop: 'var(--hk-space-4)' }}>
+                <h3 style={{ fontSize: 14, color: '#8f322a' }}>退款(动钱 · 不可撤销)</h3>
+                <p style={{ margin: 0, fontSize: 12, color: 'var(--hk-ink-500)' }}>
+                  仅已到账(completed)的充值订单可退。退款将退回上游并扣减用户 #{order.user_id} 余额。
+                  金额留空=全额退,订单原额 {formatCents(order.amount_cents, order.currency_code)}。
+                </p>
+                <Field label="退款金额(元,留空=全额)">
+                  <input
+                    value={refundAmount}
+                    onChange={(e) => setRefundAmount(e.target.value)}
+                    placeholder={`≤ ${formatCents(order.amount_cents, order.currency_code)}`}
+                    inputMode="decimal"
+                    style={inp}
+                  />
+                </Field>
+                <Field label="退款原因(可选,记入审计)">
+                  <input value={refundReason} onChange={(e) => setRefundReason(e.target.value)} placeholder="如:用户申请 / 重复支付" style={inp} />
+                </Field>
+                {actErr && <div style={errBox}>{actErr}</div>}
+                <div>
+                  <button type="button" disabled={busy} onClick={doRefund} style={dangerBtn}>
+                    退款
+                  </button>
+                </div>
+              </section>
+            )}
           </>
         ) : null}
       </div>
@@ -358,37 +529,3 @@ function OrderDetailDrawer({
   )
 }
 
-function fmt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false })
-}
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
-      {label}
-      {children}
-    </label>
-  )
-}
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--hk-space-3)', fontSize: 13 }}>
-      <span style={{ color: 'var(--hk-ink-500)' }}>{label}</span>
-      <span style={{ color: 'var(--hk-ink-900)', textAlign: 'right' }}>{children}</span>
-    </div>
-  )
-}
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
-}
-
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
-const panel: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #f2cdc8', borderRadius: 'var(--hk-radius-md)', background: '#fbe9e7', color: '#8f322a', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }

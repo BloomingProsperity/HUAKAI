@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildExportRange,
   buildOrderListQuery,
+  canRefund,
+  defaultExportRange,
   EMPTY_ORDER_FILTER,
+  EXPORT_MAX_WINDOW_DAYS,
   formatCents,
   hasAnyAction,
   orderActions,
+  parseRefundAmount,
+  refundRequestStatusLabel,
+  refundRequestStatusTone,
   statusLabel,
   statusTone,
   toRfc3339,
@@ -108,5 +115,115 @@ describe('toRfc3339', () => {
   it('空串 → 空串;非法 → 空串', () => {
     expect(toRfc3339('')).toBe('')
     expect(toRfc3339('not-a-date')).toBe('')
+  })
+})
+
+describe('parseRefundAmount(money 敏感)', () => {
+  it('空串=全额退,落到订单原额(maxCents)而非 0', () => {
+    // 判别核心(S1 回归):后端 amount_cents<=0 即 ErrInvalidAmount(store_postgres_refund.go:64),
+    // 没有 0=全额兜底。空输入必须解析为订单原额(正数),否则全额退实际发 0 → 后端 400 退款不可用。
+    // 变异(空串返回 {amountCents:0})→ 本断言 RED。
+    expect(parseRefundAmount('', 5000)).toEqual({ amountCents: 5000 })
+    expect(parseRefundAmount('   ', 5000)).toEqual({ amountCents: 5000 })
+  })
+
+  it('空串但订单原额未知(maxCents<=0)→ 报错,绝不发 0', () => {
+    // 变异(maxCents<=0 时仍返回 0)→ 本断言 RED;那正是会被后端 400 拒的坏路径。
+    expect(parseRefundAmount('', 0)).toEqual({ error: '无法确定订单金额,请显式填写退款金额' })
+  })
+
+  it('元 → cents 用整数运算,无浮点误差', () => {
+    // 判别核心:19.99 元必须是 1999 cents,而非 1998.9999…。变异(parseFloat*100)易现误差。
+    expect(parseRefundAmount('19.99', 5000)).toEqual({ amountCents: 1999 })
+    expect(parseRefundAmount('0.05', 5000)).toEqual({ amountCents: 5 })
+    expect(parseRefundAmount('10', 5000)).toEqual({ amountCents: 1000 })
+    expect(parseRefundAmount('0.1', 5000)).toEqual({ amountCents: 10 })
+  })
+
+  it('超过订单金额 → 报错(前端先拦 refund_exceeds_available)', () => {
+    // 判别核心:超额必须拦。变异(删 maxCents 上限判断)→ 此断言 RED。
+    expect(parseRefundAmount('60', 5000)).toEqual({ error: '退款金额不能超过订单金额' })
+    // 恰好等于上限放行。
+    expect(parseRefundAmount('50', 5000)).toEqual({ amountCents: 5000 })
+  })
+
+  it('非法格式 / 非正数 → 报错', () => {
+    expect(parseRefundAmount('abc', 5000)).toEqual({
+      error: '退款金额必须是非负数,最多两位小数',
+    })
+    expect(parseRefundAmount('1.999', 5000)).toEqual({
+      error: '退款金额必须是非负数,最多两位小数',
+    })
+    expect(parseRefundAmount('-5', 5000)).toEqual({
+      error: '退款金额必须是非负数,最多两位小数',
+    })
+    expect(parseRefundAmount('0', 5000)).toEqual({
+      error: '退款金额必须大于 0(留空表示全额退款)',
+    })
+  })
+})
+
+describe('canRefund', () => {
+  it('仅 completed 可退款(后端 ErrOrderNotRefundable)', () => {
+    // 判别核心:只有 completed 可退。变异(paid 也放行)→ RED。
+    expect(canRefund('completed')).toBe(true)
+    for (const s of ['pending', 'paid', 'recharging', 'refunded', 'cancelled', 'failed']) {
+      expect(canRefund(s)).toBe(false)
+    }
+  })
+})
+
+describe('refundRequestStatus 标签/语气', () => {
+  it('中文标签 + 语气', () => {
+    expect(refundRequestStatusLabel('pending')).toBe('待审批')
+    expect(refundRequestStatusLabel('weird')).toBe('weird')
+    // 判别核心:rejected 必须 danger,approved 必须 ok。变异(对调)→ RED。
+    expect(refundRequestStatusTone('approved')).toBe('ok')
+    expect(refundRequestStatusTone('pending')).toBe('warn')
+    expect(refundRequestStatusTone('rejected')).toBe('danger')
+  })
+})
+
+describe('buildExportRange', () => {
+  it('from/to 必填(后端 required),空 → 报错', () => {
+    // 判别核心:缺 from 或 to 必须报错(后端硬性必填)。变异(允许空)→ RED。
+    expect(buildExportRange('', '2026-02-01T00:00')).toEqual({ error: '请选择有效的导出起始时间' })
+    expect(buildExportRange('2026-01-01T00:00', '')).toEqual({ error: '请选择有效的导出截止时间' })
+  })
+
+  it('from 晚于 to → 报错', () => {
+    expect(buildExportRange('2026-02-01T00:00', '2026-01-01T00:00')).toEqual({
+      error: '起始时间不能晚于截止时间',
+    })
+  })
+
+  it('跨度超 366 天 → 报错(后端 date_range_too_large)', () => {
+    // 判别核心:超窗必须先拦。变异(删窗口判断)→ RED。
+    const r = buildExportRange('2024-01-01T00:00', '2026-01-01T00:00')
+    expect('error' in r).toBe(true)
+  })
+
+  it('合法窗 → 返回 RFC3339 from/to', () => {
+    const r = buildExportRange('2026-01-01T00:00', '2026-01-31T00:00')
+    expect('from' in r).toBe(true)
+    const ok = r as { from: string; to: string }
+    expect(ok.from).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/)
+    expect(ok.to).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/)
+  })
+
+  it('EXPORT_MAX_WINDOW_DAYS 对齐后端 366', () => {
+    expect(EXPORT_MAX_WINDOW_DAYS).toBe(366)
+  })
+})
+
+describe('defaultExportRange', () => {
+  it('给出近 30 天的 datetime-local 形态', () => {
+    const now = new Date('2026-06-29T12:00:00')
+    const r = defaultExportRange(now)
+    // 判别核心:from 是 to 之前约 30 天;形态可被 buildExportRange 再消费(往返一致)。
+    expect(r.to).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+    expect(r.from).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+    const built = buildExportRange(r.from, r.to)
+    expect('from' in built).toBe(true)
   })
 })
