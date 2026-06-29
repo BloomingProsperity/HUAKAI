@@ -188,3 +188,58 @@ export function isSubscriptionActive(sub: SubscriptionView | null): boolean {
   if (!sub) return false
   return sub.status === 'active'
 }
+
+/**
+ * 自助换套餐的目标套餐候选:从在售套餐里剔除「当前订阅所属套餐」(换成自己无意义,后端也会拒),
+ * 且只保留可购(enabled && for_sale)的套餐。
+ * 判别核心:必须排除 currentPlanId(变异成不排除 → 出现「换成当前套餐」选项 → RED);
+ *          必须过滤不可售(变异成放行 → 列出不可换的套餐 → RED)。
+ */
+export function changeablePlans(
+  plans: Pick<PlanView, 'id' | 'enabled' | 'for_sale'>[],
+  currentPlanId: number | null | undefined,
+): Pick<PlanView, 'id' | 'enabled' | 'for_sale'>[] {
+  return plans.filter((p) => p.id !== currentPlanId && p.enabled && p.for_sale)
+}
+
+/**
+ * 换套餐前端校验:目标 plan id 必须为正,且不能与当前套餐相同(同档换无意义)。
+ * 通过返回 null,否则返回中文错误文案。
+ * 判别核心:newPlanId === currentPlanId 必须拦下(变异成放行 → 发无效换套餐请求 → RED)。
+ */
+export function validateChangePlan(newPlanId: number, currentPlanId: number | null | undefined): string | null {
+  if (!newPlanId || newPlanId <= 0) return '请选择要换的目标套餐'
+  if (currentPlanId != null && newPlanId === currentPlanId) return '已是当前套餐,无需更换'
+  return null
+}
+
+/**
+ * 关闭自动续订后的提示文案。强调「当前权益不受影响,到期不再续费」,避免用户误以为立刻失效。
+ * 判别核心:必须含「到期」语义且不能说「立即取消/失效」(变异成误导文案 → RED)。
+ */
+export function cancelRenewGuidance(expiresAt?: string | null): string {
+  const tail = expiresAt ? `,当前订阅将保留至 ${formatDate(expiresAt)} 到期。` : ',当前订阅在到期前仍可正常使用。'
+  return `自动续订已关闭,到期后将不再自动续费${tail}`
+}
+
+/** 换套餐路径后端错误码 → 友好中文(对照 subscriptionhttp writeSubscriptionError / 校验分支)。 */
+export function friendlyChangePlanError(code: string, fallback?: string): string {
+  switch (code) {
+    case 'invalid_plan':
+      return '目标套餐无效,请重新选择'
+    case 'plan_not_for_sale':
+      return '目标套餐当前不可购买'
+    case 'subscription_not_found':
+    case 'no_active_subscription':
+      return '当前没有可更换的生效订阅'
+    case 'downgrade_not_allowed':
+      return '降级需联系管理员处理,自助仅支持升级'
+    case 'session_token_required':
+      return '登录状态已失效,请重新登录后再操作'
+    case 'gateway_not_configured':
+    case 'subscription_backend_error':
+      return '订阅服务暂时不可用,请稍后再试'
+    default:
+      return fallback || '换套餐失败,请稍后再试'
+  }
+}

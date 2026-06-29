@@ -87,6 +87,22 @@ export interface PurchaseRequest {
   plan_id: number
 }
 
+/**
+ * POST /change-plan 请求体(自助换套餐)。
+ * 真码 backend/internal/subscriptionhttp/purchase.go:39 userChangePlanRequest{NewPlanID int64 `json:"new_plan_id"`}。
+ * 后端只允许升级(AllowDowngrade=false),降级需 admin 覆盖。
+ */
+export interface ChangePlanRequest {
+  new_plan_id: number
+}
+
+/**
+ * POST /change-plan 响应:{subscription}。真码 purchase.go:288 writeJSON({"subscription": toSubscriptionView(sub)})。
+ */
+export interface ChangePlanResponse {
+  subscription: SubscriptionView
+}
+
 /** 购买订单摘要(POST /purchase 响应的 order 字段)。 */
 export interface PurchaseOrderView {
   id: number

@@ -1,18 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildPurchaseRequest,
+  cancelRenewGuidance,
   capLabel,
+  changeablePlans,
   clampBarPercent,
   formatCaps,
   formatPrice,
   formatResetCountdown,
   formatValidity,
+  friendlyChangePlanError,
   isOverLimit,
   isSubscriptionActive,
   purchaseGuidance,
   sortProgressWindows,
   subscriptionStatusLabel,
   subscriptionStatusTone,
+  validateChangePlan,
   validatePurchasable,
   windowLabel,
 } from './subscriptions'
@@ -213,5 +217,54 @@ describe('isSubscriptionActive', () => {
   it('expired → false', () => {
     // 判别核心:非 active 必须 false(变异成只判 null → 过期订阅被当生效 → RED)。
     expect(isSubscriptionActive({ ...sub, status: 'expired' })).toBe(false)
+  })
+})
+
+describe('changeablePlans', () => {
+  const plans = [
+    { id: 1, enabled: true, for_sale: true },
+    { id: 2, enabled: true, for_sale: true }, // 当前套餐
+    { id: 3, enabled: false, for_sale: true }, // 停用
+    { id: 4, enabled: true, for_sale: false }, // 不可售
+  ]
+  it('剔除当前套餐 + 只留可购', () => {
+    // 判别核心:id=2(当前)被排除,id=3/4(停用/不可售)被过滤,只剩 id=1。
+    // 变异(不排除当前)→ 含 id=2 → RED;变异(不过滤不可售)→ 含 id=4 → RED。
+    expect(changeablePlans(plans, 2).map((p) => p.id)).toEqual([1])
+  })
+  it('无当前订阅(currentPlanId 为 null)时不排除任何套餐(仅按可购过滤)', () => {
+    expect(changeablePlans(plans, null).map((p) => p.id)).toEqual([1, 2])
+  })
+})
+
+describe('validateChangePlan', () => {
+  it('合法目标 → null', () => {
+    expect(validateChangePlan(3, 2)).toBeNull()
+  })
+  it('与当前套餐相同 → 拦下', () => {
+    // 判别核心:同档换无意义且后端会拒,前端必须先拦(变异成放行 → 发无效请求 → RED)。
+    expect(validateChangePlan(2, 2)).toContain('当前套餐')
+  })
+  it('非法 id → 提示选择', () => {
+    expect(validateChangePlan(0, 2)).toContain('选择')
+  })
+})
+
+describe('cancelRenewGuidance', () => {
+  it('强调到期保留、不立即失效', () => {
+    // 判别核心:必须含「到期」,不能含「立即/失效」误导词(变异成误导文案 → RED)。
+    const g = cancelRenewGuidance('2026-07-01T00:00:00Z')
+    expect(g).toContain('到期')
+    expect(g).toContain('不再自动续费')
+    expect(g).not.toContain('立即失效')
+  })
+})
+
+describe('friendlyChangePlanError', () => {
+  it('降级码 → 引导联系管理员', () => {
+    expect(friendlyChangePlanError('downgrade_not_allowed')).toContain('降级')
+  })
+  it('未知码 → 回退文案', () => {
+    expect(friendlyChangePlanError('boom', '兜底')).toBe('兜底')
   })
 })

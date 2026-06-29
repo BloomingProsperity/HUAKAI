@@ -89,3 +89,78 @@ export function modelDisplay(record: Pick<UsageRecord, 'requested_model' | 'upst
 export function hasMore(nextCursor: string): boolean {
   return nextCursor.trim() !== ''
 }
+
+// ── 用量 CSV 导出(GET /v1/me/usage/export.csv)的纯逻辑 ────────────────────────
+// 后端 meexporthttp 经 exporthttp.ParseExportRange 强制 from/to 两个 RFC3339 参数:
+//   ① 缺任一 → 400 from_required / to_required;
+//   ② 非 RFC3339 → 400 *_invalid;
+//   ③ from 晚于 to → 400 invalid_date_range;
+//   ④ 跨度 > 366 天 → 400 date_range_too_large。
+// 这里前端先行校验,避免无谓请求;并把日期选择器的「YYYY-MM-DD」转成后端要的 RFC3339。
+
+/** 导出窗口最大跨度(对齐后端 maxExportWindow = 366 天)。 */
+export const MAX_EXPORT_DAYS = 366
+
+/**
+ * 把 <input type="date"> 的 'YYYY-MM-DD' 转成当天 UTC 起点的 RFC3339(from)。
+ * 非法/空串返回空串(由 buildExportQuery / validateExportRange 拦截)。
+ */
+export function dayStartRFC3339(day: string): string {
+  const v = day.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return ''
+  const d = new Date(`${v}T00:00:00.000Z`)
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString()
+}
+
+/**
+ * 把 'YYYY-MM-DD' 转成当天 UTC 终点(次日零点)的 RFC3339(to,半开区间右界)。
+ * 这样选「同一天」也能覆盖整日数据,而非零跨度。
+ */
+export function dayEndRFC3339(day: string): string {
+  const v = day.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return ''
+  const d = new Date(`${v}T00:00:00.000Z`)
+  if (Number.isNaN(d.getTime())) return ''
+  d.setUTCDate(d.getUTCDate() + 1)
+  return d.toISOString()
+}
+
+/**
+ * 校验导出日期范围(输入为两个 'YYYY-MM-DD')。通过返回 null,否则返回中文错误。
+ * 判别核心:from 晚于 to 必须拦下(变异成放行 → 后端 400 invalid_date_range → RED);
+ *          跨度 > 366 天必须拦下(变异成放行 → 后端 400 date_range_too_large → RED)。
+ */
+export function validateExportRange(fromDay: string, toDay: string): string | null {
+  const from = dayStartRFC3339(fromDay)
+  const to = dayStartRFC3339(toDay)
+  if (!from || !to) return '请选择有效的起止日期'
+  const fromMs = Date.parse(from)
+  const toMs = Date.parse(to)
+  if (fromMs > toMs) return '开始日期不能晚于结束日期'
+  // 含右界整日,跨度按天数计;> 366 天后端会拒。
+  const days = Math.round((toMs - fromMs) / 86_400_000) + 1
+  if (days > MAX_EXPORT_DAYS) return `导出范围不能超过 ${MAX_EXPORT_DAYS} 天`
+  return null
+}
+
+/**
+ * 构造导出查询参数:固定 format=csv,from/to 转成 RFC3339。
+ * 判别核心:from 用当天起点、to 用次日零点(右界半开),且 format 必须为 csv
+ * (变异成漏 from/to 或用错边界 → 后端 400 / 数据缺失 → RED)。
+ */
+export function buildExportQuery(fromDay: string, toDay: string): { format: string; from: string; to: string } {
+  return { format: 'csv', from: dayStartRFC3339(fromDay), to: dayEndRFC3339(toDay) }
+}
+
+/** 默认导出范围:最近 N 天(含今天),返回 [fromDay, toDay] 的 'YYYY-MM-DD'。 */
+export function defaultExportRange(days = 30, now: Date = new Date()): { fromDay: string; toDay: string } {
+  const toDay = isoDay(now)
+  const from = new Date(now)
+  from.setUTCDate(from.getUTCDate() - (days - 1))
+  return { fromDay: isoDay(from), toDay }
+}
+
+/** Date → 'YYYY-MM-DD'(UTC)。 */
+function isoDay(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}

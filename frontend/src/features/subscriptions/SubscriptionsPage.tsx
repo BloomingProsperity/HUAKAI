@@ -2,21 +2,25 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
-import { getCurrentSubscription, getProgress, listPlans, purchasePlan } from './api'
+import { cancelRenew, changePlan, getCurrentSubscription, getProgress, listPlans, purchasePlan } from './api'
 import {
   buildPurchaseRequest,
+  cancelRenewGuidance,
+  changeablePlans,
   clampBarPercent,
   formatCaps,
   formatDate,
   formatPrice,
   formatResetCountdown,
   formatValidity,
+  friendlyChangePlanError,
   isOverLimit,
   isSubscriptionActive,
   purchaseGuidance,
   sortProgressWindows,
   subscriptionStatusLabel,
   subscriptionStatusTone,
+  validateChangePlan,
   validatePurchasable,
   windowLabel,
   type SubTone,
@@ -26,6 +30,7 @@ import type {
   PlanView,
   SubscriptionProgressResponse,
   SubscriptionProgressView,
+  SubscriptionView,
 } from './types'
 
 /*
@@ -149,6 +154,14 @@ export function SubscriptionsPage() {
                   ))}
                 </div>
               )}
+
+              {/* 订阅自助:关闭自动续订 + 换套餐(money 相关,均二次确认) */}
+              <SubscriptionSelfService
+                sub={sub!}
+                autoRenew={current?.auto_renew ?? false}
+                plans={plans}
+                onChanged={() => setRefreshNonce((n) => n + 1)}
+              />
             </div>
           )}
         </div>
@@ -233,6 +246,139 @@ function QuotaBar({ row }: { row: SubscriptionProgressView }) {
         />
       </div>
       <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{formatResetCountdown(row.resets_in_seconds)}</span>
+    </div>
+  )
+}
+
+/**
+ * 订阅自助操作区:关闭自动续订 + 换套餐。
+ * - 关闭自动续订:POST /cancel-renew(只置 auto_renew=false,当前权益保留到到期)。二次确认。
+ * - 换套餐:POST /change-plan {new_plan_id}(money 相关,后端仅允许升级)。下拉选目标 + 二次确认。
+ * 所有写动作身份取自 session,前端绝不传 user_id;成功后刷新当前订阅。
+ */
+function SubscriptionSelfService({
+  sub,
+  autoRenew,
+  plans,
+  onChanged,
+}: {
+  sub: SubscriptionView
+  autoRenew: boolean
+  plans: PlanView[]
+  onChanged: () => void
+}) {
+  const [busy, setBusy] = useState<'cancel' | 'change' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [targetPlanId, setTargetPlanId] = useState<number>(0)
+
+  // 可换的目标套餐:剔除当前套餐 + 只留可购(纯逻辑,已变异测试)。
+  const options = changeablePlans(plans, sub.plan_id) as PlanView[]
+
+  const doCancelRenew = async () => {
+    if (!window.confirm('确认关闭自动续订?当前订阅在到期前仍可正常使用,但到期后不会自动续费。')) {
+      return
+    }
+    setBusy('cancel')
+    setError(null)
+    setNotice(null)
+    try {
+      const resp = await cancelRenew()
+      setNotice(cancelRenewGuidance(resp.subscription?.expires_at))
+      onChanged()
+    } catch (e) {
+      setError(e instanceof ApiError ? friendlyChangePlanError(e.code, e.message) : '关闭自动续订失败,请稍后再试')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const doChangePlan = async () => {
+    const invalid = validateChangePlan(targetPlanId, sub.plan_id)
+    if (invalid) {
+      setError(invalid)
+      setNotice(null)
+      return
+    }
+    const target = options.find((p) => p.id === targetPlanId)
+    const label = target ? `「${target.name}」(${formatPrice(target.price_cents, target.currency_code)})` : ''
+    // money 提示:换套餐可能产生新的计费窗口与权益变更,需用户明确确认。
+    if (!window.confirm(`确认将套餐更换为${label}?换套餐可能改变你的配额上限与计费窗口,且仅支持升级。`)) {
+      return
+    }
+    setBusy('change')
+    setError(null)
+    setNotice(null)
+    try {
+      await changePlan(targetPlanId)
+      setNotice('套餐已更换,新的权益与配额已生效。')
+      setTargetPlanId(0)
+      onChanged()
+    } catch (e) {
+      setError(e instanceof ApiError ? friendlyChangePlanError(e.code, e.message) : '换套餐失败,请稍后再试')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 'var(--hk-space-3)',
+        paddingTop: 'var(--hk-space-4)',
+        borderTop: '1px solid var(--hk-line)',
+      }}
+    >
+      <h3 style={{ margin: 0, fontSize: 13, color: 'var(--hk-ink-500)' }}>订阅自助</h3>
+
+      {error && <Banner tone="danger">{error}</Banner>}
+      {notice && <Banner tone="ok">{notice}</Banner>}
+
+      {/* 关闭自动续订:仅在当前已开启时展示 */}
+      {autoRenew ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, color: 'var(--hk-ink-700)' }}>自动续订当前已开启。</span>
+          <button type="button" disabled={busy !== null} onClick={doCancelRenew} style={busy !== null ? buyBtnDisabled : ghostActionBtn}>
+            {busy === 'cancel' ? '处理中…' : '关闭自动续订'}
+          </button>
+        </div>
+      ) : (
+        <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>自动续订未开启,到期后需手动续订。</span>
+      )}
+
+      {/* 换套餐:有可换目标时展示下拉 + 按钮 */}
+      {options.length > 0 ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 13, color: 'var(--hk-ink-700)' }}>换套餐:</label>
+          <select
+            value={targetPlanId}
+            onChange={(e) => setTargetPlanId(Number(e.target.value))}
+            aria-label="选择目标套餐"
+            disabled={busy !== null}
+            style={selectActionStyle}
+          >
+            <option value={0}>选择目标套餐…</option>
+            {options.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}（{formatPrice(p.price_cents, p.currency_code)}）
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={busy !== null || targetPlanId <= 0}
+            onClick={doChangePlan}
+            style={busy !== null || targetPlanId <= 0 ? buyBtnDisabled : ghostActionBtn}
+          >
+            {busy === 'change' ? '更换中…' : '更换套餐'}
+          </button>
+          <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>仅支持升级,降级请联系管理员。</span>
+        </div>
+      ) : (
+        <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>暂无可更换的其它在售套餐。</span>
+      )}
     </div>
   )
 }
@@ -388,4 +534,27 @@ const buyBtnDisabled: CSSProperties = {
   color: 'var(--hk-ink-500)',
   border: '1px solid var(--hk-line)',
   cursor: 'not-allowed',
+}
+
+// 自助操作区的次级按钮(描边款,区别于醒目的购买按钮)。
+const ghostActionBtn: CSSProperties = {
+  height: 32,
+  padding: '0 var(--hk-space-4)',
+  border: '1px solid var(--hk-line)',
+  borderRadius: 'var(--hk-radius-md)',
+  background: 'var(--hk-surface)',
+  color: 'var(--hk-ink-700)',
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: 'pointer',
+}
+
+const selectActionStyle: CSSProperties = {
+  height: 32,
+  padding: '0 var(--hk-space-2)',
+  border: '1px solid var(--hk-line)',
+  borderRadius: 'var(--hk-radius-md)',
+  background: 'var(--hk-surface)',
+  color: 'var(--hk-ink-700)',
+  fontSize: 13,
 }

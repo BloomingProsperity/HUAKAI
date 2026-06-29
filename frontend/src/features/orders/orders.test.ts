@@ -6,6 +6,7 @@ import {
   formatMoney,
   orderKindLabel,
   providerLabel,
+  receiptEligible,
   statusCounts,
   statusLabel,
   statusTone,
@@ -28,6 +29,22 @@ function order(over: Partial<UserOrder>): UserOrder {
     ...over,
   }
 }
+
+describe('receiptEligible', () => {
+  it('已完成的充值/订阅订单 → 可下载收据', () => {
+    expect(receiptEligible(order({ order_kind: 'topup', status: 'completed' }))).toBe(true)
+    expect(receiptEligible(order({ order_kind: 'subscription', status: 'completed' }))).toBe(true)
+  })
+  it('未完成订单 → 不可(即便种类合格)', () => {
+    // 判别核心:必须同时校验 status=completed(变异成只看 kind → 待支付订单也露入口 → RED)。
+    expect(receiptEligible(order({ order_kind: 'topup', status: 'pending' }))).toBe(false)
+    expect(receiptEligible(order({ order_kind: 'topup', status: 'paid' }))).toBe(false)
+  })
+  it('种类不合格 → 不可(即便已完成)', () => {
+    // 判别核心:必须同时校验 kind(变异成只看 status → 非充值/订阅订单也出收据 → RED)。
+    expect(receiptEligible(order({ order_kind: 'other', status: 'completed' }))).toBe(false)
+  })
+})
 
 describe('statusLabel / statusTone', () => {
   it('已知状态译中文,未知原样回显', () => {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildExportQuery,
+  dayEndRFC3339,
+  dayStartRFC3339,
+  defaultExportRange,
   formatCost,
   hasMore,
   isSuccess,
@@ -8,6 +12,7 @@ import {
   statusTone,
   tokensSummary,
   totalTokens,
+  validateExportRange,
 } from './usagerecords'
 
 describe('statusTone / statusLabel(镜像后端 usageStatus)', () => {
@@ -96,5 +101,56 @@ describe('hasMore(游标分页)', () => {
     expect(hasMore('abc123')).toBe(true)
     expect(hasMore('')).toBe(false)
     expect(hasMore('   ')).toBe(false)
+  })
+})
+
+describe('dayStartRFC3339 / dayEndRFC3339(导出日期转 RFC3339)', () => {
+  it('起点=当天 UTC 零点,终点=次日 UTC 零点(右界半开)', () => {
+    // 判别核心:to 必须是次日零点(变异成同当天零点 → 零跨度漏当日数据 → RED)。
+    expect(dayStartRFC3339('2026-06-25')).toBe('2026-06-25T00:00:00.000Z')
+    expect(dayEndRFC3339('2026-06-25')).toBe('2026-06-26T00:00:00.000Z')
+  })
+  it('非法日期 → 空串', () => {
+    expect(dayStartRFC3339('2026/06/25')).toBe('')
+    expect(dayEndRFC3339('')).toBe('')
+  })
+})
+
+describe('validateExportRange', () => {
+  it('合法范围 → null', () => {
+    expect(validateExportRange('2026-06-01', '2026-06-30')).toBeNull()
+  })
+  it('开始晚于结束 → 拦下', () => {
+    // 判别核心:from>to 必须拦(变异成放行 → 后端 400 invalid_date_range → RED)。
+    expect(validateExportRange('2026-06-30', '2026-06-01')).toContain('不能晚于')
+  })
+  it('跨度 > 366 天 → 拦下', () => {
+    // 判别核心:超 366 天必须拦(变异成放行 → 后端 400 date_range_too_large → RED)。
+    expect(validateExportRange('2025-01-01', '2026-06-30')).toContain('366')
+  })
+  it('恰好 366 天(含右界整日)→ 放行', () => {
+    // 2026-01-01 到 2026-12-31 含两端共 365 天;再加一天到 366 边界仍放行。
+    expect(validateExportRange('2026-01-01', '2026-12-31')).toBeNull()
+  })
+})
+
+describe('buildExportQuery', () => {
+  it('format=csv + from 起点 + to 次日零点', () => {
+    // 判别核心:format 必须 csv,且 to 用 dayEndRFC3339(变异成漏 format 或错边界 → RED)。
+    expect(buildExportQuery('2026-06-01', '2026-06-01')).toEqual({
+      format: 'csv',
+      from: '2026-06-01T00:00:00.000Z',
+      to: '2026-06-02T00:00:00.000Z',
+    })
+  })
+})
+
+describe('defaultExportRange', () => {
+  it('最近 N 天(含今天):toDay=今天,fromDay=今天往前 N-1 天', () => {
+    // 固定 now 验证边界:最近 30 天 → from = now-29 天。
+    const now = new Date('2026-06-30T12:00:00.000Z')
+    const r = defaultExportRange(30, now)
+    expect(r.toDay).toBe('2026-06-30')
+    expect(r.fromDay).toBe('2026-06-01')
   })
 })
