@@ -830,6 +830,15 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Queries: d.adminQueries,
 		})
 	})
+	// admin token(运维凭证)签发 / 列举 / 吊销:支持临时/一次性 token
+	//(可选 expires_at)。高权操作,issuer 内部做 platform_admin-only 的
+	// fail-closed RBAC;明文 bearer 仅在签发响应里返一次。
+	r.Route("/admin/v1/admin-tokens", func(r chi.Router) {
+		adminhttp.MountAdminTokenRoutes(r, adminhttp.AdminTokensDeps{
+			Auth:   d.adminAuth,
+			Issuer: d.adminTokenIssuer,
+		})
+	})
 	adminUserDeps := adminuserhttp.Deps{
 		Auth:             d.adminAuth,
 		Store:            d.adminQueries,
