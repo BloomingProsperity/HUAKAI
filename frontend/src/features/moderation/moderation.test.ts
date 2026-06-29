@@ -147,3 +147,65 @@ describe('configToForm', () => {
     })
   })
 })
+
+// ── 关键词/哈希规则校验 + 批量解析(Wave B 接线;§14 变异法)─────────────────────
+import {
+  BULK_MAX_ITEMS,
+  normalizeHash,
+  parseBulkLines,
+  shortHash,
+  validateBulkCount,
+  validateHash,
+  validateKeyword,
+} from './moderation'
+
+describe('validateKeyword', () => {
+  it('空白拒绝、非空通过', () => {
+    // 变异(删 trim()===''守卫)→ 纯空白本应报错却放行,首断言 RED。
+    expect(validateKeyword('   ')).toBe('关键词不能为空')
+    expect(validateKeyword('')).toBe('关键词不能为空')
+    expect(validateKeyword('badword')).toBeNull()
+  })
+})
+
+describe('validateHash', () => {
+  const valid = 'a'.repeat(64)
+  it('恰好 64 位小写 hex 通过;63/65 位、非 hex 字符拒绝', () => {
+    // 变异(长度判从 ==64 改成 >=64,或字符集放宽)→ 65 位/含 g 本应拒却放行,断言 RED。
+    expect(validateHash(valid)).toBeNull()
+    expect(validateHash('a'.repeat(63))).toBe('须为 64 位十六进制(SHA-256)')
+    expect(validateHash('a'.repeat(65))).toBe('须为 64 位十六进制(SHA-256)')
+    expect(validateHash('g'.repeat(64))).toBe('须为 64 位十六进制(SHA-256)')
+  })
+  it('大写输入先归一为小写再判,合法大写哈希应通过', () => {
+    // 变异(normalizeHash 去掉 toLowerCase)→ 大写哈希被判非法,断言 RED。
+    expect(validateHash('A'.repeat(64))).toBeNull()
+    expect(normalizeHash('  ABCDEF  ')).toBe('abcdef')
+  })
+})
+
+describe('validateBulkCount', () => {
+  it('0 拒、1 与 1000 过、1001 拒(边界打在 BULK_MAX_ITEMS)', () => {
+    // 变异(把 n>MAX 改成 n>MAX+1,或 n<=0 改 n<0)→ 1001/0 本应拒却放行,断言 RED。
+    expect(validateBulkCount(0).ok).toBe(false)
+    expect(validateBulkCount(1).ok).toBe(true)
+    expect(validateBulkCount(BULK_MAX_ITEMS).ok).toBe(true)
+    expect(validateBulkCount(BULK_MAX_ITEMS + 1).ok).toBe(false)
+  })
+})
+
+describe('parseBulkLines', () => {
+  it('按行拆、trim、丢空行、保序', () => {
+    // 变异(去掉 filter 空行)→ 中间空行会混入,length/内容断言 RED。
+    expect(parseBulkLines('a\n  b  \n\n c\n')).toEqual(['a', 'b', 'c'])
+    expect(parseBulkLines('   \n\n')).toEqual([])
+  })
+})
+
+describe('shortHash', () => {
+  it('长串缩为头8尾4、短串原样、空串破折号', () => {
+    expect(shortHash('a'.repeat(64))).toBe('aaaaaaaa…aaaa')
+    expect(shortHash('abc')).toBe('abc')
+    expect(shortHash('')).toBe('—')
+  })
+})
