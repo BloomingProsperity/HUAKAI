@@ -252,3 +252,97 @@ export const tabBar: React.CSSProperties = {
   borderRadius: 'var(--hk-radius-md)',
   overflow: 'hidden',
 }
+// 可点击的历史会话行(回看入口):左侧标题/时间,右侧删除按钮。
+export const convoRow: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 'var(--hk-space-2)',
+  padding: 'var(--hk-space-2) var(--hk-space-3)',
+  borderRadius: 'var(--hk-radius-md)',
+  background: 'var(--hk-surface-sunken)',
+  border: '1px solid var(--hk-line)',
+}
+export const convoOpenBtn: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  alignItems: 'flex-start',
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  padding: 0,
+  textAlign: 'left',
+}
+// 删除会话按钮(破坏性动作:点击会先 window.confirm 二次确认)。
+export const convoDeleteBtn: React.CSSProperties = {
+  flexShrink: 0,
+  border: '1px solid var(--hk-danger)',
+  background: 'transparent',
+  color: 'var(--hk-danger)',
+  fontSize: 11,
+  cursor: 'pointer',
+  padding: '2px 8px',
+  borderRadius: 'var(--hk-radius-sm)',
+}
+// 回看头部:返回按钮 + 会话标题。
+export const viewerHeader: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--hk-space-2)',
+  padding: 'var(--hk-space-2) var(--hk-space-4)',
+  borderBottom: '1px solid var(--hk-line)',
+  background: 'var(--hk-surface-sunken)',
+}
+export const backBtn: React.CSSProperties = {
+  border: '1px solid var(--hk-line)',
+  background: 'var(--hk-surface)',
+  color: 'var(--hk-ink-700)',
+  fontSize: 12,
+  cursor: 'pointer',
+  padding: '2px 10px',
+  borderRadius: 'var(--hk-radius-pill)',
+}
+// 模块上下文卡片:身份 + 探针状态。
+export const moduleRow: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--hk-space-1)',
+  padding: 'var(--hk-space-2) var(--hk-space-3)',
+  borderRadius: 'var(--hk-radius-md)',
+  background: 'var(--hk-surface-sunken)',
+  border: '1px solid var(--hk-line)',
+}
+// 探针状态 pill 的色调映射(probeTone 的四档)。
+export const probePill: Record<'ok' | 'warn' | 'danger' | 'muted', React.CSSProperties> = {
+  ok: {
+    fontSize: 11,
+    color: 'var(--hk-success)',
+    border: '1px solid var(--hk-success)',
+    borderRadius: 'var(--hk-radius-pill)',
+    padding: '0 8px',
+  },
+  warn: {
+    fontSize: 11,
+    color: 'var(--hk-warn)',
+    border: '1px solid var(--hk-warn)',
+    borderRadius: 'var(--hk-radius-pill)',
+    padding: '0 8px',
+  },
+  danger: {
+    fontSize: 11,
+    color: 'var(--hk-danger)',
+    border: '1px solid var(--hk-danger)',
+    borderRadius: 'var(--hk-radius-pill)',
+    padding: '0 8px',
+  },
+  muted: {
+    fontSize: 11,
+    color: 'var(--hk-ink-500)',
+    border: '1px solid var(--hk-line)',
+    borderRadius: 'var(--hk-radius-pill)',
+    padding: '0 8px',
+  },
+}

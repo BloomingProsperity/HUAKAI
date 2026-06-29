@@ -12,7 +12,9 @@ import {
   type HermesActor,
 } from './hermesContext'
 import { useHermesChat } from './useHermesChat'
-import { listConversations, listTools, type HermesConversation, type HermesTool } from './hermesClient'
+import { listTools, type HermesTool } from './hermesClient'
+import { HermesHistoryTab } from './HermesHistoryTab'
+import { HermesContextTab } from './HermesContextTab'
 import * as S from './hermesPanelStyles'
 
 /*
@@ -43,8 +45,8 @@ export function HermesPanel({ onClose }: HermesPanelProps) {
   const [actor, setActor] = useState<HermesActor>(() => loadActor())
   const [showActorForm, setShowActorForm] = useState(false)
   const [input, setInput] = useState('')
-  // 视图分页:对话 / 只读工具清单(看 Hermes 能调用哪些读工具)。纯只读,无执行入口。
-  const [tab, setTab] = useState<'chat' | 'tools'>('chat')
+  // 视图分页:对话 / 历史会话回看 / 只读工具清单 / 模块上下文。纯只读(历史页含删除自己会话的破坏性动作,已二次确认)。
+  const [tab, setTab] = useState<'chat' | 'history' | 'tools' | 'context'>('chat')
 
   const adminToken = auth.adminToken
   const hasAdmin = !!adminToken
@@ -158,8 +160,14 @@ export function HermesPanel({ onClose }: HermesPanelProps) {
             <TabButton active={tab === 'chat'} onClick={() => setTab('chat')}>
               对话
             </TabButton>
+            <TabButton active={tab === 'history'} onClick={() => setTab('history')}>
+              历史
+            </TabButton>
             <TabButton active={tab === 'tools'} onClick={() => setTab('tools')}>
               只读工具
+            </TabButton>
+            <TabButton active={tab === 'context'} onClick={() => setTab('context')}>
+              模块
             </TabButton>
           </div>
         </div>
@@ -177,14 +185,18 @@ export function HermesPanel({ onClose }: HermesPanelProps) {
         />
       )}
 
-      {/* 主体:无 token 空状态 / 消息区 / 只读工具清单 */}
+      {/* 主体:无 token 空状态 / 消息区 / 历史回看 / 只读工具清单 / 模块上下文 */}
       {!hasAdmin ? (
         <EmptyState
           title="需运维者 token"
           desc="Hermes 运维助手只在运营台可用,且必须使用运维者(admin)token。请先在系统设置里配置 admin token 后重试。"
         />
-      ) : tab === 'tools' && ready && actor.asUserId !== null && adminToken ? (
+      ) : ready && actor.asUserId !== null && adminToken && tab === 'history' ? (
+        <HermesHistoryTab adminToken={adminToken} asUserId={actor.asUserId} tenantId={actor.tenantId ?? undefined} />
+      ) : ready && actor.asUserId !== null && adminToken && tab === 'tools' ? (
         <ToolsTab adminToken={adminToken} asUserId={actor.asUserId} tenantId={actor.tenantId ?? undefined} />
+      ) : ready && actor.asUserId !== null && adminToken && tab === 'context' ? (
+        <HermesContextTab adminToken={adminToken} asUserId={actor.asUserId} tenantId={actor.tenantId ?? undefined} />
       ) : (
         <MessageArea
           messages={chat.messages}
@@ -253,32 +265,23 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 }
 
 /**
- * ToolsTab 列出 Hermes 可用的只读工具(发现用)与历史会话标题(只读)。纯只读:绝不提供任何
- * 执行 / 提议 / 确认入口,只展示清单。两个列表都用显式 admin Bearer 拉取(见 hermesClient)。
+ * ToolsTab 列出 Hermes 可用的只读工具(发现用)。纯只读:绝不提供任何执行 / 提议 / 确认入口,
+ * 只展示清单。用显式 admin Bearer 拉取(见 hermesClient)。历史会话回看已拆到 HermesHistoryTab。
  */
 function ToolsTab({ adminToken, asUserId, tenantId }: { adminToken: string; asUserId: number; tenantId?: number }) {
   const [tools, setTools] = useState<HermesTool[] | null>(null)
-  const [conversations, setConversations] = useState<HermesConversation[] | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     const ctrl = new AbortController()
-    const auth = { asUserId, tenantId }
     setErr(null)
-    void (async () => {
-      try {
-        const [t, c] = await Promise.all([
-          listTools(adminToken, auth, ctrl.signal),
-          listConversations(adminToken, auth, ctrl.signal),
-        ])
-        setTools(t)
-        setConversations(c)
-      } catch (e) {
+    void listTools(adminToken, { asUserId, tenantId }, ctrl.signal)
+      .then((t) => setTools(t))
+      .catch((e) => {
         if (!(e instanceof DOMException && e.name === 'AbortError')) {
           setErr(e instanceof Error ? e.message : '加载失败')
         }
-      }
-    })()
+      })
     return () => ctrl.abort()
   }, [adminToken, asUserId, tenantId])
 
@@ -309,24 +312,6 @@ function ToolsTab({ adminToken, asUserId, tenantId }: { adminToken: string; asUs
           </div>
         ))
       )}
-
-      <SectionLabel>历史会话({conversations?.length ?? 0})</SectionLabel>
-      {conversations === null && !err ? (
-        <p style={mutedText}>加载中…</p>
-      ) : (conversations ?? []).length === 0 ? (
-        <p style={mutedText}>暂无历史会话。</p>
-      ) : (
-        (conversations ?? []).map((c) => (
-          <div key={c.id} style={S.toolRow}>
-            <strong style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>
-              {c.title?.trim() ? c.title : `会话 #${c.id}`}
-            </strong>
-            {c.last_message_at && (
-              <span style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{formatTime(c.last_message_at)}</span>
-            )}
-          </div>
-        ))
-      )}
     </div>
   )
 }
@@ -335,12 +320,6 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--hk-ink-500)', marginTop: 'var(--hk-space-2)' }}>{children}</div>
   )
-}
-
-/** formatTime 把 RFC3339 时间转本地可读串;解析失败回退原串。 */
-function formatTime(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
 }
 
 const mutedText: React.CSSProperties = { fontSize: 12, color: 'var(--hk-ink-500)', margin: 0 }
