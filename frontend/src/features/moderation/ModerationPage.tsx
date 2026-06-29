@@ -3,6 +3,7 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getModerationConfig, listModerationLogs, updateModerationConfig } from './api'
 import { configToForm, decisionLabel, decisionTone, formatFee, validateConfig } from './moderation'
+import { BannedKeysCard, HashesCard, KeywordsCard } from './ModerationRules'
 import { EMPTY_LOG_FILTERS, type LogFilters, type ModerationConfig, type ModerationLog } from './types'
 
 /*
@@ -11,7 +12,8 @@ import { EMPTY_LOG_FILTERS, type LogFilters, type ModerationConfig, type Moderat
  *   - 配置:开关(总开关/fail-closed)、采样率、自动封禁阈值与窗口、违规罚款(GET/PUT config)
  *   - 命中日志:只读列表,按 API Key 过滤、分页(GET logs)
  * 注意:platform_admin 角色下后端要求 tenant_id 必填,故本页先要租户 ID 再加载。
- * 不在此页做关键词/哈希规则增删,也不碰任何 pool/registry/gateway 等碰撞包模块。
+ * 关键词/哈希黑名单的增删/批量导入 + 被封 Key 解封见 ./ModerationRules;
+ * 本页不碰任何 pool/registry/gateway 等碰撞包模块。
  */
 
 type ConfigForm = ReturnType<typeof configToForm>
@@ -58,6 +60,9 @@ export function ModerationPage() {
       ) : (
         <>
           <ConfigCard tenantId={tenantId} />
+          <KeywordsCard tenantId={tenantId} />
+          <HashesCard tenantId={tenantId} />
+          <BannedKeysCard tenantId={tenantId} />
           <LogsCard tenantId={tenantId} />
         </>
       )}

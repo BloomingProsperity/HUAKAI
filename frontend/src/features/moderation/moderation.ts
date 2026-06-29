@@ -154,6 +154,62 @@ export function formatFee(raw: string): string {
   return trimmed === '' ? '0' : trimmed
 }
 
+// ── 关键词/哈希规则的前端校验与批量解析(镜像后端硬约束,可单测)────────────────
+
+/** 批量导入项数上限,镜像后端 moderation.BulkImportMaxItems(types.go:188)。 */
+export const BULK_MAX_ITEMS = 1000
+
+/** 校验关键词:trim 后非空。返回错误文案或 null(合法)。 */
+export function validateKeyword(keyword: string): string | null {
+  if (keyword.trim() === '') return '关键词不能为空'
+  return null
+}
+
+/**
+ * 归一化哈希:trim + 转小写(后端单条 create 先 ToLower 再校验,bulk 不转,
+ * 故前端统一转小写后下发,避免大写输入被 bulk 逐条记 invalid_hash_hex)。
+ */
+export function normalizeHash(hashHex: string): string {
+  return hashHex.trim().toLowerCase()
+}
+
+/**
+ * 校验哈希:归一化后须为恰好 64 位小写 hex(镜像 moderation.ValidSHA256Hex,bulk_store.go:90)。
+ * 判别核心:长度必须 ==64 且字符集 ∈ [0-9a-f];任一不满足即拒。返回错误文案或 null。
+ */
+export function validateHash(hashHex: string): string | null {
+  const h = normalizeHash(hashHex)
+  if (!/^[0-9a-f]{64}$/.test(h)) return '须为 64 位十六进制(SHA-256)'
+  return null
+}
+
+/** 把多行文本拆成非空行(trim 每行、丢弃空行),用于批量导入框。 */
+export function parseBulkLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+}
+
+/** 批量个数校验结果。 */
+export type BulkCountValidation = { ok: true } | { ok: false; error: string }
+
+/**
+ * 校验批量条数 ∈ [1, BULK_MAX_ITEMS](镜像后端 validateBulkItemCount:0 拒、>1000 拒)。
+ * 判别核心:0 条与 >1000 条都必须拒(前端先拦,避免无谓 400)。
+ */
+export function validateBulkCount(n: number): BulkCountValidation {
+  if (n <= 0) return { ok: false, error: '请至少导入 1 条' }
+  if (n > BULK_MAX_ITEMS) return { ok: false, error: `单次最多 ${BULK_MAX_ITEMS} 条` }
+  return { ok: true }
+}
+
+/** 哈希缩写展示(头 8 + 尾 4),用于列表。 */
+export function shortHash(h: string): string {
+  if (!h) return '—'
+  return h.length > 14 ? `${h.slice(0, 8)}…${h.slice(-4)}` : h
+}
+
 /** 把后端配置 DTO 拍平成表单初值(供页面 useState 初始化)。 */
 export function configToForm(cfg: ModerationConfig): {
   enabled: boolean
