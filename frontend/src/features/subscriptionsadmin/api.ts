@@ -1,9 +1,16 @@
 import { apiGet, apiSend } from '../../lib/api'
 import type {
   AssignResponse,
+  BulkAssignRequest,
+  BulkAssignResponse,
+  ChangePlanRequest,
+  CreateSubscriptionVoucherRequest,
+  CreateVoucherResponse,
+  ExtendAssignmentRequest,
   ListAssignmentsResponse,
   ListPlansResponse,
   PlanResponse,
+  RevokeAssignmentRequest,
   SubscriptionResponse,
   UpsertPlanRequest,
 } from './types'
@@ -21,6 +28,16 @@ import type {
  *  - GET    /assignments?tenant_id&user_id  列某用户订阅 → {subscriptions}
  *  - POST   /assignments/{id}/cancel     取消订阅 → {subscription}
  *  - POST   /assignments/{id}/reset-quota 重置配额 → {subscription}
+ *  - POST   /assignments/bulk            批量分配 → {results}
+ *  - POST   /assignments/{id}/extend     延长有效期(days 或 until)→ {subscription}
+ *  - POST   /assignments/{id}/change-plan 改套餐 → {subscription}
+ *  - POST   /assignments/{id}/revoke     撤销(硬性终止)→ {subscription}
+ *  - POST   /vouchers                    发订阅兑换券 → {voucher,code}
+ *  - GET    /plans/{id}?tenant_id=       套餐详情 → {plan}
+ *
+ * 真码路由对照:handler.go:251 + admin_ops.go(extend/change-plan/revoke/bulk handler 在 admin_ops.go,
+ * 路径均含 {id};兑换券 handler.go:515)。注意 extend/change-plan/revoke 都带订阅 {id},
+ * 不是无 id 的 /assignments/extend 等。
  */
 const ROOT = '/v1/admin/subscriptions'
 
@@ -77,4 +94,45 @@ export async function cancelSubscription(id: number, tenantID: number): Promise<
 /** 重置配额:POST /assignments/{id}/reset-quota {tenant_id}。 */
 export async function resetQuota(id: number, tenantID: number): Promise<SubscriptionResponse> {
   return apiSend<SubscriptionResponse>('POST', `${ROOT}/assignments/${id}/reset-quota`, { tenant_id: tenantID })
+}
+
+/** 套餐详情:GET /plans/{id}?tenant_id=。 */
+export async function getPlan(id: number, tenantID: number, signal?: AbortSignal): Promise<PlanResponse> {
+  return apiGet<PlanResponse>(`${ROOT}/plans/${id}`, { query: { tenant_id: tenantID }, signal })
+}
+
+/** 批量分配:POST /assignments/bulk {tenant_id,user_ids,plan_id}。逐用户返回结果(部分成功)。 */
+export async function bulkAssign(req: BulkAssignRequest): Promise<BulkAssignResponse> {
+  return apiSend<BulkAssignResponse>('POST', `${ROOT}/assignments/bulk`, req)
+}
+
+/**
+ * 延长订阅有效期:POST /assignments/{id}/extend {tenant_id,days?,until?}。money(改权益)。
+ * days 与 until 二选一,由调用方校验后下发。
+ */
+export async function extendSubscription(
+  id: number,
+  req: ExtendAssignmentRequest,
+): Promise<SubscriptionResponse> {
+  return apiSend<SubscriptionResponse>('POST', `${ROOT}/assignments/${id}/extend`, req)
+}
+
+/** 改套餐:POST /assignments/{id}/change-plan {tenant_id,new_plan_id,allow_downgrade?}。money(改权益)。 */
+export async function changePlan(id: number, req: ChangePlanRequest): Promise<SubscriptionResponse> {
+  return apiSend<SubscriptionResponse>('POST', `${ROOT}/assignments/${id}/change-plan`, req)
+}
+
+/** 撤销订阅(硬性终止):POST /assignments/{id}/revoke {tenant_id,reason}。money + 破坏性。 */
+export async function revokeSubscription(
+  id: number,
+  req: RevokeAssignmentRequest,
+): Promise<SubscriptionResponse> {
+  return apiSend<SubscriptionResponse>('POST', `${ROOT}/assignments/${id}/revoke`, req)
+}
+
+/** 发订阅兑换券:POST /vouchers。返回券视图 + 明文 code(仅此次回显)。money。 */
+export async function createSubscriptionVoucher(
+  req: CreateSubscriptionVoucherRequest,
+): Promise<CreateVoucherResponse> {
+  return apiSend<CreateVoucherResponse>('POST', `${ROOT}/vouchers`, req)
 }

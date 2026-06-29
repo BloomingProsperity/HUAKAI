@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildExtendRequest,
   buildPlanRequest,
+  buildVoucherRequest,
   centsToUsd,
+  EMPTY_VOUCHER_FORM,
+  parseBulkUserIDs,
   planStatusLabel,
   planToForm,
   planTone,
   subscriptionTone,
   usdToCents,
+  type VoucherFormState,
 } from './subscriptions'
 import { EMPTY_PLAN_FORM, type Plan, type PlanFormState } from './types'
 
@@ -146,5 +151,103 @@ describe('planTone / planStatusLabel', () => {
     expect(planStatusLabel(plan({ enabled: false }))).toBe('已停用')
     expect(planStatusLabel(plan({ enabled: true, for_sale: true }))).toBe('在售')
     expect(planStatusLabel(plan({ enabled: true, for_sale: false }))).toBe('未上架')
+  })
+})
+
+describe('parseBulkUserIDs', () => {
+  it('多分隔符解析 + 去重', () => {
+    // 判别核心:逗号/空格/换行混合分隔都能切出 token,且重复 ID 去重。
+    const r = parseBulkUserIDs('1, 2\n3  2,1')
+    expect('ids' in r).toBe(true)
+    if (!('ids' in r)) return
+    expect(r.ids).toEqual([1, 2, 3])
+  })
+  it('任一非正整数 → 整体失败', () => {
+    // 判别核心:遇到非法 token 必须整体报错,不能静默吞掉(否则误分配)。
+    // 变异(把 return error 改成 continue)→ 这些断言 RED。
+    expect('error' in parseBulkUserIDs('1, abc, 3')).toBe(true)
+    expect('error' in parseBulkUserIDs('1, -2')).toBe(true)
+    expect('error' in parseBulkUserIDs('1, 0')).toBe(true)
+    expect('error' in parseBulkUserIDs('1, 2.5')).toBe(true)
+  })
+  it('全空 → 失败', () => {
+    expect('error' in parseBulkUserIDs('   ')).toBe(true)
+    expect('error' in parseBulkUserIDs('')).toBe(true)
+  })
+})
+
+describe('buildExtendRequest', () => {
+  const now = Date.parse('2026-06-29T00:00:00Z')
+  it('days 模式:正整数 → 仅下发 days', () => {
+    const r = buildExtendRequest('days', 1, '30', '', now)
+    expect('request' in r).toBe(true)
+    if (!('request' in r)) return
+    expect(r.request.days).toBe(30)
+    // 判别核心:days 模式不能带 until(后端 omitempty 二义)。变异(同时塞 until)→ RED。
+    expect('until' in r.request).toBe(false)
+  })
+  it('days 非正整数 → 失败', () => {
+    expect('error' in buildExtendRequest('days', 1, '0', '', now)).toBe(true)
+    expect('error' in buildExtendRequest('days', 1, '-5', '', now)).toBe(true)
+    expect('error' in buildExtendRequest('days', 1, '1.5', '', now)).toBe(true)
+  })
+  it('until 模式:未来时间 → ISO 串,仅下发 until', () => {
+    const r = buildExtendRequest('until', 1, '', '2026-12-31T00:00:00Z', now)
+    expect('request' in r).toBe(true)
+    if (!('request' in r)) return
+    expect(r.request.until).toBe('2026-12-31T00:00:00.000Z')
+    expect('days' in r.request).toBe(false)
+  })
+  it('until 过去/非法 → 失败', () => {
+    // 判别核心:必须拒绝 <= now 的时间(否则把订阅缩短/无效延长)。变异(去掉 ts<=now 判断)→ RED。
+    expect('error' in buildExtendRequest('until', 1, '', '2020-01-01T00:00:00Z', now)).toBe(true)
+    expect('error' in buildExtendRequest('until', 1, '', 'not-a-date', now)).toBe(true)
+    expect('error' in buildExtendRequest('until', 1, '', '', now)).toBe(true)
+  })
+})
+
+describe('buildVoucherRequest', () => {
+  function vform(over: Partial<VoucherFormState>): VoucherFormState {
+    return {
+      ...EMPTY_VOUCHER_FORM,
+      planId: '5',
+      amountUsd: '19.99',
+      validFrom: '2026-06-29T00:00:00Z',
+      validUntil: '2026-12-31T00:00:00Z',
+      ...over,
+    }
+  }
+  it('合法表单 → 请求体(名义价换分 + ISO 时间)', () => {
+    const r = buildVoucherRequest(vform({}), 3)
+    expect('request' in r).toBe(true)
+    if (!('request' in r)) return
+    expect(r.request.tenant_id).toBe(3)
+    expect(r.request.plan_id).toBe(5)
+    // 判别核心:名义价 19.99 美元 → 1999 分。变异(去掉 *100)→ RED。
+    expect(r.request.amount_cents).toBe(1999)
+    expect(r.request.valid_from).toBe('2026-06-29T00:00:00.000Z')
+    expect(r.request.single_use_per_user).toBe(true)
+  })
+  it('plan_id 必须正整数', () => {
+    expect('error' in buildVoucherRequest(vform({ planId: '0' }), 1)).toBe(true)
+    expect('error' in buildVoucherRequest(vform({ planId: 'abc' }), 1)).toBe(true)
+  })
+  it('until 必须晚于 from', () => {
+    // 判别核心:窗口倒置必须拒。变异(去掉 until<=from 判断)→ RED。
+    const r = buildVoucherRequest(
+      vform({ validFrom: '2026-12-31T00:00:00Z', validUntil: '2026-06-29T00:00:00Z' }),
+      1,
+    )
+    expect('error' in r).toBe(true)
+  })
+  it('max_redemptions / eligible_user_id 空串省略、填了校验正整数', () => {
+    const ok = buildVoucherRequest(vform({}), 1)
+    expect('request' in ok).toBe(true)
+    if (!('request' in ok)) return
+    // 判别核心:空串不下发(对齐后端 omitempty)。变异(无条件赋值 NaN)→ RED。
+    expect('max_redemptions' in ok.request).toBe(false)
+    expect('eligible_user_id' in ok.request).toBe(false)
+    expect('error' in buildVoucherRequest(vform({ maxRedemptions: '0' }), 1)).toBe(true)
+    expect('error' in buildVoucherRequest(vform({ eligibleUserId: '-1' }), 1)).toBe(true)
   })
 })

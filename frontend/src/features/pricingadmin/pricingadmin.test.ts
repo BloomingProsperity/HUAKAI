@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  billingPolicyLabel,
+  buildBillingSettingsUpdate,
+  parsePositiveDecimal,
   RATIO_MAX_DEFAULT,
   RATIO_MIN,
-  parsePositiveDecimal,
   scopeLabel,
   validateCacheQualifier,
   validateMultiplier,
@@ -85,5 +87,50 @@ describe('scopeLabel', () => {
     expect(scopeLabel('model')).toBe('按模型')
     expect(scopeLabel('tenant')).toBe('按租户')
     expect(scopeLabel('weird')).toBe('weird')
+  })
+})
+
+describe('billingPolicyLabel', () => {
+  it('已知策略值映射中文,未知透传', () => {
+    expect(billingPolicyLabel('no_bill')).toContain('不结算')
+    expect(billingPolicyLabel('no_bill_record')).toContain('记录')
+    expect(billingPolicyLabel('bill_input')).toContain('路线图')
+    expect(billingPolicyLabel('weird')).toBe('weird')
+  })
+})
+
+describe('buildBillingSettingsUpdate', () => {
+  const allowed = ['no_bill', 'no_bill_record']
+
+  it('合法策略 + reason → 请求体(reason trim)', () => {
+    const r = buildBillingSettingsUpdate(1, 'no_bill_record', '  合规切换  ', allowed)
+    expect('request' in r).toBe(true)
+    if (!('request' in r)) return
+    expect(r.request.tenant_id).toBe(1)
+    expect(r.request.stream_input_only_interrupted_policy).toBe('no_bill_record')
+    expect(r.request.reason).toBe('合规切换')
+  })
+
+  it('reason 空 → 失败', () => {
+    // 判别核心:reason 必填(后端 billing_settings_reason_required)。变异(去 reason 判断)→ RED。
+    expect('error' in buildBillingSettingsUpdate(1, 'no_bill', '', allowed)).toBe(true)
+    expect('error' in buildBillingSettingsUpdate(1, 'no_bill', '   ', allowed)).toBe(true)
+  })
+
+  it('路线图值 bill_input 必须拦截(且给路线图专属错误,而非泛化非法)', () => {
+    // 判别核心:bill_input 永不下发,且要给「路线图值」专属提示(后端会回 409 billing_policy_value_roadmap)。
+    // 即使把 bill_input 放进 allowed,roadmap 守卫也必须先拦截。
+    // 变异(去掉 roadmap 守卫)→ 含 bill_input 的 allowed 下会放行 → 此断言 RED。
+    const blocked = buildBillingSettingsUpdate(1, 'bill_input', '试试', ['no_bill', 'bill_input'])
+    expect('error' in blocked).toBe(true)
+    if (!('error' in blocked)) return
+    expect(blocked.error).toContain('路线图')
+  })
+
+  it('不在 allowed 列表 → 失败', () => {
+    // 判别核心:策略值必须落在后端回的 allowed_values 内。变异(去掉 includes 判断)→ RED。
+    expect('error' in buildBillingSettingsUpdate(1, 'random_value', '试试', allowed)).toBe(true)
+    // allowed 收窄时,原本合法的值也应被拦截(证明确实读 allowed 而非硬编码)。
+    expect('error' in buildBillingSettingsUpdate(1, 'no_bill_record', '试试', ['no_bill'])).toBe(true)
   })
 })
