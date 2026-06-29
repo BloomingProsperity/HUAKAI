@@ -187,6 +187,130 @@ type RevokeAdminTokenParams struct {
 // Soft-revoke an admin token. Tenant-bound revocation isn't enforced here
 // because admin_tokens has no tenant ownership for platform_admin rows;
 // the handler-side RBAC check decides whether the caller can revoke.
+const listAdminTokens = `-- name: ListAdminTokens :many
+SELECT
+    id,
+    name,
+    key_prefix,
+    role,
+    scope_tenant_id,
+    bootstrap,
+    status,
+    expires_at,
+    last_used_at,
+    revoked_at,
+    revoked_reason,
+    created_at
+FROM admin_tokens
+WHERE deleted_at IS NULL
+ORDER BY id DESC
+LIMIT $1::int
+OFFSET $2::int
+`
+
+type ListAdminTokensParams struct {
+	PageLimit  int32 `db:"page_limit" json:"page_limit"`
+	PageOffset int32 `db:"page_offset" json:"page_offset"`
+}
+
+// Metadata-only listing of admin tokens for the operator console. NEVER
+// selects key_hash — only key_prefix (insufficient on its own to
+// authenticate) plus lifecycle columns. Soft-deleted rows are excluded.
+type ListAdminTokensRow struct {
+	ID            int64              `db:"id" json:"id"`
+	Name          string             `db:"name" json:"name"`
+	KeyPrefix     string             `db:"key_prefix" json:"key_prefix"`
+	Role          string             `db:"role" json:"role"`
+	ScopeTenantID *int64             `db:"scope_tenant_id" json:"scope_tenant_id"`
+	Bootstrap     bool               `db:"bootstrap" json:"bootstrap"`
+	Status        string             `db:"status" json:"status"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	LastUsedAt    pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
+	RevokedAt     pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
+	RevokedReason *string            `db:"revoked_reason" json:"revoked_reason"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) ListAdminTokens(ctx context.Context, arg ListAdminTokensParams) ([]ListAdminTokensRow, error) {
+	rows, err := q.db.Query(ctx, listAdminTokens, arg.PageLimit, arg.PageOffset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAdminTokensRow
+	for rows.Next() {
+		var i ListAdminTokensRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.KeyPrefix,
+			&i.Role,
+			&i.ScopeTenantID,
+			&i.Bootstrap,
+			&i.Status,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+			&i.RevokedReason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAdminTokenByID = `-- name: GetAdminTokenByID :one
+SELECT
+    id,
+    name,
+    key_prefix,
+    role,
+    scope_tenant_id,
+    bootstrap,
+    status,
+    expires_at,
+    created_at
+FROM admin_tokens
+WHERE id = $1::bigint
+  AND deleted_at IS NULL
+`
+
+type GetAdminTokenByIDRow struct {
+	ID            int64              `db:"id" json:"id"`
+	Name          string             `db:"name" json:"name"`
+	KeyPrefix     string             `db:"key_prefix" json:"key_prefix"`
+	Role          string             `db:"role" json:"role"`
+	ScopeTenantID *int64             `db:"scope_tenant_id" json:"scope_tenant_id"`
+	Bootstrap     bool               `db:"bootstrap" json:"bootstrap"`
+	Status        string             `db:"status" json:"status"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// Fetch a single admin token's metadata (no key_hash) for revoke
+// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
+func (q *Queries) GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error) {
+	row := q.db.QueryRow(ctx, getAdminTokenByID, id)
+	var i GetAdminTokenByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.KeyPrefix,
+		&i.Role,
+		&i.ScopeTenantID,
+		&i.Bootstrap,
+		&i.Status,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 func (q *Queries) RevokeAdminToken(ctx context.Context, arg RevokeAdminTokenParams) (int64, error) {
 	result, err := q.db.Exec(ctx, revokeAdminToken, arg.Reason, arg.ID)
 	if err != nil {
