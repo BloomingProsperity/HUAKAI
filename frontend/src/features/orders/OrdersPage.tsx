@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
-import { downloadReceiptText, fetchOrderReceipt, getMyOrder, listMyOrders } from './api'
+import {
+  cancelMyOrder,
+  downloadReceiptText,
+  fetchOrderReceipt,
+  getMyOrder,
+  listMyOrders,
+  requestOrderRefund,
+} from './api'
 import {
   ORDER_STATUSES,
   buildTimeline,
+  cancellable,
   clampLimit,
   filterByStatus,
   formatMoney,
+  hasUserAction,
   orderKindLabel,
   providerLabel,
   receiptEligible,
+  refundRequestable,
   statusCounts,
   statusLabel,
   statusTone,
@@ -19,7 +29,9 @@ import type { UserOrder } from './types'
 
 /*
  * 我的订单(user 壳)。/v1/users/me/payments/orders 列表 + /{id} 详情(状态机时间线)。
- * 纯只读:本页只 GET,不发起取消/退款等写动作。
+ * 写动作(均 money/状态敏感,二次确认):
+ *   - 撤单:仅 pending 单可撤(付款前撤回),POST /orders/{id}/cancel;
+ *   - 申请退款:仅「已完成的充值单」可申请,POST /orders/{id}/refund-request(只建 pending 记录待 admin 审批,不即时动钱)。
  * 后端列表端点只收 limit、不收 status/offset,故状态筛选在前端对窗口内做。
  */
 
@@ -138,9 +150,23 @@ export function OrdersPage() {
                     </td>
                     <td style={td}>{fmt(o.created_at)}</td>
                     <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button type="button" onClick={() => setDetailId(o.id)} style={linkBtn}>
-                        详情
-                      </button>
+                      <div style={{ display: 'inline-flex', gap: 'var(--hk-space-2)', alignItems: 'center' }}>
+                        {/* 行内入口:可撤单/可退款时直接给出对应动作入口,点开即落到详情抽屉的二次确认流程,
+                            避免在表格行直接触发 money/破坏性动作(确认与执行集中在抽屉一处)。 */}
+                        {cancellable(o) && (
+                          <button type="button" onClick={() => setDetailId(o.id)} style={rowDangerLink}>
+                            撤单
+                          </button>
+                        )}
+                        {refundRequestable(o) && (
+                          <button type="button" onClick={() => setDetailId(o.id)} style={linkBtn}>
+                            申请退款
+                          </button>
+                        )}
+                        <button type="button" onClick={() => setDetailId(o.id)} style={linkBtn}>
+                          详情
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -150,17 +176,32 @@ export function OrdersPage() {
         )}
       </div>
 
-      {detailId != null && <OrderDetailDrawer orderId={detailId} onClose={() => setDetailId(null)} />}
+      {detailId != null && (
+        <OrderDetailDrawer
+          orderId={detailId}
+          onClose={() => setDetailId(null)}
+          onChanged={() => setRefreshNonce((n) => n + 1)}
+        />
+      )}
     </div>
   )
 }
 
 /* ---------------- 订单详情抽屉(状态机时间线) ---------------- */
 
-function OrderDetailDrawer({ orderId, onClose }: { orderId: number; onClose: () => void }) {
+function OrderDetailDrawer({
+  orderId,
+  onClose,
+  onChanged,
+}: {
+  orderId: number
+  onClose: () => void
+  onChanged: () => void
+}) {
   const [order, setOrder] = useState<UserOrder | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [reloadNonce, setReloadNonce] = useState(0)
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -176,7 +217,13 @@ function OrderDetailDrawer({ orderId, onClose }: { orderId: number; onClose: () 
         if (!ctrl.signal.aborted) setLoading(false)
       })
     return () => ctrl.abort()
-  }, [orderId])
+  }, [orderId, reloadNonce])
+
+  // 写动作成功后:刷新抽屉内详情(看到新状态)+ 通知列表重拉。
+  const afterAction = useCallback(() => {
+    setReloadNonce((n) => n + 1)
+    onChanged()
+  }, [onChanged])
 
   const timeline = order ? buildTimeline(order) : []
 
@@ -204,6 +251,9 @@ function OrderDetailDrawer({ orderId, onClose }: { orderId: number; onClose: () 
               <Field label="当前状态" value={<StatusBadge tone={statusTone(order.status)}>{statusLabel(order.status)}</StatusBadge>} />
               {order.expires_at && <Field label="过期时间" value={fmt(order.expires_at)} />}
             </section>
+
+            {/* 用户自助动作:撤单(pending)/ 申请退款(已完成充值单)。均二次确认。 */}
+            {hasUserAction(order) && <OrderActions order={order} onChanged={afterAction} />}
 
             {/* 收据下载:仅对「已完成的充值/订阅订单」可得(与后端 invoicehttp 资格判定一致) */}
             {receiptEligible(order) && <ReceiptSection order={order} />}
@@ -243,6 +293,101 @@ function OrderDetailDrawer({ orderId, onClose }: { orderId: number; onClose: () 
         )}
       </aside>
     </div>
+  )
+}
+
+/* ---------------- 订单自助动作(撤单 / 申请退款,均二次确认) ---------------- */
+
+function OrderActions({ order, onChanged }: { order: UserOrder; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [ok, setOk] = useState<string | null>(null)
+  const canCancel = cancellable(order)
+  const canRefund = refundRequestable(order)
+
+  const doCancel = () => {
+    setError(null)
+    setOk(null)
+    // 撤单二次确认:明示这是不可逆的撤回(订单将变为已取消)。pending 单从未入账,撤单不动钱。
+    if (
+      !window.confirm(
+        `确认撤销订单 ${order.out_trade_no}(${formatMoney(order.amount_cents, order.currency_code)})?\n\n` +
+          '撤销后该「待支付」订单将作废且不可恢复;若你尚未付款,可放心撤回。',
+      )
+    ) {
+      return
+    }
+    setBusy(true)
+    cancelMyOrder(order.id)
+      .then(() => {
+        setOk('订单已撤销。')
+        onChanged()
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof ApiError ? `${e.message}(${e.code})` : '撤单失败')
+      })
+      .finally(() => setBusy(false))
+  }
+
+  const doRefund = () => {
+    setError(null)
+    setOk(null)
+    // 退款申请:reason 选填,供管理员审批审计。明示「只是发起申请,不会立即退款」。
+    const reason = window.prompt(
+      `对订单 ${order.out_trade_no}(${formatMoney(order.amount_cents, order.currency_code)})申请退款。\n` +
+        '这只是发起一条退款申请,需管理员审批后才会实际退款,不会立即到账。\n\n请填写退款原因(选填):',
+      '',
+    )
+    // prompt 返回 null = 用户取消;此时不发起请求。空串=确认但不填原因,允许继续。
+    if (reason === null) return
+    setBusy(true)
+    requestOrderRefund(order.id, { reason })
+      .then(() => {
+        setOk('退款申请已提交,等待管理员审批。')
+        onChanged()
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof ApiError ? `${e.message}(${e.code})` : '提交退款申请失败')
+      })
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+      <h3 style={{ fontSize: 13, color: 'var(--hk-ink-500)', margin: 0 }}>订单操作</h3>
+      {error && <div style={errorBox}>{error}</div>}
+      {ok && (
+        <div
+          style={{
+            padding: 'var(--hk-space-2) var(--hk-space-3)',
+            borderRadius: 'var(--hk-radius-md)',
+            fontSize: 13,
+            color: 'var(--hk-primary-700)',
+            background: 'var(--hk-primary-50, #eef7f2)',
+            border: '1px solid var(--hk-line)',
+          }}
+        >
+          {ok}
+        </div>
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-2)' }}>
+        {canCancel && (
+          <button type="button" disabled={busy} onClick={doCancel} style={dangerBtn}>
+            {busy ? '处理中…' : '撤销订单'}
+          </button>
+        )}
+        {canRefund && (
+          <button type="button" disabled={busy} onClick={doRefund} style={linkBtn}>
+            {busy ? '处理中…' : '申请退款'}
+          </button>
+        )}
+      </div>
+      {canRefund && (
+        <span style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>
+          退款申请提交后由管理员审批,审批通过才会实际退款,不会立即到账。
+        </span>
+      )}
+    </section>
   )
 }
 
@@ -363,6 +508,8 @@ const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)'
 const selectStyle: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13 }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const linkBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-primary-700)', fontSize: 12, cursor: 'pointer' }
+const dangerBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid #c0392b', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: '#c0392b', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
+const rowDangerLink: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: '#c0392b', fontSize: 12, cursor: 'pointer' }
 const closeBtn: React.CSSProperties = { width: 28, height: 28, border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-500)', fontSize: 14, cursor: 'pointer', lineHeight: 1 }
 const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
 const overlay: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(15, 23, 27, 0.32)', zIndex: 'var(--hk-z-overlay)' as unknown as number, display: 'flex', justifyContent: 'flex-end' }

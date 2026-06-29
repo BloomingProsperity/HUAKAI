@@ -84,3 +84,49 @@ export function formatCentsRange(minCents: number, maxCents: number, currencyCod
   const fmt = (c: number) => `${sym}${formatMoney(c)}${suffix}`
   return `${fmt(minCents)} ~ ${fmt(maxCents)}`
 }
+
+/*
+ * 充值开单纯逻辑(money 敏感,可单测,无 IO 无 DOM)。
+ * 金额输入按「美元」字符串解析成「分」(避免浮点:整数化后乘 100),
+ * 再与门户配置区间做客户端前置校验。服务端仍会二次裁决金额(真码 user_portal.go:315),
+ * 这里只是早失败 + 给清晰提示,绝不作为最终金额权威。
+ */
+
+/** 金额解析/校验结果:ok=true 时 amountCents 为正整数(分);否则 error 为中文原因。 */
+export type TopupAmountResult =
+  | { ok: true; amountCents: number }
+  | { ok: false; error: string }
+
+/**
+ * 把用户输入的「美元」金额字符串解析成「分」并按 [minCents, maxCents] 校验。
+ * 规则:
+ *   - 必须是非负数字字面量,至多两位小数(美分精度);多于两位小数判非法。
+ *   - 解析成分时用四舍五入到整数分(`Math.round(dollars*100)`)规避 2.5→249 这类浮点漂移。
+ *   - 金额必须 > 0 且落在配置区间内(含端点);越界返回带可读区间的中文提示。
+ * 判别核心:区间两端都要卡(变异成只卡一端 → 越界金额漏过 → RED);
+ *           两位小数限制要在(变异成放开 → "1.005" 被吞成 100/101 分 → RED)。
+ */
+export function parseTopupAmount(
+  input: string,
+  minCents: number,
+  maxCents: number,
+  currencyCode = 'USD',
+): TopupAmountResult {
+  const raw = input.trim()
+  if (raw === '') return { ok: false, error: '请输入充值金额' }
+  // 仅允许可选符号? 不:充值金额必须为正,显式拒负号与科学计数法。
+  if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
+    return { ok: false, error: '金额格式不合法(最多两位小数,且必须为正数)' }
+  }
+  const dollars = Number(raw)
+  if (!Number.isFinite(dollars)) return { ok: false, error: '金额格式不合法' }
+  const amountCents = Math.round(dollars * 100)
+  if (amountCents <= 0) return { ok: false, error: '充值金额必须大于 0' }
+  if (amountCents < minCents || amountCents > maxCents) {
+    return {
+      ok: false,
+      error: `金额需在 ${formatCentsRange(minCents, maxCents, currencyCode)} 之间`,
+    }
+  }
+  return { ok: true, amountCents }
+}

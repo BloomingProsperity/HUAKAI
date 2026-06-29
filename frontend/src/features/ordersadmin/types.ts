@@ -123,3 +123,36 @@ export interface DashboardStats {
   average_amount_cents: number
   daily_series: DailyStats[]
 }
+
+/**
+ * 支付商运行时配置 DTO,镜像 admin_panel.go:25 providerConfigView。
+ * 重要(secret 姿态):后端该视图【不含任何 secret/HMAC 密钥/网关 key】字段 ——
+ * HMAC 验签密钥由进程启动时的 env(ProviderRegistryConfig.HMACSecrets,provider_hmac.go:47)
+ * 装载,刻意不经此 admin 配置面;故前端既无 secret 回显,也无 secret 写入(本端点 PUT body
+ * 只接 enabled + checkout_url,见 admin_panel.go:20 providerConfigRequest)。
+ */
+export interface ProviderConfigView {
+  provider_kind: string
+  enabled: boolean
+  checkout_url: string
+  /** 配置来源(runtime/default 等),后端给什么显示什么。 */
+  source: string
+  /** 最近一次写入者(admin token id 的字符串),omitempty。 */
+  updated_by?: string
+  /** 最近一次写入时间(RFC3339),omitempty。 */
+  updated_at?: string
+}
+
+/** 支付商配置读/写响应:GET|PUT /v1/admin/payments/providers/{provider}/config → { provider }。 */
+export interface ProviderConfigResponse {
+  provider: ProviderConfigView
+}
+
+/**
+ * 代客建单响应:POST /v1/admin/payments → { order, idempotent }。
+ * 建单仅创建挂单(pending),不入账;到账由后续「确认到账并履约」动作完成。
+ */
+export interface CreateOrderResponse {
+  order: AdminOrder
+  idempotent: boolean
+}

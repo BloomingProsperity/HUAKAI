@@ -120,6 +120,29 @@ export function receiptEligible(order: Pick<UserOrder, 'order_kind' | 'status'>)
   return kindOk && order.status === 'completed'
 }
 
+/**
+ * 订单可执行的用户自助动作判定(与后端前置门槛严格对齐):
+ *   - cancellable:仅 pending 单可撤(对齐 newUserCancelHandler → CancelOrder,非 pending 回 409 order_not_cancelable)。
+ *   - refundRequestable:仅「已完成的充值单(topup+completed)」可发起退款申请
+ *     (对齐 user_portal.go:451:order_kind=topup 且 status=completed,否则回 409 order_not_refund_requestable)。
+ * 前端先行过滤,避免对不合格订单露出动作按钮触发无效 409 请求。
+ * 判别核心:
+ *   - cancellable 必须只认 pending(变异成放开其它态 → 已完成/已取消单也露撤单 → RED);
+ *   - refundRequestable 必须同时卡 kind 与 status(变异成只看其一 → 订阅单或未完成单露退款 → RED)。
+ */
+export function cancellable(order: Pick<UserOrder, 'status'>): boolean {
+  return order.status === 'pending'
+}
+
+export function refundRequestable(order: Pick<UserOrder, 'order_kind' | 'status'>): boolean {
+  return order.order_kind === 'topup' && order.status === 'completed'
+}
+
+/** 任一自助动作可用(撤单或退款),用于决定是否渲染动作列/区块。 */
+export function hasUserAction(order: Pick<UserOrder, 'order_kind' | 'status'>): boolean {
+  return cancellable(order) || refundRequestable(order)
+}
+
 /** 时间线一步:label=步骤名,at=发生时刻(null=尚未发生),done=是否已发生。 */
 export interface TimelineStep {
   key: string

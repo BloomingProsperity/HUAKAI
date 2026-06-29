@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { AdminCreateOrder } from './AdminCreateOrder'
 import { cancelOrder, confirmOrder, getOrder, listOrders, refundOrder, retryOrder } from './api'
 import { DashboardCards } from './DashboardCards'
 import { ExportToolbar } from './ExportToolbar'
+import { ProviderConfigPanel } from './ProviderConfigPanel'
 import {
   buildOrderListQuery,
   canRefund,
@@ -36,7 +38,7 @@ import {
 } from './ui'
 import type { AdminOrder, OrderAuditEvent } from './types'
 
-type TabKey = 'orders' | 'refund-requests'
+type TabKey = 'orders' | 'refund-requests' | 'create-order' | 'provider-config'
 
 /*
  * 订单管理台(运营台,admin 壳)。管线之「钱」侧只读+卡单处置。
@@ -121,6 +123,8 @@ export function OrdersAdminPage() {
         {([
           { key: 'orders' as TabKey, label: '订单列表' },
           { key: 'refund-requests' as TabKey, label: '退款工单' },
+          { key: 'create-order' as TabKey, label: '代客建单' },
+          { key: 'provider-config' as TabKey, label: '支付商配置' },
         ]).map((t) => (
           <button
             key={t.key}
@@ -145,6 +149,10 @@ export function OrdersAdminPage() {
 
       {tab === 'refund-requests' ? (
         <RefundRequestsTab tenantId={tenantId} />
+      ) : tab === 'create-order' ? (
+        <AdminCreateOrder onCreated={refresh} />
+      ) : tab === 'provider-config' ? (
+        <ProviderConfigPanel />
       ) : (
         <OrdersTab
           draft={draft}

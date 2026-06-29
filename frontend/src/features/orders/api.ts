@@ -1,15 +1,23 @@
-import { apiGet, ApiError } from '../../lib/api'
+import { apiGet, apiSend, ApiError } from '../../lib/api'
 import { getTokens } from '../../auth/store'
 import { tokenForPath } from '../../auth/tokenForPath'
-import type { UserOrderDetailResponse, UserOrderListResponse } from './types'
+import type {
+  CancelOrderResponse,
+  RefundRequestBody,
+  RefundRequestResponse,
+  UserOrderDetailResponse,
+  UserOrderListResponse,
+} from './types'
 
 /*
  * 我的订单数据访问层。端点前缀 /v1/users/me/payments(session 鉴权,管理当前登录用户名下的订单)。
- * 纯只读:本模块只 GET,不发起任何写/退款资金动作(退款申请是另一条非只读路径,本页不做)。
+ * 读:列表 / 详情 / 收据。写:撤自己的 pending 单 + 对已完成单发起退款申请(只建 pending 记录,不动钱)。
  *
  * 端点真码:
  *   - 列表 backend/internal/paymenthttp/handler.go:208 → newUserListOrdersHandler(handler.go:310)
  *   - 详情 backend/internal/paymenthttp/handler.go:210 → newPortalGetOrderHandler(user_portal.go:382)
+ *   - 撤单 backend/internal/paymenthttp/handler.go:211 → newUserCancelHandler(handler.go:218)
+ *   - 退款申请 backend/internal/paymenthttp/handler.go:212 → newPortalRefundRequestHandler(user_portal.go:414)
  *   - 收据 backend/internal/invoicehttp/handler.go:33(GET /v1/me/orders/{id}/receipt,挂载 routes.go:197 的 /v1/me session 组)
  */
 const ORDERS_PATH = '/v1/users/me/payments/orders'
@@ -25,6 +33,25 @@ export async function listMyOrders(limit = 50, signal?: AbortSignal): Promise<Us
 /** 拉取单张订单详情(归属校验在后端;非本人订单回 404,真码 user_portal.go:403)。 */
 export async function getMyOrder(id: number, signal?: AbortSignal): Promise<UserOrderDetailResponse> {
   return apiGet<UserOrderDetailResponse>(`${ORDERS_PATH}/${id}`, { signal })
+}
+
+/**
+ * 撤销自己的 pending 充值单(扫码/淘宝下单前可撤)。无请求体。
+ * 仅 pending 可撤(orderEditable.cancellable 已先行过滤);非 pending 后端回 409 order_not_cancelable。
+ * 身份取自 session,非本人订单后端回 404(IDOR 后端兜)。撤单不动钱(pending 单从未入账)。
+ */
+export async function cancelMyOrder(id: number): Promise<CancelOrderResponse> {
+  return apiSend<CancelOrderResponse>('POST', `${ORDERS_PATH}/${id}/cancel`, undefined)
+}
+
+/**
+ * 对自己「已完成的充值单」发起退款申请 → 只建一条 pending 记录待 admin 审批,绝不即时动钱。
+ * 仅 completed+topup 可申请(orderEditable.refundRequestable 已先行过滤);否则后端回 409。
+ * 请求体 {reason?} 可选;reason 空时不带 body。
+ */
+export async function requestOrderRefund(id: number, body?: RefundRequestBody): Promise<RefundRequestResponse> {
+  const reason = body?.reason?.trim()
+  return apiSend<RefundRequestResponse>('POST', `${ORDERS_PATH}/${id}/refund-request`, reason ? { reason } : undefined)
 }
 
 /**

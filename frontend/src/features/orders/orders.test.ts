@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildTimeline,
+  cancellable,
   clampLimit,
   filterByStatus,
   formatMoney,
+  hasUserAction,
   orderKindLabel,
   providerLabel,
   receiptEligible,
+  refundRequestable,
   statusCounts,
   statusLabel,
   statusTone,
@@ -43,6 +46,32 @@ describe('receiptEligible', () => {
   it('种类不合格 → 不可(即便已完成)', () => {
     // 判别核心:必须同时校验 kind(变异成只看 status → 非充值/订阅订单也出收据 → RED)。
     expect(receiptEligible(order({ order_kind: 'other', status: 'completed' }))).toBe(false)
+  })
+})
+
+describe('cancellable / refundRequestable / hasUserAction(动作门槛)', () => {
+  it('cancellable 仅 pending 单', () => {
+    // 判别核心:只有 pending 可撤。变异(放开 paid/completed)→ 已支付/已完成单也露撤单 → RED。
+    expect(cancellable(order({ status: 'pending' }))).toBe(true)
+    expect(cancellable(order({ status: 'paid' }))).toBe(false)
+    expect(cancellable(order({ status: 'completed' }))).toBe(false)
+    expect(cancellable(order({ status: 'cancelled' }))).toBe(false)
+  })
+  it('refundRequestable 仅「已完成的充值单」(topup+completed)', () => {
+    // 判别核心:必须同时卡 kind=topup 与 status=completed。
+    expect(refundRequestable(order({ order_kind: 'topup', status: 'completed' }))).toBe(true)
+    // 变异(只看 status)→ 订阅完成单也露退款 → RED。
+    expect(refundRequestable(order({ order_kind: 'subscription', status: 'completed' }))).toBe(false)
+    // 变异(只看 kind)→ 未完成充值单也露退款 → RED。
+    expect(refundRequestable(order({ order_kind: 'topup', status: 'pending' }))).toBe(false)
+    expect(refundRequestable(order({ order_kind: 'topup', status: 'paid' }))).toBe(false)
+  })
+  it('hasUserAction 在可撤或可退款时为真', () => {
+    expect(hasUserAction(order({ status: 'pending' }))).toBe(true) // 可撤
+    expect(hasUserAction(order({ order_kind: 'topup', status: 'completed' }))).toBe(true) // 可退款
+    // 判别核心:既不可撤也不可退款 → false。变异(恒返回 true)→ 失败单也露动作 → RED。
+    expect(hasUserAction(order({ order_kind: 'topup', status: 'failed' }))).toBe(false)
+    expect(hasUserAction(order({ order_kind: 'subscription', status: 'completed' }))).toBe(false)
   })
 })
 

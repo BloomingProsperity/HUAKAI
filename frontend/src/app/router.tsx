@@ -60,6 +60,7 @@ import { DisputesAdminPage } from '../features/disputesadmin/DisputesAdminPage'
 import { DlqPage } from '../features/dlq/DlqPage'
 import { BillingClaimsPage } from '../features/billingadmin/BillingClaimsPage'
 import { CacheMonitorPage } from '../features/cachemonitor/CacheMonitorPage'
+import { HermesConfigPage } from '../features/hermes/HermesConfigPage'
 import { OrphanReconcilePage } from '../features/orphanreconcile/OrphanReconcilePage'
 import { LandingPage } from '../features/landing/LandingPage'
 import { LegalPage } from '../features/legal/LegalPage'
@@ -119,6 +120,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/admin/dlq': <DlqPage />,
   '/admin/orphan-reconcile': <OrphanReconcilePage />,
   '/admin/cache': <CacheMonitorPage />,
+  '/admin/hermes': <HermesConfigPage />,
   '/admin/route-rules': <RouteRulesPage />,
   '/admin/quota-policies': <QuotaPoliciesPage />,
   '/admin/tls-fingerprints': <TLSFingerprintsPage />,
