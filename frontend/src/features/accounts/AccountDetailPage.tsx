@@ -6,6 +6,8 @@ import { clearAccountRateLimit, getProviderAccount, setAccountEnabled } from './
 import { AccountDangerZone } from './AccountDangerZone'
 import { AccountDiagnosticsCard } from './AccountDiagnosticsCard'
 import { AccountFingerprintBind } from './AccountFingerprintBind'
+import { CredentialPanel } from './CredentialPanel'
+import { CredentialAcquisitionWizard } from './CredentialAcquisitionWizard'
 import { accountAvailableActions } from './detail'
 import { EditAccountModal } from './EditAccountModal'
 import type { ProviderAccount } from './types'
@@ -154,6 +156,10 @@ export function AccountDetailPage() {
       <AccountDiagnosticsCard id={account.id} />
 
       <AccountFingerprintBind accountId={account.id} tenantId={account.tenant_id} />
+
+      <CredentialPanel accountId={account.id} tenantId={account.tenant_id} />
+
+      <CredentialAcquisitionWizard accountId={account.id} tenantId={account.tenant_id} />
 
       <Card title="调度与池">
         <Grid
