@@ -184,6 +184,7 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/admin/backup', label: '备份与恢复', built: true },
       { path: '/admin/dlq', label: '死信队列', built: true },
       { path: '/admin/orphan-reconcile', label: '孤儿对账', built: true },
+      { path: '/admin/cache', label: 'L2 缓存监控', built: true },
     ],
   },
   {

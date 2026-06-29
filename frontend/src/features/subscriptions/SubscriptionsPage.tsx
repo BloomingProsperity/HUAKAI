@@ -2,7 +2,15 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
-import { cancelRenew, changePlan, getCurrentSubscription, getProgress, listPlans, purchasePlan } from './api'
+import {
+  cancelRenew,
+  changePlan,
+  getCurrentSubscription,
+  getProgress,
+  listPlans,
+  listSubscriptionHistory,
+  purchasePlan,
+} from './api'
 import {
   buildPurchaseRequest,
   cancelRenewGuidance,
@@ -18,6 +26,7 @@ import {
   isSubscriptionActive,
   purchaseGuidance,
   sortProgressWindows,
+  sortSubscriptionHistory,
   subscriptionStatusLabel,
   subscriptionStatusTone,
   validateChangePlan,
@@ -43,6 +52,7 @@ export function SubscriptionsPage() {
   const [current, setCurrent] = useState<CurrentSubscriptionResponse | null>(null)
   const [progress, setProgress] = useState<SubscriptionProgressResponse | null>(null)
   const [plans, setPlans] = useState<PlanView[]>([])
+  const [history, setHistory] = useState<SubscriptionView[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
@@ -54,17 +64,20 @@ export function SubscriptionsPage() {
   const load = useCallback((signal: AbortSignal) => {
     setLoading(true)
     setError(null)
-    // 三个只读端点并发拉取;progress 在无生效订阅时正常回空数组,不当作错误。
+    // 四个只读端点并发拉取;progress 在无生效订阅时正常回空数组,不当作错误。
+    // history(订阅历史)同为只读,身份取自 session,无生效订阅也可能有历史记录。
     Promise.all([
       getCurrentSubscription(signal),
       getProgress(signal),
       listPlans(signal),
+      listSubscriptionHistory(signal),
     ])
-      .then(([cur, prog, planList]) => {
+      .then(([cur, prog, planList, hist]) => {
         if (signal.aborted) return
         setCurrent(cur)
         setProgress(prog)
         setPlans(planList.plans ?? [])
+        setHistory(hist.subscriptions ?? [])
       })
       .catch((e: unknown) => {
         if (signal.aborted) return
@@ -109,6 +122,8 @@ export function SubscriptionsPage() {
   const sub = current?.subscription ?? null
   const active = isSubscriptionActive(sub)
   const windows = sortProgressWindows(progress?.progress ?? [])
+  // 订阅历史按创建时间倒序(最新在前),纯逻辑已变异测试。
+  const historyRows = sortSubscriptionHistory(history)
 
   return (
     <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
@@ -162,6 +177,51 @@ export function SubscriptionsPage() {
                 plans={plans}
                 onChanged={() => setRefreshNonce((n) => n + 1)}
               />
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* 订阅历史(只读):本人全部订阅记录,含已过期/已取消/待生效 */}
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+        <h2 style={sectionTitle}>订阅历史</h2>
+        <div style={card}>
+          {loading && history.length === 0 ? (
+            <Empty>加载中…</Empty>
+          ) : historyRows.length === 0 ? (
+            <Empty>暂无订阅记录。</Empty>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>套餐 ID</th>
+                    <th style={thStyle}>状态</th>
+                    <th style={thStyle}>权益组</th>
+                    <th style={thStyle}>生效时间</th>
+                    <th style={thStyle}>到期时间</th>
+                    <th style={thStyle}>取消时间</th>
+                    <th style={thStyle}>创建时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyRows.map((h) => (
+                    <tr key={h.id}>
+                      <td style={tdStyle}>{h.plan_id}</td>
+                      <td style={tdStyle}>
+                        <StatusBadge tone={toBadgeTone(subscriptionStatusTone(h.status))}>
+                          {subscriptionStatusLabel(h.status)}
+                        </StatusBadge>
+                      </td>
+                      <td style={tdStyle}>{h.granted_group || '—'}</td>
+                      <td style={tdStyle}>{formatDate(h.starts_at) || '—'}</td>
+                      <td style={tdStyle}>{formatDate(h.expires_at) || '—'}</td>
+                      <td style={tdStyle}>{formatDate(h.cancelled_at) || '—'}</td>
+                      <td style={tdStyle}>{formatDate(h.created_at) || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
@@ -506,6 +566,23 @@ function friendlyPurchaseError(code: string, fallback?: string): string {
 }
 
 const sectionTitle: CSSProperties = { fontSize: 15, margin: 0, color: 'var(--hk-ink-700)' }
+
+// 订阅历史表格的表头/单元格样式(只读列表)。
+const thStyle: CSSProperties = {
+  textAlign: 'left',
+  padding: 'var(--hk-space-2) var(--hk-space-3)',
+  borderBottom: '1px solid var(--hk-line)',
+  color: 'var(--hk-ink-500)',
+  fontWeight: 600,
+  whiteSpace: 'nowrap',
+}
+
+const tdStyle: CSSProperties = {
+  padding: 'var(--hk-space-2) var(--hk-space-3)',
+  borderBottom: '1px solid var(--hk-surface-sunken)',
+  color: 'var(--hk-ink-700)',
+  whiteSpace: 'nowrap',
+}
 
 const card: CSSProperties = {
   background: 'var(--hk-surface)',

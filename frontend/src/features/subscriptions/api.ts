@@ -6,6 +6,7 @@ import type {
   ListPlansResponse,
   PurchaseRequest,
   PurchaseResponse,
+  SubscriptionHistoryResponse,
   SubscriptionProgressResponse,
 } from './types'
 
@@ -14,6 +15,7 @@ import type {
  * 由 lib/api 按路径自动注入当前登录用户的 session token)。真实路由见:
  *   backend/cmd/gateway/routes.go:317(挂载前缀)
  *   backend/internal/subscriptionhttp/handler.go:271(MountSubscriptionUserRoutes)
+ *     GET  /            → newUserListSubscriptionsHandler     (handler.go:272/558,订阅历史)
  *     GET  /plans        → newUserListPlansHandler            (handler.go:275)
  *     GET  /me           → newUserCurrentSubscriptionHandler  (handler.go:274)
  *     GET  /me/progress  → newUserSubscriptionProgressHandler (handler.go:273)
@@ -31,6 +33,15 @@ export async function listPlans(signal?: AbortSignal): Promise<ListPlansResponse
 /** 当前生效订阅 + 自动续订状态。无生效订阅时 subscription 为 null。 */
 export async function getCurrentSubscription(signal?: AbortSignal): Promise<CurrentSubscriptionResponse> {
   return apiGet<CurrentSubscriptionResponse>(`${BASE}/me`, { signal })
+}
+
+/**
+ * 订阅历史:本人全部订阅记录(不只当前生效一条,含已过期/已取消/待生效)。
+ * 真码 handler.go:558 newUserListSubscriptionsHandler,挂在 BASE 的 "/"(handler.go:272),
+ * 故路径带尾斜杠;响应 {subscriptions: subscriptionView[]}。只读,身份取自 session。
+ */
+export async function listSubscriptionHistory(signal?: AbortSignal): Promise<SubscriptionHistoryResponse> {
+  return apiGet<SubscriptionHistoryResponse>(`${BASE}/`, { signal })
 }
 
 /** 当前订阅各配额窗口(日/周/月)的用量进度。无生效订阅时 progress 为空数组。 */

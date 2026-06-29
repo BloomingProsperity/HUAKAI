@@ -190,6 +190,20 @@ export function isSubscriptionActive(sub: SubscriptionView | null): boolean {
 }
 
 /**
+ * 订阅历史排序:按创建时间倒序(最新的订阅记录排最前),便于用户最先看到最近一次订阅。
+ * 后端 ListUserSubscriptions 返回顺序不保证,故前端稳定排序。
+ * 判别核心:必须倒序(最新在前)。变异成正序(最旧在前)→ 顺序反 → RED;
+ *          无效/缺失 created_at 当作最早(排最后),不抛错。
+ */
+export function sortSubscriptionHistory(rows: SubscriptionView[]): SubscriptionView[] {
+  const ts = (s: SubscriptionView): number => {
+    const t = new Date(s.created_at).getTime()
+    return Number.isNaN(t) ? -Infinity : t
+  }
+  return [...rows].sort((a, b) => ts(b) - ts(a))
+}
+
+/**
  * 自助换套餐的目标套餐候选:从在售套餐里剔除「当前订阅所属套餐」(换成自己无意义,后端也会拒),
  * 且只保留可购(enabled && for_sale)的套餐。
  * 判别核心:必须排除 currentPlanId(变异成不排除 → 出现「换成当前套餐」选项 → RED);

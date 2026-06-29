@@ -4,6 +4,7 @@ import type {
   AccountHealth,
   AccountTestResult,
   BulkByTagResult,
+  DeleteAccountResult,
   FingerprintBindResult,
   FingerprintProfileOption,
   ProviderAccount,
@@ -56,6 +57,25 @@ export async function clearAccountRateLimit(id: number, reason: string): Promise
 /** 通用编辑账号(池调优旋钮):PATCH /admin/v1/provider-accounts/{id}。仅下发改动字段。 */
 export async function updateProviderAccount(id: number, body: object): Promise<ProviderAccount> {
   return apiSend<ProviderAccount>('PATCH', `${ACCOUNTS_PATH}/${id}`, body)
+}
+
+/**
+ * 硬删账号:DELETE /admin/v1/provider-accounts/{id}。这是不可逆的删除操作,
+ * 与运维动作里的「停用账号」(PATCH /{id}/enabled,可恢复软停)语义截然不同。
+ * 后端做 SoftDeleteProviderAccount(从可调度池移除并写审计),账号从此不再出现在池中。
+ *
+ * 请求体:复用后端 mutateProviderAccountRequest {tenant_id?, enabled?, reason?}。
+ * tenant_id 由后端从鉴权 scope 推导(此处不传,避免与 scope 冲突);reason 进 admin 审计,
+ * 为空则不下发(后端默认中文文案「删除 provider account」)。
+ * 响应:{id, deleted:true}(handler:695)。
+ * 真码:backend/internal/gatewayhttp/admin_pool_accounts_handler.go:665
+ *      (newDeleteProviderAccountHandler)+ :172(MountAdminPoolAccountRoutes 挂 DELETE /{id})。
+ */
+export async function deleteProviderAccount(id: number, reason: string): Promise<DeleteAccountResult> {
+  const body: { reason?: string } = {}
+  const trimmed = reason.trim()
+  if (trimmed) body.reason = trimmed
+  return apiSend<DeleteAccountResult>('DELETE', `${ACCOUNTS_PATH}/${id}`, body)
 }
 
 /**

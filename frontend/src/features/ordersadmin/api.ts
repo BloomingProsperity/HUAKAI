@@ -163,14 +163,17 @@ export async function getDashboard(
 // ── CSV 导出(blob 下载,走 admin token)────────────────────────────────────
 
 /**
- * 导出类型 → 后端 CSV 端点路径(exporthttp/export.go:68-73 MountRoutes 真路由)。
- * 注意:这三个端点【不接受 tenant_id query】,租户由 admin 凭据 ScopeTenantID 推导
- * (export.go:218 resolveTenantScope);from/to 为必填 RFC3339,status 仅 payments/orders 接受。
+ * 导出类型 → 后端 CSV 端点路径(exporthttp/export.go:69-73 MountRoutes 真路由)。
+ * 注意:这四个端点【不接受 tenant_id query】,租户由 admin 凭据 ScopeTenantID 推导
+ * (export.go:218 resolveTenantScope);from/to 为必填 RFC3339,status 仅 payments/orders 接受
+ * (refunds 与 usage 都不消费 status)。usage 用量明细导出真码 export.go:141 NewUsageExportHandler,
+ * 表头 export.go:32 = request_id/user_id/model/tokens_input/tokens_output/cost_usd/created_at。
  */
 const EXPORT_PATHS = {
   payments: '/v1/admin/payments/export.csv',
   orders: '/v1/admin/orders/export.csv',
   refunds: '/v1/admin/refunds/export.csv',
+  usage: '/v1/admin/usage/export.csv',
 } as const
 
 export type ExportKind = keyof typeof EXPORT_PATHS
@@ -188,8 +191,8 @@ export async function downloadExportCsv(
   status?: string,
 ): Promise<void> {
   const params = new URLSearchParams({ from, to })
-  // refunds 端点不消费 status(orders_refunds_export.go 仅 orders/payments 读 status)。
-  if (status && status.trim() && kind !== 'refunds') params.set('status', status.trim())
+  // 仅 payments/orders 消费 status(orders_refunds_export.go);refunds 与 usage 均不读 status,带了也无害但留空更干净。
+  if (status && status.trim() && (kind === 'payments' || kind === 'orders')) params.set('status', status.trim())
   const path = `${EXPORT_PATHS[kind]}?${params.toString()}`
   const token = getTokens().adminToken
   const resp = await fetch(path, {

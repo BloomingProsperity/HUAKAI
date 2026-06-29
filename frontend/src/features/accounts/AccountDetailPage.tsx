@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../../lib/api'
 import { StatusBadge, healthTone } from '../../ui/StatusBadge'
 import { clearAccountRateLimit, getProviderAccount, setAccountEnabled } from './api'
+import { AccountDangerZone } from './AccountDangerZone'
 import { AccountDiagnosticsCard } from './AccountDiagnosticsCard'
 import { AccountFingerprintBind } from './AccountFingerprintBind'
 import { accountAvailableActions } from './detail'
@@ -16,6 +17,7 @@ import type { ProviderAccount } from './types'
  */
 export function AccountDetailPage() {
   const params = useParams()
+  const navigate = useNavigate()
   const id = Number(params.id)
   const [account, setAccount] = useState<ProviderAccount | null>(null)
   const [loading, setLoading] = useState(true)
@@ -197,6 +199,12 @@ export function AccountDetailPage() {
           ]}
         />
       </Card>
+
+      <AccountDangerZone
+        accountId={account.id}
+        accountName={account.name}
+        onDeleted={() => navigate('/accounts')}
+      />
     </div>
   )
 }

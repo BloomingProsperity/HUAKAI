@@ -1,8 +1,13 @@
-import { apiGet, ApiError } from '../../lib/api'
+import { apiGet, apiSend, ApiError } from '../../lib/api'
 import { getTokens } from '../../auth/store'
 import { tokenForPath } from '../../auth/tokenForPath'
-import type { UsageRecordsResponse } from './types'
-import { buildExportQuery } from './usagerecords'
+import type {
+  DisputesResponse,
+  ReceiptVerifyResponse,
+  UsageRecordsResponse,
+  UserCostReceipt,
+} from './types'
+import { buildExportQuery, encodeReceiptRequestID } from './usagerecords'
 
 /*
  * 用量明细数据访问层。端点 GET /v1/me/usage-records(session 鉴权,tokenForPath 走 session token)。
@@ -76,4 +81,44 @@ export async function exportUsageCSV(fromDay: string, toDay: string, signal?: Ab
   a.click()
   document.body.removeChild(a)
   URL.revokeObjectURL(objectUrl)
+}
+
+/*
+ * ── 签名收据 / 验签 / 我的争议(session 只读数据层) ───────────────────────────
+ * 这几条都 session 鉴权(tokenForPath:非 /v1/auth、非 admin 前缀 → session token;
+ * 后端 routes.go:174-184 均挂 SessionMiddleware)。身份由后端从会话派生,前端只传 request_id。
+ * 注:逐请求成本端点 /v1/generation 走的是 API-key(d.inboundAuth,routes.go:130 顶层)鉴权、
+ * 非 session 不可达,故前端不接它;成本/用量明细改用列表行(/v1/me/usage-records,session)自带数据。
+ */
+
+/**
+ * 单次签名成本收据:GET /v1/receipts/{request_id}(cost_receipt_handler.go:101)。
+ * request_id 可能含至多一个斜杠(host/tail 形态),encodeReceiptRequestID 按段编码以匹配后端路由。
+ * 收据尚未最终化时后端回 202 receipt_unavailable;此处统一交上层按 ApiError 处理。
+ */
+export async function getCostReceipt(requestID: string, signal?: AbortSignal): Promise<UserCostReceipt> {
+  return apiGet<UserCostReceipt>(`/v1/receipts/${encodeReceiptRequestID(requestID)}`, { signal })
+}
+
+/**
+ * 收据验签:POST /v1/receipts/{request_id}/verify(cost_receipt_handler.go:148)。
+ * 只读密码学校验,不动钱。空 body 即「验存储的签名收据」分支(verifyStoredCostReceiptByID),
+ * 后端用已落库的 canonical+签名做校验,前端无需也不应自带 receipt 体。
+ */
+export async function verifyCostReceipt(requestID: string, signal?: AbortSignal): Promise<ReceiptVerifyResponse> {
+  return apiSend<ReceiptVerifyResponse>('POST', `/v1/receipts/${encodeReceiptRequestID(requestID)}/verify`, undefined, {
+    signal,
+  })
+}
+
+/**
+ * 我的争议列表:GET /v1/me/disputes(dispute_handler.go:116)。只读列本人争议。
+ * limit 1-500(后端 parseLimit 校验),默认 100。
+ * 注意:发起争议 POST /v1/receipts/{id}/disputes 触发退款流程=money,Owner-gated,本模块不接。
+ */
+export async function listMyDisputes(limit?: number, signal?: AbortSignal): Promise<DisputesResponse> {
+  return apiGet<DisputesResponse>('/v1/me/disputes', {
+    query: { limit: limit ?? undefined },
+    signal,
+  })
 }
