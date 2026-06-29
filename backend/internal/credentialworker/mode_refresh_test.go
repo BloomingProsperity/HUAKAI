@@ -213,11 +213,12 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 			t.Setenv("HUAKAI_GEMINI_OAUTH_TOKEN_URL", operatorEndpoint)
 			t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_ID", operatorClientID)
 			t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", "")
-			previousClient := http.DefaultClient
-			t.Cleanup(func() { http.DefaultClient = previousClient })
 			var gotURL string
 			var gotForm url.Values
-			http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			// operator OAuth 路径生产用 SSRF 防护拨号 client(丢弃自定义 RoundTripper、拨号层校验
+			// 目标 IP),无法用 http.DefaultClient mock 驱动。经 newDefaultModeAdapterRegistry 注入
+			// mock client 直驱刷新逻辑;SSRF 防护本身另由 TestGeminiRefreshHTTPClientIsSSRFProtectedAtWiring 覆盖。
+			mockClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				gotURL = r.URL.String()
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -230,7 +231,7 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 				return jsonResponse(`{"access_token":"` + wantAccessToken + `","refresh_token":"` + wantRefreshToken + `","expires_in":1800,"token_type":"Bearer"}`), nil
 			})}
 
-			adapter, ok := DefaultModeAdapterRegistry().Lookup(tc.vendor, tc.authMode)
+			adapter, ok := newDefaultModeAdapterRegistry(mockClient).Lookup(tc.vendor, tc.authMode)
 			if !ok {
 				t.Fatalf("missing mode refresh adapter %s/%s", tc.vendor, tc.authMode)
 			}
