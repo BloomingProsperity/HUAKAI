@@ -39,3 +39,29 @@ export interface PortalTopupConfig {
 export interface PortalConfigResponse {
   config: PortalTopupConfig
 }
+
+/*
+ * 自助充值开单 —— 镜像 paymenthttp 的 portalCreateTopupRequest / 创建响应。
+ * 端点(真码):POST /v1/users/me/payments/orders(session 鉴权)
+ *   backend/internal/paymenthttp/handler.go:209 → user_portal.go:290 newPortalCreateTopupHandler。
+ *
+ * 请求体真字段(user_portal.go:207 portalCreateTopupRequest):
+ *   - amount_cents(int,必需 >0,服务端按门户区间二次裁决)
+ *   - provider(string,必需,JSON key 是 "provider" 而非 "provider_kind";须在 config.providers 内)
+ *   - terms_version(可选,本前端暂不传)
+ * 服务端强制 order_kind=topup、身份取自 session(请求体不带 tenant/user,防越权)。
+ *
+ * 响应(user_portal.go:357):{order, idempotent, payment_instruction:{provider, instruction}}。
+ * money 立场:本响应不含任何 secret;不含余额变更(manual 渠道是 pending 单 + 人工指引,不即时入账)。
+ */
+export interface CreateTopupRequest {
+  amount_cents: number
+  provider: string
+}
+
+/** 创建充值单响应:复用 orders 模块的 UserOrder 形态(同后端 orderView)。 */
+export interface CreateTopupResponse {
+  order: import('../orders/types').UserOrder
+  idempotent: boolean
+  payment_instruction: PortalProviderConfig
+}

@@ -17,6 +17,28 @@ export interface MyInvitationCode {
   inviter_user_id: number
 }
 
+/**
+ * POST /v1/invitations 请求体(gatewayhttp.invitationCreateRequest)。
+ * 三字段均可选(后端有默认值);此处只送数值两项,不暴露 client_idempotency_key
+ * 给用户(保留前缀由服务端管控,前端无须也不应让用户自填)。
+ */
+export interface MintInvitationRequest {
+  max_usage?: number
+  expires_in_days?: number
+}
+
+/**
+ * POST /v1/invitations 响应(gatewayhttp.invitationCreateResponse)。
+ * 注意:此响应不含任何 secret —— code 是可分享的邀请码(非凭证),其余皆元数据。
+ * expires_at 为 RFC3339 时间字符串。
+ */
+export interface MintInvitationResponse {
+  code: string
+  inviter_user_id: number
+  expires_at: string
+  max_usage: number
+}
+
 /** GET /v1/me/invitations:邀请汇总(只读计数)。 */
 export interface InvitationSummary {
   qualified_count: number

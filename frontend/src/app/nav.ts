@@ -180,6 +180,7 @@ export const PIPELINE_NAV: NavSection[] = [
       { path: '/admin/channel-health', label: '渠道健康台', built: true },
       { path: '/admin/modules', label: '模块知识脊柱', built: true },
       { path: '/admin/version', label: '版本与维护', built: true },
+      { path: '/admin/hermes', label: 'Hermes 配置与工具', built: true },
       { path: '/admin/logs', label: '日志与诊断', built: true },
       { path: '/admin/backup', label: '备份与恢复', built: true },
       { path: '/admin/dlq', label: '死信队列', built: true },

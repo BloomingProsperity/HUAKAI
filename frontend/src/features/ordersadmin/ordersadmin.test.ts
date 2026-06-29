@@ -1,20 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildCreateOrderRequest,
   buildExportRange,
   buildOrderListQuery,
+  buildOutTradeNo,
+  buildProviderConfig,
   canRefund,
   defaultExportRange,
+  EMPTY_CREATE_ORDER_FORM,
   EMPTY_ORDER_FILTER,
   EXPORT_MAX_WINDOW_DAYS,
   formatCents,
   hasAnyAction,
+  MAX_AMOUNT_CENTS,
   orderActions,
+  parseAmountToCents,
   parseRefundAmount,
+  providerKindLabel,
   refundRequestStatusLabel,
   refundRequestStatusTone,
   statusLabel,
   statusTone,
   toRfc3339,
+  type CreateOrderForm,
   type OrderFilterForm,
 } from './ordersadmin'
 
@@ -225,5 +233,130 @@ describe('defaultExportRange', () => {
     expect(r.from).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
     const built = buildExportRange(r.from, r.to)
     expect('from' in built).toBe(true)
+  })
+})
+
+describe('providerKindLabel', () => {
+  it('已知渠道给中文,未知回落原值', () => {
+    expect(providerKindLabel('manual')).toBe('手动充值(manual)')
+    expect(providerKindLabel('taobao')).toBe('淘宝/闲鱼(taobao)')
+    expect(providerKindLabel('alipay')).toBe('alipay')
+  })
+})
+
+describe('buildProviderConfig', () => {
+  it('checkout_url 留空合法(不设链接),enabled 透传', () => {
+    // 判别核心:空 URL 必须放行且 checkoutUrl 归一为空串;变异(空也报错)→ RED。
+    expect(buildProviderConfig({ enabled: true, checkoutUrl: '' })).toEqual({ enabled: true, checkoutUrl: '' })
+    expect(buildProviderConfig({ enabled: false, checkoutUrl: '   ' })).toEqual({ enabled: false, checkoutUrl: '' })
+  })
+
+  it('非 http(s) 形态的 URL → 报错(前端体验护栏)', () => {
+    // 判别核心:非法 URL 必须拦;变异(删 URL 形态校验)→ 此断言 RED。
+    expect(buildProviderConfig({ enabled: true, checkoutUrl: 'item.taobao.com/x' })).toEqual({
+      error: '跳转链接必须是 http(s):// 开头的有效 URL(留空表示不设链接)',
+    })
+    expect(buildProviderConfig({ enabled: true, checkoutUrl: 'javascript:alert(1)' })).toEqual({
+      error: '跳转链接必须是 http(s):// 开头的有效 URL(留空表示不设链接)',
+    })
+  })
+
+  it('合法 http(s) URL 透传(trim)', () => {
+    expect(buildProviderConfig({ enabled: true, checkoutUrl: '  https://item.taobao.com/x  ' })).toEqual({
+      enabled: true,
+      checkoutUrl: 'https://item.taobao.com/x',
+    })
+    expect(buildProviderConfig({ enabled: false, checkoutUrl: 'http://pay.example/abc' })).toEqual({
+      enabled: false,
+      checkoutUrl: 'http://pay.example/abc',
+    })
+  })
+})
+
+describe('parseAmountToCents(代客建单 money)', () => {
+  it('元 → 正整数分,无浮点误差', () => {
+    // 判别核心:19.99 元=1999 分而非 1998.99…;变异(parseFloat*100)易现误差。
+    expect(parseAmountToCents('19.99')).toEqual({ cents: 1999 })
+    expect(parseAmountToCents('0.05')).toEqual({ cents: 5 })
+    expect(parseAmountToCents('10')).toEqual({ cents: 1000 })
+    expect(parseAmountToCents('0.1')).toEqual({ cents: 10 })
+  })
+
+  it('非正 / 非法格式 → 报错', () => {
+    // 判别核心:0 与负数必须拒(后端 amount_cents<=0 即 ErrInvalidAmount)。变异(放行 0)→ RED。
+    expect(parseAmountToCents('0')).toEqual({ error: '金额必须大于 0' })
+    expect(parseAmountToCents('0.00')).toEqual({ error: '金额必须大于 0' })
+    expect(parseAmountToCents('abc')).toEqual({ error: '金额必须是非负数,最多两位小数' })
+    expect(parseAmountToCents('1.999')).toEqual({ error: '金额必须是非负数,最多两位小数' })
+    expect(parseAmountToCents('-5')).toEqual({ error: '金额必须是非负数,最多两位小数' })
+  })
+
+  it('超账本上限 → 报错(后端 maxAmountCents 防溢出卡单)', () => {
+    // 判别核心:超上限必须先拦;变异(删上限判断)→ 此断言 RED。
+    const overWhole = String(MAX_AMOUNT_CENTS / 100 + 1) // 比上限多 1 元
+    expect(parseAmountToCents(overWhole)).toEqual({ error: '金额超出账本可表示上限' })
+  })
+})
+
+describe('buildOutTradeNo', () => {
+  it('字符集仅 [A-Za-z0-9_-],非法 suffix 字符被剔除(后端 validateOutTradeNo)', () => {
+    // 判别核心:out_trade_no 必须只含合法字符,否则后端 ErrInvalidInput;变异(原样拼接 suffix)→ RED。
+    const n = buildOutTradeNo(1, 2, 1000, 'a/b c:d')
+    expect(n).toMatch(/^[A-Za-z0-9_-]+$/)
+    expect(n).toBe('admin-t1-u2-1000-abcd')
+  })
+
+  it('同一建单意图 + 同一 suffix → 同一稳定单号(幂等防双账)', () => {
+    expect(buildOutTradeNo(3, 7, 500, 'x123')).toBe(buildOutTradeNo(3, 7, 500, 'x123'))
+  })
+})
+
+function createForm(over: Partial<CreateOrderForm>): CreateOrderForm {
+  return { ...EMPTY_CREATE_ORDER_FORM, ...over }
+}
+
+describe('buildCreateOrderRequest(代客建单 money)', () => {
+  it('租户/用户/金额齐全 → 返回正整数分 + 合法单号 + 渠道', () => {
+    const r = buildCreateOrderRequest(createForm({ tenantId: '1', userId: '9', amount: '10.50', providerKind: 'taobao' }), 1700000000000)
+    expect('error' in r).toBe(false)
+    const ok = r as { tenantId: number; userId: number; amountCents: number; outTradeNo: string; providerKind: string }
+    expect(ok.tenantId).toBe(1)
+    expect(ok.userId).toBe(9)
+    expect(ok.amountCents).toBe(1050)
+    expect(ok.providerKind).toBe('taobao')
+    expect(ok.outTradeNo).toMatch(/^[A-Za-z0-9_-]+$/)
+  })
+
+  it('租户 ID 缺失 / 非正 → 报错(后端 ErrInvalidInput)', () => {
+    // 判别核心:无 tenant 必须拦;变异(允许空 tenant)→ RED。
+    expect(buildCreateOrderRequest(createForm({ userId: '9', amount: '10' }), 1)).toEqual({ error: '请填写有效的租户 ID(正整数)' })
+    expect(buildCreateOrderRequest(createForm({ tenantId: '0', userId: '9', amount: '10' }), 1)).toEqual({ error: '请填写有效的租户 ID(正整数)' })
+  })
+
+  it('用户 ID 缺失 / 非正 → 报错', () => {
+    expect(buildCreateOrderRequest(createForm({ tenantId: '1', amount: '10' }), 1)).toEqual({ error: '请填写有效的用户 ID(正整数)' })
+    expect(buildCreateOrderRequest(createForm({ tenantId: '1', userId: '-2', amount: '10' }), 1)).toEqual({ error: '请填写有效的用户 ID(正整数)' })
+  })
+
+  it('金额非正 → 报错(money 关键:绝不发 amount_cents<=0)', () => {
+    // 判别核心:0 金额必须拦在前端(后端 ErrInvalidAmount);变异(放行 0)→ RED。
+    expect(buildCreateOrderRequest(createForm({ tenantId: '1', userId: '9', amount: '0' }), 1)).toEqual({ error: '金额必须大于 0' })
+  })
+
+  it('nowMs 进入单号作为去重 suffix(不同时间戳 → 不同单号)', () => {
+    const a = buildCreateOrderRequest(createForm({ tenantId: '1', userId: '9', amount: '10' }), 111)
+    const b = buildCreateOrderRequest(createForm({ tenantId: '1', userId: '9', amount: '10' }), 222)
+    const an = (a as { outTradeNo: string }).outTradeNo
+    const bn = (b as { outTradeNo: string }).outTradeNo
+    expect(an).not.toBe(bn)
+  })
+
+  it('渠道默认 manual(非法值回落 manual)', () => {
+    const r = buildCreateOrderRequest(
+      // @ts-expect-error 故意传非法渠道值,测回落
+      createForm({ tenantId: '1', userId: '9', amount: '10', providerKind: 'weird' }),
+      1,
+    )
+    expect((r as { providerKind: string }).providerKind).toBe('manual')
   })
 })

@@ -1,6 +1,8 @@
-import { apiGet } from '../../lib/api'
+import { apiGet, apiSend } from '../../lib/api'
 import type {
   InvitationSummary,
+  MintInvitationRequest,
+  MintInvitationResponse,
   MyInvitationCode,
   ReferralListResponse,
   RewardLedgerResponse,
@@ -29,4 +31,13 @@ export async function listReferrals(offset = 0, limit = 20, signal?: AbortSignal
 /** GET /v1/me/referrals/rewards:返利流水(分页,带累计 total_reward_usd)。 */
 export async function listReferralRewards(offset = 0, limit = 20, signal?: AbortSignal): Promise<RewardLedgerResponse> {
   return apiGet<RewardLedgerResponse>('/v1/me/referrals/rewards', { query: { offset, limit }, signal })
+}
+
+/**
+ * POST /v1/invitations:生成一个活动邀请码(session 鉴权,backend routes.go:395)。
+ * 返回体里一次性带回 code(可分享、非 secret),刷新后不再下发,需再看走自助码端点。
+ * money-coupled:被邀人后续产生计费才会触发返利,生成本身只铸码不立即入账。
+ */
+export async function mintInvitation(req: MintInvitationRequest, signal?: AbortSignal): Promise<MintInvitationResponse> {
+  return apiSend<MintInvitationResponse>('POST', '/v1/invitations', req, { signal })
 }

@@ -6,6 +6,7 @@ import {
   referralStatusLabel,
   referralStatusTone,
   refereeDisplay,
+  validateMintForm,
 } from './affiliate'
 
 describe('buildInviteLink', () => {
@@ -74,5 +75,60 @@ describe('referralStatusTone', () => {
 describe('refereeDisplay', () => {
   it('脱敏成 用户 #id', () => {
     expect(refereeDisplay(42)).toBe('用户 #42')
+  })
+})
+
+describe('validateMintForm', () => {
+  it('合法值通过并规范化为整数', () => {
+    const v = validateMintForm('5', '30')
+    expect(v.ok).toBe(true)
+    expect(v.maxUsage).toBe(5)
+    expect(v.expiresInDays).toBe(30)
+    expect(v.error).toBe('')
+  })
+
+  it('两端边界都通过(镜像后端闭区间 [1,100] / [1,90])', () => {
+    // 判别核心:1/1 与 100/90 必须通过。变异(把 <= 写成 <、或上界改成 99/89)→ RED。
+    expect(validateMintForm('1', '1').ok).toBe(true)
+    expect(validateMintForm('100', '90').ok).toBe(true)
+  })
+
+  it('max_usage 越上界(101)被拒,ok=false 且不返回数值', () => {
+    // 判别核心:101 必须 RED。变异(上界放宽到 101 / 去掉上界检查)→ 此断言 RED。
+    const v = validateMintForm('101', '30')
+    expect(v.ok).toBe(false)
+    expect(v.maxUsage).toBe(0)
+    expect(v.error).toContain('使用次数')
+  })
+
+  it('max_usage 越下界(0)被拒', () => {
+    expect(validateMintForm('0', '30').ok).toBe(false)
+  })
+
+  it('expires_in_days 越上界(91)被拒', () => {
+    // 判别核心:91 必须 RED。变异(上界放宽到 91)→ RED。
+    const v = validateMintForm('5', '91')
+    expect(v.ok).toBe(false)
+    expect(v.error).toContain('有效天数')
+  })
+
+  it('expires_in_days 越下界(0)被拒', () => {
+    expect(validateMintForm('5', '0').ok).toBe(false)
+  })
+
+  it('小数被拒(必须整数)', () => {
+    // 判别核心:"1.5" 不是整数。变异(用 parseFloat 接受小数)→ RED。
+    expect(validateMintForm('1.5', '30').ok).toBe(false)
+    expect(validateMintForm('5', '30.5').ok).toBe(false)
+  })
+
+  it('空串 / 非数字被拒', () => {
+    expect(validateMintForm('', '30').ok).toBe(false)
+    expect(validateMintForm('abc', '30').ok).toBe(false)
+    expect(validateMintForm('5', '').ok).toBe(false)
+  })
+
+  it('前后空白被容忍并裁剪', () => {
+    expect(validateMintForm(' 5 ', ' 30 ').ok).toBe(true)
   })
 })

@@ -1,9 +1,15 @@
 /*
- * Hermes 非流式只读 API(列会话 / 列工具)。复用 lib/api 的 apiGet,并显式传 admin token 作 Bearer。
+ * Hermes 非流式 API。复用 lib/api 的 apiGet/apiSend,并显式传 admin token 作 Bearer。
  *
  * 鉴权要点:/v1/hermes/* 不匹配 tokenForPath 的 admin 前缀(只认 /admin/* 与 /v1/admin/*),
  * 若不显式覆盖 bearer 会回落到 session token → 后端恒 401。故每个调用都强制传入 adminToken。
- * 这里只做"读":列会话、列工具(只读发现),绝不调用任何改动型 / 提议 / 确认端点。
+ *
+ * 本文件提供「读」面:列会话、列工具(只读发现)、读模块上下文、软删自己的会话。
+ * 改动型(Hermes per-user 配置启停 + api-profile CRUD + mutating 工具 dry-run→confirm 执行)
+ * 在同簇的 hermesAdminApi.ts 里,经 Owner 授权后接入;它复用本文件导出的 buildAuthQuery 走同款
+ * 鉴权(显式 admin Bearer + as_user_id/tenant_id query),并对每个 mutating 工具强制走
+ * 「dry-run 取 correlation_id + preview → operator 看 preview → confirm=true 执行」的安全门
+ * (correlation_id 5 分钟 TTL,一次性消费),secret 仍只写不回显。
  */
 
 import { apiGet, apiSend } from '../../lib/api'
@@ -91,8 +97,11 @@ interface ToolsResponse {
   tools: HermesTool[]
 }
 
-/** buildAuthQuery 组装 as_user_id / tenant_id query(供 apiGet 的 opts.query)。 */
-function buildAuthQuery(auth: HermesAuthQuery): Record<string, string | number> {
+/**
+ * buildAuthQuery 组装 as_user_id / tenant_id query(供 apiGet/apiSend 的 opts.query)。
+ * 导出供同簇 hermesAdminApi.ts 复用,使改动型调用与只读调用走逐字节一致的鉴权 query。
+ */
+export function buildAuthQuery(auth: HermesAuthQuery): Record<string, string | number> {
   const q: Record<string, string | number> = { as_user_id: auth.asUserId }
   if (auth.tenantId !== undefined) q.tenant_id = auth.tenantId
   return q

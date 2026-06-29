@@ -79,3 +79,63 @@ export function referralStatusTone(status: string): BadgeTone {
 export function refereeDisplay(userId: number): string {
   return `用户 #${userId}`
 }
+
+/*
+ * 活动邀请码生成的前端校验,严格镜像后端范围(避免无谓往返,真校验仍在后端):
+ *   - max_usage      ∈ [1, 100]   (invitation.DefaultMaxUsage=1 / MaxUsageLimit=100)
+ *   - expires_in_days∈ [1, 90]    (invitation.DefaultExpiryDays=30 / maxExpiresDays=90)
+ * 后端真码:backend/internal/community/invitation/{types.go,service.go}。
+ */
+export const MAX_USAGE_MIN = 1
+export const MAX_USAGE_MAX = 100
+export const EXPIRES_DAYS_MIN = 1
+export const EXPIRES_DAYS_MAX = 90
+export const DEFAULT_MAX_USAGE = 1
+export const DEFAULT_EXPIRES_DAYS = 30
+
+export interface MintFormValidation {
+  ok: boolean
+  /** 校验失败时的中文提示;ok 时为空串。 */
+  error: string
+  /** 校验通过时,规范化后的整数 max_usage(ok=false 时为 0)。 */
+  maxUsage: number
+  /** 校验通过时,规范化后的整数 expires_in_days(ok=false 时为 0)。 */
+  expiresInDays: number
+}
+
+/**
+ * 校验生成活动邀请码的两个数值输入(均来自文本框,故入参为 string)。
+ * 判别核心:
+ *   - 必须是整数(拒小数 / 非数字 / 空);
+ *   - max_usage ∈ [1,100],expires_in_days ∈ [1,90](闭区间,镜像后端);
+ *   - 越界 / 非整数 → ok=false 且给出针对性中文 error。
+ * 变异(放宽上界 / 接受小数 / 边界判错)→ 对应断言 RED。
+ */
+export function validateMintForm(maxUsageRaw: string, expiresInDaysRaw: string): MintFormValidation {
+  const fail = (error: string): MintFormValidation => ({ ok: false, error, maxUsage: 0, expiresInDays: 0 })
+
+  const maxUsage = parseStrictInt(maxUsageRaw)
+  if (maxUsage === null) return fail('使用次数必须是整数')
+  if (maxUsage < MAX_USAGE_MIN || maxUsage > MAX_USAGE_MAX) {
+    return fail(`使用次数需在 ${MAX_USAGE_MIN}–${MAX_USAGE_MAX} 之间`)
+  }
+
+  const expiresInDays = parseStrictInt(expiresInDaysRaw)
+  if (expiresInDays === null) return fail('有效天数必须是整数')
+  if (expiresInDays < EXPIRES_DAYS_MIN || expiresInDays > EXPIRES_DAYS_MAX) {
+    return fail(`有效天数需在 ${EXPIRES_DAYS_MIN}–${EXPIRES_DAYS_MAX} 之间`)
+  }
+
+  return { ok: true, error: '', maxUsage, expiresInDays }
+}
+
+/**
+ * 严格整数解析:仅接受可选前后空白包裹的纯十进制整数串(如 "1"、" 100 ")。
+ * 拒绝空串、小数("1.5")、带符号外的非数字、Infinity/NaN。失败返回 null。
+ */
+function parseStrictInt(raw: string): number | null {
+  const s = raw.trim()
+  if (!/^\d+$/.test(s)) return null
+  const n = Number.parseInt(s, 10)
+  return Number.isSafeInteger(n) ? n : null
+}
