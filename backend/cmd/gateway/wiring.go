@@ -189,6 +189,7 @@ type deps struct {
 	adminAuth                *admin.AdminResolver
 	adminIssuer              *admin.KeyIssuer
 	adminRevoker             *admin.KeyRevoker
+	adminTokenIssuer         *admin.AdminTokenIssuer
 	billingAuditUpdater      gatewayhttp.AdminBillingSettingsAuditUpdater
 	platformSettings         *platformsettings.Service
 	hermesService            *hermes.Service
@@ -1314,6 +1315,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		adminAuth:                admin.NewAdminResolver(adminQueries),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
 		adminRevoker:             admin.NewKeyRevoker(pgPool),
+		adminTokenIssuer:         admin.NewAdminTokenIssuer(pgPool),
 		billingAuditUpdater:      gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
 		platformSettings:         platformSettingsService,
 		hermesService:            hermesService,

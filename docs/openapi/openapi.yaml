@@ -9565,6 +9565,95 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/admin-tokens:
+    post:
+      tags: [admin-tokens]
+      summary: Issue a new admin token (temporary/one-shot supported)
+      operationId: issueAdminToken
+      description: |
+        Mints a new operator credential (hk_admin_...). The plaintext bearer
+        is returned ONCE in `plaintext_bearer` and never again. Supports an
+        optional strictly-future `expires_at` for temporary/one-shot tokens —
+        the token is rejected by the resolver after expiry. High-privilege:
+        only platform_admin may call this; tenant_operator gets 403.
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTokenCreate' }
+      responses:
+        '201':
+          description: Token issued. plaintext_bearer shown ONCE.
+          headers:
+            X-Huakai-Key-Display:
+              description: Always 'once-only' on success.
+              schema: { type: string, enum: [once-only] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTokenIssued' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    get:
+      tags: [admin-tokens]
+      summary: List admin tokens (metadata only)
+      operationId: listAdminTokens
+      description: |
+        Returns admin token metadata (never plaintext, never key_hash). Only
+        platform_admin may call this; tenant_operator gets 403.
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated list.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTokenList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/admin-tokens/{id}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-tokens]
+      summary: Revoke an admin token
+      operationId: revokeAdminToken
+      description: |
+        Soft-revokes (status='revoked', revoked_at=now()). Idempotent:
+        revoking an already-non-active token returns 200 with
+        already_revoked=true. Only platform_admin may call this.
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTokenRevokeRequest' }
+      responses:
+        '200':
+          description: Revoked (or already-revoked).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTokenRevokeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   # ==========================================================================
   # Admin: Pool Groups (F-POOL-001)
   # ==========================================================================
@@ -16515,6 +16604,102 @@ components:
         already_revoked:
           type: boolean
           description: true when the key was already revoked before this call. The response is still 200 (idempotent).
+
+    AdminTokenCreate:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [platform_admin, tenant_operator]
+          description: Role of the minted admin token.
+        tenant_id:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+          description: Required for tenant_operator; must be omitted for platform_admin (scope consistency).
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: Strictly future timestamp for a temporary/one-shot token. Null = permanent. Past values rejected with 400.
+        name: { type: string }
+        note: { type: string }
+
+    AdminTokenIssued:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - role
+        - key_prefix
+        - status
+        - created_at
+        - plaintext_bearer
+      properties:
+        id: { type: integer, format: int64 }
+        role: { type: string, enum: [platform_admin, tenant_operator] }
+        key_prefix: { type: string }
+        status: { type: string, enum: [active] }
+        expires_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        plaintext_bearer:
+          type: string
+          description: |
+            Full plaintext admin bearer (e.g. hk_admin_xxxxxxxxxxxxxxxxxxxxxxxx).
+            Returned ONCE on issuance — never echoed by LIST or any later
+            fetch. Operators MUST capture this at issuance time.
+
+    AdminTokenListItem:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required: [id, name, key_prefix, role, bootstrap, status, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        key_prefix: { type: string }
+        role: { type: string, enum: [platform_admin, tenant_operator] }
+        scope_tenant_id: { type: [integer, 'null'], format: int64 }
+        bootstrap: { type: boolean }
+        status: { type: string, enum: [active, disabled, revoked] }
+        expires_at: { type: [string, 'null'], format: date-time }
+        last_used_at: { type: [string, 'null'], format: date-time }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        revoked_reason: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+
+    AdminTokenList:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminTokenListItem' }
+        limit: { type: integer, minimum: 1, maximum: 500 }
+        offset: { type: integer, minimum: 0 }
+
+    AdminTokenRevokeRequest:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string }
+
+    AdminTokenRevokeResponse:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required: [id, already_revoked]
+      properties:
+        id: { type: integer, format: int64 }
+        already_revoked:
+          type: boolean
+          description: true when the token was already non-active before this call. The response is still 200 (idempotent).
 
     PoolGroup:
       type: object
