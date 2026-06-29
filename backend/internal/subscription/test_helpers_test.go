@@ -76,8 +76,10 @@ func (f *subFixture) seedUser(tenantID int64, label string) int64 {
 func (f *subFixture) cleanup() {
 	ctx := context.Background()
 	for _, tenantID := range []int64{f.tenantA, f.tenantB} {
+		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_auto_renewal_charges WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_fulfillment_effects WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_expiry_reminders WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_plan_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_audit_events WHERE tenant_id=$1`, tenantID)
