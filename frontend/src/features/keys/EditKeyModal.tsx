@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { updateApiKey } from './api'
 import { buildKeyUpdate, formFromKey, type ExpiryMode, type KeyEditForm } from './edit'
+import { KeyControlsSection } from './KeyControlsSection'
 import type { ApiKeyView } from './types'
 
 /*
@@ -20,6 +21,8 @@ export function EditKeyModal({
   const [form, setForm] = useState<KeyEditForm>(formFromKey(apiKey))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 高级控制(配额/分组/IP 白黑名单/模型白名单)默认折叠,展开后逐项 GET 回填 + PUT 保存。
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const set = <K extends keyof KeyEditForm>(k: K, v: KeyEditForm[K]) => setForm((f) => ({ ...f, [k]: v }))
 
   const submit = async () => {
@@ -52,7 +55,7 @@ export function EditKeyModal({
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(28,38,34,0.4)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 'var(--hk-space-6)', zIndex: 'var(--hk-z-overlay)' as unknown as number, overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(440px,100%)', background: 'var(--hk-surface)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-3)', padding: 'var(--hk-space-5)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(560px,100%)', background: 'var(--hk-surface)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-3)', padding: 'var(--hk-space-5)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
         <h2 style={{ fontSize: 18 }}>编辑 Key</h2>
         <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', margin: 0 }}>
           <code style={{ fontFamily: 'var(--hk-font-mono)' }}>{apiKey.key_prefix}</code>
@@ -76,6 +79,24 @@ export function EditKeyModal({
           </Field>
         )}
         {error && <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{error}</div>}
+
+        {/* 高级控制:配额(计费敏感)/分组/IP 白黑名单/模型白名单。各项独立保存,与上方改名/到期互不影响。 */}
+        <div style={{ borderTop: '1px solid var(--hk-line)', paddingTop: 'var(--hk-space-3)' }}>
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((o) => !o)}
+            style={{ border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <span style={{ display: 'inline-block', transform: advancedOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }}>▶</span>
+            高级控制(配额 / 分组 / IP / 模型)
+          </button>
+          {advancedOpen && (
+            <div style={{ marginTop: 'var(--hk-space-3)' }}>
+              <KeyControlsSection apiKeyId={apiKey.api_key_id} />
+            </div>
+          )}
+        </div>
+
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
           <button type="button" onClick={onClose} style={ghost}>
             取消
