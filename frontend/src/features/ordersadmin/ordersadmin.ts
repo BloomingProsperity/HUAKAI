@@ -147,3 +147,110 @@ export function formatCents(cents: number, currency: string): string {
   const frac = (abs % 100).toString().padStart(2, '0')
   return `${sign}${whole}.${frac} ${currency || ''}`.trim()
 }
+
+// ── 退款(money 敏感)纯逻辑 ────────────────────────────────────────────────
+
+/**
+ * 退款表单解析结果(判别联合)。amountCents 恒为正整数分。
+ * 注意:后端 RefundOrder 要求 amount_cents ∈ (0, 订单原额]
+ * (store_postgres_refund.go:64 / store_memory.go:203:`<=0 || >credit.AmountCents` 即 ErrInvalidAmount),
+ * **没有** amount_cents=0 当全额退的兜底。故「全额退款」由前端用订单原额(maxCents)显式算出,绝不发 0。
+ */
+export type RefundAmountResult = { error: string } | { amountCents: number }
+
+/**
+ * 解析退款金额输入(展示单位「元」字符串 → cents)。
+ * 空串=全额退:返回订单原额 maxCents(>0);若 maxCents 未知(<=0)则报错让运营显式填,绝不发 0。
+ * 非空时必须是正数且不超过订单已支付金额(maxCents)。用整数分运算避免浮点误差(0.1+0.2 陷阱)。
+ */
+export function parseRefundAmount(input: string, maxCents: number): RefundAmountResult {
+  const trimmed = input.trim()
+  if (trimmed === '') {
+    // 空=全额退:用订单原额。后端无 0→原额兜底,前端必须算出正数金额。
+    if (maxCents > 0) return { amountCents: maxCents }
+    return { error: '无法确定订单金额,请显式填写退款金额' }
+  }
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) {
+    return { error: '退款金额必须是非负数,最多两位小数' }
+  }
+  const [whole, frac = ''] = trimmed.split('.')
+  const cents = Number(whole) * 100 + Number(frac.padEnd(2, '0'))
+  if (cents <= 0) return { error: '退款金额必须大于 0(留空表示全额退款)' }
+  if (maxCents > 0 && cents > maxCents) {
+    return { error: '退款金额不能超过订单金额' }
+  }
+  return { amountCents: cents }
+}
+
+/** 订单当前状态是否「可退款」。后端仅 completed(已到账充值单)可退;其余返回 order_not_refundable。 */
+export function canRefund(status: string): boolean {
+  return status === 'completed'
+}
+
+// ── 退款工单(refund request)状态 ─────────────────────────────────────────
+
+export const REFUND_REQUEST_STATUSES: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'pending', label: '待审批' },
+  { value: 'approved', label: '已通过' },
+  { value: 'rejected', label: '已驳回' },
+]
+
+export function refundRequestStatusLabel(status: string): string {
+  return REFUND_REQUEST_STATUSES.find((s) => s.value === status)?.label ?? status
+}
+
+export function refundRequestStatusTone(status: string): BadgeTone {
+  switch (status) {
+    case 'approved':
+      return 'ok'
+    case 'pending':
+      return 'warn'
+    case 'rejected':
+      return 'danger'
+    default:
+      return 'muted'
+  }
+}
+
+// ── CSV 导出时间窗 ────────────────────────────────────────────────────────
+
+/** 后端 exporthttp maxExportWindow = 366 天(export.go:27)。前端先拦超窗避免 400。 */
+export const EXPORT_MAX_WINDOW_DAYS = 366
+
+/** buildExportRange 结果:成功带 from/to(RFC3339),失败带 error。 */
+export type BuildExportRangeResult = { error: string } | { from: string; to: string }
+
+/**
+ * 校验并构造 CSV 导出时间窗。后端 from/to 均为【必填】RFC3339(export.go:243 parseExportRange),
+ * from 必须 ≤ to,且跨度 ≤ 366 天。注意:导出端点的租户来自 admin 凭据 ScopeTenantID,
+ * 不接受 tenant_id query 参(export.go:218 resolveTenantScope),故此处不处理租户。
+ */
+export function buildExportRange(fromLocal: string, toLocal: string): BuildExportRangeResult {
+  const from = toRfc3339(fromLocal)
+  if (!from) return { error: '请选择有效的导出起始时间' }
+  const to = toRfc3339(toLocal)
+  if (!to) return { error: '请选择有效的导出截止时间' }
+  const fromMs = Date.parse(from)
+  const toMs = Date.parse(to)
+  if (fromMs > toMs) return { error: '起始时间不能晚于截止时间' }
+  // 判别核心:跨度超 366 天必须先拦(后端 date_range_too_large)。
+  if (toMs - fromMs > EXPORT_MAX_WINDOW_DAYS * 24 * 60 * 60 * 1000) {
+    return { error: `导出时间窗不能超过 ${EXPORT_MAX_WINDOW_DAYS} 天` }
+  }
+  return { from, to }
+}
+
+/** 导出时间窗草稿。 */
+export interface ExportRangeForm {
+  from: string
+  to: string
+}
+
+/** 默认导出窗:近 30 天(到 datetime-local 形态)。 */
+export function defaultExportRange(now: Date): ExportRangeForm {
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+  return { from: fmt(from), to: fmt(now) }
+}
