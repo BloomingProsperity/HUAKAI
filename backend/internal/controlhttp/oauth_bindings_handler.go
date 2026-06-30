@@ -9,10 +9,14 @@ package controlhttp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/telegramauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
@@ -21,12 +25,24 @@ type OAuthBindingLister interface {
 	ListSocialIdentityLinks(ctx context.Context, tenantID, userID int64) ([]userauth.SocialIdentityLink, error)
 }
 
-// OAuthBindingsDeps 是 /v1/users/me/oauth-bindings 路由的依赖。两端点均由 *userauth.Service 满足。
+// VerifiedSocialBinder 把一个已校验的社交身份绑定到已登录用户(「先绑定后登录」的绑定腿),
+// 由 *userauth.Service 实现。接管保护在 service 层(身份已绑他人 → ErrSocialIdentityAlreadyBound)。
+type VerifiedSocialBinder interface {
+	LinkVerifiedSocialIdentity(ctx context.Context, tenantID, userID int64, identity userauth.VerifiedIdentity) (userauth.User, error)
+}
+
+// OAuthBindingsDeps 是 /v1/users/me/oauth-bindings 路由的依赖。列表/解绑由 *userauth.Service 满足。
 type OAuthBindingsDeps struct {
 	// Bindings 列出本人绑定(只读)。nil = 列表端点未配置。
 	Bindings OAuthBindingLister
 	// SocialLinks 解绑(末位登录方式保护在 service 层)。nil = 解绑端点未配置。
 	SocialLinks AuthSocialLinkService
+	// TelegramBinder 绑定 telegram 身份到本人。nil 或 TelegramBotToken 为空 = telegram 绑定端点未启用。
+	TelegramBinder VerifiedSocialBinder
+	// TelegramBotToken 是 Telegram Login Widget 的 HMAC 校验密钥(来自 env,与登录端点同源)。空 = 关闭绑定。
+	TelegramBotToken string
+	// TelegramWidgetMaxAge 是 widget auth_date 的最大有效期;<=0 时由 verifier 取默认 24h。
+	TelegramWidgetMaxAge time.Duration
 }
 
 // oauthBindingResponse 是单条绑定的出网 DTO。subject 已在 service 层脱敏;不含上游 OAuth token。
@@ -41,6 +57,47 @@ type oauthBindingResponse struct {
 func MountOAuthBindingsRoutes(r chi.Router, d OAuthBindingsDeps) {
 	r.Get("/", newOAuthBindingsListHandler(d))
 	r.Delete("/{provider}", newOAuthBindingsUnlinkHandler(d))
+	// 绑定 telegram(「先绑定后登录」的绑定腿):已登录用户用 Telegram Login Widget 回传数据绑定自己的
+	// telegram 身份;绑定后才能在登录页用 telegram 直接登录(见 userauth.applyVerifiedSocialIdentity 既有绑定优先)。
+	r.Post("/telegram", newOAuthBindingsTelegramHandler(d))
+}
+
+// oauthBindingsTelegramRequest 是绑定 telegram 的请求体。params 即 Telegram Login Widget 回传的字段集
+// (id/first_name/last_name/username/photo_url/auth_date/hash);tenant/user 绝不取自请求体,只取 session。
+type oauthBindingsTelegramRequest struct {
+	Params map[string]string `json:"params"`
+}
+
+func newOAuthBindingsTelegramHandler(d OAuthBindingsDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.TelegramBinder == nil || strings.TrimSpace(d.TelegramBotToken) == "" {
+			controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "telegram binding not configured")
+			return
+		}
+		ident, ok := authMeSessionIdentity(w, r)
+		if !ok {
+			return
+		}
+		var req oauthBindingsTelegramRequest
+		defer r.Body.Close()
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			controlWriteJSONError(w, http.StatusBadRequest, "invalid_telegram_binding_request", "invalid JSON body")
+			return
+		}
+		// 服务端用 bot token HMAC 校验 widget 数据;客户端传来的任何字段都不被信任(信任靠签名)。
+		identity, err := telegramauth.VerifyWidget(req.Params, d.TelegramBotToken, time.Now(), d.TelegramWidgetMaxAge)
+		if err != nil {
+			// 校验失败统一按 social_identity_verification_failed(401)处理,不回显细节。
+			writeAuthSocialLinkError(w, userauth.ErrSocialLoginRejected)
+			return
+		}
+		// tenant/user 取自 session;接管保护(已绑他人 → 409)在 service 层。
+		if _, err := d.TelegramBinder.LinkVerifiedSocialIdentity(r.Context(), ident.TenantID, ident.UserID, identity); err != nil {
+			writeAuthSocialLinkError(w, err)
+			return
+		}
+		controlWriteJSON(w, http.StatusOK, map[string]any{"status": "bound", "provider": userauth.SocialProviderTelegram})
+	}
 }
 
 func newOAuthBindingsListHandler(d OAuthBindingsDeps) http.HandlerFunc {

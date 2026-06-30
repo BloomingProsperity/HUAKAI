@@ -167,9 +167,10 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	if tenantID <= 0 || provider == "" || subject == "" || email == "" {
 		return User{}, ErrInvalidInput
 	}
-	if !identity.EmailVerified {
-		return User{}, ErrOAuthPendingEmailRequired
-	}
+	// 既有绑定优先:一个已建立的社交身份是受信凭证,直接登录——不受本次身份是否带已验证邮箱影响。
+	// 邮箱门(下方)只为防「用未验证邮箱 link 到既有真实账号」的接管,对已绑定身份不适用。
+	// 这同时修复了原先「邮箱门在查绑定之前」导致已绑定的无邮箱身份(telegram/QQ,EmailVerified 恒 false)
+	// 永远登不进的顺序缺陷——「先绑定后登录」模型的关键前提。
 	if user, err := s.Store.GetUserBySocialIdentity(ctx, tenantID, provider, subject); err == nil {
 		if err := ensureSocialLoginUserAllowed(user, s.now()); err != nil {
 			return User{}, err
@@ -177,6 +178,11 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 		return user, nil
 	} else if err != nil && !errors.Is(err, ErrUserNotFound) {
 		return User{}, err
+	}
+	// 全新身份(无既有绑定):邮箱门拦下无已验证邮箱的源(telegram/QQ 等)。在「先绑定后登录」模型下,
+	// 这类源须先由已登录用户在设置里绑定,未绑定不能凭空建号/登录。
+	if !identity.EmailVerified {
+		return User{}, ErrOAuthPendingEmailRequired
 	}
 	existing, err := s.Store.GetUserByEmail(ctx, tenantID, email)
 	if err == nil {
@@ -225,6 +231,53 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	}
 	s.issueSignupCredits(ctx, linkedUser.TenantID, linkedUser.ID, false)
 	return linkedUser, nil
+}
+
+// LinkVerifiedSocialIdentity 把一个已校验的社交身份(provider+subject)绑定到指定的已登录用户。
+// 「先绑定后登录」模型的绑定腿:无已验证邮箱的社交源(telegram/QQ 等)不能凭空建号,只能由已登录用户
+// 在设置里主动绑定;绑定后再走 telegram-login 等端点凭既有绑定直接登录(见 applyVerifiedSocialIdentity
+// 的既有绑定优先分支)。
+//
+// 调用方必须先用对应的 verifier(如 telegramauth.VerifyWidget)校验出可信的 identity,本方法不做凭证校验,
+// 只负责「把已校验身份安全地落成本人绑定」。tenant/user 必须取自 session,绝不取自请求体。
+//
+// 接管保护:该 subject 已绑到「另一个」用户 → ErrSocialIdentityAlreadyBound;已绑到「本人」→ 幂等成功。
+// 账号须存在且允许登录(banned/inactive 会被 ensureSocialLoginUserAllowed 拒)。
+func (s *Service) LinkVerifiedSocialIdentity(ctx context.Context, tenantID, userID int64, identity VerifiedIdentity) (User, error) {
+	if s == nil || s.Store == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	provider := normalizeSocialProvider(identity.Provider)
+	subject := strings.TrimSpace(identity.Subject)
+	if tenantID <= 0 || userID <= 0 || provider == "" || subject == "" {
+		return User{}, ErrInvalidInput
+	}
+	var linked User
+	err := s.withStoreTx(ctx, func(store Store) error {
+		user, err := store.GetUserByID(ctx, tenantID, userID)
+		if err != nil {
+			return err
+		}
+		if err := ensureSocialLoginUserAllowed(user, s.now()); err != nil {
+			return err
+		}
+		// 接管保护:subject 已绑到他人则拒;已绑到本人则幂等(直接当成功)。
+		existing, err := store.GetUserBySocialIdentity(ctx, tenantID, provider, subject)
+		switch {
+		case err == nil:
+			if existing.ID != userID {
+				return ErrSocialIdentityAlreadyBound
+			}
+		case !errors.Is(err, ErrUserNotFound):
+			return err
+		}
+		linked, err = store.LinkSocialIdentity(ctx, tenantID, userID, provider, subject)
+		return err
+	})
+	if err != nil {
+		return User{}, err
+	}
+	return linked, nil
 }
 
 type socialIdentityUnlinkStore interface {

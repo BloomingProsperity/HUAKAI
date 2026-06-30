@@ -33,6 +33,7 @@ const BACKEND_KEYS: string[] = [
   'captcha_provider',
   'captcha_site_key',
   'oauth_providers_enabled',
+  'telegram_bot_username',
   'promo_enabled',
   'stream_timeout_seconds',
   'cooldown_429_seconds',
@@ -88,7 +89,7 @@ describe('TAB_GROUPS 分签全覆盖', () => {
     const grouped = groupedKeys()
     expect(new Set(grouped).size).toBe(grouped.length) // 无重复
     expect(new Set(grouped)).toEqual(new Set(BACKEND_KEYS)) // 不漏不多
-    expect(grouped.length).toBe(55)
+    expect(grouped.length).toBe(56)
   })
 
   it('正好 9 个分签且 key 唯一', () => {

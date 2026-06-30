@@ -83,6 +83,36 @@ func TestVerifyWidgetRejectsExpiredAuthDate(t *testing.T) {
 	}
 }
 
+// TestVerifyWidgetRejectsFutureAuthDate 锁定 HUAKAI 相对借鉴项目的算法升级点:未来时间戳拒绝。
+// new-api 的 checkTelegramAuthorization 只校验 HMAC、对 auth_date 不做任何时间判断,
+// 因此一个 auth_date 在未来的(被时钟偏移或伪造的)payload 只要 HMAC 对就被接受;
+// HUAKAI 额外拒绝「auth_date 晚于 now 一分钟以上」的 payload。
+// 变异:删 telegramauth.go 里 authTime.After(now.Add(time.Minute)) 这条守卫 → 本用例放行,断言红。
+func TestVerifyWidgetRejectsFutureAuthDate(t *testing.T) {
+	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	// auth_date 在 now 之后 10 分钟:HMAC 仍由测试用真 token 正确签出,唯一的拒绝理由是未来戳。
+	params := signedTelegramWidgetParams("123456:bot-secret", map[string]string{
+		"id":        "424242",
+		"username":  "ada_dev",
+		"auth_date": strconv.FormatInt(now.Add(10*time.Minute).Unix(), 10),
+	})
+
+	if _, err := VerifyWidget(params, "123456:bot-secret", now, 24*time.Hour); err == nil {
+		t.Fatal("VerifyWidget 接受了 auth_date 在未来的 payload(应拒绝,防时钟偏移/伪造)")
+	}
+
+	// 判别性自证:同一构造、把 auth_date 拉回当下 → 必须接受。证明拒绝的是「未来戳」这一维度,
+	// 而非构造本身有问题(否则就是恒拒的非判别测试)。
+	okParams := signedTelegramWidgetParams("123456:bot-secret", map[string]string{
+		"id":        "424242",
+		"username":  "ada_dev",
+		"auth_date": strconv.FormatInt(now.Unix(), 10),
+	})
+	if _, err := VerifyWidget(okParams, "123456:bot-secret", now, 24*time.Hour); err != nil {
+		t.Fatalf("当下时间戳应被接受,得 err=%v", err)
+	}
+}
+
 func signedTelegramWidgetParams(botToken string, params map[string]string) map[string]string {
 	out := make(map[string]string, len(params)+1)
 	for k, v := range params {

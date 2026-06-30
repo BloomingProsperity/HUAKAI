@@ -101,13 +101,24 @@ export interface AuthAffordances {
   showRegister: boolean
   /** 是否显示社交登录按钮行。 */
   showOauth: boolean
-  /** 要渲染的社交 provider 列表。 */
+  /** 要渲染为 oauth-init 跳转按钮的社交 provider 列表(已排除 telegram —— 它走 Login Widget 不走 oauth-init)。 */
   oauthProviders: string[]
+  /** 是否渲染 Telegram Login Widget(运营启用 telegram 且配了公开 bot 用户名才可渲染)。 */
+  telegramLogin: boolean
+  /** Telegram 公开 bot 用户名(渲染 widget 用);telegramLogin 为 false 时无意义。 */
+  telegramBotUsername: string
   /** 是否显示通行密钥登录按钮。 */
   showPasskey: boolean
   /** 是否需要渲染人机验证。 */
   showCaptcha: boolean
 }
+
+/**
+ * telegram 走 Telegram Login Widget(独立端点 /v1/auth/telegram-login),不走 oauth-init 跳转。
+ * 故从 oauth-init 按钮列表里排除,避免渲染一个点了必然报错(后端 oauth-init 不认 telegram)的按钮。
+ * telegram 登录入口由专门的 widget 组件提供;且在「先绑定后登录」模型下,需用户先在设置里绑定。
+ */
+export const TELEGRAM_PROVIDER = 'telegram'
 
 /**
  * 从 SiteConfig 派生页面入口可见性。每项独立门控:
@@ -118,12 +129,18 @@ export interface AuthAffordances {
  *  - captcha:captcha_enabled 才渲染。
  */
 export function deriveAffordances(cfg: SiteConfig): AuthAffordances {
+  // oauth-init 按钮列表排除 telegram(它走 widget,不走 oauth-init,渲染成按钮点了必报错)。
+  const oauthInitProviders = cfg.oauthProviders.filter((p) => p !== TELEGRAM_PROVIDER)
+  // telegram 登录 widget:运营启用 telegram 且配了公开 bot 用户名才可渲染。
+  const telegramLogin = cfg.oauthProviders.includes(TELEGRAM_PROVIDER) && cfg.telegramBotUsername.length > 0
   return {
     showPasswordLogin: cfg.passwordLoginEnabled,
     // 判别核心:注册入口需"总开关 registration_enabled"与"密码注册 password_register_enabled"同时为真。
     showRegister: cfg.registrationEnabled && cfg.passwordRegisterEnabled,
-    showOauth: cfg.oauthProviders.length > 0,
-    oauthProviders: cfg.oauthProviders,
+    showOauth: oauthInitProviders.length > 0,
+    oauthProviders: oauthInitProviders,
+    telegramLogin,
+    telegramBotUsername: cfg.telegramBotUsername,
     showPasskey: cfg.passkeyEnabled,
     showCaptcha: cfg.captchaEnabled,
   }

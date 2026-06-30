@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
+  bindTelegram,
   changePassword,
   deletePasskey,
   deleteSelf,
@@ -16,6 +17,8 @@ import {
   unlinkOAuthBinding,
   updateProfile,
 } from './api'
+import { fetchSiteConfig, FALLBACK_SITE_CONFIG, type SiteConfig } from '../../auth/siteConfig'
+import { TelegramLoginWidget } from '../../auth/TelegramLoginWidget'
 import {
   buildChangePassword,
   EMPTY_CHANGE_PASSWORD,
@@ -487,6 +490,15 @@ function BindingsCard() {
   const [flash, setFlash] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
+  // 站点配置:取 telegram bot 用户名 + 是否启用 telegram,用于决定是否渲染「绑定 Telegram」widget。
+  const [site, setSite] = useState<SiteConfig>(FALLBACK_SITE_CONFIG)
+  useEffect(() => {
+    let alive = true
+    fetchSiteConfig()
+      .then((c) => { if (alive) setSite(c) })
+      .catch(() => { /* 取站点配置失败则不渲染 telegram 绑定,不影响其余绑定管理 */ })
+    return () => { alive = false }
+  }, [])
 
   const load = useCallback((signal: AbortSignal) => {
     setLoading(true)
@@ -524,6 +536,30 @@ function BindingsCard() {
     }
   }
 
+  // 绑定 Telegram(「先绑定后登录」):widget onauth → bind 端点 → 刷新列表。
+  const onBindTelegram = async (params: Record<string, string>) => {
+    setBusy('telegram')
+    setError(null)
+    setFlash(null)
+    try {
+      await bindTelegram(params)
+      setFlash('已绑定 Telegram,现在可以在登录页用 Telegram 直接登录了。')
+      setRefreshNonce((n) => n + 1)
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'social_identity_already_bound') {
+        setError('这个 Telegram 账号已被其他账户绑定,无法重复绑定。')
+      } else {
+        setError(errMsg(e, '绑定 Telegram 失败'))
+      }
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // 渲染绑定入口的条件:运营启用 telegram + 配了公开 bot 用户名 + 本人尚未绑定 telegram。
+  const telegramEnabled = site.oauthProviders.includes('telegram') && site.telegramBotUsername.length > 0
+  const telegramBound = items.some((b) => b.provider === 'telegram')
+
   return (
     <Card title="社交账号绑定">
       <p style={hint}>已绑定的第三方登录方式。无法解绑唯一的登录方式。</p>
@@ -548,6 +584,13 @@ function BindingsCard() {
               </button>
             </div>
           ))}
+        </div>
+      )}
+      {/* 绑定 Telegram(先绑定后登录):仅在运营启用 telegram 且本人尚未绑定时显示官方 Login Widget。 */}
+      {telegramEnabled && !telegramBound && (
+        <div style={{ marginTop: 'var(--hk-space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+          <p style={hint}>绑定 Telegram 后,即可在登录页用 Telegram 直接登录。</p>
+          <TelegramLoginWidget botUsername={site.telegramBotUsername} onAuth={onBindTelegram} />
         </div>
       )}
     </Card>

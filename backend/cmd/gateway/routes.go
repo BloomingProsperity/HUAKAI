@@ -291,6 +291,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		controlhttp.MountOAuthBindingsRoutes(r, controlhttp.OAuthBindingsDeps{
 			Bindings:    d.userAuth,
 			SocialLinks: d.userAuth,
+			// telegram 绑定腿(「先绑定后登录」):已登录用户绑定自己的 telegram 身份。
+			// bot token 与登录端点同源(env),空则绑定端点降级为 503。
+			TelegramBinder:   d.userAuth,
+			TelegramBotToken: strings.TrimSpace(os.Getenv("HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN")),
 		})
 	})
 	paymentDeps := paymenthttp.Deps{Service: d.paymentService, Providers: d.paymentProviders}

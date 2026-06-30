@@ -210,6 +210,10 @@ func writeAuthSocialLinkError(w http.ResponseWriter, err error) {
 		controlWriteJSONError(w, http.StatusBadRequest, "invalid_account_binding", "account binding request is invalid")
 	case errors.Is(err, userauth.ErrLastLoginMethod):
 		controlWriteJSONError(w, http.StatusConflict, "last_login_method", "cannot remove the last login method")
+	case errors.Is(err, userauth.ErrSocialIdentityAlreadyBound):
+		controlWriteJSONError(w, http.StatusConflict, "social_identity_already_bound", "this social account is already bound to another user")
+	case errors.Is(err, userauth.ErrSocialLoginRejected):
+		controlWriteJSONError(w, http.StatusUnauthorized, "social_identity_verification_failed", "social identity verification failed")
 	case errors.Is(err, userauth.ErrUserNotFound):
 		controlWriteJSONError(w, http.StatusNotFound, "user_not_found", "user was not found")
 	default:

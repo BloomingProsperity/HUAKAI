@@ -106,3 +106,13 @@ export async function listOAuthBindings(signal?: AbortSignal): Promise<OAuthBind
 export async function unlinkOAuthBinding(provider: string): Promise<{ unlinked: boolean }> {
   return apiSend<{ unlinked: boolean }>('DELETE', `/v1/users/me/oauth-bindings/${encodeURIComponent(provider)}`, {})
 }
+
+/**
+ * 绑定 Telegram(「先绑定后登录」的绑定腿):把 Telegram Login Widget 回传的 params 提交到
+ * POST /v1/users/me/oauth-bindings/telegram(session 鉴权,tokenForPath 自动注入 session token)。
+ * 后端用 bot token HMAC 校验 widget 数据并绑到本人;身份已被他人绑定 → 409 social_identity_already_bound。
+ * 绑定成功后即可在登录页用 Telegram 直接登录。
+ */
+export async function bindTelegram(params: Record<string, string>): Promise<{ status: string; provider: string }> {
+  return apiSend<{ status: string; provider: string }>('POST', '/v1/users/me/oauth-bindings/telegram', { params })
+}

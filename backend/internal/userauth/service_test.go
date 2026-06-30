@@ -744,6 +744,103 @@ func TestApplyVerifiedSocialIdentityRejectsTelegramSyntheticEmailPendingVerifica
 	}
 }
 
+// TestApplyVerifiedSocialIdentityBoundEmaillessLogsIn 锁定「先绑定后登录」的关键 reorder:
+// 一个已绑定的无邮箱社交身份(telegram,EmailVerified 恒 false)再次登录时,必须凭既有绑定直接登录、
+// 拿到本人用户,而不是被邮箱门拦成 pending-email。
+// 变异(把既有绑定查询改回邮箱门之后,即旧顺序)→ 已绑定的 telegram 身份会先撞 !EmailVerified 返回
+// ErrOAuthPendingEmailRequired,本测试第一处断言 RED——正是修掉的「连已绑定用户都登不进」顺序缺陷。
+func TestApplyVerifiedSocialIdentityBoundEmaillessLogsIn(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 9, 30, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+
+	// 先有一个真实账号(邮箱+密码),并已把 telegram 身份绑到它(模拟「先绑定」那一步已完成)。
+	user, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: 1, Email: "bound@example.test", DisplayName: "Bound",
+		PasswordHash: "argon2id-test-hash", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.LinkSocialIdentity(ctx, 1, user.ID, SocialProviderTelegram, "tg-bound-1"); err != nil {
+		t.Fatalf("LinkSocialIdentity: %v", err)
+	}
+
+	// 现在用同一 telegram 身份「登录」(widget 恒 EmailVerified:false)。应直接登录到本人,而非 pending。
+	got, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
+		Provider:      SocialProviderTelegram,
+		Subject:       "tg-bound-1",
+		Email:         SyntheticOAuthEmail(SocialProviderTelegram, "tg-bound-1"),
+		EmailVerified: false,
+	})
+	if err != nil {
+		t.Fatalf("已绑定 telegram 身份登录应成功,得 err=%v", err)
+	}
+	if got.ID != user.ID {
+		t.Fatalf("登录返回的用户=%d,应为已绑定的本人 %d", got.ID, user.ID)
+	}
+
+	// 判别性对照:未绑定的 telegram 身份(不同 subject)仍必须被邮箱门拦成 pending、不建号。
+	if _, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
+		Provider: SocialProviderTelegram, Subject: "tg-unbound-9",
+		Email: SyntheticOAuthEmail(SocialProviderTelegram, "tg-unbound-9"), EmailVerified: false,
+	}); !errors.Is(err, ErrOAuthPendingEmailRequired) {
+		t.Fatalf("未绑定 telegram 身份 err=%v,应 ErrOAuthPendingEmailRequired", err)
+	}
+}
+
+// TestLinkVerifiedSocialIdentity 锁定绑定腿的两条不变量:幂等 + 接管保护。
+func TestLinkVerifiedSocialIdentity(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+
+	alice, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: 1, Email: "alice@example.test", PasswordHash: "h", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser alice: %v", err)
+	}
+	bob, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: 1, Email: "bob@example.test", PasswordHash: "h", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser bob: %v", err)
+	}
+	tgIdentity := VerifiedIdentity{
+		Provider: SocialProviderTelegram, Subject: "tg-777",
+		Email: SyntheticOAuthEmail(SocialProviderTelegram, "tg-777"), EmailVerified: false,
+	}
+
+	// alice 首次绑定成功,且之后能凭该绑定登录到 alice。
+	if _, err := svc.LinkVerifiedSocialIdentity(ctx, 1, alice.ID, tgIdentity); err != nil {
+		t.Fatalf("alice 绑定应成功,得 err=%v", err)
+	}
+	loggedIn, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, tgIdentity)
+	if err != nil || loggedIn.ID != alice.ID {
+		t.Fatalf("绑定后凭 telegram 登录应到 alice,得 user=%d err=%v", loggedIn.ID, err)
+	}
+
+	// 幂等:alice 再绑同一身份不报错。
+	if _, err := svc.LinkVerifiedSocialIdentity(ctx, 1, alice.ID, tgIdentity); err != nil {
+		t.Fatalf("alice 重复绑定应幂等成功,得 err=%v", err)
+	}
+
+	// 接管保护:bob 试图绑 alice 已占用的同一 telegram 身份 → 必须拒。
+	// 变异(去掉 existing.ID != userID 的拒绝)→ bob 抢绑成功,本断言 RED(账号接管漏洞)。
+	if _, err := svc.LinkVerifiedSocialIdentity(ctx, 1, bob.ID, tgIdentity); !errors.Is(err, ErrSocialIdentityAlreadyBound) {
+		t.Fatalf("bob 抢绑他人已占身份 err=%v,应 ErrSocialIdentityAlreadyBound", err)
+	}
+	// 抢绑被拒后,该身份仍归 alice。
+	if owner, err := store.GetUserBySocialIdentity(ctx, 1, SocialProviderTelegram, "tg-777"); err != nil || owner.ID != alice.ID {
+		t.Fatalf("接管被拒后身份应仍归 alice,得 owner=%d err=%v", owner.ID, err)
+	}
+}
+
 func TestApplyVerifiedSocialIdentityScopesNewProvidersByTenant(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 3, 9, 30, 0, 0, time.UTC)
