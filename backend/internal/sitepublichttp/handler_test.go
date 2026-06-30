@@ -11,10 +11,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
-// expectedFieldCount 是公开投射的精确尺寸:tenant_id + 8 个布尔 + 13 个字符串。
+// expectedFieldCount 是公开投射的精确尺寸:tenant_id + 8 个布尔 + 14 个字符串
+// (14 含新增的 telegram_bot_username 公开 bot 用户名)。
 // 它被直接断言,这样在 handler 加了 key 却没更新本测试(或反之)时就能被抓到,
 // 也让 CMB-5 泄漏测试能够证明「没有多余的 key 混进来」。
-const expectedFieldCount = 1 + 8 + 13
+const expectedFieldCount = 1 + 8 + 14
 
 // stubSettings 提供预设的 setting 值;缺失的 key 回退到编译期默认值,
 // 与真实 Service 在 DB-miss 时的行为完全一致。
@@ -82,6 +83,7 @@ func TestSiteConfigProjectsCompiledDefaults(t *testing.T) {
 		"passkey_rp_id":           "",
 		"passkey_rp_display_name": "HUAKAI",
 		"oauth_providers_enabled": "",
+		"telegram_bot_username":   "",
 		"site_name":               "HUAKAI",
 		"site_logo":               "",
 		"site_footer":             "",
@@ -166,6 +168,25 @@ func TestSiteConfigProjectsExtendedBranding(t *testing.T) {
 		if got, ok := body[field].(string); !ok || got != want {
 			t.Fatalf("%s=%v (%T) want %q", field, body[field], body[field], want)
 		}
+	}
+}
+
+// T2c:公开 Telegram bot 用户名必须从 store 原样投射,匿名前端才能据此渲染 Login Widget。
+// 变异:从 handler 的 stringKeys 删掉 telegram_bot_username 这一项,该字段回退到空默认值,
+// 断言失败。这是 telegram 登录前端能接线的前提(前端拿不到 username 就渲染不出 widget)。
+func TestSiteConfigProjectsTelegramBotUsername(t *testing.T) {
+	rec := serveSiteConfig(t, Deps{
+		Settings: stubSettings{values: map[platformsettings.SettingKey]string{
+			platformsettings.KeyTelegramBotUsername: "HuakaiLoginBot",
+		}},
+		TenantID: 1,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeSiteConfig(t, rec)
+	if got, ok := body["telegram_bot_username"].(string); !ok || got != "HuakaiLoginBot" {
+		t.Fatalf("telegram_bot_username=%v (%T) want HuakaiLoginBot", body["telegram_bot_username"], body["telegram_bot_username"])
 	}
 }
 

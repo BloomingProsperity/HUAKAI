@@ -4602,6 +4602,51 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/users/me/oauth-bindings/telegram:
+    post:
+      tags: [auth]
+      summary: Bind a verified Telegram identity to the authenticated user (bind-then-login)
+      operationId: bindUserTelegramIdentity
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/oauth_bindings_handler.go
+        - backend/internal/telegramauth/telegramauth.go
+        - backend/internal/userauth/social_login.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Binds the Telegram Login Widget payload to the authenticated user's account
+        ("bind-then-login" model). The server verifies the widget data with the bot
+        token (HMAC-SHA256) and links the verified telegram subject to the session
+        tenant/user. Takeover protection: a subject already bound to another user is
+        rejected (409 social_identity_already_bound). Requires the bot token to be
+        configured server-side; otherwise 503.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [params]
+              properties:
+                params:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: Telegram Login Widget fields (id/auth_date/hash/...).
+      responses:
+        '200':
+          description: Telegram identity bound to the authenticated user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  provider: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/logout:
     post:
       tags: [auth]

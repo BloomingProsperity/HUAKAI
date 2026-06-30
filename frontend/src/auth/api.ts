@@ -178,6 +178,25 @@ export async function completeOAuth(
   return { kind: 'ok', tokens: tokensFromSession(body.session), user: normUser(body.user) }
 }
 
+/**
+ * Telegram 登录(凭既有绑定):POST /v1/auth/telegram-login {tenant_id, params, device_info?}
+ * → {user, session}。params 是 Telegram Login Widget 回传的字段集;后端用 bot token HMAC 校验,
+ * 并在「先绑定后登录」模型下凭既有绑定登录(未绑定的 telegram 身份会被后端拒/挂起,前端按错误提示引导先绑定)。
+ * 公开端点(/v1/auth/*),不带 token;身份凭证就是 widget 数据本身的 HMAC 签名。
+ */
+export async function telegramLogin(
+  tenantId: number,
+  params: Record<string, string>,
+  deviceInfo?: Record<string, unknown>,
+): Promise<LoginResult> {
+  const body = await apiSend<LoginSuccess>('POST', '/v1/auth/telegram-login', {
+    tenant_id: tenantId,
+    params,
+    device_info: deviceInfo,
+  })
+  return { kind: 'ok', tokens: tokensFromSession(body.session), user: normUser(body.user) }
+}
+
 /** passkey login begin 响应(passkey.BeginResponse:session_id + public_key(WebAuthn 选项 JSON))。 */
 export interface PasskeyLoginBegin {
   session_id: string

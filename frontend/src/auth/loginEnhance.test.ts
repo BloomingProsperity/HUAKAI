@@ -100,6 +100,21 @@ describe('deriveAffordances', () => {
     expect(deriveAffordances(parseSiteConfig({ oauth_providers_enabled: 'github' })).showOauth).toBe(true)
     expect(deriveAffordances(parseSiteConfig({})).showOauth).toBe(false)
   })
+  it('telegram 从 oauth-init 按钮列表排除(它走 widget,渲染成按钮点了必报错)', () => {
+    // 判别核心:telegram 绝不能进 oauthProviders(那会渲染一个调 oauth-init 的坏按钮)。
+    // 变异(deriveAffordances 不 filter telegram)→ telegram 出现在 oauthProviders,本断言 RED。
+    const af = deriveAffordances(parseSiteConfig({ oauth_providers_enabled: 'github,telegram' }))
+    expect(af.oauthProviders).toEqual(['github'])
+    expect(af.oauthProviders).not.toContain('telegram')
+    // 只有 telegram 时,oauth-init 按钮行不显示(没有可跳转的 provider)。
+    expect(deriveAffordances(parseSiteConfig({ oauth_providers_enabled: 'telegram' })).showOauth).toBe(false)
+  })
+  it('telegram 登录 widget 需 telegram∈providers 且有公开 bot_username', () => {
+    // 判别核心:两个条件 AND。变异(只看 providers 不看 username)→ 无 username 时误判可渲染 → RED。
+    expect(deriveAffordances(parseSiteConfig({ oauth_providers_enabled: 'telegram', telegram_bot_username: 'HuakaiBot' })).telegramLogin).toBe(true)
+    expect(deriveAffordances(parseSiteConfig({ oauth_providers_enabled: 'telegram' })).telegramLogin).toBe(false)
+    expect(deriveAffordances(parseSiteConfig({ telegram_bot_username: 'HuakaiBot' })).telegramLogin).toBe(false)
+  })
   it('passkey 按钮随 passkey_enabled', () => {
     expect(deriveAffordances(parseSiteConfig({ passkey_enabled: true })).showPasskey).toBe(true)
     expect(deriveAffordances(parseSiteConfig({})).showPasskey).toBe(false)

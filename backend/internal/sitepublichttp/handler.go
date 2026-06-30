@@ -60,6 +60,9 @@ var stringKeys = []struct {
 	{"passkey_rp_id", platformsettings.KeyPasskeyRPID},
 	{"passkey_rp_display_name", platformsettings.KeyPasskeyRPDisplayName},
 	{"oauth_providers_enabled", platformsettings.KeyOAuthProvidersEnabled},
+	// telegram_bot_username 是 Telegram Login Widget 渲染所需的公开 bot 用户名(t.me/<name>),
+	// 非密钥。bot token 是密钥,只走 env,从不进入本投射面。
+	{"telegram_bot_username", platformsettings.KeyTelegramBotUsername},
 	{"site_name", platformsettings.KeySiteName},
 	{"site_logo", platformsettings.KeySiteLogo},
 	{"site_footer", platformsettings.KeySiteFooter},

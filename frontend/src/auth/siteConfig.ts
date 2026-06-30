@@ -30,6 +30,8 @@ export interface RawSiteConfig {
   passkey_rp_display_name?: string
   /** 逗号分隔字符串或字符串数组,二者都接受。 */
   oauth_providers_enabled?: string | string[]
+  /** Telegram Login Widget 渲染所需的公开 bot 用户名(t.me/<name>);非密钥。空=未配置。 */
+  telegram_bot_username?: string
   site_name?: string
   site_logo?: string
   site_footer?: string
@@ -60,6 +62,8 @@ export interface SiteConfig {
   promoEnabled: boolean
   /** 启用的社交登录 provider 列表(已去空白/去重/小写归一)。 */
   oauthProviders: string[]
+  /** Telegram Login Widget 的公开 bot 用户名(t.me/<name>);空=未配置,不渲染 telegram 绑定/登录入口。 */
+  telegramBotUsername: string
   /** 品牌/法律链接(用于条款、文档入口);缺省为空串。 */
   siteName: string
   siteDocUrl: string
@@ -119,6 +123,7 @@ export function parseSiteConfig(raw: RawSiteConfig | null | undefined): SiteConf
     // promo 行为保持:仅显式 false 才关闭(同 passwordLoginEnabled 思路),与后端门控一致。
     promoEnabled: r.promo_enabled !== false,
     oauthProviders: parseOauthProviders(r.oauth_providers_enabled),
+    telegramBotUsername: asStr(r.telegram_bot_username),
     siteName: asStr(r.site_name),
     siteDocUrl: asStr(r.site_doc_url),
   }

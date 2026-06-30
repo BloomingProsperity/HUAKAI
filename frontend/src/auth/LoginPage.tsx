@@ -8,8 +8,10 @@ import {
   passkeyLoginBegin,
   passkeyLoginFinish,
   register,
+  telegramLogin,
   validateInvitationCode,
 } from './api'
+import { TelegramLoginWidget } from './TelegramLoginWidget'
 import { setAdminToken, setSessionTokens, useAuth, type AuthUser } from './store'
 import { fetchSiteConfig, FALLBACK_SITE_CONFIG, type SiteConfig } from './siteConfig'
 import {
@@ -221,6 +223,31 @@ export function LoginPage() {
     }
   }
 
+  // ===== 增强:Telegram 登录(凭既有绑定;widget onauth → telegram-login → setSessionTokens) =====
+  // 「先绑定后登录」:未绑定的 telegram 身份后端会拒/挂起,这里把错误翻成「请先登录后在设置里绑定」。
+  const onTelegramAuth = async (params: Record<string, string>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await telegramLogin(tid(), params, { device: 'browser' })
+      if (r.kind !== 'ok') {
+        setError('Telegram 登录返回异常')
+        return
+      }
+      setSessionTokens(r.tokens, r.user ?? undefined)
+      nav('/', { replace: true })
+    } catch (e) {
+      // 未绑定/待补邮箱:引导用户先用其它方式登录再到设置里绑定 Telegram。
+      if (e instanceof ApiError && e.code === 'oauth_pending_email_required') {
+        setError('这个 Telegram 账号还没绑定到任何账户。请先用邮箱或其它方式登录,在「设置」里绑定 Telegram 后再用它登录。')
+        return
+      }
+      setError(authErr(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const passkeyAvailable = af.showPasskey && webAuthnSupported()
 
   return (
@@ -350,7 +377,7 @@ export function LoginPage() {
         )}
 
         {/* 增强:社交登录 + 通行密钥(仅登录态,且后端开启对应能力时) */}
-        {mode === 'login' && (af.showOauth || af.showPasskey) && (
+        {mode === 'login' && (af.showOauth || af.showPasskey || af.telegramLogin) && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)', marginTop: 'var(--hk-space-2)' }}>
             <Divider>或使用其他方式</Divider>
             {af.showOauth && (
@@ -361,6 +388,10 @@ export function LoginPage() {
                   </button>
                 ))}
               </div>
+            )}
+            {/* Telegram 登录走官方 Login Widget(凭既有绑定登录);需后端配 bot username。 */}
+            {af.telegramLogin && (
+              <TelegramLoginWidget botUsername={af.telegramBotUsername} onAuth={onTelegramAuth} />
             )}
             {af.showPasskey && (
               <button

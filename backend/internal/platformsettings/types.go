@@ -33,6 +33,10 @@ const (
 	KeyCaptchaProvider                SettingKey = "captcha_provider"
 	KeyCaptchaSiteKey                 SettingKey = "captcha_site_key"
 	KeyOAuthProvidersEnabled          SettingKey = "oauth_providers_enabled"
+	// KeyTelegramBotUsername 是 Telegram Login Widget 渲染所需的**公开** bot 用户名
+	//(即 t.me/<name> 里那个名,绝非密钥)。bot token 是密钥,只走 env,永不入此处。
+	// 空值 = 关闭 Telegram 登录入口(配合 oauth_providers_enabled 含 telegram 才渲染按钮)。
+	KeyTelegramBotUsername            SettingKey = "telegram_bot_username"
 	KeyPromoEnabled                   SettingKey = "promo_enabled"
 	KeyStreamTimeoutSeconds           SettingKey = "stream_timeout_seconds"
 	KeyCooldown429Seconds             SettingKey = "cooldown_429_seconds"
@@ -91,7 +95,7 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeyAdminNotificationEmail}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyTelegramBotUsername, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeyAdminNotificationEmail}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -106,6 +110,7 @@ var (
 		KeyCaptchaProvider:                "",
 		KeyCaptchaSiteKey:                 "",
 		KeyOAuthProvidersEnabled:          "",
+		KeyTelegramBotUsername:            "",
 		KeyPromoEnabled:                   "true",
 		KeyStreamTimeoutSeconds:           "120",
 		KeyCooldown429Seconds:             "60",
@@ -190,6 +195,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyPasskeyRPID || key == KeySiteSubtitle || key == KeySiteContactInfo {
 		return validateOptionalPublicTextValue(key, value)
 	}
+	if key == KeyTelegramBotUsername {
+		return validateTelegramBotUsernameValue(key, value)
+	}
 	if key == KeyMediaTaskProviderBaseURL || key == KeyModerationExternalBaseURL ||
 		key == KeySiteDocURL || key == KeySiteAPIBaseURL {
 		return validateOptionalHTTPURLValue(key, value)
@@ -262,6 +270,34 @@ func validateOptionalPublicTextValue(key SettingKey, value string) (string, erro
 		return "", nil
 	}
 	return validatePublicTextValue(key, value)
+}
+
+// validateTelegramBotUsernameValue 校验公开的 Telegram bot 用户名(不是密钥,是 t.me/<name>
+// 里那个公开名)。空值 = 关闭 Telegram 登录(安全默认)。为运营便利接受可选前导 "@" 并剥除。
+// 非空时按 Telegram 真实命名约束硬化:仅 ASCII 字母/数字/下划线、长度 5–32、且必须以 "bot"
+// 结尾(大小写不敏感,这是 Telegram bot 账户的强制规则)。这层硬化既挡配置笔误,又确保该值
+// 后续被前端注入 data-telegram-login 属性时不可能携带引号/尖括号等可破坏 HTML 属性的字符
+// (纵深防御 XSS)。借鉴项目 new-api 不做任何校验、原样存。
+func validateTelegramBotUsernameValue(key SettingKey, value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	value = strings.TrimPrefix(value, "@")
+	if len(value) < 5 || len(value) > 32 {
+		return "", fmt.Errorf("%w: %s 长度须为 5–32 个字符", ErrInvalidValue, key)
+	}
+	for _, r := range value {
+		isLower := r >= 'a' && r <= 'z'
+		isUpper := r >= 'A' && r <= 'Z'
+		isDigit := r >= '0' && r <= '9'
+		if !isLower && !isUpper && !isDigit && r != '_' {
+			return "", fmt.Errorf("%w: %s 只允许字母、数字、下划线", ErrInvalidValue, key)
+		}
+	}
+	if !strings.HasSuffix(strings.ToLower(value), "bot") {
+		return "", fmt.Errorf("%w: %s 必须以 \"bot\" 结尾", ErrInvalidValue, key)
+	}
+	return value, nil
 }
 
 // validateOptionalEmailValue 接受空值（让每日巡检 worker 保持关闭的安全默认）

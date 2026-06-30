@@ -160,6 +160,7 @@ export const TAB_GROUPS: SettingsTabGroup[] = [
       { key: 'email_alias_restriction_enabled', label: '限制邮箱别名', hint: '禁止 + 别名等', control: 'bool' },
       { key: 'reserved_email_localparts', label: '保留邮箱前缀', hint: '逗号分隔', control: 'string' },
       { key: 'oauth_providers_enabled', label: '第三方登录开关', hint: 'OAuth provider 配置(JSON)', control: 'json' },
+      { key: 'telegram_bot_username', label: 'Telegram Bot 用户名', hint: '公开 bot 名(t.me/<name>),配合 oauth_providers_enabled 含 telegram 启用 Telegram 登录;bot token 走 env 不在此设', control: 'string' },
     ],
   },
   {
