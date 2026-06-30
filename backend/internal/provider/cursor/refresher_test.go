@@ -233,7 +233,7 @@ func TestCursorRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
 	if got := auth.RefreshAuditOutcomeFromError(err); got != "auth_expired" {
 		t.Fatalf("refresh audit outcome=%q, want auth_expired", got)
 	}
-	wantCalls := []string{"probe", "tx_begin", "lock:71", "reread", "failure:71:auth_expired"}
+	wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:71", "reread", "failure:71:auth_expired"}
 	if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 		t.Fatalf("calls=%v, want %v", calls, wantCalls)
 	}
@@ -274,7 +274,7 @@ type recordingCursorRefreshTx struct {
 }
 
 func (tx *recordingCursorRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:"+strconvInt64(args[0]))
+	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

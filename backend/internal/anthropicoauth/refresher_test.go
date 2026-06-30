@@ -43,7 +43,7 @@ func TestRefresherInvalidGrantRecordsAuthExpiredInRefreshTransaction(t *testing.
 	wantCalls := []string{
 		"probe:101",
 		"tx_begin",
-		"lock:44",
+		"lock:credential_refresh:44",
 		"reread:101",
 		"failure:auth_expired",
 		"audit:credential_refresh_failed:auth_expired",
@@ -287,7 +287,8 @@ func (tx *memoryRefreshTx) SaveRefreshFailure(_ context.Context, _ credentialsto
 }
 
 func (tx *memoryRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	tx.store.calls = append(tx.store.calls, "lock:"+int64String(args[0].(int64)))
+	// 锁键现以单个 text 参数传入(修复 pgx 无法把 int64 编码成 text 的 bug),故按 string 记录。
+	tx.store.calls = append(tx.store.calls, "lock:"+args[0].(string))
 	return pgconn.NewCommandTag("SELECT 1"), nil
 }
 

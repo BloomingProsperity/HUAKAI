@@ -842,9 +842,17 @@ func newSetUserRemarkHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		ai := buildUnlockAuditInput(r, ident, "")
+		// payload 列 NOT NULL(默认 '{}');必须显式给非 NULL payload,否则 INSERT 撞 23502 → 503 且审计丢失。
+		// 记录改后的备注长度(不落原文,备注可能含敏感信息;长度足够审计追踪)。
+		remarkPayload, err := json.Marshal(map[string]any{"remark_length": len([]rune(remark))})
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "audit_payload_failed", err.Error())
+			return
+		}
 		audit := admindb.InsertAdminAuditEventParams{
 			TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole,
 			Action: "set_user_remark", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID,
+			Payload: remarkPayload,
 		}
 		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write remark audit failed: %v", err))

@@ -230,7 +230,7 @@ func TestOpenAICodexRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) 
 			if got := auth.RefreshAuditOutcomeFromError(err); got != tt.want {
 				t.Fatalf("refresh audit outcome=%q, want %q", got, tt.want)
 			}
-			wantCalls := []string{"probe", "tx_begin", "lock:101", "reread", "failure:101:" + tt.want}
+			wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:101", "reread", "failure:101:" + tt.want}
 			if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 				t.Fatalf("calls=%v, want %v", calls, wantCalls)
 			}
@@ -280,7 +280,7 @@ type recordingOpenAICodexRefreshTx struct {
 }
 
 func (tx *recordingOpenAICodexRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:"+strconvInt64(args[0]))
+	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

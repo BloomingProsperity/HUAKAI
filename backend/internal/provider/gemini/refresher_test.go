@@ -259,7 +259,7 @@ func TestGeminiRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) {
 			if got := auth.RefreshAuditOutcomeFromError(err); got != tt.want {
 				t.Fatalf("refresh audit outcome=%q, want %q", got, tt.want)
 			}
-			wantCalls := []string{"probe", "tx_begin", "lock:111", "reread", "failure:111:" + tt.want}
+			wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:111", "reread", "failure:111:" + tt.want}
 			if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 				t.Fatalf("calls=%v, want %v", calls, wantCalls)
 			}
@@ -302,7 +302,7 @@ type recordingGeminiRefreshTx struct {
 }
 
 func (tx *recordingGeminiRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:"+geminiStrconvInt64(args[0]))
+	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

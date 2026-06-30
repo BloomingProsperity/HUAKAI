@@ -84,7 +84,7 @@ func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
 	}
 	// TOKLIFE-04:ErrNoRefreshRequired 现在通过 SetNextAttemptThrottle 设置
 	// next_attempt_at,以防止紧密的重试循环;调用序列中预期出现 throttle:88。
-	want := []string{"probe", "tx_begin", "lock:88", "reread", "throttle:88"}
+	want := []string{"probe", "tx_begin", "lock:credential_refresh:88", "reread", "throttle:88"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -338,7 +338,7 @@ func TestModeRefreshCodexOperatorConfigFailureRecordsOperatorClass(t *testing.T)
 	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
 		t.Fatalf("Refresh err=%v, want ErrCodexOAuthConfigRequired", err)
 	}
-	want := []string{"probe", "tx_begin", "lock:45", "reread", "failure:45:operator_config_required"}
+	want := []string{"probe", "tx_begin", "lock:credential_refresh:45", "reread", "failure:45:operator_config_required"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -456,7 +456,7 @@ func TestRefreshAdvisoryLockPrecedesRereadAndSave(t *testing.T) {
 	if err := refresher.Refresh(context.Background(), 101); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	want := []string{"probe", "tx_begin", "lock:44", "reread", "adapter:44", "save:44"}
+	want := []string{"probe", "tx_begin", "lock:credential_refresh:44", "reread", "adapter:44", "save:44"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -486,7 +486,7 @@ func TestGeminiFallbackAuditWrittenInRefreshTransaction(t *testing.T) {
 		t.Fatalf("Refresh: %v", err)
 	}
 	want := []string{
-		"probe", "tx_begin", "lock:55", "reread", "adapter:55",
+		"probe", "tx_begin", "lock:credential_refresh:55", "reread", "adapter:55",
 		"audit:gemini_cross_client_fallback:code_assist:ai_studio:true", "save:55",
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -563,7 +563,8 @@ type recordingRefreshTx struct {
 }
 
 func (tx *recordingRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:"+strconv.FormatInt(args[0].(int64), 10))
+	// 锁键现以单个 text 参数传入(修复 pgx int64→text 编码 bug),按 string 记录。
+	*tx.calls = append(*tx.calls, "lock:"+args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

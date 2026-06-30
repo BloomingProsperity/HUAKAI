@@ -401,7 +401,9 @@ type ListAuditEventsRow struct {
 	EventClass        string             `db:"event_class" json:"event_class"`
 	EventType         string             `db:"event_type" json:"event_type"`
 	Severity          string             `db:"severity" json:"severity"`
-	LedgerID          string             `db:"ledger_id" json:"ledger_id"`
+	// ledger_id 列可为 NULL(并非所有审计事件都挂在 ledger 上,如目录/用户管理类动作),
+	// 故必须是可空指针;原生成的非指针 string 会在扫描 NULL 时崩(audit_query_failed)。
+	LedgerID          *string            `db:"ledger_id" json:"ledger_id"`
 	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
 	ProviderAccountID *int64             `db:"provider_account_id" json:"provider_account_id"`
 	PoolGroupID       *int64             `db:"pool_group_id" json:"pool_group_id"`

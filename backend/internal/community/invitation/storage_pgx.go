@@ -32,7 +32,11 @@ func (s *PostgresStore) Generate(ctx context.Context, rec generateRecord) (Invit
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	// 同租户邀请码创建串行化，避免并发请求一起越过月配额。
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('invitation_quota:' || $1::text, 0))`, rec.TenantID); err != nil {
+	// 锁键整串在 Go 侧拼好后作单个 text 参数传入：原先 `'invitation_quota:' || $1::text` 把 int64
+	// tenant_id 声明成 text 参数，pgx 扩展协议下无法把 int64 编码成 text(OID 25)→ "cannot find
+	// encode plan",导致所有邀请/推广码生成 503。改成传一个真 text 参数即可,哈希值不变。
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		fmt.Sprintf("invitation_quota:%d", rec.TenantID)); err != nil {
 		return Invitation{}, fmt.Errorf("invitation: quota lock: %w", err)
 	}
 	clientKey := sql.NullString{}
