@@ -255,7 +255,12 @@ func claimRow(id int64) dbbilling.ListBillingClaimsRow {
 	return dbbilling.ListBillingClaimsRow{ID: id, TenantID: 7, IdempotencyKey: "idem", APIKeyID: 1, UserID: 2, LogicalRequestID: "lr", EndpointFamily: "chat", RequestedModel: "m", AttemptSeq: 1, PredictedCost: decimal.RequireFromString("0.01000000"), CurrencyCode: "USD", Status: "committed", CreatedAt: ts(id)}
 }
 func auditRow(id int64, severity, ledgerID string) dbbilling.ListAuditEventsRow {
-	return dbbilling.ListAuditEventsRow{ID: id, TenantID: 7, EventClass: "rate_limit", EventType: "permanent_disable_set", Severity: severity, LedgerID: ledgerID, Payload: []byte(`{"ok":true}`), CreatedAt: ts(id)}
+	// LedgerID 现为可空 *string(列可为 NULL);非空 ledgerID 取地址,空串视作 NULL(nil)以覆盖真实数据形态。
+	var lp *string
+	if ledgerID != "" {
+		lp = &ledgerID
+	}
+	return dbbilling.ListAuditEventsRow{ID: id, TenantID: 7, EventClass: "rate_limit", EventType: "permanent_disable_set", Severity: severity, LedgerID: lp, Payload: []byte(`{"ok":true}`), CreatedAt: ts(id)}
 }
 func ts(id int64) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: time.Date(2026, 5, 14, 0, 0, int(id), 0, time.UTC), Valid: true}
