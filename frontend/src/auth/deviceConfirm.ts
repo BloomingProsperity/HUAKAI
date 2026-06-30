@@ -38,6 +38,18 @@ export function validateDeviceConfirmParams(p: DeviceConfirmParams): string | nu
   return null
 }
 
+/**
+ * 用用户手动粘贴的 token 兜底 URL 里缺失的 token。
+ * 背景(端到端缺陷修复):确认邮件正文只投递裸 token、不含带 query 的链接
+ *(email/sender_factory.go:276 buildDeviceConfirmationBody),用户收到 token 却无法构造带 ?token= 的落地 URL。
+ * URL 已带 token 时一切照旧(manual 忽略);URL 无 token 时用 trim 后的 manual 覆盖;都空则保持空。
+ */
+export function withManualDeviceToken(urlParams: DeviceConfirmParams, manualToken: string): DeviceConfirmParams {
+  if (urlParams.token.length > 0) return urlParams
+  const t = manualToken.trim()
+  return t ? { ...urlParams, token: t } : urlParams
+}
+
 /** 后端错误码:token 不存在/跨租户/已被消费(session_handler.go,401)。 */
 export const DEVICE_INVALID_CODE = 'device_confirmation_invalid'
 /** 后端错误码:token 过期(401)。 */

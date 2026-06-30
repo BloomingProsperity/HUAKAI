@@ -5,6 +5,7 @@ import {
   deviceConfirmErrorMessage,
   parseDeviceConfirmParams,
   validateDeviceConfirmParams,
+  withManualDeviceToken,
 } from './deviceConfirm'
 
 describe('parseDeviceConfirmParams', () => {
@@ -41,5 +42,21 @@ describe('deviceConfirmErrorMessage', () => {
   it('未知错误码走兜底;非 ApiError 走通用文案', () => {
     expect(deviceConfirmErrorMessage(new ApiError(503, 'device_confirmation_backend_error', 'down'))).toMatch(/设备确认失败/)
     expect(deviceConfirmErrorMessage(new Error('boom'))).toMatch(/请稍后重试/)
+  })
+})
+
+describe('withManualDeviceToken', () => {
+  it('URL 无 token 时用手动粘贴的 token 兜底(去空白)', () => {
+    // 端到端死锁修复核心:确认邮件只给裸 token,URL 无 token 时须能用手动 token 继续。
+    // 变异(忽略 manual、直接返回 urlParams)→ merged.token 仍空,断言 RED。
+    const merged = withManualDeviceToken(parseDeviceConfirmParams('?tenant_id=6'), '  dev-tok  ')
+    expect(merged.token).toBe('dev-tok')
+    expect(merged.tenantId).toBe(6)
+  })
+  it('URL 已带 token 时手动值被忽略(链接落地优先)', () => {
+    expect(withManualDeviceToken(parseDeviceConfirmParams('?token=url-tok'), 'x').token).toBe('url-tok')
+  })
+  it('URL 与手动都空 → 保持空 token', () => {
+    expect(withManualDeviceToken(parseDeviceConfirmParams(''), '  ').token).toBe('')
   })
 })

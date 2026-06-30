@@ -37,6 +37,18 @@ export function validateVerifyParams(p: VerifyParams): string | null {
   return null
 }
 
+/**
+ * 用用户手动粘贴的 token 兜底 URL 里缺失的 token。
+ * 背景(端到端缺陷修复):验证邮件正文只投递裸 token、不含带 query 的链接
+ *(email/sender_factory.go:266 buildVerificationBody),用户收到 token 却无法构造带 ?token= 的落地 URL。
+ * URL 已带 token 时一切照旧(manual 忽略);URL 无 token 时用 trim 后的 manual 覆盖;都空则保持空。
+ */
+export function withManualVerifyToken(urlParams: VerifyParams, manualToken: string): VerifyParams {
+  if (urlParams.token.length > 0) return urlParams
+  const t = manualToken.trim()
+  return t ? { ...urlParams, token: t } : urlParams
+}
+
 /** 后端 auth_token_invalid 错误码:token 无效 / 过期 / 已使用(auth_handler.go:1013)。 */
 export const TOKEN_INVALID_CODE = 'auth_token_invalid'
 

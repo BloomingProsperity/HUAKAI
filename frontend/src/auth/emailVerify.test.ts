@@ -6,6 +6,7 @@ import {
   TOKEN_INVALID_CODE,
   validateVerifyParams,
   verifyErrorMessage,
+  withManualVerifyToken,
 } from './emailVerify'
 
 describe('parseVerifyParams', () => {
@@ -76,5 +77,21 @@ describe('verifyErrorMessage', () => {
 
   it('非 ApiError → 通用重试文案', () => {
     expect(verifyErrorMessage(new Error('boom'))).toContain('重试')
+  })
+})
+
+describe('withManualVerifyToken', () => {
+  it('URL 无 token 时用手动粘贴的 token 兜底(去空白)', () => {
+    // 端到端死锁修复核心:验证邮件只给裸 token,URL 无 token 时须能用手动 token 继续。
+    // 变异(忽略 manual、直接返回 urlParams)→ merged.token 仍空,断言 RED。
+    const merged = withManualVerifyToken(parseVerifyParams('?tenant_id=4'), '  tok-x  ')
+    expect(merged.token).toBe('tok-x')
+    expect(merged.tenantId).toBe(4)
+  })
+  it('URL 已带 token 时手动值被忽略(链接落地优先)', () => {
+    expect(withManualVerifyToken(parseVerifyParams('?token=url-tok'), 'x').token).toBe('url-tok')
+  })
+  it('URL 与手动都空 → 保持空 token', () => {
+    expect(withManualVerifyToken(parseVerifyParams(''), '  ').token).toBe('')
   })
 })

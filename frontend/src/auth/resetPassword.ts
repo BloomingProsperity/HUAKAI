@@ -47,6 +47,23 @@ export function hasResetToken(params: ResetLinkParams): boolean {
   return params.token.length > 0
 }
 
+/**
+ * 用用户手动粘贴的 token 兜底 URL 里缺失的 token。
+ *
+ * 背景(端到端缺陷修复):后端重置邮件正文只投递裸 token、不含带 query 的链接
+ * (email/sender_factory.go:271 buildPasswordResetBody),用户收到 token 却无法构造
+ * 带 ?token= 的落地 URL。本 helper 让页面在 URL 无 token 时接受手动粘贴的 token,
+ * 使重置流程不再因「token 无处可填」而端到端死锁。
+ *
+ * 语义:URL 已带非空 token 时一切照旧(manual 被忽略);URL 无 token 时用 trim 后的
+ * manual token 覆盖。manual 也为空则保持空 token(页面据此禁用提交)。
+ */
+export function withManualToken(urlParams: ResetLinkParams, manualToken: string): ResetLinkParams {
+  if (urlParams.token.length > 0) return urlParams
+  const t = manualToken.trim()
+  return t ? { ...urlParams, token: t } : urlParams
+}
+
 export type PasswordCheck =
   | { ok: true }
   | { ok: false; reason: 'too_short' | 'mismatch' | 'empty' }
