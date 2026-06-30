@@ -30,12 +30,17 @@ function round1(n: number): number {
 
 export type RateTone = 'ok' | 'warn' | 'danger'
 
-/** 成功率配色:≥99% 绿、≥95% 警、否则危。入参是百分比字符串(如 "99.5")。 */
-export function successRateTone(successRatePct: string): RateTone {
-  const v = Number(successRatePct)
+/**
+ * 成功率配色:≥99% 绿、≥95% 警、否则危。
+ * 入参是后端 overview 的 success_rate —— 0~1 的小数(successCount/requestCount 经 StringFixed(4),
+ * 如 "0.9950" 表示 99.5%),不是百分数。故阈值按 0~1 标度(0.99 / 0.95)比较。
+ * 判别点:若误按 0~100 标度(v>=99)比,则 0.9950 恒落 danger —— 即便 100% 成功也永远显示告警。
+ */
+export function successRateTone(successRateFraction: string): RateTone {
+  const v = Number(successRateFraction)
   if (!Number.isFinite(v)) return 'warn'
-  if (v >= 99) return 'ok'
-  if (v >= 95) return 'warn'
+  if (v >= 0.99) return 'ok'
+  if (v >= 0.95) return 'warn'
   return 'danger'
 }
 
