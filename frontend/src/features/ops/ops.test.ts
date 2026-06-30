@@ -33,10 +33,13 @@ describe('sparklinePoints', () => {
 })
 
 describe('successRateTone', () => {
-  it('≥99 绿、≥95 警、否则危、非法警', () => {
-    expect(successRateTone('99.5')).toBe('ok')
-    expect(successRateTone('97')).toBe('warn')
-    expect(successRateTone('90')).toBe('danger')
+  it('入参是 0~1 小数(后端 success_rate 形态):≥0.99 绿、≥0.95 警、否则危、非法警', () => {
+    // 判别核心:入参是 0~1 小数(如 "0.9950"=99.5%),不是百分数。
+    // 变异(误按 0~100 比,v>=99)→ "0.9950" 落 danger,首断言 RED(即便 99.5% 成功也显示告警)。
+    expect(successRateTone('0.9950')).toBe('ok')
+    expect(successRateTone('0.97')).toBe('warn')
+    expect(successRateTone('0.90')).toBe('danger')
+    expect(successRateTone('1')).toBe('ok') // 100% 成功
     expect(successRateTone('abc')).toBe('warn')
   })
 })

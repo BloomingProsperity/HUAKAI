@@ -151,7 +151,8 @@ export function OpsPage() {
           <Kpi label="活跃 Key" value={overview ? fmtInt(overview.totals.active_api_keys) : '…'} />
           <Kpi
             label="成功率"
-            value={overview ? `${overview.totals.success_rate}%` : '…'}
+            // success_rate 是 0~1 小数(同 error_rate),须经 fmtFractionPct ×100 展示;原 `${x}%` 少算 100 倍。
+            value={overview ? fmtFractionPct(overview.totals.success_rate) : '…'}
             badge={overview ? successRateTone(overview.totals.success_rate) : undefined}
           />
         </div>
