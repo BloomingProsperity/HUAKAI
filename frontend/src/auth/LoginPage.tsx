@@ -418,6 +418,11 @@ export function LoginPage() {
 
 function authErr(e: unknown): string {
   if (e instanceof ApiError) {
+    // 新设备需确认:后端在新设备登录返 403 device_confirmation_required 并已发确认邮件。
+    // 引导用户去邮箱点确认链接(/device-confirm 页)后再重新登录,而非当成密码错误。
+    if (e.code === 'device_confirmation_required') {
+      return '检测到新设备登录,我们已向你的邮箱发送确认链接。请点击邮件中的链接确认这台设备后,再重新登录。'
+    }
     if (e.code === 'invalid_credentials' || e.status === 401) return '邮箱或密码错误'
     if (e.code === 'captcha_required') return '人机验证未通过,请重试'
     return `${e.message}(${e.code})`

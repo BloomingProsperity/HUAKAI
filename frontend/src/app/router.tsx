@@ -69,6 +69,7 @@ import { OAuthCallbackPage } from '../auth/OAuthCallbackPage'
 import { ForgotPasswordPage } from '../auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '../auth/ResetPasswordPage'
 import { EmailVerifyPage } from '../auth/EmailVerifyPage'
+import { DeviceConfirmPage } from '../auth/DeviceConfirmPage'
 import { RequireAuth } from '../auth/RequireAuth'
 import { ErrorFallback } from '../ui/ErrorFallback'
 import { PIPELINE_NAV } from './nav'
@@ -157,6 +158,7 @@ export const router = createBrowserRouter([
   { path: '/forgot-password', element: <ForgotPasswordPage />, errorElement: errEl },
   { path: '/reset-password', element: <ResetPasswordPage />, errorElement: errEl },
   { path: '/email-verify', element: <EmailVerifyPage />, errorElement: errEl },
+  { path: '/device-confirm', element: <DeviceConfirmPage />, errorElement: errEl },
   { path: '/rankings', element: <RankingsPage />, errorElement: errEl },
   { path: '/welcome', element: <LandingPage />, errorElement: errEl },
   { path: '/legal', element: <LegalPage />, errorElement: errEl },
