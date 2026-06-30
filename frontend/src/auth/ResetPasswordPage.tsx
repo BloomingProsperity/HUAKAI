@@ -9,6 +9,7 @@ import {
   isTokenInvalidError,
   parseResetLink,
   passwordCheckMessage,
+  withManualToken,
 } from './resetPassword'
 
 /*
@@ -23,7 +24,13 @@ import {
 export function ResetPasswordPage() {
   const nav = useNavigate()
   // 链接参数在首帧解析一次即可(URL 不会在本页内变更)。
-  const params = useMemo(() => parseResetLink(window.location.search), [])
+  const urlParams = useMemo(() => parseResetLink(window.location.search), [])
+  // URL 是否自带 token:有则走「链接落地」常规态;无则展示手动粘贴框
+  //(后端重置邮件只给裸 token、不含链接,用户需把 token 粘进来才能继续)。
+  const urlHasToken = hasResetToken(urlParams)
+  const [manualToken, setManualToken] = useState('')
+  // 有效参数:URL 无 token 时用手动粘贴的 token 兜底。
+  const params = withManualToken(urlParams, manualToken)
   const linkValid = hasResetToken(params)
 
   const [password, setPassword] = useState('')
@@ -65,13 +72,7 @@ export function ResetPasswordPage() {
           <h1 style={{ fontSize: 20, fontWeight: 700 }}>重置密码</h1>
         </div>
 
-        {!linkValid ? (
-          <InvalidLink
-            title="重置链接无效"
-            body="链接缺少必要的重置参数。请重新发起「忘记密码」获取新链接。"
-            onGoLogin={() => nav('/login', { replace: true })}
-          />
-        ) : tokenDead ? (
+        {tokenDead ? (
           <InvalidLink
             title="链接已失效"
             body="该重置链接已过期或已被使用。请重新发起「忘记密码」获取新链接。"
@@ -99,13 +100,28 @@ export function ResetPasswordPage() {
             )}
             {error && <Banner tone="danger">{error}</Banner>}
 
+            {/* URL 无 token 时给手动粘贴框:重置邮件只投递裸 token(不含链接),用户需把它粘进来。 */}
+            {!urlHasToken && (
+              <Field label="重置 token(粘贴邮件里收到的一次性 token)">
+                <input
+                  type="text"
+                  value={manualToken}
+                  onChange={(e) => setManualToken(e.target.value)}
+                  autoComplete="one-time-code"
+                  autoFocus
+                  placeholder="把邮件中的一次性 token 粘贴到这里"
+                  style={inp}
+                />
+              </Field>
+            )}
+
             <Field label={`新密码(至少 ${MIN_PASSWORD_LENGTH} 个字符)`}>
               <input
                 type={reveal ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="new-password"
-                autoFocus
+                autoFocus={urlHasToken}
                 style={inp}
               />
             </Field>
@@ -126,7 +142,7 @@ export function ResetPasswordPage() {
 
             {liveMessage && <p style={{ margin: 0, fontSize: 12, color: '#8f322a' }}>{liveMessage}</p>}
 
-            <button type="submit" disabled={busy || !check.ok} style={primary}>
+            <button type="submit" disabled={busy || !check.ok || !linkValid} style={primary}>
               {busy ? '提交中…' : '设置新密码'}
             </button>
             <button type="button" onClick={() => nav('/login', { replace: true })} style={linkBtn}>

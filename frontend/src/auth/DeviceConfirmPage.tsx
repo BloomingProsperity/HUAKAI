@@ -1,56 +1,60 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { StatusBadge } from '../ui/StatusBadge'
 import { confirmDevice } from './confirmDeviceApi'
 import {
   deviceConfirmErrorMessage,
   parseDeviceConfirmParams,
-  validateDeviceConfirmParams,
-  type DeviceConfirmParams,
+  withManualDeviceToken,
 } from './deviceConfirm'
 
 /*
- * 新设备确认页(public 壳,AppShell 之外)。从 URL query 读 token / tenant_id,挂载即自动确认,
- * 呈现 确认中 / 成功 / 失败 三态,提供「去登录」。
+ * 新设备确认页(public 壳,AppShell 之外)。从 URL query 读 token / tenant_id;URL 带 token 则挂载即自动确认,
+ * URL 无 token 则展示「手动粘贴 token」表单(确认邮件只投递裸 token、不含链接,用户需把 token 粘进来)。
+ * 呈现 输入 / 确认中 / 成功 / 失败 四态,提供「去登录」。
  *
- * 形态:与 verify-email 同款「点邮件链接确认」——新设备登录被 403 device_confirmation_required 挡下后,
- * 后端发确认邮件(链接 /device-confirm?token=…&tenant_id=…),用户点击进本页完成确认,再重新登录。
+ * 形态:新设备登录被 403 device_confirmation_required 挡下后,后端发确认邮件(裸 token),
+ * 用户进本页(或点链接)粘 token 完成确认,再重新登录。
  */
-type Phase = 'confirming' | 'success' | 'error'
+type Phase = 'input' | 'confirming' | 'success' | 'error'
 
 export function DeviceConfirmPage() {
   const nav = useNavigate()
-  const [phase, setPhase] = useState<Phase>('confirming')
+  const urlParams = useMemo(() => parseDeviceConfirmParams(window.location.search), [])
+  const urlHasToken = urlParams.token.length > 0
+  // URL 带 token → 自动确认态;URL 无 token → 先让用户手动粘贴。
+  const [phase, setPhase] = useState<Phase>(urlHasToken ? 'confirming' : 'input')
   const [error, setError] = useState<string | null>(null)
+  const [manualToken, setManualToken] = useState('')
   // 严格模式下 effect 跑两次;用 ref 守一次性,避免重复 POST 同一 token(第二次必返回已用)。
   const ran = useRef(false)
 
-  useEffect(() => {
-    if (ran.current) return
-    ran.current = true
-
-    const params: DeviceConfirmParams = parseDeviceConfirmParams(window.location.search)
-    const invalid = validateDeviceConfirmParams(params)
-    if (invalid) {
-      setError(invalid)
-      setPhase('error')
-      return
-    }
-
-    let alive = true
-    confirmDevice(params.tenantId, params.token)
-      .then(() => {
-        if (alive) setPhase('success')
-      })
+  const submit = (token: string) => {
+    setPhase('confirming')
+    setError(null)
+    confirmDevice(urlParams.tenantId, token)
+      .then(() => setPhase('success'))
       .catch((e) => {
-        if (!alive) return
         setError(deviceConfirmErrorMessage(e))
         setPhase('error')
       })
-    return () => {
-      alive = false
-    }
+  }
+
+  useEffect(() => {
+    if (ran.current || !urlHasToken) return
+    ran.current = true
+    submit(urlParams.token)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const onManualConfirm = () => {
+    const p = withManualDeviceToken(urlParams, manualToken)
+    if (!p.token) {
+      setError('请粘贴确认邮件里收到的 token。')
+      return
+    }
+    submit(p.token)
+  }
 
   const goLogin = () => nav('/login', { replace: true })
 
@@ -61,6 +65,25 @@ export function DeviceConfirmPage() {
           <span aria-hidden style={logo} />
           <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>新设备确认</h1>
         </div>
+
+        {phase === 'input' && (
+          <div style={body}>
+            <p style={lead}>把新设备确认邮件里收到的一次性 token 粘贴到这里完成确认。</p>
+            {error && <p style={{ ...lead, color: '#8f322a' }}>{error}</p>}
+            <input
+              type="text"
+              value={manualToken}
+              onChange={(e) => setManualToken(e.target.value)}
+              autoComplete="one-time-code"
+              autoFocus
+              placeholder="粘贴确认 token"
+              style={inputBox}
+            />
+            <button type="button" onClick={onManualConfirm} style={primary}>
+              确认这台设备
+            </button>
+          </div>
+        )}
 
         {phase === 'confirming' && (
           <div style={body}>
@@ -132,4 +155,14 @@ const primary: React.CSSProperties = {
   fontSize: 14,
   fontWeight: 600,
   cursor: 'pointer',
+}
+const inputBox: React.CSSProperties = {
+  height: 38,
+  padding: '0 var(--hk-space-3)',
+  border: '1px solid var(--hk-line)',
+  borderRadius: 'var(--hk-radius-md)',
+  background: 'var(--hk-surface)',
+  color: 'var(--hk-ink-900)',
+  fontSize: 14,
+  width: '100%',
 }

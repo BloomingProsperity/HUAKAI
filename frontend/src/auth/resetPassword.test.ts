@@ -7,6 +7,7 @@ import {
   isTokenInvalidError,
   parseResetLink,
   passwordCheckMessage,
+  withManualToken,
 } from './resetPassword'
 
 describe('parseResetLink', () => {
@@ -37,6 +38,28 @@ describe('hasResetToken', () => {
     // 判别核心:无 token 必须判为无效。变异(恒返回 true)→ 缺 token 的链接被当有效,本断言 RED。
     expect(hasResetToken(parseResetLink('?token=x'))).toBe(true)
     expect(hasResetToken(parseResetLink('?email=a@b'))).toBe(false)
+  })
+})
+
+describe('withManualToken', () => {
+  it('URL 无 token 时用手动粘贴的 token 兜底(去空白)', () => {
+    // 这是端到端死锁修复的核心:邮件只给裸 token,URL 无 token 时必须能用手动粘贴的 token 继续。
+    // 变异(忽略 manual、直接返回 urlParams)→ 手动 token 不生效,merged.token 仍空,本断言 RED。
+    const url = parseResetLink('?tenant_id=5')
+    const merged = withManualToken(url, '  pasted-tok  ')
+    expect(merged.token).toBe('pasted-tok')
+    expect(merged.tenantId).toBe(5)
+    expect(hasResetToken(merged)).toBe(true)
+  })
+
+  it('URL 已带 token 时手动值被忽略(链接落地优先,不被覆盖)', () => {
+    // 判别核心:URL token 存在时不能被手动框误覆盖。变异(无条件用 manual 覆盖)→ token 变 'x',本断言 RED。
+    const url = parseResetLink('?token=url-tok')
+    expect(withManualToken(url, 'x').token).toBe('url-tok')
+  })
+
+  it('URL 与手动都为空 → 保持空 token(页面据此禁用提交)', () => {
+    expect(hasResetToken(withManualToken(parseResetLink(''), '   '))).toBe(false)
   })
 })
 
