@@ -16,6 +16,18 @@
 
 ---
 
+## ★ P1 scope 审计结果(2026-07-01,读真码,重塑 P2 设计)
+
+已走查全部 `AdminIdentity` 消费点,session-admin 映射成 `{Role:platform_admin, TokenID:0, ScopeTenantID:0}` 的两个真隐患:
+
+1. **审计误归属(必修)**:~15 处 handler 用 `ident.TokenID` 做审计归属(`ActorID: fmt(ident.TokenID)` / `admin_token:%d` / routeadmin `AdminID`,遍及 balance_credit/api_keys/provider_catalog/channel_catalog/provider_account_bulk/platformsettings/model_sync/routeadmin/notify 等)。session-admin TokenID=0 → 全记成"token 0",真实操作用户丢失。
+2. **潜在 FK 破裂(必修)**:迁移 `0144_hermes_admin_actor` 的 actor 列带 `REFERENCES admin_tokens(id)` 外键;session-admin 插 `admin_token_id=0` → 外键违约、操作崩。(其余 `*_admin_id` 为纯 bigint 无 FK,只误归属不崩。)
+3. **Role== 检查**:session-admin=platform_admin,全部 `!=RolePlatformAdmin`/`requirePlatformAdmin` 检查通过(符合 D3 全权);`provider_catalog:165` 要求 tenant_operator 的分支是"无 ?tenant_id 时用 ScopeTenantID",platform_admin 走显式 ?tenant_id,不受影响。**签发/吊销 admin token 走 requirePlatformAdmin → session-admin 能签发 → 属 P3 step-up 必盯的高危操作。**
+
+**P2 设计据此调整**:`AdminIdentity` 增 `Source`(token/session)+ session 时的 `UserID`;审计归属改走统一方法(如 `ident.AuditActor()` 返 "admin_token:N" / "admin_user:N"),迁移 ~15 call site;带 FK 的 Hermes actor 列对 session-admin 走可空/另存用户列。**未处理这两点前,knob 绝不能翻开(会误归审计 + Hermes 动作 FK 崩)。**
+
+---
+
 ## 0. 一句话背景与本计划的边界
 
 HUAKAI 今天是**两套物理隔离的身份系统**:
