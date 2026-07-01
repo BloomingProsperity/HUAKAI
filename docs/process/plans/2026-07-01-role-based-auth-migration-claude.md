@@ -262,6 +262,33 @@ AdminAuthResolver.Resolve(ctx, req) →
 
 ---
 
+## ★ P2a 已合(2026-07-01,commit 9349144e,对抗审查零 S0/S1)
+
+**已交付**:`AdminIdentity` 增 `Source`(token/session)+ `UserID` + `AuditActor()`;组合解析器
+session 通道「灰度只读端点先行」——仅放行 GET/HEAD,写方法一律拒。knob 默认关零行为变。
+§14 双变异证红(gate 失效 / AuditActor 忽略 Source),对抗审查逐 7 攻击面证伪,零 S0/S1。
+
+**核心安全属性(经审查坐实)**:即便翻开 knob,session-admin 灰度期只能读,P1 两处写隐患
+物理上无法触发——每个用 `ident.TokenID` 做变更写的 handler 都是 POST/PUT/DELETE
+(routeadmin/voucher/balance_credit 等实测全非 GET);Hermes 审计只在写 handler,读 handler
+不写审计,故 FK 崩 + JSONB 误归零残留。
+
+**遗留债(P2b 放开写端点前必处理,审查记录的 S2/S3)**:
+1. **S2 — mutating-GET:`oauth-callback`**(`admin_credential_acquisition_handler.go:96` 注册
+   `r.Get("/oauth-callback")`,handler 落库凭证 + 写审计)。「读方法≠只读操作」的既有设计债:
+   knob 开后 session-admin 可经此 GET 触发一次真实凭证 finalize。**不触 P1 隐患**(该 handler 用
+   预存 `session.ActorID` 归属、不调 `d.Auth.Resolve()`,不写 TokenID=0、不触外键)。放开写端点
+   前把变更类端点从 GET 迁 POST,或把 gate 改「端点白名单」而非纯 HTTP 方法。
+2. **S3 — 方法代理只读性脆弱**:未来若新增「GET 却变更且用 ident.TokenID 审计」的 handler,gate 会
+   静默放行 session-admin(TokenID=0)触发 P1。加一条「变更端点必须非 GET」的结构约束/集成断言。
+3. **S3 — 灰度期 session-admin 可读全租户进程指标**(`/debug/vars`、`/metrics`)——D3 意图内,仅知会。
+
+**P2b(Owner-gated,改持久化审计格式=behavior)**:`AuditActor` 接入 ~15 审计 site(token-admin
+输出从 `%d`/`admin-token:%d` 统一到 `admin_token:N` = 现网审计内容格式变更);Hermes `admin_actor_token_id`
+对 session-admin 写 NULL(另存 user 列);放开写端点。翻 knob 激活 = Owner 最终拍板点。
+
+---
+
 相关文件(绝对路径,供落盘参考):
 - 计划落盘目标目录:`/home/ubuntu/HUAKAI/backend/docs/process/plans/`
 - 核心改造文件:`/home/ubuntu/HUAKAI/backend/internal/admin/operator_auth.go`、`/home/ubuntu/HUAKAI/backend/internal/admin/bootstrap.go`、`/home/ubuntu/HUAKAI/backend/internal/panelauth/resolve.go`、`/home/ubuntu/HUAKAI/backend/internal/auth/session_middleware.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/routes.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/middleware.go`、`/home/ubuntu/HUAKAI/backend/internal/controlhttp/panelauth_handler.go`
