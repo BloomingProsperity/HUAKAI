@@ -18,6 +18,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminstepup"
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
@@ -1353,9 +1354,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		adminAuth: adminsessionauth.New(
 			admin.NewAdminResolver(adminQueries), // 令牌通道(hk_admin_,行为不变)
 			userSessionService,                   // session 校验器
-			panelauth.NewPostgresRoleStore(pgPool), // users.role 只读查询
+			panelauth.NewPostgresRoleStore(pgPool),                  // users.role 只读查询
 			clientIPResolver,
-			func() bool { return adminSessionAuthEnabled }, // knob,默认关
+			adminstepup.New(userAuthService.Store, twoFactorService), // SessionStepUp 写端点的密码/2FA 二次校验(复用 passkey 原语)
+			func() bool { return adminSessionAuthEnabled },          // knob,默认关
 		),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
 		adminRevoker:             admin.NewKeyRevoker(pgPool),

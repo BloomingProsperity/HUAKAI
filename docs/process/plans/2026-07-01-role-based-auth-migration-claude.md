@@ -388,6 +388,32 @@ session 通道「灰度只读端点先行」——仅放行 GET/HEAD,写方法�
 
 ---
 
+## ★ P3 实现设计(2026-07-01,读 HUAKAI 真码 + 三镜 step-up 后定稿)
+
+**三镜 step-up 证据(亲核 file:line):**
+- **new-api**:窗口模型(`secure_verified_at` 时间戳存 Gin **服务端 session cookie**,TTL 300s,`SecureVerificationRequired` 中间件比对 `now-verified_at<300`;`middleware/secure_verification.go:16,64`)。仅 1 条路由用(`POST /api/channel/:id/key` 看渠道密钥,`router/api-router.go:236`)。无失败锁定,靠 `CriticalRateLimit`。
+- **sub2api**(最近亲,同双令牌 admin 模型 `admin_auth.go:26-88`):**无统一 step-up 框架**,逐操作**内联再认证**(改密验 old_password + bump TokenVersion 废全 token;TOTP/邮箱绑定验 password/email_code,均 body 载);5 次失败→429(`VERIFY_CODE_MAX_ATTEMPTS`/`TOTP_TOO_MANY_ATTEMPTS`);常时比较。**显式无跨操作"近 N 分钟已验证"窗口**;admin 另有合规确认门(HTTP 423)。
+- **HUAKAI 既有** `passkeyhttp/stepup.go:44-77`:已是**逐请求 proof**(密码 argon2id 常时比较 OR 2FA VerifyLogin),已生产接线(routes.go:716);`writeStepUpError` **已含** `twofa.ErrLocked→429`(handler.go:305,非缺口——原计划误记)。
+
+**定稿决策(翻转 §315 line-340 的"加窗口"工程默认):走逐请求 proof,不做窗口/不加 FamilyID anchor。** 理由:窗口在 HUAKAI(无状态 bearer,无 new-api 那种服务端 session)= **净新增基建**(签名 token 或存储),既有原语与最近亲(sub2api)都不用;逐请求 proof 复用既有已接线 verifier,零新状态、无重放窗口(每次高危单独授权)。符合「镜像既有模式/不发明新抽象/不堆砌」。窗口是 UX 优化,待真有中危路由放开 + Owner 要更顺 UX 再做,YAGNI。
+
+**HUAKAI 相对两镜的 delta(更优处)**:一套 **fail-closed 的 per-endpoint 写分级框架**(默认 token-only),两镜都没有——它们把再认证零散挂在个别路由/handler 里;HUAKAI 集中成「路由注册处显式标注、未标注=默认拒 session 写」,配合 P2b 已建的双身份(token vs session)审计归属。
+
+**机制(全在既有默认关 knob 后):**
+1. **写分级(opt-in,fail-closed)**:`AdminWriteClass ∈ {SessionSafe, SessionStepUp}`,经 per-route 中间件 `adminsessionauth.AllowSessionWrite(class)` 塞进 request context。**只给要放开的路由挂**;高危路由不挂 → 默认 = session 写被拒(= 今日 P2a 行为)。无 token-only 枚举值(它就是"不标注"的默认)。
+2. **解析器改造**:把 P2a 的一刀切 `if !isReadOnlyMethod → 拒` 换成:只读方法(GET/HEAD)照放;写方法读 context 里的 class —— 缺失→拒(fail-closed);SessionSafe→放;SessionStepUp→验 step-up header proof。
+3. **step-up proof 走 header**(`X-Admin-Step-Up-Password`/`X-Admin-Step-Up-2FA`),避开 danger 端点的 `DisallowUnknownFields` + 不碰 r.Body(否则耗尽致下游 EOF)。解析器注入 `StepUpVerifier` 接口(knob 关/未接线时为 nil → SessionStepUp 路由 fail-closed 503);wiring 用薄 adapter 包既有 `passkeyhttp.LocalStepUpVerifier`(避免 adminsessionauth→passkeyhttp 层级耦合,不泄露其 proof 类型)。
+4. **错误映射**(admin 语境,反枚举一致):新 sentinel `ErrAdminStepUpRequired`(403)/`ErrAdminStepUpInvalid`(401)/locked→429/未配→503,并入 `writeAdminAuthError`。
+5. **knob 关**:session 通道整体不走,零变更。**knob 开 + 无路由挂**:session 读照走、所有写默认拒 = 今日行为。**knob 开 + 挂 SessionSafe/StepUp**:才开对应能力。
+
+**放开哪些真路由 = 血案边界,分两步**:先合**机制切片**(框架 + 解析器 enforcement + step-up header 验证 + 测试用合成路由跑通,不动真 admin 路由)→ 再产出全 admin 写端点风险分级表交 Owner 批,按批放开低危配置类为 SessionSafe。money/凭证/KEK/签发 admin token/删账号/Hermes 写永远不挂(token-only);money 即便日后有 step-up 仍 token-only(待 money-via-login 切片迁 schema)。
+
+**⚠️ 路由放开切片的强制项(对抗审查确认的潜伏跨层缺口,balance_credit 同类)**:机制切片里 `admin.ErrAdminStepUp{Required,Invalid,Locked}` 尚无任何 handler 的 `writeAdminAuthError` 副本映射(全仓 ~15 副本只认 ErrAdminBackend,余走 default→401)。机制切片下这些错误生产不可达(无真路由挂 AllowSessionWrite + knob 默认关),且 default→401 是 fail-closed 兜底(更严不误授权),故非 S0/S1。**但放开真 SessionStepUp 路由的切片【必须】同时**:①在承载该路由的包的 `writeAdminAuthError` 补 Required→403 / Invalid→401 / Locked→429(+Retry-After);②加一条 handler 端到端测试验此链(否则 403/429 静默坍缩成 401,丢掉设计刻意区分的可操作信号 + 429 退避提示)。
+
+**机制切片已合(2026-07-01,commit 待填)**:admin sentinels + `internal/adminstepup` 适配器(复用 passkeyhttp verifier,错误翻译)+ `adminsessionauth` 写分级(AllowSessionWrite 中间件 fail-closed / resolver enforcement / header proof)+ wiring 注入;全在默认关 knob 后零生产变;§14 变异(fail-closed default / step-up 错误传递 / 错译)均证红,对抗审查(3 镜头 × 逐条对抗验证)零 S0/S1。
+
+---
+
 相关文件(绝对路径,供落盘参考):
 - 计划落盘目标目录:`/home/ubuntu/HUAKAI/backend/docs/process/plans/`
 - 核心改造文件:`/home/ubuntu/HUAKAI/backend/internal/admin/operator_auth.go`、`/home/ubuntu/HUAKAI/backend/internal/admin/bootstrap.go`、`/home/ubuntu/HUAKAI/backend/internal/panelauth/resolve.go`、`/home/ubuntu/HUAKAI/backend/internal/auth/session_middleware.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/routes.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/middleware.go`、`/home/ubuntu/HUAKAI/backend/internal/controlhttp/panelauth_handler.go`

@@ -37,12 +37,14 @@ type Resolver struct {
 	session  SessionValidator
 	roles    RoleStore
 	clientIP *clientip.Resolver
+	stepUp   StepUpVerifier
 	enabled  func() bool
 }
 
-// New 组装组合解析器。enabled 为 nil 视同 session 通道关。
-func New(token TokenResolver, session SessionValidator, roles RoleStore, clientIP *clientip.Resolver, enabled func() bool) *Resolver {
-	return &Resolver{token: token, session: session, roles: roles, clientIP: clientIP, enabled: enabled}
+// New 组装组合解析器。enabled 为 nil 视同 session 通道关;stepUp 为 nil 时 SessionStepUp
+// 写端点 fail-closed 拒(绝不放行未接线的二次校验)。
+func New(token TokenResolver, session SessionValidator, roles RoleStore, clientIP *clientip.Resolver, stepUp StepUpVerifier, enabled func() bool) *Resolver {
+	return &Resolver{token: token, session: session, roles: roles, clientIP: clientIP, stepUp: stepUp, enabled: enabled}
 }
 
 // Resolve 先令牌通道(hk_admin_ 前缀恒走),knob 开时再 session 通道。
@@ -80,12 +82,13 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminI
 	if panelauth.PanelForRole(role) != panelauth.PanelAdmin {
 		return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
 	}
-	// 灰度只读端点先行:session 通道当前仅放行只读方法(GET/HEAD)。写方法一律拒——
-	// 这样即便翻开 knob,session-admin 也够不到写路径,P1 的两处写端点隐患
-	//(TokenID=0 审计误归 + Hermes admin_actor_token_id 外键违约崩)在灰度期物理上无法触发。
-	// 放开写端点是独立的 Owner-gated 一步(P2b/P3 step-up 后),届时才把审计归属改走 AuditActor。
+	// 只读方法(GET/HEAD)照放。写方法按路由在注册处标注的写分级 fail-closed 判定
+	//(P3):未标注 → 拒(= 灰度期默认 token-only,P1 的写端点隐患物理上无法触发);
+	// SessionSafe → 放;SessionStepUp → 验 header 载的 step-up 证明。
 	if !isReadOnlyMethod(req.Method) {
-		return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
+		if err := r.authorizeSessionWrite(ctx, req, validated); err != nil {
+			return admin.AdminIdentity{}, err
+		}
 	}
 	// admin-role session → 平台级全权 admin(D3:全租户)。ScopeTenantID 留 0 即平台级。
 	// Source=session + UserID 供审计归属(AuditActor)与后续写端点接线区分来源。
@@ -94,6 +97,26 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminI
 		UserID: validated.UserID,
 		Role:   admin.RolePlatformAdmin,
 	}, nil
+}
+
+// authorizeSessionWrite 按路由标注的写分级判定 session-admin 的写请求。fail-closed:
+// 未标注(writeClassNone)一律拒。step-up 证明走 HTTP header(避开 danger 端点的
+// DisallowUnknownFields、不碰 r.Body)。
+func (r *Resolver) authorizeSessionWrite(ctx context.Context, req *http.Request, validated usersession.ValidatedSession) error {
+	switch writeClassFromContext(req.Context()) {
+	case SessionSafe:
+		return nil
+	case SessionStepUp:
+		if r.stepUp == nil {
+			// SessionStepUp 路由但未接线 verifier:fail-closed 503,绝不放行。
+			return admin.ErrAdminBackend
+		}
+		return r.stepUp.VerifyStepUp(ctx,
+			validated.TenantID, validated.UserID,
+			req.Header.Get(StepUpPasswordHeader), req.Header.Get(StepUpTwoFactorHeader))
+	default:
+		return admin.ErrAdminUnauthorized
+	}
 }
 
 // isReadOnlyMethod 判定请求是否为只读方法。session 通道灰度期只放行这些。
