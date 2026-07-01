@@ -203,6 +203,12 @@ func parseAllowedOrigins(raw string) map[string]struct{} {
 	return out
 }
 
+// spaContentSecurityPolicy 是内嵌前端「文档面」的 CSP:允许加载同源脚本/样式/字体/图片、
+// 同源 fetch(connect-src),行内样式属性(React 的 style={} 会生成 inline style)需 'unsafe-inline';
+// 仍保留 frame-ancestors 'none' 防点击劫持、base-uri / form-action 'self' 收口跳转与表单目标。
+// 与 API 面的 default-src 'none' 分流:文档要能自举、API 要彻底锁死,两者 CSP 不能共用一份。
+const spaContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
 // securityHeaders 在每个响应上安装浏览器安全响应头契约。
 // 该网关是一个 JSON API,背后是面向浏览器的 /v1/auth、/v1/sessions、
 // /v1/api-keys、/v1/admin 路由,这些此前一个安全响应头都没有。
@@ -214,8 +220,14 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
-		// API 响应是 JSON,绝非文档上下文:把页面彻底锁死。
-		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		// CSP 按响应面分流:API 响应是 JSON、绝非文档上下文,default-src 'none' 把页面彻底锁死;
+		// 但内嵌 SPA 的 HTML 外壳(及其 /assets 静态资源)是文档,必须允许加载自身的同源
+		// 脚本/样式,否则 'none' 会连它自己的 JS/CSS 一起拦死 → 整个前端白屏。
+		if webui.IsAPIPath(r.URL.Path) {
+			h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		} else {
+			h.Set("Content-Security-Policy", spaContentSecurityPolicy)
+		}
 		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		}
