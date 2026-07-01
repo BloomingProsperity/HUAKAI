@@ -45,7 +45,9 @@ func TestAdminBalanceCreditHandlerPlatformAdminReturnsNetBalance(t *testing.T) {
 	if !service.called {
 		t.Fatal("platform_admin did not reach money service")
 	}
-	if service.got.ActorID != "admin_token:11" || service.got.TenantID != 7 || service.got.UserID != 3 ||
+	// ActorID 必须是纯数字 TokenID:payment 归属 sink 是 int64(parseAdminActorID 会 ParseInt),
+	// 传 AuditActor() 的 "admin_token:11" 会被解析成 0、丢充值归属。变异:改回 ident.AuditActor() → RED。
+	if service.got.ActorID != "11" || service.got.TenantID != 7 || service.got.UserID != 3 ||
 		!service.got.Amount.Equal(decimal.RequireFromString("200.00000000")) ||
 		service.got.ExternalTradeNo != "admin-idem-200" {
 		t.Fatalf("service input mismatch: %+v", service.got)
