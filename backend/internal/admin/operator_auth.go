@@ -24,14 +24,42 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
+// admin 身份来源:token=admin_tokens(hk_admin_ 程序化凭据),session=admin-role
+// 用户会话(role 制单登录)。审计归属据此区分,带 admin_tokens(id) 外键的列只对 token 源写入。
+const (
+	AdminSourceToken   = "token"
+	AdminSourceSession = "session"
+)
+
 // AdminIdentity 是 AdminResolver 产出的已解析运维上下文。
 // ScopeTenantID 仅在 Role==RoleTenantOperator 时非零;对 platform_admin
 // 该字段为 0,且 handler 的 RBAC 允许跨 tenant。
+//
+// Source 记录凭据通道:token 源 TokenID 有效、UserID=0;session 源反之
+// (UserID=发起操作的 users.id、TokenID=0)。空 Source 视同 token(既有令牌通道零变)。
 type AdminIdentity struct {
 	TokenID       int64
+	UserID        int64
+	Source        string
 	Role          string
 	ScopeTenantID int64
 	Bootstrap     bool
+}
+
+// AuditActor 返回稳定的审计归属串,按来源区分,不因 session-admin 的 TokenID=0
+// 而误记成 token 0:
+//
+//	token 源(含空源,兼容既有)-> "admin_token:<TokenID>"
+//	session 源                -> "admin_user:<UserID>"
+//
+// 相较 new-api/sub2api 单身份模型把 admin 动作坍缩成同一个登录 id,本方法保留
+// 「程序化 token vs 人的会话」通道来源(取证可分)。写端点接入 session 通道前,
+// 所有 actor 字段须改走本方法——那是改动持久化审计格式的一步,Owner-gated。
+func (i AdminIdentity) AuditActor() string {
+	if i.Source == AdminSourceSession {
+		return fmt.Sprintf("admin_user:%d", i.UserID)
+	}
+	return fmt.Sprintf("admin_token:%d", i.TokenID)
 }
 
 // AdminResolver 将入站 admin 请求对 admin_tokens 进行认证。
@@ -85,6 +113,7 @@ func (r *AdminResolver) Resolve(ctx context.Context, req *http.Request) (AdminId
 		}
 		return AdminIdentity{
 			TokenID:       row.ID,
+			Source:        AdminSourceToken,
 			Role:          row.Role,
 			ScopeTenantID: scope,
 			Bootstrap:     row.Bootstrap,

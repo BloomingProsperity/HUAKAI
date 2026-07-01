@@ -48,7 +48,11 @@ func (s stubRoles) UserRole(context.Context, int64, int64) (string, error) {
 }
 
 func req(bearer string) *http.Request {
-	r := httptest.NewRequest(http.MethodGet, "/admin/v1/api-keys", nil)
+	return reqM(http.MethodGet, bearer)
+}
+
+func reqM(method, bearer string) *http.Request {
+	r := httptest.NewRequest(method, "/admin/v1/api-keys", nil)
 	if bearer != "" {
 		r.Header.Set("Authorization", "Bearer "+bearer)
 	}
@@ -105,6 +109,40 @@ func TestSessionAdminGrantsPlatformAdmin(t *testing.T) {
 	}
 	if id.ScopeTenantID != 0 {
 		t.Fatalf("平台级 admin 的 ScopeTenantID 应为 0(全租户),得 %d", id.ScopeTenantID)
+	}
+	// Source/UserID 供审计归属区分来源(P1 审计误归的正解基础)。
+	// 变异:若 session 分支不打 Source=session → 归属会退回 admin_token:0 → 断言 RED。
+	if id.Source != admin.AdminSourceSession {
+		t.Fatalf("session-admin 的 Source 应为 session,得 %q", id.Source)
+	}
+	if id.UserID != 9 {
+		t.Fatalf("session-admin 的 UserID 应取自 session(9),得 %d", id.UserID)
+	}
+	if id.AuditActor() != "admin_user:9" {
+		t.Fatalf("session-admin 审计归属应为 admin_user:9,得 %q", id.AuditActor())
+	}
+}
+
+// 灰度只读端点先行:knob 开 + role=admin,但写方法(POST/PUT/PATCH/DELETE)经 session 通道
+// 一律拒——写路径仍只认 token。这样即便翻开 knob,P1 的写端点隐患(审计误归 + Hermes 外键崩)
+// 在灰度期物理上无法触发。
+// 变异:若删掉 resolver 里的 isReadOnlyMethod gate → POST 会放行成平台级 admin → 下列断言 RED。
+func TestSessionWriteMethodDeniedReadOnlyGate(t *testing.T) {
+	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		tok := &stubToken{err: admin.ErrAdminUnauthorized}
+		sess := &stubSession{out: usersession.ValidatedSession{TenantID: 3, UserID: 9}}
+		r := New(tok, sess, stubRoles{role: "admin"}, nil, on())
+		_, err := r.Resolve(context.Background(), reqM(m, "valid-session"))
+		if !errors.Is(err, admin.ErrAdminUnauthorized) {
+			t.Fatalf("method=%s 经 session 通道写应被只读 gate 拒,得 err=%v", m, err)
+		}
+	}
+	// 反向对照:同样 session 走 GET(只读)→ 放行,证明拒的是"写方法"而非"session 通道整体"。
+	tok := &stubToken{err: admin.ErrAdminUnauthorized}
+	sess := &stubSession{out: usersession.ValidatedSession{TenantID: 3, UserID: 9}}
+	r := New(tok, sess, stubRoles{role: "admin"}, nil, on())
+	if _, err := r.Resolve(context.Background(), reqM(http.MethodGet, "valid-session")); err != nil {
+		t.Fatalf("GET(只读)经 session 通道应放行,得 err=%v", err)
 	}
 }
 
