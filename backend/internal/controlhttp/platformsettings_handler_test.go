@@ -169,7 +169,7 @@ func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
 		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service:                 svc,
-		CaptchaSecretConfigured: false,
+		CaptchaSecretConfigured: func(context.Context) bool { return false },
 	})
 
 	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
@@ -192,6 +192,33 @@ func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 	}
 }
 
+// TestHandlerPUTCaptchaEnabledAllowedWhenSecretConfigured 是上面的判别镜像:secret 已配置
+// (resolver 返回 true)时启用 captcha 必须放行到 Upsert。变异:若把配置门写死成恒 false
+// (无视 resolver)→ 本用例会拿到 400 而非放行 → RED;证明 resolver 的 true 分支真被消费。
+func TestHandlerPUTCaptchaEnabledAllowedWhenSecretConfigured(t *testing.T) {
+	svc := &platformSettingsServiceStub{
+		upsertResult: platformsettings.StoredSetting{
+			Key:    platformsettings.KeyCaptchaEnabled,
+			Value:  "true",
+			Source: platformsettings.SourceDB,
+		},
+	}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service:                 svc,
+		CaptchaSecretConfigured: func(context.Context) bool { return true },
+	})
+
+	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
+		"value": "true",
+	})
+
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	if svc.upsertCalls != 1 || svc.lastUpsert.Key != platformsettings.KeyCaptchaEnabled || svc.lastUpsert.Value != "true" {
+		t.Fatalf("configured-secret enable upsert calls=%d input=%+v", svc.upsertCalls, svc.lastUpsert)
+	}
+}
+
 // TestHandlerGETCaptchaEnabledShowsMissingSecretHealth 给管理员提供这个运行时
 // 配置错误信号,它取代了原先的启动失败。变异检查:移除健康状态装饰后,响应仍会
 // 返回该设置,但缺少降级的「缺失 secret」标记。
@@ -206,7 +233,7 @@ func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
 		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service:                 svc,
-		CaptchaSecretConfigured: false,
+		CaptchaSecretConfigured: func(context.Context) bool { return false },
 	})
 
 	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/captcha_enabled", nil)

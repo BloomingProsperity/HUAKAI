@@ -32,6 +32,11 @@ const (
 	KeyTwoFactorEnabled               SettingKey = "two_factor_enabled"
 	KeyCaptchaProvider                SettingKey = "captcha_provider"
 	KeyCaptchaSiteKey                 SettingKey = "captcha_site_key"
+	// KeyCaptchaSecret 是人机验证提供方(Turnstile/reCAPTCHA/hCaptcha)的**服务端** secret,
+	// 校验 token 时用。secret key,at-rest 加密、写后不回显;网关登录/注册端点请求期读它做
+	// 校验,空则回退 env HUAKAI_CAPTCHA_TURNSTILE_SECRET(back-compat)。与 captcha_site_key
+	//(公开、前端渲染用)相对——site key 公开、secret 保密。
+	KeyCaptchaSecret                  SettingKey = "captcha_secret"
 	KeyOAuthProvidersEnabled          SettingKey = "oauth_providers_enabled"
 	// KeyTelegramBotUsername 是 Telegram Login Widget 渲染所需的**公开** bot 用户名
 	//(即 t.me/<name> 里那个名,绝非密钥;密钥是下面的 KeyTelegramBotToken)。
@@ -103,7 +108,7 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -117,6 +122,7 @@ var (
 		KeyTwoFactorEnabled:               "true",
 		KeyCaptchaProvider:                "",
 		KeyCaptchaSiteKey:                 "",
+		KeyCaptchaSecret:                  "",
 		KeyOAuthProvidersEnabled:          "",
 		KeyTelegramBotUsername:            "",
 		KeyTelegramBotToken:               "",
@@ -202,7 +208,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyPasskeyRPOrigins || key == KeyModerationExternalAPIKeys {
 		return validateStringArrayValue(key, value)
 	}
-	if key == KeyPasskeyRPID || key == KeySiteSubtitle || key == KeySiteContactInfo || key == KeyTelegramBotToken {
+	if key == KeyPasskeyRPID || key == KeySiteSubtitle || key == KeySiteContactInfo || key == KeyTelegramBotToken || key == KeyCaptchaSecret {
 		return validateOptionalPublicTextValue(key, value)
 	}
 	if key == KeyTelegramBotUsername {

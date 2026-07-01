@@ -619,6 +619,21 @@ func telegramBotTokenResolver(d *deps) func(context.Context) string {
 	}
 }
 
+// captchaSecretResolver 请求期解析 captcha secret:后台设置 KeyCaptchaSecret 优先(settings-first),
+// 空则回退 env HUAKAI_CAPTCHA_TURNSTILE_SECRET(back-compat)。使运营在管理台配/换 secret 即生效、不重部署。
+func captchaSecretResolver(d *deps) func(context.Context) string {
+	return func(ctx context.Context) string {
+		if d.platformSettings != nil {
+			if s, err := d.platformSettings.Get(ctx, platformsettings.KeyCaptchaSecret); err == nil {
+				if v := strings.TrimSpace(s.Value); v != "" {
+					return v
+				}
+			}
+		}
+		return captchaTurnstileSecret()
+	}
+}
+
 func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 	return gatewayhttp.AuthHandlerDeps{
 		Auth:             d.userAuth,
@@ -630,7 +645,7 @@ func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 		ClientIPResolver: d.clientIPResolver,
 		Captcha: captcha.NewVerifier(
 			d.platformSettings,
-			captchaTurnstileSecret(),
+			captchaSecretResolver(d),
 			&http.Client{Timeout: 10 * time.Second},
 		),
 		LoginThrottle:            d.loginThrottle,

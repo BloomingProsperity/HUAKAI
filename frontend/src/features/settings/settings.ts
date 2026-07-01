@@ -121,7 +121,7 @@ export function controlFor(key: string): SettingControl {
  * 唯一来源:后端读路径对这些 key 脱敏(清空明文 value、改给 value_configured)。
  * 前端据此判定控件为 secret 且不回显明文。
  */
-const SECRET_KEYS = new Set<string>(['moderation_external_api_keys', 'telegram_bot_token'])
+const SECRET_KEYS = new Set<string>(['moderation_external_api_keys', 'telegram_bot_token', 'captcha_secret'])
 
 /*
  * 9 个分签的归组表。规则:后端每一个 platform-settings key 必须且只能出现在一个 tab。
@@ -174,6 +174,7 @@ export const TAB_GROUPS: SettingsTabGroup[] = [
       { key: 'captcha_enabled', label: '启用人机验证', hint: '需先配好 Turnstile 密钥', control: 'bool' },
       { key: 'captcha_provider', label: '验证码提供方', hint: 'turnstile / recaptcha / hcaptcha', control: 'string' },
       { key: 'captcha_site_key', label: '验证码 Site Key', hint: '前端公开 site key', control: 'string' },
+      { key: 'captcha_secret', label: '验证码 Secret', hint: '提供方服务端校验密钥(脱敏存储、不回显);配置后即生效、无需重部署,留空则回退环境变量。配好本项才能开启人机验证', control: 'secret' },
       { key: 'passkey_enabled', label: '启用 Passkey 登录', control: 'bool' },
       { key: 'passkey_registration_enabled', label: '允许注册 Passkey', control: 'bool' },
       { key: 'passkey_rp_id', label: 'Passkey RP ID', hint: '依赖方域名标识', control: 'string' },
