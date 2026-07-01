@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/loglevel"
 )
 
@@ -23,9 +24,10 @@ type logLevelAuth interface {
 // PUT {"level":"debug"} 在运行时设置级别(委托给 zap 的
 // AtomicLevel.ServeHTTP)。挂载在 /admin/v1 和 /v1/admin 之下。
 func MountLogLevelRoutes(r chi.Router, d LogLevelDeps) {
+	// SessionSafe:运行时日志级别切换(zap 进程内原子变量,即时可逆),登录 admin(session)可直接写。
 	h := newLogLevelHandler(d)
 	r.Get("/loglevel", h)
-	r.Put("/loglevel", h)
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Put("/loglevel", h)
 }
 
 func newLogLevelHandler(d LogLevelDeps) http.HandlerFunc {
