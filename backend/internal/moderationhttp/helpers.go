@@ -138,7 +138,8 @@ func positivePathID(w http.ResponseWriter, raw string, name string) (int64, bool
 }
 
 func adminActorID(ident admin.AdminIdentity) string {
-	return strconv.FormatInt(ident.TokenID, 10)
+	// 统一审计 actor 归属:token 源返 admin_token:<id>,session 源返 admin_user:<id>
+	return ident.AuditActor()
 }
 
 func formatTime(t time.Time) string {

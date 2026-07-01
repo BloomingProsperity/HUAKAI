@@ -77,8 +77,8 @@ func TestAdminTenantOperatorDefaultsToScopedTenant(t *testing.T) {
 	if service.saved.TenantID != 7 || service.saved.UserID != 42 {
 		t.Fatalf("saved scope tenant=%d user=%d want scoped tenant 7 and path user 42", service.saved.TenantID, service.saved.UserID)
 	}
-	if service.saved.UpdatedBy != "admin:99" {
-		t.Fatalf("updated_by=%q want admin:99", service.saved.UpdatedBy)
+	if service.saved.UpdatedBy != "admin_token:99" {
+		t.Fatalf("updated_by=%q want admin_token:99", service.saved.UpdatedBy)
 	}
 }
 

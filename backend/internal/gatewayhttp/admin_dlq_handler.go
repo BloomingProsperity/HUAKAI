@@ -74,7 +74,7 @@ func NewAdminDLQReplayHandler(d AdminDLQDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_dlq_id", "id must be a positive int64")
 			return
 		}
-		row, err := store.Replay(r.Context(), id, strconv.FormatInt(ident.TokenID, 10))
+		row, err := store.Replay(r.Context(), id, ident.AuditActor())
 		if err != nil {
 			switch {
 			case errors.Is(err, dlq.ErrNotFound):

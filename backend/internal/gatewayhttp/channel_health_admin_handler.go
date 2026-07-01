@@ -187,7 +187,7 @@ func channelHealthMutationHandler(
 			writeJSONError(w, http.StatusBadRequest, "reason_required", "reason is required")
 			return
 		}
-		rec, err := fn(r.Context(), d.Controller, key, strconv.FormatInt(ident.TokenID, 10), req.Reason)
+		rec, err := fn(r.Context(), d.Controller, key, ident.AuditActor(), req.Reason)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "channel_health_override_failed", err.Error())
 			return

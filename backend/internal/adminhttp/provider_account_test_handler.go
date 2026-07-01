@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -161,7 +160,7 @@ func writeProviderAccountTestReadError(w http.ResponseWriter, err error, code st
 }
 
 func writeProviderAccountTestAudit(ctx context.Context, r *http.Request, store providerAccountTestAccountStore, ident admin.AdminIdentity, tenantID, accountID int64, result credentialworker.ProviderAccountCredentialTestResult, testErr error) error {
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+	actorID := ident.AuditActor()
 	reqID := middleware.GetReqID(r.Context())
 	reason := "测试 provider account credential"
 	errorClass := result.ErrorClass

@@ -137,7 +137,7 @@ func newRatioUpsertHandler(d AdminPricingRatioDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		actor := fmt.Sprintf("admin_token:%d", ident.TokenID)
+		actor := ident.AuditActor()
 		row, err := d.Store.UpsertRatio(r.Context(), pricingcatalog.UpsertRatioParams{
 			TenantID:    page.TenantID,
 			PoolGroupID: poolGroupID,
@@ -169,7 +169,7 @@ func newRatioDeleteHandler(d AdminPricingRatioDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		actor := fmt.Sprintf("admin_token:%d", ident.TokenID)
+		actor := ident.AuditActor()
 		if err := d.Store.DeleteRatio(r.Context(), pricingcatalog.DeleteRatioParams{
 			TenantID:    page.TenantID,
 			PoolGroupID: poolGroupID,

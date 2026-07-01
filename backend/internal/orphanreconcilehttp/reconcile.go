@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -134,7 +133,7 @@ func buildAuditHook(ident admin.AdminIdentity, req reconcileRequest, reqID strin
 		}
 		_, err := admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 			TenantID:   &tenantID,
-			ActorID:    fmt.Sprintf("%d", ident.TokenID),
+			ActorID:    ident.AuditActor(),
 			ActorRole:  auditActorRole(ident),
 			Action:     auditAction(result.Status),
 			TargetType: auditTargetType,

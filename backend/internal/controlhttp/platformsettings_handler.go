@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -136,7 +135,7 @@ func newPlatformSettingsPutHandler(d PlatformSettingsDeps) http.HandlerFunc {
 			platformSettingsWriteJSONError(w, http.StatusBadRequest, "captcha_secret_required", "cannot enable CAPTCHA until Turnstile secret is configured")
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		setting, err := d.Service.Upsert(r.Context(), platformsettings.UpsertInput{
 			Key:       key,
 			Value:     *req.Value,

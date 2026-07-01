@@ -386,8 +386,9 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // actorID 是审计用的 ActorID(admin_audit_events.actor_id,一个 text 列)。
+// 统一走 AuditActor():token 源返 admin_token:<TokenID>,session 源返 admin_user:<UserID>。
 func actorID(ident admin.AdminIdentity) string {
-	return fmt.Sprintf("%d", ident.TokenID)
+	return ident.AuditActor()
 }
 
 // actorAttribution 是 created_by/last_modified_by_actor 列的取值

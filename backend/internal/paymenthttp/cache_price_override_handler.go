@@ -160,7 +160,8 @@ func parseCacheOverrideKey(w http.ResponseWriter, r *http.Request) (billing.Cach
 }
 
 func cacheOverrideActorID(ident admin.AdminIdentity) string {
-	return "admin:" + strconv.FormatInt(ident.TokenID, 10)
+	// 统一审计归属:token 源 "admin_token:<id>",session 源 "admin_user:<id>"。
+	return ident.AuditActor()
 }
 
 func cacheOverrideRecordView(rec billing.CacheOverrideRecord) cacheOverrideView {

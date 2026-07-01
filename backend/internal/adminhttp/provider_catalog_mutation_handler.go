@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -422,7 +421,7 @@ func buildProviderCatalogAuditParams(w http.ResponseWriter, r *http.Request, ide
 		reasonArg = &reason
 	}
 	return admindb.InsertAdminAuditEventParams{
-		TenantID: &tenantID, ActorID: fmt.Sprintf("%d", ident.TokenID), ActorRole: actorRole,
+		TenantID: &tenantID, ActorID: ident.AuditActor(), ActorRole: actorRole,
 		Action: action, TargetType: "provider", RequestID: reqIDArg,
 		Reason: reasonArg, Payload: raw,
 	}, true

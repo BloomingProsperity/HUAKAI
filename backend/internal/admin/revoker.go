@@ -105,7 +105,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 		}
 		if _, err := qtx.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 			TenantID:   nullableInt64(req.TenantID),
-			ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
+			ActorID:    req.Caller.AuditActor(),
 			ActorRole:  actorRole,
 			Action:     "revoke_api_key",
 			TargetType: "api_key",
@@ -144,7 +144,7 @@ func (r *KeyRevoker) auditDeny(ctx context.Context, req RevokeRequest, reason st
 	// 取证审查。
 	_, err := q.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID:   nil,
-		ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
+		ActorID:    req.Caller.AuditActor(),
 		ActorRole:  actorRole,
 		Action:     "revoke_api_key",
 		TargetType: "api_key",

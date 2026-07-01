@@ -73,10 +73,10 @@ func tenantPolicyReq(method, target, body string, ident *admin.AdminIdentity) *h
 	return req
 }
 
-// 守 PUT 核心: tenant 取自 query(7), inherit 取自 body(true), actor 取自已认证身份(admin-token:4242, 非 body), 响应反映。
+// 守 PUT 核心: tenant 取自 query(7), inherit 取自 body(true), actor 取自已认证身份(admin_token:4242, 非 body), 响应反映。
 // mutation: handler 把 actor 取自 body/写死 / tenant 误取 body / inherit 读错 → 对应断言红。
 func TestTenantPolicySet_FlipsTenantFromQueryInheritFromBodyActorFromIdentity(t *testing.T) {
-	store := &tenantPolicyStoreStub{setPolicy: registry.TenantPolicy{TenantID: 7, InheritGlobalCatalog: true, UpdatedByActor: "admin-token:4242", UpdatedAt: time.Unix(1700000000, 0).UTC()}}
+	store := &tenantPolicyStoreStub{setPolicy: registry.TenantPolicy{TenantID: 7, InheritGlobalCatalog: true, UpdatedByActor: "admin_token:4242", UpdatedAt: time.Unix(1700000000, 0).UTC()}}
 	rec := httptest.NewRecorder()
 	tenantPolicyRouter(AdminTenantPolicyDeps{Store: store}).ServeHTTP(rec,
 		tenantPolicyReq(http.MethodPut, "/v1/admin/model-registry-policy?tenant_id=7", `{"inherit_global_catalog":true}`, &admin.AdminIdentity{TokenID: 4242, Role: admin.RolePlatformAdmin}))
@@ -90,8 +90,8 @@ func TestTenantPolicySet_FlipsTenantFromQueryInheritFromBodyActorFromIdentity(t 
 	if store.lastSetInherit != true {
 		t.Fatalf("set inherit=%v want true (取自 body)", store.lastSetInherit)
 	}
-	if store.lastSetActor != "admin-token:4242" {
-		t.Fatalf("set actor=%q want admin-token:4242 (取自认证身份, 非 body)", store.lastSetActor)
+	if store.lastSetActor != "admin_token:4242" {
+		t.Fatalf("set actor=%q want admin_token:4242 (取自认证身份, 非 body)", store.lastSetActor)
 	}
 	var out struct {
 		Policy tenantPolicyView `json:"policy"`

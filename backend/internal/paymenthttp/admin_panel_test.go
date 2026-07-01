@@ -189,7 +189,7 @@ func TestAdminProviderConfigGetPutWiresRuntimeConfig(t *testing.T) {
 		t.Fatalf("PUT status=%d want 200; body=%s", putRec.Code, putRec.Body.String())
 	}
 	if svc.gotSetProviderConfig.ProviderKind != payment.ProviderTaobao || !svc.gotSetProviderConfig.Enabled ||
-		svc.gotSetProviderConfig.CheckoutURL != "https://pay.example/taobao" || svc.gotSetProviderConfig.UpdatedBy != "99" {
+		svc.gotSetProviderConfig.CheckoutURL != "https://pay.example/taobao" || svc.gotSetProviderConfig.UpdatedBy != "admin_token:99" {
 		t.Fatalf("PUT config not wired: %+v", svc.gotSetProviderConfig)
 	}
 }

@@ -321,7 +321,7 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, strin
 		writeAdminAuthError(w, err)
 		return 0, "", false
 	}
-	actor := fmt.Sprintf("admin-token:%d", ident.TokenID)
+	actor := ident.AuditActor()
 	switch ident.Role {
 	case admin.RoleTenantOperator:
 		if ident.ScopeTenantID <= 0 {

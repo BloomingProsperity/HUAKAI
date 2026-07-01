@@ -102,7 +102,7 @@ func newAdminFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *adm
 	t.Cleanup(func() {
 		c := context.Background()
 		_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE actor_id = $1`,
-			intStr(f.adminTokenID))
+			AdminIdentity{TokenID: f.adminTokenID, Source: AdminSourceToken}.AuditActor())
 		_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id = $1`, f.tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM admin_tokens WHERE id = $1`, f.adminTokenID)
 		_, _ = pool.Exec(c, `DELETE FROM api_keys WHERE tenant_id = $1`, f.tenantID)
@@ -371,8 +371,4 @@ func bcryptHashForTest(plaintext string) (string, error) {
 		return "", err
 	}
 	return string(hash), nil
-}
-
-func intStr(n int64) string {
-	return strconv.FormatInt(n, 10)
 }

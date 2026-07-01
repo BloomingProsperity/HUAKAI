@@ -148,7 +148,7 @@ func (h notifyAdminHandler) put(w http.ResponseWriter, r *http.Request) {
 	if !decodeNotifySettingsRequest(w, r, &req) {
 		return
 	}
-	settings := notifyRequestToSettings(req, tenantID, userID, fmt.Sprintf("admin:%d", ident.TokenID))
+	settings := notifyRequestToSettings(req, tenantID, userID, ident.AuditActor())
 	saved, err := h.deps.Service.UpsertSettings(r.Context(), settings)
 	if err != nil {
 		writeNotifyError(w, err, "notification_settings_update_failed")

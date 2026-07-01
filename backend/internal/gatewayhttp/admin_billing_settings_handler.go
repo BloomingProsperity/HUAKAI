@@ -130,7 +130,7 @@ func newAdminBillingSettingsPutHandler(d AdminBillingSettingsDeps) http.HandlerF
 			return
 		}
 
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		result, err := d.AuditUpdater.UpsertStreamInputOnlyInterruptedPolicyWithAudit(r.Context(), AdminBillingSettingsAuditUpdate{
 			TenantID:  req.TenantID,
 			Policy:    policy,

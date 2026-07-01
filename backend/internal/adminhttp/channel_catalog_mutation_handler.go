@@ -477,7 +477,7 @@ func buildChannelCatalogAuditParams(w http.ResponseWriter, r *http.Request, iden
 		reasonArg = &reason
 	}
 	return admindb.InsertAdminAuditEventParams{
-		TenantID: &tenantID, ActorID: fmt.Sprintf("%d", ident.TokenID), ActorRole: actorRole,
+		TenantID: &tenantID, ActorID: ident.AuditActor(), ActorRole: actorRole,
 		Action: action, TargetType: "channel", RequestID: reqIDArg,
 		Reason: reasonArg, Payload: raw,
 	}, true

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
@@ -324,7 +325,9 @@ func insertAdminAuditRow(ctx context.Context, tx pgx.Tx, rec MutationAuditRecord
 		return fmt.Errorf("hermesops: admin audit payload not json encodable: %w", err)
 	}
 	tenant := rec.TenantID
-	actorID := fmt.Sprintf("%d", rec.AdminActorTokenID)
+	// 与其它 handler 一致走 AuditActor()(admin_token:<id>),否则同一 operator 在同一
+	// admin_audit_events 表里被分裂成两种归属串、按新格式检索会漏掉 Hermes mutation 行。
+	actorID := admin.AdminIdentity{TokenID: rec.AdminActorTokenID, Source: admin.AdminSourceToken}.AuditActor()
 	reqID := nilIfEmpty(rec.RequestID)
 	targetID := rec.TargetID
 	_, err = admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{

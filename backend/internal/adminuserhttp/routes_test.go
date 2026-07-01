@@ -275,7 +275,7 @@ func TestAdminUnlockUserTenantScopedAudited(t *testing.T) {
 	if audit.calls != 1 {
 		t.Fatalf("audit calls=%d want 1", audit.calls)
 	}
-	if audit.arg.Action != "unlock_user" || audit.arg.TargetType != "user" || audit.arg.ActorID != "12" || audit.arg.ActorRole != admin.RoleTenantOperator {
+	if audit.arg.Action != "unlock_user" || audit.arg.TargetType != "user" || audit.arg.ActorID != "admin_token:12" || audit.arg.ActorRole != admin.RoleTenantOperator {
 		t.Fatalf("audit metadata mismatch: %+v", audit.arg)
 	}
 	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {

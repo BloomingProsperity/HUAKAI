@@ -311,7 +311,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 		// 丢弃审计轨迹。
 		if _, err := d.Queries.InsertAdminAuditEvent(r.Context(), admindb.InsertAdminAuditEventParams{
 			TenantID:   &tenantPtr,
-			ActorID:    fmt.Sprintf("%d", ident.TokenID),
+			ActorID:    ident.AuditActor(),
 			ActorRole:  actorRole,
 			Action:     "list_api_keys",
 			TargetType: "api_key",
