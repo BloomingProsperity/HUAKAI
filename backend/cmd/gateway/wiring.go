@@ -37,6 +37,7 @@ import (
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/settingscipher"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -802,7 +803,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	adminQueries := admindb.New(pgPool)
 	authQueries := dbauth.New(pgPool)
 	billingQueries := dbbilling.New(pgPool)
-	platformSettingsService := platformsettings.NewService(platformsettings.NewPostgresStore(pgPool), nil)
+	// 提前加载凭据加密主密钥,给 secret 平台设置做 at-rest 加密(secret settings 复用同一把主密钥)。
+	credentialKeys, err := loadCredentialKeyProvider()
+	if err != nil {
+		return nil, fmt.Errorf("load credential encryption key: %w", err)
+	}
+	settingsOpts := []platformsettings.Option{}
+	if settingsSecretCipher := settingscipher.New(credentialstore.NewCipher(credentialKeys)); settingsSecretCipher != nil {
+		settingsOpts = append(settingsOpts, platformsettings.WithSecretCipher(settingsSecretCipher))
+	}
+	platformSettingsService := platformsettings.NewService(platformsettings.NewPostgresStore(pgPool), nil, settingsOpts...)
 	if err := platformSettingsService.RefreshAll(ctx); err != nil {
 		logger.Warn("platform settings prewarm failed", zap.Error(err))
 	}
@@ -887,10 +897,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.outboxRuntime = opts.outboxRuntime
 	auditRefPolicy := buildAuditRefPolicy(opts.eventBus)
 
-	credentialKeys, err := loadCredentialKeyProvider()
-	if err != nil {
-		return nil, fmt.Errorf("load credential encryption key: %w", err)
-	}
+	// credentialKeys 已在前面(platformSettings 构造处)加载,此处直接复用。
 	if hermesService != nil {
 		hermesService.WithMessageContentKeys(credentialKeys)
 	}
