@@ -418,7 +418,13 @@ Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。�
 - **前端**:对不可逆/破坏性操作弹「此操作无法撤销,确认?」确认框(P5 做,纯 UX,可绕过但只为防手滑)。哪些不可逆 = 分级表里带 `irreversible` flag 的。
 - **high-risk 仍 token-only**:money/凭证/KEK/签发吊销/建删账号(60 个)保持 token-only。理由不变(独立锁 + money-via-session 需 P2b-2 int64 schema 迁移才能做,技术阻塞)。
 
-**据此简化机制(撤 1c7ed0d9 的 step-up 部分,保留 SessionSafe/fail-closed 框架)**:删 `internal/adminstepup` 包、`SessionStepUp` 档、header proof、`ErrAdminStepUp*` sentinel、resolver 的 step-up 分支与 stepUp 依赖。写分级收敛成二元:**token-only(默认 fail-closed)vs SessionSafe(显式放开)**。原 39 个「SessionStepUp」端点改归 SessionSafe(session 可直接写),危险者靠前端确认框。
+**据此简化机制(撤 1c7ed0d9 的 step-up 部分,保留 SessionSafe/fail-closed 框架)**:删 `internal/adminstepup` 包、`SessionStepUp` 档、header proof、`ErrAdminStepUp*` sentinel、resolver 的 step-up 分支与 stepUp 依赖。写分级收敛成二元:**token-only(默认 fail-closed)vs SessionSafe(显式放开)**。原 39 个「SessionStepUp」端点改归 SessionSafe(session 可直接写),危险者靠前端确认框。**已合 commit fe097f4e**(§14 反转写分级判定证红,测试全绿,默认关 knob 后零生产变)。
+
+**放开路由的落地架构(2026-07-01,已定 + chi 探针实证)**:
+- **否掉「中央 exact-pattern allowlist 中间件」**:探针证实 chi `RouteContext.RoutePattern()` 在【父路由 r.Use 中间件】里读到 `""`——父级中间件在 sub-router 匹配【之前】执行,拿不到叶子模式。故中央 allowlist 在 admin 父路由层不可靠。
+- **定为「per-route 注解」**:在各包 Mount 函数里给 SessionSafe 路由挂 `r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe))`。robust(不依赖路由内省)、class 紧贴路由(无漂移)、fail-closed(不挂即 token-only)。
+- **⚠️ 碰撞区限制**:per-route 注解须编辑承载包,但本会话硬约束【不碰 `gateway*`/`proxy`/`tlsfp` 等碰撞区包】。故这些包里的 SessionSafe 路由(gatewayhttp 池账号/渠道健康/L2缓存、proxyadminhttp 代理、tlsfphttp 指纹)**无法由我放开,继续 token-only**(与 money/凭证同待遇——基础设施层走令牌,合理)。
+- **可放开集(非碰撞区,~26 路由)**:adminuserhttp(用户 remark/状态/解锁/强关2FA/解绑,5)、controlhttp(分组路由增改停删,4)、modelbindingadminhttp(模型→pool 绑定增改删,3)、moderationhttp(关键词/哈希/解封,7)、adminquotahttp(配额策略增改,2)、announcementhttp(公告增改删,3)、adminhttp(loglevel/model-sync,2)。**这些是放开切片的落地目标**,每包 per-route 挂 SessionSafe + handler 端到端测试(证 knob 开时 session-admin 可写、token 仍可写、未挂路由仍拒)。
 
 ---
 
