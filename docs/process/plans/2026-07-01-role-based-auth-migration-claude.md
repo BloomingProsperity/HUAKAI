@@ -262,6 +262,35 @@ AdminAuthResolver.Resolve(ctx, req) →
 
 ---
 
+## ★ 深研设计结论(2026-07-01,25-agent Workflow wnbh0dm9n,P3/P5/P2b 三切片各 3-lens 对抗审查 + critic)
+
+**硬顺序链:P2b(keystone)→ P3;P5 后端无阻塞但 UX 依赖 P2b。** 三切片各有 S1,均源码亲核非误报。
+
+### P2b(写端点放开)——比原估更实,Owner-gated
+- **现网审计 actor 已 3 套格式并存、根本没走 `AuditActor()`**:`modelbindingadminhttp/routes.go:324`=`admin-token:%d`(连字符)、`pricingcataloghttp/pricing_ratio_handler.go:140`=`admin_token:%d`(下划线)、`adminquotahttp/validate.go:389`=裸 `%d`。统一到 `AuditActor()`(`admin_token:N`/`admin_user:N`)= **持久化审计格式迁移**,存量行不回填、取证工具须兼容旧格式 → §2 auth-core+审计格式变更,Owner-gated。
+- Hermes `admin_actor_token_id`(FK→admin_tokens)对 session 源(TokenID=0)必须写 NULL;15 site 里哪些列带此 FK 须逐列核。
+- S1:observability.sql 的 actor 过滤 UNION **不含 admin_audit_events**(设计的"第0层"前提为假,须重定位下游);oauth-callback mutating-GET **不过 session resolver**(白名单是死守卫,该端点用 OAuth flow_id/state 自证,不调 d.Auth.Resolve)。
+
+### P3(step-up)——扩展既有原语,非另造;3 个 S1
+- **二次密码+2FA step-up 原语已存在**:`passkeyhttp/stepup.go:44-77`(`LocalStepUpVerifier`,密码 argon2id 常时比较 + 2FA VerifyLogin,已生产接线 routes.go:716)。P3 真正新增 = **窗口 + anchor(绑 session FamilyID)+ 按路由挂门 + TTL 运维开关**。方案改为「给既有 verifier 加窗口」,delta 按 #12 重写为精确形态。
+- **S1-a anchor 数据不可达**:`AdminIdentity` 没带 session FamilyID,resolver 构造时丢弃 `validated.FamilyID` → 提权窗绑不到 session family。修:P2a 的 AdminIdentity 补 `FamilyID` + resolver 填充(加法,token 源留 0,零行为变)。
+- **S1-b proof 载体撞 `DisallowUnknownFields`**:danger 端点解码器禁未知字段、请求结构体无 step_up 字段 → proof 放 body 必 400,且中间件读 body 会耗尽 r.Body 致下游 EOF。修:**proof 走 HTTP header**(如 `X-Step-Up-*`),中间件不碰 body。
+- **S1-c `writeStepUpError` 缺 429**:`passkeyhttp/handler.go:297-308` 无 `twofa.ErrLocked`→429 分支,锁定后落 default→503(误导)。修:补 ErrLocked→429。
+- P3 覆盖面成功审计走 `admin_user:N` **依赖 P2b 已把 15 site 改走 AuditActor**,否则 session-admin 充值记成 `admin_token:0`。
+
+### P5(前端切壳)——唯一后端无阻塞(auth-core 审查 SOUND);4 个 S1
+- 权威来源 `getMe()` 的 panel 字段链已存在(`panelauth_handler.go`),不依赖 P2b/P3 新后端 knob。
+- **S1**:OAuth 登录落点 `OAuthCallbackPage.tsx`(setSessionTokens :62/:101)漏进 scope → OAuth admin 的 panel 恒 null;getMe() 须 **best-effort + knob 门控**(否则插进登录成功分支的 catch 会因瞬时 5xx 挡登录);getMe() 503 时的**降级壳未定义**(不能默认 admin 壳=提权,不能白屏)。
+- **UX 耦合**:admin 若在 P2b 前被切到运营台,其写操作 503/403(安全但断裂)——admin 密码登录只拿 session token、无 hk_admin token,operator 壳的 /admin 写端点在 P2b 放开前够不到。
+
+### ★ 给 Owner 的决策(§15,见下方 AskUserQuestion)
+1. **顺序 + 审计格式**:授权 P2b 先行(接受审计格式统一、存量不回填)?
+2. **token 通道 step-up 豁免**:程序化 hk_admin token 对高危操作豁免 step-up(持有即授权,对标 new-api)?
+3. **P5 排序**:P5 跟在 P2b 后(壳一上即可用)/ 先上(只读可用写待 P2b)/ 只弱化 token 框不切壳?
+- 工程默认(非 Owner-gated,除非否决):P3 扩展既有 verifier + header 载 proof + anchor 绑 FamilyID + ErrLocked→429;TTL 默认 300s、session 撤销/FamilyID 轮换连带失窗;P5 getMe best-effort+knob 门控、503 降级到最小只读壳、deny-by-default。
+
+---
+
 ## ★ P4 已合(2026-07-01,commit dc646749,对抗审查零 S0/S1)
 
 **已交付**:`panelauth.MaybeBootstrapAdminUser`——env `HUAKAI_ADMIN_BOOTSTRAP_EMAIL` 把默认工作
