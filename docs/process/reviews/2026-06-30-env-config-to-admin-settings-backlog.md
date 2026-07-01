@@ -8,6 +8,20 @@
 核心问题坐实:HUAKAI 一大批**运营者面向的功能配置锁死在 env**(改一下要重部署),而 sub2api 把这类放
 **后台管理设置 UI**(运营自助配、随时改、密钥写后不回显 `*_configured`)。
 
+## 进度(2026-07-01 更新)——Tier 1 已全部落地
+
+settings-first-with-env-fallback 架构落地,Tier 1 全部完成(每项零行为变更:设置为空 → 与迁移前一致):
+- ✅ **OAuth 7 家凭证 + 端点URL + 字段映射 + min_trust_level**:两 secret-key 拆分 `oauth_providers_config`
+  (公开 JSON)+ `oauth_providers_secrets`(密钥,加密+脱敏);`OAuthService` 加请求期 resolver
+  (settings-first 覆盖 env、未命中回退 boot 静态)。**Tier 2 的端点URL/字段映射一并覆盖**(config JSON 可带任意字段)。
+- ✅ **telegram bot token**:secret-key,登录/绑定端点请求期 settings-first。
+- ✅ **captcha turnstile secret**:secret-key,verifier + 配置门请求期 settings-first,消除双源一致性校验。
+- ✅ **registration mode**:`registrationMasterGate` 让 registration_enabled/invitation_required
+  后台设置真正驱动注册门(密码+社交两路),不再只在 sitepublic 只读展示。
+- ✅ **linuxdo min_trust_level / trust_level_field**:并入 OAuth config JSON 的数值/字符串字段。
+
+剩:Tier 3(payment HMAC,money,Owner-gated 待拍板)。下面为原始清单存档。
+
 ## Tier 1 — 高优先(运营上线必配,sub2api 已后台化)
 - **全部 OAuth provider 凭证**(google/github/qq/dingtalk/discord/nodeseek/linuxdo,各 client_id/client_secret/redirect_uri):
   config.go:305-446 仅从 env 读、boot 时一次性 build(lifecycle.go:330)→ 改要重部署。

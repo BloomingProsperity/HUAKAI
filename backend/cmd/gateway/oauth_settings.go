@@ -143,6 +143,14 @@ func overlayOAuthSettings(base userauth.OAuthConfig, pcfg map[string]any, psec s
 	if v, ok := str("display_name_field"); ok {
 		base.DisplayNameField = v
 	}
+	if v, ok := str("trust_level_field"); ok {
+		base.MinimumNumericClaimField = v
+	}
+	if raw, ok := pcfg["min_trust_level"]; ok {
+		if n, ok := oauthNumberFromAny(raw); ok {
+			base.MinimumNumericClaimValue = n
+		}
+	}
 	if raw, ok := pcfg["scopes"]; ok {
 		if scopes := oauthScopesFromAny(raw); len(scopes) > 0 {
 			base.Scopes = scopes
@@ -154,6 +162,25 @@ func overlayOAuthSettings(base userauth.OAuthConfig, pcfg map[string]any, psec s
 		}
 	}
 	return base
+}
+
+// oauthNumberFromAny 从 JSON 反序列化出的 any 里取非负整数(json.Unmarshal 数字默认是 float64)。
+func oauthNumberFromAny(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n < 0 {
+			return 0, false
+		}
+		return int64(n), true
+	case json.Number:
+		iv, err := n.Int64()
+		if err != nil || iv < 0 {
+			return 0, false
+		}
+		return iv, true
+	default:
+		return 0, false
+	}
 }
 
 func oauthScopesFromAny(v any) []string {
