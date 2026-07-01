@@ -2,13 +2,11 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // HUAKAI 前端构建配置。
-// - base 用相对路径,便于 go:embed 后由网关从任意挂载前缀提供静态资源。
-// - outDir 默认 frontend/dist(被 .gitignore 忽略);后续 embed 切片把 dist 拷进
-//   backend/internal/webui/dist 由 -tags embed 编进单二进制(沿 sub2api/new-api go:embed 范式)。
-// - dev 期 /api 代理到本地网关,避免跨域;生产期前端与网关同源,无需代理。
+// base 必须是绝对根 '/':勿改回 './'——相对 base 下深层路由(如 /oauth/callback)会把资源解析到
+// /oauth/assets/*,404 兜底成 index.html → 浏览器拿 HTML 当 JS → 白屏。
 export default defineConfig({
   plugins: [react()],
-  base: './',
+  base: '/',
   build: {
     outDir: 'dist',
     emptyOutDir: true,

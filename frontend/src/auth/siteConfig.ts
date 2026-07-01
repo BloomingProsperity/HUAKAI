@@ -90,7 +90,24 @@ function asStr(v: string | undefined): string {
  */
 export function parseOauthProviders(raw: string | string[] | undefined): string[] {
   if (raw == null) return []
-  const parts = Array.isArray(raw) ? raw : String(raw).split(',')
+  let parts: string[]
+  if (Array.isArray(raw)) {
+    parts = raw
+  } else {
+    const s = String(raw).trim()
+    // 兼容 JSON 数组字符串(如 '["github"]';settings 允许该形态、site/config 原样下发);
+    // 否则整串会被当成一个 provider 名。解析失败/非数组 → 回退逗号分隔。
+    if (s.startsWith('[')) {
+      try {
+        const arr: unknown = JSON.parse(s)
+        parts = Array.isArray(arr) ? arr.map((x) => String(x)) : s.split(',')
+      } catch {
+        parts = s.split(',')
+      }
+    } else {
+      parts = s.split(',')
+    }
+  }
   const seen = new Set<string>()
   const out: string[] = []
   for (const p of parts) {

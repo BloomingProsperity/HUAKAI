@@ -55,6 +55,16 @@ describe('parseSiteConfig', () => {
       'google',
     ])
   })
+  it('oauth_providers_enabled 兼容 JSON 数组字符串形态', () => {
+    // 变异:不解析 JSON(只 split ',')→ '["github"]' 成单个坏 provider → RED。
+    expect(parseSiteConfig({ oauth_providers_enabled: '["github"]' }).oauthProviders).toEqual(['github'])
+    expect(parseSiteConfig({ oauth_providers_enabled: '["github", "google"]' }).oauthProviders).toEqual([
+      'github',
+      'google',
+    ])
+    // 坏 JSON → 回退逗号分隔,不抛异常
+    expect(parseSiteConfig({ oauth_providers_enabled: '[bad' }).oauthProviders).toEqual(['[bad'])
+  })
   it('null 输入 → 全 fail-closed(回退配置)', () => {
     const cfg = parseSiteConfig(null)
     expect(cfg.registrationEnabled).toBe(false)
