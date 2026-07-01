@@ -46,7 +46,8 @@ func New(token TokenResolver, session SessionValidator, roles RoleStore, clientI
 }
 
 // Resolve 先令牌通道(hk_admin_ 前缀恒走),knob 开时再 session 通道。
-// session 任何失败(无效/查角色错/非 admin)一律 ErrAdminUnauthorized,与令牌通道反枚举语义一致。
+// session 通道灰度只读端点先行:仅放行只读方法(GET/HEAD),写方法拒。
+// session 任何失败(无效/查角色错/非 admin/写方法)一律 ErrAdminUnauthorized,与令牌通道反枚举语义一致。
 func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminIdentity, error) {
 	// nil 接收者 / 未配令牌通道:fail-closed 返 ErrAdminBackend(503),与既有 AdminResolver
 	// 的 nil 契约一致(未接线的 admin 面统一 503,不误报 401、也绝不 panic)。
@@ -79,8 +80,30 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminI
 	if panelauth.PanelForRole(role) != panelauth.PanelAdmin {
 		return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
 	}
+	// 灰度只读端点先行:session 通道当前仅放行只读方法(GET/HEAD)。写方法一律拒——
+	// 这样即便翻开 knob,session-admin 也够不到写路径,P1 的两处写端点隐患
+	//(TokenID=0 审计误归 + Hermes admin_actor_token_id 外键违约崩)在灰度期物理上无法触发。
+	// 放开写端点是独立的 Owner-gated 一步(P2b/P3 step-up 后),届时才把审计归属改走 AuditActor。
+	if !isReadOnlyMethod(req.Method) {
+		return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
+	}
 	// admin-role session → 平台级全权 admin(D3:全租户)。ScopeTenantID 留 0 即平台级。
-	return admin.AdminIdentity{Role: admin.RolePlatformAdmin}, nil
+	// Source=session + UserID 供审计归属(AuditActor)与后续写端点接线区分来源。
+	return admin.AdminIdentity{
+		Source: admin.AdminSourceSession,
+		UserID: validated.UserID,
+		Role:   admin.RolePlatformAdmin,
+	}, nil
+}
+
+// isReadOnlyMethod 判定请求是否为只读方法。session 通道灰度期只放行这些。
+func isReadOnlyMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		return true
+	default:
+		return false
+	}
 }
 
 func parseBearer(header string) (string, bool) {
