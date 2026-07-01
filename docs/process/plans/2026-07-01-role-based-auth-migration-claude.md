@@ -410,6 +410,21 @@ session 通道「灰度只读端点先行」——仅放行 GET/HEAD,写方法�
 
 **⚠️ 路由放开切片的强制项(对抗审查确认的潜伏跨层缺口,balance_credit 同类)**:机制切片里 `admin.ErrAdminStepUp{Required,Invalid,Locked}` 尚无任何 handler 的 `writeAdminAuthError` 副本映射(全仓 ~15 副本只认 ErrAdminBackend,余走 default→401)。机制切片下这些错误生产不可达(无真路由挂 AllowSessionWrite + knob 默认关),且 default→401 是 fail-closed 兜底(更严不误授权),故非 S0/S1。**但放开真 SessionStepUp 路由的切片【必须】同时**:①在承载该路由的包的 `writeAdminAuthError` 补 Required→403 / Invalid→401 / Locked→429(+Retry-After);②加一条 handler 端到端测试验此链(否则 403/429 静默坍缩成 401,丢掉设计刻意区分的可操作信号 + 429 退避提示)。
 
+### ★ admin 写端点风险分级表(2026-07-01,Workflow wr97jggxm:102 端点枚举→逐条对抗验证非 token-only 提议)
+
+**102 个写端点**。首轮 56 token-only,46 拟放开;对抗验证后 4 个被降回 token-only(passkey 删除=账号安全 / 改用户分组=耦合计费配额档 / 建 TLS 指纹 profile / 删配额策略)。**放开哪些=血案边界,Owner 拍板**;下表全在默认关 knob 后,翻 knob 才激活。
+
+**① SessionSafe(3,低危可逆无钱无凭证,Owner 已授权"放开低危配置类")**:
+- `PUT /admin/v1/users/{id}/remark`(adminuserhttp)——写用户 admin 备注自由文本。⚠️残留:回显未服务端消毒=存储型 XSS(admin-on-admin,前端渲染层问题,非"谁能写")。
+- `PUT /admin/v1/loglevel`(adminhttp)——运行时日志级别(zap 原子变量,进程内即时可逆)。⚠️切 debug 放大日志信息暴露面。
+- `DELETE /admin/v1/cache/l2/{key}`(gatewayhttp)——逐出一条 L2 缓存(可逆,下次请求回填)。
+
+**② SessionStepUp(39,中危可逆但有真实爆炸半径,需 Owner 明确授权+带 step-up)**:池账号编辑/停启/清限流/软删/批量、指纹 profile 绑定、用户账号恢复(强制关 2FA/解绑社交/解锁/封启)、模型→pool 绑定增改删、分组路由增改删停、渠道健康暂停/恢复/强激活、代理删/状态/质检、TLS profile 改/状态/删、模型目录同步、公告增改删、配额策略增改、审核关键词/哈希/API key 封禁增删。
+
+**③ token-only(56+4=60,永久,session 永远够不到)**:全部 money(充值/退款/发券/订阅/计费设置/价格/媒体对账)、凭证/KEK(provider 凭证增改删/轮换/采集流/粘贴导入/OAuth init/邮件 SMTP 密钥)、签发吊销(api-key/admin-token)、建/删账号、建代理(含凭证)、改用户分组、建 TLS profile、删配额策略。
+
+**放开路径的工程注意(非 policy)**:①注解穿透——SessionSafe 的 remark 埋在 adminuserhttp.MountRoutes 多端点混合挂载里,不能整包 wrap(会 fail-open 同包的 status/unlock 等 StepUp 路由),须 per-route 挂 `AllowSessionWrite`(改 Mount 函数按路由标注,或在 routes.go 单独注册该路由)。loglevel/L2cache 若单一用途可整组 wrap。②放开任何 SessionStepUp 路由的切片必须同时补 `admin.ErrAdminStepUp*`→403/401/429 handler 映射+端到端测试(见上"强制项")。
+
 **机制切片已合(2026-07-01,commit 1c7ed0d9)**:admin sentinels + `internal/adminstepup` 适配器(复用 passkeyhttp verifier,错误翻译)+ `adminsessionauth` 写分级(AllowSessionWrite 中间件 fail-closed / resolver enforcement / header proof)+ wiring 注入;全在默认关 knob 后零生产变;§14 变异(fail-closed default / step-up 错误传递 / 错译)均证红,对抗审查(3 镜头 × 逐条对抗验证)零 S0/S1。
 
 ---
