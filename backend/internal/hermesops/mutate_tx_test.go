@@ -22,9 +22,14 @@ type txRecorder struct {
 	lockKey        string
 	adminActorID   string // 捕获 admin_audit_events 写入的 actor_id,守其格式统一走 AuditActor()
 	toolCallInsert int
-	adminInsert    int
-	commitCount    int
-	rollbackCount  int
+	// toolCallTokenID 捕获 hermes_tool_calls 的 admin_actor_token_id 实参($3)。
+	// 它是 *int64:token>0 时指向该 id、token==0 时为 nil(持久化为 SQL NULL)。
+	// 守 insertToolCallRow 的 `if rec.AdminActorTokenID > 0` 分支——nil vs 非 nil 判别性。
+	toolCallTokenID    *int64
+	toolCallTokenIDSet bool // 是否见过一次 tool_calls insert(区分「未插入」与「插了个 nil」)
+	adminInsert        int
+	commitCount        int
+	rollbackCount      int
 	// rollbackLiveCtx 计数那些以 NON-cancelled(未被取消)context 调用的回滚。orchestrator
 	// 必须在一个 INDEPENDENT(独立)ctx 上回滚,而非那个已死的截止 ctx——否则回滚本身就会被取消,
 	// 连接池连接 + advisory lock 就会泄漏。一次以已取消 ctx 看到的回滚,意味着那份独立性丢失了。
@@ -60,6 +65,11 @@ func (tx *fakeMutateTx) QueryRow(_ context.Context, sql string, args ...any) pgx
 	switch {
 	case strings.Contains(sql, "INSERT INTO hermes_tool_calls"):
 		tx.rec.toolCallInsert++
+		// admin_actor_token_id 是第 3 个占位符($3)→ args 下标 2,类型 *int64。
+		tx.rec.toolCallTokenIDSet = true
+		if len(args) > 2 {
+			tx.rec.toolCallTokenID, _ = args[2].(*int64)
+		}
 		if tx.rec.toolCallErr != nil {
 			return errRow{err: tx.rec.toolCallErr}
 		}
@@ -181,6 +191,65 @@ func TestOrchestrator_CommitsMutationWithAuditAndLock(t *testing.T) {
 	}
 	if rec.commitCount != 1 || rec.rollbackCount != 0 {
 		t.Fatalf("commit=%d rollback=%d want 1/0", rec.commitCount, rec.rollbackCount)
+	}
+}
+
+func TestOrchestrator_ActorAttributionByTokenID(t *testing.T) {
+	// 回归(actor 归属、有区分度、刚修的 S1 区):Hermes mutation 镜像进 admin_audit_events 时,
+	// actor_id MUST(必须)走 admin.AdminIdentity.AuditActor()(admin_token:<id>);同一次 mutation
+	// 在 hermes_tool_calls 里落 admin_actor_token_id FK 列:token>0 写具体 id、token==0(非 admin 模式)
+	// 写 NULL(nil *int64)。两条腿一起锁,证明 AuditActor 归属格式与 FK NULL/非NULL 分支都不回退。
+	//
+	// 关键补充:token==0 这条腿此前完全无覆盖。若把 mutate_tx.go 里
+	//   actorID := admin.AdminIdentity{TokenID: rec.AdminActorTokenID, ...}.AuditActor()
+	// 退回裸 fmt.Sprintf("%d", rec.AdminActorTokenID),token=99 那腿仍得 "99"≠"admin_token:99" 会红,
+	// 但真正的语义漂移(token=0 该不该带 admin_token: 前缀、FK 列该不该是 NULL)只有 token==0 的用例能锁死。
+	cases := []struct {
+		name          string
+		tokenID       int64
+		wantActorID   string // admin_audit_events.actor_id 期望值(AuditActor 统一格式)
+		wantTokenNull bool   // hermes_tool_calls.admin_actor_token_id 是否应为 NULL
+	}{
+		// token>0:admin token 模式。actor_id 带 admin_token:<id>,FK 列写具体 id。
+		{name: "admin_token_present", tokenID: 99, wantActorID: "admin_token:99", wantTokenNull: false},
+		// token==0:非 admin 模式(未接 admin token 通道)。走 AuditActor→admin_token:0(与其它 handler
+		// 同格式,不因 token 缺失被分裂成裸 "0" 归属);FK 列 admin_actor_token_id 写 NULL——绝不能把 0
+		// 当成一个真实存在的 admin_tokens.id(那会撞 FK 或错误归因到 id=0 的 token)。
+		{name: "non_admin_actor_zero", tokenID: 0, wantActorID: "admin_token:0", wantTokenNull: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &txRecorder{}
+			o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
+			audit := baseRecord()
+			audit.AdminActorTokenID = tc.tokenID
+			_, err := o.Execute(context.Background(), "lock:actor", audit, func(context.Context, pgx.Tx) (ToolResult, error) {
+				return ToolResult{Summary: map[string]any{"enabled": false}}, nil
+			})
+			if err != nil {
+				t.Fatalf("execute err=%v want nil", err)
+			}
+			// (a) admin_audit_events 镜像 actor_id 走 AuditActor 统一格式。
+			if rec.adminActorID != tc.wantActorID {
+				t.Fatalf("admin_audit actor_id=%q want %q(须走 AuditActor 统一格式,token=%d)", rec.adminActorID, tc.wantActorID, tc.tokenID)
+			}
+			// (b) hermes_tool_calls.admin_actor_token_id FK 列:token>0 非 nil 且等于 id;token==0 为 nil(NULL)。
+			if !rec.toolCallTokenIDSet {
+				t.Fatalf("tool_calls insert 从未发生(无法断言 admin_actor_token_id 分支)")
+			}
+			if tc.wantTokenNull {
+				if rec.toolCallTokenID != nil {
+					t.Fatalf("admin_actor_token_id=%v want NULL(nil)对 token=0——绝不能把 0 当真实 FK", *rec.toolCallTokenID)
+				}
+			} else {
+				if rec.toolCallTokenID == nil {
+					t.Fatalf("admin_actor_token_id=NULL want %d——token>0 必须落具体 FK id", tc.tokenID)
+				}
+				if *rec.toolCallTokenID != tc.tokenID {
+					t.Fatalf("admin_actor_token_id=%d want %d", *rec.toolCallTokenID, tc.tokenID)
+				}
+			}
+		})
 	}
 }
 

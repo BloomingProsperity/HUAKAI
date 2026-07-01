@@ -34,6 +34,17 @@ func TestBootstrapAdminUserFailsLoudOnNilPool(t *testing.T) {
 	}
 }
 
+// 守值校验顺序:tenantID<=0 的守卫必须排在 nil-pool 守卫之前。env 已设 + tenantID 非法 + pool 也为 nil
+// 时,应报 tenant 错(而非 nil pool 错)——顺序反了会先撞 nil-pool。
+// 变异:把 tenantID 守卫挪到 nil-pool 守卫之后 → 消息变 "nil pool" 不含 "tenantID" → RED。
+func TestBootstrapAdminUserTenantCheckBeforePoolCheck(t *testing.T) {
+	t.Setenv(AdminBootstrapEmailEnv, "ops@example.test")
+	err := MaybeBootstrapAdminUser(context.Background(), nil, 0, nil)
+	if !errors.Is(err, ErrBootstrapBackend) || !strings.Contains(err.Error(), "tenantID") {
+		t.Fatalf("tenantID 守卫应先于 nil-pool 守卫触发(错误含 tenantID),得 %v", err)
+	}
+}
+
 // env 已设但 tenantID 非法(<=0)→ fail-loud,不越权全表提升。
 // 断言错误消息含 "tenantID"(而非只判 ErrBootstrapBackend):tenant 守卫排在 nil-pool 守卫之前,
 // 二者都返 ErrBootstrapBackend——只判错误类型无法区分是哪道守卫拦的。

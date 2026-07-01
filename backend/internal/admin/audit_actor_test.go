@@ -33,3 +33,27 @@ func TestAuditActorSourceIsDiscriminating(t *testing.T) {
 		t.Fatalf("token 源与 session 源同值 id 归属串不应相同,均得 %q(Source 未参与判别)", tokenActor)
 	}
 }
+
+// 判别性:session 源即便 UserID=0(未填/异常)也必须走 session 前缀,
+// 绝不因数值为 0 而回退成 "admin_token:0" 把人的会话误记成 token 0。
+// 变异:若 AuditActor 的 session 判定改成 `Source==session && UserID!=0`
+// 这类"值非零才用 UserID"的错误短路 → 本例得 "admin_token:0" → RED。
+func TestAuditActorSessionZeroUserStillSessionPrefix(t *testing.T) {
+	got := AdminIdentity{Source: AdminSourceSession, UserID: 0}.AuditActor()
+	if got != "admin_user:0" {
+		t.Fatalf("session 源 UserID=0 AuditActor()=%q,want %q(不得回退成 token 形态)", got, "admin_user:0")
+	}
+}
+
+// 判别性:大小写敏感——Source 常量是精确串 "session";任何非精确匹配
+// (如 "Session"/"SESSION")按既有兼容语义退化为 token 源,绝不误判成 session。
+// 守 AuditActor 里 `i.Source == AdminSourceSession` 用的是精确等值而非
+// 大小写不敏感/前缀匹配。
+func TestAuditActorSourceIsCaseSensitiveExact(t *testing.T) {
+	for _, bad := range []string{"Session", "SESSION", "session ", " session", "token"} {
+		got := AdminIdentity{Source: bad, TokenID: 5, UserID: 9}.AuditActor()
+		if got != "admin_token:5" {
+			t.Fatalf("Source=%q AuditActor()=%q,want admin_token:5(非精确 session 串须退化为 token 源)", bad, got)
+		}
+	}
+}
