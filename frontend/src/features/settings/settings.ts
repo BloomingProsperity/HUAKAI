@@ -144,6 +144,7 @@ export const TAB_GROUPS: SettingsTabGroup[] = [
       { key: 'site_contact_info', label: '联系方式', hint: '公开的运营联系方式(邮箱/IM/自由文本)', control: 'string' },
       { key: 'site_doc_url', label: '文档链接', hint: '公开文档地址(http/https)', control: 'string' },
       { key: 'site_api_base_url', label: 'API 基础地址', hint: '公开网关地址,供用户配置客户端', control: 'string' },
+      { key: 'site_frontend_base_url', label: '前端站点地址', hint: '本站前端 URL(如 https://你的域名),配置后验证/重置/设备确认邮件会发完整可点链接(用户直接点);留空则发裸 token 由粘贴框兜底', control: 'string' },
     ],
   },
   {

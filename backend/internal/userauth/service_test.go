@@ -791,6 +791,51 @@ func TestApplyVerifiedSocialIdentityBoundEmaillessLogsIn(t *testing.T) {
 	}
 }
 
+// TestCompleteSocialSignupWithVerifiedEmail 锁定「OAuth 无邮箱补全」建号方法的四条不变量:
+// 建号+链身份+邮箱已验证;邮箱被占用拒;既有绑定幂等;注册关时拒。
+func TestCompleteSocialSignupWithVerifiedEmail(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+	svc.SocialSignup = true
+
+	idQQ := VerifiedIdentity{Provider: SocialProviderQQ, Subject: "qq-1", Email: SyntheticOAuthEmail(SocialProviderQQ, "qq-1"), EmailVerified: false}
+
+	// ① 新身份 + 新邮箱 → 建号 + 链接 + 邮箱已验证(调用方已验码)。
+	user, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, idQQ, "alice@example.test")
+	if err != nil {
+		t.Fatalf("① 建号应成功: %v", err)
+	}
+	if user.Email != "alice@example.test" || !user.EmailVerified {
+		t.Fatalf("① 建号 email/verified 不对: %+v", user)
+	}
+	// 链接已落:用 QQ 身份登录应直接到该用户。
+	gotLogin, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, idQQ)
+	if err != nil || gotLogin.ID != user.ID {
+		t.Fatalf("① 链接后登录应到本人,得 user=%d err=%v", gotLogin.ID, err)
+	}
+
+	// ② 邮箱已被占用(不同身份)→ ErrEmailExists,防抢注/接管。
+	idGH := VerifiedIdentity{Provider: SocialProviderGitHub, Subject: "gh-9", Email: SyntheticOAuthEmail(SocialProviderGitHub, "gh-9"), EmailVerified: false}
+	if _, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, idGH, "alice@example.test"); !errors.Is(err, ErrEmailExists) {
+		t.Fatalf("② 邮箱被占用应 ErrEmailExists,得 %v", err)
+	}
+
+	// ③ 既有绑定 → 幂等返回本人(不因邮箱不同而重复建号)。
+	again, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, idQQ, "other@example.test")
+	if err != nil || again.ID != user.ID {
+		t.Fatalf("③ 既有绑定应幂等返回本人,得 user=%d err=%v", again.ID, err)
+	}
+
+	// ④ 注册关闭 → 拒(与密码 Register 同闸)。变异:去掉 registrationMode 闸 → 这里会建号,断言 RED。
+	svc.RegistrationMode = RegistrationModeDisabled
+	if _, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, idGH, "bob@example.test"); !errors.Is(err, ErrRegistrationDisabled) {
+		t.Fatalf("④ 注册关闭应 ErrRegistrationDisabled,得 %v", err)
+	}
+}
+
 // TestLinkVerifiedSocialIdentity 锁定绑定腿的两条不变量:幂等 + 接管保护。
 func TestLinkVerifiedSocialIdentity(t *testing.T) {
 	ctx := context.Background()

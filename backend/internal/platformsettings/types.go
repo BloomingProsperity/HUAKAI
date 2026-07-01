@@ -85,6 +85,10 @@ const (
 	// （例如客户端要指向的 OpenAI 兼容 base）。它是一个公开 endpoint 地址，
 	// 绝非机密。
 	KeySiteAPIBaseURL SettingKey = "site_api_base_url"
+	// KeySiteFrontendBaseURL 是本站前端的公开 base URL(如 https://huakai.example),供后端拼接
+	// 邮件里的完整可点链接(验证/重置/新设备确认)。空 = 不拼链接,邮件回退到投递裸 token
+	//(前端落地页的手动粘贴框兜底)。非机密,是站点自己的地址。
+	KeySiteFrontendBaseURL SettingKey = "site_frontend_base_url"
 	// KeyAdminNotificationEmail 是每日运维巡检报告寄送到的运营者地址。默认为空：
 	// 未配置的部署解析不出收件人，巡检 worker 保持关闭（fail-safe）。worker 层
 	// 还另有一处 env 回退。
@@ -95,7 +99,7 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyTelegramBotUsername, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeyAdminNotificationEmail}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyOAuthProvidersEnabled, KeyTelegramBotUsername, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -152,6 +156,7 @@ var (
 		KeySiteContactInfo:                "",
 		KeySiteDocURL:                     "",
 		KeySiteAPIBaseURL:                 "",
+		KeySiteFrontendBaseURL:            "",
 		KeyAdminNotificationEmail:         "",
 	}
 )
@@ -199,7 +204,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return validateTelegramBotUsernameValue(key, value)
 	}
 	if key == KeyMediaTaskProviderBaseURL || key == KeyModerationExternalBaseURL ||
-		key == KeySiteDocURL || key == KeySiteAPIBaseURL {
+		key == KeySiteDocURL || key == KeySiteAPIBaseURL || key == KeySiteFrontendBaseURL {
 		return validateOptionalHTTPURLValue(key, value)
 	}
 	if key == KeyModerationExternalThresholds {

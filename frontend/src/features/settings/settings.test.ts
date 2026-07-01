@@ -75,6 +75,7 @@ const BACKEND_KEYS: string[] = [
   'site_contact_info',
   'site_doc_url',
   'site_api_base_url',
+  'site_frontend_base_url',
   'admin_notification_email',
 ]
 
@@ -89,7 +90,7 @@ describe('TAB_GROUPS 分签全覆盖', () => {
     const grouped = groupedKeys()
     expect(new Set(grouped).size).toBe(grouped.length) // 无重复
     expect(new Set(grouped)).toEqual(new Set(BACKEND_KEYS)) // 不漏不多
-    expect(grouped.length).toBe(56)
+    expect(grouped.length).toBe(57)
   })
 
   it('正好 9 个分签且 key 唯一', () => {

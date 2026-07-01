@@ -44,8 +44,13 @@ func loadGatewayConfig(logger *zap.Logger) (*Config, error) {
 	return cfg, nil
 }
 
-func buildAuthEmailSender(_ *Config, store mailinfra.SettingsStore, keys credentialstore.KeyProvider, logger *zap.Logger, outbox obsoutbox.Outbox) (gatewayhttp.AuthEmailSender, error) {
-	sender, err := mailinfra.BuildEmailSender(context.Background(), store, keys, mailinfra.WithOutbox(outbox))
+func buildAuthEmailSender(_ *Config, store mailinfra.SettingsStore, keys credentialstore.KeyProvider, logger *zap.Logger, outbox obsoutbox.Outbox, frontendBaseURL func(context.Context) string) (gatewayhttp.AuthEmailSender, error) {
+	opts := []mailinfra.AuthSenderOption{mailinfra.WithOutbox(outbox)}
+	if frontendBaseURL != nil {
+		// 前端 base URL 已配置时,鉴权邮件投递完整可点链接(用户直接点),否则回退裸 token + 前端粘贴框。
+		opts = append(opts, mailinfra.WithFrontendBaseURL(frontendBaseURL))
+	}
+	sender, err := mailinfra.BuildEmailSender(context.Background(), store, keys, opts...)
 	if err != nil {
 		return nil, err
 	}

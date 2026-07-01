@@ -957,7 +957,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 				zap.Error(gateErr))
 		}
 	}
-	authEmailSender, err := buildAuthEmailSender(cfg, emailSettingsStore, credentialKeys, logger, outboxStore)
+	// 前端 base URL 解析器:从 platformsettings 读 site_frontend_base_url(运营在设置里配),
+	// 使鉴权邮件能拼出完整可点链接;未配则返回空,邮件回退裸 token(前端粘贴框兜底)。
+	frontendBaseURLResolver := func(ctx context.Context) string {
+		setting, err := platformSettingsService.Get(ctx, platformsettings.KeySiteFrontendBaseURL)
+		if err != nil {
+			return ""
+		}
+		return setting.Value
+	}
+	authEmailSender, err := buildAuthEmailSender(cfg, emailSettingsStore, credentialKeys, logger, outboxStore, frontendBaseURLResolver)
 	if err != nil {
 		return nil, fmt.Errorf("build auth email sender: %w", err)
 	}
