@@ -43,6 +43,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/orphanreconcilehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
@@ -252,6 +253,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Route("/v1/auth", func(r chi.Router) {
 		mountInviteValidateRoutes(r, d)
 		gatewayhttp.MountAuthRoutes(r, authHandlerDeps(d, logger))
+		// 「社交登录无邮箱→补邮箱建号」两端点(独立包,不膨胀 gatewayhttp)。
+		oauthpendinghttp.MountRoutes(r, oauthPendingDeps(d, logger))
 		r.Route("/passkey", func(r chi.Router) {
 			passkeyhttp.MountLoginRoutes(r, passkeyHandlerDeps(d))
 		})
@@ -652,6 +655,39 @@ func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 		TwoFactor:                d.twoFactor,
 		TwoFactorSettings:        d.platformSettings,
 		TelegramBotTokenResolver: telegramBotTokenResolver(d),
+		OAuthPendingKey:          oauthPendingKey(d),
+	}
+}
+
+// oauthPendingKey 从会话签名密钥域分隔派生「社交登录补邮箱」流程专用密钥。会话服务/密钥缺失时返 nil
+// (补邮箱流程随之停用、端点返 503),不 panic。
+func oauthPendingKey(d *deps) []byte {
+	if d == nil || d.userSessions == nil {
+		return nil
+	}
+	return oauthpendinghttp.DeriveKey(d.userSessions.SigningKey)
+}
+
+// oauthPendingDeps 装配「补邮箱建号」独立包的依赖。EmailSender 用类型断言取具体 *email.AuthSender
+// (它实现 SendOAuthEmailCode);断言失败(如 Noop 装配)则不发码。事件经 gatewayhttp 的 AuthEventSink 记录。
+func oauthPendingDeps(d *deps, logger *zap.Logger) oauthpendinghttp.Deps {
+	var emailSender oauthpendinghttp.EmailCodeSender
+	if s, ok := d.authEmailSender.(oauthpendinghttp.EmailCodeSender); ok {
+		emailSender = s
+	}
+	sink := newAuthEventSink(logger)
+	return oauthpendinghttp.Deps{
+		Auth:        d.userAuth,
+		Sessions:    d.userSessions,
+		EmailSender: emailSender,
+		ClientIP:    d.clientIPResolver,
+		Key:         oauthPendingKey(d),
+		RecordEvent: func(ctx context.Context, eventType string, tenantID, userID int64, provider, outcome, reasonClass string) {
+			sink.RecordAuthEvent(ctx, gatewayhttp.AuthEvent{
+				EventType: eventType, TenantID: tenantID, UserID: userID,
+				Provider: provider, Outcome: outcome, ReasonClass: reasonClass, AuthMethod: provider,
+			})
+		},
 	}
 }
 

@@ -158,6 +158,32 @@ func (s *AuthSender) SendDeviceConfirmation(ctx context.Context, user userauth.U
 	return err
 }
 
+// SendOAuthEmailCode 给「社交登录无邮箱 → 补邮箱」流程发一次性验证码到裸邮箱(账号尚未建、无 User)。
+// 与验证/重置邮件不同:这里发的是**要用户填回的短码**(非可点链接/长 token),复用同一发送链路 + 冷却。
+func (s *AuthSender) SendOAuthEmailCode(ctx context.Context, tenantID int64, email, code string) error {
+	if s == nil {
+		return ErrEmailBackendUnconfigured
+	}
+	if strings.TrimSpace(email) == "" || strings.TrimSpace(code) == "" {
+		return nil
+	}
+	allowed, rollback := s.reserveCooldown("oauth_code", tenantID, email, s.verificationCooldown)
+	if !allowed {
+		return nil
+	}
+	err := s.sendForTenant(ctx, tenantID, Message{
+		TenantID: tenantID,
+		To:       email,
+		Subject:  "HUAKAI email verification code",
+		HTMLBody: buildOAuthCodeBody(code),
+	})
+	if err != nil {
+		// 见 SendVerification:硬失败回滚冷却,避免吞掉合法重发。
+		rollback()
+	}
+	return err
+}
+
 func (s *AuthSender) EmailVerificationEnabled(ctx context.Context, tenantID int64) (bool, error) {
 	if s == nil || s.store == nil {
 		return false, ErrEmailBackendUnconfigured
@@ -346,6 +372,17 @@ func buildPasswordResetBody(link, token string) string {
 
 func buildDeviceConfirmationBody(link, token string) string {
 	return buildAuthActionBody("A new device tried to sign in to your HUAKAI account. Authorize it:", link, token, "Confirm device", "If this was not you, ignore this email and change your password.")
+}
+
+// buildOAuthCodeBody 构造补邮箱验证码邮件体:显著展示要填回的一次性短码(非链接)。
+func buildOAuthCodeBody(code string) string {
+	code = SanitizeHeaderValue(code)
+	var b strings.Builder
+	b.WriteString(`<html><body><p>Enter this verification code to finish signing in to HUAKAI:</p>`)
+	b.WriteString(`<p style="font-size:20px;font-weight:bold;letter-spacing:2px"><code>`)
+	b.WriteString(code)
+	b.WriteString(`</code></p><p>This code expires soon. If you did not try to sign in, ignore this email.</p></body></html>`)
+	return b.String()
 }
 
 type VerificationPolicy struct {

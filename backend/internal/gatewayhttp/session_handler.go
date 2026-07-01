@@ -10,6 +10,7 @@ import (
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
+	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
@@ -309,5 +310,62 @@ func writeDeviceConfirmationError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusUnauthorized, "device_confirmation_expired", "device confirmation token is expired")
 	default:
 		writeJSONError(w, http.StatusServiceUnavailable, "device_confirmation_backend_error", "device confirmation backend transient failure")
+	}
+}
+
+// newAuthOAuthCallbackHandler 处理配置化社交 OAuth 回调:换取已校验身份→建会话登录;身份缺已验证
+// 邮箱(QQ/无验证邮箱 GitHub 等)则签发 pending_token 让前端走「补邮箱建号」(端点在 oauthpendinghttp)。
+func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Auth == nil || d.Sessions == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth/session dependency unset")
+			return
+		}
+		var req authOAuthCallbackRequest
+		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		if err := requireOAuthStateCookie(w, r, req.State); err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		completion, err := d.Auth.CompleteOAuthDetailed(r.Context(), userauth.OAuthCallbackInput{
+			TenantID: req.TenantID, Provider: req.Provider, State: req.State, Code: req.Code,
+		})
+		if err != nil {
+			writeAuthError(w, err)
+			return
+		}
+		if completion.PendingEmail {
+			pendingToken, tErr := oauthpendinghttp.MintPendingToken(d.OAuthPendingKey, completion.PendingIdentity, req.TenantID, d.Auth.Clock())
+			if tErr != nil || pendingToken == "" {
+				writeAuthError(w, userauth.ErrOAuthPendingEmailRequired)
+				return
+			}
+			writeAuditJSON(w, http.StatusAccepted, map[string]any{"code": "oauth_pending_email_required", "pending_token": pendingToken})
+			return
+		}
+		user := completion.User
+		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
+			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
+			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
+		})
+		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_social_login_session_failed", TenantID: user.TenantID, UserID: user.ID,
+				Provider: safeProviderForEvent(req.Provider), Outcome: "failure", ReasonClass: sessionReasonClass(err),
+				AuthMethod: safeProviderForEvent(req.Provider),
+			})
+			if handleDeviceConfirmationRequired(w, r, d, user, err) {
+				return
+			}
+			writeSessionError(w, err)
+			return
+		}
+		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
+			Provider: safeProviderForEvent(req.Provider), Outcome: "success", AuthMethod: safeProviderForEvent(req.Provider),
+		})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
 	}
 }
