@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
@@ -39,7 +40,7 @@ func TestModulesEndpointIsAdminGated(t *testing.T) {
 	d := &deps{
 		// queries 为 nil -> Resolve 返回 ErrAdminBackend(fail-closed 503),
 		// 与 Hermes admin-gate 测试所依赖的行为完全一致。
-		adminAuth:      admin.NewAdminResolver(nil),
+		adminAuth:      adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil, nil),
 		moduleRegistry: moduleregistry.New(),
 	}
 	r := chi.NewRouter()

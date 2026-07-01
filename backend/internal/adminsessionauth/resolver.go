@@ -48,6 +48,11 @@ func New(token TokenResolver, session SessionValidator, roles RoleStore, clientI
 // Resolve 先令牌通道(hk_admin_ 前缀恒走),knob 开时再 session 通道。
 // session 任何失败(无效/查角色错/非 admin)一律 ErrAdminUnauthorized,与令牌通道反枚举语义一致。
 func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminIdentity, error) {
+	// nil 接收者 / 未配令牌通道:fail-closed 返 ErrAdminBackend(503),与既有 AdminResolver
+	// 的 nil 契约一致(未接线的 admin 面统一 503,不误报 401、也绝不 panic)。
+	if r == nil || r.token == nil {
+		return admin.AdminIdentity{}, admin.ErrAdminBackend
+	}
 	bearer, hasBearer := parseBearer(req.Header.Get("Authorization"))
 	// hk_admin_ 令牌恒走既有令牌通道。
 	if hasBearer && strings.HasPrefix(bearer, "hk_admin_") {

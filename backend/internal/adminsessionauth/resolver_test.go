@@ -123,6 +123,19 @@ func TestSessionNonAdminRoleDeniedDenyByDefault(t *testing.T) {
 	}
 }
 
+// nil 接收者 / nil 令牌通道 → fail-closed 返 ErrAdminBackend(503),绝不 panic。
+// 变异:去掉 Resolve 顶部的 nil 守卫 → nil 接收者解引用 panic → 本测试崩(RED)。
+func TestNilReceiverFailsClosed(t *testing.T) {
+	var r *Resolver // nil
+	if _, err := r.Resolve(context.Background(), req("hk_admin_x")); !errors.Is(err, admin.ErrAdminBackend) {
+		t.Fatalf("nil 接收者应 fail-closed 返 ErrAdminBackend,得 %v", err)
+	}
+	r2 := New(nil, nil, nil, nil, on()) // nil 令牌通道
+	if _, err := r2.Resolve(context.Background(), req("hk_admin_x")); !errors.Is(err, admin.ErrAdminBackend) {
+		t.Fatalf("nil 令牌通道应 fail-closed 返 ErrAdminBackend,得 %v", err)
+	}
+}
+
 // session 无效 → 统一反枚举 ErrAdminUnauthorized(不泄露是 session 无效还是非 admin)。
 func TestInvalidSessionAntiEnumeration(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}

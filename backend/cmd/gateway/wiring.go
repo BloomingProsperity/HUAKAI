@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
@@ -188,7 +189,7 @@ type deps struct {
 	modelRegistry            *registry.PostgresRegistry
 	modelSync                *modelsync.Service
 	routePlanner             *router.DefaultRouter
-	adminAuth                *admin.AdminResolver
+	adminAuth                *adminsessionauth.Resolver
 	adminIssuer              *admin.KeyIssuer
 	adminRevoker             *admin.KeyRevoker
 	adminTokenIssuer         *admin.AdminTokenIssuer
@@ -1259,6 +1260,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.mediaTaskWorker = mediaTaskWorker
 	userAuditStore := userauditlog.NewPostgresStore(pgPool)
 
+	// role 制单登录:admin session 通道 knob(默认关 → 纯令牌通道,与迁移前逐字同行为)。
+	adminSessionAuthEnabled, err := runtimeconfig.AdminSessionAuthEnabled()
+	if err != nil {
+		return nil, err
+	}
+
 	d := &deps{
 		cfg:                   cfg,
 		clientIPResolver:      clientIPResolver,
@@ -1343,7 +1350,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		modelRegistry:            modelRegistry,
 		modelSync:                modelSyncService,
 		routePlanner:             router.NewDefaultRouter(),
-		adminAuth:                admin.NewAdminResolver(adminQueries),
+		adminAuth: adminsessionauth.New(
+			admin.NewAdminResolver(adminQueries), // 令牌通道(hk_admin_,行为不变)
+			userSessionService,                   // session 校验器
+			panelauth.NewPostgresRoleStore(pgPool), // users.role 只读查询
+			clientIPResolver,
+			func() bool { return adminSessionAuthEnabled }, // knob,默认关
+		),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
 		adminRevoker:             admin.NewKeyRevoker(pgPool),
 		adminTokenIssuer:         admin.NewAdminTokenIssuer(pgPool),
