@@ -449,11 +449,14 @@ Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。�
 - adminuserhttp(8fa015b2):unlock/2fa-force-disable/remark/status/解绑社交 5 端点。
 - controlhttp + moderationhttp(89f06d96):分组路由增改停删 4;审核关键词/哈希增删 + API key 解封 7(PUT /config 留 token-only)。
 - announcementhttp + adminhttp:公告增改删 3;loglevel PUT + model-sync POST 2。
+- adminquotahttp:配额策略 create/update 2(delete 留 token-only);顺带把 gateway 内联挂载重构成包函数
+  `MountQuotaPolicyRoutes`(全路径内联、路径不变,写分级注解与路由收拢一处;删除死掉的导出 wrapper)。
 - 共享测试脚手架 `internal/adminsessionauthtest`(89f06d96)。
 
-**暂缓(非本会话可自主放开,继续 token-only)**:
+**至此非碰撞区可自主放开的包全部开完(6 包)。**
+
+**暂缓/不碰(继续 token-only)**:
 - `modelbindingadminhttp`:import 碰撞区 `registry` 类型,守 §6 不碰。
-- `adminquotahttp`:路由在 gateway 内联挂载(非包内 Mount 函数),干净的包内测试需先重构成包函数,择机做。
 - **碰撞区 gateway*/proxy/tlsfp**(池账号/渠道健康/L2缓存/代理/TLS 指纹):守 §6 不碰,继续 token-only(与 money/凭证同待遇,基础设施层走令牌合理)。
 
 **机制切片已合(2026-07-01,commit 1c7ed0d9)**:admin sentinels + `internal/adminstepup` 适配器(复用 passkeyhttp verifier,错误翻译)+ `adminsessionauth` 写分级(AllowSessionWrite 中间件 fail-closed / resolver enforcement / header proof)+ wiring 注入;全在默认关 knob 后零生产变;§14 变异(fail-closed default / step-up 错误传递 / 错译)均证红,对抗审查(3 镜头 × 逐条对抗验证)零 S0/S1。

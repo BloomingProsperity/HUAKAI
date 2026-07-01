@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
 )
 
@@ -58,17 +59,22 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Delete("/{id}", newDeleteHandler(d))
 }
 
-// 这些导出的构造器让 gateway 可以内联挂载每条路由(不建 chi.Route 子树),
-// 这样路径遍历器报告的就是规范的、不带尾斜杠的路径,与 channel-catalog 那段
-// 完全一致。
-func NewListHandler(d Deps) http.HandlerFunc   { return newListHandler(d) }
-func NewCreateHandler(d Deps) http.HandlerFunc { return newCreateHandler(d) }
-func NewGetHandler(d Deps) http.HandlerFunc    { return newGetHandler(d) }
-func NewUpdateHandler(d Deps) http.HandlerFunc { return newUpdateHandler(d) }
-func NewDeleteHandler(d Deps) http.HandlerFunc { return newDeleteHandler(d) }
+// MountQuotaPolicyRoutes 在 admin 根路由上内联挂载 quota-policy 全部端点(集合级 + /{id}),
+// 与原 gateway 内联挂载一致(不建 chi.Route 子树,保证路径遍历器报告规范、不带尾斜杠的路径)。
+// role 制单登录:SessionSafe = 创建/更新配额策略(防滥用 RPM/并发,可逆),登录 admin(session)
+// 可直接写;删除留 token-only(分级表对抗验证降档,登录 admin 够不到,只认令牌)。危险者靠前端确认弹窗。
+func MountQuotaPolicyRoutes(r chi.Router, d Deps) {
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.Get("/admin/v1/quota-policies", newListHandler(d))
+	r.With(safe).Post("/admin/v1/quota-policies", newCreateHandler(d))
+	r.Get("/admin/v1/quota-policies/{id}", newGetHandler(d))
+	r.With(safe).Put("/admin/v1/quota-policies/{id}", newUpdateHandler(d))
+	r.Delete("/admin/v1/quota-policies/{id}", newDeleteHandler(d))
+}
 
-// NewRouter 为测试构建一个独立的 router:它接线集合级的 GET/POST 以及 id 子树,
-// 与 gateway 的挂载方式完全一致。
+// NewRouter 为 handler 逻辑测试构建独立 router,挂相对路径的集合级 GET/POST 与 id 子树。
+// (生产挂载走 MountQuotaPolicyRoutes 的全路径内联形态 + 写分级注解;本 router 只为路径无关的
+// handler 行为测试,不带 SessionSafe 注解——那由 route_write_class_test 单独覆盖。)
 func NewRouter(d Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", newListHandler(d))

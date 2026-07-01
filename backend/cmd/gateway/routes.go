@@ -974,11 +974,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Auth:  d.adminAuth,
 		Store: adminquotahttp.NewQuotaPolicyStoreAdapter(d.pgPool),
 	}
-	r.Get("/admin/v1/quota-policies", adminquotahttp.NewListHandler(quotaPolicyDeps))
-	r.Post("/admin/v1/quota-policies", adminquotahttp.NewCreateHandler(quotaPolicyDeps))
-	r.Get("/admin/v1/quota-policies/{id}", adminquotahttp.NewGetHandler(quotaPolicyDeps))
-	r.Put("/admin/v1/quota-policies/{id}", adminquotahttp.NewUpdateHandler(quotaPolicyDeps))
-	r.Delete("/admin/v1/quota-policies/{id}", adminquotahttp.NewDeleteHandler(quotaPolicyDeps))
+	// role 制单登录:集合级 + /{id} 端点内联挂载迁入包函数(create/update 挂 SessionSafe、delete 留 token-only),
+	// 路径不变(仍规范无尾斜杠),仅把写分级注解与路由定义收拢到一处。
+	adminquotahttp.MountQuotaPolicyRoutes(r, quotaPolicyDeps)
 	// 孤儿对账闭环 admin 面:只读列表(可视化) + 显式手动对账动作。复用既有 admin 鉴权
 	// (d.adminAuth)。追扣走既有 billing settle、Manual-First、幂等防双扣(详见 orphanreconcilehttp)。
 	if d.mediaTaskStore != nil {
