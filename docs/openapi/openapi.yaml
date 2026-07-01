@@ -4301,6 +4301,72 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/auth/oauth-pending/send-code:
+    post:
+      tags: [auth]
+      summary: Send email verification code for OAuth no-verified-email signup completion
+      description: >
+        Given a signed pending_token (issued by oauth-callback when a verified social
+        identity lacks a verified email), send a one-time code to the supplied email and
+        return a signed challenge_token. Stateless: the code is not stored; the challenge
+        token carries only an HMAC binding of the code.
+      operationId: authOAuthPendingSendCode
+      x-huakai-spec-source: [backend/internal/gatewayhttp/oauth_pending.go]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pending_token, email]
+              properties:
+                pending_token: { type: string }
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Code sent; challenge_token returned for the complete step.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  challenge_token: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/oauth-pending/complete:
+    post:
+      tags: [auth]
+      summary: Complete OAuth no-verified-email signup by verifying the email code
+      description: >
+        Given the challenge_token and the emailed code, verify email ownership, create the
+        account with the verified social identity, and issue a platform session.
+      operationId: authOAuthPendingComplete
+      x-huakai-spec-source: [backend/internal/gatewayhttp/oauth_pending.go]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge_token, code]
+              properties:
+                challenge_token: { type: string }
+                code: { type: string }
+                device_info: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Email ownership verified, account created and session issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/telegram-login:
     post:
       tags: [auth]

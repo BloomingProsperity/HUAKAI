@@ -156,27 +156,61 @@ func (s *Service) validateOAuthRedirectURI(raw string) error {
 	return fmt.Errorf("%w: redirect_uri 不在允许白名单", ErrInvalidInput)
 }
 
-func (s *Service) CompleteOAuth(ctx context.Context, in OAuthCallbackInput) (User, error) {
+// OAuthCompletion 是 OAuth 回调完成的结果:要么直接登录成功(User 非零),要么该社交身份缺
+// 已验证邮箱、需走「补邮箱建号」流程(PendingEmail=true 且 PendingIdentity 带已校验的社交身份)。
+// 拆出这个富返回,是为让 HTTP 层在「待补邮箱」时能拿到已校验身份去签发 pending_token,而不必
+// 重跑 OAuth 兑换(flow session 已被消费、无法重放)。
+type OAuthCompletion struct {
+	User            User
+	PendingIdentity VerifiedIdentity
+	PendingEmail    bool
+}
+
+// CompleteOAuthDetailed 执行 OAuth 回调:消费 flow → 兑换身份 → 应用身份。相比 CompleteOAuth,
+// 它在「身份已校验但无已验证邮箱」时不返错误,而是返回 {PendingIdentity, PendingEmail:true},
+// 供 HTTP 层发起补邮箱流程。其余错误照常返回。
+func (s *Service) CompleteOAuthDetailed(ctx context.Context, in OAuthCallbackInput) (OAuthCompletion, error) {
 	if s == nil || s.Store == nil {
-		return User{}, ErrStoreNotConfigured
+		return OAuthCompletion{}, ErrStoreNotConfigured
 	}
 	providerName := normalizeSocialProvider(in.Provider)
 	if in.TenantID <= 0 || providerName == "" || strings.TrimSpace(in.State) == "" || strings.TrimSpace(in.Code) == "" {
-		return User{}, ErrInvalidInput
+		return OAuthCompletion{}, ErrInvalidInput
 	}
 	provider, ok := s.OAuth.ProviderCtx(ctx, providerName)
 	if !ok {
-		return User{}, ErrOAuthProviderMissing
+		return OAuthCompletion{}, ErrOAuthProviderMissing
 	}
 	flow, err := s.Store.ConsumeOAuthFlowSession(ctx, in.TenantID, providerName, HashToken(in.State), s.now())
 	if err != nil {
-		return User{}, err
+		return OAuthCompletion{}, err
 	}
 	identity, err := provider.ExchangeVerifiedIdentity(ctx, flow, strings.TrimSpace(in.Code))
 	if err != nil {
+		return OAuthCompletion{}, err
+	}
+	user, err := s.applyVerifiedSocialIdentity(ctx, in.TenantID, identity)
+	if err != nil {
+		// 待补邮箱是正常分支(不是失败):透出已校验身份让 HTTP 层发起补邮箱流程。
+		if errors.Is(err, ErrOAuthPendingEmailRequired) {
+			return OAuthCompletion{PendingIdentity: identity, PendingEmail: true}, nil
+		}
+		return OAuthCompletion{}, err
+	}
+	return OAuthCompletion{User: user}, nil
+}
+
+// CompleteOAuth 保持原签名(User, error)不变,内部走 CompleteOAuthDetailed;待补邮箱仍以
+// ErrOAuthPendingEmailRequired 返回,既有调用方/测试零改动。
+func (s *Service) CompleteOAuth(ctx context.Context, in OAuthCallbackInput) (User, error) {
+	completion, err := s.CompleteOAuthDetailed(ctx, in)
+	if err != nil {
 		return User{}, err
 	}
-	return s.applyVerifiedSocialIdentity(ctx, in.TenantID, identity)
+	if completion.PendingEmail {
+		return User{}, ErrOAuthPendingEmailRequired
+	}
+	return completion.User, nil
 }
 
 func (s *Service) ApplyVerifiedSocialIdentity(ctx context.Context, tenantID int64, identity VerifiedIdentity) (User, error) {

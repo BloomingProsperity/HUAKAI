@@ -94,6 +94,9 @@ type AuthHandlerDeps struct {
 	TelegramBotToken         string
 	TelegramBotTokenResolver func(context.Context) string
 	TelegramWidgetMaxAge     time.Duration
+	// OAuthPendingKey 是「社交登录无邮箱→补邮箱」流程 pending/challenge token 的 HMAC 密钥
+	//(由会话签名密钥域分隔派生,见 DeriveOAuthPendingKey)。空 = 补邮箱流程停用(端点返 503)。
+	OAuthPendingKey []byte
 }
 
 // resolveTelegramBotToken 请求期解析 bot token:优先 resolver(后台设置 settings-first),否则静态字段。
@@ -190,6 +193,8 @@ func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/reset-password", newAuthResetPasswordHandler(d))
 	r.Post("/oauth-init", newAuthOAuthInitHandler(d))
 	r.Post("/oauth-callback", newAuthOAuthCallbackHandler(d))
+	// 「社交登录无已验证邮箱 → 补邮箱建号」两步(发码/验码)由 oauthpendinghttp 独立包挂载,
+	// 见 cmd/gateway 装配(mountAuthPendingRoutes)。
 	r.Post("/telegram-login", newAuthTelegramLoginHandler(d))
 	r.Post("/social/identity-changed", newAuthSocialIdentityChangedHandler(d))
 }
@@ -619,51 +624,6 @@ func newAuthOAuthInitHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		setOAuthStateCookie(w, r, result.State)
 		writeAuditJSON(w, http.StatusCreated, result)
-	}
-}
-
-func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if d.Auth == nil || d.Sessions == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth/session dependency unset")
-			return
-		}
-		var req authOAuthCallbackRequest
-		if !decodeAdminPoolJSON(w, r, &req) {
-			return
-		}
-		if err := requireOAuthStateCookie(w, r, req.State); err != nil {
-			writeAuthError(w, err)
-			return
-		}
-		user, err := d.Auth.CompleteOAuth(r.Context(), userauth.OAuthCallbackInput{
-			TenantID: req.TenantID, Provider: req.Provider, State: req.State, Code: req.Code,
-		})
-		if err != nil {
-			writeAuthError(w, err)
-			return
-		}
-		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
-			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
-			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
-		})
-		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
-				EventType: "user_social_login_session_failed", TenantID: user.TenantID, UserID: user.ID,
-				Provider: safeProviderForEvent(req.Provider), Outcome: "failure", ReasonClass: sessionReasonClass(err),
-				AuthMethod: safeProviderForEvent(req.Provider),
-			})
-			if handleDeviceConfirmationRequired(w, r, d, user, err) {
-				return
-			}
-			writeSessionError(w, err)
-			return
-		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
-			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
-			Provider: safeProviderForEvent(req.Provider), Outcome: "success", AuthMethod: safeProviderForEvent(req.Provider),
-		})
-		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
 	}
 }
 
