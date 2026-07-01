@@ -11,6 +11,8 @@
  * sessionStorage 仅存 provider/tenantId/state 这类非密钥引导信息,不含任何 token/凭据。
  */
 
+import { ApiError } from '../lib/api'
+
 /** 发起社交登录时暂存、回调时取回的待完成上下文。 */
 export interface PendingOAuth {
   provider: string
@@ -131,4 +133,34 @@ export function clearPendingOAuth(): void {
   } catch {
     /* 忽略 */
   }
+}
+
+/**
+ * 判定 /v1/auth/oauth-callback 的响应体是否为「待补邮箱」分支(后端 202 返回
+ * {code:'oauth_pending_email_required', pending_token})。是则回 {pendingToken},否则 null。
+ * 抽成纯函数便于变异测试:completeOAuth 据此把待补邮箱与正常登录分流。
+ */
+export function isOAuthPendingBody(body: { code?: string; pending_token?: string } | null | undefined): {
+  pendingToken: string
+} | null {
+  if (body && body.code === 'oauth_pending_email_required' && typeof body.pending_token === 'string' && body.pending_token) {
+    return { pendingToken: body.pending_token }
+  }
+  return null
+}
+
+/** 主回调失败文案:401 归一成「验证失败」,其余带上后端 code。 */
+export function callbackErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    return e.status === 401 ? '社交登录验证失败,请重新登录' : `${e.message}(${e.code})`
+  }
+  return '社交登录完成失败,请重新登录'
+}
+
+/** 补邮箱步骤失败文案:验证码错/token 过期等给可读提示,不回登录(留在当前步可重试)。 */
+export function pendingErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    return `${e.message}(${e.code})`
+  }
+  return '操作失败,请重试'
 }

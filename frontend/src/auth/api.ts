@@ -1,4 +1,5 @@
 import { apiSend } from '../lib/api'
+import { isOAuthPendingBody } from './oauthCallback'
 import { parseIssuedTokens, type RawIssuedTokens, type SessionTokens } from './refresh'
 import type { AuthUser } from './store'
 
@@ -31,6 +32,10 @@ export type LoginResult =
   // 2FA 第一步返回 user(后端 auth_handler.go:297 含 user),需带回供第二步完成后写入 store
   // —— 因为 2FA 完成响应(auth_handler.go:365)只回 {session} 不含 user。
   | { kind: '2fa'; challengeId: string; user: AuthUser | null }
+
+// OAuthCallbackResult 是社交登录回调专属结果:在 LoginResult 之外多一个 pending_email 分支
+//(身份缺已验证邮箱,需走补邮箱建号)。不并入 LoginResult,避免污染密码登录等其它调用点的收窄。
+export type OAuthCallbackResult = LoginResult | { kind: 'pending_email'; pendingToken: string }
 
 function normUser(u: PublicUser | undefined): AuthUser | null {
   if (!u) return null
@@ -168,12 +173,45 @@ export async function completeOAuth(
   provider: string,
   state: string,
   code: string,
+): Promise<OAuthCallbackResult> {
+  // 回调可能返回 202 {code:'oauth_pending_email_required', pending_token}(身份无已验证邮箱),
+  // 也可能返回 200 {user, session}(正常登录)。202 仍是 2xx,parse 原样返回 body,据 code 分流。
+  const body = await apiSend<LoginSuccess & { code?: string; pending_token?: string }>(
+    'POST',
+    '/v1/auth/oauth-callback',
+    { tenant_id: tenantId, provider, state, code },
+  )
+  const pending = isOAuthPendingBody(body)
+  if (pending) {
+    return { kind: 'pending_email', pendingToken: pending.pendingToken }
+  }
+  return { kind: 'ok', tokens: tokensFromSession(body.session), user: normUser(body.user) }
+}
+
+/**
+ * 补邮箱第一步——发码:POST /v1/auth/oauth-pending/send-code {pending_token, email}
+ * → {status, challenge_token}。把一次性码发到用户填的邮箱,返回 challenge_token(携码指纹,不含码本身)。
+ */
+export async function oauthPendingSendCode(pendingToken: string, email: string): Promise<string> {
+  const body = await apiSend<{ status?: string; challenge_token: string }>(
+    'POST',
+    '/v1/auth/oauth-pending/send-code',
+    { pending_token: pendingToken, email: email.trim() },
+  )
+  return body.challenge_token
+}
+
+/**
+ * 补邮箱第二步——验码建号:POST /v1/auth/oauth-pending/complete {challenge_token, code}
+ * → {user, session}。验证邮箱码后建号并建会话,返回与正常登录同构的 LoginResult。
+ */
+export async function oauthPendingComplete(
+  challengeToken: string,
+  code: string,
 ): Promise<LoginResult> {
-  const body = await apiSend<LoginSuccess>('POST', '/v1/auth/oauth-callback', {
-    tenant_id: tenantId,
-    provider,
-    state,
-    code,
+  const body = await apiSend<LoginSuccess>('POST', '/v1/auth/oauth-pending/complete', {
+    challenge_token: challengeToken,
+    code: code.trim(),
   })
   return { kind: 'ok', tokens: tokensFromSession(body.session), user: normUser(body.user) }
 }
