@@ -262,6 +262,18 @@ AdminAuthResolver.Resolve(ctx, req) →
 
 ---
 
+## ★ P2b-3 架构修正(2026-07-01,读真码后):写门并入 P3
+
+**Owner 已定**:高危全部 token-only(钱/凭证/KEK/签 admin token/删账号/Hermes 写),session 写只放低危配置类。
+
+**读真码发现**:admin 路由把安全与危险端点**混在同一前缀**下——`/admin/v1/provider-accounts/{id}/credentials`(配置 vs KEK 凭证同前缀)、`/admin/v1/users`(改配置 vs DELETE 删账号)。故在组合解析器里按 path 前缀做中央分类会 **fail-open**(危险子路径漏进安全前缀被误放行),不可取。
+
+**修正**:P2b-3 的「session 可写白名单」与 P3 step-up 的「危险端点二次密码」是**同一个 per-endpoint 分类问题**,分开建 = 先建一个被 P3 替换的临时门(堆砌)。**合并**:P2b-3 写门并入 P3,一套 per-endpoint 策略、fail-closed(默认 token-only,显式标注端点为 session-safe / session-with-stepup)。承载点在**路由注册处**(端点风险已知),非解析器猜 path。money 端点因 schema 未迁,即便有 step-up 仍 token-only(待 money-via-login 切片)。
+
+**修正后剩余序**:P3(per-endpoint 策略 + step-up + 放开 session 写,含 FamilyID anchor + header proof + ErrLocked→429)→ money-via-login(P2b-2 schema A + 钱 step-up)→ P5 前端切壳。
+
+---
+
 ## ★ P2b-2/P2b-3 设计(2026-07-01,待 Owner 拍板 schema + 写端点分级)
 
 **已合**:P2b-1(f512ee7b 字符串审计统一)+ balance_credit 回归修复(4bf3dddb)+ 测试加强(6f27073d,5复杂逻辑区真 PG 集成)。
