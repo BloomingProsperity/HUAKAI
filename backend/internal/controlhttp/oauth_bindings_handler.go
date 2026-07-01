@@ -39,10 +39,22 @@ type OAuthBindingsDeps struct {
 	SocialLinks AuthSocialLinkService
 	// TelegramBinder 绑定 telegram 身份到本人。nil 或 TelegramBotToken 为空 = telegram 绑定端点未启用。
 	TelegramBinder VerifiedSocialBinder
-	// TelegramBotToken 是 Telegram Login Widget 的 HMAC 校验密钥(来自 env,与登录端点同源)。空 = 关闭绑定。
-	TelegramBotToken string
+	// TelegramBotToken 是静态 HMAC 校验密钥(测试/旧装配)。生产走 TelegramBotTokenResolver 请求期读
+	// 后台设置(settings-first,空回退 env),与登录端点同源。
+	TelegramBotToken         string
+	TelegramBotTokenResolver func(context.Context) string
 	// TelegramWidgetMaxAge 是 widget auth_date 的最大有效期;<=0 时由 verifier 取默认 24h。
 	TelegramWidgetMaxAge time.Duration
+}
+
+// resolveTelegramBotToken 请求期解析 bot token:优先 resolver(后台设置),否则静态字段。
+func (d OAuthBindingsDeps) resolveTelegramBotToken(ctx context.Context) string {
+	if d.TelegramBotTokenResolver != nil {
+		if v := strings.TrimSpace(d.TelegramBotTokenResolver(ctx)); v != "" {
+			return v
+		}
+	}
+	return d.TelegramBotToken
 }
 
 // oauthBindingResponse 是单条绑定的出网 DTO。subject 已在 service 层脱敏;不含上游 OAuth token。
@@ -70,7 +82,8 @@ type oauthBindingsTelegramRequest struct {
 
 func newOAuthBindingsTelegramHandler(d OAuthBindingsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.TelegramBinder == nil || strings.TrimSpace(d.TelegramBotToken) == "" {
+		botToken := d.resolveTelegramBotToken(r.Context())
+		if d.TelegramBinder == nil || strings.TrimSpace(botToken) == "" {
 			controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "telegram binding not configured")
 			return
 		}
@@ -85,7 +98,7 @@ func newOAuthBindingsTelegramHandler(d OAuthBindingsDeps) http.HandlerFunc {
 			return
 		}
 		// 服务端用 bot token HMAC 校验 widget 数据;客户端传来的任何字段都不被信任(信任靠签名)。
-		identity, err := telegramauth.VerifyWidget(req.Params, d.TelegramBotToken, time.Now(), d.TelegramWidgetMaxAge)
+		identity, err := telegramauth.VerifyWidget(req.Params, botToken, time.Now(), d.TelegramWidgetMaxAge)
 		if err != nil {
 			// 校验失败统一按 social_identity_verification_failed(401)处理,不回显细节。
 			writeAuthSocialLinkError(w, userauth.ErrSocialLoginRejected)
