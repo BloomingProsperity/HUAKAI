@@ -3,7 +3,6 @@ package adminhttp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -92,7 +91,7 @@ func newModelSyncHandler(d AdminModelSyncDeps) http.HandlerFunc {
 			reason = "admin_manual"
 		}
 
-		actor := fmt.Sprintf("admin_token:%d", ident.TokenID)
+		actor := ident.AuditActor()
 		result, err := d.Service.SyncWithActor(r.Context(), reason, actor)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "model_sync_failed",

@@ -93,7 +93,7 @@ func newAdminEmailSettingsPutHandler(d AdminEmailSettingsDeps) http.HandlerFunc 
 			writeJSONError(w, http.StatusBadRequest, "email_settings_empty", "at least one setting is required")
 			return
 		}
-		if err := d.Store.Save(r.Context(), req.TenantID, values, fmt.Sprintf("%d", ident.TokenID)); err != nil {
+		if err := d.Store.Save(r.Context(), req.TenantID, values, ident.AuditActor()); err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "email_settings_update_failed", err.Error())
 			return
 		}

@@ -503,7 +503,7 @@ func buildUnlockAuditInput(r *http.Request, ident admin.AdminIdentity, beforeSta
 		reqIDArg = &reqID
 	}
 	return unlockAuditInput{
-		ActorID:      fmt.Sprintf("%d", ident.TokenID),
+		ActorID:      ident.AuditActor(),
 		ActorRole:    actorRole,
 		RequestID:    reqIDArg,
 		BeforeStatus: beforeStatus,

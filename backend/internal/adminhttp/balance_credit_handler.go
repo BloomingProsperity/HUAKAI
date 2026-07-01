@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -89,7 +88,7 @@ func newBalanceCreditHandler(d AdminBalanceCreditDeps) http.HandlerFunc {
 			UserID:          req.UserID,
 			Amount:          req.Amount,
 			CurrencyCode:    req.CurrencyCode,
-			ActorID:         strconv.FormatInt(ident.TokenID, 10),
+			ActorID:         ident.AuditActor(),
 			Reason:          req.Reason,
 			RequestID:       middleware.GetReqID(r.Context()),
 			ExternalTradeNo: req.IdempotencyKey,

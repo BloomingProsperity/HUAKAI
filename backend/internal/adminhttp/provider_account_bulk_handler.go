@@ -82,7 +82,7 @@ func newProviderAccountBulkHandler(d ProviderAccountBulkDeps) http.HandlerFunc {
 		}
 
 		affectedIDs := make([]int64, 0, len(rows))
-		actorIDStr := fmt.Sprintf("%d", ident.TokenID)
+		actorIDStr := ident.AuditActor()
 
 		for _, row := range rows {
 			_, err := d.Store.UpdateAdminProviderAccount(r.Context(), admindb.UpdateAdminProviderAccountParams{

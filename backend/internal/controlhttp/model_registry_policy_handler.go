@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
@@ -98,7 +97,7 @@ func NewAdminTenantPolicySetHandler(d AdminTenantPolicyDeps) http.HandlerFunc {
 		}
 		actor := ""
 		if ident, ok := admin.IdentityFromContext(r.Context()); ok {
-			actor = fmt.Sprintf("admin-token:%d", ident.TokenID)
+			actor = ident.AuditActor()
 		}
 		policy, err := d.Store.SetTenantInheritGlobal(r.Context(), tenantID, *req.InheritGlobalCatalog, actor)
 		if err != nil {

@@ -265,7 +265,7 @@ func TestATS1Tenant001PlatformAdminExplicitTenantSucceedsAndAudits(t *testing.T)
 		t.Fatalf("audit count=%d audits=%+v", len(store.audits), store.audits)
 	}
 	audit := store.audits[0]
-	if audit.TenantID == nil || *audit.TenantID != 42 || audit.ActorID != "11" || audit.ActorRole != admin.RolePlatformAdmin {
+	if audit.TenantID == nil || *audit.TenantID != 42 || audit.ActorID != "admin_token:11" || audit.ActorRole != admin.RolePlatformAdmin {
 		t.Fatalf("audit lost tenant or actor: %+v", audit)
 	}
 	if audit.Action != "create_pool_group" || audit.TargetType != "pool_group" || audit.TargetID == nil || *audit.TargetID != 77 {

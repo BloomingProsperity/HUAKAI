@@ -288,7 +288,7 @@ func TestAdminModelAliasBulkImportRejectsUnknownFields(t *testing.T) {
 }
 
 // 守审计归属不可伪造: body 设 actor:"victim" 也无效, 实际传给 store 的 params.Actor 取自认证身份
-// (admin-token:<TokenID>)。身份经 admin.IdentityToContext 注入(模拟 adminGate 放行后注入)。
+// (admin_token:<TokenID>,来自 AdminIdentity.AuditActor())。身份经 admin.IdentityToContext 注入(模拟 adminGate 放行后注入)。
 // mutation: handler 不覆盖 actor(信任 body)→ store 收到 "victim" → 红。
 func TestAdminAliasBulkImportActorFromIdentityNotBody(t *testing.T) {
 	store := &adminModelAliasStoreStub{}
@@ -301,8 +301,8 @@ func TestAdminAliasBulkImportActorFromIdentityNotBody(t *testing.T) {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
 	// actor 取自认证身份, 非 body 'victim'(防伪造)。
-	if store.params.Actor != "admin-token:4242" {
-		t.Fatalf("store params.Actor=%q, want admin-token:4242 (取自认证身份, 非 body 'victim')", store.params.Actor)
+	if store.params.Actor != "admin_token:4242" {
+		t.Fatalf("store params.Actor=%q, want admin_token:4242 (取自认证身份, 非 body 'victim')", store.params.Actor)
 	}
 	// 判别(Reason 保留不变量): Reason 是合法用户备注, 只覆盖 actor 不得连带清掉 reason。
 	// mutation: handler 误覆盖/清空 params.Reason → 此断言红。
@@ -337,8 +337,8 @@ func TestAdminAliasBulkImportCSVActorFromIdentity(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
-	if store.params.Actor != "admin-token:4242" {
-		t.Fatalf("CSV 分支 actor=%q, want admin-token:4242 (override 路径无关)", store.params.Actor)
+	if store.params.Actor != "admin_token:4242" {
+		t.Fatalf("CSV 分支 actor=%q, want admin_token:4242 (override 路径无关)", store.params.Actor)
 	}
 }
 

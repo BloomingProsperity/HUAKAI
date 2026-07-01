@@ -127,7 +127,7 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 			Value:     "true",
 			Source:    platformsettings.SourceDB,
 			UpdatedAt: updatedAt,
-			UpdatedBy: "11",
+			UpdatedBy: "admin_token:11",
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
@@ -144,12 +144,12 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 		t.Fatalf("upsert calls=%d want 1", svc.upsertCalls)
 	}
 	if svc.lastUpsert.Key != platformsettings.KeyPromoEnabled || svc.lastUpsert.Value != "true" ||
-		svc.lastUpsert.UpdatedBy != "11" || svc.lastUpsert.ActorID != "11" ||
+		svc.lastUpsert.UpdatedBy != "admin_token:11" || svc.lastUpsert.ActorID != "admin_token:11" ||
 		svc.lastUpsert.ActorRole != admin.RolePlatformAdmin || svc.lastUpsert.Reason != "" {
 		t.Fatalf("upsert input=%+v", svc.lastUpsert)
 	}
 	got := decodePlatformSettingsResponse(t, rec)
-	if got.Value != "true" || got.Source != "db" || got.UpdatedAt == nil || *got.UpdatedBy != "11" {
+	if got.Value != "true" || got.Source != "db" || got.UpdatedAt == nil || *got.UpdatedBy != "admin_token:11" {
 		t.Fatalf("response=%+v want db true with metadata", got)
 	}
 }

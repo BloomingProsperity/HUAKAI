@@ -213,7 +213,7 @@ func TestCreateProvider_TenantScopedUnique(t *testing.T) {
 		if queries.createAudit.Action != "create_provider" ||
 			queries.createAudit.TargetType != "provider" ||
 			queries.createAudit.TenantID == nil || *queries.createAudit.TenantID != 7 ||
-			queries.createAudit.ActorID != "12" ||
+			queries.createAudit.ActorID != "admin_token:12" ||
 			!strings.Contains(string(queries.createAudit.Payload), `"code":"mistral"`) {
 			t.Fatalf("create audit=%+v payload=%s", queries.createAudit, string(queries.createAudit.Payload))
 		}

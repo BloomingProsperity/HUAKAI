@@ -162,8 +162,8 @@ func TestCreateDefaultsAndActorPropagation(t *testing.T) {
 	if c.Priority != 100 || c.Weight != 1 || c.SelectionMode != "strict_priority" || c.FallbackClass != "normal" || !c.Enabled {
 		t.Fatalf("默认值错:pri=%d w=%d sel=%q fb=%q en=%v", c.Priority, c.Weight, c.SelectionMode, c.FallbackClass, c.Enabled)
 	}
-	if c.Actor != "admin-token:7" {
-		t.Fatalf("actor=%q want admin-token:7", c.Actor)
+	if c.Actor != "admin_token:7" {
+		t.Fatalf("actor=%q want admin_token:7", c.Actor)
 	}
 }
 
@@ -255,7 +255,7 @@ func TestDeletePropagatesIDTenantActor(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("code=%d want 204", rec.Code)
 	}
-	if svc.lastDeleteID != 5 || svc.lastDeleteTen != 42 || svc.lastDeleteActr != "admin-token:7" {
+	if svc.lastDeleteID != 5 || svc.lastDeleteTen != 42 || svc.lastDeleteActr != "admin_token:7" {
 		t.Fatalf("传播错:id=%d tenant=%d actor=%q", svc.lastDeleteID, svc.lastDeleteTen, svc.lastDeleteActr)
 	}
 }

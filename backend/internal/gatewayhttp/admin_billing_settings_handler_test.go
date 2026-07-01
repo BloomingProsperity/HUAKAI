@@ -41,14 +41,14 @@ func TestAdminBillingSettingsPlatformAdminReadWriteAndAudit(t *testing.T) {
 	if got.TenantID != 7 || got.Value != "no_bill_record" || got.Source != "tenant" {
 		t.Fatalf("PUT response=%+v", got)
 	}
-	if got.UpdatedBy == nil || *got.UpdatedBy != "11" {
-		t.Fatalf("updated_by=%v want 11", got.UpdatedBy)
+	if got.UpdatedBy == nil || *got.UpdatedBy != "admin_token:11" {
+		t.Fatalf("updated_by=%v want admin_token:11", got.UpdatedBy)
 	}
 	if len(audit.records) != 1 {
 		t.Fatalf("audit records=%d want 1", len(audit.records))
 	}
 	record := audit.records[0]
-	if record.ActorID != "11" || record.ActorRole != admin.RolePlatformAdmin ||
+	if record.ActorID != "admin_token:11" || record.ActorRole != admin.RolePlatformAdmin ||
 		record.Action != "update_billing_settings" || record.TenantID == nil || *record.TenantID != 7 {
 		t.Fatalf("audit record mismatch: %+v", record)
 	}

@@ -133,7 +133,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 	{
 		q := admindb.New(i.pool)
 		count, err := q.CountIssuanceInWindow(ctx, admindb.CountIssuanceInWindowParams{
-			ActorID:       fmt.Sprintf("%d", req.Caller.TokenID),
+			ActorID:       req.Caller.AuditActor(),
 			WindowSeconds: int32(i.rateLimitWindowSecs),
 		})
 		if err != nil {
@@ -160,7 +160,10 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 	// count 与 insert 必须在同一个 TX 内、置于 per-actor advisory lock
 	// 之后,否则并发请求会竞态越过 30/小时 的上限。该 advisory lock 在
 	// TX 结束时自动释放。
-	actorID := fmt.Sprintf("%d", req.Caller.TokenID)
+	// actorID 同时用作 per-actor advisory lock 键和速率窗口计数键;它必须与
+	// 写入 admin_audit_events.actor_id 的审计归属串一致,否则计数查询
+	// (WHERE actor_id = $1)会与实际写入的行错位。统一走 AuditActor()。
+	actorID := req.Caller.AuditActor()
 	rateLimited := false
 	out := IssueResult{KeyPrefix: prefix, Status: "active"}
 	err = i.tx(ctx, func(qtx *admindb.Queries) error {
@@ -214,7 +217,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		}
 		if _, err := qtx.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 			TenantID:   nullableInt64(req.TenantID),
-			ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
+			ActorID:    req.Caller.AuditActor(),
 			ActorRole:  actorRole,
 			Action:     "issue_api_key",
 			TargetType: "api_key",
@@ -271,7 +274,7 @@ func (i *KeyIssuer) audit(ctx context.Context, req IssueRequest, outcome, reason
 	// 留在 payload jsonb 中供取证审查。
 	_, err := q.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID:   nil,
-		ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
+		ActorID:    req.Caller.AuditActor(),
 		ActorRole:  actorRole,
 		Action:     "issue_api_key",
 		TargetType: "api_key",

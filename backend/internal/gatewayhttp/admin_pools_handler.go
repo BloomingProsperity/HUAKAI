@@ -524,7 +524,7 @@ func buildAdminPoolAuditParams(r *http.Request, ident admin.AdminIdentity, tenan
 	if err != nil {
 		return admindb.InsertAdminAuditEventParams{}, err
 	}
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+	actorID := ident.AuditActor()
 	requestID := middleware.GetReqID(r.Context())
 	params := admindb.InsertAdminAuditEventParams{
 		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,

@@ -14,7 +14,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -82,7 +81,7 @@ func newHandler(d Deps) http.HandlerFunc {
 			writeErr(w, http.StatusBadRequest, "invalid_profile_id", "profile_id must be a positive integer or null to unbind")
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		if err := d.Store.UpdateProviderAccountFingerprintProfile(r.Context(), admindb.UpdateProviderAccountFingerprintProfileParams{
 			ProfileID: req.ProfileID, ActorID: &actorID, ID: id, TenantID: tenantID,
 		}); err != nil {

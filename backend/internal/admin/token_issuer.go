@@ -202,7 +202,7 @@ func (t *AdminTokenIssuer) IssueToken(ctx context.Context, req TokenIssueRequest
 		})
 		if _, err := qtx.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 			TenantID:   req.ScopeTenantID,
-			ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
+			ActorID:    req.Caller.AuditActor(),
 			ActorRole:  req.Caller.Role,
 			Action:     "issue_admin_token",
 			TargetType: "admin_token",
@@ -273,7 +273,7 @@ func (t *AdminTokenIssuer) RevokeToken(ctx context.Context, req TokenRevokeReque
 		})
 		if _, err := qtx.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 			TenantID:   row.ScopeTenantID,
-			ActorID:    fmt.Sprintf("%d", req.Caller.TokenID),
+			ActorID:    req.Caller.AuditActor(),
 			ActorRole:  req.Caller.Role,
 			Action:     "revoke_admin_token",
 			TargetType: "admin_token",
@@ -362,7 +362,7 @@ func (t *AdminTokenIssuer) auditDeny(ctx context.Context, caller AdminIdentity, 
 	}
 	_, err := q.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID:   nil,
-		ActorID:    fmt.Sprintf("%d", caller.TokenID),
+		ActorID:    caller.AuditActor(),
 		ActorRole:  actorRole,
 		Action:     action,
 		TargetType: "admin_token",

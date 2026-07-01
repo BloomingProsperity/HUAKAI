@@ -47,7 +47,7 @@ func seedTenantOperatorToken(t *testing.T, ctx context.Context, f *adminFixture)
 	}
 	t.Cleanup(func() {
 		c := context.Background()
-		_, _ = f.pool.Exec(c, `DELETE FROM admin_audit_events WHERE actor_id = $1`, intStr(tokenID))
+		_, _ = f.pool.Exec(c, `DELETE FROM admin_audit_events WHERE actor_id = $1`, AdminIdentity{TokenID: tokenID, Source: AdminSourceToken}.AuditActor())
 		_, _ = f.pool.Exec(c, `DELETE FROM admin_tokens WHERE id = $1`, tokenID)
 	})
 	return AdminIdentity{TokenID: tokenID, Role: RoleTenantOperator, ScopeTenantID: f.tenantID}

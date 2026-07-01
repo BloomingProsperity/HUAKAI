@@ -20,6 +20,7 @@ type fakeMutateTx struct {
 type txRecorder struct {
 	lockAcquired   bool
 	lockKey        string
+	adminActorID   string // 捕获 admin_audit_events 写入的 actor_id,守其格式统一走 AuditActor()
 	toolCallInsert int
 	adminInsert    int
 	commitCount    int
@@ -55,7 +56,7 @@ func (tx *fakeMutateTx) Exec(_ context.Context, sql string, args ...any) (pgconn
 	return pgconn.NewCommandTag("OK"), nil
 }
 
-func (tx *fakeMutateTx) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+func (tx *fakeMutateTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 	switch {
 	case strings.Contains(sql, "INSERT INTO hermes_tool_calls"):
 		tx.rec.toolCallInsert++
@@ -65,6 +66,10 @@ func (tx *fakeMutateTx) QueryRow(_ context.Context, sql string, _ ...any) pgx.Ro
 		return toolCallRow{}
 	case strings.Contains(sql, "INSERT INTO admin_audit_events"):
 		tx.rec.adminInsert++
+		// InsertAdminAuditEvent 列序 (tenant_id, actor_id, ...) → actor_id 为第 2 个参数。
+		if len(args) > 1 {
+			tx.rec.adminActorID, _ = args[1].(string)
+		}
 		if tx.rec.adminErr != nil {
 			return errRow{err: tx.rec.adminErr}
 		}
@@ -164,6 +169,12 @@ func TestOrchestrator_CommitsMutationWithAuditAndLock(t *testing.T) {
 	}
 	if rec.toolCallInsert != 1 || rec.adminInsert != 1 {
 		t.Fatalf("audit inserts toolcall=%d admin=%d want 1/1", rec.toolCallInsert, rec.adminInsert)
+	}
+	// admin_audit_events.actor_id 必须与其它 handler 同格式(AuditActor()=admin_token:<id>),
+	// 否则同一 operator 在同表被分裂成两种归属串、按新格式检索漏掉 Hermes mutation 行。
+	// 变异:把 mutate_tx.go 的 actorID 退回裸 fmt.Sprintf("%d", ...) → 得 "99" → RED。
+	if rec.adminActorID != "admin_token:99" {
+		t.Fatalf("admin_audit actor_id=%q want admin_token:99(须走 AuditActor 统一格式)", rec.adminActorID)
 	}
 	if mutated != 1 {
 		t.Fatalf("mutate ran %d times want 1", mutated)

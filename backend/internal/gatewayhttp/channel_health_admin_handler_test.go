@@ -69,7 +69,7 @@ func TestChannelHealthAdminPause(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if ctrl.called != "pause" || ctrl.key.ProviderAccountID != 101 || ctrl.key.TenantID != 7 ||
-		ctrl.key.AccountCredentialID != 9001 || ctrl.reason != "ops pause" || ctrl.actorID != "11" {
+		ctrl.key.AccountCredentialID != 9001 || ctrl.reason != "ops pause" || ctrl.actorID != "admin_token:11" {
 		t.Fatalf("controller call mismatch: %+v", ctrl)
 	}
 	if !strings.Contains(rec.Body.String(), `"state":"manual_paused"`) {

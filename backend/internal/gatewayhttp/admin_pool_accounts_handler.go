@@ -317,7 +317,7 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		dbCredentials := []byte(req.Credentials)
 		if useCredentialStore {
 			dbCredentials = []byte(`{}`)
@@ -510,7 +510,7 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		arg := admindb.UpdateAdminProviderAccountParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
 			Enabled: req.Enabled, Priority: req.Priority, StaticWeight: req.StaticWeight, CapConcurrency: req.CapConcurrency,
@@ -611,7 +611,7 @@ func newUpdateProviderAccountEnabledHandler(d AdminPoolAccountDeps) http.Handler
 			writeJSONError(w, http.StatusBadRequest, "enabled_required", "enabled is required")
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		if err := d.Store.UpdateProviderAccountEnabled(r.Context(), admindb.UpdateProviderAccountEnabledParams{
 			Enabled: *req.Enabled, ActorID: &actorID, ID: id, TenantID: tenantID,
 		}); err != nil {
@@ -642,7 +642,7 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 		if !ok {
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		account, err := d.Store.ClearProviderAccountRateLimit(r.Context(), admindb.ClearProviderAccountRateLimitParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
 		})
@@ -679,7 +679,7 @@ func newDeleteProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !validateProviderAccountTenant(w, req.TenantID, tenantID) {
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		if err := d.Store.SoftDeleteProviderAccount(r.Context(), admindb.SoftDeleteProviderAccountParams{
 			ActorID: &actorID, ID: id, TenantID: tenantID,
 		}); err != nil {
@@ -1078,7 +1078,7 @@ func chineseReason(got, fallback string) *string {
 }
 
 func writeProviderAccountAudit(ctx context.Context, r *http.Request, store AdminPoolAccountStore, ident admin.AdminIdentity, tenantID int64, action string, targetID int64, reason *string, payload []byte) error {
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+	actorID := ident.AuditActor()
 	reqID := middleware.GetReqID(r.Context())
 	_, err := store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,

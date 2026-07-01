@@ -70,7 +70,7 @@ func NewAdminModelAliasBulkImportHandler(d AdminModelAliasesDeps) http.HandlerFu
 		// 伪造别名导入审计快照的归属(类 routes AdminID-from-identity / modelbinding actor 范式)。adminGate
 		// 已把身份注入 context; 未注入(异常/未经 gate)时置空, 不回退信任 body。Reason 是合法用户备注, 保留 body。
 		if ident, ok := admin.IdentityFromContext(r.Context()); ok {
-			params.Actor = fmt.Sprintf("admin-token:%d", ident.TokenID)
+			params.Actor = ident.AuditActor()
 		} else {
 			params.Actor = ""
 		}

@@ -215,7 +215,7 @@ func TestAdminModerationUnban_PassesActorReasonAndReturnsAudit(t *testing.T) {
 		t.Fatalf("unban calls=%d want 1", store.unbanCalls)
 	}
 	if store.unbanReq.TenantID != 7 || store.unbanReq.APIKeyID != 30 ||
-		store.unbanReq.ActorID != "1" || store.unbanReq.Reason != "manual review cleared" {
+		store.unbanReq.ActorID != "admin_token:1" || store.unbanReq.Reason != "manual review cleared" {
 		t.Fatalf("unban request mismatch: %+v", store.unbanReq)
 	}
 	var body unbanAPIKeyResponse

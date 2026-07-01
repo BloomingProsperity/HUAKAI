@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -159,7 +158,7 @@ func newCreateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 		meta, err := d.Credentials.Create(r.Context(), credentialstore.CreateCredentialInput{
 			TenantID: req.TenantID, ProviderAccountID: accountID,
 			Vendor: req.Vendor, AuthMode: req.AuthMode,
-			Payload: req.Credentials, ActorID: fmt.Sprintf("%d", ident.TokenID),
+			Payload: req.Credentials, ActorID: ident.AuditActor(),
 			ExternalAccountID:    req.ExternalAccountID,
 			ExternalAccountEmail: req.ExternalAccountEmail,
 		})
@@ -184,7 +183,7 @@ func newRotateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 		}
 		meta, err := d.Credentials.Rotate(r.Context(), credentialstore.RotateCredentialInput{
 			TenantID: req.TenantID, ProviderAccountID: accountID, CredentialID: credentialID,
-			Payload: req.Credentials, ActorID: fmt.Sprintf("%d", ident.TokenID),
+			Payload: req.Credentials, ActorID: ident.AuditActor(),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_rotate_failed", err.Error())
@@ -209,7 +208,7 @@ func newSetAccountCredentialStateHandler(d AdminCredentialDeps) http.HandlerFunc
 			writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
 			return
 		}
-		if err := d.Credentials.SetState(r.Context(), req.TenantID, accountID, credentialID, req.State, fmt.Sprintf("%d", ident.TokenID)); err != nil {
+		if err := d.Credentials.SetState(r.Context(), req.TenantID, accountID, credentialID, req.State, ident.AuditActor()); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_state_failed", err.Error())
 			return
 		}
@@ -236,7 +235,7 @@ func newDeleteAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
 			return
 		}
-		if err := d.Credentials.Delete(r.Context(), req.TenantID, accountID, credentialID, fmt.Sprintf("%d", ident.TokenID)); err != nil {
+		if err := d.Credentials.Delete(r.Context(), req.TenantID, accountID, credentialID, ident.AuditActor()); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_delete_failed", err.Error())
 			return
 		}
@@ -404,7 +403,7 @@ func writeCredentialAdminAudit(r *http.Request, d AdminCredentialDeps, ident adm
 }
 
 func writeAccountCredentialAudit(ctx context.Context, r *http.Request, store AdminPoolAccountStore, ident admin.AdminIdentity, tenantID *int64, action string, reason *string, payload []byte) error {
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+	actorID := ident.AuditActor()
 	reqID := middleware.GetReqID(r.Context())
 	_, err := store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID: tenantID, ActorID: actorID, ActorRole: ident.Role,

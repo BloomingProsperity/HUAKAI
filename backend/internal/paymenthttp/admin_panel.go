@@ -181,7 +181,7 @@ func newAdminPutProviderConfigHandler(d AdminDeps) http.HandlerFunc {
 			ProviderKind: kind,
 			Enabled:      *req.Enabled,
 			CheckoutURL:  req.CheckoutURL,
-			UpdatedBy:    strconv.FormatInt(ident.TokenID, 10),
+			UpdatedBy:    ident.AuditActor(),
 		})
 		if err != nil {
 			writePaymentError(w, err)
