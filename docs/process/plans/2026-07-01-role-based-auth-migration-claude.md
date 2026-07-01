@@ -410,6 +410,18 @@ session 通道「灰度只读端点先行」——仅放行 GET/HEAD,写方法�
 
 **⚠️ 路由放开切片的强制项(对抗审查确认的潜伏跨层缺口,balance_credit 同类)**:机制切片里 `admin.ErrAdminStepUp{Required,Invalid,Locked}` 尚无任何 handler 的 `writeAdminAuthError` 副本映射(全仓 ~15 副本只认 ErrAdminBackend,余走 default→401)。机制切片下这些错误生产不可达(无真路由挂 AllowSessionWrite + knob 默认关),且 default→401 是 fail-closed 兜底(更严不误授权),故非 S0/S1。**但放开真 SessionStepUp 路由的切片【必须】同时**:①在承载该路由的包的 `writeAdminAuthError` 补 Required→403 / Invalid→401 / Locked→429(+Retry-After);②加一条 handler 端到端测试验此链(否则 403/429 静默坍缩成 401,丢掉设计刻意区分的可操作信号 + 429 退避提示)。
 
+### ★★ Owner 终审(2026-07-01):采用 new-api 模型,砍掉后端 step-up,改前端确认弹窗
+
+Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。只是弹窗二次确认,说明无法撤销操作即可。」**
+
+- **后端**:session-admin(登录 admin,role='admin')可直接写非高危端点(= SessionSafe),**不做后端二次密码/2FA**。这对标 new-api(登录 admin 经 session 全权操作,前端对危险操作弹确认框)。防的是**误操作**(accident),非攻击——单运营者本就是受信主体。
+- **前端**:对不可逆/破坏性操作弹「此操作无法撤销,确认?」确认框(P5 做,纯 UX,可绕过但只为防手滑)。哪些不可逆 = 分级表里带 `irreversible` flag 的。
+- **high-risk 仍 token-only**:money/凭证/KEK/签发吊销/建删账号(60 个)保持 token-only。理由不变(独立锁 + money-via-session 需 P2b-2 int64 schema 迁移才能做,技术阻塞)。
+
+**据此简化机制(撤 1c7ed0d9 的 step-up 部分,保留 SessionSafe/fail-closed 框架)**:删 `internal/adminstepup` 包、`SessionStepUp` 档、header proof、`ErrAdminStepUp*` sentinel、resolver 的 step-up 分支与 stepUp 依赖。写分级收敛成二元:**token-only(默认 fail-closed)vs SessionSafe(显式放开)**。原 39 个「SessionStepUp」端点改归 SessionSafe(session 可直接写),危险者靠前端确认框。
+
+---
+
 ### ★ admin 写端点风险分级表(2026-07-01,Workflow wr97jggxm:102 端点枚举→逐条对抗验证非 token-only 提议)
 
 **102 个写端点**。首轮 56 token-only,46 拟放开;对抗验证后 4 个被降回 token-only(passkey 删除=账号安全 / 改用户分组=耦合计费配额档 / 建 TLS 指纹 profile / 删配额策略)。**放开哪些=血案边界,Owner 拍板**;下表全在默认关 knob 后,翻 knob 才激活。
