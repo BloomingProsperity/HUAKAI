@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
@@ -43,7 +44,8 @@ func newHermesGateTestDeps(t *testing.T, adminOnly bool) *deps {
 		hermesRunner:    runner,
 		hermesAdminOnly: adminOnly,
 		// queries 为 nil -> Resolve 返回 ErrAdminBackend(fail-closed 503)。
-		adminAuth: admin.NewAdminResolver(nil),
+		// 组合器包一层,knob=nil(session 通道关)→ 委托令牌通道,行为不变。
+		adminAuth: adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil, nil),
 		// inboundAuth 故意为 nil:旧版 APIKeyMiddleware 会把 nil 的
 		// resolver 映射为 503 hermes_auth_unavailable,与 admin 的错误码有区别。
 	}
