@@ -183,7 +183,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 	if in.TenantID <= 0 || email == "" || strings.TrimSpace(in.Password) == "" {
 		return RegistrationResult{}, ErrInvalidInput
 	}
-	mode, err := s.registrationMode()
+	mode, err := s.registrationMode(ctx, in.TenantID)
 	if err != nil {
 		return RegistrationResult{}, err
 	}
@@ -390,8 +390,35 @@ func (s *Service) lockoutThreshold() int {
 	return DefaultLockoutThreshold
 }
 
-func (s *Service) registrationMode() (RegistrationMode, error) {
+// registrationMasterGate 是 RegistrationGate 的可选扩展:支持请求期读「注册总开关 / 是否需邀请码」
+// 后台设置。由 authpolicy.Policy 实现。用类型断言探测,避免破坏既有 RegistrationGate 接口与测试桩。
+type registrationMasterGate interface {
+	RegistrationEnabled(context.Context, int64) (bool, error)
+	InvitationRequired(context.Context, int64) (bool, error)
+}
+
+// registrationMode 决定社交注册门。settings-first(对齐 sub2api 的请求期主门 IsRegistrationEnabled):
+// 若注入的 gate 支持后台设置读取,则 registration_enabled / invitation_required 由后台设置驱动
+//(运营在管理台改即生效,fail-closed);否则回退到 boot 时 env 注入的静态字段(back-compat)。
+func (s *Service) registrationMode(ctx context.Context, tenantID int64) (RegistrationMode, error) {
 	if s == nil {
+		return RegistrationModeOpen, nil
+	}
+	if gate, ok := s.RegistrationGate.(registrationMasterGate); ok {
+		enabled, err := gate.RegistrationEnabled(ctx, tenantID)
+		if err != nil {
+			return "", err
+		}
+		if !enabled {
+			return RegistrationModeDisabled, nil
+		}
+		inviteReq, err := gate.InvitationRequired(ctx, tenantID)
+		if err != nil {
+			return "", err
+		}
+		if inviteReq {
+			return RegistrationModeInviteRequired, nil
+		}
 		return RegistrationModeOpen, nil
 	}
 	switch s.RegistrationMode {

@@ -204,7 +204,7 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	// 走到这里说明是「全新用户首次社交注册」(社交身份与邮箱都查无既有用户)。社交流程
 	// 没有邀请码输入通道, 必须与密码 Register 受同一公开注册/邀请闸约束。本检查只在新用户分支生效,
 	// 既有用户的社交登录/绑定走上面的 link 路径不受影响。
-	mode, err := s.registrationMode()
+	mode, err := s.registrationMode(ctx, tenantID)
 	if err != nil {
 		return User{}, err
 	}
@@ -219,6 +219,78 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 		Email:               email,
 		DisplayName:         identity.DisplayName,
 		EmailVerified:       true,
+		SocialLoginProvider: provider,
+		Status:              UserStatusActive,
+	})
+	if err != nil {
+		return User{}, err
+	}
+	linkedUser, err := s.Store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
+	if err != nil {
+		return User{}, err
+	}
+	s.issueSignupCredits(ctx, linkedUser.TenantID, linkedUser.ID, false)
+	return linkedUser, nil
+}
+
+// CompleteSocialSignupWithVerifiedEmail 用一个「已校验的社交身份」+「已证明所有权的邮箱」建号并链接社交身份。
+// 用于无邮箱社交源(OAuth provider 不返回已验证邮箱、QQ/微信等)的补全流程:当 applyVerifiedSocialIdentity
+// 因 !EmailVerified 返回 pending 后,前端收集邮箱、端点向该邮箱发码并验码,证明用户拥有该邮箱,再调本方法落号。
+//
+// 调用方责任(本方法不重复做):① 已用对应 verifier 校验出可信 identity;② 已通过「发码→验码」证明邮箱所有权
+//(故这里以 EmailVerified=true 建号)。tenant 取自可信上下文,绝不取自请求体明文。
+//
+// 安全:
+//   - 既有绑定优先:该社交身份已绑某用户 → 直接返回那个用户(幂等,不重复建号);
+//   - 邮箱已被占用 → ErrEmailExists(防把社交身份抢注/接管到既有邮箱账号);
+//   - 受邮箱策略(保留前缀/域名白名单)与公开注册/邀请闸约束,与密码 Register 一致。
+func (s *Service) CompleteSocialSignupWithVerifiedEmail(ctx context.Context, tenantID int64, identity VerifiedIdentity, email string) (User, error) {
+	if s == nil || s.Store == nil {
+		return User{}, ErrStoreNotConfigured
+	}
+	provider := normalizeSocialProvider(identity.Provider)
+	subject := strings.TrimSpace(identity.Subject)
+	email = NormalizeEmail(email)
+	if tenantID <= 0 || provider == "" || subject == "" || email == "" {
+		return User{}, ErrInvalidInput
+	}
+	// 既有绑定优先:身份已绑某用户 → 直接登录到那个用户(幂等),不重复建号。
+	if user, err := s.Store.GetUserBySocialIdentity(ctx, tenantID, provider, subject); err == nil {
+		if err := ensureSocialLoginUserAllowed(user, s.now()); err != nil {
+			return User{}, err
+		}
+		return user, nil
+	} else if err != nil && !errors.Is(err, ErrUserNotFound) {
+		return User{}, err
+	}
+	// 邮箱已被占用 → 拒(防抢注/接管既有邮箱账号)。
+	if _, err := s.Store.GetUserByEmail(ctx, tenantID, email); err == nil {
+		return User{}, ErrEmailExists
+	} else if !errors.Is(err, ErrUserNotFound) {
+		return User{}, err
+	}
+	// 邮箱策略 + 公开注册/邀请闸,与密码 Register 同约束(社交流程无邀请码输入通道)。
+	if err := s.checkRegistrationEmailPolicy(ctx, tenantID, email); err != nil {
+		return User{}, err
+	}
+	if !s.SocialSignup {
+		return User{}, ErrSocialLoginRejected
+	}
+	mode, err := s.registrationMode(ctx, tenantID)
+	if err != nil {
+		return User{}, err
+	}
+	switch mode {
+	case RegistrationModeDisabled:
+		return User{}, ErrRegistrationDisabled
+	case RegistrationModeInviteRequired:
+		return User{}, ErrInviteRequired
+	}
+	user, err := s.Store.CreateUser(ctx, CreateUserParams{
+		TenantID:            tenantID,
+		Email:               email,
+		DisplayName:         identity.DisplayName,
+		EmailVerified:       true, // 调用方已通过发码验码证明邮箱所有权
 		SocialLoginProvider: provider,
 		Status:              UserStatusActive,
 	})
