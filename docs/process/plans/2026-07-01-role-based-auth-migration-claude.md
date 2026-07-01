@@ -262,6 +262,26 @@ AdminAuthResolver.Resolve(ctx, req) →
 
 ---
 
+## ★ P4 已合(2026-07-01,commit dc646749,对抗审查零 S0/S1)
+
+**已交付**:`panelauth.MaybeBootstrapAdminUser`——env `HUAKAI_ADMIN_BOOTSTRAP_EMAIL` 把默认工作
+租户下已注册的匹配账号提升为 `role=admin`。env 未设 = no-op。advisory-lock + 幂等(role<>'admin'
+跳过不重写 updated_at)+ 陈旧/软删/未注册均记日志不 crash。`tenancy.WorkingTenantIDFromEnv()` 抽
+单一真相源共用(复用不重复,零行为变)。
+
+**delta(§16)**:new-api 空库建 root/123456、sub2api 建号带 ADMIN_PASSWORD;HUAKAI 提升真实注册
+账号、env 只放邮箱(非凭据、无弱密码、无泄密面)。CLIProxyAPI 无 user/role 无等价。
+
+**验证**:单测(env-gate/nil-pool/tenant 守卫判别)+ 真 PG integration_pg 六场景(提升/幂等+updated_at/
+跨租户隔离/软删不提升/大小写/陈旧不崩);§14 五处变异实测证红(tenant/deleted_at/lower 三谓词 +
+tenant 守卫 + role<>'admin')。对抗审查零 S0/S1,两条 S3 测试判别缺口就地修复证红。
+
+**运维流程**:先用正常注册流建账号 → 设 `HUAKAI_ADMIN_BOOTSTRAP_EMAIL` 重启 → 该账号 role=admin。
+注:users.role 当前只驱动前端面板归属(0076);授予 admin API 访问要等 session-auth knob 翻开
+(P2b 写端点放开后)。
+
+---
+
 ## ★ P2a 已合(2026-07-01,commit 9349144e,对抗审查零 S0/S1)
 
 **已交付**:`AdminIdentity` 增 `Source`(token/session)+ `UserID` + `AuditActor()`;组合解析器
