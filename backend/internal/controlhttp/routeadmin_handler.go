@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 )
 
@@ -102,12 +103,15 @@ func routeAdminToRouteViews(routes []routeadmin.Route) []routeView {
 // MountRouteAdminRoutes 挂载管理员分组路由端点 (建 / 列 / 查 / 改 / 启停 / 软删)。
 // {id}/enabled 与 {id} 段深不同, chi 不冲突: PUT /55 命中 {id}(全替换), PUT /55/enabled 命中 {id}/enabled(启停)。
 func MountRouteAdminRoutes(r chi.Router, d RouteAdminDeps) {
-	r.Post("/", newRouteAdminCreateHandler(d))
+	// SessionSafe:分组路由(routes 表)增改停删都是可逆的选路配置,登录 admin(session)可直接写;
+	// 危险者(如删)靠前端确认弹窗防误操作。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/", newRouteAdminCreateHandler(d))
 	r.Get("/", newRouteAdminListHandler(d))
 	r.Get("/{id}", newRouteAdminGetHandler(d))
-	r.Put("/{id}", newRouteAdminUpdateHandler(d))
-	r.Put("/{id}/enabled", newRouteAdminSetEnabledHandler(d))
-	r.Delete("/{id}", newRouteAdminDeleteHandler(d))
+	r.With(safe).Put("/{id}", newRouteAdminUpdateHandler(d))
+	r.With(safe).Put("/{id}/enabled", newRouteAdminSetEnabledHandler(d))
+	r.With(safe).Delete("/{id}", newRouteAdminDeleteHandler(d))
 }
 
 func newRouteAdminCreateHandler(d RouteAdminDeps) http.HandlerFunc {
