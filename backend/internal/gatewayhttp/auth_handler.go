@@ -88,9 +88,22 @@ type AuthHandlerDeps struct {
 	TwoFactorSettings AuthTwoFactorSettings
 	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸。nil = 不限流(测试/旧装配),
 	// 生产装配必须注入,否则未认证攻击者可对任意邮箱触发昂贵 argon2 放大 CPU。
-	LoginThrottle        *loginthrottle.Limiter
-	TelegramBotToken     string
-	TelegramWidgetMaxAge time.Duration
+	LoginThrottle *loginthrottle.Limiter
+	// TelegramBotToken 是静态 bot token(测试/旧装配直接注入)。生产走 TelegramBotTokenResolver
+	// 请求期读后台设置(settings-first,空则回退 env),使运营在管理台改 token 即生效、不重部署。
+	TelegramBotToken         string
+	TelegramBotTokenResolver func(context.Context) string
+	TelegramWidgetMaxAge     time.Duration
+}
+
+// resolveTelegramBotToken 请求期解析 bot token:优先 resolver(后台设置 settings-first),否则静态字段。
+func (d AuthHandlerDeps) resolveTelegramBotToken(ctx context.Context) string {
+	if d.TelegramBotTokenResolver != nil {
+		if v := strings.TrimSpace(d.TelegramBotTokenResolver(ctx)); v != "" {
+			return v
+		}
+	}
+	return d.TelegramBotToken
 }
 
 type authRegisterRequest struct {
@@ -660,7 +673,8 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth/session dependency unset")
 			return
 		}
-		if strings.TrimSpace(d.TelegramBotToken) == "" {
+		botToken := d.resolveTelegramBotToken(r.Context())
+		if strings.TrimSpace(botToken) == "" {
 			writeAuthError(w, userauth.ErrOAuthProviderMissing)
 			return
 		}
@@ -668,7 +682,7 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if !decodeAdminPoolJSON(w, r, &req) {
 			return
 		}
-		identity, err := telegramauth.VerifyWidget(req.Params, d.TelegramBotToken, d.Auth.Clock(), telegramWidgetMaxAge(d))
+		identity, err := telegramauth.VerifyWidget(req.Params, botToken, d.Auth.Clock(), telegramWidgetMaxAge(d))
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
 				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: userauth.SocialProviderTelegram,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -45,6 +46,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/orphanreconcilehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
@@ -293,8 +295,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			SocialLinks: d.userAuth,
 			// telegram 绑定腿(「先绑定后登录」):已登录用户绑定自己的 telegram 身份。
 			// bot token 与登录端点同源(env),空则绑定端点降级为 503。
-			TelegramBinder:   d.userAuth,
-			TelegramBotToken: strings.TrimSpace(os.Getenv("HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN")),
+			TelegramBinder:           d.userAuth,
+			TelegramBotTokenResolver: telegramBotTokenResolver(d),
 		})
 	})
 	paymentDeps := paymenthttp.Deps{Service: d.paymentService, Providers: d.paymentProviders}
@@ -602,6 +604,21 @@ func writeInternalError(w http.ResponseWriter, status int, code string) {
 // authHandlerDeps 装配 /v1/auth handlers 的依赖。关键: EventSink 接生产
 // zap sink(newAuthEventSink), 否则登录失败/注册/重置/OAuth/social 等安全
 // 事件在 recordAuthEvent 处因 sink==nil 被静默丢弃。
+// telegramBotTokenResolver 请求期解析 telegram bot token:后台设置 KeyTelegramBotToken 优先(settings-first),
+// 空则回退 env HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN(back-compat)。使运营在管理台配/换 token 即生效、不重部署。
+func telegramBotTokenResolver(d *deps) func(context.Context) string {
+	return func(ctx context.Context) string {
+		if d.platformSettings != nil {
+			if s, err := d.platformSettings.Get(ctx, platformsettings.KeyTelegramBotToken); err == nil {
+				if v := strings.TrimSpace(s.Value); v != "" {
+					return v
+				}
+			}
+		}
+		return strings.TrimSpace(os.Getenv("HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN"))
+	}
+}
+
 func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 	return gatewayhttp.AuthHandlerDeps{
 		Auth:             d.userAuth,
@@ -616,10 +633,10 @@ func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 			captchaTurnstileSecret(),
 			&http.Client{Timeout: 10 * time.Second},
 		),
-		LoginThrottle:     d.loginThrottle,
-		TwoFactor:         d.twoFactor,
-		TwoFactorSettings: d.platformSettings,
-		TelegramBotToken:  strings.TrimSpace(os.Getenv("HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN")),
+		LoginThrottle:            d.loginThrottle,
+		TwoFactor:                d.twoFactor,
+		TwoFactorSettings:        d.platformSettings,
+		TelegramBotTokenResolver: telegramBotTokenResolver(d),
 	}
 }
 
