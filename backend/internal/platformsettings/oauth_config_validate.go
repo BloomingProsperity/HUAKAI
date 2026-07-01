@@ -47,10 +47,17 @@ var oauthConfigStringFields = map[string]struct{}{
 	"email_field":          {},
 	"email_verified_field": {},
 	"display_name_field":   {},
+	// trust_level_field 是「最小数值 claim」的字段名(linuxdo 用 trust_level 挡低等级账号),
+	// 与下面 min_trust_level 数值配套。仍是字符串字段。
+	"trust_level_field": {},
 }
 
 // oauthConfigArrayField 是唯一允许的**字符串数组**字段。
 const oauthConfigArrayField = "scopes"
+
+// oauthConfigNumberField 是唯一允许的**非负整数**字段:min_trust_level(登录准入门槛,
+// 如 linuxdo 要求 trust_level >= N)。0 或缺省 = 不设门槛。
+const oauthConfigNumberField = "min_trust_level"
 
 func validateOAuthProvidersConfigValue(key SettingKey, value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -82,6 +89,19 @@ func validateOAuthProvidersConfigValue(key SettingKey, value string) (string, er
 				var arr []string
 				if err := json.Unmarshal(rawVal, &arr); err != nil {
 					return "", fmt.Errorf("%w: %s 里 %s.scopes 必须是字符串数组", ErrInvalidValue, key, name)
+				}
+				continue
+			}
+			if fname == oauthConfigNumberField {
+				var n json.Number
+				dn := json.NewDecoder(strings.NewReader(string(rawVal)))
+				dn.UseNumber()
+				if err := dn.Decode(&n); err != nil {
+					return "", fmt.Errorf("%w: %s 里 %s.min_trust_level 必须是非负整数", ErrInvalidValue, key, name)
+				}
+				iv, err := n.Int64()
+				if err != nil || iv < 0 {
+					return "", fmt.Errorf("%w: %s 里 %s.min_trust_level 必须是非负整数", ErrInvalidValue, key, name)
 				}
 				continue
 			}

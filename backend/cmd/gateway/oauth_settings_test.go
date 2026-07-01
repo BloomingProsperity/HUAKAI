@@ -59,6 +59,19 @@ func TestOverlayOAuthSettings(t *testing.T) {
 	if g := overlayOAuthSettings(base, map[string]any{"scopes": []any{"a", "b"}}, "", false); len(g.Scopes) != 2 || g.Scopes[0] != "a" {
 		t.Fatalf("scopes 应被覆盖为 [a b],得 %v", g.Scopes)
 	}
+
+	// min_trust_level 数值覆盖(JSON 反序列化为 float64)+ trust_level_field 字符串覆盖。
+	g := overlayOAuthSettings(base, map[string]any{"min_trust_level": float64(3), "trust_level_field": "tl"}, "", false)
+	if g.MinimumNumericClaimValue != 3 {
+		t.Fatalf("min_trust_level 应被覆盖为 3,得 %d", g.MinimumNumericClaimValue)
+	}
+	if g.MinimumNumericClaimField != "tl" {
+		t.Fatalf("trust_level_field 应被覆盖为 tl,得 %q", g.MinimumNumericClaimField)
+	}
+	// 负数不覆盖(保留 env 基线 0)。
+	if g := overlayOAuthSettings(base, map[string]any{"min_trust_level": float64(-1)}, "", false); g.MinimumNumericClaimValue != 0 {
+		t.Fatalf("负 min_trust_level 不应覆盖,得 %d", g.MinimumNumericClaimValue)
+	}
 }
 
 // TestOAuthResolverFallsBackWhenSettingsEmpty:设置为空时 resolver 返回 false → 调用方回退 env 静态。
