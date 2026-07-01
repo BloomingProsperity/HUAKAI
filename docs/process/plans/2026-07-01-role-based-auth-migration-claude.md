@@ -262,6 +262,22 @@ AdminAuthResolver.Resolve(ctx, req) →
 
 ---
 
+## ★ Owner 定案(2026-07-01)+ P2b 执行拆分
+
+**Owner 三决策**:①**授权 P2b 先行**(接受审计格式统一、存量行不回填、取证工具兼容新旧);②**token 通道豁免 step-up**(hk_admin 程序化凭据持有即授权,对标 new-api;sub2api 亦双通道 `admin_auth.go:26-88` x-api-key + JWT);③**P5 跟在 P2b 后**。顺序锁死:**P2b → P3 → P5**。
+
+**sub2api 印证方向(§16,`sub2api@e34ad2b:backend/internal/server/middleware/admin_auth.go:26-88`)**:sub2 的 admin 门同样双身份——Admin API Key(x-api-key,程序化,= HUAKAI 令牌管理员)+ JWT 登录 admin 角色(= 登录管理员),两者同门。sub2 的 JWT-admin 早已能调所有管理 API;P2b 就是把 HUAKAI 登录管理员追平这条路。HUAKAI delta:令牌侧是表(多命名令牌,比 sub2 单共享密钥细)、审计能分 `admin_token:N` vs `admin_user:N`(sub2 两路都归第一个 admin,分不清)。
+
+**P2b 站点枚举(已读真码分类)**:
+- **字符串 actor(~25 处,3 套格式并存 `%d`/`admin-token:`/`admin:`/`admin_token:`)** → 统一走 `ident.AuditActor()`/`req.Caller.AuditActor()`,无 schema。安全前提已核:**无任何处把 actor 解析回数字**(Atoi/ParseInt on actor 为空);仅 admin_audit.sql:36 / observability.sql:295,330 按 actor_id 精确过滤(取证查询,新格式查、老行不回填=已授权)。→ **P2b-1**。
+- **int64 actor(~15 处,重灾=钱:paymenthttp/voucher/subscription/refund `ActorAdminID int64`/`AdminID int64`)** → 装不下 `admin_user:N`,需 schema(加字符串 actor 列或 source 判别列)。→ **P2b-2**(动钱+schema,子决策可能再回 Owner)。
+- **Hermes FK(hermeshttp/admin_auth.go:94 `adminActor{TokenID}` → admin_actor_token_id 外键)** → session-admin 写 NULL + 另存 user 列。→ **P2b-2**。
+- **放开 session 写方法**(adminsessionauth 只读 gate 放宽)→ 仅在 P2b-1/2 属性修对后。→ **P2b-3**。
+
+**P2b-1 排除项(功能键非审计,不机械改,单独核)**:`paymenthttp/cache_price_override_handler.go:163 "admin:"+N`(疑为 override key 非审计);hermesconfirm/cache.go(confirm 绑定键,非审计)。
+
+---
+
 ## ★ 深研设计结论(2026-07-01,25-agent Workflow wnbh0dm9n,P3/P5/P2b 三切片各 3-lens 对抗审查 + critic)
 
 **硬顺序链:P2b(keystone)→ P3;P5 后端无阻塞但 UX 依赖 P2b。** 三切片各有 S1,均源码亲核非误报。
