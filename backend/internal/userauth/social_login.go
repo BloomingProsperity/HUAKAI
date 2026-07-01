@@ -56,6 +56,10 @@ type OAuthProvider interface {
 
 type OAuthService struct {
 	providers map[string]OAuthProvider
+	// resolver 是请求期 provider 解析器(由 cmd/gateway 注入):按 provider 名 + ctx 读后台设置,
+	// settings-first 覆盖 env 基线后现构 provider。nil = 不启用,只用下面 boot 期 env 静态 providers。
+	// 放在这里而非直接依赖 platformsettings,是为让 userauth 包保持对配置来源无感(依赖倒置)。
+	resolver func(ctx context.Context, name string) (OAuthProvider, bool)
 }
 
 func NewOAuthService(providers ...OAuthProvider) *OAuthService {
@@ -72,12 +76,34 @@ func NewOAuthService(providers ...OAuthProvider) *OAuthService {
 	return out
 }
 
+// SetProviderResolver 注入请求期 provider 解析器(settings-first 覆盖 env)。nil = 不启用。
+func (s *OAuthService) SetProviderResolver(resolver func(ctx context.Context, name string) (OAuthProvider, bool)) {
+	if s == nil {
+		return
+	}
+	s.resolver = resolver
+}
+
 func (s *OAuthService) Provider(name string) (OAuthProvider, bool) {
 	if s == nil {
 		return nil, false
 	}
 	provider, ok := s.providers[normalizeSocialProvider(name)]
 	return provider, ok
+}
+
+// ProviderCtx 请求期解析 provider:先试注入的 resolver(读后台设置、settings-first 覆盖 env),
+// 未命中回退 boot 期 env 静态 provider。保证「设置为空 → 与迁移前行为逐字节一致」。
+func (s *OAuthService) ProviderCtx(ctx context.Context, name string) (OAuthProvider, bool) {
+	if s == nil {
+		return nil, false
+	}
+	if s.resolver != nil {
+		if provider, ok := s.resolver(ctx, name); ok && provider != nil {
+			return provider, true
+		}
+	}
+	return s.Provider(name)
 }
 
 func (s *Service) StartOAuth(ctx context.Context, in OAuthInitInput) (OAuthInitResult, error) {
@@ -88,7 +114,7 @@ func (s *Service) StartOAuth(ctx context.Context, in OAuthInitInput) (OAuthInitR
 	if in.TenantID <= 0 || providerName == "" {
 		return OAuthInitResult{}, ErrInvalidInput
 	}
-	provider, ok := s.OAuth.Provider(providerName)
+	provider, ok := s.OAuth.ProviderCtx(ctx, providerName)
 	if !ok {
 		return OAuthInitResult{}, ErrOAuthProviderMissing
 	}
@@ -138,7 +164,7 @@ func (s *Service) CompleteOAuth(ctx context.Context, in OAuthCallbackInput) (Use
 	if in.TenantID <= 0 || providerName == "" || strings.TrimSpace(in.State) == "" || strings.TrimSpace(in.Code) == "" {
 		return User{}, ErrInvalidInput
 	}
-	provider, ok := s.OAuth.Provider(providerName)
+	provider, ok := s.OAuth.ProviderCtx(ctx, providerName)
 	if !ok {
 		return User{}, ErrOAuthProviderMissing
 	}
