@@ -80,6 +80,49 @@ curl -sS -X PUT http://127.0.0.1:8080/v1/admin/email/settings \
 > 若设了 `HUAKAI_REQUIRE_EMAIL_GATE=true`,则需先以 `HUAKAI_RELEASE_MODE=dev` 起一次配齐上面的 SMTP,
 > 再切回 production(否则严格门不过)——这正是软化前的旧"鸡生蛋"序列,现已非默认。
 
+## 4b. (可选)配置第三方登录(社交登录 / OAuth)
+
+社交登录(GitHub / Google / QQ / Discord / 钉钉 / NodeSeek / LinuxDo)默认不启用。**HUAKAI 不内置、不硬编码
+任何 OAuth 凭证**——每个部署方到对应平台**注册自己的 OAuth 应用**、用自己的 `client_id` / `client_secret`;
+凭证只存在本部署的运行时配置(设置中心或环境变量)里,永不进代码仓库。开源使用者各配各的,互不影响。
+
+**第一步:在上游平台注册你自己的 OAuth 应用,回调地址(Authorization callback URL)填:**
+
+```
+https://<你的域名>/oauth/callback          # 有域名(形态 A)
+http://<服务器IP>:<端口>/oauth/callback    # IP 直连(形态 B)
+http://localhost:<端口>/oauth/callback      # 本地联调(GitHub / Google 均允许 localhost)
+```
+
+> 回调地址**必须与上游登记的一字不差**,否则上游以 `redirect_uri_mismatch` 拒绝——这是最常见的配置错误。
+> HUAKAI 固定回跳到这个前端页换取会话(发起时前端不传 redirect_uri,由服务端固定值防 open-redirect)。
+
+- **GitHub**:Settings → Developer settings → OAuth Apps → New OAuth App;拿 Client ID + 生成 Client Secret。免审核,localhost 直接可用。
+- **Google**:Cloud Console → APIs & Services → 先建 OAuth consent screen(External + 加测试用户),再建 Credentials
+  → OAuth client ID(类型 Web application),把上面的回调地址加进 Authorized redirect URIs。
+
+**第二步:把凭证填进 HUAKAI(二选一;推荐设置中心,即时生效、免重启):**
+
+方式 A —— 管理台**设置中心 →「注册登录」分组**,填三项:
+
+- `第三方登录开关`(`oauth_providers_enabled`):启用哪些 provider,如 `["github","google"]`(决定登录页渲染哪些按钮)。
+- `第三方登录配置`(`oauth_providers_config`,公开):`{"github":{"client_id":"...","redirect_uri":"https://你的域名/oauth/callback"}}`。
+- `第三方登录密钥`(`oauth_providers_secrets`,**脱敏存储、不回显**):`{"github":"<client_secret>"}`。
+  client_secret **只能**填这里,填进公开配置会被写入校验直接拒绝。
+
+方式 B —— 环境变量(需重启;设置中心留空时回退到此):
+
+```
+HUAKAI_GITHUB_OAUTH_CLIENT_ID / HUAKAI_GITHUB_OAUTH_CLIENT_SECRET / HUAKAI_GITHUB_OAUTH_REDIRECT_URI
+HUAKAI_GOOGLE_OAUTH_CLIENT_ID / HUAKAI_GOOGLE_OAUTH_CLIENT_SECRET / HUAKAI_GOOGLE_OAUTH_REDIRECT_URI
+```
+
+**授权 / 令牌端点 URL 与 scope 都有内置默认,通常不用填**(GitHub `read:user user:email`、Google `openid email profile`)。
+仅自建 / 私有 OAuth(如自托管 LinuxDo、NodeSeek)才需在配置里覆盖 `auth_url` / `token_url` / `scopes` 等字段。
+
+> **无已验证邮箱的 provider(QQ、或把邮箱设为私密的 GitHub 账号)**:登录时进入"补邮箱建号"流程——
+> 用户填邮箱、收一次性验证码、验码后建号。该流程依赖 §4 的 SMTP 已配好(否则发码端点 fail-closed 返 503,不会静默假成功)。
+
 ## 5. HTTPS / 反向代理(Caddy 自动 TLS,已内置)
 
 prod compose 内置 `caddy` 服务做 TLS 终结 + 反代,**gateway 不再对宿主暴露明文端口**,外部流量一律经
