@@ -410,7 +410,7 @@ session 通道「灰度只读端点先行」——仅放行 GET/HEAD,写方法�
 
 **⚠️ 路由放开切片的强制项(对抗审查确认的潜伏跨层缺口,balance_credit 同类)**:机制切片里 `admin.ErrAdminStepUp{Required,Invalid,Locked}` 尚无任何 handler 的 `writeAdminAuthError` 副本映射(全仓 ~15 副本只认 ErrAdminBackend,余走 default→401)。机制切片下这些错误生产不可达(无真路由挂 AllowSessionWrite + knob 默认关),且 default→401 是 fail-closed 兜底(更严不误授权),故非 S0/S1。**但放开真 SessionStepUp 路由的切片【必须】同时**:①在承载该路由的包的 `writeAdminAuthError` 补 Required→403 / Invalid→401 / Locked→429(+Retry-After);②加一条 handler 端到端测试验此链(否则 403/429 静默坍缩成 401,丢掉设计刻意区分的可操作信号 + 429 退避提示)。
 
-**机制切片已合(2026-07-01,commit 待填)**:admin sentinels + `internal/adminstepup` 适配器(复用 passkeyhttp verifier,错误翻译)+ `adminsessionauth` 写分级(AllowSessionWrite 中间件 fail-closed / resolver enforcement / header proof)+ wiring 注入;全在默认关 knob 后零生产变;§14 变异(fail-closed default / step-up 错误传递 / 错译)均证红,对抗审查(3 镜头 × 逐条对抗验证)零 S0/S1。
+**机制切片已合(2026-07-01,commit 1c7ed0d9)**:admin sentinels + `internal/adminstepup` 适配器(复用 passkeyhttp verifier,错误翻译)+ `adminsessionauth` 写分级(AllowSessionWrite 中间件 fail-closed / resolver enforcement / header proof)+ wiring 注入;全在默认关 knob 后零生产变;§14 变异(fail-closed default / step-up 错误传递 / 错译)均证红,对抗审查(3 镜头 × 逐条对抗验证)零 S0/S1。
 
 ---
 
