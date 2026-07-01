@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
@@ -120,10 +121,12 @@ func MountUserRoutes(r chi.Router, d UserDeps) {
 }
 
 func MountAdminRoutes(r chi.Router, d AdminDeps) {
+	// SessionSafe:站内公告增改删,低危可逆的运营内容,登录 admin(session)可直接写;删靠前端确认弹窗。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/v1/admin/announcements", newAdminListHandler(d))
-	r.Post("/v1/admin/announcements", newAdminCreateHandler(d))
-	r.Put("/v1/admin/announcements/{id}", newAdminUpdateHandler(d))
-	r.Delete("/v1/admin/announcements/{id}", newAdminDeleteHandler(d))
+	r.With(safe).Post("/v1/admin/announcements", newAdminCreateHandler(d))
+	r.With(safe).Put("/v1/admin/announcements/{id}", newAdminUpdateHandler(d))
+	r.With(safe).Delete("/v1/admin/announcements/{id}", newAdminDeleteHandler(d))
 }
 
 func newUserListHandler(d UserDeps) http.HandlerFunc {

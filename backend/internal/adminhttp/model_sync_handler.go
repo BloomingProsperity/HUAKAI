@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 )
 
@@ -51,7 +52,8 @@ type modelSyncResultItemBody struct {
 }
 
 func MountModelSyncRoutes(r chi.Router, d AdminModelSyncDeps) {
-	r.Post("/", newModelSyncHandler(d))
+	// SessionSafe:触发全局模型目录同步(从上游拉取,可重跑),登录 admin(session)可直接写;前端确认弹窗防误触发。
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/", newModelSyncHandler(d))
 }
 
 func newModelSyncHandler(d AdminModelSyncDeps) http.HandlerFunc {
