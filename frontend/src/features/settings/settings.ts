@@ -99,6 +99,7 @@ const JSON_KEYS = new Set<string>([
   'moderation_external_thresholds',
   'passkey_rp_origins',
   'oauth_providers_enabled',
+  'oauth_providers_config',
 ])
 
 const MULTILINE_KEYS = new Set<string>(['site_home_content', 'site_footer'])
@@ -121,7 +122,12 @@ export function controlFor(key: string): SettingControl {
  * 唯一来源:后端读路径对这些 key 脱敏(清空明文 value、改给 value_configured)。
  * 前端据此判定控件为 secret 且不回显明文。
  */
-const SECRET_KEYS = new Set<string>(['moderation_external_api_keys', 'telegram_bot_token', 'captcha_secret'])
+const SECRET_KEYS = new Set<string>([
+  'moderation_external_api_keys',
+  'telegram_bot_token',
+  'captcha_secret',
+  'oauth_providers_secrets',
+])
 
 /*
  * 9 个分签的归组表。规则:后端每一个 platform-settings key 必须且只能出现在一个 tab。
@@ -160,7 +166,9 @@ export const TAB_GROUPS: SettingsTabGroup[] = [
       { key: 'email_domain_allowlist', label: '允许的邮箱域名', hint: '逗号分隔', control: 'string' },
       { key: 'email_alias_restriction_enabled', label: '限制邮箱别名', hint: '禁止 + 别名等', control: 'bool' },
       { key: 'reserved_email_localparts', label: '保留邮箱前缀', hint: '逗号分隔', control: 'string' },
-      { key: 'oauth_providers_enabled', label: '第三方登录开关', hint: 'OAuth provider 配置(JSON)', control: 'json' },
+      { key: 'oauth_providers_enabled', label: '第三方登录开关', hint: '启用的 provider 列表(逗号分隔或 JSON 数组),决定登录页渲染哪些按钮', control: 'json' },
+      { key: 'oauth_providers_config', label: '第三方登录配置', hint: '各 provider 的非密钥配置(JSON):{"github":{"client_id":"...","redirect_uri":"...","auth_url":"..."}};配置后即生效、无需重部署,留空则回退环境变量。client_secret 请填下方「密钥」项', control: 'json' },
+      { key: 'oauth_providers_secrets', label: '第三方登录密钥', hint: '各 provider 的 client_secret(JSON):{"github":"...","google":"..."}(脱敏存储、不回显);留空则回退环境变量', control: 'secret' },
       { key: 'telegram_bot_username', label: 'Telegram Bot 用户名', hint: '公开 bot 名(t.me/<name>),配合 oauth_providers_enabled 含 telegram 启用 Telegram 登录', control: 'string' },
       { key: 'telegram_bot_token', label: 'Telegram Bot Token', hint: 'BotFather 颁发的 bot token(HMAC 校验密钥,脱敏存储、不回显);配置后即生效、无需重部署,留空则回退环境变量', control: 'secret' },
     ],

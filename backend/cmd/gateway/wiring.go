@@ -989,6 +989,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+	// 注入 OAuth provider 请求期解析器(settings-first 覆盖 env)。必须用 cipher-enabled 的
+	// platformSettingsService(line ~815 带 WithSecretCipher):oauth_providers_secrets 在库里是密文,
+	// 读时须解密成明文 client_secret;buildUserServices 内部那个是 cipher-less 的,不能用于读 secret。
+	if userAuthService.OAuth != nil {
+		userAuthService.OAuth.SetProviderResolver(oauthProviderSettingsResolver(platformSettingsService, logger))
+	}
 	twoFactorService := twofa.NewService(twofa.NewPostgresStore(pgPool), credentialKeys)
 	passkeyService := passkey.NewService(
 		passkey.NewPostgresStore(pgPool),
