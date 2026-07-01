@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
@@ -143,19 +144,22 @@ func (s postgresUnlockAuditStore) UnlockUserWithAudit(ctx context.Context, tenan
 }
 
 func MountRoutes(r chi.Router, d Deps) {
+	// SessionSafe:登录 admin(session)可直接写的用户账号运维/恢复类操作(危险者靠前端确认弹窗防误操作)。
+	// 未挂此中间件的写端点默认 token-only(建/删用户、删 passkey、改分组=耦合计费档,均高危,继续只认令牌)。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newListHandler(d))
 	r.Post("/", newCreateUserHandler(d))
 	r.Delete("/{id}", newDeleteUserHandler(d))
 	r.Get("/2fa-adoption-stats", newTwoFAStatsHandler(d))
 	r.Get("/{id}", newGetHandler(d))
-	r.Post("/{id}/unlock", newUnlockHandler(d))
-	r.Post("/{id}/2fa/force-disable", newForceDisable2FAHandler(d))
+	r.With(safe).Post("/{id}/unlock", newUnlockHandler(d))
+	r.With(safe).Post("/{id}/2fa/force-disable", newForceDisable2FAHandler(d))
 	r.Delete("/{id}/passkeys", newResetPasskeyHandler(d))
 	r.Put("/{id}/group", newSetUserGroupHandler(d))
-	r.Put("/{id}/remark", newSetUserRemarkHandler(d))
-	r.Put("/{id}/status", newSetUserStatusHandler(d))
+	r.With(safe).Put("/{id}/remark", newSetUserRemarkHandler(d))
+	r.With(safe).Put("/{id}/status", newSetUserStatusHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
-	r.Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
+	r.With(safe).Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
 
 func NewRouter(d Deps) http.Handler {
