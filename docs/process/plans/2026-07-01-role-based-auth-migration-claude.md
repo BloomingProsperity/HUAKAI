@@ -262,6 +262,28 @@ AdminAuthResolver.Resolve(ctx, req) →
 
 ---
 
+## ★ P2b-2/P2b-3 设计(2026-07-01,待 Owner 拍板 schema + 写端点分级)
+
+**已合**:P2b-1(f512ee7b 字符串审计统一)+ balance_credit 回归修复(4bf3dddb)+ 测试加强(6f27073d,5复杂逻辑区真 PG 集成)。
+
+**§16 三镜动钱归属对照**:sub2api(`sub2api@e34ad2b:payment_fulfillment.go:350,439 UserID/AssignedBy`)+ new-api(`new-api:model/topup.go:16 / redemption.go:16 UserId int`)动钱归属都是**单个 int user_id**——**三镜无 token/session 双身份**,故"双身份钱归属"无现成范式,HUAKAI 是真扩展。CLIProxyAPI 纯 relay 无动钱,无对应。
+
+**HUAKAI int64 归属迁移面**(~9 列跨 6 表,全 bigint):payment `created_by_admin_id/confirmed_by_admin_id`(0071)+ `payment_audit_events.actor_id`(0071:102);voucher `created_by_admin_id/revoked_by_admin_id`(0023);subscription `assigned_by_admin_id`(0073)+ `actor_id`(0073/0101);notices `created_by`(0020);**Hermes `admin_actor_token_id`(0144/0145,唯一带外键→崩)**。
+
+**关键判断:P2b-2 schema 可完全延后。** Hermes 写 + 钱写在 P2b-3 保持 token-only(Owner 已定),它们的崩(Hermes FK)/误记(钱 int64)在灰度期根本不触发。故本轮**不动 money schema**,只做 P2b-3 按危险度分级放开 session 写。
+
+**P2b-3 写端点分级(核心设计)**:组合解析器只读 gate 从"纯 GET/HEAD"升级为"读 + 安全写白名单";session 写仅放行**低危配置类**(catalog/routing/pool/quota/moderation/告警/平台设置等,均 P2b-1 已字符串归属),**危险类一律 token-only**:
+- 🔴 **钱**(payment/voucher/subscription/refund,int64 归属)→ token-only,待 P2b-2 schema + P3 step-up。
+- 🔴 **凭证/KEK/签发 admin token/删账号**(高危爆炸半径)→ token-only,待 P3 step-up(即便 P2b-1 已字符串归属,step-up 未建前不放开)。
+- 🔴 **Hermes 写**(FK 崩)→ token-only,待 P2b-2 Hermes FK 修 + P3。
+
+**P2b-2 未来 money schema 三选项(交 Owner)**:
+- **A 加字符串 actor 列**(`*_by_actor text` 存 AuditActor(),与中央 admin_audit_events.actor_id 统一)——最完整,~9 列迁移;delta:HUAKAI 钱归属能分程序化 token vs 人会话(三镜单 id 分不清)。
+- **B 来源判别列**(`*_actor_source text` + 复用 int64)——int64 含义随列变,较脏。
+- **C 延后**:钱端点保持 token-only,money-via-session 与 P3 step-up 打包成独立"money-via-login"切片再做 A。**推荐**(动钱最高危,本就需 step-up;三镜无双身份范式可抄;不堆砌)。
+
+---
+
 ## ★ Owner 定案(2026-07-01)+ P2b 执行拆分
 
 **Owner 三决策**:①**授权 P2b 先行**(接受审计格式统一、存量行不回填、取证工具兼容新旧);②**token 通道豁免 step-up**(hk_admin 程序化凭据持有即授权,对标 new-api;sub2api 亦双通道 `admin_auth.go:26-88` x-api-key + JWT);③**P5 跟在 P2b 后**。顺序锁死:**P2b → P3 → P5**。
