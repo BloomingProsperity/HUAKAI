@@ -1,6 +1,10 @@
 package oauthpendinghttp
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -125,6 +129,38 @@ func TestChallengeRoundTripAndBinding(t *testing.T) {
 	}
 	if codeBinding(key, cc.TenantID, cc.Provider, cc.Subject, cc.Email, "ZZZZZZZZ") == cc.CodeBinding {
 		t.Fatal("错误码不得命中 challenge 绑定")
+	}
+}
+
+// TestSendCodeFailsClosedWithoutEmailSender 守护:邮件通道未配(EmailSender 为 nil)时,发码端点
+// 必须 fail-closed 返 503,绝不签发用户永远收不到码的 challenge_token(把用户引入死等)。
+// 变异:若入口守卫去掉 `d.EmailSender == nil` 判断 → 持合法 pending_token 的请求走到发码分支、
+// 静默跳过投递并返 200 + challenge_token → 本断言(期望 503)RED。
+func TestSendCodeFailsClosedWithoutEmailSender(t *testing.T) {
+	key := testKey()
+	// Now 固定到 fixedNow,使 mustPending 签发的 token 在处理时仍有效:
+	// 这样「去掉守卫」的变异体会真的走到发码分支(否则 token 过期先被拒,掩盖缺陷)。
+	auth := &userauth.Service{Now: func() time.Time { return fixedNow() }}
+	d := Deps{Auth: auth, Key: key} // EmailSender 故意留 nil
+	body, _ := json.Marshal(sendCodeRequest{PendingToken: mustPending(t, key), Email: "a@b.com"})
+	req := httptest.NewRequest(http.MethodPost, "/oauth-pending/send-code", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	newSendCodeHandler(d)(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("EmailSender 缺失时应 fail-closed 503,得 %d(body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCodeBindingNoDelimiterCollision 守护长度前缀编码消除分隔符碰撞:两组仅在 subject/email 边界
+// 不同、但旧「|」拼接会折叠成同一字符串的输入,其码指纹必须不同。
+// 变异:若 codeBinding 退回 strings.Join(...,"|") 拼接 → 下面两指纹相等 → RED。
+func TestCodeBindingNoDelimiterCollision(t *testing.T) {
+	key := testKey()
+	// 旧拼接: 两者都 = "7|github|a|b|c@d.com|CODE1234"(subject 尾的 "|b" 与 email 头的 "b|" 挪移碰撞)。
+	a := codeBinding(key, 7, "github", "a", "b|c@d.com", "CODE1234")
+	b := codeBinding(key, 7, "github", "a|b", "c@d.com", "CODE1234")
+	if a == b {
+		t.Fatal("subject/email 边界不同的两输入,码指纹必须不同(否则分隔符碰撞可跨字段挪移绕过绑定)")
 	}
 }
 

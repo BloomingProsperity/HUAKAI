@@ -25,6 +25,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -165,13 +166,24 @@ func verifyPendingToken(key []byte, token string, now time.Time) (pendingClaims,
 	return c, nil
 }
 
+// codeBinding = HMAC(key, prefix ‖ 各字段「8 字节大端长度前缀 + 字节」编码)。
+// 用长度前缀分隔字段而非 "|" 拼接,消除分隔符歧义类:email 允许含 "|"(looksLikeEmail 不挡)、
+// subject 由上游给不做限制,"|" 拼接下不同的 (subject,email) 边界可折叠成同一字符串产生碰撞;
+// 长度前缀让每个字段的边界不可挪移,任意字段值都不会与相邻字段串到一起。
 func codeBinding(key []byte, tenantID int64, provider, subject, email, code string) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(codeBindingPrefix))
-	mac.Write([]byte(strings.Join([]string{
-		itoa(tenantID), strings.ToLower(strings.TrimSpace(provider)),
-		strings.TrimSpace(subject), normalizeEmail(email), normalizeCode(code),
-	}, "|")))
+	writeField := func(s string) {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(s)))
+		mac.Write(n[:])
+		mac.Write([]byte(s))
+	}
+	writeField(itoa(tenantID))
+	writeField(strings.ToLower(strings.TrimSpace(provider)))
+	writeField(strings.TrimSpace(subject))
+	writeField(normalizeEmail(email))
+	writeField(normalizeCode(code))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -260,7 +272,9 @@ type completeRequest struct {
 
 func newSendCodeHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.Auth == nil || len(d.Key) == 0 {
+		// EmailSender 缺失(邮件通道未配)= 码无法投递,fail-closed 停用发码:绝不签发用户永远无法
+		// 完成的 challenge_token,否则会把用户静默引入「等一个永不到达的码」死局(而非报错引导)。
+		if d.Auth == nil || len(d.Key) == 0 || d.EmailSender == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "oauth pending flow not configured")
 			return
 		}
@@ -288,11 +302,10 @@ func newSendCodeHandler(d Deps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "failed to issue challenge")
 			return
 		}
-		if d.EmailSender != nil {
-			if err := d.EmailSender.SendOAuthEmailCode(r.Context(), claims.TenantID, email, code); err != nil {
-				writeJSONError(w, http.StatusServiceUnavailable, "email_send_failed", "failed to send verification code")
-				return
-			}
+		// EmailSender 已由入口守卫保证非 nil;发码失败即 fail-closed 报错,不返 challenge_token。
+		if err := d.EmailSender.SendOAuthEmailCode(r.Context(), claims.TenantID, email, code); err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "email_send_failed", "failed to send verification code")
+			return
 		}
 		d.recordEvent(r.Context(), "oauth_pending_email_code_sent", claims.TenantID, 0, claims.Provider, "success", "")
 		writeJSON(w, http.StatusOK, map[string]any{"status": "code_sent", "challenge_token": challengeToken})
