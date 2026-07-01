@@ -471,6 +471,38 @@ Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。�
 
 ---
 
+## ★★ money-via-login 设计(2026-07-01,Owner 选定的下一切片;schema+money 双 Owner-gated,待拍板)
+
+**目标**:让登录 admin(session,无 hk_admin 令牌、TokenID=0)也能做动钱操作(充值/余额调整/退款/发券/订阅指派),归属可追、守 new-api 模型(前端确认弹窗,无后端 step-up)。
+
+**研究结论(Workflow wsknpa07f 亲核真码,file:line 见任务输出)**:动钱归属列**全是可空 bigint、无 NOT NULL、无指向 admin 身份的 FK**(只有指向 tenants/users 的租户 FK)→ session-admin 写入本身不违约。真阻断三层:
+1. **归属丢**:所有动钱 handler 取 `ident.TokenID`(int64)→ session-admin=0 → `nullableInt64(0)`=NULL,归属整条丢(balance_credit 刻意传 "0" 也一样)。
+2. **硬阻断**:退款申请 approve/reject 有 `adminActorID <= 0` 守卫(refund_request_admin.go:130,169 + refund_request_postgres.go:95,144)→ session-admin(0)被 ErrInvalidInput 直接拒。
+3. **到达阻断**:无动钱路由标 SessionSafe → session-admin fail-closed 到不了(设计使然)。
+- **格式裂缝**:`admin_audit_events.actor_id` 已是 **text**(`admin_token:N`,P2b-1)但 payment/voucher/subscription 的 actor 列是 **bigint 裸 id**,区分不了 admin_tokens.id vs users.id。审计表有 `actor_kind` CHECK(admin/user/system)。
+
+**§15 三镜对照(动钱归属数据模型)**:
+| 镜 | 归属列形态 | 是否区分 token vs session | 证据 |
+|---|---|---|---|
+| **new-api** | 单 int `admin_id`(恒 users.id)+ JSON `auth_method`("access_token"/"session") | **区分**(auth_method 字段) | new-api@HEAD:model/log.go:179-201、controller/audit.go:66-80 |
+| **sub2api** | 单 varchar `operator`(如 "admin"/"user:123") | **不区分** | sub2api@HEAD:service/payment_stats.go:153-159、migrations/093_payment_audit_logs.sql |
+| **CLIProxyAPI** | 无动钱模块(纯 relay) | 不适用 | README 确认无 .sql/无 payment 包 |
+- **关键差异**:new-api 的 admin token = 用户的**个人** access token(admin_id 恒 users.id,auth_method 只记"怎么登的")→ 单一 id 空间。**HUAKAI 的 admin_tokens 是独立于用户的程序化凭据**(不绑任何 users.id)→ 天然两 id 空间(admin_tokens.id vs users.id),必须区分。HUAKAI 的 `AuditActor()` 串 `admin_token:N`/`admin_user:N`(id+来源编码进一串)正是为此,比 new-api「id+方法两列」更紧凑。
+
+**schema 选项(→ Owner 拍板)**:
+- **选项 A(推荐)——加 text `*_by_actor` 列存 AuditActor()**:给动钱表(payment_orders/payment_audit_events/voucher/voucher_batch/user_subscriptions/subscription 审计/payment_refunds/refund_requests)各加一个可空 text 列,存 `admin_token:N`/`admin_user:N`;既有 bigint 列保留(token-admin 双写、session-admin 只写 text 列)。**统一 admin_audit_events 既有 text 格式**、无歧义、取证友好、对标 new-api「id+来源」的紧凑版。改动面:一支迁移加~8 列 + handler 改写审计归属走 AuditActor()。
+- **选项 B——扩 actor_kind + int actor_id 存来源相关 id**:审计表 actor_kind CHECK 扩 'admin_token'/'admin_session',actor_id 存对应 id(token→TokenID、session→UserID),靠 kind 消歧。更接近 new-api「两列」、actor_id 可 JOIN;但 order/assignment 类列(created_by_admin_id 等)无 actor_kind 兄弟列,session-admin 只能留 NULL(归属只落审计事件)或另加来源列 → 反而更碎。
+- **推荐 A**:一列一格式、全表一致、与 P2b-1 已建的 admin_audit_events text 归属同源;单运营者场景取证可读 > JOIN 便利。
+
+**配套修法**:
+- **refund 守卫**:`adminActorID <= 0` 改判「有已认证 admin 身份」而非「int>0」(session-admin 合法);归属改走 text actor 列。
+- **S3 限流(顺带解)**:给 admin_audit_events 加数值 `actor_token_id bigint`,API key 签发限流 `CountIssuanceInWindow` 改按数值稳定键分桶(而非审计展示串),跨部署边界免疫(研究选项 A2)。可与本切片同迁移或独立小迁移。
+- **放开范围(blast-radius,→ Owner 拍板)**:哪些动钱端点发 SessionSafe 许可?**选项**:(a)全动钱端点放开(充值/退款/发券/订阅,最贴 new-api,前端危险确认弹窗);(b)只放开低危动钱(如手动充值,退款/发券留 token-only);(c)先只建归属基建、暂不放开任何动钱端点(session 仍够不到,但迁移到位、日后翻标即开)。
+
+**执行计划(Owner 批准 schema+范围后才动)**:①一支迁移(加 text actor 列 + S3 数值列 + 索引;非破坏,纯加列)②handler 动钱归属统一走 AuditActor() 写 text 列(sqlc 手改生成码不重生成,见 [[sqlc-codegen-out-of-sync]])③refund 守卫改判来源 ④按选定范围给动钱路由发 AllowSessionWrite(SessionSafe)⑤§14 变异 + 真 PG 集成测试(session-admin 动钱归属落 admin_user:N、token-admin 落 admin_token:N、refund 不再拒 session)⑥对抗审查零 S0/S1。全在默认关 knob 后零生产变。
+
+---
+
 相关文件(绝对路径,供落盘参考):
 - 计划落盘目标目录:`/home/ubuntu/HUAKAI/backend/docs/process/plans/`
 - 核心改造文件:`/home/ubuntu/HUAKAI/backend/internal/admin/operator_auth.go`、`/home/ubuntu/HUAKAI/backend/internal/admin/bootstrap.go`、`/home/ubuntu/HUAKAI/backend/internal/panelauth/resolve.go`、`/home/ubuntu/HUAKAI/backend/internal/auth/session_middleware.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/routes.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/middleware.go`、`/home/ubuntu/HUAKAI/backend/internal/controlhttp/panelauth_handler.go`
