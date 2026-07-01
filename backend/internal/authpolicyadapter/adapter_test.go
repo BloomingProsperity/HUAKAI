@@ -61,24 +61,31 @@ func TestRegPolicyAdapterReadsSettings(t *testing.T) {
 	}
 }
 
-func TestRegPolicyFailOpen(t *testing.T) {
+// TestRegPolicyFailsToDefaultsOnReadError:设置读失败时,适配器回落到各 key 的**默认值**
+//(AuthSettings.Get 吞错返回 defaultSetting),而非一律 fail-open。因此:
+//   - 注册主门 registration_enabled 默认 false(Owner 拍板「注册默认关」)→ 读错时注册被拒(fail-safe);
+//   - 密码登录 password_login_enabled 默认 true → 读错时登录仍放行;
+//   - 邮箱域名白名单/别名限制默认关 → 读错时不误开限制。
+// 变异:若适配器改成"读错一律返回 true/开",注册断言(期望 false)会 RED;若改成"读错一律 false",
+// 登录断言(期望 true)会 RED——双向判别。
+func TestRegPolicyFailsToDefaultsOnReadError(t *testing.T) {
 	ctx := context.Background()
 	settings := stubSettings{err: errors.New("settings unavailable")}
 
 	gate := NewRegistrationGate(settings)
 	registerAllowed, err := gate.PasswordRegistrationAllowed(ctx, 42)
 	if err != nil {
-		t.Fatalf("PasswordRegistrationAllowed err=%v want nil fail-open", err)
+		t.Fatalf("PasswordRegistrationAllowed err=%v want nil(回落默认)", err)
 	}
-	if !registerAllowed {
-		t.Fatalf("PasswordRegistrationAllowed=false want true fail-open; MUTATION: read error locked registration")
+	if registerAllowed {
+		t.Fatalf("PasswordRegistrationAllowed=true want false;注册默认关,读错须回落到拒绝(fail-safe)")
 	}
 	loginAllowed, err := gate.PasswordLoginAllowed(ctx, 42)
 	if err != nil {
-		t.Fatalf("PasswordLoginAllowed err=%v want nil fail-open", err)
+		t.Fatalf("PasswordLoginAllowed err=%v want nil(回落默认)", err)
 	}
 	if !loginAllowed {
-		t.Fatalf("PasswordLoginAllowed=false want true fail-open; MUTATION: read error locked login")
+		t.Fatalf("PasswordLoginAllowed=false want true;登录默认开,读错须回落到放行")
 	}
 
 	emailPolicy := NewEmailPolicy(settings)
