@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
@@ -14,9 +16,13 @@ func mountPlatformSettingsRoutes(r chi.Router, d *deps) {
 	}
 	r.Route("/v1/admin/platform-settings", func(r chi.Router) {
 		controlhttp.MountPlatformSettingsRoutes(r, controlhttp.PlatformSettingsDeps{
-			Auth:                    auth,
-			Service:                 platformSettingsRouteService(d),
-			CaptchaSecretConfigured: captchaTurnstileSecret() != "",
+			Auth:    auth,
+			Service: platformSettingsRouteService(d),
+			// 请求期解析 captcha secret 是否已配置(settings-first 回退 env),与登录端点同源;
+			// 不再用 boot 快照,保证管理台改 captcha_secret 后配置门/健康态即时反映。
+			CaptchaSecretConfigured: func(ctx context.Context) bool {
+				return captchaSecretResolver(d)(ctx) != ""
+			},
 		})
 	})
 }

@@ -816,7 +816,15 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := platformSettingsService.RefreshAll(ctx); err != nil {
 		logger.Warn("platform settings prewarm failed", zap.Error(err))
 	}
+	// captcha secret 现为 settings-first(后台设置 captcha_secret 优先、空回退 env),
+	// boot 期日志/生产门也据此解析,避免密钥已在管理台配置却误报"未配置"。
+	// platformSettingsService 此处必非 nil(刚构造),可安全 Get。
 	captchaSecret := captchaTurnstileSecret()
+	if s, err := platformSettingsService.Get(ctx, platformsettings.KeyCaptchaSecret); err == nil {
+		if v := strings.TrimSpace(s.Value); v != "" {
+			captchaSecret = v
+		}
+	}
 	if err := validateProductionCaptchaConfig(ctx, platformSettingsService, captchaSecret); err != nil {
 		return nil, err
 	}

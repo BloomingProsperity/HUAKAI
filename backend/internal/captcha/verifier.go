@@ -50,20 +50,24 @@ type TurnstileConfig struct {
 	SiteVerifyURL string
 }
 
+// NewVerifier 构造按运行时 captcha_provider 路由校验端点的 verifier。secret 不再在 boot 期
+// 固化,而是通过 secretResolver 在**请求期**解析(后台设置 captcha_secret 优先、空回退 env),
+// 使运营在管理台配/换 secret 即生效、不重部署;secretResolver 为 nil 时退化为 noop(fail-open)。
+// 注:与旧版「boot 期 secret 空即 noop」不同——现在 secret 可来自后台设置,故延迟到请求期判定;
+// 若请求期解析仍为空(设置与 env 都没配),Verify 仍按 fail-open noop 处理,语义与旧版一致。
 func NewVerifier(
 	settings SettingsReader,
-	secret string,
+	secretResolver func(context.Context) string,
 	client *http.Client,
 ) CaptchaVerifier {
-	secret = strings.TrimSpace(secret)
-	if secret == "" {
+	if secretResolver == nil {
 		return noopVerifier{}
 	}
 	return settingsProviderVerifier{
-		settings:  settings,
-		secret:    secret,
-		client:    captchaHTTPClient(client),
-		providers: defaultSiteVerifyProviders(),
+		settings:       settings,
+		secretResolver: secretResolver,
+		client:         captchaHTTPClient(client),
+		providers:      defaultSiteVerifyProviders(),
 	}
 }
 
@@ -103,10 +107,18 @@ type siteVerifyProvider struct {
 }
 
 type settingsProviderVerifier struct {
-	settings  SettingsReader
-	secret    string
-	client    *http.Client
-	providers []siteVerifyProvider
+	settings       SettingsReader
+	secretResolver func(context.Context) string
+	client         *http.Client
+	providers      []siteVerifyProvider
+}
+
+// resolveSecret 请求期解析 captcha secret(settings-first 回退 env 已封装在注入的 resolver 里)。
+func (v settingsProviderVerifier) resolveSecret(ctx context.Context) string {
+	if v.secretResolver == nil {
+		return ""
+	}
+	return strings.TrimSpace(v.secretResolver(ctx))
 }
 
 func (v turnstileVerifier) Verify(
@@ -125,11 +137,17 @@ func (v settingsProviderVerifier) Verify(
 	token string,
 	remoteIP string,
 ) error {
+	// secret 先行:请求期解析仍为空 = 未配置 → fail-open noop(且不读运行时设置),
+	// 与旧版「secret 缺失即 noop」语义一致;有 secret 才按运行时 provider 路由校验。
+	secret := v.resolveSecret(ctx)
+	if secret == "" {
+		return nil
+	}
 	endpoint, ok := v.enabledEndpoint(ctx)
 	if !ok {
 		return nil
 	}
-	return verifySiteToken(ctx, v.client, endpoint, v.secret, token, remoteIP)
+	return verifySiteToken(ctx, v.client, endpoint, secret, token, remoteIP)
 }
 
 func verifySiteToken(

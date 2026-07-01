@@ -28,9 +28,20 @@ type PlatformSettingsService interface {
 }
 
 type PlatformSettingsDeps struct {
-	Auth                    PlatformSettingsAuth
-	Service                 PlatformSettingsService
-	CaptchaSecretConfigured bool
+	Auth    PlatformSettingsAuth
+	Service PlatformSettingsService
+	// CaptchaSecretConfigured 请求期报告 captcha secret 是否已配置(后台设置 captcha_secret
+	// 非空 或 回退 env 非空)。改为请求期 resolver(而非 boot 快照),因为 secret 现可在管理台
+	// 自助配置、无需重部署;nil 视为未配置。
+	CaptchaSecretConfigured func(context.Context) bool
+}
+
+// captchaSecretConfigured 请求期解析 captcha secret 是否已配置,nil-safe。
+func (d PlatformSettingsDeps) captchaSecretConfigured(ctx context.Context) bool {
+	if d.CaptchaSecretConfigured == nil {
+		return false
+	}
+	return d.CaptchaSecretConfigured(ctx)
 }
 
 type platformSettingsPutRequest struct {
@@ -79,7 +90,7 @@ func newPlatformSettingsListHandler(d PlatformSettingsDeps) http.HandlerFunc {
 		}
 		out := make([]platformSettingsResponse, 0, len(items))
 		for _, item := range items {
-			out = append(out, platformSettingsResponseFromStored(item, d))
+			out = append(out, platformSettingsResponseFromStored(r.Context(), item, d))
 		}
 		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsListResponse{Items: out})
 	}
@@ -99,7 +110,7 @@ func newPlatformSettingsGetHandler(d PlatformSettingsDeps) http.HandlerFunc {
 			platformSettingsWriteServiceError(w, err)
 			return
 		}
-		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsResponseFromStored(setting, d))
+		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsResponseFromStored(r.Context(), setting, d))
 	}
 }
 
@@ -121,7 +132,7 @@ func newPlatformSettingsPutHandler(d PlatformSettingsDeps) http.HandlerFunc {
 			platformSettingsWriteJSONError(w, http.StatusBadRequest, "platform_setting_value_required", "value is required")
 			return
 		}
-		if key == platformsettings.KeyCaptchaEnabled && strings.TrimSpace(*req.Value) == "true" && !d.CaptchaSecretConfigured {
+		if key == platformsettings.KeyCaptchaEnabled && strings.TrimSpace(*req.Value) == "true" && !d.captchaSecretConfigured(r.Context()) {
 			platformSettingsWriteJSONError(w, http.StatusBadRequest, "captcha_secret_required", "cannot enable CAPTCHA until Turnstile secret is configured")
 			return
 		}
@@ -139,7 +150,7 @@ func newPlatformSettingsPutHandler(d PlatformSettingsDeps) http.HandlerFunc {
 			platformSettingsWriteServiceError(w, err)
 			return
 		}
-		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsResponseFromStored(setting, d))
+		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsResponseFromStored(r.Context(), setting, d))
 	}
 }
 
@@ -189,7 +200,7 @@ func platformSettingsDecodeJSON(w http.ResponseWriter, r *http.Request, dst any)
 	return true
 }
 
-func platformSettingsResponseFromStored(setting platformsettings.StoredSetting, d PlatformSettingsDeps) platformSettingsResponse {
+func platformSettingsResponseFromStored(ctx context.Context, setting platformsettings.StoredSetting, d PlatformSettingsDeps) platformSettingsResponse {
 	resp := platformSettingsResponse{
 		Key:    string(setting.Key),
 		Value:  setting.Value,
@@ -204,7 +215,7 @@ func platformSettingsResponseFromStored(setting platformsettings.StoredSetting, 
 		resp.ValueConfigured = &configured
 	}
 	if setting.Key == platformsettings.KeyCaptchaEnabled {
-		resp.Health = platformSettingsCaptchaHealth(setting, d)
+		resp.Health = platformSettingsCaptchaHealth(ctx, setting, d)
 	}
 	if !setting.UpdatedAt.IsZero() {
 		updatedAt := setting.UpdatedAt.UTC()
@@ -216,12 +227,13 @@ func platformSettingsResponseFromStored(setting platformsettings.StoredSetting, 
 	return resp
 }
 
-func platformSettingsCaptchaHealth(setting platformsettings.StoredSetting, d PlatformSettingsDeps) *platformSettingsHealth {
+func platformSettingsCaptchaHealth(ctx context.Context, setting platformsettings.StoredSetting, d PlatformSettingsDeps) *platformSettingsHealth {
+	configured := d.captchaSecretConfigured(ctx)
 	health := &platformSettingsHealth{
 		Status:                  "ok",
-		CaptchaSecretConfigured: d.CaptchaSecretConfigured,
+		CaptchaSecretConfigured: configured,
 	}
-	if strings.TrimSpace(setting.Value) == "true" && !d.CaptchaSecretConfigured {
+	if strings.TrimSpace(setting.Value) == "true" && !configured {
 		health.Status = "degraded"
 		health.Issue = "turnstile_secret_missing"
 	}

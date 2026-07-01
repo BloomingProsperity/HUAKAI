@@ -19,6 +19,8 @@ var secretSettingKeys = map[SettingKey]struct{}{
 	KeyModerationExternalAPIKeys: {},
 	// KeyTelegramBotToken 是 Telegram bot token(HMAC 校验密钥),at-rest 加密 + 写后不回显。
 	KeyTelegramBotToken: {},
+	// KeyCaptchaSecret 是人机验证提供方的服务端 secret(校验 token 用),at-rest 加密 + 写后不回显。
+	KeyCaptchaSecret: {},
 }
 
 // IsSecretKey 判定某个 key 是否属于密钥/凭据类。读路径与审计脱敏都调用它,确保
