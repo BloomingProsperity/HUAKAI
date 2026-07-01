@@ -455,6 +455,14 @@ Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。�
 
 **至此非碰撞区可自主放开的包全部开完(6 包)。**
 
+**arc 收口全局审计(2026-07-01,Workflow wy5tl34mk,5 维 × 逐条对抗验证):零 CONFIRMED S0/S1。**
+核心 knob-off 零变更不变量确认成立(knob 关时 session/写分级分支物理不可达、AllowSessionWrite 惰性)。
+唯一 CONFIRMED = **S3(自愈、部署边界一次性)**:P2b-1(f512ee7b)把审计 actor_id 从 `"5"` 统一到
+`"admin_token:5"`(token 通道恒活、非 knob 门控),而 API key 签发限流的 `CountIssuanceInWindow`
+按 actor_id 精确串匹配统计 → P2b-1 部署瞬间,卡在 30/小时上限的 admin 其限流窗因旧行 actor_id 格式不符
+被有效清零一次(≤1 小时自愈,无回填)。无越权/崩溃/money。属 Owner 已接受的「审计格式统一 + 存量不回填」
+之副作用(Q1),留待 money-via-login 切片(届时本就重访审计归属)一并解决,不为 S3 硬改限流查询。
+
 **暂缓/不碰(继续 token-only)**:
 - `modelbindingadminhttp`:import 碰撞区 `registry` 类型,守 §6 不碰。
 - **碰撞区 gateway*/proxy/tlsfp**(池账号/渠道健康/L2缓存/代理/TLS 指纹):守 §6 不碰,继续 token-only(与 money/凭证同待遇,基础设施层走令牌合理)。
