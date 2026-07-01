@@ -44,6 +44,25 @@ var ErrAdminNotFound = errors.New("admin: target not found")
 // 与 auth.ErrAuthBackend 对应。
 var ErrAdminBackend = errors.New("admin: backend datastore error")
 
+// step-up 二次校验错误(role 制单登录 P3):session 通道对被标注 SessionStepUp
+// 的写端点要求新鲜的密码/2FA 证明。与凭证失败(ErrAdminUnauthorized/401)刻意区分,
+// 因为 step-up 是「可操作信号」——客户端应据此弹出二次校验、而非当作凭证失效。
+// token 通道豁免(programmatic 持有即授权),故这些错误只在 session 源产生。
+//
+// ⚠️ 映射契约由消费 handler 履行,且【必须】随「放开真 SessionStepUp 路由」的切片一并落地:
+// 承载该路由的包须在其 writeAdminAuthError 里补下列映射 + 一条 handler 端到端测试。
+// 本机制切片不放开任何真路由,故当前无 handler 产出这些错误(SessionStepUp 分支生产不可达);
+// 现有 writeAdminAuthError 副本的 default→401 对它们是 fail-closed 兜底(更严、绝不误授权)。
+//
+// ErrAdminStepUpRequired:未带 step-up 证明。映射 403(带专用 code 供前端弹二次校验)。
+var ErrAdminStepUpRequired = errors.New("admin: step-up required")
+
+// ErrAdminStepUpInvalid:证明错误(密码/2FA 不符)。映射 401。
+var ErrAdminStepUpInvalid = errors.New("admin: step-up invalid")
+
+// ErrAdminStepUpLocked:底层 2FA 多次失败临时锁定。映射 429(建议带 Retry-After)。
+var ErrAdminStepUpLocked = errors.New("admin: step-up locked")
+
 // Role 枚举,与 admin_tokens.role 的 CHECK 约束对应。
 const (
 	RolePlatformAdmin  = "platform_admin"

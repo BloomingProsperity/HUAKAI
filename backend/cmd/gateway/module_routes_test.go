@@ -40,7 +40,7 @@ func TestModulesEndpointIsAdminGated(t *testing.T) {
 	d := &deps{
 		// queries 为 nil -> Resolve 返回 ErrAdminBackend(fail-closed 503),
 		// 与 Hermes admin-gate 测试所依赖的行为完全一致。
-		adminAuth:      adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil, nil),
+		adminAuth:      adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil, nil, nil),
 		moduleRegistry: moduleregistry.New(),
 	}
 	r := chi.NewRouter()
