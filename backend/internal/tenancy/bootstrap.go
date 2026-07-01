@@ -39,6 +39,22 @@ const (
 // ErrTenancyBackend 标记 EnsureDefaultTenant 的基础设施失败(启动 fatal)。
 var ErrTenancyBackend = errors.New("tenancy: backend error")
 
+// WorkingTenantIDFromEnv 解析默认工作租户 id(env 覆盖,默认 DefaultWorkingTenantID)。
+// 非法覆盖 fail-loud(吞成默认值会让运维误以为覆盖生效)。这是「哪个租户是工作租户」
+// 的单一真相源,供 EnsureDefaultTenant 与其他启动钩子(如 admin 用户 bootstrap)共用,
+// 避免各处各读一份 env 而漂移。
+func WorkingTenantIDFromEnv() (int64, error) {
+	seedID := DefaultWorkingTenantID
+	if raw := os.Getenv(DefaultWorkingTenantIDEnv); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("%w: %s=%q 非法(需正整数)", ErrTenancyBackend, DefaultWorkingTenantIDEnv, raw)
+		}
+		seedID = parsed
+	}
+	return seedID, nil
+}
+
 // EnsureDefaultTenant 在启动时保证至少存在一个非哨兵(id>0)、未软删、active
 // 的工作租户;一个都没有时种 DefaultWorkingTenantID(env 可覆盖 id)。幂等、
 // advisory lock 串行化(多网关并发启动安全)。失败 = 启动 fatal(fail-loud,
@@ -54,14 +70,9 @@ func EnsureDefaultTenant(ctx context.Context, pool *pgxpool.Pool, logger *zap.Lo
 		return fmt.Errorf("%w: nil pool", ErrTenancyBackend)
 	}
 
-	seedID := DefaultWorkingTenantID
-	if raw := os.Getenv(DefaultWorkingTenantIDEnv); raw != "" {
-		parsed, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || parsed <= 0 {
-			// fail-loud:配置错误吞成默认值会让运维以为覆盖生效了。
-			return fmt.Errorf("%w: %s=%q 非法(需正整数)", ErrTenancyBackend, DefaultWorkingTenantIDEnv, raw)
-		}
-		seedID = parsed
+	seedID, err := WorkingTenantIDFromEnv()
+	if err != nil {
+		return err
 	}
 
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})

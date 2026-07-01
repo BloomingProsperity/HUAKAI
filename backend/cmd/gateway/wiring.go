@@ -1447,6 +1447,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := tenancy.EnsureDefaultTenant(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("ensure default tenant: %w", err)
 	}
+	// role 制单登录 bootstrap:把 HUAKAI_ADMIN_BOOTSTRAP_EMAIL 指定的已注册账号提升为
+	// role=admin(env 未设 = no-op)。租户走与种默认租户同一真相源,尊重 env 覆盖。
+	if workingTenantID, err := tenancy.WorkingTenantIDFromEnv(); err != nil {
+		return nil, fmt.Errorf("resolve working tenant: %w", err)
+	} else if err := panelauth.MaybeBootstrapAdminUser(ctx, pgPool, workingTenantID, logger); err != nil {
+		return nil, fmt.Errorf("admin user bootstrap: %w", err)
+	}
 	// Production-required gate: credentialScheduler 必须装
 	// authQueries + auditLedger + pgPool + auditSigner,否则 audit/ledger 链
 	// 在 OAuth refresh 时静默失败。Startup fail-fast 比 runtime
