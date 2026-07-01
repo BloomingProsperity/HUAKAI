@@ -11,12 +11,13 @@ import (
 const defaultCacheTTL = 30 * time.Second
 
 type Service struct {
-	store     Store
-	audit     AuditSink
-	cache     sync.Map
-	lastKnown sync.Map
-	cacheTTL  time.Duration
-	now       func() time.Time
+	store        Store
+	audit        AuditSink
+	cache        sync.Map
+	lastKnown    sync.Map
+	cacheTTL     time.Duration
+	now          func() time.Time
+	secretCipher SecretCipher
 }
 
 type Option func(*Service)
@@ -113,11 +114,21 @@ func (s *Service) Upsert(ctx context.Context, in UpsertInput) (StoredSetting, er
 	}
 	updatedBy := firstNonEmpty(in.UpdatedBy, in.ActorID, "system")
 	in.Key = key
+	// secret key 值加密后落库(at-rest);value/in.Value 同步为密文,两条 upsert 路径都存密文。
+	value, err = s.encryptSecretValue(ctx, key, value)
+	if err != nil {
+		return StoredSetting{}, err
+	}
 	in.Value = value
 	in.UpdatedBy = updatedBy
 	if atomic, ok := s.store.(AtomicStore); ok && s.audit == nil {
 		updated, err := atomic.UpsertWithAudit(ctx, in)
 		if err != nil {
+			return StoredSetting{}, err
+		}
+		// 先解密(updated 来自库为密文)再 normalize:normalize 内的 ValidateValue 须对明文跑;
+		// 缓存的也是明文,与 Get/readFresh 一致。
+		if updated.Value, err = s.decryptSecretValue(ctx, key, updated.Value); err != nil {
 			return StoredSetting{}, err
 		}
 		updated, err = normalizeStoredSetting(updated, SourceDB)
@@ -134,6 +145,10 @@ func (s *Service) Upsert(ctx context.Context, in UpsertInput) (StoredSetting, er
 	}
 	updated, err := s.store.Upsert(ctx, GlobalScope, string(key), value, updatedBy)
 	if err != nil {
+		return StoredSetting{}, err
+	}
+	// 先解密(库里为密文)再 normalize(ValidateValue 须对明文跑);审计对 secret key 另有脱敏、缓存存明文。
+	if updated.Value, err = s.decryptSecretValue(ctx, key, updated.Value); err != nil {
 		return StoredSetting{}, err
 	}
 	updated, err = normalizeStoredSetting(updated, SourceDB)
@@ -251,6 +266,12 @@ func (s *Service) readFresh(ctx context.Context, key SettingKey) (StoredSetting,
 	}
 	if !found {
 		return defaultSetting(key), nil
+	}
+	// 先解密再 normalize:secret 值在库里是密文(带前缀),而 normalizeStoredSetting 会对值跑 ValidateValue
+	// (secret key 如审核 keys 要求是 JSON 数组),故必须先解回明文再校验/规整。存量明文(无前缀)原样返回。
+	row.Value, err = s.decryptSecretValue(ctx, key, row.Value)
+	if err != nil {
+		return StoredSetting{}, err
 	}
 	return normalizeStoredSetting(row, SourceDB)
 }
