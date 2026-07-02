@@ -777,7 +777,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			// 与 legacy raw 路径(readRawBufferedUpstreamBody → CodeUpstreamResponseTooLarge)行为一致。
 			abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_response_too_large", ex.requestID, 0, ex.protocolLoss)
 			if ex.healthKeyOK {
-				recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, http.StatusOK, time.Since(startedAt), ex.requestID, nil)
+				recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, http.StatusOK, time.Since(startedAt), ex.requestID, nil, 0)
 			}
 			failure := terminalLocalAttemptFailure(http.StatusBadGateway, clienterr.CodeUpstreamResponseTooLarge, clienterr.MessageFor(clienterr.CodeUpstreamResponseTooLarge), "upstream_response_too_large", err)
 			return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
@@ -816,7 +816,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, ex.protocolLoss)
 
 		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), healthStatus, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()))
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), healthStatus, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), 0)
 		}
 		code := "upstream_dispatch_error"
 		if upstreamErr != nil {
@@ -867,7 +867,7 @@ func (ex *chatExecution) finalizeBufferedEnvelope(w http.ResponseWriter, env *pr
 	if env == nil || env.BufferedResponse == nil {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0, ex.protocolLoss)
 		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, statusCode, time.Since(startedAt), ex.requestID, nil)
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, statusCode, time.Since(startedAt), ex.requestID, nil, 0)
 		}
 		failure := retryableLocalAttemptFailure(http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse), "upstream_empty_response", gateway.UpstreamError5xx, nil)
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
@@ -877,7 +877,7 @@ func (ex *chatExecution) finalizeBufferedEnvelope(w http.ResponseWriter, env *pr
 	fillAccountingModelUpstreamReported(env)
 	env.Accounting.HopChain = gateway.BuildHopChain(ex.forwardReq, "", ex.startedAt, time.Now())
 	if ex.healthKeyOK {
-		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalSuccess, http.StatusOK, time.Since(startedAt), ex.requestID, nil)
+		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalSuccess, http.StatusOK, time.Since(startedAt), ex.requestID, nil, 0)
 	}
 	return env, nil, true
 }

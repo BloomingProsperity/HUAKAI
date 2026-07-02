@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 )
 
@@ -17,6 +18,8 @@ type Service struct {
 	policy      Policy
 	clock       Clock
 	alertOutbox obsdlq.Outbox
+	// authLane 是独立于健康 FSM 的 auth 降级车道(nil=未接线,SignalAuthChallenge 变 no-op)。
+	authLane AuthCooldownLane
 }
 
 type transactionalStore interface {
@@ -82,6 +85,20 @@ func (s *Service) applySignal(ctx context.Context, sig Signal) (Record, error) {
 	now := s.clock.Now()
 	if sig.At.IsZero() {
 		sig.At = now
+	}
+	class := normalizeSignalClass(sig.Class)
+	// auth 降级车道:auth 失败(SignalAuthChallenge)独立于健康 FSM 处理——只把账号临时移出选号
+	//(authcooldown),完全不改 rec.State/Score、不写健康窗口(防 auth blip 污染健康分,保留既有
+	//「令牌问题不写健康降级」意图)。刻意在 EnsureDefaultActive 之前返回:auth blip 不落健康记录行。
+	if class == SignalAuthChallenge {
+		if s.authLane != nil && sig.Key.ProviderAccountID != 0 {
+			s.authLane.Suspend(ctx, sig.Key.ProviderAccountID, sig.AuthFailureClass, sig.Key.CredentialVersion, now)
+		}
+		return Record{}, nil
+	}
+	// 成功信号顺带清 auth 车道(等价 CLIProxy self-heal:一次成功即解除冷却、strike 归零)。
+	if class == SignalSuccess && s.authLane != nil && sig.Key.ProviderAccountID != 0 {
+		s.authLane.Clear(ctx, sig.Key.ProviderAccountID, authcooldown.ClearReasonSuccess)
 	}
 	rec, err := s.EnsureDefaultActive(ctx, sig.Key)
 	if err != nil {
@@ -404,6 +421,11 @@ func (s *Service) manualTransitionLocked(ctx context.Context, key ChannelKey, ac
 	rec, err = s.store.UpsertRecord(ctx, rec)
 	if err != nil {
 		return Record{}, err
+	}
+	// 运营 resume(ForceActive→active / ManualResume→ramping)一并清 auth 降级车道(含 HardDisabled),
+	// 否则被 auth 车道硬禁的账号运营者救不回(§17 修正2)。ManualPause(→manual_paused)不清。
+	if s.authLane != nil && key.ProviderAccountID != 0 && (state == StateActive || state == StateRamping) {
+		s.authLane.Clear(ctx, key.ProviderAccountID, authcooldown.ClearReasonOperatorResume)
 	}
 	if err := s.emitTransitionEvents(ctx, prev, rec, "", actorID, decision{eventTypes: events}); err != nil {
 		return Record{}, err

@@ -46,6 +46,7 @@ const (
 	GateFailureCapability          = router.GateFailureCapability
 	GateFailureCredential          = router.GateFailureCredential
 	GateFailureHealth              = router.GateFailureHealth
+	GateFailureAuthCooldown        = router.GateFailureAuthCooldown
 	GateFailureGroupPolicy         = router.GateFailureGroupPolicy
 	GateFailurePerRequestExclusion = router.GateFailurePerRequestExclusion
 	GateFailureScoredBand          = router.GateFailureScoredBand

@@ -222,8 +222,13 @@ func TestPR5NonStream401ConsumesOneAuthFailoverOnlyAndDoesNotRecordHealth(t *tes
 	if len(settler.aborts) != 2 {
 		t.Fatalf("aborts=%+v want both failed attempts released", settler.aborts)
 	}
-	if len(health.signals) != 0 {
-		t.Fatalf("401 health signals=%+v want none", health.signals)
+	// 缺口① 修复后:401 auth 会记 SignalAuthChallenge(走 auth 降级车道临时排除坏号),但绝不进
+	// 健康 FSM——守护每条信号都是 auth_challenge,不是 rate_limit/5xx/error 等健康降级类,
+	// 即 401 仍不污染健康分/error-rate(与旧「完全不记信号」等价的健康不变量,机制升级为独立车道)。
+	for _, sig := range health.signals {
+		if sig.Class != channelhealth.SignalAuthChallenge {
+			t.Fatalf("401 应只记 auth_challenge(不污染健康),实得 %+v", health.signals)
+		}
 	}
 }
 

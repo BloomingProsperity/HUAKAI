@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -129,6 +130,10 @@ type ChatHandlerDeps struct {
 	// 多少次都不加附加费(旧行为,运维关闭开关时的退路)。生产装配按
 	// HUAKAI_TOOL_SURCHARGE_ENABLED 注入 platformSource 启用按官方价计费。
 	ToolPricingTable toolpricing.Source
+
+	// AuthCooldown 是 auth 降级车道(缺口① S1);此处仅用于凭证热刷新↔选号的双向握手
+	//(triggerCredentialHotRefresh 回调 OnRefreshResult)。nil 安全(方法自带 nil-guard),默认关。
+	AuthCooldown *authcooldown.Store
 }
 
 type channelHealthRecorder interface {
@@ -593,26 +598,6 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	return modelRunResult{}
 }
 
-func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
-	if ex == nil || ex.d.CredentialHotRefresher == nil || accountID == 0 {
-		return
-	}
-	tenantID := ex.ident.TenantID
-	vendor := ex.accInfo.Platform
-	if vendor == "" {
-		vendor = pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)
-	}
-	requestID := ex.requestID
-	refresher := ex.d.CredentialHotRefresher
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), credentialHotRefreshTimeout)
-		defer cancel()
-		if err := refresher.RefreshHotPath(ctx, tenantID, accountID, vendor); err != nil {
-			logInternalError(ctx, requestID, "credential_hot_refresh_failed", err)
-		}
-	}()
-}
-
 func (ex *chatExecution) screenModerationInput(w http.ResponseWriter) bool {
 	if ex == nil || ex.d.ModerationScreener == nil || ex.moderationScreened {
 		return true
@@ -753,7 +738,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		}
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, nil)
 		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(startedAt), ex.requestID, nil)
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(startedAt), ex.requestID, nil, 0)
 		}
 		failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
@@ -761,7 +746,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0, nil)
 		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(startedAt), ex.requestID, nil)
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(startedAt), ex.requestID, nil, 0)
 		}
 		failure := retryableLocalAttemptFailure(http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse), "upstream_empty_response", gateway.UpstreamError5xx, nil)
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
@@ -778,7 +763,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil, 0)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, code, readErr)
 		return nil, nil, false
@@ -793,7 +778,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, dispatchRes.StatusCode, ex.requestID)
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, nil)
 		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()))
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 		}
 		failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
@@ -816,7 +801,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 				setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 			}
 			if ex.healthKeyOK {
-				recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil)
+				recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil, 0)
 			}
 			writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
 			return nil, nil, false

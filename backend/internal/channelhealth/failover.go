@@ -16,6 +16,8 @@ type PoolGate struct {
 		MaybeStartRamp(context.Context, ChannelKey) (Record, error)
 	}
 	clock Clock
+	// authLane 是独立于健康 FSM 的 auth 降级车道(nil=未接线,auth 检查短路,行为不变)。
+	authLane AuthCooldownLane
 }
 
 type GateStore interface {
@@ -36,11 +38,29 @@ func NewServicePoolGate(service *Service, clock Clock) *PoolGate {
 	store, _ := service.Store().(GateStore)
 	gate := NewPoolGate(store, clock)
 	gate.ramp = service
+	// auth 车道与 Service 共享同一实例:applySignal 写(Suspend/Clear)、PoolGate 读(Eligible),
+	// 二者必须看同一份内存态。
+	gate.authLane = service.authLane
 	return gate
 }
 
 func (g *PoolGate) Allow(ctx context.Context, account *pool.AccountSnapshot, req pool.SelectionRequest) (bool, pool.GateFailureReason, error) {
-	if g == nil || g.store == nil || account == nil {
+	if g == nil || account == nil {
+		return true, "", nil
+	}
+	// auth 降级车道检查:独立于健康 store(即使 store==nil 也生效),不读健康 State/Score。
+	// 被 auth 车道移出选号(now<AuthUntil 或 HardDisabled)→ 返回独立的 GateFailureAuthCooldown,
+	// 与 GateFailureHealth 区分(审计/计数可辨识)。
+	if g.authLane != nil {
+		ok, hardDisabled := g.authLane.Eligible(account.ID, g.clock.Now())
+		if !ok {
+			// DisableCooling 逃生阀只豁免软退避,不豁免 HardDisabled(否则给 revoked 号重开黑洞,修正5)。
+			if !(account.DisableCooling && !hardDisabled) {
+				return false, pool.GateFailureAuthCooldown, nil
+			}
+		}
+	}
+	if g.store == nil {
 		return true, "", nil
 	}
 	rec, err := g.store.LatestByProviderAccount(ctx, req.TenantID, account.ID)

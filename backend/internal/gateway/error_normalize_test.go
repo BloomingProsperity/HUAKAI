@@ -35,6 +35,38 @@ func TestClassify_R015_5xx_NeverDisabled(t *testing.T) {
 	}
 }
 
+// 缺口①附带修复 —— Grok/xAI 坏 key 返 400(非 401)带 invalid_api_key/incorrect api key
+// -> R-024/R-025 -> token_revoked 类。此前无规则命中 → R-016 通配 → unknown → upstream_client_4xx
+// 直接透传给客户端(既不换号也不冷却)。判别:删掉 R-024/R-025 → 落回 R-016 unknown,断言红。
+func TestClassify_R024_R025_GrokBadKey400(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		body     string
+		wantRule string
+	}{
+		{"grok_invalid_api_key", "grok", `{"code":"400","error":"invalid_api_key: bad key"}`, "R-024"},
+		{"grok_incorrect_api_key", "grok", `{"error":{"message":"Incorrect API key provided"}}`, "R-025"},
+		{"xai_alias_invalid_api_key", "xai", `{"error":"invalid_api_key"}`, "R-024"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Classify(400, nil, []byte(c.body), c.provider)
+			if err != nil {
+				t.Fatalf("classify err: %v", err)
+			}
+			if got.RuleID != c.wantRule || got.Class != ErrorClassTokenRevoked {
+				t.Fatalf("got rule=%s class=%s; want %s token_revoked", got.RuleID, got.Class, c.wantRule)
+			}
+		})
+	}
+	// 反例:grok 400 但非认证类文本 → 不应命中 R-024/R-025(保守 keyword,不误禁好号)。
+	got, _ := Classify(400, nil, []byte(`{"error":"model not found"}`), "grok")
+	if got.RuleID == "R-024" || got.RuleID == "R-025" {
+		t.Fatalf("非认证类 grok 400 误命中 auth 规则:rule=%s", got.RuleID)
+	}
+}
+
 // AT-RATE-023 —— 未知错误 -> R-016 兜底规则 -> pass_through。
 func TestClassify_R016_Wildcard(t *testing.T) {
 	c, err := Classify(418, nil, []byte("teapot"), "fictional_provider")

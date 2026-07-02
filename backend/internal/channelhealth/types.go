@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 )
 
 type HealthState string
@@ -36,6 +38,9 @@ const (
 	SignalForbidden                       SignalClass = "forbidden"
 	SignalLatencyP99                      SignalClass = "latency_p99"
 	SignalAccountSuspended                SignalClass = "account_suspended"
+	// SignalAuthChallenge:auth 失败(401 / Grok 400-auth)。刻意独立于健康 FSM——applySignal 把它
+	// 单独路由进 auth 降级车道(authcooldown),完全不改 rec.State/Score、不进 error-rate/ban-ramp 窗口。
+	SignalAuthChallenge                   SignalClass = "auth_challenge"
 	SignalTokenRevoked                    SignalClass = "token_revoked"
 	SignalCredentialRevoked               SignalClass = "credential_revoked"
 	SignalAccountDisabled                 SignalClass = "account_disabled"
@@ -244,6 +249,9 @@ type Signal struct {
 	RateLimitResetAt *time.Time
 	// RawUpstreamText 仅用于分类测试而接收。Service 逻辑刻意从不存储或回显该值。
 	RawUpstreamText string
+	// AuthFailureClass 仅当 Class==SignalAuthChallenge 时有意义:区分 iron-clad/ambiguous,
+	// 决定 auth 车道是否允许升级 HardDisabled。零值=ambiguous(安全默认:永不永久禁)。
+	AuthFailureClass authcooldown.FailureClass
 }
 
 type SignalSample struct {
