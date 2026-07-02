@@ -30,16 +30,16 @@ func (fakeQuotaStore) DeleteQuotaPolicyWithAudit(context.Context, quotaPolicyDel
 	return 0, nil
 }
 
-func mountQuota(knob bool) http.Handler {
+func mountQuota() http.Handler {
 	r := chi.NewRouter()
-	MountQuotaPolicyRoutes(r, Deps{Auth: adminsessionauthtest.Resolver(knob), Store: fakeQuotaStore{}})
+	MountQuotaPolicyRoutes(r, Deps{Auth: adminsessionauthtest.Resolver(), Store: fakeQuotaStore{}})
 	return r
 }
 
 // SessionSafe:配额策略创建/更新过鉴权≠401;token-only 的删除对 session fail-closed 401。
 // 变异:摘 POST/PUT 的 safe → 该路由 session 写 401 → 首断言 RED;给 DELETE 误挂 safe → 不再 401 → 次断言 RED。
 func TestQuotaPolicyWriteGate(t *testing.T) {
-	h := mountQuota(true)
+	h := mountQuota()
 	sess := adminsessionauthtest.SessionBearer
 	for _, tc := range []struct{ m, p string }{
 		{http.MethodPost, "/admin/v1/quota-policies"},
@@ -55,17 +55,9 @@ func TestQuotaPolicyWriteGate(t *testing.T) {
 	}
 }
 
-// knob 关:session 写回退令牌通道被拒 401。
-func TestQuotaPolicyKnobOff(t *testing.T) {
-	h := mountQuota(false)
-	if code := adminsessionauthtest.Status(h, http.MethodPost, "/admin/v1/quota-policies", adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-		t.Fatalf("knob 关时 session 写应被拒 401,得 %d", code)
-	}
-}
-
 // token 通道豁免:hk_admin 令牌写 token-only 删除也过鉴权≠401。
 func TestQuotaPolicyTokenExempt(t *testing.T) {
-	h := mountQuota(true)
+	h := mountQuota()
 	if code := adminsessionauthtest.Status(h, http.MethodDelete, "/admin/v1/quota-policies/5", adminsessionauthtest.TokenBearer); code == http.StatusUnauthorized {
 		t.Fatalf("hk_admin 令牌写 token-only 删除应过鉴权(≠401),得 401")
 	}

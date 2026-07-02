@@ -13,13 +13,13 @@ import (
 // 复用既有 captureService(全 Service 实现)+ 共享 Resolver。挂在 /orders 下(同 gateway 形态)。
 // 变异:摘任一路由的 .With(safe) → session 写 401 → 对应断言 RED。
 func TestPaymentAdminSessionSafeWriteGate(t *testing.T) {
-	mount := func(knob bool) http.Handler {
+	mount := func() http.Handler {
 		r := chi.NewRouter()
-		d := AdminDeps{Auth: adminsessionauthtest.Resolver(knob), Service: &captureService{}}
+		d := AdminDeps{Auth: adminsessionauthtest.Resolver(), Service: &captureService{}}
 		r.Route("/orders", func(r chi.Router) { MountPaymentAdminRoutes(r, d) })
 		return r
 	}
-	// 代表性动钱写端点(退款/取消/确认/建单):knob 开 session-admin 过鉴权(≠401)。
+	// 代表性动钱写端点(退款/取消/确认/建单):session-admin 过鉴权(≠401)。
 	safeRoutes := []struct{ m, p string }{
 		{http.MethodPost, "/orders/"},
 		{http.MethodPost, "/orders/5/refund"},
@@ -27,15 +27,11 @@ func TestPaymentAdminSessionSafeWriteGate(t *testing.T) {
 		{http.MethodPost, "/orders/5/confirm"},
 		{http.MethodPost, "/orders/5/retry"},
 	}
-	h := mount(true)
+	h := mount()
 	for _, tc := range safeRoutes {
 		if code := adminsessionauthtest.Status(h, tc.m, tc.p, adminsessionauthtest.SessionBearer); code == http.StatusUnauthorized {
 			t.Fatalf("SessionSafe %s %s 应过鉴权(≠401),得 401", tc.m, tc.p)
 		}
-	}
-	// knob 关:回退令牌被拒 401。
-	if code := adminsessionauthtest.Status(mount(false), http.MethodPost, "/orders/5/refund", adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-		t.Fatalf("knob 关时 POST /orders/5/refund 应被拒 401,得 %d", code)
 	}
 	// token 豁免。
 	if code := adminsessionauthtest.Status(h, http.MethodPost, "/orders/5/refund", adminsessionauthtest.TokenBearer); code == http.StatusUnauthorized {

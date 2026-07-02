@@ -13,9 +13,9 @@ import (
 // 复用既有 adminOpsServiceStub(全 Service 实现)+ 共享 Resolver。挂在 /subs 下。
 // 变异:摘任一路由的 .With(safe) → session 写 401 → 对应断言 RED。
 func TestSubscriptionAdminSessionSafeWriteGate(t *testing.T) {
-	mount := func(knob bool) http.Handler {
+	mount := func() http.Handler {
 		r := chi.NewRouter()
-		d := AdminDeps{Auth: adminsessionauthtest.Resolver(knob), Service: &adminOpsServiceStub{}}
+		d := AdminDeps{Auth: adminsessionauthtest.Resolver(), Service: &adminOpsServiceStub{}}
 		r.Route("/subs", func(r chi.Router) { MountSubscriptionAdminRoutes(r, d) })
 		return r
 	}
@@ -27,14 +27,11 @@ func TestSubscriptionAdminSessionSafeWriteGate(t *testing.T) {
 		{http.MethodPost, "/subs/assignments/5/extend"},
 		{http.MethodPost, "/subs/assignments/5/revoke"},
 	}
-	h := mount(true)
+	h := mount()
 	for _, tc := range safeRoutes {
 		if code := adminsessionauthtest.Status(h, tc.m, tc.p, adminsessionauthtest.SessionBearer); code == http.StatusUnauthorized {
 			t.Fatalf("SessionSafe %s %s 应过鉴权(≠401),得 401", tc.m, tc.p)
 		}
-	}
-	if code := adminsessionauthtest.Status(mount(false), http.MethodPost, "/subs/assignments", adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-		t.Fatalf("knob 关时 POST /subs/assignments 应被拒 401,得 %d", code)
 	}
 	if code := adminsessionauthtest.Status(h, http.MethodPost, "/subs/assignments", adminsessionauthtest.TokenBearer); code == http.StatusUnauthorized {
 		t.Fatalf("hk_admin 令牌 POST /subs/assignments 应过鉴权(≠401),得 401")

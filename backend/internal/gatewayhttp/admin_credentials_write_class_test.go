@@ -14,32 +14,25 @@ import (
 // 对照组:OAuth 采集流(acquisition)未挂 SessionSafe,session 写必须仍 401(采集流留 token-only)。
 // 变异:摘任一 .With(safe) → 对应 session 写 401 → RED;给 acquisition 挂 safe → 对照断言 RED。
 func TestAdminCredentialSessionSafeWriteGate(t *testing.T) {
-	mount := func(knob bool) http.Handler {
+	mount := func() http.Handler {
 		r := chi.NewRouter()
 		d := AdminCredentialDeps{
-			Auth: adminsessionauthtest.Resolver(knob), Credentials: &adminCredentialStoreStub{}, AuditStore: &adminPoolStoreStub{},
+			Auth: adminsessionauthtest.Resolver(), Credentials: &adminCredentialStoreStub{}, AuditStore: &adminPoolStoreStub{},
 		}
 		r.Route("/provider-accounts", func(r chi.Router) { MountAdminCredentialRoutes(r, d) })
 		return r
 	}
-	// 放开的日常写端点:knob 开 session-admin 过鉴权(≠401)。
+	// 放开的日常写端点:session-admin 过鉴权(≠401)。
 	safeRoutes := []struct{ m, p string }{
 		{http.MethodPost, "/provider-accounts/77/credentials"},
 		{http.MethodPost, "/provider-accounts/77/credentials/5/rotate"},
 		{http.MethodPatch, "/provider-accounts/77/credentials/5/state"},
 		{http.MethodDelete, "/provider-accounts/77/credentials/5"},
 	}
-	h := mount(true)
+	h := mount()
 	for _, tc := range safeRoutes {
 		if code := adminsessionauthtest.Status(h, tc.m, tc.p, adminsessionauthtest.SessionBearer); code == http.StatusUnauthorized {
 			t.Fatalf("SessionSafe %s %s 应过鉴权(≠401),得 401", tc.m, tc.p)
-		}
-	}
-	// knob 关:4 条写路由 session 一律被拒 401(零生产变不变量;循环化防路径漂移后断言空转)。
-	off := mount(false)
-	for _, tc := range safeRoutes {
-		if code := adminsessionauthtest.Status(off, tc.m, tc.p, adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-			t.Fatalf("knob 关时 %s %s 应被拒 401,得 %d", tc.m, tc.p, code)
 		}
 	}
 	// token 通道恒豁免。
@@ -52,11 +45,11 @@ func TestAdminCredentialSessionSafeWriteGate(t *testing.T) {
 	}
 }
 
-// 采集流对照:即便 knob 开,acquisition 写路由(未挂 SessionSafe)session 仍 401。
+// 采集流对照:acquisition 写路由(未挂 SessionSafe)session 仍 401。
 // 这是「日常改动放开、采集流(含 mutating-GET callback 债)不放」的边界锁。
 // 用既有 fixture(全依赖 stub)确保打到鉴权层而非依赖判空的 503。
 func TestAdminCredentialAcquisitionStaysTokenOnly(t *testing.T) {
-	fx := newCredentialAcqHTTPFixture(t, adminsessionauthtest.Resolver(true))
+	fx := newCredentialAcqHTTPFixture(t, adminsessionauthtest.Resolver())
 	// canonical 流 4 条写 + import-helper 5 条(paste/cli/csv/json/oauth-init)全部锁死:
 	// helper 是「录入凭证」的另一条完整通路(且支持批量),错误放开任意一条都要红。
 	for _, p := range []string{
