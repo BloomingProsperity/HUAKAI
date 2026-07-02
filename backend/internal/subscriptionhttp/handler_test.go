@@ -122,7 +122,7 @@ func (f *fakeSubscriptionService) AssignSubscription(context.Context, subscripti
 func (f *fakeSubscriptionService) BulkAssign(context.Context, subscription.BulkAssignInput) (subscription.BulkAssignResult, error) {
 	return subscription.BulkAssignResult{}, nil
 }
-func (f *fakeSubscriptionService) CancelSubscription(context.Context, int64, int64, int64, string) (subscription.UserSubscription, error) {
+func (f *fakeSubscriptionService) CancelSubscription(context.Context, int64, int64, int64, string, string) (subscription.UserSubscription, error) {
 	return subscription.UserSubscription{}, nil
 }
 func (f *fakeSubscriptionService) ExtendSubscription(context.Context, subscription.ExtendSubscriptionInput) (subscription.UserSubscription, error) {

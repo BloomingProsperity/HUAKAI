@@ -257,9 +257,9 @@ func (s *PostgresStore) ConfirmPaid(ctx context.Context, rec confirmRecord) (Ord
 		}
 		row := tx.QueryRow(ctx, `
 UPDATE payment_orders
-SET status='paid', paid_at=$3, confirmed_by_admin_id=$4, confirm_reason=$5, updated_at=$3
+SET status='paid', paid_at=$3, confirmed_by_admin_id=$4, confirmed_by_actor=$6, confirm_reason=$5, updated_at=$3
 WHERE tenant_id=$1 AND id=$2
-RETURNING`+orderSelectColumns, rec.TenantID, rec.OrderID, rec.Now, nullableInt64(rec.AdminID), nullableText(rec.ConfirmReason))
+RETURNING`+orderSelectColumns, rec.TenantID, rec.OrderID, rec.Now, nullableInt64(rec.AdminID), nullableText(rec.ConfirmReason), nullableText(rec.ActorRef))
 		order, err = scanOrder(row)
 		if err != nil {
 			return Order{}, fmt.Errorf("payment: confirm update: %w", err)

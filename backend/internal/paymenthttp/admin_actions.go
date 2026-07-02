@@ -36,6 +36,7 @@ func newAdminConfirmHandler(d AdminDeps) http.HandlerFunc {
 			TenantID:      req.TenantID,
 			OrderID:       id,
 			ActorAdminID:  ident.TokenID,
+			ActorRef:      ident.AuditActor(),
 			ConfirmReason: req.ConfirmReason,
 			RequestID:     requestID(r),
 		})

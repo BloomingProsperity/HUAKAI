@@ -41,7 +41,7 @@ func TestSubscriptionPostgres_AdminExtendSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign cancelled candidate: %v", err)
 	}
-	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-extend"); err != nil {
+	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-extend", "admin_token:7"); err != nil {
 		t.Fatalf("cancel candidate: %v", err)
 	}
 	if _, err := svc.ExtendSubscription(ctx, ExtendSubscriptionInput{
@@ -348,7 +348,7 @@ func TestSubscriptionPostgres_ChangePlanRejectsNonActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign cancelled candidate: %v", err)
 	}
-	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-change"); err != nil {
+	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-change", "admin_token:7"); err != nil {
 		t.Fatalf("cancel candidate: %v", err)
 	}
 	// 让其变红的变异:不带 active 状态守卫就更新 cancelled/expired 的行。

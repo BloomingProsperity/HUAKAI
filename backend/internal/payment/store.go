@@ -94,6 +94,7 @@ type confirmRecord struct {
 	TenantID      int64
 	OrderID       int64
 	AdminID       int64
+	ActorRef      string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	ActorKind     string // admin = 管理员手动 (P1); system = 支付回调自动 (P2a)。空缺省按 system。
 	ConfirmReason string
 	RequestID     string
