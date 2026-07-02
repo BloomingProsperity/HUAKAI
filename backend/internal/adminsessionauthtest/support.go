@@ -41,7 +41,7 @@ func (sessionAdmin) Validate(context.Context, string, string, string) (usersessi
 
 type roleAdmin struct{}
 
-func (roleAdmin) UserRole(context.Context, int64, int64) (string, error) { return "admin", nil }
+func (roleAdmin) ActiveUserRole(context.Context, int64, int64) (string, error) { return "admin", nil }
 
 // Resolver 返回 knob 可控的组合解析器:非 hk_admin bearer 在 knob 开时走 session→admin;knob 关时回退令牌通道被拒。
 func Resolver(knob bool) *adminsessionauth.Resolver {
