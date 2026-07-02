@@ -1050,6 +1050,50 @@ func (q *Queries) ListDueQuotaReconciliationJobs(ctx context.Context, arg ListDu
 	return items, nil
 }
 
+const listTenantsWithDueQuotaReconciliationJobs = `-- name: ListTenantsWithDueQuotaReconciliationJobs :many
+SELECT DISTINCT tenant_id
+FROM quota_reconciliation_jobs
+WHERE (
+    (status IN ('queued', 'failed')
+     AND next_run_at <= $1::timestamptz)
+    OR (
+        status = 'running'
+        AND (
+            locked_at IS NULL
+            OR locked_at < $1::timestamptz - INTERVAL '15 minutes'
+        )
+    )
+)
+ORDER BY tenant_id ASC
+LIMIT $2::integer
+`
+
+type ListTenantsWithDueQuotaReconciliationJobsParams struct {
+	AtTime      pgtype.Timestamptz `db:"at_time" json:"at_time"`
+	TenantLimit int32              `db:"tenant_limit" json:"tenant_limit"`
+}
+
+// 全局 sweep:列出有到期 job 的 distinct 租户,供跨租户 worker 公平轮转。
+func (q *Queries) ListTenantsWithDueQuotaReconciliationJobs(ctx context.Context, arg ListTenantsWithDueQuotaReconciliationJobsParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listTenantsWithDueQuotaReconciliationJobs, arg.AtTime, arg.TenantLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var tenantID int64
+		if err := rows.Scan(&tenantID); err != nil {
+			return nil, err
+		}
+		items = append(items, tenantID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markQuotaReconciliationJobRunning = `-- name: MarkQuotaReconciliationJobRunning :execrows
 UPDATE quota_reconciliation_jobs
 SET status = 'running',

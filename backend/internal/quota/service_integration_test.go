@@ -1116,6 +1116,10 @@ func (s failingReserveStore) ListDueReconciliationJobs(context.Context, int64, t
 	return nil, s.err
 }
 
+func (s failingReserveStore) ListTenantsWithDueReconciliationJobs(context.Context, time.Time, int) ([]int64, error) {
+	return nil, s.err
+}
+
 func (s failingReserveStore) MarkReconciliationJobRunning(context.Context, int64, int64) error {
 	return s.err
 }

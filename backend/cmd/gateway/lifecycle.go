@@ -41,6 +41,7 @@ type gatewayRuntime struct {
 	paymentExpireSweepStop      func()
 	apiKeyExpirySweepStop       func()
 	pendingReconcileStop        func()
+	quotaReconcileStop          func()
 	modelSyncStop               func()
 	alertingEvalStop            func()
 	closeReplica                func()
@@ -86,6 +87,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.pendingReconcileStop != nil {
 		rt.pendingReconcileStop()
+	}
+	if rt.quotaReconcileStop != nil {
+		rt.quotaReconcileStop()
 	}
 	if rt.mediaTaskWorker != nil {
 		rt.mediaTaskWorker.Stop()

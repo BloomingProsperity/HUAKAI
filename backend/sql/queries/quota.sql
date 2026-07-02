@@ -508,6 +508,27 @@ ORDER BY next_run_at ASC, id ASC
 LIMIT sqlc.arg(job_limit)::integer
 FOR UPDATE SKIP LOCKED;
 
+-- name: ListTenantsWithDueQuotaReconciliationJobs :many
+-- 全局 sweep 入口: 列出「有到期 job」的 distinct 租户, 供跨租户 worker 公平轮转。
+-- due 条件与单租户 ListDueQuotaReconciliationJobs 逐字一致(queued/failed 到期, 或 running
+-- 但 lock 陈旧), 确保「有 due 的租户」精确; worker 再对每个租户走单租户领取 + 每租户 limit,
+-- 天然公平不饿死其它租户。tenant_limit 封顶单轮扫描的租户数。
+SELECT DISTINCT tenant_id
+FROM quota_reconciliation_jobs
+WHERE (
+    (status IN ('queued', 'failed')
+     AND next_run_at <= sqlc.arg(at_time)::timestamptz)
+    OR (
+        status = 'running'
+        AND (
+            locked_at IS NULL
+            OR locked_at < sqlc.arg(at_time)::timestamptz - INTERVAL '15 minutes'
+        )
+    )
+)
+ORDER BY tenant_id ASC
+LIMIT sqlc.arg(tenant_limit)::integer;
+
 -- name: MarkQuotaReconciliationJobRunning :execrows
 -- worker 领取 job 后标记 running; 超过 15 分钟的 running 视为可回收 lease。
 UPDATE quota_reconciliation_jobs
