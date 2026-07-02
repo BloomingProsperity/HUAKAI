@@ -96,15 +96,15 @@ func (w *PendingReconciliationWorker) loop(ctx context.Context) {
 // logRound 汇总一轮 pending 补结算:此前计数/错误被静默丢弃,流式无 usage 记录长期
 // 补不上运营无从察觉。空转轮只打 Debug,分钟级周期不用 Info 刷屏。
 func (w *PendingReconciliationWorker) logRound(ctx context.Context, finalized int, err error) {
-	if err != nil {
+	// 三分支互斥(同 lease_sweep):失败轮只打 Warn(已带 processed),保证每轮恰一条。
+	switch {
+	case err != nil:
 		w.logger.WarnContext(ctx, "pending reconciliation round failed",
 			"component", pendingReconciliationComponent, "processed", finalized, "error", err.Error())
-	}
-	switch {
 	case finalized > 0:
 		w.logger.InfoContext(ctx, "pending reconciliation round finalized records",
 			"component", pendingReconciliationComponent, "processed", finalized)
-	case err == nil:
+	default:
 		w.logger.DebugContext(ctx, "pending reconciliation round idle", "component", pendingReconciliationComponent)
 	}
 }

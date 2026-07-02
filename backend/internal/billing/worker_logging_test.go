@@ -80,6 +80,20 @@ func TestLeaseSweeperLogRound(t *testing.T) {
 			t.Fatalf("错误轮记录=%+v,want 恰好 1 条 Warn error=db down", recs)
 		}
 	})
+	t.Run("部分失败轮恰好一条Warn不再补Info", func(t *testing.T) {
+		// sweepOnce 逐 claim 容错,降级期常态返回 swept>0 且 err≠nil;双发 Warn+Info 会让
+		// 按 processed 求和的日志派生指标双计回收量。变异契约:Info 分支去掉 err 互斥 → 红。
+		s, h := newSweeper()
+		s.logRound(context.Background(), 5, errors.New("partial abort"))
+		recs := h.snapshot()
+		if len(recs) != 1 {
+			t.Fatalf("部分失败轮记录数=%d,want 恰好 1 条(双发=processed 双计)", len(recs))
+		}
+		r := recs[0]
+		if r.level != slog.LevelWarn || r.attrs["processed"] != "5" || r.attrs["error"] != "partial abort" {
+			t.Fatalf("部分失败轮记录=%+v,want Warn processed=5 error=partial abort", r)
+		}
+	})
 	t.Run("空转轮零Info", func(t *testing.T) {
 		s, h := newSweeper()
 		s.logRound(context.Background(), 0, nil)
@@ -108,7 +122,8 @@ func TestLeaseSweeperLoopLogsFailedRound(t *testing.T) {
 	s.logger = slog.New(h)
 	s.Start(context.Background())
 
-	deadline := time.Now().Add(5 * time.Second)
+	// 15s 死线:路径依赖真实网络栈(连不可达端口),CI 冷 race 构建+满载下 5s 曾抓到过 1 次闪红。
+	deadline := time.Now().Add(15 * time.Second)
 	warned := false
 	for !warned && time.Now().Before(deadline) {
 		for _, r := range h.snapshot() {
@@ -206,15 +221,23 @@ func TestPendingReconciliationWorkerLoopLogsRounds(t *testing.T) {
 			t.Fatal("loop 未把 RunOnce 错误打成 Warn(错误仍被丢弃)")
 		}
 	})
-	t.Run("空转轮零Info", func(t *testing.T) {
+	t.Run("空转轮零Info且生命周期各一条", func(t *testing.T) {
 		f := &staticFinalizer{}
 		recs := startPendingWorkerAndWaitRounds(t, f, 2)
+		// started/stopped 存在性断言(审查 S3:此前只豁免不断言,删掉生命周期日志测试仍绿)。
+		var started, stopped bool
 		for _, r := range recs {
-			if r.level >= slog.LevelInfo &&
-				r.msg != "pending reconciliation worker started" &&
-				r.msg != "pending reconciliation worker stopped" {
+			switch {
+			case r.level == slog.LevelInfo && r.msg == "pending reconciliation worker started":
+				started = true
+			case r.level == slog.LevelInfo && r.msg == "pending reconciliation worker stopped":
+				stopped = true
+			case r.level >= slog.LevelInfo:
 				t.Fatalf("空转轮出现非生命周期 Info+ 记录:%+v(会刷屏)", r)
 			}
+		}
+		if !started || !stopped {
+			t.Fatalf("生命周期日志缺失:started=%v stopped=%v", started, stopped)
 		}
 	})
 }
