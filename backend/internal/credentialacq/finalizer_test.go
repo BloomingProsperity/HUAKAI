@@ -170,8 +170,13 @@ func samplePayloadForMode(vendor, mode string) []byte {
 	case "openai/refresh_token":
 		fields["refresh_token"] = "test-refresh-value"
 	default:
-		fields["session_token"] = "test-session-value"
-		fields["refresh_token"] = "test-refresh-value"
+		// 官 key 厂商(grok/deepseek/kimi/国内大厂)统一走纯 api_key 形状;其余默认按 OAuth 会话形状。
+		if credentialstore.Normalize(mode) == credentialstore.AuthModeAPIKey {
+			fields["api_key"] = "test-api-key"
+		} else {
+			fields["session_token"] = "test-session-value"
+			fields["refresh_token"] = "test-refresh-value"
+		}
 	}
 	raw, _ := json.Marshal(fields)
 	return raw

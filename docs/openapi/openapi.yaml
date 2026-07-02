@@ -17557,7 +17557,7 @@ components:
       properties:
         tenant_id: { type: integer, format: int64 }
         provider_account_id: { type: integer, format: int64 }
-        vendor: { type: string, enum: [anthropic, openai, gemini] }
+        vendor: { type: string, enum: [anthropic, openai, gemini, copilot, antigravity, windsurf, grok, kimi, deepseek, qwen, glm, yi, baichuan, doubao, minimax, ernie, hunyuan, step] }
         auth_mode:
           type: string
           enum:
@@ -17568,6 +17568,7 @@ components:
             - vertex_anthropic
             - chatgpt_oauth
             - codex_cli_oauth
+            - codex_web_oauth
             - azure
             - refresh_token
             - aistudio_api_key
@@ -17575,6 +17576,10 @@ components:
             - code_assist
             - google_one
             - antigravity
+            - copilot_oauth
+            - xai_oauth
+            - kimi_oauth
+            - oauth
         flow_kind:
           type: string
           enum: [oauth, cli_import, paste, csv_import, json_import, cloud_bootstrap, token_exchange, setup_token, manual_first]
@@ -17634,7 +17639,7 @@ components:
       properties:
         tenant_id: { type: integer, format: int64 }
         provider_account_id: { type: integer, format: int64 }
-        vendor: { type: string, enum: [anthropic, openai, gemini] }
+        vendor: { type: string, enum: [anthropic, openai, gemini, copilot, antigravity, windsurf, grok, kimi, deepseek, qwen, glm, yi, baichuan, doubao, minimax, ernie, hunyuan, step] }
         auth_mode: { type: string }
         flow_kind:
           type: string

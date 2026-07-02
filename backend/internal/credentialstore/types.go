@@ -28,6 +28,17 @@ const (
 	VendorPerplexity  = "perplexity"
 	VendorFireworks   = "fireworks"
 
+	// 国内大厂官 key 接入(2026-07-02 Owner 指派)。命名与 registrydefault 协议族前缀对齐(qwen_chat→qwen 等)。
+	VendorQwen     = "qwen"     // 通义千问(阿里 DashScope)
+	VendorGLM      = "glm"      // 智谱 GLM(BigModel)
+	VendorYi       = "yi"       // 零一万物
+	VendorBaichuan = "baichuan" // 百川
+	VendorDoubao   = "doubao"   // 豆包(火山方舟 Ark)
+	VendorMiniMax  = "minimax"  // MiniMax
+	VendorErnie    = "ernie"    // 文心(百度千帆 v2 OpenAI 兼容端点)
+	VendorHunyuan  = "hunyuan"  // 腾讯混元(OpenAI 兼容端点)
+	VendorStep     = "step"     // 阶跃星辰
+
 	AuthModeAPIKey          = "api_key"
 	AuthModeClaudeAIOAuth   = "claude_ai_oauth"
 	AuthModeClaudeCode      = "claude_code"
@@ -281,6 +292,22 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorWindsurf, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorGrok, authMode: AuthModeXAIOAuth, runtimeKind: RuntimeOAuthAccessToken, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorKimi, authMode: AuthModeKimiOAuth, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
+		// 官 key(纯 api_key)厂商:Grok/DeepSeek/Kimi + 国内大厂(2026-07-02 Owner 指派接入)。
+		// 出站均为 OpenAI 兼容 Bearer 端点(endpoint 由 registrydefault 按协议族决定),凭据只有一个 api_key。
+		// 注意:全球推理托管云(openrouter/mistral/groqcloud/together/perplexity/fireworks)Owner 明确不接,
+		// 刻意不给 handlerSpec——存储层(0169 CHECK)同样不放行,双层拒绝。
+		handlerSpec{vendor: VendorGrok, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorDeepSeek, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorKimi, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorQwen, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorGLM, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorYi, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorBaichuan, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorDoubao, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorMiniMax, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorErnie, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorHunyuan, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorStep, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
 	}
 }
 

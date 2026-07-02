@@ -146,6 +146,15 @@ func newDefaultModeAdapterRegistry(operatorOAuthClient *http.Client) *ModeAdapte
 	register(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, builtinRefreshTokenModeAdapter{
 		providerName: "kimi", tokenURL: credentialacq.KimiOAuthTokenURL, clientID: credentialacq.KimiOAuthClientID,
 	})
+	// 官 key 厂商(2026-07-02 接入):静态 api_key 无刷新语义,与 anthropic/openai 的 api_key 同构。
+	for _, vendor := range []string{
+		credentialstore.VendorGrok, credentialstore.VendorDeepSeek, credentialstore.VendorKimi,
+		credentialstore.VendorQwen, credentialstore.VendorGLM, credentialstore.VendorYi,
+		credentialstore.VendorBaichuan, credentialstore.VendorDoubao, credentialstore.VendorMiniMax,
+		credentialstore.VendorErnie, credentialstore.VendorHunyuan, credentialstore.VendorStep,
+	} {
+		register(vendor, credentialstore.AuthModeAPIKey, staticModeAdapter{})
+	}
 	return r
 }
 

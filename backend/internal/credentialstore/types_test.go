@@ -30,6 +30,19 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		"windsurf/oauth",
 		"grok/xai_oauth",
 		"kimi/kimi_oauth",
+		// 官 key 厂商(2026-07-02 接入,迁移 0169 放行存储)。
+		"grok/api_key",
+		"deepseek/api_key",
+		"kimi/api_key",
+		"qwen/api_key",
+		"glm/api_key",
+		"yi/api_key",
+		"baichuan/api_key",
+		"doubao/api_key",
+		"minimax/api_key",
+		"ernie/api_key",
+		"hunyuan/api_key",
+		"step/api_key",
 	}
 	if got := registry.Names(); len(got) != len(want) {
 		t.Fatalf("handler count=%d want %d: %v", len(got), len(want), got)
