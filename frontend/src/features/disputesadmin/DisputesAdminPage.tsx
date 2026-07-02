@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { confirmIrreversible } from '../../ui/confirmDanger'
 import { listDisputes, resolveDispute } from './api'
 import {
   DEFAULT_PAGE_SIZE,
@@ -233,9 +234,14 @@ function DisputeRow({
       setRowError(v.error)
       return
     }
-    // money 敏感:裁决会落定该笔费用争议的退款/维持结论,二次确认。
+    // money 敏感:裁决落定该笔费用争议的退款/维持结论(不可逆),二次确认并明示无法撤销。
     const verb = status === 'resolved' ? '支持退款' : status === 'rejected' ? '驳回(维持扣费)' : statusLabel(status)
-    if (!window.confirm(`确认将争议「${row.dispute_id}」裁决为「${verb}」?该动作影响一笔已计费请求的费用结论。`)) {
+    if (
+      !confirmIrreversible(
+        `将争议「${row.dispute_id}」裁决为「${verb}」`,
+        '裁决为终态,将落定这笔已计费请求的费用结论。',
+      )
+    ) {
       return
     }
     setBusy(true)

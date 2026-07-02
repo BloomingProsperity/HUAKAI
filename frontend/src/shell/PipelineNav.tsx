@@ -1,12 +1,18 @@
 import { Fragment } from 'react'
 import { NavLink } from 'react-router-dom'
 import { PIPELINE_NAV, SHELL_LABEL } from '../app/nav'
+import { useMe, visibleNavSections } from '../auth/me'
 
 /*
  * 三壳管线导航栏。命名刻意避开通用 "Sidebar"。按壳(用户门户 / 运营台)分组,
  * 组内每个 section 带刻度序号;切换壳时插入壳标题分隔。
+ *
+ * role 切壳:据 /v1/auth/me 的 panel 过滤可见壳——非 admin(含加载中/降级)看不到运营台入口。
+ * 前端裁剪仅为体验,不是授权边界(后端每端点独立鉴权)。
  */
 export function PipelineNav() {
+  const me = useMe()
+  const sections = visibleNavSections(PIPELINE_NAV, me.access)
   let lastShell: string | null = null
   return (
     <nav
@@ -22,7 +28,7 @@ export function PipelineNav() {
         zIndex: 'var(--hk-z-rail)' as unknown as number,
       }}
     >
-      {PIPELINE_NAV.map((section) => {
+      {sections.map((section) => {
         const showShellHeader = section.shell !== lastShell
         lastShell = section.shell
         return (

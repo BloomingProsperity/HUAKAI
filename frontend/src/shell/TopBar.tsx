@@ -1,5 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { clearAll, useAuth } from '../auth/store'
+import { resetMe } from '../auth/me'
 import { logout } from '../auth/api'
 
 /*
@@ -12,6 +13,7 @@ export function TopBar({ onOpenHermes }: { onOpenHermes?: () => void } = {}) {
   const onLogout = async () => {
     await logout()
     clearAll()
+    resetMe() // 清空 me 状态,避免下个登录者短暂沿用上一位的 panel/壳。
     nav('/login', { replace: true })
   }
   return innerTopBar(auth.user?.email, onLogout, onOpenHermes)
