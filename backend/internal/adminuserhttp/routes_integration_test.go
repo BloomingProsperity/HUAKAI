@@ -214,7 +214,8 @@ func TestPGAdminUnlockUser(t *testing.T) {
 		`SELECT action, target_type FROM admin_audit_events
 		 WHERE tenant_id=$1 AND actor_id=$2 AND target_id=$3
 		 ORDER BY id DESC LIMIT 1`,
-		f.tenantID, "12", userID,
+		// P2b-1 起审计 actor_id 统一为 AuditActor() 格式(token-admin = "admin_token:<TokenID>")。
+		f.tenantID, "admin_token:12", userID,
 	).Scan(&auditAction, &auditTarget); err != nil {
 		t.Fatalf("read unlock audit: %v", err)
 	}
