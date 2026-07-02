@@ -106,6 +106,7 @@ type cancelRecord struct {
 	OrderID   int64
 	UserID    int64 // >0: 用户自助取消(校验归属); 0: admin 取消(不限用户)。
 	ActorKind string
+	ActorRef  string // 双身份归属串,空则 NULL
 	ActorID   int64
 	Reason    string
 	RequestID string
@@ -129,6 +130,7 @@ type fulfillRecord struct {
 	TenantID  int64
 	OrderID   int64
 	ActorKind string
+	ActorRef  string // 双身份归属串,空则 NULL
 	ActorID   int64
 	RequestID string
 	Now       time.Time

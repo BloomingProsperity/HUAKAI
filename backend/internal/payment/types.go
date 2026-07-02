@@ -139,6 +139,7 @@ type CreateOrderInput struct {
 	ActorAdminID       int64
 	ActorKind          string
 	ActorID            int64
+	ActorRef           string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID          string
 	ExpiresIn          time.Duration // 0 = 默认 TTL
 	// OrderKind 缺省 topup; subscription 时 SubscriptionPlanID 必填。
@@ -173,6 +174,7 @@ type CancelOrderInput struct {
 	TenantID  int64
 	OrderID   int64
 	UserID    int64
+	ActorRef  string // 双身份归属串,空则 NULL
 	ActorKind string // user / admin
 	ActorID   int64
 	Reason    string
@@ -197,6 +199,7 @@ type FulfillInput struct {
 	TenantID  int64
 	OrderID   int64
 	ActorKind string
+	ActorRef  string // 双身份归属串,空则 NULL
 	ActorID   int64
 	RequestID string
 }

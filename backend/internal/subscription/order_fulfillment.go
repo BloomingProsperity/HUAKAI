@@ -20,6 +20,7 @@ type FulfillOrderInput struct {
 	// ActorKind/ActorID: 自助下单=user; 管理员代开/系统回调可传 admin/system。
 	ActorKind string
 	ActorID   int64
+	ActorRef  string // 双身份归属串(AuditActor() 形态,admin 通道才有),空则列落 NULL
 	RequestID string
 	Now       time.Time
 }
@@ -45,6 +46,7 @@ func FulfillOrderTx(ctx context.Context, tx pgx.Tx, in FulfillOrderInput) (Fulfi
 		SourceKind:         EffectSourceOrder,
 		ActorKind:          in.ActorKind,
 		ActorID:            in.ActorID,
+		ActorRef:           in.ActorRef,
 		RequestID:          in.RequestID,
 		EnforceUpgradeOnly: true,
 		Now:                in.Now,

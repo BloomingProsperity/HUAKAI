@@ -121,6 +121,7 @@ func newAdminRetryHandler(d AdminDeps) http.HandlerFunc {
 			TenantID:     req.TenantID,
 			OrderID:      id,
 			ActorAdminID: ident.TokenID,
+			ActorRef:     ident.AuditActor(),
 			RequestID:    requestID(r),
 		})
 		if err != nil {

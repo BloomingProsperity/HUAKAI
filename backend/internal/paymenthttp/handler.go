@@ -270,6 +270,7 @@ func newAdminCreateOrderHandler(d AdminDeps) http.HandlerFunc {
 			OrderKind:          req.OrderKind,
 			SubscriptionPlanID: req.SubscriptionPlanID,
 			ActorAdminID:       ident.TokenID,
+			ActorRef:           ident.AuditActor(),
 			RequestID:          requestID(r),
 		})
 		if err != nil {
