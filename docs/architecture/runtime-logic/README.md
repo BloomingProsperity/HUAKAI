@@ -29,10 +29,10 @@
 
 | 子系统 | 文档 | 状态 |
 |---|---|---|
-| relay 转发链(auth→配额/计费→选号→转发→结算) | [relay-forwarding.md](relay-forwarding.md) | 🚧 调研中(module-interplay workflow) |
-| billing 预扣↔结算↔abort | (relay 文档内含,后续可拆) | 待补 |
-| quota↔选号↔并发槽释放 | (relay 文档内含) | ⚠️ 已发现配合缺口(reconciler 未结算) |
-| pool 选号↔渠道健康回流↔failover | (relay 文档内含) | 待补 |
+| relay 转发链(auth→配额/计费→选号→转发→结算) | [relay-forwarding.md](relay-forwarding.md) | ✅ 完成:协作图 + 12 配合点对照三镜 + 20 配合测试用例(T1-T20)+ 实测发现(§7) |
+| billing 预扣↔结算↔abort | relay-forwarding.md §2 C1/C2/C3 + §3 T1-T5 | ✅ 含于 relay 文档 |
+| quota↔选号↔并发槽释放 | relay-forwarding.md §2 C11/C12 + §7.2 | ⚠️ 已发现配合缺口(reconciler 未结算,待定性) |
+| pool 选号↔渠道健康回流↔failover | relay-forwarding.md §2 C4/C5/C6/C7 + §3 T7-T10 | ✅ 含于 relay 文档 |
 | credential 采集流状态机(start→callback→finalize) | credential-acquisition.md | 待补 |
 | media 任务生命周期(submit→poll→settle) | media-task.md | 待补 |
 
