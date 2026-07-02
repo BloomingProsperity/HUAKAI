@@ -503,12 +503,14 @@ Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。�
 
 **★ 分阶段执行序(每阶段=一子系统 vertical slice:迁移+handler+真 PG 测试+变异+审查后单独提交;避免半迁移态与 money 代码在长会话尾部的仓促出错):**
 - **Stage 1 = payment/充值路径**(canonical):迁移加 payment_orders.created_by_actor/confirmed_by_actor + payment_audit_events.actor_ref(nullable text)。改动 **~10 个 ActorID 触点**已勘定:`admin_credit.go`(AdminBalanceAdjustmentInput 加 ActorRef 字段 :28 区、actorID 计算 :114、createOrderRecord :123、三条 auditInsert :135-137、confirmed :168)+ `types.go`(createOrderRecord :63 / auditInsert :122-123 加 ActorRef/ActorRefText)+ `store_postgres.go`(insertOrderTx/insertAuditTx 写新 text 列)。**关键:balance_credit_handler 保持传 int64 TokenID 给旧列(token 向后兼容),另传 ident.AuditActor() 给新 text 列**——token-admin 双写(int64+text)、session-admin int64 落 NULL + text 落 admin_user:N。
-- **Stage 2 = voucher**(voucher_handler + voucher/store_postgres,created_by_actor/revoked_by_actor)。
-- **Stage 3 = subscription**(admin_ops + subscription/activation + audit,assigned_by_actor/actor_ref)。
-- **Stage 4 = refund**(refund_request_admin/postgres 去 `adminActorID<=0` 硬守卫改判来源 + payment_refunds/refund_requests text 列)。
-- **Stage 5 = S3 限流数值键**(admin_audit_events 加 actor_token_id bigint,CountIssuanceInWindow 改按数值分桶)。
-- **Stage 6 = 放开动钱路由**发 SessionSafe(充值/退款/发券/订阅,守 new-api 前端确认弹窗)。
-- **收尾 = arc 级对抗审查零 S0/S1**。全程 coordination claim payment/voucher/subscription 文件、默认关 knob 后零生产变。
+- **Stage 2 = subscription**(admin_ops + subscription/activation + audit,assigned_by_actor/actor_ref)。
+- **Stage 3 = refund**(refund_request_admin/postgres 去 `adminActorID<=0` 硬守卫改判来源 + payment_refunds/refund_requests text 列)。
+- **Stage 4 = S3 限流数值键**(admin_audit_events 加 actor_token_id bigint,CountIssuanceInWindow 改按数值分桶)。
+- **Stage 5 = 放开动钱路由**发 SessionSafe(充值/退款/订阅;adminhttp/paymenthttp/subscriptionhttp 均非碰撞区;守 new-api 前端确认弹窗)。
+- **⚠️ voucher 顺延(原 Stage 2)**:其 admin handler 在 `internal/gatewayhttp/voucher_handler.go` = §6 碰撞区(本会话一贯不碰,与池账号/渠道健康同待遇)。发券归属 text 列 + 放开留待碰撞约束解除后一小片(3 个传参点 + 迁移),届时 voucher 继续 token-only 不受影响。
+- **收尾 = arc 级对抗审查零 S0/S1**。全程 coordination claim、默认关 knob 后零生产变。
+
+**Stage 1 已合(5a240cdb,对抗审查零 S0/S1)**。审查附带 2 条 S3 观察:①`ActorRef` 未纳入 validate 必填——生产 handler 恒传 AuditActor() 非空,新调用方漏传会静默 NULL,留观;②通用手工确认路径(store_postgres.go:260 SET status='paid')未接 confirmed_by_actor,该路径归 Stage 5 放开确认端点时一并接。
 
 ---
 
