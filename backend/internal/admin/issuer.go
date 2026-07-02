@@ -135,6 +135,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		count, err := q.CountIssuanceInWindow(ctx, admindb.CountIssuanceInWindowParams{
 			ActorID:       req.Caller.AuditActor(),
 			WindowSeconds: int32(i.rateLimitWindowSecs),
+			LegacyActorID: legacyActorKey(req.Caller),
 		})
 		if err != nil {
 			return IssueResult{}, fmt.Errorf("%w: rate-limit preflight: %v", ErrAdminBackend, err)
@@ -173,6 +174,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		count, err := qtx.CountIssuanceInWindow(ctx, admindb.CountIssuanceInWindowParams{
 			ActorID:       actorID,
 			WindowSeconds: int32(i.rateLimitWindowSecs),
+			LegacyActorID: legacyActorKey(req.Caller),
 		})
 		if err != nil {
 			return fmt.Errorf("%w: rate-limit count: %v", ErrAdminBackend, err)
@@ -287,7 +289,7 @@ func (i *KeyIssuer) audit(ctx context.Context, req IssueRequest, outcome, reason
 }
 
 // tx 在一个全新的事务内运行 fn。与 registry.PostgresRegistry.ResolveModel
-//(使用 REPEATABLE READ 只读)所用的模式对应。签发会写入,故我们使用
+// (使用 REPEATABLE READ 只读)所用的模式对应。签发会写入,故我们使用
 // 默认隔离级别,但保持相同形态。
 func (i *KeyIssuer) tx(ctx context.Context, fn func(*admindb.Queries) error) error {
 	tx, err := i.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -329,3 +331,13 @@ func nullableString(s string) *string {
 }
 
 var _ = errors.New // 预留未来扩展
+
+// legacyActorKey 返回 P2b-1 之前的老格式限流键(裸 TokenID 串),让限流窗跨审计格式
+// 迁移保持连续(老 "5" 行与新 "admin_token:5" 行同桶)。无老格式的来源(session)返回
+// 当前键同串,OR 谓词下无副作用。
+func legacyActorKey(caller AdminIdentity) string {
+	if caller.TokenID > 0 {
+		return fmt.Sprintf("%d", caller.TokenID)
+	}
+	return caller.AuditActor()
+}
