@@ -16,7 +16,7 @@ import (
 //   - 入：OpenAI Chat Completions HTTP body（JSON）
 //   - 出：HCSF v0.4 request envelope；含 Messages、CapabilityText/ToolUse/
 //     ToolResult 节点 + EdgeRequires（tool_result→tool_use；）。
-//   - image_url / input_audio / file 等 multimodal content part 暂 warning loss。
+//   - image_url 建 CapabilityImage 节点；input_audio / file 暂 warning loss。
 //   - response_format json_schema / reasoning_effort 作为 capability 节点建模，
 //     同时保留上游原始请求形态供 passthrough 投影。
 
@@ -149,12 +149,13 @@ func (o *OpenAIChatClient) RequestToCanonical(ctx context.Context, raw []byte) (
 			if m.ToolCallID == "" {
 				return nil, nil, fmt.Errorf("proto: openai_chat messages[%d] role=tool missing tool_call_id", mi)
 			}
-			texts, contentLoss, err := parseOpenAIChatContent(m.Content, mi)
+			parts, contentLoss, err := parseOpenAIChatContent(m.Content, mi)
 			if err != nil {
 				return nil, nil, err
 			}
 			losses = append(losses, contentLoss...)
-			toolResultText := flattenOpenAIToolResultContent(texts)
+			toolResultText, flattenLoss := flattenOpenAIToolResultContent(parts)
+			losses = append(losses, flattenLoss...)
 			rawResult, _ := json.Marshal([]CanonicalContentBlock{{Type: "text", Text: toolResultText}})
 			cm.Content = append(cm.Content, CanonicalContentBlock{
 				Type:       "tool_result",
@@ -192,28 +193,45 @@ func (o *OpenAIChatClient) RequestToCanonical(ctx context.Context, raw []byte) (
 			continue
 		}
 
-		// 通用 role（system / developer / user / assistant）
-		texts, contentLoss, err := parseOpenAIChatContent(m.Content, mi)
+		// 通用 role（system / developer / user / assistant）；text/image
+		// 交织顺序按 parsed-part 原序落 Content 与 CapabilityGraph
+		// （image 接线逐字段镜像 anthropic_messages_request.go 的 image 分支）。
+		parts, contentLoss, err := parseOpenAIChatContent(m.Content, mi)
 		if err != nil {
 			return nil, nil, err
 		}
 		losses = append(losses, contentLoss...)
-		for bi, t := range texts {
-			cm.Content = append(cm.Content, CanonicalContentBlock{Type: "text", Text: t})
-			nodeSeq++
-			nodeID := fmt.Sprintf("n_text_%d", nodeSeq)
+		for _, part := range parts {
 			msgIdx := mi
-			blkIdx := bi
-			env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
-				ID:          nodeID,
-				Kind:        CapabilityText,
-				StreamReady: StreamReadyYes,
-				Source:      &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
-				Text:        &TextNode{Role: m.Role, Block: CanonicalContentBlock{Type: "text", Text: t}},
-			})
-			env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
-				Capability: CapabilityText, NodeID: nodeID, Verdict: ProjectionPreserved,
-			})
+			blkIdx := len(cm.Content)
+			switch part.Kind {
+			case "text":
+				cm.Content = append(cm.Content, CanonicalContentBlock{Type: "text", Text: part.Text})
+				nodeSeq++
+				nodeID := fmt.Sprintf("n_text_%d", nodeSeq)
+				env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+					ID:          nodeID,
+					Kind:        CapabilityText,
+					StreamReady: StreamReadyYes,
+					Source:      &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
+					Text:        &TextNode{Role: m.Role, Block: CanonicalContentBlock{Type: "text", Text: part.Text}},
+				})
+				env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+					Capability: CapabilityText, NodeID: nodeID, Verdict: ProjectionPreserved,
+				})
+			case "image":
+				cm.Content = append(cm.Content, CanonicalContentBlock{Type: "image", Image: part.Raw})
+				nodeSeq++
+				nodeID := fmt.Sprintf("n_image_%d", nodeSeq)
+				env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+					ID: nodeID, Kind: CapabilityImage, StreamReady: StreamReadyYes,
+					Source: &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
+					Image:  part.Image,
+				})
+				env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+					Capability: CapabilityImage, NodeID: nodeID, Verdict: ProjectionPreserved,
+				})
+			}
 		}
 
 		// assistant role 可能附带 tool_calls

@@ -275,32 +275,8 @@ func TestOpenAIChatClient_AssistantToolCallsThenToolResult(t *testing.T) {
 	}
 }
 
-func TestOpenAIChatClient_ImageURLContentPartLoss(t *testing.T) {
-	adapter := &OpenAIChatClient{}
-	body := []byte(`{
-		"model":"gpt-4o",
-		"messages":[{"role":"user","content":[
-			{"type":"text","text":"see this:"},
-			{"type":"image_url","image_url":{"url":"https://x"}}
-		]}]
-	}`)
-	_, losses, err := adapter.RequestToCanonical(newTestOpenAIChatCtx(t), body)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	var foundImg bool
-	for _, l := range losses {
-		if l.Severity == "" {
-			t.Errorf("loss must not be silent: %+v", l)
-		}
-		if strings.Contains(l.Reason, "image_url_d5_pending") {
-			foundImg = true
-		}
-	}
-	if !foundImg {
-		t.Errorf("expected image_url pending loss")
-	}
-}
+// image_url content part 的解析行为(F4 视觉修复后建 CapabilityImage 节点,
+// 不再是 pending loss)见 openai_chat_image_test.go。
 
 func TestOpenAIChatClient_NegativeMissingModel(t *testing.T) {
 	adapter := &OpenAIChatClient{}
