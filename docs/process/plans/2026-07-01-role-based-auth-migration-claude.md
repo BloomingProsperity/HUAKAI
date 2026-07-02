@@ -552,6 +552,30 @@ voucher_batch +created_by_actor,nullable text)+ CreateInput/BatchCreateInput/Rev
 
 ---
 
+## ★★ 凭证日常改动放开(2026-07-02,Owner 批「放开到日常改动」,commit 4fee5aaa)
+
+**决策背景**:Owner 质疑「凭证卡令牌是否背离 new-api」→ 9-agent workflow 读两镜真码 + 对抗核验定论:
+new-api **无独立令牌**(其令牌=绑定用户行的会话替身),凭证**写**是登录 admin 直接做,但凭证**明文读回**
+是全库唯一 step-up(超管+300s 新鲜 2FA/Passkey)——连 new-api 都不把凭证当普通操作;sub2 的静态密钥
+=独立于登录、绕 TOTP 的满权后门(与 HUAKAI admin_tokens 同构)。结论:HUAKAI「凭证更强凭据」不背离
+new-api 精神,只是实现成独立令牌而非会话 step-up。Owner 采纳折中:日常凭证改动放开。
+
+**已落地**:`gatewayhttp.MountAdminCredentialRoutes` 4 条写路由挂 SessionSafe(录入/轮换单条上游凭证/
+启停/删除;rotate=池账号换上游 key,非 KEK)。**永久 token-only 红线**:OAuth 采集流全部(canonical 4 写
++ import-helper 5 条批量通路)、KEK(无 HTTP 端点)、签发吊销 admin_token/API key、建删账号——一个能签发
+令牌的会话=一次 XSS 造出永久后门,此线不动。归属零改动(handler 早走 AuditActor());前端凭证面板既有
+"不可撤销"确认,零改动。验证:双测试三重变异证红 + 采集流 9 路径对照锁 + 审查零 S0/S1(3 S3 已就地修)。
+
+## ★ CI 全量首验(2026-07-02,54 提交推送后)
+
+分支领先 origin 54 提交期间 CI 从未真跑;推送后全量 integration_pg(61 包独立纯净库)抓出 1 个潜伏红:
+P2b-1(f512ee7b)统一审计 actor 格式时漏改 adminuserhttp 集成测试(仍按裸 "12" 查审计)→ edccdeb7 修复
+(查询对齐 "admin_token:12",扫全仓无同类漏网),CI 转绿。另 quality-gate 潜伏红(89f06d96 测试脚手架
+5 项 deadcode 误报未收基线)→ 6847e25b 修复(基线净 +4,DC_MAX 875→879)。教训重申:每片提交前跑完整
+`go test ./...` + quality-gate,涉集成的包必跑 integration_pg,不只定向。
+
+---
+
 相关文件(绝对路径,供落盘参考):
 - 计划落盘目标目录:`/home/ubuntu/HUAKAI/backend/docs/process/plans/`
 - 核心改造文件:`/home/ubuntu/HUAKAI/backend/internal/admin/operator_auth.go`、`/home/ubuntu/HUAKAI/backend/internal/admin/bootstrap.go`、`/home/ubuntu/HUAKAI/backend/internal/panelauth/resolve.go`、`/home/ubuntu/HUAKAI/backend/internal/auth/session_middleware.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/routes.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/middleware.go`、`/home/ubuntu/HUAKAI/backend/internal/controlhttp/panelauth_handler.go`
