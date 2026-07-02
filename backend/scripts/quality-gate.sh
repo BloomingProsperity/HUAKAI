@@ -34,8 +34,12 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # 但 memoryStore 是 test-fake、从生产 main 不可达 → deadcode 必然命中(与已收录的 31 个 memoryStore
 # 兄弟方法同类,删不掉/不接生产)。按本文件头规定的 deferral 正路 +2 进 baseline 并显式调高 DC_MAX
 # 873->875(Owner 可见可审);非死代码堆积,是接口契约的内存实现。
+# 2026-07-02 role 制单登录共享测试脚手架 internal/adminsessionauthtest/support.go:该包被 10 个
+# 写分级 _test.go 真调用(Resolver/Status 等),但 `deadcode ./...` 不带 -test 看不到跨包测试引用
+# → 必然误命中(与上述 memoryStore test-fake 同类)。全量重算基线净 +4(+5 脚手架项,-1 voucher
+# WithBurstLimiter 已不再死),DC_MAX 875->879(Owner 可见可审);非死代码堆积,是测试专用脚手架。
 SC_MAX=94
-DC_MAX=875
+DC_MAX=879
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1

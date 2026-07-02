@@ -9,6 +9,11 @@ internal/adminhttp/channel_test_template_handler.go:  unreachable func: MountCha
 internal/adminhttp/provider_catalog_mutation_handler.go:  unreachable func: MountProviderCatalogRoutes
 internal/adminquotahttp/routes.go:  unreachable func: MountRoutes
 internal/adminquotahttp/routes.go:  unreachable func: NewRouter
+internal/adminsessionauthtest/support.go:  unreachable func: Resolver
+internal/adminsessionauthtest/support.go:  unreachable func: Status
+internal/adminsessionauthtest/support.go:  unreachable func: roleAdmin.UserRole
+internal/adminsessionauthtest/support.go:  unreachable func: sessionAdmin.Validate
+internal/adminsessionauthtest/support.go:  unreachable func: tokenReject.Resolve
 internal/adminuserhttp/routes.go:  unreachable func: NewRouter
 internal/alerting/memory_store.go:  unreachable func: MemoryStore.CreateRule
 internal/alerting/memory_store.go:  unreachable func: MemoryStore.CreateSilence
@@ -854,7 +859,6 @@ internal/voucher/audit.go:  unreachable func: MemoryAuditSink.EmitVoucherAudit
 internal/voucher/audit.go:  unreachable func: MemoryAuditSink.Events
 internal/voucher/audit.go:  unreachable func: NewMemoryAuditSink
 internal/voucher/audit.go:  unreachable func: cloneAuditEvent
-internal/voucher/service.go:  unreachable func: WithBurstLimiter
 internal/voucher/store_memory.go:  unreachable func: MemoryStore.BillingEvents
 internal/voucher/store_memory.go:  unreachable func: MemoryStore.CreateBatch
 internal/voucher/store_memory.go:  unreachable func: MemoryStore.CreateVoucher
