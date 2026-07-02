@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
@@ -68,11 +69,17 @@ type renewStatusCursor struct {
 }
 
 func MountAdminCredentialRoutes(r chi.Router, d AdminCredentialDeps) {
+	// 凭证日常增改(Owner 批准放开给登录 admin):录入/轮换单条上游凭证/启停/删,守 new-api
+	// 「会话可写渠道密钥」形态,危险动作靠前端确认弹窗。审计归属已走 AuditActor()(text,双身份)。
+	// 注意:这里 rotate=替换该池账号的上游凭证,非 KEK 主密钥轮换;KEK/签发/建删账号仍 token-only。
+	// OAuth 采集流(acquisition/import-helper)不放开,session 写仍拒;其 helper GET /oauth-callback
+	// 本就不走 admin 鉴权(靠 flow state 一次性防护,既有债),本片不触碰。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/{id}/credentials", newListAccountCredentialsHandler(d))
-	r.Post("/{id}/credentials", newCreateAccountCredentialHandler(d))
-	r.Post("/{id}/credentials/{credentialID}/rotate", newRotateAccountCredentialHandler(d))
-	r.Patch("/{id}/credentials/{credentialID}/state", newSetAccountCredentialStateHandler(d))
-	r.Delete("/{id}/credentials/{credentialID}", newDeleteAccountCredentialHandler(d))
+	r.With(safe).Post("/{id}/credentials", newCreateAccountCredentialHandler(d))
+	r.With(safe).Post("/{id}/credentials/{credentialID}/rotate", newRotateAccountCredentialHandler(d))
+	r.With(safe).Patch("/{id}/credentials/{credentialID}/state", newSetAccountCredentialStateHandler(d))
+	r.With(safe).Delete("/{id}/credentials/{credentialID}", newDeleteAccountCredentialHandler(d))
 }
 
 func MountAdminCredentialRenewStatusRoutes(r chi.Router, d AdminCredentialDeps) {
