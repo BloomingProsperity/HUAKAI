@@ -580,3 +580,18 @@ P2b-1(f512ee7b)统一审计 actor 格式时漏改 adminuserhttp 集成测试(仍
 - 计划落盘目标目录:`/home/ubuntu/HUAKAI/backend/docs/process/plans/`
 - 核心改造文件:`/home/ubuntu/HUAKAI/backend/internal/admin/operator_auth.go`、`/home/ubuntu/HUAKAI/backend/internal/admin/bootstrap.go`、`/home/ubuntu/HUAKAI/backend/internal/panelauth/resolve.go`、`/home/ubuntu/HUAKAI/backend/internal/auth/session_middleware.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/routes.go`、`/home/ubuntu/HUAKAI/backend/cmd/gateway/middleware.go`、`/home/ubuntu/HUAKAI/backend/internal/controlhttp/panelauth_handler.go`
 - schema:`/home/ubuntu/HUAKAI/backend/sql/migrations/0076_user_role.up.sql`、`/home/ubuntu/HUAKAI/backend/sql/migrations/0010_admin_auth.up.sql`
+---
+
+## ★★★ 默认翻开——arc 终局(2026-07-02,Owner「为什么要手动打开?就默认这一套啊」,commit 2c252269)
+
+`HUAKAI_ADMIN_SESSION_AUTH_ENABLED` 未设=**开**(envBoolDefault true):登录即管理员是产品默认形态;
+显式 false=运维退路(退回纯令牌通道,与迁移前逐字一致);非法值 fail-loud 拒启。部署文件零引用=零部署改动。
+
+**随翻转修掉审查 S2**:封禁(disabled)/锁定/强制改密的 admin,其登录会话此前不掉权且可经 refresh 永续
+(UserRole 不查 status、usersession 不回查、封禁不吊销 session families)。修法=panelauth 新增
+`ActiveUserRole`(status='active' 谓词),adminsessionauth session 通道改用之——每请求即时掉权;
+`/v1/auth/me` 的 panel 判定仍走 `UserRole`,普通用户(pending_verification 等)不受影响。2 处「默认关」
+陈旧注释同批修正。真 PG 集成测试(disabled/locked 掉权)+双变异证红;完整单测/集成/quality-gate 三门绿;
+对抗审查零 S0/S1(新库首启安全:注册 role 恒 'user'、唯一提升=bootstrap email、无 admin 时通道开着等价安全)。
+
+**role 制单登录 arc 至此全部完成,无剩余 Owner 决策点。**
