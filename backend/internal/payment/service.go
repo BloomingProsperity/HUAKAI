@@ -160,6 +160,7 @@ func (s *Service) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateO
 		ProviderOrderRef:       intent.OrderRef,
 		RequestFingerprint:     strings.TrimSpace(in.RequestFingerprint),
 		CreatedByAdminID:       in.ActorAdminID,
+		CreatedByActor:         in.ActorRef,
 		CreatedActorKind:       createOrderActorKind(in),
 		CreatedActorID:         createOrderActorID(in),
 		RequestID:              in.RequestID,
@@ -197,7 +198,8 @@ func createOrderActorKind(in CreateOrderInput) string {
 	if in.ActorKind != "" {
 		return in.ActorKind
 	}
-	if in.ActorAdminID > 0 {
+	// session-admin 的 TokenID=0:靠 ActorRef 非空识别 admin,不得误标 system(收口审计 S1)。
+	if in.ActorAdminID > 0 || in.ActorRef != "" {
 		return ActorKindAdmin
 	}
 	return ActorKindSystem
@@ -226,6 +228,7 @@ func (s *Service) CancelOrder(ctx context.Context, in CancelOrderInput) (Order, 
 		UserID:    in.UserID,
 		ActorKind: in.ActorKind,
 		ActorID:   in.ActorID,
+		ActorRef:  in.ActorRef,
 		Reason:    in.Reason,
 		RequestID: in.RequestID,
 		Now:       s.now(),
@@ -294,6 +297,7 @@ func (s *Service) Fulfill(ctx context.Context, in FulfillInput) (FulfillResult, 
 		OrderID:   in.OrderID,
 		ActorKind: in.ActorKind,
 		ActorID:   in.ActorID,
+		ActorRef:  in.ActorRef,
 		RequestID: in.RequestID,
 		Now:       s.now(),
 	}); err != nil {
@@ -304,6 +308,7 @@ func (s *Service) Fulfill(ctx context.Context, in FulfillInput) (FulfillResult, 
 		OrderID:   in.OrderID,
 		ActorKind: in.ActorKind,
 		ActorID:   in.ActorID,
+		ActorRef:  in.ActorRef,
 		RequestID: in.RequestID,
 		Now:       s.now(),
 	})

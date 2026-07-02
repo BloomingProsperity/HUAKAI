@@ -66,6 +66,7 @@ type RetryFulfillmentInput struct {
 	TenantID     int64
 	OrderID      int64
 	ActorAdminID int64
+	ActorRef     string // 双身份归属串,空则 NULL
 	RequestID    string
 }
 
@@ -143,6 +144,7 @@ func (s *Service) RetryFulfillment(ctx context.Context, in RetryFulfillmentInput
 		OrderID:   in.OrderID,
 		ActorKind: ActorKindAdmin,
 		ActorID:   in.ActorAdminID,
+		ActorRef:  in.ActorRef,
 		RequestID: in.RequestID,
 	})
 }

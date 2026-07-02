@@ -69,6 +69,7 @@ func (s *PostgresStore) CreateOrder(ctx context.Context, rec createOrderRecord) 
 		EventType: AuditOrderCreated,
 		ActorKind: auditActorKind(rec),
 		ActorID:   auditActorID(rec),
+		ActorRef:  rec.CreatedByActor,
 		RequestID: rec.RequestID,
 		Payload:   map[string]any{"amount_cents": rec.AmountCents, "provider_kind": string(rec.ProviderKind)},
 		Now:       rec.Now,
@@ -107,6 +108,7 @@ func (s *PostgresStore) handleDuplicateOrder(ctx context.Context, rec createOrde
 		EventType: AuditIdempotentReplay,
 		ActorKind: auditActorKind(rec),
 		ActorID:   auditActorID(rec),
+		ActorRef:  rec.CreatedByActor,
 		RequestID: rec.RequestID,
 		Now:       rec.Now,
 	}); err != nil {
@@ -202,6 +204,7 @@ RETURNING`+orderSelectColumns, rec.TenantID, rec.OrderID, rec.Now)
 			EventType:   AuditOrderCancelled,
 			ActorKind:   actorKindOrDefault(rec.ActorKind),
 			ActorID:     rec.ActorID,
+			ActorRef:    rec.ActorRef,
 			ReasonClass: rec.Reason,
 			RequestID:   rec.RequestID,
 			Now:         rec.Now,
@@ -319,6 +322,7 @@ RETURNING`+orderSelectColumns, rec.TenantID, rec.OrderID, rec.Now)
 			EventType: AuditFulfillmentStarted,
 			ActorKind: actorKindOrDefault(rec.ActorKind),
 			ActorID:   rec.ActorID,
+			ActorRef:  rec.ActorRef,
 			RequestID: rec.RequestID,
 			Now:       rec.Now,
 		}); err != nil {
@@ -419,6 +423,7 @@ RETURNING`+orderSelectColumns, rec.TenantID, order.ID, rec.Now)
 			EventType: AuditCredited,
 			ActorKind: actorKindOrDefault(rec.ActorKind),
 			ActorID:   rec.ActorID,
+			ActorRef:  rec.ActorRef,
 			RequestID: rec.RequestID,
 			Payload: map[string]any{
 				"order_kind":           OrderKindSubscription,
@@ -485,6 +490,7 @@ RETURNING`+orderSelectColumns, rec.TenantID, order.ID, rec.Now)
 		EventType: AuditCredited,
 		ActorKind: actorKindOrDefault(rec.ActorKind),
 		ActorID:   rec.ActorID,
+		ActorRef:  rec.ActorRef,
 		RequestID: rec.RequestID,
 		Payload:   map[string]any{"amount_cents": order.AmountCents, "credit_id": credit.ID, "billing_event_id": billingID},
 		Now:       rec.Now,
@@ -516,6 +522,7 @@ func (s *PostgresStore) activateOrderSubscriptionTx(ctx context.Context, tx pgx.
 		PaymentOrderID: order.ID,
 		ActorKind:      actorKindOrDefault(rec.ActorKind),
 		ActorID:        rec.ActorID,
+		ActorRef:       rec.ActorRef,
 		RequestID:      rec.RequestID,
 		Now:            rec.Now,
 	})

@@ -79,6 +79,7 @@ func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
 			UserID:    0,
 			ActorKind: payment.ActorKindAdmin,
 			ActorID:   ident.TokenID,
+			ActorRef:  ident.AuditActor(),
 			Reason:    req.Reason,
 			RequestID: requestID(r),
 		})
