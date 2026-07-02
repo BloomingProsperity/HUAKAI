@@ -385,11 +385,13 @@
 | 触发处置 | `SetTempUnschedulable` 保 active | 整渠道 `DisableChannel`(AutoBan) | per-(auth,model) TTL | 独立 auth 车道临时排除 |
 | 冷却时长 | 定长 10min | 无 TTL 靠后台探活 | 定长 30min | **封顶指数退避** base30s<<strike,cap30min |
 | 死号硬禁 | 无 refresh→永久禁 + 2-strike | AutoBan 整渠道 | 不硬禁纯 TTL | iron-clad 达 strike K 或刷新拿 invalid_grant → HardDisabled |
-| 自愈 | 后台刷新拾取 | 后台探活 | 成功即时 reset | 成功即清 + 热刷新握手即时解除 |
+| 自愈 | 后台刷新拾取 | 后台探活 | 成功即时 reset | 成功请求即清;刷新结果只单向通报(永久失效→硬禁) |
 | 健康分污染 | 复用 TempUnschedulable | 复用渠道状态 | 复用 ModelState | **不写 State/Score/error-rate/ban-ramp** |
 
 三维 delta:①架构=独立 auth 车道不污染健康分;②算法=封顶指数退避(瞬时过期几秒自愈、真死 key 几何止损)+
-ambiguous 通用 401 永不误永久禁(修 new-api);③生态=热刷新 worker↔选号车道双向握手(三镜均无)+ 结构化日志。
+ambiguous 通用 401 永不误永久禁(修 new-api);③生态=热刷新 worker→选号车道单向通报(永久失效即时硬禁,
+三镜均无)+ 结构化日志。刷新「成功」刻意不解除冷却:RefreshHotPath 返回 nil ≠ 真刷新(去抖窗口跳过 /
+storm 预算拒绝 / 静态 API-key 无可刷新都返回 nil),把 no-op 当成功会在并发 401 下毫秒级拆冷却、复活硬禁死号。
 
 ### 8.3 模块协作链(修复后)
 
@@ -406,11 +408,20 @@ ambiguous 通用 401 永不误永久禁(修 new-api);③生态=热刷新 worker�
   → PoolGate.Allow:先查 authcooldown.Eligible → now<AuthUntil 或 HardDisabled → GateFailureAuthCooldown(移出选号)
       (DisableCooling 逃生阀只豁免软退避,不豁免 HardDisabled)
 自愈闭环
-  → 一次成功请求 SignalSuccess → applySignal 调 Clear(strike 归零)
-  → triggerCredentialHotRefresh 异步刷新 → OnRefreshResult:成功→Clear;invalid_grant→HardDisabled
+  → 退避到期回池 → 一次成功请求 SignalSuccess → applySignal 调 Clear(strike 归零)
+  → triggerCredentialHotRefresh 异步刷新 → OnRefreshResult:仅 invalid_grant→HardDisabled;
+      成功/transient 一律不动状态(nil≠真刷新,防假成功拆冷却)
 运营恢复
-  → ForceActive/ManualResume → channelhealth.manualTransition 调 Clear(含 HardDisabled)
+  → ForceActive/ManualResume → channelhealth.manualTransition 调 Clear(含 HardDisabled;
+      HardDisabled 死号的唯一恢复出路)
 ```
+
+已知取舍(knob 翻开前 Owner 须知):
+- **全体 401 场景**(出口 IP 被封/上游全局故障):整池渐进进冷却 → 池空 → 全量 503;无「池空自动放行」
+  兜底,运营逃生阀=账号 DisableCooling(豁免软退避)+ ManualResume。上游恢复后最坏多付一个退避周期
+  (cap 30min)。对照 CLIProxy 的 disableCooling 逃生阀为账号级,与 HUAKAI 等价;自动池空放行留后续评估。
+- **HardDisabled 恢复**:iron-clad 死号 / 刷新证实 invalid_grant 后,唯一出路是运营 ForceActive/
+  ManualResume(换新凭证后也需手动 resume 一次);Phase2 前端账号列表将展示车道状态。
 
 ### 8.4 配合点测试(判别性)
 

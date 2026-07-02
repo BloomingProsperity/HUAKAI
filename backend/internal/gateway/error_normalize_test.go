@@ -35,10 +35,19 @@ func TestClassify_R015_5xx_NeverDisabled(t *testing.T) {
 	}
 }
 
-// 缺口①附带修复 —— Grok/xAI 坏 key 返 400(非 401)带 invalid_api_key/incorrect api key
-// -> R-024/R-025 -> token_revoked 类。此前无规则命中 → R-016 通配 → unknown → upstream_client_4xx
-// 直接透传给客户端(既不换号也不冷却)。判别:删掉 R-024/R-025 → 落回 R-016 unknown,断言红。
+// enableAuthLaneRules 在测试内临时打开车道绑定规则(R-024/R-025 + xai 归一化),测试结束自动还原。
+func enableAuthLaneRules(t *testing.T) {
+	t.Helper()
+	SetAuthLaneRulesEnabled(true)
+	t.Cleanup(func() { SetAuthLaneRulesEnabled(false) })
+}
+
+// 缺口①附带修复(knob 开时生效)—— Grok/xAI 坏 key 返 400(非 401)带 invalid_api_key/
+// incorrect api key -> R-024/R-025 -> token_revoked 类。此前无规则命中 → R-016 通配 → unknown →
+// upstream_client_4xx 直接透传给客户端(既不换号也不冷却)。判别:删掉 R-024/R-025 → 落回 R-016
+// unknown,断言红。
 func TestClassify_R024_R025_GrokBadKey400(t *testing.T) {
+	enableAuthLaneRules(t)
 	cases := []struct {
 		name     string
 		provider string
@@ -64,6 +73,25 @@ func TestClassify_R024_R025_GrokBadKey400(t *testing.T) {
 	got, _ := Classify(400, nil, []byte(`{"error":"model not found"}`), "grok")
 	if got.RuleID == "R-024" || got.RuleID == "R-025" {
 		t.Fatalf("非认证类 grok 400 误命中 auth 规则:rule=%s", got.RuleID)
+	}
+}
+
+// TestClassify_GrokAuthRulesGatedByKnob(审查 S1):knob 关(默认生产态)时 R-024/R-025 与
+// xai→grok 归一化必须不生效——grok/xai 400 坏 key 保持基底行为(R-016 unknown → 400 原样透传
+// + error-rate 健康记账),客户端契约与健康记账零变化。判别:去掉 matchRule 的 RequiresAuthLane
+// 门控或 normalizeProvider 的 knob 判断 → 命中 R-024,断言红。
+func TestClassify_GrokAuthRulesGatedByKnob(t *testing.T) {
+	// 不 enable(模拟默认关);防其它测试残留,显式置 false 并还原。
+	SetAuthLaneRulesEnabled(false)
+	t.Cleanup(func() { SetAuthLaneRulesEnabled(false) })
+	for _, provider := range []string{"grok", "xai"} {
+		got, err := Classify(400, nil, []byte(`{"error":"invalid_api_key"}`), provider)
+		if err != nil {
+			t.Fatalf("classify err: %v", err)
+		}
+		if got.RuleID != "R-016" || got.Class != ErrorClassUnknown {
+			t.Fatalf("knob 关时 %s 400 坏 key 必须保持基底分类 R-016 unknown,实际 rule=%s class=%s", provider, got.RuleID, got.Class)
+		}
 	}
 }
 

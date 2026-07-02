@@ -12,7 +12,7 @@ import (
 type AuthCooldownLane interface {
 	// Suspend 记录一次 auth 失败(升 strike、算退避、按 class 决定是否 HardDisabled)。
 	Suspend(ctx context.Context, accountID int64, class authcooldown.FailureClass, credVersion int, now time.Time)
-	// Clear 彻底清除账号车道状态(reason 供日志区分:success/refresh/operator_resume)。
+	// Clear 彻底清除账号车道状态(reason 供日志区分:request_success/operator_resume)。
 	Clear(ctx context.Context, accountID int64, reason string)
 	// Eligible 选号门查询:ok=false 表示被 auth 车道移出选号;hardDisabled 供逃生阀判定。
 	Eligible(accountID int64, now time.Time) (ok bool, hardDisabled bool)

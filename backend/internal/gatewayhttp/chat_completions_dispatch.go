@@ -816,7 +816,9 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, ex.protocolLoss)
 
 		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), healthStatus, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), 0)
+			// canonical 缓冲是默认主路径:必须带真实 iron-clad 分级,否则该路径上的铁证 401
+			// 永远按 ambiguous 处理、strike 硬禁不可达(审查 S2)。
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), healthStatus, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 		}
 		code := "upstream_dispatch_error"
 		if upstreamErr != nil {

@@ -131,8 +131,9 @@ type ChatHandlerDeps struct {
 	// HUAKAI_TOOL_SURCHARGE_ENABLED 注入 platformSource 启用按官方价计费。
 	ToolPricingTable toolpricing.Source
 
-	// AuthCooldown 是 auth 降级车道(缺口① S1);此处仅用于凭证热刷新↔选号的双向握手
-	//(triggerCredentialHotRefresh 回调 OnRefreshResult)。nil 安全(方法自带 nil-guard),默认关。
+	// AuthCooldown 是 auth 降级车道(缺口① S1);此处仅用于凭证热刷新结果的单向通报
+	//(triggerCredentialHotRefresh 回调 OnRefreshResult,只在永久失效时升 HardDisabled)。
+	// nil 安全(方法自带 nil-guard),默认关。
 	AuthCooldown *authcooldown.Store
 }
 
@@ -738,7 +739,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		}
 		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, nil)
 		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(startedAt), ex.requestID, nil, 0)
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(startedAt), ex.requestID, nil, gateway.AuthFailureClassFromClassification(classification))
 		}
 		failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false

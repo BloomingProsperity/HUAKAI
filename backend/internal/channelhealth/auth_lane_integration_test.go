@@ -153,3 +153,45 @@ func TestAuthLane_NotWiredIsNoop(t *testing.T) {
 		t.Fatalf("车道未接线时应照旧放行(no-op):ok=%v err=%v", ok, err)
 	}
 }
+
+// txCountingStore 给 MemoryStore 套一层 transactionalStore,只为统计 WithTx 次数。
+type txCountingStore struct {
+	*MemoryStore
+	txCalls int
+}
+
+func (s *txCountingStore) WithTx(ctx context.Context, fn func(Store) error) error {
+	s.txCalls++
+	return fn(s.MemoryStore)
+}
+
+// TestAuthLane_AuthChallengeOpensNoTx(审查 S3):SignalAuthChallenge 纯内存处理,必须在进
+// 事务之前短路——401 风暴(车道目标场景)下每失败一次白开一个 Serializable 空事务会压 DB;
+// knob 关(nil lane)时同理,与基底「auth 类直接跳过」逐字节等价。
+// 判别:把 auth 分支挪回 withMutation 内 → txCalls>0 → 两个子断言红;对照组证明普通信号确实走事务。
+func TestAuthLane_AuthChallengeOpensNoTx(t *testing.T) {
+	ctx := context.Background()
+	clock := &fixedClock{now: time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)}
+	key := testKey()
+	for _, wired := range []bool{true, false} {
+		store := &txCountingStore{MemoryStore: NewMemoryStore()}
+		opts := []ServiceOption{}
+		if wired {
+			opts = append(opts, WithAuthCooldownLane(authcooldown.NewStore(authcooldown.Config{})))
+		}
+		svc := NewService(store, testPolicy(), clock, opts...)
+		if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalAuthChallenge, AuthFailureClass: authcooldown.ClassAmbiguous}); err != nil {
+			t.Fatalf("ApplySignal(wired=%v): %v", wired, err)
+		}
+		if store.txCalls != 0 {
+			t.Fatalf("auth 信号不得开事务(wired=%v):txCalls=%d", wired, store.txCalls)
+		}
+		// 对照组:普通信号必须照常走事务(证明 spy 真的在计数)。
+		if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalUpstream5xx}); err != nil {
+			t.Fatalf("ApplySignal 5xx(wired=%v): %v", wired, err)
+		}
+		if store.txCalls == 0 {
+			t.Fatalf("对照组失效:普通信号未走事务(wired=%v)", wired)
+		}
+	}
+}

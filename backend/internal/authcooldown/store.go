@@ -13,7 +13,8 @@
 //   - 架构:独立 auth 车道,不写健康 State/Score、不进 error-rate/ban-ramp 窗口(auth blip 不污染健康分);
 //   - 算法:封顶指数退避(base<<(strike-1),cap 封顶)替代定长冷却——常态 token 过期几秒热刷新自愈、
 //     真死 key 几何增长快速止损;iron-clad 达 strike 上限升 HardDisabled,ambiguous 通用 401 永不永久禁;
-//   - 生态:与凭证热刷新 worker 双向握手(OnRefreshResult)+ 结构化日志把「坏号被冷却/恢复」变运营可见。
+//   - 生态:凭证热刷新 worker 单向通报车道(OnRefreshResult:仅永久失效→硬禁)+ 结构化日志把
+//     「坏号被冷却/恢复」变运营可见。刷新成功刻意不解除冷却(见 OnRefreshResult 注释)。
 //
 // Phase1 纯内存(重启丢失、非账号行天然可见);持久化列/表为 Phase2 Owner-gated。
 package authcooldown
@@ -46,9 +47,8 @@ func (c FailureClass) label() string {
 
 // Clear 的原因标签,进日志供运营区分账号是如何解除冷却的。
 const (
-	ClearReasonSuccess        = "request_success"  // 一次成功请求(self-heal)
-	ClearReasonRefresh        = "refresh_success"  // 凭证热刷新成功
-	ClearReasonOperatorResume = "operator_resume"  // 运营 ForceActive/ManualResume
+	ClearReasonSuccess        = "request_success" // 一次成功请求(self-heal)
+	ClearReasonOperatorResume = "operator_resume" // 运营 ForceActive/ManualResume
 )
 
 // Config 是退避与升级参数。零值经 normalized() 补默认。
@@ -110,8 +110,10 @@ func (s *Store) Suspend(ctx context.Context, accountID int64, class FailureClass
 		e = &entry{credVersion: credVersion}
 		s.entries[accountID] = e
 	}
-	// 版本感知 strike-reset:凭证已轮换(版本前后都非零且不同)→ 旧的失败历史作废,当作全新账号。
-	if credVersion > 0 && e.credVersion > 0 && credVersion != e.credVersion {
+	// 版本感知 strike-reset:凭证已轮换到「更新」的版本 → 旧的失败历史作废,当作全新账号。
+	// 只认版本前进(>):迟到的旧版本事件(长流式在途请求携带轮换前的 credVersion)不得
+	// 反向重置新版本已积累的 strike/HardDisabled(审查 S3)。
+	if credVersion > 0 && e.credVersion > 0 && credVersion > e.credVersion {
 		e.strike = 0
 		e.hardDisabled = false
 		e.authUntil = time.Time{}
@@ -193,7 +195,7 @@ func (s *Store) Eligible(accountID int64, now time.Time) (ok bool, hardDisabled 
 }
 
 // Clear 彻底清除账号的车道状态(strike 归零 + AuthUntil 清 + 解除 HardDisabled)。
-// 用于:一次成功请求(self-heal)、凭证热刷新成功、运营 resume/ForceActive。
+// 用于:一次成功请求(self-heal)、运营 resume/ForceActive。
 // 仅当确有条目被清(账号此前真的在冷却)才记 InfoContext——避免每次成功请求刷屏。
 func (s *Store) Clear(ctx context.Context, accountID int64, reason string) {
 	if s == nil || accountID == 0 {
@@ -210,19 +212,16 @@ func (s *Store) Clear(ctx context.Context, accountID int64, reason string) {
 	}
 }
 
-// OnRefreshResult 是凭证热刷新 worker 与选号车道的握手回调:
-//   - success → 即时解除冷却 + strike 归零(不等 TTL);
+// OnRefreshResult 是凭证热刷新 worker 到车道的单向通报:
 //   - permanentFailure(刷新拿到 invalid_grant/撤销)→ 即时升 HardDisabled;
-//   - transient 刷新失败 → 不动退避,继续走 TTL 自愈。
+//   - 其余(success / transient 失败)→ 一律不动车道状态,继续走 TTL 自愈。
+//
+// 刷新成功刻意不 Clear(审查 S1):RefreshHotPath 返回 nil ≠ 真的刷新了——去抖包装器
+// 窗口内跳过、storm 预算拒绝、无可刷新的静态 API-key 凭证都返回 nil;把 no-op 当成功
+// 会在并发 401 下毫秒级拆掉刚建立的冷却、并复活已硬禁的死号(车道自我瓦解)。
+// 真恢复路径 = 退避到期回池 → 一次请求成功 → Clear(channelhealth SignalSuccess 侧)。
 func (s *Store) OnRefreshResult(ctx context.Context, accountID int64, success bool, permanentFailure bool) {
-	if s == nil || accountID == 0 {
-		return
-	}
-	if success {
-		s.Clear(ctx, accountID, ClearReasonRefresh)
-		return
-	}
-	if !permanentFailure {
+	if s == nil || accountID == 0 || success || !permanentFailure {
 		return
 	}
 	s.mu.Lock()
