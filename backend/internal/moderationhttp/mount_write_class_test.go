@@ -50,16 +50,16 @@ func (fakeStore) UnbanAPIKey(context.Context, moderation.UnbanAPIKeyRequest) (mo
 	return moderation.UnbanAPIKeyResult{}, nil
 }
 
-func mountModeration(knob bool) http.Handler {
+func mountModeration() http.Handler {
 	r := chi.NewRouter()
-	MountModerationAdminRoutes(r, ModerationAdminDeps{Auth: adminsessionauthtest.Resolver(knob), Store: fakeStore{}})
+	MountModerationAdminRoutes(r, ModerationAdminDeps{Auth: adminsessionauthtest.Resolver(), Store: fakeStore{}})
 	return r
 }
 
 // SessionSafe 写端点(审核规则增删 + 解封)过鉴权≠401;token-only 的 PUT /config 对 session 仍 401。
 // 变异:摘某 SessionSafe 路由的 safe → 401 → 首断言 RED;给 /config 误挂 safe → 不再 401 → 次断言 RED。
 func TestModerationWriteGate(t *testing.T) {
-	h := mountModeration(true)
+	h := mountModeration()
 	sess := adminsessionauthtest.SessionBearer
 
 	for _, tc := range []struct{ m, p string }{
@@ -82,17 +82,10 @@ func TestModerationWriteGate(t *testing.T) {
 	}
 }
 
-// knob 关:session 写回退令牌通道被拒 401。
-func TestModerationKnobOff(t *testing.T) {
-	h := mountModeration(false)
-	if code := adminsessionauthtest.Status(h, http.MethodDelete, "/keywords/5", adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-		t.Fatalf("knob 关时 session 写应被拒 401,得 %d", code)
-	}
-}
 
 // token 通道豁免:hk_admin 令牌写 token-only 的 /config 也过鉴权≠401。
 func TestModerationTokenExempt(t *testing.T) {
-	h := mountModeration(true)
+	h := mountModeration()
 	if code := adminsessionauthtest.Status(h, http.MethodPut, "/config", adminsessionauthtest.TokenBearer); code == http.StatusUnauthorized {
 		t.Fatalf("hk_admin 令牌写 /config 应过鉴权(≠401),得 401")
 	}

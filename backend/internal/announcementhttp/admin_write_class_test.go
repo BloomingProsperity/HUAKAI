@@ -28,16 +28,16 @@ func (fakeService) ListAllAdmin(context.Context, announcement.ListAdminInput) ([
 	return nil, nil
 }
 
-func mountAnnouncementAdmin(knob bool) http.Handler {
+func mountAnnouncementAdmin() http.Handler {
 	r := chi.NewRouter()
-	MountAdminRoutes(r, AdminDeps{Auth: adminsessionauthtest.Resolver(knob), Service: fakeService{}})
+	MountAdminRoutes(r, AdminDeps{Auth: adminsessionauthtest.Resolver(), Service: fakeService{}})
 	return r
 }
 
 // SessionSafe 写端点(公告增改删)过鉴权≠401。
 // 变异:摘任一路由的 safe → 该路由 session 写 401 → RED。
 func TestAnnouncementSessionSafeWrites(t *testing.T) {
-	h := mountAnnouncementAdmin(true)
+	h := mountAnnouncementAdmin()
 	for _, tc := range []struct{ m, p string }{
 		{http.MethodPost, "/v1/admin/announcements"},
 		{http.MethodPut, "/v1/admin/announcements/5"},
@@ -49,17 +49,9 @@ func TestAnnouncementSessionSafeWrites(t *testing.T) {
 	}
 }
 
-// knob 关:session 写回退令牌通道被拒 401。
-func TestAnnouncementKnobOff(t *testing.T) {
-	h := mountAnnouncementAdmin(false)
-	if code := adminsessionauthtest.Status(h, http.MethodDelete, "/v1/admin/announcements/5", adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-		t.Fatalf("knob 关时 session 写应被拒 401,得 %d", code)
-	}
-}
-
 // token 通道豁免:hk_admin 令牌写过鉴权≠401。
 func TestAnnouncementTokenExempt(t *testing.T) {
-	h := mountAnnouncementAdmin(true)
+	h := mountAnnouncementAdmin()
 	if code := adminsessionauthtest.Status(h, http.MethodDelete, "/v1/admin/announcements/5", adminsessionauthtest.TokenBearer); code == http.StatusUnauthorized {
 		t.Fatalf("hk_admin 令牌写应过鉴权(≠401),得 401")
 	}

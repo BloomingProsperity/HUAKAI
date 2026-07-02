@@ -31,16 +31,16 @@ func (fakeRouteService) Delete(context.Context, int64, int64, int64) (routeadmin
 	return routeadmin.Route{}, nil
 }
 
-func mountRouteAdmin(knob bool) http.Handler {
+func mountRouteAdmin() http.Handler {
 	r := chi.NewRouter()
-	MountRouteAdminRoutes(r, RouteAdminDeps{Auth: adminsessionauthtest.Resolver(knob), Service: fakeRouteService{}})
+	MountRouteAdminRoutes(r, RouteAdminDeps{Auth: adminsessionauthtest.Resolver(), Service: fakeRouteService{}})
 	return r
 }
 
-// SessionSafe 写端点(分组路由增改停删):knob 开 + session-admin → 过鉴权(≠401)。
+// SessionSafe 写端点(分组路由增改停删):session-admin → 过鉴权(≠401)。
 // 变异:摘掉任一路由的 .With(safe) → 该路由 session 写变 writeClassNone → 401 → RED。
 func TestRouteAdminSessionSafeWrites(t *testing.T) {
-	h := mountRouteAdmin(true)
+	h := mountRouteAdmin()
 	for _, tc := range []struct{ m, p string }{
 		{http.MethodPost, "/"},
 		{http.MethodPut, "/5"},
@@ -53,17 +53,9 @@ func TestRouteAdminSessionSafeWrites(t *testing.T) {
 	}
 }
 
-// knob 关:session 通道不走,非 hk_admin 写回退令牌通道被拒 401。
-func TestRouteAdminKnobOffClosesWrites(t *testing.T) {
-	h := mountRouteAdmin(false)
-	if code := adminsessionauthtest.Status(h, http.MethodDelete, "/5", adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-		t.Fatalf("knob 关时 session 写应回退令牌通道被拒 401,得 %d", code)
-	}
-}
-
 // token 通道豁免:hk_admin 令牌写过鉴权(≠401)。
 func TestRouteAdminTokenExempt(t *testing.T) {
-	h := mountRouteAdmin(true)
+	h := mountRouteAdmin()
 	if code := adminsessionauthtest.Status(h, http.MethodDelete, "/5", adminsessionauthtest.TokenBearer); code == http.StatusUnauthorized {
 		t.Fatalf("hk_admin 令牌写应过鉴权(≠401),得 401")
 	}

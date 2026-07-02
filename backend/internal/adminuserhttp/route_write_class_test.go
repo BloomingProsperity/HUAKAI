@@ -62,11 +62,11 @@ func (fakeBackend) CreateUser(context.Context, userCreateInput) (userCreated, er
 func (fakeBackend) SoftDeleteForTenant(context.Context, int64, int64) (int64, error) { return 0, nil }
 func (fakeBackend) Revoke(context.Context, usersession.RevokeInput) (int64, error)   { return 0, nil }
 
-func mountForTest(knob bool) http.Handler {
+func mountForTest() http.Handler {
 	fb := fakeBackend{}
 	r := chi.NewRouter()
 	MountRoutes(r, Deps{
-		Auth: adminsessionauthtest.Resolver(knob), Store: fb, SocialLinks: fb, UnlockAudit: fb,
+		Auth: adminsessionauthtest.Resolver(), Store: fb, SocialLinks: fb, UnlockAudit: fb,
 		Unlocker: fb, Audit: fb, TwoFADisabler: fb, PasskeyResetter: fb, UserGroupSetter: fb,
 		UserRemarkSetter: fb, UserStatusSetter: fb, UserCreator: fb, UserSoftDeleter: fb, SessionRevoker: fb,
 	})
@@ -77,7 +77,7 @@ func mountForTest(knob bool) http.Handler {
 // 变异:把某 SessionSafe 路由的 .With(safe) 删掉 → 该路由 writeClassNone → session 写 401 → 首断言 RED;
 //       把 safe 误挂到 token-only 路由 → 该路由不再 401 → 次断言 RED。
 func TestSessionSafeRoutesOpenTokenOnlyRoutesClosed(t *testing.T) {
-	h := mountForTest(true)
+	h := mountForTest()
 	sess := adminsessionauthtest.SessionBearer
 
 	for _, tc := range []struct{ method, path string }{
@@ -104,17 +104,9 @@ func TestSessionSafeRoutesOpenTokenOnlyRoutesClosed(t *testing.T) {
 	}
 }
 
-// knob 关:即便 SessionSafe 已挂,session 通道整体不走,非 hk_admin bearer 回退令牌通道被拒 401。
-func TestKnobOffClosesSessionWrites(t *testing.T) {
-	h := mountForTest(false)
-	if code := adminsessionauthtest.Status(h, http.MethodPut, "/7/status", adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-		t.Fatalf("knob 关时 SessionSafe 写端点也应回退令牌通道被拒 401,得 %d", code)
-	}
-}
-
 // token 通道豁免:hk_admin 令牌写 token-only 端点(group)也过鉴权(≠401),不吃写分级。
 func TestTokenChannelWritesTokenOnlyRoutes(t *testing.T) {
-	h := mountForTest(true)
+	h := mountForTest()
 	if code := adminsessionauthtest.Status(h, http.MethodPut, "/7/group", adminsessionauthtest.TokenBearer); code == http.StatusUnauthorized {
 		t.Fatalf("hk_admin 令牌写 token-only 端点应过鉴权(≠401),得 401")
 	}

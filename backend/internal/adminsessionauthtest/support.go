@@ -1,5 +1,5 @@
 // Package adminsessionauthtest 为「放开 SessionSafe 写路由」的各 admin http 包测试提供共享脚手架:
-// 一个 knob 可控的拟真组合解析器(令牌通道拒非 hk_admin=同生产;session→admin;roles→admin)
+// 一个拟真组合解析器(令牌通道拒非 hk_admin=同生产;session→admin;roles→admin)
 // + 请求/状态码助手。仅被 _test.go 引用,不进生产二进制。
 //
 // 各包测试仍需自备【非 nil 后端 fake】(因多数 handler 在鉴权前做 nil 后端 503 兜底,后端为 nil
@@ -43,9 +43,9 @@ type roleAdmin struct{}
 
 func (roleAdmin) ActiveUserRole(context.Context, int64, int64) (string, error) { return "admin", nil }
 
-// Resolver 返回 knob 可控的组合解析器:非 hk_admin bearer 在 knob 开时走 session→admin;knob 关时回退令牌通道被拒。
-func Resolver(knob bool) *adminsessionauth.Resolver {
-	return adminsessionauth.New(tokenReject{}, sessionAdmin{}, roleAdmin{}, nil, func() bool { return knob })
+// Resolver 返回组合解析器:非 hk_admin bearer 走 session→admin(登录即管理员,无开关)。
+func Resolver() *adminsessionauth.Resolver {
+	return adminsessionauth.New(tokenReject{}, sessionAdmin{}, roleAdmin{}, nil)
 }
 
 // Status 发一个带 bearer 的请求(body="{}" 满足多数 handler 的 JSON 解码),返回响应码。

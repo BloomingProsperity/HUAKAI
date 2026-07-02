@@ -1,7 +1,6 @@
 // Package adminsessionauth 组合 admin 鉴权的两条通道:既有令牌通道(admin_tokens,hk_admin_)
-// + session 通道(admin-role 用户 session 直接鉴权 admin 端点,产品默认形态)。knob 显式 false
-// 时退回纯令牌通道(与迁移前逐字一致)。role 制单登录,详见
-// docs/process/plans/2026-07-01-role-based-auth-migration-claude.md。
+// + session 通道(admin-role 用户 session 直接鉴权 admin 端点)。登录即管理员是产品形态,无开关。
+// role 制单登录,详见 docs/process/plans/2026-07-01-role-based-auth-migration-claude.md。
 package adminsessionauth
 
 import (
@@ -31,24 +30,21 @@ type RoleStore interface {
 	ActiveUserRole(context.Context, int64, int64) (string, error)
 }
 
-// Resolver 组合令牌通道 + session 通道。enabled() 为假(运维显式关)时 session 通道恒不走,
-// 一切回退令牌通道 → 与迁移前逐字同行为。
+// Resolver 组合令牌通道 + session 通道。
 type Resolver struct {
 	token    TokenResolver
 	session  SessionValidator
 	roles    RoleStore
 	clientIP *clientip.Resolver
-	enabled  func() bool
 }
 
-// New 组装组合解析器。enabled 为 nil 视同 session 通道关。
-func New(token TokenResolver, session SessionValidator, roles RoleStore, clientIP *clientip.Resolver, enabled func() bool) *Resolver {
-	return &Resolver{token: token, session: session, roles: roles, clientIP: clientIP, enabled: enabled}
+// New 组装组合解析器。
+func New(token TokenResolver, session SessionValidator, roles RoleStore, clientIP *clientip.Resolver) *Resolver {
+	return &Resolver{token: token, session: session, roles: roles, clientIP: clientIP}
 }
 
-// Resolve 先令牌通道(hk_admin_ 前缀恒走),knob 开时再 session 通道。
-// session 通道灰度只读端点先行:仅放行只读方法(GET/HEAD),写方法拒。
-// session 任何失败(无效/查角色错/非 admin/写方法)一律 ErrAdminUnauthorized,与令牌通道反枚举语义一致。
+// Resolve 先令牌通道(hk_admin_ 前缀恒走),再 session 通道。
+// session 任何失败(无效/查角色错/非 admin/未标注写)一律 ErrAdminUnauthorized,与令牌通道反枚举语义一致。
 func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminIdentity, error) {
 	// nil 接收者 / 未配令牌通道:fail-closed 返 ErrAdminBackend(503),与既有 AdminResolver
 	// 的 nil 契约一致(未接线的 admin 面统一 503,不误报 401、也绝不 panic)。
@@ -60,9 +56,8 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminI
 	if hasBearer && strings.HasPrefix(bearer, "hk_admin_") {
 		return r.token.Resolve(ctx, req)
 	}
-	// session 通道关(默认)/依赖缺失/无 bearer:回退令牌通道(它对非 hk_admin bearer 统一返
-	// ErrAdminUnauthorized)→ 与今天一致。
-	if r.enabled == nil || !r.enabled() || r.session == nil || r.roles == nil || !hasBearer {
+	// 依赖缺失/无 bearer:回退令牌通道(它对非 hk_admin bearer 统一返 ErrAdminUnauthorized)。
+	if r.session == nil || r.roles == nil || !hasBearer {
 		return r.token.Resolve(ctx, req)
 	}
 	var ip string

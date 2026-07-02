@@ -1260,12 +1260,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.mediaTaskWorker = mediaTaskWorker
 	userAuditStore := userauditlog.NewPostgresStore(pgPool)
 
-	// role 制单登录:admin session 通道(默认开=登录即管理员;显式 false 退回纯令牌通道)。
-	adminSessionAuthEnabled, err := runtimeconfig.AdminSessionAuthEnabled()
-	if err != nil {
-		return nil, err
-	}
-
 	d := &deps{
 		cfg:                   cfg,
 		clientIPResolver:      clientIPResolver,
@@ -1355,7 +1349,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			userSessionService,                   // session 校验器
 			panelauth.NewPostgresRoleStore(pgPool), // users.role 只读查询
 			clientIPResolver,
-			func() bool { return adminSessionAuthEnabled }, // 默认开;显式 false 退回纯令牌
 		),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
 		adminRevoker:             admin.NewKeyRevoker(pgPool),
