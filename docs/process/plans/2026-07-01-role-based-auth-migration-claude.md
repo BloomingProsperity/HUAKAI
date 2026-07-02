@@ -510,7 +510,9 @@ Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。�
 - **⚠️ voucher 顺延(原 Stage 2)**:其 admin handler 在 `internal/gatewayhttp/voucher_handler.go` = §6 碰撞区(本会话一贯不碰,与池账号/渠道健康同待遇)。发券归属 text 列 + 放开留待碰撞约束解除后一小片(3 个传参点 + 迁移),届时 voucher 继续 token-only 不受影响。
 - **收尾 = arc 级对抗审查零 S0/S1**。全程 coordination claim、默认关 knob 后零生产变。
 
-**Stage 1 已合(5a240cdb,对抗审查零 S0/S1)**。审查附带 2 条 S3 观察:①`ActorRef` 未纳入 validate 必填——生产 handler 恒传 AuditActor() 非空,新调用方漏传会静默 NULL,留观;②通用手工确认路径(store_postgres.go:260 SET status='paid')未接 confirmed_by_actor,该路径归 Stage 5 放开确认端点时一并接。
+**Stage 1 已合(5a240cdb)/ Stage 2 subscription 已合(f0fb4c66,含 changePlanActor session 误判修复)/
+Stage 3 refund 已合(6f876398,守卫改判来源+decided_by 0→NULL,审查抓 S2 refund.go 漏接已就地补)——三阶段均对抗审查零 S0/S1。**
+剩 Stage 4(S3 数值键)+ Stage 5(放开动钱路由 SessionSafe + 接 CancelSubscription/通用确认路径归属)。审查附带 2 条 S3 观察:①`ActorRef` 未纳入 validate 必填——生产 handler 恒传 AuditActor() 非空,新调用方漏传会静默 NULL,留观;②通用手工确认路径(store_postgres.go:260 SET status='paid')未接 confirmed_by_actor,该路径归 Stage 5 放开确认端点时一并接。
 
 ---
 
