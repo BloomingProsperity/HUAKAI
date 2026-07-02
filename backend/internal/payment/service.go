@@ -249,6 +249,7 @@ func (s *Service) RefundOrder(ctx context.Context, in RefundOrderInput) (RefundR
 		OrderID:        in.OrderID,
 		AmountCents:    in.AmountCents,
 		IdempotencyKey: key,
+		ActorRef:       strings.TrimSpace(in.ActorRef),
 		Reason:         strings.TrimSpace(in.Reason),
 		ActorKind:      in.ActorKind,
 		ActorID:        in.ActorID,

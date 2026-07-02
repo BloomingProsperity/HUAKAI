@@ -121,6 +121,7 @@ type RefundRecord struct {
 	Reason         string
 	ActorKind      string
 	ActorID        int64
+	ActorRef       string // 同上
 	BillingEventID int64
 	CreatedAt      time.Time
 }
@@ -186,6 +187,7 @@ type RefundOrderInput struct {
 	Reason         string
 	ActorKind      string
 	ActorID        int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 }
 

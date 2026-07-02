@@ -186,15 +186,16 @@ func insertPaymentRefundTx(ctx context.Context, tx pgx.Tx, order Order, rec refu
 		Reason:         rec.Reason,
 		ActorKind:      actorKindOrDefault(rec.ActorKind),
 		ActorID:        rec.ActorID,
+		ActorRef:       rec.ActorRef,
 	}
 	if err := tx.QueryRow(ctx, `
 INSERT INTO payment_refunds (
 	tenant_id, order_id, user_id, amount_cents, currency, idempotency_key,
-	reason, actor_kind, actor_id, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	reason, actor_kind, actor_id, actor_ref, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 RETURNING id, created_at`,
 		refund.TenantID, refund.OrderID, refund.UserID, refund.AmountCents, refund.CurrencyCode,
-		refund.IdempotencyKey, nullableText(refund.Reason), refund.ActorKind, nullableInt64(refund.ActorID), rec.Now,
+		refund.IdempotencyKey, nullableText(refund.Reason), refund.ActorKind, nullableInt64(refund.ActorID), nullableText(refund.ActorRef), rec.Now,
 	).Scan(&refund.ID, &refund.CreatedAt); err != nil {
 		return RefundRecord{}, err
 	}
