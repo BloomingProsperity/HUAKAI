@@ -28,7 +28,8 @@ Retry-After。症状:单用户并发大多数秒级 500。钱是安全的(事务
 1. `internal/billing/retry.go`(新,非碰撞):`retryReserve` 有限重试 + decorrelated-jitter 退避
    (base 2ms / cap 50ms / max 5);`isReserveSerializationConflict` 只认 40001/40P01;业务哨兵
    (ErrClaimRace/ErrFingerprintConflict/ErrInsufficientBalance)立即返回不重试;ctx 早退;退避
-   sleep 在事务外(连接已归还);耗尽映射 `ErrClaimRace`;可观测计数器 `ReserveSerialRetryStats()`。
+   sleep 在事务外(连接已归还);耗尽映射 `ErrClaimRace` 并打一条 `slog.Warn`(运营 grep 日志定位
+   高并发争用,比不透明 500 好定位;不引入无消费者的导出计数器 getter,避免死代码/堆砌)。
 2. `internal/billing/claim_gate.go`:`Reserve` 拆成外层(算幂等键 + retryReserve 包裹)+ `reserveOnce`
    (原事务体);struct 加可注入 `reserveSleep/reserveRand`(生产 nil→默认,单测注入确定性)。
 3. **5 端点补 `ErrClaimRace`→409+Retry-After 分支**(`{audio,completions,embeddings,images,rerank}http/billing.go`,
