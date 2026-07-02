@@ -11,7 +11,7 @@ internal/adminquotahttp/routes.go:  unreachable func: MountRoutes
 internal/adminquotahttp/routes.go:  unreachable func: NewRouter
 internal/adminsessionauthtest/support.go:  unreachable func: Resolver
 internal/adminsessionauthtest/support.go:  unreachable func: Status
-internal/adminsessionauthtest/support.go:  unreachable func: roleAdmin.UserRole
+internal/adminsessionauthtest/support.go:  unreachable func: roleAdmin.ActiveUserRole
 internal/adminsessionauthtest/support.go:  unreachable func: sessionAdmin.Validate
 internal/adminsessionauthtest/support.go:  unreachable func: tokenReject.Resolve
 internal/adminuserhttp/routes.go:  unreachable func: NewRouter

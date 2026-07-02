@@ -1,6 +1,6 @@
 // Package adminsessionauth 组合 admin 鉴权的两条通道:既有令牌通道(admin_tokens,hk_admin_)
-// + 可选的 session 通道(admin-role 用户 session 直接鉴权 admin 端点)。session 通道由 knob 控制,
-// 默认关时行为与纯令牌通道逐字一致。role 制单登录迁移 P0,详见
+// + session 通道(admin-role 用户 session 直接鉴权 admin 端点,产品默认形态)。knob 显式 false
+// 时退回纯令牌通道(与迁移前逐字一致)。role 制单登录,详见
 // docs/process/plans/2026-07-01-role-based-auth-migration-claude.md。
 package adminsessionauth
 
@@ -25,12 +25,13 @@ type SessionValidator interface {
 	Validate(context.Context, string, string, string) (usersession.ValidatedSession, error)
 }
 
-// RoleStore 读 users.role(panelauth.RoleStore 实现)。
+// RoleStore 读 users.role(panelauth.PostgresRoleStore 实现)。ActiveUserRole 仅返回
+// status='active' 行:封禁/锁定/强制改密的 admin 即刻失去 session 权力(每请求生效)。
 type RoleStore interface {
-	UserRole(context.Context, int64, int64) (string, error)
+	ActiveUserRole(context.Context, int64, int64) (string, error)
 }
 
-// Resolver 组合令牌通道 + session 通道。enabled() 为假(默认)时 session 通道恒不走,
+// Resolver 组合令牌通道 + session 通道。enabled() 为假(运维显式关)时 session 通道恒不走,
 // 一切回退令牌通道 → 与迁移前逐字同行为。
 type Resolver struct {
 	token    TokenResolver
@@ -72,7 +73,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminI
 	if err != nil {
 		return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
 	}
-	role, err := r.roles.UserRole(ctx, validated.TenantID, validated.UserID)
+	role, err := r.roles.ActiveUserRole(ctx, validated.TenantID, validated.UserID)
 	if err != nil {
 		return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
 	}

@@ -51,7 +51,7 @@ type stubRoles struct {
 	err  error
 }
 
-func (s stubRoles) UserRole(context.Context, int64, int64) (string, error) {
+func (s stubRoles) ActiveUserRole(context.Context, int64, int64) (string, error) {
 	return s.role, s.err
 }
 
@@ -261,7 +261,7 @@ func TestEnabledNilFallsBackToToken(t *testing.T) {
 
 // knob 开但依赖缺失(session==nil 或 roles==nil):回退令牌通道,绝不 panic。
 // 变异:去掉回退条件里的 `r.session == nil ||` / `r.roles == nil ||`
-// → 后面 r.session.Validate / r.roles.UserRole 对 nil 接口解引用 panic → 本测试崩(RED)。
+// → 后面 r.session.Validate / r.roles.ActiveUserRole 对 nil 接口解引用 panic → 本测试崩(RED)。
 func TestKnobOnMissingDepsFallBackToToken(t *testing.T) {
 	// session == nil
 	tok1 := &stubToken{err: admin.ErrAdminUnauthorized}
