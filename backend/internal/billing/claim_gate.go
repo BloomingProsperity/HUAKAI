@@ -57,6 +57,10 @@ type DefaultClaimGate struct {
 	// Lease window for claim row orphan-sweep recovery; 必须 > 请求最大生命周期,
 	// 见 DefaultClaimLeaseWindow。
 	LeaseWindow time.Duration
+	// 可选注入:Serializable 重试的退避 sleeper 与随机源。生产留 nil 走默认
+	// (真实退避);单测注入确定性实现,免真睡眠又能驱动重试路径。
+	reserveSleep func(context.Context, time.Duration) bool
+	reserveRand  func(int64) int64
 }
 
 // NewClaimGate 构造一个 DefaultClaimGate。传入 nil pool 会得到一个其各方法
@@ -86,7 +90,18 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 		return nil, ErrPoolNotConfigured
 	}
 	idempotencyKey := ComputeIdempotencyFingerprint(req)
+	// Serializable 隔离下同一用户并发争抢 user_balances 行会抛 40001;retryReserve 在
+	// 序列化冲突上做有限退避重试(每次重跑一整个干净事务),预算耗尽映射 ErrClaimRace
+	// →调用方返回可重试的 409+Retry-After,而非不透明 500。
+	return retryReserve(ctx, func(ctx context.Context) (*ReserveResult, error) {
+		return g.reserveOnce(ctx, req, idempotencyKey)
+	}, g.reserveSleep, g.reserveRand)
+}
 
+// reserveOnce 执行一次完整 Tx1 事务(BeginTx→Commit/Rollback)。由 retryReserve 在
+// Serializable 冲突时重跑:每次都是全新干净事务,幂等查找 / 指纹重放检查 / hold 三个
+// 不变量逐次重建,失败整事务回滚不留 claim/hold,故重跑既不重复扣也不漏扣。
+func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, idempotencyKey string) (*ReserveResult, error) {
 	tx, err := g.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return nil, fmt.Errorf("billing: begin Tx1: %w", err)
