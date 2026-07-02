@@ -66,8 +66,10 @@ func TestReserveConcurrentSameUser_NoSerializationLeakToClient(t *testing.T) {
 			if claimIDs[i] == 0 {
 				t.Errorf("goroutine %d 成功但无 ClaimID", i)
 			}
-		case errors.Is(err, ErrClaimRace), errors.Is(err, ErrInsufficientBalance):
-			// 可接受:重试耗尽降级成可重试的 409,或余额门(本例余额充足不应触发)。
+		case errors.Is(err, ErrClaimRace):
+			// 可接受:重试耗尽降级成可重试的 409(客户端自动退避重试)。
+			// 注意:本例余额充足(100 » 16×0.01),ErrInsufficientBalance 不该出现——
+			// 刻意不纳入可接受集合,否则会静默吞掉「并发下 hold 计算错误导致误拒」的缺陷。
 		default:
 			// 关键判别:绝不允许原始序列化冲突泄漏给调用方——那就是修复前的 500 根因。
 			var pgErr *pgconn.PgError
@@ -81,15 +83,18 @@ func TestReserveConcurrentSameUser_NoSerializationLeakToClient(t *testing.T) {
 		t.Fatalf("并发全失败,预期绝大多数应成功")
 	}
 
-	// 余额/held 一致性:预扣防超支不被并发破坏。
+	// 余额/held 守恒(判别性):预扣只增 held、不动 balance(HUAKAI 模型:reserve 建 hold,
+	// balance 到 settle/capture 才实扣)。故并发 N 笔后 balance 必恒等于初始 100(充足余额下),
+	// held 必恰等成功数×单价。用「精确守恒」而非「非负」——非负在 balance=100 下永真、抓不到
+	// 「reserve 误扣 balance / hold 泄漏 / 双重 hold」这些并发下的真实缺陷。
 	var balance, held decimal.Decimal
 	if err := pool.QueryRow(ctx,
 		`SELECT balance, held FROM user_balances WHERE user_id=$1 AND tenant_id=$2`,
 		userID, tenantID).Scan(&balance, &held); err != nil {
 		t.Fatalf("读余额: %v", err)
 	}
-	if balance.IsNegative() {
-		t.Fatalf("余额为负 %s —— 并发下预扣防超支被破坏", balance)
+	if !balance.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("balance=%s 应恒为初始 100(reserve 只建 hold 不实扣)——并发下被误扣/破坏", balance)
 	}
 	wantHeld := decimal.NewFromFloat(0.01).Mul(decimal.NewFromInt(int64(succeeded)))
 	if !held.Equal(wantHeld) {
