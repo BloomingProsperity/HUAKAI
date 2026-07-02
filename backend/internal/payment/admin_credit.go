@@ -21,11 +21,14 @@ const (
 )
 
 type AdminBalanceAdjustmentInput struct {
-	TenantID        int64
-	UserID          int64
-	Amount          decimal.Decimal
-	CurrencyCode    string
-	ActorID         string
+	TenantID     int64
+	UserID       int64
+	Amount       decimal.Decimal
+	CurrencyCode string
+	ActorID      string
+	// ActorRef 双身份归属串(AuditActor() 形态 "admin_token:<id>"/"admin_user:<id>"),
+	// 落 text 列;ActorID 仍是旧 bigint 列的纯数字载体(session-admin 传 "0"→NULL)。
+	ActorRef        string
 	Reason          string
 	RequestID       string
 	ExternalTradeNo string
@@ -111,6 +114,8 @@ func (s *PostgresStore) applyAdminBalanceAdjustmentOnce(ctx context.Context, inp
 	if err != nil {
 		return AdminBalanceAdjustmentResult{}, err
 	}
+	// 双身份归属:actorID(旧 bigint 列,token 通道的数字 TokenID;session-admin 为 0→NULL)
+	// + input.ActorRef(新 text 列,AuditActor() 串,两通道都可归属)。
 	actorID := parseAdminActorID(input.ActorID)
 	order, err := insertOrderTx(ctx, tx, createOrderRecord{
 		TenantID:           input.TenantID,
@@ -121,6 +126,7 @@ func (s *PostgresStore) applyAdminBalanceAdjustmentOnce(ctx context.Context, inp
 		ProviderKind:       ProviderManual,
 		RequestFingerprint: adminAdjustmentFingerprint,
 		CreatedByAdminID:   actorID,
+		CreatedByActor:     input.ActorRef,
 		RequestID:          input.RequestID,
 		OrderKind:          OrderKindTopup,
 		Now:                input.Now,
@@ -132,9 +138,9 @@ func (s *PostgresStore) applyAdminBalanceAdjustmentOnce(ctx context.Context, inp
 		return AdminBalanceAdjustmentResult{}, fmt.Errorf("payment: insert admin adjustment order: %w", err)
 	}
 	for _, ev := range []auditInsert{
-		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditOrderCreated, ActorKind: ActorKindAdmin, ActorID: actorID, ReasonClass: input.Reason, RequestID: input.RequestID, Payload: map[string]any{"source": adminAdjustmentFingerprint, "amount_cents": amountCents}, Now: input.Now},
-		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditPaidConfirmed, ActorKind: ActorKindAdmin, ActorID: actorID, ReasonClass: input.Reason, RequestID: input.RequestID, Now: input.Now},
-		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditFulfillmentStarted, ActorKind: ActorKindAdmin, ActorID: actorID, ReasonClass: input.Reason, RequestID: input.RequestID, Now: input.Now},
+		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditOrderCreated, ActorKind: ActorKindAdmin, ActorID: actorID, ActorRef: input.ActorRef, ReasonClass: input.Reason, RequestID: input.RequestID, Payload: map[string]any{"source": adminAdjustmentFingerprint, "amount_cents": amountCents}, Now: input.Now},
+		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditPaidConfirmed, ActorKind: ActorKindAdmin, ActorID: actorID, ActorRef: input.ActorRef, ReasonClass: input.Reason, RequestID: input.RequestID, Now: input.Now},
+		{TenantID: input.TenantID, OrderID: order.ID, EventType: AuditFulfillmentStarted, ActorKind: ActorKindAdmin, ActorID: actorID, ActorRef: input.ActorRef, ReasonClass: input.Reason, RequestID: input.RequestID, Now: input.Now},
 	} {
 		if err := insertAuditTx(ctx, tx, ev); err != nil {
 			return AdminBalanceAdjustmentResult{}, err
@@ -151,11 +157,12 @@ SET status='completed',
     recharging_at=$3,
     completed_at=$3,
     confirmed_by_admin_id=$4,
+    confirmed_by_actor=$6,
     confirm_reason=$5,
     updated_at=$3
 WHERE tenant_id=$1 AND id=$2
 RETURNING`+orderSelectColumns,
-		input.TenantID, order.ID, input.Now, nullableInt64(actorID), nullableText(input.Reason))
+		input.TenantID, order.ID, input.Now, nullableInt64(actorID), nullableText(input.Reason), nullableText(input.ActorRef))
 	completed, err := scanOrder(row)
 	if err != nil {
 		return AdminBalanceAdjustmentResult{}, fmt.Errorf("payment: complete admin adjustment order: %w", err)
@@ -166,6 +173,7 @@ RETURNING`+orderSelectColumns,
 		EventType: AuditCredited,
 		ActorKind: ActorKindAdmin,
 		ActorID:   actorID,
+		ActorRef:  input.ActorRef,
 		RequestID: input.RequestID,
 		Payload:   map[string]any{"amount_cents": completed.AmountCents, "credit_id": credit.ID, "billing_event_id": billingID},
 		Now:       input.Now,
@@ -194,6 +202,7 @@ func normalizeAdminBalanceAdjustmentInput(input AdminBalanceAdjustmentInput) Adm
 		input.CurrencyCode = "USD"
 	}
 	input.ActorID = strings.TrimSpace(input.ActorID)
+	input.ActorRef = strings.TrimSpace(input.ActorRef)
 	input.Reason = strings.TrimSpace(input.Reason)
 	input.RequestID = strings.TrimSpace(input.RequestID)
 	input.ExternalTradeNo = strings.TrimSpace(input.ExternalTradeNo)
