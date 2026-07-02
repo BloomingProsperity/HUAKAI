@@ -174,8 +174,10 @@ func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key chann
 	})
 }
 
-// triggerCredentialHotRefresh 在 401 时异步跑凭证热刷新,并完成热刷新↔选号 auth 车道的双向握手:
-// 刷新成功→即时解除冷却+strike 归零;拿到 invalid_grant→即时升 HardDisabled(authLane 为 nil 时 no-op)。
+// triggerCredentialHotRefresh 在 401 时异步跑凭证热刷新,并把结果单向通报选号 auth 车道:
+// 拿到 invalid_grant→即时升 HardDisabled(authLane 为 nil 时 no-op)。刷新「成功」刻意不解除
+// 冷却——RefreshHotPath 返回 nil 不代表真的刷新了(去抖窗口跳过/storm 预算拒绝/静态 API-key
+// 无可刷新都返回 nil),车道侧对 success 一律不动状态(见 authcooldown.OnRefreshResult)。
 func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
 	if ex == nil || ex.d.CredentialHotRefresher == nil || accountID == 0 {
 		return

@@ -22,11 +22,21 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 )
+
+// authLaneRulesEnabled 门控与 auth 降级车道绑定的分类改动(R-024/R-025 + xai→grok 归一化)。
+// 这些改动会把 grok/xai 400 坏 key 从「unknown→400 原样透传+error-rate 记账」变成
+// 「token_revoked→401+auth-failover 换号」——属客户端契约与健康记账的行为变化,必须与
+// HUAKAI_AUTH_COOLDOWN_ENABLED 同源生效(审查 S1:knob 关=行为逐字节不变是本片 landable 根基)。
+var authLaneRulesEnabled atomic.Bool
+
+// SetAuthLaneRulesEnabled 由 wiring 启动期调用一次,与 auth 车道 knob 同源;测试可临时翻转(须还原)。
+func SetAuthLaneRulesEnabled(on bool) { authLaneRulesEnabled.Store(on) }
 
 // AuthFailureClassFromClassification 把上游分类映射为 auth 降级车道的确定性分级:
 // token_revoked/关键词 invalid_grant(R-001)/Grok 400-auth → iron-clad(可硬禁);
@@ -159,6 +169,8 @@ type ErrorRule struct {
 	Class       ErrorClass
 	Action      RetryAction
 	Tier        DisableTier
+	// RequiresAuthLane=true 的规则只在 auth 降级车道 knob 开时参与匹配(默认关=零行为变)。
+	RequiresAuthLane bool
 }
 
 // Classification 是 Classify() 的输出。它携带了 A22(FSM)与 A11(审计)
@@ -252,12 +264,13 @@ var errorRules = []ErrorRule{
 	// 通配 R-016 → unknown → upstream_client_4xx 直接透传给客户端,既不换号也不冷却)。
 	// keyword 集刻意保守(过宽会误禁好 grok 号,F1 Owner-gated):只认最明确的认证失败标识。
 	// tier=ambiguous(error_normalize 层不永久禁);是否硬禁由 auth 车道的 iron-clad 分级独立决定。
+	// RequiresAuthLane:客户端契约(400 透传→401 换号)与健康记账都会变,必须随车道 knob 生效。
 	{RuleID: "R-024", Version: 1, Priority: 22, Provider: "grok", HTTPStatus: "400",
 		BodyKeyword: "invalid_api_key", Class: ErrorClassTokenRevoked,
-		Action: RetryActionCooldown, Tier: TierAmbiguous},
+		Action: RetryActionCooldown, Tier: TierAmbiguous, RequiresAuthLane: true},
 	{RuleID: "R-025", Version: 1, Priority: 22, Provider: "grok", HTTPStatus: "400",
 		BodyKeyword: "incorrect api key", Class: ErrorClassTokenRevoked,
-		Action: RetryActionCooldown, Tier: TierAmbiguous},
+		Action: RetryActionCooldown, Tier: TierAmbiguous, RequiresAuthLane: true},
 
 	// 优先级 25 - D8: Anthropic 402 兜底 billing_error。
 	// 在 R-007(优先级 20, keyword 专用)之后触发。任何不带 credit keyword 的
@@ -388,6 +401,10 @@ func matchRule(httpStatus int, headers http.Header, body []byte, provider string
 	var best ErrorRule
 	found := false
 	for _, rule := range errorRules {
+		// 车道绑定规则只在 knob 开时参与(默认关 → grok/xai 分类保持基底行为)。
+		if rule.RequiresAuthLane && !authLaneRulesEnabled.Load() {
+			continue
+		}
 		if !providerMatches(rule.Provider, normalizedProvider) {
 			continue
 		}
@@ -416,7 +433,11 @@ func normalizeProvider(provider string) string {
 		return "anthropic"
 	case "xai":
 		// xAI 与 grok 是同一上游的两种叫法;归一到 canonical vendor "grok",让 R-024/R-025 覆盖两者。
-		return "grok"
+		// 与 R-024/R-025 同门控:knob 关时保持基底归一化(xai 只匹配通配规则),零行为变。
+		if authLaneRulesEnabled.Load() {
+			return "grok"
+		}
+		return "xai"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}

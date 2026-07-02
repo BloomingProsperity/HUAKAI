@@ -1031,6 +1031,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// auth 降级车道(缺口① S1):默认关(HUAKAI_AUTH_COOLDOWN_ENABLED 未设=nil→车道未接线,行为逐字节不变)。
 	// 翻默认开=默认行为翻转(§2 硬门,Owner-gated A1):auth 失败从对选号 no-op 变临时排除坏号。
 	authCooldownStore := buildAuthCooldownStore()
+	// 车道绑定的分类规则(R-024/R-025 + xai→grok 归一化)与 knob 同源生效:它们改变 grok/xai
+	// 400 坏 key 的客户端契约(400 透传→401 换号)与健康记账,knob 关时必须保持基底行为。
+	gateway.SetAuthLaneRulesEnabled(authCooldownStore != nil)
 	channelHealthOptions := []channelhealth.ServiceOption{channelhealth.WithAlertOutbox(outboxStore)}
 	if authCooldownStore != nil {
 		channelHealthOptions = append(channelHealthOptions, channelhealth.WithAuthCooldownLane(authCooldownStore))

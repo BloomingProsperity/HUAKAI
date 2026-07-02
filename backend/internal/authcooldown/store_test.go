@@ -164,8 +164,11 @@ func TestClearResetsEverything(t *testing.T) {
 	}
 }
 
-// TestOnRefreshResultSuccessClears:热刷新成功即时解除冷却+strike 归零(不等 TTL)。
-func TestOnRefreshResultSuccessClears(t *testing.T) {
+// TestOnRefreshResultSuccessDoesNotClear(审查 S1):刷新「成功」绝不解除冷却/硬禁——
+// RefreshHotPath 返回 nil ≠ 真刷新(去抖跳过/storm 拒绝/静态 key 无可刷新都是 nil),
+// 把 no-op 当成功会在并发 401 下毫秒级拆冷却、复活硬禁死号。
+// 判别:改回 success→Clear → 冷却被解除/硬禁被复活,两个断言都红。
+func TestOnRefreshResultSuccessDoesNotClear(t *testing.T) {
 	s := NewStore(testCfg())
 	now := time.Unix(1_000_000, 0)
 	s.Suspend(context.Background(), 7, ClassIronClad, 1, now)
@@ -173,8 +176,19 @@ func TestOnRefreshResultSuccessClears(t *testing.T) {
 		t.Fatal("前置:应被暂停")
 	}
 	s.OnRefreshResult(context.Background(), 7, true, false)
+	if ok, _ := s.Eligible(7, now); ok {
+		t.Fatal("刷新 success(可能只是 no-op nil)不得解除冷却")
+	}
+	// 硬禁死号也不得被假成功复活。
+	s.OnRefreshResult(context.Background(), 7, false, true) // 先证实永久失效 → HardDisabled
+	s.OnRefreshResult(context.Background(), 7, true, false) // 随后的假成功
+	if ok, hard := s.Eligible(7, now.Add(time.Hour)); ok || !hard {
+		t.Fatalf("假成功不得复活硬禁死号:ok=%v hard=%v", ok, hard)
+	}
+	// 真恢复路径仍在:一次成功请求/运营 resume 走 Clear。
+	s.Clear(context.Background(), 7, ClearReasonSuccess)
 	if ok, hard := s.Eligible(7, now); !ok || hard {
-		t.Fatalf("刷新成功应即时解除:ok=%v hard=%v", ok, hard)
+		t.Fatalf("Clear 后应完全恢复:ok=%v hard=%v", ok, hard)
 	}
 }
 
@@ -232,6 +246,32 @@ func TestCredentialVersionResetsStrike(t *testing.T) {
 	}
 	if hard {
 		t.Fatal("轮换后单次失败不应触发 HardDisabled")
+	}
+}
+
+// TestStaleCredentialVersionDoesNotReset(审查 S3):迟到的「旧版本」事件(长流式在途请求
+// 携轮换前 credVersion)不得反向重置新版本已积累的状态。判别:版本比较改回 `!=` →
+// 旧版本事件把 strike/HardDisabled 全清,两个断言都红。
+func TestStaleCredentialVersionDoesNotReset(t *testing.T) {
+	s := NewStore(testCfg())
+	now := time.Unix(1_000_000, 0)
+	// v2 下连续 iron-clad 失败 3 次 → HardDisabled。
+	for i := 0; i < 3; i++ {
+		s.Suspend(context.Background(), 7, ClassIronClad, 2, now)
+		_, until, _ := inspect(s, 7)
+		now = until.Add(time.Millisecond)
+	}
+	if _, hard := s.Eligible(7, now); !hard {
+		t.Fatal("前置:v2 应已 HardDisabled")
+	}
+	// 迟到的 v1(旧版本)401 事件到达 → 不得重置。
+	s.Suspend(context.Background(), 7, ClassIronClad, 1, now)
+	strike, _, hard := inspect(s, 7)
+	if !hard {
+		t.Fatal("迟到旧版本事件不得解除 HardDisabled")
+	}
+	if strike < 3 {
+		t.Fatalf("迟到旧版本事件不得重置 strike:实际 %d", strike)
 	}
 }
 

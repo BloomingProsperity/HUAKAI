@@ -67,6 +67,20 @@ func (s *Service) EnsureDefaultActive(ctx context.Context, key ChannelKey) (Reco
 }
 
 func (s *Service) ApplySignal(ctx context.Context, sig Signal) (Record, error) {
+	// auth 降级车道:auth 失败(SignalAuthChallenge)独立于健康 FSM 处理——只把账号临时移出选号
+	//(authcooldown 纯内存),完全不改 rec.State/Score、不写健康窗口(防 auth blip 污染健康分,
+	// 保留既有「令牌问题不写健康降级」意图)。刻意在 withMutation 之前短路:该路径不碰健康存储,
+	// 进 Serializable 事务只会白开空事务——401 风暴(恰是车道目标场景)下每失败一次多两趟 DB
+	// 往返(审查 S3);lane 未接线(knob 关)时同样短路,与基底「auth 类直接跳过」逐字节等价。
+	if normalizeSignalClass(sig.Class) == SignalAuthChallenge {
+		if s == nil || s.store == nil {
+			return Record{}, errors.New("channelhealth: service not configured")
+		}
+		if s.authLane != nil && sig.Key.ProviderAccountID != 0 {
+			s.authLane.Suspend(ctx, sig.Key.ProviderAccountID, sig.AuthFailureClass, sig.Key.CredentialVersion, s.clock.Now())
+		}
+		return Record{}, nil
+	}
 	return s.withMutation(ctx, func(tx *Service) (Record, error) {
 		return tx.applySignal(ctx, sig)
 	})
@@ -87,15 +101,6 @@ func (s *Service) applySignal(ctx context.Context, sig Signal) (Record, error) {
 		sig.At = now
 	}
 	class := normalizeSignalClass(sig.Class)
-	// auth 降级车道:auth 失败(SignalAuthChallenge)独立于健康 FSM 处理——只把账号临时移出选号
-	//(authcooldown),完全不改 rec.State/Score、不写健康窗口(防 auth blip 污染健康分,保留既有
-	//「令牌问题不写健康降级」意图)。刻意在 EnsureDefaultActive 之前返回:auth blip 不落健康记录行。
-	if class == SignalAuthChallenge {
-		if s.authLane != nil && sig.Key.ProviderAccountID != 0 {
-			s.authLane.Suspend(ctx, sig.Key.ProviderAccountID, sig.AuthFailureClass, sig.Key.CredentialVersion, now)
-		}
-		return Record{}, nil
-	}
 	// 成功信号顺带清 auth 车道(等价 CLIProxy self-heal:一次成功即解除冷却、strike 归零)。
 	if class == SignalSuccess && s.authLane != nil && sig.Key.ProviderAccountID != 0 {
 		s.authLane.Clear(ctx, sig.Key.ProviderAccountID, authcooldown.ClearReasonSuccess)
