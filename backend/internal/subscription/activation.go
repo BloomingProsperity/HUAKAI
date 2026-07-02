@@ -22,6 +22,7 @@ type ActivateInput struct {
 	SourceKind string
 	ActorKind  string // ActorKindAdmin / ActorKindUser / ActorKindSystem
 	ActorID    int64
+	ActorRef   string // 双身份归属串(AuditActor() 形态,admin 通道才有),空则列落 NULL
 	RequestID  string
 	// EnforceUpgradeOnly: 自助购买 (订单/兑换码) 传 true → 同组叠买只能往高 (caps 逐窗口支配),
 	// 往低返回 ErrDowngradeNotAllowed 零副作用; 管理员手动传 false → 可升可降 (override)。
@@ -115,6 +116,7 @@ func ActivateOrRenewTx(ctx context.Context, tx pgx.Tx, in ActivateInput) (Activa
 		EventType:          AuditSubscriptionRenewed,
 		ActorKind:          actorKind,
 		ActorID:            in.ActorID,
+		ActorRef:           in.ActorRef,
 		RequestID:          in.RequestID,
 		Payload: map[string]any{
 			"plan_id":      plan.ID,
@@ -158,7 +160,7 @@ func activateNewTx(ctx context.Context, tx pgx.Tx, in ActivateInput, plan Plan, 
 		StartsAt:          in.Now,
 		ExpiresAt:         expiresAt,
 	}
-	sub, err := insertSubscriptionTx(ctx, tx, sub, in.Now)
+	sub, err := insertSubscriptionTx(ctx, tx, sub, in.ActorRef, in.Now)
 	if err != nil {
 		return ActivateResult{}, err
 	}
@@ -176,6 +178,7 @@ func activateNewTx(ctx context.Context, tx pgx.Tx, in ActivateInput, plan Plan, 
 			EventType:          AuditGroupUpgraded,
 			ActorKind:          actorKind,
 			ActorID:            in.ActorID,
+			ActorRef:           in.ActorRef,
 			RequestID:          in.RequestID,
 			Payload:            map[string]any{"from": prevGroup, "to": plan.GrantedGroup},
 			Now:                in.Now,
@@ -189,6 +192,7 @@ func activateNewTx(ctx context.Context, tx pgx.Tx, in ActivateInput, plan Plan, 
 		EventType:          AuditSubscriptionCreated,
 		ActorKind:          actorKind,
 		ActorID:            in.ActorID,
+		ActorRef:           in.ActorRef,
 		RequestID:          in.RequestID,
 		Payload:            assignAuditPayload(sub),
 		Now:                in.Now,

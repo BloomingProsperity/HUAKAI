@@ -85,8 +85,8 @@ func newAdminUpdatePlanHandler(d AdminDeps) http.HandlerFunc {
 			MonthlyCapUSD: monthly,
 			ForSale:       *req.ForSale,
 			SortOrder:     req.SortOrder,
-			ActorAdminID:  ident.TokenID,
-			RequestID:     requestID(r),
+			ActorAdminID:  ident.TokenID, ActorRef: ident.AuditActor(),
+			RequestID: requestID(r),
 		})
 		if err != nil {
 			writeSubscriptionError(w, err)
@@ -108,7 +108,7 @@ func newAdminBulkAssignHandler(d AdminDeps) http.HandlerFunc {
 		}
 		result, err := d.Service.BulkAssign(r.Context(), subscription.BulkAssignInput{
 			TenantID: req.TenantID, UserIDs: req.UserIDs, PlanID: req.PlanID,
-			ActorAdminID: ident.TokenID, RequestID: requestID(r),
+			ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(), RequestID: requestID(r),
 		})
 		if err != nil {
 			writeSubscriptionError(w, err)
@@ -133,7 +133,7 @@ func newAdminExtendHandler(d AdminDeps) http.HandlerFunc {
 			return
 		}
 		sub, err := d.Service.ExtendSubscription(r.Context(), subscription.ExtendSubscriptionInput{
-			TenantID: req.TenantID, SubscriptionID: id, ActorAdminID: ident.TokenID,
+			TenantID: req.TenantID, SubscriptionID: id, ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(),
 			RequestID: requestID(r), Days: req.Days, Until: req.Until,
 		})
 		if err != nil {
@@ -159,7 +159,7 @@ func newAdminResetQuotaHandler(d AdminDeps) http.HandlerFunc {
 			return
 		}
 		sub, err := d.Service.ResetQuota(r.Context(), subscription.ResetQuotaInput{
-			TenantID: req.TenantID, SubscriptionID: id, ActorAdminID: ident.TokenID, RequestID: requestID(r),
+			TenantID: req.TenantID, SubscriptionID: id, ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(), RequestID: requestID(r),
 		})
 		if err != nil {
 			writeSubscriptionError(w, err)
@@ -185,7 +185,7 @@ func newAdminChangePlanHandler(d AdminDeps) http.HandlerFunc {
 		}
 		sub, err := d.Service.ChangePlan(r.Context(), subscription.ChangePlanInput{
 			TenantID: req.TenantID, SubscriptionID: id, NewPlanID: req.NewPlanID,
-			AllowDowngrade: req.AllowDowngrade, ActorAdminID: ident.TokenID, RequestID: requestID(r),
+			AllowDowngrade: req.AllowDowngrade, ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(), RequestID: requestID(r),
 		})
 		if err != nil {
 			writeSubscriptionError(w, err)
@@ -210,7 +210,7 @@ func newAdminRevokeHandler(d AdminDeps) http.HandlerFunc {
 			return
 		}
 		sub, err := d.Service.RevokeSubscription(r.Context(), subscription.RevokeSubscriptionInput{
-			TenantID: req.TenantID, SubscriptionID: id, ActorAdminID: ident.TokenID,
+			TenantID: req.TenantID, SubscriptionID: id, ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(),
 			Reason: strings.TrimSpace(req.Reason), RequestID: requestID(r),
 		})
 		if err != nil {

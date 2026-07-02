@@ -115,6 +115,7 @@ func (s *Service) UpdatePlan(ctx context.Context, in UpdatePlanInput) (Plan, err
 		ForSale:       fields.ForSale,
 		SortOrder:     fields.SortOrder,
 		ActorAdminID:  in.ActorAdminID,
+		ActorRef:      in.ActorRef,
 		RequestID:     strings.TrimSpace(in.RequestID),
 		Now:           s.now(),
 	})
@@ -154,6 +155,7 @@ func (s *Service) AssignSubscription(ctx context.Context, in AssignSubscriptionI
 		UserID:       in.UserID,
 		PlanID:       in.PlanID,
 		ActorAdminID: in.ActorAdminID,
+		ActorRef:     in.ActorRef,
 		RequestID:    strings.TrimSpace(in.RequestID),
 		Now:          s.now(),
 	})
@@ -178,6 +180,7 @@ func (s *Service) BulkAssign(ctx context.Context, in BulkAssignInput) (BulkAssig
 			UserID:       userID,
 			PlanID:       in.PlanID,
 			ActorAdminID: in.ActorAdminID,
+			ActorRef:     in.ActorRef,
 			RequestID:    strings.TrimSpace(in.RequestID),
 		})
 		if err != nil {
@@ -227,6 +230,7 @@ func (s *Service) ExtendSubscription(ctx context.Context, in ExtendSubscriptionI
 		TenantID:       in.TenantID,
 		SubscriptionID: in.SubscriptionID,
 		ActorAdminID:   in.ActorAdminID,
+		ActorRef:       in.ActorRef,
 		RequestID:      strings.TrimSpace(in.RequestID),
 		Days:           in.Days,
 		Until:          until,
@@ -245,6 +249,7 @@ func (s *Service) ResetQuota(ctx context.Context, in ResetQuotaInput) (UserSubsc
 		SubscriptionID: in.SubscriptionID,
 		ActorKind:      ActorKindAdmin,
 		ActorID:        in.ActorAdminID,
+		ActorRef:       in.ActorRef,
 		RequestID:      strings.TrimSpace(in.RequestID),
 		Now:            s.now(),
 	})
@@ -269,6 +274,7 @@ func (s *Service) ChangePlan(ctx context.Context, in ChangePlanInput) (UserSubsc
 		NewPlanID:      in.NewPlanID,
 		AllowDowngrade: in.AllowDowngrade,
 		ActorAdminID:   in.ActorAdminID,
+		ActorRef:       in.ActorRef,
 		RequestID:      strings.TrimSpace(in.RequestID),
 		Now:            s.now(),
 	})
@@ -287,6 +293,7 @@ func (s *Service) RevokeSubscription(ctx context.Context, in RevokeSubscriptionI
 		TenantID:       in.TenantID,
 		SubscriptionID: in.SubscriptionID,
 		ActorAdminID:   in.ActorAdminID,
+		ActorRef:       in.ActorRef,
 		Reason:         reason,
 		RequestID:      strings.TrimSpace(in.RequestID),
 		Now:            s.now(),

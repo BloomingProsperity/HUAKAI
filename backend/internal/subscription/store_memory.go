@@ -498,7 +498,7 @@ func (m *memoryStore) ChangePlan(_ context.Context, rec changePlanRecord) (UserS
 		})
 	}
 
-	actorKind, actorID := changePlanActor(rec, sub)
+	actorKind, actorID, _ := changePlanActor(rec, sub) // 内存实现不落 actor_ref 列,丢弃
 	if plan.GrantedGroup != prevGroup {
 		currentOwnedByTarget := false
 		if prevGroup != "" {

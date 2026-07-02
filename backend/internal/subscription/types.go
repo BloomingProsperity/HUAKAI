@@ -235,6 +235,7 @@ type AssignSubscriptionInput struct {
 	UserID       int64
 	PlanID       int64
 	ActorAdminID int64
+	ActorRef     string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID    string
 }
 

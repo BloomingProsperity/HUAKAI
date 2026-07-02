@@ -203,6 +203,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 			EventType:          AuditIdempotentReplay,
 			ActorKind:          ActorKindAdmin,
 			ActorID:            rec.ActorAdminID,
+			ActorRef:           rec.ActorRef,
 			RequestID:          rec.RequestID,
 			Payload:            map[string]any{"plan_id": rec.PlanID},
 			Now:                rec.Now,
@@ -232,7 +233,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 		StartsAt:          rec.Now,
 		ExpiresAt:         expiresAt,
 	}
-	sub, err = insertSubscriptionTx(ctx, tx, sub, rec.Now)
+	sub, err = insertSubscriptionTx(ctx, tx, sub, rec.ActorRef, rec.Now)
 	if err != nil {
 		return AssignResult{}, err // 23505 由外层当幂等处理
 	}
@@ -253,6 +254,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 			EventType:          AuditGroupUpgraded,
 			ActorKind:          ActorKindAdmin,
 			ActorID:            rec.ActorAdminID,
+			ActorRef:           rec.ActorRef,
 			RequestID:          rec.RequestID,
 			Payload:            map[string]any{"from": prevGroup, "to": plan.GrantedGroup},
 			Now:                rec.Now,
@@ -267,6 +269,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 		EventType:          AuditSubscriptionCreated,
 		ActorKind:          ActorKindAdmin,
 		ActorID:            rec.ActorAdminID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Payload:            assignAuditPayload(sub),
 		Now:                rec.Now,
@@ -304,6 +307,7 @@ func (s *PostgresStore) readActiveAsIdempotent(ctx context.Context, rec assignRe
 		EventType:          AuditIdempotentReplay,
 		ActorKind:          ActorKindAdmin,
 		ActorID:            rec.ActorAdminID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Payload:            map[string]any{"plan_id": rec.PlanID},
 		Now:                rec.Now,
@@ -494,6 +498,7 @@ RETURNING`+subscriptionSelectColumns,
 					EventType:          AuditGroupDowngraded,
 					ActorKind:          actorKindOrDefault(rec.ActorKind),
 					ActorID:            rec.ActorID,
+					ActorRef:           rec.ActorRef,
 					RequestID:          rec.RequestID,
 					Payload:            map[string]any{"from": currentGroup, "to": targetGroup},
 					Now:                rec.Now,
@@ -510,6 +515,7 @@ RETURNING`+subscriptionSelectColumns,
 		EventType:          event,
 		ActorKind:          actorKindOrDefault(rec.ActorKind),
 		ActorID:            rec.ActorID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Now:                rec.Now,
 	}); err != nil {
@@ -760,7 +766,7 @@ FOR UPDATE`, tenantID, userID)
 	return sub, nil
 }
 
-func insertSubscriptionTx(ctx context.Context, tx pgx.Tx, sub UserSubscription, now time.Time) (UserSubscription, error) {
+func insertSubscriptionTx(ctx context.Context, tx pgx.Tx, sub UserSubscription, actorRef string, now time.Time) (UserSubscription, error) {
 	daily, err := capParam(sub.DailyCapUSD)
 	if err != nil {
 		return UserSubscription{}, ErrInvalidInput
@@ -778,13 +784,13 @@ INSERT INTO user_subscriptions (
 	tenant_id, user_id, plan_id, granted_group,
 	daily_cap_usd, weekly_cap_usd, monthly_cap_usd,
 	status, source, auto_renew, assigned_by_admin_id, prev_user_group,
-	starts_at, expires_at, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
+	starts_at, expires_at, created_at, updated_at, assigned_by_actor
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15, $16)
 RETURNING`+subscriptionSelectColumns,
 		sub.TenantID, sub.UserID, sub.PlanID, sub.GrantedGroup,
 		daily, weekly, monthly,
 		string(sub.Status), string(sub.Source), sub.AutoRenew, nullableInt64(sub.AssignedByAdminID), sub.PrevUserGroup,
-		sub.StartsAt, sub.ExpiresAt, now)
+		sub.StartsAt, sub.ExpiresAt, now, nullableText(actorRef))
 	return scanSubscription(row)
 }
 
@@ -912,6 +918,7 @@ type subAuditInsert struct {
 	EventType          string
 	ActorKind          string
 	ActorID            int64
+	ActorRef           string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	ReasonClass        string
 	RequestID          string
 	Payload            map[string]any
@@ -925,11 +932,11 @@ func insertSubAuditTx(ctx context.Context, tx pgx.Tx, ev subAuditInsert) error {
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO subscription_audit_events (
-	tenant_id, user_subscription_id, event_type, actor_kind, actor_id,
+	tenant_id, user_subscription_id, event_type, actor_kind, actor_id, actor_ref,
 	reason_class, request_id, redacted_payload, occurred_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		ev.TenantID, ev.UserSubscriptionID, ev.EventType, actorKindOrDefault(ev.ActorKind),
-		nullableInt64(ev.ActorID), nullableText(ev.ReasonClass), nullableText(ev.RequestID),
+		nullableInt64(ev.ActorID), nullableText(ev.ActorRef), nullableText(ev.ReasonClass), nullableText(ev.RequestID),
 		nullableJSON(raw), ev.Now); err != nil {
 		return fmt.Errorf("subscription: insert audit event: %w", err)
 	}
