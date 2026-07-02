@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { confirmIrreversible } from '../../ui/confirmDanger'
 import { createVoucher, createVoucherBatch, getBatch, listVouchers, revokeVoucher } from './api'
 import {
   batchStatusLabel,
@@ -81,7 +82,9 @@ export function VouchersAdminPage() {
   }
 
   const onRevoke = async (v: Voucher) => {
-    const reason = window.prompt(`吊销券 #${v.id}?可填写吊销原因(可选):`, '')
+    // money 敏感:吊销后该券作废、不可恢复,先明示无法撤销再收原因。
+    if (!confirmIrreversible(`吊销券 #${v.id}`, '吊销后该券立即作废,已发未用的额度将无法再兑换。')) return
+    const reason = window.prompt(`吊销券 #${v.id} 的原因(可选):`, '')
     if (reason === null) return // 取消
     setBusyId(v.id)
     setError(null)

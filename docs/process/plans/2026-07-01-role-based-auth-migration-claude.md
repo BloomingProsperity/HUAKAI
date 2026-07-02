@@ -511,8 +511,44 @@ Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。�
 - **收尾 = arc 级对抗审查零 S0/S1**。全程 coordination claim、默认关 knob 后零生产变。
 
 **Stage 1 已合(5a240cdb)/ Stage 2 subscription 已合(f0fb4c66,含 changePlanActor session 误判修复)/
-Stage 3 refund 已合(6f876398,守卫改判来源+decided_by 0→NULL,审查抓 S2 refund.go 漏接已就地补)——三阶段均对抗审查零 S0/S1。**
-剩 Stage 4(S3 数值键)+ Stage 5(放开动钱路由 SessionSafe + 接 CancelSubscription/通用确认路径归属)。审查附带 2 条 S3 观察:①`ActorRef` 未纳入 validate 必填——生产 handler 恒传 AuditActor() 非空,新调用方漏传会静默 NULL,留观;②通用手工确认路径(store_postgres.go:260 SET status='paid')未接 confirmed_by_actor,该路径归 Stage 5 放开确认端点时一并接。
+Stage 3 refund 已合(6f876398,守卫改判来源+decided_by 0→NULL,审查抓 S2 refund.go 漏接已就地补)/
+Stage 4 S3 限流数值键已合(46b76c8c,零 schema 翻案:CountIssuanceInWindow 双键谓词 actor_id OR legacyActorID,免二次格式迁移)/
+Stage 5 放开动钱路由 SessionSafe 已合(d1379b20)——五阶段均对抗审查零 S0/S1。**
+**收口审计(14b4f039)**:arc 级 money 审计抓 S1——建单/取消/重试路径开了 SessionSafe 但未接 ActorRef,
+致 session-admin 建单 created_by_actor 与 created_by_admin_id 双 NULL + actor_kind 误标 'system'(真人伪称系统单);
+已全接线 + createOrderActorKind 守卫 + 2 真 PG 测试 + 3 变异证红。
+
+**★ voucher 归属片已合(5001f3ab,Owner 解禁 voucher 后接入)**:迁移 0168(voucher +created_by_actor/revoked_by_actor、
+voucher_batch +created_by_actor,nullable text)+ CreateInput/BatchCreateInput/RevokeInput 加 ActorRef + 三处守卫改判来源
+`(AdminID<=0 && ActorRef=="")` + store 双写(token bigint+text / session 仅 text,bigint NULL 绝不误归 0)+ voucherAuditActor 辅助
+(token 保留裸数字串向后兼容、session 用 ActorRef)+ gatewayhttp/voucher_handler.go(3 处)+ subscriptionhttp 订阅券全接线。
+真 PG 测试 3 例 + §14 变异三处证红 + 对抗审查逐列核对**零 S0/S1**。审查门控观察:实际活路径是订阅券创建
+(subscriptionhttp:271 标 SessionSafe);gatewayhttp 余额券 POST 未标 SessionSafe,session 写在 resolver 层即被拒,
+那段归属码 inert(前瞻,knob 默认关)——均在 Owner-gated money-via-login 范围内。
+
+**★ money-via-login 归属基建至此全部落地(payment/subscription/refund/voucher + S3 限流键),后端 arc 收官。**
+早前 S3 观察均已消解或纳入:①ActorRef 未纳入 validate 必填——生产 handler 恒传非空,留观(voucher 片同款,审查确认无害);
+②通用手工确认路径 confirmed_by_actor 已在 Stage 5 放开确认端点时接。
+
+---
+
+## ★★ P5 前端切壳已建(2026-07-01,Owner「前端改就完了」授权)
+
+**P5a role 感知壳 + getMe best-effort(commit 待附)**:
+- 新 `frontend/src/auth/me.ts`:模块 store + `useMe()`(仅订阅)+ 纯函数 `deriveShellAccess`/`nextMeState`/`visibleNavSections`。
+- **权威来源** = 后端 `/v1/auth/me` 的 `panel`(取自 users.role,绝不信前端)。`panel==='admin'` 才启用运营台(导航 + Hermes 面板),其余仅用户门户。
+- **deny-by-default**:唯有 `status==='ready' && panel==='admin'` 启用运营台;loading/degraded/user/none/null 一律仅用户壳——降级绝不默认 admin 壳(防提权)、绝不空壳(防白屏)。
+- **getMe best-effort**:触发点在壳(AppShell,按 sessionToken 变化),非登录 handler,故邮箱密码与 **OAuth 回调**两条登录路径都会拉 panel(修 §315 的 OAuth admin panel 恒 null 之 S1)。首拉失败→degraded;重验失败(已 ready)→保留上次良好态(瞬时 5xx 不抖掉在用 admin 的壳)。登出 resetMe 清态。
+- 接线:PipelineNav 按 `visibleNavSections` 过滤;AppShell 单一 getMe 触发点 + Hermes 面板 gate 由 operatorEnabled+operator 路由双守;TopBar 登出接 resetMe。
+- 验证:vitest 14 例(deny-by-default/首拉降级/重验保留/OAuth 覆盖/换人不残留)+ §14 五处变异证红 + 全量 1315 绿 + build 绿。
+
+**P5b 危险操作确认弹窗(new-api 模型,commit 待附)**:
+- 新 `frontend/src/ui/confirmDanger.ts`:单一真相源——纯 `buildIrreversibleMessage`(恒「⚠️ 此操作无法撤销。」前缀)+ `confirmIrreversible` 薄包装(无 window 保守返 false)。
+- 接入 money 敏感不可逆 admin 操作:退款争议裁决(DisputesAdminPage)、券吊销(VouchersAdminPage)。其余危险操作(删除/2FA 强关等)代码库已有 window.confirm 二次确认;**是否全站统一迁到本助手 + 是否做带样式模态框,作为可选扩展 surface Owner**。
+- 弱化 token 粘贴框:登录页 admin token 输入已收在折叠 `<details>`(登录为主),现状已满足「弱化」。
+- 验证:vitest 3 例 + build 绿。
+
+**注**:前端切壳仅为体验、不是授权边界——真正边界在后端每端点独立鉴权(§3 resolver + P2a/P3 写分级)。knob `HUAKAI_ADMIN_SESSION_AUTH_ENABLED` 仍默认关;翻开=Owner 最终拍板点。
 
 ---
 

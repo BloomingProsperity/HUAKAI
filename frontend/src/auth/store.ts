@@ -69,6 +69,11 @@ export function getTokens(): TokenSet {
   return { sessionToken: state.sessionToken, adminToken: state.adminToken }
 }
 
+/** 当前已登录用户(非 hook);无则 null。供 me 壳判定「同人 token 轮换 vs 换人登录」。 */
+export function getAuthUser(): AuthUser | null {
+  return state.user
+}
+
 /** 当前 refresh token(供刷新客户端读取);无则 null。 */
 export function getRefreshToken(): string | null {
   return state.refreshToken
