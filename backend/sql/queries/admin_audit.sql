@@ -31,9 +31,14 @@ RETURNING id, occurred_at;
 -- attempts (which write a deny audit row with target_id=0/NULL) are
 -- excluded from the cap. Otherwise an actor that hits the cap keeps
 -- refreshing the window with deny rows on every retry and never recovers.
+--
+-- 双格式分桶(role 制单登录 S3 修):P2b-1 把 actor_id 从裸 TokenID("5")统一成
+-- AuditActor() 串("admin_token:5"),部署边界老行匹配不到会重置限流窗。谓词兼容
+-- 两种键(legacy_actor_id=老格式;无老格式的来源传同一串,OR 无副作用),窗口跨
+-- 格式迁移连续,且不需要新列/回填(数值列方案会再造一次同类边界重置)。
 SELECT count(*)::bigint
 FROM admin_audit_events
-WHERE actor_id = sqlc.arg(actor_id)::text
+WHERE (actor_id = sqlc.arg(actor_id)::text OR actor_id = sqlc.arg(legacy_actor_id)::text)
   AND action = 'issue_api_key'
   AND target_id IS NOT NULL
   AND occurred_at > now() - make_interval(secs => sqlc.arg(window_seconds)::integer);
