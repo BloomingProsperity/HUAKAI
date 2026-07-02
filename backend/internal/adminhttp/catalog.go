@@ -150,8 +150,20 @@ type ChannelDisposition struct {
 func RequestedChannelDispositions() []ChannelDisposition {
 	return []ChannelDisposition{
 		hiddenFlagChannel(credentialstore.VendorOpenRouter, credentialstore.AuthModeAPIKey),
-		hiddenFlagChannel(credentialstore.VendorDeepSeek, credentialstore.AuthModeAPIKey),
-		hiddenFlagChannel(credentialstore.VendorGrok, credentialstore.AuthModeAPIKey),
+		// 官 key 厂商(2026-07-02 Owner 指派):迁移 0169 已放行存储约束,审定为 enabled。
+		enabledChannel(credentialstore.VendorDeepSeek, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorGrok, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorKimi, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorQwen, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorGLM, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorYi, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorBaichuan, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorDoubao, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorMiniMax, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorErnie, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorHunyuan, credentialstore.AuthModeAPIKey),
+		enabledChannel(credentialstore.VendorStep, credentialstore.AuthModeAPIKey),
+		// 全球推理托管云:Owner 明确不接,维持 hidden-flag(存储层 0169 亦未放行,双层拒绝)。
 		hiddenFlagChannel(credentialstore.VendorMistral, credentialstore.AuthModeAPIKey),
 		hiddenFlagChannel(credentialstore.VendorGroqCloud, credentialstore.AuthModeAPIKey),
 		hiddenFlagChannel(credentialstore.VendorTogether, credentialstore.AuthModeAPIKey),

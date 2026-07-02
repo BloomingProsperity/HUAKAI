@@ -81,7 +81,7 @@ export interface CredentialWriteBody {
   reason?: string
 }
 
-/** vendor 选项(镜像 credentialstore/types.go:14-29 的 Vendor* 常量)。 */
+/** vendor 选项(镜像 credentialstore/types.go 的 Vendor* 常量段,含 2026-07-02 官 key 厂商)。 */
 export const VENDOR_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'openai', label: 'OpenAI' },
@@ -99,9 +99,19 @@ export const VENDOR_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'together', label: 'Together' },
   { value: 'perplexity', label: 'Perplexity' },
   { value: 'fireworks', label: 'Fireworks' },
+  // 国内大厂官 key(2026-07-02 接入,迁移 0169 放行存储;镜像 credentialstore Vendor* 新增段)。
+  { value: 'qwen', label: '通义千问 Qwen' },
+  { value: 'glm', label: '智谱 GLM' },
+  { value: 'yi', label: '零一万物 Yi' },
+  { value: 'baichuan', label: '百川' },
+  { value: 'doubao', label: '豆包 Doubao' },
+  { value: 'minimax', label: 'MiniMax' },
+  { value: 'ernie', label: '文心 ERNIE' },
+  { value: 'hunyuan', label: '腾讯混元' },
+  { value: 'step', label: '阶跃 Step' },
 ]
 
-/** auth_mode 选项(镜像 credentialstore/types.go:31-49 的 AuthMode* 常量)。 */
+/** auth_mode 选项(镜像 credentialstore/types.go 的 AuthMode* 常量段)。 */
 export const AUTH_MODE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'api_key', label: 'API Key' },
   { value: 'claude_ai_oauth', label: 'Claude AI OAuth' },
