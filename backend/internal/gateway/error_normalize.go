@@ -23,7 +23,56 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 )
+
+// AuthFailureClassFromClassification 把上游分类映射为 auth 降级车道的确定性分级:
+// token_revoked/关键词 invalid_grant(R-001)/Grok 400-auth → iron-clad(可硬禁);
+// 通用 401(R-009 无关键词)→ ambiguous(永远退避自愈,绝不永久禁)。
+func AuthFailureClassFromClassification(c Classification) authcooldown.FailureClass {
+	switch c.Class {
+	case ErrorClassTokenRevoked:
+		return authcooldown.ClassIronClad
+	case ErrorClassOAuthInvalidGrant:
+		if c.RuleID == "R-001" {
+			return authcooldown.ClassIronClad
+		}
+	}
+	return authcooldown.ClassAmbiguous
+}
+
+// SignalFromClassification 把上游错误分类映射为 channelhealth 信号类。auth 类(token_revoked /
+// oauth_invalid_grant,含 Grok 400-auth 归的 token_revoked)映射为 SignalAuthChallenge——由
+// channelhealth 单独路由进 auth 降级车道(临时移出选号、短 TTL 自愈),不写健康 State/Score/窗口。
+func SignalFromClassification(statusCode int, c Classification) channelhealth.SignalClass {
+	switch c.Class {
+	case ErrorClassRateLimited:
+		return channelhealth.SignalRateLimit
+	case ErrorClassServerError, ErrorClassOverloaded:
+		return channelhealth.SignalUpstream5xx
+	case ErrorClassNetworkTimeout, ErrorClassUpstreamTimeout:
+		return channelhealth.SignalTimeout
+	case ErrorClassTokenRevoked, ErrorClassOAuthInvalidGrant:
+		return channelhealth.SignalAuthChallenge
+	case ErrorClassKYCRequired, ErrorClassOrgDisabled,
+		ErrorClassWorkspaceDeactivated, ErrorClassCreditExhausted:
+		return channelhealth.SignalAccountSuspended
+	case ErrorClassPlatformPolicy:
+		return channelhealth.SignalForbidden
+	}
+	switch {
+	case statusCode == http.StatusTooManyRequests:
+		return channelhealth.SignalRateLimit
+	case statusCode == http.StatusForbidden:
+		return channelhealth.SignalForbidden
+	case statusCode >= 500:
+		return channelhealth.SignalUpstream5xx
+	default:
+		return channelhealth.SignalChannelError
+	}
+}
 
 // ErrorClass 枚举来自 A13 的 14 个归一化错误类别(D8 已更新)。
 type ErrorClass string
@@ -198,6 +247,18 @@ var errorRules = []ErrorRule{
 		BodyKeyword: keywordCreditBalance, Class: ErrorClassCreditExhausted,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
+	// 优先级 22 - Grok/xAI 坏 key 返 400(非 401):归 token_revoked 类,使其经 SignalFromClassification
+	// 走 auth 降级车道、经 decisionFromHTTPClassification 走 auth-failover(缺口① 附带修复:此前 grok 400
+	// 通配 R-016 → unknown → upstream_client_4xx 直接透传给客户端,既不换号也不冷却)。
+	// keyword 集刻意保守(过宽会误禁好 grok 号,F1 Owner-gated):只认最明确的认证失败标识。
+	// tier=ambiguous(error_normalize 层不永久禁);是否硬禁由 auth 车道的 iron-clad 分级独立决定。
+	{RuleID: "R-024", Version: 1, Priority: 22, Provider: "grok", HTTPStatus: "400",
+		BodyKeyword: "invalid_api_key", Class: ErrorClassTokenRevoked,
+		Action: RetryActionCooldown, Tier: TierAmbiguous},
+	{RuleID: "R-025", Version: 1, Priority: 22, Provider: "grok", HTTPStatus: "400",
+		BodyKeyword: "incorrect api key", Class: ErrorClassTokenRevoked,
+		Action: RetryActionCooldown, Tier: TierAmbiguous},
+
 	// 优先级 25 - D8: Anthropic 402 兜底 billing_error。
 	// 在 R-007(优先级 20, keyword 专用)之后触发。任何不带 credit keyword 的
 	// Anthropic 402, 按 Anthropic 新的 typed error class 文档仍代表 billing_error
@@ -353,6 +414,9 @@ func normalizeProvider(provider string) string {
 		return "*"
 	case "anthropic_messages":
 		return "anthropic"
+	case "xai":
+		// xAI 与 grok 是同一上游的两种叫法;归一到 canonical vendor "grok",让 R-024/R-025 覆盖两者。
+		return "grok"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}

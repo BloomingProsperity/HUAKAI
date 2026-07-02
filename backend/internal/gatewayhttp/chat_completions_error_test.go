@@ -11,10 +11,66 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 )
+
+// TestSignalFromClassification_AuthRoutesToChallengeLane:401/坏 key 的令牌类分类必须映射为
+// SignalAuthChallenge(独立 auth 车道),而非空信号(旧行为=对选号 no-op=黑洞根因)。
+// 判别:把 token_revoked/oauth_invalid_grant 分支改回 return "" → 断言红。
+func TestSignalFromClassification_AuthRoutesToChallengeLane(t *testing.T) {
+	for _, class := range []gateway.ErrorClass{gateway.ErrorClassTokenRevoked, gateway.ErrorClassOAuthInvalidGrant} {
+		got := gateway.SignalFromClassification(http.StatusUnauthorized, gateway.Classification{Class: class})
+		if got != channelhealth.SignalAuthChallenge {
+			t.Fatalf("class=%s 应映射 SignalAuthChallenge,实得 %q", class, got)
+		}
+	}
+	// 非 auth 类不受影响。
+	if got := gateway.SignalFromClassification(http.StatusTooManyRequests, gateway.Classification{Class: gateway.ErrorClassRateLimited}); got != channelhealth.SignalRateLimit {
+		t.Fatalf("rate_limited 应仍映射 SignalRateLimit,实得 %q", got)
+	}
+}
+
+// TestAuthFailureClassFromClassification:iron-clad(关键词铁证/token_revoked/grok)vs ambiguous(通用 401)。
+// 判别:把通用 401(R-009)错标 iron-clad → 断言红(会让瞬时 401 好号被推向硬禁,修 new-api 误禁)。
+func TestAuthFailureClassFromClassification(t *testing.T) {
+	cases := []struct {
+		name string
+		c    gateway.Classification
+		want authcooldown.FailureClass
+	}{
+		{"invalid_grant_R001", gateway.Classification{Class: gateway.ErrorClassOAuthInvalidGrant, RuleID: "R-001"}, authcooldown.ClassIronClad},
+		{"generic_401_R009", gateway.Classification{Class: gateway.ErrorClassOAuthInvalidGrant, RuleID: "R-009"}, authcooldown.ClassAmbiguous},
+		{"token_revoked", gateway.Classification{Class: gateway.ErrorClassTokenRevoked, RuleID: "R-004"}, authcooldown.ClassIronClad},
+		{"grok_token_revoked", gateway.Classification{Class: gateway.ErrorClassTokenRevoked, RuleID: "R-024"}, authcooldown.ClassIronClad},
+		{"non_auth", gateway.Classification{Class: gateway.ErrorClassRateLimited, RuleID: "R-013"}, authcooldown.ClassAmbiguous},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := gateway.AuthFailureClassFromClassification(c.c); got != c.want {
+				t.Fatalf("AuthFailureClassFromClassification=%v, 期望 %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestRecordChannelHealthSignalCarriesAuthClass:recordChannelHealthSignal 必须把 authClass 透传进
+// Signal.AuthFailureClass,否则 gateway 路径算出的 iron-clad 分级到不了 auth 车道(坏号永远只当
+// ambiguous、无法硬禁)。判别:把 Signal 的 AuthFailureClass 写死 0 → 断言红。
+func TestRecordChannelHealthSignalCarriesAuthClass(t *testing.T) {
+	health := &recordingChannelHealth{}
+	key := channelhealth.ChannelKey{TenantID: 7, Vendor: "openai", ProviderAccountID: 101, AccountCredentialID: 9001, CredentialVersion: 1}
+	recordChannelHealthSignal(context.Background(), ChatHandlerDeps{ChannelHealth: health}, key,
+		channelhealth.SignalAuthChallenge, http.StatusUnauthorized, 0, "req-1", nil, authcooldown.ClassIronClad)
+	if len(health.signals) != 1 {
+		t.Fatalf("signals=%+v want 1", health.signals)
+	}
+	if health.signals[0].AuthFailureClass != authcooldown.ClassIronClad {
+		t.Fatalf("Signal.AuthFailureClass=%v want iron-clad(authClass 未透传到 Signal)", health.signals[0].AuthFailureClass)
+	}
+}
 
 // TestWriteJSONErrorProducesValidJSONForControlChars 守护 gateway error writer:
 // 即便 code/message 带有控制字节(admin create 时 vendor="\x01" 会把 err.Error()
@@ -59,8 +115,20 @@ func TestSignalFromClassification_Suppresses401AuthHealthSignal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if got := signalFromClassification(http.StatusUnauthorized, classification); got != "" {
-		t.Fatalf("signalFromClassification(401 auth)=%q want empty signal", got)
+	// 缺口① 修复后:401 auth 归 SignalAuthChallenge —— 走独立 auth 降级车道(补上临时排除坏号一步),
+	// 但仍不写健康降级(applySignal 单独路由,不改 State/Score/窗口)。这里守护「不是健康降级类」:
+	// 绝不能落到 rate_limit/5xx/error/forbidden/suspended,否则 401 又会污染健康分。
+	got := gateway.SignalFromClassification(http.StatusUnauthorized, classification)
+	if got != channelhealth.SignalAuthChallenge {
+		t.Fatalf("signalFromClassification(401 auth)=%q want SignalAuthChallenge", got)
+	}
+	for _, degrading := range []channelhealth.SignalClass{
+		channelhealth.SignalRateLimit, channelhealth.SignalUpstream5xx,
+		channelhealth.SignalChannelError, channelhealth.SignalForbidden, channelhealth.SignalAccountSuspended,
+	} {
+		if got == degrading {
+			t.Fatalf("401 auth 不得映射为健康降级类 %q", degrading)
+		}
 	}
 }
 
@@ -71,7 +139,7 @@ func TestSignalFromClassification_StillEmits403Forbidden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	if got := signalFromClassification(http.StatusForbidden, classification); got != channelhealth.SignalForbidden {
+	if got := gateway.SignalFromClassification(http.StatusForbidden, classification); got != channelhealth.SignalForbidden {
 		t.Fatalf("signalFromClassification(403)=%q want %q", got, channelhealth.SignalForbidden)
 	}
 }

@@ -367,3 +367,57 @@
 - **🟡 [observability] usage_records 成本分项列系统性为 0**
   - `input_cost`/`output_cost` 全 0(聚合 `actual_cost` 正确)。对账分项报表会空。非 money bug。
 
+## 8. auth 失败降级车道(缺口① S1,已修复)
+
+### 8.1 缺口(修复前的模块配合断裂)
+
+坏 key 账号 auth 失败(401 / Grok 400-auth)后,选号↔渠道健康↔failover 的配合缺一环:
+`signalFromClassification` 对 `token_revoked/oauth_invalid_grant` 故意返空信号(不写健康降级,防误伤好账号),
+但**漏了「临时移出选号」这一步**——坏号恒 `StateActive`、`PoolGate` 恒放行,占据池首优先级时每个请求首选它、
+吃一发 401;auth-failover 子预算硬限一次(`attempt` loop),**≥2 个坏号**即预算耗尽、请求直接 401 给客户端。
+坏号黑洞整个模型流量。附带:Grok 坏 key 返 400 无规则 → R-016 通配 → `unknown` → `upstream_client_4xx` 直接透传,
+既不换号也不冷却。
+
+### 8.2 三镜对照(§16)
+
+| 维度 | sub2api | new-api | CLIProxyAPI | HUAKAI(本修) |
+|---|---|---|---|---|
+| 触发处置 | `SetTempUnschedulable` 保 active | 整渠道 `DisableChannel`(AutoBan) | per-(auth,model) TTL | 独立 auth 车道临时排除 |
+| 冷却时长 | 定长 10min | 无 TTL 靠后台探活 | 定长 30min | **封顶指数退避** base30s<<strike,cap30min |
+| 死号硬禁 | 无 refresh→永久禁 + 2-strike | AutoBan 整渠道 | 不硬禁纯 TTL | iron-clad 达 strike K 或刷新拿 invalid_grant → HardDisabled |
+| 自愈 | 后台刷新拾取 | 后台探活 | 成功即时 reset | 成功即清 + 热刷新握手即时解除 |
+| 健康分污染 | 复用 TempUnschedulable | 复用渠道状态 | 复用 ModelState | **不写 State/Score/error-rate/ban-ramp** |
+
+三维 delta:①架构=独立 auth 车道不污染健康分;②算法=封顶指数退避(瞬时过期几秒自愈、真死 key 几何止损)+
+ambiguous 通用 401 永不误永久禁(修 new-api);③生态=热刷新 worker↔选号车道双向握手(三镜均无)+ 结构化日志。
+
+### 8.3 模块协作链(修复后)
+
+```
+上游 401/Grok400-auth
+  → gateway.Classify → gateway.SignalFromClassification=SignalAuthChallenge
+                     + gateway.AuthFailureClassFromClassification=iron-clad/ambiguous
+  → recordChannelHealthSignal(带 authClass)
+  → channelhealth.applySignal:SignalAuthChallenge 早返回,只调 authcooldown.Suspend
+      (不改 rec.State/Score、不进健康窗口)
+  → authcooldown.Store:Strike++、AuthUntil=now+min(base<<(strike-1),cap);
+      iron-clad 达 strike K → HardDisabled
+下一请求选号
+  → PoolGate.Allow:先查 authcooldown.Eligible → now<AuthUntil 或 HardDisabled → GateFailureAuthCooldown(移出选号)
+      (DisableCooling 逃生阀只豁免软退避,不豁免 HardDisabled)
+自愈闭环
+  → 一次成功请求 SignalSuccess → applySignal 调 Clear(strike 归零)
+  → triggerCredentialHotRefresh 异步刷新 → OnRefreshResult:成功→Clear;invalid_grant→HardDisabled
+运营恢复
+  → ForceActive/ManualResume → channelhealth.manualTransition 调 Clear(含 HardDisabled)
+```
+
+### 8.4 配合点测试(判别性)
+
+- auth 失败 → PoolGate 排除该账号(`GateFailureAuthCooldown`)且健康记录 State/Score/窗口不变(双不变量)。
+- 一次成功 / 运营 ForceActive/ManualResume → 车道清除,账号立即可再被选(跨模块恢复)。
+- DisableCooling 豁免软退避但不豁免 HardDisabled(不给 revoked 号重开黑洞)。
+- N 并发瞬时 401 去抖:strike 只升一次、退避不被抬满(好号不被打进 cap)。
+
+Phase1 纯内存(重启丢失);默认关(`HUAKAI_AUTH_COOLDOWN_ENABLED`,翻默认开=§2 硬门 A1)。持久化列为 Phase2。
+

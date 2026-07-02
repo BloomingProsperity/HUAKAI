@@ -11,9 +11,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 )
@@ -146,8 +148,12 @@ func channelHealthKey(tenantID int64, account provider.AccountInfo) (channelheal
 	return key, true
 }
 
-func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key channelhealth.ChannelKey, class channelhealth.SignalClass, statusCode int, latency time.Duration, requestID string, resetAt *time.Time) {
-	if d.RecentReqRing != nil && key.ProviderAccountID != 0 && class != "" {
+// recordChannelHealthSignal 记一条渠道健康信号。authClass 仅当 class==SignalAuthChallenge 时有意义
+//(auth 车道 iron-clad/ambiguous 分级);非 auth 信号传 0(ambiguous,不被消费)。SignalAuthChallenge
+// 刻意不喂 RecentReqRing——auth blip 既不进健康 FSM 也不污染 RPM 累计,与接线前(auth 返回空信号、
+// 直接跳过)的 RPM 行为逐字节等价。
+func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key channelhealth.ChannelKey, class channelhealth.SignalClass, statusCode int, latency time.Duration, requestID string, resetAt *time.Time, authClass authcooldown.FailureClass) {
+	if d.RecentReqRing != nil && key.ProviderAccountID != 0 && class != "" && class != channelhealth.SignalAuthChallenge {
 		d.RecentReqRing.Record(key.ProviderAccountID, class == channelhealth.SignalSuccess)
 	}
 	if d.ChannelHealth == nil || class == "" {
@@ -164,44 +170,40 @@ func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key chann
 		LatencyMS:        latencyMS,
 		RequestID:        requestID,
 		RateLimitResetAt: resetAt,
+		AuthFailureClass: authClass,
 	})
 }
 
-func signalFromClassification(statusCode int, c gateway.Classification) channelhealth.SignalClass {
-	switch c.Class {
-	case gateway.ErrorClassRateLimited:
-		return channelhealth.SignalRateLimit
-	case gateway.ErrorClassServerError, gateway.ErrorClassOverloaded:
-		return channelhealth.SignalUpstream5xx
-	case gateway.ErrorClassNetworkTimeout, gateway.ErrorClassUpstreamTimeout:
-		return channelhealth.SignalTimeout
-	case gateway.ErrorClassTokenRevoked, gateway.ErrorClassOAuthInvalidGrant:
-		// Phase 1 综合稿 override-1: 401 触发一次 auth failover/refresh intent，
-		// 但不把令牌问题写成账号健康降级信号。
-		return ""
-	case gateway.ErrorClassKYCRequired, gateway.ErrorClassOrgDisabled,
-		gateway.ErrorClassWorkspaceDeactivated, gateway.ErrorClassCreditExhausted:
-		return channelhealth.SignalAccountSuspended
-	case gateway.ErrorClassPlatformPolicy:
-		return channelhealth.SignalForbidden
+// triggerCredentialHotRefresh 在 401 时异步跑凭证热刷新,并完成热刷新↔选号 auth 车道的双向握手:
+// 刷新成功→即时解除冷却+strike 归零;拿到 invalid_grant→即时升 HardDisabled(authLane 为 nil 时 no-op)。
+func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
+	if ex == nil || ex.d.CredentialHotRefresher == nil || accountID == 0 {
+		return
 	}
-	switch {
-	case statusCode == http.StatusTooManyRequests:
-		return channelhealth.SignalRateLimit
-	case statusCode == http.StatusForbidden:
-		return channelhealth.SignalForbidden
-	case statusCode >= 500:
-		return channelhealth.SignalUpstream5xx
-	default:
-		return channelhealth.SignalChannelError
+	tenantID := ex.ident.TenantID
+	vendor := ex.accInfo.Platform
+	if vendor == "" {
+		vendor = pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)
 	}
+	requestID := ex.requestID
+	refresher := ex.d.CredentialHotRefresher
+	authLane := ex.d.AuthCooldown
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), credentialHotRefreshTimeout)
+		defer cancel()
+		err := refresher.RefreshHotPath(ctx, tenantID, accountID, vendor)
+		authLane.OnRefreshResult(ctx, accountID, err == nil, err != nil && authcooldown.IsPermanentRefreshError(err))
+		if err != nil {
+			logInternalError(ctx, requestID, "credential_hot_refresh_failed", err)
+		}
+	}()
 }
 
 func signalFromDispatchError(err error, c gateway.Classification) channelhealth.SignalClass {
 	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
 		return channelhealth.SignalTimeout
 	}
-	return signalFromClassification(0, c)
+	return gateway.SignalFromClassification(0, c)
 }
 
 func rateLimitResetFromClassification(c gateway.Classification, now time.Time) *time.Time {

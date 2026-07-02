@@ -16,6 +16,9 @@ const (
 	GateFailureCapability          GateFailureReason = "capability"
 	GateFailureCredential          GateFailureReason = "credential"
 	GateFailureHealth              GateFailureReason = "health"
+	// GateFailureAuthCooldown 是 auth 降级车道(authcooldown)专用的不合格原因,与 GateFailureHealth
+	// 区分:auth 失败不写健康分,单独临时排除,便于审计/计数辨识「因坏 key 被移出选号」。
+	GateFailureAuthCooldown GateFailureReason = "auth_cooldown"
 	GateFailureGroupPolicy         GateFailureReason = "group_policy"
 	GateFailurePerRequestExclusion GateFailureReason = "per_request_exclusion"
 	GateFailurePinnedAccount       GateFailureReason = "pinned_account"

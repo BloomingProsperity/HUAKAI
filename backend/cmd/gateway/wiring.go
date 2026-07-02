@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/budget"
 	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkin"
 	"github.com/BloomingProsperity/HUAKAI/internal/circuitbreaker"
@@ -124,6 +125,7 @@ type deps struct {
 	billingPolicyResolver *billing.PolicyResolver
 	selector              pool.Selector
 	channelHealth         *channelhealth.Service
+	authCooldown          *authcooldown.Store
 	modelCooldowns        *ratelimit.ModelCooldownService
 	upstreamRate          ratelimit.Service
 	retryBudget           *retrybudget.Budget
@@ -779,6 +781,17 @@ func buildVendorRefresherOptions(bindings []vendorRefresherBinding) []credential
 	return opts
 }
 
+// buildAuthCooldownStore 按 HUAKAI_AUTH_COOLDOWN_ENABLED 决定是否接线 auth 降级车道(缺口① S1)。
+// 默认关(未设/false)→ 返回 nil → 车道未接线,auth 失败对选号仍是 no-op(逐字节保持既有行为);
+// 翻默认开 = 默认行为翻转(§2 硬门 A1,Owner-gated):auth 失败后临时把坏号移出选号、短 TTL 自愈。
+// 退避参数(base=30s/cap=30min/硬禁 strike K=3)用 Config 默认;进一步调参为 Owner-gated 后续项(F2)。
+func buildAuthCooldownStore() *authcooldown.Store {
+	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_AUTH_COOLDOWN_ENABLED")); !on {
+		return nil
+	}
+	return authcooldown.NewStore(authcooldown.Config{})
+}
+
 func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger) (*gatewayRuntime, error) {
 	pgPool, err := db.Open(ctx, dbPoolConfig(cfg))
 	if err != nil {
@@ -1015,7 +1028,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealthStoreOptions = append(channelHealthStoreOptions, channelhealth.WithProductionRequired())
 	}
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner, channelHealthStoreOptions...)
-	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
+	// auth 降级车道(缺口① S1):默认关(HUAKAI_AUTH_COOLDOWN_ENABLED 未设=nil→车道未接线,行为逐字节不变)。
+	// 翻默认开=默认行为翻转(§2 硬门,Owner-gated A1):auth 失败从对选号 no-op 变临时排除坏号。
+	authCooldownStore := buildAuthCooldownStore()
+	channelHealthOptions := []channelhealth.ServiceOption{channelhealth.WithAlertOutbox(outboxStore)}
+	if authCooldownStore != nil {
+		channelHealthOptions = append(channelHealthOptions, channelhealth.WithAuthCooldownLane(authCooldownStore))
+	}
+	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelHealthOptions...)
 	// SUB2-EGRESS-03:在 selector 之前构建 window cost cache,这样 gate
 	// 在启动时就能引用它。worker 在 selector 就绪后再启动。
 	windowCostCache := windowcost.NewCache()
@@ -1283,6 +1303,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		recentReqRing:         recentReqRing,
 		toolPriceSource:       buildToolPriceSource(),
 		channelHealth:         channelHealthService,
+		authCooldown:          authCooldownStore,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool))),
 		retryBudget:           tenantRetryBudget,

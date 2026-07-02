@@ -749,6 +749,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		RateService:            d.upstreamRate,
 		RetryBudget:            d.retryBudget,
 		CredentialHotRefresher: d.credentialScheduler,
+		AuthCooldown:           d.authCooldown,
 		ModelFallbackSettings:  d.platformSettings,
 		BillingPolicyVersion:   d.cfg.BillingPolicyVersion,
 		RequestClass:           d.cfg.RequestClass,
