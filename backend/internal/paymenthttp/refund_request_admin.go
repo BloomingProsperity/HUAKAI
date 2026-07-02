@@ -73,7 +73,7 @@ func newAdminApproveRefundRequestHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		rr, err := recorder.ApproveRefundRequest(r.Context(), req.TenantID, id, ident.TokenID)
+		rr, err := recorder.ApproveRefundRequest(r.Context(), req.TenantID, id, ident.TokenID, ident.AuditActor())
 		if err != nil {
 			writeRefundRequestError(w, err)
 			return
@@ -101,7 +101,7 @@ func newAdminRejectRefundRequestHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		rr, err := recorder.RejectRefundRequest(r.Context(), req.TenantID, id, req.Reason, ident.TokenID)
+		rr, err := recorder.RejectRefundRequest(r.Context(), req.TenantID, id, req.Reason, ident.TokenID, ident.AuditActor())
 		if err != nil {
 			writeRefundRequestError(w, err)
 			return
@@ -126,8 +126,9 @@ func (m *memoryRefundRequestRecorder) ListPendingRefundRequests(_ context.Contex
 	return out, nil
 }
 
-func (m *memoryRefundRequestRecorder) ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64) (RefundRequest, error) {
-	if tenantID <= 0 || requestID <= 0 || adminActorID <= 0 {
+func (m *memoryRefundRequestRecorder) ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64, actorRef string) (RefundRequest, error) {
+	// session-admin 的 TokenID=0:有 actorRef 即有已认证 admin 身份,不再用 int>0 硬拒(role 制单登录)。
+	if tenantID <= 0 || requestID <= 0 || (adminActorID <= 0 && actorRef == "") {
 		return RefundRequest{}, ErrRefundRequestInvalidInput
 	}
 	m.mu.Lock()
@@ -154,6 +155,7 @@ func (m *memoryRefundRequestRecorder) ApproveRefundRequest(ctx context.Context, 
 		Reason:         req.Reason,
 		ActorKind:      payment.ActorKindAdmin,
 		ActorID:        adminActorID,
+		ActorRef:       actorRef,
 	}); err != nil {
 		return RefundRequest{}, err
 	}
@@ -165,8 +167,8 @@ func (m *memoryRefundRequestRecorder) ApproveRefundRequest(ctx context.Context, 
 	return req, nil
 }
 
-func (m *memoryRefundRequestRecorder) RejectRefundRequest(_ context.Context, tenantID, requestID int64, reason string, adminActorID int64) (RefundRequest, error) {
-	if tenantID <= 0 || requestID <= 0 || adminActorID <= 0 {
+func (m *memoryRefundRequestRecorder) RejectRefundRequest(_ context.Context, tenantID, requestID int64, reason string, adminActorID int64, actorRef string) (RefundRequest, error) {
+	if tenantID <= 0 || requestID <= 0 || (adminActorID <= 0 && actorRef == "") {
 		return RefundRequest{}, ErrRefundRequestInvalidInput
 	}
 	m.mu.Lock()

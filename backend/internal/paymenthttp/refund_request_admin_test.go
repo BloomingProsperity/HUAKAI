@@ -75,7 +75,7 @@ func TestAdminRefundRequestsListOnlyPending(t *testing.T) {
 	recorder := NewMemoryRefundRequestRecorder()
 	pending := createRefundRequestForAdminTest(t, ctx, recorder, 5, 7, 101, "pending")
 	rejected := createRefundRequestForAdminTest(t, ctx, recorder, 5, 8, 102, "reject me")
-	if _, err := recorder.RejectRefundRequest(ctx, 5, rejected.ID, "no", 99); err != nil {
+	if _, err := recorder.RejectRefundRequest(ctx, 5, rejected.ID, "no", 99, "admin_token:99"); err != nil {
 		t.Fatalf("reject setup: %v", err)
 	}
 	router := newRefundRequestAdminRouter(&captureService{}, recorder)
@@ -132,18 +132,18 @@ func TestAdminRefundRequestTenantIsolation(t *testing.T) {
 	if refunds.refundCalls != 0 {
 		t.Fatalf("cross-tenant approve called RefundOrder %d times", refunds.refundCalls)
 	}
-	stillPending, err := recorder.ApproveRefundRequest(ctx, 6, req.ID, 99)
+	stillPending, err := recorder.ApproveRefundRequest(ctx, 6, req.ID, 99, "admin_token:99")
 	if err == nil || stillPending.ID != 0 {
 		t.Fatalf("direct cross-tenant approve returned request=%+v err=%v, want not found", stillPending, err)
 	}
-	got, err := recorder.ApproveRefundRequest(ctx, 5, req.ID, 99)
+	got, err := recorder.ApproveRefundRequest(ctx, 5, req.ID, 99, "admin_token:99")
 	if err != nil {
 		t.Fatalf("same-tenant approve after isolation check: %v", err)
 	}
 	if got.Status != RefundRequestApproved || refunds.refundCalls != 1 {
 		t.Fatalf("same-tenant approve status=%q refundCalls=%d, want approved/1", got.Status, refunds.refundCalls)
 	}
-	again, err := recorder.ApproveRefundRequest(ctx, 5, req.ID, 99)
+	again, err := recorder.ApproveRefundRequest(ctx, 5, req.ID, 99, "admin_token:99")
 	if err != nil {
 		t.Fatalf("duplicate approve after approved: %v", err)
 	}

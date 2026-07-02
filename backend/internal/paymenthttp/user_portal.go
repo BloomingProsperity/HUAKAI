@@ -143,8 +143,8 @@ type RefundRequestInput struct {
 type RefundRequestRecorder interface {
 	CreateRefundRequest(ctx context.Context, in RefundRequestInput) (RefundRequest, error)
 	ListPendingRefundRequests(ctx context.Context, tenantID int64) ([]RefundRequest, error)
-	ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64) (RefundRequest, error)
-	RejectRefundRequest(ctx context.Context, tenantID, requestID int64, reason string, adminActorID int64) (RefundRequest, error)
+	ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64, actorRef string) (RefundRequest, error)
+	RejectRefundRequest(ctx context.Context, tenantID, requestID int64, reason string, adminActorID int64, actorRef string) (RefundRequest, error)
 }
 
 // memoryRefundRequestRecorder 进程内退款申请记录 (MVP 兜底)。

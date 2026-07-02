@@ -119,6 +119,7 @@ type refundRecord struct {
 	Reason         string
 	ActorKind      string
 	ActorID        int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 	Now            time.Time
 }
