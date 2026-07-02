@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -225,9 +226,18 @@ func TestPR5NonStream401ConsumesOneAuthFailoverOnlyAndDoesNotRecordHealth(t *tes
 	// 缺口① 修复后:401 auth 会记 SignalAuthChallenge(走 auth 降级车道临时排除坏号),但绝不进
 	// 健康 FSM——守护每条信号都是 auth_challenge,不是 rate_limit/5xx/error 等健康降级类,
 	// 即 401 仍不污染健康分/error-rate(与旧「完全不记信号」等价的健康不变量,机制升级为独立车道)。
+	if len(health.signals) == 0 {
+		t.Fatal("canonical 401 应至少记一条 auth_challenge 信号")
+	}
 	for _, sig := range health.signals {
 		if sig.Class != channelhealth.SignalAuthChallenge {
 			t.Fatalf("401 应只记 auth_challenge(不污染健康),实得 %+v", health.signals)
+		}
+		// 审查 S2:canonical 缓冲(默认非流式主路径)必须带真实 iron-clad 分级——body 是
+		// invalid_grant(R-001)→ iron-clad;若该路径 authClass 写死 0(ambiguous),strike 硬禁
+		// 在主路径永不可达。判别:call-site 传回字面量 0 → AuthFailureClass=ambiguous → 红。
+		if sig.AuthFailureClass != authcooldown.ClassIronClad {
+			t.Fatalf("canonical 401 invalid_grant 应带 iron-clad 分级,实得 %v(主路径 authClass 丢失)", sig.AuthFailureClass)
 		}
 	}
 }
