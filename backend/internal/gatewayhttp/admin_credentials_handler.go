@@ -69,11 +69,7 @@ type renewStatusCursor struct {
 }
 
 func MountAdminCredentialRoutes(r chi.Router, d AdminCredentialDeps) {
-	// 凭证日常增改(Owner 批准放开给登录 admin):录入/轮换单条上游凭证/启停/删,守 new-api
-	// 「会话可写渠道密钥」形态,危险动作靠前端确认弹窗。审计归属已走 AuditActor()(text,双身份)。
-	// 注意:这里 rotate=替换该池账号的上游凭证,非 KEK 主密钥轮换;KEK/签发/建删账号仍 token-only。
-	// OAuth 采集流(acquisition/import-helper)不放开,session 写仍拒;其 helper GET /oauth-callback
-	// 本就不走 admin 鉴权(靠 flow state 一次性防护,既有债),本片不触碰。
+	// 日常凭证增改放开给登录 admin(rotate=换池账号上游凭证,非 KEK);采集流/import-helper/签发/建删账号仍 token-only。
 	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/{id}/credentials", newListAccountCredentialsHandler(d))
 	r.With(safe).Post("/{id}/credentials", newCreateAccountCredentialHandler(d))
