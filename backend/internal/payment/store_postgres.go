@@ -676,6 +676,7 @@ type auditInsert struct {
 	EventType   string
 	ActorKind   string
 	ActorID     int64
+	ActorRef    string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	ReasonClass string
 	RequestID   string
 	Payload     map[string]any
@@ -688,10 +689,10 @@ func insertAuditTx(ctx context.Context, tx pgx.Tx, ev auditInsert) error {
 		raw, _ = json.Marshal(payload)
 	}
 	if _, err := tx.Exec(ctx, `
-INSERT INTO payment_audit_events (tenant_id, payment_order_id, event_type, actor_kind, actor_id, reason_class, request_id, redacted_payload, occurred_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+INSERT INTO payment_audit_events (tenant_id, payment_order_id, event_type, actor_kind, actor_id, actor_ref, reason_class, request_id, redacted_payload, occurred_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		ev.TenantID, ev.OrderID, ev.EventType, actorKindOrDefault(ev.ActorKind),
-		nullableInt64(ev.ActorID), nullableText(ev.ReasonClass), nullableText(ev.RequestID),
+		nullableInt64(ev.ActorID), nullableText(ev.ActorRef), nullableText(ev.ReasonClass), nullableText(ev.RequestID),
 		nullableJSON(raw), ev.Now); err != nil {
 		return fmt.Errorf("payment: insert audit event: %w", err)
 	}
@@ -702,14 +703,15 @@ func insertOrderTx(ctx context.Context, tx pgx.Tx, rec createOrderRecord) (Order
 	row := tx.QueryRow(ctx, `
 INSERT INTO payment_orders (
 	tenant_id, user_id, out_trade_no, amount_cents, currency_code, status,
-	provider_kind, provider_order_ref, request_fingerprint, created_by_admin_id,
+	provider_kind, provider_order_ref, request_fingerprint, created_by_admin_id, created_by_actor,
 	created_at, updated_at, expires_at, order_kind, subscription_plan_id,
 	terms_version, terms_accepted_at, terms_accepted_by, terms_accepted_ip
-) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $10, $11, $12, $13, $14, $15, $16, $17::inet)
+) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11, $11, $12, $13, $14, $15, $16, $17, $18::inet)
 RETURNING`+orderSelectColumns,
 		rec.TenantID, rec.UserID, rec.OutTradeNo, rec.AmountCents, rec.CurrencyCode,
 		string(providerKindOrDefault(rec.ProviderKind)), nullableText(rec.ProviderOrderRef),
-		nullableText(rec.RequestFingerprint), nullableInt64(rec.CreatedByAdminID), rec.Now, rec.ExpiresAt,
+		nullableText(rec.RequestFingerprint), nullableInt64(rec.CreatedByAdminID), nullableText(rec.CreatedByActor),
+		rec.Now, rec.ExpiresAt,
 		orderKindOrDefault(rec.OrderKind), rec.SubscriptionPlanID,
 		nullableText(rec.ComplianceTermsVersion), rec.ComplianceAcceptedAt, nullableInt64(rec.ComplianceAcceptedBy),
 		nullableText(rec.ComplianceAcceptedIP))

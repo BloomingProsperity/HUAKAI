@@ -88,11 +88,11 @@ func newBalanceCreditHandler(d AdminBalanceCreditDeps) http.HandlerFunc {
 			UserID:          req.UserID,
 			Amount:          req.Amount,
 			CurrencyCode:    req.CurrencyCode,
-			// payment 归属 sink 是 int64(payment_audit_log.actor_id / recharge_orders.*_by_admin_id
-			// 均 bigint,由 parseAdminActorID 把此串 ParseInt 回数字)。故此处必须传纯数字 TokenID,
-			// 不能走 AuditActor()("admin_token:5" 会被 ParseInt 成 0、丢归属)。payment 的字符串化 +
-			// session-admin 归属属 P2b-2(动钱 schema 迁移),届时统一。
+			// 双身份归属(money-via-login Stage 1):ActorID 仍传纯数字 TokenID 喂旧 bigint 列
+			//(token 通道向后兼容;session-admin 为 0→NULL,不能传 AuditActor() 否则 ParseInt 成 0);
+			// ActorRef 传 AuditActor() 串落新 text 列,两通道都可归属(admin_token:N / admin_user:N)。
 			ActorID:         fmt.Sprintf("%d", ident.TokenID),
+			ActorRef:        ident.AuditActor(),
 			Reason:          req.Reason,
 			RequestID:       middleware.GetReqID(r.Context()),
 			ExternalTradeNo: req.IdempotencyKey,

@@ -69,6 +69,7 @@ type createOrderRecord struct {
 	ProviderOrderRef       string
 	RequestFingerprint     string
 	CreatedByAdminID       int64
+	CreatedByActor         string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	CreatedActorKind       string
 	CreatedActorID         int64
 	RequestID              string
