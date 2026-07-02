@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -20,6 +21,8 @@ const defaultReconciliationWorkerInterval = time.Minute
 type ReconciliationWorker struct {
 	reconciler *Reconciler
 	interval   time.Duration
+	// logger 可注入(测试用收集 handler);nil 语义由构造器兜成 slog.Default()。
+	logger *slog.Logger
 
 	mu      sync.Mutex
 	running bool
@@ -27,6 +30,9 @@ type ReconciliationWorker struct {
 	done    chan struct{}
 	now     func() time.Time
 }
+
+// quotaReconciliationComponent 是本 worker 结构化日志的 component 标识。
+const quotaReconciliationComponent = "quota_reconciliation_worker"
 
 // NewReconciliationWorker 构造 worker。interval<=0 用默认分钟级。
 func NewReconciliationWorker(reconciler *Reconciler, interval time.Duration) *ReconciliationWorker {
@@ -36,6 +42,7 @@ func NewReconciliationWorker(reconciler *Reconciler, interval time.Duration) *Re
 	return &ReconciliationWorker{
 		reconciler: reconciler,
 		interval:   interval,
+		logger:     slog.Default(),
 		now:        func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -53,6 +60,7 @@ func (w *ReconciliationWorker) Start(ctx context.Context) {
 	w.stop = make(chan struct{})
 	w.done = make(chan struct{})
 	w.running = true
+	w.logger.InfoContext(ctx, "quota reconciliation worker started", "component", quotaReconciliationComponent)
 	go w.loop(ctx)
 }
 
@@ -67,8 +75,25 @@ func (w *ReconciliationWorker) loop(ctx context.Context) {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			_, _ = w.RunOnce(ctx, w.now())
+			replayed, err := w.RunOnce(ctx, w.now())
+			w.logRound(ctx, replayed, err)
 		}
+	}
+}
+
+// logRound 聚合一轮全局 sweep 结果(每轮一条,不逐租户逐 job 打):此前计数/错误被静默
+// 丢弃,补偿 job 持续重放失败运营无从察觉。空转轮只打 Debug,分钟级周期不用 Info 刷屏。
+func (w *ReconciliationWorker) logRound(ctx context.Context, replayed int, err error) {
+	if err != nil {
+		w.logger.WarnContext(ctx, "quota reconciliation round failed",
+			"component", quotaReconciliationComponent, "processed", replayed, "error", err.Error())
+	}
+	switch {
+	case replayed > 0:
+		w.logger.InfoContext(ctx, "quota reconciliation round replayed jobs",
+			"component", quotaReconciliationComponent, "processed", replayed)
+	case err == nil:
+		w.logger.DebugContext(ctx, "quota reconciliation round idle", "component", quotaReconciliationComponent)
 	}
 }
 
@@ -101,4 +126,6 @@ func (w *ReconciliationWorker) Stop() {
 	if done != nil {
 		<-done
 	}
+	// 等 <-done 后再打,保证"stopped"意味着协程真退了。
+	w.logger.Info("quota reconciliation worker stopped", "component", quotaReconciliationComponent)
 }

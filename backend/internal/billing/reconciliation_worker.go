@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -21,11 +22,16 @@ type PendingNoUsageFinalizer interface {
 	FinalizePendingNoUsage(ctx context.Context, cutoff time.Time, limit int32, source string, reconciledAt time.Time) (int, error)
 }
 
+// pendingReconciliationComponent 是本 worker 结构化日志的 component 标识。
+const pendingReconciliationComponent = "billing_pending_reconciliation_worker"
+
 type PendingReconciliationWorker struct {
 	finalizer PendingNoUsageFinalizer
 	interval  time.Duration
 	grace     time.Duration
 	batch     int32
+	// logger 可注入(测试用收集 handler);nil 语义由构造器兜成 slog.Default()。
+	logger *slog.Logger
 
 	mu      sync.Mutex
 	running bool
@@ -49,6 +55,7 @@ func NewPendingReconciliationWorker(finalizer PendingNoUsageFinalizer, interval,
 		interval:  interval,
 		grace:     grace,
 		batch:     batch,
+		logger:    slog.Default(),
 		now:       func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -65,6 +72,7 @@ func (w *PendingReconciliationWorker) Start(ctx context.Context) {
 	w.stop = make(chan struct{})
 	w.done = make(chan struct{})
 	w.running = true
+	w.logger.InfoContext(ctx, "pending reconciliation worker started", "component", pendingReconciliationComponent)
 	go w.loop(ctx)
 }
 
@@ -79,8 +87,25 @@ func (w *PendingReconciliationWorker) loop(ctx context.Context) {
 		case <-w.stop:
 			return
 		case <-ticker.C:
-			_, _ = w.RunOnce(ctx, w.now())
+			finalized, err := w.RunOnce(ctx, w.now())
+			w.logRound(ctx, finalized, err)
 		}
+	}
+}
+
+// logRound 汇总一轮 pending 补结算:此前计数/错误被静默丢弃,流式无 usage 记录长期
+// 补不上运营无从察觉。空转轮只打 Debug,分钟级周期不用 Info 刷屏。
+func (w *PendingReconciliationWorker) logRound(ctx context.Context, finalized int, err error) {
+	if err != nil {
+		w.logger.WarnContext(ctx, "pending reconciliation round failed",
+			"component", pendingReconciliationComponent, "processed", finalized, "error", err.Error())
+	}
+	switch {
+	case finalized > 0:
+		w.logger.InfoContext(ctx, "pending reconciliation round finalized records",
+			"component", pendingReconciliationComponent, "processed", finalized)
+	case err == nil:
+		w.logger.DebugContext(ctx, "pending reconciliation round idle", "component", pendingReconciliationComponent)
 	}
 }
 
@@ -117,6 +142,8 @@ func (w *PendingReconciliationWorker) Stop() {
 	if done != nil {
 		<-done
 	}
+	// 等 <-done 后再打,保证"stopped"意味着协程真退了。
+	w.logger.Info("pending reconciliation worker stopped", "component", pendingReconciliationComponent)
 }
 
 type PostgresPendingReconciliationFinalizer struct {
