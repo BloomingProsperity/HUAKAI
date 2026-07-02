@@ -115,7 +115,7 @@ func newVoucherCreateHandler(d VoucherAdminDeps) http.HandlerFunc {
 			return
 		}
 		result, err := d.Service.Create(r.Context(), voucher.CreateInput{
-			TenantID: req.TenantID, AdminID: ident.TokenID, Code: req.Code,
+			TenantID: req.TenantID, AdminID: ident.TokenID, ActorRef: ident.AuditActor(), Code: req.Code,
 			AmountCents: req.AmountCents, CurrencyCode: req.CurrencyCode,
 			ValidFrom: req.ValidFrom, ValidUntil: req.ValidUntil,
 			MaxRedemptions: req.MaxRedemptions, SingleUsePerUser: boolDefault(req.SingleUsePerUser, true),
@@ -140,7 +140,7 @@ func newVoucherBatchCreateHandler(d VoucherAdminDeps) http.HandlerFunc {
 			return
 		}
 		result, err := d.Service.CreateBatch(r.Context(), voucher.BatchCreateInput{
-			TenantID: req.TenantID, AdminID: ident.TokenID, Count: req.Count,
+			TenantID: req.TenantID, AdminID: ident.TokenID, ActorRef: ident.AuditActor(), Count: req.Count,
 			AmountCents: req.AmountCents, CurrencyCode: req.CurrencyCode,
 			ValidFrom: req.ValidFrom, ValidUntil: req.ValidUntil,
 			MaxRedemptions: req.MaxRedemptions, SingleUsePerUser: boolDefault(req.SingleUsePerUser, true),
@@ -169,7 +169,7 @@ func newVoucherRevokeHandler(d VoucherAdminDeps) http.HandlerFunc {
 			return
 		}
 		v, err := d.Service.Revoke(r.Context(), voucher.RevokeInput{
-			TenantID: req.TenantID, ID: id, AdminID: ident.TokenID, Reason: req.Reason,
+			TenantID: req.TenantID, ID: id, AdminID: ident.TokenID, ActorRef: ident.AuditActor(), Reason: req.Reason,
 		})
 		if err != nil {
 			writeVoucherError(w, err)

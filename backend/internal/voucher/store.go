@@ -22,6 +22,7 @@ type createVoucherRecord struct {
 	TenantID         int64
 	BatchID          *int64
 	AdminID          int64
+	ActorRef         string // 双身份归属串,空则 NULL
 	CodeHash         []byte
 	CodeFingerprint  string
 	AmountCents      int64
@@ -41,6 +42,7 @@ type createVoucherRecord struct {
 type createBatchRecord struct {
 	TenantID         int64
 	AdminID          int64
+	ActorRef         string // 双身份归属串,空则 NULL
 	RequestedCount   int
 	AmountCents      int64
 	CurrencyCode     string
