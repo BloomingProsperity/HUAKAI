@@ -499,7 +499,16 @@ Owner 定案:**「不需要[后端密码/2FA step-up],像 new-api 就行了。�
 - **S3 限流(顺带解)**:给 admin_audit_events 加数值 `actor_token_id bigint`,API key 签发限流 `CountIssuanceInWindow` 改按数值稳定键分桶(而非审计展示串),跨部署边界免疫(研究选项 A2)。可与本切片同迁移或独立小迁移。
 - **放开范围(blast-radius,→ Owner 拍板)**:哪些动钱端点发 SessionSafe 许可?**选项**:(a)全动钱端点放开(充值/退款/发券/订阅,最贴 new-api,前端危险确认弹窗);(b)只放开低危动钱(如手动充值,退款/发券留 token-only);(c)先只建归属基建、暂不放开任何动钱端点(session 仍够不到,但迁移到位、日后翻标即开)。
 
-**执行计划(Owner 批准 schema+范围后才动)**:①一支迁移(加 text actor 列 + S3 数值列 + 索引;非破坏,纯加列)②handler 动钱归属统一走 AuditActor() 写 text 列(sqlc 手改生成码不重生成,见 [[sqlc-codegen-out-of-sync]])③refund 守卫改判来源 ④按选定范围给动钱路由发 AllowSessionWrite(SessionSafe)⑤§14 变异 + 真 PG 集成测试(session-admin 动钱归属落 admin_user:N、token-admin 落 admin_token:N、refund 不再拒 session)⑥对抗审查零 S0/S1。全在默认关 knob 后零生产变。
+**执行计划(Owner 已授权"按我的回答继续"=按推荐 A + 放开动钱;coordination 看板已确认无人改 payment)**:①一支迁移(加 text actor 列 + S3 数值列 + 索引;非破坏,纯加列)②handler 动钱归属统一走 AuditActor() 写 text 列(sqlc 手改生成码不重生成,见 [[sqlc-codegen-out-of-sync]])③refund 守卫改判来源 ④按选定范围给动钱路由发 AllowSessionWrite(SessionSafe)⑤§14 变异 + 真 PG 集成测试(session-admin 动钱归属落 admin_user:N、token-admin 落 admin_token:N、refund 不再拒 session)⑥对抗审查零 S0/S1。全在默认关 knob 后零生产变。
+
+**★ 分阶段执行序(每阶段=一子系统 vertical slice:迁移+handler+真 PG 测试+变异+审查后单独提交;避免半迁移态与 money 代码在长会话尾部的仓促出错):**
+- **Stage 1 = payment/充值路径**(canonical):迁移加 payment_orders.created_by_actor/confirmed_by_actor + payment_audit_events.actor_ref(nullable text)。改动 **~10 个 ActorID 触点**已勘定:`admin_credit.go`(AdminBalanceAdjustmentInput 加 ActorRef 字段 :28 区、actorID 计算 :114、createOrderRecord :123、三条 auditInsert :135-137、confirmed :168)+ `types.go`(createOrderRecord :63 / auditInsert :122-123 加 ActorRef/ActorRefText)+ `store_postgres.go`(insertOrderTx/insertAuditTx 写新 text 列)。**关键:balance_credit_handler 保持传 int64 TokenID 给旧列(token 向后兼容),另传 ident.AuditActor() 给新 text 列**——token-admin 双写(int64+text)、session-admin int64 落 NULL + text 落 admin_user:N。
+- **Stage 2 = voucher**(voucher_handler + voucher/store_postgres,created_by_actor/revoked_by_actor)。
+- **Stage 3 = subscription**(admin_ops + subscription/activation + audit,assigned_by_actor/actor_ref)。
+- **Stage 4 = refund**(refund_request_admin/postgres 去 `adminActorID<=0` 硬守卫改判来源 + payment_refunds/refund_requests text 列)。
+- **Stage 5 = S3 限流数值键**(admin_audit_events 加 actor_token_id bigint,CountIssuanceInWindow 改按数值分桶)。
+- **Stage 6 = 放开动钱路由**发 SessionSafe(充值/退款/发券/订阅,守 new-api 前端确认弹窗)。
+- **收尾 = arc 级对抗审查零 S0/S1**。全程 coordination claim payment/voucher/subscription 文件、默认关 knob 后零生产变。
 
 ---
 
