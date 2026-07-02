@@ -79,6 +79,20 @@ func TestQuotaReconciliationWorkerLogRound(t *testing.T) {
 			t.Fatalf("错误轮记录=%+v,want 恰好 1 条 Warn error=sweep exploded", recs)
 		}
 	})
+	t.Run("部分失败轮恰好一条Warn不再补Info", func(t *testing.T) {
+		// 单租户失败不阻断其余租户,reconciler 常态返回 replayed>0 且 err≠nil;双发会让
+		// processed 双计、按 msg=failed 的停摆告警被干扰。变异契约:Info 分支去掉互斥 → 红。
+		w, h := newWorker()
+		w.logRound(context.Background(), 7, errors.New("tenant 42 poisoned"))
+		recs := h.snapshot()
+		if len(recs) != 1 {
+			t.Fatalf("部分失败轮记录数=%d,want 恰好 1 条(双发=processed 双计)", len(recs))
+		}
+		r := recs[0]
+		if r.level != slog.LevelWarn || r.attrs["processed"] != "7" || r.attrs["error"] != "tenant 42 poisoned" {
+			t.Fatalf("部分失败轮记录=%+v,want Warn processed=7 error=tenant 42 poisoned", r)
+		}
+	})
 	t.Run("空转轮零Info", func(t *testing.T) {
 		w, h := newWorker()
 		w.logRound(context.Background(), 0, nil)

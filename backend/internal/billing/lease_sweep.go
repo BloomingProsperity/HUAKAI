@@ -86,15 +86,16 @@ func (s *LeaseSweeper) loop(ctx context.Context) {
 // logRound 汇总一轮孤儿回收结果:此前处理量/错误被静默丢弃,动钱补偿卡死或持续失败
 // 运营完全看不见。空转轮只打 Debug,30s 周期下绝不用 Info 刷屏。
 func (s *LeaseSweeper) logRound(ctx context.Context, swept int, err error) {
-	if err != nil {
+	// 三分支互斥:部分成功轮(swept>0 且 err≠nil)只打 Warn(已带 processed),
+	// 否则同轮双发 Warn+Info 会让按 processed 求和的日志派生指标双计回收量。
+	switch {
+	case err != nil:
 		s.logger.WarnContext(ctx, "lease sweep round failed",
 			"component", leaseSweeperComponent, "processed", swept, "error", err.Error())
-	}
-	switch {
 	case swept > 0:
 		s.logger.InfoContext(ctx, "lease sweep round reclaimed orphans",
 			"component", leaseSweeperComponent, "processed", swept)
-	case err == nil:
+	default:
 		s.logger.DebugContext(ctx, "lease sweep round idle", "component", leaseSweeperComponent)
 	}
 }

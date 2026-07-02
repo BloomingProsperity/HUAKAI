@@ -84,15 +84,16 @@ func (w *ReconciliationWorker) loop(ctx context.Context) {
 // logRound 聚合一轮全局 sweep 结果(每轮一条,不逐租户逐 job 打):此前计数/错误被静默
 // 丢弃,补偿 job 持续重放失败运营无从察觉。空转轮只打 Debug,分钟级周期不用 Info 刷屏。
 func (w *ReconciliationWorker) logRound(ctx context.Context, replayed int, err error) {
-	if err != nil {
+	// 三分支互斥:单租户失败不阻断其余租户(reconciler 常态返回 replayed>0 且 err≠nil),
+	// 该轮只打 Warn(已带 processed),否则同轮双发会让 processed 被双计、"failed" 告警被干扰。
+	switch {
+	case err != nil:
 		w.logger.WarnContext(ctx, "quota reconciliation round failed",
 			"component", quotaReconciliationComponent, "processed", replayed, "error", err.Error())
-	}
-	switch {
 	case replayed > 0:
 		w.logger.InfoContext(ctx, "quota reconciliation round replayed jobs",
 			"component", quotaReconciliationComponent, "processed", replayed)
-	case err == nil:
+	default:
 		w.logger.DebugContext(ctx, "quota reconciliation round idle", "component", quotaReconciliationComponent)
 	}
 }
