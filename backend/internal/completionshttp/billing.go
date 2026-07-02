@@ -47,6 +47,13 @@ func (ex *execution) reserve(w http.ResponseWriter) bool {
 		writeInsufficientBalanceError(w)
 		return false
 	}
+	// 幂等竞争 / Serializable 重试耗尽:可重试,返 409+Retry-After 让客户端稍后再试
+	//(镜像 chat completions;此前落进下方通用 500 = 把可重试竞争误报成服务端错误)。
+	if errors.Is(err, billing.ErrClaimRace) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace))
+		return false
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeReserveError, clienterr.MessageFor(clienterr.CodeReserveError))
 		return false
