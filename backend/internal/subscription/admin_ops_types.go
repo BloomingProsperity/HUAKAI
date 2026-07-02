@@ -25,6 +25,7 @@ type UpdatePlanInput struct {
 	ForSale       bool
 	SortOrder     int
 	ActorAdminID  int64
+	ActorRef      string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID     string
 }
 
@@ -34,6 +35,7 @@ type ExtendSubscriptionInput struct {
 	TenantID       int64
 	SubscriptionID int64
 	ActorAdminID   int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 	Days           int
 	Until          *time.Time
@@ -45,6 +47,7 @@ type ResetQuotaInput struct {
 	TenantID       int64
 	SubscriptionID int64
 	ActorAdminID   int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 }
 
@@ -58,6 +61,7 @@ type ChangePlanInput struct {
 	NewPlanID      int64
 	AllowDowngrade bool
 	ActorAdminID   int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 }
 
@@ -67,6 +71,7 @@ type BulkAssignInput struct {
 	UserIDs      []int64
 	PlanID       int64
 	ActorAdminID int64
+	ActorRef     string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID    string
 }
 
@@ -88,6 +93,7 @@ type RevokeSubscriptionInput struct {
 	TenantID       int64
 	SubscriptionID int64
 	ActorAdminID   int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	Reason         string
 	RequestID      string
 }

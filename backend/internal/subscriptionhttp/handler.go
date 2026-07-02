@@ -403,8 +403,8 @@ func newAdminAssignHandler(d AdminDeps) http.HandlerFunc {
 			TenantID:     req.TenantID,
 			UserID:       req.UserID,
 			PlanID:       req.PlanID,
-			ActorAdminID: ident.TokenID,
-			RequestID:    requestID(r),
+			ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(),
+			RequestID: requestID(r),
 		})
 		if err != nil {
 			writeSubscriptionError(w, err)

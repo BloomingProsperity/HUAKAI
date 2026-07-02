@@ -53,7 +53,7 @@ RETURNING`+planSelectColumns,
 	}
 	if err := insertPlanAuditTx(ctx, tx, planAuditInsert{
 		TenantID: rec.TenantID, PlanID: plan.ID, EventType: AuditSubscriptionPlanUpdated,
-		ActorKind: ActorKindAdmin, ActorID: rec.ActorAdminID, RequestID: rec.RequestID,
+		ActorKind: ActorKindAdmin, ActorID: rec.ActorAdminID, ActorRef: rec.ActorRef, RequestID: rec.RequestID,
 		Payload: map[string]any{
 			"name":            plan.Name,
 			"price_cents":     plan.PriceCents,
@@ -146,6 +146,7 @@ RETURNING`+subscriptionSelectColumns,
 		EventType:          AuditSubscriptionExtended,
 		ActorKind:          ActorKindAdmin,
 		ActorID:            rec.ActorAdminID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Payload: map[string]any{
 			"from_expires": prev.UTC(),
@@ -223,6 +224,7 @@ RETURNING`+subscriptionSelectColumns, rec.TenantID, sub.ID, rec.Now)
 		EventType:          AuditSubscriptionQuotaReset,
 		ActorKind:          actorKindOrDefault(rec.ActorKind),
 		ActorID:            rec.ActorID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Payload:            assignAuditPayload(sub),
 		Now:                rec.Now,
@@ -315,8 +317,8 @@ func (s *PostgresStore) changePlanOnce(ctx context.Context, rec changePlanRecord
 		return UserSubscription{}, err
 	}
 
-	actorKind, actorID := changePlanActor(rec, sub)
-	if err := maybeAuditGroupChangeTx(ctx, tx, rec, sub, plan, currentGroup, prevGroup, actorKind, actorID); err != nil {
+	actorKind, actorID, actorRef := changePlanActor(rec, sub)
+	if err := maybeAuditGroupChangeTx(ctx, tx, rec, sub, plan, currentGroup, prevGroup, actorKind, actorID, actorRef); err != nil {
 		return UserSubscription{}, err
 	}
 	if err := insertSubAuditTx(ctx, tx, subAuditInsert{
@@ -325,6 +327,7 @@ func (s *PostgresStore) changePlanOnce(ctx context.Context, rec changePlanRecord
 		EventType:          AuditSubscriptionRenewed,
 		ActorKind:          actorKind,
 		ActorID:            actorID,
+		ActorRef:           actorRef,
 		RequestID:          rec.RequestID,
 		Payload: map[string]any{
 			"source":          "change_plan",
@@ -415,6 +418,7 @@ RETURNING`+subscriptionSelectColumns,
 		EventType:          AuditSubscriptionRevoked,
 		ActorKind:          ActorKindAdmin,
 		ActorID:            rec.ActorAdminID,
+		ActorRef:           rec.ActorRef,
 		ReasonClass:        rec.Reason,
 		RequestID:          rec.RequestID,
 		Payload:            map[string]any{"reason": rec.Reason},
@@ -435,14 +439,16 @@ func resolveChangePlanTargetTx(ctx context.Context, tx pgx.Tx, rec changePlanRec
 	return getCurrentActiveByUserForUpdateTx(ctx, tx, rec.TenantID, rec.UserID)
 }
 
-func changePlanActor(rec changePlanRecord, sub UserSubscription) (string, int64) {
-	if rec.ActorAdminID > 0 {
-		return ActorKindAdmin, rec.ActorAdminID
+func changePlanActor(rec changePlanRecord, sub UserSubscription) (string, int64, string) {
+	// admin 判定不能只看 ActorAdminID>0:session-admin 的 TokenID=0,须靠 ActorRef 非空识别
+	//(自助 change-plan 两者皆空 → user actor)。
+	if rec.ActorAdminID > 0 || rec.ActorRef != "" {
+		return ActorKindAdmin, rec.ActorAdminID, rec.ActorRef
 	}
-	return ActorKindUser, sub.UserID
+	return ActorKindUser, sub.UserID, ""
 }
 
-func maybeAuditGroupChangeTx(ctx context.Context, tx pgx.Tx, rec changePlanRecord, before UserSubscription, plan Plan, currentGroup, prevGroup, actorKind string, actorID int64) error {
+func maybeAuditGroupChangeTx(ctx context.Context, tx pgx.Tx, rec changePlanRecord, before UserSubscription, plan Plan, currentGroup, prevGroup, actorKind string, actorID int64, actorRef string) error {
 	if plan.GrantedGroup == prevGroup {
 		return nil
 	}
@@ -480,6 +486,7 @@ func maybeAuditGroupChangeTx(ctx context.Context, tx pgx.Tx, rec changePlanRecor
 		EventType:          eventType,
 		ActorKind:          actorKind,
 		ActorID:            actorID,
+		ActorRef:           actorRef,
 		RequestID:          rec.RequestID,
 		Payload:            map[string]any{"from": currentGroup, "to": targetGroup},
 		Now:                rec.Now,
@@ -544,6 +551,7 @@ func downgradeAfterCloseTx(ctx context.Context, tx pgx.Tx, rec lifecycleRecord, 
 		EventType:          AuditGroupDowngraded,
 		ActorKind:          actorKindOrDefault(rec.ActorKind),
 		ActorID:            rec.ActorID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Payload:            map[string]any{"from": currentGroup, "to": targetGroup},
 		Now:                rec.Now,
@@ -559,6 +567,7 @@ type planAuditInsert struct {
 	EventType string
 	ActorKind string
 	ActorID   int64
+	ActorRef  string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID string
 	Payload   map[string]any
 	Now       time.Time
@@ -571,10 +580,10 @@ func insertPlanAuditTx(ctx context.Context, tx pgx.Tx, ev planAuditInsert) error
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO subscription_plan_audit_events (
-	tenant_id, plan_id, event_type, actor_kind, actor_id, request_id, redacted_payload, occurred_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+	tenant_id, plan_id, event_type, actor_kind, actor_id, actor_ref, request_id, redacted_payload, occurred_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		ev.TenantID, ev.PlanID, ev.EventType, actorKindOrDefault(ev.ActorKind),
-		nullableInt64(ev.ActorID), nullableText(ev.RequestID), nullableJSON(raw), ev.Now); err != nil {
+		nullableInt64(ev.ActorID), nullableText(ev.ActorRef), nullableText(ev.RequestID), nullableJSON(raw), ev.Now); err != nil {
 		return fmt.Errorf("subscription: insert plan audit event: %w", err)
 	}
 	return nil
