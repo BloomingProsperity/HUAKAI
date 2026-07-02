@@ -525,6 +525,25 @@ func (s *PostgresStore) ListDueReconciliationJobs(ctx context.Context, tenantID 
 	return jobs, nil
 }
 
+// ListTenantsWithDueReconciliationJobs 返回有到期 job 的 distinct 租户(全局 sweep 入口)。
+// tenantLimit<=0 时不查(返回空),防止无界扫描。
+func (s *PostgresStore) ListTenantsWithDueReconciliationJobs(ctx context.Context, at time.Time, tenantLimit int) ([]int64, error) {
+	q, err := s.queries()
+	if err != nil {
+		return nil, err
+	}
+	if tenantLimit <= 0 {
+		return nil, nil
+	}
+	if tenantLimit > math.MaxInt32 {
+		tenantLimit = math.MaxInt32
+	}
+	return q.ListTenantsWithDueQuotaReconciliationJobs(ctx, dbquota.ListTenantsWithDueQuotaReconciliationJobsParams{
+		AtTime:      pgTimestamptz(at),
+		TenantLimit: int32(tenantLimit),
+	})
+}
+
 func (s *PostgresStore) MarkReconciliationJobRunning(ctx context.Context, tenantID int64, jobID int64) error {
 	q, err := s.queries()
 	if err != nil {

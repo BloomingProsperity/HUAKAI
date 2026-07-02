@@ -1167,6 +1167,17 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	pendingReconciler.Start(ctx)
 	rt.pendingReconcileStop = pendingReconciler.Stop
 
+	// quota 补偿器 worker(缺口② 修复):此前 quota.Reconciler 建了但从未接线(死代码),
+	// 导致 quota_reconciliation_jobs 永久卡 queued、reservation 卡 reserved、并发槽只靠
+	// lease 过期释放。这里用跨租户全局 sweep 把它真跑起来。默认关(knob 打开才启,不翻转默认
+	// 行为);打开后 reservation 结算/释放失败入队的 job 由后台 sweep 重放,不再永久卡 reserved。
+	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_QUOTA_RECONCILER_ENABLED")); on {
+		quotaReconciler := quota.NewReconciler(nil, quota.NewPostgresStore(pgPool), quota.ReconcilerOptions{})
+		quotaWorker := quota.NewReconciliationWorker(quotaReconciler, 0)
+		quotaWorker.Start(ctx)
+		rt.quotaReconcileStop = quotaWorker.Stop
+	}
+
 	// PROXY-04: 代理池健康探测 worker, 带迟滞维护 status (active<->dead)。无此
 	// worker 时一个 flap 的代理会被永久 dead, 绑定它的账号 fail-closed 永不自愈;
 	// TCP 探活恢复后账号自动回来。随 ctx 取消停。

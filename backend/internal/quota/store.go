@@ -33,6 +33,8 @@ type PGStore interface {
 	InsertAuditEvent(ctx context.Context, event AuditEvent) (int64, error)
 	EnqueueReconciliationJob(ctx context.Context, input ReconciliationEnqueue) (ReconciliationJob, error)
 	ListDueReconciliationJobs(ctx context.Context, tenantID int64, at time.Time, limit int) ([]ReconciliationJob, error)
+	// ListTenantsWithDueReconciliationJobs 返回有到期 job 的 distinct 租户,供跨租户全局 sweep worker 使用。
+	ListTenantsWithDueReconciliationJobs(ctx context.Context, at time.Time, tenantLimit int) ([]int64, error)
 	MarkReconciliationJobRunning(ctx context.Context, tenantID int64, jobID int64) error
 	CompleteReconciliationJob(ctx context.Context, tenantID int64, jobID int64) error
 	FailReconciliationJob(ctx context.Context, input ReconciliationFailure) error

@@ -528,6 +528,10 @@ func (s *noTxReserveStore) ListDueReconciliationJobs(context.Context, int64, tim
 	return nil, s.fail()
 }
 
+func (s *noTxReserveStore) ListTenantsWithDueReconciliationJobs(context.Context, time.Time, int) ([]int64, error) {
+	return nil, s.fail()
+}
+
 func (s *noTxReserveStore) MarkReconciliationJobRunning(context.Context, int64, int64) error {
 	return s.fail()
 }
@@ -639,6 +643,10 @@ func (s *claimConflictReplayStore) EnqueueReconciliationJob(context.Context, Rec
 
 func (s *claimConflictReplayStore) ListDueReconciliationJobs(context.Context, int64, time.Time, int) ([]ReconciliationJob, error) {
 	return nil, errors.New("unexpected ListDueReconciliationJobs")
+}
+
+func (s *claimConflictReplayStore) ListTenantsWithDueReconciliationJobs(context.Context, time.Time, int) ([]int64, error) {
+	return nil, errors.New("unexpected ListTenantsWithDueReconciliationJobs")
 }
 
 func (s *claimConflictReplayStore) MarkReconciliationJobRunning(context.Context, int64, int64) error {

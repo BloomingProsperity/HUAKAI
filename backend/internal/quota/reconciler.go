@@ -13,6 +13,7 @@ const (
 	defaultReconcilerBaseBackoff = time.Minute
 	defaultReconcilerMaxBackoff  = time.Hour
 	defaultReconcilerLimit       = 100
+	defaultReconcilerTenantSweep = 200
 	terminalReconciliationDelay  = 3650 * 24 * time.Hour
 
 	reconciliationKindSettleAfterBillingSuccess = "settle_after_billing_success"
@@ -28,6 +29,8 @@ type ReconcilerOptions struct {
 	BaseBackoff time.Duration
 	MaxBackoff  time.Duration
 	Limit       int
+	// TenantSweep 是全局 sweep 单轮扫描的最大租户数(ReconcileAllTenants 用),默认 200。
+	TenantSweep int
 	Logger      *slog.Logger
 }
 
@@ -39,6 +42,7 @@ type Reconciler struct {
 	baseBackoff time.Duration
 	maxBackoff  time.Duration
 	limit       int
+	tenantSweep int
 	logger      *slog.Logger
 }
 
@@ -61,6 +65,9 @@ func NewReconciler(service *Service, store PGStore, opts ReconcilerOptions) *Rec
 	if opts.Limit <= 0 {
 		opts.Limit = defaultReconcilerLimit
 	}
+	if opts.TenantSweep <= 0 {
+		opts.TenantSweep = defaultReconcilerTenantSweep
+	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
@@ -71,8 +78,47 @@ func NewReconciler(service *Service, store PGStore, opts ReconcilerOptions) *Rec
 		baseBackoff: opts.BaseBackoff,
 		maxBackoff:  opts.MaxBackoff,
 		limit:       opts.Limit,
+		tenantSweep: opts.TenantSweep,
 		logger:      opts.Logger,
 	}
+}
+
+// ReconcileAllTenants 是跨租户全局 sweep:列出有到期 job 的 distinct 租户,对每个租户走
+// 现有单租户 ReconcileDueJobs(每租户各自 limit,天然公平不饿死)。一个租户失败不阻断其它
+// 租户,错误汇总返回;返回本轮成功处理的 job 总数。这是让 quota 补偿器从「建了没接线的死代码」
+// 变成真跑的入口——reservation 结算/释放失败入队后由本 sweep 重放,不再永久卡 reserved。
+func (r *Reconciler) ReconcileAllTenants(ctx context.Context, now time.Time) (int, error) {
+	if r == nil || r.service == nil || r.store == nil {
+		return 0, fmt.Errorf("quota reconciler: service and store are required")
+	}
+	if now.IsZero() {
+		return 0, fmt.Errorf("quota reconciler: now is required")
+	}
+	now = now.UTC()
+	tenants, err := r.store.ListTenantsWithDueReconciliationJobs(ctx, now, r.tenantSweep)
+	if err != nil {
+		return 0, fmt.Errorf("quota reconciler: list tenants with due jobs: %w", err)
+	}
+	total := 0
+	var errs []error
+	for _, tenantID := range tenants {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		processed, err := r.ReconcileDueJobs(ctx, tenantID, now, r.limit)
+		total += processed
+		if err != nil {
+			// 单租户失败不阻断其它租户的补偿(隔离故障域)。
+			errs = append(errs, fmt.Errorf("tenant %d: %w", tenantID, err))
+		}
+	}
+	if len(tenants) == r.tenantSweep {
+		// 命中扫描上限=可能还有更多租户待处理,记 info 供运营判断是否调大 TenantSweep/缩短 interval。
+		r.logger.InfoContext(ctx, "quota reconciler tenant sweep hit limit; more tenants may be pending",
+			"tenant_sweep_limit", r.tenantSweep, "processed_jobs", total)
+	}
+	return total, errors.Join(errs...)
 }
 
 func (r *Reconciler) ReconcileDueJobs(ctx context.Context, tenantID int64, now time.Time, limit int) (int, error) {
