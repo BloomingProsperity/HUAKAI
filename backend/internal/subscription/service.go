@@ -196,7 +196,7 @@ func (s *Service) BulkAssign(ctx context.Context, in BulkAssignInput) (BulkAssig
 }
 
 // CancelSubscription 管理员取消订阅 (关配额 + 降级)。
-func (s *Service) CancelSubscription(ctx context.Context, tenantID, subscriptionID, actorAdminID int64, requestID string) (UserSubscription, error) {
+func (s *Service) CancelSubscription(ctx context.Context, tenantID, subscriptionID, actorAdminID int64, requestID, actorRef string) (UserSubscription, error) {
 	if tenantID <= 0 || subscriptionID <= 0 {
 		return UserSubscription{}, ErrInvalidInput
 	}
@@ -205,6 +205,7 @@ func (s *Service) CancelSubscription(ctx context.Context, tenantID, subscription
 		SubscriptionID: subscriptionID,
 		ActorKind:      ActorKindAdmin,
 		ActorID:        actorAdminID,
+		ActorRef:       actorRef,
 		RequestID:      strings.TrimSpace(requestID),
 		Now:            s.now(),
 	})

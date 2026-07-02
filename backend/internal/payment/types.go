@@ -162,6 +162,7 @@ type AdminConfirmPaidInput struct {
 	TenantID      int64
 	OrderID       int64
 	ActorAdminID  int64
+	ActorRef      string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID     string
 	ConfirmReason string
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
@@ -30,7 +31,9 @@ type adminBalanceCreditService interface {
 }
 
 func MountBalanceCreditRoutes(r chi.Router, d AdminBalanceCreditDeps) {
-	r.Post("/adjustments", newBalanceCreditHandler(d))
+	// money-via-login:手动充值/余额调整放开给登录 admin(session),对标 new-api;前端确认弹窗防误操作。
+	// 归属经 P2b-2 双身份 text 列(created_by_actor/actor_ref)可追。
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/adjustments", newBalanceCreditHandler(d))
 }
 
 type balanceCreditRequestBody struct {

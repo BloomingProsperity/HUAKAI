@@ -17,6 +17,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
@@ -38,7 +39,7 @@ type Service interface {
 	DisablePlan(context.Context, int64, int64) error
 	AssignSubscription(context.Context, subscription.AssignSubscriptionInput) (subscription.AssignResult, error)
 	BulkAssign(context.Context, subscription.BulkAssignInput) (subscription.BulkAssignResult, error)
-	CancelSubscription(context.Context, int64, int64, int64, string) (subscription.UserSubscription, error)
+	CancelSubscription(context.Context, int64, int64, int64, string, string) (subscription.UserSubscription, error)
 	ExtendSubscription(context.Context, subscription.ExtendSubscriptionInput) (subscription.UserSubscription, error)
 	ResetQuota(context.Context, subscription.ResetQuotaInput) (subscription.UserSubscription, error)
 	ChangePlan(context.Context, subscription.ChangePlanInput) (subscription.UserSubscription, error)
@@ -249,22 +250,25 @@ func toAuditEventViews(events []subscription.AuditEvent) []auditEventView {
 
 // MountSubscriptionAdminRoutes 挂载管理员订阅端点 (套餐 CRUD + 分配/取消/查询)。
 func MountSubscriptionAdminRoutes(r chi.Router, d AdminDeps) {
-	r.Post("/plans", newAdminCreatePlanHandler(d))
+	// money-via-login:订阅套餐/指派/发券等 admin 动钱操作放开给登录 admin(session),对标 new-api;
+	// 危险者靠前端确认弹窗。归属经 P2b-2 双身份 text 列(assigned_by_actor/actor_ref)可追。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/plans", newAdminCreatePlanHandler(d))
 	r.Get("/plans", newAdminListPlansHandler(d))
 	r.Get("/plans/{id}", newAdminGetPlanHandler(d))
-	r.Put("/plans/{id}", newAdminUpdatePlanHandler(d))
-	r.Post("/plans/{id}", newAdminUpdatePlanHandler(d))
-	r.Post("/plans/{id}/disable", newAdminDisablePlanHandler(d))
-	r.Post("/assignments", newAdminAssignHandler(d))
-	r.Post("/assignments/bulk", newAdminBulkAssignHandler(d))
+	r.With(safe).Put("/plans/{id}", newAdminUpdatePlanHandler(d))
+	r.With(safe).Post("/plans/{id}", newAdminUpdatePlanHandler(d))
+	r.With(safe).Post("/plans/{id}/disable", newAdminDisablePlanHandler(d))
+	r.With(safe).Post("/assignments", newAdminAssignHandler(d))
+	r.With(safe).Post("/assignments/bulk", newAdminBulkAssignHandler(d))
 	r.Get("/assignments", newAdminListAssignmentsHandler(d))
 	r.Get("/assignments/{id}", newAdminGetAssignmentHandler(d))
-	r.Post("/assignments/{id}/cancel", newAdminCancelHandler(d))
-	r.Post("/assignments/{id}/extend", newAdminExtendHandler(d))
-	r.Post("/assignments/{id}/reset-quota", newAdminResetQuotaHandler(d))
-	r.Post("/assignments/{id}/change-plan", newAdminChangePlanHandler(d))
-	r.Post("/assignments/{id}/revoke", newAdminRevokeHandler(d))
-	r.Post("/vouchers", newAdminCreateSubscriptionVoucherHandler(d))
+	r.With(safe).Post("/assignments/{id}/cancel", newAdminCancelHandler(d))
+	r.With(safe).Post("/assignments/{id}/extend", newAdminExtendHandler(d))
+	r.With(safe).Post("/assignments/{id}/reset-quota", newAdminResetQuotaHandler(d))
+	r.With(safe).Post("/assignments/{id}/change-plan", newAdminChangePlanHandler(d))
+	r.With(safe).Post("/assignments/{id}/revoke", newAdminRevokeHandler(d))
+	r.With(safe).Post("/vouchers", newAdminCreateSubscriptionVoucherHandler(d))
 }
 
 // MountSubscriptionUserRoutes 挂载用户订阅端点 (当前订阅 / 可购套餐 / 自助购买)。
@@ -500,7 +504,7 @@ func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		sub, err := d.Service.CancelSubscription(r.Context(), req.TenantID, id, ident.TokenID, requestID(r))
+		sub, err := d.Service.CancelSubscription(r.Context(), req.TenantID, id, ident.TokenID, requestID(r), ident.AuditActor())
 		if err != nil {
 			writeSubscriptionError(w, err)
 			return

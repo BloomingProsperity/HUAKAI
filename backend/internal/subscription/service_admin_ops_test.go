@@ -242,7 +242,7 @@ func TestService_ChangePlanRejectsNonActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign basic: %v", err)
 	}
-	if _, err := svc.CancelSubscription(ctx, 1, assigned.Subscription.ID, 7, "cancel-before-change"); err != nil {
+	if _, err := svc.CancelSubscription(ctx, 1, assigned.Subscription.ID, 7, "cancel-before-change", "admin_token:7"); err != nil {
 		t.Fatalf("cancel before change: %v", err)
 	}
 

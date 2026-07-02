@@ -266,6 +266,7 @@ func (s *Service) AdminConfirmPaid(ctx context.Context, in AdminConfirmPaidInput
 		TenantID:      in.TenantID,
 		OrderID:       in.OrderID,
 		AdminID:       in.ActorAdminID,
+		ActorRef:      in.ActorRef,
 		ActorKind:     ActorKindAdmin, // P1 手动确认显式归属 admin (区别于 P2a 回调的 system)。
 		ConfirmReason: in.ConfirmReason,
 		RequestID:     in.RequestID,
