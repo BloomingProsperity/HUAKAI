@@ -541,7 +541,7 @@ func newAdminCreateSubscriptionVoucherHandler(d AdminDeps) http.HandlerFunc {
 		}
 		planID := req.PlanID
 		result, err := d.VoucherService.Create(r.Context(), voucher.CreateInput{
-			TenantID: req.TenantID, AdminID: ident.TokenID, Code: req.Code,
+			TenantID: req.TenantID, AdminID: ident.TokenID, ActorRef: ident.AuditActor(), Code: req.Code,
 			AmountCents: req.AmountCents, CurrencyCode: req.CurrencyCode,
 			ValidFrom: req.ValidFrom, ValidUntil: req.ValidUntil,
 			MaxRedemptions: req.MaxRedemptions, SingleUsePerUser: boolDefault(req.SingleUsePerUser, true),

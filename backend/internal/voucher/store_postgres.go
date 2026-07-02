@@ -31,13 +31,13 @@ func (s *PostgresStore) CreateVoucher(ctx context.Context, rec createVoucherReco
 INSERT INTO voucher (
 	tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, created_at, updated_at,
+	eligible_user_id, created_by_admin_id, created_by_actor, created_at, updated_at,
 	grant_kind, subscription_plan_id
 ) VALUES (
 	$1, $2, $3, $4, $5, $6,
 	$7, $8, $9, $10,
 	CASE WHEN $8::timestamptz <= $13::timestamptz THEN 'expired' ELSE 'active' END,
-	$14, $11, $12, $12,
+	$14, $11, $17, $12, $12,
 	$15, $16
 )
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
@@ -47,7 +47,7 @@ RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, cu
 		rec.TenantID, rec.BatchID, rec.CodeHash, rec.CodeFingerprint, rec.AmountCents, rec.CurrencyCode,
 		rec.ValidFrom, rec.ValidUntil, rec.MaxRedemptions, rec.SingleUsePerUser, nullableAdminID(rec.AdminID),
 		rec.Now, rec.Now, rec.EligibleUserID,
-		grantKindOrDefault(rec.GrantKind), rec.SubscriptionPlanID)
+		grantKindOrDefault(rec.GrantKind), rec.SubscriptionPlanID, nullableText(rec.ActorRef))
 	v, err := scanVoucher(row)
 	if isUniqueViolation(err) {
 		return Voucher{}, ErrVoucherDuplicate
@@ -72,13 +72,13 @@ func (s *PostgresStore) CreateBatch(ctx context.Context, batchRec createBatchRec
 INSERT INTO voucher_batch (
 	tenant_id, created_by_admin_id, requested_count, created_count, amount_cents,
 	currency_code, valid_from, valid_until, max_redemptions, single_use_per_user,
-	status, created_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', $11)
+	status, created_at, created_by_actor
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', $11, $12)
 RETURNING id, tenant_id, created_by_admin_id, requested_count, created_count, amount_cents,
 	currency_code, valid_from, valid_until, max_redemptions, single_use_per_user, status, created_at`,
 		batchRec.TenantID, nullableAdminID(batchRec.AdminID), batchRec.RequestedCount, len(voucherRecs),
 		batchRec.AmountCents, batchRec.CurrencyCode, batchRec.ValidFrom, batchRec.ValidUntil,
-		batchRec.MaxRedemptions, batchRec.SingleUsePerUser, batchRec.Now).Scan(
+		batchRec.MaxRedemptions, batchRec.SingleUsePerUser, batchRec.Now, nullableText(batchRec.ActorRef)).Scan(
 		&b.ID, &b.TenantID, &b.CreatedByAdminID, &b.RequestedCount, &b.CreatedCount,
 		&b.AmountCents, &b.CurrencyCode, &b.ValidFrom, &b.ValidUntil, &b.MaxRedemptions,
 		&b.SingleUsePerUser, &b.Status, &b.CreatedAt,
@@ -196,13 +196,13 @@ func (s *PostgresStore) RevokeVoucher(ctx context.Context, input RevokeInput) (V
 	}
 	row := s.pool.QueryRow(ctx, `
 UPDATE voucher
-SET status='revoked', revoked_by_admin_id=$3, revoked_reason=$4, revoked_at=$5, updated_at=$5
+SET status='revoked', revoked_by_admin_id=$3, revoked_by_actor=$6, revoked_reason=$4, revoked_at=$5, updated_at=$5
 WHERE tenant_id=$1 AND id=$2
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, redeemed_count, single_use_per_user, status,
 	eligible_user_id, created_by_admin_id, revoked_by_admin_id, revoked_reason, created_at, updated_at, revoked_at,
 	grant_kind, subscription_plan_id`,
-		input.TenantID, input.ID, nullableAdminID(input.AdminID), input.Reason, input.Now)
+		input.TenantID, input.ID, nullableAdminID(input.AdminID), input.Reason, input.Now, nullableText(input.ActorRef))
 	v, err := scanVoucher(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Voucher{}, ErrVoucherNotFound
@@ -543,13 +543,13 @@ func insertVoucherTx(ctx context.Context, tx pgx.Tx, rec createVoucherRecord) (V
 INSERT INTO voucher (
 	tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
 	valid_from, valid_until, max_redemptions, single_use_per_user, status,
-	eligible_user_id, created_by_admin_id, created_at, updated_at,
+	eligible_user_id, created_by_admin_id, created_by_actor, created_at, updated_at,
 	grant_kind, subscription_plan_id
 ) VALUES (
 	$1, $2, $3, $4, $5, $6,
 	$7, $8, $9, $10,
 	CASE WHEN $8::timestamptz <= $13::timestamptz THEN 'expired' ELSE 'active' END,
-	$14, $11, $12, $12,
+	$14, $11, $17, $12, $12,
 	$15, $16
 )
 RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, currency_code,
@@ -559,7 +559,7 @@ RETURNING id, tenant_id, batch_id, code_hash, code_fingerprint, amount_cents, cu
 		rec.TenantID, rec.BatchID, rec.CodeHash, rec.CodeFingerprint, rec.AmountCents, rec.CurrencyCode,
 		rec.ValidFrom, rec.ValidUntil, rec.MaxRedemptions, rec.SingleUsePerUser, nullableAdminID(rec.AdminID),
 		rec.Now, rec.Now, rec.EligibleUserID,
-		grantKindOrDefault(rec.GrantKind), rec.SubscriptionPlanID)
+		grantKindOrDefault(rec.GrantKind), rec.SubscriptionPlanID, nullableText(rec.ActorRef))
 	v, err := scanVoucher(row)
 	if err != nil {
 		return Voucher{}, fmt.Errorf("voucher: insert voucher: %w", err)

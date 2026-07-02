@@ -123,6 +123,7 @@ type BillingEvent struct {
 type CreateInput struct {
 	TenantID         int64
 	AdminID          int64
+	ActorRef         string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	Code             string
 	AmountCents      int64
 	CurrencyCode     string
@@ -145,6 +146,7 @@ type CreateResult struct {
 type BatchCreateInput struct {
 	TenantID         int64
 	AdminID          int64
+	ActorRef         string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	Count            int
 	AmountCents      int64
 	CurrencyCode     string
@@ -200,6 +202,7 @@ type RevokeInput struct {
 	TenantID int64
 	ID       int64
 	AdminID  int64
+	ActorRef string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	Reason   string
 	Now      time.Time
 }
