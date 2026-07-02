@@ -133,6 +133,88 @@ func TestOpenAIChatClient_ImageHTTPURLKind(t *testing.T) {
 	}
 }
 
+// TestOpenAIChatClient_ImageDetailDropped 断言 image_url.detail=low/high(非默认 auto)
+// 未投射到上游时记 info loss(丢必记),而 detail=auto/缺省不记。
+// mutation 契约:删除 detail 的 loss 分支 → "detail=low" 子测试全红。
+func TestOpenAIChatClient_ImageDetailDropped(t *testing.T) {
+	cases := []struct {
+		name       string
+		detailJSON string
+		wantLoss   bool
+	}{
+		{"low记loss", `,"detail":"low"`, true},
+		{"high记loss", `,"detail":"high"`, true},
+		{"大写HIGH归一后记loss", `,"detail":"HIGH"`, true},
+		{"auto不记", `,"detail":"auto"`, false},
+		{"缺省不记", ``, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &OpenAIChatClient{}
+			body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":[` +
+				`{"type":"image_url","image_url":{"url":"data:image/png;base64,` + testRedPixelPNGBase64 + `"` + tc.detailJSON + `}}` +
+				`]}]}`)
+			_, losses, err := adapter.RequestToCanonical(newTestOpenAIChatCtx(t), body)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			var got bool
+			for _, l := range losses {
+				if l.Code == "image_detail_dropped" {
+					got = true
+				}
+			}
+			if got != tc.wantLoss {
+				t.Errorf("detail=%q 记 image_detail_dropped loss=%v, want %v(losses=%+v)", tc.detailJSON, got, tc.wantLoss, losses)
+			}
+		})
+	}
+}
+
+// TestOpenAIChatClient_ImageDataURIMediaTypeNormalized 断言 data URI 的 mime 段
+// 归一化:带 charset 参数只留主类型、大写归一为小写、scheme 前缀大小写不敏感。
+// mutation 契约:去掉主类型截断(直接用整段 mediaType)→ "带charset" 子测试红;
+// 去掉 EqualFold 大小写不敏感前缀判定 → "大写DATA前缀" 子测试(会被当 URL)红。
+func TestOpenAIChatClient_ImageDataURIMediaTypeNormalized(t *testing.T) {
+	cases := []struct {
+		name     string
+		url      string
+		wantMime string
+		wantKind DataSourceKind
+	}{
+		{"带charset参数只留主类型", "data:image/png;charset=utf-8;base64," + testRedPixelPNGBase64, "image/png", DataSourceInlineBase64},
+		{"大写mime归一小写", "data:IMAGE/PNG;base64," + testRedPixelPNGBase64, "image/png", DataSourceInlineBase64},
+		{"大写DATA前缀仍认inline", "DATA:image/jpeg;base64," + testRedPixelPNGBase64, "image/jpeg", DataSourceInlineBase64},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &OpenAIChatClient{}
+			body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":[` +
+				`{"type":"image_url","image_url":{"url":"` + tc.url + `"}}` +
+				`]}]}`)
+			env, _, err := adapter.RequestToCanonical(newTestOpenAIChatCtx(t), body)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			imgs := findImageNodes(env)
+			if len(imgs) != 1 {
+				t.Fatalf("CapabilityImage nodes = %d, want 1", len(imgs))
+			}
+			img := imgs[0].Image
+			if img.SourceKind != tc.wantKind {
+				t.Errorf("SourceKind = %q, want %q", img.SourceKind, tc.wantKind)
+			}
+			if img.MediaType != tc.wantMime {
+				t.Errorf("MediaType = %q, want %q(归一化失败)", img.MediaType, tc.wantMime)
+			}
+			// 主类型截断不能误伤 base64 载荷(base64 里不含 ';')
+			if img.Locator.Value != testRedPixelPNGBase64 {
+				t.Errorf("Locator.Value 被误截: got=%q", img.Locator.Value)
+			}
+		})
+	}
+}
+
 // TestOpenAIChatClient_ImageMalformedURLRecordsLoss 断言空 url / 畸形
 // data URI 记 loss 不 panic 不 hard error,也不建图节点。
 func TestOpenAIChatClient_ImageMalformedURLRecordsLoss(t *testing.T) {
@@ -143,6 +225,8 @@ func TestOpenAIChatClient_ImageMalformedURLRecordsLoss(t *testing.T) {
 		{"空url", `{"type":"image_url","image_url":{"url":""}}`},
 		{"缺image_url对象", `{"type":"image_url"}`},
 		{"畸形dataURI缺base64段", `{"type":"image_url","image_url":{"url":"data:image/png"}}`},
+		{"空mime段", `{"type":"image_url","image_url":{"url":"data:;base64,iVBOR"}}`},
+		{"空data段", `{"type":"image_url","image_url":{"url":"data:image/png;base64,"}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

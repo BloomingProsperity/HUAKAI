@@ -68,38 +68,56 @@ func parseOpenAIChatContent(raw json.RawMessage, mi int) ([]openAIChatParsedPart
 func buildOpenAIImageNode(rawImageURL json.RawMessage) (*ImageNode, []ProtocolLossEntry) {
 	var shape struct {
 		URL string `json:"url"`
+		// detail=low/high/auto 控制上游 vision 计费档;当前建模路径不承载它,
+		// 丢弃时记 info loss 保住「丢必记」可观测性(不影响图本身)。
+		Detail string `json:"detail"`
 	}
 	if err := json.Unmarshal(rawImageURL, &shape); err != nil || shape.URL == "" {
 		loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_image_url_missing_url", "invalid_image_url", CapabilityImage, "")
 		return nil, []ProtocolLossEntry{loss}
 	}
-	if strings.HasPrefix(shape.URL, "data:") {
+	var losses []ProtocolLossEntry
+	// detail 非空且非默认 auto 时,记 info loss(low/high 精度提示未投射到上游)。
+	if d := strings.ToLower(strings.TrimSpace(shape.Detail)); d != "" && d != "auto" {
+		loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_image_detail_dropped:"+d, "image_detail_dropped", CapabilityImage, "")
+		losses = append(losses, loss)
+	}
+	// data URI 前缀判定大小写不敏感(RFC2397 scheme 不区分大小写)。
+	if len(shape.URL) >= 5 && strings.EqualFold(shape.URL[:5], "data:") {
 		mediaType, data, ok := parseBase64DataURI(shape.URL)
 		if !ok {
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_image_url_malformed_data_uri", "invalid_image_url", CapabilityImage, "")
-			return nil, []ProtocolLossEntry{loss}
+			return nil, append(losses, loss)
 		}
 		return &ImageNode{
 			SourceKind: DataSourceInlineBase64,
 			MediaType:  mediaType,
 			Locator:    DataLocator{Kind: DataSourceInlineBase64, Value: data},
-		}, nil
+		}, losses
 	}
 	return &ImageNode{
 		SourceKind: DataSourceURL,
 		// OpenAI 形态 URL 不带独立 mime 字段,留空由上游按 URL 自判。
 		Locator: DataLocator{Kind: DataSourceURL, Value: shape.URL},
-	}, nil
+	}, losses
 }
 
 // parseBase64DataURI 解 data:<mime>;base64,<data>;mime 与 data 皆非空才算合法。
+// mediaType 归一为「第一个 ';' 前的主类型」并转小写——data URI 的 mime 段可带
+// charset 等参数(如 image/png;charset=utf-8),这些参数对图像识别无意义且会让
+// 跨族渲染时上游按非法 mime 4xx 拒;前缀 "data:" 已由调用方大小写不敏感判定。
 func parseBase64DataURI(uri string) (mediaType, data string, ok bool) {
-	rest := strings.TrimPrefix(uri, "data:")
+	rest := uri[len("data:"):]
 	mediaType, data, found := strings.Cut(rest, ";base64,")
 	if !found || mediaType == "" || data == "" {
 		return "", "", false
 	}
-	return mediaType, data, true
+	mainType, _, _ := strings.Cut(mediaType, ";")
+	mainType = strings.ToLower(strings.TrimSpace(mainType))
+	if mainType == "" {
+		return "", "", false
+	}
+	return mainType, data, true
 }
 
 // convertOpenAITools 把 OpenAI tools[] 转 CanonicalTool[]。
