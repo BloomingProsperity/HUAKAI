@@ -3,6 +3,7 @@ package channelhealth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -120,6 +121,69 @@ func TestChannelHealth_TransitionLogEmitsStructuredSlog(t *testing.T) {
 		if rec.Attrs["vendor"] != key.Vendor {
 			t.Fatalf("第%d条日志 vendor=%q want %q", i, rec.Attrs["vendor"], key.Vendor)
 		}
+	}
+}
+
+// auditFailStore 让 AppendAudit 恒失败,并把自身当事务 store,复现「转换审计写库失败」路径。
+type auditFailStore struct {
+	Store
+}
+
+func (auditFailStore) AppendAudit(context.Context, AuditEvent) error {
+	return errors.New("simulated audit append failure")
+}
+
+func (s auditFailStore) WithTx(ctx context.Context, fn func(Store) error) error {
+	return fn(s) // 事务 store 用自身,fn 内 AppendAudit 走失败版
+}
+
+// commitFailStore 让 fn 正常跑完(转换/审计成功、pending 攒好)后,WithTx 返回错误,
+// 复现「Serializable Commit 抛 40001 → 整事务回滚」——正是 401 风暴/退池并发下的常见冲突。
+type commitFailStore struct {
+	Store
+}
+
+func (s commitFailStore) WithTx(ctx context.Context, fn func(Store) error) error {
+	_ = fn(s.Store)                                           // 让转换/审计/pending 登记全部发生
+	return errors.New("simulated serialization_failure 40001") // 但提交失败
+}
+
+// TestChannelHealth_TransitionLogNotEmittedOnAuditFailure 守时序不变量:转换审计写库失败时,
+// 不得打出运维日志(否则运营看到 DB 权威审计查无此事的幽灵转换)。
+// 变异守卫:把 emitTransitionEvents 里的 recordTransitionLog 移到审计循环之前 → 审计失败仍打日志 → 本测试红。
+func TestChannelHealth_TransitionLogNotEmittedOnAuditFailure(t *testing.T) {
+	ctx := context.Background()
+	clock := &fixedClock{now: time.Date(2026, 7, 3, 8, 0, 0, 0, time.UTC)}
+	handler, snapshot := newCollectingHandler()
+	svc := NewService(auditFailStore{Store: NewMemoryStore()}, testPolicy(), clock, WithLogger(slog.New(handler)))
+	key := testKey()
+
+	// ForceCooldown 单次即触发 active→cooling_down 转换,其审计写入命中失败版本。
+	_, err := svc.ForceCooldown(ctx, key, clock.now.Add(time.Hour), "test")
+	if err == nil {
+		t.Fatal("审计失败时 ForceCooldown 应返回错误")
+	}
+	if recs := snapshot(); len(recs) != 0 {
+		t.Fatalf("审计失败时不得打运维日志,实得 %d 条:%+v", len(recs), recs)
+	}
+}
+
+// TestChannelHealth_TransitionLogNotEmittedOnCommitRollback 守本片核心修复(审查 S2):
+// 事务在转换/审计成功后于 Commit 阶段失败回滚时,不得留下与 DB 权威审计矛盾的幽灵运维日志。
+// 变异守卫:把 withMutation 的 `if err == nil` flush 守卫改成无条件 flush → 回滚也打日志 → 本测试红。
+func TestChannelHealth_TransitionLogNotEmittedOnCommitRollback(t *testing.T) {
+	ctx := context.Background()
+	clock := &fixedClock{now: time.Date(2026, 7, 3, 8, 0, 0, 0, time.UTC)}
+	handler, snapshot := newCollectingHandler()
+	svc := NewService(commitFailStore{Store: NewMemoryStore()}, testPolicy(), clock, WithLogger(slog.New(handler)))
+	key := testKey()
+
+	_, err := svc.ForceCooldown(ctx, key, clock.now.Add(time.Hour), "test")
+	if err == nil {
+		t.Fatal("Commit 失败时 ForceCooldown 应返回错误")
+	}
+	if recs := snapshot(); len(recs) != 0 {
+		t.Fatalf("事务回滚时不得留幽灵运维日志,实得 %d 条:%+v", len(recs), recs)
 	}
 }
 

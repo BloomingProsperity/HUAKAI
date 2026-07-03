@@ -24,6 +24,10 @@ type Service struct {
 	// logger 记渠道健康状态转换的 stdout 结构化运维日志——补 DB 审计(AppendAudit)只落库、
 	// 运维实时看不见的观测盲区。nil→slog.Default();可经 WithLogger 注入(测试用收集型 handler)。
 	logger *slog.Logger
+	// pendingTransitionLogs 仅在事务闭包内(withMutation 里的 tx service)非 nil:emitTransitionEvents
+	// 把待打的转换日志攒在这里,由 withMutation 在事务 Commit 成功后才真正打出——避免事务回滚
+	// (Serializable Commit 抛 40001 / emitAlert 失败)后残留与 DB 权威审计矛盾的幽灵日志(审查 S2)。
+	pendingTransitionLogs *[]transitionLogRecord
 }
 
 type transactionalStore interface {
@@ -463,16 +467,25 @@ func (s *Service) withMutation(ctx context.Context, fn func(*Service) (Record, e
 	}
 	txs, ok := s.store.(transactionalStore)
 	if !ok {
+		// 无事务边界的 store:无回滚风险,emitTransitionEvents 里 pending 为 nil 走立即打(行为不变)。
 		return fn(s)
 	}
 	var out Record
+	// 事务内产生的转换日志先攒进 pending;只有 WithTx 返回 nil(即 Commit 成功)后才 flush。
+	var pending []transitionLogRecord
 	err := txs.WithTx(ctx, func(store Store) error {
 		txService := *s
 		txService.store = store
+		txService.pendingTransitionLogs = &pending
 		var err error
 		out, err = fn(&txService)
 		return err
 	})
+	if err == nil {
+		for i := range pending {
+			s.logTransition(ctx, pending[i])
+		}
+	}
 	return out, err
 }
 

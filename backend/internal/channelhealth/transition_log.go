@@ -27,36 +27,58 @@ func transitionLogLevel(state HealthState) slog.Level {
 	}
 }
 
-// logTransition 在审计成功落库后补一条 stdout 结构化运维日志(每次真实转换恰一条,按目标状态分级)。
+// transitionLogRecord 是一条待打的转换运维日志的完整快照:在事务闭包内产生、Commit 成功后才打,
+// 因此把打日志所需字段全部快照下来,不持有会随事务回滚变化的活引用。
+type transitionLogRecord struct {
+	prev      HealthState
+	rec       Record
+	primary   AuditEventType
+	requestID string
+	actorID   string
+}
+
+// recordTransitionLog 决定「攒起来延迟打」还是「立即打」:
+//   - 事务路径(pendingTransitionLogs 非 nil):攒进 pending,由 withMutation 在 Commit 成功后 flush,
+//     事务回滚则整批丢弃——绝不为已回滚的转换留幽灵日志(审查 S2)。
+//   - 无事务边界的 store(pending 为 nil):无回滚风险,立即打(行为与旧版一致)。
+func (s *Service) recordTransitionLog(ctx context.Context, r transitionLogRecord) {
+	if s.pendingTransitionLogs != nil {
+		*s.pendingTransitionLogs = append(*s.pendingTransitionLogs, r)
+		return
+	}
+	s.logTransition(ctx, r)
+}
+
+// logTransition 打一条 stdout 结构化运维日志(每次真实转换恰一条,按目标状态分级)。
 // 绝不写入原始上游文本 / token / 凭证材料——只带账号 id、凭证版本号等非敏感标识。这是补观测盲区,
-// 不替代 DB 审计护城河(审计仍照旧全量落库)。
-func (s *Service) logTransition(ctx context.Context, prev HealthState, rec Record, primary AuditEventType, requestID, actorID string) {
+// 不替代 DB 审计护城河(审计仍照旧全量落库)。仅由 withMutation 在事务 Commit 成功后调用。
+func (s *Service) logTransition(ctx context.Context, r transitionLogRecord) {
 	logger := s.logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	attrs := []slog.Attr{
 		slog.String("component", logComponent),
-		slog.String("event_type", string(primary)),
-		slog.Int64("tenant_id", rec.Key.TenantID),
-		slog.Int64("provider_account_id", rec.Key.ProviderAccountID),
-		slog.String("channel_id", rec.Key.StableChannelID()),
-		slog.String("vendor", rec.Key.Vendor),
-		slog.String("previous_state", string(prev)),
-		slog.String("new_state", string(rec.State)),
-		slog.String("reason_class", string(rec.ReasonClass)),
-		slog.String("policy_version", rec.PolicyVersion),
+		slog.String("event_type", string(r.primary)),
+		slog.Int64("tenant_id", r.rec.Key.TenantID),
+		slog.Int64("provider_account_id", r.rec.Key.ProviderAccountID),
+		slog.String("channel_id", r.rec.Key.StableChannelID()),
+		slog.String("vendor", r.rec.Key.Vendor),
+		slog.String("previous_state", string(r.prev)),
+		slog.String("new_state", string(r.rec.State)),
+		slog.String("reason_class", string(r.rec.ReasonClass)),
+		slog.String("policy_version", r.rec.PolicyVersion),
 	}
-	if requestID != "" {
-		attrs = append(attrs, slog.String("request_id", requestID))
+	if r.requestID != "" {
+		attrs = append(attrs, slog.String("request_id", r.requestID))
 	}
-	if actorID != "" {
-		attrs = append(attrs, slog.String("actor_id", actorID))
+	if r.actorID != "" {
+		attrs = append(attrs, slog.String("actor_id", r.actorID))
 	}
-	if rec.CooldownUntil != nil {
-		attrs = append(attrs, slog.String("cooldown_until", rec.CooldownUntil.UTC().Format(time.RFC3339Nano)))
+	if r.rec.CooldownUntil != nil {
+		attrs = append(attrs, slog.String("cooldown_until", r.rec.CooldownUntil.UTC().Format(time.RFC3339Nano)))
 	}
-	logger.LogAttrs(ctx, transitionLogLevel(rec.State), "channel health state transition", attrs...)
+	logger.LogAttrs(ctx, transitionLogLevel(r.rec.State), "channel health state transition", attrs...)
 }
 
 func (s *Service) emitTransitionEvents(ctx context.Context, prev HealthState, rec Record, requestID, actorID string, dec decision) error {
@@ -87,9 +109,16 @@ func (s *Service) emitTransitionEvents(ctx context.Context, prev HealthState, re
 		// 末位非空事件作为运维日志主事件类型(事件列表按终态事件排在末位,如 [degraded,disabled]→disabled)。
 		primary = typ
 	}
-	// 审计全部成功落库后再补运维日志:审计中途失败会在上面提前返回,不为已回滚的转换留误导性日志。
+	// 审计全部成功落库后再登记运维日志(审计中途失败上面已提前返回);登记只是攒进 pending,
+	// 真正打出推迟到 withMutation 确认事务 Commit 成功之后——事务回滚则整批丢弃,不留幽灵日志。
 	if primary != "" {
-		s.logTransition(ctx, prev, rec, primary, requestID, actorID)
+		s.recordTransitionLog(ctx, transitionLogRecord{
+			prev:      prev,
+			rec:       rec,
+			primary:   primary,
+			requestID: requestID,
+			actorID:   actorID,
+		})
 	}
 	return nil
 }
