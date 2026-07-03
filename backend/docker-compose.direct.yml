@@ -52,6 +52,8 @@ services:
       HUAKAI_SESSION_SIGNING_KEY_B64: ${HUAKAI_SESSION_SIGNING_KEY_B64:-}
       HUAKAI_SESSION_SIGNING_KEY_HEX: ${HUAKAI_SESSION_SIGNING_KEY_HEX:-}
       HUAKAI_ADMIN_BOOTSTRAP_TOKEN: ${HUAKAI_ADMIN_BOOTSTRAP_TOKEN}
+      # role 制单登录(登录即管理员):把该邮箱的已注册账号提升为 admin。部署者填自己的注册邮箱。
+      HUAKAI_ADMIN_BOOTSTRAP_EMAIL: ${HUAKAI_ADMIN_BOOTSTRAP_EMAIL:-}
       # 必填,无默认:dev = 自测 / 内网最省事(审计账本走内存、签名用临时密钥,免私钥文件);
       # production = 对外硬化(强制审计账本持久化 + 持久 ed25519 私钥等启动门,见下方审计段与
       # docs/deploy/production-bootstrap.md)。我们不替你设默认 —— 选项在你手里。
