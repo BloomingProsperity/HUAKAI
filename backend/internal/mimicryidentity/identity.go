@@ -1,26 +1,10 @@
-// Package mimicryidentity 是 R7 身份改写【接线】层:把池中选定账号的身份
-// 投影成 metadata.user_id,让上游看到的客户端身份与 HUAKAI 实际派发的账号
-// 一致,避免身份不一致触发上游风控。
+// Package mimicryidentity 把池中选定账号的身份投影成请求 body 的 metadata.user_id,
+// 让上游看到的客户端身份与实际派发的账号一致。改写逻辑在 gateway.ApplyMimicryPlan
+// (本包仅启用其 metadata.user_id 步骤);本包据账号上下文构造 plan、读运维开关、对空
+// 身份 fail-open,并用 SHA256 确定性派生设备/会话指纹(免存储)。
 //
-// 本包不重复实现 body 变换 —— 改写逻辑沉淀在 gateway 包已建的 6-step 强伪装
-// 组合器 gateway.ApplyMimicryPlan(step5 = metadata.user_id),本包只负责:
-//  1. 据账号上下文构造 gateway.MimicryPlan(仅启 step5);
-//  2. 读运维开关决定是否启用(默认关 = 整管线 no-op = body 字节完全不变);
-//  3. fail-open:external account id 为空时不带 plan、不改写;
-//  4. 设备/会话指纹用 SHA256 确定性派生,免存储。
-//
-// 依赖方向:mimicryidentity → gateway(单向,gateway 不反向 import 本包,
-// 无 import 环)。接线方(gatewayhttp)在 dispatch 之前、对"dispatch 专用
-// body 拷贝"调用本包,绝不触碰参与缓存键计算的原始客户端 body。
-//
-// 默认行为:开关默认开(详见 RewriteEnabled)。
-//
-// 机制参考三镜(§16,仅描述做法,代码本仓独立编写):
-//   - sub2api 有同类 metadata.user_id 身份重写(账号 UUID 投影 + 确定性 session
-//     派生 + 空身份 fail-open + 只改单字段保留其余字节);为唯一有此能力者,
-//     按 §16 默认 tiebreaker 取其机制。
-//   - new-api 无等价(user_id 命中均为 vendor DTO 字段/channel-affinity 设置)。
-//   - CLIProxyAPI 仅从 metadata.user_id 读 session 做账号亲和选择,不改写。
+// 依赖方向 mimicryidentity → gateway(单向)。接线方在 dispatch 前对 dispatch 专用
+// body 拷贝调用,不触碰参与缓存键计算的原始客户端 body。
 package mimicryidentity
 
 import (
@@ -33,14 +17,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
 )
 
-// envIdentityRewrite 是身份改写的运维开关环境变量名。**默认开**(Owner 2026-07-03
-// 硬规则「默认关的全默认开、别搞不伦不类」):空 / 未配置 / 任意非 "false" 值一律
-// 视为开;仅显式设为 "false" 才关。读取惯例与 transport.MimicryEnabled 一致 ——
-// 就地读 env,避免反向 import config 包。
-//
-// 与 transport.MimicryEnabled 现在同为默认开(TLS 指纹伪装 + 请求体身份伪装两层齐开)。
-// 默认开安全性由多重 fail-open 门控兜底:serverSecret 未配置 / external id 空 / 非反转号
-// (apikey/bedrock) / 上游族非 anthropic_messages 时均不改写,故默认开不会误伤合法路径。
+// envIdentityRewrite 是身份改写的运维开关环境变量名。默认开:空 / 未配置 / 任意非
+// "false" 值一律视为开;仅显式设为 "false" 才关。就地读 env,避免反向 import config 包。
+// 多重 fail-open 兜底:serverSecret 未配置 / external id 空 / 非反转号 / 上游族非
+// anthropic_messages 时均不改写。
 const envIdentityRewrite = "HUAKAI_MIMICRY_IDENTITY_REWRITE"
 
 // RewriteEnabled 报告身份改写运维开关是否开启。**默认开**:仅显式设为 "false"
