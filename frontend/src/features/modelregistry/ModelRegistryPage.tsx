@@ -23,7 +23,7 @@ import type { AliasImportResult, CapabilityBinding, TenantPolicyView } from './t
  * 模型注册(运维台 · admin 壳)。三块运维面,全部命中已存在的 /v1/admin/* 端点:
  *   1) 能力矩阵编辑      PUT /v1/admin/models/{id}/capabilities(任意能力 key→bool + 上限/模式)
  *   2) 能力绑定         GET/PUT /v1/admin/models/{id}/capability-bindings(白名单能力,per-scope)
- *   3) 别名批量导入      POST /v1/admin/models/aliases/bulk-import(逐行结果)
+ *   3) 映射批量导入      POST /v1/admin/models/aliases/bulk-import(逐行结果)
  *   4) 目录继承策略      GET/PUT /v1/admin/model-registry-policy?tenant_id(inherit_global_catalog 开关)
  * 模型用数字 DB id 定位(后端 path 契约);公开目录不回数字 id,故由运维者直接输入。
  */
@@ -33,7 +33,7 @@ export function ModelRegistryPage() {
       <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
         <h1 style={{ fontSize: 22 }}>模型注册</h1>
         <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          能力矩阵 · 能力绑定 · 别名批量导入 · 租户目录继承策略。模型以数字 DB id 定位。
+          能力矩阵 · 能力绑定 · 映射批量导入 · 租户目录继承策略。模型以数字 DB id 定位。
         </p>
       </header>
 
@@ -286,7 +286,7 @@ function CapabilityBindingsCard() {
   )
 }
 
-// ── 块 3:别名批量导入(逐行结果) ──
+// ── 块 3:映射批量导入(逐行结果) ──
 function AliasImportCard() {
   const [text, setText] = useState('')
   const [reason, setReason] = useState('')
@@ -302,7 +302,7 @@ function AliasImportCard() {
     setResults(null)
     setError(null)
     if (rows.length === 0) {
-      setError('没有可提交的合法别名行(请检查格式与逐行报错)。')
+      setError('没有可提交的合法映射行(请检查格式与逐行报错)。')
       return
     }
     setBusy(true)
@@ -313,7 +313,7 @@ function AliasImportCard() {
       const resp = await bulkImportAliases(body)
       setResults(resp.results)
     } catch (e) {
-      setError(errText(e, '别名批量导入失败'))
+      setError(errText(e, '映射批量导入失败'))
     } finally {
       setBusy(false)
     }
@@ -322,7 +322,7 @@ function AliasImportCard() {
   const summary = results ? summarizeImportResults(results) : null
 
   return (
-    <Card title="别名批量导入" subtitle="逐行格式:model_id,alias[,scope[,tenant_id[,display]]]。# 起首为注释。scope 缺省 tenant。">
+    <Card title="映射批量导入" subtitle="逐行格式:model_id,映射名[,scope[,tenant_id[,display]]]。# 起首为注释。scope 缺省 tenant。">
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -332,7 +332,7 @@ function AliasImportCard() {
       />
       <Row>
         <Field label="原因备注(可选,落审计)">
-          <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="如 季度别名重整" style={inp} />
+          <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="如 季度映射重整" style={inp} />
         </Field>
       </Row>
       <Actions>
@@ -371,7 +371,7 @@ function AliasImportCard() {
           )}
           <div style={tableWrap}>
             <table style={tbl}>
-              <thead><tr>{['#', '别名', '模型 id', '状态', '错误'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <thead><tr>{['#', '映射名', '模型 id', '状态', '错误'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
               <tbody>
                 {results.map((r) => (
                   <tr key={r.index} style={{ borderTop: '1px solid var(--hk-line)' }}>
