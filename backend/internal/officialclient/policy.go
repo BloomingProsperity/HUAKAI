@@ -1,21 +1,9 @@
-// Package officialclient 实现「反转/订阅号只接对应官方客户端」的访问控制策略
-// (per-vendor official-client gate)。它是【鉴真门】:校验进入的请求确实来自
-// 该 vendor 的官方客户端(Anthropic=Claude Code / OpenAI=Codex CLI / Gemini=
-// Gemini CLI),非官方则拒。
+// Package officialclient 判定某 vendor 的账号是否只接受其官方客户端:Anthropic 账号
+// 要求 Claude Code、OpenAI 账号要求 Codex CLI,非官方客户端拒。客户端身份由 clientid
+// 检测,本包据其结果 + vendor + 是否要求官方客户端,判 allow/reject。
 //
-// 这是【访问控制】,不是伪装:本包只判定 allow/reject,不改写请求、不注入任何
-// 伪造身份。进来的必须真是官方客户端(由 clientid 检测),透传其真流量;非官方拒。
-//
-// 职责边界(与相邻包):
-//   - clientid 负责【检测】客户端身份(UA/X-Client 信号 → Identity+confidence),
-//     其文档明言"不直接拒绝请求,让 policy 决定";本包就是那个 policy。
-//   - 本包不做检测、不做 body 伪装、不持久化。
-//
-// 用法:上层在请求鉴权/选号阶段,对开了 official-client-only 的反转号池,用
-// clientid.Detect 得到身份后调 Allowed 判定;返回 false 即 403 拒。
-//
-// 参考做法(§16,clean-room 重写不搬码):sub2api 用分组级 ClaudeCodeOnly +
-// 账号级 codex_cli_only 做同类 per-vendor 官方客户端门控,非官方拒。
+// 用法:请求鉴权/选号阶段用 clientid.Detect 得到客户端身份,调 Allowed 判定,
+// 返回 false 即拒(上层 403)。
 package officialclient
 
 import (
@@ -30,15 +18,11 @@ const (
 	ReasonOfficialClientOK  = "official_client_ok"             // 官方客户端,放行
 	ReasonNonOfficialReject = "non_official_client_rejected"   // 非官方客户端,拒
 	ReasonUnknownClient     = "unknown_client_rejected"        // 身份未知,保守拒
-	ReasonVendorNoOfficial  = "vendor_has_no_official_client"  // vendor 无官方客户端概念却开了门(配置矛盾),保守拒
+	ReasonVendorNoOfficial  = "vendor_has_no_official_client"  // vendor 无官方客户端映射,拒
 )
 
-// RequiredIdentity 返回某 vendor 的反转/订阅号所要求的官方客户端身份。
-// ok=false 表示该 vendor 没有「官方客户端」概念(如纯 apikey 聚合厂),不应对其
-// 启用 official-client-only。
-//
-// 当前覆盖 Anthropic(Claude Code)与 OpenAI(Codex CLI)。Gemini CLI 待补
-// (请求侧官方客户端标识不明确、反转路径 env-gated,后续接)。
+// RequiredIdentity 返回某 vendor 要求的官方客户端身份;ok=false 表示该 vendor 无对应
+// 官方客户端映射。当前覆盖 Anthropic(Claude Code)与 OpenAI(Codex CLI)。
 func RequiredIdentity(vendor string) (clientid.Identity, bool) {
 	switch strings.ToLower(strings.TrimSpace(vendor)) {
 	case "anthropic", "claude":
@@ -50,14 +34,11 @@ func RequiredIdentity(vendor string) (clientid.Identity, bool) {
 	}
 }
 
-// Allowed 判定一个已检测出 clientIdentity 的请求是否允许访问该 vendor 的账号。
-//
-//   - officialOnly=false → 恒 allow(不设限,如 apikey 号池)。
-//   - officialOnly=true 且 vendor 有官方客户端 → 仅当 clientIdentity 恰为该官方
-//     客户端才 allow;非官方与 unknown 一律 reject。
-//   - officialOnly=true 但 vendor 无官方客户端概念 → 保守 reject(配置矛盾)。
-//
-// 返回 (allowed, reason);reason 为上述常量之一,供审计与 403 错误渲染。
+// Allowed 判定已检测出 clientIdentity 的请求是否允许访问该 vendor 的账号。
+//   - officialOnly=false → 放行(任意客户端)。
+//   - officialOnly=true 且 vendor 有官方客户端 → 仅该官方客户端放行,非官方与 unknown 拒。
+//   - officialOnly=true 但 vendor 无官方客户端映射 → 拒。
+// 返回 (allowed, reason),reason 为下列常量之一。
 func Allowed(clientIdentity clientid.Identity, vendor string, officialOnly bool) (bool, string) {
 	if !officialOnly {
 		return true, ReasonNoRestriction
