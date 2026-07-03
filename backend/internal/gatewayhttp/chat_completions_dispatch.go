@@ -25,8 +25,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -576,30 +578,30 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	}
 	bindingID, bindingRPM, bindingTPM := ex.activeBindingRateLimits()
 	selRes, err := ex.d.Selector.Select(ex.ctx, pool.SelectionRequest{
-		TenantID:             ex.ident.TenantID,
-		UserID:               ex.ident.UserID,
-		APIKeyID:             ex.ident.APIKeyID,
-		PoolGroupID:          ex.attempt.PoolGroupID,
-		RequestedModel:       ex.req.Model,
-		ModelCooldownKey:     ex.upstreamModelID,
-		ProtocolFamily:       ex.resolved.ProtocolFamily,
-		EndpointFamily:       ex.d.effectiveEndpointFamily(),
-		ClaimID:              ex.reserveRes.ClaimID,
-		AttemptSeq:           attemptSeq,
-		ExcludedAccounts:     excludedAccounts,
-		CapabilityFlags:      ex.attempt.RequiredCapabilities,
-		SessionHash:          ex.sessionHash,
-		Vendor:               pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
-		UserGroup:            ex.ident.UserGroup,
+		TenantID:         ex.ident.TenantID,
+		UserID:           ex.ident.UserID,
+		APIKeyID:         ex.ident.APIKeyID,
+		PoolGroupID:      ex.attempt.PoolGroupID,
+		RequestedModel:   ex.req.Model,
+		ModelCooldownKey: ex.upstreamModelID,
+		ProtocolFamily:   ex.resolved.ProtocolFamily,
+		EndpointFamily:   ex.d.effectiveEndpointFamily(),
+		ClaimID:          ex.reserveRes.ClaimID,
+		AttemptSeq:       attemptSeq,
+		ExcludedAccounts: excludedAccounts,
+		CapabilityFlags:  ex.attempt.RequiredCapabilities,
+		SessionHash:      ex.sessionHash,
+		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
+		UserGroup:        ex.ident.UserGroup,
 		// 命中 binding 的 selection_mode 透传给 selector(priority_weighted 才激活加权,否则均匀)。
 		SelectionMode:        ex.activeBindingSelectionMode(),
 		ModelContextWindow:   ctxWindow,
 		EstimatedInputTokens: estInput,
 		MaxOutputTokens:      maxOut,
 		// 命中 binding 的 per-binding RPM/TPM 限额透传给 BindingRateLimitSelector(env 门控 + 限额>0 才强制)。
-		BindingID:            bindingID,
-		BindingRPMLimit:      bindingRPM,
-		BindingTPMLimit:      bindingTPM,
+		BindingID:       bindingID,
+		BindingRPMLimit: bindingRPM,
+		BindingTPMLimit: bindingTPM,
 	})
 	// 把任何池选号错误(含 SEC-249/250 的 per-key 限流)映射到对应的 HTTP 失败
 	// + claim 终止。已抽取到 chat_completions_pool_errors.go。
@@ -681,7 +683,23 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 		SessionHash:          ex.sessionHash,
 	}
 	ex.healthKey, ex.healthKeyOK = channelHealthKey(ex.ident.TenantID, accInfo)
+	if failure := ex.enforceOfficialClient(); failure != nil {
+		return failure
+	}
 	return nil
+}
+
+// enforceOfficialClient 对反转/订阅号(oauth/session)校验请求来自该 vendor 的官方客户端
+// (Anthropic=Claude Code、OpenAI=Codex CLI);非官方客户端释放本次预扣后返回终态 403。
+// apikey 等账号类型不设限。客户端身份由 clientid 从请求 header/UA 检测。
+func (ex *chatExecution) enforceOfficialClient() *classifiedAttemptFailure {
+	identity, _ := clientid.Detect(clientid.SignalFromRequest(ex.r))
+	if reject, _ := officialclient.GateDecision(ex.accInfo.AccountType, ex.accInfo.Platform, identity); !reject {
+		return nil
+	}
+	abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "official_client_required", ex.requestID, 0, ex.protocolLoss)
+	failure := terminalLocalAttemptFailure(http.StatusForbidden, clienterr.CodeOfficialClientRequired, clienterr.MessageFor(clienterr.CodeOfficialClientRequired), "official_client_required", nil)
+	return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 }
 
 func credentialWithNativeStreamMode(cred provider.Credential, clientProtocol proto.ClientProtocol, stream bool) provider.Credential {

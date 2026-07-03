@@ -10,15 +10,16 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
 // 判定原因常量(供审计日志与 403 错误信息渲染)。
 const (
-	ReasonNoRestriction     = "no_restriction"                 // 未开门控,放行
-	ReasonOfficialClientOK  = "official_client_ok"             // 官方客户端,放行
-	ReasonNonOfficialReject = "non_official_client_rejected"   // 非官方客户端,拒
-	ReasonUnknownClient     = "unknown_client_rejected"        // 身份未知,保守拒
-	ReasonVendorNoOfficial  = "vendor_has_no_official_client"  // vendor 无官方客户端映射,拒
+	ReasonNoRestriction     = "no_restriction"                // 未开门控,放行
+	ReasonOfficialClientOK  = "official_client_ok"            // 官方客户端,放行
+	ReasonNonOfficialReject = "non_official_client_rejected"  // 非官方客户端,拒
+	ReasonUnknownClient     = "unknown_client_rejected"       // 身份未知,保守拒
+	ReasonVendorNoOfficial  = "vendor_has_no_official_client" // vendor 无官方客户端映射,拒
 )
 
 // RequiredIdentity 返回某 vendor 要求的官方客户端身份;ok=false 表示该 vendor 无对应
@@ -38,6 +39,7 @@ func RequiredIdentity(vendor string) (clientid.Identity, bool) {
 //   - officialOnly=false → 放行(任意客户端)。
 //   - officialOnly=true 且 vendor 有官方客户端 → 仅该官方客户端放行,非官方与 unknown 拒。
 //   - officialOnly=true 但 vendor 无官方客户端映射 → 拒。
+//
 // 返回 (allowed, reason),reason 为下列常量之一。
 func Allowed(clientIdentity clientid.Identity, vendor string, officialOnly bool) (bool, string) {
 	if !officialOnly {
@@ -54,4 +56,48 @@ func Allowed(clientIdentity clientid.Identity, vendor string, officialOnly bool)
 		return true, ReasonOfficialClientOK
 	}
 	return false, ReasonNonOfficialReject
+}
+
+// reverseAuthModes 是反转/订阅号(OAuth/session 类凭据)的账号类型集合;这类账号要求
+// 对应官方客户端。官方 API key / 云凭据类(api_key/aistudio_api_key/bedrock/vertex_*/
+// azure)不在此集合、不设限。取值为 credentialstore.AuthMode*。
+var reverseAuthModes = map[string]struct{}{
+	credentialstore.AuthModeClaudeAIOAuth: {},
+	credentialstore.AuthModeClaudeCode:    {},
+	credentialstore.AuthModeChatGPTOAuth:  {},
+	credentialstore.AuthModeCodexCLIOAuth: {},
+	credentialstore.AuthModeCodexWebOAuth: {},
+	credentialstore.AuthModeCodeAssist:    {},
+	credentialstore.AuthModeGoogleOne:     {},
+	credentialstore.AuthModeAntigravity:   {},
+	credentialstore.AuthModeCopilotOAuth:  {},
+	credentialstore.AuthModeXAIOAuth:      {},
+	credentialstore.AuthModeKimiOAuth:     {},
+	credentialstore.AuthModeOAuth:         {},
+	credentialstore.AuthModeRefreshToken:  {},
+}
+
+// IsReverseAccountType 报告账号类型是否为反转/订阅号(OAuth/session 类,要求官方客户端)。
+// accountType 取值为 provider.AccountInfo.AccountType(= credentialstore.AuthMode*);
+// 官方 API key / 云凭据类及未知/空值返回 false(不设限)。
+func IsReverseAccountType(accountType string) bool {
+	_, ok := reverseAuthModes[strings.ToLower(strings.TrimSpace(accountType))]
+	return ok
+}
+
+// GateDecision 报告某账号类型 + vendor 下、已检测出 clientIdentity 的请求是否应被拒。
+// 反转/订阅号且该 vendor 有官方客户端映射时,非官方客户端 → reject;非反转号、或该 vendor
+// 无官方客户端映射,均不拒。返回 (reject, reason)。
+func GateDecision(accountType, vendor string, clientIdentity clientid.Identity) (bool, string) {
+	if !IsReverseAccountType(accountType) {
+		return false, ReasonNoRestriction
+	}
+	required, has := RequiredIdentity(vendor)
+	if !has {
+		return false, ReasonVendorNoOfficial
+	}
+	if clientIdentity == required {
+		return false, ReasonOfficialClientOK
+	}
+	return true, ReasonNonOfficialReject
 }
