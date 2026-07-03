@@ -5,12 +5,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/buildinfo"
+	"github.com/BloomingProsperity/HUAKAI/internal/logfacade"
 	"github.com/BloomingProsperity/HUAKAI/internal/loglevel"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
@@ -31,10 +35,24 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = logger.Sync() }()
+	// 必须在 buildGatewayRuntime 之前装配:多个 worker 构造器在构造期捕获 slog.Default(),
+	// 晚装配它们会永远拿旧的文本 handler。
+	setupSlogFacade()
 
 	if err := run(logger); err != nil {
 		logger.Fatal("gateway exited with error", zap.Error(err))
 	}
+}
+
+// setupSlogFacade 把全局 slog 默认 logger 接到 logfacade 门面:与 zap 共享
+// loglevel.Level(/admin/v1/loglevel 热调对两栈同时生效),输出与 zap 同为
+// stderr JSON,attr 值经 privacy 禁写扫描。全部存量 slog 调用点零改动升级。
+func setupSlogFacade() {
+	slog.SetDefault(logfacade.New(logfacade.Options{
+		Service: "huakai-gateway",
+		Env:     strings.ToLower(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE"))),
+		Version: buildinfo.Version,
+	}))
 }
 
 func run(logger *zap.Logger) error {

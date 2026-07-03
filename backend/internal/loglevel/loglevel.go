@@ -1,6 +1,7 @@
 // Package loglevel 暴露进程级的原子日志级别，使得 admin 的
 // /loglevel 端点能在运行时（事故排查时）提高或降低日志详尽程度，
-// 而无需重启 gateway。main() 用这个级别构建 zap logger；
+// 而无需重启 gateway。main() 用这个级别构建 zap logger，logfacade 的
+// slog 门面也逐条查询它——一次热调对 zap 与 slog 两栈同时生效；
 // admin handler 通过 zap 的 AtomicLevel HTTP handler 读取/设置它。
 package loglevel
 
