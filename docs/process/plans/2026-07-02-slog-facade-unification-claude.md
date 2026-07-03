@@ -125,6 +125,15 @@ zap 侧暂不加同名字段(不动 zap 配置=控 blast radius);两栈字段对
 
 ## 5. Blast radius(需 Owner 知悉)
 
+- **SetDefault 的隐式 log 包桥接已刻意退回**(对抗审查 A|S1):Go 的 slog.SetDefault
+  会顺手 log.SetOutput(handlerWriter)+SetFlags(0),把标准库 log 包也改道门面并固定按
+  Info 级过 loglevel 闸门——后果是 /loglevel=warn 降噪时,http.Server 的
+  "http: panic serving"+栈(lifecycle 未设 ErrorLog)、trust-chain fail-open 警告
+  (money 路径)、hermeshttp 审计失败日志等 log 通道输出会整条静默消失;且
+  log.Printf 的动态文本进 message(门面不扫消息)成脱敏破口。setupSlogFacade 在
+  SetDefault 之后显式 log.SetOutput(os.Stderr)+log.SetFlags(log.LstdFlags),恢复
+  log 包基底行为(逐字节等价:无条件直写 stderr、标准时间前缀)。log 通道统一留
+  后续片:先把约 6 个 log 调用点迁到 slog 才能安全桥接(见 reviews/DEFERRED-logfacade.md)。
 - **生产 stderr 格式变化**:slog 通道从 logfmt 文本 → JSON(zap 行不变)。若有按文本
   grep slog 行的采集/告警规则会失配。自部署形态、无已知外部采集依赖 → 风险低,但属
   单向格式切换,合并前应向 Owner surface。

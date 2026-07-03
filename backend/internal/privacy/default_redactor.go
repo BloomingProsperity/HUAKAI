@@ -297,7 +297,9 @@ func containsForbiddenValue(value any) bool {
 	switch v := value.(type) {
 	case map[string]any:
 		for k, child := range v {
-			if sensitiveKey(k) || containsForbiddenValue(child) {
+			// key 本身也可能承载秘密(把 token 当 map key 用):与值一致跑禁写子串扫,
+			// 否则"按树形扫描、按原文输出"的调用方(如 logfacade)会放走 key 位明文。
+			if sensitiveKey(k) || containsForbiddenString(k) || containsForbiddenValue(child) {
 				return true
 			}
 		}
@@ -315,11 +317,19 @@ func containsForbiddenValue(value any) bool {
 
 func containsForbiddenString(value string) bool {
 	text := strings.ToLower(value)
+	// 注意:text 已整体小写,标记必须写小写形态。
+	// "ant-" 已窄化为 "sk-ant-":独立 "ant-" 会咬 tenant-/grant- 等正常词;
+	// 真实 Anthropic key/OAuth token 均为 sk-ant- 前缀,且裸 "sk-" 条目仍在,检测面不缩。
+	// Google refresh token 的 "1//" 前缀刻意不加:URL 双斜杠拼接(…/v1//…)误杀面大于收益。
 	for _, marker := range []string{
-		"sk-", "toolu_", "aiv_", "gho_", "ant-", "bearer ", "authorization:",
+		"sk-", "toolu_", "aiv_", "gho_", "sk-ant-", "bearer ", "authorization:",
 		"access_token", "refresh_token", "id_token", "cookie=", "cookie:",
 		"credential", "raw user prompt", "prompt sentinel", "prompt_sentinel",
 		"completion sentinel", "completion_sentinel", "password", "secret=",
+		// 本仓一等凭证与常见云凭证形态:hk_* 是 admin/keygen.go 自己签发的
+		// 客户/运维 key;eyj 是裸 JWT 头(base64(`{"alg`) 恒为 eyJ);
+		// aiza=Google API key;ghp_/github_pat_ 为 GitHub token(gho_ 已在上方)。
+		"hk_live_", "hk_test_", "hk_admin_", "eyj", "aiza", "ghp_", "github_pat_",
 	} {
 		if strings.Contains(text, marker) {
 			return true

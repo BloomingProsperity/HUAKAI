@@ -58,10 +58,21 @@ func (h *handler) Enabled(_ context.Context, level slog.Level) bool {
 
 func (h *handler) Handle(ctx context.Context, record slog.Record) error {
 	scrubbed := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
-	record.Attrs(func(attr slog.Attr) bool {
-		scrubbed.AddAttrs(scrubAttr(attr))
-		return true
-	})
+	func() {
+		// 顶层兜底:任何 scrub 环节 panic 都不许向日志调用点传播——billing/quota 等
+		// worker loop 无 recover,一条日志绝不能打崩进程。panic 时该条记录降级为
+		// 安全形态:保留消息与级别,attrs 整体替换为 scrub_panic 标记(fail-closed)。
+		defer func() {
+			if recover() != nil {
+				scrubbed = slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+				scrubbed.AddAttrs(slog.String("logfacade", "scrub_panic"))
+			}
+		}()
+		record.Attrs(func(attr slog.Attr) bool {
+			scrubbed.AddAttrs(scrubAttr(attr))
+			return true
+		})
+	}()
 	return h.inner.Handle(ctx, scrubbed)
 }
 
@@ -113,16 +124,43 @@ func scrubAttr(attr slog.Attr) slog.Attr {
 		// error 特判:JSONHandler 会把多数 error 序列化成 {},丢掉错误文本;
 		// 这里先取文本再扫,保住 TextHandler 时代的可观测性。
 		if err, ok := value.Any().(error); ok {
-			text := err.Error()
-			if privacy.ContainsForbiddenRawData([]byte(text)) {
+			text, ok := safeErrorText(err)
+			if !ok || privacy.ContainsForbiddenRawData([]byte(text)) {
 				return slog.String(attr.Key, redactedMarker)
 			}
 			return slog.String(attr.Key, text)
 		}
-		raw, jerr := json.Marshal(value.Any())
-		if jerr != nil || privacy.ContainsForbiddenRawData(raw) {
+		raw, ok := safeMarshal(value.Any())
+		if !ok || privacy.ContainsForbiddenRawData(raw) {
 			return slog.String(attr.Key, redactedMarker)
 		}
 	}
 	return slog.Attr{Key: attr.Key, Value: value}
+}
+
+// safeErrorText 提取 error 文本。typed-nil(指针接收者 Error() 且内部指针为
+// nil)等有毒实现会 panic;基底 fmt 渲染是 panic-safe 的,门面不许倒退——
+// 这里 recover 后 fail-closed,由调用方整值替换,绝不向日志调用点传播。
+func safeErrorText(err error) (text string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			text, ok = "", false
+		}
+	}()
+	return err.Error(), true
+}
+
+// safeMarshal 序列化 Any 值。有毒 MarshalJSON 的 panic 会穿透 encoding/json
+// 的内部 recover(它只回收自家 jsonError),这里兜住并 fail-closed。
+func safeMarshal(v any) (raw []byte, ok bool) {
+	defer func() {
+		if recover() != nil {
+			raw, ok = nil, false
+		}
+	}()
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }

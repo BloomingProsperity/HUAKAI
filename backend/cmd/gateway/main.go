@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -53,6 +54,15 @@ func setupSlogFacade() {
 		Env:     strings.ToLower(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE"))),
 		Version: buildinfo.Version,
 	}))
+	// slog.SetDefault 会顺手把标准库 log 包改道到 slog handler,并固定按 Info 级
+	// 过 loglevel 闸门(Go 源码 log/slog/logger.go 的 SetDefault:
+	// log.SetOutput(handlerWriter)+log.SetFlags(0))。后果:/loglevel=warn 降噪时,
+	// http.Server 的 "http: panic serving"+栈、trust-chain fail-open 警告等走 log 包
+	// 的输出会整条静默消失;且 log.Printf 的动态文本进 message(门面不扫消息),
+	// 成脱敏破口。这里刻意退回该隐式桥接,恢复 log 包基底行为(无条件直写 stderr、
+	// 标准时间前缀);log 通道统一留后续片(先迁调用点到 slog 才能安全桥)。
+	log.SetOutput(os.Stderr)
+	log.SetFlags(log.LstdFlags)
 }
 
 func run(logger *zap.Logger) error {

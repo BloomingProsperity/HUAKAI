@@ -191,3 +191,96 @@ func TestNilWriterDefaultsSafely(t *testing.T) {
 	logger := New(Options{Service: "s", Env: "e", Version: "v"})
 	logger.Info("suppressed")
 }
+
+// mustNotPanic 把 panic 转成 Fatal:日志发射绝不允许向调用点抛 panic
+// (billing/quota worker loop 无 recover,一条日志能打崩整进程)。
+func mustNotPanic(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("日志发射不得 panic,得到: %v", r)
+		}
+	}()
+	fn()
+}
+
+// nilErrProbe 指针接收者读字段:typed-nil 时调用 Error() 即 nil deref panic。
+type nilErrProbe struct{ msg string }
+
+func (p *nilErrProbe) Error() string { return p.msg }
+
+// poisonMarshaler 模拟有毒 MarshalJSON:panic 会穿透 encoding/json 的内部 recover。
+type poisonMarshaler struct{}
+
+func (poisonMarshaler) MarshalJSON() ([]byte, error) { panic("poison marshaler") }
+
+// panic 安全判别:typed-nil error(err != nil 但内部指针为 nil)过门面不得 panic,
+// 且该值 fail-closed 替换。变异靶:去掉 safeErrorText 的 recover → 本测试必红(崩溃即 Fatal)。
+func TestTypedNilErrorDoesNotPanic(t *testing.T) {
+	withLevel(t, zapcore.InfoLevel)
+	logger, buf := newBufLogger()
+
+	var probe *nilErrProbe
+	var err error = probe // typed-nil:接口非 nil,内部指针 nil
+	mustNotPanic(t, func() {
+		logger.Warn("op failed", slog.Any("err", err))
+	})
+	if !strings.Contains(buf.String(), "op failed") {
+		t.Fatalf("记录本体应照常输出(降级而非丢弃): %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), redactedMarker) {
+		t.Fatalf("有毒 error 值应 fail-closed 替换: %s", buf.String())
+	}
+}
+
+// panic 安全判别:有毒 MarshalJSON 过门面不得 panic,值 fail-closed 替换。
+// 变异靶:去掉 safeMarshal 的 recover → 本测试必红。
+func TestPoisonMarshalerDoesNotPanic(t *testing.T) {
+	withLevel(t, zapcore.InfoLevel)
+	logger, buf := newBufLogger()
+
+	mustNotPanic(t, func() {
+		logger.Warn("op failed", slog.Any("payload", poisonMarshaler{}))
+	})
+	if !strings.Contains(buf.String(), "op failed") {
+		t.Fatalf("记录本体应照常输出: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), redactedMarker) {
+		t.Fatalf("有毒 Marshaler 值应 fail-closed 替换: %s", buf.String())
+	}
+}
+
+// 一等凭证形态判别:本仓自己签发的 hk_* key(admin/keygen.go)、裸 JWT、GitHub PAT
+// 过门面必须被抹掉。变异靶:从 privacy 标记表删 hk_live_ 等新条目 → 本测试必红。
+func TestScrubsFirstPartyKeyForms(t *testing.T) {
+	withLevel(t, zapcore.InfoLevel)
+	logger, buf := newBufLogger()
+
+	logger.Warn("key echo",
+		slog.String("k1", "hk_live_abcdefgh23456789abcdefgh"),
+		slog.String("k2", "eyJhbGciOiJIUzI1NiJ9.fake.fake"),
+		slog.String("k3", "ghp_FAKEFAKEFAKEFAKE"),
+	)
+	out := buf.String()
+	for _, leak := range []string{"hk_live_", "eyJhbGci", "ghp_FAKE"} {
+		if strings.Contains(out, leak) {
+			t.Fatalf("一等凭证形态 %q 落了明文: %s", leak, out)
+		}
+	}
+}
+
+// map key 扫描判别:秘密出现在 JSON map key 位(Any-map 的 key / 字符串值恰为
+// 合法 JSON 时树扫描的 key)同样必须命中。变异靶:去掉 privacy
+// containsForbiddenValue 的 key 子串扫 → 本测试必红。
+func TestScrubsSecretsInMapKeys(t *testing.T) {
+	withLevel(t, zapcore.InfoLevel)
+	logger, buf := newBufLogger()
+
+	logger.Warn("x",
+		slog.Any("m", map[string]int{"sk-live-FAKE": 3}),
+		slog.String("s", `{"sk-live-FAKE":7}`),
+	)
+	if strings.Contains(buf.String(), "sk-live-FAKE") {
+		t.Fatalf("map key 承载的秘密落了明文: %s", buf.String())
+	}
+}
