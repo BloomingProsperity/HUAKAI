@@ -400,7 +400,7 @@ func identityWiredDeps(t *testing.T, externalAccountID string) ChatHandlerDeps {
 	}, provider.AccountInfo{
 		AccountID:           1,
 		Platform:            "anthropic",
-		AccountType:         "apikey",
+		AccountType:         "claude_ai_oauth", // 反转/订阅号:身份改写仅对反转号生效
 		AccountCredentialID: 9001,
 		CredentialVersion:   1,
 		ExternalAccountID:   externalAccountID,
@@ -429,7 +429,10 @@ func TestChatCompletions_HCSF路真接R7改写钩子(t *testing.T) {
 	d := identityWiredDeps(t, externalID)
 	d.CanonicalDispatcher = dispatcher
 
-	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	// 反转号只接受官方客户端:请求带 Claude Code UA 过鉴真门,再验证 HCSF 钩子改写。
+	rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions",
+		`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"User-Agent": "claude-cli/2.1.78 (external, cli)"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
 	}
@@ -437,11 +440,10 @@ func TestChatCompletions_HCSF路真接R7改写钩子(t *testing.T) {
 		t.Fatalf("canonical dispatcher calls = %d; want 1", dispatcher.calls)
 	}
 	if !dispatcher.hookNonNil {
-		t.Fatalf("HCSF 路未接 R7 改写钩子:HCSFDispatchInput.IdentityRewrite 为 nil —— dispatch.go 接线疑似缺失")
+		t.Fatalf("HCSF 路未接改写钩子:HCSFDispatchInput.IdentityRewrite 为 nil —— dispatch.go 接线疑似缺失")
 	}
 	// 无 metadata 的 anthropic body 经钩子后必须冒出 metadata + 含上游 id 的 user_id。
-	// (默认请求 UA 无 Claude Code 版本 → legacy 形 user_id,account 组件在
-	// "_account_<id>_" 段;故用包含式断言,对 legacy / JSON 两形态都成立。)
+	// (用包含式断言,对 legacy / JSON 两种 user_id 形态都成立。)
 	gotAccountUUID := extractMetadataUserIDAccountComponent(t, dispatcher.rewrittenOut)
 	if gotAccountUUID != externalID {
 		t.Fatalf("HCSF 钩子改写后 account 组件应为上游 id %q,实际 %q\nbody=%s", externalID, gotAccountUUID, dispatcher.rewrittenOut)

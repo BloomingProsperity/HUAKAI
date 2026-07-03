@@ -74,7 +74,7 @@ func newIdentityRewriteExecFamily(externalAccountID, protocolFamily string) *cha
 		accInfo: provider.AccountInfo{
 			AccountID:         42,
 			Platform:          "anthropic",
-			AccountType:       "apikey",
+			AccountType:       "claude_ai_oauth", // 反转/订阅号:身份改写仅对反转号生效
 			ExternalAccountID: externalAccountID,
 		},
 	}
@@ -163,13 +163,13 @@ func TestIdentityRewrite_failopen_空上游id_不改写(t *testing.T) {
 	}
 }
 
-// TestIdentityRewrite_默认关_零变更 验证:运维开关默认关(不设 env)时,
-// identityRewrite 返回与入参逐字节等价的 body(PR#115 已有此性质,确认穿线后仍绿)。
+// TestIdentityRewrite_显式关_零变更 验证:运维开关显式设为 false 时,
+// identityRewrite 返回与入参逐字节等价的 body。
 //
-// 变异证伪:把开关默认当成开 → 改写发生 → account_uuid 变化 → 字节不再等价 → 红。
-func TestIdentityRewrite_默认关_零变更(t *testing.T) {
-	// 显式清空,防环境污染;默认关。
-	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "")
+// 变异证伪:把 false 也当成开 → 改写发生 → account_uuid 变化 → 字节不再等价 → 红。
+func TestIdentityRewrite_显式关_零变更(t *testing.T) {
+	// 显式关:开关设为 false。
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "false")
 	t.Setenv("HUAKAI_MIMICRY_IDENTITY_SECRET", "fixed-secret-for-test")
 
 	body := identityRewriteFixtureBody(t)
@@ -177,7 +177,7 @@ func TestIdentityRewrite_默认关_零变更(t *testing.T) {
 
 	out := ex.identityRewrite(body)
 	if string(out) != string(body) {
-		t.Fatalf("默认关时必须字节等价\n原: %s\n出: %s", body, out)
+		t.Fatalf("显式关时必须字节等价\n原: %s\n出: %s", body, out)
 	}
 }
 
