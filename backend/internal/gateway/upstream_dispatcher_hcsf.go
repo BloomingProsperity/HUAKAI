@@ -270,6 +270,7 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		in.InboundBody = body
 		return a.BuildRequest(ctx, in)
 	}
+	resolveURLImagesForFamily(ctx, env, endpointFamily, defaultImageFetcher)
 	body, err := hcsfRequestBody(env, endpointFamily)
 	if err != nil {
 		return nil, err
