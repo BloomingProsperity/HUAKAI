@@ -15,14 +15,42 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let request = proto::read_control_request(&mut ipc).await?;
+    // corr 与 Go 出口边界日志同一 correlation_id,令 go↔rust 两侧日志可关联(跨边界追一次握手)。
+    // 老 Go 客户端不发本字段时为空串,不影响握手。component/phase 字段与 Go 侧口径一致,便于统一过滤。
+    let corr = request.correlation_id.as_deref().unwrap_or("");
+    tracing::info!(
+        component = "egress_sidecar",
+        phase = "accepted",
+        correlation_id = corr,
+        target_host = %request.target_host,
+        target_port = request.port,
+        profile_id = %request.profile_id,
+        force_h1 = request.force_h1.unwrap_or(false),
+        proxied = request.proxy.is_some(),
+        "egress sidecar 收到拨号请求"
+    );
     let profile = match profiles.get(&request.profile_id) {
         Ok(profile) => profile.clone(),
         Err(error) => {
+            tracing::warn!(
+                component = "egress_sidecar",
+                phase = "rejected",
+                correlation_id = corr,
+                profile_id = %request.profile_id,
+                error = %error,
+                "egress sidecar profile 不受理,拒绝拨号"
+            );
             proto::write_control_ack(&mut ipc, &ControlAck::error(error.to_string())).await?;
             return Ok(());
         }
     };
     if request.target_host.trim().is_empty() || request.port == 0 {
+        tracing::warn!(
+            component = "egress_sidecar",
+            phase = "rejected",
+            correlation_id = corr,
+            "egress sidecar target_host/port 非法,拒绝拨号"
+        );
         proto::write_control_ack(
             &mut ipc,
             &ControlAck::error("target_host and port are required"),
@@ -46,11 +74,26 @@ where
     {
         Ok(tls) => tls,
         Err(error) => {
+            tracing::warn!(
+                component = "egress_sidecar",
+                phase = "upstream_failed",
+                correlation_id = corr,
+                target_host = %request.target_host,
+                error = %error,
+                "egress sidecar 上游连接失败"
+            );
             proto::write_control_ack(&mut ipc, &ControlAck::error(error.to_string())).await?;
             return Ok(());
         }
     };
     proto::write_control_ack(&mut ipc, &ControlAck::ok()).await?;
+    tracing::info!(
+        component = "egress_sidecar",
+        phase = "established",
+        correlation_id = corr,
+        target_host = %request.target_host,
+        "egress sidecar 隧道建立"
+    );
     match upstream {
         ConnectedUpstream::Raw(mut tls) => {
             tokio::io::copy_bidirectional(&mut ipc, &mut tls).await?;
@@ -249,6 +292,7 @@ mod tests {
             target_host: "127.0.0.1".to_owned(),
             port: 443,
             profile_id: "missing-profile".to_owned(),
+            correlation_id: None,
             force_h1: None,
             proxy: None,
         };

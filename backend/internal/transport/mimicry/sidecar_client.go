@@ -2,9 +2,12 @@ package mimicry
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,6 +15,16 @@ import (
 	"strings"
 	"time"
 )
+
+// newEgressCorrelationID 生成一次出口拨号的关联 id(8 字节 hex)。best-effort:crypto/rand
+// 极罕见失败时返回空串,绝不因生成日志关联 id 而让拨号失败(可观测不得反噬可用性)。
+func newEgressCorrelationID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
+}
 
 const (
 	SidecarProfileAnthropicCLIMimicryV1 = "anthropic-cli-mimicry-v1"
@@ -23,10 +36,21 @@ var sidecarDialContext = (&net.Dialer{}).DialContext
 // SidecarClient 把 Go 的 transport 路径接到本地 BoringSSL TLS sidecar。
 type SidecarClient struct {
 	socketPath string
+	// logger 为 go↔rust 出口边界的分层结构化日志目标;nil 时兜底 slog.Default()
+	// (片 D 门面)。测试经 WithLogger 注入收集型 handler 断言边界事件。
+	logger *slog.Logger
 }
 
 func NewSidecarClient(socketPath string) *SidecarClient {
 	return &SidecarClient{socketPath: socketPath}
+}
+
+// WithLogger 注入出口边界日志的 logger,返回自身便于链式;nil 时用 slog.Default()。
+func (c *SidecarClient) WithLogger(logger *slog.Logger) *SidecarClient {
+	if c != nil {
+		c.logger = logger
+	}
+	return c
 }
 
 func NewSidecarRoundTripper(client *SidecarClient, profileID string) http.RoundTripper {
@@ -123,27 +147,35 @@ func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, prof
 	if profileID == "" {
 		return nil, fmt.Errorf("mimicry sidecar: empty profile id")
 	}
+	correlationID := newEgressCorrelationID()
+	obs := newSidecarDialObserver(c.logger, correlationID, host, port, profileID, forceH1, proxy != nil, time.Now())
 	conn, err := sidecarDialContext(ctx, "unix", c.socketPath)
 	if err != nil {
+		obs.failed(ctx, sidecarPhaseDial, err)
 		return nil, fmt.Errorf("mimicry sidecar: dial unix socket %s: %w", c.socketPath, err)
 	}
 	if err := setDeadlineFromContext(conn, ctx); err != nil {
+		obs.failed(ctx, sidecarPhaseDial, err)
 		conn.Close()
 		return nil, err
 	}
 	req := sidecarControlRequest{
-		TargetHost: host,
-		Port:       uint16(port),
-		ProfileID:  profileID,
-		ForceH1:    forceH1Ptr(forceH1),
-		Proxy:      proxy,
+		TargetHost:    host,
+		Port:          uint16(port),
+		ProfileID:     profileID,
+		CorrelationID: correlationID,
+		ForceH1:       forceH1Ptr(forceH1),
+		Proxy:         proxy,
 	}
-	if err := writeSidecarFrame(conn, req); err != nil {
+	frameBytes, err := writeSidecarFrame(conn, req)
+	if err != nil {
+		obs.failed(ctx, sidecarPhaseWriteControl, err)
 		conn.Close()
 		return nil, fmt.Errorf("mimicry sidecar: write control frame: %w", err)
 	}
 	var ack sidecarControlAck
 	if err := readSidecarFrame(conn, &ack); err != nil {
+		obs.failed(ctx, sidecarPhaseReadAck, err)
 		conn.Close()
 		return nil, fmt.Errorf("mimicry sidecar: read ack frame: %w", err)
 	}
@@ -152,9 +184,11 @@ func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, prof
 		if ack.Error == "" {
 			ack.Error = "sidecar rejected request"
 		}
+		obs.rejected(ctx, ack.Error)
 		return nil, fmt.Errorf("mimicry sidecar: %s", ack.Error)
 	}
 	_ = conn.SetDeadline(time.Time{})
+	obs.established(ctx, frameBytes)
 	return conn, nil
 }
 
@@ -187,6 +221,10 @@ type sidecarControlRequest struct {
 	TargetHost string `json:"target_host"`
 	Port       uint16 `json:"port"`
 	ProfileID  string `json:"profile_id"`
+	// CorrelationID 随控制帧过河给 Rust sidecar,令 go↔rust 两侧日志用同一 id 关联(跨边界
+	// 追一次出口握手)。omitempty:空时不写键,老 Rust sidecar(无此字段且不 deny_unknown_fields)
+	// 直接忽略,向后兼容。Rust 侧 proto::ControlRequest 加同名 serde(default) 字段后即可 tracing 记录。
+	CorrelationID string `json:"correlation_id,omitempty"`
 	// ForceH1 仅在非 nil 时随 control frame 下发(omitempty + 指针);nil(默认,旧线缆)时
 	// JSON 不含 force_h1 键,与历史 Rust sidecar 完全兼容。Rust 侧 serde(default) 把缺省解为 None。
 	ForceH1 *bool `json:"force_h1,omitempty"`
@@ -278,21 +316,25 @@ type sidecarControlAck struct {
 	Error string `json:"error,omitempty"`
 }
 
-func writeSidecarFrame(conn net.Conn, value any) error {
+// writeSidecarFrame 发一帧长度前缀 + JSON body,返回 body 字节数(供出口帧传输层
+// 观测)。写失败返回 (0, err)。
+func writeSidecarFrame(conn net.Conn, value any) (int, error) {
 	body, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(body) > sidecarMaxFrameLen {
-		return fmt.Errorf("frame length %d exceeds max %d", len(body), sidecarMaxFrameLen)
+		return 0, fmt.Errorf("frame length %d exceeds max %d", len(body), sidecarMaxFrameLen)
 	}
 	var prefix [4]byte
 	binary.LittleEndian.PutUint32(prefix[:], uint32(len(body)))
 	if _, err := conn.Write(prefix[:]); err != nil {
-		return err
+		return 0, err
 	}
-	_, err = conn.Write(body)
-	return err
+	if _, err := conn.Write(body); err != nil {
+		return 0, err
+	}
+	return len(body), nil
 }
 
 func readSidecarFrame(conn net.Conn, value any) error {

@@ -9,6 +9,11 @@ pub struct ControlRequest {
     pub target_host: String,
     pub port: u16,
     pub profile_id: String,
+    // correlation_id 是 Go 侧本次拨号的关联 id,随控制帧过河;Rust 侧 tracing 用它与 Go 出口
+    // 边界日志关联(跨边界追一次握手,而非两侧各记孤岛日志)。serde(default)+skip_serializing_if
+    // 向后兼容:老 Go 客户端不发本字段时反序列化为 None,None 时序列化也不写出该键(=旧线缆字节)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
     // force_h1 为 Some(true) 时,本次拨号握手只广告 ALPN=http/1.1,从根上消除 h2 升级,
     // 必走 Raw 隧道(对齐 Go uTLS 路 utls_dialer.go 的 ForceH1)。
     // serde(default) + skip_serializing_if 保证向后兼容:老 Go 客户端不发本字段时反序列化为
@@ -177,6 +182,7 @@ mod tests {
             target_host: "api.anthropic.com".to_owned(),
             port: 443,
             profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            correlation_id: None,
             force_h1: None,
             proxy: None,
         };
@@ -216,6 +222,7 @@ mod tests {
             target_host: "api.anthropic.com".to_owned(),
             port: 443,
             profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            correlation_id: None,
             force_h1: None,
             proxy: None,
         };
@@ -228,6 +235,52 @@ mod tests {
         );
     }
 
+    // correlation_id 与 force_h1 同构:带值时 round-trip 保值;None 时序列化省略键(旧线缆字节
+    // 不变);缺该键的老帧解出 None。守护跨边界关联字段的向后兼容(删 serde(default) 则老帧解析
+    // 报错、删 skip_serializing_if 则 None 多写 null,两处变异均此测试红)。
+    #[tokio::test]
+    async fn control_request_correlation_id_round_trips_and_stays_backward_compatible() {
+        let with_corr = super::ControlRequest {
+            target_host: "api.anthropic.com".to_owned(),
+            port: 443,
+            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            correlation_id: Some("abc123def456".to_owned()),
+            force_h1: None,
+            proxy: None,
+        };
+        let mut wire = Vec::new();
+        super::write_control_request(&mut wire, &with_corr)
+            .await
+            .unwrap();
+        let decoded = super::read_control_request(&mut Cursor::new(wire))
+            .await
+            .unwrap();
+        assert_eq!(decoded.correlation_id.as_deref(), Some("abc123def456"));
+
+        let without = super::ControlRequest {
+            target_host: "api.anthropic.com".to_owned(),
+            port: 443,
+            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            correlation_id: None,
+            force_h1: None,
+            proxy: None,
+        };
+        let json = serde_json::to_string(&without).unwrap();
+        assert!(
+            !json.contains("correlation_id"),
+            "correlation_id=None 必须省略该键以保持旧线缆兼容,实际 JSON={json}"
+        );
+
+        let legacy =
+            br#"{"target_host":"api.anthropic.com","port":443,"profile_id":"anthropic-cli-mimicry-v1"}"#;
+        let mut lwire = Vec::new();
+        super::write_frame(&mut lwire, legacy).await.unwrap();
+        let ld = super::read_control_request(&mut Cursor::new(lwire))
+            .await
+            .unwrap();
+        assert_eq!(ld.correlation_id, None);
+    }
+
     // 抓的缺陷:proxy=None(无账号级代理=直连目标,今日行为)时,若 ProxySpec 去掉
     // skip_serializing_if,序列化会多写 "proxy":null,改变发往老 sidecar 的线缆字节。
     // 本测试断言 None 时序列化输出里不含 proxy 键,守护向后兼容。
@@ -237,6 +290,7 @@ mod tests {
             target_host: "api.anthropic.com".to_owned(),
             port: 443,
             profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            correlation_id: None,
             force_h1: None,
             proxy: None,
         };
@@ -275,6 +329,7 @@ mod tests {
             target_host: "api.anthropic.com".to_owned(),
             port: 443,
             profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            correlation_id: None,
             force_h1: None,
             proxy: Some(super::ProxySpec {
                 scheme: "http".to_owned(),
@@ -331,6 +386,7 @@ mod tests {
             target_host: "api.anthropic.com".to_owned(),
             port: 443,
             profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            correlation_id: None,
             force_h1: Some(true),
             proxy: None,
         };

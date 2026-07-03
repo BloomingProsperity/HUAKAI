@@ -83,7 +83,7 @@ func ProbeSidecarForMode(ctx context.Context, socketPath string, mode TransportM
 		Port:       1,
 		ProfileID:  profileID,
 	}
-	if err := writeSidecarFrame(conn, req); err != nil {
+	if _, err := writeSidecarFrame(conn, req); err != nil {
 		return fmt.Errorf("%w: write probe frame: %w", ErrSidecarUnavailable, err)
 	}
 	var ack sidecarControlAck
