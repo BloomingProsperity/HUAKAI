@@ -34,8 +34,9 @@ or genuine forks. One PR per slice; report after each.
    authenticated context, never the request body.
 5. **Test quality:** a test must go RED when its defect is introduced — prove it by mutation; use `-count=1`
    when a test reads runtime files (Go test cache otherwise reports false-green).
-6. **Don't touch `Sidebar.tsx`; avoid the proxies-collision packages** (pool / registry / proxy / channel /
-   gateway* / tlsfp*) while that branch is active.
+6. **Don't touch `Sidebar.tsx`.** (历史条款注:曾要求避开 proxies-collision 包
+   (pool/registry/proxy/channel/gateway*/tlsfp*)——该分支早已合并,Owner 于 2026-06-26 明确解冻,
+   2026-07-03 再次确认「哪来那么多冻结包」。这些包照常改,走正常审查门即可;别再当冻结区。)
 7. **语言:全中文(Owner 硬规则,不可违反)。** 所有面向 Owner 的回复、**代码注释**(`.go` 生产代码与测试)、
    commit message 正文、计划与 `docs/process` 文档,以及**派给 subagent 的指令和要求其返回的报告**,一律用中文。
    英文技术标识符(函数名 / 类型名 / 环境变量名 / SQL 关键字)保留英文,只是注释与散文用中文。派 subagent 时
