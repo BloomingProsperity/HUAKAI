@@ -16,10 +16,9 @@ git checkout feat/fe-wire-users-mod    # ← 当前主线(非 main;main 落后 2
 
 # 2. 三镜(clean-room 调研用,§16)——重拉即可,不用从旧机搬
 mkdir -p /home/ubuntu/refs
-git clone --depth=1 https://github.com/<sub2api>       /home/ubuntu/refs/sub2api
-git clone --depth=1 https://github.com/<new-api>       /home/ubuntu/refs/new-api
-git clone --depth=1 https://github.com/<CLIProxyAPI>   /home/ubuntu/refs/CLIProxyAPI
-#   ↑ 具体 repo URL 见旧机 ~/refs/*/.git/config,或 Owner 提供
+git clone --depth=1 https://github.com/Wei-Shaw/sub2api.git          /home/ubuntu/refs/sub2api
+git clone --depth=1 https://github.com/QuantumNous/new-api.git       /home/ubuntu/refs/new-api
+git clone --depth=1 https://github.com/router-for-me/CLIProxyAPI.git /home/ubuntu/refs/CLIProxyAPI
 
 # 3. 恢复 Claude 记忆(关键!不在 git 里,必须从旧机 scp 过来)
 #    旧机文件:/home/ubuntu/claude-memory-backup-20260703.tar.gz
