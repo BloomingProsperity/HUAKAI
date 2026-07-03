@@ -194,7 +194,7 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 		{ProtocolPerplexityChat, "perplexity", "https://api.perplexity.ai/chat/completions"},
 		{ProtocolFireworksChat, "fireworks", "https://api.fireworks.ai/inference/v1/chat/completions"},
 		{ProtocolKimiChat, "kimi", "https://api.kimi.com/coding/v1/chat/completions"},
-		{ProtocolQwenChat, "qwen", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"},
+		{ProtocolQwenChat, "qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"},
 		{ProtocolGLMChat, "glm", "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
 		{ProtocolYiChat, "yi", "https://api.lingyiwanwu.com/v1/chat/completions"},
 		{ProtocolBaichuanChat, "baichuan", "https://api.baichuan-ai.com/v1/chat/completions"},
@@ -202,7 +202,7 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 		{ProtocolErnieChat, "ernie", "https://qianfan.baidubce.com/v2/chat/completions"},
 		{ProtocolStepChat, "step", "https://api.stepfun.com/v1/chat/completions"},
 		{ProtocolHunyuanChat, "hunyuan", "https://api.hunyuan.cloud.tencent.com/v1/chat/completions"},
-		{ProtocolMinimaxChat, "minimax", "https://api.minimax.io/v1/chat/completions"},
+		{ProtocolMinimaxChat, "minimax", "https://api.minimaxi.com/v1/chat/completions"},
 		{ProtocolCohereChat, "cohere", "https://api.cohere.ai/compatibility/v1/chat/completions"},
 		{ProtocolOllamaChat, "ollama", "http://127.0.0.1:11434/v1/chat/completions"},
 	}

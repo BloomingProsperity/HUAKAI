@@ -92,7 +92,7 @@ const (
 	ProtocolErnieChat    = "ernie_chat"    // 文心 ERNIE（百度千帆 Qianfan v2，OpenAI 兼容）
 	ProtocolStepChat     = "step_chat"     // 阶跃星辰 StepFun（OpenAI 兼容）
 	ProtocolHunyuanChat  = "hunyuan_chat"  // 腾讯混元 Hunyuan（OpenAI 兼容端点，Bearer）
-	ProtocolMinimaxChat  = "minimax_chat"  // MiniMax（api.minimax.io，OpenAI 兼容 /v1/chat/completions，Bearer）
+	ProtocolMinimaxChat  = "minimax_chat"  // MiniMax（api.minimaxi.com 国内站，OpenAI 兼容 /v1/chat/completions，Bearer）
 	ProtocolCohereChat   = "cohere_chat"   // Cohere（api.cohere.ai/compatibility/v1，OpenAI 兼容，Bearer）
 	ProtocolOllamaChat   = "ollama_chat"   // Ollama 自托管（OpenAI 兼容 /v1/chat/completions；默认 endpoint 仅占位，实际部署必须经 channel/account base_url 覆盖到真实主机）
 	ProtocolOllamaNative = "ollama_native" // Ollama 原生 /api/chat（NDJSON 流式、options{} 采样参数；与 ollama_chat 并存，默认 endpoint 同为本机占位）
@@ -210,7 +210,9 @@ func Build() *provider.StaticRegistry {
 	// Bearer 鉴权；channel base_url 可覆盖默认 Endpoint。
 	r.MustRegister(ProtocolQwenChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "qwen",
-		Endpoint:     "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+		// 默认打国内站(与 new-api 一致:constant/channel.go 默认 dashscope.aliyuncs.com);
+		// 国际站 dashscope-intl 由运营者按需经 channel base_url 覆盖。
+		Endpoint:     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 	})
 	r.MustRegister(ProtocolGLMChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "glm",
@@ -242,7 +244,9 @@ func Build() *provider.StaticRegistry {
 	})
 	r.MustRegister(ProtocolMinimaxChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "minimax",
-		Endpoint:     "https://api.minimax.io/v1/chat/completions",
+		// 默认打国内站 api.minimaxi.com(new-api 用旧域名 api.minimax.chat,此处取现行国内域名);
+		// 国际站 api.minimax.io 由运营者按需经 channel base_url 覆盖。
+		Endpoint:     "https://api.minimaxi.com/v1/chat/completions",
 	})
 	r.MustRegister(ProtocolCohereChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "cohere",
