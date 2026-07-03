@@ -37,12 +37,14 @@ const (
 // ok=false 表示该 vendor 没有「官方客户端」概念(如纯 apikey 聚合厂),不应对其
 // 启用 official-client-only。
 //
-// 当前覆盖 Anthropic(Claude Code)。Codex(OpenAI)/Gemini CLI 待 clientid 扩展
-// 对应 Identity 后接入(见包级 TODO:clientid 目前无 Codex/GeminiCLI 身份枚举)。
+// 当前覆盖 Anthropic(Claude Code)与 OpenAI(Codex CLI)。Gemini CLI 待补
+// (请求侧官方客户端标识不明确、反转路径 env-gated,后续接)。
 func RequiredIdentity(vendor string) (clientid.Identity, bool) {
 	switch strings.ToLower(strings.TrimSpace(vendor)) {
 	case "anthropic", "claude":
 		return clientid.IdentityClaudeCode, true
+	case "openai", "codex", "chatgpt":
+		return clientid.IdentityCodexCLI, true
 	default:
 		return "", false
 	}

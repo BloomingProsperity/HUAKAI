@@ -63,7 +63,23 @@ func TestRequiredIdentity_覆盖(t *testing.T) {
 	if id, ok := RequiredIdentity("  Claude  "); !ok || id != clientid.IdentityClaudeCode {
 		t.Fatalf("大小写/空白不敏感 Claude 应要求 Claude Code,得 id=%q ok=%v", id, ok)
 	}
-	if _, ok := RequiredIdentity("openai"); ok {
-		t.Fatalf("openai 暂未接入官方客户端映射,应 ok=false(待 clientid 扩展 Codex 身份)")
+	if id, ok := RequiredIdentity("openai"); !ok || id != clientid.IdentityCodexCLI {
+		t.Fatalf("openai 应要求 Codex CLI,得 id=%q ok=%v", id, ok)
+	}
+	if _, ok := RequiredIdentity("some_apikey_vendor"); ok {
+		t.Fatalf("未覆盖 vendor 应 ok=false")
+	}
+}
+
+// TestAllowed_Codex门 验证 openai 反转号开门时只放 Codex CLI,拒其余(含 Claude Code)。
+//
+// 变异证伪:RequiredIdentity 把 openai 也映射成 ClaudeCode → Codex CLI 被拒/Claude 被放 → 变红。
+func TestAllowed_Codex门(t *testing.T) {
+	if ok, reason := Allowed(clientid.IdentityCodexCLI, "openai", true); !ok || reason != ReasonOfficialClientOK {
+		t.Fatalf("Codex CLI 访问 openai 反转号应放行,得 ok=%v reason=%q", ok, reason)
+	}
+	// Claude Code 不是 Codex → 访问 openai 反转号应拒。
+	if ok, _ := Allowed(clientid.IdentityClaudeCode, "openai", true); ok {
+		t.Fatalf("Claude Code 非 Codex,访问 openai 反转号应拒")
 	}
 }
