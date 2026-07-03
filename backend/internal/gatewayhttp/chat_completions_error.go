@@ -149,7 +149,7 @@ func channelHealthKey(tenantID int64, account provider.AccountInfo) (channelheal
 }
 
 // recordChannelHealthSignal 记一条渠道健康信号。authClass 仅当 class==SignalAuthChallenge 时有意义
-//(auth 车道 iron-clad/ambiguous 分级);非 auth 信号传 0(ambiguous,不被消费)。SignalAuthChallenge
+// (auth 车道 iron-clad/ambiguous 分级);非 auth 信号传 0(ambiguous,不被消费)。SignalAuthChallenge
 // 刻意不喂 RecentReqRing——auth blip 既不进健康 FSM 也不污染 RPM 累计,与接线前(auth 返回空信号、
 // 直接跳过)的 RPM 行为逐字节等价。
 func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key channelhealth.ChannelKey, class channelhealth.SignalClass, statusCode int, latency time.Duration, requestID string, resetAt *time.Time, authClass authcooldown.FailureClass) {

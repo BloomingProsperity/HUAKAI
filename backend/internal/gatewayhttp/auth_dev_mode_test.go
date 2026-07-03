@@ -75,7 +75,7 @@ func TestAuthPasswordResetDevModeReturnsResetToken(t *testing.T) {
 // 变异检查:移除 devAuthReturnTokenEnabled 中的 production 短路,响应就会在
 // production 下重新带上 verification_token → 该断言变红。与上面的 dev 测试的
 // 区分点:标志相同,仅 HUAKAI_RELEASE_MODE 不同,且期望的响应体不同
-//(该 key 在 prod 下缺失,在 dev 下存在)。
+// (该 key 在 prod 下缺失,在 dev 下存在)。
 func TestAuthRegisterDevTokenSuppressedInProduction(t *testing.T) {
 	t.Setenv("HUAKAI_DEV_AUTH_RETURN_TOKEN", "true")
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")

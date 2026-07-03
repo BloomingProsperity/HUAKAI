@@ -20,7 +20,7 @@ import (
 // TestAdminObsUsageProjectsClientIPAndUA —— 审计闭环证明（真实 PG）。
 //
 // 它守护的缺陷：ip_address/user_agent 已持久化在 usage_records 上
-//（迁移 0112），但 admin 可观测性 usage 列表从未把它们投影出来。
+// （迁移 0112），但 admin 可观测性 usage 列表从未把它们投影出来。
 // 本测试播种一条携带已知 ip/ua 的 usage_record，驱动真实的 admin usage
 // handler（真实 ListUsageRecords 查询 → 真实 mapUsageRow 投影，基于真实的
 // *pgxpool.Pool store），并断言 JSON 响应携带完全一致的值。

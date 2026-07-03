@@ -24,7 +24,7 @@ import (
 //     → 登录会落到默认 writeSessionError 的 503 (ErrDeviceConfirmationRequired 走 default 分支),
 //     "want 403" 断言变红, 且 email.deviceConfirmation 仍为空 ("confirmation email not sent" 变红)。
 //   - 把响应体 device_confirmation_required 改成回显 token → "response body must not contain token" 变红。
-//   (已手动验证其一: 临时删掉 password 登录点的 handleDeviceConfirmationRequired 分支 → status=503 报红; 还原后绿。)
+//     (已手动验证其一: 临时删掉 password 登录点的 handleDeviceConfirmationRequired 分支 → status=503 报红; 还原后绿。)
 func TestDeviceConfirmationEndToEnd_LoginBlockedSendsEmailThenConfirmFreesSlot(t *testing.T) {
 	now := time.Date(2026, 6, 29, 9, 0, 0, 0, time.UTC)
 	authStore := newGatewayMemoryAuthStore(now)
