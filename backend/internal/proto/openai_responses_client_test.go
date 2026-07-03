@@ -295,27 +295,84 @@ func TestOpenAIResponsesClient_RequestReasoningItemPreservesOpaqueState(t *testi
 	}
 }
 
-func TestOpenAIResponsesClient_ImageInputPending(t *testing.T) {
+// TestOpenAIResponsesClient_ImageInputBuildsNode 断言 Responses 的 input_image(裸字符串
+// image_url)建 CapabilityImage 节点、text/image 顺序保留、无 d9 pending loss。此前只记
+// d9_image_pending loss 把图丢了(HCSF 默认开时上游收不到图)——F4 视觉修复的 Responses 兄弟缺口。
+// mutation 契约:parse 侧还原成"只记 loss 不建节点"→ 本测试全红(节点数=0 + 报 input_image loss)。
+func TestOpenAIResponsesClient_ImageInputBuildsNode(t *testing.T) {
 	adapter := &OpenAIResponsesClient{}
 	body := []byte(`{
 		"model":"gpt-4o",
 		"input":[{"type":"message","role":"user","content":[
 			{"type":"input_text","text":"see"},
-			{"type":"input_image","image_url":"data:image/png;base64,..."}
+			{"type":"input_image","image_url":"data:image/png;base64,` + testRedPixelPNGBase64 + `"}
 		]}]
 	}`)
-	_, losses, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
+	env, losses, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	var foundImg bool
+
+	imgs := findImageNodes(env)
+	if len(imgs) != 1 {
+		t.Fatalf("CapabilityImage 节点 = %d, want 1(input_image 未建节点=图被丢)", len(imgs))
+	}
+	img := imgs[0].Image
+	if img == nil {
+		t.Fatal("image 节点缺 Image 载荷")
+	}
+	if img.SourceKind != DataSourceInlineBase64 {
+		t.Errorf("SourceKind = %q, want inline_base64", img.SourceKind)
+	}
+	if img.MediaType != "image/png" {
+		t.Errorf("MediaType = %q, want image/png", img.MediaType)
+	}
+	if img.Locator.Value != testRedPixelPNGBase64 {
+		t.Errorf("Locator.Value 与原 base64 不逐字节相等: got=%q", img.Locator.Value)
+	}
+
+	// 消息 Content 顺序保留:text 在前、image 在后。
+	if len(env.Messages) != 1 || len(env.Messages[0].Content) != 2 {
+		t.Fatalf("messages/content 形状不对: %+v", env.Messages)
+	}
+	if env.Messages[0].Content[0].Type != "text" || env.Messages[0].Content[1].Type != "image" {
+		t.Errorf("Content 顺序应为 text,image, got %+v", env.Messages[0].Content)
+	}
+
+	// 图已解析:不再有 input_image / d9_image_pending pending loss。
 	for _, l := range losses {
-		if strings.Contains(l.Reason, "input_image") {
-			foundImg = true
+		if strings.Contains(l.Reason, "input_image") || l.Code == "d9_image_pending" {
+			t.Errorf("图已解析仍报 pending loss: %+v", l)
 		}
 	}
-	if !foundImg {
-		t.Errorf("expected input_image pending loss, got: %+v", losses)
+}
+
+// TestOpenAIResponsesClient_ImageInputHTTPURL 断言非 data URI 的 image_url 字符串走
+// SourceKind=url 原样透传(不误判为 data URI、不丢图)。
+func TestOpenAIResponsesClient_ImageInputHTTPURL(t *testing.T) {
+	adapter := &OpenAIResponsesClient{}
+	body := []byte(`{
+		"model":"gpt-4o",
+		"input":[{"type":"message","role":"user","content":[
+			{"type":"input_image","image_url":"https://x/y.png"}
+		]}]
+	}`)
+	env, losses, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	imgs := findImageNodes(env)
+	if len(imgs) != 1 {
+		t.Fatalf("CapabilityImage 节点 = %d, want 1", len(imgs))
+	}
+	img := imgs[0].Image
+	if img.SourceKind != DataSourceURL || img.Locator.Value != "https://x/y.png" {
+		t.Errorf("URL 图节点 = %+v, want url/https://x/y.png", img)
+	}
+	for _, l := range losses {
+		if l.Code == "d9_image_pending" {
+			t.Errorf("URL 图已解析仍报 pending loss: %+v", l)
+		}
 	}
 }
 

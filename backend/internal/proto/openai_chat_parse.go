@@ -72,19 +72,30 @@ func buildOpenAIImageNode(rawImageURL json.RawMessage) (*ImageNode, []ProtocolLo
 		// 丢弃时记 info loss 保住「丢必记」可观测性(不影响图本身)。
 		Detail string `json:"detail"`
 	}
-	if err := json.Unmarshal(rawImageURL, &shape); err != nil || shape.URL == "" {
+	if err := json.Unmarshal(rawImageURL, &shape); err != nil {
+		loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_image_url_missing_url", "invalid_image_url", CapabilityImage, "")
+		return nil, []ProtocolLossEntry{loss}
+	}
+	return imageNodeFromURL(shape.URL, shape.Detail)
+}
+
+// imageNodeFromURL 把 image URL 字符串(data URI 或 http url)+ detail 提示转 ImageNode,
+// 供 openai_chat 的 image_url 对象与 openai_responses 的 input_image 字符串共用同一套
+// data URI / detail / 大小写判定内核(两处不漂移)。空/畸形 → nil + warning loss,调用方跳过。
+func imageNodeFromURL(imageURL, detail string) (*ImageNode, []ProtocolLossEntry) {
+	if imageURL == "" {
 		loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_image_url_missing_url", "invalid_image_url", CapabilityImage, "")
 		return nil, []ProtocolLossEntry{loss}
 	}
 	var losses []ProtocolLossEntry
 	// detail 非空且非默认 auto 时,记 info loss(low/high 精度提示未投射到上游)。
-	if d := strings.ToLower(strings.TrimSpace(shape.Detail)); d != "" && d != "auto" {
+	if d := strings.ToLower(strings.TrimSpace(detail)); d != "" && d != "auto" {
 		loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_image_detail_dropped:"+d, "image_detail_dropped", CapabilityImage, "")
 		losses = append(losses, loss)
 	}
 	// data URI 前缀判定大小写不敏感(RFC2397 scheme 不区分大小写)。
-	if len(shape.URL) >= 5 && strings.EqualFold(shape.URL[:5], "data:") {
-		mediaType, data, ok := parseBase64DataURI(shape.URL)
+	if len(imageURL) >= 5 && strings.EqualFold(imageURL[:5], "data:") {
+		mediaType, data, ok := parseBase64DataURI(imageURL)
 		if !ok {
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_image_url_malformed_data_uri", "invalid_image_url", CapabilityImage, "")
 			return nil, append(losses, loss)
@@ -98,7 +109,7 @@ func buildOpenAIImageNode(rawImageURL json.RawMessage) (*ImageNode, []ProtocolLo
 	return &ImageNode{
 		SourceKind: DataSourceURL,
 		// OpenAI 形态 URL 不带独立 mime 字段,留空由上游按 URL 自判。
-		Locator: DataLocator{Kind: DataSourceURL, Value: shape.URL},
+		Locator: DataLocator{Kind: DataSourceURL, Value: imageURL},
 	}, losses
 }
 
