@@ -359,6 +359,13 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	annotateForwardHopChainEvents(canonicalEvents, req)
 	wrote := false
 	var delivered int64
+	// raw 直通(ClientAdapter==nil):把【原始上游帧】恰好转发一次,与 provider adapter 的
+	// canonical 展开数无关。此前缺陷=主循环按 canonical 数逐次调 clientChunks,而 clientChunks
+	// 在 nil ClientAdapter 下恒返回原始 evt 的 rawSSE,故 1 上游帧→N canonical 时同一帧被写 N 次
+	// (客户端拿到重复内容,openai 兼容全族同协议流式 S0)。修法=nil 直通下 canonical 循环只做
+	// usage/token 计费 tap 与交付记账,原始帧在循环外只转发一次;翻译路径(非 nil ClientAdapter)
+	// 不变,仍每 canonical 产客户块(正确的 1→N 翻译)。
+	rawPassthrough := f.ClientAdapter == nil
 	for _, canonical := range canonicalEvents {
 		eventDelivered := canonicalDeliveredChunks(canonical)
 		if usage, ok := canonicalUsage(canonical); ok {
@@ -374,6 +381,11 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		if canonicalTerminal(canonical) {
 			terminalSeen = true
 			acc.Freeze()
+		}
+		if rawPassthrough {
+			// 原始帧在循环外统一转发一次;此处只累计交付量(内容交付记账,与帧写几次无关)。
+			delivered += eventDelivered
+			continue
 		}
 		chunks, clientLosses, err := f.clientChunks(ctx, canonical, clientState, evt)
 		if err != nil {
@@ -396,6 +408,14 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		if wroteEvent && eventDelivered > 0 {
 			delivered += eventDelivered
 		}
+	}
+	// raw 直通:原始上游帧只转发一次(仅当该帧确有 canonical 展开时;adapter 产 0 事件的帧
+	// 此前就不透传,保持既有 drop 语义不变,不在本 S0 修复内改动)。
+	if rawPassthrough && len(canonicalEvents) > 0 {
+		if err := writeAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat)); err != nil {
+			return terminalSeen, false, 0, ErrClientDisconnect
+		}
+		wrote = true
 	}
 	return terminalSeen, wrote, delivered, nil
 }
