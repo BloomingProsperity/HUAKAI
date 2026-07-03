@@ -38,15 +38,17 @@ func serverSecret() string {
 // 施加 R7 身份改写。内部完成"读派生密钥 env + 调 RewriteInboundBody",版本由
 // 调用方从 UA 抽好后以 cliVersion 传入(避免本层 import net/http)。
 //
-// 默认关 + fail-open 语义完全由 RewriteInboundBody 保证(开关默认关、external
-// account id 空、serverSecret 空、改写出错均返回原 body 拷贝,永不阻断请求)。
+// 默认开 + fail-open 语义完全由 RewriteInboundBody 保证(开关默认开、非反转号
+// (apikey/bedrock)、external account id 空、serverSecret 空、改写出错均返回原
+// body 拷贝,永不阻断请求)。
 //
 // 入参 dispatchBody 必须是 dispatch 专用拷贝,**不得是参与缓存键计算的原始
 // 客户端 body**。
-func RewriteForDispatch(dispatchBody []byte, accountID int64, externalAccountID, clientSessionID, cliVersion string) []byte {
+func RewriteForDispatch(dispatchBody []byte, accountID int64, externalAccountID, accountType, clientSessionID, cliVersion string) []byte {
 	id := AccountIdentity{
 		AccountID:         accountID,
 		ExternalAccountID: externalAccountID,
+		AccountType:       accountType,
 		ClientSessionID:   clientSessionID,
 		ClientCLIVersion:  cliVersion,
 	}

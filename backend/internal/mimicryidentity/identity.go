@@ -32,20 +32,20 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
 
-// envIdentityRewrite 是身份改写的运维开关环境变量名。**默认关**:
-// 空 / 未配置 / 任意非 "true" 值一律视为关(整管线 no-op,body 字节不变);
-// 仅显式设为 "true" 时才启用。读取惯例与 transport.MimicryEnabled 一致 ——
+// envIdentityRewrite 是身份改写的运维开关环境变量名。**默认开**(Owner 2026-07-03
+// 硬规则「默认关的全默认开、别搞不伦不类」):空 / 未配置 / 任意非 "false" 值一律
+// 视为开;仅显式设为 "false" 才关。读取惯例与 transport.MimicryEnabled 一致 ——
 // 就地读 env,避免反向 import config 包。
 //
-// 注意与 transport.MimicryEnabled 的默认极性相反:那个开关管 TLS 指纹伪装、
-// 默认开(关现网行为);本开关管请求体身份改写、**默认关**,因为它会改写
-// 转发出去的请求体内容,翻默认属默认行为翻转 = Owner-gated。
+// 与 transport.MimicryEnabled 现在同为默认开(TLS 指纹伪装 + 请求体身份伪装两层齐开)。
+// 默认开安全性由多重 fail-open 门控兜底:serverSecret 未配置 / external id 空 / 非反转号
+// (apikey/bedrock) / 上游族非 anthropic_messages 时均不改写,故默认开不会误伤合法路径。
 const envIdentityRewrite = "HUAKAI_MIMICRY_IDENTITY_REWRITE"
 
-// RewriteEnabled 报告身份改写运维开关是否显式开启。默认(空/未配置/非 "true")
-// 返回 false。
+// RewriteEnabled 报告身份改写运维开关是否开启。**默认开**:仅显式设为 "false"
+// (大小写不敏感)才关;空 / 未配置 / 其它值一律开。
 func RewriteEnabled() bool {
-	return strings.EqualFold(strings.TrimSpace(os.Getenv(envIdentityRewrite)), "true")
+	return !strings.EqualFold(strings.TrimSpace(os.Getenv(envIdentityRewrite)), "false")
 }
 
 // AccountIdentity 是构造改写计划所需的账号上下文。由接线方据池中选定账号
@@ -53,6 +53,10 @@ func RewriteEnabled() bool {
 type AccountIdentity struct {
 	// AccountID 是池中账号主键,用于设备/会话指纹的确定性派生 seed。
 	AccountID int64
+	// AccountType 账号类型(apikey/oauth/session/bedrock)。**scope 硬守卫**:仅
+	// oauth/session(反转/订阅号)才施加身份伪装;apikey/bedrock 等官方合法凭据
+	// 永不伪装——给合法 API 用户伪装成 Claude Code 身份=制造身份矛盾反增风险。
+	AccountType string
 	// ExternalAccountID 是上游账号的稳定标识(如 Anthropic account uuid),
 	// 写入 metadata.user_id 的 account 组件。**为空时 fail-open:不改写。**
 	ExternalAccountID string
@@ -77,9 +81,10 @@ type AccountIdentity struct {
 // 生成。serverSecret 为空时无法安全派生 → fail-open 不改写。
 //
 // 短路/fail-open 条件(任一命中即返回原 body 拷贝,不改写):
-//   - 运维开关未开(RewriteEnabled()==false)——默认关;
+//   - 运维开关显式关(RewriteEnabled()==false)——默认开;
 //   - body 为空;
 //   - id.ExternalAccountID 为空(镜像 sub2api account_uuid==” 跳过);
+//   - id.AccountType 非反转号(仅 oauth/session 伪装;apikey/bedrock 跳过);
 //   - serverSecret 为空。
 //
 // 满足条件时构造仅启 step5 的 gateway.MimicryPlan 并调 gateway.ApplyMimicryPlan。
@@ -94,6 +99,11 @@ func RewriteInboundBody(body []byte, id AccountIdentity, serverSecret string) ([
 	}
 	// fail-open:缺 external account id 不改写(镜像 sub2 account_uuid=='' 跳过)。
 	if strings.TrimSpace(id.ExternalAccountID) == "" {
+		return cloneBody(body), nil
+	}
+	// scope 硬守卫:仅反转/订阅号(oauth/session)施加身份伪装;apikey/bedrock 等
+	// 官方合法凭据永不伪装(否则给合法 API 用户造 Claude Code 身份矛盾反增风险)。
+	if !isReverseAccountType(id.AccountType) {
 		return cloneBody(body), nil
 	}
 	// serverSecret 为空无法确定性派生设备/会话指纹 → fail-open。
@@ -204,4 +214,16 @@ func itoa(n int64) string {
 // cloneBody 返回 body 的独立拷贝(永不把入参切片回传给调用方)。
 func cloneBody(body []byte) []byte {
 	return append([]byte(nil), body...)
+}
+
+// isReverseAccountType 报告账号类型是否属反转/订阅号(oauth/session)——只有这类
+// 才施加 R7 身份伪装。apikey/bedrock/空 一律 false(官方合法凭据不伪装)。
+// 与 provider.AccountInfo.AccountType 的取值域一致("apikey"/"oauth"/"session"/"bedrock")。
+func isReverseAccountType(accountType string) bool {
+	switch strings.ToLower(strings.TrimSpace(accountType)) {
+	case "oauth", "session":
+		return true
+	default:
+		return false
+	}
 }

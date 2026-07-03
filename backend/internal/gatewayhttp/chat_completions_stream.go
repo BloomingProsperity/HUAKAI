@@ -141,6 +141,7 @@ func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
 		dispatchBody,
 		ex.accInfo.AccountID,
 		ex.accInfo.ExternalAccountID, // 空 → fail-open 不改写
+		ex.accInfo.AccountType,       // scope 硬守卫:仅 oauth/session 反转号伪装,apikey/bedrock 永不
 		ex.clientSessionID,           // 参与 session 派生,避免同账号跨会话共用 upstream session
 		mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
 	)

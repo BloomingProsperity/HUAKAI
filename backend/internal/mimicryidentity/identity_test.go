@@ -73,32 +73,32 @@ func stripMetadata(t *testing.T, body []byte) []byte {
 	return out
 }
 
-// TestA_默认关零行为变更 验证:运维开关未配置时,经接线入口后请求体与原 body
-// 字节等价。
+// TestA_默认开_未配置即改写 验证:运维开关【默认开】(Owner 2026-07-03「默认关的
+// 全默认开」)——未配置 env 时,反转号 + 密钥就绪即改写请求体;仅显式 "false" 才关。
 //
-// 变异证伪:把默认翻成开(即让 RewriteEnabled 默认返回 true,或本测试用
-// t.Setenv 设 "true")→ 改写发生 → 字节不再等价 → 本测试变红。
-func TestA_默认关零行为变更(t *testing.T) {
-	// 不设置 HUAKAI_MIMICRY_IDENTITY_REWRITE → 默认关。显式清空以防环境污染。
+// 变异证伪:把 RewriteEnabled 默认退回关(未配置返回 false)→ 未配置时不改写 →
+// 第一段断言变红。
+func TestA_默认开_未配置即改写(t *testing.T) {
+	// 不设置 HUAKAI_MIMICRY_IDENTITY_REWRITE → 默认开。显式清空以防环境污染。
 	t.Setenv(envIdentityRewrite, "")
 	body := fixtureBody(t)
-	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
-		t.Fatalf("默认关路径不应返回 error: %v", err)
+		t.Fatalf("默认开路径不应返回 error: %v", err)
 	}
-	if !bytes.Equal(out, body) {
-		t.Fatalf("默认关时请求体必须字节等价\n原: %s\n出: %s", body, out)
+	if bytes.Equal(out, body) {
+		t.Fatalf("默认开(未配置)+ 反转号本应改写,却与原 body 字节等价 —— 默认极性错(仍默认关?)")
 	}
-	// 自证:同样入参显式开启后,结果应当不同(否则说明开关根本没生效)。
-	t.Setenv(envIdentityRewrite, "true")
-	enabledOut, err := RewriteInboundBody(body, id, testServerSecret)
+	// 自证:显式设 "false" 后同入参不改写,证明是"默认开"而非"恒改"。
+	t.Setenv(envIdentityRewrite, "false")
+	offOut, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
-		t.Fatalf("开启路径返回 error: %v", err)
+		t.Fatalf("显式关路径返回 error: %v", err)
 	}
-	if bytes.Equal(enabledOut, body) {
-		t.Fatalf("开启后请求体本应被改写,却与原 body 字节等价 —— 开关或改写失效")
+	if !bytes.Equal(offOut, body) {
+		t.Fatalf("显式 false 本应关闭改写,却字节不等\n原: %s\n出: %s", body, offOut)
 	}
 }
 
@@ -120,7 +120,7 @@ func TestB_failopen_空外部账号id(t *testing.T) {
 		t.Fatalf("external account id 空时必须 fail-open 字节等价\n原: %s\n出: %s", body, out)
 	}
 	// 自证:补上非空 id 后同样开关下结果应被改写,证明"空才跳过"而非"恒不改"。
-	idFilled := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, ClientCLIVersion: "2.1.78"}
+	idFilled := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
 	filledOut, _ := RewriteInboundBody(body, idFilled, testServerSecret)
 	if bytes.Equal(filledOut, body) {
 		t.Fatalf("非空 external account id 本应触发改写,却字节等价 —— fail-open 判定恒真")
@@ -134,7 +134,7 @@ func TestB_failopen_空外部账号id(t *testing.T) {
 func TestB2_failopen_空serverSecret(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := fixtureBody(t)
-	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, "")
 	if err != nil {
@@ -155,7 +155,7 @@ func TestC_开启且有身份_user_id被改写成派生值(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := fixtureBody(t)
 	const accountID int64 = 42
-	id := AccountIdentity{AccountID: accountID, ExternalAccountID: testExternalAccountUUID, ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: accountID, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
@@ -254,7 +254,7 @@ func TestC2_派生确定性(t *testing.T) {
 func TestD_CCH字节不变_仅动metadata(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := fixtureBody(t)
-	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
@@ -284,7 +284,7 @@ func TestD_CCH字节不变_仅动metadata(t *testing.T) {
 func TestE_缺metadata_failopen_不阻断(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hi"}]}`)
-	id := AccountIdentity{AccountID: 7, ExternalAccountID: testExternalAccountUUID, ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: 7, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
@@ -293,5 +293,32 @@ func TestE_缺metadata_failopen_不阻断(t *testing.T) {
 	var sink map[string]json.RawMessage
 	if jerr := json.Unmarshal(out, &sink); jerr != nil {
 		t.Fatalf("改写产物应为合法 JSON: %v", jerr)
+	}
+}
+
+// TestScope_仅反转号伪装_apikey永不 验证 scope 硬守卫(I1):即便开关开 + 密钥就绪 +
+// external id 非空,apikey/bedrock/空 类账号也永不伪装;仅 oauth/session 反转号被改写。
+//
+// 变异证伪:删去 isReverseAccountType 守卫(或让它恒真)→ apikey 也被改写 →
+// 第一段断言变红。判别性:同条件下 oauth 号必须被改写(第二段),证明"非反转才跳过"
+// 而非"恒不改"。
+func TestScope_仅反转号伪装_apikey永不(t *testing.T) {
+	t.Setenv(envIdentityRewrite, "true")
+	body := fixtureBody(t)
+	for _, at := range []string{"apikey", "bedrock", ""} {
+		id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: at, ClientCLIVersion: "2.1.78"}
+		out, err := RewriteInboundBody(body, id, testServerSecret)
+		if err != nil {
+			t.Fatalf("非反转号(%q)不应 error: %v", at, err)
+		}
+		if !bytes.Equal(out, body) {
+			t.Fatalf("非反转号(%q)必须不伪装字节等价\n原: %s\n出: %s", at, body, out)
+		}
+	}
+	// 判别自证:同条件下 oauth 反转号会被改写。
+	rev := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
+	revOut, _ := RewriteInboundBody(body, rev, testServerSecret)
+	if bytes.Equal(revOut, body) {
+		t.Fatalf("反转号 oauth 本应改写,却字节等价 —— scope 守卫恒真(误伤/失效)")
 	}
 }
