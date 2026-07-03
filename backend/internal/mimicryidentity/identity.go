@@ -1,10 +1,6 @@
-// Package mimicryidentity 把池中选定账号的身份投影成请求 body 的 metadata.user_id,
-// 让上游看到的客户端身份与实际派发的账号一致。改写逻辑在 gateway.ApplyMimicryPlan
-// (本包仅启用其 metadata.user_id 步骤);本包据账号上下文构造 plan、读运维开关、对空
-// 身份 fail-open,并用 SHA256 确定性派生设备/会话指纹(免存储)。
-//
-// 依赖方向 mimicryidentity → gateway(单向)。接线方在 dispatch 前对 dispatch 专用
-// body 拷贝调用,不触碰参与缓存键计算的原始客户端 body。
+// Package mimicryidentity 据选定账号构造 metadata.user_id 改写计划
+// (gateway.ApplyMimicryPlan)并施加于 dispatch 专用 body 拷贝;读运维开关,
+// 空身份/密钥 fail-open,设备/会话指纹用 SHA256 确定性派生。
 package mimicryidentity
 
 import (
@@ -40,11 +36,9 @@ type AccountIdentity struct {
 	// ExternalAccountID 是上游账号的稳定标识(如 Anthropic account uuid),
 	// 写入 metadata.user_id 的 account 组件。**为空时 fail-open:不改写。**
 	ExternalAccountID string
-	// ClientSessionID 是本次请求的客户端会话标识(从会话头/openai 顶层抽取),
-	// 参与 session 组件派生 seed。**作用**:让落到同一池账号的不同客户端会话派生出
-	// 不同的 upstream session_id,避免"同账号跨会话共用同一 session"被上游观测成
-	// 异常会话模式(同 session 塞进互相矛盾的跨用户上下文)反触发会话级风控。
-	// 空串时 session 退回账号级派生(仍是合法 UUID,只是同账号稳定)。
+	// ClientSessionID 是本次请求的客户端会话标识(从会话头/openai 顶层抽取),参与
+	// session 组件派生 seed:不同客户端会话派生不同 session_id,同(账号,会话)稳定。
+	// 空串时退回账号级派生(仍是合法 UUID 形态)。
 	ClientSessionID string
 	// ClientCLIVersion 是客户端 Claude Code CLI 版本(从 UA 解析),决定写回
 	// user_id 用 JSON 新格式还是 legacy 拼接格式。空串按旧版处理。
@@ -63,11 +57,11 @@ type AccountIdentity struct {
 // 短路/fail-open 条件(任一命中即返回原 body 拷贝,不改写):
 //   - 运维开关显式关(RewriteEnabled()==false)——默认开;
 //   - body 为空;
-//   - id.ExternalAccountID 为空(镜像 sub2api account_uuid==” 跳过);
+//   - id.ExternalAccountID 为空;
 //   - id.AccountType 非反转号(官方 API key / 云凭据类跳过);
 //   - serverSecret 为空。
 //
-// 满足条件时构造仅启 step5 的 gateway.MimicryPlan 并调 gateway.ApplyMimicryPlan。
+// 满足条件时构造 gateway.MimicryPlan 并调 gateway.ApplyMimicryPlan。
 // ApplyMimicryPlan 本身在 metadata 缺失/不可解析等情形下也 fail-open
 // (返回 body 拷贝),故本入口永不因身份相关原因阻断请求。
 func RewriteInboundBody(body []byte, id AccountIdentity, serverSecret string) ([]byte, error) {
@@ -77,7 +71,7 @@ func RewriteInboundBody(body []byte, id AccountIdentity, serverSecret string) ([
 	if len(body) == 0 {
 		return cloneBody(body), nil
 	}
-	// fail-open:缺 external account id 不改写(镜像 sub2 account_uuid=='' 跳过)。
+	// fail-open:缺 external account id 不改写。
 	if strings.TrimSpace(id.ExternalAccountID) == "" {
 		return cloneBody(body), nil
 	}
@@ -94,8 +88,7 @@ func RewriteInboundBody(body []byte, id AccountIdentity, serverSecret string) ([
 	plan := BuildPlan(id, serverSecret)
 	res, err := gateway.ApplyMimicryPlan(body, plan)
 	if err != nil {
-		// 改写出错时绝不阻断请求:回退到原 body 拷贝。缓存优化与身份伪装
-		// 都不是请求的硬依赖。
+		// 改写出错时不阻断请求:回退到原 body 拷贝。
 		return cloneBody(body), err
 	}
 	return res.Body, nil
@@ -142,10 +135,8 @@ func deriveDeviceID(serverSecret string, accountID int64) string {
 // deriveSessionUUID 用 SHA256(serverSecret::accountID::session::clientSessionID)
 // 派生成 UUID 形态(8-4-4-4-12)。确定性、免存储。取摘要前 16 字节投影成 UUID 串。
 //
-// clientSessionID 纳入 seed:同一池账号下不同客户端会话派生不同 session_id(避免
-// 同账号跨会话共用同一 upstream session 被风控);同一(账号, 客户端会话)稳定派生
-// 同值(保上游会话亲和)。clientSessionID 为空时退回账号级派生(scope 尾部为空,
-// 仍是确定性合法 UUID,只是同账号稳定)。
+// clientSessionID 纳入 seed:不同客户端会话派生不同 session_id,同(账号, 客户端会话)
+// 稳定派生同值。clientSessionID 为空时退回账号级派生(scope 尾部为空,仍是确定性合法 UUID)。
 func deriveSessionUUID(serverSecret string, accountID int64, clientSessionID string) string {
 	sum := deriveDigest(serverSecret, accountID, "session::"+clientSessionID)
 	h := hex.EncodeToString(sum[:16]) // 16 字节 → 32 hex
