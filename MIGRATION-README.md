@@ -41,23 +41,24 @@ go build ./... && echo BUILD_OK
 #    "读 CLAUDE.md + 记忆,继续 /loop 推进(当前:片D slog门面审查中→E/F/G/H)"
 ```
 
-## 二、当前进度快照(新环境的 Claude 接手点)
+## 二、当前进度快照(新环境的 Claude 接手点,2026-07-03 更新)
 
-主线 `feat/fe-wire-users-mod` @426fb3c0,已合并且推送:
+主线 `feat/fe-wire-users-mod` @ff3c3230,已合并且推送:
 - 官key(Grok/DeepSeek/Kimi + 9 国内厂 vendor)、F4 视觉修复
 - billing Serializable 重试(L1)、quota reconciler 跨租户 sweep(②)
 - **auth 黑洞车道(缺口①)**——重审 26 条全修、5 变异全红
 - **日志片 A+B**——billing/quota worker 处理量/失败可观测
+- **日志片 D @ff3c3230**——slog 门面统一 + /loglevel 联动两栈(S1 双栈割裂已修);
+  首审 7 项+复审 3 项(含 privacy map-key 误杀 credential_* 的 S2 回归)全修,变异证红。
+  剩余延后项见 docs/process/reviews/DEFERRED-logfacade.md(3 项,非阻塞)
+- **日志片 E @e7f2d856**——channelhealth 状态转换镜像 slog(审查抓幽灵日志 S2 已修:
+  转换日志推迟到事务 Commit 成功后打)
 - §17 模块配合规则 + relay 运行逻辑文档 + 日志体系调研计划
 
-进行中(代码已上 GitHub `feat/slog-facade` @8eff5637,未合并):
-- **日志片 D**:slog 门面统一 + /loglevel 联动两栈(修 S1 双栈割裂)——对抗审查被换机中断,新环境**重跑审查**:worktree add 该分支 → 发 4 维对抗审查 workflow → 零 S0/S1 后 rebase 到主 HEAD + 重跑门禁 → ff 合并。
-
 待办队列(日志计划 docs/process/plans/2026-07-02-logging-observability-plan-claude.md):
-- 片 E channelhealth 状态转换镜像 slog(S3,小,internal/channelhealth/service.go emitTransitionEvents)
-- 片 F settlementrecovery/DLQ 补偿可见(S2)
+- 片 F settlementrecovery/DLQ 补偿可见(S2)← 下一片
 - 片 G 全链 request_id + trace_id 填充(跨模块)
-- 片 H slog 采样 + 脱敏单一真相源 + CI 脱敏断言
+- 片 H slog 采样 + 脱敏单一真相源 + CI 脱敏断言 + credential 宽词部分遮蔽(DEFERRED①)
 - /loop 上游扩展:Gemini 换 AIza key(待 Owner 给)、切片 C Veo/Sora 视频 adaptor
 
 ## 三、GitHub 上的兜底(任何分支都能找回)
