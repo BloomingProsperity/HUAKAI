@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyns"
 )
 
 const (
@@ -255,8 +257,8 @@ var exactAllowlist = map[string]struct{}{
 	"upstream_5xx_hits": {}, "upstream_reported": {}, "user_id": {}, "vendor": {}, "verdict": {}, "voucher_redeemed_micro_usd": {}, "window_summary": {}, "ts": {},
 }
 
-// sensitiveKeyExemptions 是允许携带敏感词根的合法字段名子串。sensitiveKey 与
-// containsForbiddenValue 的 map key 禁写扫描共用这张表,保证两处豁免口径一致。
+// sensitiveKeyExemptions 是允许携带敏感词根的合法字段名子串,供 sensitiveKey 放行
+// (如 refresh_token_fingerprint 含 refresh_token 词根却是安全的指纹字段)。
 var sensitiveKeyExemptions = []string{
 	"account_credential_id", "credential_id", "credential_version", "credential_fingerprint", "credentials_present",
 	"token_count", "tokens", "cache_read_tokens", "cache_write_tokens", "body_envelope",
@@ -309,12 +311,12 @@ func containsForbiddenValue(value any) bool {
 	switch v := value.(type) {
 	case map[string]any:
 		for k, child := range v {
-			// key 本身也可能承载秘密(把 token 当 map key 用):与值一致跑禁写子串扫,
+			// key 位也可能落一个被当 map key 用的裸凭证 token(如 JWT / sk-ant- 作 key),
 			// 否则"按树形扫描、按原文输出"的调用方(如 logfacade)会放走 key 位明文。
-			// 携带敏感词根的合法字段名(credential_version 等)走与 sensitiveKey
-			// 同一张豁免表,避免既有白名单字段被 key 扫描误杀。
-			lk := strings.ToLower(strings.TrimSpace(k))
-			if sensitiveKey(k) || (!exemptSensitiveKey(lk) && containsForbiddenString(k)) || containsForbiddenValue(child) {
+			// 但 key 的语义敏感词根(credential/password 等)由 sensitiveKey 连同其豁免表
+			// 统一裁;这里【只】补 sensitiveKey 认不出的「不透明 token 形态」,且前缀锚定,
+			// 绝不用值扫描的宽词(credential/sk-)误杀 credential_state / disk-usage-pct 等合法字段名。
+			if sensitiveKey(k) || keyLooksLikeCredential(k) || containsForbiddenValue(child) {
 				return true
 			}
 		}
@@ -330,23 +332,66 @@ func containsForbiddenValue(value any) bool {
 	return false
 }
 
+// customerKeyPrefixes 是本仓自签发的客户 live/test key 与 admin token 前缀,
+// 从 apikeyns【唯一真相源】init 期快照:运维用 HUAKAI_API_KEY_PREFIX 自定义前缀时
+// 随之改变,避免硬编 hk_ 与实际签发前缀漂移放走 acme_live_… 这类裸 key 值
+// (生产在进程启动前设好 env,禁写网只需认生产前缀,故 init 快照即够)。
+var customerKeyPrefixes = []string{apikeyns.LivePrefix(), apikeyns.TestPrefix(), apikeyns.AdminPrefix}
+
+// forbiddenValueMarkers 是【值】位禁写子串(text 已整体小写,标记写小写形态)。
+// "ant-" 已窄化为 "sk-ant-":独立 "ant-" 会咬 tenant-/grant- 等正常词;真实
+// Anthropic key/OAuth token 均为 sk-ant- 前缀,裸 "sk-" 仍在,检测面不缩。
+// Google refresh token 的 "1//" 前缀刻意不加:URL 双斜杠(…/v1//…)误杀面大于收益。
+// eyJ(JWT 头)/AIza(Google key)不在此表:它们大小写敏感,单独在原文上判,
+// 小写子串 eyj/aiza 会误杀 base64 文本与 faiza/Raiza/aizawl 等人名地名。
+var forbiddenValueMarkers = []string{
+	"sk-", "toolu_", "aiv_", "gho_", "sk-ant-", "bearer ", "authorization:",
+	"access_token", "refresh_token", "id_token", "cookie=", "cookie:",
+	"credential", "raw user prompt", "prompt sentinel", "prompt_sentinel",
+	"completion sentinel", "completion_sentinel", "password", "secret=",
+	"ghp_", "github_pat_",
+}
+
+// credentialTokenKeyPrefixes 是「裸凭证 token 作 map key」时用于前缀锚定的形态前缀
+// (小写)。凭证作 key 时整个 key 就是那串 token,故用 HasPrefix 精确锚定——不会像
+// 子串扫那样咬中 disk-usage-pct(含 sk-)这类合法字段名。含本仓自签发前缀。
+var credentialTokenKeyPrefixes = append([]string{
+	"sk-", "toolu_", "aiv_", "gho_", "ghp_", "github_pat_",
+}, customerKeyPrefixes...)
+
+// keyLooksLikeCredential 判断 map key 是否本身就是一个被当键用的裸凭证 token。
+// 只认「不透明 token 前缀」并前缀锚定;key 的语义敏感字段名由 sensitiveKey 另行裁。
+func keyLooksLikeCredential(key string) bool {
+	k := strings.TrimSpace(key)
+	// eyJ(JWT 头)/AIza(Google key)大小写敏感:真凭证恒为此精确大小写。
+	if strings.HasPrefix(k, "eyJ") || strings.HasPrefix(k, "AIza") {
+		return true
+	}
+	lk := strings.ToLower(k)
+	for _, prefix := range credentialTokenKeyPrefixes {
+		if strings.HasPrefix(lk, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func containsForbiddenString(value string) bool {
+	// eyJ(裸 JWT 头)/AIza(Google API key)大小写敏感精确匹配:真凭证恒为此精确
+	// 大小写;小写子串 eyj/aiza 会误杀 base64 文本与 faiza/Raiza/aizawl 等人名地名。
+	if strings.Contains(value, "eyJ") || strings.Contains(value, "AIza") {
+		return true
+	}
 	text := strings.ToLower(value)
-	// 注意:text 已整体小写,标记必须写小写形态。
-	// "ant-" 已窄化为 "sk-ant-":独立 "ant-" 会咬 tenant-/grant- 等正常词;
-	// 真实 Anthropic key/OAuth token 均为 sk-ant- 前缀,且裸 "sk-" 条目仍在,检测面不缩。
-	// Google refresh token 的 "1//" 前缀刻意不加:URL 双斜杠拼接(…/v1//…)误杀面大于收益。
-	for _, marker := range []string{
-		"sk-", "toolu_", "aiv_", "gho_", "sk-ant-", "bearer ", "authorization:",
-		"access_token", "refresh_token", "id_token", "cookie=", "cookie:",
-		"credential", "raw user prompt", "prompt sentinel", "prompt_sentinel",
-		"completion sentinel", "completion_sentinel", "password", "secret=",
-		// 本仓一等凭证与常见云凭证形态:hk_* 是 admin/keygen.go 自己签发的
-		// 客户/运维 key;eyj 是裸 JWT 头(base64(`{"alg`) 恒为 eyJ);
-		// aiza=Google API key;ghp_/github_pat_ 为 GitHub token(gho_ 已在上方)。
-		"hk_live_", "hk_test_", "hk_admin_", "eyj", "aiza", "ghp_", "github_pat_",
-	} {
+	for _, marker := range forbiddenValueMarkers {
 		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	// 本仓自签发客户/admin key 前缀从 apikeyns 单一真相源取,随 HUAKAI_API_KEY_PREFIX
+	// 变,避免硬编 hk_ 与签发前缀漂移放走自定义前缀部署的裸 key 值。
+	for _, prefix := range customerKeyPrefixes {
+		if strings.Contains(text, prefix) {
 			return true
 		}
 	}
