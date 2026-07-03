@@ -77,21 +77,25 @@ func (o *sidecarDialObserver) base(phase string) []any {
 }
 
 // failed 记录拨号/发帧/收帧任一层的失败(sidecar 不可用),Warn 级——这是 fail-closed
-// 降级点,出口这一刻转不出去,运维必须立刻看见。
+// 降级点,出口这一刻转不出去,运维必须立刻看见。同点递增 A2 指标(result 由 phase 映射),
+// 保证同一次失败在日志(phase)与指标(result)两侧口径一致、永不背离。
 func (o *sidecarDialObserver) failed(ctx context.Context, phase string, err error) {
+	recordEgressDialResult(egressDialResultForPhase(phase))
 	attrs := append(o.base(phase), "error_class", sidecarErrClassUnavailable, "error", sidecarErrText(err))
 	o.logger.WarnContext(ctx, "出口 sidecar 衔接失败(fail-closed,不回退直连)", attrs...)
 }
 
 // rejected 记录 sidecar 受理了连接但显式拒绝请求(profile 不受理等),Warn 级。
 func (o *sidecarDialObserver) rejected(ctx context.Context, reason string) {
+	recordEgressDialResult(egressDialResultRejected)
 	attrs := append(o.base(sidecarPhaseRejected), "error_class", sidecarErrClassProfile, "reject_reason", reason)
 	o.logger.WarnContext(ctx, "出口 sidecar 拒绝拨号请求", attrs...)
 }
 
 // established 记录隧道建立成功,Debug 级(热路径不刷屏)。control_frame_bytes=控制帧字节数,
-// 给帧传输层一个真实观测量。
+// 给帧传输层一个真实观测量。同点递增 A2 成功计数(result=ok),作为出口成功率分子。
 func (o *sidecarDialObserver) established(ctx context.Context, controlFrameBytes int) {
+	recordEgressDialResult(egressDialResultOK)
 	attrs := append(o.base(sidecarPhaseEstablished), "control_frame_bytes", controlFrameBytes)
 	o.logger.DebugContext(ctx, "出口 sidecar 隧道建立", attrs...)
 }

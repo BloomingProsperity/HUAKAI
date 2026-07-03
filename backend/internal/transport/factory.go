@@ -313,6 +313,9 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 	}
 	if err := probe(ctx, f.SidecarSocketPath, sidecarMode, profileID); err != nil {
 		class := classifySidecarError(err)
+		// probe 失败 = 出口在真实拨号前就转不出去(默认 fail-closed 下 sidecar 宕机的主路径)。
+		// 计入与 DialTLS 同一套 result 桶,否则出口成功率分母漏掉最主要的宕机情形。
+		mimicry.RecordEgressProbeFailure(class == TransportErrorClassSidecarProfileUnavailable)
 		slog.Warn("transport mimicry sidecar unavailable",
 			"mode", mode,
 			"socket_path", f.SidecarSocketPath,
@@ -352,6 +355,9 @@ func (f *Factory) recordSidecarFallback(mode TransportMode, err error) {
 	}
 	class := classifySidecarError(err)
 	f.sidecarFallbacks.Add(1)
+	// 同点把降级事件桥进 expvar(reason_class 维度),让 /metrics 也能看见出口降级——
+	// 此前只有内存计数 + slog,Prometheus 侧不可见(看关联产物:计数器要到达其下游消费者)。
+	recordEgressFallbackMetric(class)
 	slog.Warn("transport mimicry sidecar fallback to Go-native mimicry",
 		"audit_event", "transport_sidecar_fallback",
 		"mode", mode,

@@ -256,6 +256,46 @@ func bridgeCounters() []bridgeCounter {
 			description: "L2 response-cache total bytes, summed across vendor/model labels.",
 			read:        func() int64 { return readExpvarMapSum("huakai_cache_l2_size_bytes") },
 		},
+		// go↔rust 出口衔接可观测(A2):把 mimicry sidecar 拨号结果计数按 result 桥出来。
+		// result 维度与 A1 出口边界日志的 phase/error_class、Rust sidecar tracing 的 phase
+		// 同口径,运维能把 /metrics 的某个 result 计数直接对到日志/tracing 的同名阶段
+		// (看关联产物:指标↔日志↔跨边界 tracing 三处同源)。出口成功率 = ok /(ok+其余);
+		// 默认 fail-closed 下 dial/write/read/rejected 即出口拒服务。
+		{
+			name:        "huakai_egress_sidecar_dial_ok_total",
+			description: "Egress sidecar dials that established a tunnel (success numerator).",
+			read:        func() int64 { return readExpvarMapInt("egress_sidecar_dial_total", "ok") },
+		},
+		{
+			name:        "huakai_egress_sidecar_dial_fail_total",
+			description: "Egress sidecar dials that failed dialing the unix socket (sidecar_unavailable).",
+			read:        func() int64 { return readExpvarMapInt("egress_sidecar_dial_total", "dial_fail") },
+		},
+		{
+			name:        "huakai_egress_sidecar_write_fail_total",
+			description: "Egress sidecar dials that failed writing the control frame (sidecar_unavailable).",
+			read:        func() int64 { return readExpvarMapInt("egress_sidecar_dial_total", "write_fail") },
+		},
+		{
+			name:        "huakai_egress_sidecar_read_fail_total",
+			description: "Egress sidecar dials that failed reading the ack frame (sidecar_unavailable).",
+			read:        func() int64 { return readExpvarMapInt("egress_sidecar_dial_total", "read_fail") },
+		},
+		{
+			// 注:Rust sidecar 的负 ack 同时涵盖 profile 拒绝与上游/代理不可达(upstream_failed),
+			// Go 侧当前不区分,统一记入本桶。描述保持中性,不断言"一定是 profile";按 error_class
+			// 细分 upstream_failed 为独立 follow-up 切片(需 Go 解析 ack.Error + 对齐 Rust phase)。
+			name:        "huakai_egress_sidecar_rejected_total",
+			description: "Egress sidecar dials the sidecar negatively acked (profile rejection or upstream/proxy unreachable).",
+			read:        func() int64 { return readExpvarMapInt("egress_sidecar_dial_total", "rejected") },
+		},
+		// 出口降级(sidecar 不可用→Go-native mimicry)总数,跨 reason_class 求和。仅在
+		// SidecarFallbackEnabled=true 时非零;非零=出口指纹保真度降级正在发生,应告警。
+		{
+			name:        "huakai_egress_sidecar_fallback_total",
+			description: "Egress sidecar fallbacks to Go-native mimicry (fingerprint-fidelity degraded), summed across reason classes.",
+			read:        func() int64 { return readExpvarMapSum("egress_sidecar_fallback_total") },
+		},
 	}
 }
 

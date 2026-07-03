@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"io"
 	"net"
@@ -235,6 +236,10 @@ func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOffDoesNotDegrade(t *t
 		return errors.New("connection refused")
 	}
 
+	// A2/S2-1:probe 阶段的出口失败必须计入拨号计数——这是默认 fail-closed 下 sidecar 宕机的
+	// 主路径(DialTLS 从不运行)。connection refused 归 sidecar_unavailable → dial_fail 桶。
+	beforeDialFail := egressDialFailCount()
+
 	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
 
 	if err == nil {
@@ -249,6 +254,25 @@ func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOffDoesNotDegrade(t *t
 	if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarUnavailable {
 		t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarUnavailable)
 	}
+	// 判别性:删 sidecarRoundTripper probe 失败分支的 mimicry.RecordEgressProbeFailure → 增量 0 → 红。
+	// 证 probe 期出口宕机不再是指标死账(补齐"出口成功率"分母的关联缺口)。
+	if delta := egressDialFailCount() - beforeDialFail; delta != 1 {
+		t.Fatalf("egress_sidecar_dial_total{dial_fail} 增量=%d 应为 1(probe 期 sidecar 宕机未计入拨号失败,出口成功率分母漏账)", delta)
+	}
+}
+
+// egressDialFailCount 读 bridge 面 dial 计数的 dial_fail 桶(经 expvar 全局 map,跨包读)。
+// probe 失败在 mimicry 包计数,这里用 expvar 名字读回,顺带证跨包 expvar 契约。
+func egressDialFailCount() int64 {
+	m, ok := expvar.Get("egress_sidecar_dial_total").(*expvar.Map)
+	if !ok || m == nil {
+		return 0
+	}
+	iv, ok := m.Get("dial_fail").(*expvar.Int)
+	if !ok || iv == nil {
+		return 0
+	}
+	return iv.Value()
 }
 
 func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOnUsesNativeAndCountsMetric(t *testing.T) {
@@ -261,6 +285,10 @@ func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOnUsesNativeAndCountsM
 		return errors.New("connection refused")
 	}
 
+	// A2:抓 bridge 面 expvar 的增量。expvar 是进程全局、与其它测试共享,故取增量而非绝对值。
+	// unavailable 类应 +1,与内存原子计数 SidecarFallbackCount 同步递增。
+	beforeUnavailable := egressFallbackClassCount(TransportErrorClassSidecarUnavailable)
+
 	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
 
 	if err != nil {
@@ -272,6 +300,22 @@ func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOnUsesNativeAndCountsM
 	if got := f.SidecarFallbackCount(); got != 1 {
 		t.Fatalf("fallback metric=%d want 1", got)
 	}
+	// 判别性:删 recordSidecarFallback 里的 recordEgressFallbackMetric(class) → 此增量为 0 → 红。
+	// 且 reason_class 必须落在 sidecar_unavailable 桶(probe connection refused),写错分类桶也红。
+	if delta := egressFallbackClassCount(TransportErrorClassSidecarUnavailable) - beforeUnavailable; delta != 1 {
+		t.Fatalf("egress_sidecar_fallback_total{sidecar_unavailable} 增量=%d 应为 1(降级事件未桥进 expvar,或写错 reason_class 桶)", delta)
+	}
+}
+
+// egressFallbackClassCount 读 bridge 面 expvar 里某一 reason_class 的降级计数(同包可直接读
+// 包级 var)。用于断言"内存原子计数"与"expvar 桥接面"在同一真实降级路径上同步 +1。
+func egressFallbackClassCount(class TransportErrorClass) int64 {
+	v := egressSidecarFallbackTotal.Get(string(class))
+	iv, ok := v.(*expvar.Int)
+	if !ok || iv == nil {
+		return 0
+	}
+	return iv.Value()
 }
 
 func TestFactory_For_MimicrySidecarRuntimeFailureFallbacksToNative(t *testing.T) {
