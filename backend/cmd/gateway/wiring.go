@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -1034,7 +1035,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// 车道绑定的分类规则(R-024/R-025 + xai→grok 归一化)与 knob 同源生效:它们改变 grok/xai
 	// 400 坏 key 的客户端契约(400 透传→401 换号)与健康记账,knob 关时必须保持基底行为。
 	gateway.SetAuthLaneRulesEnabled(authCooldownStore != nil)
-	channelHealthOptions := []channelhealth.ServiceOption{channelhealth.WithAlertOutbox(outboxStore)}
+	// 渠道健康状态转换的 stdout 结构化运维日志走进程默认 slog 实例(与 billing lease sweeper /
+	// quota reconciler 同源;片D slog 门面合并后自动升级 JSON)。显式注入 = 等价 nil 兜底,零行为变化。
+	channelHealthOptions := []channelhealth.ServiceOption{
+		channelhealth.WithAlertOutbox(outboxStore),
+		channelhealth.WithLogger(slog.Default()),
+	}
 	if authCooldownStore != nil {
 		channelHealthOptions = append(channelHealthOptions, channelhealth.WithAuthCooldownLane(authCooldownStore))
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -20,6 +21,9 @@ type Service struct {
 	alertOutbox obsdlq.Outbox
 	// authLane 是独立于健康 FSM 的 auth 降级车道(nil=未接线,SignalAuthChallenge 变 no-op)。
 	authLane AuthCooldownLane
+	// logger 记渠道健康状态转换的 stdout 结构化运维日志——补 DB 审计(AppendAudit)只落库、
+	// 运维实时看不见的观测盲区。nil→slog.Default();可经 WithLogger 注入(测试用收集型 handler)。
+	logger *slog.Logger
 }
 
 type transactionalStore interface {
@@ -34,6 +38,13 @@ func WithAlertOutbox(outbox obsdlq.Outbox) ServiceOption {
 	}
 }
 
+// WithLogger 注入渠道健康状态转换运维日志的 logger;nil 时构造器兜底 slog.Default()。
+func WithLogger(logger *slog.Logger) ServiceOption {
+	return func(s *Service) {
+		s.logger = logger
+	}
+}
+
 func NewService(store Store, policy Policy, clock Clock, opts ...ServiceOption) *Service {
 	if clock == nil {
 		clock = realClock{}
@@ -43,6 +54,9 @@ func NewService(store Store, policy Policy, clock Clock, opts ...ServiceOption) 
 		if opt != nil {
 			opt(s)
 		}
+	}
+	if s.logger == nil {
+		s.logger = slog.Default()
 	}
 	return s
 }
@@ -678,34 +692,6 @@ func (s *Service) rollbackRamp(rec *Record, now time.Time, reason SignalClass) {
 	rec.LastTransitionAt = now
 	rec.UpdatedAt = now
 	rec.PolicyVersion = s.policy.Version
-}
-
-func (s *Service) emitTransitionEvents(ctx context.Context, prev HealthState, rec Record, requestID, actorID string, dec decision) error {
-	events := dec.eventTypes
-	if len(events) == 0 {
-		events = defaultEvents(prev, rec.State)
-	}
-	for _, typ := range events {
-		if typ == "" {
-			continue
-		}
-		ev := AuditEvent{
-			Type:          typ,
-			Key:           rec.Key,
-			PreviousState: prev,
-			NewState:      rec.State,
-			ReasonClass:   rec.ReasonClass,
-			PolicyVersion: rec.PolicyVersion,
-			RequestID:     requestID,
-			ActorID:       actorID,
-			OccurredAt:    s.clock.Now(),
-			Payload:       auditPayload(rec),
-		}
-		if err := s.store.AppendAudit(ctx, ev); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Service) emitAlert(ctx context.Context, rec Record, typ AlertType, severity string, payload map[string]any) error {
