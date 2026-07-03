@@ -93,7 +93,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	// 使 audit_ledger_error abort 与成功 settle 的 protocol_loss 缺 ledger 侧损失(item 2)。
 	ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "audit_ledger_error", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
@@ -110,7 +110,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
 	}
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "canonical_response_error", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
@@ -119,7 +119,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pricing_unavailable", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, err)
@@ -180,18 +180,18 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost c
 	draft := withOriginAudit(nonStreamingUsageDraft(env, actualCost, routingReason), ex.r, ex.d)
 	draft.ClientTool = clientToolFromContext(ex.ctx)
 	return billing.SettleRequest{
-		ClaimID:             ex.reserveRes.ClaimID,
-		AccountID:           ex.acquiredAccountID,
-		AcquisitionToken:    ex.acquisitionToken,
-		TenantID:            ex.ident.TenantID,
-		APIKeyID:            ex.ident.APIKeyID,
-		UserID:              ex.ident.UserID,
-		ProviderAccountID:   ex.acquiredAccountID,
-		AttemptSeq:          int32(ex.activeAttemptSeq()),
-		RequestedModel:      ex.req.Model,
-		UpstreamModel:       ex.upstreamModelID,
-		Provider:            ex.cacheVendor,
-		Stream:              false,
+		ClaimID:           ex.reserveRes.ClaimID,
+		AccountID:         ex.acquiredAccountID,
+		AcquisitionToken:  ex.acquisitionToken,
+		TenantID:          ex.ident.TenantID,
+		APIKeyID:          ex.ident.APIKeyID,
+		UserID:            ex.ident.UserID,
+		ProviderAccountID: ex.acquiredAccountID,
+		AttemptSeq:        int32(ex.activeAttemptSeq()),
+		RequestedModel:    ex.req.Model,
+		UpstreamModel:     ex.upstreamModelID,
+		Provider:          ex.cacheVendor,
+		Stream:            false,
 		// RequestedAt=请求到达时刻(非结算时刻),TTFT/延迟基准。此前不设→settler 兜底 time.Now()
 		// =结算时刻,使 first_byte_at-requested_at 失真。
 		RequestedAt:         ex.startedAt,
@@ -392,8 +392,9 @@ func rejectMoneyPathAuditRef(ctx context.Context, d ChatHandlerDeps, event event
 	if d.Settler != nil && event.ClaimID > 0 {
 		// 复用事件已携带的 protocol_loss 证据(event.SettleRequest.ProtocolLoss),
 		// 这条 audit-ref-missing 的零成本 abort 是该 claim 唯一持久行;之前传 nil
-		// 会丢失损失证据(item 3)。不新增 eventbus 字段。
-		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0, event.SettleRequest.ProtocolLoss)
+		// 会丢失损失证据。脱离请求 ctx 释放(见 detachedAbort):cache-hit-commit /
+		// direct-settle 走请求 ctx,断连时不脱离会漏 hold/并发槽。
+		abortErr = detachedAbort(ctx, d.Settler, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0, event.SettleRequest.ProtocolLoss)
 	}
 	logMoneyPathAuditRefError(ctx, event, validationErr, source, false)
 	if abortErr != nil {

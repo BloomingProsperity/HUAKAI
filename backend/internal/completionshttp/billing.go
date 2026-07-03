@@ -174,7 +174,11 @@ func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTo
 	if ex.reserveRes == nil {
 		return
 	}
-	if err := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
+	// 脱离请求 ctx 释放 hold 与并发槽:客户端断连时 ex.ctx 已取消,不脱离会让 Abort 失败,
+	// hold/并发槽泄漏到 lease 过期才回收(与 images/rerank/embeddings/audio 的 billingCtx 同)。
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
+	defer cancel()
+	if err := ex.d.Settler.Abort(abortCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
 	}
 }

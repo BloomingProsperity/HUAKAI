@@ -43,7 +43,7 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 	ex.cacheKey, err = ex.l2CacheKeyForModel(ex.upstreamModelID)
 	if err != nil {
 		if ex.reserveRes != nil {
-			if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "cache_key_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+			if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "cache_key_error", 0, ex.protocolLoss); abortErr != nil {
 				setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 			}
 		}
@@ -185,7 +185,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		if decision.AbortReason == "" {
 			decision.AbortReason = "upstream_dispatch_error"
 		}
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, ex.protocolLoss)
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil, gateway.AuthFailureClassFromClassification(classification))
 		}
@@ -193,7 +193,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		return outcome
 	}
 	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0, ex.protocolLoss)
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "upstream_empty_response", 0, ex.protocolLoss)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(upstreamAttemptStartedAt), ex.requestID, nil, 0)
 		}
@@ -234,7 +234,7 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 	}
 	decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
 	recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, dispatchRes.StatusCode, ex.requestID)
-	abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, ex.protocolLoss)
+	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
 	if ex.healthKeyOK {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 	}
@@ -409,7 +409,7 @@ func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
 func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) ([]byte, proto.ClientAdapter, bool) {
 	clientAdapter, err := ex.streamingClientAdapter()
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_adapter_unregistered", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "streaming_adapter_unregistered", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeStreamingAdapterUnregistered, err)
@@ -420,14 +420,14 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 	canonicalReq, protocolLosses, err := clientAdapter.RequestToCanonical(seedCtx, ex.body)
 	ex.protocolLoss = protocolLossJSONFromEntries(protocolLosses)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "invalid_request_body", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, err)
 		return nil, nil, false
 	}
 	if canonicalReq == nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "invalid_request_body", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, clienterr.MessageFor(clienterr.CodeInvalidRequestBody))
@@ -441,7 +441,7 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 
 	body, err := streamingProviderRequestBody(canonicalReq, ex.resolved.ProtocolFamily)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "streaming_translation_not_supported", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "streaming_translation_not_supported", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusNotImplemented, clienterr.CodeStreamingTranslationUnsupported, err)
@@ -801,8 +801,8 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			Stream:            true,
 			// RequestedAt=请求到达时刻(非结算时刻),TTFT 基准。此前不设→settler 兜底 time.Now()
 			// =结算时刻,使 TTFT=first_byte_at-requested_at 失真(修 first_byte_at 后会算成负值)。
-			RequestedAt:       ex.startedAt,
-			ActualCost:        actualCost.Total,
+			RequestedAt: ex.startedAt,
+			ActualCost:  actualCost.Total,
 			// 合并请求翻译损失(ex.protocolLoss)与流式逐事件损失(draft.StreamProtocolLoss);
 			// 后者之前被 StreamForwarder 丢弃,只有初始(常为空)请求侧损失能到 settle(item 4)。
 			ProtocolLoss:        mergeProtocolLossWithEntries(ex.protocolLoss, draft.StreamProtocolLoss),

@@ -515,7 +515,7 @@ func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing
 		return true
 	}
 	if quotaenforce.IsDenied(err) || (err == nil && !result.Allowed) {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, reserveRes.ClaimID, "quota_denied", ex.requestID, 0, ex.protocolLoss)
+		abortErr := ex.abortReservation(reserveRes.ClaimID, "quota_denied", 0, ex.protocolLoss)
 		if abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
@@ -609,13 +609,13 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		return failure
 	}
 	if selRes != nil && selRes.WaitPlan != nil {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "queue_wait", ex.requestID, 0, ex.protocolLoss)
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "queue_wait", 0, ex.protocolLoss)
 		failure := retryableLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeQueueWait, clienterr.MessageFor(clienterr.CodeQueueWait), "queue_wait", gateway.UpstreamRateLimit, nil)
 		failure.RetryAfterSeconds = retryAfterSecondsForWaitPlan(selRes.WaitPlan)
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if selRes == nil || selRes.AccountID == 0 {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pool_select_no_account", ex.requestID, 0, ex.protocolLoss)
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pool_select_no_account", 0, ex.protocolLoss)
 		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_select_no_account", gateway.UpstreamError5xx, nil)
 		// 此分支 err 为 nil(无哨兵携带恢复时刻),给一个默认 Retry-After 修掉"503 却无退避头"缺陷,
 		// 避免客户端盲目重试。与无容量错误路径的回退值一致。
@@ -653,7 +653,7 @@ func retryAfterSecondsForWaitPlan(plan *pool.WaitPlan) int {
 func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	cred, accInfo, err := ex.d.CredentialVault.Resolve(ex.ctx, ex.ident.TenantID, ex.acquiredAccountID)
 	if err != nil {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "credential_resolve_error", ex.requestID, 0, ex.protocolLoss)
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "credential_resolve_error", 0, ex.protocolLoss)
 		status := http.StatusInternalServerError
 		if errors.Is(err, provider.ErrAccountNotFound) {
 			status = http.StatusServiceUnavailable
@@ -697,7 +697,7 @@ func (ex *chatExecution) enforceOfficialClient() *classifiedAttemptFailure {
 	if reject, _ := officialclient.GateDecision(ex.accInfo.AccountType, ex.accInfo.Platform, identity); !reject {
 		return nil
 	}
-	abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "official_client_required", ex.requestID, 0, ex.protocolLoss)
+	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "official_client_required", 0, ex.protocolLoss)
 	failure := terminalLocalAttemptFailure(http.StatusForbidden, clienterr.CodeOfficialClientRequired, clienterr.MessageFor(clienterr.CodeOfficialClientRequired), "official_client_required", nil)
 	return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 }
@@ -737,14 +737,14 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	// billing 快照也累积请求侧证据(item 2;非流式 buffered 路径原本整段丢失)。
 	ex.protocolLoss = protocolLossJSONFromEntries(requestLosses)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "invalid_request_body", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, err)
 		return nil, nil, false
 	}
 	if canonicalReq == nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "invalid_request_body", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "invalid_request_body", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, clienterr.MessageFor(clienterr.CodeInvalidRequestBody))
@@ -761,7 +761,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 
 	dispatcher := hcsfDispatcher(ex.d)
 	if dispatcher == nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "non_streaming_not_yet_wired", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "non_streaming_not_yet_wired", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		err := fmt.Errorf("dispatcher lacks HCSF dispatch support for client_protocol=%q protocol_family=%q", ex.clientProtocol, ex.resolved.ProtocolFamily)
@@ -793,7 +793,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			// 上游 2xx 响应超 1MiB 上限：终止(重试不会让响应变小)，client 拿 upstream_response_too_large
 			// 而非把截断字节喂 ProviderResponseToCanonical 后塌成的 opaque upstream_dispatch_error(502)。
 			// 与 legacy raw 路径(readRawBufferedUpstreamBody → CodeUpstreamResponseTooLarge)行为一致。
-			abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_response_too_large", ex.requestID, 0, ex.protocolLoss)
+			abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "upstream_response_too_large", 0, ex.protocolLoss)
 			if ex.healthKeyOK {
 				recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, http.StatusOK, time.Since(startedAt), ex.requestID, nil, 0)
 			}
@@ -831,7 +831,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		if decision.AbortReason == "" {
 			decision.AbortReason = "upstream_dispatch_error"
 		}
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, decision.AbortReason, ex.requestID, 0, ex.protocolLoss)
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
 
 		if ex.healthKeyOK {
 			// canonical 缓冲是默认主路径:必须带真实 iron-clad 分级,否则该路径上的铁证 401
@@ -885,7 +885,7 @@ func upstreamRateCooldownCandidate(statusCode int) bool {
 
 func (ex *chatExecution) finalizeBufferedEnvelope(w http.ResponseWriter, env *proto.HCSF, statusCode int, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
 	if env == nil || env.BufferedResponse == nil {
-		abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "upstream_empty_response", ex.requestID, 0, ex.protocolLoss)
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "upstream_empty_response", 0, ex.protocolLoss)
 		if ex.healthKeyOK {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, statusCode, time.Since(startedAt), ex.requestID, nil, 0)
 		}

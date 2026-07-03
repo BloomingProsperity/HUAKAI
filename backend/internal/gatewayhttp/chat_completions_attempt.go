@@ -182,6 +182,21 @@ func degradeFailureIfAbortFailed(ctx context.Context, requestID string, failure 
 	return failure
 }
 
+// detachedAbort 在脱离请求 ctx 的独立 ctx(WithoutCancel + 超时)上释放 hold 与并发槽,
+// 使释放不受客户端断连影响——否则请求 ctx 随断连取消会让 Settler.Abort 失败,
+// hold/并发槽泄漏到 lease 过期才回收。settle / cache-hit-commit / direct-settle /
+// eventbus 各失败路径的 abort 统一走此入口。
+func detachedAbort(reqCtx context.Context, settler billing.Settler, tenantID, claimID int64, reason, requestID string, observedTokens int64, protocolLoss json.RawMessage) error {
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), 30*time.Second)
+	defer cancel()
+	return settler.Abort(abortCtx, tenantID, claimID, reason, requestID, observedTokens, protocolLoss)
+}
+
+// abortReservation 释放本次预扣的 hold 与并发槽(脱离请求 ctx,见 detachedAbort)。
+func (ex *chatExecution) abortReservation(claimID int64, reason string, observedTokens int64, protocolLoss json.RawMessage) error {
+	return detachedAbort(ex.ctx, ex.d.Settler, ex.ident.TenantID, claimID, reason, ex.requestID, observedTokens, protocolLoss)
+}
+
 func endClassFromAttemptFailure(classification gateway.Classification, decision gateway.AttemptRetryDecision) gateway.StreamEndClass {
 	var draft gateway.UsageRecordDraft
 	gateway.ApplyClassificationToDraft(&draft, classification)
