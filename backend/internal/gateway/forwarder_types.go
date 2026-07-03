@@ -115,6 +115,13 @@ type UsageRecordDraft struct {
 	PendingReconciliation   bool           `json:"pending_reconciliation"`
 	FirstTokenLatencyMillis int64          `json:"first_token_latency_ms"`
 	TotalDurationMillis     int64          `json:"total_duration_ms"`
+	// FirstByteAt / LastEventAt 是【绝对墙钟时刻】(非相对 ms):首个内容块 flush 给客户的时刻、
+	// 与流末最后事件时刻。结算写入 usage_records 同名列,使 TTFT=first_byte_at-requested_at 与
+	// TPS=tokens_output/(last_event_at-first_byte_at) 可算。此前 forwarder 只量了相对 ms 却无人
+	// 消费、settler 也从不写这两列→列恒 NULL→所有 TTFT/TPS 指标恒 0(监控盲区)。零值(非流式/
+	// 未产出)→ settler 经 pgTimestamp 写 NULL,被 perf SQL 的 IS NOT NULL 过滤排除(均为流式指标)。
+	FirstByteAt time.Time `json:"first_byte_at,omitempty"`
+	LastEventAt time.Time `json:"last_event_at,omitempty"`
 
 	// ReasoningTokens / EstimatedOutputTokens / EstimatedReasoningTokens 携带流式 token 交叉校验
 	// 所需信号到 gatewayhttp 层(settle 时与 reported OutputTokens 比对,审计-only,不参与计费):

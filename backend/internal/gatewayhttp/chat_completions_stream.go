@@ -798,6 +798,9 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			UpstreamModel:     ex.upstreamModelID,
 			Provider:          ex.cacheVendor,
 			Stream:            true,
+			// RequestedAt=请求到达时刻(非结算时刻),TTFT 基准。此前不设→settler 兜底 time.Now()
+			// =结算时刻,使 TTFT=first_byte_at-requested_at 失真(修 first_byte_at 后会算成负值)。
+			RequestedAt:       ex.startedAt,
 			ActualCost:        actualCost.Total,
 			// 合并请求翻译损失(ex.protocolLoss)与流式逐事件损失(draft.StreamProtocolLoss);
 			// 后者之前被 StreamForwarder 丢弃,只有初始(常为空)请求侧损失能到 settle(item 4)。

@@ -192,6 +192,9 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost c
 		UpstreamModel:       ex.upstreamModelID,
 		Provider:            ex.cacheVendor,
 		Stream:              false,
+		// RequestedAt=请求到达时刻(非结算时刻),TTFT/延迟基准。此前不设→settler 兜底 time.Now()
+		// =结算时刻,使 first_byte_at-requested_at 失真。
+		RequestedAt:         ex.startedAt,
 		ActualCost:          actualCost.Total,
 		ProtocolLoss:        ex.protocolLoss,
 		Fingerprint:         ex.payloadHash,

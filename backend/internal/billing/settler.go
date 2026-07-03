@@ -171,6 +171,10 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		RoutingReason:          jsonOrEmptyObject(req.Draft.RoutingReason),
 		ProtocolLoss:           jsonOrEmptyArray(req.ProtocolLoss),
 		RequestedAt:            pgTimestamp(requestedAt),
+		// TTFT/TPS 数据源:首字与流末绝对时刻(forwarder 量,零值→pgTimestamp 写 NULL 被 perf SQL 排除)。
+		// 此前从不写→列恒 NULL→avg_ttft_ms/avg_tps/p95 恒 0(设施齐全但断链)。
+		FirstByteAt:            pgTimestamp(req.Draft.FirstByteAt),
+		LastEventAt:            pgTimestamp(req.Draft.LastEventAt),
 		RequestedModel:         coalesceString(req.RequestedModel, claim.RequestedModel),
 		UpstreamModel:          nullableString(req.UpstreamModel),
 		Stream:                 req.Stream,

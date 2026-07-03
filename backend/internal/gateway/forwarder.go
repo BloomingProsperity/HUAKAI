@@ -256,6 +256,8 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				if wrote && !firstEmitted {
 					firstEmitted = true
 					draft.FirstTokenLatencyMillis = millisSince(start)
+					// 首字绝对墙钟时刻:结算写入 usage_records.first_byte_at,供 TTFT=first_byte_at-requested_at。
+					draft.FirstByteAt = time.Now().UTC()
 				}
 				if err == nil {
 					continue
@@ -583,6 +585,11 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 		d.StreamTerminatedReason = streamTerminatedReason(d.EndClass, d.DeliveredTokenCount)
 	}
 	d.TotalDurationMillis = millisSince(startedAt)
+	// 流末最后事件绝对时刻,供 TPS=tokens_output/(last_event_at-first_byte_at)。仅在确有首字时成对
+	// 落库(无首字=无输出流,两列都留 NULL,避免 first_byte NULL 而 last_event 非 NULL 的半截数据)。
+	if !d.FirstByteAt.IsZero() {
+		d.LastEventAt = time.Now().UTC()
+	}
 	return d, err
 }
 
