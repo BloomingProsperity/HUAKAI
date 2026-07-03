@@ -126,7 +126,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	settleReq := ex.nonStreamingSettleRequest(bufferedEnv, actualCost, ex.selRes.RoutingReasonJSON)
-	if _, err := settleCompletion(ex.ctx, ex.d, eventbus.RequestCompletionEvent{
+	if _, err := settleCompletionWithRecovery(ex.ctx, ex.d, eventbus.RequestCompletionEvent{
 		ID:                        ex.requestID,
 		TenantID:                  ex.ident.TenantID,
 		ClaimID:                   ex.reserveRes.ClaimID,
@@ -143,7 +143,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
 		Metadata:                  completionMetadata(ex.routeID, ex.clientRequestID),
-	}); err != nil {
+	}, settlementrecovery.SourceDirectSettle); err != nil {
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
 		return markAttemptOutcomeDelivered(outcome)
 	}

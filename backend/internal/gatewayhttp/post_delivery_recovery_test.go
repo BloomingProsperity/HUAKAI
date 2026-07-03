@@ -137,6 +137,30 @@ func TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue(t *testing.T) {
 	}
 }
 
+// TestSettleCompletionWithRecovery_DirectSettleEnqueues 守 C-2:非流式路径用
+// SourceDirectSettle 时,settle 失败也入 DLQ 恢复(与流式 SourceStream 一致),
+// 避免上游已成功却因结算失败丢账。
+//
+// Mutation:非流式路径改回调 settleCompletion(不带恢复)→ 结算失败不入 DLQ。
+// 本用例直测 WithRecovery+SourceDirectSettle 的入队,守住 source 归类不被误当空跳过。
+func TestSettleCompletionWithRecovery_DirectSettleEnqueues(t *testing.T) {
+	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle db error")}
+	spy := &postDeliverySpyEnqueuer{}
+	deps := ChatHandlerDeps{
+		Settler:           settler,
+		SettleRecoveryDLQ: spy,
+	}
+	event := newPostDeliveryFixtureEvent()
+
+	_, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceDirectSettle)
+	if err == nil {
+		t.Fatal("settle err must propagate")
+	}
+	if spy.calls != 1 {
+		t.Fatalf("非流式 SourceDirectSettle settle 失败必入 DLQ 恢复,enqueue calls=%d want 1", spy.calls)
+	}
+}
+
 // TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery 守 P2/P3 主修复:
 // 流式 settle 失败 + source=stream + SettleRecoveryDLQ 已注入 → enqueue 1 次,
 // 行 event_kind=post_delivery_settlement,payload 可 decode 回 SettleRequest。
