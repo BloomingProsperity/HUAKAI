@@ -82,7 +82,7 @@ func TestA_默认开_未配置即改写(t *testing.T) {
 	// 不设置 HUAKAI_MIMICRY_IDENTITY_REWRITE → 默认开。显式清空以防环境污染。
 	t.Setenv(envIdentityRewrite, "")
 	body := fixtureBody(t)
-	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "claude_ai_oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
@@ -120,7 +120,7 @@ func TestB_failopen_空外部账号id(t *testing.T) {
 		t.Fatalf("external account id 空时必须 fail-open 字节等价\n原: %s\n出: %s", body, out)
 	}
 	// 自证:补上非空 id 后同样开关下结果应被改写,证明"空才跳过"而非"恒不改"。
-	idFilled := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
+	idFilled := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "claude_ai_oauth", ClientCLIVersion: "2.1.78"}
 	filledOut, _ := RewriteInboundBody(body, idFilled, testServerSecret)
 	if bytes.Equal(filledOut, body) {
 		t.Fatalf("非空 external account id 本应触发改写,却字节等价 —— fail-open 判定恒真")
@@ -134,7 +134,7 @@ func TestB_failopen_空外部账号id(t *testing.T) {
 func TestB2_failopen_空serverSecret(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := fixtureBody(t)
-	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "claude_ai_oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, "")
 	if err != nil {
@@ -155,7 +155,7 @@ func TestC_开启且有身份_user_id被改写成派生值(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := fixtureBody(t)
 	const accountID int64 = 42
-	id := AccountIdentity{AccountID: accountID, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: accountID, ExternalAccountID: testExternalAccountUUID, AccountType: "claude_ai_oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
@@ -254,7 +254,7 @@ func TestC2_派生确定性(t *testing.T) {
 func TestD_CCH字节不变_仅动metadata(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := fixtureBody(t)
-	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "claude_ai_oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
@@ -284,7 +284,7 @@ func TestD_CCH字节不变_仅动metadata(t *testing.T) {
 func TestE_缺metadata_failopen_不阻断(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hi"}]}`)
-	id := AccountIdentity{AccountID: 7, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
+	id := AccountIdentity{AccountID: 7, ExternalAccountID: testExternalAccountUUID, AccountType: "claude_ai_oauth", ClientCLIVersion: "2.1.78"}
 
 	out, err := RewriteInboundBody(body, id, testServerSecret)
 	if err != nil {
@@ -305,7 +305,7 @@ func TestE_缺metadata_failopen_不阻断(t *testing.T) {
 func TestScope_仅反转号伪装_apikey永不(t *testing.T) {
 	t.Setenv(envIdentityRewrite, "true")
 	body := fixtureBody(t)
-	for _, at := range []string{"apikey", "bedrock", ""} {
+	for _, at := range []string{"api_key", "bedrock", ""} {
 		id := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: at, ClientCLIVersion: "2.1.78"}
 		out, err := RewriteInboundBody(body, id, testServerSecret)
 		if err != nil {
@@ -316,7 +316,7 @@ func TestScope_仅反转号伪装_apikey永不(t *testing.T) {
 		}
 	}
 	// 判别自证:同条件下 oauth 反转号会被改写。
-	rev := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "oauth", ClientCLIVersion: "2.1.78"}
+	rev := AccountIdentity{AccountID: 42, ExternalAccountID: testExternalAccountUUID, AccountType: "claude_ai_oauth", ClientCLIVersion: "2.1.78"}
 	revOut, _ := RewriteInboundBody(body, rev, testServerSecret)
 	if bytes.Equal(revOut, body) {
 		t.Fatalf("反转号 oauth 本应改写,却字节等价 —— scope 守卫恒真(误伤/失效)")

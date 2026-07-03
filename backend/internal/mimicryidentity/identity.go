@@ -13,7 +13,7 @@
 // 无 import 环)。接线方(gatewayhttp)在 dispatch 之前、对"dispatch 专用
 // body 拷贝"调用本包,绝不触碰参与缓存键计算的原始客户端 body。
 //
-// 默认行为:开关默认关。**翻默认(默认开)是 Owner-gated 二阶段,不在本切片。**
+// 默认行为:开关默认开(详见 RewriteEnabled)。
 //
 // 机制参考三镜(§16,仅描述做法,代码本仓独立编写):
 //   - sub2api 有同类 metadata.user_id 身份重写(账号 UUID 投影 + 确定性 session
@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
 )
 
 // envIdentityRewrite 是身份改写的运维开关环境变量名。**默认开**(Owner 2026-07-03
@@ -53,9 +54,8 @@ func RewriteEnabled() bool {
 type AccountIdentity struct {
 	// AccountID 是池中账号主键,用于设备/会话指纹的确定性派生 seed。
 	AccountID int64
-	// AccountType 账号类型(apikey/oauth/session/bedrock)。**scope 硬守卫**:仅
-	// oauth/session(反转/订阅号)才施加身份伪装;apikey/bedrock 等官方合法凭据
-	// 永不伪装——给合法 API 用户伪装成 Claude Code 身份=制造身份矛盾反增风险。
+	// AccountType 账号类型(credentialstore.AuthMode* 值)。scope 守卫:仅反转/订阅号
+	// (OAuth/session 类)施加身份改写;官方 API key / 云凭据类不改写。
 	AccountType string
 	// ExternalAccountID 是上游账号的稳定标识(如 Anthropic account uuid),
 	// 写入 metadata.user_id 的 account 组件。**为空时 fail-open:不改写。**
@@ -84,7 +84,7 @@ type AccountIdentity struct {
 //   - 运维开关显式关(RewriteEnabled()==false)——默认开;
 //   - body 为空;
 //   - id.ExternalAccountID 为空(镜像 sub2api account_uuid==” 跳过);
-//   - id.AccountType 非反转号(仅 oauth/session 伪装;apikey/bedrock 跳过);
+//   - id.AccountType 非反转号(官方 API key / 云凭据类跳过);
 //   - serverSecret 为空。
 //
 // 满足条件时构造仅启 step5 的 gateway.MimicryPlan 并调 gateway.ApplyMimicryPlan。
@@ -101,9 +101,9 @@ func RewriteInboundBody(body []byte, id AccountIdentity, serverSecret string) ([
 	if strings.TrimSpace(id.ExternalAccountID) == "" {
 		return cloneBody(body), nil
 	}
-	// scope 硬守卫:仅反转/订阅号(oauth/session)施加身份伪装;apikey/bedrock 等
-	// 官方合法凭据永不伪装(否则给合法 API 用户造 Claude Code 身份矛盾反增风险)。
-	if !isReverseAccountType(id.AccountType) {
+	// scope 守卫:仅反转/订阅号(OAuth/session 类)施加身份改写;官方 API key / 云凭据类
+	// 不改写。账号类型分类复用 officialclient.IsReverseAccountType(按真实 AuthMode 值)。
+	if !officialclient.IsReverseAccountType(id.AccountType) {
 		return cloneBody(body), nil
 	}
 	// serverSecret 为空无法确定性派生设备/会话指纹 → fail-open。
@@ -214,16 +214,4 @@ func itoa(n int64) string {
 // cloneBody 返回 body 的独立拷贝(永不把入参切片回传给调用方)。
 func cloneBody(body []byte) []byte {
 	return append([]byte(nil), body...)
-}
-
-// isReverseAccountType 报告账号类型是否属反转/订阅号(oauth/session)——只有这类
-// 才施加 R7 身份伪装。apikey/bedrock/空 一律 false(官方合法凭据不伪装)。
-// 与 provider.AccountInfo.AccountType 的取值域一致("apikey"/"oauth"/"session"/"bedrock")。
-func isReverseAccountType(accountType string) bool {
-	switch strings.ToLower(strings.TrimSpace(accountType)) {
-	case "oauth", "session":
-		return true
-	default:
-		return false
-	}
 }
