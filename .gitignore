@@ -30,8 +30,10 @@ backend/.gocache/
 .env.*
 !.env.example
 !backend/.env.dev.example
+!backend/.env.prod.example
 *.pem
 *.key
+!backend/deploy/keys/.gitignore
 *.crt
 # 例外: Rust route-client mTLS 测试 placeholder 证书 (`-----BEGIN HUAKAI TEST … PLACEHOLDER-----`)
 # 不是真证书,只是 build_client_tls_config tests 需要文件存在

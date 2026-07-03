@@ -1,0 +1,43 @@
+# HUAKAI production reverse proxy (Caddy).
+#
+# Caddy terminates TLS (automatic Let's Encrypt for the configured domain) and
+# path-routes to two upstreams:
+#   - the gateway (relay API + admin API + debug + ACME well-known)
+#   - the Next.js frontend (everything else: Admin UI + user portal)
+#
+# Set your real domain below (replace huakai.example.com) and point its DNS A/AAAA
+# record at this host BEFORE first start, so Caddy can complete the ACME challenge.
+# For a local/staging run without a public domain, replace the site line with
+# `:80` (HTTP only, no auto-TLS) — see docs/ops/DEPLOYMENT.md.
+
+huakai.example.com {
+	# Relay + admin + debug + ACME bridge → gateway. These paths are the backend
+	# API surface the frontend would otherwise rewrite to.
+	@gateway {
+		path /v1/* /admin/v1/* /debug/* /.well-known/*
+	}
+	handle @gateway {
+		reverse_proxy gateway:8080 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	# Everything else (the Admin UI + user portal) → the Next.js frontend container.
+	handle {
+		reverse_proxy frontend:3000 {
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	encode gzip
+}
