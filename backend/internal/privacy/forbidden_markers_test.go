@@ -38,3 +38,18 @@ func TestAntMarkerNarrowedToSkAnt(t *testing.T) {
 		t.Fatal("sk-ant- 凭证形态必须命中")
 	}
 }
+
+// 豁免口径判别:携带敏感词根的合法字段名(credential_version 等既有白名单字段)
+// 不因 map key 扫描被误杀——豁免与 sensitiveKey 共用同一张表(全量抓到的真回归:
+// obs/dlq 告警 payload 的 credential_version 被误判)。
+// 变异靶:key 扫描不走 exemptSensitiveKey 豁免 → 本测试必红。
+func TestAllowlistedKeyNamesNotFlagged(t *testing.T) {
+	for _, probe := range []string{
+		`{"alert_type":"ban_signal","credential_version":3}`,
+		`{"account_credential_id":"c1","refresh_token_fingerprint":"fp"}`,
+	} {
+		if ContainsForbiddenRawData([]byte(probe)) {
+			t.Errorf("合法字段名被 map key 扫描误杀: %s", probe)
+		}
+	}
+}

@@ -255,19 +255,31 @@ var exactAllowlist = map[string]struct{}{
 	"upstream_5xx_hits": {}, "upstream_reported": {}, "user_id": {}, "vendor": {}, "verdict": {}, "voucher_redeemed_micro_usd": {}, "window_summary": {}, "ts": {},
 }
 
+// sensitiveKeyExemptions 是允许携带敏感词根的合法字段名子串。sensitiveKey 与
+// containsForbiddenValue 的 map key 禁写扫描共用这张表,保证两处豁免口径一致。
+var sensitiveKeyExemptions = []string{
+	"account_credential_id", "credential_id", "credential_version", "credential_fingerprint", "credentials_present",
+	"token_count", "tokens", "cache_read_tokens", "cache_write_tokens", "body_envelope",
+	"source_ip_hash", "pubkey_fingerprint", "refresh_token_fingerprint", "payload_fingerprint",
+}
+
+// exemptSensitiveKey 判断(已小写、trim 过的)字段名是否命中豁免表。
+func exemptSensitiveKey(k string) bool {
+	for _, safe := range sensitiveKeyExemptions {
+		if strings.Contains(k, safe) {
+			return true
+		}
+	}
+	return false
+}
+
 func sensitiveKey(key string) bool {
 	k := strings.ToLower(strings.TrimSpace(key))
 	if k == "" {
 		return false
 	}
-	for _, safe := range []string{
-		"account_credential_id", "credential_id", "credential_version", "credential_fingerprint", "credentials_present",
-		"token_count", "tokens", "cache_read_tokens", "cache_write_tokens", "body_envelope",
-		"source_ip_hash", "pubkey_fingerprint", "refresh_token_fingerprint", "payload_fingerprint",
-	} {
-		if strings.Contains(k, safe) {
-			return false
-		}
+	if exemptSensitiveKey(k) {
+		return false
 	}
 	for _, marker := range []string{
 		"access_token", "refresh_token", "id_token", "bearer", "cookie", "password",
@@ -299,7 +311,10 @@ func containsForbiddenValue(value any) bool {
 		for k, child := range v {
 			// key 本身也可能承载秘密(把 token 当 map key 用):与值一致跑禁写子串扫,
 			// 否则"按树形扫描、按原文输出"的调用方(如 logfacade)会放走 key 位明文。
-			if sensitiveKey(k) || containsForbiddenString(k) || containsForbiddenValue(child) {
+			// 携带敏感词根的合法字段名(credential_version 等)走与 sensitiveKey
+			// 同一张豁免表,避免既有白名单字段被 key 扫描误杀。
+			lk := strings.ToLower(strings.TrimSpace(k))
+			if sensitiveKey(k) || (!exemptSensitiveKey(lk) && containsForbiddenString(k)) || containsForbiddenValue(child) {
 				return true
 			}
 		}
