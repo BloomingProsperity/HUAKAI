@@ -126,7 +126,6 @@ WHERE ur.pending_reconciliation = true
     FROM usage_record_reconciliation_events re
     WHERE re.tenant_id = ur.tenant_id
       AND re.original_usage_record_id = ur.id
-      AND re.reconciliation_source = 'stream_no_usage_finalized'
   )
 `
 
@@ -160,7 +159,6 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -641,7 +639,6 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -827,7 +824,6 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )

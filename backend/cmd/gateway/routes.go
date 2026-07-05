@@ -16,11 +16,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/accountfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminquotahttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminuserhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcementhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditexporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/billingreconhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/completionshttp"
@@ -1092,6 +1095,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			TenantChecker: d.adminQueries,
 			AuditUpdater:  d.billingAuditUpdater,
 		})
+		repriceService := billing.NewPostgresRepriceService(d.pgPool, d.rateTableSource, d.pricingRatioResolver, d.cfg.BillingPolicyVersion)
+		r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/reprice", billingreconhttp.NewHandler(billingreconhttp.Deps{
+			Auth:    d.adminAuth,
+			Service: repriceService,
+		}))
 	})
 	mountPricingCatalogRoutes(r, d)
 	r.Route("/admin/v1/balances", func(r chi.Router) {

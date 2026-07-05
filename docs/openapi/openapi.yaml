@@ -11023,6 +11023,32 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/billing/reprice:
+    post:
+      tags: [admin-billing]
+      summary: Dry-run or apply manual-first usage repricing
+      operationId: repriceAdminBillingUsage
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-03-audit-remediation-claude.md
+        - backend/internal/billing/reprice.go
+      x-huakai-required-role: platform_admin
+      description: Recomputes pending usage record cost with the current pricing table. dry_run defaults to true. apply only appends reconciliation events and clears pending flags; balance and ledger adjustments remain a separate manual admin workflow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminBillingRepriceRequest' }
+      responses:
+        '200':
+          description: Per-record reprice report.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminBillingRepriceResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/pricing/ratios:
     get:
       tags: [admin-pricing]
@@ -18464,6 +18490,107 @@ components:
         reason:
           type: string
           minLength: 1
+
+    AdminBillingRepriceRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-03-audit-remediation-claude.md
+        - backend/internal/billingreconhttp/handler.go
+      properties:
+        usage_record_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Single usage record scope. Cannot be combined with tenant_id/from/to.
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Batch scope tenant id. Required with from/to when usage_record_id is absent.
+        from:
+          type: string
+          format: date-time
+          description: Inclusive settled_at lower bound for batch scope.
+        to:
+          type: string
+          format: date-time
+          description: Exclusive settled_at upper bound for batch scope.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 100
+        dry_run:
+          type: boolean
+          default: true
+
+    AdminBillingRepriceResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/billing/reprice.go
+        - backend/internal/billingreconhttp/handler.go
+      required: [object, dry_run, items, summary]
+      properties:
+        object:
+          type: string
+          enum: [billing_reprice_report]
+        dry_run:
+          type: boolean
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminBillingRepriceItem' }
+        summary:
+          $ref: '#/components/schemas/AdminBillingRepriceSummary'
+
+    AdminBillingRepriceItem:
+      type: object
+      additionalProperties: false
+      required:
+        - usage_record_id
+        - tenant_id
+        - status
+        - original_cost
+        - authoritative_cost
+        - cost_delta
+      properties:
+        usage_record_id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        status:
+          type: string
+          enum: [would_apply, repriced, already_repriced, skipped, error]
+        skipped_reason:
+          type: string
+          enum: [already_reconciled, not_found]
+        error_code:
+          type: string
+        error_message:
+          type: string
+        original_cost:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        authoritative_cost:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        cost_delta:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        pricing_source:
+          type: string
+          description: Current pricing table, selected rate source, cost snapshot, and pricing ratio evidence.
+
+    AdminBillingRepriceSummary:
+      type: object
+      additionalProperties: false
+      required: [total, would_apply, repriced, already_repriced, skipped, failed]
+      properties:
+        total: { type: integer, minimum: 0 }
+        would_apply: { type: integer, minimum: 0 }
+        repriced: { type: integer, minimum: 0 }
+        already_repriced: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
 
     UserRechargeCreateRequest:
       type: object

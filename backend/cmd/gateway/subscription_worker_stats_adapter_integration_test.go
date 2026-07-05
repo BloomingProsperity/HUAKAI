@@ -17,9 +17,9 @@ import (
 )
 
 // TestWorkerStatsAdapterPendingReconciliationUsesRealQuery 守 C-2 一级真实 SQL:
-// worker-stats 只统计 pending_reconciliation=true 且尚未被 finalized 事件消解的 usage_records。
-// 判别(§14):若 CountPendingReconciliationUsageRecords 去掉 WHERE 条件,本测试播种的非 pending
-// 行会被一并计入,usage_records 从 1 变 2 后转红。
+// worker-stats 只统计 pending_reconciliation=true 且尚无任何对账事件的 usage_records。
+// 判别(§14):若 CountPendingReconciliationUsageRecords 去掉 WHERE/NOT EXISTS 条件,本测试播种的
+// 非 pending 行或已手动补价行会被一并计入,usage_records 从 1 变 2/3 后转红。
 func TestWorkerStatsAdapterPendingReconciliationUsesRealQuery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -32,17 +32,24 @@ func TestWorkerStatsAdapterPendingReconciliationUsesRealQuery(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	queries := dbbilling.New(tx)
+	baseline, err := queries.CountPendingReconciliationUsageRecords(ctx)
+	if err != nil {
+		t.Fatalf("count pending baseline: %v", err)
+	}
 	fixture := seedWorkerStatsUsageFixture(t, ctx, tx)
 	seedWorkerStatsUsageRecord(t, ctx, tx, fixture, "pending", true)
+	repricedID := seedWorkerStatsUsageRecord(t, ctx, tx, fixture, "repriced", true)
+	seedWorkerStatsRepriceEvent(t, ctx, tx, fixture.tenantID, repricedID)
 	seedWorkerStatsUsageRecord(t, ctx, tx, fixture, "settled", false)
 
 	reminder := subscription.NewReminderWorker(subscription.ReminderWorkerConfig{})
 	expiry := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{})
-	reader := newSubscriptionWorkerStatsReader(reminder, expiry, nil, dbbilling.New(tx))
+	reader := newSubscriptionWorkerStatsReader(reminder, expiry, nil, queries)
 
 	stats := reader.ReadWorkerStats(ctx)
-	if stats.PendingReconciliation.UsageRecords != 1 || stats.PendingReconciliation.QueryFailed {
-		t.Fatalf("pending_reconciliation stats=%+v want usage_records=1/query_failed=false", stats.PendingReconciliation)
+	if stats.PendingReconciliation.UsageRecords != baseline+1 || stats.PendingReconciliation.QueryFailed {
+		t.Fatalf("pending_reconciliation stats=%+v baseline=%d want usage_records=%d/query_failed=false", stats.PendingReconciliation, baseline, baseline+1)
 	}
 }
 
@@ -83,7 +90,7 @@ func seedWorkerStatsUsageFixture(t *testing.T, ctx context.Context, tx pgx.Tx) w
 	return fixture
 }
 
-func seedWorkerStatsUsageRecord(t *testing.T, ctx context.Context, tx pgx.Tx, fixture workerStatsUsageFixture, label string, pending bool) {
+func seedWorkerStatsUsageRecord(t *testing.T, ctx context.Context, tx pgx.Tx, fixture workerStatsUsageFixture, label string, pending bool) int64 {
 	t.Helper()
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
 	var claimID int64
@@ -101,7 +108,8 @@ func seedWorkerStatsUsageRecord(t *testing.T, ctx context.Context, tx pgx.Tx, fi
 		"logical-"+label, now, now.Add(time.Hour)).Scan(&claimID); err != nil {
 		t.Fatalf("insert claim %s: %v", label, err)
 	}
-	if _, err := tx.Exec(ctx, `
+	var usageID int64
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO usage_records (
 			tenant_id, claim_id, api_key_id, user_id, attempt_seq,
 			tokens_input, tokens_output, actual_cost, input_cost, output_cost,
@@ -110,7 +118,30 @@ func seedWorkerStatsUsageRecord(t *testing.T, ctx context.Context, tx pgx.Tx, fi
 		)
 		VALUES ($1, $2, $3, $4, 1, 1, 1, 0, 0, 0, 'non_streaming',
 			'reported', $5, $6, $7, 'worker-stats-model', false, 'response_cache_l2')
-	`, fixture.tenantID, claimID, fixture.apiKeyID, fixture.userID, pending, now.Add(-time.Second), now); err != nil {
+		RETURNING id
+	`, fixture.tenantID, claimID, fixture.apiKeyID, fixture.userID, pending, now.Add(-time.Second), now).Scan(&usageID); err != nil {
 		t.Fatalf("insert usage %s: %v", label, err)
+	}
+	return usageID
+}
+
+func seedWorkerStatsRepriceEvent(t *testing.T, ctx context.Context, tx pgx.Tx, tenantID, usageID int64) {
+	t.Helper()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO usage_record_reconciliation_events (
+			tenant_id,
+			original_usage_record_id,
+			authoritative_tokens_input,
+			authoritative_tokens_output,
+			authoritative_cost,
+			cost_delta,
+			reconciliation_source,
+			reconciled_at
+		) VALUES ($1, $2, 1, 1, 0, 0, 'manual_reprice_current_pricing', $3)`,
+		tenantID,
+		usageID,
+		time.Date(2026, 7, 5, 12, 1, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("insert reprice event: %v", err)
 	}
 }

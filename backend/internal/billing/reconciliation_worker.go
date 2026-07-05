@@ -203,7 +203,6 @@ WITH candidates AS (
 		FROM usage_record_reconciliation_events re
 		WHERE re.tenant_id = ur.tenant_id
 		  AND re.original_usage_record_id = ur.id
-		  AND re.reconciliation_source = $3
 	  )
 	ORDER BY ur.settled_at ASC, ur.id ASC
 	LIMIT $4
@@ -226,7 +225,6 @@ WITH candidates AS (
 		FROM usage_record_reconciliation_events re
 		WHERE re.tenant_id = c.tenant_id
 		  AND re.original_usage_record_id = c.id
-		  AND re.reconciliation_source = $3
 	)
 	RETURNING id
 )

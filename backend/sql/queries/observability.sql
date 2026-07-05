@@ -42,7 +42,6 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -101,7 +100,6 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -192,7 +190,6 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -212,7 +209,6 @@ WHERE ur.pending_reconciliation = true
     FROM usage_record_reconciliation_events re
     WHERE re.tenant_id = ur.tenant_id
       AND re.original_usage_record_id = ur.id
-      AND re.reconciliation_source = 'stream_no_usage_finalized'
   );
 
 -- name: ListBillingClaims :many
