@@ -8,7 +8,20 @@
 - ✅ **A#1**(e95a6eee)completion 总线用全装饰后 settler——移出 buildSettlementServices、挪到 quota/budget/notify 装饰之后;变异证明测试;**顺带解 A#4(budget)**。端到端集成断言(真 pg)排 follow-up。
 - ✅ **A#2**(df71c432)completionshttp 非流式 settle 脱钩 ctx + DLQ;变异证明测试。
 - ✅ **B2 + B7**(8988a302)退款回执改签 trust.v1 canonical + base64(与验签/正常结算同口径),修死签名;伪绿测试改走生产验签口径;变异证明。删死码 v2 签名 helper。
-- ⏭ 下一切片:**B1**(订阅续费被到期 worker 抢先)——需 §16 三镜研究(sub2/new-api 到期 vs 续费协调)+ 订阅状态机分析(避免"跳过 auto_renew 致失败续费永不到期");再 S2 批 → S3 收尾。
+- ✅ **B1**(0470fefd)提前续费窗口(renew-ahead grace 30min)+ 到期路径锁内 due 复查(堵 TOCTOU)。三镜研究(agent a54cbd13)证实首选方案 A:sub2/new-api 均无自动续费 worker、到期查询无排除、到期写点带时间条件。5 新判别测试(3 unit + 2 PG)全变异证明(MUT-A/B/C + MUTPG-1/2 逐一变红);干净基线整包 unit + 全 subscription 集成绿。对抗审查(agent a1c545,独立复跑两处核心变异+确认 6 处推进时钟非伪绿)裁定**可合并,零 S0/S1/S2**。
+  - **「测所有相关点」抓到关联缺陷**:到期复查改动使 6 处既有守卫测试(ChainedExpiry/ExpiryGuard/admin extend/change ×PG+unit)悄悄假绿——它们把 ExpireSubscription 当"强制关闭"捷径用在未到点订阅上,被复查 no-op 后断言因"什么都没发生"而通过、守卫变异不再变红。已全部改为「推进时钟到到期后」让到期真实发生、守卫真跑。生产语义核实:ExpireSubscription 只由 worker(ProcessDueExpiries,只喂到点行)调用,admin 用 Revoke/Cancel(不同终态不受复查约束)。
+  - 爆炸半径:全在 subscription 包内(ListAutoRenewDue 参数/autoRenewRecord 字段均包内/未导出),无包外调用者;cmd/gateway 编译绿。
+  - **S3 follow-up(记录,不阻断)**:①到期复查 no-op 时 ProcessDueExpiries 仍 processed++,ExpiredTotal 指标微高计(罕见 TOCTOU,无害;精确需 store 返回「是否真置终态」布尔)②DefaultAutoRenewLeadWindow 硬编码 30min 不随 interval 派生(已加运维约束注释;默认 interval=5min 安全)③reminder worker 不排除 auto_renew(pre-existing,B1 未触及)。
+
+**🎉 审计修复 S1 四条全清**:A#1(e95a6eee)、A#2(df71c432)、B2/B7(8988a302)、B1(0470fefd),全部 mutation-proven + 对抗审查零 S0/S1 + 零回归。下一步:S2 批 → S3 收尾 → 额度恢复重跑 feature 审计未验证域。
+
+### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
+- **方案 = 提前量续费(renew-ahead grace window),到期判据不动**:`ListAutoRenewDue` 扫 `expires_at <= now+lead`(PG+memory 同改);`tryAutoRenewOnce` 锁行复查同用 `DueCutoff`(autoRenewRecord 加字段);`ProcessAutoRenewal` 算 cutoff 下传。lead 取 30min(5min 节拍 ≥6 次尝试,余额不足可重试;对比 Apple 提前 24h 扣款,30min 属保守)。
+- **为什么不选「ListDueExpiry 排除 auto_renew=true」**:续费持续失败(余额不足/套餐停用)的订阅将永不到期 → 白嫖;要堵这个洞需加失败计数/宽限状态机 = schema 变更。提前量方案零 schema、到期兜底天然保留:续费失败订阅照常在 expires_at 到期降级。
+- **提前续费用户零损失**:activation.go:85-89 续期基准 = `max(now, 现到期)`,提前续费从原到期日累加;且未过期续期走 reconcileCapsTx(保留用量计数,防重置白嫖,对齐 sub2api 期中续期语义)。幂等锚 periodKey=续费前 expires_at,提前/准点同锚。
+- **顺带堵第二竞态(#17 配合点)**:closeSubscriptionOnce 锁行后只复查 status 不复查到期——「到期扫描→锁行」间隙内续费提交后,订阅仍会被误置 expired。修:Expire 路径锁行后 `!IsExpiredAt(now)` → no-op(Cancel/Revoke 无条件语义不受影响)。
+- **旋钮不动**:HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED 默认 false 保持(默认翻转=Owner-gated);旋钮关时本修复零行为变化(到期路径的 due 复查纯防御)。
+- **判别测试**:①lead 窗口内(未到期)订阅进续费候选且成功续期、到期日=原到期+validity(变异:退回 `<=now` → 红);②续费失败(余额不足)订阅仍准点到期(守「永不到期」陷阱,变异:ListDueExpiry 排除 auto_renew → 红);③expire 锁行后 due 复查:已续期行 no-op(变异:去掉复查 → 红);④两 worker 同跑集成:auto_renew=true 有钱续期、没钱到期。
 - ⏳ **额度恢复后重跑 feature 审计未验证域**(resume wf_bfe5c8d5-e10):payment/apikey-access/quota-budget/pricing/moderation/media/billing-settle/hermes/mimicry-egress/credential/notify/platform-obs/frontend。
 
 ## 安全网(每切片必过)
