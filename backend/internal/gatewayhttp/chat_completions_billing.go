@@ -151,7 +151,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
 		// retry/failover 可能跨 upstream model 成功；cache 写入必须使用
-		// 实际成功 attempt 的 model，避免把 fallback 响应写进 primary key。
+		// 实际成功 attempt 的 model，避免把 回退响应写进 primary key。
 		if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
 			ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
 			syncL2SizeMetrics(ex.d.ResponseCache)
@@ -296,12 +296,12 @@ func normalizedPayloadHash(body []byte) string {
 // 调用约定:
 //   - source != "" 表示 "已交付内容 给客户端" — settle 失败必须 durable 兜底
 //   - source == "" 或 SettleRecoveryDLQ == nil — 跟原 settleCompletion 一致,
-//     失败只返 err,caller 自决(stream/billing pre-delivery path 返 5xx 给客户端)
+//     失败只返 err,调用方自决(stream/billing pre-delivery path 返 5xx 给客户端)
 //
 // Enqueue 自己失败时 P0 log alert(Owner D-4 已批 — 不再 disk spool,只 alert),
 // 但不阻塞:流式响应已发给客户端不能反悔。
 //
-// settle err 始终原样传给 caller,跟 settleCompletion 行为一致。
+// settle err 始终原样传给调用方,跟 settleCompletion 行为一致。
 func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, error) {
 	res, err := settleCompletion(ctx, d, event)
 	if err == nil {

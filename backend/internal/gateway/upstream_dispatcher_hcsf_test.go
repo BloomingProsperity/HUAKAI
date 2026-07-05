@@ -131,7 +131,7 @@ func TestDispatchHCSFUnsupportedEndpointFamilyFailsBeforeRawFallback(t *testing.
 // 帧,openai_chat JSON 投影不可解析,见 hcsfProviderRequestModelFamily 排除
 // 注释;OCAW 采集确认真实形态前不接)。本测试守:该族走 HCSF 非流式时在
 // marshal 处 fail-closed,绝不把客户端 raw body 透传到上游。
-// Mutation:往 hcsfProviderRequestModelFamily 加 cursor_session→openai_chat
+// 变异:往 hcsfProviderRequestModelFamily 加 cursor_session→openai_chat
 // → err==nil 断言红(同时守卫测试的例外表反向断言也红)。
 func TestDispatchHCSFNativeOnlySessionFamilyFailsBeforeRawFallback(t *testing.T) {
 	const rawMarker = "CURSOR_RAWFALLBACK_MARKER"
@@ -213,7 +213,7 @@ func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testi
 // 跨协议守卫(DM-20 评审 S2):许可集与流式 needsStreamingHCSFTranslation 严格
 // 镜像——同族/空 ingress 直通,anthropic→bedrock 走 adapter 内 AutoTranslate
 // 直通,其余跨协议 fail-closed。
-// MUTATION: 删 validateNativeRawBodyIngress 调用(恢复 fail-open)→ anthropic
+// 变异: 删 validateNativeRawBodyIngress 调用(恢复 fail-open)→ anthropic
 // body 原样直发 codex / openai body 进 bedrock 嗅探误译 → 四个 wantErr 用例 RED;
 // 把 anthropic→bedrock 许可删掉 → AutoTranslate 合法路径被误杀 → 该用例 RED。
 func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
@@ -686,7 +686,7 @@ func TestDispatchHCSFPrefersProviderEnvelopeBuilder(t *testing.T) {
 	}
 }
 
-// MUTATION: DispatchHCSF 构造 provider.BuildInput 时丢 InboundBetaTokens
+// 变异: DispatchHCSF 构造 provider.BuildInput 时丢 InboundBetaTokens
 // 映射 → 红(DM-03 HCSF 路径穿线守卫)。
 func TestDispatchHCSFPassesInboundBetaTokensToAdapter(t *testing.T) {
 	adapter := &stubAdapter{platform: "openai"}
@@ -711,7 +711,7 @@ func TestDispatchHCSFPassesInboundBetaTokensToAdapter(t *testing.T) {
 
 // TestReadBufferedUpstreamResponseDetectsOverflow 守 S2-7 核心: 读上游 buffered 响应必须
 // 用 limit+1 哨兵探测溢出, 否则 >1MiB 响应被静默截断且无人知晓。
-// Mutation: 把 readBufferedUpstreamResponse 的 LimitReader 改回 maxBufferedUpstreamResponseBytes
+// 变异: 把 readBufferedUpstreamResponse 的 LimitReader 改回 maxBufferedUpstreamResponseBytes
 // (无 +1) → over body 读到恰好 limit 字节 → len==limit 非 >limit → oversized=false → RED。
 func TestReadBufferedUpstreamResponseDetectsOverflow(t *testing.T) {
 	// 恰好上限: 不算 oversized, 全量返回。
@@ -743,7 +743,7 @@ func TestReadBufferedUpstreamResponseDetectsOverflow(t *testing.T) {
 // TestDispatchHCSFRejectsOversizedSuccessResponse 守 S2-7: 上游 2xx 成功响应 >1MiB 必须在
 // canonicalize 前被拒为 ErrUpstreamResponseTooLarge, 而非把截断字节喂 ProviderResponseToCanonical
 // (静默截断→opaque 502 / SSE 形按部分响应错计费)。
-// Mutation: 删 DispatchHCSF 内 `if oversized { return ErrUpstreamResponseTooLarge }` → 截断体进
+// 变异: 删 DispatchHCSF 内 `if oversized { return ErrUpstreamResponseTooLarge }` → 截断体进
 // adapter → err 变 nil 或 parse 错(均 ≠ ErrUpstreamResponseTooLarge) → RED。
 func TestDispatchHCSFRejectsOversizedSuccessResponse(t *testing.T) {
 	big := strings.Repeat("x", maxBufferedUpstreamResponseBytes+100)
@@ -760,7 +760,7 @@ func TestDispatchHCSFRejectsOversizedSuccessResponse(t *testing.T) {
 
 // TestDispatchHCSFOversizedNon2xxStaysUpstreamHTTPError 守: 非 2xx 上游响应即便超 1MiB, 仍须
 // 作 UpstreamHTTPError(带截断 body 供错误分类), 不能被当 too-large 拒绝(镜像 legacy oversizedNon2xx)。
-// Mutation: 把 oversized 检查挪到 status 判断之前 → 非 2xx oversized 被误拒为 too-large → RED。
+// 变异: 把 oversized 检查挪到 status 判断之前 → 非 2xx oversized 被误拒为 too-large → RED。
 func TestDispatchHCSFOversizedNon2xxStaysUpstreamHTTPError(t *testing.T) {
 	big := strings.Repeat("x", maxBufferedUpstreamResponseBytes+100)
 	adapter := &stubAdapter{platform: "openai"}

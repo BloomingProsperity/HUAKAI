@@ -339,7 +339,7 @@ func TestNonStreamingDispatchError_RefreshesMarshalLossBeforeAbort(t *testing.T)
 	if len(settler.aborts) != 1 {
 		t.Fatalf("aborts=%+v want exactly one dispatch-error abort", settler.aborts)
 	}
-	// MUTATION: 删除 dispatch.go 中 DispatchHCSF 之后的 ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
+	// 变异: 删除 dispatch.go 中 DispatchHCSF 之后的 ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
 	// 刷新 → abort 仍用 dispatch 前快照(仅请求翻译损失,本例为空)→ 缺 marshal sentinel → RED。
 	if !settledLossHasCode(t, settler.aborts[0].protocolLoss, "marshal_loss_on_dispatch_error") {
 		t.Fatalf("dispatch-error abort missing marshal-stage loss: %s", settler.aborts[0].protocolLoss)

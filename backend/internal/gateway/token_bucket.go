@@ -105,7 +105,7 @@ func (b *TokenBucket) NextAvailableAt(now time.Time) time.Time {
 }
 
 // Refund 把 1 个令牌还回桶里 —— 用于:占用了名额后上游调用失败,
-// 调用方不希望浪费预算的场景。令牌数会夹到 Burst。
+//调用方不希望浪费预算的场景。令牌数会夹到 Burst。
 func (b *TokenBucket) Refund(now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -134,7 +134,7 @@ func (b *TokenBucket) Snapshot() (tokens float64, lastRefillAt time.Time) {
 }
 
 // refillLocked 把自 lastRefillNs 以来攒下的令牌补充进来,上限为 Burst。
-// 调用方必须持有 b.mu。
+//调用方必须持有 b.mu。
 func (b *TokenBucket) refillLocked(now time.Time) {
 	nowNs := now.UnixNano()
 	b.normalizeLocked()

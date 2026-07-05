@@ -6,7 +6,7 @@ import (
 )
 
 // UpstreamHTTPError 由 buffered/HCSF 路径返回上游非 2xx 响应时构造, 用于把
-// 上游真实 status code + body + headers 透传到 caller (chat handler 等),
+// 上游真实 status code + body + headers 透传到调用方(chat handler 等),
 // 保留 client retry 语义 (401/429) + cooldown / channel-health 分类信号
 // (不是所有失败都塌成 502 + status=0)。
 //
@@ -27,7 +27,7 @@ func (e *UpstreamHTTPError) Error() string {
 	return fmt.Sprintf("dispatcher: 上游状态码 %d", e.StatusCode)
 }
 
-// RetryAfter 返回上游 Retry-After header 值 (秒), 找不到返回 0。caller 用于
+// RetryAfter 返回上游 Retry-After header 值 (秒), 找不到返回 0。调用方用于
 // 决定 cooldown 时长 (429 + Retry-After 比 generic 429 信号更精确)。
 func (e *UpstreamHTTPError) RetryAfter() string {
 	if e == nil || e.Header == nil {

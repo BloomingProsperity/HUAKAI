@@ -41,7 +41,7 @@ func (s *abortCtxSpySettler) Refund(_ context.Context, _ billing.RefundRequest) 
 // TestAbortReservation_UsesDetachedCtx 守 C-1:客户端断连(ex.ctx 取消)时,abort 仍以未取消的
 // 脱离 ctx 执行,hold/并发槽得以释放,不泄漏到 lease 过期。
 //
-// Mutation:abortReservation 改回 ex.d.Settler.Abort(ex.ctx, ...) → Abort 收到已取消 ctx →
+// 变异:abortReservation 改回 ex.d.Settler.Abort(ex.ctx, ...) → Abort 收到已取消 ctx →
 // lastCtxErr != nil → 红。
 func TestAbortReservation_UsesDetachedCtx(t *testing.T) {
 	spy := &abortCtxSpySettler{}
@@ -70,7 +70,7 @@ func TestAbortReservation_UsesDetachedCtx(t *testing.T) {
 // ctx——否则 abort 失败,hold+并发槽泄漏到 lease 过期。这是与 ex.abortReservation 配对的
 // 另一条请求路径,单测 ex 方法测不到。
 //
-// Mutation:把 serveL2CacheHit 的 detachedAbort 改回 d.Settler.Abort(ctx, ...) → abort 收到
+// 变异:把 serveL2CacheHit 的 detachedAbort 改回 d.Settler.Abort(ctx, ...) → abort 收到
 // 已取消 ctx → lastCtxErr != nil → 红。
 func TestServeL2CacheHit_AbortUsesDetachedCtx(t *testing.T) {
 	// production + AuditLedger==nil → submitAuditLedgerEntry 返错 → 触发 audit_ledger_error abort。
@@ -119,7 +119,7 @@ func TestServeL2CacheHit_AbortUsesDetachedCtx(t *testing.T) {
 // cache-hit-commit 与 direct-settle 两条请求路径的零成本 abort 都汇到 rejectMoneyPathAuditRef,
 // 断连时同样需脱离 ctx 释放,否则漏 hold/并发槽。
 //
-// Mutation:把 :396 的 detachedAbort 改回 d.Settler.Abort(ctx, ...) → lastCtxErr != nil → 红。
+// 变异:把 :396 的 detachedAbort 改回 d.Settler.Abort(ctx, ...) → lastCtxErr != nil → 红。
 func TestRejectMoneyPathAuditRef_AbortUsesDetachedCtx(t *testing.T) {
 	spy := &abortCtxSpySettler{}
 	canceled, cancel := context.WithCancel(context.Background())

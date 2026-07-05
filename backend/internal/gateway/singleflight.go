@@ -81,7 +81,7 @@ func (sf *SingleFlight) Do(key string, fn func() (any, error)) (val any, err err
 
 // Forget 把 key 从进行中 map 移除，这样下一次针对该 key 的 Do 调用会重新
 // 执行 fn，而不是搭上一个陈旧结果。可在某次 Do 进行中安全调用；进行中的
-// 调用方仍看到原结果，但新调用方会开启一次全新执行。
+//调用方仍看到原结果，但新调用方会开启一次全新执行。
 func (sf *SingleFlight) Forget(key string) {
 	sf.mu.Lock()
 	delete(sf.calls, key)

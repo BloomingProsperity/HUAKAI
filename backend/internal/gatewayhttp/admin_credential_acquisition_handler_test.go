@@ -131,7 +131,7 @@ func TestAdminCredentialAcquisitionCanonicalCallbackUsesRegistryAndFinalizesCred
 }
 
 // 缺陷：浏览器 OAuth 回跳没有 Bearer，helper callback 若继续解析 admin token 会永远 401。
-// 判别 mutation：恢复 callback handler 的 Bearer 闸时，本测试必须因 401 变红。
+// 判别变异：恢复 callback handler 的 Bearer 闸时，本测试必须因 401 变红。
 func TestOAuthBrowserCallbackCompletesWithoutBearer(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
@@ -153,7 +153,7 @@ func TestOAuthBrowserCallbackCompletesWithoutBearer(t *testing.T) {
 }
 
 // 缺陷：browser callback 若绕过 CompleteOAuthCallback，就会跳过 state CSRF 校验。
-// 判别 mutation：把 handler 改成直接 finalize 时，错误 state 会返回 200，本测试必须变红。
+// 判别变异：把 handler 改成直接 finalize 时，错误 state 会返回 200，本测试必须变红。
 func TestOAuthBrowserCallbackRejectsStateMismatch(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
@@ -171,7 +171,7 @@ func TestOAuthBrowserCallbackRejectsStateMismatch(t *testing.T) {
 }
 
 // 缺陷：browser callback 若不复用 consumed/finalized 闸，同一 code 回跳可重放创建凭据。
-// 判别 mutation：删除 CompleteOAuthCallback 的 consumed/finalized 闸时，第二次 GET 会触发第 2 次 exchange，callCount=2，本测试必须变红。
+// 判别变异：删除 CompleteOAuthCallback 的 consumed/finalized 闸时，第二次 GET 会触发第 2 次 exchange，callCount=2，本测试必须变红。
 func TestOAuthBrowserCallbackRejectsReplay(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
@@ -197,7 +197,7 @@ func TestOAuthBrowserCallbackRejectsReplay(t *testing.T) {
 }
 
 // 缺陷：无 Bearer browser callback 的审计 actor 若取当前请求身份，会丢失发起 admin。
-// 判别 mutation：把 actor 改成空字符串或固定值时，admin audit actor 断言必须变红。
+// 判别变异：把 actor 改成空字符串或固定值时，admin audit actor 断言必须变红。
 func TestOAuthBrowserCallbackAuditsStartingAdmin(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
@@ -458,7 +458,7 @@ func TestGeminiAdminStartFlowIgnoresClientSecretFromRequest(t *testing.T) {
 func TestAdminChatGPTOAuthStartFlowIgnoresClientSecretFromRequest(t *testing.T) {
 	// 缺陷：ChatGPT OAuth 是 PKCE-only；admin request body 的 client_secret 若进入 StartOAuthFlow，
 	// 会被内置 profile 拒绝或诱导后续路径发送 confidential-client secret。
-	// 判别 mutation：只对 Gemini 清空 client_secret 时，本测试必须变红。
+	// 判别变异：只对 Gemini 清空 client_secret 时，本测试必须变红。
 	guard := &chatGPTAdminStartConfigGuardExchanger{}
 	registry := credentialacq.NewExchangerRegistry()
 	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), guard); err != nil {

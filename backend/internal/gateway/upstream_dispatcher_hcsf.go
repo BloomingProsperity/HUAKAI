@@ -34,7 +34,7 @@ type HCSFDispatchInput struct {
 	// 让 R7 也覆盖默认走的 HCSF 非流式路径(与流式 / legacy raw 两路并成三路闭环)。
 	//
 	// 语义保持单一来源:钩子实参就是 gatewayhttp 的 ex.identityRewrite —— 默认关
-	// 时它返回入参 body 的逐字节拷贝(no-op),故默认关时本路径字节等价;开关开 +
+	// 时它返回入参 body 的逐字节拷贝(空操作),故默认关时本路径字节等价;开关开 +
 	// 账号带 external id + secret 时才把 metadata.user_id 投影成池账号身份(对
 	// anthropic marshal 出的无 metadata body 走 inject 路径补出 metadata.user_id)。
 	// nil 时不施加(零行为变化)。
@@ -80,7 +80,7 @@ type envelopeRequestBuilder interface {
 // 路径对超大响应行为一致。
 const maxBufferedUpstreamResponseBytes = 1 << 20
 
-// ErrUpstreamResponseTooLarge 表示上游 2xx 成功响应超过 buffered 读取上限。caller 应映射成
+// ErrUpstreamResponseTooLarge 表示上游 2xx 成功响应超过 buffered 读取上限。调用方应映射成
 // clienterr.CodeUpstreamResponseTooLarge(终止、不重试：重试不会变小)，而非把截断字节喂给
 // ProviderResponseToCanonical 后塌成 opaque dispatch error，或被 ReconstructBufferedFromSSE
 // 当截断 SSE 计部分账。
@@ -88,7 +88,7 @@ var ErrUpstreamResponseTooLarge = errors.New("gateway: upstream buffered respons
 
 // readBufferedUpstreamResponse 读上游 buffered 响应，带溢出哨兵(读 limit+1 探测)。
 // oversized 时 raw 截断到 maxBufferedUpstreamResponseBytes —— 仅供非 2xx 响应的错误分类用；
-// 2xx 成功响应一旦 oversized，caller 必须拒绝(截断的成功体不可解析/会错计费)。
+// 2xx 成功响应一旦 oversized，调用方必须拒绝(截断的成功体不可解析/会错计费)。
 func readBufferedUpstreamResponse(r io.Reader) (raw []byte, oversized bool, err error) {
 	raw, err = io.ReadAll(io.LimitReader(r, maxBufferedUpstreamResponseBytes+1))
 	if err != nil {
@@ -185,7 +185,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		return nil, fmt.Errorf("dispatcher: 读取上游响应失败: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// 用类型化错误把 status + body 透传到 caller, 由 caller 决定 client 返回
+		// 用类型化错误把 status + body 透传到调用方, 由调用方决定 client 返回
 		// 状态码 / 走 health classification / 触发 cooldown. 不能塌成 string-only,
 		// 否则 chat handler 总是 502 + status=0 health signal 跟流式路径行为分叉。
 		// 非 2xx 时即便 oversized, 截断 body 仍够做错误分类(镜像 legacy oversizedNon2xx)。
@@ -262,10 +262,10 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		}
 		// RR-03: 转发前强制 Anthropic extended-thinking 的有效性(temperature=1 /
 		// tool_choice auto), 否则会被 upstream 返回 400; 当 body 没有激活的
-		// thinking 字段时为 no-op(字节等价)。
+		// thinking 字段时为空操作(字节等价)。
 		body = thinkingnorm.NormalizeThinkingValidity(body)
 		// R7 身份改写施加在最终上游 body 上(native-raw 子路:bedrock/codex)。
-		// 默认关时钩子 no-op = 字节等价。
+		// 默认关时钩子空操作= 字节等价。
 		body = applyIdentityRewrite(body, identityRewrite)
 		in.InboundBody = body
 		return a.BuildRequest(ctx, in)
@@ -285,7 +285,7 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 	}
 	// R7 身份改写施加在最终上游 body 上(canonical-marshal 子路;anthropic 默认走此)。
 	// 此处 body 是 MarshalToProviderRequest 的产物 —— anthropic marshal 不带 metadata,
-	// 钩子开关开时走 inject 路径补出含池账号身份的 metadata.user_id;默认关时 no-op
+	// 钩子开关开时走 inject 路径补出含池账号身份的 metadata.user_id;默认关时空操作
 	// = 字节等价,保 HCSF 默认路径零行为变化。
 	body = applyIdentityRewrite(body, identityRewrite)
 	in.InboundBody = body
@@ -329,7 +329,7 @@ func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {
 }
 
 // hcsfProviderRequestModelFamily 把 endpoint family 归一到它的 HCSF marshal
-// 形态族(wire 形态同形 ⇒ 同一 marshal 投影)。这张表是族集对称守卫的第 4 个
+// 形态族(线格式形态同形 ⇒ 同一 marshal 投影)。这张表是族集对称守卫的第 4 个
 // 站点:出站 registrydefault / 入站 protocol_selector / stream_scanner 三表
 // 之外,每个注册族还必须在此有 marshal 形态(或在守卫测试的 fail-closed
 // 例外表里有文档化理由)——此前 kimi/qwen/glm/yi/baichuan/doubao/ernie/step/

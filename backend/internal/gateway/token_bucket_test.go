@@ -169,7 +169,7 @@ func TestTokenBucket_BackwardClockNoRegress(t *testing.T) {
 	b := NewTokenBucket(10, 5)
 	now := bucketTime()
 	_ = b.TryAcquireN(now, 2)            // tokens = 3
-	_ = b.TryAcquireN(now.Add(-1*time.Second), 0) // 时间倒退, no-op
+	_ = b.TryAcquireN(now.Add(-1*time.Second), 0) // 时间倒退,不处理
 	tokens, _ := b.Snapshot()
 	if tokens != 3 {
 		t.Fatalf("backward clock should not regress; tokens=%.1f", tokens)

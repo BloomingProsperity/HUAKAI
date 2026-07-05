@@ -65,7 +65,7 @@ func (s *postDeliverySpyEnqueuer) Enqueue(ctx context.Context, e dlq.Event) (int
 // TestSettleCompletionWithRecovery_EnqueueUsesFreshContext 守 S2(#2)：交付后 settle 因传入 ctx 的
 // deadline 耗尽而失败时，DLQ 兜底 enqueue 必须用独立未过期 ctx，否则复用同一已过期 ctx 会让
 // recovery intent 落不了盘——DB 受压(settle 超时)时兜底最该工作却最易失效。
-// Mutation: chat_completions_billing.go 把 enqueue 的 enqCtx 改回复用传入 ctx → enqueue 收到
+// 变异: chat_completions_billing.go 把 enqueue 的 enqCtx 改回复用传入 ctx → enqueue 收到
 // 已取消 ctx → lastCtxErr!=nil → RED。
 func TestSettleCompletionWithRecovery_EnqueueUsesFreshContext(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle deadline exceeded")}
@@ -118,7 +118,7 @@ func newPostDeliveryFixtureEvent() eventbus.RequestCompletionEvent {
 // TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue 守:settle 成功时
 // SettleRecoveryDLQ 不被调用 — 防误兜底正常 settle。
 //
-// Mutation:把 helper 改成"无条件 enqueue" → 本用例 spy.calls=1 必红。
+// 变异:把 helper 改成"无条件 enqueue" → 本用例 spy.calls=1 必红。
 func TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: nil}
 	spy := &postDeliverySpyEnqueuer{}
@@ -141,7 +141,7 @@ func TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue(t *testing.T) {
 // SourceDirectSettle 时,settle 失败也入 DLQ 恢复(与流式 SourceStream 一致),
 // 避免上游已成功却因结算失败丢账。
 //
-// Mutation:非流式路径改回调 settleCompletion(不带恢复)→ 结算失败不入 DLQ。
+// 变异:非流式路径改回调 settleCompletion(不带恢复)→ 结算失败不入 DLQ。
 // 本用例直测 WithRecovery+SourceDirectSettle 的入队,守住 source 归类不被误当空跳过。
 func TestSettleCompletionWithRecovery_DirectSettleEnqueues(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle db error")}
@@ -163,11 +163,11 @@ func TestSettleCompletionWithRecovery_DirectSettleEnqueues(t *testing.T) {
 
 // TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery 守 P2/P3 主修复:
 // 流式 settle 失败 + source=stream + SettleRecoveryDLQ 已注入 → enqueue 1 次,
-// 行 event_kind=post_delivery_settlement,payload 可 decode 回 SettleRequest。
+// 行 event_kind=post_delivery_settlement,payload 可解码 回 SettleRequest。
 //
-// Mutation 1:删 settleCompletionWithRecovery 内 enqueue 调用 → spy.calls=0 红。
-// Mutation 2:把 source 改成 source="" 调用 → 同样不 enqueue 红。
-// Mutation 3:把 event_kind 改回 EventKindUsageRecord → assertion 红。
+// 变异 1:删 settleCompletionWithRecovery 内 enqueue 调用 → spy.calls=0 红。
+// 变异 2:把 source 改成 source="" 调用 → 同样不 enqueue 红。
+// 变异 3:把 event_kind 改回 EventKindUsageRecord → assertion 红。
 func TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("pgx: connection reset")}
 	spy := &postDeliverySpyEnqueuer{}
@@ -218,10 +218,10 @@ func TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery(t *testing.T) {
 }
 
 // TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue 守 pre-delivery
-// 调用方(source="")不触发 enqueue — 非流式 settle 失败 = 500 给客户端,
+//调用方(source="")不触发 enqueue — 非流式 settle 失败 = 500 给客户端,
 // 不应进 DLQ 重 settle。
 //
-// Mutation:把 source==""  check 删 → 本用例 spy.calls=1 必红。
+// 变异:把 source==""  check 删 → 本用例 spy.calls=1 必红。
 func TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle failed")}
 	spy := &postDeliverySpyEnqueuer{}
@@ -240,11 +240,11 @@ func TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue(t *testing.T) {
 	}
 }
 
-// TestSettleCompletionWithRecovery_NilDLQDoesNotPanic 守 wire 缺时不 panic —
-// 生产部署可能阶段性 wire 缺(测试环境 / 启动 race),不能因此让 stream
+// TestSettleCompletionWithRecovery_NilDLQDoesNotPanic 守 接线缺失时不 panic —
+// 生产部署可能阶段性 接线缺失(测试环境 / 启动 race),不能因此让 stream
 // handler 崩溃。
 //
-// Mutation:删 d.SettleRecoveryDLQ==nil check → settlementrecovery.EnqueuePayload
+// 变异:删 d.SettleRecoveryDLQ==nil check → settlementrecovery.EnqueuePayload
 // 内 q==nil 返 ErrEnqueuerNil 但本测试是 helper level — 实际 helper 跳过
 // settlementrecovery.EnqueuePayload 调用,nil DLQ 时不该触发。
 func TestSettleCompletionWithRecovery_NilDLQDoesNotPanic(t *testing.T) {
@@ -263,12 +263,12 @@ func TestSettleCompletionWithRecovery_NilDLQDoesNotPanic(t *testing.T) {
 }
 
 // TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated 守 D-4 决策:
-// DLQ persist 自己失败 = money path 双环灰区 — log P0 alert 但不影响 caller
-// (流式响应已发给客户端,不能反悔)。settle err 是 caller 看到的唯一 err。
+// DLQ persist 自己失败 = money path 双环灰区 — log P0 alert 但不影响调用方
+// (流式响应已发给客户端,不能反悔)。settle err 是调用方看到的唯一 err。
 //
-// Mutation 1:helper 把 enqueue err 也返给 caller → caller 拿到 enqueue err
+// 变异 1:helper 把 enqueue err 也返给调用方 → 调用方拿到 enqueue err
 // 而不是 settle err,日志链断。
-// Mutation 2:helper panic on enqueue err → 本用例 panic。
+// 变异 2:helper 在 enqueue err 时 panic → 本用例 panic。
 func TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated(t *testing.T) {
 	var logs bytes.Buffer
 	prev := slog.Default()

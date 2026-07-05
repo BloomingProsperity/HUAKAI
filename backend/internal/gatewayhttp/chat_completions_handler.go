@@ -91,7 +91,7 @@ type ChatHandlerDeps struct {
 	ModerationScreener    moderation.Screener
 	// SettleRecoveryDLQ 是 post-delivery settle 失败(流式响应已发给客户端
 	// 但 Tx2 settlement 未确认提交)的 durable 兜底 enqueue;nil 时 stream
-	// path 失败只 log,money path 灰区无可补救。生产部署必须 wire 上
+	// path 失败只 log,money path 灰区无可补救。生产部署必须 接上
 	// dlq.Service(见 cmd/gateway/routes.go SettleRecoveryDLQ: d.dlqService)。
 	SettleRecoveryDLQ      settlementrecovery.Enqueuer
 	Signer                 *sign.Signer
@@ -133,7 +133,7 @@ type ChatHandlerDeps struct {
 
 	// AuthCooldown 是 auth 降级车道(缺口① S1);此处仅用于凭证热刷新结果的单向通报
 	//(triggerCredentialHotRefresh 回调 OnRefreshResult,只在永久失效时升 HardDisabled)。
-	// nil 安全(方法自带 nil-guard),默认关。
+	// nil 安全(方法自带 nil 守卫),默认关。
 	AuthCooldown *authcooldown.Store
 }
 
@@ -505,7 +505,7 @@ func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 
 func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts int) modelRunResult {
 	// SUB2-EGRESS-04: 在计费前拦截 Claude Code 的一次性预热(throwaway)请求。
-	// 该开关 opt-in(默认关)；关闭时此代码块是真正的 no-op。
+	// 该开关 opt-in(默认关)；关闭时此代码块是真正的空操作。
 	if warmupInterceptEnabled(ex.ctx, ex.d.PlatformSettings) {
 		isClaudeUA := warmupintercept.IsClaudeCodeUserAgent(ex.r.UserAgent())
 		maxTok := 0
@@ -708,7 +708,7 @@ func readRawBufferedUpstreamBody(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	if len(raw) > maxRawBufferedUpstreamBodyBytes {
-		// 超限时保留截断 body，供 caller 对非 2xx 上游响应继续做错误分类。
+		// 超限时保留截断 body，供调用方对非 2xx 上游响应继续做错误分类。
 		return raw[:maxRawBufferedUpstreamBodyBytes], errRawBufferedUpstreamBodyTooLarge
 	}
 	return raw, nil

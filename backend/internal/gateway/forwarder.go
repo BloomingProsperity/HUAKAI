@@ -1,4 +1,4 @@
-// stream forwarder: SSE 流式上游转发(超时/取消/审计)。本文件参与 Go build。
+// 流式 forwarder:SSE 上游转发(超时/取消/审计)。本文件参与 Go build。
 package gateway
 
 import (
@@ -33,15 +33,15 @@ type StreamingHopChainBuilder func(req ForwardRequest, providerEndpoint string, 
 
 // StreamForwarder 执行 F-GW-002 A-D 阶段的流式转发流水线。
 //
-// 变更说明（A1 atomic）：
+// 变更说明（A1 原子变更）：
 //   - 加 Scanners 字段（StreamScannerRegistry），替代之前硬编码的
 //     ScanSSEEvents 调用。Forward 按 ForwardRequest.ProtocolFamily 查询
-//     scanner，把 wire-format 切帧职责从 forwarder 解耦出去。
-//   - SSE 行为通过 SSEStreamScanner 保持等价（行为不变 refactor）。
-//   - Bedrock binary EventStream 在 A2+A3 atomic 接入对应 scanner，
+//     scanner，把线格式切帧职责从 forwarder 解耦出去。
+//   - SSE 行为通过 SSEStreamScanner 保持等价（行为不变重构）。
+//   - Bedrock binary EventStream 在 A2+A3 原子变更接入对应 scanner，
 //     无需再动 forwarder 主流程。
 //
-// 历史变更说明（wire-up 重构）：
+// 历史变更说明（接线重构）：
 //   - 新增 ProtocolAdapters 字段，替代原先硬编码的 anthropic.Adapter。
 //   - 删除原 UpstreamAdapter 字段（由 ProtocolAdapters + ForwardRequest.ProtocolFamily 动态解析）。
 //   - Forward 入口校验 ProtocolFamily 非空、ProtocolAdapters 非 nil。
@@ -50,7 +50,7 @@ type StreamForwarder struct {
 	// 必须非 nil；若为 nil，Forward 将立即返回错误。
 	ProtocolAdapters ProtocolAdapterRegistry
 
-	// Scanners 是 wire-format scanner 注册表，按 ForwardRequest.ProtocolFamily
+	// Scanners 是线格式 scanner 注册表，按 ForwardRequest.ProtocolFamily
 	// 查询 StreamScanner。必须非 nil（A1 之后）；nil 时 Forward 立即返回错误，
 	// 避免静默回落到 SSE 把 binary 流切碎。
 	Scanners StreamScannerRegistry
@@ -72,7 +72,7 @@ type StreamForwarder struct {
 	CostEstimator func(drainedBytes int64, acc UsageAccumulator) decimal.Decimal
 
 	// AuditLedger / Signer 是 T12 streaming trust-chain ledger 的可选依赖。
-	// 两者任一缺失时 graceful skip，并通过 LedgerWarning 记录一次 loss。
+	// 两者任一缺失时温和跳过，并通过 LedgerWarning 记录一次 loss。
 	AuditLedger    auditledger.Ledger
 	AuditLedgerDLQ auditledger.DLQEnqueuer
 	Signer         *sign.Signer
@@ -85,7 +85,7 @@ type StreamForwarder struct {
 }
 
 // ErrNilStreamScannerRegistry 表示 StreamForwarder.Scanners 未注入。
-// 与 ErrNilProtocolAdapterRegistry 同形态：fail-loud，禁止静默 fallback。
+// 与 ErrNilProtocolAdapterRegistry 同形态：显式失败，禁止静默回退。
 var ErrNilStreamScannerRegistry = errors.New("gateway: StreamForwarder.Scanners 未注入")
 
 const (
@@ -107,8 +107,8 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	}
 
 	// --- 入口校验：Scanners 注册表必须已注入（A1 之后强制） ---
-	// 不允许 nil fallback 到 SSE — 那样 Bedrock binary 流会被切碎，
-	// 不如 fail-loud 让启动期 misconfig 立刻暴露。
+	// 不允许 nil 回退到 SSE — 那样 Bedrock binary 流会被切碎，
+	// 不如显式失败，让启动期配置错误立刻暴露。
 	if f.Scanners == nil {
 		return UsageRecordDraft{}, ErrNilStreamScannerRegistry
 	}
@@ -118,13 +118,13 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		return UsageRecordDraft{}, fmt.Errorf("%w: ProtocolFamily 未指定", ErrUnknownProtocolFamily)
 	}
 
-	// --- 按请求的 ProtocolFamily 解析 upstream adapter；不 fallback 到默认 ---
+	// --- 按请求的 ProtocolFamily 解析 upstream adapter；不回退到默认 ---
 	adapter, err := f.ProtocolAdapters.For(req.ProtocolFamily)
 	if err != nil {
 		return UsageRecordDraft{}, err
 	}
 
-	// --- 按请求的 ProtocolFamily 解析 wire-format scanner；不 fallback 到 SSE ---
+	// --- 按请求的 ProtocolFamily 解析线格式 scanner；不回退到 SSE ---
 	scanner, err := f.Scanners.For(req.ProtocolFamily)
 	if err != nil {
 		return UsageRecordDraft{}, err
@@ -303,7 +303,7 @@ func (f *StreamForwarder) BufferedResponse(ctx context.Context, canonical *proto
 //
 // 旁路 adapter 的特殊事件类型：
 //   - evt.Type == "error" — protocol-level error 帧（如 Bedrock exception
-//     scanner 在 yield ErrBedrockException 前 emit 的 error SSEEvent）。
+//     scanner 在 yield ErrBedrockException 前发出的 error SSEEvent）。
 //     这些 payload 不是 model 事件，喂给 adapter 会触发 JSON 解析失败；
 //     客户端只接收 canonical public error，内部日志只记录脱敏摘要。
 func (f *StreamForwarder) handleEventWithAdapter(
@@ -667,7 +667,7 @@ type scanResult struct {
 }
 
 // scanInto 把 StreamScanner 切出的事件流送到 channel。A1 之前直接 hard-call
-// ScanSSEEvents；现在通过 scanner 抽象，由调用方决定 wire format。
+// ScanSSEEvents；现在通过 scanner 抽象，由调用方决定线格式。
 func scanInto(ctx context.Context, scanner StreamScanner, r io.Reader, cap int, out chan<- scanResult) {
 	defer close(out)
 	for evt, err := range scanner.Scan(ctx, r, cap) {

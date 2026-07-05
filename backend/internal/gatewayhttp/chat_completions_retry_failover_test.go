@@ -1498,7 +1498,7 @@ func (r *delayedReadCloser) Close() error {
 
 // 守 wave-2 P2(429/529 无 Retry-After 仍冷却): 上游 429 不带 Retry-After 头时, 仍必须按
 // RateService 默认冷却把被限流账号 ForceCooldown(否则该账号被持续命中)。
-// Mutation: 还原 forceCooldownFromUpstreamRateLimit 中 RetryAfter()=="" 早退 -> ForceCooldown
+// 变异: 还原 forceCooldownFromUpstreamRateLimit 中 RetryAfter()=="" 早退 -> ForceCooldown
 // 不被调用 -> len(forceCooldowns)==0 -> 红。
 func TestPR5NonStream429NoRetryAfterStillCooldowns(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -1560,7 +1560,7 @@ func TestPR5NonStreamTransient5xxForceCooldownWhenEnabled(t *testing.T) {
 	if selector.calls != 2 {
 		t.Fatalf("selector calls=%d want 2 (failover to 2nd account)", selector.calls)
 	}
-	// 变异:把 caller 预过滤器仍限定为只匹配 429/529,会让这里停在零。
+	// 变异:把调用方预过滤器仍限定为只匹配 429/529,会让这里停在零。
 	if len(health.forceCooldowns) != 1 {
 		t.Fatalf("ForceCooldown calls=%d want 1 for enabled 502 transient cooldown", len(health.forceCooldowns))
 	}
@@ -1577,7 +1577,7 @@ func TestPR5NonStreamTransient5xxForceCooldownWhenEnabled(t *testing.T) {
 // attempt 收到 401 时, 仍必须获得一次换号 auth-failover 重试(设计: gateway/attempt_error.go
 // "401 可交付前换一次号")。原 bug: shouldRetryAttemptFailure 的 finalAttempt 门在最前, 把最终
 // attempt 的 auth-failover 也短路了。
-// Mutation: 还原 finalAttempt 前置门 / 移除 loop 的 attemptCap+1 -> 仅 1 次 attempt -> rec.Code==401,
+// 变异: 还原 finalAttempt 前置门 / 移除 loop 的 attemptCap+1 -> 仅 1 次 attempt -> rec.Code==401,
 // selector.calls==1 -> 红。
 func TestPR5NonStream401FinalAttemptStillGetsAuthFailover(t *testing.T) {
 	enableHCSFDispatchForTest(t)

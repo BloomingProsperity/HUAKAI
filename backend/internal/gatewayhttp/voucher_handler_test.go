@@ -134,8 +134,8 @@ func TestVoucherUserRedeemUsesTrustedProxyClientIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	httpReq := httptest.NewRequest(http.MethodPost, "/v1/users/me/vouchers/redeem", bytes.NewReader(payload))
-	httpReq.RemoteAddr = "10.1.2.3:5000"                  // trusted reverse-proxy peer
-	httpReq.Header.Set("X-Forwarded-For", "198.51.100.9") // real client behind it
+	httpReq.RemoteAddr = "10.1.2.3:5000"                  // 可信反向代理对端
+	httpReq.Header.Set("X-Forwarded-For", "198.51.100.9") // 其后的真实客户端
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httpReq)
 

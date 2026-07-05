@@ -120,7 +120,7 @@ func TestHCSFIdentityRewrite_canonical路覆盖_上游body被改写(t *testing.T
 }
 
 // TestHCSFIdentityRewrite_默认关_上游body字节等价 验证【B:HCSF 默认关零变更】:
-// IdentityRewrite 钩子为 nil(模拟 R7 默认关时 ex.identityRewrite 的 no-op 效果 ——
+// IdentityRewrite 钩子为 nil(模拟 R7 默认关时 ex.identityRewrite 的空操作效果 ——
 // 钩子返回入参拷贝)时,canonical 路上游 body 与"完全不接钩子"字节等价,且
 // 绝不出现 metadata 字段(anthropic marshal 原貌)。
 //
@@ -140,7 +140,7 @@ func TestHCSFIdentityRewrite_默认关_上游body字节等价(t *testing.T) {
 		return append([]byte(nil), adapter.lastInput.InboundBody...)
 	}
 
-	// nil 钩子 = R7 默认关时的 no-op(applyIdentityRewrite 对 nil 钩子原样返回)。
+	// nil 钩子 = R7 默认关时的空操作(applyIdentityRewrite 对 nil 钩子原样返回)。
 	withNilHook := build(nil)
 	// 不接钩子(钩子返回入参拷贝)= 默认关时 ex.identityRewrite 的真实语义。
 	withNoopHook := build(func(b []byte) []byte { return append([]byte(nil), b...) })

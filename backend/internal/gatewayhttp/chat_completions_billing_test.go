@@ -311,7 +311,7 @@ func TestChatCompletions_AuditLedgerDuplicateRequestIDStillSettlesDeliveredCharg
 }
 
 func TestChatCompletions_DirectSettleNilBusRejectsMissingAuditRef(t *testing.T) {
-	// Mutation: 删除 CompletionBus==nil 分支 Settle 前的 validator 时，本用例会返回 200 且 settle calls 变成 1。
+	// 变异: 删除 CompletionBus==nil 分支 Settle 前的 validator 时，本用例会返回 200 且 settle calls 变成 1。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	d := clientAdapterDeps(t)
@@ -336,7 +336,7 @@ func TestChatCompletions_DirectSettleNilBusRejectsMissingAuditRef(t *testing.T) 
 }
 
 func TestChatCompletions_DirectSettleNilBusAllowsDLQRef(t *testing.T) {
-	// Mutation: 删除 Deferred ledger result 到 AuditLedgerDLQRef 的映射时，本用例会被 production policy 拒绝且 settle calls 保持 0。
+	// 变异: 删除 Deferred ledger result 到 AuditLedgerDLQRef 的映射时，本用例会被 production policy 拒绝且 settle calls 保持 0。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	d := clientAdapterDeps(t)
@@ -359,7 +359,7 @@ func TestChatCompletions_DirectSettleNilBusAllowsDLQRef(t *testing.T) {
 }
 
 func TestChatCompletions_DirectSettleFallbackRejectsMissingAuditRef(t *testing.T) {
-	// Mutation: 只保护 CompletionBus==nil、漏掉 shouldDirectSettleFallback 分支时，本用例会 fallback settle 并让 settle calls 变成 1。
+	// 变异: 只保护 CompletionBus==nil、漏掉 shouldDirectSettleFallback 分支时，本用例会 回退 settle 并让 settle calls 变成 1。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	d := clientAdapterDeps(t)
@@ -384,7 +384,7 @@ func TestChatCompletions_DirectSettleFallbackRejectsMissingAuditRef(t *testing.T
 }
 
 func TestChatCompletions_DirectSettleFallbackAllowsDLQRef(t *testing.T) {
-	// Mutation: fallback 分支 Settle 前误把 DLQRef 分支也要求 fingerprint 时，本用例会返回 500 且 settle calls 保持 0。
+	// 变异: 回退分支 Settle 前误把 DLQRef 分支也要求 fingerprint 时，本用例会返回 500 且 settle calls 保持 0。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	d := clientAdapterDeps(t)
@@ -407,7 +407,7 @@ func TestChatCompletions_DirectSettleFallbackAllowsDLQRef(t *testing.T) {
 }
 
 func TestChatCompletions_DirectSettleProductionEscapeFlagStillRejectsMissingAuditRef(t *testing.T) {
-	// Mutation: 恢复 production AllowMissingMoneyRef 旁路时，本用例会返回 200 且 settle calls 变成 1。
+	// 变异: 恢复 production AllowMissingMoneyRef 旁路时，本用例会返回 200 且 settle calls 变成 1。
 	enableHCSFDispatchForTest(t)
 	logs := captureSlogForTest(t)
 	settler := &recordingSettler{}

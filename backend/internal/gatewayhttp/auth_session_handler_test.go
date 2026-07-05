@@ -1951,7 +1951,7 @@ func lastLoginFailedReason(t *testing.T, events *captureAuthEventSink) string {
 // Authenticate(查用户 + argon2)之前就被 429 挡掉。用「查用户次数」证明 pre-KDF 顺序: 被限流的那
 // 次请求绝不能再触发一次 GetUserByEmail(进而 argon2)。
 //
-// mutation: 把 handler 里的限流闸移到 Authenticate 之后 → 被限流的请求仍先查了用户/跑了 argon2 →
+// 变异: 把 handler 里的限流闸移到 Authenticate 之后 → 被限流的请求仍先查了用户/跑了 argon2 →
 // 查用户次数从 1 涨到 2 → 红(未认证 CPU 放大 DoS 复活)。
 func TestLogin_ThrottleBlocksBeforeKDF(t *testing.T) {
 	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
@@ -1987,7 +1987,7 @@ func TestLogin_ThrottleBlocksBeforeKDF(t *testing.T) {
 // 登录失败对外必须是同一个 generic 401 invalid_credentials(消状态码枚举 oracle), 但审计事件仍保留
 // 真实 reason_class(操作员可见)。
 //
-// mutation: 任一状态在 handler 仍走 writeAuthError(保留 403 user_disabled 等专用码)→ 该 case 的
+// 变异: 任一状态在 handler 仍走 writeAuthError(保留 403 user_disabled 等专用码)→ 该 case 的
 // HTTP 401 / code 断言红; handler 把审计 reason 也抹成 generic → 审计 reason 断言红。
 func TestLogin_AccountStateFailuresAreGeneric(t *testing.T) {
 	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
@@ -2029,7 +2029,7 @@ func TestLogin_AccountStateFailuresAreGeneric(t *testing.T) {
 // TestLogin_ThrottleKeyedByIPNotTenant 钉住限流 key 的来源: 用可信 client IP, 不用未认证可伪造
 // 的 body tenant_id。否则攻击者只要每次换一个 tenant_id 就能绕过 CPU 防护(用任意值刷满 argon2)。
 //
-// mutation: 把限流 key 改成含 body tenant_id(如 fmt.Sprintf("%d|%s", tenantID, ip))→ tenant=2
+// 变异: 把限流 key 改成含 body tenant_id(如 fmt.Sprintf("%d|%s", tenantID, ip))→ tenant=2
 // 是新 key → 第二次不再 429(走到 Authenticate)→ 本测红。
 func TestLogin_ThrottleKeyedByIPNotTenant(t *testing.T) {
 	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)

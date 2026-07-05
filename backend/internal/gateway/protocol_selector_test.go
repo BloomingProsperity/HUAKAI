@@ -188,7 +188,7 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		}
 	}
 
-	// bedrock_invoke 走专用 bedrock.EventStreamAdapter（A4 atomic 接入；
+	// bedrock_invoke 走专用 bedrock.EventStreamAdapter（A4 原子变更接入；
 	// AWS Binary EventStream 与 SSE 不兼容，A2+A3 提供 binary scanner）。
 	bedrockAdapter, err := r.For("bedrock_invoke")
 	if err != nil {
@@ -243,7 +243,7 @@ func assertPanic(t *testing.T, fn func()) {
 // (hcsfDispatchEnabled 默认开),DispatchHCSF 用本注册表 adapter 解析上游响应。
 // 漏登记 = 该 provider 非流式请求直接 "取 upstream adapter 失败"(本轮修复的
 // kimi/qwen/glm/yi/baichuan/doubao/ernie/step/hunyuan/minimax 整类漏接)。
-// Mutation guard: 删 protocol_selector.go 任一 MustRegister 行 → 对应族子断言红。
+// 变异守卫: 删 protocol_selector.go 任一 MustRegister 行 → 对应族子断言红。
 func TestOpenAICompatFamiliesResolveInbound(t *testing.T) {
 	reg := BuildDefaultProtocolAdapterRegistry()
 	families := []string{

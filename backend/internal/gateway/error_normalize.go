@@ -7,7 +7,7 @@
 // RetryActionPermanentDisable。
 //
 // D8 新增(2026-05-06 vendor-drift-audit.md):
-// Anthropic 现在记录了 3 个新的 typed error class:
+// Anthropic 现在记录了 3 个新的类型化 error class:
 //
 //	402 → billing_error   (R-021, 在 keyword 专用的 R-007 之后兜底)
 //	504 → timeout_error   (R-022, upstream gateway 超时)
@@ -32,7 +32,7 @@ import (
 // authLaneRulesEnabled 门控与 auth 降级车道绑定的分类改动(R-024/R-025 + xai→grok 归一化)。
 // 这些改动会把 grok/xai 400 坏 key 从「unknown→400 原样透传+error-rate 记账」变成
 // 「token_revoked→401+auth-failover 换号」——属客户端契约与健康记账的行为变化,必须与
-// HUAKAI_AUTH_COOLDOWN_ENABLED 同源生效(审查 S1:knob 关=行为逐字节不变是本片 landable 根基)。
+// HUAKAI_AUTH_COOLDOWN_ENABLED 同源生效(审查 S1:开关关闭=行为逐字节不变是本片可落地根基)。
 var authLaneRulesEnabled atomic.Bool
 
 // SetAuthLaneRulesEnabled 由 wiring 启动期调用一次,与 auth 车道 knob 同源;测试可临时翻转(须还原)。
@@ -101,7 +101,7 @@ const (
 	ErrorClassNetworkTimeout       ErrorClass = "network_timeout"
 	ErrorClassUnknown              ErrorClass = "unknown_upstream"
 
-	// D8 新增 —— Anthropic 新的 typed error class(2026-05-06)。
+	// D8 新增 —— Anthropic 新的类型化 error class(2026-05-06)。
 	// ErrorClassUpstreamTimeout 区分 upstream 自身的 gateway 超时(504)
 	// 与本地 network 超时(R-019 ErrorClassNetworkTimeout, status=0)。
 	ErrorClassUpstreamTimeout ErrorClass = "upstream_timeout"
@@ -139,7 +139,7 @@ const (
 )
 
 // FsmTransition 是建议的 A22 FSM 目标状态。分类器不会变更 FSM 状态;
-// 此字段只是给 FSM 调用方的提示。
+// 此字段只是给 FSM调用方的提示。
 type FsmTransition string
 
 const (
@@ -274,7 +274,7 @@ var errorRules = []ErrorRule{
 
 	// 优先级 25 - D8: Anthropic 402 兜底 billing_error。
 	// 在 R-007(优先级 20, keyword 专用)之后触发。任何不带 credit keyword 的
-	// Anthropic 402, 按 Anthropic 新的 typed error class 文档仍代表 billing_error
+	// Anthropic 402, 按 Anthropic 新的 类型化 error class 文档仍代表 billing_error
 	// (platform.claude.com/docs/en/api/errors, 2026-05-06 抓取)。
 	{RuleID: "R-021", Version: 1, Priority: 25, Provider: "anthropic", HTTPStatus: "402",
 		BodyKeyword: "", Class: ErrorClassCreditExhausted,
@@ -328,7 +328,7 @@ var errorRules = []ErrorRule{
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
 	// D8: Anthropic 413 request_too_large —— 客户端载荷错误, 不重试。
-	// PassThrough: 调用方必须减小请求大小; 不改变 FSM 状态。
+	// PassThrough:调用方必须减小请求大小; 不改变 FSM 状态。
 	// 来源: platform.claude.com/docs/en/api/errors (2026-05-06 抓取)。
 	{RuleID: "R-023", Version: 1, Priority: 50, Provider: "anthropic", HTTPStatus: "413",
 		Class:  ErrorClassRequestTooLarge,
@@ -355,7 +355,7 @@ var errorRules = []ErrorRule{
 var ErrNoMatchingRule = errors.New("no matching error normalization rule")
 
 // Classify 用 ERROR_RULES 表对一个 upstream 响应求值并返回 Classification。
-// 分类器从不变更状态; FsmTransition 只是提示, 实际状态转移由 FSM 调用方(A22)负责。
+// 分类器从不变更状态; FsmTransition 只是提示, 实际状态转移由 FSM调用方(A22)负责。
 //
 // httpStatus 0 代表一个合成响应(没有 upstream 回复, 例如 network 超时)——
 // 与 BodyKeyword "timeout" 组合即匹配 R-019。
@@ -382,7 +382,7 @@ func Classify(httpStatus int, headers http.Header, body []byte, provider string)
 }
 
 // RemapClientStatus 仅对客户端响应应用一个可选的 channel 级状态码映射。
-// 空配置或未命中映射时, 原样返回从 upstream 推导出的状态码; 调用方必须让
+// 空配置或未命中映射时, 原样返回从 upstream 推导出的状态码;调用方必须让
 // classification、body 与计费输入仍基于原始的 upstream 状态码。
 func RemapClientStatus(status int, mapping map[int]int) int {
 	if len(mapping) == 0 {

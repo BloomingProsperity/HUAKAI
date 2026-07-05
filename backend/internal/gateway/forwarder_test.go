@@ -40,7 +40,7 @@ import (
 // 辅助工具
 // =====================================================================
 
-// sseBytes 将 Anthropic 风格的 SSE 事件序列化为 wire payload。
+// sseBytes 将 Anthropic 风格的 SSE 事件序列化为 线协议载荷。
 func sseBytes(events ...sseEvt) []byte {
 	var b bytes.Buffer
 	for _, e := range events {
@@ -992,7 +992,7 @@ func TestAT_GW_002_PF_02_NilRegistryReturnsError(t *testing.T) {
 }
 
 // AT-GW-002-PF-02b: Scanners 为 nil 时 Forward 返回 ErrNilStreamScannerRegistry。
-// fail-loud — 不静默 fallback 到 SSE，否则 Bedrock binary 会被切碎。
+// 显式失败 — 不静默回退到 SSE，否则 Bedrock binary 会被切碎。
 func TestAT_GW_002_PF_02b_NilScannerRegistryReturnsError(t *testing.T) {
 	f := &StreamForwarder{
 		ProtocolAdapters: BuildDefaultProtocolAdapterRegistry(),

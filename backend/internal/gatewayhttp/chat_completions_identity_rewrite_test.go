@@ -200,7 +200,7 @@ func anthropicMarshalledBodyNoMetadata() []byte {
 // metadata.user_id(account 组件 == ExternalAccountID)。
 //
 // 变异证伪:把 RewriteInboundBody 的 MetadataInjectRewrite 在无 user_id 时的
-// fallback 注入路径删掉(无 metadata 就不注入)→ HCSF 路 marshal 后 body 仍无
+// 回退注入路径删掉(无 metadata 就不注入)→ HCSF 路 marshal 后 body 仍无
 // metadata → 下面"已注入 + account 组件==上游 id"断言变红。
 func TestIdentityRewrite_HCSF三路一致_marshal后body被注入身份(t *testing.T) {
 	const externalID = "acc-xyz"

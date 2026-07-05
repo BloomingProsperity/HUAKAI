@@ -20,7 +20,7 @@ import (
 )
 
 // TestSignalFromClassification_AuthRoutesToChallengeLane:401/坏 key 的令牌类分类必须映射为
-// SignalAuthChallenge(独立 auth 车道),而非空信号(旧行为=对选号 no-op=黑洞根因)。
+// SignalAuthChallenge(独立 auth 车道),而非空信号(旧行为=对选号空操作=黑洞根因)。
 // 判别:把 token_revoked/oauth_invalid_grant 分支改回 return "" → 断言红。
 func TestSignalFromClassification_AuthRoutesToChallengeLane(t *testing.T) {
 	for _, class := range []gateway.ErrorClass{gateway.ErrorClassTokenRevoked, gateway.ErrorClassOAuthInvalidGrant} {

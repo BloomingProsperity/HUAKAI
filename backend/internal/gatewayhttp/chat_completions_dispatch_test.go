@@ -102,10 +102,10 @@ func TestHandler_HCSFUpstreamHTTPErrorDoesNotLeakBody(t *testing.T) {
 	}
 }
 
-// TestHandler_HCSFOversizedSuccessMapsToTooLarge 守 S2-7 caller 映射(默认 HCSF-on 路径)：
+// TestHandler_HCSFOversizedSuccessMapsToTooLarge 守 S2-7 调用方映射(默认 HCSF-on 路径)：
 // DispatchHCSF 返回 ErrUpstreamResponseTooLarge 时，client 必须拿 502 + upstream_response_too_large，
 // 而非塌成 opaque upstream_dispatch_error；且终止不重试(dispatcher 只被调一次)。
-// Mutation: 删 chat_completions_dispatch.go 的 errors.Is(ErrUpstreamResponseTooLarge) 分支 →
+// 变异: 删 chat_completions_dispatch.go 的 errors.Is(ErrUpstreamResponseTooLarge) 分支 →
 // 落到 generic upstream_dispatch_error → body 不含 upstream_response_too_large → RED。
 func TestHandler_HCSFOversizedSuccessMapsToTooLarge(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -453,11 +453,11 @@ func TestResponsesPreviousResponseIDPreservesSessionHashThroughDispatch(t *testi
 
 func TestDispatch_EstimatedInputTokensPopulatedWhenModelFallbackOff(t *testing.T) {
 	// 抓 S2(对抗 bug-hunt):EstimatedInputTokens 是 per-key / per-binding / per-account(ROUTE-121)的
-	// TPM 限流器按 token 累积窗口的增量源。此前它只在 model-fallback 开启时才估算 → 默认(fallback 关)
+	// TPM 限流器按 token 累积窗口的增量源。此前它只在 model-fallback 开启时才估算 → 默认(回退关闭)
 	// 恒 0 → 三个 TPM 限流器的窗口永不累积、配置的 TPM 上限被静默绕过。修后无条件估算。
-	// 本测试在 fallback 关(默认:未设 ModelFallbackSettings → FromSettings 返回 Enabled=false)下发一个
+	// 本测试在回退关闭(默认:未设 ModelFallbackSettings → FromSettings 返回 Enabled=false)下发一个
 	// 有内容的请求,断言传给 selector 的 EstimatedInputTokens > 0。
-	// 变异(已验证转红):把 estInput 估算移回 `if ex.modelFallbackEnabled` 分支 → fallback 关时恒 0 → 此处红。
+	// 变异(已验证转红):把 estInput 估算移回 `if ex.modelFallbackEnabled` 分支 → 回退关闭时恒 0 → 此处红。
 	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
 	dispatcher := &mockCanonicalBufferedDispatcher{}
 	selector := &recordingSelectionRequestSelector{}
@@ -903,7 +903,7 @@ func TestHandler_QuotaDenyAbortsBillingClaimAndReturns429(t *testing.T) {
 
 // TestHandler_QuotaReserveFeedsInputTokenEstimate W5:输入 token 估算必须喂进
 // 配额预检的 ReservedTokens(否则 token-per-window 配额永远拿不到量、无法拦截)。
-// MUTATION: 去掉 reserveQuota 的 ReservedTokens 接线 → req.ReservedTokens=0 →
+// 变异: 去掉 reserveQuota 的 ReservedTokens 接线 → req.ReservedTokens=0 →
 // 本断言红。
 func TestHandler_QuotaReserveFeedsInputTokenEstimate(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -931,7 +931,7 @@ func TestHandler_QuotaReserveFeedsInputTokenEstimate(t *testing.T) {
 // TestHandler_QuotaDenyEmitsRetryAfterAndWindowResetsAt "更强"delta:窗口配额
 // 拒绝时,引擎算出的 RetryAfter 必须吐成 Retry-After 头 + body 的
 // window_resets_at,让客户端按窗口边界智能退避(逐窗口区分,优于单一累计配额)。
-// MUTATION: 拒绝写回改回 writeInsufficientQuotaError(w)(不传 RetryAfter)→
+// 变异: 拒绝写回改回 writeInsufficientQuotaError(w)(不传 RetryAfter)→
 // Retry-After 头缺失 + body 无 window_resets_at → 两断言红。
 func TestHandler_QuotaDenyEmitsRetryAfterAndWindowResetsAt(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -966,7 +966,7 @@ func TestHandler_QuotaDenyEmitsRetryAfterAndWindowResetsAt(t *testing.T) {
 // TestHandler_QuotaDenyEmitsWindowKind 验证窗口配额拒绝时 429 body 透出 quota_window,让客户端区分
 // 是日额还是月额超了(逐窗口区分超限)。子用例二验 manual 窗口:quota_window 仍透出但与
 // window_resets_at 解耦(manual 无固定重置时刻)。
-// MUTATION: 删 exceededDecision/DenyWindowKind 的窗口透传、或删 errFields 写 quota_window 那行 →
+// 变异: 删 exceededDecision/DenyWindowKind 的窗口透传、或删 errFields 写 quota_window 那行 →
 // body 缺 quota_window → calendar_month 断言红。
 func TestHandler_QuotaDenyEmitsWindowKind(t *testing.T) {
 	run := func(t *testing.T, kind quota.WindowKind, retryAfter time.Duration) *httptest.ResponseRecorder {
@@ -1252,7 +1252,7 @@ func expectedClientSessionHashForTest(id string) string {
 // TestSelectPoolAccount_ThreadsUserGroupFromIdentity 守 R-SUB-WIRE-1 接线: 选号时
 // SelectionRequest.UserGroup 必须从 auth.Identity.UserGroup 透传, 否则订阅分组路由 gate
 // 永远收到空档 → 恒放行 → 限档失效。
-// mutation: 删 selectPoolAccount 里 `UserGroup: ex.ident.UserGroup` → 透传为空串 → 红。
+// 变异: 删 selectPoolAccount 里 `UserGroup: ex.ident.UserGroup` → 透传为空串 → 红。
 func TestSelectPoolAccount_ThreadsUserGroupFromIdentity(t *testing.T) {
 	selector := &recordingSelectionRequestSelector{}
 	ex := &chatExecution{
@@ -1350,9 +1350,9 @@ func capSet(caps []string) map[string]bool {
 // TestPrepareRoute_ThreadsBodyDerivedCapabilities 是自证接线测试 (ROUTE-024 核心契约):
 // 一个含 image part + tools + json_schema 的 streamed body 经 prepareRoute 后,
 // 真 Router 产出的 AttemptPlan.RequiredCapabilities 必须 == {stream,vision,tools,json};
-// baseline arm = 纯 text 非流 body,同代码路径只应得到 {} (没有 :313 接线两臂不会有差别)。
+// 基线 arm = 纯 text 非流 body,同代码路径只应得到 {} (没有 :313 接线两臂不会有差别)。
 // 还断言 PlanInput.Features 三个 Wants* 位被 body 真正驱动。
-// mutation: 还原 :313 为 `Features: router.RequestFeatures{Stream: ex.req.Stream}` ->
+// 变异: 还原 :313 为 `Features: router.RequestFeatures{Stream: ex.req.Stream}` ->
 // rich arm 的 vision/tools/json 全丢 -> 转红。
 func TestPrepareRoute_ThreadsBodyDerivedCapabilities(t *testing.T) {
 	richBody := `{"model":"claude-3-5-sonnet","stream":true,` +
@@ -1421,7 +1421,7 @@ func TestPrepareRoute_ThreadsBodyDerivedCapabilities(t *testing.T) {
 
 // TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps 守 stream 不被回归:
 // 一个 streamed 但无 vision/tools/json 的 body 只应得到 {stream}。
-// mutation: :313 误删 Stream 字段 -> 转红。
+// 变异: :313 误删 Stream 字段 -> 转红。
 func TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps(t *testing.T) {
 	rec := &recordingPlanInputRouter{delegate: router.NewDefaultRouter()}
 	ex := &chatExecution{

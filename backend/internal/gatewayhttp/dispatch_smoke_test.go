@@ -233,12 +233,12 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 	// --- 4. 构建真实 StreamForwarder ---
 	// ProtocolAdapters：使用默认 registry，让 openai_chat 走真实 stream adapter。
 	// 该 adapter 会从 mock 的 OpenAI SSE usage/content 填充 draft token 信号；
-	// ClientAdapter 仍为空，因此响应侧保持 raw SSE fallback 的冒烟级断言。
+	// ClientAdapter 仍为空，因此响应侧保持 raw SSE 回退 的冒烟级断言。
 	protoReg := gateway.BuildDefaultProtocolAdapterRegistry()
 	forwarder := &gateway.StreamForwarder{
 		ProtocolAdapters: protoReg,
-		// A1 atomic：Forward 现要求 Scanners 非 nil。注入默认注册表
-		// （19 个 family 全 SSE，与本测试期望的 SSE wire 行为一致）。
+		// A1 原子变更：Forward 现要求 Scanners 非 nil。注入默认注册表
+		// （19 个 family 全 SSE，与本测试期望的 SSE 线协议行为一致）。
 		Scanners: gateway.BuildDefaultStreamScannerRegistry(),
 	}
 

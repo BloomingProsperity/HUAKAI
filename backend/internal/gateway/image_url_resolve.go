@@ -31,7 +31,7 @@ type ImageFetcher func(ctx context.Context, imageURL string) (mediaType, base64D
 
 // resolveURLImagesForFamily 对只收内联 base64 的上游族,把 canonical graph 里 url 来源的
 // image 节点抓取转成 inline_base64。抓取失败/超限的节点保持原样(由 marshal 侧记 loss)。
-// 非 base64-only 族、fetch 为 nil、无 url 图时 no-op。原地修改 env。
+// 非 base64-only 族、fetch 为 nil、无 url 图时空操作。原地修改 env。
 func resolveURLImagesForFamily(ctx context.Context, env *proto.HCSF, endpointFamily string, fetch ImageFetcher) {
 	if env == nil || fetch == nil {
 		return

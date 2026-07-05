@@ -13,7 +13,7 @@ import (
 // RoutingReasonPayload 是写入 UsageRecordDraft.RoutingReason 的 JSON schema。
 // 字段形态遵循 §A13 审计 payload 契约；顺序保持以获得稳定的磁盘格式。
 // 所有值均为字符串（Go 把 `type X string` 序列化为字符串），从而使
-// 线格式与厂商无关。
+//线格式与厂商无关。
 type RoutingReasonPayload struct {
 	RuleID        string `json:"rule_id"`
 	RuleVersion   int    `json:"rule_version"`

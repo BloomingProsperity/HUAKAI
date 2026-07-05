@@ -83,7 +83,7 @@ type MetadataUserIDResult struct {
 }
 
 // ParsedUserID 还原 metadata.user_id 的三个语义组件加形态标记。组件集合
-// (设备指纹 / 账号 / 会话)由 wire 协议固定;IsNewFormat 记录原值是 JSON
+// (设备指纹 / 账号 / 会话)由线协议固定;IsNewFormat 记录原值是 JSON
 // 还是 legacy 拼接,供写回时选用同一形态。
 type ParsedUserID struct {
 	DeviceID    string // legacy 下为 64 位 hex,JSON 下为客户端任意非空指纹
@@ -92,7 +92,7 @@ type ParsedUserID struct {
 	IsNewFormat bool   // 原值为 JSON 形态时为 true
 }
 
-// newFormatUserID 是 JSON 形态 user_id 的字段投影,三键名固定于 wire 协议。
+// newFormatUserID 是 JSON 形态 user_id 的字段投影,三键名固定于线协议。
 type newFormatUserID struct {
 	DeviceID    string `json:"device_id"`
 	AccountUUID string `json:"account_uuid"`
@@ -211,7 +211,7 @@ func compareSemver(a, b string) int {
 			}
 			continue
 		}
-		// fallback：字符串比较
+		// 回退：字符串比较
 		ax, bx := getOrEmpty(pa, i), getOrEmpty(pb, i)
 		if ax != bx {
 			if ax < bx {
@@ -313,7 +313,7 @@ func RewriteMetadataUserID(body []byte, plan MetadataUserIDPlan) (MetadataUserID
 			)
 			return writeMetaUserID(root, metaObj, final, reasonMetaRewrote, parsed)
 		}
-		// 解析失败 / 无 user_id：用 fallback 整体替换。
+		// 解析失败 / 无 user_id：用回退值整体替换。
 		if plan.FallbackUserID == "" {
 			if hasUserID {
 				return metaUnchanged(body, reasonMetaUnparseableNoFallback), nil

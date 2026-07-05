@@ -242,7 +242,7 @@ func sessionReasonClass(err error) string {
 // handleDeviceConfirmationRequired 检测 Sessions.Create 返回的设备确认错误: 命中则发确认邮件
 // (best-effort, 失败只记日志不致命) 并返回 403 device_confirmation_required (响应体绝不含 token),
 // 返回 true 表示已处理; 否则返回 false 让调用方按常规 writeSessionError 处理。
-// user 是已认证用户 (取其 email 发信); 调用方在各登录路径上已持有它, 无需重查库。
+// user 是已认证用户 (取其 email 发信);调用方在各登录路径上已持有它, 无需重查库。
 func handleDeviceConfirmationRequired(w http.ResponseWriter, r *http.Request, d AuthHandlerDeps, user userauth.User, err error) bool {
 	var confirmErr *usersession.DeviceConfirmationRequiredError
 	if !errors.As(err, &confirmErr) {

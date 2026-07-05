@@ -38,7 +38,7 @@ func (s twoFactorLoginStub) VerifyLoginChallenge(context.Context, twofa.Challeng
 
 // TestAuthTwoFactorLogin_RejectsIneligibleUser 守资格门: 验证码通过但账号已被
 // 封禁/时间锁/删除 → 403 account_not_active 且不签发会话; 账号正常 → 200 签发。
-// mutation: 去掉 handler 里 GetProfile+EnsureLoginEligible 门 → disabled/locked/deleted
+// 变异: 去掉 handler 里 GetProfile+EnsureLoginEligible 门 → disabled/locked/deleted
 // 三例返回 200 带会话 → 红。
 func TestAuthTwoFactorLogin_RejectsIneligibleUser(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)

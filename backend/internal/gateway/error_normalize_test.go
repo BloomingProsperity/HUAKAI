@@ -43,7 +43,7 @@ func enableAuthLaneRules(t *testing.T) {
 }
 
 // 缺口①附带修复(knob 开时生效)—— Grok/xAI 坏 key 返 400(非 401)带 invalid_api_key/
-// incorrect api key -> R-024/R-025 -> token_revoked 类。此前无规则命中 → R-016 通配 → unknown →
+// incorrect api key 文本 -> R-024/R-025 -> token_revoked 类。此前无规则命中 → R-016 通配 → unknown →
 // upstream_client_4xx 直接透传给客户端(既不换号也不冷却)。判别:删掉 R-024/R-025 → 落回 R-016
 // unknown,断言红。
 func TestClassify_R024_R025_GrokBadKey400(t *testing.T) {

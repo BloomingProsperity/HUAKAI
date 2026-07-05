@@ -143,9 +143,9 @@ type UsageRecordDraft struct {
 
 // ForwardRequest 携带 F-GW-002 请求身份和协议元数据。
 //
-// 新增字段（wire-up 重构）：
+// 新增字段（接线 重构）：
 //   - ProtocolFamily：协议族标识符，作为 ProtocolAdapterRegistry.For() 的查询键。
-//     调用方必须明确填写；空值会触发 ErrUnknownProtocolFamily 错误。
+//    调用方必须明确填写；空值会触发 ErrUnknownProtocolFamily 错误。
 //     合法值示例："anthropic_messages" / "openai_chat" / "openai_responses" / "gemini_messages"。
 //
 // 保留字段：TenantID / AccountID / AcquisitionToken / RouteID /
@@ -273,6 +273,6 @@ var (
 	ErrClientDisconnect   = errors.New("gateway: client disconnect")
 
 	// ErrNilProtocolAdapterRegistry 表示 StreamForwarder.ProtocolAdapters 未注入。
-	// 调用方应在构造 StreamForwarder 时注入非 nil 的注册表。
+	//调用方应在构造 StreamForwarder 时注入非 nil 的注册表。
 	ErrNilProtocolAdapterRegistry = errors.New("gateway: ProtocolAdapters 注册表未注入（nil）")
 )

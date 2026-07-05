@@ -376,7 +376,7 @@ func TestStreamingCompletionEvent_NoUsageKeepsZeroCostPendingInferred(t *testing
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 若重新按 DeliveredTokenCount（此处为 40 个内容帧）计 provisional，有效费率表（output 2500）
+	// 变异: 若重新按 DeliveredTokenCount（此处为 40 个内容帧）计 provisional，有效费率表（output 2500）
 	// 会把 40 帧当 40 token 计成 ActualCost=0.1（向用户多收）→ 此断言（==0）RED；修复后帧数不计费 → 0 → GREEN。
 	// 有效费率表是判别关键：费率表损坏会让新旧都为 0（非判别）。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
@@ -451,7 +451,7 @@ func TestStreamingCompletionEvent_PricingConfigFailureStaysReportedNotInferred(t
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 若错误分支无条件标 inferred（去掉 reportedUsageMissing 守卫），这条有真实 token 的行会变 inferred
+	// 变异: 若错误分支无条件标 inferred（去掉 reportedUsageMissing 守卫），这条有真实 token 的行会变 inferred
 	// → settlementreconcile worker 会把真实请求零差额定稿成 $0（静默零计费）→ RED；有守卫则保持 reported（留人工对账）→ GREEN。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
 	if !event.SettleRequest.Draft.PendingReconciliation {
@@ -492,7 +492,7 @@ func TestStreamingCompletionEvent_AmbiguousUsagePreservedNotInferred(t *testing.
 	// SM-05 判别对照:本 draft 只有 DeliveredTokenCount=40(chunk 帧数)、无 EstimatedOutputTokens
 	//(可估交付=0)。歧义放行估算的判据必须是「有可估交付内容」(EstimatedOutputTokens+
 	// EstimatedReasoningTokens>0),无可估内容的歧义流仍保留 ambiguous 态留待真对账。
-	// MUTATION: 若把放行判据错写成 DeliveredTokenCount>0(按 chunk 帧数而非可估输出),本歧义流
+	// 变异: 若把放行判据错写成 DeliveredTokenCount>0(按 chunk 帧数而非可估输出),本歧义流
 	// 会被误降级 inferred(且可被宽限定稿成 $0 provisional)→ UsageSource 断言 RED;
 	// 正确按可估输出判据则原样保留 → GREEN。证「只在有可估交付时才收」。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
@@ -534,7 +534,7 @@ func estimatedFallbackRateTable() billing.RateTableSource {
 // TestStreamingCompletionEvent_WiresClientToolFromContext W4:settle draft 必须
 // 带上 clientid 中间件归一出的客户端工具枚举(从请求 ctx 取),供按客户端归因
 // 用量/成本。
-// MUTATION: 去掉 streamingCompletionEvent 里 draft.ClientTool = clientToolFromContext
+// 变异: 去掉 streamingCompletionEvent 里 draft.ClientTool = clientToolFromContext
 // 接线 → Draft.ClientTool 空 → 断言红。判别关键:ctx 注入 cursor,空 ctx 会得空串
 // (区别于"恒空")。
 func TestStreamingCompletionEvent_WiresClientToolFromContext(t *testing.T) {
@@ -577,7 +577,7 @@ func TestStreamingCompletionEvent_MissingUsageBillsEstimatedDeliveredContent(t *
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 去掉估算兜底（恢复零结算路径），无 usage 但交付了 200 估算 token 的流
+	// 变异: 去掉估算兜底（恢复零结算路径），无 usage 但交付了 200 估算 token 的流
 	// ActualCost 回到 0（漏钱）→ 本断言 RED；有兜底则按估算基数计出正成本 → GREEN。
 	wantInput := tokencheck.EstimateRequestInputTokens(ex.body)
 	wantCost := decimal.NewFromInt(int64(wantInput)*1000 + 200*2000).Div(decimal.NewFromInt(1_000_000))
@@ -613,7 +613,7 @@ func TestStreamingCompletionEvent_MissingUsageEstimateIncludesReasoningText(t *t
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 10}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算基数漏加 EstimatedReasoningTokens，thinking-only 流（可见输出为 0）
+	// 变异: 估算基数漏加 EstimatedReasoningTokens，thinking-only 流（可见输出为 0）
 	// 回到零结算 → 本断言 RED;计入 reasoning 文本则产出 120 token 的正成本 → GREEN。
 	if got := event.SettleRequest.Draft.TokensOutput; got != 120 {
 		t.Fatalf("Draft.TokensOutput=%d want 120 (reasoning text is billable output)", got)
@@ -634,7 +634,7 @@ func TestStreamingCompletionEvent_MixedVisibleAndReasoningEstimateSums(t *testin
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 10}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 基数只取 EstimatedOutputTokens 或只取 EstimatedReasoningTokens
+	// 变异: 基数只取 EstimatedOutputTokens 或只取 EstimatedReasoningTokens
 	//（「二选一」类变体）→ 220 断言 RED;求和则 GREEN。
 	if got := event.SettleRequest.Draft.TokensOutput; got != 220 {
 		t.Fatalf("Draft.TokensOutput=%d want 220 (visible + reasoning sum)", got)
@@ -653,7 +653,7 @@ func TestStreamingCompletionEvent_ReportedUsageNeverReplacedByEstimate(t *testin
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算分支越过「actualCompletionCost 失败 && reportedUsageMissing」双门
+	// 变异: 估算分支越过「actualCompletionCost 失败 && reportedUsageMissing」双门
 	//（如 err==nil 也进估算），真实 reported usage 被估算覆盖 → 下列断言 RED。
 	wantCost := decimal.NewFromInt(10*1000 + 1000*2000).Div(decimal.NewFromInt(1_000_000))
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, wantCost)
@@ -682,7 +682,7 @@ func TestStreamingCompletionEvent_EstimatedSettleStripsRatioPending(t *testing.T
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算路径不剥离 ratio fail-soft 带来的 PendingReconciliation → 估算行
+	// 变异: 估算路径不剥离 ratio fail-soft 带来的 PendingReconciliation → 估算行
 	// 以 inferred+tokens>0+pending=true 落库,no-usage 定稿 SQL（只认全零记录）永远
 	// 跳过 → 永久 pending → 本断言 RED;剥离后估算行保持终局 → GREEN（ratio 故障
 	// 已由快照标记留痕，不丢审计信号）。
@@ -706,7 +706,7 @@ func TestStreamingCompletionEvent_MultimodalInputBasisCapped(t *testing.T) {
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 5}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 输入基数退回原始 body 字节数/4，44KB base64 折 ~11000 token 终局
+	// 变异: 输入基数退回原始 body 字节数/4，44KB base64 折 ~11000 token 终局
 	// 多收 → 上界断言 RED。多模态超收回归（对抗评审 S1/F-1）由此锁死。
 	if got := event.SettleRequest.Draft.TokensInput; got > 2000 {
 		t.Fatalf("Draft.TokensInput=%d want <= 2000 (base64 blob must be capped, not billed by raw bytes)", got)
@@ -729,7 +729,7 @@ func TestStreamingCompletionEvent_AmbiguousWithDeliveredBillsEstimated(t *testin
 	// SM-05:歧义用量但已交付可估内容(EstimatedOutputTokens>0)——内容已发给用户,而
 	// reconciliation 是 refund-only/zero-finalize 永不补收,留歧义态会永久零收漏钱。故放行
 	// estimatedStreamingCost 估算保守计费,升 inferred + 清 pending + 挂估算基数标记。
-	// MUTATION: 守卫重新排除 Ambiguous(恢复零收)→ ActualCost 回零 + UsageSource 退回
+	// 变异: 守卫重新排除 Ambiguous(恢复零收)→ ActualCost 回零 + UsageSource 退回
 	// ambiguous + pending 留 true → 下列断言全 RED;放行估算 → GREEN。判别关键:成本基数取
 	// EstimatedOutputTokens=200(可见输出估算)而非 DeliveredTokenCount=40(chunk 帧数),
 	// 证按可见输出估算计费而非按帧数(宁少勿多收)。
@@ -760,7 +760,7 @@ func TestStreamingCompletionEvent_EstimateUnpriceableKeepsPendingZero(t *testing
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算分支忽略 completionCost 错误伪造成本（或把 pending 清掉），费率表
+	// 变异: 估算分支忽略 completionCost 错误伪造成本（或把 pending 清掉），费率表
 	// 故障时会凭空收费/丢失对账信号 → RED;正确行为是回退零结算 + pending + inferred → GREEN。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
 	if !event.SettleRequest.Draft.PendingReconciliation {
@@ -922,7 +922,7 @@ func TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss(t *testing.
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 20}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: stream.go 还原 `ProtocolLoss: ex.protocolLoss`(不合并 draft.StreamProtocolLoss)
+	// 变异: stream.go 还原 `ProtocolLoss: ex.protocolLoss`(不合并 draft.StreamProtocolLoss)
 	// → 缺 stream_event_loss_sentinel → RED。
 	if !settledLossHasCode(t, event.SettleRequest.ProtocolLoss, "request_translation_loss_sentinel") {
 		t.Fatalf("merged ProtocolLoss missing request sentinel: %s", event.SettleRequest.ProtocolLoss)
@@ -960,7 +960,7 @@ func TestRejectMoneyPathAuditRef_PreservesEventProtocolLoss(t *testing.T) {
 			if len(settler.aborts) != 1 {
 				t.Fatalf("aborts=%d want 1", len(settler.aborts))
 			}
-			// MUTATION: rejectMoneyPathAuditRef 传 nil 而非 event.SettleRequest.ProtocolLoss → 空 → RED。
+			// 变异: rejectMoneyPathAuditRef 传 nil 而非 event.SettleRequest.ProtocolLoss → 空 → RED。
 			if !settledLossHasCode(t, settler.aborts[0].protocolLoss, "audit_ref_abort_sentinel") {
 				t.Fatalf("abort protocolLoss=%s want code audit_ref_abort_sentinel", settler.aborts[0].protocolLoss)
 			}
@@ -988,7 +988,7 @@ func TestNonStreamingSettle_CapturesResponseConversionProtocolLoss(t *testing.T)
 	if len(settler.calls) != 1 {
 		t.Fatalf("settle calls=%d want 1", len(settler.calls))
 	}
-	// MUTATION: 还原 billing.go CanonicalToClientResponse 的损失丢弃(_) → settle 缺 stop_reason_unknown → RED。
+	// 变异: 还原 billing.go CanonicalToClientResponse 的损失丢弃(_) → settle 缺 stop_reason_unknown → RED。
 	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "stop_reason_unknown") {
 		t.Fatalf("settle ProtocolLoss=%s want code stop_reason_unknown", settler.calls[0].ProtocolLoss)
 	}
@@ -1015,7 +1015,7 @@ func TestNonStreamingSettle_CapturesRequestTranslationProtocolLoss(t *testing.T)
 	if len(settler.calls) != 1 {
 		t.Fatalf("settle calls=%d want 1", len(settler.calls))
 	}
-	// MUTATION: 还原 dispatch.go RequestToCanonical 的损失丢弃(_) → settle 缺 d5_metadata_field_pending → RED。
+	// 变异: 还原 dispatch.go RequestToCanonical 的损失丢弃(_) → settle 缺 d5_metadata_field_pending → RED。
 	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "d5_metadata_field_pending") {
 		t.Fatalf("settle ProtocolLoss=%s want code d5_metadata_field_pending", settler.calls[0].ProtocolLoss)
 	}
@@ -1339,7 +1339,7 @@ func TestToolSurcharge_EmptyTableByteIdentical(t *testing.T) {
 		},
 	}
 
-	// baseline:不带任何工具计价地算成本
+	// 基线:不带任何工具计价地算成本
 	baseEx := &chatExecution{
 		ctx: ex.ctx,
 		d: ChatHandlerDeps{

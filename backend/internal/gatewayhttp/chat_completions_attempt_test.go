@@ -78,7 +78,7 @@ func TestPR4PrepareNextAttemptAfterAbortClearsReservationAndAcquisition(t *testi
 // TestUpstreamInboundBodySkipsModelRewriteForDifyChat 抓的回归:dify_chat
 // 的翻译产物 body 没有 model 字段(Dify 契约无此键),流式路径经
 // upstreamInboundBody 时不得被 rewriteUpstreamModel 注入顶层 model 污染契约。
-// Mutation:删掉 upstreamInboundBody 的 dify_chat 跳过 → 本测试红。
+// 变异:删掉 upstreamInboundBody 的 dify_chat 跳过 → 本测试红。
 func TestUpstreamInboundBodySkipsModelRewriteForDifyChat(t *testing.T) {
 	original := []byte(`{"inputs":{},"query":"USER: hi","response_mode":"streaming","user":"req-1","auto_generate_name":false}`)
 	ex := &chatExecution{
@@ -182,7 +182,7 @@ func TestDegradeFailureIfAbortFailedUsesSafeAbortReasonAndLogsErrorClass(t *test
 	assertLogOmits(t, logs, marker)
 }
 
-// MUTATION: endClassFromAttemptFailure 漏 DM-06 持久传输类 → 红——健康记账
+// 变异: endClassFromAttemptFailure 漏 DM-06 持久传输类 → 红——健康记账
 // 信号落 UnknownTermination,channelhealth 看不见持久故障(不摘账号复发)。
 func TestEndClassFromAttemptFailure_PersistentTransportClassesAreUpstream5xx(t *testing.T) {
 	for _, class := range []gateway.TransportErrorClass{
@@ -198,7 +198,7 @@ func TestEndClassFromAttemptFailure_PersistentTransportClassesAreUpstream5xx(t *
 	}
 }
 
-// MUTATION: stripCrossAccountResponseChain 去掉 miss 判定(任何 responses 都
+// 变异: stripCrossAccountResponseChain 去掉 miss 判定(任何 responses 都
 // 剥)→ hit/none 用例红;去掉剥除 → miss 用例红(DM-07:只在 sticky miss 剥
 // 跨账号链 ID,其余场景 body 必须原样)。
 func TestStripCrossAccountResponseChain(t *testing.T) {
@@ -229,7 +229,7 @@ func TestStripCrossAccountResponseChain(t *testing.T) {
 	}
 }
 
-// MUTATION: writeAttemptFailure 去掉 clearRetryableAttemptFailureHeaders 调用,
+// 变异: writeAttemptFailure 去掉 clearRetryableAttemptFailureHeaders 调用,
 // 或清单删掉 X-Accel-Buffering → 红(DM-19:终局 JSON 错误携带流式残留头)。
 func TestWriteAttemptFailureClearsStreamResidualHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
@@ -271,7 +271,7 @@ func TestWriteAttemptFailureClearsStreamResidualHeaders(t *testing.T) {
 	}
 }
 
-// MUTATION: clientTailMessageRole 任一协议分支解析错位 → 对应子断言红(DM-16)。
+// 变异: clientTailMessageRole 任一协议分支解析错位 → 对应子断言红(DM-16)。
 func TestClientTailMessageRole(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -299,7 +299,7 @@ func TestClientTailMessageRole(t *testing.T) {
 // TestActiveBindingSelectionMode 钉死 dispatch 级 selection_mode 取值:必须按当前请求命中的
 // binding(ex.attempt.PoolGroupID)取其 selection_mode 透传给 SelectionRequest,而非取错 binding
 // 或恒空。这是路由加权激活闭环在 dispatch 端的接线点。
-// MUTATION:若 activeBindingSelectionMode 恒返回 ""(漏接)→ 命中 priority_weighted binding 的请求
+// 变异:若 activeBindingSelectionMode 恒返回 ""(漏接)→ 命中 priority_weighted binding 的请求
 // 也走默认 → 下面 weighted 断言红;若取错 binding(忽略 PoolGroupID)→ 多 binding 用例红。
 func TestActiveBindingSelectionMode(t *testing.T) {
 	ex := &chatExecution{

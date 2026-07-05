@@ -11,7 +11,7 @@ import (
 func TestDispatchBodyControls_EmptyObfuscateWords(t *testing.T) {
 	body := []byte(`{"model":"claude-3-5-sonnet-20241022","system":"banned word here","messages":[{"role":"user","content":"hello"}]}`)
 	controls := DispatchBodyControls{
-		ObfuscateWords: nil, // 空 — 必须是严格的 no-op
+		ObfuscateWords: nil, // 空 — 必须严格不处理
 	}
 	out, err := ApplyDispatchBodyControls(body, controls)
 	if err != nil {

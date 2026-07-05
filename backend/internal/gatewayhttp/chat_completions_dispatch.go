@@ -452,7 +452,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		excludedAccounts = map[int64]struct{}{}
 	}
 	// estInput 是 per-key / per-binding / per-account(ROUTE-121)TPM 限流器按 token 累积窗口的增量源,
-	// 必须**无条件估算**:此前它只在 model-fallback 开启时算,默认(fallback 关)恒 0 → 三个 TPM 限流器
+	// 必须**无条件估算**:此前它只在 model-fallback 开启时算,默认(回退关闭)恒 0 → 三个 TPM 限流器
 	// 的窗口永不累积、配置的 TPM 上限被静默绕过(对抗 bug-hunt S2 数据/限额正确性缺陷)。
 	// tokenestimate.Estimate 是廉价的单次字符分类扫描。ctxWindow / maxOut 仅服务 ROUTE-023 的
 	// context-window 预检(它对 ctxWindow<=0 / estInput<=0 fail-open),故仍随 model-fallback 门控。
@@ -664,7 +664,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		RawBody:           ex.upstreamInboundBody(ex.body),
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),
-		// R7 三路闭环第三路:HCSF canonical 非流式(默认走)。改写施加在 dispatcher marshal 出的最终上游 body 上(anthropic 往返丢 metadata,入口改 ex.body 流不过去);默认关 no-op 字节等价、不污染缓存键。
+		// R7 三路闭环第三路:HCSF canonical 非流式(默认走)。改写施加在 dispatcher marshal 出的最终上游 body 上(anthropic 往返丢 metadata,入口改 ex.body 流不过去);默认关时空操作字节等价、不污染缓存键。
 		IdentityRewrite: ex.identityRewrite,
 	})
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)

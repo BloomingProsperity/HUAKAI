@@ -71,7 +71,7 @@ func recordCacheHitReplay(ctx context.Context, d ChatHandlerDeps, in l2CacheHitI
 
 // serveIdempotentReplay 处理同 Idempotency-Key 的重试 (ClaimGate 返
 // IdempotencyHit): 按原 claim_id 从持久重放表取回原始响应重放 —— 路由无关、
-// 不受 L2 response cache 淘汰影响。 取不到返 false 让 caller 回 409。
+// 不受 L2 response cache 淘汰影响。 取不到返 false 让调用方回 409。
 func (ex *chatExecution) serveIdempotentReplay(w http.ResponseWriter, claimID int64) bool {
 	if ex.d.ReplayStore == nil || claimID == 0 {
 		return false

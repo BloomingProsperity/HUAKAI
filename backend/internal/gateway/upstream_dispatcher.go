@@ -50,7 +50,7 @@ type DispatchInput struct {
 	// InboundBody 客户原始请求 body 字节。
 	InboundBody []byte
 	// BodyControls 是可选的 per-channel 出站前 JSON 变换。
-	// 零值为 no-op。
+	// 零值为空操作。
 	BodyControls DispatchBodyControls
 	// InboundContentType 是入口请求 Content-Type。空值保持 adapter 默认；
 	// multipart audio 透传时必须带原 boundary。
@@ -129,7 +129,7 @@ type UpstreamDispatcher struct {
 }
 
 // Dispatch 执行一次完整出站。失败时 result 可能为 nil；调用方按 err
-// 与 status 决定是否重试 / fallback。
+// 与 status 决定是否重试 / 回退。
 func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchResult, error) {
 	if d == nil {
 		return nil, errors.New("dispatcher: nil receiver")
@@ -323,7 +323,7 @@ func validatePassthroughEndpointTarget(ctx context.Context, cred provider.Creden
 
 // maybeInjectAnthropicBreakpoints 在 Anthropic Messages 请求 body 被构造成
 // 出站 HTTP 请求之前,对其规划并应用 ephemeral cache_control breakpoints。
-// 当满足以下任一条件时,它是 no-op(返回 body 不变):
+// 当满足以下任一条件时,它是空操作(返回 body 不变):
 //   - dispatcher 上未启用 AnthropicAutoBreakpoints;
 //   - protocol family 不是 "anthropic_messages";
 //   - 客户端已在请求任何位置(system / message content / tools)提供了

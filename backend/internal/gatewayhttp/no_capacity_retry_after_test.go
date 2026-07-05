@@ -9,7 +9,7 @@ import (
 )
 
 // TestPoolNoCapacityRetryAfter 守"用池最早恢复时刻算精确 Retry-After,无可估则回退默认"。
-// 变异:删 poolNoCapacityRetryAfter 的 errors.As 提取(恒返回 fallback)→ 前三条精确用例红。
+// 变异:删 poolNoCapacityRetryAfter 的 errors.As 提取(恒返回 回退)→ 前三条精确用例红。
 func TestPoolNoCapacityRetryAfter(t *testing.T) {
 	base := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
 	cases := []struct {

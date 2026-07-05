@@ -118,8 +118,8 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	// xAI Grok v1/chat/completions 严格 OpenAI 兼容。
 	r.MustRegister("grok_chat", &openai.Adapter{})
 	// AWS Bedrock 走二进制 EventStream（非 SSE），由专用 bedrock.EventStreamAdapter
-	// （proto/bedrock/eventstream.go，A4 atomic）+ BedrockEventStreamScanner
-	// （gateway/bedrock_stream_scanner.go，A3 atomic）成对处理。
+	// （proto/bedrock/eventstream.go，A4 原子变更）+ BedrockEventStreamScanner
+	// （gateway/bedrock_stream_scanner.go，A3 原子变更）成对处理。
 	// 当前限定 Bedrock-on-Anthropic（Claude on Bedrock）；future Llama/Cohere
 	// on Bedrock 时再 model-family 分流。
 	r.MustRegister("bedrock_invoke", bedrock.NewEventStreamAdapter())

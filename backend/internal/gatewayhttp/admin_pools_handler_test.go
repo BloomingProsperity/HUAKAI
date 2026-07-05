@@ -475,10 +475,10 @@ func adminPoolsTenantOperator(tenantID int64) adminPoolAuthStub {
 // 然后调 CreatePoolWithAudit / UpdatePoolWithAudit;adapter 在 BeginFunc 内
 // audit insert 失败应自动 rollback,断言 pool 行**不存在 / 字段未变**。
 //
-// Mutation 自检:把 adapter CreatePoolWithAudit 改成 InsertPool 后单独
+// 变异自检:把 adapter CreatePoolWithAudit 改成 InsertPool 后单独
 // InsertAdminAuditEvent (非同事务) → audit 拒后 pool 行已落 → 本用例 red。
 //
-// 直接 append 到既有 _test.go,用 env-var 守卫而不是 build tag。
+// 直接追加到既有 _test.go,用 env-var 守卫而不是 build tag。
 // ------------------------------------------------------------------
 
 func openAdminPoolsTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -549,7 +549,7 @@ func installAdminAuditRejectTrigger(t *testing.T, ctx context.Context, pool *pgx
 // 判别 fixture:trigger 拒收 actor_id='gw10-create-test' 的 audit row;
 // CreatePoolWithAudit 应返 error 且 pool_groups 表内无 (tenant, name) 行。
 //
-// Mutation 自检:adapter 改成 InsertPool 提交后再调 InsertAdminAuditEvent (非同事务)
+// 变异自检:adapter 改成 InsertPool 提交后再调 InsertAdminAuditEvent (非同事务)
 // → pool 行已落,审计后才拒 → pool 行留下 → 本用例 red。
 func TestAdminPoolsCreate_AuditFailureRollsBackPool(t *testing.T) {
 	ctx := context.Background()
@@ -601,7 +601,7 @@ func TestAdminPoolsCreate_AuditFailureRollsBackPool(t *testing.T) {
 // TestAdminPoolsUpdate_AuditFailureRollsBackPool — T_G2 (pool 版,不是 provider account)
 //
 // 判别 fixture:seed pool 后 audit trigger 拒 update;断言 pool 字段未变。
-// Mutation 自检:UpdatePoolWithAudit 改成两段非同事务 → update 提交后 audit 拒
+// 变异自检:UpdatePoolWithAudit 改成两段非同事务 → update 提交后 audit 拒
 // → 字段已改 → 本用例 red。
 func TestAdminPoolsUpdate_AuditFailureRollsBackPool(t *testing.T) {
 	ctx := context.Background()
@@ -614,7 +614,7 @@ func TestAdminPoolsUpdate_AuditFailureRollsBackPool(t *testing.T) {
 	adapter := NewAdminPoolsStoreAdapter(dbbilling.New(pool), admindb.New(pool), pool)
 	poolName := "tx-update-baseline-" + suffix
 
-	// 种一条 pool 行,直接走 InsertPool(非 tx 版本)—— baseline
+	// 种一条 pool 行,直接走 InsertPool(非 tx 版本)—— 基线
 	seeded, err := dbbilling.New(pool).InsertPool(ctx, dbbilling.InsertPoolParams{
 		TenantID:          tenantID,
 		Name:              poolName,
@@ -663,7 +663,7 @@ func TestAdminPoolsUpdate_AuditFailureRollsBackPool(t *testing.T) {
 }
 
 // TestAdminPoolsCreate_HappyPathCommitsBoth — 正向保持守:audit 成功时 pool + audit
-// 都落库。Mutation: 把 BeginFunc 改成只 Rollback,正向用例必红。
+// 都落库。变异: 把 BeginFunc 改成只 Rollback,正向用例必红。
 func TestAdminPoolsCreate_HappyPathCommitsBoth(t *testing.T) {
 	ctx := context.Background()
 	pool := openAdminPoolsTestPool(t, ctx)

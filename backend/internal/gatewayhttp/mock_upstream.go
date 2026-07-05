@@ -16,7 +16,7 @@ import (
 
 // MockAnthropicUpstreamBytes 返回一段含 4 个事件的 Anthropic SSE 流:
 // message_start → content_block_delta → message_delta(usage)→ message_stop。
-// 调用方传入 inputTokens / outputTokens;发射器把它们编码进
+//调用方传入 inputTokens / outputTokens;发射器把它们编码进
 // message_delta 的 usage 字段,anthropic.Adapter 再从中提取到
 // UsageRecordDraft。
 func MockAnthropicUpstreamBytes(messageID, model string, inputTokens, outputTokens int) []byte {

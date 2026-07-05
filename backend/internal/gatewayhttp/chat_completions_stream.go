@@ -387,7 +387,7 @@ func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
 	if cp == fam {
 		return false
 	}
-	// 上游族 wire 形态与客户端协议同形时(kimi/qwen/cohere/... == openai_chat;
+	// 上游族线格式形态与客户端协议同形时(kimi/qwen/cohere/... == openai_chat;
 	// openai_codex 刻意不在映射表内,见 hcsfProviderRequestModelFamily 排除注释,
 	// 故 responses→codex 不走此 fast-path 而 fail-closed)走 raw 直通:保真 vendor 专有字段
 	// (top_k 等;流式无 mergeHCSFRawPassthroughFields,翻译会静默丢),与

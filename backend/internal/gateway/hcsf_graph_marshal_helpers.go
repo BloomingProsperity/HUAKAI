@@ -339,7 +339,7 @@ func injectGeminiRequestControls(body map[string]any, env *proto.HCSF) ([]byte, 
 //   - {"type":"json_schema","json_schema":{"schema":{...}}}   → ("application/json", <schema>)
 //   - 其它(无可识别 type / 已是 Gemini 形)                    → ("", nil)  表示不由本函数映射
 //
-// 注:Gemini responseSchema 仅接受 OpenAPI 子集,不兼容的 schema 会被上游 4xx 拒(fail-loud,优于
+// 注:Gemini responseSchema 仅接受 OpenAPI 子集,不兼容的 schema 会被上游 4xx 拒(显式失败,优于
 // 此前对客户端显式结构化输出请求的静默丢弃)。schema 透传为 any(已是解析后的 JSON 值),由
 // json.Marshal 重新序列化进 generationConfig。OpenAI 的 json_schema.name 是元数据、strict 在 Gemini
 // 不支持(无对应字段),故二者均不映射(非信息丢失)。json_schema 缺/空 schema 时只回 mime(schema=nil),

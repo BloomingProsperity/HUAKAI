@@ -122,7 +122,7 @@ const estimatedUsageBasisConfidence = 0.8
 // 估算结算是终局:权威 usage 永远不会到达,挂 pending 只会让 no-usage 定稿 SQL
 // (只认 tokens 与 actual_cost 全零的记录)永远跳过它;故连 ratio fail-soft 的
 // pending 也剥离(其快照标记已留痕)。无可估内容或费率表不可用时返回 ok=false,
-// 调用方维持零结算 + pending 的原路径。
+//调用方维持零结算 + pending 的原路径。
 func (ex *chatExecution) estimatedStreamingCost(draft gateway.UsageRecordDraft) (completionCostBreakdown, completionUsageForCost, bool) {
 	estimatedOutput := draft.EstimatedOutputTokens + draft.EstimatedReasoningTokens
 	if estimatedOutput <= 0 {

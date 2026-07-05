@@ -80,7 +80,7 @@ func TestForwardAccumulatesPerEventProtocolLoss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Forward: %v", err)
 	}
-	// MUTATION: forwarder.go 还原 provider(handleEventWithAdapter)或 client(clientChunks)损失丢弃(_)
+	// 变异: forwarder.go 还原 provider(handleEventWithAdapter)或 client(clientChunks)损失丢弃(_)
 	// → draft.StreamProtocolLoss 缺对应 sentinel → RED。
 	if !forwarderLossHasCode(draft.StreamProtocolLoss, "provider_event_loss_sentinel") {
 		t.Fatalf("draft.StreamProtocolLoss missing provider sentinel: %+v", draft.StreamProtocolLoss)
@@ -101,7 +101,7 @@ func forwarderLossHasCode(losses []proto.ProtocolLossEntry, code string) bool {
 
 // TestCanonicalVisibleEstimateExcludesReasoning 守 流式交叉校验:逐事件可见输出
 // 估算计入 Delta.Text(+ PartialJSON / ContentBlock.Text),但**排除** Delta.ReasoningText ——
-// 隐藏推理已由 CanonicalUsage.ReasoningTokens 单列、交叉校验时从 reported 扣除。self-proving:
+// 隐藏推理已由 CanonicalUsage.ReasoningTokens 单列、交叉校验时从 reported 扣除。自证:
 // 同一可见文本、其一附带大段 reasoning delta,断言两者估算相等。
 func TestCanonicalVisibleEstimateExcludesReasoning(t *testing.T) {
 	visibleText := "the visible answer streamed to the client token by token"
@@ -115,7 +115,7 @@ func TestCanonicalVisibleEstimateExcludesReasoning(t *testing.T) {
 	if gotVisible <= 0 {
 		t.Fatalf("visible estimate=%d want positive", gotVisible)
 	}
-	// MUTATION: canonicalVisibleEstimate 把 d.ReasoningText 也计进估算 → withReasoning > visible → RED。
+	// 变异: canonicalVisibleEstimate 把 d.ReasoningText 也计进估算 → withReasoning > visible → RED。
 	if got := canonicalVisibleEstimate(withReasoning); got != gotVisible {
 		t.Fatalf("estimate with hidden reasoning=%d want == visible-only %d (reasoning must be excluded)", got, gotVisible)
 	}
@@ -124,7 +124,7 @@ func TestCanonicalVisibleEstimateExcludesReasoning(t *testing.T) {
 // TestCanonicalReasoningEstimateCountsOnlyReasoningText 守 修复:
 // canonicalReasoningEstimate **只**统计可见 reasoning 文本(Delta.ReasoningText),不计可见输出
 // 文本(Delta.Text)—— 它与 canonicalVisibleEstimate 互补,供 crossCheckAudit 在 reasoning 文本
-// 流出但缺 ReasoningTokens 时跳过校验。self-proving:reasoning-only delta 估算为正,而 visible-only
+// 流出但缺 ReasoningTokens 时跳过校验。自证:reasoning-only delta 估算为正,而 visible-only
 // delta 的 reasoning 估算必须为 0。
 func TestCanonicalReasoningEstimateCountsOnlyReasoningText(t *testing.T) {
 	reasoningOnly := proto.CanonicalEvent{Type: "content_block_delta", Delta: &proto.CanonicalContentDelta{
@@ -137,7 +137,7 @@ func TestCanonicalReasoningEstimateCountsOnlyReasoningText(t *testing.T) {
 	if got := canonicalReasoningEstimate(reasoningOnly); got <= 0 {
 		t.Fatalf("reasoning-only estimate=%d want positive (ReasoningText must count)", got)
 	}
-	// MUTATION: canonicalReasoningEstimate 把 d.Text 也计进 → visible-only 估算 >0 → RED。
+	// 变异: canonicalReasoningEstimate 把 d.Text 也计进 → visible-only 估算 >0 → RED。
 	if got := canonicalReasoningEstimate(visibleOnly); got != 0 {
 		t.Fatalf("visible-only reasoning estimate=%d want 0 (only ReasoningText counts)", got)
 	}
@@ -152,7 +152,7 @@ func TestCanonicalVisibleEstimateCountsContentBlockInput(t *testing.T) {
 		Name:  "search",
 		Input: []byte(`{"query":"weather in hangzhou","units":"metric","verbose":true}`),
 	}}
-	// MUTATION: canonicalVisibleEstimate 丢弃 cb.Input(传 nil)→ 0 → tool-only 流被 CrossCheck 判 Unknown → RED。
+	// 变异: canonicalVisibleEstimate 丢弃 cb.Input(传 nil)→ 0 → tool-only 流被 CrossCheck 判 Unknown → RED。
 	if got := canonicalVisibleEstimate(oneShotTool); got <= 0 {
 		t.Fatalf("one-shot tool content_block_start estimate=%d want positive (Input must count)", got)
 	}
@@ -175,7 +175,7 @@ func TestDrainWithAdapterAccumulatesOutputEstimate(t *testing.T) {
 
 	f.drainWithAdapter(context.Background(), adapter, events, nil, acc)
 
-	// MUTATION: drain 循环不累加 canonicalVisibleEstimate → acc.EstimatedOutputTokens==0 → RED。
+	// 变异: drain 循环不累加 canonicalVisibleEstimate → acc.EstimatedOutputTokens==0 → RED。
 	if acc.EstimatedOutputTokens <= 0 {
 		t.Fatalf("acc.EstimatedOutputTokens=%d want positive (drained visible output must be estimated)", acc.EstimatedOutputTokens)
 	}
@@ -183,7 +183,7 @@ func TestDrainWithAdapterAccumulatesOutputEstimate(t *testing.T) {
 
 // TestHandleEventWithAdapterAccumulatesLossOnErrorReturn 守 finding 2:
 // 部分上游 adapter 把 ProtocolLossEntry 连同 error 一起返回(anthropic/sse.go:228 未知事件
-// → loss + ErrUnknownEventType)。handleEventWithAdapter 原先在 append providerLosses 之前
+// → loss + ErrUnknownEventType)。handleEventWithAdapter 原先在 追加 providerLosses 之前
 // 就 error 早返,证据丢失;现在累积先于 error 返回。
 func TestHandleEventWithAdapterAccumulatesLossOnErrorReturn(t *testing.T) {
 	adapter := &forwarderClientAdapterUpstreamStub{
@@ -207,14 +207,14 @@ func TestHandleEventWithAdapterAccumulatesLossOnErrorReturn(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected adapter error to propagate")
 	}
-	// MUTATION: 把 providerLosses append 移回 error 早返之后 → acc.StreamProtocolLoss 为空 → RED。
+	// 变异: 把 providerLosses 追加 移回 error 早返之后 → acc.StreamProtocolLoss 为空 → RED。
 	if !forwarderLossHasCode(acc.StreamProtocolLoss, "provider_error_loss_sentinel") {
 		t.Fatalf("acc.StreamProtocolLoss missing sentinel after errored provider event: %+v", acc.StreamProtocolLoss)
 	}
 }
 
 // TestDrainWithAdapterAccumulatesLossOnErrorReturn 守 finding 2 的 drain 镜像:
-// drainWithAdapter 原先只在 err==nil 时 append drainLosses,drain 期未知/畸形事件
+// drainWithAdapter 原先只在 err==nil 时 追加 drainLosses,drain 期未知/畸形事件
 // (loss+error)证据丢失;现在累积不受 err 影响,usage 仍仅在 err==nil 时采信。
 func TestDrainWithAdapterAccumulatesLossOnErrorReturn(t *testing.T) {
 	adapter := &forwarderClientAdapterUpstreamStub{
@@ -229,7 +229,7 @@ func TestDrainWithAdapterAccumulatesLossOnErrorReturn(t *testing.T) {
 
 	f.drainWithAdapter(context.Background(), adapter, events, nil, acc)
 
-	// MUTATION: 把 drainLosses append 移回 `if err == nil` 内 → acc.StreamProtocolLoss 为空 → RED。
+	// 变异: 把 drainLosses 追加 移回 `if err == nil` 内 → acc.StreamProtocolLoss 为空 → RED。
 	if !forwarderLossHasCode(acc.StreamProtocolLoss, "drain_error_loss_sentinel") {
 		t.Fatalf("acc.StreamProtocolLoss missing drain sentinel after errored drain event: %+v", acc.StreamProtocolLoss)
 	}

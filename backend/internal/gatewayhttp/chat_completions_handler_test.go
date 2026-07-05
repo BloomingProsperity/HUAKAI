@@ -122,7 +122,7 @@ func minimalDeps() ChatHandlerDeps {
 		Router:    stubRouter{plan: router.RoutePlan{Attempts: []router.AttemptPlan{{PoolGroupID: 42}}, SnapshotVersion: "registry:7:1;router:v0.1-phase-c"}},
 		ClaimGate: stubClaimGate{},
 		Selector:  stubSelector{},
-		// 真出站链路占位，让入口校验类测试通过 nil-guard。
+		// 真出站链路占位，让入口校验类测试通过 nil 守卫。
 		CredentialVault:      provider.NewStaticVault(),
 		Dispatcher:           &gateway.UpstreamDispatcher{},
 		Forwarder:            &gateway.StreamForwarder{},
@@ -419,7 +419,7 @@ func (s *chatModerationBanSpy) RecordAndCheck(_ context.Context, event moderatio
 }
 
 // 守:dedup until map 必须惰性回收已过期项,否则高账号 churn 下无限增长。window=0 让每个
-// 条目立即过期;填满超阈值后再 admit 触发清理。Mutation: 去掉 purge → size 仍 > threshold,红。
+// 条目立即过期;填满超阈值后再 admit 触发清理。变异: 去掉 purge → size 仍 > threshold,红。
 func TestDedupingCredentialHotRefresher_PurgesExpiredEntries(t *testing.T) {
 	r := newDedupingCredentialHotRefresher(nil, 0).(*dedupingCredentialHotRefresher)
 	for i := int64(1); i <= int64(credentialHotRefreshPurgeThreshold)+5; i++ {
