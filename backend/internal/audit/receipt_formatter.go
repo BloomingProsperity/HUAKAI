@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
@@ -298,7 +299,10 @@ func (rf *ReceiptFormatter) DeriveReceipt(ctx context.Context, requestID string)
 	}, nil
 }
 
-// SignReceipt 对 canonical receipt hash 做 ed25519 签名，返回带签名副本。
+// SignReceipt 对 receipt 的 trust.receipt.v1 canonical 做 ed25519 签名,返回带签名副本。
+// canonical 与验签侧(cost_receipt_handler.canonicalBytesFromCostReceipt→FinalTrustReceiptCanonical)
+// 及正常结算侧(attachFinalTrustSignature→trustreceipt.SignReceipt)同口径;SignedHash 存 base64,
+// 与验签解码一致。用此(退款回执唯一签名入口)签的 receipt 才能通过用户验签。
 func (rf *ReceiptFormatter) SignReceipt(ctx context.Context, receipt *CostReceipt) (*CostReceipt, error) {
 	if rf == nil {
 		return nil, ErrReceiptFormatterNil
@@ -319,7 +323,7 @@ func (rf *ReceiptFormatter) SignReceipt(ctx context.Context, receipt *CostReceip
 	if err := validateReceiptForSigning(out); err != nil {
 		return nil, err
 	}
-	canonical, err := canonicalReceiptHashWithRedactor(ctx, rf.redactor, out)
+	canonical, err := FinalTrustReceiptCanonical(out)
 	if err != nil {
 		return nil, err
 	}
@@ -328,14 +332,12 @@ func (rf *ReceiptFormatter) SignReceipt(ctx context.Context, receipt *CostReceip
 		return nil, fmt.Errorf("audit: sign receipt: %w", err)
 	}
 	out.SignerFingerprint = []byte(fingerprint)
-	out.SignedHash = append([]byte(nil), signature...)
+	out.SignedHash = []byte(base64.StdEncoding.EncodeToString(signature))
 	return out, nil
 }
 
-func canonicalReceiptHash(receipt *CostReceipt) ([]byte, error) {
-	return canonicalReceiptHashWithRedactor(context.Background(), privacy.DefaultRedactor(), receipt)
-}
-
+// canonicalReceiptHashWithRedactor 构造 v2 用户可见 receipt 的 canonical(display/dedup 用途;
+// 签名已改走 trust.v1,见 SignReceipt)。
 func canonicalReceiptHashWithRedactor(ctx context.Context, redactor privacy.Redactor, receipt *CostReceipt) ([]byte, error) {
 	if receipt == nil {
 		return nil, ErrReceiptRequired

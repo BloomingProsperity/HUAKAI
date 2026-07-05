@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -113,13 +114,21 @@ func TestAT_AUDIT_001_002_SignReceiptDeterministic(t *testing.T) {
 	if string(signed1.SignerFingerprint) != signer.Fingerprint() {
 		t.Fatalf("fingerprint=%q want %q", string(signed1.SignerFingerprint), signer.Fingerprint())
 	}
-	canonical, err := canonicalReceiptHash(signed1)
+	// 走【生产验签口径】:trust.v1 canonical(FinalTrustReceiptCanonical,同 cost_receipt_handler
+	// 验签侧)+ base64 解码 SignedHash。此前用 v2 canonical + 原始 SignedHash 验签是伪绿(B7)——
+	// 退款回执实际按 trust.v1 验签,若签名口径不符则用户验签恒失败(B2)。
+	// Mutation: 把 SignReceipt 改回签 v2 canonical 哈希 / 存原始字节 → 本处 trust.v1 验签失败 → RED。
+	canonical, err := FinalTrustReceiptCanonical(signed1)
 	if err != nil {
-		t.Fatalf("canonical hash: %v", err)
+		t.Fatalf("canonical: %v", err)
 	}
-	ok, err := signer.Verify(ctx, canonical, signed1.SignedHash, string(signed1.SignerFingerprint))
+	sig, err := base64.StdEncoding.DecodeString(string(signed1.SignedHash))
+	if err != nil {
+		t.Fatalf("SignedHash 必须是 base64 编码: %v", err)
+	}
+	ok, err := signer.Verify(ctx, canonical, sig, string(signed1.SignerFingerprint))
 	if err != nil || !ok {
-		t.Fatalf("signature verify: ok=%v err=%v", ok, err)
+		t.Fatalf("退款回执签名必须通过生产 trust.v1 验签口径: ok=%v err=%v", ok, err)
 	}
 }
 
