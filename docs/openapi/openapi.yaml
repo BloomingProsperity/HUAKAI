@@ -14091,10 +14091,11 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/subscriptionhttp/admin_worker_stats.go
-      required: [reminder, expiry]
+      required: [reminder, expiry, auto_renew]
       properties:
         reminder: { $ref: '#/components/schemas/AdminReminderWorkerStats' }
         expiry: { $ref: '#/components/schemas/AdminExpiryWorkerStats' }
+        auto_renew: { $ref: '#/components/schemas/AdminAutoRenewWorkerStats' }
 
     AdminReminderWorkerStats:
       type: object
@@ -14112,6 +14113,17 @@ components:
       properties:
         tick_count: { type: integer, format: int64, minimum: 0 }
         expired_total: { type: integer, format: int64, minimum: 0 }
+        failed_ticks: { type: integer, format: int64, minimum: 0 }
+
+    AdminAutoRenewWorkerStats:
+      type: object
+      additionalProperties: false
+      required: [enabled, tick_count, renewed_total, skipped_total, failed_ticks]
+      properties:
+        enabled: { type: boolean }
+        tick_count: { type: integer, format: int64, minimum: 0 }
+        renewed_total: { type: integer, format: int64, minimum: 0 }
+        skipped_total: { type: integer, format: int64, minimum: 0 }
         failed_ticks: { type: integer, format: int64, minimum: 0 }
 
     ModerationKeywordCreateRequest:

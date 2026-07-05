@@ -20,10 +20,11 @@ type AdminWorkerStatsDeps struct {
 	Reader WorkerStatsReader
 }
 
-// WorkerStats 是订阅通知 worker 的 JSON 响应。
+// WorkerStats 是订阅通知/续费 worker 的 JSON 响应。
 type WorkerStats struct {
-	Reminder ReminderWorkerStats `json:"reminder"`
-	Expiry   ExpiryWorkerStats   `json:"expiry"`
+	Reminder  ReminderWorkerStats  `json:"reminder"`
+	Expiry    ExpiryWorkerStats    `json:"expiry"`
+	AutoRenew AutoRenewWorkerStats `json:"auto_renew"`
 }
 
 type ReminderWorkerStats struct {
@@ -35,6 +36,16 @@ type ReminderWorkerStats struct {
 type ExpiryWorkerStats struct {
 	TickCount    uint64 `json:"tick_count"`
 	ExpiredTotal uint64 `json:"expired_total"`
+	FailedTicks  uint64 `json:"failed_ticks"`
+}
+
+// AutoRenewWorkerStats 是自动续费 worker 的 money 计数器。Enabled=false 表示该 worker
+// 未启用(HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED 默认关),此时其余计数恒 0。
+type AutoRenewWorkerStats struct {
+	Enabled      bool   `json:"enabled"`
+	TickCount    uint64 `json:"tick_count"`
+	RenewedTotal uint64 `json:"renewed_total"`
+	SkippedTotal uint64 `json:"skipped_total"`
 	FailedTicks  uint64 `json:"failed_ticks"`
 }
 
