@@ -77,50 +77,6 @@ func TestChannelHealth_AT002_ErrorRateCooldownAndAudit(t *testing.T) {
 	}
 }
 
-func TestChannelHealth_ClientMalformedDoesNotDriveErrorRateCooldown(t *testing.T) {
-	ctx, svc, store, clock := testService()
-	key := testKey()
-	window := summarizeSamples([]SignalSample{
-		{At: clock.Now(), Class: SignalClientMalformed, StatusCode: 400},
-		{At: clock.Now().Add(time.Millisecond), Class: SignalClientMalformed, StatusCode: 413},
-		{At: clock.Now().Add(2 * time.Millisecond), Class: SignalClientMalformed, StatusCode: 422},
-	})
-	if window.FailedAttempts != 0 {
-		t.Fatalf("client malformed FailedAttempts=%d want 0", window.FailedAttempts)
-	}
-	if window.TotalAttempts != 3 {
-		t.Fatalf("client malformed TotalAttempts=%d want 3", window.TotalAttempts)
-	}
-	classified := Classify(ClassifierInput{StatusCode: 400, SafeErrorClass: "invalid_request"}).Class
-	for i := 0; i < 3; i++ {
-		clock.Add(time.Millisecond)
-		if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: classified, StatusCode: 400}); err != nil {
-			t.Fatalf("ApplySignal client malformed: %v", err)
-		}
-	}
-	rec, _ := store.Get(ctx, key)
-	if classified != SignalClientMalformed {
-		t.Fatalf("classified=%s rec=%+v; client malformed must not become account health failure", classified, rec)
-	}
-	if rec.State != StateActive || rec.SampleWindow.FailedAttempts != 0 {
-		t.Fatalf("client malformed rec=%+v want active with zero failed attempts", rec)
-	}
-
-	badKey := testKey()
-	badKey.ProviderAccountID = 202
-	badKey.AccountCredentialID = 9202
-	for i := 0; i < 3; i++ {
-		clock.Add(time.Millisecond)
-		if _, err := svc.ApplySignal(ctx, Signal{Key: badKey, Class: SignalChannelError, StatusCode: 400}); err != nil {
-			t.Fatalf("ApplySignal channel error: %v", err)
-		}
-	}
-	badRec, _ := store.Get(ctx, badKey)
-	if badRec.State != StateCoolingDown || badRec.SampleWindow.FailedAttempts != 3 {
-		t.Fatalf("channel error rec=%+v want cooling_down with three failed attempts", badRec)
-	}
-}
-
 func TestChannelHealth_AT003_Upstream5xxDegradesBeforeCooldownAndLocal5xxIgnored(t *testing.T) {
 	ctx, svc, store, clock := testService()
 	key := testKey()

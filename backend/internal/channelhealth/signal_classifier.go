@@ -69,9 +69,6 @@ func classifyDefault(in ClassifierInput, code, safe, raw string) ClassifierResul
 	if in.StatusCode >= 500 {
 		return ClassifierResult{Class: SignalUpstream5xx, Confidence: ConfidenceObserved}
 	}
-	if isClientMalformed4xx(in.StatusCode, code, safe, raw) {
-		return ClassifierResult{Class: SignalClientMalformed, Confidence: ConfidenceObserved}
-	}
 	if in.StatusCode >= 400 {
 		return ClassifierResult{Class: SignalChannelError, Confidence: ConfidenceObserved}
 	}
@@ -79,27 +76,6 @@ func classifyDefault(in ClassifierInput, code, safe, raw string) ClassifierResul
 		return ClassifierResult{Class: SignalSuccess, Confidence: ConfidenceObserved}
 	}
 	return ClassifierResult{Class: SignalSuccess, Confidence: ConfidenceObserved}
-}
-
-func isClientMalformed4xx(statusCode int, code, safe, raw string) bool {
-	switch statusCode {
-	case 413, 422:
-		return true
-	case 400:
-		return containsAny(code, safe, raw,
-			"request_too_large",
-			"invalid_request",
-			"invalid request",
-			"context_length_exceeded",
-			"context length",
-			"too many tokens",
-			"maximum context",
-			"malformed",
-			"bad request",
-		)
-	default:
-		return false
-	}
 }
 
 func matchesDisableKeyword(code, safe string, keywords []string) bool {
