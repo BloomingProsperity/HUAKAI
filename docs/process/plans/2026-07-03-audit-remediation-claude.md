@@ -25,6 +25,8 @@
   - ✅ **B5 后半**(1e07adc6):usersession UserGate seam——Validate/Refresh 每次复核会话主体资格,ineligible 拒+机会式撤家族(sub2api RefreshTokenPair 同款);wiring 注入 userauth 适配器,只拒 disabled/deleted/软删,locked/时间锁放行(防失败锁定被当会话 DoS);fail-closed 但瞬时故障不撤家族;Refresh 端点 403 account_not_active 同口径。两变异证红+适配器映射矩阵+fail-closed 测试;全基线绿。**B5 双管齐下全部闭环。**
   - follow-up 记录:签发点收口(sub2api respondWithTokenPair 模式,防未来新登录路径漏门)——Validate 惰性复核落地后已有结构性兜底,收口属加固非必需;TokenVersion 版本号列(将来做「登出所有设备」self-service 的底座)。
 
+- ✅ **B3**(eea7178d)会话漂移 Medium/Low 接消费者:usersession DriftObserver seam(纯观测),Validate/Refresh 非 None 漂移统一交观察者(High 同流,撤销不变);wiring 注入 zap 结构化观测(low=Info,medium/high=Warn),事件记 IP/UA class 无 PII。两变异证红+四档矩阵测试。指标带读者部分并入 B10。**B 系 S2 全清(B3/B4/B5/B6),剩 S2 仅 A 系四条。**
+
 ### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
 - **方案 = 提前量续费(renew-ahead grace window),到期判据不动**:`ListAutoRenewDue` 扫 `expires_at <= now+lead`(PG+memory 同改);`tryAutoRenewOnce` 锁行复查同用 `DueCutoff`(autoRenewRecord 加字段);`ProcessAutoRenewal` 算 cutoff 下传。lead 取 30min(5min 节拍 ≥6 次尝试,余额不足可重试;对比 Apple 提前 24h 扣款,30min 属保守)。
 - **为什么不选「ListDueExpiry 排除 auto_renew=true」**:续费持续失败(余额不足/套餐停用)的订阅将永不到期 → 白嫖;要堵这个洞需加失败计数/宽限状态机 = schema 变更。提前量方案零 schema、到期兜底天然保留:续费失败订阅照常在 expires_at 到期降级。
