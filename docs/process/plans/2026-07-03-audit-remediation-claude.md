@@ -20,6 +20,11 @@
   - S3 follow-up(已顺手收进):回链部分唯一索引、down dirty 恢复指引、fixture 单事务禁触发器、A6 并发补账本断言、B6-2 注释如实。codebudget 门既有红(gatewayhttp 4 项 + store_memory.go)与本切片无因果,另案处理。
   - 剩 S2:A#3/A#5/A#6/A#8 + B3/B4/B5。
 
+- ✅ **B4 + B5 前半 + B9**(423b36c2)账号状态复核不一致家族:①B4 2FA 完成路径补资格门(GetProfile+EnsureLoginEligible,403 account_not_active 对齐 passkey 反枚举)②B5 封禁撤既有会话(镜像删除路径)③B9 twofa 失败回填身份供审计归因。三处变异逐一证红;gatewayhttp 全包+五邻包 unit+两包集成绿。
+  - **三镜研究裁定(agent a2316a)**:多路登录完成步漏复核是惯发病(new-api 2FA 同漏、passkey 双检;其 cookie 会话封禁后可用满 30 天=B5 同病);sub2api=完成步显式复核+签发点 respondWithTokenPair 再兜一道+全车道每请求复核 status+封禁靠惰性复核生效(TokenVersion bump 留给登出所有设备)。
+  - **⏭ B5 后半(下一切片,三镜裁定的主防线)**:Validate/Refresh 惰性复核 users.status——HUAKAI bearer 30 天长效,暴露模型同 new-api cookie 病灶;Validate 若已查 session 表可 JOIN users 零额外往返;**锁定态不杀既有会话**(防攻击者借失败锁定 DoS 正常用户,锁只守登录门),只拒 disabled/deleted。
+  - follow-up 记录:签发点收口(sub2api respondWithTokenPair 模式,防未来新登录路径漏门)——Validate 惰性复核落地后已有结构性兜底,收口属加固非必需;TokenVersion 版本号列(将来做「登出所有设备」self-service 的底座)。
+
 ### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
 - **方案 = 提前量续费(renew-ahead grace window),到期判据不动**:`ListAutoRenewDue` 扫 `expires_at <= now+lead`(PG+memory 同改);`tryAutoRenewOnce` 锁行复查同用 `DueCutoff`(autoRenewRecord 加字段);`ProcessAutoRenewal` 算 cutoff 下传。lead 取 30min(5min 节拍 ≥6 次尝试,余额不足可重试;对比 Apple 提前 24h 扣款,30min 属保守)。
 - **为什么不选「ListDueExpiry 排除 auto_renew=true」**:续费持续失败(余额不足/套餐停用)的订阅将永不到期 → 白嫖;要堵这个洞需加失败计数/宽限状态机 = schema 变更。提前量方案零 schema、到期兜底天然保留:续费失败订阅照常在 expires_at 到期降级。
