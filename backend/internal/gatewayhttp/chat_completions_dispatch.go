@@ -2,18 +2,13 @@ package gatewayhttp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"expvar"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -28,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -45,21 +41,6 @@ var quotaReserveFailedOpenTotal = expvar.NewInt("quota_reserve_failed_open_total
 // quotaDeniedTotal 计 token/cost/requests 等配额硬拒次数(区别于 fail-open),
 // 供运营观测配额拦截命中率。
 var quotaDeniedTotal = expvar.NewInt("quota_denied_total")
-
-const (
-	clientSessionIDMaxLength = 200
-	clientSessionHashPrefix  = "client-session:"
-	clientSessionHashDomain  = "huakai:client-session:v1:"
-)
-
-var clientSessionIDHeaderPriority = []string{
-	"X-Session-ID",
-	"X-Amp-Thread-Id",
-	"Session-Id",
-	"X-Client-Request-Id",
-}
-
-var openAIMetadataUserIDSessionSuffixRE = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
 func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, validated chatValidatedRequest, startedAt time.Time) *chatExecution {
 	return &chatExecution{
@@ -81,72 +62,7 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 }
 
 func requestClientSessionID(r *http.Request, validated chatValidatedRequest) string {
-	if r != nil {
-		for _, header := range clientSessionIDHeaderPriority {
-			if id := normalizeClientSessionID(r.Header.Get(header)); id != "" {
-				return id
-			}
-		}
-	}
-	if !isOpenAIClientProtocol(validated.ClientProtocol) {
-		return ""
-	}
-	return openAITopLevelClientSessionID(validated.Body)
-}
-
-func isOpenAIClientProtocol(clientProtocol proto.ClientProtocol) bool {
-	switch clientProtocol {
-	case proto.ClientProtocolOpenAIChat, proto.ClientProtocolOpenAIResponses:
-		return true
-	default:
-		return false
-	}
-}
-
-func openAITopLevelClientSessionID(rawBody []byte) string {
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(rawBody, &top); err != nil || top == nil {
-		return ""
-	}
-	for _, key := range []string{"conversation_id", "session_id"} {
-		raw, ok := top[key]
-		if !ok {
-			continue
-		}
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil {
-			continue
-		}
-		if id := normalizeClientSessionID(value); id != "" {
-			return id
-		}
-	}
-	if raw, ok := top["metadata"]; ok {
-		var metadata struct {
-			UserID string `json:"user_id"`
-		}
-		if err := json.Unmarshal(raw, &metadata); err == nil {
-			userID := strings.TrimSpace(metadata.UserID)
-			if match := openAIMetadataUserIDSessionSuffixRE.FindStringSubmatch(userID); len(match) == 2 {
-				return normalizeClientSessionID(match[1])
-			}
-			return normalizeClientSessionID(metadata.UserID)
-		}
-	}
-	return ""
-}
-
-func normalizeClientSessionID(raw string) string {
-	id := strings.TrimSpace(raw)
-	if id == "" || len(id) > clientSessionIDMaxLength {
-		return ""
-	}
-	for _, r := range id {
-		if unicode.IsControl(r) {
-			return ""
-		}
-	}
-	return id
+	return chatpipe.RequestClientSessionID(r, validated.ClientProtocol, validated.Body)
 }
 
 type dispatchTransportSelection struct {
@@ -230,7 +146,7 @@ func (ex *chatExecution) refreshRequestSessionHashes() {
 		ex.sessionHash = affinityKey
 		return
 	}
-	ex.sessionHash = requestSessionHash(ex.clientProtocol, ex.body, ex.promptHash, ex.clientSessionID)
+	ex.sessionHash = chatpipe.RequestSessionHash(ex.clientProtocol, ex.body, ex.promptHash, ex.clientSessionID)
 }
 
 func (ex *chatExecution) configuredAffinityKey() (string, bool) {
@@ -254,36 +170,6 @@ func (ex *chatExecution) configuredAffinityKey() (string, bool) {
 		Body:      ex.body,
 	})
 	return affinityKey, matched
-}
-
-func requestSessionHash(clientProtocol proto.ClientProtocol, rawBody []byte, promptHash, clientSessionID string) string {
-	if clientSessionID != "" {
-		return clientSessionHash(clientSessionID)
-	}
-	if promptHash != "" {
-		return promptHash
-	}
-	if clientProtocol == proto.ClientProtocolOpenAIResponses {
-		if previousID := openAIResponsesPreviousResponseID(rawBody); previousID != "" {
-			return previousID
-		}
-	}
-	return promptHash
-}
-
-func clientSessionHash(clientSessionID string) string {
-	sum := sha256.Sum256([]byte(clientSessionHashDomain + clientSessionID))
-	return clientSessionHashPrefix + hex.EncodeToString(sum[:])
-}
-
-func openAIResponsesPreviousResponseID(rawBody []byte) string {
-	var req struct {
-		PreviousResponseID string `json:"previous_response_id"`
-	}
-	if err := json.Unmarshal(rawBody, &req); err != nil {
-		return ""
-	}
-	return req.PreviousResponseID
 }
 
 func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {

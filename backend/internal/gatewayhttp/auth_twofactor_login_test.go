@@ -41,7 +41,7 @@ func (s twoFactorLoginStub) VerifyLoginChallenge(context.Context, twofa.Challeng
 // mutation: 去掉 handler 里 GetProfile+EnsureLoginEligible 门 → disabled/locked/deleted
 // 三例返回 200 带会话 → 红。
 func TestAuthTwoFactorLogin_RejectsIneligibleUser(t *testing.T) {
-	now := time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	lockedUntil := now.Add(30 * time.Minute)
 
 	cases := []struct {

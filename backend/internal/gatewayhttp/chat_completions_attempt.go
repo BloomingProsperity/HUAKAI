@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -516,51 +517,22 @@ func writeAttemptFailure(w http.ResponseWriter, failure *classifiedAttemptFailur
 }
 
 type deliveryTracker struct {
-	http.ResponseWriter
-	startedFlag bool
-	status      int
+	*chatpipe.DeliveryTracker
 }
 
 func newDeliveryTracker(w http.ResponseWriter) *deliveryTracker {
-	return &deliveryTracker{ResponseWriter: w}
-}
-
-func (w *deliveryTracker) WriteHeader(statusCode int) {
-	if !w.startedFlag {
-		w.startedFlag = true
-		w.status = statusCode
-	}
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (w *deliveryTracker) Write(p []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(p)
-	if n > 0 && !w.startedFlag {
-		w.startedFlag = true
-		w.status = http.StatusOK
-	}
-	return n, err
-}
-
-func (w *deliveryTracker) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-func (w *deliveryTracker) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
+	return &deliveryTracker{DeliveryTracker: chatpipe.NewDeliveryTracker(w)}
 }
 
 func (w *deliveryTracker) started() bool {
-	return w != nil && w.startedFlag
+	return w != nil && w.DeliveryTracker.Started()
 }
 
 func (w *deliveryTracker) statusCode() int {
-	if w == nil || w.status == 0 {
+	if w == nil {
 		return http.StatusOK
 	}
-	return w.status
+	return w.DeliveryTracker.StatusCode()
 }
 
 // stripCrossAccountResponseChain(DM-07):responses 协议的 previous_response_id
