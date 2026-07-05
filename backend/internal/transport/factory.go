@@ -548,7 +548,12 @@ func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHe
 	if rt := f.mimicryByMode[mode]; rt != nil {
 		return rt
 	}
-	rt := mimicry.NewRoundTripper(tmpl)
+	var rt http.RoundTripper
+	if f.SidecarForceH1 != nil {
+		rt = mimicry.NewRoundTripperForceH1(tmpl, *f.SidecarForceH1)
+	} else {
+		rt = mimicry.NewRoundTripper(tmpl)
+	}
 	f.mimicryByMode[mode] = rt
 	return rt
 }

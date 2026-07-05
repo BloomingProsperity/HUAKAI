@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
@@ -265,6 +266,28 @@ func TestMutate_StaleOrWrongCorrelationIDIs400NoMutation(t *testing.T) {
 	}
 }
 
+func TestMutate_UnknownCorrelationIDAsksOperatorToRePropose(t *testing.T) {
+	// HERMES-IP-02:跨副本或过期 token 在本副本未命中时,operator 必须得到可恢复的
+	// re-propose/re-dry-run 错误码。变异证伪:把 confirmMutation 改回统一
+	// hermes_tool_confirmation_invalid,下面 code 断言会变红。
+	c := &mutateCounters{}
+	mut := &fakeMutator{}
+	h := buildMutateHandler(mutatingRegistry(c), &fakeToolCalls{}, mut)
+	ident, actor := operator(7)
+
+	rec := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5},"confirm":true,"correlation_id":"hmc_not_on_this_replica"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	}
+	errObj := decodeBody(t, rec)["error"].(map[string]any)
+	if got := errObj["code"]; got != "hermes_tool_confirmation_repropose_required" {
+		t.Fatalf("error code=%v want hermes_tool_confirmation_repropose_required body=%s", got, rec.Body.String())
+	}
+	if c.mutates != 0 || mut.executions != 0 {
+		t.Fatalf("unknown correlation executed: mutates=%d exec=%d want 0/0", c.mutates, mut.executions)
+	}
+}
+
 func TestMutate_CorrelationIDBoundToTool(t *testing.T) {
 	// 回归(L2):为 account_pause 签发的 correlation_id 不能用来确认另一个工具。
 	// 变异检查:去掉 confirmCache.consume 里的 ToolName 匹配,这次跨工具 confirm
@@ -423,6 +446,35 @@ func TestMutate_CommitPhaseFaultClassifiesByTxMode(t *testing.T) {
 	}
 	if ownClass == inClass {
 		t.Fatalf("tx-mode did not flip the class (own=%q in=%q) — rec.OwnTx not threaded per tool", ownClass, inClass)
+	}
+}
+
+func TestMutate_DLQReplayAlreadyDeliveredIsIdempotentSuccess(t *testing.T) {
+	// HERMES-IP-03:已投递/已处理的 DLQ 记录在 confirm 阶段命中底层幂等保护时,
+	// operator 应看到 200 + 幂等提示,而不是泛化 503 "rolled back"。变异证伪:
+	// 把 DLQReplaySpec.Mutate 改回直接返回 dlq.ErrNotFound,本测试会收到 503。
+	reg := hermesops.NewRegistry()
+	reg.Register(hermesops.DLQReplaySpec(hermesops.DLQReplayDeps{
+		Lookup: func(_ context.Context, id, tenant int64) (dlq.Record, error) {
+			return dlq.Record{ID: id, TenantID: tenant, Status: dlq.StatusDelivered}, nil
+		},
+		Replay: func(context.Context, int64, string) (*dlq.Record, error) {
+			return nil, dlq.ErrNotFound
+		},
+	}))
+	h := buildMutateHandler(reg, &fakeToolCalls{}, &fakeMutator{})
+	ident := sessionauth.Identity{TenantID: 7, UserID: 42}
+	actor := adminActor{TokenID: 99, Role: admin.RolePlatformAdmin}
+
+	preview := mutateRequest(h, ident, actor, `{"tool_name":"dlq_replay","args":{"id":11}}`)
+	corr := decodeBody(t, preview)["correlation_id"].(string)
+	confirm := mutateRequest(h, ident, actor, `{"tool_name":"dlq_replay","args":{"id":11},"confirm":true,"correlation_id":"`+corr+`"}`)
+	if confirm.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s want 200", confirm.Code, confirm.Body.String())
+	}
+	result := decodeBody(t, confirm)["result"].(map[string]any)
+	if result["status"] != "already_processed" || result["idempotent"] != true {
+		t.Fatalf("result=%v want already_processed/idempotent=true", result)
 	}
 }
 

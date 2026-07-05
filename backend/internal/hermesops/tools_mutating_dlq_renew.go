@@ -3,6 +3,7 @@ package hermesops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -85,6 +86,15 @@ func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 			actorID := fmt.Sprintf("%d", req.ActorUserID)
 			rec, err := deps.Replay(ctx, plan.TargetID, actorID)
 			if err != nil {
+				if errors.Is(err, dlq.ErrNotFound) {
+					return ToolResult{Summary: map[string]any{
+						"dlq_id":          plan.TargetID,
+						"previous_status": plan.Preview["current_status"],
+						"status":          "already_processed",
+						"idempotent":      true,
+						"message":         "DLQ 记录已处理或已由其他副本投递,无需重复 replay",
+					}}, nil
+				}
 				return ToolResult{}, err
 			}
 			summary := map[string]any{

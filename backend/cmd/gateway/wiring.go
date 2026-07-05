@@ -898,6 +898,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+	hermesProposeEnabled = effectiveHermesProposeEnabled(hermesMutatingEnabled, hermesProposeEnabled, logger)
 	if !hermesMutatingEnabled {
 		logger.Warn("Hermes MUTATING tools disabled at runtime — account_pause/account_resume/dlq_replay/renew_trigger are refused; read-only diagnostics + chat remain live",
 			zap.String("knob", hermesMutatingEnabledEnv+"=false"))

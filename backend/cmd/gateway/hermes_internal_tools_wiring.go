@@ -5,6 +5,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
+	"go.uber.org/zap"
 )
 
 // hermes_internal_tools_wiring.go 接线 WAVE H3b 的对话式「只读」工具回路:它把「现有」的
@@ -30,7 +31,7 @@ type hermesToolCatalogProvider struct {
 }
 
 // ToolCatalog 返回注入给 LLM 的工具目录(已塑形成可 marshal 的 map)。registry 为 nil 时返回 nil
-//(不注入目录)——聊天照常工作,LLM 只是没有可调用的工具。proposeEnabled 决定用只读目录还是可提议
+// (不注入目录)——聊天照常工作,LLM 只是没有可调用的工具。proposeEnabled 决定用只读目录还是可提议
 // 目录(见类型注释)。
 func (p hermesToolCatalogProvider) ToolCatalog() []map[string]any {
 	if p.reg == nil {
@@ -87,4 +88,19 @@ func buildHermesInternalToolHandler(secret []byte, bindings *hermeschat.SessionB
 	// handler 都拒绝每一次 runner 回调(403)。handler 仍会被构造(非 nil),使禁用态下的
 	// 调用拿到一个干净的 403,而非未挂载路由的 404。
 	return hermeschat.NewInternalToolHandler(secret, bindings, reg, calls, nil, toolLoopEnabled, proposer, confirmCache, proposeEnabled)
+}
+
+func effectiveHermesProposeEnabled(mutatingEnabled, proposeEnabled bool, logger *zap.Logger) bool {
+	if !proposeEnabled {
+		return false
+	}
+	if mutatingEnabled {
+		return true
+	}
+	if logger != nil {
+		logger.Warn("Hermes LLM-propose disabled because Hermes mutating tools are disabled",
+			zap.String("propose_knob", hermesLLMProposeEnabledEnv+"=true"),
+			zap.String("mutating_knob", hermesMutatingEnabledEnv+"=false"))
+	}
+	return false
 }

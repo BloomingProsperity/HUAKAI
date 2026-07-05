@@ -149,9 +149,13 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 	// 错误 operator-token 的 correlation_id 都会查不到任何记录而被拒绝——不做变更。
 	// actor.TokenID 把本次 confirm 绑定到「签发该 preview 的同一个 operator admin
 	// token」(而不仅是 tenant-user 上下文)。
-	entry, ok := h.confirmCache.Consume(req.CorrelationID, spec.Name, ident.TenantID, ident.UserID, actor.TokenID)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_invalid", "correlation_id is stale, unknown, or does not match this tool")
+	entry, consumeStatus := h.confirmCache.ConsumeWithStatus(req.CorrelationID, spec.Name, ident.TenantID, ident.UserID, actor.TokenID)
+	if consumeStatus != hermesconfirm.ConsumeOK {
+		if consumeStatus == hermesconfirm.ConsumeMissing || consumeStatus == hermesconfirm.ConsumeExpired {
+			writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_repropose_required", "confirm token expired or is not available on this replica; re-run dry-run/propose before confirming")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_invalid", "correlation_id does not match this tool or operator")
 		return
 	}
 	// 纵深防御:被确认的目标必须正是 preview 所锚定的那个。对固定目标而言 Resolve 是

@@ -16,6 +16,8 @@ import (
 
 var ErrUnsafePassthroughEndpoint = errors.New("provider: unsafe upstream passthrough endpoint")
 
+var ErrPassthroughProxyCustomEndpointIncompatible = errors.New("config_incompatible_proxy_custom_endpoint")
+
 func safePassthroughBaseURL(raw string) (*url.URL, error) {
 	if hasControlOrSpace(raw) {
 		return nil, passthroughEndpointBlocked("control character or whitespace")
@@ -164,7 +166,7 @@ func WrapPassthroughEndpointTransport(rt http.RoundTripper) (http.RoundTripper, 
 		return nil, passthroughEndpointBlocked("unsupported transport")
 	}
 	if base.Proxy != nil {
-		return nil, passthroughEndpointBlocked("proxy transport is not allowed")
+		return nil, fmt.Errorf("%w: %w", ErrUnsafePassthroughEndpoint, ErrPassthroughProxyCustomEndpointIncompatible)
 	}
 	clone := base.Clone()
 	dial := clone.DialContext

@@ -37,14 +37,23 @@ type PendingConfirmation struct {
 // 只能驱动一次 mutation(重复使用的 correlation_id 找不到任何条目而被拒绝)。
 //
 // 本阶段刻意采用进程内方案:confirm 必须落在签发预览的同一个 replica 上。多 replica
-// 的 operator UI 若命中了不同的 replica,会重新发起 dry-run(预览成本低且只读);
-// 共享缓存是已记录在案的后续工作,而非安全漏洞(缺失的 correlation_id 总是 fail
-// closed → 400,绝不执行)。
+// 部署需要 sticky 路由,否则 operator UI 命中不同 replica 时必须重新发起 dry-run
+// (预览成本低且只读);共享缓存是已记录在案的后续工作,而非安全漏洞(缺失的
+// correlation_id 总是 fail closed → 400,绝不执行)。
 type Cache struct {
 	mu      sync.Mutex
 	entries map[string]PendingConfirmation
 	now     func() time.Time
 }
+
+type ConsumeStatus string
+
+const (
+	ConsumeOK       ConsumeStatus = "ok"
+	ConsumeMissing  ConsumeStatus = "missing"
+	ConsumeExpired  ConsumeStatus = "expired"
+	ConsumeMismatch ConsumeStatus = "mismatch"
+)
 
 // NewCache 构造一个使用真实时钟的空 Cache。
 func NewCache() *Cache {
@@ -74,24 +83,32 @@ func (c *Cache) Issue(p PendingConfirmation) (string, error) {
 // tool/tenant/actor 绑定匹配时,才返回(entry, true);否则返回(零值, false)。由于删除
 // 与查找在同一把锁下进行,针对同一 id 的两个并发 confirm 不可能都成功——最多一个能消费它。
 func (c *Cache) Consume(id, toolName string, tenantID, actorID, tokenID int64) (PendingConfirmation, bool) {
+	entry, status := c.ConsumeWithStatus(id, toolName, tenantID, actorID, tokenID)
+	return entry, status == ConsumeOK
+}
+
+// ConsumeWithStatus 与 Consume 同样原子消费 correlation_id,但保留失败类别。
+// HTTP 层用 missing/expired 给 operator 返回可恢复的“重新 dry-run”提示;绑定不匹配
+// 仍保持普通 invalid,避免向错误 operator 泄露有效 token 的存在。
+func (c *Cache) ConsumeWithStatus(id, toolName string, tenantID, actorID, tokenID int64) (PendingConfirmation, ConsumeStatus) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[id]
 	if !ok {
-		return PendingConfirmation{}, false
+		return PendingConfirmation{}, ConsumeMissing
 	}
 	// 先删除,使得即便是不匹配或已过期的命中也是单次消费(被猜中的 id 无法被反复探测)。
 	delete(c.entries, id)
 	if c.now().After(entry.ExpiresAt) {
-		return PendingConfirmation{}, false
+		return PendingConfirmation{}, ConsumeExpired
 	}
 	// 将 confirm 绑定到执行预览的那个确切 operator:tool + tenant + actor-user +
 	// operator 的 admin TokenID。若没有 TokenID 校验,在同一 tenant-user 上下文中操作的
 	// 另一个 operator(不同的 admin token)就能消费别人的预览并执行该 mutation。
 	if entry.ToolName != toolName || entry.TenantID != tenantID || entry.ActorID != actorID || entry.TokenID != tokenID {
-		return PendingConfirmation{}, false
+		return PendingConfirmation{}, ConsumeMismatch
 	}
-	return entry, true
+	return entry, ConsumeOK
 }
 
 func (c *Cache) evictExpiredLocked() {

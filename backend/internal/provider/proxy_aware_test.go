@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +51,25 @@ func TestWrapTransportWithProxy_ProxyAwareBuildError(t *testing.T) {
 	_, err := got.RoundTrip(nil)
 	if err != wantErr {
 		t.Fatalf("expected fail-loud build error %v, got %v", wantErr, err)
+	}
+}
+
+func TestWrapPassthroughEndpointTransportProxyConflictHasErrorCode(t *testing.T) {
+	// ME-3:自定义上游 endpoint 与账号出口代理组合仍必须 fail-closed,但错误要可区分,
+	// 使运维能直接定位配置不兼容。变异证伪:把 WrapPassthroughEndpointTransport
+	// 改回 passthroughEndpointBlocked("proxy transport is not allowed"),此处 sentinel
+	// 与错误码字符串断言都会变红。
+	proxyURL, _ := url.Parse("http://proxy.test:8080")
+	base := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	_, err := WrapPassthroughEndpointTransport(base)
+	if !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("err=%v want ErrUnsafePassthroughEndpoint", err)
+	}
+	if !errors.Is(err, ErrPassthroughProxyCustomEndpointIncompatible) {
+		t.Fatalf("err=%v want ErrPassthroughProxyCustomEndpointIncompatible", err)
+	}
+	if !strings.Contains(err.Error(), "config_incompatible_proxy_custom_endpoint") {
+		t.Fatalf("err=%v missing stable diagnostic code", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"reflect"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -89,4 +90,64 @@ func TestSidecarFallbackWrapper_RealConsumerTakesProxyAwareBranch(t *testing.T) 
 		t.Fatalf("WrapTransportWithProxy 落到了 fail-loud 分支(返回 %T 不带 SidecarProfileID):"+
 			"wrapper 未被识别为 proxy-aware,代理 mimicry 账号会整体返回 ErrProxyUnsupportedTransport", wrapped)
 	}
+}
+
+func TestSidecarFallbackNativeLegInheritsConfigForceH1(t *testing.T) {
+	// ME-4:env 显式关闭 force-h1 时,运维 config 的 SidecarForceH1=true 仍必须作用到
+	// Go-native fallback 腿;叠加账号代理后也要继承同一决策。变异证伪:
+	// 1. factory 改回 mimicry.NewRoundTripper(tmpl) -> 初始 fallback forceH1=false;
+	// 2. roundTripper.WithProxy 改回 NewUtlsDialer(rt.template) -> 代理后的 fallback forceH1=false。
+	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
+	t.Setenv("HUAKAI_TRANSPORT_FORCE_H1", "false")
+	forceH1 := true
+	f := NewFactory()
+	f.SidecarSocketPath = "/run/huakai-test-sidecar.sock"
+	f.SidecarFallbackEnabled = true
+	f.SidecarForceH1 = &forceH1
+	f.sidecarProbe = func(context.Context, string, mimicry.TransportMode, string) error { return nil }
+
+	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+	if err != nil {
+		t.Fatalf("Factory.For 应返回 fallback wrapper: %v", err)
+	}
+	wrapper, ok := rt.(*sidecarFallbackRoundTripper)
+	if !ok {
+		t.Fatalf("Factory.For 返回 %T want *sidecarFallbackRoundTripper", rt)
+	}
+	if !mimicryRoundTripperForceH1(t, wrapper.fallback) {
+		t.Fatal("fallback Go-native uTLS 腿没有继承 SidecarForceH1=true")
+	}
+
+	proxyURL, _ := url.Parse("http://127.0.0.1:8080")
+	proxied, err := wrapper.WithProxy(proxyURL)
+	if err != nil {
+		t.Fatalf("WithProxy: %v", err)
+	}
+	proxiedWrapper, ok := proxied.(*sidecarFallbackRoundTripper)
+	if !ok {
+		t.Fatalf("WithProxy 返回 %T want *sidecarFallbackRoundTripper", proxied)
+	}
+	if !mimicryRoundTripperForceH1(t, proxiedWrapper.fallback) {
+		t.Fatal("叠加代理后的 fallback Go-native uTLS 腿丢失 SidecarForceH1=true")
+	}
+}
+
+func mimicryRoundTripperForceH1(t *testing.T, rt http.RoundTripper) bool {
+	t.Helper()
+	v := reflect.ValueOf(rt)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		t.Fatalf("fallback RT=%T, want pointer", rt)
+	}
+	dialer := v.Elem().FieldByName("dialer")
+	if dialer.IsValid() && !dialer.IsNil() {
+		forceH1 := dialer.Elem().FieldByName("ForceH1")
+		if forceH1.IsValid() && forceH1.Kind() == reflect.Bool {
+			return forceH1.Bool()
+		}
+	}
+	field := v.Elem().FieldByName("forceH1")
+	if !field.IsValid() || field.Kind() != reflect.Bool {
+		t.Fatalf("fallback RT=%T 缺可观测的 forceH1 字段", rt)
+	}
+	return field.Bool()
 }

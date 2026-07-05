@@ -179,6 +179,32 @@ func TestDLQReplay_IdempotencyDoesNotDoubleProcess(t *testing.T) {
 	}
 }
 
+func TestDLQReplay_ErrNotFoundAfterPreviewIsIdempotentAlreadyProcessed(t *testing.T) {
+	// HERMES-IP-03:confirm 前 preview 已看到目标,但 Replay 再 claim 时返回 ErrNotFound,
+	// 代表记录已投递/已处理或被其它副本抢先完成。这里必须转成幂等成功 summary,
+	// 不能把 operator 带到泛化 503。变异证伪:删除 Mutate 中的 dlq.ErrNotFound 分支,
+	// 此测试会得到 err。
+	spec := DLQReplaySpec(DLQReplayDeps{
+		Lookup: func(_ context.Context, id, tenant int64) (dlq.Record, error) {
+			return dlq.Record{ID: id, TenantID: tenant, Status: dlq.StatusDelivered}, nil
+		},
+		Replay: func(context.Context, int64, string) (*dlq.Record, error) {
+			return nil, dlq.ErrNotFound
+		},
+	})
+	plan, err := spec.Resolve(context.Background(), ToolRequest{TenantID: 7, Args: map[string]any{"id": float64(11)}})
+	if err != nil {
+		t.Fatalf("resolve err=%v", err)
+	}
+	res, err := spec.Mutate(context.Background(), ToolRequest{TenantID: 7, ActorUserID: 42}, plan)
+	if err != nil {
+		t.Fatalf("mutate err=%v want idempotent success", err)
+	}
+	if res.Summary["status"] != "already_processed" || res.Summary["idempotent"] != true {
+		t.Fatalf("summary=%v want already_processed/idempotent=true", res.Summary)
+	}
+}
+
 // --- renew_trigger 隐私 --------------------------------------------------
 
 func TestRenewTrigger_NeverReturnsCredentialMaterial(t *testing.T) {

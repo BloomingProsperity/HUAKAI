@@ -22,7 +22,7 @@ type UtlsDialer struct {
 	TLSConfig        *utls.Config
 	HandshakeTimeout time.Duration
 	// ForceH1 为 true 时,握手在线缆上只广告 ALPN=http/1.1,不广告 h2。
-	// 与 sub2api 的伪装拨号器默认姿态一致(只锁单一真实客户端档案的协议栈)。
+	// 该默认姿态只锁单一真实客户端档案的协议栈。
 	// 这同时是协议正确性约束:本路径返回的是 *utls.UConn(非标准库 *tls.Conn),
 	// Go 的内置 HTTP/2 升级路径在结构上接不住它,若仍广告 h2 且服务端选 h2,
 	// 会出现"服务端按 h2、客户端发 h1 帧"的握手后错乱。收窄 ALPN 从根上消除。
@@ -32,6 +32,12 @@ type UtlsDialer struct {
 // NewUtlsDialer 返回使用指定 ClientHello 模板的拨号器。
 // ForceH1 默认由运维 env HUAKAI_TRANSPORT_FORCE_H1 决定(默认开)。
 func NewUtlsDialer(template *ClientHelloTemplate) *UtlsDialer {
+	return NewUtlsDialerForceH1(template, forceH1Enabled())
+}
+
+// NewUtlsDialerForceH1 返回显式 force-h1 决策的 uTLS 拨号器,供上层 config
+// 覆盖 env 默认时使用。
+func NewUtlsDialerForceH1(template *ClientHelloTemplate, forceH1 bool) *UtlsDialer {
 	return &UtlsDialer{
 		Template: template,
 		NetDialer: net.Dialer{
@@ -39,7 +45,7 @@ func NewUtlsDialer(template *ClientHelloTemplate) *UtlsDialer {
 			KeepAlive: 30 * time.Second,
 		},
 		HandshakeTimeout: 10 * time.Second,
-		ForceH1:          forceH1Enabled(),
+		ForceH1:          forceH1,
 	}
 }
 
@@ -54,7 +60,12 @@ func forceH1Enabled() bool {
 
 // NewRoundTripper 构造使用 uTLS DialTLSContext 的 http.RoundTripper。
 func NewRoundTripper(template *ClientHelloTemplate) http.RoundTripper {
-	dialer := NewUtlsDialer(template)
+	return NewRoundTripperForceH1(template, forceH1Enabled())
+}
+
+// NewRoundTripperForceH1 构造使用显式 force-h1 决策的 uTLS RoundTripper。
+func NewRoundTripperForceH1(template *ClientHelloTemplate, forceH1 bool) http.RoundTripper {
+	dialer := NewUtlsDialerForceH1(template, forceH1)
 	return &roundTripper{
 		// Phase A 保持直连。Go 的 HTTPS proxy 路径不会调用
 		// DialTLSContext，若暴露 *http.Transport 会把 uTLS 旁路掉。
@@ -73,12 +84,16 @@ func NewRoundTripper(template *ClientHelloTemplate) http.RoundTripper {
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 		template: template,
+		forceH1:  forceH1,
+		dialer:   dialer,
 	}
 }
 
 type roundTripper struct {
 	inner    *http.Transport
 	template *ClientHelloTemplate
+	forceH1  bool
+	dialer   *UtlsDialer
 }
 
 func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -362,7 +377,7 @@ func (rt *roundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) 
 	if err != nil {
 		return nil, err
 	}
-	dialer := NewUtlsDialer(rt.template)
+	dialer := NewUtlsDialerForceH1(rt.template, rt.forceH1)
 	dialer.ProxyDialer = pd
 	return &roundTripper{
 		inner: &http.Transport{
@@ -377,12 +392,14 @@ func (rt *roundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) 
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 		template: rt.template,
+		forceH1:  rt.forceH1,
+		dialer:   dialer,
 	}, nil
 }
 
 // clientHelloIDForPreset 把内置浏览器 preset 名映射到 uTLS ClientHelloID。uTLS
 // 生成真实当前浏览器 ClientHello (不手写/伪造 cipher 数组)。空/未知 -> (_, false)。
-// 参照 CLIProxyAPI utls_client.go 用 HelloChrome_Auto。
+// 当前内置 Chrome 档案使用 uTLS 的 HelloChrome_Auto。
 func clientHelloIDForPreset(preset string) (utls.ClientHelloID, bool) {
 	switch strings.ToLower(strings.TrimSpace(preset)) {
 	case "chrome":

@@ -1,11 +1,14 @@
 package hermesconfirm
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestConfirmCacheBindsOperatorToken 是 H4 审查 S1 的判别式守卫:mutating-tool 的确认
 // 必须绑定到签发 dry-run 预览的那个确切 operator admin token,而不只是 tenant + tenant-
 // user 上下文。若没有 TokenID 校验,在同一 (tenant, as_user_id) 上下文中操作的 operator B
-//(不同的 admin token)就能消费 operator A 的预览并执行一次特权 mutation。
+// (不同的 admin token)就能消费 operator A 的预览并执行一次特权 mutation。
 //
 // 捕获的回归:从 Cache.Consume 删除 `entry.TokenID != tokenID` 会让错误 operator token
 // 的消费成功——此测试随之变红。
@@ -55,5 +58,42 @@ func TestConfirmCacheBindsOperatorToken(t *testing.T) {
 	}
 	if _, ok := c.Consume(id2, tool, tenantID, actorUser, tokenA); ok {
 		t.Fatal("correlation_id was reusable after a successful consume — single-use is broken")
+	}
+}
+
+func TestConfirmCacheConsumeWithStatusDistinguishesRecoverableMiss(t *testing.T) {
+	// HERMES-IP-02:未知/过期 correlation_id 要能被 HTTP 层映射成“重新 dry-run/propose”
+	// 的可恢复错误,而不是和错误工具/错误 operator 混成一个泛化 invalid。
+	// 变异证伪:若 ConsumeWithStatus 退回 bool 或把 missing/expired/mismatch 都返回同一状态,
+	// 本测试会在状态断言处变红。
+	const (
+		tool      = "account_pause"
+		tenantID  = int64(7)
+		actorUser = int64(42)
+		tokenID   = int64(99)
+	)
+	c := NewCache()
+
+	if _, status := c.ConsumeWithStatus("hmc_missing", tool, tenantID, actorUser, tokenID); status != ConsumeMissing {
+		t.Fatalf("missing status=%s want %s", status, ConsumeMissing)
+	}
+
+	id, err := c.Issue(PendingConfirmation{ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenID, TargetID: 5})
+	if err != nil {
+		t.Fatalf("issue mismatch: %v", err)
+	}
+	if _, status := c.ConsumeWithStatus(id, "dlq_replay", tenantID, actorUser, tokenID); status != ConsumeMismatch {
+		t.Fatalf("wrong tool status=%s want %s", status, ConsumeMismatch)
+	}
+
+	base := time.Now()
+	c.now = func() time.Time { return base }
+	expiredID, err := c.Issue(PendingConfirmation{ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenID, TargetID: 5})
+	if err != nil {
+		t.Fatalf("issue expired: %v", err)
+	}
+	c.now = func() time.Time { return base.Add(ConfirmTTL + time.Nanosecond) }
+	if _, status := c.ConsumeWithStatus(expiredID, tool, tenantID, actorUser, tokenID); status != ConsumeExpired {
+		t.Fatalf("expired status=%s want %s", status, ConsumeExpired)
 	}
 }
