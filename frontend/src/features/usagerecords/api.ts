@@ -1,4 +1,4 @@
-import { apiGet, apiSend, ApiError } from '../../lib/api'
+import { apiGet, apiSend, ApiError, ensureFreshSessionForPath } from '../../lib/api'
 import { getTokens } from '../../auth/store'
 import { tokenForPath } from '../../auth/tokenForPath'
 import type {
@@ -49,6 +49,7 @@ export async function exportUsageCSV(fromDay: string, toDay: string, signal?: Ab
   const path = '/v1/me/usage/export.csv'
   const q = buildExportQuery(fromDay, toDay)
   const url = `${path}?format=${encodeURIComponent(q.format)}&from=${encodeURIComponent(q.from)}&to=${encodeURIComponent(q.to)}`
+  await ensureFreshSessionForPath(path)
   // /v1/me/* 走 session token(tokenForPath:非 /v1/auth、非 admin → session)。
   const token = tokenForPath(path, getTokens())
   const resp = await fetch(url, {

@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { clearAll, getRefreshToken, setSessionTokens } from '../../auth/store'
+import { exportUsageCSV } from './api'
 import {
   MAX_DISPUTE_REASON_LEN,
   buildExportQuery,
@@ -264,5 +266,63 @@ describe('validateDisputeReason(发起争议原因校验,镜像 dispute_store.go
     const padded = ' '.repeat(5000) + 'abcde' + ' '.repeat(5000)
     expect(padded.length).toBeGreaterThan(MAX_DISPUTE_REASON_LEN)
     expect(validateDisputeReason(padded)).toBeNull()
+  })
+})
+
+describe('用量 CSV 下载主动刷新接线', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-05T10:00:00.000Z'))
+    clearAll()
+    setSessionTokens({
+      sessionToken: 'hus_old',
+      refreshToken: 'husr_old',
+      sessionExpiresAt: '2026-07-05T10:01:00.000Z',
+    })
+  })
+
+  afterEach(() => {
+    clearAll()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('session 临近到期时先刷新,再用新 token 下载 CSV', async () => {
+    const f = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/sessions/refresh') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            session: {
+              session_token: 'hus_new',
+              refresh_token: 'husr_new',
+              session_expires_at: '2026-07-05T10:15:00Z',
+            },
+          }),
+        } as Response
+      }
+      return {
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () => JSON.stringify({ error: { code: 'session_expired', message: '会话已过期' } }),
+      } as Response
+    })
+    vi.stubGlobal('fetch', f)
+
+    await expect(exportUsageCSV('2026-07-01', '2026-07-01')).rejects.toMatchObject({
+      status: 401,
+      code: 'session_expired',
+    })
+
+    // 判别核心:裸下载必须复用统一主动刷新前置。变异(去掉 ensureFreshSessionForPath)→ 不会刷新,RED。
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(f.mock.calls[0][0]).toBe('/v1/sessions/refresh')
+    expect(JSON.parse((f.mock.calls[0][1] as RequestInit).body as string)).toEqual({ refresh_token: 'husr_old' })
+    expect(String(f.mock.calls[1][0])).toContain('/v1/me/usage/export.csv?format=csv')
+    expect((f.mock.calls[1][1] as RequestInit).headers).toEqual({ Authorization: 'Bearer hus_new' })
+    expect(getRefreshToken()).toBe('husr_new')
   })
 })

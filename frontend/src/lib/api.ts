@@ -88,7 +88,7 @@ function usesSessionToken(path: string, bearer?: string): boolean {
   return !!tokens.sessionToken && tokenForPath(path, tokens) === tokens.sessionToken
 }
 
-async function maybeProactiveRefresh(path: string, bearer?: string): Promise<void> {
+export async function ensureFreshSessionForPath(path: string, bearer?: string): Promise<void> {
   if (!usesSessionToken(path, bearer)) return
   if (!shouldRefresh(getSessionExpiry(), Date.now(), REFRESH_BUFFER_MS)) return
   try {
@@ -99,7 +99,7 @@ async function maybeProactiveRefresh(path: string, bearer?: string): Promise<voi
 }
 
 export async function apiGet<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  await maybeProactiveRefresh(path, opts.bearer)
+  await ensureFreshSessionForPath(path, opts.bearer)
   const resp = await fetch(buildURL(path, opts.query), {
     method: 'GET',
     credentials: 'include',
@@ -115,7 +115,7 @@ export async function apiSend<T>(
   payload?: unknown,
   opts: RequestOptions = {},
 ): Promise<T> {
-  await maybeProactiveRefresh(path, opts.bearer)
+  await ensureFreshSessionForPath(path, opts.bearer)
   const resp = await fetch(buildURL(path, opts.query), {
     method,
     credentials: 'include',

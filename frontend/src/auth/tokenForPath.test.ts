@@ -30,6 +30,17 @@ describe('tokenForPath', () => {
     expect(tokenForPath('/admin/v1/model-pool-bindings', tokens)).toBe('adm-xyz')
   })
 
+  it('admin 路径没有手贴 admin token 时回落 session token', () => {
+    // 判别核心:登录态 admin 用户可由后端按 session 角色放行。变异(去掉 ?? sessionToken)→ 返回 null,RED。
+    expect(tokenForPath('/admin/v1/provider-accounts', { sessionToken: 'sess-abc', adminToken: null })).toBe('sess-abc')
+    expect(tokenForPath('/v1/admin/usage/overview', { sessionToken: 'sess-abc', adminToken: null })).toBe('sess-abc')
+  })
+
+  it('admin 路径两种 token 都有时优先手贴 admin token', () => {
+    // 判别核心:手贴 admin token 是显式覆盖。变异(直接用 sessionToken)→ 本断言 RED。
+    expect(tokenForPath('/admin/v1/provider-accounts', { sessionToken: 'sess-abc', adminToken: 'adm-xyz' })).toBe('adm-xyz')
+  })
+
   it('/v1/admin/* 也用 admin token(后端同属 adminGate,曾误发 session token 致 401)', () => {
     // 判别核心:这几个 /v1/admin/* 端点是 admin-token 鉴权,必须带 admin token。
     // 变异(去掉 /v1/admin/ 分支)→ 退回 sessionToken,本断言 RED(正是 Ops#144/Settings#135 的真 bug)。
@@ -52,7 +63,7 @@ describe('tokenForPath', () => {
   })
 
   it('token 缺失时返回 null(不伪造)', () => {
-    expect(tokenForPath('/admin/v1/x', { sessionToken: 's', adminToken: null })).toBeNull()
+    expect(tokenForPath('/admin/v1/x', { sessionToken: null, adminToken: null })).toBeNull()
     expect(tokenForPath('/v1/api-keys', { sessionToken: null, adminToken: 'a' })).toBeNull()
   })
 })

@@ -1,4 +1,4 @@
-import { apiGet, ApiError } from '../../lib/api'
+import { apiGet, ApiError, ensureFreshSessionForPath } from '../../lib/api'
 import { getTokens } from '../../auth/store'
 import { tokenForPath } from '../../auth/tokenForPath'
 import { appendQuery, buildAuditQuery, buildExportQuery, type AuditExportFilter } from './audit'
@@ -31,6 +31,7 @@ export async function listAuditEvents(
 
 /** 取一次同源 blob 并另存为文件,失败时把后端 JSON 错误体归一化成 ApiError。 */
 async function downloadSessionBlob(path: string, filename: string, signal?: AbortSignal): Promise<void> {
+  await ensureFreshSessionForPath(path)
   // /v1/audit/* → session token(非 /v1/auth、非 admin)。
   const token = tokenForPath(path, getTokens())
   const resp = await fetch(path, {

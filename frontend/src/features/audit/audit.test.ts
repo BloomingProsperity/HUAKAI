@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { clearAll, getRefreshToken, setSessionTokens } from '../../auth/store'
+import { exportAuditChain } from './api'
 import { appendQuery, buildAuditQuery, buildExportQuery, severityTone, toIso } from './audit'
 import { EMPTY_AUDIT_FILTERS, type AuditFilters } from './types'
 
@@ -80,5 +82,63 @@ describe('severityTone', () => {
     expect(severityTone('warn')).toBe('warn')
     expect(severityTone('info')).toBe('info')
     expect(severityTone('debug')).toBe('muted')
+  })
+})
+
+describe('审计下载主动刷新接线', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-05T10:00:00.000Z'))
+    clearAll()
+    setSessionTokens({
+      sessionToken: 'hus_old',
+      refreshToken: 'husr_old',
+      sessionExpiresAt: '2026-07-05T10:01:00.000Z',
+    })
+  })
+
+  afterEach(() => {
+    clearAll()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('session 临近到期时先刷新,再用新 token 下载审计导出', async () => {
+    const f = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/sessions/refresh') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            session: {
+              session_token: 'hus_new',
+              refresh_token: 'husr_new',
+              session_expires_at: '2026-07-05T10:15:00Z',
+            },
+          }),
+        } as Response
+      }
+      return {
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        text: async () => JSON.stringify({ error: { code: 'session_expired', message: '会话已过期' } }),
+      } as Response
+    })
+    vi.stubGlobal('fetch', f)
+
+    await expect(exportAuditChain({ from: '', to: '', requestIds: ['req_a'] })).rejects.toMatchObject({
+      status: 401,
+      code: 'session_expired',
+    })
+
+    // 判别核心:下载前必须先刷新。变异(去掉 ensureFreshSessionForPath)→ 只有下载请求,本断言 RED。
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(f.mock.calls[0][0]).toBe('/v1/sessions/refresh')
+    expect(JSON.parse((f.mock.calls[0][1] as RequestInit).body as string)).toEqual({ refresh_token: 'husr_old' })
+    expect(f.mock.calls[1][0]).toBe('/v1/audit/export?request_ids=req_a')
+    expect((f.mock.calls[1][1] as RequestInit).headers).toEqual({ Authorization: 'Bearer hus_new' })
+    expect(getRefreshToken()).toBe('husr_new')
   })
 })
