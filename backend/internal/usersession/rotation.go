@@ -40,6 +40,27 @@ type Service struct {
 	Now                   func() time.Time
 	// UserGate 非 nil 时 Validate/Refresh 复核账号资格 (生产 wiring 必注入; nil 仅限单测)。
 	UserGate UserGate
+	// DriftObserver 非 nil 时消费漂移事件 (生产 wiring 必注入; nil 仅限单测)。
+	DriftObserver DriftObserver
+}
+
+// observeDrift 把一次非 None 漂移交给观察者 (纯观测, 不影响放行/拒绝)。
+func (s *Service) observeDrift(ctx context.Context, family SessionFamily, drift DriftResult, ip, userAgent, source string) {
+	if s.DriftObserver == nil || drift.Level == DriftNone {
+		return
+	}
+	baselineUA := ""
+	if family.DeviceInfo != nil {
+		if v, ok := family.DeviceInfo["ua_class"].(string); ok {
+			baselineUA = v
+		}
+	}
+	s.DriftObserver.ObserveSessionDrift(ctx, SessionDriftEvent{
+		TenantID: family.TenantID, UserID: family.UserID, FamilyID: family.ID,
+		Level: drift.Level, Reason: drift.Reason, Source: source,
+		IPClass: IPClass(ip), UAClass: UserAgentClass(userAgent),
+		BaselineIP: strings.TrimSpace(family.IPBaseline), BaselineUA: baselineUA,
+	})
 }
 
 func NewService(store Store) *Service {
@@ -121,7 +142,9 @@ func (s *Service) Refresh(ctx context.Context, in RefreshInput) (IssuedTokens, e
 		_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, "refresh_expired", now)
 		return IssuedTokens{}, ErrTokenExpired
 	}
-	if drift := DetectDrift(rec.Family, in.IP, in.UserAgent); drift.Level == DriftHigh {
+	drift := DetectDrift(rec.Family, in.IP, in.UserAgent)
+	s.observeDrift(ctx, rec.Family, drift, in.IP, in.UserAgent, "refresh")
+	if drift.Level == DriftHigh {
 		_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, drift.Reason, now)
 		return IssuedTokens{}, ErrAnomalyRejected
 	}
@@ -250,7 +273,9 @@ func (s *Service) Validate(ctx context.Context, token string, ip string, userAge
 	if rec.Family.Generation != payload.Generation {
 		return ValidatedSession{}, ErrTokenNotFound
 	}
-	if drift := DetectDrift(rec.Family, ip, userAgent); drift.Level == DriftHigh {
+	drift := DetectDrift(rec.Family, ip, userAgent)
+	s.observeDrift(ctx, rec.Family, drift, ip, userAgent, "validate")
+	if drift.Level == DriftHigh {
 		_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, drift.Reason, now)
 		return ValidatedSession{}, ErrAnomalyRejected
 	}

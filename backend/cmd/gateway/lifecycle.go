@@ -345,6 +345,8 @@ func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, e
 	// 会话使用期资格复核: Validate/Refresh 每次复核 users.status, 封禁/删除下一请求即生效
 	// (主动吊销只是辅助, 这道闸不依赖各封禁入口记得调 Revoke)。
 	userSessionService.UserGate = sessionUserGate{auth: userAuthService}
+	// 漂移观测: Medium/Low 弱信号落结构化日志 (不消费则 token 盗用最常见形态检测全盲)。
+	userSessionService.DriftObserver = newSessionDriftObserver(logger)
 	// 新设备策略两旋钮 (默认休眠 max=0, 零行为变更); 非法配置 fail-loud 拒启。
 	maxActiveDevices, devicePolicy, err := loadSessionDevicePolicyFromEnv()
 	if err != nil {
