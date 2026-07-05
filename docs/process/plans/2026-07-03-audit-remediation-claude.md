@@ -15,6 +15,11 @@
 
 **🎉 审计修复 S1 四条全清**:A#1(e95a6eee)、A#2(df71c432)、B2/B7(8988a302)、B1(0470fefd),全部 mutation-proven + 对抗审查零 S0/S1 + 零回归。下一步:S2 批 → S3 收尾 → 额度恢复重跑 feature 审计未验证域。
 
+- ✅ **B6**(aad36b49)续费扣款写统一账本:迁移 0170(事件类型+关联列+配对约束+FK+回链)+ 续费事务内写事件行(钱包流出负号,沿退款先例)+ 管理端余额历史三处联动(SQL 源/手改生成码/openapi enum)。对抗审查零 S0/S1,唯一 S2(管理端渲染缺环=审查抓到的 §17 关联漏改)已同切片修;4 处变异证明;subscription/payment/voucher/billing/adminuserhttp + openapi 一致性 + 迁移往返全绿。
+  - **审查抓到的关联漏改教训**:写账本行只完成一半,「唯一按用户渲染账本的管理面」的五路 JOIN/COALESCE/CASE + openapi 枚举 = 事件类型新增时的固定关联产物清单,后续加类型必须同步五处。
+  - S3 follow-up(已顺手收进):回链部分唯一索引、down dirty 恢复指引、fixture 单事务禁触发器、A6 并发补账本断言、B6-2 注释如实。codebudget 门既有红(gatewayhttp 4 项 + store_memory.go)与本切片无因果,另案处理。
+  - 剩 S2:A#3/A#5/A#6/A#8 + B3/B4/B5。
+
 ### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
 - **方案 = 提前量续费(renew-ahead grace window),到期判据不动**:`ListAutoRenewDue` 扫 `expires_at <= now+lead`(PG+memory 同改);`tryAutoRenewOnce` 锁行复查同用 `DueCutoff`(autoRenewRecord 加字段);`ProcessAutoRenewal` 算 cutoff 下传。lead 取 30min(5min 节拍 ≥6 次尝试,余额不足可重试;对比 Apple 提前 24h 扣款,30min 属保守)。
 - **为什么不选「ListDueExpiry 排除 auto_renew=true」**:续费持续失败(余额不足/套餐停用)的订阅将永不到期 → 白嫖;要堵这个洞需加失败计数/宽限状态机 = schema 变更。提前量方案零 schema、到期兜底天然保留:续费失败订阅照常在 expires_at 到期降级。
