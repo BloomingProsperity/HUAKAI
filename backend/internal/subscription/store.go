@@ -48,8 +48,10 @@ type Store interface {
 	ExpireSubscription(ctx context.Context, rec lifecycleRecord) (UserSubscription, error)
 
 	// --- 自动续费 worker (P-AUTORENEW) ---
-	// ListAutoRenewDue: 扫到点 (expires_at<=now) 且 auto_renew=true 的 active 订阅, 限量批处理。
-	ListAutoRenewDue(ctx context.Context, now time.Time, limit int) ([]UserSubscription, error)
+	// ListAutoRenewDue: 扫 expires_at<=dueCutoff 且 auto_renew=true 的 active 订阅, 限量批处理。
+	// dueCutoff = now + 提前续费窗口(renew-ahead grace),让续费抢在到期 worker 收割前完成,
+	// 且续费失败(余额不足)的订阅照常在 expires_at 到点被 ExpiryWorker 收割, 不留白嫖窗口。
+	ListAutoRenewDue(ctx context.Context, dueCutoff time.Time, limit int) ([]UserSubscription, error)
 	// TryAutoRenewSubscription: 单事务尝试"扣钱包余额 → 续期"。
 	//   - 锁订阅行重查仍 active+auto_renew+due (并发/重复防护), 否则零副作用跳过。
 	//   - 幂等锚: 同 (订阅, 续费周期) 已扣过 → 跳过, 不重复扣 (worker 重跑安全)。
@@ -166,6 +168,9 @@ type autoRenewRecord struct {
 	TenantID       int64
 	SubscriptionID int64
 	Now            time.Time
+	// DueCutoff = 批扫时的 now + 提前续费窗口; 锁行后复查 expires_at<=DueCutoff 仍成立才续,
+	// 否则(到期日被别的路径推到窗口外)零副作用跳过。与 ListAutoRenewDue 的 cutoff 同源。
+	DueCutoff time.Time
 }
 
 // AutoRenewResult 单条自动续费的结果。

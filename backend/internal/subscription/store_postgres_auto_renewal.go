@@ -12,9 +12,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// ListAutoRenewDue 扫到点 (expires_at<=now) 且 auto_renew=true 的 active 订阅 (worker 批处理)。
-// 与 ListDueExpiry 同形, 但多一个 auto_renew=true 过滤 —— 只对用户 opt-in 的订阅尝试续费。
-func (s *PostgresStore) ListAutoRenewDue(ctx context.Context, now time.Time, limit int) ([]UserSubscription, error) {
+// ListAutoRenewDue 扫 expires_at<=dueCutoff 且 auto_renew=true 的 active 订阅 (worker 批处理)。
+// dueCutoff = now + 提前续费窗口: 扫「已到点」与「即将到点」两类, 让续费抢在到期 worker 收割前完成。
+// 比 ListDueExpiry 多 auto_renew=true 过滤 —— 只对用户 opt-in 的订阅尝试续费; 与 ListDueExpiry 保持
+// 无 auto_renew 排除对偶, 续费失败(余额不足)的订阅仍在 expires_at 到点被 ExpiryWorker 收割, 不留白嫖窗口。
+func (s *PostgresStore) ListAutoRenewDue(ctx context.Context, dueCutoff time.Time, limit int) ([]UserSubscription, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured
 	}
@@ -24,7 +26,7 @@ func (s *PostgresStore) ListAutoRenewDue(ctx context.Context, now time.Time, lim
 	rows, err := s.pool.Query(ctx, `SELECT`+subscriptionSelectColumns+`
 FROM user_subscriptions
 WHERE status='active' AND auto_renew=true AND expires_at <= $1
-ORDER BY expires_at, id LIMIT $2`, now, limit)
+ORDER BY expires_at, id LIMIT $2`, dueCutoff, limit)
 	if err != nil {
 		return nil, fmt.Errorf("subscription: list auto renew due: %w", err)
 	}
@@ -83,8 +85,15 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 	if !sub.AutoRenew {
 		return skipNoCommit(ctx, tx, sub, AutoRenewSkipAutoRenewOff)
 	}
-	if !sub.IsExpiredAt(rec.Now) {
-		// 到期日已被别的路径 (手动续期/延期) 推后, 本周期不再到点。
+	// 锁内复查仍到点。cutoff = max(DueCutoff, Now): 用 DueCutoff(=批扫 now+提前窗口)放行提前扫出的
+	// 「即将到期」行进续费(否则按 now 判定会把整个提前窗口候选全部误跳过); 兜底 Now 防调用方未设
+	// DueCutoff(零值)时把所有行误判为不到点。到期日被别的路径(手动续期/延期/上轮续费)推到 cutoff
+	// 之外 → 本周期不再到点, 零副作用跳过。
+	cutoff := rec.DueCutoff
+	if cutoff.Before(rec.Now) {
+		cutoff = rec.Now
+	}
+	if sub.ExpiresAt.After(cutoff) {
 		return skipNoCommit(ctx, tx, sub, AutoRenewSkipNotDue)
 	}
 

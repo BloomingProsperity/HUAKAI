@@ -177,6 +177,8 @@ func TestService_ExpiryDowngradeGuard(t *testing.T) {
 	if g := store.userGroupOf(userKey{1, 42}); g != "premium2" {
 		t.Fatalf("group after second upgrade = %q, want premium2", g)
 	}
+	// 推进到到期后再到期 (生产里到期只发生在到点行; 到期路径锁内复查 expires_at<=now)。
+	now = sub1.Subscription.ExpiresAt.Add(time.Hour)
 	// 到期旧 premium 订阅, 守卫应保留 premium2 (current != sub1.granted_group)。
 	if _, err := store.ExpireSubscription(ctx, lifecycleRecord{TenantID: 1, SubscriptionID: sub1.Subscription.ID, ActorKind: ActorKindSystem, Now: now}); err != nil {
 		t.Fatalf("expire sub1: %v", err)
@@ -199,7 +201,9 @@ func TestService_ChainedExpiryResolvesToDefault(t *testing.T) {
 	if g := store.userGroupOf(userKey{1, 42}); g != "premium" {
 		t.Fatalf("after chain = %q, want premium", g)
 	}
-	// 到期 basic: 守卫跳过 (current=premium)。
+	// 推进到到期后 (两订阅同 validity 均到点; 到期路径锁内复查 expires_at<=now)。
+	now = subPremium.Subscription.ExpiresAt.Add(time.Hour)
+	// 到期 basic: 守卫跳过 (current=premium; 分组解析只按 status 不看 expires_at → premium 仍算 active)。
 	store.ExpireSubscription(ctx, lifecycleRecord{TenantID: 1, SubscriptionID: subBasic.Subscription.ID, ActorKind: ActorKindSystem, Now: now})
 	if g := store.userGroupOf(userKey{1, 42}); g != "premium" {
 		t.Fatalf("after expire basic = %q, want premium", g)

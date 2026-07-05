@@ -313,6 +313,11 @@ func (m *memoryStore) closeMemWithAudit(rec lifecycleRecord, terminal Subscripti
 		}
 		return sub, nil // 幂等
 	}
+	// 到期路径专属: 复查仍到点。到期扫描与处理之间若订阅被续费推后 expires_at, 则不再到点,
+	// 不置 expired(对齐 PG closeSubscriptionOnce 的锁内复查)。Cancel/Revoke 无条件, 不受约束。
+	if terminal == StatusExpired && sub.ExpiresAt.After(rec.Now) {
+		return sub, nil // 已被续费推后到期日, no-op
+	}
 	if revokeStrict && !sub.ExpiresAt.After(rec.Now) {
 		return UserSubscription{}, ErrSubscriptionNotActive
 	}
@@ -572,9 +577,10 @@ func (m *memoryStore) ListDueExpiry(_ context.Context, now time.Time, limit int)
 	return out, nil
 }
 
-// ListAutoRenewDue 内存实现: 过滤 active + auto_renew=true + 到点 (expires_at<=now)。
-// 与 PG 同语义的过滤逻辑可在此被单测覆盖 (mutation: 去掉 auto_renew 过滤 → 含 false 行 → 红)。
-func (m *memoryStore) ListAutoRenewDue(_ context.Context, now time.Time, limit int) ([]UserSubscription, error) {
+// ListAutoRenewDue 内存实现: 过滤 active + auto_renew=true + expires_at<=dueCutoff (含提前窗口)。
+// 与 PG 同语义的过滤逻辑可在此被单测覆盖 (mutation: 去掉 auto_renew 过滤 → 含 false 行 → 红;
+// 把 dueCutoff 退回 now → 提前窗口内的行不返回 → 红)。
+func (m *memoryStore) ListAutoRenewDue(_ context.Context, dueCutoff time.Time, limit int) ([]UserSubscription, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if limit <= 0 || limit > 1000 {
@@ -582,7 +588,7 @@ func (m *memoryStore) ListAutoRenewDue(_ context.Context, now time.Time, limit i
 	}
 	var out []UserSubscription
 	for _, sub := range m.subs {
-		if sub.Status == StatusActive && sub.AutoRenew && !sub.ExpiresAt.After(now) {
+		if sub.Status == StatusActive && sub.AutoRenew && !sub.ExpiresAt.After(dueCutoff) {
 			out = append(out, sub)
 		}
 	}

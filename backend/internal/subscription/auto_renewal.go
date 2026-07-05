@@ -16,6 +16,13 @@ const DefaultAutoRenewInterval = 5 * time.Minute
 // DefaultAutoRenewBatchSize 单次扫描批量上限 (默认 200)。
 const DefaultAutoRenewBatchSize = 200
 
+// DefaultAutoRenewLeadWindow 提前续费窗口 (renew-ahead grace): 扫描把「即将到期」的订阅也纳入,
+// 使续费抢在 ExpiryWorker(1min 节拍)收割前完成。取 30min 显著大于 到期节拍+续费节拍(1+5min),
+// 到点前至少有多轮续费尝试; 余额不足反复跳过零副作用, 到点后仍由 ExpiryWorker 正常收割(不留白嫖窗口)。
+// 运维约束: 此窗口须 > AutoRenewWorker.Interval + ExpiryWorker.Interval, 否则订阅可能在两次续费扫描
+// 之间就被到期收割; 若把续费 interval 调到 >30min, 须同步放大本窗口。
+const DefaultAutoRenewLeadWindow = 30 * time.Minute
+
 // AutoRenewWorker 后台 ticker: 周期扫"到点且 auto_renew=true"的订阅, 逐条尝试
 // "扣钱包余额 → 续期"。单 goroutine, 接 context cancellation 优雅退出。
 // 默认在 wiring 处不启动 (HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED 默认 false),
@@ -161,7 +168,10 @@ type AutoRenewBatchResult struct {
 // (扣钱与续期不可分裂; 幂等锚防双扣; 余额不足绝不扣只跳过)。本方法只做批编排与计数。
 func (s *Service) ProcessAutoRenewal(ctx context.Context, limit int) (AutoRenewBatchResult, error) {
 	now := s.now()
-	due, err := s.store.ListAutoRenewDue(ctx, now, limit)
+	// cutoff = now + 提前续费窗口: 扫「已到点 + 即将到点」两类。批扫与逐条锁行复查同用此 cutoff,
+	// 保证提前扫出的行在锁内不被按 now 判定误跳过 (见 store.ListAutoRenewDue 与 tryAutoRenewOnce)。
+	cutoff := now.Add(DefaultAutoRenewLeadWindow)
+	due, err := s.store.ListAutoRenewDue(ctx, cutoff, limit)
 	if err != nil {
 		return AutoRenewBatchResult{}, err
 	}
@@ -172,6 +182,7 @@ func (s *Service) ProcessAutoRenewal(ctx context.Context, limit int) (AutoRenewB
 			TenantID:       sub.TenantID,
 			SubscriptionID: sub.ID,
 			Now:            s.now(),
+			DueCutoff:      cutoff,
 		})
 		if err != nil {
 			lastErr = err

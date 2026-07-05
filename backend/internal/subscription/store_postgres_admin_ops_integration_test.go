@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -55,6 +56,7 @@ func TestSubscriptionPostgres_AdminExtendSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign expired candidate: %v", err)
 	}
+	clk.set(expired.Subscription.ExpiresAt.Add(time.Hour)) // 推进到到期后 (到期路径锁内复查 expires_at<=now)
 	if _, err := store.ExpireSubscription(ctx, lifecycleRecord{
 		TenantID: f.tenantA, SubscriptionID: expired.Subscription.ID, ActorKind: ActorKindSystem, Now: clk.now(),
 	}); err != nil {
@@ -366,6 +368,7 @@ func TestSubscriptionPostgres_ChangePlanRejectsNonActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign expired candidate: %v", err)
 	}
+	clk.set(expired.Subscription.ExpiresAt.Add(time.Hour)) // 推进到到期后 (到期路径锁内复查 expires_at<=now)
 	if _, err := store.ExpireSubscription(ctx, lifecycleRecord{
 		TenantID: f.tenantA, SubscriptionID: expired.Subscription.ID, ActorKind: ActorKindSystem, Now: clk.now(),
 	}); err != nil {

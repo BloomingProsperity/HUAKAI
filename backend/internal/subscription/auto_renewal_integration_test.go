@@ -298,6 +298,95 @@ func TestPG_AutoRenew_FreePlanRenewsWithoutCharge(t *testing.T) {
 	}
 }
 
+// B1-1: 提前续费窗口 (renew-ahead grace) —— 订阅尚未到点但落在 now+lead 窗口内, 余额够 →
+// 续费在到期前完成 (扣款 + 从旧到期日累加续期, 未过期续期不重置用量窗口)。
+// 这是 B1 核心修复: 不加提前窗口时 ListAutoRenewDue 只扫已到点行, 续费永远抢不过 1min 节拍的
+// ExpiryWorker, 付费用户被停服降级还没续上。
+// mutation: ProcessAutoRenewal 的 cutoff 退回 `now`(去掉 .Add(lead)) → 窗口内订阅漏扫 → Renewed=0 → 红。
+func TestPG_AutoRenew_GraceWindowRenewsBeforeExpiry(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+	plan := createPaidPlan(t, ctx, svc, f.tenantA, 500) // $5.00
+	f.seedBalance(f.tenantA, f.userA, "20")
+
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantA, UserID: f.userA, PlanID: plan.ID})
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	prevExpires := assigned.Subscription.ExpiresAt
+
+	// 推进到到期前 10 分钟: 订阅仍 active 且未到点, 落在 30min 提前窗口内。
+	clk.set(prevExpires.Add(-10 * time.Minute))
+	res, err := svc.ProcessAutoRenewal(ctx, 10)
+	if err != nil {
+		t.Fatalf("process auto renewal: %v", err)
+	}
+	if res.Renewed != 1 || res.Skipped != 0 {
+		t.Fatalf("batch renewed=%d skipped=%d, want 1/0 (提前窗口内应续费, 否则续费抢不过到期 worker)", res.Renewed, res.Skipped)
+	}
+	// 扣款精确 $20-$5=$15。
+	if got := f.balanceOf(f.tenantA, f.userA); !got.Equal(decimal.RequireFromString("15")) {
+		t.Fatalf("balance = %s, want 15", got.String())
+	}
+	// 未过期续期: 从旧到期日累加 30 天 (用户不损失时长), 而非从 now 起算。
+	got := f.userSubExpires(f.tenantA, f.userA)
+	wantExpires := prevExpires.AddDate(0, 0, 30)
+	if !got.Equal(wantExpires) {
+		t.Fatalf("expires = %v, want %v (提前续期应从旧到期日累加)", got, wantExpires)
+	}
+	if n := f.countInt(`SELECT count(*) FROM subscription_auto_renewal_charges WHERE tenant_id=$1`, f.tenantA); n != 1 {
+		t.Fatalf("charge rows = %d, want 1", n)
+	}
+}
+
+// B1-2: 到期 worker 锁内复查堵 TOCTOU —— 订阅先被续费推后到期日, 随后到期路径不得错杀。
+// 模拟时序: 续费成功 (expires_at 推后到远期) → 冻结在续费后、到期日之前的时刻调 ExpireSubscription,
+// 应 no-op 保持 active (到期扫描快照与拿锁之间被续费的经典竞态)。
+// mutation: closeSubscriptionOnce 去掉 `terminal==StatusExpired && !sub.IsExpiredAt(rec.Now)` 复查
+// → 刚续费的订阅被置 expired → 红 (付费用户刚扣完钱就被停服)。
+func TestPG_Expire_SkipsRowRenewedAfterScan(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	store := NewPostgresStore(pool)
+	svc := NewService(store, WithClock(clk.now))
+	plan := createPaidPlan(t, ctx, svc, f.tenantA, 500)
+	f.seedBalance(f.tenantA, f.userA, "20")
+
+	assigned, _ := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantA, UserID: f.userA, PlanID: plan.ID})
+	prevExpires := assigned.Subscription.ExpiresAt
+
+	// 提前窗口内续费成功 → expires_at 推后到 prevExpires+30 天。
+	clk.set(prevExpires.Add(-10 * time.Minute))
+	if _, err := svc.ProcessAutoRenewal(ctx, 10); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	renewedExpires := f.userSubExpires(f.tenantA, f.userA)
+	if !renewedExpires.After(prevExpires) {
+		t.Fatalf("续费未推后到期日: %v", renewedExpires)
+	}
+
+	// 现在直接对同订阅调 ExpireSubscription, now 仍在续费后的到期日之前 → 锁内复查应 no-op。
+	got, err := store.ExpireSubscription(ctx, lifecycleRecord{
+		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, ActorKind: ActorKindSystem, Now: clk.now(),
+	})
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	if got.Status != StatusActive {
+		t.Fatalf("到期复查失效: 刚续费的订阅被置 %s, 应保持 active (错杀付费用户)", got.Status)
+	}
+	// 库内确认仍 active + 到期日未回退。
+	reloaded, _ := store.GetSubscription(ctx, f.tenantA, assigned.Subscription.ID)
+	if reloaded.Status != StatusActive || !reloaded.ExpiresAt.Equal(renewedExpires) {
+		t.Fatalf("库内 status=%s expires=%v, want active + %v", reloaded.Status, reloaded.ExpiresAt, renewedExpires)
+	}
+}
+
 // A6: 并发多 worker 同时续费同一订阅 → 必须只扣一次只续一次。
 // 真并发下双扣是最危险的 money 缺陷; Serializable + getSubscriptionForUpdateTx 行锁串行化,
 // 加唯一锚 uq_sub_auto_renewal_period 硬兜底。

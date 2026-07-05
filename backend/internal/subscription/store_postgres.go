@@ -456,6 +456,16 @@ func (s *PostgresStore) closeSubscriptionOnce(ctx context.Context, rec lifecycle
 		return sub, nil
 	}
 
+	// 到期路径专属: 锁行后重验仍到点。ListDueExpiry 扫出快照与拿锁之间, 若订阅被续费(自动/手动/延期)
+	// 推后 expires_at, 则此刻已不到点, 不可置 expired —— 否则错杀刚续费成功的订阅(镜像在到期写点均带
+	// 时间条件, 本处对齐)。Cancel/Revoke 是无条件终态, 不受此复查约束。
+	if terminal == StatusExpired && !sub.IsExpiredAt(rec.Now) {
+		if err := tx.Commit(ctx); err != nil {
+			return UserSubscription{}, fmt.Errorf("subscription: commit no-op expire recheck: %w", err)
+		}
+		return sub, nil
+	}
+
 	var cancelledAt any
 	if terminal == StatusCancelled {
 		cancelledAt = rec.Now
