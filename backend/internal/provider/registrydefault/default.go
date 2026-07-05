@@ -46,6 +46,7 @@ package registrydefault
 
 import (
 	"os"
+	"sort"
 
 	_ "github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -64,6 +65,76 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/vertex"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 )
+
+var defaultProtocolFamilies = []string{
+	ProtocolOpenAIChat,
+	ProtocolOpenAIResponses,
+	ProtocolOpenAICodex,
+	ProtocolAnthropicMessages,
+	ProtocolGeminiMessages,
+	ProtocolOpenRouterChat,
+	ProtocolBedrockInvoke,
+	ProtocolGrokChat,
+	ProtocolKimiChat,
+	ProtocolDeepSeekChat,
+	ProtocolMistralChat,
+	ProtocolGroqCloudChat,
+	ProtocolTogetherChat,
+	ProtocolPerplexityChat,
+	ProtocolFireworksChat,
+	ProtocolQwenChat,
+	ProtocolGLMChat,
+	ProtocolYiChat,
+	ProtocolBaichuanChat,
+	ProtocolDoubaoChat,
+	ProtocolErnieChat,
+	ProtocolStepChat,
+	ProtocolHunyuanChat,
+	ProtocolMinimaxChat,
+	ProtocolCohereChat,
+	ProtocolOllamaChat,
+	ProtocolOllamaNative,
+	ProtocolDifyChat,
+	ProtocolReplicateImage,
+	ProtocolVertexGemini,
+	ProtocolVertexAnthropic,
+}
+
+var envGatedProtocolFamilies = []string{
+	ProtocolGeminiCodeAssist,
+	ProtocolCursorSession,
+	ProtocolCopilotSession,
+	ProtocolGeminiAdvancedSession,
+	ProtocolAntigravitySession,
+	ProtocolKiroSession,
+	ProtocolWindsurfSession,
+}
+
+var supportedProtocolFamilySet = protocolFamilySet(SupportedProtocolFamilies())
+
+// SupportedProtocolFamilies 返回所有已有 adapter 注册路径的协议族，包含默认注册
+// 和按环境变量 opt-in 的实验族；不包含当前刻意 fail-closed 的死常量。
+func SupportedProtocolFamilies() []string {
+	out := make([]string, 0, len(defaultProtocolFamilies)+len(envGatedProtocolFamilies))
+	out = append(out, defaultProtocolFamilies...)
+	out = append(out, envGatedProtocolFamilies...)
+	sort.Strings(out)
+	return out
+}
+
+// IsSupportedProtocolFamily 判断 protocol family 是否有 adapter 注册路径。
+func IsSupportedProtocolFamily(protocolFamily string) bool {
+	_, ok := supportedProtocolFamilySet[protocolFamily]
+	return ok
+}
+
+func protocolFamilySet(families []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(families))
+	for _, family := range families {
+		out[family] = struct{}{}
+	}
+	return out
+}
 
 // Protocol family 常量。供配置层与 router 共享。
 const (
@@ -212,7 +283,7 @@ func Build() *provider.StaticRegistry {
 		PlatformName: "qwen",
 		// 默认打国内站(与 new-api 一致:constant/channel.go 默认 dashscope.aliyuncs.com);
 		// 国际站 dashscope-intl 由运营者按需经 channel base_url 覆盖。
-		Endpoint:     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+		Endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 	})
 	r.MustRegister(ProtocolGLMChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "glm",
@@ -246,7 +317,7 @@ func Build() *provider.StaticRegistry {
 		PlatformName: "minimax",
 		// 默认打国内站 api.minimaxi.com(new-api 用旧域名 api.minimax.chat,此处取现行国内域名);
 		// 国际站 api.minimax.io 由运营者按需经 channel base_url 覆盖。
-		Endpoint:     "https://api.minimaxi.com/v1/chat/completions",
+		Endpoint: "https://api.minimaxi.com/v1/chat/completions",
 	})
 	r.MustRegister(ProtocolCohereChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "cohere",

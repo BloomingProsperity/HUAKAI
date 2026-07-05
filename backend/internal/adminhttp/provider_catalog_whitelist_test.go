@@ -7,15 +7,12 @@ import (
 )
 
 // TestEveryRegisteredFamilyIsCatalogProtocol 族集对称第 9 站:registrydefault
-// 注册的每个出站 protocol family 都必须在 knownProviderCatalogProtocols 白名单
-// 里——否则管理端渠道目录 CRUD 对该族返回 400 invalid_upstream_protocol,
-// 运行时八站全通也无法在配置面申报该 provider(渠道建不出来=族整体不可运营)。
+// 注册的每个出站 protocol family 都必须被管理端渠道目录 CRUD 放行,
+// 否则运行时全通也无法在配置面申报该 provider(渠道建不出来=族整体不可运营)。
 // 开全部 env-gate 以覆盖 env-gated 族(6 个 placeholder session + gemini_code_assist)。
 //
-// Mutation:从白名单删任一注册族 → 对应子断言红;往 registrydefault 加新族而
-// 漏补白名单 → 本测试红(把配置面纳入新族落地的强制 checklist,防再漂移——
-// kimi/qwen/.../ollama 12 兼容族 + dify/ollama_native/replicate/vertex×2 此前
-// 正是这样漂掉的)。
+// Mutation:把 isKnownProviderCatalogProtocol 改回旧手写集合并漏掉任一注册族
+// → 对应子断言红;误把平台名当协议族放行 → negative 子断言红。
 func TestEveryRegisteredFamilyIsCatalogProtocol(t *testing.T) {
 	t.Setenv("HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS", "")
 	for _, env := range []string{
@@ -31,8 +28,13 @@ func TestEveryRegisteredFamilyIsCatalogProtocol(t *testing.T) {
 	}
 	r := registrydefault.Build()
 	for _, fam := range r.RegisteredProtocolFamilies() {
-		if _, ok := knownProviderCatalogProtocols[fam]; !ok {
-			t.Errorf("registrydefault 注册族 %q 不在 provider-catalog 白名单(管理端渠道 CRUD 会 400 invalid_upstream_protocol)", fam)
+		if !isKnownProviderCatalogProtocol(fam) {
+			t.Errorf("registrydefault 注册族 %q 未被 provider-catalog 放行(管理端渠道 CRUD 会 400 invalid_upstream_protocol)", fam)
+		}
+	}
+	for _, stale := range []string{"gemini", "bedrock", "antigravity", registrydefault.ProtocolAnthropicClaudeSession} {
+		if isKnownProviderCatalogProtocol(stale) {
+			t.Errorf("provider-catalog 不应放行未注册 protocol family %q", stale)
 		}
 	}
 }

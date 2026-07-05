@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
 var (
@@ -481,55 +482,5 @@ func providerCatalogItemFromSoftDeleteRow(row admindb.SoftDeleteProviderRow) pro
 }
 
 func isKnownProviderCatalogProtocol(protocol string) bool {
-	_, ok := knownProviderCatalogProtocols[protocol]
-	return ok
-}
-
-var knownProviderCatalogProtocols = map[string]struct{}{
-	"anthropic_messages":       {},
-	"openai_chat":              {},
-	"openai_responses":         {},
-	"openai_codex":             {},
-	"gemini":                   {},
-	"gemini_messages":          {},
-	"bedrock":                  {},
-	"bedrock_invoke":           {},
-	"openrouter_chat":          {},
-	"grok_chat":                {},
-	"deepseek_chat":            {},
-	"mistral_chat":             {},
-	"groqcloud_chat":           {},
-	"together_chat":            {},
-	"perplexity_chat":          {},
-	"fireworks_chat":           {},
-	// 12 家后补 OpenAI 兼容直通族(国内 + cohere + ollama 兼容模式)。此前
-	// 缺席本白名单 → 管理端渠道目录 CRUD 对它们 400 invalid_upstream_protocol,
-	// 即便运行时八站全通也无法在配置面申报(族集对称第 9 站)。
-	"kimi_chat":     {},
-	"qwen_chat":     {},
-	"glm_chat":      {},
-	"yi_chat":       {},
-	"baichuan_chat": {},
-	"doubao_chat":   {},
-	"ernie_chat":    {},
-	"step_chat":     {},
-	"hunyuan_chat":  {},
-	"minimax_chat":  {},
-	"cohere_chat":   {},
-	"ollama_chat":   {},
-	// 6 个 parity serving adapter 新族(2026-06-11 批次)。
-	"ollama_native":      {},
-	"dify_chat":          {},
-	"replicate_image":    {},
-	"vertex_gemini":      {},
-	"vertex_anthropic":   {},
-	"gemini_code_assist": {},
-	"anthropic_claude_session": {},
-	"cursor_session":           {},
-	"copilot_session":          {},
-	"gemini_advanced_session":  {},
-	"antigravity":              {},
-	"antigravity_session":      {},
-	"kiro_session":             {},
-	"windsurf_session":         {},
+	return registrydefault.IsSupportedProtocolFamily(protocol)
 }

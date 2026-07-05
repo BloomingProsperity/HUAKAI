@@ -3,7 +3,11 @@ package registrydefault
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -15,39 +19,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
-	want := []string{
-		ProtocolOpenAIChat,
-		ProtocolOpenAIResponses,
-		ProtocolOpenAICodex,
-		ProtocolAnthropicMessages,
-		ProtocolGeminiMessages,
-		ProtocolOpenRouterChat,
-		ProtocolBedrockInvoke,
-		ProtocolGrokChat,
-		ProtocolDeepSeekChat,
-		ProtocolMistralChat,
-		ProtocolGroqCloudChat,
-		ProtocolTogetherChat,
-		ProtocolPerplexityChat,
-		ProtocolFireworksChat,
-		ProtocolKimiChat,
-		ProtocolQwenChat,
-		ProtocolGLMChat,
-		ProtocolYiChat,
-		ProtocolBaichuanChat,
-		ProtocolDoubaoChat,
-		ProtocolErnieChat,
-		ProtocolStepChat,
-		ProtocolHunyuanChat,
-		ProtocolMinimaxChat,
-		ProtocolCohereChat,
-		ProtocolOllamaChat,
-		ProtocolOllamaNative,
-		ProtocolDifyChat,
-		ProtocolReplicateImage,
-		ProtocolVertexGemini,
-		ProtocolVertexAnthropic,
-	}
+	want := append([]string(nil), defaultProtocolFamilies...)
 	got := r.RegisteredProtocolFamilies()
 	sort.Strings(got)
 	sort.Strings(want)
@@ -59,6 +31,65 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 			t.Errorf("missing protocol %q; registered=%v", pf, got)
 		}
 	}
+}
+
+// TestSupportedProtocolFamiliesMatchOptInRegistration 守导出集合是注册路径的
+// 单一配置面真相源。变异证明:新增 MustRegister 但漏补集合 → len/成员断言红;
+// 把 fail-closed 死常量加入集合 → negative 断言红。
+func TestSupportedProtocolFamiliesMatchOptInRegistration(t *testing.T) {
+	t.Setenv(placeholderSessionAdaptersEnv, "")
+	for _, env := range []string{
+		cursorSessionAdapterEnv, copilotSessionAdapterEnv,
+		geminiCodeAssistAdapterEnv,
+		geminiAdvancedSessionAdapterEnv, antigravitySessionAdapterEnv,
+		kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
+	} {
+		t.Setenv(env, "true")
+	}
+	r := Build()
+	got := r.RegisteredProtocolFamilies()
+	want := SupportedProtocolFamilies()
+	sort.Strings(got)
+	sort.Strings(want)
+	if len(got) != len(want) {
+		t.Fatalf("registered count=%d want supported count=%d; registered=%v supported=%v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("registered[%d]=%q want supported[%d]=%q; registered=%v supported=%v", i, got[i], i, want[i], got, want)
+		}
+	}
+	if IsSupportedProtocolFamily(ProtocolAnthropicClaudeSession) {
+		t.Fatalf("%q 当前没有注册路径,不得进入支持集合", ProtocolAnthropicClaudeSession)
+	}
+}
+
+// TestMigration0172ContainsSupportedProtocolFamilies 守 DB CHECK 与 adapter
+// 注册路径同步。变异证明:从 0172 up 的 CHECK 删除任一支持族 → 本测试红。
+func TestMigration0172ContainsSupportedProtocolFamilies(t *testing.T) {
+	raw := readRegistryDefaultMigration(t, "0172_models_protocol_family_registered_adapters.up.sql")
+	for _, family := range SupportedProtocolFamilies() {
+		if !strings.Contains(raw, "'"+family+"'") {
+			t.Errorf("0172 up migration missing protocol_family %q", family)
+		}
+	}
+	if strings.Contains(raw, "'"+ProtocolAnthropicClaudeSession+"'") {
+		t.Fatalf("0172 up migration must not include fail-closed family %q", ProtocolAnthropicClaudeSession)
+	}
+}
+
+func readRegistryDefaultMigration(t *testing.T, name string) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	path := filepath.Join(filepath.Dir(file), "..", "..", "..", "sql", "migrations", name)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read migration %s: %v", name, err)
+	}
+	return string(raw)
 }
 
 // TestEveryRegisteredPlatformHasTransportPolicy 族集对称守卫第 6 站:出站

@@ -156,3 +156,37 @@ A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven 
 - 📋 C-7【S3】死代码:quotaDenyFromBudget/IncrementWindowRequestCount/ExpireConcurrencySlots 无调用方。
 - 📋 存疑-3:reconciler job 重放用 predicted 当 actual(保守高估);job 表有 claim_id 可 join 权威值,清扫段已用 claim actual,job 段同法可改进。
 - ✅ 核实干净(agent 亲读证据):检查/累计同真相源同事务行锁+Serializable 重试、窗口边界按 reserve 时刻 snapshot 归属无跨窗污染、billing/quota/budget 三方同一 CostForAttempt 值、abort 补偿闭环(deny→abort claim/释放同事务/budget 逆序回滚/lease sweeper 走全装饰 settler)、退款链防双退+逐窗钳制+wiring 已注入(旧账「配额退款不冲减」已闭环)、订阅 caps=真 quota_policies 最严者胜+期中续期不清用量、单价缺失 fail-closed 无 0 价白吃、工具附加费默认开真累计、用户可见读与强制同源无表分叉、budget Redis 故障内存 fallback+响亮告警。
+
+### moderation + notify + platform-obs 域(agent a7946c)——已审,4 S2 + 一批 S3
+亲读取证。分三类处置:
+
+**A. 纯技术缺陷·自主修(派 codex)**
+- **PO-1【S2】DualRunReconciler 每请求内存泄漏**:billing_persister_handler.go:96-98 无条件 RecordAsync,reconciliation_handler.go:107-143 record() 只插不删、无淘汰;读端(Compare/ExpiredMismatches)与 legacy 写端(RecordLegacy)生产全零调用=对账单边名存实亡。默认 eventbus 开→每成功请求泄漏一条(含 decimal+error 串)→缓慢 OOM。处置:生产默认不装 reconciler(读端与 legacy 端皆死,移除零功能损失,消除泄漏),保留类型+测试待将来真恢复双跑再接;加守护测试断言生产 wiring 不注入。**改前 codex 须 grep 复核 reconciler 无其它真读端。**
+- **PO-2【S2】DLQ ErrNoHandler 不 quarantine**:dlq/service.go:152-157 无 handler 返回 ErrNoHandler(非 ErrUnretryable)→ 按普通失败烧满 10 次/15min 重试才转 operator_review,replay 仍 ErrNoHandler 永不可恢复;最痛=audit_event_replica(money 审计 ref 缺失行)默认部署躺尸+抬高 dlq_depth 噪音。处置:ErrNoHandler 视同结构性失败直接 quarantine(NextFailureForErr 特判 or wrap ErrUnretryable),replay 侧同理。
+- **NT-3【S3】限流先占后发+map 无淘汰**:notifier.go:126-128/191-196 Allow 先写 last[key] 再投递,投递失败不回滚→一次瞬时故障静默压制一整小时;last map(:538-550)只写不删。处置:投递成功才记槽位(或失败回滚)+ map 周期淘汰过期键。
+- **MO-3【S3】config 读取故障 fail-closed 波及未启用租户**:screener.go:49-53 err 短路发生在 Enabled 检查之前→moderation 全关的租户在 moderation_configs 查询抖动时也吃 403;且 config 无缓存(keyword/hash 有 30s TTL)。处置:err 短路移到 Enabled 判定之后(未启用租户 config 故障放行)+ config 加 30s TTL 缓存对齐 keyword/hash。
+- **死代码清理(PO-4/PO-5/MO-2 API 面)**:obs/dlq refund_worker.go 双通道残留(真通道在 internal/dlq)、MetricsAggregator 聚合无读端、moderation ViolationFeeUSD/DecisionFeeCharged/BillingEventID 死字段(Owner 已裁「违规罚款不接」,清 admin API 面死字段防误导)。逐项 grep 证零调用再删。
+
+**B. 默认翻转/新功能面·Owner-gated(surface)**
+- **NT-1【S2·信息泄露】运维广播扇出给终端客户**:notifier.go:163-199 broadcast→store.go:83-108 ListActiveSettings 无角色过滤;routes_notifications.go:33-36 普通 session 可 PUT /v1/users/me/notifications→任意登录用户开 webhook 即收 provider_account_down(含 provider_account_id/vendor/health_state)+alert_firing。上游账号池=商业内核,泄露给客户。修法需决策:①最小堵漏=运维广播只发 admin/运维角色用户(需角色来源 join);②架构级=独立运维接收者配置表(schema)。**信息泄露不宜拖,surface Owner 择方案(带三镜对照)。**
+- **NT-2 + MO-1【S2/S3·静默死链】控制面恒在、执行面默认关无提示**:HUAKAI_ALERTING_EVAL_ENABLED 默认关但 alertinghttp CRUD 恒挂→规则建了永不评估;HUAKAI_CONTENT_MODERATION_ENABLED 默认关但 admin config PUT Enabled=true 静默无效。默认翻转=Owner-gated;可自主的最小改善=CRUD 回显执行器状态/补部署文档(不翻默认)。
+- **PO-3【S2】obs/dlq dlq_events 只写不读**:store_postgres.go:176-178 写、全仓无 SELECT/admin 面/worker→email 死信(SMTP 故障超 5 次重试)终态丢失且运维零可见;internal/dlq 侧有 /admin/v1/dlq 面形成对比。补 admin 列表/replay 面=功能新增,surface 排期。
+
+**C. 核实干净(教科书级正确接线,agent 亲读证据)**
+- moderation 审核在 reserveClaim **之前**(handler.go:529-537),拒绝时钱未动无需补偿=最干净解;拒绝路径审计不打折、只存 payload_hash 不存 body;auto-ban 原子 CTE 强制同事务写审计;管理面全 resolveAdmin+租户 scope。
+- notify 三处失败均不阻断主业务(async+context.Background/WithoutCancel,非请求 ctx post-commit);密文 AES 信封加密+AAD 绑 tenant/user,GET 只回 *_configured 布尔;出站 SSRF 校验+HMAC 签名+模板 html.Escape;email 重试链完整(outbox PriorityCritical+textproto 数值码判临时/永久+退避 15min 上限)。
+- platform-obs 审计导出 IDOR 已修双层防御(路由 session+handler 派生 scope,吊销表加载失败 503 不跳检);统计写读同源租户强隔离不选凭证列;DLQ 三泳道 panic-recover+quarantine+dlq_depth 每 30s 刷;日志门面旧 S1 已修 accesslog 不记 query/header/IP/body。
+
+## 🔥 端到端测试阶段(2026-07-05,Owner 拍板「现在起核心端到端+并发实测」)
+- ✅ **smoke 冒烟通过**(mock 上游+真 PG+子进程网关):HTTP 正确+5 项 PG 计费断言全过。
+- ✅ **第一跑即挖出核心 billing↔quota 配合缺陷并修复(68194e32)**:quotaenforce 结算只传 ClaimID(ReservationID=0),Settle/Release/CommitCacheHit 的写点误用 req.ReservationID → WHERE id=0 → 0 行 → 裸 no rows 回滚 quota 结算事务。直连路径每请求失败(fail-open warn 掩盖),reserved_value 靠 reconciler 按 claim 重解析兜底才收敛(带退避窗口占用+DB churn);A#1 扫尾时的「no rows 怪相」由此坐实为真缺陷而非 harness 制品。修:6 写点一律用 getFinalizationReservation 解析出的权威 reservation.ID。两组变异证红;smoke 复跑 warning 消失。
+- ✅ **对抗审查(agent a007d7)裁定驳不倒、零 S0/S1/S2**:mismatch 拦截/残留 0 值无害(reconciler 按 claim 重解析)/窗口定位不依赖 ID/其它 requireAffected 均已改/Serializable+FOR UPDATE 无并发落空。2 条 S3 测试缺口(变异实测证绿):①CommitCacheHit claim-only 零覆盖②3 个 ReleaseConcurrencySlots 写点无判别(槽泄漏只有 lease 兜底)。fix-in-place 排下一 codex 批。
+- 🔄 **阶段2:真上游 e2e(codex 搭建中)**:照 smoke 模板写 e2e_upstream tag,混元(hunyuan-lite,压 max_tokens)真转发+计费金额+quota 结算(守 68194e32)+并发槽断言;真 key 走 env 注入(Owner 提供 ARK/HUNYUAN 两 key,已定位于 scratchpad/e2e-keys.env,权限 600)。
+
+### 🔴 端到端测试第2个真缺陷(S1 上线阻塞):models CHECK 缺 19 个已注册 vendor family
+- **根因**:internal/provider/registrydefault/default.go MustRegister 了 39 个 protocol family 的 adapter,但 models 表 `models_protocol_family_check`(0008/0011 迁移定义)只允许 20 个 → 缺 19 个:国内厂 doubao/hunyuan/qwen/minimax/glm/ernie/baichuan/kimi/step/yi + vertex_anthropic/vertex_gemini/cohere/dify/ollama_chat/ollama_native/gemini_code_assist/replicate_image/anthropic_claude_session。
+- **后果**:这 19 个 vendor 的 model 无法录入 models 表(protocol_family 违反 CHECK)→ ResolveModel 拿不到 → **19 个 vendor relay 生产完全不可用**,含 Owner 2026-07-03 明确裁定要上线的国内厂六厂([[cn-vendor-domestic-key-verdict]])。
+- **性质**:cn-vendor 接入(7ec6da57 端点+代码)的关联产物漏改——adapter/端点/credential vendor handler 都建了,唯独 models CHECK 白名单没同步(典型「只顾眼前不看关联产物」)。credential 是 api_key 类型不走 upstream_passthrough,endpoint 靠 adapter 硬编码,必须专属 family 路由,openai_chat 兜不住。
+- **修法**(schema,授权内:补齐已注册能力+Owner 明确要+放宽白名单低风险,对齐 sensitive-modules 给能力非守门):迁移扩 CHECK = registrydefault 全部 MustRegister family;同步 internal/adminhttp/provider_catalog_mutation_handler.go 的 Go 白名单;迁移往返+国内厂 model 录入测试。派 codex。
+- e2e 库已临时 ALTER 验证(models 过);正式迁移随 codex。
+- **e2e 打通残留**:混元真转发卡 no_capacity(选号候选空,激活字段全对,codex seed 漏 model resolve→pool→account 链某配置),随 codex 修 seed 后我注入真 key 验证。
