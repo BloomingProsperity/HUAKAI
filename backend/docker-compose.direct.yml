@@ -59,6 +59,12 @@ services:
       # quota reconciler 默认启用(unset/非法值均按 true):补偿结算/释放失败和孤儿预留。
       # 仅应急停用时显式设 false 或 0。
       HUAKAI_QUOTA_RECONCILER_ENABLED: ${HUAKAI_QUOTA_RECONCILER_ENABLED:-true}
+      # 告警规则评估器默认启用(unset/非法值均按 true):无告警规则时评估循环空转 no-op,
+      # LeaderLock 已防多副本重复。配了告警规则却不评估会静默失效,故默认开;应急停用设 false 或 0。
+      HUAKAI_ALERTING_EVAL_ENABLED: ${HUAKAI_ALERTING_EVAL_ENABLED:-true}
+      # 内容审核执行器默认启用(unset/非法值均按 true):执行器恒接线,但租户级审核配置默认
+      # Enabled=false;未在 admin 面显式开启审核的租户仍全量放行。整机应急停用设 false 或 0。
+      HUAKAI_CONTENT_MODERATION_ENABLED: ${HUAKAI_CONTENT_MODERATION_ENABLED:-true}
       # 信任「反代转发的 X-Forwarded-For」的来源(CSV CIDR),使 per-IP 限流按真实客户端 IP 计算。
       # 默认全部 RFC1918 私网段,对两种接法都正确:
       #   - 直连公网(无反代):公网客户端的 socket 源 IP 非 RFC1918,其伪造的 XFF 被 fail-closed
