@@ -124,7 +124,12 @@ func (ex *execution) settleAndWriteJSON(w http.ResponseWriter, res *gateway.Disp
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
 		return false
 	}
-	if _, err := ex.d.Settler.Settle(ex.ctx, ex.settleRequest(usage, cost, attemptSeq, false)); err != nil {
+	// 交付后结算:上游 2xx body 已读回(平台已付费),结算必须在**脱钩 ctx**(WithoutCancel)上跑,
+	// 否则客户端在 body 读完、Tx2 未 commit 的窗口断连会取消请求 ctx → Tx2 回滚 → 已交付 token 永不
+	// 计费 + claim/hold/账号槽/配额预留冻结到 lease 过期。与流式路径、abort 路径同脱钩范式;失败经 DLQ 持久重试。
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), settleRecoveryTimeout)
+	defer cancel()
+	if err := ex.settleDirectWithRecovery(settleCtx, ex.settleRequest(usage, cost, attemptSeq, false)); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
 		return false
 	}

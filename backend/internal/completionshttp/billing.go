@@ -129,19 +129,28 @@ func (ex *execution) settleRequest(usage completionUsage, cost completionCostBre
 	}
 }
 
-// settleStreamWithRecovery 在流式响应已交付给客户端后结算。调用方必须传入**脱钩 ctx**
-// (context.WithoutCancel)，使客户端断连不取消 Tx2——否则已交付 token 永不计费(S1-2 计费泄漏)。
-// settle 失败时把 SettleRequest 经 settlementrecovery DLQ 持久化(SourceStream)，worker 后续
-// 重 settle 防钱账丢失；DLQ 重结算靠既有三证 proof(claim/usage_records/billing_events)幂等防重扣。
-// 镜像 gatewayhttp.settleCompletionWithRecovery 的交付后兜底语义(S1-3 补齐 completions 路径缺的保护)。
-// SettleRecoveryDLQ 未注入时退回原行为(仅返 err，caller 置 X-Huakai-Settle-Failed 头)。
-// settle err 始终原样返回 caller。
+// settleStreamWithRecovery 在流式响应已交付后结算,DLQ 事件源标记为流式(SourceStream)。
 func (ex *execution) settleStreamWithRecovery(ctx context.Context, req billing.SettleRequest) error {
+	return ex.settleWithRecovery(ctx, settlementrecovery.SourceStream, req)
+}
+
+// settleDirectWithRecovery 在非流式响应体已交付后结算,DLQ 事件源标记为非流式直结(SourceDirectSettle)。
+func (ex *execution) settleDirectWithRecovery(ctx context.Context, req billing.SettleRequest) error {
+	return ex.settleWithRecovery(ctx, settlementrecovery.SourceDirectSettle, req)
+}
+
+// settleWithRecovery 在响应已交付给客户端后结算。调用方必须传入**脱钩 ctx**
+// (context.WithoutCancel)，使客户端断连不取消 Tx2——否则已交付 token 永不计费(计费泄漏)。
+// settle 失败时把 SettleRequest 经 settlementrecovery DLQ 持久化(source 标记来路),worker 后续
+// 重 settle 防钱账丢失;DLQ 重结算靠既有三证 proof(claim/usage_records/billing_events)幂等防重扣。
+// SettleRecoveryDLQ 未注入时退回原行为(仅返 err,caller 置 X-Huakai-Settle-Failed 头)。
+// settle err 始终原样返回 caller。
+func (ex *execution) settleWithRecovery(ctx context.Context, source settlementrecovery.Source, req billing.SettleRequest) error {
 	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
 		if ex.d.SettleRecoveryDLQ == nil {
 			return err
 		}
-		payload := settlementrecovery.FromSettleRequest(settlementrecovery.SourceStream, ex.requestID, req)
+		payload := settlementrecovery.FromSettleRequest(source, ex.requestID, req)
 		failureClass := privacy.ErrorClassFor(ctx, err)
 		// DLQ 持久化必须用**独立 ctx**：settle 可能正因传入 ctx 的 deadline 耗尽(DB 锁等待/上游慢)
 		// 而失败，此刻复用同一已过期 ctx 会让 enqueue 的 INSERT 立即 deadline-exceeded、recovery
@@ -150,7 +159,7 @@ func (ex *execution) settleStreamWithRecovery(ctx context.Context, req billing.S
 		enqCtx, enqCancel := context.WithTimeout(context.WithoutCancel(ctx), settleRecoveryEnqueueTimeout)
 		defer enqCancel()
 		if _, enqErr := settlementrecovery.EnqueuePayload(enqCtx, ex.d.SettleRecoveryDLQ, payload, failureClass); enqErr != nil {
-			// DLQ persist 自身失败 = money path 兜底链断 → P0 alert(不阻塞:流式响应已发不能反悔)。
+			// DLQ persist 自身失败 = money path 兜底链断 → P0 alert(不阻塞:响应已发不能反悔)。
 			_ = privacy.LogSystem(enqCtx, privacy.SystemEvent{
 				Severity:   privacy.SeverityError,
 				Component:  "completionshttp.settle_recovery",
@@ -158,7 +167,7 @@ func (ex *execution) settleStreamWithRecovery(ctx context.Context, req billing.S
 				ErrorClass: privacy.ErrorClassFor(ctx, enqErr),
 				Attrs: map[string]any{
 					"event_class":          "settle_recovery_dlq_enqueue_failed",
-					"event_type":           string(settlementrecovery.SourceStream),
+					"event_type":           string(source),
 					"tenant_id":            req.TenantID,
 					"claim_id":             req.ClaimID,
 					"failure_reason_class": failureClass,

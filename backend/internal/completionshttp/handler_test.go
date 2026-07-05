@@ -589,6 +589,38 @@ func TestCompletionsStreamSettleUsesDetachedContext(t *testing.T) {
 	}
 }
 
+// TestCompletionsNonStreamSettleUsesDetachedContext 守 A#2:非流式 body 交付后结算同样必须**脱钩**
+// 于请求 ctx——客户端在上游 body 已读回、Tx2 未 commit 的窗口断连(父 ctx 取消)时,settle 仍须在
+// 未取消的 ctx 上跑,否则 Tx2 回滚、已交付 token 永不计费 + claim/hold/账号槽/配额预留冻结到 lease
+// 过期。此前非流式 settle 是五兄弟里唯一裸用 ex.ctx 的漏点(流式路径与 abort 早已脱钩)。
+// Mutation: 把 attempt.go 非流式 settle 改回 ex.d.Settler.Settle(ex.ctx,...) → settle 继承父的已取消
+// 状态 → lastSettleCtxErr==context.Canceled → RED。
+func TestCompletionsNonStreamSettleUsesDetachedContext(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status:      http.StatusOK,
+		body:        `{"id":"cmpl_1","object":"text_completion","model":"text-davinci-003","choices":[{"text":"world","index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`,
+		contentType: "application/json",
+	})
+	// 模拟客户端在 body 读完、结算未 commit 窗口断连:父 ctx 已取消。stub 依赖不检查 ctx,故请求仍走到交付后结算。
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rec := env.invokeCompletionsCtx(t, parent, `{"model":"legacy-public","prompt":"hello"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 (non-stream delivered); body=%s", rec.Code, rec.Body.String())
+	}
+	if env.settler.lastSettleCtx == nil {
+		t.Fatalf("settle was not invoked")
+	}
+	// 核心:尽管父 ctx 已取消,非流式 settle 调用时刻其 ctx 仍未被取消 → WithoutCancel 脱钩生效。
+	if env.settler.lastSettleCtxErr != nil {
+		t.Fatalf("非流式 settle 跑在被客户端断连取消的 ctx 上(err=%v)—— 缺 WithoutCancel 脱钩(A#2 计费泄漏)", env.settler.lastSettleCtxErr)
+	}
+	if _, hasDeadline := env.settler.lastSettleCtx.Deadline(); !hasDeadline {
+		t.Fatalf("非流式交付后 settle ctx 无 deadline —— 缺 WithTimeout")
+	}
+}
+
 // TestCompletionsStreamSettleAndDLQEnqueueBothFail 守 #4：交付后 settle 失败、DLQ enqueue 也失败时，
 // 兜底链的最后一环(P0 log)必须 (a) 不 panic、不改 HTTP(响应已发)，(b) enqueue 仍被尝试一次，
 // (c) DLQ failure_reason 只记错误**类别**、不内插 raw settle 错误文本(防泄漏 prompt/凭证类内容)。

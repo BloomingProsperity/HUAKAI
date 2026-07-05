@@ -1,0 +1,74 @@
+# 颗粒度模块配合缺陷 · 修复计划(2026-07-03)
+
+来源:§17 模块配合审计(工作流 w3p36lzsw,8 链路×亲读→猎缺陷→三镜头对抗验证)+ 全项目功能审计(wy3l2q11k,进行中,findings 落地后并入本计划 §B)。全部缺陷 file:line 均经审计 agent 亲读取证;S1 两条已由本人二次亲读复核确认。
+
+分支 `feat/fe-wire-users-mod`,基线 HEAD `7b4e9dfb`(C-1)。Owner 已授**全权**(含 money/schema/auth 自主推进 + 安全网),高危项落地后 surface 复核。
+
+## 安全网(每切片必过)
+1. 亲读真码定位根因(不信 grep) 2. §14 变异证明测试(改坏必红) 3. 干净基线 `-count=1` 整包+相邻包绿 4. 对抗自审爆炸半径(配对另一半/兄弟/装饰器链)。
+
+## 六类共性根因(修复要连根,不只补单点)
+1. **装饰器链顺序 vs 旁路总线**:completion 事件总线在中间层捕获 settler,晚于 quota/budget/notify 装饰 → 异步结算静默跳过外层装饰器(结构性顺序陷阱)。
+2. **多资源获取只测单维释放**:一个请求 reserve 出 hold+账号槽+quota预留+quota并发槽+budget预留,释放分散在不同装饰层,无一测试断言"全部归零"。
+3. **跨模块租约窗口不协同**:billing claim=30min(正确>600s流),quota 并发槽=90s(<请求时长),media claim=20min 但单 worker 无法先于 sweeper。
+4. **请求 ctx 用于交付后/提交后持久写**:断连即回滚/半提交(C-1 同类,已逐调用点手抄脱钩,漏点即退回不安全)。
+5. **补偿链只认"失败入队"不认"从未运行"**:quota reconciler 只重放失败 job;动作被旁路/从未调用则无 job 无孤儿记录。
+6. **best-effort 释放吞错 + 一次性保护**:持久 DB 计数器的 -1 吞错 + sync.Once → 一次瞬时失败永久泄漏。
+
+## A. relay 链确认缺陷(9 条)· 修复优先级
+
+| 序 | 缺陷 | Sev | 默认触发 | file:line | 修法 | schema | Owner-gated |
+|---|---|---|---|---|---|---|---|
+| 1 | 异步总线持未装饰 settler → 成功请求漏 quota 预留+并发槽 | **S1** | 是 | cmd/gateway/middleware.go:402 / wiring.go:1096-1107 | 总线构造挪到全装饰链之后(持最终 settler)+ wiring 断言;顺带解决 #6 | 否 | money/quota wiring |
+| 2 | completionshttp 非流式 settle 用 ex.ctx → 断连漏资源+漏计费 | **S1** | 条件(断连窗口) | completionshttp/attempt.go:127 | 改用 `ex.billingCtx()` 脱钩 + DLQ 兜底(照抄四兄弟/流式路径) | 否 | money |
+| 3 | quota 并发槽租约 90s 死钉、无续租 → 长流(600s)静默突破并发上限 | S2 | 是(>90s请求) | quotaenforce/settler.go:18 | slot lease 从 STREAM_TOTAL_TIMEOUT+grace 派生(或 = claim lease) | 否 | quota |
+| 4 | media claim 被 sweeper 抢先 abort → media_tasks 卡非终态+每~30s 重试失败死循环 | S2 | 背压/停机 | mediatask/store_money.go:156 | ErrClaimNotReserving 时强制 media_tasks 终态(claim_swept)+ 落孤儿记录,不回滚整事务 | 否(复用 orphans 表) | 媒体计费 |
+| 5 | storm release 吞错+sync.Once → current_in_flight 永久泄漏死号 | S2 | 瞬时DB错/failover | auth/storm_controller.go:84 | release 不吞错(失败进 DLQ/待对账)+ current_in_flight reaper | reaper 加列才需 | auth-core 凭据刷新 |
+| 6 | storm acquire scan 在 +1 提交后报错 → 无 release 闭包 → 永久泄漏死号 | S2 | 瞬时DB错 | auth/storm_controller.go:74 | scan 失败即补偿 -1 | 否 | auth-core |
+| 7 | budget 结算同被异步总线绕过 | S2 | 否(默认关) | wiring.go:488 | 随 #1 同根修复 | 否 | 预算强制 |
+| 8 | credential finalize 非原子:Create 提交后 MarkFinalized 断连失败 → 活凭据孤儿+flow卡死 | S2 | 条件(断连窗口) | credentialacq/finalizer.go:74 | Create+MarkFinalized 同事务(或脱钩 ctx)+ flow 孤儿对账器 | 否(复用表) | auth-core 凭据 |
+| 9 | DefaultSelector 槽释放用可取消 ctx(90s 孤儿扫兜底) | S3 | 条件 | pool/router/default_selector.go:235 | 照 PASR 改 `WithoutCancel`+限时 | 否 | pool |
+| 9b | credentialacq BeginFinalize 补偿 MarkFailed 用可取消 ctx | S3 | 条件 | credentialacq/finalizer.go:58 | 补偿写脱钩 ctx | 否 | auth-core |
+
+## 系统性加固(随修落地,防同类再生)
+1. **统一"最终结算 settler"单一注入点** + wiring 断言"异步 handler settler == d.Settler 装饰深度"(治根因1)。
+2. **per-资源生命周期集成测试**:reserve 全部资源 → 驱动同步+真实异步总线 settle/abort → 断言每个计数器回基线;删任一装饰器变红(治根因2)。
+3. **抽公共交付后结算骨架**:五兄弟 settle/abort 收进共享 helper,恒脱钩+恒 DLQ,消灭逐点选 ctx(治根因4,防 #2 再生)。
+4. **持久计数器一律配主动 reaper+不吞错**:接线 ExpireConcurrencySlots、current_in_flight reaper、quota reservation 陈旧扫;折进 LeaseSweeper tick 默认开(治根因5/6)。
+5. **租约窗口统一推导**:所有模块 lease 从单一"操作最大生命周期"源派生(治根因3)。
+6. **补偿改状态扫描**:孤儿状态扫描器补"动作从未运行"缺口(治根因5)。
+
+## 执行顺序
+1. **S1-A(#1)先修** — 纯 wiring 重排,顺带解 #7;写变异证明的 wiring/集成断言。
+2. **S1-B(#2)次修** — 机械照抄既有脱钩范式 + DLQ。
+3. S2 批(#3/#4/#5/#6/#8)按域推进,每条带判别测试。
+4. S3(#9/#9b)收尾。
+5. 系统性加固 1/2/3 随对应切片落地。
+
+每切片:亲读→修→变异测试→干净基线→对抗自审→commit(中文)→报进度。S1/S2 落地后 surface Owner 复核。
+
+## B. 全项目功能审计缺陷(wy3l2q11k,10 条确认)
+
+> ⚠️ 该审计**撞周额度上限中断**(165 verify agent 失败 + synthesize 失败),确认的 10 条是完成验证的子集;`payment/apikey-access/quota-budget/pricing/moderation/media/billing-settle/hermes/mimicry-egress/credential/notify/platform-obs/frontend` 域各有候选未跑完验证——**额度恢复后需重跑这些域的 verify**(resumeFromRunId=wf_bfe5c8d5-e10 可复用已完成 agent 缓存)。
+
+| 序 | 缺陷 | Sev | file:line | 修法 | Owner-gated |
+|---|---|---|---|---|---|
+| B1 | ExpiryWorker(1min,无 auto_renew 过滤)抢先把 auto_renew=true 订阅置 expired → 自动续费几乎永不发生,付费用户被停服降级还没扣续费款 | **S1** | subscription/store_postgres.go:540 | ListDueExpiry 排除 auto_renew=true(或续费带 grace 窗口先扣费续期);补两 worker 同跑的判别集成测试 | money/订阅 |
+| B2 | 退款回执签名用 v2 canonical(32B 哈希)、验签用 trust.v1 完整字节 → **所有退款回执验签恒 Valid=false(死签名)** | **S1** | audit/refund_worker.go:565 | 退款签名改用 `trustreceipt.SignReceipt`(trust.v1),与结算侧/验签侧同口径 | 审计签名 |
+| B3 | 会话漂移 DriftMedium/DriftLow(仅IP变/仅UA变)被算却零消费者:不撤销/不审计/不日志/不指标 → token 重放最常见形态检测全盲 | S2 | usersession/rotation.go:114 | medium/low 至少落审计事件+指标(或按策略 step-up);Service 补 logger | auth-core(会话) |
+| B4 | 2FA 登录完成路径不复检账号资格 → 被禁用/锁定/删除用户在 challenge 窗口内签发全新长效会话(passkey 路径有 EnsureLoginEligible,2FA 缺) | S2 | gatewayhttp/auth_handler.go:382 | verify 后 Sessions.Create 前补 `EnsureLoginEligible`(镜像 passkey) | auth-core |
+| B5 | 用户封禁不吊销会话 bearer,Validate/Refresh 从不复核账号状态 → 被封用户 self-service 会话+续期存活最长 30 天 | S2 | usersession/rotation.go:238 | 封禁 handler 调 SessionRevoker.Revoke(对齐删除路径);或 Validate/Refresh 复核 users.status | auth-core |
+| B6 | 自动续费扣 user_balances 只写 subscription_auto_renewal_charges,不写 billing_events 统一账本 → 与充值口径断裂、对账缺一环 | S2 | subscription/store_postgres_auto_renewal.go:142 | 续费扣款同写 billing_events(与充值/结算同账本) | money |
+| B7 | 退款回执验签的两处测试用「非生产签名路径」造 fixture → 伪绿掩盖 B2 的 canonical 断裂 | S2 | cost_receipt_handler_test.go:320 | 测试改用生产签名路径(与 B2 一起修,变异证明) | 否 |
+| B8 | /v1/auth/me 面板归属用 UserRole(无 status 过滤)→ 被封/锁 admin 仍被 /me 判 admin 面板(与 ActiveUserRole 口径不一致) | S3 | controlhttp/panelauth_handler.go:95 | /me 改用 ActiveUserRole(带 status 过滤) | auth-core |
+| B9 | 2FA 校验失败审计事件 tenant/user 记 0(challenge 携带身份未回收)→ 失败与锁定无法归因 | S3 | gatewayhttp/auth_handler.go:375 | 失败审计从 challenge 回填 tenant/user | 否 |
+| B10 | AutoRenewWorker money 指标(Renewed/Skipped/Failed/Tick)无读者,admin worker-stats 不暴露 | S3 | cmd/gateway/subscription_worker_stats_adapter.go:20 | 接线指标到 admin worker-stats 端点 | 否 |
+
+**共性延续 A 的根因**:B1(跨模块 worker 判据不协同=根因3)、B2/B7(签名/验签 canonical 配对断裂+伪绿测试=根因2/missing-associated)、B3(死开关)、B4/B5/B8(账号状态复核在各登录/会话/面板路径不一致=inconsistent-state,同一不变量 passkey/删除有、2FA/封禁/面板缺)、B6(账本写入配对缺失)。
+
+## 执行顺序(合并 A+B,19 条)
+1. **S1 四条**(A#1 配额旁路、A#2 completions settle ctx、B1 订阅续费、B2 退款死签名)——最先,各带判别测试。
+2. **S2 批**按域推进(A#3-8 + B3-7)。
+3. **S3 收尾**(A#9/9b + B8-10)。
+4. 系统性加固随对应切片落地。
+5. 额度恢复后重跑 feature 审计未验证域(resume wf_bfe5c8d5-e10)。
