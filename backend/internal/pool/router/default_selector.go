@@ -228,11 +228,11 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 		// 不能静默跳过 writeback (否则 settlement 找不到 acquisition_token 锚点)。
 		if req.ClaimID != 0 {
 			if s.claims == nil {
-				_ = acquired.release(ctx)
+				releaseSlotDetached(ctx, acquired)
 				return nil, true, errors.New("default selector: ClaimID provided but claims writer not configured")
 			}
 			if err := s.claims.WriteAcquisition(ctx, req.TenantID, req.ClaimID, account.ID, acquired.AcquisitionToken); err != nil {
-				_ = acquired.release(ctx)
+				releaseSlotDetached(ctx, acquired)
 				// ErrClaimRace 必须 bubble 给 caller (区分"无候选"与"被另请求抢占"
 				// 两种语义), 不能映射成 false/nil 让 caller 误判 no-eligible。
 				return nil, true, err

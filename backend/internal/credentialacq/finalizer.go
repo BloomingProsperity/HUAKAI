@@ -4,9 +4,17 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
+
+// finalizeWriteCtx 交付后持久写 (MarkFinalized / MarkFailed / 审计) 一律脱离请求 ctx:
+// creator.Create 已提交后客户端断连不得把 flow 留在 consumed 非终态 —— 那等于活凭据
+// 孤儿 + 重试恒 ErrFlowReplay 卡死 (只能等 expires_at 惰性过期)。
+func finalizeWriteCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+}
 
 type CredentialCreator interface {
 	Create(context.Context, credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error)
@@ -55,8 +63,12 @@ func (f *Finalizer) Finalize(ctx context.Context, flowID string, candidate Crede
 	}
 	candidate = fillCandidateFromSession(session, candidate)
 	if err := f.ValidateCandidate(candidate); err != nil {
-		failed, _ := f.sessions.MarkFailed(ctx, flowID, "finalizer_rejected", redactedErr(err))
-		_ = EmitLifecycleAudit(ctx, f.audit, failed, EventFailed, 0, actorID, requestID, map[string]any{"error_class": "finalizer_rejected"})
+		// 补偿写脱钩: BeginFinalize 已置 consumed_at, MarkFailed 若随请求取消而失败,
+		// flow 留在 consumed 非终态卡死。
+		wctx, cancel := finalizeWriteCtx(ctx)
+		failed, _ := f.sessions.MarkFailed(wctx, flowID, "finalizer_rejected", redactedErr(err))
+		_ = EmitLifecycleAudit(wctx, f.audit, failed, EventFailed, 0, actorID, requestID, map[string]any{"error_class": "finalizer_rejected"})
+		cancel()
 		return FinalizeResult{Session: failed}, err
 	}
 	meta, err := f.creator.Create(ctx, credentialstore.CreateCredentialInput{
@@ -67,19 +79,45 @@ func (f *Finalizer) Finalize(ctx context.Context, flowID string, candidate Crede
 		ExternalAccountEmail: candidate.ExternalAccountEmail,
 	})
 	if err != nil {
-		failed, _ := f.sessions.MarkFailed(ctx, flowID, "credential_create_failed", redactedErr(err))
-		_ = EmitLifecycleAudit(ctx, f.audit, failed, EventFailed, 0, actorID, requestID, map[string]any{"error_class": "credential_create_failed"})
+		wctx, cancel := finalizeWriteCtx(ctx)
+		failed, _ := f.sessions.MarkFailed(wctx, flowID, "credential_create_failed", redactedErr(err))
+		_ = EmitLifecycleAudit(wctx, f.audit, failed, EventFailed, 0, actorID, requestID, map[string]any{"error_class": "credential_create_failed"})
+		cancel()
 		return FinalizeResult{Session: failed}, err
 	}
-	finalized, err := f.sessions.MarkFinalized(ctx, flowID, meta.ID)
+	// Create 已提交, 此后是"记录既成事实": 脱钩 + 重试, 尽最大努力不留孤儿。
+	finalized, err := f.markFinalizedWithRetry(ctx, flowID, meta.ID)
 	if err != nil {
 		return FinalizeResult{Session: session, Credential: meta}, err
 	}
-	_ = EmitLifecycleAudit(ctx, f.audit, finalized, EventCompleted, meta.ID, actorID, requestID, map[string]any{
+	wctx, cancel := finalizeWriteCtx(ctx)
+	_ = EmitLifecycleAudit(wctx, f.audit, finalized, EventCompleted, meta.ID, actorID, requestID, map[string]any{
 		"credential_id": meta.ID,
 		"metadata_keys": redactedContextKeys(finalized.RedactedContext),
 	})
+	cancel()
 	return FinalizeResult{Session: finalized, Credential: meta}, nil
+}
+
+// markFinalizedWithRetry 凭据已建成, flow 状态写失败即活凭据孤儿 + flow 卡死,
+// 带退避重试收窄窗口; 全败后剩余孤儿由 expires_at 惰性过期兜底。
+func (f *Finalizer) markFinalizedWithRetry(ctx context.Context, flowID string, credentialID int64) (Session, error) {
+	var (
+		finalized Session
+		err       error
+	)
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+		wctx, cancel := finalizeWriteCtx(ctx)
+		finalized, err = f.sessions.MarkFinalized(wctx, flowID, credentialID)
+		cancel()
+		if err == nil {
+			return finalized, nil
+		}
+	}
+	return finalized, err
 }
 
 func fillCandidateFromSession(session Session, candidate CredentialCandidate) CredentialCandidate {
