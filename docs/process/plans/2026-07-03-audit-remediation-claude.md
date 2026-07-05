@@ -4,6 +4,12 @@
 
 分支 `feat/fe-wire-users-mod`,基线 HEAD `7b4e9dfb`(C-1)。Owner 已授**全权**(含 money/schema/auth 自主推进 + 安全网),高危项落地后 surface 复核。
 
+## 进度(2026-07-03)
+- ✅ **A#1**(e95a6eee)completion 总线用全装饰后 settler——移出 buildSettlementServices、挪到 quota/budget/notify 装饰之后;变异证明测试;**顺带解 A#4(budget)**。端到端集成断言(真 pg)排 follow-up。
+- ✅ **A#2**(df71c432)completionshttp 非流式 settle 脱钩 ctx + DLQ;变异证明测试。
+- ⏭ 下一批(带完整跨文件核实):**B2**(退款签名 canonical——高危,改前必核签名侧 v2 vs 验签侧 trust.v1 vs 正常结算侧三处)+ **B1**(订阅续费被到期 worker 抢先)→ 再 S2 批 → S3 收尾。
+- ⏳ **额度恢复后重跑 feature 审计未验证域**(resume wf_bfe5c8d5-e10):payment/apikey-access/quota-budget/pricing/moderation/media/billing-settle/hermes/mimicry-egress/credential/notify/platform-obs/frontend。
+
 ## 安全网(每切片必过)
 1. 亲读真码定位根因(不信 grep) 2. §14 变异证明测试(改坏必红) 3. 干净基线 `-count=1` 整包+相邻包绿 4. 对抗自审爆炸半径(配对另一半/兄弟/装饰器链)。
 
