@@ -27,6 +27,8 @@
 
 - ✅ **B3**(eea7178d)会话漂移 Medium/Low 接消费者:usersession DriftObserver seam(纯观测),Validate/Refresh 非 None 漂移统一交观察者(High 同流,撤销不变);wiring 注入 zap 结构化观测(low=Info,medium/high=Warn),事件记 IP/UA class 无 PII。两变异证红+四档矩阵测试。指标带读者部分并入 B10。**B 系 S2 全清(B3/B4/B5/B6),剩 S2 仅 A 系四条。**
 
+- ✅ **A#3**(2a86f850)并发槽租约 90s→与 claim 租约同源派生(billing.DefaultClaimLeaseWindow 30min,统一租约推导=加固#5):acquire DB 函数 COUNT 前清扫过期槽,90s 租约使长流(600s)中途被扫位顶替、并发上限静默突破。变异退回 90s 双断言红;quota PG 集成绿。剩 S2:A#5/A#6(storm 同文件)+ A#8。
+
 ### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
 - **方案 = 提前量续费(renew-ahead grace window),到期判据不动**:`ListAutoRenewDue` 扫 `expires_at <= now+lead`(PG+memory 同改);`tryAutoRenewOnce` 锁行复查同用 `DueCutoff`(autoRenewRecord 加字段);`ProcessAutoRenewal` 算 cutoff 下传。lead 取 30min(5min 节拍 ≥6 次尝试,余额不足可重试;对比 Apple 提前 24h 扣款,30min 属保守)。
 - **为什么不选「ListDueExpiry 排除 auto_renew=true」**:续费持续失败(余额不足/套餐停用)的订阅将永不到期 → 白嫖;要堵这个洞需加失败计数/宽限状态机 = schema 变更。提前量方案零 schema、到期兜底天然保留:续费失败订阅照常在 expires_at 到期降级。
