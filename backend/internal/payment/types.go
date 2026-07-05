@@ -230,12 +230,15 @@ type Balance struct {
 }
 
 var (
-	ErrStoreNotConfigured     = errors.New("payment: store not configured")
-	ErrOrderNotFound          = errors.New("payment: order not found")
-	ErrInvalidAmount          = errors.New("payment: amount must be positive")
-	ErrInvalidInput           = errors.New("payment: invalid input")
-	ErrOrderNotConfirmable    = errors.New("payment: order not in a confirmable state")
-	ErrOrderNotFulfillable    = errors.New("payment: order not in a fulfillable state")
+	ErrStoreNotConfigured  = errors.New("payment: store not configured")
+	ErrOrderNotFound       = errors.New("payment: order not found")
+	ErrInvalidAmount       = errors.New("payment: amount must be positive")
+	ErrInvalidInput        = errors.New("payment: invalid input")
+	ErrOrderNotConfirmable = errors.New("payment: order not in a confirmable state")
+	ErrOrderNotFulfillable = errors.New("payment: order not in a fulfillable state")
+	// ErrOrderFulfillFailed: 履约命中确定性失败(降档拒绝/套餐停用等), 订单已转终态 failed。
+	// 重试注定同样失败, 调用方不得当瞬时错误重试; 退款走 admin 通道(Manual-First)。
+	ErrOrderFulfillFailed     = errors.New("payment: order fulfillment failed terminally")
 	ErrOrderNotCancelable     = errors.New("payment: order not in a cancelable state")
 	ErrOrderNotRefundable     = errors.New("payment: order not in a refundable state")
 	ErrRefundExceedsAvailable = errors.New("payment: refund exceeds available balance")

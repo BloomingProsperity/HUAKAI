@@ -407,6 +407,17 @@ func (s *PostgresStore) completeFulfillOnce(ctx context.Context, rec fulfillReco
 	if order.OrderKind == OrderKindSubscription {
 		grant, err := s.activateOrderSubscriptionTx(ctx, tx, order, rec)
 		if err != nil {
+			// 确定性不可履约(降档拒绝/套餐停用/套餐不存在): 重试注定同样失败,
+			// 留 recharging 会让订单永久悬空(webhook 重投/admin 重点都撞同一堵墙,
+			// 且无清扫器认领 recharging)。转终态 failed + 审计留痕, 用户已付款项
+			// 由 admin 经退款/人工通道处置(Manual-First, 与孤儿对账同纪律)。
+			if isDeterministicFulfillFailure(err) {
+				_ = tx.Rollback(ctx)
+				if failErr := s.markOrderFulfillFailed(ctx, rec, err); failErr != nil {
+					return FulfillResult{}, errors.Join(err, failErr)
+				}
+				return FulfillResult{}, fmt.Errorf("%w: %w", ErrOrderFulfillFailed, err)
+			}
 			return FulfillResult{}, err
 		}
 		row := tx.QueryRow(ctx, `
@@ -507,9 +518,54 @@ RETURNING`+orderSelectColumns, rec.TenantID, order.ID, rec.Now)
 	return FulfillResult{Order: order, Credit: credit, BalanceCents: balance, Idempotent: false}, nil
 }
 
+// isDeterministicFulfillFailure 判定订阅履约错误是否「确定性不可履约」——重试/重投必然
+// 同样失败的业务拒绝, 区别于瞬时故障(DB 冲突/超时, 那些该留 recharging 等重试)。
+func isDeterministicFulfillFailure(err error) bool {
+	return errors.Is(err, subscription.ErrDowngradeNotAllowed) ||
+		errors.Is(err, subscription.ErrPlanDisabled) ||
+		errors.Is(err, subscription.ErrPlanNotFound)
+}
+
+// markOrderFulfillFailed 独立事务把订单 recharging→failed + 审计 fulfillment_failed。
+// CAS 带 status='recharging' 谓词: 并发竞争者已推进(completed/failed)则 no-op 幂等。
+func (s *PostgresStore) markOrderFulfillFailed(ctx context.Context, rec fulfillRecord, cause error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("payment: begin mark fulfill failed: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
+UPDATE payment_orders SET status='failed', updated_at=$3
+WHERE tenant_id=$1 AND id=$2 AND status='recharging'`,
+		rec.TenantID, rec.OrderID, rec.Now)
+	if err != nil {
+		return fmt.Errorf("payment: mark fulfill failed: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // 并发已推进终态, 幂等退出。
+	}
+	if err := insertAuditTx(ctx, tx, auditInsert{
+		TenantID:  rec.TenantID,
+		OrderID:   rec.OrderID,
+		EventType: AuditFulfillmentFailed,
+		ActorKind: actorKindOrDefault(rec.ActorKind),
+		ActorID:   rec.ActorID,
+		ActorRef:  rec.ActorRef,
+		RequestID: rec.RequestID,
+		Payload:   map[string]any{"reason": cause.Error(), "terminal": true},
+		Now:       rec.Now,
+	}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("payment: commit mark fulfill failed: %w", err)
+	}
+	return nil
+}
+
 // activateOrderSubscriptionTx 订阅单分支: 在订单完成事务内调订阅履约入口 (激活/续期 + 写效果账本, 幂等),
-// 回传授予摘要。零 payment_credits / 零 billing_events。subscription.ErrDowngradeNotAllowed 等错误向上传播 →
-// 整事务回滚 → 订单不进 completed (留 recharging 可人工/重试)。
+// 回传授予摘要。零 payment_credits / 零 billing_events。确定性业务拒绝(降档/套餐停用)由调用方转
+// 终态 failed(见 completeFulfillOnce); 瞬时错误向上传播 → 整事务回滚 → 留 recharging 等重试。
 func (s *PostgresStore) activateOrderSubscriptionTx(ctx context.Context, tx pgx.Tx, order Order, rec fulfillRecord) (*SubscriptionGrant, error) {
 	if order.SubscriptionPlanID == nil {
 		// DB CHECK (payment_orders_subscription_kind_check) 已保证非空; 防御性二道闸。
