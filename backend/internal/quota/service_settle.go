@@ -105,16 +105,19 @@ func (s *Service) Settle(ctx context.Context, req SettleRequest) (SettleResult, 
 		case ReservationExpired:
 			return reconciliationStateError(req.TenantID, req.ClaimID, req.ReservationID, quotaReconcileKindSettleFailed, reservation.Status)
 		case ReservationReserved, ReservationReconciliationNeeded:
+			// 写操作一律用解析出的 reservation.ID,不用 req.ReservationID:结算调用方
+			// (quotaenforce)只按 claim 定位、令 req.ReservationID=0,直接用会 WHERE id=0
+			// 命中 0 行、requireAffected 抛裸 no rows,导致 quota 窗口永不结算。
 			overage, err := applySettlementWindows(ctx, tx, reservation, req.ActualCost, false)
 			if err != nil {
 				return err
 			}
-			if err := tx.ReleaseConcurrencySlots(ctx, req.TenantID, req.ReservationID, "settled"); err != nil {
+			if err := tx.ReleaseConcurrencySlots(ctx, req.TenantID, reservation.ID, "settled"); err != nil {
 				return err
 			}
 			if err := tx.SettleReservation(ctx, Settlement{
 				TenantID:      req.TenantID,
-				ReservationID: req.ReservationID,
+				ReservationID: reservation.ID,
 				ClaimID:       req.ClaimID,
 				ActualCost:    req.ActualCost,
 				SettledUnits:  reservation.ReservedUnits,
@@ -193,12 +196,12 @@ func (s *Service) Release(ctx context.Context, req ReleaseRequest) (ReleaseResul
 			if err := applyReleaseWindows(ctx, tx, reservation); err != nil {
 				return err
 			}
-			if err := tx.ReleaseConcurrencySlots(ctx, req.TenantID, req.ReservationID, req.Reason); err != nil {
+			if err := tx.ReleaseConcurrencySlots(ctx, req.TenantID, reservation.ID, req.Reason); err != nil {
 				return err
 			}
 			if err := tx.ReleaseReservation(ctx, ReservationRelease{
 				TenantID:      req.TenantID,
-				ReservationID: req.ReservationID,
+				ReservationID: reservation.ID,
 				ClaimID:       req.ClaimID,
 				Reason:        req.Reason,
 			}); err != nil {
@@ -271,12 +274,12 @@ func (s *Service) CommitCacheHit(ctx context.Context, req CacheHitRequest) (Cach
 			if _, err := applySettlementWindows(ctx, tx, reservation, decimal.Zero, true); err != nil {
 				return err
 			}
-			if err := tx.ReleaseConcurrencySlots(ctx, req.TenantID, req.ReservationID, "cache_hit"); err != nil {
+			if err := tx.ReleaseConcurrencySlots(ctx, req.TenantID, reservation.ID, "cache_hit"); err != nil {
 				return err
 			}
 			if err := tx.SettleReservation(ctx, Settlement{
 				TenantID:      req.TenantID,
-				ReservationID: req.ReservationID,
+				ReservationID: reservation.ID,
 				ClaimID:       req.ClaimID,
 				ActualCost:    decimal.Zero,
 				SettledUnits:  reservation.ReservedUnits,
