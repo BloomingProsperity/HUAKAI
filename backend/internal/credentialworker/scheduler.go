@@ -194,8 +194,19 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	if _, err := ScanRotationDue(ctx, s.rotationStore, s.rotationClassifier, s.rotationAlert, s.rotationMaxAge, s.now(), s.rotationLimit); err != nil {
 		out = errors.Join(out, err)
 	}
+	// storm 槽陈旧 reaper:release 全败/进程崩溃留下的 in_flight 永久 +1(cap=1 时
+	// 该账号永久无法刷新)每 tick 自愈归零。阈值取远大于单次刷新生命周期。
+	if s.StormController != nil {
+		if _, err := s.StormController.ReapStaleSlots(ctx, s.now().Add(-stormSlotStaleAfter)); err != nil {
+			out = errors.Join(out, err)
+		}
+	}
 	return out
 }
+
+// stormSlotStaleAfter storm 槽陈旧阈值: acquire/release 都会刷新 last_updated_at,
+// 单次刷新(含重试退避)分钟级完成, 15min 未触碰的 in_flight>0 行必为泄漏。
+const stormSlotStaleAfter = 15 * time.Minute
 
 // RotationScanConfigForTest 暴露 CRED-288 轮换扫描装配后的 store/maxAge/limit,
 // 仅供测试断言"WithRotationScan option 是否真把扫描装上"(生产 wiring 的 gating 决策

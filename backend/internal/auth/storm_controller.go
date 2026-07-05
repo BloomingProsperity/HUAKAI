@@ -3,8 +3,11 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
@@ -72,6 +75,10 @@ func (c *StormController) Acquire(ctx context.Context, tenantID, accountID int64
 
 	currentInFlight, err := c.queries.TryAcquireAccountStormSlot(ctx, budget.ID)
 	if err != nil {
+		// +1 与结果回读非原子: UPDATE 可能已提交而扫描失败(连接中断), 调用方拿不到
+		// release 闭包 → 永久泄漏。补偿 -1: Release 带 GREATEST(...,0) 钳位, 未提交时
+		// 补偿只会钳在 0, 净安全; 已提交时立即消除泄漏。
+		c.releaseSlotWithRetry(budget.ID)
 		return nil, "", err
 	}
 	if currentInFlight <= 0 {
@@ -81,11 +88,40 @@ func (c *StormController) Acquire(ctx context.Context, tenantID, accountID int64
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
-			_ = c.queries.ReleaseAccountStormSlot(context.Background(), budget.ID)
+			c.releaseSlotWithRetry(budget.ID)
 		})
 	}
 
 	return release, "", nil
+}
+
+// releaseSlotWithRetry 释放 account 槽位: current_in_flight 是持久计数器且 cap 默认 1,
+// 一次瞬时 DB 失败若被吞掉即该账号永久无法刷新。带退避重试; 全部失败则大声记日志,
+// 残留泄漏由陈旧 reaper (ReapStaleSlots) 兜底自愈。用脱离 ctx: 释放不得随请求取消。
+func (c *StormController) releaseSlotWithRetry(budgetID int64) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		lastErr = c.queries.ReleaseAccountStormSlot(ctx, budgetID)
+		cancel()
+		if lastErr == nil {
+			return
+		}
+	}
+	slog.Warn("auth: storm slot release failed after retries; stale reaper will self-heal",
+		"budget_id", budgetID, "err", lastErr)
+}
+
+// ReapStaleSlots 归零陈旧的 in_flight 计数 (release 全败/进程崩溃留下的永久 +1)。
+// staleBefore 之前未被 acquire/release 触碰过的 in_flight>0 行视为泄漏。
+func (c *StormController) ReapStaleSlots(ctx context.Context, staleBefore time.Time) (int64, error) {
+	if c == nil || c.queries == nil {
+		return 0, ErrStormControllerUnavailable
+	}
+	return c.queries.ReapStaleAccountStormSlots(ctx, pgtype.Timestamptz{Time: staleBefore, Valid: true})
 }
 
 // AcquireProviderEndpoint 从 per-(provider, endpoint) bucket 消费一个 token。
