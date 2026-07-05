@@ -572,11 +572,31 @@ func (s *PostgresStore) ListStaleReservedReservations(ctx context.Context, at ti
 			ClaimID:            row.ClaimID,
 			PredictedCost:      decimalFromPG(row.PredictedCost),
 			ClaimStatus:        row.ClaimStatus,
-			ClaimActualCost:    decimalFromPG(row.ClaimActualCost),
+			ClaimActualCost:    row.ClaimActualCost.Decimal,
 			ClaimActualCostSet: row.ClaimActualCost.Valid,
 		})
 	}
 	return stale, nil
+}
+
+// GetClaimTerminalState 点查 billing claim 现状(status + actual_cost)。
+func (s *PostgresStore) GetClaimTerminalState(ctx context.Context, tenantID, claimID int64) (ClaimTerminalState, error) {
+	q, err := s.queries()
+	if err != nil {
+		return ClaimTerminalState{}, err
+	}
+	row, err := q.GetBillingClaimTerminalState(ctx, dbquota.GetBillingClaimTerminalStateParams{
+		TenantID: tenantID,
+		ClaimID:  claimID,
+	})
+	if err != nil {
+		return ClaimTerminalState{}, err
+	}
+	return ClaimTerminalState{
+		Status:        row.Status,
+		ActualCost:    row.ActualCost.Decimal,
+		ActualCostSet: row.ActualCost.Valid,
+	}, nil
 }
 
 func (s *PostgresStore) MarkReconciliationJobRunning(ctx context.Context, tenantID int64, jobID int64) error {

@@ -127,11 +127,15 @@ func (r *Reconciler) ReconcileAllTenants(ctx context.Context, now time.Time) (in
 }
 
 // SweepStaleReservations 兜住「billing claim 已终态但 quota 补偿 job 从未入队」的崩溃窗口
-//(进程死于 billing Tx2 commit 与 quota settle 之间时, job 表里什么都没有, 预留会永久卡
-// reserved 冻结窗口 headroom)。按 claim 终态定向补偿: committed→Settle(优先用 claim 的
-// actual_cost, NULL 时退回 predicted_cost 保守代理), aborted→Release。两个动作与并发中的
-// 真实结算相撞时都是幂等命中(见 service_settle.go 终态 switch), 无竞态窗口; claim 仍
-// reserving 的行不取(billing lease sweeper 先终结, 下一轮再接)。返回本轮补偿成功的预留数。
+// (进程死于 billing Tx2 commit 与 quota settle 之间时, job 表里什么都没有, 预留会永久卡
+// reserved 冻结窗口 headroom)。只取无补偿 job 史的孤儿行——有 job 史的行归 job 重放段,
+// 其退避与终态停靠不可被本段每轮重试击穿(本段动作失败时 Settle 内部会入队 job,
+// 于是该行下一轮起自动改走 job 段, 天然获得退避)。
+// 竞态口径: list 是时点快照, 每行动作前经 sweepStaleRow 复核现状(预留仍未终态、lease 仍
+// 过期、claim 仍终态), 把 aborted→复活链的竞态收窄到复核与动作事务之间的毫秒级; 动作本身
+// 行锁 + 幂等(见 service_settle.go 终态 switch), 与并发真实结算相撞时后到方幂等命中,
+// 残余最坏情形是一次错误返回入 errs 由后续轮次/job 段接手。返回本轮真实补偿的预留数
+// (幂等命中不计)。
 func (r *Reconciler) SweepStaleReservations(ctx context.Context, now time.Time, limit int) (int, error) {
 	if r == nil || r.service == nil || r.store == nil {
 		return 0, fmt.Errorf("quota reconciler: service and store are required")
@@ -154,44 +158,73 @@ func (r *Reconciler) SweepStaleReservations(ctx context.Context, now time.Time, 
 			errs = append(errs, err)
 			break
 		}
-		var actErr error
-		switch row.ClaimStatus {
-		case claimStatusCommitted:
-			actual := row.PredictedCost
-			if row.ClaimActualCostSet {
-				actual = row.ClaimActualCost
-			}
-			_, actErr = r.service.Settle(ctx, SettleRequest{
-				TenantID:      row.TenantID,
-				ClaimID:       row.ClaimID,
-				ReservationID: row.ReservationID,
-				ActualCost:    actual,
-				SettledAt:     now,
-			})
-		case claimStatusAborted:
-			_, actErr = r.service.Release(ctx, ReleaseRequest{
-				TenantID:      row.TenantID,
-				ClaimID:       row.ClaimID,
-				ReservationID: row.ReservationID,
-				Reason:        reconciliationReleaseReason,
-				ReleasedAt:    now,
-			})
-		default:
-			continue
-		}
+		acted, actErr := r.sweepStaleRow(ctx, now, row)
 		if actErr != nil {
-			// 单行失败不阻断其它行(下一轮重扫仍会接住本行)。
 			errs = append(errs, fmt.Errorf("tenant %d reservation %d claim %d (%s): %w",
 				row.TenantID, row.ReservationID, row.ClaimID, row.ClaimStatus, actErr))
 			continue
 		}
-		processed++
+		if acted {
+			processed++
+		}
 	}
 	if processed > 0 {
 		r.logger.InfoContext(ctx, "quota reconciler swept stale reservations",
 			"processed", processed, "scanned", len(stale))
 	}
 	return processed, errors.Join(errs...)
+}
+
+// sweepStaleRow 对单个候选行复核现状后定向补偿。返回 (是否真实补偿, 错误);
+// 复核不通过(claim 复活/预留已终态/lease 已被 reactivate 续期)与幂等命中都算未补偿、非错误。
+func (r *Reconciler) sweepStaleRow(ctx context.Context, now time.Time, row StaleReservation) (bool, error) {
+	rec, err := r.store.GetReservationByClaimForUpdate(ctx, row.TenantID, row.ClaimID)
+	if err != nil {
+		return false, fmt.Errorf("recheck reservation: %w", err)
+	}
+	if rec.ID != row.ReservationID ||
+		(rec.Status != ReservationReserved && rec.Status != ReservationReconciliationNeeded) ||
+		rec.LeaseExpiresAt.After(now) {
+		return false, nil
+	}
+	claim, err := r.store.GetClaimTerminalState(ctx, row.TenantID, row.ClaimID)
+	if err != nil {
+		return false, fmt.Errorf("recheck claim: %w", err)
+	}
+	switch claim.Status {
+	case claimStatusCommitted:
+		// billing 金额权威取 claim 实结额; actual_cost 仅在 commit 时写入
+		//(billing_settle.sql, WHERE status='reserving'), NULL 时退 predicted 保守代理。
+		actual := rec.PredictedCost
+		if claim.ActualCostSet {
+			actual = claim.ActualCost
+		}
+		result, err := r.service.Settle(ctx, SettleRequest{
+			TenantID:      row.TenantID,
+			ClaimID:       row.ClaimID,
+			ReservationID: row.ReservationID,
+			ActualCost:    actual,
+			SettledAt:     now,
+		})
+		if err != nil {
+			return false, err
+		}
+		return !result.IdempotencyHit, nil
+	case claimStatusAborted:
+		result, err := r.service.Release(ctx, ReleaseRequest{
+			TenantID:      row.TenantID,
+			ClaimID:       row.ClaimID,
+			ReservationID: row.ReservationID,
+			Reason:        reconciliationReleaseReason,
+			ReleasedAt:    now,
+		})
+		if err != nil {
+			return false, err
+		}
+		return !result.IdempotencyHit, nil
+	default:
+		return false, nil
+	}
 }
 
 func (r *Reconciler) ReconcileDueJobs(ctx context.Context, tenantID int64, now time.Time, limit int) (int, error) {
@@ -254,14 +287,17 @@ func (r *Reconciler) replayJob(ctx context.Context, tenantID int64, now time.Tim
 
 	switch job.Kind {
 	case reconciliationKindSettleAfterBillingSuccess:
-		// job 表没有真实 actual_cost; billing ledger 是金额权威。这里用 reserve 阶段
-		// predicted_cost 作为 quota 视图的保守代理, 把 hold 从 reserved 转到 settled,
-		// 不释放用量, 避免 billing 已成功但 quota 漏算。
+		// billing ledger 是金额权威: claim 已写实结额时用它, 未写(NULL)退回 reserve 阶段
+		// predicted_cost 保守代理, 与清扫段同一取值口径, 避免同类孤儿两段结出不同金额。
+		actual := reservation.PredictedCost
+		if claim, err := r.store.GetClaimTerminalState(ctx, tenantID, job.ClaimID); err == nil && claim.ActualCostSet {
+			actual = claim.ActualCost
+		}
 		_, err := r.service.Settle(ctx, SettleRequest{
 			TenantID:      tenantID,
 			ClaimID:       job.ClaimID,
 			ReservationID: reservationID,
-			ActualCost:    reservation.PredictedCost,
+			ActualCost:    actual,
 			SettledAt:     now,
 		})
 		return err

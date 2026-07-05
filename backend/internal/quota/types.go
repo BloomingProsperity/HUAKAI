@@ -213,6 +213,14 @@ type ReconciliationJob struct {
 	NextRunAt     time.Time
 }
 
+// ClaimTerminalState 是 billing claim 的现状点查视图。ActualCostSet=false 表示
+// actual_cost 仍为 NULL(尚未 commit 写入实结额)。
+type ClaimTerminalState struct {
+	Status        string
+	ActualCost    decimal.Decimal
+	ActualCostSet bool
+}
+
 // StaleReservation 是 lease 已过期仍未终态的预留 + 其 billing claim 终态视图,
 // 供清扫器按 claim 终态定向补偿(committed→Settle, aborted→Release)。
 // ClaimActualCostSet=false 表示 claim 行 actual_cost 为 NULL(此时用 PredictedCost 兜底)。

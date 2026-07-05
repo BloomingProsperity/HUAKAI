@@ -508,6 +508,10 @@ func (s *noTxReserveStore) ListStaleReservedReservations(context.Context, time.T
 	return nil, s.fail()
 }
 
+func (s *noTxReserveStore) GetClaimTerminalState(context.Context, int64, int64) (ClaimTerminalState, error) {
+	return ClaimTerminalState{}, s.fail()
+}
+
 func (s *noTxReserveStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {
 	return ConcurrencySlot{}, s.fail()
 }
@@ -627,6 +631,10 @@ func (s *claimConflictReplayStore) MarkReservationReconciliationNeeded(context.C
 
 func (s *claimConflictReplayStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
 	return nil, errors.New("unexpected ListStaleReservedReservations")
+}
+
+func (s *claimConflictReplayStore) GetClaimTerminalState(context.Context, int64, int64) (ClaimTerminalState, error) {
+	return ClaimTerminalState{}, errors.New("unexpected GetClaimTerminalState")
 }
 
 func (s *claimConflictReplayStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {

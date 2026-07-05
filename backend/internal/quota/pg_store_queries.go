@@ -13,6 +13,7 @@ type quotaQueries interface {
 	EnqueueQuotaReconciliationJob(ctx context.Context, arg dbquota.EnqueueQuotaReconciliationJobParams) (dbquota.EnqueueQuotaReconciliationJobRow, error)
 	ExpireQuotaConcurrencySlots(ctx context.Context, arg dbquota.ExpireQuotaConcurrencySlotsParams) (int64, error)
 	FailQuotaReconciliationJob(ctx context.Context, arg dbquota.FailQuotaReconciliationJobParams) (int64, error)
+	GetBillingClaimTerminalState(ctx context.Context, arg dbquota.GetBillingClaimTerminalStateParams) (dbquota.GetBillingClaimTerminalStateRow, error)
 	GetQuotaReservationByClaimForUpdate(ctx context.Context, arg dbquota.GetQuotaReservationByClaimForUpdateParams) (dbquota.GetQuotaReservationByClaimForUpdateRow, error)
 	GetQuotaWindowForUpdate(ctx context.Context, arg dbquota.GetQuotaWindowForUpdateParams) (dbquota.GetQuotaWindowForUpdateRow, error)
 	IncrementQuotaWindowRequestCount(ctx context.Context, arg dbquota.IncrementQuotaWindowRequestCountParams) (dbquota.IncrementQuotaWindowRequestCountRow, error)

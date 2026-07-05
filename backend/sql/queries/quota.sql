@@ -571,9 +571,7 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND status = 'running';
 
 -- name: ListStaleReservedQuotaReservations :many
--- 清扫入口: lease 已过期仍未终态的预留, 连同其 billing claim 终态与实结金额。
--- 只取 claim 已终态(committed/aborted)的行; 仍 reserving 的 claim 由 billing
--- lease sweeper 先终结, 下一轮再被本查询接住。跨租户扫描, 补偿动作按行内租户执行。
+-- 清扫入口: lease 过期未终态 + claim 已终态 + 无任何补偿 job 史的孤儿预留(有 job 史的行归 job 重放段, 其退避与终态停靠不可被清扫段每轮重试击穿)。
 SELECT qr.tenant_id,
        qr.id AS reservation_id,
        qr.claim_id,
@@ -587,5 +585,19 @@ JOIN billing_ledger_claims blc
 WHERE qr.status IN ('reserved', 'reconciliation_needed')
   AND qr.lease_expires_at <= sqlc.arg(at_time)::timestamptz
   AND blc.status IN ('committed', 'aborted')
+  AND NOT EXISTS (
+      SELECT 1
+      FROM quota_reconciliation_jobs j
+      WHERE j.tenant_id = qr.tenant_id
+        AND j.claim_id = qr.claim_id
+        AND j.status IN ('queued', 'running', 'failed')
+  )
 ORDER BY qr.lease_expires_at ASC, qr.id ASC
 LIMIT sqlc.arg(row_limit)::integer;
+
+-- name: GetBillingClaimTerminalState :one
+-- claim 终态点查: 补偿动作执行前复核 claim 现状(actual_cost 非 NULL 等价于已 commit 写入实结额)。
+SELECT status, actual_cost
+FROM billing_ledger_claims
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(claim_id)::bigint;

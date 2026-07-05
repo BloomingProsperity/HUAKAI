@@ -187,6 +187,125 @@ func TestReconcilerSweep_IneligibleRowsDoNotConsumeLimit(t *testing.T) {
 	}
 }
 
+// seedFailedReconciliationJob 直插一条 failed 态补偿 job,模拟「重放已失败、正在退避」的行。
+func (f *quotaFixture) seedFailedReconciliationJob(claimID int64, kind string, at time.Time) {
+	f.t.Helper()
+	if _, err := f.pool.Exec(f.ctx,
+		`INSERT INTO quota_reconciliation_jobs (tenant_id, claim_id, job_kind, status, attempt_count, next_run_at, created_at, updated_at)
+		 VALUES ($1, $2, $3, 'failed', 3, $4, $4, $4)`,
+		f.tenantID, claimID, kind, at,
+	); err != nil {
+		f.t.Fatalf("seed failed reconciliation job: %v", err)
+	}
+}
+
+// TestReconcilerSweep_SkipsRowsWithJobHistory 守住清扫段不得碰有补偿 job 史的行:
+// job 段自带退避与终态停靠,清扫段每轮重试会击穿它(每分钟 re-enqueue 一条新 job,
+// attempt_count 永远打不到上限,job 表无界增长)。
+// Mutation: 查询去掉 NOT EXISTS 反连接 → failed job 的行被清扫处理 → RED。
+func TestReconcilerSweep_SkipsRowsWithJobHistory(t *testing.T) {
+	ctx, f, store, reconciler := newQuotaReconcilerRuntime(t)
+	now := time.Date(2026, 7, 5, 9, 45, 0, 0, time.UTC)
+	f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricCostUSD, WindowFixed, 3600, "100", ModeEnforce)
+	reserve := f.reserveForSettlement(ctx, NewService(store), now, "sweep-job-history", "4", false)
+	f.expireReservationLease(reserve.Reservation.ID, now.Add(-time.Minute))
+	f.setClaimTerminal(reserve.Reservation.ClaimID, "committed", "2")
+	f.seedFailedReconciliationJob(reserve.Reservation.ClaimID, "settle_after_billing_success", now.Add(time.Hour))
+
+	processed, err := reconciler.SweepStaleReservations(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("SweepStaleReservations: %v", err)
+	}
+	if processed != 0 {
+		t.Fatalf("processed=%d; want 0 (有 job 史的行归 job 段)", processed)
+	}
+	status, _, _, _ := f.reservationSettlement(reserve.Reservation.ID)
+	if status != ReservationReserved {
+		t.Fatalf("reservation status=%s; want untouched reserved", status)
+	}
+}
+
+// TestReconcilerSweep_RowRecheckSkipsRevivedClaim 守住每行动作前的现状复核:
+// list 快照后 claim 被复活(aborted→reserving)或预留 lease 被 reactivate 续期时,
+// 必须跳过,不得按 stale 快照 Release 在途预留(并发槽/headroom 会被中途归还)。
+// Mutation: sweepStaleRow 删掉复核直接按快照动作 → 复活行被 Release → RED。
+func TestReconcilerSweep_RowRecheckSkipsRevivedClaim(t *testing.T) {
+	ctx, f, store, reconciler := newQuotaReconcilerRuntime(t)
+	now := time.Date(2026, 7, 5, 9, 50, 0, 0, time.UTC)
+	f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricCostUSD, WindowFixed, 3600, "100", ModeEnforce)
+	service := NewService(store)
+
+	// 子场景1: 快照声称 aborted,现状已复活为 reserving → 跳过。
+	revived := f.reserveForSettlement(ctx, service, now, "sweep-revived", "4", false)
+	f.expireReservationLease(revived.Reservation.ID, now.Add(-time.Minute))
+	staleRow := StaleReservation{
+		TenantID:      f.tenantID,
+		ReservationID: revived.Reservation.ID,
+		ClaimID:       revived.Reservation.ClaimID,
+		PredictedCost: decimal.NewFromInt(4),
+		ClaimStatus:   "aborted", // stale 快照
+	}
+	acted, err := reconciler.sweepStaleRow(ctx, now, staleRow)
+	if err != nil {
+		t.Fatalf("sweepStaleRow revived: %v", err)
+	}
+	if acted {
+		t.Fatal("acted=true; claim 现状 reserving 必须跳过")
+	}
+	status, _, _, _ := f.reservationSettlement(revived.Reservation.ID)
+	if status != ReservationReserved {
+		t.Fatalf("reservation status=%s; want untouched reserved", status)
+	}
+
+	// 子场景2: 快照后 lease 被续期(reactivate 语义)→ 跳过。
+	renewed := f.reserveForSettlement(ctx, service, now, "sweep-renewed", "4", false)
+	f.setClaimTerminal(renewed.Reservation.ClaimID, "aborted", "")
+	f.expireReservationLease(renewed.Reservation.ID, now.Add(30*time.Minute)) // 现状 lease 在未来
+	renewedRow := StaleReservation{
+		TenantID:      f.tenantID,
+		ReservationID: renewed.Reservation.ID,
+		ClaimID:       renewed.Reservation.ClaimID,
+		PredictedCost: decimal.NewFromInt(4),
+		ClaimStatus:   "aborted",
+	}
+	acted, err = reconciler.sweepStaleRow(ctx, now, renewedRow)
+	if err != nil {
+		t.Fatalf("sweepStaleRow renewed: %v", err)
+	}
+	if acted {
+		t.Fatal("acted=true; lease 已续期(在途)必须跳过")
+	}
+	status, _, _, _ = f.reservationSettlement(renewed.Reservation.ID)
+	if status != ReservationReserved {
+		t.Fatalf("renewed reservation status=%s; want untouched reserved", status)
+	}
+}
+
+// TestReconciler_JobReplayUsesClaimActualCost 守住 job 重放段与清扫段同一金额口径:
+// claim 已写实结额时必须用它,不得恒用 predicted(同类孤儿两段结出不同金额)。
+// Mutation: replayJob settle 分支回退恒用 predicted → settled_cost=4≠2 → RED。
+func TestReconciler_JobReplayUsesClaimActualCost(t *testing.T) {
+	ctx, f, store, reconciler := newQuotaReconcilerRuntime(t)
+	now := time.Date(2026, 7, 5, 9, 55, 0, 0, time.UTC)
+	f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricCostUSD, WindowFixed, 3600, "100", ModeEnforce)
+	reserve := f.reserveForSettlement(ctx, NewService(store), now, "job-actual-cost", "4", false)
+	f.requireReservationReconciliation(ctx, store, reserve.Reservation)
+	f.setClaimTerminal(reserve.Reservation.ClaimID, "committed", "2")
+	f.enqueueReconcilerJob(ctx, store, reserve.Reservation.ClaimID, &reserve.Reservation.ID, "settle_after_billing_success", now.Add(-time.Minute))
+
+	processed, err := reconciler.ReconcileDueJobs(ctx, f.tenantID, now, 10)
+	if err != nil {
+		t.Fatalf("ReconcileDueJobs: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed=%d; want 1", processed)
+	}
+	status, settledCost, _, _ := f.reservationSettlement(reserve.Reservation.ID)
+	if status != ReservationSettled || !settledCost.Equal(decimal.NewFromInt(2)) {
+		t.Fatalf("reservation status=%s settled_cost=%s; want settled with claim actual 2", status, settledCost)
+	}
+}
+
 // TestReconciliationWorker_RunOnceIncludesStaleSweep 守住 worker 单轮必须带清扫段:
 // job 表为空(崩溃窗口下本来就没有 job)时,孤儿预留仍要在一轮内被补偿。
 // Mutation: RunOnce 去掉 SweepStaleReservations 调用 → processed=0、预留仍 reserved → RED。

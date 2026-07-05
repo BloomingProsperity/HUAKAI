@@ -1096,6 +1096,10 @@ func (s failingReserveStore) ListStaleReservedReservations(context.Context, time
 	return nil, s.err
 }
 
+func (s failingReserveStore) GetClaimTerminalState(context.Context, int64, int64) (ClaimTerminalState, error) {
+	return ClaimTerminalState{}, s.err
+}
+
 func (s failingReserveStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {
 	return ConcurrencySlot{}, s.err
 }
