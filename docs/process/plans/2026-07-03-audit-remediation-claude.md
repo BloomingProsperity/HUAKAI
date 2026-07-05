@@ -31,6 +31,9 @@
 
 - ✅ **A#5 + A#6**(4bf18522)storm 槽持久计数器泄漏三件套:①A#6 回读失败就地补偿 -1(GREATEST 钳位净安全)②A#5 release 3 次退避重试+脱离 ctx+全败 slog,Once 幂等保留 ③陈旧 reaper 15min 归零(last_updated_at 现成列零 schema),挂 credentialworker 每 tick——加固#4 落地。三变异证红(含语义变异:去陈旧条件→新鲜行误伤断言红);StormController DB 路径零测试一并补齐。**剩 S2 仅 A#8。**
 
+- ✅ **A#8 + A#9 + A#9b**(241485ac)交付后写与补偿释放全部脱钩:①A#8 MarkFinalized 脱钩+3 次重试(Create 后是记录既成事实;全败由既有 expires_at 惰性过期兜底——亲读 BeginFinalize Get 回退路径核实该语义已存在,审计建议的"孤儿对账器"由此覆盖)②A#9b 两个 MarkFailed 补偿脱钩 ③A#9 selector 槽补偿 releaseSlotDetached(镜像 pasr HIGH-2)。四变异证红;判别关键=ctx 敏感 DB 包装(fake 忽略 ctx 则测试恒绿伪判别)。
+  - **勘误**:进度行「A#1 顺带解 A#4(budget)」应为 #7(budget);#4(media claim 被 sweeper 抢先 abort)仍待修。**剩:A#4(S2)+ B8/B10(S3)。**
+
 ### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
 - **方案 = 提前量续费(renew-ahead grace window),到期判据不动**:`ListAutoRenewDue` 扫 `expires_at <= now+lead`(PG+memory 同改);`tryAutoRenewOnce` 锁行复查同用 `DueCutoff`(autoRenewRecord 加字段);`ProcessAutoRenewal` 算 cutoff 下传。lead 取 30min(5min 节拍 ≥6 次尝试,余额不足可重试;对比 Apple 提前 24h 扣款,30min 属保守)。
 - **为什么不选「ListDueExpiry 排除 auto_renew=true」**:续费持续失败(余额不足/套餐停用)的订阅将永不到期 → 白嫖;要堵这个洞需加失败计数/宽限状态机 = schema 变更。提前量方案零 schema、到期兜底天然保留:续费失败订阅照常在 expires_at 到期降级。
