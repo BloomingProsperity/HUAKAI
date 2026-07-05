@@ -379,6 +379,28 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			return
 		}
 		authMethod := "password+" + result.Method
+		// 账号资格门:challenge 签发(密码对)到此刻之间账号可能被封禁/锁定/删除,
+		// 签发会话前必须复核(与 passkey/social 登录同一道门), 否则 challenge 窗口
+		// 成为停用控制的绕过口。对外统一 403 account_not_active, 不泄露具体状态。
+		if user, err := d.Auth.GetProfile(r.Context(), result.TenantID, result.UserID); err != nil || userauth.EnsureLoginEligible(user, time.Now()) != nil {
+			if err == nil {
+				err = userauth.EnsureLoginEligible(user, time.Now())
+			}
+			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				EventType: "user_login_2fa_failed", TenantID: result.TenantID, UserID: result.UserID,
+				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: authMethod,
+			})
+			switch {
+			case errors.Is(err, userauth.ErrUserNotFound),
+				errors.Is(err, userauth.ErrUserDisabled),
+				errors.Is(err, userauth.ErrUserLocked),
+				errors.Is(err, userauth.ErrPasswordResetRequired):
+				writeJSONError(w, http.StatusForbidden, "account_not_active", "account is no longer active")
+			default:
+				writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
+			}
+			return
+		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
 			TenantID: result.TenantID, UserID: result.UserID, DeviceInfo: req.DeviceInfo,
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: authMethod,

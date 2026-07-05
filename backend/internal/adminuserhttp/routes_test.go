@@ -3,6 +3,7 @@ package adminuserhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -859,6 +860,36 @@ func TestAdminSetUserStatusDisableAudited(t *testing.T) {
 	if len(audit.arg.Payload) == 0 || !strings.Contains(string(audit.arg.Payload), "status_before") {
 		t.Fatalf("audit payload 缺 before/after: %s", audit.arg.Payload)
 	}
+}
+
+// TestAdminSetUserStatusDisable_RevokesSessions 封禁第三轴:置 disabled 必须撤该用户
+// 全部既有会话(登录门与 API key 联查只挡新入口,已签发 bearer/refresh 不撤能活到自然过期);
+// 重新启用(active)不撤;撤销失败映 503 不静默吞。
+// MUTATION: 去掉 handler 里 status=="disabled" 的 SessionRevoker 调用 → rev.calls==0 → 红。
+func TestAdminSetUserStatusDisable_RevokesSessions(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	setter := &userStatusSetterStub{}
+	rev := &sessionRevokerStub{}
+	audit := &adminAuditStub{}
+	deps := Deps{
+		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store,
+		UserStatusSetter: setter, SessionRevoker: rev, Audit: audit,
+	}
+	rec := invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled"}`)
+	assertStatus(t, rec, http.StatusOK)
+	if rev.calls != 1 || rev.in.TenantID != 7 || rev.in.UserID != 101 || rev.in.Reason != "admin_user_disabled" {
+		t.Fatalf("封禁未撤会话: calls=%d in=%+v", rev.calls, rev.in)
+	}
+	// 重新启用不撤会话。
+	rec = invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"active"}`)
+	assertStatus(t, rec, http.StatusOK)
+	if rev.calls != 1 {
+		t.Fatalf("启用不该撤会话: calls=%d want 1", rev.calls)
+	}
+	// 撤销失败 → 503(调用者可重试,RevokeUser 幂等)。
+	deps.SessionRevoker = &sessionRevokerStub{err: errors.New("revoke backend down")}
+	rec = invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled"}`)
+	assertStatus(t, rec, http.StatusServiceUnavailable)
 }
 
 // TestAdminSetUserStatusInvalidRejected 非 active/disabled 状态 → 400,不触达 store/audit。

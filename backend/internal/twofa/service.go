@@ -305,11 +305,17 @@ func (s *Service) VerifyLoginChallenge(ctx context.Context, in ChallengeVerifyIn
 	if err != nil {
 		return VerifyResult{}, err
 	}
-	return s.VerifyLogin(ctx, VerifyInput{
+	res, err := s.VerifyLogin(ctx, VerifyInput{
 		TenantID: payload.TenantID,
 		UserID:   payload.UserID,
 		Code:     in.Code,
 	})
+	if err != nil {
+		// challenge 已解出身份, 校验失败也回填 —— 调用方的失败/锁定审计才能归因到
+		// (tenant, user), 否则恒记 0/0 无法追查。
+		return VerifyResult{TenantID: payload.TenantID, UserID: payload.UserID}, err
+	}
+	return res, nil
 }
 
 func (s *Service) ready() error {

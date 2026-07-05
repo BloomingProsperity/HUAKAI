@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 // user_status.go — 终端用户封禁/启用(slice 3,从 routes.go 抽出以守软预算门)。
@@ -95,6 +96,18 @@ func newSetUserStatusHandler(d Deps) http.HandlerFunc {
 			// 不静默成功(否则运营者以为封了实际没动)。
 			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found or already deleted")
 			return
+		}
+		// 封禁第三轴:撤既有会话(bearer+refresh)。登录门与 API key 联查只挡新入口,
+		// 已签发的 self-service 会话不撤就能活到自然过期。与删除路径同纪律:失败映 503
+		// 让调用者重试(RevokeUser 幂等);重新启用(active)不撤。
+		if status == "disabled" && d.SessionRevoker != nil {
+			if _, err := d.SessionRevoker.Revoke(r.Context(), usersession.RevokeInput{
+				TenantID: tenantID, UserID: userID, Reason: "admin_user_disabled",
+			}); err != nil {
+				writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
+					fmt.Sprintf("revoke disabled user sessions failed: %v", err))
+				return
+			}
 		}
 		ai := buildUnlockAuditInput(r, ident, before.Status)
 		payload, err := marshalUnlockAuditPayload(before.Status, status)

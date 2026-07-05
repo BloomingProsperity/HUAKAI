@@ -120,6 +120,15 @@ func TestLoginChallengeRequiresValidSignatureAndCode(t *testing.T) {
 	if !errors.Is(err, ErrChallengeInvalid) {
 		t.Fatalf("tampered challenge err=%v want ErrChallengeInvalid", err)
 	}
+	// 错误验证码: 失败也必须回填 challenge 解出的身份, 否则调用方失败/锁定审计恒记 0/0 无法归因。
+	// mutation: VerifyLoginChallenge 失败分支退回裸 `return VerifyResult{}, err` → 断言红。
+	failed, err := svc.VerifyLoginChallenge(ctx, ChallengeVerifyInput{ChallengeID: challenge.ID, Code: "000000"})
+	if !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("wrong code err=%v want ErrInvalidCode", err)
+	}
+	if failed.TenantID != 1 || failed.UserID != 1001 {
+		t.Fatalf("失败结果身份 = (%d,%d), want (1,1001) —— 审计无法归因", failed.TenantID, failed.UserID)
+	}
 	result, err := svc.VerifyLoginChallenge(ctx, ChallengeVerifyInput{ChallengeID: challenge.ID, Code: codeFromSetupSecret(t, setup.Secret, now)})
 	if err != nil {
 		t.Fatalf("VerifyLoginChallenge: %v", err)
