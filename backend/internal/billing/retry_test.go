@@ -46,6 +46,79 @@ func TestRetryReserve_RetriesSerializationThenSucceeds(t *testing.T) {
 	}
 }
 
+// TestRetryTx2_RetriesSerializationThenSucceeds 覆盖 Settle/Abort 共用的 Tx2
+// 包装:前 2 次 40001/40P01、第 3 次成功 → 最终成功且只退避 2 次。
+// 变异契约:让 retryTx2 首次遇到 40001 直接返回 → calls==1 / err!=nil,本测试红。
+// Settle/Abort 外层包装的变异证据由 settler_integration_test 覆盖。
+func TestRetryTx2_RetriesSerializationThenSucceeds(t *testing.T) {
+	for _, code := range []string{"40001", "40P01"} {
+		t.Run(code, func(t *testing.T) {
+			calls, sleeps := 0, 0
+			err := retryTx2(context.Background(), "settle", func(context.Context) error {
+				calls++
+				if calls <= 2 {
+					return fakePgErr(code)
+				}
+				return nil
+			}, countingSleep(&sleeps), zeroRand)
+			if err != nil {
+				t.Fatalf("Tx2 应在 %s 后重试成功,得 err=%v", code, err)
+			}
+			if calls != 3 {
+				t.Fatalf("Tx2 应跑 3 次(2 重试+1 成功),得 %d", calls)
+			}
+			if sleeps != 2 {
+				t.Fatalf("Tx2 应退避 2 次,得 %d", sleeps)
+			}
+		})
+	}
+}
+
+// TestRetryTx2_BusinessErrorsNotRetried:Tx2 的业务哨兵和普通错误代表确定性结果,
+// 不能被当成并发冲突重跑。变异契约:把 retryTx2 改成任意错误都重试 →
+// ErrClaimNotReserving / ErrSlotReleaseMissed 等会 calls>1,本测试红。
+func TestRetryTx2_BusinessErrorsNotRetried(t *testing.T) {
+	for _, sentinel := range []error{
+		ErrClaimNotReserving,
+		ErrAcquisitionTokenMismatch,
+		ErrSlotReleaseMissed,
+		errors.New("plain tx2 error"),
+	} {
+		calls := 0
+		err := retryTx2(context.Background(), "abort", func(context.Context) error {
+			calls++
+			return sentinel
+		}, countingSleep(new(int)), zeroRand)
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("Tx2 错误 %v 应原样返回,得 %v", sentinel, err)
+		}
+		if calls != 1 {
+			t.Fatalf("Tx2 错误 %v 不应重试,跑了 %d 次", sentinel, calls)
+		}
+	}
+}
+
+// TestRetryTx2_ExhaustsToLastError:Tx2 重试预算耗尽后返回最后一次原始 40001,
+// 让 settlement recovery / lease sweep 等既有兜底继续按原错误处理。
+// 变异契约:若错误被吞掉、被映射成 ErrClaimRace 或提前停止,本测试红。
+func TestRetryTx2_ExhaustsToLastError(t *testing.T) {
+	calls, sleeps := 0, 0
+	lastErr := fakePgErr("40001")
+	err := retryTx2(context.Background(), "settle", func(context.Context) error {
+		calls++
+		return lastErr
+	}, countingSleep(&sleeps), zeroRand)
+	if err != lastErr {
+		t.Fatalf("Tx2 耗尽应返回最后原始错误,got %v want %v", err, lastErr)
+	}
+	if calls != reserveRetryMax+1 {
+		t.Fatalf("Tx2 应跑 max+1=%d 次,得 %d", reserveRetryMax+1, calls)
+	}
+	if sleeps != reserveRetryMax {
+		t.Fatalf("Tx2 应退避 max=%d 次,得 %d", reserveRetryMax, sleeps)
+	}
+}
+
 // TestRetryReserve_ExhaustsToClaimRace:一直 40001 → 耗尽后映射 ErrClaimRace(可重试
 // 409+Retry-After),而非原 pgErr(不透明 500)。变异契约:把耗尽 return ErrClaimRace
 // 改成 return err(原 pgErr)→ errors.Is(err, ErrClaimRace) 变 false,本测试红。

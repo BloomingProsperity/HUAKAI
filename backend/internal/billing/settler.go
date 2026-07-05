@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -74,11 +75,79 @@ func NewSettler(pool *pgxpool.Pool, opts ...SettlerOption) *DefaultSettler {
 	return s
 }
 
+// retryTx2 在完整 Tx2 事务遇到 Serializable 冲突时有限重试。
+// fn 必须自包含 BeginTx→Commit/Rollback,所有 usage_record、billing_event、hold
+// capture/release、pool slot 释放都必须在该事务内完成。PostgreSQL 对 40001/40P01
+// 会撤销整事务,所以重跑不会留下部分写入;若并发路径已把 claim 推进到终态,
+// settleOnce/abortOnce 的 status='reserving' 守卫会返回 ErrClaimNotReserving,
+// 从而阻止重复计费、重复退款和重复审计事件。
+func retryTx2(
+	ctx context.Context,
+	name string,
+	fn func(context.Context) error,
+	sleep func(context.Context, time.Duration) bool,
+	rnd func(int64) int64,
+) error {
+	if sleep == nil {
+		sleep = sleepWithContext
+	}
+	if rnd == nil {
+		rnd = defaultReserveRand
+	}
+	if name == "" {
+		name = "tx2"
+	}
+	prev := reserveBackoffBase
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		err := fn(ctx)
+		if err == nil || !isReserveSerializationConflict(err) {
+			return err
+		}
+		lastErr = err
+		if attempt >= reserveRetryMax {
+			slog.WarnContext(ctx, "billing Tx2 serialization retry exhausted",
+				slog.String("operation", name),
+				slog.Int("attempts", attempt+1))
+			return lastErr
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		prev = reserveBackoff(prev, rnd)
+		if !sleep(ctx, prev) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			return lastErr
+		}
+	}
+}
+
 func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*SettleResult, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrPoolNotConfigured
 	}
 
+	var res *SettleResult
+	err := retryTx2(ctx, "settle", func(ctx context.Context) error {
+		next, err := s.settleOnce(ctx, req)
+		if err != nil {
+			return err
+		}
+		res = next
+		return nil
+	}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// settleOnce 执行一次完整 Tx2 结算事务。外层 retryTx2 只在 40001/40P01 后
+// 重跑整个事务;事务内任何写入若未提交都会随 Rollback 撤销,且 status='reserving'
+// 守卫保证终态 claim 不会被重复插入 usage_record、billing_event 或重复 capture。
+func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*SettleResult, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return nil, fmt.Errorf("billing: begin Tx2: %w", err)
@@ -173,18 +242,18 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 		RequestedAt:            pgTimestamp(requestedAt),
 		// TTFT/TPS 数据源:首字与流末绝对时刻(forwarder 量,零值→pgTimestamp 写 NULL 被 perf SQL 排除)。
 		// 此前从不写→列恒 NULL→avg_ttft_ms/avg_tps/p95 恒 0(设施齐全但断链)。
-		FirstByteAt:            pgTimestamp(req.Draft.FirstByteAt),
-		LastEventAt:            pgTimestamp(req.Draft.LastEventAt),
-		RequestedModel:         coalesceString(req.RequestedModel, claim.RequestedModel),
-		UpstreamModel:          nullableString(req.UpstreamModel),
-		Stream:                 req.Stream,
-		SnapshotVersion:        nullableString(req.SnapshotVersion),
-		ImageCount:             req.Draft.ImageCount,
-		ImageSize:              req.Draft.ImageSize,
-		ImageSizeBreakdown:     req.Draft.ImageSizeBreakdown,
-		IPAddress:              req.Draft.IPAddress,
-		UserAgent:              req.Draft.UserAgent,
-		ClientTool:             nullableString(req.Draft.ClientTool),
+		FirstByteAt:        pgTimestamp(req.Draft.FirstByteAt),
+		LastEventAt:        pgTimestamp(req.Draft.LastEventAt),
+		RequestedModel:     coalesceString(req.RequestedModel, claim.RequestedModel),
+		UpstreamModel:      nullableString(req.UpstreamModel),
+		Stream:             req.Stream,
+		SnapshotVersion:    nullableString(req.SnapshotVersion),
+		ImageCount:         req.Draft.ImageCount,
+		ImageSize:          req.Draft.ImageSize,
+		ImageSizeBreakdown: req.Draft.ImageSizeBreakdown,
+		IPAddress:          req.Draft.IPAddress,
+		UserAgent:          req.Draft.UserAgent,
+		ClientTool:         nullableString(req.Draft.ClientTool),
 	}
 
 	endClass := normalizeEndClass(req.Draft.EndClass, req.Stream)
@@ -277,6 +346,15 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		return ErrPoolNotConfigured
 	}
 
+	return retryTx2(ctx, "abort", func(ctx context.Context) error {
+		return s.abortOnce(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens, protocolLoss)
+	}, nil, nil)
+}
+
+// abortOnce 执行一次完整 Tx2 中止事务。外层 retryTx2 只在整事务被 Serializable
+// 冲突回滚后重跑;若 claim 已不在 reserving,这里立即返回 ErrClaimNotReserving,
+// 因而不会重复 Release、重复 claim_aborted 事件或重复零成本 usage_record。
+func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return fmt.Errorf("billing: begin abort Tx2: %w", err)

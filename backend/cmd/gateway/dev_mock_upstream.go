@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
@@ -19,6 +21,10 @@ import (
 // 或网络即可跑通。它仅供本地 MVP 演示和 smoke 测试使用;在 production 下被硬性禁用,
 // 确保真实部署绝不会静默伪造上游流量。
 const DevMockUpstreamEnv = "HUAKAI_DEV_MOCK_UPSTREAM"
+
+// DevMockUpstreamDelayMSEnv 仅供测试把 dev mock 上游请求保持一小段时间,制造真实
+// HTTP 请求重叠。未设置或为 0 时完全保持原有瞬时返回行为。
+const DevMockUpstreamDelayMSEnv = "HUAKAI_DEV_MOCK_UPSTREAM_DELAY_MS"
 
 // devMockUpstreamDoer 在启用时返回假 doer,否则返回 nil。返回 nil 时
 // UpstreamDispatcher 保持在其真实的 transport/proxy/TLS 路径上,不受影响。
@@ -39,6 +45,16 @@ type mockUpstreamDoer struct{}
 // 计费提交的行为与对接真实 provider 时完全一致。
 func (mockUpstreamDoer) Do(req *http.Request) (*http.Response, error) {
 	const inTok, outTok = 12, 8
+	if delay := devMockUpstreamDelay(); delay > 0 {
+		ctx := contextForMockRequest(req)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 	var body []byte
 	if req != nil && req.URL != nil && strings.Contains(req.URL.Path, "/messages") {
 		body = gatewayhttp.MockAnthropicUpstreamBytes("msg_devmock", "dev-mock-model", inTok, outTok)
@@ -51,6 +67,25 @@ func (mockUpstreamDoer) Do(req *http.Request) (*http.Response, error) {
 		Body:       io.NopCloser(bytes.NewReader(body)),
 		Request:    req,
 	}, nil
+}
+
+func contextForMockRequest(req *http.Request) context.Context {
+	if req == nil {
+		return context.Background()
+	}
+	return req.Context()
+}
+
+func devMockUpstreamDelay() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(DevMockUpstreamDelayMSEnv))
+	if raw == "" {
+		return 0
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // mockOpenAIChatSSE 输出一段「2 个 chunk + [DONE]」的 OpenAI chat.completion.chunk 流,

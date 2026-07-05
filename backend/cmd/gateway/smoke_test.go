@@ -1,4 +1,4 @@
-//go:build smoke
+//go:build smoke || e2e_concurrency
 
 // Phase C.4 端到端冒烟测试。构建网关二进制,在子进程中运行它,
 // 指向开发用的 PostgreSQL 容器,发送一次 chat completions 请求,
