@@ -27,7 +27,7 @@ type Service struct {
 	handlers map[EventKind]Handler
 	policy   RetryPolicy
 	now      func() time.Time
-	// poisonQuarantineDisabled 关闭"结构性毒消息 attempt1 直接 quarantine"这一行为,
+	// poisonQuarantineDisabled 关闭"结构性不可重试失败 attempt1 直接 quarantine"这一行为,
 	// 回退到旧的"按 attempt/age 走满重试 -> operator_review"路径。默认启用(更精确的
 	// operator 隔离泳道);env HUAKAI_DLQ_QUARANTINE_POISON=false/0/off 或 option 可关闭。
 	poisonQuarantineDisabled bool
@@ -47,12 +47,12 @@ func WithClock(now func() time.Time) ServiceOption {
 	}
 }
 
-// WithPoisonQuarantineDisabled 显式设置毒消息隔离开关(覆盖 env 默认),供 wiring / 测试注入。
+// WithPoisonQuarantineDisabled 显式设置结构性失败隔离开关(覆盖 env 默认),供 wiring / 测试注入。
 func WithPoisonQuarantineDisabled(disabled bool) ServiceOption {
 	return func(s *Service) { s.poisonQuarantineDisabled = disabled }
 }
 
-// poisonQuarantineDisabledFromEnv 读 HUAKAI_DLQ_QUARANTINE_POISON 决定是否禁用毒消息隔离。
+// poisonQuarantineDisabledFromEnv 读 HUAKAI_DLQ_QUARANTINE_POISON 决定是否禁用结构性失败隔离。
 // 默认(未设 / 无法识别)= 启用(返回 false),这是 fail-safe:quarantine 是更精确且完全可逆
 // (operator 可见可 replay)的终态分类。显式 false/0/off/no/n 时禁用,回退纯 NextFailure 旧行为。
 func poisonQuarantineDisabledFromEnv() bool {
@@ -157,9 +157,9 @@ func (s *Service) handle(ctx context.Context, rec Record) error {
 	return h(ctx, rec)
 }
 
-// failureDecision 选择一次 handler 失败后的下一步状态。默认启用毒消息隔离:用
-// NextFailureForErr,使 errors.Is(failErr, ErrUnretryable) 的结构性毒消息在 attempt1 直接
-// quarantine,不烧重试预算。逃生阀禁用时回退纯 NextFailure(忽略错误分类,旧行为)。
+// failureDecision 选择一次 handler 失败后的下一步状态。默认启用结构性失败隔离:用
+// NextFailureForErr,使不可重试错误在 attempt1 直接 quarantine,不烧重试预算。
+// 逃生阀禁用时回退纯 NextFailure(忽略错误分类,旧行为)。
 func (s *Service) failureDecision(rec *Record, failErr error) RetryDecision {
 	if s.poisonQuarantineDisabled {
 		return s.policy.NextFailure(s.now(), rec.FailureAt, rec.ReplayAttempts)

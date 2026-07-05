@@ -3,8 +3,6 @@ package moderation
 import (
 	"context"
 	"time"
-
-	"github.com/shopspring/decimal"
 )
 
 type Decision string
@@ -15,7 +13,6 @@ const (
 	DecisionBlockHash     Decision = "block_hash"
 	DecisionBlockExternal Decision = "block_external"
 	DecisionBlockBackend  Decision = "block_backend"
-	DecisionFeeCharged    Decision = "fee_charged"
 )
 
 type ScreenRequest struct {
@@ -73,7 +70,6 @@ type ModerationConfig struct {
 	SampleRatePct    int32
 	BanThreshold     int32
 	BanWindowSeconds int32
-	ViolationFeeUSD  decimal.Decimal
 	External         ExternalModerationConfig
 	UpdatedBy        string
 	UpdatedAt        time.Time
@@ -106,7 +102,6 @@ func DefaultConfig(tenantID int64) ModerationConfig {
 		SampleRatePct:    100,
 		BanThreshold:     3,
 		BanWindowSeconds: 3600,
-		ViolationFeeUSD:  decimal.Zero,
 		External:         DefaultExternalModerationConfig(),
 	}
 }
@@ -121,8 +116,6 @@ type ModerationEvent struct {
 	ReasonCode       string
 	MatchedKeywordID *int64
 	MatchedHashID    *int64
-	ViolationFeeUSD  decimal.Decimal
-	BillingEventID   *int64
 }
 
 type ModerationLog struct {
@@ -136,8 +129,6 @@ type ModerationLog struct {
 	ReasonCode       string
 	MatchedKeywordID *int64
 	MatchedHashID    *int64
-	ViolationFeeUSD  decimal.Decimal
-	BillingEventID   *int64
 	OccurredAt       time.Time
 }
 

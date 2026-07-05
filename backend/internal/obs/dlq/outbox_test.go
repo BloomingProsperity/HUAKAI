@@ -177,32 +177,6 @@ func TestAT_OBS_005_007_DLQRowRedaction(t *testing.T) {
 	}
 }
 
-func TestAT_OBS_005_011_RefundWorkerPriorityHigh(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 5, 17, 12, 40, 0, 0, time.UTC)
-	box := NewMemoryOutbox(WithMemoryClock(func() time.Time { return now }))
-	ev, err := NewRefundEvent(RefundPayload{TenantID: 1, ReceiptID: "rcpt_1", RefundMicrocents: 25})
-	if err != nil {
-		t.Fatalf("refund event: %v", err)
-	}
-	if ev.Priority != PriorityHigh {
-		t.Fatalf("refund priority=%s want high", ev.Priority)
-	}
-	if _, err := box.Enqueue(ctx, ev); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-	sink := &fakeRefundSink{}
-	worker := NewWorker(box, WorkerConfig{RetryPolicy: RetryPolicy{MaxAttempts: 2}}, WithWorkerClock(func() time.Time { return now }))
-	worker.Register(EventTypeAuditRefund, NewRefundHandler(sink))
-	processed, err := worker.RunOnce(ctx, PriorityHigh, "refund")
-	if err != nil || !processed {
-		t.Fatalf("refund run processed=%v err=%v", processed, err)
-	}
-	if sink.payload.ReceiptID != "rcpt_1" || box.Snapshot()[0].Status != StatusCompleted {
-		t.Fatalf("refund payload=%+v status=%s", sink.payload, box.Snapshot()[0].Status)
-	}
-}
-
 func TestAT_OBS_005_012_AlertSinkPriorityDefault(t *testing.T) {
 	ctx := context.Background()
 	box := NewMemoryOutbox()
@@ -221,15 +195,6 @@ func TestAT_OBS_005_012_AlertSinkPriorityDefault(t *testing.T) {
 	if ContainsForbiddenRawData(ev.Payload) {
 		t.Fatalf("alert payload redaction over/under applied: %s", ev.Payload)
 	}
-}
-
-type fakeRefundSink struct {
-	payload RefundPayload
-}
-
-func (s *fakeRefundSink) ApplyMismatchRefund(_ context.Context, payload RefundPayload) error {
-	s.payload = payload
-	return nil
 }
 
 func mustEnqueue(t *testing.T, box *MemoryOutbox, eventType string, priority Priority) {

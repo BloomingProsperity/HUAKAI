@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -123,10 +122,12 @@ func (n *Notifier) NotifyLowBalance(ctx context.Context, tenantID, userID int64,
 		return err
 	}
 	now := n.now()
+	limited := false
 	if n.limiter != nil && !n.limiter.Allow(tenantID, userID, EventLowBalance, now) {
 		return nil
 	}
-	return n.send(ctx, settings, Event{
+	limited = n.limiter != nil
+	err = n.send(ctx, settings, Event{
 		EventType:      EventLowBalance,
 		TenantID:       tenantID,
 		UserID:         userID,
@@ -135,6 +136,10 @@ func (n *Notifier) NotifyLowBalance(ctx context.Context, tenantID, userID int64,
 		BillingEventID: billingEventID,
 		OccurredAt:     now.UTC(),
 	})
+	if err != nil && limited {
+		n.limiter.Release(tenantID, userID, EventLowBalance, now)
+	}
+	return err
 }
 
 func (n *Notifier) NotifyAlertFiring(ctx context.Context, tenantID int64, alert AlertFiringInfo) error {
@@ -191,8 +196,13 @@ func (n *Notifier) broadcast(ctx context.Context, tenantID int64, eventType stri
 		if n.limiter != nil && !n.limiter.Allow(tenantID, settings.UserID, eventType, now) {
 			continue
 		}
-		if err := deliver(ctx, settings); err != nil && firstErr == nil {
-			firstErr = err
+		if err := deliver(ctx, settings); err != nil {
+			if n.limiter != nil {
+				n.limiter.Release(tenantID, settings.UserID, eventType, now)
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	return firstErr
@@ -520,33 +530,6 @@ func validateOutboundURL(label, raw string) error {
 		return fmt.Errorf("%w: %v", ErrUnsafeEndpoint, err)
 	}
 	return nil
-}
-
-type RateLimiter struct {
-	mu     sync.Mutex
-	window time.Duration
-	last   map[string]time.Time
-}
-
-func NewRateLimiter(window time.Duration) *RateLimiter {
-	return &RateLimiter{
-		window: window,
-		last:   make(map[string]time.Time),
-	}
-}
-
-func (l *RateLimiter) Allow(tenantID, userID int64, eventType string, now time.Time) bool {
-	if l == nil || l.window <= 0 {
-		return true
-	}
-	key := fmt.Sprintf("%d:%d:%s", tenantID, userID, eventType)
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if last, ok := l.last[key]; ok && now.Sub(last) < l.window {
-		return false
-	}
-	l.last[key] = now
-	return true
 }
 
 func (n *Notifier) sendExtraEmailCopies(ctx context.Context, settings Settings, base mailinfra.Message) {

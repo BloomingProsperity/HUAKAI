@@ -64,6 +64,11 @@ func TestAdminConfig_GetReturnsDefaults(t *testing.T) {
 	if body.TenantID != 7 || body.Enabled || !body.FailClosed {
 		t.Fatalf("default config mismatch: %+v", body)
 	}
+	var raw map[string]json.RawMessage
+	decodeBody(t, rec, &raw)
+	if _, ok := raw["violation_fee_usd"]; ok {
+		t.Fatalf("config response exposed violation_fee_usd; MUTATION: restoring removed fee API field makes this red")
+	}
 }
 
 func TestAdminConfig_PutPersistsConfig(t *testing.T) {
@@ -157,6 +162,22 @@ func TestAdminModerationLogs_ListPassesTenantFilterAndPage(t *testing.T) {
 	if body.Object != "moderation_logs_list" || len(body.Items) != 1 ||
 		body.Items[0].ID != 90 || body.Items[0].PayloadHash != "payload-hash-visible" {
 		t.Fatalf("moderation logs response mismatch: %+v", body)
+	}
+	var raw map[string]any
+	decodeBody(t, rec, &raw)
+	items, ok := raw["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("raw moderation logs items mismatch: %+v", raw["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("raw moderation log item mismatch: %+v", items[0])
+	}
+	if _, ok := item["violation_fee_usd"]; ok {
+		t.Fatalf("log response exposed violation_fee_usd; MUTATION: restoring removed fee API field makes this red")
+	}
+	if _, ok := item["billing_event_id"]; ok {
+		t.Fatalf("log response exposed billing_event_id; MUTATION: restoring removed billing API field makes this red")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
@@ -14,12 +15,14 @@ import (
 var moderationFailureMetrics = expvar.NewMap("huakai_moderation_failure_total")
 
 type ScreenerDeps struct {
-	Config   ConfigStore
-	Keywords KeywordStore
-	Hashes   HashStore
-	Audit    AuditLogger
-	Ban      AutoBanCounter
-	External ExternalModerator
+	Config         ConfigStore
+	Keywords       KeywordStore
+	Hashes         HashStore
+	Audit          AuditLogger
+	Ban            AutoBanCounter
+	External       ExternalModerator
+	ConfigCacheTTL time.Duration
+	Now            func() time.Time
 }
 
 type storeScreener struct {
@@ -29,6 +32,7 @@ type storeScreener struct {
 	audit    AuditLogger
 	ban      AutoBanCounter
 	external ExternalModerator
+	configs  *ttlLRU[int64, ModerationConfig]
 }
 
 type AutoBanCounter interface {
@@ -36,6 +40,18 @@ type AutoBanCounter interface {
 }
 
 func NewScreener(deps ScreenerDeps) Screener {
+	configTTL := deps.ConfigCacheTTL
+	if configTTL == 0 {
+		configTTL = 30 * time.Second
+	}
+	var configs *ttlLRU[int64, ModerationConfig]
+	if configTTL > 0 {
+		configs = newTTLLRU[int64, ModerationConfig](CacheOptions{
+			MaxEntries: 1024,
+			TTL:        configTTL,
+			Now:        deps.Now,
+		})
+	}
 	return &storeScreener{
 		config:   deps.Config,
 		keywords: deps.Keywords,
@@ -43,16 +59,17 @@ func NewScreener(deps ScreenerDeps) Screener {
 		audit:    deps.Audit,
 		ban:      deps.Ban,
 		external: deps.External,
+		configs:  configs,
 	}
 }
 
 func (s *storeScreener) Screen(ctx context.Context, req ScreenRequest) (ScreenResult, error) {
 	cfg, err := s.loadConfig(ctx, req.TenantID)
-	if err != nil {
-		return s.backendResult(cfg, "config_backend_error", err)
-	}
 	if !cfg.Enabled {
 		return ScreenResult{Decision: DecisionPass, ReasonCode: "moderation_disabled"}, nil
+	}
+	if err != nil {
+		return s.backendResult(cfg, "config_backend_error", err)
 	}
 	hashResult, err := s.checkHash(ctx, req, cfg)
 	if err != nil || hashResult.Decision != "" {
@@ -81,9 +98,20 @@ func (s *storeScreener) loadConfig(ctx context.Context, tenantID int64) (Moderat
 	if s.config == nil {
 		return DefaultConfig(tenantID), nil
 	}
+	if s.configs != nil {
+		if cfg, ok := s.configs.Get(tenantID); ok {
+			return cfg, nil
+		}
+	}
 	cfg, err := s.config.GetConfig(ctx, tenantID)
 	if err != nil {
-		return DefaultConfig(tenantID), err
+		if cfg.TenantID == 0 {
+			cfg = DefaultConfig(tenantID)
+		}
+		return cfg, err
+	}
+	if s.configs != nil {
+		s.configs.Set(tenantID, cfg)
 	}
 	return cfg, nil
 }

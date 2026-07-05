@@ -2,7 +2,6 @@ package observability
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
@@ -13,10 +12,6 @@ type MetricsAggregatorHandler struct {
 	timeout time.Duration
 	delay   time.Duration
 	fail    func(eventbus.RequestCompletionEvent) error
-
-	mu       sync.Mutex
-	received int
-	byModel  map[string]int
 }
 
 type MetricsAggregatorOption func(*MetricsAggregatorHandler)
@@ -30,7 +25,7 @@ func WithMetricsFailure(fn func(eventbus.RequestCompletionEvent) error) MetricsA
 }
 
 func NewMetricsAggregatorHandler(timeout time.Duration, opts ...MetricsAggregatorOption) *MetricsAggregatorHandler {
-	h := &MetricsAggregatorHandler{timeout: timeout, byModel: make(map[string]int)}
+	h := &MetricsAggregatorHandler{timeout: timeout}
 	for _, opt := range opts {
 		opt(h)
 	}
@@ -79,21 +74,5 @@ func (h *MetricsAggregatorHandler) Handle(ctx context.Context, event eventbus.Re
 			return err
 		}
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.received++
-	if h.byModel == nil {
-		h.byModel = make(map[string]int)
-	}
-	h.byModel[event.RequestedModel]++
 	return nil
-}
-
-func (h *MetricsAggregatorHandler) Count() int {
-	if h == nil {
-		return 0
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.received
 }

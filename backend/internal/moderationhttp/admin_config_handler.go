@@ -3,19 +3,16 @@ package moderationhttp
 import (
 	"net/http"
 
-	"github.com/shopspring/decimal"
-
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 )
 
 type configRequest struct {
-	TenantID         int64  `json:"tenant_id"`
-	Enabled          bool   `json:"enabled"`
-	FailClosed       bool   `json:"fail_closed"`
-	SampleRatePct    int32  `json:"sample_rate_pct"`
-	BanThreshold     int32  `json:"ban_threshold"`
-	BanWindowSeconds int32  `json:"ban_window_seconds"`
-	ViolationFeeUSD  string `json:"violation_fee_usd"`
+	TenantID         int64 `json:"tenant_id"`
+	Enabled          bool  `json:"enabled"`
+	FailClosed       bool  `json:"fail_closed"`
+	SampleRatePct    int32 `json:"sample_rate_pct"`
+	BanThreshold     int32 `json:"ban_threshold"`
+	BanWindowSeconds int32 `json:"ban_window_seconds"`
 }
 
 type configResponse struct {
@@ -25,7 +22,6 @@ type configResponse struct {
 	SampleRatePct    int32  `json:"sample_rate_pct"`
 	BanThreshold     int32  `json:"ban_threshold"`
 	BanWindowSeconds int32  `json:"ban_window_seconds"`
-	ViolationFeeUSD  string `json:"violation_fee_usd"`
 	UpdatedBy        string `json:"updated_by,omitempty"`
 	UpdatedAt        string `json:"updated_at,omitempty"`
 }
@@ -92,16 +88,6 @@ func configFromRequest(w http.ResponseWriter, body configRequest) (moderation.Mo
 			"ban_window_seconds must be positive")
 		return moderation.ModerationConfig{}, false
 	}
-	fee := decimal.Zero
-	if body.ViolationFeeUSD != "" {
-		parsed, err := decimal.NewFromString(body.ViolationFeeUSD)
-		if err != nil || parsed.IsNegative() {
-			writeError(w, http.StatusBadRequest, "invalid_violation_fee_usd",
-				"violation_fee_usd must be a non-negative decimal")
-			return moderation.ModerationConfig{}, false
-		}
-		fee = parsed
-	}
 	return moderation.ModerationConfig{
 		TenantID:         body.TenantID,
 		Enabled:          body.Enabled,
@@ -109,7 +95,6 @@ func configFromRequest(w http.ResponseWriter, body configRequest) (moderation.Mo
 		SampleRatePct:    body.SampleRatePct,
 		BanThreshold:     body.BanThreshold,
 		BanWindowSeconds: body.BanWindowSeconds,
-		ViolationFeeUSD:  fee,
 	}, true
 }
 
@@ -121,7 +106,6 @@ func configFromValue(cfg moderation.ModerationConfig) configResponse {
 		SampleRatePct:    cfg.SampleRatePct,
 		BanThreshold:     cfg.BanThreshold,
 		BanWindowSeconds: cfg.BanWindowSeconds,
-		ViolationFeeUSD:  cfg.ViolationFeeUSD.StringFixed(8),
 		UpdatedBy:        cfg.UpdatedBy,
 		UpdatedAt:        formatTime(cfg.UpdatedAt),
 	}

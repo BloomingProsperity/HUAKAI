@@ -27,7 +27,6 @@ const (
 
 const (
 	EventTypeEmailRetry   = "email.retry"
-	EventTypeAuditRefund  = "audit.refund"
 	EventTypeChannelAlert = "channel.alert"
 	EventTypeAdminAlert   = "admin.alert"
 )

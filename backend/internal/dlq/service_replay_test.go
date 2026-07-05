@@ -17,9 +17,9 @@ type fakeReplayStore struct {
 	lastDecision  RetryDecision
 }
 
-func (f *fakeReplayStore) Enqueue(context.Context, Event) (int64, error)       { return 0, nil }
-func (f *fakeReplayStore) List(context.Context, ListFilter) ([]Record, error)  { return nil, nil }
-func (f *fakeReplayStore) MarkDelivered(context.Context, Record) error         { return nil }
+func (f *fakeReplayStore) Enqueue(context.Context, Event) (int64, error)      { return 0, nil }
+func (f *fakeReplayStore) List(context.Context, ListFilter) ([]Record, error) { return nil, nil }
+func (f *fakeReplayStore) MarkDelivered(context.Context, Record) error        { return nil }
 func (f *fakeReplayStore) Claim(context.Context, Lane, string, time.Duration) (*Record, error) {
 	return f.rec, nil
 }
@@ -48,7 +48,7 @@ func newReplayService(store recordStore, handler Handler) *Service {
 
 // TestServiceReplaySurfacesMarkFailedError 守:当手动 replay 的 handler 失败、且
 // 随后的 MarkFailed 状态写入也失败时,Replay 必须把持久化错误暴露出来
-//(与 worker 路径 ProcessClaim 一致),而不是用 `_ =` 丢弃。否则该 DLQ 行会
+// (与 worker 路径 ProcessClaim 一致),而不是用 `_ =` 丢弃。否则该 DLQ 行会
 // 带着过期的手动 lease / retry-count 停留在 inflight,运营者只会看到 handler 错误,
 // 永远不知道 recovery 系统连自己的失败状态都没能落盘。
 //
@@ -127,6 +127,27 @@ func TestServiceReplayPoisonQuarantineToggle(t *testing.T) {
 	}
 	if store2.lastDecision.Status != StatusPending {
 		t.Fatalf("escape hatch disabled: attempt1 poison must fall back to pending, got %s", store2.lastDecision.Status)
+	}
+}
+
+// TestServiceReplayNoHandlerQuarantines 守 replay 路径:没有注册 handler 是部署结构缺口,
+// 继续重试同一记录不会恢复,必须直接进 quarantined,同时把 ErrNoHandler 暴露给操作者。
+// Mutation: 去掉 NextFailureForErr 的 ErrNoHandler 短路 → lastDecision.Status=pending → 红。
+func TestServiceReplayNoHandlerQuarantines(t *testing.T) {
+	store := &fakeReplayStore{rec: &Record{EventKind: "missing_kind"}}
+	s := &Service{
+		store:    store,
+		handlers: map[EventKind]Handler{},
+		policy:   DefaultRetryPolicy(),
+		now:      func() time.Time { return time.Unix(0, 0).UTC() },
+	}
+
+	_, err := s.Replay(context.Background(), 1, "op")
+	if !errors.Is(err, ErrNoHandler) {
+		t.Fatalf("Replay error=%v want ErrNoHandler", err)
+	}
+	if store.lastDecision.Status != StatusQuarantined {
+		t.Fatalf("no handler must quarantine on replay, got %s", store.lastDecision.Status)
 	}
 }
 

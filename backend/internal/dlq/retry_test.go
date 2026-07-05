@@ -91,6 +91,23 @@ func TestNextFailureForErr_QuarantinesUnretryable(t *testing.T) {
 	}
 }
 
+// TestNextFailureForErr_QuarantinesNoHandler 守:部署未注册对应 kind 的 handler 时,
+// 同一条 DLQ 记录继续重试也不会自愈,必须直接进入 quarantined 等 operator 补接线。
+// Mutation: 去掉 ErrNoHandler 短路 → attempt1 回到 pending → 本断言红。
+func TestNextFailureForErr_QuarantinesNoHandler(t *testing.T) {
+	policy := DefaultRetryPolicy()
+	first := time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC)
+	noHandler := fmt.Errorf("dispatch: %w", ErrNoHandler)
+
+	got := policy.NextFailureForErr(first.Add(time.Second), first, 0, noHandler)
+	if got.Status != StatusQuarantined {
+		t.Fatalf("no handler err must quarantine on attempt 1, got status=%s", got.Status)
+	}
+	if got.Attempts != 1 {
+		t.Fatalf("quarantine attempts=%d want=1 (must not burn retry budget)", got.Attempts)
+	}
+}
+
 // TestNextFailureForErr_TransientDelegates 守:非 ErrUnretryable 的瞬时错与 nil err
 // 完全沿用 NextFailure 既有语义 —— 对既有调用者零行为变更,且瞬时抖动绝不被误判为
 // 不可重试。Mutation: 若短路对任意非 nil err 命中 → 瞬时 case 变 quarantined → 红。

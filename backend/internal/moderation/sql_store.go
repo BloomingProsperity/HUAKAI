@@ -74,8 +74,7 @@ func (s *SQLStore) InsertModerationLog(ctx context.Context, event ModerationEven
 		ReasonCode:       safeReasonCode(event.ReasonCode, event.Decision),
 		MatchedKeywordID: event.MatchedKeywordID,
 		MatchedHashID:    event.MatchedHashID,
-		ViolationFeeUsd:  numericFromDecimal(event.ViolationFeeUSD),
-		BillingEventID:   event.BillingEventID,
+		ViolationFeeUsd:  numericFromDecimal(decimal.Zero),
 	})
 }
 
@@ -267,7 +266,7 @@ func (s *SQLStore) UpsertConfig(ctx context.Context, cfg ModerationConfig) (Mode
 		SampleRatePct:    cfg.SampleRatePct,
 		BanThreshold:     cfg.BanThreshold,
 		BanWindowSeconds: cfg.BanWindowSeconds,
-		ViolationFeeUsd:  numericFromDecimal(cfg.ViolationFeeUSD),
+		ViolationFeeUsd:  numericFromDecimal(decimal.Zero),
 		UpdatedBy:        stringPtr(cfg.UpdatedBy),
 	})
 	if err != nil {
@@ -284,7 +283,6 @@ func configFromDB(row dbmoderation.ModerationConfig) ModerationConfig {
 		SampleRatePct:    row.SampleRatePct,
 		BanThreshold:     row.BanThreshold,
 		BanWindowSeconds: row.BanWindowSeconds,
-		ViolationFeeUSD:  row.ViolationFeeUsd,
 		UpdatedAt:        timeFromPG(row.UpdatedAt),
 	}
 	if row.UpdatedBy != nil {
@@ -304,8 +302,6 @@ func moderationLogFromDB(row dbmoderation.ModerationLog) ModerationLog {
 		ReasonCode:       row.ReasonCode,
 		MatchedKeywordID: row.MatchedKeywordID,
 		MatchedHashID:    row.MatchedHashID,
-		ViolationFeeUSD:  row.ViolationFeeUsd,
-		BillingEventID:   row.BillingEventID,
 		OccurredAt:       timeFromPG(row.OccurredAt),
 	}
 	if row.RequestID != nil {

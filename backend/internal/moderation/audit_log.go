@@ -23,7 +23,7 @@ func (l *DBModerationLogger) Log(ctx context.Context, event ModerationEvent, cfg
 	if l == nil || l.sink == nil {
 		return nil
 	}
-	// 合规取证不打折:违规/拦截/计费等非 clean 事件无条件落库,只有 clean(pass)
+	// 合规取证不打折:违规/拦截等非 clean 事件无条件落库,只有 clean(pass)
 	// 审计才走 sample_rate_pct 采样。否则运营调低采样率会按比例丢失违规取证记录,
 	// 与 screener.go 的承诺"命中(block)的审计仍无条件写——取证不打折"矛盾。
 	if isSampleableDecision(event.Decision) && !ShouldSample(sampleKey(event), cfg.SampleRatePct) {
@@ -36,8 +36,8 @@ func (l *DBModerationLogger) Log(ctx context.Context, event ModerationEvent, cfg
 
 // isSampleableDecision 报告某条审计事件是否允许被采样丢弃。只有 clean 放行
 // (pass / 空 decision)是纯噪音、可采样;一切非 clean 决定(block_keyword /
-// block_hash / block_external / block_backend / fee_charged 等)都是取证或
-// money-coupled 记录,必须无条件落库,绝不因采样率被丢。
+// block_hash / block_external / block_backend 等)都是取证记录,必须无条件落库,
+// 绝不因采样率被丢。
 func isSampleableDecision(decision Decision) bool {
 	switch decision {
 	case "", DecisionPass:

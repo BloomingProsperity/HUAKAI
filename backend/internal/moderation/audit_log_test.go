@@ -66,7 +66,6 @@ func TestAuditLogger_ViolationWrittenUnconditionallyAtLowSampleRate(t *testing.T
 		DecisionBlockHash,
 		DecisionBlockExternal,
 		DecisionBlockBackend,
-		DecisionFeeCharged,
 	}
 	for _, decision := range blockDecisions {
 		decision := decision
