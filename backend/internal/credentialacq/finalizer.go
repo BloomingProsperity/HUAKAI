@@ -20,6 +20,34 @@ type CredentialCreator interface {
 	Create(context.Context, credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error)
 }
 
+type CredentialCreatedFinalizeError struct {
+	FlowID     string
+	Credential credentialstore.CredentialMetadata
+	Err        error
+}
+
+func (e *CredentialCreatedFinalizeError) Error() string {
+	if e == nil {
+		return "credentialacq: credential created but flow finalization failed"
+	}
+	return fmt.Sprintf("credentialacq: credential created but flow finalization failed (flow_id=%s credential_id=%d tenant_id=%d provider_account_id=%d vendor=%s auth_mode=%s): %v",
+		strings.TrimSpace(e.FlowID),
+		e.Credential.ID,
+		e.Credential.TenantID,
+		e.Credential.ProviderAccountID,
+		credentialstore.Normalize(e.Credential.Vendor),
+		credentialstore.Normalize(e.Credential.AuthMode),
+		e.Err,
+	)
+}
+
+func (e *CredentialCreatedFinalizeError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 type Finalizer struct {
 	sessions *PostgresSessionStore
 	registry *credentialstore.HandlerRegistry
@@ -88,7 +116,7 @@ func (f *Finalizer) Finalize(ctx context.Context, flowID string, candidate Crede
 	// Create 已提交, 此后是"记录既成事实": 脱钩 + 重试, 尽最大努力不留孤儿。
 	finalized, err := f.markFinalizedWithRetry(ctx, flowID, meta.ID)
 	if err != nil {
-		return FinalizeResult{Session: session, Credential: meta}, err
+		return FinalizeResult{Session: session, Credential: meta}, &CredentialCreatedFinalizeError{FlowID: flowID, Credential: meta, Err: err}
 	}
 	wctx, cancel := finalizeWriteCtx(ctx)
 	_ = EmitLifecycleAudit(wctx, f.audit, finalized, EventCompleted, meta.ID, actorID, requestID, map[string]any{

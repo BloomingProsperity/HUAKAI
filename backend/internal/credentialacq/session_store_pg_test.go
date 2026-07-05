@@ -79,6 +79,17 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 	case strings.Contains(sql, "SET status = $2"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
+		if len(args) >= 5 {
+			if !ok || !flowStatusAllowed(row.Status, stringSliceArg(args[4])) {
+				return testSessionRow{err: pgx.ErrNoRows}
+			}
+			row.Status = FlowStatus(stringArg(args[1]))
+			row.ErrorClass = stringArg(args[2])
+			row.ErrorMessageRedacted = stringArg(args[3])
+			row.UpdatedAt = db.now
+			db.rows[id] = row
+			return testSessionRow{session: row, sql: sql}
+		}
 		// 镜像真 SQL 的 `AND status NOT IN ('finalized','cancelled','expired','failed')` CAS —— 终态
 		// 行不可被状态推进,RETURNING 无行 → ErrNoRows(production 再 re-fetch 区分 replay/not-found)。
 		// 复用生产 isTerminalStatus,避免 fake 与真 SQL 漂移(教训)。
@@ -143,6 +154,30 @@ func (db *testSessionDB) rowByID(sql, id string) pgx.Row {
 		return testSessionRow{err: pgx.ErrNoRows}
 	}
 	return testSessionRow{session: row, sql: sql}
+}
+
+func stringSliceArg(v any) []string {
+	switch got := v.(type) {
+	case []string:
+		return got
+	case []FlowStatus:
+		out := make([]string, 0, len(got))
+		for _, status := range got {
+			out = append(out, string(status))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func flowStatusAllowed(status FlowStatus, allowed []string) bool {
+	for _, candidate := range allowed {
+		if string(status) == strings.TrimSpace(candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 type testSessionRow struct {

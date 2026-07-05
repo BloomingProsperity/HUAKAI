@@ -144,29 +144,44 @@ func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flo
 	if !session.ConsumedAt.IsZero() || isTerminalStatus(session.Status) {
 		return CredentialCandidate{}, session, ErrFlowReplay
 	}
+	if session.Status != StatusStarted && session.Status != StatusWaitingForUser {
+		return CredentialCandidate{}, session, ErrFlowReplay
+	}
 	now := store.now().UTC()
 	if now.After(session.ExpiresAt) {
-		expired, _ := store.UpdateStatus(ctx, flowID, StatusExpired, "expired", "acquisition flow expired")
+		expired, markErr := store.UpdateStatusFrom(ctx, flowID, StatusExpired, "expired", "acquisition flow expired", StatusStarted, StatusWaitingForUser)
+		if markErr != nil {
+			return CredentialCandidate{}, expired, markErr
+		}
 		return CredentialCandidate{}, expired, ErrFlowExpired
 	}
 	if !OAuthStateMatches(session.StateHash, state) {
-		failed, _ := store.UpdateStatus(ctx, flowID, StatusFailed, "state_mismatch", "oauth state mismatch")
+		failed, markErr := store.UpdateStatusFrom(ctx, flowID, StatusFailed, "state_mismatch", "oauth state mismatch", StatusStarted, StatusWaitingForUser)
+		if markErr != nil {
+			return CredentialCandidate{}, failed, markErr
+		}
 		return CredentialCandidate{}, failed, ErrStateMismatch
 	}
 	if _, err := store.DecryptTransientPayload(ctx, session.EncryptedPKCEVerifier, session.NonceHash, pkceAADFromSession(session)); err != nil {
-		failed, _ := store.UpdateStatus(ctx, flowID, StatusFailed, "pkce_decrypt_failed", "oauth verifier decrypt failed")
+		failed, markErr := store.UpdateStatusFrom(ctx, flowID, StatusFailed, "pkce_decrypt_failed", "oauth verifier decrypt failed", StatusStarted, StatusWaitingForUser)
+		if markErr != nil {
+			return CredentialCandidate{}, failed, markErr
+		}
 		return CredentialCandidate{}, failed, err
 	}
-	callbackSession, err := store.UpdateStatus(ctx, flowID, StatusCallbackReceived, "", "")
+	callbackSession, err := store.UpdateStatusFrom(ctx, flowID, StatusCallbackReceived, "", "", StatusStarted, StatusWaitingForUser)
 	if err != nil {
-		return CredentialCandidate{}, session, err
+		return CredentialCandidate{}, callbackSession, err
 	}
 	if exchange == nil {
 		return CredentialCandidate{}, callbackSession, ErrOAuthExchangerMissing
 	}
 	candidate, err := exchange(ctx, callbackSession, code)
 	if err != nil {
-		failed, _ := store.UpdateStatus(ctx, flowID, StatusFailed, "exchange_failed", "oauth exchange failed")
+		failed, markErr := store.UpdateStatusFrom(ctx, flowID, StatusFailed, "exchange_failed", "oauth exchange failed", StatusCallbackReceived)
+		if markErr != nil {
+			return CredentialCandidate{}, failed, markErr
+		}
 		return CredentialCandidate{}, failed, err
 	}
 	if candidate.Vendor == "" {
@@ -175,7 +190,7 @@ func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flo
 	if candidate.AuthMode == "" {
 		candidate.AuthMode = callbackSession.AuthMode
 	}
-	validated, err := store.UpdateStatus(ctx, flowID, StatusValidated, "", "")
+	validated, err := store.UpdateStatusFrom(ctx, flowID, StatusValidated, "", "", StatusCallbackReceived)
 	return candidate, validated, err
 }
 

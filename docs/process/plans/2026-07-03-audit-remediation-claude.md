@@ -246,7 +246,7 @@ A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven 
 - F-3【S3 CONFIRMED】google_sa 物化 Value 空无转发 adapter(核证:v2 credentialstore vertex_sa 有正常路径,legacy 路径缺)。**2026-07-05 修:mapServiceAccount 改明确 ErrCredentialFormat fail-closed(亲核:全仓生产代码零消费 Extra["auth_kind"]/google_sa,旧路径产出的空 Value 凭据本无人能转发,非砍活功能)。**
 
 **auth 采集流状态机(上游账号凭据采集,非用户登录 auth-core)**:
-- ACF-1【S2 CONFIRMED】OAuth 回调无逐 flow 串行化:并发双回调把已 validated 的 flow 覆写成 failed(核证更宽:晚到回调的 callback_received 写 oauth.go:160 就已覆写)→有效凭据采集丢失/活凭据孤儿。修=按 flow_id 串行化回调(乐观锁/状态机守卫,只允许 pending→terminal)。
-- ACF-2【S3 ADJUSTED】Create 成功但 MarkFinalized 失败→活凭据孤儿(核证:"重复凭据"不成立,uq_account_credentials_active 唯一约束防住;危害降级为孤儿元数据)。
+- ACF-1【S2 CONFIRMED→**已修 2026-07-05**】OAuth 回调无逐 flow 串行化:并发双回调把已 validated 的 flow 覆写成 failed(核证更宽:晚到回调的 callback_received 写 oauth.go:160 就已覆写)→有效凭据采集丢失/活凭据孤儿。修=session_store 新增 UpdateStatusFrom(UPDATE … WHERE status = ANY(前置合法态) 的 CAS),CompleteOAuthCallback 每步状态写限定前置态+入口 replay 守卫,晚到/并发回调在 exchange 前得 ErrFlowReplay,validated 不可被覆写。判别测试=真实 PG 通道门控并发(第一个回调停在 exchange 内时第二个到达);Claude 亲自变异抽查(删守卫+CAS 改无条件→红)复验。
+- ACF-2【S3 ADJUSTED→**已修 2026-07-05**】Create 成功但 MarkFinalized 失败→活凭据孤儿(核证:"重复凭据"不成立,uq_account_credentials_active 唯一约束防住;危害降级为孤儿元数据)。修=类型化 CredentialCreatedFinalizeError 携带 flow_id/credential_id/tenant/vendor/auth_mode 非密钥对账元数据,Unwrap 保留错误链,handler 只记日志也有对账线索。
 
-**落地**:批G=pool-failover(PF-01 money+PF-02,已合 8bf1b692+8f7a1ee6);批H=credential(F-1 白名单+F-3 fail-closed 已修,F-2 方案否决维持现状待 Owner);批I=auth(ACF-1 串行化+ACF-2)。均 S2/S3 非上线阻塞。
+**落地(2026-07-05 全部收官)**:批G=pool-failover(PF-01 money+PF-02,已合 8bf1b692+8f7a1ee6);批H=credential(F-1 白名单+F-3 fail-closed 已修 dc26b948,F-2 方案否决维持现状待 Owner);批I=auth(ACF-1 CAS 串行化+ACF-2 孤儿透出,已修)。§17 剩余子系统审计 7 条全部处置完毕:5 修 1 否决待 Owner(F-2)1 无需改(PF-02 死代码路径回退)。

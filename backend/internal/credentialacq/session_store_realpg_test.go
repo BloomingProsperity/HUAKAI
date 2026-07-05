@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -401,5 +402,120 @@ func TestCancelFinalizeRaceGuardsPG(t *testing.T) {
 	}
 	if retry.Status != StatusFinalized || retry.ResultAccountCredentialID != credID {
 		t.Fatalf("retry finalized=(status=%q credential=%d), want finalized/%d", retry.Status, retry.ResultAccountCredentialID, credID)
+	}
+}
+
+// TestCompleteOAuthCallbackSerializesFlowPG 针对真实 Postgres 守护 ACF-1:
+// 同一个 OAuth flow 只能有一个回调把状态从 pending 推进到 callback_received 并进入 exchange。
+// 第二个并发/迟到回调必须在 exchange 前得到 ErrFlowReplay,不能把 callback_received 或
+// validated 覆写成 failed。
+//
+// §14 变异:把 CompleteOAuthCallback 的 UpdateStatusFrom 改回 UpdateStatus,并删除入口处
+// callback_received/validated replay 守卫。第二个回调会进入 exchange,随后把 flow 标成 failed
+// 或让第一个回调的 validated 写失败,本测试的 exchange 次数/最终状态断言会变红。
+func TestCompleteOAuthCallbackSerializesFlowPG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	now := time.Now().UTC()
+	store := NewPostgresSessionStore(pool).WithNow(func() time.Time { return now })
+	tenantID, paID := seedCredentialAcqProviderAccount(t, ctx, pool, uuid.NewString())
+	flowID := uuid.NewString()
+	state := "serial-state"
+	if _, err := store.Create(ctx, Session{
+		ID: flowID, TenantID: tenantID, ProviderAccountID: paID, Vendor: "openai", AuthMode: "chatgpt_oauth",
+		Kind: FlowKindOAuth, Status: StatusStarted, ActorID: "admin-1", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourcePublicCLI,
+		StateHash:            HashOAuthState(state),
+		RequestedScopes:      []string{"openid"},
+		RedactedContext:      map[string]any{"case": "oauth_callback_serial"},
+		ExpiresAt:            now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("Create flow: %v", err)
+	}
+
+	type callbackResult struct {
+		candidate CredentialCandidate
+		session   Session
+		err       error
+	}
+	enteredExchange := make(chan struct{})
+	releaseExchange := make(chan struct{})
+	firstDone := make(chan callbackResult, 1)
+	var exchangeCalls int32
+
+	go func() {
+		candidate, session, err := CompleteOAuthCallback(ctx, store, flowID, state, "first-code",
+			func(context.Context, Session, string) (CredentialCandidate, error) {
+				if atomic.AddInt32(&exchangeCalls, 1) == 1 {
+					close(enteredExchange)
+				}
+				<-releaseExchange
+				return CredentialCandidate{
+					TenantID: tenantID, ProviderAccountID: paID,
+					Vendor: "openai", AuthMode: "chatgpt_oauth",
+					Payload: samplePayloadForMode("openai", "chatgpt_oauth"),
+				}, nil
+			})
+		firstDone <- callbackResult{candidate: candidate, session: session, err: err}
+	}()
+
+	select {
+	case <-enteredExchange:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first callback did not reach exchange")
+	}
+
+	lateExchangeCalled := false
+	_, lateSession, lateErr := CompleteOAuthCallback(ctx, store, flowID, state, "late-code",
+		func(context.Context, Session, string) (CredentialCandidate, error) {
+			lateExchangeCalled = true
+			return CredentialCandidate{}, errors.New("late callback must not exchange")
+		})
+	if !errors.Is(lateErr, ErrFlowReplay) {
+		t.Fatalf("late callback while first in-flight: err=%v want ErrFlowReplay", lateErr)
+	}
+	if lateExchangeCalled {
+		t.Fatal("late callback entered exchange while first callback owned the flow")
+	}
+	if lateSession.Status != StatusCallbackReceived {
+		t.Fatalf("late callback saw status=%q want callback_received", lateSession.Status)
+	}
+
+	close(releaseExchange)
+	first := <-firstDone
+	if first.err != nil {
+		t.Fatalf("first callback: %v", first.err)
+	}
+	if first.session.Status != StatusValidated {
+		t.Fatalf("first callback status=%q want validated", first.session.Status)
+	}
+	if first.candidate.ProviderAccountID != paID {
+		t.Fatalf("candidate provider_account_id=%d want %d", first.candidate.ProviderAccountID, paID)
+	}
+	if got := atomic.LoadInt32(&exchangeCalls); got != 1 {
+		t.Fatalf("exchange calls=%d want 1", got)
+	}
+
+	afterValidatedCalled := false
+	_, afterValidated, err := CompleteOAuthCallback(ctx, store, flowID, state, "after-validated-code",
+		func(context.Context, Session, string) (CredentialCandidate, error) {
+			afterValidatedCalled = true
+			return CredentialCandidate{}, errors.New("validated callback must not exchange")
+		})
+	if !errors.Is(err, ErrFlowReplay) {
+		t.Fatalf("callback after validated: err=%v want ErrFlowReplay", err)
+	}
+	if afterValidatedCalled {
+		t.Fatal("callback after validated entered exchange")
+	}
+	if afterValidated.Status != StatusValidated {
+		t.Fatalf("callback after validated returned status=%q want validated", afterValidated.Status)
+	}
+	reloaded, err := store.Get(ctx, flowID)
+	if err != nil {
+		t.Fatalf("Get flow: %v", err)
+	}
+	if reloaded.Status != StatusValidated || reloaded.ErrorClass != "" {
+		t.Fatalf("reloaded flow=(status=%q error_class=%q), want validated/no error", reloaded.Status, reloaded.ErrorClass)
 	}
 }
