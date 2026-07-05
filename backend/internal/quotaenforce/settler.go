@@ -15,7 +15,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
 
-const DefaultLeaseTTL = 90 * time.Second
+// DefaultLeaseTTL 并发槽租约窗口, 与 billing claim 租约同源派生 —— 槽和 claim 一样
+// 必须活过整个请求生命周期(流式可达 HUAKAI_STREAM_TOTAL_TIMEOUT 默认 600s)。
+// acquire DB 函数在 COUNT 前会清扫已过 lease 的槽: 窗口短于请求时长时, 长流的槽
+// 中途被当空位扫掉、新请求顶上, 并发上限被静默突破。正常路径 settle/abort 即时释放,
+// 本窗口只兜真孤儿(进程崩溃), 代价仅是崩溃后槽位回收延迟变长。
+const DefaultLeaseTTL = billing.DefaultClaimLeaseWindow
 
 type Reserver interface {
 	Reserve(context.Context, quota.ReserveRequest) (quota.ReserveResult, error)

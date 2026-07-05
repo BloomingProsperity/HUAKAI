@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -324,5 +325,27 @@ func TestDenyWindowKind(t *testing.T) {
 				t.Fatalf("DenyWindowKind=%q want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDefaultLeaseTTLOutlivesRequestLifecycle 守并发槽租约窗口的两个不变量:
+//  1. 与 billing claim 租约同源 (统一从"请求最大生命周期"派生, 防两边漂移再生);
+//  2. 显著大于流式上限 (HUAKAI_STREAM_TOTAL_TIMEOUT 默认 600s) —— acquire 在 COUNT 前
+//     清扫过期槽, 窗口短于请求时长时长流的槽中途被当空位扫掉, 并发上限被静默突破。
+//
+// mutation: DefaultLeaseTTL 退回 90*time.Second → 两断言全红。
+func TestDefaultLeaseTTLOutlivesRequestLifecycle(t *testing.T) {
+	if DefaultLeaseTTL != billing.DefaultClaimLeaseWindow {
+		t.Fatalf("DefaultLeaseTTL=%v 与 claim 租约 %v 脱钩 (租约窗口必须同源派生)", DefaultLeaseTTL, billing.DefaultClaimLeaseWindow)
+	}
+	const streamMax = 600 * time.Second // HUAKAI_STREAM_TOTAL_TIMEOUT 默认值
+	if DefaultLeaseTTL <= 2*streamMax {
+		t.Fatalf("DefaultLeaseTTL=%v 不足流上限 %v 的 2 倍余量 —— 长流的槽会被 acquire 清扫顶位", DefaultLeaseTTL, streamMax)
+	}
+	// 默认路径真的用它: BuildReserveRequest 未显式给 lease 时派生 at+TTL。
+	at := time.Date(2026, 7, 5, 14, 0, 0, 0, time.UTC)
+	req := BuildReserveRequest(ReserveInput{TenantID: 1, ClaimID: 2, At: at})
+	if !req.LeaseExpiresAt.Equal(at.Add(DefaultLeaseTTL)) {
+		t.Fatalf("默认 lease = %v, want at+%v", req.LeaseExpiresAt, DefaultLeaseTTL)
 	}
 }
