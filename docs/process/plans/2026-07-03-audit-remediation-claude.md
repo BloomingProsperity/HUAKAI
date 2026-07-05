@@ -127,3 +127,13 @@ A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven 
 3. **S3 收尾**(A#9/9b + B8-10)。
 4. 系统性加固随对应切片落地。
 5. 额度恢复后重跑 feature 审计未验证域(resume wf_bfe5c8d5-e10)。
+
+## feature 审计未验证域重跑(2026-07-05,替代 wf_bfe5c8d5-e10)
+用同一 §17 模块配合审计法(单 agent 深审,亲读取证)逐域重跑。
+
+### payment + 结算恢复域(agent a55c10)——已审已修
+- ✅ **S2-1**(bee4f34f)订阅单履约确定性失败(降档拒绝/套餐停用)转终态 failed + 审计留痕,不再永久卡 recharging 悬空(webhook 重投/admin 重点撞同一堵墙、无清扫器认领);退款 Manual-First 走 admin。变异证红。
+- 📋 S3-1(follow-up):observability DLQPayload 未镜像 Handle 身份兜底 → 潜在零 ClaimID 毒消息落盘(当前所有 caller 都令 SettleRequest.ClaimID==event.ClaimID 故未触发);修:DLQPayload 生成前做同款兜底 + eventbus.writeDLQ 入队前 Validate。
+- 📋 S3-2(产品确认):payment 派生「支付来源余额」(SUM credits-refunds,不扣消费)vs user_balances「可花余额」分叉,若前端当可用余额展示会误导。
+- ✅ 核心配合链 9 子域审计无问题:结算 Tx2 原子性、DLQ 三证 proof 防双扣、post_delivery_settlement 精确路由、充值三写同事务、退款不可超退、回调验签/金额/租户/重放、履约幂等不双开。
+- 次要观察:admin 支付端点从请求体取 tenant_id(对全局 platform_admin 是操作对象选择器非身份,单租户不可越权;多租户启用前需改按身份限定,与 CLAUDE.md #4 软张力)。
