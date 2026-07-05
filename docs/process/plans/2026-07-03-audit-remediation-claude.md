@@ -22,7 +22,7 @@
 
 - ✅ **B4 + B5 前半 + B9**(423b36c2)账号状态复核不一致家族:①B4 2FA 完成路径补资格门(GetProfile+EnsureLoginEligible,403 account_not_active 对齐 passkey 反枚举)②B5 封禁撤既有会话(镜像删除路径)③B9 twofa 失败回填身份供审计归因。三处变异逐一证红;gatewayhttp 全包+五邻包 unit+两包集成绿。
   - **三镜研究裁定(agent a2316a)**:多路登录完成步漏复核是惯发病(new-api 2FA 同漏、passkey 双检;其 cookie 会话封禁后可用满 30 天=B5 同病);sub2api=完成步显式复核+签发点 respondWithTokenPair 再兜一道+全车道每请求复核 status+封禁靠惰性复核生效(TokenVersion bump 留给登出所有设备)。
-  - **⏭ B5 后半(下一切片,三镜裁定的主防线)**:Validate/Refresh 惰性复核 users.status——HUAKAI bearer 30 天长效,暴露模型同 new-api cookie 病灶;Validate 若已查 session 表可 JOIN users 零额外往返;**锁定态不杀既有会话**(防攻击者借失败锁定 DoS 正常用户,锁只守登录门),只拒 disabled/deleted。
+  - ✅ **B5 后半**(1e07adc6):usersession UserGate seam——Validate/Refresh 每次复核会话主体资格,ineligible 拒+机会式撤家族(sub2api RefreshTokenPair 同款);wiring 注入 userauth 适配器,只拒 disabled/deleted/软删,locked/时间锁放行(防失败锁定被当会话 DoS);fail-closed 但瞬时故障不撤家族;Refresh 端点 403 account_not_active 同口径。两变异证红+适配器映射矩阵+fail-closed 测试;全基线绿。**B5 双管齐下全部闭环。**
   - follow-up 记录:签发点收口(sub2api respondWithTokenPair 模式,防未来新登录路径漏门)——Validate 惰性复核落地后已有结构性兜底,收口属加固非必需;TokenVersion 版本号列(将来做「登出所有设备」self-service 的底座)。
 
 ### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
