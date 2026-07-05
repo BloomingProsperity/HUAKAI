@@ -387,6 +387,96 @@ func TestPG_Expire_SkipsRowRenewedAfterScan(t *testing.T) {
 	}
 }
 
+// B6-1: 付费续费同事务写统一 money 账本 billing_events(与充值/退款/兑换同流可对账)。
+// 断言: 恰一行 subscription_auto_renewed、actual_cost_signed=-5(钱包流出负号,沿用退款先例)、
+// 关联列指向 charge 行、charge 行回链 billing_event_id。
+// mutation: tryAutoRenewOnce 去掉 insertAutoRenewalBillingEventTx 调用 → 零事件行 → 红。
+func TestPG_AutoRenew_WritesUnifiedBillingEvent(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+	plan := createPaidPlan(t, ctx, svc, f.tenantA, 500) // $5.00
+	f.seedBalance(f.tenantA, f.userA, "20")
+
+	assigned, _ := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantA, UserID: f.userA, PlanID: plan.ID})
+	clk.set(assigned.Subscription.ExpiresAt.Add(time.Hour))
+	if _, err := svc.ProcessAutoRenewal(ctx, 10); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+
+	// 恰一行 subscription_auto_renewed, 负符号精确 -5。
+	var n int64
+	var signed string
+	if err := pool.QueryRow(ctx, `
+SELECT count(*), COALESCE(min(actual_cost_signed::text), '')
+FROM billing_events WHERE tenant_id=$1 AND event_type='subscription_auto_renewed'`, f.tenantA).Scan(&n, &signed); err != nil {
+		t.Fatalf("query billing events: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("subscription_auto_renewed 事件行 = %d, want 1 (续费扣款没进统一账本, 对账缺环)", n)
+	}
+	if !decimal.RequireFromString(signed).Equal(decimal.RequireFromString("-5")) {
+		t.Fatalf("actual_cost_signed = %s, want -5 (钱包流出必须负号, 否则净流向对账错)", signed)
+	}
+	// 关联列与回链双向配对。
+	var chargeRef, backlink int64
+	if err := pool.QueryRow(ctx, `
+SELECT be.subscription_auto_renewal_charge_id, c.billing_event_id
+FROM billing_events be
+JOIN subscription_auto_renewal_charges c
+  ON c.tenant_id=be.tenant_id AND c.id=be.subscription_auto_renewal_charge_id
+WHERE be.tenant_id=$1 AND be.event_type='subscription_auto_renewed'`, f.tenantA).Scan(&chargeRef, &backlink); err != nil {
+		t.Fatalf("join charge link: %v", err)
+	}
+	var billingID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM billing_events WHERE tenant_id=$1 AND event_type='subscription_auto_renewed'`, f.tenantA).Scan(&billingID); err != nil {
+		t.Fatalf("read billing id: %v", err)
+	}
+	if backlink != billingID {
+		t.Fatalf("charge.billing_event_id = %d, want %d (回链断裂)", backlink, billingID)
+	}
+}
+
+// B6-2: 免费续费 (price=0) 无钱移动 → 不写 billing_events(账本只记 money movement);
+// 幂等重跑同周期 → 事件行不重复。
+// mutation: 把 priceCents>0 门槛去掉 → 免费续费也写一行(signed=0 噪声)→ 第一断言红。
+func TestPG_AutoRenew_FreePlanNoBillingEventAndIdempotentNoDup(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+
+	// 免费续费: 零事件行。
+	freePlan := createPaidPlan(t, ctx, svc, f.tenantA, 0)
+	freeAssigned, _ := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantA, UserID: f.userA, PlanID: freePlan.ID})
+	clk.set(freeAssigned.Subscription.ExpiresAt.Add(time.Hour))
+	if _, err := svc.ProcessAutoRenewal(ctx, 10); err != nil {
+		t.Fatalf("free renew: %v", err)
+	}
+	if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='subscription_auto_renewed'`, f.tenantA); n != 0 {
+		t.Fatalf("免费续费事件行 = %d, want 0 (无钱移动不进账本)", n)
+	}
+
+	// 顺序重跑: 第一次续费推后 expires_at, 第二次锁内到点复查即跳过 → 事件行不重复。
+	// (守的是锁内复查防双扣双记账; 变异: 删掉复查 → 第二次真双扣双记账 → 事件行=2 → 红。)
+	paidPlan := createPaidPlan(t, ctx, svc, f.tenantB, 300)
+	f.seedBalance(f.tenantB, f.userB, "20")
+	paidAssigned, _ := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantB, UserID: f.userB, PlanID: paidPlan.ID})
+	clk.set(paidAssigned.Subscription.ExpiresAt.Add(time.Hour))
+	store := NewPostgresStore(pool)
+	for i := 0; i < 2; i++ {
+		if _, err := store.TryAutoRenewSubscription(ctx, autoRenewRecord{TenantID: f.tenantB, SubscriptionID: paidAssigned.Subscription.ID, Now: clk.now()}); err != nil {
+			t.Fatalf("renew #%d: %v", i+1, err)
+		}
+	}
+	if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='subscription_auto_renewed'`, f.tenantB); n != 1 {
+		t.Fatalf("幂等重跑后事件行 = %d, want 1 (重复写账本=对账虚增流出)", n)
+	}
+}
+
 // A6: 并发多 worker 同时续费同一订阅 → 必须只扣一次只续一次。
 // 真并发下双扣是最危险的 money 缺陷; Serializable + getSubscriptionForUpdateTx 行锁串行化,
 // 加唯一锚 uq_sub_auto_renewal_period 硬兜底。
@@ -429,5 +519,9 @@ func TestPG_AutoRenew_ConcurrentNoDoubleCharge(t *testing.T) {
 	}
 	if n := f.countInt(`SELECT count(*) FROM subscription_auto_renewal_charges WHERE tenant_id=$1`, f.tenantA); n != 1 {
 		t.Fatalf("charge rows = %d, want 1 (并发重复记账)", n)
+	}
+	// 统一账本同样只一行: 撞锚回滚必须连带事件行回滚 (同事务), 并发不虚增钱包流出。
+	if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='subscription_auto_renewed'`, f.tenantA); n != 1 {
+		t.Fatalf("billing_events 行 = %d, want 1 (并发把统一账本写重了)", n)
 	}
 }

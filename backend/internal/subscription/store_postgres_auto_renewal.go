@@ -148,7 +148,7 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 	}
 
 	// 6) 写幂等锚 + money 审计行 (同事务)。撞唯一索引 → 外层当"已续过"。
-	if err := insertAutoRenewalChargeTx(ctx, tx, autoRenewalCharge{
+	chargeID, err := insertAutoRenewalChargeTx(ctx, tx, autoRenewalCharge{
 		TenantID:           rec.TenantID,
 		UserID:             sub.UserID,
 		UserSubscriptionID: sub.ID,
@@ -157,8 +157,17 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 		AmountCents:        priceCents,
 		PrevExpiresAt:      sub.ExpiresAt,
 		NewExpiresAt:       res.NewExpiresAt,
-	}); err != nil {
+	})
+	if err != nil {
 		return AutoRenewResult{}, err
+	}
+
+	// 7) 统一 money 账本 (同事务): 扣款进 billing_events, 与充值/退款/兑换同流可对账。
+	// 免费续费 (price<=0) 无钱移动, 不写事件行 (账本只记 money movement)。
+	if priceCents > 0 {
+		if err := insertAutoRenewalBillingEventTx(ctx, tx, rec.TenantID, sub.ID, chargeID, priceCents); err != nil {
+			return AutoRenewResult{}, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -211,15 +220,39 @@ type autoRenewalCharge struct {
 	NewExpiresAt       time.Time
 }
 
-func insertAutoRenewalChargeTx(ctx context.Context, tx pgx.Tx, c autoRenewalCharge) error {
-	if _, err := tx.Exec(ctx, `
+func insertAutoRenewalChargeTx(ctx context.Context, tx pgx.Tx, c autoRenewalCharge) (int64, error) {
+	var id int64
+	if err := tx.QueryRow(ctx, `
 INSERT INTO subscription_auto_renewal_charges (
 	tenant_id, user_id, user_subscription_id, period_key, plan_id,
 	amount_cents, prev_expires_at, new_expires_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id`,
 		c.TenantID, c.UserID, c.UserSubscriptionID, c.PeriodKey, c.PlanID,
-		c.AmountCents, c.PrevExpiresAt, c.NewExpiresAt); err != nil {
-		return fmt.Errorf("subscription: insert auto renewal charge: %w", err)
+		c.AmountCents, c.PrevExpiresAt, c.NewExpiresAt).Scan(&id); err != nil {
+		return 0, fmt.Errorf("subscription: insert auto renewal charge: %w", err)
+	}
+	return id, nil
+}
+
+// insertAutoRenewalBillingEventTx 把续费扣款写进统一 money 账本并回链账本行。
+// 符号约定沿用钱包流出先例 (payment_refunded): actual_cost=0, actual_cost_signed=-金额,
+// SUM(actual_cost_signed) 即钱包净流向。事件类型与关联列配对由表 CHECK 约束把守。
+func insertAutoRenewalBillingEventTx(ctx context.Context, tx pgx.Tx, tenantID, subscriptionID, chargeID, amountCents int64) error {
+	signed := decimal.NewFromInt(amountCents).Div(decimal.NewFromInt(100)).Neg()
+	fingerprint := fmt.Sprintf("sub-autorenew:t%d:s%d:c%d", tenantID, subscriptionID, chargeID)
+	var billingID int64
+	if err := tx.QueryRow(ctx, `
+INSERT INTO billing_events (tenant_id, event_type, actual_cost, actual_cost_signed,
+	stream_state, delivered_token_count, fingerprint, subscription_auto_renewal_charge_id)
+VALUES ($1, 'subscription_auto_renewed', 0, $2, 2, 0, $3, $4)
+RETURNING id`, tenantID, signed, fingerprint, chargeID).Scan(&billingID); err != nil {
+		return fmt.Errorf("subscription: insert auto renewal billing event: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE subscription_auto_renewal_charges SET billing_event_id=$3
+WHERE tenant_id=$1 AND id=$2`, tenantID, chargeID, billingID); err != nil {
+		return fmt.Errorf("subscription: link auto renewal billing event: %w", err)
 	}
 	return nil
 }

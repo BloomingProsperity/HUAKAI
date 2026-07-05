@@ -16310,13 +16310,14 @@ components:
             - balance_recharged
             - payment_credited
             - payment_refunded
+            - subscription_auto_renewed
         amount:
           type: string
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         fingerprint: { type: string }
         source_type:
           type: string
-          enum: [payment_credit, payment_refund, voucher_redemption, recharge_order, billing_claim, billing_event]
+          enum: [payment_credit, payment_refund, voucher_redemption, recharge_order, subscription_auto_renewal, billing_claim, billing_event]
         source_id: { type: integer, format: int64, minimum: 1 }
         occurred_at: { type: string, format: date-time }
 

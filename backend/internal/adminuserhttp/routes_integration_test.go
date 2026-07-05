@@ -128,6 +128,42 @@ func TestAdminBalanceHistory_ScopedNewestFirst(t *testing.T) {
 	}
 }
 
+// TestAdminBalanceHistory_IncludesSubscriptionAutoRenewal 守余额历史渲染订阅续费扣款:
+// 续费事件行归属用户靠 subscription_auto_renewal_charges JOIN, 漏 JOIN 则该行被
+// COALESCE(user)=NULL 整行滤掉——管理员对账看不见扣款, SUM(历史)≠余额变动。
+// mutation: AdminListUserBalanceHistoryForTenant 去掉 sarc JOIN 或 COALESCE 里的 sarc.user_id
+// → 续费行消失 (len=1) → 红。
+func TestAdminBalanceHistory_IncludesSubscriptionAutoRenewal(t *testing.T) {
+	ctx := context.Background()
+	pool := openAdminUsersPool(t, ctx)
+	f := newAdminUsersFixture(t, ctx, pool)
+	target := f.seedUser("renewal-target", "active", "user", "0.00000000")
+
+	at := time.Date(2026, 6, 6, 8, 0, 0, 0, time.UTC)
+	f.seedPaymentCreditEvent(target, "renewal-credit", "5.00000000", at)
+	f.seedSubscriptionAutoRenewalEvent(target, "renewal-debit", "-5.00000000", at.Add(time.Hour))
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
+		Store: admindb.New(pool),
+	}, http.MethodGet, fmt.Sprintf("/admin/v1/users/%d/balance-history?limit=10", target), nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	var body adminBalanceHistoryResponse
+	decodeBody(t, rec, &body)
+	if len(body.Items) != 2 {
+		t.Fatalf("history len=%d want 2 (续费扣款行未渲染, 对账缺环) body=%+v", len(body.Items), body)
+	}
+	// 最新在前: 续费扣款行带正确类型与负金额。
+	got := body.Items[0]
+	if got.Fingerprint != "renewal-debit" || got.EventType != "subscription_auto_renewed" || got.SourceType != "subscription_auto_renewal" {
+		t.Fatalf("续费行渲染错: %+v", got)
+	}
+	if got.Amount != "-5.00000000" {
+		t.Fatalf("续费行金额 = %s, want -5.00000000 (钱包流出负号)", got.Amount)
+	}
+}
+
 func TestTwoFAStats_TenantScoped(t *testing.T) {
 	ctx := context.Background()
 	pool := openAdminUsersPool(t, ctx)
@@ -405,6 +441,58 @@ func (f *adminUsersFixture) seedPaymentCreditEventInTenant(tenantID, userID int6
 	}
 }
 
+// seedSubscriptionAutoRenewalEvent 为用户种一条订阅续费扣款账本链
+// (plan → user_subscription → charge → billing_events + 回链), 供余额历史渲染测试。
+func (f *adminUsersFixture) seedSubscriptionAutoRenewalEvent(userID int64, fingerprint, amount string, occurredAt time.Time) {
+	f.t.Helper()
+	var planID int64
+	if err := f.pool.QueryRow(f.ctx,
+		`INSERT INTO subscription_plans (tenant_id, name, price_cents, currency_code, validity_days, granted_group, for_sale, enabled)
+		 VALUES ($1, $2, 500, 'USD', 30, 'premium', true, true)
+		 RETURNING id`,
+		f.tenantID, "plan-"+fingerprint+"-"+f.suffix,
+	).Scan(&planID); err != nil {
+		f.t.Fatalf("seed plan %s: %v", fingerprint, err)
+	}
+	var subID int64
+	if err := f.pool.QueryRow(f.ctx,
+		`INSERT INTO user_subscriptions (tenant_id, user_id, plan_id, granted_group, status, source, auto_renew, starts_at, expires_at)
+		 VALUES ($1, $2, $3, 'premium', 'active', 'admin', true, $4::timestamptz, $4::timestamptz + interval '30 days')
+		 RETURNING id`,
+		f.tenantID, userID, planID, occurredAt,
+	).Scan(&subID); err != nil {
+		f.t.Fatalf("seed subscription %s: %v", fingerprint, err)
+	}
+	var chargeID int64
+	if err := f.pool.QueryRow(f.ctx,
+		`INSERT INTO subscription_auto_renewal_charges (tenant_id, user_id, user_subscription_id, period_key, plan_id, amount_cents, prev_expires_at, new_expires_at, created_at)
+		 VALUES ($1, $2, $3, $4, $5, 500, $6::timestamptz, $6::timestamptz + interval '30 days', $6::timestamptz)
+		 RETURNING id`,
+		f.tenantID, userID, subID, fingerprint+"-"+f.suffix, planID, occurredAt,
+	).Scan(&chargeID); err != nil {
+		f.t.Fatalf("seed renewal charge %s: %v", fingerprint, err)
+	}
+	var eventID int64
+	if err := f.pool.QueryRow(f.ctx,
+		`INSERT INTO billing_events (
+			tenant_id, event_type, actual_cost, actual_cost_signed,
+			stream_state, delivered_token_count, fingerprint, subscription_auto_renewal_charge_id, occurred_at
+		) VALUES (
+			$1, 'subscription_auto_renewed', 0, $2::numeric(20,8),
+			2, 0, $3, $4, $5
+		) RETURNING id`,
+		f.tenantID, amount, fingerprint, chargeID, occurredAt,
+	).Scan(&eventID); err != nil {
+		f.t.Fatalf("seed renewal billing event %s: %v", fingerprint, err)
+	}
+	if _, err := f.pool.Exec(f.ctx,
+		`UPDATE subscription_auto_renewal_charges SET billing_event_id=$3 WHERE tenant_id=$1 AND id=$2`,
+		f.tenantID, chargeID, eventID,
+	); err != nil {
+		f.t.Fatalf("link renewal billing event %s: %v", fingerprint, err)
+	}
+}
+
 type adminUsersListResponse struct {
 	Items  []adminUsersListItem `json:"items"`
 	Limit  int32                `json:"limit"`
@@ -423,6 +511,9 @@ type adminBalanceHistoryResponse struct {
 
 type adminBalanceHistoryItem struct {
 	Fingerprint string `json:"fingerprint"`
+	EventType   string `json:"event_type"`
+	SourceType  string `json:"source_type"`
+	Amount      string `json:"amount"`
 }
 
 type adminTwoFAStatsResponse struct {
