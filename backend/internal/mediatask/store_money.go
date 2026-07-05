@@ -62,7 +62,18 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 		}); err != nil {
 			return err
 		} else if rows == 0 {
-			return billing.ErrClaimNotReserving
+			// claim 已被 billing LeaseSweeper 抢先 abort (预扣已释放退回用户)。回滚整事务
+			// 会让任务卡 in_progress 每 ~30s 重试死循环且永远结算不了。任务在上游真实跑
+			// 成功: 强推终态 succeeded (用户拿到产物), 落孤儿对账线索 (admin Manual-First
+			// 追扣/核销), 跳过 claim/billing 写 (sweeper 已写平 abort 账, 再写 committed 是假账)。
+			if err := updateTaskSuccess(ctx, tx, locked.ID, result, now); err != nil {
+				return err
+			}
+			if err := persistOrphanTx(ctx, tx, locked, owner, now); err != nil {
+				return err
+			}
+			settled = true
+			return nil
 		}
 		if err := insertBillingEvent(ctx, qtx, locked, claimID, "claim_committed", actual, "stream_end_graceful", billing.StreamStatePartial); err != nil {
 			return err
@@ -153,7 +164,23 @@ func (s *PostgresStore) abortTask(ctx context.Context, taskID int64, owner strin
 		}); err != nil {
 			return err
 		} else if rows == 0 {
-			return billing.ErrClaimNotReserving
+			// claim 已被 billing LeaseSweeper 抢先 abort (billing 侧账已由 sweeper 写平)。
+			// 回滚整事务会让任务卡非终态死循环。强推终态, error_class 标 claim_swept 可追溯;
+			// 有上游任务 ID 则落孤儿线索 (上游可能仍在跑并计费)。
+			if _, err := tx.Exec(ctx, `
+	UPDATE media_tasks
+	SET status=$2, error_class='claim_swept', lease_owner=NULL, lease_expires_at=NULL,
+	    updated_at=$3, finished_at=$3
+	WHERE id=$1 AND status IN ('queued','in_progress')`,
+				locked.ID, status, now.UTC(),
+			); err != nil {
+				return err
+			}
+			if err := persistOrphanTx(ctx, tx, locked, owner, now); err != nil {
+				return err
+			}
+			completed = true
+			return nil
 		}
 		if err := insertBillingEvent(ctx, qtx, locked, claimID, "claim_aborted", decimal.Zero, reason, billing.StreamStateFailed); err != nil {
 			return err
@@ -201,6 +228,18 @@ func activeAPIKeyID(ctx context.Context, tx pgx.Tx, tenantID, userID int64, now 
 		return 0, ErrNoActiveAPIKey
 	}
 	return id, err
+}
+
+// persistOrphanTx 在调用方事务内幂等落一条孤儿对账线索 (无上游任务 ID 时无对账价值, 跳过)。
+func persistOrphanTx(ctx context.Context, tx pgx.Tx, task Task, owner string, now time.Time) error {
+	providerTaskID := strings.TrimSpace(task.ProviderTaskID)
+	if providerTaskID == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, insertOrphanSQL,
+		task.ID, task.TenantID, task.UserID, task.Provider,
+		providerTaskID, owner, now.UTC())
+	return err
 }
 
 func lockTerminalCandidate(ctx context.Context, tx pgx.Tx, id int64, owner string) (Task, bool, error) {
