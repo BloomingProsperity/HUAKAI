@@ -199,6 +199,9 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusUnauthorized, "session_family_revoked", "session family is revoked or missing")
 	case errors.Is(err, usersession.ErrAnomalyRejected):
 		writeJSONError(w, http.StatusForbidden, "session_anomaly_rejected", "session context changed too much")
+	case errors.Is(err, usersession.ErrUserIneligible):
+		// 与登录路径资格门同口径 (passkey/2FA), 不泄露具体账号状态。
+		writeJSONError(w, http.StatusForbidden, "account_not_active", "account is no longer active")
 	case errors.Is(err, usersession.ErrDeviceLimitExceeded):
 		writeJSONError(w, http.StatusForbidden, "session_device_limit_exceeded", "too many active devices")
 	case errors.Is(err, usersession.ErrDeviceConfirmationRequired):

@@ -25,16 +25,18 @@ const (
 )
 
 var (
-	ErrInvalidInput               = errors.New("usersession: invalid input")
-	ErrStoreNotConfigured         = errors.New("usersession: store not configured")
-	ErrSigningKeyMissing          = errors.New("usersession: signing key missing")
-	ErrFamilyNotFound             = errors.New("usersession: family not found")
-	ErrFamilyRevoked              = errors.New("usersession: family revoked")
-	ErrTokenNotFound              = errors.New("usersession: token not found")
-	ErrTokenExpired               = errors.New("usersession: token expired")
-	ErrRefreshReplay              = errors.New("usersession: refresh token replay")
-	ErrSessionUserMismatch        = errors.New("usersession: session user mismatch")
-	ErrAnomalyRejected            = errors.New("usersession: session anomaly rejected")
+	ErrInvalidInput        = errors.New("usersession: invalid input")
+	ErrStoreNotConfigured  = errors.New("usersession: store not configured")
+	ErrSigningKeyMissing   = errors.New("usersession: signing key missing")
+	ErrFamilyNotFound      = errors.New("usersession: family not found")
+	ErrFamilyRevoked       = errors.New("usersession: family revoked")
+	ErrTokenNotFound       = errors.New("usersession: token not found")
+	ErrTokenExpired        = errors.New("usersession: token expired")
+	ErrRefreshReplay       = errors.New("usersession: refresh token replay")
+	ErrSessionUserMismatch = errors.New("usersession: session user mismatch")
+	ErrAnomalyRejected     = errors.New("usersession: session anomaly rejected")
+	// ErrUserIneligible: 会话主体账号已封禁/删除, 会话使用期复核拒绝 (UserGate)。
+	ErrUserIneligible             = errors.New("usersession: user ineligible for session")
 	ErrDeviceLimitExceeded        = errors.New("usersession: device limit exceeded")
 	ErrDeviceConfirmationRequired = errors.New("usersession: device confirmation required")
 	// ErrDeviceConfirmationNotFound: 确认 token 无对应 pending 记录 (不存在 / 已消费 / 跨租户)。

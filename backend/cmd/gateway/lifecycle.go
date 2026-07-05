@@ -342,6 +342,9 @@ func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, e
 	}
 	userSessionService := usersession.NewService(usersession.NewPostgresStore(pgPool))
 	userSessionService.SigningKey = sessionSigningKey
+	// 会话使用期资格复核: Validate/Refresh 每次复核 users.status, 封禁/删除下一请求即生效
+	// (主动吊销只是辅助, 这道闸不依赖各封禁入口记得调 Revoke)。
+	userSessionService.UserGate = sessionUserGate{auth: userAuthService}
 	// 新设备策略两旋钮 (默认休眠 max=0, 零行为变更); 非法配置 fail-loud 拒启。
 	maxActiveDevices, devicePolicy, err := loadSessionDevicePolicyFromEnv()
 	if err != nil {

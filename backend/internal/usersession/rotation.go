@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -20,6 +21,13 @@ const (
 	DefaultDeviceConfirmationTTL = 24 * time.Hour
 )
 
+// UserGate 会话使用期的账号资格复核: Validate/Refresh 每次调用复核会话主体,
+// 封禁/删除下一请求即生效, 不依赖各封禁入口记得主动吊销(主动吊销只是辅助)。
+// 返回 nil 放行; ErrUserIneligible 拒并撤家族; 其余错误(后端瞬时故障)原样上抛。
+type UserGate interface {
+	CheckSessionUser(ctx context.Context, tenantID, userID int64) error
+}
+
 type Service struct {
 	Store             Store
 	SessionTTL        time.Duration
@@ -30,6 +38,8 @@ type Service struct {
 	// DeviceConfirmationTTL 是确认 token 的有效期; 0 用 DefaultDeviceConfirmationTTL。
 	DeviceConfirmationTTL time.Duration
 	Now                   func() time.Time
+	// UserGate 非 nil 时 Validate/Refresh 复核账号资格 (生产 wiring 必注入; nil 仅限单测)。
+	UserGate UserGate
 }
 
 func NewService(store Store) *Service {
@@ -114,6 +124,15 @@ func (s *Service) Refresh(ctx context.Context, in RefreshInput) (IssuedTokens, e
 	if drift := DetectDrift(rec.Family, in.IP, in.UserAgent); drift.Level == DriftHigh {
 		_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, drift.Reason, now)
 		return IssuedTokens{}, ErrAnomalyRejected
+	}
+	// 账号资格复核: 封禁/删除的主体不得续期; 命中即撤整个家族 (机会式清理, 掐断 refresh 链)。
+	if s.UserGate != nil {
+		if err := s.UserGate.CheckSessionUser(ctx, rec.Family.TenantID, rec.Family.UserID); err != nil {
+			if errors.Is(err, ErrUserIneligible) {
+				_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, "user_ineligible", now)
+			}
+			return IssuedTokens{}, err
+		}
 	}
 	refreshRaw, refreshHash, err := GenerateRefreshToken()
 	if err != nil {
@@ -234,6 +253,16 @@ func (s *Service) Validate(ctx context.Context, token string, ip string, userAge
 	if drift := DetectDrift(rec.Family, ip, userAgent); drift.Level == DriftHigh {
 		_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, drift.Reason, now)
 		return ValidatedSession{}, ErrAnomalyRejected
+	}
+	// 账号资格复核: bearer 是长效 token, 不复核则封禁/删除后既有会话能活到自然过期。
+	// 命中即撤家族 —— 后续请求快速失败在 family revoked, 不再走本复核。
+	if s.UserGate != nil {
+		if err := s.UserGate.CheckSessionUser(ctx, payload.TenantID, payload.UserID); err != nil {
+			if errors.Is(err, ErrUserIneligible) {
+				_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, "user_ineligible", now)
+			}
+			return ValidatedSession{}, err
+		}
 	}
 	_ = s.Store.TouchSessionToken(ctx, rec.Token.TenantID, rec.Token.ID, now)
 	return ValidatedSession{
