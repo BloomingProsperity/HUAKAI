@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
 // OrphanReconcileResult 是一次孤儿对账动作的结果,供调用方写审计 / 回客户端。
@@ -22,9 +24,10 @@ type OrphanReconcileResult struct {
 	BackCharged   bool
 	CapturedCents int64
 	// BackChargeOutcome 记追扣的实际结果(仅 backCharge=true 时有意义):
-	// "captured"=真扣到钱;其余("hold_not_held"/"task_archived"/"no_estimate"/
-	// "holdref_unparseable")=本笔追扣未发生(0 扣),此时孤儿保持 pending、不推进
-	// reconciled 终态,供 admin 据因调查/重试或改用 back_charge=false 关闭。
+	// "captured"=真扣到钱;其余("hold_not_held"/"hold_released_needs_manual_charge"/
+	// "claim_swept_conflict"/"task_archived"/"no_estimate"/"holdref_unparseable")=本笔追扣
+	// 未发生(0 扣),此时孤儿保持 pending、不推进 reconciled 终态,供 admin 据因调查/重试或
+	// 改用 back_charge=false 关闭。
 	BackChargeOutcome string
 }
 
@@ -104,7 +107,8 @@ func (s *PostgresStore) ReconcileOrphan(
 			result.CapturedCents = captured
 			result.BackChargeOutcome = outcome
 			if captured == 0 {
-				// 追扣请求但未真正扣到钱(hold 已 released / 行归档 / 金额非法 / holdref 不可解析):
+				// 追扣请求但未真正扣到钱(hold 已 released / 行归档 / 金额非法 / holdref 不可解析 /
+				// claim 已非 reserving):
 				// 绝不把孤儿推进 reconciled 终态——那会把漏扣静默对平且永久不可重试。保持 pending,
 				// 让 admin 据 outcome 调查/重试,或显式用 back_charge=false 关闭不可追回的孤儿。
 				// 用专用哨兵回滚事务(本路径未动钱),外层把含 outcome 的 result 透出。
@@ -152,8 +156,8 @@ func (s *PostgresStore) ReconcileOrphan(
 var errOrphanRaced = errors.New("mediatask: orphan reconcile raced")
 
 // errOrphanBackChargeNoOp 是内部哨兵:backCharge=true 但 captureOrphanHold 未真正扣到钱
-// (hold 已 released/captured、原任务行归档、估算非正、holdref 不可解析)。用它回滚事务
-// (本路径未动钱、未推进终态),对外把孤儿保持 pending 并透出含 BackChargeOutcome 的 result。
+// (hold 已 released/captured、claim 已非 reserving、原任务行归档、估算非正、holdref 不可解析)。
+// 用它回滚事务(本路径未动钱、未推进终态),对外把孤儿保持 pending 并透出含 BackChargeOutcome 的 result。
 var errOrphanBackChargeNoOp = errors.New("mediatask: orphan back-charge captured nothing")
 
 // captureOrphanHold 把孤儿对应的原始 media_tasks 行那笔已 Reserve 的预扣,通过既有
@@ -161,15 +165,7 @@ var errOrphanBackChargeNoOp = errors.New("mediatask: orphan back-charge captured
 // 若 media_tasks 行已不存在(归档等),无可追扣,返回 0。billing.Capture 的 hold.State
 // 守卫保证:claim 已被结算(captured/released)时本调用为 no-op,余额不动(防双扣命门-2)。
 func captureOrphanHold(ctx context.Context, tx pgx.Tx, taskID, tenantID int64) (int64, string, error) {
-	var (
-		holdRef        string
-		estimatedCents int64
-	)
-	err := tx.QueryRow(ctx, `
-		SELECT hold_ref, estimated_cents
-		FROM media_tasks
-		WHERE id=$1 AND tenant_id=$2
-		FOR UPDATE`, taskID, tenantID).Scan(&holdRef, &estimatedCents)
+	task, err := scanTask(tx.QueryRow(ctx, selectTaskSQL+` WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, taskID, tenantID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		// 原任务行已不在(已归档/删除):无对应预扣可追,本笔追扣未发生。
 		return 0, "task_archived", nil
@@ -177,10 +173,10 @@ func captureOrphanHold(ctx context.Context, tx pgx.Tx, taskID, tenantID int64) (
 	if err != nil {
 		return 0, "", err
 	}
-	if estimatedCents <= 0 {
+	if task.EstimatedCents <= 0 {
 		return 0, "no_estimate", nil
 	}
-	claimID, err := claimIDFromHoldRef(holdRef)
+	claimID, err := claimIDFromHoldRef(task.HoldRef)
 	if err != nil {
 		// hold_ref 不可解析:不冒险动钱,本笔追扣未发生。
 		return 0, "holdref_unparseable", nil
@@ -195,11 +191,50 @@ func captureOrphanHold(ctx context.Context, tx pgx.Tx, taskID, tenantID int64) (
 	}
 	if !capturable {
 		// hold 已 released(预扣已退客户)或已 captured:本笔追扣无对象,绝不假报已扣。
-		return 0, "hold_not_held", nil
+		outcome, err := orphanHoldNotHeldOutcome(ctx, tx, claimID, tenantID)
+		if err != nil {
+			return 0, "", err
+		}
+		return 0, outcome, nil
 	}
-	// 复用既有 settle 路径:把预扣 capture 成真实扣费。
-	if _, err := billing.Capture(ctx, tx, claimID, centsToUSD(estimatedCents)); err != nil {
+	actual := centsToUSD(task.EstimatedCents)
+	qtx := dbbilling.New(tx)
+	rows, err := qtx.UpdateClaimCommitted(ctx, dbbilling.UpdateClaimCommittedParams{
+		ID: claimID, ActualCost: decimal.NullDecimal{Decimal: actual, Valid: true}, TenantID: tenantID,
+	})
+	if err != nil {
 		return 0, "", err
 	}
-	return estimatedCents, "captured", nil
+	if rows == 0 {
+		// claim 已被并发回收推进到非 reserving:此时不能强写 committed,也不能扣余额。
+		return 0, "claim_swept_conflict", nil
+	}
+	if err := insertBillingEvent(ctx, qtx, task, claimID, "claim_committed", actual, "orphan_back_charge", billing.StreamStatePartial); err != nil {
+		return 0, "", err
+	}
+	// 复用既有 settle 路径:把预扣 capture 成真实扣费。若本步失败,前面的 claim 与事件同事务回滚。
+	if _, err := billing.Capture(ctx, tx, claimID, actual); err != nil {
+		return 0, "", err
+	}
+	return task.EstimatedCents, "captured", nil
+}
+
+func orphanHoldNotHeldOutcome(ctx context.Context, tx pgx.Tx, claimID, tenantID int64) (string, error) {
+	var state, claimStatus string
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE((
+			SELECT bh.state FROM balance_holds bh WHERE bh.claim_id = blc.id
+		), ''), blc.status
+		FROM billing_ledger_claims blc
+		WHERE blc.id=$1 AND blc.tenant_id=$2`, claimID, tenantID).Scan(&state, &claimStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "hold_not_held", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if state == "released" || claimStatus == "aborted" {
+		return "hold_released_needs_manual_charge", nil
+	}
+	return "hold_not_held", nil
 }

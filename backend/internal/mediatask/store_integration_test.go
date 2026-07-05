@@ -232,6 +232,41 @@ func TestMediaTaskTimeoutExpiresAndRefunds(t *testing.T) {
 	}
 	assertTaskStatus(t, ctx, pool, task.ID, StatusExpired)
 	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "aborted", decimal.Zero)
+	if n := countSweptOrphans(t, ctx, store, task.ID); n != 1 {
+		t.Fatalf("已有上游任务 ID 的超时任务应落孤儿线索,orphan rows=%d want 1", n)
+	}
+}
+
+func TestMediaTaskTimeoutWithoutProviderTaskDoesNotCreateOrphan(t *testing.T) {
+	// 变异：无上游任务 ID 时也无条件 persistOrphanTx；orphan rows 会从 0 变 1。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "timeout-no-provider")
+	svc := newIntegrationService(pool)
+	store := svc.store.(*PostgresStore)
+
+	task, err := svc.Submit(ctx, seed.tenantID, seed.userID, submitInput("req-timeout-no-provider"))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	leased := leaseTaskForTest(t, ctx, pool, task.ID, "worker-timeout-no-provider")
+	ok, err := store.ExpireTask(ctx, leased, "worker-timeout-no-provider", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("ExpireTask: %v", err)
+	}
+	if !ok {
+		t.Fatal("ExpireTask ok=false")
+	}
+	balance, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
+	if !balance.Equal(decimal.RequireFromString("10.00")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("balance/held=%s/%s want 10.00/0", balance, held)
+	}
+	assertTaskStatus(t, ctx, pool, task.ID, StatusExpired)
+	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "aborted", decimal.Zero)
+	if n := countSweptOrphans(t, ctx, store, task.ID); n != 0 {
+		t.Fatalf("无上游任务 ID 时不应落孤儿线索,orphan rows=%d want 0", n)
+	}
 }
 
 func TestMediaTaskWorkerFencing_NoDoubleSettle(t *testing.T) {

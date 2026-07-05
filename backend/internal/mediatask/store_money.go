@@ -43,8 +43,8 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 		// 下限锚定(bug ② 修复):上游 Poll 未回实际用量时 ActualCents 保持 0(图像/视频等
 		// 任务创建型上游普遍只回任务 ID/状态、不回 token 用量),若按 0 结算 = 任务成功却白吃
 		// 真实上游成本、等同给客户做了 $0 全额退式结算。此处锚定到预扣的预估额度
-		// locked.EstimatedCents(绝不归零;免费模型 EstimatedCents=0 时仍正确结 $0),对齐
-		// new-api"无可用用量时保持预扣的预估、差额重算带 ≤0 即不动账护栏"的做法。
+		// locked.EstimatedCents(绝不归零;免费模型 EstimatedCents=0 时仍正确结 $0),维持
+		// "无可用用量时保持预扣估算、非正差额不动账"的保守口径。
 		if billedCents <= 0 {
 			billedCents = locked.EstimatedCents
 		}
@@ -189,12 +189,15 @@ func (s *PostgresStore) abortTask(ctx context.Context, taskID int64, owner strin
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-	UPDATE media_tasks
-	SET status=$2, error_class=$3, lease_owner=NULL, lease_expires_at=NULL,
-	    updated_at=$4, finished_at=$4
-	WHERE id=$1 AND status IN ('queued','in_progress')`,
+		UPDATE media_tasks
+		SET status=$2, error_class=$3, lease_owner=NULL, lease_expires_at=NULL,
+		    updated_at=$4, finished_at=$4
+		WHERE id=$1 AND status IN ('queued','in_progress')`,
 			locked.ID, status, errorClass, now.UTC(),
 		); err != nil {
+			return err
+		}
+		if err := persistOrphanTx(ctx, tx, locked, owner, now); err != nil {
 			return err
 		}
 		completed = true

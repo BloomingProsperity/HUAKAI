@@ -203,3 +203,28 @@ A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven 
 6. **C-2 裁定=不建自动补价 worker**:现有四层不动(预扣 fail-closed 严于三镜/ratio 冷启 fail-open→1.0 与 new-api 一致/流式 0 价+pending 落账优于 sub2api)。第一级自主:pending_reconciliation 未定稿行数进 admin worker-stats+expvar+部署文档。第二级 Manual-First:RepriceUsageRecord+admin dry-run 端点(usage_record_reconciliation_events 表字段现成零迁移),差额报告人工走既有 admin 调整,不自动动钱——排在第一级之后独立切片。
 
 **落地批次**(等 codex②三域批收工避免同文件冲突):批A=C-1b+NT-1+PO-3+S3-4 一级+C-2 一级;批B=NT-2+MO-1(叠在 codex② 的 MO-3 之上);批C=C-2 二级 Manual-First reprice + S3-4 二级(视一级数据)。
+
+## 🔬 剩余四域 §17 模块配合审计(2026-07-05,17-agent Workflow wf_769e95f6-c97;13 条发现全部核证存活 CONFIRMED/ADJUSTED,0 REFUTED;无 S0/S1,最高 S2)
+
+**media(3 条,全 money 相关,Claude 亲核 MEDIA-1 成立)**——孤儿追扣子系统与 claim 状态机/sweeper 配合断裂:
+- MEDIA-1【S2·钱】captureOrphanHold(store_orphan_backcharge.go:201)只 billing.Capture 扣余额,**不推进 claim 到 committed**(Capture 函数体亲核只动 balance_holds+user_balances 不碰 billing_ledger_claims);claim 停 reserving,~TaskTimeout+grace 后被 LeaseSweeper abort → 账本记 claim aborted+退款事件,与用户实际被扣矛盾。修:追扣 Capture 成功须同事务 UpdateClaimCommitted+写 claim_committed 事件,对齐正常 CompleteSuccess 路径。
+- MEDIA-2【S3·钱】自超时 abort(store_money.go:191 正常路径)已提交上游的任务只 Release 退款不 persistOrphanTx → 上游成本无对账入口(swept 路径建线索、自超时不建,不一致)。修:ExpireTask 且 ProviderTaskID 非空时也建孤儿线索。
+- MEDIA-3【S3·钱】swept 来源孤儿(hold 已被 sweeper released)追扣时 HoldCapturable 恒 false → 对真正代表上游漏扣的孤儿追回 0,admin 只能 mark ignored。与 MEDIA-1 同根(追扣与 sweeper 释放时序错配),随 MEDIA-1 修复方向一并考量。
+
+**frontend(3 条,Claude 亲核 FE-1 成立)**:
+- FE-1【S2】tokenForPath.ts:49 admin 路径只用手贴 adminToken、不 fallback session token;后端 adminsessionauth.Resolver 明确支持 session admin 通道(role=admin→platform admin)→「登录即管理员」在 UI 失效,session 登录的 admin 访问运营台恒 401。修:admin 路径 adminToken 空时 fallback sessionToken。纯接线 bug,非页面设计,自主。
+- FE-2【S2】多标签页 token 轮换后内存快照不跨标签同步 → refresh family 重放 → 所有标签强制登出。修:BroadcastChannel/storage 事件跨标签同步 setSessionTokens。
+- FE-3【S3】裸 fetch 下载器(audit/usagerecords api.ts)绕过 maybeProactiveRefresh → 临近 session 到期误 401。修:下载前先 ensureFreshSession。
+
+**mimicry-egress(4 条)**:
+- ME-1【S2】sidecar 就绪探测在全局锁内做网络 I/O 且失败不缓存(transport/factory.go:287-344)→ sidecar 挂起时并发 mimicry 出口串行化(锁 convoy)。修:探测移出锁/失败负缓存。
+- ME-2【S2】基础设施故障(sidecar 不可用)被误记 per-account SignalChannelError(chat_completions_error.go:204)→ sidecar 抖动引发全池 5min 冷却+failover 甩打。修:区分 infra 故障 vs account 故障,infra 不发 per-account 冷却。
+- ME-3【S3】自定义上游端点+绑定出口代理=每请求恒 fail-closed 无前置校验(passthrough_endpoint_guard.go:166),叠加 ME-2 反把账号冷却。
+- ME-4【S3】Go-native uTLS 回退腿只认 env force-h1、不继承 config SidecarForceH1(factory.go:332)→ env 关 force-h1 时回退腿广告接不住的 h2。
+
+**hermes(3 条,全 S3,非钱非安全)**:
+- HERMES-IP-01 propose 开关与 mutating 总开关解耦(wiring.go:897)→ PROPOSE=on+MUTATING=off 时 operator 确认必 403 死胡同。
+- HERMES-IP-02 confirmCache 进程内单例(hermesconfirm/cache.go:39)→ 多副本部署 propose→confirm 跨副本必失败,无 re-dry-run 逃生阀。
+- HERMES-IP-03 已投递 dlq 记录的 confirm 幂等正确但回泛化 503 掩盖真因(hermesops/tools_mutating_dlq_renew.go:78)。
+
+**落地批次**:批D=frontend(FE-1/2/3,独立)+mimicry(ME-1~4);批E=media(3 条,money,等 codex⑦ 补价让出 internal/billing 后派,Claude 重点验收+对抗审查);批F=hermes 3×S3(fix-in-place)。

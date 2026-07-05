@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -22,7 +23,7 @@ import (
 // "held" 是 no-op、0 扣。
 //
 // 修复后正确行为:不假报已扣、不推进 reconciled 终态,孤儿保持 pending(可重试),
-// outcome=hold_not_held。
+// outcome=hold_released_needs_manual_charge,提示该笔已释放预扣只能走人工政策处理。
 //
 // 变异举证(去掉 captureOrphanHold 里的 HoldCapturable 先验守卫 → 退回直接 Capture+无条件
 // 返回 estimated_cents):captured_cents 变 123、advanced 变 true、孤儿被标 reconciled →
@@ -78,9 +79,9 @@ func TestReconcileOrphanBackChargeNoOpWhenHoldReleased(t *testing.T) {
 	if res.CapturedCents != 0 {
 		t.Fatalf("hold released 时 0 扣,captured_cents 应为 0,实际 %d(假报已扣=漏扣被静默掩盖)", res.CapturedCents)
 	}
-	// ③:outcome 明确告知为何 0 扣。
-	if res.BackChargeOutcome != "hold_not_held" {
-		t.Fatalf("outcome 应为 hold_not_held,实际 %q", res.BackChargeOutcome)
+	// ③:outcome 明确告知已释放预扣不能靠原 hold 自动追回。
+	if res.BackChargeOutcome != "hold_released_needs_manual_charge" {
+		t.Fatalf("outcome 应为 hold_released_needs_manual_charge,实际 %q", res.BackChargeOutcome)
 	}
 	// ④:孤儿必须仍 pending(可重试),不得被标 reconciled 永久掩盖漏扣。
 	var status string
@@ -93,6 +94,9 @@ func TestReconcileOrphanBackChargeNoOpWhenHoldReleased(t *testing.T) {
 	// 余额本就没扣到,必须保持释放后状态。
 	if bal, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID); !bal.Equal(decimal.RequireFromString("10.00")) || !held.Equal(decimal.Zero) {
 		t.Fatalf("追扣未发生时余额不应变 balance/held=%s/%s want 10.00/0", bal, held)
+	}
+	if events := countBillingEvents(t, ctx, pool, claimID, ""); events != 0 {
+		t.Fatalf("hold 已释放后追扣不得新增 billing event,实际 %d", events)
 	}
 }
 
@@ -163,10 +167,19 @@ func TestReconcileOrphanBackChargeIdempotent(t *testing.T) {
 	if res1.CapturedCents != 123 || !res1.BackCharged {
 		t.Fatalf("首次追扣结果错 captured=%d backcharged=%v want 123/true", res1.CapturedCents, res1.BackCharged)
 	}
+	claimID := mustClaimID(t, task.HoldRef)
+	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("1.23"))
+	if events := countBillingEvents(t, ctx, pool, claimID, "claim_committed"); events != 1 {
+		t.Fatalf("首次追扣后 claim_committed 事件数=%d want 1", events)
+	}
 	bal1, held1 := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
 	if !bal1.Equal(decimal.RequireFromString("8.77")) || !held1.Equal(decimal.Zero) {
 		t.Fatalf("首次追扣后 balance/held=%s/%s want 8.77/0", bal1, held1)
 	}
+	if rows := attemptClaimSweepForTest(t, ctx, pool, claimID); rows != 0 {
+		t.Fatalf("追扣已 committed 的 claim 不应再被 sweep 成 aborted,rows=%d", rows)
+	}
+	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("1.23"))
 
 	// 4) 第二次追扣对账(同一孤儿):状态门拦截,no-op,余额不动(防双扣命门)。
 	res2, ok2, err := store.ReconcileOrphan(ctx, orphanID, "reconciled", true, time.Now().UTC(), nil)
@@ -182,6 +195,58 @@ func TestReconcileOrphanBackChargeIdempotent(t *testing.T) {
 	bal2, held2 := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
 	if !bal2.Equal(decimal.RequireFromString("8.77")) || !held2.Equal(decimal.Zero) {
 		t.Fatalf("二次追扣后 balance/held=%s/%s want 8.77/0(不得双扣)", bal2, held2)
+	}
+	if events := countBillingEvents(t, ctx, pool, claimID, "claim_committed"); events != 1 {
+		t.Fatalf("二次追扣后 claim_committed 事件数=%d want 1(不得重复记账)", events)
+	}
+}
+
+// TestReconcileOrphanBackChargeClaimConflictDoesNotCapture 守 rows==0 防御:若 claim 已非
+// reserving,即使 hold 仍 held,也不得先扣余额再发现账本推进失败。
+func TestReconcileOrphanBackChargeClaimConflictDoesNotCapture(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "orphan-claim-conflict")
+	svc := newIntegrationService(pool)
+	store := svc.store.(*PostgresStore)
+
+	task, err := svc.Submit(ctx, seed.tenantID, seed.userID, submitInput("req-orphan-conflict"))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	claimID := mustClaimID(t, task.HoldRef)
+	if _, err := pool.Exec(ctx, `
+		UPDATE billing_ledger_claims
+		SET status='aborted', aborted_reason='lease_expired', settled_at=NOW()
+		WHERE id=$1 AND tenant_id=$2 AND status='reserving'`,
+		claimID, seed.tenantID); err != nil {
+		t.Fatalf("force claim abort: %v", err)
+	}
+	if err := store.PersistOrphan(ctx, OrphanRecord{
+		TaskID: task.ID, TenantID: seed.tenantID, UserID: seed.userID, Provider: "http",
+		ProviderTaskID: "up-orphan-conflict", LeaseOwner: "it-conflict-owner", ObservedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PersistOrphan: %v", err)
+	}
+	orphanID := mustOrphanID(t, ctx, pool, task.ID, "up-orphan-conflict")
+
+	res, advanced, err := store.ReconcileOrphan(ctx, orphanID, "reconciled", true, time.Now().UTC(), nil)
+	if err != nil {
+		t.Fatalf("ReconcileOrphan: %v", err)
+	}
+	if advanced {
+		t.Fatal("claim 已非 reserving 时不得推进孤儿终态")
+	}
+	if res.CapturedCents != 0 || res.BackChargeOutcome != "claim_swept_conflict" {
+		t.Fatalf("conflict 结果 captured/outcome=%d/%q want 0/claim_swept_conflict", res.CapturedCents, res.BackChargeOutcome)
+	}
+	bal, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
+	if !bal.Equal(decimal.RequireFromString("10.00")) || !held.Equal(decimal.RequireFromString("1.23")) {
+		t.Fatalf("claim 冲突时不得扣余额 balance/held=%s/%s want 10.00/1.23", bal, held)
+	}
+	if events := countBillingEvents(t, ctx, pool, claimID, "claim_committed"); events != 0 {
+		t.Fatalf("claim 冲突时不得写 committed 事件,实际 %d", events)
 	}
 }
 
@@ -280,4 +345,35 @@ func mustOrphanID(t *testing.T, ctx context.Context, pool interface {
 		t.Fatalf("lookup orphan id: %v", err)
 	}
 	return id
+}
+
+func countBillingEvents(t *testing.T, ctx context.Context, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, claimID int64, eventType string) int {
+	t.Helper()
+	var n int
+	if eventType == "" {
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing_events WHERE claim_id=$1`, claimID).Scan(&n); err != nil {
+			t.Fatalf("count billing events: %v", err)
+		}
+		return n
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing_events WHERE claim_id=$1 AND event_type=$2`, claimID, eventType).Scan(&n); err != nil {
+		t.Fatalf("count billing events: %v", err)
+	}
+	return n
+}
+
+func attemptClaimSweepForTest(t *testing.T, ctx context.Context, pool interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, claimID int64) int64 {
+	t.Helper()
+	tag, err := pool.Exec(ctx, `
+		UPDATE billing_ledger_claims
+		SET status='aborted', aborted_reason='lease_expired', settled_at=NOW()
+		WHERE id=$1 AND status='reserving'`, claimID)
+	if err != nil {
+		t.Fatalf("attempt claim sweep: %v", err)
+	}
+	return tag.RowsAffected()
 }
