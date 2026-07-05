@@ -38,10 +38,60 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
+	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
+	"github.com/BloomingProsperity/HUAKAI/internal/quota"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
+
+// wiringQuotaFinalizerSpy 观测 quota 结算/释放是否被调用(注入 quotaenforce.Settler 作 Finalizer)。
+type wiringQuotaFinalizerSpy struct {
+	settleCalls  int
+	releaseCalls int
+}
+
+func (s *wiringQuotaFinalizerSpy) Settle(context.Context, quota.SettleRequest) (quota.SettleResult, error) {
+	s.settleCalls++
+	return quota.SettleResult{}, nil
+}
+
+func (s *wiringQuotaFinalizerSpy) Release(context.Context, quota.ReleaseRequest) (quota.ReleaseResult, error) {
+	s.releaseCalls++
+	return quota.ReleaseResult{}, nil
+}
+
+func (s *wiringQuotaFinalizerSpy) CommitCacheHit(context.Context, quota.CacheHitRequest) (quota.CacheHitResult, error) {
+	return quota.CacheHitResult{}, nil
+}
+
+// TestWiring_AsyncBillingHandlerSettlesThroughQuotaDecorator 守 A#1:异步 completion 总线真正落账的
+// BillingPersisterHandler 必须持【quota 装饰后】的 settler——否则成功请求经异步路径结算时绕过 quota
+// 装饰器,配额预留与并发槽永不释放(默认 eventbus+quota 均开即触发,累积后整 scope 被 429 硬拒)。
+// 生产缺陷根因是总线在装饰链装配【之前】构造(持中间层 settler);修复把总线构造挪到全装饰之后。
+// 本测试按 wiring 装饰顺序组 settler(base→quota),交给 BillingPersisterHandler,发一个成功完成事件,
+// 断言 quota.Settle 被调用(即异步落账确经 quota 层)。
+// Mutation: 若 handler 改回持未装饰 base settler(重现 A#1),或 quotaenforce.Settler.Settle 不再调
+// quota.Settle → settleCalls==0 → RED。
+func TestWiring_AsyncBillingHandlerSettlesThroughQuotaDecorator(t *testing.T) {
+	base := &wiringRecordingSettler{}
+	quotaSpy := &wiringQuotaFinalizerSpy{}
+	// 复刻 wiring 的结算装饰:base → quota(buildQuotaEnforcement 等价的外层包装)。
+	decorated := quotaenforce.NewSettler(base, quotaSpy)
+
+	handler := observability.NewBillingPersisterHandler(decorated, time.Second)
+	event := eventbus.RequestCompletionEvent{
+		ID: "evt-a1", TenantID: 7, ClaimID: 101,
+		SettleRequest: billing.SettleRequest{TenantID: 7, ClaimID: 101, AuditRequestID: "req-a1"},
+	}
+	if err := handler.Handle(context.Background(), event); err != nil {
+		t.Fatalf("async billing handler settle: %v", err)
+	}
+	if quotaSpy.settleCalls != 1 {
+		t.Fatalf("quota.Settle 调用次数=%d want 1 —— 异步落账 handler 未经 quota 装饰器结算(A#1:配额/并发槽泄漏)", quotaSpy.settleCalls)
+	}
+}
 
 // ---------------------------------------------------------------
 // Audit-ref policy 接线:2 个用例

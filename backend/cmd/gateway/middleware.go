@@ -353,23 +353,26 @@ func buildOutboxWorker(outboxStore obsoutbox.Outbox, outboxRuntime obsoutbox.Run
 	return outboxWorker
 }
 
-func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, eventBusCfg *runtimeconfig.EventBusConfig, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger, referralRewardIssuer auditreceipt.ReferralRewardIssuer, referralRewardSettings auditreceipt.ReferralRewardSettings, quotaReverser auditreceipt.QuotaReverser) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, *billing.PGXRateTableSource, *eventbus.Bus, error) {
+// buildSettlementServices 构造 base→receipt 结算 settler 与配套件。completion 事件总线【不在此处
+// 构造】——它必须持 quota/budget/notify 全装饰完成后的最终 settler,由调用方在装饰链装配后再建
+// (见 wiring.go buildCompletionEventBus 调用点),否则异步成功结算会绕过外层装饰器、漏释放配额/预算。
+func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigner *sign.Signer, auditLedger auditledger.Ledger, dlqStore *legacydlq.Store, dlqService *legacydlq.Service, replicaTarget string, logger *zap.Logger, referralRewardIssuer auditreceipt.ReferralRewardIssuer, referralRewardSettings auditreceipt.ReferralRewardSettings, quotaReverser auditreceipt.QuotaReverser) (billing.Settler, *auditreceipt.PGXReceiptStorage, *auditreceipt.ReceiptFormatter, *auditreceipt.MismatchRefundQueue, *billing.PGXRateTableSource, error) {
 	receiptStore, err := auditreceipt.NewPGXReceiptStorage(pgPool)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build receipt storage: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("build receipt storage: %w", err)
 	}
 	receiptSource, err := auditreceipt.NewPGXReceiptSource(pgPool)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build receipt source: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("build receipt source: %w", err)
 	}
 	baseSettler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
 	receiptFormatter, err := auditreceipt.NewReceiptFormatter(auditLedger, baseSettler, receiptSource, auditSigner)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build receipt formatter: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("build receipt formatter: %w", err)
 	}
 	refundPendingStore, err := auditreceipt.NewPGXRefundPendingStore(pgPool)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build audit refund pending store: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("build audit refund pending store: %w", err)
 	}
 	refundWorkerOpts := []auditreceipt.RefundWorkerOption{
 		auditreceipt.WithRefundLedger(auditLedger),
@@ -399,11 +402,7 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 		auditreceipt.WithReceiptHookReferralQualifier(referralQualifier),
 		auditreceipt.WithReceiptHookReferralRewardIssuer(referralRewardIssuer),
 		auditreceipt.WithReceiptHookReferralRewardSettings(referralRewardSettings))
-	completionBus, err := buildCompletionEventBus(eventBusCfg, settler, pgPool, dlqService, auditRefPolicy, logger)
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, fmt.Errorf("build completion eventbus: %w", err)
-	}
-	return settler, receiptStore, receiptFormatter, refundQueue, billing.NewPGXRateTableSource(pgPool), completionBus, nil
+	return settler, receiptStore, receiptFormatter, refundQueue, billing.NewPGXRateTableSource(pgPool), nil
 }
 
 func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.Settler, pgPool *pgxpool.Pool, dlqService *legacydlq.Service, auditRefPolicy *eventbus.AuditRefPolicy, logger *zap.Logger) (*eventbus.Bus, error) {

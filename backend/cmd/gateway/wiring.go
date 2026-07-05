@@ -27,11 +27,11 @@ import (
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/budget"
 	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
-	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkin"
 	"github.com/BloomingProsperity/HUAKAI/internal/circuitbreaker"
@@ -40,7 +40,6 @@ import (
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/settingscipher"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -94,6 +93,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
+	"github.com/BloomingProsperity/HUAKAI/internal/settingscipher"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
@@ -1093,8 +1093,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if cfg != nil && cfg.QuotaEnforce {
 		refundQuotaReverser = quotaCostReverser{svc: quota.NewService(quota.NewPostgresStore(pgPool))}
 	}
-	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, completionBus, err := buildSettlementServices(
-		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger, paymentService, platformSettingsService, refundQuotaReverser,
+	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, err := buildSettlementServices(
+		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, logger, paymentService, platformSettingsService, refundQuotaReverser,
 	)
 	if err != nil {
 		return nil, err
@@ -1107,6 +1107,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	settler = notify.NewSettler(settler, notifier, notify.WithSettlerDeliveryErrorRecorder(func(err error) {
 		logger.Warn("low balance notification delivery failed", zap.Error(err))
 	}))
+	// completion 事件总线在 settler 全装饰(quota/budget/notify)完成后再构造,使异步成功结算走完整的
+	// billing→quota→budget→notify 结算链——否则总线持中间层 settler,成功请求漏释放配额预留/并发槽与
+	// 预算预留(默认 eventbus+quota 均开即触发)。abort 走同步装饰后 settler 本就正确,唯成功异步路径漏。
+	completionBus, err := buildCompletionEventBus(opts.eventBus, settler, pgPool, dlqService, auditRefPolicy, logger)
+	if err != nil {
+		return nil, fmt.Errorf("build completion eventbus: %w", err)
+	}
 
 	// P2/P3 post-delivery settle 恢复:把 settler 注入 settlementrecovery
 	// handler,注册到 dlqService 让 worker 拿到 post_delivery_settlement
@@ -1370,24 +1377,24 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			// 真实的 transport 路径不受影响。
 			HTTPClient: devMockUpstreamDoer(),
 		},
-		inboundAuth:              auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
-		auditLedger:              auditLedger,
-		auditSigner:              auditSigner,
-		cacheOverrideStore:       billing.NewCacheOverrideStore(auditSigner, nil),
-		auditPubkeyRegistry:      auditPubkeyRegistry,
-		receiptStore:             receiptStore,
-		receiptFormatter:         receiptFormatter,
-		disputeStore:             disputeStore,
-		refundQueue:              refundQueue,
-		rateTableSource:          rateTableSource,
-		pricingRatioStore:        pricingRatioStore,
-		pricingRatioResolver:     pricingRatioResolver,
-		modelRegistry:            modelRegistry,
-		modelSync:                modelSyncService,
-		routePlanner:             router.NewDefaultRouter(),
+		inboundAuth:          auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
+		auditLedger:          auditLedger,
+		auditSigner:          auditSigner,
+		cacheOverrideStore:   billing.NewCacheOverrideStore(auditSigner, nil),
+		auditPubkeyRegistry:  auditPubkeyRegistry,
+		receiptStore:         receiptStore,
+		receiptFormatter:     receiptFormatter,
+		disputeStore:         disputeStore,
+		refundQueue:          refundQueue,
+		rateTableSource:      rateTableSource,
+		pricingRatioStore:    pricingRatioStore,
+		pricingRatioResolver: pricingRatioResolver,
+		modelRegistry:        modelRegistry,
+		modelSync:            modelSyncService,
+		routePlanner:         router.NewDefaultRouter(),
 		adminAuth: adminsessionauth.New(
-			admin.NewAdminResolver(adminQueries), // 令牌通道(hk_admin_,行为不变)
-			userSessionService,                   // session 校验器
+			admin.NewAdminResolver(adminQueries),   // 令牌通道(hk_admin_,行为不变)
+			userSessionService,                     // session 校验器
 			panelauth.NewPostgresRoleStore(pgPool), // users.role 只读查询
 			clientIPResolver,
 		),
