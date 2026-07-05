@@ -23,7 +23,7 @@
 //   - step 6 在 tools 数组的最后一个元素上挂一个 ephemeral cache_control；
 //     用于伪装 Claude Code 默认的工具列表缓存位。
 //
-// HUAKAI 相对 sub2api 的差异：
+// HUAKAI 机制：
 //   - 6 步进程内完整审计，每步独立 reason
 //   - 任一原子失败时记录部分结果再返回 error（便于 admin 定位）
 //   - plan 中每个步骤都可单独 nil/false 关闭，做单步测试

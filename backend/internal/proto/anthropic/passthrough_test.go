@@ -1,8 +1,8 @@
 // proto/anthropic/passthrough_test.go — U7-D 测试：anthropic.Adapter 接入
-// PassthroughEnvelope。verify envelope-level unknown 字段（如 Anthropic 加
+// PassthroughEnvelope。验证 envelope-level unknown 字段（如 Anthropic 加
 // 的 cache_creation_input_tokens / service_tier / system_fingerprint 等）
 // 透传到 proto.CanonicalEvent.Passthrough。Bedrock-on-Anthropic（A4
-// bedrock.EventStreamAdapter delegate）自动受益。
+// bedrock.EventStreamAdapter 委托）自动受益。
 package anthropic_test
 
 import (
@@ -16,7 +16,7 @@ import (
 	"testing"
 )
 
-// TestAnthropic_MessageStart_PassthroughCarriesUnknownFields message_start
+// TestAnthropic_MessageStart_PassthroughCarriesUnknownFields 验证 message_start
 // 事件顶层 unknown 字段进 Passthrough（如 vendor 加 service_tier）。
 func TestAnthropic_MessageStart_PassthroughCarriesUnknownFields(t *testing.T) {
 	raw := []byte(`{"type":"message_start","message":{"id":"msg_x","model":"claude-3-7-sonnet"},"service_tier":"standard","custom_field":42}`)
@@ -82,8 +82,8 @@ func TestAnthropic_NestedUnknownAtEnvelopeLevel(t *testing.T) {
 	}
 }
 
-// TestBedrockOnAnthropic_PassthroughInheritsFromAnthropic Bedrock-on-Anthropic
-// adapter（A4）通过 delegate anthropic.Adapter，自动获得 passthrough 能力。
+// TestBedrockOnAnthropic_PassthroughInheritsFromAnthropic 验证 Bedrock-on-Anthropic
+// adapter（A4）通过委托 anthropic.Adapter，自动获得 passthrough 能力。
 func TestBedrockOnAnthropic_PassthroughInheritsFromAnthropic(t *testing.T) {
 	// 模拟 Bedrock chunk 的 inner JSON（A3 scanner base64-decode 后的形态）
 	innerJSON := []byte(`{"type":"message_start","message":{"id":"msg_bedrock","model":"claude-3-7-sonnet"},"bedrock_specific_field":"new_value"}`)

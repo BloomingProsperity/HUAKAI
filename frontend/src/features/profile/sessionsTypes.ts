@@ -13,7 +13,7 @@ export interface SessionFamily {
   id: string
   user_id: number
   tenant_id: number
-  /** active / revoked / expired / suspicious / replaced(usersession FamilyStatus)。 */
+  /** 状态值：active / revoked / expired / suspicious / replaced(usersession FamilyStatus)。 */
   status: string
   generation: number
   created_at: string

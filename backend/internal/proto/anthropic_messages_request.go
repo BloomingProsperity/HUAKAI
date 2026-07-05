@@ -7,13 +7,13 @@ import (
 	"fmt"
 )
 
-// P-2 D1 anthropic_messages ClientAdapter — RequestToCanonical（D1 + D1.x）。
+// P-2 D1 anthropic_messages ClientAdapter — RequestToCanonical 请求转规范形态（D1 + D1.x）。
 //
 // 范围（P-2 synthesis §5.1 + Q5 决策 A：context 注入 RequestMetaSeed）：
 //   - 入：Anthropic Messages API v1 request body（JSON）
 //   - 出：HCSF v0.4 request envelope；含 RequestMeta + RequestControls +
 //     Messages + CapabilityGraph（text / tool_use / tool_result + requires 边 /
-//     image / cache_control / thinking）+ ProviderProjection client baseline。
+//     image / cache_control / thinking）+ ProviderProjection client baseline 客户端基线。
 
 // AnthropicMessagesClient 实现 ClientAdapter；零值即可使用。
 // 注册到 ClientAdapterRegistry：reg.Register(ClientProtocolAnthropicMessages, &AnthropicMessagesClient{}).

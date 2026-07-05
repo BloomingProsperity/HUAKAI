@@ -76,7 +76,7 @@ function authHeaders(path: string, bearer?: string): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-// session token TTL 短(默认 15 分钟);到期前这个提前量内的请求先主动换新,避免请求打到过期 token
+// session token 的 TTL 短(默认 15 分钟);到期前这个提前量内的请求先主动换新,避免请求打到过期 token
 // 而被踢。single-flight 合并并发刷新,失败静默(原请求照常发,后端 401 由上层处理)。
 const REFRESH_BUFFER_MS = 120_000 // 2 分钟提前量
 

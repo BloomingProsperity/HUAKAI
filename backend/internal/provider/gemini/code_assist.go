@@ -89,8 +89,8 @@ type codeAssistEnvelope struct {
 //  6. 流式判定 → action generateContent / streamGenerateContent
 //  7. endpoint = base + "/v1internal:" + action，经 EndpointForBuildInput 统一
 //     SSRF 守卫 + 流式追加 ?alt=sse
-//  8. body envelope {model, project, request}
-//  9. headers：Authorization Bearer + Content-Type/Accept + UA + X-Goog-Api-Client
+//  8. body envelope {model, project, request} 请求信封
+//  9. headers 请求头：Authorization Bearer + Content-Type/Accept + UA + X-Goog-Api-Client
 func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*http.Request, error) {
 	if !a.acceptsCredential(in.Credential.Type) {
 		return nil, fmt.Errorf("gemini code assist: 不支持的凭据形态 %q（cloudcode-pa 仅 OAuth/session，拒 apikey）", in.Credential.Type)

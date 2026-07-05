@@ -71,7 +71,7 @@ func TestRatePrecheckGate_FailOpen(t *testing.T) {
 	if ok, _, _ := (RatePrecheckGate{Counter: c}).Allow(context.Background(), noLimit, SelectionRequest{}); !ok {
 		t.Fatalf("account with no rpm/tpm limit must always be allowed")
 	}
-	// nil counter → fail-open
+	// nil counter → fail-open 放行
 	if ok, _, _ := (RatePrecheckGate{}).Allow(context.Background(), &AccountSnapshot{ID: 1, RPMLimit: 1}, SelectionRequest{}); !ok {
 		t.Fatalf("nil counter must fail-open")
 	}

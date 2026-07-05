@@ -396,7 +396,7 @@ func TestPASR_Select_RingProvider_HotSwap(t *testing.T) {
 		t.Errorf("ring1 阶段应选 ring1 内账号, 选到 %d", res.AccountID)
 	}
 
-	// hot-swap ring + accounts
+	// 热替换 ring + accounts
 	currentRing = NewAccountRing(accs2, 0xC0FFEE)
 	src.snapshots = snaps2
 

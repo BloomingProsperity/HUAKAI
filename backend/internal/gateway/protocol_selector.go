@@ -82,12 +82,12 @@ func (r *StaticProtocolAdapterRegistry) For(family string) (proto.UpstreamAdapte
 //
 // 以下 6 家 vendor 使用 openai.Adapter 解析 SSE，因为它们均实现了
 // OpenAI Chat Completions 兼容协议（data: {"choices":[...]} 形态）：
-//   - deepseek_chat   DeepSeek
-//   - mistral_chat    Mistral AI
-//   - groqcloud_chat  Groq Cloud
-//   - together_chat   Together AI
-//   - perplexity_chat Perplexity AI
-//   - fireworks_chat  Fireworks AI
+//   - deepseek_chat   DeepSeek 协议族
+//   - mistral_chat    Mistral AI 协议族
+//   - groqcloud_chat  Groq Cloud 协议族
+//   - together_chat   Together AI 协议族
+//   - perplexity_chat Perplexity AI 协议族
+//   - fireworks_chat  Fireworks AI 协议族
 func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r := NewStaticProtocolAdapterRegistry()
 	r.MustRegister("anthropic_messages", &anthropic.Adapter{CarryForwardSignatureDelta: false})

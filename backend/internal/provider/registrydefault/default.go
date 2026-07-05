@@ -10,13 +10,13 @@
 //
 // Protocol family 字符串约定（与 router.ResolvedModel.ProtocolFamily 对齐）：
 //   - openai_chat              OpenAI Chat Completions 兼容
-//   - openai_responses         OpenAI Responses API
+//   - openai_responses         OpenAI Responses API 协议
 //   - openai_codex             OpenAI Codex CLI / ChatGPT Plus session 反转
-//   - anthropic_messages       Anthropic Messages
+//   - anthropic_messages       Anthropic Messages 协议
 //   - anthropic_claude_session Anthropic Pro/Max OAuth session 反转
-//   - gemini_messages          Google Gemini generativelanguage
+//   - gemini_messages          Google Gemini generativelanguage 协议
 //   - openrouter_chat          OpenRouter（OpenAI 兼容）
-//   - bedrock_invoke           AWS Bedrock Runtime invoke
+//   - bedrock_invoke           AWS Bedrock Runtime invoke 协议
 //   - grok_chat                xAI Grok（OpenAI 兼容）
 //   - kimi_chat                Kimi / Moonshot（OpenAI 兼容）
 //   - deepseek_chat            DeepSeek（OpenAI 兼容）
@@ -33,8 +33,8 @@
 //   - ollama_native            Ollama 原生 /api/chat（NDJSON 流式；与 ollama_chat 并存）
 //   - dify_chat                Dify 应用 API（per-app token；bot_type 分端点）
 //   - replicate_image          Replicate 图片生成（models/{model}/predictions；图片 lane 专用）
-//   - vertex_gemini            Gemini-on-Vertex（publishers/google；generateContent/streamGenerateContent）
-//   - vertex_anthropic         Anthropic-on-Vertex（publishers/anthropic；rawPredict/streamRawPredict + body reshape）
+//   - vertex_gemini            Gemini-on-Vertex 协议（publishers/google；generateContent/streamGenerateContent）
+//   - vertex_anthropic         Anthropic-on-Vertex（publishers/anthropic；rawPredict/streamRawPredict + body reshape 重塑）
 //   - gemini_code_assist       Google Gemini Code Assist（cloudcode-pa v1internal，OAuth；env-gated 默认 off）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
@@ -176,7 +176,7 @@ const (
 	ProtocolReplicateImage = "replicate_image"
 	// Vertex AI serving（Google Cloud aiplatform）。两个独立 family 共享
 	// "vertex" 平台与出站 SSRF 策略：vertex_gemini 走 publishers/google +
-	// generateContent/streamGenerateContent（body passthrough）；vertex_anthropic
+	// generateContent/streamGenerateContent（body passthrough 直通）；vertex_anthropic
 	// 走 publishers/anthropic + rawPredict/streamRawPredict（body 剥 model/stream
 	// + 注 anthropic_version）。凭据 runtime 形态为 upstream_passthrough（Value
 	// 已是 Bearer access_token，由 credentialworker metadata token 刷新链 materialize）。
@@ -214,7 +214,7 @@ const (
 func Build() *provider.StaticRegistry {
 	r := provider.NewStaticRegistry()
 
-	// OpenAI Chat Completions（v1/chat/completions）
+	// OpenAI Chat Completions 协议（v1/chat/completions）
 	r.MustRegister(ProtocolOpenAIChat, &openai.PassthroughAdapter{})
 
 	// OpenAI Responses API 仅 endpoint 区分；body / SSE shape 由 HCSF
@@ -281,7 +281,7 @@ func Build() *provider.StaticRegistry {
 	// Bearer 鉴权；channel base_url 可覆盖默认 Endpoint。
 	r.MustRegister(ProtocolQwenChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "qwen",
-		// 默认打国内站(与 new-api 一致:constant/channel.go 默认 dashscope.aliyuncs.com);
+		// 默认打国内站 dashscope.aliyuncs.com;
 		// 国际站 dashscope-intl 由运营者按需经 channel base_url 覆盖。
 		Endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 	})
@@ -315,7 +315,7 @@ func Build() *provider.StaticRegistry {
 	})
 	r.MustRegister(ProtocolMinimaxChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "minimax",
-		// 默认打国内站 api.minimaxi.com(new-api 用旧域名 api.minimax.chat,此处取现行国内域名);
+		// 默认打国内站 api.minimaxi.com;
 		// 国际站 api.minimax.io 由运营者按需经 channel base_url 覆盖。
 		Endpoint: "https://api.minimaxi.com/v1/chat/completions",
 	})

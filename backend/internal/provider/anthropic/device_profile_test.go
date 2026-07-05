@@ -3,8 +3,7 @@ package anthropic
 import "testing"
 
 // DEVPIN-01:按账号固定设备 profile(反封禁 anti-clustering)。
-// 相比 CLIProxyAPI 的 claude_device_profile.go 持平甚至更优(用确定性派生取代
-// TTL 缓存;软件版本钉死在真实 baseline 下限上——绝不臆造)。
+// 用确定性派生取代 TTL 缓存;软件版本钉死在真实 baseline 下限上——绝不臆造。
 
 func TestResolveAccountDeviceProfile_BaselineFallback(t *testing.T) {
 	base := baselineClaudeDeviceProfile()

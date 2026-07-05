@@ -90,7 +90,7 @@ export function LoginPage() {
     setBusy(true)
     setError(null)
     try {
-      // captcha token 仅在站点要求且已获取时传;否则缺席,请求体与增强前一致。
+      // 验证码 token 仅在站点要求且已获取时传;否则缺席,请求体与增强前一致。
       const r = await login(tid(), email.trim(), password, af.showCaptcha ? captchaToken : undefined)
       if (r.kind === '2fa') {
         setChallengeId(r.challengeId)
@@ -207,7 +207,7 @@ export function LoginPage() {
         return
       }
       const r = await passkeyLoginFinish(tid(), begin.session_id, serializeAssertion(credential))
-      // passkey finish 后端直接发会话(不走 2FA),恒为 ok;narrow 以满足类型并防御异常分支。
+      // passkey 完成阶段后端直接发会话(不走 2FA),恒为 ok;收窄类型以防御异常分支。
       if (r.kind !== 'ok') {
         setError('通行密钥登录返回异常')
         return

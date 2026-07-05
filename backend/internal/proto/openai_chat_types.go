@@ -2,7 +2,7 @@ package proto
 
 import "encoding/json"
 
-// OpenAI Chat Completions wire-format types — 仅本包 internal 用，不对外暴露。
+// OpenAI Chat Completions 线格式类型 — 仅本包 internal 用，不对外暴露。
 
 type openAIChatRequest struct {
 	Model               string           `json:"model"`

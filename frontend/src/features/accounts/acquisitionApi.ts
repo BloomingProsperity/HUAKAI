@@ -87,7 +87,7 @@ export async function cancelAcquisition(
 // 注:手动 finalize 端点(POST /{id}/credential-acquisitions/{flowID}/finalize)未接前端——
 // OAuth 回调经 deliverCallback 自动落库、导入经 finalize=true 一步落库,无手工 finalize 入口;
 // 刻意不导出 finalizeAcquisition,收窄直接下发原始 credentials secret 的 API 面(若将来加手工
-// finalize UI,再补回并确保其 credentials 输入同样只写、提交后清空)。
+// finalize 界面,再补回并确保其 credentials 输入同样只写、提交后清空)。
 
 /**
  * 导入 helper(粘贴 / CLI / CSV / JSON)。POST /admin/v1/credentials/{paste,cli-import,csv-import,json-import}。

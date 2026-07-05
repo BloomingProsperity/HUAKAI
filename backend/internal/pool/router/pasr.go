@@ -424,7 +424,7 @@ func (p *PASRSelector) healthStatus(ctx context.Context, snap *AccountSnapshot, 
 //     ErrPASRPreMutationFail, dispatcher 可安全 fallback default
 //   - Slot 已 acquire, ClaimGate.WriteAcquisition 失败 → release slot +
 //     ErrPASRPostMutationFail, dispatcher 必须 fail closed (再走 default 会双
-//     claim race)
+//     claim 竞争)
 //
 // 不变量: 函数返回 (nil, ErrPASR*) 时, in_flight_count / billing_claims 表都已
 // 还原到入函数前的状态; 返回 (*SelectionResult, nil) 时刚好写了 1 行 slot

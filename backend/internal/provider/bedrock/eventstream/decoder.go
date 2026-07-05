@@ -13,7 +13,7 @@
 //   │   headers_length  uint32   headers 段字节数                   │
 //   │   prelude_crc     uint32   CRC32(IEEE) of 前 8 byte           │
 //   ├──────────────────────────────────────────────────────────────┤
-//   │ Headers (headers_length bytes)                               │
+//   │ Headers (headers_length 字节)                                 │
 //   │   每条 = name_len(uint8) + name(utf8) + value_type(uint8)    │
 //   │           + value(type-specific)                             │
 //   ├──────────────────────────────────────────────────────────────┤

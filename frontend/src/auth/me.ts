@@ -146,7 +146,7 @@ export function resetMe(): void {
 
 function isAbort(e: unknown): boolean {
   if (e instanceof DOMException && e.name === 'AbortError') return true
-  // fetch abort 在部分环境抛普通 Error(name==='AbortError');ApiError 不是取消。
+  // fetch 取消在部分环境抛普通 Error(name==='AbortError');ApiError 不是取消。
   if (e instanceof ApiError) return false
   return e instanceof Error && e.name === 'AbortError'
 }

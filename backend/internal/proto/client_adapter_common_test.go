@@ -9,7 +9,7 @@ import (
 )
 
 // 覆盖 P-2 D0 shared foundation：RequestMetaSeed / ClientAdapterRegistry /
-// SSE emit / typed loss constructor。
+// SSE 发出 / typed loss 构造器。
 
 func TestRequestMetaSeed_ContextRoundTrip(t *testing.T) {
 	seed := RequestMetaSeed{
@@ -43,9 +43,9 @@ func TestRequestMetaSeed_MissingFromBaseContext(t *testing.T) {
 
 func TestRequestMetaSeed_ApplyToRequestMeta_Required(t *testing.T) {
 	cases := []struct {
-		name  string
-		seed  RequestMetaSeed
-		want  string // error 中期望包含的子串；空 = 期望成功
+		name string
+		seed RequestMetaSeed
+		want string // error 中期望包含的子串；空 = 期望成功
 	}{
 		{
 			name: "missing request id",

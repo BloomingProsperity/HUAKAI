@@ -26,7 +26,7 @@ const defaultChatCompletionsEndpoint = "https://api.openai.com/v1/chat/completio
 
 // PassthroughAdapter 实现 provider.Adapter，把客户原始 OpenAI 形态请求直通
 // 转发到 OpenAI 官方 endpoint，仅注入 Authorization 与可选的 organization
-// / project header。
+// / project header 头。
 type PassthroughAdapter struct {
 	// Endpoint 覆盖默认 endpoint。空串走 OpenAI 官方
 	// "https://api.openai.com/v1/chat/completions"。

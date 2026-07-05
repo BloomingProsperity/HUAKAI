@@ -1,4 +1,4 @@
-// hrw_ring.go — PASR-lite A1: HRW (Highest Random Weight) Rendezvous Hashing
+// hrw_ring.go — PASR-lite A1: HRW（最高随机权重）Rendezvous Hashing
 // 数据结构 + top-K 选段。
 //
 // 算法（参 Thaler & Ravishankar 1996, 公开学术算法，无 license 风险）:
@@ -108,7 +108,7 @@ func NewAccountRing(accounts []int64, seed uint64) *AccountRing {
 // 算法: account_id 先经 splitmix64 高熵化, 再以 SHA-256 强混合
 // (seed_8B || prefix_hash || mixed_account_8B), 取 digest 前 8 bytes 得最终 score。
 // 输入域:
-//   - seed_8B          big-endian uint64
+//   - seed_8B          big-endian uint64（大端）
 //   - prefix_hash      任意长度 raw bytes（caller 保证 deterministic）
 //   - mixed_account_8B splitmix64(uint64(accountID)) big-endian
 //

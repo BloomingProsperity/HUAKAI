@@ -6,8 +6,8 @@
 // HUAKAI 客户端永远看不到。本类型 + helpers 让任意未识别字段以 RawMessage
 // 形式被携带过整个 canonical pipeline，最终序列化时合并回输出。
 //
-// 与 portkey 的 extras 思路同方向但 HUAKAI 升级点：每个 extra field 都可
-// 走 FieldMatrix 查询 verdict（preserve / transform / drop），运维可观测。
+// HUAKAI 升级点：每个 extra field 都可走 FieldMatrix 查询 verdict
+// （preserve / transform / drop），运维可观测。
 //
 // 使用模式（adapter 端）：
 //

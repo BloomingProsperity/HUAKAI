@@ -1,13 +1,13 @@
 // anthropic_request_translator.go — Bedrock 闭环最后一块：把 Anthropic
-// Messages API body 翻译成 AWS Bedrock invoke body.
+// Messages API body 翻译成 AWS Bedrock invoke body。
 //
 // 调用链:
 //
-//	Anthropic CLI / Claude Code  ─→  HUAKAI /v1/messages handler
+//	Anthropic CLI / Claude Code  ─→  HUAKAI /v1/messages handler 处理器
 //	─→  TranslateAnthropicAPIToBedrock(body)
 //	─→  PassthroughAdapter (sigv4 sign)
-//	─→  AWS Bedrock invoke-with-response-stream
-//	─→  binary EventStream
+//	─→  AWS Bedrock invoke-with-response-stream 端点
+//	─→  binary EventStream 二进制事件流
 //	─→  BedrockEventStreamScanner (gateway A3)
 //	─→  BedrockEventStreamAdapter (proto A4)
 //	─→  forwarder (SSE 输出)
@@ -29,12 +29,12 @@
 //	   "max_tokens":1024, "system":"...", ...}
 //
 // 关键差异:
-//   - **strip "model"**: Bedrock URL 中已含 model_id，body 不能再有
-//   - **strip "stream"**: Bedrock 用 endpoint URL 切流式（invoke vs
+//   - **strip "model"**: 剥离 "model"；Bedrock URL 中已含 model_id，body 不能再有
+//   - **strip "stream"**: 剥离 "stream"；Bedrock 用 endpoint URL 切流式（invoke vs
 //     invoke-with-response-stream）
 //   - **inject "anthropic_version": "bedrock-2023-05-31"**: AWS 要求字段
 //   - 其它字段（messages / max_tokens / system / temperature / tools 等）
-//     直接 carry-over
+//     直接透传
 //   - 未识别字段（vendor 添加新字段如 "service_tier"）直接透传——保 U7
 //     字段透传一致性
 package bedrock
@@ -89,7 +89,7 @@ type AnthropicAPIToBedrockResult struct {
 	Body []byte
 
 	// Stream: 原 body 是否含 stream:true。caller 据此选 invoke 或
-	// invoke-with-response-stream endpoint。
+	// invoke-with-response-stream endpoint 端点。
 	Stream bool
 
 	// UpstreamModelID: 原 body 的 model 字段（被剥离后保留供 caller 用作
@@ -141,8 +141,8 @@ func TranslateAnthropicAPIToBedrock(anthropicBody []byte) (AnthropicAPIToBedrock
 		delete(raw, "stream")
 	}
 
-	// Bedrock 对未知顶层字段返回 400 ValidationException(sub2api bf28a009 实测
-	// 结论,delta-mine #4):剥除 Anthropic 直连专有顶层字段。metadata 是重灾区
+	// Bedrock 对未知顶层字段返回 400 ValidationException(真实流量验证):
+	// 剥除 Anthropic 直连专有顶层字段。metadata 是重灾区
 	// ——Claude Code 客户端必带 metadata.user_id,不剥则默认 AutoTranslate 配置下
 	// 真实 CC 流量经 Bedrock 必 400,整条 Bedrock CC 闭环坏死。
 	delete(raw, "metadata")
@@ -175,7 +175,7 @@ func TranslateAnthropicAPIToBedrock(anthropicBody []byte) (AnthropicAPIToBedrock
 }
 
 // bedrockSupportedBetaTokens 是 Bedrock 认识的 anthropic beta token 白名单
-// (对照 sub2api bedrockSupportedBetaTokens;不在名单的 token Bedrock 会 400)。
+// (不在名单的 token Bedrock 会 400)。
 var bedrockSupportedBetaTokens = map[string]struct{}{
 	"computer-use-2024-10-22":                {},
 	"computer-use-2025-01-24":                {},

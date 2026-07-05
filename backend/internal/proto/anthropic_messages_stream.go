@@ -7,8 +7,8 @@ import (
 	"fmt"
 )
 
-// P-2 D3 + D4 anthropic_messages streaming — CanonicalEventToClientChunk +
-// FinalizeClientStream + per-stream state。
+// P-2 D3 + D4 anthropic_messages 流式 — CanonicalEventToClientChunk +
+// FinalizeClientStream + 单流状态。
 
 // AnthropicMessagesStreamState 是 anthropic_messages client adapter 的 per-stream
 // 状态；forwarder 在 stream 起点初始化，逐事件传入。

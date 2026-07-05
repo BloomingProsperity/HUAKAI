@@ -49,7 +49,7 @@ describe('errorMessage 归一', () => {
   })
 
   it('ApiError 优先于 Error 分支(instanceof 顺序)', () => {
-    // ApiError extends Error;必须先命中 ApiError 分支拿到 code,而非落到 Error 分支
+    // ApiError 继承 Error;必须先命中 ApiError 分支拿到 code,而非落到 Error 分支
     const e = errorMessage(new ApiError(403, 'admin_forbidden', '无权'))
     expect(e.detail).toContain('admin_forbidden')
   })

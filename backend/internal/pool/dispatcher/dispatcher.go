@@ -3,8 +3,8 @@
 //
 // 架构 (synthesis §3.3 + D2/D4/D5/D6):
 //
-//	┌────────────────┐    mode dispatch
-//	│ chat handler   │──────────────────► SelectorDispatcher.Select
+//	┌────────────────┐    按 mode 分发
+//	│ chat handler入口│──────────────────► SelectorDispatcher.Select
 //	└────────────────┘                       │
 //	                                         ▼
 //	     ┌─────── default ────► DefaultSelector.Select
@@ -12,12 +12,12 @@
 //	     ├─────── shadow  ────► DefaultSelector (主路径, 同步返)
 //	     │                      │
 //	     │                      └─► async shadow goroutine 比对 PASR 选择
-//	     │                          (500ms ctx, panic recover, drop counter)
+//	     │                          (500ms ctx, panic 恢复, drop 计数)
 //	     │
 //	     ├─────── canary  ────► fnv64a(salt+SessionHash) % 100 < canary_pct
 //	     │                      ├ 命中桶 → PASR actual (写 slot+claim)
-//	     │                      │   ├ ErrPASRPreMutationFail → fallback default
-//	     │                      │   └ ErrPASRPostMutationFail → 已 release, fail closed
+//	     │                      │   ├ ErrPASRPreMutationFail → fallback default（回退默认）
+//	     │                      │   └ ErrPASRPostMutationFail → 已 release, fail-closed
 //	     │                      └ miss → DefaultSelector
 //	     │
 //	     ├─── pasr-primary ───► PASR actual (D4: pre-mutation 可 fallback)

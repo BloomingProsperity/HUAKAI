@@ -29,10 +29,10 @@ const (
 	// CredentialTypeAPIKey 普通开发者 API key（如 OpenAI sk-...，Bearer 头注入）
 	CredentialTypeAPIKey CredentialType = "apikey"
 	// CredentialTypeOAuthAccessToken OAuth 拿到的 access_token（如 Anthropic
-	// Pro/Max OAuth、Gemini OAuth、Antigravity OAuth）
+	// Pro/Max OAuth、Gemini OAuth、Antigravity OAuth 凭据）
 	CredentialTypeOAuthAccessToken CredentialType = "oauth_access_token"
 	// CredentialTypeSessionToken 网页/客户端 session token 反转用（如
-	// ChatGPT Plus / Cursor / Windsurf）
+	// ChatGPT Plus / Cursor / Windsurf 会话）
 	CredentialTypeSessionToken CredentialType = "session_token"
 	// CredentialTypeAWSSigV4 AWS SigV4 已签名凭据（Bedrock 直通）
 	CredentialTypeAWSSigV4 CredentialType = "aws_sigv4"

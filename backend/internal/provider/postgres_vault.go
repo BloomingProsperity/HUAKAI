@@ -176,7 +176,7 @@ func (v *PostgresCredentialVault) resolveFromStore(
 		CredentialVersion:   int(rec.CredentialVersion),
 		// 把凭据行上的上游账号标识(迁移 0141 列)投影进 AccountInfo,供 R7 身份
 		// 改写把它写进 metadata.user_id 的 account 组件。nil(未提取到)→ 空串 →
-		// 下游 fail-open 不改写,与 sub2api account_uuid=="" 跳过同义。
+		// 下游 fail-open 不改写,与 account_uuid=="" 跳过语义一致。
 		ExternalAccountID: derefString(rec.ExternalAccountID),
 	}, true, nil
 }

@@ -483,7 +483,7 @@ func TestDispatcher_VendorMetric_WiredFromRequest(t *testing.T) {
 	}
 }
 
-// waitFor polls until cond returns true or timeout, then logs failure。
+// waitFor 轮询直到 cond 返回 true 或超时,随后记录失败。
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

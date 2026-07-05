@@ -33,7 +33,7 @@ func canonicalToResponsesStatus(c CanonicalStopReason) (status string, incomplet
 }
 
 // CanonicalToClientResponse 把 HCSF buffered envelope 序列化为 OpenAI Responses
-// API response JSON。
+// API 响应 JSON。
 func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
 	if canonical == nil {
 		return nil, nil, errors.New("proto: openai_responses CanonicalToClientResponse nil envelope")

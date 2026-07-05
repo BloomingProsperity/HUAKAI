@@ -72,7 +72,7 @@ export async function disableSettings(
   })
 }
 
-// ── api-profile CRUD(响应只 FK 引用,无 secret)─────────────────────────────────
+// ── api-profile 增删改查(响应只 FK 引用,无 secret)────────────────────────────
 
 /** 列当前 owner 的 api-profile。GET /v1/hermes/api-profiles(profiles_handler.go:53)。 */
 export async function listProfiles(

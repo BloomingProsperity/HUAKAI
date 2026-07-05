@@ -8,8 +8,8 @@ import (
 	"fmt"
 )
 
-// P-2 D2 anthropic_messages.CanonicalToClientResponse —— HCSF buffered envelope
-// 序列化为 Anthropic Messages API response JSON。
+// P-2 D2 anthropic_messages.CanonicalToClientResponse —— HCSF buffered envelope 响应信封
+// 序列化为 Anthropic Messages API 响应 JSON。
 
 // anthropicMessagesResponse 是 Anthropic Messages API response 的最小映射。
 type anthropicMessagesResponse struct {
@@ -78,7 +78,7 @@ func canonicalToAnthropicStopReason(c CanonicalStopReason) (*string, []ProtocolL
 }
 
 // CanonicalToClientResponse 把 HCSF buffered envelope 序列化为 Anthropic Messages
-// response JSON（text + tool_use + usage + stop_reason map）。
+// 响应 JSON（text + tool_use + usage + stop_reason 映射）。
 // 输入约束：canonical 必须是 buffered envelope（BufferedResponse != nil；）。
 func (a *AnthropicMessagesClient) CanonicalToClientResponse(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
 	if canonical == nil {

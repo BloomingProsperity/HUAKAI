@@ -9,9 +9,8 @@ import (
 //
 // 背景:applyClaudeDeviceProfile 之前给每个账号的出口流量都打上同一组硬编码的
 //(User-Agent + X-Stainless-*)元组,于是 N 个池账号呈现出逐字节相同的指纹——
-// 对上游 WAF 来说这是一个极易识别的聚类信号。CLIProxyAPI(internal/runtime/
-// executor/helps/claude_device_profile.go)通过 per-auth 的 7 天缓存 + 以每个
-// 客户端真实入站 UA 为种子的版本下限单调升级来解决此问题。
+// 对上游 WAF 来说这是一个极易识别的聚类信号。HUAKAI 通过按账号确定性派生
+// 设备指纹来解决此问题。
 //
 // HUAKAI 的 adapter 在这一层拿不到入站客户端 UA,所以我们采取一种持平甚至更优的
 // 做法:从 account id 确定性地派生出一个稳定、按账号区分的平台元组。对我们这个
@@ -33,9 +32,8 @@ type claudeDeviceProfile struct {
 	arch           string
 }
 
-// baselineClaudeDeviceProfile 是唯一一份已知真实的 Claude Code 指纹(与
-// CLIProxyAPI 默认值一致)。它是版本下限:按账号的变化永远不会低于它,也永远
-// 不改动软件版本,只改动平台。
+// baselineClaudeDeviceProfile 是唯一一份已知真实的 Claude Code 指纹。
+// 它是版本下限:按账号的变化永远不会低于它,也永远不改动软件版本,只改动平台。
 func baselineClaudeDeviceProfile() claudeDeviceProfile {
 	return claudeDeviceProfile{
 		userAgent:      claudeCodeUserAgent,
@@ -47,7 +45,7 @@ func baselineClaudeDeviceProfile() claudeDeviceProfile {
 }
 
 // claudeDevicePlatforms 是真实 Claude Code(Stainless SDK)OS/Arch 元组的白名单
-//(取值与 CPA 的 mapStainlessOS/mapStainlessArch 一致)。索引 0 是 baseline 平台。
+// (取值与 CPA 的 mapStainlessOS/mapStainlessArch 一致)。索引 0 是 baseline 平台。
 // 每一项内部自洽——不会出现 MacOS+x86 这种荒唐组合——所以派生出的 profile 始终
 // 是一台貌似真实的机器。
 var claudeDevicePlatforms = [][2]string{

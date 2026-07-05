@@ -79,9 +79,9 @@ func mustRegister(reg *ClientAdapterRegistry, protocol ClientProtocol, adapter C
 // 映射约定（HUAKAI v0.4）：
 //   - /v1/chat/completions     → openai_chat
 //   - /v1/responses            → openai_responses
-//   - /backend-api/codex/responses → openai_responses（Codex CLI ingress）
+//   - /backend-api/codex/responses → openai_responses（Codex CLI 入站）
 //   - /v1/messages             → anthropic_messages
-//   - /v1/native/openai/responses → openai_responses（native passthrough route）
+//   - /v1/native/openai/responses → openai_responses（native passthrough 原生透传路由）
 //   - /v1beta/models...        → gemini
 //
 // 返回 ok=false 表示路径未识别；调用方应返回 404/400，不要默认 fallback 到

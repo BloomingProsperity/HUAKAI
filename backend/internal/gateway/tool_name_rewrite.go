@@ -10,7 +10,7 @@
 //
 // type=="tool_result" 块只含 tool_use_id，无 name 字段，不触碰。
 //
-// HUAKAI 相对 sub2api 的差异：映射由调用方传入而非硬编码；纯函数无 service
+// HUAKAI 机制：映射由调用方传入而非硬编码；纯函数无 service
 // 耦合；每次改名输出一行审计 (path, from, to) 便于 admin 查询；幂等（目标
 // 名已等于期望值时不重写、不产生审计行）；未知字段经 json.RawMessage
 // round-trip 完整保留。

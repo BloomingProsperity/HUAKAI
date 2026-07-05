@@ -79,7 +79,7 @@ func canonicalToOpenAIFinishReason(c CanonicalStopReason) (*string, []ProtocolLo
 }
 
 // CanonicalToClientResponse 把 HCSF buffered envelope 序列化为 OpenAI Chat
-// completion JSON。
+// completion JSON 响应。
 func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
 	if canonical == nil {
 		return nil, nil, errors.New("proto: openai_chat CanonicalToClientResponse nil envelope")

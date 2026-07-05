@@ -13,7 +13,7 @@
 //   - "exception" / "error" → 发出为协议级 error
 //     SSEEvent（Type="error", Data=原 payload），随后 yield ErrBedrockException
 //     结束流（R4 决策：当协议级 error 处理）
-//   - Bedrock response exception event-types / unknown message-type →
+//   - Bedrock response exception 事件类型 / unknown message-type →
 //     协议级 error；明确的 control event 才可跳过
 //   - decoder 错误传播为 (SSEEvent{}, err)，scanner 退出
 //

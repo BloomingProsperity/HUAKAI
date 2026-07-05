@@ -467,7 +467,7 @@ func TestR021_Anthropic402Billing(t *testing.T) {
 	}
 }
 
-// TestR022_Anthropic504Timeout:anthropic 504 -> R-022 -> UpstreamTimeout ambiguous cooldown。
+// TestR022_Anthropic504Timeout：anthropic 504 -> R-022 -> UpstreamTimeout 模糊冷却。
 func TestR022_Anthropic504Timeout(t *testing.T) {
 	c, err := Classify(504, nil, []byte(`{"type":"timeout_error"}`), "anthropic")
 	if err != nil {

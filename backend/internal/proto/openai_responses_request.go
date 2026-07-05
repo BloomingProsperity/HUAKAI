@@ -9,9 +9,9 @@ import (
 
 // P-2 D9 openai_responses ClientAdapter — RequestToCanonical 第一片：
 // input string + message items（含 input_text）+ function_call items +
-// function_call_output items + instructions + function tools；built-in tools
+// function_call_output items + instructions + function tools；内置工具
 // （web_search/code_interpreter 等）按 synthesis Q9 决策 D 走 native_required
-// + Mandatory Roadmap loss。
+// + Mandatory Roadmap 损失。
 //
 
 type OpenAIResponsesClient struct{}
