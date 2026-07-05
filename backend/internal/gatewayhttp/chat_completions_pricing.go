@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/realtokenizer"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
@@ -282,11 +283,13 @@ func (ex *chatExecution) cacheGroupPricingRatio(ratio decimal.Decimal, pendingRe
 }
 
 func (ex *chatExecution) defaultRatioAfterResolverError(err error) (decimal.Decimal, bool) {
+	// 错误只落分类与类型,不落原文:与全仓「err 出口过 privacy 脱敏」约定一致。
 	slog.ErrorContext(ex.ctx, "pricing ratio resolver error served default ratio",
 		"tenant_id", ex.ident.TenantID,
 		"pool_group_id", ex.attempt.PoolGroupID,
 		"default_group_ratio", "1",
-		"error", err,
+		"error_class", privacy.ErrorClassFor(ex.ctx, err),
+		"error_type", fmt.Sprintf("%T", err),
 	)
 	return decimal.NewFromInt(1), true
 }
