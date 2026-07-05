@@ -86,6 +86,12 @@
 
 **共性延续 A 的根因**:B1(跨模块 worker 判据不协同=根因3)、B2/B7(签名/验签 canonical 配对断裂+伪绿测试=根因2/missing-associated)、B3(死开关)、B4/B5/B8(账号状态复核在各登录/会话/面板路径不一致=inconsistent-state,同一不变量 passkey/删除有、2FA/封禁/面板缺)、B6(账本写入配对缺失)。
 
+### B6 scope(2026-07-05 亲读核实,下一切片)——**属实非假缺口**
+- **确认 billing_events 是钱包统一账本**:payment topup(store_postgres.go:464 `payment_credited`)、refund(store_postgres_refund.go:211 `payment_refunded`)、余额券(voucher/store_postgres.go:317 `voucher_redeemed`)都真 INSERT。0023 迁移已把 claim_id 放宽 nullable、event_type CHECK 扩到 money 类型。自动续费扣 user_balances 却只写 subscription_auto_renewal_charges、漏写 billing_events → 对账缺一环属实。
+- **当前 event_type 全集**(0092):claim_committed/aborted/reconciliation_appended + voucher_redeemed/balance_recharged/payment_credited/payment_refunded。**无订阅续费扣款类型** → 修复需**新迁移**:①加 event_type(拟 `subscription_auto_renewed`)②加关联列(拟 `subscription_auto_renewal_charge_id`)③更新 `billing_events_claim_or_voucher_check` 约束允许新类型带新 ref。
+- **待定的实现问题**(下一轮先解):续费是钱包**扣款**(money out),而 payment_credited 用 +amount(money in);要读 refund(payment_refunded)的 actual_cost_signed 符号约定,确定续费扣款该记正还是负(对账 delta 语义)。§16 先看三镜是否在钱账本记订阅续费(sub2/new-api 无自动续费 worker,可能无先例→按 HUAKAI 充值/退款账本符号约定自洽即可)。
+- **切片形态**:migration(补 openapi/迁移一致性测试)+ tryAutoRenewOnce 内 INSERT billing_events + 回填 link + PG 判别集成测试(续费后断言 billing_events 一行、类型/金额/符号正确;变异:去掉 insert → 红)+ 对抗审查。money+schema,Owner-gated 但在全权授权内,落地后 surface。
+
 ## 执行顺序(合并 A+B,19 条)
 1. **S1 四条**(A#1 配额旁路、A#2 completions settle ctx、B1 订阅续费、B2 退款死签名)——最先,各带判别测试。
 2. **S2 批**按域推进(A#3-8 + B3-7)。
