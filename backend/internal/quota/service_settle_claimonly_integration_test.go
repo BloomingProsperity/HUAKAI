@@ -90,3 +90,82 @@ func TestServiceRelease_ClaimOnlyResolvesReservationID(t *testing.T) {
 		t.Fatalf("cost window=%+v; want reserved=0 settled=0(预留已释放归还)", values)
 	}
 }
+
+// TestServiceCommitCacheHit_ClaimOnlyResolvesReservationID 守住 cache-hit 路径同样必须
+// 用解析出的 reservation.ID 做窗口结算、并发槽释放与 reservation 终态写入。
+// Mutation: cache-hit 分支任一写点改回 req.ReservationID → CommitCacheHit 报 no rows
+// 或窗口/槽/审计字段不落地 → RED。
+func TestServiceCommitCacheHit_ClaimOnlyResolvesReservationID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openQuotaIntegrationPool(t, ctx)
+	f := newQuotaFixture(t, ctx, pool)
+	service := NewService(NewPostgresStore(pool))
+
+	now := time.Date(2026, 7, 5, 12, 20, 0, 0, time.UTC)
+	requestPolicy := f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricRequests, WindowFixed, 3600, "100", ModeEnforce)
+	costPolicy := f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricCostUSD, WindowFixed, 3600, "100", ModeEnforce)
+	f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricConcurrency, WindowNone, 0, "1", ModeEnforce)
+	reserve := f.reserveForSettlement(ctx, service, now, "cache-hit-claim-only", "4", true)
+	if got := f.activeSlotCount(ScopeUser, fmt.Sprint(f.userID)); got != 1 {
+		t.Fatalf("cache-hit 前 active slots=%d; want 1", got)
+	}
+
+	const cacheKey = "claim-only-cache-key"
+	const cacheSource = "response_cache"
+	result, err := service.CommitCacheHit(ctx, CacheHitRequest{
+		TenantID:    f.tenantID,
+		ClaimID:     reserve.Reservation.ClaimID,
+		CommittedAt: now,
+		CacheKey:    cacheKey,
+		CacheSource: cacheSource,
+	})
+	if err != nil {
+		t.Fatalf("CommitCacheHit(claim-only) err=%v; 写操作误用 req.ReservationID=0 会命中 0 行报 no rows", err)
+	}
+	if result.Reservation.Status != ReservationSettled {
+		t.Fatalf("result status=%s; want settled cache hit", result.Reservation.Status)
+	}
+	status, settledCost, settledUnits, overageUnits := f.reservationSettlement(reserve.Reservation.ID)
+	if status != ReservationSettled || !settledCost.Equal(decimal.Zero) || !settledUnits.Equal(decimal.NewFromInt(1)) || !overageUnits.Equal(decimal.Zero) {
+		t.Fatalf("reservation status=%s settled_cost=%s settled_units=%s overage_units=%s; want settled zero-cost cache hit", status, settledCost, settledUnits, overageUnits)
+	}
+	requestValues := f.windowValues(requestPolicy, now)
+	if !requestValues.reserved.Equal(decimal.Zero) || !requestValues.settled.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("request window=%+v; want reserved=0 settled=1", requestValues)
+	}
+	costValues := f.windowValues(costPolicy, now)
+	if !costValues.reserved.Equal(decimal.Zero) || !costValues.settled.Equal(decimal.Zero) || !costValues.overage.Equal(decimal.Zero) {
+		t.Fatalf("cost window=%+v; want reserved=0 settled=0 overage=0", costValues)
+	}
+	if got := f.activeSlotCount(ScopeUser, fmt.Sprint(f.userID)); got != 0 {
+		t.Fatalf("cache-hit 后 active slots=%d; want 0", got)
+	}
+	auditReserved, auditSettled := f.finalizationAuditAmounts("cache_hit", MetricRequests)
+	if !auditReserved.Equal(decimal.NewFromInt(1)) || !auditSettled.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("cache_hit requests audit reserved=%s settled=%s; want request units 1/1", auditReserved, auditSettled)
+	}
+	if got := f.finalizationAuditPayloadField("cache_hit", "cache_key"); got != cacheKey {
+		t.Fatalf("cache_hit payload cache_key=%q; want %q", got, cacheKey)
+	}
+	if got := f.finalizationAuditPayloadField("cache_hit", "cache_source"); got != cacheSource {
+		t.Fatalf("cache_hit payload cache_source=%q; want %q", got, cacheSource)
+	}
+}
+
+func (f *quotaFixture) finalizationAuditPayloadField(operation string, field string) string {
+	f.t.Helper()
+	var value string
+	if err := f.pool.QueryRow(f.ctx,
+		`SELECT COALESCE(payload ->> $3, '')
+		 FROM quota_audit_events
+		 WHERE tenant_id=$1
+		   AND payload ->> 'operation' = $2
+		 ORDER BY id DESC
+		 LIMIT 1`,
+		f.tenantID, operation, field,
+	).Scan(&value); err != nil {
+		f.t.Fatalf("read finalization audit payload field %s/%s: %v", operation, field, err)
+	}
+	return value
+}
