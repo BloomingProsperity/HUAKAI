@@ -39,6 +39,9 @@
 
 ## 🎉🎉 审计修复全部 19 条闭环(2026-07-05)
 A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven + 干净基线 + 对抗审查(S1 切片)零 S0/S1 + 零回归。11 提交:e95a6eee/df71c432/8988a302/0470fefd/aad36b49/423b36c2/1e07adc6/eea7178d/2a86f850/4bf18522/241485ac/7167b5a8/75af01aa。系统性加固#4/#5(持久计数器 reaper+不吞错、租约统一派生)随 A#3/A#5/A#6 落地。
+### 扫尾进度(2026-07-05)
+- **A#1 端到端集成断言尝试**:写真 pg e2e(handler→quota 装饰 settler→断言预留 settled)时撞到一个与 A#1 无关的怪相——刚经 `service.Reserve` 提交的预留,`svc.Settle(ReservationID=0)`(经 claim 解析)在其 Serializable 事务内报 `no rows`,而带 ReservationID 的直接 settle 能查到;getFinalizationReservation 的查询本忽略 ReservationID(只按 tenant+claim),两路本该一致。疑为测试 harness 的连接快照制品。因加了诊断直接 settle 会使 handler 只命中幂等路径=**伪绿**,按 B7 教训删除该 e2e、不留误导测试。**A#1 回归由既有单测 `TestWiring_AsyncBillingHandlerSettlesThroughQuotaDecorator`(spy+mutation-proven)充分守护**;真 pg e2e 与该快照怪相留作独立 follow-up(需单独查 quota settle 的 Serializable 可见性,非本 arc)。
+
 **剩扫尾(非审计条目)**:①额度恢复重跑 feature 审计未验证域(resume wf_bfe5c8d5-e10)②A#1 端到端集成断言(真 pg)③签发点收口/TokenVersion 加固(B4/B5 follow-up)④codebudget 既有红(gatewayhttp 4 项+store_memory.go)另案 ⑤加固#1/2/3/6(统一结算 settler 注入点+per-资源生命周期集成测试+补偿状态扫描)。
 
 ### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
