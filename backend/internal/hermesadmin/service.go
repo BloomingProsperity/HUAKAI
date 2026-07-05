@@ -10,6 +10,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
+	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 )
 
 // 诊断源的读取上限。小而固定：每日巡检是面向根因的聚合，不是批量导出。
@@ -36,22 +37,24 @@ type ModuleSnapshotter interface {
 //   - ChannelSummary == channelhealth.Service.SummarizeChannelHealth
 //     （account_health_diagnose 的聚合渠道视图）。
 //   - DLQList       == dlq.Store.List（dlq_inspect 的读取；Replay 从不接线）。
+//   - ObsDLQList    == obs/outbox 死信管理面的只读列表（Replay 从不接线）。
 //   - ListUsage     == billingQueries.ListUsageRecords（log_analyze /
 //     request_diagnose 的读取）。
 //   - Modules       == H2 的 moduleregistry 快照。
 //
 // 某字段为 nil 会把对应那一段降级为 SourceError；报告的其余部分仍会组合出来
-//（软失败，绝不 panic）。
+// （软失败，绝不 panic）。
 type Sources struct {
 	RenewStatus    func(ctx context.Context, params credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error)
 	ChannelSummary func(ctx context.Context, tenantID int64) (channelhealth.ChannelHealthSummary, error)
 	DLQList        func(ctx context.Context, filter dlq.ListFilter) ([]dlq.Record, error)
+	ObsDLQList     func(ctx context.Context, filter obsdlq.AdminListFilter) ([]obsdlq.AdminDeadEvent, error)
 	ListUsage      func(ctx context.Context, params dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error)
 	Modules        ModuleSnapshotter
 }
 
 // InspectionService 从注入的诊断源组合出每日运维报告。它自身不持有任何 DB 句柄
-//——每次读取都是注入进来的函数，因此在测试中极易打桩，而在生产中复用线上接线的
+// ——每次读取都是注入进来的函数，因此在测试中极易打桩，而在生产中复用线上接线的
 // 读取。
 type InspectionService struct {
 	src      Sources
@@ -131,7 +134,7 @@ func (s *InspectionService) accountPool(ctx context.Context, rep *InspectionRepo
 
 // credentials 读取平台范围的续期状态（TenantID=nil），并统计其状态表明刷新失败或
 // 续期临近的行。「needs renewal」信号是指该行的 refresh_before_at 已成为过去
-//（以 worker 自身的时钟为准），与上游的状态字符串无关。
+// （以 worker 自身的时钟为准），与上游的状态字符串无关。
 func (s *InspectionService) credentials(ctx context.Context, rep *InspectionReport) CredentialSection {
 	sec := CredentialSection{ByState: map[string]int{}, TopFailClass: map[string]int{}, Severity: SeverityOK}
 	if s.src.RenewStatus == nil {
@@ -206,6 +209,32 @@ func (s *InspectionService) dlq(ctx context.Context, rep *InspectionReport) DLQS
 	if sec.PendingTotal > 0 {
 		sec.Severity = SeverityCritical
 	}
+	if s.src.ObsDLQList != nil {
+		obsRows, err := s.src.ObsDLQList(ctx, obsdlq.AdminListFilter{TenantID: &tenant, Limit: dlqReadLimit})
+		if err != nil {
+			s.addSourceErr(rep, "obs_dlq", "read_failed")
+		} else {
+			for _, r := range obsRows {
+				sec.Total++
+				lane := "OBS_" + strings.ToUpper(string(r.Priority))
+				sec.ByLane[lane]++
+				status := "obs_" + string(r.OutboxStatus)
+				sec.ByStatus[status]++
+				if r.OutboxStatus == obsdlq.StatusFailedDead {
+					sec.PendingTotal++
+					if prev, ok := oldest[lane]; !ok || r.DeadAt.Before(prev) {
+						oldest[lane] = r.DeadAt
+					}
+				}
+			}
+			for lane, ts := range oldest {
+				sec.OldestPendingAt[lane] = ts.UTC().Format(time.RFC3339)
+			}
+			if sec.PendingTotal > 0 {
+				sec.Severity = SeverityCritical
+			}
+		}
+	}
 	return sec
 }
 
@@ -219,7 +248,7 @@ func isPendingDLQ(st dlq.Status) bool {
 }
 
 // errorTrend 读取近期用量窗口，并聚合 end_class 计数 + 流终止数 + 待对账数
-//——这些与 log_analyze 暴露的是同一批 enums，绝不涉及原始请求体。一个非成功占主导
+// ——这些与 log_analyze 暴露的是同一批 enums，绝不涉及原始请求体。一个非成功占主导
 // 的窗口会被标记为 warn。
 func (s *InspectionService) errorTrend(ctx context.Context, rep *InspectionReport) ErrorTrendSection {
 	sec := ErrorTrendSection{ByEndClass: map[string]int{}, Severity: SeverityOK}

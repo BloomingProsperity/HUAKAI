@@ -42,10 +42,13 @@ func moderationScreener(d *deps) moderation.Screener {
 }
 
 func contentModerationRuntimeEnabled() bool {
+	// 执行器默认接线,但租户级 DefaultConfig 保持 Enabled=false,未配置租户仍会
+	// 全量放行。翻开运行时 gate 只让管理员 PUT enabled=true 后真实生效;事故时
+	// 可用 HUAKAI_CONTENT_MODERATION_ENABLED=false/0 关闭执行器。
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(contentModerationEnabledEnv))) {
-	case "1", "true":
-		return true
-	default:
+	case "0", "false":
 		return false
+	default:
+		return true
 	}
 }

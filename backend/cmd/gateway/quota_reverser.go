@@ -19,14 +19,14 @@ type quotaCostReverser struct {
 
 var _ auditreceipt.QuotaReverser = quotaCostReverser{}
 
-func (r quotaCostReverser) ReverseSettledCost(ctx context.Context, tenantID, claimID int64, amountMicroUSD int64) error {
+func (r quotaCostReverser) ReverseSettledCost(ctx context.Context, tenantID, claimID int64, amountMicroUSD int64) (auditreceipt.QuotaReverseResult, error) {
 	if r.svc == nil || amountMicroUSD <= 0 {
-		return nil
+		return auditreceipt.QuotaReverseResult{Skipped: true}, nil
 	}
-	_, err := r.svc.ReverseCost(ctx, quota.ReverseCostRequest{
+	result, err := r.svc.ReverseCost(ctx, quota.ReverseCostRequest{
 		TenantID: tenantID,
 		ClaimID:  claimID,
 		Amount:   decimal.NewFromInt(amountMicroUSD).Div(decimal.NewFromInt(1_000_000)),
 	})
-	return err
+	return auditreceipt.QuotaReverseResult{Skipped: result.Skipped}, err
 }

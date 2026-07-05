@@ -175,6 +175,7 @@ type deps struct {
 	responseCache            l2cache.Store
 	cacheScope               string
 	dlqService               *legacydlq.Service
+	obsDLQAdminStore         *obsoutbox.PostgresOutbox
 	completionBus            *eventbus.Bus
 	auditRefPolicy           *eventbus.AuditRefPolicy
 	inboundAuth              *auth.APIKeyResolver
@@ -261,6 +262,18 @@ type deps struct {
 	// 之外、或 chat bridge 未设置时,该 handler 为 nil。
 	hermesSessionBindings     *hermeschat.SessionBindings
 	hermesInternalToolHandler *hermeschat.InternalToolHandler
+}
+
+func quotaReconcilerEnabledFromEnv() bool {
+	raw, ok := os.LookupEnv("HUAKAI_QUOTA_RECONCILER_ENABLED")
+	if !ok || strings.TrimSpace(raw) == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(raw)
+	if err != nil {
+		return true
+	}
+	return on
 }
 
 type refundReceiptAppender interface {
@@ -1057,7 +1070,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	rt.selectorCleanup = selectorCleanup
 
-	dlqStore, dlqService, dlqWorker, replicaTarget, closeReplica := buildDLQRuntime(pgPool, opts.obsDLQ, auditLedger)
+	dlqStore, dlqService, dlqWorker, replicaTarget, closeReplica := buildDLQRuntime(pgPool, opts.obsDLQ, auditLedger, outboxStore)
 	rt.closeReplica = closeReplica
 	outboxWorker := buildOutboxWorker(outboxStore, opts.outboxRuntime, emailSettingsStore, credentialKeys, channelHealthStore)
 	notificationStore := notify.NewPostgresStore(pgPool, credentialKeys)
@@ -1206,8 +1219,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// quota 补偿器 worker:每轮两段——①重放结算/释放失败后入队的补偿 job;②清扫 lease 已过期、
 	// billing claim 已终态、但补偿 job 从未入队(进程死于 billing 终态与 quota 补偿之间的崩溃窗口)
 	// 的孤儿预留,按 claim 终态定向 Settle/Release。两段缺一,预留都会永久卡 reserved 冻结窗口
-	// headroom(手动/累计窗无滚动自愈)。默认关,knob 打开才启。
-	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_QUOTA_RECONCILER_ENABLED")); on {
+	// headroom(手动/累计窗无滚动自愈)。默认启动;显式 false/0 才跳过。
+	if quotaReconcilerEnabledFromEnv() {
 		quotaReconciler := quota.NewReconciler(nil, quota.NewPostgresStore(pgPool), quota.ReconcilerOptions{})
 		quotaWorker := quota.NewReconciliationWorker(quotaReconciler, 0)
 		quotaWorker.Start(ctx)
@@ -1362,6 +1375,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		responseCache:         opts.responseCache,
 		cacheScope:            opts.cacheScope,
 		dlqService:            dlqService,
+		obsDLQAdminStore:      outboxStore,
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,
 		dispatcher: &gateway.UpstreamDispatcher{
@@ -1636,6 +1650,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialStr:  credentialStore,
 		channelHealth:  channelHealthService,
 		dlqStore:       dlqStore,
+		obsDLQStore:    outboxStore,
 		billingQueries: billingQueries,
 		logger:         logger,
 	}); inspectionWorker != nil {

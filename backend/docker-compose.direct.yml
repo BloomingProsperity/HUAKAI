@@ -56,6 +56,9 @@ services:
       # production = 对外硬化(强制审计账本持久化 + 持久 ed25519 私钥等启动门,见下方审计段与
       # docs/deploy/production-bootstrap.md)。我们不替你设默认 —— 选项在你手里。
       HUAKAI_RELEASE_MODE: ${HUAKAI_RELEASE_MODE}
+      # quota reconciler 默认启用(unset/非法值均按 true):补偿结算/释放失败和孤儿预留。
+      # 仅应急停用时显式设 false 或 0。
+      HUAKAI_QUOTA_RECONCILER_ENABLED: ${HUAKAI_QUOTA_RECONCILER_ENABLED:-true}
       # 信任「反代转发的 X-Forwarded-For」的来源(CSV CIDR),使 per-IP 限流按真实客户端 IP 计算。
       # 默认全部 RFC1918 私网段,对两种接法都正确:
       #   - 直连公网(无反代):公网客户端的 socket 源 IP 非 RFC1918,其伪造的 XFF 被 fail-closed

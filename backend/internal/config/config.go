@@ -143,8 +143,8 @@ var ErrMissingRequired = errors.New("config: missing required env var")
 // Load 把 env 变量读入 Config。必填变量:HUAKAI_DATABASE_URL。
 //
 // 已移除 Smoke* 字段——改用基于 api_keys 表的入站鉴权
-//(auth.APIKeyResolver)。要回滚到 env 注入式鉴权需改代码回退
-//(没有 build-tag 这类逃生出口)。
+// (auth.APIKeyResolver)。要回滚到 env 注入式鉴权需改代码回退
+// (没有 build-tag 这类逃生出口)。
 func Load() (*Config, error) {
 	// 客户 API key 前缀(HUAKAI_API_KEY_PREFIX,默认 hk):若运维设了非法值,启动期
 	// fail-loud,免得静默回落默认后所有客户端被拒还查不出原因。空=用默认,无误。
@@ -199,10 +199,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	alertingEvalEnabled, err := envBool("HUAKAI_ALERTING_EVAL_ENABLED")
-	if err != nil {
-		return nil, err
-	}
+	// 告警规则评估器默认开启:无规则时评估循环空转 no-op,LeaderLock 已避免重复
+	// worker。运维仍可设 HUAKAI_ALERTING_EVAL_ENABLED=false 作为逃生出口;历史上
+	// 部分部署写过非布尔占位值,这里按默认开启处理,避免控制面规则创建后静默不评估。
+	alertingEvalEnabled := envBoolDefaultLenient("HUAKAI_ALERTING_EVAL_ENABLED", true)
 	alertingEvalInterval, err := envOptionalDurationSeconds("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS")
 	if err != nil {
 		return nil, err
@@ -420,6 +420,18 @@ func envBoolDefault(name string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s must be a boolean, got %q: %w", name, raw, err)
 	}
 	return v, nil
+}
+
+func envBoolDefaultLenient(name string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
 
 // envOptionalForceH1 解析 HUAKAI_TRANSPORT_FORCE_H1,语义与 mimicry.forceH1Enabled

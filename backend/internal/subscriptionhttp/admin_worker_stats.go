@@ -3,6 +3,7 @@
 package subscriptionhttp
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -11,7 +12,7 @@ import (
 
 // WorkerStatsReader 读取进程内的订阅 worker 计数器。
 type WorkerStatsReader interface {
-	ReadWorkerStats() WorkerStats
+	ReadWorkerStats(context.Context) WorkerStats
 }
 
 // AdminWorkerStatsDeps 持有 admin stats 端点的依赖。
@@ -22,9 +23,10 @@ type AdminWorkerStatsDeps struct {
 
 // WorkerStats 是订阅通知/续费 worker 的 JSON 响应。
 type WorkerStats struct {
-	Reminder  ReminderWorkerStats  `json:"reminder"`
-	Expiry    ExpiryWorkerStats    `json:"expiry"`
-	AutoRenew AutoRenewWorkerStats `json:"auto_renew"`
+	Reminder              ReminderWorkerStats              `json:"reminder"`
+	Expiry                ExpiryWorkerStats                `json:"expiry"`
+	AutoRenew             AutoRenewWorkerStats             `json:"auto_renew"`
+	PendingReconciliation PendingReconciliationWorkerStats `json:"pending_reconciliation"`
 }
 
 type ReminderWorkerStats struct {
@@ -49,6 +51,13 @@ type AutoRenewWorkerStats struct {
 	FailedTicks  uint64 `json:"failed_ticks"`
 }
 
+// PendingReconciliationWorkerStats 暴露未定稿 usage_records 数量,供运维用
+// pending_reconciliation_only=true 过滤器定位待人工核查行。
+type PendingReconciliationWorkerStats struct {
+	UsageRecords int64 `json:"usage_records"`
+	QueryFailed  bool  `json:"query_failed"`
+}
+
 // NewAdminWorkerStatsHandler 返回当前进程内的 worker 计数器。
 func NewAdminWorkerStatsHandler(d AdminWorkerStatsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +78,6 @@ func NewAdminWorkerStatsHandler(d AdminWorkerStatsDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
 			return
 		}
-		writeJSON(w, http.StatusOK, d.Reader.ReadWorkerStats())
+		writeJSON(w, http.StatusOK, d.Reader.ReadWorkerStats(r.Context()))
 	}
 }

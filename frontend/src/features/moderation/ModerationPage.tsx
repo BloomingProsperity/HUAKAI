@@ -2,14 +2,14 @@ import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getModerationConfig, listModerationLogs, updateModerationConfig } from './api'
-import { configToForm, decisionLabel, decisionTone, formatFee, validateConfig } from './moderation'
+import { configToForm, decisionLabel, decisionTone, validateConfig } from './moderation'
 import { BannedKeysCard, HashesCard, KeywordsCard } from './ModerationRules'
 import { EMPTY_LOG_FILTERS, type LogFilters, type ModerationConfig, type ModerationLog } from './types'
 
 /*
  * 内容审核(风控)运营台。管线第 8 站(安全审计)下的风控配置 + 命中日志。
  * 后端 /admin/v1/moderation(admin token):
- *   - 配置:开关(总开关/fail-closed)、采样率、自动封禁阈值与窗口、违规罚款(GET/PUT config)
+ *   - 配置:开关(总开关/fail-closed)、采样率、自动封禁阈值与窗口(GET/PUT config)
  *   - 命中日志:只读列表,按 API Key 过滤、分页(GET logs)
  * 注意:platform_admin 角色下后端要求 tenant_id 必填,故本页先要租户 ID 再加载。
  * 关键词/哈希黑名单的增删/批量导入 + 被封 Key 解封见 ./ModerationRules;
@@ -166,15 +166,6 @@ function ConfigCard({ tenantId }: { tenantId: number }) {
             value={form.banWindowSeconds}
             onChange={(v) => setF('banWindowSeconds', v)}
           />
-          <Field label="违规罚款(USD)">
-            <input
-              value={form.violationFeeUsd}
-              onChange={(e) => setF('violationFeeUsd', e.target.value)}
-              inputMode="decimal"
-              placeholder="如 0 或 1.50"
-              style={inp}
-            />
-          </Field>
           <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 'var(--hk-space-2)' }}>
             <button type="button" disabled={saving} onClick={save} style={primaryBtn}>
               {saving ? '保存中…' : '保存配置'}
@@ -276,7 +267,7 @@ function LogsCard({ tenantId }: { tenantId: number }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>
-                {['时间', '判定', '原因码', 'API Key', '用户', '罚款(USD)', 'Payload Hash'].map((h) => (
+                {['时间', '判定', '原因码', 'API Key', '用户', 'Payload Hash'].map((h) => (
                   <th key={h} style={th}>
                     {h}
                   </th>
@@ -293,7 +284,6 @@ function LogsCard({ tenantId }: { tenantId: number }) {
                   <td style={{ ...td, color: 'var(--hk-ink-700)' }}>{row.reason_code || '—'}</td>
                   <td style={tdMono}>#{row.api_key_id}</td>
                   <td style={tdMono}>#{row.user_id}</td>
-                  <td style={tdMono}>{formatFee(row.violation_fee_usd)}</td>
                   <td style={{ ...tdMono, color: 'var(--hk-ink-300)' }}>{short(row.payload_hash)}</td>
                 </tr>
               ))}

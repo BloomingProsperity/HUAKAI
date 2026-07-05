@@ -36,6 +36,9 @@ services:
       HUAKAI_SESSION_SIGNING_KEY_HEX: ${HUAKAI_SESSION_SIGNING_KEY_HEX:-}
       HUAKAI_ADMIN_BOOTSTRAP_TOKEN: ${HUAKAI_ADMIN_BOOTSTRAP_TOKEN}
       HUAKAI_RELEASE_MODE: ${HUAKAI_RELEASE_MODE}
+      # quota reconciler 默认启用(unset/非法值均按 true):补偿结算/释放失败和孤儿预留。
+      # 仅应急停用时显式设 false 或 0。
+      HUAKAI_QUOTA_RECONCILER_ENABLED: ${HUAKAI_QUOTA_RECONCILER_ENABLED:-true}
       # 信任 caddy 反代(本 compose 内网)转发的 X-Forwarded-For,使 per-IP 限流按真实
       # 客户端 IP 计算而非 caddy 自身 IP。默认信任全部 RFC1918 私网段:gateway 仅在 compose
       # 内网可达(expose 非 ports),能连它的只有同网 caddy(必属私网 IP),外部到不了无从伪造;

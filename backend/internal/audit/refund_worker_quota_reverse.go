@@ -2,17 +2,25 @@ package audit
 
 import (
 	"context"
+	"expvar"
 	"log/slog"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 )
+
+var refundQuotaReverseSkippedTotal = expvar.NewInt("refund_quota_reverse_skipped_total")
+
+// QuotaReverseResult 报告退款后的配额冲减结果。
+type QuotaReverseResult struct {
+	Skipped bool
+}
 
 // QuotaReverser 把已结算 claim 的成本从配额 settled_value 负向冲减(退款后的次级补账)。
 // 退款只退钱包、不退配额计数会让用户净花费已降却因旧计数提前撞成本上限被拒(过度强制),
 // 本接口在退款落库后按退款的实际金额把 settled_value 同步降回。实现由 wiring 注入(quota.Service
 // 适配器);未注入则退款不触发配额冲减,行为与改造前完全一致(零回归)。
 type QuotaReverser interface {
-	ReverseSettledCost(ctx context.Context, tenantID, claimID int64, amountMicroUSD int64) error
+	ReverseSettledCost(ctx context.Context, tenantID, claimID int64, amountMicroUSD int64) (QuotaReverseResult, error)
 }
 
 // WithRefundQuotaReverser 注入配额成本冲减器:退款落库后,把退款的实际金额从配额 settled_value
@@ -40,11 +48,20 @@ func (w *MismatchRefundWorker) reverseQuotaAfterRefund(ctx context.Context, payl
 	if w == nil || w.quotaReverser == nil || refund == nil || refund.RefundMicroUSD <= 0 || refund.Idempotent {
 		return
 	}
-	if err := w.quotaReverser.ReverseSettledCost(ctx, payload.TenantID, payload.ClaimID, refund.RefundMicroUSD); err != nil {
+	result, err := w.quotaReverser.ReverseSettledCost(ctx, payload.TenantID, payload.ClaimID, refund.RefundMicroUSD)
+	if err != nil {
 		slog.WarnContext(ctx, "退款后配额 settled_value 冲减失败(fail-open,不影响已成功退款)",
 			slog.Int64("tenant_id", payload.TenantID),
 			slog.Int64("claim_id", payload.ClaimID),
 			slog.Int64("refund_micro_usd", refund.RefundMicroUSD),
 			slog.String("error", err.Error()))
+		return
+	}
+	if result.Skipped {
+		refundQuotaReverseSkippedTotal.Add(1)
+		slog.WarnContext(ctx, "退款后配额 settled_value 冲减跳过(预留未结算或无可冲减值)",
+			slog.Int64("tenant_id", payload.TenantID),
+			slog.Int64("claim_id", payload.ClaimID),
+			slog.Int64("refund_micro_usd", refund.RefundMicroUSD))
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 func TestScreener_ConfigErrorPassesWhenTenantNotKnownEnabled(t *testing.T) {
 	keywords := &keywordStoreStub{err: errors.New("must not call")}
+	beforeMetric := moderationFailureMetricValue("config_backend_error")
 	s := NewScreener(ScreenerDeps{
 		Config:   configStub{err: errors.New("config db gone")},
 		Keywords: keywords,
@@ -31,6 +32,9 @@ func TestScreener_ConfigErrorPassesWhenTenantNotKnownEnabled(t *testing.T) {
 	}
 	if keywords.calls != 0 {
 		t.Fatalf("keyword store was called while config load failed disabled: calls=%d", keywords.calls)
+	}
+	if got := moderationFailureMetricValue("config_backend_error") - beforeMetric; got != 1 {
+		t.Fatalf("config backend metric delta=%d want 1; MUTATION:删除冷缓存 pass 的指标记录会变红", got)
 	}
 }
 
@@ -65,6 +69,36 @@ func TestScreener_ConfigCacheReusesWithinTTLAndRefreshesAfterExpiry(t *testing.T
 	}
 	if configs.calls != 2 {
 		t.Fatalf("config calls=%d want 2 after TTL expiry", configs.calls)
+	}
+}
+
+func TestScreener_ConfigErrorUsesExpiredEnabledCache(t *testing.T) {
+	now := time.Date(2026, 7, 5, 9, 0, 0, 0, time.UTC)
+	configs := &countingConfigStore{cfg: ModerationConfig{
+		TenantID: 7, Enabled: true, FailClosed: true, SampleRatePct: 100,
+	}}
+	s := NewScreener(ScreenerDeps{
+		Config:         configs,
+		ConfigCacheTTL: 5 * time.Second,
+		Now:            func() time.Time { return now },
+	})
+
+	res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "req-stale-1"})
+	if err != nil || res.Decision != DecisionPass || res.ReasonCode != "clean" {
+		t.Fatalf("first screen result=%+v err=%v", res, err)
+	}
+
+	now = now.Add(6 * time.Second)
+	configs.err = errors.New("config db gone with secret-like text")
+	res, err = s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "req-stale-2"})
+	if !errors.Is(err, ErrScreenerBackend) {
+		t.Fatalf("err=%v want ErrScreenerBackend from stale enabled config; MUTATION:删除 stale 兜底会变成 pass/nil", err)
+	}
+	if res.Decision != DecisionBlockBackend || res.ReasonCode != "config_backend_error" {
+		t.Fatalf("result=%+v want config backend block from stale enabled config", res)
+	}
+	if configs.calls != 2 {
+		t.Fatalf("config calls=%d want retry after TTL expiry", configs.calls)
 	}
 }
 

@@ -11921,6 +11921,67 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /admin/v1/obs-dlq:
+    get:
+      tags: [admin-dlq]
+      summary: List observability outbox dead-letter events
+      operationId: listObsDLQ
+      x-huakai-spec-source:
+        - backend/internal/obsdlqhttp/handler.go
+        - backend/internal/obs/dlq/store_admin.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: tenant
+          in: query
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: event_type
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Matching observability dead-letter events.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObsDLQEntryList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/obs-dlq/{id}/replay:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [admin-dlq]
+      summary: Replay an observability outbox dead-letter event
+      operationId: replayObsDLQ
+      x-huakai-spec-source:
+        - backend/internal/obsdlqhttp/handler.go
+        - backend/internal/obs/dlq/store_admin.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Outbox event was returned to pending state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObsDLQReplayResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/model-pool-bindings:
     get:
       tags: [admin-model-bindings]
@@ -14091,11 +14152,12 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/subscriptionhttp/admin_worker_stats.go
-      required: [reminder, expiry, auto_renew]
+      required: [reminder, expiry, auto_renew, pending_reconciliation]
       properties:
         reminder: { $ref: '#/components/schemas/AdminReminderWorkerStats' }
         expiry: { $ref: '#/components/schemas/AdminExpiryWorkerStats' }
         auto_renew: { $ref: '#/components/schemas/AdminAutoRenewWorkerStats' }
+        pending_reconciliation: { $ref: '#/components/schemas/AdminPendingReconciliationWorkerStats' }
 
     AdminReminderWorkerStats:
       type: object
@@ -14125,6 +14187,14 @@ components:
         renewed_total: { type: integer, format: int64, minimum: 0 }
         skipped_total: { type: integer, format: int64, minimum: 0 }
         failed_ticks: { type: integer, format: int64, minimum: 0 }
+
+    AdminPendingReconciliationWorkerStats:
+      type: object
+      additionalProperties: false
+      required: [usage_records, query_failed]
+      properties:
+        usage_records: { type: integer, format: int64, minimum: 0 }
+        query_failed: { type: boolean }
 
     ModerationKeywordCreateRequest:
       type: object
@@ -18690,6 +18760,62 @@ components:
       properties:
         item: { $ref: '#/components/schemas/DLQEntry' }
         replayed: { type: boolean }
+
+    ObsDLQEntry:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/obsdlqhttp/handler.go
+        - backend/internal/obs/dlq/store_admin.go
+      required:
+        - id
+        - outbox_event_id
+        - tenant_id
+        - event_type
+        - priority
+        - payload
+        - dead_at
+        - dead_reason
+        - attempt_count
+        - outbox_status
+        - created_at
+        - next_retry_at
+      properties:
+        id: { type: string }
+        outbox_event_id: { type: string }
+        tenant_id: { type: integer, format: int64 }
+        event_type: { type: string }
+        priority:
+          type: string
+          enum: [default, high, critical]
+        payload: { type: object, additionalProperties: true }
+        dead_at: { type: string, format: date-time }
+        dead_reason: { type: string }
+        attempt_count: { type: integer, minimum: 0 }
+        outbox_status:
+          type: string
+          enum: [pending, processing, completed, failed_retry, failed_dead]
+        failure_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        next_retry_at: { type: string, format: date-time }
+
+    ObsDLQEntryList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ObsDLQEntry' }
+
+    ObsDLQReplayResult:
+      type: object
+      additionalProperties: false
+      required: [replayed, id, outbox_event_id]
+      properties:
+        replayed: { type: boolean }
+        id: { type: string }
+        outbox_event_id: { type: string }
 
 # ============================================================================
 # Synthesis metadata

@@ -25,8 +25,6 @@ export interface ModerationConfig {
   ban_threshold: number
   /** 自动封禁统计窗口(秒)。 */
   ban_window_seconds: number
-  /** 违规罚款(USD,十进制字符串,后端 StringFixed(8))。 */
-  violation_fee_usd: string
   updated_by?: string
   updated_at?: string
 }
@@ -39,7 +37,6 @@ export interface ModerationConfigUpdate {
   sample_rate_pct: number
   ban_threshold: number
   ban_window_seconds: number
-  violation_fee_usd: string
 }
 
 /** 单条命中日志 DTO(镜像 moderationLogResponse,admin_visibility_handler.go:13)。 */
@@ -55,7 +52,6 @@ export interface ModerationLog {
   reason_code: string
   matched_keyword_id?: number | null
   matched_hash_id?: number | null
-  violation_fee_usd: string
   billing_event_id?: number | null
   occurred_at?: string
 }

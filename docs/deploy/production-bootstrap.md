@@ -61,6 +61,9 @@ openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem   # production 审
    配齐 SMTP 且开启邮件验证才放行启动"的旧严格行为,设 `HUAKAI_REQUIRE_EMAIL_GATE=true`。
    故首启只剩**迁移**与**审计**两道硬门。
 
+quota reconciler 随 gateway 默认启动:未设置或误填 `HUAKAI_QUOTA_RECONCILER_ENABLED` 都按 `true` 处理,
+负责补偿结算/释放失败和孤儿预留。仅应急停用时显式设 `HUAKAI_QUOTA_RECONCILER_ENABLED=false` 或 `0`。
+
 ## 4. (可选)配置 SMTP 以启用邮箱验证 / 重置邮件
 
 email 门已软化,**production 可直接起,不必先配 SMTP**。仅当你要启用邮箱验证、密码重置邮件等功能,或
@@ -152,6 +155,10 @@ curl -s https://<你的域名>/healthz               # {"status":"ok"}
 ```
 
 接着接上游账号池、建 API key、手动 admin 充值,即可跑通 relay。
+
+运维排查对账待定稿用量时,先看 platform_admin 的
+`GET /v1/admin/notifications/worker-stats` 响应里的 `pending_reconciliation.usage_records`。若非 0,
+再用 `GET /admin/v1/usage?pending_reconciliation_only=true` 过滤出具体行核查。
 
 ## 7. 无域名 / IP 直连形态(形态 B)
 

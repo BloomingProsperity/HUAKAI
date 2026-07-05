@@ -10,6 +10,8 @@ import (
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 var moderationFailureMetrics = expvar.NewMap("huakai_moderation_failure_total")
@@ -66,7 +68,11 @@ func NewScreener(deps ScreenerDeps) Screener {
 func (s *storeScreener) Screen(ctx context.Context, req ScreenRequest) (ScreenResult, error) {
 	cfg, err := s.loadConfig(ctx, req.TenantID)
 	if !cfg.Enabled {
-		return ScreenResult{Decision: DecisionPass, ReasonCode: "moderation_disabled"}, nil
+		result := ScreenResult{Decision: DecisionPass, ReasonCode: "moderation_disabled"}
+		if err != nil {
+			reportModerationFailure(ctx, "config_backend_error", req, result, err)
+		}
+		return result, nil
 	}
 	if err != nil {
 		return s.backendResult(cfg, "config_backend_error", err)
@@ -98,13 +104,21 @@ func (s *storeScreener) loadConfig(ctx context.Context, tenantID int64) (Moderat
 	if s.config == nil {
 		return DefaultConfig(tenantID), nil
 	}
+	var staleCfg ModerationConfig
+	hasStale := false
 	if s.configs != nil {
-		if cfg, ok := s.configs.Get(tenantID); ok {
+		if cfg, fresh, stale := s.configs.GetAllowStale(tenantID); fresh {
 			return cfg, nil
+		} else if stale {
+			staleCfg = cfg
+			hasStale = true
 		}
 	}
 	cfg, err := s.config.GetConfig(ctx, tenantID)
 	if err != nil {
+		if hasStale {
+			return staleCfg, err
+		}
 		if cfg.TenantID == 0 {
 			cfg = DefaultConfig(tenantID)
 		}
@@ -336,7 +350,7 @@ func reportModerationFailure(ctx context.Context, kind string, req ScreenRequest
 		slog.String("request_id", req.RequestID),
 		slog.String("decision", string(res.Decision)),
 		slog.String("reason_code", res.ReasonCode),
-		slog.String("error_type", fmt.Sprintf("%T", err)),
+		slog.String("error_class", privacy.ErrorClassFor(ctx, err)),
 	)
 }
 

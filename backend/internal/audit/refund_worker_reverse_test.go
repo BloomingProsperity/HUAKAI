@@ -1,7 +1,10 @@
 package audit
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -16,11 +19,12 @@ type reverseCall struct {
 type recordingQuotaReverser struct {
 	calls []reverseCall
 	err   error
+	skip  bool
 }
 
-func (r *recordingQuotaReverser) ReverseSettledCost(_ context.Context, tenantID, claimID int64, amountMicroUSD int64) error {
+func (r *recordingQuotaReverser) ReverseSettledCost(_ context.Context, tenantID, claimID int64, amountMicroUSD int64) (QuotaReverseResult, error) {
 	r.calls = append(r.calls, reverseCall{tenantID: tenantID, claimID: claimID, micros: amountMicroUSD})
-	return r.err
+	return QuotaReverseResult{Skipped: r.skip}, r.err
 }
 
 // TestMismatchRefundWorker_ReversesQuotaWithActualRefund 钉死 ③ 接线:退款落库后,worker 用退款的
@@ -72,5 +76,32 @@ func TestReverseQuotaAfterRefund_GuardsZeroNilIdempotentAndAbsent(t *testing.T) 
 	w.reverseQuotaAfterRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 25})
 	if len(rev.calls) != 1 || rev.calls[0].micros != 25 {
 		t.Fatalf("本轮新退款应按实退 25 冲减一次(非请求 delta 99),calls=%+v", rev.calls)
+	}
+}
+
+// TestReverseQuotaAfterRefund_RecordsSkippedResult 钉死 S3-4 一级:配额冲减器返回 Skipped
+// 时必须有可观测信号,否则非 settled 预留退款会静默丢失冲减。判别(§14):删掉 Add(1) 或
+// WARN 日志分支,计数 / 日志断言会转红。
+func TestReverseQuotaAfterRefund_RecordsSkippedResult(t *testing.T) {
+	refundQuotaReverseSkippedTotal.Set(0)
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		refundQuotaReverseSkippedTotal.Set(0)
+	})
+
+	rev := &recordingQuotaReverser{skip: true}
+	w := &MismatchRefundWorker{quotaReverser: rev}
+	payload := MismatchRefundPayload{TenantID: 9, ClaimID: 1001, DeltaMicroUSD: 40}
+
+	w.reverseQuotaAfterRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 40})
+
+	if got := refundQuotaReverseSkippedTotal.Value(); got != 1 {
+		t.Fatalf("refund_quota_reverse_skipped_total=%d want 1", got)
+	}
+	if !strings.Contains(logs.String(), "配额 settled_value 冲减跳过") || !strings.Contains(logs.String(), "claim_id=1001") {
+		t.Fatalf("skip WARN 日志缺失关键上下文: %s", logs.String())
 	}
 }

@@ -420,7 +420,6 @@ func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.
 			)
 		}
 	}))
-	reconciler := observability.NewDualRunReconciler(observability.DefaultDualRunWindow)
 	// 接线 account health probe 死开关:此前 probe 传 nil → handler 每次请求完成都被触发
 	// 但空转,provider_accounts.last_probe_at 永远为 NULL、健康面板恒空。这里注入一个真实
 	// 的 pgxpool 支撑写,盖 last_probe_at 戳点亮面板。纯可观测、异步、单行 PK update,
@@ -431,12 +430,10 @@ func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.
 		healthProbe = accounthealthprobe.NewPostgresProbe(admindb.New(pgPool))
 	}
 	handlers := []eventbus.Handler{
-		observability.NewBillingPersisterHandler(settler, cfg.HandlerTimeout,
-			observability.WithBillingPersisterReconciler(reconciler)),
+		observability.NewBillingPersisterHandler(settler, cfg.HandlerTimeout),
 		observability.NewAuditLoggerHandler(cfg.HandlerTimeout,
 			observability.WithRequiredAuditRef(),
 			observability.WithAuditRefPolicy(auditRefPolicy)),
-		observability.NewReconciliationHandler(cfg.HandlerTimeout, reconciler),
 		observability.NewAccountHealthProbeHandler(cfg.HandlerTimeout, healthProbe),
 		observability.NewMetricsAggregatorHandler(cfg.HandlerTimeout),
 	}

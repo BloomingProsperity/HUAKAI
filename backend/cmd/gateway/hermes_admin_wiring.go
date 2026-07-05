@@ -12,6 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
+	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
@@ -26,6 +27,7 @@ type hermesAdminDeps struct {
 	credentialStr  *credentialstore.Store
 	channelHealth  *channelhealth.Service
 	dlqStore       *dlq.Store
+	obsDLQStore    *obsoutbox.PostgresOutbox
 	billingQueries *dbbilling.Queries
 	logger         *zap.Logger
 }
@@ -71,6 +73,9 @@ func buildHermesInspectionWorker(ctx context.Context, d hermesAdminDeps) *hermes
 	}
 	if d.dlqStore != nil {
 		sources.DLQList = d.dlqStore.List
+	}
+	if d.obsDLQStore != nil {
+		sources.ObsDLQList = d.obsDLQStore.ListDead
 	}
 	if d.billingQueries != nil {
 		sources.ListUsage = d.billingQueries.ListUsageRecords

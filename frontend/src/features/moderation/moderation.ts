@@ -6,7 +6,6 @@ import type { LogFilters, ModerationConfig, ModerationConfigUpdate } from './typ
  *   - 命中日志 query 构造(tenant_id 必带,api_key_id 空则省略,limit/offset 分页)
  *   - 审核判定 → 徽章语气 + 中文标签
  *   - 配置表单的前端校验(镜像后端 configFromRequest 约束,见 admin_config_handler.go:79)
- *   - 罚款金额展示(裁掉无意义的尾随 0)
  * 全部为同步纯函数,便于变异测试打红。
  */
 
@@ -92,7 +91,6 @@ export type ConfigValidation =
  *   - sample_rate_pct ∈ [0,100]
  *   - ban_threshold ≥ 0
  *   - ban_window_seconds > 0
- *   - violation_fee_usd 空串或非负十进制
  * 前端先拦,避免无谓 400;后端仍是权威。tenant_id 必须为正(读取时已校验,这里兜底)。
  */
 export function validateConfig(
@@ -103,7 +101,6 @@ export function validateConfig(
     sampleRatePct: number
     banThreshold: number
     banWindowSeconds: number
-    violationFeeUsd: string
   },
 ): ConfigValidation {
   if (!Number.isInteger(tenantId) || tenantId <= 0) {
@@ -120,13 +117,6 @@ export function validateConfig(
   if (!Number.isInteger(banWindowSeconds) || banWindowSeconds <= 0) {
     return { ok: false, error: '封禁窗口(秒)必须是正整数' }
   }
-  const feeRaw = form.violationFeeUsd.trim()
-  if (feeRaw !== '') {
-    // 非负十进制:可有小数;负号/非数字一律拒。
-    if (!/^[0-9]+(\.[0-9]+)?$/.test(feeRaw)) {
-      return { ok: false, error: '违规罚款必须是非负的十进制数(如 0 或 1.50)' }
-    }
-  }
   return {
     ok: true,
     value: {
@@ -136,22 +126,8 @@ export function validateConfig(
       sample_rate_pct: sampleRatePct,
       ban_threshold: banThreshold,
       ban_window_seconds: banWindowSeconds,
-      // 空串归一为 "0"(后端把空串当 0;这里显式化便于回显一致)。
-      violation_fee_usd: feeRaw === '' ? '0' : feeRaw,
     },
   }
-}
-
-/**
- * 罚款金额展示:后端回的是 StringFixed(8)(如 "0.00000000")。
- * 裁掉小数部分无意义的尾随 0,纯整数则不留小数点;非法值原样返回。
- */
-export function formatFee(raw: string): string {
-  const v = raw.trim()
-  if (!/^[0-9]+(\.[0-9]+)?$/.test(v)) return v
-  if (!v.includes('.')) return v
-  const trimmed = v.replace(/0+$/, '').replace(/\.$/, '')
-  return trimmed === '' ? '0' : trimmed
 }
 
 // ── 关键词/哈希规则的前端校验与批量解析(镜像后端硬约束,可单测)────────────────
@@ -217,7 +193,6 @@ export function configToForm(cfg: ModerationConfig): {
   sampleRatePct: number
   banThreshold: number
   banWindowSeconds: number
-  violationFeeUsd: string
 } {
   return {
     enabled: cfg.enabled,
@@ -225,6 +200,5 @@ export function configToForm(cfg: ModerationConfig): {
     sampleRatePct: cfg.sample_rate_pct,
     banThreshold: cfg.ban_threshold,
     banWindowSeconds: cfg.ban_window_seconds,
-    violationFeeUsd: formatFee(cfg.violation_fee_usd),
   }
 }

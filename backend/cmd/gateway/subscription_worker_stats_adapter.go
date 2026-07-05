@@ -1,28 +1,43 @@
 package main
 
 import (
+	"context"
+	"expvar"
+	"log/slog"
+
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 )
 
+var pendingReconciliationUsageRecordsGauge = expvar.NewInt("pending_reconciliation_usage_records")
+
+type pendingReconciliationCounter interface {
+	CountPendingReconciliationUsageRecords(context.Context) (int64, error)
+}
+
 type subscriptionWorkerStatsAdapter struct {
-	reminder  *subscription.ReminderWorker
-	expiry    *subscription.ExpiryWorker
-	autoRenew *subscription.AutoRenewWorker // nil = worker 未启用(默认关)
+	reminder                     *subscription.ReminderWorker
+	expiry                       *subscription.ExpiryWorker
+	autoRenew                    *subscription.AutoRenewWorker // nil = worker 未启用(默认关)
+	pendingReconciliationCounter pendingReconciliationCounter
 }
 
 func newSubscriptionWorkerStatsReader(
 	reminder *subscription.ReminderWorker,
 	expiry *subscription.ExpiryWorker,
 	autoRenew *subscription.AutoRenewWorker,
+	pendingCounter pendingReconciliationCounter,
 ) subscriptionhttp.WorkerStatsReader {
 	if reminder == nil || expiry == nil {
 		return nil
 	}
-	return subscriptionWorkerStatsAdapter{reminder: reminder, expiry: expiry, autoRenew: autoRenew}
+	return subscriptionWorkerStatsAdapter{reminder: reminder, expiry: expiry, autoRenew: autoRenew, pendingReconciliationCounter: pendingCounter}
 }
 
-func (a subscriptionWorkerStatsAdapter) ReadWorkerStats() subscriptionhttp.WorkerStats {
+var _ pendingReconciliationCounter = (*dbbilling.Queries)(nil)
+
+func (a subscriptionWorkerStatsAdapter) ReadWorkerStats(ctx context.Context) subscriptionhttp.WorkerStats {
 	stats := subscriptionhttp.WorkerStats{
 		Reminder: subscriptionhttp.ReminderWorkerStats{
 			TickCount:   a.reminder.TickCount(),
@@ -43,6 +58,17 @@ func (a subscriptionWorkerStatsAdapter) ReadWorkerStats() subscriptionhttp.Worke
 			RenewedTotal: a.autoRenew.RenewedTotal(),
 			SkippedTotal: a.autoRenew.SkippedTotal(),
 			FailedTicks:  a.autoRenew.FailedTicks(),
+		}
+	}
+	if a.pendingReconciliationCounter != nil {
+		count, err := a.pendingReconciliationCounter.CountPendingReconciliationUsageRecords(ctx)
+		if err != nil {
+			stats.PendingReconciliation.QueryFailed = true
+			slog.WarnContext(ctx, "读取 pending_reconciliation usage_records 计数失败",
+				slog.String("error", err.Error()))
+		} else {
+			stats.PendingReconciliation.UsageRecords = count
+			pendingReconciliationUsageRecordsGauge.Set(count)
 		}
 	}
 	return stats

@@ -268,7 +268,7 @@ export function isPlausibleIPorCIDR(raw: string): boolean {
 }
 
 /**
- * 裁掉十进制尾随 0(与 moderation.formatFee 同构):
+ * 裁掉十进制尾随 0:
  * "25.00000000" → "25";"1.50" → "1.5";整数原样;非十进制原样返回。
  */
 export function trimDecimal(raw: string): string {

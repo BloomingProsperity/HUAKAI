@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -134,6 +135,73 @@ func TestWiring_CompletionEventBusConfigCarriesMaxStates(t *testing.T) {
 	custom := buildCompletionEventBusConfig(&runtimeconfig.EventBusConfig{Enabled: true, MaxStates: 7}, policy)
 	if custom.MaxStates != 7 {
 		t.Fatalf("busCfg.MaxStates=%d want 7(必须按传入值透传,不能是常量)", custom.MaxStates)
+	}
+}
+
+func TestWiring_QuotaReconcilerEnabledByDefault(t *testing.T) {
+	restoreUnsetEnv(t, "HUAKAI_QUOTA_RECONCILER_ENABLED")
+	if !quotaReconcilerEnabledFromEnv() {
+		t.Fatal("HUAKAI_QUOTA_RECONCILER_ENABLED 未设置时应默认启动 quota reconciler")
+	}
+	t.Setenv("HUAKAI_QUOTA_RECONCILER_ENABLED", "not-a-bool")
+	if !quotaReconcilerEnabledFromEnv() {
+		t.Fatal("HUAKAI_QUOTA_RECONCILER_ENABLED 非法值应按安全默认启动处理")
+	}
+	t.Setenv("HUAKAI_QUOTA_RECONCILER_ENABLED", "false")
+	if quotaReconcilerEnabledFromEnv() {
+		t.Fatal("HUAKAI_QUOTA_RECONCILER_ENABLED=false 应显式关闭 quota reconciler")
+	}
+	t.Setenv("HUAKAI_QUOTA_RECONCILER_ENABLED", "0")
+	if quotaReconcilerEnabledFromEnv() {
+		t.Fatal("HUAKAI_QUOTA_RECONCILER_ENABLED=0 应显式关闭 quota reconciler")
+	}
+}
+
+func TestWiring_CompletionEventBusDoesNotInstallDualRunReconciler(t *testing.T) {
+	bus, err := buildCompletionEventBus(
+		&runtimeconfig.EventBusConfig{Enabled: true, HandlerTimeout: time.Second, HighWorkers: 1, MediumWorkers: 1, LowWorkers: 1},
+		&wiringRecordingSettler{},
+		nil,
+		nil,
+		&eventbus.AuditRefPolicy{ReleaseMode: eventbus.ReleaseModeProduction},
+		zaptest.NewLogger(t),
+	)
+	if err != nil {
+		t.Fatalf("buildCompletionEventBus: %v", err)
+	}
+	defer func() {
+		if err := bus.Stop(context.Background()); err != nil {
+			t.Fatalf("stop bus: %v", err)
+		}
+	}()
+
+	handlers := reflect.ValueOf(bus).Elem().FieldByName("handlers")
+	seenBillingPersister := false
+	for i := 0; i < handlers.Len(); i++ {
+		runner := handlers.Index(i)
+		if runner.Kind() == reflect.Pointer {
+			runner = runner.Elem()
+		}
+		handler := runner.FieldByName("handler")
+		if handler.Kind() != reflect.Interface || handler.IsNil() {
+			continue
+		}
+		concrete := handler.Elem()
+		handlerType := concrete.Type().String()
+		if handlerType == "*observability.ReconciliationHandler" {
+			t.Fatal("生产 completion eventbus 不应注册 DualRunReconciler 的 ReconciliationHandler")
+		}
+		if handlerType != "*observability.BillingPersisterHandler" {
+			continue
+		}
+		seenBillingPersister = true
+		reconciler := concrete.Elem().FieldByName("reconciler")
+		if !reconciler.IsNil() {
+			t.Fatal("生产 BillingPersisterHandler 不应注入 DualRunReconciler")
+		}
+	}
+	if !seenBillingPersister {
+		t.Fatal("completion eventbus 未注册 billing persister handler")
 	}
 }
 
@@ -316,16 +384,20 @@ func (w *wiringAPIKeyExpiryWorker) Stop() {
 	w.stopOnce.Do(func() { close(w.stopped) })
 }
 
-func TestContentModerationRuntimeEnabledDefaultsOff(t *testing.T) {
-	// 变异:把 moderation 请求路径 gate 默认设为启用,会把一个依赖 DB 的
-	// screener 接进 chat,并给每个未配置租户的请求都加上 moderation 查表延迟。
+func TestContentModerationRuntimeEnabledDefaultsOnAndCanDisable(t *testing.T) {
+	// 变异:把 moderation 请求路径 gate 退回默认关闭;管理员 PUT enabled=true 后
+	// 请求路径仍静默不执行审核,首断言转红。
 	t.Setenv(contentModerationEnabledEnv, "")
-	if contentModerationRuntimeEnabled() {
-		t.Fatal("content moderation runtime gate enabled by default; want opt-in")
-	}
-	t.Setenv(contentModerationEnabledEnv, "true")
 	if !contentModerationRuntimeEnabled() {
-		t.Fatal("content moderation runtime gate false for explicit true")
+		t.Fatal("content moderation runtime gate disabled by default; want default enabled")
+	}
+	t.Setenv(contentModerationEnabledEnv, "0")
+	if contentModerationRuntimeEnabled() {
+		t.Fatal("content moderation runtime gate true for explicit 0")
+	}
+	t.Setenv(contentModerationEnabledEnv, "false")
+	if contentModerationRuntimeEnabled() {
+		t.Fatal("content moderation runtime gate true for explicit false")
 	}
 	t.Setenv(contentModerationEnabledEnv, "1")
 	if !contentModerationRuntimeEnabled() {
@@ -436,6 +508,21 @@ type wiringClaimGate struct{}
 
 func (g *wiringClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
 	return &billing.ReserveResult{ClaimID: 1}, nil
+}
+
+func restoreUnsetEnv(t *testing.T, key string) {
+	t.Helper()
+	old, had := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(key, old)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }
 
 // 生产 wiring 必须真的调用 installAnthropicClaudeAIOAuthMimicryExchanger

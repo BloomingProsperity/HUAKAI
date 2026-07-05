@@ -144,7 +144,7 @@ func TestLoadIncludesTransportSidecarFallbackFlag(t *testing.T) {
 }
 
 // BILL-121/123:配额强制执行默认开启。引擎默认就是安全的
-//(无策略时 no-op, observe 策略从不阻塞, 基础设施错误时 fail open),
+// (无策略时 no-op, observe 策略从不阻塞, 基础设施错误时 fail open),
 // 所以默认开启会激活已配置的 enforce 策略, 而不会破坏未配置的部署。
 // MUTATION:把 Load 改回 envBool("HUAKAI_QUOTA_ENFORCE")(未设置 -> false),
 // 本断言即变红。
@@ -476,26 +476,55 @@ func TestLoadAPIKeyExpirySweepReadsEnvAndCanDisable(t *testing.T) {
 	}
 }
 
-func TestLoadAlertingEvalDefaultsDisabled(t *testing.T) {
-	// MUTATION:把 AlertingEvalEnabled 默认改成 true;全新安装会在运维未主动开启的情况下就启动告警评估器。
+func TestLoadAlertingEvalDefaultsEnabledAndInvalidFallsBack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "unset", raw: ""},
+		{name: "invalid", raw: "sometimes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// MUTATION:把 HUAKAI_ALERTING_EVAL_ENABLED 退回默认关或非法值报错;
+			// 控制面规则建好后仍不会被评估,本断言转红。
+			t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+			t.Setenv("HUAKAI_ALERTING_EVAL_ENABLED", tc.raw)
+			t.Setenv("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", "")
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !cfg.AlertingEvalEnabled {
+				t.Fatal("AlertingEvalEnabled=false want default true")
+			}
+			if cfg.AlertingEvalInterval != time.Minute {
+				t.Fatalf("AlertingEvalInterval=%s want 1m default bounded ticker", cfg.AlertingEvalInterval)
+			}
+		})
+	}
+}
+
+func TestLoadAlertingEvalReadsEnvAndCanDisable(t *testing.T) {
+	// MUTATION:忽略 HUAKAI_ALERTING_EVAL_ENABLED=false;运维事故响应时无法暂停评估器。
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
-	t.Setenv("HUAKAI_ALERTING_EVAL_ENABLED", "")
-	t.Setenv("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", "")
+	t.Setenv("HUAKAI_ALERTING_EVAL_ENABLED", "false")
+	t.Setenv("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", "15")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.AlertingEvalEnabled {
-		t.Fatal("AlertingEvalEnabled=true want default false")
+		t.Fatal("AlertingEvalEnabled=true want false from env")
 	}
-	if cfg.AlertingEvalInterval != time.Minute {
-		t.Fatalf("AlertingEvalInterval=%s want 1m default bounded ticker", cfg.AlertingEvalInterval)
+	if cfg.AlertingEvalInterval != 15*time.Second {
+		t.Fatalf("AlertingEvalInterval=%s want 15s", cfg.AlertingEvalInterval)
 	}
 }
 
-func TestLoadAlertingEvalReadsEnv(t *testing.T) {
-	// MUTATION:忽略 HUAKAI_ALERTING_EVAL_* env;运维主动开启也永远无法以指定频率启动评估器。
+func TestLoadAlertingEvalReadsExplicitTrue(t *testing.T) {
+	// MUTATION:忽略 HUAKAI_ALERTING_EVAL_* env;显式 true 与指定频率不生效。
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_ALERTING_EVAL_ENABLED", "true")
 	t.Setenv("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", "15")
@@ -518,7 +547,6 @@ func TestLoadRejectsInvalidAlertingEvalConfig(t *testing.T) {
 		env  string
 		raw  string
 	}{
-		{name: "enabled garbage", env: "HUAKAI_ALERTING_EVAL_ENABLED", raw: "sometimes"},
 		{name: "interval zero", env: "HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", raw: "0"},
 		{name: "interval negative", env: "HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", raw: "-1"},
 		{name: "interval garbage", env: "HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS", raw: "soon"},

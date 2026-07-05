@@ -8,6 +8,8 @@
 #   make db-down       # stop container (preserve volume)
 #
 # DSN for code: postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable
+# gateway 本地手动运行时,quota reconciler 默认启用;如需临时停用,在启动 gateway
+# 前显式设置 HUAKAI_QUOTA_RECONCILER_ENABLED=false 或 0。
 
 services:
   postgres:

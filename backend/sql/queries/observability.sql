@@ -203,6 +203,18 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
     OR (sqlc.narg(outcome)::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
   );
 
+-- name: CountPendingReconciliationUsageRecords :one
+SELECT count(*)::bigint
+FROM usage_records ur
+WHERE ur.pending_reconciliation = true
+  AND NOT EXISTS (
+    SELECT 1
+    FROM usage_record_reconciliation_events re
+    WHERE re.tenant_id = ur.tenant_id
+      AND re.original_usage_record_id = ur.id
+      AND re.reconciliation_source = 'stream_no_usage_finalized'
+  );
+
 -- name: ListBillingClaims :many
 SELECT
     blc.id, blc.tenant_id, blc.idempotency_key, blc.api_key_id, blc.user_id,

@@ -376,7 +376,7 @@ func buildAuditServices(ctx context.Context, pgPool *pgxpool.Pool, logger *zap.L
 	return auditSigner, auditLedger, auditPubkeyRegistry, nil
 }
 
-func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, auditLedger auditledger.Ledger) (*legacydlq.Store, *legacydlq.Service, *legacydlq.Worker, string, func()) {
+func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, auditLedger auditledger.Ledger, outboxStore *obsoutbox.PostgresOutbox) (*legacydlq.Store, *legacydlq.Service, *legacydlq.Worker, string, func()) {
 	dlqStore := legacydlq.NewStore(pgPool)
 	dlqService := legacydlq.NewService(dlqStore, legacydlq.WithPolicy(legacydlq.RetryPolicy{
 		BaseBackoff: cfg.BaseBackoff,
@@ -402,7 +402,32 @@ func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, audi
 		LeaseTTL:      cfg.LeaseTTL,
 		IdleSleep:     time.Second,
 	})
-	// OPS-003：让 dlq_depth 的 expvar gauge 保持新鲜，供告警使用。
-	dlqWorker.ApplyWorkerOptions(legacydlq.WithDepthRefresher(dlqStore))
+	// OPS-003：让 dlq_depth 的 expvar gauge 保持新鲜，供告警使用；同时把 obs/outbox 死信深度
+	// 并入同一个 gauge map，避免运维只看到旧 DLQ 而漏掉邮件 / 渠道告警死信。
+	dlqWorker.ApplyWorkerOptions(legacydlq.WithDepthRefresher(combinedDLQDepthRefresher{legacy: dlqStore, obs: outboxStore}))
 	return dlqStore, dlqService, dlqWorker, replicaTarget, closeReplica
+}
+
+type combinedDLQDepthRefresher struct {
+	legacy interface {
+		UpdateDLQDepthGauge(context.Context) error
+	}
+	obs interface {
+		UpdateDLQDepthGauge(context.Context) error
+	}
+}
+
+func (r combinedDLQDepthRefresher) UpdateDLQDepthGauge(ctx context.Context) error {
+	var firstErr error
+	if r.legacy != nil {
+		if err := r.legacy.UpdateDLQDepthGauge(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if r.obs != nil {
+		if err := r.obs.UpdateDLQDepthGauge(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

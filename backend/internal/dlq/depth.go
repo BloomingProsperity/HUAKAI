@@ -65,6 +65,19 @@ func getDLQDepthMetrics() *expvar.Map {
 	return dlqDepthMetrics
 }
 
+// SetDLQDepthGauge 设置 dlq_depth map 中的一个 gauge 键,供同属死信面板的
+// 其它队列把深度并入同一运维指标面。
+func SetDLQDepthGauge(key string, count int64) {
+	m := getDLQDepthMetrics()
+	if ev := m.Get(key); ev != nil {
+		if iv, ok := ev.(*expvar.Int); ok {
+			iv.Set(count)
+			return
+		}
+	}
+	m.Add(key, count)
+}
+
 // UpdateDLQDepthGauge 从数据库刷新 dlq_depth expvar map。
 // 它由 DLQ worker 的 ticker 调用，使告警规则引擎始终能通过
 // ExpvarMetricSource.Snapshot() 拿到新鲜的 gauge。
@@ -73,7 +86,6 @@ func (s *Store) UpdateDLQDepthGauge(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	m := getDLQDepthMetrics()
 	// 在应用新快照前先将所有 lane 重置为零，使已完全排空的 lane
 	// 不会保留陈旧的非零值。
 	totals := map[Lane]int64{LaneHigh: 0, LaneMed: 0, LaneLow: 0}
@@ -82,15 +94,7 @@ func (s *Store) UpdateDLQDepthGauge(ctx context.Context) error {
 	}
 	for lane, count := range totals {
 		key := "depth_" + string(lane)
-		// expvar.Map.Add 是对已存在键唯一安全的变更方法。
-		// 这里改为通过底层的 *expvar.Int 调用 Set。
-		if ev := m.Get(key); ev != nil {
-			if iv, ok := ev.(*expvar.Int); ok {
-				iv.Set(count)
-				continue
-			}
-		}
-		m.Add(key, count)
+		SetDLQDepthGauge(key, count)
 	}
 	return nil
 }

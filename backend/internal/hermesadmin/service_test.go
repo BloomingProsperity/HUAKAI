@@ -11,6 +11,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
+	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 )
 
 const testTenant = 1
@@ -140,6 +141,27 @@ func TestInspectIssuesNeedAttention(t *testing.T) {
 	// 自证：两个不同的输入必须产出不同的标题。
 	if head == Headline(NewInspectionService(healthySources(), testTenant, fixedNow).Inspect(context.Background())) {
 		t.Fatalf("broken and healthy inputs produced the same headline %q — non-discriminating", head)
+	}
+}
+
+func TestInspectIncludesObsDLQSource(t *testing.T) {
+	src := healthySources()
+	src.ObsDLQList = func(_ context.Context, filter obsdlq.AdminListFilter) ([]obsdlq.AdminDeadEvent, error) {
+		if filter.TenantID == nil || *filter.TenantID != testTenant || filter.Limit != dlqReadLimit {
+			t.Fatalf("obs dlq filter=%+v, want tenant scoped read limit", filter)
+		}
+		return []obsdlq.AdminDeadEvent{{
+			ID:           "dead-obs-1",
+			TenantID:     testTenant,
+			Priority:     obsdlq.PriorityCritical,
+			OutboxStatus: obsdlq.StatusFailedDead,
+			DeadAt:       fixedNow().Add(-time.Hour),
+		}}, nil
+	}
+
+	rep := NewInspectionService(src, testTenant, fixedNow).Inspect(context.Background())
+	if rep.DLQ.PendingTotal != 1 || rep.DLQ.ByLane["OBS_CRITICAL"] != 1 || rep.DLQ.ByStatus["obs_failed_dead"] != 1 {
+		t.Fatalf("obs dlq not reflected in report: %+v", rep.DLQ)
 	}
 }
 

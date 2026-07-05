@@ -88,24 +88,28 @@ func (s *PostgresStore) ListActiveSettings(ctx context.Context, tenantID int64) 
 		return nil, fmt.Errorf("%w: tenant_id", ErrInvalidSettings)
 	}
 	const q = `
-SELECT user_id,
-       notify_type,
-       webhook_url,
-       webhook_secret,
-       notification_email,
-       bark_url,
-       gotify_url,
-       gotify_token,
-       gotify_priority,
-       balance_threshold::text,
-       updated_at,
-       updated_by,
-       threshold_type,
-       extra_emails
-FROM user_notification_settings
-WHERE tenant_id = $1
-  AND notify_type <> 'none'
-ORDER BY user_id ASC`
+	SELECT uns.user_id,
+	       uns.notify_type,
+	       uns.webhook_url,
+	       uns.webhook_secret,
+	       uns.notification_email,
+	       uns.bark_url,
+	       uns.gotify_url,
+	       uns.gotify_token,
+	       uns.gotify_priority,
+	       uns.balance_threshold::text,
+	       uns.updated_at,
+	       uns.updated_by,
+	       uns.threshold_type,
+	       uns.extra_emails
+	FROM user_notification_settings uns
+	JOIN users ON users.tenant_id = uns.tenant_id
+	          AND users.id = uns.user_id
+	          AND users.role = 'admin'
+	          AND users.deleted_at IS NULL
+	WHERE uns.tenant_id = $1
+	  AND uns.notify_type <> 'none'
+	ORDER BY uns.user_id ASC`
 	rows, err := s.db.Query(ctx, q, tenantID)
 	if err != nil {
 		return nil, err

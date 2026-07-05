@@ -5,7 +5,6 @@ import {
   configToForm,
   decisionLabel,
   decisionTone,
-  formatFee,
   validateConfig,
 } from './moderation'
 import { EMPTY_LOG_FILTERS, type ModerationConfig } from './types'
@@ -63,7 +62,6 @@ describe('validateConfig', () => {
     sampleRatePct: 100,
     banThreshold: 3,
     banWindowSeconds: 3600,
-    violationFeeUsd: '0',
   }
 
   it('合法配置 → ok 且回带请求体', () => {
@@ -77,7 +75,6 @@ describe('validateConfig', () => {
         sample_rate_pct: 100,
         ban_threshold: 3,
         ban_window_seconds: 3600,
-        violation_fee_usd: '0',
       })
     }
   })
@@ -106,28 +103,10 @@ describe('validateConfig', () => {
     expect(validateConfig(7, { ...base, banThreshold: -1 }).ok).toBe(false)
   })
 
-  it('罚款空串归一为 "0";负数/非数字非法', () => {
-    const empty = validateConfig(7, { ...base, violationFeeUsd: '' })
-    expect(empty.ok).toBe(true)
-    if (empty.ok) expect(empty.value.violation_fee_usd).toBe('0')
-    expect(validateConfig(7, { ...base, violationFeeUsd: '1.50' }).ok).toBe(true)
-    expect(validateConfig(7, { ...base, violationFeeUsd: '-1' }).ok).toBe(false)
-    expect(validateConfig(7, { ...base, violationFeeUsd: 'abc' }).ok).toBe(false)
-  })
-})
-
-describe('formatFee', () => {
-  it('裁尾随 0,整数不留小数点,非法原样', () => {
-    expect(formatFee('0.00000000')).toBe('0')
-    expect(formatFee('1.50000000')).toBe('1.5')
-    expect(formatFee('2.00000000')).toBe('2')
-    expect(formatFee('3')).toBe('3')
-    expect(formatFee('xyz')).toBe('xyz')
-  })
 })
 
 describe('configToForm', () => {
-  it('拍平 DTO 为表单初值,fee 经 formatFee', () => {
+  it('拍平 DTO 为表单初值且不携带已删除的罚款字段', () => {
     const cfg: ModerationConfig = {
       tenant_id: 7,
       enabled: false,
@@ -135,7 +114,6 @@ describe('configToForm', () => {
       sample_rate_pct: 80,
       ban_threshold: 5,
       ban_window_seconds: 600,
-      violation_fee_usd: '2.50000000',
     }
     expect(configToForm(cfg)).toEqual({
       enabled: false,
@@ -143,7 +121,6 @@ describe('configToForm', () => {
       sampleRatePct: 80,
       banThreshold: 5,
       banWindowSeconds: 600,
-      violationFeeUsd: '2.5',
     })
   })
 })

@@ -44,6 +44,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/obsdlqhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/orphanreconcilehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
@@ -1187,6 +1188,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Get("/admin/v1/dlq/{handler}", gatewayhttp.NewAdminDLQListHandler(d))
 	r.Post("/admin/v1/dlq/{id}/replay", gatewayhttp.NewAdminDLQReplayHandler(d))
 	r.Post("/admin/v1/usage-record-dlq/{id}/replay", gatewayhttp.NewAdminDLQReplayHandler(d))
+	obsDLQDeps := obsdlqhttp.Deps{Auth: d.adminAuth, Store: d.obsDLQAdminStore}
+	r.Get("/admin/v1/obs-dlq", obsdlqhttp.NewListHandler(obsDLQDeps))
+	r.Post("/admin/v1/obs-dlq/{id}/replay", obsdlqhttp.NewReplayHandler(obsDLQDeps))
 	r.Route("/admin/v1/cache/l2", func(r chi.Router) {
 		gatewayhttp.MountAdminL2CacheRoutes(r, gatewayhttp.AdminL2CacheDeps{
 			Auth:  d.adminAuth,

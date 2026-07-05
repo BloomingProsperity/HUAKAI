@@ -91,6 +91,7 @@ type Querier interface {
 	CountBillingClaims(ctx context.Context, arg CountBillingClaimsParams) (int64, error)
 	// Operator overview: how many claims are in each status for one tenant.
 	CountClaimsByStatus(ctx context.Context, tenantID int64) ([]CountClaimsByStatusRow, error)
+	CountPendingReconciliationUsageRecords(ctx context.Context) (int64, error)
 	// DM-14:告警指标——当前被自动摘除(非 healthy 且仍在生效期)的账号数,按状态分组。
 	// 过期的 cooldown/throttled 已重新可调度(对齐 ListEligibleAccounts 语义),不计入。
 	CountUnhealthyAccountsByTenant(ctx context.Context, tenantID int64) ([]CountUnhealthyAccountsByTenantRow, error)

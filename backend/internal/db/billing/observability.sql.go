@@ -117,6 +117,26 @@ func (q *Queries) CountBillingClaims(ctx context.Context, arg CountBillingClaims
 	return column_1, err
 }
 
+const countPendingReconciliationUsageRecords = `-- name: CountPendingReconciliationUsageRecords :one
+SELECT count(*)::bigint
+FROM usage_records ur
+WHERE ur.pending_reconciliation = true
+  AND NOT EXISTS (
+    SELECT 1
+    FROM usage_record_reconciliation_events re
+    WHERE re.tenant_id = ur.tenant_id
+      AND re.original_usage_record_id = ur.id
+      AND re.reconciliation_source = 'stream_no_usage_finalized'
+  )
+`
+
+func (q *Queries) CountPendingReconciliationUsageRecords(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingReconciliationUsageRecords)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countUsageRecords = `-- name: CountUsageRecords :one
 SELECT count(*)::bigint
 FROM usage_records ur
@@ -396,11 +416,11 @@ type ListAuditEventsParams struct {
 }
 
 type ListAuditEventsRow struct {
-	ID                int64              `db:"id" json:"id"`
-	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
-	EventClass        string             `db:"event_class" json:"event_class"`
-	EventType         string             `db:"event_type" json:"event_type"`
-	Severity          string             `db:"severity" json:"severity"`
+	ID         int64  `db:"id" json:"id"`
+	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
+	EventClass string `db:"event_class" json:"event_class"`
+	EventType  string `db:"event_type" json:"event_type"`
+	Severity   string `db:"severity" json:"severity"`
 	// ledger_id 列可为 NULL(并非所有审计事件都挂在 ledger 上,如目录/用户管理类动作),
 	// 故必须是可空指针;原生成的非指针 string 会在扫描 NULL 时崩(audit_query_failed)。
 	LedgerID          *string            `db:"ledger_id" json:"ledger_id"`
@@ -652,7 +672,7 @@ type ListUsageRecordsParams struct {
 	CursorID                  int64              `db:"cursor_id" json:"cursor_id"`
 	PageLimit                 int32              `db:"page_limit" json:"page_limit"`
 	// UserID:会话级用量端点新增的末位 narg($15);手改追加,不 renumber 现有 $1-$14。
-	UserID                    *int64             `db:"user_id" json:"user_id"`
+	UserID *int64 `db:"user_id" json:"user_id"`
 }
 
 type ListUsageRecordsRow struct {
