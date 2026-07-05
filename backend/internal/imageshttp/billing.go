@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +21,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
+
+var imagesQuotaReserveFailedOpenTotal = expvar.NewInt("images_quota_reserve_failed_open_total")
 
 func (ex *execution) reserve(w http.ResponseWriter) bool {
 	ex.ensureIdempotency()
@@ -75,6 +80,7 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 		PoolGroupID:        ex.attempt.PoolGroupID,
 		RequestFingerprint: ex.payloadHash,
 		RequestedModel:     ex.req.Model,
+		ReservedTokens:     ex.quotaReservedTokens(),
 		PredictedCost:      ex.predictedCost,
 		At:                 time.Now().UTC(),
 	}))
@@ -83,10 +89,25 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 	}
 	if quotaenforce.IsDenied(err) || (err == nil && !result.Allowed) {
 		ex.abort(w, "quota_denied", 0)
-		writeInsufficientQuotaError(w)
+		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err), quotaenforce.DenyWindowKind(result, err))
 		return false
 	}
+	imagesQuotaReserveFailedOpenTotal.Add(1)
+	slog.WarnContext(ex.ctx, "quota reserve failed open",
+		slog.String("request_id", ex.requestID),
+		slog.Int64("tenant_id", ex.ident.TenantID),
+		slog.Int64("claim_id", ex.reserveRes.ClaimID),
+		slog.String("reason", "quota_reserve_infra_error"),
+		slog.String("error_type", fmt.Sprintf("%T", err)),
+	)
 	return true
+}
+
+func (ex *execution) quotaReservedTokens() int64 {
+	if ex.scheme != imagepricing.SchemeTokenImage {
+		return 0
+	}
+	return int64(estimatePromptTokens(ex.req.PromptText()))
 }
 
 // billableImageCount 是 per_image 计费/审计的真相源:常态返回请求 amount,

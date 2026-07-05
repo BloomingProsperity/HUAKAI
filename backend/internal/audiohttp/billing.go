@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/audiopricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
@@ -17,6 +21,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
+
+var audioQuotaReserveFailedOpenTotal = expvar.NewInt("audio_quota_reserve_failed_open_total")
 
 func (ex *execution) reserve(w http.ResponseWriter) bool {
 	ex.ensureIdempotency()
@@ -74,6 +80,7 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 		PoolGroupID:        ex.attempt.PoolGroupID,
 		RequestFingerprint: ex.payloadHash,
 		RequestedModel:     ex.req.Model,
+		ReservedTokens:     ex.quotaReservedTokens(),
 		PredictedCost:      ex.predictedCost,
 		At:                 time.Now().UTC(),
 	}))
@@ -82,10 +89,25 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 	}
 	if quotaenforce.IsDenied(err) || (err == nil && !result.Allowed) {
 		ex.abort(w, "quota_denied", 0)
-		writeInsufficientQuotaError(w)
+		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err), quotaenforce.DenyWindowKind(result, err))
 		return false
 	}
+	audioQuotaReserveFailedOpenTotal.Add(1)
+	slog.WarnContext(ex.ctx, "quota reserve failed open",
+		slog.String("request_id", ex.requestID),
+		slog.Int64("tenant_id", ex.ident.TenantID),
+		slog.Int64("claim_id", ex.reserveRes.ClaimID),
+		slog.String("reason", "quota_reserve_infra_error"),
+		slog.String("error_type", fmt.Sprintf("%T", err)),
+	)
 	return true
+}
+
+func (ex *execution) quotaReservedTokens() int64 {
+	if ex.scheme != audiopricing.SchemeToken {
+		return 0
+	}
+	return int64(ex.reserveTokenUsage().InputTokens)
 }
 
 func (ex *execution) settleRequest(usage audioTokenUsage, cost decimal.Decimal, snapshot string, attemptSeq int, pending bool) billing.SettleRequest {

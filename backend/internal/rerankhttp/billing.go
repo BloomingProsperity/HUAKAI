@@ -3,6 +3,9 @@ package rerankhttp
 import (
 	"context"
 	"errors"
+	"expvar"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -13,6 +16,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
+
+var rerankQuotaReserveFailedOpenTotal = expvar.NewInt("rerank_quota_reserve_failed_open_total")
 
 func (ex *execution) reserve(w http.ResponseWriter) bool {
 	ex.ensureIdempotency()
@@ -86,9 +91,17 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 	}
 	if quotaenforce.IsDenied(err) || (err == nil && !result.Allowed) {
 		ex.abort(w, "quota_denied", 0)
-		writeInsufficientQuotaError(w)
+		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err), quotaenforce.DenyWindowKind(result, err))
 		return false
 	}
+	rerankQuotaReserveFailedOpenTotal.Add(1)
+	slog.WarnContext(ex.ctx, "quota reserve failed open",
+		slog.String("request_id", ex.requestID),
+		slog.Int64("tenant_id", ex.ident.TenantID),
+		slog.Int64("claim_id", ex.reserveRes.ClaimID),
+		slog.String("reason", "quota_reserve_infra_error"),
+		slog.String("error_type", fmt.Sprintf("%T", err)),
+	)
 	return true
 }
 

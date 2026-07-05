@@ -137,3 +137,22 @@ A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven 
 - 📋 S3-2(产品确认):payment 派生「支付来源余额」(SUM credits-refunds,不扣消费)vs user_balances「可花余额」分叉,若前端当可用余额展示会误导。
 - ✅ 核心配合链 9 子域审计无问题:结算 Tx2 原子性、DLQ 三证 proof 防双扣、post_delivery_settlement 精确路由、充值三写同事务、退款不可超退、回调验签/金额/租户/重放、履约幂等不双开。
 - 次要观察:admin 支付端点从请求体取 tenant_id(对全局 platform_admin 是操作对象选择器非身份,单租户不可越权;多租户启用前需改按身份限定,与 CLAUDE.md #4 软张力)。
+
+### credential + apikey-access 域(agent adf29b + 泄漏扫查 a2f5b8)——已审,零 S0/S1/S2
+- ✅ **S3 修**(f8499ba5):chat_completions_pricing.go 比率解析失败日志原样落 err(全仓唯一绕过 privacy 脱敏的 err 出口)→ 收口为 error_class/error_type,判别测试变异证红。
+- **审计 agent 主结论被亲读推翻**:agent 称「无 forward 时过期闸」,实际 credentialstore/types.go:265 `RuntimeMaterial` 有闸返回 ErrCredentialExpired,只是 `allowGrace` handler(Anthropic OAuth 等)豁免。豁免路径语义自洽:过期 token 端出 → 上游 401 → 网关同步热刷新(30s 去重+storm 预算)自愈,auth 车道把账号冷却到刷新成功本就是正确行为;残余成本=降级场景(worker 停/退避中)每 30s 白烧一次 attempt。定 **S3 记录不修**(加闸反而会破坏「上游为准」语义且过期闸下无热刷新触发点)。
+- 📋 S3 记录:①grace 状态机 inert(`refreshing_with_grace`/`grace_until` 全仓无人设置,SQL serving 分支死代码,原子刷新已覆盖该窗口);②Gemini `auth_in_query=true` 明文 key 进 URL query(当前无日志化点故不泄漏;未来任何 URL 级日志/HopChain endpoint 接线前必须先脱敏;收敛到 header 是行为变更不自主动);③HopChain builder 预留 endpoint 接线口同上;④KEK 单钥无 re-wrap worker=已知 Owner-gated(2026-06-26 已 surface)。
+- ✅ 核实干净:hk_ key 解析零缓存(封禁/吊销即时生效)、16 字符前缀无 bcrypt fanout、key 过期逐请求硬校验+worker 翻状态双保险、DR-001 双侧租户绑定、解密 fail-closed(按存量 KeyID)、热刷新与预扣释放均 detached ctx、AAD 版本配对往返一致、凭据注入链无活跃泄漏(privacy 三出口全覆盖+Zeroize)、legacy 明文回落路径零日志。
+
+### quota-budget + pricing 域(agent adc148)——已审,2 S2 + 4 S3 + 死代码
+- ✅ **C-1【S2】已修**(d082c569):补偿环崩溃窗口——进程死于 billing Tx2 与 quota settle 之间时补偿 job 从未入队,预留永久卡 reserved 冻结窗口 headroom(manual/none 累计窗无滚动自愈)。修:补偿 worker 每轮新增孤儿预留清扫段(lease 过期+claim 已终态→committed 按 claim actual_cost Settle/aborted Release,SQL 终态过滤防 LIMIT 饿死)。六组变异证红。
+- ✅ **C-1 对抗审查加固**(8d2b65aa):审查坐实 2 S2 + 4 S3,全落地——①S2 无索引全表扫→0171 partial 索引;②S2 清扫零退避每轮 re-enqueue 击穿 job 退避/终态停靠(去重唯一索引只含 queued/running,failed 后每分钟净插新 job)→清扫只取无 job 史孤儿行,失败行自动移交 job 段获得退避;③S3 stale 快照×aborted 复活链竞态→每行动作前复核现状(预留未终态+lease 仍过期+claim 仍终态),注释去绝对化;④S3 job 段/清扫段金额分叉→job 重放同样优先 claim 实结额;⑤S3 sqlc 全局 override(billing_ledger_claims.actual_cost→NullDecimal)漂移→手写码对齐;⑥幂等命中不计 processed。三组新变异证红,integration_pg 全包绿。审查驳回项:actual_cost=0 合法(cache-hit/非计费 attempt)、无双冲减(actual_cost 唯一写点 WHERE status='reserving')、Serializable+行锁幂等主线成立。
+- 📋 **S3-4 记录(审查发现,预存在)**:退款先于补偿落地时 ReverseCost 只对 settled 态冲减、其余 skip 不重试→孤儿窗口内退款冲减永久丢失,随后补偿按未冲减全额入窗(成本窗多计,过度限流非丢钱)。修法需 ReverseCost 对 reserved/reconciliation_needed 行留冲减备忘或重试——排 follow-up。
+- 🔑 **C-1b Owner-gated(surface 首位)**:HUAKAI_QUOTA_RECONCILER_ENABLED 默认仍关(2026-06-24 死开关普查裁定配额激活=Owner-gated);不翻开,默认部署下 C-1 修复不生效。建议翻默认开(worker 分钟级、限 200 租户/轮、动作全幂等)。
+- 🔑 **C-2【S2】Owner-gated(money)**:pending_reconciliation 有写无读死区——①ratio 后端错 fail-open→1 的行金额永久定格(配折扣/溢价组的租户少收/多收);②流式结算时价表读故障→ActualCost=0 落账=真漏钱,注释自认无重算 worker(completionshttp/attempt.go:185-201);唯一自动消费者只认 no-usage 全零行且从不清 flag。修法=补价 worker(按 usage_records token×现价重算+reconciliation 事件),动钱需拍板。
+- ✅ **C-3 已修**(98ca3cf5):可复活预留(released/expired)重放只校验 fingerprint(请求内容身份),predicted/scopes 允许随重试更新(billing 幂等口径对齐:pooling_group 不入指纹、复活接受新 predicted);reactivate 用新值重跑策略评估与窗口判定,强制面不缩;非复活态维持严格比对。两组变异证红(严格比对挡回→更新值重试 429;删 fingerprint 校验→异内容重放放行)。
+- ✅ **C-4/C-5/C-6 已修(codex gpt-5.5+xhigh 实现,PM 亲检验收)**:五包(completions/images/embeddings/audio/rerank)对齐 chat——①ReservedTokens 补传(completions 用 inputEstimate、images 用 prompt token 估算、audio 仅 token 方案、rerank 无估算不造假);②completions 预测价补输出估算(MaxTokens/缺省 1000 与 chat 同口径);③quota fail-open 五包补 expvar 计数+Warn;④completions ratio 走 ResolveWithSignal,pending 进结算 snapshot(marker 与 chat 同串);⑤quota deny 五包补 Retry-After/window_kind。codex 12+ 测试逐条变异红/绿;PM 独立复验输出估算与 pending 两组变异红+全门禁绿。
+- ⚠️ codebudget 回归(C-1 切片自伤):db/quota/quota.sql.go 超基线 5% 余量、quota/pg_store.go 642>600——拆文件修复(派 codex)。
+- 📋 C-7【S3】死代码:quotaDenyFromBudget/IncrementWindowRequestCount/ExpireConcurrencySlots 无调用方。
+- 📋 存疑-3:reconciler job 重放用 predicted 当 actual(保守高估);job 表有 claim_id 可 join 权威值,清扫段已用 claim actual,job 段同法可改进。
+- ✅ 核实干净(agent 亲读证据):检查/累计同真相源同事务行锁+Serializable 重试、窗口边界按 reserve 时刻 snapshot 归属无跨窗污染、billing/quota/budget 三方同一 CostForAttempt 值、abort 补偿闭环(deny→abort claim/释放同事务/budget 逆序回滚/lease sweeper 走全装饰 settler)、退款链防双退+逐窗钳制+wiring 已注入(旧账「配额退款不冲减」已闭环)、订阅 caps=真 quota_policies 最严者胜+期中续期不清用量、单价缺失 fail-closed 无 0 价白吃、工具附加费默认开真累计、用户可见读与强制同源无表分叉、budget Redis 故障内存 fallback+响亮告警。
