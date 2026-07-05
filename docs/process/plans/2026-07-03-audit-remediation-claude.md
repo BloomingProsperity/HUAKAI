@@ -228,3 +228,25 @@ A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven 
 - HERMES-IP-03 已投递 dlq 记录的 confirm 幂等正确但回泛化 503 掩盖真因(hermesops/tools_mutating_dlq_renew.go:78)。
 
 **落地批次**:批D=frontend(FE-1/2/3,独立)+mimicry(ME-1~4);批E=media(3 条,money,等 codex⑦ 补价让出 internal/billing 后派,Claude 重点验收+对抗审查);批F=hermes 3×S3(fix-in-place)。
+
+## 🔬 §17 全链路端到端并发压测(2026-07-05,账号并发槽,提交 572d1c87)
+- ✅ 新增 e2e_concurrency 压测:账号 cap_concurrency=3、8 并发,验证在途峰值严格≤3、成功=3、超额 5 个 429/queue_wait 干净拒绝、槽全释放无泄漏。mock 上游加可选延迟制造重叠。
+- ✅ **挖修真实健壮性缺陷**:Reserve 有 40001 重试(retryReserve)但 Settle/Abort 主路径无→并发结算冲突 abort_failed/settle_failed 噪音(不亏钱,hold_released=1,靠 DLQ/lease 兜底)。修=Settle/Abort 加 retryTx2 对齐 Reserve;对抗审查零 S0/S1(幂等=Serializable 全回滚+status 守卫)。
+- ⚠️ **Owner 决策项(产品语义,已挡住 codex 擅改)**:queue_wait(账号全满)当前是 **retryable 本地失败**——同一 HTTP 请求内会内部重试一轮(每 attempt 一条 claim_aborted 审计),最终 429+Retry-After。codex 曾擅自把它改成 terminal(直接 429 不内部重试),被 Claude 回退(超范围+改产品 failover/限流语义,风险涉 model-fallback 交互)。**是否把 queue_wait 内部无间隔重试改成 terminal 429**(理由:全满时立即重试撞同一窗口是噪音,Retry-After 让客户端延迟重试更合理;风险:需确认不影响 RetryableEndClasses 白名单里 model-fallback 的换号)=Owner 拍板的产品决策,未自主改。
+- 剩:per-key RPM / 用户级并发的全链路压测(组件层已覆盖,全链路只做了最核心的账号槽);其它 §17 子系统配合审计(pool failover↔健康回流 / auth 采集流状态机 / credential 物化↔转发)可续。
+
+## 🔬 §17 剩余核心子系统配合审计(2026-07-05,10-agent Workflow wf_fb124cef;7 条全核证存活 0 REFUTED,无 S0/S1,最高 S2)
+**pool-failover(选号↔健康回流↔failover)**:
+- PF-01【S2·钱 CONFIRMED】流式路径漏即时账号冷却:buffered 路径(dispatch.go:702)对 429/5xx 调 forceCooldownFromUpstreamRateLimit 立即 park 到 Retry-After,但流式(stream.go:222 classifyStreamingUpstreamFailure / :290 forwardSSEAndSettle)只 recordChannelHealthSignal(FSM 需≥10样本才冷却)→被限流账号跨请求反复重打、无视 Retry-After、损耗付费账号资产。同缺陷两路径行为相反。两镜(new-api relay.go:221 processChannelError / CLIProxyAPI 流式非流式共用冷却)都一视同仁。修=流式路径补即时冷却回流对齐 buffered。
+- PF-02【S2 CONFIRMED】client 4xx(400/413/422)记 SignalChannelError 计入账号健康失败率→误杀健康账号:producer(error_normalize.go:82)从不产出 consumer 已备的豁免类 SignalClientMalformed(全仓零发射点),client 坏输入(context length exceeded 等在任何账号都失败)反复打同一 sticky 账号→errorRateDecision 冷却健康账号拖垮池容量。核证补:signal_classifier.go:72-73 同款缺陷。两镜都不把 client 4xx 计入渠道健康。修=client-caused 4xx 归 SignalClientMalformed 不计健康。
+
+**credential 物化↔转发**:
+- F-1【S2→鲁棒性 CONFIRMED(Claude 亲核降级)】Bedrock aws_region 直拼上游 host 无白名单校验(passthrough.go:94 region 取自 Credential.Extra=运营者账号配置,**非客户可控**,故非客户 SSRF;但配错/污染可拼坏 host,aws_sigv4 endpoint 绕过 dispatcher 统一 SSRF 守卫)。修=加 region 白名单校验对齐 vertex 的 validVertexLocation。
+- F-2【S3 ADJUSTED→**修复方案否决,维持现状**】legacy 回落物化不回填 AccountCredentialID/CredentialVersion→channel-health 对未迁移账号盲(核证:死号降级权威非 channel-health FSM,危害降级)。**2026-07-05 验收裁定:codex 的"回填 provider_accounts.id"方案被 Claude 亲核否决并回退**——channel_health_state 建表(0022)对 account_credential_id 有强外键 REFERENCES account_credentials(id),且 uq_channel_health_credential_version(account_credential_id, credential_version) 是**不带 tenant 的全局唯一索引**;借用 provider_accounts.id 回填,该 id 在 account_credentials 不存在时健康落库外键违约,恰好存在时**串写其他凭据(甚至跨租户)的健康行**,把 S3 盲区变 S2 污染。禁 schema 约束下无合法回填值(任何值要么违约要么撞真实凭据)。正解=legacy 账号补建 v2 account_credentials 行(数据迁移)或放宽外键,均触 schema=**Owner-gated**;现状(healthKeyOK=false 健康回流不落)已在 postgres_vault.go 注释说明。
+- F-3【S3 CONFIRMED】google_sa 物化 Value 空无转发 adapter(核证:v2 credentialstore vertex_sa 有正常路径,legacy 路径缺)。**2026-07-05 修:mapServiceAccount 改明确 ErrCredentialFormat fail-closed(亲核:全仓生产代码零消费 Extra["auth_kind"]/google_sa,旧路径产出的空 Value 凭据本无人能转发,非砍活功能)。**
+
+**auth 采集流状态机(上游账号凭据采集,非用户登录 auth-core)**:
+- ACF-1【S2 CONFIRMED】OAuth 回调无逐 flow 串行化:并发双回调把已 validated 的 flow 覆写成 failed(核证更宽:晚到回调的 callback_received 写 oauth.go:160 就已覆写)→有效凭据采集丢失/活凭据孤儿。修=按 flow_id 串行化回调(乐观锁/状态机守卫,只允许 pending→terminal)。
+- ACF-2【S3 ADJUSTED】Create 成功但 MarkFinalized 失败→活凭据孤儿(核证:"重复凭据"不成立,uq_account_credentials_active 唯一约束防住;危害降级为孤儿元数据)。
+
+**落地**:批G=pool-failover(PF-01 money+PF-02,已合 8bf1b692+8f7a1ee6);批H=credential(F-1 白名单+F-3 fail-closed 已修,F-2 方案否决维持现状待 Owner);批I=auth(ACF-1 串行化+ACF-2)。均 S2/S3 非上线阻塞。

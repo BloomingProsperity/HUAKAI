@@ -66,6 +66,56 @@ func TestRejectMissingRegion(t *testing.T) {
 	}
 }
 
+// TestRejectInvalidRegion 抓的回归:aws_region 来自运营侧账号配置,虽非客户可控,
+// 仍必须 fail-closed,避免污染值进入 Bedrock host。
+// 变异:删 BuildRequest 的 validBedrockRegion 校验 → 这些非法值会继续构造请求,
+// 本测试红。
+func TestRejectInvalidRegion(t *testing.T) {
+	badRegions := []string{
+		"us.east-1",
+		"us-east-1@internal",
+		"us-east-1:443",
+		"169.254.169.254",
+		"localhost",
+		"http://us-east-1",
+		"US-EAST-1",
+		"-us-east-1",
+		"us-east-1-",
+		"global",
+	}
+	for _, region := range badRegions {
+		t.Run(region, func(t *testing.T) {
+			a := newTestAdapter()
+			in := validSigV4Input()
+			in.Credential.Extra["aws_region"] = region
+
+			_, err := a.BuildRequest(context.Background(), in)
+			if err == nil {
+				t.Fatalf("非法 aws_region %q 未被拒", region)
+			}
+			if !strings.Contains(err.Error(), "aws_region") {
+				t.Fatalf("error=%v, want 提及 aws_region", err)
+			}
+		})
+	}
+}
+
+// TestRegionValidationMutationWouldPoisonHost 证明 fixture 判别性:若上层校验被删,
+// 含点号的 region 会被原样拼进 host,而不是被 URL 编码或清洗。
+func TestRegionValidationMutationWouldPoisonHost(t *testing.T) {
+	const poisonedRegion = "us-east-1.evil.internal"
+	if validBedrockRegion(poisonedRegion) {
+		t.Fatalf("测试前提失效: %q 不应在白名单内", poisonedRegion)
+	}
+	endpoint, err := (&PassthroughAdapter{}).buildEndpoint(poisonedRegion, "anthropic.claude-3-5-sonnet-20241022-v2:0", false)
+	if err != nil {
+		t.Fatalf("buildEndpoint: %v", err)
+	}
+	if !strings.Contains(endpoint, "bedrock-runtime."+poisonedRegion+".amazonaws.com") {
+		t.Fatalf("fixture 不判别: endpoint=%q 未体现污染 region", endpoint)
+	}
+}
+
 // TestRejectMissingAccessKeyID 验证 aws_sigv4 模式下缺少 aws_access_key_id 时返回 error。
 func TestRejectMissingAccessKeyID(t *testing.T) {
 	a := newTestAdapter()
@@ -143,6 +193,24 @@ func TestNonStreamEndpoint(t *testing.T) {
 	}
 	if strings.Contains(req.URL.Path, "stream") {
 		t.Errorf("非流式 endpoint 不应含 stream，got: %s", req.URL.Path)
+	}
+}
+
+func TestValidRegionAccepted(t *testing.T) {
+	for _, region := range []string{"us-east-1", "ap-northeast-1"} {
+		t.Run(region, func(t *testing.T) {
+			a := newTestAdapter()
+			in := validSigV4Input()
+			in.Credential.Extra["aws_region"] = region
+
+			req, err := a.BuildRequest(context.Background(), in)
+			if err != nil {
+				t.Fatalf("合法 aws_region %q 被拒: %v", region, err)
+			}
+			if !strings.Contains(req.URL.Host, region) {
+				t.Fatalf("host=%q 未包含 region %q", req.URL.Host, region)
+			}
+		})
 	}
 }
 

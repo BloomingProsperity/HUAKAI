@@ -116,6 +116,20 @@ func TestPostgresCredentialVaultResolveBlocksLegacyFallbackWhenV2CredentialNotAc
 	}
 }
 
+func TestLegacyServiceAccountFailClosed(t *testing.T) {
+	cred, err := mapServiceAccount([]byte(`{
+		"client_email":"sa@project.iam.gserviceaccount.com",
+		"private_key":"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+		"token_uri":"https://oauth2.googleapis.com/token"
+	}`))
+	if err == nil {
+		t.Fatalf("legacy service_account 返回了空 Value 可转发凭据: %+v", cred)
+	}
+	if !errors.Is(err, ErrCredentialFormat) {
+		t.Fatalf("err=%v, want ErrCredentialFormat", err)
+	}
+}
+
 func mustVaultTestKeyProvider(t *testing.T) credentialstore.KeyProvider {
 	t.Helper()
 	provider, err := credentialstore.NewStaticKeyProvider("test-key", []byte("0123456789abcdef0123456789abcdef"))

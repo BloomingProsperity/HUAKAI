@@ -357,8 +357,9 @@ func TestPostgresCredentialVault_OAuthHappyPath(t *testing.T) {
 	}
 }
 
-// TestPostgresCredentialVault_ServiceAccountPath 验证 service_account 类型映射。
-func TestPostgresCredentialVault_ServiceAccountPath(t *testing.T) {
+// TestPostgresCredentialVault_ServiceAccountPathFailClosed 验证 legacy
+// service_account 不再产出空 Value 凭据静默进入转发。
+func TestPostgresCredentialVault_ServiceAccountPathFailClosed(t *testing.T) {
 	ctx := context.Background()
 	suffix := "svcacct"
 	f := setupFixture(ctx, t, suffix)
@@ -375,22 +376,11 @@ func TestPostgresCredentialVault_ServiceAccountPath(t *testing.T) {
 
 	vault := NewPostgresCredentialVault(testDB)
 	cred, _, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
-	if err != nil {
-		t.Fatalf("期望成功，但得到错误: %v", err)
+	if err == nil {
+		t.Fatalf("legacy service_account 返回了可转发凭据: type=%q value=%q extra=%v", cred.Type, cred.Value, cred.Extra)
 	}
-
-	if cred.Type != CredentialTypeOAuthAccessToken {
-		t.Errorf("期望 CredentialTypeOAuthAccessToken，得到 %q", cred.Type)
-	}
-	// auth_kind 必须为 google_sa。
-	if cred.Extra["auth_kind"] != "google_sa" {
-		t.Errorf("期望 Extra['auth_kind']='google_sa'，得到 %q", cred.Extra["auth_kind"])
-	}
-	if cred.Extra["client_email"] != "sa@project.iam.gserviceaccount.com" {
-		t.Errorf("期望 client_email 正确，得到 %q", cred.Extra["client_email"])
-	}
-	if cred.Extra["private_key"] == "" {
-		t.Error("期望 private_key 非空")
+	if !errors.Is(err, ErrCredentialFormat) {
+		t.Fatalf("err=%v, want ErrCredentialFormat", err)
 	}
 }
 

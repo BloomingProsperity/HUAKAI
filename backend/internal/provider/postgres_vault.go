@@ -123,6 +123,11 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, account
 		return Credential{}, AccountInfo{}, fmt.Errorf("provider vault: commit: %w", err)
 	}
 
+	// legacy 行没有 account_credentials 主键可回填:channel_health_state 对
+	// account_credential_id 有强外键且 (account_credential_id, credential_version)
+	// 全局唯一,借用 provider_accounts.id 会外键违约或串写其他凭据的健康行。
+	// 故 legacy 账号健康 subject 留空(healthKeyOK=false,健康回流不落),
+	// 直到该账号迁入 v2 credentialstore。
 	info := AccountInfo{
 		AccountID:   row.id,
 		TenantID:    row.tenantID,
@@ -525,9 +530,8 @@ func mapOAuth(raw []byte) (Credential, error) {
 	return cred, nil
 }
 
-// mapServiceAccount 解析 service_account 类型凭据（Google SA）。
-// 映射为 CredentialTypeOAuthAccessToken，并在 Extra["auth_kind"]="google_sa" 标记。
-// client_email / private_key / token_uri 一并放入 Extra，供下游 adapter 使用。
+// mapServiceAccount 拒绝 legacy service_account。旧表只有私钥材料,没有本仓
+// v2 凭据刷新链产出的可转发 access token；继续产空 Value 会把失败延后到出站。
 func mapServiceAccount(raw []byte) (Credential, error) {
 	var r rawServiceAccount
 	if err := json.Unmarshal(raw, &r); err != nil {
@@ -539,20 +543,7 @@ func mapServiceAccount(raw []byte) (Credential, error) {
 	if r.PrivateKey == "" {
 		return Credential{}, fmt.Errorf("%w: service_account private_key field is empty", ErrCredentialFormat)
 	}
-	extra := map[string]string{
-		"auth_kind":    "google_sa",
-		"client_email": r.ClientEmail,
-		"private_key":  r.PrivateKey,
-	}
-	if r.TokenURI != "" {
-		extra["token_uri"] = r.TokenURI
-	}
-	// service_account 在获取访问令牌前主值留空；适配器凭 auth_kind 决策令牌交换流程。
-	return Credential{
-		Type:  CredentialTypeOAuthAccessToken,
-		Value: "",
-		Extra: extra,
-	}, nil
+	return Credential{}, fmt.Errorf("%w: legacy service_account cannot materialize runtime credential; migrate to v2 vertex_sa", ErrCredentialFormat)
 }
 
 // mapUpstreamStatic 解析 upstream_static 类型凭据。

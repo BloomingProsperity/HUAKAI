@@ -133,6 +133,9 @@ func TestVertexRuntimeMaterialSurfacesLocation(t *testing.T) {
 			if material.Kind != RuntimeUpstreamPassthrough {
 				t.Fatalf("kind=%q want %q", material.Kind, RuntimeUpstreamPassthrough)
 			}
+			if material.Value != "Bearer vertex-access" {
+				t.Fatalf("Value=%q want Bearer vertex-access (v2 vertex_sa 必须产可转发主值)", material.Value)
+			}
 			if got := material.Extra["location"]; got != "us-east5" {
 				t.Fatalf("Extra[location]=%q want us-east5 (location 必须透到 adapter)", got)
 			}
