@@ -34,6 +34,13 @@
 - ✅ **A#8 + A#9 + A#9b**(241485ac)交付后写与补偿释放全部脱钩:①A#8 MarkFinalized 脱钩+3 次重试(Create 后是记录既成事实;全败由既有 expires_at 惰性过期兜底——亲读 BeginFinalize Get 回退路径核实该语义已存在,审计建议的"孤儿对账器"由此覆盖)②A#9b 两个 MarkFailed 补偿脱钩 ③A#9 selector 槽补偿 releaseSlotDetached(镜像 pasr HIGH-2)。四变异证红;判别关键=ctx 敏感 DB 包装(fake 忽略 ctx 则测试恒绿伪判别)。
   - **勘误**:进度行「A#1 顺带解 A#4(budget)」应为 #7(budget);#4(media claim 被 sweeper 抢先 abort)仍待修。**剩:A#4(S2)+ B8/B10(S3)。**
 
+- ✅ **A#4**(7167b5a8)media claim 被 sweeper 抢先 abort → 强推终态(succeeded/failed+error_class=claim_swept)+ 事务内幂等落孤儿线索(复用 Manual-First 对账),跳过 billing 假账,不再卡 in_progress 每 30s 死循环。两 PG 变异证红。
+- ✅ **B8 + B10**(75af01aa)收尾:B8 /me 面板走 ActiveUserRole(封/锁 admin 降级 user 面板不给 admin,锁定不 403 防 DoS,已删→403);B10 AutoRenewWorker money 指标接 admin worker-stats(带 Enabled,openapi 同步),drift 指标 B3 已由 zap 日志消除死指标。变异逐一证红。
+
+## 🎉🎉 审计修复全部 19 条闭环(2026-07-05)
+A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven + 干净基线 + 对抗审查(S1 切片)零 S0/S1 + 零回归。11 提交:e95a6eee/df71c432/8988a302/0470fefd/aad36b49/423b36c2/1e07adc6/eea7178d/2a86f850/4bf18522/241485ac/7167b5a8/75af01aa。系统性加固#4/#5(持久计数器 reaper+不吞错、租约统一派生)随 A#3/A#5/A#6 落地。
+**剩扫尾(非审计条目)**:①额度恢复重跑 feature 审计未验证域(resume wf_bfe5c8d5-e10)②A#1 端到端集成断言(真 pg)③签发点收口/TokenVersion 加固(B4/B5 follow-up)④codebudget 既有红(gatewayhttp 4 项+store_memory.go)另案 ⑤加固#1/2/3/6(统一结算 settler 注入点+per-资源生命周期集成测试+补偿状态扫描)。
+
 ### B1 设计定稿(2026-07-05,亲读全链后;三镜研究并行中,回来后校准)
 - **方案 = 提前量续费(renew-ahead grace window),到期判据不动**:`ListAutoRenewDue` 扫 `expires_at <= now+lead`(PG+memory 同改);`tryAutoRenewOnce` 锁行复查同用 `DueCutoff`(autoRenewRecord 加字段);`ProcessAutoRenewal` 算 cutoff 下传。lead 取 30min(5min 节拍 ≥6 次尝试,余额不足可重试;对比 Apple 提前 24h 扣款,30min 属保守)。
 - **为什么不选「ListDueExpiry 排除 auto_renew=true」**:续费持续失败(余额不足/套餐停用)的订阅将永不到期 → 白嫖;要堵这个洞需加失败计数/宽限状态机 = schema 变更。提前量方案零 schema、到期兜底天然保留:续费失败订阅照常在 expires_at 到期降级。
