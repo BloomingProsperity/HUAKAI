@@ -66,6 +66,8 @@ func SignalFromClassification(statusCode int, c Classification) channelhealth.Si
 		return channelhealth.SignalTimeout
 	case ErrorClassTokenRevoked, ErrorClassOAuthInvalidGrant:
 		return channelhealth.SignalAuthChallenge
+	case ErrorClassRequestTooLarge:
+		return channelhealth.SignalClientMalformed
 	case ErrorClassKYCRequired, ErrorClassOrgDisabled,
 		ErrorClassWorkspaceDeactivated, ErrorClassCreditExhausted:
 		return channelhealth.SignalAccountSuspended
@@ -77,10 +79,21 @@ func SignalFromClassification(statusCode int, c Classification) channelhealth.Si
 		return channelhealth.SignalRateLimit
 	case statusCode == http.StatusForbidden:
 		return channelhealth.SignalForbidden
+	case clientMalformedStatus(statusCode) && c.Tier == TierNone && c.RetryAction == RetryActionPassThrough && c.FsmTransition == FsmTransitionNoChange:
+		return channelhealth.SignalClientMalformed
 	case statusCode >= 500:
 		return channelhealth.SignalUpstream5xx
 	default:
 		return channelhealth.SignalChannelError
+	}
+}
+
+func clientMalformedStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
 	}
 }
 

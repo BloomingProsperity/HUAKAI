@@ -13,6 +13,10 @@ func TestSignalClassifierSafeClasses(t *testing.T) {
 		{name: "rate-ish 403", in: ClassifierInput{StatusCode: 403, RawUpstreamText: "quota limit reached"}, want: SignalRateLimit},
 		{name: "local 5xx", in: ClassifierInput{StatusCode: 502, LocalGatewayError: true}, want: SignalLocalGateway5xx},
 		{name: "upstream 5xx", in: ClassifierInput{StatusCode: 503}, want: SignalUpstream5xx},
+		{name: "bad request malformed", in: ClassifierInput{StatusCode: 400, SafeErrorClass: "invalid_request"}, want: SignalClientMalformed},
+		{name: "request too large", in: ClassifierInput{StatusCode: 413, ErrorCode: "request_too_large"}, want: SignalClientMalformed},
+		{name: "context too long", in: ClassifierInput{StatusCode: 422, RawUpstreamText: "context length exceeded"}, want: SignalClientMalformed},
+		{name: "plain unauthorized still account-side", in: ClassifierInput{StatusCode: 401}, want: SignalChannelError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

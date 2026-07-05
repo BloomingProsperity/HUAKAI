@@ -1285,15 +1285,22 @@ func (d *pr5CanonicalSequenceDispatcher) DispatchHCSF(_ context.Context, request
 }
 
 type pr5StreamStep struct {
-	status int
-	body   io.ReadCloser
-	err    error
+	status  int
+	headers http.Header
+	body    io.ReadCloser
+	err     error
 }
 
 type pr5SequentialStreamingDoer struct {
 	calls int
 	steps []pr5StreamStep
 }
+
+type pr5FixedClock struct {
+	now time.Time
+}
+
+func (c pr5FixedClock) Now() time.Time { return c.now }
 
 func (d *pr5SequentialStreamingDoer) Do(req *http.Request) (*http.Response, error) {
 	_, _ = io.ReadAll(req.Body)
@@ -1311,9 +1318,13 @@ func (d *pr5SequentialStreamingDoer) Do(req *http.Request) (*http.Response, erro
 	if step.body == nil {
 		step.body = io.NopCloser(strings.NewReader(""))
 	}
+	headers := step.headers
+	if headers == nil {
+		headers = make(http.Header)
+	}
 	return &http.Response{
 		StatusCode: step.status,
-		Header:     make(http.Header),
+		Header:     headers,
 		Body:       step.body,
 	}, nil
 }
@@ -1477,6 +1488,67 @@ func (l *firstAppendFailsThenPersistsLedger) LatestMerkleRoot(ctx context.Contex
 
 func (l *firstAppendFailsThenPersistsLedger) Size(ctx context.Context) int {
 	return l.inner.Size(ctx)
+}
+
+func TestPR5Stream429RetryAfterForceCooldownsBeforeRetry(t *testing.T) {
+	now := time.Date(2026, 7, 5, 9, 0, 0, 0, time.UTC)
+	streamDoer := &pr5SequentialStreamingDoer{
+		steps: []pr5StreamStep{
+			{
+				status:  http.StatusTooManyRequests,
+				headers: http.Header{"Retry-After": []string{"120"}},
+				body:    io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)),
+			},
+			{body: io.NopCloser(strings.NewReader(openAIStreamingFixture()))},
+		},
+	}
+	health := &recordingChannelHealth{}
+	deps := streamingReplayDeps(t, 88011, false, "", nil)
+	deps.Dispatcher.HTTPClient = streamDoer
+	deps.ChannelHealth = health
+	deps.RateService = rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute)
+	deps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "same_pool_account_failover"},
+	)}
+	deps.Selector = newPR5Selector(t, 1201, 1202)
+	deps.CredentialVault = pr5CredentialVault(t, 1201, 1202)
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 after streaming 429 failover", rec.Code, rec.Body.String())
+	}
+	if streamDoer.calls != 2 {
+		t.Fatalf("stream dispatch calls=%d want 2", streamDoer.calls)
+	}
+	if len(health.signals) == 0 || health.signals[0].Class != channelhealth.SignalRateLimit {
+		t.Fatalf("health signals=%+v want first streaming 429 rate-limit signal", health.signals)
+	}
+	if len(health.forceCooldowns) != 1 {
+		t.Fatalf("ForceCooldown calls=%d want 1 for streaming 429 Retry-After", len(health.forceCooldowns))
+	}
+	forced := health.forceCooldowns[0]
+	if forced.key.ProviderAccountID != 1201 || forced.key.AccountCredentialID != 10201 {
+		t.Fatalf("ForceCooldown key=%+v want first stream account 1201 credential 10201", forced.key)
+	}
+	if forced.reason != string(rate.ReasonRateLimitRPM) {
+		t.Fatalf("ForceCooldown reason=%q want %q", forced.reason, rate.ReasonRateLimitRPM)
+	}
+	if !forced.until.Equal(now.Add(2 * time.Minute)) {
+		t.Fatalf("ForceCooldown until=%s want %s", forced.until, now.Add(2*time.Minute))
+	}
+	svc := channelhealth.NewService(channelhealth.NewMemoryStore(), channelhealth.DefaultPolicy(), pr5FixedClock{now: now})
+	if _, err := svc.ForceCooldown(context.Background(), forced.key, forced.until, forced.reason); err != nil {
+		t.Fatalf("real ForceCooldown: %v", err)
+	}
+	gate := channelhealth.NewServicePoolGate(svc, pr5FixedClock{now: now})
+	ok, reason, err := gate.Allow(context.Background(),
+		&pool.AccountSnapshot{ID: forced.key.ProviderAccountID, TenantID: forced.key.TenantID},
+		pool.SelectionRequest{TenantID: forced.key.TenantID, PoolGroupID: 42, RequestedModel: "gpt-4o"},
+	)
+	if err != nil || ok || reason != pool.GateFailureHealth {
+		t.Fatalf("PoolGate Allow ok=%v reason=%s err=%v want blocked by forced cooldown", ok, reason, err)
+	}
 }
 
 type delayedReadCloser struct {

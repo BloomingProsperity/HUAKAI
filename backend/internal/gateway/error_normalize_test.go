@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 )
 
 // AT-RATE-021 —— 401 响应体中含 invalid_grant -> R-001 -> iron_clad -> disabled。
@@ -513,6 +515,53 @@ func TestR023_Anthropic413RequestTooLarge(t *testing.T) {
 	}
 	if c.FsmTransition != FsmTransitionNoChange {
 		t.Fatalf("fsm=%s; want no_transition (413 is client error, no FSM impact)", c.FsmTransition)
+	}
+}
+
+func TestSignalFromClassification_ClientMalformed4xxDoesNotBecomeChannelError(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		class  Classification
+		want   channelhealth.SignalClass
+	}{
+		{
+			name:   "typed request too large",
+			status: http.StatusRequestEntityTooLarge,
+			class:  Classification{Class: ErrorClassRequestTooLarge, Tier: TierNone, RetryAction: RetryActionPassThrough, FsmTransition: FsmTransitionNoChange},
+			want:   channelhealth.SignalClientMalformed,
+		},
+		{
+			name:   "unknown bad request passthrough",
+			status: http.StatusBadRequest,
+			class:  Classification{Class: ErrorClassUnknown, Tier: TierNone, RetryAction: RetryActionPassThrough, FsmTransition: FsmTransitionNoChange},
+			want:   channelhealth.SignalClientMalformed,
+		},
+		{
+			name:   "unprocessable request passthrough",
+			status: http.StatusUnprocessableEntity,
+			class:  Classification{Class: ErrorClassUnknown, Tier: TierNone, RetryAction: RetryActionPassThrough, FsmTransition: FsmTransitionNoChange},
+			want:   channelhealth.SignalClientMalformed,
+		},
+		{
+			name:   "account auth stays auth lane",
+			status: http.StatusUnauthorized,
+			class:  Classification{Class: ErrorClassTokenRevoked, Tier: TierIronClad, RetryAction: RetryActionPermanentDisable, FsmTransition: FsmTransitionDisabled},
+			want:   channelhealth.SignalAuthChallenge,
+		},
+		{
+			name:   "rate limit stays rate limit",
+			status: http.StatusTooManyRequests,
+			class:  Classification{Class: ErrorClassRateLimited, Tier: TierAmbiguous, RetryAction: RetryActionCooldown, FsmTransition: FsmTransitionCooling},
+			want:   channelhealth.SignalRateLimit,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SignalFromClassification(tt.status, tt.class); got != tt.want {
+				t.Fatalf("SignalFromClassification=%s want %s", got, tt.want)
+			}
+		})
 	}
 }
 
