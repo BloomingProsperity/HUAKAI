@@ -91,21 +91,29 @@ type Factory struct {
 	// mimicry 是测试或外部装配注入点。nil 时按 registry 查 per-mode 模板。
 	mimicry http.RoundTripper
 	// templateRegistry 保存 per-mode ClientHello 模板。
-	templateRegistry *mimicry.TemplateRegistry
-	mimicryMu        sync.Mutex
-	mimicryByMode    map[TransportMode]http.RoundTripper
-	sidecarByMode    map[TransportMode]http.RoundTripper
-	sidecarMandatory map[TransportMode]bool
-	sidecarFallbacks atomic.Uint64
+	templateRegistry     *mimicry.TemplateRegistry
+	mimicryMu            sync.Mutex
+	mimicryByMode        map[TransportMode]http.RoundTripper
+	sidecarByMode        map[TransportMode]http.RoundTripper
+	sidecarFailureByMode map[TransportMode]sidecarFailureCache
+	sidecarMandatory     map[TransportMode]bool
+	sidecarFallbacks     atomic.Uint64
 	// sidecarProbeTimeout 限定启动时/请求时的 sidecar 就绪检查时长。
 	// 为零则使用 defaultSidecarProbeTimeout。
-	sidecarProbeTimeout time.Duration
-	sidecarProbe        func(context.Context, string, mimicry.TransportMode, string) error
+	sidecarProbeTimeout    time.Duration
+	sidecarFailureCacheTTL time.Duration
+	sidecarProbe           func(context.Context, string, mimicry.TransportMode, string) error
 	// diagnostics 是仅做连通性诊断的 RoundTripper。nil 表示尚未实施。
 	diagnostics http.RoundTripper
 }
 
 const defaultSidecarProbeTimeout = 5 * time.Second
+const defaultSidecarFailureCacheTTL = time.Second
+
+type sidecarFailureCache struct {
+	err       error
+	expiresAt time.Time
+}
 
 // NewFactory 构造一个新的 Factory。所有 RoundTripper 字段为 nil — 调用
 // SetXxx 注入实例。standard 在未注入时回落到 http.DefaultTransport。
@@ -293,6 +301,12 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 	if rt := f.sidecarByMode[mode]; rt != nil {
 		return rt, nil
 	}
+	if cached, ok := f.sidecarFailureByMode[mode]; ok {
+		if time.Now().Before(cached.expiresAt) {
+			return nil, cached.err
+		}
+		delete(f.sidecarFailureByMode, mode)
+	}
 	sidecarMode := mimicry.TransportMode(mode)
 	profileID, ok := mimicry.SidecarProfileForMode(sidecarMode)
 	if !ok {
@@ -323,7 +337,9 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 			"reason_class", class,
 			"error", err,
 		)
-		return nil, newSidecarTransportError(class, mode, f.SidecarSocketPath, err)
+		transportErr := newSidecarTransportError(class, mode, f.SidecarSocketPath, err)
+		f.cacheSidecarFailureLocked(mode, transportErr)
+		return nil, transportErr
 	}
 	var (
 		rt  http.RoundTripper
@@ -337,10 +353,27 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 		rt, err = mimicry.NewSidecarRoundTripperForMode(f.SidecarSocketPath, sidecarMode)
 	}
 	if err != nil {
-		return nil, newSidecarTransportError(classifySidecarError(err), mode, f.SidecarSocketPath, err)
+		transportErr := newSidecarTransportError(classifySidecarError(err), mode, f.SidecarSocketPath, err)
+		f.cacheSidecarFailureLocked(mode, transportErr)
+		return nil, transportErr
 	}
+	delete(f.sidecarFailureByMode, mode)
 	f.sidecarByMode[mode] = rt
 	return rt, nil
+}
+
+func (f *Factory) cacheSidecarFailureLocked(mode TransportMode, err error) {
+	if err == nil {
+		return
+	}
+	ttl := f.sidecarFailureCacheTTL
+	if ttl <= 0 {
+		ttl = defaultSidecarFailureCacheTTL
+	}
+	if f.sidecarFailureByMode == nil {
+		f.sidecarFailureByMode = make(map[TransportMode]sidecarFailureCache)
+	}
+	f.sidecarFailureByMode[mode] = sidecarFailureCache{err: err, expiresAt: time.Now().Add(ttl)}
 }
 
 func (f *Factory) sidecarModeMandatory(mode TransportMode) bool {

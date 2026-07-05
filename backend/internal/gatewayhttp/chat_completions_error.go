@@ -18,6 +18,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 const (
@@ -202,10 +203,38 @@ func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
 }
 
 func signalFromDispatchError(err error, c gateway.Classification) channelhealth.SignalClass {
+	if dispatchErrorIsInfrastructure(err) {
+		return ""
+	}
 	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
 		return channelhealth.SignalTimeout
 	}
 	return gateway.SignalFromClassification(0, c)
+}
+
+func dispatchErrorIsInfrastructure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var upstreamErr *gateway.UpstreamHTTPError
+	if errors.As(err, &upstreamErr) {
+		return false
+	}
+	switch transport.TransportErrorClassOf(err) {
+	case transport.TransportErrorClassSidecarUnavailable,
+		transport.TransportErrorClassSidecarProfileUnavailable:
+		return true
+	}
+	switch gateway.TransportErrorClassFromError(err) {
+	case gateway.TransportErrorTLSHandshakeFailed,
+		gateway.TransportErrorConnectionRefused,
+		gateway.TransportErrorDNSFailure,
+		gateway.TransportErrorNetworkUnreachable,
+		gateway.TransportErrorProxyFailure:
+		return true
+	default:
+		return false
+	}
 }
 
 func rateLimitResetFromClassification(c gateway.Classification, now time.Time) *time.Time {

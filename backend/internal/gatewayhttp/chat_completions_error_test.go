@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 // TestSignalFromClassification_AuthRoutesToChallengeLane:401/坏 key 的令牌类分类必须映射为
@@ -141,6 +143,50 @@ func TestSignalFromClassification_StillEmits403Forbidden(t *testing.T) {
 	}
 	if got := gateway.SignalFromClassification(http.StatusForbidden, classification); got != channelhealth.SignalForbidden {
 		t.Fatalf("signalFromClassification(403)=%q want %q", got, channelhealth.SignalForbidden)
+	}
+}
+
+func TestSignalFromDispatchError_SuppressesInfrastructureCooldown(t *testing.T) {
+	t.Parallel()
+
+	err := &transport.TransportError{
+		Class:      transport.TransportErrorClassSidecarUnavailable,
+		Mode:       transport.TransportModeMimicryClaudeCode,
+		SocketPath: "/tmp/huakai-sidecar-down.sock",
+		Err:        context.DeadlineExceeded,
+	}
+	classification, classifyErr := gateway.Classify(0, nil, []byte(err.Error()), "anthropic")
+	if classifyErr != nil {
+		t.Fatalf("Classify: %v", classifyErr)
+	}
+	if got := signalFromDispatchError(err, classification); got != "" {
+		t.Fatalf("sidecar 基础设施故障不应产生 per-account 冷却信号, got %q", got)
+	}
+
+	proxyErr := errors.New("proxyconnect tcp: dial tcp 127.0.0.1:8080: connection refused")
+	proxyClassification, classifyErr := gateway.Classify(0, nil, []byte(proxyErr.Error()), "openai")
+	if classifyErr != nil {
+		t.Fatalf("Classify proxy: %v", classifyErr)
+	}
+	if got := signalFromDispatchError(proxyErr, proxyClassification); got != "" {
+		t.Fatalf("本地代理设施故障不应产生 per-account 冷却信号, got %q", got)
+	}
+}
+
+func TestSignalFromDispatchError_StillEmitsUpstreamAuthCooldown(t *testing.T) {
+	t.Parallel()
+
+	upstreamErr := &gateway.UpstreamHTTPError{
+		StatusCode: http.StatusUnauthorized,
+		Body:       []byte(`{"error":{"message":"invalid_grant"}}`),
+		Header:     make(http.Header),
+	}
+	_, classification, err := gateway.ClassifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body, "openai")
+	if err != nil {
+		t.Fatalf("ClassifyAttemptHTTPError: %v", err)
+	}
+	if got := signalFromDispatchError(upstreamErr, classification); got != channelhealth.SignalAuthChallenge {
+		t.Fatalf("真实上游 401 仍应产生 auth 冷却信号, got %q want %q", got, channelhealth.SignalAuthChallenge)
 	}
 }
 

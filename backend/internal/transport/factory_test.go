@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,6 +225,56 @@ func TestFactory_For_MimicrySidecarNoAckTimesOutFailClosed(t *testing.T) {
 	}
 	if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarUnavailable {
 		t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarUnavailable)
+	}
+}
+
+func TestFactory_For_MimicrySidecarFailureCacheCoalescesConcurrentProbeTimeouts(t *testing.T) {
+	f := NewFactory()
+	f.SidecarSocketPath = "/tmp/huakai-stuck-sidecar.sock"
+	f.sidecarProbeTimeout = 30 * time.Millisecond
+	f.sidecarFailureCacheTTL = time.Second
+	var probeCalls atomic.Int64
+	f.sidecarProbe = func(ctx context.Context, _ string, _ mimicry.TransportMode, _ string) error {
+		probeCalls.Add(1)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	const concurrent = 10
+	start := make(chan struct{})
+	errs := make(chan error, concurrent)
+	var wg sync.WaitGroup
+	wg.Add(concurrent)
+	started := time.Now()
+	for i := 0; i < concurrent; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+			if err == nil {
+				errs <- fmt.Errorf("sidecar 挂起时不应返回 rt=%T", rt)
+				return
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err == nil {
+			t.Fatal("sidecar 挂起时所有并发请求都应失败")
+		}
+		if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarUnavailable {
+			t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarUnavailable)
+		}
+	}
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("挂起 sidecar 的并发探测次数=%d want 1；失败负缓存未命中会导致锁内串行探测", got)
+	}
+	if elapsed := time.Since(started); elapsed >= f.sidecarProbeTimeout*time.Duration(concurrent)/2 {
+		t.Fatalf("并发挂起 sidecar 总耗时=%s，接近线性串行探测；timeout=%s N=%d", elapsed, f.sidecarProbeTimeout, concurrent)
 	}
 }
 
