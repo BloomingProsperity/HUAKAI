@@ -7,7 +7,8 @@
 ## 进度(2026-07-03)
 - ✅ **A#1**(e95a6eee)completion 总线用全装饰后 settler——移出 buildSettlementServices、挪到 quota/budget/notify 装饰之后;变异证明测试;**顺带解 A#4(budget)**。端到端集成断言(真 pg)排 follow-up。
 - ✅ **A#2**(df71c432)completionshttp 非流式 settle 脱钩 ctx + DLQ;变异证明测试。
-- ⏭ 下一批(带完整跨文件核实):**B2**(退款签名 canonical——高危,改前必核签名侧 v2 vs 验签侧 trust.v1 vs 正常结算侧三处)+ **B1**(订阅续费被到期 worker 抢先)→ 再 S2 批 → S3 收尾。
+- ✅ **B2 + B7**(8988a302)退款回执改签 trust.v1 canonical + base64(与验签/正常结算同口径),修死签名;伪绿测试改走生产验签口径;变异证明。删死码 v2 签名 helper。
+- ⏭ 下一切片:**B1**(订阅续费被到期 worker 抢先)——需 §16 三镜研究(sub2/new-api 到期 vs 续费协调)+ 订阅状态机分析(避免"跳过 auto_renew 致失败续费永不到期");再 S2 批 → S3 收尾。
 - ⏳ **额度恢复后重跑 feature 审计未验证域**(resume wf_bfe5c8d5-e10):payment/apikey-access/quota-budget/pricing/moderation/media/billing-settle/hermes/mimicry-egress/credential/notify/platform-obs/frontend。
 
 ## 安全网(每切片必过)
