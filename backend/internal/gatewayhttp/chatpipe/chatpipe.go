@@ -226,10 +226,6 @@ func streamingProviderRequestBody(env *proto.HCSF, family string) ([]byte, error
 	return forceStreamingRequest(body)
 }
 
-func InjectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, error) {
-	return injectStreamingRequestControls(raw, env, family)
-}
-
 func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, error) {
 	if family == "dify_chat" {
 		// Dify 无 per-request 控制参数(模型/采样在 app 侧配置),openai 形

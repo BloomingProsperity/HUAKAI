@@ -471,10 +471,6 @@ func streamingProviderRequestBody(env *proto.HCSF, family string) ([]byte, error
 	return chatpipe.StreamingProviderRequestBody(env, family)
 }
 
-func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, error) {
-	return chatpipe.InjectStreamingRequestControls(raw, env, family)
-}
-
 type canonicalEventPointerClientAdapter struct {
 	inner proto.ClientAdapter
 }

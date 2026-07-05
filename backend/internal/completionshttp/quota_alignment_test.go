@@ -155,7 +155,7 @@ func TestCompletionsPricingRatioPendingSignalReachesSettle(t *testing.T) {
 
 // TestCompletionsQuotaDenyEmitsRetryAfter 守 quota deny 的可重试窗口信息:Retry-After
 // 头、window_resets_at 与 window_kind 都要写回。
-// 变异:deny 分支改回 writeInsufficientQuotaError(w) → Retry-After 与 body 字段断言红。
+// 变异:deny 分支改回不带退避字段的 writeInsufficientQuotaErrorRetryable(w,0,"") → Retry-After 与 body 字段断言红。
 func TestCompletionsQuotaDenyEmitsRetryAfter(t *testing.T) {
 	env := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: `{}`})
 	env.deps.QuotaReserver = &completionsQuotaReserverSpy{result: quota.ReserveResult{

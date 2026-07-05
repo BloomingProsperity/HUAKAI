@@ -1,14 +1,5 @@
 package gatewayhttp
 
-// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat /
-// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses
-// 守 P2-B 修复在流式 marshal 路径(injectStreamingRequestControls)。同非流式
-// 测试逻辑:Type:"raw" 时 marshal 必须 1:1 还原 Schema 整体,不能再包
-// {"type":"raw","schema":...}。
-//
-// 变异:改回 raw-wrap 逻辑时两个用例必红 —— response_format.type 变成 "raw"
-// 而非 inbound 的 'json_object',或 text.format 嵌套出多一层 schema 包壳。
-
 import (
 	"bytes"
 	"context"
@@ -1789,109 +1780,8 @@ func assertLogOmits(t *testing.T, logs *bytes.Buffer, forbiddens ...string) {
 	}
 }
 
-// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat
-// 守 P2-B 修复在流式 marshal 路径(injectStreamingRequestControls)。
-// 与非流式 hcsf_graph_marshal_test.go 中同名用例同源:Type:"raw" 时 marshal
-// 必须 1:1 还原 Schema 整体,不再包 {"type":"raw","schema":...}。
-//
-// 变异:把流式 helper 改回原 wrap 逻辑时本用例必红 — body["response_format"]
-// 会变成 {"type":"raw","schema":{"type":"json_object"}},.type != "json_object"。
-func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing.T) {
-	raw := json.RawMessage(`{"type":"json_object"}`)
-	env := &proto.HCSF{
-		RequestControls: proto.RequestControls{
-			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
-		},
-	}
-	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_chat")
-	if err != nil {
-		t.Fatalf("injectStreamingRequestControls err=%v", err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(out, &body); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, out)
-	}
-	rf, ok := body["response_format"].(map[string]any)
-	if !ok {
-		t.Fatalf("response_format must be JSON object, got %T: %v", body["response_format"], body["response_format"])
-	}
-	if rf["type"] != "json_object" {
-		t.Fatalf("streaming response_format.type = %v, want inbound 'json_object' (raw-wrap regression)", rf["type"])
-	}
-	if _, hasSchema := rf["schema"]; hasSchema {
-		t.Fatalf("streaming response_format 出现 'schema' key 是 raw-wrap regression: body=%+v", body)
-	}
-}
-
-// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses
-// 守 P2-B 修复在 Responses 流式 marshal 路径。
-//
-// 变异:同上,改回原 wrap 时 body["text"] 会成
-// {"format":{"type":"raw","schema":...}} 而非 inbound 原 text 整体。
-func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *testing.T) {
-	raw := json.RawMessage(`{"format":{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object"}}}}`)
-	env := &proto.HCSF{
-		RequestControls: proto.RequestControls{
-			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
-		},
-	}
-	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_responses")
-	if err != nil {
-		t.Fatalf("injectStreamingRequestControls err=%v", err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(out, &body); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, out)
-	}
-	text, ok := body["text"].(map[string]any)
-	if !ok {
-		t.Fatalf("text must be JSON object, got %T: %v", body["text"], body["text"])
-	}
-	format, ok := text["format"].(map[string]any)
-	if !ok {
-		t.Fatalf("text.format must be object, got %T: %v", text["format"], text["format"])
-	}
-	if format["type"] != "json_schema" {
-		t.Fatalf("streaming text.format.type = %v, want inbound 'json_schema' (raw-wrap regression)", format["type"])
-	}
-	if _, hasOuter := format["schema"]; hasOuter {
-		t.Fatalf("streaming text.format 出现包壳 'schema' 字段是 raw-wrap regression: body=%+v", body)
-	}
-}
-
-func TestInjectStreamingRequestControlsMergesRequestPassthrough(t *testing.T) {
-	max := 12
-	env := &proto.HCSF{
-		RequestControls: proto.RequestControls{MaxTokens: &max},
-		Passthrough: &proto.PassthroughEnvelope{Extra: map[string]json.RawMessage{
-			"max_tool_calls":    json.RawMessage(`3`),
-			"prompt_cache_key":  json.RawMessage(`"tenant-a:stable-prefix"`),
-			"max_output_tokens": json.RawMessage(`999`),
-		}},
-	}
-	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_responses")
-	if err != nil {
-		t.Fatalf("injectStreamingRequestControls err=%v", err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(out, &body); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, out)
-	}
-	maxToolCalls, ok := body["max_tool_calls"].(float64)
-	if !ok || maxToolCalls != 3 {
-		t.Fatalf("max_tool_calls passthrough lost: %+v", body)
-	}
-	if body["prompt_cache_key"] != "tenant-a:stable-prefix" {
-		t.Fatalf("prompt_cache_key passthrough lost: %+v", body)
-	}
-	maxOutputTokens, ok := body["max_output_tokens"].(float64)
-	if !ok || maxOutputTokens != 12 {
-		t.Fatalf("modeled max_output_tokens should win over passthrough conflict: %+v", body)
-	}
-}
-
 // TestStreamingProviderRequestBodyNormalizesMarshalShape 守卫流式翻译路径
-// 的形态归一:injectStreamingRequestControls 的按形态分支(response_format
+// 的形态归一:chatpipe controls 注入的按形态分支(response_format
 // raw 直通的 case "openai_chat" 等)必须收到归一后的形态族,不能收到原始
 // 族名。判别点(真实可达路径 = 跨协议翻译,如 gemini 客户端→kimi 上游):
 //  1. kimi_chat → max_tokens=33 + 顶层 stream:true(openai_chat 形态);
@@ -1948,11 +1838,11 @@ func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 
 // TestStreamingProviderRequestBodyDifyChat 抓的回归:dify_chat 流式翻译 body
 // 被 openai 形处理污染——Dify 的流式语义只在 body 内 response_mode 字段,
-// (1) forceStreamingRequest 注顶层 stream:true、(2) injectStreamingRequestControls
+// (1) forceStreamingRequest 注顶层 stream:true、(2) chatpipe controls 注入
 // 注 max_tokens 等 openai 形 controls,任一发生都是协议污染;且被丢弃的
 // MaxTokens 控制必须在 marshal 内记 loss 而非静默蒸发。
 // 变异:从 streamingProviderRequestBody 的跳过分支删掉 dify_chat → 顶层
-// stream 断言红;从 injectStreamingRequestControls 删掉 dify_chat 早退 →
+// stream 断言红;从 chatpipe controls 注入删掉 dify_chat 早退 →
 // max_tokens 断言红。
 func TestStreamingProviderRequestBodyDifyChat(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
@@ -1998,10 +1888,10 @@ func TestStreamingProviderRequestBodyDifyChat(t *testing.T) {
 
 // TestStreamingProviderRequestBodyOllamaNative 抓的回归:ollama_native 流式
 // 翻译 body 被 openai 形处理污染——Ollama 的采样控制只认 options{} 嵌套
-// (num_predict),injectStreamingRequestControls 注顶层 max_tokens 即协议污染;
+// (num_predict),chatpipe controls 注入顶层 max_tokens 即协议污染;
 // stream 字段由 marshal 按 StreamPlan 显式写,真相源必须唯一(forceStreaming
 // 跳过为单源纪律,其 true 写入与 marshal 幂等,判别断言落在 controls 注入)。
-// 变异:从 injectStreamingRequestControls 删掉 ollama_native 早退 →
+// 变异:从 chatpipe controls 注入删掉 ollama_native 早退 →
 // 顶层 max_tokens 断言红。
 func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
 	env := proto.NewEmptyEnvelope()

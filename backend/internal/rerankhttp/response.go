@@ -24,10 +24,6 @@ func writeInsufficientBalanceError(w http.ResponseWriter) {
 	writeJSONError(w, http.StatusPaymentRequired, clienterr.CodeInsufficientBalance, clienterr.MessageFor(clienterr.CodeInsufficientBalance))
 }
 
-func writeInsufficientQuotaError(w http.ResponseWriter) {
-	writeInsufficientQuotaErrorRetryable(w, 0, "")
-}
-
 // writeInsufficientQuotaErrorRetryable 把窗口配额拒绝的退避信息写回客户端。
 func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time.Duration, windowKind string) {
 	w.Header().Set("Content-Type", "application/json")

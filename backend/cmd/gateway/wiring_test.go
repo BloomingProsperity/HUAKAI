@@ -157,7 +157,7 @@ func TestWiring_QuotaReconcilerEnabledByDefault(t *testing.T) {
 	}
 }
 
-func TestWiring_CompletionEventBusDoesNotInstallDualRunReconciler(t *testing.T) {
+func TestWiring_CompletionEventBusDoesNotInstallDeprecatedReconciliationHandler(t *testing.T) {
 	bus, err := buildCompletionEventBus(
 		&runtimeconfig.EventBusConfig{Enabled: true, HandlerTimeout: time.Second, HighWorkers: 1, MediumWorkers: 1, LowWorkers: 1},
 		&wiringRecordingSettler{},
@@ -189,16 +189,12 @@ func TestWiring_CompletionEventBusDoesNotInstallDualRunReconciler(t *testing.T) 
 		concrete := handler.Elem()
 		handlerType := concrete.Type().String()
 		if handlerType == "*observability.ReconciliationHandler" {
-			t.Fatal("生产 completion eventbus 不应注册 DualRunReconciler 的 ReconciliationHandler")
+			t.Fatal("生产 completion eventbus 不应注册已废弃的 reconciliation handler")
 		}
 		if handlerType != "*observability.BillingPersisterHandler" {
 			continue
 		}
 		seenBillingPersister = true
-		reconciler := concrete.Elem().FieldByName("reconciler")
-		if !reconciler.IsNil() {
-			t.Fatal("生产 BillingPersisterHandler 不应注入 DualRunReconciler")
-		}
 	}
 	if !seenBillingPersister {
 		t.Fatal("completion eventbus 未注册 billing persister handler")

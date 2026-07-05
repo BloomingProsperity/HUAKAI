@@ -80,7 +80,7 @@ func TestImagesQuotaReserveInfraErrorFailsOpenWithMetric(t *testing.T) {
 
 // TestImagesQuotaDenyEmitsRetryAfter 守同型 quota deny 响应:窗口拒绝必须透出
 // Retry-After、window_resets_at 与 window_kind。
-// 变异:deny 分支改回 writeInsufficientQuotaError(w) → Retry-After 与 body 字段断言红。
+// 变异:deny 分支改回不带退避字段的 writeInsufficientQuotaErrorRetryable(w,0,"") → Retry-After 与 body 字段断言红。
 func TestImagesQuotaDenyEmitsRetryAfter(t *testing.T) {
 	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{status: http.StatusOK, body: `{}`})
 	env.deps.QuotaReserver = &imagesQuotaReserverSpy{result: quota.ReserveResult{

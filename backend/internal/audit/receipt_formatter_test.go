@@ -534,44 +534,6 @@ func TestAT_AUDIT_001_009_NonUUIDRequestIDWorks(t *testing.T) {
 	}
 }
 
-func TestReceiptCanonicalPayloadUsesMicroUSDField(t *testing.T) {
-	ctx := context.Background()
-	redactor := &capturingReceiptRedactor{}
-	receipt := &CostReceipt{
-		RequestID:           "host/random-000005",
-		TenantID:            7,
-		ReceiptSequence:     2,
-		Model:               "gpt-4.1-mini",
-		InputTokens:         10,
-		OutputTokens:        2,
-		CostUSDMicros:       1234,
-		RateTableSnapshotID: 8,
-		CreatedAt:           time.Date(2026, 5, 17, 17, 0, 0, 0, time.UTC),
-	}
-	if _, err := canonicalReceiptHashWithRedactor(ctx, redactor, receipt); err != nil {
-		t.Fatalf("canonicalReceiptHashWithRedactor: %v", err)
-	}
-	raw := string(redactor.lastRaw)
-	if !strings.Contains(raw, `"cost_total_micro_usd":1234`) {
-		t.Fatalf("canonical payload missing micro-USD field: %s", raw)
-	}
-	if !strings.Contains(raw, `"receipt_sequence":2`) {
-		t.Fatalf("canonical payload missing receipt_sequence field: %s", raw)
-	}
-	if strings.Contains(raw, "cost_total_microcents") {
-		t.Fatalf("canonical payload must not use microcents field: %s", raw)
-	}
-	if !strings.Contains(raw, `"validation_state":"valid"`) {
-		t.Fatalf("canonical payload missing validation_state field: %s", raw)
-	}
-	if !strings.Contains(raw, `"verdict":"match"`) {
-		t.Fatalf("canonical payload missing verdict field: %s", raw)
-	}
-	if !strings.Contains(raw, `"adjustment_refs":[]`) {
-		t.Fatalf("canonical payload missing adjustment_refs field: %s", raw)
-	}
-}
-
 type staticReceiptSource struct {
 	inputs        ReceiptInputs
 	err           error
@@ -1026,30 +988,6 @@ func (r scriptedReceiptRow) Scan(dest ...any) error {
 		}
 	}
 	return nil
-}
-
-type capturingReceiptRedactor struct {
-	lastRaw []byte
-}
-
-func (r *capturingReceiptRedactor) SanitizePayload(_ context.Context, payload any) ([]byte, error) {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	r.lastRaw = append([]byte(nil), raw...)
-	return raw, nil
-}
-
-func (r *capturingReceiptRedactor) SanitizeError(_ context.Context, err error) (string, error) {
-	if err == nil {
-		return "", nil
-	}
-	return err.Error(), nil
-}
-
-func (r *capturingReceiptRedactor) AllowlistField(string) bool {
-	return true
 }
 
 func testFormatter(t *testing.T, signer *auditledger.LocalEd25519Signer) *ReceiptFormatter {

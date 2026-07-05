@@ -81,16 +81,24 @@ func TestForceH1EnabledDefaultsOn(t *testing.T) {
 	}
 }
 
-// TestNewUtlsDialerForceH1FromEnv 守护构造器把 env 落到 ForceH1 字段。变异证伪:
-// 把 NewUtlsDialer 里 ForceH1 赋值删掉(默认零值 false),则默认开用例转红。
-func TestNewUtlsDialerForceH1FromEnv(t *testing.T) {
+// TestNewRoundTripperForceH1FromEnv 守护默认构造器把 env 落到 ForceH1 字段。变异证伪:
+// 把 NewRoundTripper 里的 env 读取删掉(默认零值 false),则默认开用例转红。
+func TestNewRoundTripperForceH1FromEnv(t *testing.T) {
 	t.Setenv("HUAKAI_TRANSPORT_FORCE_H1", "")
-	if d := NewUtlsDialer(AnthropicCLIMimicryV1Template()); !d.ForceH1 {
-		t.Fatal("env 未设时 NewUtlsDialer.ForceH1 应为 true(默认强制 H1)")
+	rt, ok := NewRoundTripper(AnthropicCLIMimicryV1Template()).(*roundTripper)
+	if !ok {
+		t.Fatalf("NewRoundTripper 返回类型非 *roundTripper")
+	}
+	if !rt.forceH1 || !rt.dialer.ForceH1 {
+		t.Fatal("env 未设时 NewRoundTripper 应默认强制 H1")
 	}
 	t.Setenv("HUAKAI_TRANSPORT_FORCE_H1", "false")
-	if d := NewUtlsDialer(AnthropicCLIMimicryV1Template()); d.ForceH1 {
-		t.Fatal("env=false 时 NewUtlsDialer.ForceH1 应为 false")
+	rt, ok = NewRoundTripper(AnthropicCLIMimicryV1Template()).(*roundTripper)
+	if !ok {
+		t.Fatalf("NewRoundTripper 返回类型非 *roundTripper")
+	}
+	if rt.forceH1 || rt.dialer.ForceH1 {
+		t.Fatal("env=false 时 NewRoundTripper 不应强制 H1")
 	}
 }
 

@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -15,6 +16,31 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
+
+type fakeSettler struct {
+	req billing.SettleRequest
+	err error
+}
+
+func (s *fakeSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
+	s.req = req
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &billing.SettleResult{}, nil
+}
+
+func (s *fakeSettler) Abort(context.Context, int64, int64, string, string, int64, json.RawMessage) error {
+	return nil
+}
+
+func (s *fakeSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {
+	return nil
+}
+
+func (s *fakeSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {
+	return &billing.RefundResult{}, nil
+}
 
 func TestBillingPersisterReceiptHookAppendsAfterAsyncSettle(t *testing.T) {
 	ctx := context.Background()

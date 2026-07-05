@@ -96,7 +96,7 @@ func TestSidecarFallbackNativeLegInheritsConfigForceH1(t *testing.T) {
 	// ME-4:env 显式关闭 force-h1 时,运维 config 的 SidecarForceH1=true 仍必须作用到
 	// Go-native fallback 腿;叠加账号代理后也要继承同一决策。变异证伪:
 	// 1. factory 改回 mimicry.NewRoundTripper(tmpl) -> 初始 fallback forceH1=false;
-	// 2. roundTripper.WithProxy 改回 NewUtlsDialer(rt.template) -> 代理后的 fallback forceH1=false。
+	// 2. roundTripper.WithProxy 丢掉原 forceH1 决策 -> 代理后的 fallback forceH1=false。
 	t.Setenv("HUAKAI_TRANSPORT_PHASE_A_FALLBACK", "true")
 	t.Setenv("HUAKAI_TRANSPORT_FORCE_H1", "false")
 	forceH1 := true

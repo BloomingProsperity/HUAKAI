@@ -29,12 +29,6 @@ type UtlsDialer struct {
 	ForceH1 bool
 }
 
-// NewUtlsDialer 返回使用指定 ClientHello 模板的拨号器。
-// ForceH1 默认由运维 env HUAKAI_TRANSPORT_FORCE_H1 决定(默认开)。
-func NewUtlsDialer(template *ClientHelloTemplate) *UtlsDialer {
-	return NewUtlsDialerForceH1(template, forceH1Enabled())
-}
-
 // NewUtlsDialerForceH1 返回显式 force-h1 决策的 uTLS 拨号器,供上层 config
 // 覆盖 env 默认时使用。
 func NewUtlsDialerForceH1(template *ClientHelloTemplate, forceH1 bool) *UtlsDialer {
