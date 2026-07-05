@@ -190,3 +190,16 @@ A 系 9 条(A#1/2/3/4/5/6/7/8/9/9b)+ B 系 10 条(B1-B10)全部 mutation-proven 
 - **修法**(schema,授权内:补齐已注册能力+Owner 明确要+放宽白名单低风险,对齐 sensitive-modules 给能力非守门):迁移扩 CHECK = registrydefault 全部 MustRegister family;同步 internal/adminhttp/provider_catalog_mutation_handler.go 的 Go 白名单;迁移往返+国内厂 model 录入测试。派 codex。
 - e2e 库已临时 ALTER 验证(models 过);正式迁移随 codex。
 - **e2e 打通残留**:混元真转发卡 no_capacity(选号候选空,激活字段全对,codex seed 漏 model resolve→pool→account 链某配置),随 codex 修 seed 后我注入真 key 验证。
+
+## 🏛️ 原 Owner-gated 六项裁定(2026-07-05,Owner 授权「查借鉴项目做法、选合适的」;12-agent 三镜调研+逐项对抗核证全过,证据全文 wf_79018afd-1de journal)
+
+**裁定原则**:镜像市场验证做法优先;正确性兜底默认开、性能旋钮默认关(new-api/sub2api 两家一致的默认值哲学);能力给足默认开、保留 env 逃生开关;不 bolt-on 镜像没有的开关。
+
+1. **C-1b 裁定=翻默认开**:quota reconciler(RunOnce=对账重放+孤儿清扫)属正确性兜底非性能旋钮——new-api 超时任务清扫 UPDATE_TASK 默认 true(common/init.go:147)、sub2api 并发槽清扫 DI 无条件启动(wire.go:239-248,默认 30s);HUAKAI 同 wiring 函数里 billing 侧三个同性质兜底(replayJanitor/leaseSweeper/pendingReconciler)全无条件启动,唯 quota 被 gate 是历史遗留。改 cmd/gateway/wiring.go:1210 语义反转(unset/非法值→开,显式 false→关)+wiring 判别测试(变异翻回关证红)+三个 compose/部署文档补变量。CLIProxyAPI 无计费无对应(五组关键词取证)。
+2. **NT-1 裁定=最小堵漏(S2 自主修)**:notify ListActiveSettings(store.go:90-108)JOIN users 限 role='admin' AND deleted_at IS NULL——运维广播(provider_account_down/alert_firing)只达 admin;客户自身事件(低余额)单发路径不动;**不加**「发全体」开关(两镜都没有,加了是 bolt-on)。判别测试:普通 user 配 webhook 不收广播/admin 收,删 role 过滤证红。sub2api 独立运维收件人配置(recipients+min_severity+限流)排 roadmap 方案②。
+3. **NT-2+MO-1 裁定=两执行器都翻默认开**:①HUAKAI_ALERTING_EVAL_ENABLED 默认 true(无规则时空转,LeaderLock 已防重复);②contentModerationRuntimeEnabled 默认 true(租户级 DefaultConfig Enabled=false 保证未配置租户放行,admin PUT Enabled=true 真生效——语义与 sub2api 一致:执行器恒接线+配置默认关)。**MO-1 必须与 MO-3(config TTL 缓存+fail-closed 时序)同批落地**,否则每请求裸查+查询抖动 403 波及未启用租户。配套:两 admin 面回显 executor_runtime_enabled + env 文档。
+4. **PO-3 裁定=建 obs/dlq 管理面(自主,零 schema 零开关)**:GET /admin/v1/obs-dlq(dlq_events JOIN outbox_events,limit 100/200,platform_admin)+ POST /admin/v1/obs-dlq/{id}/replay(原子 UPDATE outbox status='failed_dead'→pending,0 行→409,镜像 sub2api RetryFulfillment 原子状态机);死信行保留作历史;openapi.yaml 同步+obs 死信深度并入 dlq_depth expvar+Hermes 只读源。前端页 Owner-gated 不建。
+5. **S3-4 裁定=分级**:互斥机制零缺口不加新机制(行锁+Serializable+终态幂等已强于两镜)。第一级立即做:ReverseCost skip(预留非 settled)从完全静默改为 WARN+expvar/审计事件,先看发生频率。第二级(job_kind 扩 CHECK 迁移+冲减备忘重试)按数据决定是否做,依附 reconciler 开关不另设新 knob。
+6. **C-2 裁定=不建自动补价 worker**:现有四层不动(预扣 fail-closed 严于三镜/ratio 冷启 fail-open→1.0 与 new-api 一致/流式 0 价+pending 落账优于 sub2api)。第一级自主:pending_reconciliation 未定稿行数进 admin worker-stats+expvar+部署文档。第二级 Manual-First:RepriceUsageRecord+admin dry-run 端点(usage_record_reconciliation_events 表字段现成零迁移),差额报告人工走既有 admin 调整,不自动动钱——排在第一级之后独立切片。
+
+**落地批次**(等 codex②三域批收工避免同文件冲突):批A=C-1b+NT-1+PO-3+S3-4 一级+C-2 一级;批B=NT-2+MO-1(叠在 codex② 的 MO-3 之上);批C=C-2 二级 Manual-First reprice + S3-4 二级(视一级数据)。
