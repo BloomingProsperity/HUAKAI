@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestUsagePendingQueriesKeepMarkerExclusionInsidePendingOnlyClause(t *testing.T) {
+func TestUsagePendingQueriesExcludeAnyReconciliationEventInsidePendingOnlyClause(t *testing.T) {
 	pendingOnlyBlock := normalizeSQLForPendingQueryTest(`
 		AND (
 			$9::boolean = false
@@ -17,18 +17,21 @@ func TestUsagePendingQueriesKeepMarkerExclusionInsidePendingOnlyClause(t *testin
 					FROM usage_record_reconciliation_events re
 					WHERE re.tenant_id = ur.tenant_id
 					  AND re.original_usage_record_id = ur.id
-					  AND re.reconciliation_source = 'stream_no_usage_finalized'
 				)
 			)
 		)
 	`)
 	for name, query := range map[string]string{
-		"list":  listUsageRecords,
-		"count": countUsageRecords,
+		"list":       listUsageRecords,
+		"list_names": listUsageRecordsWithNames,
+		"count":      countUsageRecords,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if !strings.Contains(normalizeSQLForPendingQueryTest(query), pendingOnlyBlock) {
-				t.Fatalf("%s query must exclude no-usage markers only inside pending_reconciliation_only block", name)
+				t.Fatalf("%s query must exclude reconciled rows only inside pending_reconciliation_only block", name)
+			}
+			if strings.Contains(query, "reconciliation_source = 'stream_no_usage_finalized'") {
+				t.Fatalf("%s query must not restrict logical pending exclusion to one reconciliation source", name)
 			}
 		})
 	}

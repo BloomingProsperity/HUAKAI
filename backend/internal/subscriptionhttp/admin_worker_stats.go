@@ -51,8 +51,8 @@ type AutoRenewWorkerStats struct {
 	FailedTicks  uint64 `json:"failed_ticks"`
 }
 
-// PendingReconciliationWorkerStats 暴露未定稿 usage_records 数量,供运维用
-// pending_reconciliation_only=true 过滤器定位待人工核查行。
+// PendingReconciliationWorkerStats 暴露 pending 且尚无对账事件的 usage_records 数量,
+// 供运维用 pending_reconciliation_only=true 过滤器定位待人工核查行。
 type PendingReconciliationWorkerStats struct {
 	UsageRecords int64 `json:"usage_records"`
 	QueryFailed  bool  `json:"query_failed"`
