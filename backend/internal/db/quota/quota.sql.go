@@ -1437,3 +1437,63 @@ func (q *Queries) UpsertQuotaWindow(ctx context.Context, arg UpsertQuotaWindowPa
 	)
 	return i, err
 }
+
+const listStaleReservedQuotaReservations = `-- name: ListStaleReservedQuotaReservations :many
+SELECT qr.tenant_id,
+       qr.id AS reservation_id,
+       qr.claim_id,
+       qr.predicted_cost,
+       blc.status AS claim_status,
+       blc.actual_cost AS claim_actual_cost
+FROM quota_reservations qr
+JOIN billing_ledger_claims blc
+  ON blc.tenant_id = qr.tenant_id
+ AND blc.id = qr.claim_id
+WHERE qr.status IN ('reserved', 'reconciliation_needed')
+  AND qr.lease_expires_at <= $1::timestamptz
+  AND blc.status IN ('committed', 'aborted')
+ORDER BY qr.lease_expires_at ASC, qr.id ASC
+LIMIT $2::integer
+`
+
+type ListStaleReservedQuotaReservationsParams struct {
+	AtTime   pgtype.Timestamptz `db:"at_time" json:"at_time"`
+	RowLimit int32              `db:"row_limit" json:"row_limit"`
+}
+
+type ListStaleReservedQuotaReservationsRow struct {
+	TenantID        int64          `db:"tenant_id" json:"tenant_id"`
+	ReservationID   int64          `db:"reservation_id" json:"reservation_id"`
+	ClaimID         int64          `db:"claim_id" json:"claim_id"`
+	PredictedCost   pgtype.Numeric `db:"predicted_cost" json:"predicted_cost"`
+	ClaimStatus     string         `db:"claim_status" json:"claim_status"`
+	ClaimActualCost pgtype.Numeric `db:"claim_actual_cost" json:"claim_actual_cost"`
+}
+
+// 清扫入口: lease 已过期仍未终态、且 billing claim 已终态的预留(跨租户)。
+func (q *Queries) ListStaleReservedQuotaReservations(ctx context.Context, arg ListStaleReservedQuotaReservationsParams) ([]ListStaleReservedQuotaReservationsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleReservedQuotaReservations, arg.AtTime, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaleReservedQuotaReservationsRow
+	for rows.Next() {
+		var i ListStaleReservedQuotaReservationsRow
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.ReservationID,
+			&i.ClaimID,
+			&i.PredictedCost,
+			&i.ClaimStatus,
+			&i.ClaimActualCost,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

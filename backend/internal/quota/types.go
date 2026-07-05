@@ -212,3 +212,16 @@ type ReconciliationJob struct {
 	LastError     *string
 	NextRunAt     time.Time
 }
+
+// StaleReservation 是 lease 已过期仍未终态的预留 + 其 billing claim 终态视图,
+// 供清扫器按 claim 终态定向补偿(committed→Settle, aborted→Release)。
+// ClaimActualCostSet=false 表示 claim 行 actual_cost 为 NULL(此时用 PredictedCost 兜底)。
+type StaleReservation struct {
+	TenantID           int64
+	ReservationID      int64
+	ClaimID            int64
+	PredictedCost      decimal.Decimal
+	ClaimStatus        string
+	ClaimActualCost    decimal.Decimal
+	ClaimActualCostSet bool
+}

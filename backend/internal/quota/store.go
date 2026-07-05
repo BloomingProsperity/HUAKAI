@@ -38,6 +38,9 @@ type PGStore interface {
 	MarkReconciliationJobRunning(ctx context.Context, tenantID int64, jobID int64) error
 	CompleteReconciliationJob(ctx context.Context, tenantID int64, jobID int64) error
 	FailReconciliationJob(ctx context.Context, input ReconciliationFailure) error
+	// ListStaleReservedReservations 返回 lease 已过期仍未终态、且 billing claim 已终态的预留
+	//(跨租户),供清扫器兜住「billing 终态后补偿 job 从未入队」的崩溃窗口。
+	ListStaleReservedReservations(ctx context.Context, at time.Time, limit int) ([]StaleReservation, error)
 }
 
 type ProgressReadStore interface {

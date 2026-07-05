@@ -1203,10 +1203,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	pendingReconciler.Start(ctx)
 	rt.pendingReconcileStop = pendingReconciler.Stop
 
-	// quota 补偿器 worker(缺口② 修复):此前 quota.Reconciler 建了但从未接线(死代码),
-	// 导致 quota_reconciliation_jobs 永久卡 queued、reservation 卡 reserved、并发槽只靠
-	// lease 过期释放。这里用跨租户全局 sweep 把它真跑起来。默认关(knob 打开才启,不翻转默认
-	// 行为);打开后 reservation 结算/释放失败入队的 job 由后台 sweep 重放,不再永久卡 reserved。
+	// quota 补偿器 worker:每轮两段——①重放结算/释放失败后入队的补偿 job;②清扫 lease 已过期、
+	// billing claim 已终态、但补偿 job 从未入队(进程死于 billing 终态与 quota 补偿之间的崩溃窗口)
+	// 的孤儿预留,按 claim 终态定向 Settle/Release。两段缺一,预留都会永久卡 reserved 冻结窗口
+	// headroom(手动/累计窗无滚动自愈)。默认关,knob 打开才启。
 	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_QUOTA_RECONCILER_ENABLED")); on {
 		quotaReconciler := quota.NewReconciler(nil, quota.NewPostgresStore(pgPool), quota.ReconcilerOptions{})
 		quotaWorker := quota.NewReconciliationWorker(quotaReconciler, 0)

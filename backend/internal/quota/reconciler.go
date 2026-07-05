@@ -22,6 +22,11 @@ const (
 
 	// Release 校验已有白名单; reconciler 使用现有合法 reason, 不扩展主路径校验面。
 	reconciliationReleaseReason = "upstream_error"
+
+	// billing_ledger_claims.status 终态值(与 0002 迁移 CHECK 对齐)。
+	// quota 不 import internal/billing(避免反向依赖), 以字面值对齐。
+	claimStatusCommitted = "committed"
+	claimStatusAborted   = "aborted"
 )
 
 type ReconcilerOptions struct {
@@ -119,6 +124,74 @@ func (r *Reconciler) ReconcileAllTenants(ctx context.Context, now time.Time) (in
 			"tenant_sweep_limit", r.tenantSweep, "processed_jobs", total)
 	}
 	return total, errors.Join(errs...)
+}
+
+// SweepStaleReservations 兜住「billing claim 已终态但 quota 补偿 job 从未入队」的崩溃窗口
+//(进程死于 billing Tx2 commit 与 quota settle 之间时, job 表里什么都没有, 预留会永久卡
+// reserved 冻结窗口 headroom)。按 claim 终态定向补偿: committed→Settle(优先用 claim 的
+// actual_cost, NULL 时退回 predicted_cost 保守代理), aborted→Release。两个动作与并发中的
+// 真实结算相撞时都是幂等命中(见 service_settle.go 终态 switch), 无竞态窗口; claim 仍
+// reserving 的行不取(billing lease sweeper 先终结, 下一轮再接)。返回本轮补偿成功的预留数。
+func (r *Reconciler) SweepStaleReservations(ctx context.Context, now time.Time, limit int) (int, error) {
+	if r == nil || r.service == nil || r.store == nil {
+		return 0, fmt.Errorf("quota reconciler: service and store are required")
+	}
+	if now.IsZero() {
+		return 0, fmt.Errorf("quota reconciler: now is required")
+	}
+	now = now.UTC()
+	if limit <= 0 {
+		limit = r.limit
+	}
+	stale, err := r.store.ListStaleReservedReservations(ctx, now, limit)
+	if err != nil {
+		return 0, fmt.Errorf("quota reconciler: list stale reservations: %w", err)
+	}
+	processed := 0
+	var errs []error
+	for _, row := range stale {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		var actErr error
+		switch row.ClaimStatus {
+		case claimStatusCommitted:
+			actual := row.PredictedCost
+			if row.ClaimActualCostSet {
+				actual = row.ClaimActualCost
+			}
+			_, actErr = r.service.Settle(ctx, SettleRequest{
+				TenantID:      row.TenantID,
+				ClaimID:       row.ClaimID,
+				ReservationID: row.ReservationID,
+				ActualCost:    actual,
+				SettledAt:     now,
+			})
+		case claimStatusAborted:
+			_, actErr = r.service.Release(ctx, ReleaseRequest{
+				TenantID:      row.TenantID,
+				ClaimID:       row.ClaimID,
+				ReservationID: row.ReservationID,
+				Reason:        reconciliationReleaseReason,
+				ReleasedAt:    now,
+			})
+		default:
+			continue
+		}
+		if actErr != nil {
+			// 单行失败不阻断其它行(下一轮重扫仍会接住本行)。
+			errs = append(errs, fmt.Errorf("tenant %d reservation %d claim %d (%s): %w",
+				row.TenantID, row.ReservationID, row.ClaimID, row.ClaimStatus, actErr))
+			continue
+		}
+		processed++
+	}
+	if processed > 0 {
+		r.logger.InfoContext(ctx, "quota reconciler swept stale reservations",
+			"processed", processed, "scanned", len(stale))
+	}
+	return processed, errors.Join(errs...)
 }
 
 func (r *Reconciler) ReconcileDueJobs(ctx context.Context, tenantID int64, now time.Time, limit int) (int, error) {

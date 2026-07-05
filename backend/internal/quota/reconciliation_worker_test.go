@@ -20,6 +20,11 @@ func (s countingSweepStore) ListTenantsWithDueReconciliationJobs(context.Context
 	return nil, nil
 }
 
+// RunOnce 的清扫段也会打到 store;返回空让轮次保持空转语义。
+func (s countingSweepStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
+	return nil, nil
+}
+
 // TestReconciliationWorker_NilReconcilerSafe:reconciler 为 nil 时全部空操作、不 panic
 //(生产 knob 关时不构造 reconciler,worker 相关 stop hook 也不会被设——但防御式仍要安全)。
 func TestReconciliationWorker_NilReconcilerSafe(t *testing.T) {

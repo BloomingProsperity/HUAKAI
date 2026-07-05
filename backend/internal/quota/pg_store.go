@@ -544,6 +544,41 @@ func (s *PostgresStore) ListTenantsWithDueReconciliationJobs(ctx context.Context
 	})
 }
 
+// ListStaleReservedReservations 返回 lease 已过期仍未终态、且 billing claim 已终态的预留。
+// limit<=0 时不查(返回空),防止无界扫描。
+func (s *PostgresStore) ListStaleReservedReservations(ctx context.Context, at time.Time, limit int) ([]StaleReservation, error) {
+	q, err := s.queries()
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	if limit > math.MaxInt32 {
+		limit = math.MaxInt32
+	}
+	rows, err := q.ListStaleReservedQuotaReservations(ctx, dbquota.ListStaleReservedQuotaReservationsParams{
+		AtTime:   pgTimestamptz(at),
+		RowLimit: int32(limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+	stale := make([]StaleReservation, 0, len(rows))
+	for _, row := range rows {
+		stale = append(stale, StaleReservation{
+			TenantID:           row.TenantID,
+			ReservationID:      row.ReservationID,
+			ClaimID:            row.ClaimID,
+			PredictedCost:      decimalFromPG(row.PredictedCost),
+			ClaimStatus:        row.ClaimStatus,
+			ClaimActualCost:    decimalFromPG(row.ClaimActualCost),
+			ClaimActualCostSet: row.ClaimActualCost.Valid,
+		})
+	}
+	return stale, nil
+}
+
 func (s *PostgresStore) MarkReconciliationJobRunning(ctx context.Context, tenantID int64, jobID int64) error {
 	q, err := s.queries()
 	if err != nil {

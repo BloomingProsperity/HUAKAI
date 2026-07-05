@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -99,7 +100,8 @@ func (w *ReconciliationWorker) logRound(ctx context.Context, replayed int, err e
 }
 
 // RunOnce 跑一轮全局 sweep;now 为零值时取当前时间。错误仅返回不致命(下轮重试),
-// 供测试直接驱动一轮而不启 goroutine。
+// 供测试直接驱动一轮而不启 goroutine。一轮 = job 重放 + 过期预留清扫两段:前者补
+// 「已入队的补偿」,后者兜「job 从未入队」的崩溃窗口,缺任一都会留永久冻结面。
 func (w *ReconciliationWorker) RunOnce(ctx context.Context, now time.Time) (int, error) {
 	if w == nil || w.reconciler == nil {
 		return 0, nil
@@ -107,7 +109,9 @@ func (w *ReconciliationWorker) RunOnce(ctx context.Context, now time.Time) (int,
 	if now.IsZero() {
 		now = w.now()
 	}
-	return w.reconciler.ReconcileAllTenants(ctx, now.UTC())
+	replayed, jobErr := w.reconciler.ReconcileAllTenants(ctx, now.UTC())
+	swept, sweepErr := w.reconciler.SweepStaleReservations(ctx, now.UTC(), 0)
+	return replayed + swept, errors.Join(jobErr, sweepErr)
 }
 
 // Stop 幂等停止并等待循环退出。

@@ -569,3 +569,23 @@ SET status = 'failed',
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND id = sqlc.arg(job_id)::bigint
   AND status = 'running';
+
+-- name: ListStaleReservedQuotaReservations :many
+-- 清扫入口: lease 已过期仍未终态的预留, 连同其 billing claim 终态与实结金额。
+-- 只取 claim 已终态(committed/aborted)的行; 仍 reserving 的 claim 由 billing
+-- lease sweeper 先终结, 下一轮再被本查询接住。跨租户扫描, 补偿动作按行内租户执行。
+SELECT qr.tenant_id,
+       qr.id AS reservation_id,
+       qr.claim_id,
+       qr.predicted_cost,
+       blc.status AS claim_status,
+       blc.actual_cost AS claim_actual_cost
+FROM quota_reservations qr
+JOIN billing_ledger_claims blc
+  ON blc.tenant_id = qr.tenant_id
+ AND blc.id = qr.claim_id
+WHERE qr.status IN ('reserved', 'reconciliation_needed')
+  AND qr.lease_expires_at <= sqlc.arg(at_time)::timestamptz
+  AND blc.status IN ('committed', 'aborted')
+ORDER BY qr.lease_expires_at ASC, qr.id ASC
+LIMIT sqlc.arg(row_limit)::integer;

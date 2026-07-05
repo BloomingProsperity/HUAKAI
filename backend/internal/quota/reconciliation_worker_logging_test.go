@@ -115,6 +115,11 @@ func (s failingSweepStore) ListTenantsWithDueReconciliationJobs(context.Context,
 	return nil, errors.New("pg unavailable")
 }
 
+// RunOnce 的清扫段也会打到 store;返回空,让本 fake 的错误轮语义只来自 job 段。
+func (s failingSweepStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
+	return nil, nil
+}
+
 // startQuotaWorkerAndWaitRounds 起 worker 跑到 calls 至少 minCalls 后停,返回全部日志记录。
 func startQuotaWorkerAndWaitRounds(t *testing.T, store PGStore, calls *atomic.Int32, minCalls int32) []collectRecord {
 	t.Helper()

@@ -1092,6 +1092,10 @@ func (s failingReserveStore) MarkReservationReconciliationNeeded(context.Context
 	return s.err
 }
 
+func (s failingReserveStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
+	return nil, s.err
+}
+
 func (s failingReserveStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {
 	return ConcurrencySlot{}, s.err
 }

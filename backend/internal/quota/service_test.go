@@ -504,6 +504,10 @@ func (s *noTxReserveStore) MarkReservationReconciliationNeeded(context.Context, 
 	return s.fail()
 }
 
+func (s *noTxReserveStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
+	return nil, s.fail()
+}
+
 func (s *noTxReserveStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {
 	return ConcurrencySlot{}, s.fail()
 }
@@ -619,6 +623,10 @@ func (s *claimConflictReplayStore) ReleaseReservation(context.Context, Reservati
 
 func (s *claimConflictReplayStore) MarkReservationReconciliationNeeded(context.Context, int64, int64, int64) error {
 	return errors.New("unexpected MarkReservationReconciliationNeeded")
+}
+
+func (s *claimConflictReplayStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
+	return nil, errors.New("unexpected ListStaleReservedReservations")
 }
 
 func (s *claimConflictReplayStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {
