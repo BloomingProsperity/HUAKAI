@@ -27,7 +27,7 @@ func TestCodexSessionAdapter_AcceptableCredentialTypes(t *testing.T) {
 		t.Fatalf("AcceptableCredentialTypes 长度=%d want 2: %v", len(got), got)
 	}
 	want := map[provider.CredentialType]bool{
-		provider.CredentialTypeSessionToken:       true,
+		provider.CredentialTypeSessionToken:        true,
 		provider.CredentialTypeUpstreamPassthrough: true,
 	}
 	for _, ct := range got {
@@ -119,6 +119,87 @@ func TestCodexSessionAdapter_BuildRequest_CustomEndpoint(t *testing.T) {
 	}
 	if got := req.URL.String(); got != "https://chatgpt.com/backend-api/codex/chat" {
 		t.Errorf("自定义 endpoint 未生效: URL=%q", got)
+	}
+}
+
+func TestCodexSessionAdapter_BuildRequest_ExtraBaseURLOverridesEndpoint(t *testing.T) {
+	a := &CodexSessionAdapter{Endpoint: "https://chatgpt.com/backend-api/codex/chat"}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-tok",
+			Extra: map[string]string{
+				"base_url": " https://codex-proxy.example/backend-api/codex/completions?route=primary ",
+			},
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.String(); got != "https://codex-proxy.example/backend-api/codex/completions?route=primary" {
+		t.Fatalf("Extra base_url 未覆盖 endpoint: URL=%q", got)
+	}
+}
+
+func TestCodexSessionAdapter_BuildRequest_LocalBaseURLAllowedForE2E(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-4o",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-tok",
+			Extra: map[string]string{
+				"base_url": "http://127.0.0.1:18080/backend-api/codex/completions",
+			},
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.String(); got != "http://127.0.0.1:18080/backend-api/codex/completions" {
+		t.Fatalf("本机 base_url 未保留: URL=%q", got)
+	}
+}
+
+func TestCodexSessionAdapter_BuildRequest_RejectUnsafeBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+	}{
+		{name: "http 非本机", baseURL: "http://codex-proxy.example/backend-api/codex/completions"},
+		{name: "metadata IP", baseURL: "https://169.254.169.254/latest/meta-data"},
+		{name: "metadata host", baseURL: "https://metadata.google.internal/backend-api/codex/completions"},
+		{name: "私网 IP", baseURL: "https://10.0.0.1/backend-api/codex/completions"},
+		{name: "特殊用途 IP", baseURL: "https://203.0.113.10/backend-api/codex/completions"},
+		{name: "空 host", baseURL: "https:///backend-api/codex/completions"},
+		{name: "编码 host", baseURL: "https://example%2ecom/backend-api/codex/completions"},
+		{name: "混淆数字 host", baseURL: "https://0177.0.0.1/backend-api/codex/completions"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &CodexSessionAdapter{}
+			in := provider.BuildInput{
+				UpstreamModelID: "gpt-4o",
+				InboundBody:     []byte(`{}`),
+				Credential: provider.Credential{
+					Type:  provider.CredentialTypeSessionToken,
+					Value: "sb-tok",
+					Extra: map[string]string{"base_url": tc.baseURL},
+				},
+			}
+			_, err := a.BuildRequest(context.Background(), in)
+			if err == nil {
+				t.Fatal("不安全 base_url 应被拒绝")
+			}
+			if !strings.Contains(err.Error(), "base_url 非法") {
+				t.Fatalf("error=%v want base_url 非法", err)
+			}
+		})
 	}
 }
 
