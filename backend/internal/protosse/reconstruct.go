@@ -23,12 +23,20 @@ type BufferedSSEReconstructLimits struct {
 	ScannerBufferBytes       int
 	MaxCanonicalPayloadBytes int
 	MaxCanonicalEvents       int
+	// MaxUpstreamEvents 限制**总共消费的上游 SSE 事件数**(不论是否产出 canonical 事件)。
+	// MaxCanonicalPayloadBytes / MaxCanonicalEvents 只在 adapter 产出 canonical 事件时推进,
+	// 而解析失败 / response.error / 未知事件一律返回「0 canonical 事件 + 1 loss」——这类坏事件
+	// 令那两道上限永不触达,却让 losses 切片无界增长(恶意上游狂发不可解析小事件→OOM)。
+	// 本上限对良构流永不成为绑定约束(良构流每事件产 canonical 事件,早被 canonical 上限拦住),
+	// 只拦不产 canonical 事件的坏事件洪流。
+	MaxUpstreamEvents int
 }
 
 const (
 	defaultBufferedSSEScannerBufferBytes    = 2 << 20
 	defaultBufferedSSECanonicalPayloadBytes = 16 << 20
 	defaultBufferedSSECanonicalEvents       = 200000
+	defaultBufferedSSEUpstreamEvents        = 200000
 	bufferedSSEReaderInitialBufferBytes     = 32 << 10
 )
 
@@ -41,6 +49,7 @@ func DefaultBufferedSSEReconstructLimits() BufferedSSEReconstructLimits {
 		ScannerBufferBytes:       defaultBufferedSSEScannerBufferBytes,
 		MaxCanonicalPayloadBytes: defaultBufferedSSECanonicalPayloadBytes,
 		MaxCanonicalEvents:       defaultBufferedSSECanonicalEvents,
+		MaxUpstreamEvents:        defaultBufferedSSEUpstreamEvents,
 	}
 }
 
@@ -54,6 +63,9 @@ func (l BufferedSSEReconstructLimits) normalized() BufferedSSEReconstructLimits 
 	}
 	if l.MaxCanonicalEvents <= 0 {
 		l.MaxCanonicalEvents = def.MaxCanonicalEvents
+	}
+	if l.MaxUpstreamEvents <= 0 {
+		l.MaxUpstreamEvents = def.MaxUpstreamEvents
 	}
 	return l
 }
@@ -72,6 +84,9 @@ func ReconstructBufferedFromSSE(adapter proto.UpstreamAdapter, raw []byte) (*pro
 	ctx := context.Background()
 	var events []proto.CanonicalEvent
 	var losses []proto.ProtocolLossEntry
+	// 注:byte 版不设总事件上限。输入 raw 由调用方(handler/hcsf 的原始体读取上限,~1MiB)
+	// 硬 bound,装不下能触发上限的事件量(每事件至少数字节),故其事件数天然有界;
+	// 真正的无界向量是 reader 版(逐帧消费无外层字节上限),上限只加在那一侧,避免死分支。
 	for _, evt := range splitSSE(raw) {
 		if len(bytes.TrimSpace(evt.data)) == 0 {
 			continue
@@ -121,6 +136,7 @@ func ReconstructBufferedFromSSEReader(ctx context.Context, adapter proto.Upstrea
 	var events []proto.CanonicalEvent
 	var losses []proto.ProtocolLossEntry
 	payloadBytes := 0
+	consumedEvents := 0
 	appendEvents := func(in []any) error {
 		canonical := canonicalEvents(in)
 		for _, evt := range canonical {
@@ -139,6 +155,12 @@ func ReconstructBufferedFromSSEReader(ctx context.Context, adapter proto.Upstrea
 		data := bytes.TrimSpace(evt.data)
 		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 			return nil
+		}
+		// 总消费事件上限:坏事件不产 canonical 事件、绕过下面两道 canonical 软上限,
+		// 必须在此对「进入 adapter 的事件总数」设界,否则 losses 随坏事件洪流无界增长。
+		consumedEvents++
+		if consumedEvents > limits.MaxUpstreamEvents {
+			return ErrBufferedSSECanonicalTooLarge
 		}
 		out, eventLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, data, state)
 		losses = append(losses, eventLosses...)

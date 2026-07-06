@@ -1,6 +1,9 @@
 package protosse
 
 import (
+	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -10,6 +13,80 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
+
+// floodEventReader 惰性产出 remaining 个相同的坏 SSE 事件后 EOF,用于在不分配巨大
+// 字符串的前提下模拟「超量/近乎无界的上游流」;每次 Read 至多吐一个事件的字节。
+// 读到 EOF 前 remaining 会随消费递减,故测试可用 remaining>0 断言重组提前终止、
+// 没有把整条流读完(证明总事件上限真的短路了消费)。
+type floodEventReader struct {
+	event     []byte
+	remaining int
+	buf       []byte
+}
+
+func (f *floodEventReader) Read(p []byte) (int, error) {
+	if len(f.buf) == 0 {
+		if f.remaining <= 0 {
+			return 0, io.EOF
+		}
+		f.remaining--
+		f.buf = append([]byte(nil), f.event...)
+	}
+	n := copy(p, f.buf)
+	f.buf = f.buf[n:]
+	return n, nil
+}
+
+// TestReconstructBufferedFromSSEReaderUpstreamEventFloodTripsLimit 守卫 S2 DoS:
+// 坏事件(JSON 解析失败)不产 canonical 事件、绕过 MaxCanonicalPayloadBytes /
+// MaxCanonicalEvents 两道 canonical 软上限,却每个让 losses 增长一项。恶意上游
+// 狂发不可解析小事件时,若无「总消费事件上限」,losses 切片无界增长直至 OOM、
+// 拖垮承载所有租户的共享网关。
+// 判别 fixture:cap=5,惰性产出 5 万个坏事件(`data: {`)。修好后断言返回
+// ErrBufferedSSECanonicalTooLarge,且 reader 仍有大量未读事件(remaining>0)=提前
+// 终止、没读完整条流。
+// Mutation:删 ReconstructBufferedFromSSEReader 回调里的 consumedEvents 上限检查 →
+// 5 万个坏事件全被消费(remaining 归 0)、0 canonical 事件 → 返回 err==nil、
+// ok==true → 本测试两处断言均红。
+func TestReconstructBufferedFromSSEReaderUpstreamEventFloodTripsLimit(t *testing.T) {
+	r := &floodEventReader{event: []byte("data: {\n\n"), remaining: 50000}
+	limits := BufferedSSEReconstructLimits{MaxUpstreamEvents: 5}
+	env, _, _, err := ReconstructBufferedFromSSEReader(context.Background(), &openai.ResponsesAdapter{}, r, limits)
+	if !errors.Is(err, ErrBufferedSSECanonicalTooLarge) {
+		t.Fatalf("坏事件洪流必须触发 too-large,得 err=%v env=%+v", err, env)
+	}
+	if r.remaining == 0 {
+		t.Fatal("上限未短路消费:reader 被读到底(remaining=0),说明总事件上限没生效")
+	}
+}
+
+// TestReconstructBufferedFromSSEReaderGoodStreamUnaffectedByEventLimit 负向:总事件
+// 上限不能误伤良构流。良构流每事件都产 canonical 事件、事件数远小于上限,必须照常
+// 重组出 buffered response,不被 too-large 误拦。
+func TestReconstructBufferedFromSSEReaderGoodStreamUnaffectedByEventLimit(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"id":"chatcmpl-sse","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"rescued text"},"finish_reason":null}]}`,
+		``,
+		`data: {"id":"chatcmpl-sse","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+		``,
+		`data: [DONE]`,
+		``,
+		``,
+	}, "\n")
+	env, _, ok, err := ReconstructBufferedFromSSEReader(context.Background(), &openai.Adapter{}, strings.NewReader(raw), BufferedSSEReconstructLimits{})
+	if err != nil {
+		t.Fatalf("良构流不应报错: %v", err)
+	}
+	if !ok || env == nil || env.BufferedResponse == nil {
+		t.Fatalf("良构流必须重组出 buffered response: ok=%v env=%+v", ok, env)
+	}
+	if got := env.BufferedResponse.Content; len(got) != 1 || got[0].Type != "text" || got[0].Text != "rescued text" {
+		t.Fatalf("content = %+v, want one text block 'rescued text'", got)
+	}
+	if got := env.BufferedResponse.Usage; got.InputTokens != 10 || got.OutputTokens != 5 {
+		t.Fatalf("usage = %+v, want input=10 output=5", got)
+	}
+}
 
 // TestReconstructBufferedFromSSEDifyStream 守卫族集对称第 8 站:本包
 // newUpstreamState 与 gateway/forwarder.newUpstreamState 是孪生类型分派,

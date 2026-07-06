@@ -99,3 +99,14 @@ TestCodexLiveResponsesMatrix 5 项全 PASS 打真实 chatgpt.com:流式文本✅
 - **Gemini 账号**(code_assist/google_one→gemini_advanced_session;dispatch:30-31 映射 ProviderGeminiAdvanced):dispatch transport 已映射但**未 live 验**真实端点/形态(codex 同款风险:端点/响应形可能过时错)。
 - **Antigravity**(→antigravity_session/ProviderAntigravity,dispatch:32-33):同 gemini advanced,dispatch 映射在、未 live 验。
 **结论**:除 codex 外这些账号 serving 均"部分接线未 live 验",每个需 codex 片1 同款方法论(真实账号探端点/形态→修 endpoint/transform/parser/ingress→live 全能力 e2e)。均需真实账号(Claude 必须 Owner 提供、不用本机)。
+
+## 片2a 对抗审查裁定(506f3baa,wlfrjrse5,15 agent,§17 链路配合视角复核)
+Owner 提醒「不能只看当前链路,要看链路上其他颗粒度模块 + 模块之间的配合」——已把两发现放回整条 reader 聚合链路亲核真码,而非就地补丁。
+
+**链路全貌**:泛型 `ReconstructBufferedFromSSEReader` 有两个消费端——(a) raw/HCSF=0 路径 `chat_completions_dispatch.go:756`;(b) 生产默认 HCSF 路径 `upstream_dispatcher_hcsf.go:278`;对**所有 family**(anthropic/gemini/openai/dify/ollama)生效。另有字节版 `ReconstructBufferedFromSSE` 两入口(hcsf:246 / handler:809,输入已 bounded)。
+
+**S2(losses/总事件无界→OOM)= 链路通病,fix(片2b)**:软上限只数 canonical 事件(reconstruct.go:127-135),而 adapter 遇坏事件返回「0 事件+1 loss」(responses_sse.go:49-52/210-214),`losses` 在 :144 无界增长、软上限永不触达。恶意上游狂发不可解析小事件→数 GB→拖垮共享网关。**adapter 契约↔聚合 DoS 守卫的配合缺口**,是刚 ship 的片2a 代码的安全洞→片2b hotfix:泛型层加总消费事件上限 `MaxUpstreamEvents`,一次覆盖全 family+两消费端。
+
+**S3(重试分类分叉)= 真·模块配合缺陷,dev-only,记录不混修**:raw 路径(chat_completions_dispatch.go:757-769)对瞬时聚合错误硬 502 不 failover;HCSF 默认路径(upstream_dispatcher_hcsf.go:283)把同错误交 `ClassifyAttemptDispatchError`→idle/network timeout 判可重试→换号 failover。**尚未向客户端写字节时**(缓冲聚合恒真,failover 安全),raw 路径把本可恢复的瞬时错误变硬失败。但 raw 路径只在 `HUAKAI_DISPATCH_HCSF=0`(dev-only)可达,生产默认走 HCSF 路径 failover 正确。收敛=让 raw 路径瞬时聚合错误也走 `ClassifyAttemptDispatchError` 分类(未写客户端则返回可重试 failure 供换号),与 HCSF 路径一致。**因触 failover/重试语义(记忆两次栽在 codex 擅改 failover 语义),列为专门切片 + surface Owner,不在片2b hotfix 混改。** 生命周期本身正确(单次 abort、无 hold 泄漏、无重复 abort),仅可恢复性分叉。
+
+**审查驳回的(未存活,记录以免重开)**:①response.failed/cancelled/传输截断当成功结算少计费——驳回(失败流不产 buffered_response→被 :285/:771 判 `!ok` 拒、不结算,且已记 loss+stop_reason);②聚合读取无 inter-event 超时占并发槽 S3——seedCtx 带请求级 deadline,记 follow-up;③16MiB 对 codex 不可达 S3——2MiB per-event 先绑,设计如此。
