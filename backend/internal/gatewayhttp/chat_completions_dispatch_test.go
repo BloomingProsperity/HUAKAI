@@ -1216,7 +1216,7 @@ func (waitPlanSelector) Select(context.Context, pool.SelectionRequest) (*pool.Se
 		AccountID:      1,
 		MaxConcurrency: 2,
 		TimeoutMS:      2500,
-		MaxWaiting:     8,
+		MaxWaiting:     0,
 	}}, nil
 }
 

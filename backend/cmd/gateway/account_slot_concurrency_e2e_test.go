@@ -19,8 +19,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
 const (
@@ -30,99 +28,13 @@ const (
 )
 
 func TestAccountSlotConcurrencyE2E_NoCapacityAndRelease(t *testing.T) {
-	capacity := int(accountSlotE2ECapacity)
-	dsn := os.Getenv("HUAKAI_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("HUAKAI_DATABASE_URL not set; skipping e2e concurrency test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
-	if err != nil {
-		t.Fatalf("Open dev pool: %v", err)
-	}
-	t.Cleanup(pgPool.Close)
-
-	seed := seedSmokeGraph(t, ctx, pgPool)
-	pricingVersion := "e2e-account-slot-" + uuid.NewString()
-	cleanupAccountSlotE2E(t, pgPool, seed.tenantID, pricingVersion)
-	seedAccountSlotE2EConfig(t, ctx, pgPool, seed, pricingVersion)
-
-	binPath := buildGateway(t)
-	defer os.Remove(binPath)
-
-	addr := reserveLocalPort(t)
-	cmd := startAccountSlotE2EGateway(t, binPath, dsn, addr, pricingVersion)
-	t.Cleanup(func() { stopGateway(cmd) })
-	waitForGateway(t, addr)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-
-	samplerCtx, stopSampler := context.WithCancel(ctx)
-	sampler := &accountSlotInFlightSampler{}
-	samplerDone := make(chan struct{})
-	go func() {
-		defer close(samplerDone)
-		sampler.run(samplerCtx, pgPool, seed.providerAccountID)
-	}()
-
-	holderResults := make([]accountSlotHTTPResult, capacity)
-	holderStart := make(chan struct{})
-	var holderWG sync.WaitGroup
-	for i := range holderResults {
-		i := i
-		holderWG.Add(1)
-		go func() {
-			defer holderWG.Done()
-			<-holderStart
-			logicalID := fmt.Sprintf("account-slot-holder-%02d-%s", i, uuid.NewString())
-			holderResults[i] = postAccountSlotChat(ctx, client, addr, seed.bearer, logicalID)
-		}()
-	}
-	close(holderStart)
-
-	fullSeen := waitForAccountSlotInFlight(t, ctx, pgPool, seed.providerAccountID, accountSlotE2ECapacity, accountSlotE2ECapacity)
-	sampler.observe(fullSeen)
-
-	overflowResults := postAccountSlotBatch(ctx, client, addr, seed.bearer, "account-slot-overflow", accountSlotE2EOverflowRequests)
-	holderWG.Wait()
-
-	stopSampler()
-	<-samplerDone
-	peak, sampleErr := sampler.result()
-	if sampleErr != nil {
-		t.Fatalf("采样 provider_accounts.in_flight_count: %v", sampleErr)
-	}
-	if peak != accountSlotE2ECapacity {
-		t.Fatalf("账号在途峰值=%d want %d;峰值必须打满但不能越过 cap", peak, accountSlotE2ECapacity)
-	}
-
-	successes, rejects := classifyAccountSlotResults(t, holderResults, overflowResults)
-	if len(successes) != capacity {
-		t.Fatalf("成功请求数=%d want %d", len(successes), accountSlotE2ECapacity)
-	}
-	if len(rejects) != accountSlotE2EOverflowRequests {
-		t.Fatalf("queue_wait 拒绝数=%d want %d", len(rejects), accountSlotE2EOverflowRequests)
-	}
-
-	for _, result := range successes {
-		assertAccountSlotSuccessPG(t, ctx, pgPool, seed, result.logicalID)
-	}
-	for _, result := range rejects {
-		assertAccountSlotRejectPG(t, ctx, pgPool, seed, result.logicalID)
-	}
-	waitForAccountSlotInFlight(t, ctx, pgPool, seed.providerAccountID, 0, accountSlotE2ECapacity)
-	assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(successes), len(rejects))
-
-	t.Logf("账号并发槽语义:单账号 cap=%d 时,在途峰值=%d,成功=%d,超额请求以 429/queue_wait 干净拒绝=%d",
-		accountSlotE2ECapacity, peak, len(successes), len(rejects))
+	runAccountSlotQueueWaitE2E(t)
 }
 
 type accountSlotHTTPResult struct {
 	logicalID  string
 	statusCode int
+	retryAfter string
 	body       []byte
 	err        error
 }
@@ -321,7 +233,7 @@ func postAccountSlotChat(ctx context.Context, client *http.Client, addr, bearer,
 	if err != nil {
 		return accountSlotHTTPResult{logicalID: logicalID, statusCode: resp.StatusCode, err: err}
 	}
-	return accountSlotHTTPResult{logicalID: logicalID, statusCode: resp.StatusCode, body: raw}
+	return accountSlotHTTPResult{logicalID: logicalID, statusCode: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After"), body: raw}
 }
 
 func classifyAccountSlotResults(t *testing.T, holderResults, overflowResults []accountSlotHTTPResult) (successes, rejects []accountSlotHTTPResult) {
@@ -401,6 +313,11 @@ func assertAccountSlotSuccessPG(t *testing.T, ctx context.Context, pgPool *pgxpo
 
 func assertAccountSlotRejectPG(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *smokeSeed, logicalID string) {
 	t.Helper()
+	assertAccountSlotRejectReasonPG(t, ctx, pgPool, seed, logicalID, "queue_wait")
+}
+
+func assertAccountSlotRejectReasonPG(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *smokeSeed, logicalID string, wantReason string) {
+	t.Helper()
 	claimID, _ := readAccountSlotClaim(t, ctx, pgPool, seed, logicalID, "aborted")
 	var abortedReason *string
 	if err := pgPool.QueryRow(ctx,
@@ -410,8 +327,8 @@ func assertAccountSlotRejectPG(t *testing.T, ctx context.Context, pgPool *pgxpoo
 	).Scan(&abortedReason); err != nil {
 		t.Fatalf("read aborted_reason for claim %d: %v", claimID, err)
 	}
-	if abortedReason == nil || *abortedReason != "queue_wait" {
-		t.Fatalf("claim %d aborted_reason=%v want queue_wait", claimID, abortedReason)
+	if abortedReason == nil || *abortedReason != wantReason {
+		t.Fatalf("claim %d aborted_reason=%v want %s", claimID, abortedReason, wantReason)
 	}
 	assertAccountSlotCount(t, ctx, pgPool,
 		`SELECT count(*) FROM usage_records WHERE tenant_id=$1 AND claim_id=$2`,

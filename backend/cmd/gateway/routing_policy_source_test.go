@@ -9,13 +9,19 @@ package main
 
 import (
 	"context"
+	"errors"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	poolrouter "github.com/BloomingProsperity/HUAKAI/internal/pool/router"
 )
+
+var errUnexpectedRoutingPolicyFallback = errors.New("routing policy fallback 配置不符合预期")
 
 // weightedFakeAccountSource 返回三个同优先级、同负载、同 LastUsedAt 的账号(故落在同一 tie-band),
 // 唯一差异是 Weight,用于观察加权选号是否真按 Weight 倾斜。
@@ -171,5 +177,442 @@ func TestBindingRoutingPolicySource_ReturnsNonNilByMode(t *testing.T) {
 		if strict.SelectionMode == poolrouter.SelectionModePriorityWeighted {
 			t.Fatalf("mode=%q 误判为 priority_weighted, 默认不该走加权", mode)
 		}
+	}
+}
+
+type countingRoutingPolicyPoolStore struct {
+	mu    sync.Mutex
+	rows  map[routingPolicyCacheKey]dbbilling.PoolGroup
+	calls []dbbilling.GetPoolParams
+}
+
+func newCountingRoutingPolicyPoolStore() *countingRoutingPolicyPoolStore {
+	return &countingRoutingPolicyPoolStore{rows: make(map[routingPolicyCacheKey]dbbilling.PoolGroup)}
+}
+
+func (s *countingRoutingPolicyPoolStore) set(tenantID, poolGroupID int64, maxWaiting, timeoutMS int32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows[routingPolicyCacheKey{tenantID: tenantID, poolGroupID: poolGroupID}] = dbbilling.PoolGroup{
+		ID:                     poolGroupID,
+		TenantID:               tenantID,
+		FallbackWaitMaxWaiting: maxWaiting,
+		FallbackWaitTimeoutMs:  timeoutMS,
+	}
+}
+
+func (s *countingRoutingPolicyPoolStore) GetPool(_ context.Context, arg dbbilling.GetPoolParams) (dbbilling.PoolGroup, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, arg)
+	if row, ok := s.rows[routingPolicyCacheKey{tenantID: arg.TenantID, poolGroupID: arg.ID}]; ok {
+		return row, nil
+	}
+	return dbbilling.PoolGroup{
+		ID:                     arg.ID,
+		TenantID:               arg.TenantID,
+		FallbackWaitMaxWaiting: int32(10 + arg.ID),
+		FallbackWaitTimeoutMs:  int32(1000 + arg.ID),
+	}, nil
+}
+
+func (s *countingRoutingPolicyPoolStore) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.calls)
+}
+
+type routingPolicyGetPoolGate struct {
+	entered     chan struct{}
+	release     chan struct{}
+	enterOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func newRoutingPolicyGetPoolGate() *routingPolicyGetPoolGate {
+	return &routingPolicyGetPoolGate{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (g *routingPolicyGetPoolGate) markEntered() {
+	g.enterOnce.Do(func() { close(g.entered) })
+}
+
+func (g *routingPolicyGetPoolGate) releaseQuery() {
+	g.releaseOnce.Do(func() { close(g.release) })
+}
+
+type blockingRoutingPolicyPoolStore struct {
+	mu    sync.Mutex
+	rows  map[routingPolicyCacheKey]dbbilling.PoolGroup
+	errs  map[routingPolicyCacheKey]error
+	gates map[routingPolicyCacheKey]*routingPolicyGetPoolGate
+	calls map[routingPolicyCacheKey]int
+}
+
+func newBlockingRoutingPolicyPoolStore() *blockingRoutingPolicyPoolStore {
+	return &blockingRoutingPolicyPoolStore{
+		rows:  make(map[routingPolicyCacheKey]dbbilling.PoolGroup),
+		errs:  make(map[routingPolicyCacheKey]error),
+		gates: make(map[routingPolicyCacheKey]*routingPolicyGetPoolGate),
+		calls: make(map[routingPolicyCacheKey]int),
+	}
+}
+
+func (s *blockingRoutingPolicyPoolStore) set(tenantID, poolGroupID int64, maxWaiting, timeoutMS int32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows[routingPolicyCacheKey{tenantID: tenantID, poolGroupID: poolGroupID}] = dbbilling.PoolGroup{
+		ID:                     poolGroupID,
+		TenantID:               tenantID,
+		FallbackWaitMaxWaiting: maxWaiting,
+		FallbackWaitTimeoutMs:  timeoutMS,
+	}
+}
+
+func (s *blockingRoutingPolicyPoolStore) setErr(tenantID, poolGroupID int64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := routingPolicyCacheKey{tenantID: tenantID, poolGroupID: poolGroupID}
+	if err == nil {
+		delete(s.errs, key)
+		return
+	}
+	s.errs[key] = err
+}
+
+func (s *blockingRoutingPolicyPoolStore) setGate(tenantID, poolGroupID int64, gate *routingPolicyGetPoolGate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := routingPolicyCacheKey{tenantID: tenantID, poolGroupID: poolGroupID}
+	if gate == nil {
+		delete(s.gates, key)
+		return
+	}
+	s.gates[key] = gate
+}
+
+func (s *blockingRoutingPolicyPoolStore) GetPool(ctx context.Context, arg dbbilling.GetPoolParams) (dbbilling.PoolGroup, error) {
+	key := routingPolicyCacheKey{tenantID: arg.TenantID, poolGroupID: arg.ID}
+	s.mu.Lock()
+	s.calls[key]++
+	row, ok := s.rows[key]
+	err := s.errs[key]
+	gate := s.gates[key]
+	s.mu.Unlock()
+
+	if gate != nil {
+		gate.markEntered()
+		select {
+		case <-gate.release:
+		case <-ctx.Done():
+			return dbbilling.PoolGroup{}, ctx.Err()
+		}
+	}
+	if err != nil {
+		return dbbilling.PoolGroup{}, err
+	}
+	if ok {
+		return row, nil
+	}
+	return dbbilling.PoolGroup{
+		ID:                     arg.ID,
+		TenantID:               arg.TenantID,
+		FallbackWaitMaxWaiting: int32(10 + arg.ID),
+		FallbackWaitTimeoutMs:  int32(1000 + arg.ID),
+	}, nil
+}
+
+func (s *blockingRoutingPolicyPoolStore) callCountFor(tenantID, poolGroupID int64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[routingPolicyCacheKey{tenantID: tenantID, poolGroupID: poolGroupID}]
+}
+
+func TestBindingRoutingPolicySource_CachesFallbackForTenantPoolGroup(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := newCountingRoutingPolicyPoolStore()
+	store.set(7, 42, 3, 2500)
+	src := &bindingRoutingPolicySource{
+		q:        store,
+		cacheTTL: time.Minute,
+		now:      func() time.Time { return now },
+	}
+	req := poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 42}
+
+	first, err := src.GetRoutingPolicy(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first GetRoutingPolicy 失败: %v", err)
+	}
+	second, err := src.GetRoutingPolicy(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second GetRoutingPolicy 失败: %v", err)
+	}
+	if got := store.callCount(); got != 1 {
+		t.Fatalf("GetPool calls=%d want 1; MUTATION:删除缓存会变成 2", got)
+	}
+	for i, policy := range []*poolrouter.RoutingPolicy{first, second} {
+		if policy.FallbackMaxWaiting != 3 || policy.FallbackTimeoutMS != 2500 {
+			t.Fatalf("policy[%d] fallback=%d/%d want 3/2500", i, policy.FallbackMaxWaiting, policy.FallbackTimeoutMS)
+		}
+	}
+}
+
+func TestBindingRoutingPolicySource_RefreshesAfterCacheTTL(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := newCountingRoutingPolicyPoolStore()
+	store.set(7, 42, 3, 2500)
+	src := &bindingRoutingPolicySource{
+		q:        store,
+		cacheTTL: time.Minute,
+		now:      func() time.Time { return now },
+	}
+	req := poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 42}
+
+	if _, err := src.GetRoutingPolicy(context.Background(), req); err != nil {
+		t.Fatalf("first GetRoutingPolicy 失败: %v", err)
+	}
+	store.set(7, 42, 5, 4100)
+	now = now.Add(time.Minute + time.Nanosecond)
+	refreshed, err := src.GetRoutingPolicy(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expired GetRoutingPolicy 失败: %v", err)
+	}
+	if got := store.callCount(); got != 2 {
+		t.Fatalf("GetPool calls=%d want 2", got)
+	}
+	if refreshed.FallbackMaxWaiting != 5 || refreshed.FallbackTimeoutMS != 4100 {
+		t.Fatalf("refreshed fallback=%d/%d want 5/4100", refreshed.FallbackMaxWaiting, refreshed.FallbackTimeoutMS)
+	}
+}
+
+func TestBindingRoutingPolicySource_CacheSeparatesPoolGroups(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := newCountingRoutingPolicyPoolStore()
+	store.set(7, 42, 3, 2500)
+	store.set(7, 43, 4, 3500)
+	src := &bindingRoutingPolicySource{
+		q:        store,
+		cacheTTL: time.Minute,
+		now:      func() time.Time { return now },
+	}
+
+	first, err := src.GetRoutingPolicy(context.Background(), poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 42})
+	if err != nil {
+		t.Fatalf("pool 42 GetRoutingPolicy 失败: %v", err)
+	}
+	second, err := src.GetRoutingPolicy(context.Background(), poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 43})
+	if err != nil {
+		t.Fatalf("pool 43 GetRoutingPolicy 失败: %v", err)
+	}
+	if got := store.callCount(); got != 2 {
+		t.Fatalf("GetPool calls=%d want 2", got)
+	}
+	if first.FallbackTimeoutMS == second.FallbackTimeoutMS {
+		t.Fatalf("不同 pool_group 被缓存串用:first=%+v second=%+v", first, second)
+	}
+}
+
+func TestBindingRoutingPolicySource_CacheConcurrentSafe(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := newCountingRoutingPolicyPoolStore()
+	store.set(7, 42, 3, 2500)
+	src := &bindingRoutingPolicySource{
+		q:        store,
+		cacheTTL: time.Minute,
+		now:      func() time.Time { return now },
+	}
+	req := poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 42}
+
+	const workers = 32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			policy, err := src.GetRoutingPolicy(context.Background(), req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if policy.FallbackMaxWaiting != 3 || policy.FallbackTimeoutMS != 2500 {
+				errs <- errUnexpectedRoutingPolicyFallback
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent GetRoutingPolicy 失败: %v", err)
+		}
+	}
+	if got := store.callCount(); got != 1 {
+		t.Fatalf("并发 GetPool calls=%d want 1", got)
+	}
+}
+
+func TestBindingRoutingPolicySource_SingleFlightSameKeyMiss(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := newBlockingRoutingPolicyPoolStore()
+	store.set(7, 42, 3, 2500)
+	gate := newRoutingPolicyGetPoolGate()
+	store.setGate(7, 42, gate)
+	src := &bindingRoutingPolicySource{
+		q:        store,
+		cacheTTL: time.Minute,
+		now:      func() time.Time { return now },
+	}
+	req := poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 42}
+
+	const workers = 24
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			policy, err := src.GetRoutingPolicy(context.Background(), req)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if policy.FallbackMaxWaiting != 3 || policy.FallbackTimeoutMS != 2500 {
+				errs <- errUnexpectedRoutingPolicyFallback
+				return
+			}
+			errs <- nil
+		}()
+	}
+	close(start)
+	<-gate.entered
+	gate.releaseQuery()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("single-flight 同 key miss 返回错误: %v", err)
+		}
+	}
+	if got := store.callCountFor(7, 42); got != 1 {
+		t.Fatalf("同 key 并发 miss GetPool calls=%d want 1", got)
+	}
+}
+
+func TestBindingRoutingPolicySource_CacheHitUnaffectedByOtherKeyInflight(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := newBlockingRoutingPolicyPoolStore()
+	store.set(7, 42, 3, 2500)
+	store.set(7, 43, 4, 3500)
+	src := &bindingRoutingPolicySource{
+		q:        store,
+		cacheTTL: time.Minute,
+		now:      func() time.Time { return now },
+	}
+	cachedReq := poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 43}
+	if _, err := src.GetRoutingPolicy(context.Background(), cachedReq); err != nil {
+		t.Fatalf("prime cached key 失败: %v", err)
+	}
+
+	gate := newRoutingPolicyGetPoolGate()
+	defer gate.releaseQuery()
+	store.setGate(7, 42, gate)
+	blockedDone := make(chan error, 1)
+	go func() {
+		_, err := src.GetRoutingPolicy(context.Background(), poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 42})
+		blockedDone <- err
+	}()
+	<-gate.entered
+
+	cachedDone := make(chan error, 1)
+	go func() {
+		policy, err := src.GetRoutingPolicy(context.Background(), cachedReq)
+		if err != nil {
+			cachedDone <- err
+			return
+		}
+		if policy.FallbackMaxWaiting != 4 || policy.FallbackTimeoutMS != 3500 {
+			cachedDone <- errUnexpectedRoutingPolicyFallback
+			return
+		}
+		cachedDone <- nil
+	}()
+
+	select {
+	case err := <-cachedDone:
+		if err != nil {
+			t.Fatalf("cached key 返回错误: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("key A 查询阻塞时,已缓存 key B 被全局锁卡住")
+	}
+
+	gate.releaseQuery()
+	if err := <-blockedDone; err != nil {
+		t.Fatalf("blocked key 查询释放后返回错误: %v", err)
+	}
+	if got := store.callCountFor(7, 43); got != 1 {
+		t.Fatalf("cached key GetPool calls=%d want 1", got)
+	}
+}
+
+func TestBindingRoutingPolicySource_InflightErrorPropagatesAndDoesNotCache(t *testing.T) {
+	now := time.Unix(1000, 0)
+	boom := errors.New("routing policy db down")
+	store := newBlockingRoutingPolicyPoolStore()
+	store.set(7, 42, 3, 2500)
+	store.setErr(7, 42, boom)
+	gate := newRoutingPolicyGetPoolGate()
+	store.setGate(7, 42, gate)
+	src := &bindingRoutingPolicySource{
+		q:        store,
+		cacheTTL: time.Minute,
+		now:      func() time.Time { return now },
+	}
+	req := poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 42}
+
+	const waiters = 8
+	start := make(chan struct{})
+	errs := make(chan error, waiters)
+	for i := 0; i < waiters; i++ {
+		go func() {
+			<-start
+			_, err := src.GetRoutingPolicy(context.Background(), req)
+			errs <- err
+		}()
+	}
+	close(start)
+	<-gate.entered
+	for i := 0; i < 1000; i++ {
+		runtime.Gosched()
+	}
+	gate.releaseQuery()
+	for i := 0; i < waiters; i++ {
+		if err := <-errs; !errors.Is(err, boom) {
+			t.Fatalf("waiter[%d] err=%v want %v", i, err, boom)
+		}
+	}
+	if got := store.callCountFor(7, 42); got != 1 {
+		t.Fatalf("失败 in-flight GetPool calls=%d want 1", got)
+	}
+
+	store.setErr(7, 42, nil)
+	policy, err := src.GetRoutingPolicy(context.Background(), req)
+	if err != nil {
+		t.Fatalf("失败后重查不应命中错误缓存: %v", err)
+	}
+	if policy.FallbackMaxWaiting != 3 || policy.FallbackTimeoutMS != 2500 {
+		t.Fatalf("失败后重查 fallback=%d/%d want 3/2500", policy.FallbackMaxWaiting, policy.FallbackTimeoutMS)
+	}
+	if got := store.callCountFor(7, 42); got != 2 {
+		t.Fatalf("失败不应污染缓存,重查 GetPool calls=%d want 2", got)
 	}
 }

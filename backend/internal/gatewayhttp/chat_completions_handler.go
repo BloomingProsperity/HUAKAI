@@ -70,12 +70,16 @@ type ChatHandlerDeps struct {
 	// schema 接管 CRED-205..212/216 配置后，按 binding/channel 持久化此项。
 	AffinityRules affinityrules.AffinityRuleSet
 
-	ClaimGate             billing.ClaimGate
-	QuotaReserver         quotaenforce.Reserver
-	RateTables            billing.RateTableSource
-	PricingRatioResolver  pricingRatioResolver
-	CacheOverrideStore    cacheOverrideResolver
-	Selector              pool.Selector
+	ClaimGate            billing.ClaimGate
+	QuotaReserver        quotaenforce.Reserver
+	RateTables           billing.RateTableSource
+	PricingRatioResolver pricingRatioResolver
+	CacheOverrideStore   cacheOverrideResolver
+	Selector             pool.Selector
+	// QueueWaiter 执行 WaitPlan 的有界等待。nil 时 handler 构造阶段补默认执行器。
+	QueueWaiter QueueWaiter
+	// QueueWaitNow 为 queue_wait 请求级预算提供可注入时钟;nil 时使用 time.Now。
+	QueueWaitNow          func() time.Time
 	CredentialVault       provider.CredentialVault
 	Dispatcher            *gateway.UpstreamDispatcher
 	CanonicalDispatcher   HCSFDispatcher
@@ -231,6 +235,9 @@ type chatExecution struct {
 	healthKey    channelhealth.ChannelKey
 	healthKeyOK  bool
 	protocolLoss json.RawMessage
+
+	queueWaitSpentMS int
+	queueWaitNow     func() time.Time
 }
 
 type modelRunResult struct {
@@ -308,6 +315,7 @@ func NewChatCompletionsHandler(d ChatHandlerDeps) http.HandlerFunc {
 	if d.CredentialHotRefresher != nil {
 		d.CredentialHotRefresher = newDedupingCredentialHotRefresher(d.CredentialHotRefresher, credentialHotRefreshDedupeWindow)
 	}
+	ensureChatQueueWaiter(&d)
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		requestStartedAt := time.Now()

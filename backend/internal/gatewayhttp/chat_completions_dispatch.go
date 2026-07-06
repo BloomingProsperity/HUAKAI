@@ -43,6 +43,10 @@ var quotaReserveFailedOpenTotal = expvar.NewInt("quota_reserve_failed_open_total
 var quotaDeniedTotal = expvar.NewInt("quota_denied_total")
 
 func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, validated chatValidatedRequest, startedAt time.Time) *chatExecution {
+	queueWaitNow := d.QueueWaitNow
+	if queueWaitNow == nil {
+		queueWaitNow = time.Now
+	}
 	return &chatExecution{
 		d:                                d,
 		r:                                r,
@@ -58,6 +62,7 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 		clientSessionID:                  requestClientSessionID(r, validated),
 		streamInputOnlyInterruptedPolicy: d.BillingPolicyResolver.ResolveStreamInputOnlyInterruptedPolicy(r.Context(), ident.TenantID),
 		balanceEnforcementMode:           d.BillingPolicyResolver.ResolveBalanceEnforcementMode(r.Context(), ident.TenantID),
+		queueWaitNow:                     queueWaitNow,
 	}
 }
 
@@ -443,6 +448,29 @@ func (ex *chatExecution) ensureIdempotencyState() {
 func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInput) *classifiedAttemptFailure {
 	// 同一 prompt prefix 固定到同一账号，提高 vendor prompt cache 命中率。
 	ex.refreshRequestSessionHashes()
+	selReq := ex.buildPoolSelectionRequest(in)
+	selRes, err := ex.d.Selector.Select(ex.ctx, selReq)
+	// 把任何池选号错误(含 SEC-249/250 的 per-key 限流)映射到对应的 HTTP 失败
+	// + claim 终止，集中交给 classifyPoolSelectFailure。
+	if failure := ex.classifyPoolSelectFailure(w, err); failure != nil {
+		return failure
+	}
+	if selRes != nil && selRes.WaitPlan != nil {
+		return ex.handleQueueWaitPlan(w, selReq, selRes.WaitPlan)
+	}
+	if selRes == nil || selRes.AccountID == 0 {
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pool_select_no_account", 0, ex.protocolLoss)
+		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_select_no_account", gateway.UpstreamError5xx, nil)
+		// 此分支 err 为 nil(无哨兵携带恢复时刻),给一个默认 Retry-After 修掉"503 却无退避头"缺陷,
+		// 避免客户端盲目重试。与无容量错误路径的回退值一致。
+		failure.RetryAfterSeconds = noCapacityFallbackRetryAfter
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
+	}
+	ex.acceptPoolSelection(selRes)
+	return nil
+}
+
+func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.SelectionRequest {
 	attemptSeq := in.AttemptSeq
 	if attemptSeq <= 0 {
 		attemptSeq = ex.activeAttemptSeq()
@@ -463,7 +491,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		maxOut = derefIntOrZero(ex.req.MaxTokens)
 	}
 	bindingID, bindingRPM, bindingTPM := ex.activeBindingRateLimits()
-	selRes, err := ex.d.Selector.Select(ex.ctx, pool.SelectionRequest{
+	return pool.SelectionRequest{
 		TenantID:         ex.ident.TenantID,
 		UserID:           ex.ident.UserID,
 		APIKeyID:         ex.ident.APIKeyID,
@@ -488,35 +516,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 		BindingID:       bindingID,
 		BindingRPMLimit: bindingRPM,
 		BindingTPMLimit: bindingTPM,
-	})
-	// 把任何池选号错误(含 SEC-249/250 的 per-key 限流)映射到对应的 HTTP 失败
-	// + claim 终止。已抽取到 chat_completions_pool_errors.go。
-	if failure := ex.classifyPoolSelectFailure(w, err); failure != nil {
-		return failure
 	}
-	if selRes != nil && selRes.WaitPlan != nil {
-		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "queue_wait", 0, ex.protocolLoss)
-		failure := retryableLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeQueueWait, clienterr.MessageFor(clienterr.CodeQueueWait), "queue_wait", gateway.UpstreamRateLimit, nil)
-		failure.RetryAfterSeconds = retryAfterSecondsForWaitPlan(selRes.WaitPlan)
-		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
-	}
-	if selRes == nil || selRes.AccountID == 0 {
-		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pool_select_no_account", 0, ex.protocolLoss)
-		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_select_no_account", gateway.UpstreamError5xx, nil)
-		// 此分支 err 为 nil(无哨兵携带恢复时刻),给一个默认 Retry-After 修掉"503 却无退避头"缺陷,
-		// 避免客户端盲目重试。与无容量错误路径的回退值一致。
-		failure.RetryAfterSeconds = noCapacityFallbackRetryAfter
-		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
-	}
-	ex.selRes = selRes
-	ex.acquiredAccountID = selRes.AccountID
-	ex.acquisitionToken = selRes.AcquisitionToken
-	// SUB2-EGRESS-02:把会话登记到已获取的账号上,使 SessionCountGate
-	// 在下次选号时拥有最新视图。
-	if ex.d.SessionCapRegistry != nil && ex.sessionHash != "" {
-		ex.d.SessionCapRegistry.Register(ex.acquiredAccountID, ex.sessionHash)
-	}
-	return nil
 }
 
 // derefIntOrZero 在 p 非 nil 且为正时返回 *p,否则返回 0。用于把可选的

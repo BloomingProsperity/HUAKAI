@@ -10,36 +10,162 @@
 //     与接线前逐一字节一致。
 //   - 仅 binding 显式 'priority_weighted' → 返回 SelectionMode=priority_weighted 的 policy
 //     → selector 走 weightedReservoirIndex 加权选号。
-//   - 返回值始终非 nil,但其它字段全留零值——与"policy==nil"行为等价(topK/hasModelRoute/
-//     fallbackPlan 三处对 nil 与零值策略走同分支),只令加权分支可达,不改任何既有行为。
+//   - 返回值始终非 nil;SelectionMode 只受 binding 控制,fallback wait 配置按池组短 TTL
+//     补齐,避免 selector 热路径每轮都查库。
 package main
 
 import (
 	"context"
+	"sync"
+	"time"
 
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
-// bindingRoutingPolicySource 是无状态的请求级路由策略源:据本次请求命中 binding 透传进
-// SelectionRequest 的 selection_mode,返回对应 RoutingPolicy。不查库、不持状态——
+const defaultRoutingPolicyCacheTTL = 45 * time.Second
+
+type routingPolicyPoolGetter interface {
+	GetPool(context.Context, dbbilling.GetPoolParams) (dbbilling.PoolGroup, error)
+}
+
+type routingPolicyCacheKey struct {
+	tenantID    int64
+	poolGroupID int64
+}
+
+type routingPolicyCacheEntry struct {
+	fallbackTimeoutMS  int
+	fallbackMaxWaiting int
+	expiresAt          time.Time
+}
+
+type routingPolicyInflight struct {
+	done  chan struct{}
+	entry routingPolicyCacheEntry
+	err   error
+}
+
+// bindingRoutingPolicySource 是请求级路由策略源:据本次请求命中 binding 透传进
+// SelectionRequest 的 selection_mode 返回选号模式,并用短 TTL 缓存补齐 fallback wait 配置。
 // selection_mode 已由 dispatch 端从 registry 解析的 BindingMetadata 透传到 req,这里只做映射。
-type bindingRoutingPolicySource struct{}
+type bindingRoutingPolicySource struct {
+	q routingPolicyPoolGetter
+
+	mu       sync.Mutex
+	cache    map[routingPolicyCacheKey]routingPolicyCacheEntry
+	inflight map[routingPolicyCacheKey]*routingPolicyInflight
+	cacheTTL time.Duration
+	now      func() time.Time
+}
 
 // newBindingRoutingPolicySource 构造生产 RoutingPolicySource。
-func newBindingRoutingPolicySource() pool.RoutingPolicySource {
-	return bindingRoutingPolicySource{}
+func newBindingRoutingPolicySource(q ...routingPolicyPoolGetter) pool.RoutingPolicySource {
+	var queries routingPolicyPoolGetter
+	if len(q) > 0 {
+		queries = q[0]
+	}
+	return &bindingRoutingPolicySource{
+		q:        queries,
+		cacheTTL: defaultRoutingPolicyCacheTTL,
+		now:      time.Now,
+	}
 }
 
 // GetRoutingPolicy 据 req.SelectionMode 返回选号策略。
 //   - "priority_weighted" → 加权分支(按账号 static_weight)。
 //   - 其它(""/"strict_priority"/未知)→ strict_priority 等价,走均匀 Shuffle(默认保持)。
 //
-// 始终返回非 nil policy 让 selector 的 policy() 拿到确定结果;非加权时其余字段零值,
-// 与 policy==nil 行为完全等价(见文件头不变量)。
-func (bindingRoutingPolicySource) GetRoutingPolicy(_ context.Context, req pool.SelectionRequest) (*pool.RoutingPolicy, error) {
+// 始终返回非 nil policy 让 selector 的 policy() 拿到确定结果;SelectionMode 与 fallback
+// wait 配置彼此独立,默认 strict 不会被 fallback 缓存翻成加权。
+func (s *bindingRoutingPolicySource) GetRoutingPolicy(ctx context.Context, req pool.SelectionRequest) (*pool.RoutingPolicy, error) {
 	mode := pool.SelectionModeStrictPriority
 	if pool.SelectionMode(req.SelectionMode) == pool.SelectionModePriorityWeighted {
 		mode = pool.SelectionModePriorityWeighted
 	}
-	return &pool.RoutingPolicy{SelectionMode: mode}, nil
+	policy := &pool.RoutingPolicy{SelectionMode: mode}
+	if s.q == nil || req.TenantID == 0 || req.PoolGroupID == 0 {
+		return policy, nil
+	}
+	key := routingPolicyCacheKey{tenantID: req.TenantID, poolGroupID: req.PoolGroupID}
+	entry, err := s.fallbackPolicy(ctx, key, dbbilling.GetPoolParams{
+		TenantID: req.TenantID,
+		ID:       req.PoolGroupID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	applyRoutingPolicyFallback(policy, entry)
+	return policy, nil
+}
+
+func (s *bindingRoutingPolicySource) fallbackPolicy(ctx context.Context, key routingPolicyCacheKey, params dbbilling.GetPoolParams) (routingPolicyCacheEntry, error) {
+	s.mu.Lock()
+	now := s.currentTime()
+	if s.cache == nil {
+		s.cache = make(map[routingPolicyCacheKey]routingPolicyCacheEntry)
+	}
+	if entry, ok := s.cache[key]; ok && now.Before(entry.expiresAt) {
+		s.mu.Unlock()
+		return entry, nil
+	}
+	if s.inflight == nil {
+		s.inflight = make(map[routingPolicyCacheKey]*routingPolicyInflight)
+	}
+	if call, ok := s.inflight[key]; ok {
+		done := call.done
+		s.mu.Unlock()
+		select {
+		case <-done:
+			return call.entry, call.err
+		case <-ctx.Done():
+			return routingPolicyCacheEntry{}, ctx.Err()
+		}
+	}
+	call := &routingPolicyInflight{done: make(chan struct{})}
+	s.inflight[key] = call
+	s.mu.Unlock()
+
+	poolGroup, err := s.q.GetPool(ctx, params)
+	var entry routingPolicyCacheEntry
+	if err == nil {
+		entry = routingPolicyCacheEntry{
+			fallbackMaxWaiting: int(poolGroup.FallbackWaitMaxWaiting),
+			fallbackTimeoutMS:  int(poolGroup.FallbackWaitTimeoutMs),
+			expiresAt:          s.currentTime().Add(s.effectiveCacheTTL()),
+		}
+	}
+
+	s.mu.Lock()
+	if err == nil {
+		if s.cache == nil {
+			s.cache = make(map[routingPolicyCacheKey]routingPolicyCacheEntry)
+		}
+		s.cache[key] = entry
+	}
+	call.entry = entry
+	call.err = err
+	delete(s.inflight, key)
+	close(call.done)
+	s.mu.Unlock()
+	return entry, err
+}
+
+func (s *bindingRoutingPolicySource) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+func (s *bindingRoutingPolicySource) effectiveCacheTTL() time.Duration {
+	if s.cacheTTL > 0 {
+		return s.cacheTTL
+	}
+	return defaultRoutingPolicyCacheTTL
+}
+
+func applyRoutingPolicyFallback(policy *pool.RoutingPolicy, entry routingPolicyCacheEntry) {
+	policy.FallbackMaxWaiting = entry.fallbackMaxWaiting
+	policy.FallbackTimeoutMS = entry.fallbackTimeoutMS
 }

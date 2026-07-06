@@ -733,6 +733,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		PricingRatioResolver:   d.pricingRatioResolver,
 		CacheOverrideStore:     d.cacheOverrideStore,
 		Selector:               d.selector,
+		QueueWaiter:            d.queueWaiter,
 		CredentialVault:        d.credentialVault,
 		Dispatcher:             d.dispatcher,
 		Forwarder:              d.forwarder,

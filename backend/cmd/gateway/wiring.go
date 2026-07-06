@@ -73,6 +73,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool/queuewait"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -125,6 +126,7 @@ type deps struct {
 	billingPolicyStore    billing.PolicyStore
 	billingPolicyResolver *billing.PolicyResolver
 	selector              pool.Selector
+	queueWaiter           *queuewait.Executor
 	channelHealth         *channelhealth.Service
 	authCooldown          *authcooldown.Store
 	modelCooldowns        *ratelimit.ModelCooldownService
@@ -1329,6 +1331,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		billingPolicyStore:    billingPolicyStore,
 		billingPolicyResolver: billingPolicyResolver,
 		selector:              selector,
+		queueWaiter:           queuewait.NewExecutor(),
 		sessionCapRegistry:    sessionCapRegistry,
 		recentReqRing:         recentReqRing,
 		toolPriceSource:       buildToolPriceSource(),
