@@ -85,3 +85,17 @@ HUAKAI 内部对 codex 上游形态的记载**自相矛盾且与三镜实证不�
 ## 🎉 片1 live 全能力验证通过(2026-07-06,真实 ChatGPT 账号)
 TestCodexLiveResponsesMatrix 5 项全 PASS 打真实 chatgpt.com:流式文本✅/工具调用✅/reasoning✅/图片vision✅/请求变换验证✅(客户端带 temperature/top_p/max_output_tokens/store=true/stream=false→网关剥离变换→上游200)。真实 ChatGPT 账号→HUAKAI relay→真实 codex 后端→响应→计费全链打通。
 **排障挖出的 live 事实(测试harness+生产)**:①codex input 必须是 list(纯字符串→400 "Input must be a list");②**version 头:显式发旧版(0.99.0)→400 "requires a newer version";不发 version 头→200**(故生产缺 codex_version 时 omit 正确,operator 别配旧版);③codex 不需 TLS 伪装(明文200,ChatGPT mimicry 模板缺失是已知gap,e2e 关伪装);④account_type='session'(非 auth_mode);⑤api_key key_prefix 取 bearer 前16字符,前缀须短到让 unique 进前16(否则 LIMIT 5 漏新行)。
+
+## 片1 对抗审查(ff76e3f4,post-commit,24 agent):1 存活 S2,记入片2/3
+**S2(存活)**:normalizeCodexResponsesBody 无条件 stream=true,非流式客户端走缓冲 SSE 重组受 1MiB 上限(maxRawBufferedUpstreamBodyBytes)约束——SSE 体积是等价 JSON 数倍,长非流式补全累计>1MiB→误判 CodeUpstreamResponseTooLarge 502。片1 明确 defer 的"非流式→内部流式聚合"未做的后果,短输出测试掩盖。**修=片2/3**:非流式客户端→内部流式→聚合成非流式 JSON 返回(不走 1MiB 缓冲原始 SSE)。非 S0/S1 不 hotfix。
+其余驳回/降级:max_output_tokens 剥离(客户端上限失效,S3)、top_logprobs 可能误剥(S3 待 codex 支持性确认)、reasoning encrypted_content 流式丢弃(多轮续接,降级)、chatgpt-account-id 双缺省静默(多账号路由,S3)——记 follow-up。
+
+## 其他 vendor 账号转 API 现状盘点(2026-07-06 亲核)
+**采集+物化:全 wired**(Claude claude_ai_oauth/claude_code、Grok xai_oauth、Gemini code_assist/google_one、Antigravity oauth 均有物化 handler,types.go:274-294)。
+**serving(账号转API)状态(与 codex 同类,需 verify+wire+live)**:
+- codex/ChatGPT:✅ 片1 done,live 全能力验证。
+- **Claude**(claude_ai_oauth/claude_code→anthropic_claude_session):**serving 未注册=fail-closed**(protocol_selector 只注册 anthropic_messages,无 anthropic_claude_session;oauth_session.go:22 有 Platform 名但 dispatch transport 无映射)。需 codex 同款处置。**Owner:不允许用本机 claude 凭据测**→需 Owner 提供 Claude 订阅账号 live 测。
+- **Grok**(xai_oauth→grok_chat,openai.Adapter):family 注册、dispatch 走默认 providerCode=grok;openai-compat 可能可用但**未 live 验**真实 Grok OAuth 上游端点/形态。
+- **Gemini 账号**(code_assist/google_one→gemini_advanced_session;dispatch:30-31 映射 ProviderGeminiAdvanced):dispatch transport 已映射但**未 live 验**真实端点/形态(codex 同款风险:端点/响应形可能过时错)。
+- **Antigravity**(→antigravity_session/ProviderAntigravity,dispatch:32-33):同 gemini advanced,dispatch 映射在、未 live 验。
+**结论**:除 codex 外这些账号 serving 均"部分接线未 live 验",每个需 codex 片1 同款方法论(真实账号探端点/形态→修 endpoint/transform/parser/ingress→live 全能力 e2e)。均需真实账号(Claude 必须 Owner 提供、不用本机)。

@@ -761,6 +761,9 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	defer closeDispatchResult(dispatchRes)
+	if dispatchRes.StatusCode >= 200 && dispatchRes.StatusCode < 300 && ex.shouldAggregateForcedStreamingBuffered() {
+		return ex.dispatchForcedStreamingBuffered(w, dispatchRes, seed, seedCtx, startedAt)
+	}
 	raw, readErr := readRawBufferedUpstreamBody(dispatchRes.UpstreamReader)
 	oversizedNon2xx := errors.Is(readErr, errRawBufferedUpstreamBodyTooLarge) && (dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300)
 	if readErr != nil && !oversizedNon2xx {

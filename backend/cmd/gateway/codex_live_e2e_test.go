@@ -160,6 +160,24 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "非流式长输出聚合",
+			body: codexLiveLongBufferedBody(model),
+			assert: func(t *testing.T, res codexLiveResult) {
+				if res.isSSE {
+					t.Fatalf("非流式客户端不应收到原始 SSE: events=%v body=%s", res.events, safeCodexLiveBody(res.body, ""))
+				}
+				if res.bufferedID == "" {
+					t.Fatalf("聚合后的 Responses JSON 缺 id: body=%s", safeCodexLiveBody(res.body, ""))
+				}
+				if strings.TrimSpace(res.outputText) == "" {
+					t.Fatalf("聚合后的 Responses JSON 输出为空: body=%s", safeCodexLiveBody(res.body, ""))
+				}
+				if res.usage.InputTokens+res.usage.OutputTokens+res.usage.TotalTokens <= 0 {
+					t.Fatalf("聚合后的 Responses JSON 缺 usage: %+v body=%s", res.usage, safeCodexLiveBody(res.body, ""))
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -835,6 +853,15 @@ func codexLiveTransformBody(model string) map[string]any {
 		"top_p":             0.9,
 		"max_output_tokens": 16,
 	}
+}
+
+func codexLiveLongBufferedBody(model string) map[string]any {
+	return codexLiveBaseBody(
+		model,
+		"List exactly 10 concise practical points. Use one sentence of explanation per point.",
+		"Give 10 practical points for keeping a small software gateway reliable.",
+		false,
+	)
 }
 
 func codexLiveRedPNGDataURL() string {

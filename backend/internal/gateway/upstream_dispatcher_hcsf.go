@@ -86,6 +86,25 @@ const maxBufferedUpstreamResponseBytes = 1 << 20
 // 当截断 SSE 计部分账。
 var ErrUpstreamResponseTooLarge = errors.New("gateway: upstream buffered response exceeds size limit")
 
+// ForcedStreamingBufferedFamily 标记上游成功响应固定以 SSE 返回的协议族。
+func ForcedStreamingBufferedFamily(family string) bool {
+	switch family {
+	case "openai_codex":
+		return true
+	default:
+		return false
+	}
+}
+
+func hcsfShouldAggregateForcedStreamingBuffered(family string, env *proto.HCSF) bool {
+	if env == nil {
+		return false
+	}
+	return ForcedStreamingBufferedFamily(family) &&
+		env.RequestMeta.ClientProtocol == proto.ClientProtocolOpenAIResponses &&
+		env.StreamPlan.Mode == proto.StreamModeBuffered
+}
+
 // readBufferedUpstreamResponse 读上游 buffered 响应，带溢出哨兵(读 limit+1 探测)。
 // oversized 时 raw 截断到 maxBufferedUpstreamResponseBytes —— 仅供非 2xx 响应的错误分类用；
 // 2xx 成功响应一旦 oversized，调用方必须拒绝(截断的成功体不可解析/会错计费)。
@@ -180,11 +199,11 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		return nil, fmt.Errorf("dispatcher: HTTP Do 失败: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, oversized, err := readBufferedUpstreamResponse(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("dispatcher: 读取上游响应失败: %w", err)
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _, err := readBufferedUpstreamResponse(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("dispatcher: 读取上游响应失败: %w", err)
+		}
 		// 用类型化错误把 status + body 透传到调用方, 由调用方决定 client 返回
 		// 状态码 / 走 health classification / 触发 cooldown. 不能塌成 string-only,
 		// 否则 chat handler 总是 502 + status=0 health signal 跟流式路径行为分叉。
@@ -195,11 +214,6 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 			Header:     resp.Header.Clone(),
 		}
 	}
-	if oversized {
-		// 2xx 但超 1MiB: 截断字节喂给 ProviderResponseToCanonical 会静默截断(→opaque 502)，
-		// SSE 形则被 ReconstructBufferedFromSSE 当部分响应计费。在 canonicalize 前直接拒绝。
-		return nil, ErrUpstreamResponseTooLarge
-	}
 
 	upstreamAdapters := d.ProtocolAdapters
 	if upstreamAdapters == nil {
@@ -209,17 +223,40 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: 取 upstream adapter 失败 (protocol=%q): %w", family, err)
 	}
-	responseEnv, respLosses, err := upstreamAdapter.ProviderResponseToCanonical(ctx, raw)
-	if err != nil {
-		if reconstructedEnv, reconstructedLosses, ok := protosse.ReconstructBufferedFromSSE(upstreamAdapter, raw); ok && reconstructedEnv != nil {
-			responseEnv = reconstructedEnv
-			respLosses = reconstructedLosses
-		} else {
-			return nil, fmt.Errorf("dispatcher: ProviderResponseToCanonical 失败: %w", err)
+
+	var responseEnv *proto.HCSF
+	var respLosses []proto.ProtocolLossEntry
+	if hcsfShouldAggregateForcedStreamingBuffered(family, env) {
+		responseEnv, respLosses, err = reconstructForcedStreamingBuffered(ctx, upstreamAdapter, resp.Body)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		raw, oversized, err := readBufferedUpstreamResponse(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("dispatcher: 读取上游响应失败: %w", err)
+		}
+		if oversized {
+			// 2xx 但超 1MiB: 截断字节喂给 ProviderResponseToCanonical 会静默截断(→opaque 502)，
+			// SSE 形则被 ReconstructBufferedFromSSE 当部分响应计费。在 canonicalize 前直接拒绝。
+			return nil, ErrUpstreamResponseTooLarge
+		}
+		responseEnv, respLosses, err = upstreamAdapter.ProviderResponseToCanonical(ctx, raw)
+		if err != nil {
+			if reconstructedEnv, reconstructedLosses, ok := protosse.ReconstructBufferedFromSSE(upstreamAdapter, raw); ok && reconstructedEnv != nil {
+				responseEnv = reconstructedEnv
+				respLosses = reconstructedLosses
+			} else {
+				return nil, fmt.Errorf("dispatcher: ProviderResponseToCanonical 失败: %w", err)
+			}
 		}
 	}
 	if responseEnv == nil || responseEnv.BufferedResponse == nil {
-		return nil, errors.New("dispatcher: upstream adapter 未返回 buffered_response")
+		if hcsfShouldAggregateForcedStreamingBuffered(family, env) {
+			return nil, errors.New("dispatcher: 上游强制流式响应未能聚合为 buffered_response")
+		} else {
+			return nil, errors.New("dispatcher: upstream adapter 未返回 buffered_response")
+		}
 	}
 
 	out, err := cloneHCSF(env)
@@ -235,6 +272,20 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	}
 	fillUpstreamReported(out)
 	return out, nil
+}
+
+func reconstructForcedStreamingBuffered(ctx context.Context, upstreamAdapter proto.UpstreamAdapter, body io.Reader) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
+	responseEnv, respLosses, ok, err := protosse.ReconstructBufferedFromSSEReader(ctx, upstreamAdapter, body, protosse.DefaultBufferedSSEReconstructLimits())
+	if err != nil {
+		if errors.Is(err, protosse.ErrBufferedSSECanonicalTooLarge) {
+			return nil, respLosses, ErrUpstreamResponseTooLarge
+		}
+		return nil, respLosses, fmt.Errorf("dispatcher: 上游流式响应聚合失败: %w", err)
+	}
+	if !ok || responseEnv == nil || responseEnv.BufferedResponse == nil {
+		return nil, respLosses, errors.New("dispatcher: 上游流式响应未返回可识别内容")
+	}
+	return responseEnv, respLosses, nil
 }
 
 func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provider.BuildInput, env *proto.HCSF, ingressFamily string, endpointFamily string, nativeRawBody []byte, identityRewrite func([]byte) []byte, controlsOpt ...DispatchBodyControls) (*http.Request, error) {

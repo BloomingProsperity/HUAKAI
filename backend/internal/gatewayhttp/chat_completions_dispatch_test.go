@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"expvar"
 	"io"
@@ -21,8 +22,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	protoanthropic "github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
+	protoopenai "github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	provideranthropic "github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
+	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -284,6 +287,233 @@ func (d *anthropicBufferedDoer) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+type codexSSEDoer struct {
+	body        string
+	status      int
+	requestPath string
+	requestBody string
+}
+
+func (d *codexSSEDoer) Do(req *http.Request) (*http.Response, error) {
+	d.requestPath = req.URL.Path
+	raw, _ := io.ReadAll(req.Body)
+	d.requestBody = string(raw)
+	status := d.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(d.body)),
+	}, nil
+}
+
+func codexForcedStreamingDeps(t *testing.T, doer *codexSSEDoer, claimGate *recordingClaimGate, settler *recordingSettler) ChatHandlerDeps {
+	t.Helper()
+	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "false")
+	d := responsesClientAdapterDeps(t)
+	d.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias:      "gpt-5.5",
+		CanonicalModelID: "openai/gpt-5.5",
+		ProviderModelID:  "gpt-5.5",
+		ProtocolFamily:   "openai_codex",
+		PoolCandidates:   []int64{42},
+	}}
+	vault := provider.NewStaticVault()
+	if err := vault.Set(1, provider.Credential{
+		Type:  provider.CredentialTypeSessionToken,
+		Value: "codex-session-test",
+	}, provider.AccountInfo{
+		AccountID:           1,
+		Platform:            "openai_codex",
+		AccountType:         "session",
+		AccountCredentialID: 9201,
+		CredentialVersion:   1,
+	}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+	providerAdapters := provider.NewStaticRegistry()
+	providerAdapters.MustRegister("openai_codex", &provideropenai.CodexSessionAdapter{})
+	protoAdapters := gateway.NewStaticProtocolAdapterRegistry()
+	protoAdapters.MustRegister("openai_codex", &protoopenai.ResponsesAdapter{})
+	dispatcher := &gateway.UpstreamDispatcher{
+		Adapters:         providerAdapters,
+		TransportFactory: transport.NewFactory(),
+		ProtocolAdapters: protoAdapters,
+		HTTPClient:       doer,
+	}
+	d.CredentialVault = vault
+	d.Dispatcher = dispatcher
+	d.CanonicalDispatcher = dispatcher
+	d.Forwarder = &gateway.StreamForwarder{ProtocolAdapters: protoAdapters}
+	d.ClaimGate = claimGate
+	d.Settler = settler
+	return d
+}
+
+func largeCodexResponsesSSE(t *testing.T) (string, string) {
+	t.Helper()
+	const frames = 1500
+	chunk := strings.Repeat("x", 768)
+	var text strings.Builder
+	var body strings.Builder
+	appendCodexSSEEvent(t, &body, "response.created", map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":     "resp_forced_stream_large",
+			"model":  "gpt-5.5",
+			"status": "in_progress",
+		},
+	})
+	appendCodexSSEEvent(t, &body, "response.output_item.added", map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"id":   "msg_large",
+			"type": "message",
+			"role": "assistant",
+		},
+	})
+	appendCodexSSEEvent(t, &body, "response.content_part.added", map[string]any{
+		"type":         "response.content_part.added",
+		"output_index": 0,
+		"item_id":      "msg_large",
+		"part":         map[string]any{"type": "output_text"},
+	})
+	for i := 0; i < frames; i++ {
+		text.WriteString(chunk)
+		appendCodexSSEEvent(t, &body, "response.output_text.delta", map[string]any{
+			"type":         "response.output_text.delta",
+			"output_index": 0,
+			"item_id":      "msg_large",
+			"delta":        chunk,
+		})
+	}
+	wantText := text.String()
+	appendCodexSSEEvent(t, &body, "response.completed", map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     "resp_forced_stream_large",
+			"model":  "gpt-5.5",
+			"status": "completed",
+			"output": []map[string]any{{
+				"id":   "msg_large",
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": wantText,
+				}},
+			}},
+			"usage": map[string]any{
+				"input_tokens":  11,
+				"output_tokens": 22,
+				"total_tokens":  33,
+			},
+		},
+	})
+	if body.Len() <= maxRawBufferedUpstreamBodyBytes {
+		t.Fatalf("fixture raw SSE len=%d must exceed %d", body.Len(), maxRawBufferedUpstreamBodyBytes)
+	}
+	return body.String(), wantText
+}
+
+func appendCodexSSEEvent(t *testing.T, b *strings.Builder, event string, payload any) {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal SSE payload: %v", err)
+	}
+	b.WriteString("event: ")
+	b.WriteString(event)
+	b.WriteString("\n")
+	b.WriteString("data: ")
+	b.Write(raw)
+	b.WriteString("\n\n")
+}
+
+func assertCodexAggregatedResponse(t *testing.T, rec *httptest.ResponseRecorder, wantText string) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body prefix=%s", rec.Code, safeBodyPrefix(rec.Body.String()))
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "event:") || strings.Contains(body, "data:") {
+		t.Fatalf("响应仍是原始 SSE，而不是非流式 JSON: prefix=%s", safeBodyPrefix(body))
+	}
+	if !strings.Contains(body, `"object":"response"`) || !strings.Contains(body, `"output_text"`) || !strings.Contains(body, `"usage"`) {
+		t.Fatalf("响应缺少 Responses JSON 基本字段: prefix=%s", safeBodyPrefix(body))
+	}
+	var decoded struct {
+		Object string `json:"object"`
+		Usage  struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			TotalTokens  int `json:"total_tokens"`
+		} `json:"usage"`
+		Output []struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode aggregated response: %v; prefix=%s", err, safeBodyPrefix(body))
+	}
+	if decoded.Object != "response" {
+		t.Fatalf("object=%q want response", decoded.Object)
+	}
+	var gotText strings.Builder
+	for _, item := range decoded.Output {
+		for _, part := range item.Content {
+			if part.Type == "output_text" {
+				gotText.WriteString(part.Text)
+			}
+		}
+	}
+	if gotText.String() != wantText {
+		t.Fatalf("聚合文本长度=%d want %d", gotText.Len(), len(wantText))
+	}
+	if decoded.Usage.InputTokens != 11 || decoded.Usage.OutputTokens != 22 || decoded.Usage.TotalTokens != 33 {
+		t.Fatalf("usage=%+v want 11/22/33", decoded.Usage)
+	}
+}
+
+func assertCodexAggregatedBilling(t *testing.T, claimGate *recordingClaimGate, settler *recordingSettler, wantClaimID int64) {
+	t.Helper()
+	if claimGate.endpointFamily != "openai_responses" {
+		t.Fatalf("reserve EndpointFamily=%q want openai_responses", claimGate.endpointFamily)
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0", len(settler.aborts))
+	}
+	call := settler.calls[0]
+	if call.ClaimID != wantClaimID {
+		t.Fatalf("settle ClaimID=%d want %d", call.ClaimID, wantClaimID)
+	}
+	if call.Stream {
+		t.Fatal("settle Stream=true; 聚合响应必须落非流式 usage record")
+	}
+	if call.Draft.TokensInput != 11 || call.Draft.TokensOutput != 22 {
+		t.Fatalf("draft tokens=%d/%d want 11/22", call.Draft.TokensInput, call.Draft.TokensOutput)
+	}
+	if call.Draft.UsageSource != gateway.UsageSourceReported {
+		t.Fatalf("UsageSource=%q want reported", call.Draft.UsageSource)
+	}
+}
+
+func safeBodyPrefix(body string) string {
+	if len(body) > 512 {
+		return body[:512] + "...<truncated>"
+	}
+	return body
+}
+
 func TestHandler_OpenAIEndpointFamilySet(t *testing.T) {
 	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
 	dispatcher := &mockCanonicalBufferedDispatcher{}
@@ -404,6 +634,46 @@ func TestCodexResponsesBilled(t *testing.T) {
 	}
 	if settler.calls[0].RequestedModel != "gpt-4o" {
 		t.Fatalf("settle RequestedModel=%q want gpt-4o", settler.calls[0].RequestedModel)
+	}
+}
+
+func TestCodexResponsesRawForcedStreamingAggregatesOverRawLimit(t *testing.T) {
+	// 变异红点：删 dispatchRawBuffered 的强制流式聚合分支，回退到
+	// readRawBufferedUpstreamBody 读取整条原始 SSE，本用例会返回 502
+	// upstream_response_too_large。
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	body, wantText := largeCodexResponsesSSE(t)
+	doer := &codexSSEDoer{body: body}
+	claimGate := &recordingClaimGate{claimID: 8221}
+	settler := &recordingSettler{}
+	d := codexForcedStreamingDeps(t, doer, claimGate, settler)
+
+	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", `{"model":"gpt-5.5","stream":false,"input":"hi"}`)
+	assertCodexAggregatedResponse(t, rec, wantText)
+	assertCodexAggregatedBilling(t, claimGate, settler, 8221)
+	if doer.requestPath != "/backend-api/codex/responses" {
+		t.Fatalf("upstream path=%q want /backend-api/codex/responses", doer.requestPath)
+	}
+	if !strings.Contains(doer.requestBody, `"stream":true`) {
+		t.Fatalf("上游请求未被 session adapter 强制 stream=true: %s", doer.requestBody)
+	}
+}
+
+func TestCodexResponsesHCSFForcedStreamingAggregatesOverRawLimit(t *testing.T) {
+	// 变异红点：只修 legacy raw、不修 DispatchHCSF 的 2xx reader 聚合时，
+	// 默认 HCSF-on 路径仍会在 1MiB 原始 SSE 处返回 upstream_response_too_large。
+	enableHCSFDispatchForTest(t)
+	body, wantText := largeCodexResponsesSSE(t)
+	doer := &codexSSEDoer{body: body}
+	claimGate := &recordingClaimGate{claimID: 8222}
+	settler := &recordingSettler{}
+	d := codexForcedStreamingDeps(t, doer, claimGate, settler)
+
+	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", `{"model":"gpt-5.5","stream":false,"input":"hi"}`)
+	assertCodexAggregatedResponse(t, rec, wantText)
+	assertCodexAggregatedBilling(t, claimGate, settler, 8222)
+	if doer.requestPath != "/backend-api/codex/responses" {
+		t.Fatalf("upstream path=%q want /backend-api/codex/responses", doer.requestPath)
 	}
 }
 

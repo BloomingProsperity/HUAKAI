@@ -27,6 +27,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
@@ -732,6 +733,54 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, 0, startedAt)
+}
+
+func (ex *chatExecution) shouldAggregateForcedStreamingBuffered() bool {
+	if ex == nil {
+		return false
+	}
+	return ex.clientProtocol == proto.ClientProtocolOpenAIResponses &&
+		gateway.ForcedStreamingBufferedFamily(ex.resolved.ProtocolFamily)
+}
+
+func (ex *chatExecution) dispatchForcedStreamingBuffered(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
+	ex.updateSessionWindowFromHeaders(dispatchRes.Headers)
+	upstreamAdapter, err := protocolAdapterForBuffered(ex.d.Forwarder, ex.resolved.ProtocolFamily)
+	if err != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "upstream_adapter_error", 0, nil); abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeUpstreamAdapterError, err)
+		return nil, nil, false
+	}
+	bufferedEnv, _, ok, err := protosse.ReconstructBufferedFromSSEReader(seedCtx, upstreamAdapter, dispatchRes.UpstreamReader, protosse.DefaultBufferedSSEReconstructLimits())
+	if err != nil {
+		code := clienterr.CodeCanonicalResponseError
+		if errors.Is(err, protosse.ErrBufferedSSECanonicalTooLarge) {
+			code = clienterr.CodeUpstreamResponseTooLarge
+		}
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, code, 0, nil); abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		if ex.healthKeyOK {
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil, 0)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, code, err)
+		return nil, nil, false
+	}
+	if !ok || bufferedEnv == nil || bufferedEnv.BufferedResponse == nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "canonical_response_error", 0, nil); abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		if ex.healthKeyOK {
+			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil, 0)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, errors.New("forced streaming upstream did not return reconstructable SSE"))
+		return nil, nil, false
+	}
+	_ = seed.ApplyToRequestMeta(&bufferedEnv.RequestMeta)
+	enrichCanonicalRequestMeta(bufferedEnv, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.sessionHash)
+	return ex.finalizeBufferedEnvelope(w, bufferedEnv, dispatchRes.StatusCode, startedAt)
 }
 
 func (ex *chatExecution) forceCooldownFromUpstreamRateLimit(upstreamErr *gateway.UpstreamHTTPError) {

@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -15,6 +17,46 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
+
+// BufferedSSEReconstructLimits 约束 reader 版 SSE 重组的内存增长。
+type BufferedSSEReconstructLimits struct {
+	ScannerBufferBytes       int
+	MaxCanonicalPayloadBytes int
+	MaxCanonicalEvents       int
+}
+
+const (
+	defaultBufferedSSEScannerBufferBytes    = 2 << 20
+	defaultBufferedSSECanonicalPayloadBytes = 16 << 20
+	defaultBufferedSSECanonicalEvents       = 200000
+	bufferedSSEReaderInitialBufferBytes     = 32 << 10
+)
+
+// ErrBufferedSSECanonicalTooLarge 表示 SSE 重组后的 canonical 数据超过保护阈值。
+var ErrBufferedSSECanonicalTooLarge = errors.New("protosse: buffered SSE canonical payload exceeds size limit")
+
+// DefaultBufferedSSEReconstructLimits 返回生产路径默认保护阈值。
+func DefaultBufferedSSEReconstructLimits() BufferedSSEReconstructLimits {
+	return BufferedSSEReconstructLimits{
+		ScannerBufferBytes:       defaultBufferedSSEScannerBufferBytes,
+		MaxCanonicalPayloadBytes: defaultBufferedSSECanonicalPayloadBytes,
+		MaxCanonicalEvents:       defaultBufferedSSECanonicalEvents,
+	}
+}
+
+func (l BufferedSSEReconstructLimits) normalized() BufferedSSEReconstructLimits {
+	def := DefaultBufferedSSEReconstructLimits()
+	if l.ScannerBufferBytes <= 0 {
+		l.ScannerBufferBytes = def.ScannerBufferBytes
+	}
+	if l.MaxCanonicalPayloadBytes <= 0 {
+		l.MaxCanonicalPayloadBytes = def.MaxCanonicalPayloadBytes
+	}
+	if l.MaxCanonicalEvents <= 0 {
+		l.MaxCanonicalEvents = def.MaxCanonicalEvents
+	}
+	return l
+}
 
 // ReconstructBufferedFromSSE 把一个 SSE 形态的缓冲上游响应体转换成缓冲式 HCSF
 // 响应:逐条把每个 data 负载通过现有的上游流式 adapter 重放一遍。
@@ -61,6 +103,75 @@ func ReconstructBufferedFromSSE(adapter proto.UpstreamAdapter, raw []byte) (*pro
 		env.CapabilityGraph.ProtocolLoss = append(env.CapabilityGraph.ProtocolLoss, losses...)
 	}
 	return env, losses, true
+}
+
+// ReconstructBufferedFromSSEReader 从 reader 逐帧消费 SSE 并重组成 buffered HCSF。
+func ReconstructBufferedFromSSEReader(ctx context.Context, adapter proto.UpstreamAdapter, r io.Reader, limits BufferedSSEReconstructLimits) (*proto.HCSF, []proto.ProtocolLossEntry, bool, error) {
+	if adapter == nil {
+		return nil, nil, true, nil
+	}
+	if r == nil {
+		return nil, nil, false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	limits = limits.normalized()
+	state := newUpstreamState(adapter)
+	var events []proto.CanonicalEvent
+	var losses []proto.ProtocolLossEntry
+	payloadBytes := 0
+	appendEvents := func(in []any) error {
+		canonical := canonicalEvents(in)
+		for _, evt := range canonical {
+			payloadBytes += canonicalEventPayloadSize(evt)
+			if payloadBytes > limits.MaxCanonicalPayloadBytes {
+				return ErrBufferedSSECanonicalTooLarge
+			}
+		}
+		events = append(events, canonical...)
+		if len(events) > limits.MaxCanonicalEvents {
+			return ErrBufferedSSECanonicalTooLarge
+		}
+		return nil
+	}
+	sawSSE, err := scanSSEReader(ctx, r, limits.ScannerBufferBytes, func(evt sseEvent) error {
+		data := bytes.TrimSpace(evt.data)
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			return nil
+		}
+		out, eventLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, data, state)
+		losses = append(losses, eventLosses...)
+		if err != nil {
+			losses = append(losses, proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "buffered SSE event could not be reconstructed"))
+			return nil
+		}
+		return appendEvents(out)
+	})
+	if err != nil {
+		return nil, losses, sawSSE, err
+	}
+	if !sawSSE {
+		return nil, losses, false, nil
+	}
+	final, err := adapter.FinalizeUpstreamStream(ctx, state)
+	if err != nil {
+		losses = append(losses, proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "buffered SSE stream could not be finalized"))
+	} else if err := appendEvents(final); err != nil {
+		return nil, losses, true, err
+	}
+	resp, foldLosses := responseFromEvents(events)
+	losses = append(losses, foldLosses...)
+	if !responseHasValue(resp) {
+		return nil, losses, true, nil
+	}
+	env := proto.NewEmptyEnvelope()
+	env.BufferedResponse = &resp
+	env.Accounting.Usage = resp.Usage
+	if len(losses) > 0 {
+		env.CapabilityGraph.ProtocolLoss = append(env.CapabilityGraph.ProtocolLoss, losses...)
+	}
+	return env, losses, true, nil
 }
 
 type sseEvent struct {
@@ -129,6 +240,94 @@ func trimSSEFieldValue(v []byte) []byte {
 		v = v[1:]
 	}
 	return bytes.TrimRight(v, "\r")
+}
+
+func scanSSEReader(ctx context.Context, r io.Reader, maxEventBytes int, onEvent func(sseEvent) error) (bool, error) {
+	reader := bufio.NewReaderSize(r, bufferedSSEReaderInitialBufferBytes)
+	var current sseEvent
+	var data bytes.Buffer
+	sawSSE := false
+	flush := func() error {
+		if current.event == "" && data.Len() == 0 {
+			return nil
+		}
+		current.data = append([]byte(nil), bytes.TrimSpace(data.Bytes())...)
+		if onEvent != nil {
+			if err := onEvent(current); err != nil {
+				return err
+			}
+		}
+		current = sseEvent{}
+		data.Reset()
+		return nil
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return sawSSE, ctx.Err()
+		default:
+		}
+		line, err := readSSELine(reader, maxEventBytes)
+		if len(line) > 0 {
+			line = bytes.TrimRight(line, "\n")
+			line = bytes.TrimRight(line, "\r")
+			if len(bytes.TrimSpace(line)) == 0 {
+				if flushErr := flush(); flushErr != nil {
+					return sawSSE, flushErr
+				}
+			} else {
+				line = bytes.TrimLeft(line, " \t")
+				switch {
+				case bytes.HasPrefix(line, []byte("event:")):
+					sawSSE = true
+					current.event = string(trimSSEFieldValue(bytes.TrimPrefix(line, []byte("event:"))))
+				case bytes.HasPrefix(line, []byte("data:")):
+					sawSSE = true
+					value := trimSSEFieldValue(bytes.TrimPrefix(line, []byte("data:")))
+					if data.Len() > 0 {
+						if data.Len()+1 > maxEventBytes {
+							return sawSSE, ErrBufferedSSECanonicalTooLarge
+						}
+						data.WriteByte('\n')
+					}
+					if data.Len()+len(value) > maxEventBytes {
+						return sawSSE, ErrBufferedSSECanonicalTooLarge
+					}
+					data.Write(value)
+				}
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if flushErr := flush(); flushErr != nil {
+					return sawSSE, flushErr
+				}
+				return sawSSE, nil
+			}
+			return sawSSE, err
+		}
+	}
+}
+
+func readSSELine(r *bufio.Reader, maxLineBytes int) ([]byte, error) {
+	var out []byte
+	for {
+		part, err := r.ReadSlice('\n')
+		if len(out)+len(part) > maxLineBytes {
+			return nil, ErrBufferedSSECanonicalTooLarge
+		}
+		out = append(out, part...)
+		if err == nil {
+			return out, nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return out, io.EOF
+		}
+		return out, err
+	}
 }
 
 // newUpstreamState 与 gateway/forwarder.newUpstreamState 是同一类型分派的
@@ -237,6 +436,13 @@ func responseFromEvents(events []proto.CanonicalEvent) (proto.CanonicalResponse,
 			case "tool_input_delta":
 				b := ensureBlock(evt.Index, "tool_use")
 				b.input.WriteString(partialJSONText(evt.Delta.PartialJSON))
+			case "reasoning_delta":
+				b := ensureBlock(evt.Index, "thinking")
+				b.block.Thinking += evt.Delta.ReasoningText
+				b.block.ReasoningSummary += evt.Delta.ReasoningText
+			case "signature_delta":
+				b := ensureBlock(evt.Index, "thinking")
+				b.block.Signature += evt.Delta.Signature
 			}
 		case "message_delta":
 			if evt.Usage != nil {
@@ -325,6 +531,23 @@ func partialJSONText(raw json.RawMessage) string {
 		return s
 	}
 	return string(raw)
+}
+
+func canonicalEventPayloadSize(evt proto.CanonicalEvent) int {
+	n := len(evt.Type) + len(evt.MessageID) + len(evt.Model) + len(evt.NativeFinishReason)
+	if evt.ContentBlock != nil {
+		n += canonicalContentBlockPayloadSize(*evt.ContentBlock)
+	}
+	if evt.Delta != nil {
+		n += len(evt.Delta.Type) + len(evt.Delta.Text) + len(evt.Delta.PartialJSON) + len(evt.Delta.ReasoningText) + len(evt.Delta.Signature)
+	}
+	return n
+}
+
+func canonicalContentBlockPayloadSize(block proto.CanonicalContentBlock) int {
+	return len(block.Type) + len(block.Text) + len(block.Thinking) + len(block.Signature) +
+		len(block.Data) + len(block.CallID) + len(block.Name) + len(block.Input) +
+		len(block.ToolResult) + len(block.Image) + len(block.ReasoningSummary) + len(block.Raw)
 }
 
 func responseHasValue(resp proto.CanonicalResponse) bool {
