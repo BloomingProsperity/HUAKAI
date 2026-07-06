@@ -156,7 +156,7 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 	}
 
 	for _, family := range []string{
-		"openai_chat", "openai_responses", "openai_codex",
+		"openai_chat",
 		// OpenRouter / Grok 也走 OpenAI 兼容 SSE
 		"openrouter_chat", "grok_chat",
 		// 6 家 OpenAI 兼容直通，均注册为 openai.Adapter
@@ -175,6 +175,16 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		}
 		if _, ok := got.(*openai.Adapter); !ok {
 			t.Fatalf("For(%s) adapter type = %T, want *openai.Adapter", family, got)
+		}
+	}
+
+	for _, family := range []string{"openai_responses", "openai_codex"} {
+		got, err := r.For(family)
+		if err != nil {
+			t.Fatalf("For(%s) error = %v", family, err)
+		}
+		if _, ok := got.(*openai.ResponsesAdapter); !ok {
+			t.Fatalf("For(%s) adapter type = %T, want *openai.ResponsesAdapter", family, got)
 		}
 	}
 

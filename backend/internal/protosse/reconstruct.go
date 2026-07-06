@@ -138,6 +138,8 @@ func newUpstreamState(adapter proto.UpstreamAdapter) any {
 	switch adapter.(type) {
 	case *openai.Adapter:
 		return &openai.UpstreamState{}
+	case *openai.ResponsesAdapter:
+		return &openai.ResponsesUpstreamState{}
 	case *gemini.Adapter:
 		return &gemini.UpstreamState{}
 	case *geminicodeassist.Adapter:

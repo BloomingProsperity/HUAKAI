@@ -41,6 +41,8 @@ const (
 	chatgptSessionE2EVendor       = credentialstore.VendorOpenAI
 	chatgptSessionE2EAuthMode     = credentialstore.AuthModeChatGPTOAuth
 	chatgptSessionE2EToken        = "session-token-e2e-fake"
+	chatgptSessionE2EAccountID    = "acct-chatgpt-session-e2e"
+	chatgptSessionE2EVersion      = "0.99.0-e2e"
 	chatgptSessionE2EDeviceID     = "device-e2e-codex-123"
 	chatgptSessionE2EUserAgent    = "codex_cli_rs/0.5.0 (Linux x86_64)"
 	chatgptSessionE2EQuotaLimit   = "1000.00000000"
@@ -111,25 +113,37 @@ func (f *chatgptSessionE2EFakeUpstream) Close() {
 }
 
 func (f *chatgptSessionE2EFakeUpstream) endpoint() string {
-	return f.server.URL + "/backend-api/codex/completions"
+	return f.server.URL + "/backend-api/codex/responses"
 }
 
 func (f *chatgptSessionE2EFakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
-	_, _ = io.Copy(io.Discard, r.Body)
+	rawBody, _ := io.ReadAll(r.Body)
 	_ = r.Body.Close()
 
 	var errs []string
 	if r.Method != http.MethodPost {
 		errs = append(errs, "method 不是 POST")
 	}
-	if r.URL.Path != "/backend-api/codex/completions" {
-		errs = append(errs, "path 不是 codex completions")
+	if r.URL.Path != "/backend-api/codex/responses" {
+		errs = append(errs, "path 不是 codex responses")
 	}
 	if got := r.Header.Get("Authorization"); got != "Bearer "+chatgptSessionE2EToken {
 		errs = append(errs, "Authorization 未按 session token 注入")
 	}
+	if got := r.Header.Get("Accept"); got != "text/event-stream" {
+		errs = append(errs, "Accept 不是 text/event-stream")
+	}
 	if got := r.Header.Get("OAI-Device-Id"); got != chatgptSessionE2EDeviceID {
 		errs = append(errs, "OAI-Device-Id 未按账号 extra 注入")
+	}
+	if got := r.Header.Get("originator"); got != "codex_cli_rs" {
+		errs = append(errs, "originator 未按 Codex 默认值注入")
+	}
+	if got := r.Header.Get("chatgpt-account-id"); got != chatgptSessionE2EAccountID {
+		errs = append(errs, "chatgpt-account-id 未按账号 extra 注入")
+	}
+	if got := r.Header.Get("version"); got != chatgptSessionE2EVersion {
+		errs = append(errs, "version 未按账号 extra 注入")
 	}
 	ua := r.Header.Get("User-Agent")
 	if ua == "" || strings.Contains(strings.ToLower(ua), "mozilla") || !strings.Contains(strings.ToLower(ua), "codex") {
@@ -137,6 +151,23 @@ func (f *chatgptSessionE2EFakeUpstream) handle(w http.ResponseWriter, r *http.Re
 	}
 	if got := r.Header.Get("OAI-Language"); got != "en-US" {
 		errs = append(errs, "OAI-Language 不是 en-US")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		errs = append(errs, "请求体不是 JSON object")
+	} else {
+		if body["stream"] != true {
+			errs = append(errs, "stream 未强制为 true")
+		}
+		if body["store"] != false {
+			errs = append(errs, "store 未强制为 false")
+		}
+		if _, ok := body["max_output_tokens"]; ok {
+			errs = append(errs, "max_output_tokens 未剥离")
+		}
+		if body["model"] != chatgptSessionE2EModel {
+			errs = append(errs, "model 未保留")
+		}
 	}
 
 	f.mu.Lock()
@@ -148,26 +179,75 @@ func (f *chatgptSessionE2EFakeUpstream) handle(w http.ResponseWriter, r *http.Re
 		http.Error(w, "fake upstream header assertion failed", http.StatusTeapot)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id":      "chatcmpl-chatgpt-session-e2e",
-		"object":  "chat.completion",
-		"created": time.Now().Unix(),
-		"model":   chatgptSessionE2EModel,
-		"choices": []map[string]any{{
-			"index":         0,
-			"finish_reason": "stop",
-			"message": map[string]string{
-				"role":    "assistant",
-				"content": "pong from fake chatgpt codex backend",
-			},
-		}},
-		"usage": map[string]int{
-			"prompt_tokens":     7,
-			"completion_tokens": 5,
-			"total_tokens":      12,
+	w.Header().Set("Content-Type", "text/event-stream")
+	writeChatGPTSessionE2ESSE(w, "response.created", map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":     "resp-chatgpt-session-e2e",
+			"model":  chatgptSessionE2EModel,
+			"status": "in_progress",
 		},
 	})
+	writeChatGPTSessionE2ESSE(w, "response.output_item.added", map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"id":   "msg_1",
+			"type": "message",
+			"role": "assistant",
+		},
+	})
+	writeChatGPTSessionE2ESSE(w, "response.output_text.delta", map[string]any{
+		"type":          "response.output_text.delta",
+		"item_id":       "msg_1",
+		"output_index":  0,
+		"content_index": 0,
+		"delta":         "pong from fake codex responses backend",
+	})
+	writeChatGPTSessionE2ESSE(w, "response.output_item.done", map[string]any{
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item": map[string]any{
+			"id":   "msg_1",
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]string{{
+				"type": "output_text",
+				"text": "pong from fake codex responses backend",
+			}},
+		},
+	})
+	writeChatGPTSessionE2ESSE(w, "response.completed", map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     "resp-chatgpt-session-e2e",
+			"model":  chatgptSessionE2EModel,
+			"status": "completed",
+			"usage": map[string]int{
+				"input_tokens":  7,
+				"output_tokens": 5,
+				"total_tokens":  12,
+			},
+			"output": []map[string]any{{
+				"id":   "msg_1",
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]string{{
+					"type": "output_text",
+					"text": "pong from fake codex responses backend",
+				}},
+			}},
+		},
+	})
+}
+
+func writeChatGPTSessionE2ESSE(w http.ResponseWriter, event string, payload map[string]any) {
+	raw, _ := json.Marshal(payload)
+	_, _ = fmt.Fprintf(w, "event: %s\n", event)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func (f *chatgptSessionE2EFakeUpstream) assertSingleRequest(t *testing.T) {
@@ -377,6 +457,10 @@ func seedChatGPTSessionE2EProviderAccount(t *testing.T, ctx context.Context, pgP
 		"base_url":      seed.upstreamEndpoint,
 		"oai_device_id": chatgptSessionE2EDeviceID,
 		"user_agent":    chatgptSessionE2EUserAgent,
+		"account_id":    chatgptSessionE2EAccountID,
+		"codex_version": chatgptSessionE2EVersion,
+		"originator":    "codex_cli_rs",
+		"oai_country":   "US",
 	}
 	legacyCredentials, err := json.Marshal(map[string]any{
 		"session_token": chatgptSessionE2EToken,
@@ -538,7 +622,7 @@ func startChatGPTSessionE2EGateway(t *testing.T, binPath, dsn, addr string, seed
 		"HUAKAI_BINDING_RATE_LIMIT_ENABLED=false",
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
-		"HUAKAI_DISPATCH_HCSF=0",
+		"HUAKAI_DISPATCH_HCSF=1",
 		"HUAKAI_TRANSPORT_MIMICRY=false",
 	)
 	stderr, _ := cmd.StderrPipe()
@@ -599,30 +683,31 @@ type chatgptSessionE2EChatResult struct {
 }
 
 type chatgptSessionE2EUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }
 
 func postChatGPTSessionE2EChat(t *testing.T, ctx context.Context, client *http.Client, addr string, seed *chatgptSessionE2ESeed, logicalID string) chatgptSessionE2EChatResult {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
-		"model": chatgptSessionE2EModel,
-		"messages": []map[string]string{
-			{"role": "user", "content": "ping"},
-		},
-		"max_tokens": 16,
-		"stream":     false,
+		"model":             chatgptSessionE2EModel,
+		"instructions":      "Reply briefly.",
+		"input":             "ping",
+		"stream":            true,
+		"store":             true,
+		"max_output_tokens": 16,
 	})
 	if err != nil {
-		t.Fatalf("marshal chat body: %v", err)
+		t.Fatalf("marshal responses body: %v", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"http://"+addr+"/v1/chat/completions", bytes.NewReader(body))
+		"http://"+addr+"/v1/responses", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+seed.bearer)
 	req.Header.Set("Idempotency-Key", logicalID)
 	req.Header.Set("User-Agent", chatgptSessionE2EUserAgent)
@@ -630,7 +715,7 @@ func postChatGPTSessionE2EChat(t *testing.T, ctx context.Context, client *http.C
 
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("POST /v1/chat/completions: %v", err)
+		t.Fatalf("POST /v1/responses: %v", err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
@@ -639,23 +724,56 @@ func postChatGPTSessionE2EChat(t *testing.T, ctx context.Context, client *http.C
 	}
 	result := chatgptSessionE2EChatResult{statusCode: resp.StatusCode, body: raw, logicalID: logicalID}
 	if resp.StatusCode == http.StatusOK {
-		var decoded struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-			Usage chatgptSessionE2EUsage `json:"usage"`
-		}
-		if err := json.Unmarshal(raw, &decoded); err != nil {
-			t.Fatalf("decode success response: %v body=%s", err, safeChatGPTSessionE2EBody(raw))
-		}
-		if len(decoded.Choices) > 0 {
-			result.content = decoded.Choices[0].Message.Content
-		}
-		result.usage = decoded.Usage
+		result.content, result.usage = parseChatGPTSessionE2EResponsesSSE(t, raw)
 	}
 	return result
+}
+
+func parseChatGPTSessionE2EResponsesSSE(t *testing.T, raw []byte) (string, chatgptSessionE2EUsage) {
+	t.Helper()
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	var currentEvent string
+	var content strings.Builder
+	var usage chatgptSessionE2EUsage
+	seenCreated := false
+	seenCompleted := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		switch {
+		case strings.HasPrefix(line, "event:"):
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			if currentEvent == "response.created" {
+				seenCreated = true
+			}
+			if currentEvent == "response.completed" {
+				seenCompleted = true
+			}
+		case strings.HasPrefix(line, "data:"):
+			var evt struct {
+				Type     string `json:"type"`
+				Delta    string `json:"delta"`
+				Response struct {
+					Usage chatgptSessionE2EUsage `json:"usage"`
+				} `json:"response"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &evt); err != nil {
+				t.Fatalf("decode responses SSE data: %v line=%s body=%s", err, line, safeChatGPTSessionE2EBody(raw))
+			}
+			if evt.Type == "response.output_text.delta" {
+				content.WriteString(evt.Delta)
+			}
+			if evt.Type == "response.completed" || currentEvent == "response.completed" {
+				usage = evt.Response.Usage
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan responses SSE: %v", err)
+	}
+	if !seenCreated || !seenCompleted {
+		t.Fatalf("Responses SSE 缺关键事件: created=%v completed=%v body=%s", seenCreated, seenCompleted, safeChatGPTSessionE2EBody(raw))
+	}
+	return content.String(), usage
 }
 
 func assertChatGPTSessionE2ESuccessResponse(t *testing.T, result chatgptSessionE2EChatResult) {

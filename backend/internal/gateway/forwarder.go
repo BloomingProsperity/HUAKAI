@@ -613,6 +613,8 @@ func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 			switch adapter.(type) {
 			case *openai.Adapter:
 				return &openai.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+			case *openai.ResponsesAdapter:
+				return &openai.ResponsesUpstreamState{}
 			case *gemini.Adapter:
 				return &gemini.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			case *geminicodeassist.Adapter:

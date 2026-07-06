@@ -337,11 +337,9 @@ func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {
 // HCSF 路径 502(MarshalToProviderRequest unsupported)。守卫:
 // gateway.TestMarshalSupportsEveryRegisteredProtocolFamily。
 //
-// 刻意 fail-closed、不在表内的族(映射前提"请求 body 与形态族同形"不成立,
-// 待 OCAW 真实流量采集确认后再接):
-//   - openai_codex            请求侧 native-raw(Responses 形),但响应侧
-//     protocol_selector 注册的是 chat-chunk 解析器,仓内两处记载互斥,
-//     形态未定 → 保持 marshal unsupported。
+// 刻意 fail-closed、不在表内的族(映射前提"请求 body 与形态族同形"不成立):
+//   - openai_codex            Responses 形客户端走 native-raw 直通;
+//     chat/messages → codex 的请求翻译尚未落地,保持 marshal unsupported。
 //   - cursor_session          上游是 Connect/proto 帧(application/connect+proto,
 //     见 provider/cursor),openai_chat JSON 投影必不可解析。
 //   - gemini_advanced_session 上游是 f.req= form-urlencoded 包装(见
@@ -405,6 +403,9 @@ func validateNativeRawBodyIngress(ingressFamily, endpointFamily string) error {
 		return nil
 	}
 	if ingressFamily == "anthropic_messages" && endpointFamily == "bedrock_invoke" {
+		return nil
+	}
+	if ingressFamily == "openai_responses" && endpointFamily == "openai_codex" {
 		return nil
 	}
 	return fmt.Errorf("dispatcher: native raw-body endpoint family %q does not accept ingress %q (cross-protocol raw forward is fail-closed)", endpointFamily, ingressFamily)

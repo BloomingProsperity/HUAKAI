@@ -225,6 +225,7 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 		"copilot_endpoint_api", "auth_mode", "client_id_source",
 		"oauth_token_endpoint", "expires_at",
 		"user_agent", "cursor_checksum", "cursor_client_version", "cookie",
+		"account_id", "chatgpt_account_id", "codex_version", "originator", "oai_device_id",
 	} {
 		if value := fieldString(fields, key); value != "" {
 			extra[key] = value

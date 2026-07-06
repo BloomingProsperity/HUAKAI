@@ -1935,8 +1935,8 @@ func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
 
 // TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough 守卫流式
 // 翻译门(renew-156 族集不对称第 5 处变体):上游族的线格式形态与客户端协议
-// 同形时(kimi/qwen/... == openai_chat;openai_codex 刻意不在映射表内,
-// responses→codex 留 fail-closed,见下方用例)
+// 同形时(kimi/qwen/... == openai_chat;Responses 客户端到 codex 同为
+// Responses 线格式)
 // 必须走 raw 直通——既保留 vendor 专有字段(top_k 等,流式无 raw-merge,
 // 走 HCSF 翻译会被静默丢),也是此前全部兼容族流式 501 的根因(返回 true 后
 // MarshalToProviderRequest 不认这些族)。真跨协议(anthropic→kimi、
@@ -1957,11 +1957,12 @@ func TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough(t *testing.T
 		{"openai→grok 同形态直通", proto.ClientProtocolOpenAIChat, "grok_chat", false},
 		{"openai→deepseek 同形态直通", proto.ClientProtocolOpenAIChat, "deepseek_chat", false},
 		{"openai→copilot_session JSON形 session 直通", proto.ClientProtocolOpenAIChat, "copilot_session", false},
-		// cursor(Connect/proto 帧)/codex(形态仓内互斥)不在映射表 →
+		// cursor(Connect/proto 帧)不在映射表 →
 		// 仍走翻译路径,在 marshal 处 fail-closed 501(见
 		// hcsfProviderRequestModelFamily 排除注释;OCAW 采集后再接)。
 		{"openai→cursor_session 留 fail-closed", proto.ClientProtocolOpenAIChat, "cursor_session", true},
-		{"responses→codex 留 fail-closed", proto.ClientProtocolOpenAIResponses, "openai_codex", true},
+		{"responses→codex Responses形直通", proto.ClientProtocolOpenAIResponses, "openai_codex", false},
+		{"openai→codex 片1不翻译", proto.ClientProtocolOpenAIChat, "openai_codex", true},
 		{"openai→openai 既有直通不回归", proto.ClientProtocolOpenAIChat, "openai_chat", false},
 		{"openai→anthropic 跨协议须翻译", proto.ClientProtocolOpenAIChat, "anthropic_messages", true},
 		{"anthropic→kimi 跨协议须翻译", proto.ClientProtocolAnthropicMessages, "kimi_chat", true},

@@ -104,6 +104,52 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexRuntimeMaterialSurfacesAccountHeaders(t *testing.T) {
+	registry := DefaultHandlerRegistry()
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{name: "chatgpt oauth", mode: AuthModeChatGPTOAuth},
+		{name: "codex cli oauth", mode: AuthModeCodexCLIOAuth},
+		{name: "codex web oauth", mode: AuthModeCodexWebOAuth},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, err := registry.MustLookup(VendorOpenAI, tc.mode)
+			if err != nil {
+				t.Fatalf("lookup: %v", err)
+			}
+			raw := `{
+				"access_token":"access-for-codex",
+				"account_id":"acct_primary",
+				"chatgpt_account_id":"acct_header",
+				"codex_version":"0.99.0",
+				"originator":"codex_cli_rs",
+				"oai_device_id":"device_1"
+			}`
+			material, err := handler.RuntimeMaterial([]byte(raw))
+			if err != nil {
+				t.Fatalf("RuntimeMaterial: %v", err)
+			}
+			if material.Kind != RuntimeSessionToken || material.Value != "access-for-codex" {
+				t.Fatalf("material kind/value=%q/%q want session access token", material.Kind, material.Value)
+			}
+			for key, want := range map[string]string{
+				"account_id":         "acct_primary",
+				"chatgpt_account_id": "acct_header",
+				"codex_version":      "0.99.0",
+				"originator":         "codex_cli_rs",
+				"oai_device_id":      "device_1",
+			} {
+				if got := material.Extra[key]; got != want {
+					t.Fatalf("Extra[%s]=%q want %q; extra=%+v", key, got, want, material.Extra)
+				}
+			}
+		})
+	}
+}
+
 // TestVertexRuntimeMaterialSurfacesLocation 抓的回归:Vertex 模式的
 // RuntimeMaterial 必须把 location 透到 Extra,供 vertex.PassthroughAdapter 拼
 // region-templated URL。location 不在白名单 → adapter 拿不到 → URL 区域错。

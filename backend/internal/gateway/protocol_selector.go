@@ -92,11 +92,11 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r := NewStaticProtocolAdapterRegistry()
 	r.MustRegister("anthropic_messages", &anthropic.Adapter{CarryForwardSignatureDelta: false})
 	r.MustRegister("openai_chat", &openai.Adapter{})
-	r.MustRegister("openai_responses", &openai.Adapter{})
-	// openai_codex 出站到 chatgpt.com/backend-api/codex/completions，
-	// 但响应 SSE 形态与 OpenAI Chat Completions 兼容（data: {"choices":[...]}）。
-	// 复用 openai.Adapter；若后续观测到形态差异再做专用 session SSE adapter。
-	r.MustRegister("openai_codex", &openai.Adapter{})
+	r.MustRegister("openai_responses", &openai.ResponsesAdapter{})
+	// openai_codex 出站到 chatgpt.com/backend-api/codex/responses。
+	// 真实探测已确认它返回 OpenAI Responses SSE(named event +
+	// data.type=response.*)，不是 Chat Completions chunk。
+	r.MustRegister("openai_codex", &openai.ResponsesAdapter{})
 	r.MustRegister("gemini_messages", &gemini.Adapter{})
 	// Vertex AI serving 入站响应解析复用既有 proto adapter：
 	//   - vertex_gemini    上游 generateContent/streamGenerateContent 的 SSE/JSON

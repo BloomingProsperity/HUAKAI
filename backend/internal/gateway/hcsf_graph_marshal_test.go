@@ -836,7 +836,7 @@ func TestMarshalSupportsEveryRegisteredProtocolFamily(t *testing.T) {
 		// 与 hcsfProviderRequestModelFamily 的排除注释保持同步(单一真相在
 		// upstream_dispatcher_hcsf.go,此处仅作守卫例外登记)。
 		"bedrock_invoke":          "binary EventStream;anthropic 走 native-raw + adapter 内 AutoTranslate,openai 入站 marshal fail-closed",
-		"openai_codex":            "请求/响应形态仓内记载互斥(native-raw Responses vs chat-chunk 解析器),待 OCAW 采集确认",
+		"openai_codex":            "Responses 客户端走 native-raw 直通;chat/messages 到 codex 的 marshal 翻译留后续切片",
 		"cursor_session":          "上游 Connect/proto 帧(application/connect+proto),openai_chat JSON 投影不可解析,待 OCAW",
 		"gemini_advanced_session": "上游 f.req= form-urlencoded 包装,非 Gemini API JSON,待 OCAW",
 	}

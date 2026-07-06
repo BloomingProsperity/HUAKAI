@@ -10,6 +10,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -21,13 +22,35 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
-// defaultCodexEndpoint 默认目标 endpoint：Codex CLI 旧版 completions 接口。
+// defaultCodexEndpoint 默认目标 endpoint：Codex Responses 接口。
 // chatgpt.com 自有 backend，非 api.openai.com。
-const defaultCodexEndpoint = "https://chatgpt.com/backend-api/codex/completions"
+const defaultCodexEndpoint = "https://chatgpt.com/backend-api/codex/responses"
 
 // defaultCodexUserAgent Codex CLI 风格默认 User-Agent。
 // caller 可通过 Credential.Extra["user_agent"] 覆盖。
 const defaultCodexUserAgent = "codex/1.0.0 (linux; go)"
+
+// Codex Responses live 已坐实会拒绝这些常见采样/输出字段。
+var codexResponsesLiveUnsupportedFields = [...]string{
+	"temperature",
+	"top_p",
+	"max_output_tokens",
+}
+
+// 三镜对齐的 Codex Responses 不支持字段,仅在 openai_codex session adapter 出站前剥离。
+var codexResponsesAlignedUnsupportedFields = [...]string{
+	"max_completion_tokens",
+	"frequency_penalty",
+	"presence_penalty",
+	"logprobs",
+	"top_logprobs",
+	"n",
+	"stream_options",
+	"user",
+	"metadata",
+	"prompt_cache_retention",
+	"safety_identifier",
+}
 
 // 编译期接口合规性断言：CodexSessionAdapter 必须满足 provider.Adapter。
 var _ provider.Adapter = (*CodexSessionAdapter)(nil)
@@ -42,7 +65,7 @@ var _ provider.Adapter = (*CodexSessionAdapter)(nil)
 //   - Body shape 由 caller 负责；adapter 透传不重塑
 type CodexSessionAdapter struct {
 	// Endpoint 覆盖默认 chatgpt.com endpoint。空串走
-	// "https://chatgpt.com/backend-api/codex/completions"。
+	// "https://chatgpt.com/backend-api/codex/responses"。
 	Endpoint string
 }
 
@@ -106,7 +129,12 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 		endpoint = validatedEndpoint
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
+	body, err := normalizeCodexResponsesBody(in.InboundBody)
+	if err != nil {
+		return nil, fmt.Errorf("openai codex session: 请求体规整失败: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("openai codex session: 构造请求失败: %w", err)
 	}
@@ -121,9 +149,9 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 		req.Header.Set("Authorization", in.Credential.Value)
 	}
 
-	// Content-Type / Accept 标准头
+	// Content-Type / Accept 标准头。Codex Responses 只接受流式响应。
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 
 	// User-Agent：caller 可通过 Extra["user_agent"] 覆盖；空时用默认 Codex CLI 风格 UA
 	ua := in.Credential.Extra["user_agent"]
@@ -145,6 +173,19 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	// OAI-Language：固定 en-US，与 Codex CLI 默认行为一致
 	req.Header.Set("OAI-Language", "en-US")
 
+	originator := strings.TrimSpace(in.Credential.Extra["originator"])
+	if originator == "" {
+		originator = "codex_cli_rs"
+	}
+	req.Header.Set("originator", originator)
+
+	if accountID := firstNonEmptyCodexExtra(in.Credential.Extra, "chatgpt_account_id", "account_id"); accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+	if version := strings.TrimSpace(in.Credential.Extra["codex_version"]); version != "" {
+		req.Header.Set("version", version)
+	}
+
 	// 扩展透传 header：caller 通过 Extra 传入的其它 chatgpt.com 必要字段
 	// 支持 key：cookie / arkose_token / chat_session_id / oai_country
 	if cookie := in.Credential.Extra["cookie"]; cookie != "" {
@@ -161,6 +202,37 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	}
 
 	return req, nil
+}
+
+func normalizeCodexResponsesBody(raw []byte) ([]byte, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return raw, nil
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	if body == nil {
+		return nil, errors.New("请求体必须是 JSON object")
+	}
+	body["stream"] = json.RawMessage("true")
+	body["store"] = json.RawMessage("false")
+	for _, field := range codexResponsesLiveUnsupportedFields {
+		delete(body, field)
+	}
+	for _, field := range codexResponsesAlignedUnsupportedFields {
+		delete(body, field)
+	}
+	return json.Marshal(body)
+}
+
+func firstNonEmptyCodexExtra(extra map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if v := strings.TrimSpace(extra[key]); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // acceptsCredential 检查凭据形态是否在 AcceptableCredentialTypes 列表中。

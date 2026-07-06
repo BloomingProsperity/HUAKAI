@@ -212,7 +212,8 @@ func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testi
 // TestBuildHCSFProviderRequestNativeRawIngressGuard 非流式 native-raw 直转的
 // 跨协议守卫(DM-20 评审 S2):许可集与流式 needsStreamingHCSFTranslation 严格
 // 镜像——同族/空 ingress 直通,anthropic→bedrock 走 adapter 内 AutoTranslate
-// 直通,其余跨协议 fail-closed。
+// 直通,openai_responses→openai_codex 同为 Responses 形直通,其余跨协议
+// fail-closed。
 // 变异: 删 validateNativeRawBodyIngress 调用(恢复 fail-open)→ anthropic
 // body 原样直发 codex / openai body 进 bedrock 嗅探误译 → 四个 wantErr 用例 RED;
 // 把 anthropic→bedrock 许可删掉 → AutoTranslate 合法路径被误杀 → 该用例 RED。
@@ -224,7 +225,7 @@ func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 		wantErr        bool
 	}{
 		{"anthropic→codex fail-closed", "anthropic_messages", "openai_codex", true},
-		{"responses→codex fail-closed(镜像流式)", "openai_responses", "openai_codex", true},
+		{"responses→codex Responses形直通", "openai_responses", "openai_codex", false},
 		{"openai→codex fail-closed", "openai_chat", "openai_codex", true},
 		{"openai→bedrock fail-closed(嗅探误译路径)", "openai_chat", "bedrock_invoke", true},
 		{"anthropic→bedrock AutoTranslate 直通", "anthropic_messages", "bedrock_invoke", false},
