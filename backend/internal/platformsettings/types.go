@@ -20,24 +20,24 @@ const (
 type SettingKey string
 
 const (
-	KeyRegistrationEnabled            SettingKey = "registration_enabled"
-	KeyInvitationRequired             SettingKey = "invitation_required"
-	KeyPasswordRegisterEnabled        SettingKey = "password_register_enabled"
-	KeyPasswordLoginEnabled           SettingKey = "password_login_enabled"
-	KeyEmailDomainAllowlistEnabled    SettingKey = "email_domain_allowlist_enabled"
-	KeyEmailDomainAllowlist           SettingKey = "email_domain_allowlist"
-	KeyEmailAliasRestrictionEnabled   SettingKey = "email_alias_restriction_enabled"
-	KeyReservedEmailLocalparts        SettingKey = "reserved_email_localparts"
-	KeyCaptchaEnabled                 SettingKey = "captcha_enabled"
-	KeyTwoFactorEnabled               SettingKey = "two_factor_enabled"
-	KeyCaptchaProvider                SettingKey = "captcha_provider"
-	KeyCaptchaSiteKey                 SettingKey = "captcha_site_key"
+	KeyRegistrationEnabled          SettingKey = "registration_enabled"
+	KeyInvitationRequired           SettingKey = "invitation_required"
+	KeyPasswordRegisterEnabled      SettingKey = "password_register_enabled"
+	KeyPasswordLoginEnabled         SettingKey = "password_login_enabled"
+	KeyEmailDomainAllowlistEnabled  SettingKey = "email_domain_allowlist_enabled"
+	KeyEmailDomainAllowlist         SettingKey = "email_domain_allowlist"
+	KeyEmailAliasRestrictionEnabled SettingKey = "email_alias_restriction_enabled"
+	KeyReservedEmailLocalparts      SettingKey = "reserved_email_localparts"
+	KeyCaptchaEnabled               SettingKey = "captcha_enabled"
+	KeyTwoFactorEnabled             SettingKey = "two_factor_enabled"
+	KeyCaptchaProvider              SettingKey = "captcha_provider"
+	KeyCaptchaSiteKey               SettingKey = "captcha_site_key"
 	// KeyCaptchaSecret 是人机验证提供方(Turnstile/reCAPTCHA/hCaptcha)的**服务端** secret,
 	// 校验 token 时用。secret key,at-rest 加密、写后不回显;网关登录/注册端点请求期读它做
 	// 校验,空则回退 env HUAKAI_CAPTCHA_TURNSTILE_SECRET(back-compat)。与 captcha_site_key
 	//(公开、前端渲染用)相对——site key 公开、secret 保密。
-	KeyCaptchaSecret                  SettingKey = "captcha_secret"
-	KeyOAuthProvidersEnabled          SettingKey = "oauth_providers_enabled"
+	KeyCaptchaSecret         SettingKey = "captcha_secret"
+	KeyOAuthProvidersEnabled SettingKey = "oauth_providers_enabled"
 	// KeyOAuthProvidersConfig 是第三方登录(OAuth)各 provider 的**非密钥**配置(公开可读):
 	// JSON 对象 {"github":{"client_id":"...","redirect_uri":"...","auth_url":"...",...},"google":{...}}。
 	// 网关登录/回调端点请求期读它,按 provider 逐字段覆盖 env 基线(settings-first);未配置的
@@ -46,11 +46,11 @@ const (
 	// KeyOAuthProvidersSecrets 是第三方登录各 provider 的 **client_secret** 集合(密钥):
 	// JSON 对象 {"github":"secret1","google":"secret2"}。secret key,at-rest 加密、写后不回显。
 	// 与上面公开 config 分离,使 config 可读、secret 保密。
-	KeyOAuthProvidersSecrets          SettingKey = "oauth_providers_secrets"
+	KeyOAuthProvidersSecrets SettingKey = "oauth_providers_secrets"
 	// KeyTelegramBotUsername 是 Telegram Login Widget 渲染所需的**公开** bot 用户名
 	//(即 t.me/<name> 里那个名,绝非密钥;密钥是下面的 KeyTelegramBotToken)。
 	// 空值 = 关闭 Telegram 登录入口(配合 oauth_providers_enabled 含 telegram 才渲染按钮)。
-	KeyTelegramBotUsername            SettingKey = "telegram_bot_username"
+	KeyTelegramBotUsername SettingKey = "telegram_bot_username"
 	// KeyTelegramBotToken 是 Telegram Login Widget HMAC 校验用的 bot token(密钥)。secret key,
 	// at-rest 加密、写后不回显。配置后 telegram 登录/绑定端点读它做校验;空则回退 env
 	// HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN(back-compat)。
@@ -111,13 +111,14 @@ const (
 	// 未配置的部署解析不出收件人，巡检 worker 保持关闭（fail-safe）。worker 层
 	// 还另有一处 env 回退。
 	KeyAdminNotificationEmail SettingKey = "admin_notification_email"
+	// codex-cli 全局加固层的 7 个 SettingKey 常量在 codex_client_access.go 定义(§13 体量,同包)。
 )
 
 var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyOAuthProvidersConfig, KeyOAuthProvidersSecrets, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyOAuthProvidersConfig, KeyOAuthProvidersSecrets, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyCodexClientAccessBlacklist, KeyCodexClientAccessWhitelist, KeyCodexClientAccessMinVersion, KeyCodexClientAccessMaxVersion, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessEngineFingerprintSignals, KeyCodexClientAccessForceAllow, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -180,6 +181,14 @@ var (
 		KeySiteAPIBaseURL:                 "",
 		KeySiteFrontendBaseURL:            "",
 		KeyAdminNotificationEmail:         "",
+		// codex-cli 全局加固层默认全开:名单/信号空 = 不额外限制,版本无界,app-server 放行,force 关。
+		KeyCodexClientAccessBlacklist:                "[]",
+		KeyCodexClientAccessWhitelist:                "[]",
+		KeyCodexClientAccessMinVersion:               "",
+		KeyCodexClientAccessMaxVersion:               "",
+		KeyCodexClientAccessAllowAppServer:           "true",
+		KeyCodexClientAccessEngineFingerprintSignals: "[]",
+		KeyCodexClientAccessForceAllow:               "false",
 	}
 )
 
@@ -210,6 +219,19 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrUnknownKey, key)
 	}
 	value := strings.TrimSpace(raw)
+	// codex-cli 全局加固层键在 value=="" 守卫之前处理:空 JSON 名单/信号归一为 "[]",空版本合法。
+	if key == KeyCodexClientAccessBlacklist {
+		return normalizeCodexClientAccessBlacklistValue(key, value)
+	}
+	if key == KeyCodexClientAccessWhitelist {
+		return normalizeCodexClientAccessWhitelistValue(key, value)
+	}
+	if key == KeyCodexClientAccessEngineFingerprintSignals {
+		return normalizeCodexClientAccessEngineFingerprintSignalsValue(key, value)
+	}
+	if key == KeyCodexClientAccessMinVersion || key == KeyCodexClientAccessMaxVersion {
+		return validateCodexClientAccessVersionValue(key, value)
+	}
 	if key == KeyResponseHeaderDenyExtra || key == KeyResponseHeaderAllowOverride {
 		return validateHeaderListValue(key, value)
 	}
@@ -263,7 +285,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailAliasRestrictionEnabled, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailAliasRestrictionEnabled, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessForceAllow:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs:
 		return validatePositiveIntValue(key, value)
