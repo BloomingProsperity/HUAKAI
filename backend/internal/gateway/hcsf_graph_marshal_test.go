@@ -542,14 +542,12 @@ func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing
 }
 
 // TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses
-// 守 P2-B 在 Responses 协议侧。inbound text =
-// {"format":{"type":"json_schema","json_schema":{...}}} 时出站 body 的 text
-// 字段必须 1:1 还原,不能被包成 {"format":{"type":"raw","schema":...}}。
+// 守 Responses 原生 text 直通。inbound text 已是 Responses 形时出站 body 的
+// text 字段必须 1:1 还原,不能被当成 Chat response_format 再转换。
 //
-// 变异:改回原 wrap 逻辑时 text.format.type 会变 "raw" 而非 inbound
-// 'json_schema',或多嵌套一层 'schema' 包壳。
+// 变异:把原生 text 也二次转换时,verbosity 或 format.schema 会丢失/错位。
 func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *testing.T) {
-	raw := json.RawMessage(`{"format":{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object"}}}}`)
+	raw := json.RawMessage(`{"format":{"type":"json_schema","name":"Person","strict":true,"schema":{"type":"object","properties":{"age":{"type":"integer"}}}},"verbosity":"low"}`)
 	env := &proto.HCSF{
 		RequestControls: proto.RequestControls{
 			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
@@ -574,8 +572,99 @@ func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *te
 	if format["type"] != "json_schema" {
 		t.Fatalf("text.format.type = %v, want inbound 'json_schema' (raw-wrap regression)", format["type"])
 	}
-	if _, hasOuter := format["schema"]; hasOuter {
-		t.Fatalf("text.format 出现包壳 'schema' 字段是 raw-wrap regression: body=%+v", body)
+	if format["name"] != "Person" || format["strict"] != true || text["verbosity"] != "low" {
+		t.Fatalf("Responses 原生 text 未原样保留: text=%+v", text)
+	}
+	schema, ok := format["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" {
+		t.Fatalf("Responses 原生 text.format.schema 未保真: format=%+v", format)
+	}
+	if _, hasChatShape := format["json_schema"]; hasChatShape {
+		t.Fatalf("Responses text.format 不应出现 Chat json_schema 包壳: body=%+v", body)
+	}
+}
+
+// TestInjectRequestControlsResponseFormatRawChatJSONSchemaToOpenAIResponses
+// 守片2g:Chat response_format(json_schema/text/json_object) 打到 Responses
+// 上游时必须投影为 text.format,且 json_schema 内层要摊平到 format 本体。
+//
+// 变异:退回 raw 原样塞 body["text"] 时,text.format 缺失且 text.json_schema 出现。
+func TestInjectRequestControlsResponseFormatRawChatJSONSchemaToOpenAIResponses(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","json_schema":{"name":"Answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}}}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{
+			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
+		},
+	}
+	out, err := injectRequestControls([]byte(`{}`), env, "openai_responses")
+	if err != nil {
+		t.Fatalf("injectRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	text, ok := body["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("text must be JSON object, got %T: %v", body["text"], body["text"])
+	}
+	if _, hasChatShape := text["json_schema"]; hasChatShape {
+		t.Fatalf("text 出现 Chat json_schema 包壳,上游 Responses 会拒: body=%+v", body)
+	}
+	format, ok := text["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("text.format must be object, got %T: %v", text["format"], text["format"])
+	}
+	if format["type"] != "json_schema" || format["name"] != "Answer" || format["strict"] != true {
+		t.Fatalf("text.format 元数据未摊平: %+v", format)
+	}
+	schema, ok := format["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" || schema["additionalProperties"] != false {
+		t.Fatalf("text.format.schema 应是 json_schema.schema 本体: %+v", format["schema"])
+	}
+	if _, hasNested := format["json_schema"]; hasNested {
+		t.Fatalf("text.format 不应保留 Chat json_schema 内层包壳: %+v", format)
+	}
+}
+
+func TestInjectRequestControlsResponseFormatRawChatSimpleTypesToOpenAIResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{name: "text", raw: json.RawMessage(`{"type":"text"}`), want: "text"},
+		{name: "json_object", raw: json.RawMessage(`{"type":"json_object"}`), want: "json_object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &proto.HCSF{
+				RequestControls: proto.RequestControls{
+					ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: tc.raw},
+				},
+			}
+			out, err := injectRequestControls([]byte(`{}`), env, "openai_responses")
+			if err != nil {
+				t.Fatalf("injectRequestControls err=%v", err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(out, &body); err != nil {
+				t.Fatalf("unmarshal: %v body=%s", err, out)
+			}
+			text, ok := body["text"].(map[string]any)
+			if !ok {
+				t.Fatalf("text must be JSON object, got %T: %v", body["text"], body["text"])
+			}
+			format, ok := text["format"].(map[string]any)
+			if !ok {
+				t.Fatalf("text.format must be object, got %T: %v", text["format"], text["format"])
+			}
+			if format["type"] != tc.want {
+				t.Fatalf("text.format.type=%v want %s; body=%+v", format["type"], tc.want, body)
+			}
+			if _, hasSchema := format["schema"]; hasSchema {
+				t.Fatalf("简单 response_format 不应注入 schema: %+v", format)
+			}
+		})
 	}
 }
 

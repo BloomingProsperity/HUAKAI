@@ -235,15 +235,15 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 		body["tools"] = renderControlTools(family, c.Tools)
 	}
 	if c.ResponseFormat != nil {
-		// D5 first slice raw-passthrough:Schema 字段存的是 inbound 原始
-		// response_format / text 整体,marshal 必须 1:1 还原上游契约,
-		// 不能再包一层 {"type":"raw","schema":...} — 上游 OpenAI 只接受
-		// response_format 为 {"type":"json_object"} / {"type":"json_schema",...}
-		// 或 Responses 的 text:{"format":{...}},包错壳会直接 4xx reject。
+		// Schema 存 inbound 原始 response_format/text;同协议直通,Chat→Responses 改写为 text.format。
 		if c.ResponseFormat.Type == "raw" && len(c.ResponseFormat.Schema) > 0 {
 			switch family {
 			case "openai_responses":
-				body["text"] = rawJSONValue(c.ResponseFormat.Schema)
+				if text, ok := OpenAIResponsesTextFromChatResponseFormatRaw(c.ResponseFormat.Schema); ok {
+					body["text"] = text
+				} else {
+					body["text"] = rawJSONValue(c.ResponseFormat.Schema)
+				}
 			case "openai_chat":
 				body["response_format"] = rawJSONValue(c.ResponseFormat.Schema)
 			}
@@ -264,6 +264,29 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 	}
 	mergeRequestPassthrough(body, env)
 	return json.Marshal(body)
+}
+
+func OpenAIResponsesTextFromChatResponseFormatRaw(raw json.RawMessage) (map[string]any, bool) {
+	var rf map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &rf) != nil {
+		return nil, false
+	}
+	typ, _ := rf["type"].(string)
+	format := map[string]any{"type": typ}
+	switch typ {
+	case "text", "json_object":
+	case "json_schema":
+		if inner, ok := rf["json_schema"].(map[string]any); ok {
+			for _, key := range []string{"name", "strict", "schema"} {
+				if v, exists := inner[key]; exists {
+					format[key] = v
+				}
+			}
+		}
+	default:
+		return nil, false
+	}
+	return map[string]any{"format": format}, true
 }
 
 func mergeRequestPassthrough(body map[string]any, env *proto.HCSF) {

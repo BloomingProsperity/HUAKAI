@@ -37,9 +37,9 @@ func TestInjectStreamingRequestControlsResponseFormatRawPassthroughOpenAIChat(t 
 }
 
 // TestInjectStreamingRequestControlsResponseFormatRawPassthroughOpenAIResponses
-// 守 Responses 流式 controls 注入路径的 raw text.format 直通。
+// 守 Responses 流式 controls 注入路径的原生 text 直通。
 func TestInjectStreamingRequestControlsResponseFormatRawPassthroughOpenAIResponses(t *testing.T) {
-	raw := json.RawMessage(`{"format":{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object"}}}}`)
+	raw := json.RawMessage(`{"format":{"type":"json_schema","name":"Person","strict":true,"schema":{"type":"object"}},"verbosity":"low"}`)
 	env := &proto.HCSF{
 		RequestControls: proto.RequestControls{
 			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
@@ -64,8 +64,53 @@ func TestInjectStreamingRequestControlsResponseFormatRawPassthroughOpenAIRespons
 	if format["type"] != "json_schema" {
 		t.Fatalf("streaming text.format.type = %v, want inbound 'json_schema'", format["type"])
 	}
-	if _, hasOuter := format["schema"]; hasOuter {
-		t.Fatalf("streaming text.format 出现多余 schema 字段: body=%+v", body)
+	if format["name"] != "Person" || format["strict"] != true || text["verbosity"] != "low" {
+		t.Fatalf("streaming Responses 原生 text 未保真: text=%+v", text)
+	}
+	schema, ok := format["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" {
+		t.Fatalf("streaming Responses 原生 schema 未保真: format=%+v", format)
+	}
+	if _, hasChatShape := format["json_schema"]; hasChatShape {
+		t.Fatalf("streaming Responses text.format 不应出现 Chat json_schema 包壳: body=%+v", body)
+	}
+}
+
+func TestInjectStreamingRequestControlsResponseFormatRawChatJSONSchemaToOpenAIResponses(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","json_schema":{"name":"Answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}}}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{
+			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
+		},
+	}
+	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_responses")
+	if err != nil {
+		t.Fatalf("injectStreamingRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	text, ok := body["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("text must be JSON object, got %T: %v", body["text"], body["text"])
+	}
+	if _, hasChatShape := text["json_schema"]; hasChatShape {
+		t.Fatalf("streaming text 出现 Chat json_schema 包壳: body=%+v", body)
+	}
+	format, ok := text["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("text.format must be object, got %T: %v", text["format"], text["format"])
+	}
+	if format["type"] != "json_schema" || format["name"] != "Answer" || format["strict"] != true {
+		t.Fatalf("streaming text.format 元数据未摊平: %+v", format)
+	}
+	schema, ok := format["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" || schema["additionalProperties"] != false {
+		t.Fatalf("streaming text.format.schema 应是 json_schema.schema 本体: %+v", format["schema"])
+	}
+	if _, hasNested := format["json_schema"]; hasNested {
+		t.Fatalf("streaming text.format 不应保留 Chat json_schema 内层包壳: %+v", format)
 	}
 }
 

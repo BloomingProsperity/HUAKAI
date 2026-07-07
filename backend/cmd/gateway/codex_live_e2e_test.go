@@ -287,6 +287,49 @@ func TestChatToCodexLiveMatrix(t *testing.T) {
 			},
 		},
 		{
+			name: "D2结构化输出json_schema",
+			path: "/v1/chat/completions",
+			body: map[string]any{
+				"model": model,
+				"messages": []map[string]any{{
+					"role":    "user",
+					"content": `Return exactly {"answer":"ok"} as JSON.`,
+				}},
+				"stream":     false,
+				"max_tokens": 64,
+				"response_format": map[string]any{
+					"type": "json_schema",
+					"json_schema": map[string]any{
+						"name":   "live_answer",
+						"strict": true,
+						"schema": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"answer": map[string]any{"type": "string"},
+							},
+							"required":             []string{"answer"},
+							"additionalProperties": false,
+						},
+					},
+				},
+			},
+			wantStream: &streamFalse,
+			assert: func(t *testing.T, res codexLiveHTTPResult) {
+				assertCodexLiveContentType(t, res, "application/json")
+				chat := parseCodexLiveChatResponse(t, res.body)
+				if strings.TrimSpace(chat.outputText) == "" {
+					t.Fatalf("结构化输出 chat 响应为空: parsed=%+v body=%s", chat, safeCodexLiveBody(res.body, ""))
+				}
+				var got map[string]any
+				if err := json.Unmarshal([]byte(chat.outputText), &got); err != nil {
+					t.Fatalf("结构化输出不是 JSON object: output=%q err=%v body=%s", chat.outputText, err, safeCodexLiveBody(res.body, ""))
+				}
+				if got["answer"] != "ok" {
+					t.Fatalf("结构化输出 answer=%v want ok; output=%q", got["answer"], chat.outputText)
+				}
+			},
+		},
+		{
 			name: "chat工具调用",
 			path: "/v1/chat/completions",
 			body: map[string]any{

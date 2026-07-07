@@ -278,12 +278,17 @@ func injectStreamingRequestControls(raw []byte, env *proto.HCSF, family string) 
 	if c.ResponseFormat != nil {
 		// D5 raw-passthrough:同非流式逻辑(hcsf_graph_marshal_helpers.go 的
 		// injectRequestControls)。Schema 存的是 inbound 原始 response_format /
-		// text 整体,流式 marshal 必须 1:1 还原,不能再包 {"type":"raw","schema":...}
-		// 让上游 4xx reject。
+		// text 整体。同协议流式 marshal 1:1 还原;Chat response_format 投到
+		// Responses 时改写为 text.format。两种路径都不能再包
+		// {"type":"raw","schema":...} 让上游 4xx reject。
 		if c.ResponseFormat.Type == "raw" && len(c.ResponseFormat.Schema) > 0 {
 			switch family {
 			case "openai_responses":
-				body["text"] = streamingRawJSONValue(c.ResponseFormat.Schema)
+				if text, ok := gateway.OpenAIResponsesTextFromChatResponseFormatRaw(c.ResponseFormat.Schema); ok {
+					body["text"] = text
+				} else {
+					body["text"] = streamingRawJSONValue(c.ResponseFormat.Schema)
+				}
 			case "openai_chat":
 				body["response_format"] = streamingRawJSONValue(c.ResponseFormat.Schema)
 			}
