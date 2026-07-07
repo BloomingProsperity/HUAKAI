@@ -447,6 +447,7 @@ func (ex *chatExecution) translatedStreamingInboundBody(w http.ResponseWriter) (
 	gateway.ApplyForwardRequestHopChain(canonicalReq, ex.forwardReq)
 
 	body, err := streamingProviderRequestBody(canonicalReq, ex.resolved.ProtocolFamily)
+	ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
 	if err != nil {
 		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "streaming_translation_not_supported", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)

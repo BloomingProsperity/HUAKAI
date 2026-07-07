@@ -23,6 +23,15 @@ func marshalBody(t *testing.T, env *proto.HCSF, family string) map[string]any {
 	return body
 }
 
+func marshalLossHasCode(losses []proto.ProtocolLossEntry, code string) bool {
+	for _, loss := range losses {
+		if loss.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func graphEnv(nodes ...proto.CapabilityNode) *proto.HCSF {
 	env := proto.NewEmptyEnvelope()
 	env.RequestMeta.Model = "model-in"
@@ -480,6 +489,55 @@ func TestMarshalOpenAIResponsesNativeExtensionPassthrough(t *testing.T) {
 	}
 }
 
+func TestMarshalOpenAICodexProjectsToResponsesShape(t *testing.T) {
+	env := graphEnv(
+		textNode("n_system", "system", "follow policy"),
+		textNode("n_user", "user", "hi"),
+	)
+	body := marshalBody(t, env, "openai_codex")
+	if body["instructions"] != "follow policy" {
+		t.Fatalf("codex instructions=%v want system text; body=%+v", body["instructions"], body)
+	}
+	input, ok := body["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("codex input=%+v want Responses input array", body["input"])
+	}
+	first := input[0].(map[string]any)
+	if first["type"] != "message" {
+		t.Fatalf("codex input item=%+v want Responses message item", first)
+	}
+	if _, ok := body["messages"]; ok {
+		t.Fatalf("codex marshal must not emit Chat messages shape: %+v", body)
+	}
+}
+
+func TestHCSFRequestBodyCodexUnsupportedControlsEmitLoss(t *testing.T) {
+	env := graphEnv(textNode("n_text_1", "user", "hi"))
+	max := 12
+	temp := 0.2
+	topP := 0.9
+	env.RequestControls.MaxTokens = &max
+	env.RequestControls.Temperature = &temp
+	env.RequestControls.TopP = &topP
+
+	raw, err := hcsfRequestBody(env, "openai_codex")
+	if err != nil {
+		t.Fatalf("hcsfRequestBody(openai_codex): %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, raw)
+	}
+	if body["max_output_tokens"].(float64) != 12 || body["temperature"].(float64) != 0.2 || body["top_p"].(float64) != 0.9 {
+		t.Fatalf("codex body controls before adapter normalization = %+v", body)
+	}
+	for _, code := range []string{"codex_max_output_tokens_stripped", "codex_temperature_stripped", "codex_top_p_stripped"} {
+		if !marshalLossHasCode(env.CapabilityGraph.ProtocolLoss, code) {
+			t.Fatalf("loss code %q missing; losses=%+v", code, env.CapabilityGraph.ProtocolLoss)
+		}
+	}
+}
+
 // TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIChat 守 P2-B 修复:
 // inbound response_format = {"type":"json_object"} 时,injectRequestControls
 // 必须把出站 body 的 response_format 字段还原为 {"type":"json_object"} 本体,
@@ -836,7 +894,6 @@ func TestMarshalSupportsEveryRegisteredProtocolFamily(t *testing.T) {
 		// 与 hcsfProviderRequestModelFamily 的排除注释保持同步(单一真相在
 		// upstream_dispatcher_hcsf.go,此处仅作守卫例外登记)。
 		"bedrock_invoke":          "binary EventStream;anthropic 走 native-raw + adapter 内 AutoTranslate,openai 入站 marshal fail-closed",
-		"openai_codex":            "Responses 客户端走 native-raw 直通;chat/messages 到 codex 的 marshal 翻译留后续切片",
 		"cursor_session":          "上游 Connect/proto 帧(application/connect+proto),openai_chat JSON 投影不可解析,待 OCAW",
 		"gemini_advanced_session": "上游 f.req= form-urlencoded 包装,非 Gemini API JSON,待 OCAW",
 	}

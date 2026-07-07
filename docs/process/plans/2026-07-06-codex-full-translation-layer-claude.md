@@ -110,3 +110,18 @@ Owner 提醒「不能只看当前链路,要看链路上其他颗粒度模块 + �
 **S3(重试分类分叉)= 真·模块配合缺陷,dev-only,记录不混修**:raw 路径(chat_completions_dispatch.go:757-769)对瞬时聚合错误硬 502 不 failover;HCSF 默认路径(upstream_dispatcher_hcsf.go:283)把同错误交 `ClassifyAttemptDispatchError`→idle/network timeout 判可重试→换号 failover。**尚未向客户端写字节时**(缓冲聚合恒真,failover 安全),raw 路径把本可恢复的瞬时错误变硬失败。但 raw 路径只在 `HUAKAI_DISPATCH_HCSF=0`(dev-only)可达,生产默认走 HCSF 路径 failover 正确。收敛=让 raw 路径瞬时聚合错误也走 `ClassifyAttemptDispatchError` 分类(未写客户端则返回可重试 failure 供换号),与 HCSF 路径一致。**因触 failover/重试语义(记忆两次栽在 codex 擅改 failover 语义),列为专门切片 + surface Owner,不在片2b hotfix 混改。** 生命周期本身正确(单次 abort、无 hold 泄漏、无重复 abort),仅可恢复性分叉。
 
 **审查驳回的(未存活,记录以免重开)**:①response.failed/cancelled/传输截断当成功结算少计费——驳回(失败流不产 buffered_response→被 :285/:771 判 `!ok` 拒、不结算,且已记 loss+stop_reason);②聚合读取无 inter-event 超时占并发槽 S3——seedCtx 带请求级 deadline,记 follow-up;③16MiB 对 codex 不可达 S3——2MiB per-event 先绑,设计如此。
+
+## 片2c 计划:chat/anthropic 客户端打通 openai_codex(方案A 接线,非新建翻译层)
+让标准 OpenAI Chat SDK / Anthropic Messages 客户端也能用 codex 账号。经 7-agent Workflow(wf_1a475897-6d6)穷尽镜像点+双对抗审查验证。
+
+**三镜对照(§16)**:sub2api=chat→Responses 双阶段(typed struct+map,Responses 形为 IR,`chatcompletions_to_responses.go`+`openai_codex_transform.go`,证实**支持** chat→codex 非直通);CLIProxyAPI=逐 `(from,to)` 对直译无统一 IR(`internal/translator/codex/openai/chat-completions/`);**HUAKAI upgrade delta(架构维)= canonical IR(HCSF)单渲染器**:实现一次 canonical→Responses(复用现成 `marshalOpenAIResponses`),chat/anthropic/gemini→codex 全客户端协议复用,无需逐对写。
+
+**方案A=接线,复用现成资产**:请求侧 `marshalOpenAIResponses` 已投影 Responses 形;响应侧 codex 已注册 `ResponsesAdapter`(SSE→canonical)+ `OpenAIChatClient`(canonical→chat)零新码;字段裁剪 `normalizeCodexResponsesBody`(adapter 层)自动兜。分叉键=**ingressFamily**(禁 body 嗅探)。
+
+**改动(P1-P5,生产码4处+可观测1处,3文件)**:P1 `hcsfProviderRequestModelFamily` 加 `case openai_codex→openai_responses`(一处驱动非流式marshal+流式marshal+流式翻译门);P2 注释同步;P3 `hcsfProviderRequestUsesNativeRawBody` 加 ingressFamily 形参+codex 白名单(""/同族/openai_responses→native-raw 保真直通,其余→marshal)——**保真红线:绝不无条件 false**;P4 放宽两处聚合门(门①`hcsfShouldAggregate`=HCSF-on 生产关键 / 门②`shouldAggregate`=HCSF=0 dev-only)删 `ClientProtocol==responses`;P5 D1 可观测性。
+
+**对抗审查裁定的两项(surface Owner)**:
+- **D1(S2,money-adjacent)**:chat 客户端 max_tokens→max_output_tokens/temperature/top_p 被 `normalizeCodexResponsesBody` 静默剥离(codex 上游确实拒收,剥离必需)**但无 ProtocolLossEntry**——客户端输出/花费上限在 codex-backed 模型上失效且不可观测。§17 配合缺陷(marshal 建模为生效↔adapter 无声丢)。片2c P5 补 loss 记录;若落点不干净则降级 follow-up。**codex-backed 模型不支持这三参数**须写进部署文档。
+- **D2(S3 验证盲区)**:注入的 `stop`/`parallel_tool_calls`/`tools`/`text` 不在 codex 剥离集,若 chatgpt.com codex 端点比标准 Responses 更严拒收则 chat→codex 硬 400。**live e2e 必须带 stop+tools 的真实 body** 才能证伪,否则覆盖盲区。
+
+**测试(§14/§17)**:判别测试打 **HCSF-on 路径(门①)** 非 dev-only 门②(否则假绿);例外表移除 openai_codex;变异点=P1去case→501/P3无条件false→保真破/门①改回带ClientProtocol→非流式chat→codex不聚合。派 codex 实现(dispatch 无 --sandbox),PM 亲检+跑门+live e2e。

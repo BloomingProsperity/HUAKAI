@@ -17,6 +17,7 @@ func MarshalToProviderRequest(env *proto.HCSF, endpointFamily string) ([]byte, e
 	if env == nil {
 		return nil, errors.New("gateway: nil HCSF envelope")
 	}
+	addCodexUnsupportedRequestControlLosses(env, endpointFamily)
 	// 先把 endpoint family 归一到 marshal 形态族(OpenAI 兼容族/部分 session
 	// 反转族与 openai_chat 同形等)。流式路径(gatewayhttp
 	// streamingProviderRequestBody)直接传原始族名进来,归一前这里对全部
@@ -41,6 +42,30 @@ func MarshalToProviderRequest(env *proto.HCSF, endpointFamily string) ([]byte, e
 		return protoollama.MarshalChatRequest(env)
 	default:
 		return nil, fmt.Errorf("gateway: unsupported HCSF endpoint family %q", endpointFamily)
+	}
+}
+
+func addCodexUnsupportedRequestControlLosses(env *proto.HCSF, endpointFamily string) {
+	if env == nil || endpointFamily != "openai_codex" {
+		return
+	}
+	for _, ctl := range []struct {
+		on          bool
+		field, code string
+	}{
+		{env.RequestControls.MaxTokens != nil, "max_output_tokens", "codex_max_output_tokens_stripped"},
+		{env.RequestControls.Temperature != nil, "temperature", "codex_temperature_stripped"},
+		{env.RequestControls.TopP != nil, "top_p", "codex_top_p_stripped"},
+	} {
+		if !ctl.on {
+			continue
+		}
+		loss, _ := proto.NewClientLossEntry(proto.ProtocolLossWarning, fmt.Sprintf("codex 上游不支持 %s 请求控制, 已在出站前剥离", ctl.field), ctl.code, "", "")
+		loss.Direction = string(proto.DirectionCanonicalToUpstream)
+		loss.Verdict = proto.VerdictLossy
+		loss.Field = ctl.field
+		loss.Vendor = "openai_codex"
+		env.CapabilityGraph.ProtocolLoss = append(env.CapabilityGraph.ProtocolLoss, loss)
 	}
 }
 

@@ -212,10 +212,10 @@ func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testi
 // TestBuildHCSFProviderRequestNativeRawIngressGuard 非流式 native-raw 直转的
 // 跨协议守卫(DM-20 评审 S2):许可集与流式 needsStreamingHCSFTranslation 严格
 // 镜像——同族/空 ingress 直通,anthropic→bedrock 走 adapter 内 AutoTranslate
-// 直通,openai_responses→openai_codex 同为 Responses 形直通,其余跨协议
-// fail-closed。
+// 直通,openai_responses→openai_codex 同为 Responses 形直通,openai/anthropic
+// →codex 已改走 canonical marshal,openai→bedrock 仍 fail-closed。
 // 变异: 删 validateNativeRawBodyIngress 调用(恢复 fail-open)→ anthropic
-// body 原样直发 codex / openai body 进 bedrock 嗅探误译 → 四个 wantErr 用例 RED;
+// body 原样直发 bedrock / openai body 进 bedrock 嗅探误译 → wantErr 用例 RED;
 // 把 anthropic→bedrock 许可删掉 → AutoTranslate 合法路径被误杀 → 该用例 RED。
 func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 	for _, tc := range []struct {
@@ -224,9 +224,7 @@ func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 		endpointFamily string
 		wantErr        bool
 	}{
-		{"anthropic→codex fail-closed", "anthropic_messages", "openai_codex", true},
 		{"responses→codex Responses形直通", "openai_responses", "openai_codex", false},
-		{"openai→codex fail-closed", "openai_chat", "openai_codex", true},
 		{"openai→bedrock fail-closed(嗅探误译路径)", "openai_chat", "bedrock_invoke", true},
 		{"anthropic→bedrock AutoTranslate 直通", "anthropic_messages", "bedrock_invoke", false},
 		{"同族 codex 直通", "openai_codex", "openai_codex", false},
@@ -251,6 +249,52 @@ func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 			}
 			if !tc.wantErr && !strings.Contains(string(adapter.lastInput.InboundBody), `"raw":"body"`) {
 				t.Fatalf("直通路径 body 丢失: %s", adapter.lastInput.InboundBody)
+			}
+		})
+	}
+}
+
+func TestBuildHCSFProviderRequestCodexCrossProtocolMarshalsResponsesShape(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		ingressFamily string
+	}{
+		{"openai→codex", "openai_chat"},
+		{"anthropic→codex", "anthropic_messages"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testHCSFEnvelope()
+			env.RequestMeta.EndpointFamily = "openai_codex"
+			env.RequestControls.SystemPrompt = "system policy"
+			adapter := &stubAdapter{platform: "codex"}
+
+			req, err := buildHCSFProviderRequest(context.Background(), adapter, provider.BuildInput{
+				UpstreamModelID: "gpt-5-codex",
+				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
+				Account:         provider.AccountInfo{AccountID: 12, Platform: "codex", AccountType: "native"},
+			}, env, tc.ingressFamily, "openai_codex", []byte(`{"raw":"body"}`), nil)
+			if err != nil {
+				t.Fatalf("buildHCSFProviderRequest: %v", err)
+			}
+			if strings.Contains(string(adapter.lastInput.InboundBody), `"raw":"body"`) {
+				t.Fatalf("cross-protocol codex must not native-raw forward body: %s", adapter.lastInput.InboundBody)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(adapter.lastInput.InboundBody, &body); err != nil {
+				t.Fatalf("built body json: %v\n%s", err, adapter.lastInput.InboundBody)
+			}
+			if _, ok := body["input"].([]any); !ok {
+				t.Fatalf("codex body missing Responses input array: %+v", body)
+			}
+			if body["instructions"] != "system policy" {
+				t.Fatalf("instructions=%v want system policy; body=%+v", body["instructions"], body)
+			}
+			if _, ok := body["messages"]; ok {
+				t.Fatalf("codex body must not use chat messages shape: %+v", body)
+			}
+			wire, _ := io.ReadAll(req.Body)
+			if !strings.Contains(string(wire), `"input"`) || strings.Contains(string(wire), `"raw":"body"`) {
+				t.Fatalf("wire body=%s want Responses shape without native raw marker", wire)
 			}
 		})
 	}

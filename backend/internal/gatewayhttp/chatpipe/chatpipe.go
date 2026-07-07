@@ -205,8 +205,9 @@ func streamingProviderRequestBody(env *proto.HCSF, family string) ([]byte, error
 	// (anthropic→codex / openai→gemini_advanced 等)把 openai_chat 形态的
 	// controls 注进 Responses/Gemini body。同形态直通路径不经过本函数
 	// (needsStreamingHCSFTranslation fast-path),此处只服务真翻译路径。
-	family = gateway.HCSFEndpointModelFamily(family)
-	body, err := gateway.MarshalToProviderRequest(env, family)
+	endpointFamily := family
+	family = gateway.HCSFEndpointModelFamily(endpointFamily)
+	body, err := gateway.MarshalToProviderRequest(env, endpointFamily)
 	if err != nil {
 		return nil, err
 	}

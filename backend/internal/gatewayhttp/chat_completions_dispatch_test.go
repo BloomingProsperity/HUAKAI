@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
@@ -294,6 +296,14 @@ type codexSSEDoer struct {
 	requestBody string
 }
 
+const (
+	codexForcedStreamingAccountID int64 = 1
+	codexLargeReasoningTokens     int   = 6
+	codexSmallReasoningTokens     int   = 3
+)
+
+var codexForcedStreamingAcquisitionToken = uuid.MustParse("22222222-3333-4444-5555-666666666666")
+
 func (d *codexSSEDoer) Do(req *http.Request) (*http.Response, error) {
 	d.requestPath = req.URL.Path
 	raw, _ := io.ReadAll(req.Body)
@@ -309,6 +319,15 @@ func (d *codexSSEDoer) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+type codexForcedStreamingSelector struct{}
+
+func (codexForcedStreamingSelector) Select(_ context.Context, _ pool.SelectionRequest) (*pool.SelectionResult, error) {
+	return &pool.SelectionResult{
+		AccountID:        codexForcedStreamingAccountID,
+		AcquisitionToken: codexForcedStreamingAcquisitionToken,
+	}, nil
+}
+
 func codexForcedStreamingDeps(t *testing.T, doer *codexSSEDoer, claimGate *recordingClaimGate, settler *recordingSettler) ChatHandlerDeps {
 	t.Helper()
 	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "false")
@@ -321,11 +340,11 @@ func codexForcedStreamingDeps(t *testing.T, doer *codexSSEDoer, claimGate *recor
 		PoolCandidates:   []int64{42},
 	}}
 	vault := provider.NewStaticVault()
-	if err := vault.Set(1, provider.Credential{
+	if err := vault.Set(codexForcedStreamingAccountID, provider.Credential{
 		Type:  provider.CredentialTypeSessionToken,
 		Value: "codex-session-test",
 	}, provider.AccountInfo{
-		AccountID:           1,
+		AccountID:           codexForcedStreamingAccountID,
 		Platform:            "openai_codex",
 		AccountType:         "session",
 		AccountCredentialID: 9201,
@@ -344,9 +363,14 @@ func codexForcedStreamingDeps(t *testing.T, doer *codexSSEDoer, claimGate *recor
 		HTTPClient:       doer,
 	}
 	d.CredentialVault = vault
+	d.Selector = codexForcedStreamingSelector{}
 	d.Dispatcher = dispatcher
 	d.CanonicalDispatcher = dispatcher
-	d.Forwarder = &gateway.StreamForwarder{ProtocolAdapters: protoAdapters}
+	d.Forwarder = &gateway.StreamForwarder{
+		ProtocolAdapters: protoAdapters,
+		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
+		ScannerBufferCap: 1 << 20,
+	}
 	d.ClaimGate = claimGate
 	d.Settler = settler
 	return d
@@ -410,6 +434,9 @@ func largeCodexResponsesSSE(t *testing.T) (string, string) {
 				"input_tokens":  11,
 				"output_tokens": 22,
 				"total_tokens":  33,
+				"output_tokens_details": map[string]any{
+					"reasoning_tokens": codexLargeReasoningTokens,
+				},
 			},
 		},
 	})
@@ -417,6 +444,74 @@ func largeCodexResponsesSSE(t *testing.T) (string, string) {
 		t.Fatalf("fixture raw SSE len=%d must exceed %d", body.Len(), maxRawBufferedUpstreamBodyBytes)
 	}
 	return body.String(), wantText
+}
+
+func smallCodexResponsesSSE(t *testing.T, text string) string {
+	t.Helper()
+	var body strings.Builder
+	appendCodexSSEEvent(t, &body, "response.created", map[string]any{
+		"type": "response.created",
+		"response": map[string]any{
+			"id":     "resp_small",
+			"model":  "gpt-5.5",
+			"status": "in_progress",
+		},
+	})
+	appendCodexSSEEvent(t, &body, "response.output_item.added", map[string]any{
+		"type":         "response.output_item.added",
+		"output_index": 0,
+		"item": map[string]any{
+			"id":   "msg_small",
+			"type": "message",
+			"role": "assistant",
+		},
+	})
+	appendCodexSSEEvent(t, &body, "response.content_part.added", map[string]any{
+		"type":         "response.content_part.added",
+		"output_index": 0,
+		"item_id":      "msg_small",
+		"part":         map[string]any{"type": "output_text"},
+	})
+	appendCodexSSEEvent(t, &body, "response.output_text.delta", map[string]any{
+		"type":         "response.output_text.delta",
+		"output_index": 0,
+		"item_id":      "msg_small",
+		"delta":        text,
+	})
+	appendCodexSSEEvent(t, &body, "response.completed", map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     "resp_small",
+			"model":  "gpt-5.5",
+			"status": "completed",
+			"output": []map[string]any{{
+				"id":   "msg_small",
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": text,
+				}},
+			}},
+			"usage": map[string]any{
+				"input_tokens":  5,
+				"output_tokens": 7,
+				"total_tokens":  12,
+				"output_tokens_details": map[string]any{
+					"reasoning_tokens": codexSmallReasoningTokens,
+				},
+			},
+		},
+	})
+	return body.String()
+}
+
+func truncatedCodexResponsesSSE() string {
+	return strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_truncated"`,
+		``,
+	}, "\n")
 }
 
 func appendCodexSSEEvent(t *testing.T, b *strings.Builder, event string, payload any) {
@@ -496,14 +591,140 @@ func assertCodexAggregatedBilling(t *testing.T, claimGate *recordingClaimGate, s
 	if call.ClaimID != wantClaimID {
 		t.Fatalf("settle ClaimID=%d want %d", call.ClaimID, wantClaimID)
 	}
+	assertCodexSettleIdentity(t, call)
 	if call.Stream {
 		t.Fatal("settle Stream=true; 聚合响应必须落非流式 usage record")
 	}
 	if call.Draft.TokensInput != 11 || call.Draft.TokensOutput != 22 {
 		t.Fatalf("draft tokens=%d/%d want 11/22", call.Draft.TokensInput, call.Draft.TokensOutput)
 	}
+	if call.Draft.ReasoningTokens != codexLargeReasoningTokens {
+		t.Fatalf("draft ReasoningTokens=%d want %d", call.Draft.ReasoningTokens, codexLargeReasoningTokens)
+	}
 	if call.Draft.UsageSource != gateway.UsageSourceReported {
 		t.Fatalf("UsageSource=%q want reported", call.Draft.UsageSource)
+	}
+}
+
+func assertCodexRequestBodyResponsesShape(t *testing.T, raw string, wantInstructions string) {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		t.Fatalf("decode codex request body: %v body=%s", err, safeBodyPrefix(raw))
+	}
+	if _, ok := body["input"].([]any); !ok {
+		t.Fatalf("codex request missing Responses input[]: %+v", body)
+	}
+	gotInstructions, _ := body["instructions"].(string)
+	if wantInstructions != "" && !strings.Contains(gotInstructions, wantInstructions) {
+		t.Fatalf("instructions=%v want containing %q; body=%+v", body["instructions"], wantInstructions, body)
+	}
+	if body["stream"] != true || body["store"] != false {
+		t.Fatalf("codex request stream/store=%v/%v want true/false; body=%+v", body["stream"], body["store"], body)
+	}
+	if _, ok := body["messages"]; ok {
+		t.Fatalf("codex request must not use Chat messages shape: %+v", body)
+	}
+	for _, field := range []string{"max_output_tokens", "temperature", "top_p"} {
+		if _, ok := body[field]; ok {
+			t.Fatalf("codex adapter should strip unsupported field %q before wire body: %+v", field, body)
+		}
+	}
+}
+
+func assertCodexChatCompletionResponse(t *testing.T, rec *httptest.ResponseRecorder, wantText string) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body prefix=%s", rec.Code, safeBodyPrefix(rec.Body.String()))
+	}
+	var decoded struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode chat response: %v; prefix=%s", err, safeBodyPrefix(rec.Body.String()))
+	}
+	if decoded.Object != "chat.completion" || len(decoded.Choices) != 1 {
+		t.Fatalf("chat response object/choices=%q/%d body=%s", decoded.Object, len(decoded.Choices), safeBodyPrefix(rec.Body.String()))
+	}
+	if decoded.Choices[0].Message.Content != wantText {
+		t.Fatalf("chat content len=%d want %d", len(decoded.Choices[0].Message.Content), len(wantText))
+	}
+	if decoded.Usage.PromptTokens != 11 || decoded.Usage.CompletionTokens != 22 || decoded.Usage.TotalTokens != 33 {
+		t.Fatalf("chat usage=%+v want 11/22/33", decoded.Usage)
+	}
+}
+
+func assertCodexAnthropicMessageResponse(t *testing.T, rec *httptest.ResponseRecorder, wantText string) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var decoded struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode anthropic response: %v; body=%s", err, rec.Body.String())
+	}
+	if decoded.Type != "message" || len(decoded.Content) != 1 || decoded.Content[0].Text != wantText {
+		t.Fatalf("anthropic response=%+v want text %q", decoded, wantText)
+	}
+	if decoded.Usage.InputTokens != 5 || decoded.Usage.OutputTokens != 7 {
+		t.Fatalf("anthropic usage=%+v want 5/7", decoded.Usage)
+	}
+}
+
+func assertCodexSettledUsage(t *testing.T, settler *recordingSettler, wantClaimID int64, wantInput, wantOutput, wantReasoning int) {
+	t.Helper()
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0", len(settler.aborts))
+	}
+	call := settler.calls[0]
+	if call.ClaimID != wantClaimID {
+		t.Fatalf("settle ClaimID=%d want %d", call.ClaimID, wantClaimID)
+	}
+	assertCodexSettleIdentity(t, call)
+	if call.Stream {
+		t.Fatal("settle Stream=true; 非流式聚合响应必须落 buffered usage record")
+	}
+	if call.Draft.TokensInput != wantInput || call.Draft.TokensOutput != wantOutput {
+		t.Fatalf("draft tokens=%d/%d want %d/%d", call.Draft.TokensInput, call.Draft.TokensOutput, wantInput, wantOutput)
+	}
+	if call.Draft.ReasoningTokens != wantReasoning {
+		t.Fatalf("draft ReasoningTokens=%d want %d", call.Draft.ReasoningTokens, wantReasoning)
+	}
+	if call.Draft.UsageSource != gateway.UsageSourceReported {
+		t.Fatalf("UsageSource=%q want reported", call.Draft.UsageSource)
+	}
+}
+
+func assertCodexSettleIdentity(t *testing.T, call billing.SettleRequest) {
+	t.Helper()
+	if call.AccountID != codexForcedStreamingAccountID {
+		t.Fatalf("settle AccountID=%d want %d", call.AccountID, codexForcedStreamingAccountID)
+	}
+	if call.AcquisitionToken != codexForcedStreamingAcquisitionToken {
+		t.Fatalf("settle AcquisitionToken=%s want %s", call.AcquisitionToken, codexForcedStreamingAcquisitionToken)
 	}
 }
 
@@ -674,6 +895,143 @@ func TestCodexResponsesHCSFForcedStreamingAggregatesOverRawLimit(t *testing.T) {
 	assertCodexAggregatedBilling(t, claimGate, settler, 8222)
 	if doer.requestPath != "/backend-api/codex/responses" {
 		t.Fatalf("upstream path=%q want /backend-api/codex/responses", doer.requestPath)
+	}
+}
+
+func TestCodexResponsesForcedStreamingAggregationFailureAbortsClaim(t *testing.T) {
+	// 变异红点：把 dispatchForcedStreamingBuffered 的聚合失败 abort 分支错换成
+	// settle，settler.calls 会变成 1，且同一 claim 不再只通过 abort 释放。
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	doer := &codexSSEDoer{body: truncatedCodexResponsesSSE()}
+	claimGate := &recordingClaimGate{claimID: 8321}
+	settler := &recordingSettler{}
+	d := codexForcedStreamingDeps(t, doer, claimGate, settler)
+
+	rec := invokeResponsesHandlerPath(t, d, "/v1/responses", `{"model":"gpt-5.5","stream":false,"input":"hi"}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want 502; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 on unreconstructable forced-streaming SSE", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 on unreconstructable forced-streaming SSE", len(settler.aborts))
+	}
+	abort := settler.aborts[0]
+	if abort.claimID != 8321 {
+		t.Fatalf("abort claimID=%d want 8321", abort.claimID)
+	}
+	if abort.reason != "canonical_response_error" {
+		t.Fatalf("abort reason=%q want canonical_response_error", abort.reason)
+	}
+}
+
+func TestChatToCodexHCSFForcedStreamingAggregatesAndRendersChat(t *testing.T) {
+	// 变异红点：把 hcsfShouldAggregateForcedStreamingBuffered 改回只允许
+	// openai_responses 客户端时，本用例会在大 SSE raw reader 处返回 502，
+	// 不会得到 chat.completion，也不会 settle reported usage。
+	enableHCSFDispatchForTest(t)
+	body, wantText := largeCodexResponsesSSE(t)
+	doer := &codexSSEDoer{body: body}
+	claimGate := &recordingClaimGate{claimID: 8331}
+	settler := &recordingSettler{}
+	d := codexForcedStreamingDeps(t, doer, claimGate, settler)
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{
+		"model":"gpt-5.5",
+		"stream":false,
+		"max_tokens":16,
+		"temperature":0.2,
+		"top_p":0.9,
+		"messages":[
+			{"role":"system","content":"system policy"},
+			{"role":"user","content":"hi"}
+		]
+	}`)
+	assertCodexChatCompletionResponse(t, rec, wantText)
+	assertCodexRequestBodyResponsesShape(t, doer.requestBody, "system policy")
+	assertCodexSettledUsage(t, settler, 8331, 11, 22, codexLargeReasoningTokens)
+	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "codex_max_output_tokens_stripped") {
+		t.Fatalf("settle ProtocolLoss=%s want codex_max_output_tokens_stripped", settler.calls[0].ProtocolLoss)
+	}
+	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "codex_temperature_stripped") {
+		t.Fatalf("settle ProtocolLoss=%s want codex_temperature_stripped", settler.calls[0].ProtocolLoss)
+	}
+	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "codex_top_p_stripped") {
+		t.Fatalf("settle ProtocolLoss=%s want codex_top_p_stripped", settler.calls[0].ProtocolLoss)
+	}
+}
+
+func TestChatToCodexStreamingSettleCarriesMarshalLossAndReasoning(t *testing.T) {
+	// 变异红点：删 translatedStreamingInboundBody 中 streamingProviderRequestBody
+	// 之后的 protocolLoss 重快照，settle ProtocolLoss 会漏
+	// codex_max_output_tokens_stripped；删流式 draft 的 ReasoningTokens 拷贝，
+	// 下方 ReasoningTokens 断言会红。
+	enableHCSFDispatchForTest(t)
+	const wantText = "hello from codex"
+	doer := &codexSSEDoer{body: smallCodexResponsesSSE(t, wantText)}
+	claimGate := &recordingClaimGate{claimID: 8333}
+	settler := &recordingSettler{}
+	d := codexForcedStreamingDeps(t, doer, claimGate, settler)
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{
+		"model":"gpt-5.5",
+		"stream":true,
+		"max_tokens":16,
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0", len(settler.aborts))
+	}
+	call := settler.calls[0]
+	assertCodexSettleIdentity(t, call)
+	if call.ClaimID != 8333 {
+		t.Fatalf("settle ClaimID=%d want 8333", call.ClaimID)
+	}
+	if !call.Stream {
+		t.Fatal("settle Stream=false; 流式请求必须落 stream usage record")
+	}
+	if call.Draft.TokensInput != 5 || call.Draft.TokensOutput != 7 {
+		t.Fatalf("draft tokens=%d/%d want 5/7", call.Draft.TokensInput, call.Draft.TokensOutput)
+	}
+	if call.Draft.ReasoningTokens != codexSmallReasoningTokens {
+		t.Fatalf("draft ReasoningTokens=%d want %d", call.Draft.ReasoningTokens, codexSmallReasoningTokens)
+	}
+	if !settledLossHasCode(t, call.ProtocolLoss, "codex_max_output_tokens_stripped") {
+		t.Fatalf("settle ProtocolLoss=%s want codex_max_output_tokens_stripped", call.ProtocolLoss)
+	}
+}
+
+func TestAnthropicToCodexHCSFForcedStreamingAggregatesAndRendersMessage(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	const wantText = "hello from codex"
+	doer := &codexSSEDoer{body: smallCodexResponsesSSE(t, wantText)}
+	claimGate := &recordingClaimGate{claimID: 8332}
+	settler := &recordingSettler{}
+	d := codexForcedStreamingDeps(t, doer, claimGate, settler)
+	h := NewMessagesHandler(d)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"gpt-5.5",
+		"stream":false,
+		"max_tokens":16,
+		"system":"system policy",
+		"messages":[{"role":"user","content":"hi"}]
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	assertCodexAnthropicMessageResponse(t, rec, wantText)
+	assertCodexRequestBodyResponsesShape(t, doer.requestBody, "system policy")
+	assertCodexSettledUsage(t, settler, 8332, 5, 7, codexSmallReasoningTokens)
+	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "codex_max_output_tokens_stripped") {
+		t.Fatalf("settle ProtocolLoss=%s want codex_max_output_tokens_stripped", settler.calls[0].ProtocolLoss)
 	}
 }
 

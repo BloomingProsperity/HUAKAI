@@ -101,7 +101,6 @@ func hcsfShouldAggregateForcedStreamingBuffered(family string, env *proto.HCSF) 
 		return false
 	}
 	return ForcedStreamingBufferedFamily(family) &&
-		env.RequestMeta.ClientProtocol == proto.ClientProtocolOpenAIResponses &&
 		env.StreamPlan.Mode == proto.StreamModeBuffered
 }
 
@@ -300,7 +299,7 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		}
 		return applyRequestBodyControls(req, controls)
 	}
-	if hcsfProviderRequestUsesNativeRawBody(endpointFamily) {
+	if hcsfProviderRequestUsesNativeRawBody(endpointFamily, ingressFamily) {
 		if err := validateNativeRawBodyIngress(ingressFamily, endpointFamily); err != nil {
 			return nil, err
 		}
@@ -368,7 +367,7 @@ func applyRequestBodyControls(req *http.Request, controls DispatchBodyControls) 
 
 func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {
 	modeledFamily := hcsfProviderRequestModelFamily(endpointFamily)
-	body, err := MarshalToProviderRequest(env, modeledFamily)
+	body, err := MarshalToProviderRequest(env, endpointFamily)
 	if err != nil {
 		return nil, err
 	}
@@ -389,8 +388,7 @@ func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {
 // gateway.TestMarshalSupportsEveryRegisteredProtocolFamily。
 //
 // 刻意 fail-closed、不在表内的族(映射前提"请求 body 与形态族同形"不成立):
-//   - openai_codex            Responses 形客户端走 native-raw 直通;
-//     chat/messages → codex 的请求翻译尚未落地,保持 marshal unsupported。
+//   - openai_codex            chat/messages 入站复用 Responses 形 marshal;Responses 形/同族入站仍走 native-raw 直通保真。
 //   - cursor_session          上游是 Connect/proto 帧(application/connect+proto,
 //     见 provider/cursor),openai_chat JSON 投影必不可解析。
 //   - gemini_advanced_session 上游是 f.req= form-urlencoded 包装(见
@@ -418,6 +416,10 @@ func hcsfProviderRequestModelFamily(endpointFamily string) string {
 		// vertex.PassthroughAdapter（ModeAnthropic）再剥 model/stream + 注
 		// anthropic_version 改写成 Vertex rawPredict 形（两步串联）。
 		return "anthropic_messages"
+	case "openai_codex":
+		// 非 responses/非同族入站(chat/messages)复用 Responses 形投影;
+		// adapter 出站前再剥离 codex 不接受的请求控制字段。
+		return "openai_responses"
 	default:
 		return endpointFamily
 	}
@@ -430,10 +432,13 @@ func HCSFEndpointModelFamily(endpointFamily string) string {
 	return hcsfProviderRequestModelFamily(endpointFamily)
 }
 
-func hcsfProviderRequestUsesNativeRawBody(endpointFamily string) bool {
+func hcsfProviderRequestUsesNativeRawBody(endpointFamily, ingressFamily string) bool {
 	switch endpointFamily {
-	case "bedrock_invoke", "openai_codex":
+	case "bedrock_invoke":
 		return true
+	case "openai_codex":
+		// 仅 Responses 形/同族/空 ingress 走字节直通;chat/messages 入站落到 canonical marshal,避免把异族 raw body 原样投给 codex。
+		return ingressFamily == "" || ingressFamily == endpointFamily || ingressFamily == "openai_responses"
 	default:
 		return false
 	}

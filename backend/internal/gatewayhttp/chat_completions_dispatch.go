@@ -739,8 +739,7 @@ func (ex *chatExecution) shouldAggregateForcedStreamingBuffered() bool {
 	if ex == nil {
 		return false
 	}
-	return ex.clientProtocol == proto.ClientProtocolOpenAIResponses &&
-		gateway.ForcedStreamingBufferedFamily(ex.resolved.ProtocolFamily)
+	return gateway.ForcedStreamingBufferedFamily(ex.resolved.ProtocolFamily)
 }
 
 func (ex *chatExecution) dispatchForcedStreamingBuffered(w http.ResponseWriter, dispatchRes *gateway.DispatchResult, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {

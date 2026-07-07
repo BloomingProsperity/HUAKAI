@@ -35,6 +35,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
+func streamLossHasCode(losses []proto.ProtocolLossEntry, code string) bool {
+	for _, loss := range losses {
+		if loss.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDeliveryTrackerMarksStartedOnWriteAndWriteHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	tracker := newDeliveryTracker(rec)
@@ -1788,8 +1797,8 @@ func assertLogOmits(t *testing.T, logs *bytes.Buffer, forbiddens ...string) {
 //  2. kimi_chat + ResponseFormat{Type:"raw"} → body 出现 response_format
 //     ——不归一时 family="kimi_chat" 命中不了 case "openai_chat",raw
 //     response_format 被静默丢弃。
-//  3. 留 fail-closed 的族(openai_codex/cursor_session/gemini_advanced_session)
-//     在此报错,不产出 body。
+//  3. openai_codex → Responses 形 body;仍留 fail-closed 的族
+//     (cursor_session/gemini_advanced_session)在此报错,不产出 body。
 //
 // 变异:删掉 streamingProviderRequestBody 开头的形态归一行 → 2 必红
 // (response_format 缺失);把归一改错成恒等 → 同红。
@@ -1807,6 +1816,7 @@ func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 		max := 33
 		env.RequestControls.MaxTokens = &max
 		env.RequestControls.ResponseFormat = &proto.ResponseFormat{Type: "raw", Schema: json.RawMessage(`{"type":"json_object"}`)}
+		env.RequestControls.SystemPrompt = "system policy"
 		return env
 	}
 
@@ -1829,7 +1839,35 @@ func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 		t.Errorf("kimi_chat 的 raw response_format 未直通(形态归一缺失时 case openai_chat 不命中、静默丢弃): %v", kimi["response_format"])
 	}
 
-	for _, fam := range []string{"openai_codex", "cursor_session", "gemini_advanced_session"} {
+	codexEnv := newEnv()
+	rawCodex, err := streamingProviderRequestBody(codexEnv, "openai_codex")
+	if err != nil {
+		t.Fatalf("openai_codex streamingProviderRequestBody err=%v(chat/anthropic→codex 流式翻译路径回归 501)", err)
+	}
+	var codex map[string]any
+	if err := json.Unmarshal(rawCodex, &codex); err != nil {
+		t.Fatalf("unmarshal codex: %v body=%s", err, rawCodex)
+	}
+	if _, ok := codex["input"].([]any); !ok {
+		t.Errorf("openai_codex 应投影为 Responses input[] 形态,got=%+v", codex)
+	}
+	if codex["instructions"] != "system policy" {
+		t.Errorf("openai_codex instructions=%v want system policy", codex["instructions"])
+	}
+	if codex["stream"] != true {
+		t.Errorf("openai_codex stream=%v want true", codex["stream"])
+	}
+	if got, ok := codex["max_output_tokens"].(float64); !ok || got != 33 {
+		t.Errorf("openai_codex 应注入 max_output_tokens=33(Responses 形态),got=%v", codex["max_output_tokens"])
+	}
+	if _, ok := codex["messages"]; ok {
+		t.Errorf("openai_codex 不得产出 Chat messages 形态: %+v", codex)
+	}
+	if !streamLossHasCode(codexEnv.CapabilityGraph.ProtocolLoss, "codex_max_output_tokens_stripped") {
+		t.Errorf("codex MaxTokens 被 adapter 剥离但未记 loss: %+v", codexEnv.CapabilityGraph.ProtocolLoss)
+	}
+
+	for _, fam := range []string{"cursor_session", "gemini_advanced_session"} {
 		if _, err := streamingProviderRequestBody(newEnv(), fam); err == nil {
 			t.Errorf("family %q 应在 marshal 处 fail-closed(待 OCAW 确认形态),却产出了 body", fam)
 		}
@@ -1940,7 +1978,7 @@ func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
 // 必须走 raw 直通——既保留 vendor 专有字段(top_k 等,流式无 raw-merge,
 // 走 HCSF 翻译会被静默丢),也是此前全部兼容族流式 501 的根因(返回 true 后
 // MarshalToProviderRequest 不认这些族)。真跨协议(anthropic→kimi、
-// openai→anthropic)仍须翻译。
+// openai→anthropic/openai→codex)仍须翻译。
 // 变异:删掉 needsStreamingHCSFTranslation 的同形态 fast-path → 兼容族
 // 用例红;把 fast-path 错写成无条件 false → 跨协议用例红。
 func TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough(t *testing.T) {
@@ -1962,7 +2000,7 @@ func TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough(t *testing.T
 		// hcsfProviderRequestModelFamily 排除注释;OCAW 采集后再接)。
 		{"openai→cursor_session 留 fail-closed", proto.ClientProtocolOpenAIChat, "cursor_session", true},
 		{"responses→codex Responses形直通", proto.ClientProtocolOpenAIResponses, "openai_codex", false},
-		{"openai→codex 片1不翻译", proto.ClientProtocolOpenAIChat, "openai_codex", true},
+		{"openai→codex 片2c走 Responses 形翻译", proto.ClientProtocolOpenAIChat, "openai_codex", true},
 		{"openai→openai 既有直通不回归", proto.ClientProtocolOpenAIChat, "openai_chat", false},
 		{"openai→anthropic 跨协议须翻译", proto.ClientProtocolOpenAIChat, "anthropic_messages", true},
 		{"anthropic→kimi 跨协议须翻译", proto.ClientProtocolAnthropicMessages, "kimi_chat", true},
