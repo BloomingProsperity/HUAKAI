@@ -699,8 +699,6 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			clientStatus = upstreamErr.StatusCode
 			healthStatus = upstreamErr.StatusCode
 			decision, classification, _ = gateway.ClassifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body, ex.accInfo.Platform)
-			recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID)
-			ex.forceCooldownFromUpstreamRateLimit(upstreamErr)
 		} else {
 			classifyBody = []byte(err.Error())
 			classification, _ = gateway.Classify(0, nil, classifyBody, ex.accInfo.Platform)
@@ -719,8 +717,12 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			decision.AbortReason = "upstream_dispatch_error"
 		}
 		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
+		modelScopedRateLimit := false
+		if upstreamErr != nil {
+			modelScopedRateLimit = ex.applyUpstreamErrorCooldown(upstreamErr, classification, true)
+		}
 
-		if ex.healthKeyOK {
+		if ex.healthKeyOK && !modelScopedRateLimit {
 			// canonical 缓冲是默认主路径:必须带真实 iron-clad 分级,否则该路径上的铁证 401
 			// 永远按 ambiguous 处理、strike 硬禁不可达(审查 S2)。
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), healthStatus, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
@@ -783,7 +785,7 @@ func (ex *chatExecution) dispatchForcedStreamingBuffered(w http.ResponseWriter, 
 }
 
 func (ex *chatExecution) forceCooldownFromUpstreamRateLimit(upstreamErr *gateway.UpstreamHTTPError) {
-	if upstreamErr == nil || ex.d.RateService == nil || ex.d.ChannelHealth == nil || !ex.healthKeyOK {
+	if upstreamErr == nil {
 		return
 	}
 	if !upstreamRateCooldownCandidate(upstreamErr.StatusCode) {
@@ -792,9 +794,15 @@ func (ex *chatExecution) forceCooldownFromUpstreamRateLimit(upstreamErr *gateway
 	// 不再因缺 Retry-After 头而早退:很多 provider 的 429/529 不带该头,HandleUpstreamError 对
 	// 无头情形会施加默认冷却(defaultCooldown)。早退会让被限流账号永不冷却、被持续命中。
 	// 若上游带了 Retry-After,HandleUpstreamError 内部(retryAfterCooldown)会解析并采用。
-	dec, err := ex.d.RateService.HandleUpstreamError(ex.ctx, ex.acquiredAccountID, upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body)
-	if err != nil {
-		logInternalError(ex.ctx, ex.requestID, "upstream_rate_cooldown_decision_failed", err)
+	dec, ok := ex.upstreamRateDecision(upstreamErr)
+	if !ok {
+		return
+	}
+	ex.forceCooldownFromDecision(dec)
+}
+
+func (ex *chatExecution) forceCooldownFromDecision(dec rate.Decision) {
+	if ex == nil || ex.d.ChannelHealth == nil || !ex.healthKeyOK {
 		return
 	}
 	if dec.StateChange == rate.StateNoChange || dec.CooldownUntil.IsZero() {

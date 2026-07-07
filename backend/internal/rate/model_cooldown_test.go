@@ -52,6 +52,9 @@ func TestModelCooldownServiceRecordsDefault404Cooldown(t *testing.T) {
 	if fake.arg.UpstreamStatusCode != 404 || fake.arg.UpstreamRequestID != "up-req-1" {
 		t.Fatalf("upstream evidence=(%d,%q), want (404, up-req-1)", fake.arg.UpstreamStatusCode, fake.arg.UpstreamRequestID)
 	}
+	if fake.arg.SourceLayer != "gateway_upstream_error" {
+		t.Fatalf("source_layer=%q, want gateway_upstream_error", fake.arg.SourceLayer)
+	}
 	got := fake.arg.ResetAt.Time
 	if got.Before(now.Add(5*time.Minute)) || got.After(now.Add(5*time.Minute+time.Second)) {
 		t.Fatalf("reset_at=%s, want about now+5m", got.Format(time.RFC3339Nano))

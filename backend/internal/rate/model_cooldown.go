@@ -14,7 +14,7 @@ import (
 const (
 	defaultModelCooldownDuration = 5 * time.Minute
 	modelCooldownActor           = "system:gateway"
-	modelCooldownSourceLayer     = "gateway_upstream_404"
+	modelCooldownSourceLayer     = "gateway_upstream_error"
 )
 
 var ErrModelCooldownInvalidInput = errors.New("rate: invalid model cooldown input")

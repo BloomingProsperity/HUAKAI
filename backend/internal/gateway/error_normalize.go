@@ -218,14 +218,18 @@ func IsIronCladKeyword(keyword string) bool {
 }
 
 const (
-	keywordInvalidGrant                = "invalid_grant"
-	keywordIdentityVerification        = "identity verification"
-	keywordOrgDisabled                 = "org_disabled"
-	keywordTokenRevoked                = "token_revoked"
-	keywordDeactivatedWorkspace        = "deactivated_workspace"
-	keywordTokenInvalidated            = "token_invalidated"
-	keywordCredit                      = "credit"
-	keywordCreditBalance               = "credit balance"
+	keywordInvalidGrant         = "invalid_grant"
+	keywordIdentityVerification = "identity verification"
+	keywordOrgDisabled          = "org_disabled"
+	keywordTokenRevoked         = "token_revoked"
+	keywordDeactivatedWorkspace = "deactivated_workspace"
+	keywordTokenInvalidated     = "token_invalidated"
+	keywordCredit               = "credit"
+	keywordCreditBalance        = "credit balance"
+	keywordInsufficientQuota    = "insufficient_quota"
+	// 匹配机器码字段形态(如 error.code=billing_hard_limit_reached);OpenAI/Codex 把稳定标识
+	// 放在 code/type 而非人类可读 message,下划线子串比空格文案更可靠,也能命中 *_reached 后缀变体。
+	keywordBillingHardLimit            = "billing_hard_limit"
 	keywordValidation                  = "validation"
 	keywordPermissionDenied            = "permission denied"
 	keywordThrottling                  = "throttling"
@@ -249,11 +253,8 @@ var errorRules = []ErrorRule{
 	{RuleID: "R-004", Version: 1, Priority: 10, Provider: "*", HTTPStatus: "401",
 		BodyKeyword: keywordTokenRevoked, Class: ErrorClassTokenRevoked,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
-	// 漂移 D3 (docs/reference_delta/2026-05-06/vendor-drift-audit.md):
-	// OpenAI 文档不再为 billing/deactivation 给出 402。把
-	// deactivated_workspace keyword 保留为 OpenAI 范围内、跨状态码的防御性匹配。
-	// 抓取 URL: https://developers.openai.com/api/docs/guides/error-codes
-	// 与 https://platform.claude.com/docs/en/api/errors (2026-05-06 抓取)。
+	// 漂移 D3(详见 docs/reference_delta/2026-05-06/vendor-drift-audit.md):OpenAI 文档不再为
+	// billing/deactivation 给出 402,故保留跨状态码防御性匹配。
 	{RuleID: "R-005", Version: 2, Priority: 10, Provider: "openai", HTTPStatus: "*",
 		BodyKeyword: keywordDeactivatedWorkspace, Class: ErrorClassWorkspaceDeactivated,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
@@ -285,10 +286,7 @@ var errorRules = []ErrorRule{
 		BodyKeyword: "incorrect api key", Class: ErrorClassTokenRevoked,
 		Action: RetryActionCooldown, Tier: TierAmbiguous, RequiresAuthLane: true},
 
-	// 优先级 25 - D8: Anthropic 402 兜底 billing_error。
-	// 在 R-007(优先级 20, keyword 专用)之后触发。任何不带 credit keyword 的
-	// Anthropic 402, 按 Anthropic 新的 类型化 error class 文档仍代表 billing_error
-	// (platform.claude.com/docs/en/api/errors, 2026-05-06 抓取)。
+	// 优先级 25 - D8: Anthropic 402 兜底 billing_error,排在 R-007 keyword 专用规则之后。
 	{RuleID: "R-021", Version: 1, Priority: 25, Provider: "anthropic", HTTPStatus: "402",
 		BodyKeyword: "", Class: ErrorClassCreditExhausted,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
@@ -314,16 +312,19 @@ var errorRules = []ErrorRule{
 		Class:  ErrorClassPlatformPolicy,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// 优先级 45 - Bedrock 漂移 D2(2026-05-06 厂商审计):
-	// 429 ThrottlingException 是 quota/限流;503
-	// ServiceUnavailableException 是容量/过载, 不是限流。
-	// 抓取 URL: https://docs.aws.amazon.com/bedrock/latest/userguide/troubleshooting-api-error-codes.html
+	// 优先级 45 - Bedrock 漂移 D2:429 ThrottlingException 是限流;503 ServiceUnavailableException 是过载。
 	{RuleID: "R-018", Version: 2, Priority: 45, Provider: "bedrock", HTTPStatus: "429",
 		BodyKeyword: keywordThrottlingException, Class: ErrorClassRateLimited,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 	{RuleID: "R-020", Version: 1, Priority: 45, Provider: "bedrock", HTTPStatus: "503",
 		BodyKeyword: keywordServiceUnavailableException, Class: ErrorClassOverloaded,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
+
+	// 优先级 48 - OpenAI/Codex 429 的明确配额耗尽证据;极窄词表避免把普通限速误禁整号。
+	{RuleID: "R-026", Version: 1, Priority: 48, Provider: "openai", HTTPStatus: "429", BodyKeyword: keywordInsufficientQuota, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
+	{RuleID: "R-027", Version: 1, Priority: 48, Provider: "codex", HTTPStatus: "429", BodyKeyword: keywordInsufficientQuota, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
+	{RuleID: "R-028", Version: 1, Priority: 48, Provider: "openai", HTTPStatus: "429", BodyKeyword: keywordBillingHardLimit, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
+	{RuleID: "R-029", Version: 1, Priority: 48, Provider: "codex", HTTPStatus: "429", BodyKeyword: keywordBillingHardLimit, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
 	// 优先级 50 - 限流与过载(始终 ambiguous, 仅 cooldown)
 	{RuleID: "R-013", Version: 1, Priority: 50, Provider: "*", HTTPStatus: "429",
@@ -333,16 +334,12 @@ var errorRules = []ErrorRule{
 		Class:  ErrorClassOverloaded,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// D8: Anthropic 504 timeout_error —— upstream gateway 超时(ambiguous, cooldown)。
-	// 与 R-019 network 超时(status=0, 本地合成)不同。
-	// 来源: platform.claude.com/docs/en/api/errors (2026-05-06 抓取)。
+	// D8: Anthropic 504 timeout_error 是 upstream gateway 超时,不同于本地合成的 R-019(status=0)。
 	{RuleID: "R-022", Version: 1, Priority: 50, Provider: "anthropic", HTTPStatus: "504",
 		Class:  ErrorClassUpstreamTimeout,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// D8: Anthropic 413 request_too_large —— 客户端载荷错误, 不重试。
-	// PassThrough:调用方必须减小请求大小; 不改变 FSM 状态。
-	// 来源: platform.claude.com/docs/en/api/errors (2026-05-06 抓取)。
+	// D8: Anthropic 413 request_too_large 是客户端载荷错误,不重试且不改变 FSM 状态。
 	{RuleID: "R-023", Version: 1, Priority: 50, Provider: "anthropic", HTTPStatus: "413",
 		Class:  ErrorClassRequestTooLarge,
 		Action: RetryActionPassThrough, Tier: TierNone},
@@ -444,6 +441,8 @@ func normalizeProvider(provider string) string {
 		return "*"
 	case "anthropic_messages":
 		return "anthropic"
+	case "openai_codex":
+		return "codex"
 	case "xai":
 		// xAI 与 grok 是同一上游的两种叫法;归一到 canonical vendor "grok",让 R-024/R-025 覆盖两者。
 		// 与 R-024/R-025 同门控:knob 关时保持基底归一化(xai 只匹配通配规则),零行为变。

@@ -103,11 +103,12 @@ func TestPR5AbortFailureStopsRetryBeforeReReserve(t *testing.T) {
 	}
 }
 
-func TestPR5NonStream429RecordsCooldownAndRetriesNextAccount(t *testing.T) {
+func TestPR5NonStream429RecordsModelCooldownAndRetriesNextAccount(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	selector := newPR5Selector(t, 201, 202)
 	health := &recordingChannelHealth{}
+	modelCooldowns := &recordingModelRateLimiter{}
 	dispatcher := &pr5CanonicalSequenceDispatcher{
 		steps: []pr5CanonicalStep{
 			{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, headers: http.Header{"Retry-After": []string{"3600"}}},
@@ -116,7 +117,12 @@ func TestPR5NonStream429RecordsCooldownAndRetriesNextAccount(t *testing.T) {
 	}
 	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88002}, &recordingSettler{}, dispatcher)
 	deps.ChannelHealth = health
+	deps.ModelCooldowns = modelCooldowns
 	deps.RateService = rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute)
+	deps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "same_pool_account_failover"},
+	)}
 
 	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
 	if rec.Code != http.StatusOK {
@@ -125,24 +131,64 @@ func TestPR5NonStream429RecordsCooldownAndRetriesNextAccount(t *testing.T) {
 	if selector.calls != 2 {
 		t.Fatalf("selector calls=%d want 2", selector.calls)
 	}
-	if len(health.signals) < 1 {
-		t.Fatalf("health signals=%+v want rate limit signal", health.signals)
+	if _, excluded := selector.requests[1].ExcludedAccounts[201]; !excluded {
+		t.Fatalf("second attempt exclusions=%v want failed account 201 excluded for this request", selector.requests[1].ExcludedAccounts)
 	}
-	if sig := health.signals[0]; sig.Class != channelhealth.SignalRateLimit || sig.StatusCode != http.StatusTooManyRequests || sig.RateLimitResetAt == nil {
-		t.Fatalf("first health signal=%+v want 429 rate-limit cooldown", sig)
+	if got := countHealthSignals(health, channelhealth.SignalRateLimit); got != 0 {
+		t.Fatalf("SignalRateLimit count=%d want 0;纯 429 不得污染账号健康", got)
 	}
-	if len(health.forceCooldowns) != 1 {
-		t.Fatalf("ForceCooldown calls=%d want 1; calls=%+v", len(health.forceCooldowns), health.forceCooldowns)
+	if len(health.forceCooldowns) != 0 {
+		t.Fatalf("ForceCooldown calls=%d want 0; calls=%+v", len(health.forceCooldowns), health.forceCooldowns)
 	}
-	forced := health.forceCooldowns[0]
-	if forced.key.ProviderAccountID != 201 || forced.key.AccountCredentialID != 9201 {
-		t.Fatalf("ForceCooldown key=%+v want first account 201 credential 9201", forced.key)
+	if modelCooldowns.calls != 1 {
+		t.Fatalf("model cooldown calls=%d want 1", modelCooldowns.calls)
 	}
-	if forced.reason != string(rate.ReasonRateLimitRPM) {
-		t.Fatalf("ForceCooldown reason=%q want %q", forced.reason, rate.ReasonRateLimitRPM)
+	if in := modelCooldowns.input; in.TenantID != validIdentity().TenantID || in.ProviderAccountID != 201 || in.ModelKey != "provider-gpt-4o" {
+		t.Fatalf("model cooldown scope=%+v want tenant/current account/upstream model", in)
 	}
-	if !forced.until.Equal(now.Add(time.Hour)) {
-		t.Fatalf("ForceCooldown until=%s want %s", forced.until, now.Add(time.Hour))
+	if modelCooldowns.input.Reason != rate.ReasonRateLimitRPM || modelCooldowns.input.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("model cooldown reason/status=%s/%d want rpm/429", modelCooldowns.input.Reason, modelCooldowns.input.StatusCode)
+	}
+	if !modelCooldowns.input.ResetAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("model cooldown reset=%s want %s", modelCooldowns.input.ResetAt, now.Add(time.Hour))
+	}
+}
+
+func TestPR5NonStreamQuota429RecordsAccountSuspendedNotModelCooldown(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	selector := newPR5Selector(t, 231, 232)
+	health := &recordingChannelHealth{}
+	modelCooldowns := &recordingModelRateLimiter{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusTooManyRequests, body: `{"error":{"type":"insufficient_quota","message":"billing hard limit reached"}}`},
+			{successText: "must not retry quota exhausted account"},
+		},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88012}, &recordingSettler{}, dispatcher)
+	deps.ChannelHealth = health
+	deps.ModelCooldowns = modelCooldowns
+	deps.RateService = rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s; want upstream quota 429 returned without rate failover", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 1 || dispatcher.calls != 1 {
+		t.Fatalf("selector/dispatcher calls=%d/%d want 1/1;配额耗尽不应按纯限速换号", selector.calls, dispatcher.calls)
+	}
+	if modelCooldowns.calls != 0 {
+		t.Fatalf("model cooldown calls=%d want 0 for quota exhausted 429", modelCooldowns.calls)
+	}
+	if len(health.forceCooldowns) != 0 {
+		t.Fatalf("ForceCooldown calls=%d want 0;配额耗尽由 SignalAccountSuspended 处理", len(health.forceCooldowns))
+	}
+	if got := countHealthSignals(health, channelhealth.SignalAccountSuspended); got != 1 {
+		t.Fatalf("SignalAccountSuspended count=%d want 1;signals=%+v", got, health.signals)
+	}
+	if got := countHealthSignals(health, channelhealth.SignalRateLimit); got != 0 {
+		t.Fatalf("SignalRateLimit count=%d want 0 for quota exhausted 429", got)
 	}
 }
 
@@ -1001,6 +1047,19 @@ func pr5NonStreamBody() string {
 	return `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
 }
 
+func countHealthSignals(health *recordingChannelHealth, class channelhealth.SignalClass) int {
+	if health == nil {
+		return 0
+	}
+	count := 0
+	for _, sig := range health.signals {
+		if sig.Class == class {
+			count++
+		}
+	}
+	return count
+}
+
 func pr5NonStreamDeps(t *testing.T, selector pool.Selector, claimGate billing.ClaimGate, settler billing.Settler, dispatcher HCSFDispatcher) ChatHandlerDeps {
 	t.Helper()
 	deps := clientAdapterDeps(t)
@@ -1296,12 +1355,6 @@ type pr5SequentialStreamingDoer struct {
 	steps []pr5StreamStep
 }
 
-type pr5FixedClock struct {
-	now time.Time
-}
-
-func (c pr5FixedClock) Now() time.Time { return c.now }
-
 func (d *pr5SequentialStreamingDoer) Do(req *http.Request) (*http.Response, error) {
 	_, _ = io.ReadAll(req.Body)
 	d.calls++
@@ -1490,7 +1543,7 @@ func (l *firstAppendFailsThenPersistsLedger) Size(ctx context.Context) int {
 	return l.inner.Size(ctx)
 }
 
-func TestPR5Stream429RetryAfterForceCooldownsBeforeRetry(t *testing.T) {
+func TestPR5Stream429RetryAfterRecordsModelCooldownBeforeRetry(t *testing.T) {
 	now := time.Date(2026, 7, 5, 9, 0, 0, 0, time.UTC)
 	streamDoer := &pr5SequentialStreamingDoer{
 		steps: []pr5StreamStep{
@@ -1503,9 +1556,11 @@ func TestPR5Stream429RetryAfterForceCooldownsBeforeRetry(t *testing.T) {
 		},
 	}
 	health := &recordingChannelHealth{}
+	modelCooldowns := &recordingModelRateLimiter{}
 	deps := streamingReplayDeps(t, 88011, false, "", nil)
 	deps.Dispatcher.HTTPClient = streamDoer
 	deps.ChannelHealth = health
+	deps.ModelCooldowns = modelCooldowns
 	deps.RateService = rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute)
 	deps.Router = stubRouter{plan: pr5RoutePlan(
 		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"},
@@ -1521,33 +1576,20 @@ func TestPR5Stream429RetryAfterForceCooldownsBeforeRetry(t *testing.T) {
 	if streamDoer.calls != 2 {
 		t.Fatalf("stream dispatch calls=%d want 2", streamDoer.calls)
 	}
-	if len(health.signals) == 0 || health.signals[0].Class != channelhealth.SignalRateLimit {
-		t.Fatalf("health signals=%+v want first streaming 429 rate-limit signal", health.signals)
+	if got := countHealthSignals(health, channelhealth.SignalRateLimit); got != 0 {
+		t.Fatalf("SignalRateLimit count=%d want 0 for streaming pure 429", got)
 	}
-	if len(health.forceCooldowns) != 1 {
-		t.Fatalf("ForceCooldown calls=%d want 1 for streaming 429 Retry-After", len(health.forceCooldowns))
+	if len(health.forceCooldowns) != 0 {
+		t.Fatalf("ForceCooldown calls=%d want 0 for streaming pure 429", len(health.forceCooldowns))
 	}
-	forced := health.forceCooldowns[0]
-	if forced.key.ProviderAccountID != 1201 || forced.key.AccountCredentialID != 10201 {
-		t.Fatalf("ForceCooldown key=%+v want first stream account 1201 credential 10201", forced.key)
+	if modelCooldowns.calls != 1 {
+		t.Fatalf("model cooldown calls=%d want 1", modelCooldowns.calls)
 	}
-	if forced.reason != string(rate.ReasonRateLimitRPM) {
-		t.Fatalf("ForceCooldown reason=%q want %q", forced.reason, rate.ReasonRateLimitRPM)
+	if in := modelCooldowns.input; in.ProviderAccountID != 1201 || in.ModelKey != "gpt-4o" || in.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("model cooldown input=%+v want first stream account/gpt-4o/429", in)
 	}
-	if !forced.until.Equal(now.Add(2 * time.Minute)) {
-		t.Fatalf("ForceCooldown until=%s want %s", forced.until, now.Add(2*time.Minute))
-	}
-	svc := channelhealth.NewService(channelhealth.NewMemoryStore(), channelhealth.DefaultPolicy(), pr5FixedClock{now: now})
-	if _, err := svc.ForceCooldown(context.Background(), forced.key, forced.until, forced.reason); err != nil {
-		t.Fatalf("real ForceCooldown: %v", err)
-	}
-	gate := channelhealth.NewServicePoolGate(svc, pr5FixedClock{now: now})
-	ok, reason, err := gate.Allow(context.Background(),
-		&pool.AccountSnapshot{ID: forced.key.ProviderAccountID, TenantID: forced.key.TenantID},
-		pool.SelectionRequest{TenantID: forced.key.TenantID, PoolGroupID: 42, RequestedModel: "gpt-4o"},
-	)
-	if err != nil || ok || reason != pool.GateFailureHealth {
-		t.Fatalf("PoolGate Allow ok=%v reason=%s err=%v want blocked by forced cooldown", ok, reason, err)
+	if modelCooldowns.input.Reason != rate.ReasonRateLimitRPM || !modelCooldowns.input.ResetAt.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("model cooldown reason/reset=%s/%s want rpm/%s", modelCooldowns.input.Reason, modelCooldowns.input.ResetAt, now.Add(2*time.Minute))
 	}
 }
 
@@ -1568,15 +1610,14 @@ func (r *delayedReadCloser) Close() error {
 	return nil
 }
 
-// 守 wave-2 P2(429/529 无 Retry-After 仍冷却): 上游 429 不带 Retry-After 头时, 仍必须按
-// RateService 默认冷却把被限流账号 ForceCooldown(否则该账号被持续命中)。
-// 变异: 还原 forceCooldownFromUpstreamRateLimit 中 RetryAfter()=="" 早退 -> ForceCooldown
-// 不被调用 -> len(forceCooldowns)==0 -> 红。
-func TestPR5NonStream429NoRetryAfterStillCooldowns(t *testing.T) {
+// 守 429 无 Retry-After 的默认模型冷却:上游 429 不带 Retry-After 头时,仍必须按
+// RateService/ModelCooldownService 默认时长写入当前账号×当前上游模型,但不得整号冷却。
+func TestPR5NonStream429NoRetryAfterRecordsDefaultModelCooldown(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	selector := newPR5Selector(t, 201, 202)
 	health := &recordingChannelHealth{}
+	modelCooldowns := &recordingModelRateLimiter{}
 	dispatcher := &pr5CanonicalSequenceDispatcher{
 		steps: []pr5CanonicalStep{
 			{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`}, // 故意无 Retry-After 头
@@ -1585,6 +1626,7 @@ func TestPR5NonStream429NoRetryAfterStillCooldowns(t *testing.T) {
 	}
 	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88003}, &recordingSettler{}, dispatcher)
 	deps.ChannelHealth = health
+	deps.ModelCooldowns = modelCooldowns
 	deps.RateService = rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute)
 
 	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
@@ -1594,15 +1636,17 @@ func TestPR5NonStream429NoRetryAfterStillCooldowns(t *testing.T) {
 	if selector.calls != 2 {
 		t.Fatalf("selector calls=%d want 2 (failover to 2nd account)", selector.calls)
 	}
-	if len(health.forceCooldowns) != 1 {
-		t.Fatalf("ForceCooldown calls=%d want 1 (429 w/o Retry-After must still cooldown via default)", len(health.forceCooldowns))
+	if got := countHealthSignals(health, channelhealth.SignalRateLimit); got != 0 {
+		t.Fatalf("SignalRateLimit count=%d want 0 for 429 model cooldown", got)
 	}
-	forced := health.forceCooldowns[0]
-	if forced.reason != string(rate.ReasonRateLimitRPM) {
-		t.Fatalf("ForceCooldown reason=%q want %q", forced.reason, rate.ReasonRateLimitRPM)
+	if len(health.forceCooldowns) != 0 {
+		t.Fatalf("ForceCooldown calls=%d want 0 for 429 model cooldown", len(health.forceCooldowns))
 	}
-	if !forced.until.Equal(now.Add(time.Minute)) {
-		t.Fatalf("ForceCooldown until=%s want %s (default cooldown, not skipped)", forced.until, now.Add(time.Minute))
+	if modelCooldowns.calls != 1 {
+		t.Fatalf("model cooldown calls=%d want 1", modelCooldowns.calls)
+	}
+	if !modelCooldowns.input.ResetAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("model cooldown reset=%s want %s (default cooldown)", modelCooldowns.input.ResetAt, now.Add(time.Minute))
 	}
 }
 

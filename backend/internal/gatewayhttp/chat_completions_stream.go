@@ -233,14 +233,13 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 		}
 	}
 	decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
-	recordModelCooldownOnUpstream404(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, dispatchRes.StatusCode, ex.requestID)
-	ex.forceCooldownFromUpstreamRateLimit(&gateway.UpstreamHTTPError{
+	modelScopedRateLimit := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
 		StatusCode: dispatchRes.StatusCode,
 		Header:     dispatchRes.Headers,
 		Body:       errBody,
-	})
+	}, classification, true)
 	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
-	if ex.healthKeyOK {
+	if ex.healthKeyOK && !modelScopedRateLimit {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 	}
 	failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)

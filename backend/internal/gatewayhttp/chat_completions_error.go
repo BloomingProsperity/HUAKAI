@@ -245,17 +245,92 @@ func rateLimitResetFromClassification(c gateway.Classification, now time.Time) *
 	return &reset
 }
 
-func recordModelCooldownOnUpstream404(ctx context.Context, d ChatHandlerDeps, tenantID, accountID int64, modelKey string, statusCode int, requestID string) {
-	if d.ModelCooldowns == nil || statusCode != http.StatusNotFound || tenantID == 0 || accountID == 0 || modelKey == "" {
-		return
+func (ex *chatExecution) applyUpstreamErrorCooldown(upstreamErr *gateway.UpstreamHTTPError, classification gateway.Classification, applyAccountCooldown bool) bool {
+	if ex == nil || upstreamErr == nil {
+		return false
 	}
-	if err := d.ModelCooldowns.RecordModelRateLimit(ctx, rate.ModelCooldownInput{
+	if upstreamErr.StatusCode == http.StatusNotFound {
+		recordModelCooldownFromUpstreamError(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID, nil, rate.ReasonModelLimitExceeded)
+		return false
+	}
+	if upstreamErr.StatusCode == http.StatusTooManyRequests {
+		if classification.Class != gateway.ErrorClassRateLimited {
+			return false
+		}
+		dec, hasDecision := ex.upstreamRateDecision(upstreamErr)
+		if hasDecision && dec.StateChange != rate.StateNoChange && dec.StateChange != rate.StateRateLimited {
+			if applyAccountCooldown {
+				ex.forceCooldownFromDecision(dec)
+			}
+			return false
+		}
+		resetAt := rateLimitResetFromClassification(classification, time.Now())
+		reason := rate.ReasonRateLimitRPM
+		if hasDecision {
+			if !dec.CooldownUntil.IsZero() {
+				reset := dec.CooldownUntil
+				resetAt = &reset
+			}
+			if dec.Reason != "" {
+				reason = dec.Reason
+			}
+		}
+		// 只有模型格确实写成功才抑制整号健康信号;写失败/未接线(ModelCooldowns nil、
+		// modelKey 空、DB 落库报错)时返回 false,让调用方回落 recordChannelHealthSignal——
+		// 否则纯 429 会既没写模型格又跳过账号健康,该账号该模型零冷却、被立刻重选反复挨限速。
+		return recordModelCooldownFromUpstreamError(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID, resetAt, reason)
+	}
+	if applyAccountCooldown {
+		ex.forceCooldownFromUpstreamRateLimit(upstreamErr)
+	}
+	return false
+}
+
+func (ex *chatExecution) upstreamRateDecision(upstreamErr *gateway.UpstreamHTTPError) (rate.Decision, bool) {
+	if ex == nil || upstreamErr == nil || ex.d.RateService == nil {
+		return rate.Decision{}, false
+	}
+	dec, err := ex.d.RateService.HandleUpstreamError(ex.ctx, ex.acquiredAccountID, upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body)
+	if err != nil {
+		logInternalError(ex.ctx, ex.requestID, "upstream_rate_cooldown_decision_failed", err)
+		return rate.Decision{}, false
+	}
+	return dec, true
+}
+
+// recordModelCooldownFromUpstreamError 写一格账号×模型冷却,返回是否确实写成功。
+// 返回值供调用方决定要不要抑制整号健康信号:只有 true(确认落库)才代表模型格已承接冷却,
+// false(未接线/参数不全/落库报错)时调用方须回落账号级健康信号,避免该模型零冷却被反复重选。
+func recordModelCooldownFromUpstreamError(ctx context.Context, d ChatHandlerDeps, tenantID, accountID int64, modelKey string, statusCode int, requestID string, resetAt *time.Time, reason rate.Reason) bool {
+	if d.ModelCooldowns == nil || tenantID == 0 || accountID == 0 || modelKey == "" {
+		return false
+	}
+	switch statusCode {
+	case http.StatusNotFound:
+		if reason == "" {
+			reason = rate.ReasonModelLimitExceeded
+		}
+	case http.StatusTooManyRequests:
+		if reason == "" {
+			reason = rate.ReasonRateLimitRPM
+		}
+	default:
+		return false
+	}
+	input := rate.ModelCooldownInput{
 		TenantID:          tenantID,
 		ProviderAccountID: accountID,
 		ModelKey:          modelKey,
+		Reason:            reason,
 		StatusCode:        statusCode,
 		UpstreamRequestID: requestID,
-	}); err != nil {
-		logInternalError(ctx, requestID, "model_rate_limit_record_failed", err)
 	}
+	if resetAt != nil {
+		input.ResetAt = *resetAt
+	}
+	if err := d.ModelCooldowns.RecordModelRateLimit(ctx, input); err != nil {
+		logInternalError(ctx, requestID, "model_rate_limit_record_failed", err)
+		return false
+	}
+	return true
 }

@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -190,11 +192,11 @@ func TestSignalFromDispatchError_StillEmitsUpstreamAuthCooldown(t *testing.T) {
 	}
 }
 
-func TestRecordModelCooldownOnUpstream404ScopesAccountAndModel(t *testing.T) {
+func TestRecordModelCooldownFromUpstreamErrorScopes404AccountAndModel(t *testing.T) {
 	t.Parallel()
 
 	rec := &recordingModelRateLimiter{}
-	recordModelCooldownOnUpstream404(context.Background(), ChatHandlerDeps{ModelCooldowns: rec}, 7, 101, "upstream-gpt-4o", http.StatusNotFound, "req-404")
+	recordModelCooldownFromUpstreamError(context.Background(), ChatHandlerDeps{ModelCooldowns: rec}, 7, 101, "upstream-gpt-4o", http.StatusNotFound, "req-404", nil, rate.ReasonModelLimitExceeded)
 	if rec.calls != 1 {
 		t.Fatalf("calls=%d, want 1", rec.calls)
 	}
@@ -206,21 +208,247 @@ func TestRecordModelCooldownOnUpstream404ScopesAccountAndModel(t *testing.T) {
 		t.Fatalf("upstream evidence=(%d,%q), want 404 req-404", rec.input.StatusCode, rec.input.UpstreamRequestID)
 	}
 
-	recordModelCooldownOnUpstream404(context.Background(), ChatHandlerDeps{ModelCooldowns: rec}, 7, 101, "upstream-gpt-4o", http.StatusBadRequest, "req-400")
+	recordModelCooldownFromUpstreamError(context.Background(), ChatHandlerDeps{ModelCooldowns: rec}, 7, 101, "upstream-gpt-4o", http.StatusBadRequest, "req-400", nil, "")
 	if rec.calls != 1 {
 		t.Fatalf("non-404 status recorded model cooldown; calls=%d want 1", rec.calls)
 	}
 }
 
+func TestApplyUpstreamErrorCooldown_ModelScoped429DoesNotForceAccountCooldown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	rec := &recordingModelRateLimiter{}
+	health := &recordingChannelHealth{}
+	classification, err := gateway.Classify(http.StatusTooManyRequests, http.Header{"Retry-After": []string{"3600"}}, []byte(`{"error":"rate limited"}`), "openai")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	ex := modelCooldownTestExecution(rec, health, rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute))
+
+	modelScoped := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"3600"}},
+		Body:       []byte(`{"error":"rate limited"}`),
+	}, classification, true)
+	if !modelScoped {
+		t.Fatal("纯 429 限速应下沉到模型格,返回 modelScoped=true")
+	}
+	if rec.calls != 1 {
+		t.Fatalf("model cooldown calls=%d want 1", rec.calls)
+	}
+	if rec.input.TenantID != validIdentity().TenantID || rec.input.ProviderAccountID != 101 || rec.input.ModelKey != "upstream-gpt-4o" {
+		t.Fatalf("model cooldown scope=%+v want tenant/current account/upstream model", rec.input)
+	}
+	if rec.input.Reason != rate.ReasonRateLimitRPM {
+		t.Fatalf("reason=%q want %q", rec.input.Reason, rate.ReasonRateLimitRPM)
+	}
+	if !rec.input.ResetAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("reset_at=%s want %s", rec.input.ResetAt, now.Add(time.Hour))
+	}
+	if len(health.forceCooldowns) != 0 {
+		t.Fatalf("ForceCooldown calls=%d want 0 for pure model 429", len(health.forceCooldowns))
+	}
+}
+
+func TestApplyUpstreamErrorCooldown_Quota429StaysAccountSignal(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingModelRateLimiter{}
+	health := &recordingChannelHealth{}
+	body := []byte(`{"error":{"type":"insufficient_quota","message":"billing hard limit reached"}}`)
+	classification, err := gateway.Classify(http.StatusTooManyRequests, nil, body, "openai")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if classification.Class != gateway.ErrorClassCreditExhausted {
+		t.Fatalf("class=%s want credit_exhausted", classification.Class)
+	}
+	ex := modelCooldownTestExecution(rec, health, rate.NewUpstreamRateService(func() time.Time {
+		return time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	}, time.Minute))
+
+	modelScoped := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{StatusCode: http.StatusTooManyRequests, Body: body}, classification, true)
+	if modelScoped {
+		t.Fatal("配额耗尽 429 不得写模型格")
+	}
+	if rec.calls != 0 {
+		t.Fatalf("model cooldown calls=%d want 0 for quota exhausted 429", rec.calls)
+	}
+	if len(health.forceCooldowns) != 0 {
+		t.Fatalf("ForceCooldown calls=%d want 0;配额耗尽由账号信号禁用", len(health.forceCooldowns))
+	}
+	signal := gateway.SignalFromClassification(http.StatusTooManyRequests, classification)
+	if signal != channelhealth.SignalAccountSuspended {
+		t.Fatalf("signal=%s want account_suspended", signal)
+	}
+	recordChannelHealthSignal(context.Background(), ChatHandlerDeps{ChannelHealth: health}, ex.healthKey, signal, http.StatusTooManyRequests, 0, "req-quota", nil, gateway.AuthFailureClassFromClassification(classification))
+	if len(health.signals) != 1 || health.signals[0].Class != channelhealth.SignalAccountSuspended {
+		t.Fatalf("health signals=%+v want one account_suspended", health.signals)
+	}
+}
+
+func TestQuota429AccountSuspendedSignalDisablesChannelHealthRecord(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"error":{"type":"insufficient_quota"}}`)
+	classification, err := gateway.Classify(http.StatusTooManyRequests, nil, body, "openai")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	signal := gateway.SignalFromClassification(http.StatusTooManyRequests, classification)
+	if signal != channelhealth.SignalAccountSuspended {
+		t.Fatalf("signal=%s want account_suspended", signal)
+	}
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	store := channelhealth.NewMemoryStore()
+	svc := channelhealth.NewService(store, channelhealth.DefaultPolicy(), fixedChannelHealthClock{now: now})
+	key := channelhealth.ChannelKey{
+		TenantID:            validIdentity().TenantID,
+		Vendor:              "openai",
+		ProviderAccountID:   101,
+		AccountCredentialID: 9001,
+		CredentialVersion:   1,
+	}
+	key.ChannelID = key.StableChannelID()
+
+	rec, err := svc.ApplySignal(context.Background(), channelhealth.Signal{Key: key, Class: signal, StatusCode: http.StatusTooManyRequests})
+	if err != nil {
+		t.Fatalf("ApplySignal: %v", err)
+	}
+	if rec.State != channelhealth.StateDisabled || rec.CooldownUntil == nil {
+		t.Fatalf("record=%+v want disabled with cooldown_until", rec)
+	}
+}
+
+type fixedChannelHealthClock struct {
+	now time.Time
+}
+
+func (c fixedChannelHealthClock) Now() time.Time { return c.now }
+
+func TestApplyUpstreamErrorCooldown_Concurrent429WritesSameModelScope(t *testing.T) {
+	t.Parallel()
+
+	const goroutines = 24
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	rec := &recordingModelRateLimiter{}
+	health := &recordingChannelHealth{}
+	classification, err := gateway.Classify(http.StatusTooManyRequests, http.Header{"Retry-After": []string{"30"}}, []byte(`{"error":"rate limited"}`), "openai")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	ex := modelCooldownTestExecution(rec, health, rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute))
+	upstreamErr := &gateway.UpstreamHTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"30"}},
+		Body:       []byte(`{"error":"rate limited"}`),
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if !ex.applyUpstreamErrorCooldown(upstreamErr, classification, true) {
+				t.Errorf("并发 429 应全部返回 modelScoped=true")
+			}
+		}()
+	}
+	wg.Wait()
+
+	inputs := rec.inputsSnapshot()
+	if len(inputs) != goroutines {
+		t.Fatalf("model cooldown writes=%d want %d", len(inputs), goroutines)
+	}
+	for i, in := range inputs {
+		if in.TenantID != validIdentity().TenantID || in.ProviderAccountID != 101 || in.ModelKey != "upstream-gpt-4o" {
+			t.Fatalf("input[%d] scope=%+v want tenant/current account/upstream model", i, in)
+		}
+		if in.StatusCode != http.StatusTooManyRequests || in.Reason != rate.ReasonRateLimitRPM || !in.ResetAt.Equal(now.Add(30*time.Second)) {
+			t.Fatalf("input[%d]=%+v want 429/rpm/reset+30s", i, in)
+		}
+	}
+	if len(health.forceCooldowns) != 0 || len(health.signals) != 0 {
+		t.Fatalf("health force/signals=%d/%d want 0/0 for pure model 429", len(health.forceCooldowns), len(health.signals))
+	}
+}
+
+func TestApplyUpstreamErrorCooldown_ModelWriteFailFallsBackToAccountHealth(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
+	// 模型格落库失败(DB 抖动)时:纯 429 限速下沉写模型格报错,helper 必须返回 false,
+	// 让调用方回落 recordChannelHealthSignal——否则该账号该模型零冷却、被立刻重选反复挨限速(片3a 回退)。
+	rec := &recordingModelRateLimiter{err: context.DeadlineExceeded}
+	health := &recordingChannelHealth{}
+	header := http.Header{"Retry-After": []string{"60"}}
+	classification, err := gateway.Classify(http.StatusTooManyRequests, header, []byte(`{"error":"rate limited"}`), "openai")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	ex := modelCooldownTestExecution(rec, health, rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute))
+
+	modelScoped := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     header,
+		Body:       []byte(`{"error":"rate limited"}`),
+	}, classification, true)
+	if modelScoped {
+		t.Fatal("模型格写失败必须返回 false 以回落账号健康,不能吞掉冷却")
+	}
+	if rec.calls != 1 {
+		t.Fatalf("model cooldown 尝试次数=%d want 1(应已试写但失败)", rec.calls)
+	}
+}
+
+func modelCooldownTestExecution(rec *recordingModelRateLimiter, health *recordingChannelHealth, svc rate.Service) *chatExecution {
+	ident := validIdentity()
+	key := channelhealth.ChannelKey{
+		TenantID:            ident.TenantID,
+		Vendor:              "openai",
+		ProviderAccountID:   101,
+		AccountCredentialID: 9001,
+		CredentialVersion:   1,
+	}
+	key.ChannelID = key.StableChannelID()
+	return &chatExecution{
+		ctx:               context.Background(),
+		ident:             ident,
+		requestID:         "req-429",
+		acquiredAccountID: 101,
+		upstreamModelID:   "upstream-gpt-4o",
+		d: ChatHandlerDeps{
+			ModelCooldowns: rec,
+			ChannelHealth:  health,
+			RateService:    svc,
+		},
+		healthKey:   key,
+		healthKeyOK: true,
+	}
+}
+
 type recordingModelRateLimiter struct {
-	calls int
-	input rate.ModelCooldownInput
+	mu     sync.Mutex
+	calls  int
+	input  rate.ModelCooldownInput
+	inputs []rate.ModelCooldownInput
+	err    error // 非 nil 时模拟落库失败,验证写失败要回落账号健康
 }
 
 func (r *recordingModelRateLimiter) RecordModelRateLimit(_ context.Context, in rate.ModelCooldownInput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls++
 	r.input = in
-	return nil
+	r.inputs = append(r.inputs, in)
+	return r.err
+}
+
+func (r *recordingModelRateLimiter) inputsSnapshot() []rate.ModelCooldownInput {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]rate.ModelCooldownInput(nil), r.inputs...)
 }
 
 func TestChatCompletionsPublicErrorsDoNotUseRawErrorStrings(t *testing.T) {

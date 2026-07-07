@@ -204,6 +204,47 @@ func TestProviderSpecificity_BedrockThrottling(t *testing.T) {
 	}
 }
 
+func TestClassify_OpenAIAndCodex429QuotaExhaustedBeforeRateLimit(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		body     string
+		wantRule string
+	}{
+		{"openai_structured_quota", "openai", `{"error":{"type":"insufficient_quota"}}`, "R-026"},
+		{"codex_alias_structured_quota", "openai_codex", `{"error":{"code":"insufficient_quota"}}`, "R-027"},
+		{"openai_hard_limit_code", "openai", `{"error":{"code":"billing_hard_limit_reached"}}`, "R-028"},
+		{"codex_hard_limit_code", "codex", `{"error":{"code":"billing_hard_limit_reached"}}`, "R-029"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Classify(429, nil, []byte(tt.body), tt.provider)
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if got.RuleID != tt.wantRule || got.Class != ErrorClassCreditExhausted {
+				t.Fatalf("rule/class=%s/%s want %s/%s", got.RuleID, got.Class, tt.wantRule, ErrorClassCreditExhausted)
+			}
+			if got.RetryAction != RetryActionPermanentDisable || got.Tier != TierIronClad || got.FsmTransition != FsmTransitionDisabled {
+				t.Fatalf("action/tier/fsm=%s/%s/%s want permanent_disable/iron_clad/disabled", got.RetryAction, got.Tier, got.FsmTransition)
+			}
+			if sig := SignalFromClassification(429, got); sig != channelhealth.SignalAccountSuspended {
+				t.Fatalf("signal=%s want account_suspended", sig)
+			}
+		})
+	}
+}
+
+func TestClassify_429QuotaWordsRemainRateLimitedUnlessNarrowEvidence(t *testing.T) {
+	got, err := Classify(429, nil, []byte(`{"error":{"message":"quota window rate limit reached"}}`), "openai")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got.RuleID != "R-013" || got.Class != ErrorClassRateLimited {
+		t.Fatalf("rule/class=%s/%s want R-013/rate_limited;泛 quota 文案不得整号禁用", got.RuleID, got.Class)
+	}
+}
+
 func TestR018_BedrockThrottling429(t *testing.T) {
 	c, err := Classify(429, nil, []byte(`{"type":"ThrottlingException"}`), "bedrock")
 	if err != nil {
