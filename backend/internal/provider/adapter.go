@@ -65,6 +65,10 @@ type AccountInfo struct {
 	Platform string
 	// AccountType 账号类型（如 "apikey" / "oauth" / "session" / "bedrock"）。
 	AccountType string
+	// CodexCLIOnly 表示该账号 opt-in 到 Codex CLI 入站官方客户端门。该字段仅供
+	// 入站门控使用，禁止投影到出站 Credential.Extra 或身份改写载荷；缺省 false
+	// 表示维持 Codex/OpenAI 账号默认放开。
+	CodexCLIOnly bool
 	// AccountCredentialID 是当前出站凭据行主键，用于 channel-health subject。
 	AccountCredentialID int64
 	// CredentialVersion 是当前出站凭据版本，用于区分轮换前后的健康状态。

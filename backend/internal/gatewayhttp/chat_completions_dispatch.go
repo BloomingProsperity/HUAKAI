@@ -576,12 +576,13 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	return nil
 }
 
-// enforceOfficialClient 对反转/订阅号(oauth/session)校验请求来自该 vendor 的官方客户端
-// (Anthropic=Claude Code、OpenAI=Codex CLI);非官方客户端释放本次预扣后返回终态 403。
-// apikey 等账号类型不设限。客户端身份由 clientid 从请求 header/UA 检测。
+// enforceOfficialClient 对反转/订阅号(oauth/session)按 vendor 默认策略或账号级
+// CodexCLIOnly opt-in 校验请求来自官方客户端(Anthropic=Claude Code、OpenAI=Codex CLI);
+// 非官方客户端释放本次预扣后返回终态 403。apikey 等账号类型不设限。客户端身份由 clientid
+// 从请求 header/UA 检测。
 func (ex *chatExecution) enforceOfficialClient() *classifiedAttemptFailure {
 	identity, _ := clientid.Detect(clientid.SignalFromRequest(ex.r))
-	if reject, _ := officialclient.GateDecision(ex.accInfo.AccountType, ex.accInfo.Platform, identity); !reject {
+	if reject, _ := officialclient.GateDecision(ex.accInfo.AccountType, ex.accInfo.Platform, identity, ex.accInfo.CodexCLIOnly); !reject {
 		return nil
 	}
 	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "official_client_required", 0, ex.protocolLoss)

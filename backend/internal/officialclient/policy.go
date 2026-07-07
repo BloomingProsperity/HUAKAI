@@ -79,13 +79,14 @@ func IsReverseAccountType(accountType string) bool {
 }
 
 // GateDecision 报告某账号类型 + vendor 下、已检测出 clientIdentity 的请求是否应被拒。
-// 仅反转/订阅号 + vendor 强制官方客户端入站 + 身份非官方时拒;非反转号、未强制 vendor
-// (含 OpenAI/codex/chatgpt)、或官方客户端身份,均不拒。返回 (reject, reason)。
-func GateDecision(accountType, vendor string, clientIdentity clientid.Identity) (bool, string) {
+// 仅反转/订阅号 + vendor 默认强制官方客户端入站或账号级 forceOfficialClient + 身份
+// 非官方时拒;非反转号不拒。forceOfficialClient 只扩大已有官方客户端映射 vendor 的
+// 入站门控,不越过反转账号前置条件;无官方客户端映射仍 fail-open。返回 (reject, reason)。
+func GateDecision(accountType, vendor string, clientIdentity clientid.Identity, forceOfficialClient bool) (bool, string) {
 	if !IsReverseAccountType(accountType) {
 		return false, ReasonNoRestriction
 	}
-	if !vendorEnforcesOfficialClient(vendor) {
+	if !vendorEnforcesOfficialClient(vendor) && !forceOfficialClient {
 		return false, ReasonVendorNotEnforced
 	}
 	required, has := RequiredIdentity(vendor)

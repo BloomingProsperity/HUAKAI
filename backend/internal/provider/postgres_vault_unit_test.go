@@ -219,3 +219,74 @@ func vaultSetScanValue(dest any, value any) error {
 	}
 	return errors.New("scan destination type mismatch")
 }
+
+// TestProviderAccountExtraCodexCLIOnlyAndMerge 验证账号级 codex_cli_only 开关解析与泄漏隔离:
+// 布尔正确投影进 AccountInfo 入站门控字段,且绝不并入出站 Credential.Extra,同时不影响其余
+// 可透传 extra 键。
+func TestProviderAccountExtraCodexCLIOnlyAndMerge(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+		want bool
+	}{
+		{
+			name: "true 开启 AccountInfo 入站门控字段",
+			raw:  []byte(`{"codex_cli_only":true,"passthrough":"kept"}`),
+			want: true,
+		},
+		{
+			name: "false 保持关闭",
+			raw:  []byte(`{"codex_cli_only":false,"passthrough":"kept"}`),
+			want: false,
+		},
+		{
+			name: "缺省保持关闭",
+			raw:  []byte(`{"passthrough":"kept"}`),
+			want: false,
+		},
+		{
+			name: "空 extra 保持关闭",
+			raw:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			accountExtra := decodeProviderAccountExtra(tt.raw)
+			info := AccountInfo{
+				CodexCLIOnly: codexCLIOnlyFromAccountExtra(accountExtra),
+			}
+			if info.CodexCLIOnly != tt.want {
+				t.Fatalf("CodexCLIOnly = %v, want %v", info.CodexCLIOnly, tt.want)
+			}
+
+			cred := mergeCredentialAccountExtra(Credential{}, accountExtra)
+			if _, exists := cred.Extra[providerAccountExtraCodexCLIOnlyKey]; exists {
+				t.Fatalf("Credential.Extra 不应泄漏 %q", providerAccountExtraCodexCLIOnlyKey)
+			}
+			if len(accountExtra) > 0 {
+				if got := cred.Extra["passthrough"]; got != "kept" {
+					t.Fatalf("passthrough extra = %q, want kept", got)
+				}
+			}
+		})
+	}
+}
+
+// TestMergeCredentialAccountExtraScrubsPreexistingPolicyKey 验证绝对泄漏保证:即便凭据载荷
+// 本身(非 account extra)误带 codex_cli_only,merge 也会把它从出站 Extra 清除。
+func TestMergeCredentialAccountExtraScrubsPreexistingPolicyKey(t *testing.T) {
+	// 凭据载荷预带内部策略键 + account extra 为空(走不并入路径),仍须清除。
+	cred := Credential{Extra: map[string]string{
+		providerAccountExtraCodexCLIOnlyKey: "true",
+		"org_id":                            "org-keep",
+	}}
+	got := mergeCredentialAccountExtra(cred, nil)
+	if _, exists := got.Extra[providerAccountExtraCodexCLIOnlyKey]; exists {
+		t.Fatalf("凭据载荷预带的 %q 必须被清除,不得出站", providerAccountExtraCodexCLIOnlyKey)
+	}
+	if got.Extra["org_id"] != "org-keep" {
+		t.Fatalf("org_id=%q want org-keep;scrub 不应误删其他键", got.Extra["org_id"])
+	}
+}

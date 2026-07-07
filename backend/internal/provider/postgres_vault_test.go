@@ -319,6 +319,44 @@ func TestPostgresCredentialVault_ProviderAccountExtraSupplementsCredentialExtra(
 	}
 }
 
+// TestPostgresCredentialVault_ProviderAccountExtraCodexCLIOnly 验证片2e 接线在真实 DB 上闭环:
+// provider_accounts.extra 的 codex_cli_only 经 legacy Resolve 填入 AccountInfo.CodexCLIOnly,
+// 且该内部策略键不泄漏进出站 cred.Extra、不影响其余可透传 extra 键。
+func TestPostgresCredentialVault_ProviderAccountExtraCodexCLIOnly(t *testing.T) {
+	ctx := context.Background()
+	suffix := "codex-cli-only"
+	f := setupFixture(ctx, t, suffix)
+	defer cleanupFixture(ctx, t, testDB, f)
+
+	creds := map[string]interface{}{"api_key": "sk-test-codexcli"}
+	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
+		f.tenantID, f.providerID, f.channelID,
+		"test-account-"+suffix, "api_key", true, creds)
+
+	extraJSON, err := json.Marshal(map[string]any{"codex_cli_only": true, "org_id": "org-keep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.Exec(ctx, `UPDATE provider_accounts SET extra = $2 WHERE id = $1`, f.providerAccountID, extraJSON); err != nil {
+		t.Fatalf("update provider account extra: %v", err)
+	}
+
+	vault := NewPostgresCredentialVault(testDB)
+	cred, info, err := vault.Resolve(ctx, f.tenantID, f.providerAccountID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !info.CodexCLIOnly {
+		t.Fatal("legacy Resolve 应从 extra 填 AccountInfo.CodexCLIOnly=true")
+	}
+	if _, leaked := cred.Extra["codex_cli_only"]; leaked {
+		t.Fatal("codex_cli_only 内部策略键不应泄漏进出站 cred.Extra")
+	}
+	if cred.Extra["org_id"] != "org-keep" {
+		t.Fatalf("org_id=%q want org-keep;其余 extra 键应正常并入", cred.Extra["org_id"])
+	}
+}
+
 // TestPostgresCredentialVault_OAuthHappyPath 验证 oauth 类型凭据正确映射。
 func TestPostgresCredentialVault_OAuthHappyPath(t *testing.T) {
 	ctx := context.Background()

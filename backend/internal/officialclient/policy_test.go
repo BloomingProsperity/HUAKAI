@@ -165,7 +165,7 @@ func TestGateDecision(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reject, reason := GateDecision(tt.accountType, tt.vendor, tt.identity)
+			reject, reason := GateDecision(tt.accountType, tt.vendor, tt.identity, false)
 			if reject != tt.wantReject {
 				t.Fatalf("reject=%v, want %v, reason=%q", reject, tt.wantReject, reason)
 			}
@@ -176,8 +176,95 @@ func TestGateDecision(t *testing.T) {
 	}
 
 	for _, vendor := range []string{credentialstore.VendorAnthropic, credentialstore.VendorOpenAI, "codex", "chatgpt", "gemini"} {
-		if reject, reason := GateDecision(credentialstore.AuthModeAPIKey, vendor, clientid.IdentityCurlScript); reject || reason != ReasonNoRestriction {
+		if reject, reason := GateDecision(credentialstore.AuthModeAPIKey, vendor, clientid.IdentityCurlScript, false); reject || reason != ReasonNoRestriction {
 			t.Fatalf("api_key 号不应拒 vendor=%q,得 reject=%v reason=%q", vendor, reject, reason)
 		}
+	}
+}
+
+// TestGateDecisionForceOfficialClient 验证账号级 forceOfficialClient opt-in:codex 默认放开、
+// 开关打开后非官方客户端被拒、官方 Codex CLI 放行,且不越过反转账号前置门、不削弱 Anthropic。
+func TestGateDecisionForceOfficialClient(t *testing.T) {
+	tests := []struct {
+		name                string
+		accountType         string
+		vendor              string
+		identity            clientid.Identity
+		forceOfficialClient bool
+		wantReject          bool
+		wantReason          string
+	}{
+		{
+			name:        "anthropic 反转账号非 Claude Code 拒绝",
+			accountType: credentialstore.AuthModeClaudeAIOAuth,
+			vendor:      credentialstore.VendorAnthropic,
+			identity:    clientid.IdentityCurlScript,
+			wantReject:  true,
+			wantReason:  ReasonNonOfficialReject,
+		},
+		{
+			name:        "anthropic 反转账号 Claude Code 放行",
+			accountType: credentialstore.AuthModeClaudeAIOAuth,
+			vendor:      credentialstore.VendorAnthropic,
+			identity:    clientid.IdentityClaudeCode,
+			wantReject:  false,
+			wantReason:  ReasonOfficialClientOK,
+		},
+		{
+			name:        "codex 反转账号默认不强制非 CLI 放行",
+			accountType: credentialstore.AuthModeCodexCLIOAuth,
+			vendor:      credentialstore.VendorOpenAI,
+			identity:    clientid.IdentityCurlScript,
+			wantReject:  false,
+			wantReason:  ReasonVendorNotEnforced,
+		},
+		{
+			name:                "codex 反转账号强制后非 CLI 拒绝",
+			accountType:         credentialstore.AuthModeCodexCLIOAuth,
+			vendor:              credentialstore.VendorOpenAI,
+			identity:            clientid.IdentityCurlScript,
+			forceOfficialClient: true,
+			wantReject:          true,
+			wantReason:          ReasonNonOfficialReject,
+		},
+		{
+			name:                "codex 反转账号强制后 CLI 放行",
+			accountType:         credentialstore.AuthModeCodexCLIOAuth,
+			vendor:              credentialstore.VendorOpenAI,
+			identity:            clientid.IdentityCodexCLI,
+			forceOfficialClient: true,
+			wantReject:          false,
+			wantReason:          ReasonOfficialClientOK,
+		},
+		{
+			name:                "apikey 类账号即使 force 也不越过反转前置门",
+			accountType:         credentialstore.AuthModeAPIKey,
+			vendor:              credentialstore.VendorOpenAI,
+			identity:            clientid.IdentityCurlScript,
+			forceOfficialClient: true,
+			wantReject:          false,
+			wantReason:          ReasonNoRestriction,
+		},
+		{
+			name:                "无官方客户端映射 vendor 即使 force 也 fail-open 不误杀",
+			accountType:         credentialstore.AuthModeCodeAssist,
+			vendor:              "gemini",
+			identity:            clientid.IdentityCurlScript,
+			forceOfficialClient: true,
+			wantReject:          false,
+			wantReason:          ReasonVendorNoOfficial,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotReject, gotReason := GateDecision(tt.accountType, tt.vendor, tt.identity, tt.forceOfficialClient)
+			if gotReject != tt.wantReject {
+				t.Fatalf("reject = %v, want %v, reason = %s", gotReject, tt.wantReject, gotReason)
+			}
+			if gotReason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", gotReason, tt.wantReason)
+			}
+		})
 	}
 }
