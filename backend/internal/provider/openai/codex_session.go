@@ -30,11 +30,12 @@ const defaultCodexEndpoint = "https://chatgpt.com/backend-api/codex/responses"
 // caller 可通过 Credential.Extra["user_agent"] 覆盖。
 const defaultCodexUserAgent = "codex/1.0.0 (linux; go)"
 
-// Codex Responses live 已坐实会拒绝这些常见采样/输出字段。
+// Codex Responses live 已坐实会拒绝这些常见采样/输出字段；顶层 stop 也会被拒。
 var codexResponsesLiveUnsupportedFields = [...]string{
 	"temperature",
 	"top_p",
 	"max_output_tokens",
+	"stop",
 }
 
 // 三镜对齐的 Codex Responses 不支持字段,仅在 openai_codex session adapter 出站前剥离。

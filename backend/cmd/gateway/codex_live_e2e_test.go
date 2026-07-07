@@ -195,6 +195,205 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 	}
 }
 
+func TestChatToCodexLiveMatrix(t *testing.T) {
+	dsn := firstCodexLiveNonEmpty(os.Getenv("HUAKAI_DATABASE_URL"), os.Getenv("HUAKAI_E2E_DATABASE_URL"))
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HUAKAI_DATABASE_URL/HUAKAI_E2E_DATABASE_URL 未设置，跳过 chat/messages→codex live e2e")
+	}
+	auth := loadCodexLiveAuth(t)
+	if strings.TrimSpace(auth.AccessToken) == "" {
+		t.Skip("未找到 Codex live access_token，跳过 chat/messages→codex live e2e")
+	}
+	if strings.TrimSpace(auth.AccountID) == "" {
+		t.Skip("未找到 Codex live account_id，跳过 chat/messages→codex live e2e")
+	}
+	model := firstCodexLiveNonEmpty(os.Getenv("HUAKAI_E2E_CODEX_MODEL"), codexLiveDefaultModel)
+	version := firstCodexLiveNonEmpty(os.Getenv("HUAKAI_E2E_CODEX_VERSION"), codexLiveDefaultVersion)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("打开 chat/messages→codex live e2e 数据库连接池: %v", err)
+	}
+	defer pgPool.Close()
+
+	seed := seedCodexLiveGraph(t, ctx, pgPool, auth, model, version)
+	assertCodexLiveSeedSelectable(t, ctx, pgPool, seed)
+
+	binPath := buildCodexLiveGateway(t)
+	defer os.Remove(binPath)
+
+	addr := reserveCodexLiveLocalPort(t)
+	cmd := startCodexLiveGateway(t, binPath, dsn, addr, seed, auth)
+	t.Cleanup(func() { stopCodexLiveGateway(cmd) })
+	waitForCodexLiveGateway(t, addr)
+
+	streamTrue := true
+	streamFalse := false
+	client := &http.Client{Timeout: 180 * time.Second}
+	cases := []struct {
+		name       string
+		path       string
+		body       map[string]any
+		wantStream *bool
+		d2Probe    bool
+		assert     func(*testing.T, codexLiveHTTPResult)
+	}{
+		{
+			name:       "chat流式文本",
+			path:       "/v1/chat/completions",
+			body:       codexLiveChatTextBody(model, "Say hi in 3 words", true, 16),
+			wantStream: &streamTrue,
+			assert: func(t *testing.T, res codexLiveHTTPResult) {
+				assertCodexLiveContentType(t, res, "text/event-stream")
+				chat := parseCodexLiveChatResponse(t, res.body)
+				if !chat.isSSE {
+					t.Fatalf("chat 流式文本响应不是 SSE: body=%s", safeCodexLiveBody(res.body, ""))
+				}
+				if !chat.sawDeltaContent || strings.TrimSpace(chat.outputText) == "" {
+					t.Fatalf("chat SSE 未观察到 choices[].delta.content: parsed=%+v body=%s", chat, safeCodexLiveBody(res.body, ""))
+				}
+			},
+		},
+		{
+			name: "D2字段探测",
+			path: "/v1/chat/completions",
+			// chat stop 会在投影为 Codex Responses 后剥离；live 应返回 200。
+			body: map[string]any{
+				"model": model,
+				"messages": []map[string]any{{
+					"role":    "user",
+					"content": "Return a tiny JSON object with answer set to ok. Do not call tools.",
+				}},
+				"stream":              true,
+				"max_tokens":          16,
+				"stop":                []string{"\n\n"},
+				"temperature":         0.5,
+				"top_p":               0.9,
+				"tools":               []map[string]any{codexLiveChatFunctionTool("lookup_weather", "Look up a short weather summary.")},
+				"tool_choice":         "auto",
+				"parallel_tool_calls": true,
+				// 注:response_format(json_schema)不在本子测试——它触发独立的
+				// 结构化输出翻译 gap(chat response_format→Responses text.format,片2g)。
+				// 本子测试验 stop 剥离 + temperature/top_p 剥离 + tools/tool_choice/
+				// parallel_tool_calls 被 codex 接受。
+			},
+			wantStream: &streamTrue,
+			d2Probe:    true,
+			assert: func(t *testing.T, res codexLiveHTTPResult) {
+				assertCodexLiveContentType(t, res, "text/event-stream")
+			},
+		},
+		{
+			name: "chat工具调用",
+			path: "/v1/chat/completions",
+			body: map[string]any{
+				"model": model,
+				"messages": []map[string]any{{
+					"role":    "user",
+					"content": "Call get_current_weather for Paris. Do not answer with normal text.",
+				}},
+				"stream":      true,
+				"max_tokens":  32,
+				"tools":       []map[string]any{codexLiveChatFunctionTool("get_current_weather", "Return the current weather for a city.")},
+				"tool_choice": "required",
+			},
+			wantStream: &streamTrue,
+			assert: func(t *testing.T, res codexLiveHTTPResult) {
+				chat := parseCodexLiveChatResponse(t, res.body)
+				if !chat.sawToolCall {
+					t.Fatalf("chat 工具调用未观察到 tool_calls: parsed=%+v body=%s", chat, safeCodexLiveBody(res.body, ""))
+				}
+			},
+		},
+		{
+			name:       "chat非流式聚合",
+			path:       "/v1/chat/completions",
+			body:       codexLiveChatTextBody(model, "Reply with exactly: aggregation ok", false, 16),
+			wantStream: &streamFalse,
+			assert: func(t *testing.T, res codexLiveHTTPResult) {
+				assertCodexLiveContentType(t, res, "application/json")
+				chat := parseCodexLiveChatResponse(t, res.body)
+				if chat.isSSE {
+					t.Fatalf("chat 非流式聚合不应返回 SSE: parsed=%+v body=%s", chat, safeCodexLiveBody(res.body, ""))
+				}
+				if chat.object != "chat.completion" || chat.choiceCount != 1 {
+					t.Fatalf("chat 非流式响应形态不对: parsed=%+v body=%s", chat, safeCodexLiveBody(res.body, ""))
+				}
+				if strings.TrimSpace(chat.outputText) == "" {
+					t.Fatalf("chat 非流式 message.content 为空: body=%s", safeCodexLiveBody(res.body, ""))
+				}
+			},
+		},
+		{
+			name: "chat视觉",
+			path: "/v1/chat/completions",
+			body: map[string]any{
+				"model":      model,
+				"stream":     false,
+				"max_tokens": 16,
+				"messages": []map[string]any{{
+					"role": "user",
+					"content": []map[string]any{
+						{"type": "text", "text": "What color is this square? Answer with one English color word."},
+						{"type": "image_url", "image_url": map[string]any{"url": codexLiveRedPNGDataURL()}},
+					},
+				}},
+			},
+			wantStream: &streamFalse,
+			assert: func(t *testing.T, res codexLiveHTTPResult) {
+				chat := parseCodexLiveChatResponse(t, res.body)
+				if !strings.Contains(strings.ToLower(chat.outputText), "red") {
+					t.Fatalf("chat 视觉颜色回答=%q want 包含 red; body=%s", chat.outputText, safeCodexLiveBody(res.body, ""))
+				}
+			},
+		},
+		{
+			name: "anthropic到codex",
+			path: "/v1/messages",
+			body: map[string]any{
+				"model":      model,
+				"max_tokens": 16,
+				"messages": []map[string]any{{
+					"role":    "user",
+					"content": "Say hi",
+				}},
+			},
+			wantStream: &streamFalse,
+			assert: func(t *testing.T, res codexLiveHTTPResult) {
+				assertCodexLiveContentType(t, res, "application/json")
+				msg := parseCodexLiveAnthropicResponse(t, res.body)
+				if msg.typ != "message" || strings.TrimSpace(msg.outputText) == "" {
+					t.Fatalf("anthropic_messages 响应不可识别: parsed=%+v body=%s", msg, safeCodexLiveBody(res.body, ""))
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logicalID := "codex-live-chat-" + uuid.NewString()
+			res := postCodexLiveClientRequest(t, ctx, client, addr, seed, logicalID, tc.path, tc.body)
+			if res.statusCode != http.StatusOK {
+				if tc.d2Probe {
+					t.Fatalf("D2 探测 HTTP status=%d want 200(stop 已剥离); 完整错误 body=%s; 若需核对 HUAKAI 实发上游 body, 可设置 HUAKAI_E2E_CODEX_CAPTURE_URL",
+						res.statusCode, safeCodexLiveBody(res.body, auth.AccessToken))
+				}
+				t.Fatalf("%s HTTP status=%d want 200 body=%s", tc.name, res.statusCode, safeCodexLiveBody(res.body, auth.AccessToken))
+			}
+			tc.assert(t, res)
+			claimID := assertCodexLivePG(t, ctx, pgPool, seed, logicalID)
+			assertCodexLiveUsageRecord(t, ctx, pgPool, claimID)
+			if tc.wantStream != nil {
+				assertCodexLiveUsageRecordStream(t, ctx, pgPool, claimID, *tc.wantStream)
+			}
+			waitForCodexLiveInFlight(t, ctx, pgPool, seed.providerAccountID, 0)
+		})
+	}
+}
+
 func loadCodexLiveAuth(t *testing.T) codexLiveAuth {
 	t.Helper()
 	if token := strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_ACCESS_TOKEN")); token != "" {
@@ -658,6 +857,26 @@ type codexLiveUsage struct {
 	TotalTokens  int `json:"total_tokens"`
 }
 
+type codexLiveHTTPResult struct {
+	statusCode  int
+	contentType string
+	body        []byte
+}
+
+type codexLiveChatParsed struct {
+	isSSE           bool
+	object          string
+	choiceCount     int
+	outputText      string
+	sawDeltaContent bool
+	sawToolCall     bool
+}
+
+type codexLiveAnthropicParsed struct {
+	typ        string
+	outputText string
+}
+
 func postCodexLiveResponses(t *testing.T, ctx context.Context, client *http.Client, addr string, seed *codexLiveSeed, logicalID string, body map[string]any) codexLiveResult {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -691,6 +910,50 @@ func postCodexLiveResponses(t *testing.T, ctx context.Context, client *http.Clie
 		result.body = respBody
 	}
 	return result
+}
+
+func postCodexLiveClientRequest(t *testing.T, ctx context.Context, client *http.Client, addr string, seed *codexLiveSeed, logicalID, path string, body map[string]any) codexLiveHTTPResult {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal codex live client body: %v", err)
+	}
+	if !strings.HasPrefix(path, "/") {
+		t.Fatalf("codex live client path=%q must start with /", path)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+path, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("NewRequest %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if codexLiveBodyStream(body) {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+	req.Header.Set("Authorization", "Bearer "+seed.bearer)
+	req.Header.Set("Idempotency-Key", logicalID)
+	req.Header.Set("User-Agent", "codex-live-e2e/"+seed.version)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read %s body: %v", path, err)
+	}
+	return codexLiveHTTPResult{
+		statusCode:  resp.StatusCode,
+		contentType: resp.Header.Get("Content-Type"),
+		body:        respBody,
+	}
+}
+
+func codexLiveBodyStream(body map[string]any) bool {
+	stream, ok := body["stream"].(bool)
+	return ok && stream
 }
 
 func parseCodexLiveResponse(t *testing.T, raw []byte) codexLiveResult {
@@ -781,6 +1044,114 @@ func parseCodexLiveSSE(t *testing.T, raw []byte) codexLiveResult {
 	return out
 }
 
+func parseCodexLiveChatResponse(t *testing.T, raw []byte) codexLiveChatParsed {
+	t.Helper()
+	if bytes.Contains(raw, []byte("data:")) {
+		return parseCodexLiveChatSSE(t, raw)
+	}
+	var resp struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Content   *string           `json:"content"`
+				ToolCalls []json.RawMessage `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("decode chat completion response: %v body=%s", err, safeCodexLiveBody(raw, ""))
+	}
+	var text strings.Builder
+	sawToolCall := false
+	for _, choice := range resp.Choices {
+		if choice.Message.Content != nil {
+			text.WriteString(*choice.Message.Content)
+		}
+		if len(choice.Message.ToolCalls) > 0 {
+			sawToolCall = true
+		}
+	}
+	return codexLiveChatParsed{
+		object:      resp.Object,
+		choiceCount: len(resp.Choices),
+		outputText:  text.String(),
+		sawToolCall: sawToolCall,
+	}
+}
+
+func parseCodexLiveChatSSE(t *testing.T, raw []byte) codexLiveChatParsed {
+	t.Helper()
+	out := codexLiveChatParsed{isSSE: true}
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Object  string `json:"object"`
+			Choices []struct {
+				Delta struct {
+					Content   string            `json:"content"`
+					ToolCalls []json.RawMessage `json:"tool_calls"`
+				} `json:"delta"`
+				Message struct {
+					Content   *string           `json:"content"`
+					ToolCalls []json.RawMessage `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			t.Fatalf("decode chat SSE data: %v line=%s body=%s", err, line, safeCodexLiveBody(raw, ""))
+		}
+		if out.object == "" {
+			out.object = chunk.Object
+		}
+		for _, choice := range chunk.Choices {
+			out.choiceCount++
+			if choice.Delta.Content != "" {
+				out.sawDeltaContent = true
+				out.outputText += choice.Delta.Content
+			}
+			if len(choice.Delta.ToolCalls) > 0 || len(choice.Message.ToolCalls) > 0 {
+				out.sawToolCall = true
+			}
+			if choice.Message.Content != nil {
+				out.outputText += *choice.Message.Content
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan chat SSE: %v", err)
+	}
+	return out
+}
+
+func parseCodexLiveAnthropicResponse(t *testing.T, raw []byte) codexLiveAnthropicParsed {
+	t.Helper()
+	var resp struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("decode anthropic_messages response: %v body=%s", err, safeCodexLiveBody(raw, ""))
+	}
+	var text strings.Builder
+	for _, block := range resp.Content {
+		if block.Type == "text" {
+			text.WriteString(block.Text)
+		}
+	}
+	return codexLiveAnthropicParsed{typ: resp.Type, outputText: text.String()}
+}
+
 func codexLiveBaseBody(model, instructions, input string, stream bool) map[string]any {
 	return map[string]any{
 		"model":        model,
@@ -793,6 +1164,39 @@ func codexLiveBaseBody(model, instructions, input string, stream bool) map[strin
 		}},
 		"stream": stream,
 		"store":  false,
+	}
+}
+
+func codexLiveChatTextBody(model, prompt string, stream bool, maxTokens int) map[string]any {
+	return map[string]any{
+		"model": model,
+		"messages": []map[string]any{{
+			"role":    "user",
+			"content": prompt,
+		}},
+		"stream":     stream,
+		"max_tokens": maxTokens,
+	}
+}
+
+func codexLiveChatFunctionTool(name, description string) map[string]any {
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        name,
+			"description": description,
+			"parameters": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"city": map[string]any{
+						"type":        "string",
+						"description": "City name.",
+					},
+				},
+				"required":             []string{"city"},
+				"additionalProperties": false,
+			},
+		},
 	}
 }
 
@@ -888,6 +1292,13 @@ func assertCodexLiveSSEEvents(t *testing.T, res codexLiveResult, want ...string)
 	}
 }
 
+func assertCodexLiveContentType(t *testing.T, res codexLiveHTTPResult, wantSubstr string) {
+	t.Helper()
+	if !strings.Contains(strings.ToLower(res.contentType), strings.ToLower(wantSubstr)) {
+		t.Fatalf("Content-Type=%q want 包含 %q; body=%s", res.contentType, wantSubstr, safeCodexLiveBody(res.body, ""))
+	}
+}
+
 func assertCodexLivePG(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *codexLiveSeed, logicalID string) int64 {
 	t.Helper()
 	var claimID int64
@@ -934,6 +1345,26 @@ func assertCodexLiveUsageRecord(t *testing.T, ctx context.Context, pgPool *pgxpo
 	}
 	if tokensInput+tokensOutput < 0 {
 		t.Fatalf("claim %d token sum=%d want >=0", claimID, tokensInput+tokensOutput)
+	}
+}
+
+func assertCodexLiveUsageRecordStream(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, claimID int64, want bool) {
+	t.Helper()
+	var count int
+	var matched bool
+	if err := pgPool.QueryRow(ctx,
+		`SELECT count(*), COALESCE(bool_and(stream = $2), false)
+		   FROM usage_records
+		  WHERE claim_id=$1`,
+		claimID, want,
+	).Scan(&count, &matched); err != nil {
+		t.Fatalf("PG usage_records stream for claim %d: %v", claimID, err)
+	}
+	if count < 1 {
+		t.Fatalf("claim %d usage_records count=%d want >=1", claimID, count)
+	}
+	if !matched {
+		t.Fatalf("claim %d usage_records.stream want 全部为 %v", claimID, want)
 	}
 }
 

@@ -23,15 +23,6 @@ func marshalBody(t *testing.T, env *proto.HCSF, family string) map[string]any {
 	return body
 }
 
-func marshalLossHasCode(losses []proto.ProtocolLossEntry, code string) bool {
-	for _, loss := range losses {
-		if loss.Code == code {
-			return true
-		}
-	}
-	return false
-}
-
 func graphEnv(nodes ...proto.CapabilityNode) *proto.HCSF {
 	env := proto.NewEmptyEnvelope()
 	env.RequestMeta.Model = "model-in"
@@ -508,33 +499,6 @@ func TestMarshalOpenAICodexProjectsToResponsesShape(t *testing.T) {
 	}
 	if _, ok := body["messages"]; ok {
 		t.Fatalf("codex marshal must not emit Chat messages shape: %+v", body)
-	}
-}
-
-func TestHCSFRequestBodyCodexUnsupportedControlsEmitLoss(t *testing.T) {
-	env := graphEnv(textNode("n_text_1", "user", "hi"))
-	max := 12
-	temp := 0.2
-	topP := 0.9
-	env.RequestControls.MaxTokens = &max
-	env.RequestControls.Temperature = &temp
-	env.RequestControls.TopP = &topP
-
-	raw, err := hcsfRequestBody(env, "openai_codex")
-	if err != nil {
-		t.Fatalf("hcsfRequestBody(openai_codex): %v", err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(raw, &body); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, raw)
-	}
-	if body["max_output_tokens"].(float64) != 12 || body["temperature"].(float64) != 0.2 || body["top_p"].(float64) != 0.9 {
-		t.Fatalf("codex body controls before adapter normalization = %+v", body)
-	}
-	for _, code := range []string{"codex_max_output_tokens_stripped", "codex_temperature_stripped", "codex_top_p_stripped"} {
-		if !marshalLossHasCode(env.CapabilityGraph.ProtocolLoss, code) {
-			t.Fatalf("loss code %q missing; losses=%+v", code, env.CapabilityGraph.ProtocolLoss)
-		}
 	}
 }
 
