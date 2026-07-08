@@ -42,7 +42,10 @@ type Policy struct {
 	ForceAllow               bool                      `json:"force_allow"`
 }
 
-var versionStringPattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){0,3}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
+// versionStringPattern:min/max 版本边界只接受 1-3 段纯数字(与引擎版本解析器同为三段粒度)。
+// 不接受第 4 段或 -预发布/+构建后缀——比较层为发布粒度、会丢弃这些后缀,若放行会造成「配了却
+// 不按 semver 生效」的错觉(审查 S3)。真实 codex 版本均为三段 semver。
+var versionStringPattern = regexp.MustCompile(`^v?[0-9]+(?:\.[0-9]+){0,2}$`)
 
 // ParseAllowedClientEntries 解析客户端签名 JSON 数组。空串与 [] 都表示空清单;
 // 未知字段会被拒绝,避免配置拼写错误静默失效。

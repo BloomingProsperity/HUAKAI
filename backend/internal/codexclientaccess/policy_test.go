@@ -91,9 +91,11 @@ func TestValidateVersionString(t *testing.T) {
 	}{
 		{name: "空串合法", value: ""},
 		{name: "单段数字合法", value: "1"},
+		{name: "两段数字合法", value: "0.141"},
 		{name: "三段数字合法", value: "1.2.3"},
-		{name: "预发布合法", value: "1.2.3-beta.1"},
-		{name: "构建号合法", value: "1.2.3+build.7"},
+		{name: "四段拒绝", value: "1.2.3.4", wantErr: true},
+		{name: "预发布拒绝", value: "1.2.3-beta.1", wantErr: true},
+		{name: "构建号拒绝", value: "1.2.3+build.7", wantErr: true},
 		{name: "乱串拒绝", value: "latest", wantErr: true},
 		{name: "空段拒绝", value: "1..3", wantErr: true},
 	}
