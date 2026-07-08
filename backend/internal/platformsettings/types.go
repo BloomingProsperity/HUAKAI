@@ -181,12 +181,13 @@ var (
 		KeySiteAPIBaseURL:                 "",
 		KeySiteFrontendBaseURL:            "",
 		KeyAdminNotificationEmail:         "",
-		// codex-cli 全局加固层默认全开:名单/信号空 = 不额外限制,版本无界,app-server 放行,force 关。
+		// codex-cli 全局加固层默认:名单/信号空、版本无界、force 关;app-server 默认 false(放松旋钮,
+		// 若默认 true 会放行任意客户端使 codex_cli_only 形同虚设;false 时空策略 = 仅官方客户端放行)。
 		KeyCodexClientAccessBlacklist:                "[]",
 		KeyCodexClientAccessWhitelist:                "[]",
 		KeyCodexClientAccessMinVersion:               "",
 		KeyCodexClientAccessMaxVersion:               "",
-		KeyCodexClientAccessAllowAppServer:           "true",
+		KeyCodexClientAccessAllowAppServer:           "false",
 		KeyCodexClientAccessEngineFingerprintSignals: "[]",
 		KeyCodexClientAccessForceAllow:               "false",
 	}

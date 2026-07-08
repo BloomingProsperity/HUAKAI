@@ -20,11 +20,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
-	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
-	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/clientgate"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
@@ -576,17 +575,16 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	return nil
 }
 
-// enforceOfficialClient 对反转/订阅号(oauth/session)按 vendor 默认策略或账号级
-// CodexCLIOnly opt-in 校验请求来自官方客户端(Anthropic=Claude Code、OpenAI=Codex CLI);
-// 非官方客户端释放本次预扣后返回终态 403。apikey 等账号类型不设限。客户端身份由 clientid
-// 从请求 header/UA 检测。
+// enforceOfficialClient 对反转/订阅号(oauth/session)校验入站客户端准入:决策委派给
+// clientgate(片2e vendor/账号级官方客户端门 + 片2f codex 全局加固层);被拒时释放本次预扣
+// 后返回终态 403。apikey 等账号类型不设限。
 func (ex *chatExecution) enforceOfficialClient() *classifiedAttemptFailure {
-	identity, _ := clientid.Detect(clientid.SignalFromRequest(ex.r))
-	if reject, _ := officialclient.GateDecision(ex.accInfo.AccountType, ex.accInfo.Platform, identity, ex.accInfo.CodexCLIOnly); !reject {
+	deny, reason := clientgate.Decide(ex.ctx, ex.d.PlatformSettings, ex.accInfo.AccountType, ex.accInfo.Platform, ex.accInfo.CodexCLIOnly, ex.r)
+	if !deny {
 		return nil
 	}
-	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "official_client_required", 0, ex.protocolLoss)
-	failure := terminalLocalAttemptFailure(http.StatusForbidden, clienterr.CodeOfficialClientRequired, clienterr.MessageFor(clienterr.CodeOfficialClientRequired), "official_client_required", nil)
+	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, reason, 0, ex.protocolLoss)
+	failure := terminalLocalAttemptFailure(http.StatusForbidden, clienterr.CodeOfficialClientRequired, clienterr.MessageFor(clienterr.CodeOfficialClientRequired), reason, nil)
 	return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 }
 

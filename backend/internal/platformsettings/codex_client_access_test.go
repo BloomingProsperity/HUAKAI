@@ -11,7 +11,7 @@ func TestCodexClientAccessKeysRegisteredWithOpenDefaults(t *testing.T) {
 		KeyCodexClientAccessWhitelist:                "[]",
 		KeyCodexClientAccessMinVersion:               "",
 		KeyCodexClientAccessMaxVersion:               "",
-		KeyCodexClientAccessAllowAppServer:           "true",
+		KeyCodexClientAccessAllowAppServer:           "false",
 		KeyCodexClientAccessEngineFingerprintSignals: "[]",
 		KeyCodexClientAccessForceAllow:               "false",
 	}
