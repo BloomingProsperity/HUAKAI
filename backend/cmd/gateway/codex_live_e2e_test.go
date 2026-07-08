@@ -128,6 +128,16 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 			},
 		},
 		{
+			name: "图片生成",
+			body: codexLiveImageBody(model),
+			assert: func(t *testing.T, res codexLiveResult) {
+				assertCodexLiveSSEEvents(t, res, "response.created", "response.completed")
+				if !res.sawImage {
+					t.Fatalf("未观察到 image_generation_call 事件(HUAKAI 可能未透传 image_generation 工具): events=%v", res.events)
+				}
+			},
+		},
+		{
 			name: "reasoning",
 			body: codexLiveReasoningBody(model),
 			assert: func(t *testing.T, res codexLiveResult) {
@@ -891,6 +901,7 @@ type codexLiveResult struct {
 	usage           codexLiveUsage
 	sawFunctionCall bool
 	sawReasoning    bool
+	sawImage        bool
 	bufferedID      string
 }
 
@@ -1036,6 +1047,8 @@ func parseCodexLiveSSE(t *testing.T, raw []byte) codexLiveResult {
 	t.Helper()
 	out := codexLiveResult{isSSE: true, events: map[string]bool{}}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	// 图片生成的 partial_image 单行 base64 可达数 MB,远超 bufio 默认 64KB token 上限;放大缓冲。
+	scanner.Buffer(make([]byte, 0, 1<<20), 32<<20)
 	var currentEvent string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1075,6 +1088,9 @@ func parseCodexLiveSSE(t *testing.T, raw []byte) codexLiveResult {
 			}
 			if strings.Contains(data, "reasoning") {
 				out.sawReasoning = true
+			}
+			if strings.Contains(data, "image_generation_call") {
+				out.sawImage = true
 			}
 			if evt.Type == "response.completed" || currentEvent == "response.completed" {
 				out.usage = evt.Response.Usage
@@ -1259,6 +1275,14 @@ func codexLiveToolBody(model string) map[string]any {
 		},
 	}}
 	body["tool_choice"] = map[string]any{"type": "function", "name": "lookup_city"}
+	return body
+}
+
+// codexLiveImageBody 用内建 image_generation 工具经 /responses 生成图片(OAuth 订阅额度出图,
+// 验证 HUAKAI 中转能否透传 image_generation 工具并流回图片数据)。
+func codexLiveImageBody(model string) map[string]any {
+	body := codexLiveBaseBody(model, "Use the image_generation tool to fulfill any image request.", "Generate a tiny simple sticker of an orange cat.", true)
+	body["tools"] = []map[string]any{{"type": "image_generation"}}
 	return body
 }
 
