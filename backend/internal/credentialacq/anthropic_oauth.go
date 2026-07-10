@@ -73,7 +73,7 @@ func (e claudeAIOAuthExchanger) ExchangeOAuthCode(context.Context, Session, stri
 	return CredentialCandidate{}, fmt.Errorf("%w: anthropic claude_ai_oauth requires stored PKCE verifier", ErrOAuthExchangerMissing)
 }
 
-func (e claudeAIOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, store *PostgresSessionStore, session Session, _ string, code string) (CredentialCandidate, error) {
+func (e claudeAIOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, store *PostgresSessionStore, session Session, state string, code string) (CredentialCandidate, error) {
 	if store == nil {
 		return CredentialCandidate{}, errors.New("credentialacq: session store not configured")
 	}
@@ -96,7 +96,7 @@ func (e claudeAIOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, 
 	payload.RedirectURI = cfg.RedirectURI
 	payload.Scopes = append([]string(nil), cfg.Scopes...)
 
-	token, err := e.exchangeAuthorizationCodeJSON(ctx, payload, code)
+	token, err := e.exchangeAuthorizationCodeJSON(ctx, payload, state, code)
 	if err != nil {
 		return CredentialCandidate{}, err
 	}
@@ -227,7 +227,7 @@ func validateClaudeAIRedirectURI(raw string) error {
 	return nil
 }
 
-func (e claudeAIOAuthExchanger) exchangeAuthorizationCodeJSON(ctx context.Context, payload storedPKCEPayload, code string) (oauthTokenResponse, error) {
+func (e claudeAIOAuthExchanger) exchangeAuthorizationCodeJSON(ctx context.Context, payload storedPKCEPayload, state, code string) (oauthTokenResponse, error) {
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return oauthTokenResponse{}, fmt.Errorf("%w: authorization code is empty", ErrInvalidTokenShape)
@@ -238,6 +238,7 @@ func (e claudeAIOAuthExchanger) exchangeAuthorizationCodeJSON(ctx context.Contex
 		"redirect_uri":  strings.TrimSpace(payload.RedirectURI),
 		"client_id":     claudeAIOAuthPublicClientID,
 		"code_verifier": strings.TrimSpace(payload.CodeVerifier),
+		"state":         strings.TrimSpace(state),
 	})
 	if err != nil {
 		return oauthTokenResponse{}, err
