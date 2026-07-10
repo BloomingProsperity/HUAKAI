@@ -77,10 +77,10 @@ func TestXAIOAuthConfigEndpointsAndClient(t *testing.T) {
 	if got := strings.Join(cfg.Scopes, " "); got != wantScope {
 		t.Fatalf("scope=%q want %q", got, wantScope)
 	}
-	if cfg.AuthURL != "https://auth.x.ai/oauth/authorize" {
+	if cfg.AuthURL != "https://auth.x.ai/oauth2/authorize" {
 		t.Fatalf("auth_url=%q", cfg.AuthURL)
 	}
-	if cfg.TokenURL != "https://auth.x.ai/oauth/token" {
+	if cfg.TokenURL != "https://auth.x.ai/oauth2/token" {
 		t.Fatalf("token_url=%q", cfg.TokenURL)
 	}
 	if cfg.Source != ClientSourceOperatorConfig {
@@ -124,7 +124,7 @@ func TestXAIOAuthSSRFHost(t *testing.T) {
 	wantScopes := strings.Fields("openid profile email offline_access grok-cli:access api:access")
 	base := OAuthClientConfig{
 		Source: ClientSourceOperatorConfig, ClientID: wantClientID,
-		AuthURL: "https://auth.x.ai/oauth/authorize", TokenURL: "https://auth.x.ai/oauth/token",
+		AuthURL: "https://auth.x.ai/oauth2/authorize", TokenURL: "https://auth.x.ai/oauth2/token",
 		RedirectURI: "https://huakai.example.test/admin/v1/credentials/oauth-callback",
 		Scopes:      wantScopes,
 	}

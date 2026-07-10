@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	xaiOAuthAuthURL  = "https://auth.x.ai/oauth/authorize"
-	xaiOAuthTokenURL = "https://auth.x.ai/oauth/token"
+	xaiOAuthAuthURL  = "https://auth.x.ai/oauth2/authorize"
+	xaiOAuthTokenURL = "https://auth.x.ai/oauth2/token"
 	xaiOAuthClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	xaiOAuthScope    = "openid profile email offline_access grok-cli:access api:access"
 )

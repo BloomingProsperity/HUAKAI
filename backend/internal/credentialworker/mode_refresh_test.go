@@ -639,7 +639,7 @@ func TestDefaultModeAdapterRegistryRoutesUpstreamOAuthRefreshModes(t *testing.T)
 	cases := []struct {
 		vendor, authMode, wantTokenURL, wantClientID string
 	}{
-		{credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, "https://auth.x.ai/oauth/token", "b1a00492-073a-47ea-816f-4c329264a828"},
+		{credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, "https://auth.x.ai/oauth2/token", "b1a00492-073a-47ea-816f-4c329264a828"},
 		{credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, "https://auth.kimi.com/api/oauth/token", "17e5f671-d194-4dfb-9706-5516cb48c098"},
 	}
 	for _, tc := range cases {
