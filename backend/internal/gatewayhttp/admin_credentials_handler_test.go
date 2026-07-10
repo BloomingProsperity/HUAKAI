@@ -13,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
@@ -496,4 +497,38 @@ func adminCredentialRenewRow(id, tenantID int64, tenantName string, accountID in
 		State: credentialstore.StateActive, CredentialVersion: 1,
 		FailureCount: 0, UpdatedAt: now,
 	}
+}
+
+// TestCreateAccountCredentialProtocolGuard 咬住 credential-create 守卫(收敛 G1 account-first
+// + R1A):给一个 anthropic_messages family 的账号加 openai/api_key 凭据(跨厂错配)必须被拒;
+// 正配(anthropic/api_key)放行。变异:去掉 handler 里 ValidateProtocolCompatibility 调用 →
+// 错配用例 201 而非 400,本测试红。
+func TestCreateAccountCredentialProtocolGuard(t *testing.T) {
+	acctRow := &admindb.AdminProviderAccountRow{ID: 77, TenantID: 7, ProviderID: 8, AccountType: "api_key"}
+
+	t.Run("跨厂错配凭据被拒", func(t *testing.T) {
+		store := &adminCredentialStoreStub{}
+		audit := &adminPoolStoreStub{get: acctRow, providerFamilies: map[int64]string{8: "anthropic_messages"}}
+		rec := invokeAdminCredentials(t, AdminCredentialDeps{
+			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
+		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
+			`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-openai"}}`)
+		assertStatus(t, rec, http.StatusBadRequest)
+		if store.createInput != nil {
+			t.Fatal("错配凭据不应进入 Create")
+		}
+	})
+
+	t.Run("正配凭据放行", func(t *testing.T) {
+		store := &adminCredentialStoreStub{}
+		audit := &adminPoolStoreStub{get: acctRow, providerFamilies: map[int64]string{8: "anthropic_messages"}}
+		rec := invokeAdminCredentials(t, AdminCredentialDeps{
+			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
+		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
+			`{"tenant_id":7,"vendor":"anthropic","auth_mode":"api_key","credentials":{"api_key":"sk-ant"}}`)
+		assertStatus(t, rec, http.StatusCreated)
+		if store.createInput == nil {
+			t.Fatal("正配凭据应进入 Create")
+		}
+	})
 }
