@@ -235,7 +235,14 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 	value := ""
 	switch kind {
 	case RuntimeAPIKey:
-		value = firstField(fields, "api_key", "azure_api_key")
+		value = fieldString(fields, "api_key")
+		// S0 防密钥外发:azure_api_key 需 Azure 专属 endpoint(base_url/deployment/api-version)
+		// 与 `api-key` 头;当前无 Azure adapter,若当普通 APIKey 物化会被 OpenAI adapter 发往
+		// api.openai.com(Bearer),把 Azure 密钥外发给 OpenAI。fail-closed,拒绝物化。
+		// Entra access_token 走下面的 passthrough(尊重 base_url,发往 operator 自配 endpoint)。
+		if value == "" && fieldString(fields, "azure_api_key") != "" && fieldString(fields, "access_token") == "" {
+			return RuntimeMaterial{}, fmt.Errorf("%w: %s/%s azure api-key 尚无 Azure adapter,拒绝物化以防密钥外发到 OpenAI(请用 Entra access_token + 完整 base_url,或等 Azure adapter 切片)", ErrRuntimeMaterial, h.vendor, h.authMode)
+		}
 		if value == "" && fieldString(fields, "access_token") != "" {
 			kind = RuntimeUpstreamPassthrough
 			value = "Bearer " + fieldString(fields, "access_token")

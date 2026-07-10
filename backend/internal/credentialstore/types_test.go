@@ -2,6 +2,7 @@ package credentialstore
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,38 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		if got.Kind != tc.kind || got.Value != tc.value {
 			t.Fatalf("%s/%s got kind=%q value=%q want %q/%q", tc.vendor, tc.mode, got.Kind, got.Value, tc.kind, tc.value)
 		}
+	}
+}
+
+// TestAzureAPIKeyFailsClosedToPreventOpenAILeak 咬住 S0:azure_api_key(无 api_key、无
+// access_token)必须 fail-closed 物化——否则会被物化成普通 APIKey,由 OpenAI adapter
+// 发往 api.openai.com(Bearer),把 Azure 密钥外发给 OpenAI。Entra access_token 仍走
+// passthrough(尊重 base_url,发往 operator 自配 endpoint,不外发)。api_key 正常。
+// 变异:恢复 firstField(fields,"api_key","azure_api_key")而去掉 fail-close → azure_api_key
+// 物化成 APIKey(value=Azure 密钥),第一条断言红。
+func TestAzureAPIKeyFailsClosedToPreventOpenAILeak(t *testing.T) {
+	handler, err := DefaultHandlerRegistry().MustLookup(VendorOpenAI, AuthModeAzure)
+	if err != nil {
+		t.Fatalf("azure handler lookup: %v", err)
+	}
+	// azure_api_key 单独存在 → 必须拒绝物化,且错误不回显密钥。
+	if _, err := handler.RuntimeMaterial([]byte(`{"azure_api_key":"azkey-secret","base_url":"https://x.openai.azure.com"}`)); err == nil {
+		t.Fatal("azure_api_key 应 fail-closed 拒绝物化,却成功(密钥会外发到 OpenAI)")
+	} else if strings.Contains(err.Error(), "azkey-secret") {
+		t.Fatalf("错误信息不得回显密钥: %v", err)
+	}
+	// Entra access_token → passthrough(不外发,尊重 base_url)。
+	got, err := handler.RuntimeMaterial([]byte(`{"access_token":"entra-tok","base_url":"https://x.openai.azure.com"}`))
+	if err != nil {
+		t.Fatalf("Entra access_token 应可物化: %v", err)
+	}
+	if got.Kind != RuntimeUpstreamPassthrough || got.Value != "Bearer entra-tok" {
+		t.Fatalf("Entra 应为 passthrough Bearer,得 kind=%q value=%q", got.Kind, got.Value)
+	}
+	// 普通 api_key(非 azure)正常物化。
+	got, err = handler.RuntimeMaterial([]byte(`{"api_key":"sk-openai"}`))
+	if err != nil || got.Kind != RuntimeAPIKey || got.Value != "sk-openai" {
+		t.Fatalf("普通 api_key 应正常物化,得 kind=%q value=%q err=%v", got.Kind, got.Value, err)
 	}
 }
 
