@@ -122,7 +122,7 @@ const estimatedUsageBasisConfidence = 0.8
 // 估算结算是终局:权威 usage 永远不会到达,挂 pending 只会让 no-usage 定稿 SQL
 // (只认 tokens 与 actual_cost 全零的记录)永远跳过它;故连 ratio fail-soft 的
 // pending 也剥离(其快照标记已留痕)。无可估内容或费率表不可用时返回 ok=false,
-//调用方维持零结算 + pending 的原路径。
+// 调用方维持零结算 + pending 的原路径。
 func (ex *chatExecution) estimatedStreamingCost(draft gateway.UsageRecordDraft) (completionCostBreakdown, completionUsageForCost, bool) {
 	estimatedOutput := draft.EstimatedOutputTokens + draft.EstimatedReasoningTokens
 	if estimatedOutput <= 0 {
@@ -158,9 +158,15 @@ func snapshotWithEstimatedUsageBasis(snapshot string) string {
 // token,因此必须把缓存 token 从计费的 input 桶中扣除,以避免对其重复收费——一次按
 // input 费率、再一次按 cache 费率。对应于参考实现里基于「Claude 用量语义」判定的基础
 // token 扣减逻辑。
+// 必须与所有复用 anthropic.Adapter(input_tokens 不含 cache 的 Anthropic 用量约定)的
+// 协议族保持一致。漏项=对缓存请求二次减 cache→少计费(B2:vertex_anthropic、R1A 引入的
+// anthropic_claude_session 曾漏)。TestCacheExclusiveInputFamiliesCoverAnthropicParser
+// 遍历契约 ResponseParseShape 防复发。
 var cacheExclusiveInputFamilies = map[string]struct{}{
-	"anthropic_messages": {},
-	"bedrock_invoke":     {},
+	"anthropic_messages":       {},
+	"anthropic_claude_session": {},
+	"bedrock_invoke":           {},
+	"vertex_anthropic":         {},
 }
 
 func inputTokensExcludeCache(protocolFamily string) bool {
