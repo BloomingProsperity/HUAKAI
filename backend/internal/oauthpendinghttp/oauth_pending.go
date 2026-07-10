@@ -3,9 +3,10 @@
 //
 // 背景:QQ / 无公开验证邮箱的 GitHub 等 OAuth 登录只给身份不给已验证邮箱,而建号必须要邮箱。
 // 原先这类登录成为死胡同。本包把它接通成三步:
-//   ① OAuth 回调发现待补邮箱 → gatewayhttp 用 MintPendingToken 签发 pending_token(载已校验身份)
-//   ② POST /v1/auth/oauth-pending/send-code {pending_token,email} → 发一次性码到该邮箱,返回 challenge_token
-//   ③ POST /v1/auth/oauth-pending/complete {challenge_token,code} → 验码 → 建号 + 建会话
+//
+//	① OAuth 回调发现待补邮箱 → gatewayhttp 用 MintPendingToken 签发 pending_token(载已校验身份)
+//	② POST /v1/auth/oauth-pending/send-code {pending_token,email} → 发一次性码到该邮箱,返回 challenge_token
+//	③ POST /v1/auth/oauth-pending/complete {challenge_token,code} → 验码 → 建号 + 建会话
 //
 // 安全模型(全程无状态、不落库):
 //   - pending/challenge 两 token 都用 HMAC(派生密钥) 签名 → 无密钥造不出身份/绑定;
@@ -63,12 +64,15 @@ type Deps struct {
 	ClientIP    *clientip.Resolver
 	Key         []byte
 	// RecordEvent 可选:记录安全事件(nil 则不记)。
-	RecordEvent func(ctx context.Context, eventType string, tenantID, userID int64, provider, outcome, reasonClass string)
+	RecordEvent func(ctx context.Context, eventType string, tenantID, userID int64, provider, outcome, reasonClass, ip, userAgent string)
 }
 
-func (d Deps) recordEvent(ctx context.Context, eventType string, tenantID, userID int64, provider, outcome, reasonClass string) {
+func (d Deps) recordEvent(r *http.Request, eventType string, tenantID, userID int64, provider, outcome, reasonClass string) {
 	if d.RecordEvent != nil {
-		d.RecordEvent(ctx, eventType, tenantID, userID, provider, outcome, reasonClass)
+		d.RecordEvent(
+			r.Context(), eventType, tenantID, userID, provider, outcome, reasonClass,
+			d.ClientIP.ClientIP(r), r.UserAgent(),
+		)
 	}
 }
 
@@ -307,7 +311,7 @@ func newSendCodeHandler(d Deps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "email_send_failed", "failed to send verification code")
 			return
 		}
-		d.recordEvent(r.Context(), "oauth_pending_email_code_sent", claims.TenantID, 0, claims.Provider, "success", "")
+		d.recordEvent(r, "oauth_pending_email_code_sent", claims.TenantID, 0, claims.Provider, "success", "")
 		writeJSON(w, http.StatusOK, map[string]any{"status": "code_sent", "challenge_token": challengeToken})
 	}
 }
@@ -330,7 +334,7 @@ func newCompleteHandler(d Deps) http.HandlerFunc {
 		// 重算码指纹与 token 内绑定做**恒时**比对:相等才证明持有发到邮箱的那个码。
 		want := codeBinding(d.Key, claims.TenantID, claims.Provider, claims.Subject, claims.Email, req.Code)
 		if !hmac.Equal([]byte(want), []byte(claims.CodeBinding)) {
-			d.recordEvent(r.Context(), "oauth_pending_email_code_failed", claims.TenantID, 0, claims.Provider, "failure", "code_mismatch")
+			d.recordEvent(r, "oauth_pending_email_code_failed", claims.TenantID, 0, claims.Provider, "failure", "code_mismatch")
 			writeJSONError(w, http.StatusBadRequest, "oauth_code_invalid", "verification code is incorrect")
 			return
 		}
@@ -356,7 +360,7 @@ func newCompleteHandler(d Deps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "failed to issue session")
 			return
 		}
-		d.recordEvent(r.Context(), "oauth_pending_email_signup_succeeded", user.TenantID, user.ID, claims.Provider, "success", "")
+		d.recordEvent(r, "oauth_pending_email_signup_succeeded", user.TenantID, user.ID, claims.Provider, "success", "")
 		writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
 	}
 }

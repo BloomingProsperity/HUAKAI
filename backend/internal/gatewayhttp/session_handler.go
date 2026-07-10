@@ -73,14 +73,14 @@ func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {
 			if hasValidBearer {
 				tenantID, userID = ident.TenantID, ident.UserID
 			}
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "session_refresh_failed", TenantID: tenantID, UserID: userID,
 				Outcome: "failure", ReasonClass: sessionReasonClass(err),
 			})
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "session_refreshed", TenantID: result.Family.TenantID, UserID: result.Family.UserID, Outcome: "success",
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"session": result})
@@ -354,7 +354,7 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_session_failed", TenantID: user.TenantID, UserID: user.ID,
 				Provider: safeProviderForEvent(req.Provider), Outcome: "failure", ReasonClass: sessionReasonClass(err),
 				AuthMethod: safeProviderForEvent(req.Provider),
@@ -365,7 +365,7 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
 			Provider: safeProviderForEvent(req.Provider), Outcome: "success", AuthMethod: safeProviderForEvent(req.Provider),
 		})

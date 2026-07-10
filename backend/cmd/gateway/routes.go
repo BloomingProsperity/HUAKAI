@@ -686,10 +686,11 @@ func oauthPendingDeps(d *deps, logger *zap.Logger) oauthpendinghttp.Deps {
 		EmailSender: emailSender,
 		ClientIP:    d.clientIPResolver,
 		Key:         oauthPendingKey(d),
-		RecordEvent: func(ctx context.Context, eventType string, tenantID, userID int64, provider, outcome, reasonClass string) {
+		RecordEvent: func(ctx context.Context, eventType string, tenantID, userID int64, provider, outcome, reasonClass, ip, userAgent string) {
 			sink.RecordAuthEvent(ctx, gatewayhttp.AuthEvent{
 				EventType: eventType, TenantID: tenantID, UserID: userID,
-				Provider: provider, Outcome: outcome, ReasonClass: reasonClass, AuthMethod: provider,
+				IP: ip, UserAgent: userAgent, Provider: provider,
+				Outcome: outcome, ReasonClass: reasonClass, AuthMethod: provider,
 			})
 		},
 	}

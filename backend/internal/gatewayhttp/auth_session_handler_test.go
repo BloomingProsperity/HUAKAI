@@ -1947,6 +1947,104 @@ func lastLoginFailedReason(t *testing.T, events *captureAuthEventSink) string {
 	return ""
 }
 
+func lastAuthEvent(t *testing.T, events *captureAuthEventSink, eventType string) AuthEvent {
+	t.Helper()
+	events.mu.Lock()
+	defer events.mu.Unlock()
+	for i := len(events.events) - 1; i >= 0; i-- {
+		if events.events[i].EventType == eventType {
+			return events.events[i]
+		}
+	}
+	t.Fatalf("未记录认证审计事件 %q", eventType)
+	return AuthEvent{}
+}
+
+// TestRecordAuthEventPreservesExplicitSourceMetadata 约束集中补齐只填空字段。
+// 变异:若 helper 无条件覆盖显式来源，捕获值会变成请求来源并触发断言失败。
+func TestRecordAuthEventPreservesExplicitSourceMetadata(t *testing.T) {
+	resolver, err := clientip.NewResolver(nil)
+	if err != nil {
+		t.Fatalf("创建客户端 IP 解析器失败: %v", err)
+	}
+	events := &captureAuthEventSink{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
+	req.RemoteAddr = "203.0.113.77:43123"
+	req.Header.Set("User-Agent", "request-user-agent")
+	recordAuthEvent(req.Context(), events, req, resolver, AuthEvent{
+		EventType: "explicit_source", Outcome: "success",
+		IP: "198.51.100.88", UserAgent: "explicit-user-agent",
+	})
+
+	got := lastAuthEvent(t, events, "explicit_source")
+	if got.IP != "198.51.100.88" || got.UserAgent != "explicit-user-agent" {
+		t.Fatalf("显式来源被集中补齐覆盖: %+v", got)
+	}
+}
+
+// TestLogin_AuditEventsCarrySourceMetadata 钉住失败与成功登录的取证来源。
+// 变异:删除集中 IP 或 User-Agent 补齐后，对应精确断言会收到空字符串并变红；
+// 若只在成功建会话时补齐，失败登录分支仍会变红。
+func TestLogin_AuditEventsCarrySourceMetadata(t *testing.T) {
+	now := time.Date(2026, 7, 10, 9, 0, 0, 0, time.UTC)
+	store := newGatewayMemoryAuthStore(now)
+	seedLoginUser(t, store, "audit-source@example.test", "secret", userauth.UserStatusActive, true)
+	user := mustGatewayUserByEmail(t, store, "audit-source@example.test")
+	router, events := newLoginTestHandler(t, now, store, nil, false)
+
+	const (
+		remoteAddr = "203.0.113.77:43123"
+		clientIP   = "203.0.113.77"
+		userAgent  = "HUAKAI-AuthAudit-Test/1.0"
+	)
+	doLogin := func(password string) *httptest.ResponseRecorder {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{
+			"tenant_id": 1,
+			"email":     "audit-source@example.test",
+			"password":  password,
+		})
+		if err != nil {
+			t.Fatalf("编码登录请求失败: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(raw))
+		req.RemoteAddr = remoteAddr
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", userAgent)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	failureResponse := doLogin("wrong-password")
+	assertHTTPStatus(t, failureResponse, http.StatusUnauthorized)
+	failure := lastAuthEvent(t, events, "user_login_failed")
+	if failure.TenantID != 1 || failure.UserID != 0 || failure.Outcome != "failure" ||
+		failure.ReasonClass != "invalid_credentials" || failure.AuthMethod != "password" {
+		t.Fatalf("失败登录既有审计字段发生变化: %+v", failure)
+	}
+	if failure.IP != clientIP {
+		t.Fatalf("失败登录审计 IP=%q，期望 %q", failure.IP, clientIP)
+	}
+	if failure.UserAgent != userAgent {
+		t.Fatalf("失败登录审计 User-Agent=%q，期望 %q", failure.UserAgent, userAgent)
+	}
+
+	successResponse := doLogin("secret")
+	assertHTTPStatus(t, successResponse, http.StatusOK)
+	success := lastAuthEvent(t, events, "user_login_succeeded")
+	if success.TenantID != 1 || success.UserID != user.ID || success.Outcome != "success" ||
+		success.ReasonClass != "" || success.AuthMethod != "password" {
+		t.Fatalf("成功登录既有审计字段发生变化: %+v", success)
+	}
+	if success.IP != clientIP {
+		t.Fatalf("成功登录审计 IP=%q，期望 %q", success.IP, clientIP)
+	}
+	if success.UserAgent != userAgent {
+		t.Fatalf("成功登录审计 User-Agent=%q，期望 %q", success.UserAgent, userAgent)
+	}
+}
+
 // TestLogin_ThrottleBlocksBeforeKDF 是 门1 的核心判别测: 限流命中时, 登录请求必须在调用
 // Authenticate(查用户 + argon2)之前就被 429 挡掉。用「查用户次数」证明 pre-KDF 顺序: 被限流的那
 // 次请求绝不能再触发一次 GetUserByEmail(进而 argon2)。

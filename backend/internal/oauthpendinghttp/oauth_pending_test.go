@@ -2,6 +2,7 @@ package oauthpendinghttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -148,6 +149,52 @@ func TestSendCodeFailsClosedWithoutEmailSender(t *testing.T) {
 	newSendCodeHandler(d)(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("EmailSender 缺失时应 fail-closed 503,得 %d(body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRecordEventCarriesRequestSource 钉住 OAuth 补邮箱旁路的来源传递。
+// 变异:若 recordEvent 不再从请求提取 IP 或 User-Agent，精确断言会收到空值并变红。
+func TestRecordEventCarriesRequestSource(t *testing.T) {
+	type capturedEvent struct {
+		eventType   string
+		tenantID    int64
+		userID      int64
+		provider    string
+		outcome     string
+		reasonClass string
+		ip          string
+		userAgent   string
+	}
+	var got capturedEvent
+	d := Deps{
+		RecordEvent: func(
+			_ context.Context,
+			eventType string,
+			tenantID, userID int64,
+			provider, outcome, reasonClass, ip, userAgent string,
+		) {
+			got = capturedEvent{
+				eventType: eventType, tenantID: tenantID, userID: userID,
+				provider: provider, outcome: outcome, reasonClass: reasonClass,
+				ip: ip, userAgent: userAgent,
+			}
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth-pending/complete", nil)
+	req.RemoteAddr = "198.51.100.44:54321"
+	req.Header.Set("User-Agent", "HUAKAI-OAuthAudit-Test/1.0")
+
+	d.recordEvent(req, "oauth_pending_email_code_failed", 7, 11, "github", "failure", "code_mismatch")
+
+	if got.eventType != "oauth_pending_email_code_failed" || got.tenantID != 7 || got.userID != 11 ||
+		got.provider != "github" || got.outcome != "failure" || got.reasonClass != "code_mismatch" {
+		t.Fatalf("OAuth 补邮箱既有审计字段发生变化: %+v", got)
+	}
+	if got.ip != "198.51.100.44" {
+		t.Fatalf("OAuth 补邮箱审计 IP=%q，期望 198.51.100.44", got.ip)
+	}
+	if got.userAgent != "HUAKAI-OAuthAudit-Test/1.0" {
+		t.Fatalf("OAuth 补邮箱审计 User-Agent=%q，期望 HUAKAI-OAuthAudit-Test/1.0", got.userAgent)
 	}
 }
 

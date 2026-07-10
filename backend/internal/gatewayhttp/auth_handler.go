@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/authaudit"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
@@ -52,11 +53,12 @@ type AuthTwoFactor interface {
 type AuthTwoFactorSettings interface {
 	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
-
 type AuthEvent struct {
 	EventType       string `json:"event_type"`
 	TenantID        int64  `json:"tenant_id,omitempty"`
 	UserID          int64  `json:"user_id,omitempty"`
+	IP              string `json:"ip,omitempty"`
+	UserAgent       string `json:"user_agent,omitempty"`
 	Provider        string `json:"provider,omitempty"`
 	Outcome         string `json:"outcome"`
 	ReasonClass     string `json:"reason_class,omitempty"`
@@ -64,7 +66,6 @@ type AuthEvent struct {
 	SessionPolicy   string `json:"session_policy,omitempty"`
 	SessionsRevoked int64  `json:"sessions_revoked,omitempty"`
 }
-
 type NoopAuthEmailSender struct{}
 
 func (NoopAuthEmailSender) SendVerification(context.Context, userauth.User, string) error { return nil }
@@ -223,7 +224,7 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 			Password: req.Password, InviteCode: req.InviteCode,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_register_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
 			})
 			writeAuthError(w, err)
@@ -244,7 +245,7 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 			"verification_required": result.VerificationToken != "",
 		}
 		addDevAuthToken(resp, "verification_token", result.VerificationToken)
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_registered", TenantID: result.User.TenantID, UserID: result.User.ID, Outcome: "success",
 		})
 		writeAuditJSON(w, http.StatusCreated, resp)
@@ -272,7 +273,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			lease, dec = d.LoginThrottle.Begin(ip)
 			defer lease.Cancel()
 			if !dec.Allowed {
-				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 					EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: "login_rate_limited", AuthMethod: "password",
 				})
 				writeLoginThrottled(w, dec.RetryAfter)
@@ -293,7 +294,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if err != nil {
 			lease.Failure() // nil-safe: 限流未装配时为 no-op
 			// 审计记录真实 reason(操作员可见), 但对外统一 generic, 杜绝状态码/消息枚举(门2)。
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: "password",
 			})
 			writeLoginFailureGeneric(w, err)
@@ -302,7 +303,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		lease.Success() // 登录凭据通过, 释放在途槽且不计失败(成功不消耗限流配额)
 		required, err := authTwoFactorRequired(r.Context(), d, user.TenantID, user.ID)
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_2fa_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
 				ReasonClass: twoFactorReasonClass(err), AuthMethod: "password",
 			})
@@ -312,14 +313,14 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if required {
 			challenge, err := d.TwoFactor.StartLoginChallenge(r.Context(), user.TenantID, user.ID)
 			if err != nil {
-				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 					EventType: "user_login_2fa_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
 					ReasonClass: twoFactorReasonClass(err), AuthMethod: "password",
 				})
 				writeTwoFactorLoginError(w, err)
 				return
 			}
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_2fa_required", TenantID: user.TenantID, UserID: user.ID, Outcome: "challenge", AuthMethod: "password",
 			})
 			writeAuditJSON(w, http.StatusAccepted, map[string]any{
@@ -335,7 +336,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_session_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
 				ReasonClass: sessionReasonClass(err), AuthMethod: "password",
 			})
@@ -345,7 +346,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_login_succeeded", TenantID: user.TenantID, UserID: user.ID, Outcome: "success", AuthMethod: "password",
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
@@ -371,7 +372,7 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			Code:        req.Code,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_2fa_failed", TenantID: result.TenantID, UserID: result.UserID,
 				Outcome: "failure", ReasonClass: twoFactorReasonClass(err), AuthMethod: "password+2fa",
 			})
@@ -386,7 +387,7 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			if err == nil {
 				err = userauth.EnsureLoginEligible(user, time.Now())
 			}
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_2fa_failed", TenantID: result.TenantID, UserID: result.UserID,
 				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: authMethod,
 			})
@@ -406,7 +407,7 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: authMethod,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_session_failed", TenantID: result.TenantID, UserID: result.UserID, Outcome: "failure",
 				ReasonClass: sessionReasonClass(err), AuthMethod: authMethod,
 			})
@@ -416,7 +417,7 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_login_succeeded", TenantID: result.TenantID, UserID: result.UserID, Outcome: "success", AuthMethod: authMethod,
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"session": tokens})
@@ -490,7 +491,7 @@ func verifyAuthCaptcha(
 	); err == nil {
 		return true
 	}
-	recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+	recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 		EventType: eventType, TenantID: tenantID, Outcome: "failure",
 		ReasonClass: "captcha_failed", AuthMethod: authMethod,
 	})
@@ -530,7 +531,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if strings.TrimSpace(req.Token) == "" {
 			result, err := d.Auth.RequestPasswordReset(r.Context(), userauth.PasswordResetRequest{TenantID: req.TenantID, Email: req.Email})
 			if err != nil {
-				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 					EventType: "user_password_reset_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
 				})
 				writeAuthError(w, err)
@@ -547,7 +548,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 				}
 				if sender := authEmailSender(d); sender != nil {
 					if err := sender.SendPasswordReset(r.Context(), user, result.Token); err != nil {
-						recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+						recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 							EventType: "user_password_reset_failed", TenantID: req.TenantID, UserID: result.UserID,
 							Outcome: "failure", ReasonClass: "email_delivery_failed",
 						})
@@ -558,7 +559,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 			}
 			resp := map[string]any{"reset_requested": true}
 			addDevAuthToken(resp, "reset_token", result.Token)
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_requested", TenantID: req.TenantID, UserID: result.UserID, Outcome: "success",
 			})
 			writeAuditJSON(w, http.StatusAccepted, resp)
@@ -573,7 +574,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		subject, err := d.Auth.PreparePasswordReset(r.Context(), confirm)
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
 			})
 			writeAuthError(w, err)
@@ -586,7 +587,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		})
 		if revErr != nil {
 			logInternalError(r.Context(), "", "user_password_reset_session_revoke_failed", revErr)
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_session_revoke_failed", TenantID: subject.TenantID, UserID: subject.ID,
 				Outcome: "failure", ReasonClass: sessionReasonClass(revErr), SessionPolicy: "failed", SessionsRevoked: revoked,
 			})
@@ -595,7 +596,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		user, err := d.Auth.ResetPassword(r.Context(), confirm)
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
 			})
 			writeAuthError(w, err)
@@ -608,14 +609,14 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if postErr != nil {
 			sessionRevocation = "failed"
 			logInternalError(r.Context(), "", "user_password_reset_session_revoke_failed", postErr)
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_session_revoke_failed", TenantID: user.TenantID, UserID: user.ID,
 				Outcome: "failure", ReasonClass: sessionReasonClass(postErr), SessionPolicy: "failed", SessionsRevoked: revoked,
 			})
 		} else {
 			revoked += postRevoked
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_password_reset_completed", TenantID: user.TenantID, UserID: user.ID,
 			Outcome: "success", SessionPolicy: sessionRevocation, SessionsRevoked: revoked,
 		})
@@ -637,7 +638,7 @@ func newAuthOAuthInitHandler(d AuthHandlerDeps) http.HandlerFunc {
 			TenantID: req.TenantID, Provider: req.Provider, RedirectURI: req.RedirectURI,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: safeProviderForEvent(req.Provider),
 				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: safeProviderForEvent(req.Provider),
 			})
@@ -666,7 +667,7 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		identity, err := telegramauth.VerifyWidget(req.Params, botToken, d.Auth.Clock(), telegramWidgetMaxAge(d))
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: userauth.SocialProviderTelegram,
 				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: userauth.SocialProviderTelegram,
 			})
@@ -675,7 +676,7 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		user, err := d.Auth.ApplyVerifiedSocialIdentity(r.Context(), req.TenantID, identity)
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: userauth.SocialProviderTelegram,
 				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: userauth.SocialProviderTelegram,
 			})
@@ -687,7 +688,7 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: userauth.SocialProviderTelegram,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_session_failed", TenantID: user.TenantID, UserID: user.ID,
 				Provider: userauth.SocialProviderTelegram, Outcome: "failure", ReasonClass: sessionReasonClass(err),
 				AuthMethod: userauth.SocialProviderTelegram,
@@ -698,7 +699,7 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
 			Provider: userauth.SocialProviderTelegram, Outcome: "success", AuthMethod: userauth.SocialProviderTelegram,
 		})
@@ -801,7 +802,7 @@ func newAuthSocialIdentityChangedHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_social_identity_changed", TenantID: user.TenantID, UserID: user.ID, Provider: provider,
 			Outcome: "success", ReasonClass: reason, SessionPolicy: "revoked", SessionsRevoked: revoked,
 		})
@@ -816,10 +817,11 @@ func newAuthSocialIdentityChangedHandler(d AuthHandlerDeps) http.HandlerFunc {
 	}
 }
 
-func recordAuthEvent(ctx context.Context, sink AuthEventSink, event AuthEvent) {
+func recordAuthEvent(ctx context.Context, sink AuthEventSink, r *http.Request, ipResolver *clientip.Resolver, event AuthEvent) {
 	if sink == nil {
 		return
 	}
+	event.IP, event.UserAgent = authaudit.WithRequestSource(r, ipResolver, event.IP, event.UserAgent)
 	sink.RecordAuthEvent(ctx, event)
 }
 
@@ -961,7 +963,7 @@ func allowAuthEmailSend(w http.ResponseWriter, r *http.Request, d AuthHandlerDep
 	if allowed {
 		return true
 	}
-	recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+	recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 		EventType: "auth_email_send_rate_limited", TenantID: tenantID, UserID: userID,
 		Outcome: "failure", ReasonClass: "email_send_rate_limited",
 	})
