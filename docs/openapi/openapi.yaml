@@ -8952,6 +8952,71 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/users/{id}/usage:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-users]
+      summary: List one tenant user's per-request usage records
+      operationId: listAdminUserUsage
+      description: |
+        Returns immutable per-request usage records scoped by both the tenant
+        authorized for the administrator and the target user id in the path.
+        Tenant operators default to their own scope; platform administrators
+        must explicitly select an authorized tenant with `tenant_id`. The result
+        spans all API keys owned by that user and never accepts client-supplied
+        user scope.
+      x-huakai-spec-source:
+        - backend/internal/adminuserhttp/user_usage.go
+        - docs/process/plans/2026-07-10-admin-user-usage.md
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant and may only repeat that tenant explicitly.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: model
+          in: query
+          required: false
+          schema: { type: string, maxLength: 200 }
+        - name: provider
+          in: query
+          required: false
+          schema: { type: string, maxLength: 200 }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [success, error] }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned as `next_cursor`.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tenant-and-user-scoped usage records, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeUsageListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/users/2fa-adoption-stats:
     get:
       tags: [admin-users]
@@ -18235,6 +18300,7 @@ components:
         - requested_model
         - upstream_model
         - actual_cost
+        - tokens
         - ledger_id
         - verify_hint
         - created_at
@@ -18251,6 +18317,15 @@ components:
           type: string
           description: 'numeric(20,8) real cost rendered as string for client BigNumber safety.'
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        tokens:
+          type: object
+          additionalProperties: false
+          required: [input, output]
+          properties:
+            input: { type: integer, format: int32, minimum: 0 }
+            output: { type: integer, format: int32, minimum: 0 }
+            cache_creation: { type: integer, format: int32, minimum: 0 }
+            cache_read: { type: integer, format: int32, minimum: 0 }
         provider:
           type: string
           description: Provider code when available from usage joins.

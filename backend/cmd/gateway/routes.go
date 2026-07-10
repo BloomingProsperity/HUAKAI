@@ -875,6 +875,26 @@ func audioHandlerDeps(d *deps) audiohttp.Deps {
 	}
 }
 
+func adminUserRouteDeps(d *deps) adminuserhttp.Deps {
+	return adminuserhttp.Deps{
+		Auth:             d.adminAuth,
+		Store:            d.adminQueries,
+		UsageStore:       d.billingQueries,
+		SocialLinks:      d.userAuth,
+		UnlockAudit:      adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
+		TwoFADisabler:    d.twoFactor,
+		PasskeyResetter:  d.passkeys,
+		UserGroupSetter:  adminuserhttp.NewPostgresUserGroupStore(d.pgPool),
+		UserRemarkSetter: adminuserhttp.NewPostgresUserRemarkStore(d.pgPool),
+		UserStatusSetter: adminuserhttp.NewPostgresUserStatusStore(d.pgPool),
+		UserCreator:      adminuserhttp.NewPostgresUserCreateStore(d.pgPool),
+		UserSoftDeleter:  adminuserhttp.NewPostgresUserSoftDeleteStore(d.pgPool),
+		SessionRevoker:   d.userSessions,
+		Unlocker:         d.userAuth,
+		Audit:            d.adminQueries,
+	}
+}
+
 func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/v1/admin/email", func(r chi.Router) {
 		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
@@ -926,22 +946,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Issuer: d.adminTokenIssuer,
 		})
 	})
-	adminUserDeps := adminuserhttp.Deps{
-		Auth:             d.adminAuth,
-		Store:            d.adminQueries,
-		SocialLinks:      d.userAuth,
-		UnlockAudit:      adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
-		TwoFADisabler:    d.twoFactor,
-		PasskeyResetter:  d.passkeys,
-		UserGroupSetter:  adminuserhttp.NewPostgresUserGroupStore(d.pgPool),
-		UserRemarkSetter: adminuserhttp.NewPostgresUserRemarkStore(d.pgPool),
-		UserStatusSetter: adminuserhttp.NewPostgresUserStatusStore(d.pgPool),
-		UserCreator:      adminuserhttp.NewPostgresUserCreateStore(d.pgPool),
-		UserSoftDeleter:  adminuserhttp.NewPostgresUserSoftDeleteStore(d.pgPool),
-		SessionRevoker:   d.userSessions,
-		Unlocker:         d.userAuth,
-		Audit:            d.adminQueries,
-	}
+	adminUserDeps := adminUserRouteDeps(d)
 	r.Get("/admin/v1/users", adminuserhttp.NewListHandler(adminUserDeps))
 	r.Route("/admin/v1/users", func(r chi.Router) {
 		adminuserhttp.MountRoutes(r, adminUserDeps)

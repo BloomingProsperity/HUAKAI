@@ -848,6 +848,7 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		"/admin/v1/users",
 		"/admin/v1/users/{id}",
 		"/admin/v1/users/{id}/balance-history",
+		"/admin/v1/users/{id}/usage",
 	}
 	for _, path := range readOps {
 		if !hasOperationEquivalent(implOps, http.MethodGet, path) {
@@ -874,6 +875,9 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		{http.MethodPost, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodPatch, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodDelete, "/admin/v1/users/{id}/balance-history"},
+		{http.MethodPost, "/admin/v1/users/{id}/usage"},
+		{http.MethodPatch, "/admin/v1/users/{id}/usage"},
+		{http.MethodDelete, "/admin/v1/users/{id}/usage"},
 	} {
 		if hasOperationEquivalent(implOps, op.method, op.path) {
 			t.Fatalf("runtime unexpectedly exposes read-only slice mutation %s %s", op.method, op.path)
@@ -911,6 +915,9 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		{http.MethodPost, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodPatch, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodDelete, "/admin/v1/users/{id}/balance-history"},
+		{http.MethodPost, "/admin/v1/users/{id}/usage"},
+		{http.MethodPatch, "/admin/v1/users/{id}/usage"},
+		{http.MethodDelete, "/admin/v1/users/{id}/usage"},
 	} {
 		if hasOperation(specOps, op.method, op.path) {
 			t.Fatalf("OpenAPI unexpectedly declares read-only slice mutation %s %s", op.method, op.path)
@@ -930,6 +937,7 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		"listAdminUsers",
 		"getAdminUser",
 		"listAdminUserBalanceHistory",
+		"listAdminUserUsage",
 		"adminUnlockUser",
 		"balance-history",
 		"unlock_user",
