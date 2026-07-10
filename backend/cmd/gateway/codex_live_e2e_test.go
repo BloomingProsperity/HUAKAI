@@ -150,6 +150,29 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 			},
 		},
 		{
+			// max 是 gpt-5.6 专属最高 effort 档(gpt-5.5 及以下上游直接 400)。
+			// 三镜有折叠先例(sub2api 把 xhigh/extrahigh/max 一律压成 xhigh),本用例
+			// 钉死 HUAKAI 对合法 effort 字节直通、不折叠——上游会原样回显 effort=max。
+			// 注:ultra 不是 wire 层 effort 枚举值(上游返回 Invalid value: 'ultra'),
+			// 它是客户端编排 mode(response 里体现为 reasoning.mode 而非 effort),故 relay
+			// 层无从透传 ultra effort,这里验证的是最高合法档 max。
+			name: "reasoning-max字节直通",
+			body: codexLiveMaxEffortBody(model),
+			assert: func(t *testing.T, res codexLiveResult) {
+				if !strings.Contains(model, "5.6") {
+					t.Skipf("model=%s 无 max 档(max 为 gpt-5.6 专属),跳过 max 字节直通用例", model)
+				}
+				assertCodexLiveSSEEvents(t, res, "response.created", "response.completed")
+				// 变异=网关折叠 max→xhigh(如 sub2api)→ 回显 xhigh 而非 max → 红。
+				if !bytes.Contains(res.body, []byte(`"effort":"max"`)) {
+					t.Fatalf("max 未字节直通回显(疑被折叠): events=%v body=%s", res.events, safeCodexLiveBody(res.body, ""))
+				}
+				if bytes.Contains(res.body, []byte(`"effort":"xhigh"`)) {
+					t.Fatalf("max 被折叠成 xhigh: body=%s", safeCodexLiveBody(res.body, ""))
+				}
+			},
+		},
+		{
 			name: "图片输入",
 			body: codexLiveVisionBody(model),
 			assert: func(t *testing.T, res codexLiveResult) {
@@ -1303,6 +1326,13 @@ func codexLiveImageBody(model string) map[string]any {
 func codexLiveReasoningBody(model string) map[string]any {
 	body := codexLiveBaseBody(model, "Think briefly, then answer with one sentence.", "What is 2+2?", true)
 	body["reasoning"] = map[string]any{"effort": "low"}
+	return body
+}
+
+func codexLiveMaxEffortBody(model string) map[string]any {
+	// max = gpt-5.6 专属最高档;跟随矩阵 model,以便 seed 已注册该 model 时直接命中。
+	body := codexLiveBaseBody(model, "Answer with exactly one word.", "Say OK.", true)
+	body["reasoning"] = map[string]any{"effort": "max"}
 	return body
 }
 
