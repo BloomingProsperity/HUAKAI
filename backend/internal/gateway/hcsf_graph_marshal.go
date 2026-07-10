@@ -12,38 +12,39 @@ import (
 	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 )
 
-// MarshalToProviderRequest 把 HCSF graph 投影为目标 provider endpoint 的请求 body。
-// 不支持的 capability 必须写 ProtocolLossEntry，禁止静默丢弃。
+// hcsfRequestMarshalers 是生产 marshal 与能力闭合检查共享的唯一请求投影登记面。
+var hcsfRequestMarshalers = map[string]func(*proto.HCSF) ([]byte, error){
+	"anthropic_messages": marshalAnthropicMessages,
+	"openai_chat":        marshalOpenAIChat,
+	"openai_responses":   marshalOpenAIResponses,
+	"gemini_messages":    marshalGeminiMessages,
+	"dify_chat":          protodify.MarshalChatRequest,
+	"ollama_native":      protoollama.MarshalChatRequest,
+}
+
+// MarshalToProviderRequest 把 HCSF graph 投影为请求 body，且不静默丢弃 capability。
 func MarshalToProviderRequest(env *proto.HCSF, endpointFamily string) ([]byte, error) {
 	if env == nil {
 		return nil, errors.New("gateway: nil HCSF envelope")
 	}
 	codexreqctl.AddUnsupportedRequestControlLosses(env, endpointFamily)
-	// 先把 endpoint family 归一到 marshal 形态族(OpenAI 兼容族/部分 session
-	// 反转族与 openai_chat 同形等)。流式路径(gatewayhttp
-	// streamingProviderRequestBody)直接传原始族名进来,归一前这里对全部
-	// 兼容族报 unsupported → 流式 501;非流式靠调用方先行映射,但映射表曾
-	// 漏 12 个兼容族 → 502。归一收敛在本函数内,任何调用方传原始族名都安全。
-	switch hcsfProviderRequestModelFamily(endpointFamily) {
-	case "anthropic_messages":
-		return marshalAnthropicMessages(env)
-	case "openai_chat":
-		return marshalOpenAIChat(env)
-	case "openai_responses":
-		return marshalOpenAIResponses(env)
-	case "gemini_messages":
-		return marshalGeminiMessages(env)
-	case "dify_chat":
-		// Dify 形态自带流式语义(response_mode)与全部可表达字段;loss 记账在
-		// proto/dify 包内完成。
-		return protodify.MarshalChatRequest(env)
-	case "ollama_native":
-		// Ollama 原生形态自带流式语义(显式 stream 字段)与 options{} 采样
-		// 控制;loss 记账在 proto/ollama 包内完成。
-		return protoollama.MarshalChatRequest(env)
-	default:
+	// 在唯一入口归一形态，保证流式与非流式调用方传原始 family 时结论一致。
+	shape := hcsfProviderRequestModelFamily(endpointFamily)
+	marshal, ok := hcsfRequestMarshalers[shape]
+	if !ok {
 		return nil, fmt.Errorf("gateway: unsupported HCSF endpoint family %q", endpointFamily)
 	}
+	return marshal(env)
+}
+
+// HCSFRequestMarshalShape 返回当前生产路径实际登记的请求投影形态。
+func HCSFRequestMarshalShape(endpointFamily string) (string, bool) {
+	shape := hcsfProviderRequestModelFamily(endpointFamily)
+	_, registered := hcsfRequestMarshalers[shape]
+	if !registered && hcsfProviderRequestUsesNativeRawBody(endpointFamily, endpointFamily) {
+		return "native_raw", true
+	}
+	return shape, registered
 }
 
 func hcsfModel(env *proto.HCSF) string {

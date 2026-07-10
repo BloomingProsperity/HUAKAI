@@ -9087,7 +9087,8 @@ paths:
         `code` is unique per tenant among non-deleted providers. platform_admin
         callers must pass tenant_id; tenant_operator callers may omit it and
         are scoped to their admin token tenant. Successful mutations write an
-        admin audit event.
+        admin audit event. When `enabled=true`, the selected protocol family
+        must pass the current process serving-readiness closure check.
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
       parameters:
@@ -9111,6 +9112,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/providers/{code}:
@@ -9121,7 +9123,12 @@ paths:
       description: |
         Updates display name, upstream protocol, and enabled state for a
         provider selected by tenant scope plus path `code`. Successful
-        mutations write an admin audit event.
+        mutations write an admin audit event. When `enabled=true`, the selected
+        protocol family must pass the current process serving-readiness closure
+        check. Only disabled rows for canonical adapter-backed families declared
+        by `registrydefault` bypass closure validation and remain storable for
+        read-only retention. Contract-only or otherwise non-serving-ready
+        families return HTTP 422 on closure failure even when `enabled=false`.
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
       parameters:
@@ -9149,6 +9156,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
     delete:
       tags: [admin-provider-catalog]
@@ -16224,6 +16232,7 @@ components:
         - feature_flag
         - risk_level
         - risk_reasons
+        - serving_readiness
       properties:
         vendor: { type: string }
         auth_mode: { type: string }
@@ -16253,6 +16262,28 @@ components:
         risk_reasons:
           type: array
           items: { type: string }
+        serving_readiness: { $ref: '#/components/schemas/AccountModeServingReadiness' }
+
+    AccountModeServingReadiness:
+      x-huakai-spec-source: [docs/11_ACCEPTANCE_TEST_MATRIX.md]
+      type: object
+      additionalProperties: false
+      required: [ready, enableable, traffic_allowed, status, action]
+      properties:
+        family: { type: string }
+        release_state:
+          type: string
+          enum: [scaffold, experimental, released, retired]
+        ready: { type: boolean }
+        enableable: { type: boolean }
+        traffic_allowed: { type: boolean }
+        status:
+          type: string
+          enum: [ready, experimental, collect_only, collectable_not_serving, experimental_wire_unverified, scaffold, retired, not_ready, test_only]
+        action:
+          type: string
+          enum: [allow, reject_write, mark_red, hide_read_only, reject_publish, report_only]
+        reason: { type: string }
 
     AccountModeField:
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]
@@ -16577,16 +16608,34 @@ components:
         - openai_codex
         - gemini
         - gemini_messages
+        - gemini_code_assist
         - bedrock
         - bedrock_invoke
         - openrouter_chat
         - grok_chat
+        - kimi_chat
         - deepseek_chat
         - mistral_chat
         - groqcloud_chat
         - together_chat
         - perplexity_chat
         - fireworks_chat
+        - qwen_chat
+        - glm_chat
+        - yi_chat
+        - baichuan_chat
+        - doubao_chat
+        - ernie_chat
+        - step_chat
+        - hunyuan_chat
+        - minimax_chat
+        - cohere_chat
+        - ollama_chat
+        - ollama_native
+        - dify_chat
+        - replicate_image
+        - vertex_gemini
+        - vertex_anthropic
         - anthropic_claude_session
         - cursor_session
         - copilot_session

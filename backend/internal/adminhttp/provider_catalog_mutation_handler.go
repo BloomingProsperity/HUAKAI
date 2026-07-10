@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
+	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 )
 
 var (
@@ -212,6 +213,9 @@ func newCreateProviderCatalogHandler(d AdminProviderCatalogDeps) http.HandlerFun
 		if !ok {
 			return
 		}
+		if !requireProviderCatalogServingReadiness(w, arg.UpstreamProtocol, arg.Enabled) {
+			return
+		}
 		audit, ok := buildProviderCatalogAuditParams(w, r, ident, tenantID, "create_provider", req.Reason, map[string]any{
 			"tenant_id": tenantID, "code": arg.Code, "display_name": arg.DisplayName,
 			"upstream_protocol": arg.UpstreamProtocol, "enabled": arg.Enabled,
@@ -246,6 +250,9 @@ func newUpdateProviderCatalogHandler(d AdminProviderCatalogDeps) http.HandlerFun
 		}
 		arg, ok := validateProviderCatalogUpdateRequest(w, tenantID, code, req)
 		if !ok {
+			return
+		}
+		if !requireProviderCatalogServingReadiness(w, arg.UpstreamProtocol, arg.Enabled) {
 			return
 		}
 		audit, ok := buildProviderCatalogAuditParams(w, r, ident, tenantID, "update_provider", req.Reason, map[string]any{
@@ -328,7 +335,7 @@ func resolveProviderCatalogMutationAdmin(w http.ResponseWriter, r *http.Request,
 func validateProviderCatalogCreateRequest(w http.ResponseWriter, tenantID int64, req providerCatalogMutationRequest) (providerCatalogCreateParams, bool) {
 	code := strings.TrimSpace(req.Code)
 	displayName := strings.TrimSpace(req.DisplayName)
-	protocol := strings.TrimSpace(req.UpstreamProtocol)
+	protocol := req.UpstreamProtocol
 	if code == "" {
 		writeError(w, http.StatusBadRequest, "provider_code_required", "provider code is required")
 		return providerCatalogCreateParams{}, false
@@ -341,7 +348,7 @@ func validateProviderCatalogCreateRequest(w http.ResponseWriter, tenantID int64,
 	if !ok {
 		return providerCatalogCreateParams{}, false
 	}
-	if !isKnownProviderCatalogProtocol(protocol) {
+	if !isCanonicalProviderCatalogMutationProtocol(protocol) {
 		writeError(w, http.StatusBadRequest, "invalid_upstream_protocol", "upstream_protocol is not supported")
 		return providerCatalogCreateParams{}, false
 	}
@@ -353,7 +360,7 @@ func validateProviderCatalogCreateRequest(w http.ResponseWriter, tenantID int64,
 
 func validateProviderCatalogUpdateRequest(w http.ResponseWriter, tenantID int64, code string, req providerCatalogMutationRequest) (providerCatalogUpdateParams, bool) {
 	displayName := strings.TrimSpace(req.DisplayName)
-	protocol := strings.TrimSpace(req.UpstreamProtocol)
+	protocol := req.UpstreamProtocol
 	if displayName == "" {
 		writeError(w, http.StatusBadRequest, "provider_display_name_required", "provider display_name is required")
 		return providerCatalogUpdateParams{}, false
@@ -362,7 +369,7 @@ func validateProviderCatalogUpdateRequest(w http.ResponseWriter, tenantID int64,
 	if !ok {
 		return providerCatalogUpdateParams{}, false
 	}
-	if !isKnownProviderCatalogProtocol(protocol) {
+	if !isCanonicalProviderCatalogMutationProtocol(protocol) {
 		writeError(w, http.StatusBadRequest, "invalid_upstream_protocol", "upstream_protocol is not supported")
 		return providerCatalogUpdateParams{}, false
 	}
@@ -378,6 +385,37 @@ func validateProviderCatalogEnabled(w http.ResponseWriter, enabled *bool) (bool,
 		return false, false
 	}
 	return *enabled, true
+}
+
+func requireProviderCatalogServingReadiness(w http.ResponseWriter, family string, enabled bool) bool {
+	return requireProviderCatalogServingReadinessUsing(
+		w, family, enabled, defaultServingCapabilityEvaluator().RequireProviderConfigEnabled,
+	)
+}
+
+func requireProviderCatalogServingReadinessUsing(w http.ResponseWriter, family string, enabled bool, require func(string) error) bool {
+	if !enabled && isKnownProviderCatalogProtocol(family) {
+		return true
+	}
+	if require == nil {
+		writeError(w, http.StatusServiceUnavailable, "provider_readiness_unavailable", "provider readiness checker is unavailable")
+		return false
+	}
+	err := require(family)
+	if err == nil {
+		return true
+	}
+	var readinessErr *servingcapability.ReadinessError
+	if errors.As(err, &readinessErr) {
+		reason := strings.TrimSpace(readinessErr.Result.Reason)
+		if reason == "" {
+			reason = "closure_incomplete"
+		}
+		writeError(w, http.StatusUnprocessableEntity, "provider_serving_not_ready", reason)
+		return false
+	}
+	writeError(w, http.StatusServiceUnavailable, "provider_readiness_unavailable", err.Error())
+	return false
 }
 
 func decodeProviderCatalogMutationJSON(w http.ResponseWriter, r *http.Request, dst any, required bool) bool {
@@ -483,4 +521,15 @@ func providerCatalogItemFromSoftDeleteRow(row admindb.SoftDeleteProviderRow) pro
 
 func isKnownProviderCatalogProtocol(protocol string) bool {
 	return registrydefault.IsSupportedProtocolFamily(protocol)
+}
+
+func isCanonicalProviderCatalogMutationProtocol(protocol string) bool {
+	if protocol == "" || strings.TrimSpace(protocol) != protocol {
+		return false
+	}
+	if isKnownProviderCatalogProtocol(protocol) {
+		return true
+	}
+	contract, ok := servingcapability.DefaultContractRegistry().Lookup(protocol)
+	return ok && contract.Family == protocol
 }
