@@ -174,7 +174,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		ClientStreamIntent: ex.req.Stream,
 	})
 	if err != nil {
-		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
+		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.errorClassProvider())
 		decision := gateway.ClassifyAttemptDispatchError(err)
 		if decision.AbortReason == "" {
 			decision.AbortReason = "upstream_dispatch_error"
@@ -213,14 +213,25 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 	return outcome
 }
 
+// errorClassProvider 返回错误分类用的上游 provider。多数族 credential vendor
+// (accInfo.Platform)即上游 provider;但 bedrock(anthropic-on-AWS,credential vendor 归一为
+// anthropic)须按 family 归一为 bedrock,否则 bedrock 专用 429/503(限流/过载)规则不命中,
+// 退化为通用规则,影响 cooldown/health/failover(F2)。
+func (ex *chatExecution) errorClassProvider() string {
+	if ex.resolved.ProtocolFamily == "bedrock_invoke" {
+		return "bedrock"
+	}
+	return ex.accInfo.Platform
+}
+
 func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.DispatchResult, startedAt time.Time) *classifiedAttemptFailure {
 	errBody, readErr := io.ReadAll(io.LimitReader(dispatchRes.UpstreamReader, 1<<20))
 	if readErr != nil {
 		errBody = []byte(readErr.Error())
 	}
-	decision, classification, classifyErr := gateway.ClassifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, errBody, ex.accInfo.Platform)
+	decision, classification, classifyErr := gateway.ClassifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, errBody, ex.errorClassProvider())
 	if classifyErr != nil {
-		classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, errBody, ex.accInfo.Platform)
+		classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, errBody, ex.errorClassProvider())
 		decision = gateway.AttemptRetryDecision{
 			ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class),
 			AbortReason:  "upstream_error",

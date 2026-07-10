@@ -735,10 +735,10 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		if errors.As(err, &upstreamErr) {
 			clientStatus = upstreamErr.StatusCode
 			healthStatus = upstreamErr.StatusCode
-			decision, classification, _ = gateway.ClassifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body, ex.accInfo.Platform)
+			decision, classification, _ = gateway.ClassifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body, ex.errorClassProvider())
 		} else {
 			classifyBody = []byte(err.Error())
-			classification, _ = gateway.Classify(0, nil, classifyBody, ex.accInfo.Platform)
+			classification, _ = gateway.Classify(0, nil, classifyBody, ex.errorClassProvider())
 			decision = gateway.ClassifyAttemptDispatchError(err)
 			if decision.ClientStatus != 0 {
 				clientStatus = decision.ClientStatus

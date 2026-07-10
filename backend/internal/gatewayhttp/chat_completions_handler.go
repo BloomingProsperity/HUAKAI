@@ -729,7 +729,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		NonStreamingBuffered: true,
 	})
 	if err != nil {
-		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.accInfo.Platform)
+		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.errorClassProvider())
 		decision := gateway.ClassifyAttemptDispatchError(err)
 		if !decision.RetryableBeforeDelivery && decision.TransportClass == gateway.TransportErrorLocalDispatch {
 			decision.ClientStatus = http.StatusBadGateway
@@ -775,9 +775,9 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		return nil, nil, false
 	}
 	if dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300 {
-		decision, classification, classifyErr := gateway.ClassifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.accInfo.Platform)
+		decision, classification, classifyErr := gateway.ClassifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.errorClassProvider())
 		if classifyErr != nil {
-			classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.accInfo.Platform)
+			classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.errorClassProvider())
 			decision = gateway.AttemptRetryDecision{ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), AbortReason: "upstream_error"}
 		}
 		decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
