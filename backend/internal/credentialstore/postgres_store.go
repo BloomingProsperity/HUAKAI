@@ -1184,8 +1184,15 @@ func (s *Store) prepareEnvelope(ctx context.Context, tenantID, providerAccountID
 	accessExp := expiresAt(fields)
 	refreshExp := parseNamedTime(fields, "refresh_expires_at")
 	var refreshBefore time.Time
-	if handler.Refreshable() && !accessExp.IsZero() {
-		refreshBefore = accessExp.Add(-RefreshWindow)
+	if handler.Refreshable() {
+		if accessExp.IsZero() {
+			// 无初始 access token 的可刷新凭据(如 vertex SA 仅有 client_email+private_key
+			// 私钥材料):排入即时刷新,让 refresher 铸出首个 token;否则永不进刷新扫描=
+			// 无法物化 fail-closed(M1 bootstrap)。铸不出的凭据经 refresher 的 backoff 限频。
+			refreshBefore = time.Now().UTC()
+		} else {
+			refreshBefore = accessExp.Add(-RefreshWindow)
+		}
 	}
 	return preparedEnvelope{
 		env:                env,

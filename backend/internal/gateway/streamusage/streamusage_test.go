@@ -1,4 +1,4 @@
-package gateway
+package streamusage
 
 import (
 	"encoding/json"
@@ -23,17 +23,17 @@ func TestMaybeInjectStreamUsageB1(t *testing.T) {
 	}
 
 	// 官方 openai 兼容族 + 流式 + 无 include_usage → 注入 true。
-	out := maybeInjectStreamUsage("openai_chat", []byte(`{"model":"gpt-4o","stream":true,"messages":[]}`))
+	out := Inject("openai_chat", []byte(`{"model":"gpt-4o","stream":true,"messages":[]}`))
 	if !hasIncludeUsageTrue(out) {
 		t.Fatalf("openai_chat 流式应注入 include_usage=true,得 %s", out)
 	}
 	// kimi_chat 同理。
-	out = maybeInjectStreamUsage("kimi_chat", []byte(`{"model":"k2","stream":true,"messages":[]}`))
+	out = Inject("kimi_chat", []byte(`{"model":"k2","stream":true,"messages":[]}`))
 	if !hasIncludeUsageTrue(out) {
 		t.Fatalf("kimi_chat 流式应注入 include_usage=true,得 %s", out)
 	}
 	// 已有其它 stream_options 字段 → 保留并加 include_usage。
-	out = maybeInjectStreamUsage("openai_chat", []byte(`{"stream":true,"stream_options":{"foo":1},"messages":[]}`))
+	out = Inject("openai_chat", []byte(`{"stream":true,"stream_options":{"foo":1},"messages":[]}`))
 	if !hasIncludeUsageTrue(out) {
 		t.Fatalf("应保留既有 stream_options 并加 include_usage,得 %s", out)
 	}
@@ -46,17 +46,17 @@ func TestMaybeInjectStreamUsageB1(t *testing.T) {
 	}
 
 	// 非流式 → 不注入(响应本就带 usage)。
-	out = maybeInjectStreamUsage("openai_chat", []byte(`{"stream":false,"messages":[]}`))
+	out = Inject("openai_chat", []byte(`{"stream":false,"messages":[]}`))
 	if hasIncludeUsageTrue(out) {
 		t.Fatalf("非流式不应注入,得 %s", out)
 	}
 	// 反转 session 族(真实性)→ 不注入。
-	out = maybeInjectStreamUsage("copilot_session", []byte(`{"stream":true,"messages":[]}`))
+	out = Inject("copilot_session", []byte(`{"stream":true,"messages":[]}`))
 	if hasIncludeUsageTrue(out) {
 		t.Fatalf("反转 session 族不应注入(要真实性),得 %s", out)
 	}
 	// 非 openai 兼容族(dify)→ 不注入。
-	out = maybeInjectStreamUsage("dify_chat", []byte(`{"stream":true}`))
+	out = Inject("dify_chat", []byte(`{"stream":true}`))
 	if hasIncludeUsageTrue(out) {
 		t.Fatalf("dify_chat 不应注入,得 %s", out)
 	}

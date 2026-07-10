@@ -96,7 +96,7 @@ func newDefaultModeAdapterRegistry(operatorOAuthClient *http.Client) *ModeAdapte
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth, legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{}})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode, legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{}})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock, staticModeAdapter{})
-	register(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, metadataTokenAdapter{})
+	register(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, vertexSAModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, staticModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, newOpenAIChatGPTBuiltinOAuthModeAdapter())
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: adapters.CodexRefresh{OpenAI: adapters.OpenAIRefresh{}}})
@@ -107,7 +107,7 @@ func newDefaultModeAdapterRegistry(operatorOAuthClient *http.Client) *ModeAdapte
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAzure, mockTokenExchangeAdapter{providerName: "azure"})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey, staticModeAdapter{})
-	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, metadataTokenAdapter{})
+	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, vertexSAModeAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, newGeminiBuiltinClientOAuthModeAdapter("code_assist"))
 	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, newGeminiBuiltinClientOAuthModeAdapter("google_one"))
 	// gemini/antigravity refresh 标 Mandatory Roadmap，
