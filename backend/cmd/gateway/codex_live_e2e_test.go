@@ -47,7 +47,9 @@ const (
 	codexLiveDefaultModel = "gpt-5.5"
 	// chatgpt.com 按模型强制最低 Codex 版本;旧版(如 0.99.0)对 gpt-5.5 返回
 	// "requires a newer version of Codex" 400。须与已安装 codex CLI 版本一致。
-	codexLiveDefaultVersion = "0.139.0"
+	// 0.144.1:gpt-5.6 族有最低 Codex 版本门(实测 0.142→拒/0.144→过),旧版本会被上游拒
+	// "requires a newer version of Codex";gpt-5.5 在新版本下向后兼容仍工作。
+	codexLiveDefaultVersion = "0.144.1"
 	codexLiveQuotaLimit     = "1000.00000000"
 
 	codexLiveBootRetries   = 30
