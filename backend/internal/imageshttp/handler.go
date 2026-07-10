@@ -66,6 +66,9 @@ type Deps struct {
 	ClientIPResolver      *clientip.Resolver
 	// ReplicateCancelClient 可注入(测试/定制);nil 用包内默认 client(10s 超时)。
 	ReplicateCancelClient cancelHTTPDoer
+	// NonStreamKeepAliveInterval:图片生成(强制 buffered,可达数十秒)期间每隔此时长向客户端写
+	// 一个裸换行保活,避开 Cloudflare 等反代 ~100s 空闲超时。0=关(默认)。JSON 容忍前导空白。
+	NonStreamKeepAliveInterval time.Duration
 }
 
 type execution struct {

@@ -29,6 +29,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/httpkeepalive"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
@@ -105,6 +106,8 @@ type ChatHandlerDeps struct {
 	RetryBudget            retryBudgetGate
 	CredentialHotRefresher CredentialHotRefresher
 	ModelFallbackSettings  modelfallback.SettingsReader
+	// NonStreamKeepAliveInterval:非流式 buffered 长响应期间每隔此时长写裸换行保活,避开反代空闲超时;0=关。
+	NonStreamKeepAliveInterval time.Duration
 	// PlatformSettings 提供对平台级 feature flag 的读取访问。
 	// warmup_intercept_enabled 开关(SUB2-EGRESS-04)需要它。
 	PlatformSettings     platformSettingsReader
@@ -764,7 +767,9 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 	if dispatchRes.StatusCode >= 200 && dispatchRes.StatusCode < 300 && ex.shouldAggregateForcedStreamingBuffered() {
 		return ex.dispatchForcedStreamingBuffered(w, dispatchRes, seed, seedCtx, startedAt)
 	}
+	rawKeepalive := httpkeepalive.Start(w, ex.d.NonStreamKeepAliveInterval) // buffered 读慢接缝保活(见 Deps 字段注释)
 	raw, readErr := readRawBufferedUpstreamBody(dispatchRes.UpstreamReader)
+	rawKeepalive.Stop()
 	oversizedNon2xx := errors.Is(readErr, errRawBufferedUpstreamBodyTooLarge) && (dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300)
 	if readErr != nil && !oversizedNon2xx {
 		code := clienterr.CodeUpstreamReadError

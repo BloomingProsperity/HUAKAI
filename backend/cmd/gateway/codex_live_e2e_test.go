@@ -188,6 +188,18 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 				if res.usage.InputTokens+res.usage.OutputTokens+res.usage.TotalTokens <= 0 {
 					t.Fatalf("聚合后的 Responses JSON 缺 usage: %+v body=%s", res.usage, safeCodexLiveBody(res.body, ""))
 				}
+				// CF keepalive 判别:开启 HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL 时,buffered 上游耗时
+				// 远大于间隔(本用例真上游 ~数秒),响应体应带前导换行保活字节且不破坏 JSON 解析(上方
+				// bufferedID/usage 已从含前导空白的 body 解析成功)。变异:keepalive 未接线 → 0 前导 → 红。
+				if ka := strings.TrimSpace(os.Getenv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL")); ka != "" && ka != "0" && ka != "0s" {
+					lead := 0
+					for lead < len(res.body) && (res.body[lead] == '\n' || res.body[lead] == ' ') {
+						lead++
+					}
+					if lead == 0 {
+						t.Fatalf("keepalive 开启(%s)时 buffered 响应应有前导保活字节,实际 0(接线断?)", ka)
+					}
+				}
 			},
 		},
 	}

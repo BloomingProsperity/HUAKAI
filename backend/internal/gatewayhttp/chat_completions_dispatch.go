@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/clientgate"
+	"github.com/BloomingProsperity/HUAKAI/internal/httpkeepalive"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
@@ -667,7 +668,10 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		// R7 三路闭环第三路:HCSF canonical 非流式(默认走)。改写施加在 dispatcher marshal 出的最终上游 body 上(anthropic 往返丢 metadata,入口改 ex.body 流不过去);默认关时空操作字节等价、不污染缓存键。
 		IdentityRewrite: ex.identityRewrite,
 	})
+	// DispatchHCSF 是 canonical buffered 慢接缝(完整上游往返+聚合),keepalive 保活;Stop 在写 w 前。
+	canonicalKeepalive := httpkeepalive.Start(w, ex.d.NonStreamKeepAliveInterval)
 	bufferedEnv, err := dispatcher.DispatchHCSF(dispatchCtx, canonicalReq)
+	canonicalKeepalive.Stop()
 	// DispatchHCSF 内 MarshalToProviderRequest 会原地往 canonicalReq.CapabilityGraph.ProtocolLoss
 	// 追加 canonical→upstream marshal 损失(addMarshalLossRaw)。下方 dispatch-error 与
 	// finalizeBufferedEnvelope 的 empty-response abort 都走 ex.protocolLoss 快照,必须在此刷新,

@@ -756,6 +756,9 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		CredentialHotRefresher: d.credentialScheduler,
 		AuthCooldown:           d.authCooldown,
 		ModelFallbackSettings:  d.platformSettings,
+		// 非流式 keepalive 间隔:默认 0=关(不改现有行为)。反代(Cloudflare)前建议设
+		// HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL=85s,避开 ~100s 空闲超时掐断长 buffered 响应(图片生成等)。
+		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
 		// 平台设置读取(止漏装配):此前从不赋值 → 热路径恒 nil → warmup_intercept 与
 		// codex_client_access.* 全部键落库后运行时永不被读(死开关)。两族键默认均为
 		// 关/等价现行为,接上不翻转任何默认行为,仅让运维显式配置真正生效。
@@ -848,6 +851,8 @@ func imageHandlerDeps(d *deps) imageshttp.Deps {
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
 		ClientIPResolver:      d.clientIPResolver,
+		// 图片生成强制 buffered、可达数十秒;反代前设 HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL 保活。默认 0=关。
+		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
 	}
 }
 
