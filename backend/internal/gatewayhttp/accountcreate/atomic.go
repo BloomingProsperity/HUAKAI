@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,12 +36,24 @@ type Result struct {
 }
 
 // ValidateProtocolCompatibility 只给 Claude session 族加硬约束，既有协议族保持原行为。
+// ValidateProtocolCompatibility 校验 account 的 vendor/auth_mode/runtime 与 provider
+// family 契约一致(G1):防特权误配把 A 厂 key 绑到 B 厂 family,导致错投密钥、错误
+// transport/health 标签、计价归因分裂。无契约的 family 保守跳过(不误拒 R0 未覆盖族)。
 func ValidateProtocolCompatibility(family, accountType, vendor, authMode string) error {
-	if family != registrydefault.ProtocolAnthropicClaudeSession {
+	// session 族额外硬约束:account_type 必须 oauth/session(非 api_key)。
+	if family == registrydefault.ProtocolAnthropicClaudeSession {
+		if accountType != "oauth" && accountType != "session" {
+			return fmt.Errorf("%w: Claude session provider requires oauth/session account_type", ErrProtocolIncompatible)
+		}
+	}
+	if !servingcapability.HasContract(family) {
 		return nil
 	}
-	if accountType != "oauth" && accountType != "session" {
-		return fmt.Errorf("%w: Claude session provider requires oauth/session account_type", ErrProtocolIncompatible)
+	// account-first 模式:裸账号先建、凭据后加,create 期无 vendor/auth。此时无从校验,
+	// 推迟到凭据创建期(credential-create 守卫)兜住 account-first 的错配。credential-first
+	// (create 期已带 vendor/auth)在此 fail-fast。
+	if strings.TrimSpace(vendor) == "" && strings.TrimSpace(authMode) == "" {
+		return nil
 	}
 	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(vendor, authMode)
 	if err != nil {

@@ -105,6 +105,13 @@ func (r *ContractRegistry) All() []ServingCapabilityContract {
 	return out
 }
 
+// HasContract 报告某 family 是否有 serving 契约。供 G1 全族兼容校验判定:无契约的
+// family 保守跳过(不误拒 R0 未覆盖族),有契约的才强制 vendor/auth/runtime 一致。
+func HasContract(family string) bool {
+	_, ok := DefaultContractRegistry().Lookup(family)
+	return ok
+}
+
 // ValidateAccountCompatibility 校验 family、vendor、auth mode 与物化后的
 // runtime kind 是否同时落在同一 capability contract 内。配置面可在写入前
 // 调用，热路径则在发网前复核，避免错误账号混入同一 provider 后被选号。
