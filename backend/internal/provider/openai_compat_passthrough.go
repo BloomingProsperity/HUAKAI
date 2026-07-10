@@ -20,6 +20,8 @@ func (a *OpenAICompatPassthroughAdapter) Platform() string { return a.PlatformNa
 func (a *OpenAICompatPassthroughAdapter) AcceptableCredentialTypes() []CredentialType {
 	return []CredentialType{
 		CredentialTypeAPIKey,
+		// OAuth access token 对 OpenAI 兼容上游同样是 Bearer 凭据，例如 xAI Grok 订阅令牌。
+		CredentialTypeOAuthAccessToken,
 		CredentialTypeUpstreamPassthrough,
 	}
 }
@@ -45,6 +47,8 @@ func (a *OpenAICompatPassthroughAdapter) BuildRequest(ctx context.Context, in Bu
 
 	switch in.Credential.Type {
 	case CredentialTypeAPIKey:
+		req.Header.Set("Authorization", "Bearer "+in.Credential.Value)
+	case CredentialTypeOAuthAccessToken:
 		req.Header.Set("Authorization", "Bearer "+in.Credential.Value)
 	case CredentialTypeUpstreamPassthrough:
 		req.Header.Set("Authorization", in.Credential.Value)
