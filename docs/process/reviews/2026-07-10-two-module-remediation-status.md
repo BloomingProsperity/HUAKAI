@@ -26,7 +26,7 @@
 - **B0 结算失败四终局**(动钱,已落盘完整设计 2026-07-10-B0-*):非流式误扣未交付/流式已交付白吃/settle+DLQ双失败sweep非补偿/Replicate不释放。**缺口3正解=独立第二持久环,推翻 Owner D4(2026-05-24 只alert不disk spool)**;需 Owner 定:交付政策(完整业务体写成功才算交付)+ 第二环架构(外部队列 vs 本地WAL)+ 是否新增 delivery/settlement intent schema + 反转两个锁错终局测试。
 - **A1 released 族无 handler**:openrouter/cohere/ollama/ollama_native/dify/replicate 标 Released 但无 credential handler(不可导入),mistral/groqcloud/together/perplexity/fireworks 是 Scaffold 双 fail-closed。需 Owner 定:补 handler+DB 组合 vs 降级 release 状态(发布态翻转)。
 - **P1 定价发布期不 gate**:运行时查不到价 reserve 前 503(正确),但绑定创建不 probe 定价→可发布每次 reserve 503 的模型。需 Owner 定发布期定价预检。
-- **F1 Kimi endpoint 分流**:kimi_chat 恒打 coding endpoint,但契约允许 api_key(普通 Moonshot);普通 Moonshot key 无可选 endpoint。修复需 §16 三镜确认 Moonshot vs coding 分流 + 确保 kimi_oauth 携带 coding endpoint(否则改默认会破坏现有 coding 账号)——需谨慎设计切片。
+- **F1 Kimi endpoint 分流**:§16 核实——new-api 里 Moonshot=api.moonshot.cn、Kimi coding=api.kimi.com/coding/v1(不同 base URL);HUAKAI kimi_chat 恒打 coding。**已验证 kimi_oauth(anyOf=access_token/refresh_token)与 api_key(required=api_key)都不携带 endpoint,均靠 adapter 默认 coding**,故 kimi_oauth 对、api_key(Moonshot)错。改默认会破坏 coding 账号(不带 endpoint);正解=endpoint-by-auth-mode,但 base_url 覆盖机制被 S0 刻意限制为 passthrough-only(api_key 不能用)→ 触及 S0 收紧的机制 + kimi_chat 是否服务 Moonshot api_key 的功能取舍 = **Owner 设计决策**(选:endpoint-by-auth-mode 分流 / 拆两 family / api_key 拒收 fail-fast)。
 - **per-反转账号 ACL**:当前完整伪造 Claude Code 形态 + 同租户模型已授权的有效 key 会用池内反转账号(跨租户/禁用模型仍拦);是否需"哪个 key 用哪个具体反转账号"的细粒度 ACL 属产品/安全决策。
 - **Azure 专属 adapter**:S0 后 azure api-key fail-closed;完整 Azure 支持(base_url/deployment/api-version + api-key 头)是新 adapter 切片。
 
