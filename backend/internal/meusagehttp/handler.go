@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
@@ -37,6 +38,9 @@ type queryParams struct {
 	Limit, FetchLimit             int32
 	HasCursor                     bool
 	CursorID                      int64
+	Model                         *string
+	Provider                      *string
+	Outcome                       *string
 }
 
 type usageCursor struct {
@@ -69,7 +73,7 @@ type usageRecord struct {
 }
 
 // usageTokens 暴露每次请求的 token 明细，这些数据已存于 usage_records
-//（input/output 始终存在；cache 计数仅在非零时输出）。这是「中转请求日志」
+// （input/output 始终存在；cache 计数仅在非零时输出）。这是「中转请求日志」
 // 功能真正剩下的部分：GET /v1/me/usage 已经提供 model / cost / status /
 // provider / verify_hint，配合 keyset 分页与自我作用域的 relay-key 鉴权，
 // 因此我们只是暴露 ListUsageRecords 早已 SELECT 出来的 token 列 ——
@@ -91,7 +95,10 @@ type verifyHint struct {
 	TenantScopeRef    string `json:"tenant_scope_ref,omitempty"`
 }
 
-const cursorKind = "me_usage"
+const (
+	cursorKind          = "me_usage"
+	maxUsageFilterRunes = 200
+)
 
 func NewHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +134,9 @@ func NewHandler(d Deps) http.HandlerFunc {
 			FromTs:          q.FromTs,
 			ToTs:            q.ToTs,
 			APIKeyID:        &apiKeyID,
+			Model:           q.Model,
+			Provider:        q.Provider,
+			Outcome:         q.Outcome,
 			HasCursor:       q.HasCursor,
 			CursorCreatedAt: q.CursorCreatedAt,
 			CursorID:        q.CursorID,
@@ -181,6 +191,28 @@ func parseQuery(w http.ResponseWriter, u *url.URL) (queryParams, bool) {
 			return queryParams{}, false
 		}
 		q.HasCursor, q.CursorCreatedAt, q.CursorID = true, tsParam(&ts), id
+	}
+	if raw := trim(values, "model"); raw != "" {
+		if utf8.RuneCountInString(raw) > maxUsageFilterRunes {
+			writeJSONError(w, http.StatusBadRequest, "invalid_model", "model must not exceed 200 characters")
+			return queryParams{}, false
+		}
+		q.Model = &raw
+	}
+	if raw := trim(values, "provider"); raw != "" {
+		if utf8.RuneCountInString(raw) > maxUsageFilterRunes {
+			writeJSONError(w, http.StatusBadRequest, "invalid_provider", "provider must not exceed 200 characters")
+			return queryParams{}, false
+		}
+		q.Provider = &raw
+	}
+	switch raw := trim(values, "status"); raw {
+	case "":
+	case "success", "error":
+		q.Outcome = &raw
+	default:
+		writeJSONError(w, http.StatusBadRequest, "invalid_status", "status must be success or error")
+		return queryParams{}, false
 	}
 	return q, true
 }

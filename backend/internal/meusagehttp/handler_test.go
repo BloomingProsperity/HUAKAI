@@ -34,9 +34,11 @@ func (s authStub) Resolve(context.Context, *http.Request) (auth.Identity, error)
 type usageStoreStub struct {
 	rows    []dbbilling.ListUsageRecordsRow
 	listArg dbbilling.ListUsageRecordsParams
+	calls   int
 }
 
 func (s *usageStoreStub) ListUsageRecords(_ context.Context, arg dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
+	s.calls++
 	s.listArg = arg
 	rows := s.filter(arg.TenantID, arg.APIKeyID, arg.FromTs, arg.ToTs)
 	if arg.HasCursor {
@@ -239,6 +241,99 @@ func TestMeUsageScopesToAuthenticatedAPIKeyAndKeepsTrustFields(t *testing.T) {
 	}
 }
 
+// TestMeUsageFilterParamsPassThrough 守护 model/provider/status 从查询参数到
+// 数据库查询参数的完整接线。变异:漏传任一字段会留下 nil 或错误值并使断言变红。
+func TestMeUsageFilterParamsPassThrough(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage?model=gpt-4&status=error&provider=openai")
+
+	assertMeStatus(t, rec, http.StatusOK)
+	if store.calls != 1 {
+		t.Fatalf("用量 Store 调用次数=%d,期望 1", store.calls)
+	}
+	if got := store.listArg.Model; got == nil || *got != "gpt-4" {
+		t.Fatalf("Model=%v,期望非 nil 且值为 gpt-4", got)
+	}
+	if got := store.listArg.Provider; got == nil || *got != "openai" {
+		t.Fatalf("Provider=%v,期望非 nil 且值为 openai", got)
+	}
+	if got := store.listArg.Outcome; got == nil || *got != "error" {
+		t.Fatalf("Outcome=%v,期望非 nil 且值为 error", got)
+	}
+}
+
+// TestMeUsageStatusSuccessMapsOutcome 守护 success 状态映射。
+// 变异:删除或改错映射后,Outcome 会是 nil 或非 success,断言随即变红。
+func TestMeUsageStatusSuccessMapsOutcome(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage?status=success")
+
+	assertMeStatus(t, rec, http.StatusOK)
+	if store.calls != 1 {
+		t.Fatalf("用量 Store 调用次数=%d,期望 1", store.calls)
+	}
+	if got := store.listArg.Outcome; got == nil || *got != "success" {
+		t.Fatalf("Outcome=%v,期望非 nil 且值为 success", got)
+	}
+}
+
+// TestMeUsageRejectsInvalidStatus 守护非法状态在查询 Store 前被拒绝。
+// 变异:静默忽略非法状态会返回 200 并调用 Store,状态与调用次数断言都会变红。
+func TestMeUsageRejectsInvalidStatus(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage?status=foo")
+
+	assertMeStatus(t, rec, http.StatusBadRequest)
+	assertMeErrorCode(t, rec, "invalid_status")
+	if store.calls != 0 {
+		t.Fatalf("非法状态不应调用用量 Store,实际调用次数=%d", store.calls)
+	}
+}
+
+// TestMeUsageNoFiltersLeavesParamsNil 守护无过滤条件时的缺省语义。
+// 变异:误设任一过滤字段会使对应的 nil 断言变红。
+func TestMeUsageNoFiltersLeavesParamsNil(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage")
+
+	assertMeStatus(t, rec, http.StatusOK)
+	if store.calls != 1 {
+		t.Fatalf("用量 Store 调用次数=%d,期望 1", store.calls)
+	}
+	if store.listArg.Model != nil || store.listArg.Provider != nil || store.listArg.Outcome != nil {
+		t.Fatalf("无过滤条件时过滤参数必须全为 nil,实际 Model=%v Provider=%v Outcome=%v",
+			store.listArg.Model, store.listArg.Provider, store.listArg.Outcome)
+	}
+}
+
+// TestMeUsageRejectsOverlongModel 守护 model 的 200 字符上限。
+// 变异:移除长度校验会返回 200 并调用 Store,状态与调用次数断言都会变红。
+func TestMeUsageRejectsOverlongModel(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage?model="+strings.Repeat("a", 201))
+
+	assertMeStatus(t, rec, http.StatusBadRequest)
+	assertMeErrorCode(t, rec, "invalid_model")
+	if store.calls != 0 {
+		t.Fatalf("超长 model 不应调用用量 Store,实际调用次数=%d", store.calls)
+	}
+}
+
 func TestMeUsagePaginatesWithEndpointSpecificCursor(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	store := &usageStoreStub{rows: []dbbilling.ListUsageRecordsRow{
@@ -324,7 +419,7 @@ func TestMeUsageExposesPerRequestTokenCounts(t *testing.T) {
 // ListUsageRecords 也已 SELECT 它们;但 DTO 把它们丢弃了。
 // 这些是调用方自己的请求属性(且已在 admin 视图中),
 // 而非 ip/user_agent 这类第三方 PII。变异:丢掉这三个投影中任一个
-//(或 DTO 字段)-> stream 读出 false / 那些 omitempty 字符串键缺失 -> 变红。
+// (或 DTO 字段)-> stream 读出 false / 那些 omitempty 字符串键缺失 -> 变红。
 func TestMeUsageExposesStreamShapeAndTiming(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
@@ -358,7 +453,7 @@ func TestMeUsageExposesStreamShapeAndTiming(t *testing.T) {
 // stream/stream_terminated_reason/requested_at 的投影。mapGenerationUsageRecord
 // 把它们从 GetUsageRecordByRequestIDRow 接出;list 路径的测试不会走到本路径。
 // 变异:把 gen 路径的接线行清零 -> 单条记录响应丢失这些字段
-//(stream 读出 false,那些 omitempty 键缺失)-> 本测试变红。
+// (stream 读出 false,那些 omitempty 键缺失)-> 本测试变红。
 func TestGenerationExposesStreamShapeAndTiming(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	row := generationUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "R_A", "ledger-a", "anthropic")
@@ -396,7 +491,7 @@ func TestGenerationExposesStreamShapeAndTiming(t *testing.T) {
 // 区分度:这些 sentinel("203.0.113.7" / "probe-UA/1.0")绝不会出现在合法的
 // me payload(model/cost/tokens/provider/verify_hint)里,因此一旦 me mapper
 // 把任一字段透传出去,子串断言就会变红。
-//(已通过把该字段加进 usageRecord + mapUsageRecord 做变异验证。)
+// (已通过把该字段加进 usageRecord + mapUsageRecord 做变异验证。)
 func TestMeUsageDoesNotLeakClientIPOrUserAgent(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
@@ -449,6 +544,21 @@ func assertMeStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != want {
 		t.Fatalf("status=%d want=%d body=%s", rec.Code, want, rec.Body.String())
+	}
+}
+
+func assertMeErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("解析错误响应失败: %v body=%s", err, rec.Body.String())
+	}
+	if body.Error.Code != want {
+		t.Fatalf("错误码=%q,期望 %q body=%s", body.Error.Code, want, rec.Body.String())
 	}
 }
 
