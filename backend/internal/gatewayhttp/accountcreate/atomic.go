@@ -65,6 +65,28 @@ func ValidateProtocolCompatibility(family, accountType, vendor, authMode string)
 	return nil
 }
 
+// CredentialCompatLookup 是 credential 创建守卫所需的最小账号/协议查询接口。
+// *db/admin.Queries(经 AdminPoolAccountStore)天然满足。
+type CredentialCompatLookup interface {
+	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
+	GetProviderProtocolForAccountCreate(context.Context, admindb.GetProviderProtocolForAccountCreateParams) (string, error)
+}
+
+// ValidateCredentialCompatibility 校验将写入 account 的新凭据 vendor/auth 与账号 provider
+// family 兼容(收敛 G1 account-first + R1A credential-写入守卫)。查不到账号/协议时返回 nil
+// (fail-open,交调用方 Create / 运行时兼容检查兜底)。
+func ValidateCredentialCompatibility(ctx context.Context, lookup CredentialCompatLookup, tenantID, accountID int64, vendor, authMode string) error {
+	acct, err := lookup.GetAdminProviderAccount(ctx, admindb.GetAdminProviderAccountParams{ID: accountID, TenantID: tenantID})
+	if err != nil {
+		return nil
+	}
+	family, err := lookup.GetProviderProtocolForAccountCreate(ctx, admindb.GetProviderProtocolForAccountCreateParams{TenantID: tenantID, ProviderID: acct.ProviderID})
+	if err != nil {
+		return nil
+	}
+	return ValidateProtocolCompatibility(family, acct.AccountType, vendor, authMode)
+}
+
 // Insert 在同一事务内锁定 provider 协议、串行化渠道风险检查并插入账号。
 func Insert(ctx context.Context, pool *pgxpool.Pool, arg Params) (Result, error) {
 	if pool == nil {

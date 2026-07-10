@@ -160,17 +160,11 @@ func newCreateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 			return
 		}
 		// credential-create 守卫(收敛 G1 account-first + R1A):新凭据 vendor/auth 须与账号所属
-		// provider family 兼容,防给 live 账号加错配凭据(跨厂错投密钥/协议不符)。用 auth 派生
-		// tenant 查账号+协议;查不到则 fail-open(交 Create/运行时兼容检查兜底)。完整 race-free
-		// (与协议变更同事务)属层次重构;并发 TOCTOU 由运行时 ErrCredentialAmbiguous/兼容门兜底。
+		// provider family 兼容,防给 live 账号加错配凭据。并发 TOCTOU 由运行时兼容门兜底。
 		if d.AuditStore != nil {
-			if acct, aerr := d.AuditStore.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: accountID, TenantID: tenantID}); aerr == nil {
-				if family, ferr := d.AuditStore.GetProviderProtocolForAccountCreate(r.Context(), admindb.GetProviderProtocolForAccountCreateParams{TenantID: tenantID, ProviderID: acct.ProviderID}); ferr == nil {
-					if verr := accountcreate.ValidateProtocolCompatibility(family, acct.AccountType, req.Vendor, req.AuthMode); verr != nil {
-						writeJSONError(w, http.StatusBadRequest, "credential_protocol_incompatible", verr.Error())
-						return
-					}
-				}
+			if err := accountcreate.ValidateCredentialCompatibility(r.Context(), d.AuditStore, tenantID, accountID, req.Vendor, req.AuthMode); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "credential_protocol_incompatible", err.Error())
+				return
 			}
 		}
 		meta, err := d.Credentials.Create(r.Context(), credentialstore.CreateCredentialInput{
