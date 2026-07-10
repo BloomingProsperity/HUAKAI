@@ -28,7 +28,7 @@ import (
 func VendorFromProtocolFamily(pf string) string {
 	switch pf {
 	// —— 4-vendor 真实账号集合(标签锁定,勿动)——
-	case "anthropic_messages":
+	case "anthropic_messages", "anthropic_claude_session":
 		return "anthropic"
 	case "openai_chat", "openai_responses":
 		return "openai"

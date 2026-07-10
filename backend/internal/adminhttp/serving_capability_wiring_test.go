@@ -25,12 +25,6 @@ func TestDefaultCatalogMakesNonServingStatesExplicit(t *testing.T) {
 		reason   string
 	}{
 		{
-			name: "Claude OAuth 只采集不可 serving", vendor: credentialstore.VendorAnthropic,
-			authMode: credentialstore.AuthModeClaudeAIOAuth,
-			status:   servingcapability.StatusCollectableNotServing,
-			reason:   servingcapability.ReasonCollectableNotServing,
-		},
-		{
 			name: "Antigravity wire 未验证", vendor: credentialstore.VendorAntigravity,
 			authMode: credentialstore.AuthModeOAuth,
 			status:   servingcapability.StatusExperimentalWireUnverified,
@@ -48,6 +42,13 @@ func TestDefaultCatalogMakesNonServingStatesExplicit(t *testing.T) {
 			status:   servingcapability.StatusCollectOnly,
 			reason:   "released_or_experimental_contract_missing",
 		},
+	}
+	for _, authMode := range []string{credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode} {
+		mode := findCatalogMode(t, catalog, credentialstore.VendorAnthropic, authMode)
+		got := mode.ServingReadiness
+		if !got.Ready || !got.Enableable || !got.TrafficAllowed || got.Status != servingcapability.StatusReady || got.Reason != "" {
+			t.Fatalf("Anthropic/%s readiness=%+v, want released ready", authMode, got)
+		}
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,10 +87,6 @@ func TestProviderCatalogEnabledWriteRequiresCurrentProcessReadiness(t *testing.T
 			name: "env off family", family: registrydefault.ProtocolGeminiCodeAssist,
 			reason: servingcapability.ReasonAdapterNotRegistered,
 		},
-		{
-			name: "未接线 family", family: registrydefault.ProtocolAnthropicClaudeSession,
-			reason: servingcapability.ReasonCollectableNotServing,
-		},
 	}
 
 	for _, tc := range tests {
@@ -118,10 +115,24 @@ func TestProviderCatalogEnabledWriteRequiresCurrentProcessReadiness(t *testing.T
 			}
 		})
 	}
+
+	t.Run("Claude session enabled 正向写入", func(t *testing.T) {
+		store := newProviderCatalogQueriesStub()
+		rec := invokeProviderCatalogRequest(t, AdminProviderCatalogDeps{
+			Auth: apiKeyAuthStub{ident: tenantOperator(7)}, Store: store,
+		}, http.MethodPost, "/admin/v1/providers", map[string]any{
+			"code": "claude-session", "display_name": "Claude Session",
+			"upstream_protocol": registrydefault.ProtocolAnthropicClaudeSession, "enabled": true,
+		})
+		assertProviderCatalogStatus(t, rec, http.StatusCreated)
+		if store.createCalls != 1 || !store.createArg.Enabled || store.createArg.UpstreamProtocol != registrydefault.ProtocolAnthropicClaudeSession {
+			t.Fatalf("Claude session enabled 写入未落到 store: calls=%d arg=%+v", store.createCalls, store.createArg)
+		}
+	})
 }
 
-// 变异：把 requireProviderCatalogServingReadiness 的 disabled 旁路恢复为对所有
-// family 放行，contract-only 子项必须因从 422 退化为 201 而变红。
+// 变异：删掉 Claude session 默认注册后，canonical 与闭合门会产生相反结论，
+// 本测试必须因 disabled 写入不再落库而变红。
 func TestProviderCatalogDisabledWriteBypassesOnlyCanonicalFamilies(t *testing.T) {
 	setAdminSessionAdapterEnvironment(t, false)
 	tests := []struct {
@@ -135,8 +146,8 @@ func TestProviderCatalogDisabledWriteBypassesOnlyCanonicalFamilies(t *testing.T)
 			canonical: true,
 		},
 		{
-			name: "contract-only family", family: registrydefault.ProtocolAnthropicClaudeSession,
-			canonical: false, reason: servingcapability.ReasonCollectableNotServing,
+			name: "released Claude session family", family: registrydefault.ProtocolAnthropicClaudeSession,
+			canonical: true,
 		},
 	}
 	for _, tc := range tests {

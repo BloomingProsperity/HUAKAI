@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -222,6 +223,25 @@ func TestCountTokensPassthroughNoBilling(t *testing.T) {
 	}
 }
 
+// TestCountTokensRejectsClaudeSessionMandatoryRoadmap 防止 messages serving ready
+// 被错误外推成 session count_tokens ready；本切片必须在选号和发网前 501。
+func TestCountTokensRejectsClaudeSessionMandatoryRoadmap(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: `{"input_tokens":1}`})
+	env.deps.Registry = registryStub{protocolFamily: registrydefault.ProtocolAnthropicClaudeSession}
+
+	rec := env.invokeCountTokens(t, `{"model":"claude-session","messages":[{"role":"user","content":"hello"}]}`)
+
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "count_tokens_not_supported_for_protocol") {
+		t.Fatalf("status=%d body=%s want 501 mandatory-roadmap rejection", rec.Code, rec.Body.String())
+	}
+	if env.dispatcher.calls != 0 {
+		t.Fatalf("dispatcher calls=%d want 0 for unsupported session count_tokens", env.dispatcher.calls)
+	}
+	if len(env.claims.reserves) != 0 || len(env.settler.settles) != 0 || len(env.settler.aborts) != 0 {
+		t.Fatalf("count_tokens 越界路径触碰钱账: reserves/settles/aborts=%d/%d/%d", len(env.claims.reserves), len(env.settler.settles), len(env.settler.aborts))
+	}
+}
+
 func TestCountTokensAuthRequired(t *testing.T) {
 	env := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: `{"input_tokens":1}`})
 	env.deps.Auth = authStub{err: errors.New("invalid bearer")}
@@ -329,14 +349,20 @@ func (s authStub) Resolve(context.Context, *http.Request) (auth.Identity, error)
 	return s.ident, s.err
 }
 
-type registryStub struct{}
+type registryStub struct {
+	protocolFamily string
+}
 
-func (registryStub) ResolveModel(_ context.Context, publicAlias string, _ int64) (registry.Resolved, error) {
+func (s registryStub) ResolveModel(_ context.Context, publicAlias string, _ int64) (registry.Resolved, error) {
+	protocolFamily := s.protocolFamily
+	if protocolFamily == "" {
+		protocolFamily = registrydefault.ProtocolOpenAIChat
+	}
 	return registry.Resolved{
 		PublicAlias:      publicAlias,
 		CanonicalModelID: "completion/canonical",
 		ProviderModelID:  "text-davinci-003",
-		ProtocolFamily:   "openai_chat",
+		ProtocolFamily:   protocolFamily,
 		PoolCandidates:   []int64{101},
 		SnapshotVersion:  "registry:7:1",
 	}, nil

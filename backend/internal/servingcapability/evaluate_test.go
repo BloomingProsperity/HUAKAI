@@ -358,6 +358,37 @@ func TestEvaluateAccountEligibilityDistinguishesExpiryAndHealthGaps(t *testing.T
 	}
 }
 
+// TestClaudeSessionAccountCompatibility 咬住 session family 的 vendor/auth/runtime
+// 三元组；任一维度退回 API key 或 transport vendor 字符串都必须被拒。
+func TestClaudeSessionAccountCompatibility(t *testing.T) {
+	valid := []struct {
+		authMode string
+		runtime  string
+	}{
+		{credentialstore.AuthModeClaudeAIOAuth, credentialstore.RuntimeOAuthAccessToken},
+		{credentialstore.AuthModeClaudeCode, credentialstore.RuntimeSessionToken},
+	}
+	for _, tc := range valid {
+		if err := ValidateAccountCompatibility(registrydefault.ProtocolAnthropicClaudeSession, credentialstore.VendorAnthropic, tc.authMode, tc.runtime); err != nil {
+			t.Fatalf("valid %s/%s: %v", tc.authMode, tc.runtime, err)
+		}
+	}
+	invalid := []struct {
+		vendor   string
+		authMode string
+		runtime  string
+	}{
+		{"anthropic_claude_session", credentialstore.AuthModeClaudeAIOAuth, credentialstore.RuntimeOAuthAccessToken},
+		{credentialstore.VendorAnthropic, credentialstore.AuthModeAPIKey, credentialstore.RuntimeAPIKey},
+		{credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode, credentialstore.RuntimeAPIKey},
+	}
+	for _, tc := range invalid {
+		if err := ValidateAccountCompatibility(registrydefault.ProtocolAnthropicClaudeSession, tc.vendor, tc.authMode, tc.runtime); err == nil {
+			t.Fatalf("invalid tuple unexpectedly accepted: vendor=%s auth=%s runtime=%s", tc.vendor, tc.authMode, tc.runtime)
+		}
+	}
+}
+
 func TestEvaluateModelSellabilityDistinguishesPricingGap(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	evaluator := NewEvaluator(nil, productionRuntimeSources(registrydefault.Build()))

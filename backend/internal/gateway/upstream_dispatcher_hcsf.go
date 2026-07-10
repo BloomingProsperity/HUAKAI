@@ -25,25 +25,13 @@ type HCSFDispatchInput struct {
 	RawBody           []byte
 	BodyControls      DispatchBodyControls
 	InboundBetaTokens []string
-	// IdentityRewrite 是 R7 身份改写钩子(默认关 + fail-open),由接线方
-	// (gatewayhttp)注入。HCSF canonical 非流式路径里,上游真实 body 由
-	// MarshalToProviderRequest 从 canonical 结构重新 marshal 出来 —— anthropic
-	// marshal 不带 metadata 字段(且 RequestToCanonical 把 metadata 整段丢弃,
-	// 仅记 d1_metadata_not_yet_implemented loss),故在 dispatch 入口对 ex.body
-	// 做改写【流不过去】。本钩子把改写施加在【已 marshal 出的最终上游 body】上,
-	// 让 R7 也覆盖默认走的 HCSF 非流式路径(与流式 / legacy raw 两路并成三路闭环)。
-	//
-	// 语义保持单一来源:钩子实参就是 gatewayhttp 的 ex.identityRewrite —— 默认关
-	// 时它返回入参 body 的逐字节拷贝(空操作),故默认关时本路径字节等价;开关开 +
-	// 账号带 external id + secret 时才把 metadata.user_id 投影成池账号身份(对
-	// anthropic marshal 出的无 metadata body 走 inject 路径补出 metadata.user_id)。
-	// nil 时不施加(零行为变化)。
+	OfficialDirect    bool
+	// IdentityRewrite 作用于 HCSF marshal 后的最终 body；nil 表示不改写。
+	// 开关、fail-open 与身份投影语义由接线方统一提供。
 	IdentityRewrite func([]byte) []byte
 }
 
-// applyIdentityRewrite 对已构造的上游 body 施加 R7 身份改写钩子(nil / 空 body 时
-// 原样返回)。改写逻辑与 fail-open / 默认关短路全由钩子自身保证,本函数只负责
-// "钩子存在且 body 非空时调用它"。
+// applyIdentityRewrite 在钩子存在且 body 非空时处理最终出站字节。
 func applyIdentityRewrite(body []byte, rewrite func([]byte) []byte) []byte {
 	if rewrite == nil || len(body) == 0 {
 		return body
@@ -64,9 +52,7 @@ func hcsfDispatchInputFromContext(ctx context.Context) HCSFDispatchInput {
 	return HCSFDispatchInput{}
 }
 
-// HCSFDispatchInputFromContext 是 hcsfDispatchInputFromContext 的导出形式,供
-// 接线方(gatewayhttp)的 dispatcher 实现在 DispatchHCSF 内取回本次 dispatch 的
-// 输入(含 R7 IdentityRewrite 钩子),以断言接线真发生。生产路径不依赖它。
+// HCSFDispatchInputFromContext 供接线方读取本次 dispatch 输入并做接线断言。
 func HCSFDispatchInputFromContext(ctx context.Context) HCSFDispatchInput {
 	return hcsfDispatchInputFromContext(ctx)
 }
@@ -292,6 +278,16 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 	if len(controlsOpt) > 0 {
 		controls = controlsOpt[0]
 	}
+	if hcsfDispatchInputFromContext(ctx).OfficialDirect {
+		if endpointFamily != "anthropic_claude_session" || ingressFamily != "anthropic_messages" {
+			return nil, fmt.Errorf("dispatcher: official direct raw body rejects endpoint=%q ingress=%q", endpointFamily, ingressFamily)
+		}
+		if len(nativeRawBody) == 0 || controls.Enabled() {
+			return nil, errors.New("dispatcher: official direct requires raw body without body controls")
+		}
+		in.InboundBody = applyIdentityRewrite(nativeRawBody, identityRewrite)
+		return a.BuildRequest(ctx, in)
+	}
 	if b, ok := a.(envelopeRequestBuilder); ok {
 		req, err := b.BuildRequestFromEnvelope(ctx, in, env)
 		if err != nil {
@@ -415,6 +411,9 @@ func hcsfProviderRequestModelFamily(endpointFamily string) string {
 		// Anthropic-on-Vertex:HCSF marshal 出标准 anthropic_messages body,
 		// vertex.PassthroughAdapter（ModeAnthropic）再剥 model/stream + 注
 		// anthropic_version 改写成 Vertex rawPredict 形（两步串联）。
+		return "anthropic_messages"
+	case "anthropic_claude_session":
+		// OAuth/session 只改变凭据与准入策略，请求线形仍是 Anthropic Messages。
 		return "anthropic_messages"
 	case "openai_codex":
 		// 非 responses/非同族入站(chat/messages)复用 Responses 形投影;

@@ -71,6 +71,7 @@ var defaultProtocolFamilies = []string{
 	ProtocolOpenAIResponses,
 	ProtocolOpenAICodex,
 	ProtocolAnthropicMessages,
+	ProtocolAnthropicClaudeSession,
 	ProtocolGeminiMessages,
 	ProtocolOpenRouterChat,
 	ProtocolBedrockInvoke,
@@ -231,9 +232,9 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolOpenAICodex, &openai.CodexSessionAdapter{})
 
 	r.MustRegister(ProtocolAnthropicMessages, &anthropic.PassthroughAdapter{})
-	// S1-005：provider 侧的 OAuthSessionAdapter 已存在，但
-	// anthropic_claude_session 的 serving 路径尚未端到端完整接线。
-	// 默认保持 fail-closed，而不是暴露一个只服务到一半的 family。
+	// Claude OAuth/session 独立协议族只接受 OAuth/session 运行时凭据；
+	// 平台仍归一为 anthropic，避免 transport、选号与计价产生第二套 vendor。
+	r.MustRegister(ProtocolAnthropicClaudeSession, &anthropic.OAuthSessionAdapter{})
 	r.MustRegister(ProtocolGeminiMessages, &gemini.PassthroughAdapter{})
 	r.MustRegister(ProtocolOpenRouterChat, &openrouter.PassthroughAdapter{})
 	// AutoTranslateAnthropicAPIBody=true 让 Anthropic CLI / Claude Code 直发的

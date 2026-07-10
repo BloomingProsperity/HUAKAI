@@ -12,6 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
 func NewCountTokensHandler(d Deps) http.HandlerFunc {
@@ -49,6 +50,10 @@ func NewCountTokensHandler(d Deps) http.HandlerFunc {
 			payloadHash:    bodyHash(body),
 		}
 		if !ex.prepareRoute(w, req.Model) {
+			return
+		}
+		if ex.resolved.ProtocolFamily == registrydefault.ProtocolAnthropicClaudeSession {
+			writeJSONError(w, http.StatusNotImplemented, "count_tokens_not_supported_for_protocol", "count_tokens is not enabled for Claude session serving")
 			return
 		}
 		ex.runCountTokens(w, req.Model)

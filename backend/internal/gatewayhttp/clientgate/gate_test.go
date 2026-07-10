@@ -1,6 +1,7 @@
 package clientgate
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,40 @@ func reqWithUA(ua string) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	r.Header.Set("User-Agent", ua)
 	return r
+}
+
+func strictAnthropicGateFixture() (*http.Request, []byte) {
+	body := []byte(`{"model":"claude-sonnet","max_tokens":8,"system":[{"type":"text","text":"supported CLI"}],"metadata":{"user_id":"user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_account_00000000-1111-2222-3333-444444444444_session_11111111-2222-3333-4444-555555555555"},"messages":[{"role":"user","content":"hi"}]}`)
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("User-Agent", "claude-cli/2.1.78 (external, cli)")
+	r.Header.Set("X-App", "cli")
+	r.Header.Set("X-Stainless-Lang", "js")
+	r.Header.Set("X-Stainless-Runtime", "node")
+	r.Header.Set("X-Stainless-Package-Version", "0.74.0")
+	r.Header.Set("X-Stainless-Retry-Count", "0")
+	r.Header.Set("Anthropic-Version", "2023-06-01")
+	r.Header.Set("Anthropic-Beta", "claude-code-20250219")
+	return r, body
+}
+
+// TestDecideWithBodyAnthropicIsClosedTwoState 守住 S1 的封闭状态机：严格 fixture
+// 只能 OfficialDirect；只保留 UA/X-Client 的伪造请求只能 Reject，不存在 raw allow。
+func TestDecideWithBodyAnthropicIsClosedTwoState(t *testing.T) {
+	r, body := strictAnthropicGateFixture()
+	got := DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, r, body)
+	if got.Decision != DecisionOfficialDirect || !bytes.Equal(got.Body, body) {
+		t.Fatalf("官方 fixture result=%+v want official_direct + byte equivalent", got)
+	}
+
+	spoof := r.Clone(r.Context())
+	spoof.Header = make(http.Header)
+	spoof.Header.Set("User-Agent", "claude-cli/2.1.78 (external, cli)")
+	spoof.Header.Set("X-Client-Name", "Claude Code")
+	got = DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, spoof, body)
+	if got.Decision != DecisionReject || got.Reason != ReasonOfficialClientRequired || len(got.Body) != 0 {
+		t.Fatalf("伪造 fixture result=%+v want reject without raw body", got)
+	}
 }
 
 // TestCodexAccessApplies 守住加固层生效范围:仅 codex vendor 反转号 + CodexCLIOnly 开启才生效;

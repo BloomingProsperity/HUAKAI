@@ -29,10 +29,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokenestimate"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -253,6 +255,9 @@ func (ex *chatExecution) activeBindingMetadata() (registry.BindingMetadata, bool
 }
 
 func (ex *chatExecution) activeDispatchBodyControls() gateway.DispatchBodyControls {
+	if ex != nil && ex.officialDirect && ex.resolved.ProtocolFamily == "anthropic_claude_session" {
+		return gateway.DispatchBodyControls{}
+	}
 	binding, ok := ex.activeBindingMetadata()
 	if !ok {
 		return gateway.DispatchBodyControls{}
@@ -553,6 +558,24 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	}
 	ex.cred = credentialWithNativeStreamMode(cred, ex.clientProtocol, ex.req.Stream)
 	ex.accInfo = accInfo
+	if ex.resolved.ProtocolFamily == registrydefault.ProtocolAnthropicClaudeSession {
+		runtimeKind, ok := servingcapability.RuntimeKindForProviderCredential(ex.cred.Type)
+		if !ok {
+			runtimeKind = string(ex.cred.Type)
+		}
+		if err := servingcapability.ValidateAccountCompatibility(ex.resolved.ProtocolFamily, accInfo.Platform, accInfo.AccountType, runtimeKind); err != nil {
+			abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "credential_protocol_incompatible", 0, ex.protocolLoss)
+			failure := classifiedFailureFromDecision(clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), gateway.Classification{}, gateway.AttemptRetryDecision{
+				RetryableBeforeDelivery:         true,
+				SwitchAccount:                   true,
+				ClientStatus:                    http.StatusServiceUnavailable,
+				AbortReason:                     "credential_protocol_incompatible",
+				CountsAgainstAuthFailoverBudget: true,
+			}, err)
+			failure.EndClass = gateway.UpstreamError5xx
+			return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
+		}
+	}
 	ex.forwardReq = gateway.ForwardRequest{
 		TenantID:             ex.ident.TenantID,
 		AccountID:            ex.acquiredAccountID,
@@ -576,13 +599,21 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	return nil
 }
 
-// enforceOfficialClient 对反转/订阅号(oauth/session)校验入站客户端准入:决策委派给
-// clientgate(片2e vendor/账号级官方客户端门 + 片2f codex 全局加固层);被拒时释放本次预扣
-// 后返回终态 403。apikey 等账号类型不设限。
+// enforceOfficialClient 对 oauth/session 账号执行客户端准入；拒绝时释放预扣并返回 403。
+// API key 等既有账号类型保持原行为。
 func (ex *chatExecution) enforceOfficialClient() *classifiedAttemptFailure {
-	deny, reason := clientgate.Decide(ex.ctx, ex.d.PlatformSettings, ex.accInfo.AccountType, ex.accInfo.Platform, ex.accInfo.CodexCLIOnly, ex.r)
-	if !deny {
+	result := clientgate.DecideWithBody(ex.ctx, ex.d.PlatformSettings, ex.accInfo.AccountType, ex.accInfo.Platform, ex.accInfo.CodexCLIOnly, ex.r, ex.body)
+	if result.Decision == clientgate.DecisionOfficialDirect {
+		ex.body = result.Body
+		ex.officialDirect = true
 		return nil
+	}
+	if result.Decision != clientgate.DecisionReject {
+		return nil
+	}
+	reason := result.Reason
+	if reason == "" {
+		reason = clientgate.ReasonOfficialClientRequired
 	}
 	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, reason, 0, ex.protocolLoss)
 	failure := terminalLocalAttemptFailure(http.StatusForbidden, clienterr.CodeOfficialClientRequired, clienterr.MessageFor(clienterr.CodeOfficialClientRequired), reason, nil)
@@ -665,8 +696,11 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		RawBody:           ex.upstreamInboundBody(ex.body),
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),
+		OfficialDirect:    ex.officialDirect,
 		// R7 三路闭环第三路:HCSF canonical 非流式(默认走)。改写施加在 dispatcher marshal 出的最终上游 body 上(anthropic 往返丢 metadata,入口改 ex.body 流不过去);默认关时空操作字节等价、不污染缓存键。
-		IdentityRewrite: ex.identityRewrite,
+		IdentityRewrite: func(body []byte) []byte {
+			return chatpipe.OutboundDispatchBody(ex.officialDirect, ex.resolved.ProtocolFamily, body, ex.identityRewrite)
+		},
 	})
 	// DispatchHCSF 是 canonical buffered 慢接缝(完整上游往返+聚合),keepalive 保活;Stop 在写 w 前。
 	canonicalKeepalive := httpkeepalive.Start(w, ex.d.NonStreamKeepAliveInterval)

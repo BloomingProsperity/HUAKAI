@@ -5,12 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -35,7 +37,7 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 
 // TestSupportedProtocolFamiliesMatchOptInRegistration 守导出集合是注册路径的
 // 单一配置面真相源。变异证明:新增 MustRegister 但漏补集合 → len/成员断言红;
-// 把 fail-closed 死常量加入集合 → negative 断言红。
+// 漏掉默认 Claude session family → 正向成员断言红。
 func TestSupportedProtocolFamiliesMatchOptInRegistration(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	for _, env := range []string{
@@ -59,22 +61,72 @@ func TestSupportedProtocolFamiliesMatchOptInRegistration(t *testing.T) {
 			t.Fatalf("registered[%d]=%q want supported[%d]=%q; registered=%v supported=%v", i, got[i], i, want[i], got, want)
 		}
 	}
-	if IsSupportedProtocolFamily(ProtocolAnthropicClaudeSession) {
-		t.Fatalf("%q 当前没有注册路径,不得进入支持集合", ProtocolAnthropicClaudeSession)
+	if !IsSupportedProtocolFamily(ProtocolAnthropicClaudeSession) {
+		t.Fatalf("%q 已有默认注册路径,必须进入支持集合", ProtocolAnthropicClaudeSession)
 	}
 }
 
-// TestMigration0172ContainsSupportedProtocolFamilies 守 DB CHECK 与 adapter
-// 注册路径同步。变异证明:从 0172 up 的 CHECK 删除任一支持族 → 本测试红。
-func TestMigration0172ContainsSupportedProtocolFamilies(t *testing.T) {
-	raw := readRegistryDefaultMigration(t, "0172_models_protocol_family_registered_adapters.up.sql")
+// TestMigration0174ContainsSupportedProtocolFamilies 守 DB CHECK 与 adapter
+// 注册路径同步。变异证明:从 0174 up 的 CHECK 删除任一支持族 → 本测试红。
+func TestMigration0174ContainsSupportedProtocolFamilies(t *testing.T) {
+	raw := readRegistryDefaultMigration(t, "0174_models_protocol_family_anthropic_claude_session.up.sql")
 	for _, family := range SupportedProtocolFamilies() {
 		if !strings.Contains(raw, "'"+family+"'") {
-			t.Errorf("0172 up migration missing protocol_family %q", family)
+			t.Errorf("0174 up migration missing protocol_family %q", family)
 		}
 	}
-	if strings.Contains(raw, "'"+ProtocolAnthropicClaudeSession+"'") {
-		t.Fatalf("0172 up migration must not include fail-closed family %q", ProtocolAnthropicClaudeSession)
+	if !strings.Contains(raw, "'"+ProtocolAnthropicClaudeSession+"'") {
+		t.Fatalf("0174 up migration must include serving family %q", ProtocolAnthropicClaudeSession)
+	}
+}
+
+// TestMigration0174ProtocolFamilySetsAreExact 防止“只包含但多放了未知族”或 down
+// 回退到更早缩水集合。up 必须精确等于支持集；down 必须精确等于 0172 up。
+func TestMigration0174ProtocolFamilySetsAreExact(t *testing.T) {
+	up := protocolFamiliesInMigration(t, "0174_models_protocol_family_anthropic_claude_session.up.sql")
+	down := protocolFamiliesInMigration(t, "0174_models_protocol_family_anthropic_claude_session.down.sql")
+	previous := protocolFamiliesInMigration(t, "0172_models_protocol_family_registered_adapters.up.sql")
+	assertStringSlicesEqual(t, up, sortedCopy(SupportedProtocolFamilies()), "0174 up vs supported")
+	assertStringSlicesEqual(t, down, previous, "0174 down vs 0172 up")
+}
+
+var migrationFamilyLiteral = regexp.MustCompile(`'([a-z][a-z0-9_]+)'`)
+
+func protocolFamiliesInMigration(t *testing.T, name string) []string {
+	t.Helper()
+	raw := readRegistryDefaultMigration(t, name)
+	if start := strings.LastIndex(raw, "ALTER TABLE models ADD CONSTRAINT models_protocol_family_check"); start >= 0 {
+		raw = raw[start:]
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, match := range migrationFamilyLiteral.FindAllStringSubmatch(raw, -1) {
+		family := match[1]
+		if seen[family] {
+			continue
+		}
+		seen[family] = true
+		out = append(out, family)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedCopy(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return out
+}
+
+func assertStringSlicesEqual(t *testing.T, got, want []string, label string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s len=%d want %d\ngot=%v\nwant=%v", label, len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s mismatch at %d: got=%q want=%q\ngot=%v\nwant=%v", label, i, got[i], want[i], got, want)
+		}
 	}
 }
 
@@ -134,6 +186,7 @@ func TestBuild_AdaptersAreReachable(t *testing.T) {
 	for _, pf := range []string{
 		ProtocolOpenAIChat,
 		ProtocolAnthropicMessages,
+		ProtocolAnthropicClaudeSession,
 		ProtocolGeminiMessages,
 		ProtocolOpenRouterChat,
 		ProtocolBedrockInvoke,
@@ -164,37 +217,38 @@ func TestBuild_PlatformIDsCorrect(t *testing.T) {
 	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 	cases := map[string]string{
-		ProtocolOpenAIChat:        "openai",
-		ProtocolOpenAIResponses:   "openai",
-		ProtocolOpenAICodex:       "openai_codex",
-		ProtocolAnthropicMessages: "anthropic",
-		ProtocolGeminiMessages:    "gemini",
-		ProtocolOpenRouterChat:    "openrouter",
-		ProtocolBedrockInvoke:     "bedrock",
-		ProtocolGrokChat:          "grok",
-		ProtocolDeepSeekChat:      "deepseek",
-		ProtocolMistralChat:       "mistral",
-		ProtocolGroqCloudChat:     "groqcloud",
-		ProtocolTogetherChat:      "together",
-		ProtocolPerplexityChat:    "perplexity",
-		ProtocolFireworksChat:     "fireworks",
-		ProtocolKimiChat:          "kimi",
-		ProtocolQwenChat:          "qwen",
-		ProtocolGLMChat:           "glm",
-		ProtocolYiChat:            "yi",
-		ProtocolBaichuanChat:      "baichuan",
-		ProtocolDoubaoChat:        "doubao",
-		ProtocolErnieChat:         "ernie",
-		ProtocolStepChat:          "step",
-		ProtocolHunyuanChat:       "hunyuan",
-		ProtocolMinimaxChat:       "minimax",
-		ProtocolCohereChat:        "cohere",
-		ProtocolOllamaChat:        "ollama",
-		ProtocolOllamaNative:      "ollama",
-		ProtocolDifyChat:          "dify",
-		ProtocolReplicateImage:    "replicate",
-		ProtocolVertexGemini:      "vertex",
-		ProtocolVertexAnthropic:   "vertex",
+		ProtocolOpenAIChat:             "openai",
+		ProtocolOpenAIResponses:        "openai",
+		ProtocolOpenAICodex:            "openai_codex",
+		ProtocolAnthropicMessages:      "anthropic",
+		ProtocolAnthropicClaudeSession: "anthropic",
+		ProtocolGeminiMessages:         "gemini",
+		ProtocolOpenRouterChat:         "openrouter",
+		ProtocolBedrockInvoke:          "bedrock",
+		ProtocolGrokChat:               "grok",
+		ProtocolDeepSeekChat:           "deepseek",
+		ProtocolMistralChat:            "mistral",
+		ProtocolGroqCloudChat:          "groqcloud",
+		ProtocolTogetherChat:           "together",
+		ProtocolPerplexityChat:         "perplexity",
+		ProtocolFireworksChat:          "fireworks",
+		ProtocolKimiChat:               "kimi",
+		ProtocolQwenChat:               "qwen",
+		ProtocolGLMChat:                "glm",
+		ProtocolYiChat:                 "yi",
+		ProtocolBaichuanChat:           "baichuan",
+		ProtocolDoubaoChat:             "doubao",
+		ProtocolErnieChat:              "ernie",
+		ProtocolStepChat:               "step",
+		ProtocolHunyuanChat:            "hunyuan",
+		ProtocolMinimaxChat:            "minimax",
+		ProtocolCohereChat:             "cohere",
+		ProtocolOllamaChat:             "ollama",
+		ProtocolOllamaNative:           "ollama",
+		ProtocolDifyChat:               "dify",
+		ProtocolReplicateImage:         "replicate",
+		ProtocolVertexGemini:           "vertex",
+		ProtocolVertexAnthropic:        "vertex",
 	}
 	for pf, wantPlatform := range cases {
 		a, err := r.For(pf)
@@ -369,14 +423,34 @@ func TestBuild_OpenAIResponsesEndpointIsResponsesAPI(t *testing.T) {
 	}
 }
 
-func TestBuild_AnthropicClaudeSessionDefaultFailClosed(t *testing.T) {
+func TestBuild_AnthropicClaudeSessionDefaultServing(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
 
-	_, err := r.For(ProtocolAnthropicClaudeSession)
-	if !errors.Is(err, provider.ErrAdapterNotRegistered) {
-		t.Fatalf("For(%q) err=%v want ErrAdapterNotRegistered", ProtocolAnthropicClaudeSession, err)
+	a, err := r.For(ProtocolAnthropicClaudeSession)
+	if err != nil {
+		t.Fatalf("For(%q): %v", ProtocolAnthropicClaudeSession, err)
+	}
+	if _, ok := a.(*anthropic.OAuthSessionAdapter); !ok {
+		t.Fatalf("For(%q) type=%T want *anthropic.OAuthSessionAdapter", ProtocolAnthropicClaudeSession, a)
+	}
+	if got := a.Platform(); got != "anthropic" {
+		t.Fatalf("For(%q) Platform=%q want anthropic", ProtocolAnthropicClaudeSession, got)
+	}
+	wantTypes := []provider.CredentialType{
+		provider.CredentialTypeOAuthAccessToken,
+		provider.CredentialTypeSessionToken,
+		provider.CredentialTypeUpstreamPassthrough,
+	}
+	gotTypes := a.AcceptableCredentialTypes()
+	if len(gotTypes) != len(wantTypes) {
+		t.Fatalf("For(%q) credential types=%v want %v", ProtocolAnthropicClaudeSession, gotTypes, wantTypes)
+	}
+	for i := range wantTypes {
+		if gotTypes[i] != wantTypes[i] {
+			t.Fatalf("For(%q) credential types=%v want %v", ProtocolAnthropicClaudeSession, gotTypes, wantTypes)
+		}
 	}
 }
 

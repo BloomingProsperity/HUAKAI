@@ -2,6 +2,18 @@
 -- Read-only directory data for admin UI. These SELECT lists intentionally
 -- exclude tenant_id and every credential-bearing provider_accounts column.
 
+-- name: GetProviderProtocolForAccountCreate :one
+-- 账号创建事务内读取并锁定 provider 协议。必须用 FOR SHARE 而非 FOR KEY SHARE:
+-- upstream_protocol 是非键列,管理端改它取 FOR NO KEY UPDATE 锁;FOR KEY SHARE 与之
+-- 不冲突,会放过"创建读旧协议→管理端改新协议→创建插入不兼容账号"的 TOCTOU。
+-- FOR SHARE 与 FOR NO KEY UPDATE 冲突,把协议钉到创建事务提交,同时允许并发创建共存。
+SELECT upstream_protocol
+FROM providers
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(provider_id)::bigint
+  AND deleted_at IS NULL
+FOR SHARE;
+
 -- name: ListAdminProvidersByTenant :many
 SELECT
     id,

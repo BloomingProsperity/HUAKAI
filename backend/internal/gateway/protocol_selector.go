@@ -91,6 +91,7 @@ func (r *StaticProtocolAdapterRegistry) For(family string) (proto.UpstreamAdapte
 func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r := NewStaticProtocolAdapterRegistry()
 	r.MustRegister("anthropic_messages", &anthropic.Adapter{CarryForwardSignatureDelta: false})
+	r.MustRegister("anthropic_claude_session", &anthropic.Adapter{CarryForwardSignatureDelta: false})
 	r.MustRegister("openai_chat", &openai.Adapter{})
 	r.MustRegister("openai_responses", &openai.ResponsesAdapter{})
 	// openai_codex 出站到 chatgpt.com/backend-api/codex/responses。

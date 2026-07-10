@@ -408,28 +408,28 @@ func TestDBAccountSource_ListByPoolGroupFiltersProtocolFamily(t *testing.T) {
 	seed := seedAdapterGraph(t, ctx, pgPool, "src-family")
 
 	suffix := uuid.NewString()
-	var anthropicProviderID, anthropicChannelID, anthropicAccountID int64
+	var sessionProviderID, sessionChannelID, sessionAccountID int64
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
-		 VALUES ($1, $2, $3, 'anthropic_messages') RETURNING id`,
-		seed.tenantID, "anthropic-"+suffix, "Anthropic "+suffix,
-	).Scan(&anthropicProviderID); err != nil {
-		t.Fatalf("seed anthropic provider: %v", err)
+		 VALUES ($1, $2, $3, 'anthropic_claude_session') RETURNING id`,
+		seed.tenantID, "claude-session-"+suffix, "Claude Session "+suffix,
+	).Scan(&sessionProviderID); err != nil {
+		t.Fatalf("seed session provider: %v", err)
 	}
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`,
-		seed.tenantID, seed.poolGroupID, "anthropic-ch-"+suffix,
-	).Scan(&anthropicChannelID); err != nil {
-		t.Fatalf("seed anthropic channel: %v", err)
+		seed.tenantID, seed.poolGroupID, "session-ch-"+suffix,
+	).Scan(&sessionChannelID); err != nil {
+		t.Fatalf("seed session channel: %v", err)
 	}
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO provider_accounts (
 			tenant_id, provider_id, channel_id, name, account_type,
 			cap_concurrency, in_flight_count, priority
-		) VALUES ($1, $2, $3, $4, 'api_key', 4, 0, 50) RETURNING id`,
-		seed.tenantID, anthropicProviderID, anthropicChannelID, "anthropic-acct-"+suffix,
-	).Scan(&anthropicAccountID); err != nil {
-		t.Fatalf("seed anthropic account: %v", err)
+		) VALUES ($1, $2, $3, $4, 'oauth', 4, 0, 50) RETURNING id`,
+		seed.tenantID, sessionProviderID, sessionChannelID, "session-acct-"+suffix,
+	).Scan(&sessionAccountID); err != nil {
+		t.Fatalf("seed session account: %v", err)
 	}
 
 	src := NewDBAccountSource(dbbilling.New(pgPool))
@@ -437,17 +437,17 @@ func TestDBAccountSource_ListByPoolGroupFiltersProtocolFamily(t *testing.T) {
 		TenantID:       seed.tenantID,
 		PoolGroupID:    seed.poolGroupID,
 		RequestedModel: "claude-3-5-sonnet",
-		ProtocolFamily: "anthropic_messages",
+		ProtocolFamily: "anthropic_claude_session",
 	})
 	if err != nil {
 		t.Fatalf("ListAccounts: %v", err)
 	}
 	// 变异:去掉 upstream_protocol 谓词会返回两个 allow-list 为空的 account。
-	if len(accounts) != 1 || accounts[0].ID != anthropicAccountID {
-		t.Fatalf("accounts=%+v; want only anthropic protocol account %d", accounts, anthropicAccountID)
+	if len(accounts) != 1 || accounts[0].ID != sessionAccountID {
+		t.Fatalf("accounts=%+v; want only Claude session protocol account %d", accounts, sessionAccountID)
 	}
-	if accounts[0].ProtocolFamily != "anthropic_messages" {
-		t.Fatalf("ProtocolFamily=%q, want anthropic_messages", accounts[0].ProtocolFamily)
+	if accounts[0].ProtocolFamily != "anthropic_claude_session" {
+		t.Fatalf("ProtocolFamily=%q, want anthropic_claude_session", accounts[0].ProtocolFamily)
 	}
 }
 

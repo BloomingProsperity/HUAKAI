@@ -154,6 +154,14 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 	if anthropicAdapter.CarryForwardSignatureDelta {
 		t.Fatal("anthropic_messages CarryForwardSignatureDelta = true, want false")
 	}
+	sessionAdapterRaw, err := r.For("anthropic_claude_session")
+	if err != nil {
+		t.Fatalf("For(anthropic_claude_session) error = %v", err)
+	}
+	sessionAdapter, ok := sessionAdapterRaw.(*anthropic.Adapter)
+	if !ok || sessionAdapter.CarryForwardSignatureDelta {
+		t.Fatalf("anthropic_claude_session adapter=%T carry=%v want Anthropic adapter with carry=false", sessionAdapterRaw, ok && sessionAdapter.CarryForwardSignatureDelta)
+	}
 
 	for _, family := range []string{
 		"openai_chat",

@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"syscall"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
 // TransportErrorClass 是 Go dispatcher 与未来 Rust transport sidecar 共用的
@@ -24,6 +26,7 @@ const (
 	TransportErrorTLSHandshakeFailed      TransportErrorClass = "tls_handshake_failed"
 	TransportErrorUpstreamHeaderTimeout   TransportErrorClass = "upstream_header_timeout"
 	TransportErrorUpstreamBodyIdleTimeout TransportErrorClass = "upstream_body_idle_timeout"
+	TransportErrorCredentialExpired       TransportErrorClass = "local_credential_expired"
 	TransportErrorLocalDispatch           TransportErrorClass = "local_dispatch_error"
 
 	// DM-06 持久型传输错误:重试同一账号几乎必然再失败(端点拒连/域名
@@ -83,6 +86,9 @@ func ClassifyAttemptDispatchError(err error) AttemptRetryDecision {
 func TransportErrorClassFromError(err error) TransportErrorClass {
 	if err == nil {
 		return TransportErrorNone
+	}
+	if errors.Is(err, credentialstore.ErrCredentialExpired) {
+		return TransportErrorCredentialExpired
 	}
 
 	lower := strings.ToLower(err.Error())
@@ -177,6 +183,16 @@ func ClassifyAttemptTransportError(class TransportErrorClass) AttemptRetryDecisi
 		return retryableTransportDecision(class, http.StatusBadGateway, "transport_network_unreachable")
 	case TransportErrorProxyFailure:
 		return retryableTransportDecision(class, http.StatusBadGateway, "transport_proxy_failure")
+	case TransportErrorCredentialExpired:
+		return AttemptRetryDecision{
+			RetryableBeforeDelivery:         true,
+			SwitchAccount:                   true,
+			RefreshIntent:                   RefreshOAuthHotPath,
+			ClientStatus:                    http.StatusServiceUnavailable,
+			AbortReason:                     "local_credential_expired",
+			TransportClass:                  class,
+			CountsAgainstAuthFailoverBudget: true,
+		}
 	case TransportErrorNone:
 		return AttemptRetryDecision{}
 	default:

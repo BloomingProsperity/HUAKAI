@@ -52,9 +52,7 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 	}
 	if cached, ok := ex.d.ResponseCache.Get(ex.ctx, ex.cacheKey); ok {
 		if cached.TenantID != ex.ident.TenantID || cached.ScopeID != ex.cacheScopeID() {
-			// 纵深防御: 物理 key 已把 TenantID + scope principal 哈希进去(cache/key.go), 正常绝不会
-			// 取到别租户/别 principal 条目; 若发生说明 key 被弱化或缓存被污染 —— 绝不跨租户/跨
-			// principal serve。删除该条目、记录, 当作 miss 走正常上游。
+			// 物理 key 已隔离 tenant/principal；命中不一致视为污染，删除后按 miss 处理。
 			logInternalError(ex.ctx, ex.requestID, "l2_cache_principal_mismatch",
 				fmt.Errorf("cached entry tenant=%d scope_id=%d != request tenant=%d scope_id=%d", cached.TenantID, cached.ScopeID, ex.ident.TenantID, ex.cacheScopeID()))
 			ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
@@ -124,16 +122,12 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 	}
 }
 
-// identityRewrite 对 dispatch 专用 body 施加 R7 身份改写(默认关 + fail-open),
-// 三条 dispatch 路径共用本方法。默认关/fail-open/external id 空跳过等语义全由
-// mimicryidentity 子包保证(详见该包文档)。翻全局默认是 Owner-gated 二阶段。
+// identityRewrite 对 dispatch 专用 body 施加默认关闭且 fail-open 的身份改写。
 func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
 	if ex == nil || ex.r == nil {
 		return dispatchBody
 	}
-	// 协议族门控:R7 改写写 metadata.user_id(Anthropic 专属语义),仅当上游族是
-	// anthropic_messages 时 dispatchBody 才是 Anthropic 形、注入才合法。其余族
-	// (OpenAI/Gemini/Bedrock)强注入会被上游拒(400/语义错配),故 fail-open 返回原 body。
+	// metadata.user_id 只适用于 Anthropic Messages；其它形态保持原 body。
 	if ex.resolved.ProtocolFamily != "anthropic_messages" {
 		return dispatchBody
 	}
@@ -168,7 +162,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
 		// R7 身份改写(默认关 + fail-open,只动 dispatch 专用拷贝、不动 ex.body)。
-		InboundBody:       ex.identityRewrite(ex.upstreamInboundBody(inboundBody)),
+		InboundBody:       chatpipe.OutboundDispatchBody(ex.officialDirect, ex.resolved.ProtocolFamily, ex.upstreamInboundBody(inboundBody), ex.identityRewrite),
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),
 		Account:           transportSelection.account,
@@ -517,25 +511,12 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	if err != nil {
 		draft.PendingReconciliation = true
 		actualCost = completionCostBreakdown{}
-		// 缺上游 usage（无任何 token 信号）但已交付内容：不把 DeliveredTokenCount 当 token 计费——
-		// 它此处是内容帧数（canonicalDeliveredChunks）而非 token 数；细碎 tool_input/sub-token 分帧
-		// 会使帧数 > 真实 token 数，按帧计费会向用户多收。
-		// 仅在确为缺 usage 时走估算/inferred：计费配置失败（rate table 缺失但有真实 token）不可标 inferred，
-		// 否则 worker 会把真实请求零差额定稿成 $0（静默零计费）。
-		// 歧义用量（unknown termination 等）默认保留歧义态留待真对账，不降级成 inferred、
-		// 不被估算终局计费——除非已向用户交付可估内容（EstimatedOutputTokens+
-		// EstimatedReasoningTokens>0）：此时内容已发出，而 reconciliation 是 refund-only/
-		// zero-finalize 永不补收，留歧义态 = 永久零收漏钱（SM-05）。故对「歧义且有可估交付」
-		// 放行估算保守计费，与 billing/state.go AttemptFromGatewayDraft 同口径判据一致；
-		// 无可估交付的歧义流仍跳过，保留歧义态。
+		// DeliveredTokenCount 是内容帧数，不能当 token 收费。仅在缺 usage 且已有可估交付时
+		// 采用保守估算；计价配置失败或无可估交付的歧义流继续等待权威对账。
 		if reportedUsageMissing(usage) &&
 			(draft.UsageSource != gateway.UsageSourceAmbiguous || ambiguousDeliveredEstimable(draft)) {
-			// 估算兜底：终帧缺失/无 usage 帧的流（部分 serving 上游不保证 usage）按
-			// 逐事件可见内容估算终局计费，token 基数写回 draft 留账，inferred +
-			// usage_basis 快照标记构成审计链；不挂 pending（no-usage 定稿 SQL 只认
-			// 全零记录，挂上即永久 pending）。估算不可用（零可见内容/费率表故障）→
-			// 维持 ActualCost=0 + pending + inferred，交由 settlementreconcile worker
-			// 宽限后零差额定稿（无权威 usage 会到达）。
+			// 缺终帧/usage 时按可见内容估算并记录 inferred；无法估算则保留 pending，
+			// 由 reconciliation worker 宽限后零差额定稿。
 			if cost, estimated, ok := ex.estimatedStreamingCost(draft); ok {
 				actualCost = cost
 				draft.TokensInput = estimated.InputTokens
@@ -552,16 +533,11 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 	draft.CostSnapshot = actualCost.CostSnapshot
 	draft.CacheCreationCost = actualCost.CacheCreationCost
 	draft.CacheReadCost = actualCost.CacheReadCost
-	// 流式 token 交叉校验(镜像非流 nonStreamingUsageDraft,审计-only,不改成本/usage_source):
-	// forwarder 逐事件累加的可见输出估算(draft.EstimatedOutputTokens)与 reported OutputTokens
-	// (扣除隐藏 reasoning)比对。估算为 0(未捕获可估内容)→ Unknown → 不降级。reasoning 文本
-	// 流出但无 ReasoningTokens(Anthropic/Gemini thinking,folding 不可知)→ 跳过校验避免误报。
-	// pending 与上方缺 usage 的 pending 取并集,不互相覆盖。
+	// 流式 token 交叉校验只写审计置信度，不改成本；没有可比基数时保持 Unknown。
+	// pending 与缺 usage 分支取并集。
 	streamConfidence, streamPending := crossCheckAudit(draft.TokensOutput, draft.ReasoningTokens, draft.EstimatedOutputTokens, draft.EstimatedReasoningTokens, actualCost.Total.IsPositive())
 	if usageBasisEstimated {
-		// 估算计费行:交叉校验是估算值自比对,恒满置信且可能在畸形 usage(只报
-		// reasoning)下误挂 pending——估算行的 pending 无人能定稿(no-usage 定稿
-		// SQL 只认全零)。改记固定降级置信,pending 强制清零,保持终局语义。
+		// 估算行使用固定降级置信度并清 pending，避免自比对制造永久待处理记录。
 		streamConfidence, streamPending = estimatedUsageBasisConfidence, false
 	}
 	draft.ConfidenceScore = &streamConfidence

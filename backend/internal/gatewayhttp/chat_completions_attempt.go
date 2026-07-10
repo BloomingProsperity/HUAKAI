@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/bodymodel"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -211,6 +212,7 @@ func endClassFromAttemptFailure(classification gateway.Classification, decision 
 		gateway.TransportErrorUpstreamBodyIdleTimeout:
 		return gateway.InterEventTimeout
 	case gateway.TransportErrorTLSHandshakeFailed,
+		gateway.TransportErrorCredentialExpired,
 		gateway.TransportErrorConnectionRefused,
 		gateway.TransportErrorDNSFailure,
 		gateway.TransportErrorNetworkUnreachable,
@@ -221,6 +223,7 @@ func endClassFromAttemptFailure(classification gateway.Classification, decision 
 	case "upstream_5xx", "upstream_overloaded", "pool_no_capacity",
 		"pool_select_error", "pool_select_no_account", "credential_resolve_error",
 		"upstream_dispatch_error", "upstream_empty_response",
+		"local_credential_expired",
 		"transport_connection_refused", "transport_dns_failure",
 		"transport_network_unreachable", "transport_proxy_failure":
 		return gateway.UpstreamError5xx
@@ -364,17 +367,27 @@ func (ex *chatExecution) prepareNextAttemptAfterAbort() {
 	ex.forwardReq = gateway.ForwardRequest{}
 	ex.healthKey = channelhealth.ChannelKey{}
 	ex.healthKeyOK = false
+	ex.officialDirect = false
 }
 
 func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
 	if ex == nil || len(body) == 0 {
 		return body
 	}
+	if ex.officialDirect && ex.resolved.ProtocolFamily == "anthropic_claude_session" {
+		// 官方直发默认字节等价;仅当 alias≠上游 model 时才改写 model(否则上游未知模型)。
+		if strings.TrimSpace(ex.upstreamModelID) != "" && !bodymodel.ModelMatches(body, ex.upstreamModelID) {
+			if rewritten, ok := bodymodel.RewriteModel(body, ex.upstreamModelID); ok {
+				return rewritten
+			}
+		}
+		return body
+	}
 	out := body
 	// dify_chat 的出站 body 没有 model 字段(Dify 由 app token 决定模型,
 	// 模型选择只参与路由/计费),不得把顶层 model 注进翻译产物污染契约。
 	if strings.TrimSpace(ex.upstreamModelID) != "" && ex.resolved.ProtocolFamily != "dify_chat" {
-		rewritten, ok := ex.rewriteUpstreamModel(body)
+		rewritten, ok := bodymodel.RewriteModel(body, ex.upstreamModelID)
 		if !ok {
 			return body
 		}
@@ -400,23 +413,6 @@ func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
 		out = next
 	}
 	return out
-}
-
-func (ex *chatExecution) rewriteUpstreamModel(body []byte) ([]byte, bool) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return body, false
-	}
-	modelRaw, err := json.Marshal(ex.upstreamModelID)
-	if err != nil {
-		return body, false
-	}
-	obj["model"] = modelRaw
-	out, err := json.Marshal(obj)
-	if err != nil {
-		return body, false
-	}
-	return out, true
 }
 
 func (ex *chatExecution) activeBodyParamGate() (map[string]json.RawMessage, []string) {

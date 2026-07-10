@@ -276,6 +276,63 @@ func (q *Queries) ListProviderAccountRiskPeers(ctx context.Context, arg ListProv
 	return items, nil
 }
 
+// listProviderAccountsForProviderCompat 列某 provider 全部非删账号 × 其**每一条**活跃凭据的
+// account_type 与 vendor/auth_mode,供协议变更时逐条校验与新协议兼容性。用全连接(非
+// LIMIT 1)是防"较新兼容凭据遮蔽同账号另一条不兼容凭据"的绕过——一个账号可同时有多条
+// 不同 (vendor,auth_mode) 的活跃凭据,任一不兼容都必须拦。无活跃凭据的账号出一行(空
+// vendor/auth,仍受 account_type 校验)。列集合与 ProviderAccountRiskPeerRow 一致,复用其
+// 行类型。UPDATE providers 的 FOR NO KEY UPDATE 与该事务同锁生命周期,防读后并发新增。
+const listProviderAccountsForProviderCompat = `
+SELECT
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    pa.channel_id,
+    pa.account_type,
+    COALESCE(ac.vendor, '') AS credential_vendor,
+    COALESCE(ac.auth_mode, '') AS credential_auth_mode
+FROM provider_accounts pa
+LEFT JOIN account_credentials ac
+    ON ac.tenant_id = pa.tenant_id
+   AND ac.provider_account_id = pa.id
+   AND ac.deleted_at IS NULL
+   AND ac.state IN ('active', 'refreshing', 'refreshing_with_grace', 'temp_unschedulable', 'needs_rotation', 'operator_attention')
+WHERE pa.tenant_id = $1
+  AND pa.provider_id = $2
+  AND pa.deleted_at IS NULL
+ORDER BY pa.id ASC, ac.id ASC
+`
+
+// ListProviderAccountsForProviderCompatParams 按 tenant+provider 列账号。
+type ListProviderAccountsForProviderCompatParams struct {
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	ProviderID int64 `db:"provider_id" json:"provider_id"`
+}
+
+// ListProviderAccountsForProviderCompat 返回该 provider 的账号(复用 RiskPeer 行类型)。
+func (q *Queries) ListProviderAccountsForProviderCompat(ctx context.Context, arg ListProviderAccountsForProviderCompatParams) ([]ProviderAccountRiskPeerRow, error) {
+	rows, err := q.db.Query(ctx, listProviderAccountsForProviderCompat, arg.TenantID, arg.ProviderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProviderAccountRiskPeerRow{}
+	for rows.Next() {
+		var i ProviderAccountRiskPeerRow
+		if err := rows.Scan(
+			&i.ID, &i.TenantID, &i.ProviderID, &i.ChannelID,
+			&i.AccountType, &i.CredentialVendor, &i.CredentialAuthMode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateAdminProviderAccount = `
 UPDATE provider_accounts
 SET

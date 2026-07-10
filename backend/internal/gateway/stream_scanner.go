@@ -1,24 +1,5 @@
-// stream_scanner.go — A1 原子变更（Bedrock plan §A1）：StreamForwarder
-// 从硬编码 SSE 行扫描升级为可插拔的线格式 scanner。
-//
-// 现状（A1 之前）：StreamForwarder.Forward 内部直接调用 ScanSSEEvents，
-// 这意味着所有 protocol family 都被假定走 SSE 文本帧。Bedrock streaming
-// 的 binary EventStream 无法塞进 bufio.Scanner（按 \n 切分会切碎帧）。
-//
-// A1 引入的抽象层（行为不变）：
-//   - StreamScanner 接口：把 io.Reader 切成 SSEEvent 流（保留事件结构，
-//     避免大改 forwarder 下游消费代码）
-//   - StreamScannerRegistry：按 protocol family 路由到对应 scanner
-//   - SSEStreamScanner：薄封装旧 ScanSSEEvents（实现等价）
-//   - BuildDefaultStreamScannerRegistry：覆盖所有现有 19 个 family，全部
-//     走 SSE。Bedrock 专属 scanner 在 A2+A3 原子变更加入
-//
-// 不做：
-//   - 不改 SSEEvent 结构（保留 Type/Data/ObservedAt 三字段；下游 forwarder
-//     代码不动）
-//   - 不动 ScanSSEEvents 实现（只是被 SSEStreamScanner 调用）
-//   - 不引入新的 线协议元数据字段（StreamWireProtocol 留到
-//     未来 observability 需要时再加）
+// stream_scanner.go 把不同上游线格式统一投影为 SSEEvent 迭代器；
+// 文本 SSE、NDJSON 与二进制 EventStream 由各自 scanner 负责切帧。
 package gateway
 
 import (
@@ -225,6 +206,7 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		// 切),但事件名在 data JSON 的 "event" 字段里,由 proto/dify adapter 解。
 		"dify_chat",
 		// 6 家订阅 session 反转
+		"anthropic_claude_session",
 		"copilot_session",
 		"cursor_session",
 		"gemini_advanced_session",

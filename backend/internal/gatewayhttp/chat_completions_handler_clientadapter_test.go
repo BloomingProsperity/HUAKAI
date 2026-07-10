@@ -398,8 +398,10 @@ func identityWiredDeps(t *testing.T, externalAccountID string) ChatHandlerDeps {
 		Type:  provider.CredentialTypeAPIKey,
 		Value: "sk-test",
 	}, provider.AccountInfo{
-		AccountID:           1,
-		Platform:            "anthropic",
+		AccountID: 1,
+		// 使用无强制官方门的测试平台，只隔离验证旧 R7 钩子；
+		// anthropic_claude_session 的官方直发旁路由独立 S1 测试覆盖。
+		Platform:            "anthropic_test",
 		AccountType:         "claude_ai_oauth", // 反转/订阅号:身份改写仅对反转号生效
 		AccountCredentialID: 9001,
 		CredentialVersion:   1,

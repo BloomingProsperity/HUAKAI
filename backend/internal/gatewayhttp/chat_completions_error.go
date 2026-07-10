@@ -227,6 +227,7 @@ func dispatchErrorIsInfrastructure(err error) bool {
 	}
 	switch gateway.TransportErrorClassFromError(err) {
 	case gateway.TransportErrorTLSHandshakeFailed,
+		gateway.TransportErrorCredentialExpired,
 		gateway.TransportErrorConnectionRefused,
 		gateway.TransportErrorDNSFailure,
 		gateway.TransportErrorNetworkUnreachable,

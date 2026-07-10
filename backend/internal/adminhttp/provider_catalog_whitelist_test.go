@@ -32,7 +32,10 @@ func TestEveryRegisteredFamilyIsCatalogProtocol(t *testing.T) {
 			t.Errorf("registrydefault 注册族 %q 未被 provider-catalog 放行(管理端渠道 CRUD 会 400 invalid_upstream_protocol)", fam)
 		}
 	}
-	for _, stale := range []string{"gemini", "bedrock", "antigravity", registrydefault.ProtocolAnthropicClaudeSession} {
+	if !isKnownProviderCatalogProtocol(registrydefault.ProtocolAnthropicClaudeSession) {
+		t.Errorf("provider-catalog 必须放行已默认注册的 protocol family %q", registrydefault.ProtocolAnthropicClaudeSession)
+	}
+	for _, stale := range []string{"gemini", "bedrock", "antigravity"} {
 		if isKnownProviderCatalogProtocol(stale) {
 			t.Errorf("provider-catalog 不应放行未注册 protocol family %q", stale)
 		}

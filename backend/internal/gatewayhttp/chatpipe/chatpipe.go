@@ -1,6 +1,7 @@
 package chatpipe
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
 const (
@@ -27,6 +29,14 @@ var clientSessionIDHeaderPriority = []string{
 }
 
 var openAIMetadataUserIDSessionSuffixRE = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
+
+// OutboundDispatchBody 保证严格官方 session 请求不经过 JSON 改写，并返回独立切片。
+func OutboundDispatchBody(officialDirect bool, family string, body []byte, fallback func([]byte) []byte) []byte {
+	if officialDirect && family == registrydefault.ProtocolAnthropicClaudeSession {
+		return bytes.Clone(body)
+	}
+	return fallback(body)
+}
 
 func RequestClientSessionID(r *http.Request, clientProtocol proto.ClientProtocol, rawBody []byte) string {
 	if r != nil {

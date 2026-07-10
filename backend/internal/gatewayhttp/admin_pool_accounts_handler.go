@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
 
@@ -31,8 +32,9 @@ const (
 )
 
 var (
-	errAdminPoolAccountTxPoolUnset                  = errors.New("gatewayhttp: admin pool account adapter pgxpool unset")
-	errProviderAccountMixedRiskConfirmationRequired = errors.New("provider account mixed channel risk confirmation required")
+	errAdminPoolAccountTxPoolUnset                  = accountcreate.ErrPoolUnset
+	errProviderAccountMixedRiskConfirmationRequired = accountcreate.ErrMixedRiskConfirmRequired
+	errProviderAccountProtocolIncompatible          = accountcreate.ErrProtocolIncompatible
 )
 
 type AdminPoolAccountAuth interface {
@@ -40,6 +42,7 @@ type AdminPoolAccountAuth interface {
 }
 
 type AdminPoolAccountStore interface {
+	GetProviderProtocolForAccountCreate(context.Context, admindb.GetProviderProtocolForAccountCreateParams) (string, error)
 	InsertProviderAccount(context.Context, admindb.InsertProviderAccountParams) (int64, error)
 	ListAdminProviderAccounts(context.Context, admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error)
 	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
@@ -78,16 +81,8 @@ type adminPoolAccountStoreAdapter struct {
 	pool *pgxpool.Pool
 }
 
-type adminPoolAccountCreateWithMixedRiskParams struct {
-	Insert    admindb.InsertProviderAccountParams
-	Candidate mixedchannelrisk.Account
-	Confirmed bool
-}
-
-type adminPoolAccountCreateWithMixedRiskResult struct {
-	ID         int64
-	RiskReport mixedchannelrisk.Report
-}
+type adminPoolAccountCreateWithMixedRiskParams = accountcreate.Params
+type adminPoolAccountCreateWithMixedRiskResult = accountcreate.Result
 
 func NewAdminPoolAccountStoreAdapter(base AdminPoolAccountStore, pool *pgxpool.Pool) AdminPoolAccountStore {
 	return adminPoolAccountStoreAdapter{base: base, pool: pool}
@@ -95,6 +90,10 @@ func NewAdminPoolAccountStoreAdapter(base AdminPoolAccountStore, pool *pgxpool.P
 
 func (s adminPoolAccountStoreAdapter) InsertProviderAccount(ctx context.Context, arg admindb.InsertProviderAccountParams) (int64, error) {
 	return s.base.InsertProviderAccount(ctx, arg)
+}
+
+func (s adminPoolAccountStoreAdapter) GetProviderProtocolForAccountCreate(ctx context.Context, arg admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
+	return s.base.GetProviderProtocolForAccountCreate(ctx, arg)
 }
 
 func (s adminPoolAccountStoreAdapter) ListAdminProviderAccounts(ctx context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
@@ -126,40 +125,7 @@ func (s adminPoolAccountStoreAdapter) InsertAdminAuditEvent(ctx context.Context,
 }
 
 func (s adminPoolAccountStoreAdapter) InsertProviderAccountWithMixedRiskCheck(ctx context.Context, arg adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error) {
-	if s.pool == nil {
-		return adminPoolAccountCreateWithMixedRiskResult{}, errAdminPoolAccountTxPoolUnset
-	}
-	var out adminPoolAccountCreateWithMixedRiskResult
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		q := admindb.New(tx)
-		// 同一 tenant/channel 的风险检查和 insert 必须串行化,否则两个空 channel
-		// 并发 create 都可能先看到无 peers 再同时落库。
-		lockKey := fmt.Sprintf("provider-account-mixed-risk:%d:%d", arg.Insert.TenantID, arg.Insert.ChannelID)
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, lockKey); err != nil {
-			return err
-		}
-		peers, err := q.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
-			TenantID:  arg.Insert.TenantID,
-			ChannelID: arg.Insert.ChannelID,
-		})
-		if err != nil {
-			return err
-		}
-		out.RiskReport = mixedchannelrisk.Evaluate(arg.Candidate, mixedRiskPeerAccounts(peers))
-		if out.RiskReport.HighRisk && !arg.Confirmed {
-			return errProviderAccountMixedRiskConfirmationRequired
-		}
-		id, err := q.InsertProviderAccount(ctx, arg.Insert)
-		if err != nil {
-			return err
-		}
-		out.ID = id
-		return nil
-	})
-	if err != nil {
-		return adminPoolAccountCreateWithMixedRiskResult{RiskReport: out.RiskReport}, err
-	}
-	return out, nil
+	return accountcreate.Insert(ctx, s.pool, arg)
 }
 
 func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
@@ -313,6 +279,21 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "credential store dependency unset")
 			return
 		}
+		providerFamily, err := d.Store.GetProviderProtocolForAccountCreate(r.Context(), admindb.GetProviderProtocolForAccountCreateParams{
+			TenantID: tenantID, ProviderID: req.ProviderID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "provider does not exist")
+				return
+			}
+			writeJSONError(w, http.StatusServiceUnavailable, "provider_protocol_lookup_failed", err.Error())
+			return
+		}
+		if err := validateProviderAccountProtocolCompatibility(providerFamily, req.AccountType, req.Vendor, req.AuthMode); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
+			return
+		}
 		confirmed, ok := parseProviderAccountMixedRiskConfirm(w, r, req)
 		if !ok {
 			return
@@ -330,8 +311,12 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			Extra:          normalizedProviderAccountExtra(req.Extra),
 			ModelAllowList: req.ModelAllowList, CapabilityFlags: req.CapabilityFlags, ActorID: &actorID,
 		}
-		createResult, err := insertProviderAccountWithMixedRiskCheck(r.Context(), d.Store, createArg, req, confirmed)
+		createResult, err := insertProviderAccountWithMixedRiskCheck(r.Context(), d.Store, createArg, req, providerFamily, confirmed)
 		if err != nil {
+			if errors.Is(err, errProviderAccountProtocolIncompatible) {
+				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
+				return
+			}
 			if errors.Is(err, errProviderAccountMixedRiskConfirmationRequired) {
 				writeProviderAccountMixedRiskRequired(w, createResult.RiskReport)
 				return
@@ -824,7 +809,7 @@ func parseProviderAccountMixedRiskConfirm(w http.ResponseWriter, r *http.Request
 	return false, true
 }
 
-func insertProviderAccountWithMixedRiskCheck(ctx context.Context, store AdminPoolAccountStore, createArg admindb.InsertProviderAccountParams, req createProviderAccountRequest, confirmed bool) (adminPoolAccountCreateWithMixedRiskResult, error) {
+func insertProviderAccountWithMixedRiskCheck(ctx context.Context, store AdminPoolAccountStore, createArg admindb.InsertProviderAccountParams, req createProviderAccountRequest, providerFamily string, confirmed bool) (adminPoolAccountCreateWithMixedRiskResult, error) {
 	atomicStore, ok := store.(AdminPoolAccountAtomicCreateStore)
 	if !ok {
 		return adminPoolAccountCreateWithMixedRiskResult{}, errAdminPoolAccountTxPoolUnset
@@ -834,19 +819,12 @@ func insertProviderAccountWithMixedRiskCheck(ctx context.Context, store AdminPoo
 		AccountType: req.AccountType, Vendor: req.Vendor, AuthMode: req.AuthMode,
 	}
 	return atomicStore.InsertProviderAccountWithMixedRiskCheck(ctx, adminPoolAccountCreateWithMixedRiskParams{
-		Insert: createArg, Candidate: candidate, Confirmed: confirmed,
+		Insert: createArg, Candidate: candidate, ProviderFamily: providerFamily, Confirmed: confirmed,
 	})
 }
 
-func mixedRiskPeerAccounts(rows []admindb.ProviderAccountRiskPeerRow) []mixedchannelrisk.Account {
-	out := make([]mixedchannelrisk.Account, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, mixedchannelrisk.Account{
-			ID: row.ID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
-			AccountType: row.AccountType, Vendor: row.CredentialVendor, AuthMode: row.CredentialAuthMode,
-		})
-	}
-	return out
+func validateProviderAccountProtocolCompatibility(family, accountType, vendor, authMode string) error {
+	return accountcreate.ValidateProtocolCompatibility(family, accountType, vendor, authMode)
 }
 
 func writeProviderAccountMixedRiskRequired(w http.ResponseWriter, report mixedchannelrisk.Report) {

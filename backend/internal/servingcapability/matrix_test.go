@@ -4,6 +4,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
@@ -32,6 +33,7 @@ var defaultVisibleFamilies = []string{
 	registrydefault.ProtocolOpenAIResponses,
 	registrydefault.ProtocolOpenAICodex,
 	registrydefault.ProtocolAnthropicMessages,
+	registrydefault.ProtocolAnthropicClaudeSession,
 	registrydefault.ProtocolGeminiMessages,
 	registrydefault.ProtocolOpenRouterChat,
 	registrydefault.ProtocolBedrockInvoke,
@@ -131,13 +133,13 @@ func TestCurrentClaudeAndAntigravityVerdictsArePinned(t *testing.T) {
 	claude := evaluator.EvaluateProviderConfig(ProviderConfigInput{
 		Family: registrydefault.ProtocolAnthropicClaudeSession, Enabled: true,
 	})
-	if claude.Ready || claude.Allowed || claude.TrafficAllowed ||
-		claude.Status != StatusCollectableNotServing || claude.Reason != ReasonCollectableNotServing ||
-		claude.Action != ActionHideReadOnly {
+	if !claude.Ready || !claude.Allowed || !claude.TrafficAllowed ||
+		claude.Status != StatusReady || claude.Reason != "" || claude.Action != ActionAllow {
 		t.Fatalf("Claude OAuth 当前结论漂移: %+v", claude)
 	}
-	if _, err := registry.For(registrydefault.ProtocolAnthropicClaudeSession); err == nil {
-		t.Fatal("Claude OAuth session 不得因全 env on 被注册为当前进程 adapter")
+	adapter, err := registry.For(registrydefault.ProtocolAnthropicClaudeSession)
+	if err != nil || adapter == nil || adapter.Platform() != "anthropic" {
+		t.Fatalf("Claude OAuth session 必须默认注册且平台归一为 anthropic: adapter=%T err=%v", adapter, err)
 	}
 
 	antigravity := evaluator.EvaluateProviderConfig(ProviderConfigInput{
@@ -150,6 +152,49 @@ func TestCurrentClaudeAndAntigravityVerdictsArePinned(t *testing.T) {
 	}
 	if _, err := registry.For(registrydefault.ProtocolAntigravitySession); err != nil {
 		t.Fatalf("全 env on 应只让 Antigravity adapter 可见，实际未注册: %v", err)
+	}
+}
+
+// TestClaudeSessionServingStationsFailClosed 逐站注入缺失，证明 R1A 的闭合闸
+// 不是“注册 adapter 就算完成”。删除响应、marshal、scanner、vendor 或 transport
+// 任一站，session family 都必须从 ready 退回 not_ready。
+func TestClaudeSessionServingStationsFailClosed(t *testing.T) {
+	registry := registrydefault.Build()
+	baselineSources := productionRuntimeSources(registry)
+	baseline := NewEvaluator(nil, baselineSources).EvaluateProviderConfig(ProviderConfigInput{
+		Family: registrydefault.ProtocolAnthropicClaudeSession, Enabled: true,
+	})
+	if !baseline.Ready {
+		t.Fatalf("Claude session 基线必须 ready: %+v", baseline)
+	}
+
+	tests := []struct {
+		name    string
+		station StationID
+		mutate  func(*RuntimeSources)
+	}{
+		{"缺 provider adapter", StationProviderAdapter, func(s *RuntimeSources) { s.ProviderAdapters = nil }},
+		{"缺 response adapter", StationResponseParser, func(s *RuntimeSources) { s.ResponseParsers = gateway.NewStaticProtocolAdapterRegistry() }},
+		{"缺 HCSF marshal", StationRequestMarshal, func(s *RuntimeSources) { s.RequestMarshal = func(string) (string, bool) { return "", false } }},
+		{"缺 SSE scanner", StationStreamScanner, func(s *RuntimeSources) { s.StreamScanners = gateway.NewStaticStreamScannerRegistry() }},
+		{"缺 pool vendor", StationPoolVendor, func(s *RuntimeSources) { s.PoolVendor = func(string) string { return "" } }},
+		{"缺 transport policy", StationTransportPolicy, func(s *RuntimeSources) { s.TransportModes = func(string) []string { return nil } }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sources := baselineSources
+			tc.mutate(&sources)
+			got := NewEvaluator(nil, sources).EvaluateProviderConfig(ProviderConfigInput{
+				Family: registrydefault.ProtocolAnthropicClaudeSession, Enabled: true,
+			})
+			if got.Ready || got.Allowed || got.TrafficAllowed || got.Status != StatusNotReady {
+				t.Fatalf("删除站点 %s 后未 fail-closed: %+v", tc.station, got)
+			}
+			station := findStation(t, got, tc.station)
+			if station.Present || !station.Blocking {
+				t.Fatalf("站点 %s 状态=%+v want missing+blocking", tc.station, station)
+			}
+		})
 	}
 }
 

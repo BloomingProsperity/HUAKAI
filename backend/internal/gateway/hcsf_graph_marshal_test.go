@@ -868,6 +868,24 @@ func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 	}
 }
 
+// TestMarshalClaudeSessionProjectsToAnthropicMessages 咬住 session 族的线形：
+// 凭据与准入独立，但 HCSF 请求必须逐字节复用 Anthropic Messages 投影。
+// 变异：删除 hcsfProviderRequestModelFamily 的 session 分支会使输出报错或形态漂移。
+func TestMarshalClaudeSessionProjectsToAnthropicMessages(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	want, err := MarshalToProviderRequest(env, "anthropic_messages")
+	if err != nil {
+		t.Fatalf("baseline anthropic_messages marshal: %v", err)
+	}
+	got, err := MarshalToProviderRequest(env, "anthropic_claude_session")
+	if err != nil {
+		t.Fatalf("session marshal: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("session 投影 != anthropic_messages 投影\ngot:  %s\nwant: %s", got, want)
+	}
+}
+
 // TestInjectRequestControlsSkipsDifyChat 抓的回归:非流式 HCSF 路径
 // (hcsfRequestBody→injectRequestControls)把 openai 形 controls(max_tokens/
 // temperature/tools)注进 Dify body——Dify 无 per-request 参数,marshal 已对

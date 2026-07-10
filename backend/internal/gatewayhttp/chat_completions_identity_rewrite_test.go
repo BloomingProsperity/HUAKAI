@@ -6,11 +6,14 @@ package gatewayhttp
 // 闭环测试变红。
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -77,6 +80,30 @@ func newIdentityRewriteExecFamily(externalAccountID, protocolFamily string) *cha
 			AccountType:       "claude_ai_oauth", // 反转/订阅号:身份改写仅对反转号生效
 			ExternalAccountID: externalAccountID,
 		},
+	}
+}
+
+// TestOfficialDirectBodyThreePathsByteEquivalent 咬住 raw stream、raw buffered、
+// HCSF marshal 后三处共用的 composer 接缝：官方 session body 逐字节不变，
+// 且每次输出都是独立克隆。若接回 identity rewrite/unmarshal-remarshal 会立即变红。
+func TestOfficialDirectBodyThreePathsByteEquivalent(t *testing.T) {
+	ex := &chatExecution{
+		officialDirect: true,
+		resolved:       registry.Resolved{ProtocolFamily: "anthropic_claude_session"},
+	}
+	input := []byte("{\n  \"unknown\": [3, 2, 1], \"messages\": []\n}\n")
+	baseline := bytes.Clone(input)
+	for _, path := range []string{"raw_stream", "raw_buffered", "hcsf_buffered"} {
+		t.Run(path, func(t *testing.T) {
+			got := chatpipe.OutboundDispatchBody(ex.officialDirect, ex.resolved.ProtocolFamily, input, ex.identityRewrite)
+			if !bytes.Equal(got, baseline) {
+				t.Fatalf("%s body 漂移\ngot:  %q\nwant: %q", path, got, baseline)
+			}
+			got[0] = '['
+			if !bytes.Equal(input, baseline) {
+				t.Fatalf("%s 输出与输入共享底层切片", path)
+			}
+		})
 	}
 }
 

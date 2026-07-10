@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -116,6 +117,47 @@ func TestUpstreamInboundBodyUsesResolvedModelWithoutMutatingOriginal(t *testing.
 	}
 	if string(ex.body) != string(original) {
 		t.Fatalf("original body mutated: got %s want %s", string(ex.body), string(original))
+	}
+}
+
+// TestOfficialDirectRemapsModelWhenAliasDiffersFromUpstream 抓 S1-4:官方直发
+// 路径下 public alias 与上游 provider model 不一致时,出站 model 必须被改写成
+// 上游值,否则上游收到未知模型。旧实现无条件返回原 body → alias 泄漏到上游。
+// 变异:把 upstreamInboundBody 里 officialDirect 分支改回无条件 return body → 本测试红。
+func TestOfficialDirectRemapsModelWhenAliasDiffersFromUpstream(t *testing.T) {
+	original := []byte(`{"model":"claude-team","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+	ex := &chatExecution{
+		officialDirect:  true,
+		upstreamModelID: "claude-sonnet-4-5",
+		body:            original,
+		resolved:        registry.Resolved{ProtocolFamily: "anthropic_claude_session"},
+	}
+	out := ex.upstreamInboundBody(ex.body)
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("outbound body 非 JSON: %v", err)
+	}
+	if parsed.Model != "claude-sonnet-4-5" {
+		t.Fatalf("官方直发 alias 未改写: model=%q want claude-sonnet-4-5 body=%s", parsed.Model, out)
+	}
+}
+
+// TestOfficialDirectPreservesBytesWhenModelAlreadyMatches 证明常见直发(客户端
+// 直接请求真实模型名,alias==上游 model)保持字节等价,不做无谓重序列化。
+// 变异:去掉 bodyModelMatches 的相等短路 → body 被 rewriteUpstreamModel 重排 → 本测试红。
+func TestOfficialDirectPreservesBytesWhenModelAlreadyMatches(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4-5","max_tokens":8,"system":"x","messages":[{"role":"user","content":"hi"}]}`)
+	ex := &chatExecution{
+		officialDirect:  true,
+		upstreamModelID: "claude-sonnet-4-5",
+		body:            original,
+		resolved:        registry.Resolved{ProtocolFamily: "anthropic_claude_session"},
+	}
+	out := ex.upstreamInboundBody(ex.body)
+	if !bytes.Equal(out, original) {
+		t.Fatalf("alias==上游 model 时官方直发 body 不应改动\ngot:  %s\nwant: %s", out, original)
 	}
 }
 

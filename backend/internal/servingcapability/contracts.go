@@ -105,6 +105,27 @@ func (r *ContractRegistry) All() []ServingCapabilityContract {
 	return out
 }
 
+// ValidateAccountCompatibility 校验 family、vendor、auth mode 与物化后的
+// runtime kind 是否同时落在同一 capability contract 内。配置面可在写入前
+// 调用，热路径则在发网前复核，避免错误账号混入同一 provider 后被选号。
+func ValidateAccountCompatibility(family, vendor, authMode, runtimeKind string) error {
+	contract, ok := DefaultContractRegistry().Lookup(family)
+	if !ok {
+		return fmt.Errorf("servingcapability: family %q contract missing", family)
+	}
+	vendor, authMode, runtimeKind = normalize(vendor), normalize(authMode), normalize(runtimeKind)
+	if vendor != contract.Vendor {
+		return fmt.Errorf("servingcapability: family %q requires vendor %q", contract.Family, contract.Vendor)
+	}
+	if !contains(contract.AuthModes, authMode) {
+		return fmt.Errorf("servingcapability: family %q rejects auth mode %q", contract.Family, authMode)
+	}
+	if runtimeKind == "" || !contains(contract.RuntimeCredentialKinds, runtimeKind) {
+		return fmt.Errorf("servingcapability: family %q rejects runtime credential %q", contract.Family, runtimeKind)
+	}
+	return nil
+}
+
 var (
 	defaultContractsOnce sync.Once
 	defaultContracts     *ContractRegistry
@@ -138,11 +159,10 @@ func DefaultContracts() []ServingCapabilityContract {
 			[]string{credentialstore.AuthModeAPIKey},
 			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
 			registrydefault.ProtocolAnthropicMessages, registrydefault.ProtocolAnthropicMessages, streamFramingSSE, ModelDiscoveryGlobal),
-		contract(registrydefault.ProtocolAnthropicClaudeSession, credentialstore.VendorAnthropic,
+		releasedContract(registrydefault.ProtocolAnthropicClaudeSession, credentialstore.VendorAnthropic,
 			[]string{credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode},
 			[]string{credentialstore.RuntimeOAuthAccessToken, credentialstore.RuntimeSessionToken, credentialstore.RuntimeUpstreamPassthrough},
-			registrydefault.ProtocolAnthropicMessages, registrydefault.ProtocolAnthropicMessages, streamFramingSSE,
-			ReleaseStateScaffold, ModelDiscoveryAccountScoped, true, ReasonCollectableNotServing),
+			registrydefault.ProtocolAnthropicMessages, registrydefault.ProtocolAnthropicMessages, streamFramingSSE, ModelDiscoveryAccountScoped),
 		releasedContract(registrydefault.ProtocolGeminiMessages, credentialstore.VendorGemini,
 			[]string{credentialstore.AuthModeAIStudioAPIKey},
 			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},

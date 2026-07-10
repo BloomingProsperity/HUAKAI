@@ -141,6 +141,11 @@ func (e *Evaluator) EvaluateProviderConfig(input ProviderConfigInput) CheckResul
 		station(StationTransportPolicy, len(modes) > 0, ReasonTransportPolicyMissing,
 			fmt.Sprintf("provider=%s modes=%s", platform, strings.Join(modes, ","))))
 
+	// Ready/TrafficAllowed 的语义边界:只表示**dispatch 能力**闭合(adapter/parser/
+	// marshal/scanner/pool-vendor/transport 六站 + 契约/发布态/wire 校验)。它不保证某次
+	// 真实请求端到端必成——那还需运行时数据:选号阶段有 eligible 账号(pool 选号强制)、
+	// 该模型有可解析定价(model-sellability 不变量,发布守卫属 R1B)。反转族的官方客户端
+	// 门是编译期硬接线,不作运行时可缺 station。切勿把 TrafficAllowed 读作"可售卖/必计费成功"。
 	result.Ready = stationsReady(result.Stations)
 	result.Allowed = !input.Enabled || result.Ready
 	result.TrafficAllowed = input.Enabled && result.Ready
@@ -480,6 +485,25 @@ func providerCredentialType(runtimeKind string) (provider.CredentialType, bool) 
 		return provider.CredentialTypeAWSSigV4, true
 	case credentialstore.RuntimeUpstreamPassthrough:
 		return provider.CredentialTypeUpstreamPassthrough, true
+	default:
+		return "", false
+	}
+}
+
+// RuntimeKindForProviderCredential 把 provider adapter 的凭据形态投影回
+// credentialstore contract 字面量，供 dispatch 前兼容性二次校验复用。
+func RuntimeKindForProviderCredential(credentialType provider.CredentialType) (string, bool) {
+	switch credentialType {
+	case provider.CredentialTypeAPIKey:
+		return credentialstore.RuntimeAPIKey, true
+	case provider.CredentialTypeOAuthAccessToken:
+		return credentialstore.RuntimeOAuthAccessToken, true
+	case provider.CredentialTypeSessionToken:
+		return credentialstore.RuntimeSessionToken, true
+	case provider.CredentialTypeAWSSigV4:
+		return credentialstore.RuntimeAWSSigV4, true
+	case provider.CredentialTypeUpstreamPassthrough:
+		return credentialstore.RuntimeUpstreamPassthrough, true
 	default:
 		return "", false
 	}

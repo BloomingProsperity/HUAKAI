@@ -18,6 +18,22 @@ import (
 // ReasonOfficialClientRequired 是片2e 官方客户端门拒绝时的审计/错误原因标签。
 const ReasonOfficialClientRequired = "official_client_required"
 
+// Decision 是 clientgate 对调用方的封闭结果。S1 不定义 RewriteRequired：
+// Anthropic 反转账号只能 OfficialDirect 或 Reject；其它既有账号可保持 Allow。
+type Decision string
+
+const (
+	DecisionAllow          Decision = "allow"
+	DecisionOfficialDirect Decision = "official_direct"
+	DecisionReject         Decision = "reject"
+)
+
+type Result struct {
+	Decision Decision
+	Reason   string
+	Body     []byte
+}
+
 // SettingsGetter 是 clientgate 读取平台设置的最小接口;*platformsettings.Service 及 gatewayhttp
 // 的 platformSettingsReader 均满足。nil 表示设置未接线,调用方回退默认(仅官方客户端放行)。
 type SettingsGetter interface {
@@ -32,8 +48,7 @@ func CodexAccessApplies(accountType, platform string, codexCLIOnly bool) bool {
 		codexCLIOnly
 }
 
-// Decide 决定入站客户端是否被拒 + 原因标签。deny=false 时放行。
-// codex 加固层生效 → codexclientaccess.Evaluate 判决;否则 → clientid 检测 + 官方客户端门。
+// Decide 执行既有无 body 客户端决策；Anthropic 严格直发由 DecideWithBody 在它之前处理。
 func Decide(ctx context.Context, getter SettingsGetter, accountType, platform string, codexCLIOnly bool, r *http.Request) (bool, string) {
 	if CodexAccessApplies(accountType, platform, codexCLIOnly) {
 		decision := codexclientaccess.Evaluate(LoadCodexPolicy(ctx, getter), codexclientaccess.CandidateFromRequest(r))
@@ -48,6 +63,22 @@ func Decide(ctx context.Context, getter SettingsGetter, accountType, platform st
 		return false, ""
 	}
 	return true, ReasonOfficialClientRequired
+}
+
+// DecideWithBody 在既有策略之前为 Anthropic 反转账号启用严格官方直发。
+// 自报 UA/X-Client 命中但缺少路径、SDK 头或 body 结构时只能 Reject。
+func DecideWithBody(ctx context.Context, getter SettingsGetter, accountType, platform string, codexCLIOnly bool, r *http.Request, body []byte) Result {
+	if officialclient.RequiresStrictAnthropicDirect(accountType, platform, codexCLIOnly) {
+		strict := officialclient.DecideAnthropicOfficialDirect(r, body)
+		if strict.Decision == officialclient.DirectDecisionOfficialDirect {
+			return Result{Decision: DecisionOfficialDirect, Body: strict.Body}
+		}
+		return Result{Decision: DecisionReject, Reason: ReasonOfficialClientRequired}
+	}
+	if reject, reason := Decide(ctx, getter, accountType, platform, codexCLIOnly, r); reject {
+		return Result{Decision: DecisionReject, Reason: reason}
+	}
+	return Result{Decision: DecisionAllow}
 }
 
 // LoadCodexPolicy 从平台设置读取 codex 全局加固层策略快照。任一键读失败/解析失败/校验失败 →

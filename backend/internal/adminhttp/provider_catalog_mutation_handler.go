@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -16,16 +17,37 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 )
 
 var (
-	errProviderCatalogCodeConflict   = errors.New("provider catalog code already exists")
-	errProviderCatalogNotFound       = errors.New("provider catalog provider not found")
-	errProviderCatalogActiveAccounts = errors.New("provider catalog provider has active accounts")
-	errProviderCatalogTxPoolUnset    = errors.New("provider catalog transaction pool unset")
+	errProviderCatalogCodeConflict        = errors.New("provider catalog code already exists")
+	errProviderCatalogNotFound            = errors.New("provider catalog provider not found")
+	errProviderCatalogActiveAccounts      = errors.New("provider catalog provider has active accounts")
+	errProviderCatalogTxPoolUnset         = errors.New("provider catalog transaction pool unset")
+	errProviderProtocolChangeIncompatible = errors.New("provider protocol change incompatible with existing accounts")
 )
+
+// ensureAccountsCompatibleWithProtocol 校验某 provider 全部存量账号与 newProtocol 兼容,
+// 任一不兼容即返回错误(调用方在事务内会因此回滚,协议变更不落)。对非受限协议族
+// ValidateProtocolCompatibility 返回 nil,故只有改成 session 等受限族且存在错型账号时才拒。
+func ensureAccountsCompatibleWithProtocol(ctx context.Context, q *admindb.Queries, tenantID, providerID int64, newProtocol string) error {
+	accounts, err := q.ListProviderAccountsForProviderCompat(ctx, admindb.ListProviderAccountsForProviderCompatParams{
+		TenantID: tenantID, ProviderID: providerID,
+	})
+	if err != nil {
+		return err
+	}
+	for _, a := range accounts {
+		if err := accountcreate.ValidateProtocolCompatibility(newProtocol, a.AccountType, a.CredentialVendor, a.CredentialAuthMode); err != nil {
+			return fmt.Errorf("%w: 账号 %d(%s/%s/%s)与新协议 %q 不兼容: %v",
+				errProviderProtocolChangeIncompatible, a.ID, a.AccountType, a.CredentialVendor, a.CredentialAuthMode, newProtocol, err)
+		}
+	}
+	return nil
+}
 
 type providerCatalogCreateParams struct {
 	TenantID         int64
@@ -137,6 +159,12 @@ func (s providerCatalogStoreAdapter) UpdateProviderCatalogWithAudit(ctx context.
 		})
 		if err != nil {
 			return normalizeProviderCatalogDBError(err)
+		}
+		// S1-5:改协议不得留下与新协议不兼容的存量账号。UpdateProvider 已对该 provider 行
+		// 取 FOR NO KEY UPDATE,与创建侧 FOR SHARE 冲突,故本校验与并发创建互斥;任一存量
+		// 账号不兼容则整个事务回滚,协议不落。
+		if err := ensureAccountsCompatibleWithProtocol(ctx, q, arg.TenantID, row.ID, row.UpstreamProtocol); err != nil {
+			return err
 		}
 		audit.TargetID = &row.ID
 		if _, err := q.InsertAdminAuditEvent(ctx, audit); err != nil {
@@ -472,6 +500,8 @@ func writeProviderCatalogMutationError(w http.ResponseWriter, err error, fallbac
 		writeError(w, http.StatusConflict, "provider_code_conflict", "provider code already exists")
 	case errors.Is(err, errProviderCatalogActiveAccounts):
 		writeError(w, http.StatusConflict, "provider_has_active_accounts", "provider has active provider accounts")
+	case errors.Is(err, errProviderProtocolChangeIncompatible):
+		writeError(w, http.StatusConflict, "provider_protocol_incompatible_accounts", "provider protocol change is incompatible with existing accounts")
 	case errors.Is(err, errProviderCatalogNotFound), errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "provider_not_found", "provider not found")
 	default:

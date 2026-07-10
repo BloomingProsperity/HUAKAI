@@ -19,7 +19,7 @@ type OAuthSessionAdapter struct {
 }
 
 func (a *OAuthSessionAdapter) Platform() string {
-	return "anthropic_claude_session"
+	return "anthropic"
 }
 
 func (a *OAuthSessionAdapter) AcceptableCredentialTypes() []provider.CredentialType {
@@ -43,11 +43,16 @@ func (a *OAuthSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	if err := a.rejectExpired(in.Credential); err != nil {
 		return nil, err
 	}
+	customEndpoint := strings.TrimSpace(a.Endpoint) != "" || provider.UsesCustomPassthroughEndpoint(in.Credential)
 	endpoint := a.Endpoint
 	if endpoint == "" {
 		endpoint = defaultMessagesEndpoint
 	}
 	endpoint, err := provider.EndpointForCredential(endpoint, in.Credential)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic oauth session: endpoint rejected: %w", err)
+	}
+	endpoint, err = oauthMessagesEndpointWithBeta(endpoint, in.Credential.Extra["claude_beta_query"], customEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic oauth session: endpoint rejected: %w", err)
 	}
@@ -84,6 +89,25 @@ func (a *OAuthSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	stampClaudeCodeStaticHeaders(req.Header)
 	applyClaudeSessionHeaders(req.Header, in.Account.AccountID)
 	return req, nil
+}
+
+// oauthMessagesEndpointWithBeta 实现 session 出站的三态规则：官方默认地址缺省
+// 加 beta=true，显式 false 关闭；自定义地址缺省不加，只有显式 true 才加。
+// URL 合并交给公共 helper，保留已有 query 且不覆盖已有 beta 值。
+func oauthMessagesEndpointWithBeta(endpoint, setting string, customEndpoint bool) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(setting)) {
+	case "true":
+		return provider.EndpointWithQueryParamIfMissing(endpoint, "beta", "true")
+	case "false":
+		return endpoint, nil
+	case "":
+		if customEndpoint {
+			return endpoint, nil
+		}
+		return provider.EndpointWithQueryParamIfMissing(endpoint, "beta", "true")
+	default:
+		return "", errors.New("claude_beta_query must be true, false, or empty")
+	}
 }
 
 func (a *OAuthSessionAdapter) acceptsCredential(t provider.CredentialType) bool {

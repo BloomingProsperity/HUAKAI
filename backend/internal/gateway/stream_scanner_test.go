@@ -103,7 +103,7 @@ func TestBuildDefaultStreamScannerRegistry(t *testing.T) {
 	}
 
 	for _, family := range []string{
-		"anthropic_messages", "openai_chat", "openai_responses", "openai_codex",
+		"anthropic_messages", "anthropic_claude_session", "openai_chat", "openai_responses", "openai_codex",
 		"gemini_messages", "openrouter_chat", "grok_chat",
 		"deepseek_chat", "mistral_chat", "groqcloud_chat",
 		"together_chat", "perplexity_chat", "fireworks_chat",

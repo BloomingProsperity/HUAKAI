@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,12 +23,16 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	provideranthropic "github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
+	"github.com/BloomingProsperity/HUAKAI/internal/quota"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/retrybudget"
@@ -368,6 +373,422 @@ func TestPR5NonStream401HotRefreshDedupesSameAccountWithinWindow(t *testing.T) {
 	}
 	if calls := refresher.snapshot(); len(calls) != 1 || calls[0].accountID != 321 {
 		t.Fatalf("hot refresh calls=%+v want exactly one call for account 321", calls)
+	}
+}
+
+type claudeSessionSuccessDoer struct {
+	calls         int
+	urls          []string
+	authorization []string
+	bodies        [][]byte
+}
+
+type claudeSessionStreamingDoer struct {
+	calls int
+	url   string
+	auth  string
+	body  []byte
+}
+
+func (d *claudeSessionStreamingDoer) Do(req *http.Request) (*http.Response, error) {
+	d.body, _ = io.ReadAll(req.Body)
+	d.calls++
+	d.url = req.URL.String()
+	d.auth = req.Header.Get("Authorization")
+	wire := strings.Join([]string{
+		`event: message_start`,
+		`data: {"type":"message_start","message":{"id":"msg-r1a-stream","model":"claude-sonnet","usage":{"input_tokens":2}}}`,
+		``,
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		``,
+		`event: content_block_delta`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"pong"}}`,
+		``,
+		`event: content_block_stop`,
+		`data: {"type":"content_block_stop","index":0}`,
+		``,
+		`event: message_delta`,
+		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+		``,
+		`event: message_stop`,
+		`data: {"type":"message_stop"}`,
+		``,
+	}, "\n")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(wire)),
+	}, nil
+}
+
+func (d *claudeSessionSuccessDoer) Do(req *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	d.calls++
+	d.urls = append(d.urls, req.URL.String())
+	d.authorization = append(d.authorization, req.Header.Get("Authorization"))
+	d.bodies = append(d.bodies, body)
+	response := `{"id":"msg-r1a","type":"message","role":"assistant","model":"claude-sonnet","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3}}`
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(response)),
+	}, nil
+}
+
+type claudeSessionQuotaFinalizer struct {
+	settles  []quota.SettleRequest
+	releases []quota.ReleaseRequest
+}
+
+func (f *claudeSessionQuotaFinalizer) Settle(_ context.Context, req quota.SettleRequest) (quota.SettleResult, error) {
+	f.settles = append(f.settles, req)
+	return quota.SettleResult{}, nil
+}
+
+func (f *claudeSessionQuotaFinalizer) Release(_ context.Context, req quota.ReleaseRequest) (quota.ReleaseResult, error) {
+	f.releases = append(f.releases, req)
+	return quota.ReleaseResult{}, nil
+}
+
+func (f *claudeSessionQuotaFinalizer) CommitCacheHit(_ context.Context, req quota.CacheHitRequest) (quota.CacheHitResult, error) {
+	return quota.CacheHitResult{}, nil
+}
+
+func claudeSessionOfficialBody() string {
+	return `{
+  "model":"claude-sonnet",
+  "max_tokens":8,
+  "stream":false,
+  "system":[{"type":"text","text":"supported CLI"}],
+  "metadata":{"user_id":"user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_account_00000000-1111-2222-3333-444444444444_session_11111111-2222-3333-4444-555555555555"},
+  "messages":[{"role":"user","content":"hi"}]
+}`
+}
+
+func claudeSessionOfficialHeaders() map[string]string {
+	return map[string]string{
+		"User-Agent":                  "claude-cli/2.1.78 (external, cli)",
+		"X-App":                       "cli",
+		"X-Stainless-Lang":            "js",
+		"X-Stainless-Runtime":         "node",
+		"X-Stainless-Package-Version": "0.74.0",
+		"X-Stainless-Retry-Count":     "0",
+		"Anthropic-Version":           "2023-06-01",
+		"Anthropic-Beta":              "claude-code-20250219",
+	}
+}
+
+// TestClaudeSessionLocalExpiryReleasesARefreshesAndSettlesBOnce 是 R1A 的资源
+// 生命周期判别用例：A 在 adapter 本地发现过期后不得发 HTTP，必须 abort/quota
+// release、触发一次刷新并加入排除；B 成功且 billing/quota 各只 settle 一次。
+func TestClaudeSessionLocalExpiryReleasesARefreshesAndSettlesBOnce(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	selector := newPR5Selector(t, 7101, 7102)
+	claimGate := &pr5ClaimGate{claimID: 88710}
+	innerSettler := &recordingSettler{}
+	quotaFinalizer := &claudeSessionQuotaFinalizer{}
+	refresher := newRecordingHotRefreshSpy()
+	health := &recordingChannelHealth{}
+	doer := &claudeSessionSuccessDoer{}
+
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("anthropic_claude_session", &provideranthropic.OAuthSessionAdapter{
+		Now: func() time.Time { return time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC) },
+	})
+	tf := transport.NewFactory()
+	tf.SetMimicry(http.DefaultTransport)
+
+	vault := provider.NewStaticVault()
+	for _, account := range []struct {
+		id      int64
+		token   string
+		expires string
+	}{
+		{7101, "expired-A", "2026-07-10T11:59:00Z"},
+		{7102, "fresh-B", "2026-07-10T13:00:00Z"},
+	} {
+		if err := vault.Set(account.id, provider.Credential{
+			Type: provider.CredentialTypeOAuthAccessToken, Value: account.token,
+			Extra: map[string]string{"expires_at": account.expires},
+		}, provider.AccountInfo{
+			AccountID: account.id, Platform: credentialstore.VendorAnthropic,
+			AccountType:         credentialstore.AuthModeClaudeAIOAuth,
+			AccountCredentialID: 9000 + account.id, CredentialVersion: 1,
+		}); err != nil {
+			t.Fatalf("vault.Set(%d): %v", account.id, err)
+		}
+	}
+
+	deps := pr5NonStreamDeps(t, selector, claimGate, quotaenforce.NewSettler(innerSettler, quotaFinalizer), nil)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "claude-sonnet", CanonicalModelID: "anthropic/claude-sonnet",
+		ProviderModelID: "claude-sonnet", ProtocolFamily: "anthropic_claude_session",
+		PoolCandidates: []int64{42},
+	}}
+	deps.Router = stubRouter{plan: pr5RoutePlan(router.AttemptPlan{
+		Index: 0, PoolGroupID: 42, UpstreamModelID: "claude-sonnet", Reason: "primary",
+	})}
+	deps.CredentialVault = vault
+	deps.CredentialHotRefresher = refresher
+	deps.ChannelHealth = health
+	deps.Dispatcher = &gateway.UpstreamDispatcher{
+		Adapters: adapters, TransportFactory: tf, HTTPClient: doer,
+	}
+
+	rec := invokeHandlerPathWithHeaders(t, deps, "/v1/messages", claudeSessionOfficialBody(), claudeSessionOfficialHeaders())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want B success", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 2 || len(selector.requests) != 2 {
+		t.Fatalf("selector calls=%d requests=%d want 2", selector.calls, len(selector.requests))
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[7101]; !excluded {
+		t.Fatalf("second exclusions=%v want expired A", selector.requests[1].ExcludedAccounts)
+	}
+	if doer.calls != 1 || len(doer.authorization) != 1 || doer.authorization[0] != "Bearer fresh-B" {
+		t.Fatalf("HTTP calls=%d auth=%v want only fresh B", doer.calls, doer.authorization)
+	}
+	if len(doer.urls) != 1 || doer.urls[0] != "https://api.anthropic.com/v1/messages?beta=true" {
+		t.Fatalf("upstream URLs=%v want official beta=true", doer.urls)
+	}
+	if len(doer.bodies) != 1 || !bytes.Equal(doer.bodies[0], []byte(claudeSessionOfficialBody())) {
+		t.Fatalf("raw buffered 官方直发 body 漂移\ngot:  %s\nwant: %s", doer.bodies[0], claudeSessionOfficialBody())
+	}
+	if len(innerSettler.aborts) != 1 || innerSettler.aborts[0].reason != "local_credential_expired" {
+		t.Fatalf("billing aborts=%+v want one local expiry", innerSettler.aborts)
+	}
+	if len(innerSettler.calls) != 1 || innerSettler.calls[0].AccountID != 7102 || innerSettler.calls[0].AttemptSeq != 2 {
+		t.Fatalf("billing settles=%+v want B once at attempt 2", innerSettler.calls)
+	}
+	if len(quotaFinalizer.releases) != 1 || len(quotaFinalizer.settles) != 1 {
+		t.Fatalf("quota release/settle=%d/%d want 1/1", len(quotaFinalizer.releases), len(quotaFinalizer.settles))
+	}
+	refresh := refresher.waitForCall(t)
+	if refresh.accountID != 7101 || refresh.vendor != credentialstore.VendorAnthropic {
+		t.Fatalf("hot refresh=%+v want expired A/anthropic", refresh)
+	}
+	for _, signal := range health.signals {
+		if signal.Key.ProviderAccountID == 7101 && signal.Class != "" {
+			t.Fatalf("本地过期 A 不得写普通 channel health 信号: %+v", health.signals)
+		}
+	}
+}
+
+// TestClaudeSessionLocalExpiryHotRefreshConcurrentDedupe 模拟同一过期账号被并发
+// 请求同时击中；分类路径都会触发热刷新，但去重层必须只把一次调用交给刷新器。
+// 变异：移除 admit 的互斥/窗口判断会使 calls>1。
+func TestClaudeSessionLocalExpiryHotRefreshConcurrentDedupe(t *testing.T) {
+	inner := newRecordingHotRefreshSpy()
+	refresher := newDedupingCredentialHotRefresher(inner, time.Minute)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = refresher.RefreshHotPath(context.Background(), 7, 7101, credentialstore.VendorAnthropic)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if calls := inner.snapshot(); len(calls) != 1 || calls[0].accountID != 7101 {
+		t.Fatalf("concurrent hot refresh calls=%+v want exactly one for A", calls)
+	}
+}
+
+// TestClaudeSessionMissingAdapterReleasesWithoutHTTP 证明即便启动闭合闸被绕过，
+// 热路径缺 adapter 仍会在发网前终结 billing/quota，不留下 hold 或并发槽。
+func TestClaudeSessionMissingAdapterReleasesWithoutHTTP(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	selector := newPR5Selector(t, 7201)
+	innerSettler := &recordingSettler{}
+	quotaFinalizer := &claudeSessionQuotaFinalizer{}
+	doer := &claudeSessionSuccessDoer{}
+	tf := transport.NewFactory()
+	tf.SetMimicry(http.DefaultTransport)
+	vault := provider.NewStaticVault()
+	if err := vault.Set(7201, provider.Credential{
+		Type: provider.CredentialTypeOAuthAccessToken, Value: "fresh",
+	}, provider.AccountInfo{
+		AccountID: 7201, Platform: credentialstore.VendorAnthropic,
+		AccountType:         credentialstore.AuthModeClaudeAIOAuth,
+		AccountCredentialID: 16201, CredentialVersion: 1,
+	}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88720}, quotaenforce.NewSettler(innerSettler, quotaFinalizer), nil)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "claude-sonnet", CanonicalModelID: "anthropic/claude-sonnet",
+		ProviderModelID: "claude-sonnet", ProtocolFamily: "anthropic_claude_session", PoolCandidates: []int64{42},
+	}}
+	deps.Router = stubRouter{plan: pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "claude-sonnet"})}
+	deps.CredentialVault = vault
+	deps.Dispatcher = &gateway.UpstreamDispatcher{
+		Adapters: provider.NewStaticRegistry(), TransportFactory: tf, HTTPClient: doer,
+	}
+	rec := invokeHandlerPathWithHeaders(t, deps, "/v1/messages", claudeSessionOfficialBody(), claudeSessionOfficialHeaders())
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s want 502", rec.Code, rec.Body.String())
+	}
+	if doer.calls != 0 {
+		t.Fatalf("missing adapter HTTP calls=%d want 0", doer.calls)
+	}
+	if len(innerSettler.aborts) != 1 || len(innerSettler.calls) != 0 || len(quotaFinalizer.releases) != 1 || len(quotaFinalizer.settles) != 0 {
+		t.Fatalf("resource finalization abort/settle/quota-release/quota-settle=%d/%d/%d/%d want 1/0/1/0",
+			len(innerSettler.aborts), len(innerSettler.calls), len(quotaFinalizer.releases), len(quotaFinalizer.settles))
+	}
+}
+
+// TestClaudeSessionRuntimeCompatibilityRejectsWrongAAndUsesB 证明配置面被绕过时，
+// 发网前二次校验仍会拒绝 API-key A、释放其资源并只让兼容的 OAuth B 发 HTTP。
+func TestClaudeSessionRuntimeCompatibilityRejectsWrongAAndUsesB(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	selector := newPR5Selector(t, 7301, 7302)
+	innerSettler := &recordingSettler{}
+	quotaFinalizer := &claudeSessionQuotaFinalizer{}
+	doer := &claudeSessionSuccessDoer{}
+	tf := transport.NewFactory()
+	tf.SetMimicry(http.DefaultTransport)
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("anthropic_claude_session", &provideranthropic.OAuthSessionAdapter{})
+	vault := provider.NewStaticVault()
+	if err := vault.Set(7301, provider.Credential{
+		Type: provider.CredentialTypeAPIKey, Value: "must-not-leave-process",
+	}, provider.AccountInfo{
+		AccountID: 7301, Platform: credentialstore.VendorAnthropic,
+		AccountType: credentialstore.AuthModeAPIKey, AccountCredentialID: 16301, CredentialVersion: 1,
+	}); err != nil {
+		t.Fatalf("vault.Set A: %v", err)
+	}
+	if err := vault.Set(7302, provider.Credential{
+		Type: provider.CredentialTypeOAuthAccessToken, Value: "fresh-B",
+	}, provider.AccountInfo{
+		AccountID: 7302, Platform: credentialstore.VendorAnthropic,
+		AccountType: credentialstore.AuthModeClaudeAIOAuth, AccountCredentialID: 16302, CredentialVersion: 1,
+	}); err != nil {
+		t.Fatalf("vault.Set B: %v", err)
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88730}, quotaenforce.NewSettler(innerSettler, quotaFinalizer), nil)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "claude-sonnet", CanonicalModelID: "anthropic/claude-sonnet",
+		ProviderModelID: "claude-sonnet", ProtocolFamily: "anthropic_claude_session", PoolCandidates: []int64{42},
+	}}
+	deps.Router = stubRouter{plan: pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "claude-sonnet"})}
+	deps.CredentialVault = vault
+	deps.Dispatcher = &gateway.UpstreamDispatcher{Adapters: adapters, TransportFactory: tf, HTTPClient: doer}
+	rec := invokeHandlerPathWithHeaders(t, deps, "/v1/messages", claudeSessionOfficialBody(), claudeSessionOfficialHeaders())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want B success", rec.Code, rec.Body.String())
+	}
+	if doer.calls != 1 || doer.authorization[0] != "Bearer fresh-B" {
+		t.Fatalf("HTTP calls/auth=%d/%v want only OAuth B", doer.calls, doer.authorization)
+	}
+	if len(innerSettler.aborts) != 1 || innerSettler.aborts[0].reason != "credential_protocol_incompatible" {
+		t.Fatalf("aborts=%+v want incompatible A once", innerSettler.aborts)
+	}
+	if len(innerSettler.calls) != 1 || innerSettler.calls[0].AccountID != 7302 || len(quotaFinalizer.releases) != 1 || len(quotaFinalizer.settles) != 1 {
+		t.Fatalf("settlement mismatch billing=%+v quota release/settle=%d/%d", innerSettler.calls, len(quotaFinalizer.releases), len(quotaFinalizer.settles))
+	}
+}
+
+// TestClaudeSessionStreamingUsesAnthropicScannerAndSettlesOnce 走真实 session
+// adapter + SSE scanner + Anthropic event adapter，证明流式路不是仅靠注册表假绿。
+func TestClaudeSessionStreamingUsesAnthropicScannerAndSettlesOnce(t *testing.T) {
+	selector := newPR5Selector(t, 7401)
+	settler := &recordingSettler{}
+	doer := &claudeSessionStreamingDoer{}
+	tf := transport.NewFactory()
+	tf.SetMimicry(http.DefaultTransport)
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("anthropic_claude_session", &provideranthropic.OAuthSessionAdapter{})
+	vault := provider.NewStaticVault()
+	if err := vault.Set(7401, provider.Credential{
+		Type: provider.CredentialTypeOAuthAccessToken, Value: "stream-token",
+	}, provider.AccountInfo{
+		AccountID: 7401, Platform: credentialstore.VendorAnthropic,
+		AccountType: credentialstore.AuthModeClaudeAIOAuth, AccountCredentialID: 16401, CredentialVersion: 1,
+	}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88740}, settler, nil)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "claude-sonnet", CanonicalModelID: "anthropic/claude-sonnet",
+		ProviderModelID: "claude-sonnet", ProtocolFamily: "anthropic_claude_session", PoolCandidates: []int64{42},
+	}}
+	deps.Router = stubRouter{plan: pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "claude-sonnet"})}
+	deps.CredentialVault = vault
+	deps.Dispatcher = &gateway.UpstreamDispatcher{Adapters: adapters, TransportFactory: tf, HTTPClient: doer}
+	deps.Forwarder = &gateway.StreamForwarder{
+		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
+		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
+	}
+	body := strings.Replace(claudeSessionOfficialBody(), `"stream":false`, `"stream":true`, 1)
+	rec := invokeHandlerPathWithHeaders(t, deps, "/v1/messages", body, claudeSessionOfficialHeaders())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "pong") || !strings.Contains(rec.Body.String(), "message_stop") {
+		t.Fatalf("status=%d body=%s want Anthropic SSE pong+stop", rec.Code, rec.Body.String())
+	}
+	if doer.calls != 1 || doer.url != "https://api.anthropic.com/v1/messages?beta=true" || doer.auth != "Bearer stream-token" {
+		t.Fatalf("stream doer calls/url/auth=%d/%s/%s", doer.calls, doer.url, doer.auth)
+	}
+	if !bytes.Equal(doer.body, []byte(body)) {
+		t.Fatalf("raw stream 官方直发 body 漂移\ngot:  %s\nwant: %s", doer.body, body)
+	}
+	if len(settler.calls) != 1 || len(settler.aborts) != 0 || settler.calls[0].AccountID != 7401 {
+		t.Fatalf("stream settle/abort=%+v/%+v want one settle", settler.calls, settler.aborts)
+	}
+}
+
+// TestClaudeSessionHCSFMarshalAndResponseSettleOnce 走默认 HCSF 非流路径；严格官方
+// 请求体跳过 canonical 重排，而响应仍经 Anthropic adapter 回到 HCSF 并只结算一次。
+func TestClaudeSessionHCSFMarshalAndResponseSettleOnce(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 7501)
+	settler := &recordingSettler{}
+	doer := &claudeSessionSuccessDoer{}
+	tf := transport.NewFactory()
+	tf.SetMimicry(http.DefaultTransport)
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("anthropic_claude_session", &provideranthropic.OAuthSessionAdapter{})
+	vault := provider.NewStaticVault()
+	if err := vault.Set(7501, provider.Credential{
+		Type: provider.CredentialTypeOAuthAccessToken, Value: "hcsf-token",
+	}, provider.AccountInfo{
+		AccountID: 7501, Platform: credentialstore.VendorAnthropic,
+		AccountType: credentialstore.AuthModeClaudeAIOAuth, AccountCredentialID: 16501, CredentialVersion: 1,
+	}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+	dispatcher := &gateway.UpstreamDispatcher{
+		Adapters: provider.NewStaticRegistry(), TransportFactory: tf, HTTPClient: doer,
+		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
+	}
+	dispatcher.Adapters = adapters
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88750}, settler, dispatcher)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "claude-sonnet", CanonicalModelID: "anthropic/claude-sonnet",
+		ProviderModelID: "claude-sonnet", ProtocolFamily: "anthropic_claude_session", PoolCandidates: []int64{42},
+	}}
+	deps.Router = stubRouter{plan: pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "claude-sonnet"})}
+	deps.CredentialVault = vault
+	deps.Dispatcher = dispatcher
+	deps.CanonicalDispatcher = dispatcher
+	rec := invokeHandlerPathWithHeaders(t, deps, "/v1/messages", claudeSessionOfficialBody(), claudeSessionOfficialHeaders())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ok") {
+		t.Fatalf("status=%d body=%s want HCSF success", rec.Code, rec.Body.String())
+	}
+	if doer.calls != 1 || doer.authorization[0] != "Bearer hcsf-token" {
+		t.Fatalf("HCSF HTTP calls/auth=%d/%v", doer.calls, doer.authorization)
+	}
+	if len(doer.bodies) != 1 || !bytes.Equal(doer.bodies[0], []byte(claudeSessionOfficialBody())) {
+		t.Fatalf("HCSF 官方直发 body 漂移\ngot:  %s\nwant: %s", doer.bodies[0], claudeSessionOfficialBody())
+	}
+	if len(settler.calls) != 1 || len(settler.aborts) != 0 || settler.calls[0].AccountID != 7501 {
+		t.Fatalf("HCSF settle/abort=%+v/%+v want one settle", settler.calls, settler.aborts)
 	}
 }
 

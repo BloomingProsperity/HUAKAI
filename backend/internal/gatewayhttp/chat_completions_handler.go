@@ -29,6 +29,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/httpkeepalive"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
@@ -94,10 +95,7 @@ type ChatHandlerDeps struct {
 	AuditLedger           auditledger.Ledger
 	AuditLedgerDLQ        auditledger.DLQEnqueuer
 	ModerationScreener    moderation.Screener
-	// SettleRecoveryDLQ 是 post-delivery settle 失败(流式响应已发给客户端
-	// 但 Tx2 settlement 未确认提交)的 durable 兜底 enqueue;nil 时 stream
-	// path 失败只 log,money path 灰区无可补救。生产部署必须 接上
-	// dlq.Service(见 cmd/gateway/routes.go SettleRecoveryDLQ: d.dlqService)。
+	// SettleRecoveryDLQ 持久化已交付但 Tx2 未确认的结算；生产必须接入 DLQ 服务。
 	SettleRecoveryDLQ      settlementrecovery.Enqueuer
 	Signer                 *sign.Signer
 	ChannelHealth          channelHealthRecorder
@@ -115,32 +113,23 @@ type ChatHandlerDeps struct {
 	RequestClass         string
 	ClientIPResolver     *clientip.Resolver
 
-	// SessionCapRegistry 用于在 dispatch 成功时注册 session hash
-	// (SUB2-EGRESS-02)。nil 是安全的(跳过注册)。
+	// SessionCapRegistry 在 dispatch 成功时登记 session hash；nil 时跳过。
 	SessionCapRegistry *sessioncap.Registry
 
-	// RecentReqRing 记录 per-account 的请求结果，供事故定位使用
-	// (MGMT-RECENTREQ-01)。nil 是安全的(跳过记录)。
+	// RecentReqRing 记录账号级近期请求；nil 时跳过。
 	RecentReqRing *recentreq.Ring
 
-	// EndpointFamily 标记 billing 字段；空字符串退化为 "chat"。
-	// /v1/chat/completions: "chat"
-	// /v1/messages:         "messages"
+	// EndpointFamily 标记 billing 端点族，空值退化为 "chat"。
 	EndpointFamily string
 
 	// CacheScope 决定 L2 缓存键 principal 隔离粒度(tenant|apikey|user); 空 → "apikey"。
 	CacheScope string
 
-	// ToolPricingTable 提供 per-(tenant, model) 工具调用附加费价表查询。
-	// 类型为 toolpricing.Source 接口:既能吃裸 Table(纯 override / 测试),也能吃
-	// 带平台默认价回落的 platformSource(生产装配)。nil = default-off:无论工具调用
-	// 多少次都不加附加费(旧行为,运维关闭开关时的退路)。生产装配按
-	// HUAKAI_TOOL_SURCHARGE_ENABLED 注入 platformSource 启用按官方价计费。
+	// ToolPricingTable 查询租户/模型工具附加费；nil 保持不加费的安全默认。
+	// 生产由 HUAKAI_TOOL_SURCHARGE_ENABLED 决定是否注入带默认价的 source。
 	ToolPricingTable toolpricing.Source
 
-	// AuthCooldown 是 auth 降级车道(缺口① S1);此处仅用于凭证热刷新结果的单向通报
-	//(triggerCredentialHotRefresh 回调 OnRefreshResult,只在永久失效时升 HardDisabled)。
-	// nil 安全(方法自带 nil 守卫),默认关。
+	// AuthCooldown 接收热刷新结果，永久失效时升级 HardDisabled；nil 安全。
 	AuthCooldown *authcooldown.Store
 }
 
@@ -232,12 +221,12 @@ type chatExecution struct {
 	groupRatioCache                      decimal.Decimal
 	groupRatioCachePendingReconciliation bool
 
-	cred         provider.Credential
-	accInfo      provider.AccountInfo
-	forwardReq   gateway.ForwardRequest
-	healthKey    channelhealth.ChannelKey
-	healthKeyOK  bool
-	protocolLoss json.RawMessage
+	cred                        provider.Credential
+	accInfo                     provider.AccountInfo
+	forwardReq                  gateway.ForwardRequest
+	healthKey                   channelhealth.ChannelKey
+	healthKeyOK, officialDirect bool
+	protocolLoss                json.RawMessage
 
 	queueWaitSpentMS int
 	queueWaitNow     func() time.Time
@@ -731,7 +720,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
 		// R7 身份改写(默认关 + fail-open,只动 dispatch 专用拷贝、不动 ex.body)。
-		InboundBody:          ex.identityRewrite(ex.upstreamInboundBody(ex.body)),
+		InboundBody:          chatpipe.OutboundDispatchBody(ex.officialDirect, ex.resolved.ProtocolFamily, ex.upstreamInboundBody(ex.body), ex.identityRewrite),
 		BodyControls:         ex.activeDispatchBodyControls(),
 		InboundBetaTokens:    ex.clientBetaTokens(),
 		Account:              transportSelection.account,

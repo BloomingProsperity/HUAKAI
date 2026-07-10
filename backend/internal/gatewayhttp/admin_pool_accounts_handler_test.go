@@ -53,18 +53,26 @@ func (s adminPoolAuthStub) Resolve(context.Context, *http.Request) (admin.AdminI
 }
 
 type adminPoolStoreStub struct {
-	insertID   int64
-	insert     *admindb.InsertProviderAccountParams
-	riskPeers  []providerAccountRiskPeerForTest
-	listArg    *admindb.ListAdminProviderAccountsParams
-	list       []admindb.AdminProviderAccountRow
-	getArg     *admindb.GetAdminProviderAccountParams
-	get        *admindb.AdminProviderAccountRow
-	updateFull *admindb.UpdateAdminProviderAccountParams
-	update     *admindb.UpdateProviderAccountEnabledParams
-	clear      *admindb.ClearProviderAccountRateLimitParams
-	delete     *admindb.SoftDeleteProviderAccountParams
-	audits     []admindb.InsertAdminAuditEventParams
+	insertID         int64
+	insert           *admindb.InsertProviderAccountParams
+	providerFamilies map[int64]string
+	riskPeers        []providerAccountRiskPeerForTest
+	listArg          *admindb.ListAdminProviderAccountsParams
+	list             []admindb.AdminProviderAccountRow
+	getArg           *admindb.GetAdminProviderAccountParams
+	get              *admindb.AdminProviderAccountRow
+	updateFull       *admindb.UpdateAdminProviderAccountParams
+	update           *admindb.UpdateProviderAccountEnabledParams
+	clear            *admindb.ClearProviderAccountRateLimitParams
+	delete           *admindb.SoftDeleteProviderAccountParams
+	audits           []admindb.InsertAdminAuditEventParams
+}
+
+func (s *adminPoolStoreStub) GetProviderProtocolForAccountCreate(_ context.Context, arg admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
+	if family, ok := s.providerFamilies[arg.ProviderID]; ok {
+		return family, nil
+	}
+	return "openai_chat", nil
 }
 
 type providerAccountRiskPeerForTest struct {
@@ -127,6 +135,9 @@ func (s *adminPoolStoreStub) ListProviderAccountRiskPeers(_ context.Context, arg
 }
 
 func (s *adminPoolStoreStub) InsertProviderAccountWithMixedRiskCheck(ctx context.Context, arg adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error) {
+	if err := validateProviderAccountProtocolCompatibility(arg.ProviderFamily, arg.Candidate.AccountType, arg.Candidate.Vendor, arg.Candidate.AuthMode); err != nil {
+		return adminPoolAccountCreateWithMixedRiskResult{}, err
+	}
 	peers, err := s.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
 		TenantID:  arg.Insert.TenantID,
 		ChannelID: arg.Insert.ChannelID,
@@ -143,6 +154,17 @@ func (s *adminPoolStoreStub) InsertProviderAccountWithMixedRiskCheck(ctx context
 		return adminPoolAccountCreateWithMixedRiskResult{RiskReport: report}, err
 	}
 	return adminPoolAccountCreateWithMixedRiskResult{ID: id, RiskReport: report}, nil
+}
+
+func mixedRiskPeerAccounts(rows []admindb.ProviderAccountRiskPeerRow) []mixedchannelrisk.Account {
+	out := make([]mixedchannelrisk.Account, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mixedchannelrisk.Account{
+			ID: row.ID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
+			AccountType: row.AccountType, Vendor: row.CredentialVendor, AuthMode: row.CredentialAuthMode,
+		})
+	}
+	return out
 }
 
 func (s *adminPoolStoreStub) ListAdminProviderAccounts(_ context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
@@ -350,6 +372,36 @@ func TestAdminPoolAccounts_CreateWithCredentialV2StoresEmptyLegacyJSON(t *testin
 	}
 	if response.ID != 77 {
 		t.Fatalf("id=%d want 77", response.ID)
+	}
+}
+
+// TestAdminPoolAccounts_ClaudeSessionRejectsAPIKeyBeforeInsert 咬住配置面防线：
+// API-key 账号不能挂到 session provider，且拒绝发生在账号行与凭据写入之前。
+func TestAdminPoolAccounts_ClaudeSessionRejectsAPIKeyBeforeInsert(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77, providerFamilies: map[int64]string{8: "anthropic_claude_session"}}
+	credentials := &adminPoolCredentialWriterStub{id: 88}
+	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":8,"channel_id":9,"name":"wrong-key","account_type":"api_key","vendor":"anthropic","auth_mode":"api_key","credentials":{"api_key":"sk-ant"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert != nil || credentials.input != nil {
+		t.Fatalf("不兼容账号不得落库或写凭据: insert=%+v credential=%+v", store.insert, credentials.input)
+	}
+}
+
+// TestAdminPoolAccounts_ClaudeSessionAcceptsOAuth 证明正向模式仍可创建，
+// 并精确把 claude_ai_oauth 凭据交给 credential store。
+func TestAdminPoolAccounts_ClaudeSessionAcceptsOAuth(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77, providerFamilies: map[int64]string{8: "anthropic_claude_session"}}
+	credentials := &adminPoolCredentialWriterStub{id: 88}
+	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":8,"channel_id":9,"name":"claude-oauth","account_type":"oauth","vendor":"anthropic","auth_mode":"claude_ai_oauth","credentials":{"access_token":"oauth-access","refresh_token":"oauth-refresh"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert == nil || credentials.input == nil || credentials.input.AuthMode != credentialstore.AuthModeClaudeAIOAuth {
+		t.Fatalf("session OAuth 正向创建未闭合: insert=%+v credential=%+v", store.insert, credentials.input)
 	}
 }
 
