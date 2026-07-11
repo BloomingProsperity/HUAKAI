@@ -26,6 +26,16 @@ type CreateParams struct {
 	PredictedCost      decimal.Decimal
 }
 
+// StaleSettlementIntent 是后台对账所需的最小意图快照。
+type StaleSettlementIntent struct {
+	ID         int64
+	TenantID   int64
+	ClaimID    int64
+	AttemptSeq int32
+	Version    int32
+	Status     string
+}
+
 // Store 定义结算意图所需的最小持久化接口，便于主链路注入故障测试。
 type Store interface {
 	Insert(context.Context, CreateParams) (int64, error)
@@ -34,6 +44,10 @@ type Store interface {
 	MarkSettled(context.Context, int64, int32, decimal.Decimal, time.Time) (int32, error)
 	MarkAborted(context.Context, int64, int32) (int32, error)
 	MarkFailed(context.Context, int64, int32, decimal.Decimal) (int32, error)
+	ListStaleNonTerminalSettlementIntents(context.Context, time.Time, time.Time, int32) ([]StaleSettlementIntent, error)
+	MarkSettledIfStale(context.Context, int64, int32, decimal.Decimal, time.Time) (int32, error)
+	MarkAbortedIfStale(context.Context, int64, int32) (int32, error)
+	MarkSupersededIfStale(context.Context, int64, int32) (int32, error)
 }
 
 // PostgresStore 把状态迁移委托给 sqlc 查询。
@@ -120,6 +134,64 @@ func (s *PostgresStore) MarkFailed(ctx context.Context, id int64, version int32,
 		ActualCost: actualCost,
 		ID:         id,
 		Version:    version,
+	})
+}
+
+func (s *PostgresStore) ListStaleNonTerminalSettlementIntents(ctx context.Context, staleCutoff, createdBefore time.Time, limit int32) ([]StaleSettlementIntent, error) {
+	if s == nil || s.queries == nil {
+		return nil, errStoreNotConfigured
+	}
+	rows, err := s.queries.ListStaleNonTerminalSettlementIntents(ctx, dbbilling.ListStaleNonTerminalSettlementIntentsParams{
+		StaleCutoff:   pgtype.Timestamptz{Time: staleCutoff.UTC(), Valid: true},
+		CreatedBefore: pgtype.Timestamptz{Time: createdBefore.UTC(), Valid: true},
+		Lim:           limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	intents := make([]StaleSettlementIntent, 0, len(rows))
+	for _, row := range rows {
+		intents = append(intents, StaleSettlementIntent{
+			ID:         row.ID,
+			TenantID:   row.TenantID,
+			ClaimID:    row.ClaimID,
+			AttemptSeq: row.AttemptSeq,
+			Version:    row.Version,
+			Status:     row.Status,
+		})
+	}
+	return intents, nil
+}
+
+func (s *PostgresStore) MarkSettledIfStale(ctx context.Context, id int64, version int32, actualCost decimal.Decimal, settledAt time.Time) (int32, error) {
+	if s == nil || s.queries == nil {
+		return 0, errStoreNotConfigured
+	}
+	return s.queries.MarkSettlementIntentSettledIfStale(ctx, dbbilling.MarkSettlementIntentSettledIfStaleParams{
+		ActualCost: actualCost,
+		SettledAt:  pgtype.Timestamptz{Time: settledAt.UTC(), Valid: true},
+		ID:         id,
+		Version:    version,
+	})
+}
+
+func (s *PostgresStore) MarkAbortedIfStale(ctx context.Context, id int64, version int32) (int32, error) {
+	if s == nil || s.queries == nil {
+		return 0, errStoreNotConfigured
+	}
+	return s.queries.MarkSettlementIntentAbortedIfStale(ctx, dbbilling.MarkSettlementIntentAbortedIfStaleParams{
+		ID:      id,
+		Version: version,
+	})
+}
+
+func (s *PostgresStore) MarkSupersededIfStale(ctx context.Context, id int64, version int32) (int32, error) {
+	if s == nil || s.queries == nil {
+		return 0, errStoreNotConfigured
+	}
+	return s.queries.MarkSettlementIntentSupersededIfStale(ctx, dbbilling.MarkSettlementIntentSupersededIfStaleParams{
+		ID:      id,
+		Version: version,
 	})
 }
 

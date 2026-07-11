@@ -377,9 +377,9 @@ Source: `docs/specs/voucher-system.md` and `docs/decompositions/_cross-cutting/v
 | AT-R1A-007 | per-key 与账号级并发上限饱和后可恢复。 | quota + pool slot 并发 | 真 PostgreSQL、并发测试 tag/E2E 环境。 | 并发抢 quota scope；账号槽打满并触发排队/拒绝；成功与 abort 后重新取槽。 | 同时成功数精确等于 cap；不得超发；终结后容量恢复，claim/quota/slot 无悬挂。 | 并发超卖、排队错误、成功/失败释放不对称。 | PASS（真 PG quota/pool 集成测试；`e2e_concurrency` 四场景整组干净重跑通过：释放后 waiter 成功、等待队列溢出快速拒绝、超时 abort/release、断连释放等待位） |
 | AT-R1A-008 | `count_tokens` 明确不属于本切片。 | Mandatory Roadmap | 无 session count_tokens adapter/contract。 | 用 session family 模型调用既有 `/v1/messages/count_tokens` 路由。 | 在选号、发网和钱账前显式 501；不因 messages family ready 自动推导 count_tokens ready，后续独立切片实现。 | 协议族启用后旧 handler 意外复用 session adapter，造成虚假支持。 | MANDATORY ROADMAP（fail-closed 已判别：`backend/internal/completionshttp/handler_test.go`） |
 
-## 持久结算意图阶段 1
+## 持久结算意图
 
-边界：本节只验迁移、意图生命周期、旁路 fail-open 与生产依赖装配。sweeper、按 `attempt_seq` 绑定恢复 proof 和运维人工裁决仍属后续强制切片，不因本节 PASS 被视为已完成。
+边界：阶段 1 验迁移、正向意图生命周期、旁路 fail-open 与生产依赖装配；阶段 2 只把悬挂意图追平权威 claim，绝不推断金额或改写主账本。运维人工裁决仍属后续强制切片。
 
 | Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -388,6 +388,9 @@ Source: `docs/specs/voucher-system.md` and `docs/decompositions/_cross-cutting/v
 | AT-SETTLEMENT-INTENT-003 | 六类意图操作错误或超时都不得阻断主链路。 | F-BILL-001 / F-GW-001 | 灰度开关开启；Store 可按操作注入 error/timeout，也可模拟启用态 nil 与 id=0。 | 表驱动覆盖 Insert、delivering、settling、settled、aborted、failed；观察 HTTP、原结算/Abort 次数与日志。 | 可交付路径保持 200 和一次主结算；Abort 路径保持原失败响应和一次 Abort；warning 含稳定 operation/error type，不含原错误或密钥；默认关闭 nil 不产噪声，启用态 nil 与 id=0 可观测。 | 旁路证据成为可用性闸门、终态受客户端取消影响、错误日志泄密。 | PASS（working tree：`backend/internal/gatewayhttp/settlement_intent_test.go`） |
 | AT-SETTLEMENT-INTENT-004 | 生产 runtime 必须按灰度值构造 Store，并把 Store 与启用态注入 handler。 | F-BILL-001 / F-GW-001 | 使用生产工厂、runtime AST 和 routes 装配函数。 | 分别以 enabled=false/true 调用 Store 工厂；核对 runtime 传入真实配置；核对 `chatHandlerDeps` 的实例身份和启用态。 | disabled 返回 nil，enabled 返回非 nil；runtime 不得写死开关或漏掉工厂；handler 收到相同 Store 与启用态。 | 开关已配置但生产主链路因漏构造或漏注入永久 no-op。 | PASS（working tree：`backend/cmd/gateway/settlement_intent_wiring_test.go`、`backend/internal/config/config_test.go`） |
 | AT-SETTLEMENT-INTENT-005 | L2 cache 与流式 handler 只用完整客户端写证据推进交付态。 | F-BILL-001 / F-GW-002 | cache-hit 的 acquire 前后两分支可调用；stream=true 从真实 handler 入口执行；客户端 writer 可短写、断连或让意图 Store 变慢。 | 对两条 cache-hit 分支注入短写；对流式首帧注入成功与短写；让 delivering 写持续到短超时。 | cache 短写后无 delivering/settled；流式成功为完整生命周期，首帧短写只 Abort 且无 delivering/settled/settling；慢意图 Store 不延迟后续业务帧。 | 财务 committed 与客户端交付混淆、handler 漏接首帧回调、旁路数据库阻塞流、断连后伪造交付。 | PASS（working tree：`backend/internal/gatewayhttp/settlement_intent_test.go`） |
+| AT-SETTLEMENT-INTENT-006 | 悬挂意图按 claim 的权威状态与 attempt proof 追平。 | F-BILL-001 / F-OBS-001 | 迁移 0175 已应用；意图超过陈旧阈值；claim 查询与守卫式写可用。 | Normal：同 attempt committed/aborted。Failure：committed 缺权威金额、claim 缺失、单条 panic。Recovery：reserving 保持不动；claim 复活到更高 attempt 后再扫。 | committed 仅复制权威 `actual_cost` 并 settled；aborted 只标 aborted；缺金额/缺 claim/panic 结构化 warning 且不阻断后续行；reserving 不动；更高 attempt 只能 superseded。 | 推断金额、误杀在途、用新 attempt 金额污染旧证据、单条坏数据拖垮整轮。 | PASS（working tree：`backend/internal/settlementintent/sweeper_test.go`；真 PG：`backend/internal/settlementintent/sweeper_integration_test.go`） |
+| AT-SETTLEMENT-INTENT-007 | 多副本 sweeper 与正向 hook 并发时只有一个终态写胜出，新意图受创建宽限保护。 | F-BILL-001 / F-OBS-001 | 真 PostgreSQL 纯净迁移库；同一 delivering 意图；两个 worker 与正向 MarkSettled 可并发。 | 12 goroutine 同时竞争；终态后以当前 version 再调 stale 写；另将 5 秒内新意图置于 10 秒创建宽限内扫描。 | 恰一方成功、version 恰加一、金额无重复；已终态 stale 写返回 no rows；宽限内意图 `status/version` 不变。 | 多副本重复终态、终态反向改写、慢提交边界漏读或误处理。 | PASS（真 PG + `-race`：`backend/internal/settlementintent/sweeper_integration_test.go`） |
+| AT-SETTLEMENT-INTENT-008 | sweeper 默认关闭、可优雅启停，且阶段 1 正向 Mark* 不回归。 | F-BILL-001 / F-GW-001 | 使用生产工厂、runtime 生命周期、短 ticker 与 Tracker。 | disabled/enabled 构造；启动 ticker 后停止两次；注入扫描/时钟 panic；执行 `pending→delivering→settling→settled` 原路径。 | disabled 不构造/不启动；enabled 在 runtime close 前停止；panic 被隔离且下一轮可继续；阶段 1 仍调用原 Mark*、version 依次递增且不触发 stale 写。 | 后台功能默认侵入热路径、worker 泄漏、panic 崩进程、阶段 2 偷改阶段 1 语义。 | PASS（working tree：`backend/cmd/gateway/settlement_intent_sweeper_wiring_test.go`、`backend/internal/settlementintent/sweeper_test.go`；真 PG 正向回归同上） |
 
 ## Release Rule
 

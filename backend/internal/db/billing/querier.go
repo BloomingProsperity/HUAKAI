@@ -196,6 +196,7 @@ type Querier interface {
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
+	ListStaleNonTerminalSettlementIntents(ctx context.Context, arg ListStaleNonTerminalSettlementIntentsParams) ([]ListStaleNonTerminalSettlementIntentsRow, error)
 	// F-OBS-001 read-only query surface for the admin/audit lane.
 	// This file contains SELECT-only queries; the Repository wrapper enforces tenant
 	// scope on every call.
@@ -212,10 +213,13 @@ type Querier interface {
 	// though those ids are globally unique today.
 	ListUsageRecordsWithNames(ctx context.Context, arg ListUsageRecordsWithNamesParams) ([]ListUsageRecordsWithNamesRow, error)
 	MarkSettlementIntentAborted(ctx context.Context, arg MarkSettlementIntentAbortedParams) (int32, error)
+	MarkSettlementIntentAbortedIfStale(ctx context.Context, arg MarkSettlementIntentAbortedIfStaleParams) (int32, error)
 	MarkSettlementIntentDelivering(ctx context.Context, arg MarkSettlementIntentDeliveringParams) (int32, error)
 	MarkSettlementIntentFailed(ctx context.Context, arg MarkSettlementIntentFailedParams) (int32, error)
 	MarkSettlementIntentSettled(ctx context.Context, arg MarkSettlementIntentSettledParams) (int32, error)
+	MarkSettlementIntentSettledIfStale(ctx context.Context, arg MarkSettlementIntentSettledIfStaleParams) (int32, error)
 	MarkSettlementIntentSettling(ctx context.Context, arg MarkSettlementIntentSettlingParams) (int32, error)
+	MarkSettlementIntentSupersededIfStale(ctx context.Context, arg MarkSettlementIntentSupersededIfStaleParams) (int32, error)
 	// Usage-log retention only. Deletes bounded batches from usage_records and
 	// deliberately does not touch billing_ledger_claims, billing_events, audit
 	// tables, or other money/trust-chain records.

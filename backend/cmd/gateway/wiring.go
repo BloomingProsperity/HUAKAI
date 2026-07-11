@@ -814,6 +814,18 @@ func buildSettlementIntentStore(queries *dbbilling.Queries, enabled bool) settle
 	return settlementintent.NewConfiguredPostgresStore(queries, enabled)
 }
 
+func buildSettlementIntentSweeper(queries *dbbilling.Queries, enabled bool) *settlementintent.SettlementIntentSweeper {
+	if !enabled {
+		return nil
+	}
+	store := settlementintent.NewPostgresStore(queries)
+	return settlementintent.NewSettlementIntentSweeper(
+		store,
+		settlementintent.NewPostgresClaimAuthority(queries),
+		settlementintent.SweeperOptions{},
+	)
+}
+
 func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger) (*gatewayRuntime, error) {
 	pgPool, err := db.Open(ctx, dbPoolConfig(cfg))
 	if err != nil {
@@ -1213,6 +1225,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
 	leaseSweeper.Start(ctx)
 	rt.leaseSweepStop = leaseSweeper.Stop
+	// sweeper 与正向意图共用默认关闭的总开关：关闭时不构造、不启动，也不扫描数据库。
+	// 多副本无需选主来保证正确性，终态写由意图行的 version 与悬挂状态守卫裁决单胜者。
+	settlementIntentSweeper := buildSettlementIntentSweeper(billingQueries, cfg.SettlementIntentEnabled)
+	if settlementIntentSweeper != nil {
+		settlementIntentSweeper.Start(ctx)
+		rt.settlementIntentSweepStop = settlementIntentSweeper.Stop
+	}
 	pendingReconciler := billing.NewPendingReconciliationWorker(
 		billing.NewPostgresPendingReconciliationFinalizer(pgPool),
 		0,

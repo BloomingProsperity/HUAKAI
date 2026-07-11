@@ -116,6 +116,25 @@ func (s *recordingSettlementIntentStore) MarkFailed(ctx context.Context, id int6
 	return s.advance("failed"), nil
 }
 
+func (s *recordingSettlementIntentStore) ListStaleNonTerminalSettlementIntents(context.Context, time.Time, time.Time, int32) ([]settlementintent.StaleSettlementIntent, error) {
+	return nil, nil
+}
+
+func (s *recordingSettlementIntentStore) MarkSettledIfStale(ctx context.Context, id int64, version int32, actualCost decimal.Decimal, settledAt time.Time) (int32, error) {
+	return s.MarkSettled(ctx, id, version, actualCost, settledAt)
+}
+
+func (s *recordingSettlementIntentStore) MarkAbortedIfStale(ctx context.Context, id int64, version int32) (int32, error) {
+	return s.MarkAborted(ctx, id, version)
+}
+
+func (s *recordingSettlementIntentStore) MarkSupersededIfStale(_ context.Context, id int64, version int32) (int32, error) {
+	if err := s.checkVersion(id, version); err != nil {
+		return 0, err
+	}
+	return s.advance("superseded"), nil
+}
+
 func (s *recordingSettlementIntentStore) checkVersion(id int64, version int32) error {
 	if id != 71001 {
 		return fmt.Errorf("intent id=%d want 71001", id)
@@ -1130,6 +1149,22 @@ func (s *settlementIntentFaultStore) MarkFailed(ctx context.Context, id int64, v
 		return version + 1, nil
 	}
 	return s.base.MarkFailed(ctx, id, version, actualCost)
+}
+
+func (s *settlementIntentFaultStore) ListStaleNonTerminalSettlementIntents(ctx context.Context, staleCutoff, createdBefore time.Time, limit int32) ([]settlementintent.StaleSettlementIntent, error) {
+	return s.base.ListStaleNonTerminalSettlementIntents(ctx, staleCutoff, createdBefore, limit)
+}
+
+func (s *settlementIntentFaultStore) MarkSettledIfStale(ctx context.Context, id int64, version int32, actualCost decimal.Decimal, settledAt time.Time) (int32, error) {
+	return s.base.MarkSettledIfStale(ctx, id, version, actualCost, settledAt)
+}
+
+func (s *settlementIntentFaultStore) MarkAbortedIfStale(ctx context.Context, id int64, version int32) (int32, error) {
+	return s.base.MarkAbortedIfStale(ctx, id, version)
+}
+
+func (s *settlementIntentFaultStore) MarkSupersededIfStale(ctx context.Context, id int64, version int32) (int32, error) {
+	return s.base.MarkSupersededIfStale(ctx, id, version)
 }
 
 func (s *settlementIntentFaultStore) release() {

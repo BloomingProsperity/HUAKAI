@@ -250,3 +250,133 @@ func (q *Queries) MarkSettlementIntentSettling(ctx context.Context, arg MarkSett
 	err := row.Scan(&version)
 	return version, err
 }
+
+const listStaleNonTerminalSettlementIntents = `-- name: ListStaleNonTerminalSettlementIntents :many
+SELECT id, tenant_id, claim_id, attempt_seq, version, status
+FROM settlement_intents
+WHERE status IN ('pending', 'delivering', 'settling')
+  AND updated_at < $1
+  AND created_at < $2
+ORDER BY updated_at
+LIMIT $3
+`
+
+type ListStaleNonTerminalSettlementIntentsParams struct {
+	StaleCutoff   pgtype.Timestamptz `db:"stale_cutoff" json:"stale_cutoff"`
+	CreatedBefore pgtype.Timestamptz `db:"created_before" json:"created_before"`
+	Lim           int32              `db:"lim" json:"lim"`
+}
+
+type ListStaleNonTerminalSettlementIntentsRow struct {
+	ID         int64  `db:"id" json:"id"`
+	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
+	ClaimID    int64  `db:"claim_id" json:"claim_id"`
+	AttemptSeq int32  `db:"attempt_seq" json:"attempt_seq"`
+	Version    int32  `db:"version" json:"version"`
+	Status     string `db:"status" json:"status"`
+}
+
+func (q *Queries) ListStaleNonTerminalSettlementIntents(ctx context.Context, arg ListStaleNonTerminalSettlementIntentsParams) ([]ListStaleNonTerminalSettlementIntentsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleNonTerminalSettlementIntents, arg.StaleCutoff, arg.CreatedBefore, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaleNonTerminalSettlementIntentsRow
+	for rows.Next() {
+		var i ListStaleNonTerminalSettlementIntentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ClaimID,
+			&i.AttemptSeq,
+			&i.Version,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markSettlementIntentSettledIfStale = `-- name: MarkSettlementIntentSettledIfStale :one
+UPDATE settlement_intents
+SET status = 'settled',
+    actual_cost = $1,
+    settled_at = $2,
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = $3
+  AND version = $4
+  AND status IN ('pending', 'delivering', 'settling')
+RETURNING version
+`
+
+type MarkSettlementIntentSettledIfStaleParams struct {
+	ActualCost decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	SettledAt  pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
+	ID         int64              `db:"id" json:"id"`
+	Version    int32              `db:"version" json:"version"`
+}
+
+func (q *Queries) MarkSettlementIntentSettledIfStale(ctx context.Context, arg MarkSettlementIntentSettledIfStaleParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markSettlementIntentSettledIfStale,
+		arg.ActualCost,
+		arg.SettledAt,
+		arg.ID,
+		arg.Version,
+	)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
+}
+
+const markSettlementIntentAbortedIfStale = `-- name: MarkSettlementIntentAbortedIfStale :one
+UPDATE settlement_intents
+SET status = 'aborted',
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = $1
+  AND version = $2
+  AND status IN ('pending', 'delivering', 'settling')
+RETURNING version
+`
+
+type MarkSettlementIntentAbortedIfStaleParams struct {
+	ID      int64 `db:"id" json:"id"`
+	Version int32 `db:"version" json:"version"`
+}
+
+func (q *Queries) MarkSettlementIntentAbortedIfStale(ctx context.Context, arg MarkSettlementIntentAbortedIfStaleParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markSettlementIntentAbortedIfStale, arg.ID, arg.Version)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
+}
+
+const markSettlementIntentSupersededIfStale = `-- name: MarkSettlementIntentSupersededIfStale :one
+UPDATE settlement_intents
+SET status = 'superseded',
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = $1
+  AND version = $2
+  AND status IN ('pending', 'delivering', 'settling')
+RETURNING version
+`
+
+type MarkSettlementIntentSupersededIfStaleParams struct {
+	ID      int64 `db:"id" json:"id"`
+	Version int32 `db:"version" json:"version"`
+}
+
+func (q *Queries) MarkSettlementIntentSupersededIfStale(ctx context.Context, arg MarkSettlementIntentSupersededIfStaleParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markSettlementIntentSupersededIfStale, arg.ID, arg.Version)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
+}

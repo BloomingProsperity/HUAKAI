@@ -87,3 +87,44 @@ FROM settlement_intents
 WHERE tenant_id = @tenant_id
   AND claim_id = @claim_id
   AND status NOT IN ('settled', 'aborted', 'superseded');
+
+-- name: ListStaleNonTerminalSettlementIntents :many
+SELECT id, tenant_id, claim_id, attempt_seq, version, status
+FROM settlement_intents
+WHERE status IN ('pending', 'delivering', 'settling')
+  AND updated_at < @stale_cutoff
+  AND created_at < @created_before
+ORDER BY updated_at
+LIMIT @lim;
+
+-- name: MarkSettlementIntentSettledIfStale :one
+UPDATE settlement_intents
+SET status = 'settled',
+    actual_cost = @actual_cost,
+    settled_at = @settled_at,
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = @id
+  AND version = @version
+  AND status IN ('pending', 'delivering', 'settling')
+RETURNING version;
+
+-- name: MarkSettlementIntentAbortedIfStale :one
+UPDATE settlement_intents
+SET status = 'aborted',
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = @id
+  AND version = @version
+  AND status IN ('pending', 'delivering', 'settling')
+RETURNING version;
+
+-- name: MarkSettlementIntentSupersededIfStale :one
+UPDATE settlement_intents
+SET status = 'superseded',
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = @id
+  AND version = @version
+  AND status IN ('pending', 'delivering', 'settling')
+RETURNING version;
