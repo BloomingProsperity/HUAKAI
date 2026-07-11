@@ -30,10 +30,11 @@ dsn() { echo "postgres://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$1?sslmode=disable"
 command -v migrate >/dev/null 2>&1 || { echo "FATAL: 缺 migrate CLI"; exit 2; }
 
 echo ">> 准备 template 库 $TEMPLATE_DB(迁移一次,后续各包从它克隆)"
-psql_admin -c "DROP DATABASE IF EXISTS $RUN_DB WITH (FORCE)"
-psql_admin -c "DROP DATABASE IF EXISTS $TEMPLATE_DB WITH (FORCE)"
-psql_admin -c "CREATE DATABASE $TEMPLATE_DB"
-migrate -path "$MIGRATIONS" -database "$(dsn "$TEMPLATE_DB")" up
+# 建库/迁移任一失败必须 fail-loud 退出:否则后续会在缺表/陈旧库上跑测试并假绿。
+psql_admin -c "DROP DATABASE IF EXISTS $RUN_DB WITH (FORCE)" || { echo "FATAL: 清理旧 RUN_DB 失败"; exit 2; }
+psql_admin -c "DROP DATABASE IF EXISTS $TEMPLATE_DB WITH (FORCE)" || { echo "FATAL: 清理旧 template 库失败(可能有活动连接无权终止)"; exit 2; }
+psql_admin -c "CREATE DATABASE $TEMPLATE_DB" || { echo "FATAL: 创建 template 库失败"; exit 2; }
+migrate -path "$MIGRATIONS" -database "$(dsn "$TEMPLATE_DB")" up || { echo "FATAL: template 库迁移失败"; exit 2; }
 
 PKGS=$(grep -rl "//go:build integration_pg" --include=*_test.go internal | xargs -n1 dirname | sort -u | sed 's#^#./#')
 # 防假绿:发现不到 integration_pg 包说明发现逻辑坏了(标签改名/路径变动),必须 fail-loud
@@ -51,9 +52,20 @@ i=0
 for pkg in $PKGS; do
   i=$((i + 1))
   # 从 template 克隆纯净库(秒级,免重迁)。克隆要求 template 无活动连接——串行下恒成立。
-  psql_admin -c "DROP DATABASE IF EXISTS $RUN_DB WITH (FORCE)" >/dev/null
-  psql_admin -c "CREATE DATABASE $RUN_DB TEMPLATE $TEMPLATE_DB" >/dev/null
+  # 克隆任一步失败必须把本包记为失败并跳过测试:绝不能在陈旧/残留库上跑出假绿。
   printf '[%d/%d] %s\n' "$i" "$total" "$pkg"
+  if ! psql_admin -c "DROP DATABASE IF EXISTS $RUN_DB WITH (FORCE)" >/dev/null; then
+    echo "  克隆前清理 RUN_DB 失败,记为失败并跳过(拒绝在残留库上假绿)"
+    fail=1
+    failed_pkgs="$failed_pkgs $pkg(clone_drop_failed)"
+    continue
+  fi
+  if ! psql_admin -c "CREATE DATABASE $RUN_DB TEMPLATE $TEMPLATE_DB" >/dev/null; then
+    echo "  从 template 克隆纯净库失败,记为失败并跳过(拒绝在陈旧库上假绿)"
+    fail=1
+    failed_pkgs="$failed_pkgs $pkg(clone_create_failed)"
+    continue
+  fi
   if ! HUAKAI_DATABASE_URL="$(dsn "$RUN_DB")" HUAKAI_TEST_DATABASE_URL="$(dsn "$RUN_DB")" \
     HUAKAI_SKIP_PERF_LATENCY_GATE=1 \
     go test -tags=integration_pg $RACE -count=1 -timeout "$TIMEOUT" "$pkg"; then
