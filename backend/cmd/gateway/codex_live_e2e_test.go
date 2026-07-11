@@ -105,9 +105,10 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 
 	client := &http.Client{Timeout: 180 * time.Second}
 	cases := []struct {
-		name   string
-		body   map[string]any
-		assert func(*testing.T, codexLiveResult)
+		name       string
+		body       map[string]any
+		skipReason string
+		assert     func(*testing.T, codexLiveResult)
 	}{
 		{
 			name: "流式文本",
@@ -158,10 +159,15 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 			// 层无从透传 ultra effort,这里验证的是最高合法档 max。
 			name: "reasoning-max字节直通",
 			body: codexLiveMaxEffortBody(model),
-			assert: func(t *testing.T, res codexLiveResult) {
+			// max 是 gpt-5.6 专属档;非 5.6 模型上游会拒(400),须在发请求前跳过而非在断言里
+			// (断言在 HTTP 200 校验之后,来不及)。
+			skipReason: func() string {
 				if !strings.Contains(model, "5.6") {
-					t.Skipf("model=%s 无 max 档(max 为 gpt-5.6 专属),跳过 max 字节直通用例", model)
+					return "model=" + model + " 无 max 档(max 为 gpt-5.6 专属)"
 				}
+				return ""
+			}(),
+			assert: func(t *testing.T, res codexLiveResult) {
 				assertCodexLiveSSEEvents(t, res, "response.created", "response.completed")
 				// 变异=网关折叠 max→xhigh(如 sub2api)→ 回显 xhigh 而非 max → 红。
 				if !bytes.Contains(res.body, []byte(`"effort":"max"`)) {
@@ -229,6 +235,9 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.skipReason != "" {
+				t.Skipf("跳过用例:%s", tc.skipReason)
+			}
 			logicalID := "codex-live-" + uuid.NewString()
 			res := postCodexLiveResponses(t, ctx, client, addr, seed, logicalID, tc.body)
 			if res.statusCode != http.StatusOK {
