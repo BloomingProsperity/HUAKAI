@@ -33,7 +33,7 @@
 | billing 预扣↔结算↔abort | relay-forwarding.md §2 C1/C2/C3 + §3 T1-T5 | ✅ 含于 relay 文档 |
 | quota↔选号↔并发槽释放 | relay-forwarding.md §2 C11/C12 + §7.2 | ⚠️ 已发现配合缺口(reconciler 未结算,待定性) |
 | pool 选号↔渠道健康回流↔failover | relay-forwarding.md §2 C4/C5/C6/C7 + §3 T7-T10 | ✅ 含于 relay 文档 |
-| credential 采集流状态机(start→callback→finalize) | credential-acquisition.md | 待补 |
+| credential 采集流状态机(start→callback→finalize) | [credential-acquisition.md](credential-acquisition.md) | ✅ 完成:三入口(PKCE/设备码/CLI导入)汇合 Finalize,6 配合点 + 失败协作(state CSRF/非原子补偿/无邮箱),三镜逐点对照标注待专项调研 |
 | media 任务生命周期(submit→poll→settle) | media-task.md | 待补 |
 | settlement_intents 持久结算意图(意图↔claim↔交付↔sweeper 追平) | [settlement-intent-reconciliation.md](settlement-intent-reconciliation.md) | ✅ 完成:阶段 1 fail-open 旁路 + 阶段 2 sweeper 对账,5 配合点 + 6 配合测试对照三镜,真 PG+race 实测 |
 
