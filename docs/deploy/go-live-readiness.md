@@ -4,7 +4,7 @@
 > 具体起栈步骤见 [production-bootstrap.md](./production-bootstrap.md);本文只讲"上线该知道的全貌"。
 > 涉及 deploy/prod 的实际改动按仓库规则属 Owner-gated——本文是运营对照,不代表已执行部署。
 
-最后更新:2026-07-05(四域模块配合审计闭环后)。
+最后更新:2026-07-11(持久结算意图阶段 1+2 与 Antigravity 反转车道闭环后)。
 
 ---
 
@@ -56,12 +56,14 @@ HUAKAI 是一个 **clean-room、MIT 许可的 API 中转站(relay)**:把一批�
 - **obs 死信管理**:`GET /admin/v1/obs-dlq` 列表 + `POST /admin/v1/obs-dlq/{id}/replay` 重放(platform_admin,原子状态机防双重放)。
 - **media 孤儿对账**:掉租/超时的媒体任务落孤儿线索,admin reconcile 面处置;追扣成功账本一致(claim committed),已释放 hold 的孤儿标注 `hold_released_needs_manual_charge`(真实新扣款属人工决策)。
 - **运维广播受众隔离**:账号故障/告警广播只发 admin 角色;客户只收自己的事件(如低余额)。
+- **持久结算意图(默认关,`HUAKAI_SETTLEMENT_INTENT_ENABLED`)**:一条与主账本平行的"意图→交付→结算"证据链,采 **fail-open 旁路**——写意图失败/超时/panic 绝不阻塞主结算(billing_ledger_claims 始终权威)。开启后:①阶段 1 记录每笔请求的意图生命周期(pending→delivering→settling→settled/aborted),便于对账取证;②阶段 2 后台 sweeper 兜底 fail-open 漏标——扫描非终态且陈旧的意图行,按权威 claim 追平(committed→settled 复制权威金额、aborted→aborted、在途 reserving 跳过、claim 已进入更高 attempt 则旧意图 superseded),守卫式 CAS 保证多副本单胜者、attempt proof 防止拿新尝试金额冒充旧证据。真上游 E2E 账目零漂移(7=7=7=7),真 PG + `-race` 并发实测通过。**默认关**:仅取证/对账增强,核心结算不依赖它。
 
 ## 6. 能力边界与法律免责
 
 HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权交使用者;运营者对如何使用这些能力、以及由此产生的与上游厂商服务条款/当地法律的关系,**自行负责**:
 
 - **上游账号合规**:接入的上游账号(官方 key / 第三方中转 key)是否符合该厂商服务条款、是否有转售授权,由运营者自负。HUAKAI 只提供转发与记账,不代表对任何上游的授权背书。
+- **订阅反转车道(experimental,默认关)**:除官方 key / 第三方中转外,HUAKAI 支持把**个人订阅的 OAuth 凭据**反转成可转发上游(如 Antigravity/Gemini Code Assist 走 cloudcode-pa、ChatGPT/Codex session、Claude session 等),逐 family env-gate、**默认全部不注册**,部署方须显式 opt-in 才构造对应 adapter(env 形如 `HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER=true`,cursor/copilot/kiro/windsurf/gemini-advanced 等车道同构;凭据经 CLI 导入解析后由 credentialworker 自动纳入 refresh 健康探测)。这类车道属"给能力非控制":HUAKAI 提供 OAuth 刷新 + 转发的温和实现(仅刷 token、按客户端既有形态转发,**不做**设备指纹/机器码重置/关联封规避等激进 ban-evasion),**个人订阅是否允许这样反转、是否违反该服务的用户协议,由运营者自负**。凭据 AES 信封加密存储,刷新走 SSRF 防护出口。
 - **TLS 出口伪装**:sidecar 的 BoringSSL 指纹伪装**默认关**;Go-native 出口是温和 uTLS(仅 ClientHello 姿态,锁 h1)。HUAKAI **不做**激进 ban-evasion(逐请求指纹轮换/设备码伪造/软限流规避等——见项目"不做清单")。
 - **内容审核**:审核执行器默认开但租户配置默认关(§3);是否对客户流量启用审核、按什么标准,由运营者按其合规义务配置。
 - **数据与隐私**:accesslog 只记 URL.Path、绝不记 query/body/headers/credentials;凭据 AES 信封加密(AAD 绑租户);审计链 ed25519 签名。运营者仍需按其司法辖区履行数据保护义务。
@@ -76,3 +78,4 @@ HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权�
 - Hermes 提议-确认改动链默认关(`HUAKAI_HERMES_LLM_PROPOSE_ENABLED`);confirmCache 进程内,多副本需 sticky 路由(已加 re-propose 逃生阀)。
 - 存量英文注释逐步转中文(分批工程,不影响功能)。
 - 前端运营台页面级设计仍 Owner-gated 逐页确认。
+- 持久结算意图 / 订阅反转车道默认关,翻 on 属 Owner-gated 的默认行为翻转;结算意图的在途续期 bump / leader 选主减重复扫描 / 运维人工裁决悬挂意图 UI,Antigravity 的 GOOGLE_ONE_AI credits 计费与额度语义 + 403 封号态建模,均属后续增强切片(不阻塞上线)。
