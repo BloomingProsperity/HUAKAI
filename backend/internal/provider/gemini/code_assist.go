@@ -52,6 +52,13 @@ type CodeAssistAdapter struct {
 	// Endpoint 覆盖默认 base（含 scheme+host，不含 path），供 httptest 注入。
 	// 空值时使用 codeAssistBase。
 	Endpoint string
+	// UserAgent 与 APIClient 可为共用 Cloud Code 线协议的客户端设置已确认的
+	// 静态身份头；空值保持 Gemini Code Assist 既有值。
+	UserAgent string
+	APIClient string
+	// EnabledCreditTypes 只在调用方明确提供时进入顶层 envelope；nil/空切片
+	// 完全保持既有 Gemini Code Assist 请求形态。
+	EnabledCreditTypes []string
 }
 
 // Platform 返回平台标识。
@@ -73,9 +80,10 @@ func (a *CodeAssistAdapter) AcceptableCredentialTypes() []provider.CredentialTyp
 //
 // inner gemini body 用 json.RawMessage 携带，避免重 marshal（保 byte-for-byte）。
 type codeAssistEnvelope struct {
-	Model   string          `json:"model"`
-	Project string          `json:"project"`
-	Request json.RawMessage `json:"request"`
+	Model              string          `json:"model"`
+	Project            string          `json:"project"`
+	Request            json.RawMessage `json:"request"`
+	EnabledCreditTypes []string        `json:"enabledCreditTypes,omitempty"`
 }
 
 // BuildRequest 构造出站到 cloudcode-pa 的 *http.Request。
@@ -148,9 +156,10 @@ func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildI
 
 	// body envelope：inner gemini body 原样作 RawMessage 嵌入 "request"。
 	outBody, err := json.Marshal(codeAssistEnvelope{
-		Model:   in.UpstreamModelID,
-		Project: projectID,
-		Request: json.RawMessage(in.InboundBody),
+		Model:              in.UpstreamModelID,
+		Project:            projectID,
+		Request:            json.RawMessage(in.InboundBody),
+		EnabledCreditTypes: a.EnabledCreditTypes,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("gemini code assist: envelope marshal 失败: %w", err)
@@ -182,8 +191,16 @@ func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildI
 	}
 
 	// 最小必需 header（反封禁姿态：仅功能必需，不加额外 mimicry）。
-	req.Header.Set("User-Agent", codeAssistUserAgent)
-	req.Header.Set("X-Goog-Api-Client", codeAssistAPIClient)
+	userAgent := strings.TrimSpace(a.UserAgent)
+	if userAgent == "" {
+		userAgent = codeAssistUserAgent
+	}
+	apiClient := strings.TrimSpace(a.APIClient)
+	if apiClient == "" {
+		apiClient = codeAssistAPIClient
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("X-Goog-Api-Client", apiClient)
 
 	return req, nil
 }

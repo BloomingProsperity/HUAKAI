@@ -325,7 +325,8 @@ func TestValidateOAuthModeConsistencyRejectsMissingExchanger(t *testing.T) {
 
 // TestGeminiAntigravityAcquisitionFailsClosedNotFake 守护核心的信任边界修复:
 // gemini/antigravity 获取绝不能再把 JSON-token 形状的回调码当作真实
-// 凭据接受;它必须以 ErrFeatureDisabled fail-closed,与已暂停的 refresh 侧一致。
+// 凭据接受;在授权页地址尚未确认时必须以 ErrFeatureDisabled fail-closed。
+// CLI token 导入后的 refresh 是独立且已激活的路径，不受此边界影响。
 // 变异:为此 mode 还原 NewPKCEFakeExchanger,伪造的 blob 就会被接受(err==nil)——
 // 本测试随之变红,证明它守护的是真实的伪造凭据接受,而非一个装样子的错误。
 func TestGeminiAntigravityAcquisitionFailsClosedNotFake(t *testing.T) {

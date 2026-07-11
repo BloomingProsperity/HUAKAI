@@ -115,11 +115,35 @@ func importCandidatesFromDecoded(decoded any, defaultVendor, defaultAuthMode str
 func importCandidateFromMap(fields map[string]any, defaultVendor, defaultAuthMode string) CredentialCandidate {
 	vendor := importStringField(fields, "vendor", defaultVendor)
 	mode := importStringField(fields, "auth_mode", defaultAuthMode)
-	payload, _ := json.Marshal(fields)
+	payload, _ := json.Marshal(flattenCLITokenObject(fields))
 	return CredentialCandidate{
 		Vendor: credentialstore.Normalize(vendor), AuthMode: credentialstore.Normalize(mode), Payload: payload,
 		RedactedContext: map[string]any{"shape": "json_object"},
 	}
+}
+
+// flattenCLITokenObject 识别 CLI 凭据文件的 {token:{...}} 外层，把运行时
+// 需要的 token 字段扁平化；expiry 是 RFC3339 时间，存储层统一读取
+// expires_at。普通扁平 JSON 不经过特殊改写。
+func flattenCLITokenObject(fields map[string]any) map[string]any {
+	out := make(map[string]any, len(fields)+3)
+	for key, value := range fields {
+		out[key] = value
+	}
+	token, ok := fields["token"].(map[string]any)
+	if !ok {
+		return out
+	}
+	delete(out, "token")
+	for _, key := range []string{"access_token", "token_type", "refresh_token"} {
+		if value, exists := token[key]; exists {
+			out[key] = value
+		}
+	}
+	if expiry, ok := token["expiry"].(string); ok && strings.TrimSpace(expiry) != "" {
+		out["expires_at"] = strings.TrimSpace(expiry)
+	}
+	return out
 }
 
 func importTokenCandidate(token, defaultVendor, defaultAuthMode string) CredentialCandidate {

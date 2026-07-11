@@ -10,6 +10,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/bedrock"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto/geminicodeassist"
 	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 )
@@ -170,9 +171,9 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		// 6 家 OpenAI 兼容直通，均注册为 openai.Adapter
 		"deepseek_chat", "mistral_chat", "groqcloud_chat",
 		"together_chat", "perplexity_chat", "fireworks_chat",
-		// session 反转占位 SSE 解析（实测前先复用 openai.Adapter）
+		// OpenAI 兼容或尚未完成专用解析的 session 反转。
 		"copilot_session", "cursor_session",
-		"antigravity_session", "kiro_session", "windsurf_session",
+		"kiro_session", "windsurf_session",
 	} {
 		got, err := r.For(family)
 		if err != nil {
@@ -183,6 +184,18 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 		}
 		if _, ok := got.(*openai.Adapter); !ok {
 			t.Fatalf("For(%s) adapter type = %T, want *openai.Adapter", family, got)
+		}
+	}
+
+	// Antigravity 与 Gemini Code Assist 共用 Cloud Code 的 {response}
+	// envelope，不能落回 OpenAI Chat Completions 解析器。
+	for _, family := range []string{"antigravity_session", "gemini_code_assist"} {
+		got, err := r.For(family)
+		if err != nil {
+			t.Fatalf("For(%s) error = %v", family, err)
+		}
+		if _, ok := got.(*geminicodeassist.Adapter); !ok {
+			t.Fatalf("For(%s) adapter type = %T，期望 *geminicodeassist.Adapter", family, got)
 		}
 	}
 
@@ -242,6 +255,45 @@ func TestBuildDefaultProtocolAdapterRegistry(t *testing.T) {
 	}
 	if _, ok := ollamaAdapter.(*protoollama.Adapter); !ok {
 		t.Errorf("ollama_native adapter 类型=%T 期望 *ollama.Adapter", ollamaAdapter)
+	}
+}
+
+// TestAntigravityProtocolAdapterUnwrapsCloudCodeResponse 守住协议选择器的承重映射：
+// Antigravity 的 Cloud Code 响应先剥掉 {"response":...}，再按 Gemini 响应解析。
+// 变异为 openai.Adapter 时既无法得到文本，也会被类型断言直接识别。
+func TestAntigravityProtocolAdapterUnwrapsCloudCodeResponse(t *testing.T) {
+	assertCloudCodeResponseUnwrapped(t, "antigravity_session")
+}
+
+// TestGeminiCodeAssistProtocolMappingStillUnwrapsCloudCodeResponse 单独守住既有
+// Gemini Code Assist 映射，防止 Antigravity 接入时误改共享车道。
+func TestGeminiCodeAssistProtocolMappingStillUnwrapsCloudCodeResponse(t *testing.T) {
+	assertCloudCodeResponseUnwrapped(t, "gemini_code_assist")
+}
+
+func assertCloudCodeResponseUnwrapped(t *testing.T, family string) {
+	t.Helper()
+	adapter, err := BuildDefaultProtocolAdapterRegistry().For(family)
+	if err != nil {
+		t.Fatalf("For(%s) error = %v", family, err)
+	}
+	if _, ok := adapter.(*geminicodeassist.Adapter); !ok {
+		t.Fatalf("For(%s) adapter type = %T，期望 *geminicodeassist.Adapter", family, adapter)
+	}
+
+	raw := []byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"已解包"}],"role":"model"},"index":0,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}}`)
+	env, _, err := adapter.ProviderResponseToCanonical(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("%s 解析 Cloud Code 响应失败：%v", family, err)
+	}
+	if env == nil || env.BufferedResponse == nil || len(env.BufferedResponse.Content) != 1 {
+		t.Fatalf("%s 解包后响应不完整：%+v", family, env)
+	}
+	if got := env.BufferedResponse.Content[0].Text; got != "已解包" {
+		t.Fatalf("%s 解包文本=%q，期望 已解包", family, got)
+	}
+	if got := env.BufferedResponse.Usage.TotalTokens; got != 3 {
+		t.Fatalf("%s 解包 usage.total_tokens=%d，期望 3", family, got)
 	}
 }
 

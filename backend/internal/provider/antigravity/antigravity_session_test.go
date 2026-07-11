@@ -1,9 +1,8 @@
-// 包 antigravity — AntigravitySessionAdapter 烟雾测试。
 package antigravity
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -12,139 +11,140 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
-func TestAntigravitySessionAdapter_Platform(t *testing.T) {
-	a := &AntigravitySessionAdapter{}
-	if got := a.Platform(); got != "antigravity" {
-		t.Errorf("Platform()=%q want antigravity", got)
-	}
-}
-
-func TestAntigravitySessionAdapter_RejectsAPIKey(t *testing.T) {
-	a := &AntigravitySessionAdapter{}
-	for _, ct := range a.AcceptableCredentialTypes() {
-		if ct == provider.CredentialTypeAPIKey {
-			t.Error("AcceptableCredentialTypes 不应包含 apikey")
-		}
-	}
-	_, err := a.BuildRequest(context.Background(), provider.BuildInput{
-		UpstreamModelID: "antigravity-default",
-		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-x"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "apikey") {
-		t.Errorf("apikey 凭据应被拒绝，err=%v", err)
-	}
-}
-
-func TestAntigravitySessionAdapter_RejectsEmptyValue(t *testing.T) {
-	a := &AntigravitySessionAdapter{}
-	_, err := a.BuildRequest(context.Background(), provider.BuildInput{
-		UpstreamModelID: "antigravity-default",
-		Credential:      provider.Credential{Type: provider.CredentialTypeSessionToken, Value: " "},
-	})
-	if err == nil {
-		t.Error("空白 Credential.Value 应被拒绝")
-	}
-}
-
-func TestAntigravitySessionAdapter_RejectsEmptyModelID(t *testing.T) {
-	a := &AntigravitySessionAdapter{}
-	_, err := a.BuildRequest(context.Background(), provider.BuildInput{
-		UpstreamModelID: "",
-		Credential:      provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "ag-token"},
-	})
-	if err == nil {
-		t.Error("空 UpstreamModelID 应被拒绝")
-	}
-}
-
-func TestAntigravitySessionAdapter_NormalSessionReversal_RequestMatchesCurrentPlaceholderContract(t *testing.T) {
-	body := []byte(`{"model":"antigravity-default","messages":[{"role":"user","content":"ping"}]}`)
-	in := provider.BuildInput{
-		UpstreamModelID: "antigravity-default",
+func antigravityInput(body []byte, extra map[string]string) provider.BuildInput {
+	return provider.BuildInput{
+		UpstreamModelID: "gemini-3-flash",
 		InboundBody:     body,
 		Credential: provider.Credential{
 			Type:  provider.CredentialTypeSessionToken,
-			Value: "ag-session",
-			Extra: map[string]string{
-				"cookie":     "ag_session_cookie=abc",
-				"user_agent": "antigravity-client/1.0.1",
-			},
+			Value: "ag-access-token",
+			Extra: extra,
 		},
 	}
+}
 
-	defaultReq, err := (&AntigravitySessionAdapter{}).BuildRequest(context.Background(), in)
-	if err != nil {
-		t.Fatal(err)
+func TestAntigravitySessionAdapterPlatformAndCredentialTypes(t *testing.T) {
+	a := &AntigravitySessionAdapter{}
+	if got := a.Platform(); got != "antigravity" {
+		t.Fatalf("Platform()=%q，期望 antigravity", got)
 	}
-	if got := defaultReq.URL.String(); got != defaultAntigravityEndpoint {
-		t.Fatalf("默认 endpoint=%q want %q", got, defaultAntigravityEndpoint)
+	want := map[provider.CredentialType]bool{
+		provider.CredentialTypeSessionToken:        true,
+		provider.CredentialTypeOAuthAccessToken:    true,
+		provider.CredentialTypeUpstreamPassthrough: true,
 	}
-
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		assertAntigravityPlaceholderRequest(t, r, body)
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(bytes.NewReader([]byte(`{"id":"ag-fake","choices":[]}`))),
-			Request:    r,
-		}, nil
-	})}
-
-	a := &AntigravitySessionAdapter{Endpoint: "https://fake.antigravity.local/v1/chat/completions"}
-	req, err := a.BuildRequest(context.Background(), in)
-	if err != nil {
-		t.Fatal(err)
+	for _, got := range a.AcceptableCredentialTypes() {
+		delete(want, got)
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("fake upstream status=%d want 200", resp.StatusCode)
+	if len(want) != 0 {
+		t.Fatalf("缺少 Cloud Code OAuth 凭据类型：%v", want)
 	}
 }
 
-func TestAntigravitySessionAdapter_ExpiredSessionTriggersReauthFlow(t *testing.T) {
-	t.Skip("Antigravity vendor-real endpoint/header/body 仍待 OCAW；401 reauth flow 尚未实现，不能用占位 adapter 冒充覆盖")
-}
-
-func TestAntigravitySessionAdapter_Upstream5xxEnqueuesDLQRetry(t *testing.T) {
-	t.Skip("Antigravity vendor-real 5xx 分类与 DLQ retry 仍待 dispatcher/channel-health 接入后补测")
-}
-
-func assertAntigravityPlaceholderRequest(t *testing.T, r *http.Request, wantBody []byte) {
-	t.Helper()
-
-	if r.Method != http.MethodPost {
-		t.Errorf("Method=%q want POST", r.Method)
+// TestAntigravitySessionRequestUsesCloudCodeProfile 同时守住正式端点、静态 UA、
+// X-Goog-Api-Client、Cloud Code envelope 与 GOOGLE_ONE_AI 注入。
+// 退回 api.antigravity.ai、删除 credits 或绕过共享 adapter 均会变红。
+func TestAntigravitySessionRequestUsesCloudCodeProfile(t *testing.T) {
+	inner := []byte(`{"contents":[{"role":"user","parts":[{"text":"ping"}]}]}`)
+	req, err := (&AntigravitySessionAdapter{}).BuildRequest(context.Background(), antigravityInput(inner, map[string]string{
+		"project_id": "ag-project",
+	}))
+	if err != nil {
+		t.Fatalf("BuildRequest 失败：%v", err)
 	}
-	if got := r.URL.Path; got != "/v1/chat/completions" {
-		t.Errorf("URL path=%q want /v1/chat/completions", got)
+	if got := req.URL.String(); got != "https://cloudcode-pa.googleapis.com/v1internal:generateContent" {
+		t.Fatalf("URL=%q，期望正式 Cloud Code v1internal generateContent", got)
 	}
-	headerWant := map[string]string{
-		"Authorization": "Bearer ag-session",
-		"Content-Type":  "application/json",
-		"Accept":        "application/json",
-		"User-Agent":    "antigravity-client/1.0.1",
-		"Cookie":        "ag_session_cookie=abc",
+	wantHeaders := map[string]string{
+		"Authorization":     "Bearer ag-access-token",
+		"Content-Type":      "application/json",
+		"Accept":            "application/json",
+		"User-Agent":        defaultAntigravityUserAgent,
+		"X-Goog-Api-Client": defaultAntigravityAPIClient,
 	}
-	for name, want := range headerWant {
-		if got := r.Header.Get(name); got != want {
-			t.Errorf("%s=%q want %q", name, got, want)
+	for name, want := range wantHeaders {
+		if got := req.Header.Get(name); got != want {
+			t.Errorf("%s=%q，期望 %q", name, got, want)
 		}
 	}
-	gotBody, err := io.ReadAll(r.Body)
+
+	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("读取请求体失败：%v", err)
 	}
-	if !bytes.Equal(gotBody, wantBody) {
-		t.Errorf("body=%s want %s", gotBody, wantBody)
+	var envelope struct {
+		Model              string          `json:"model"`
+		Project            string          `json:"project"`
+		Request            json.RawMessage `json:"request"`
+		EnabledCreditTypes []string        `json:"enabledCreditTypes"`
 	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("请求体不是合法 Cloud Code envelope：%v；body=%s", err, body)
+	}
+	if envelope.Model != "gemini-3-flash" || envelope.Project != "ag-project" {
+		t.Fatalf("envelope model/project=(%q,%q)，期望 (gemini-3-flash,ag-project)", envelope.Model, envelope.Project)
+	}
+	if !jsonBytesEqual(envelope.Request, inner) {
+		t.Fatalf("envelope.request=%s，期望 %s", envelope.Request, inner)
+	}
+	if len(envelope.EnabledCreditTypes) != 1 || envelope.EnabledCreditTypes[0] != antigravityGoogleOneCreditType {
+		t.Fatalf("enabledCreditTypes=%v，期望 [GOOGLE_ONE_AI]", envelope.EnabledCreditTypes)
+	}
+}
+
+// TestAntigravitySessionStreamUsesCloudCodeSSE 守住流式动作与 alt=sse。
+func TestAntigravitySessionStreamUsesCloudCodeSSE(t *testing.T) {
+	req, err := (&AntigravitySessionAdapter{}).BuildRequest(context.Background(), antigravityInput([]byte(`{"contents":[]}`), map[string]string{
+		"project_id": "ag-project",
+		"stream":     "true",
+	}))
+	if err != nil {
+		t.Fatalf("BuildRequest 失败：%v", err)
+	}
+	if got := req.URL.String(); got != "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse" {
+		t.Fatalf("流式 URL=%q，期望 Cloud Code streamGenerateContent?alt=sse", got)
+	}
+	if got := req.Header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("Accept=%q，期望 text/event-stream", got)
+	}
+}
+
+func TestAntigravitySessionEndpointOverrideUsesBaseSemantics(t *testing.T) {
+	a := &AntigravitySessionAdapter{Endpoint: "https://cloudcode.test"}
+	req, err := a.BuildRequest(context.Background(), antigravityInput([]byte(`{}`), map[string]string{"project_id": "p"}))
+	if err != nil {
+		t.Fatalf("BuildRequest 失败：%v", err)
+	}
+	if got := req.URL.String(); got != "https://cloudcode.test/v1internal:generateContent" {
+		t.Fatalf("覆盖 URL=%q", got)
+	}
+}
+
+func TestAntigravitySessionRejectsAPIKeyAndMissingProject(t *testing.T) {
+	a := &AntigravitySessionAdapter{}
+	in := antigravityInput([]byte(`{}`), map[string]string{"project_id": "p"})
+	in.Credential.Type = provider.CredentialTypeAPIKey
+	if _, err := a.BuildRequest(context.Background(), in); err == nil || !strings.Contains(err.Error(), "不支持的凭据形态") {
+		t.Fatalf("API key 应被拒绝，err=%v", err)
+	}
+	in = antigravityInput([]byte(`{}`), nil)
+	if _, err := a.BuildRequest(context.Background(), in); err == nil || !strings.Contains(err.Error(), "project_id") {
+		t.Fatalf("缺少 project_id 应 fail loud，err=%v", err)
+	}
+}
+
+func jsonBytesEqual(a, b []byte) bool {
+	var left, right any
+	if json.Unmarshal(a, &left) != nil || json.Unmarshal(b, &right) != nil {
+		return false
+	}
+	leftJSON, _ := json.Marshal(left)
+	rightJSON, _ := json.Marshal(right)
+	return string(leftJSON) == string(rightJSON)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

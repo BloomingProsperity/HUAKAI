@@ -3,113 +3,104 @@ package antigravity
 import (
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 )
 
-func TestAntigravityOAuthConfigRequiresOperatorVerifiedPKCEConfig(t *testing.T) {
-	// 已堵回归:Antigravity 的 OAuth endpoint、client ID 和 scope 还不是公开
-	// 契约输入。变异自检:硬编码任意默认 endpoint/client/scope 都会让本测试变红。
+// TestAntigravityDefaultOAuthConfigPinsPublicCLIProfile 守住内置 client、secret、
+// token endpoint 与五段 scope；任一常量退回空占位都会直接变红。
+func TestAntigravityDefaultOAuthConfigPinsPublicCLIProfile(t *testing.T) {
 	cfg := DefaultOAuthConfig()
-
-	if cfg.AuthURL != "" || cfg.TokenURL != "" || cfg.ClientID != "" {
-		t.Fatalf("default Antigravity OAuth cfg must be operator-gated, got auth=%q token=%q client=%q", cfg.AuthURL, cfg.TokenURL, cfg.ClientID)
+	if cfg.ClientID != AntigravityOAuthClientID || cfg.ClientSecret != AntigravityOAuthClientSecret {
+		t.Fatalf("内置 OAuth client 不匹配：id=%q secret=%q", cfg.ClientID, cfg.ClientSecret)
 	}
-	if len(cfg.Scopes) != 0 {
-		t.Fatalf("default Antigravity OAuth scopes=%v, want none until operator config", cfg.Scopes)
+	if cfg.TokenURL != AntigravityOAuthTokenEndpoint {
+		t.Fatalf("token endpoint=%q", cfg.TokenURL)
 	}
-	if cfg.Source != credentialacq.ClientSourceOperatorConfig {
-		t.Fatalf("source=%q, want operator_config", cfg.Source)
+	if got := strings.Join(cfg.Scopes, " "); got != antigravityOAuthScope {
+		t.Fatalf("scopes=%q，期望 %q", got, antigravityOAuthScope)
 	}
-	if err := ValidateOAuthConfig(cfg); !errors.Is(err, ErrAntigravityOAuthConfigRequired) {
-		t.Fatalf("ValidateOAuthConfig err=%v, want ErrAntigravityOAuthConfigRequired", err)
+	if cfg.Source != credentialacq.ClientSourcePublicCLI {
+		t.Fatalf("source=%q，期望 public_cli_client", cfg.Source)
+	}
+	if _, err := RefreshAdapterFromOAuthConfig(cfg); err != nil {
+		t.Fatalf("默认配置应可直接构造 refresh adapter：%v", err)
+	}
+	if err := ValidateOAuthConfig(cfg); !errors.Is(err, ErrAntigravityOAuthConfigRequired) || !strings.Contains(err.Error(), "auth_url") {
+		t.Fatalf("未提供授权页时完整 PKCE 校验应 fail-closed，err=%v", err)
 	}
 }
 
-func TestAntigravityOAuthAuthorizeURLUsesOperatorPKCEValues(t *testing.T) {
-	// 已堵回归:PKCE 授权 URL 必须仅由 operator 配置构建。变异自检:臆测的
-	// Antigravity endpoint 或 scope 会产出不同的 URL/query 并在此处失败。
-	override := credentialacq.OAuthClientConfig{
-		AuthURL:     "https://operator.antigravity.example.test/oauth/authorize",
-		TokenURL:    "https://operator.antigravity.example.test/oauth/token",
-		ClientID:    "antigravity-client-id",
-		RedirectURI: "http://127.0.0.1:1455/auth/callback",
-		Scopes:      []string{"openid", "email", "offline_access"},
-	}
-	cfg := OAuthConfig(override)
-	override.Scopes[0] = "mutated"
-
-	authURL, err := BuildOAuthAuthorizeURL(cfg, "state-value", "challenge-value")
-	if err != nil {
-		t.Fatalf("BuildOAuthAuthorizeURL: %v", err)
-	}
-	parsed, err := url.Parse(authURL)
-	if err != nil {
-		t.Fatalf("parse authorize URL: %v", err)
-	}
-	if got := parsed.Scheme + "://" + parsed.Host + parsed.Path; got != "https://operator.antigravity.example.test/oauth/authorize" {
-		t.Fatalf("authorize endpoint=%q", got)
-	}
-	q := parsed.Query()
-	assertAntigravityQueryValue(t, q, "response_type", "code")
-	assertAntigravityQueryValue(t, q, "client_id", "antigravity-client-id")
-	assertAntigravityQueryValue(t, q, "redirect_uri", "http://127.0.0.1:1455/auth/callback")
-	assertAntigravityQueryValue(t, q, "state", "state-value")
-	assertAntigravityQueryValue(t, q, "code_challenge", "challenge-value")
-	assertAntigravityQueryValue(t, q, "code_challenge_method", AntigravityPKCEMethodS256)
-	assertAntigravityQueryValue(t, q, "scope", "openid email offline_access")
-}
-
-func TestAntigravityOAuthConfigRejectsNonOperatorSource(t *testing.T) {
-	// 已堵回归:source=operator_config 是强制校验的,不是装饰性的。
+func TestAntigravityOAuthConfigPinsIdentityAgainstOverrides(t *testing.T) {
 	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
-		AuthURL:     "https://operator.antigravity.example.test/oauth/authorize",
-		TokenURL:    "https://operator.antigravity.example.test/oauth/token",
-		ClientID:    "antigravity-client-id",
-		RedirectURI: "http://127.0.0.1:1455/auth/callback",
-		Scopes:      []string{"openid", "offline_access"},
-		Source:      credentialacq.ClientSourcePublicCLI,
-	})
-	if cfg.Source != credentialacq.ClientSourceOperatorConfig {
-		t.Fatalf("OAuthConfig source=%q, want forced operator_config", cfg.Source)
-	}
-
-	raw := cfg
-	raw.Source = credentialacq.ClientSourcePublicCLI
-	if err := ValidateOAuthConfig(raw); !errors.Is(err, ErrAntigravityOAuthConfigRequired) {
-		t.Fatalf("ValidateOAuthConfig err=%v, want ErrAntigravityOAuthConfigRequired", err)
-	}
-}
-
-func TestAntigravityRefreshAdapterFromOAuthConfigUsesOperatorConfig(t *testing.T) {
-	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
-		AuthURL:      "https://operator.antigravity.example.test/oauth/authorize",
-		TokenURL:     "https://operator.antigravity.example.test/oauth/token",
-		ClientID:     "antigravity-client-id",
-		ClientSecret: "antigravity-client-secret",
+		AuthURL:      "https://accounts.example.test/o/oauth2/auth",
+		TokenURL:     "https://attacker.example/token",
+		ClientID:     "attacker-client",
+		ClientSecret: "attacker-secret",
 		RedirectURI:  "http://127.0.0.1:1455/auth/callback",
-		Scopes:       []string{"openid", "email", "offline_access"},
+		Scopes:       []string{"attacker-scope"},
+		Source:       credentialacq.ClientSourceOperatorConfig,
 	})
+	if cfg.TokenURL != AntigravityOAuthTokenEndpoint || cfg.ClientID != AntigravityOAuthClientID || cfg.ClientSecret != AntigravityOAuthClientSecret {
+		t.Fatalf("OAuth 固定身份被 override 改写：%+v", cfg)
+	}
+	if got := strings.Join(cfg.Scopes, " "); got != antigravityOAuthScope {
+		t.Fatalf("scope 被 override 改写：%q", got)
+	}
+	if cfg.Source != credentialacq.ClientSourcePublicCLI {
+		t.Fatalf("source 被 override 改写：%q", cfg.Source)
+	}
 
-	adapter, err := RefreshAdapterFromOAuthConfig(cfg)
+	authorizeURL, err := BuildOAuthAuthorizeURL(cfg, "state-value", "challenge-value")
 	if err != nil {
-		t.Fatalf("RefreshAdapterFromOAuthConfig: %v", err)
+		t.Fatalf("BuildOAuthAuthorizeURL 失败：%v", err)
 	}
-	if adapter.TokenURL != "https://operator.antigravity.example.test/oauth/token" || adapter.ClientID != "antigravity-client-id" {
-		t.Fatalf("adapter endpoint/client=(%q,%q), want operator values", adapter.TokenURL, adapter.ClientID)
+	parsed, err := url.Parse(authorizeURL)
+	if err != nil {
+		t.Fatalf("解析 authorize URL 失败：%v", err)
 	}
-	if adapter.ClientSecret != "antigravity-client-secret" {
-		t.Fatalf("adapter client_secret=%q, want operator secret", adapter.ClientSecret)
-	}
-	if got := adapter.Scope; got != "openid email offline_access" {
-		t.Fatalf("scope=%q, want operator scopes", got)
+	query := parsed.Query()
+	assertAntigravityQueryValue(t, query, "client_id", AntigravityOAuthClientID)
+	assertAntigravityQueryValue(t, query, "scope", antigravityOAuthScope)
+	assertAntigravityQueryValue(t, query, "state", "state-value")
+	assertAntigravityQueryValue(t, query, "code_challenge", "challenge-value")
+	assertAntigravityQueryValue(t, query, "code_challenge_method", AntigravityPKCEMethodS256)
+}
+
+func TestAntigravityRefreshConfigRejectsTamperedProfile(t *testing.T) {
+	for _, mutate := range []func(*credentialacq.OAuthClientConfig){
+		func(cfg *credentialacq.OAuthClientConfig) { cfg.TokenURL = "https://attacker.example/token" },
+		func(cfg *credentialacq.OAuthClientConfig) { cfg.ClientID = "attacker-client" },
+		func(cfg *credentialacq.OAuthClientConfig) { cfg.ClientSecret = "attacker-secret" },
+		func(cfg *credentialacq.OAuthClientConfig) { cfg.Scopes = []string{"attacker-scope"} },
+		func(cfg *credentialacq.OAuthClientConfig) { cfg.Source = credentialacq.ClientSourceOperatorConfig },
+	} {
+		cfg := DefaultOAuthConfig()
+		mutate(&cfg)
+		if _, err := RefreshAdapterFromOAuthConfig(cfg); !errors.Is(err, ErrAntigravityOAuthConfigRequired) {
+			t.Fatalf("被改写的公开 profile 应被拒绝，cfg=%+v err=%v", cfg, err)
+		}
 	}
 }
 
-func assertAntigravityQueryValue(t *testing.T, q url.Values, key, want string) {
+func TestAntigravityRefreshAdapterUsesBuiltinProfile(t *testing.T) {
+	adapter, err := RefreshAdapterFromOAuthConfig(DefaultOAuthConfig())
+	if err != nil {
+		t.Fatalf("RefreshAdapterFromOAuthConfig 失败：%v", err)
+	}
+	if adapter.TokenURL != AntigravityOAuthTokenEndpoint || adapter.ClientID != AntigravityOAuthClientID {
+		t.Fatalf("adapter endpoint/client=(%q,%q)", adapter.TokenURL, adapter.ClientID)
+	}
+	if adapter.ClientSecret != AntigravityOAuthClientSecret || adapter.Scope != antigravityOAuthScope {
+		t.Fatalf("adapter secret/scope 未使用内置 profile")
+	}
+}
+
+func assertAntigravityQueryValue(t *testing.T, query url.Values, key, want string) {
 	t.Helper()
-	if got := q.Get(key); got != want {
-		t.Fatalf("query %s=%q, want %q; all=%v", key, got, want, q)
+	if got := query.Get(key); got != want {
+		t.Fatalf("query %s=%q，期望 %q；all=%v", key, got, want, query)
 	}
 }

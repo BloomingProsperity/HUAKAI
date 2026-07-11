@@ -18,7 +18,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
@@ -178,11 +177,11 @@ func TestGeminiRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 		name       string
 		statusCode int
 		body       string
-		want       credentialworker.RefreshOutcome
+		want       auth.RefreshOutcome
 	}{
-		{name: "unauthorized", statusCode: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`, want: credentialworker.OutcomeAuthExpired},
-		{name: "rate_limited", statusCode: http.StatusTooManyRequests, body: `{"error":"rate_limit_exceeded"}`, want: credentialworker.OutcomeRateLimit},
-		{name: "risk_control", statusCode: http.StatusForbidden, body: `{"message":"risk control triggered"}`, want: credentialworker.OutcomeRiskControl},
+		{name: "unauthorized", statusCode: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`, want: auth.OutcomeAuthExpired},
+		{name: "rate_limited", statusCode: http.StatusTooManyRequests, body: `{"error":"rate_limit_exceeded"}`, want: auth.OutcomeRateLimit},
+		{name: "risk_control", statusCode: http.StatusForbidden, body: `{"message":"risk control triggered"}`, want: auth.OutcomeRiskControl},
 	}
 
 	for _, tt := range tests {
@@ -203,7 +202,7 @@ func TestGeminiRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 			if !errors.As(err, &refreshErr) {
 				t.Fatalf("err=%T %v, want *RefreshError", err, err)
 			}
-			if got := credentialworker.ClassifyRefreshError(err, GeminiVendor, refreshErr.StatusCode); got != tt.want {
+			if got := auth.ClassifyRefreshError(err, GeminiVendor, refreshErr.StatusCode); got != tt.want {
 				t.Fatalf("classified outcome=%q, want %q; err=%v", got, tt.want, err)
 			}
 			if refreshErr.Outcome != string(tt.want) {
@@ -302,7 +301,7 @@ type recordingGeminiRefreshTx struct {
 }
 
 func (tx *recordingGeminiRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
+	*tx.calls = append(*tx.calls, "lock:"+args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

@@ -52,11 +52,11 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), newClaudeAIOAuthExchanger())
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), newGeminiPublicCLIOAuthExchanger(credentialstore.AuthModeCodeAssist))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne), newGeminiPublicCLIOAuthExchanger(credentialstore.AuthModeGoogleOne))
-	// gemini/antigravity refresh 侧已 fail-closed(mode_refresh.go geminiAntigravityPausedAdapter,
-	// DR-GEM-3-ANTIGRAVITY-PAUSED)。acquisition 侧此前仍是 fake exchanger,会把 JSON-token 形状的回调码当真
-	// 换回真实 authorization-code exchanger。
+	// gemini/antigravity 的导入凭据已经可以用内置公开客户端刷新；交互式
+	// acquisition 因本切片没有确认授权页地址，继续明确 fail-closed，绝不把
+	// JSON-token 形状的回调码当作授权码交换结果。
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity),
-		newFailClosedExchanger("gemini/antigravity OAuth acquisition 暂停(DR-GEM-3-ANTIGRAVITY-PAUSED);refresh 侧已 fail-closed"))
+		newFailClosedExchanger("gemini/antigravity 交互式 OAuth acquisition 尚缺已确认的授权页地址；请先使用 CLI token 导入"))
 	register("gemini/oauth", newAuthorizationCodeOAuthExchanger(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), newChatGPTOAuthExchanger())
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth), openAICodexDeviceCode)

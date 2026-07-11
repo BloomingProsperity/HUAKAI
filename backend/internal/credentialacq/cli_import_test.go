@@ -2,7 +2,9 @@ package credentialacq
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
@@ -58,6 +60,70 @@ func TestCLIImportParsesMultipleShapes(t *testing.T) {
 	}
 }
 
+// TestCLIImportFlattensAntigravityConsumerToken 守住真实 CLI 文件的嵌套 token
+// 形态：access/refresh/token_type 必须进入顶层，expiry 必须改名 expires_at，
+// 并能被现有 credentialstore handler 直接物化。若仍按扁平输入读取，
+// access_token/refresh_token 都为空，本测试会红。
+func TestCLIImportFlattensAntigravityConsumerToken(t *testing.T) {
+	input := `{
+		"auth_method":"consumer",
+		"token":{
+			"access_token":"ya29.redacted-access",
+			"token_type":"Bearer",
+			"refresh_token":"1//redacted-refresh",
+			"expiry":"2099-07-11T12:34:56Z"
+		}
+	}`
+	candidates, err := ParseImportContent(input, credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	if err != nil {
+		t.Fatalf("ParseImportContent 失败：%v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidate 数量=%d，期望 1", len(candidates))
+	}
+	candidate := candidates[0]
+	if candidate.Vendor != credentialstore.VendorGemini || candidate.AuthMode != credentialstore.AuthModeAntigravity {
+		t.Fatalf("candidate vendor/mode=(%q,%q)", candidate.Vendor, candidate.AuthMode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
+		t.Fatalf("解析 payload 失败：%v", err)
+	}
+	if payload["access_token"] != "ya29.redacted-access" || payload["refresh_token"] != "1//redacted-refresh" {
+		t.Fatalf("token 未扁平化：%s", candidate.Payload)
+	}
+	if payload["token_type"] != "Bearer" || payload["expires_at"] != "2099-07-11T12:34:56Z" {
+		t.Fatalf("token_type/expiry 映射错误：%s", candidate.Payload)
+	}
+	if _, exists := payload["token"]; exists {
+		t.Fatalf("payload 不应残留嵌套 token：%s", candidate.Payload)
+	}
+	if _, exists := payload["expiry"]; exists {
+		t.Fatalf("payload 不应残留旧 expiry 字段：%s", candidate.Payload)
+	}
+	if _, err := time.Parse(time.RFC3339, payload["expires_at"].(string)); err != nil {
+		t.Fatalf("expires_at 不是 RFC3339：%v", err)
+	}
+
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(candidate.Vendor, candidate.AuthMode)
+	if err != nil {
+		t.Fatalf("查找 credentialstore handler 失败：%v", err)
+	}
+	if err := handler.ValidatePayload(candidate.Payload); err != nil {
+		t.Fatalf("扁平 payload 无法进入 credentialstore：%v", err)
+	}
+	runtimeMaterial, err := handler.RuntimeMaterial(candidate.Payload)
+	if err != nil {
+		t.Fatalf("扁平 payload 无法物化：%v", err)
+	}
+	if runtimeMaterial.Kind != credentialstore.RuntimeSessionToken || runtimeMaterial.Value != "ya29.redacted-access" {
+		t.Fatalf("runtime material=(%q,%q)", runtimeMaterial.Kind, runtimeMaterial.Value)
+	}
+	if runtimeMaterial.Extra["expires_at"] != "2099-07-11T12:34:56Z" {
+		t.Fatalf("runtime expires_at=%q", runtimeMaterial.Extra["expires_at"])
+	}
+}
+
 func TestCLIImportRejectsEmptyInput(t *testing.T) {
 	if _, err := ParseImportContent(" \n\t ", credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth); err != ErrInvalidImportBody {
 		t.Fatalf("err=%v want %v", err, ErrInvalidImportBody)
@@ -65,11 +131,11 @@ func TestCLIImportRejectsEmptyInput(t *testing.T) {
 }
 
 // TestCLIImportRejectsMalformedJSONLine 守护这样一类行：明显意图写结构化 JSON
-//（以 { 或 [ 开头）但解析失败，必须被拒绝，而不是被静默存成 raw session token ——
+// （以 { 或 [ 开头）但解析失败，必须被拒绝，而不是被静默存成 raw session token ——
 // 后者此前会让导入"看似成功"，实则得到不可用的凭据文本。
 //
 // 变异检查：删掉 jsonLikeLine 分支后，每条畸形行都会被当作 token 接受
-//（err==nil）→ "expect ErrInvalidImportBody" 的断言变红。末尾的 raw-token 用例
+// （err==nil）→ "expect ErrInvalidImportBody" 的断言变红。末尾的 raw-token 用例
 // 证明我们没有让合法的非 JSON token 导入发生回归。
 func TestCLIImportRejectsMalformedJSONLine(t *testing.T) {
 	malformed := []string{

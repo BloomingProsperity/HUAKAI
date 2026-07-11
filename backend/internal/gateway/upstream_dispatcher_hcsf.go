@@ -395,17 +395,17 @@ func hcsfProviderRequestModelFamily(endpointFamily string) string {
 	switch endpointFamily {
 	case "openrouter_chat", "grok_chat", "deepseek_chat", "mistral_chat", "groqcloud_chat", "together_chat", "perplexity_chat", "fireworks_chat",
 		"kimi_chat", "qwen_chat", "glm_chat", "yi_chat", "baichuan_chat", "doubao_chat", "ernie_chat", "step_chat", "hunyuan_chat", "minimax_chat", "cohere_chat", "ollama_chat",
-		"copilot_session", "antigravity_session", "kiro_session", "windsurf_session":
+		"copilot_session", "kiro_session", "windsurf_session":
 		return "openai_chat"
 	case "vertex_gemini":
 		// Gemini-on-Vertex 请求 body 与 generativelanguage Gemini 同形:HCSF 先
 		// marshal 出标准 gemini_messages body,vertex.PassthroughAdapter（ModeGemini）
 		// 再原样直通到 publishers/google endpoint。
 		return "gemini_messages"
-	case "gemini_code_assist":
-		// Gemini Code Assist:HCSF 先 marshal 出标准 gemini_messages body 作内层,
-		// gemini.CodeAssistAdapter 再包 {model,project,request} envelope 出站到
-		// cloudcode-pa（两步串联,与 vertex 同模式）。
+	case "gemini_code_assist", "antigravity_session":
+		// 两条 Cloud Code 车道都先 marshal 出标准 gemini_messages body 作内层，
+		// provider adapter 再包 {model,project,request} envelope。Antigravity 额外
+		// 注入已确认的客户端头与 GOOGLE_ONE_AI credit 类型。
 		return "gemini_messages"
 	case "vertex_anthropic":
 		// Anthropic-on-Vertex:HCSF marshal 出标准 anthropic_messages body,

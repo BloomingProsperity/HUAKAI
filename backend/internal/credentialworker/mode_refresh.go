@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
+	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 )
 
@@ -110,8 +111,17 @@ func newDefaultModeAdapterRegistry(operatorOAuthClient *http.Client) *ModeAdapte
 	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, vertexSAModeAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, newGeminiBuiltinClientOAuthModeAdapter("code_assist"))
 	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, newGeminiBuiltinClientOAuthModeAdapter("google_one"))
-	// gemini/antigravity refresh 标 Mandatory Roadmap，
-	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, geminiAntigravityPausedAdapter{})
+	// gemini/antigravity 使用内置公开 OAuth profile 与既有 Antigravity 刷新核；
+	// endpoint/client/scope 不从凭据 payload 取值。
+	antigravityOAuth := providerantigravity.DefaultOAuthConfig()
+	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, legacyOAuthModeAdapter{
+		providerName: "antigravity",
+		adapter: providerantigravity.RefreshAdapter{
+			TokenURL: antigravityOAuth.TokenURL, ClientID: antigravityOAuth.ClientID,
+			ClientSecret: antigravityOAuth.ClientSecret, Scope: strings.Join(antigravityOAuth.Scopes, " "),
+			HTTPClient: operatorOAuthClient,
+		},
+	})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, operatorOAuthModeAdapter{
 		providerName: "gemini",
 		configVendor: appconfig.VendorOAuthGemini,
@@ -409,12 +419,6 @@ type staticModeAdapter struct{}
 
 func (staticModeAdapter) RefreshCredential(context.Context, ModeRefreshInput) (ModeRefreshResult, error) {
 	return ModeRefreshResult{}, ErrNoRefreshRequired
-}
-
-type geminiAntigravityPausedAdapter struct{}
-
-func (geminiAntigravityPausedAdapter) RefreshCredential(context.Context, ModeRefreshInput) (ModeRefreshResult, error) {
-	return ModeRefreshResult{}, fmt.Errorf("antigravity OAuth wiring pending Owner reactivation: %w", credentialacq.ErrFeatureDisabled)
 }
 
 type legacyOAuthModeAdapter struct {

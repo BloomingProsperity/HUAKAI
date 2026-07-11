@@ -13,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
+	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -576,6 +577,56 @@ func TestBuild_GeminiCodeAssistEnvGated(t *testing.T) {
 		// 平台必须有 transport 策略,否则 dispatcher 取 RoundTripper 整族挂。
 		if err := transport.ValidateModeForProvider(transport.ProviderCode(a.Platform()), transport.TransportModeStandard); err != nil {
 			t.Errorf("gemini_code_assist 平台无 transport 策略: %v", err)
+		}
+	})
+}
+
+// TestBuild_AntigravityEnvGateDefaultsOffAndBuildsCloudCodeAdapter 守住 rollout
+// 姿态：env 关闭时注册表完全不含该族，不进入转发热路径；env 开启后构造的
+// 必须是真实 Cloud Code adapter，而不是旧占位实现。无条件注册或删 env 分支
+// 分别会使两个子测试变红。
+func TestBuild_AntigravityEnvGateDefaultsOffAndBuildsCloudCodeAdapter(t *testing.T) {
+	t.Run("默认关闭不进入热路径", func(t *testing.T) {
+		clearPlaceholderSessionAdapterEnvs(t)
+		r := Build()
+		if _, err := r.For(ProtocolAntigravitySession); !errors.Is(err, provider.ErrAdapterNotRegistered) {
+			t.Fatalf("Antigravity 默认应未注册，err=%v", err)
+		}
+		for _, family := range r.RegisteredProtocolFamilies() {
+			if family == ProtocolAntigravitySession {
+				t.Fatalf("默认注册集合不应含 %q", ProtocolAntigravitySession)
+			}
+		}
+	})
+
+	t.Run("显式开启构造正确 adapter", func(t *testing.T) {
+		clearPlaceholderSessionAdapterEnvs(t)
+		t.Setenv(antigravitySessionAdapterEnv, "true")
+		r := Build()
+		raw, err := r.For(ProtocolAntigravitySession)
+		if err != nil {
+			t.Fatalf("env 开启后取 adapter 失败：%v", err)
+		}
+		adapter, ok := raw.(*providerantigravity.AntigravitySessionAdapter)
+		if !ok {
+			t.Fatalf("adapter type=%T，期望 *antigravity.AntigravitySessionAdapter", raw)
+		}
+		req, err := adapter.BuildRequest(context.Background(), provider.BuildInput{
+			UpstreamModelID: "gemini-3-flash",
+			InboundBody:     []byte(`{"contents":[]}`),
+			Credential: provider.Credential{
+				Type: provider.CredentialTypeSessionToken, Value: "access-token",
+				Extra: map[string]string{"project_id": "project-id"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("已构造 adapter 无法 BuildRequest：%v", err)
+		}
+		if got := req.URL.String(); got != "https://cloudcode-pa.googleapis.com/v1internal:generateContent" {
+			t.Fatalf("env 开启后的出站 URL=%q", got)
+		}
+		if got := req.Header.Get("User-Agent"); got != "antigravity/hub/2.2.1 darwin/arm64" {
+			t.Fatalf("env 开启后的 User-Agent=%q", got)
 		}
 	})
 }

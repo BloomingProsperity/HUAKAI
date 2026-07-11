@@ -16,7 +16,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
@@ -256,12 +255,12 @@ func (a RefreshAdapter) postRefresh(ctx context.Context, tokenURL string, form u
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := a.httpClient().Do(req)
 	if err != nil {
-		return tokenResponse{}, &RefreshError{Outcome: string(credentialworker.OutcomeTransientError), Retryable: true, Cause: err}
+		return tokenResponse{}, &RefreshError{Outcome: string(auth.OutcomeTransientError), Retryable: true, Cause: err}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return tokenResponse{}, &RefreshError{Outcome: string(credentialworker.OutcomeTransientError), Retryable: true, Cause: err}
+		return tokenResponse{}, &RefreshError{Outcome: string(auth.OutcomeTransientError), Retryable: true, Cause: err}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return tokenResponse{}, classifyHTTPRefreshError(resp.StatusCode, resp.Header, body, a.now())
@@ -306,9 +305,8 @@ func (a RefreshAdapter) httpClient() *http.Client {
 	if a.HTTPClient != nil {
 		return a.HTTPClient
 	}
-	// 与镜像兄弟 gemini/kiro/cursor/windsurf/openai_codex 的 RefreshAdapter 一致,未注入时回退 SSRF 防护
-	// client 而非裸 http.DefaultClient(防 env 代理外发凭据/无 IP 校验/不禁 3xx;S2-054 同款防线,补齐本镜像组
-	// 最后一个漏修点)。当前 antigravity OAuth wiring 待 Owner 重新接线,提前补好防线避免激活即漏。
+	// 未注入时回退 SSRF 防护 client，而非裸 http.DefaultClient，避免环境代理
+	// 外发 refresh_token/client_secret，并在拨号层拒绝私网与重定向漂移。
 	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
@@ -366,7 +364,7 @@ type tokenResponse struct {
 
 func classifyHTTPRefreshError(status int, header http.Header, body []byte, now time.Time) error {
 	bodyText := sanitizedRefreshBody(body)
-	outcome := credentialworker.ClassifyRefreshError(errors.New(bodyText), AntigravityVendor, status)
+	outcome := auth.ClassifyRefreshError(errors.New(bodyText), AntigravityVendor, status)
 	refreshErr := &RefreshError{
 		Outcome:    string(outcome),
 		StatusCode: status,
@@ -374,18 +372,18 @@ func classifyHTTPRefreshError(status int, header http.Header, body []byte, now t
 		Body:       bodyText,
 	}
 	switch outcome {
-	case credentialworker.OutcomeAuthExpired:
+	case auth.OutcomeAuthExpired:
 		refreshErr.Cause = ErrAntigravityAuthExpired
-	case credentialworker.OutcomeRateLimit:
+	case auth.OutcomeRateLimit:
 		refreshErr.Cause = ErrAntigravityRateLimited
 		refreshErr.RetryAfter = now.Add(parseRetryAfter(header, now))
-	case credentialworker.OutcomeRiskControl:
+	case auth.OutcomeRiskControl:
 		refreshErr.Cause = ErrAntigravityRiskControl
-	case credentialworker.OutcomeTransientError:
+	case auth.OutcomeTransientError:
 		refreshErr.Cause = ErrAntigravityTransient
 		refreshErr.Retryable = true
 	default:
-		refreshErr.Outcome = string(credentialworker.OutcomeUnknown)
+		refreshErr.Outcome = string(auth.OutcomeUnknown)
 	}
 	return refreshErr
 }
@@ -401,7 +399,7 @@ func classifyRefreshFailure(err error) string {
 	if errors.Is(err, ErrAntigravityRecordMismatch) {
 		return failureVendorMismatch
 	}
-	if outcome := credentialworker.ClassifyRefreshError(err, AntigravityVendor, 0); outcome != credentialworker.OutcomeUnknown {
+	if outcome := auth.ClassifyRefreshError(err, AntigravityVendor, 0); outcome != auth.OutcomeUnknown {
 		return string(outcome)
 	}
 	return failureUnknown

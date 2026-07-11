@@ -18,10 +18,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 )
 
 func TestDefaultModeAdapterRegistryCoversCredentialStoreModes(t *testing.T) {
@@ -149,34 +149,84 @@ func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *test
 	}
 }
 
-func TestGeminiAntigravityRefreshIsFailClosedUntilReactivation(t *testing.T) {
-	// 判别 mutation：把 registry 改回 legacy AntigravityRefresh 时会发生 HTTP 调用。
-	previousClient := http.DefaultClient
-	t.Cleanup(func() { http.DefaultClient = previousClient })
-	var calls int
-	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		calls++
-		return jsonResponse(`{"access_token":"unexpected","refresh_token":"unexpected-rt","expires_in":1800}`), nil
+// TestGeminiAntigravityRefreshUsesBuiltinProfile 守住重激活路径：canonical 的
+// gemini/antigravity mode 必须调用既有 Antigravity 刷新核，并且只把内置公开
+// endpoint/client/secret/scope 发给 Google。退回暂停 adapter 或改用 Gemini
+// 默认 client 时都会在本测试中变红。
+func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
+	var gotURL string
+	var gotForm url.Values
+	mockClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("读取 refresh body 失败：%v", err)
+		}
+		gotForm, err = url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatalf("解析 refresh body 失败：%v", err)
+		}
+		return jsonResponse(`{"access_token":"ag-access-new","refresh_token":"ag-refresh-new","expires_in":1800,"token_type":"Bearer"}`), nil
 	})}
 
-	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	adapter, ok := newDefaultModeAdapterRegistry(mockClient).Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
 	if !ok {
-		t.Fatal("missing gemini/antigravity refresh adapter")
+		t.Fatal("缺少 gemini/antigravity refresh adapter")
 	}
-	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+	legacy, ok := adapter.(legacyOAuthModeAdapter)
+	if !ok {
+		t.Fatalf("adapter type=%T，期望 legacyOAuthModeAdapter 复用刷新契约", adapter)
+	}
+	wire, ok := legacy.adapter.(providerantigravity.RefreshAdapter)
+	if !ok {
+		t.Fatalf("底层 adapter type=%T，期望 antigravity.RefreshAdapter", legacy.adapter)
+	}
+	if wire.TokenURL != providerantigravity.AntigravityOAuthTokenEndpoint || wire.ClientID != providerantigravity.AntigravityOAuthClientID {
+		t.Fatalf("底层 endpoint/client=(%q,%q)", wire.TokenURL, wire.ClientID)
+	}
+
+	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
 		ProviderAccountID: 94,
 		Vendor:            credentialstore.VendorGemini,
 		AuthMode:          credentialstore.AuthModeAntigravity,
-		Payload:           []byte(`{"access_token":"old","refresh_token":"rt-old","client_secret":"credential-secret"}`),
+		Payload: []byte(`{
+			"session_token":"ag-session-old",
+			"access_token":"ag-access-old",
+			"refresh_token":"ag-refresh-old",
+			"project_id":"project-preserved",
+			"oauth_token_endpoint":"https://attacker.example/token",
+			"client_id":"attacker-client",
+			"client_secret":"attacker-secret",
+			"scope":"attacker-scope"
+		}`),
 	})
-	if !errors.Is(err, credentialacq.ErrFeatureDisabled) {
-		t.Fatalf("RefreshCredential err=%v, want credentialacq.ErrFeatureDisabled", err)
+	if err != nil {
+		t.Fatalf("RefreshCredential 失败：%v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "antigravity OAuth wiring pending Owner reactivation") {
-		t.Fatalf("RefreshCredential err=%v, want Owner reactivation pause message", err)
+	if gotURL != providerantigravity.AntigravityOAuthTokenEndpoint {
+		t.Fatalf("refresh URL=%q，期望 %q", gotURL, providerantigravity.AntigravityOAuthTokenEndpoint)
 	}
-	if calls != 0 {
-		t.Fatalf("HTTP calls=%d want 0 while gemini/antigravity refresh is paused", calls)
+	wantForm := map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": "ag-refresh-old",
+		"client_id":     providerantigravity.AntigravityOAuthClientID,
+		"client_secret": providerantigravity.AntigravityOAuthClientSecret,
+		"scope":         strings.Join(providerantigravity.DefaultOAuthConfig().Scopes, " "),
+	}
+	for key, want := range wantForm {
+		if got := gotForm.Get(key); got != want {
+			t.Errorf("refresh form %s=%q，期望 %q", key, got, want)
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(result.Payload, &payload); err != nil {
+		t.Fatalf("解析刷新结果失败：%v", err)
+	}
+	if payload["access_token"] != "ag-access-new" || payload["session_token"] != "ag-access-new" {
+		t.Fatalf("新 access/session token 未同步：%s", result.Payload)
+	}
+	if payload["refresh_token"] != "ag-refresh-new" || payload["project_id"] != "project-preserved" {
+		t.Fatalf("refresh_token/project_id 未正确合并：%s", result.Payload)
 	}
 }
 

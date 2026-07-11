@@ -855,7 +855,7 @@ func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 		"kimi_chat", "qwen_chat", "glm_chat", "yi_chat", "baichuan_chat",
 		"doubao_chat", "ernie_chat", "step_chat", "hunyuan_chat",
 		"minimax_chat", "cohere_chat", "ollama_chat",
-		"copilot_session", "antigravity_session", "kiro_session", "windsurf_session",
+		"copilot_session", "kiro_session", "windsurf_session",
 	} {
 		got, err := MarshalToProviderRequest(env, fam)
 		if err != nil {
@@ -865,6 +865,32 @@ func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("family %q 投影 != openai_chat 投影\ngot:  %s\nwant: %s", fam, got, want)
 		}
+	}
+}
+
+// TestMarshalAntigravityProjectsToGeminiMessages 守住真实网关链路的内层 body：
+// Antigravity provider adapter 外包 Cloud Code envelope 前，HCSF 必须先投影为
+// Gemini contents/parts，而不是旧占位的 OpenAI messages。回退到 openai_chat
+// 映射时，与 Gemini 基线不同且会被本测试识别。
+func TestMarshalAntigravityProjectsToGeminiMessages(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	want, err := MarshalToProviderRequest(env, "gemini_messages")
+	if err != nil {
+		t.Fatalf("Gemini 基线 marshal 失败：%v", err)
+	}
+	openAI, err := MarshalToProviderRequest(env, "openai_chat")
+	if err != nil {
+		t.Fatalf("OpenAI 判别基线 marshal 失败：%v", err)
+	}
+	if bytes.Equal(openAI, want) {
+		t.Fatal("测试夹具失去判别性：OpenAI 与 Gemini 投影意外相同")
+	}
+	got, err := MarshalToProviderRequest(env, "antigravity_session")
+	if err != nil {
+		t.Fatalf("Antigravity marshal 失败：%v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Antigravity 投影 != gemini_messages 投影\ngot:  %s\nwant: %s", got, want)
 	}
 }
 

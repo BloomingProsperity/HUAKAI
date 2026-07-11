@@ -39,7 +39,7 @@
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
-//   - antigravity_session      Antigravity AI session 反转（占位）
+//   - antigravity_session      Antigravity Cloud Code OAuth 反转（env-gated 默认 off）
 //   - kiro_session             AWS Kiro session 反转（占位）
 //   - windsurf_session         Codeium Windsurf session 反转（占位）
 package registrydefault
@@ -189,7 +189,8 @@ const (
 	// 默认 off（OAuth session + 内部 Google 端点高危项），按 cursor/copilot
 	// placeholder 模式 env-gated opt-in 注册。
 	ProtocolGeminiCodeAssist = "gemini_code_assist"
-	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
+	// 订阅 session 反转路径；Antigravity 已完成 Cloud Code wire，其他族仍为
+	// 待验证 scaffold。全部保持逐 family env-gated，默认不注册。
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
 	ProtocolGeminiAdvancedSession = "gemini_advanced_session"
@@ -361,9 +362,8 @@ func Build() *provider.StaticRegistry {
 		r.MustRegister(ProtocolGeminiCodeAssist, &gemini.CodeAssistAdapter{})
 	}
 
-	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
-	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境
-	// 必须逐 family 显式 opt-in，不能用一个总开关一次性打开全部。
+	// 未验证 session adapter 默认不注册，避免把真实凭据发到占位上游；
+	// 实验环境必须逐 family 显式 opt-in，不能由旧总开关一次性打开全部。
 	if placeholderSessionAdapterEnabled(cursorSessionAdapterEnv) {
 		r.MustRegister(ProtocolCursorSession, &cursor.CursorSessionAdapter{})
 	}
@@ -373,6 +373,8 @@ func Build() *provider.StaticRegistry {
 	if placeholderSessionAdapterEnabled(geminiAdvancedSessionAdapterEnv) {
 		r.MustRegister(ProtocolGeminiAdvancedSession, &gemini.GeminiAdvancedSessionAdapter{})
 	}
+	// Antigravity wire 已落到正式 cloudcode-pa，但生产默认仍保持 off；只有
+	// 部署方显式开启本 family 时才构造并注册 adapter。
 	if placeholderSessionAdapterEnabled(antigravitySessionAdapterEnv) {
 		r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
 	}

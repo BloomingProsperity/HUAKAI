@@ -16,8 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
@@ -98,6 +98,57 @@ func TestAntigravityRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
 	}
 }
 
+// TestAntigravityCLIImportPayloadFeedsExistingRefresher 证明嵌套 CLI token 经
+// credentialacq 扁平化后，不需要第二套转换即可交给现有 refresher。
+func TestAntigravityCLIImportPayloadFeedsExistingRefresher(t *testing.T) {
+	candidates, err := credentialacq.ParseImportContent(`{
+		"auth_method":"consumer",
+		"token":{
+			"access_token":"ag-access-old",
+			"token_type":"Bearer",
+			"refresh_token":"ag-refresh-old",
+			"expiry":"2099-07-11T12:34:56Z"
+		}
+	}`, credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("解析 CLI token 失败：count=%d err=%v", len(candidates), err)
+	}
+
+	var refreshToken string
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, readErr := io.ReadAll(req.Body)
+		if readErr != nil {
+			t.Fatalf("读取 refresh body 失败：%v", readErr)
+		}
+		form, parseErr := url.ParseQuery(string(body))
+		if parseErr != nil {
+			t.Fatalf("解析 refresh body 失败：%v", parseErr)
+		}
+		refreshToken = form.Get("refresh_token")
+		return antigravityJSONResponse(http.StatusOK, `{"access_token":"ag-access-new","expires_in":1800}`), nil
+	})}
+	cfg := DefaultOAuthConfig()
+	cfg.HTTPClient = client
+	adapter, err := RefreshAdapterFromOAuthConfig(cfg)
+	if err != nil {
+		t.Fatalf("构造 refresh adapter 失败：%v", err)
+	}
+	payload, _, err := adapter.RefreshForProvider(context.Background(), 55, AntigravityVendor, candidates[0].Payload)
+	if err != nil {
+		t.Fatalf("扁平 CLI token 无法刷新：%v", err)
+	}
+	if refreshToken != "ag-refresh-old" {
+		t.Fatalf("refresh_token=%q，期望 ag-refresh-old", refreshToken)
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(payload, &updated); err != nil {
+		t.Fatalf("解析刷新结果失败：%v", err)
+	}
+	if updated["access_token"] != "ag-access-new" || updated["session_token"] != "ag-access-new" {
+		t.Fatalf("刷新结果未同步 access/session token：%s", payload)
+	}
+}
+
 func TestAntigravityRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *testing.T) {
 	// 消除的回归:当运营方未配置 token_url 时,凭证里携带的 OAuth endpoint
 	// 必须 fail closed(直接失败)。变异自检:一旦使用凭证里的 endpoint,
@@ -132,11 +183,11 @@ func TestAntigravityRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 		name       string
 		statusCode int
 		body       string
-		want       credentialworker.RefreshOutcome
+		want       auth.RefreshOutcome
 	}{
-		{name: "unauthorized", statusCode: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`, want: credentialworker.OutcomeAuthExpired},
-		{name: "rate_limited", statusCode: http.StatusTooManyRequests, body: `{"error":"rate_limit_exceeded"}`, want: credentialworker.OutcomeRateLimit},
-		{name: "risk_control", statusCode: http.StatusForbidden, body: `{"message":"risk control triggered"}`, want: credentialworker.OutcomeRiskControl},
+		{name: "unauthorized", statusCode: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`, want: auth.OutcomeAuthExpired},
+		{name: "rate_limited", statusCode: http.StatusTooManyRequests, body: `{"error":"rate_limit_exceeded"}`, want: auth.OutcomeRateLimit},
+		{name: "risk_control", statusCode: http.StatusForbidden, body: `{"message":"risk control triggered"}`, want: auth.OutcomeRiskControl},
 	}
 
 	for _, tt := range tests {
@@ -157,7 +208,7 @@ func TestAntigravityRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 			if !errors.As(err, &refreshErr) {
 				t.Fatalf("err=%T %v, want *RefreshError", err, err)
 			}
-			if got := credentialworker.ClassifyRefreshError(err, AntigravityVendor, refreshErr.StatusCode); got != tt.want {
+			if got := auth.ClassifyRefreshError(err, AntigravityVendor, refreshErr.StatusCode); got != tt.want {
 				t.Fatalf("classified outcome=%q, want %q; err=%v", got, tt.want, err)
 			}
 			if refreshErr.Outcome != string(tt.want) {
@@ -304,7 +355,7 @@ type recordingAntigravityRefreshTx struct {
 }
 
 func (tx *recordingAntigravityRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
+	*tx.calls = append(*tx.calls, "lock:"+args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

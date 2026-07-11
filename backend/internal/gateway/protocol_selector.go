@@ -154,16 +154,15 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	// 哨兵，done:true 终帧携带 usage），专用 adapter；与 OpenAI 兼容直通的
 	// ollama_chat（上方，openai.Adapter）并存为两个独立 family。
 	r.MustRegister("ollama_native", &protoollama.Adapter{})
-	// 订阅 session 反转路径。响应 SSE 形态分两类：
+	// 订阅 session 反转路径。响应 SSE 形态按真实上游区分：
 	//   - copilot_session:               OpenAI Chat Completions 兼容 → openai.Adapter
 	//   - gemini_advanced_session:       Google 内部 SSE 形态，近似 Gemini 官方 → gemini.Adapter
-	//   - cursor / antigravity / kiro / windsurf: SSE 形态待 OCAW 采集后确认；
-	//     先复用 openai.Adapter 作占位（多数采用 OpenAI Chat 兼容形态），
-	//     若实测形态不同再做专用 adapter。
+	//   - antigravity_session:            Cloud Code {response} envelope → geminicodeassist.Adapter
+	//   - cursor / kiro / windsurf:       SSE 形态待采集确认，暂用 openai.Adapter。
 	r.MustRegister("copilot_session", &openai.Adapter{})
 	r.MustRegister("gemini_advanced_session", &gemini.Adapter{})
 	r.MustRegister("cursor_session", &openai.Adapter{})
-	r.MustRegister("antigravity_session", &openai.Adapter{})
+	r.MustRegister("antigravity_session", &geminicodeassist.Adapter{})
 	r.MustRegister("kiro_session", &openai.Adapter{})
 	r.MustRegister("windsurf_session", &openai.Adapter{})
 	return r
