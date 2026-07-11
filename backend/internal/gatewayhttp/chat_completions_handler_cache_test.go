@@ -340,7 +340,7 @@ type replayClaimGate struct {
 }
 
 func (g replayClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
-	return &billing.ReserveResult{ClaimID: g.claimID, IdempotencyHit: g.hit}, nil
+	return &billing.ReserveResult{ClaimID: g.claimID, AttemptSeq: 1, IdempotencyHit: g.hit}, nil
 }
 
 func invokeWithIdempotencyKey(t *testing.T, deps ChatHandlerDeps, body, idemKey string) *httptest.ResponseRecorder {

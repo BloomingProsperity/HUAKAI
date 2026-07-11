@@ -44,6 +44,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
@@ -81,20 +82,23 @@ type ChatHandlerDeps struct {
 	// QueueWaiter 执行 WaitPlan 的有界等待。nil 时 handler 构造阶段补默认执行器。
 	QueueWaiter QueueWaiter
 	// QueueWaitNow 为 queue_wait 请求级预算提供可注入时钟;nil 时使用 time.Now。
-	QueueWaitNow          func() time.Time
-	CredentialVault       provider.CredentialVault
-	Dispatcher            *gateway.UpstreamDispatcher
-	CanonicalDispatcher   HCSFDispatcher
-	Forwarder             *gateway.StreamForwarder
-	ResponseCache         l2cache.Store
-	Settler               billing.Settler
-	ReplayStore           billing.ReplayStore
-	BillingPolicyResolver *billing.PolicyResolver
-	CompletionBus         *eventbus.Bus
-	AuditRefPolicy        *eventbus.AuditRefPolicy
-	AuditLedger           auditledger.Ledger
-	AuditLedgerDLQ        auditledger.DLQEnqueuer
-	ModerationScreener    moderation.Screener
+	QueueWaitNow        func() time.Time
+	CredentialVault     provider.CredentialVault
+	Dispatcher          *gateway.UpstreamDispatcher
+	CanonicalDispatcher HCSFDispatcher
+	Forwarder           *gateway.StreamForwarder
+	ResponseCache       l2cache.Store
+	Settler             billing.Settler
+	// SettlementIntents 关闭时静默禁用，开启但 Store 缺失时只告警并 fail-open。
+	SettlementIntents       settlementintent.Store
+	SettlementIntentEnabled bool
+	ReplayStore             billing.ReplayStore
+	BillingPolicyResolver   *billing.PolicyResolver
+	CompletionBus           *eventbus.Bus
+	AuditRefPolicy          *eventbus.AuditRefPolicy
+	AuditLedger             auditledger.Ledger
+	AuditLedgerDLQ          auditledger.DLQEnqueuer
+	ModerationScreener      moderation.Screener
 	// SettleRecoveryDLQ 持久化已交付但 Tx2 未确认的结算；生产必须接入 DLQ 服务。
 	SettleRecoveryDLQ      settlementrecovery.Enqueuer
 	Signer                 *sign.Signer
@@ -205,6 +209,7 @@ type chatExecution struct {
 	sessionHash                      string
 	moderationScreened               bool
 	reserveRes                       *billing.ReserveResult
+	settlementIntent                 *settlementintent.Tracker
 	streamInputOnlyInterruptedPolicy billing.StreamInputOnlyInterruptedPolicy
 	balanceEnforcementMode           billing.BalanceEnforcementMode
 

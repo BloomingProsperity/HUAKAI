@@ -25,6 +25,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/clientgate"
 	"github.com/BloomingProsperity/HUAKAI/internal/httpkeepalive"
+	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
@@ -35,6 +36,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokenestimate"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -63,6 +65,7 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 		requestID:                        validated.RequestID,
 		clientRequestID:                  validated.ClientRequestID,
 		clientSessionID:                  requestClientSessionID(r, validated),
+		settlementIntent:                 settlementintent.NewTracker(d.SettlementIntents, d.SettlementIntentEnabled),
 		streamInputOnlyInterruptedPolicy: d.BillingPolicyResolver.ResolveStreamInputOnlyInterruptedPolicy(r.Context(), ident.TenantID),
 		balanceEnforcementMode:           d.BillingPolicyResolver.ResolveBalanceEnforcementMode(r.Context(), ident.TenantID),
 		queueWaitNow:                     queueWaitNow,
@@ -384,6 +387,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.reserveRes = reserveRes
+	ex.settlementIntent.InsertPending(ex.ctx, ex.ident.TenantID, ex.requestID, ex.logicalRequestID, reserveRes.ClaimID, reserveRes.AttemptSeq, ex.ident.APIKeyID, ex.payloadHash, predictedCost)
 	if !ex.reserveQuota(w, reserveRes, predictedCost) {
 		return false
 	}
@@ -447,7 +451,7 @@ func (ex *chatExecution) ensureIdempotencyState() {
 		}
 	}
 	if ex.payloadHash == "" {
-		ex.payloadHash = normalizedPayloadHash(ex.body)
+		ex.payloadHash = payloadhash.Sum(ex.body)
 	}
 }
 

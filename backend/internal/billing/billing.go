@@ -73,6 +73,7 @@ type ReserveRequest struct {
 // ReserveResult 标识 claim 行,以及是否命中可用的缓存历史响应。
 type ReserveResult struct {
 	ClaimID             int64
+	AttemptSeq          int32
 	CachedPriorResponse []byte // 除非命中重放,否则为空
 	FingerprintConflict bool
 	IdempotencyHit      bool

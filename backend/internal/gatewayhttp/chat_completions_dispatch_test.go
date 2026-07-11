@@ -47,7 +47,7 @@ func (g *recordingClaimGate) Reserve(_ context.Context, req billing.ReserveReque
 	if claimID == 0 {
 		claimID = 999
 	}
-	return &billing.ReserveResult{ClaimID: claimID}, nil
+	return &billing.ReserveResult{ClaimID: claimID, AttemptSeq: 1}, nil
 }
 
 type reserveClaimRaceClaimGate struct{}

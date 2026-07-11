@@ -377,6 +377,18 @@ Source: `docs/specs/voucher-system.md` and `docs/decompositions/_cross-cutting/v
 | AT-R1A-007 | per-key 与账号级并发上限饱和后可恢复。 | quota + pool slot 并发 | 真 PostgreSQL、并发测试 tag/E2E 环境。 | 并发抢 quota scope；账号槽打满并触发排队/拒绝；成功与 abort 后重新取槽。 | 同时成功数精确等于 cap；不得超发；终结后容量恢复，claim/quota/slot 无悬挂。 | 并发超卖、排队错误、成功/失败释放不对称。 | PASS（真 PG quota/pool 集成测试；`e2e_concurrency` 四场景整组干净重跑通过：释放后 waiter 成功、等待队列溢出快速拒绝、超时 abort/release、断连释放等待位） |
 | AT-R1A-008 | `count_tokens` 明确不属于本切片。 | Mandatory Roadmap | 无 session count_tokens adapter/contract。 | 用 session family 模型调用既有 `/v1/messages/count_tokens` 路由。 | 在选号、发网和钱账前显式 501；不因 messages family ready 自动推导 count_tokens ready，后续独立切片实现。 | 协议族启用后旧 handler 意外复用 session adapter，造成虚假支持。 | MANDATORY ROADMAP（fail-closed 已判别：`backend/internal/completionshttp/handler_test.go`） |
 
+## 持久结算意图阶段 1
+
+边界：本节只验迁移、意图生命周期、旁路 fail-open 与生产依赖装配。sweeper、按 `attempt_seq` 绑定恢复 proof 和运维人工裁决仍属后续强制切片，不因本节 PASS 被视为已完成。
+
+| Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AT-SETTLEMENT-INTENT-001 | 成功 relay 请求留下意图→交付→结算三段证据，双失败留下真实金额。 | F-BILL-001 / F-OBS-001 | 迁移 0175 已应用；灰度开关开启；Reserve、交付、Settler 与恢复队列可注入。 | 分别执行非流式成功、流式成功、结算失败且恢复成功、结算与恢复双失败。 | 成功路径严格为 `pending→delivering→settled`；`first_byte_at` 不早于完整业务写出；恢复成功为 `settling`，恢复失败为 `failed`，两者 `actual_cost` 均等于主结算输入。 | 首字节证据提前、恢复配置冒充真实入队、意图金额与主钱路漂移。 | PASS（working tree：`backend/internal/gatewayhttp/settlement_intent_test.go`） |
+| AT-SETTLEMENT-INTENT-002 | 同一账本 claim attempt 只能有一条意图，claim 复活后新 attempt 可并存。 | F-BILL-001 / F-OBS-001 | 全新 PostgreSQL 已迁移到 0175；测试先创建真实 tenant/user/api-key/claim。 | 用不同 request ID 重复写同一 `(tenant_id, claim_id, attempt_seq)`；将同一 claim 从 attempt 1 复活到 2 后再写；另写不存在 claim 和非法 attempt/version/retry/金额。 | 重复 identity 返回 `23505`；attempt 1/2 两行并存；缺失 claim 返回 `23503`；五项 CHECK 返回 `23514`；陈旧 version 返回 no rows。 | HTTP request ID 不防串账、跨租户 claim 关联、非法 money/计数状态、丢更新。 | PASS（真 PostgreSQL：`backend/internal/db/settlement_intents_integration_test.go`） |
+| AT-SETTLEMENT-INTENT-003 | 六类意图操作错误或超时都不得阻断主链路。 | F-BILL-001 / F-GW-001 | 灰度开关开启；Store 可按操作注入 error/timeout，也可模拟启用态 nil 与 id=0。 | 表驱动覆盖 Insert、delivering、settling、settled、aborted、failed；观察 HTTP、原结算/Abort 次数与日志。 | 可交付路径保持 200 和一次主结算；Abort 路径保持原失败响应和一次 Abort；warning 含稳定 operation/error type，不含原错误或密钥；默认关闭 nil 不产噪声，启用态 nil 与 id=0 可观测。 | 旁路证据成为可用性闸门、终态受客户端取消影响、错误日志泄密。 | PASS（working tree：`backend/internal/gatewayhttp/settlement_intent_test.go`） |
+| AT-SETTLEMENT-INTENT-004 | 生产 runtime 必须按灰度值构造 Store，并把 Store 与启用态注入 handler。 | F-BILL-001 / F-GW-001 | 使用生产工厂、runtime AST 和 routes 装配函数。 | 分别以 enabled=false/true 调用 Store 工厂；核对 runtime 传入真实配置；核对 `chatHandlerDeps` 的实例身份和启用态。 | disabled 返回 nil，enabled 返回非 nil；runtime 不得写死开关或漏掉工厂；handler 收到相同 Store 与启用态。 | 开关已配置但生产主链路因漏构造或漏注入永久 no-op。 | PASS（working tree：`backend/cmd/gateway/settlement_intent_wiring_test.go`、`backend/internal/config/config_test.go`） |
+| AT-SETTLEMENT-INTENT-005 | L2 cache 与流式 handler 只用完整客户端写证据推进交付态。 | F-BILL-001 / F-GW-002 | cache-hit 的 acquire 前后两分支可调用；stream=true 从真实 handler 入口执行；客户端 writer 可短写、断连或让意图 Store 变慢。 | 对两条 cache-hit 分支注入短写；对流式首帧注入成功与短写；让 delivering 写持续到短超时。 | cache 短写后无 delivering/settled；流式成功为完整生命周期，首帧短写只 Abort 且无 delivering/settled/settling；慢意图 Store 不延迟后续业务帧。 | 财务 committed 与客户端交付混淆、handler 漏接首帧回调、旁路数据库阻塞流、断连后伪造交付。 | PASS（working tree：`backend/internal/gatewayhttp/settlement_intent_test.go`） |
+
 ## Release Rule
 
 No capability group may be marked release-ready without acceptance tests covering normal path, failure path, and operator recovery path.

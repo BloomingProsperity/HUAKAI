@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
@@ -32,20 +33,7 @@ import (
 // nil 时使用 BuildHopChain，保持与 non-streaming ledger 相同的六跳形态。
 type StreamingHopChainBuilder func(req ForwardRequest, providerEndpoint string, startedAt, completedAt time.Time) []proto.HopAttestation
 
-// StreamForwarder 执行 F-GW-002 A-D 阶段的流式转发流水线。
-//
-// 变更说明（A1 原子变更）：
-//   - 加 Scanners 字段（StreamScannerRegistry），替代之前硬编码的
-//     ScanSSEEvents 调用。Forward 按 ForwardRequest.ProtocolFamily 查询
-//     scanner，把线格式切帧职责从 forwarder 解耦出去。
-//   - SSE 行为通过 SSEStreamScanner 保持等价（行为不变重构）。
-//   - Bedrock binary EventStream 在 A2+A3 原子变更接入对应 scanner，
-//     无需再动 forwarder 主流程。
-//
-// 历史变更说明（接线重构）：
-//   - 新增 ProtocolAdapters 字段，替代原先硬编码的 anthropic.Adapter。
-//   - 删除原 UpstreamAdapter 字段（由 ProtocolAdapters + ForwardRequest.ProtocolFamily 动态解析）。
-//   - Forward 入口校验 ProtocolFamily 非空、ProtocolAdapters 非 nil。
+// StreamForwarder 执行流式扫描、协议转换、交付判定、审计与用量汇总。
 type StreamForwarder struct {
 	// ProtocolAdapters 是协议适配器注册表，Forward 按 ForwardRequest.ProtocolFamily 查询。
 	// 必须非 nil；若为 nil，Forward 将立即返回错误。
@@ -83,6 +71,8 @@ type StreamForwarder struct {
 	HopChainBuilder StreamingHopChainBuilder
 	LedgerCallback  func(auditledger.AuditLedgerResult)
 	LedgerWarning   func(code, reason string)
+	// AfterFirstBusinessFrame 在首个业务帧完整写出并刷新后调用一次。
+	AfterFirstBusinessFrame func(time.Time)
 }
 
 // ErrNilStreamScannerRegistry 表示 StreamForwarder.Scanners 未注入。
@@ -97,10 +87,7 @@ const (
 // Forward 执行 F-GW-002 Phase A 扫描、Phase B 处理、Phase C 分类、
 // Phase C-bis drain，并返回 Phase D draft。
 //
-// 校验顺序：
-//  1. ProtocolAdapters 为 nil → ErrNilProtocolAdapterRegistry
-//  2. ProtocolFamily 为空    → ErrEmptyProtocolFamily（封装 ErrUnknownProtocolFamily）
-//  3. ProtocolAdapters.For 失败 → 透传 registry 返回的 error
+// 入口按 adapter、scanner、协议族顺序校验，配置缺失时显式失败。
 func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader, clientWriter http.ResponseWriter, req ForwardRequest) (UsageRecordDraft, error) {
 	// --- 入口校验：ProtocolAdapters 注册表必须已注入 ---
 	if f.ProtocolAdapters == nil {
@@ -137,6 +124,11 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	})
 	clientWriter = ledgerWriter
 	var businessFrameDelivered bool
+	afterBusinessFrame := sync.OnceFunc(func() {
+		if f.AfterFirstBusinessFrame != nil {
+			f.AfterFirstBusinessFrame(time.Now().UTC())
+		}
+	})
 	finish := func(d UsageRecordDraft, acc UsageAccumulator, err error) (UsageRecordDraft, error) {
 		d.BusinessFrameDelivered = businessFrameDelivered
 		ledgerWriter.ensureLedger(time.Now())
@@ -247,7 +239,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				stopTimer(keepaliveTimer)
 				keepaliveTimer = newTimer(f.Timeouts.KeepAliveInterval) // 真事件来 → 重置心跳,只在空闲间隙发
 				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
-				seen, wrote, businessWritten, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
+				seen, wrote, businessWritten, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req, afterBusinessFrame)
 				terminalSeen = terminalSeen || seen
 				businessFrameDelivered = businessFrameDelivered || businessWritten
 				// 上游主动 error 帧已由 handleEventWithAdapter 写出协议终止帧,记账防双写。
@@ -319,7 +311,13 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	clientState any,
 	acc *UsageAccumulator,
 	req ForwardRequest,
+	afterBusinessFrame ...func(),
 ) (bool, bool, bool, int64, error) {
+	afterWrite := func(written bool) {
+		if written && len(afterBusinessFrame) > 0 && afterBusinessFrame[0] != nil {
+			afterBusinessFrame[0]()
+		}
+	}
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
 	if evt.Type == "error" {
@@ -348,6 +346,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		if err != nil {
 			return terminalSeen, businessWritten, businessWritten, 0, ErrClientDisconnect
 		}
+		afterWrite(businessWritten)
 		return terminalSeen, true, businessWritten, 1, nil
 	}
 
@@ -413,6 +412,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 			if err != nil {
 				return terminalSeen, wrote, businessWritten, delivered, ErrClientDisconnect
 			}
+			afterWrite(chunkWritten)
 			wroteEvent = true
 		}
 		if wroteEvent && eventDelivered > 0 {
@@ -428,6 +428,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		if err != nil {
 			return terminalSeen, wrote, businessWritten, delivered, ErrClientDisconnect
 		}
+		afterWrite(frameWritten)
 	}
 	return terminalSeen, wrote, businessWritten, delivered, nil
 }

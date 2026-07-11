@@ -569,6 +569,9 @@ func TestPR4_AbortReReserveCrossPoolFinalSettleOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Reserve: %v", err)
 	}
+	if first.AttemptSeq != 1 {
+		t.Fatalf("first Reserve attempt_seq=%d want 1", first.AttemptSeq)
+	}
 	firstAcq, err := slotManager.Acquire(ctx, &pool.AccountSnapshot{
 		ID:       graph.firstAccountID,
 		TenantID: graph.tenantID,
@@ -602,6 +605,9 @@ func TestPR4_AbortReReserveCrossPoolFinalSettleOnce(t *testing.T) {
 	}
 	if second.ClaimID != first.ClaimID {
 		t.Fatalf("re-reserve claim id=%d want same %d", second.ClaimID, first.ClaimID)
+	}
+	if second.AttemptSeq != 2 {
+		t.Fatalf("re-reserve result attempt_seq=%d want 2", second.AttemptSeq)
 	}
 	assertClaimReReservedClean(t, ctx, pg, first.ClaimID, graph.secondPoolID, 2)
 
@@ -660,6 +666,9 @@ func TestPR4_ReReserveClearsStaleAcquisitionBeforePreAcquireAbort(t *testing.T) 
 	if err != nil {
 		t.Fatalf("first Reserve: %v", err)
 	}
+	if first.AttemptSeq != 1 {
+		t.Fatalf("first Reserve attempt_seq=%d want 1", first.AttemptSeq)
+	}
 	firstAcq, err := slotManager.Acquire(ctx, &pool.AccountSnapshot{
 		ID:       graph.firstAccountID,
 		TenantID: graph.tenantID,
@@ -688,6 +697,9 @@ func TestPR4_ReReserveClearsStaleAcquisitionBeforePreAcquireAbort(t *testing.T) 
 	second, err := gate.Reserve(ctx, req)
 	if err != nil {
 		t.Fatalf("second Reserve re-reserve: %v", err)
+	}
+	if second.AttemptSeq != 2 {
+		t.Fatalf("re-reserve result attempt_seq=%d want 2", second.AttemptSeq)
 	}
 	assertClaimReReservedClean(t, ctx, pg, second.ClaimID, graph.secondPoolID, 2)
 	if err := settler.Abort(ctx, graph.tenantID, second.ClaimID, "pre_acquire_retry_exhausted", "req-pr4-clear-attempt-2", 0, nil); err != nil {

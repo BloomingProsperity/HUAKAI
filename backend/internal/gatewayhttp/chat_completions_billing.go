@@ -2,8 +2,6 @@ package gatewayhttp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
+	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -137,8 +136,8 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		RequestedModel:            ex.req.Model,
 		UpstreamModel:             ex.upstreamModelID,
 		PayloadHash:               ex.payloadHash,
-		RawBodyHash:               bodyHash(ex.body),
-		RedactedBodyRef:           redactedBodyRef(ex.body),
+		RawBodyHash:               payloadhash.Sum(ex.body),
+		RedactedBodyRef:           payloadhash.RedactedRef(ex.body),
 		AuditLedgerID:             ledgerID(ledgerResult),
 		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
@@ -146,7 +145,8 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		Metadata:                  completionMetadata(ex.routeID, ex.clientRequestID),
 	}
 	if err := validateMoneyPathAuditRefForSource(ex.ctx, ex.d, settleEvent, "direct_settle"); err != nil {
-		rejectErr := rejectMoneyPathDirectSettle(ex.ctx, ex.d, settleEvent, err)
+		rejectErr, abortErr := rejectMoneyPathAuditRef(ex.ctx, ex.d, settleEvent, err, "direct_settle")
+		ex.settlementIntent.MarkAbortResult(ex.ctx, abortErr)
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(rejectErr), rejectErr)
 		return markAttemptOutcomeDelivered(outcome)
 	}
@@ -166,18 +166,20 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	} else if writeErr != nil {
 		logInternalError(ex.ctx, ex.requestID, "client_response_write_uncertain", writeErr)
 	}
-	// net/http 可能先把小响应留在服务端写缓冲；结算前主动刷新，缩短客户端可见响应与
-	// Tx2 之间的窗口。刷新错误发生在完整 Write 之后，交付结果不可判定，按已交付保守结算。
+	// 结算前主动刷新；完整 Write 后的刷新错误按已交付保守结算。
 	if flushErr := http.NewResponseController(w).Flush(); flushErr != nil {
 		logInternalError(ex.ctx, ex.requestID, "client_response_flush_uncertain", flushErr)
 	}
-	// 响应已经交付，幂等重放证据不依赖本次 Tx2 是否立即成功；恢复结算成功后，客户端
-	// 使用同一 Idempotency-Key 仍应拿回原响应，而不是落入 replay_without_cache。
+	afterDelivery, waitForDeliveryIntent := ex.settlementIntent.AfterDeliveryAsync(ex.ctx)
+	afterDelivery(time.Now().UTC())
+	// 响应已交付后立即保存幂等重放证据，不依赖本次 Tx2 是否立即成功。
 	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
 	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
 	defer settleCancel()
-	if _, err := settleCompletionWithRecovery(settleCtx, ex.d, settleEvent, settlementrecovery.SourceDirectSettle); err != nil {
-		logInternalError(settleCtx, ex.requestID, settleErrorCode(err), err)
+	_, recoveryEnqueued, settleErr := settleCompletionWithRecovery(settleCtx, ex.d, settleEvent, settlementrecovery.SourceDirectSettle)
+	ex.settlementIntent.WaitAndMarkSettlementResult(settleCtx, settleReq.ActualCost, settleErr, recoveryEnqueued, waitForDeliveryIntent)
+	if settleErr != nil {
+		logInternalError(settleCtx, ex.requestID, settleErrorCode(settleErr), settleErr)
 	} else {
 		if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
 			if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
@@ -293,28 +295,7 @@ func mergeProtocolLossWithEntries(base json.RawMessage, entries []proto.Protocol
 	return protocolLossJSONFromEntries(merged)
 }
 
-// normalizedPayloadHash 对客户端原始请求体做 SHA256 摘要, 作为 idempotency
-// fingerprint。
-//
-// 旧实现只 hash (model, messages), 客户端可以用同 Idempotency-Key 但带不同
-// input / system / tools / temperature / max_tokens 等字段重放, hash 不变
-// 就被当成 replay 命中 cached claim, 出现 "同 key 不同 payload 静默复用同条
-// claim → 跟实际上游响应/成本错配" 风险。
-//
-// 新实现 hash 原始 body 字节: 任何字段变更 (含 OpenAI /v1/responses 的 input,
-// Anthropic 的 system, function calling 的 tools, 采样参数 temperature /
-// top_p / max_tokens 等) 都触发新 hash, ClaimGate fingerprint conflict 检测
-// 生效, 重放被拒绝。
-//
-// Note: 字节级 hash, 不做 JSON canonicalization。客户端 whitespace / key
-// order 不同视为不同请求 — idempotency replay detection 角度合理, 因为
-// 上游 upstream 实际看到的请求 body 字节才是判定 dup 的本质。
-func normalizedPayloadHash(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
-}
-
-func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, error) {
+func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, bool, error) {
 	var res *billing.SettleResult
 	var err error
 	if source != "" {
@@ -328,14 +309,14 @@ func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event 
 		res, err = settleCompletion(ctx, d, event)
 	}
 	if err == nil {
-		return res, nil
+		return res, false, nil
 	}
 	if source == "" || d.SettleRecoveryDLQ == nil {
-		return res, err
+		return res, false, err
 	}
 	payload := settlementrecovery.FromCompletionEvent(source, event)
-	_ = settlementrecovery.EnqueueFailure(ctx, d.SettleRecoveryDLQ, payload, err, "gatewayhttp.settle_recovery")
-	return res, err
+	enqueueErr := settlementrecovery.EnqueueFailure(ctx, d.SettleRecoveryDLQ, payload, err, "gatewayhttp.settle_recovery")
+	return res, enqueueErr == nil, err
 }
 
 func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent) (*billing.SettleResult, error) {
@@ -478,18 +459,6 @@ func settleErrorCode(err error) string {
 		return clienterr.CodeAuditRefMissing
 	}
 	return clienterr.CodeSettleError
-}
-
-func bodyHash(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
-}
-
-func redactedBodyRef(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	return "sha256:" + bodyHash(body)
 }
 
 func ledgerID(result auditledger.AuditLedgerResult) string {

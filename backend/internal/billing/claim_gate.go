@@ -123,7 +123,7 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 			if err := tx.Commit(ctx); err != nil {
 				return nil, fmt.Errorf("billing: commit idempotent-hit Tx1: %w", err)
 			}
-			return &ReserveResult{ClaimID: existing.ID, IdempotencyHit: true}, nil
+			return &ReserveResult{ClaimID: existing.ID, AttemptSeq: existing.AttemptSeq, IdempotencyHit: true}, nil
 		case "reserving":
 			return nil, ErrClaimRace
 		case "aborted":
@@ -157,7 +157,7 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 			if err := tx.Commit(ctx); err != nil {
 				return nil, fmt.Errorf("billing: commit re-reserve Tx1: %w", err)
 			}
-			return &ReserveResult{ClaimID: row.ID}, nil
+			return &ReserveResult{ClaimID: row.ID, AttemptSeq: row.AttemptSeq}, nil
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("billing: claim idempotency lookup: %w", err)
@@ -222,7 +222,7 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("billing: commit Tx1: %w", err)
 	}
-	return &ReserveResult{ClaimID: inserted.ID}, nil
+	return &ReserveResult{ClaimID: inserted.ID, AttemptSeq: inserted.AttemptSeq}, nil
 }
 
 // ComputeIdempotencyFingerprint 按规格 §Tx1 步骤 1 对 9 个已持久化字段做 hash。
@@ -233,7 +233,7 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 // 状态推导,而非来自客户端请求。若某 admin 在请求进行途中改写了 model→pool
 // 绑定,使用相同 Idempotency-Key 的合法重试否则会 hash 出一个新指纹,
 // 并表现为 idempotency_conflict。排除它使幂等仅依赖客户端可控的输入
-//(tenant + key + logical id + payload + model alias + endpoint +
+// (tenant + key + logical id + payload + model alias + endpoint +
 // billing policy + request class)。
 func ComputeIdempotencyFingerprint(r ReserveRequest) string {
 	h := sha256.New()

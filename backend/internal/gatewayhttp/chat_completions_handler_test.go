@@ -51,7 +51,7 @@ func (s stubRouter) Plan(_ context.Context, _ router.PlanInput) (router.RoutePla
 type stubClaimGate struct{}
 
 func (stubClaimGate) Reserve(_ context.Context, _ billing.ReserveRequest) (*billing.ReserveResult, error) {
-	return &billing.ReserveResult{ClaimID: 999}, nil
+	return &billing.ReserveResult{ClaimID: 999, AttemptSeq: 1}, nil
 }
 
 type insufficientBalanceClaimGate struct{}

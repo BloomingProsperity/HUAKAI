@@ -196,7 +196,9 @@ func detachedAbort(reqCtx context.Context, settler billing.Settler, tenantID, cl
 
 // abortReservation 释放本次预扣的 hold 与并发槽(脱离请求 ctx,见 detachedAbort)。
 func (ex *chatExecution) abortReservation(claimID int64, reason string, observedTokens int64, protocolLoss json.RawMessage) error {
-	return detachedAbort(ex.ctx, ex.d.Settler, ex.ident.TenantID, claimID, reason, ex.requestID, observedTokens, protocolLoss)
+	err := detachedAbort(ex.ctx, ex.d.Settler, ex.ident.TenantID, claimID, reason, ex.requestID, observedTokens, protocolLoss)
+	ex.settlementIntent.MarkAbortResult(ex.ctx, err)
+	return err
 }
 
 func endClassFromAttemptFailure(classification gateway.Classification, decision gateway.AttemptRetryDecision) gateway.StreamEndClass {

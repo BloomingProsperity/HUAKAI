@@ -186,6 +186,33 @@ func TestLoadQuotaEnforceFlag(t *testing.T) {
 	}
 }
 
+// TestLoadSettlementIntentFlag 守住新旁路默认关闭、显式启用和非法值 fail-loud。
+func TestLoadSettlementIntentFlag(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_SETTLEMENT_INTENT_ENABLED", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load default: %v", err)
+	}
+	if cfg.SettlementIntentEnabled {
+		t.Fatal("SettlementIntentEnabled 默认必须关闭")
+	}
+
+	t.Setenv("HUAKAI_SETTLEMENT_INTENT_ENABLED", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load enabled: %v", err)
+	}
+	if !cfg.SettlementIntentEnabled {
+		t.Fatal("SettlementIntentEnabled 未读取显式 true")
+	}
+
+	t.Setenv("HUAKAI_SETTLEMENT_INTENT_ENABLED", "not-a-bool")
+	if _, err := Load(); err == nil {
+		t.Fatal("非法 HUAKAI_SETTLEMENT_INTENT_ENABLED 必须拒绝启动")
+	}
+}
+
 func TestLoadBudgetDefaultsOffWithMemoryFallback(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 

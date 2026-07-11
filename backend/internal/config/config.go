@@ -55,6 +55,9 @@ type Config struct {
 	// QuotaEnforce 把配额预留/结清路径接入 chat 准入。
 	// 默认 false, 不改动热路径。
 	QuotaEnforce bool
+	// SettlementIntentEnabled 在 relay 首字节前持久化结算意图。默认关闭；
+	// 意图写失败始终降级为 warning，不改变原有钱路结果。
+	SettlementIntentEnabled bool
 	// Budget 接入每分钟 RPM/TPM 预算跟踪。默认关闭, 不改动热路径;
 	// 启用时失败模式默认为 memory_fallback。
 	Budget BudgetConfig
@@ -195,6 +198,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	settlementIntentEnabled, err := envBool("HUAKAI_SETTLEMENT_INTENT_ENABLED")
+	if err != nil {
+		return nil, err
+	}
 	cacheAnthropicAutoBreakpoints, err := envBool("HUAKAI_CACHE_ANTHROPIC_AUTO_BREAKPOINTS")
 	if err != nil {
 		return nil, err
@@ -247,6 +254,7 @@ func Load() (*Config, error) {
 		TransportSidecarFallback:       transportSidecarFallback,
 		TransportSidecarForceH1:        envOptionalForceH1("HUAKAI_TRANSPORT_FORCE_H1"),
 		QuotaEnforce:                   quotaEnforce,
+		SettlementIntentEnabled:        settlementIntentEnabled,
 		Budget:                         budgetCfg,
 		VendorOAuth:                    loadVendorOAuthConfigs(),
 		CredentialAcqBootstrapShortTTL: credentialAcqBootstrapShortTTL,

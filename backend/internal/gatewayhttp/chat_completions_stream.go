@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/mimicryidentity"
+	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/trust"
@@ -119,6 +120,7 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 		PlanSnapshot:      ex.plan.SnapshotVersion,
 		PayloadHash:       ex.payloadHash,
 		AttemptSeq:        ex.activeAttemptSeq(),
+		SettlementIntent:  ex.settlementIntent,
 	}
 }
 
@@ -284,6 +286,8 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	if ex.activeForceFormat() {
 		streamForwarder.ForceOpenAIChatFormat = true
 	}
+	afterDelivery, waitForDeliveryIntent := ex.settlementIntent.AfterDeliveryAsync(ex.ctx)
+	streamForwarder.AfterFirstBusinessFrame = afterDelivery
 	var ledgerResult auditledger.AuditLedgerResult
 	streamForwarder.LedgerCallback = func(result auditledger.AuditLedgerResult) {
 		ledgerResult = result
@@ -319,16 +323,16 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		streamAttempt = streamAttempt.Normalized()
 	}
 	writeStreamBillingHeaders(w.Header(), streamAttempt)
-	// Abort 与结算的分流只认客户端整帧交付证据。Attempt 状态与上游 usage
-	// 仍决定已交付请求的金额口径，但不能把“上游生成”反推成“客户端收到”。
-	settle := businessDelivered
+	// Abort 与结算只认客户端整帧交付证据，上游 usage 不能反推客户端已收到。
 	var streamAbortErr error
-	if settle && (!ledgerFailClosed || businessDelivered) {
+	if businessDelivered {
 		event := ex.streamingCompletionEvent(draft, streamAttempt, ledgerResult)
 		// 交付后结算失败进入持久恢复，后续重放 Settle。
-		if _, err := settleCompletionWithRecovery(settleCtx, ex.d, event, settlementrecovery.SourceStream); err != nil {
+		_, recoveryEnqueued, settleErr := settleCompletionWithRecovery(settleCtx, ex.d, event, settlementrecovery.SourceStream)
+		ex.settlementIntent.WaitAndMarkSettlementResult(settleCtx, event.SettleRequest.ActualCost, settleErr, recoveryEnqueued, waitForDeliveryIntent)
+		if settleErr != nil {
 			w.Header().Set(headerHUAKAIStreamState, "deferred")
-			logInternalError(settleCtx, ex.requestID, "settlement_deferred", err)
+			logInternalError(settleCtx, ex.requestID, "settlement_deferred", settleErr)
 		}
 		// 重放证据不依赖本轮结算是否转入恢复。
 		if replayCapture != nil && !replayCapture.overLimit() {
@@ -342,7 +346,8 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 			reason = "stream_no_billable_delivery"
 		}
 		observedInputTokens := ex.abortObservedInputTokens(draft)
-		streamAbortErr = ex.d.Settler.Abort(settleCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, ex.protocolLoss)
+		streamAbortErr = ex.abortReservation(ex.reserveRes.ClaimID, reason, observedInputTokens, ex.protocolLoss)
+		waitForDeliveryIntent()
 		if streamAbortErr != nil {
 			logInternalError(settleCtx, ex.requestID, clienterr.CodeAbortFailed, streamAbortErr)
 		}
@@ -565,8 +570,8 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 		RequestedModel:            ex.req.Model,
 		UpstreamModel:             ex.upstreamModelID,
 		PayloadHash:               ex.payloadHash,
-		RawBodyHash:               bodyHash(ex.body),
-		RedactedBodyRef:           redactedBodyRef(ex.body),
+		RawBodyHash:               payloadhash.Sum(ex.body),
+		RedactedBodyRef:           payloadhash.RedactedRef(ex.body),
 		AuditLedgerID:             ledgerID(ledgerResult),
 		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),

@@ -7,6 +7,7 @@ package billing
 import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/shopspring/decimal"
 )
 
 // Case C 计费策略的租户级设置表, 保存每个租户可配置的计费行为。
@@ -54,4 +55,25 @@ type PoolSlotAcquisition struct {
 	ReleasedAt        pgtype.Timestamptz `db:"released_at" json:"released_at"`
 	ReleaseReason     *string            `db:"release_reason" json:"release_reason"`
 	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+type SettlementIntent struct {
+	ID                 int64              `db:"id" json:"id"`
+	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
+	RequestID          string             `db:"request_id" json:"request_id"`
+	LogicalRequestID   *string            `db:"logical_request_id" json:"logical_request_id"`
+	AttemptSeq         int32              `db:"attempt_seq" json:"attempt_seq"`
+	ClaimID            int64              `db:"claim_id" json:"claim_id"`
+	APIKeyID           *int64             `db:"api_key_id" json:"api_key_id"`
+	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
+	Status             string             `db:"status" json:"status"`
+	PredictedCost      decimal.Decimal    `db:"predicted_cost" json:"predicted_cost"`
+	ActualCost         decimal.Decimal    `db:"actual_cost" json:"actual_cost"`
+	HoldID             *int64             `db:"hold_id" json:"hold_id"`
+	FirstByteAt        pgtype.Timestamptz `db:"first_byte_at" json:"first_byte_at"`
+	RetryCount         int32              `db:"retry_count" json:"retry_count"`
+	Version            int32              `db:"version" json:"version"`
+	CreatedAt          pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	SettledAt          pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
 }

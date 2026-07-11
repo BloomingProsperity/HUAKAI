@@ -55,7 +55,7 @@ func TestPgConnect(t *testing.T) {
 }
 
 // TestPgSchemaApplied 确认 migration 已落地，且关键钱路径表
-//（claim ledger + usage records + outbox）存在。
+// （claim ledger + usage records + outbox）存在。
 // 失败时请运行 `make db-migrate`。
 func TestPgSchemaApplied(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -74,6 +74,7 @@ func TestPgSchemaApplied(t *testing.T) {
 		"pool_slot_acquisitions",
 		"oauth_refresh_audit_events",
 		"sticky_bindings",
+		"settlement_intents",
 	}
 	for _, table := range expected {
 		var present bool

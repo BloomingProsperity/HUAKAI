@@ -95,6 +95,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
 	"github.com/BloomingProsperity/HUAKAI/internal/settingscipher"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
@@ -134,6 +135,7 @@ type deps struct {
 	retryBudget           *retrybudget.Budget
 	claimGate             billing.ClaimGate
 	settler               billing.Settler
+	settlementIntents     settlementintent.Store
 	quotaReserver         quotaenforce.Reserver
 	replayStore           billing.ReplayStore
 	forwarder             *gateway.StreamForwarder
@@ -808,6 +810,10 @@ func buildAuthCooldownStore() *authcooldown.Store {
 	return authcooldown.NewStore(authcooldown.Config{})
 }
 
+func buildSettlementIntentStore(queries *dbbilling.Queries, enabled bool) settlementintent.Store {
+	return settlementintent.NewConfiguredPostgresStore(queries, enabled)
+}
+
 func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger) (*gatewayRuntime, error) {
 	pgPool, err := db.Open(ctx, dbPoolConfig(cfg))
 	if err != nil {
@@ -1339,6 +1345,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		retryBudget:           tenantRetryBudget,
 		claimGate:             newClaimGateWithLease(pgPool),
 		settler:               settler,
+		settlementIntents:     buildSettlementIntentStore(billingQueries, cfg.SettlementIntentEnabled),
 		quotaReserver:         quotaReserver,
 		replayStore:           replayStore,
 		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService),
