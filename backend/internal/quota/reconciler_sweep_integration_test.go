@@ -3,6 +3,7 @@
 package quota
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -38,6 +39,28 @@ func (f *quotaFixture) setClaimTerminal(claimID int64, status string, actualCost
 	if err != nil {
 		f.t.Fatalf("set claim %d terminal %s: %v", claimID, status, err)
 	}
+}
+
+func (f *quotaFixture) seedPendingPostDeliverySettlement(claimID int64) {
+	f.t.Helper()
+	var id int64
+	if err := f.pool.QueryRow(f.ctx,
+		`INSERT INTO usage_record_dlq (
+			tenant_id, claim_id, payload, failure_reason, event_kind, lane, status,
+			next_retry_at, lease_ttl, replica_status, replica_target, idempotency_key,
+			source_table, source_id
+		 ) VALUES (
+			$1, $2, '{}', 'settlement_failed', 'post_delivery_settlement', 'HIGH', 'pending',
+			NOW(), interval '30 seconds', 'none', 'primary', $3,
+			'billing_ledger_claims', $2
+		 ) RETURNING id`,
+		f.tenantID, claimID, fmt.Sprintf("quota-protect:%d:%d", f.tenantID, claimID),
+	).Scan(&id); err != nil {
+		f.t.Fatalf("seed pending post-delivery settlement: %v", err)
+	}
+	f.t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `DELETE FROM usage_record_dlq WHERE id=$1`, id)
+	})
 }
 
 // TestReconcilerSweep_CommittedClaimSettlesWithClaimActualCost 守住清扫器对 committed claim
@@ -154,6 +177,43 @@ func TestReconcilerSweep_SkipsLiveLeaseAndReservingClaim(t *testing.T) {
 		if status != ReservationReserved {
 			t.Fatalf("%s reservation status=%s; want untouched reserved", label, status)
 		}
+	}
+}
+
+func TestReconcilerSweep_SkipsUnresolvedPostDeliverySettlement(t *testing.T) {
+	// 变异检查:移除 quota reservation 或 concurrency slot 的恢复行排除条件会释放已交付资源。
+	ctx, f, store, reconciler := newQuotaReconcilerRuntime(t)
+	now := time.Date(2026, 7, 5, 9, 32, 0, 0, time.UTC)
+	f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricCostUSD, WindowFixed, 3600, "100", ModeEnforce)
+	f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricConcurrency, WindowNone, 0, "1", ModeEnforce)
+	reserve := f.reserveForSettlement(ctx, NewService(store), now, "sweep-delivered-unsettled", "4", true)
+	f.expireReservationLease(reserve.Reservation.ID, now.Add(-time.Minute))
+	f.setClaimTerminal(reserve.Reservation.ClaimID, "aborted", "")
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE quota_concurrency_slots
+		 SET lease_expires_at=$3
+		 WHERE tenant_id=$1 AND reservation_id=$2`,
+		f.tenantID, reserve.Reservation.ID, now.Add(-time.Minute),
+	); err != nil {
+		t.Fatalf("expire concurrency slot: %v", err)
+	}
+	f.seedPendingPostDeliverySettlement(reserve.Reservation.ClaimID)
+
+	if err := store.ExpireConcurrencySlots(ctx, f.tenantID, now); err != nil {
+		t.Fatalf("ExpireConcurrencySlots: %v", err)
+	}
+	if got := f.activeSlotCount(ScopeUser, fmt.Sprint(f.userID)); got != 1 {
+		t.Fatalf("active slots=%d want 1 while settlement unresolved", got)
+	}
+	processed, err := reconciler.SweepStaleReservations(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("SweepStaleReservations: %v", err)
+	}
+	if processed != 0 {
+		t.Fatalf("processed=%d want 0 while settlement unresolved", processed)
+	}
+	if status := f.reservationStatus(reserve.Reservation.ID); status != ReservationReserved {
+		t.Fatalf("reservation status=%s want reserved", status)
 	}
 }
 

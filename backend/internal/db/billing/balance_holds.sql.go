@@ -199,11 +199,19 @@ func (q *Queries) ReserveBalanceHold(ctx context.Context, arg ReserveBalanceHold
 }
 
 const selectExpiredReservingClaims = `-- name: SelectExpiredReservingClaims :many
-SELECT id, tenant_id
-FROM billing_ledger_claims
-WHERE status = 'reserving'
-  AND lease_expires_at < NOW()
-ORDER BY lease_expires_at
+SELECT blc.id, blc.tenant_id
+FROM billing_ledger_claims blc
+WHERE blc.status = 'reserving'
+  AND blc.lease_expires_at < NOW()
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_dlq d
+      WHERE d.tenant_id = blc.tenant_id
+        AND d.claim_id = blc.id
+        AND d.event_kind = 'post_delivery_settlement'
+        AND d.status <> 'delivered'
+  )
+ORDER BY blc.lease_expires_at
 LIMIT $1
 FOR UPDATE SKIP LOCKED
 `

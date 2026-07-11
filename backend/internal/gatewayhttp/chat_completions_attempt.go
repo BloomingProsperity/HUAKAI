@@ -106,7 +106,7 @@ type attemptSuccess struct {
 	StatusCode int
 	Header     http.Header
 	Body       []byte
-	Streamed   bool
+	Written    bool
 }
 
 type classifiedAttemptFailure struct {
@@ -461,7 +461,7 @@ func (ex *chatExecution) runAttempt(w http.ResponseWriter, in attemptInput) atte
 }
 
 func writeAttemptSuccess(w http.ResponseWriter, out attemptOutcome) {
-	if out.Success == nil || out.Success.Streamed {
+	if out.Success == nil || out.Success.Written {
 		return
 	}
 	if out.Success.Header != nil {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -140,6 +141,8 @@ func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
 	setExpvarMapInt(t, "billing_settings", "resolver_db_read_fail_total", 11)
 	setExpvarInt(t, "group_policy_fail_open_total", 4)
 	setExpvarInt(t, "budget_fail_open_total", 6)
+	setExpvarMapInt(t, "dlq_depth", "delivered_unsettled_count", 3)
+	setExpvarMapInt(t, "dlq_depth", "delivered_unsettled_age_seconds", 901)
 
 	source := NewExpvarMetricSource()
 	snapshot, err := source.Snapshot(context.Background(), 7)
@@ -157,6 +160,49 @@ func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
 	if got := snapshot["huakai_budget_failopen_total"]; got != 6 {
 		t.Fatalf("huakai_budget_failopen_total=%v want 6", got)
 	}
+	// 未决结算数量与年龄必须进入生产使用的同一告警快照；只写 expvar map 会让规则不可见。
+	if got := snapshot["huakai_delivered_unsettled_count"]; got != 3 {
+		t.Fatalf("huakai_delivered_unsettled_count=%v want 3", got)
+	}
+	if got := snapshot["huakai_delivered_unsettled_age_seconds"]; got != 901 {
+		t.Fatalf("huakai_delivered_unsettled_age_seconds=%v want 901", got)
+	}
+}
+
+// TestDeliveredUnsettledMetricsExportAsGauges 守住两个可下降快照的 Prometheus
+// 语义。变异：把它们恢复为 ObservableCounter 后，# TYPE 会变回 counter，本测试变红。
+func TestDeliveredUnsettledMetricsExportAsGauges(t *testing.T) {
+	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "true")
+	mp, handler, shutdown, err := Setup(context.Background())
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	defer func() {
+		if err := shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	}()
+	if err := RegisterBridge(context.Background(), mp); err != nil {
+		t.Fatalf("RegisterBridge: %v", err)
+	}
+
+	setExpvarMapInt(t, "dlq_depth", "delivered_unsettled_count", 3)
+	setExpvarMapInt(t, "dlq_depth", "delivered_unsettled_age_seconds", 901)
+	first := scrapeMetrics(t, handler)
+	assertPromMetricType(t, first, "huakai_delivered_unsettled_count", "gauge")
+	assertPromMetricType(t, first, "huakai_delivered_unsettled_age_seconds", "gauge")
+	assertPromMetricValue(t, first, "huakai_delivered_unsettled_count", "3")
+	assertPromMetricValue(t, first, "huakai_delivered_unsettled_age_seconds", "901")
+
+	// 快照可随恢复消费下降；gauge 应直接导出新值，不制造 counter reset。
+	setExpvarMapInt(t, "dlq_depth", "delivered_unsettled_count", 1)
+	setExpvarMapInt(t, "dlq_depth", "delivered_unsettled_age_seconds", 12)
+	second := scrapeMetrics(t, handler)
+	assertPromMetricValue(t, second, "huakai_delivered_unsettled_count", "1")
+	assertPromMetricValue(t, second, "huakai_delivered_unsettled_age_seconds", "12")
+
+	// 控制组：其它既有 counter 不能被本轮误改成 gauge。
+	assertPromMetricType(t, second, "huakai_group_policy_failopen_total", "counter")
 }
 
 // TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot 守护按 (vendor,model) 打标签的
@@ -229,6 +275,14 @@ func assertPromMetricValue(t *testing.T, body, name, value string) {
 	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `(?:\{[^}\n]*\})?\s+` + regexp.QuoteMeta(value) + `(?:\.0+)?$`)
 	if !re.MatchString(body) {
 		t.Fatalf("metrics output missing exact %s=%s; body:\n%s", name, value, body)
+	}
+}
+
+func assertPromMetricType(t *testing.T, body, name, metricType string) {
+	t.Helper()
+	want := "# TYPE " + name + " " + metricType
+	if !strings.Contains(body, want) {
+		t.Fatalf("metrics output missing %q; body:\n%s", want, body)
 	}
 }
 

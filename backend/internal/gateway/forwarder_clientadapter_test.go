@@ -194,7 +194,7 @@ func TestHandleEventWithAdapterAccumulatesLossOnErrorReturn(t *testing.T) {
 	acc := &UsageAccumulator{}
 	rec := httptest.NewRecorder()
 
-	_, _, _, err := f.handleEventWithAdapter(
+	_, _, _, _, err := f.handleEventWithAdapter(
 		context.Background(),
 		adapter,
 		SSEEvent{Type: "unknown_event", Data: []byte(`{"type":"unknown_event"}`)},
@@ -324,7 +324,7 @@ func TestHandleEventWithAdapterKeepsBoundedSummaryForComplexProtocolError(t *tes
 	f := newForwarder()
 	rec := httptest.NewRecorder()
 
-	_, wrote, _, err := f.handleEventWithAdapter(
+	_, wrote, businessWritten, _, err := f.handleEventWithAdapter(
 		context.Background(),
 		nil,
 		SSEEvent{Type: "error", Data: payload},
@@ -339,6 +339,9 @@ func TestHandleEventWithAdapterKeepsBoundedSummaryForComplexProtocolError(t *tes
 	}
 	if !wrote {
 		t.Fatal("canonical error frame was not written")
+	}
+	if businessWritten {
+		t.Fatal("协议错误帧不得标成业务交付")
 	}
 	gotLog := logs.String()
 	for _, want := range []string{"req-complex-protocol-error", "stream_protocol_error", "payload_bytes", "payload_summary_sha256_prefix", "payload_snippet"} {
@@ -426,7 +429,7 @@ func assertProtocolErrorSanitized(t *testing.T, adapter proto.UpstreamAdapter) {
 	payload := sensitiveBedrockPayload(marker)
 	f := newForwarder()
 	rec := httptest.NewRecorder()
-	terminalSeen, wrote, delivered, err := f.handleEventWithAdapter(
+	terminalSeen, wrote, businessWritten, delivered, err := f.handleEventWithAdapter(
 		context.Background(),
 		adapter,
 		SSEEvent{Type: "error", Data: []byte(payload)},
@@ -444,6 +447,9 @@ func assertProtocolErrorSanitized(t *testing.T, adapter proto.UpstreamAdapter) {
 	}
 	if !wrote {
 		t.Fatalf("sanitized error frame was not written")
+	}
+	if businessWritten {
+		t.Fatalf("protocol error frame must not count as business delivery")
 	}
 	if delivered != 0 {
 		t.Fatalf("protocol error frame delivered chunks=%d want 0", delivered)

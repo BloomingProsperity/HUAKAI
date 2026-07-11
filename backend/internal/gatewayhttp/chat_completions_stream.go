@@ -209,7 +209,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		outcome.UsageDraft = failureUsageDraft(failure)
 		return outcome
 	}
-	outcome.Success = &attemptSuccess{StatusCode: http.StatusOK, Streamed: true}
+	outcome.Success = &attemptSuccess{StatusCode: http.StatusOK, Written: true}
 	return outcome
 }
 
@@ -297,7 +297,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		forwardWriter = replayCapture
 	}
 	draft, fwdErr := streamForwarder.Forward(ex.ctx, dispatchRes.UpstreamReader, forwardWriter, ex.forwardReq)
-	streamAttempt := billing.AttemptFromGatewayDraft(true, draft)
+	streamAttempt, businessDelivered := chatpipe.DeliveredStreamAttempt(draft)
 	if fwdErr != nil {
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeForwardFailed, fwdErr)
 		if ex.healthKeyOK {
@@ -313,27 +313,25 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
 	defer cancel()
 	ledgerFailClosed := auditLedgerProductionMode() && !streamingAuditLedgerResultAllowsSettle(ledgerResult)
-	if ledgerFailClosed {
+	if ledgerFailClosed && !businessDelivered {
 		streamAttempt.State = billing.StreamStateFailed
 		streamAttempt.StreamTerminatedReason = "audit_ledger_error"
 		streamAttempt = streamAttempt.Normalized()
 	}
 	writeStreamBillingHeaders(w.Header(), streamAttempt)
-	// settle 条件三选一: 可计费 / 已向客户端交付内容 / 用量歧义需 audit 对账。
-	// 仅"上游真零交付"(非计费 且 零交付 且 非 AmbiguousUsage) 才 abort —— 对齐
-	// 20 计费策略,且避免 abort 已交付内容的流导致重试重复交付。
-	settle := streamAttempt.State.Chargeable() ||
-		streamAttempt.DeliveredTokenCount > 0 ||
-		draft.EndClass == gateway.AmbiguousUsage
+	// Abort 与结算的分流只认客户端整帧交付证据。Attempt 状态与上游 usage
+	// 仍决定已交付请求的金额口径，但不能把“上游生成”反推成“客户端收到”。
+	settle := businessDelivered
 	var streamAbortErr error
-	if settle && !ledgerFailClosed {
+	if settle && (!ledgerFailClosed || businessDelivered) {
 		event := ex.streamingCompletionEvent(draft, streamAttempt, ledgerResult)
-		// post-delivery:forwardSSEAndSettle 已经把内容写给客户端,settle
-		// 失败时通过 settleCompletionWithRecovery 把 RequestCompletionEvent
-		// 转 settlementrecovery DLQ 持久化,worker 后续重 settle 防钱账丢失。
+		// 交付后结算失败进入持久恢复，后续重放 Settle。
 		if _, err := settleCompletionWithRecovery(settleCtx, ex.d, event, settlementrecovery.SourceStream); err != nil {
-			logInternalError(settleCtx, ex.requestID, clienterr.CodeSettleFailed, err)
-		} else if replayCapture != nil && !replayCapture.overLimit() {
+			w.Header().Set(headerHUAKAIStreamState, "deferred")
+			logInternalError(settleCtx, ex.requestID, "settlement_deferred", err)
+		}
+		// 重放证据不依赖本轮结算是否转入恢复。
+		if replayCapture != nil && !replayCapture.overLimit() {
 			ex.recordStreamingIdempotencyReplay(ex.reserveRes.ClaimID, replayCapture.statusCode(), replayCapture.body())
 		}
 	} else {
@@ -349,7 +347,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 			logInternalError(settleCtx, ex.requestID, clienterr.CodeAbortFailed, streamAbortErr)
 		}
 	}
-	deliveryStarted := tracker.started()
+	deliveryStarted := businessDelivered
 	if fwdErr != nil && !deliveryStarted {
 		reason := streamAttempt.StreamTerminatedReason
 		if reason == "" {

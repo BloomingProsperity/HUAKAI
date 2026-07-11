@@ -218,7 +218,7 @@ func TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery(t *testing.T) {
 }
 
 // TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue 守 pre-delivery
-//调用方(source="")不触发 enqueue — 非流式 settle 失败 = 500 给客户端,
+// 调用方(source="")不触发 enqueue — 非流式 settle 失败 = 500 给客户端,
 // 不应进 DLQ 重 settle。
 //
 // 变异:把 source==""  check 删 → 本用例 spy.calls=1 必红。
@@ -299,7 +299,7 @@ func TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated(t *testing.T
 		t.Fatalf("DLQ FailureReason=%q want error class internal_error", spy.lastEvt.FailureReason)
 	}
 	gotLog := logs.String()
-	for _, want := range []string{"req-pd-1", "settle_recovery_dlq_enqueue_failed", "error_class"} {
+	for _, want := range []string{"req-pd-1", "money_lost_double_fault", "critical", "P0", "error_class"} {
 		if !strings.Contains(gotLog, want) {
 			t.Fatalf("sanitized settle recovery log missing %q: %s", want, gotLog)
 		}

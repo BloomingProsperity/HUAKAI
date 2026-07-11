@@ -13,6 +13,11 @@ type LaneCount struct {
 	Count int64
 }
 
+type DeliveredUnsettledStats struct {
+	Count            int64
+	OldestAgeSeconds int64
+}
+
 // CountPendingByLane 返回 status='pending' 的行数，按 lane 分组。
 // 仅统计 pending 行；inflight/delivered/dlq 行被排除在外。
 // MUTATION 守卫：移除 status='pending' 过滤会返回被夸大的计数。
@@ -47,6 +52,24 @@ ORDER BY lane`)
 	return out, nil
 }
 
+// DeliveredUnsettled 返回所有未闭合交付后结算行的数量与最老年龄。
+func (s *Store) DeliveredUnsettled(ctx context.Context) (DeliveredUnsettledStats, error) {
+	if s == nil || s.pool == nil {
+		return DeliveredUnsettledStats{}, ErrStoreNotConfigured
+	}
+	var stats DeliveredUnsettledStats
+	err := s.pool.QueryRow(ctx, `
+SELECT count(*),
+       COALESCE(GREATEST(EXTRACT(EPOCH FROM (now() - MIN(failure_at))), 0)::bigint, 0)
+FROM usage_record_dlq
+WHERE event_kind = 'post_delivery_settlement'
+  AND status <> 'delivered'`).Scan(&stats.Count, &stats.OldestAgeSeconds)
+	if err != nil {
+		return DeliveredUnsettledStats{}, fmt.Errorf("dlq: delivered unsettled stats: %w", err)
+	}
+	return stats, nil
+}
+
 // dlqDepthMetrics 是 OTel 桥接与 alertmetrics 叠加层使用的 expvar.Map
 // "dlq_depth"。键为 "depth_HIGH"、"depth_MED"、"depth_LOW"。
 var (
@@ -60,6 +83,8 @@ func getDLQDepthMetrics() *expvar.Map {
 		m.Add("depth_HIGH", 0)
 		m.Add("depth_MED", 0)
 		m.Add("depth_LOW", 0)
+		m.Add("delivered_unsettled_count", 0)
+		m.Add("delivered_unsettled_age_seconds", 0)
 		dlqDepthMetrics = m
 	})
 	return dlqDepthMetrics
@@ -96,5 +121,11 @@ func (s *Store) UpdateDLQDepthGauge(ctx context.Context) error {
 		key := "depth_" + string(lane)
 		SetDLQDepthGauge(key, count)
 	}
+	stats, err := s.DeliveredUnsettled(ctx)
+	if err != nil {
+		return err
+	}
+	SetDLQDepthGauge("delivered_unsettled_count", stats.Count)
+	SetDLQDepthGauge("delivered_unsettled_age_seconds", stats.OldestAgeSeconds)
 	return nil
 }

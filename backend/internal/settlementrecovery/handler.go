@@ -7,23 +7,25 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 )
 
 // Handler 是 obs/dlq worker 注册的 post_delivery_settlement 重放 handler。
 //
 // 流程:
-//   1. Decode payload(失败 → 不可重试错,worker 转 quarantine)
-//   2. Validate(同上)
-//   3. 调 public billing.Settler.Settle 重放 — 走完整 Tx2 idempotency 路径
-//   4. 若返 nil,标 DLQ delivered
-//   5. 若返 billing.ErrClaimNotReserving(claim 已 committed),走 CommittedProof
-//      三证:齐全 → 标 delivered;缺一 → 继续视失败重试
-//   6. 其他错 → 视失败,worker 按 policy 重试 / quarantine
+//  1. Decode payload(失败 → 结构错误并持续封顶退避，等待运维修复)
+//  2. Validate(同上)
+//  3. 调 public billing.Settler.Settle 重放 — 走完整 Tx2 idempotency 路径
+//  4. 若返 nil,标 DLQ delivered
+//  5. 若返 billing.ErrClaimNotReserving(claim 已 committed),走 CommittedProof
+//     三证:齐全 → 标 delivered;缺一 → 继续视失败重试
+//  6. 其他错 → 视失败,worker 持续封顶退避并在越过阈值后告警
 //
 // 关键不变性:不重写底层 SQL,只通过 public Settler.Settle 入口,保 Tx2 单入口。
 type Handler struct {
-	Settler billing.Settler
-	Proof   CommittedProof
+	Settler        billing.Settler
+	Proof          CommittedProof
+	AuditRefPolicy *eventbus.AuditRefPolicy
 }
 
 // ErrSettlerNil/ErrProofNil 是 handler wire 不完整的兜底,
@@ -50,13 +52,17 @@ func (h *Handler) Handle(ctx context.Context, record dlq.Record) error {
 
 	payload, err := Decode(record.Payload)
 	if err != nil {
-		// Decode 失败 = payload 结构性损坏,重试同一份输入永远不会成功 → 裹 dlq.ErrUnretryable,
-		// 由 worker 重试决策立即转 quarantined(不烧满重试预算),operator 介入。
+		// Decode 失败属于结构性损坏；错误分类触发告警，但交付后钱账仍保持持续重试。
 		return fmt.Errorf("settlementrecovery: decode payload: %w", errors.Join(err, dlq.ErrUnretryable))
 	}
 	if err := payload.Validate(); err != nil {
-		// 校验不过同属结构性毒消息,重试无意义 → 立即 quarantine。
+		// 校验不过同属结构性损坏，保留分类供运维定位。
 		return fmt.Errorf("settlementrecovery: validate payload: %w", errors.Join(err, dlq.ErrUnretryable))
+	}
+	if err := payload.ValidateAuditRef(h.AuditRefPolicy); err != nil {
+		// 审计证据可能由运维修复或 audit-DLQ 后续补齐；保持 pending 重试，
+		// 绝不能先扣费，也不能把该缺口伪装成 delivered。
+		return err
 	}
 
 	req := payload.ToSettleRequest()
@@ -80,6 +86,6 @@ func (h *Handler) Handle(ctx context.Context, record dlq.Record) error {
 		return nil
 	}
 	// 三证未齐 = claim 状态异常(可能 aborted 或半提交),继续报错重试。
-	// worker 多次失败后转 quarantined,operator 决定是手动 force settle 还是 abort。
+	// worker 持续重试并告警，由运维修复异常状态。
 	return fmt.Errorf("settlementrecovery: settler returned ErrClaimNotReserving but proof says not committed for tenant=%d claim=%d", payload.Settle.TenantID, payload.Settle.ClaimID)
 }

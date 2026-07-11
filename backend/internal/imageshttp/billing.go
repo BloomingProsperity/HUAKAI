@@ -19,7 +19,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 var imagesQuotaReserveFailedOpenTotal = expvar.NewInt("images_quota_reserve_failed_open_total")
@@ -164,6 +166,51 @@ func (ex *execution) settleRequest(tokens tokenImageUsage, cost decimal.Decimal,
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
 	}
+}
+
+func (ex *execution) settleDeliveredResponse(ctx context.Context, req billing.SettleRequest) error {
+	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
+		failureClass := privacy.ErrorClassFor(ctx, err)
+		payload := settlementrecovery.FromSettleRequest(settlementrecovery.SourceImagesDelivered, ex.requestID, req)
+		_ = settlementrecovery.EnqueueFailure(ctx, ex.d.SettleRecoveryDLQ, payload, err, "imageshttp.settle_recovery")
+		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+			Severity: privacy.SeverityError, Component: "imageshttp.settle_recovery",
+			RequestID: ex.requestID, ErrorClass: failureClass, Attrs: map[string]any{
+				"event_class":          "image_settlement_deferred",
+				"tenant_id":            req.TenantID,
+				"claim_id":             req.ClaimID,
+				"failure_reason_class": failureClass,
+			},
+		})
+		return err
+	}
+	return nil
+}
+
+func (ex *execution) abortAfterResponseWriteFailure(reason string, observedInputTokens int64, writeErr error) {
+	if ex.reserveRes == nil {
+		return
+	}
+	ctx, cancel := ex.billingCtx()
+	defer cancel()
+	abortErr := ex.d.Settler.Abort(ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil)
+	attrs := map[string]any{
+		"event_class": "image_response_write_failed", "tenant_id": ex.ident.TenantID,
+		"claim_id": ex.reserveRes.ClaimID,
+	}
+	if abortErr != nil {
+		attrs["failure_class"] = privacy.ErrorClassFor(ctx, abortErr)
+	}
+	_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+		Severity: privacy.SeverityError, Component: "imageshttp.response_delivery",
+		RequestID: ex.requestID, ErrorClass: privacy.ErrorClassFor(ctx, writeErr),
+		Attrs: attrs,
+	})
+}
+
+func (ex *execution) observeResponseWriteUncertainty(err error) {
+	slog.WarnContext(ex.ctx, "image response write uncertain after full body",
+		slog.String("request_id", ex.requestID), slog.String("error_type", fmt.Sprintf("%T", err)))
 }
 
 func imageSizeBreakdown(size string, count int32) []byte {

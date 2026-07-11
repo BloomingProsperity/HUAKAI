@@ -78,20 +78,22 @@ type DrainBudgets struct {
 
 // UsageRecordDraft 是 F-GW-002 Phase D 交给 F-OBS-001 Tx2 的载荷。
 type UsageRecordDraft struct {
-	TokensInput           int             `json:"tokens_input"`
-	TokensOutput          int             `json:"tokens_output"`
-	DeliveredTokenCount   int64           `json:"delivered_token_count"`
-	CacheCreationTokens   int             `json:"cache_creation_tokens"`
-	CacheCreation5mTokens int             `json:"cache_creation_5m_tokens"`
-	CacheCreation1hTokens int             `json:"cache_creation_1h_tokens"`
-	CacheReadTokens       int             `json:"cache_read_tokens"`
-	ActualCost            decimal.Decimal `json:"actual_cost"`
-	CostSnapshot          string          `json:"cost_snapshot,omitempty"`
-	CacheCreationCost     decimal.Decimal `json:"cache_creation_cost"`
-	CacheReadCost         decimal.Decimal `json:"cache_read_cost"`
-	ImageCount            int32           `json:"image_count"`
-	ImageSize             *string         `json:"image_size,omitempty"`
-	ImageSizeBreakdown    []byte          `json:"image_size_breakdown,omitempty"`
+	TokensInput         int   `json:"tokens_input"`
+	TokensOutput        int   `json:"tokens_output"`
+	DeliveredTokenCount int64 `json:"delivered_token_count"`
+	// BusinessFrameDelivered 覆盖零 token 业务帧，不含心跳与错误帧。
+	BusinessFrameDelivered bool            `json:"business_frame_delivered,omitempty"`
+	CacheCreationTokens    int             `json:"cache_creation_tokens"`
+	CacheCreation5mTokens  int             `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int             `json:"cache_creation_1h_tokens"`
+	CacheReadTokens        int             `json:"cache_read_tokens"`
+	ActualCost             decimal.Decimal `json:"actual_cost"`
+	CostSnapshot           string          `json:"cost_snapshot,omitempty"`
+	CacheCreationCost      decimal.Decimal `json:"cache_creation_cost"`
+	CacheReadCost          decimal.Decimal `json:"cache_read_cost"`
+	ImageCount             int32           `json:"image_count"`
+	ImageSize              *string         `json:"image_size,omitempty"`
+	ImageSizeBreakdown     []byte          `json:"image_size_breakdown,omitempty"`
 
 	// WebSearchCalls / FileSearchCalls / ImageGenerationCalls 为流式路径
 	// 镜像 proto.CanonicalUsage:由上游响应解析填充(Stage B+),
@@ -145,7 +147,7 @@ type UsageRecordDraft struct {
 //
 // 新增字段（接线 重构）：
 //   - ProtocolFamily：协议族标识符，作为 ProtocolAdapterRegistry.For() 的查询键。
-//    调用方必须明确填写；空值会触发 ErrUnknownProtocolFamily 错误。
+//     调用方必须明确填写；空值会触发 ErrUnknownProtocolFamily 错误。
 //     合法值示例："anthropic_messages" / "openai_chat" / "openai_responses" / "gemini_messages"。
 //
 // 保留字段：TenantID / AccountID / AcquisitionToken / RouteID /

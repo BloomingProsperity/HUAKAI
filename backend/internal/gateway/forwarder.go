@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway/streamdelivery"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
@@ -135,7 +136,9 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		f.emitStreamingLedger(ctx, req, "", start, completedAt)
 	})
 	clientWriter = ledgerWriter
+	var businessFrameDelivered bool
 	finish := func(d UsageRecordDraft, acc UsageAccumulator, err error) (UsageRecordDraft, error) {
+		d.BusinessFrameDelivered = businessFrameDelivered
 		ledgerWriter.ensureLedger(time.Now())
 		return f.finishDraft(d, acc, start, err)
 	}
@@ -191,7 +194,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 			// CF/长跑保活:长 TTFT 或稀疏 token 间隙时向客户端发 SSE 注释行心跳,避开 Cloudflare 等
 			// 反代 ~100s 空闲超时断链。心跳是独立于 First/Inter/Total 的保活,不重置那些"上游静默即放弃"
 			// 检测器(见上 interTimer case)。写失败 = 客户端/反代已断 → 按 ClientDisconnect 收尾。
-			if err := writeAndFlush(clientWriter, sseKeepaliveComment); err != nil {
+			if err := streamdelivery.WriteAndFlush(clientWriter, sseKeepaliveComment); err != nil {
 				draft.EndClass, endErr = ClientDisconnect, err
 			} else {
 				// 心跳一旦写出即向客户端提交了 HTTP 200 响应头+字节:此后无法再改 HTTP 状态码或换上游重试。
@@ -244,8 +247,9 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				stopTimer(keepaliveTimer)
 				keepaliveTimer = newTimer(f.Timeouts.KeepAliveInterval) // 真事件来 → 重置心跳,只在空闲间隙发
 				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
-				seen, wrote, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
+				seen, wrote, businessWritten, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
 				terminalSeen = terminalSeen || seen
+				businessFrameDelivered = businessFrameDelivered || businessWritten
 				// 上游主动 error 帧已由 handleEventWithAdapter 写出协议终止帧,记账防双写。
 				if res.event.Type == "error" && wrote {
 					terminalFrameWritten = true
@@ -281,7 +285,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		if endErr != nil && draft.EndClass != ClientDisconnect &&
 			(keepaliveCommitted || firstEmitted) && !terminalSeen && !terminalFrameWritten {
 			for _, fr := range terminalErrorFrame(req.ClientProtocol) {
-				_ = writeAndFlush(clientWriter, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat))
+				_ = streamdelivery.WriteAndFlush(clientWriter, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat))
 			}
 		}
 		return finish(draft, acc, endErr)
@@ -315,7 +319,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	clientState any,
 	acc *UsageAccumulator,
 	req ForwardRequest,
-) (bool, bool, int64, error) {
+) (bool, bool, bool, int64, error) {
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
 	if evt.Type == "error" {
@@ -331,19 +335,20 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		// 上游主动 error 帧按客户端协议合成(canonicalStreamErrorSSE 是 anthropic-only
 		// event: error,对 openai_chat 客户端只认 data: 行 → 被忽略=静默截断)。
 		for _, fr := range terminalErrorFrame(req.ClientProtocol) {
-			if err := writeAndFlush(w, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat)); err != nil {
-				return terminalSeen, false, 0, ErrClientDisconnect
+			if err := streamdelivery.WriteAndFlush(w, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat)); err != nil {
+				return terminalSeen, false, false, 0, ErrClientDisconnect
 			}
 		}
-		return terminalSeen, true, 0, nil
+		return terminalSeen, true, false, 0, nil
 	}
 
 	// adapter 为 nil 时透传原始 SSE（保留既有 nil-adapter 行为）
 	if adapter == nil {
-		if err := writeAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat)); err != nil {
-			return terminalSeen, false, 0, ErrClientDisconnect
+		businessWritten, err := streamdelivery.WriteBusinessAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat))
+		if err != nil {
+			return terminalSeen, businessWritten, businessWritten, 0, ErrClientDisconnect
 		}
-		return terminalSeen, true, 1, nil
+		return terminalSeen, true, businessWritten, 1, nil
 	}
 
 	canonicalEvents, providerLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
@@ -356,10 +361,11 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, providerLosses...)
 	}
 	if err != nil {
-		return terminalSeen, false, 0, err
+		return terminalSeen, false, false, 0, err
 	}
 	annotateForwardHopChainEvents(canonicalEvents, req)
 	wrote := false
+	businessWritten := false
 	var delivered int64
 	// raw 直通(ClientAdapter==nil):把【原始上游帧】恰好转发一次,与 provider adapter 的
 	// canonical 展开数无关。此前缺陷=主循环按 canonical 数逐次调 clientChunks,而 clientChunks
@@ -391,7 +397,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		}
 		chunks, clientLosses, err := f.clientChunks(ctx, canonical, clientState, evt)
 		if err != nil {
-			return terminalSeen, wrote, delivered, err
+			return terminalSeen, wrote, businessWritten, delivered, err
 		}
 		if len(clientLosses) > 0 {
 			acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, clientLosses...)
@@ -401,10 +407,12 @@ func (f *StreamForwarder) handleEventWithAdapter(
 			if len(chunk) == 0 {
 				continue
 			}
-			if err := writeAndFlush(w, chunk); err != nil {
-				return terminalSeen, wrote, delivered, ErrClientDisconnect
+			chunkWritten, err := streamdelivery.WriteBusinessAndFlush(w, chunk)
+			wrote = wrote || chunkWritten
+			businessWritten = businessWritten || chunkWritten
+			if err != nil {
+				return terminalSeen, wrote, businessWritten, delivered, ErrClientDisconnect
 			}
-			wrote = true
 			wroteEvent = true
 		}
 		if wroteEvent && eventDelivered > 0 {
@@ -414,12 +422,14 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	// raw 直通:原始上游帧只转发一次(仅当该帧确有 canonical 展开时;adapter 产 0 事件的帧
 	// 此前就不透传,保持既有 drop 语义不变,不在本 S0 修复内改动)。
 	if rawPassthrough && len(canonicalEvents) > 0 {
-		if err := writeAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat)); err != nil {
-			return terminalSeen, false, 0, ErrClientDisconnect
+		frameWritten, err := streamdelivery.WriteBusinessAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat))
+		wrote = wrote || frameWritten
+		businessWritten = businessWritten || frameWritten
+		if err != nil {
+			return terminalSeen, wrote, businessWritten, delivered, ErrClientDisconnect
 		}
-		wrote = true
 	}
-	return terminalSeen, wrote, delivered, nil
+	return terminalSeen, wrote, businessWritten, delivered, nil
 }
 
 // finalizeClientStream 在上游 reader 结束后调用 client adapter 收尾 hook。
@@ -436,7 +446,7 @@ func (f *StreamForwarder) finalizeClientStream(ctx context.Context, w http.Respo
 		if len(chunk) == 0 {
 			continue
 		}
-		if err := writeAndFlush(w, chunk); err != nil {
+		if err := streamdelivery.WriteAndFlush(w, chunk); err != nil {
 			return ErrClientDisconnect
 		}
 	}
@@ -852,16 +862,6 @@ data: {"error":{"code":"` + streamProtocolErrorCode + `","message":"` + streamPr
 // sseKeepaliveComment 是发给客户端的 SSE 注释行心跳。行首 ':' 的行是 SSE 注释,合规客户端会
 // 忽略其内容,但这次写入会让反代/客户端看到连接仍活跃,从而避开 ~100s 空闲超时断链。
 var sseKeepaliveComment = []byte(": hk\n\n")
-
-func writeAndFlush(w http.ResponseWriter, b []byte) error {
-	if _, err := w.Write(b); err != nil {
-		return err
-	}
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	return nil
-}
 
 type streamingLedgerHeaderWriter struct {
 	http.ResponseWriter

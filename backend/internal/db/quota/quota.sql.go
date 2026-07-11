@@ -259,14 +259,22 @@ func (q *Queries) EnqueueQuotaReconciliationJob(ctx context.Context, arg Enqueue
 }
 
 const expireQuotaConcurrencySlots = `-- name: ExpireQuotaConcurrencySlots :execrows
-UPDATE quota_concurrency_slots
+UPDATE quota_concurrency_slots qcs
 SET status = 'expired',
     released_at = NOW(),
     release_reason = 'lease_expired',
     updated_at = NOW()
-WHERE tenant_id = $1::bigint
-  AND status = 'acquired'
-  AND lease_expires_at <= $2::timestamptz
+WHERE qcs.tenant_id = $1::bigint
+  AND qcs.status = 'acquired'
+  AND qcs.lease_expires_at <= $2::timestamptz
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_dlq d
+      WHERE d.tenant_id = qcs.tenant_id
+        AND d.claim_id = qcs.claim_id
+        AND d.event_kind = 'post_delivery_settlement'
+        AND d.status <> 'delivered'
+  )
 `
 
 type ExpireQuotaConcurrencySlotsParams struct {

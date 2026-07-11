@@ -31,6 +31,7 @@ import (
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -50,6 +51,25 @@ func TestDeliveryTrackerMarksStartedOnWriteAndWriteHeader(t *testing.T) {
 	if tracker.started() {
 		t.Fatal("new tracker must start as not delivered")
 	}
+	if _, err := tracker.Write([]byte("\n")); err != nil {
+		t.Fatalf("Write keepalive: %v", err)
+	}
+	if tracker.BusinessStarted() {
+		t.Fatal("裸换行 keepalive 不得标成业务交付")
+	}
+	if _, err := tracker.Write([]byte(": hk\n\n")); err != nil {
+		t.Fatalf("Write SSE keepalive: %v", err)
+	}
+	if tracker.BusinessStarted() {
+		t.Fatal("SSE 注释 keepalive 不得标成业务交付")
+	}
+	if _, err := tracker.Write([]byte(": hk\n\ndata: [DONE]\n\n")); err != nil {
+		t.Fatalf("Write combined frames: %v", err)
+	}
+	if !tracker.BusinessStarted() {
+		t.Fatal("同次写入中 keepalive 后的业务帧必须标成交付")
+	}
+	tracker = newDeliveryTracker(httptest.NewRecorder())
 	if _, err := tracker.Write([]byte("data: hello\n\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -58,6 +78,14 @@ func TestDeliveryTrackerMarksStartedOnWriteAndWriteHeader(t *testing.T) {
 	}
 	if tracker.statusCode() != http.StatusOK {
 		t.Fatalf("status=%d want 200 after implicit WriteHeader", tracker.statusCode())
+	}
+	if !tracker.BusinessStarted() {
+		t.Fatal("业务 SSE 帧必须标成交付")
+	}
+	partial := newDeliveryTracker(&partialWriteResponseWriter{header: make(http.Header), limit: 5, err: io.ErrClosedPipe})
+	_, _ = partial.Write([]byte("data: partial\n\n"))
+	if !partial.BusinessWriteUncertain() {
+		t.Fatal("业务帧部分写入必须标成交付不确定")
 	}
 
 	rec = httptest.NewRecorder()
@@ -623,10 +651,9 @@ func TestAT_GW_002_14_StreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.
 	}
 }
 
-func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T) {
-	// 已消除风险:流式 Append+DLQ 双重失败绝不能变成无审计行的可计费 200。
-	// 变异自检:移除 Forward 之后的 ledger-result settle 门控,会为本 fixture
-	// 记录一次 settle;移除 trailer 对账则会让 StreamState 停在 partial 而非 failed。
+func TestStreamingLedgerAppendAndDLQFailureAfterBusinessDeliveryDefersSettlementWithoutAbort(t *testing.T) {
+	// 该测试守住已交付永不反悔：业务帧已写出后，审计 ledger 双失败只能把结算交给恢复，不能 Abort。
+	// 变异：恢复旧 ledgerFailClosed 分支会写成 failed 并 Abort，本测试的终态、Abort、恢复断言同时变红。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -639,6 +666,9 @@ func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T)
 	deps.AuditLedgerDLQ = dlqSink
 	deps.Signer = signer
 	deps.Settler = settler
+	deps.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	recovery := &postDeliverySpyEnqueuer{}
+	deps.SettleRecoveryDLQ = recovery
 
 	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
 	if rec.Code != http.StatusOK {
@@ -648,20 +678,27 @@ func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T)
 		t.Fatalf("stream body=%s want delivered fixture content", rec.Body.String())
 	}
 	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 when streaming ledger has no durable result", len(settler.calls))
+		t.Fatalf("direct settle calls=%d want 0 when audit ref is unavailable", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
-		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none after business delivery", settler.aborts)
 	}
 	if len(dlqSink.events) != 1 {
 		t.Fatalf("DLQ events=%d want 1 attempted enqueue", len(dlqSink.events))
 	}
-	result := rec.Result()
-	if got := result.Trailer.Get(headerHUAKAIStreamState); got != "failed" {
-		t.Fatalf("%s trailer=%q want failed for fail-closed ledger abort", headerHUAKAIStreamState, got)
+	if recovery.calls != 1 {
+		t.Fatalf("settlement recovery calls=%d want 1", recovery.calls)
 	}
-	if got := result.Trailer.Get(headerHUAKAIStreamState); got == "partial" {
-		t.Fatalf("%s trailer must not stay chargeable partial after fail-closed abort", headerHUAKAIStreamState)
+	payload, err := settlementrecovery.Decode(recovery.lastEvt.Payload)
+	if err != nil {
+		t.Fatalf("decode settlement recovery: %v", err)
+	}
+	if payload.Source != settlementrecovery.SourceStream {
+		t.Fatalf("settlement recovery source=%q want %q", payload.Source, settlementrecovery.SourceStream)
+	}
+	result := rec.Result()
+	if got := result.Trailer.Get(headerHUAKAIStreamState); got != "deferred" {
+		t.Fatalf("%s trailer=%q want deferred", headerHUAKAIStreamState, got)
 	}
 }
 
@@ -796,10 +833,9 @@ func TestStreamingDeferredLedgerDLQRefIsTrailer(t *testing.T) {
 	}
 }
 
-func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testing.T) {
-	// 已消除风险:重复的 request_id 永远无法通过 DLQ replay 恢复。
-	// 变异自检:移除重复值的特例处理后,会入队 DLQ、
-	// 发出 Deferred 回调,并让 handler 对这条可计费流式结算。
+func TestStreamingLedgerDuplicateRequestIDAfterDeliveryDefersSettlementWithoutAbort(t *testing.T) {
+	// 重复审计 request_id 不能恢复审计行，但业务帧已经交付时仍不得 Abort；结算转入三证恢复并告警。
+	// 变异：恢复旧 fail-closed Abort 后，Abort 与恢复断言同时变红。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -812,6 +848,9 @@ func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testin
 	deps.AuditLedgerDLQ = dlqSink
 	deps.Signer = signer
 	deps.Settler = settler
+	deps.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	recovery := &postDeliverySpyEnqueuer{}
+	deps.SettleRecoveryDLQ = recovery
 
 	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
 	if rec.Code != http.StatusOK {
@@ -821,17 +860,20 @@ func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testin
 		t.Fatalf("stream body=%s want delivered fixture content", rec.Body.String())
 	}
 	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 for duplicate request_id", len(settler.calls))
+		t.Fatalf("direct settle calls=%d want 0 for missing audit ref", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
-		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none after business delivery", settler.aborts)
 	}
 	if len(dlqSink.events) != 0 {
 		t.Fatalf("DLQ events=%d want 0 for duplicate request_id", len(dlqSink.events))
 	}
+	if recovery.calls != 1 {
+		t.Fatalf("settlement recovery calls=%d want 1", recovery.calls)
+	}
 }
 
-func TestStreamingIdempotencyReplayAbortsZeroChargeGracefulStream(t *testing.T) {
+func TestStreamingIdempotencyReplayCommitsZeroTokenBusinessFrames(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	body := openAIStreamingRequestBody()
 	claimID := int64(77706)
@@ -843,63 +885,42 @@ func TestStreamingIdempotencyReplayAbortsZeroChargeGracefulStream(t *testing.T) 
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d want 200; body=%s", first.Code, first.Body.String())
 	}
-	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 for zero-delivery stream", len(settler.calls))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 for delivered zero-token frames", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 {
-		t.Fatalf("abort calls=%d want 1 for zero-delivery stream", len(settler.aborts))
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 after business frames", len(settler.aborts))
 	}
-	if got := settler.aborts[0].claimID; got != claimID {
-		t.Fatalf("abort claimID=%d want %d", got, claimID)
+	if got := settler.calls[0].ClaimID; got != claimID {
+		t.Fatalf("settle claimID=%d want %d", got, claimID)
 	}
-	if got := settler.aborts[0].reason; got != "stream_no_billable_delivery" {
-		t.Fatalf("abort reason=%q want stream_no_billable_delivery", got)
-	}
-	if _, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID); err != nil {
+	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
+	if err != nil {
 		t.Fatalf("lookup replay: %v", err)
-	} else if ok {
-		t.Fatal("zero-delivery stream must not record idempotency replay")
+	}
+	if !ok || string(stored.ResponseBody) != first.Body.String() {
+		t.Fatalf("zero-token business frames were not recorded for replay: ok=%v stored=%q first=%q", ok, stored.ResponseBody, first.Body.String())
 	}
 
-	retryClaimID := claimID + 1
 	retrySettler := &recordingSettler{}
-	secondDeps := streamingReplayDeps(t, retryClaimID, false, openAIStreamingFixture(), replayStore)
+	secondDeps := streamingReplayDeps(t, claimID, true, "data: should-not-dispatch\n\n", replayStore)
 	secondDeps.Settler = retrySettler
 	second := invokeWithIdempotencyKey(t, secondDeps, body, "stream-idem-zero-charge")
 	if second.Code != http.StatusOK {
 		t.Fatalf("retry status=%d want 200; body=%s", second.Code, second.Body.String())
 	}
-	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "" {
-		t.Fatalf("retry idempotency-hit header=%q want empty after aborted first claim", got)
+	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "true" {
+		t.Fatalf("replay idempotency-hit header=%q want true", got)
 	}
-	if !strings.Contains(second.Body.String(), "pong") {
-		t.Fatalf("retry should dispatch upstream and return fresh stream; body=%s", second.Body.String())
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
-	if len(retrySettler.calls) != 1 {
-		t.Fatalf("retry settle calls=%d want 1", len(retrySettler.calls))
-	}
-	if retrySettler.calls[0].ClaimID != retryClaimID {
-		t.Fatalf("retry settle claimID=%d want %d", retrySettler.calls[0].ClaimID, retryClaimID)
-	}
-	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, retryClaimID)
-	if err != nil {
-		t.Fatalf("lookup replay: %v", err)
-	}
-	if !ok {
-		t.Fatal("retry chargeable stream must record replay after successful settlement")
-	}
-	if stored.ContentType != idempotencyReplayContentTypeSSE {
-		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeSSE)
-	}
-	if string(stored.ResponseBody) != second.Body.String() {
-		t.Fatalf("stored retry body mismatch:\nstored=%s\nretry=%s", string(stored.ResponseBody), second.Body.String())
-	}
-	if first.Body.String() == second.Body.String() {
-		t.Fatalf("fixture sanity: zero-delivery first body should differ from fresh chargeable retry\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
+	if len(retrySettler.calls) != 0 || len(retrySettler.aborts) != 0 {
+		t.Fatalf("replay must not settle or abort: settles=%d aborts=%d", len(retrySettler.calls), len(retrySettler.aborts))
 	}
 }
 
-func TestStreamingCaseCDefaultNoBillAbortsWithZeroObservedInput(t *testing.T) {
+func TestStreamingCaseCDefaultPolicySettlesDeliveredBusinessFrame(t *testing.T) {
 	settler := &recordingSettler{}
 	deps := inputOnlyInterruptedStreamDeps(t, 77801, 17, billing.NewPolicyResolver(&streamPolicyStore{}, time.Minute))
 	deps.Settler = settler
@@ -908,21 +929,18 @@ func TestStreamingCaseCDefaultNoBillAbortsWithZeroObservedInput(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 for case C no_bill", len(settler.calls))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 after business frame", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 {
-		t.Fatalf("abort calls=%d want 1 for case C no_bill", len(settler.aborts))
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 after business frame", len(settler.aborts))
 	}
-	if got := settler.aborts[0].reason; got != "upstream_5xx" {
-		t.Fatalf("abort reason=%q want upstream_5xx", got)
-	}
-	if got := settler.aborts[0].observedInputTokens; got != 0 {
-		t.Fatalf("observed input tokens=%d want 0 for default no_bill", got)
+	if got := settler.calls[0].Draft.TokensInput; got != 17 {
+		t.Fatalf("settled input tokens=%d want authoritative 17", got)
 	}
 }
 
-func TestStreamingCaseCNoBillRecordAbortsWithObservedInput(t *testing.T) {
+func TestStreamingCaseCNoBillRecordPolicySettlesDeliveredBusinessFrame(t *testing.T) {
 	settler := &recordingSettler{}
 	deps := inputOnlyInterruptedStreamDeps(t, 77802, 23, streamPolicyResolver(billing.StreamInputOnlyInterruptedPolicyNoBillRecord))
 	deps.Settler = settler
@@ -931,20 +949,20 @@ func TestStreamingCaseCNoBillRecordAbortsWithObservedInput(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 for case C no_bill_record", len(settler.calls))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 after business frame", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 {
-		t.Fatalf("abort calls=%d want 1 for case C no_bill_record", len(settler.aborts))
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 after business frame", len(settler.aborts))
 	}
-	if got := settler.aborts[0].observedInputTokens; got != 23 {
-		t.Fatalf("observed input tokens=%d want 23 for no_bill_record", got)
+	if got := settler.calls[0].Draft.TokensInput; got != 23 {
+		t.Fatalf("settled input tokens=%d want authoritative 23", got)
 	}
 }
 
 func TestStreamingNoBillRecordTrueZeroDeliveryKeepsZeroObservedInput(t *testing.T) {
 	settler := &recordingSettler{}
-	deps := streamingReplayDeps(t, 77803, false, zeroTokenOpenAIStreamingFixture(), nil)
+	deps := streamingReplayDeps(t, 77803, false, "", nil)
 	deps.BillingPolicyResolver = streamPolicyResolver(billing.StreamInputOnlyInterruptedPolicyNoBillRecord)
 	deps.Settler = settler
 
@@ -963,7 +981,27 @@ func TestStreamingNoBillRecordTrueZeroDeliveryKeepsZeroObservedInput(t *testing.
 	}
 }
 
-func TestStreamingCaseCNilResolverDefaultsNoBill(t *testing.T) {
+func TestStreamingProtocolErrorFrameBeforeBusinessDeliveryStillAborts(t *testing.T) {
+	// 变异检查:若重新按“任意非注释 SSE 字节”判定业务交付，终止错误帧会触发 Settle，
+	// 本测试的零结算与单次 Abort 断言同时变红。
+	settler := &recordingSettler{}
+	upstream := "event: error\ndata: {\"message\":\"upstream failed\"}\n\n"
+	deps := streamingReplayDeps(t, 77805, false, upstream, nil)
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "upstream_error") {
+		t.Fatalf("status/body=%d/%q want delivered protocol error frame", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for error-only stream", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 for zero business-frame stream", len(settler.aborts))
+	}
+}
+
+func TestStreamingCaseCNilResolverSettlesDeliveredBusinessFrame(t *testing.T) {
 	settler := &recordingSettler{}
 	deps := inputOnlyInterruptedStreamDeps(t, 77804, 31, nil)
 	deps.Settler = settler
@@ -972,11 +1010,14 @@ func TestStreamingCaseCNilResolverDefaultsNoBill(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if len(settler.aborts) != 1 {
-		t.Fatalf("abort calls=%d want 1 for nil resolver case C", len(settler.aborts))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 after business frame", len(settler.calls))
 	}
-	if got := settler.aborts[0].observedInputTokens; got != 0 {
-		t.Fatalf("observed input tokens=%d want 0 for nil resolver", got)
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 after business frame", len(settler.aborts))
+	}
+	if got := settler.calls[0].Draft.TokensInput; got != 31 {
+		t.Fatalf("settled input tokens=%d want authoritative 31", got)
 	}
 }
 
@@ -1325,14 +1366,14 @@ func TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders(t *testing.T) {
 		if got := rec.Header().Get("X-Huakai-Settle-Error"); got != "" {
 			t.Fatalf("X-Huakai-Settle-Error=%q want empty", got)
 		}
-		assertLogContains(t, logs, "settle_failed", "error_class")
+		assertLogContains(t, logs, "settlement_deferred", "error_class")
 		assertLogOmits(t, logs, marker)
 	})
 
-	t.Run("abort error after delivery", func(t *testing.T) {
+	t.Run("abort error before business delivery", func(t *testing.T) {
 		const marker = "SENSITIVE_STREAM_ABORT_MARKER"
 		logs := captureSlogForTest(t)
-		deps := streamingReplayDeps(t, 77903, false, zeroTokenOpenAIStreamingFixture(), nil)
+		deps := streamingReplayDeps(t, 77903, false, "", nil)
 		deps.Settler = &failingAbortSettler{err: errors.New(marker)}
 
 		rec := invokeHandler(t, deps, openAIStreamingRequestBody())
@@ -1354,6 +1395,8 @@ func TestStreamingIdempotencyReplayAbortsZeroByteForwardError(t *testing.T) {
 
 	deps := streamingReplayDeps(t, claimID, false, "", replayStore)
 	deps.Settler = settler
+	recovery := &postDeliverySpyEnqueuer{}
+	deps.SettleRecoveryDLQ = recovery
 	scanners := gateway.NewStaticStreamScannerRegistry()
 	scanners.MustRegister("openai_chat", scannerImmediateError{err: io.ErrUnexpectedEOF})
 	deps.Forwarder.Scanners = scanners
@@ -1373,6 +1416,9 @@ func TestStreamingIdempotencyReplayAbortsZeroByteForwardError(t *testing.T) {
 	}
 	if len(settler.aborts) != 1 {
 		t.Fatalf("abort calls=%d want 1 for zero-byte forward error", len(settler.aborts))
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 for zero business frames", recovery.calls)
 	}
 	if got := settler.aborts[0].claimID; got != claimID {
 		t.Fatalf("abort claimID=%d want %d", got, claimID)

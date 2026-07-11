@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
 	"unicode"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
@@ -147,6 +149,28 @@ func NewDeliveryTracker(w http.ResponseWriter) *DeliveryTracker {
 	return newDeliveryTracker(w)
 }
 
+func WriteFull(w http.ResponseWriter, body []byte) (bool, error) {
+	written, err := w.Write(body)
+	if written >= len(body) {
+		return true, err
+	}
+	if err == nil {
+		err = io.ErrShortWrite
+	}
+	return false, err
+}
+
+// DeliveredStreamAttempt 归一业务帧已交付但底层写入失败的保守终态。
+func DeliveredStreamAttempt(draft gateway.UsageRecordDraft) (billing.Attempt, bool) {
+	attempt := billing.AttemptFromGatewayDraft(true, draft)
+	delivered := draft.BusinessFrameDelivered
+	if delivered && attempt.State == billing.StreamStateFailed {
+		attempt.State = billing.StreamStatePartial
+		attempt = attempt.Normalized()
+	}
+	return attempt, delivered
+}
+
 func (w *deliveryTracker) Started() bool {
 	return w.started()
 }
@@ -157,8 +181,10 @@ func (w *deliveryTracker) StatusCode() int {
 
 type deliveryTracker struct {
 	http.ResponseWriter
-	startedFlag bool
-	status      int
+	startedFlag         bool
+	businessStartedFlag bool
+	businessUncertain   bool
+	status              int
 }
 
 func newDeliveryTracker(w http.ResponseWriter) *deliveryTracker {
@@ -175,11 +201,48 @@ func (w *deliveryTracker) WriteHeader(statusCode int) {
 
 func (w *deliveryTracker) Write(p []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(p)
-	if n > 0 && !w.startedFlag {
-		w.startedFlag = true
-		w.status = http.StatusOK
+	if n > 0 {
+		if !w.startedFlag {
+			w.startedFlag = true
+			w.status = http.StatusOK
+		}
+		written := n
+		if written > len(p) {
+			written = len(p)
+		}
+		if !w.businessStartedFlag && isBusinessDeliveryBytes(p[:written]) {
+			w.businessStartedFlag = true
+		}
+		if (err != nil || n != len(p)) && isBusinessDeliveryBytes(p[:written]) {
+			w.businessUncertain = true
+		}
 	}
 	return n, err
+}
+
+// BusinessStarted 报告是否写出过非空白、非 SSE 注释的业务字节。
+func (w *deliveryTracker) BusinessStarted() bool {
+	return w != nil && w.businessStartedFlag
+}
+
+// BusinessWriteUncertain 报告业务字节是否发生过短写或带错写入。
+func (w *deliveryTracker) BusinessWriteUncertain() bool {
+	return w != nil && w.businessUncertain
+}
+
+func isBusinessDeliveryBytes(p []byte) bool {
+	for len(p) > 0 {
+		line, rest, found := bytes.Cut(p, []byte{'\n'})
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) > 0 && trimmed[0] != ':' {
+			return true
+		}
+		if !found {
+			break
+		}
+		p = rest
+	}
+	return false
 }
 
 func (w *deliveryTracker) Flush() {

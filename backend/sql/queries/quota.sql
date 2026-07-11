@@ -387,14 +387,22 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
 
 -- name: ExpireQuotaConcurrencySlots :execrows
 -- 租户内 lease 过期清理, 不写 provider cooldown。
-UPDATE quota_concurrency_slots
+UPDATE quota_concurrency_slots qcs
 SET status = 'expired',
     released_at = NOW(),
     release_reason = 'lease_expired',
     updated_at = NOW()
-WHERE tenant_id = sqlc.arg(tenant_id)::bigint
-  AND status = 'acquired'
-  AND lease_expires_at <= sqlc.arg(at_time)::timestamptz;
+WHERE qcs.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND qcs.status = 'acquired'
+  AND qcs.lease_expires_at <= sqlc.arg(at_time)::timestamptz
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_dlq d
+      WHERE d.tenant_id = qcs.tenant_id
+        AND d.claim_id = qcs.claim_id
+        AND d.event_kind = 'post_delivery_settlement'
+        AND d.status <> 'delivered'
+  );
 
 -- name: InsertQuotaAuditEvent :one
 -- 配额审计事件; deny/overage/reconcile 都只写 quota audit。
@@ -591,6 +599,14 @@ WHERE qr.status IN ('reserved', 'reconciliation_needed')
       WHERE j.tenant_id = qr.tenant_id
         AND j.claim_id = qr.claim_id
         AND j.status IN ('queued', 'running', 'failed')
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_dlq d
+      WHERE d.tenant_id = qr.tenant_id
+        AND d.claim_id = qr.claim_id
+        AND d.event_kind = 'post_delivery_settlement'
+        AND d.status <> 'delivered'
   )
 ORDER BY qr.lease_expires_at ASC, qr.id ASC
 LIMIT sqlc.arg(row_limit)::integer;

@@ -1135,10 +1135,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// handler,注册到 dlqService 让 worker 拿到 post_delivery_settlement
 	// 行后重调 Settler.Settle。三证 proof 用 PG 直接查 claim/usage/billing_events。
 	settlementProof := settlementrecovery.NewPostgresCommittedProof(pgPool)
-	settlementHandler := &settlementrecovery.Handler{
-		Settler: settler,
-		Proof:   settlementProof,
-	}
+	settlementHandler := newSettlementRecoveryHandler(settler, settlementProof, auditRefPolicy)
 	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
 	// WAVE H3 只读诊断工具脊柱 + 它的 hermes_tool_calls 审计写入器,在这里构建
 	//(早于 chat bridge),这样 WAVE H3b 对话式工具循环就能把 registry(catalog
@@ -1663,6 +1660,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	ready = true
 	return rt, nil
+}
+
+func newSettlementRecoveryHandler(settler billing.Settler, proof settlementrecovery.CommittedProof, auditRefPolicy *eventbus.AuditRefPolicy) *settlementrecovery.Handler {
+	return &settlementrecovery.Handler{
+		Settler:        settler,
+		Proof:          proof,
+		AuditRefPolicy: auditRefPolicy,
+	}
 }
 
 func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.PostgresRegistry) *modelsync.Service {

@@ -1,6 +1,7 @@
 package dlq
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -46,6 +47,34 @@ func TestRetryPolicyDLQAgeThreshold(t *testing.T) {
 	got := policy.NextFailure(first.Add(15*time.Minute), first, 2)
 	if got.Status != StatusOperatorReview {
 		t.Fatalf("status=%s want operator_review", got.Status)
+	}
+}
+
+func TestServicePostDeliverySettlementFailureKeepsRetryingPastAlertThreshold(t *testing.T) {
+	// 变异检查:改回通用重试决策后,超过次数或年龄阈值会停在 operator_review/quarantined。
+	first := time.Date(2026, 7, 11, 1, 0, 0, 0, time.UTC)
+	now := first.Add(time.Hour)
+	service := NewService(nil,
+		WithClock(func() time.Time { return now }),
+		WithPolicy(RetryPolicy{BaseBackoff: time.Second, CapBackoff: 5 * time.Minute, MaxAttempts: 2, DLQAfter: time.Minute}),
+	)
+	for name, failure := range map[string]error{
+		"瞬时失败": errors.New("temporary database error"),
+		"结构失败": fmt.Errorf("decode: %w", ErrUnretryable),
+	} {
+		t.Run(name, func(t *testing.T) {
+			decision := service.failureDecision(context.Background(), &Record{
+				EventKind:      EventKindPostDeliverySettlement,
+				FailureAt:      first,
+				ReplayAttempts: 10,
+			}, failure)
+			if decision.Status != StatusPending {
+				t.Fatalf("status=%s want pending", decision.Status)
+			}
+			if decision.Delay != 5*time.Minute || !decision.NextRetryAt.Equal(now.Add(5*time.Minute)) {
+				t.Fatalf("delay=%v next=%v want capped retry", decision.Delay, decision.NextRetryAt)
+			}
+		})
 	}
 }
 

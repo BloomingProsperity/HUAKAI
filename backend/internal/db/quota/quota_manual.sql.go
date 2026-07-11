@@ -54,6 +54,14 @@ WHERE qr.status IN ('reserved', 'reconciliation_needed')
         AND j.claim_id = qr.claim_id
         AND j.status IN ('queued', 'running', 'failed')
   )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_dlq d
+      WHERE d.tenant_id = qr.tenant_id
+        AND d.claim_id = qr.claim_id
+        AND d.event_kind = 'post_delivery_settlement'
+        AND d.status <> 'delivered'
+  )
 ORDER BY qr.lease_expires_at ASC, qr.id ASC
 LIMIT $2::integer
 `

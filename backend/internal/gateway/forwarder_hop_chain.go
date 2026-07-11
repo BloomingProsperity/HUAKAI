@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway/streamdelivery"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
@@ -146,7 +147,7 @@ func (f *StreamForwarder) emitFinalUpstreamEvents(
 			if len(chunk) == 0 {
 				continue
 			}
-			if err := writeAndFlush(w, chunk); err != nil {
+			if err := streamdelivery.WriteAndFlush(w, chunk); err != nil {
 				return ErrClientDisconnect
 			}
 		}

@@ -21,10 +21,11 @@ import (
 )
 
 var (
-	ErrClaimNotReserving        = errors.New("billing: claim is not reserving")
-	ErrAcquisitionTokenMismatch = errors.New("billing: acquisition token mismatch")
-	ErrSlotReleaseMissed        = errors.New("billing: pool_slot_acquisitions row not in 'acquired' state for token")
-	ErrCostOverflow             = errors.New("billing: cost overflow")
+	ErrClaimNotReserving             = errors.New("billing: claim is not reserving")
+	ErrPostDeliverySettlementPending = errors.New("billing: post-delivery settlement recovery is unresolved")
+	ErrAcquisitionTokenMismatch      = errors.New("billing: acquisition token mismatch")
+	ErrSlotReleaseMissed             = errors.New("billing: pool_slot_acquisitions row not in 'acquired' state for token")
+	ErrCostOverflow                  = errors.New("billing: cost overflow")
 )
 
 const maxCostMicroUSDInt64 int64 = 1<<63 - 1
@@ -332,6 +333,24 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 	}
 	if status != "reserving" {
 		return ErrClaimNotReserving
+	}
+	// 候选清扫查询与本事务之间存在时间窗；在持有 claim 行锁时再次检查恢复队列，
+	// 防止已交付请求刚落下未决恢复行却仍被零成本中止。所有状态未闭合的恢复行都保护 claim。
+	var settlementRecoveryPending bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1
+			FROM usage_record_dlq
+			WHERE tenant_id=$1
+			  AND claim_id=$2
+			  AND event_kind='post_delivery_settlement'
+			  AND status <> 'delivered'
+		)`, tenantID, claimID,
+	).Scan(&settlementRecoveryPending); err != nil {
+		return fmt.Errorf("billing: check post-delivery settlement recovery before abort: %w", err)
+	}
+	if settlementRecoveryPending {
+		return ErrPostDeliverySettlementPending
 	}
 
 	qtx := s.q.WithTx(tx)

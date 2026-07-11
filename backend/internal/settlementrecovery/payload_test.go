@@ -53,9 +53,11 @@ func fixtureCompletionEvent(t *testing.T) eventbus.RequestCompletionEvent {
 		StreamTerminatedReason: "stream_complete",
 	}
 	return eventbus.RequestCompletionEvent{
-		ID:                "evt-123",
-		RequestID:         "req-456",
-		AuditLedgerDLQRef: "audit-dlq-7",
+		ID:                        "evt-123",
+		RequestID:                 "req-456",
+		AuditLedgerID:             "ledger-7",
+		AuditLedgerDLQRef:         "audit-dlq-7",
+		AuditSignatureFingerprint: "sig-fingerprint-7",
 		SettleRequest: billing.SettleRequest{
 			ClaimID:             7001,
 			AccountID:           9001,
@@ -103,6 +105,13 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 		t.Fatalf("Decode: %v", err)
 	}
 	got := decoded.ToSettleRequest()
+	if decoded.AuditLedgerID != event.AuditLedgerID ||
+		decoded.AuditLedgerDLQRef != event.AuditLedgerDLQRef ||
+		decoded.AuditSignatureFingerprint != event.AuditSignatureFingerprint {
+		t.Fatalf("audit bundle mismatch: got=(%q,%q,%q) want=(%q,%q,%q)",
+			decoded.AuditLedgerID, decoded.AuditLedgerDLQRef, decoded.AuditSignatureFingerprint,
+			event.AuditLedgerID, event.AuditLedgerDLQRef, event.AuditSignatureFingerprint)
+	}
 
 	if got.ClaimID != original.ClaimID {
 		t.Fatalf("ClaimID: got=%d want=%d", got.ClaimID, original.ClaimID)
@@ -164,6 +173,19 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 	}
 }
 
+// TestPayload_DirectSettleSourceKeepsInlineAuditPolicy 守住图片与旧 completions
+// 直接 SettleRequest 来源的既有 inline 口径，不因本轮事件总线审计重验而静默冻结。
+func TestPayload_DirectSettleSourceKeepsInlineAuditPolicy(t *testing.T) {
+	payload := FromSettleRequest(SourceImagesDelivered, "req-images-1", billing.SettleRequest{
+		ClaimID:  7,
+		TenantID: 9,
+	})
+	policy := &eventbus.AuditRefPolicy{ReleaseMode: eventbus.ReleaseModeProduction}
+	if err := payload.ValidateAuditRef(policy); err != nil {
+		t.Fatalf("direct settle payload audit validation: %v", err)
+	}
+}
+
 // outbox intent 必须是可 JSON 持久化的 bool,post-delivery settle replay 成功
 // 时才能补写原本应该跟 Tx2 同事务产生的 scheduler_outbox 行。
 //
@@ -215,6 +237,13 @@ func TestValidate_RejectsInvalidSource(t *testing.T) {
 	p := Payload{Source: "bogus", Settle: settleRequestPersisted{ClaimID: 1, TenantID: 1}}
 	if err := p.Validate(); err == nil {
 		t.Fatal("Validate must reject unknown Source")
+	}
+}
+
+func TestValidate_AcceptsImagesDeliveredSource(t *testing.T) {
+	p := Payload{Source: SourceImagesDelivered, Settle: settleRequestPersisted{ClaimID: 1, TenantID: 1}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate images source: %v", err)
 	}
 }
 

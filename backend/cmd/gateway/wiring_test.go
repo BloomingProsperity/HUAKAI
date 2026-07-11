@@ -38,6 +38,7 @@ import (
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
@@ -118,6 +119,14 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 	policy.AllowMissingMoneyRef = true
 	if !busCfg.AuditRefPolicy.AllowMissingMoneyRef || !chatDeps.AuditRefPolicy.AllowMissingMoneyRef {
 		t.Fatalf("policy mutation was not visible through both wiring surfaces")
+	}
+}
+
+func TestWiring_SettlementRecoverySharesAuditRefPolicy(t *testing.T) {
+	policy := &eventbus.AuditRefPolicy{ReleaseMode: eventbus.ReleaseModeProduction}
+	handler := newSettlementRecoveryHandler(nil, nil, policy)
+	if handler.AuditRefPolicy != policy {
+		t.Fatalf("settlement recovery AuditRefPolicy pointer=%p want shared %p", handler.AuditRefPolicy, policy)
 	}
 }
 
@@ -290,12 +299,14 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	rateTables := billing.NewPGXRateTableSource(nil)
 	claimGate := &wiringClaimGate{}
 	settler := &wiringRecordingSettler{}
+	recovery := dlq.NewService(nil)
 	d := &deps{
 		cfg:                  &Config{BillingPolicyVersion: "1.0", RequestClass: "standard"},
 		pricingRatioResolver: resolver,
 		rateTableSource:      rateTables,
 		claimGate:            claimGate,
 		settler:              settler,
+		dlqService:           recovery,
 	}
 
 	chatDeps := chatHandlerDeps(d)
@@ -325,6 +336,9 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	}
 	if imageDeps.RateTables != rateTables || imageDeps.ClaimGate != claimGate || imageDeps.Settler != settler {
 		t.Fatal("image deps did not reuse shared money-path wiring")
+	}
+	if imageDeps.SettleRecoveryDLQ != recovery {
+		t.Fatal("image deps did not reuse shared settlement recovery queue")
 	}
 	if completionsDeps.RateTables != rateTables || completionsDeps.ClaimGate != claimGate || completionsDeps.Settler != settler {
 		t.Fatal("completions deps did not reuse shared money-path wiring")

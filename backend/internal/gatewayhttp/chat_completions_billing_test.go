@@ -3,7 +3,9 @@ package gatewayhttp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,8 +25,150 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
+
+func TestChatCompletionsNonStreamingSettleFailureKeepsDeliveredResponseAndEnqueuesRecovery(t *testing.T) {
+	// 该测试守住结算与交付的顺序：完整业务体必须先到客户端，之后的结算故障只能进入恢复。
+	// 变异：把结算移回写体之前，会返回 500 且响应缺少 canonical 内容，本测试必红。
+	enableHCSFDispatchForTest(t)
+	settler := &failingSettleSettler{err: errors.New("settle unavailable")}
+	recovery := &postDeliverySpyEnqueuer{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.SettleRecoveryDLQ = recovery
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !json.Valid(rec.Body.Bytes()) || !strings.Contains(rec.Body.String(), "hello from canonical") {
+		t.Fatalf("响应体不是完整业务 JSON: %q", rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none after full delivery", settler.aborts)
+	}
+	if recovery.calls != 1 || recovery.lastEvt.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("recovery calls/kind=%d/%q want 1/%q", recovery.calls, recovery.lastEvt.EventKind, dlq.EventKindPostDeliverySettlement)
+	}
+	decoded, err := settlementrecovery.Decode(recovery.lastEvt.Payload)
+	if err != nil {
+		t.Fatalf("decode recovery payload: %v", err)
+	}
+	if decoded.Source != settlementrecovery.SourceDirectSettle {
+		t.Fatalf("recovery source=%q want %q", decoded.Source, settlementrecovery.SourceDirectSettle)
+	}
+}
+
+func TestChatCompletionsNonStreamingPartialWriteAbortsWithoutSettlement(t *testing.T) {
+	// 该测试守住未完整交付不得计费：写出部分业务字节后报错时，只能释放预留，不能结算或入恢复。
+	// 变异：忽略 Write 的 n/err 会产生一次 Settle 且没有 Abort，本测试必红。
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	recovery := &postDeliverySpyEnqueuer{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.SettleRecoveryDLQ = recovery
+	w := &partialWriteResponseWriter{header: make(http.Header), limit: 9, err: io.ErrClosedPipe}
+	h := NewChatCompletionsHandler(d)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	h.ServeHTTP(w, req)
+
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 on partial write", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "client_response_write_error" {
+		t.Fatalf("aborts=%+v want one client_response_write_error", settler.aborts)
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 for undelivered body", recovery.calls)
+	}
+	if w.writeHeaderCalls != 0 {
+		t.Fatalf("WriteHeader calls=%d want 0 before fallible body write", w.writeHeaderCalls)
+	}
+	if w.body.Len() == 0 {
+		t.Fatal("fixture did not exercise a partial write")
+	}
+	if w.flushes != 0 {
+		t.Fatalf("flushes=%d want 0 after incomplete body", w.flushes)
+	}
+}
+
+func TestChatCompletionsNonStreamingFullLengthWriteErrorIsConservativelyDelivered(t *testing.T) {
+	// 写入器报告完整长度但同时返回错误时，客户端是否收到不可判定；必须按已交付结算，不能 Abort。
+	enableHCSFDispatchForTest(t)
+	w := &partialWriteResponseWriter{header: make(http.Header), limit: -1, err: io.ErrUnexpectedEOF}
+	settler := &flushCheckingSettler{flushed: func() bool { return w.flushes > 0 }}
+	recovery := &postDeliverySpyEnqueuer{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.SettleRecoveryDLQ = recovery
+	h := NewChatCompletionsHandler(d)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	h.ServeHTTP(w, req)
+
+	if len(settler.calls) != 1 || len(settler.aborts) != 0 {
+		t.Fatalf("settles=%d aborts=%d want 1/0 for uncertain full write", len(settler.calls), len(settler.aborts))
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 after successful direct settlement", recovery.calls)
+	}
+	if !json.Valid(w.body.Bytes()) {
+		t.Fatalf("fixture did not report a full JSON write: %q", w.body.String())
+	}
+	if w.flushes != 1 || settler.settleBeforeFlush {
+		t.Fatalf("flushes/settleBeforeFlush=%d/%v want 1/false", w.flushes, settler.settleBeforeFlush)
+	}
+}
+
+type flushCheckingSettler struct {
+	recordingSettler
+	flushed           func() bool
+	settleBeforeFlush bool
+}
+
+func (s *flushCheckingSettler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
+	if s.flushed == nil || !s.flushed() {
+		s.settleBeforeFlush = true
+	}
+	return s.recordingSettler.Settle(ctx, req)
+}
+
+type partialWriteResponseWriter struct {
+	header           http.Header
+	body             bytes.Buffer
+	limit            int
+	err              error
+	writeHeaderCalls int
+	flushes          int
+}
+
+func (w *partialWriteResponseWriter) Header() http.Header { return w.header }
+
+func (w *partialWriteResponseWriter) WriteHeader(int) { w.writeHeaderCalls++ }
+
+func (w *partialWriteResponseWriter) Write(p []byte) (int, error) {
+	n := w.limit
+	if n < 0 || n > len(p) {
+		n = len(p)
+	}
+	_, _ = w.body.Write(p[:n])
+	return n, w.err
+}
+
+func (w *partialWriteResponseWriter) Flush() { w.flushes++ }
 
 func TestChatCompletions_AuditLedgerNilGracefulNoPanic(t *testing.T) {
 	enableHCSFDispatchForTest(t)

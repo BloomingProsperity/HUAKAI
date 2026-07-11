@@ -1,6 +1,7 @@
 package imageshttp
 
 import (
+	"io"
 	"net/http"
 	"strings"
 
@@ -161,17 +162,32 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 			return false
 		}
 	}
-	ibctx, icancel := ex.billingCtx()
-	defer icancel()
-	if _, err := ex.d.Settler.Settle(ibctx, ex.settleRequest(tokens, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
-		return false
-	}
+	settleReq := ex.settleRequest(tokens, actualCost, costSnapshot, attemptSeq, pending)
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw)
+	written, writeErr := w.Write(raw)
+	fullyWritten := written >= len(raw)
+	if !fullyWritten && writeErr == nil {
+		writeErr = io.ErrShortWrite
+	}
+	if !fullyWritten {
+		ex.abortAfterResponseWriteFailure("client_response_write_error", int64(tokens.InputTokens), writeErr)
+		return false
+	}
+	if writeErr != nil {
+		ex.observeResponseWriteUncertainty(writeErr)
+	}
+	// 小图片 JSON 可能仍在 net/http 写缓冲中；结算前刷新，使业务体尽早对客户端可见。
+	// 完整 Write 后的刷新错误属于交付不确定，按已交付保守结算，不能释放预留。
+	if flushErr := http.NewResponseController(w).Flush(); flushErr != nil {
+		ex.observeResponseWriteUncertainty(flushErr)
+	}
+	ibctx, icancel := ex.billingCtx()
+	defer icancel()
+	if err := ex.settleDeliveredResponse(ibctx, settleReq); err != nil {
+		return false
+	}
 	return true
 }

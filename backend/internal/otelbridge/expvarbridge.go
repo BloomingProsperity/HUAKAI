@@ -20,6 +20,7 @@ type bridgeCounter struct {
 	name        string
 	description string
 	read        func() int64
+	gauge       bool
 }
 
 // RegisterBridge 将选定的一组 expvar 计数器导出为 OTel observable counter。
@@ -36,9 +37,29 @@ func RegisterBridge(_ context.Context, mp otelmetric.MeterProvider) error {
 		instrument otelmetric.Int64ObservableCounter
 		read       func() int64
 	}
-	registered := make([]registeredCounter, 0, len(specs))
+	type registeredGauge struct {
+		instrument otelmetric.Int64ObservableGauge
+		read       func() int64
+	}
+	registeredCounters := make([]registeredCounter, 0, len(specs))
+	registeredGauges := make([]registeredGauge, 0, 2)
 	observables := make([]otelmetric.Observable, 0, len(specs))
 	for _, spec := range specs {
+		if spec.gauge {
+			instrument, err := meter.Int64ObservableGauge(
+				spec.name,
+				otelmetric.WithDescription(spec.description),
+			)
+			if err != nil {
+				return fmt.Errorf("register observable gauge %s: %w", spec.name, err)
+			}
+			registeredGauges = append(registeredGauges, registeredGauge{
+				instrument: instrument,
+				read:       spec.read,
+			})
+			observables = append(observables, instrument)
+			continue
+		}
 		instrument, err := meter.Int64ObservableCounter(
 			spec.name,
 			otelmetric.WithDescription(spec.description),
@@ -46,7 +67,7 @@ func RegisterBridge(_ context.Context, mp otelmetric.MeterProvider) error {
 		if err != nil {
 			return fmt.Errorf("register observable counter %s: %w", spec.name, err)
 		}
-		registered = append(registered, registeredCounter{
+		registeredCounters = append(registeredCounters, registeredCounter{
 			instrument: instrument,
 			read:       spec.read,
 		})
@@ -54,12 +75,19 @@ func RegisterBridge(_ context.Context, mp otelmetric.MeterProvider) error {
 	}
 
 	_, err := meter.RegisterCallback(func(_ context.Context, observer otelmetric.Observer) error {
-		for _, counter := range registered {
+		for _, counter := range registeredCounters {
 			value := counter.read()
 			if value < 0 {
 				value = 0
 			}
 			observer.ObserveInt64(counter.instrument, value)
+		}
+		for _, gauge := range registeredGauges {
+			value := gauge.read()
+			if value < 0 {
+				value = 0
+			}
+			observer.ObserveInt64(gauge.instrument, value)
 		}
 		return nil
 	}, observables...)
@@ -189,6 +217,18 @@ func bridgeCounters() []bridgeCounter {
 			name:        "huakai_dlq_pending_depth_low",
 			description: "Pending DLQ rows in the LOW lane.",
 			read:        func() int64 { return readExpvarMapInt("dlq_depth", "depth_LOW") },
+		},
+		{
+			name:        "huakai_delivered_unsettled_count",
+			description: "已交付但尚未闭合结算的持久恢复行数量。",
+			read:        func() int64 { return readExpvarMapInt("dlq_depth", "delivered_unsettled_count") },
+			gauge:       true,
+		},
+		{
+			name:        "huakai_delivered_unsettled_age_seconds",
+			description: "最老一条已交付未结算恢复行的滞留秒数。",
+			read:        func() int64 { return readExpvarMapInt("dlq_depth", "delivered_unsettled_age_seconds") },
+			gauge:       true,
 		},
 		// F-GW-003 第 2 阶段:实时进程运行时资源仪表盘,直接从 Go runtime 读取
 		// (而非 expvar 支撑)。通过与上面计数器相同的快照路径桥接,这样运维就能用

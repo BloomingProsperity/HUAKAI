@@ -126,8 +126,9 @@ func (s *LeaseSweeper) sweepOnce(ctx context.Context) (int, error) {
 		switch {
 		case err == nil:
 			swept++
-		case errors.Is(err, ErrClaimNotReserving):
-			// 并发良性:claim 已被真实请求路径或另一副本推进出 reserving 态 → 不再孤儿,跳过。
+		case errors.Is(err, ErrClaimNotReserving), errors.Is(err, ErrPostDeliverySettlementPending):
+			// 并发良性:claim 已推进出 reserving，或候选查询后出现未决交付后结算恢复行；
+			// 两种情况都不得继续零成本中止。
 		default:
 			errs = append(errs, fmt.Errorf("abort claim %d: %w", claim.ID, err))
 		}

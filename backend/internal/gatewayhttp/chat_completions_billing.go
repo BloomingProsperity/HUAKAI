@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -126,7 +127,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	settleReq := ex.nonStreamingSettleRequest(bufferedEnv, actualCost, ex.selRes.RoutingReasonJSON)
-	if _, err := settleCompletionWithRecovery(ex.ctx, ex.d, eventbus.RequestCompletionEvent{
+	settleEvent := eventbus.RequestCompletionEvent{
 		ID:                        ex.requestID,
 		TenantID:                  ex.ident.TenantID,
 		ClaimID:                   ex.reserveRes.ClaimID,
@@ -143,29 +144,54 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
 		Metadata:                  completionMetadata(ex.routeID, ex.clientRequestID),
-	}, settlementrecovery.SourceDirectSettle); err != nil {
-		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
-		return markAttemptOutcomeDelivered(outcome)
 	}
-	// 持久幂等重放: 存原始响应供同 Idempotency-Key 重试路由无关地重放。
-	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
-	if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
-		// retry/failover 可能跨 upstream model 成功；cache 写入必须使用
-		// 实际成功 attempt 的 model，避免把 回退响应写进 primary key。
-		if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
-			ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
-			syncL2SizeMetrics(ex.d.ResponseCache)
-		}
+	if err := validateMoneyPathAuditRefForSource(ex.ctx, ex.d, settleEvent, "direct_settle"); err != nil {
+		rejectErr := rejectMoneyPathDirectSettle(ex.ctx, ex.d, settleEvent, err)
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(rejectErr), rejectErr)
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" {
 		w.Header().Set("X-HUAKAI-Cache-L2", "miss")
 	}
 	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerResult, ex.requestID, ex.ident.TenantID, ex.d.Signer)
+	fullyWritten, writeErr := chatpipe.WriteFull(w, clientBody)
+	if !fullyWritten {
+		logInternalError(ex.ctx, ex.requestID, "client_response_write_error", writeErr)
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "client_response_write_error", 0, ex.protocolLoss); abortErr != nil {
+			logInternalError(ex.ctx, ex.requestID, clienterr.CodeAbortFailed, abortErr)
+		}
+		outcome.DeliveryStarted = true
+		return outcome
+	} else if writeErr != nil {
+		logInternalError(ex.ctx, ex.requestID, "client_response_write_uncertain", writeErr)
+	}
+	// net/http 可能先把小响应留在服务端写缓冲；结算前主动刷新，缩短客户端可见响应与
+	// Tx2 之间的窗口。刷新错误发生在完整 Write 之后，交付结果不可判定，按已交付保守结算。
+	if flushErr := http.NewResponseController(w).Flush(); flushErr != nil {
+		logInternalError(ex.ctx, ex.requestID, "client_response_flush_uncertain", flushErr)
+	}
+	// 响应已经交付，幂等重放证据不依赖本次 Tx2 是否立即成功；恢复结算成功后，客户端
+	// 使用同一 Idempotency-Key 仍应拿回原响应，而不是落入 replay_without_cache。
+	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
+	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
+	defer settleCancel()
+	if _, err := settleCompletionWithRecovery(settleCtx, ex.d, settleEvent, settlementrecovery.SourceDirectSettle); err != nil {
+		logInternalError(settleCtx, ex.requestID, settleErrorCode(err), err)
+	} else {
+		if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
+			if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
+				ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
+				syncL2SizeMetrics(ex.d.ResponseCache)
+			}
+		}
+	}
 	outcome = ex.baseAttemptOutcome()
+	outcome.DeliveryStarted = true
 	outcome.Success = &attemptSuccess{
 		StatusCode: http.StatusOK,
 		Body:       clientBody,
+		Written:    true,
 	}
 	return outcome
 }
@@ -288,22 +314,19 @@ func normalizedPayloadHash(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// settleCompletionWithRecovery 包 settleCompletion,在 post-delivery 场景
-// (响应已发给客户端 + settle 失败)把 RequestCompletionEvent 转
-// settlementrecovery.Payload enqueue 进 usage_record_dlq,worker 后续重放
-// Settler.Settle。
-//
-// 调用约定:
-//   - source != "" 表示 "已交付内容 给客户端" — settle 失败必须 durable 兜底
-//   - source == "" 或 SettleRecoveryDLQ == nil — 跟原 settleCompletion 一致,
-//     失败只返 err,调用方自决(stream/billing pre-delivery path 返 5xx 给客户端)
-//
-// Enqueue 自己失败时 P0 log alert(Owner D-4 已批 — 不再 disk spool,只 alert),
-// 但不阻塞:流式响应已发给客户端不能反悔。
-//
-// settle err 始终原样传给调用方,跟 settleCompletion 行为一致。
 func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, error) {
-	res, err := settleCompletion(ctx, d, event)
+	var res *billing.SettleResult
+	var err error
+	if source != "" {
+		if validationErr := validateMoneyPathAuditRefForSource(ctx, d, event, string(source)); validationErr != nil {
+			logMoneyPathAuditRefError(ctx, event, validationErr, string(source), false)
+			err = fmt.Errorf("post-delivery settlement deferred: %w", validationErr)
+		} else {
+			res, err = settleCompletion(ctx, d, event)
+		}
+	} else {
+		res, err = settleCompletion(ctx, d, event)
+	}
 	if err == nil {
 		return res, nil
 	}
@@ -311,29 +334,7 @@ func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event 
 		return res, err
 	}
 	payload := settlementrecovery.FromCompletionEvent(source, event)
-	// post-delivery recovery DLQ 是持久运维元数据,也只能保留错误类别,不能保留 settle 原始错误文本。
-	settleFailureClass := privacy.ErrorClassFor(ctx, err)
-	// DLQ 持久化用**独立 ctx**：settle 可能正因传入 settleCtx 的 deadline 耗尽(DB 锁等待/上游慢)
-	// 而失败,此刻复用同一已过期 ctx 会让 enqueue 的 INSERT 立即 deadline-exceeded、recovery intent
-	// 落不了盘——DB 受压时 DLQ 最该兜底却最易失效。WithoutCancel 去掉过期/取消传播后重新 WithTimeout。
-	enqCtx, enqCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	defer enqCancel()
-	if _, enqErr := settlementrecovery.EnqueuePayload(enqCtx, d.SettleRecoveryDLQ, payload, settleFailureClass); enqErr != nil {
-		// DLQ persist 自己失败 = money path 双环灰区 (Owner D-4: 只 alert,不 disk spool)。
-		_ = privacy.LogSystem(enqCtx, privacy.SystemEvent{
-			Severity:   privacy.SeverityError,
-			Component:  "gatewayhttp.settle_recovery",
-			RequestID:  event.RequestID,
-			ErrorClass: privacy.ErrorClassFor(ctx, enqErr),
-			Attrs: map[string]any{
-				"event_class":          "settle_recovery_dlq_enqueue_failed",
-				"event_type":           string(source),
-				"tenant_id":            event.TenantID,
-				"claim_id":             event.ClaimID,
-				"failure_reason_class": settleFailureClass,
-			},
-		})
-	}
+	_ = settlementrecovery.EnqueueFailure(ctx, d.SettleRecoveryDLQ, payload, err, "gatewayhttp.settle_recovery")
 	return res, err
 }
 

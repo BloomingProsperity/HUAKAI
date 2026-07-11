@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 type Handler func(context.Context, Record) error
@@ -111,7 +113,7 @@ func (s *Service) Replay(ctx context.Context, id int64, actorID string) (*Record
 		return nil, err
 	}
 	if err := s.handle(ctx, *rec); err != nil {
-		decision := s.failureDecision(rec, err)
+		decision := s.failureDecision(ctx, rec, err)
 		if markErr := s.store.MarkFailed(ctx, *rec, err.Error(), decision); markErr != nil {
 			// 与 worker 路径(ProcessClaim)一致:MarkFailed 写失败是独立的状态持久化故障,必须上抛。
 			// 否则 handler 失败且状态更新也失败时,行会停在 inflight(带 manual lease、陈旧 retry 计数、
@@ -137,7 +139,7 @@ func (s *Service) ProcessClaim(ctx context.Context, lane Lane, workerID string, 
 		return false, err
 	}
 	if err := s.handle(ctx, *rec); err != nil {
-		decision := s.failureDecision(rec, err)
+		decision := s.failureDecision(ctx, rec, err)
 		if markErr := s.store.MarkFailed(ctx, *rec, err.Error(), decision); markErr != nil {
 			return true, markErr
 		}
@@ -157,10 +159,33 @@ func (s *Service) handle(ctx context.Context, rec Record) error {
 	return h(ctx, rec)
 }
 
-// failureDecision 选择一次 handler 失败后的下一步状态。默认启用结构性失败隔离:用
+// failureDecision 选择一次 handler 失败后的下一步状态。交付后结算始终持续重试；其它事件默认启用结构性失败隔离:用
 // NextFailureForErr,使不可重试错误在 attempt1 直接 quarantine,不烧重试预算。
 // 逃生阀禁用时回退纯 NextFailure(忽略错误分类,旧行为)。
-func (s *Service) failureDecision(rec *Record, failErr error) RetryDecision {
+func (s *Service) failureDecision(ctx context.Context, rec *Record, failErr error) RetryDecision {
+	if rec.EventKind == EventKindPostDeliverySettlement {
+		now := s.now()
+		decision := s.policy.NextFailureContinuous(now, rec.ReplayAttempts)
+		policy := s.policy.normalized()
+		if decision.Attempts >= policy.MaxAttempts || (!rec.FailureAt.IsZero() && !now.Before(rec.FailureAt.Add(policy.DLQAfter))) || errors.Is(failErr, ErrUnretryable) || errors.Is(failErr, ErrNoHandler) {
+			attrs := map[string]any{
+				"event_class": "delivered_unsettled_retry_continues",
+				"tenant_id":   rec.TenantID,
+				"attempts":    decision.Attempts,
+			}
+			if rec.ClaimID != nil {
+				attrs["claim_id"] = *rec.ClaimID
+			}
+			if !rec.FailureAt.IsZero() {
+				attrs["duration_ms"] = now.Sub(rec.FailureAt).Milliseconds()
+			}
+			_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+				Severity: privacy.SeverityError, Component: "dlq.post_delivery_settlement",
+				ErrorClass: privacy.ErrorClassFor(ctx, failErr), Attrs: attrs,
+			})
+		}
+		return decision
+	}
 	if s.poisonQuarantineDisabled {
 		return s.policy.NextFailure(s.now(), rec.FailureAt, rec.ReplayAttempts)
 	}

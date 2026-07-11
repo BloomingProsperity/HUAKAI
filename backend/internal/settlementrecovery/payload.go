@@ -36,6 +36,8 @@ const (
 	// SourceEventbusBillingHandler:observability/billing_persister_handler
 	// 在 eventbus 内处理失败,委托 DLQ 重放。
 	SourceEventbusBillingHandler Source = "eventbus_billing_handler"
+	// SourceImagesDelivered 表示图片业务响应已完整交付后结算未确认。
+	SourceImagesDelivered Source = "images_delivered"
 )
 
 // Payload 是 post_delivery_settlement DLQ 行的 JSON payload。
@@ -45,11 +47,13 @@ const (
 // 后 scheduler outbox 改为 bool intent,必须持久化,否则原 Tx2
 // 失败后 recovery 成功时会漏写 scheduler_outbox。
 type Payload struct {
-	Source            Source                 `json:"source"`
-	Settle            settleRequestPersisted `json:"settle"`
-	EventID           string                 `json:"event_id,omitempty"`
-	RequestID         string                 `json:"request_id"`
-	AuditLedgerDLQRef string                 `json:"audit_ledger_dlq_ref,omitempty"`
+	Source                    Source                 `json:"source"`
+	Settle                    settleRequestPersisted `json:"settle"`
+	EventID                   string                 `json:"event_id,omitempty"`
+	RequestID                 string                 `json:"request_id"`
+	AuditLedgerID             string                 `json:"audit_ledger_id,omitempty"`
+	AuditLedgerDLQRef         string                 `json:"audit_ledger_dlq_ref,omitempty"`
+	AuditSignatureFingerprint string                 `json:"audit_signature_fingerprint,omitempty"`
 }
 
 // settleRequestPersisted 镜像 billing.SettleRequest 的可持久字段。
@@ -87,6 +91,7 @@ var (
 	ErrPayloadMissingClaimID  = errors.New("settlementrecovery: payload missing claim_id")
 	ErrPayloadMissingTenantID = errors.New("settlementrecovery: payload missing tenant_id")
 	ErrPayloadInvalidSource   = errors.New("settlementrecovery: payload invalid source")
+	ErrAuditRefPolicyNil      = errors.New("settlementrecovery: audit ref policy not configured")
 )
 
 // FromCompletionEvent 把 eventbus.RequestCompletionEvent 转 Payload。
@@ -102,7 +107,9 @@ var (
 func FromCompletionEvent(src Source, event eventbus.RequestCompletionEvent) Payload {
 	p := FromSettleRequest(src, event.RequestID, event.SettleRequest)
 	p.EventID = event.ID
+	p.AuditLedgerID = event.AuditLedgerID
 	p.AuditLedgerDLQRef = event.AuditLedgerDLQRef
+	p.AuditSignatureFingerprint = event.AuditSignatureFingerprint
 	return p
 }
 
@@ -150,7 +157,7 @@ func FromSettleRequest(src Source, requestID string, req billing.SettleRequest) 
 // Validate 在 enqueue 前 + worker decode 后两端调,确保 payload 不破坏 settle 必填条件。
 func (p Payload) Validate() error {
 	switch p.Source {
-	case SourceStream, SourceDirectSettle, SourceEventbusBillingHandler:
+	case SourceStream, SourceDirectSettle, SourceEventbusBillingHandler, SourceImagesDelivered:
 	default:
 		return fmt.Errorf("%w: %q", ErrPayloadInvalidSource, p.Source)
 	}
@@ -159,6 +166,30 @@ func (p Payload) Validate() error {
 	}
 	if p.Settle.TenantID == 0 {
 		return ErrPayloadMissingTenantID
+	}
+	return nil
+}
+
+// ValidateAuditRef 对来自 RequestCompletionEvent 的恢复 payload 复用 inline/eventbus
+// 同一审计引用口径。直接 SettleRequest 来源没有 event_id，保持其既有 inline 语义。
+func (p Payload) ValidateAuditRef(policy *eventbus.AuditRefPolicy) error {
+	if p.EventID == "" {
+		return nil
+	}
+	if policy == nil {
+		return ErrAuditRefPolicyNil
+	}
+	event := eventbus.RequestCompletionEvent{
+		ID:                        p.EventID,
+		TenantID:                  p.Settle.TenantID,
+		ClaimID:                   p.Settle.ClaimID,
+		RequestID:                 p.RequestID,
+		AuditLedgerID:             p.AuditLedgerID,
+		AuditLedgerDLQRef:         p.AuditLedgerDLQRef,
+		AuditSignatureFingerprint: p.AuditSignatureFingerprint,
+	}
+	if err := eventbus.ValidateMoneyPathAuditRef(&event, policy); err != nil {
+		return fmt.Errorf("settlementrecovery: validate audit ref: %w", err)
 	}
 	return nil
 }

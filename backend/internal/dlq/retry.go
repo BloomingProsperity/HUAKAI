@@ -50,6 +50,16 @@ func (p RetryPolicy) NextFailure(now, firstFailureAt time.Time, previousAttempts
 	if attempts >= p.MaxAttempts || (!firstFailureAt.IsZero() && !now.Before(firstFailureAt.Add(p.DLQAfter))) {
 		return RetryDecision{Status: StatusOperatorReview, Attempts: attempts}
 	}
+	return p.pendingDecision(now, attempts)
+}
+
+// NextFailureContinuous 让必须最终闭合的钱账事件在告警阈值后仍按封顶退避重试。
+func (p RetryPolicy) NextFailureContinuous(now time.Time, previousAttempts int) RetryDecision {
+	p = p.normalized()
+	return p.pendingDecision(now, previousAttempts+1)
+}
+
+func (p RetryPolicy) pendingDecision(now time.Time, attempts int) RetryDecision {
 	delay := p.BaseBackoff
 	for i := 1; i < attempts; i++ {
 		delay *= 2

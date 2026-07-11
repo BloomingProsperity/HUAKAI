@@ -142,6 +142,14 @@ WITH candidates AS (
             AND blc.attempt_seq = pool_slot_acquisitions.attempt_seq
             AND blc.status = 'reserving'
       )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM usage_record_dlq d
+          WHERE d.tenant_id = pool_slot_acquisitions.tenant_id
+            AND d.claim_id = pool_slot_acquisitions.claim_id
+            AND d.event_kind = 'post_delivery_settlement'
+            AND d.status <> 'delivered'
+      )
     ORDER BY lease_expires_at
     LIMIT $1
     FOR UPDATE SKIP LOCKED
