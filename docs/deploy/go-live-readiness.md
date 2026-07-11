@@ -73,6 +73,16 @@ HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权�
 
 ## 7. 已知未覆盖 / roadmap(不阻塞上线)
 
+> **上线前 S1 核实(2026-07-11)**:曾 surface 的 money/security/schema S1 已逐项核当前真码,
+> **无未修 blocker**——media 计费白吃 / 配额退款不冲减 / request_id 丢账三项真 money 缺陷均已修
+> 并接线生产,详见 [../process/reviews/2026-07-11-pre-launch-s1-verification.md](../process/reviews/2026-07-11-pre-launch-s1-verification.md)。两条**运营约束**须知:
+> - ⚠️ **多版本密钥环落地前,禁止轮换 `HUAKAI_CREDENTIAL_KEY_ID` / `_KEY_B64`**:单版本 KEK 下轮换
+>   会使旧密文解不开(凭证全瘫);已有启动期 fail-closed 自检兜底,但正确做法是等多版本密钥环切片
+>   落地再轮换。不轮换即安全。
+> - 工具按次附加费(OpenAI Responses/Gemini 服务端 web_search 等)当前保守计零(**少收非漏账**,
+>   主流量 Anthropic 已全覆盖),稳定上游 usage 信号可用后接入。
+
+
 - 真支付 provider 接入(手动 admin 充值可替代)。
 - S3-4 二级:退款↔sweep 竞态的冲减备忘重试(job_kind 迁移)——一级可观测已上,视数据积累决定是否做。
 - Hermes 提议-确认改动链默认关(`HUAKAI_HERMES_LLM_PROPOSE_ENABLED`);confirmCache 进程内,多副本需 sticky 路由(已加 re-propose 逃生阀)。
