@@ -70,6 +70,13 @@ var visibleButNotEnableable = map[string]bool{
 	registrydefault.ProtocolTogetherChat:   true,
 	registrydefault.ProtocolPerplexityChat: true,
 	registrydefault.ProtocolFireworksChat:  true,
+	// 这些 family 尚无凭据 handler，只保留可见的 scaffold 契约。
+	registrydefault.ProtocolOpenRouterChat: true,
+	registrydefault.ProtocolCohereChat:     true,
+	registrydefault.ProtocolOllamaChat:     true,
+	registrydefault.ProtocolOllamaNative:   true,
+	registrydefault.ProtocolDifyChat:       true,
+	registrydefault.ProtocolReplicateImage: true,
 	// 下列 session family 即使 env on，wire 仍未经验证。
 	registrydefault.ProtocolCursorSession:         true,
 	registrydefault.ProtocolCopilotSession:        true,

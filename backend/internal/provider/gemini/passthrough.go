@@ -91,7 +91,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	// 后续 strings.ReplaceAll 找不到 "{model}" 子串, model 占位永远换不掉。
 	// model ID 用 path escape 防 URL 保留字符断 routing。
 	substituted := strings.ReplaceAll(defaultEndpoint, "{model}", url.PathEscape(in.UpstreamModelID))
-	// upstream_passthrough 凭据自带 base_url 优先用之。
+	// API key 或 upstream_passthrough 凭据自带 base_url 时优先使用。
 	endpoint, err := provider.EndpointForCredential(substituted, in.Credential)
 	if err != nil {
 		return nil, fmt.Errorf("gemini passthrough: endpoint rejected: %w", err)

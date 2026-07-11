@@ -1,6 +1,6 @@
-// EndpointForCredential 单元测试: 重点覆盖 upstream_passthrough base_url 与
-// adapter default endpoint 的路径拼接, 尤其是多段 API root (OpenRouter
-// "/api/v1"、Groq "/openai/v1") 不得拼出重复版本段。
+// EndpointForCredential 单元测试:重点覆盖 API key、upstream_passthrough 的
+// base_url 与 adapter default endpoint 路径拼接，尤其是多段 API root
+// (OpenRouter "/api/v1"、Groq "/openai/v1") 不得拼出重复版本段。
 package provider
 
 import (
@@ -22,6 +22,14 @@ func passthroughCred(baseURL string) Credential {
 	}
 }
 
+func apiKeyCred(baseURL string) Credential {
+	return Credential{
+		Type:  CredentialTypeAPIKey,
+		Value: "sk-api-key",
+		Extra: map[string]string{"base_url": baseURL},
+	}
+}
+
 func setPassthroughPolicyEnv(t *testing.T, key, value string) {
 	t.Helper()
 	t.Setenv(key, value)
@@ -37,10 +45,34 @@ func TestEndpointForCredential(t *testing.T) {
 		want           string
 	}{
 		{
-			name:           "非 passthrough 凭据原样返回 adapter default",
+			name:           "API key 未配置 base_url 原样返回 adapter default",
 			adapterDefault: "https://api.openai.com/v1/chat/completions",
 			cred:           Credential{Type: CredentialTypeAPIKey, Value: "sk-x"},
 			want:           "https://api.openai.com/v1/chat/completions",
+		},
+		{
+			name:           "API key 使用 operator 自配上游地址",
+			adapterDefault: "https://api.kimi.com/coding/v1/chat/completions",
+			cred:           apiKeyCred("https://api.moonshot.cn/v1"),
+			want:           "https://api.moonshot.cn/v1/chat/completions",
+		},
+		{
+			name:           "OAuth 凭据忽略 base_url",
+			adapterDefault: "https://api.example.com/v1/chat/completions",
+			cred:           Credential{Type: CredentialTypeOAuthAccessToken, Extra: map[string]string{"base_url": "https://operator.example/v1"}},
+			want:           "https://api.example.com/v1/chat/completions",
+		},
+		{
+			name:           "Session 凭据忽略 base_url",
+			adapterDefault: "https://api.example.com/v1/chat/completions",
+			cred:           Credential{Type: CredentialTypeSessionToken, Extra: map[string]string{"base_url": "https://operator.example/v1"}},
+			want:           "https://api.example.com/v1/chat/completions",
+		},
+		{
+			name:           "SigV4 凭据忽略 base_url",
+			adapterDefault: "https://api.example.com/v1/chat/completions",
+			cred:           Credential{Type: CredentialTypeAWSSigV4, Extra: map[string]string{"base_url": "https://operator.example/v1"}},
+			want:           "https://api.example.com/v1/chat/completions",
 		},
 		{
 			name:           "base_url 仅 scheme+host 用 adapter 全 path",
@@ -121,13 +153,15 @@ func TestEndpointForCredential(t *testing.T) {
 	}
 }
 
-func TestEndpointForCredentialRejectsUnsafePassthroughBaseURL(t *testing.T) {
+func TestEndpointForCredentialRejectsUnsafeCustomBaseURL(t *testing.T) {
 	cases := []struct {
 		name    string
 		baseURL string
 		leak    string
 	}{
 		{name: "http scheme", baseURL: "http://proxy.example/v1"},
+		{name: "http loopback IPv4", baseURL: "http://127.0.0.1:8080", leak: "127.0.0.1"},
+		{name: "http link local metadata", baseURL: "http://169.254.169.254/latest/meta-data", leak: "169.254.169.254"},
 		{name: "loopback IPv4", baseURL: "https://127.0.0.1:8443/v1", leak: "127.0.0.1"},
 		{name: "private IPv4", baseURL: "https://10.1.2.3/v1", leak: "10.1.2.3"},
 		{name: "link local metadata", baseURL: "https://169.254.169.254/latest", leak: "169.254.169.254"},
@@ -143,17 +177,51 @@ func TestEndpointForCredentialRejectsUnsafePassthroughBaseURL(t *testing.T) {
 		{name: "invalid port", baseURL: "https://proxy.example:70000/v1", leak: "70000"},
 		{name: "empty port", baseURL: "https://proxy.example:/v1", leak: "proxy.example"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := EndpointForCredential(
-				"https://api.openai.com/v1/chat/completions",
-				passthroughCred(tc.baseURL),
-			)
-			if !errors.Is(err, ErrUnsafePassthroughEndpoint) {
-				t.Fatalf("EndpointForCredential error=%v, want ErrUnsafePassthroughEndpoint", err)
+	credentialCases := []struct {
+		name  string
+		build func(string) Credential
+	}{
+		{name: "api_key", build: apiKeyCred},
+		{name: "upstream_passthrough", build: passthroughCred},
+	}
+	for _, credentialCase := range credentialCases {
+		t.Run(credentialCase.name, func(t *testing.T) {
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					_, err := EndpointForCredential(
+						"https://api.openai.com/v1/chat/completions",
+						credentialCase.build(tc.baseURL),
+					)
+					if !errors.Is(err, ErrUnsafePassthroughEndpoint) {
+						t.Fatalf("EndpointForCredential error=%v, want ErrUnsafePassthroughEndpoint", err)
+					}
+					if tc.leak != "" && strings.Contains(err.Error(), tc.leak) {
+						t.Fatalf("blocked endpoint error leaked raw destination %q: %v", tc.leak, err)
+					}
+				})
 			}
-			if tc.leak != "" && strings.Contains(err.Error(), tc.leak) {
-				t.Fatalf("blocked endpoint error leaked raw destination %q: %v", tc.leak, err)
+		})
+	}
+}
+
+func TestUsesCustomPassthroughEndpointCredentialKinds(t *testing.T) {
+	tests := []struct {
+		name string
+		cred Credential
+		want bool
+	}{
+		{name: "API key 带 base_url", cred: apiKeyCred("https://upstream.example/v1"), want: true},
+		{name: "API key 不带 base_url", cred: Credential{Type: CredentialTypeAPIKey}, want: false},
+		{name: "透传凭据带 base_url", cred: passthroughCred("https://upstream.example/v1"), want: true},
+		{name: "透传凭据带专用 endpoint", cred: Credential{Type: CredentialTypeUpstreamPassthrough, Extra: map[string]string{"endpoint_api": "https://upstream.example"}}, want: true},
+		{name: "OAuth 不得启用自定义地址", cred: Credential{Type: CredentialTypeOAuthAccessToken, Extra: map[string]string{"base_url": "https://upstream.example"}}, want: false},
+		{name: "Session 不得启用自定义地址", cred: Credential{Type: CredentialTypeSessionToken, Extra: map[string]string{"base_url": "https://upstream.example"}}, want: false},
+		{name: "SigV4 不得启用自定义地址", cred: Credential{Type: CredentialTypeAWSSigV4, Extra: map[string]string{"base_url": "https://upstream.example"}}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UsesCustomPassthroughEndpoint(tc.cred); got != tc.want {
+				t.Fatalf("UsesCustomPassthroughEndpoint()=%t want %t", got, tc.want)
 			}
 		})
 	}

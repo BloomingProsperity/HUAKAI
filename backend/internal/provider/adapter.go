@@ -81,20 +81,22 @@ type AccountInfo struct {
 	ExternalAccountID string
 }
 
-// EndpointForCredential 按账号凭据决定上游 endpoint:
+// EndpointForCredential 按账号凭据和 operator 配置决定上游 endpoint:
 //   - 默认走 adapter.Endpoint (或调用方传的 adapterDefault)
-//   - cred.Type == UpstreamPassthrough 且 cred.Extra["base_url"] 非空 → 用
-//     account 自带的第三方代理地址 (provider_accounts.upstream_static.base_url)
+//   - APIKey 或 UpstreamPassthrough 凭据的 Extra["base_url"] 非空时，改用
+//     operator 自配的上游地址
 //
 // base_url 路径处理:
 //   - base_url 只含 scheme + host (e.g. "https://proxy.com" 或 "https://proxy.com/") →
 //     用 adapter default 的 path 拼接, 结果 "https://proxy.com/v1/chat/completions"
 //   - base_url 自带 path (e.g. "https://proxy.com/api/v1/chat") → 信任用户原样返回
 //
-// 防第三方 upstream_passthrough 凭据 token 误发到官方
-// vendor endpoint (e.g. 客户配置自托管 proxy 但请求仍发 api.openai.com)。
+// 自定义 base_url 必先通过 safePassthroughBaseURL 静态校验；默认策略对 metadata、
+// 内网、loopback 与其它特殊用途目标 fail-closed。dispatcher 仍须在发网前执行
+// DNS 校验并在直连拨号时再次约束目标 IP，避免域名解析与重绑定绕过。
+// APIKey 与 UpstreamPassthrough 未配置 base_url 时都回落 adapterDefault。
 func EndpointForCredential(adapterDefault string, cred Credential) (string, error) {
-	if cred.Type != CredentialTypeUpstreamPassthrough {
+	if cred.Type != CredentialTypeAPIKey && cred.Type != CredentialTypeUpstreamPassthrough {
 		return adapterDefault, nil
 	}
 	base := strings.TrimSpace(cred.Extra["base_url"])

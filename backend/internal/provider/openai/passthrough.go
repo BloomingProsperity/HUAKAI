@@ -38,8 +38,8 @@ func (a *PassthroughAdapter) Platform() string {
 	return "openai"
 }
 
-// AcceptableCredentialTypes 列出本 adapter 支持的凭据形态。仅 apikey
-// 与 upstream_passthrough（自带 base URL 的开发者代理）。
+// AcceptableCredentialTypes 列出本 adapter 支持的凭据形态。apikey 与
+// upstream_passthrough 都可由 operator 配置 base URL。
 func (a *PassthroughAdapter) AcceptableCredentialTypes() []provider.CredentialType {
 	return []provider.CredentialType{
 		provider.CredentialTypeAPIKey,
@@ -61,8 +61,8 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	if defaultEndpoint == "" {
 		defaultEndpoint = defaultChatCompletionsEndpoint
 	}
-	// upstream_passthrough 凭据自带 base_url, 优先用之 (防第三方 token 发到
-	// OpenAI 官方端点)。
+	// API key 或 upstream_passthrough 凭据自带 base_url 时优先使用；统一
+	// endpoint 守卫在 EndpointForBuildInput 内执行。
 	endpoint, err := provider.EndpointForBuildInput(defaultEndpoint, in)
 	if err != nil {
 		return nil, fmt.Errorf("openai passthrough: endpoint rejected: %w", err)

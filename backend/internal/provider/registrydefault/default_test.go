@@ -318,8 +318,8 @@ func TestBuild_OpenAICompatChatRegistrationsPreservePlatformAndEndpoint(t *testi
 }
 
 func TestKimiRuntimeAdapterRegistered(t *testing.T) {
-	// 变异：删除 ProtocolKimiChat 注册或改其 endpoint/platform；
-	// 在任何 gateway 路由能静默指向 Kimi 之前，本测试必须变红。
+	// 变异：删除 ProtocolKimiChat 注册、改其 endpoint/platform，或恢复成 API key
+	// 不识别 base_url 的旧门，均会让对应完整 URL 断言转红。
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	clearPlaceholderSessionAdapterEnvs(t)
 	r := Build()
@@ -330,21 +330,51 @@ func TestKimiRuntimeAdapterRegistered(t *testing.T) {
 	if got := a.Platform(); got != "kimi" {
 		t.Fatalf("Kimi Platform=%q want kimi", got)
 	}
-	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
-		InboundBody: []byte(`{"model":"kimi-k2","messages":[]}`),
-		Credential: provider.Credential{
-			Type:  provider.CredentialTypeUpstreamPassthrough,
-			Value: "Bearer kimi-access",
+	tests := []struct {
+		name              string
+		credential        provider.Credential
+		wantURL           string
+		wantAuthorization string
+	}{
+		{
+			name:              "API key 未配置 base_url 保持编程订阅默认地址",
+			credential:        provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "kimi-key"},
+			wantURL:           "https://api.kimi.com/coding/v1/chat/completions",
+			wantAuthorization: "Bearer kimi-key",
 		},
-	})
-	if err != nil {
-		t.Fatalf("Kimi BuildRequest: %v", err)
+		{
+			name: "API key 使用 Moonshot 自定义地址",
+			credential: provider.Credential{
+				Type:  provider.CredentialTypeAPIKey,
+				Value: "moonshot-key",
+				Extra: map[string]string{"base_url": "https://api.moonshot.cn/v1"},
+			},
+			wantURL:           "https://api.moonshot.cn/v1/chat/completions",
+			wantAuthorization: "Bearer moonshot-key",
+		},
+		{
+			name:              "透传凭据未配置 base_url 保持原行为",
+			credential:        provider.Credential{Type: provider.CredentialTypeUpstreamPassthrough, Value: "Bearer kimi-access"},
+			wantURL:           "https://api.kimi.com/coding/v1/chat/completions",
+			wantAuthorization: "Bearer kimi-access",
+		},
 	}
-	if got := req.URL.String(); got != "https://api.kimi.com/coding/v1/chat/completions" {
-		t.Fatalf("Kimi endpoint=%q", got)
-	}
-	if got := req.Header.Get("Authorization"); got != "Bearer kimi-access" {
-		t.Fatalf("Kimi Authorization=%q", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+				InboundBody: []byte(`{"model":"kimi-k2","messages":[]}`),
+				Credential:  tc.credential,
+			})
+			if err != nil {
+				t.Fatalf("Kimi BuildRequest: %v", err)
+			}
+			if got := req.URL.String(); got != tc.wantURL {
+				t.Fatalf("Kimi endpoint=%q want %q", got, tc.wantURL)
+			}
+			if got := req.Header.Get("Authorization"); got != tc.wantAuthorization {
+				t.Fatalf("Kimi Authorization=%q want %q", got, tc.wantAuthorization)
+			}
+		})
 	}
 }
 

@@ -59,8 +59,8 @@ func (a *Adapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*ht
 	if base == "" {
 		base = defaultBaseURL
 	}
-	// EndpointForBuildInput 统一处理 in.EndpointPath 覆盖 + upstream_passthrough
-	// base_url 选择 + SSRF 守卫；adapter 不得自行拼私有 endpoint 绕过守卫。
+	// EndpointForBuildInput 统一处理 in.EndpointPath 覆盖、两类凭据的 base_url
+	// 选择与 SSRF 守卫；adapter 不得自行拼私有 endpoint 绕过守卫。
 	endpoint, err := provider.EndpointForBuildInput(base+endpointPath, in)
 	if err != nil {
 		return nil, fmt.Errorf("ollama passthrough: endpoint rejected: %w", err)

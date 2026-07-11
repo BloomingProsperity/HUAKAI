@@ -63,7 +63,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		endpoint = defaultMessagesEndpoint
 	}
 
-	// upstream_passthrough 凭据自带 base_url 优先用之。
+	// API key 或 upstream_passthrough 凭据自带 base_url 时优先使用。
 	endpoint, err := provider.EndpointForCredential(endpoint, in.Credential)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic passthrough: endpoint rejected: %w", err)

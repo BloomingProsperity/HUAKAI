@@ -204,7 +204,17 @@ func TestEvaluateProviderConfigImageLaneUsesOnlyImageRuntimeStations(t *testing.
 	}
 
 	sources := productionRuntimeSources(registrydefault.Build())
-	complete := NewEvaluator(nil, sources).EvaluateProviderConfig(ProviderConfigInput{Family: family, Enabled: true})
+	// 该测试只隔离验证图片车道站点；生产契约是 scaffold，因此测试注册表临时把
+	// 发布态提升为 Released，避免发布决策遮蔽 Lane 的判别性。
+	contracts := DefaultContracts()
+	for i := range contracts {
+		if contracts[i].Family == family {
+			contracts[i].ReleaseState = ReleaseStateReleased
+			contracts[i].ReadinessReason = ""
+		}
+	}
+	laneRegistry := MustNewContractRegistry(contracts)
+	complete := NewEvaluator(laneRegistry, sources).EvaluateProviderConfig(ProviderConfigInput{Family: family, Enabled: true})
 	if !complete.Ready || !complete.Allowed || !complete.TrafficAllowed || complete.Status != StatusReady || complete.Action != ActionAllow {
 		t.Fatalf("图片车道完整 fixture 未 ready: %+v", complete)
 	}
@@ -253,7 +263,7 @@ func TestEvaluateProviderConfigImageLaneUsesOnlyImageRuntimeStations(t *testing.
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			missing := NewEvaluator(nil, tc.mutate(sources)).EvaluateProviderConfig(ProviderConfigInput{Family: family, Enabled: true})
+			missing := NewEvaluator(laneRegistry, tc.mutate(sources)).EvaluateProviderConfig(ProviderConfigInput{Family: family, Enabled: true})
 			assertCapabilityTransition(t, complete, missing,
 				StatusReady, ActionAllow, StatusNotReady, ActionRejectWrite)
 			assertMissingStation(t, missing, tc.station, tc.reason)

@@ -101,10 +101,16 @@ func validatePassthroughHostWithPolicy(raw string, policy ssrfpolicy.Policy) (st
 	return host, nil
 }
 
-// UsesCustomPassthroughEndpoint 报告 cred 是否携带了租户提供的上游 base URL，
-// 其请求目标必须在 Do() 之前先经过守卫校验。
+// UsesCustomPassthroughEndpoint 报告 API key 或透传凭据是否选择了 operator
+// 自配的上游 endpoint；这类请求必须在 Do() 前经过 DNS 守卫校验，并在直连
+// 拨号时继续 fail-closed 拦截 metadata、内网、loopback 与其它特殊用途地址。
 func UsesCustomPassthroughEndpoint(cred Credential) bool {
-	if cred.Type != CredentialTypeUpstreamPassthrough {
+	switch cred.Type {
+	case CredentialTypeAPIKey:
+		return strings.TrimSpace(cred.Extra["base_url"]) != ""
+	case CredentialTypeUpstreamPassthrough:
+		// 透传凭据还可能由专用 adapter 使用历史 endpoint 字段。
+	default:
 		return false
 	}
 	for _, key := range []string{"base_url", "endpoint_api", "copilot_endpoint_api"} {

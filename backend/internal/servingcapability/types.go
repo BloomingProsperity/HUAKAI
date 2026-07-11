@@ -125,6 +125,7 @@ const (
 const (
 	ReasonCollectableNotServing      = "collectable_not_serving"
 	ReasonExperimentalWireUnverified = "experimental_wire_unverified"
+	ReasonNoCredentialHandler        = "no_credential_handler"
 	ReasonAdapterNotRegistered       = "adapter_not_registered"
 	ReasonResponseParserMissing      = "response_parser_missing"
 	ReasonRequestMarshalMissing      = "request_marshal_missing"

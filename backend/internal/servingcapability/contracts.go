@@ -206,7 +206,10 @@ func DefaultContracts() []ServingCapabilityContract {
 	}
 
 	contracts = append(contracts,
-		releasedOpenAICompatible(registrydefault.ProtocolOpenRouterChat, credentialstore.VendorOpenRouter, []string{credentialstore.AuthModeAPIKey}, []string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough}),
+		contract(registrydefault.ProtocolOpenRouterChat, credentialstore.VendorOpenRouter,
+			[]string{credentialstore.AuthModeAPIKey}, []string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
+			registrydefault.ProtocolOpenAIChat, registrydefault.ProtocolOpenAIChat, streamFramingSSE,
+			ReleaseStateScaffold, ModelDiscoveryGlobal, true, ReasonNoCredentialHandler),
 		releasedOpenAICompatible(registrydefault.ProtocolGrokChat, credentialstore.VendorGrok,
 			[]string{credentialstore.AuthModeAPIKey, credentialstore.AuthModeXAIOAuth},
 			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeOAuthAccessToken, credentialstore.RuntimeUpstreamPassthrough}),
@@ -250,18 +253,30 @@ func DefaultContracts() []ServingCapabilityContract {
 			ReleaseStateScaffold, ModelDiscoveryGlobal, true, "product_not_released"))
 	}
 
+	replicateImage := contract(registrydefault.ProtocolReplicateImage, "replicate", []string{credentialstore.AuthModeAPIKey},
+		[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
+		registrydefault.ProtocolReplicateImage, registrydefault.ProtocolReplicateImage, streamFramingNone,
+		ReleaseStateScaffold, ModelDiscoveryGlobal, true, ReasonNoCredentialHandler)
+	replicateImage.Lane = ServingLaneImage
+
 	contracts = append(contracts,
-		releasedOpenAICompatible(registrydefault.ProtocolCohereChat, "cohere", []string{credentialstore.AuthModeAPIKey}, []string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough}),
-		releasedOpenAICompatible(registrydefault.ProtocolOllamaChat, "ollama", []string{credentialstore.AuthModeAPIKey}, []string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough}),
-		releasedContract(registrydefault.ProtocolOllamaNative, "ollama", []string{credentialstore.AuthModeAPIKey},
+		contract(registrydefault.ProtocolCohereChat, "cohere", []string{credentialstore.AuthModeAPIKey},
 			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
-			registrydefault.ProtocolOllamaNative, registrydefault.ProtocolOllamaNative, streamFramingNDJSON, ModelDiscoveryGlobal),
-		releasedContract(registrydefault.ProtocolDifyChat, "dify", []string{credentialstore.AuthModeAPIKey},
+			registrydefault.ProtocolOpenAIChat, registrydefault.ProtocolOpenAIChat, streamFramingSSE,
+			ReleaseStateScaffold, ModelDiscoveryGlobal, true, ReasonNoCredentialHandler),
+		contract(registrydefault.ProtocolOllamaChat, "ollama", []string{credentialstore.AuthModeAPIKey},
 			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
-			registrydefault.ProtocolDifyChat, registrydefault.ProtocolDifyChat, streamFramingSSE, ModelDiscoveryGlobal),
-		releasedImageContract(registrydefault.ProtocolReplicateImage, "replicate", []string{credentialstore.AuthModeAPIKey},
+			registrydefault.ProtocolOpenAIChat, registrydefault.ProtocolOpenAIChat, streamFramingSSE,
+			ReleaseStateScaffold, ModelDiscoveryGlobal, true, ReasonNoCredentialHandler),
+		contract(registrydefault.ProtocolOllamaNative, "ollama", []string{credentialstore.AuthModeAPIKey},
 			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
-			registrydefault.ProtocolReplicateImage, registrydefault.ProtocolReplicateImage, streamFramingNone, ModelDiscoveryGlobal),
+			registrydefault.ProtocolOllamaNative, registrydefault.ProtocolOllamaNative, streamFramingNDJSON,
+			ReleaseStateScaffold, ModelDiscoveryGlobal, true, ReasonNoCredentialHandler),
+		contract(registrydefault.ProtocolDifyChat, "dify", []string{credentialstore.AuthModeAPIKey},
+			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
+			registrydefault.ProtocolDifyChat, registrydefault.ProtocolDifyChat, streamFramingSSE,
+			ReleaseStateScaffold, ModelDiscoveryGlobal, true, ReasonNoCredentialHandler),
+		replicateImage,
 	)
 	return contracts
 }
@@ -274,12 +289,6 @@ func releasedOpenAICompatible(family, vendor string, authModes, runtimeKinds []s
 func releasedContract(family, vendor string, authModes, runtimeKinds []string, requestShape, responseShape, stream string, scope ModelDiscoveryScope) ServingCapabilityContract {
 	return contract(family, vendor, authModes, runtimeKinds, requestShape, responseShape, stream,
 		ReleaseStateReleased, scope, true, "")
-}
-
-func releasedImageContract(family, vendor string, authModes, runtimeKinds []string, requestShape, responseShape, stream string, scope ModelDiscoveryScope) ServingCapabilityContract {
-	result := releasedContract(family, vendor, authModes, runtimeKinds, requestShape, responseShape, stream, scope)
-	result.Lane = ServingLaneImage
-	return result
 }
 
 func unverifiedSessionContract(family, vendor string, authModes, runtimeKinds []string) ServingCapabilityContract {

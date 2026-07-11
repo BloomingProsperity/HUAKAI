@@ -377,35 +377,36 @@ func TestBestEffortCancelSurvivesCanceledRequestContext(t *testing.T) {
 	}
 }
 
-// TestBestEffortCancelBlocksRebindingPassthroughEndpoint 运行时 SSRF 守卫
-// (评审 S1):租户自填 base_url 的 host 静态检查能过,但 DNS 解析到内网/
+// TestBestEffortCancelBlocksRebindingCustomEndpoint 运行时 SSRF 守卫：租户自填
+// base_url 的 host 静态检查能过，但 DNS 解析到内网/
 // metadata(rebinding)时,cancel 发送前必须 fail-closed——cancel 不得成为
 // 主出站守卫的旁路。
-// 变异:删 bestEffortCancel 里的 ValidatePassthroughEndpointTarget 调用 →
-// doer 收到请求 + outcome=cancel_issued → 两断言变红。
-func TestBestEffortCancelBlocksRebindingPassthroughEndpoint(t *testing.T) {
+// 变异:删 bestEffortCancel 里的运行时校验，或不再识别 API key 的 base_url，
+// doer 会收到对应请求且 outcome=cancel_issued，断言转红。
+func TestBestEffortCancelBlocksRebindingCustomEndpoint(t *testing.T) {
 	restore := provider.SwapPassthroughEndpointLookupForTesting(func(context.Context, string, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("169.254.169.254")}, nil
 	})
 	defer restore()
-	doer := &recordingCancelDoer{}
-	ex := &execution{
-		ctx: context.Background(),
-		cred: provider.Credential{
-			Type:  provider.CredentialTypeUpstreamPassthrough,
-			Value: "Token x",
-			Extra: map[string]string{"base_url": "https://relay.rebind.example"},
-		},
-		d: Deps{ReplicateCancelClient: doer},
+	tests := []struct {
+		name string
+		cred provider.Credential
+	}{
+		{name: "API key", cred: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "x", Extra: map[string]string{"base_url": "https://relay.rebind.example"}}},
+		{name: "upstream passthrough", cred: provider.Credential{Type: provider.CredentialTypeUpstreamPassthrough, Value: "Token x", Extra: map[string]string{"base_url": "https://relay.rebind.example"}}},
 	}
-
-	outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-ssrf", Status: "processing"})
-
-	if !strings.HasPrefix(outcome, "cancel_blocked_unsafe_endpoint") {
-		t.Fatalf("outcome=%q want cancel_blocked_unsafe_endpoint 前缀(rebinding 必须拦截)", outcome)
-	}
-	if got := len(doer.requests); got != 0 {
-		t.Fatalf("cancel requests=%d want 0(被守卫拦截不得出站)", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doer := &recordingCancelDoer{}
+			ex := &execution{ctx: context.Background(), cred: tc.cred, d: Deps{ReplicateCancelClient: doer}}
+			outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-ssrf", Status: "processing"})
+			if !strings.HasPrefix(outcome, "cancel_blocked_unsafe_endpoint") {
+				t.Fatalf("outcome=%q want cancel_blocked_unsafe_endpoint 前缀(rebinding 必须拦截)", outcome)
+			}
+			if got := len(doer.requests); got != 0 {
+				t.Fatalf("cancel requests=%d want 0(被守卫拦截不得出站)", got)
+			}
+		})
 	}
 }
 

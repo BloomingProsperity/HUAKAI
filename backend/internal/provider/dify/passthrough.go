@@ -7,7 +7,8 @@
 //   - "completion"                    → POST {base}/v1/completion-messages
 //
 // bot 类型由凭据 Extra["bot_type"] 携带（账号侧配置）；base 默认
-// https://api.dify.ai，自托管实例经 upstream_passthrough base_url 覆盖。
+// https://api.dify.ai，自托管实例可由 API key 或 upstream_passthrough
+// 凭据的 base_url 覆盖。
 package dify
 
 import (
@@ -45,7 +46,7 @@ func (a *Adapter) AcceptableCredentialTypes() []provider.CredentialType {
 }
 
 // BuildRequest 构造出站请求。in.InboundBody 此时已是 dify_chat marshal 产物
-//（response_mode 等流式语义在 body 内，本 adapter 不再 reshape）。
+// （response_mode 等流式语义在 body 内，本 adapter 不再 reshape）。
 func (a *Adapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*http.Request, error) {
 	if !a.acceptsCredential(in.Credential.Type) {
 		return nil, fmt.Errorf("dify passthrough: 不支持的凭据形态 %q", in.Credential.Type)
@@ -62,8 +63,8 @@ func (a *Adapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*ht
 	if base == "" {
 		base = defaultBaseURL
 	}
-	// EndpointForBuildInput 统一处理 in.EndpointPath 覆盖 + upstream_passthrough
-	// base_url 选择 + SSRF 守卫；adapter 不得自行拼私有 endpoint 绕过守卫。
+	// EndpointForBuildInput 统一处理 in.EndpointPath 覆盖、两类凭据的 base_url
+	// 选择与 SSRF 守卫；adapter 不得自行拼私有 endpoint 绕过守卫。
 	endpoint, err := provider.EndpointForBuildInput(base+path, in)
 	if err != nil {
 		return nil, fmt.Errorf("dify passthrough: endpoint rejected: %w", err)

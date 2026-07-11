@@ -365,6 +365,50 @@ func TestDispatcher_RejectsPassthroughEndpointHostnameAliasBeforeDo(t *testing.T
 	}
 }
 
+// 变异：若 UsesCustomPassthroughEndpoint 不再识别带 base_url 的 API key，
+// dispatcher 会跳过 DNS-time 校验并把带密钥的请求交给 HTTP doer，本测试转红。
+func TestDispatcher_RejectsAPIKeyCustomEndpointResolvingToProtectedIPBeforeDo(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+	}{
+		{name: "metadata", addr: "169.254.169.254"},
+		{name: "loopback", addr: "127.0.0.1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := provider.SwapPassthroughEndpointLookupForTesting(func(_ context.Context, network, host string) ([]netip.Addr, error) {
+				if network != "ip" || host != "operator-upstream.example" {
+					t.Fatalf("lookup=(%q,%q), want (ip,operator-upstream.example)", network, host)
+				}
+				return []netip.Addr{netip.MustParseAddr(tc.addr)}, nil
+			})
+			t.Cleanup(restore)
+
+			doer := &stubDoer{respStatus: http.StatusOK, respBody: "{}"}
+			d := newDispatcherForTest(&provider.OpenAICompatPassthroughAdapter{
+				PlatformName: "kimi",
+				Endpoint:     "https://api.kimi.com/coding/v1/chat/completions",
+			}, doer)
+			_, err := d.Dispatch(context.Background(), DispatchInput{
+				ProtocolFamily: "kimi_chat",
+				Account:        provider.AccountInfo{AccountID: 79, Platform: "kimi", AccountType: "apikey"},
+				Credential: provider.Credential{
+					Type:  provider.CredentialTypeAPIKey,
+					Value: "operator-secret",
+					Extra: map[string]string{"base_url": "https://operator-upstream.example/v1"},
+				},
+			})
+			if !errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
+				t.Fatalf("Dispatch error=%v, want ErrUnsafePassthroughEndpoint", err)
+			}
+			if doer.got != nil {
+				t.Fatal("不安全 API key 自定义 endpoint 到达 HTTP doer")
+			}
+		})
+	}
+}
+
 func TestDispatcher_RejectsPassthroughDNSRebindAtDial(t *testing.T) {
 	lookupCalls := 0
 	restore := provider.SwapPassthroughEndpointLookupForTesting(func(_ context.Context, network, host string) ([]netip.Addr, error) {

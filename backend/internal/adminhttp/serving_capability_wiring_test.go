@@ -237,7 +237,9 @@ func TestProviderCatalogMutationRejectsNonCanonicalProtocolValue(t *testing.T) {
 	}
 }
 
-func TestProviderCatalogReplicateImageEnabledWriteUsesImageLane(t *testing.T) {
+// 变异：若 replicate_image 被误升为 Released，enabled 写入会返回 201 并触碰
+// store，本测试必须转红；图片车道本身由 servingcapability 的 Lane 测试独立约束。
+func TestProviderCatalogReplicateImageScaffoldRejectsEnabledWrite(t *testing.T) {
 	setAdminSessionAdapterEnvironment(t, false)
 	store := newProviderCatalogQueriesStub()
 	rec := invokeProviderCatalogRequest(t, AdminProviderCatalogDeps{
@@ -247,9 +249,19 @@ func TestProviderCatalogReplicateImageEnabledWriteUsesImageLane(t *testing.T) {
 		"upstream_protocol": registrydefault.ProtocolReplicateImage, "enabled": true,
 	})
 
-	assertProviderCatalogStatus(t, rec, http.StatusCreated)
-	if store.createCalls != 1 || !store.createArg.Enabled || store.createArg.UpstreamProtocol != registrydefault.ProtocolReplicateImage {
-		t.Fatalf("image lane enabled 写入未落到 store: calls=%d arg=%+v", store.createCalls, store.createArg)
+	assertProviderCatalogStatus(t, rec, http.StatusUnprocessableEntity)
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeProviderCatalogBody(t, rec, &body)
+	if body.Error.Code != "provider_serving_not_ready" || body.Error.Message != servingcapability.ReasonNoCredentialHandler {
+		t.Fatalf("replicate scaffold error=%+v", body.Error)
+	}
+	if store.createCalls != 0 {
+		t.Fatalf("replicate scaffold enabled 写入触碰 store: calls=%d arg=%+v", store.createCalls, store.createArg)
 	}
 }
 

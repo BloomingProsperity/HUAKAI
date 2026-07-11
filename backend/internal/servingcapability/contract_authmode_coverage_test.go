@@ -13,15 +13,14 @@ import (
 // 先修契约(补 runtime kind),再泛化。
 func TestAllContractAuthModesMaterializeCompatibly(t *testing.T) {
 	reg := credentialstore.DefaultHandlerRegistry()
-	var a1NoHandler []string
+	var noHandler []string
 	for _, c := range DefaultContracts() {
 		for _, authMode := range c.AuthModes {
 			handler, err := reg.MustLookup(c.Vendor, authMode)
 			if err != nil {
-				// A1(已在 official-api-module-audit 记录):契约声明但无 credential handler
-				// =无法导入账号。这类族本就不可创建有效凭据,G1 泛化后在 MustLookup 处被拒;
-				// 修 A1(补 handler+DB 或降级 release)属独立切片,此处记录不 fail。
-				a1NoHandler = append(a1NoHandler, c.Family+"/"+authMode)
+				// 无 handler 的契约无法物化账号；发布态由各 family 的定向契约测试
+				// 约束，此处只记录缺口并继续检查可物化组合的 runtime kind。
+				noHandler = append(noHandler, c.Family+"/"+authMode)
 				continue
 			}
 			if err := ValidateAccountCompatibility(c.Family, c.Vendor, authMode, handler.RuntimeKind()); err != nil {
@@ -30,7 +29,7 @@ func TestAllContractAuthModesMaterializeCompatibly(t *testing.T) {
 			}
 		}
 	}
-	if len(a1NoHandler) > 0 {
-		t.Logf("A1 已知 gap(契约声明但无 handler,不可导入,见 official-api-module-audit): %v", a1NoHandler)
+	if len(noHandler) > 0 {
+		t.Logf("契约无 handler、不可导入: %v", noHandler)
 	}
 }
