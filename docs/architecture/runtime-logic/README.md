@@ -35,8 +35,9 @@
 | pool 选号↔渠道健康回流↔failover | relay-forwarding.md §2 C4/C5/C6/C7 + §3 T7-T10 | ✅ 含于 relay 文档 |
 | credential 采集流状态机(start→callback→finalize) | credential-acquisition.md | 待补 |
 | media 任务生命周期(submit→poll→settle) | media-task.md | 待补 |
+| settlement_intents 持久结算意图(意图↔claim↔交付↔sweeper 追平) | [settlement-intent-reconciliation.md](settlement-intent-reconciliation.md) | ✅ 完成:阶段 1 fail-open 旁路 + 阶段 2 sweeper 对账,5 配合点 + 6 配合测试对照三镜,真 PG+race 实测 |
 
 ## 已知配合缺口(全局登记,详见各子系统文档)
 
-- **[quota reconciliation 未结算,2026-07-02 实测]** `quota_reconciliation_jobs` 卡 `queued`(0 成功),`quota_reservations` 停在 `reserved` 不结算,并发槽只靠 90s lease 过期释放、从不即时释放 → concurrency 退化为「90s 窗口内请求启动数上限」而非「真在途并发数」。属 billing 结算 ↔ quota reconciler 配合断裂(可用性,非亏钱——RPM 与计费金额均正确)。待多方位证实(是此 dev 部署未起 reconciler worker,还是真 bug)后定级。
+- **✅[已闭合 2026-07-11]~~[quota reconciliation 未结算,2026-07-02 实测]~~** 原象:`quota_reconciliation_jobs` 卡 `queued`、`quota_reservations` 停 `reserved` 不结算,并发槽只靠 90s lease 过期释放。**定性=当时 dev 部署未起 reconciler worker,非代码 bug**:生产 `quotaReconcilerEnabledFromEnv()` 默认 true(未设/空/解析失败都返回 true,`cmd/gateway/wiring.go:271-281`),wiring.go:1248 无条件启动 `quota.NewReconciliationWorker`;billing 侧 `PendingReconciliationWorker` 亦无条件启动(wiring.go:1235)。二者补上「reservation 卡 reserved 冻结 headroom」的配合断裂。go-live-readiness §3 已列为默认开执行器。
 - **[usage 成本分项列未持久化,2026-07-02 实测]** `usage_records.input_cost` / `output_cost` 系统性为 0(聚合 `actual_cost` 正确)。对账分项报表会空。observability 缺口,非 money bug。
