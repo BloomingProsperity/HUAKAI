@@ -100,11 +100,9 @@ func (f *quotaFixture) createPolicy(tenantID int64, body string) quotaPolicyItem
 	return item
 }
 
-// TestCreatePersistsAndAuditsRealStore 在同一个事务里演练真实的
-// InsertQuotaPolicy + InsertAdminAuditEvent。区分性断言:必须存在一条审计行
-//(action=create_quota_policy, target_type=quota_policy, target_id=新 id)。
-// 变异:从事务里去掉 InsertAdminAuditEvent 会让审计行查询查不到行 -> 变红,
-// 即便 create 仍然返回 201。
+// TestCreatePersistsAndAuditsRealStore 守住 policy 与审计事件在同一个事务持久化。
+// HTTP 201 之外还必须存在与新 policy 标识一致的 create_quota_policy 审计行，
+// 否则管理员无法追溯创建动作。
 func TestCreatePersistsAndAuditsRealStore(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -142,10 +140,8 @@ func TestCreatePersistsAndAuditsRealStore(t *testing.T) {
 	}
 }
 
-// TestCrossTenantGet404 证明 GetQuotaPolicyByID 有租户围栏:为租户 A 创建的
-// policy 通过 ?tenant_id=B 是不可见的。变异:从 GetQuotaPolicyByID 去掉
-// `AND tenant_id=$1` 会返回跨租户的行,于是这个 404 断言会变红 —— 这是核心的
-// 跨租户泄露守卫。
+// TestCrossTenantGet404 守住 GetQuotaPolicyByID 的租户围栏：租户 A 的 policy
+// 对租户 B 必须返回 404，响应体也不得泄露租户 A 的 scope 内容。
 func TestCrossTenantGet404(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -164,10 +160,8 @@ func TestCrossTenantGet404(t *testing.T) {
 	}
 }
 
-// TestDeleteInUseRealFK 证明 quota_windows 的 FK ON DELETE RESTRICT(23503)
-// 会被表现为 409 quota_policy_in_use。没有 window 的夹具会让删除成功(200),
-// 所以种入 window 正是证明 FK 路径的关键。变异:把 23503 映射为 503 会使 409
-// 断言变红。
+// TestDeleteInUseRealFK 守住 quota_windows 占用 policy 时的 FK 约束语义：
+// 接口必须返回 409 quota_policy_in_use，不得把可操作的资源冲突误报为 503。
 func TestDeleteInUseRealFK(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -194,8 +188,8 @@ func TestDeleteInUseRealFK(t *testing.T) {
 	}
 }
 
-// TestDeleteCleanRealStore 证明一个没有 window 的 policy 会被硬删除(200),
-// 写入一条 delete_quota_policy 审计行,且随后的 GET 返回 404。
+// TestDeleteCleanRealStore 守住未被 window 使用的 policy 可从主表移除，
+// 同时写入一条 delete_quota_policy 审计行，且随后的 GET 返回 404。
 func TestDeleteCleanRealStore(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -227,11 +221,9 @@ func TestDeleteCleanRealStore(t *testing.T) {
 	}
 }
 
-// TestUpdateEnabledTogglesReserveVisibility 是自证型测试:在禁用一个 policy 之后,
-// 它同时运行 admin List 读取器与 reserve 路径的 ListActiveQuotaPoliciesForScopes
-// 读取器,并断言二者结果不同 —— admin 仍能看到该行,reserve 看不到。变异:一个
-// 把 reserve 路径的 `WHERE enabled=true` 过滤照搬过来的、有缺陷的 admin List
-// 会让两者都为空,从而使"admin 看得到、reserve 看不到"的断言变红。
+// TestUpdateEnabledTogglesReserveVisibility 守住禁用 policy 的双重可见性：
+// admin List 仍能用于运维查看，reserve 读取器必须忽略该行；两类读取结果
+// 相同会让禁用状态失去运维可见性或继续影响准入。
 func TestUpdateEnabledTogglesReserveVisibility(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -296,9 +288,9 @@ func TestUpdateEnabledTogglesReserveVisibility(t *testing.T) {
 	}
 }
 
-// TestNoMoneySideEffect 证明 cost_usd quota policy 的 CRUD 绝不触碰
-// user_balances 或 billing_ledger_claims:在 create+update+delete 前后,行数
-// 保持不变。变异:在 handler 里接入任何余额/账本写入,都会使行数差值断言变红。
+// TestNoMoneySideEffect 守住 cost_usd quota policy 的 CRUD 只管理策略，
+// create+update+delete 前后 user_balances 与 billing_ledger_claims 行数必须不变；
+// 任一余额或账本写入都违反管理面与钱路隔离。
 func TestNoMoneySideEffect(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)

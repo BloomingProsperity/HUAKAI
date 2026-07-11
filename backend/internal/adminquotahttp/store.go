@@ -16,9 +16,11 @@ const (
 	auditTargetType = "quota_policy"
 
 	// 由 live-policy 唯一索引以及 quota_windows 的 FK ON DELETE RESTRICT 抛出的
-	// Postgres SQLSTATE 码,handler 会将其归一化为 409。
+	// Postgres SQLSTATE 码,handler 会将其归一化为 409。不同约束动作可能分别
+	// 返回 foreign_key_violation 或 restrict_violation。
 	pgUniqueViolation     = "23505"
 	pgForeignKeyViolation = "23503"
+	pgRestrictViolation   = "23001"
 
 	liveScopeMetricIndex = "uq_quota_policies_live_scope_metric"
 )
@@ -170,7 +172,7 @@ func (s quotaPolicyStoreAdapter) DeleteQuotaPolicyWithAudit(ctx context.Context,
 
 // normalizeQuotaPolicyDBError 把 Postgres 约束失败映射到本包的哨兵错误,handler
 // 再把它们翻译成 409,与 channel-catalog 的 23505->409 归一化方式一致。live-policy
-// 唯一索引变成 quota_policy_conflict;quota_windows 的 FK RESTRICT(23503)变成
+// 唯一索引变成 quota_policy_conflict;quota_windows 的 FK RESTRICT 约束失败变成
 // quota_policy_in_use。
 func normalizeQuotaPolicyDBError(err error) error {
 	if err == nil {
@@ -183,7 +185,7 @@ func normalizeQuotaPolicyDBError(err error) error {
 			if pgErr.ConstraintName == liveScopeMetricIndex {
 				return errQuotaPolicyConflict
 			}
-		case pgForeignKeyViolation:
+		case pgForeignKeyViolation, pgRestrictViolation:
 			return errQuotaPolicyInUse
 		}
 	}
