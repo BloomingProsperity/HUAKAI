@@ -12,9 +12,10 @@ type staticRulesProvider struct {
 	rules         []TempUnschedulableRule
 	customEnabled bool
 	customCodes   []int32
+	poolMode      bool
 }
 
-func (p *staticRulesProvider) GetAccountErrorRules(accountID int64) ([]TempUnschedulableRule, []int32) {
+func (p *staticRulesProvider) GetAccountErrorPolicy(accountID int64) AccountErrorPolicy {
 	_ = accountID
 	var rules []TempUnschedulableRule
 	if p.tempEnabled {
@@ -24,7 +25,7 @@ func (p *staticRulesProvider) GetAccountErrorRules(accountID int64) ([]TempUnsch
 	if p.customEnabled {
 		codes = p.customCodes
 	}
-	return rules, codes
+	return AccountErrorPolicy{Rules: rules, CustomErrorCodes: codes, PoolMode: p.poolMode}
 }
 
 func fixedNow() time.Time {
@@ -147,11 +148,11 @@ func TestProvider_TempUnschedulableDisabled_EmptyRules(t *testing.T) {
 		customEnabled: true,
 		customCodes:   []int32{418},
 	}
-	rules, codes := p.GetAccountErrorRules(1)
-	if len(rules) != 0 {
-		t.Fatalf("expected empty rules when temp_unschedulable_enabled=false, got %v", rules)
+	policy := p.GetAccountErrorPolicy(1)
+	if len(policy.Rules) != 0 {
+		t.Fatalf("expected empty rules when temp_unschedulable_enabled=false, got %v", policy.Rules)
 	}
-	if len(codes) == 0 {
+	if len(policy.CustomErrorCodes) == 0 {
 		t.Fatal("expected custom codes when custom_error_codes_enabled=true")
 	}
 }
@@ -164,11 +165,11 @@ func TestProvider_CustomCodesDisabled_EmptyCodes(t *testing.T) {
 		customEnabled: false,
 		customCodes:   []int32{403, 418},
 	}
-	rules, codes := p.GetAccountErrorRules(1)
-	if len(codes) != 0 {
-		t.Fatalf("expected empty codes when custom_error_codes_enabled=false, got %v", codes)
+	policy := p.GetAccountErrorPolicy(1)
+	if len(policy.CustomErrorCodes) != 0 {
+		t.Fatalf("expected empty codes when custom_error_codes_enabled=false, got %v", policy.CustomErrorCodes)
 	}
-	if len(rules) == 0 {
+	if len(policy.Rules) == 0 {
 		t.Fatal("expected rules when temp_unschedulable_enabled=true")
 	}
 }
@@ -288,5 +289,44 @@ func TestHandleUpstreamError_429_Unaffected(t *testing.T) {
 	}
 	if dec.StateChange != StateRateLimited {
 		t.Fatalf("StateChange=%v want StateRateLimited", dec.StateChange)
+	}
+}
+
+func TestHandleUpstreamError_PoolModeSkipsUnmatchedLocalState(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	provider := &staticRulesProvider{
+		poolMode:      true,
+		customEnabled: true,
+		customCodes:   []int32{418},
+	}
+	svc := NewUpstreamRateService(func() time.Time { return now }, time.Minute, WithAccountErrorRulesProvider(provider))
+
+	dec, err := svc.HandleUpstreamError(context.Background(), 42, http.StatusTooManyRequests, http.Header{"Retry-After": []string{"60"}}, nil)
+	if err != nil {
+		t.Fatalf("HandleUpstreamError: %v", err)
+	}
+	if !dec.SuppressLocalState || dec.StateChange != StateNoChange || !dec.CooldownUntil.IsZero() {
+		t.Fatalf("未匹配错误必须只故障转移且不改本地状态，得到 %+v", dec)
+	}
+	if !dec.ShouldFailover {
+		t.Fatal("pool_mode 跳过状态写入时仍须允许故障转移")
+	}
+}
+
+func TestHandleUpstreamError_PoolModeKeepsCustomRuleOverride(t *testing.T) {
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	provider := &staticRulesProvider{
+		poolMode:    true,
+		tempEnabled: true,
+		rules:       []TempUnschedulableRule{{ErrorCode: 503, Keywords: []string{"busy"}, DurationMinutes: 11}},
+	}
+	svc := NewUpstreamRateService(func() time.Time { return now }, time.Minute, WithAccountErrorRulesProvider(provider))
+
+	dec, err := svc.HandleUpstreamError(context.Background(), 42, http.StatusServiceUnavailable, nil, []byte(`{"error":"busy"}`))
+	if err != nil {
+		t.Fatalf("HandleUpstreamError: %v", err)
+	}
+	if dec.SuppressLocalState || dec.StateChange != StateTempUnsched || dec.Reason != ReasonTempUnschedRule {
+		t.Fatalf("自定义规则应覆盖 pool_mode 短路，得到 %+v", dec)
 	}
 }

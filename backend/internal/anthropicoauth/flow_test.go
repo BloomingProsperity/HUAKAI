@@ -126,6 +126,9 @@ func TestCallbackUsesStoredPKCEVerifierForExchange(t *testing.T) {
 	if payload.Email != "owner@example.test" || payload.AuthMode != credentialstore.AuthModeClaudeAIOAuth {
 		t.Fatalf("payload metadata email/auth_mode=%q/%q", payload.Email, payload.AuthMode)
 	}
+	if !strings.Contains(payload.Scope, "user:profile") {
+		t.Fatalf("凭据载荷未保留已申请的 profile scope：%q", payload.Scope)
+	}
 }
 
 func TestDefaultTokenExchangeClientUsesAnthropicMimicryTransport(t *testing.T) {

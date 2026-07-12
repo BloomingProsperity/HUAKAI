@@ -106,6 +106,57 @@ func TestGetAdminProviderAccountHealthFallsBackToProviderAccountRefresh(t *testi
 	}
 }
 
+func TestGetAdminProviderAccountHealthReadsQuotaWindows(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openAdminAuditIntegrationPool(t, ctx)
+	q := New(pool)
+
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tenantID, accountID := seedAdminProviderAccountHealthGraph(t, ctx, pool, suffix)
+	t.Cleanup(func() {
+		cleanupAdminProviderAccountHealthGraph(t, context.Background(), pool, tenantID)
+	})
+	start5h := time.Date(2026, 7, 12, 8, 0, 0, 0, time.UTC)
+	end5h := start5h.Add(5 * time.Hour)
+	start7d := time.Date(2026, 7, 6, 13, 0, 0, 0, time.UTC)
+	end7d := start7d.Add(7 * 24 * time.Hour)
+	if _, err := pool.Exec(ctx, `
+UPDATE provider_accounts
+SET session_window_5h_start = $1,
+    session_window_5h_end = $2,
+    session_window_5h_status = 'active',
+    session_window_5h_utilization = 37.50,
+    session_window_7d_start = $3,
+    session_window_7d_end = $4,
+    session_window_7d_status = 'active',
+    session_window_7d_utilization = 62.25
+WHERE tenant_id = $5 AND id = $6`, start5h, end5h, start7d, end7d, tenantID, accountID); err != nil {
+		t.Fatalf("更新窗口快照: %v", err)
+	}
+
+	row, err := q.GetAdminProviderAccountHealth(ctx, GetAdminProviderAccountHealthParams{TenantID: tenantID, ID: accountID})
+	if err != nil {
+		t.Fatalf("GetAdminProviderAccountHealth: %v", err)
+	}
+	if !row.SessionWindow5hStart.Valid || !row.SessionWindow5hStart.Time.Equal(start5h) ||
+		!row.SessionWindow5hEnd.Valid || !row.SessionWindow5hEnd.Time.Equal(end5h) ||
+		row.SessionWindow5hStatus == nil || *row.SessionWindow5hStatus != "active" ||
+		!row.SessionWindow7dStart.Valid || !row.SessionWindow7dStart.Time.Equal(start7d) ||
+		!row.SessionWindow7dEnd.Valid || !row.SessionWindow7dEnd.Time.Equal(end7d) ||
+		row.SessionWindow7dStatus == nil || *row.SessionWindow7dStatus != "active" {
+		t.Fatalf("窗口时间/状态回读不一致：%+v", row)
+	}
+	util5h, err := row.SessionWindow5hUtilization.Float64Value()
+	if err != nil || !util5h.Valid || util5h.Float64 != 37.5 {
+		t.Fatalf("5h utilization=%+v err=%v", util5h, err)
+	}
+	util7d, err := row.SessionWindow7dUtilization.Float64Value()
+	if err != nil || !util7d.Valid || util7d.Float64 != 62.25 {
+		t.Fatalf("7d utilization=%+v err=%v", util7d, err)
+	}
+}
+
 func seedAdminProviderAccountHealthGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string) (tenantID, accountID int64) {
 	t.Helper()
 	var providerID, poolGroupID, channelID int64

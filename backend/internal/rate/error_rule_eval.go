@@ -21,6 +21,13 @@ type TempUnschedulableRule struct {
 	Description     string   `json:"description"`
 }
 
+// AccountErrorPolicy 是单个账号在错误决策树中的完整本地状态策略。
+type AccountErrorPolicy struct {
+	Rules            []TempUnschedulableRule
+	CustomErrorCodes []int32
+	PoolMode         bool
+}
+
 // AccountErrorRulesProvider 向 rate service 提供按账号的错误封禁配置。实现
 // 可使用进程内缓存。nil 的 provider 被视为「无规则」(零配置的空操作)。
 //
@@ -28,10 +35,8 @@ type TempUnschedulableRule struct {
 // custom_error_codes_enabled):对任何被禁用的特性,它都返回空切片,因此
 // 调用方永远不需要一个单独的 enabled bool。
 type AccountErrorRulesProvider interface {
-	// GetAccountErrorRules 返回给定账号生效的 temp-unschedulable 规则和
-	// custom error codes,且两个 enable 标志均已应用。空切片表示
-	//「特性关闭 / 无配置」(空操作)。
-	GetAccountErrorRules(accountID int64) (rules []TempUnschedulableRule, customErrorCodes []int32)
+	// GetAccountErrorPolicy 已应用两个 enable 标志；查询失败时返回零值以维持既有行为。
+	GetAccountErrorPolicy(accountID int64) AccountErrorPolicy
 }
 
 const maxBodyBytesForMatch = 8 * 1024 // 8 KB 上限 —— 绝不要记录这段切片

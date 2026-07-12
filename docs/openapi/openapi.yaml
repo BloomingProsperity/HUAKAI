@@ -17480,6 +17480,18 @@ components:
         custom_error_codes: { type: array, items: { type: integer } }
         pool_mode: { type: boolean, default: false }
         temp_unschedulable_enabled: { type: boolean, default: false }
+        temp_unschedulable_rules:
+          description: 仅账号详情读取接口返回；列表与其它账号响应省略。
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [error_code, keywords, duration_minutes]
+            properties:
+              error_code: { type: integer }
+              keywords: { type: array, items: { type: string } }
+              duration_minutes: { type: integer }
+              description: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -17640,6 +17652,17 @@ components:
       required:
         - id
         - health_state
+        - last_probe_latency_ms
+        - last_probe_at
+        - model_sync_last_check_at
+        - session_window_5h_start
+        - session_window_5h_end
+        - session_window_5h_status
+        - session_window_5h_utilization
+        - session_window_7d_start
+        - session_window_7d_end
+        - session_window_7d_status
+        - session_window_7d_utilization
         - last_refresh_at
         - last_refresh_outcome
         - failure_class
@@ -17656,6 +17679,29 @@ components:
           type: string
           format: date-time
           description: Present only when the current health state has an automatic recovery deadline.
+        last_probe_latency_ms: { type: [integer, 'null'], format: int32, minimum: 0 }
+        last_probe_at: { type: [string, 'null'], format: date-time }
+        model_sync_last_check_at: { type: [string, 'null'], format: date-time }
+        session_window_5h_start: { type: [string, 'null'], format: date-time }
+        session_window_5h_end: { type: [string, 'null'], format: date-time }
+        session_window_5h_status:
+          type: [string, 'null']
+          description: 窗口结束时间早于读取时间时固定投影为 expired。
+        session_window_5h_utilization:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 100
+          description: 仅活动窗口返回；过期或无法判活时为 null。
+        session_window_7d_start: { type: [string, 'null'], format: date-time }
+        session_window_7d_end: { type: [string, 'null'], format: date-time }
+        session_window_7d_status:
+          type: [string, 'null']
+          description: 窗口结束时间早于读取时间时固定投影为 expired。
+        session_window_7d_utilization:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 100
+          description: 仅活动窗口返回；过期或无法判活时为 null。
         last_refresh_at: { type: [string, 'null'], format: date-time }
         last_refresh_outcome: { type: [string, 'null'] }
         failure_class: { type: [string, 'null'] }

@@ -402,6 +402,43 @@ func TestApplyUpstreamErrorCooldown_ModelWriteFailFallsBackToAccountHealth(t *te
 	}
 }
 
+func TestApplyUpstreamErrorCooldown_PoolModeSuppressesEveryLocalWrite(t *testing.T) {
+	t.Parallel()
+
+	recorder := &recordingModelRateLimiter{}
+	health := &recordingChannelHealth{}
+	ex := modelCooldownTestExecution(recorder, health, suppressingLocalStateRateService{})
+	classification, err := gateway.Classify(http.StatusTooManyRequests, nil, []byte(`{"error":"rate limited"}`), "openai")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	handled := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"error":"rate limited"}`),
+	}, classification, true)
+	if !handled {
+		t.Fatal("pool_mode 抑制信号必须阻止调用方继续写账号健康状态")
+	}
+	if recorder.calls != 0 || len(health.forceCooldowns) != 0 || len(health.signals) != 0 {
+		t.Fatalf("pool_mode 未匹配分支发生本地写入：model=%d force=%d signal=%d", recorder.calls, len(health.forceCooldowns), len(health.signals))
+	}
+}
+
+type suppressingLocalStateRateService struct{}
+
+func (suppressingLocalStateRateService) HandleUpstreamError(context.Context, int64, int, http.Header, []byte) (rate.Decision, error) {
+	return rate.Decision{ShouldFailover: true, SuppressLocalState: true}, nil
+}
+
+func (suppressingLocalStateRateService) ClearCascade(context.Context, int64, string) error {
+	return nil
+}
+
+func (suppressingLocalStateRateService) UpdateSessionWindow(context.Context, int64, http.Header) error {
+	return nil
+}
+
 func modelCooldownTestExecution(rec *recordingModelRateLimiter, health *recordingChannelHealth, svc rate.Service) *chatExecution {
 	ident := validIdentity()
 	key := channelhealth.ChannelKey{

@@ -833,6 +833,10 @@ func (ex *chatExecution) updateSessionWindowFromHeaders(headers http.Header) {
 	if ex == nil || ex.d.RateService == nil || ex.acquiredAccountID <= 0 {
 		return
 	}
+	// 这些头的语义只属于 Anthropic 车道，避免兼容网关伪造同名头污染其它账号。
+	if !strings.EqualFold(strings.TrimSpace(ex.accInfo.Platform), "anthropic") {
+		return
+	}
 	if err := ex.d.RateService.UpdateSessionWindow(ex.ctx, ex.acquiredAccountID, headers); err != nil {
 		logInternalError(ex.ctx, ex.requestID, "session_window_update_failed", err)
 	}

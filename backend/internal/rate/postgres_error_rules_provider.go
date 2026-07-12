@@ -20,13 +20,13 @@ func NewPostgresAccountErrorRulesProvider(pool *pgxpool.Pool) AccountErrorRulesP
 	return &postgresAccountErrorRulesProvider{pool: pool}
 }
 
-// GetAccountErrorRules 实现 AccountErrorRulesProvider。
+// GetAccountErrorPolicy 实现 AccountErrorRulesProvider。
 // 它应用两个 enable 标志:
 //   - 当 temp_unschedulable_enabled = false 时返回空 rules
 //   - 当 custom_error_codes_enabled = false 时返回空 codes
-func (p *postgresAccountErrorRulesProvider) GetAccountErrorRules(accountID int64) ([]TempUnschedulableRule, []int32) {
+func (p *postgresAccountErrorRulesProvider) GetAccountErrorPolicy(accountID int64) AccountErrorPolicy {
 	if p == nil || p.pool == nil || accountID <= 0 {
-		return nil, nil
+		return AccountErrorPolicy{}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -34,9 +34,10 @@ func (p *postgresAccountErrorRulesProvider) GetAccountErrorRules(accountID int64
 
 	row := p.pool.QueryRow(ctx,
 		`SELECT temp_unschedulable_enabled, temp_unschedulable_rules,
-		        custom_error_codes_enabled, custom_error_codes
-		   FROM provider_accounts
-		  WHERE id = $1`,
+			        custom_error_codes_enabled, custom_error_codes, pool_mode
+			   FROM provider_accounts
+			  WHERE id = $1
+			    AND deleted_at IS NULL`,
 		accountID,
 	)
 
@@ -45,10 +46,11 @@ func (p *postgresAccountErrorRulesProvider) GetAccountErrorRules(accountID int64
 		rulesRaw      []byte
 		customEnabled bool
 		customCodes   []int32
+		poolMode      bool
 	)
-	if err := row.Scan(&tempEnabled, &rulesRaw, &customEnabled, &customCodes); err != nil {
+	if err := row.Scan(&tempEnabled, &rulesRaw, &customEnabled, &customCodes, &poolMode); err != nil {
 		// 行未找到或查询错误:fail-open。
-		return nil, nil
+		return AccountErrorPolicy{}
 	}
 
 	var rules []TempUnschedulableRule
@@ -61,5 +63,5 @@ func (p *postgresAccountErrorRulesProvider) GetAccountErrorRules(accountID int64
 		effectiveCodes = customCodes
 	}
 
-	return rules, effectiveCodes
+	return AccountErrorPolicy{Rules: rules, CustomErrorCodes: effectiveCodes, PoolMode: poolMode}
 }

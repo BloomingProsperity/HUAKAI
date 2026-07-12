@@ -116,6 +116,7 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, account
 	if err != nil {
 		return Credential{}, AccountInfo{}, err
 	}
+	oauthScope := strings.TrimSpace(cred.Extra["scope"])
 	accountExtra := decodeProviderAccountExtra(row.extra)
 	cred = mergeCredentialAccountExtra(cred, accountExtra)
 
@@ -132,6 +133,7 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, account
 	info := AccountInfo{
 		AccountID:    row.id,
 		TenantID:     row.tenantID,
+		OAuthScope:   oauthScope,
 		Platform:     row.platform,
 		AccountType:  row.accountType,
 		CodexCLIOnly: codexCLIOnlyFromAccountExtra(accountExtra),
@@ -164,6 +166,7 @@ func (v *PostgresCredentialVault) resolveFromStore(
 		return Credential{}, AccountInfo{}, true, err
 	}
 	cred := mapRuntimeMaterial(material)
+	oauthScope := strings.TrimSpace(material.Extra["scope"])
 	accountExtra, err := v.loadProviderAccountExtra(ctx, tenantID, accountID)
 	if err != nil {
 		return Credential{}, AccountInfo{}, true, err
@@ -172,6 +175,7 @@ func (v *PostgresCredentialVault) resolveFromStore(
 	return cred, AccountInfo{
 		AccountID:           rec.ProviderAccountID,
 		TenantID:            rec.TenantID,
+		OAuthScope:          oauthScope,
 		Platform:            rec.Vendor,
 		AccountType:         rec.AuthMode,
 		CodexCLIOnly:        codexCLIOnlyFromAccountExtra(accountExtra),

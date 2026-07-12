@@ -42,6 +42,7 @@ type AdminProviderAccountRow struct {
 	CustomErrorCodes         []int32            `db:"custom_error_codes" json:"custom_error_codes"`
 	PoolMode                 bool               `db:"pool_mode" json:"pool_mode"`
 	TempUnschedulableEnabled bool               `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
 	ProxyID                  *int64             `db:"proxy_id" json:"proxy_id"`
 	ProxyGroupID             *string            `db:"proxy_group_id" json:"proxy_group_id"`
 	CreatedAt                pgtype.Timestamptz `db:"created_at" json:"created_at"`
@@ -152,6 +153,7 @@ const adminProviderAccountColumns = `
     custom_error_codes,
     pool_mode,
     temp_unschedulable_enabled,
+    temp_unschedulable_rules,
     proxy_id,
     proxy_group_id,
     created_at,
@@ -465,6 +467,7 @@ func scanAdminProviderAccount(row adminProviderAccountScanner, i *AdminProviderA
 		&i.CustomErrorCodes,
 		&i.PoolMode,
 		&i.TempUnschedulableEnabled,
+		&i.TempUnschedulableRules,
 		&i.ProxyID,
 		&i.ProxyGroupID,
 		&i.CreatedAt,

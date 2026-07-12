@@ -596,6 +596,9 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	if len(response.Items) != 1 || response.Items[0].ID != 77 || !response.Page.HasMore || response.Page.NextCursor == nil {
 		t.Fatalf("unexpected list response: %+v", response)
 	}
+	if strings.Contains(rec.Body.String(), "temp_unschedulable_rules") {
+		t.Fatalf("列表响应不应携带详情规则：%s", rec.Body.String())
+	}
 }
 
 func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
@@ -605,6 +608,7 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	row.ProbeModel = &probeModel
 	row.Tags = []string{"prod", "blue"}
 	row.Extra = []byte(`{"azure_api_version":"2024-08-01"}`)
+	row.TempUnschedulableRules = []byte(`[{"error_code":529,"keywords":["busy"],"duration_minutes":5,"description":"拥塞"}]`)
 	store := &adminPoolStoreStub{get: &row}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts/77", "")
 	if rec.Code != http.StatusOK {
@@ -625,6 +629,18 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	}
 	if !strings.Contains(string(body.Extra), `"azure_api_version":"2024-08-01"`) {
 		t.Fatalf("extra response=%s", string(body.Extra))
+	}
+	var rules []struct {
+		ErrorCode       int      `json:"error_code"`
+		Keywords        []string `json:"keywords"`
+		DurationMinutes int      `json:"duration_minutes"`
+		Description     string   `json:"description"`
+	}
+	if err := json.Unmarshal(body.TempUnschedulableRules, &rules); err != nil {
+		t.Fatalf("temp_unschedulable_rules 响应无效: %v raw=%s", err, body.TempUnschedulableRules)
+	}
+	if len(rules) != 1 || rules[0].ErrorCode != 529 || rules[0].DurationMinutes != 5 || rules[0].Description != "拥塞" {
+		t.Fatalf("temp_unschedulable_rules=%+v", rules)
 	}
 }
 

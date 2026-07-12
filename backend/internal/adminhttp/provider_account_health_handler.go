@@ -34,22 +34,27 @@ type providerAccountHealthStore interface {
 }
 
 type providerAccountHealthResponseBody struct {
-	ID                    int64   `json:"id"`
-	HealthState           string  `json:"health_state"`
-	HealthStateUntil      *string `json:"health_state_until,omitempty"`
-	LastProbeLatencyMS    *int32  `json:"last_probe_latency_ms"`
-	LastProbeAt           *string `json:"last_probe_at"`
-	ModelSyncLastCheckAt  *string `json:"model_sync_last_check_at"`
-	SessionWindow5hStart  *string `json:"session_window_5h_start"`
-	SessionWindow5hEnd    *string `json:"session_window_5h_end"`
-	SessionWindow5hStatus *string `json:"session_window_5h_status"`
-	LastRefreshAt         *string `json:"last_refresh_at"`
-	LastRefreshOutcome    *string `json:"last_refresh_outcome"`
-	FailureClass          *string `json:"failure_class"`
-	FailureCount          int32   `json:"failure_count"`
-	Enabled               bool    `json:"enabled"`
-	RequiresAction        bool    `json:"requires_action"`
-	UpdatedAt             string  `json:"updated_at"`
+	ID                         int64    `json:"id"`
+	HealthState                string   `json:"health_state"`
+	HealthStateUntil           *string  `json:"health_state_until,omitempty"`
+	LastProbeLatencyMS         *int32   `json:"last_probe_latency_ms"`
+	LastProbeAt                *string  `json:"last_probe_at"`
+	ModelSyncLastCheckAt       *string  `json:"model_sync_last_check_at"`
+	SessionWindow5hStart       *string  `json:"session_window_5h_start"`
+	SessionWindow5hEnd         *string  `json:"session_window_5h_end"`
+	SessionWindow5hStatus      *string  `json:"session_window_5h_status"`
+	SessionWindow5hUtilization *float64 `json:"session_window_5h_utilization"`
+	SessionWindow7dStart       *string  `json:"session_window_7d_start"`
+	SessionWindow7dEnd         *string  `json:"session_window_7d_end"`
+	SessionWindow7dStatus      *string  `json:"session_window_7d_status"`
+	SessionWindow7dUtilization *float64 `json:"session_window_7d_utilization"`
+	LastRefreshAt              *string  `json:"last_refresh_at"`
+	LastRefreshOutcome         *string  `json:"last_refresh_outcome"`
+	FailureClass               *string  `json:"failure_class"`
+	FailureCount               int32    `json:"failure_count"`
+	Enabled                    bool     `json:"enabled"`
+	RequiresAction             bool     `json:"requires_action"`
+	UpdatedAt                  string   `json:"updated_at"`
 	// 当没有进程内数据可用时(ring 为 nil 或没有记录到请求),
 	// RecentRequests 会被省略。零值不会被输出。
 	RecentRequests *recentRequestsSummary `json:"recent_requests,omitempty"`
@@ -139,27 +144,53 @@ func writeProviderAccountHealthReadError(w http.ResponseWriter, err error) {
 }
 
 func providerAccountHealthResponse(row admindb.GetAdminProviderAccountHealthRow, ring *recentreq.Ring) providerAccountHealthResponseBody {
+	return providerAccountHealthResponseAt(row, ring, time.Now().UTC())
+}
+
+func providerAccountHealthResponseAt(row admindb.GetAdminProviderAccountHealthRow, ring *recentreq.Ring, now time.Time) providerAccountHealthResponseBody {
 	// requires_action 是确定性 admin 视图规则,不从请求输入或上游响应推断。
 	requiresAction := row.HealthState == "revoked" || row.FailureCount > 3
+	status5h, utilization5h := activeSessionWindowView(row.SessionWindow5hEnd, row.SessionWindow5hStatus, row.SessionWindow5hUtilization, now)
+	status7d, utilization7d := activeSessionWindowView(row.SessionWindow7dEnd, row.SessionWindow7dStatus, row.SessionWindow7dUtilization, now)
 	return providerAccountHealthResponseBody{
-		ID:                    row.ID,
-		HealthState:           row.HealthState,
-		HealthStateUntil:      formatProviderAccountHealthTime(row.HealthStateUntil),
-		LastProbeLatencyMS:    row.LastProbeLatencyMS,
-		LastProbeAt:           formatProviderAccountHealthTime(row.LastProbeAt),
-		ModelSyncLastCheckAt:  formatProviderAccountHealthTime(row.ModelSyncLastCheckAt),
-		SessionWindow5hStart:  formatProviderAccountHealthTime(row.SessionWindow5hStart),
-		SessionWindow5hEnd:    formatProviderAccountHealthTime(row.SessionWindow5hEnd),
-		SessionWindow5hStatus: row.SessionWindow5hStatus,
-		LastRefreshAt:         formatProviderAccountHealthTime(row.LastRefreshAt),
-		LastRefreshOutcome:    row.LastRefreshOutcome,
-		FailureClass:          row.FailureClass,
-		FailureCount:          row.FailureCount,
-		Enabled:               row.Enabled,
-		RequiresAction:        requiresAction,
-		UpdatedAt:             requiredProviderAccountHealthTime(row.UpdatedAt),
-		RecentRequests:        recentRequestsSummaryFor(ring, row.ID),
+		ID:                         row.ID,
+		HealthState:                row.HealthState,
+		HealthStateUntil:           formatProviderAccountHealthTime(row.HealthStateUntil),
+		LastProbeLatencyMS:         row.LastProbeLatencyMS,
+		LastProbeAt:                formatProviderAccountHealthTime(row.LastProbeAt),
+		ModelSyncLastCheckAt:       formatProviderAccountHealthTime(row.ModelSyncLastCheckAt),
+		SessionWindow5hStart:       formatProviderAccountHealthTime(row.SessionWindow5hStart),
+		SessionWindow5hEnd:         formatProviderAccountHealthTime(row.SessionWindow5hEnd),
+		SessionWindow5hStatus:      status5h,
+		SessionWindow5hUtilization: utilization5h,
+		SessionWindow7dStart:       formatProviderAccountHealthTime(row.SessionWindow7dStart),
+		SessionWindow7dEnd:         formatProviderAccountHealthTime(row.SessionWindow7dEnd),
+		SessionWindow7dStatus:      status7d,
+		SessionWindow7dUtilization: utilization7d,
+		LastRefreshAt:              formatProviderAccountHealthTime(row.LastRefreshAt),
+		LastRefreshOutcome:         row.LastRefreshOutcome,
+		FailureClass:               row.FailureClass,
+		FailureCount:               row.FailureCount,
+		Enabled:                    row.Enabled,
+		RequiresAction:             requiresAction,
+		UpdatedAt:                  requiredProviderAccountHealthTime(row.UpdatedAt),
+		RecentRequests:             recentRequestsSummaryFor(ring, row.ID),
 	}
+}
+
+func activeSessionWindowView(end pgtype.Timestamptz, status *string, utilization pgtype.Numeric, now time.Time) (*string, *float64) {
+	if end.Valid && end.Time.Before(now.UTC()) {
+		expired := "expired"
+		return &expired, nil
+	}
+	if !end.Valid {
+		return status, nil
+	}
+	value, err := utilization.Float64Value()
+	if err != nil || !value.Valid {
+		return status, nil
+	}
+	return status, &value.Float64
 }
 
 func formatProviderAccountHealthTime(ts pgtype.Timestamptz) *string {

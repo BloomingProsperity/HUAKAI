@@ -277,7 +277,7 @@ func claimRow(id int64) dbbilling.ListBillingClaimsRow {
 	return dbbilling.ListBillingClaimsRow{ID: id, TenantID: 7, IdempotencyKey: "idem", APIKeyID: 1, UserID: 2, LogicalRequestID: "lr", EndpointFamily: "chat", RequestedModel: "m", AttemptSeq: 1, PredictedCost: decimal.RequireFromString("0.01000000"), CurrencyCode: "USD", Status: "committed", CreatedAt: ts(id)}
 }
 func auditRow(id int64, severity, ledgerID string) dbbilling.ListAuditEventsRow {
-	// LedgerID 现为可空 *string(列可为 NULL);非空 ledgerID 取地址,空串视作 NULL(nil)以覆盖真实数据形态。
+	// LedgerID 为可空 *string(列可为 NULL);空串视作 NULL(nil)以覆盖真实数据形态。
 	var lp *string
 	if ledgerID != "" {
 		lp = &ledgerID

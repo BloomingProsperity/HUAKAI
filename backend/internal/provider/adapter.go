@@ -52,14 +52,16 @@ type Credential struct {
 	Extra map[string]string
 }
 
-// AccountInfo 是池中选中的 account 摘要，供 adapter 在构造请求时引用
-// （如 binding-level 模型映射、组级配额标记等）。仅含 adapter 必需字段。
+// AccountInfo 是池中选中的 account 摘要，供 adapter 与只读后台任务引用。
+// 这里只保留运行时必需字段。
 type AccountInfo struct {
 	// AccountID 池中 account 主键。
 	AccountID int64
 	// TenantID 是账号所属租户; CredentialVault.Resolve 与 dispatcher 后续都
 	// 用它做 DR-001 跨租户隔离校验。
 	TenantID int64
+	// OAuthScope 只来自凭据载荷，不受 provider_accounts.extra 合并影响。
+	OAuthScope string
 	// Platform vendor 平台标识（如 "openai" / "gemini" / "antigravity"
 	// / "cursor" / "copilot" / "kiro" / "windsurf"）。
 	Platform string

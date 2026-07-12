@@ -13,7 +13,7 @@ import (
 // Service 运行有序的上游错误决策树。
 type Service interface {
 	// HandleUpstreamError 应用分层决策树:
-	// pool-mode → custom-codes → temp-unsched 规则 → 状态码分支。
+	// custom-codes/temp-unsched 规则 → pool-mode 未匹配短路 → 状态码分支。
 	HandleUpstreamError(ctx context.Context, accountID int64, statusCode int,
 		respHeaders http.Header, respBody []byte) (Decision, error)
 
@@ -32,6 +32,8 @@ type Decision struct {
 	Reason            Reason
 	ShouldFailover    bool
 	RetryAfterSeconds int
+	// SuppressLocalState 只由 pool_mode 的未匹配分支设置；请求仍可故障转移，但不得写账号或模型健康状态。
+	SuppressLocalState bool
 }
 
 // StateChange 对 Account 状态变更进行分类。

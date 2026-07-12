@@ -3,6 +3,7 @@ package adminhttp
 import (
 	"context"
 	"encoding/json"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -132,6 +134,11 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		"session_window_5h_end",
 		"session_window_5h_start",
 		"session_window_5h_status",
+		"session_window_5h_utilization",
+		"session_window_7d_end",
+		"session_window_7d_start",
+		"session_window_7d_status",
+		"session_window_7d_utilization",
 		"updated_at",
 	})
 	forbiddenFragments := []string{"credential", "credentials", "encrypted", "payload", "secret", "token", "nonce", "key_id"}
@@ -224,10 +231,15 @@ func TestProviderAccountHealthResponseIncludesSyncAndSessionWindowSnapshot(t *te
 	store := newProviderAccountHealthStoreStub()
 	row := providerAccountHealthRow(7, 103)
 	row.ModelSyncLastCheckAt = pgTimestamp(time.Date(2026, 6, 2, 12, 4, 0, 0, time.UTC))
-	row.SessionWindow5hStart = pgTimestamp(time.Date(2026, 6, 2, 8, 0, 0, 0, time.UTC))
-	row.SessionWindow5hEnd = pgTimestamp(time.Date(2026, 6, 2, 13, 0, 0, 0, time.UTC))
+	row.SessionWindow5hStart = pgTimestamp(time.Date(2099, 6, 2, 8, 0, 0, 0, time.UTC))
+	row.SessionWindow5hEnd = pgTimestamp(time.Date(2099, 6, 2, 13, 0, 0, 0, time.UTC))
+	row.SessionWindow5hUtilization = pgNumeric(37.5)
+	row.SessionWindow7dStart = pgTimestamp(time.Date(2099, 5, 27, 13, 0, 0, 0, time.UTC))
+	row.SessionWindow7dEnd = pgTimestamp(time.Date(2099, 6, 3, 13, 0, 0, 0, time.UTC))
+	row.SessionWindow7dUtilization = pgNumeric(62.25)
 	status := "allowed"
 	row.SessionWindow5hStatus = &status
+	row.SessionWindow7dStatus = &status
 	store.put(row)
 
 	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
@@ -245,14 +257,47 @@ func TestProviderAccountHealthResponseIncludesSyncAndSessionWindowSnapshot(t *te
 	if body.ModelSyncLastCheckAt == nil || *body.ModelSyncLastCheckAt != "2026-06-02T12:04:00Z" {
 		t.Fatalf("model_sync_last_check_at=%v want 2026-06-02T12:04:00Z", body.ModelSyncLastCheckAt)
 	}
-	if body.SessionWindow5hStart == nil || *body.SessionWindow5hStart != "2026-06-02T08:00:00Z" {
-		t.Fatalf("session_window_5h_start=%v want 2026-06-02T08:00:00Z", body.SessionWindow5hStart)
+	if body.SessionWindow5hStart == nil || *body.SessionWindow5hStart != "2099-06-02T08:00:00Z" {
+		t.Fatalf("session_window_5h_start=%v want 2099-06-02T08:00:00Z", body.SessionWindow5hStart)
 	}
-	if body.SessionWindow5hEnd == nil || *body.SessionWindow5hEnd != "2026-06-02T13:00:00Z" {
-		t.Fatalf("session_window_5h_end=%v want 2026-06-02T13:00:00Z", body.SessionWindow5hEnd)
+	if body.SessionWindow5hEnd == nil || *body.SessionWindow5hEnd != "2099-06-02T13:00:00Z" {
+		t.Fatalf("session_window_5h_end=%v want 2099-06-02T13:00:00Z", body.SessionWindow5hEnd)
 	}
 	if body.SessionWindow5hStatus == nil || *body.SessionWindow5hStatus != "allowed" {
 		t.Fatalf("session_window_5h_status=%v want allowed", body.SessionWindow5hStatus)
+	}
+	if body.SessionWindow5hUtilization == nil || *body.SessionWindow5hUtilization != 37.5 {
+		t.Fatalf("session_window_5h_utilization=%v want 37.5", body.SessionWindow5hUtilization)
+	}
+	if body.SessionWindow7dStart == nil || *body.SessionWindow7dStart != "2099-05-27T13:00:00Z" ||
+		body.SessionWindow7dEnd == nil || *body.SessionWindow7dEnd != "2099-06-03T13:00:00Z" ||
+		body.SessionWindow7dStatus == nil || *body.SessionWindow7dStatus != "allowed" ||
+		body.SessionWindow7dUtilization == nil || *body.SessionWindow7dUtilization != 62.25 {
+		t.Fatalf("7d 窗口响应不一致：%+v", body)
+	}
+}
+
+func TestProviderAccountHealthExpiredWindowHidesUtilization(t *testing.T) {
+	now := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
+	status := "active"
+	row := providerAccountHealthRow(7, 104)
+	row.SessionWindow5hEnd = pgTimestamp(now.Add(-time.Second))
+	row.SessionWindow5hStatus = &status
+	row.SessionWindow5hUtilization = pgNumeric(87.5)
+	row.SessionWindow7dEnd = pgTimestamp(now.Add(time.Hour))
+	row.SessionWindow7dStatus = &status
+	row.SessionWindow7dUtilization = pgNumeric(42.25)
+
+	body := providerAccountHealthResponseAt(row, nil, now)
+	if body.SessionWindow5hStatus == nil || *body.SessionWindow5hStatus != "expired" {
+		t.Fatalf("过期 5h status=%v，期望 expired", body.SessionWindow5hStatus)
+	}
+	if body.SessionWindow5hUtilization != nil {
+		t.Fatalf("过期 5h 利用率不得作为活数据返回：%v", body.SessionWindow5hUtilization)
+	}
+	if body.SessionWindow7dStatus == nil || *body.SessionWindow7dStatus != "active" ||
+		body.SessionWindow7dUtilization == nil || *body.SessionWindow7dUtilization != 42.25 {
+		t.Fatalf("未过期 7d 窗口被误隐藏：%+v", body)
 	}
 }
 
@@ -435,4 +480,19 @@ func providerAccountHealthRow(tenantID, id int64) admindb.GetAdminProviderAccoun
 		Enabled:     true,
 		UpdatedAt:   pgTimestamp(time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)),
 	}
+}
+
+func pgNumeric(value float64) pgtype.Numeric {
+	text := strconv.FormatFloat(value, 'f', -1, 64)
+	point := strings.IndexByte(text, '.')
+	exponent := int32(0)
+	if point >= 0 {
+		exponent = int32(-(len(text) - point - 1))
+		text = strings.ReplaceAll(text, ".", "")
+	}
+	integer, ok := new(big.Int).SetString(text, 10)
+	if !ok {
+		panic("测试 numeric 构造失败")
+	}
+	return pgtype.Numeric{Int: integer, Exp: exponent, Valid: true}
 }

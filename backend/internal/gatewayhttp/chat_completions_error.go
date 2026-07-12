@@ -250,6 +250,10 @@ func (ex *chatExecution) applyUpstreamErrorCooldown(upstreamErr *gateway.Upstrea
 	if ex == nil || upstreamErr == nil {
 		return false
 	}
+	dec, hasDecision := ex.upstreamRateDecision(upstreamErr)
+	if hasDecision && dec.SuppressLocalState {
+		return true
+	}
 	if upstreamErr.StatusCode == http.StatusNotFound {
 		recordModelCooldownFromUpstreamError(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID, nil, rate.ReasonModelLimitExceeded)
 		return false
@@ -258,7 +262,6 @@ func (ex *chatExecution) applyUpstreamErrorCooldown(upstreamErr *gateway.Upstrea
 		if classification.Class != gateway.ErrorClassRateLimited {
 			return false
 		}
-		dec, hasDecision := ex.upstreamRateDecision(upstreamErr)
 		if hasDecision && dec.StateChange != rate.StateNoChange && dec.StateChange != rate.StateRateLimited {
 			if applyAccountCooldown {
 				ex.forceCooldownFromDecision(dec)
@@ -281,8 +284,8 @@ func (ex *chatExecution) applyUpstreamErrorCooldown(upstreamErr *gateway.Upstrea
 		// 否则纯 429 会既没写模型格又跳过账号健康,该账号该模型零冷却、被立刻重选反复挨限速。
 		return recordModelCooldownFromUpstreamError(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID, resetAt, reason)
 	}
-	if applyAccountCooldown {
-		ex.forceCooldownFromUpstreamRateLimit(upstreamErr)
+	if applyAccountCooldown && hasDecision && upstreamRateCooldownCandidate(upstreamErr.StatusCode) {
+		ex.forceCooldownFromDecision(dec)
 	}
 	return false
 }

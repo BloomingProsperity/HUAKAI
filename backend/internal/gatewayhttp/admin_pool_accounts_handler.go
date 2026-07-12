@@ -243,6 +243,7 @@ type providerAccountResponse struct {
 	CustomErrorCodes         []int32         `json:"custom_error_codes"`
 	PoolMode                 bool            `json:"pool_mode"`
 	TempUnschedulableEnabled bool            `json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
 	ProxyID                  *int64          `json:"proxy_id"`
 	ProxyGroupID             *string         `json:"proxy_group_id"`
 	CreatedAt                *time.Time      `json:"created_at"`
@@ -470,7 +471,7 @@ func newGetProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeProviderAccountReadError(w, err, "provider_account_get_failed")
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
+		writeAuditJSON(w, http.StatusOK, providerAccountDetailDTO(account))
 	}
 }
 
@@ -979,6 +980,20 @@ func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResp
 		ProxyID: row.ProxyID, ProxyGroupID: row.ProxyGroupID,
 		CreatedAt: pgTimePtr(row.CreatedAt), UpdatedAt: pgTimePtr(row.UpdatedAt),
 	}
+}
+
+func providerAccountDetailDTO(row admindb.AdminProviderAccountRow) providerAccountResponse {
+	response := providerAccountDTO(row)
+	response.TempUnschedulableRules = jsonArrayOrEmpty(row.TempUnschedulableRules)
+	return response
+}
+
+func jsonArrayOrEmpty(raw []byte) json.RawMessage {
+	var values []json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &values) != nil || values == nil {
+		return json.RawMessage(`[]`)
+	}
+	return json.RawMessage(append([]byte(nil), raw...))
 }
 
 func pgTimePtr(ts pgtype.Timestamptz) *time.Time {
