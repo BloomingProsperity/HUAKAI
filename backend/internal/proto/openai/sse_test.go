@@ -258,6 +258,138 @@ func TestOpenAIBufferedResponseHelperParsesUsageAndTools(t *testing.T) {
 	}
 }
 
+// DeepSeek 的最终 usage 独立 chunk 必须把命中 token 带进 canonical，
+// 否则流式结算仍会把整段 prompt 按普通输入价收费。
+func TestOpenAIAdapterDeepSeekFinalUsageParsesCacheHit(t *testing.T) {
+	const fixture = `
+data: {"id":"chatcmpl-deepseek","object":"chat.completion.chunk","model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"完成"},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-deepseek","object":"chat.completion.chunk","model":"deepseek-chat","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_cache_hit_tokens":40,"prompt_cache_miss_tokens":60}}
+
+data: [DONE]
+`
+	events, losses, state := runOpenAIGoldenSSE(t, fixture)
+	if len(losses) != 0 {
+		t.Fatalf("DeepSeek 最终 usage 不应产生协议损失：%+v", losses)
+	}
+	if got := state.AccumulatedUsage.CacheReadInputTokens; got != 40 {
+		t.Fatalf("累计 CacheReadInputTokens=%d，期望 40", got)
+	}
+	var gotUsage *proto.CanonicalUsage
+	for i := range events {
+		if events[i].Usage != nil {
+			gotUsage = events[i].Usage
+		}
+	}
+	if gotUsage == nil {
+		t.Fatal("最终 usage chunk 未产出 canonical usage 事件")
+	}
+	if gotUsage.InputTokens != 100 || gotUsage.CacheReadInputTokens != 40 || gotUsage.OutputTokens != 20 {
+		t.Fatalf("最终 usage 映射错误：%+v", gotUsage)
+	}
+}
+
+func TestOpenAIBufferedResponseDeepSeekCacheUsageDefenses(t *testing.T) {
+	tests := []struct {
+		name      string
+		usageJSON string
+		wantInput int
+		wantRead  int
+	}{
+		{
+			name:      "命中与未命中字段映射",
+			usageJSON: `{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_cache_hit_tokens":40,"prompt_cache_miss_tokens":60}`,
+			wantInput: 100,
+			wantRead:  40,
+		},
+		{
+			name:      "标准 cached 字段优先",
+			usageJSON: `{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":17},"prompt_cache_hit_tokens":40,"prompt_cache_miss_tokens":60}`,
+			wantInput: 100,
+			wantRead:  17,
+		},
+		{
+			name:      "details 未带 cached 时回退命中字段",
+			usageJSON: `{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"audio_tokens":3},"prompt_cache_hit_tokens":40,"prompt_cache_miss_tokens":60}`,
+			wantInput: 100,
+			wantRead:  40,
+		},
+		{
+			name:      "标准 cached 显式零仍优先",
+			usageJSON: `{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":40,"prompt_cache_miss_tokens":60}`,
+			wantInput: 100,
+			wantRead:  0,
+		},
+		{
+			name:      "命中数超过 prompt 时钳制",
+			usageJSON: `{"prompt_tokens":10,"completion_tokens":2,"prompt_cache_hit_tokens":12,"prompt_cache_miss_tokens":0}`,
+			wantInput: 10,
+			wantRead:  10,
+		},
+		{
+			name:      "标准 cached 超过 prompt 时钳制",
+			usageJSON: `{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":12}}`,
+			wantInput: 10,
+			wantRead:  10,
+		},
+		{
+			name:      "命中未命中之和不等时以 prompt 为准",
+			usageJSON: `{"prompt_tokens":10,"completion_tokens":2,"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":99}`,
+			wantInput: 10,
+			wantRead:  3,
+		},
+		{
+			name:      "只有命中字段仍可映射",
+			usageJSON: `{"prompt_tokens":10,"completion_tokens":2,"prompt_cache_hit_tokens":3}`,
+			wantInput: 10,
+			wantRead:  3,
+		},
+		{
+			name:      "命中字段缺失保持原行为",
+			usageJSON: `{"prompt_tokens":10,"completion_tokens":2,"prompt_cache_miss_tokens":10}`,
+			wantInput: 10,
+			wantRead:  0,
+		},
+		{
+			name:      "负命中数保持原行为",
+			usageJSON: `{"prompt_tokens":10,"completion_tokens":2,"prompt_cache_hit_tokens":-1,"prompt_cache_miss_tokens":11}`,
+			wantInput: 10,
+			wantRead:  0,
+		},
+		{
+			name:      "负未命中数使扩展失效",
+			usageJSON: `{"prompt_tokens":10,"completion_tokens":2,"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":-1}`,
+			wantInput: 10,
+			wantRead:  0,
+		},
+		{
+			name:      "负标准 cached 不回退 vendor 字段",
+			usageJSON: `{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":-1},"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":7}`,
+			wantInput: 10,
+			wantRead:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := []byte(fmt.Sprintf(`{"id":"chatcmpl-deepseek","object":"chat.completion","model":"deepseek-chat","choices":[],"usage":%s}`, tt.usageJSON))
+			resp, losses, err := openAIResponseToCanonicalResponse(raw)
+			if err != nil {
+				t.Fatalf("解析 buffered 响应失败：%v", err)
+			}
+			if len(losses) != 0 {
+				t.Fatalf("usage 防御不应产生协议损失：%+v", losses)
+			}
+			if resp.Usage.InputTokens != tt.wantInput {
+				t.Fatalf("InputTokens=%d，期望保持 prompt 总量 %d", resp.Usage.InputTokens, tt.wantInput)
+			}
+			if got := resp.Usage.CacheReadInputTokens; got != tt.wantRead {
+				t.Fatalf("CacheReadInputTokens=%d，期望 %d；usage=%s", got, tt.wantRead, tt.usageJSON)
+			}
+		})
+	}
+}
+
 // TestOpenAIBufferedResponseParsesReasoningTokens 守 S2-163-fu: o1/o3 的
 // completion_tokens_details.reasoning_tokens 必须映射进 CanonicalUsage.ReasoningTokens
 // 供 token 交叉校验扣除。Mutation: 去掉 canonical() 里的 CompletionTokensDetails 映射 →
