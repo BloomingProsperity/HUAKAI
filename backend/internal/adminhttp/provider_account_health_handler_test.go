@@ -339,9 +339,19 @@ func (s providerAccountHealthAuthStub) Resolve(context.Context, *http.Request) (
 }
 
 type providerAccountHealthStoreStub struct {
-	rows    map[string]admindb.GetAdminProviderAccountHealthRow
-	getArgs []admindb.GetAdminProviderAccountHealthParams
-	err     error
+	rows        map[string]admindb.GetAdminProviderAccountHealthRow
+	getArgs     []admindb.GetAdminProviderAccountHealthParams
+	err         error
+	summaryRows []admindb.SummarizeProviderAccountHealthRow
+	summaryArgs []int64
+}
+
+func (s *providerAccountHealthStoreStub) SummarizeProviderAccountHealth(_ context.Context, tenantID int64) ([]admindb.SummarizeProviderAccountHealthRow, error) {
+	s.summaryArgs = append(s.summaryArgs, tenantID)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.summaryRows, nil
 }
 
 func newProviderAccountHealthStoreStub() *providerAccountHealthStoreStub {

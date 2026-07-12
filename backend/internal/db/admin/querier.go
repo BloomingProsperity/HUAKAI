@@ -173,6 +173,8 @@ type Querier interface {
 	// 软删 (设 deleted_at); provider_accounts.tls_fingerprint_profile_id 引用仍存在
 	// (FK 不级联), 但 resolver 走 GetByID 因 deleted_at IS NULL 过滤掉, 降级到 builtin.
 	SoftDeleteTLSFingerprintProfile(ctx context.Context, arg SoftDeleteTLSFingerprintProfileParams) error
+	// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 跨整个租户池计数。
+	SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error)
 	// 由异步 eventbus account_health_probe handler 调用,盖 last_probe_at 戳点亮健康面板。
 	TouchProviderAccountProbe(ctx context.Context, arg TouchProviderAccountProbeParams) error
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error)

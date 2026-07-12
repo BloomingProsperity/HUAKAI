@@ -10194,6 +10194,49 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/provider-accounts/health-summary:
+    get:
+      tags: [admin-accounts]
+      summary: 账号池健康聚合(运维巡检)
+      operationId: summarizeProviderAccountHealth
+      description: |
+        跨整个租户池按 health_state 与 enabled 聚合计数（非分页），供管理端一眼看清问题账号分布。
+        只读、不含钱字段；needs_attention 计入非 healthy 或被停用的账号。租户边界由 SQL 谓词保护。
+      x-huakai-spec-source:
+        - backend/sql/queries/admin_provider_account_health.sql
+        - backend/internal/adminhttp/provider_account_health_summary_handler.go
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: 无固定租户作用域的 platform_admin 必须显式指定；tenant_operator 始终使用自身租户。
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 账号池健康聚合总览。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, enabled, disabled, needs_attention, states]
+                properties:
+                  total: { type: integer, format: int64 }
+                  enabled: { type: integer, format: int64 }
+                  disabled: { type: integer, format: int64 }
+                  needs_attention: { type: integer, format: int64 }
+                  states:
+                    type: array
+                    items:
+                      type: object
+                      required: [health_state, count]
+                      properties:
+                        health_state: { type: string }
+                        count: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/recent-requests:
     parameters:
       - $ref: '#/components/parameters/ResourceId'

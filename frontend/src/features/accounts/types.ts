@@ -127,6 +127,15 @@ export interface AccountHealth {
   }
 }
 
+/** GET /provider-accounts/health-summary 账号池健康聚合(B9 运维巡检,跨整个租户池)。 */
+export interface AccountHealthSummary {
+  total: number
+  enabled: number
+  disabled: number
+  needs_attention: number
+  states: Array<{ health_state: string; count: number }>
+}
+
 /** GET /{id}/recent-requests 单条(已结算 usage_records,不含钱字段)。ttft/upstream_model 可空。 */
 export interface AccountRecentRequestItem {
   at: string

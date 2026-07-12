@@ -31,6 +31,7 @@ type providerAccountHealthAuth interface {
 
 type providerAccountHealthStore interface {
 	GetAdminProviderAccountHealth(context.Context, admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error)
+	SummarizeProviderAccountHealth(context.Context, int64) ([]admindb.SummarizeProviderAccountHealthRow, error)
 }
 
 type providerAccountHealthResponseBody struct {
@@ -70,6 +71,8 @@ type recentRequestsSummary struct {
 
 func MountProviderAccountHealthRoutes(r chi.Router, d ProviderAccountHealthDeps) {
 	r.Get("/{id}/health", newProviderAccountHealthHandler(d))
+	// 账号池健康聚合(B9):跨整个租户池计数,静态路径须先于 /{id}/health 无冲突(chi 精确段优先)。
+	r.Get("/health-summary", newProviderAccountHealthSummaryHandler(d))
 }
 
 func newProviderAccountHealthHandler(d ProviderAccountHealthDeps) http.HandlerFunc {

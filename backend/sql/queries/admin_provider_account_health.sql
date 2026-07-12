@@ -50,3 +50,13 @@ SET last_probe_at = sqlc.arg(probed_at)::timestamptz
 WHERE id = sqlc.arg(id)::bigint
   AND tenant_id = sqlc.arg(tenant_id)::bigint
   AND deleted_at IS NULL;
+
+-- name: SummarizeProviderAccountHealth :many
+-- 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 计数,跨整个租户池(非分页)。
+-- 只读、不含钱字段;供管理端一眼看清问题账号分布。软删账号排除。
+SELECT health_state, enabled, count(*)::bigint AS n
+FROM provider_accounts
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL
+GROUP BY health_state, enabled
+ORDER BY health_state, enabled;

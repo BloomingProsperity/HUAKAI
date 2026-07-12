@@ -2,6 +2,7 @@ import { apiGet, apiSend } from '../../lib/api'
 import { buildAccountListQuery, type AccountListFilters } from './query'
 import type {
   AccountHealth,
+  AccountHealthSummary,
   AccountRecentRequestsResponse,
   AccountTestResult,
   BulkByTagResult,
@@ -104,6 +105,15 @@ export async function getProviderAccountHealth(id: number, signal?: AbortSignal)
  */
 export async function getProviderAccountUpstreamModels(id: number): Promise<UpstreamModelsResult> {
   return apiGet<UpstreamModelsResult>(`${ACCOUNTS_PATH}/${id}/upstream-models`)
+}
+
+/**
+ * 账号池健康聚合(B9 运维巡检):GET /admin/v1/provider-accounts/health-summary。
+ * 跨整个租户池按健康态计数(非分页),只读、不含钱字段。
+ * 真码:backend/internal/adminhttp/provider_account_health_summary_handler.go。
+ */
+export async function getProviderAccountHealthSummary(signal?: AbortSignal): Promise<AccountHealthSummary> {
+  return apiGet<AccountHealthSummary>(`${ACCOUNTS_PATH}/health-summary`, { signal })
 }
 
 /**

@@ -5,6 +5,7 @@ import { StatusBadge, healthTone, type BadgeTone } from '../../ui/StatusBadge'
 import { listProviderAccounts } from './api'
 import { AccountBulkByTag } from './AccountBulkByTag'
 import { CreateAccountModal } from './CreateAccountModal'
+import { HealthSummaryCard } from './HealthSummaryCard'
 import {
   ACCOUNT_STATE_OPTIONS,
   ACCOUNTS_PAGE_LIMIT,
@@ -114,6 +115,8 @@ export function AccountsPage() {
           ＋ 新建账号
         </button>
       </header>
+
+      <HealthSummaryCard />
 
       {createOpen && (
         <CreateAccountModal

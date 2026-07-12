@@ -134,3 +134,41 @@ func (q *Queries) TouchProviderAccountProbe(ctx context.Context, arg TouchProvid
 	_, err := q.db.Exec(ctx, touchProviderAccountProbe, arg.ProbedAt, arg.ID, arg.TenantID)
 	return err
 }
+
+const summarizeProviderAccountHealth = `-- name: SummarizeProviderAccountHealth :many
+
+SELECT health_state, enabled, count(*)::bigint AS n
+FROM provider_accounts
+WHERE tenant_id = $1::bigint
+  AND deleted_at IS NULL
+GROUP BY health_state, enabled
+ORDER BY health_state, enabled
+`
+
+type SummarizeProviderAccountHealthRow struct {
+	HealthState string `db:"health_state" json:"health_state"`
+	Enabled     bool   `db:"enabled" json:"enabled"`
+	N           int64  `db:"n" json:"n"`
+}
+
+// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 跨整个租户池计数(非分页)。
+// 只读、不含钱字段;软删账号排除。手写生成码(避免全量 sqlc regen 触碰 billing 生成码)。
+func (q *Queries) SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error) {
+	rows, err := q.db.Query(ctx, summarizeProviderAccountHealth, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SummarizeProviderAccountHealthRow
+	for rows.Next() {
+		var i SummarizeProviderAccountHealthRow
+		if err := rows.Scan(&i.HealthState, &i.Enabled, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
