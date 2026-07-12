@@ -4,7 +4,7 @@
 > 具体起栈步骤见 [production-bootstrap.md](./production-bootstrap.md);本文只讲"上线该知道的全貌"。
 > 涉及 deploy/prod 的实际改动按仓库规则属 Owner-gated——本文是运营对照,不代表已执行部署。
 
-最后更新:2026-07-11(持久结算意图阶段 1+2 与 Antigravity 反转车道闭环后)。
+最后更新:2026-07-12(前端全设计+接线波闭环后:用户/运营两面 UI 补齐 + 邮件模板 + 运行日志入库)。
 
 ---
 
@@ -58,6 +58,38 @@ HUAKAI 是一个 **clean-room、MIT 许可的 API 中转站(relay)**:把一批�
 - **运维广播受众隔离**:账号故障/告警广播只发 admin 角色;客户只收自己的事件(如低余额)。
 - **持久结算意图(默认关,`HUAKAI_SETTLEMENT_INTENT_ENABLED`)**:一条与主账本平行的"意图→交付→结算"证据链,采 **fail-open 旁路**——写意图失败/超时/panic 绝不阻塞主结算(billing_ledger_claims 始终权威)。开启后:①阶段 1 记录每笔请求的意图生命周期(pending→delivering→settling→settled/aborted),便于对账取证;②阶段 2 后台 sweeper 兜底 fail-open 漏标——扫描非终态且陈旧的意图行,按权威 claim 追平(committed→settled 复制权威金额、aborted→aborted、在途 reserving 跳过、claim 已进入更高 attempt 则旧意图 superseded),守卫式 CAS 保证多副本单胜者、attempt proof 防止拿新尝试金额冒充旧证据。真上游 E2E 账目零漂移(7=7=7=7),真 PG + `-race` 并发实测通过。**默认关**:仅取证/对账增强,核心结算不依赖它。
 
+## 5b. 用户/运营两面 UI(2026-07-12 波,全接线全测试)
+
+本波把「后端有、前端没建」与「三镜前端有、我们没有」的缺口全部收口(细节见
+`docs/process/plans/` 当日计划与各 commit 正文);全部经 tsc 0 错 / vitest 全绿 /
+生产构建 / OpenAPI 一致性 / 变异判别测试:
+
+**用户侧(卖 Key 的开箱体验)**
+- **用量可视化对齐 Claude/Codex 官方形态**:配额窗口小方格进度条(24 格 + 重置倒计时)、
+  费用/缓存双日历热力图、缓存命中率格条;Key 级分析(30 天窗、费用条、token 汇总)。
+- **逐笔明细**:每请求端到端时延列、状态、流式终止原因、verify_hint 信任链入口;
+  `GET /v1/generation?id=<request_id>` 单笔下钻。
+- **免登录凭 Key 查用量**:公开页 `/key-usage`(Key 即凭证,无会话也可查)。
+- **接入指引页** `/integration`:Claude Code(ANTHROPIC_BASE_URL)/ OpenAI SDK / curl
+  三形态配置一键复制,site_api_base_url 自动注入。
+- **项目管理 / 配额探针 / 缓存 TTL 设置**:project_id 管理、5h/周配额窗口探测
+  (sub2api 同口径)、Anthropic 缓存 5min/1h 档运行时开关(设置键,默认关)。
+
+**运营侧**
+- **账号池**:健康聚合巡检(`/admin/v1/provider-accounts/health-summary`,
+  needs_attention 口径=非 healthy 或禁用)、账号最近请求明细、7 天会话窗利用率、
+  临时不可调度规则编辑回填、凭证 project_ref 解析。
+- **鉴权邮件模板**(§sub2api 跟法):四类鉴权邮件(验证/重置密码/新设备确认/补邮箱验证码)
+  主题+HTML 正文租户级自定义,零 schema(存邮件设置 k/v);`{{占位符}}` 渲染,
+  **fail-safe 三重回退**(store 读错/覆盖为空/未知占位符→内置默认),模板问题绝不阻断
+  auth 邮件送达;管理端 PUT templates + 预览端点(样例值纯渲染);设置中心「邮件」tab 聚合编辑器。
+- **运行日志入库+查询**(§sub2api ops_system_logs 跟法):两栈(zap+slog)warn+ 异步
+  批量入库(表 ops_runtime_logs,迁移 0180),fail-open 铁律(队列满/DB 故障/panic 只
+  丢弃计数,绝不反压业务);admin 键集分页查询(level/component/**request_id** 过滤)+
+  cleanup 保留策略 + sink 健康观测;前端「日志与诊断」页实时轮询(3s 增量合并)面板。
+  三镜均无服务端推送日志流,轮询即业界形态。
+- **DeepSeek 缓存命中计价修复**:命中价=同版本 input 1/10(迁移 0179)。
+
 ## 6. 能力边界与法律免责
 
 HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权交使用者;运营者对如何使用这些能力、以及由此产生的与上游厂商服务条款/当地法律的关系,**自行负责**:
@@ -84,6 +116,10 @@ HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权�
 
 
 - 真支付 provider 接入(手动 admin 充值可替代)。
+- admin 用量列表按 request_id 过滤(触 billing sqlc 生成码漂移面,defer;运行日志表
+  自身可按 request_id 查,用户侧 `/v1/generation?id=` 已可单查)。
+- 运行日志自动清理 worker(当前靠 cleanup 端点手动/外部调度);chi access-log 的
+  X-Request-Id 与计费链 logical_request_id 尚无关联(两套 ID,查日志用后者)。
 - S3-4 二级:退款↔sweep 竞态的冲减备忘重试(job_kind 迁移)——一级可观测已上,视数据积累决定是否做。
 - Hermes 提议-确认改动链默认关(`HUAKAI_HERMES_LLM_PROPOSE_ENABLED`);confirmCache 进程内,多副本需 sticky 路由(已加 re-propose 逃生阀)。
 - 存量英文注释逐步转中文(分批工程,不影响功能)。
