@@ -23,11 +23,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // 仅 dev:把前端实际调用的网关 API 前缀转发到本地网关。生产由网关 go:embed 同源提供,不经此代理。
     proxy: {
-      '/api': {
-        target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080',
-        changeOrigin: true,
-      },
+      '/api': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
+      '/v1': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
+      '/admin': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
     },
   },
 })
