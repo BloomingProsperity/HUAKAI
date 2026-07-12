@@ -49,10 +49,12 @@ export function UsagePage() {
   }, [load])
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>用量与配额</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>管线第 4 站 · 配额窗口与各密钥用量。</p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>用量与配额</h1>
+          <p className="hk-sub">管线第 4 站 · 配额窗口与各密钥用量。</p>
+        </div>
       </header>
 
       {error && <Banner>{error}</Banner>}
@@ -77,21 +79,19 @@ export function UsagePage() {
         ) : rows.length === 0 ? (
           <Muted>没有活跃密钥可统计。</Muted>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['密钥', '花费(USD)', '请求数', '输入 Token', '输出 Token', '缓存读/写'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.map(({ key, summary }) => (
-                  <tr key={key.api_key_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>
+                  <tr key={key.api_key_id}>
+                    <td>
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{key.name}</span>
                         <code style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{key.key_prefix}</code>
@@ -99,16 +99,16 @@ export function UsagePage() {
                     </td>
                     {summary ? (
                       <>
-                        <td style={tdNum}>{summary.total_cost}</td>
-                        <td style={tdNum}>{summary.request_count}</td>
-                        <td style={tdNum}>{summary.total_tokens_input}</td>
-                        <td style={tdNum}>{summary.total_tokens_output}</td>
-                        <td style={tdNum}>
+                        <td className="hk-mono" style={{ textAlign: 'right' }}>{summary.total_cost}</td>
+                        <td className="hk-mono" style={{ textAlign: 'right' }}>{summary.request_count}</td>
+                        <td className="hk-mono" style={{ textAlign: 'right' }}>{summary.total_tokens_input}</td>
+                        <td className="hk-mono" style={{ textAlign: 'right' }}>{summary.total_tokens_output}</td>
+                        <td className="hk-mono" style={{ textAlign: 'right' }}>
                           {summary.total_cache_read_tokens}/{summary.total_cache_creation_tokens}
                         </td>
                       </>
                     ) : (
-                      <td style={{ ...td, color: 'var(--hk-ink-300)' }} colSpan={5}>
+                      <td style={{ color: 'var(--hk-ink-300)' }} colSpan={5}>
                         汇总不可用
                       </td>
                     )}
@@ -149,15 +149,17 @@ function QuotaBar({ w }: { w: QuotaWindow }) {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
-      <h2 style={{ fontSize: 14, color: 'var(--hk-ink-500)' }}>{title}</h2>
-      {children}
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>{title}</h3>
+      </div>
+      <div className="hk-card__body">{children}</div>
     </section>
   )
 }
 
 function Muted({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-4)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function Banner({ children }: { children: React.ReactNode }) {
@@ -167,7 +169,3 @@ function Banner({ children }: { children: React.ReactNode }) {
     </div>
   )
 }
-
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }

@@ -19,8 +19,6 @@ import type { ProviderAccount } from './types'
  * name 搜索为本页客户端过滤(后端无 name query 参数,故明确限定"本页内")。
  */
 
-const PAGE = 'var(--hk-space-6)'
-
 export function AccountsPage() {
   // 已提交的筛选(驱动请求);草稿在输入框,点"查询"才提交,避免每键一请求。
   const [filters, setFilters] = useState<AccountListFilters>(EMPTY_ACCOUNT_FILTERS)
@@ -103,16 +101,16 @@ export function AccountsPage() {
   }, [items, nameQuery])
 
   return (
-    <div style={{ padding: PAGE, display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>账号中心</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>账号中心</h1>
+          <p className="hk-sub">
             管线第 1 站 · 上游账号池。共 {visible.length} 条
             {nameQuery.trim() && items.length !== visible.length ? `(本页内按名称过滤自 ${items.length})` : ''}。
           </p>
         </div>
-        <button type="button" onClick={() => setCreateOpen(true)} style={newAccountBtn}>
+        <button type="button" onClick={() => setCreateOpen(true)} className="hk-btn hk-btn--green">
           ＋ 新建账号
         </button>
       </header>
@@ -140,15 +138,7 @@ export function AccountsPage() {
       {/* 按标签批量调参:批量启停/改优先级/改静态权重(POST /bulk-by-tag),应用后重拉列表。 */}
       <AccountBulkByTag onApplied={() => setRefreshNonce((n) => n + 1)} />
 
-      <div
-        style={{
-          background: 'var(--hk-surface)',
-          border: '1px solid var(--hk-line)',
-          borderRadius: 'var(--hk-radius-lg)',
-          boxShadow: 'var(--hk-shadow-1)',
-          overflow: 'hidden',
-        }}
-      >
+      <div className="hk-card">
         {error ? (
           <Notice tone="danger">{error}</Notice>
         ) : loading && items.length === 0 ? (
@@ -193,14 +183,12 @@ function FilterBar(props: {
         e.preventDefault()
         props.onApply()
       }}
+      className="hk-card"
       style={{
         display: 'flex',
         flexWrap: 'wrap',
         gap: 'var(--hk-space-3)',
         alignItems: 'flex-end',
-        background: 'var(--hk-surface)',
-        border: '1px solid var(--hk-line)',
-        borderRadius: 'var(--hk-radius-lg)',
         padding: 'var(--hk-space-4)',
       }}
     >
@@ -232,10 +220,10 @@ function FilterBar(props: {
       <Field label="名称(本页过滤)">
         <input value={props.nameQuery} onChange={(e) => props.onName(e.target.value)} placeholder="按名称筛当前页" style={inputStyle} />
       </Field>
-      <button type="submit" style={primaryBtn}>
+      <button type="submit" className="hk-btn hk-btn--green">
         查询
       </button>
-      <button type="button" onClick={props.onReset} style={ghostBtn}>
+      <button type="button" onClick={props.onReset} className="hk-btn">
         重置
       </button>
     </form>
@@ -244,21 +232,19 @@ function FilterBar(props: {
 
 function AccountsTable({ rows, dim }: { rows: ProviderAccount[]; dim: boolean }) {
   return (
-    <div style={{ overflowX: 'auto', opacity: dim ? 0.6 : 1, transition: 'opacity .15s' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+    <div className="hk-tablewrap" style={{ opacity: dim ? 0.6 : 1, transition: 'opacity .15s' }}>
+      <table className="hk-table">
         <thead>
           <tr>
             {['名称', '类型', '启用', '健康', '凭据', '在途', '优先级', '权重', '并发上限', '最近派发'].map((h) => (
-              <th key={h} style={thStyle}>
-                {h}
-              </th>
+              <th key={h}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((a) => (
-            <tr key={a.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-              <td style={tdStyle}>
+            <tr key={a.id}>
+              <td>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <Link to={`/accounts/${a.id}`} style={{ fontWeight: 600, color: 'var(--hk-primary-700)' }}>
                     {a.name}
@@ -268,27 +254,23 @@ function AccountsTable({ rows, dim }: { rows: ProviderAccount[]; dim: boolean })
                   )}
                 </div>
               </td>
-              <td style={tdStyle}>
-                <span className="hk-mono" style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>
-                  {a.account_type}
-                </span>
+              <td>
+                <span className="hk-mono">{a.account_type}</span>
               </td>
-              <td style={tdStyle}>
+              <td>
                 <StatusBadge tone={a.enabled ? 'ok' : 'muted'}>{a.enabled ? '已启用' : '已停用'}</StatusBadge>
               </td>
-              <td style={tdStyle}>
+              <td>
                 <StatusBadge tone={healthTone(a.health_state)}>{a.health_state || '—'}</StatusBadge>
               </td>
-              <td style={tdStyle}>
+              <td>
                 <StatusBadge tone={credentialTone(a.credential_state)}>{a.credential_state || '—'}</StatusBadge>
               </td>
-              <td style={tdNum}>{a.in_flight_count}</td>
-              <td style={tdNum}>{a.priority}</td>
-              <td style={tdNum}>{a.static_weight}</td>
-              <td style={tdNum}>{a.cap_concurrency}</td>
-              <td style={tdStyle}>
-                <span style={{ color: 'var(--hk-ink-500)', fontSize: 12 }}>{formatTime(a.last_dispatch_at)}</span>
-              </td>
+              <td className="hk-mono" style={{ textAlign: 'right' }}>{a.in_flight_count}</td>
+              <td className="hk-mono" style={{ textAlign: 'right' }}>{a.priority}</td>
+              <td className="hk-mono" style={{ textAlign: 'right' }}>{a.static_weight}</td>
+              <td className="hk-mono" style={{ textAlign: 'right' }}>{a.cap_concurrency}</td>
+              <td className="hk-mono">{formatTime(a.last_dispatch_at)}</td>
             </tr>
           ))}
         </tbody>
@@ -347,7 +329,7 @@ function Notice({ tone, children }: { tone: 'danger' | 'muted'; children: React.
 
 function PagerButton({ disabled, onClick, children }: { disabled: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button type="button" disabled={disabled} onClick={onClick} style={{ ...ghostBtn, opacity: disabled ? 0.5 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}>
+    <button type="button" disabled={disabled} onClick={onClick} className="hk-btn" style={{ opacity: disabled ? 0.5 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}>
       {children}
     </button>
   )
@@ -358,53 +340,9 @@ const inputStyle: React.CSSProperties = {
   minWidth: 140,
   padding: '0 var(--hk-space-3)',
   border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
+  borderRadius: 'var(--hk-radius-sm)',
   fontSize: 13,
   background: 'var(--hk-surface)',
   color: 'var(--hk-ink-900)',
 }
 const selectStyle: React.CSSProperties = { ...inputStyle }
-const primaryBtn: React.CSSProperties = {
-  height: 32,
-  padding: '0 var(--hk-space-4)',
-  border: '1px solid var(--hk-primary-600)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-primary-500)',
-  color: '#fff',
-  fontSize: 13,
-  fontWeight: 600,
-  cursor: 'pointer',
-}
-const newAccountBtn: React.CSSProperties = {
-  height: 36,
-  padding: '0 var(--hk-space-4)',
-  border: '1px solid var(--hk-primary-600)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-primary-500)',
-  color: '#fff',
-  fontSize: 14,
-  fontWeight: 600,
-  cursor: 'pointer',
-  flexShrink: 0,
-}
-const ghostBtn: React.CSSProperties = {
-  height: 32,
-  padding: '0 var(--hk-space-4)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-surface)',
-  color: 'var(--hk-ink-700)',
-  fontSize: 13,
-  cursor: 'pointer',
-}
-const thStyle: React.CSSProperties = {
-  textAlign: 'left',
-  padding: 'var(--hk-space-3) var(--hk-space-4)',
-  fontSize: 12,
-  fontWeight: 600,
-  color: 'var(--hk-ink-500)',
-  background: 'var(--hk-surface-sunken)',
-  whiteSpace: 'nowrap',
-}
-const tdStyle: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...tdStyle, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }

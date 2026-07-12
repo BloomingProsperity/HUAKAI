@@ -94,15 +94,15 @@ export function UsageRecordsPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>用量明细</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>用量明细</h1>
+          <p className="hk-sub">
             你账户跨全部 API Key 的逐请求记录(模型 / 状态 / 费用 / token)。已加载 {items.length} 条。
           </p>
         </div>
-        <button type="button" onClick={() => setRefreshNonce((n) => n + 1)} style={ghostBtn} disabled={loading}>
+        <button type="button" onClick={() => setRefreshNonce((n) => n + 1)} className="hk-btn" disabled={loading}>
           刷新
         </button>
       </header>
@@ -111,20 +111,18 @@ export function UsageRecordsPage() {
 
       {error && <div style={errBox}>{error}</div>}
 
-      <div style={card}>
+      <div className="hk-card">
         {loading && items.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : items.length === 0 ? (
           <Empty>暂无请求记录。发起 API 调用后这里会显示逐请求用量。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['时间', '模型', '状态', '费用', 'Token', '请求 ID', ''].map((h, hi) => (
-                    <th key={h || `act-${hi}`} style={th}>
-                      {h}
-                    </th>
+                    <th key={h || `act-${hi}`}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -151,7 +149,7 @@ export function UsageRecordsPage() {
       {more && (
         <div style={{ display: 'flex', justifyContent: 'center' }}>
           {/* 刷新进行中也禁用,避免与首屏重拉并发追加导致列表瞬时错位 */}
-          <button type="button" onClick={loadMore} disabled={loadingMore || loading} style={ghostBtn}>
+          <button type="button" onClick={loadMore} disabled={loadingMore || loading} className="hk-btn">
             {loadingMore ? '加载中…' : '加载更多'}
           </button>
         </div>
@@ -184,31 +182,31 @@ function RecordRow({
   const reqID = record.request_id?.trim() ?? ''
   return (
     <>
-      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-        <td style={tdTime}>{fmt(record.created_at)}</td>
-        <td style={td}>
+      <tr>
+        <td className="hk-mono">{fmt(record.created_at)}</td>
+        <td>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ color: 'var(--hk-ink-900)' }}>{modelDisplay(record)}</span>
             {record.stream && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>流式</span>}
           </div>
         </td>
-        <td style={td}>
+        <td>
           <StatusBadge tone={statusTone(record.status) as BadgeTone}>{statusLabel(record.status)}</StatusBadge>
         </td>
-        <td style={{ ...td, whiteSpace: 'nowrap' }}>
+        <td style={{ whiteSpace: 'nowrap' }}>
           <code style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>{formatCost(record.actual_cost)}</code>
         </td>
-        <td style={{ ...td, color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }}>{tokensSummary(record.tokens)}</td>
-        <td style={td}>
+        <td style={{ color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }}>{tokensSummary(record.tokens)}</td>
+        <td>
           {reqID ? (
             <code style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{reqID}</code>
           ) : (
             <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
           )}
         </td>
-        <td style={{ ...td, whiteSpace: 'nowrap', textAlign: 'right' }}>
+        <td style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
           {reqID ? (
-            <button type="button" onClick={onToggle} style={ghostBtnSm} aria-expanded={expanded}>
+            <button type="button" onClick={onToggle} className="hk-btn hk-btn--sm" aria-expanded={expanded}>
               {expanded ? '收起' : '成本详情'}
             </button>
           ) : (
@@ -312,7 +310,7 @@ function RecordDrilldown({
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--hk-space-3)' }}>
               <h3 style={panelTitle}>签名成本收据</h3>
               {receipt && (
-                <button type="button" onClick={doVerify} disabled={verifying} style={ghostBtnSm}>
+                <button type="button" onClick={doVerify} disabled={verifying} className="hk-btn hk-btn--sm">
                   {verifying ? '验签中…' : '验签'}
                 </button>
               )}
@@ -458,16 +456,16 @@ function DisputePanel({ requestID, onDisputeCreated }: { requestID: string; onDi
                 <strong>运营核实前不会退款、不影响余额</strong>。
               </div>
               <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-                <button type="button" onClick={submit} disabled={submitting} style={primaryBtnSm}>
+                <button type="button" onClick={submit} disabled={submitting} className="hk-btn hk-btn--sm hk-btn--green">
                   {submitting ? '提交中…' : '确认提交'}
                 </button>
-                <button type="button" onClick={() => setStage('idle')} disabled={submitting} style={ghostBtnSm}>
+                <button type="button" onClick={() => setStage('idle')} disabled={submitting} className="hk-btn hk-btn--sm">
                   取消
                 </button>
               </div>
             </div>
           ) : (
-            <button type="button" onClick={proceed} disabled={submitting} style={ghostBtnSm}>
+            <button type="button" onClick={proceed} disabled={submitting} className="hk-btn hk-btn--sm">
               发起争议
             </button>
           )}
@@ -513,46 +511,44 @@ function MyDisputes({ refreshNonce }: { refreshNonce: number }) {
             你对计费收据提起的争议进度。如需发起争议,展开上方某条记录的「成本详情」即可提交。
           </p>
         </div>
-        <button type="button" onClick={() => setNonce((n) => n + 1)} style={ghostBtn} disabled={loading}>
+        <button type="button" onClick={() => setNonce((n) => n + 1)} className="hk-btn" disabled={loading}>
           刷新
         </button>
       </header>
 
       {error && <div style={errBox}>{error}</div>}
 
-      <div style={card}>
+      <div className="hk-card">
         {loading && disputes.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : disputes.length === 0 ? (
           <Empty>暂无争议记录。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['争议 ID', '请求 ID', '原因', '状态', '提交时间', '处理时间', '运营备注'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {disputes.map((d) => (
-                  <tr key={d.id || d.dispute_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>
+                  <tr key={d.id || d.dispute_id}>
+                    <td>
                       <code style={{ fontSize: 11, color: 'var(--hk-ink-700)' }}>{d.dispute_id || d.id}</code>
                     </td>
-                    <td style={td}>
+                    <td>
                       <code style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{d.request_id || '—'}</code>
                     </td>
-                    <td style={{ ...td, maxWidth: 280, color: 'var(--hk-ink-700)' }}>{d.reason || '—'}</td>
-                    <td style={td}>
+                    <td style={{ maxWidth: 280, color: 'var(--hk-ink-700)' }}>{d.reason || '—'}</td>
+                    <td>
                       <StatusBadge tone={disputeStatusTone(d.status) as BadgeTone}>{disputeStatusLabel(d.status)}</StatusBadge>
                     </td>
-                    <td style={tdTime}>{fmt(d.created_at)}</td>
-                    <td style={tdTime}>{d.resolved_at ? fmt(d.resolved_at) : '—'}</td>
-                    <td style={{ ...td, maxWidth: 240, color: 'var(--hk-ink-500)' }}>{d.operator_note || '—'}</td>
+                    <td className="hk-mono">{fmt(d.created_at)}</td>
+                    <td className="hk-mono">{d.resolved_at ? fmt(d.resolved_at) : '—'}</td>
+                    <td style={{ maxWidth: 240, color: 'var(--hk-ink-500)' }}>{d.operator_note || '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -628,7 +624,7 @@ function ExportToolbar() {
         到
         <input type="date" value={toDay} min={fromDay} onChange={(e) => setToDay(e.target.value)} style={dateInput} aria-label="导出结束日期" />
       </label>
-      <button type="button" onClick={doExport} disabled={busy} style={ghostBtn}>
+      <button type="button" onClick={doExport} disabled={busy} className="hk-btn">
         {busy ? '导出中…' : '下载 CSV'}
       </button>
       {error && <span style={{ fontSize: 12, color: 'var(--hk-danger)' }}>{error}</span>}
@@ -637,7 +633,7 @@ function ExportToolbar() {
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 /** RFC3339(Nano)→ 本地可读串(24 小时制)。非法/空原样或占位。 */
@@ -647,15 +643,8 @@ function fmt(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdTime: React.CSSProperties = { ...td, color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const ghostBtnSm: React.CSSProperties = { height: 26, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }
-const primaryBtnSm: React.CSSProperties = { height: 26, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-accent, #b23a2e)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-accent, #b23a2e)', color: '#fff', fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap' }
-const textarea: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: 'var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', fontSize: 13, fontFamily: 'inherit', resize: 'vertical' }
-const confirmBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 12, color: 'var(--hk-ink-700)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)' }
+const textarea: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: 'var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', fontSize: 13, fontFamily: 'inherit', resize: 'vertical' }
+const confirmBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)', fontSize: 12, color: 'var(--hk-ink-700)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)' }
 const panel: React.CSSProperties = { flex: '1 1 320px', minWidth: 280, display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)', padding: 'var(--hk-space-4)', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }
 const panelTitle: React.CSSProperties = { fontSize: 14, margin: 0, color: 'var(--hk-ink-900)' }
 const dl: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)', margin: 0 }

@@ -103,12 +103,14 @@ export function CredentialRenewPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>凭证续期监控</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          只读:各上游账号凭证的临期与续期健康态。失败/已过期/待续期会高亮,便于运营提前介入。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>凭证续期监控</h1>
+          <p className="hk-sub">
+            只读:各上游账号凭证的临期与续期健康态。失败/已过期/待续期会高亮,便于运营提前介入。
+          </p>
+        </div>
       </header>
 
       <form
@@ -116,7 +118,8 @@ export function CredentialRenewPage() {
           e.preventDefault()
           applyTenantFilter()
         }}
-        style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', padding: 'var(--hk-space-4)' }}
+        className="hk-card"
+        style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', padding: 'var(--hk-space-4)' }}
       >
         <Field label="按租户过滤(tenant_id,可选)">
           <input
@@ -127,7 +130,7 @@ export function CredentialRenewPage() {
             style={{ ...inp, width: 180 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           应用
         </button>
         <button
@@ -136,16 +139,16 @@ export function CredentialRenewPage() {
             setTenantDraft('')
             setTenantFilter(undefined)
           }}
-          style={ghostBtn}
+          className="hk-btn"
         >
           重置
         </button>
       </form>
 
-      <section style={card}>
-        <div style={cardHead}>
-          <h2 style={{ fontSize: 15, margin: 0 }}>续期状态</h2>
-          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>
+      <section className="hk-card">
+        <div className="hk-card__head">
+          <h3>续期状态</h3>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>
             已载 {rows.length} 条{cursor !== null ? '(还有更多)' : ''}
           </span>
         </div>
@@ -157,14 +160,12 @@ export function CredentialRenewPage() {
         ) : rows.length === 0 ? (
           <Empty>暂无凭证续期记录。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['续期状态', '租户', '账号', '厂商 / 模式', '版本', '距到期', '续期窗口', '最近刷新', '失败'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -172,27 +173,27 @@ export function CredentialRenewPage() {
                 {rows.map((row) => {
                   const h = renewHealth(row, nowMs)
                   return (
-                    <tr key={row.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                      <td style={td}>
+                    <tr key={row.id}>
+                      <td>
                         <StatusBadge tone={renewHealthTone(h)}>{renewHealthLabel(h)}</StatusBadge>
                       </td>
-                      <td style={td}>
+                      <td>
                         <div style={{ color: 'var(--hk-ink-900)' }}>{row.tenant_name || '—'}</div>
-                        <div style={{ fontSize: 11, color: 'var(--hk-ink-300)', fontFamily: 'var(--hk-font-mono)' }}>#{row.tenant_id}</div>
+                        <div className="hk-mono" style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>#{row.tenant_id}</div>
                       </td>
-                      <td style={td}>
+                      <td>
                         <div style={{ color: 'var(--hk-ink-900)' }}>{row.account_name || '—'}</div>
-                        <div style={{ fontSize: 11, color: 'var(--hk-ink-300)', fontFamily: 'var(--hk-font-mono)' }}>#{row.account_id}</div>
+                        <div className="hk-mono" style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>#{row.account_id}</div>
                       </td>
-                      <td style={td}>
+                      <td>
                         <div style={{ color: 'var(--hk-ink-700)' }}>{row.vendor || '—'}</div>
                         <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{row.auth_mode || '—'}</div>
                       </td>
-                      <td style={tdMono}>v{row.credential_version}</td>
-                      <td style={tdMono}>{relativeTime(row.access_expires_at, nowMs)}</td>
-                      <td style={tdMono}>{relativeTime(row.refresh_before_at, nowMs)}</td>
-                      <td style={tdMono}>{relativeTime(row.last_refresh_at, nowMs)}</td>
-                      <td style={{ ...td, color: h === 'failing' ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{failureSummary(row)}</td>
+                      <td className="hk-mono">v{row.credential_version}</td>
+                      <td className="hk-mono">{relativeTime(row.access_expires_at, nowMs)}</td>
+                      <td className="hk-mono">{relativeTime(row.refresh_before_at, nowMs)}</td>
+                      <td className="hk-mono">{relativeTime(row.last_refresh_at, nowMs)}</td>
+                      <td style={{ color: h === 'failing' ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{failureSummary(row)}</td>
                     </tr>
                   )
                 })}
@@ -203,7 +204,7 @@ export function CredentialRenewPage() {
 
         {cursor !== null && rows.length > 0 && (
           <div style={{ padding: 'var(--hk-space-4)', display: 'flex', justifyContent: 'center' }}>
-            <button type="button" disabled={loadingMore} onClick={loadMore} style={ghostBtn}>
+            <button type="button" disabled={loadingMore} onClick={loadMore} className="hk-btn">
               {loadingMore ? '加载中…' : '加载更多'}
             </button>
           </div>
@@ -230,14 +231,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

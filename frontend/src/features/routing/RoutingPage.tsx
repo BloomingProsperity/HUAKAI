@@ -62,15 +62,15 @@ export function RoutingPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>路由与池管理</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>路由与池管理</h1>
+          <p className="hk-sub">
             管线第 2 站 · 模型→池路由绑定与选号策略。共 {bindings.length} 条。
           </p>
         </div>
-        <button type="button" onClick={() => setModal({ open: true, binding: null })} style={newBtn}>
+        <button type="button" onClick={() => setModal({ open: true, binding: null })} className="hk-btn hk-btn--green">
           ＋ 新建绑定
         </button>
       </header>
@@ -90,7 +90,7 @@ export function RoutingPage() {
         <Field label="pool_group_id">
           <input value={draftPool} onChange={(e) => setDraftPool(e.target.value)} inputMode="numeric" placeholder="筛选池组" style={inp} />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           查询
         </button>
         <button
@@ -100,7 +100,7 @@ export function RoutingPage() {
             setDraftPool('')
             setFilters({ modelId: '', poolGroupId: '' })
           }}
-          style={ghostBtn}
+          className="hk-btn"
         >
           重置
         </button>
@@ -108,44 +108,42 @@ export function RoutingPage() {
 
       {error && <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>}
 
-      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+      <div className="hk-card">
         {loading && bindings.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : bindings.length === 0 ? (
           <Empty>没有路由绑定。点击「新建绑定」把模型挂到池组。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['模型', '池组', '优先级', '权重', '选号策略', '兜底类', '状态', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {bindings.map((b) => (
-                  <tr key={b.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>#{b.model_id}</td>
-                    <td style={tdMono}>#{b.pool_group_id}</td>
-                    <td style={tdNum}>{b.priority}</td>
-                    <td style={tdNum}>{b.weight}</td>
-                    <td style={td}>
+                  <tr key={b.id}>
+                    <td className="hk-mono">#{b.model_id}</td>
+                    <td className="hk-mono">#{b.pool_group_id}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>{b.priority}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>{b.weight}</td>
+                    <td>
                       <StatusBadge tone={b.selection_mode === 'priority_weighted' ? 'info' : 'muted'}>
                         {selectionModeLabel(b.selection_mode)}
                       </StatusBadge>
                     </td>
-                    <td style={td}>{fallbackClassLabel(b.fallback_class)}</td>
-                    <td style={td}>
+                    <td>{fallbackClassLabel(b.fallback_class)}</td>
+                    <td>
                       <StatusBadge tone={b.enabled ? 'ok' : 'muted'}>{b.enabled ? '启用' : '停用'}</StatusBadge>
                     </td>
-                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button type="button" onClick={() => setModal({ open: true, binding: b })} style={linkBtn}>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button type="button" onClick={() => setModal({ open: true, binding: b })} className="hk-btn hk-btn--sm">
                         编辑
                       </button>
-                      <button type="button" disabled={busyId === b.id} onClick={() => remove(b)} style={{ ...linkBtn, color: 'var(--hk-danger)' }}>
+                      <button type="button" disabled={busyId === b.id} onClick={() => remove(b)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
                         删除
                       </button>
                     </td>
@@ -169,15 +167,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
-const inp: React.CSSProperties = { height: 32, minWidth: 140, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const newBtn: React.CSSProperties = { height: 36, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
+const inp: React.CSSProperties = { height: 32, minWidth: 140, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }

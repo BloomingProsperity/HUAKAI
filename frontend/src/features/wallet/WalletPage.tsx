@@ -65,73 +65,77 @@ export function WalletPage() {
   const topupTotal = completedTopupCents(orders)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>钱包与充值</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>余额、充值与订单。</p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>钱包与充值</h1>
+          <p className="hk-sub">余额、充值与订单。</p>
+        </div>
       </header>
 
       <div style={cardGrid}>
-        <div style={{ ...card, gridColumn: 'span 2' }}>
-          <span style={statLabel}>当前余额(USD)</span>
+        <div className="hk-metric" style={{ gridColumn: 'span 2' }}>
+          <div className="hk-metric__label">当前余额(USD)</div>
           {balanceErr ? (
-            <span style={{ color: 'var(--hk-danger-600, var(--hk-danger))', fontSize: 13 }}>{balanceErr}</span>
+            <span style={{ color: 'var(--hk-danger)', fontSize: 13 }}>{balanceErr}</span>
           ) : (
-            <span style={{ fontSize: 30, fontWeight: 700, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-900)' }}>
-              ${balanceCents === null ? '—' : formatMoney(balanceCents)}
-            </span>
+            <div className="hk-metric__v hk-mono">${balanceCents === null ? '—' : formatMoney(balanceCents)}</div>
           )}
         </div>
-        <div style={card}>
-          <span style={statLabel}>累计已充值(USD)</span>
-          <span style={{ fontSize: 22, fontWeight: 600, fontFamily: 'var(--hk-font-mono)' }}>${formatMoney(topupTotal)}</span>
+        <div className="hk-metric">
+          <div className="hk-metric__label">累计已充值(USD)</div>
+          <div className="hk-metric__v hk-mono">${formatMoney(topupTotal)}</div>
         </div>
       </div>
 
       {/* 自助充值开单卡:金额输入(按 config 区间校验)+ 选支付方式 → 建 pending 单 + 展示人工支付指引。 */}
-      <div style={{ ...card, gap: 'var(--hk-space-3)' }}>
-        <span style={{ fontSize: 14, fontWeight: 600 }}>充值</span>
-        {configErr ? (
-          <span style={{ color: 'var(--hk-danger-600, var(--hk-danger))', fontSize: 13 }}>{configErr}</span>
-        ) : config === null ? (
-          <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>加载中…</span>
-        ) : (
-          <TopupForm config={config} onCreated={reload} />
-        )}
+      <div className="hk-card">
+        <div className="hk-card__head">
+          <h3>充值</h3>
+        </div>
+        <div className="hk-card__body">
+          {configErr ? (
+            <span style={{ color: 'var(--hk-danger)', fontSize: 13 }}>{configErr}</span>
+          ) : config === null ? (
+            <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>加载中…</span>
+          ) : (
+            <TopupForm config={config} onCreated={reload} />
+          )}
+        </div>
       </div>
 
-      <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-        <h2 style={{ fontSize: 14, color: 'var(--hk-ink-700)' }}>最近订单</h2>
+      <section className="hk-card">
+        <div className="hk-card__head">
+          <h3>最近订单</h3>
+        </div>
         {loading && orders.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <div className="hk-empty">加载中…</div>
         ) : orders.length === 0 ? (
-          <Empty>还没有订单。</Empty>
+          <div className="hk-empty">还没有订单。</div>
         ) : (
-          <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    {['单号', '类型', '金额', '状态', '时间'].map((h) => (
-                      <th key={h} style={th}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map((o) => (
-                    <tr key={o.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                      <td style={td}><code style={{ fontSize: 12 }}>{o.out_trade_no}</code></td>
-                      <td style={td}>{o.order_kind === 'topup' ? '充值' : o.order_kind === 'subscription' ? '订阅' : o.order_kind}</td>
-                      <td style={tdNum}>${formatMoney(o.amount_cents)}</td>
-                      <td style={td}>
-                        <StatusBadge tone={orderStatusTone(o.status)}>{orderStatusLabel(o.status)}</StatusBadge>
-                      </td>
-                      <td style={td}>{new Date(o.created_at).toLocaleString()}</td>
-                    </tr>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
+              <thead>
+                <tr>
+                  {['单号', '类型', '金额', '状态', '时间'].map((h) => (
+                    <th key={h}>{h}</th>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map((o) => (
+                  <tr key={o.id}>
+                    <td><code style={{ fontSize: 12 }}>{o.out_trade_no}</code></td>
+                    <td>{o.order_kind === 'topup' ? '充值' : o.order_kind === 'subscription' ? '订阅' : o.order_kind}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>${formatMoney(o.amount_cents)}</td>
+                    <td>
+                      <StatusBadge tone={orderStatusTone(o.status)}>{orderStatusLabel(o.status)}</StatusBadge>
+                    </td>
+                    <td className="hk-mono">{new Date(o.created_at).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
@@ -223,7 +227,7 @@ function TopupForm({ config, onCreated }: { config: PortalTopupConfig; onCreated
                 key={c}
                 type="button"
                 onClick={() => setAmount((c / 100).toFixed(2))}
-                style={presetBtn}
+                className="hk-btn hk-btn--sm hk-mono"
               >
                 {sym}
                 {formatMoney(c)}
@@ -257,7 +261,7 @@ function TopupForm({ config, onCreated }: { config: PortalTopupConfig; onCreated
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }}>
-        <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+        <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
           {busy ? '提交中…' : '创建充值订单'}
         </button>
         <span style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>提交前会二次确认金额与渠道。</span>
@@ -291,25 +295,6 @@ function TopupForm({ config, onCreated }: { config: PortalTopupConfig; onCreated
   )
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
-}
-
 const cardGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 'var(--hk-space-3)' }
-const card: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--hk-space-1)',
-  padding: 'var(--hk-space-4)',
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-}
 const statLabel: React.CSSProperties = { fontSize: 11, color: 'var(--hk-ink-500)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', minWidth: 120 }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
-const presetBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', fontSize: 12, fontFamily: 'var(--hk-font-mono)', cursor: 'pointer', borderRadius: 'var(--hk-radius-md)', border: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)', color: 'var(--hk-ink-700)' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', minWidth: 120 }

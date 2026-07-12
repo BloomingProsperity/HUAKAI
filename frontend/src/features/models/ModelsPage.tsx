@@ -60,14 +60,16 @@ export function ModelsPage() {
   const unitLabel = unit === 'mtok' ? '/ 1M' : '/ token'
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-        <h1 style={{ fontSize: 22 }}>模型与定价</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          {tab === 'catalog'
-            ? `管线第 6 站 · 公开价目表。共 ${items.length} 个模型${filtered.length !== items.length ? `,筛选出 ${filtered.length} 个` : ''}。`
-            : '费率版本透明 · 历史价格快照只读查询。'}
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>模型与定价</h1>
+          <p className="hk-sub">
+            {tab === 'catalog'
+              ? `管线第 6 站 · 公开价目表。共 ${items.length} 个模型${filtered.length !== items.length ? `,筛选出 ${filtered.length} 个` : ''}。`
+              : '费率版本透明 · 历史价格快照只读查询。'}
+          </p>
+        </div>
         <Toggle
           options={[{ v: 'catalog', l: '模型目录' }, { v: 'versions', l: '费率版本' }]}
           value={tab}
@@ -146,20 +148,20 @@ function PriceCell({ label, value }: { label: string; value: string }) {
 
 function ModelTable({ items, unit, unitLabel, onOpen }: { items: PricingItem[]; unit: PriceUnit; unitLabel: string; onOpen: (m: PricingItem) => void }) {
   return (
-    <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+    <div className="hk-card">
+      <div className="hk-tablewrap">
+        <table className="hk-table">
           <thead>
             <tr>
               {['模型', '厂商', `输入 ${unitLabel}`, `输出 ${unitLabel}`, '上下文', '能力'].map((h) => (
-                <th key={h} style={th}>{h}</th>
+                <th key={h}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {items.map((m) => (
-              <tr key={m.model} onClick={() => onOpen(m)} style={{ borderTop: '1px solid var(--hk-line)', cursor: 'pointer' }}>
-                <td style={td}>
+              <tr key={m.model} onClick={() => onOpen(m)} style={{ cursor: 'pointer' }}>
+                <td>
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <code style={{ fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-900)' }}>{m.model}</code>
                     {m.canonical_id && m.canonical_id !== m.model && (
@@ -167,11 +169,11 @@ function ModelTable({ items, unit, unitLabel, onOpen }: { items: PricingItem[]; 
                     )}
                   </div>
                 </td>
-                <td style={td}>{m.owned_by || '其他'}</td>
-                <td style={tdNum}>{formatPrice(m.input_price_per_token, unit)}</td>
-                <td style={tdNum}>{formatPrice(m.output_price_per_token, unit)}</td>
-                <td style={tdNum}>{m.context_length ? fmtTokens(m.context_length) : '—'}</td>
-                <td style={td}>
+                <td>{m.owned_by || '其他'}</td>
+                <td className="hk-mono" style={{ textAlign: 'right' }}>{formatPrice(m.input_price_per_token, unit)}</td>
+                <td className="hk-mono" style={{ textAlign: 'right' }}>{formatPrice(m.output_price_per_token, unit)}</td>
+                <td className="hk-mono" style={{ textAlign: 'right' }}>{m.context_length ? fmtTokens(m.context_length) : '—'}</td>
+                <td>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                     {capabilityList(m.capabilities).map((c) => (
                       <StatusBadge key={c} tone="info">{c}</StatusBadge>
@@ -242,21 +244,13 @@ function Select({ value, onChange, allLabel, options }: { value: string; onChang
 
 function Toggle({ options, value, onChange }: { options: Array<{ v: string; l: string }>; value: string; onChange: (v: string) => void }) {
   return (
-    <div style={{ display: 'inline-flex', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', overflow: 'hidden' }}>
+    <div className="hk-seg">
       {options.map((o) => (
         <button
           key={o.v}
           type="button"
+          className={value === o.v ? 'is-on' : undefined}
           onClick={() => onChange(o.v)}
-          style={{
-            height: 32,
-            padding: '0 var(--hk-space-3)',
-            fontSize: 12,
-            cursor: 'pointer',
-            border: 'none',
-            background: value === o.v ? 'var(--hk-primary-500)' : 'var(--hk-surface)',
-            color: value === o.v ? '#fff' : 'var(--hk-ink-700)',
-          }}
         >
           {o.l}
         </button>
@@ -270,7 +264,7 @@ function fmtTokens(n: number): string {
   return String(n)
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 const toolbar: React.CSSProperties = {
@@ -298,10 +292,7 @@ const card: React.CSSProperties = {
   boxShadow: 'var(--hk-shadow-1)',
   cursor: 'pointer',
 }
-const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
+const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const mono: React.CSSProperties = { fontFamily: 'var(--hk-font-mono)', fontSize: 12 }
 const iconBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-ink-500)', fontSize: 16, cursor: 'pointer' }
 const drawerOverlay: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(28,38,34,0.4)', display: 'flex', justifyContent: 'flex-end', zIndex: 'var(--hk-z-overlay)' as unknown as number }

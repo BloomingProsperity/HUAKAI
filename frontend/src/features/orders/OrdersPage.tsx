@@ -73,11 +73,11 @@ export function OrdersPage() {
   const visible = useMemo(() => filterByStatus(orders, statusFilter), [orders, statusFilter])
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>我的订单</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>我的订单</h1>
+          <p className="hk-sub">
             充值与订阅订单的历史与状态。共 {orders.length} 条{statusFilter ? `,当前筛选 ${visible.length} 条` : ''}。
           </p>
         </div>
@@ -95,7 +95,7 @@ export function OrdersPage() {
               </option>
             ))}
           </select>
-          <button type="button" onClick={() => setRefreshNonce((n) => n + 1)} style={ghostBtn}>
+          <button type="button" onClick={() => setRefreshNonce((n) => n + 1)} className="hk-btn">
             刷新
           </button>
         </div>
@@ -117,53 +117,51 @@ export function OrdersPage() {
         ))}
       </div>
 
-      <div style={cardStyle}>
+      <div className="hk-card">
         {loading && orders.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : visible.length === 0 ? (
           <Empty>{orders.length === 0 ? '还没有订单记录。' : '当前筛选下没有订单。'}</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['订单号', '类型', '金额', '渠道', '状态', '创建时间', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {visible.map((o) => (
-                  <tr key={o.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>
+                  <tr key={o.id}>
+                    <td>
                       <code style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>{o.out_trade_no}</code>
                     </td>
-                    <td style={td}>{orderKindLabel(o.order_kind)}</td>
-                    <td style={{ ...td, fontWeight: 600, color: 'var(--hk-ink-900)' }}>
+                    <td>{orderKindLabel(o.order_kind)}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right', fontWeight: 600, color: 'var(--hk-ink-900)' }}>
                       {formatMoney(o.amount_cents, o.currency_code)}
                     </td>
-                    <td style={td}>{providerLabel(o.provider_kind)}</td>
-                    <td style={td}>
+                    <td>{providerLabel(o.provider_kind)}</td>
+                    <td>
                       <StatusBadge tone={statusTone(o.status)}>{statusLabel(o.status)}</StatusBadge>
                     </td>
-                    <td style={td}>{fmt(o.created_at)}</td>
-                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <td className="hk-mono">{fmt(o.created_at)}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <div style={{ display: 'inline-flex', gap: 'var(--hk-space-2)', alignItems: 'center' }}>
                         {/* 行内入口:可撤单/可退款时直接给出对应动作入口,点开即落到详情抽屉的二次确认流程,
                             避免在表格行直接触发 money/破坏性动作(确认与执行集中在抽屉一处)。 */}
                         {cancellable(o) && (
-                          <button type="button" onClick={() => setDetailId(o.id)} style={rowDangerLink}>
+                          <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm hk-btn--danger">
                             撤单
                           </button>
                         )}
                         {refundRequestable(o) && (
-                          <button type="button" onClick={() => setDetailId(o.id)} style={linkBtn}>
+                          <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm">
                             申请退款
                           </button>
                         )}
-                        <button type="button" onClick={() => setDetailId(o.id)} style={linkBtn}>
+                        <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm">
                           详情
                         </button>
                       </div>
@@ -372,12 +370,12 @@ function OrderActions({ order, onChanged }: { order: UserOrder; onChanged: () =>
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-2)' }}>
         {canCancel && (
-          <button type="button" disabled={busy} onClick={doCancel} style={dangerBtn}>
+          <button type="button" disabled={busy} onClick={doCancel} className="hk-btn hk-btn--sm hk-btn--danger">
             {busy ? '处理中…' : '撤销订单'}
           </button>
         )}
         {canRefund && (
-          <button type="button" disabled={busy} onClick={doRefund} style={linkBtn}>
+          <button type="button" disabled={busy} onClick={doRefund} className="hk-btn hk-btn--sm">
             {busy ? '处理中…' : '申请退款'}
           </button>
         )}
@@ -422,7 +420,7 @@ function ReceiptSection({ order }: { order: UserOrder }) {
       {error && <div style={errorBox}>{error}</div>}
       {content == null ? (
         <div>
-          <button type="button" onClick={load} disabled={loading} style={linkBtn}>
+          <button type="button" onClick={load} disabled={loading} className="hk-btn hk-btn--sm">
             {loading ? '获取中…' : '查看收据'}
           </button>
         </div>
@@ -445,7 +443,7 @@ function ReceiptSection({ order }: { order: UserOrder }) {
             {content}
           </pre>
           <div>
-            <button type="button" onClick={download} style={linkBtn}>
+            <button type="button" onClick={download} className="hk-btn hk-btn--sm">
               下载收据(.txt)
             </button>
           </div>
@@ -487,7 +485,7 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function fmt(iso: string | null | undefined): string {
@@ -496,21 +494,8 @@ function fmt(iso: string | null | undefined): string {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const cardStyle: React.CSSProperties = {
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-  overflow: 'hidden',
-}
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle', whiteSpace: 'nowrap', color: 'var(--hk-ink-700)' }
-const selectStyle: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13 }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-primary-700)', fontSize: 12, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-danger)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-danger)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
-const rowDangerLink: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-danger)', fontSize: 12, cursor: 'pointer' }
-const closeBtn: React.CSSProperties = { width: 28, height: 28, border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-500)', fontSize: 14, cursor: 'pointer', lineHeight: 1 }
+const selectStyle: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13 }
+const closeBtn: React.CSSProperties = { width: 28, height: 28, border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', background: 'var(--hk-surface)', color: 'var(--hk-ink-500)', fontSize: 14, cursor: 'pointer', lineHeight: 1 }
 const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const overlay: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(15, 23, 27, 0.32)', zIndex: 'var(--hk-z-overlay)' as unknown as number, display: 'flex', justifyContent: 'flex-end' }
 const drawer: React.CSSProperties = { width: 'min(440px, 92vw)', height: '100%', background: 'var(--hk-surface)', boxShadow: 'var(--hk-shadow-3)', padding: 'var(--hk-space-6)', overflowY: 'auto' }

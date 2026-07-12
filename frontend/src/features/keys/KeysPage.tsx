@@ -85,15 +85,15 @@ export function KeysPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>我的密钥</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>我的密钥</h1>
+          <p className="hk-sub">
             管线第 3 站 · 把账号池签发成可用密钥。共 {keys.length} 个。
           </p>
         </div>
-        <button type="button" onClick={() => setCreateOpen(true)} style={newBtn}>
+        <button type="button" onClick={() => setCreateOpen(true)} className="hk-btn hk-btn--green">
           ＋ 新建 Key
         </button>
       </header>
@@ -125,7 +125,7 @@ export function KeysPage() {
       {selected.size > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-2) var(--hk-space-4)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }}>
           <span style={{ fontSize: 13, color: 'var(--hk-ink-700)' }}>已选 {selected.size} 个</span>
-          <button type="button" disabled={batchBusy} onClick={batchRevoke} style={revokeBtn}>
+          <button type="button" disabled={batchBusy} onClick={batchRevoke} className="hk-btn hk-btn--danger hk-btn--sm">
             {batchBusy ? '撤销中…' : '批量撤销'}
           </button>
           <button type="button" onClick={() => setSelected(new Set())} style={{ border: 'none', background: 'transparent', color: 'var(--hk-ink-500)', fontSize: 13, cursor: 'pointer' }}>
@@ -134,17 +134,17 @@ export function KeysPage() {
         </div>
       )}
 
-      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+      <div className="hk-card">
         {loading && keys.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : keys.length === 0 ? (
           <Empty>还没有密钥。点击右上角「新建 Key」创建第一个。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
-                  <th style={{ ...th, width: 36 }}>
+                  <th style={{ width: 36 }}>
                     <input
                       type="checkbox"
                       checked={allSelected}
@@ -153,16 +153,14 @@ export function KeysPage() {
                     />
                   </th>
                   {['名称', '前缀', '状态', '过期', '最近使用', '创建时间', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {keys.map((k) => (
-                  <tr key={k.api_key_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={{ ...td, textAlign: 'center' }}>
+                  <tr key={k.api_key_id}>
+                    <td style={{ textAlign: 'center' }}>
                       {isSelectable(k) && (
                         <input
                           type="checkbox"
@@ -172,25 +170,25 @@ export function KeysPage() {
                         />
                       )}
                     </td>
-                    <td style={td}>
+                    <td>
                       <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{k.name}</span>
                     </td>
-                    <td style={td}>
-                      <code style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{k.key_prefix}</code>
+                    <td>
+                      <code className="hk-mono">{k.key_prefix}</code>
                     </td>
-                    <td style={td}>
+                    <td>
                       <StatusBadge tone={statusTone(k.status)}>{statusLabel(k.status)}</StatusBadge>
                     </td>
-                    <td style={td}>{fmt(k.expires_at) || '永不'}</td>
-                    <td style={td}>{fmt(k.last_used_at) || '从未'}</td>
-                    <td style={td}>{fmt(k.created_at)}</td>
-                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <td className="hk-mono">{fmt(k.expires_at) || '永不'}</td>
+                    <td className="hk-mono">{fmt(k.last_used_at) || '从未'}</td>
+                    <td className="hk-mono">{fmt(k.created_at)}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       {k.status === 'active' && (
                         <>
-                          <button type="button" disabled={busyId === k.api_key_id} onClick={() => setEditing(k)} style={editBtn}>
+                          <button type="button" disabled={busyId === k.api_key_id} onClick={() => setEditing(k)} className="hk-btn hk-btn--sm" style={{ marginRight: 'var(--hk-space-2)' }}>
                             编辑
                           </button>
-                          <button type="button" disabled={busyId === k.api_key_id} onClick={() => revoke(k)} style={revokeBtn}>
+                          <button type="button" disabled={busyId === k.api_key_id} onClick={() => revoke(k)} className="hk-btn hk-btn--danger hk-btn--sm">
                             撤销
                           </button>
                         </>
@@ -239,11 +237,5 @@ function fmt(iso: string | null | undefined): string {
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
-
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle', whiteSpace: 'nowrap', color: 'var(--hk-ink-700)' }
-const newBtn: React.CSSProperties = { height: 36, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
-const revokeBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-danger)', fontSize: 12, cursor: 'pointer' }
-const editBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', marginRight: 'var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-primary-700)', fontSize: 12, cursor: 'pointer' }

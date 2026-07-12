@@ -25,11 +25,11 @@ export function AlertingPage() {
   const [tab, setTab] = useState<TabKey>('rules')
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>告警控制台</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>告警控制台</h1>
+          <p className="hk-sub">
             运营台 · 阈值告警规则、触发事件与静默窗口。指标命中规则即产生事件,可手动恢复或用静默临时抑制通知。
           </p>
         </div>

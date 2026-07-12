@@ -38,12 +38,14 @@ export function ChannelHealthPage() {
   const [tenantId, setTenantId] = useState<number | null>(null)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>渠道健康台</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          上游渠道(账号凭证维度)的健康状态机:自动冷却 / 爬坡恢复 / 受损,及人工暂停 / 恢复 / 强制上线。先指定租户 ID。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>渠道健康台</h1>
+          <p className="hk-sub">
+            上游渠道(账号凭证维度)的健康状态机:自动冷却 / 爬坡恢复 / 受损,及人工暂停 / 恢复 / 强制上线。先指定租户 ID。
+          </p>
+        </div>
       </header>
 
       <form
@@ -63,7 +65,7 @@ export function ChannelHealthPage() {
             style={{ ...inp, width: 160 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           加载
         </button>
       </form>
@@ -151,24 +153,22 @@ function ChannelHealthBoard({ tenantId }: { tenantId: number }) {
       <SummaryCard summary={summary} loading={loading} onReload={() => load()} />
 
       {/* 渠道列表 */}
-      <section style={card}>
-        <div style={cardHead}>
-          <h2 style={{ fontSize: 15, margin: 0 }}>渠道明细</h2>
-          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
+      <section className="hk-card">
+        <div className="hk-card__head">
+          <h3>渠道明细</h3>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
         </div>
         {loading && rows.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : rows.length === 0 ? (
           <Empty>该租户暂无渠道健康记录。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['渠道', '厂商', '状态', '健康分', '信号 / 置信', '冷却 / 爬坡', '更新', '人工干预'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -178,23 +178,23 @@ function ChannelHealthBoard({ tenantId }: { tenantId: number }) {
                   const writable = canOverride(item)
                   const busy = busyKey === key
                   return (
-                    <tr key={key} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                      <td style={tdMono}>
+                    <tr key={key}>
+                      <td className="hk-mono">
                         <div>{item.channel_id}</div>
                         <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>
                           acct #{item.provider_account_id} · cred #{item.account_credential_id} v{item.credential_version}
                         </div>
                       </td>
-                      <td style={td}>{item.vendor || '—'}</td>
-                      <td style={td}>
+                      <td>{item.vendor || '—'}</td>
+                      <td>
                         <StatusBadge tone={stateTone(item.state)}>{stateLabel(item.state)}</StatusBadge>
                       </td>
-                      <td style={tdMono}>{fmtNum(item.score)}</td>
-                      <td style={{ ...td, color: 'var(--hk-ink-700)' }}>
+                      <td className="hk-mono">{fmtNum(item.score)}</td>
+                      <td style={{ color: 'var(--hk-ink-700)' }}>
                         <div>{signalLabel(item.reason_class)}</div>
                         <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{confidenceLabel(item.confidence_tier)}</div>
                       </td>
-                      <td style={{ ...td, color: 'var(--hk-ink-700)' }}>
+                      <td style={{ color: 'var(--hk-ink-700)' }}>
                         {item.cooldown_until ? (
                           <div title="冷却到期">冷却至 {fmt(item.cooldown_until)}</div>
                         ) : null}
@@ -205,14 +205,14 @@ function ChannelHealthBoard({ tenantId }: { tenantId: number }) {
                         ) : null}
                         {!item.cooldown_until && item.state !== 'ramping' && item.ramp_stage_pct === 0 ? '—' : null}
                       </td>
-                      <td style={tdMono}>{fmt(item.updated_at)}</td>
-                      <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      <td className="hk-mono">{fmt(item.updated_at)}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
                         {writable ? (
                           <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-                            <button type="button" disabled={busy} onClick={() => override(item, 'pause')} style={dangerBtn}>
+                            <button type="button" disabled={busy} onClick={() => override(item, 'pause')} className="hk-btn hk-btn--sm hk-btn--danger">
                               {busy ? '…' : '暂停'}
                             </button>
-                            <button type="button" disabled={busy} onClick={() => override(item, 'resume')} style={ghostBtn}>
+                            <button type="button" disabled={busy} onClick={() => override(item, 'resume')} className="hk-btn hk-btn--sm">
                               恢复
                             </button>
                             <button type="button" disabled={busy} onClick={() => override(item, 'force-active')} style={warnBtn}>
@@ -252,14 +252,14 @@ function SummaryCard({
   const states = [...order, ...extras]
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>状态聚合</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>状态聚合</h3>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
           {summary?.oldest_cooldown_at && (
             <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>最早冷却 {fmt(summary.oldest_cooldown_at)}</span>
           )}
-          <button type="button" disabled={loading} onClick={onReload} style={ghostBtn}>
+          <button type="button" disabled={loading} onClick={onReload} className="hk-btn hk-btn--sm">
             {loading ? '加载中…' : '刷新'}
           </button>
         </div>
@@ -304,7 +304,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function fmt(iso?: string): string {
@@ -319,13 +319,6 @@ function fmtNum(n: number): string {
   return String(Math.round(n * 100) / 100)
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-danger-soft)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger-soft)', color: 'var(--hk-danger)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const warnBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-warn-soft)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-warn-soft)', color: 'var(--hk-warn)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+// 强制上线为警示类操作(绕过冷却),保留独立琥珀底样式以突出风险语义;共享按钮体系暂无 warn 变体。
+const warnBtn: React.CSSProperties = { border: '1px solid var(--hk-warn-soft)', borderRadius: 'var(--hk-radius-sm)', background: 'var(--hk-warn-soft)', color: 'var(--hk-warn)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '4px 10px' }

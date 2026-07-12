@@ -34,12 +34,14 @@ export function RouteRulesPage() {
   const [tenantId, setTenantId] = useState<number | null>(null)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>请求路由规则</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          按(用户组 × 模型模式)把请求路由到目标 pool_group,按优先级(数值小=先生效)裁决。先指定租户 ID。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>请求路由规则</h1>
+          <p className="hk-sub">
+            按(用户组 × 模型模式)把请求路由到目标 pool_group,按优先级(数值小=先生效)裁决。先指定租户 ID。
+          </p>
+        </div>
       </header>
 
       <form
@@ -53,7 +55,7 @@ export function RouteRulesPage() {
         <Field label="租户 ID(tenant_id)">
           <input value={tenantInput} onChange={(e) => setTenantInput(e.target.value)} inputMode="numeric" placeholder="如 1" style={{ ...inp, width: 160 }} />
         </Field>
-        <button type="submit" style={primaryBtn}>加载</button>
+        <button type="submit" className="hk-btn hk-btn--green">加载</button>
       </form>
 
       {tenantId == null ? (
@@ -157,12 +159,12 @@ function RulesCard({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>路由规则(租户 #{tenantId})</h2>
-        <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center' }}>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>路由规则(租户 #{tenantId})</h3>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center' }}>
           <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
-          <button type="button" disabled={busy || editing === 'new'} onClick={openNew} style={primaryBtn}>
+          <button type="button" disabled={busy || editing === 'new'} onClick={openNew} className="hk-btn hk-btn--green hk-btn--sm">
             新建规则
           </button>
         </div>
@@ -180,12 +182,12 @@ function RulesCard({ tenantId }: { tenantId: number }) {
       ) : rows.length === 0 ? (
         <Empty>该租户暂无路由规则。新建第一条以把请求按用户组/模型路由到 pool_group。</Empty>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
               <tr>
                 {['优先级', '规则名', '用户组匹配', '模型模式', 'pool_group', '状态', ''].map((h) => (
-                  <th key={h} style={th}>{h}</th>
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -230,7 +232,7 @@ function RuleRow({
 }) {
   if (editing) {
     return (
-      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
+      <tr>
         <td colSpan={7} style={{ padding: 0 }}>
           <RuleForm mode="edit" form={form} setForm={setForm} busy={busy} onSubmit={onSubmit} onCancel={onCancel} />
         </td>
@@ -238,19 +240,19 @@ function RuleRow({
     )
   }
   return (
-    <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-      <td style={tdMono}>{route.match_priority}</td>
-      <td style={td}>{route.name}</td>
-      <td style={tdMono}>{route.user_group_match}</td>
-      <td style={tdMono}>{displayModelPattern(route.model_pattern_match)}</td>
-      <td style={tdMono}>#{route.pool_group_id}</td>
-      <td style={td}>
+    <tr>
+      <td className="hk-mono">{route.match_priority}</td>
+      <td>{route.name}</td>
+      <td className="hk-mono">{route.user_group_match}</td>
+      <td className="hk-mono">{displayModelPattern(route.model_pattern_match)}</td>
+      <td className="hk-mono">#{route.pool_group_id}</td>
+      <td>
         <StatusBadge tone={route.enabled ? 'ok' : 'muted'}>{route.enabled ? '启用' : '停用'}</StatusBadge>
       </td>
-      <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-        <button type="button" disabled={busy} onClick={onEdit} style={linkBtn}>编辑</button>
-        <button type="button" disabled={busy} onClick={onToggle} style={linkBtn}>{route.enabled ? '停用' : '启用'}</button>
-        <button type="button" disabled={busy} onClick={onDelete} style={dangerLink}>删除</button>
+      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+        <button type="button" disabled={busy} onClick={onEdit} className="hk-btn hk-btn--sm">编辑</button>
+        <button type="button" disabled={busy} onClick={onToggle} className="hk-btn hk-btn--sm" style={{ marginLeft: 'var(--hk-space-2)' }}>{route.enabled ? '停用' : '启用'}</button>
+        <button type="button" disabled={busy} onClick={onDelete} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>删除</button>
       </td>
     </tr>
   )
@@ -288,10 +290,10 @@ function RuleForm({
         </Field>
       </div>
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-        <button type="button" disabled={busy} onClick={onSubmit} style={primaryBtn}>
+        <button type="button" disabled={busy} onClick={onSubmit} className="hk-btn hk-btn--green">
           {busy ? '提交中…' : mode === 'new' ? '创建' : '保存'}
         </button>
-        <button type="button" disabled={busy} onClick={onCancel} style={ghostBtn}>取消</button>
+        <button type="button" disabled={busy} onClick={onCancel} className="hk-btn">取消</button>
       </div>
     </div>
   )
@@ -314,16 +316,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-600)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
-const dangerLink: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

@@ -80,7 +80,7 @@ export function AccountDetailPage() {
   const actions = accountAvailableActions(account)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)', maxWidth: 920 }}>
+    <div className="hk-page" style={{ maxWidth: 920 }}>
       <Link to="/accounts" style={{ fontSize: 13 }}>
         ← 返回账号列表
       </Link>
@@ -127,7 +127,7 @@ export function AccountDetailPage() {
                   actions.toggleTo === 'enable' ? '已启用账号' : '已停用账号',
                 )
               }
-              style={actions.toggleTo === 'enable' ? primaryBtn : dangerBtn}
+              className={actions.toggleTo === 'enable' ? 'hk-btn hk-btn--green' : 'hk-btn hk-btn--danger'}
             >
               {actions.toggleTo === 'enable' ? '启用账号' : '停用账号'}
             </button>
@@ -136,12 +136,12 @@ export function AccountDetailPage() {
                 type="button"
                 disabled={busy}
                 onClick={() => runAction(() => clearAccountRateLimit(account.id, reason), '已清除限流态')}
-                style={ghostBtn}
+                className="hk-btn"
               >
                 清除限流态
               </button>
             )}
-            <button type="button" disabled={busy} onClick={() => setEditing(true)} style={ghostBtn}>
+            <button type="button" disabled={busy} onClick={() => setEditing(true)} className="hk-btn">
               编辑参数
             </button>
             {account.rate_limit_reason && (
@@ -223,20 +223,11 @@ function fmt(iso: string | null): string {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section
-      style={{
-        background: 'var(--hk-surface)',
-        border: '1px solid var(--hk-line)',
-        borderRadius: 'var(--hk-radius-lg)',
-        boxShadow: 'var(--hk-shadow-1)',
-        padding: 'var(--hk-space-4)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 'var(--hk-space-3)',
-      }}
-    >
-      <h2 style={{ fontSize: 14, color: 'var(--hk-ink-500)' }}>{title}</h2>
-      {children}
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>{title}</h3>
+      </div>
+      <div className="hk-card__body">{children}</div>
     </section>
   )
 }
@@ -291,19 +282,8 @@ const inputStyle: React.CSSProperties = {
   height: 32,
   padding: '0 var(--hk-space-3)',
   border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
+  borderRadius: 'var(--hk-radius-sm)',
   fontSize: 13,
   background: 'var(--hk-surface)',
   color: 'var(--hk-ink-900)',
 }
-const baseBtn: React.CSSProperties = {
-  height: 32,
-  padding: '0 var(--hk-space-4)',
-  borderRadius: 'var(--hk-radius-md)',
-  fontSize: 13,
-  fontWeight: 600,
-  cursor: 'pointer',
-}
-const primaryBtn: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-primary-600)', background: 'var(--hk-primary-500)', color: '#fff' }
-const dangerBtn: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-danger)', background: 'var(--hk-danger)', color: '#fff' }
-const ghostBtn: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-line)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontWeight: 400 }

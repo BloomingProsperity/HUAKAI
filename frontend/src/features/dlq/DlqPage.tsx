@@ -114,17 +114,19 @@ export function DlqPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>死信队列</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          可靠性运维:按事件类型(handler)查看投递失败的死信,并对单条执行重放。
-          重放触及计费/结算的类型(money 敏感)前会强提示;重放本身幂等。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>死信队列</h1>
+          <p className="hk-sub">
+            可靠性运维:按事件类型(handler)查看投递失败的死信,并对单条执行重放。
+            重放触及计费/结算的类型(money 敏感)前会强提示;重放本身幂等。
+          </p>
+        </div>
       </header>
 
       {/* 查询条件 */}
-      <form onSubmit={submitQuery} style={filterBar}>
+      <form onSubmit={submitQuery} className="hk-card" style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap', padding: 'var(--hk-space-4)' }}>
         <Field label="事件类型(handler)">
           <select value={handler} onChange={(e) => setHandler(e.target.value)} style={{ ...inp, width: 220 }}>
             {EVENT_KINDS.map((k) => (
@@ -152,7 +154,7 @@ export function DlqPage() {
             style={{ ...inp, width: 120 }}
           />
         </Field>
-        <button type="submit" disabled={loading} style={primaryBtn}>
+        <button type="submit" disabled={loading} className="hk-btn hk-btn--green">
           {loading ? '查询中…' : '查询'}
         </button>
       </form>
@@ -160,13 +162,13 @@ export function DlqPage() {
       {error && <Banner kind="error">{error}</Banner>}
       {notice && <Banner kind="ok">{notice}</Banner>}
 
-      <section style={card}>
-        <div style={cardHead}>
-          <h2 style={{ fontSize: 15, margin: 0 }}>
+      <section className="hk-card">
+        <div className="hk-card__head">
+          <h3>
             {eventKindLabel(query.handler)}
             {query.status ? ` · ${STATUS_LABELS[query.status] ?? query.status}` : ''}
-          </h2>
-          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
+          </h3>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
         </div>
 
         {loading && rows.length === 0 ? (
@@ -174,12 +176,12 @@ export function DlqPage() {
         ) : rows.length === 0 ? (
           <Empty>当前条件下暂无死信记录。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['ID', '租户', '泳道', '状态', '重试', '失败原因', '失败时间', ''].map((h) => (
-                    <th key={h} style={th}>
+                    <th key={h}>
                       {h}
                     </th>
                   ))}
@@ -191,8 +193,8 @@ export function DlqPage() {
                   const replayable = canReplay(r)
                   return (
                     <Fragment key={r.id}>
-                      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-                        <td style={tdMono}>
+                      <tr>
+                        <td className="hk-mono">
                           <button
                             type="button"
                             onClick={() => setExpandedId(expanded ? null : r.id)}
@@ -202,22 +204,22 @@ export function DlqPage() {
                             #{r.id} {expanded ? '▾' : '▸'}
                           </button>
                         </td>
-                        <td style={tdMono}>#{r.tenant_id}</td>
-                        <td style={td}>
+                        <td className="hk-mono">#{r.tenant_id}</td>
+                        <td>
                           <StatusBadge tone={laneTone(r.lane)}>{r.lane || '—'}</StatusBadge>
                         </td>
-                        <td style={td}>
+                        <td>
                           <StatusBadge tone={statusTone(r.status)}>{statusLabel(r.status)}</StatusBadge>
                         </td>
-                        <td style={tdMono}>{r.replay_attempts}</td>
-                        <td style={{ ...td, maxWidth: 320 }}>{shortReason(r.failure_reason)}</td>
-                        <td style={tdMono}>{formatTs(r.failure_at)}</td>
-                        <td style={{ ...td, textAlign: 'right' }}>
+                        <td className="hk-mono">{r.replay_attempts}</td>
+                        <td style={{ maxWidth: 320 }}>{shortReason(r.failure_reason)}</td>
+                        <td className="hk-mono">{formatTs(r.failure_at)}</td>
+                        <td style={{ textAlign: 'right' }}>
                           <button
                             type="button"
                             disabled={!replayable || replayingId === r.id}
                             onClick={() => onReplay(r)}
-                            style={replayable ? primaryBtn : disabledBtn}
+                            className={replayable ? 'hk-btn hk-btn--green hk-btn--sm' : 'hk-btn hk-btn--sm'}
                             title={replayable ? '重放此死信' : '已投递,无需重放'}
                           >
                             {replayingId === r.id ? '重放中…' : '重放'}
@@ -296,16 +298,10 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
-const filterBar: React.CSSProperties = { display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', padding: 'var(--hk-space-4)' }
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
+// 查询表单输入框:共享层无表单 input 类,保留本地 token 化样式。
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const disabledBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface-sunken)', color: 'var(--hk-ink-300)', fontSize: 13, cursor: 'not-allowed' }
+// 展开/收起详情的链接式按钮(非标准 hk-btn,保留内联样式)。
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-600)', fontSize: 13, fontFamily: 'var(--hk-font-mono)', cursor: 'pointer', padding: 0 }

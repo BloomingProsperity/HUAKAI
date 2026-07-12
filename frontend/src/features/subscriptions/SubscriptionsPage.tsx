@@ -126,20 +126,22 @@ export function SubscriptionsPage() {
   const historyRows = sortSubscriptionHistory(history)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>订阅</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          查看当前订阅与日/周/月配额用量,或选购在售套餐。购买后需完成支付,订单确认后订阅自动生效。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>订阅</h1>
+          <p className="hk-sub">
+            查看当前订阅与日/周/月配额用量,或选购在售套餐。购买后需完成支付,订单确认后订阅自动生效。
+          </p>
+        </div>
       </header>
 
       {error && <Banner tone="danger">{error}</Banner>}
 
       {/* 我的当前订阅 + 用量进度 */}
-      <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
-        <h2 style={sectionTitle}>我的订阅</h2>
-        <div style={card}>
+      <section className="hk-card">
+        <div className="hk-card__head"><h3>我的订阅</h3></div>
+        <div className="hk-card__body">
           {loading && !current ? (
             <Empty>加载中…</Empty>
           ) : !active ? (
@@ -183,48 +185,46 @@ export function SubscriptionsPage() {
       </section>
 
       {/* 订阅历史(只读):本人全部订阅记录,含已过期/已取消/待生效 */}
-      <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
-        <h2 style={sectionTitle}>订阅历史</h2>
-        <div style={card}>
-          {loading && history.length === 0 ? (
-            <Empty>加载中…</Empty>
-          ) : historyRows.length === 0 ? (
-            <Empty>暂无订阅记录。</Empty>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    <th style={thStyle}>套餐 ID</th>
-                    <th style={thStyle}>状态</th>
-                    <th style={thStyle}>权益组</th>
-                    <th style={thStyle}>生效时间</th>
-                    <th style={thStyle}>到期时间</th>
-                    <th style={thStyle}>取消时间</th>
-                    <th style={thStyle}>创建时间</th>
+      <section className="hk-card">
+        <div className="hk-card__head"><h3>订阅历史</h3></div>
+        {loading && history.length === 0 ? (
+          <div className="hk-card__body"><Empty>加载中…</Empty></div>
+        ) : historyRows.length === 0 ? (
+          <div className="hk-card__body"><Empty>暂无订阅记录。</Empty></div>
+        ) : (
+          <div className="hk-tablewrap">
+            <table className="hk-table">
+              <thead>
+                <tr>
+                  <th>套餐 ID</th>
+                  <th>状态</th>
+                  <th>权益组</th>
+                  <th>生效时间</th>
+                  <th>到期时间</th>
+                  <th>取消时间</th>
+                  <th>创建时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {historyRows.map((h) => (
+                  <tr key={h.id}>
+                    <td className="hk-mono">{h.plan_id}</td>
+                    <td>
+                      <StatusBadge tone={toBadgeTone(subscriptionStatusTone(h.status))}>
+                        {subscriptionStatusLabel(h.status)}
+                      </StatusBadge>
+                    </td>
+                    <td>{h.granted_group || '—'}</td>
+                    <td className="hk-mono">{formatDate(h.starts_at) || '—'}</td>
+                    <td className="hk-mono">{formatDate(h.expires_at) || '—'}</td>
+                    <td className="hk-mono">{formatDate(h.cancelled_at) || '—'}</td>
+                    <td className="hk-mono">{formatDate(h.created_at) || '—'}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {historyRows.map((h) => (
-                    <tr key={h.id}>
-                      <td style={tdStyle}>{h.plan_id}</td>
-                      <td style={tdStyle}>
-                        <StatusBadge tone={toBadgeTone(subscriptionStatusTone(h.status))}>
-                          {subscriptionStatusLabel(h.status)}
-                        </StatusBadge>
-                      </td>
-                      <td style={tdStyle}>{h.granted_group || '—'}</td>
-                      <td style={tdStyle}>{formatDate(h.starts_at) || '—'}</td>
-                      <td style={tdStyle}>{formatDate(h.expires_at) || '—'}</td>
-                      <td style={tdStyle}>{formatDate(h.cancelled_at) || '—'}</td>
-                      <td style={tdStyle}>{formatDate(h.created_at) || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       {/* 在售套餐 */}
@@ -235,11 +235,11 @@ export function SubscriptionsPage() {
         {buyError && <Banner tone="danger">{buyError}</Banner>}
 
         {loading && plans.length === 0 ? (
-          <div style={card}>
+          <div className="hk-card">
             <Empty>加载中…</Empty>
           </div>
         ) : plans.length === 0 ? (
-          <div style={card}>
+          <div className="hk-card">
             <Empty>当前没有在售套餐。</Empty>
           </div>
         ) : (
@@ -300,7 +300,7 @@ function QuotaBar({ row }: { row: SubscriptionProgressView }) {
             height: '100%',
             width: `${width}%`,
             borderRadius: 'var(--hk-radius-pill)',
-            background: over ? '#d9534f' : 'var(--hk-primary-500)',
+            background: over ? 'var(--hk-danger)' : 'var(--hk-primary-500)',
             transition: 'width 0.2s ease',
           }}
         />
@@ -400,7 +400,7 @@ function SubscriptionSelfService({
       {autoRenew ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13, color: 'var(--hk-ink-700)' }}>自动续订当前已开启。</span>
-          <button type="button" disabled={busy !== null} onClick={doCancelRenew} style={busy !== null ? buyBtnDisabled : ghostActionBtn}>
+          <button type="button" disabled={busy !== null} onClick={doCancelRenew} className="hk-btn hk-btn--sm">
             {busy === 'cancel' ? '处理中…' : '关闭自动续订'}
           </button>
         </div>
@@ -430,7 +430,7 @@ function SubscriptionSelfService({
             type="button"
             disabled={busy !== null || targetPlanId <= 0}
             onClick={doChangePlan}
-            style={busy !== null || targetPlanId <= 0 ? buyBtnDisabled : ghostActionBtn}
+            className="hk-btn hk-btn--sm"
           >
             {busy === 'change' ? '更换中…' : '更换套餐'}
           </button>
@@ -458,11 +458,12 @@ function PlanCard({
   const caps = formatCaps(plan)
   return (
     <div
+      className="hk-card"
       style={{
-        ...card,
         display: 'flex',
         flexDirection: 'column',
         gap: 'var(--hk-space-3)',
+        padding: 'var(--hk-space-5)',
       }}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
@@ -486,7 +487,13 @@ function PlanCard({
         {plan.granted_group && <CapRow label="权益组" value={plan.granted_group} />}
       </dl>
 
-      <button type="button" disabled={busy || anyBusy} onClick={onBuy} style={busy || anyBusy ? buyBtnDisabled : buyBtn}>
+      <button
+        type="button"
+        disabled={busy || anyBusy}
+        onClick={onBuy}
+        className={busy || anyBusy ? 'hk-btn' : 'hk-btn hk-btn--green'}
+        style={{ marginTop: 'auto', justifyContent: 'center' }}
+      >
         {busy ? '下单中…' : '购买'}
       </button>
     </div>
@@ -530,11 +537,7 @@ function Banner({ tone, children }: { tone: 'ok' | 'danger'; children: React.Rea
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>
-      {children}
-    </div>
-  )
+  return <div className="hk-empty">{children}</div>
 }
 
 // 把纯逻辑的 SubTone 适配到 StatusBadge 的 BadgeTone(两者命名一致,显式映射避免耦合)。
@@ -566,65 +569,6 @@ function friendlyPurchaseError(code: string, fallback?: string): string {
 }
 
 const sectionTitle: CSSProperties = { fontSize: 15, margin: 0, color: 'var(--hk-ink-700)' }
-
-// 订阅历史表格的表头/单元格样式(只读列表)。
-const thStyle: CSSProperties = {
-  textAlign: 'left',
-  padding: 'var(--hk-space-2) var(--hk-space-3)',
-  borderBottom: '1px solid var(--hk-line)',
-  color: 'var(--hk-ink-500)',
-  fontWeight: 600,
-  whiteSpace: 'nowrap',
-}
-
-const tdStyle: CSSProperties = {
-  padding: 'var(--hk-space-2) var(--hk-space-3)',
-  borderBottom: '1px solid var(--hk-surface-sunken)',
-  color: 'var(--hk-ink-700)',
-  whiteSpace: 'nowrap',
-}
-
-const card: CSSProperties = {
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-  padding: 'var(--hk-space-5)',
-}
-
-const buyBtn: CSSProperties = {
-  height: 38,
-  marginTop: 'auto',
-  padding: '0 var(--hk-space-5)',
-  border: '1px solid var(--hk-primary-600)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-primary-500)',
-  color: '#fff',
-  fontSize: 14,
-  fontWeight: 600,
-  cursor: 'pointer',
-}
-
-const buyBtnDisabled: CSSProperties = {
-  ...buyBtn,
-  background: 'var(--hk-surface-sunken)',
-  color: 'var(--hk-ink-500)',
-  border: '1px solid var(--hk-line)',
-  cursor: 'not-allowed',
-}
-
-// 自助操作区的次级按钮(描边款,区别于醒目的购买按钮)。
-const ghostActionBtn: CSSProperties = {
-  height: 32,
-  padding: '0 var(--hk-space-4)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-surface)',
-  color: 'var(--hk-ink-700)',
-  fontSize: 13,
-  fontWeight: 600,
-  cursor: 'pointer',
-}
 
 const selectActionStyle: CSSProperties = {
   height: 32,
