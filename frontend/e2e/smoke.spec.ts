@@ -7,15 +7,16 @@ const ROUTES: string[] = [
   '/overview', '/keys', '/usage', '/usage-records', '/accounts', '/models', '/routing',
   '/users', '/wallet', '/orders', '/subscriptions', '/checkin', '/redeem', '/affiliate',
   '/rankings', '/my-groups', '/notifications', '/profile', '/media-tasks', '/available-channels',
-  '/activity', '/security', '/system', '/health', '/ops', '/playground',
+  '/activity', '/security', '/system', '/health', '/ops', '/playground', '/trust',
+  '/integration', '/key-usage',
   '/admin/affiliates', '/admin/alerting', '/admin/announcements', '/admin/backup',
   '/admin/billing-claims', '/admin/broadcast', '/admin/cache', '/admin/catalogs',
   '/admin/channel-health', '/admin/channel-test-templates', '/admin/credential-renew',
   '/admin/disputes', '/admin/dlq', '/admin/groups', '/admin/hermes', '/admin/logs',
   '/admin/model-registry', '/admin/model-sync', '/admin/moderation', '/admin/modules',
-  '/admin/orders', '/admin/orphan-reconcile', '/admin/pricing', '/admin/proxies',
-  '/admin/quota-policies', '/admin/risk', '/admin/route-rules', '/admin/subscriptions',
-  '/admin/tls-fingerprints', '/admin/version', '/admin/vouchers',
+  '/admin/orders', '/admin/orphan-reconcile', '/admin/platform-credentials', '/admin/pricing',
+  '/admin/proxies', '/admin/quota-policies', '/admin/risk', '/admin/route-rules',
+  '/admin/subscriptions', '/admin/tls-fingerprints', '/admin/version', '/admin/vouchers',
 ]
 
 test('全路由 smoke:每页可开、不崩、无 5xx', async ({ page }) => {

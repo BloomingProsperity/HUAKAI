@@ -7,14 +7,17 @@ import { login, hasErrorBoundary } from './helpers'
 const ROUTES: string[] = [
   '/overview', '/keys', '/usage', '/usage-records', '/accounts', '/models', '/routing',
   '/users', '/wallet', '/orders', '/subscriptions', '/checkin', '/redeem', '/affiliate',
-  '/my-groups', '/notifications', '/profile', '/media-tasks', '/available-channels',
-  '/admin/alerting', '/admin/announcements', '/admin/backup', '/admin/billing-claims',
-  '/admin/broadcast', '/admin/cache', '/admin/catalogs', '/admin/channel-health',
-  '/admin/credential-renew', '/admin/disputes', '/admin/dlq', '/admin/groups',
-  '/admin/logs', '/admin/model-registry', '/admin/moderation', '/admin/modules',
-  '/admin/orders', '/admin/orphan-reconcile', '/admin/pricing', '/admin/proxies',
-  '/admin/quota-policies', '/admin/risk', '/admin/route-rules', '/admin/subscriptions',
-  '/admin/tls-fingerprints', '/admin/version', '/admin/vouchers',
+  '/rankings', '/my-groups', '/notifications', '/profile', '/media-tasks', '/available-channels',
+  '/activity', '/security', '/system', '/health', '/ops', '/playground', '/trust',
+  '/integration', '/key-usage',
+  '/admin/affiliates', '/admin/alerting', '/admin/announcements', '/admin/backup',
+  '/admin/billing-claims', '/admin/broadcast', '/admin/cache', '/admin/catalogs',
+  '/admin/channel-health', '/admin/channel-test-templates', '/admin/credential-renew',
+  '/admin/disputes', '/admin/dlq', '/admin/groups', '/admin/hermes', '/admin/logs',
+  '/admin/model-registry', '/admin/model-sync', '/admin/moderation', '/admin/modules',
+  '/admin/orders', '/admin/orphan-reconcile', '/admin/platform-credentials', '/admin/pricing',
+  '/admin/proxies', '/admin/quota-policies', '/admin/risk', '/admin/route-rules',
+  '/admin/subscriptions', '/admin/tls-fingerprints', '/admin/version', '/admin/vouchers',
 ]
 
 const DESTRUCTIVE = /删除|撤销|吊销|停用|禁用|清除|重置|登出|移除|解绑|强制|删|清空|注销|终止|回滚/
