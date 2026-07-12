@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
-import { listDlq, replayDlq } from './api'
+import { listDlq, replayDlq, replayUsageRecordDlq } from './api'
 import {
   canReplay,
   eventKindLabel,
@@ -16,6 +16,7 @@ import {
   validateLimit,
 } from './dlq'
 import { EVENT_KINDS, STATUS_FILTERS, type DlqRecord } from './types'
+import { ObsDlqTab } from './ObsDlqTab'
 
 /*
  * 死信队列(DLQ)运营台。管线第 7 站(系统)下的可靠性运维。
@@ -37,8 +38,12 @@ const STATUS_LABELS: Record<string, string> = {
   quarantined: '已隔离',
 }
 
+type DlqTab = 'traditional' | 'usage_record' | 'observability'
+const TRADITIONAL_EVENT_KINDS = EVENT_KINDS.filter((kind) => kind !== 'usage_record')
+
 export function DlqPage() {
-  const [handler, setHandler] = useState<string>(EVENT_KINDS[0])
+  const [tab, setTab] = useState<DlqTab>('traditional')
+  const [handler, setHandler] = useState<string>(TRADITIONAL_EVENT_KINDS[0])
   const [status, setStatus] = useState<string>('')
   const [limitInput, setLimitInput] = useState<string>(String(LIMIT_DEFAULT))
   const [rows, setRows] = useState<DlqRecord[]>([])
@@ -50,7 +55,7 @@ export function DlqPage() {
 
   // 当前生效的查询参数(点击「查询」时定格,避免输入即触发请求)。
   const [query, setQuery] = useState<{ handler: string; status: string; limit: number }>({
-    handler: EVENT_KINDS[0],
+    handler: TRADITIONAL_EVENT_KINDS[0],
     status: '',
     limit: LIMIT_DEFAULT,
   })
@@ -73,10 +78,26 @@ export function DlqPage() {
   )
 
   useEffect(() => {
+    if (tab === 'observability') {
+      setLoading(false)
+      return
+    }
     const ctrl = new AbortController()
     load(ctrl.signal)
     return () => ctrl.abort()
-  }, [load])
+  }, [load, tab])
+
+  const selectTab = (next: DlqTab) => {
+    setTab(next)
+    setError(null)
+    setNotice(null)
+    setExpandedId(null)
+    if (next === 'usage_record') {
+      setQuery((current) => ({ ...current, handler: 'usage_record' }))
+    } else if (next === 'traditional') {
+      setQuery((current) => ({ ...current, handler }))
+    }
+  }
 
   const submitQuery = (e: React.FormEvent) => {
     e.preventDefault()
@@ -88,7 +109,7 @@ export function DlqPage() {
     }
     setNotice(null)
     setExpandedId(null)
-    setQuery({ handler, status, limit: v.value })
+    setQuery({ handler: tab === 'usage_record' ? 'usage_record' : handler, status, limit: v.value })
   }
 
   const onReplay = (record: DlqRecord) => {
@@ -102,7 +123,8 @@ export function DlqPage() {
     setReplayingId(record.id)
     setError(null)
     setNotice(null)
-    replayDlq(record.id)
+    const replayRequest = tab === 'usage_record' ? replayUsageRecordDlq : replayDlq
+    replayRequest(record.id)
       .then((resp) => {
         setNotice(`已重放 #${record.id},当前状态:${statusLabel(resp.item.status)}`)
         load()
@@ -125,17 +147,38 @@ export function DlqPage() {
         </div>
       </header>
 
-      {/* 查询条件 */}
+      <div className="hk-seg" role="tablist" aria-label="死信类型" style={{ alignSelf: 'flex-start' }}>
+        <button type="button" role="tab" aria-selected={tab === 'traditional'} className={tab === 'traditional' ? 'is-on' : ''} onClick={() => selectTab('traditional')}>
+          传统死信
+        </button>
+        <button type="button" role="tab" aria-selected={tab === 'usage_record'} className={tab === 'usage_record' ? 'is-on' : ''} onClick={() => selectTab('usage_record')}>
+          用量记录死信
+        </button>
+        <button type="button" role="tab" aria-selected={tab === 'observability'} className={tab === 'observability' ? 'is-on' : ''} onClick={() => selectTab('observability')}>
+          观测死信
+        </button>
+      </div>
+
+      {tab === 'observability' ? (
+        <ObsDlqTab />
+      ) : (
+        <>
       <form onSubmit={submitQuery} className="hk-card" style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap', padding: 'var(--hk-space-4)' }}>
-        <Field label="事件类型(handler)">
-          <select value={handler} onChange={(e) => setHandler(e.target.value)} style={{ ...inp, width: 220 }}>
-            {EVENT_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {eventKindLabel(k)}（{k}）
-              </option>
-            ))}
-          </select>
-        </Field>
+        {tab === 'traditional' ? (
+          <Field label="事件类型(handler)">
+            <select value={handler} onChange={(e) => setHandler(e.target.value)} style={{ ...inp, width: 220 }}>
+              {TRADITIONAL_EVENT_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {eventKindLabel(k)}（{k}）
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : (
+          <Field label="事件类型(handler)">
+            <input value="usage_record" readOnly style={{ ...inp, width: 220, color: 'var(--hk-ink-300)' }} />
+          </Field>
+        )}
         <Field label="状态筛选">
           <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ ...inp, width: 160 }}>
             {STATUS_FILTERS.map((s) => (
@@ -241,6 +284,8 @@ export function DlqPage() {
           </div>
         )}
       </section>
+        </>
+      )}
     </div>
   )
 }

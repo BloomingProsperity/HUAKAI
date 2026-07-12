@@ -84,6 +84,52 @@ export function laneTone(lane: string): BadgeTone {
   }
 }
 
+/** 观测 outbox 优先级语气。 */
+export function obsPriorityTone(priority: string): BadgeTone {
+  switch (priority) {
+    case 'critical':
+      return 'danger'
+    case 'high':
+      return 'warn'
+    default:
+      return 'muted'
+  }
+}
+
+/** 观测 outbox 状态语气。 */
+export function obsStatusTone(status: string): BadgeTone {
+  switch (status) {
+    case 'completed':
+      return 'ok'
+    case 'failed_dead':
+      return 'danger'
+    case 'failed_retry':
+      return 'warn'
+    case 'pending':
+    case 'processing':
+      return 'info'
+    default:
+      return 'muted'
+  }
+}
+
+export function obsStatusLabel(status: string): string {
+  switch (status) {
+    case 'pending':
+      return '待投递'
+    case 'processing':
+      return '投递中'
+    case 'completed':
+      return '已完成'
+    case 'failed_retry':
+      return '等待重试'
+    case 'failed_dead':
+      return '观测死信'
+    default:
+      return status || '—'
+  }
+}
+
 /** event_kind → 中文标签(镜像 backend/internal/dlq/types.go:14-30)。 */
 export function eventKindLabel(kind: string): string {
   switch (kind) {

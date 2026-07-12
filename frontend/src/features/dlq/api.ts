@@ -1,5 +1,11 @@
 import { apiGet, apiSend } from '../../lib/api'
-import type { DlqListResponse, DlqRecord, DlqReplayResponse } from './types'
+import type {
+  DlqListResponse,
+  DlqRecord,
+  DlqReplayResponse,
+  ObsDlqListResponse,
+  ObsDlqReplayResponse,
+} from './types'
 
 /*
  * 死信队列(DLQ)运营台数据访问层。
@@ -45,6 +51,34 @@ export async function replayDlq(id: number): Promise<DlqReplayResponse> {
  */
 export async function replayUsageRecordDlq(id: number): Promise<DlqReplayResponse> {
   return apiSend<DlqReplayResponse>('POST', `/admin/v1/usage-record-dlq/${id}/replay`)
+}
+
+/** 列出观测 outbox 死信；tenant 查询参数名由后端固定为 tenant。 */
+export async function listObsDlq(
+  opts: {
+    tenantId?: number
+    eventType?: string
+    from?: string
+    to?: string
+    limit?: number
+    signal?: AbortSignal
+  } = {},
+): Promise<ObsDlqListResponse> {
+  return apiGet<ObsDlqListResponse>('/admin/v1/obs-dlq', {
+    query: {
+      tenant: opts.tenantId,
+      event_type: opts.eventType || undefined,
+      from: opts.from || undefined,
+      to: opts.to || undefined,
+      limit: opts.limit,
+    },
+    signal: opts.signal,
+  })
+}
+
+/** 把观测死信重新放回 outbox，ID 是不透明字符串。 */
+export async function replayObsDlq(id: string): Promise<ObsDlqReplayResponse> {
+  return apiSend<ObsDlqReplayResponse>('POST', `/admin/v1/obs-dlq/${encodeURIComponent(id)}/replay`)
 }
 
 export type { DlqRecord }

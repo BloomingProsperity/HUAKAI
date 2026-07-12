@@ -62,6 +62,7 @@ import { BillingClaimsPage } from '../features/billingadmin/BillingClaimsPage'
 import { CacheMonitorPage } from '../features/cachemonitor/CacheMonitorPage'
 import { HermesConfigPage } from '../features/hermes/HermesConfigPage'
 import { OrphanReconcilePage } from '../features/orphanreconcile/OrphanReconcilePage'
+import { PlatformCredentialsPage } from '../features/platformcredentials/PlatformCredentialsPage'
 import { LandingPage } from '../features/landing/LandingPage'
 import { LegalPage } from '../features/legal/LegalPage'
 import { LoginPage } from '../auth/LoginPage'
@@ -133,6 +134,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/ops': <OpsPage />,
   '/health': <HealthPage />,
   '/security': <AuditPage />,
+  '/admin/platform-credentials': <PlatformCredentialsPage />,
   '/admin/alerting': <AlertingPage />,
   '/admin/risk': <RiskOverviewPage />,
   '/admin/backup': <BackupPage />,

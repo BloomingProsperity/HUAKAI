@@ -26,6 +26,7 @@ describe('getCurrentShell —— 只在 operator 壳渲染的命门', () => {
     expect(getCurrentShell('/accounts')).toBe('operator')
     expect(getCurrentShell('/routing')).toBe('operator')
     expect(getCurrentShell('/admin/groups')).toBe('operator')
+    expect(getCurrentShell('/admin/platform-credentials')).toBe('operator')
     expect(getCurrentShell('/security')).toBe('operator')
   })
 

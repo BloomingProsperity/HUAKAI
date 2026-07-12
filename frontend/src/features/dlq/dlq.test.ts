@@ -8,6 +8,9 @@ import {
   isMoneySensitiveKind,
   laneTone,
   LIMIT_MAX,
+  obsPriorityTone,
+  obsStatusLabel,
+  obsStatusTone,
   shortReason,
   statusLabel,
   statusTone,
@@ -59,6 +62,17 @@ describe('laneTone', () => {
     expect(laneTone('HIGH')).toBe('danger')
     expect(laneTone('MED')).toBe('warn')
     expect(laneTone('LOW')).toBe('muted')
+  })
+})
+
+describe('观测死信状态映射', () => {
+  it('critical 与 failed_dead 必须凸显为危险，重试态不能伪装成功', () => {
+    expect(obsPriorityTone('critical')).toBe('danger')
+    expect(obsPriorityTone('high')).toBe('warn')
+    expect(obsStatusTone('failed_dead')).toBe('danger')
+    expect(obsStatusTone('failed_retry')).toBe('warn')
+    expect(obsStatusTone('completed')).toBe('ok')
+    expect(obsStatusLabel('failed_dead')).toBe('观测死信')
   })
 })
 

@@ -58,6 +58,18 @@ export async function getBalanceHistory(
   })
 }
 
+/** 用户用量明细：GET /admin/v1/users/{id}/usage，卡片聚合当前批次。 */
+export async function getUserUsage(
+  id: number,
+  limit = 200,
+  signal?: AbortSignal,
+): Promise<import('./detail').UserUsageResponse> {
+  return apiGet<import('./detail').UserUsageResponse>(`${PATH}/${id}/usage`, {
+    query: { limit },
+    signal,
+  })
+}
+
 // ── 用户运维动作(adminuserhttp.MountRoutes,均含审计 + 租户隔离) ──────────────
 
 /** 强制清除用户 TOTP 2FA:POST /{id}/2fa/force-disable。返回 {id, two_factor_enabled:false}。 */

@@ -88,3 +88,30 @@ export const STATUS_FILTERS = [
 ] as const
 
 export type StatusFilter = (typeof STATUS_FILTERS)[number]
+
+/** 观测 outbox 的死信投影，字段由 obsdlqhttp.mapDeadEvent 明确拼装。 */
+export interface ObsDlqRecord {
+  id: string
+  outbox_event_id: string
+  tenant_id: number
+  event_type: string
+  priority: 'default' | 'high' | 'critical' | string
+  payload: unknown
+  dead_at: string
+  dead_reason: string
+  attempt_count: number
+  outbox_status: string
+  failure_reason: string
+  created_at: string
+  next_retry_at: string
+}
+
+export interface ObsDlqListResponse {
+  items: ObsDlqRecord[]
+}
+
+export interface ObsDlqReplayResponse {
+  replayed: boolean
+  id: string
+  outbox_event_id: string
+}
