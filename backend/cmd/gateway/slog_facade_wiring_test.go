@@ -11,6 +11,7 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/loglevel"
+	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 )
 
 // restoreLogState 对称还原 setupSlogFacade 触碰的全部进程级状态:
@@ -37,7 +38,7 @@ func restoreLogState(t *testing.T) {
 func TestSetupSlogFacadeBridgesLoglevel(t *testing.T) {
 	restoreLogState(t)
 
-	setupSlogFacade()
+	setupSlogFacade(logsink.New())
 	ctx := context.Background()
 
 	loglevel.Level.SetLevel(zapcore.WarnLevel)
@@ -61,7 +62,7 @@ func TestSetupSlogFacadeBridgesLoglevel(t *testing.T) {
 func TestSetupSlogFacadeRestoresLogPackage(t *testing.T) {
 	restoreLogState(t)
 
-	setupSlogFacade()
+	setupSlogFacade(logsink.New())
 
 	if log.Writer() != os.Stderr {
 		t.Fatal("装配后标准库 log 包必须直写 stderr(SetDefault 的隐式改道必须被退回,否则 log 通道被 loglevel 闸门静默吞掉)")
@@ -91,7 +92,7 @@ func TestMainWiresSlogFacade(t *testing.T) {
 		t.Fatal("main() 函数体未闭合")
 	}
 	body := text[start : start+end]
-	if !strings.Contains(body, "setupSlogFacade()") {
-		t.Fatal("main() 函数体内缺少 setupSlogFacade() 装配调用:slog 门面未接线,全部 slog 调用点退回文本 handler 且不受 /loglevel 管辖")
+	if !strings.Contains(body, "setupSlogFacade(sink)") {
+		t.Fatal("main() 函数体内缺少 setupSlogFacade(sink) 装配调用:slog 门面未接线,全部 slog 调用点退回文本 handler 且不受 /loglevel 管辖")
 	}
 }

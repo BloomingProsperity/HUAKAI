@@ -13,10 +13,12 @@ import (
 	"syscall"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/buildinfo"
 	"github.com/BloomingProsperity/HUAKAI/internal/logfacade"
 	"github.com/BloomingProsperity/HUAKAI/internal/loglevel"
+	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
@@ -36,11 +38,17 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = logger.Sync() }()
+	// 运行日志入库 sink:两栈(zap+slog)的 warn+ 旁路采集,DB 就绪后
+	// (buildGatewayRuntime)开始落库;此前先积压在有界队列。
+	sink := logsink.New()
+	logger = logger.WithOptions(zap.WrapCore(func(c zapcore.Core) zapcore.Core {
+		return logsink.NewZapCore(c, sink)
+	}))
 	// 必须在 buildGatewayRuntime 之前装配:多个 worker 构造器在构造期捕获 slog.Default(),
 	// 晚装配它们会永远拿旧的文本 handler。
-	setupSlogFacade()
+	setupSlogFacade(sink)
 
-	if err := run(logger); err != nil {
+	if err := run(logger, sink); err != nil {
 		logger.Fatal("gateway exited with error", zap.Error(err))
 	}
 }
@@ -48,11 +56,12 @@ func main() {
 // setupSlogFacade 把全局 slog 默认 logger 接到 logfacade 门面:与 zap 共享
 // loglevel.Level(/admin/v1/loglevel 热调对两栈同时生效),输出与 zap 同为
 // stderr JSON,attr 值经 privacy 禁写扫描。全部存量 slog 调用点零改动升级。
-func setupSlogFacade() {
+func setupSlogFacade(sink *logsink.Sink) {
 	slog.SetDefault(logfacade.New(logfacade.Options{
 		Service: "huakai-gateway",
 		Env:     strings.ToLower(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE"))),
 		Version: buildinfo.Version,
+		Tap:     logsink.SlogTap(sink),
 	}))
 	// slog.SetDefault 会顺手把标准库 log 包改道到 slog handler,并固定按 Info 级
 	// 过 loglevel 闸门(Go 源码 log/slog/logger.go 的 SetDefault:
@@ -65,7 +74,7 @@ func setupSlogFacade() {
 	log.SetFlags(log.LstdFlags)
 }
 
-func run(logger *zap.Logger) error {
+func run(logger *zap.Logger, sink *logsink.Sink) error {
 	// 启动即校验 release mode,拒绝遗漏或拼错 env 后静默跑 dev 的降级。
 	if err := validateReleaseMode(); err != nil {
 		return err
@@ -86,7 +95,7 @@ func run(logger *zap.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	runtime, err := buildGatewayRuntime(ctx, cfg, mimicryRegistry, logger)
+	runtime, err := buildGatewayRuntime(ctx, cfg, mimicryRegistry, logger, sink)
 	if err != nil {
 		return err
 	}

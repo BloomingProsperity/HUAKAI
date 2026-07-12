@@ -28,6 +28,9 @@ type Options struct {
 	Service string
 	Env     string
 	Version string
+	// Tap 在脱敏完成后收到每条记录的副本(供运行日志入库 sink 等旁路消费)。
+	// 回调必须非阻塞;panic 被隔离,不影响主输出。nil = 关闭旁路。
+	Tap func(context.Context, slog.Record)
 }
 
 // New 构造统一门面 logger。
@@ -43,11 +46,12 @@ func New(opts Options) *slog.Logger {
 			slog.String("env", opts.Env),
 			slog.String("version", opts.Version),
 		})
-	return slog.New(&handler{inner: inner})
+	return slog.New(&handler{inner: inner, tap: opts.Tap})
 }
 
 type handler struct {
 	inner slog.Handler
+	tap   func(context.Context, slog.Record)
 }
 
 // Enabled 桥接两个级别域:查 loglevel.Level(zap AtomicLevel,内部共享指针),
@@ -73,6 +77,13 @@ func (h *handler) Handle(ctx context.Context, record slog.Record) error {
 			return true
 		})
 	}()
+	if h.tap != nil {
+		// 旁路消费只拿脱敏后的记录;panic 隔离,绝不影响主输出与调用点。
+		func() {
+			defer func() { _ = recover() }()
+			h.tap(ctx, scrubbed.Clone())
+		}()
+	}
 	return h.inner.Handle(ctx, scrubbed)
 }
 
@@ -81,11 +92,11 @@ func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for _, attr := range attrs {
 		clean = append(clean, scrubAttr(attr))
 	}
-	return &handler{inner: h.inner.WithAttrs(clean)}
+	return &handler{inner: h.inner.WithAttrs(clean), tap: h.tap}
 }
 
 func (h *handler) WithGroup(name string) slog.Handler {
-	return &handler{inner: h.inner.WithGroup(name)}
+	return &handler{inner: h.inner.WithGroup(name), tap: h.tap}
 }
 
 // zapLevelFor 按阈值把 slog 级别折算到 zap 的四档;两域仅这四档语义重合,

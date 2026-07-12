@@ -2027,6 +2027,84 @@ paths:
         '403': { description: Insufficient role. }
         '503': { description: Health source not configured. }
 
+  /v1/admin/ops/runtime-logs:
+    get:
+      summary: Query captured runtime logs (warn and above)
+      description: >
+        分页查询运行日志(异步 sink 只采集 warn+ 级别,批量入库;stderr 输出照旧)。
+        键集分页 id 降序(新→旧):用响应的 next_before_id 作为下一页 before_id;
+        前端以短间隔轮询无 before_id 的首页即得"实时"视图。platform_admin only
+        (运行日志是进程级平台数据,无租户列)。
+      operationId: listAdminRuntimeLogs
+      tags: [admin, observability]
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      parameters:
+        - name: level
+          in: query
+          schema: { type: string, enum: [warn, error] }
+        - name: component
+          in: query
+          schema: { type: string }
+        - name: request_id
+          in: query
+          schema: { type: string }
+        - name: before_id
+          in: query
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: Newest-first page of runtime log rows.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminRuntimeLogsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/ops/runtime-logs/cleanup:
+    post:
+      summary: Delete runtime logs older than a timestamp
+      description: 保留策略由运营者掌控:删除 before 之前的运行日志,返回删除行数。platform_admin only。
+      operationId: cleanupAdminRuntimeLogs
+      tags: [admin, observability]
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminRuntimeLogsCleanupRequest' }
+      responses:
+        '200':
+          description: Number of deleted rows.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminRuntimeLogsCleanupResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/ops/runtime-logs/health:
+    get:
+      summary: Runtime log sink health
+      description: 采集 sink 观测:队列积压、累计入库、累计丢弃(超载/DB 故障)、最后成功落库时刻。platform_admin only。
+      operationId: getAdminRuntimeLogSinkHealth
+      tags: [admin, observability]
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      responses:
+        '200':
+          description: Sink health counters.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminRuntimeLogSinkHealth' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/backup/manifest:
     get:
       summary: Read-only backup manifest (metadata only)
@@ -16342,6 +16420,61 @@ components:
         kind: { type: string }
         subject: { type: string }
         html: { type: string }
+
+    AdminRuntimeLogRow:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/logsink/store_postgres.go]
+      required: [id, created_at, level, component, message, attrs]
+      properties:
+        id: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        level: { type: string, enum: [warn, error] }
+        component: { type: string }
+        message: { type: string }
+        request_id: { type: string, nullable: true }
+        attrs: { type: object }
+
+    AdminRuntimeLogsResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [items, next_before_id]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminRuntimeLogRow' }
+        next_before_id:
+          type: integer
+          format: int64
+          description: 下一页 before_id;0 = 本页为空,无更旧数据可翻。
+
+    AdminRuntimeLogsCleanupRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [before]
+      properties:
+        before: { type: string, format: date-time }
+
+    AdminRuntimeLogsCleanupResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [deleted]
+      properties:
+        deleted: { type: integer, format: int64 }
+
+    AdminRuntimeLogSinkHealth:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [queue_len, inserted, dropped]
+      properties:
+        queue_len: { type: integer }
+        inserted: { type: integer, format: int64 }
+        dropped: { type: integer, format: int64 }
+        last_flush_at: { type: string, format: date-time }
 
     AdminEmailSettingsUpdateResponse:
       type: object

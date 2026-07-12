@@ -3,6 +3,7 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getLogLevel, setLogLevel } from './api'
 import { canSubmit, isSelectableLevel, levelLabel, levelTone, normalizeLevel } from './logsdiag'
+import { RuntimeLogsPanel } from './RuntimeLogsPanel'
 import { SELECTABLE_LEVELS } from './types'
 
 /*
@@ -125,6 +126,9 @@ export function LogsDiagPage() {
           </p>
         </div>
       </section>
+
+      {/* 运行日志面板:warn+ 入库查询 + 实时轮询 + request_id 检索(与级别旋钮同页聚合) */}
+      <RuntimeLogsPanel />
     </div>
   )
 }

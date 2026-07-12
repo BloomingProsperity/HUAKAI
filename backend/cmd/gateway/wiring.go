@@ -115,6 +115,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
+	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
@@ -125,6 +126,8 @@ type deps struct {
 	cfg                   *Config
 	clientIPResolver      *clientip.Resolver
 	pgPool                *pgxpool.Pool
+	logSink               *logsink.Sink
+	runtimeLogStore       *logsink.PostgresStore
 	adminQueries          *admindb.Queries
 	billingQueries        *dbbilling.Queries
 	billingPolicyStore    billing.PolicyStore
@@ -830,10 +833,16 @@ func buildSettlementIntentSweeper(queries *dbbilling.Queries, enabled bool) *set
 	)
 }
 
-func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger) (*gatewayRuntime, error) {
+func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger, sink *logsink.Sink) (*gatewayRuntime, error) {
 	pgPool, err := db.Open(ctx, dbPoolConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
+	}
+	// DB 就绪即启动运行日志落库 worker;进程更早的 warn+ 已积压在 sink 队列,启动后一并
+	// 刷出;ctx 取消(停机)时 worker 尽力 drain。sink 为 nil(测试直构 runtime)时跳过。
+	runtimeLogStore := logsink.NewPostgresStore(pgPool)
+	if sink != nil {
+		sink.Start(ctx, runtimeLogStore)
 	}
 	// 可选进程内自迁移(HUAKAI_AUTO_MIGRATE=true,默认关):在任何代码用表之前把 schema 升到最新,
 	// 供裸二进制单实例部署省去"先手动跑迁移再起 gateway"那一步。默认关时迁移仍外置(compose
@@ -1367,6 +1376,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	d := &deps{
 		cfg:                   cfg,
 		clientIPResolver:      clientIPResolver,
+		logSink:               sink,
+		runtimeLogStore:       runtimeLogStore,
 		adminQueries:          adminQueries,
 		billingQueries:        billingQueries,
 		billingPolicyStore:    billingPolicyStore,
