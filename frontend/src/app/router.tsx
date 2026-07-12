@@ -7,6 +7,7 @@ import { AccountsPage } from '../features/accounts/AccountsPage'
 import { AccountDetailPage } from '../features/accounts/AccountDetailPage'
 import { KeysPage } from '../features/keys/KeysPage'
 import { UsagePage } from '../features/usage/UsagePage'
+import { IntegrationGuidePage } from '../features/integration/IntegrationGuidePage'
 import { UsageRecordsPage } from '../features/usagerecords/UsageRecordsPage'
 import { TrustPage } from '../features/trust/TrustPage'
 import { RoutingPage } from '../features/routing/RoutingPage'
@@ -86,6 +87,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   // 用户门户壳
   '/overview': <OverviewPage />,
   '/keys': <KeysPage />,
+  '/integration': <IntegrationGuidePage />,
   '/usage': <UsagePage />,
   '/usage-records': <UsageRecordsPage />,
   '/trust': <TrustPage />,

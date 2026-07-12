@@ -46,6 +46,7 @@ export const PIPELINE_NAV: NavSection[] = [
     hint: '签发、接入客户端、撤销、在线调试',
     items: [
       { path: '/keys', label: '我的密钥', built: true },
+      { path: '/integration', label: '接入指引', built: true },
       { path: '/playground', label: '在线调试台', built: true },
     ],
   },
