@@ -4,7 +4,7 @@ import { login, hasErrorBoundary } from './helpers'
 // 全路由 smoke:登录后逐个访问每条路由,断言页面不崩(无路由错误边界)、无未捕获 JS 异常、
 // 页面加载期无 5xx 网络响应。这是"每个页面能开、按钮所在的界面正常渲染"的浏览器级证明。
 const ROUTES: string[] = [
-  '/overview', '/keys', '/usage', '/usage-records', '/accounts', '/models', '/routing',
+  '/', '/overview', '/keys', '/usage', '/usage-records', '/accounts', '/models', '/routing',
   '/users', '/wallet', '/orders', '/subscriptions', '/checkin', '/redeem', '/affiliate',
   '/rankings', '/my-groups', '/notifications', '/profile', '/media-tasks', '/available-channels',
   '/activity', '/security', '/system', '/health', '/ops', '/playground', '/trust',
