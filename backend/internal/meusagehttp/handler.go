@@ -70,6 +70,8 @@ type usageRecord struct {
 	Stream                 bool        `json:"stream"`
 	StreamTerminatedReason string      `json:"stream_terminated_reason,omitempty"`
 	RequestedAt            string      `json:"requested_at,omitempty"`
+	// 端到端时延(结算-请求,毫秒);任一时间缺失或为负则省略,不伪造 0。
+	LatencyMS *int64 `json:"latency_ms,omitempty"`
 }
 
 // usageTokens 暴露每次请求的 token 明细，这些数据已存于 usage_records
@@ -240,7 +242,21 @@ func mapUsageRecord(row dbbilling.ListUsageRecordsRow, tenantID int64) usageReco
 		Stream:                 row.Stream,
 		StreamTerminatedReason: valueString(row.StreamTerminatedReason),
 		RequestedAt:            formatTS(row.RequestedAt),
+		LatencyMS:              computeLatencyMS(row.RequestedAt, row.CreatedAt),
 	}
+}
+
+// computeLatencyMS 从请求时间与结算时间(row.CreatedAt=settled_at)算端到端时延毫秒。
+// 任一时间无效或结算早于请求(时钟/数据异常)则返回 nil,响应省略该字段而非伪造 0。
+func computeLatencyMS(requestedAt, settledAt pgtype.Timestamptz) *int64 {
+	if !requestedAt.Valid || !settledAt.Valid {
+		return nil
+	}
+	ms := settledAt.Time.Sub(requestedAt.Time).Milliseconds()
+	if ms < 0 {
+		return nil
+	}
+	return &ms
 }
 
 func mapGenerationUsageRecord(row dbbilling.GetUsageRecordByRequestIDRow, tenantID int64) usageRecord {

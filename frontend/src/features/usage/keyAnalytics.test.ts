@@ -6,6 +6,7 @@ import {
   defaultKeyAnalyticsRange,
 } from './keyAnalytics'
 import type { KeyUsageTimeSeriesPoint } from './types'
+import { formatLatency } from './KeyUsageAnalytics'
 
 function point(cost: string): KeyUsageTimeSeriesPoint {
   return {
@@ -63,5 +64,14 @@ describe('Key 级时间序列展示逻辑', () => {
 
   it('Token 汇总包含输入、输出与两类缓存', () => {
     expect(aggregateTokenCount(point('1'))).toBe(37)
+  })
+})
+
+describe('formatLatency', () => {
+  it('毫秒取整,缺失/负值省略(变异:null→0 会误显 0ms)', () => {
+    expect(formatLatency(120.6)).toBe('121 ms')
+    expect(formatLatency(0)).toBe('0 ms')
+    expect(formatLatency(undefined)).toBe('—')
+    expect(formatLatency(null)).toBe('—')
   })
 })

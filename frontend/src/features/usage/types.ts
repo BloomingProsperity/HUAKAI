@@ -69,6 +69,8 @@ export interface KeyUsageRecord {
   stream: boolean
   stream_terminated_reason?: string
   requested_at?: string
+  /** 端到端时延毫秒(结算-请求);后端在时间缺失/负值时省略。 */
+  latency_ms?: number
 }
 
 export interface KeyUsageRecordsResponse {

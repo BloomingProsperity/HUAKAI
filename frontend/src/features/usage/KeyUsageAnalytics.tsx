@@ -326,13 +326,14 @@ export function KeyUsageTable(props: TableProps) {
       ) : (
         <div className="hk-tablewrap">
           <table className="hk-table">
-            <thead><tr>{['时间', '模型', '状态', '费用', 'Token', 'Provider', '请求 ID'].map((title) => <th key={title}>{title}</th>)}</tr></thead>
+            <thead><tr>{['时间', '模型', '状态', '延迟', '费用', 'Token', 'Provider', '请求 ID'].map((title) => <th key={title}>{title}</th>)}</tr></thead>
             <tbody>
               {props.records.map((record, index) => (
                 <tr key={record.request_id || record.ledger_id || `${record.created_at}-${index}`}>
                   <td className="hk-mono">{formatTime(record.created_at)}</td>
                   <td>{modelDisplay(record)}</td>
                   <td><StatusBadge tone={statusTone(record.status) as BadgeTone}>{statusLabel(record.status)}</StatusBadge></td>
+                  <td className="hk-mono">{formatLatency(record.latency_ms)}</td>
                   <td className="hk-mono">{formatCost(record.actual_cost)}</td>
                   <td>{tokensSummary(record.tokens)}</td>
                   <td>{record.provider || '—'}</td>
@@ -383,6 +384,7 @@ export function KeyGenerationDetail({ record }: { record: KeyUsageRecord }) {
     ['模型', modelDisplay(record)],
     ['Provider', record.provider || '—'],
     ['状态', statusLabel(record.status)],
+    ['延迟', formatLatency(record.latency_ms)],
     ['实际费用', formatCost(record.actual_cost)],
     ['Token', tokensSummary(record.tokens)],
     ['请求时间', formatTime(record.requested_at || record.created_at)],
@@ -417,6 +419,11 @@ function formatTime(value: string): string {
   if (!value) return '—'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+// 端到端时延展示;后端缺失(时间不全/负值)时省略 → '—',不当 0。
+export function formatLatency(ms: number | null | undefined): string {
+  return ms == null || !Number.isFinite(ms) ? '—' : `${Math.max(0, Math.round(ms))} ms`
 }
 
 const column: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }

@@ -630,3 +630,22 @@ func generationUsageRow(id, tenantID, apiKeyID, userID int64, requestID, ledgerI
 		PendingReconciliation: false,
 	}
 }
+
+func TestComputeLatencyMS(t *testing.T) {
+	req := pgtype.Timestamptz{Time: time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC), Valid: true}
+	settled := pgtype.Timestamptz{Time: time.Date(2026, 7, 12, 10, 0, 1, 500*1e6, time.UTC), Valid: true} // +1.5s
+	if got := computeLatencyMS(req, settled); got == nil || *got != 1500 {
+		t.Fatalf("latency=%v want 1500ms", got)
+	}
+	// 缺时间 → nil(不伪造 0)
+	if computeLatencyMS(pgtype.Timestamptz{}, settled) != nil {
+		t.Fatal("requested 缺失应返回 nil")
+	}
+	if computeLatencyMS(req, pgtype.Timestamptz{}) != nil {
+		t.Fatal("settled 缺失应返回 nil")
+	}
+	// 结算早于请求(异常)→ nil(变异:若不判负会返回负延迟)
+	if computeLatencyMS(settled, req) != nil {
+		t.Fatal("负延迟应返回 nil")
+	}
+}
