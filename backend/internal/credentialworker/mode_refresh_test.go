@@ -181,7 +181,7 @@ func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("底层 adapter type=%T，期望 antigravity.RefreshAdapter", legacy.adapter)
 	}
-	if wire.TokenURL != providerantigravity.AntigravityOAuthTokenEndpoint || wire.ClientID != providerantigravity.AntigravityOAuthClientID {
+	if wire.TokenURL != providerantigravity.AntigravityOAuthTokenEndpoint || wire.ClientID != providerantigravity.AntigravityOAuthClientID() {
 		t.Fatalf("底层 endpoint/client=(%q,%q)", wire.TokenURL, wire.ClientID)
 	}
 
@@ -209,8 +209,8 @@ func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
 	wantForm := map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": "ag-refresh-old",
-		"client_id":     providerantigravity.AntigravityOAuthClientID,
-		"client_secret": providerantigravity.AntigravityOAuthClientSecret,
+		"client_id":     providerantigravity.AntigravityOAuthClientID(),
+		"client_secret": providerantigravity.AntigravityOAuthClientSecret(),
 		"scope":         strings.Join(providerantigravity.DefaultOAuthConfig().Scopes, " "),
 	}
 	for key, want := range wantForm {

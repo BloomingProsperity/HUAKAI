@@ -13,7 +13,10 @@ import (
 // token endpoint 与五段 scope；任一常量退回空占位都会直接变红。
 func TestAntigravityDefaultOAuthConfigPinsPublicCLIProfile(t *testing.T) {
 	cfg := DefaultOAuthConfig()
-	if cfg.ClientID != AntigravityOAuthClientID || cfg.ClientSecret != AntigravityOAuthClientSecret {
+	if strings.TrimSpace(cfg.ClientID) == "" || strings.TrimSpace(cfg.ClientSecret) == "" {
+		t.Fatalf("内置 OAuth client 不得为空：id=%q secret=%q", cfg.ClientID, cfg.ClientSecret)
+	}
+	if cfg.ClientID != AntigravityOAuthClientID() || cfg.ClientSecret != AntigravityOAuthClientSecret() {
 		t.Fatalf("内置 OAuth client 不匹配：id=%q secret=%q", cfg.ClientID, cfg.ClientSecret)
 	}
 	if cfg.TokenURL != AntigravityOAuthTokenEndpoint {
@@ -33,6 +36,23 @@ func TestAntigravityDefaultOAuthConfigPinsPublicCLIProfile(t *testing.T) {
 	}
 }
 
+// TestAntigravityOAuthClientEnvOverride 守住环境变量 override 优先于内置默认。
+func TestAntigravityOAuthClientEnvOverride(t *testing.T) {
+	t.Setenv(AntigravityOAuthClientIDEnv, "operator-client-id")
+	t.Setenv(AntigravityOAuthClientSecretEnv, "operator-client-secret")
+	cfg := DefaultOAuthConfig()
+	if cfg.ClientID != "operator-client-id" || cfg.ClientSecret != "operator-client-secret" {
+		t.Fatalf("env override 未生效：id=%q secret=%q", cfg.ClientID, cfg.ClientSecret)
+	}
+	adapter, err := RefreshAdapterFromOAuthConfig(cfg)
+	if err != nil {
+		t.Fatalf("override 后应可构造 refresh adapter：%v", err)
+	}
+	if adapter.ClientID != "operator-client-id" || adapter.ClientSecret != "operator-client-secret" {
+		t.Fatalf("refresh adapter 未用 override 值：id=%q secret=%q", adapter.ClientID, adapter.ClientSecret)
+	}
+}
+
 func TestAntigravityOAuthConfigPinsIdentityAgainstOverrides(t *testing.T) {
 	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
 		AuthURL:      "https://accounts.example.test/o/oauth2/auth",
@@ -43,7 +63,7 @@ func TestAntigravityOAuthConfigPinsIdentityAgainstOverrides(t *testing.T) {
 		Scopes:       []string{"attacker-scope"},
 		Source:       credentialacq.ClientSourceOperatorConfig,
 	})
-	if cfg.TokenURL != AntigravityOAuthTokenEndpoint || cfg.ClientID != AntigravityOAuthClientID || cfg.ClientSecret != AntigravityOAuthClientSecret {
+	if cfg.TokenURL != AntigravityOAuthTokenEndpoint || cfg.ClientID != AntigravityOAuthClientID() || cfg.ClientSecret != AntigravityOAuthClientSecret() {
 		t.Fatalf("OAuth 固定身份被 override 改写：%+v", cfg)
 	}
 	if got := strings.Join(cfg.Scopes, " "); got != antigravityOAuthScope {
@@ -62,7 +82,7 @@ func TestAntigravityOAuthConfigPinsIdentityAgainstOverrides(t *testing.T) {
 		t.Fatalf("解析 authorize URL 失败：%v", err)
 	}
 	query := parsed.Query()
-	assertAntigravityQueryValue(t, query, "client_id", AntigravityOAuthClientID)
+	assertAntigravityQueryValue(t, query, "client_id", AntigravityOAuthClientID())
 	assertAntigravityQueryValue(t, query, "scope", antigravityOAuthScope)
 	assertAntigravityQueryValue(t, query, "state", "state-value")
 	assertAntigravityQueryValue(t, query, "code_challenge", "challenge-value")
@@ -90,10 +110,10 @@ func TestAntigravityRefreshAdapterUsesBuiltinProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshAdapterFromOAuthConfig 失败：%v", err)
 	}
-	if adapter.TokenURL != AntigravityOAuthTokenEndpoint || adapter.ClientID != AntigravityOAuthClientID {
+	if adapter.TokenURL != AntigravityOAuthTokenEndpoint || adapter.ClientID != AntigravityOAuthClientID() {
 		t.Fatalf("adapter endpoint/client=(%q,%q)", adapter.TokenURL, adapter.ClientID)
 	}
-	if adapter.ClientSecret != AntigravityOAuthClientSecret || adapter.Scope != antigravityOAuthScope {
+	if adapter.ClientSecret != AntigravityOAuthClientSecret() || adapter.Scope != antigravityOAuthScope {
 		t.Fatalf("adapter secret/scope 未使用内置 profile")
 	}
 }
