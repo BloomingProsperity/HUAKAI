@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -65,6 +66,61 @@ func TestRotateAuditFailureRollsBackVersionWithTransaction(t *testing.T) {
 	}
 }
 
+func TestProjectRefPersistsAcrossCredentialWritePaths(t *testing.T) {
+	db := newCredentialAuditTxFakeDB()
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	created, err := store.Create(context.Background(), CreateCredentialInput{
+		TenantID: db.tenantID, ProviderAccountID: db.providerAccountID,
+		Vendor: VendorAntigravity, AuthMode: AuthModeOAuth,
+		Payload: []byte(`{"access_token":"access-create","refresh_token":"refresh-create","project_id":"project-create"}`),
+	})
+	if err != nil {
+		t.Fatalf("Create 失败：%v", err)
+	}
+	if created.ProjectRef == nil || *created.ProjectRef != "project-create" {
+		t.Fatalf("Create project_ref=%v，期望 project-create", created.ProjectRef)
+	}
+
+	rotated, err := store.Rotate(context.Background(), RotateCredentialInput{
+		TenantID: db.tenantID, ProviderAccountID: db.providerAccountID, CredentialID: created.ID,
+		Payload: []byte(`{"access_token":"access-rotate","refresh_token":"refresh-rotate","project_id":"project-rotate"}`),
+	})
+	if err != nil {
+		t.Fatalf("Rotate 失败：%v", err)
+	}
+	if rotated.ProjectRef == nil || *rotated.ProjectRef != "project-rotate" {
+		t.Fatalf("Rotate project_ref=%v，期望 project-rotate", rotated.ProjectRef)
+	}
+
+	err = store.SaveRefreshSuccess(context.Background(), CredentialRecord{
+		ID: created.ID, TenantID: db.tenantID, ProviderAccountID: db.providerAccountID,
+		Vendor: VendorAntigravity, AuthMode: AuthModeOAuth, CredentialVersion: rotated.Version,
+	}, []byte(`{"access_token":"access-refresh","refresh_token":"refresh-refresh","project_id":"project-refresh"}`), time.Time{}, "refresh_succeeded")
+	if err != nil {
+		t.Fatalf("SaveRefreshSuccess 失败：%v", err)
+	}
+	if db.refreshProjectRef == nil || *db.refreshProjectRef != "project-refresh" {
+		t.Fatalf("SaveRefreshSuccess project_ref=%v，期望 project-refresh", db.refreshProjectRef)
+	}
+	resolved, err := store.ResolveActive(context.Background(), db.tenantID, db.providerAccountID)
+	if err != nil {
+		t.Fatalf("ResolveActive 失败：%v", err)
+	}
+	defer privacy.Zeroize(resolved.PlaintextPayload)
+	handler, err := store.HandlerRegistry().MustLookup(resolved.Vendor, resolved.AuthMode)
+	if err != nil {
+		t.Fatalf("查找物化 handler 失败：%v", err)
+	}
+	material, err := handler.RuntimeMaterial(resolved.PlaintextPayload)
+	if err != nil {
+		t.Fatalf("物化 ResolveActive 凭证失败：%v", err)
+	}
+	if material.Extra["project_id"] != "project-refresh" {
+		t.Fatalf("ResolveActive project_id=%q，期望 project-refresh", material.Extra["project_id"])
+	}
+}
+
 type credentialAuditTxFakeDB struct {
 	tenantID          int64
 	providerAccountID int64
@@ -75,6 +131,7 @@ type credentialAuditTxFakeDB struct {
 	beginCount        int
 	commitCount       int
 	rollbackCount     int
+	refreshProjectRef *string
 }
 
 type credentialAuditTxFakeCredential struct {
@@ -87,6 +144,12 @@ type credentialAuditTxFakeCredential struct {
 	version            int32
 	payloadFingerprint string
 	refreshFingerprint string
+	projectRef         *string
+	encryptedPayload   []byte
+	encryptionScheme   string
+	keyID              string
+	nonce              []byte
+	aadHash            string
 }
 
 func newCredentialAuditTxFakeDB() *credentialAuditTxFakeDB {
@@ -100,6 +163,8 @@ func (db *credentialAuditTxFakeDB) BeginTx(context.Context, pgx.TxOptions) (pgx.
 	tx := &credentialAuditTxFakeTx{parent: db}
 	if db.credential != nil {
 		cp := *db.credential
+		cp.encryptedPayload = append([]byte(nil), db.credential.encryptedPayload...)
+		cp.nonce = append([]byte(nil), db.credential.nonce...)
 		tx.staged = &cp
 	}
 	return tx, nil
@@ -118,6 +183,9 @@ func (db *credentialAuditTxFakeDB) QueryRow(ctx context.Context, sql string, arg
 }
 
 func (db *credentialAuditTxFakeDB) exec(_ context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "UPDATE account_credentials") && strings.Contains(sql, "last_refresh_outcome") && len(args) > 10 {
+		db.refreshProjectRef = credentialAuditOptionalStringArg(args[10])
+	}
 	if strings.Contains(sql, "INSERT INTO credential_audit_events") && len(args) >= 4 && args[3] == db.failAuditEvent {
 		return pgconn.CommandTag{}, errors.New("forced audit insert failure")
 	}
@@ -128,6 +196,12 @@ func (db *credentialAuditTxFakeDB) queryRow(_ context.Context, sql string, args 
 	switch {
 	case strings.Contains(sql, "FROM provider_accounts"):
 		return credentialAuditTxScanRow{values: []any{db.providerAccountID}}
+	case strings.Contains(sql, "WITH scoped_credentials AS"):
+		if db.credential == nil {
+			return credentialAuditTxScanRow{err: pgx.ErrNoRows}
+		}
+		values := append(db.credential.recordValues(), (*string)(nil), int64(1), int64(1), false)
+		return credentialAuditTxScanRow{values: values}
 	case strings.Contains(sql, "FROM account_credentials ac"):
 		if db.credential == nil {
 			return credentialAuditTxScanRow{err: pgx.ErrNoRows}
@@ -165,6 +239,8 @@ func (tx *credentialAuditTxFakeTx) Commit(context.Context) error {
 		return nil
 	}
 	cp := *tx.staged
+	cp.encryptedPayload = append([]byte(nil), tx.staged.encryptedPayload...)
+	cp.nonce = append([]byte(nil), tx.staged.nonce...)
 	tx.parent.credential = &cp
 	return nil
 }
@@ -191,6 +267,14 @@ func (tx *credentialAuditTxFakeTx) Prepare(context.Context, string, string) (*pg
 }
 
 func (tx *credentialAuditTxFakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "UPDATE account_credentials") && strings.Contains(sql, "last_refresh_outcome") {
+		if tx.staged == nil {
+			return pgconn.NewCommandTag("UPDATE 0"), nil
+		}
+		tx.staged.applyRefreshArgs(args)
+		tx.parent.refreshProjectRef = credentialAuditOptionalStringArg(args[10])
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	}
 	return tx.parent.exec(ctx, sql, args...)
 }
 
@@ -243,6 +327,12 @@ func credentialAuditCredentialFromCreateArgs(id int64, args []any) *credentialAu
 		id: id, tenantID: args[0].(int64), providerAccountID: args[1].(int64),
 		vendor: args[2].(string), authMode: args[3].(string), state: StateActive, version: 1,
 		payloadFingerprint: credentialAuditStringArg(args[9]), refreshFingerprint: credentialAuditStringArg(args[10]),
+		projectRef:       credentialAuditOptionalStringArg(args[17]),
+		encryptedPayload: append([]byte(nil), args[4].([]byte)...),
+		encryptionScheme: args[5].(string),
+		keyID:            args[6].(string),
+		nonce:            append([]byte(nil), args[7].([]byte)...),
+		aadHash:          args[8].(string),
 	}
 }
 
@@ -251,6 +341,16 @@ func (c *credentialAuditTxFakeCredential) applyRotateArgs(args []any) {
 	c.version++
 	c.payloadFingerprint = credentialAuditStringArg(args[5])
 	c.refreshFingerprint = credentialAuditStringArg(args[6])
+	c.projectRef = credentialAuditOptionalStringArg(args[10])
+	c.encryptedPayload = append(c.encryptedPayload[:0], args[0].([]byte)...)
+	c.encryptionScheme = args[1].(string)
+	c.keyID = args[2].(string)
+	c.nonce = append(c.nonce[:0], args[3].([]byte)...)
+	c.aadHash = args[4].(string)
+}
+
+func (c *credentialAuditTxFakeCredential) applyRefreshArgs(args []any) {
+	c.applyRotateArgs(args)
 }
 
 func (c credentialAuditTxFakeCredential) metadataValues() []any {
@@ -260,13 +360,11 @@ func (c credentialAuditTxFakeCredential) metadataValues() []any {
 	return []any{
 		c.id, c.tenantID, c.providerAccountID, c.vendor, c.authMode, c.state, c.version,
 		emptyTime, emptyTime, emptyTime, nilString,
-		nilString, int32(0), now, now,
+		nilString, int32(0), c.projectRef, now, now,
 	}
 }
 
-// createMetadataValues 与 Create 的 RETURNING 列表保持一致:它在 created_at/updated_at
-// 末尾之前先暴露两个 external-identity 列(external_account_id、external_account_email)。
-// Rotate 的 RETURNING 省略了它们,因此 Rotate 沿用 metadataValues。
+// createMetadataValues 与 Create 的 RETURNING 列表保持一致。
 func (c credentialAuditTxFakeCredential) createMetadataValues() []any {
 	now := pgtype.Timestamptz{Time: time.Date(2026, 5, 23, 0, 0, 0, 0, time.UTC), Valid: true}
 	emptyTime := pgtype.Timestamptz{}
@@ -274,7 +372,7 @@ func (c credentialAuditTxFakeCredential) createMetadataValues() []any {
 	return []any{
 		c.id, c.tenantID, c.providerAccountID, c.vendor, c.authMode, c.state, c.version,
 		emptyTime, emptyTime, emptyTime, nilString,
-		nilString, int32(0), nilString, nilString, now, now,
+		nilString, int32(0), nilString, nilString, c.projectRef, now, now,
 	}
 }
 
@@ -286,8 +384,8 @@ func (c credentialAuditTxFakeCredential) recordValues() []any {
 	refreshFP := c.refreshFingerprint
 	return []any{
 		c.id, c.tenantID, c.providerAccountID, c.vendor, c.authMode, c.state,
-		c.version, []byte("ciphertext"), "aes-256-gcm", "test-key",
-		[]byte("nonce"), "aad-hash", &payloadFP, &refreshFP,
+		c.version, append([]byte(nil), c.encryptedPayload...), c.encryptionScheme, c.keyID,
+		append([]byte(nil), c.nonce...), c.aadHash, &payloadFP, &refreshFP,
 		emptyTime, emptyTime, emptyTime, emptyTime,
 		emptyTime, nilString, nilString, int32(0),
 		emptyTime, now, now, emptyTime,
@@ -306,4 +404,12 @@ func credentialAuditStringArg(v any) string {
 	default:
 		return ""
 	}
+}
+
+func credentialAuditOptionalStringArg(v any) *string {
+	value := credentialAuditStringArg(v)
+	if value == "" {
+		return nil
+	}
+	return &value
 }

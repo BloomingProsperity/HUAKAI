@@ -10194,6 +10194,44 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/provider-accounts/{id}/recent-requests:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-accounts]
+      summary: 获取 Provider Account 最近已结算请求
+      operationId: listProviderAccountRecentRequests
+      description: |
+        返回指定账号最近完成的请求健康信号，包括状态、端到端时延、TTFT 与 token 数。
+        此诊断端点刻意不返回实际成本或其它钱字段；租户边界同时由账号存在性查询与
+        usage_records SQL 谓词保护。没有已结算请求的合法账号返回空 items。
+      x-huakai-spec-source:
+        - backend/sql/queries/observability.sql
+        - backend/internal/adminhttp/provider_account_recent_requests_handler.go
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: 无固定租户作用域的 platform_admin 必须显式指定；tenant_operator 始终使用自身租户。
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          required: false
+          description: 默认 20；服务端把大于 100 的正整数钳制为 100。
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 最近已结算请求列表；合法空历史返回空数组。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountRecentRequestsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/enabled:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -10408,6 +10446,40 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/credentials/{credential_id}/resolve-project:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+      - name: credential_id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    post:
+      tags: [admin-accounts]
+      summary: 解析并持久化 Antigravity 凭证的 project 标识
+      operationId: resolveProviderAccountCredentialProject
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountCredentialProjectResolveRequest' }
+      responses:
+        '200':
+          description: 解析成功；响应只含非密 project 标识，不返回任何凭据材料。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountCredentialProjectResolveResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: 目标凭证不支持 project 解析。
+        '502':
+          description: 上游 project 解析失败。
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/provider-accounts/{id}/channel-health/pause:
@@ -17594,6 +17666,40 @@ components:
           description: True when health_state is revoked or failure_count is greater than 3.
         updated_at: { type: string, format: date-time }
 
+    ProviderAccountRecentRequest:
+      x-huakai-spec-source:
+        - backend/sql/queries/observability.sql
+        - backend/internal/adminhttp/provider_account_recent_requests_handler.go
+      type: object
+      additionalProperties: false
+      required: [at, model, upstream_model, status, latency_ms, ttft_ms, tokens_in, tokens_out, stream, attempt_seq]
+      properties:
+        at: { type: string, format: date-time }
+        model: { type: string }
+        upstream_model: { type: [string, 'null'] }
+        status: { type: string, enum: [success, error] }
+        latency_ms: { type: integer, format: int64 }
+        ttft_ms: { type: [integer, 'null'], format: int64 }
+        tokens_in: { type: integer, format: int32, minimum: 0 }
+        tokens_out: { type: integer, format: int32, minimum: 0 }
+        stream: { type: boolean }
+        attempt_seq: { type: integer, format: int32, minimum: 1 }
+
+    ProviderAccountRecentRequestsResponse:
+      x-huakai-spec-source:
+        - backend/sql/queries/observability.sql
+        - backend/internal/adminhttp/provider_account_recent_requests_handler.go
+      type: object
+      additionalProperties: false
+      required: [items, source]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountRecentRequest' }
+        source:
+          type: string
+          const: settled_usage_records
+
     ProviderAccountList:
       x-huakai-spec-source:
         - docs/specs/pool-routing.md
@@ -17645,6 +17751,11 @@ components:
         last_refresh_outcome: { type: string }
         failure_class: { type: string }
         failure_count: { type: integer, format: int32, minimum: 0 }
+        project_ref:
+          type: string
+          description: >-
+            从凭证载荷 project_id 派生的非密 project 标识。存量加密凭证无法一次性回填，
+            在后续刷新或管理员手动解析前省略该字段。
         external_account_id:
           type: string
           description: >-
@@ -17771,6 +17882,26 @@ components:
         tenant_id: { type: integer, format: int64, minimum: 1 }
         state: { type: string }
         reason: { type: string }
+
+    AccountCredentialProjectResolveRequest:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [tenant_id]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string }
+
+    AccountCredentialProjectResolveResponse:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [project_ref]
+      properties:
+        project_ref:
+          type: string
+          minLength: 1
+          description: 已解析并写回凭证载荷及 project_ref 元数据列的 project 标识。
 
     CredentialAcquisitionStart:
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]
@@ -18452,6 +18583,14 @@ components:
         tokens_input: { type: integer, minimum: 0 }
         tokens_output: { type: integer, minimum: 0 }
         cache_creation_tokens: { type: integer, minimum: 0 }
+        cache_creation_5m_tokens:
+          type: integer
+          minimum: 0
+          description: 使用默认 5 分钟 TTL 写入提示缓存的 input token 数。
+        cache_creation_1h_tokens:
+          type: integer
+          minimum: 0
+          description: 使用显式 1 小时 TTL 写入提示缓存的 input token 数。
         cache_read_tokens: { type: integer, minimum: 0 }
         actual_cost:
           type: string

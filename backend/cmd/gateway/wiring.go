@@ -39,6 +39,7 @@ import (
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -77,6 +78,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 	providercursor "github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
 	providergemini "github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
@@ -87,6 +89,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaprobe"
 	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -144,6 +147,7 @@ type deps struct {
 	credentialKeys        credentialstore.KeyProvider
 	credentialAcqStore    *credentialacq.PostgresSessionStore
 	credentialExchangers  *credentialacq.ExchangerRegistry
+	projectEnricher       projectenrich.Enricher
 	credentialScheduler   *credentialworker.Scheduler
 	emailSettings         *mailinfra.PostgresSettingsStore
 	authEmailSender       gatewayhttp.AuthEmailSender
@@ -959,6 +963,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesService.WithMessageContentKeys(credentialKeys)
 	}
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
+	credentialVault := provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore)
+	accountProxyResolver := provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys)
+	antigravityProjectResolver := &providerantigravity.ProjectResolver{}
+	credentialProjectEnricher := projectenrich.New(antigravityProjectResolver)
 	// 启动期凭证密钥自检(fail-closed):用当前 KEK 解一条既有 active 凭证,解不开则拒绝启动,
 	// 避免 operator 轮换密钥后在运行时全 relay 静默解密瘫痪而无启动信号。详见 VerifyKeySelfCheck。
 	if err := credentialStore.VerifyKeySelfCheck(ctx); err != nil {
@@ -966,7 +974,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
 	credentialExchangers := credentialacq.DefaultExchangerRegistry()
-	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicoauth.DefaultHTTPClient()); err != nil {
+	anthropicOAuthHTTPClient := anthropicoauth.DefaultHTTPClient()
+	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicOAuthHTTPClient); err != nil {
 		return nil, fmt.Errorf("register anthropic claude_ai_oauth exchanger with mimicry: %w", err)
 	}
 	geminiOAuthClientSecret, err := loadGeminiPublicCLIOAuthClientSecretFromEnv()
@@ -1284,6 +1293,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	)
 	windowCostWorker.Start(ctx)
 
+	// 配额探测只写观测窗口，不接入健康状态、冷却或选号依赖。
+	quotaProbeWorker := quotaprobe.NewWorker(quotaprobe.WorkerConfig{
+		Accounts: quotaprobe.NewPostgresAccountLister(pgPool),
+		Vault:    credentialVault,
+		Fetcher:  quotaprobe.NewHTTPUsageFetcher(anthropicOAuthHTTPClient, accountProxyResolver),
+		Store:    ratelimit.NewPostgresSessionWindowStore(pgPool),
+		Settings: platformSettingsService,
+	})
+	quotaProbeWorker.Start(ctx)
+
 	clientIPResolver, err := loadClientIPResolverFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("load trusted proxy client IP resolver: %w", err)
@@ -1368,11 +1387,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		quotaReserver:         quotaReserver,
 		replayStore:           replayStore,
 		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService),
-		credentialVault:       provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
+		credentialVault:       credentialVault,
 		credentialStore:       credentialStore,
 		credentialKeys:        credentialKeys,
 		credentialAcqStore:    credentialAcqStore,
 		credentialExchangers:  credentialExchangers,
+		projectEnricher:       credentialProjectEnricher,
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
 		emailSendLimit:        emailSendLimit,
@@ -1408,10 +1428,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:                 registrydefault.Build(),
 			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
-			ProxyResolver:            provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys),
+			ProxyResolver:            accountProxyResolver,
 			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
 			Timeouts:                 buildGatewayTimeoutConfig(),
 			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
+			AnthropicTTLSettings:     platformSettingsService,
 			// 仅 dev/demo:当设置了 HUAKAI_DEV_MOCK_UPSTREAM 且网关不在
 			// production 模式时,一个伪造的 doer 会捏造上游 SSE,使本地 MVP
 			// 循环无需真实 provider 即可运行。在 production / 未设置时为 nil →
@@ -1549,7 +1570,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if auditSigner == nil {
 		return nil, fmt.Errorf("credentialworker: production auditSigner unset (audit fail-closed gate)")
 	}
-	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistry())
+	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistryWithProjectResolver(antigravityProjectResolver))
 	credentialSchedulerOptions := []credentialworker.Option{
 		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),

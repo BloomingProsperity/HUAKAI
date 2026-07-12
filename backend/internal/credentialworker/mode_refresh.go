@@ -85,10 +85,18 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	// auth.NewSSRFProtectedOAuthClient(拨号层校验目标 IP、禁代理、禁 3xx)。
 	// newDefaultModeAdapterRegistry 的 operatorOAuthClient 仅供测试注入 mock —— SSRF 防护
 	// 拨号会丢弃自定义 RoundTripper,无法用 http.DefaultClient mock 驱动 operator OAuth 刷新逻辑。
-	return newDefaultModeAdapterRegistry(nil)
+	return DefaultModeAdapterRegistryWithProjectResolver(&providerantigravity.ProjectResolver{})
+}
+
+func DefaultModeAdapterRegistryWithProjectResolver(resolver adapters.ProjectIDResolver) *ModeAdapterRegistry {
+	return newDefaultModeAdapterRegistryWithProjectResolver(nil, resolver)
 }
 
 func newDefaultModeAdapterRegistry(operatorOAuthClient *http.Client) *ModeAdapterRegistry {
+	return newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient, nil)
+}
+
+func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.Client, projectResolver adapters.ProjectIDResolver) *ModeAdapterRegistry {
 	r := NewModeAdapterRegistry()
 	register := func(vendor, authMode string, adapter ModeRefreshAdapter) {
 		_ = r.Register(vendor, authMode, adapter)
@@ -146,7 +154,7 @@ func newDefaultModeAdapterRegistry(operatorOAuthClient *http.Client) *ModeAdapte
 			return adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{
 				Endpoint: cfg.TokenEndpoint, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
 				HTTPClient: cfg.HTTPClient, TierCacheTTL: 24 * time.Hour,
-			}}
+			}, ProjectResolver: projectResolver}
 		},
 	})
 	register(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, windsurfManualModeAdapter{adapter: adapters.WindsurfManualTokenRefresh{}})

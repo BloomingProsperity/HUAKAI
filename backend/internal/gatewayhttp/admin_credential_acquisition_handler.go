@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
@@ -25,6 +26,7 @@ type AdminCredentialAcquisitionDeps struct {
 	CredentialAudit          credentialacq.CredentialAuditWriter
 	AuditStore               AdminPoolAccountStore
 	Exchangers               *credentialacq.ExchangerRegistry
+	ProjectEnricher          projectenrich.Enricher
 	AllowLongLivedSetupToken bool
 	BootstrapShortTTL        time.Duration
 	BootstrapLongTTL         time.Duration
@@ -210,9 +212,8 @@ func newCredentialAcqFinalizeHandler(d AdminCredentialAcquisitionDeps) http.Hand
 		if !credentialAcqFlowMatchesPathAccount(w, r, session) {
 			return
 		}
-		finalizer := credentialacq.NewFinalizer(d.Sessions, credentialstore.DefaultHandlerRegistry(), d.Credentials, d.CredentialAudit)
 		actorID := ident.AuditActor()
-		result, err := finalizer.Finalize(r.Context(), flowID, credentialacq.CredentialCandidate{
+		result, err := projectenrich.Finalize(r.Context(), d.ProjectEnricher, d.Sessions, d.Credentials, d.CredentialAudit, session, credentialacq.CredentialCandidate{
 			TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 			Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: req.Credentials, ActorID: actorID,
 		}, actorID, middleware.GetReqID(r.Context()))
@@ -263,8 +264,7 @@ func newCredentialAcqImportHelperHandler(d AdminCredentialAcquisitionDeps, kind 
 			candidate.TenantID = req.TenantID
 			candidate.ProviderAccountID = req.ProviderAccountID
 			candidate.ActorID = actorID
-			finalizer := credentialacq.NewFinalizer(d.Sessions, credentialstore.DefaultHandlerRegistry(), d.Credentials, d.CredentialAudit)
-			result, err := finalizer.Finalize(r.Context(), session.ID, candidate, actorID, middleware.GetReqID(r.Context()))
+			result, err := projectenrich.Finalize(r.Context(), d.ProjectEnricher, d.Sessions, d.Credentials, d.CredentialAudit, session, candidate, actorID, middleware.GetReqID(r.Context()))
 			if err != nil {
 				writeCredentialAcqError(w, err)
 				return
@@ -325,8 +325,7 @@ func completeCredentialAcqOAuthCallback(w http.ResponseWriter, r *http.Request, 
 		writeCredentialAcqError(w, err)
 		return credentialacq.FinalizeResult{Session: session}, false
 	}
-	finalizer := credentialacq.NewFinalizer(d.Sessions, credentialstore.DefaultHandlerRegistry(), d.Credentials, d.CredentialAudit)
-	result, err := finalizer.Finalize(r.Context(), flowID, candidate, actorID, requestID)
+	result, err := projectenrich.Finalize(r.Context(), d.ProjectEnricher, d.Sessions, d.Credentials, d.CredentialAudit, session, candidate, actorID, requestID)
 	if err != nil {
 		writeCredentialAcqError(w, err)
 		return result, false

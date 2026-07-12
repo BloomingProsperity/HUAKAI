@@ -288,6 +288,34 @@ func TestListRenewStatusPlaintextFreeTenantCursorQuery(t *testing.T) {
 	}
 }
 
+func TestListByAccountExposesProjectRef(t *testing.T) {
+	projectRef := "project-from-column"
+	now := pgtype.Timestamptz{Time: time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC), Valid: true}
+	emptyTime := pgtype.Timestamptz{}
+	var nilString *string
+	db := &credentialStoreDBStub{query: func(_ context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+		if !strings.Contains(sql, "external_account_email, project_ref, created_at") {
+			t.Fatalf("ListByAccount SQL 未选择 project_ref：\n%s", sql)
+		}
+		if len(args) != 2 || args[0] != int64(7) || args[1] != int64(77) {
+			t.Fatalf("ListByAccount args=%v，期望 tenant/account=7/77", args)
+		}
+		return &credentialMetadataRowsStub{values: [][]any{{
+			int64(201), int64(7), int64(77), VendorAntigravity, AuthModeOAuth, StateActive, int32(3),
+			emptyTime, emptyTime, emptyTime, nilString, nilString, int32(0),
+			nilString, nilString, &projectRef, now, now,
+		}}}, nil
+	}}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+	rows, err := store.ListByAccount(context.Background(), 7, 77)
+	if err != nil {
+		t.Fatalf("ListByAccount 失败：%v", err)
+	}
+	if len(rows) != 1 || rows[0].ProjectRef == nil || *rows[0].ProjectRef != projectRef {
+		t.Fatalf("project_ref 未暴露：%+v", rows)
+	}
+}
+
 func mustTestKeyProvider(t *testing.T) KeyProvider {
 	t.Helper()
 	provider, err := NewStaticKeyProvider("test-key", []byte("0123456789abcdef0123456789abcdef"))
@@ -410,6 +438,43 @@ type credentialStoreRowsStub struct {
 	idx  int
 	err  error
 }
+
+type credentialMetadataRowsStub struct {
+	values [][]any
+	idx    int
+}
+
+func (r *credentialMetadataRowsStub) Close()                                       {}
+func (r *credentialMetadataRowsStub) Err() error                                   { return nil }
+func (r *credentialMetadataRowsStub) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *credentialMetadataRowsStub) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *credentialMetadataRowsStub) Next() bool {
+	if r.idx >= len(r.values) {
+		return false
+	}
+	r.idx++
+	return true
+}
+func (r *credentialMetadataRowsStub) Scan(dest ...any) error {
+	if r.idx == 0 || r.idx > len(r.values) {
+		return errors.New("Scan 没有当前行")
+	}
+	values := r.values[r.idx-1]
+	if len(dest) != len(values) {
+		return errors.New("scan destination count mismatch")
+	}
+	for i := range dest {
+		if err := setScanValue(dest[i], values[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (r *credentialMetadataRowsStub) Values() ([]any, error) {
+	return nil, errors.New("unexpected Values")
+}
+func (r *credentialMetadataRowsStub) RawValues() [][]byte { return nil }
+func (r *credentialMetadataRowsStub) Conn() *pgx.Conn     { return nil }
 
 func (r *credentialStoreRowsStub) Close() {}
 

@@ -328,6 +328,53 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 	}
 }
 
+type modeProjectResolverStub struct {
+	projectID string
+	calls     int
+	token     string
+}
+
+func (s *modeProjectResolverStub) ResolveProjectID(_ context.Context, token string) (string, error) {
+	s.calls++
+	s.token = token
+	return s.projectID, nil
+}
+
+func TestDefaultModeAdapterRegistryWiresAntigravityProjectResolver(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_GEMINI_OAUTH_TOKEN_URL", "https://operator.antigravity.example.test/oauth/token")
+	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_ID", "operator-antigravity-client")
+	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", "")
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResponse(`{"access_token":"access-after-refresh","refresh_token":"refresh-after-refresh","expires_in":1800}`), nil
+	})}
+	resolver := &modeProjectResolverStub{projectID: "project-through-registry"}
+	registry := newDefaultModeAdapterRegistryWithProjectResolver(client, resolver)
+	adapter, ok := registry.Lookup(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
+	if !ok {
+		t.Fatal("缺少 antigravity/oauth refresh adapter")
+	}
+	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 95,
+		Vendor:            credentialstore.VendorAntigravity,
+		AuthMode:          credentialstore.AuthModeOAuth,
+		Payload:           []byte(`{"access_token":"access-old","refresh_token":"refresh-old"}`),
+	})
+	if err != nil {
+		t.Fatalf("RefreshCredential 失败：%v", err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(result.Payload, &payload); err != nil {
+		t.Fatalf("解析刷新结果失败：%v", err)
+	}
+	if resolver.calls != 1 || resolver.token != "access-after-refresh" {
+		t.Fatalf("resolver 接线未生效：calls=%d token=%q", resolver.calls, resolver.token)
+	}
+	if payload["project_id"] != "project-through-registry" || payload["project_metadata_status"] != "resolved" {
+		t.Fatalf("project 未经 registry 接线写回：%s", result.Payload)
+	}
+}
+
 func TestWindsurfManualModeAdapterRejectsRefreshTokenOnlyCredential(t *testing.T) {
 	// 修掉的回归:一个只含 refresh_token 的已存储 Windsurf OAuth payload 无法被运行时
 	// session adapter 使用,因此定时 refresh 必须 fail closed,而不是悄悄把它当作一次

@@ -18,10 +18,11 @@ import (
 
 func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 	t.Run("list account credentials", func(t *testing.T) {
+		projectRef := "project-visible"
+		meta := adminCredentialMeta(201, 7, 77, credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, 1)
+		meta.ProjectRef = &projectRef
 		store := &adminCredentialStoreStub{
-			listRows: []credentialstore.CredentialMetadata{
-				adminCredentialMeta(201, 7, 77, credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, 1),
-			},
+			listRows: []credentialstore.CredentialMetadata{meta},
 		}
 		audit := &adminPoolStoreStub{}
 		rec := invokeAdminCredentials(t, AdminCredentialDeps{
@@ -38,7 +39,7 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 			Credentials []credentialstore.CredentialMetadata `json:"credentials"`
 		}
 		decodeAdminCredentialBody(t, rec, &body)
-		if len(body.Credentials) != 1 || body.Credentials[0].ID != 201 {
+		if len(body.Credentials) != 1 || body.Credentials[0].ID != 201 || body.Credentials[0].ProjectRef == nil || *body.Credentials[0].ProjectRef != projectRef {
 			t.Fatalf("list body mismatch: %+v", body)
 		}
 	})

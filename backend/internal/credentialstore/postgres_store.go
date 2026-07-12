@@ -127,6 +127,7 @@ type CredentialMetadata struct {
 	LastRefreshOutcome *string    `json:"last_refresh_outcome,omitempty"`
 	FailureClass       *string    `json:"failure_class,omitempty"`
 	FailureCount       int32      `json:"failure_count"`
+	ProjectRef         *string    `json:"project_ref,omitempty"`
 	// ExternalAccountID/ExternalAccountEmail 向 admin API/UI 暴露自动提取的上游 provider
 	// 账号标识。未捕获到时为 nil。
 	ExternalAccountID    *string   `json:"external_account_id,omitempty"`
@@ -306,18 +307,18 @@ INSERT INTO account_credentials (
     payload_fingerprint, refresh_token_fingerprint,
     access_expires_at, refresh_expires_at, refresh_before_at,
     created_by_actor, last_modified_by_actor,
-    external_account_id, external_account_email
+    external_account_id, external_account_email, project_ref
 ) VALUES (
     $1, $2, $3, $4, 'active', 1,
     $5, $6, $7, $8, $9,
     $10, $11,
     $12, $13, $14,
     NULLIF($15, ''), NULLIF($15, ''),
-    NULLIF($16, ''), NULLIF($17, '')
+    NULLIF($16, ''), NULLIF($17, ''), $18
 )
 RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
           access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
-          failure_class, failure_count, external_account_id, external_account_email, created_at, updated_at`
+          failure_class, failure_count, external_account_id, external_account_email, project_ref, created_at, updated_at`
 	var meta CredentialMetadata
 	err = s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
 		var rec credentialMetadataRow
@@ -328,9 +329,10 @@ RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credenti
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
 			strings.TrimSpace(in.ActorID),
 			strings.TrimSpace(in.ExternalAccountID), strings.TrimSpace(in.ExternalAccountEmail),
+			prepared.projectRef,
 		).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalAccountEmail, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalAccountEmail, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
 		meta = rec.metadata()
@@ -389,21 +391,22 @@ SET encrypted_payload = $1,
     access_expires_at = $8,
     refresh_expires_at = $9,
     refresh_before_at = $10,
+    project_ref = $11,
     state = 'active',
     credential_version = credential_version + 1,
     failure_class = NULL,
     failure_count = 0,
     next_attempt_at = NULL,
     updated_at = NOW(),
-    last_modified_by_actor = NULLIF($11, '')
-WHERE id = $12
-  AND tenant_id = $13
-  AND provider_account_id = $14
+    last_modified_by_actor = NULLIF($12, '')
+WHERE id = $13
+  AND tenant_id = $14
+  AND provider_account_id = $15
   AND deleted_at IS NULL
-  AND credential_version = $15
+  AND credential_version = $16
 RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
           access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
-          failure_class, failure_count, created_at, updated_at`
+          failure_class, failure_count, project_ref, created_at, updated_at`
 	var meta CredentialMetadata
 	err = s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
 		var rec credentialMetadataRow
@@ -411,10 +414,10 @@ RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credenti
 			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
 			prepared.payloadFingerprint, prepared.refreshFingerprint,
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-			strings.TrimSpace(in.ActorID), current.ID, current.TenantID, current.ProviderAccountID, current.CredentialVersion,
+			prepared.projectRef, strings.TrimSpace(in.ActorID), current.ID, current.TenantID, current.ProviderAccountID, current.CredentialVersion,
 		).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-			&rec.FailureClass, &rec.FailureCount, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			&rec.FailureClass, &rec.FailureCount, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return credentialAuditPhaseError(credentialAuditTxPhaseMutation, ErrCredentialNotFound)
 			}
@@ -444,7 +447,7 @@ func (s *Store) ListByAccount(ctx context.Context, tenantID, providerAccountID i
 	const q = `
 SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
        access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
-       failure_class, failure_count, external_account_id, external_account_email, created_at, updated_at
+       failure_class, failure_count, external_account_id, external_account_email, project_ref, created_at, updated_at
 FROM account_credentials
 WHERE tenant_id = $1
   AND provider_account_id = $2
@@ -460,7 +463,7 @@ ORDER BY updated_at DESC, id DESC`
 		var rec credentialMetadataRow
 		if err := rows.Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalAccountEmail, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalAccountEmail, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, rec.metadata())
@@ -939,19 +942,20 @@ SET encrypted_payload = $1,
     access_expires_at = $8,
     refresh_expires_at = $9,
     refresh_before_at = $10,
+    project_ref = $11,
     state = 'active',
     credential_version = credential_version + 1,
     last_refresh_at = NOW(),
-    last_refresh_outcome = $11,
+    last_refresh_outcome = $12,
     failure_class = NULL,
     failure_count = 0,
-    next_attempt_at = $16,
+    next_attempt_at = $17,
     updated_at = NOW()
-WHERE id = $12
-  AND tenant_id = $13
-  AND provider_account_id = $14
+WHERE id = $13
+  AND tenant_id = $14
+  AND provider_account_id = $15
   AND deleted_at IS NULL
-  AND credential_version = $15`
+  AND credential_version = $16`
 	now := time.Now().UTC()
 	// 计算 next_attempt_at:正常有效 refresh 时为 NULL,无效时做节流。
 	// 当 accessExpiresAt 为零(无过期信息)时 refreshBeforeAt 为零;此时视为有效。
@@ -964,7 +968,7 @@ WHERE id = $12
 			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
 			prepared.payloadFingerprint, prepared.refreshFingerprint,
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-			outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion, nullableTime(nextAttemptAt),
+			prepared.projectRef, outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion, nullableTime(nextAttemptAt),
 		)
 		if err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
@@ -1163,6 +1167,7 @@ type preparedEnvelope struct {
 	accessExpiresAt    time.Time
 	refreshExpiresAt   time.Time
 	refreshBeforeAt    time.Time
+	projectRef         *string
 }
 
 func (s *Store) prepareEnvelope(ctx context.Context, tenantID, providerAccountID int64, vendor, authMode string, version int32, payload []byte, handler ModeHandler) (preparedEnvelope, error) {
@@ -1201,6 +1206,7 @@ func (s *Store) prepareEnvelope(ctx context.Context, tenantID, providerAccountID
 		accessExpiresAt:    accessExp,
 		refreshExpiresAt:   refreshExp,
 		refreshBeforeAt:    refreshBefore,
+		projectRef:         stringPtr(fieldString(fields, "project_id")),
 	}, nil
 }
 
@@ -1291,6 +1297,7 @@ type credentialMetadataRow struct {
 	FailureCount         int32
 	ExternalAccountID    *string
 	ExternalAccountEmail *string
+	ProjectRef           *string
 	CreatedAt            pgtype.Timestamptz
 	UpdatedAt            pgtype.Timestamptz
 }
@@ -1302,6 +1309,7 @@ func (r credentialMetadataRow) metadata() CredentialMetadata {
 		AccessExpiresAt: optionalTime(r.AccessExpiresAt), RefreshBeforeAt: optionalTime(r.RefreshBeforeAt),
 		LastRefreshAt: optionalTime(r.LastRefreshAt), LastRefreshOutcome: r.LastRefreshOutcome,
 		FailureClass: r.FailureClass, FailureCount: r.FailureCount,
+		ProjectRef:        trimmedNonEmpty(r.ProjectRef),
 		ExternalAccountID: trimmedNonEmpty(r.ExternalAccountID), ExternalAccountEmail: trimmedNonEmpty(r.ExternalAccountEmail),
 		CreatedAt: pgTime(r.CreatedAt), UpdatedAt: pgTime(r.UpdatedAt),
 	}

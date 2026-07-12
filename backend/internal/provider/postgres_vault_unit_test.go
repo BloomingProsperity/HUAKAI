@@ -290,3 +290,12 @@ func TestMergeCredentialAccountExtraScrubsPreexistingPolicyKey(t *testing.T) {
 		t.Fatalf("org_id=%q want org-keep;scrub 不应误删其他键", got.Extra["org_id"])
 	}
 }
+
+func TestMergeCredentialAccountExtraCredentialProjectWins(t *testing.T) {
+	credential := Credential{Extra: map[string]string{"project_id": "project-from-credential"}}
+	accountExtra := map[string]string{"project_id": "project-from-account"}
+	merged := mergeCredentialAccountExtra(credential, accountExtra)
+	if merged.Extra["project_id"] != "project-from-credential" {
+		t.Fatalf("project_id=%q，凭证载荷必须覆盖账号 extra", merged.Extra["project_id"])
+	}
+}

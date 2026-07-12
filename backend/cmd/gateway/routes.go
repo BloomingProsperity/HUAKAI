@@ -28,6 +28,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/completionshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
@@ -89,6 +90,24 @@ func (d *deps) AdminDLQAuth() gatewayhttp.AdminDLQAuth {
 
 func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
 	return d.dlqService
+}
+
+func credentialAcquisitionRouteDeps(d *deps) gatewayhttp.AdminCredentialAcquisitionDeps {
+	return gatewayhttp.AdminCredentialAcquisitionDeps{
+		Auth: d.adminAuth, Sessions: d.credentialAcqStore,
+		Credentials: d.credentialStore, CredentialAudit: d.credentialStore,
+		AuditStore: d.adminQueries, Exchangers: d.credentialExchangers,
+		ProjectEnricher:   d.projectEnricher,
+		BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
+		BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
+	}
+}
+
+func credentialProjectRouteDeps(d *deps) credentialprojecthttp.Deps {
+	return credentialprojecthttp.Deps{
+		Auth: d.adminAuth, Store: d.credentialStore,
+		Enricher: d.projectEnricher, Audit: d.adminQueries,
+	}
 }
 
 // mountRoutes 按 docs/openapi/openapi.yaml 接线 HTTP 路由。
@@ -1037,6 +1056,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Store:         d.adminQueries,
 			RecentReqRing: d.recentReqRing,
 		})
+		adminhttp.MountProviderAccountRecentRequestsRoutes(r, adminhttp.ProviderAccountRecentRequestsDeps{
+			Auth:     d.adminAuth,
+			Accounts: d.adminQueries,
+			Requests: d.billingQueries,
+		})
 		adminhttp.MountProviderAccountBulkRoutes(r, adminhttp.ProviderAccountBulkDeps{
 			Auth:  d.adminAuth,
 			Store: d.adminQueries,
@@ -1051,16 +1075,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Credentials: d.credentialStore,
 			AuditStore:  d.adminQueries,
 		})
-		gatewayhttp.MountAdminCredentialAcquisitionRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
-			Auth:              d.adminAuth,
-			Sessions:          d.credentialAcqStore,
-			Credentials:       d.credentialStore,
-			CredentialAudit:   d.credentialStore,
-			AuditStore:        d.adminQueries,
-			Exchangers:        d.credentialExchangers,
-			BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
-			BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
-		})
+		credentialprojecthttp.MountRoutes(r, credentialProjectRouteDeps(d))
+		gatewayhttp.MountAdminCredentialAcquisitionRoutes(r, credentialAcquisitionRouteDeps(d))
 		gatewayhttp.MountChannelHealthAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
 			Auth:       d.adminAuth,
 			Controller: d.channelHealth,
@@ -1090,16 +1106,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Credentials: d.credentialStore,
 			AuditStore:  d.adminQueries,
 		})
-		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
-			Auth:              d.adminAuth,
-			Sessions:          d.credentialAcqStore,
-			Credentials:       d.credentialStore,
-			CredentialAudit:   d.credentialStore,
-			AuditStore:        d.adminQueries,
-			Exchangers:        d.credentialExchangers,
-			BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
-			BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
-		})
+		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
 		r.Mount("/", gatewayhttp.NewAdminPoolsHandler(gatewayhttp.AdminPoolsDeps{
