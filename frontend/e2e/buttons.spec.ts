@@ -5,7 +5,7 @@ import { login, hasErrorBoundary } from './helpers'
 // 清除/重置/登出/移除/解绑/强制),自动取消所有确认弹窗;每次点击后断言页面不崩、无 5xx。
 // 这是"每个可点按钮真能点、点了不出错、后端正确响应"的浏览器级证明(破坏性按钮只验证存在,不实点)。
 const ROUTES: string[] = [
-  '/overview', '/keys', '/usage', '/usage-records', '/accounts', '/models', '/routing',
+  '/', '/overview', '/keys', '/usage', '/usage-records', '/accounts', '/models', '/routing',
   '/users', '/wallet', '/orders', '/subscriptions', '/checkin', '/redeem', '/affiliate',
   '/rankings', '/my-groups', '/notifications', '/profile', '/media-tasks', '/available-channels',
   '/activity', '/security', '/system', '/health', '/ops', '/playground', '/trust',

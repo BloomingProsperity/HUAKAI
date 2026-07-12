@@ -1,13 +1,17 @@
 import { Link } from 'react-router-dom'
 import { PIPELINE_NAV } from '../app/nav'
+import { useMe } from '../auth/me'
 import { DashboardMetrics } from '../features/dashboard/DashboardMetrics'
+import { OperatorOverview } from '../features/dashboard/OperatorOverview'
 
 /*
  * 控制台首页(管线总览)。
  * 顶部=真数据指标条(账号/Key/模型/配额,各卡独立加载、无权限端点降级显"—");
+ * 运营台角色追加"经营总览"(统计卡/趋势/最近告警,复用 admin 端点);
  * 下方="管线卡片"呈现 8 个阶段,呼应管线即导航的反克隆方向。
  */
 export function Dashboard() {
+  const me = useMe()
   return (
     <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
       <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
@@ -17,6 +21,7 @@ export function Dashboard() {
         </p>
       </header>
       <DashboardMetrics />
+      {me.access.operatorEnabled && <OperatorOverview />}
       <div
         style={{
           display: 'grid',
