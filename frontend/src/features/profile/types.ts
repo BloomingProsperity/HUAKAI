@@ -12,6 +12,8 @@
  *  - POST   /v1/auth/2fa/enable|disable     twofa/types.go:77  Status
  *  - POST   /v1/auth/2fa/backup-codes/regenerate twofa/types.go:84 BackupCodesResult
  *  - GET    /v1/me/passkeys/                passkey/types.go:79  CredentialSummary[]
+ *  - POST   /v1/me/passkeys/register/begin  passkey/types.go:102 BeginResponse
+ *  - POST   /v1/me/passkeys/register/finish passkeyhttp/handler.go:33 {passkey}
  *  - DELETE /v1/me/passkeys/{id}            {deleted}
  *  - GET    /v1/users/me/oauth-bindings     controlhttp/oauth_bindings_handler.go:33 {bindings}
  *  - DELETE /v1/users/me/oauth-bindings/{provider} {unlinked}
@@ -80,6 +82,24 @@ export interface PasskeyItem {
 /** GET /v1/me/passkeys/ 响应。 */
 export interface PasskeyListResponse {
   passkeys: PasskeyItem[]
+}
+
+/** Passkey 敏感动作的二次验证。密码与两步验证码二选一。 */
+export interface PasskeyStepUp {
+  password?: string
+  two_factor_code?: string
+}
+
+/** 注册第一步响应。public_key 是浏览器 WebAuthn creation options。 */
+export interface PasskeyRegisterBeginResponse {
+  session_id: string
+  public_key: unknown
+  expires_at: string
+}
+
+/** 注册完成响应。 */
+export interface PasskeyRegisterFinishResponse {
+  passkey: PasskeyItem
 }
 
 /** 单条社交登录绑定(oauthBindingResponse)。subject 已在后端脱敏。 */

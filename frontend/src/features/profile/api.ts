@@ -7,6 +7,9 @@ import type {
   MeResponse,
   OAuthBindingsResponse,
   PasskeyListResponse,
+  PasskeyRegisterBeginResponse,
+  PasskeyRegisterFinishResponse,
+  PasskeyStepUp,
   ProfileResponse,
   TwoFASetupResult,
   TwoFAStatus,
@@ -89,10 +92,35 @@ export async function listPasskeys(signal?: AbortSignal): Promise<PasskeyListRes
   return apiGet<PasskeyListResponse>('/v1/me/passkeys/', { signal })
 }
 
-/** 删除指定通行密钥。注:后端可能要求 step_up 证明(近期密码/2FA);此处不带 step_up,
- *  若后端返回 passkey_step_up_required(403),UI 提示用户走注册/重新验证流程。 */
-export async function deletePasskey(id: number): Promise<{ deleted: boolean }> {
-  return apiSend<{ deleted: boolean }>('DELETE', `/v1/me/passkeys/${id}`, {})
+/** 发起注册 ceremony；后端同时校验 session、Origin 与 step_up。 */
+export async function registerPasskeyBegin(
+  name: string,
+  stepUp: PasskeyStepUp,
+): Promise<PasskeyRegisterBeginResponse> {
+  return apiSend<PasskeyRegisterBeginResponse>('POST', '/v1/me/passkeys/register/begin', {
+    name,
+    step_up: stepUp,
+  })
+}
+
+/** 提交浏览器创建的 attestation，完成注册。 */
+export async function registerPasskeyFinish(
+  sessionId: string,
+  name: string,
+  stepUp: PasskeyStepUp,
+  credential: unknown,
+): Promise<PasskeyRegisterFinishResponse> {
+  return apiSend<PasskeyRegisterFinishResponse>('POST', '/v1/me/passkeys/register/finish', {
+    session_id: sessionId,
+    name,
+    step_up: stepUp,
+    credential,
+  })
+}
+
+/** 删除指定通行密钥；后端要求 step_up，不能发送空证明。 */
+export async function deletePasskey(id: number, stepUp: PasskeyStepUp): Promise<{ deleted: boolean }> {
+  return apiSend<{ deleted: boolean }>('DELETE', `/v1/me/passkeys/${id}`, { step_up: stepUp })
 }
 
 // ---- 社交登录绑定(OAuth) ----

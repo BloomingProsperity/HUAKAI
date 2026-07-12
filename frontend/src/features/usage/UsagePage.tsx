@@ -5,12 +5,13 @@ import type { ApiKeyView } from '../keys/types'
 import { getKeyUsageSummary, getQuota } from './api'
 import { metricLabel, quotaProgress, windowLabel } from './quota'
 import type { KeyUsageSummary, QuotaWindow } from './types'
+import { KeyUsageAnalytics } from './KeyUsageAnalytics'
 
 /*
- * 用量与配额(P0)。管线第 4 站。session 鉴权:
+ * 用量与配额(P0)。管线第 4 站:
  *  - 配额窗口(/v1/me/quota)→ 每个 metric×window 的 cap/consumed/remaining + 进度条;
  *  - per-key 用量(列 active key,各取 /v1/me/keys/{id}/usage-summary)→ 花费/请求数/tokens。
- * 说明:per-request 请求日志(/v1/me/usage)是 API key 鉴权、session 不可达,故本页用 quota+按 key 汇总。
+ * 以上走 session；Key 级深度分析三端点走用户临时粘贴的 API Key Bearer。
  */
 export function UsagePage() {
   const [windows, setWindows] = useState<QuotaWindow[]>([])
@@ -119,6 +120,8 @@ export function UsagePage() {
           </div>
         )}
       </Card>
+
+      <KeyUsageAnalytics />
     </div>
   )
 }

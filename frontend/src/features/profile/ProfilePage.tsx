@@ -4,14 +4,12 @@ import { StatusBadge } from '../../ui/StatusBadge'
 import {
   bindTelegram,
   changePassword,
-  deletePasskey,
   deleteSelf,
   disableTwoFA,
   enableTwoFA,
   getMe,
   getTwoFAStatus,
   listOAuthBindings,
-  listPasskeys,
   regenerateBackupCodes,
   setupTwoFA,
   unlinkOAuthBinding,
@@ -23,7 +21,6 @@ import {
   buildChangePassword,
   EMPTY_CHANGE_PASSWORD,
   isValidTotpCode,
-  passkeyLabel,
   providerLabel,
   validateDisplayName,
   viewTwoFA,
@@ -32,7 +29,8 @@ import {
 import { clearAll } from '../../auth/store'
 import { NotificationPrefsCard } from './NotificationPrefsCard'
 import { ActiveSessionsCard } from './ActiveSessionsCard'
-import type { MeResponse, OAuthBinding, PasskeyItem, TwoFASetupResult, TwoFAStatus } from './types'
+import { PasskeyCard } from './PasskeyCard'
+import type { MeResponse, OAuthBinding, TwoFASetupResult, TwoFAStatus } from './types'
 
 /*
  * 个人资料·安全(user 壳)。已登录用户自助管理:资料 / 改密 / 两步验证 / 通行密钥 / 社交绑定 / 注销。
@@ -402,88 +400,6 @@ function TwoFACard() {
   )
 }
 
-// ---- 通行密钥卡 ----
-function PasskeyCard() {
-  const [items, setItems] = useState<PasskeyItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [flash, setFlash] = useState<string | null>(null)
-  const [refreshNonce, setRefreshNonce] = useState(0)
-  const [busyId, setBusyId] = useState<number | null>(null)
-
-  const load = useCallback((signal: AbortSignal) => {
-    setLoading(true)
-    setError(null)
-    listPasskeys(signal)
-      .then((r) => setItems(r.passkeys ?? []))
-      .catch((e: unknown) => {
-        if (signal.aborted) return
-        setError(errMsg(e, '加载通行密钥失败'))
-      })
-      .finally(() => {
-        if (!signal.aborted) setLoading(false)
-      })
-  }, [])
-
-  useEffect(() => {
-    const ctrl = new AbortController()
-    load(ctrl.signal)
-    return () => ctrl.abort()
-  }, [load, refreshNonce])
-
-  const remove = async (p: PasskeyItem) => {
-    setBusyId(p.id)
-    setError(null)
-    setFlash(null)
-    try {
-      await deletePasskey(p.id)
-      setFlash('通行密钥已删除')
-      setRefreshNonce((n) => n + 1)
-    } catch (e) {
-      // 后端可能要求近期密码 / 2FA 的 step-up 证明(passkey_step_up_required)。
-      setError(errMsg(e, '删除失败'))
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  return (
-    <Card title="通行密钥(Passkey)">
-      <p style={hint}>
-        通行密钥用设备生物识别或硬件密钥免密登录。
-        {/* 注:新增通行密钥需 WebAuthn 浏览器交互(navigator.credentials)且后端要求 step-up 证明,
-            该注册流程未在本页实现,留作占位;此处仅做列表与删除。 */}
-        新增通行密钥需在登录页 / 专用注册流程中完成。
-      </p>
-      {error && <ErrBox>{error}</ErrBox>}
-      {flash && <OkBox>{flash}</OkBox>}
-      {loading && items.length === 0 ? (
-        <Muted>加载中…</Muted>
-      ) : items.length === 0 ? (
-        <Muted>尚未添加任何通行密钥。</Muted>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-          {items.map((p) => (
-            <div key={p.id} style={listRow}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <span style={{ fontWeight: 600 }}>{passkeyLabel(p)}</span>
-                <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>
-                  添加于 {fmt(p.created_at)}
-                  {p.last_used_at ? ` · 最近使用 ${fmt(p.last_used_at)}` : ''}
-                  {p.clone_warning ? ' · ⚠ 检测到克隆风险' : ''}
-                </span>
-              </div>
-              <button type="button" disabled={busyId === p.id} onClick={() => remove(p)} style={dangerLinkBtn}>
-                删除
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </Card>
-  )
-}
-
 // ---- 社交绑定卡 ----
 function BindingsCard() {
   const [items, setItems] = useState<OAuthBinding[]>([])
@@ -701,10 +617,6 @@ function OkBox({ children }: { children: React.ReactNode }) {
 
 function errMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError ? `${e.message}(${e.code})` : fallback
-}
-function fmt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false })
 }
 function panelLabel(panel: string): string {
   switch (panel) {
