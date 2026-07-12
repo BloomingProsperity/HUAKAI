@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,17 @@ func TestChatHandlerDepsInjectsPlatformSettings(t *testing.T) {
 	got := chatHandlerDeps(d)
 	if got.PlatformSettings == nil {
 		t.Fatal("ChatHandlerDeps.PlatformSettings 未注入:平台设置键(warmup_intercept/codex_client_access.*)在热路径成死开关")
+	}
+}
+
+// 构造 dispatcher 时必须注入同一个运行时设置服务，否则新键只能写入而不会影响出站请求。
+func TestGatewayWiringInjectsAnthropicTTLSettings(t *testing.T) {
+	raw, err := os.ReadFile("wiring.go")
+	if err != nil {
+		t.Fatalf("读取 wiring.go: %v", err)
+	}
+	if !strings.Contains(string(raw), "AnthropicTTLSettings:     platformSettingsService") {
+		t.Fatal("UpstreamDispatcher.AnthropicTTLSettings 未注入 platformSettingsService")
 	}
 }
 

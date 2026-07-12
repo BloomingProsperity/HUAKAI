@@ -128,6 +128,28 @@ func TestAdminObsUsageTrustFieldsFromAuditLedger(t *testing.T) {
 	}
 }
 
+func TestAdminObsUsageMapsCacheCreationTTLColumns(t *testing.T) {
+	row := usageRow(1)
+	row.CacheCreation5mTokens = 125
+	row.CacheCreation1hTokens = 250
+	store := &obsStoreStub{usage: []dbbilling.ListUsageRecordsRow{row}}
+
+	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage?limit=20")
+	assertStatus(t, rec, http.StatusOK)
+	var body struct {
+		Items []struct {
+			CacheCreation5mTokens int32 `json:"cache_creation_5m_tokens"`
+			CacheCreation1hTokens int32 `json:"cache_creation_1h_tokens"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 1 {
+		t.Fatalf("解析 cache TTL 响应失败: body=%s err=%v", rec.Body.String(), err)
+	}
+	if body.Items[0].CacheCreation5mTokens != 125 || body.Items[0].CacheCreation1hTokens != 250 {
+		t.Fatalf("缓存创建 token 分列=%+v，期望 5m=125 1h=250", body.Items[0])
+	}
+}
+
 func TestAdminObsClaimsSuccess(t *testing.T) {
 	store := &obsStoreStub{claims: []dbbilling.ListBillingClaimsRow{claimRow(3)}}
 	rec := invokeObs(NewClaimsHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/billing/claims?status=committed")

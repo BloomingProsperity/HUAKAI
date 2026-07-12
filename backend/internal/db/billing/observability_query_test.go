@@ -59,6 +59,24 @@ func TestUsageOutcomeSQLFilterContracts(t *testing.T) {
 	}
 }
 
+func TestProviderAccountRecentRequestsSQLContract(t *testing.T) {
+	query := normalizeSQLForPendingQueryTest(listProviderAccountRecentRequests)
+	for _, predicate := range []string{
+		"ur.provider_account_id = $1",
+		"ur.tenant_id = $2",
+		"ORDER BY ur.settled_at DESC, ur.id DESC",
+	} {
+		if !strings.Contains(query, predicate) {
+			t.Fatalf("recent requests query must contain %q", predicate)
+		}
+	}
+	for _, forbidden := range []string{"actual_cost", "reserved_cost", "cost_snapshot"} {
+		if strings.Contains(query, forbidden) {
+			t.Fatalf("recent requests query must not expose money field %q", forbidden)
+		}
+	}
+}
+
 func normalizeSQLForPendingQueryTest(query string) string {
 	return regexp.MustCompile(`\s+`).ReplaceAllString(strings.TrimSpace(query), " ")
 }

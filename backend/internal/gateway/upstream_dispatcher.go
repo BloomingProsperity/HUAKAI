@@ -96,6 +96,10 @@ type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+type AnthropicTTLSettings interface {
+	AnthropicTTL1hRewriteEnabled(context.Context) (bool, error)
+}
+
 // UpstreamDispatcher 串起 adapter / transport / HTTP client。
 type UpstreamDispatcher struct {
 	// Adapters 按 protocol family 取 adapter；必须非 nil。
@@ -119,14 +123,11 @@ type UpstreamDispatcher struct {
 	TLSProfileResolver TLSProfileResolver
 	// Timeouts 仅作用于非流式 buffered dispatch。
 	Timeouts TimeoutConfig
-	// AnthropicAutoBreakpoints 选择在实时 Anthropic Messages 出站路径上
-	// 启用自动的 cache_control breakpoint 规划。默认 false 保持 body 逐字节不变。
-	// 为 true 时,protocol family 为 "anthropic_messages" 且未携带任何
-	// 客户端提供的 cache_control 的请求,会在 BuildRequest 之前于 planner 选定的
-	// 位置注入 ephemeral breakpoints。自带 cache_control 的客户端永不被触碰。
-	// 任何 planning/序列化错误都会被吞掉并改用原始 body —— 缓存是优化,
-	// 绝非实时请求的硬依赖。
+	// AnthropicAutoBreakpoints 仅为无客户端 cache_control 的 Messages 请求自动注入断点；
+	// 默认关闭，规划失败时保留原始 body。
 	AnthropicAutoBreakpoints bool
+	// AnthropicTTLSettings 只决定自动断点采用默认 5m 还是显式 1h；读取失败按 5m 处理。
+	AnthropicTTLSettings AnthropicTTLSettings
 }
 
 // Dispatch 执行一次完整出站。失败时 result 可能为 nil；调用方按 err
@@ -159,7 +160,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		in.InboundBody = trimmed
 	}
 	// 可选 Anthropic cache_control breakpoint 规划(仅 anthropic_messages、opt-in;见 maybeInjectAnthropicBreakpoints)。
-	in.InboundBody = d.maybeInjectAnthropicBreakpoints(in.ProtocolFamily, in.InboundBody)
+	in.InboundBody = d.maybeInjectAnthropicBreakpoints(ctx, in.ProtocolFamily, in.InboundBody)
 	// B1:官方 OpenAI 兼容族流式出站强制 stream_options.include_usage(见 streamusage 子包)。
 	in.InboundBody = streamusage.Inject(in.ProtocolFamily, in.InboundBody)
 
@@ -319,26 +320,10 @@ func validatePassthroughEndpointTarget(ctx context.Context, cred provider.Creden
 	return nil
 }
 
-// maybeInjectAnthropicBreakpoints 在 Anthropic Messages 请求 body 被构造成
-// 出站 HTTP 请求之前,对其规划并应用 ephemeral cache_control breakpoints。
-// 当满足以下任一条件时,它是空操作(返回 body 不变):
-//   - dispatcher 上未启用 AnthropicAutoBreakpoints;
-//   - protocol family 不是 "anthropic_messages";
-//   - 客户端已在请求任何位置(system / message content / tools)提供了
-//     至少一个 cache_control 字段 —— 我们绝不覆盖自管缓存的客户端;
-//   - planner 未产出任何位置,或 inspect/plan/apply 任一步骤出错。
-//     缓存是优化;planning 失败绝不能破坏实时请求,故出错时返回原始 body。
-//
-// 返回的切片要么是原始 body(原封不动),要么是 ApplyBreakpoints
-// 新分配并重新序列化的 body;调用方的切片绝不会被原地修改。
-func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(protocolFamily string, body []byte) []byte {
-	if d == nil || !d.AnthropicAutoBreakpoints {
-		return body
-	}
-	if protocolFamily != "anthropic_messages" {
-		return body
-	}
-	if len(body) == 0 {
+// maybeInjectAnthropicBreakpoints 不改客户端自带控制字段；任何规划、设置或序列化失败
+// 都回退原始 body，缓存优化不得阻断实时请求。
+func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(ctx context.Context, protocolFamily string, body []byte) []byte {
+	if d == nil || !d.AnthropicAutoBreakpoints || protocolFamily != "anthropic_messages" || len(body) == 0 {
 		return body
 	}
 	// 客户端已自带 cache_control:body 原样保留。
@@ -353,7 +338,16 @@ func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(protocolFamily stri
 	if err != nil || len(suggestion.Add) == 0 {
 		return body
 	}
-	result, err := ApplyBreakpoints(body, suggestion)
+	apply := ApplyBreakpoints
+	if d.AnthropicTTLSettings != nil {
+		if enabled, readErr := d.AnthropicTTLSettings.AnthropicTTL1hRewriteEnabled(ctx); readErr == nil && enabled {
+			for i := range suggestion.Add {
+				suggestion.Add[i].TTL = "1h"
+			}
+			apply = ApplyBreakpointsWithTTLOrdering
+		}
+	}
+	result, err := apply(body, suggestion)
 	if err != nil || len(result.Applied) == 0 || len(result.Body) == 0 {
 		return body
 	}

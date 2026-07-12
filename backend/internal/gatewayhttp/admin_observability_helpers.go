@@ -45,6 +45,7 @@ func mapUsageRow(r dbbilling.ListUsageRecordsRow) any {
 		"provider_account_id": r.ProviderAccountID, "provider": provider,
 		"attempt_seq": r.AttemptSeq, "tokens_input": r.TokensInput,
 		"tokens_output": r.TokensOutput, "cache_creation_tokens": r.CacheCreationTokens,
+		"cache_creation_5m_tokens": r.CacheCreation5mTokens, "cache_creation_1h_tokens": r.CacheCreation1hTokens,
 		"cache_read_tokens": r.CacheReadTokens, "actual_cost": r.ActualCost,
 		"end_class": r.EndClass, "usage_source": r.UsageSource,
 		"pending_reconciliation": r.PendingReconciliation,

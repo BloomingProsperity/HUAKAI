@@ -118,7 +118,7 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyOAuthProvidersConfig, KeyOAuthProvidersSecrets, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyCodexClientAccessBlacklist, KeyCodexClientAccessWhitelist, KeyCodexClientAccessMinVersion, KeyCodexClientAccessMaxVersion, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessEngineFingerprintSignals, KeyCodexClientAccessForceAllow, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyOAuthProvidersConfig, KeyOAuthProvidersSecrets, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyQuotaProbeEnabled, KeyQuotaProbeIntervalMinutes, KeyCacheAnthropicTTL1hRewrite, KeyCodexClientAccessBlacklist, KeyCodexClientAccessWhitelist, KeyCodexClientAccessMinVersion, KeyCodexClientAccessMaxVersion, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessEngineFingerprintSignals, KeyCodexClientAccessForceAllow, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:            "false",
 		KeyInvitationRequired:             "true",
@@ -161,7 +161,7 @@ var (
 		KeyMediaTaskProviderBaseURL:       "",
 		KeyMediaTaskPollIntervalSecs:      "5",
 		KeyMediaTaskTimeoutSecs:           "900",
-		KeyMediaTaskDefaultEstimatedCents: `{"image_generation":100,"video_generation":1000}`,
+		KeyMediaTaskDefaultEstimatedCents: `{"image_generation":100,"music_generation":300,"video_generation":1000}`,
 		KeyModerationExternalEnabled:      "false",
 		KeyModerationExternalBaseURL:      "",
 		KeyModerationExternalAPIKeys:      "[]",
@@ -171,6 +171,9 @@ var (
 		KeyModerationExternalRetryCount:   "2",
 		KeyModerationExternalImageEnabled: "false",
 		KeyWarmupInterceptEnabled:         "false",
+		KeyQuotaProbeEnabled:              "true",
+		KeyQuotaProbeIntervalMinutes:      "30",
+		KeyCacheAnthropicTTL1hRewrite:     "false",
 		KeySiteName:                       "HUAKAI",
 		KeySiteLogo:                       "",
 		KeySiteFooter:                     "",
@@ -181,8 +184,7 @@ var (
 		KeySiteAPIBaseURL:                 "",
 		KeySiteFrontendBaseURL:            "",
 		KeyAdminNotificationEmail:         "",
-		// codex-cli 全局加固层默认:名单/信号空、版本无界、force 关;app-server 默认 false(放松旋钮,
-		// 若默认 true 会放行任意客户端使 codex_cli_only 形同虚设;false 时空策略 = 仅官方客户端放行)。
+		// codex-cli 全局加固层默认：名单与信号为空、版本无界，force 和 app-server 均关闭。
 		KeyCodexClientAccessBlacklist:                "[]",
 		KeyCodexClientAccessWhitelist:                "[]",
 		KeyCodexClientAccessMinVersion:               "",
@@ -264,6 +266,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyMediaTaskDefaultEstimatedCents {
 		return validateMediaTaskDefaultEstimatedCentsValue(key, value)
 	}
+	if key == KeyQuotaProbeIntervalMinutes {
+		return validateQuotaProbeIntervalMinutes(key, value)
+	}
 	if key == KeyModelFallbackChains {
 		return validateModelFallbackChainsValue(key, value)
 	}
@@ -286,7 +291,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailAliasRestrictionEnabled, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessForceAllow:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailAliasRestrictionEnabled, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyQuotaProbeEnabled, KeyCacheAnthropicTTL1hRewrite, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessForceAllow:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs:
 		return validatePositiveIntValue(key, value)
@@ -333,7 +338,7 @@ func validateOptionalPublicTextValue(key SettingKey, value string) (string, erro
 // 非空时按 Telegram 真实命名约束硬化:仅 ASCII 字母/数字/下划线、长度 5–32、且必须以 "bot"
 // 结尾(大小写不敏感,这是 Telegram bot 账户的强制规则)。这层硬化既挡配置笔误,又确保该值
 // 后续被前端注入 data-telegram-login 属性时不可能携带引号/尖括号等可破坏 HTML 属性的字符
-// (纵深防御 XSS)。借鉴项目 new-api 不做任何校验、原样存。
+// (纵深防御 XSS)。
 func validateTelegramBotUsernameValue(key SettingKey, value string) (string, error) {
 	if value == "" {
 		return "", nil

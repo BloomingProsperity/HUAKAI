@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -688,12 +689,22 @@ func anthropicDispatchInput(body string) DispatchInput {
 	}
 }
 
+type anthropicTTLSettingsStub struct {
+	enabled bool
+	err     error
+}
+
+func (s anthropicTTLSettingsStub) AnthropicTTL1hRewriteEnabled(context.Context) (bool, error) {
+	return s.enabled, s.err
+}
+
 // (1) opt-in 开 + 客户端未发 cache_control → 出站 body 被注入。
 func TestDispatcher_AnthropicAutoBreakpoints_InjectsWhenAbsent(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
 	adapter := &stubAdapter{platform: "anthropic"}
 	d := newDispatcherForTest(adapter, doer)
 	d.AnthropicAutoBreakpoints = true
+	d.AnthropicTTLSettings = anthropicTTLSettingsStub{enabled: true}
 
 	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
 		`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
@@ -711,6 +722,14 @@ func TestDispatcher_AnthropicAutoBreakpoints_InjectsWhenAbsent(t *testing.T) {
 	if snap.Count < 1 {
 		t.Fatalf("expected >=1 cache_control breakpoint, got %d", snap.Count)
 	}
+	for _, loc := range snap.Locations {
+		if loc.TTL != "1h" {
+			t.Fatalf("自动断点 ttl=%q，期望显式 1h；snapshot=%+v", loc.TTL, snap)
+		}
+	}
+	if err := ValidateTTLOrdering(snap); err != nil {
+		t.Fatalf("1h 自动断点 TTL 排序无效: %v", err)
+	}
 }
 
 // (2) opt-in 开 + 客户端已带 cache_control → 出站 body 与 inbound body
@@ -720,6 +739,7 @@ func TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas(t *testing.T) {
 	adapter := &stubAdapter{platform: "anthropic"}
 	d := newDispatcherForTest(adapter, doer)
 	d.AnthropicAutoBreakpoints = true
+	d.AnthropicTTLSettings = anthropicTTLSettingsStub{enabled: true}
 
 	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
 		`"messages":[{"role":"user","content":[{"type":"text","text":"hi",` +
@@ -740,13 +760,73 @@ func TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas(t *testing.T) {
 	}
 }
 
+// 运行时设置关闭必须与未接入该设置时产生完全相同的自动注入字节，避免默认行为漂移。
+func TestDispatcher_AnthropicAutoBreakpoints_TTLSettingOffMatchesLegacyBytes(t *testing.T) {
+	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
+
+	legacyAdapter := &stubAdapter{platform: "anthropic"}
+	legacy := newDispatcherForTest(legacyAdapter, &stubDoer{respStatus: 200, respBody: "data: ok\n\n"})
+	legacy.AnthropicAutoBreakpoints = true
+	if _, err := legacy.Dispatch(context.Background(), anthropicDispatchInput(body)); err != nil {
+		t.Fatal(err)
+	}
+
+	offAdapter := &stubAdapter{platform: "anthropic"}
+	off := newDispatcherForTest(offAdapter, &stubDoer{respStatus: 200, respBody: "data: ok\n\n"})
+	off.AnthropicAutoBreakpoints = true
+	off.AnthropicTTLSettings = anthropicTTLSettingsStub{enabled: false}
+	if _, err := off.Dispatch(context.Background(), anthropicDispatchInput(body)); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyBody := string(legacyAdapter.lastInput.InboundBody)
+	offBody := string(offAdapter.lastInput.InboundBody)
+	if offBody != legacyBody {
+		t.Fatalf("设置关闭改变了既有自动注入字节\nlegacy=%s\noff=%s", legacyBody, offBody)
+	}
+	snap, err := InspectCacheControl(offAdapter.lastInput.InboundBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, loc := range snap.Locations {
+		if loc.TTL != "" {
+			t.Fatalf("设置关闭仍写入 ttl=%q；snapshot=%+v", loc.TTL, snap)
+		}
+	}
+}
+
+func TestDispatcher_AnthropicAutoBreakpoints_TTLSettingErrorFallsBackToLegacyBytes(t *testing.T) {
+	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
+
+	legacyAdapter := &stubAdapter{platform: "anthropic"}
+	legacy := newDispatcherForTest(legacyAdapter, &stubDoer{respStatus: 200, respBody: "data: ok\n\n"})
+	legacy.AnthropicAutoBreakpoints = true
+	if _, err := legacy.Dispatch(context.Background(), anthropicDispatchInput(body)); err != nil {
+		t.Fatal(err)
+	}
+
+	errorAdapter := &stubAdapter{platform: "anthropic"}
+	withError := newDispatcherForTest(errorAdapter, &stubDoer{respStatus: 200, respBody: "data: ok\n\n"})
+	withError.AnthropicAutoBreakpoints = true
+	withError.AnthropicTTLSettings = anthropicTTLSettingsStub{enabled: true, err: errors.New("设置暂不可用")}
+	if _, err := withError.Dispatch(context.Background(), anthropicDispatchInput(body)); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(errorAdapter.lastInput.InboundBody, legacyAdapter.lastInput.InboundBody) {
+		t.Fatalf("设置读取失败未回退既有 5m 字节\nlegacy=%s\nerror=%s", legacyAdapter.lastInput.InboundBody, errorAdapter.lastInput.InboundBody)
+	}
+}
+
 // (3) opt-in 关 → planner 从不运行,即便没有客户端 cache_control,
 // body 也原样穿过。
 func TestDispatcher_AnthropicAutoBreakpoints_DisabledNeverInjects(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "data: ok\n\n"}
 	adapter := &stubAdapter{platform: "anthropic"}
 	d := newDispatcherForTest(adapter, doer)
-	// AnthropicAutoBreakpoints 保持零值(false)。
+	// 运行时 TTL 开关不能越过 env 总开关。
+	d.AnthropicTTLSettings = anthropicTTLSettingsStub{enabled: true}
 
 	body := `{"model":"claude-opus-4-5","system":[{"type":"text","text":"sys"}],` +
 		`"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
@@ -765,6 +845,7 @@ func TestDispatcher_AnthropicAutoBreakpoints_OnlyAnthropicFamily(t *testing.T) {
 	adapter := &stubAdapter{platform: "openai"}
 	d := newDispatcherForTest(adapter, doer)
 	d.AnthropicAutoBreakpoints = true
+	d.AnthropicTTLSettings = anthropicTTLSettingsStub{enabled: true}
 
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`
 	in := anthropicDispatchInput(body)

@@ -16,7 +16,8 @@ SELECT
     ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
     ale.hop_chain AS audit_hop_chain,
     ale.model_chain AS audit_model_chain,
-    ur.ip_address, ur.user_agent, ur.client_tool
+    ur.ip_address, ur.user_agent, ur.client_tool,
+    ur.cache_creation_5m_tokens, ur.cache_creation_1h_tokens
 FROM usage_records ur
 JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
 LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
@@ -54,6 +55,20 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
   AND (sqlc.arg(has_cursor)::boolean = false OR (ur.settled_at, ur.id) < (sqlc.arg(cursor_created_at)::timestamptz, sqlc.arg(cursor_id)::bigint))
 ORDER BY ur.settled_at DESC, ur.id DESC
 LIMIT sqlc.arg(page_limit)::integer;
+
+-- name: ListProviderAccountRecentRequests :many
+-- 账号健康诊断只读取请求结果与时延信号，刻意不选择 actual_cost 等钱字段。
+-- tenant_id 与 provider_account_id 同时下推，避免仅靠处理器作用域保护租户边界。
+SELECT
+    ur.id, ur.requested_at, ur.settled_at, ur.requested_model,
+    ur.upstream_model, ur.end_class, ur.stream, ur.tokens_input,
+    ur.tokens_output, ur.cache_read_tokens, ur.first_byte_at,
+    ur.upstream_request_at, ur.attempt_seq
+FROM usage_records ur
+WHERE ur.provider_account_id = sqlc.arg(provider_account_id)::bigint
+  AND ur.tenant_id = sqlc.arg(tenant_id)::bigint
+ORDER BY ur.settled_at DESC, ur.id DESC
+LIMIT sqlc.arg(row_limit)::integer;
 
 -- name: ListUsageRecordsWithNames :many
 -- Sibling of ListUsageRecords with display names joined for admin/operator UI.

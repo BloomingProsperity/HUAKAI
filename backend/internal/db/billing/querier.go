@@ -196,6 +196,9 @@ type Querier interface {
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
+	// 账号健康诊断只读取请求结果与时延信号，刻意不选择 actual_cost 等钱字段。
+	// tenant_id 与 provider_account_id 同时下推，避免仅靠处理器作用域保护租户边界。
+	ListProviderAccountRecentRequests(ctx context.Context, arg ListProviderAccountRecentRequestsParams) ([]ListProviderAccountRecentRequestsRow, error)
 	ListStaleNonTerminalSettlementIntents(ctx context.Context, arg ListStaleNonTerminalSettlementIntentsParams) ([]ListStaleNonTerminalSettlementIntentsRow, error)
 	// F-OBS-001 read-only query surface for the admin/audit lane.
 	// This file contains SELECT-only queries; the Repository wrapper enforces tenant
