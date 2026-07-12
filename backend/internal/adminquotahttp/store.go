@@ -15,28 +15,29 @@ import (
 const (
 	auditTargetType = "quota_policy"
 
-	// Postgres SQLSTATE codes surfaced by the live-policy unique index and the
-	// quota_windows FK ON DELETE RESTRICT, normalized to 409 by the handlers.
+	// 由 live-policy 唯一索引以及 quota_windows 的 FK ON DELETE RESTRICT 抛出的
+	// Postgres SQLSTATE 码,handler 会将其归一化为 409。不同约束动作可能分别
+	// 返回 foreign_key_violation 或 restrict_violation。
 	pgUniqueViolation     = "23505"
 	pgForeignKeyViolation = "23503"
+	pgRestrictViolation   = "23001"
 
 	liveScopeMetricIndex = "uq_quota_policies_live_scope_metric"
 )
 
 var (
-	// errQuotaPolicyConflict marks a duplicate live (scope+metric+window+priority)
-	// policy raised by the partial unique index.
+	// errQuotaPolicyConflict 标记由部分唯一索引抛出的、重复的 live
+	//(scope+metric+window+priority)策略。
 	errQuotaPolicyConflict = errors.New("quota policy conflicts with an existing live policy")
-	// errQuotaPolicyInUse marks a delete blocked by a referencing quota_windows
-	// row (FK ON DELETE RESTRICT).
+	// errQuotaPolicyInUse 标记因被某个引用它的 quota_windows 行
+	//(FK ON DELETE RESTRICT)挡住而失败的删除。
 	errQuotaPolicyInUse = errors.New("quota policy has live windows and cannot be deleted")
-	// errQuotaStorePoolUnset is returned when the adapter has no tx pool.
+	// errQuotaStorePoolUnset 在 adapter 没有事务连接池时返回。
 	errQuotaStorePoolUnset = errors.New("quota policy transaction pool unset")
 )
 
-// quotaPolicyCreateParams is the neutral create input the handler hands the
-// store. It maps 1:1 onto dbquota.InsertQuotaPolicyParams except tenant scoping
-// is fixed by the resolved identity.
+// quotaPolicyCreateParams 是 handler 交给 store 的中立 create 输入。它与
+// dbquota.InsertQuotaPolicyParams 一一对应,只是租户作用域由已解析的身份固定。
 type quotaPolicyCreateParams struct {
 	insert dbquota.InsertQuotaPolicyParams
 }
@@ -50,9 +51,8 @@ type quotaPolicyDeleteParams struct {
 	ID       int64
 }
 
-// auditInput carries the admin_audit_events fields known before the row id is
-// assigned; the adapter sets TargetID from the persisted policy id inside the
-// transaction so the audit trail is atomic with the mutation.
+// auditInput 携带在行 id 分配之前就已知的 admin_audit_events 字段;adapter
+// 在事务内部用持久化后的 policy id 设置 TargetID,使审计轨迹与变更操作原子一致。
 type auditInput struct {
 	TenantID  int64
 	ActorID   string
@@ -79,18 +79,17 @@ func (a auditInput) toParams(targetID int64) admindb.InsertAdminAuditEventParams
 	}
 }
 
-// quotaPolicyStoreAdapter holds the *pgxpool.Pool and runs each mutation inside
-// a single pgx.BeginFunc tx that writes the quota_policies row AND the
-// admin_audit_events row atomically. Reads go straight to a pool-bound
-// dbquota.Queries. The quota sqlc package has no admindb dependency, but both
-// dbquota.New(tx) and admindb.New(tx) accept the same pgx.Tx (DBTX), so they
-// compose cleanly in one transaction.
+// quotaPolicyStoreAdapter 持有 *pgxpool.Pool,并在单个 pgx.BeginFunc 事务里
+// 运行每次变更,原子地写入 quota_policies 行和 admin_audit_events 行。读取直接
+// 走绑定到连接池的 dbquota.Queries。quota 的 sqlc 包不依赖 admindb,但
+// dbquota.New(tx) 与 admindb.New(tx) 接受同一个 pgx.Tx(DBTX),所以二者可以
+// 干净地组合进同一个事务。
 type quotaPolicyStoreAdapter struct {
 	reads *dbquota.Queries
 	pool  *pgxpool.Pool
 }
 
-// NewQuotaPolicyStoreAdapter wires the pool into the quota-policy admin store.
+// NewQuotaPolicyStoreAdapter 把连接池接入 quota-policy 的 admin store。
 func NewQuotaPolicyStoreAdapter(pool *pgxpool.Pool) quotaPolicyStore {
 	if pool == nil {
 		return nil
@@ -171,11 +170,10 @@ func (s quotaPolicyStoreAdapter) DeleteQuotaPolicyWithAudit(ctx context.Context,
 	return deletedID, err
 }
 
-// normalizeQuotaPolicyDBError maps Postgres constraint failures to the package
-// sentinels the handler translates to 409, mirroring the channel-catalog
-// 23505->409 normalization. The live-policy unique index becomes
-// quota_policy_conflict; the quota_windows FK RESTRICT (23503) becomes
-// quota_policy_in_use.
+// normalizeQuotaPolicyDBError 把 Postgres 约束失败映射到本包的哨兵错误,handler
+// 再把它们翻译成 409,与 channel-catalog 的 23505->409 归一化方式一致。live-policy
+// 唯一索引变成 quota_policy_conflict;quota_windows 的 FK RESTRICT 约束失败变成
+// quota_policy_in_use。
 func normalizeQuotaPolicyDBError(err error) error {
 	if err == nil {
 		return nil
@@ -187,7 +185,7 @@ func normalizeQuotaPolicyDBError(err error) error {
 			if pgErr.ConstraintName == liveScopeMetricIndex {
 				return errQuotaPolicyConflict
 			}
-		case pgForeignKeyViolation:
+		case pgForeignKeyViolation, pgRestrictViolation:
 			return errQuotaPolicyInUse
 		}
 	}

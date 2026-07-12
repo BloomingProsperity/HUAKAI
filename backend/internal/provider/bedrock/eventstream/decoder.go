@@ -13,7 +13,7 @@
 //   │   headers_length  uint32   headers 段字节数                   │
 //   │   prelude_crc     uint32   CRC32(IEEE) of 前 8 byte           │
 //   ├──────────────────────────────────────────────────────────────┤
-//   │ Headers (headers_length bytes)                               │
+//   │ Headers (headers_length 字节)                                 │
 //   │   每条 = name_len(uint8) + name(utf8) + value_type(uint8)    │
 //   │           + value(type-specific)                             │
 //   ├──────────────────────────────────────────────────────────────┤
@@ -328,8 +328,8 @@ func (d *Decoder) effectiveLimits() Limits {
 	return l
 }
 
-// Source files read:
-//   - https://docs.aws.amazon.com/transcribe/latest/dg/event-stream.html (event stream wire format public spec)
-//   - https://docs.aws.amazon.com/AmazonS3/latest/API/RESTSelectObjectAppendix.html#api-eventstream-format (header value types)
-// Lane: claude
-// Time: 2026-05-07T<UTC>
+// 参阅的资料来源:
+//   - https://docs.aws.amazon.com/transcribe/latest/dg/event-stream.html (event stream wire format 公开规范)
+//   - https://docs.aws.amazon.com/AmazonS3/latest/API/RESTSelectObjectAppendix.html#api-eventstream-format (header value 类型)
+// 通道: claude
+// 时间: 2026-05-07T<UTC>

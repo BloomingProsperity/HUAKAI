@@ -34,9 +34,11 @@ func (s authStub) Resolve(context.Context, *http.Request) (auth.Identity, error)
 type usageStoreStub struct {
 	rows    []dbbilling.ListUsageRecordsRow
 	listArg dbbilling.ListUsageRecordsParams
+	calls   int
 }
 
 func (s *usageStoreStub) ListUsageRecords(_ context.Context, arg dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
+	s.calls++
 	s.listArg = arg
 	rows := s.filter(arg.TenantID, arg.APIKeyID, arg.FromTs, arg.ToTs)
 	if arg.HasCursor {
@@ -95,10 +97,9 @@ func (s *generationStoreStub) GetUsageRecordByRequestID(_ context.Context, arg d
 	return dbbilling.GetUsageRecordByRequestIDRow{}, pgx.ErrNoRows
 }
 
-// TestGenerationLookupScopesToAuthenticatedUserByRequestID guards the
-// OpenRouter-compatible single-request attribution path. Mutation check:
-// remove the SQL user_id predicate and the R_B lookup can return user B's row
-// to user A; this test's A-vs-B fixture must stay discriminating.
+// TestGenerationLookupScopesToAuthenticatedUserByRequestID 守护
+// OpenRouter 兼容的单请求归属路径。变异:移除 SQL user_id 谓词后,
+// R_B 查询可能把用户 B 的行返给用户 A;本测试的 A-vs-B fixture 必须保持区分度。
 func TestGenerationLookupScopesToAuthenticatedUserByRequestID(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	userB := auth.Identity{TenantID: 7, APIKeyID: 31, UserID: 41}
@@ -148,7 +149,7 @@ func TestGenerationLookupScopesToAuthenticatedUserByRequestID(t *testing.T) {
 }
 
 func TestGenerationLookupScopesToAuthenticatedAPIKey(t *testing.T) {
-	// 同一 tenant/user 的不同 key 不能互查 generation。Mutation: store/SQL 只按
+	// 同一 tenant/user 的不同 key 不能互查 generation。变异:store/SQL 只按
 	// tenant+user+request_id 查，这个 key-B fixture 会 200 泄漏 ledger-b。
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	rowB := generationUsageRow(2, userA.TenantID, 31, userA.UserID, "R_KEY_B", "ledger-b", "openai")
@@ -240,6 +241,99 @@ func TestMeUsageScopesToAuthenticatedAPIKeyAndKeepsTrustFields(t *testing.T) {
 	}
 }
 
+// TestMeUsageFilterParamsPassThrough 守护 model/provider/status 从查询参数到
+// 数据库查询参数的完整接线。变异:漏传任一字段会留下 nil 或错误值并使断言变红。
+func TestMeUsageFilterParamsPassThrough(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage?model=gpt-4&status=error&provider=openai")
+
+	assertMeStatus(t, rec, http.StatusOK)
+	if store.calls != 1 {
+		t.Fatalf("用量 Store 调用次数=%d,期望 1", store.calls)
+	}
+	if got := store.listArg.Model; got == nil || *got != "gpt-4" {
+		t.Fatalf("Model=%v,期望非 nil 且值为 gpt-4", got)
+	}
+	if got := store.listArg.Provider; got == nil || *got != "openai" {
+		t.Fatalf("Provider=%v,期望非 nil 且值为 openai", got)
+	}
+	if got := store.listArg.Outcome; got == nil || *got != "error" {
+		t.Fatalf("Outcome=%v,期望非 nil 且值为 error", got)
+	}
+}
+
+// TestMeUsageStatusSuccessMapsOutcome 守护 success 状态映射。
+// 变异:删除或改错映射后,Outcome 会是 nil 或非 success,断言随即变红。
+func TestMeUsageStatusSuccessMapsOutcome(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage?status=success")
+
+	assertMeStatus(t, rec, http.StatusOK)
+	if store.calls != 1 {
+		t.Fatalf("用量 Store 调用次数=%d,期望 1", store.calls)
+	}
+	if got := store.listArg.Outcome; got == nil || *got != "success" {
+		t.Fatalf("Outcome=%v,期望非 nil 且值为 success", got)
+	}
+}
+
+// TestMeUsageRejectsInvalidStatus 守护非法状态在查询 Store 前被拒绝。
+// 变异:静默忽略非法状态会返回 200 并调用 Store,状态与调用次数断言都会变红。
+func TestMeUsageRejectsInvalidStatus(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage?status=foo")
+
+	assertMeStatus(t, rec, http.StatusBadRequest)
+	assertMeErrorCode(t, rec, "invalid_status")
+	if store.calls != 0 {
+		t.Fatalf("非法状态不应调用用量 Store,实际调用次数=%d", store.calls)
+	}
+}
+
+// TestMeUsageNoFiltersLeavesParamsNil 守护无过滤条件时的缺省语义。
+// 变异:误设任一过滤字段会使对应的 nil 断言变红。
+func TestMeUsageNoFiltersLeavesParamsNil(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage")
+
+	assertMeStatus(t, rec, http.StatusOK)
+	if store.calls != 1 {
+		t.Fatalf("用量 Store 调用次数=%d,期望 1", store.calls)
+	}
+	if store.listArg.Model != nil || store.listArg.Provider != nil || store.listArg.Outcome != nil {
+		t.Fatalf("无过滤条件时过滤参数必须全为 nil,实际 Model=%v Provider=%v Outcome=%v",
+			store.listArg.Model, store.listArg.Provider, store.listArg.Outcome)
+	}
+}
+
+// TestMeUsageRejectsOverlongModel 守护 model 的 200 字符上限。
+// 变异:移除长度校验会返回 200 并调用 Store,状态与调用次数断言都会变红。
+func TestMeUsageRejectsOverlongModel(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	store := &usageStoreStub{}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage?model="+strings.Repeat("a", 201))
+
+	assertMeStatus(t, rec, http.StatusBadRequest)
+	assertMeErrorCode(t, rec, "invalid_model")
+	if store.calls != 0 {
+		t.Fatalf("超长 model 不应调用用量 Store,实际调用次数=%d", store.calls)
+	}
+}
+
 func TestMeUsagePaginatesWithEndpointSpecificCursor(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	store := &usageStoreStub{rows: []dbbilling.ListUsageRecordsRow{
@@ -286,11 +380,10 @@ func TestMeUsageAuthErrorsMatchInboundAPIKeyPath(t *testing.T) {
 	}
 }
 
-// TestMeUsageExposesPerRequestTokenCounts is the discriminating test for the
-// "relay request log" residual. usage_records already stores token counts and
-// ListUsageRecords already SELECTs them, but the DTO dropped them. Mutation:
-// remove the Tokens mapping (or the DTO field) -> item["tokens"] is absent ->
-// this test goes red.
+// TestMeUsageExposesPerRequestTokenCounts 是 "relay 请求日志" 残留缺口的
+// 区分性测试。usage_records 已存储 token 计数,ListUsageRecords 也已 SELECT 它们,
+// 但 DTO 把它们丢弃了。变异:移除 Tokens 映射(或 DTO 字段)后,
+// item["tokens"] 缺失 -> 本测试变红。
 func TestMeUsageExposesPerRequestTokenCounts(t *testing.T) {
 	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
@@ -321,6 +414,118 @@ func TestMeUsageExposesPerRequestTokenCounts(t *testing.T) {
 	}
 }
 
+// TestMeUsageExposesStreamShapeAndTiming —— 自助用量记录的请求形态/时序残留缺口。
+// usage_records 已存储 stream / stream_terminated_reason / requested_at,
+// ListUsageRecords 也已 SELECT 它们;但 DTO 把它们丢弃了。
+// 这些是调用方自己的请求属性(且已在 admin 视图中),
+// 而非 ip/user_agent 这类第三方 PII。变异:丢掉这三个投影中任一个
+// (或 DTO 字段)-> stream 读出 false / 那些 omitempty 字符串键缺失 -> 变红。
+func TestMeUsageExposesStreamShapeAndTiming(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
+	row.Stream = true
+	row.StreamTerminatedReason = strPtr("client_disconnect")
+	row.RequestedAt = pgtype.Timestamptz{Time: time.Date(2026, 5, 14, 9, 30, 0, 0, time.UTC), Valid: true}
+	store := &usageStoreStub{rows: []dbbilling.ListUsageRecordsRow{row}}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage")
+	assertMeStatus(t, rec, http.StatusOK)
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 1 {
+		t.Fatalf("decode/len body=%s err=%v", rec.Body.String(), err)
+	}
+	item := body.Items[0]
+	if item["stream"] != true {
+		t.Fatalf("stream=%v want true (projection dropped?); body=%s", item["stream"], rec.Body.String())
+	}
+	if item["stream_terminated_reason"] != "client_disconnect" {
+		t.Fatalf("stream_terminated_reason=%v want client_disconnect; body=%s", item["stream_terminated_reason"], rec.Body.String())
+	}
+	if item["requested_at"] != "2026-05-14T09:30:00Z" {
+		t.Fatalf("requested_at=%v want 2026-05-14T09:30:00Z; body=%s", item["requested_at"], rec.Body.String())
+	}
+}
+
+// TestGenerationExposesStreamShapeAndTiming 守护 /v1/generation 对
+// stream/stream_terminated_reason/requested_at 的投影。mapGenerationUsageRecord
+// 把它们从 GetUsageRecordByRequestIDRow 接出;list 路径的测试不会走到本路径。
+// 变异:把 gen 路径的接线行清零 -> 单条记录响应丢失这些字段
+// (stream 读出 false,那些 omitempty 键缺失)-> 本测试变红。
+func TestGenerationExposesStreamShapeAndTiming(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	row := generationUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "R_A", "ledger-a", "anthropic")
+	row.Stream = true
+	row.StreamTerminatedReason = strPtr("upstream_eof")
+	row.RequestedAt = pgtype.Timestamptz{Time: time.Date(2026, 5, 14, 9, 30, 0, 0, time.UTC), Valid: true}
+	store := &generationStoreStub{rows: []dbbilling.GetUsageRecordByRequestIDRow{row}}
+	h := NewGenerationHandler(GenerationDeps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeGeneration(h, "/v1/generation?id=R_A")
+	assertMeStatus(t, rec, http.StatusOK)
+	var item map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &item); err != nil {
+		t.Fatalf("decode generation response: %v body=%s", err, rec.Body.String())
+	}
+	if item["stream"] != true {
+		t.Fatalf("stream=%v want true (gen-path projection dropped?); body=%s", item["stream"], rec.Body.String())
+	}
+	if item["stream_terminated_reason"] != "upstream_eof" {
+		t.Fatalf("stream_terminated_reason=%v want upstream_eof; body=%s", item["stream_terminated_reason"], rec.Body.String())
+	}
+	if item["requested_at"] != "2026-05-14T09:30:00Z" {
+		t.Fatalf("requested_at=%v want 2026-05-14T09:30:00Z; body=%s", item["requested_at"], rec.Body.String())
+	}
+}
+
+// TestMeUsageDoesNotLeakClientIPOrUserAgent —— PII 边界守卫。
+//
+// 共享的 ListUsageRecordsRow 现在带有 ip_address/user_agent(作为审计闭环
+// 投影进 ADMIN 可观测列表)。面向用户的 "me" 用量 mapper 绝不能暴露这些:
+// relay 调用方不应看到 settlement 时捕获的客户端 IP/UA。本测试在行上播种
+// 独特的 sentinel,并断言 sentinel 本身以及任何 ip/ua JSON 键都不会出现在
+// me 响应 body 中。
+//
+// 区分度:这些 sentinel("203.0.113.7" / "probe-UA/1.0")绝不会出现在合法的
+// me payload(model/cost/tokens/provider/verify_hint)里,因此一旦 me mapper
+// 把任一字段透传出去,子串断言就会变红。
+// (已通过把该字段加进 usageRecord + mapUsageRecord 做变异验证。)
+func TestMeUsageDoesNotLeakClientIPOrUserAgent(t *testing.T) {
+	userA := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
+	row := meUsageRow(1, userA.TenantID, userA.APIKeyID, userA.UserID, "claude-opus-4", "claude-opus-4-20260514", "ledger-a", "anthropic")
+	const sentinelIP = "203.0.113.7"
+	const sentinelUA = "probe-UA/1.0"
+	const sentinelTool = "cc_tool_sentinel"
+	row.IPAddress = strPtr(sentinelIP)
+	row.UserAgent = strPtr(sentinelUA)
+	row.ClientTool = strPtr(sentinelTool)
+	store := &usageStoreStub{rows: []dbbilling.ListUsageRecordsRow{row}}
+	h := NewHandler(Deps{Auth: authStub{identity: userA}, Store: store})
+
+	rec := invokeMeUsage(h, "/v1/me/usage")
+	assertMeStatus(t, rec, http.StatusOK)
+	body := rec.Body.String()
+	if strings.Contains(body, sentinelIP) {
+		t.Fatalf("PII LEAK: me usage response exposed client ip %q; body=%s", sentinelIP, body)
+	}
+	if strings.Contains(body, sentinelUA) {
+		t.Fatalf("PII LEAK: me usage response exposed user agent %q; body=%s", sentinelUA, body)
+	}
+	if strings.Contains(body, "ip_address") || strings.Contains(body, "user_agent") {
+		t.Fatalf("PII LEAK: me usage response exposed an ip/ua JSON key; body=%s", body)
+	}
+	// client_tool(迁移 0137)同样是 admin-only 归属:me mapper 的形态保持冻结,
+	// 因此其值与键都不得出现在这里。若日后改动把 client_tool 加进 me 面,
+	// 本断言会把它标出来供复查。
+	if strings.Contains(body, sentinelTool) || strings.Contains(body, "client_tool") {
+		t.Fatalf("BOUNDARY DRIFT: me usage response exposed client_tool; body=%s", body)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
 func invokeMeUsage(h http.HandlerFunc, target string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, target, strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -339,6 +544,21 @@ func assertMeStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != want {
 		t.Fatalf("status=%d want=%d body=%s", rec.Code, want, rec.Body.String())
+	}
+}
+
+func assertMeErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("解析错误响应失败: %v body=%s", err, rec.Body.String())
+	}
+	if body.Error.Code != want {
+		t.Fatalf("错误码=%q,期望 %q body=%s", body.Error.Code, want, rec.Body.String())
 	}
 }
 
@@ -408,5 +628,24 @@ func generationUsageRow(id, tenantID, apiKeyID, userID int64, requestID, ledgerI
 		RequestID:             requestID,
 		AuditLedgerID:         &ledgerID,
 		PendingReconciliation: false,
+	}
+}
+
+func TestComputeLatencyMS(t *testing.T) {
+	req := pgtype.Timestamptz{Time: time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC), Valid: true}
+	settled := pgtype.Timestamptz{Time: time.Date(2026, 7, 12, 10, 0, 1, 500*1e6, time.UTC), Valid: true} // +1.5s
+	if got := computeLatencyMS(req, settled); got == nil || *got != 1500 {
+		t.Fatalf("latency=%v want 1500ms", got)
+	}
+	// 缺时间 → nil(不伪造 0)
+	if computeLatencyMS(pgtype.Timestamptz{}, settled) != nil {
+		t.Fatal("requested 缺失应返回 nil")
+	}
+	if computeLatencyMS(req, pgtype.Timestamptz{}) != nil {
+		t.Fatal("settled 缺失应返回 nil")
+	}
+	// 结算早于请求(异常)→ nil(变异:若不判负会返回负延迟)
+	if computeLatencyMS(settled, req) != nil {
+		t.Fatal("负延迟应返回 nil")
 	}
 }

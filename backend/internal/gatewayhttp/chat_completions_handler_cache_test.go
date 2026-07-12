@@ -246,7 +246,7 @@ func TestChatCompletionsFallbackSuccessDoesNotPoisonPrimaryModelCacheKey(t *test
 }
 
 func TestChatCompletionsL2CacheHitRejectsMissingAuditRefBeforeCommit(t *testing.T) {
-	// Mutation: 删除 CommitCacheHit 前的 validator 时，第二次 cache hit 会写 cache-hit commit，导致 commit calls 变成 1。
+	// 变异: 删除 CommitCacheHit 前的 validator 时，第二次 cache hit 会写 cache-hit commit，导致 commit calls 变成 1。
 	enableHCSFDispatchForTest(t)
 	store := l2cache.NewMemoryStore(1<<20, time.Minute)
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
@@ -281,7 +281,7 @@ func TestChatCompletionsL2CacheHitRejectsMissingAuditRefBeforeCommit(t *testing.
 }
 
 func TestChatCompletionsL2CacheHitAllowsDLQRefBeforeCommit(t *testing.T) {
-	// Mutation: 删除 Deferred ledger result 到 cache-hit audit event DLQRef 的映射时，第二次 cache hit 会被拒绝且 commit calls 保持 0。
+	// 变异: 删除 Deferred ledger result 到 cache-hit audit event DLQRef 的映射时，第二次 cache hit 会被拒绝且 commit calls 保持 0。
 	enableHCSFDispatchForTest(t)
 	store := l2cache.NewMemoryStore(1<<20, time.Minute)
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
@@ -340,7 +340,7 @@ type replayClaimGate struct {
 }
 
 func (g replayClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
-	return &billing.ReserveResult{ClaimID: g.claimID, IdempotencyHit: g.hit}, nil
+	return &billing.ReserveResult{ClaimID: g.claimID, AttemptSeq: 1, IdempotencyHit: g.hit}, nil
 }
 
 func invokeWithIdempotencyKey(t *testing.T, deps ChatHandlerDeps, body, idemKey string) *httptest.ResponseRecorder {
@@ -451,7 +451,7 @@ func (s *tamperL2Store) Get(ctx context.Context, key string) (l2cache.Entry, boo
 
 // 守 缓存-P0a(纵深防御): 即使 Get 取到一条 TenantID 与请求租户不符的缓存条目(key 被弱化/
 // 污染), 也必须**拒绝 serve**, 走正常上游, 绝不把别租户的响应交付出去。
-// Mutation: 去掉 serveL2CacheIfAvailable 里的 cached.TenantID!=ident.TenantID 断言 -> 毒化条目
+// 变异: 去掉 serveL2CacheIfAvailable 里的 cached.TenantID!=ident.TenantID 断言 -> 毒化条目
 // 被 serve -> dispatcher 仅被调 1 次(第二次命中毒化缓存)-> 断言红。
 func TestChatCompletionsL2RejectsTenantMismatchedEntry(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -486,7 +486,7 @@ func TestChatCompletionsL2RejectsTenantMismatchedEntry(t *testing.T) {
 }
 
 // 守 缓存-P0c(principal-scope, 默认 apikey): 同租户不同 api-key 在 apikey scope 下**不共享**缓存
-// (堵死红队中危: reseller 同租户跨用户共享响应/探针)。Mutation: 把 principal 移出 key(退回 tenant)
+// (堵死红队中危: reseller 同租户跨用户共享响应/探针)。变异: 把 principal 移出 key(退回 tenant)
 // -> 第二个 api-key 命中第一个的缓存 -> dispatcher 仅 1 次 -> 红。
 func TestChatCompletionsL2ApikeyScopeIsolatesCrossApiKey(t *testing.T) {
 	enableHCSFDispatchForTest(t)

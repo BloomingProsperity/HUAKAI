@@ -53,8 +53,8 @@ func TestForceFormatSynthesizesChunk(t *testing.T) {
 	if len(got.Choices) != 1 || got.Choices[0].Index != 0 {
 		t.Fatalf("choices/index not synthesized correctly: %+v body=%s", got.Choices, forced)
 	}
-	// MUTATION: if force=true stops synthesizing required keys, object remains
-	// empty or choice index is omitted and this test goes red.
+	// MUTATION：若 force=true 不再合成必填键，object 会留空或 choice index
+	// 被省略，本测试即红。
 }
 
 func TestOpenAIChatClient_HappyPath_Text(t *testing.T) {
@@ -275,32 +275,8 @@ func TestOpenAIChatClient_AssistantToolCallsThenToolResult(t *testing.T) {
 	}
 }
 
-func TestOpenAIChatClient_ImageURLContentPartLoss(t *testing.T) {
-	adapter := &OpenAIChatClient{}
-	body := []byte(`{
-		"model":"gpt-4o",
-		"messages":[{"role":"user","content":[
-			{"type":"text","text":"see this:"},
-			{"type":"image_url","image_url":{"url":"https://x"}}
-		]}]
-	}`)
-	_, losses, err := adapter.RequestToCanonical(newTestOpenAIChatCtx(t), body)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	var foundImg bool
-	for _, l := range losses {
-		if l.Severity == "" {
-			t.Errorf("loss must not be silent: %+v", l)
-		}
-		if strings.Contains(l.Reason, "image_url_d5_pending") {
-			foundImg = true
-		}
-	}
-	if !foundImg {
-		t.Errorf("expected image_url pending loss")
-	}
-}
+// image_url content part 的解析行为(F4 视觉修复后建 CapabilityImage 节点,
+// 不再是 pending loss)见 openai_chat_image_test.go。
 
 func TestOpenAIChatClient_NegativeMissingModel(t *testing.T) {
 	adapter := &OpenAIChatClient{}
@@ -361,7 +337,7 @@ func TestOpenAIChatClient_NegativeMissingSeed(t *testing.T) {
 // D7/D8 测试在下方专属 section；旧 stub-ErrNotImplemented 期望已废弃。
 
 // --------------------------------------------------------------------------
-// D7 / D8 streaming tests
+// D7 / D8 流式测试
 // --------------------------------------------------------------------------
 
 func TestOpenAIChat_D7_RoleDeltaThenTextThenFinishThenDONE(t *testing.T) {
@@ -563,6 +539,30 @@ func makeOpenAIChatBufferedEnv(content []CanonicalContentBlock, stop CanonicalSt
 		Usage:      CanonicalUsage{InputTokens: 9, OutputTokens: 12},
 	}
 	return env
+}
+
+// TestOpenAIChatClient_NonStreamPassthroughMerged 守护 #4: 非流式 OpenAI Chat 响应必须把上游顶层
+// 透传字段(typed struct 未建模, 如 system_fingerprint)合并回客户端响应体。判别性: 删除
+// CanonicalToClientResponse 末尾的 MergeExtrasInto 调用 → 字段丢失 → 本测试转红。
+func TestOpenAIChatClient_NonStreamPassthroughMerged(t *testing.T) {
+	adapter := &OpenAIChatClient{}
+	env := makeOpenAIChatBufferedEnv([]CanonicalContentBlock{{Type: "text", Text: "x"}}, CanonicalStopEndTurn)
+	env.BufferedResponse.Passthrough = &PassthroughEnvelope{Extra: map[string]json.RawMessage{
+		"system_fingerprint": json.RawMessage(`"fp_abc123"`),
+	}}
+	body, _, err := adapter.CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var out map[string]any
+	_ = jsonUnmarshal(body, &out)
+	if out["system_fingerprint"] != "fp_abc123" {
+		t.Fatalf("期望上游 system_fingerprint 被合并进响应, 实际 %v (body=%s)", out["system_fingerprint"], body)
+	}
+	// typed 字段不被透传覆盖(仍是合法 chat.completion 形态)。
+	if out["object"] != "chat.completion" {
+		t.Fatalf("typed object 字段被透传覆盖: %v", out["object"])
+	}
 }
 
 func TestOpenAIChatClient_D6_HappyText(t *testing.T) {

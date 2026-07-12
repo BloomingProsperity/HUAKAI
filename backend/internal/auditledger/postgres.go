@@ -24,7 +24,15 @@ type PostgresLedger struct {
 	pool        *pgxpool.Pool
 	signer      Signer
 	tenantMu    sync.Mutex
-	tenantLocks map[int64]*sync.Mutex
+	tenantLocks map[int64]*tenantLockEntry
+}
+
+// tenantLockEntry 是某租户进程内写串行锁条目,带引用计数:refs 记录当前持有或等待该锁的写者数,
+// 归零时条目从 tenantLocks map 中删除,使 map 规模收敛到「当前并发活跃租户数」而非「历史出现过的全部
+// 租户数」(避免无界增长)。refs 受外层 tenantMu 保护,mu 是真正的 per-tenant 写锁。
+type tenantLockEntry struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // NewPostgresLedger 构造 PostgresLedger。signer / pool 均不能为 nil。
@@ -37,7 +45,7 @@ func NewPostgresLedger(pool *pgxpool.Pool, signer any) (*PostgresLedger, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &PostgresLedger{pool: pool, signer: normalized, tenantLocks: make(map[int64]*sync.Mutex)}, nil
+	return &PostgresLedger{pool: pool, signer: normalized, tenantLocks: make(map[int64]*tenantLockEntry)}, nil
 }
 
 // Append 把 prepared entry 写入 audit_ledger_entries；自动补 Timestamp / PrevMerkleRoot /
@@ -90,23 +98,40 @@ func (l *PostgresLedger) AppendInTx(ctx context.Context, tx pgx.Tx, prepared Pre
 	return AppendInTransaction(ctx, tx, l.signer, preparedEntryFromLedgerEntry(entry))
 }
 
+// lockTenantWriter 获取某租户的进程内写串行锁,返回释放函数。引用计数:无人持有/等待时条目在释放时回收,
+// 使 tenantLocks map 收敛到「当前并发活跃租户数」(避免无界增长)。跨进程真串行由 AppendInTransaction 的
+// pg_advisory_xact_lock 保证,本进程内锁仅为减少 advisory lock 等待的优化,回收/重建条目不影响链正确性。
+// 契约:释放函数**必须且只能调用一次**(`unlock := lockTenantWriter(id); defer unlock()`);重复调用会
+// panic 并使 refs 变负致条目永不回收。正确性命门:e.refs++ 必须在释放 tenantMu 之前完成,否则持有者尚在时
+// 条目可能被并发删除/重建,出现同租户两把进程内锁并行(由 TestLockTenantWriter_NeverTwoHeldSameTenant 锁死)。
 func (l *PostgresLedger) lockTenantWriter(tenantID int64) func() {
 	l.tenantMu.Lock()
 	if l.tenantLocks == nil {
-		l.tenantLocks = make(map[int64]*sync.Mutex)
+		l.tenantLocks = make(map[int64]*tenantLockEntry)
 	}
-	lock := l.tenantLocks[tenantID]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		l.tenantLocks[tenantID] = lock
+	e := l.tenantLocks[tenantID]
+	if e == nil {
+		e = &tenantLockEntry{}
+		l.tenantLocks[tenantID] = e
 	}
+	// refs 在 tenantMu 保护下自增,确保「将被使用」的条目绝不会被并发的释放路径删除。
+	e.refs++
 	l.tenantMu.Unlock()
-	lock.Lock()
-	return lock.Unlock
+
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		l.tenantMu.Lock()
+		e.refs--
+		if e.refs == 0 {
+			delete(l.tenantLocks, tenantID)
+		}
+		l.tenantMu.Unlock()
+	}
 }
 
-// AppendInTransaction appends an audit ledger entry using the caller-owned
-// database transaction. The caller is responsible for commit/rollback.
+// AppendInTransaction 使用调用方自有的数据库 transaction 追加一条 audit
+// ledger entry。commit / rollback 由调用方负责。
 func AppendInTransaction(ctx context.Context, q DBTX, signer any, prepared PreparedEntry) (LedgerEntry, error) {
 	normalized, err := normalizeSigner(signer)
 	if err != nil {
@@ -243,9 +268,9 @@ func (l *PostgresLedger) GetByRequestIDAndTenantScope(ctx context.Context, reque
 	return getByRequestIDAndTenantScope(ctx, requestID, tenantScopeRef, l.GetByRequestID)
 }
 
-// ListByRange returns tenant-scoped ledger entries in append order for the
-// supplied time range. The public tenant scope is resolved to the historical
-// tenant_id from ledger rows, then the final query constrains tenant_id.
+// ListByRange 针对给定时间区间，按 append 顺序返回经 tenant 范围过滤的
+// ledger entry。先把公开的 tenant scope 解析为 ledger 行中历史的
+// tenant_id，再让最终查询约束 tenant_id。
 func (l *PostgresLedger) ListByRange(ctx context.Context, tenantScopeRef string, from, to time.Time, limit int) ([]LedgerEntry, error) {
 	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
 	if tenantScopeRef == "" || limit <= 0 {
@@ -273,8 +298,8 @@ func (l *PostgresLedger) ListByRange(ctx context.Context, tenantScopeRef string,
 	return scanLedgerEntries(rows)
 }
 
-// ListByRequestIDs returns requested tenant-scoped ledger entries in append
-// order. Unknown ids and ids belonging to other tenants are omitted.
+// ListByRequestIDs 按 append 顺序返回所请求的、经 tenant 范围过滤的
+// ledger entry。未知的 id 以及属于其他 tenant 的 id 都会被略去。
 func (l *PostgresLedger) ListByRequestIDs(ctx context.Context, tenantScopeRef string, requestIDs []string, limit int) ([]LedgerEntry, error) {
 	tenantScopeRef = strings.TrimSpace(tenantScopeRef)
 	requestIDs = normalizeRequestIDs(requestIDs)

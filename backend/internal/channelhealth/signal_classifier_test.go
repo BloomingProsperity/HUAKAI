@@ -25,7 +25,7 @@ func TestSignalClassifierSafeClasses(t *testing.T) {
 }
 
 func TestKeywordAutoDisable(t *testing.T) {
-	// MUTATION: ignore configured keywords, or scan RawUpstreamText instead of safe/code text; quota_exceeded no longer becomes disable-worthy.
+	// 变异:忽略配置的 keyword,或扫描 RawUpstreamText 而非 safe/code 文本;quota_exceeded 将不再被判定为应禁用。
 	cfg := ClassifierConfig{DisableKeywords: []string{"quota_exceeded"}}
 	in := ClassifierInput{StatusCode: 402, SafeErrorClass: "quota_exceeded"}
 
@@ -60,7 +60,7 @@ func TestKeywordAutoDisable(t *testing.T) {
 }
 
 func TestStatusRangeAutoDisable(t *testing.T) {
-	// MUTATION: ignore configured status ranges; status 503 remains a plain upstream_5xx instead of disable-worthy.
+	// 变异:忽略配置的 status range;status 503 仍是普通的 upstream_5xx 而非应禁用。
 	cfg := ClassifierConfig{DisableStatusRanges: []string{"500-599"}}
 
 	got := ClassifyWithConfig(ClassifierInput{StatusCode: 503}, cfg)

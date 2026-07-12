@@ -16,6 +16,9 @@ const (
 	GateFailureCapability          GateFailureReason = "capability"
 	GateFailureCredential          GateFailureReason = "credential"
 	GateFailureHealth              GateFailureReason = "health"
+	// GateFailureAuthCooldown 是 auth 降级车道(authcooldown)专用的不合格原因,与 GateFailureHealth
+	// 区分:auth 失败不写健康分,单独临时排除,便于审计/计数辨识「因坏 key 被移出选号」。
+	GateFailureAuthCooldown GateFailureReason = "auth_cooldown"
 	GateFailureGroupPolicy         GateFailureReason = "group_policy"
 	GateFailurePerRequestExclusion GateFailureReason = "per_request_exclusion"
 	GateFailurePinnedAccount       GateFailureReason = "pinned_account"
@@ -73,6 +76,7 @@ type GateChain struct {
 	WindowCost    WindowCostGateIface
 	SessionCount  SessionCountGateIface
 	ContextWindow ContextWindowGateIface
+	RatePrecheck  RatePrecheckGateIface
 }
 
 func DefaultGateChain() GateChain {
@@ -80,13 +84,16 @@ func DefaultGateChain() GateChain {
 	return GateChain{
 		Tenant: g, Lifecycle: g, Channel: g, Protocol: protocolFamilyGate{}, Model: modelRateLimitGate{}, Capability: g,
 		Credential: g, Health: ProviderAccountHealthGate{}, GroupPolicy: g, Exclusion: exclusionGate{}, Pinned: pinnedAccountGate{},
-		// WindowCost defaults to nil; WithWindowCostGate sets it. nil == AllowAll (fail-open).
+		// WindowCost 默认为 nil;由 WithWindowCostGate 设置。nil == AllowAll(fail-open)。
 		WindowCost: WindowCostGate{},
-		// SessionCount defaults to nil registry; fail-open.
+		// SessionCount 默认为 nil registry;fail-open。
 		SessionCount: SessionCountGate{},
-		// ContextWindow zero value is fail-open (allows unless both
-		// ModelContextWindow>0 and EstimatedInputTokens>0 and overflow).
+		// ContextWindow 零值即 fail-open(除非同时满足
+		// ModelContextWindow>0 且 EstimatedInputTokens>0 且发生溢出,否则放行)。
 		ContextWindow: ContextWindowGate{},
+		// RatePrecheck 默认是一个 nil-counter 的 gate(fail-open);由 wiring
+		// 层注入 precheck.Counter 以激活 ROUTE-121。
+		RatePrecheck: RatePrecheckGate{},
 	}
 }
 
@@ -129,6 +136,7 @@ func (c GateChain) ForSelection(ctx context.Context, req SelectionRequest) GateC
 	c.WindowCost = prepareGate(ctx, c.WindowCost, req)
 	c.SessionCount = prepareGate(ctx, c.SessionCount, req)
 	c.ContextWindow = prepareGate(ctx, c.ContextWindow, req)
+	c.RatePrecheck = prepareGate(ctx, c.RatePrecheck, req)
 	return c
 }
 
@@ -185,6 +193,9 @@ func (c GateChain) withDefaults() GateChain {
 	if c.ContextWindow == nil {
 		c.ContextWindow = d.ContextWindow
 	}
+	if c.RatePrecheck == nil {
+		c.RatePrecheck = d.RatePrecheck
+	}
 	return c
 }
 
@@ -205,6 +216,7 @@ func (c GateChain) ordered() []namedGate {
 		{c.WindowCost, GateFailureWindowCost},
 		{c.SessionCount, GateFailureSessionCount},
 		{c.ContextWindow, GateFailureContextWindow},
+		{c.RatePrecheck, GateFailureRatePrecheck},
 	}
 }
 
@@ -278,8 +290,8 @@ func (g ProviderAccountHealthGate) Allow(_ context.Context, account *AccountSnap
 	if account == nil {
 		return false, GateFailureHealth, nil
 	}
-	// TOKLIFE-02: operator escape hatch — skip health/cooldown bench for flagged accounts.
-	// Only activates when disable_cooling=TRUE; default false preserves existing behavior exactly.
+	// TOKLIFE-02:operator 的紧急豁免口 —— 对打了标记的账号跳过 health/cooldown 检查。
+	// 仅当 disable_cooling=TRUE 时生效;默认 false,完全保持原有行为。
 	if account.DisableCooling {
 		return true, "", nil
 	}

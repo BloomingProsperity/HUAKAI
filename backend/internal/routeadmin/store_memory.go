@@ -15,8 +15,8 @@ type MemoryStore struct {
 	seq     int64
 	routes  map[int64]Route
 	deleted map[int64]bool
-	// poolGroups 非 nil 时模拟 FK + 租户归属: id→owning tenant。
-	// 创建时 pool_group 不存在 或 owning tenant ≠ 入参 tenant → ErrPoolGroupNotFound。
+	// poolGroups 非 nil 时模拟 FK + 租户归属: id→所属租户。
+	// 创建时 pool_group 不存在 或 所属租户 ≠ 入参 tenant → ErrPoolGroupNotFound。
 	poolGroups map[int64]int64
 	now        time.Time
 }
@@ -71,6 +71,44 @@ func (m *MemoryStore) Create(_ context.Context, in CreateInput) (Route, error) {
 	return r, nil
 }
 
+func (m *MemoryStore) Update(_ context.Context, in UpdateInput) (Route, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 定位未软删的本租户行(不存在/已删/跨租户 → not found, 与 postgres WHERE tenant+id+未删 一致)。
+	r, ok := m.routes[in.ID]
+	if !ok || m.deleted[in.ID] || r.TenantID != in.TenantID {
+		return Route{}, ErrRouteNotFound
+	}
+	// 目标 pool_group 归属校验(与 Create 同); 先于改名冲突判 —— 与 postgres WHERE EXISTS 失败优先于 unique 违反一致。
+	if m.poolGroups != nil {
+		if owner, ok := m.poolGroups[in.PoolGroupID]; !ok || owner != in.TenantID {
+			return Route{}, ErrPoolGroupNotFound
+		}
+	}
+	// 改名撞同租户另一活路由名 → 冲突; 排除自身(同 id 保持原名不算撞)。
+	for id, other := range m.routes {
+		if m.deleted[id] || id == in.ID {
+			continue
+		}
+		if other.TenantID == in.TenantID && other.Name == in.Name {
+			return Route{}, ErrDuplicateName
+		}
+	}
+	mp := 100
+	if in.MatchPriority != nil {
+		mp = *in.MatchPriority
+	}
+	// 全替换可编辑字段; 保留 ID/TenantID/Enabled/CreatedAt, bump UpdatedAt。
+	r.Name = in.Name
+	r.UserGroupMatch = in.UserGroupMatch
+	r.ModelPatternMatch = in.ModelPatternMatch
+	r.PoolGroupID = in.PoolGroupID
+	r.MatchPriority = mp
+	r.UpdatedAt = m.now
+	m.routes[in.ID] = r
+	return r, nil
+}
+
 func (m *MemoryStore) List(_ context.Context, tenantID int64) ([]Route, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -97,6 +135,21 @@ func (m *MemoryStore) Get(_ context.Context, tenantID, id int64) (Route, error) 
 	if !ok || m.deleted[id] || r.TenantID != tenantID {
 		return Route{}, ErrRouteNotFound
 	}
+	return r, nil
+}
+
+func (m *MemoryStore) SetEnabled(_ context.Context, tenantID, id int64, enabled bool) (Route, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// 定位未软删的本租户行(不存在/已删/跨租户 → not found, 与 postgres WHERE tenant+id+未删 一致)。
+	r, ok := m.routes[id]
+	if !ok || m.deleted[id] || r.TenantID != tenantID {
+		return Route{}, ErrRouteNotFound
+	}
+	// 只翻 enabled, bump UpdatedAt; 保留其它列。幂等: 设成当前值也照常返回快照。
+	r.Enabled = enabled
+	r.UpdatedAt = m.now
+	m.routes[id] = r
 	return r, nil
 }
 

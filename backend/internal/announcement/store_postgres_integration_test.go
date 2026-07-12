@@ -16,7 +16,7 @@ import (
 )
 
 func TestPostgresStoreListActiveFiltersAndTenantScope(t *testing.T) {
-	// MUTATION: remove active/expires_at/published_at or tenant_id SQL predicates; hidden or cross-tenant rows appear in the active list.
+	// 变异: 去掉 active/expires_at/published_at 或 tenant_id 的 SQL 谓词，被隐藏或跨租户的行就会出现在 active 列表里。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openAnnouncementPool(t, ctx)
@@ -46,7 +46,7 @@ func TestPostgresStoreListActiveFiltersAndTenantScope(t *testing.T) {
 }
 
 func TestMigration0102(t *testing.T) {
-	// MUTATION: omit announcements table, severity CHECK, active published index, or down DROP; these schema probes fail.
+	// 变异: 省略 announcements 表、severity CHECK、active published 索引或 down 的 DROP，这些 schema 探测就会失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openAnnouncementPool(t, ctx)

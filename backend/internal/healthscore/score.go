@@ -9,16 +9,38 @@ const (
 	ttftZeroMs       = 3000
 )
 
-// Business scores user-visible health from error rate and TTFT p99. A lower
-// error rate and lower p99 latency produce a higher score.
+// Business 根据错误率和 TTFT p99 给用户可见的健康度打分。错误率越低、
+// p99 延迟越低,得分越高。
 func Business(errorRate, ttftP99Ms float64) int {
 	errorScore := linearScore(errorRate, errorPerfectRate, errorZeroRate)
 	ttftScore := linearScore(ttftP99Ms, ttftPerfectMs, ttftZeroMs)
 	return clampScore(math.Round((errorScore + ttftScore) / 2))
 }
 
-// Overall combines business health and infrastructure health into a single
-// 0-100 score. Business impact carries the larger share.
+// Infra 据"自动托管的上游渠道里有多少处于健康可服务态"给基础设施健康打分(0-100)。
+// 它与业务面(错误率/TTFT)物理不同源:反映上游账号被本系统自动冷却/降级/禁用的比例,即供应商侧可用性。
+//
+//	healthyChannels = 可服务渠道数(active + ramping)
+//	managedChannels = 自动托管渠道数(健康 + degraded/cooling_down/disabled);不含 operator 手动暂停的
+//	                  manual_paused —— 那是人为意图、非基础设施故障,既不算健康也不进分母。
+//
+// managedChannels<=0(无渠道数据 / 全是手动暂停 / 取数不可用)时返回 100:保守不误报,避免"没数据"
+// 被当成"基础设施全挂"。否则按健康占比线性打分(沿用 clampScore 的 0-100 钳制风格)。
+func Infra(healthyChannels, managedChannels int64) int {
+	if managedChannels <= 0 {
+		return 100
+	}
+	if healthyChannels < 0 {
+		healthyChannels = 0
+	}
+	if healthyChannels > managedChannels {
+		healthyChannels = managedChannels
+	}
+	return clampScore(math.Round(float64(healthyChannels) / float64(managedChannels) * 100))
+}
+
+// Overall 把业务健康度与基础设施健康度合成为一个 0-100 的分数。
+// 业务影响占更大的权重。
 func Overall(businessScore, infraScore int) int {
 	return clampScore(math.Round((float64(clampInt(businessScore))*70 + float64(clampInt(infraScore))*30) / 100))
 }

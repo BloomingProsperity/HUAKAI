@@ -204,6 +204,8 @@ func TestSubscriptionPostgres_ExpiryGuardSkipsWhenNewerUpgrade(t *testing.T) {
 	if g := f.userGroup(f.tenantA, f.userA); g != "premium2" {
 		t.Fatalf("after upgrade group = %q, want premium2", g)
 	}
+	// 推进到到期后再到期 (生产里到期只发生在到点行; 到期路径锁内复查 expires_at<=now)。
+	clk.set(sub1.Subscription.ExpiresAt.Add(time.Hour))
 	// 到期第一个 (premium) 订阅: 用户当前组是 premium2 != premium → 守卫不降级。
 	if _, err := store.ExpireSubscription(ctx, lifecycleRecord{
 		TenantID: f.tenantA, SubscriptionID: sub1.Subscription.ID, ActorKind: ActorKindSystem, Now: clk.now(),
@@ -239,7 +241,9 @@ func TestSubscriptionPostgres_ChainedExpiryResolvesToDefault(t *testing.T) {
 	if g := f.userGroup(f.tenantA, f.userA); g != "premium" {
 		t.Fatalf("after chain group = %q, want premium", g)
 	}
-	// 先到期 basic: current=premium != basic → 守卫跳过, 用户仍 premium。
+	// 推进到到期后 (两订阅同 validity 均到点; 到期路径锁内复查 expires_at<=now)。
+	clk.set(subPremium.Subscription.ExpiresAt.Add(time.Hour))
+	// 先到期 basic: current=premium != basic → 守卫跳过, 用户仍 premium (分组解析按 status 不看 expires_at)。
 	if _, err := store.ExpireSubscription(ctx, lifecycleRecord{TenantID: f.tenantA, SubscriptionID: subBasic.Subscription.ID, ActorKind: ActorKindSystem, Now: clk.now()}); err != nil {
 		t.Fatalf("expire basic: %v", err)
 	}

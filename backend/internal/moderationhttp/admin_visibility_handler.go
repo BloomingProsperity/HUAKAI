@@ -21,8 +21,6 @@ type moderationLogResponse struct {
 	ReasonCode       string `json:"reason_code"`
 	MatchedKeywordID *int64 `json:"matched_keyword_id,omitempty"`
 	MatchedHashID    *int64 `json:"matched_hash_id,omitempty"`
-	ViolationFeeUSD  string `json:"violation_fee_usd"`
-	BillingEventID   *int64 `json:"billing_event_id,omitempty"`
 	OccurredAt       string `json:"occurred_at,omitempty"`
 }
 
@@ -191,8 +189,6 @@ func moderationLogFromValue(row moderation.ModerationLog) moderationLogResponse 
 		ReasonCode:       row.ReasonCode,
 		MatchedKeywordID: row.MatchedKeywordID,
 		MatchedHashID:    row.MatchedHashID,
-		ViolationFeeUSD:  row.ViolationFeeUSD.StringFixed(8),
-		BillingEventID:   row.BillingEventID,
 		OccurredAt:       formatTime(row.OccurredAt),
 	}
 }

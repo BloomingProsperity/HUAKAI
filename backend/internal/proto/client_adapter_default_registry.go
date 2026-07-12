@@ -31,10 +31,9 @@ type defaultClientAdapterFactory struct {
 	factory  func() ClientAdapter
 }
 
-// RegisterDefaultClientAdapterFactory lets protocol subpackages add built-in
-// client adapters without making the parent proto package import its child
-// packages. It must be called from package init before DefaultClientAdapterRegistry
-// is first used.
+// RegisterDefaultClientAdapterFactory 让各协议子包注册内置的 client adapter，
+// 而无需让父级 proto 包反向 import 其子包。必须在 package init 中、在
+// DefaultClientAdapterRegistry 首次使用之前调用。
 func RegisterDefaultClientAdapterFactory(protocol ClientProtocol, factory func() ClientAdapter) {
 	if protocol == "" || factory == nil {
 		panic("proto: invalid default client adapter factory")
@@ -80,9 +79,9 @@ func mustRegister(reg *ClientAdapterRegistry, protocol ClientProtocol, adapter C
 // 映射约定（HUAKAI v0.4）：
 //   - /v1/chat/completions     → openai_chat
 //   - /v1/responses            → openai_responses
-//   - /backend-api/codex/responses → openai_responses（Codex CLI ingress）
+//   - /backend-api/codex/responses → openai_responses（Codex CLI 入站）
 //   - /v1/messages             → anthropic_messages
-//   - /v1/native/openai/responses → openai_responses（native passthrough route）
+//   - /v1/native/openai/responses → openai_responses（native passthrough 原生透传路由）
 //   - /v1beta/models...        → gemini
 //
 // 返回 ok=false 表示路径未识别；调用方应返回 404/400，不要默认 fallback 到

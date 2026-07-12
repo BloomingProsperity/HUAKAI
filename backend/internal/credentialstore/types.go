@@ -1,4 +1,4 @@
-// Package credentialstore owns F-AUTH-005 encrypted upstream credentials.
+// Package credentialstore 负责 F-AUTH-005 加密的上游凭据。
 package credentialstore
 
 import (
@@ -27,6 +27,17 @@ const (
 	VendorTogether    = "together"
 	VendorPerplexity  = "perplexity"
 	VendorFireworks   = "fireworks"
+
+	// 国内大厂官 key 接入(2026-07-02 Owner 指派)。命名与 registrydefault 协议族前缀对齐(qwen_chat→qwen 等)。
+	VendorQwen     = "qwen"     // 通义千问(阿里 DashScope)
+	VendorGLM      = "glm"      // 智谱 GLM(BigModel)
+	VendorYi       = "yi"       // 零一万物
+	VendorBaichuan = "baichuan" // 百川
+	VendorDoubao   = "doubao"   // 豆包(火山方舟 Ark)
+	VendorMiniMax  = "minimax"  // MiniMax
+	VendorErnie    = "ernie"    // 文心(百度千帆 v2 OpenAI 兼容端点)
+	VendorHunyuan  = "hunyuan"  // 腾讯混元(OpenAI 兼容端点)
+	VendorStep     = "step"     // 阶跃星辰
 
 	AuthModeAPIKey          = "api_key"
 	AuthModeClaudeAIOAuth   = "claude_ai_oauth"
@@ -214,6 +225,7 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 		"copilot_endpoint_api", "auth_mode", "client_id_source",
 		"oauth_token_endpoint", "expires_at",
 		"user_agent", "cursor_checksum", "cursor_client_version", "cookie",
+		"account_id", "chatgpt_account_id", "codex_version", "originator", "oai_device_id",
 	} {
 		if value := fieldString(fields, key); value != "" {
 			extra[key] = value
@@ -223,7 +235,14 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 	value := ""
 	switch kind {
 	case RuntimeAPIKey:
-		value = firstField(fields, "api_key", "azure_api_key")
+		value = fieldString(fields, "api_key")
+		// S0 防密钥外发:azure_api_key 需 Azure 专属 endpoint(base_url/deployment/api-version)
+		// 与 `api-key` 头;当前无 Azure adapter,若当普通 APIKey 物化会被 OpenAI adapter 发往
+		// api.openai.com(Bearer),把 Azure 密钥外发给 OpenAI。fail-closed,拒绝物化。
+		// Entra access_token 走下面的 passthrough(尊重 base_url,发往 operator 自配 endpoint)。
+		if value == "" && fieldString(fields, "azure_api_key") != "" && fieldString(fields, "access_token") == "" {
+			return RuntimeMaterial{}, fmt.Errorf("%w: %s/%s azure api-key 尚无 Azure adapter,拒绝物化以防密钥外发到 OpenAI(请用 Entra access_token + 完整 base_url,或等 Azure adapter 切片)", ErrRuntimeMaterial, h.vendor, h.authMode)
+		}
 		if value == "" && fieldString(fields, "access_token") != "" {
 			kind = RuntimeUpstreamPassthrough
 			value = "Bearer " + fieldString(fields, "access_token")
@@ -281,6 +300,22 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorWindsurf, authMode: AuthModeOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorGrok, authMode: AuthModeXAIOAuth, runtimeKind: RuntimeOAuthAccessToken, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorKimi, authMode: AuthModeKimiOAuth, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
+		// 官 key(纯 api_key)厂商:Grok/DeepSeek/Kimi + 国内大厂(2026-07-02 Owner 指派接入)。
+		// 出站均为 OpenAI 兼容 Bearer 端点(endpoint 由 registrydefault 按协议族决定),凭据只有一个 api_key。
+		// 注意:全球推理托管云(openrouter/mistral/groqcloud/together/perplexity/fireworks)Owner 明确不接,
+		// 刻意不给 handlerSpec——存储层(0169 CHECK)同样不放行,双层拒绝。
+		handlerSpec{vendor: VendorGrok, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorDeepSeek, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorKimi, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorQwen, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorGLM, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorYi, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorBaichuan, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorDoubao, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorMiniMax, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorErnie, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorHunyuan, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
+		handlerSpec{vendor: VendorStep, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
 	}
 }
 

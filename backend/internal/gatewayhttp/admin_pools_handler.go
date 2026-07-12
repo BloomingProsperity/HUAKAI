@@ -51,7 +51,7 @@ type AdminPoolsStore interface {
 
 	// CreatePoolWithAudit 在**同事务**内 InsertPool + InsertAdminAuditEvent;
 	// audit insert 失败时 pool 行不提交 (W5 D1 / synthesis §6 C3 GW-10)。
-	// 老 InsertPool + writeAdminPoolAudit 两步式禁用于 mutation 路径,
+	// 老 InsertPool + writeAdminPoolAudit 两步式禁用于写入路径,
 	// 仅保留供 list/get read-only 兼容。
 	CreatePoolWithAudit(ctx context.Context, pp dbbilling.InsertPoolParams, ap admindb.InsertAdminAuditEventParams) (dbbilling.PoolGroup, error)
 
@@ -67,17 +67,17 @@ type AdminPoolsDeps struct {
 type adminPoolsStoreAdapter struct {
 	data  AdminPoolsDataStore
 	audit AdminPoolsAuditStore
-	// pool 用于 mutation 路径同事务 (CreatePoolWithAudit / UpdatePoolWithAudit);
+	// pool 用于写入路径同事务 (CreatePoolWithAudit / UpdatePoolWithAudit);
 	// nil 时这两个方法返 ErrAdminPoolsTxPoolUnset,production 必须装。
 	pool *pgxpool.Pool
 }
 
-// ErrAdminPoolsTxPoolUnset 表示 adapter 没装 pgxpool,无法走同事务 mutation。
+// ErrAdminPoolsTxPoolUnset 表示 adapter 没装 pgxpool,无法走同事务写入。
 // 仅 testing / 弱构造时出现;production 走 NewAdminPoolsStoreAdapter 必带 pool。
 var ErrAdminPoolsTxPoolUnset = errors.New("gatewayhttp: admin pools adapter pgxpool unset")
 
-// NewAdminPoolsStoreAdapter 构造同事务 adapter。pool 用于 mutation 同事务;
-// nil pool 时 mutation 方法 fail-closed。read-only 路径 (Get/List) 走 data 直读。
+// NewAdminPoolsStoreAdapter 构造同事务 adapter。pool 用于写入同事务;
+// nil pool 时写入方法 fail-closed。read-only 路径 (Get/List) 走 data 直读。
 func NewAdminPoolsStoreAdapter(data AdminPoolsDataStore, audit AdminPoolsAuditStore, pool *pgxpool.Pool) AdminPoolsStore {
 	return adminPoolsStoreAdapter{data: data, audit: audit, pool: pool}
 }
@@ -104,10 +104,10 @@ func (s adminPoolsStoreAdapter) InsertAdminAuditEvent(ctx context.Context, arg a
 
 // CreatePoolWithAudit 在 pgxpool 上 BeginFunc:dbbilling.New(tx).InsertPool +
 // admindb.New(tx).InsertAdminAuditEvent;audit insert 失败时 BeginFunc 自动
-// rollback,pool 行不留下 (W5 D1 不允许 "先 mutation 后返 503")。
+// rollback,pool 行不留下 (W5 D1 不允许 "先写入后返 503")。
 //
 // TargetID 在 ap 里保留 nil — 由本方法 insert 成功后用真实 pool.ID 填,
-// 防 caller 把 0 当 target_id 写进 audit 行。
+// 防调用方把 0 当 target_id 写进 audit 行。
 func (s adminPoolsStoreAdapter) CreatePoolWithAudit(ctx context.Context, pp dbbilling.InsertPoolParams, ap admindb.InsertAdminAuditEventParams) (dbbilling.PoolGroup, error) {
 	if s.pool == nil {
 		return dbbilling.PoolGroup{}, ErrAdminPoolsTxPoolUnset
@@ -134,8 +134,8 @@ func (s adminPoolsStoreAdapter) CreatePoolWithAudit(ctx context.Context, pp dbbi
 // UpdatePoolWithAudit 同事务 UpdatePool + audit insert。
 //
 // 跟 Create 不同,Update 是按 (tenant_id, id) 找已存在行 → ap.TargetID 应由
-// caller 填 id (因为 pool.ID 在 UPDATE 前后不变)。这里仍然在 tx 内 fetch
-// 实际 pool.ID 覆盖 ap.TargetID 以防 caller 漏填或填错。
+// 调用方填 id (因为 pool.ID 在 UPDATE 前后不变)。这里仍然在 tx 内 fetch
+// 实际 pool.ID 覆盖 ap.TargetID 以防调用方漏填或填错。
 func (s adminPoolsStoreAdapter) UpdatePoolWithAudit(ctx context.Context, up dbbilling.UpdatePoolParams, ap admindb.InsertAdminAuditEventParams) (dbbilling.PoolGroup, error) {
 	if s.pool == nil {
 		return dbbilling.PoolGroup{}, ErrAdminPoolsTxPoolUnset
@@ -516,7 +516,7 @@ func writeAdminPoolMutationError(w http.ResponseWriter, err error, code string) 
 }
 
 // buildAdminPoolAuditParams 把 audit row 的参数构造抽出来,供同事务 Create/Update
-// 的 ap 参数;不再有 writeAdminPoolAudit 两步式 (W5 D1 同事务不允许 mutation+
+// 的 ap 参数;不再有 writeAdminPoolAudit 两步式 (W5 D1 同事务不允许写入+
 // audit 分两条 DB 调用)。poolID 为 0 时 TargetID 留 nil 由 adapter 在 INSERT
 // 成功后用真实 ID 覆盖。
 func buildAdminPoolAuditParams(r *http.Request, ident admin.AdminIdentity, tenantID int64, action string, poolID int64, payload map[string]any) (admindb.InsertAdminAuditEventParams, error) {
@@ -524,7 +524,7 @@ func buildAdminPoolAuditParams(r *http.Request, ident admin.AdminIdentity, tenan
 	if err != nil {
 		return admindb.InsertAdminAuditEventParams{}, err
 	}
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+	actorID := ident.AuditActor()
 	requestID := middleware.GetReqID(r.Context())
 	params := admindb.InsertAdminAuditEventParams{
 		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,

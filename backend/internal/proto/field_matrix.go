@@ -8,8 +8,8 @@
 //     （不参与 passthrough 决策——adapter 当前无条件透传 envelope.Extra）
 //
 // PRESERVE-by-default 是核心升级语义：未在 matrix 显式登记的字段返回
-// FieldPreservedDefault，**不**是 FieldUnsupported。这是 HUAKAI 区别于
-// sub2api / new-api 的关键 — 后者 hardcode 已知字段，新字段必须改代码。
+// FieldPreservedDefault，**不**是 FieldUnsupported。这是 HUAKAI 的关键：
+// 不 hardcode 已知字段，新字段不需要改代码。
 //
 // 设计综合：
 //   - 每条 entry 带 reason + 区分 lossy/lossless transform
@@ -32,7 +32,7 @@ const (
 	FieldDropped FieldVerdict = "dropped"
 
 	// FieldPreservedDefault 未在 matrix 登记 → 默认保留。
-	// 这是 HUAKAI 区别于 sub2api 的核心：vendor 加新字段不再丢失。
+	// 这是 HUAKAI 的核心：vendor 加新字段不再丢失。
 	FieldPreservedDefault FieldVerdict = "preserved_default"
 )
 
@@ -54,9 +54,8 @@ const (
 // FieldMatrixEntry 是显式登记的字段 verdict + 元数据。
 //
 // 元数据用途：
-//   - Reason: 运维查询时给出可读说明（"preserved via typed struct" /
-//     "passthrough via PassthroughEnvelope" / "transformed lossy due to
-//     enum mapping" 等）
+//   - Reason: 运维查询时给出可读说明（"通过 typed struct 保留" /
+//     "通过 PassthroughEnvelope 透传" / "因 enum 映射有损转换" 等）
 //   - TransformKind: 仅当 Verdict == FieldTransformed 有意义；标 lossy/lossless
 //     便于 compliance audit
 type FieldMatrixEntry struct {
@@ -118,7 +117,7 @@ func transformed(kind FieldTransformKind, reason string) FieldMatrixEntry {
 // 维护原则:
 //   - 只登记 HUAKAI typed struct 已声明 + 行为已验证的字段（FieldPreserved
 //     reason 注 "typed struct"）或 passthrough 路径已覆盖的字段（reason 注
-//     "passthrough envelope"）
+//     "passthrough envelope 透传信封"）
 //   - 跨协议转换的字段登记为 FieldTransformed + lossy/lossless 标注
 //   - 未登记 = 默认保留（U7-A/U7-D wire-up 已实现透传）
 //   - 加新字段时：登记的目的是文档化 + 运维可查，不是限制透传
@@ -164,7 +163,7 @@ func DefaultFieldMatrix() FieldMatrix {
 		// Anthropic 客户端 × Anthropic 上游
 		ClientProtocolAnthropicMessages: {
 			UpstreamProtocolAnthropic: {
-				// HUAKAI typed struct（U7-D anthropicEnvelope）
+				// HUAKAI typed struct 类型（U7-D anthropicEnvelope）
 				"type":          preserved("typed struct: anthropicEnvelope.Type"),
 				"message":       preserved("typed struct: anthropicEnvelope.Message"),
 				"index":         preserved("typed struct: anthropicEnvelope.Index"),

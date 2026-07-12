@@ -1,6 +1,7 @@
 package gatewayhttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -78,7 +79,7 @@ func TestPR4PrepareNextAttemptAfterAbortClearsReservationAndAcquisition(t *testi
 // TestUpstreamInboundBodySkipsModelRewriteForDifyChat 抓的回归:dify_chat
 // 的翻译产物 body 没有 model 字段(Dify 契约无此键),流式路径经
 // upstreamInboundBody 时不得被 rewriteUpstreamModel 注入顶层 model 污染契约。
-// Mutation:删掉 upstreamInboundBody 的 dify_chat 跳过 → 本测试红。
+// 变异:删掉 upstreamInboundBody 的 dify_chat 跳过 → 本测试红。
 func TestUpstreamInboundBodySkipsModelRewriteForDifyChat(t *testing.T) {
 	original := []byte(`{"inputs":{},"query":"USER: hi","response_mode":"streaming","user":"req-1","auto_generate_name":false}`)
 	ex := &chatExecution{
@@ -116,6 +117,47 @@ func TestUpstreamInboundBodyUsesResolvedModelWithoutMutatingOriginal(t *testing.
 	}
 	if string(ex.body) != string(original) {
 		t.Fatalf("original body mutated: got %s want %s", string(ex.body), string(original))
+	}
+}
+
+// TestOfficialDirectRemapsModelWhenAliasDiffersFromUpstream 抓 S1-4:官方直发
+// 路径下 public alias 与上游 provider model 不一致时,出站 model 必须被改写成
+// 上游值,否则上游收到未知模型。旧实现无条件返回原 body → alias 泄漏到上游。
+// 变异:把 upstreamInboundBody 里 officialDirect 分支改回无条件 return body → 本测试红。
+func TestOfficialDirectRemapsModelWhenAliasDiffersFromUpstream(t *testing.T) {
+	original := []byte(`{"model":"claude-team","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+	ex := &chatExecution{
+		officialDirect:  true,
+		upstreamModelID: "claude-sonnet-4-5",
+		body:            original,
+		resolved:        registry.Resolved{ProtocolFamily: "anthropic_claude_session"},
+	}
+	out := ex.upstreamInboundBody(ex.body)
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("outbound body 非 JSON: %v", err)
+	}
+	if parsed.Model != "claude-sonnet-4-5" {
+		t.Fatalf("官方直发 alias 未改写: model=%q want claude-sonnet-4-5 body=%s", parsed.Model, out)
+	}
+}
+
+// TestOfficialDirectPreservesBytesWhenModelAlreadyMatches 证明常见直发(客户端
+// 直接请求真实模型名,alias==上游 model)保持字节等价,不做无谓重序列化。
+// 变异:去掉 bodyModelMatches 的相等短路 → body 被 rewriteUpstreamModel 重排 → 本测试红。
+func TestOfficialDirectPreservesBytesWhenModelAlreadyMatches(t *testing.T) {
+	original := []byte(`{"model":"claude-sonnet-4-5","max_tokens":8,"system":"x","messages":[{"role":"user","content":"hi"}]}`)
+	ex := &chatExecution{
+		officialDirect:  true,
+		upstreamModelID: "claude-sonnet-4-5",
+		body:            original,
+		resolved:        registry.Resolved{ProtocolFamily: "anthropic_claude_session"},
+	}
+	out := ex.upstreamInboundBody(ex.body)
+	if !bytes.Equal(out, original) {
+		t.Fatalf("alias==上游 model 时官方直发 body 不应改动\ngot:  %s\nwant: %s", out, original)
 	}
 }
 
@@ -182,7 +224,7 @@ func TestDegradeFailureIfAbortFailedUsesSafeAbortReasonAndLogsErrorClass(t *test
 	assertLogOmits(t, logs, marker)
 }
 
-// MUTATION: endClassFromAttemptFailure 漏 DM-06 持久传输类 → 红——健康记账
+// 变异: endClassFromAttemptFailure 漏 DM-06 持久传输类 → 红——健康记账
 // 信号落 UnknownTermination,channelhealth 看不见持久故障(不摘账号复发)。
 func TestEndClassFromAttemptFailure_PersistentTransportClassesAreUpstream5xx(t *testing.T) {
 	for _, class := range []gateway.TransportErrorClass{
@@ -198,7 +240,7 @@ func TestEndClassFromAttemptFailure_PersistentTransportClassesAreUpstream5xx(t *
 	}
 }
 
-// MUTATION: stripCrossAccountResponseChain 去掉 miss 判定(任何 responses 都
+// 变异: stripCrossAccountResponseChain 去掉 miss 判定(任何 responses 都
 // 剥)→ hit/none 用例红;去掉剥除 → miss 用例红(DM-07:只在 sticky miss 剥
 // 跨账号链 ID,其余场景 body 必须原样)。
 func TestStripCrossAccountResponseChain(t *testing.T) {
@@ -229,7 +271,7 @@ func TestStripCrossAccountResponseChain(t *testing.T) {
 	}
 }
 
-// MUTATION: writeAttemptFailure 去掉 clearRetryableAttemptFailureHeaders 调用,
+// 变异: writeAttemptFailure 去掉 clearRetryableAttemptFailureHeaders 调用,
 // 或清单删掉 X-Accel-Buffering → 红(DM-19:终局 JSON 错误携带流式残留头)。
 func TestWriteAttemptFailureClearsStreamResidualHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
@@ -271,7 +313,7 @@ func TestWriteAttemptFailureClearsStreamResidualHeaders(t *testing.T) {
 	}
 }
 
-// MUTATION: clientTailMessageRole 任一协议分支解析错位 → 对应子断言红(DM-16)。
+// 变异: clientTailMessageRole 任一协议分支解析错位 → 对应子断言红(DM-16)。
 func TestClientTailMessageRole(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -293,5 +335,37 @@ func TestClientTailMessageRole(t *testing.T) {
 		if got := clientTailMessageRole(tc.proto, []byte(tc.body)); got != tc.want {
 			t.Fatalf("[%s] got %q want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestActiveBindingSelectionMode 钉死 dispatch 级 selection_mode 取值:必须按当前请求命中的
+// binding(ex.attempt.PoolGroupID)取其 selection_mode 透传给 SelectionRequest,而非取错 binding
+// 或恒空。这是路由加权激活闭环在 dispatch 端的接线点。
+// 变异:若 activeBindingSelectionMode 恒返回 ""(漏接)→ 命中 priority_weighted binding 的请求
+// 也走默认 → 下面 weighted 断言红;若取错 binding(忽略 PoolGroupID)→ 多 binding 用例红。
+func TestActiveBindingSelectionMode(t *testing.T) {
+	ex := &chatExecution{
+		resolved: registry.Resolved{
+			BindingMetadata: []registry.BindingMetadata{
+				{BindingID: 1, PoolGroupID: 701, SelectionMode: "strict_priority"},
+				{BindingID: 2, PoolGroupID: 702, SelectionMode: "priority_weighted"},
+			},
+		},
+	}
+
+	// 命中 702 → 取到 priority_weighted。
+	ex.attempt = router.AttemptPlan{PoolGroupID: 702}
+	if got := ex.activeBindingSelectionMode(); got != "priority_weighted" {
+		t.Fatalf("命中 pool 702 selection_mode=%q, 期望 priority_weighted", got)
+	}
+	// 命中 701 → 取到 strict_priority(证明按 PoolGroupID 取对 binding,非取首条)。
+	ex.attempt = router.AttemptPlan{PoolGroupID: 701}
+	if got := ex.activeBindingSelectionMode(); got != "strict_priority" {
+		t.Fatalf("命中 pool 701 selection_mode=%q, 期望 strict_priority", got)
+	}
+	// 无 binding 元数据 → 空(默认 strict)。
+	empty := &chatExecution{}
+	if got := empty.activeBindingSelectionMode(); got != "" {
+		t.Fatalf("无 binding 时 selection_mode=%q, 期望空", got)
 	}
 }

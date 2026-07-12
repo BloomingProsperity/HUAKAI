@@ -29,10 +29,10 @@ const (
 	// CredentialTypeAPIKey 普通开发者 API key（如 OpenAI sk-...，Bearer 头注入）
 	CredentialTypeAPIKey CredentialType = "apikey"
 	// CredentialTypeOAuthAccessToken OAuth 拿到的 access_token（如 Anthropic
-	// Pro/Max OAuth、Gemini OAuth、Antigravity OAuth）
+	// Pro/Max OAuth、Gemini OAuth、Antigravity OAuth 凭据）
 	CredentialTypeOAuthAccessToken CredentialType = "oauth_access_token"
 	// CredentialTypeSessionToken 网页/客户端 session token 反转用（如
-	// ChatGPT Plus / Cursor / Windsurf）
+	// ChatGPT Plus / Cursor / Windsurf 会话）
 	CredentialTypeSessionToken CredentialType = "session_token"
 	// CredentialTypeAWSSigV4 AWS SigV4 已签名凭据（Bedrock 直通）
 	CredentialTypeAWSSigV4 CredentialType = "aws_sigv4"
@@ -52,39 +52,53 @@ type Credential struct {
 	Extra map[string]string
 }
 
-// AccountInfo 是池中选中的 account 摘要，供 adapter 在构造请求时引用
-// （如 binding-level 模型映射、组级配额标记等）。仅含 adapter 必需字段。
+// AccountInfo 是池中选中的 account 摘要，供 adapter 与只读后台任务引用。
+// 这里只保留运行时必需字段。
 type AccountInfo struct {
 	// AccountID 池中 account 主键。
 	AccountID int64
 	// TenantID 是账号所属租户; CredentialVault.Resolve 与 dispatcher 后续都
 	// 用它做 DR-001 跨租户隔离校验。
 	TenantID int64
+	// OAuthScope 只来自凭据载荷，不受 provider_accounts.extra 合并影响。
+	OAuthScope string
 	// Platform vendor 平台标识（如 "openai" / "gemini" / "antigravity"
 	// / "cursor" / "copilot" / "kiro" / "windsurf"）。
 	Platform string
 	// AccountType 账号类型（如 "apikey" / "oauth" / "session" / "bedrock"）。
 	AccountType string
+	// CodexCLIOnly 表示该账号 opt-in 到 Codex CLI 入站官方客户端门。该字段仅供
+	// 入站门控使用，禁止投影到出站 Credential.Extra 或身份改写载荷；缺省 false
+	// 表示维持 Codex/OpenAI 账号默认放开。
+	CodexCLIOnly bool
 	// AccountCredentialID 是当前出站凭据行主键，用于 channel-health subject。
 	AccountCredentialID int64
 	// CredentialVersion 是当前出站凭据版本，用于区分轮换前后的健康状态。
 	CredentialVersion int
+	// ExternalAccountID 是上游 provider 账号的稳定标识（如 Anthropic account
+	// uuid），凭据获取时自动提取、与凭据行 1:1 同生命周期存于
+	// account_credentials.external_account_id（迁移 0141）。账号管理元数据，
+	// **非鉴权/计费/配额输入**；仅供 R7 身份改写（mimicryidentity）把它投影进
+	// metadata.user_id 的 account 组件。未提取到时为空串 → 下游 fail-open 不改写。
+	ExternalAccountID string
 }
 
-// EndpointForCredential 按账号凭据决定上游 endpoint:
+// EndpointForCredential 按账号凭据和 operator 配置决定上游 endpoint:
 //   - 默认走 adapter.Endpoint (或调用方传的 adapterDefault)
-//   - cred.Type == UpstreamPassthrough 且 cred.Extra["base_url"] 非空 → 用
-//     account 自带的第三方代理地址 (provider_accounts.upstream_static.base_url)
+//   - APIKey 或 UpstreamPassthrough 凭据的 Extra["base_url"] 非空时，改用
+//     operator 自配的上游地址
 //
 // base_url 路径处理:
 //   - base_url 只含 scheme + host (e.g. "https://proxy.com" 或 "https://proxy.com/") →
 //     用 adapter default 的 path 拼接, 结果 "https://proxy.com/v1/chat/completions"
 //   - base_url 自带 path (e.g. "https://proxy.com/api/v1/chat") → 信任用户原样返回
 //
-// 防第三方 upstream_passthrough 凭据 token 误发到官方
-// vendor endpoint (e.g. 客户配置自托管 proxy 但请求仍发 api.openai.com)。
+// 自定义 base_url 必先通过 safePassthroughBaseURL 静态校验；默认策略对 metadata、
+// 内网、loopback 与其它特殊用途目标 fail-closed。dispatcher 仍须在发网前执行
+// DNS 校验并在直连拨号时再次约束目标 IP，避免域名解析与重绑定绕过。
+// APIKey 与 UpstreamPassthrough 未配置 base_url 时都回落 adapterDefault。
 func EndpointForCredential(adapterDefault string, cred Credential) (string, error) {
-	if cred.Type != CredentialTypeUpstreamPassthrough {
+	if cred.Type != CredentialTypeAPIKey && cred.Type != CredentialTypeUpstreamPassthrough {
 		return adapterDefault, nil
 	}
 	base := strings.TrimSpace(cred.Extra["base_url"])
@@ -132,9 +146,8 @@ func EndpointForCredential(adapterDefault string, cred Credential) (string, erro
 	return combined.String(), nil
 }
 
-// EndpointForBuildInput applies an optional endpoint path override before the
-// existing credential-specific endpoint selection. Empty EndpointPath preserves
-// legacy adapter behavior.
+// EndpointForBuildInput 在现有的凭据相关 endpoint 选择之前,先套用一个可选的
+// endpoint path 覆盖。EndpointPath 为空时保持 adapter 的既有行为。
 func EndpointForBuildInput(adapterDefault string, in BuildInput) (string, error) {
 	defaultEndpoint := strings.TrimSpace(adapterDefault)
 	if path := strings.TrimSpace(in.EndpointPath); path != "" {
@@ -219,9 +232,8 @@ type BuildInput struct {
 	// InboundBody 客户原始请求 body 字节（HUAKAI 协议入口已统一形态，
 	// 但每家 vendor 适配器决定是否 reshape）。
 	InboundBody []byte
-	// InboundContentType carries the caller's parsed Content-Type when the
-	// original body must be forwarded byte-for-byte, e.g. multipart audio.
-	// Empty keeps legacy JSON passthrough behavior.
+	// InboundContentType 在原始 body 必须逐字节透传时(如 multipart audio)
+	// 携带调用方解析出的 Content-Type。为空时保持既有的 JSON 透传行为。
 	InboundContentType string
 	// EndpointPath 可选覆盖 adapter 默认 endpoint path。空值保持 adapter
 	// 默认；OpenAI-compatible embeddings passthrough 使用 "/v1/embeddings"。

@@ -157,3 +157,34 @@ func (q *Queries) UpdateProviderAccountEnabled(ctx context.Context, arg UpdatePr
 	)
 	return err
 }
+
+const updateProviderAccountFingerprintProfile = `-- name: UpdateProviderAccountFingerprintProfile :exec
+UPDATE provider_accounts
+SET
+    tls_fingerprint_profile_id = $1::bigint,
+    updated_at = NOW(),
+    last_modified_by_actor = $2::text
+WHERE id = $3::bigint
+  AND tenant_id = $4::bigint
+  AND deleted_at IS NULL
+`
+
+type UpdateProviderAccountFingerprintProfileParams struct {
+	ProfileID *int64  `db:"profile_id" json:"profile_id"`
+	ActorID   *string `db:"actor_id" json:"actor_id"`
+	ID        int64   `db:"id" json:"id"`
+	TenantID  int64   `db:"tenant_id" json:"tenant_id"`
+}
+
+// UpdateProviderAccountFingerprintProfile 绑定/解绑 provider account 的 TLS 指纹 profile。
+// ProfileID 为 nil → 解绑回内置默认(SET NULL);非 nil → 绑定该 profile(DB 触发器 0038 会校验
+// profile 属同租户,跨租户绑定会被 RAISE 拒绝)。
+func (q *Queries) UpdateProviderAccountFingerprintProfile(ctx context.Context, arg UpdateProviderAccountFingerprintProfileParams) error {
+	_, err := q.db.Exec(ctx, updateProviderAccountFingerprintProfile,
+		arg.ProfileID,
+		arg.ActorID,
+		arg.ID,
+		arg.TenantID,
+	)
+	return err
+}

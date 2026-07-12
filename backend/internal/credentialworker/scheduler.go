@@ -49,9 +49,9 @@ type Scheduler struct {
 	healthPolicy ProviderAccountHealthPolicy
 	healthStore  providerAccountHealthStore
 
-	// alertDeliverer fires the operator alert when a health transition raised the
-	// Alert flag (CRED-293). nil-safe: nil means alerts are log-only. alertAsync
-	// wraps the detached send so production goroutines but tests run inline.
+	// alertDeliverer 在一次 health 转换升起 Alert 标志时触发 operator 告警
+	// (CRED-293)。nil-safe:nil 表示告警仅记录日志。alertAsync 包装脱离式发送,
+	// 因此生产用 goroutine,而测试内联运行。
 	alertDeliverer ProviderAccountDownDeliverer
 	alertAsync     func(func())
 
@@ -60,6 +60,18 @@ type Scheduler struct {
 	txPool       *pgxpool.Pool
 	auditSigner  any
 	auditQueries *dbauth.Queries
+
+	// CRED-288:定时的 credential-rotation-due 扫描,在每个 tick 的 refresh 过程之后
+	// 运行。除非 rotationStore 已设置 且 rotationMaxAge > 0(经 WithRotationScan
+	// opt-in),否则关闭——因此现有部署不受影响。
+	rotationStore  RotationStore
+	rotationMaxAge time.Duration
+	rotationAlert  RotationAlert
+	rotationLimit  int
+	// CRED-288c:把每个到期凭据分类为可刷新(OAuth/session → 经 refresh 流自愈)
+	// 或静态(api_key → 仅告警,绝不仅凭年龄就下线)。nil → 扫描时取
+	// DefaultRefreshClassifier。
+	rotationClassifier RefreshClassifier
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -175,7 +187,32 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	for _, account := range accounts {
 		out = errors.Join(out, s.processAccount(ctx, account))
 	}
+	// CRED-288/288c:在 refresh 过程之后,把超过其 rotation max-age 的凭据路由进
+	// 恢复(可刷新 → 经 refresh 流重新铸造;静态 → 仅告警)。除非 opt-in
+	// (WithRotationScan)否则为 no-op;一个扫描错误会 join 进 tick 错误,而不会中止
+	// 上面的 refresh 工作。
+	if _, err := ScanRotationDue(ctx, s.rotationStore, s.rotationClassifier, s.rotationAlert, s.rotationMaxAge, s.now(), s.rotationLimit); err != nil {
+		out = errors.Join(out, err)
+	}
+	// storm 槽陈旧 reaper:release 全败/进程崩溃留下的 in_flight 永久 +1(cap=1 时
+	// 该账号永久无法刷新)每 tick 自愈归零。阈值取远大于单次刷新生命周期。
+	if s.StormController != nil {
+		if _, err := s.StormController.ReapStaleSlots(ctx, s.now().Add(-stormSlotStaleAfter)); err != nil {
+			out = errors.Join(out, err)
+		}
+	}
 	return out
+}
+
+// stormSlotStaleAfter storm 槽陈旧阈值: acquire/release 都会刷新 last_updated_at,
+// 单次刷新(含重试退避)分钟级完成, 15min 未触碰的 in_flight>0 行必为泄漏。
+const stormSlotStaleAfter = 15 * time.Minute
+
+// RotationScanConfigForTest 暴露 CRED-288 轮换扫描装配后的 store/maxAge/limit,
+// 仅供测试断言"WithRotationScan option 是否真把扫描装上"(生产 wiring 的 gating 决策
+// 曾经缺失导致死开关)。生产代码不读它。
+func (s *Scheduler) RotationScanConfigForTest() (RotationStore, time.Duration, int) {
+	return s.rotationStore, s.rotationMaxAge, s.rotationLimit
 }
 
 func (s *Scheduler) RefreshHotPath(ctx context.Context, tenantID, accountID int64, vendorName string) error {
@@ -210,7 +247,7 @@ func (s *Scheduler) validate() error {
 }
 
 func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) error {
-	// Scope 1 (account): durable DB concurrency slot; released after the attempt.
+	// Scope 1(account):持久化的 DB 并发槽位;在本次尝试之后释放。
 	release, outcome, err := s.acquirer.Acquire(ctx, account.TenantID, account.ID)
 	if err != nil {
 		_ = s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "account", err)
@@ -224,9 +261,9 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 	}
 	defer release()
 
-	// Scope 2 (provider-endpoint): in-memory per-vendor-endpoint rate budget.
-	// The vendor name keys the shared OAuth token endpoint, so many accounts of
-	// the same vendor expiring at once cannot stampede it.
+	// Scope 2(provider-endpoint):内存中的 per-vendor-endpoint 速率预算。
+	// vendor 名作为共享 OAuth token endpoint 的 key,因此同一 vendor 的大量账号同时
+	// 过期时不会对它形成踩踏。
 	endpointKey := normalizeProviderName(account.VendorName)
 	endpointRefund, outcome, err := s.acquirer.AcquireProviderEndpoint(ctx, account.TenantID, endpointKey, "")
 	if err != nil {
@@ -236,22 +273,21 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 		return s.recordAudit(ctx, account, outcome, "provider_endpoint", nil)
 	}
 
-	// Scope 3 (global): in-memory process-wide rate budget, last-resort cap.
+	// Scope 3(global):内存中进程范围的速率预算,作为最后兜底上限。
 	_, outcome, err = s.acquirer.AcquireGlobal(ctx, account.TenantID)
 	if err != nil {
 		endpointRefund()
 		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "global", err))
 	}
 	if outcome != "" {
-		// Refund the endpoint token: this attempt never ran, so it must not
-		// consume the endpoint budget (A07: refund only on a downstream scope
-		// denial, never on a failed refresh).
+		// 退还 endpoint token:本次尝试从未运行,因此它不能消耗 endpoint 预算
+		// (A07:只在下游 scope 拒绝时退还,绝不在刷新失败时退还)。
 		endpointRefund()
 		return s.recordAudit(ctx, account, outcome, "global", nil)
 	}
 
-	// All three scopes admitted. Endpoint/global tokens stay consumed regardless
-	// of the refresh outcome — a failed attempt must not reopen the storm window.
+	// 三个 scope 全部放行。无论刷新结果如何,endpoint/global token 都保持被消耗状态
+	// ——一次失败的尝试绝不能重新打开 storm 窗口。
 	if err := s.refreshWithBackoff(ctx, account); err != nil {
 		if outcome := auth.RefreshAuditOutcomeFromError(err); outcome != "" {
 			return errors.Join(err, s.recordAuditString(ctx, account, outcome, "", err))

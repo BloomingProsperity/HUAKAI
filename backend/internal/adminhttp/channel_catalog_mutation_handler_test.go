@@ -13,10 +13,9 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// channelCatalogStoreStub is a fake adminChannelCatalogStore for the mutation
-// handler unit tests: it records calls and returns configurable errors without
-// a database. The SQL-level tenant fence / unique constraint are exercised by
-// the integration test.
+// channelCatalogStoreStub 是供变更处理器单元测试使用的 adminChannelCatalogStore 假实现:
+// 它在不接数据库的情况下记录调用并返回可配置的错误。
+// SQL 层面的租户隔离 / 唯一约束由集成测试来覆盖。
 type channelCatalogStoreStub struct {
 	createErr, updateErr, deleteErr       error
 	createItem, updateItem, deleteItem    channelCatalogItem
@@ -86,8 +85,8 @@ func TestChannelCatalogCreateRequiresAdminAuth(t *testing.T) {
 	}
 }
 
-// MUTATION: dropping the tenant-scope gate in resolveChannelCatalogMutationAdmin
-// lets a tenant operator mutate another tenant -> this 403-before-store check red.
+// 变异:去掉 resolveChannelCatalogMutationAdmin 中的租户作用域门控,
+// 会让一个 tenant operator 能去变更另一个租户 -> 此处「在触达 store 之前返回 403」的检查会变红。
 func TestChannelCatalogCreateCrossTenantForbidden(t *testing.T) {
 	store := &channelCatalogStoreStub{}
 	rec := invokeChannelCatalogMutation(t, AdminChannelCatalogDeps{
@@ -114,7 +113,7 @@ func TestChannelCatalogCreateHappyPath(t *testing.T) {
 	if store.createCalls != 1 || store.lastCreate.TenantID != 7 || store.lastCreate.PoolGroupID != 70 || store.lastCreate.Name != "primary" {
 		t.Fatalf("create args wrong: %+v", store.lastCreate)
 	}
-	// failover codes default applied when omitted
+	// 省略时应用 failover codes 的默认值
 	if len(store.lastCreate.FailoverStatusCodes) != 4 {
 		t.Fatalf("omitted failover codes should default to 4 entries: %v", store.lastCreate.FailoverStatusCodes)
 	}

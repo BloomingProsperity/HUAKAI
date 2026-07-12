@@ -1,6 +1,7 @@
 package completionshttp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,8 +18,18 @@ type completionCostBreakdown struct {
 	PendingReconciliation bool
 }
 
-func (ex *execution) inputCost(tokens int) (completionCostBreakdown, error) {
-	return ex.completionCost(completionUsage{PromptTokens: tokens})
+type pricingRatioResolverWithSignal interface {
+	ResolveWithSignal(ctx context.Context, tenantID, poolGroupID int64) (decimal.Decimal, bool, error)
+}
+
+// defaultEstimatedOutputTokens 与 chat 链路缺省输出估算保持同一口径。
+const defaultEstimatedOutputTokens = 1000
+
+func (ex *execution) predictedCost() (completionCostBreakdown, error) {
+	return ex.completionCost(completionUsage{
+		PromptTokens:     ex.inputEstimate,
+		CompletionTokens: estimateOutputTokens(ex.req),
+	})
 }
 
 func (ex *execution) actualCost(usage completionUsage) (completionCostBreakdown, error) {
@@ -42,7 +53,7 @@ func (ex *execution) completionCost(usage completionUsage) (completionCostBreakd
 		return completionCostBreakdown{}, err
 	}
 	fallback := selection.fallback()
-	groupRatio, err := ex.groupPricingRatio()
+	groupRatio, ratioPendingReconciliation, err := ex.groupPricingRatio()
 	if err != nil {
 		return completionCostBreakdown{}, err
 	}
@@ -54,6 +65,10 @@ func (ex *execution) completionCost(usage completionUsage) (completionCostBreakd
 	if err != nil {
 		return completionCostBreakdown{}, err
 	}
+	if ratioPendingReconciliation {
+		result.PendingReconciliation = true
+		result.CostSnapshot = snapshotWithPricingRatioPending(result.CostSnapshot)
+	}
 	return completionCostBreakdown{
 		Total:                 result.Total,
 		CostSnapshot:          result.CostSnapshot,
@@ -61,11 +76,34 @@ func (ex *execution) completionCost(usage completionUsage) (completionCostBreakd
 	}, nil
 }
 
-func (ex *execution) groupPricingRatio() (decimal.Decimal, error) {
+func (ex *execution) groupPricingRatio() (decimal.Decimal, bool, error) {
 	if ex == nil || ex.d.PricingRatioResolver == nil {
-		return decimal.Zero, nil
+		return decimal.Zero, false, nil
 	}
-	return ex.d.PricingRatioResolver.Resolve(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
+	if resolver, ok := ex.d.PricingRatioResolver.(pricingRatioResolverWithSignal); ok {
+		ratio, pendingReconciliation, err := resolver.ResolveWithSignal(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
+		return ratio, pendingReconciliation, err
+	}
+	ratio, err := ex.d.PricingRatioResolver.Resolve(ex.ctx, ex.ident.TenantID, ex.attempt.PoolGroupID)
+	return ratio, false, err
+}
+
+func snapshotWithPricingRatioPending(snapshot string) string {
+	const marker = "pending_reconciliation=pricing_ratio_backend_error"
+	if strings.TrimSpace(snapshot) == "" {
+		return marker
+	}
+	if strings.Contains(snapshot, "pending_reconciliation") {
+		return snapshot
+	}
+	return snapshot + ";" + marker
+}
+
+func estimateOutputTokens(req completionRequest) int {
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		return *req.MaxTokens
+	}
+	return defaultEstimatedOutputTokens
 }
 
 func (ex *execution) providerForPricing() string {

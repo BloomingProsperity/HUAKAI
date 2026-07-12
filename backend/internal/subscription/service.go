@@ -78,8 +78,8 @@ func (s *Service) CreatePlan(ctx context.Context, in CreatePlanInput) (Plan, err
 	})
 }
 
-// UpdatePlan updates mutable admin-owned plan catalog fields. Existing
-// user_subscriptions keep their plan snapshot.
+// UpdatePlan 更新可变的、admin 拥有的套餐目录字段。已存在的
+// user_subscriptions 保留各自的套餐 snapshot。
 func (s *Service) UpdatePlan(ctx context.Context, in UpdatePlanInput) (Plan, error) {
 	if in.TenantID <= 0 || in.PlanID <= 0 {
 		return Plan{}, ErrInvalidInput
@@ -115,6 +115,7 @@ func (s *Service) UpdatePlan(ctx context.Context, in UpdatePlanInput) (Plan, err
 		ForSale:       fields.ForSale,
 		SortOrder:     fields.SortOrder,
 		ActorAdminID:  in.ActorAdminID,
+		ActorRef:      in.ActorRef,
 		RequestID:     strings.TrimSpace(in.RequestID),
 		Now:           s.now(),
 	})
@@ -154,13 +155,14 @@ func (s *Service) AssignSubscription(ctx context.Context, in AssignSubscriptionI
 		UserID:       in.UserID,
 		PlanID:       in.PlanID,
 		ActorAdminID: in.ActorAdminID,
+		ActorRef:     in.ActorRef,
 		RequestID:    strings.TrimSpace(in.RequestID),
 		Now:          s.now(),
 	})
 }
 
-// BulkAssign grants a plan to many users. Each user is processed independently;
-// one failure never rolls back earlier/later successful assignments.
+// BulkAssign 把一个套餐授予多个用户。每个用户独立处理;
+// 单个失败绝不回滚先前/后续已成功的授予。
 func (s *Service) BulkAssign(ctx context.Context, in BulkAssignInput) (BulkAssignResult, error) {
 	if in.TenantID <= 0 || in.PlanID <= 0 || len(in.UserIDs) == 0 {
 		return BulkAssignResult{}, ErrInvalidInput
@@ -178,6 +180,7 @@ func (s *Service) BulkAssign(ctx context.Context, in BulkAssignInput) (BulkAssig
 			UserID:       userID,
 			PlanID:       in.PlanID,
 			ActorAdminID: in.ActorAdminID,
+			ActorRef:     in.ActorRef,
 			RequestID:    strings.TrimSpace(in.RequestID),
 		})
 		if err != nil {
@@ -193,7 +196,7 @@ func (s *Service) BulkAssign(ctx context.Context, in BulkAssignInput) (BulkAssig
 }
 
 // CancelSubscription 管理员取消订阅 (关配额 + 降级)。
-func (s *Service) CancelSubscription(ctx context.Context, tenantID, subscriptionID, actorAdminID int64, requestID string) (UserSubscription, error) {
+func (s *Service) CancelSubscription(ctx context.Context, tenantID, subscriptionID, actorAdminID int64, requestID, actorRef string) (UserSubscription, error) {
 	if tenantID <= 0 || subscriptionID <= 0 {
 		return UserSubscription{}, ErrInvalidInput
 	}
@@ -202,13 +205,14 @@ func (s *Service) CancelSubscription(ctx context.Context, tenantID, subscription
 		SubscriptionID: subscriptionID,
 		ActorKind:      ActorKindAdmin,
 		ActorID:        actorAdminID,
+		ActorRef:       actorRef,
 		RequestID:      strings.TrimSpace(requestID),
 		Now:            s.now(),
 	})
 }
 
-// ExtendSubscription pushes an active, non-expired assignment later. Retries
-// with the same request_id are no-ops.
+// ExtendSubscription 把一个 active、未过期的授予往后顺延。
+// 用相同 request_id 的重试是 no-op。
 func (s *Service) ExtendSubscription(ctx context.Context, in ExtendSubscriptionInput) (UserSubscription, error) {
 	if in.TenantID <= 0 || in.SubscriptionID <= 0 {
 		return UserSubscription{}, ErrInvalidInput
@@ -227,6 +231,7 @@ func (s *Service) ExtendSubscription(ctx context.Context, in ExtendSubscriptionI
 		TenantID:       in.TenantID,
 		SubscriptionID: in.SubscriptionID,
 		ActorAdminID:   in.ActorAdminID,
+		ActorRef:       in.ActorRef,
 		RequestID:      strings.TrimSpace(in.RequestID),
 		Days:           in.Days,
 		Until:          until,
@@ -234,8 +239,8 @@ func (s *Service) ExtendSubscription(ctx context.Context, in ExtendSubscriptionI
 	})
 }
 
-// ResetQuota clears current quota consumption by rebuilding the subscription's
-// active quota policies from its stored plan snapshot.
+// ResetQuota 通过从订阅存储的套餐 snapshot 重建其 active 配额策略,
+// 清空当前的配额消耗。
 func (s *Service) ResetQuota(ctx context.Context, in ResetQuotaInput) (UserSubscription, error) {
 	if in.TenantID <= 0 || in.SubscriptionID <= 0 {
 		return UserSubscription{}, ErrInvalidInput
@@ -245,14 +250,15 @@ func (s *Service) ResetQuota(ctx context.Context, in ResetQuotaInput) (UserSubsc
 		SubscriptionID: in.SubscriptionID,
 		ActorKind:      ActorKindAdmin,
 		ActorID:        in.ActorAdminID,
+		ActorRef:       in.ActorRef,
 		RequestID:      strings.TrimSpace(in.RequestID),
 		Now:            s.now(),
 	})
 }
 
-// ChangePlan swaps an active subscription to a new plan snapshot. Admin callers
-// target a concrete subscription id; self-service callers target the current
-// active subscription by user id and always leave AllowDowngrade=false.
+// ChangePlan 把一个 active 订阅切换到新的套餐 snapshot。admin 调用方
+// 针对具体的 subscription id;自助调用方按 user id 针对当前 active 订阅,
+// 且始终保持 AllowDowngrade=false。
 func (s *Service) ChangePlan(ctx context.Context, in ChangePlanInput) (UserSubscription, error) {
 	if in.TenantID <= 0 || in.NewPlanID <= 0 {
 		return UserSubscription{}, ErrInvalidInput
@@ -269,12 +275,13 @@ func (s *Service) ChangePlan(ctx context.Context, in ChangePlanInput) (UserSubsc
 		NewPlanID:      in.NewPlanID,
 		AllowDowngrade: in.AllowDowngrade,
 		ActorAdminID:   in.ActorAdminID,
+		ActorRef:       in.ActorRef,
 		RequestID:      strings.TrimSpace(in.RequestID),
 		Now:            s.now(),
 	})
 }
 
-// RevokeSubscription hard-ends an active assignment and closes entitlements.
+// RevokeSubscription 强制终止一个 active 授予并关闭其权益。
 func (s *Service) RevokeSubscription(ctx context.Context, in RevokeSubscriptionInput) (UserSubscription, error) {
 	if in.TenantID <= 0 || in.SubscriptionID <= 0 {
 		return UserSubscription{}, ErrInvalidInput
@@ -287,6 +294,7 @@ func (s *Service) RevokeSubscription(ctx context.Context, in RevokeSubscriptionI
 		TenantID:       in.TenantID,
 		SubscriptionID: in.SubscriptionID,
 		ActorAdminID:   in.ActorAdminID,
+		ActorRef:       in.ActorRef,
 		Reason:         reason,
 		RequestID:      strings.TrimSpace(in.RequestID),
 		Now:            s.now(),

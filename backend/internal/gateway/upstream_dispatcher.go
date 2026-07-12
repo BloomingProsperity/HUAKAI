@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cacheplan"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway/streamusage"
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -49,8 +50,8 @@ type DispatchInput struct {
 	UpstreamModelID string
 	// InboundBody 客户原始请求 body 字节。
 	InboundBody []byte
-	// BodyControls are optional per-channel pre-dispatch JSON transforms.
-	// Zero value is a no-op.
+	// BodyControls 是可选的 per-channel 出站前 JSON 变换。
+	// 零值为空操作。
 	BodyControls DispatchBodyControls
 	// InboundContentType 是入口请求 Content-Type。空值保持 adapter 默认；
 	// multipart audio 透传时必须带原 boundary。
@@ -66,9 +67,9 @@ type DispatchInput struct {
 	// TransportMode 决定走 standard / mimicry / diagnostics RoundTripper。
 	// 零值 ("") 视为 TransportModeStandard。
 	TransportMode transport.TransportMode
-	// NonStreamingBuffered enables the non-streaming outbound hard timeouts.
-	// Streaming callers leave this false so stream-specific timeout axes stay
-	// owned by StreamForwarder.
+	// NonStreamingBuffered 启用非流式出站的硬超时。
+	// 流式调用方保持其为 false,使流式专属的超时维度仍由
+	// StreamForwarder 掌管。
 	NonStreamingBuffered bool
 	// ClientStreamIntent 客户端流式意图,原样穿给 provider.BuildInput(语义见
 	// 彼处注释)。gemini-shaped 族跨协议流式的端点选择依赖它。
@@ -95,6 +96,10 @@ type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+type AnthropicTTLSettings interface {
+	AnthropicTTL1hRewriteEnabled(context.Context) (bool, error)
+}
+
 // UpstreamDispatcher 串起 adapter / transport / HTTP client。
 type UpstreamDispatcher struct {
 	// Adapters 按 protocol family 取 adapter；必须非 nil。
@@ -116,22 +121,17 @@ type UpstreamDispatcher struct {
 	// 指纹(未绑定/非 active/profile 非法)。仅 mimicry mode + HTTPClient 为 nil
 	// 的生产路径生效。
 	TLSProfileResolver TLSProfileResolver
-	// Timeouts applies only to non-streaming buffered dispatches.
+	// Timeouts 仅作用于非流式 buffered dispatch。
 	Timeouts TimeoutConfig
-	// AnthropicAutoBreakpoints opts into automatic cache_control breakpoint
-	// planning on the live Anthropic Messages egress path. Default false keeps
-	// the body byte-for-byte. When true, a request whose protocol family is
-	// "anthropic_messages" AND that carries no client-supplied cache_control
-	// gets ephemeral breakpoints injected at planner-chosen positions just
-	// before BuildRequest. A client that brings its own cache_control is never
-	// touched. Any planning/serialization error is swallowed and the original
-	// body is used unchanged — caching is an optimization, never a hard
-	// dependency of a live request.
+	// AnthropicAutoBreakpoints 仅为无客户端 cache_control 的 Messages 请求自动注入断点；
+	// 默认关闭，规划失败时保留原始 body。
 	AnthropicAutoBreakpoints bool
+	// AnthropicTTLSettings 只决定自动断点采用默认 5m 还是显式 1h；读取失败按 5m 处理。
+	AnthropicTTLSettings AnthropicTTLSettings
 }
 
 // Dispatch 执行一次完整出站。失败时 result 可能为 nil；调用方按 err
-// 与 status 决定是否重试 / fallback。
+// 与 status 决定是否重试 / 回退。
 func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*DispatchResult, error) {
 	if d == nil {
 		return nil, errors.New("dispatcher: nil receiver")
@@ -155,18 +155,14 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	}
 	in.InboundBody = controlledBody
 
-	// RR-04: trim client-supplied excess cache_control breakpoints to
-	// CacheControlMaxAllowed before forwarding. Anthropic 400s requests
-	// with >4 cache_control blocks. Fail-open: on decode error the body
-	// is forwarded unchanged.
+	// RR-04:裁剪 >CacheControlMaxAllowed 的 cache_control breakpoints(Anthropic >4 返 400);fail-open。
 	if trimmed, _ := EnforceCacheControlLimit(in.InboundBody, CacheControlMaxAllowed); len(trimmed) > 0 {
 		in.InboundBody = trimmed
 	}
-
-	// 1.5 Optional Anthropic cache_control breakpoint planning. Replaces the
-	// local inbound body only for the anthropic_messages family and only when
-	// opted in; see maybeInjectAnthropicBreakpoints.
-	in.InboundBody = d.maybeInjectAnthropicBreakpoints(in.ProtocolFamily, in.InboundBody)
+	// 可选 Anthropic cache_control breakpoint 规划(仅 anthropic_messages、opt-in;见 maybeInjectAnthropicBreakpoints)。
+	in.InboundBody = d.maybeInjectAnthropicBreakpoints(ctx, in.ProtocolFamily, in.InboundBody)
+	// B1:官方 OpenAI 兼容族流式出站强制 stream_options.include_usage(见 streamusage 子包)。
+	in.InboundBody = streamusage.Inject(in.ProtocolFamily, in.InboundBody)
 
 	// 2. 构造出站请求
 	req, err := adapter.BuildRequest(ctx, provider.BuildInput{
@@ -266,7 +262,18 @@ type TLSProfileResolver interface {
 // 无绑定/非 mimicry/解析失败一律保持原 rt(builtin)。永不让 dispatch 失败 ——
 // 返回的 profile RT 实现 proxy-aware WithProxy,故 applyProxy 仍能正确叠加代理。
 func (d *UpstreamDispatcher) applyTLSProfile(ctx context.Context, rt http.RoundTripper, mode transport.TransportMode, accountID int64) http.RoundTripper {
-	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard {
+	// 全局伪装关闭时(HUAKAI_TRANSPORT_MIMICRY=false),DB profile 旁路也必须跳过:
+	// 否则绑定了 DB TLS profile 的账号会在 For 已把 mode 降级标准 transport 之后,
+	// 又被这里重新换上 uTLS profile RT,留下伪装死角。复用 transport.MimicryEnabled
+	// 保证与 factory.For 的开关判定完全一致。
+	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard || !transport.MimicryEnabled() {
+		return rt
+	}
+	// 收编 DB TLS profile 旁路:若传入的 rt 已经是走 Rust tls-sidecar 的 RT(自带内置
+	// 真指纹),绝不能用 per-account DB uTLS profile 整体替换它——否则绑定 DB profile 的
+	// 账号会让 sidecar 永远轮不到用、退回 Go uTLS 占位指纹。sidecar RT 通过 SidecarProfileID()
+	// 自证(仅 mimicry.sidecarRoundTripper 实现该方法,检测精确,不会误伤非 sidecar RT)。
+	if _, ok := rt.(interface{ SidecarProfileID() string }); ok {
 		return rt
 	}
 	if profileRT, err := d.TLSProfileResolver.ResolveRoundTripper(ctx, accountID); err == nil && profileRT != nil {
@@ -313,33 +320,13 @@ func validatePassthroughEndpointTarget(ctx context.Context, cred provider.Creden
 	return nil
 }
 
-// maybeInjectAnthropicBreakpoints plans and applies ephemeral cache_control
-// breakpoints on an Anthropic Messages request body just before it is built
-// into an outbound HTTP request. It is a no-op (returns body unchanged) when
-// any of these hold:
-//   - AnthropicAutoBreakpoints is not enabled on the dispatcher;
-//   - the protocol family is not "anthropic_messages";
-//   - the client already supplied at least one cache_control field anywhere
-//     in the request (system / message content / tools) — we never override
-//     a client that manages its own caching;
-//   - the planner produces no positions, or any inspect/plan/apply step
-//     errors. Caching is an optimization; a planning failure must never
-//     break a live request, so on error the original body is returned.
-//
-// The returned slice is either the original body (untouched) or a freshly
-// allocated, re-serialized body from ApplyBreakpoints; the caller's slice is
-// never mutated in place.
-func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(protocolFamily string, body []byte) []byte {
-	if d == nil || !d.AnthropicAutoBreakpoints {
+// maybeInjectAnthropicBreakpoints 不改客户端自带控制字段；任何规划、设置或序列化失败
+// 都回退原始 body，缓存优化不得阻断实时请求。
+func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(ctx context.Context, protocolFamily string, body []byte) []byte {
+	if d == nil || !d.AnthropicAutoBreakpoints || protocolFamily != "anthropic_messages" || len(body) == 0 {
 		return body
 	}
-	if protocolFamily != "anthropic_messages" {
-		return body
-	}
-	if len(body) == 0 {
-		return body
-	}
-	// Client already brought its own cache_control: leave the body verbatim.
+	// 客户端已自带 cache_control:body 原样保留。
 	if cacheplan.HasAnyCacheControl(body) {
 		return body
 	}
@@ -351,7 +338,16 @@ func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(protocolFamily stri
 	if err != nil || len(suggestion.Add) == 0 {
 		return body
 	}
-	result, err := ApplyBreakpoints(body, suggestion)
+	apply := ApplyBreakpoints
+	if d.AnthropicTTLSettings != nil {
+		if enabled, readErr := d.AnthropicTTLSettings.AnthropicTTL1hRewriteEnabled(ctx); readErr == nil && enabled {
+			for i := range suggestion.Add {
+				suggestion.Add[i].TTL = "1h"
+			}
+			apply = ApplyBreakpointsWithTTLOrdering
+		}
+	}
+	result, err := apply(body, suggestion)
 	if err != nil || len(result.Applied) == 0 || len(result.Body) == 0 {
 		return body
 	}

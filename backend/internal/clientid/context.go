@@ -40,9 +40,9 @@ func IdentityFromContext(ctx context.Context) (Identity, float64) {
 	return d.identity, d.confidence
 }
 
-// ToolFromContext returns the non-sensitive client tool enum safe for
-// persistence. Unknown/missing identities return empty string so nullable DB
-// columns stay NULL instead of recording a misleading "unknown" bucket.
+// ToolFromContext 返回可安全持久化的非敏感 client tool 枚举。
+// unknown/缺失的身份返回空字符串，让可空 DB 列保持 NULL，而不是
+// 记录一个误导性的 "unknown" 桶。
 func ToolFromContext(ctx context.Context) string {
 	id, _ := IdentityFromContext(ctx)
 	if id == IdentityUnknown {

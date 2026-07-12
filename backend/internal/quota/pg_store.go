@@ -3,7 +3,6 @@ package quota
 import (
 	"context"
 	"errors"
-	"math"
 	"strings"
 	"time"
 
@@ -96,27 +95,6 @@ func (s *PostgresStore) ListActivePolicies(ctx context.Context, filter PolicyFil
 		policies = append(policies, policyFromDB(row))
 	}
 	return policies, nil
-}
-
-func (s *PostgresStore) ListCurrentWindowsForScope(ctx context.Context, tenantID int64, scopeKind ScopeKind, scopeID string, at time.Time) ([]CurrentWindowRead, error) {
-	q, err := s.queries()
-	if err != nil {
-		return nil, err
-	}
-	rows, err := q.ListCurrentQuotaWindowsForScope(ctx, dbquota.ListCurrentQuotaWindowsForScopeParams{
-		TenantID:  tenantID,
-		ScopeKind: string(scopeKind),
-		ScopeID:   normalizeScopeID(scopeKind, scopeID),
-		AtTime:    pgTimestamptz(at.UTC()),
-	})
-	if err != nil {
-		return nil, err
-	}
-	windows := make([]CurrentWindowRead, 0, len(rows))
-	for _, row := range rows {
-		windows = append(windows, currentWindowReadFromDB(row, at.UTC()))
-	}
-	return windows, nil
 }
 
 func (s *PostgresStore) UpsertWindow(ctx context.Context, input WindowUpsert) (WindowCounter, error) {
@@ -508,80 +486,6 @@ func (s *PostgresStore) EnqueueReconciliationJob(ctx context.Context, input Reco
 		AttemptCount:  int(row.AttemptCount),
 		NextRunAt:     pgTime(row.NextRunAt),
 	}, nil
-}
-
-func (s *PostgresStore) ListDueReconciliationJobs(ctx context.Context, tenantID int64, at time.Time, limit int) ([]ReconciliationJob, error) {
-	q, err := s.queries()
-	if err != nil {
-		return nil, err
-	}
-	if limit <= 0 {
-		return nil, nil
-	}
-	if limit > math.MaxInt32 {
-		limit = math.MaxInt32
-	}
-	rows, err := q.ListDueQuotaReconciliationJobs(ctx, dbquota.ListDueQuotaReconciliationJobsParams{
-		TenantID: tenantID,
-		AtTime:   pgTimestamptz(at),
-		JobLimit: int32(limit),
-	})
-	if err != nil {
-		return nil, err
-	}
-	jobs := make([]ReconciliationJob, 0, len(rows))
-	for _, row := range rows {
-		jobs = append(jobs, ReconciliationJob{
-			TenantID:      row.TenantID,
-			ID:            row.ID,
-			ClaimID:       row.ClaimID,
-			ReservationID: row.ReservationID,
-			Kind:          row.JobKind,
-			Status:        row.Status,
-			AttemptCount:  int(row.AttemptCount),
-			LastError:     row.LastError,
-			NextRunAt:     pgTime(row.NextRunAt),
-		})
-	}
-	return jobs, nil
-}
-
-func (s *PostgresStore) MarkReconciliationJobRunning(ctx context.Context, tenantID int64, jobID int64) error {
-	q, err := s.queries()
-	if err != nil {
-		return err
-	}
-	rows, err := q.MarkQuotaReconciliationJobRunning(ctx, dbquota.MarkQuotaReconciliationJobRunningParams{
-		TenantID: tenantID,
-		JobID:    jobID,
-	})
-	return requireAffected(rows, err)
-}
-
-func (s *PostgresStore) CompleteReconciliationJob(ctx context.Context, tenantID int64, jobID int64) error {
-	q, err := s.queries()
-	if err != nil {
-		return err
-	}
-	rows, err := q.CompleteQuotaReconciliationJob(ctx, dbquota.CompleteQuotaReconciliationJobParams{
-		TenantID: tenantID,
-		JobID:    jobID,
-	})
-	return requireAffected(rows, err)
-}
-
-func (s *PostgresStore) FailReconciliationJob(ctx context.Context, input ReconciliationFailure) error {
-	q, err := s.queries()
-	if err != nil {
-		return err
-	}
-	rows, err := q.FailQuotaReconciliationJob(ctx, dbquota.FailQuotaReconciliationJobParams{
-		LastError: input.LastError,
-		NextRunAt: pgTimestamptz(input.NextRunAt),
-		TenantID:  input.TenantID,
-		JobID:     input.JobID,
-	})
-	return requireAffected(rows, err)
 }
 
 var _ PGStore = (*PostgresStore)(nil)

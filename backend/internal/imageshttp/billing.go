@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -16,8 +19,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
+
+var imagesQuotaReserveFailedOpenTotal = expvar.NewInt("images_quota_reserve_failed_open_total")
 
 func (ex *execution) reserve(w http.ResponseWriter) bool {
 	ex.ensureIdempotency()
@@ -44,6 +51,13 @@ func (ex *execution) reserve(w http.ResponseWriter) bool {
 		writeInsufficientBalanceError(w)
 		return false
 	}
+	// 幂等竞争 / Serializable 重试耗尽:可重试,返 409+Retry-After 让客户端稍后再试
+	//(镜像 chat completions;此前落进下方通用 500 = 把可重试竞争误报成服务端错误)。
+	if errors.Is(err, billing.ErrClaimRace) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace))
+		return false
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeReserveError, clienterr.MessageFor(clienterr.CodeReserveError))
 		return false
@@ -68,6 +82,7 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 		PoolGroupID:        ex.attempt.PoolGroupID,
 		RequestFingerprint: ex.payloadHash,
 		RequestedModel:     ex.req.Model,
+		ReservedTokens:     ex.quotaReservedTokens(),
 		PredictedCost:      ex.predictedCost,
 		At:                 time.Now().UTC(),
 	}))
@@ -76,10 +91,25 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 	}
 	if quotaenforce.IsDenied(err) || (err == nil && !result.Allowed) {
 		ex.abort(w, "quota_denied", 0)
-		writeInsufficientQuotaError(w)
+		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err), quotaenforce.DenyWindowKind(result, err))
 		return false
 	}
+	imagesQuotaReserveFailedOpenTotal.Add(1)
+	slog.WarnContext(ex.ctx, "quota reserve failed open",
+		slog.String("request_id", ex.requestID),
+		slog.Int64("tenant_id", ex.ident.TenantID),
+		slog.Int64("claim_id", ex.reserveRes.ClaimID),
+		slog.String("reason", "quota_reserve_infra_error"),
+		slog.String("error_type", fmt.Sprintf("%T", err)),
+	)
 	return true
+}
+
+func (ex *execution) quotaReservedTokens() int64 {
+	if ex.scheme != imagepricing.SchemeTokenImage {
+		return 0
+	}
+	return int64(estimatePromptTokens(ex.req.PromptText()))
 }
 
 // billableImageCount 是 per_image 计费/审计的真相源:常态返回请求 amount,
@@ -136,6 +166,51 @@ func (ex *execution) settleRequest(tokens tokenImageUsage, cost decimal.Decimal,
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
 	}
+}
+
+func (ex *execution) settleDeliveredResponse(ctx context.Context, req billing.SettleRequest) error {
+	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
+		failureClass := privacy.ErrorClassFor(ctx, err)
+		payload := settlementrecovery.FromSettleRequest(settlementrecovery.SourceImagesDelivered, ex.requestID, req)
+		_ = settlementrecovery.EnqueueFailure(ctx, ex.d.SettleRecoveryDLQ, payload, err, "imageshttp.settle_recovery")
+		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+			Severity: privacy.SeverityError, Component: "imageshttp.settle_recovery",
+			RequestID: ex.requestID, ErrorClass: failureClass, Attrs: map[string]any{
+				"event_class":          "image_settlement_deferred",
+				"tenant_id":            req.TenantID,
+				"claim_id":             req.ClaimID,
+				"failure_reason_class": failureClass,
+			},
+		})
+		return err
+	}
+	return nil
+}
+
+func (ex *execution) abortAfterResponseWriteFailure(reason string, observedInputTokens int64, writeErr error) {
+	if ex.reserveRes == nil {
+		return
+	}
+	ctx, cancel := ex.billingCtx()
+	defer cancel()
+	abortErr := ex.d.Settler.Abort(ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil)
+	attrs := map[string]any{
+		"event_class": "image_response_write_failed", "tenant_id": ex.ident.TenantID,
+		"claim_id": ex.reserveRes.ClaimID,
+	}
+	if abortErr != nil {
+		attrs["failure_class"] = privacy.ErrorClassFor(ctx, abortErr)
+	}
+	_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+		Severity: privacy.SeverityError, Component: "imageshttp.response_delivery",
+		RequestID: ex.requestID, ErrorClass: privacy.ErrorClassFor(ctx, writeErr),
+		Attrs: attrs,
+	})
+}
+
+func (ex *execution) observeResponseWriteUncertainty(err error) {
+	slog.WarnContext(ex.ctx, "image response write uncertain after full body",
+		slog.String("request_id", ex.requestID), slog.String("error_type", fmt.Sprintf("%T", err)))
 }
 
 func imageSizeBreakdown(size string, count int32) []byte {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -43,8 +44,13 @@ func loadGatewayConfig(logger *zap.Logger) (*Config, error) {
 	return cfg, nil
 }
 
-func buildAuthEmailSender(_ *Config, store mailinfra.SettingsStore, keys credentialstore.KeyProvider, logger *zap.Logger, outbox obsoutbox.Outbox) (gatewayhttp.AuthEmailSender, error) {
-	sender, err := mailinfra.BuildEmailSender(context.Background(), store, keys, mailinfra.WithOutbox(outbox))
+func buildAuthEmailSender(_ *Config, store mailinfra.SettingsStore, keys credentialstore.KeyProvider, logger *zap.Logger, outbox obsoutbox.Outbox, frontendBaseURL func(context.Context) string) (gatewayhttp.AuthEmailSender, error) {
+	opts := []mailinfra.AuthSenderOption{mailinfra.WithOutbox(outbox)}
+	if frontendBaseURL != nil {
+		// 前端 base URL 已配置时,鉴权邮件投递完整可点链接(用户直接点),否则回退裸 token + 前端粘贴框。
+		opts = append(opts, mailinfra.WithFrontendBaseURL(frontendBaseURL))
+	}
+	sender, err := mailinfra.BuildEmailSender(context.Background(), store, keys, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -69,9 +75,9 @@ func validateReleaseMode() error {
 	case "dev", "development", "test", "production":
 		return nil
 	case "":
-		return fmt.Errorf("HUAKAI_RELEASE_MODE is required; set production, dev, development, or test explicitly")
+		return fmt.Errorf("HUAKAI_RELEASE_MODE 未设置:必须显式声明运行模式,拒绝静默降级。生产部署设 HUAKAI_RELEASE_MODE=production;本机/内网自测设 dev(亦可 development / test)")
 	default:
-		return fmt.Errorf("HUAKAI_RELEASE_MODE=%q 不是已知取值（production / development / dev / test）；拒绝静默降级为 dev", raw)
+		return fmt.Errorf("HUAKAI_RELEASE_MODE=%q 不是已知取值(production / development / dev / test);拒绝静默降级为 dev。生产设 production,自测设 dev", raw)
 	}
 }
 
@@ -176,6 +182,31 @@ func loadUserRegistrationModeFromEnv() (userauth.RegistrationMode, error) {
 	return mode, nil
 }
 
+// loadSessionDevicePolicyFromEnv 读新设备策略两旋钮, 注入 usersession.Service:
+//   - HUAKAI_SESSION_MAX_ACTIVE_DEVICES: 每用户活跃登录设备 (session family) 上限; 默认 0 = 策略休眠。
+//   - HUAKAI_SESSION_DEVICE_POLICY: 达上限时的处置 ("" / revoke_oldest / confirm); 默认 "" = 拒绝超限设备。
+//
+// fail-loud: 非法的数字 / 负数 / 未知 policy 取值一律返回 error 拒启, 不静默回落到休眠 (否则运维以为
+// 已开策略实则没开)。默认 (两个 env 都不设) 保持休眠 (max=0), 零生产行为变更。
+func loadSessionDevicePolicyFromEnv() (maxActiveDevices int, devicePolicy string, err error) {
+	rawMax := strings.TrimSpace(os.Getenv("HUAKAI_SESSION_MAX_ACTIVE_DEVICES"))
+	if rawMax != "" {
+		n, parseErr := strconv.Atoi(rawMax)
+		if parseErr != nil || n < 0 {
+			return 0, "", fmt.Errorf("HUAKAI_SESSION_MAX_ACTIVE_DEVICES=%q 必须是 >=0 的整数（0=设备策略休眠）", rawMax)
+		}
+		maxActiveDevices = n
+	}
+	devicePolicy = strings.TrimSpace(os.Getenv("HUAKAI_SESSION_DEVICE_POLICY"))
+	switch devicePolicy {
+	case "", "revoke_oldest", "confirm":
+		// 合法取值: "" = 达上限直接拒 (ErrDeviceLimitExceeded); revoke_oldest = 撤最老腾位; confirm = 走确认流。
+	default:
+		return 0, "", fmt.Errorf("HUAKAI_SESSION_DEVICE_POLICY=%q 不是已知取值（空 / revoke_oldest / confirm）", devicePolicy)
+	}
+	return maxActiveDevices, devicePolicy, nil
+}
+
 // validateDevAuthTokenFlag 在启动时 fail-closed:HUAKAI_DEV_AUTH_RETURN_TOKEN=true 会让公开的
 // 注册/密码重置接口把一次性明文 secret 直接回写进 JSON 响应体(addDevAuthToken),仅供本地/CI 调试。
 // 生产环境(HUAKAI_RELEASE_MODE=production)绝不能开启,否则每次注册/重置都会泄露令牌。
@@ -188,12 +219,18 @@ func validateDevAuthTokenFlag() error {
 	return nil
 }
 
+// auditKeySetupHint 在 production 审计私钥相关启动门拒启时附带打印,直接给出生成与设置命令,
+// 避免运维卡在"知道缺私钥却不知怎么补"。这是降摩擦文案,不改任何启动门判定。
+const auditKeySetupHint = "生成 ed25519 私钥:openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem " +
+	"(或跑 backend/scripts/gen-audit-key.sh 一键生成),再设 HUAKAI_AUDIT_PRIVATE_KEY_PATH 指向它;" +
+	"容器部署经 volumes 把宿主私钥挂到该路径,详见 docs/deploy/production-bootstrap.md"
+
 func requireProductionChannelHealthSigner(signer *sign.Signer) error {
 	if !releaseModeProduction() {
 		return nil
 	}
 	if signer == nil {
-		return fmt.Errorf("production 模式要求 channelhealth audit signer：请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH")
+		return fmt.Errorf("production 模式要求 channelhealth audit signer:请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH。%s", auditKeySetupHint)
 	}
 	return nil
 }
@@ -214,7 +251,7 @@ func loadCredentialKeyProvider() (credentialstore.KeyProvider, error) {
 	return credentialstore.NewStaticKeyProvider(keyID, material)
 }
 
-func loadSessionSigningKey() ([]byte, error) {
+func loadSessionSigningKey(logger *zap.Logger) ([]byte, error) {
 	b64Names := []string{"HUAKAI_SESSION_SIGNING_KEY_B64", "HUAKAI_SESSION_HMAC_KEY_B64"}
 	for _, name := range b64Names {
 		raw := strings.TrimSpace(os.Getenv(name))
@@ -243,76 +280,106 @@ func loadSessionSigningKey() ([]byte, error) {
 		}
 		return key, nil
 	}
-	return nil, fmt.Errorf("HUAKAI_SESSION_SIGNING_KEY_B64 or HUAKAI_SESSION_SIGNING_KEY_HEX is required")
+	// 无任何显式配置(上面 B64/HEX 都未设)。production 仍强制 fail-loud——跨重启稳定的会话签名
+	// 必须由运维显式提供持久 key。非生产模式(dev/development/test)则自动生成一把临时随机 key:
+	// 仅省本地开发"没设 key 就起不来"的摩擦,不持久化(重启即换、旧会话失效,本地无所谓)。
+	// 安全姿态:production 行为完全不变;此分支绝不在 production 触发。
+	if releaseModeProduction() {
+		return nil, fmt.Errorf("HUAKAI_SESSION_SIGNING_KEY_B64 or HUAKAI_SESSION_SIGNING_KEY_HEX is required")
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("生成临时 session 签名 key 失败: %w", err)
+	}
+	if logger != nil {
+		logger.Warn("非生产模式未设 HUAKAI_SESSION_SIGNING_KEY:已自动生成临时 key(重启即换、会话失效);" +
+			"如需跨重启稳定,显式设 HUAKAI_SESSION_SIGNING_KEY_B64")
+	}
+	return key, nil
 }
 
 func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
-	providers := make([]userauth.OAuthProvider, 0, 7)
-	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
-		Provider:     userauth.SocialProviderGoogle,
-		ClientID:     os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_ID"),
-		ClientSecret: os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_SECRET"),
-		RedirectURI:  os.Getenv("HUAKAI_GOOGLE_OAUTH_REDIRECT_URI"),
-		AuthURL:      os.Getenv("HUAKAI_GOOGLE_OAUTH_AUTH_URL"),
-		TokenURL:     envDefault("HUAKAI_GOOGLE_OAUTH_TOKEN_URL", "https://oauth2.googleapis.com/token"),
-		JWKSURL:      envDefault("HUAKAI_GOOGLE_OAUTH_JWKS_URL", "https://www.googleapis.com/oauth2/v3/certs"),
-		Issuer:       envDefault("HUAKAI_GOOGLE_OAUTH_ISSUER", "https://accounts.google.com"),
-	}); p != nil {
-		providers = append(providers, p)
+	configs := envOAuthConfigMap(logger)
+	providers := make([]userauth.OAuthProvider, 0, len(configs))
+	for _, cfg := range configs {
+		if p := buildOAuthProvider(logger, cfg); p != nil {
+			providers = append(providers, p)
+		}
 	}
-	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
-		Provider:     userauth.SocialProviderGitHub,
-		ClientID:     os.Getenv("HUAKAI_GITHUB_OAUTH_CLIENT_ID"),
-		ClientSecret: os.Getenv("HUAKAI_GITHUB_OAUTH_CLIENT_SECRET"),
-		RedirectURI:  os.Getenv("HUAKAI_GITHUB_OAUTH_REDIRECT_URI"),
-		AuthURL:      os.Getenv("HUAKAI_GITHUB_OAUTH_AUTH_URL"),
-		TokenURL:     envDefault("HUAKAI_GITHUB_OAUTH_TOKEN_URL", "https://github.com/login/oauth/access_token"),
-		UserURL:      envDefault("HUAKAI_GITHUB_OAUTH_USER_URL", "https://api.github.com/user"),
-		EmailsURL:    envDefault("HUAKAI_GITHUB_OAUTH_EMAILS_URL", "https://api.github.com/user/emails"),
-	}); p != nil {
-		providers = append(providers, p)
-	}
-	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
-		Provider:     userauth.SocialProviderQQ,
-		ClientID:     os.Getenv("HUAKAI_QQ_OAUTH_CLIENT_ID"),
-		ClientSecret: os.Getenv("HUAKAI_QQ_OAUTH_CLIENT_SECRET"),
-		RedirectURI:  os.Getenv("HUAKAI_QQ_OAUTH_REDIRECT_URI"),
-		AuthURL:      os.Getenv("HUAKAI_QQ_OAUTH_AUTH_URL"),
-		TokenURL:     os.Getenv("HUAKAI_QQ_OAUTH_TOKEN_URL"),
-		OpenIDURL:    os.Getenv("HUAKAI_QQ_OAUTH_OPENID_URL"),
-		UserURL:      os.Getenv("HUAKAI_QQ_OAUTH_USER_URL"),
-	}); p != nil {
-		providers = append(providers, p)
-	}
-	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
-		Provider:     userauth.SocialProviderDingTalk,
-		ClientID:     os.Getenv("HUAKAI_DINGTALK_OAUTH_CLIENT_ID"),
-		ClientSecret: os.Getenv("HUAKAI_DINGTALK_OAUTH_CLIENT_SECRET"),
-		RedirectURI:  os.Getenv("HUAKAI_DINGTALK_OAUTH_REDIRECT_URI"),
-		AuthURL:      os.Getenv("HUAKAI_DINGTALK_OAUTH_AUTH_URL"),
-		TokenURL:     os.Getenv("HUAKAI_DINGTALK_OAUTH_TOKEN_URL"),
-		UserURL:      os.Getenv("HUAKAI_DINGTALK_OAUTH_USER_URL"),
-	}); p != nil {
-		providers = append(providers, p)
-	}
-	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
-		Provider:           userauth.SocialProviderNodeSeek,
-		ClientID:           os.Getenv("HUAKAI_NODESEEK_OAUTH_CLIENT_ID"),
-		ClientSecret:       os.Getenv("HUAKAI_NODESEEK_OAUTH_CLIENT_SECRET"),
-		RedirectURI:        os.Getenv("HUAKAI_NODESEEK_OAUTH_REDIRECT_URI"),
-		AuthURL:            os.Getenv("HUAKAI_NODESEEK_OAUTH_AUTH_URL"),
-		TokenURL:           os.Getenv("HUAKAI_NODESEEK_OAUTH_TOKEN_URL"),
-		UserURL:            os.Getenv("HUAKAI_NODESEEK_OAUTH_USERINFO_URL"),
-		SubjectField:       os.Getenv("HUAKAI_NODESEEK_OAUTH_SUBJECT_FIELD"),
-		EmailField:         os.Getenv("HUAKAI_NODESEEK_OAUTH_EMAIL_FIELD"),
-		EmailVerifiedField: os.Getenv("HUAKAI_NODESEEK_OAUTH_EMAIL_VERIFIED_FIELD"),
-		DisplayNameField:   os.Getenv("HUAKAI_NODESEEK_OAUTH_DISPLAY_NAME_FIELD"),
-		Scopes:             parseCSVAllowlistEnv("HUAKAI_NODESEEK_OAUTH_SCOPES"),
-	}); p != nil {
-		providers = append(providers, p)
+	return userauth.NewOAuthService(providers...)
+}
+
+// envOAuthConfigMap 从环境变量构建各 OAuth provider 的配置模板(provider 名 → OAuthConfig,含默认 URL)。
+// boot 期静态构建与请求期 settings-first 解析共用同一份 env 基线,避免默认 URL / 字段两处漂移。
+// linuxdo 仅当 min-trust-level env 合法时纳入(与旧行为一致)。
+func envOAuthConfigMap(logger *zap.Logger) map[string]userauth.OAuthConfig {
+	configs := map[string]userauth.OAuthConfig{
+		userauth.SocialProviderGoogle: {
+			Provider:     userauth.SocialProviderGoogle,
+			ClientID:     os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_ID"),
+			ClientSecret: os.Getenv("HUAKAI_GOOGLE_OAUTH_CLIENT_SECRET"),
+			RedirectURI:  os.Getenv("HUAKAI_GOOGLE_OAUTH_REDIRECT_URI"),
+			AuthURL:      os.Getenv("HUAKAI_GOOGLE_OAUTH_AUTH_URL"),
+			TokenURL:     envDefault("HUAKAI_GOOGLE_OAUTH_TOKEN_URL", "https://oauth2.googleapis.com/token"),
+			JWKSURL:      envDefault("HUAKAI_GOOGLE_OAUTH_JWKS_URL", "https://www.googleapis.com/oauth2/v3/certs"),
+			Issuer:       envDefault("HUAKAI_GOOGLE_OAUTH_ISSUER", "https://accounts.google.com"),
+		},
+		userauth.SocialProviderGitHub: {
+			Provider:     userauth.SocialProviderGitHub,
+			ClientID:     os.Getenv("HUAKAI_GITHUB_OAUTH_CLIENT_ID"),
+			ClientSecret: os.Getenv("HUAKAI_GITHUB_OAUTH_CLIENT_SECRET"),
+			RedirectURI:  os.Getenv("HUAKAI_GITHUB_OAUTH_REDIRECT_URI"),
+			AuthURL:      os.Getenv("HUAKAI_GITHUB_OAUTH_AUTH_URL"),
+			TokenURL:     envDefault("HUAKAI_GITHUB_OAUTH_TOKEN_URL", "https://github.com/login/oauth/access_token"),
+			UserURL:      envDefault("HUAKAI_GITHUB_OAUTH_USER_URL", "https://api.github.com/user"),
+			EmailsURL:    envDefault("HUAKAI_GITHUB_OAUTH_EMAILS_URL", "https://api.github.com/user/emails"),
+		},
+		userauth.SocialProviderQQ: {
+			Provider:     userauth.SocialProviderQQ,
+			ClientID:     os.Getenv("HUAKAI_QQ_OAUTH_CLIENT_ID"),
+			ClientSecret: os.Getenv("HUAKAI_QQ_OAUTH_CLIENT_SECRET"),
+			RedirectURI:  os.Getenv("HUAKAI_QQ_OAUTH_REDIRECT_URI"),
+			AuthURL:      os.Getenv("HUAKAI_QQ_OAUTH_AUTH_URL"),
+			TokenURL:     os.Getenv("HUAKAI_QQ_OAUTH_TOKEN_URL"),
+			OpenIDURL:    os.Getenv("HUAKAI_QQ_OAUTH_OPENID_URL"),
+			UserURL:      os.Getenv("HUAKAI_QQ_OAUTH_USER_URL"),
+		},
+		userauth.SocialProviderDingTalk: {
+			Provider:     userauth.SocialProviderDingTalk,
+			ClientID:     os.Getenv("HUAKAI_DINGTALK_OAUTH_CLIENT_ID"),
+			ClientSecret: os.Getenv("HUAKAI_DINGTALK_OAUTH_CLIENT_SECRET"),
+			RedirectURI:  os.Getenv("HUAKAI_DINGTALK_OAUTH_REDIRECT_URI"),
+			AuthURL:      os.Getenv("HUAKAI_DINGTALK_OAUTH_AUTH_URL"),
+			TokenURL:     os.Getenv("HUAKAI_DINGTALK_OAUTH_TOKEN_URL"),
+			UserURL:      os.Getenv("HUAKAI_DINGTALK_OAUTH_USER_URL"),
+		},
+		userauth.SocialProviderNodeSeek: {
+			Provider:           userauth.SocialProviderNodeSeek,
+			ClientID:           os.Getenv("HUAKAI_NODESEEK_OAUTH_CLIENT_ID"),
+			ClientSecret:       os.Getenv("HUAKAI_NODESEEK_OAUTH_CLIENT_SECRET"),
+			RedirectURI:        os.Getenv("HUAKAI_NODESEEK_OAUTH_REDIRECT_URI"),
+			AuthURL:            os.Getenv("HUAKAI_NODESEEK_OAUTH_AUTH_URL"),
+			TokenURL:           os.Getenv("HUAKAI_NODESEEK_OAUTH_TOKEN_URL"),
+			UserURL:            os.Getenv("HUAKAI_NODESEEK_OAUTH_USERINFO_URL"),
+			SubjectField:       os.Getenv("HUAKAI_NODESEEK_OAUTH_SUBJECT_FIELD"),
+			EmailField:         os.Getenv("HUAKAI_NODESEEK_OAUTH_EMAIL_FIELD"),
+			EmailVerifiedField: os.Getenv("HUAKAI_NODESEEK_OAUTH_EMAIL_VERIFIED_FIELD"),
+			DisplayNameField:   os.Getenv("HUAKAI_NODESEEK_OAUTH_DISPLAY_NAME_FIELD"),
+			Scopes:             parseCSVAllowlistEnv("HUAKAI_NODESEEK_OAUTH_SCOPES"),
+		},
+		userauth.SocialProviderDiscord: {
+			Provider:     userauth.SocialProviderDiscord,
+			ClientID:     os.Getenv("HUAKAI_DISCORD_OAUTH_CLIENT_ID"),
+			ClientSecret: os.Getenv("HUAKAI_DISCORD_OAUTH_CLIENT_SECRET"),
+			RedirectURI:  os.Getenv("HUAKAI_DISCORD_OAUTH_REDIRECT_URI"),
+			AuthURL:      os.Getenv("HUAKAI_DISCORD_OAUTH_AUTH_URL"),
+			TokenURL:     os.Getenv("HUAKAI_DISCORD_OAUTH_TOKEN_URL"),
+			UserURL:      os.Getenv("HUAKAI_DISCORD_OAUTH_USERINFO_URL"),
+			Scopes:       parseCSVAllowlistEnv("HUAKAI_DISCORD_OAUTH_SCOPES"),
+		},
 	}
 	if minTrustLevel, ok := linuxDoOAuthMinTrustLevel(logger); ok {
-		if p := buildOAuthProvider(logger, userauth.OAuthConfig{
+		configs[userauth.SocialProviderLinuxDo] = userauth.OAuthConfig{
 			Provider:                 userauth.SocialProviderLinuxDo,
 			ClientID:                 os.Getenv("HUAKAI_LINUXDO_OAUTH_CLIENT_ID"),
 			ClientSecret:             os.Getenv("HUAKAI_LINUXDO_OAUTH_CLIENT_SECRET"),
@@ -327,23 +394,15 @@ func buildUserOAuthService(logger *zap.Logger) *userauth.OAuthService {
 			MinimumNumericClaimField: envDefault("HUAKAI_LINUXDO_OAUTH_TRUST_LEVEL_FIELD", "trust_level"),
 			MinimumNumericClaimValue: minTrustLevel,
 			Scopes:                   parseCSVAllowlistEnv("HUAKAI_LINUXDO_OAUTH_SCOPES"),
-		}); p != nil {
-			providers = append(providers, p)
 		}
 	}
-	if p := buildOAuthProvider(logger, userauth.OAuthConfig{
-		Provider:     userauth.SocialProviderDiscord,
-		ClientID:     os.Getenv("HUAKAI_DISCORD_OAUTH_CLIENT_ID"),
-		ClientSecret: os.Getenv("HUAKAI_DISCORD_OAUTH_CLIENT_SECRET"),
-		RedirectURI:  os.Getenv("HUAKAI_DISCORD_OAUTH_REDIRECT_URI"),
-		AuthURL:      os.Getenv("HUAKAI_DISCORD_OAUTH_AUTH_URL"),
-		TokenURL:     os.Getenv("HUAKAI_DISCORD_OAUTH_TOKEN_URL"),
-		UserURL:      os.Getenv("HUAKAI_DISCORD_OAUTH_USERINFO_URL"),
-		Scopes:       parseCSVAllowlistEnv("HUAKAI_DISCORD_OAUTH_SCOPES"),
-	}); p != nil {
-		providers = append(providers, p)
-	}
-	return userauth.NewOAuthService(providers...)
+	return configs
+}
+
+// envOAuthConfigFor 返回单个 provider 的 env 配置模板(供请求期 resolver 取基线)。
+func envOAuthConfigFor(logger *zap.Logger, provider string) (userauth.OAuthConfig, bool) {
+	cfg, ok := envOAuthConfigMap(logger)[strings.ToLower(strings.TrimSpace(provider))]
+	return cfg, ok
 }
 
 func linuxDoOAuthMinTrustLevel(logger *zap.Logger) (int64, bool) {
@@ -432,7 +491,7 @@ func loadAuditSigner(logger *zap.Logger) (*sign.Signer, error) {
 	isProd := releaseModeProduction()
 	if path == "" {
 		if isProd {
-			return nil, fmt.Errorf("production 模式要求持久私钥：请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH")
+			return nil, fmt.Errorf("production 模式要求持久审计私钥:请设置 HUAKAI_AUDIT_PRIVATE_KEY_PATH。%s", auditKeySetupHint)
 		}
 		logger.Warn("using ephemeral key — restart loses chain")
 		return sign.GenerateKey()

@@ -15,7 +15,7 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// ProviderAccountBulkDeps holds the dependencies for the bulk-by-tag handler.
+// ProviderAccountBulkDeps 持有 bulk-by-tag handler 所需的依赖。
 type ProviderAccountBulkDeps struct {
 	Auth  providerAccountBulkAuth
 	Store providerAccountBulkStore
@@ -43,7 +43,7 @@ type providerAccountBulkResponse struct {
 	Count       int     `json:"count"`
 }
 
-// MountProviderAccountBulkRoutes registers the POST /bulk-by-tag route.
+// MountProviderAccountBulkRoutes 注册 POST /bulk-by-tag 路由。
 func MountProviderAccountBulkRoutes(r chi.Router, d ProviderAccountBulkDeps) {
 	r.Post("/bulk-by-tag", newProviderAccountBulkHandler(d))
 }
@@ -82,7 +82,7 @@ func newProviderAccountBulkHandler(d ProviderAccountBulkDeps) http.HandlerFunc {
 		}
 
 		affectedIDs := make([]int64, 0, len(rows))
-		actorIDStr := fmt.Sprintf("%d", ident.TokenID)
+		actorIDStr := ident.AuditActor()
 
 		for _, row := range rows {
 			_, err := d.Store.UpdateAdminProviderAccount(r.Context(), admindb.UpdateAdminProviderAccountParams{

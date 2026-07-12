@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
 const (
@@ -96,8 +97,8 @@ func planVendorCatalogApply(catalog modelsync.Catalog, current []vendorAliasStat
 	return out, nil
 }
 
-// ApplyVendorCatalog applies one vendor's complete model-list snapshot to the
-// global model catalog. It never edits tenant aliases, pool bindings, or pricing.
+// ApplyVendorCatalog 把某个 vendor 的完整 model-list 快照应用到全局 model
+// catalog。它绝不会改动 tenant alias、pool binding 或定价。
 func (r *PostgresRegistry) ApplyVendorCatalog(ctx context.Context, catalog modelsync.Catalog, opts modelsync.ApplyOptions) (modelsync.ApplyResult, error) {
 	results, err := r.ApplyVendorCatalogs(ctx, []modelsync.Catalog{catalog}, opts)
 	if err != nil {
@@ -304,6 +305,7 @@ func upsertVendorModel(ctx context.Context, tx pgx.Tx, vendor modelsync.Vendor, 
 	if protocol == "" {
 		protocol = defaultProtocolForVendor(vendor)
 	}
+	protocol = normalizeSyncedProtocolFamily(protocol)
 	owner := strings.TrimSpace(model.OwnedBy)
 	if owner == "" {
 		owner = defaultOwnerForVendor(vendor)
@@ -617,11 +619,20 @@ func vendorCanonicalLike(vendor modelsync.Vendor) string {
 func defaultProtocolForVendor(vendor modelsync.Vendor) string {
 	switch vendor {
 	case modelsync.VendorAnthropic:
-		return "anthropic_messages"
+		return registrydefault.ProtocolAnthropicMessages
 	case modelsync.VendorGemini:
-		return "gemini"
+		return registrydefault.ProtocolGeminiMessages
 	default:
-		return "openai_chat"
+		return registrydefault.ProtocolOpenAIChat
+	}
+}
+
+func normalizeSyncedProtocolFamily(protocol string) string {
+	switch strings.TrimSpace(protocol) {
+	case "gemini":
+		return registrydefault.ProtocolGeminiMessages
+	default:
+		return strings.TrimSpace(protocol)
 	}
 }
 

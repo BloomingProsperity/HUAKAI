@@ -31,8 +31,8 @@ const receiptSelectColumns = `r.request_id, r.tenant_id,
        r.cost_usd_micros, r.rate_table_snapshot_id, r.signer_fingerprint, r.signed_hash,
        r.created_at, r.validation_state, r.verdict, r.adjustment_refs, r.receipt_sequence`
 
-// ReceiptOwner records the user ownership row that must be written atomically
-// beside every cost receipt snapshot.
+// ReceiptOwner 记录用户归属行，必须与每条 cost receipt snapshot
+// 在同一原子事务里一并写入。
 type ReceiptOwner struct {
 	UserID      int64
 	ClaimID     int64
@@ -306,7 +306,7 @@ LIMIT 1`,
 	return receipt, nil
 }
 
-// GetReceipt preserves the legacy admin-only storage semantics until callers split.
+// GetReceipt 在调用方拆分前，保留仅限 admin 的历史存储语义。
 func (rs *ReceiptStorage) GetReceipt(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
 	return rs.GetReceiptForAdmin(ctx, requestID, tenantID)
 }

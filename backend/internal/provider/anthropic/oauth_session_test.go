@@ -41,10 +41,88 @@ func TestOAuthSessionAdapterBuildRequestUsesBearerAndNeverAPIKey(t *testing.T) {
 	if got := req.Header.Get("Anthropic-Beta"); got != "tools-2024-04-04" {
 		t.Fatalf("Anthropic-Beta=%q", got)
 	}
+	if got := req.URL.String(); got != "https://api.anthropic.com/v1/messages?beta=true" {
+		t.Fatalf("URL=%q want official default beta=true", got)
+	}
 	body, _ := io.ReadAll(req.Body)
 	if !strings.Contains(string(body), "claude-3-5-sonnet") {
 		t.Fatalf("body was not passed through: %s", string(body))
 	}
+}
+
+// TestOAuthSessionAdapterBetaQueryTriState 咬住官方默认、自定义缺省与显式覆盖三态。
+// 变异：删除默认注入、对 custom 无条件注入、或字符串拼接重复 beta，均会变红。
+func TestOAuthSessionAdapterBetaQueryTriState(t *testing.T) {
+	tests := []struct {
+		name     string
+		adapter  *OAuthSessionAdapter
+		cred     provider.Credential
+		wantURL  string
+		wantBeta []string
+	}{
+		{
+			name:    "官方缺省加 beta",
+			adapter: &OAuthSessionAdapter{},
+			cred:    provider.Credential{Type: provider.CredentialTypeOAuthAccessToken, Value: "token"},
+			wantURL: "https://api.anthropic.com/v1/messages?beta=true", wantBeta: []string{"true"},
+		},
+		{
+			name:    "官方显式 false 关闭",
+			adapter: &OAuthSessionAdapter{},
+			cred:    provider.Credential{Type: provider.CredentialTypeOAuthAccessToken, Value: "token", Extra: map[string]string{"claude_beta_query": "false"}},
+			wantURL: "https://api.anthropic.com/v1/messages",
+		},
+		{
+			name:    "自定义 base_url 缺省不添加",
+			adapter: &OAuthSessionAdapter{},
+			cred: provider.Credential{Type: provider.CredentialTypeUpstreamPassthrough, Value: "Bearer token", Extra: map[string]string{
+				"base_url": "https://api.anthropic.com/v1/messages?tenant=7",
+			}},
+			wantURL: "https://api.anthropic.com/v1/messages?tenant=7",
+		},
+		{
+			name:    "自定义显式 true 合并且保留 query",
+			adapter: &OAuthSessionAdapter{},
+			cred: provider.Credential{Type: provider.CredentialTypeUpstreamPassthrough, Value: "Bearer token", Extra: map[string]string{
+				"base_url": "https://api.anthropic.com/v1/messages?tenant=7", "claude_beta_query": "true",
+			}},
+			wantURL: "https://api.anthropic.com/v1/messages?beta=true&tenant=7", wantBeta: []string{"true"},
+		},
+		{
+			name:    "已有 beta 不覆盖也不重复",
+			adapter: &OAuthSessionAdapter{Endpoint: "https://api.anthropic.com/v1/messages?beta=operator&tenant=7"},
+			cred:    provider.Credential{Type: provider.CredentialTypeOAuthAccessToken, Value: "token", Extra: map[string]string{"claude_beta_query": "true"}},
+			wantURL: "https://api.anthropic.com/v1/messages?beta=operator&tenant=7", wantBeta: []string{"operator"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := tc.adapter.BuildRequest(context.Background(), provider.BuildInput{
+				InboundBody: []byte(`{"model":"claude","max_tokens":1,"messages":[]}`), Credential: tc.cred,
+			})
+			if err != nil {
+				t.Fatalf("BuildRequest: %v", err)
+			}
+			if got := req.URL.String(); got != tc.wantURL {
+				t.Fatalf("URL=%q want %q", got, tc.wantURL)
+			}
+			if got := req.URL.Query()["beta"]; !equalStrings(got, tc.wantBeta) {
+				t.Fatalf("beta values=%v want %v", got, tc.wantBeta)
+			}
+		})
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestOAuthSessionAdapterRejectsAPIKeyCredential(t *testing.T) {

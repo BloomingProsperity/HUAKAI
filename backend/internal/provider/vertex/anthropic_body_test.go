@@ -8,8 +8,8 @@ import (
 // TestReshapeAnthropicBodyStripsModelAndStreamInjectsVersion 抓的回归:reshape
 // 必须剥顶层 model + stream 并注 anthropic_version=vertex-2023-10-16。
 // 判别性:对比逐字段——若漏删 model（Vertex 400 duplicate model）、漏删 stream
-// （上游拒）、漏注 version（Vertex 400 missing anthropic_version），断言红。
-// Mutation:删 delete(raw,"model") → model 残留断言红；删 version 注入 → 断言红。
+// （上游拒）、漏注 version（Vertex 400 缺失 anthropic_version），断言红。
+// 变异:删 delete(raw,"model") → model 残留断言红；删 version 注入 → 断言红。
 func TestReshapeAnthropicBodyStripsModelAndStreamInjectsVersion(t *testing.T) {
 	in := []byte(`{"model":"claude-opus-4-1","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"system":"be brief"}`)
 	out, err := reshapeAnthropicBody(in)

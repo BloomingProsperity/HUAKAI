@@ -1,4 +1,4 @@
-// stream forwarder: SSE 流式上游转发(超时/取消/审计)。本文件参与 Go build。
+// 流式 forwarder:SSE 上游转发(超时/取消/审计)。本文件参与 Go build。
 package gateway
 
 import (
@@ -9,9 +9,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway/streamdelivery"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
@@ -31,26 +33,13 @@ import (
 // nil 时使用 BuildHopChain，保持与 non-streaming ledger 相同的六跳形态。
 type StreamingHopChainBuilder func(req ForwardRequest, providerEndpoint string, startedAt, completedAt time.Time) []proto.HopAttestation
 
-// StreamForwarder 执行 F-GW-002 A-D 阶段的流式转发流水线。
-//
-// 变更说明（A1 atomic）：
-//   - 加 Scanners 字段（StreamScannerRegistry），替代之前硬编码的
-//     ScanSSEEvents 调用。Forward 按 ForwardRequest.ProtocolFamily 查询
-//     scanner，把 wire-format 切帧职责从 forwarder 解耦出去。
-//   - SSE 行为通过 SSEStreamScanner 保持等价（行为不变 refactor）。
-//   - Bedrock binary EventStream 在 A2+A3 atomic 接入对应 scanner，
-//     无需再动 forwarder 主流程。
-//
-// 历史变更说明（wire-up 重构）：
-//   - 新增 ProtocolAdapters 字段，替代原先硬编码的 anthropic.Adapter。
-//   - 删除原 UpstreamAdapter 字段（由 ProtocolAdapters + ForwardRequest.ProtocolFamily 动态解析）。
-//   - Forward 入口校验 ProtocolFamily 非空、ProtocolAdapters 非 nil。
+// StreamForwarder 执行流式扫描、协议转换、交付判定、审计与用量汇总。
 type StreamForwarder struct {
 	// ProtocolAdapters 是协议适配器注册表，Forward 按 ForwardRequest.ProtocolFamily 查询。
 	// 必须非 nil；若为 nil，Forward 将立即返回错误。
 	ProtocolAdapters ProtocolAdapterRegistry
 
-	// Scanners 是 wire-format scanner 注册表，按 ForwardRequest.ProtocolFamily
+	// Scanners 是线格式 scanner 注册表，按 ForwardRequest.ProtocolFamily
 	// 查询 StreamScanner。必须非 nil（A1 之后）；nil 时 Forward 立即返回错误，
 	// 避免静默回落到 SSE 把 binary 流切碎。
 	Scanners StreamScannerRegistry
@@ -58,8 +47,8 @@ type StreamForwarder struct {
 	// ClientAdapter 将 canonical event 转换为客户端协议块（可选）。
 	// 若为 nil，则透传原始 SSE 给客户端。
 	ClientAdapter proto.ClientAdapter
-	// ForceOpenAIChatFormat opt-in fills required OpenAI Chat chunk keys on
-	// client-bound SSE data frames. Default false preserves previous passthrough.
+	// ForceOpenAIChatFormat 为可选开启项,会在面向客户端的 SSE data 帧上补齐
+	// OpenAI Chat chunk 必需的键。默认 false,保持原有的透传行为。
 	ForceOpenAIChatFormat bool
 
 	Timeouts         TimeoutConfig
@@ -72,7 +61,7 @@ type StreamForwarder struct {
 	CostEstimator func(drainedBytes int64, acc UsageAccumulator) decimal.Decimal
 
 	// AuditLedger / Signer 是 T12 streaming trust-chain ledger 的可选依赖。
-	// 两者任一缺失时 graceful skip，并通过 LedgerWarning 记录一次 loss。
+	// 两者任一缺失时温和跳过，并通过 LedgerWarning 记录一次 loss。
 	AuditLedger    auditledger.Ledger
 	AuditLedgerDLQ auditledger.DLQEnqueuer
 	Signer         *sign.Signer
@@ -82,10 +71,12 @@ type StreamForwarder struct {
 	HopChainBuilder StreamingHopChainBuilder
 	LedgerCallback  func(auditledger.AuditLedgerResult)
 	LedgerWarning   func(code, reason string)
+	// AfterFirstBusinessFrame 在首个业务帧完整写出并刷新后调用一次。
+	AfterFirstBusinessFrame func(time.Time)
 }
 
 // ErrNilStreamScannerRegistry 表示 StreamForwarder.Scanners 未注入。
-// 与 ErrNilProtocolAdapterRegistry 同形态：fail-loud，禁止静默 fallback。
+// 与 ErrNilProtocolAdapterRegistry 同形态：显式失败，禁止静默回退。
 var ErrNilStreamScannerRegistry = errors.New("gateway: StreamForwarder.Scanners 未注入")
 
 const (
@@ -96,10 +87,7 @@ const (
 // Forward 执行 F-GW-002 Phase A 扫描、Phase B 处理、Phase C 分类、
 // Phase C-bis drain，并返回 Phase D draft。
 //
-// 校验顺序：
-//  1. ProtocolAdapters 为 nil → ErrNilProtocolAdapterRegistry
-//  2. ProtocolFamily 为空    → ErrEmptyProtocolFamily（封装 ErrUnknownProtocolFamily）
-//  3. ProtocolAdapters.For 失败 → 透传 registry 返回的 error
+// 入口按 adapter、scanner、协议族顺序校验，配置缺失时显式失败。
 func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader, clientWriter http.ResponseWriter, req ForwardRequest) (UsageRecordDraft, error) {
 	// --- 入口校验：ProtocolAdapters 注册表必须已注入 ---
 	if f.ProtocolAdapters == nil {
@@ -107,8 +95,8 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	}
 
 	// --- 入口校验：Scanners 注册表必须已注入（A1 之后强制） ---
-	// 不允许 nil fallback 到 SSE — 那样 Bedrock binary 流会被切碎，
-	// 不如 fail-loud 让启动期 misconfig 立刻暴露。
+	// 不允许 nil 回退到 SSE — 那样 Bedrock binary 流会被切碎，
+	// 不如显式失败，让启动期配置错误立刻暴露。
 	if f.Scanners == nil {
 		return UsageRecordDraft{}, ErrNilStreamScannerRegistry
 	}
@@ -118,13 +106,13 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		return UsageRecordDraft{}, fmt.Errorf("%w: ProtocolFamily 未指定", ErrUnknownProtocolFamily)
 	}
 
-	// --- 按请求的 ProtocolFamily 解析 upstream adapter；不 fallback 到默认 ---
+	// --- 按请求的 ProtocolFamily 解析 upstream adapter；不回退到默认 ---
 	adapter, err := f.ProtocolAdapters.For(req.ProtocolFamily)
 	if err != nil {
 		return UsageRecordDraft{}, err
 	}
 
-	// --- 按请求的 ProtocolFamily 解析 wire-format scanner；不 fallback 到 SSE ---
+	// --- 按请求的 ProtocolFamily 解析线格式 scanner；不回退到 SSE ---
 	scanner, err := f.Scanners.For(req.ProtocolFamily)
 	if err != nil {
 		return UsageRecordDraft{}, err
@@ -135,7 +123,14 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		f.emitStreamingLedger(ctx, req, "", start, completedAt)
 	})
 	clientWriter = ledgerWriter
+	var businessFrameDelivered bool
+	afterBusinessFrame := sync.OnceFunc(func() {
+		if f.AfterFirstBusinessFrame != nil {
+			f.AfterFirstBusinessFrame(time.Now().UTC())
+		}
+	})
 	finish := func(d UsageRecordDraft, acc UsageAccumulator, err error) (UsageRecordDraft, error) {
+		d.BusinessFrameDelivered = businessFrameDelivered
 		ledgerWriter.ensureLedger(time.Now())
 		return f.finishDraft(d, acc, start, err)
 	}
@@ -191,7 +186,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 			// CF/长跑保活:长 TTFT 或稀疏 token 间隙时向客户端发 SSE 注释行心跳,避开 Cloudflare 等
 			// 反代 ~100s 空闲超时断链。心跳是独立于 First/Inter/Total 的保活,不重置那些"上游静默即放弃"
 			// 检测器(见上 interTimer case)。写失败 = 客户端/反代已断 → 按 ClientDisconnect 收尾。
-			if err := writeAndFlush(clientWriter, sseKeepaliveComment); err != nil {
+			if err := streamdelivery.WriteAndFlush(clientWriter, sseKeepaliveComment); err != nil {
 				draft.EndClass, endErr = ClientDisconnect, err
 			} else {
 				// 心跳一旦写出即向客户端提交了 HTTP 200 响应头+字节:此后无法再改 HTTP 状态码或换上游重试。
@@ -244,8 +239,9 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				stopTimer(keepaliveTimer)
 				keepaliveTimer = newTimer(f.Timeouts.KeepAliveInterval) // 真事件来 → 重置心跳,只在空闲间隙发
 				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
-				seen, wrote, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req)
+				seen, wrote, businessWritten, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req, afterBusinessFrame)
 				terminalSeen = terminalSeen || seen
+				businessFrameDelivered = businessFrameDelivered || businessWritten
 				// 上游主动 error 帧已由 handleEventWithAdapter 写出协议终止帧,记账防双写。
 				if res.event.Type == "error" && wrote {
 					terminalFrameWritten = true
@@ -256,6 +252,8 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				if wrote && !firstEmitted {
 					firstEmitted = true
 					draft.FirstTokenLatencyMillis = millisSince(start)
+					// 首字绝对墙钟时刻:结算写入 usage_records.first_byte_at,供 TTFT=first_byte_at-requested_at。
+					draft.FirstByteAt = time.Now().UTC()
 				}
 				if err == nil {
 					continue
@@ -279,7 +277,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 		if endErr != nil && draft.EndClass != ClientDisconnect &&
 			(keepaliveCommitted || firstEmitted) && !terminalSeen && !terminalFrameWritten {
 			for _, fr := range terminalErrorFrame(req.ClientProtocol) {
-				_ = writeAndFlush(clientWriter, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat))
+				_ = streamdelivery.WriteAndFlush(clientWriter, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat))
 			}
 		}
 		return finish(draft, acc, endErr)
@@ -301,7 +299,7 @@ func (f *StreamForwarder) BufferedResponse(ctx context.Context, canonical *proto
 //
 // 旁路 adapter 的特殊事件类型：
 //   - evt.Type == "error" — protocol-level error 帧（如 Bedrock exception
-//     scanner 在 yield ErrBedrockException 前 emit 的 error SSEEvent）。
+//     scanner 在 yield ErrBedrockException 前发出的 error SSEEvent）。
 //     这些 payload 不是 model 事件，喂给 adapter 会触发 JSON 解析失败；
 //     客户端只接收 canonical public error，内部日志只记录脱敏摘要。
 func (f *StreamForwarder) handleEventWithAdapter(
@@ -313,7 +311,13 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	clientState any,
 	acc *UsageAccumulator,
 	req ForwardRequest,
-) (bool, bool, int64, error) {
+	afterBusinessFrame ...func(),
+) (bool, bool, bool, int64, error) {
+	afterWrite := func(written bool) {
+		if written && len(afterBusinessFrame) > 0 && afterBusinessFrame[0] != nil {
+			afterBusinessFrame[0]()
+		}
+	}
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
 	if evt.Type == "error" {
@@ -329,19 +333,21 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		// 上游主动 error 帧按客户端协议合成(canonicalStreamErrorSSE 是 anthropic-only
 		// event: error,对 openai_chat 客户端只认 data: 行 → 被忽略=静默截断)。
 		for _, fr := range terminalErrorFrame(req.ClientProtocol) {
-			if err := writeAndFlush(w, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat)); err != nil {
-				return terminalSeen, false, 0, ErrClientDisconnect
+			if err := streamdelivery.WriteAndFlush(w, forceOpenAIChatSSEChunkFormat(fr, f.ForceOpenAIChatFormat)); err != nil {
+				return terminalSeen, false, false, 0, ErrClientDisconnect
 			}
 		}
-		return terminalSeen, true, 0, nil
+		return terminalSeen, true, false, 0, nil
 	}
 
 	// adapter 为 nil 时透传原始 SSE（保留既有 nil-adapter 行为）
 	if adapter == nil {
-		if err := writeAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat)); err != nil {
-			return terminalSeen, false, 0, ErrClientDisconnect
+		businessWritten, err := streamdelivery.WriteBusinessAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat))
+		if err != nil {
+			return terminalSeen, businessWritten, businessWritten, 0, ErrClientDisconnect
 		}
-		return terminalSeen, true, 1, nil
+		afterWrite(businessWritten)
+		return terminalSeen, true, businessWritten, 1, nil
 	}
 
 	canonicalEvents, providerLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, evt.Data, upstreamState)
@@ -354,11 +360,19 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, providerLosses...)
 	}
 	if err != nil {
-		return terminalSeen, false, 0, err
+		return terminalSeen, false, false, 0, err
 	}
 	annotateForwardHopChainEvents(canonicalEvents, req)
 	wrote := false
+	businessWritten := false
 	var delivered int64
+	// raw 直通(ClientAdapter==nil):把【原始上游帧】恰好转发一次,与 provider adapter 的
+	// canonical 展开数无关。此前缺陷=主循环按 canonical 数逐次调 clientChunks,而 clientChunks
+	// 在 nil ClientAdapter 下恒返回原始 evt 的 rawSSE,故 1 上游帧→N canonical 时同一帧被写 N 次
+	// (客户端拿到重复内容,openai 兼容全族同协议流式 S0)。修法=nil 直通下 canonical 循环只做
+	// usage/token 计费 tap 与交付记账,原始帧在循环外只转发一次;翻译路径(非 nil ClientAdapter)
+	// 不变,仍每 canonical 产客户块(正确的 1→N 翻译)。
+	rawPassthrough := f.ClientAdapter == nil
 	for _, canonical := range canonicalEvents {
 		eventDelivered := canonicalDeliveredChunks(canonical)
 		if usage, ok := canonicalUsage(canonical); ok {
@@ -375,9 +389,14 @@ func (f *StreamForwarder) handleEventWithAdapter(
 			terminalSeen = true
 			acc.Freeze()
 		}
+		if rawPassthrough {
+			// 原始帧在循环外统一转发一次;此处只累计交付量(内容交付记账,与帧写几次无关)。
+			delivered += eventDelivered
+			continue
+		}
 		chunks, clientLosses, err := f.clientChunks(ctx, canonical, clientState, evt)
 		if err != nil {
-			return terminalSeen, wrote, delivered, err
+			return terminalSeen, wrote, businessWritten, delivered, err
 		}
 		if len(clientLosses) > 0 {
 			acc.StreamProtocolLoss = append(acc.StreamProtocolLoss, clientLosses...)
@@ -387,17 +406,31 @@ func (f *StreamForwarder) handleEventWithAdapter(
 			if len(chunk) == 0 {
 				continue
 			}
-			if err := writeAndFlush(w, chunk); err != nil {
-				return terminalSeen, wrote, delivered, ErrClientDisconnect
+			chunkWritten, err := streamdelivery.WriteBusinessAndFlush(w, chunk)
+			wrote = wrote || chunkWritten
+			businessWritten = businessWritten || chunkWritten
+			if err != nil {
+				return terminalSeen, wrote, businessWritten, delivered, ErrClientDisconnect
 			}
-			wrote = true
+			afterWrite(chunkWritten)
 			wroteEvent = true
 		}
 		if wroteEvent && eventDelivered > 0 {
 			delivered += eventDelivered
 		}
 	}
-	return terminalSeen, wrote, delivered, nil
+	// raw 直通:原始上游帧只转发一次(仅当该帧确有 canonical 展开时;adapter 产 0 事件的帧
+	// 此前就不透传,保持既有 drop 语义不变,不在本 S0 修复内改动)。
+	if rawPassthrough && len(canonicalEvents) > 0 {
+		frameWritten, err := streamdelivery.WriteBusinessAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat))
+		wrote = wrote || frameWritten
+		businessWritten = businessWritten || frameWritten
+		if err != nil {
+			return terminalSeen, wrote, businessWritten, delivered, ErrClientDisconnect
+		}
+		afterWrite(frameWritten)
+	}
+	return terminalSeen, wrote, businessWritten, delivered, nil
 }
 
 // finalizeClientStream 在上游 reader 结束后调用 client adapter 收尾 hook。
@@ -414,7 +447,7 @@ func (f *StreamForwarder) finalizeClientStream(ctx context.Context, w http.Respo
 		if len(chunk) == 0 {
 			continue
 		}
-		if err := writeAndFlush(w, chunk); err != nil {
+		if err := streamdelivery.WriteAndFlush(w, chunk); err != nil {
 			return ErrClientDisconnect
 		}
 	}
@@ -533,6 +566,13 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	d.CacheCreation5mTokens = acc.Usage.CacheCreationInputTokens5m
 	d.CacheCreation1hTokens = acc.Usage.CacheCreationInputTokens1h
 	d.CacheReadTokens = acc.Usage.CacheReadInputTokens
+	// 流式服务端工具调用次数(web_search/file_search/image_generation):累加器在 SSE
+	// content_block_start 已按次累加进 acc.Usage,此处必须随其余用量字段一并落入 draft——
+	// 否则 usageFromDraft 取到的工具计数恒 0,ApplyToolCallSurcharge 判 IsZero 直接跳过,
+	// 流式工具调用的上游按次附加费永不向租户计收(我方付了上游成本却对客户收 $0)。
+	d.WebSearchCalls = acc.Usage.WebSearchCalls
+	d.FileSearchCalls = acc.Usage.FileSearchCalls
+	d.ImageGenerationCalls = acc.Usage.ImageGenerationCalls
 	d.DeliveredTokenCount = acc.DeliveredTokenCount()
 	d.StreamProtocolLoss = acc.StreamProtocolLoss
 	// 流式 token 交叉校验信号(审计-only,settle 时在 gatewayhttp 比对):隐藏 reasoning、
@@ -556,6 +596,11 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 		d.StreamTerminatedReason = streamTerminatedReason(d.EndClass, d.DeliveredTokenCount)
 	}
 	d.TotalDurationMillis = millisSince(startedAt)
+	// 流末最后事件绝对时刻,供 TPS=tokens_output/(last_event_at-first_byte_at)。仅在确有首字时成对
+	// 落库(无首字=无输出流,两列都留 NULL,避免 first_byte NULL 而 last_event 非 NULL 的半截数据)。
+	if !d.FirstByteAt.IsZero() {
+		d.LastEventAt = time.Now().UTC()
+	}
 	return d, err
 }
 
@@ -579,6 +624,8 @@ func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 			switch adapter.(type) {
 			case *openai.Adapter:
 				return &openai.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
+			case *openai.ResponsesAdapter:
+				return &openai.ResponsesUpstreamState{}
 			case *gemini.Adapter:
 				return &gemini.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, PrefixHash: req.SessionHash}
 			case *geminicodeassist.Adapter:
@@ -633,7 +680,7 @@ type scanResult struct {
 }
 
 // scanInto 把 StreamScanner 切出的事件流送到 channel。A1 之前直接 hard-call
-// ScanSSEEvents；现在通过 scanner 抽象，由调用方决定 wire format。
+// ScanSSEEvents；现在通过 scanner 抽象，由调用方决定线格式。
 func scanInto(ctx context.Context, scanner StreamScanner, r io.Reader, cap int, out chan<- scanResult) {
 	defer close(out)
 	for evt, err := range scanner.Scan(ctx, r, cap) {
@@ -816,16 +863,6 @@ data: {"error":{"code":"` + streamProtocolErrorCode + `","message":"` + streamPr
 // sseKeepaliveComment 是发给客户端的 SSE 注释行心跳。行首 ':' 的行是 SSE 注释,合规客户端会
 // 忽略其内容,但这次写入会让反代/客户端看到连接仍活跃,从而避开 ~100s 空闲超时断链。
 var sseKeepaliveComment = []byte(": hk\n\n")
-
-func writeAndFlush(w http.ResponseWriter, b []byte) error {
-	if _, err := w.Write(b); err != nil {
-		return err
-	}
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	return nil
-}
 
 type streamingLedgerHeaderWriter struct {
 	http.ResponseWriter

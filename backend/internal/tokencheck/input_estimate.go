@@ -20,6 +20,17 @@ const blobMinLen = 512
 // 覆盖),仅供「上游全程未报告 usage」的估算计费兜底使用。非 JSON 体退回
 // 字节数/4。结果下限 1(请求必有输入)。
 func EstimateRequestInputTokens(body []byte) int {
+	return EstimateRequestInputTokensWith(body, estimateText)
+}
+
+// EstimateRequestInputTokensWith 是 EstimateRequestInputTokens 的可注入版本,
+// 允许为纯文本字符串叶子传入自定义计数器(BILL-086/TOK-008)。可以为
+// OpenAI 系列文本注入真实 tokenizer,同时 base64/二进制大块仍按默认启发式
+// 的上限封顶。传入 nil 计数器时回退到 CJK 启发式。
+func EstimateRequestInputTokensWith(body []byte, textCounter func(string) int) int {
+	if textCounter == nil {
+		textCounter = estimateText
+	}
 	trimmed := strings.TrimSpace(string(body))
 	if trimmed == "" {
 		return 1
@@ -28,7 +39,7 @@ func EstimateRequestInputTokens(body []byte) int {
 	if err := json.Unmarshal([]byte(trimmed), &root); err != nil {
 		return floorOne((len(trimmed) + 3) / 4)
 	}
-	return floorOne(estimateJSONValue(root))
+	return floorOne(estimateJSONValue(root, textCounter))
 }
 
 func floorOne(n int) int {
@@ -38,20 +49,20 @@ func floorOne(n int) int {
 	return n
 }
 
-func estimateJSONValue(v any) int {
+func estimateJSONValue(v any, textCounter func(string) int) int {
 	switch value := v.(type) {
 	case string:
-		return estimateStringLeaf(value)
+		return estimateStringLeaf(value, textCounter)
 	case []any:
 		total := 0
 		for _, item := range value {
-			total += estimateJSONValue(item)
+			total += estimateJSONValue(item, textCounter)
 		}
 		return total
 	case map[string]any:
 		total := 0
 		for _, item := range value {
-			total += estimateJSONValue(item)
+			total += estimateJSONValue(item, textCounter)
 		}
 		return total
 	case nil:
@@ -62,15 +73,17 @@ func estimateJSONValue(v any) int {
 	}
 }
 
-func estimateStringLeaf(s string) int {
+func estimateStringLeaf(s string, textCounter func(string) int) int {
 	if len(s) >= blobMinLen && looksLikeBinaryBlob(s) {
+		// base64/二进制大块绝不喂给真实 tokenizer:对 1MB 的 data-URI 做编码
+		// 既慢又毫无意义。作为启发式直接封顶。
 		estimate := (len(s) + 3) / 4
 		if estimate > blobTokenCap {
 			return blobTokenCap
 		}
 		return estimate
 	}
-	return estimateText(s)
+	return textCounter(s)
 }
 
 // looksLikeBinaryBlob 识别 data-URI 或纯 base64 长串。采样前 256 字符:全部落在

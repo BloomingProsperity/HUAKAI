@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -131,7 +133,7 @@ func TestAdminCredentialAcquisitionCanonicalCallbackUsesRegistryAndFinalizesCred
 }
 
 // 缺陷：浏览器 OAuth 回跳没有 Bearer，helper callback 若继续解析 admin token 会永远 401。
-// 判别 mutation：恢复 callback handler 的 Bearer 闸时，本测试必须因 401 变红。
+// 判别变异：恢复 callback handler 的 Bearer 闸时，本测试必须因 401 变红。
 func TestOAuthBrowserCallbackCompletesWithoutBearer(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
@@ -153,7 +155,7 @@ func TestOAuthBrowserCallbackCompletesWithoutBearer(t *testing.T) {
 }
 
 // 缺陷：browser callback 若绕过 CompleteOAuthCallback，就会跳过 state CSRF 校验。
-// 判别 mutation：把 handler 改成直接 finalize 时，错误 state 会返回 200，本测试必须变红。
+// 判别变异：把 handler 改成直接 finalize 时，错误 state 会返回 200，本测试必须变红。
 func TestOAuthBrowserCallbackRejectsStateMismatch(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
@@ -171,7 +173,7 @@ func TestOAuthBrowserCallbackRejectsStateMismatch(t *testing.T) {
 }
 
 // 缺陷：browser callback 若不复用 consumed/finalized 闸，同一 code 回跳可重放创建凭据。
-// 判别 mutation：删除 CompleteOAuthCallback 的 consumed/finalized 闸时，第二次 GET 会触发第 2 次 exchange，callCount=2，本测试必须变红。
+// 判别变异：删除 CompleteOAuthCallback 的 consumed/finalized 闸时，第二次 GET 会触发第 2 次 exchange，callCount=2，本测试必须变红。
 func TestOAuthBrowserCallbackRejectsReplay(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
@@ -197,7 +199,7 @@ func TestOAuthBrowserCallbackRejectsReplay(t *testing.T) {
 }
 
 // 缺陷：无 Bearer browser callback 的审计 actor 若取当前请求身份，会丢失发起 admin。
-// 判别 mutation：把 actor 改成空字符串或固定值时，admin audit actor 断言必须变红。
+// 判别变异：把 actor 改成空字符串或固定值时，admin audit actor 断言必须变红。
 func TestOAuthBrowserCallbackAuditsStartingAdmin(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAuthStub{err: admin.ErrAdminUnauthorized})
 	flow := fx.seedOAuthFlowWithActor(t, 101, "4242", admin.RolePlatformAdmin)
@@ -458,7 +460,7 @@ func TestGeminiAdminStartFlowIgnoresClientSecretFromRequest(t *testing.T) {
 func TestAdminChatGPTOAuthStartFlowIgnoresClientSecretFromRequest(t *testing.T) {
 	// 缺陷：ChatGPT OAuth 是 PKCE-only；admin request body 的 client_secret 若进入 StartOAuthFlow，
 	// 会被内置 profile 拒绝或诱导后续路径发送 confidential-client secret。
-	// 判别 mutation：只对 Gemini 清空 client_secret 时，本测试必须变红。
+	// 判别变异：只对 Gemini 清空 client_secret 时，本测试必须变红。
 	guard := &chatGPTAdminStartConfigGuardExchanger{}
 	registry := credentialacq.NewExchangerRegistry()
 	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), guard); err != nil {
@@ -576,6 +578,72 @@ func TestAdminCredentialAcquisitionRequiresAdminAuth(t *testing.T) {
 	}
 }
 
+type credentialAcqProjectResolverStub struct {
+	projectRef string
+	err        error
+	calls      int
+	token      string
+}
+
+func (s *credentialAcqProjectResolverStub) ResolveProjectID(_ context.Context, token string) (string, error) {
+	s.calls++
+	s.token = token
+	return s.projectRef, s.err
+}
+
+func TestAdminCredentialAcquisitionFinalizeEnrichesAntigravityProject(t *testing.T) {
+	resolver := &credentialAcqProjectResolverStub{projectRef: "project-from-finalize"}
+	fx := newCredentialAcqHTTPFixtureWithProjectEnricher(t, adminPoolAdmin(), projectenrich.New(resolver))
+	flow := fx.seedPasteFlowFor(t, 101, credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
+
+	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/finalize",
+		`{"credentials":{"access_token":"access-finalize","refresh_token":"refresh-finalize"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d，期望 200，body=%s", rec.Code, rec.Body.String())
+	}
+	created := fx.creator.inputsSnapshot()
+	if len(created) != 1 {
+		t.Fatalf("创建凭证数=%d，期望 1", len(created))
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(created[0].Payload, &payload); err != nil {
+		t.Fatalf("解析创建载荷失败：%v", err)
+	}
+	if resolver.calls != 1 || resolver.token != "access-finalize" {
+		t.Fatalf("resolver 调用不符：calls=%d token=%q", resolver.calls, resolver.token)
+	}
+	if payload["project_id"] != "project-from-finalize" || payload["project_metadata_status"] != projectenrich.StatusResolved {
+		t.Fatalf("finalize 未补齐 project：%s", created[0].Payload)
+	}
+	events := fx.audit.eventsSnapshot()
+	if len(events) != 1 || events[0].EventType != credentialacq.EventCompleted || strings.TrimSpace(events[0].RequestID) == "" {
+		t.Fatalf("finalize 审计缺少完成事件或 correlation：%+v", events)
+	}
+}
+
+func TestAdminCredentialAcquisitionFinalizeKeepsCredentialWhenProjectResolutionFails(t *testing.T) {
+	resolver := &credentialAcqProjectResolverStub{err: errors.New("上游 project 暂不可用")}
+	fx := newCredentialAcqHTTPFixtureWithProjectEnricher(t, adminPoolAdmin(), projectenrich.New(resolver))
+	flow := fx.seedPasteFlowFor(t, 101, credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
+
+	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/finalize",
+		`{"credentials":{"access_token":"access-finalize","refresh_token":"refresh-finalize"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("project 解析失败不得阻断创建：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	created := fx.creator.inputsSnapshot()
+	if len(created) != 1 {
+		t.Fatalf("创建凭证数=%d，期望 1", len(created))
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(created[0].Payload, &payload); err != nil {
+		t.Fatalf("解析待处理载荷失败：%v", err)
+	}
+	if resolver.calls != 1 || payload["project_id"] != "" || payload["project_metadata_status"] != projectenrich.StatusOperatorAttention {
+		t.Fatalf("解析失败未保留待处理凭证：resolver=%+v payload=%s", resolver, created[0].Payload)
+	}
+}
+
 func TestAdminCredentialAcquisitionRejectsPathAccountMismatch(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAdmin())
 	flow := fx.seedPasteFlow(t, 202)
@@ -621,6 +689,11 @@ func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialA
 	return newCredentialAcqHTTPFixtureWithRegistryAndLongLived(t, auth, registry, exchanger, false)
 }
 
+func newCredentialAcqHTTPFixtureWithProjectEnricher(t *testing.T, auth AdminCredentialAuth, enricher projectenrich.Enricher) *credentialAcqHTTPFixture {
+	t.Helper()
+	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, credentialacq.NewExchangerRegistry(), nil, false, 0, 0, enricher)
+}
+
 func newCredentialAcqHTTPFixtureWithLongLivedSetupToken(t *testing.T, auth AdminCredentialAuth, allow bool) *credentialAcqHTTPFixture {
 	t.Helper()
 	return newCredentialAcqHTTPFixtureWithBootstrapTTLs(t, auth, allow, 0, 0)
@@ -642,7 +715,7 @@ func newCredentialAcqHTTPFixtureWithRegistryAndLongLived(t *testing.T, auth Admi
 	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, registry, exchanger, allow, 0, 0)
 }
 
-func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub, allow bool, shortTTL, longTTL time.Duration) *credentialAcqHTTPFixture {
+func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub, allow bool, shortTTL, longTTL time.Duration, projectEnrichers ...projectenrich.Enricher) *credentialAcqHTTPFixture {
 	t.Helper()
 	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{9}, 32))
@@ -654,17 +727,23 @@ func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth 
 	creator := &credentialAcqCreatorStub{}
 	audit := &credentialAcqAuditStub{}
 	adminAudit := &adminPoolStoreStub{}
+	var projectEnricher projectenrich.Enricher
+	if len(projectEnrichers) > 0 {
+		projectEnricher = projectEnrichers[0]
+	}
 	deps := AdminCredentialAcquisitionDeps{
 		Auth: auth, Sessions: store,
 		Credentials:              creator,
 		CredentialAudit:          audit,
 		AuditStore:               adminAudit,
 		Exchangers:               registry,
+		ProjectEnricher:          projectEnricher,
 		AllowLongLivedSetupToken: allow,
 		BootstrapShortTTL:        shortTTL,
 		BootstrapLongTTL:         longTTL,
 	}
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
 	r.Route("/v1/admin/pool-accounts", func(r chi.Router) {
 		MountAdminCredentialAcquisitionRoutes(r, deps)
 	})
@@ -713,9 +792,18 @@ func (fx *credentialAcqHTTPFixture) do(t *testing.T, method, path, body string) 
 
 func (fx *credentialAcqHTTPFixture) seedPasteFlow(t *testing.T, providerAccountID int64) seededCredentialAcqFlow {
 	t.Helper()
+	return fx.seedPasteFlowFor(t, providerAccountID, credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey)
+}
+
+func (fx *credentialAcqHTTPFixture) seedPasteFlowFor(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {
+	t.Helper()
+	kind := credentialacq.FlowKindPaste
+	if credentialstore.Normalize(vendor) == credentialstore.VendorAntigravity {
+		kind = credentialacq.FlowKindTokenExchange
+	}
 	session, err := fx.store.CreateFromStart(context.Background(), credentialacq.StartInput{
 		TenantID: 1, ProviderAccountID: providerAccountID,
-		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAPIKey, Kind: credentialacq.FlowKindPaste,
+		Vendor: vendor, AuthMode: authMode, Kind: kind,
 		ActorID: "11", ActorRole: "platform_admin",
 		ClientIdentitySource: credentialacq.ClientSourceNone,
 	})

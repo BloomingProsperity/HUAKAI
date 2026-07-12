@@ -5,16 +5,14 @@ import (
 	"strings"
 )
 
-// UTLS-03: per-account DB TLS-fingerprint profile -> ClientHelloTemplate.
+// UTLS-03：按账号的 DB TLS 指纹 profile -> ClientHelloTemplate。
 //
-// The admin store (internal/tlsfpadmin / db) holds per-tenant fingerprint
-// profiles as int32 columns. This converter widens them into a
-// ClientHelloTemplate that the existing uTLS dialer consumes, so an account
-// bound to a DB profile actually drives its upstream ClientHello (instead of the
-// FK being write-only metadata). Kept in this package with a plain-[]int input
-// struct so it does NOT import tlsfpadmin/db (no import cycle).
+// admin 存储(internal/tlsfpadmin / db)把每租户的指纹 profile 以 int32 列保存。
+// 本转换器将其加宽成既有 uTLS dialer 可消费的 ClientHelloTemplate，使绑定到 DB
+// profile 的账号真正驱动其上游 ClientHello(而非让该 FK 沦为只写元数据)。放在
+// 本包内并以纯 []int 入参 struct，从而**不** import tlsfpadmin/db(避免 import 环)。
 
-// ProfileFields mirrors the DB TLS-fingerprint columns (int32 widened to int).
+// ProfileFields 镜像 DB 里的 TLS 指纹列(int32 加宽为 int)。
 type ProfileFields struct {
 	Name                 string
 	GreaseEnabled        bool
@@ -30,11 +28,10 @@ type ProfileFields struct {
 	ExpectedJA3Hash      string
 }
 
-// TemplateFromProfileFields converts admin-stored fields into a
-// ClientHelloTemplate. It FAILS LOUD on out-of-range ids or missing core fields
-// (cipher suites / curves / supported versions) — an invalid id would corrupt
-// the ClientHello — so the caller can fall back to the builtin per-mode template
-// rather than emit a broken handshake.
+// TemplateFromProfileFields 把 admin 存储的字段转换成 ClientHelloTemplate。遇到
+// 越界 id 或缺少核心字段(cipher suites / curves / supported versions)时**fail
+// loud**——非法 id 会破坏 ClientHello——这样调用方可回退到内置的 per-mode 模板，
+// 而非发出一次损坏的握手。
 func TemplateFromProfileFields(f ProfileFields) (*ClientHelloTemplate, error) {
 	// UTLS-05: name "preset:<browser>" -> uTLS 内置浏览器 ClientHello, 无需
 	// 手写 cipher 数组。运营建一个 name=preset:chrome 的 profile 即让绑定账号
@@ -116,12 +113,11 @@ func toUint8s(field string, in []int) ([]uint8, error) {
 	return out, nil
 }
 
-// ValidateProfileFields reports whether a DB TLS profile still produces a usable
-// uTLS ClientHello. Preset profiles are valid iff the preset name is known;
-// custom profiles must convert (range-valid) AND build a uTLS spec without error.
-// UTLS-06 drift worker uses this to flag profiles that can no longer drive a
-// handshake (e.g. bad cipher ids, or an unknown preset after an edit), without
-// computing JA3 (which would risk false positives). nil = healthy.
+// ValidateProfileFields 报告一个 DB TLS profile 是否仍能产出可用的 uTLS
+// ClientHello。preset profile 当且仅当 preset 名已知时有效；自定义 profile 必须既
+// 能转换(范围合法)又能无错地构建 uTLS spec。UTLS-06 的 drift worker 用它来标记
+// 那些已无法驱动握手的 profile(如 cipher id 非法，或编辑后 preset 变为未知)，且不
+// 计算 JA3(那会有误报风险)。返回 nil = 健康。
 func ValidateProfileFields(f ProfileFields) error {
 	tmpl, err := TemplateFromProfileFields(f)
 	if err != nil {

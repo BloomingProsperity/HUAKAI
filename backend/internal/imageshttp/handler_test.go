@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,12 +19,14 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -253,25 +256,169 @@ func TestImagesHandler_Upstream2xxEmptyBodyAbortsReservedClaim(t *testing.T) {
 	}
 }
 
-func TestImagesHandler_SettleErrorReturns500WithoutAbort(t *testing.T) {
+func TestImagesHandler_SettleErrorKeepsDeliveredJSONAndEnqueuesRecovery(t *testing.T) {
+	// 该测试反转旧终局：图片 JSON 完整交付后，结算失败只能进入恢复，不能把响应改成 500。
+	// 变异：恢复 settle-before-write 后，状态变 500、业务体消失且恢复断言失败。
 	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
 		status: http.StatusOK,
 		body:   `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`,
 	})
 	env.settler.settleErr = errors.New("settle backend down")
+	recovery := &imagesRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = recovery
 
 	rec := env.invoke(t, `{"model":"dall-e-2","prompt":"settle fails","size":"512x512"}`)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d body=%s want 500", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if got := rec.Body.String(); got != `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}` {
+		t.Fatalf("body=%s want complete image JSON", got)
 	}
 	if got := len(env.settler.settles); got != 1 {
 		t.Fatalf("settle calls=%d want 1", got)
 	}
 	if got := len(env.settler.aborts); got != 0 {
-		t.Fatalf("abort calls=%d want 0 on settle backend error", got)
+		t.Fatalf("abort calls=%d want 0 after full delivery", got)
+	}
+	if recovery.calls != 1 || recovery.event.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("recovery calls/kind=%d/%q want 1/%q", recovery.calls, recovery.event.EventKind, dlq.EventKindPostDeliverySettlement)
+	}
+	payload, err := settlementrecovery.Decode(recovery.event.Payload)
+	if err != nil {
+		t.Fatalf("decode recovery payload: %v", err)
+	}
+	if payload.Source != settlementrecovery.SourceImagesDelivered {
+		t.Fatalf("recovery source=%q want %q", payload.Source, settlementrecovery.SourceImagesDelivered)
 	}
 }
+
+// TestImagesHandler_SettleAndRecoveryDoubleFailureEmitsP0 守住图片 money-path
+// 双故障外部信号。变异：删除 EnqueueFailure 的 critical P0 事件后，本测试变红。
+func TestImagesHandler_SettleAndRecoveryDoubleFailureEmitsP0(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	const secret = "IMAGE_DOUBLE_FAULT_SECRET"
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`,
+	})
+	env.settler.settleErr = errors.New("settle failed " + secret)
+	recovery := &imagesRecoveryEnqueuer{err: errors.New("recovery enqueue failed " + secret)}
+	env.deps.SettleRecoveryDLQ = recovery
+
+	rec := env.invoke(t, `{"model":"dall-e-2","prompt":"double fault","size":"512x512"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200，响应已交付不能反悔", rec.Code, rec.Body.String())
+	}
+	if recovery.calls != 1 {
+		t.Fatalf("recovery calls=%d want 1", recovery.calls)
+	}
+	got := logs.String()
+	for _, want := range []string{"money_lost_double_fault", "critical", "P0", "imageshttp.settle_recovery"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("P0 log missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, secret) {
+		t.Fatalf("P0 log leaked raw failure detail: %s", got)
+	}
+}
+
+func TestImagesHandler_PartialWriteAbortsWithoutSettlement(t *testing.T) {
+	// 该测试守住图片未完整交付不得计费：部分写后报错必须 Abort，且不能创建 post-delivery 恢复。
+	// 变异：忽略 Write 的 n/err 会产生一次 Settle 且 Abort 为零，本测试必红。
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`,
+	})
+	recovery := &imagesRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = recovery
+	w := &imagesPartialWriteResponseWriter{header: make(http.Header), limit: 7, err: io.ErrClosedPipe}
+
+	env.invokeWithWriter(t, w, `{"model":"dall-e-2","prompt":"write fails","size":"512x512"}`)
+
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle calls=%d want 0 on partial write", got)
+	}
+	if got := len(env.settler.aborts); got != 1 || env.settler.aborts[0].reason != "client_response_write_error" {
+		t.Fatalf("aborts=%+v want one client_response_write_error", env.settler.aborts)
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 for incomplete image body", recovery.calls)
+	}
+	if w.writeHeaderCalls != 0 {
+		t.Fatalf("WriteHeader calls=%d want 0 before fallible body write", w.writeHeaderCalls)
+	}
+	if w.flushes != 0 {
+		t.Fatalf("flushes=%d want 0 after incomplete image body", w.flushes)
+	}
+}
+
+func TestImagesHandler_FullLengthWriteErrorIsConservativelyDelivered(t *testing.T) {
+	// 完整长度与错误同时返回时交付结果不确定，保守结算且不得释放 hold。
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`,
+	})
+	recovery := &imagesRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = recovery
+	w := &imagesPartialWriteResponseWriter{header: make(http.Header), limit: -1, err: io.ErrUnexpectedEOF}
+	settleBeforeFlush := false
+	env.settler.beforeSettle = func() { settleBeforeFlush = w.flushes == 0 }
+
+	env.invokeWithWriter(t, w, `{"model":"dall-e-2","prompt":"uncertain full write","size":"512x512"}`)
+
+	if got := len(env.settler.settles); got != 1 {
+		t.Fatalf("settle calls=%d want 1", got)
+	}
+	if got := len(env.settler.aborts); got != 0 {
+		t.Fatalf("abort calls=%d want 0", got)
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 after successful settlement", recovery.calls)
+	}
+	if w.flushes != 1 || settleBeforeFlush {
+		t.Fatalf("flushes/settleBeforeFlush=%d/%v want 1/false", w.flushes, settleBeforeFlush)
+	}
+}
+
+type imagesRecoveryEnqueuer struct {
+	calls int
+	event dlq.Event
+	err   error
+}
+
+func (q *imagesRecoveryEnqueuer) Enqueue(_ context.Context, event dlq.Event) (int64, error) {
+	q.calls++
+	q.event = event
+	return 1, q.err
+}
+
+type imagesPartialWriteResponseWriter struct {
+	header           http.Header
+	limit            int
+	err              error
+	writeHeaderCalls int
+	flushes          int
+}
+
+func (w *imagesPartialWriteResponseWriter) Header() http.Header { return w.header }
+
+func (w *imagesPartialWriteResponseWriter) WriteHeader(int) { w.writeHeaderCalls++ }
+
+func (w *imagesPartialWriteResponseWriter) Write(p []byte) (int, error) {
+	n := w.limit
+	if n < 0 || n > len(p) {
+		n = len(p)
+	}
+	return n, w.err
+}
+
+func (w *imagesPartialWriteResponseWriter) Flush() { w.flushes++ }
 
 func TestImagesHandler_GroupRatioDiscountsReserveAndSettle(t *testing.T) {
 	base := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{status: http.StatusOK, body: `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`})
@@ -385,6 +532,23 @@ func (e *imagesTestEnv) invoke(t *testing.T, body string) *httptest.ResponseReco
 	return rec
 }
 
+func (e *imagesTestEnv) invokeWithWriter(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	var h http.HandlerFunc
+	switch e.endpoint {
+	case imageEndpointEdits:
+		h = NewEditsHandler(e.deps)
+	case imageEndpointVariations:
+		h = NewVariationsHandler(e.deps)
+	default:
+		h = NewGenerationsHandler(e.deps)
+	}
+	req := httptest.NewRequest(http.MethodPost, e.endpoint.Path(), bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer hk-test")
+	req.Header.Set("Content-Type", "application/json")
+	middleware.RequestID(h).ServeHTTP(w, req)
+}
+
 func (e *imagesTestEnv) assertNoHangingClaims(t *testing.T) {
 	t.Helper()
 	closed := map[int64]string{}
@@ -494,9 +658,10 @@ func (vaultStub) Resolve(context.Context, int64, int64) (provider.Credential, pr
 }
 
 type recordingSettler struct {
-	settles   []billing.SettleRequest
-	aborts    []abortCall
-	settleErr error
+	settles      []billing.SettleRequest
+	aborts       []abortCall
+	settleErr    error
+	beforeSettle func()
 }
 
 type abortCall struct {
@@ -507,6 +672,9 @@ type abortCall struct {
 }
 
 func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
+	if s.beforeSettle != nil {
+		s.beforeSettle()
+	}
 	s.settles = append(s.settles, req)
 	if s.settleErr != nil {
 		return nil, s.settleErr

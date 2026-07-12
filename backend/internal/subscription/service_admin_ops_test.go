@@ -61,7 +61,7 @@ func TestService_BulkAssignPartialFailure(t *testing.T) {
 		t.Fatalf("create plan: %v", err)
 	}
 
-	// MUTATION that makes this RED: wrap all users in one transaction and roll back when user 999 is missing.
+	// 让本测试变红的变异:把所有用户包进同一个事务,并在用户 999 缺失时整体回滚。
 	result, err := svc.BulkAssign(ctx, BulkAssignInput{
 		TenantID: 1, UserIDs: []int64{42, 999, 43}, PlanID: plan.ID, ActorAdminID: 7, RequestID: "bulk-1",
 	})
@@ -103,7 +103,7 @@ func TestService_ExtendSubscriptionIdempotentByRequestID(t *testing.T) {
 	}
 	original := assigned.Subscription.ExpiresAt
 
-	// MUTATION that makes this RED: ignore prior audit request_id and add 30 days on every retry.
+	// 让本测试变红的变异:忽略此前的审计 request_id,每次重试都再加 30 天。
 	first, err := svc.ExtendSubscription(ctx, ExtendSubscriptionInput{
 		TenantID: 1, SubscriptionID: assigned.Subscription.ID, ActorAdminID: 7, RequestID: "extend-once", Days: 30,
 	})
@@ -146,7 +146,7 @@ func TestService_ChangePlanDowngradeGuard(t *testing.T) {
 		t.Fatalf("assign high: %v", err)
 	}
 
-	// MUTATION that makes this RED: ignore AllowDowngrade=false and apply lower caps anyway.
+	// 让本测试变红的变异:无视 AllowDowngrade=false,仍然套用更低的上限。
 	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
 		TenantID: 1, SubscriptionID: assigned.Subscription.ID, NewPlanID: low.ID,
 		AllowDowngrade: false, ActorAdminID: 7, RequestID: "change-denied",
@@ -192,7 +192,7 @@ func TestService_ChangePlanIdempotentByRequestID(t *testing.T) {
 	}
 	originalExpires := assigned.Subscription.ExpiresAt
 
-	// MUTATION that makes this RED: drop request_id audit replay and renew/install caps on every retry.
+	// 让本测试变红的变异:丢掉 request_id 审计重放,每次重试都续期/安装上限。
 	for i := 0; i < 2; i++ {
 		if _, err := svc.ChangePlan(ctx, ChangePlanInput{
 			TenantID: 1, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
@@ -242,11 +242,11 @@ func TestService_ChangePlanRejectsNonActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign basic: %v", err)
 	}
-	if _, err := svc.CancelSubscription(ctx, 1, assigned.Subscription.ID, 7, "cancel-before-change"); err != nil {
+	if _, err := svc.CancelSubscription(ctx, 1, assigned.Subscription.ID, 7, "cancel-before-change", "admin_token:7"); err != nil {
 		t.Fatalf("cancel before change: %v", err)
 	}
 
-	// MUTATION that makes this RED: update by id without status/expires_at guard.
+	// 让本测试变红的变异:仅按 id 更新,而不加 status/expires_at 护栏。
 	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
 		TenantID: 1, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
 		ActorAdminID: 7, RequestID: "change-cancelled",

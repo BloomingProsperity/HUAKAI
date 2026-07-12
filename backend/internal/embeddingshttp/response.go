@@ -25,12 +25,11 @@ func writeInsufficientBalanceError(w http.ResponseWriter) {
 }
 
 func writeInsufficientQuotaError(w http.ResponseWriter) {
-	writeInsufficientQuotaErrorRetryable(w, 0)
+	writeInsufficientQuotaErrorRetryable(w, 0, "")
 }
 
-// writeInsufficientQuotaErrorRetryable 窗口配额拒绝时吐 Retry-After 头(秒)+
-// body 的 window_resets_at(RFC3339),让客户端按窗口边界智能退避(对齐 sub2api)。
-func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time.Duration) {
+// writeInsufficientQuotaErrorRetryable 窗口配额拒绝时吐退避信息,让客户端按窗口边界重试。
+func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time.Duration, windowKind string) {
 	w.Header().Set("Content-Type", "application/json")
 	errFields := map[string]string{
 		"code":    clienterr.CodeInsufficientBalance,
@@ -40,6 +39,9 @@ func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time
 		secs := int64(math.Ceil(retryAfter.Seconds()))
 		w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
 		errFields["window_resets_at"] = time.Now().UTC().Add(retryAfter).Format(time.RFC3339)
+	}
+	if windowKind != "" {
+		errFields["window_kind"] = windowKind
 	}
 	w.WriteHeader(http.StatusTooManyRequests)
 	body, err := json.Marshal(map[string]map[string]string{"error": errFields})

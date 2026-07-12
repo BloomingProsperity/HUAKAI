@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -338,11 +339,152 @@ func TestNonStreamingDispatchError_RefreshesMarshalLossBeforeAbort(t *testing.T)
 	if len(settler.aborts) != 1 {
 		t.Fatalf("aborts=%+v want exactly one dispatch-error abort", settler.aborts)
 	}
-	// MUTATION: 删除 dispatch.go 中 DispatchHCSF 之后的 ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
+	// 变异: 删除 dispatch.go 中 DispatchHCSF 之后的 ex.protocolLoss = protocolLossJSONFromEnv(canonicalReq)
 	// 刷新 → abort 仍用 dispatch 前快照(仅请求翻译损失,本例为空)→ 缺 marshal sentinel → RED。
 	if !settledLossHasCode(t, settler.aborts[0].protocolLoss, "marshal_loss_on_dispatch_error") {
 		t.Fatalf("dispatch-error abort missing marshal-stage loss: %s", settler.aborts[0].protocolLoss)
 	}
+}
+
+// identityHookCapturingDispatcher 在 DispatchHCSF 内从 ctx 取回本次 dispatch 的
+// HCSFDispatchInput,把 R7 IdentityRewrite 钩子记下并实地对一个【无 metadata 的
+// anthropic marshal 产物】施加一次,捕获改写后 body —— 用以断言 gatewayhttp 的
+// dispatchCanonicalBuffered 真把 ex.identityRewrite 接进了 HCSF dispatch 输入。
+type identityHookCapturingDispatcher struct {
+	calls        int
+	hookNonNil   bool
+	rewrittenOut []byte
+}
+
+func (m *identityHookCapturingDispatcher) DispatchHCSF(ctx context.Context, requestEnvelope *proto.HCSF) (*proto.HCSF, error) {
+	m.calls++
+	in := gateway.HCSFDispatchInputFromContext(ctx)
+	if in.IdentityRewrite != nil {
+		m.hookNonNil = true
+		// 用 HCSF canonical 路真实形态(无 metadata 的 anthropic body)施加钩子。
+		m.rewrittenOut = in.IdentityRewrite([]byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stream":false}`))
+	}
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta = requestEnvelope.RequestMeta
+	env.BufferedResponse = &proto.CanonicalResponse{
+		ID:         "chatcmpl-identity-wire-test",
+		Model:      requestEnvelope.RequestMeta.UpstreamModel,
+		Content:    []proto.CanonicalContentBlock{{Type: "text", Text: "ok"}},
+		Usage:      proto.CanonicalUsage{InputTokens: 1, OutputTokens: 1},
+		StopReason: proto.CanonicalStopEndTurn,
+	}
+	env.Accounting.Usage = env.BufferedResponse.Usage
+	env.Accounting.EvidenceLabel = proto.EvidenceMock
+	return env, nil
+}
+
+// identityWiredDeps 在 clientAdapterDeps 基础上把池账号补上 ExternalAccountID,
+// 让 R7 开关开后改写非空。协议族用 anthropic_messages —— R7 身份改写仅对 Anthropic
+// 形 body 合法(协议族门控,见 TestIdentityRewrite_协议族门控_非Anthropic不改写),
+// 故验证 HCSF 接线点真触发改写必须走 Anthropic 族。
+func identityWiredDeps(t *testing.T, externalAccountID string) ChatHandlerDeps {
+	t.Helper()
+	d := clientAdapterDeps(t)
+	// 覆盖 stub registry 为 Anthropic 族(clientAdapterDeps 默认 openai_chat)。
+	d.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias:      "claude-3-5-sonnet",
+		CanonicalModelID: "anthropic/claude-3-5-sonnet",
+		ProviderModelID:  "claude-3-5-sonnet",
+		ProtocolFamily:   "anthropic_messages",
+		PoolCandidates:   []int64{42},
+	}}
+	vault := provider.NewStaticVault()
+	if err := vault.Set(1, provider.Credential{
+		Type:  provider.CredentialTypeAPIKey,
+		Value: "sk-test",
+	}, provider.AccountInfo{
+		AccountID: 1,
+		// 使用无强制官方门的测试平台，只隔离验证旧 R7 钩子；
+		// anthropic_claude_session 的官方直发旁路由独立 S1 测试覆盖。
+		Platform:            "anthropic_test",
+		AccountType:         "claude_ai_oauth", // 反转/订阅号:身份改写仅对反转号生效
+		AccountCredentialID: 9001,
+		CredentialVersion:   1,
+		ExternalAccountID:   externalAccountID,
+	}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+	d.CredentialVault = vault
+	return d
+}
+
+// TestChatCompletions_HCSF路真接R7改写钩子 验证【A 接线证据 + 变异锚点】:HCSF
+// 默认非流式路(dispatchCanonicalBuffered)真把 ex.identityRewrite 注入了
+// HCSFDispatchInput.IdentityRewrite,且 R7 开关开 + 账号带 ExternalAccountID 时,
+// 该钩子真把无 metadata 的 anthropic body 改写出含上游 id 的 metadata.user_id。
+//
+// 变异证伪(破坏 HCSF 接线):把 chat_completions_dispatch.go 里
+// `IdentityRewrite: ex.identityRewrite` 这一行删掉 → 钩子变 nil → hookNonNil=false
+// → 下面断言变红(精确锚住 S2 漏接线)。
+func TestChatCompletions_HCSF路真接R7改写钩子(t *testing.T) {
+	const externalID = "acc-wired-9"
+	enableHCSFDispatchForTest(t)
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "true")
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_SECRET", "fixed-secret-for-test")
+
+	dispatcher := &identityHookCapturingDispatcher{}
+	d := identityWiredDeps(t, externalID)
+	d.CanonicalDispatcher = dispatcher
+
+	// 反转号只接受官方客户端:请求带 Claude Code UA 过鉴真门,再验证 HCSF 钩子改写。
+	rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions",
+		`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`,
+		map[string]string{"User-Agent": "claude-cli/2.1.78 (external, cli)"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if dispatcher.calls != 1 {
+		t.Fatalf("canonical dispatcher calls = %d; want 1", dispatcher.calls)
+	}
+	if !dispatcher.hookNonNil {
+		t.Fatalf("HCSF 路未接改写钩子:HCSFDispatchInput.IdentityRewrite 为 nil —— dispatch.go 接线疑似缺失")
+	}
+	// 无 metadata 的 anthropic body 经钩子后必须冒出 metadata + 含上游 id 的 user_id。
+	// (用包含式断言,对 legacy / JSON 两种 user_id 形态都成立。)
+	gotAccountUUID := extractMetadataUserIDAccountComponent(t, dispatcher.rewrittenOut)
+	if gotAccountUUID != externalID {
+		t.Fatalf("HCSF 钩子改写后 account 组件应为上游 id %q,实际 %q\nbody=%s", externalID, gotAccountUUID, dispatcher.rewrittenOut)
+	}
+}
+
+// extractMetadataUserIDAccountComponent 从 body.metadata.user_id 解出 account 组件,
+// 兼容 legacy("user_<hex>_account_<id>_session_<uuid>")与 JSON 两种形态。
+func extractMetadataUserIDAccountComponent(t *testing.T, body []byte) string {
+	t.Helper()
+	var outer struct {
+		Metadata *struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(body, &outer); err != nil {
+		t.Fatalf("解析 metadata 失败: %v\nbody=%s", err, body)
+	}
+	if outer.Metadata == nil || outer.Metadata.UserID == "" {
+		t.Fatalf("HCSF 改写后 body 缺 metadata.user_id(钩子未注入?):%s", body)
+	}
+	uid := outer.Metadata.UserID
+	if strings.HasPrefix(strings.TrimSpace(uid), "{") {
+		var inner struct {
+			AccountUUID string `json:"account_uuid"`
+		}
+		if err := json.Unmarshal([]byte(uid), &inner); err != nil {
+			t.Fatalf("解析 JSON user_id 失败: %v (user_id=%q)", err, uid)
+		}
+		return inner.AccountUUID
+	}
+	// legacy 形:取 "_account_" 与下一个 "_session_" 之间的段。
+	const accMark, sessMark = "_account_", "_session_"
+	i := strings.Index(uid, accMark)
+	j := strings.Index(uid, sessMark)
+	if i < 0 || j < 0 || j < i {
+		t.Fatalf("legacy user_id 形态异常,无法定位 account 组件:%q", uid)
+	}
+	return uid[i+len(accMark) : j]
 }
 
 func TestChatCompletionsClientAdapter_StreamTrueBypassesCanonicalDispatcher(t *testing.T) {

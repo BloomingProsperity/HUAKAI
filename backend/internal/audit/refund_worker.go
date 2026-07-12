@@ -230,13 +230,14 @@ type refundReceiptMaxSequenceReaderInTx interface {
 }
 
 type MismatchRefundWorker struct {
-	pending     RefundPendingStore
-	settler     billing.Settler
-	formatter   receiptFormatterService
-	ledger      auditledger.Ledger
-	receiptSink RefundReceiptSink
-	txBeginner  refundTransactionBeginner
-	now         func() time.Time
+	pending       RefundPendingStore
+	settler       billing.Settler
+	formatter     receiptFormatterService
+	ledger        auditledger.Ledger
+	receiptSink   RefundReceiptSink
+	txBeginner    refundTransactionBeginner
+	quotaReverser QuotaReverser
+	now           func() time.Time
 }
 
 type RefundWorkerOption struct {
@@ -363,6 +364,7 @@ func (w *MismatchRefundWorker) applyLegacy(ctx context.Context, payload Mismatch
 		_ = w.pending.MarkFailed(ctx, payload.ClaimID)
 		return err
 	}
+	w.reverseQuotaAfterRefund(ctx, payload, refund)
 	return w.pending.MarkCompleted(ctx, payload.ClaimID, w.now())
 }
 
@@ -430,6 +432,7 @@ func (w *MismatchRefundWorker) applyInTx(ctx context.Context, payload MismatchRe
 		return fmt.Errorf("audit: commit refund transaction: %w", err)
 	}
 	committed = true
+	w.reverseQuotaAfterRefund(ctx, payload, refund)
 	return w.pending.MarkCompleted(ctx, payload.ClaimID, w.now())
 }
 

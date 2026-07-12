@@ -75,6 +75,7 @@ SELECT
         WHEN be.payment_refund_id IS NOT NULL THEN 'payment_refund'
         WHEN be.voucher_redemption_id IS NOT NULL THEN 'voucher_redemption'
         WHEN be.recharge_order_id IS NOT NULL THEN 'recharge_order'
+        WHEN be.subscription_auto_renewal_charge_id IS NOT NULL THEN 'subscription_auto_renewal'
         WHEN be.claim_id IS NOT NULL THEN 'billing_claim'
         ELSE 'billing_event'
     END::text AS source_type,
@@ -83,6 +84,7 @@ SELECT
         be.payment_refund_id,
         be.voucher_redemption_id,
         be.recharge_order_id,
+        be.subscription_auto_renewal_charge_id,
         be.claim_id,
         be.id
     )::bigint AS source_id,
@@ -103,8 +105,11 @@ LEFT JOIN payment_refunds pr
 LEFT JOIN recharge_orders ro
   ON ro.tenant_id = be.tenant_id
  AND ro.id = be.recharge_order_id
+LEFT JOIN subscription_auto_renewal_charges sarc
+  ON sarc.tenant_id = be.tenant_id
+ AND sarc.id = be.subscription_auto_renewal_charge_id
 WHERE be.tenant_id = sqlc.arg(tenant_id)::bigint
-  AND COALESCE(blc.user_id, vr.user_id, pc.user_id, pr.user_id, ro.user_id) = sqlc.arg(user_id)::bigint
+  AND COALESCE(blc.user_id, vr.user_id, pc.user_id, pr.user_id, ro.user_id, sarc.user_id) = sqlc.arg(user_id)::bigint
 ORDER BY be.occurred_at DESC, be.id DESC
 LIMIT sqlc.arg(page_limit)::integer
 OFFSET sqlc.arg(page_offset)::integer;

@@ -505,7 +505,7 @@ func verifyReceiptTrustSignature(ctx context.Context, d CostReceiptHandlerDeps, 
 		// 强制签名 key 有效窗口。receipt 的 occurred_at(从 canonical trust.receipt.v1
 		// 解析)须落在签名 key 的 [EffectiveFrom, EffectiveTo] 内,堵泄漏旧 key 签新日期 receipt。
 		// 仅 registry 路径有真实窗口(signer-only 无 registry,见 trust verify 同款豁免);occurred_at
-		// 缺省则豁免。窗口外保持 Valid=true(签名密码学有效),靠 Reason 让 caller 判 unverified。
+		// 缺省则豁免。窗口外保持 Valid=true(签名密码学有效),靠 Reason 让调用方判 unverified。
 		if occurredAt, ok := receiptOccurredAtFromCanonical(canonical); ok {
 			key, lerr := auditledger.LookupPubkey(ctx, d.PubkeyRegistry, []byte(normalizedFingerprint))
 			if lerr != nil {

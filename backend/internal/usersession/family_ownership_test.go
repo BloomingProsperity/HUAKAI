@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// TestFamilyBelongsToUser_HitMissCrossUser is a discriminating test for the
-// index-backed ownership lookup that replaced the full ListFamilies scan in the
-// session-family revoke path.
+// TestFamilyBelongsToUser_HitMissCrossUser 是对那次索引支持的 ownership 查找的
+// 判别性测试 —— 它取代了 session-family revoke 路径中原先的全量
+// ListFamilies 扫描。
 func TestFamilyBelongsToUser_HitMissCrossUser(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 5, 9, 0, 0, 0, time.UTC)
@@ -30,31 +30,31 @@ func TestFamilyBelongsToUser_HitMissCrossUser(t *testing.T) {
 	}
 	familyID := families[0].ID
 
-	// Hit: owner sees their own family.
+	// 命中: owner 看得到自己的 family。
 	if ok, err := svc.FamilyBelongsToUser(ctx, tenant, owner, familyID); err != nil || !ok {
 		t.Fatalf("owner ownership = (%v,%v), want (true,nil)", ok, err)
 	}
 
-	// Cross-user: a different user in the same tenant must NOT own it.
+	// 跨用户: 同一租户下的另一个用户绝不能拥有它。
 	if ok, err := svc.FamilyBelongsToUser(ctx, tenant, other, familyID); err != nil || ok {
 		t.Fatalf("cross-user ownership = (%v,%v), want (false,nil)", ok, err)
 	}
 
-	// Cross-tenant: same user id under a different tenant must NOT own it.
+	// 跨租户: 不同租户下相同的 user id 绝不能拥有它。
 	if ok, err := svc.FamilyBelongsToUser(ctx, tenant+1, owner, familyID); err != nil || ok {
 		t.Fatalf("cross-tenant ownership = (%v,%v), want (false,nil)", ok, err)
 	}
 
-	// Miss: a family id that does not exist resolves to false (not an error).
+	// 未命中: 不存在的 family id 解析为 false (而非 error)。
 	const ghost = "00000000-0000-0000-0000-0000000000ff"
 	if ok, err := svc.FamilyBelongsToUser(ctx, tenant, owner, ghost); err != nil || ok {
 		t.Fatalf("unknown-family ownership = (%v,%v), want (false,nil)", ok, err)
 	}
 }
 
-// TestRevokeFamily_RejectsCrossUserOwnership pins the wiring: Revoke with a
-// FamilyID owned by another user (scoped by UserID) must be denied via the
-// indexed ownership check, returning ErrFamilyNotFound rather than revoking.
+// TestRevokeFamily_RejectsCrossUserOwnership 锁定接线: 用一个属于另一个
+// 用户的 FamilyID (按 UserID 限定) 调用 Revoke, 必须经由索引化的 ownership
+// 检查被拒, 返回 ErrFamilyNotFound 而非执行 revoke。
 func TestRevokeFamily_RejectsCrossUserOwnership(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 5, 9, 30, 0, 0, time.UTC)
@@ -75,17 +75,17 @@ func TestRevokeFamily_RejectsCrossUserOwnership(t *testing.T) {
 	}
 	familyID := families[0].ID
 
-	// Attacker (different UserID) cannot revoke the owner's family.
+	// 攻击者 (不同的 UserID) 无法 revoke owner 的 family。
 	if _, err := svc.Revoke(ctx, RevokeInput{TenantID: tenant, UserID: attacker, FamilyID: familyID}); !errors.Is(err, ErrFamilyNotFound) {
 		t.Fatalf("cross-user revoke err = %v, want ErrFamilyNotFound", err)
 	}
-	// Family must still be active after the denied revoke.
+	// 被拒的 revoke 之后, family 必须仍然 active。
 	families, err = svc.List(ctx, tenant, owner)
 	if err != nil || len(families) != 1 || families[0].Status == FamilyStatusRevoked {
 		t.Fatalf("owner family unexpectedly mutated: err=%v fams=%+v", err, families)
 	}
 
-	// Owner can revoke their own family.
+	// owner 能 revoke 自己的 family。
 	if n, err := svc.Revoke(ctx, RevokeInput{TenantID: tenant, UserID: owner, FamilyID: familyID}); err != nil || n != 1 {
 		t.Fatalf("owner revoke = (%d,%v), want (1,nil)", n, err)
 	}

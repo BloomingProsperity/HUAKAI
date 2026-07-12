@@ -7,8 +7,8 @@ import (
 	"fmt"
 )
 
-// P-2 D3 + D4 anthropic_messages streaming — CanonicalEventToClientChunk +
-// FinalizeClientStream + per-stream state。
+// P-2 D3 + D4 anthropic_messages 流式 — CanonicalEventToClientChunk +
+// FinalizeClientStream + 单流状态。
 
 // AnthropicMessagesStreamState 是 anthropic_messages client adapter 的 per-stream
 // 状态；forwarder 在 stream 起点初始化，逐事件传入。
@@ -116,7 +116,22 @@ func (a *AnthropicMessagesClient) CanonicalEventToClientChunk(ctx context.Contex
 			return nil, nil, fmt.Errorf("proto: marshal content_block_start: %w", err)
 		}
 		s.OpenBlocks[evt.Index] = true
-		return [][]byte{EmitSSEEvent("content_block_start", body)}, blockLoss, nil
+		out := [][]byte{EmitSSEEvent("content_block_start", body)}
+		// gemini 等上游在 start 即携带完整工具入参(ContentBlock.Input,无后续 input_json_delta)。
+		// Anthropic 线格式里 content_block_start 的 input 恒为 {}、客户端只从 input_json_delta 累积入参,
+		// 因此把 start 携带的 Input 合成一条 input_json_delta 发出,客户端才能拿到入参(否则整条工具入参丢失)。
+		// 对 anthropic/openai 上游(start 入参为空、走真 delta),此处 len(Input)==0 不触发,无重复。
+		if cb := evt.ContentBlock; (cb.Type == "tool_use" || cb.Type == "server_tool_use") && meaningfulToolInput(cb.Input) {
+			deltaPayload := map[string]any{
+				"type":  "content_block_delta",
+				"index": evt.Index,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": string(cb.Input)},
+			}
+			if db, derr := json.Marshal(deltaPayload); derr == nil {
+				out = append(out, EmitSSEEvent("content_block_delta", db))
+			}
+		}
+		return out, blockLoss, nil
 
 	case "content_block_delta":
 		if !s.Started {
@@ -285,7 +300,10 @@ func renderAnthropicResponseDelta(d *CanonicalContentDelta) (map[string]any, []P
 	switch d.Type {
 	case "text_delta":
 		return map[string]any{"type": "text_delta", "text": d.Text}, nil
-	case "input_json_delta":
+	case "tool_input_delta", "input_json_delta":
+		// 上游 SSE 解析器(anthropic/sse.go、openai/sse.go)把工具入参 delta 统一产出为 canonical
+		// 类型 tool_input_delta;此前这里只认 anthropic 线名 input_json_delta = 真 canonical 类型掉
+		// default 被丢 → 跨协议流式工具入参整条丢失。两种拼写都接,输出仍为 anthropic 线 input_json_delta。
 		partial := d.PartialJSON
 		if len(partial) == 0 {
 			partial = json.RawMessage(`""`)

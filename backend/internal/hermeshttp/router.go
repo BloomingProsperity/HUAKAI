@@ -18,6 +18,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
@@ -29,10 +30,9 @@ type AuthResolver interface {
 
 type authContextKey struct{}
 
-// ToolRegistry is the registry of ops tools the tool-execute handler dispatches
-// to. *hermesops.Registry satisfies it. It covers BOTH the read-only diagnostic
-// dispatch (Run) and the mutating-tool authorization (AuthorizeMutating) that
-// the confirm-gated mutate path uses.
+// ToolRegistry 是 tool-execute handler 派发到的 ops 工具注册表。
+// *hermesops.Registry 实现了它。它同时覆盖只读诊断派发(Run)与 confirm 门控
+// 变更路径所用的 mutating 工具授权(AuthorizeMutating)。
 type ToolRegistry interface {
 	List() []hermesops.ToolSpec
 	Get(name string) (hermesops.ToolSpec, bool)
@@ -41,16 +41,16 @@ type ToolRegistry interface {
 	Run(ctx context.Context, name string, req hermesops.ToolRequest) (hermesops.ToolResult, error)
 }
 
-// MutateOrchestrator runs a confirmed mutating tool under the atomic-audit +
-// advisory-lock transaction. *hermesops.MutateOrchestrator satisfies it. Kept
-// as an interface so the mutate handler is unit-testable with a fake.
+// MutateOrchestrator 在 atomic-audit + advisory-lock 事务下运行一个已确认的
+// mutating 工具。*hermesops.MutateOrchestrator 实现了它。保留为接口,以便 mutate
+// handler 可用 fake 做单元测试。
 type MutateOrchestrator interface {
 	Execute(ctx context.Context, lockKey string, rec hermesops.MutationAuditRecord, mutate func(ctx context.Context, tx pgx.Tx) (hermesops.ToolResult, error)) (hermesops.ToolResult, error)
 }
 
-// ContextSource provides the merged module-knowledge view for GET
-// /v1/hermes/context. *cmdgateway moduleSource (a modulehttp.Source) is wrapped
-// by the wiring; the handler only needs the merged accessor.
+// ContextSource 为 GET /v1/hermes/context 提供合并后的 module-knowledge 视图。
+// *cmdgateway 的 moduleSource(一个 modulehttp.Source)由接线层包装;handler 只需
+// 这个合并访问器。
 type ContextSource interface {
 	modulehttp.Source
 }
@@ -63,24 +63,24 @@ type handler struct {
 	tools          ToolRegistry
 	toolCalls      hermesops.ToolCallInserter
 	contextSource  ContextSource
-	// mutator + confirmCache back the WAVE H4 mutating-tool path. When mutator is
-	// nil, mutating tools are rejected (503) — the read-only path is unaffected.
+	// mutator + confirmCache 支撑 WAVE H4 的 mutating 工具路径。当 mutator 为
+	// nil 时,mutating 工具被拒绝(503)——只读路径不受影响。
+	// confirmCache 现为 hermesconfirm 共享单例(可经 RouterDeps 注入,以便未来 Phase B 的 LLM 提议侧
+	// 与 operator 确认侧共用同一实例);未注入时本构造回退新建一个(行为同旧 newConfirmCache())。
 	mutator      MutateOrchestrator
-	confirmCache *confirmCache
-	// mutatingDisabled is KNOB A inverted: the runtime kill-switch for ALL mutating
-	// tools. Stored in DISABLED form so the handler's zero value means ENABLED
-	// (current behavior) — white-box handler tests that build a handler{} directly
-	// keep the mutating path live without setting anything. NewRouterWithDeps maps
-	// RouterDeps.MutatingEnabled (default true at the wiring) into !MutatingEnabled
-	// here. When true, executeTool refuses the mutating branch (403
-	// hermes_mutating_disabled) before previewMutation/confirmMutation and records a
-	// denied row; the read-only diagnostics path is untouched.
+	confirmCache *hermesconfirm.Cache
+	// mutatingDisabled 是 KNOB A 的取反值:针对所有 mutating 工具的运行时 kill-switch。
+	// 以「禁用」形式存储,这样 handler 的 0 值即表示「启用」(当前行为)——直接构造
+	// handler{} 的白盒 handler 测试无需任何设置即可让 mutating 路径保持可用。
+	// NewRouterWithDeps 把 RouterDeps.MutatingEnabled(接线层默认 true)映射成这里的
+	// !MutatingEnabled。为 true 时,executeTool 会在 previewMutation/confirmMutation
+	// 之前拒绝 mutating 分支(403 hermes_mutating_disabled)并记录一条 denied 行;
+	// 只读诊断路径不受影响。
 	mutatingDisabled bool
-	// mutateRateLimiter is the S2 (c) per-operator-token sliding-window limiter. It
-	// is checked in confirmMutation AFTER the correlation-id consume and BEFORE
-	// Execute, so only REAL confirmed executes count (previews/denials do not). A
-	// nil limiter (the handler's zero value, and what tests build by default) is the
-	// disabled sentinel — every confirm passes, byte-for-byte legacy behavior.
+	// mutateRateLimiter 是 S2 (c) 的 per-operator-token 滑动窗口限流器。它在
+	// confirmMutation 里、correlation-id 消费之后、Execute 之前被检查,因此只有真正
+	// 已确认的执行才计数(preview/denial 不计)。nil 限流器(handler 的 0 值,也是测试
+	// 默认构造的形态)是「禁用」哨兵——每次 confirm 都放行,与旧行为逐字节一致。
 	mutateRateLimiter *mutateguard.RateLimiter
 }
 
@@ -89,37 +89,38 @@ type RouterDeps struct {
 	Runner         *hermes.RunnerClient
 	Bridge         *hermeschat.Bridge
 	HeaderSettings headerfirewall.PlatformSettings
-	// Tools, ToolCalls, and ContextSource wire the WAVE H3 read-only ops spine.
-	// All are optional: when unset, the tool/context routes return a 503
-	// (service unavailable) rather than panicking.
+	// Tools、ToolCalls 与 ContextSource 接入 WAVE H3 的只读 ops 主干。
+	// 三者均可选:未设置时,tool/context 路由返回 503(service unavailable)
+	// 而非 panic。
 	Tools         ToolRegistry
 	ToolCalls     hermesops.ToolCallInserter
 	ContextSource ContextSource
-	// Mutator wires the WAVE H4 mutating-tool path (atomic-audit + advisory-lock
-	// orchestrator). Optional: when unset, mutating tools are rejected (503) and
-	// the read-only path is unaffected.
+	// Mutator 接入 WAVE H4 的 mutating 工具路径(atomic-audit + advisory-lock
+	// orchestrator)。可选:未设置时,mutating 工具被拒绝(503),只读路径不受影响。
 	Mutator MutateOrchestrator
-	// MutatingEnabled is KNOB A: the runtime kill-switch for ALL mutating tools.
-	// The gateway wiring sources it from HUAKAI_HERMES_MUTATING_ENABLED (default
-	// true). When false, the handler refuses the mutating branch of tool-execute
-	// (403 hermes_mutating_disabled, denial recorded) while the read-only path +
-	// chat stay live. NOTE the field is named in ENABLED form for the wiring's
-	// clarity; the handler stores its inverse so a zero-value handler{} (built
-	// directly in tests) keeps mutation ENABLED.
+	// MutatingEnabled 是 KNOB A:针对所有 mutating 工具的运行时 kill-switch。
+	// gateway 接线层从 HUAKAI_HERMES_MUTATING_ENABLED 取值(默认 true)。为 false 时,
+	// handler 拒绝 tool-execute 的 mutating 分支(403 hermes_mutating_disabled,记录
+	// denial),而只读路径 + chat 仍保持可用。注意:为接线层表达清晰,该字段以「启用」
+	// 形式命名;handler 存储其取反值,这样 0 值 handler{}(测试里直接构造)默认保持
+	// mutation 启用。
 	MutatingEnabled bool
-	// MutateGuard is the optional S2 bound-the-mutating-path bundle. Its
-	// handler-side piece is the per-operator-token rate limiter; the concurrency
-	// semaphore + tx deadline are applied on the orchestrator at wiring time. The
-	// gateway wiring sets it only when the admin-only mutator path is active; when
-	// nil, the handler's rate limiter is the disabled sentinel — byte-for-byte
-	// legacy behavior.
+	// ConfirmCache 是 dry-run→confirm 的共享 correlation-id 存储。可选:为 nil 时,
+	// NewRouterWithDeps 会为每个 router 新建一个独立实例(与旧行为完全一致)。gateway
+	// 接线层注入一个进程级单例,使(未来 Phase B 的)LLM 提议侧与本 operator 确认侧
+	// 共用同一份缓存——一次提议发出的 correlation_id 可被 operator confirm 消费。
+	// nil 缓存始终 fail-closed(confirm → 400,绝不执行)。
+	ConfirmCache *hermesconfirm.Cache
+	// MutateGuard 是可选的 S2「为 mutating 路径设界」组合。其 handler 侧的部分是
+	// per-operator-token 限流器;并发信号量 + tx deadline 在接线时施加于 orchestrator。
+	// gateway 接线层仅在 admin-only mutator 路径激活时设置它;为 nil 时,handler 的
+	// 限流器是「禁用」哨兵——与旧行为逐字节一致。
 	MutateGuard *MutateGuardDeps
 }
 
-// MutateGuardDeps carries the handler-side piece of the S2 mutating-path bound:
-// the per-operator-token rate limiter. The concurrency semaphore + tx deadline
-// are applied on the orchestrator (NewMutateOrchestrator options) at wiring time,
-// not here. A nil RateLimiter (or a disabled one) is the legacy unbounded behavior.
+// MutateGuardDeps 携带 S2 mutating 路径设界中 handler 侧的部分:per-operator-token
+// 限流器。并发信号量 + tx deadline 在接线时施加于 orchestrator(NewMutateOrchestrator
+// 选项),而非这里。nil 的 RateLimiter(或一个被禁用的)即旧的无界行为。
 type MutateGuardDeps struct {
 	RateLimiter *mutateguard.RateLimiter
 }
@@ -142,13 +143,19 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 		toolCalls:      d.ToolCalls,
 		contextSource:  d.ContextSource,
 		mutator:        d.Mutator,
-		confirmCache:   newConfirmCache(),
-		// KNOB A: store the inverse so a zero-value handler{} (test white-box) keeps
-		// mutation enabled; the wiring passes MutatingEnabled (default true).
+		// 注入共享 Cache;未注入则回退新建(行为同旧 newConfirmCache(),保证 NewRouter()/白盒测试不变)。
+		confirmCache: d.ConfirmCache,
+		// KNOB A:存储取反值,使 0 值 handler{}(白盒测试)默认保持 mutation 启用;
+		// 接线层传入 MutatingEnabled(默认 true)。
 		mutatingDisabled: !d.MutatingEnabled,
 	}
-	// S2 (c): the per-operator-token rate limiter, when the guard bundle is wired.
-	// A nil bundle (or nil limiter) leaves h.mutateRateLimiter nil = disabled.
+	// 未注入共享 Cache 时回退新建一个(行为同旧 newConfirmCache():每路由一份),保证 NewRouter()
+	// 与白盒 handler 测试无需注入即可工作。
+	if h.confirmCache == nil {
+		h.confirmCache = hermesconfirm.NewCache()
+	}
+	// S2 (c):当 guard 组合被接入时,启用 per-operator-token 限流器。
+	// nil 组合(或 nil 限流器)会让 h.mutateRateLimiter 保持 nil = 禁用。
 	if d.MutateGuard != nil {
 		h.mutateRateLimiter = d.MutateGuard.RateLimiter
 	}
@@ -165,9 +172,9 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 	r.Get("/conversations/{id}", h.getConversation)
 	r.Delete("/conversations/{id}", h.deleteConversation)
 	r.Get("/conversations/{id}/messages", h.listConversationMessages)
-	// WAVE H3 read-only ops spine + WAVE H4 mutating ops tools. tool-execute
-	// dispatches read-only tools directly and routes mutating tools through the
-	// dry-run + confirm flow (confirm=false => preview, confirm=true => execute).
+	// WAVE H3 只读 ops 主干 + WAVE H4 mutating ops 工具。tool-execute 直接派发只读
+	// 工具,而把 mutating 工具引导经过 dry-run + confirm 流程(confirm=false => preview,
+	// confirm=true => execute)。
 	r.Get("/tools", h.listTools)
 	r.Post("/tool-execute", h.executeTool)
 	r.Get("/context", h.getModuleContext)
@@ -238,13 +245,11 @@ func (h handler) audit(w http.ResponseWriter, r *http.Request, ident sessionauth
 	return true
 }
 
-// withAdminActor folds the resolved operator's token id + role into the
-// sanitized audit args when the request was authenticated in admin-only mode.
-// actor_user_id continues to record the tenant user (so the users FK holds);
-// this records WHICH operator performed the action so the audit trail
-// attributes the real admin. End-user-path requests are returned unchanged.
-// The map is copied so the caller's args (also used in error paths) are not
-// mutated, and so the audit's sensitive-key sanitizer still runs over it.
+// withAdminActor 在请求以 admin-only 模式完成认证时,把解析出的 operator token id
+// + role 折入已脱敏的审计 args。actor_user_id 仍记录 tenant user(以保证 users FK
+// 成立);本函数记录是哪个 operator 执行了该动作,使审计轨迹能归因到真正的 admin。
+// 终端用户路径的请求原样返回。该 map 会被复制,以免调用方的 args(也用于错误路径)
+// 被改动,同时也让审计的敏感键脱敏器仍能作用其上。
 func withAdminActor(ctx context.Context, args map[string]any) map[string]any {
 	actor, ok := adminActorFromContext(ctx)
 	if !ok {
@@ -254,10 +259,10 @@ func withAdminActor(ctx context.Context, args map[string]any) map[string]any {
 	for k, v := range args {
 		out[k] = v
 	}
-	// Key is admin_actor_id (NOT *_token_id): the hermes audit sanitizer
-	// (hermes.SanitizeArgs/sensitiveKey) redacts any key containing "token", and
-	// this value is a non-secret admin_tokens row PK that MUST survive into the
-	// persisted trail — otherwise operator attribution is silently dropped.
+	// 键名用 admin_actor_id(而非 *_token_id):hermes 审计脱敏器
+	// (hermes.SanitizeArgs/sensitiveKey)会对任何含 "token" 的键脱敏,而这个值是
+	// 非机密的 admin_tokens 行 PK,必须保留进入持久化轨迹——否则 operator 归因会被
+	// 静默丢弃。
 	out["admin_actor_id"] = actor.TokenID
 	out["admin_role"] = actor.Role
 	return out

@@ -7,15 +7,20 @@ import (
 	"sync"
 )
 
-// LaneCount holds the pending row count for a single DLQ lane.
+// LaneCount 持有单个 DLQ lane 的 pending 行数。
 type LaneCount struct {
 	Lane  Lane
 	Count int64
 }
 
-// CountPendingByLane returns the number of rows with status='pending' grouped
-// by lane. Only pending rows are counted; inflight/delivered/dlq rows are excluded.
-// MUTATION guard: removing the status='pending' filter returns inflated counts.
+type DeliveredUnsettledStats struct {
+	Count            int64
+	OldestAgeSeconds int64
+}
+
+// CountPendingByLane 返回 status='pending' 的行数，按 lane 分组。
+// 仅统计 pending 行；inflight/delivered/dlq 行被排除在外。
+// MUTATION 守卫：移除 status='pending' 过滤会返回被夸大的计数。
 func (s *Store) CountPendingByLane(ctx context.Context) ([]LaneCount, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured
@@ -47,8 +52,26 @@ ORDER BY lane`)
 	return out, nil
 }
 
-// dlqDepthMetrics is the expvar.Map "dlq_depth" used by the OTel bridge and
-// alertmetrics overlay. Keys are "depth_HIGH", "depth_MED", "depth_LOW".
+// DeliveredUnsettled 返回所有未闭合交付后结算行的数量与最老年龄。
+func (s *Store) DeliveredUnsettled(ctx context.Context) (DeliveredUnsettledStats, error) {
+	if s == nil || s.pool == nil {
+		return DeliveredUnsettledStats{}, ErrStoreNotConfigured
+	}
+	var stats DeliveredUnsettledStats
+	err := s.pool.QueryRow(ctx, `
+SELECT count(*),
+       COALESCE(GREATEST(EXTRACT(EPOCH FROM (now() - MIN(failure_at))), 0)::bigint, 0)
+FROM usage_record_dlq
+WHERE event_kind = 'post_delivery_settlement'
+  AND status <> 'delivered'`).Scan(&stats.Count, &stats.OldestAgeSeconds)
+	if err != nil {
+		return DeliveredUnsettledStats{}, fmt.Errorf("dlq: delivered unsettled stats: %w", err)
+	}
+	return stats, nil
+}
+
+// dlqDepthMetrics 是 OTel 桥接与 alertmetrics 叠加层使用的 expvar.Map
+// "dlq_depth"。键为 "depth_HIGH"、"depth_MED"、"depth_LOW"。
 var (
 	dlqDepthOnce    sync.Once
 	dlqDepthMetrics *expvar.Map
@@ -60,37 +83,49 @@ func getDLQDepthMetrics() *expvar.Map {
 		m.Add("depth_HIGH", 0)
 		m.Add("depth_MED", 0)
 		m.Add("depth_LOW", 0)
+		m.Add("delivered_unsettled_count", 0)
+		m.Add("delivered_unsettled_age_seconds", 0)
 		dlqDepthMetrics = m
 	})
 	return dlqDepthMetrics
 }
 
-// UpdateDLQDepthGauge refreshes the dlq_depth expvar map from the database.
-// It is called by the DLQ worker ticker so the alert rule engine always has a
-// fresh gauge via ExpvarMetricSource.Snapshot().
+// SetDLQDepthGauge 设置 dlq_depth map 中的一个 gauge 键,供同属死信面板的
+// 其它队列把深度并入同一运维指标面。
+func SetDLQDepthGauge(key string, count int64) {
+	m := getDLQDepthMetrics()
+	if ev := m.Get(key); ev != nil {
+		if iv, ok := ev.(*expvar.Int); ok {
+			iv.Set(count)
+			return
+		}
+	}
+	m.Add(key, count)
+}
+
+// UpdateDLQDepthGauge 从数据库刷新 dlq_depth expvar map。
+// 它由 DLQ worker 的 ticker 调用，使告警规则引擎始终能通过
+// ExpvarMetricSource.Snapshot() 拿到新鲜的 gauge。
 func (s *Store) UpdateDLQDepthGauge(ctx context.Context) error {
 	counts, err := s.CountPendingByLane(ctx)
 	if err != nil {
 		return err
 	}
-	m := getDLQDepthMetrics()
-	// Reset all lanes to zero before applying the fresh snapshot so that lanes
-	// that drain completely do not retain stale nonzero values.
+	// 在应用新快照前先将所有 lane 重置为零，使已完全排空的 lane
+	// 不会保留陈旧的非零值。
 	totals := map[Lane]int64{LaneHigh: 0, LaneMed: 0, LaneLow: 0}
 	for _, lc := range counts {
 		totals[lc.Lane] += lc.Count
 	}
 	for lane, count := range totals {
 		key := "depth_" + string(lane)
-		// expvar.Map.Add is the only safe mutating method on an existing key.
-		// We use Set via the underlying *expvar.Int instead.
-		if ev := m.Get(key); ev != nil {
-			if iv, ok := ev.(*expvar.Int); ok {
-				iv.Set(count)
-				continue
-			}
-		}
-		m.Add(key, count)
+		SetDLQDepthGauge(key, count)
 	}
+	stats, err := s.DeliveredUnsettled(ctx)
+	if err != nil {
+		return err
+	}
+	SetDLQDepthGauge("delivered_unsettled_count", stats.Count)
+	SetDLQDepthGauge("delivered_unsettled_age_seconds", stats.OldestAgeSeconds)
 	return nil
 }

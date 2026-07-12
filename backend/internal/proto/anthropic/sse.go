@@ -12,7 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// UpstreamState tracks Anthropic SSE translation state from spec section 3 Phase C.
+// UpstreamState 跟踪 Anthropic SSE 转换状态，对应规范第 3 节 Phase C。
 //
 // AccountID（Track P）: forwarder 注入选定的 provider_account_id, 让 adapter
 // 在终态调 cachemetrics.ObserveByAccount 累计 per-account 维度。零值表示
@@ -39,7 +39,7 @@ type UpstreamState struct {
 	TenantID int64
 }
 
-// Adapter translates Anthropic SSE events through proto.HCSF per spec section 3 Phase C.
+// Adapter 经由 proto.HCSF 转换 Anthropic SSE 事件，对应规范第 3 节 Phase C。
 type Adapter struct {
 	CarryForwardSignatureDelta bool
 }
@@ -194,8 +194,8 @@ func (s *Adapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope,
 		state.BlocksInProgress[env.Index] = true
 		block, losses := canonicalBlock(env.ContentBlock)
 		ev := proto.CanonicalEvent{Type: "content_block_start", Index: env.Index, ContentBlock: &block}
-		// Stage B: emit a CanonicalUsage with the server tool call count so the
-		// UsageAccumulator can accumulate it (+=). ONLY server_tool_use is billable.
+		// Stage B：发出一个携带 server tool 调用计数的 CanonicalUsage，
+		// 让 UsageAccumulator 能累加它（+=）。仅 server_tool_use 计费。
 		if env.ContentBlock.Type == "server_tool_use" {
 			var svcUsage proto.CanonicalUsage
 			switch {
@@ -203,7 +203,7 @@ func (s *Adapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope,
 				svcUsage.WebSearchCalls = 1
 			case strings.Contains(env.ContentBlock.Name, "file_search") || strings.Contains(env.ContentBlock.Name, "document_search"):
 				svcUsage.FileSearchCalls = 1
-				// Unknown server tool names: not bucketed — avoid mis-billing.
+				// 未知的 server tool 名称：不归桶——避免误计费。
 			}
 			if svcUsage.WebSearchCalls > 0 || svcUsage.FileSearchCalls > 0 {
 				ev.Usage = &svcUsage
@@ -244,6 +244,13 @@ func (s *Adapter) providerEventSwitch(evt anthropicEvent, env anthropicEnvelope,
 			state.PrefixHash,
 		)
 		return []proto.CanonicalEvent{{Type: "message_stop"}}, nil, nil
+	case "ping":
+		// ping 是 Anthropic 流式协议的保活心跳(TTFT 与稀疏 token 间隙周期性下发),
+		// 无任何载荷。静默吞掉:不产 canonical 事件、不记 loss(它是正常协议非损失,
+		// 记 loss 会给长流账面注入噪音)、不返 error。绝不能落入 default 把保活帧当
+		// 未知事件返 ErrUnknownEventType——那会被 forwarder 判 UnknownTermination
+		// 截断整流并对已交付内容计费。
+		return nil, nil, nil
 	default:
 		loss := proto.NewLossEntry(proto.FeatureTextStreaming, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "unknown upstream event type skipped")
 		return nil, []proto.ProtocolLossEntry{loss}, fmt.Errorf("%w: %s", proto.ErrUnknownEventType, evt.Type)
@@ -308,8 +315,11 @@ func canonicalBlock(b anthropicBlockPayload) (proto.CanonicalContentBlock, []pro
 	case "tool_use":
 		callID, err := proto.ToCanonicalCallID(b.ID, proto.UpstreamProtocolAnthropic)
 		if err != nil {
-			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed tool call identifier")
-			return proto.CanonicalContentBlock{Type: "tool_use", Name: b.Name, Input: b.Input}, []proto.ProtocolLossEntry{loss}
+			// 与同适配器 buffered 路径(anthropicBufferedToolUseBlock)对齐：缺失/畸形 id 不丢成空串
+			// (空 CallID 会让下游 openai 流硬报错、anthropic 流发出无法关联 tool_result 的 tool_use)，
+			// 而是合成一个可用 canonical id 并仅记一条 loss。
+			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-canonical tool call identifier; preserved via synthesized canonical call_id")
+			return proto.CanonicalContentBlock{Type: "tool_use", CallID: proto.SynthesizeCanonicalCallID(b.ID), Name: b.Name, Input: b.Input}, []proto.ProtocolLossEntry{loss}
 		}
 		return proto.CanonicalContentBlock{Type: "tool_use", CallID: callID, Name: b.Name, Input: b.Input}, nil
 	case "thinking":
@@ -375,9 +385,9 @@ func anthropicResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, 
 		losses = append(losses, blockLosses...)
 		out.Content = append(out.Content, block)
 	}
-	// Stage B: count server-side built-in tool invocations for per-call surcharge.
-	// ONLY type=="server_tool_use" is billable; type=="tool_use" is a free client
-	// function-call and MUST NOT be counted (over-charge prevention).
+	// Stage B：统计服务端内建工具调用次数，用于按次附加计费。
+	// 仅 type=="server_tool_use" 计费；type=="tool_use" 是免费的客户端
+	// 函数调用，绝不能计入（防止多计费）。
 	for _, rawBlock := range resp.Content {
 		var blk struct {
 			Type string `json:"type"`
@@ -391,7 +401,7 @@ func anthropicResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, 
 			out.Usage.WebSearchCalls++
 		case strings.Contains(blk.Name, "file_search") || strings.Contains(blk.Name, "document_search"):
 			out.Usage.FileSearchCalls++
-			// Unknown server tool names: intentionally not bucketed to avoid mis-billing.
+			// 未知的 server tool 名称：刻意不归桶，避免误计费。
 		}
 	}
 	return out, losses, nil
@@ -552,37 +562,52 @@ func (s *Adapter) canonicalDelta(d anthropicDeltaPayload) (*proto.CanonicalConte
 	}
 }
 
+// mergeUsage 把 message_delta 的两路 usage 来源(a=顶层 usage、b=delta.usage)
+// 并入 base(message_start 已确立的累积 usage)。
+//
+// 关键不变量:逐字段"非零才覆盖"——绝不整段替换。Anthropic 的 message_delta
+// 顶层 usage 通常只带 output_tokens,input/cache_read/cache_creation 缺省为 0;
+// 若整段替换 base 会把 message_start 确立的 input/cache 维度抹零,污染随后
+// message_stop / FinalizeUpstreamStream 读取的 cache 命中观测(进而饿掉 cache-aware
+// 路由的正反馈,且使运维 hit-rate 失真)。本语义与 UsageAccumulator.Update、
+// 缓冲重组的非零覆盖保持一致。
 func mergeUsage(base, a, b proto.CanonicalUsage) proto.CanonicalUsage {
-	if a.InputTokens != 0 || a.OutputTokens != 0 || a.TotalTokens != 0 ||
-		a.CacheCreationInputTokens != 0 || a.CacheReadInputTokens != 0 ||
-		a.CacheCreationInputTokens5m != 0 || a.CacheCreationInputTokens1h != 0 {
-		base = a
-	}
-	if b.InputTokens != 0 {
-		base.InputTokens = b.InputTokens
-	}
-	if b.OutputTokens != 0 {
-		base.OutputTokens = b.OutputTokens
-	}
-	if b.TotalTokens != 0 {
-		base.TotalTokens = b.TotalTokens
-	}
-	if b.CacheCreationInputTokens != 0 {
-		base.CacheCreationInputTokens = b.CacheCreationInputTokens
-	}
-	if b.CacheReadInputTokens != 0 {
-		base.CacheReadInputTokens = b.CacheReadInputTokens
-	}
-	if b.CacheCreationInputTokens5m != 0 {
-		base.CacheCreationInputTokens5m = b.CacheCreationInputTokens5m
-	}
-	if b.CacheCreationInputTokens1h != 0 {
-		base.CacheCreationInputTokens1h = b.CacheCreationInputTokens1h
-	}
+	base = overlayNonZeroUsage(base, a)
+	base = overlayNonZeroUsage(base, b)
 	if base.TotalTokens == 0 {
 		base.TotalTokens = base.InputTokens + base.OutputTokens
 	}
 	return base
+}
+
+// overlayNonZeroUsage 把 src 的非零 token 字段叠加到 dst,保留 dst 已有维度。
+// 只处理 token 快照字段;tool-call 计数是累加语义,不在此合并。
+func overlayNonZeroUsage(dst, src proto.CanonicalUsage) proto.CanonicalUsage {
+	if src.InputTokens != 0 {
+		dst.InputTokens = src.InputTokens
+	}
+	if src.OutputTokens != 0 {
+		dst.OutputTokens = src.OutputTokens
+	}
+	if src.ReasoningTokens != 0 {
+		dst.ReasoningTokens = src.ReasoningTokens
+	}
+	if src.TotalTokens != 0 {
+		dst.TotalTokens = src.TotalTokens
+	}
+	if src.CacheCreationInputTokens != 0 {
+		dst.CacheCreationInputTokens = src.CacheCreationInputTokens
+	}
+	if src.CacheReadInputTokens != 0 {
+		dst.CacheReadInputTokens = src.CacheReadInputTokens
+	}
+	if src.CacheCreationInputTokens5m != 0 {
+		dst.CacheCreationInputTokens5m = src.CacheCreationInputTokens5m
+	}
+	if src.CacheCreationInputTokens1h != 0 {
+		dst.CacheCreationInputTokens1h = src.CacheCreationInputTokens1h
+	}
+	return dst
 }
 
 func mapStopReason(reason string) proto.CanonicalStopReason {

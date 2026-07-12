@@ -14,6 +14,30 @@ var (
 	ErrClaimRace           = errors.New("pool claim writeback race")
 )
 
+// NoCapacityError 包裹"池内无可用容量"哨兵错误,并携带池内账号最早恢复时刻——即所有被健康冷却
+// (HealthStateUntil)或本模型限流(RateLimitResetAt)挡下的账号中,最早能重新可用的那个时刻。供
+// HTTP 层据此算精确 Retry-After,替代硬编码常数。EarliestRecoveryAt 为零值表示无可估恢复时刻(账号
+// 因非时间原因被挡或恢复时刻已过),调用方据此回退默认值。实现 Unwrap,使
+// errors.Is(err, ErrNoEligibleAccount / ErrAllChannelsDegraded) 仍成立,既有分类逻辑不受影响。
+type NoCapacityError struct {
+	Cause              error
+	EarliestRecoveryAt time.Time
+}
+
+func (e *NoCapacityError) Error() string {
+	if e == nil || e.Cause == nil {
+		return ErrNoEligibleAccount.Error()
+	}
+	return e.Cause.Error()
+}
+
+func (e *NoCapacityError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 // Selector 按 docs/specs/pool-routing.md §Phase A-D 的分层算法为租户请求
 // 选择 Provider Account。
 type Selector interface {
@@ -28,11 +52,11 @@ type SelectionRequest struct {
 	APIKeyID       int64
 	PoolGroupID    int64
 	RequestedModel string
-	// ModelCooldownKey is the upstream/provider model key used by
-	// provider_accounts.model_rate_limits. Empty falls back to RequestedModel.
+	// ModelCooldownKey 是 provider_accounts.model_rate_limits 使用的
+	// upstream/provider 模型键。为空时回退到 RequestedModel。
 	ModelCooldownKey string
-	// ProtocolFamily is the exact upstream protocol requested by registry
-	// resolution, matching providers.upstream_protocol.
+	// ProtocolFamily 是 registry 解析所请求的确切上游协议,
+	// 与 providers.upstream_protocol 对应。
 	ProtocolFamily   string
 	EndpointFamily   string
 	CapabilityFlags  []string
@@ -52,6 +76,13 @@ type SelectionRequest struct {
 	// 空字符串视同无限制 (向后兼容未接线 / 无订阅链路)。
 	UserGroup string
 
+	// SelectionMode 是本次请求命中 binding 的选号策略 (model_pool_bindings.selection_mode)，
+	// 由 dispatch 端从 activeBindingMetadata 透传:""/"strict_priority" = 同优先级账号均匀
+	// Shuffle (接线前一致行为);"priority_weighted" = 按账号 static_weight 加权选号。
+	// 生产 RoutingPolicySource 据此字段返回 RoutingPolicy.SelectionMode,opt-in 激活加权分支,
+	// 不设/默认时与接线前逐一字节一致 (非全局翻转)。
+	SelectionMode string
+
 	// EstimatedInputTokens 是本次请求 prompt 的输入 token 估算 (由 dispatch 端
 	// 用 tokenestimate 启发式按 ProtocolFamily 算出)。<=0 视为"未接线/无估算",
 	// ContextWindowGate 据此 fail-open。
@@ -65,6 +96,14 @@ type SelectionRequest struct {
 	// ContextWindowGate 加进 EstimatedInputTokens 后再与 ModelContextWindow 比较,
 	// 保证为输出留位; 0 (未指定) 时不影响判定。
 	MaxOutputTokens int
+
+	// BindingID / BindingRPMLimit / BindingTPMLimit 是命中 binding 的 per-binding 限流上下文
+	// (model_pool_bindings.id / rpm_limit / tpm_limit),由 dispatch 端从 activeBindingMetadata
+	// 透传,供 BindingRateLimitSelector 做 per-binding RPM/TPM 预算闸。与 SelectionMode 同款透传:
+	// 仅携带数据,是否真强制由该 selector 的计数器(env 门控)+ 限额是否 >0 决定。<=0 视为无该维度限额。
+	BindingID       int64
+	BindingRPMLimit int64
+	BindingTPMLimit int64
 }
 
 // StickyState 标记一次 Select 相对 sticky binding 的结果(DM-07)。
@@ -104,8 +143,8 @@ type AccountSnapshot struct {
 	TenantID       int64
 	ProtocolFamily string
 	Priority       int
-	// Weight controls priority_weighted tie-band selection. 0/unset is
-	// treated as 1 so legacy account sources keep uniform behavior.
+	// Weight 控制 priority_weighted 同分带的选号。0/未设置会被当作 1,
+	// 使旧的账号来源保持均匀行为。
 	Weight           int32
 	LoadRate         float64
 	LastUsedAt       time.Time
@@ -115,15 +154,21 @@ type AccountSnapshot struct {
 	HealthState      string
 	HealthStateUntil time.Time
 	ModelRateLimits  map[string]ModelRateLimit
-	// WindowCostLimitCents is the operator-configured 5-hour session window
-	// spend cap in cents (1/100 USD). 0 or negative means unlimited (opt-in).
+	// WindowCostLimitCents 是运营者配置的 5 小时会话窗口消费上限,单位为分
+	// (1/100 美元)。0 或负数表示不限(选择性开启)。
 	WindowCostLimitCents int64
-	// MaxSessions is the operator-configured maximum concurrent active sessions
-	// for this account. 0 means unlimited (opt-in, default safety).
+	// MaxSessions 是运营者为该账号配置的最大并发活跃会话数。
+	// 0 表示不限(选择性开启,默认安全)。
 	MaxSessions int
-	// DisableCooling bypasses the health/cooldown gate for this account when true.
-	// Default false = exact existing behavior. Opt-in escape hatch for high-value accounts.
+	// DisableCooling 为 true 时让该账号绕过健康/冷却闸门。
+	// 默认 false = 与既有行为逐字节一致。用于高价值账号的选择性逃生通道。
 	DisableCooling bool
+	// RPMLimit 是运营者为该账号配置的主动 requests-per-minute 预算(ROUTE-121)。
+	// 0 或负数表示不限(选择性开启),因此未配置预算的账号保持其当前行为完全不变。
+	RPMLimit int64
+	// TPMLimit 是运营者为该账号配置的主动 tokens-per-minute 预算(ROUTE-121)。
+	// 0 或负数表示不限(选择性开启)。
+	TPMLimit int64
 }
 
 type ModelRateLimit struct {

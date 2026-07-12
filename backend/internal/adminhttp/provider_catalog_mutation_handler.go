@@ -17,14 +17,37 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
+	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 )
 
 var (
-	errProviderCatalogCodeConflict   = errors.New("provider catalog code already exists")
-	errProviderCatalogNotFound       = errors.New("provider catalog provider not found")
-	errProviderCatalogActiveAccounts = errors.New("provider catalog provider has active accounts")
-	errProviderCatalogTxPoolUnset    = errors.New("provider catalog transaction pool unset")
+	errProviderCatalogCodeConflict        = errors.New("provider catalog code already exists")
+	errProviderCatalogNotFound            = errors.New("provider catalog provider not found")
+	errProviderCatalogActiveAccounts      = errors.New("provider catalog provider has active accounts")
+	errProviderCatalogTxPoolUnset         = errors.New("provider catalog transaction pool unset")
+	errProviderProtocolChangeIncompatible = errors.New("provider protocol change incompatible with existing accounts")
 )
+
+// ensureAccountsCompatibleWithProtocol 校验某 provider 全部存量账号与 newProtocol 兼容,
+// 任一不兼容即返回错误(调用方在事务内会因此回滚,协议变更不落)。对非受限协议族
+// ValidateProtocolCompatibility 返回 nil,故只有改成 session 等受限族且存在错型账号时才拒。
+func ensureAccountsCompatibleWithProtocol(ctx context.Context, q *admindb.Queries, tenantID, providerID int64, newProtocol string) error {
+	accounts, err := q.ListProviderAccountsForProviderCompat(ctx, admindb.ListProviderAccountsForProviderCompatParams{
+		TenantID: tenantID, ProviderID: providerID,
+	})
+	if err != nil {
+		return err
+	}
+	for _, a := range accounts {
+		if err := accountcreate.ValidateProtocolCompatibility(newProtocol, a.AccountType, a.CredentialVendor, a.CredentialAuthMode); err != nil {
+			return fmt.Errorf("%w: 账号 %d(%s/%s/%s)与新协议 %q 不兼容: %v",
+				errProviderProtocolChangeIncompatible, a.ID, a.AccountType, a.CredentialVendor, a.CredentialAuthMode, newProtocol, err)
+		}
+	}
+	return nil
+}
 
 type providerCatalogCreateParams struct {
 	TenantID         int64
@@ -137,6 +160,12 @@ func (s providerCatalogStoreAdapter) UpdateProviderCatalogWithAudit(ctx context.
 		if err != nil {
 			return normalizeProviderCatalogDBError(err)
 		}
+		// S1-5:改协议不得留下与新协议不兼容的存量账号。UpdateProvider 已对该 provider 行
+		// 取 FOR NO KEY UPDATE,与创建侧 FOR SHARE 冲突,故本校验与并发创建互斥;任一存量
+		// 账号不兼容则整个事务回滚,协议不落。
+		if err := ensureAccountsCompatibleWithProtocol(ctx, q, arg.TenantID, row.ID, row.UpstreamProtocol); err != nil {
+			return err
+		}
 		audit.TargetID = &row.ID
 		if _, err := q.InsertAdminAuditEvent(ctx, audit); err != nil {
 			return err
@@ -212,6 +241,9 @@ func newCreateProviderCatalogHandler(d AdminProviderCatalogDeps) http.HandlerFun
 		if !ok {
 			return
 		}
+		if !requireProviderCatalogServingReadiness(w, arg.UpstreamProtocol, arg.Enabled) {
+			return
+		}
 		audit, ok := buildProviderCatalogAuditParams(w, r, ident, tenantID, "create_provider", req.Reason, map[string]any{
 			"tenant_id": tenantID, "code": arg.Code, "display_name": arg.DisplayName,
 			"upstream_protocol": arg.UpstreamProtocol, "enabled": arg.Enabled,
@@ -246,6 +278,9 @@ func newUpdateProviderCatalogHandler(d AdminProviderCatalogDeps) http.HandlerFun
 		}
 		arg, ok := validateProviderCatalogUpdateRequest(w, tenantID, code, req)
 		if !ok {
+			return
+		}
+		if !requireProviderCatalogServingReadiness(w, arg.UpstreamProtocol, arg.Enabled) {
 			return
 		}
 		audit, ok := buildProviderCatalogAuditParams(w, r, ident, tenantID, "update_provider", req.Reason, map[string]any{
@@ -328,7 +363,7 @@ func resolveProviderCatalogMutationAdmin(w http.ResponseWriter, r *http.Request,
 func validateProviderCatalogCreateRequest(w http.ResponseWriter, tenantID int64, req providerCatalogMutationRequest) (providerCatalogCreateParams, bool) {
 	code := strings.TrimSpace(req.Code)
 	displayName := strings.TrimSpace(req.DisplayName)
-	protocol := strings.TrimSpace(req.UpstreamProtocol)
+	protocol := req.UpstreamProtocol
 	if code == "" {
 		writeError(w, http.StatusBadRequest, "provider_code_required", "provider code is required")
 		return providerCatalogCreateParams{}, false
@@ -341,7 +376,7 @@ func validateProviderCatalogCreateRequest(w http.ResponseWriter, tenantID int64,
 	if !ok {
 		return providerCatalogCreateParams{}, false
 	}
-	if !isKnownProviderCatalogProtocol(protocol) {
+	if !isCanonicalProviderCatalogMutationProtocol(protocol) {
 		writeError(w, http.StatusBadRequest, "invalid_upstream_protocol", "upstream_protocol is not supported")
 		return providerCatalogCreateParams{}, false
 	}
@@ -353,7 +388,7 @@ func validateProviderCatalogCreateRequest(w http.ResponseWriter, tenantID int64,
 
 func validateProviderCatalogUpdateRequest(w http.ResponseWriter, tenantID int64, code string, req providerCatalogMutationRequest) (providerCatalogUpdateParams, bool) {
 	displayName := strings.TrimSpace(req.DisplayName)
-	protocol := strings.TrimSpace(req.UpstreamProtocol)
+	protocol := req.UpstreamProtocol
 	if displayName == "" {
 		writeError(w, http.StatusBadRequest, "provider_display_name_required", "provider display_name is required")
 		return providerCatalogUpdateParams{}, false
@@ -362,7 +397,7 @@ func validateProviderCatalogUpdateRequest(w http.ResponseWriter, tenantID int64,
 	if !ok {
 		return providerCatalogUpdateParams{}, false
 	}
-	if !isKnownProviderCatalogProtocol(protocol) {
+	if !isCanonicalProviderCatalogMutationProtocol(protocol) {
 		writeError(w, http.StatusBadRequest, "invalid_upstream_protocol", "upstream_protocol is not supported")
 		return providerCatalogUpdateParams{}, false
 	}
@@ -378,6 +413,37 @@ func validateProviderCatalogEnabled(w http.ResponseWriter, enabled *bool) (bool,
 		return false, false
 	}
 	return *enabled, true
+}
+
+func requireProviderCatalogServingReadiness(w http.ResponseWriter, family string, enabled bool) bool {
+	return requireProviderCatalogServingReadinessUsing(
+		w, family, enabled, defaultServingCapabilityEvaluator().RequireProviderConfigEnabled,
+	)
+}
+
+func requireProviderCatalogServingReadinessUsing(w http.ResponseWriter, family string, enabled bool, require func(string) error) bool {
+	if !enabled && isKnownProviderCatalogProtocol(family) {
+		return true
+	}
+	if require == nil {
+		writeError(w, http.StatusServiceUnavailable, "provider_readiness_unavailable", "provider readiness checker is unavailable")
+		return false
+	}
+	err := require(family)
+	if err == nil {
+		return true
+	}
+	var readinessErr *servingcapability.ReadinessError
+	if errors.As(err, &readinessErr) {
+		reason := strings.TrimSpace(readinessErr.Result.Reason)
+		if reason == "" {
+			reason = "closure_incomplete"
+		}
+		writeError(w, http.StatusUnprocessableEntity, "provider_serving_not_ready", reason)
+		return false
+	}
+	writeError(w, http.StatusServiceUnavailable, "provider_readiness_unavailable", err.Error())
+	return false
 }
 
 func decodeProviderCatalogMutationJSON(w http.ResponseWriter, r *http.Request, dst any, required bool) bool {
@@ -422,7 +488,7 @@ func buildProviderCatalogAuditParams(w http.ResponseWriter, r *http.Request, ide
 		reasonArg = &reason
 	}
 	return admindb.InsertAdminAuditEventParams{
-		TenantID: &tenantID, ActorID: fmt.Sprintf("%d", ident.TokenID), ActorRole: actorRole,
+		TenantID: &tenantID, ActorID: ident.AuditActor(), ActorRole: actorRole,
 		Action: action, TargetType: "provider", RequestID: reqIDArg,
 		Reason: reasonArg, Payload: raw,
 	}, true
@@ -434,6 +500,8 @@ func writeProviderCatalogMutationError(w http.ResponseWriter, err error, fallbac
 		writeError(w, http.StatusConflict, "provider_code_conflict", "provider code already exists")
 	case errors.Is(err, errProviderCatalogActiveAccounts):
 		writeError(w, http.StatusConflict, "provider_has_active_accounts", "provider has active provider accounts")
+	case errors.Is(err, errProviderProtocolChangeIncompatible):
+		writeError(w, http.StatusConflict, "provider_protocol_incompatible_accounts", "provider protocol change is incompatible with existing accounts")
 	case errors.Is(err, errProviderCatalogNotFound), errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "provider_not_found", "provider not found")
 	default:
@@ -482,55 +550,16 @@ func providerCatalogItemFromSoftDeleteRow(row admindb.SoftDeleteProviderRow) pro
 }
 
 func isKnownProviderCatalogProtocol(protocol string) bool {
-	_, ok := knownProviderCatalogProtocols[protocol]
-	return ok
+	return registrydefault.IsSupportedProtocolFamily(protocol)
 }
 
-var knownProviderCatalogProtocols = map[string]struct{}{
-	"anthropic_messages":       {},
-	"openai_chat":              {},
-	"openai_responses":         {},
-	"openai_codex":             {},
-	"gemini":                   {},
-	"gemini_messages":          {},
-	"bedrock":                  {},
-	"bedrock_invoke":           {},
-	"openrouter_chat":          {},
-	"grok_chat":                {},
-	"deepseek_chat":            {},
-	"mistral_chat":             {},
-	"groqcloud_chat":           {},
-	"together_chat":            {},
-	"perplexity_chat":          {},
-	"fireworks_chat":           {},
-	// 12 家后补 OpenAI 兼容直通族(国内 + cohere + ollama 兼容模式)。此前
-	// 缺席本白名单 → 管理端渠道目录 CRUD 对它们 400 invalid_upstream_protocol,
-	// 即便运行时八站全通也无法在配置面申报(族集对称第 9 站)。
-	"kimi_chat":     {},
-	"qwen_chat":     {},
-	"glm_chat":      {},
-	"yi_chat":       {},
-	"baichuan_chat": {},
-	"doubao_chat":   {},
-	"ernie_chat":    {},
-	"step_chat":     {},
-	"hunyuan_chat":  {},
-	"minimax_chat":  {},
-	"cohere_chat":   {},
-	"ollama_chat":   {},
-	// 6 个 parity serving adapter 新族(2026-06-11 批次)。
-	"ollama_native":      {},
-	"dify_chat":          {},
-	"replicate_image":    {},
-	"vertex_gemini":      {},
-	"vertex_anthropic":   {},
-	"gemini_code_assist": {},
-	"anthropic_claude_session": {},
-	"cursor_session":           {},
-	"copilot_session":          {},
-	"gemini_advanced_session":  {},
-	"antigravity":              {},
-	"antigravity_session":      {},
-	"kiro_session":             {},
-	"windsurf_session":         {},
+func isCanonicalProviderCatalogMutationProtocol(protocol string) bool {
+	if protocol == "" || strings.TrimSpace(protocol) != protocol {
+		return false
+	}
+	if isKnownProviderCatalogProtocol(protocol) {
+		return true
+	}
+	contract, ok := servingcapability.DefaultContractRegistry().Lookup(protocol)
+	return ok && contract.Family == protocol
 }

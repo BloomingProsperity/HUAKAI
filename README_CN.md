@@ -106,8 +106,11 @@ Inbound Auth -> Model Registry -> Router Plan -> ClaimGate Reserve
 -> Resource Pool Select -> Stream Forwarder -> Billing/Observability Settler
 ```
 
-项目仍处早期。多 attempt 回退路由、`attempt_id` / `lease_id` 一等公民、真实
-provider 适配器、产线计费、admin API 与前端控制台仍是在路径上的工作。强伪装
+多 attempt 回退路由已落地（`backend/internal/gatewayhttp/chat_completions_handler.go:466`
+按 `resolver.MaxDepth()` 多模型回退），真实 provider 适配器（`backend/internal/provider/registrydefault/default.go:177`
+注册 Grok/Kimi/DeepSeek/Mistral 直通）、产线计费（`backend/internal/billing/public_price_table.go:166`
+真实 micro-USD 定价）、admin API（`backend/cmd/gateway/routes.go:815` 起 `/admin/v1/*` 路由组）
+均已实现并接线；仍在路上的是 `attempt_id` / `lease_id` schema 一等公民与前端控制台。强伪装
 模块（R7 应用层 6-step body 变换、R3 传输层伪装）正在 feature flag 后开发。
 
 ## 使命
@@ -132,7 +135,7 @@ parity，且保持 MIT 兼容。参考项目仅作行为证据来源；任何参
 
 ## 现行后端切片
 
-当前线上路径：`POST /v1/chat/completions`。
+线上入站已注册 40+ 个不同 `/v1/*` 与 `/admin/v1/*` 路由前缀（含 `/v1/messages`、`/v1/embeddings`、`/v1/images`、`/v1/audio`、`/v1/responses`、`/v1/rerank` 等），远不止单一 `/v1/chat/completions`（`backend/cmd/gateway/routes.go:106` `/v1/messages`）。
 
 已实现：
 
@@ -152,9 +155,9 @@ parity，且保持 MIT 兼容。参考项目仅作行为证据来源；任何参
 - 路由仍为 L0：从 `PoolCandidates[0]` 取一次 primary attempt
 - 网关 executor 逻辑仍嵌在 chat handler 内
 - `attempt_id` 与 `lease_id` 已文档化但未成 schema 一等公民
-- provider 适配器未产线完整；当前 happy path 用 mock 上游字节 + Anthropic SSE 解析
-- 成功请求仍以固定 placeholder cost 结算
-- admin API 与前端控制台尚未实现
+- provider 适配器已产线化并按真实上游字节走（`backend/internal/provider/registrydefault/default.go:177` 注册 Grok/Kimi/DeepSeek/Mistral 直通；anthropic 出站经 uTLS mimicry `backend/cmd/gateway/wiring.go:807`），非 mock
+- 成功请求按真实 micro-USD 定价结算（`backend/internal/billing/public_price_table.go:166` input/output_micro_usd），无固定 placeholder cost
+- admin API 已实现并挂载（`backend/cmd/gateway/routes.go:815` 起 `/admin/v1/*` 路由组）；仅前端控制台尚未实现
 - R3 传输层伪装仍在 plan 阶段，无 production-ready 代码
 
 ## 从哪里开始

@@ -192,9 +192,9 @@ func TestMarshalToolUseAndResultOpenAIResponses(t *testing.T) {
 	}
 }
 
-// TestMarshalGeminiMessages guards the Gemini egress graph projection.
-// MUTATION: leaving assistant as "assistant" instead of Gemini "model", or
-// dropping functionCall/functionResponse parts, must make this test fail.
+// TestMarshalGeminiMessages 守护 Gemini 出口图投射。
+// 变异:把 assistant 保留为 "assistant" 而不改成 Gemini 的 "model",
+// 或丢弃 functionCall/functionResponse part,都必须使本测试失败。
 func TestMarshalGeminiMessages(t *testing.T) {
 	temp := 0.25
 	topP := 0.75
@@ -287,10 +287,10 @@ func TestMarshalGeminiMessages(t *testing.T) {
 	}
 }
 
-// TestGeminiIngressToAnthropicUpstream proves Gemini-native ingress produces
-// canonical roles that can be projected into a non-Gemini upstream.
-// MUTATION: keeping Gemini's "model" role instead of canonical assistant must
-// make the Anthropic upstream role assertion fail.
+// TestGeminiIngressToAnthropicUpstream 证明 Gemini 原生入口产生的
+// 规范化角色,可投射到非 Gemini 的 upstream。
+// 变异:保留 Gemini 的 "model" 角色而不转成规范化的 assistant,
+// 必须使 Anthropic upstream 的角色断言失败。
 func TestGeminiIngressToAnthropicUpstream(t *testing.T) {
 	client := &geminiproto.GeminiClient{}
 	ctx := proto.ContextWithRequestMetaSeed(context.Background(), proto.RequestMetaSeed{
@@ -480,6 +480,28 @@ func TestMarshalOpenAIResponsesNativeExtensionPassthrough(t *testing.T) {
 	}
 }
 
+func TestMarshalOpenAICodexProjectsToResponsesShape(t *testing.T) {
+	env := graphEnv(
+		textNode("n_system", "system", "follow policy"),
+		textNode("n_user", "user", "hi"),
+	)
+	body := marshalBody(t, env, "openai_codex")
+	if body["instructions"] != "follow policy" {
+		t.Fatalf("codex instructions=%v want system text; body=%+v", body["instructions"], body)
+	}
+	input, ok := body["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("codex input=%+v want Responses input array", body["input"])
+	}
+	first := input[0].(map[string]any)
+	if first["type"] != "message" {
+		t.Fatalf("codex input item=%+v want Responses message item", first)
+	}
+	if _, ok := body["messages"]; ok {
+		t.Fatalf("codex marshal must not emit Chat messages shape: %+v", body)
+	}
+}
+
 // TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIChat 守 P2-B 修复:
 // inbound response_format = {"type":"json_object"} 时,injectRequestControls
 // 必须把出站 body 的 response_format 字段还原为 {"type":"json_object"} 本体,
@@ -490,7 +512,7 @@ func TestMarshalOpenAIResponsesNativeExtensionPassthrough(t *testing.T) {
 // 因为 ResponseFormat 注入是 dispatcher path (upstream_dispatcher_hcsf.go:173)
 // 才调的,marshalBody 跳过该步。
 //
-// Mutation:把 injectRequestControls 改回原 wrap 逻辑时本用例必红 —
+// 变异:把 injectRequestControls 改回原 wrap 逻辑时本用例必红 —
 // response_format.type 变 "raw",response_format.schema 会出现。
 func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing.T) {
 	raw := json.RawMessage(`{"type":"json_object"}`)
@@ -520,14 +542,12 @@ func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing
 }
 
 // TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses
-// 守 P2-B 在 Responses 协议侧。inbound text =
-// {"format":{"type":"json_schema","json_schema":{...}}} 时出站 body 的 text
-// 字段必须 1:1 还原,不能被包成 {"format":{"type":"raw","schema":...}}。
+// 守 Responses 原生 text 直通。inbound text 已是 Responses 形时出站 body 的
+// text 字段必须 1:1 还原,不能被当成 Chat response_format 再转换。
 //
-// Mutation:改回原 wrap 逻辑时 text.format.type 会变 "raw" 而非 inbound
-// 'json_schema',或多嵌套一层 'schema' 包壳。
+// 变异:把原生 text 也二次转换时,verbosity 或 format.schema 会丢失/错位。
 func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *testing.T) {
-	raw := json.RawMessage(`{"format":{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object"}}}}`)
+	raw := json.RawMessage(`{"format":{"type":"json_schema","name":"Person","strict":true,"schema":{"type":"object","properties":{"age":{"type":"integer"}}}},"verbosity":"low"}`)
 	env := &proto.HCSF{
 		RequestControls: proto.RequestControls{
 			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
@@ -552,8 +572,195 @@ func TestInjectRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *te
 	if format["type"] != "json_schema" {
 		t.Fatalf("text.format.type = %v, want inbound 'json_schema' (raw-wrap regression)", format["type"])
 	}
-	if _, hasOuter := format["schema"]; hasOuter {
-		t.Fatalf("text.format 出现包壳 'schema' 字段是 raw-wrap regression: body=%+v", body)
+	if format["name"] != "Person" || format["strict"] != true || text["verbosity"] != "low" {
+		t.Fatalf("Responses 原生 text 未原样保留: text=%+v", text)
+	}
+	schema, ok := format["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" {
+		t.Fatalf("Responses 原生 text.format.schema 未保真: format=%+v", format)
+	}
+	if _, hasChatShape := format["json_schema"]; hasChatShape {
+		t.Fatalf("Responses text.format 不应出现 Chat json_schema 包壳: body=%+v", body)
+	}
+}
+
+// TestInjectRequestControlsResponseFormatRawChatJSONSchemaToOpenAIResponses
+// 守片2g:Chat response_format(json_schema/text/json_object) 打到 Responses
+// 上游时必须投影为 text.format,且 json_schema 内层要摊平到 format 本体。
+//
+// 变异:退回 raw 原样塞 body["text"] 时,text.format 缺失且 text.json_schema 出现。
+func TestInjectRequestControlsResponseFormatRawChatJSONSchemaToOpenAIResponses(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","json_schema":{"name":"Answer","strict":true,"schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}}}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{
+			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
+		},
+	}
+	out, err := injectRequestControls([]byte(`{}`), env, "openai_responses")
+	if err != nil {
+		t.Fatalf("injectRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	text, ok := body["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("text must be JSON object, got %T: %v", body["text"], body["text"])
+	}
+	if _, hasChatShape := text["json_schema"]; hasChatShape {
+		t.Fatalf("text 出现 Chat json_schema 包壳,上游 Responses 会拒: body=%+v", body)
+	}
+	format, ok := text["format"].(map[string]any)
+	if !ok {
+		t.Fatalf("text.format must be object, got %T: %v", text["format"], text["format"])
+	}
+	if format["type"] != "json_schema" || format["name"] != "Answer" || format["strict"] != true {
+		t.Fatalf("text.format 元数据未摊平: %+v", format)
+	}
+	schema, ok := format["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" || schema["additionalProperties"] != false {
+		t.Fatalf("text.format.schema 应是 json_schema.schema 本体: %+v", format["schema"])
+	}
+	if _, hasNested := format["json_schema"]; hasNested {
+		t.Fatalf("text.format 不应保留 Chat json_schema 内层包壳: %+v", format)
+	}
+}
+
+func TestInjectRequestControlsResponseFormatRawChatSimpleTypesToOpenAIResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{name: "text", raw: json.RawMessage(`{"type":"text"}`), want: "text"},
+		{name: "json_object", raw: json.RawMessage(`{"type":"json_object"}`), want: "json_object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &proto.HCSF{
+				RequestControls: proto.RequestControls{
+					ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: tc.raw},
+				},
+			}
+			out, err := injectRequestControls([]byte(`{}`), env, "openai_responses")
+			if err != nil {
+				t.Fatalf("injectRequestControls err=%v", err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(out, &body); err != nil {
+				t.Fatalf("unmarshal: %v body=%s", err, out)
+			}
+			text, ok := body["text"].(map[string]any)
+			if !ok {
+				t.Fatalf("text must be JSON object, got %T: %v", body["text"], body["text"])
+			}
+			format, ok := text["format"].(map[string]any)
+			if !ok {
+				t.Fatalf("text.format must be object, got %T: %v", text["format"], text["format"])
+			}
+			if format["type"] != tc.want {
+				t.Fatalf("text.format.type=%v want %s; body=%+v", format["type"], tc.want, body)
+			}
+			if _, hasSchema := format["schema"]; hasSchema {
+				t.Fatalf("简单 response_format 不应注入 schema: %+v", format)
+			}
+		})
+	}
+}
+
+// TestInjectGeminiResponseFormatJSONSchema 守 structured_output 能力缝:inbound OpenAI Chat
+// response_format={"type":"json_schema","json_schema":{"schema":{...}}} 打到 Gemini 上游时,必须
+// 翻译成 generationConfig.responseMimeType="application/json" + responseSchema=<schema>。此前 Gemini
+// marshal 只认 Gemini 形键,OpenAI 形被静默丢弃。变异:删 openAIResponseFormatToGemini 映射块 →
+// responseSchema/responseMimeType 缺失 → 本用例红。
+func TestInjectGeminiResponseFormatJSONSchema(t *testing.T) {
+	raw := json.RawMessage(`{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object","properties":{"age":{"type":"integer"}}}}}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw}},
+	}
+	out, err := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+	if err != nil {
+		t.Fatalf("injectRequestControls err=%v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(out, &body); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, out)
+	}
+	gen, ok := body["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("缺 generationConfig: body=%+v", body)
+	}
+	if gen["responseMimeType"] != "application/json" {
+		t.Fatalf("responseMimeType=%v want application/json", gen["responseMimeType"])
+	}
+	schema, ok := gen["responseSchema"].(map[string]any)
+	if !ok {
+		t.Fatalf("responseSchema 缺失/非对象(OpenAI json_schema 被静默丢弃): %+v", gen["responseSchema"])
+	}
+	if schema["type"] != "object" {
+		t.Fatalf("responseSchema 应是被请求的 schema 本体: %+v", schema)
+	}
+}
+
+// TestInjectGeminiResponseFormatJSONObject:inbound {"type":"json_object"} → Gemini JSON 模式
+// (responseMimeType=application/json,无 responseSchema)。
+func TestInjectGeminiResponseFormatJSONObject(t *testing.T) {
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: json.RawMessage(`{"type":"json_object"}`)}},
+	}
+	out, _ := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+	var body map[string]any
+	_ = json.Unmarshal(out, &body)
+	gen, _ := body["generationConfig"].(map[string]any)
+	if gen == nil || gen["responseMimeType"] != "application/json" {
+		t.Fatalf("json_object 应映射 responseMimeType=application/json,got %+v", gen)
+	}
+	if _, has := gen["responseSchema"]; has {
+		t.Fatalf("json_object 无 schema,不应出现 responseSchema: %+v", gen)
+	}
+}
+
+// TestInjectGeminiResponseFormatNativePassthrough:inbound 已是 Gemini 形时仍 1:1 直传,
+// 不被 OpenAI 翻译分支干扰/覆盖。
+func TestInjectGeminiResponseFormatNativePassthrough(t *testing.T) {
+	raw := json.RawMessage(`{"responseMimeType":"text/x.enum","responseSchema":{"type":"string","enum":["A","B"]}}`)
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw}},
+	}
+	out, _ := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+	var body map[string]any
+	_ = json.Unmarshal(out, &body)
+	gen, _ := body["generationConfig"].(map[string]any)
+	if gen == nil || gen["responseMimeType"] != "text/x.enum" {
+		t.Fatalf("Gemini 原生 responseMimeType 应直传 text/x.enum,got %+v", gen)
+	}
+	schema, ok := gen["responseSchema"].(map[string]any)
+	if !ok || schema["type"] != "string" {
+		t.Fatalf("Gemini 原生 responseSchema 应直传,got %+v", gen["responseSchema"])
+	}
+}
+
+// TestInjectGeminiResponseFormatJSONSchemaNoSchema:边界——json_schema 但缺 schema 字段时,
+// 退化为 Gemini JSON 模式(只设 responseMimeType,不注入坏/空 responseSchema → 不会让 Gemini 4xx)。
+func TestInjectGeminiResponseFormatJSONSchemaNoSchema(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"json_schema","json_schema":{}}`,
+		`{"type":"json_schema"}`,
+		`{"type":"json_schema","json_schema":{"schema":null}}`,
+	} {
+		env := &proto.HCSF{
+			RequestControls: proto.RequestControls{ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: json.RawMessage(raw)}},
+		}
+		out, _ := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+		var body map[string]any
+		_ = json.Unmarshal(out, &body)
+		gen, _ := body["generationConfig"].(map[string]any)
+		if gen == nil || gen["responseMimeType"] != "application/json" {
+			t.Fatalf("缺 schema 应退化为 JSON 模式 responseMimeType=application/json,raw=%s got=%+v", raw, gen)
+		}
+		if _, has := gen["responseSchema"]; has {
+			t.Fatalf("缺 schema 不应注入 responseSchema(否则 Gemini 4xx),raw=%s got=%+v", raw, gen)
+		}
 	}
 }
 
@@ -635,7 +842,7 @@ func TestMarshalOpenAIChatReasoningEffortRequestControl(t *testing.T) {
 // marshal 失败 → 501,投递前就挂。
 // 判别性:断言输出与 openai_chat 投影逐字节相等——映射错指到别的形态族
 // (anthropic/gemini)会产生不同 body,必红;漏映射直接 error,必红。
-// Mutation:从 hcsfProviderRequestModelFamily 删任一族 → 对应子断言红。
+// 变异:从 hcsfProviderRequestModelFamily 删任一族 → 对应子断言红。
 func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 	env := graphEnv(textNode("n1", "user", "hello"))
 	want, err := MarshalToProviderRequest(env, "openai_chat")
@@ -648,7 +855,7 @@ func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 		"kimi_chat", "qwen_chat", "glm_chat", "yi_chat", "baichuan_chat",
 		"doubao_chat", "ernie_chat", "step_chat", "hunyuan_chat",
 		"minimax_chat", "cohere_chat", "ollama_chat",
-		"copilot_session", "antigravity_session", "kiro_session", "windsurf_session",
+		"copilot_session", "kiro_session", "windsurf_session",
 	} {
 		got, err := MarshalToProviderRequest(env, fam)
 		if err != nil {
@@ -661,12 +868,56 @@ func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 	}
 }
 
+// TestMarshalAntigravityProjectsToGeminiMessages 守住真实网关链路的内层 body：
+// Antigravity provider adapter 外包 Cloud Code envelope 前，HCSF 必须先投影为
+// Gemini contents/parts，而不是旧占位的 OpenAI messages。回退到 openai_chat
+// 映射时，与 Gemini 基线不同且会被本测试识别。
+func TestMarshalAntigravityProjectsToGeminiMessages(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	want, err := MarshalToProviderRequest(env, "gemini_messages")
+	if err != nil {
+		t.Fatalf("Gemini 基线 marshal 失败：%v", err)
+	}
+	openAI, err := MarshalToProviderRequest(env, "openai_chat")
+	if err != nil {
+		t.Fatalf("OpenAI 判别基线 marshal 失败：%v", err)
+	}
+	if bytes.Equal(openAI, want) {
+		t.Fatal("测试夹具失去判别性：OpenAI 与 Gemini 投影意外相同")
+	}
+	got, err := MarshalToProviderRequest(env, "antigravity_session")
+	if err != nil {
+		t.Fatalf("Antigravity marshal 失败：%v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Antigravity 投影 != gemini_messages 投影\ngot:  %s\nwant: %s", got, want)
+	}
+}
+
+// TestMarshalClaudeSessionProjectsToAnthropicMessages 咬住 session 族的线形：
+// 凭据与准入独立，但 HCSF 请求必须逐字节复用 Anthropic Messages 投影。
+// 变异：删除 hcsfProviderRequestModelFamily 的 session 分支会使输出报错或形态漂移。
+func TestMarshalClaudeSessionProjectsToAnthropicMessages(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	want, err := MarshalToProviderRequest(env, "anthropic_messages")
+	if err != nil {
+		t.Fatalf("baseline anthropic_messages marshal: %v", err)
+	}
+	got, err := MarshalToProviderRequest(env, "anthropic_claude_session")
+	if err != nil {
+		t.Fatalf("session marshal: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("session 投影 != anthropic_messages 投影\ngot:  %s\nwant: %s", got, want)
+	}
+}
+
 // TestInjectRequestControlsSkipsDifyChat 抓的回归:非流式 HCSF 路径
 // (hcsfRequestBody→injectRequestControls)把 openai 形 controls(max_tokens/
 // temperature/tools)注进 Dify body——Dify 无 per-request 参数,marshal 已对
 // controls 记 loss,注入=协议污染且与 loss 记账自相矛盾。流式孪生跳过由
 // gatewayhttp 的 TestStreamingProviderRequestBodyDifyChat 钉,本测试钉非流式。
-// Mutation:删 injectRequestControls 的 dify_chat 早退 → 本测试红。
+// 变异:删 injectRequestControls 的 dify_chat 早退 → 本测试红。
 func TestInjectRequestControlsSkipsDifyChat(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
 	max := 42
@@ -688,7 +939,7 @@ func TestInjectRequestControlsSkipsDifyChat(t *testing.T) {
 // 的采样控制已由 marshal 嵌进 options{}(num_predict),顶层二次注入=协议
 // 污染(上游静默忽略顶层字段,且 body 双真相源)。流式孪生跳过由 gatewayhttp
 // 的 TestStreamingProviderRequestBodyOllamaNative 钉,本测试钉非流式。
-// Mutation:删 injectRequestControls 的 ollama_native 早退 → 本测试红。
+// 变异:删 injectRequestControls 的 ollama_native 早退 → 本测试红。
 func TestInjectRequestControlsSkipsOllamaNative(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
 	max := 42
@@ -740,7 +991,6 @@ func TestMarshalSupportsEveryRegisteredProtocolFamily(t *testing.T) {
 		// 与 hcsfProviderRequestModelFamily 的排除注释保持同步(单一真相在
 		// upstream_dispatcher_hcsf.go,此处仅作守卫例外登记)。
 		"bedrock_invoke":          "binary EventStream;anthropic 走 native-raw + adapter 内 AutoTranslate,openai 入站 marshal fail-closed",
-		"openai_codex":            "请求/响应形态仓内记载互斥(native-raw Responses vs chat-chunk 解析器),待 OCAW 采集确认",
 		"cursor_session":          "上游 Connect/proto 帧(application/connect+proto),openai_chat JSON 投影不可解析,待 OCAW",
 		"gemini_advanced_session": "上游 f.req= form-urlencoded 包装,非 Gemini API JSON,待 OCAW",
 	}
@@ -765,7 +1015,7 @@ func TestMarshalSupportsEveryRegisteredProtocolFamily(t *testing.T) {
 // 的主循环因此不迭代它,fail-closed 例外表对未注册族也没有反向断言可挂)。
 // 若运营把 chat 模型 binding 错配到 replicate_image,/v1/chat/completions 的
 // 流式/非流式路径都收敛到 marshal → 必须报错,不得投影成任何 JSON 出站
-// (Replicate 端点只认 {"input":{...}} prediction 形)。Mutation:有人在
+// (Replicate 端点只认 {"input":{...}} prediction 形)。变异:有人在
 // hcsfProviderRequestModelFamily 把 replicate_image 映到 openai_chat,或注册
 // 入站 adapter 而不同步表态 marshal 支持 → 对应断言红,逼出显式决策。
 func TestMarshalReplicateImageFamilyFailsClosedOnChatLane(t *testing.T) {

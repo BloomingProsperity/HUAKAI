@@ -2,6 +2,7 @@ package proto
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -132,7 +133,7 @@ func TestOpenAIResponsesClient_HappyPath_InputArrayWithMessage(t *testing.T) {
 	if env.RequestControls.SystemPrompt != "You are helpful." {
 		t.Errorf("SystemPrompt: %q", env.RequestControls.SystemPrompt)
 	}
-	// expect 1 system + 1 user text node
+	// 期望 1 个 system + 1 个 user 文本节点
 	if len(env.CapabilityGraph.Nodes) != 2 {
 		t.Errorf("expected 2 text nodes (system + user), got %d", len(env.CapabilityGraph.Nodes))
 	}
@@ -294,27 +295,84 @@ func TestOpenAIResponsesClient_RequestReasoningItemPreservesOpaqueState(t *testi
 	}
 }
 
-func TestOpenAIResponsesClient_ImageInputPending(t *testing.T) {
+// TestOpenAIResponsesClient_ImageInputBuildsNode 断言 Responses 的 input_image(裸字符串
+// image_url)建 CapabilityImage 节点、text/image 顺序保留、无 d9 pending loss。此前只记
+// d9_image_pending loss 把图丢了(HCSF 默认开时上游收不到图)——F4 视觉修复的 Responses 兄弟缺口。
+// mutation 契约:parse 侧还原成"只记 loss 不建节点"→ 本测试全红(节点数=0 + 报 input_image loss)。
+func TestOpenAIResponsesClient_ImageInputBuildsNode(t *testing.T) {
 	adapter := &OpenAIResponsesClient{}
 	body := []byte(`{
 		"model":"gpt-4o",
 		"input":[{"type":"message","role":"user","content":[
 			{"type":"input_text","text":"see"},
-			{"type":"input_image","image_url":"data:image/png;base64,..."}
+			{"type":"input_image","image_url":"data:image/png;base64,` + testRedPixelPNGBase64 + `"}
 		]}]
 	}`)
-	_, losses, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
+	env, losses, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	var foundImg bool
+
+	imgs := findImageNodes(env)
+	if len(imgs) != 1 {
+		t.Fatalf("CapabilityImage 节点 = %d, want 1(input_image 未建节点=图被丢)", len(imgs))
+	}
+	img := imgs[0].Image
+	if img == nil {
+		t.Fatal("image 节点缺 Image 载荷")
+	}
+	if img.SourceKind != DataSourceInlineBase64 {
+		t.Errorf("SourceKind = %q, want inline_base64", img.SourceKind)
+	}
+	if img.MediaType != "image/png" {
+		t.Errorf("MediaType = %q, want image/png", img.MediaType)
+	}
+	if img.Locator.Value != testRedPixelPNGBase64 {
+		t.Errorf("Locator.Value 与原 base64 不逐字节相等: got=%q", img.Locator.Value)
+	}
+
+	// 消息 Content 顺序保留:text 在前、image 在后。
+	if len(env.Messages) != 1 || len(env.Messages[0].Content) != 2 {
+		t.Fatalf("messages/content 形状不对: %+v", env.Messages)
+	}
+	if env.Messages[0].Content[0].Type != "text" || env.Messages[0].Content[1].Type != "image" {
+		t.Errorf("Content 顺序应为 text,image, got %+v", env.Messages[0].Content)
+	}
+
+	// 图已解析:不再有 input_image / d9_image_pending pending loss。
 	for _, l := range losses {
-		if strings.Contains(l.Reason, "input_image") {
-			foundImg = true
+		if strings.Contains(l.Reason, "input_image") || l.Code == "d9_image_pending" {
+			t.Errorf("图已解析仍报 pending loss: %+v", l)
 		}
 	}
-	if !foundImg {
-		t.Errorf("expected input_image pending loss, got: %+v", losses)
+}
+
+// TestOpenAIResponsesClient_ImageInputHTTPURL 断言非 data URI 的 image_url 字符串走
+// SourceKind=url 原样透传(不误判为 data URI、不丢图)。
+func TestOpenAIResponsesClient_ImageInputHTTPURL(t *testing.T) {
+	adapter := &OpenAIResponsesClient{}
+	body := []byte(`{
+		"model":"gpt-4o",
+		"input":[{"type":"message","role":"user","content":[
+			{"type":"input_image","image_url":"https://x/y.png"}
+		]}]
+	}`)
+	env, losses, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	imgs := findImageNodes(env)
+	if len(imgs) != 1 {
+		t.Fatalf("CapabilityImage 节点 = %d, want 1", len(imgs))
+	}
+	img := imgs[0].Image
+	if img.SourceKind != DataSourceURL || img.Locator.Value != "https://x/y.png" {
+		t.Errorf("URL 图节点 = %+v, want url/https://x/y.png", img)
+	}
+	for _, l := range losses {
+		if l.Code == "d9_image_pending" {
+			t.Errorf("URL 图已解析仍报 pending loss: %+v", l)
+		}
 	}
 }
 
@@ -405,7 +463,7 @@ func TestOpenAIResponses_D11_TextLifecycle(t *testing.T) {
 	if err != nil || len(chunks) < 3 {
 		t.Fatalf("message_stop chunks=%d err=%v", len(chunks), err)
 	}
-	// chunks should be: content_part.done + output_item.done + response.completed
+	// chunks 应为：content_part.done + output_item.done + response.completed
 	lastChunk := string(chunks[len(chunks)-1])
 	if !strings.Contains(lastChunk, "response.completed") {
 		t.Errorf("final chunk should be response.completed, got: %s", lastChunk)
@@ -509,7 +567,7 @@ func TestOpenAIResponses_D12_FinalizeBeforeStartEmpty(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// D10 CanonicalToClientResponse tests
+// D10 CanonicalToClientResponse 测试
 // --------------------------------------------------------------------------
 
 func makeOpenAIResponsesBufferedEnv(content []CanonicalContentBlock, stop CanonicalStopReason) *HCSF {
@@ -579,7 +637,7 @@ func TestOpenAIResponsesClient_D10_FunctionCallOutputItem(t *testing.T) {
 	var out map[string]any
 	_ = jsonUnmarshal(body, &out)
 	outputs := out["output"].([]any)
-	// expect message item + function_call item = 2 items
+	// 期望 message item + function_call item = 2 个 item
 	if len(outputs) != 2 {
 		t.Fatalf("output len: %d", len(outputs))
 	}
@@ -668,7 +726,9 @@ func TestOpenAIResponsesClient_D10_IncompleteOnMaxTokens(t *testing.T) {
 func TestOpenAIResponsesClient_D10_ReasoningTokensInUsageDetails(t *testing.T) {
 	adapter := &OpenAIResponsesClient{}
 	env := makeOpenAIResponsesBufferedEnv([]CanonicalContentBlock{{Type: "text", Text: "x"}}, CanonicalStopEndTurn)
-	env.Accounting.ReasoningTokens = 42
+	// 走真实非流式生产写路径: reasoning 落在 BufferedResponse.Usage(CanonicalUsage)上,
+	// 而非 Accounting 顶层标量(生产从不写,旧 fixture 写它属 §14 非判别假绿)。
+	env.BufferedResponse.Usage.ReasoningTokens = 42
 	body, _, err := adapter.CanonicalToClientResponse(context.Background(), env)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -679,6 +739,30 @@ func TestOpenAIResponsesClient_D10_ReasoningTokensInUsageDetails(t *testing.T) {
 	od := usage["output_tokens_details"].(map[string]any)
 	if od["reasoning_tokens"].(float64) != 42 {
 		t.Errorf("expected reasoning_tokens=42, got %v", od["reasoning_tokens"])
+	}
+}
+
+// TestOpenAIResponsesClient_NonStreamPassthroughMerged 守护 #4: 非流式 OpenAI Responses 响应必须把
+// 上游顶层透传字段(typed struct 未建模, 如 service_tier)合并回客户端响应体。判别性: 删除
+// CanonicalToClientResponse 末尾的 MergeExtrasInto 调用 → 字段丢失 → 本测试转红。
+func TestOpenAIResponsesClient_NonStreamPassthroughMerged(t *testing.T) {
+	adapter := &OpenAIResponsesClient{}
+	env := makeOpenAIResponsesBufferedEnv([]CanonicalContentBlock{{Type: "text", Text: "x"}}, CanonicalStopEndTurn)
+	env.BufferedResponse.Passthrough = &PassthroughEnvelope{Extra: map[string]json.RawMessage{
+		"service_tier": json.RawMessage(`"scale"`),
+	}}
+	body, _, err := adapter.CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var out map[string]any
+	_ = jsonUnmarshal(body, &out)
+	if out["service_tier"] != "scale" {
+		t.Fatalf("期望上游 service_tier=scale 被合并进响应, 实际 %v (body=%s)", out["service_tier"], body)
+	}
+	// typed 字段不被透传覆盖(仍是合法 responses 形态)。
+	if out["object"] != "response" {
+		t.Fatalf("typed object 字段被透传覆盖: %v", out["object"])
 	}
 }
 

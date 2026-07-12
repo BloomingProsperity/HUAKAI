@@ -43,7 +43,7 @@ func (q *Queries) AcquireAdminIssuanceLock(ctx context.Context, actorID string) 
 const countIssuanceInWindow = `-- name: CountIssuanceInWindow :one
 SELECT count(*)::bigint
 FROM admin_audit_events
-WHERE actor_id = $1::text
+WHERE (actor_id = $1::text OR actor_id = $3::text)
   AND action = 'issue_api_key'
   AND target_id IS NOT NULL
   AND occurred_at > now() - make_interval(secs => $2::integer)
@@ -52,6 +52,9 @@ WHERE actor_id = $1::text
 type CountIssuanceInWindowParams struct {
 	ActorID       string `db:"actor_id" json:"actor_id"`
 	WindowSeconds int32  `db:"window_seconds" json:"window_seconds"`
+	// LegacyActorID 老格式键(裸 TokenID 串),跨 P2b-1 格式迁移保持限流窗连续;
+	// 无老格式的来源传 ActorID 同串(OR 无副作用)。手改生成码(见 sqlc-out-of-sync 记忆)。
+	LegacyActorID string `db:"legacy_actor_id" json:"legacy_actor_id"`
 }
 
 // D4 rate-limit window: how many SUCCESSFUL 'issue_api_key' actions has
@@ -63,7 +66,7 @@ type CountIssuanceInWindowParams struct {
 // excluded from the cap. Otherwise an actor that hits the cap keeps
 // refreshing the window with deny rows on every retry and never recovers.
 func (q *Queries) CountIssuanceInWindow(ctx context.Context, arg CountIssuanceInWindowParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countIssuanceInWindow, arg.ActorID, arg.WindowSeconds)
+	row := q.db.QueryRow(ctx, countIssuanceInWindow, arg.ActorID, arg.WindowSeconds, arg.LegacyActorID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

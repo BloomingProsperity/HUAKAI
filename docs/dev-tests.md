@@ -59,7 +59,7 @@ replay、settlement recovery、tenant isolation、inferred usage 现在由
 `internal/gateway` 和 `internal/gatewayhttp` 的可执行测试守住。
 
 - `internal/proto/proto_test.go`：3 个 AT_PROTO_002_* buffered 占位
-- `internal/pool/pool_test.go`：`TestAT_POOL_019_Tx2Atomicity`（等 Slice 5）
+- ~~`internal/pool/pool_test.go`：`TestAT_POOL_019_Tx2Atomicity`（等 Slice 5）~~ 已退役:Slice 5(F-OBS-001 settler)已实现,Tx2 原子性现由 `internal/billing` 的 `TestAT_OBS_004_AtomicFiveEffect`(happy 五效应)+ `TestAT_OBS_004_RollbackOnSlotReleaseMiss`(mid-Tx2 失败全回滚)覆盖。
 - `internal/auth/auth_test.go`：1 个 bounded-timeout 8s 占位
 - `internal/pool/pasr_selector_test.go`：5 个段内"无第二成员"分支跳过
 - `internal/auditledger/canonical_test.go`：跨语言可复现验证（缺 python3 时跳）

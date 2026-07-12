@@ -11,6 +11,27 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getProviderProtocolForAccountCreate = `-- name: GetProviderProtocolForAccountCreate :one
+SELECT upstream_protocol
+FROM providers
+WHERE tenant_id = $1::bigint
+  AND id = $2::bigint
+  AND deleted_at IS NULL
+FOR SHARE
+`
+
+type GetProviderProtocolForAccountCreateParams struct {
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	ProviderID int64 `db:"provider_id" json:"provider_id"`
+}
+
+func (q *Queries) GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error) {
+	row := q.db.QueryRow(ctx, getProviderProtocolForAccountCreate, arg.TenantID, arg.ProviderID)
+	var upstreamProtocol string
+	err := row.Scan(&upstreamProtocol)
+	return upstreamProtocol, err
+}
+
 const countActiveProviderAccountsForProvider = `-- name: CountActiveProviderAccountsForProvider :one
 SELECT count(*)::bigint
 FROM provider_accounts pa

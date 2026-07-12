@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// ---- helpers (ported from original test file) ----
+// ---- 辅助函数(从原测试文件移植) ----
 
 func ccAssertLocation(t *testing.T, location CacheControlLocation, path string, index int, cacheType string) {
 	t.Helper()
@@ -28,13 +28,13 @@ func ccAssertLocationFull(t *testing.T, location CacheControlLocation, path stri
 	}
 }
 
-// suggestNoTokens wraps SuggestBreakpoints with nil estimatedBlockTokens for
-// backward-compatible calls in tests that predate D6.
+// suggestNoTokens 以 nil 的 estimatedBlockTokens 包装 SuggestBreakpoints,
+// 供 D6 之前的测试做向后兼容的调用。
 func suggestNoTokens(body []byte, snapshot CacheControlSnapshot) (BreakpointSuggestion, error) {
 	return SuggestBreakpoints(body, snapshot, nil)
 }
 
-// ---- original tests (preserved, updated for new SuggestBreakpoints signature) ----
+// ---- 原始测试(保留,并适配新的 SuggestBreakpoints 签名) ----
 
 func TestInspectCacheControl_EmptyBodyError(t *testing.T) {
 	if _, err := InspectCacheControl(nil); err == nil {
@@ -260,16 +260,16 @@ func TestSuggestBreakpoints_DefaultMaxAllowedWhenZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// MaxAllowed=0 should default to CacheControlMaxAllowed (4); 1 candidate added.
+	// MaxAllowed=0 应回落到 CacheControlMaxAllowed(4);添加 1 个候选项。
 	if len(sugg.Add) != 1 {
 		t.Fatalf("Add = %d; want 1", len(sugg.Add))
 	}
 }
 
-// ---- D5 new tests: TTL field ----
+// ---- D5 新增测试:TTL 字段 ----
 
-// TestCacheControl_TTL_FieldParsed verifies that a cache_control with ttl:"1h"
-// is captured in Location.TTL.
+// TestCacheControl_TTL_FieldParsed 验证带 ttl:"1h" 的 cache_control
+// 会被捕获进 Location.TTL。
 func TestCacheControl_TTL_FieldParsed(t *testing.T) {
 	snap, err := InspectCacheControl([]byte(`{
 		"messages": [{"role": "user", "content": [
@@ -286,8 +286,8 @@ func TestCacheControl_TTL_FieldParsed(t *testing.T) {
 	ccAssertLocationFull(t, snap.Locations[0], "messages", 0, "ephemeral", "1h")
 }
 
-// TestCacheControl_TTL_DefaultEmpty verifies that a cache_control without ttl
-// leaves Location.TTL as the empty string (5-min default).
+// TestCacheControl_TTL_DefaultEmpty 验证不带 ttl 的 cache_control
+// 会让 Location.TTL 保持空字符串(默认 5 分钟)。
 func TestCacheControl_TTL_DefaultEmpty(t *testing.T) {
 	snap, err := InspectCacheControl([]byte(`{
 		"messages": [{"role": "user", "content": [
@@ -304,8 +304,8 @@ func TestCacheControl_TTL_DefaultEmpty(t *testing.T) {
 	ccAssertLocationFull(t, snap.Locations[0], "messages", 0, "ephemeral", "")
 }
 
-// TestCacheControl_ValidateTTLOrdering_OK verifies that long-TTL before
-// short-TTL passes validation.
+// TestCacheControl_ValidateTTLOrdering_OK 验证长 TTL 在短 TTL 之前
+// 能通过校验。
 func TestCacheControl_ValidateTTLOrdering_OK(t *testing.T) {
 	snap := CacheControlSnapshot{
 		Count: 2,
@@ -320,14 +320,14 @@ func TestCacheControl_ValidateTTLOrdering_OK(t *testing.T) {
 	}
 }
 
-// TestCacheControl_ValidateTTLOrdering_Violation verifies that short-TTL
-// followed by long-TTL returns a descriptive error.
+// TestCacheControl_ValidateTTLOrdering_Violation 验证短 TTL 之后跟着
+// 长 TTL 会返回带说明的错误。
 func TestCacheControl_ValidateTTLOrdering_Violation(t *testing.T) {
 	snap := CacheControlSnapshot{
 		Count: 2,
 		Locations: []CacheControlLocation{
-			{Path: "system", Index: 0, Type: "ephemeral", TTL: ""},   // short (default)
-			{Path: "messages", Index: 0, Type: "ephemeral", TTL: "1h"}, // long — violates ordering
+			{Path: "system", Index: 0, Type: "ephemeral", TTL: ""},   // 短(默认)
+			{Path: "messages", Index: 0, Type: "ephemeral", TTL: "1h"}, // 长 —— 违反排序
 		},
 		MaxAllowed: 4,
 	}
@@ -340,7 +340,7 @@ func TestCacheControl_ValidateTTLOrdering_Violation(t *testing.T) {
 	}
 }
 
-// TestCacheControl_ValidateTTLOrdering_OnlyShort passes with all short TTLs.
+// TestCacheControl_ValidateTTLOrdering_OnlyShort 全为短 TTL 时应通过。
 func TestCacheControl_ValidateTTLOrdering_OnlyShort(t *testing.T) {
 	snap := CacheControlSnapshot{
 		Count: 2,
@@ -355,7 +355,7 @@ func TestCacheControl_ValidateTTLOrdering_OnlyShort(t *testing.T) {
 	}
 }
 
-// TestCacheControl_ValidateTTLOrdering_OnlyLong passes with all long TTLs.
+// TestCacheControl_ValidateTTLOrdering_OnlyLong 全为长 TTL 时应通过。
 func TestCacheControl_ValidateTTLOrdering_OnlyLong(t *testing.T) {
 	snap := CacheControlSnapshot{
 		Count: 2,
@@ -370,9 +370,9 @@ func TestCacheControl_ValidateTTLOrdering_OnlyLong(t *testing.T) {
 	}
 }
 
-// ---- D6 new tests: per-model min cacheable token thresholds ----
+// ---- D6 新增测试:每个 model 的最小可缓存 token 阈值 ----
 
-// TestCacheControl_ModelThresholds verifies documented thresholds for 5+ models.
+// TestCacheControl_ModelThresholds 验证 5 个以上 model 的文档化阈值。
 func TestCacheControl_ModelThresholds(t *testing.T) {
 	cases := []struct {
 		model    string
@@ -397,8 +397,8 @@ func TestCacheControl_ModelThresholds(t *testing.T) {
 	}
 }
 
-// TestCacheControl_ModelThresholds_UnknownFallback verifies conservative
-// fallback of 4096 for unknown model identifiers.
+// TestCacheControl_ModelThresholds_UnknownFallback 验证未知 model 标识符
+// 会保守回落到 4096。
 func TestCacheControl_ModelThresholds_UnknownFallback(t *testing.T) {
 	got := MinCacheableTokensForModel("claude-unknown-future-model")
 	if got != 4096 {
@@ -406,17 +406,16 @@ func TestCacheControl_ModelThresholds_UnknownFallback(t *testing.T) {
 	}
 }
 
-// TestSuggestBreakpoints_RespectsThreshold verifies that a block whose
-// estimated token count is below the per-model threshold goes to Skipped
-// rather than Add.
+// TestSuggestBreakpoints_RespectsThreshold 验证估算 token 数低于该 model
+// 阈值的块会进入 Skipped 而非 Add。
 func TestSuggestBreakpoints_RespectsThreshold(t *testing.T) {
-	// claude-sonnet-4-6 threshold = 2048; block with 500 tokens should be skipped.
+	// claude-sonnet-4-6 阈值 = 2048;500 token 的块应被跳过。
 	body := []byte(`{
 		"model": "claude-sonnet-4-6",
 		"messages": [{"role": "user", "content": "short context"}]
 	}`)
 	snap := CacheControlSnapshot{Count: 0, MaxAllowed: 4}
-	// The candidate will be messages[0]; give it 500 tokens (below 2048).
+	// 候选项会是 messages[0];给它 500 个 token(低于 2048)。
 	estimatedTokens := map[CacheControlLocation]int{
 		{Path: "messages", Index: 0, Type: "ephemeral"}: 500,
 	}
@@ -435,8 +434,8 @@ func TestSuggestBreakpoints_RespectsThreshold(t *testing.T) {
 	}
 }
 
-// TestSuggestBreakpoints_ThresholdNilBackwardCompat verifies that passing nil
-// for estimatedBlockTokens preserves old behavior (no threshold filtering).
+// TestSuggestBreakpoints_ThresholdNilBackwardCompat 验证给 estimatedBlockTokens
+// 传 nil 会保留旧行为(不做阈值过滤)。
 func TestSuggestBreakpoints_ThresholdNilBackwardCompat(t *testing.T) {
 	body := []byte(`{
 		"model": "claude-opus-4-7",
@@ -447,17 +446,16 @@ func TestSuggestBreakpoints_ThresholdNilBackwardCompat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// With nil tokens, the single user message candidate should be added
-	// regardless of the model's threshold.
+	// token 为 nil 时,无论该 model 的阈值如何,唯一的 user 消息候选项
+	// 都应被添加。
 	if len(sugg.Add) != 1 {
 		t.Fatalf("Add = %d; want 1 (nil tokens = no threshold filter)", len(sugg.Add))
 	}
 }
 
-// TestSuggestBreakpoints_AboveThresholdAdded verifies that a block above the
-// threshold is added normally.
+// TestSuggestBreakpoints_AboveThresholdAdded 验证高于阈值的块会被正常添加。
 func TestSuggestBreakpoints_AboveThresholdAdded(t *testing.T) {
-	// claude-sonnet-4-6 threshold = 2048; block with 3000 tokens should be added.
+	// claude-sonnet-4-6 阈值 = 2048;3000 token 的块应被添加。
 	body := []byte(`{
 		"model": "claude-sonnet-4-6",
 		"messages": [{"role": "user", "content": "large context"}]

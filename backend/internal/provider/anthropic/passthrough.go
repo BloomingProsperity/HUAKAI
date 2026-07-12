@@ -4,7 +4,7 @@
 //
 //	本文件仅实现 Anthropic 官方 **API key 直通**（用 operator 合法持有
 //	的 sk-ant-api03-... 开发者 key 转发到 api.anthropic.com）。这是公开
-//	API 路径，不是 sub2api 那种"Pro/Max OAuth 反转"形态。
+//	API 路径，不是个人订阅 OAuth 反转形态。
 //	Pro/Max 反转 (R3 transport mimicry / R7 应用层伪装 / claude_token_provider
 //	等价物) 已 paused — 见 docs/process/plans/2026-05-06-r3-transport-mimicry-claude.md。
 package anthropic
@@ -29,7 +29,7 @@ const defaultAnthropicVersion = "2023-06-01"
 
 // PassthroughAdapter 实现 provider.Adapter，把客户原始 Anthropic Messages
 // 形态请求直通转发到 Anthropic 官方 endpoint，注入 x-api-key 与 anthropic-
-// version header。
+// version header 头。
 type PassthroughAdapter struct {
 	// Endpoint 覆盖默认 endpoint。空串走官方 v1/messages。
 	Endpoint string
@@ -63,7 +63,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		endpoint = defaultMessagesEndpoint
 	}
 
-	// upstream_passthrough 凭据自带 base_url 优先用之。
+	// API key 或 upstream_passthrough 凭据自带 base_url 时优先使用。
 	endpoint, err := provider.EndpointForCredential(endpoint, in.Credential)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic passthrough: endpoint rejected: %w", err)
@@ -125,10 +125,9 @@ func (a *PassthroughAdapter) acceptsCredential(t provider.CredentialType) bool {
 	return false
 }
 
-// Claude Code (Anthropic CLI) device-profile defaults — make the egress carry the
-// genuine Claude Code client signature so upstream sees the real client, not a bare
-// relay. Parity with CLIProxyAPI internal/runtime/executor/helps/claude_device_profile.go.
-// ON per Owner 2026-06-08「必须开着」(overrides CB-001 default-off).
+// Claude Code(Anthropic CLI)设备 profile 默认值——让出口流量带上真实的 Claude
+// Code 客户端签名,使上游看到的是真实客户端而非裸中转。
+// 按 Owner 2026-06-08「必须开着」默认开启(覆盖 CB-001 的默认关闭)。
 const (
 	claudeCodeUserAgent           = "claude-cli/2.1.63 (external, cli)"
 	claudeStainlessPackageVersion = "0.74.0"

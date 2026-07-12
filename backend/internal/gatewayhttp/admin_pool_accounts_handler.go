@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
 
@@ -31,8 +32,9 @@ const (
 )
 
 var (
-	errAdminPoolAccountTxPoolUnset                  = errors.New("gatewayhttp: admin pool account adapter pgxpool unset")
-	errProviderAccountMixedRiskConfirmationRequired = errors.New("provider account mixed channel risk confirmation required")
+	errAdminPoolAccountTxPoolUnset                  = accountcreate.ErrPoolUnset
+	errProviderAccountMixedRiskConfirmationRequired = accountcreate.ErrMixedRiskConfirmRequired
+	errProviderAccountProtocolIncompatible          = accountcreate.ErrProtocolIncompatible
 )
 
 type AdminPoolAccountAuth interface {
@@ -40,6 +42,7 @@ type AdminPoolAccountAuth interface {
 }
 
 type AdminPoolAccountStore interface {
+	GetProviderProtocolForAccountCreate(context.Context, admindb.GetProviderProtocolForAccountCreateParams) (string, error)
 	InsertProviderAccount(context.Context, admindb.InsertProviderAccountParams) (int64, error)
 	ListAdminProviderAccounts(context.Context, admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error)
 	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
@@ -78,16 +81,8 @@ type adminPoolAccountStoreAdapter struct {
 	pool *pgxpool.Pool
 }
 
-type adminPoolAccountCreateWithMixedRiskParams struct {
-	Insert    admindb.InsertProviderAccountParams
-	Candidate mixedchannelrisk.Account
-	Confirmed bool
-}
-
-type adminPoolAccountCreateWithMixedRiskResult struct {
-	ID         int64
-	RiskReport mixedchannelrisk.Report
-}
+type adminPoolAccountCreateWithMixedRiskParams = accountcreate.Params
+type adminPoolAccountCreateWithMixedRiskResult = accountcreate.Result
 
 func NewAdminPoolAccountStoreAdapter(base AdminPoolAccountStore, pool *pgxpool.Pool) AdminPoolAccountStore {
 	return adminPoolAccountStoreAdapter{base: base, pool: pool}
@@ -95,6 +90,10 @@ func NewAdminPoolAccountStoreAdapter(base AdminPoolAccountStore, pool *pgxpool.P
 
 func (s adminPoolAccountStoreAdapter) InsertProviderAccount(ctx context.Context, arg admindb.InsertProviderAccountParams) (int64, error) {
 	return s.base.InsertProviderAccount(ctx, arg)
+}
+
+func (s adminPoolAccountStoreAdapter) GetProviderProtocolForAccountCreate(ctx context.Context, arg admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
+	return s.base.GetProviderProtocolForAccountCreate(ctx, arg)
 }
 
 func (s adminPoolAccountStoreAdapter) ListAdminProviderAccounts(ctx context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
@@ -126,40 +125,7 @@ func (s adminPoolAccountStoreAdapter) InsertAdminAuditEvent(ctx context.Context,
 }
 
 func (s adminPoolAccountStoreAdapter) InsertProviderAccountWithMixedRiskCheck(ctx context.Context, arg adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error) {
-	if s.pool == nil {
-		return adminPoolAccountCreateWithMixedRiskResult{}, errAdminPoolAccountTxPoolUnset
-	}
-	var out adminPoolAccountCreateWithMixedRiskResult
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		q := admindb.New(tx)
-		// 同一 tenant/channel 的风险检查和 insert 必须串行化,否则两个空 channel
-		// 并发 create 都可能先看到无 peers 再同时落库。
-		lockKey := fmt.Sprintf("provider-account-mixed-risk:%d:%d", arg.Insert.TenantID, arg.Insert.ChannelID)
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, lockKey); err != nil {
-			return err
-		}
-		peers, err := q.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
-			TenantID:  arg.Insert.TenantID,
-			ChannelID: arg.Insert.ChannelID,
-		})
-		if err != nil {
-			return err
-		}
-		out.RiskReport = mixedchannelrisk.Evaluate(arg.Candidate, mixedRiskPeerAccounts(peers))
-		if out.RiskReport.HighRisk && !arg.Confirmed {
-			return errProviderAccountMixedRiskConfirmationRequired
-		}
-		id, err := q.InsertProviderAccount(ctx, arg.Insert)
-		if err != nil {
-			return err
-		}
-		out.ID = id
-		return nil
-	})
-	if err != nil {
-		return adminPoolAccountCreateWithMixedRiskResult{RiskReport: out.RiskReport}, err
-	}
-	return out, nil
+	return accountcreate.Insert(ctx, s.pool, arg)
 }
 
 func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
@@ -216,7 +182,18 @@ type updateProviderAccountRequest struct {
 	PoolMode                   *bool            `json:"pool_mode,omitempty"`
 	TempUnschedulableEnabled   *bool            `json:"temp_unschedulable_enabled,omitempty"`
 	TempUnschedulableRulesJSON *json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
-	Reason                     string           `json:"reason,omitempty"`
+	// ProxyBinding 省略=不动出站代理绑定;present=按 mode 设置(互斥由 handler 构造保证)。
+	ProxyBinding *proxyBindingInput `json:"proxy_binding,omitempty"`
+	Reason       string             `json:"reason,omitempty"`
+}
+
+// proxyBindingInput 表达账号出站代理的目标绑定:mode∈{direct,proxy,group}。
+// direct=直连(清两列);proxy=单绑 ProxyID(清组);group=绑组 ProxyGroupID(清单代理)。
+// 互斥由 handler 在每个 mode 同时写两列保证(配合 0148 DB CHECK 兜底)。
+type proxyBindingInput struct {
+	Mode         string  `json:"mode"`
+	ProxyID      *int64  `json:"proxy_id,omitempty"`
+	ProxyGroupID *string `json:"proxy_group_id,omitempty"`
 }
 
 type providerAccountListResponse struct {
@@ -266,6 +243,9 @@ type providerAccountResponse struct {
 	CustomErrorCodes         []int32         `json:"custom_error_codes"`
 	PoolMode                 bool            `json:"pool_mode"`
 	TempUnschedulableEnabled bool            `json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
+	ProxyID                  *int64          `json:"proxy_id"`
+	ProxyGroupID             *string         `json:"proxy_group_id"`
 	CreatedAt                *time.Time      `json:"created_at"`
 	UpdatedAt                *time.Time      `json:"updated_at"`
 }
@@ -300,11 +280,26 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "credential store dependency unset")
 			return
 		}
+		providerFamily, err := d.Store.GetProviderProtocolForAccountCreate(r.Context(), admindb.GetProviderProtocolForAccountCreateParams{
+			TenantID: tenantID, ProviderID: req.ProviderID,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "provider does not exist")
+				return
+			}
+			writeJSONError(w, http.StatusServiceUnavailable, "provider_protocol_lookup_failed", err.Error())
+			return
+		}
+		if err := validateProviderAccountProtocolCompatibility(providerFamily, req.AccountType, req.Vendor, req.AuthMode); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
+			return
+		}
 		confirmed, ok := parseProviderAccountMixedRiskConfirm(w, r, req)
 		if !ok {
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		dbCredentials := []byte(req.Credentials)
 		if useCredentialStore {
 			dbCredentials = []byte(`{}`)
@@ -317,8 +312,12 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			Extra:          normalizedProviderAccountExtra(req.Extra),
 			ModelAllowList: req.ModelAllowList, CapabilityFlags: req.CapabilityFlags, ActorID: &actorID,
 		}
-		createResult, err := insertProviderAccountWithMixedRiskCheck(r.Context(), d.Store, createArg, req, confirmed)
+		createResult, err := insertProviderAccountWithMixedRiskCheck(r.Context(), d.Store, createArg, req, providerFamily, confirmed)
 		if err != nil {
+			if errors.Is(err, errProviderAccountProtocolIncompatible) {
+				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
+				return
+			}
 			if errors.Is(err, errProviderAccountMixedRiskConfirmationRequired) {
 				writeProviderAccountMixedRiskRequired(w, createResult.RiskReport)
 				return
@@ -472,7 +471,7 @@ func newGetProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeProviderAccountReadError(w, err, "provider_account_get_failed")
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
+		writeAuditJSON(w, http.StatusOK, providerAccountDetailDTO(account))
 	}
 }
 
@@ -497,7 +496,7 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		arg := admindb.UpdateAdminProviderAccountParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
 			Enabled: req.Enabled, Priority: req.Priority, StaticWeight: req.StaticWeight, CapConcurrency: req.CapConcurrency,
@@ -531,6 +530,36 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if req.TempUnschedulableRulesJSON != nil {
 			arg.SetTempUnschedulableRules = true
 			arg.TempUnschedulableRulesJSON = []byte(*req.TempUnschedulableRulesJSON)
+		}
+		// 出站代理绑定:按 mode 构造性写两列,互斥由"每 mode 同时设两列"保证;
+		// proxy_id 跨租户由 0038 DB 触发器兜底(前端代理下拉只给本租户代理为主防线)。
+		if req.ProxyBinding != nil {
+			switch req.ProxyBinding.Mode {
+			case "direct":
+				arg.SetProxyID, arg.ProxyID = true, nil
+				arg.SetProxyGroupID, arg.ProxyGroupID = true, nil
+			case "proxy":
+				if req.ProxyBinding.ProxyID == nil || *req.ProxyBinding.ProxyID <= 0 {
+					writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode=proxy 需正整数 proxy_id")
+					return
+				}
+				arg.SetProxyID, arg.ProxyID = true, req.ProxyBinding.ProxyID
+				arg.SetProxyGroupID, arg.ProxyGroupID = true, nil // 互斥:清组
+			case "group":
+				g := ""
+				if req.ProxyBinding.ProxyGroupID != nil {
+					g = strings.TrimSpace(*req.ProxyBinding.ProxyGroupID)
+				}
+				if g == "" {
+					writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode=group 需非空 proxy_group_id")
+					return
+				}
+				arg.SetProxyGroupID, arg.ProxyGroupID = true, &g
+				arg.SetProxyID, arg.ProxyID = true, nil // 互斥:清单代理
+			default:
+				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode 须为 direct/proxy/group")
+				return
+			}
 		}
 		account, err := d.Store.UpdateAdminProviderAccount(r.Context(), arg)
 		if err != nil {
@@ -568,7 +597,7 @@ func newUpdateProviderAccountEnabledHandler(d AdminPoolAccountDeps) http.Handler
 			writeJSONError(w, http.StatusBadRequest, "enabled_required", "enabled is required")
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		if err := d.Store.UpdateProviderAccountEnabled(r.Context(), admindb.UpdateProviderAccountEnabledParams{
 			Enabled: *req.Enabled, ActorID: &actorID, ID: id, TenantID: tenantID,
 		}); err != nil {
@@ -599,7 +628,7 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 		if !ok {
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		account, err := d.Store.ClearProviderAccountRateLimit(r.Context(), admindb.ClearProviderAccountRateLimitParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
 		})
@@ -613,9 +642,8 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
 			return
 		}
-		// Return the reactivated account row (the UPDATE...RETURNING already
-		// gives us the post-clear state) so the operator UI sees the account is
-		// no longer benched, instead of an opaque 204.
+		// 返回重新激活后的 account 行（UPDATE...RETURNING 已经给到清除后的状态），
+		// 让运维 UI 看到该账号不再被停用，而不是一个不透明的 204。
 		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
 	}
 }
@@ -637,7 +665,7 @@ func newDeleteProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !validateProviderAccountTenant(w, req.TenantID, tenantID) {
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		if err := d.Store.SoftDeleteProviderAccount(r.Context(), admindb.SoftDeleteProviderAccountParams{
 			ActorID: &actorID, ID: id, TenantID: tenantID,
 		}); err != nil {
@@ -676,12 +704,11 @@ func resolveProviderAccountAdmin(w http.ResponseWriter, r *http.Request, d Admin
 		}
 		return ident, ident.ScopeTenantID, true
 	case admin.RolePlatformAdmin:
-		// Global platform_admin holds no implicit tenant scope: it MUST name the
-		// target tenant explicitly via ?tenant_id=N. Silently defaulting to
-		// tenant 1 both (a) blocked global admins from ever reaching tenant>1
-		// (the body tenant_id guard rejected anything != 1) and (b) risked
-		// mutating tenant 1's accounts by accident. This mirrors the explicit
-		// tenant-scope requirement in provider/channel catalog + api-keys.
+		// 全局 platform_admin 不持有任何隐式 tenant 作用域：它必须通过
+		// ?tenant_id=N 显式指明目标 tenant。静默默认到 tenant 1 既会 (a) 让全局
+		// admin 永远够不到 tenant>1（body 的 tenant_id 守卫会拒绝任何 != 1 的值），
+		// 又会 (b) 冒着误改 tenant 1 账号的风险。这与 provider/channel catalog +
+		// api-keys 中的显式 tenant 作用域要求保持一致。
 		if ident.ScopeTenantID > 0 {
 			return ident, ident.ScopeTenantID, true
 		}
@@ -783,7 +810,7 @@ func parseProviderAccountMixedRiskConfirm(w http.ResponseWriter, r *http.Request
 	return false, true
 }
 
-func insertProviderAccountWithMixedRiskCheck(ctx context.Context, store AdminPoolAccountStore, createArg admindb.InsertProviderAccountParams, req createProviderAccountRequest, confirmed bool) (adminPoolAccountCreateWithMixedRiskResult, error) {
+func insertProviderAccountWithMixedRiskCheck(ctx context.Context, store AdminPoolAccountStore, createArg admindb.InsertProviderAccountParams, req createProviderAccountRequest, providerFamily string, confirmed bool) (adminPoolAccountCreateWithMixedRiskResult, error) {
 	atomicStore, ok := store.(AdminPoolAccountAtomicCreateStore)
 	if !ok {
 		return adminPoolAccountCreateWithMixedRiskResult{}, errAdminPoolAccountTxPoolUnset
@@ -793,19 +820,12 @@ func insertProviderAccountWithMixedRiskCheck(ctx context.Context, store AdminPoo
 		AccountType: req.AccountType, Vendor: req.Vendor, AuthMode: req.AuthMode,
 	}
 	return atomicStore.InsertProviderAccountWithMixedRiskCheck(ctx, adminPoolAccountCreateWithMixedRiskParams{
-		Insert: createArg, Candidate: candidate, Confirmed: confirmed,
+		Insert: createArg, Candidate: candidate, ProviderFamily: providerFamily, Confirmed: confirmed,
 	})
 }
 
-func mixedRiskPeerAccounts(rows []admindb.ProviderAccountRiskPeerRow) []mixedchannelrisk.Account {
-	out := make([]mixedchannelrisk.Account, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, mixedchannelrisk.Account{
-			ID: row.ID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
-			AccountType: row.AccountType, Vendor: row.CredentialVendor, AuthMode: row.CredentialAuthMode,
-		})
-	}
-	return out
+func validateProviderAccountProtocolCompatibility(family, accountType, vendor, authMode string) error {
+	return accountcreate.ValidateProtocolCompatibility(family, accountType, vendor, authMode)
 }
 
 func writeProviderAccountMixedRiskRequired(w http.ResponseWriter, report mixedchannelrisk.Report) {
@@ -822,7 +842,8 @@ func validateUpdateProviderAccount(req updateProviderAccountRequest) error {
 	if req.Enabled == nil && req.Priority == nil && req.StaticWeight == nil && req.CapConcurrency == nil &&
 		req.ProbeModel == nil && req.Tags == nil && req.Extra == nil && req.ModelAllowList == nil &&
 		req.CapabilityFlags == nil && req.CustomErrorCodesEnabled == nil && req.CustomErrorCodes == nil &&
-		req.PoolMode == nil && req.TempUnschedulableEnabled == nil && req.TempUnschedulableRulesJSON == nil {
+		req.PoolMode == nil && req.TempUnschedulableEnabled == nil && req.TempUnschedulableRulesJSON == nil &&
+		req.ProxyBinding == nil {
 		return fmt.Errorf("at least one supported field is required")
 	}
 	if req.CapConcurrency != nil && *req.CapConcurrency <= 0 {
@@ -956,8 +977,23 @@ func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResp
 		LastRefreshOutcome: row.LastRefreshOutcome, OAuthEndpointHealth: row.OAuthEndpointHealth,
 		CustomErrorCodesEnabled: row.CustomErrorCodesEnabled, CustomErrorCodes: nonNilInt32Slice(row.CustomErrorCodes),
 		PoolMode: row.PoolMode, TempUnschedulableEnabled: row.TempUnschedulableEnabled,
+		ProxyID: row.ProxyID, ProxyGroupID: row.ProxyGroupID,
 		CreatedAt: pgTimePtr(row.CreatedAt), UpdatedAt: pgTimePtr(row.UpdatedAt),
 	}
+}
+
+func providerAccountDetailDTO(row admindb.AdminProviderAccountRow) providerAccountResponse {
+	response := providerAccountDTO(row)
+	response.TempUnschedulableRules = jsonArrayOrEmpty(row.TempUnschedulableRules)
+	return response
+}
+
+func jsonArrayOrEmpty(raw []byte) json.RawMessage {
+	var values []json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &values) != nil || values == nil {
+		return json.RawMessage(`[]`)
+	}
+	return json.RawMessage(append([]byte(nil), raw...))
 }
 
 func pgTimePtr(ts pgtype.Timestamptz) *time.Time {
@@ -1035,7 +1071,7 @@ func chineseReason(got, fallback string) *string {
 }
 
 func writeProviderAccountAudit(ctx context.Context, r *http.Request, store AdminPoolAccountStore, ident admin.AdminIdentity, tenantID int64, action string, targetID int64, reason *string, payload []byte) error {
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+	actorID := ident.AuditActor()
 	reqID := middleware.GetReqID(r.Context())
 	_, err := store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,

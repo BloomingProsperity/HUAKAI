@@ -443,6 +443,121 @@ func TestUserKey_Issue_RejectsBadInputs(t *testing.T) {
 	}
 }
 
+// T9b: Patch expiry 三态 (set / clear / unchanged) + reject-past delta, 经 Get readback 判别。
+// set 未来 → Get 反映; clear ("") → Get 为 nil; past → ErrInvalidExpiry 且有效期不变;
+// no-op → 保留当前有效期 (不静默清除)。
+// mutation 自检: 删 Patch 的 expires_at 子句 → set 后 Get 仍 nil → red;
+//   把 reject-past 校验删掉 → past Patch 成功把 key 设成过期 → ErrInvalidExpiry 断言 red;
+//   no-op 误走 UPDATE 清掉 expires_at → 末尾 Get 为 nil → red。
+func TestUserKey_PatchExpiry_TriStateAndRejectPast(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+	svc := newServiceFast(pool)
+
+	res, err := svc.Issue(ctx, IssueRequest{TenantID: f.tenantID, UserID: f.userA, Name: "k"})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	id := res.APIKeyID
+
+	// 设置未来时刻 → PatchResult 与 Get 都应反映出来。
+	future := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+	pr, err := svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, ExpiresAt: &future})
+	if err != nil {
+		t.Fatalf("Patch set: %v", err)
+	}
+	if pr.ExpiresAt == nil || !pr.ExpiresAt.Equal(future) {
+		t.Fatalf("set: PatchResult.ExpiresAt=%v want %v", pr.ExpiresAt, future)
+	}
+	if got, err := svc.Get(ctx, f.tenantID, f.userA, id); err != nil {
+		t.Fatalf("Get after set: %v", err)
+	} else if got.ExpiresAt == nil || !got.ExpiresAt.Equal(future) {
+		t.Fatalf("set: Get.ExpiresAt=%v want %v", got.ExpiresAt, future)
+	}
+
+	// 清除(ClearExpiry)→ PatchResult 与 Get 都显示 nil。
+	pr, err = svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, ClearExpiry: true})
+	if err != nil {
+		t.Fatalf("Patch clear: %v", err)
+	}
+	if pr.ExpiresAt != nil {
+		t.Fatalf("clear: PatchResult.ExpiresAt=%v want nil", pr.ExpiresAt)
+	}
+	if got, err := svc.Get(ctx, f.tenantID, f.userA, id); err != nil {
+		t.Fatalf("Get after clear: %v", err)
+	} else if got.ExpiresAt != nil {
+		t.Fatalf("clear: Get.ExpiresAt=%v want nil", got.ExpiresAt)
+	}
+
+	// 重新设置一个未来截止时间,好让 past/no-op 用例有个值可保护。
+	if _, err := svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, ExpiresAt: &future}); err != nil {
+		t.Fatalf("Patch re-set: %v", err)
+	}
+
+	// 设置为过去时刻 → ErrInvalidExpiry,且截止时间不被改动(仍是未来)。
+	past := time.Now().Add(-time.Hour)
+	if _, err := svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, ExpiresAt: &past}); !errors.Is(err, ErrInvalidExpiry) {
+		t.Fatalf("past: want ErrInvalidExpiry; got %v", err)
+	}
+	if got, err := svc.Get(ctx, f.tenantID, f.userA, id); err != nil {
+		t.Fatalf("Get after rejected past: %v", err)
+	} else if got.ExpiresAt == nil || !got.ExpiresAt.Equal(future) {
+		t.Fatalf("past rejected but deadline changed: Get.ExpiresAt=%v want %v", got.ExpiresAt, future)
+	}
+
+	// 空操作(全为 nil)→ 返回当前状态并保留截止时间。
+	pr, err = svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id})
+	if err != nil {
+		t.Fatalf("Patch no-op: %v", err)
+	}
+	if pr.ExpiresAt == nil || !pr.ExpiresAt.Equal(future) {
+		t.Fatalf("no-op: PatchResult.ExpiresAt=%v want %v (preserved)", pr.ExpiresAt, future)
+	}
+	if got, err := svc.Get(ctx, f.tenantID, f.userA, id); err != nil {
+		t.Fatalf("Get after no-op: %v", err)
+	} else if got.ExpiresAt == nil || !got.ExpiresAt.Equal(future) {
+		t.Fatalf("no-op changed the deadline: Get.ExpiresAt=%v want %v", got.ExpiresAt, future)
+	}
+
+	// 在同一个 patch 里组合 name + expires_at。上面的单字段用例只会用到
+	// argIdx==1 处的 expires_at 占位符;这里 name = $1 把 expires_at 挤到 $2,
+	// WHERE 在 $3/$4/$5 —— 锁死动态 UPDATE 的 argIdx 算术,一旦索引错位会被
+	// 静默破坏(截止时间放错位置会在 auth 时让 key 失效/复活)。
+	rename := "renamed"
+	future2 := time.Now().Add(72 * time.Hour).UTC().Truncate(time.Second)
+	pr, err = svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, Name: &rename, ExpiresAt: &future2})
+	if err != nil {
+		t.Fatalf("Patch name+expires: %v", err)
+	}
+	if pr.Name != "renamed" || pr.ExpiresAt == nil || !pr.ExpiresAt.Equal(future2) {
+		t.Fatalf("name+expires: PatchResult name=%q expires=%v want renamed/%v", pr.Name, pr.ExpiresAt, future2)
+	}
+	if got, err := svc.Get(ctx, f.tenantID, f.userA, id); err != nil {
+		t.Fatalf("Get after name+expires: %v", err)
+	} else if got.Name != "renamed" || got.ExpiresAt == nil || !got.ExpiresAt.Equal(future2) {
+		t.Fatalf("name+expires: Get name=%q expires=%v want renamed/%v", got.Name, got.ExpiresAt, future2)
+	}
+
+	// 组合 name + status + expires_at。status 子句会多发一个 revoked_at CASE
+	// 参数,把 expires_at 挤到最高索引($4,WHERE $5/$6/$7)—— 完整走一遍
+	// argIdx 路径。status="active" 让 key 保持可用(revoked_at CASE -> ELSE 不变)。
+	future3 := time.Now().Add(96 * time.Hour).UTC().Truncate(time.Second)
+	status := "active"
+	pr, err = svc.Patch(ctx, PatchRequest{TenantID: f.tenantID, UserID: f.userA, APIKeyID: id, Name: &rename, Status: &status, ExpiresAt: &future3})
+	if err != nil {
+		t.Fatalf("Patch name+status+expires: %v", err)
+	}
+	if pr.ExpiresAt == nil || !pr.ExpiresAt.Equal(future3) {
+		t.Fatalf("name+status+expires: PatchResult.ExpiresAt=%v want %v", pr.ExpiresAt, future3)
+	}
+	if got, err := svc.Get(ctx, f.tenantID, f.userA, id); err != nil {
+		t.Fatalf("Get after name+status+expires: %v", err)
+	} else if got.ExpiresAt == nil || !got.ExpiresAt.Equal(future3) || got.Status != "active" {
+		t.Fatalf("name+status+expires: Get expires=%v status=%q want %v/active", got.ExpiresAt, got.Status, future3)
+	}
+}
+
 // T10: cap 竞态防御 — 并发 N+5 个 Issue,**永远不**能让 active 数超过 MaxActiveKeysPerUser。
 //
 // advisory lock 把 cap 检查序列化;只 t.Parallel + serial issuance
@@ -512,7 +627,7 @@ func TestUserKey_StaleParent_FailClosed(t *testing.T) {
 		t.Fatalf("active baseline list: err=%v len=%d", err, len(list))
 	}
 
-	// disable tenant → fail-closed
+	// 禁用 tenant → fail-closed
 	if _, err := pool.Exec(ctx, `UPDATE tenants SET status='disabled' WHERE id=$1`, f.tenantID); err != nil {
 		t.Fatalf("disable tenant: %v", err)
 	}

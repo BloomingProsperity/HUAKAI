@@ -6,20 +6,46 @@ import (
 	"time"
 )
 
-func TestLoadL2CacheDefaultsOff(t *testing.T) {
+// TestLoadL2CacheDefaultsOn 守住 F-CACHE-001 的激活:在无 env 覆盖时,缓存默认开启
+//(size/ttl/scope 均取各自默认值)。
+// MUTATION:把默认值改回 Enabled:false → 本断言变红。
+func TestLoadL2CacheDefaultsOn(t *testing.T) {
 	clearL2CacheEnv(t)
 	cfg, err := LoadL2Cache()
 	if err != nil {
 		t.Fatalf("LoadL2Cache: %v", err)
 	}
-	if cfg.Enabled {
-		t.Fatal("L2 cache must default off")
+	if !cfg.Enabled {
+		t.Fatal("L2 cache must default ON after F-CACHE-001 activation")
 	}
 	if cfg.SizeBytes != defaultL2CacheSizeBytes {
 		t.Fatalf("SizeBytes=%d want %d", cfg.SizeBytes, defaultL2CacheSizeBytes)
 	}
 	if cfg.TTL != defaultL2CacheTTL {
 		t.Fatalf("TTL=%s want %s", cfg.TTL, defaultL2CacheTTL)
+	}
+	if cfg.Scope != defaultL2CacheScope {
+		t.Fatalf("Scope=%q want %q", cfg.Scope, defaultL2CacheScope)
+	}
+}
+
+// TestLoadL2CacheEnvOverrideOff 守住运维仍可通过 HUAKAI_CACHE_L2_ENABLED=0 关闭这个现已默认
+// 开启的缓存(env 覆盖必须压过新默认值)。
+// MUTATION:若 env 覆盖分支不再生效, Enabled 会保持 true → 变红。之所以有区分力, 正因为现在默认
+// 是开启的——这是一个 false 的期望值, 覆盖必须把它翻回 false。
+func TestLoadL2CacheEnvOverrideOff(t *testing.T) {
+	clearL2CacheEnv(t)
+	for _, off := range []string{"0", "false", "off", "no"} {
+		t.Run(off, func(t *testing.T) {
+			t.Setenv("HUAKAI_CACHE_L2_ENABLED", off)
+			cfg, err := LoadL2Cache()
+			if err != nil {
+				t.Fatalf("LoadL2Cache: %v", err)
+			}
+			if cfg.Enabled {
+				t.Fatalf("HUAKAI_CACHE_L2_ENABLED=%q must disable the default-on cache", off)
+			}
+		})
 	}
 }
 

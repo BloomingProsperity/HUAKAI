@@ -53,7 +53,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		endpoint = defaultChatCompletionsEndpoint
 	}
 
-	// upstream_passthrough 凭据自带 base_url 优先用之。
+	// API key 或 upstream_passthrough 凭据自带 base_url 时优先使用。
 	endpoint, err := provider.EndpointForBuildInput(endpoint, in)
 	if err != nil {
 		return nil, fmt.Errorf("openrouter passthrough: endpoint rejected: %w", err)

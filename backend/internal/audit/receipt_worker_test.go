@@ -192,7 +192,7 @@ func TestReceiptHookSettlerQualifiesReferralAfterSuccessfulSettle(t *testing.T) 
 }
 
 func TestReceiptHookSettlerReferralRewardEnabledUsesPaymentIssuer(t *testing.T) {
-	// Mutation: ignoring referral_reward_enabled or reward_cents and always calling the bare qualifier leaves issuer.calls at zero or amount != 73.
+	// 变异：忽略 referral_reward_enabled 或 reward_cents 而总是调用裸 qualifier，会让 issuer.calls 保持为零或金额不等于 73。
 	ctx := context.Background()
 	requestID := "req-worker-referral-reward-enabled"
 	hook, _ := receiptHookForReferralTest(t, requestID, 7001, 9001, 100)
@@ -228,7 +228,7 @@ func TestReceiptHookSettlerReferralRewardEnabledUsesPaymentIssuer(t *testing.T) 
 }
 
 func TestReceiptHookSettlerReferralRewardDisabledFallsBackToQualifyOnly(t *testing.T) {
-	// Mutation: calling ApplyReferralReward when referral_reward_enabled=false makes issuer.calls nonzero and would create referral_rewards rows in PG.
+	// 变异：在 referral_reward_enabled=false 时仍调用 ApplyReferralReward，会让 issuer.calls 非零，并在 PG 里创建 referral_rewards 行。
 	ctx := context.Background()
 	requestID := "req-worker-referral-reward-disabled"
 	hook, _ := receiptHookForReferralTest(t, requestID, 7001, 9001, 100)

@@ -31,21 +31,49 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 		if result.ActualCents < 0 {
 			return fmt.Errorf("%w: actual_cents", ErrInvalidInput)
 		}
-		if result.ActualCents > locked.EstimatedCents {
-			return ErrActualExceedsEstimate
+		// 保守止血:上游真把任务跑成功、但实际成本超过预扣的预估时,不再回滚整事务
+		// (旧逻辑返回 ErrActualExceedsEstimate),因为那会让成功任务卡死在 in_progress
+		// 反复轮询,直到 TaskTimeout→ExpireTask 把【全额】预扣释放、平台白吃真实上游成本。
+		// 改为把【结算金额】clamp 到预扣的预估上限:成功任务正常推进到终态 succeeded,
+		// 按预估结算(收费不超过预扣,不超收客户),平台只吸收"超出预估"这部分有界差额。
+		// 注:此处仅 clamp 计费金额;media_tasks.actual_cents 仍记录真实上游成本(见
+		// updateTaskSuccess),供运维核对平台吸收了多少。超收客户 / 转 failure 的更激进
+		// 策略属 money-policy,留待 Owner 拍板,本处只做保守版。
+		billedCents := result.ActualCents
+		// 下限锚定(bug ② 修复):上游 Poll 未回实际用量时 ActualCents 保持 0(图像/视频等
+		// 任务创建型上游普遍只回任务 ID/状态、不回 token 用量),若按 0 结算 = 任务成功却白吃
+		// 真实上游成本、等同给客户做了 $0 全额退式结算。此处锚定到预扣的预估额度
+		// locked.EstimatedCents(绝不归零;免费模型 EstimatedCents=0 时仍正确结 $0),维持
+		// "无可用用量时保持预扣估算、非正差额不动账"的保守口径。
+		if billedCents <= 0 {
+			billedCents = locked.EstimatedCents
+		}
+		if billedCents > locked.EstimatedCents {
+			billedCents = locked.EstimatedCents
 		}
 		claimID, err := claimIDFromHoldRef(locked.HoldRef)
 		if err != nil {
 			return err
 		}
-		actual := centsToUSD(result.ActualCents)
+		actual := centsToUSD(billedCents)
 		qtx := dbbilling.New(tx)
 		if rows, err := qtx.UpdateClaimCommitted(ctx, dbbilling.UpdateClaimCommittedParams{
 			ID: claimID, ActualCost: decimal.NullDecimal{Decimal: actual, Valid: true}, TenantID: locked.TenantID,
 		}); err != nil {
 			return err
 		} else if rows == 0 {
-			return billing.ErrClaimNotReserving
+			// claim 已被 billing LeaseSweeper 抢先 abort (预扣已释放退回用户)。回滚整事务
+			// 会让任务卡 in_progress 每 ~30s 重试死循环且永远结算不了。任务在上游真实跑
+			// 成功: 强推终态 succeeded (用户拿到产物), 落孤儿对账线索 (admin Manual-First
+			// 追扣/核销), 跳过 claim/billing 写 (sweeper 已写平 abort 账, 再写 committed 是假账)。
+			if err := updateTaskSuccess(ctx, tx, locked.ID, result, now); err != nil {
+				return err
+			}
+			if err := persistOrphanTx(ctx, tx, locked, owner, now); err != nil {
+				return err
+			}
+			settled = true
+			return nil
 		}
 		if err := insertBillingEvent(ctx, qtx, locked, claimID, "claim_committed", actual, "stream_end_graceful", billing.StreamStatePartial); err != nil {
 			return err
@@ -87,7 +115,10 @@ func (s *PostgresStore) insertReservedTask(ctx context.Context, tx pgx.Tx, input
 		RequestFingerprint: fingerprint, APIKeyID: apiKeyID, UserID: input.UserID,
 		LogicalRequestID: input.RequestID, EndpointFamily: "media_tasks", RequestedModel: input.TaskType,
 		BillingPolicyVersion: version, RequestClass: requestClass, PredictedCost: centsToUSD(input.EstimatedCents),
-		CurrencyCode: "USD", LeaseExpiresAt: pgtype.Timestamptz{Time: time.Now().UTC().Add(90 * time.Second), Valid: true},
+		// claim 孤儿回收租约必须 > 媒体任务最大生命周期(TaskTimeout)。原硬编码 90s 远
+		// 短于 TaskTimeout(默认 15min),会让跑得久的合法任务 claim 被 billing LeaseSweeper
+		// 提前 abort、完成时无法计费致亏钱。改用 resolveClaimLeaseWindow(覆盖任务生命周期)。
+		CurrencyCode: "USD", LeaseExpiresAt: pgtype.Timestamptz{Time: time.Now().UTC().Add(resolveClaimLeaseWindow(input.ClaimLeaseWindow)), Valid: true},
 	})
 	if err != nil {
 		return Task{}, err
@@ -133,7 +164,23 @@ func (s *PostgresStore) abortTask(ctx context.Context, taskID int64, owner strin
 		}); err != nil {
 			return err
 		} else if rows == 0 {
-			return billing.ErrClaimNotReserving
+			// claim 已被 billing LeaseSweeper 抢先 abort (billing 侧账已由 sweeper 写平)。
+			// 回滚整事务会让任务卡非终态死循环。强推终态, error_class 标 claim_swept 可追溯;
+			// 有上游任务 ID 则落孤儿线索 (上游可能仍在跑并计费)。
+			if _, err := tx.Exec(ctx, `
+	UPDATE media_tasks
+	SET status=$2, error_class='claim_swept', lease_owner=NULL, lease_expires_at=NULL,
+	    updated_at=$3, finished_at=$3
+	WHERE id=$1 AND status IN ('queued','in_progress')`,
+				locked.ID, status, now.UTC(),
+			); err != nil {
+				return err
+			}
+			if err := persistOrphanTx(ctx, tx, locked, owner, now); err != nil {
+				return err
+			}
+			completed = true
+			return nil
 		}
 		if err := insertBillingEvent(ctx, qtx, locked, claimID, "claim_aborted", decimal.Zero, reason, billing.StreamStateFailed); err != nil {
 			return err
@@ -142,12 +189,15 @@ func (s *PostgresStore) abortTask(ctx context.Context, taskID int64, owner strin
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-	UPDATE media_tasks
-	SET status=$2, error_class=$3, lease_owner=NULL, lease_expires_at=NULL,
-	    updated_at=$4, finished_at=$4
-	WHERE id=$1 AND status IN ('queued','in_progress')`,
+		UPDATE media_tasks
+		SET status=$2, error_class=$3, lease_owner=NULL, lease_expires_at=NULL,
+		    updated_at=$4, finished_at=$4
+		WHERE id=$1 AND status IN ('queued','in_progress')`,
 			locked.ID, status, errorClass, now.UTC(),
 		); err != nil {
+			return err
+		}
+		if err := persistOrphanTx(ctx, tx, locked, owner, now); err != nil {
 			return err
 		}
 		completed = true
@@ -181,6 +231,18 @@ func activeAPIKeyID(ctx context.Context, tx pgx.Tx, tenantID, userID int64, now 
 		return 0, ErrNoActiveAPIKey
 	}
 	return id, err
+}
+
+// persistOrphanTx 在调用方事务内幂等落一条孤儿对账线索 (无上游任务 ID 时无对账价值, 跳过)。
+func persistOrphanTx(ctx context.Context, tx pgx.Tx, task Task, owner string, now time.Time) error {
+	providerTaskID := strings.TrimSpace(task.ProviderTaskID)
+	if providerTaskID == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, insertOrphanSQL,
+		task.ID, task.TenantID, task.UserID, task.Provider,
+		providerTaskID, owner, now.UTC())
+	return err
 }
 
 func lockTerminalCandidate(ctx context.Context, tx pgx.Tx, id int64, owner string) (Task, bool, error) {

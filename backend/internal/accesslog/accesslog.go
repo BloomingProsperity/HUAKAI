@@ -9,9 +9,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// Middleware emits one structured access-log event after the wrapped handler
-// returns. It intentionally records URL.Path only and never records query,
-// body, headers, credentials, or remote IP.
+// Middleware 在被包裹的 handler 返回后,发出一条结构化的 access-log 事件。
+// 它刻意只记录 URL.Path,绝不记录 query、body、headers、credentials 或
+// remote IP。
 func Middleware(logger *zap.Logger) func(http.Handler) http.Handler {
 	if logger == nil {
 		logger = zap.NewNop()

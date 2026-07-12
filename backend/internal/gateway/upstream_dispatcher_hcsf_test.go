@@ -131,7 +131,7 @@ func TestDispatchHCSFUnsupportedEndpointFamilyFailsBeforeRawFallback(t *testing.
 // 帧,openai_chat JSON 投影不可解析,见 hcsfProviderRequestModelFamily 排除
 // 注释;OCAW 采集确认真实形态前不接)。本测试守:该族走 HCSF 非流式时在
 // marshal 处 fail-closed,绝不把客户端 raw body 透传到上游。
-// Mutation:往 hcsfProviderRequestModelFamily 加 cursor_session→openai_chat
+// 变异:往 hcsfProviderRequestModelFamily 加 cursor_session→openai_chat
 // → err==nil 断言红(同时守卫测试的例外表反向断言也红)。
 func TestDispatchHCSFNativeOnlySessionFamilyFailsBeforeRawFallback(t *testing.T) {
 	const rawMarker = "CURSOR_RAWFALLBACK_MARKER"
@@ -194,7 +194,7 @@ func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testi
 				UpstreamModelID: tc.model,
 				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
 				Account:         provider.AccountInfo{AccountID: 12, Platform: tc.provider, AccountType: "native"},
-			}, env, tc.family, tc.family, []byte(`{"raw_client_marker":"`+tc.marker+`"}`))
+			}, env, tc.family, tc.family, []byte(`{"raw_client_marker":"`+tc.marker+`"}`), nil)
 			if err != nil {
 				t.Fatalf("buildHCSFProviderRequest %s: %v", tc.family, err)
 			}
@@ -212,9 +212,10 @@ func TestBuildHCSFProviderRequestNativeFamiliesUseExplicitNativeRawBody(t *testi
 // TestBuildHCSFProviderRequestNativeRawIngressGuard 非流式 native-raw 直转的
 // 跨协议守卫(DM-20 评审 S2):许可集与流式 needsStreamingHCSFTranslation 严格
 // 镜像——同族/空 ingress 直通,anthropic→bedrock 走 adapter 内 AutoTranslate
-// 直通,其余跨协议 fail-closed。
-// MUTATION: 删 validateNativeRawBodyIngress 调用(恢复 fail-open)→ anthropic
-// body 原样直发 codex / openai body 进 bedrock 嗅探误译 → 四个 wantErr 用例 RED;
+// 直通,openai_responses→openai_codex 同为 Responses 形直通,openai/anthropic
+// →codex 已改走 canonical marshal,openai→bedrock 仍 fail-closed。
+// 变异: 删 validateNativeRawBodyIngress 调用(恢复 fail-open)→ anthropic
+// body 原样直发 bedrock / openai body 进 bedrock 嗅探误译 → wantErr 用例 RED;
 // 把 anthropic→bedrock 许可删掉 → AutoTranslate 合法路径被误杀 → 该用例 RED。
 func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 	for _, tc := range []struct {
@@ -223,9 +224,7 @@ func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 		endpointFamily string
 		wantErr        bool
 	}{
-		{"anthropic→codex fail-closed", "anthropic_messages", "openai_codex", true},
-		{"responses→codex fail-closed(镜像流式)", "openai_responses", "openai_codex", true},
-		{"openai→codex fail-closed", "openai_chat", "openai_codex", true},
+		{"responses→codex Responses形直通", "openai_responses", "openai_codex", false},
 		{"openai→bedrock fail-closed(嗅探误译路径)", "openai_chat", "bedrock_invoke", true},
 		{"anthropic→bedrock AutoTranslate 直通", "anthropic_messages", "bedrock_invoke", false},
 		{"同族 codex 直通", "openai_codex", "openai_codex", false},
@@ -240,7 +239,7 @@ func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 				UpstreamModelID: "m",
 				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
 				Account:         provider.AccountInfo{AccountID: 12, Platform: "native", AccountType: "native"},
-			}, env, tc.ingressFamily, tc.endpointFamily, []byte(`{"raw":"body"}`))
+			}, env, tc.ingressFamily, tc.endpointFamily, []byte(`{"raw":"body"}`), nil)
 
 			if tc.wantErr && err == nil {
 				t.Fatalf("ingress=%q endpoint=%q 应 fail-closed,got nil err(垃圾 body 将直发上游)", tc.ingressFamily, tc.endpointFamily)
@@ -250,6 +249,52 @@ func TestBuildHCSFProviderRequestNativeRawIngressGuard(t *testing.T) {
 			}
 			if !tc.wantErr && !strings.Contains(string(adapter.lastInput.InboundBody), `"raw":"body"`) {
 				t.Fatalf("直通路径 body 丢失: %s", adapter.lastInput.InboundBody)
+			}
+		})
+	}
+}
+
+func TestBuildHCSFProviderRequestCodexCrossProtocolMarshalsResponsesShape(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		ingressFamily string
+	}{
+		{"openai→codex", "openai_chat"},
+		{"anthropic→codex", "anthropic_messages"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := testHCSFEnvelope()
+			env.RequestMeta.EndpointFamily = "openai_codex"
+			env.RequestControls.SystemPrompt = "system policy"
+			adapter := &stubAdapter{platform: "codex"}
+
+			req, err := buildHCSFProviderRequest(context.Background(), adapter, provider.BuildInput{
+				UpstreamModelID: "gpt-5-codex",
+				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
+				Account:         provider.AccountInfo{AccountID: 12, Platform: "codex", AccountType: "native"},
+			}, env, tc.ingressFamily, "openai_codex", []byte(`{"raw":"body"}`), nil)
+			if err != nil {
+				t.Fatalf("buildHCSFProviderRequest: %v", err)
+			}
+			if strings.Contains(string(adapter.lastInput.InboundBody), `"raw":"body"`) {
+				t.Fatalf("cross-protocol codex must not native-raw forward body: %s", adapter.lastInput.InboundBody)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(adapter.lastInput.InboundBody, &body); err != nil {
+				t.Fatalf("built body json: %v\n%s", err, adapter.lastInput.InboundBody)
+			}
+			if _, ok := body["input"].([]any); !ok {
+				t.Fatalf("codex body missing Responses input array: %+v", body)
+			}
+			if body["instructions"] != "system policy" {
+				t.Fatalf("instructions=%v want system policy; body=%+v", body["instructions"], body)
+			}
+			if _, ok := body["messages"]; ok {
+				t.Fatalf("codex body must not use chat messages shape: %+v", body)
+			}
+			wire, _ := io.ReadAll(req.Body)
+			if !strings.Contains(string(wire), `"input"`) || strings.Contains(string(wire), `"raw":"body"`) {
+				t.Fatalf("wire body=%s want Responses shape without native raw marker", wire)
 			}
 		})
 	}
@@ -285,7 +330,7 @@ func TestBuildHCSFProviderRequestVertexFamiliesProduceCorrectOutboundBody(t *tes
 				Extra: map[string]string{"project_id": "p", "auth_header": "Authorization"},
 			},
 			Account: provider.AccountInfo{AccountID: 1, Platform: "vertex", AccountType: "vertex_sa"},
-		}, env, "vertex_gemini", "vertex_gemini", nil)
+		}, env, "vertex_gemini", "vertex_gemini", nil, nil)
 		if err != nil {
 			t.Fatalf("buildHCSFProviderRequest(vertex_gemini): %v", err)
 		}
@@ -321,7 +366,7 @@ func TestBuildHCSFProviderRequestVertexFamiliesProduceCorrectOutboundBody(t *tes
 				Extra: map[string]string{"project_id": "p", "location": "us-east5", "auth_header": "Authorization"},
 			},
 			Account: provider.AccountInfo{AccountID: 2, Platform: "vertex", AccountType: "vertex_anthropic"},
-		}, env, "vertex_anthropic", "vertex_anthropic", nil)
+		}, env, "vertex_anthropic", "vertex_anthropic", nil, nil)
 		if err != nil {
 			t.Fatalf("buildHCSFProviderRequest(vertex_anthropic): %v", err)
 		}
@@ -686,7 +731,7 @@ func TestDispatchHCSFPrefersProviderEnvelopeBuilder(t *testing.T) {
 	}
 }
 
-// MUTATION: DispatchHCSF 构造 provider.BuildInput 时丢 InboundBetaTokens
+// 变异: DispatchHCSF 构造 provider.BuildInput 时丢 InboundBetaTokens
 // 映射 → 红(DM-03 HCSF 路径穿线守卫)。
 func TestDispatchHCSFPassesInboundBetaTokensToAdapter(t *testing.T) {
 	adapter := &stubAdapter{platform: "openai"}
@@ -706,5 +751,76 @@ func TestDispatchHCSFPassesInboundBetaTokensToAdapter(t *testing.T) {
 	got := adapter.lastInput.InboundBetaTokens
 	if len(got) != 1 || got[0] != "context-management-2025-06-27" {
 		t.Fatalf("adapter InboundBetaTokens=%v; want HCSF 路径完整透传", got)
+	}
+}
+
+// TestReadBufferedUpstreamResponseDetectsOverflow 守 S2-7 核心: 读上游 buffered 响应必须
+// 用 limit+1 哨兵探测溢出, 否则 >1MiB 响应被静默截断且无人知晓。
+// 变异: 把 readBufferedUpstreamResponse 的 LimitReader 改回 maxBufferedUpstreamResponseBytes
+// (无 +1) → over body 读到恰好 limit 字节 → len==limit 非 >limit → oversized=false → RED。
+func TestReadBufferedUpstreamResponseDetectsOverflow(t *testing.T) {
+	// 恰好上限: 不算 oversized, 全量返回。
+	atLimit := strings.Repeat("a", maxBufferedUpstreamResponseBytes)
+	raw, oversized, err := readBufferedUpstreamResponse(strings.NewReader(atLimit))
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if oversized {
+		t.Fatalf("body 恰好等于上限不应判 oversized")
+	}
+	if len(raw) != maxBufferedUpstreamResponseBytes {
+		t.Fatalf("at-limit raw len=%d want %d", len(raw), maxBufferedUpstreamResponseBytes)
+	}
+	// 超 1 字节: 判 oversized, raw 截断到上限。
+	over := strings.Repeat("a", maxBufferedUpstreamResponseBytes+1)
+	raw, oversized, err = readBufferedUpstreamResponse(strings.NewReader(over))
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if !oversized {
+		t.Fatalf("body 超上限必须判 oversized(漏 +1 哨兵 = 静默截断 bug)")
+	}
+	if len(raw) != maxBufferedUpstreamResponseBytes {
+		t.Fatalf("oversized raw 应截断到上限, got %d", len(raw))
+	}
+}
+
+// TestDispatchHCSFRejectsOversizedSuccessResponse 守 S2-7: 上游 2xx 成功响应 >1MiB 必须在
+// canonicalize 前被拒为 ErrUpstreamResponseTooLarge, 而非把截断字节喂 ProviderResponseToCanonical
+// (静默截断→opaque 502 / SSE 形按部分响应错计费)。
+// 变异: 删 DispatchHCSF 内 `if oversized { return ErrUpstreamResponseTooLarge }` → 截断体进
+// adapter → err 变 nil 或 parse 错(均 ≠ ErrUpstreamResponseTooLarge) → RED。
+func TestDispatchHCSFRejectsOversizedSuccessResponse(t *testing.T) {
+	big := strings.Repeat("x", maxBufferedUpstreamResponseBytes+100)
+	oversized := `{"id":"chatcmpl-big","object":"chat.completion","model":"gpt-4o-upstream","choices":[{"index":0,"message":{"role":"assistant","content":"` + big + `"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	adapter := &stubAdapter{platform: "openai"}
+	doer := &stubDoer{respStatus: 200, respBody: oversized}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.DispatchHCSF(hcsfCtx(), testHCSFEnvelope())
+	if !errors.Is(err, ErrUpstreamResponseTooLarge) {
+		t.Fatalf("DispatchHCSF err=%v; want ErrUpstreamResponseTooLarge for >1MiB 2xx body", err)
+	}
+}
+
+// TestDispatchHCSFOversizedNon2xxStaysUpstreamHTTPError 守: 非 2xx 上游响应即便超 1MiB, 仍须
+// 作 UpstreamHTTPError(带截断 body 供错误分类), 不能被当 too-large 拒绝(镜像 legacy oversizedNon2xx)。
+// 变异: 把 oversized 检查挪到 status 判断之前 → 非 2xx oversized 被误拒为 too-large → RED。
+func TestDispatchHCSFOversizedNon2xxStaysUpstreamHTTPError(t *testing.T) {
+	big := strings.Repeat("x", maxBufferedUpstreamResponseBytes+100)
+	adapter := &stubAdapter{platform: "openai"}
+	doer := &stubDoer{respStatus: 500, respBody: big}
+	d := newDispatcherForTest(adapter, doer)
+
+	_, err := d.DispatchHCSF(hcsfCtx(), testHCSFEnvelope())
+	if errors.Is(err, ErrUpstreamResponseTooLarge) {
+		t.Fatalf("非 2xx oversized 不应被当 too-large 拒绝")
+	}
+	var upstreamErr *UpstreamHTTPError
+	if !errors.As(err, &upstreamErr) {
+		t.Fatalf("非 2xx oversized 应仍是 UpstreamHTTPError(供错误分类), got %v", err)
+	}
+	if upstreamErr.StatusCode != 500 {
+		t.Fatalf("UpstreamHTTPError.StatusCode=%d want 500", upstreamErr.StatusCode)
 	}
 }

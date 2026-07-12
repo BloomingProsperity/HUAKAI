@@ -9,9 +9,10 @@ import (
 const DefaultRecentUsageWindow = 10 * time.Minute
 
 const (
-	// Tenant usage metric keys available to alert rules:
-	// usage.request_count, usage.request_rate_per_minute, usage.success_count,
-	// usage.success_rate, usage.error_count, usage.error_rate, usage.total_cost_usd.
+	// 告警规则可用的租户用量指标 key:
+	// usage.request_count、usage.request_rate_per_minute、usage.success_count、
+	// usage.success_rate、usage.error_count、usage.error_rate、usage.total_cost_usd、
+	// usage.latency_p95_ms、usage.latency_p99_ms。
 	MetricUsageRequestCount         = "usage.request_count"
 	MetricUsageRequestRatePerMinute = "usage.request_rate_per_minute"
 	MetricUsageSuccessCount         = "usage.success_count"
@@ -19,6 +20,11 @@ const (
 	MetricUsageErrorCount           = "usage.error_count"
 	MetricUsageErrorRate            = "usage.error_rate"
 	MetricUsageTotalCostUSD         = "usage.total_cost_usd"
+	// 最近已结算窗口内的 TTFT(首字节)延迟分位值,单位毫秒。
+	// 暴露出来是为了让延迟 SLO 告警规则能在 p95/p99 劣化时触发
+	// (OPS-002)——此前只有 success/error 率可作为告警依据。
+	MetricUsageLatencyP95MS = "usage.latency_p95_ms"
+	MetricUsageLatencyP99MS = "usage.latency_p99_ms"
 )
 
 type MetricSource interface {
@@ -42,6 +48,10 @@ type RecentUsageRollup struct {
 	SuccessCount int64
 	ErrorCount   int64
 	TotalCostUSD float64
+	// LatencyP95MS/LatencyP99MS 是窗口内的 TTFT 分位值,单位毫秒;当窗口内
+	// 没有任何请求记录到首字节时为 0。
+	LatencyP95MS float64
+	LatencyP99MS float64
 }
 
 type CompositeMetricSourceConfig struct {
@@ -202,6 +212,15 @@ func overlayUsageMetrics(snapshot map[string]float64, rollup RecentUsageRollup, 
 	snapshot[MetricUsageErrorCount] = float64(errorCount)
 	snapshot[MetricUsageErrorRate] = errorRate
 	snapshot[MetricUsageTotalCostUSD] = rollup.TotalCostUSD
+	snapshot[MetricUsageLatencyP95MS] = nonNegativeFloat(rollup.LatencyP95MS)
+	snapshot[MetricUsageLatencyP99MS] = nonNegativeFloat(rollup.LatencyP99MS)
+}
+
+func nonNegativeFloat(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func cloneSnapshot(in map[string]float64) map[string]float64 {

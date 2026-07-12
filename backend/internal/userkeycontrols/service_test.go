@@ -37,8 +37,8 @@ func TestSetKeyQuota_UsesAPIKeyIDAsScopeID(t *testing.T) {
 }
 
 func TestSetKeyQuota_RequestCountMetricWritesRequests(t *testing.T) {
-	// MUTATION: ignore req.Metric and always write cost_usd; this test sees no
-	// MetricRequests policy and fails before quota enforcement ever runs.
+	// 变异:忽略 req.Metric 而总是写 cost_usd;此时本测试看不到 MetricRequests
+	// 策略,在配额强制执行还没跑起来之前就失败。
 	store := newFakeStore()
 	svc := newServiceForTest(store, fixedNow)
 
@@ -57,6 +57,23 @@ func TestSetKeyQuota_RequestCountMetricWritesRequests(t *testing.T) {
 	}
 	if res.Metric != quota.MetricRequests {
 		t.Fatalf("result metric=%q want requests", res.Metric)
+	}
+}
+
+// TestQuotaViews_SurfacePriority 守护策略解析平局判定的读出暴露
+// (quota/policy.go:策略重叠时 priority 最小者胜)。GET 投影(KeyQuotaView)
+// 与 PUT 结果(SetKeyQuotaResult)都必须带上扫描到的 Priority,这样用户才能看到
+// 重叠策略中哪一条优先。
+// 变异:从 quotaViewFromRow / quotaResultToSet 里去掉 `Priority: row.Priority` ->
+// 该字段退回 0 零值 -> 变红。fixture 的 priority(7)非零,所以漏掉这次映射
+// 不可能碰巧通过。
+func TestQuotaViews_SurfacePriority(t *testing.T) {
+	row := quotaPolicyRow{ID: 5, Priority: 7, Mode: quota.ModeEnforce}
+	if got := quotaViewFromRow(333, row).Priority; got != 7 {
+		t.Fatalf("KeyQuotaView.Priority=%d want 7 (GET read must surface the tiebreaker)", got)
+	}
+	if got := quotaResultToSet(333, row).Priority; got != 7 {
+		t.Fatalf("SetKeyQuotaResult.Priority=%d want 7 (PUT result must surface the tiebreaker)", got)
 	}
 }
 
@@ -172,8 +189,8 @@ func TestSetKeyGroup_ClearsWithNilGroupID(t *testing.T) {
 }
 
 func TestSetKeyIPAllowlist_NormalizesCIDRsAndBareIPs(t *testing.T) {
-	// Mutation check: store raw entries without parsing and this test sees the
-	// unmasked CIDR / bare IP; skip the store update and setIPAllowlistCalled is false.
+	// 变异检查:不解析就直接存原始条目,本测试会看到未掩码的 CIDR / 裸 IP;
+	// 若跳过 store 更新,则 setIPAllowlistCalled 为 false。
 	store := newFakeStore()
 	svc := newServiceForTest(store, fixedNow)
 
@@ -201,7 +218,7 @@ func TestSetKeyIPAllowlist_NormalizesCIDRsAndBareIPs(t *testing.T) {
 }
 
 func TestSetKeyIPAllowlist_EmptyClearsRestriction(t *testing.T) {
-	// Mutation check: persist an empty string instead of NULL and the store arg differs.
+	// 变异检查:若持久化空字符串而非 NULL,store 参数就会不同。
 	store := newFakeStore()
 	svc := newServiceForTest(store, fixedNow)
 
@@ -226,7 +243,7 @@ func TestSetKeyIPAllowlist_EmptyClearsRestriction(t *testing.T) {
 }
 
 func TestSetKeyIPAllowlist_RejectsInvalidCIDRBeforeStore(t *testing.T) {
-	// Mutation check: swallow parse errors and the invalid entry reaches the store.
+	// 变异检查:若吞掉解析错误,非法条目就会到达 store。
 	store := newFakeStore()
 	svc := newServiceForTest(store, fixedNow)
 
@@ -245,8 +262,8 @@ func TestSetKeyIPAllowlist_RejectsInvalidCIDRBeforeStore(t *testing.T) {
 }
 
 func TestSetKeyModelAllowlist_NormalizesAndStoresCSV(t *testing.T) {
-	// MUTATION: write raw input or ignore the setter argument and the stored CSV
-	// / result list assertions go red.
+	// 变异:若写入原始输入或忽略 setter 参数,存储的 CSV
+	// / 结果列表断言会变红。
 	store := newFakeStore()
 	svc := newServiceForTest(store, fixedNow)
 

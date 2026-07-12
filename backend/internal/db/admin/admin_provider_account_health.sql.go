@@ -24,6 +24,11 @@ SELECT
     pa.session_window_5h_start,
     pa.session_window_5h_end,
     pa.session_window_5h_status,
+    pa.session_window_5h_utilization,
+    pa.session_window_7d_start,
+    pa.session_window_7d_end,
+    pa.session_window_7d_status,
+    pa.session_window_7d_utilization,
     COALESCE(ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
     COALESCE(ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
     ac.failure_class,
@@ -55,22 +60,27 @@ type GetAdminProviderAccountHealthParams struct {
 }
 
 type GetAdminProviderAccountHealthRow struct {
-	ID                    int64              `db:"id" json:"id"`
-	TenantID              int64              `db:"tenant_id" json:"tenant_id"`
-	HealthState           string             `db:"health_state" json:"health_state"`
-	HealthStateUntil      pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
-	Enabled               bool               `db:"enabled" json:"enabled"`
-	LastProbeLatencyMS    *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
-	LastProbeAt           pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
-	ModelSyncLastCheckAt  pgtype.Timestamptz `db:"model_sync_last_check_at" json:"model_sync_last_check_at"`
-	SessionWindow5hStart  pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
-	SessionWindow5hEnd    pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
-	SessionWindow5hStatus *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
-	LastRefreshAt         pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
-	LastRefreshOutcome    *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
-	FailureClass          *string            `db:"failure_class" json:"failure_class"`
-	FailureCount          int32              `db:"failure_count" json:"failure_count"`
-	UpdatedAt             pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                         int64              `db:"id" json:"id"`
+	TenantID                   int64              `db:"tenant_id" json:"tenant_id"`
+	HealthState                string             `db:"health_state" json:"health_state"`
+	HealthStateUntil           pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	Enabled                    bool               `db:"enabled" json:"enabled"`
+	LastProbeLatencyMS         *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
+	LastProbeAt                pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
+	ModelSyncLastCheckAt       pgtype.Timestamptz `db:"model_sync_last_check_at" json:"model_sync_last_check_at"`
+	SessionWindow5hStart       pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
+	SessionWindow5hEnd         pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
+	SessionWindow5hStatus      *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
+	SessionWindow5hUtilization pgtype.Numeric     `db:"session_window_5h_utilization" json:"session_window_5h_utilization"`
+	SessionWindow7dStart       pgtype.Timestamptz `db:"session_window_7d_start" json:"session_window_7d_start"`
+	SessionWindow7dEnd         pgtype.Timestamptz `db:"session_window_7d_end" json:"session_window_7d_end"`
+	SessionWindow7dStatus      *string            `db:"session_window_7d_status" json:"session_window_7d_status"`
+	SessionWindow7dUtilization pgtype.Numeric     `db:"session_window_7d_utilization" json:"session_window_7d_utilization"`
+	LastRefreshAt              pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
+	LastRefreshOutcome         *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
+	FailureClass               *string            `db:"failure_class" json:"failure_class"`
+	FailureCount               int32              `db:"failure_count" json:"failure_count"`
+	UpdatedAt                  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error) {
@@ -88,6 +98,11 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.SessionWindow5hStart,
 		&i.SessionWindow5hEnd,
 		&i.SessionWindow5hStatus,
+		&i.SessionWindow5hUtilization,
+		&i.SessionWindow7dStart,
+		&i.SessionWindow7dEnd,
+		&i.SessionWindow7dStatus,
+		&i.SessionWindow7dUtilization,
 		&i.LastRefreshAt,
 		&i.LastRefreshOutcome,
 		&i.FailureClass,
@@ -95,4 +110,65 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const touchProviderAccountProbe = `-- name: TouchProviderAccountProbe :exec
+UPDATE provider_accounts
+SET last_probe_at = $1::timestamptz
+WHERE id = $2::bigint
+  AND tenant_id = $3::bigint
+  AND deleted_at IS NULL
+`
+
+type TouchProviderAccountProbeParams struct {
+	ProbedAt pgtype.Timestamptz `db:"probed_at" json:"probed_at"`
+	ID       int64              `db:"id" json:"id"`
+	TenantID int64              `db:"tenant_id" json:"tenant_id"`
+}
+
+// 由异步 eventbus account_health_probe handler 调用:每次请求完成在对应池账号上
+// 盖一个"最近探测时间"戳,点亮运维健康面板的 last_probe_at 列(迁移 0110 早已加列,
+// 但此前全仓零写入,该列恒 NULL)。纯可观测写,单行 PK 定位,不碰钱/auth/health_state。
+// last_probe_latency_ms 暂留 follow-up(请求延迟分散在多个发射点,见计划工件)。
+func (q *Queries) TouchProviderAccountProbe(ctx context.Context, arg TouchProviderAccountProbeParams) error {
+	_, err := q.db.Exec(ctx, touchProviderAccountProbe, arg.ProbedAt, arg.ID, arg.TenantID)
+	return err
+}
+
+const summarizeProviderAccountHealth = `-- name: SummarizeProviderAccountHealth :many
+
+SELECT health_state, enabled, count(*)::bigint AS n
+FROM provider_accounts
+WHERE tenant_id = $1::bigint
+  AND deleted_at IS NULL
+GROUP BY health_state, enabled
+ORDER BY health_state, enabled
+`
+
+type SummarizeProviderAccountHealthRow struct {
+	HealthState string `db:"health_state" json:"health_state"`
+	Enabled     bool   `db:"enabled" json:"enabled"`
+	N           int64  `db:"n" json:"n"`
+}
+
+// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 跨整个租户池计数(非分页)。
+// 只读、不含钱字段;软删账号排除。手写生成码(避免全量 sqlc regen 触碰 billing 生成码)。
+func (q *Queries) SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error) {
+	rows, err := q.db.Query(ctx, summarizeProviderAccountHealth, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SummarizeProviderAccountHealthRow
+	for rows.Next() {
+		var i SummarizeProviderAccountHealthRow
+		if err := rows.Scan(&i.HealthState, &i.Enabled, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 // Enqueuer 抽象 dlq.Service.Enqueue,handler 注入 mock 用。
@@ -17,6 +18,8 @@ type Enqueuer interface {
 // ErrEnqueuerNil 是 settle 失败但 enqueue 没配置的兜底报错 — 必须 P0 alert,
 // 因为这意味着代码部署不完整(money path 兜底链断了)。
 var ErrEnqueuerNil = errors.New("settlementrecovery: enqueuer not configured (post-delivery settle failure cannot be persisted)")
+
+const failureEnqueueTimeout = 10 * time.Second
 
 // EnqueuePayload 把 Payload 转 dlq.Event 并通过 Enqueuer 落表。
 //
@@ -53,6 +56,32 @@ func EnqueuePayload(ctx context.Context, q Enqueuer, p Payload, failureReason st
 		NextRetryAt:    time.Time{}, // store 默认按 policy 计算 first retry
 	}
 	return q.Enqueue(ctx, event)
+}
+
+// EnqueueFailure 用独立短上下文持久化结算失败；队列自身失败发脱敏 P0 critical
+// 信号，但不建立第二持久环。
+func EnqueueFailure(ctx context.Context, q Enqueuer, p Payload, settleErr error, component string) error {
+	failureClass := privacy.ErrorClassFor(ctx, settleErr)
+	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureEnqueueTimeout)
+	defer cancel()
+	_, enqueueErr := EnqueuePayload(enqueueCtx, q, p, failureClass)
+	if enqueueErr == nil {
+		return nil
+	}
+	if component == "" {
+		component = "settlementrecovery.enqueue"
+	}
+	req := p.ToSettleRequest()
+	_ = privacy.LogSystem(enqueueCtx, privacy.SystemEvent{
+		Severity: privacy.SeverityCritical, Component: component,
+		RequestID: p.RequestID, ErrorClass: privacy.ErrorClassFor(enqueueCtx, enqueueErr),
+		Attrs: map[string]any{
+			"event_class": "money_lost_double_fault", "event_type": string(p.Source),
+			"priority": "P0", "tenant_id": req.TenantID, "claim_id": req.ClaimID,
+			"failure_reason_class": failureClass, "recovery_failure_class": privacy.ErrorClassFor(enqueueCtx, enqueueErr),
+		},
+	})
+	return enqueueErr
 }
 
 // buildIdempotencyKey 生成稳定的 post_delivery_settlement DLQ 行 idempotency 字符串。

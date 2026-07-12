@@ -99,6 +99,19 @@ func TestAT_EMAIL_006_007_ProductionGateRequiresCompleteSettingsAndVerifyToggle(
 	}
 }
 
+// TestProductionGateFailsClosedOnEmptyActiveTenants 守住空 active 列表时的 fail-closed 语义:
+// 当 ListActiveTenantIDs 返回空(例如全新库里只有 id=0 系统哨兵、被 id>0 过滤后列表为空),
+// 生产门必须拒启(ErrEmailBackendUnconfigured),绝不在零真实工作租户时静默放行。
+// 判别性:删掉门里 len==0 的守卫则空列表会让 for 循环空跑直接返回 nil → 本测试转 RED。
+func TestProductionGateFailsClosedOnEmptyActiveTenants(t *testing.T) {
+	keys := testEmailKeys(t)
+	ctx := context.Background()
+	store := &fakeSettingsStore{activeTenants: []int64{}, settings: map[int64]StoredSettings{}}
+	if err := ValidateProductionReleaseGate(ctx, store, keys); !errors.Is(err, ErrEmailBackendUnconfigured) {
+		t.Fatalf("空 active 列表应 fail-closed 返回 ErrEmailBackendUnconfigured,实际=%v", err)
+	}
+}
+
 func TestAT_EMAIL_008_SMTPSenderImplementsEmailSender(t *testing.T) {
 	var sender EmailSender = NewSMTPSender(SMTPSettings{})
 	if sender == nil {
@@ -174,15 +187,13 @@ func TestAT_EMAIL_010_PasswordResetEmailCooldown(t *testing.T) {
 	}
 }
 
-// TestAuthSender_CooldownRolledBackOnHardFailure guards a first send that fails hard
-// (dispatch error, no outbox to queue a retry) must NOT consume the cooldown, so an immediate
-// second request actually attempts delivery again instead of being silently suppressed with a
-// misleading nil result.
+// TestAuthSender_CooldownRolledBackOnHardFailure 守住:首发硬失败
+// (dispatch 报错、没有 outbox 入队重试)时绝不能消耗冷却窗口,使得紧接着的
+// 第二次请求能真正再次尝试投递,而不是被静默抑制后返回一个误导性的 nil。
 //
-// Mutation check: revert reserveCooldown to the old consume-without-rollback markAllowed; the
-// second send is then suppressed inside the cooldown window → dispatch attempts stays 1 and the
-// second call returns nil → both assertions go red. Discriminating: same instant for both sends,
-// so only rollback can let the second one through.
+// 变异自检:把 reserveCooldown 改回旧的"消耗但不回滚"的 markAllowed;第二次
+// 发送便会落在冷却窗口内被抑制 → dispatch 尝试次数仍为 1、第二次调用返回 nil
+// → 两条断言都转红。判别性:两次发送处于同一时刻,故只有回滚才能放行第二次。
 func TestAuthSender_CooldownRolledBackOnHardFailure(t *testing.T) {
 	keys := testEmailKeys(t)
 	now := time.Date(2026, 5, 17, 10, 0, 0, 0, time.UTC)
@@ -211,12 +222,12 @@ func TestAuthSender_CooldownRolledBackOnHardFailure(t *testing.T) {
 	}
 }
 
-// TestAuthSender_CooldownHeldWhenQueuedForRetry guards the other half of: when the first
-// send fails transiently but is durably enqueued to the DLQ outbox, the cooldown MUST be held so a
-// second immediate request is suppressed (no double-queue / double-send while a retry is pending).
+// TestAuthSender_CooldownHeldWhenQueuedForRetry 守住另一半语义:当首发瞬时
+// 失败但已被持久入队到 DLQ outbox 时,冷却窗口必须保持,使紧接着的第二次请求被抑制
+// (重试待处理期间不重复入队 / 不重复发送)。
 //
-// Mutation check: let rollback fire on the queued (nil-return) path too; the second send then
-// dispatches and enqueues again → attempts 2 / outbox rows 2 → red.
+// 变异自检:让回滚在已入队(返回 nil)的路径上也触发;第二次发送便会再次 dispatch
+// 并入队 → 尝试次数变 2 / outbox 行数变 2 → 转红。
 func TestAuthSender_CooldownHeldWhenQueuedForRetry(t *testing.T) {
 	keys := testEmailKeys(t)
 	now := time.Date(2026, 5, 17, 10, 0, 0, 0, time.UTC)
@@ -249,13 +260,12 @@ func TestAuthSender_CooldownHeldWhenQueuedForRetry(t *testing.T) {
 	}
 }
 
-// TestIsPermanentEmailFailure_SMTPCodeSemantics guards the classifier fix: SMTP 4xx is a
-// TRANSIENT reply (must retry via DLQ), 5xx is PERMANENT (must not retry). The old rule matched the
-// substring " 4" and wrongly treated transient 4xx as permanent, so those skipped the retry outbox.
+// TestIsPermanentEmailFailure_SMTPCodeSemantics 守住分类器的修复:SMTP 4xx 是
+// 瞬时回复(必须经 DLQ 重试),5xx 是永久失败(不得重试)。旧规则用子串 " 4" 匹配,
+// 错把瞬时的 4xx 当成永久,导致它们跳过了重试 outbox。
 //
-// Mutation check: widen the permanent code test to `tperr.Code >= 400` (the old backwards
-// semantics) and the 4xx case flips to permanent → red. Discriminating fixtures: identical wrapper
-// shape, only the reply-code digit differs.
+// 变异自检:把永久码判定放宽成 `tperr.Code >= 400`(旧的反向语义),4xx 这一例
+// 便会翻成永久 → 转红。判别用例:包装形状完全相同,只有回复码那位数字不同。
 func TestIsPermanentEmailFailure_SMTPCodeSemantics(t *testing.T) {
 	transient := fmt.Errorf("smtp rcpt: %w", &textproto.Error{Code: 451, Msg: "4.7.1 try again later"})
 	if isPermanentEmailFailure(transient) {

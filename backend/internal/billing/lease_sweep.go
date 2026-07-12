@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -19,10 +20,16 @@ const (
 
 const orphanSlotReleaseReason = "slot_orphan_swept"
 
+// leaseSweeperComponent 是本 worker 结构化日志的 component 标识(惯例同 modelsync scheduler)。
+const leaseSweeperComponent = "billing_lease_sweeper"
+
 type LeaseSweeper struct {
 	pool    *pgxpool.Pool
 	settler Settler
 	batch   int32
+	// interval/logger 可注入(测试用短 tick + 收集 handler);生产走构造器默认值。
+	interval time.Duration
+	logger   *slog.Logger
 
 	mu      sync.Mutex
 	running bool
@@ -34,7 +41,13 @@ func NewLeaseSweeper(pool *pgxpool.Pool, settler Settler, batch int32) *LeaseSwe
 	if batch <= 0 {
 		batch = leaseSweepBatchSize
 	}
-	return &LeaseSweeper{pool: pool, settler: settler, batch: batch}
+	return &LeaseSweeper{
+		pool:     pool,
+		settler:  settler,
+		batch:    batch,
+		interval: leaseSweepTickerInterval,
+		logger:   slog.Default(),
+	}
 }
 
 func (s *LeaseSweeper) Start(ctx context.Context) {
@@ -49,12 +62,13 @@ func (s *LeaseSweeper) Start(ctx context.Context) {
 	s.stop = make(chan struct{})
 	s.done = make(chan struct{})
 	s.running = true
+	s.logger.InfoContext(ctx, "lease sweeper started", "component", leaseSweeperComponent)
 	go s.loop(ctx)
 }
 
 func (s *LeaseSweeper) loop(ctx context.Context) {
 	defer close(s.done)
-	ticker := time.NewTicker(leaseSweepTickerInterval)
+	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -63,8 +77,26 @@ func (s *LeaseSweeper) loop(ctx context.Context) {
 		case <-s.stop:
 			return
 		case <-ticker.C:
-			_, _ = s.sweepOnce(ctx)
+			swept, err := s.sweepOnce(ctx)
+			s.logRound(ctx, swept, err)
 		}
+	}
+}
+
+// logRound 汇总一轮孤儿回收结果:此前处理量/错误被静默丢弃,动钱补偿卡死或持续失败
+// 运营完全看不见。空转轮只打 Debug,30s 周期下绝不用 Info 刷屏。
+func (s *LeaseSweeper) logRound(ctx context.Context, swept int, err error) {
+	// 三分支互斥:部分成功轮(swept>0 且 err≠nil)只打 Warn(已带 processed),
+	// 否则同轮双发 Warn+Info 会让按 processed 求和的日志派生指标双计回收量。
+	switch {
+	case err != nil:
+		s.logger.WarnContext(ctx, "lease sweep round failed",
+			"component", leaseSweeperComponent, "processed", swept, "error", err.Error())
+	case swept > 0:
+		s.logger.InfoContext(ctx, "lease sweep round reclaimed orphans",
+			"component", leaseSweeperComponent, "processed", swept)
+	default:
+		s.logger.DebugContext(ctx, "lease sweep round idle", "component", leaseSweeperComponent)
 	}
 }
 
@@ -94,8 +126,9 @@ func (s *LeaseSweeper) sweepOnce(ctx context.Context) (int, error) {
 		switch {
 		case err == nil:
 			swept++
-		case errors.Is(err, ErrClaimNotReserving):
-			// 并发良性:claim 已被真实请求路径或另一副本推进出 reserving 态 → 不再孤儿,跳过。
+		case errors.Is(err, ErrClaimNotReserving), errors.Is(err, ErrPostDeliverySettlementPending):
+			// 并发良性:claim 已推进出 reserving，或候选查询后出现未决交付后结算恢复行；
+			// 两种情况都不得继续零成本中止。
 		default:
 			errs = append(errs, fmt.Errorf("abort claim %d: %w", claim.ID, err))
 		}
@@ -128,4 +161,6 @@ func (s *LeaseSweeper) Stop() {
 	if done != nil {
 		<-done
 	}
+	// Stop 无 ctx,用非 context 变体;等 <-done 后再打,保证"stopped"意味着协程真退了。
+	s.logger.Info("lease sweeper stopped", "component", leaseSweeperComponent)
 }

@@ -10,11 +10,13 @@ var (
 	ErrInvalidStatus = errors.New("proxyadmin: invalid status")
 	ErrBackend       = errors.New("proxyadmin: backend failure")
 	ErrNotFound      = errors.New("proxyadmin: proxy not found")
+	// ErrUnsafeHost 表示租户代理 host 指向了 loopback/内网/link-local/metadata
+	// 等不安全目标(SSRF)。映射 HTTP 400,与 ErrInvalidInput 同档但语义更明确。
+	ErrUnsafeHost = errors.New("proxyadmin: unsafe proxy host")
 )
 
-// Proxy is the secret-free projection of a proxy row. It deliberately omits
-// auth_secret: the encrypted credential is write-only and is never returned by
-// any read path (list/get), so a proxy secret cannot leak through this surface.
+// Proxy 是代理行的"不含凭据"投影。它刻意省略 auth_secret:加密后的凭据是只写的,
+// 任何读取路径(list/get)都绝不返回它,因此代理凭据无法经此面泄露。
 type Proxy struct {
 	ID           int64
 	TenantID     int64

@@ -75,8 +75,8 @@ func TestATPRIV001009AuditVerifyTenantScopeRefMismatchReturns404(t *testing.T) {
 }
 
 func TestAT_SECURITY_W1_B14_AuditVerifyRequiresTenantScopeRef(t *testing.T) {
-	// Risk killed: a public verify request with only request_id must not read a
-	// different tenant's signed ledger entry.
+	// 消除的风险:一个只带 request_id 的公开 verify 请求, 绝不能读到
+	// 另一个 tenant 已签名的 ledger 条目。
 	ledger := newAuditVerifyTestLedger(t)
 	ctx := context.Background()
 	_, err := ledger.Append(ctx, mustPrepareGatewayHTTPLedgerEntry(t, ctx, auditledger.LedgerEntry{
@@ -166,8 +166,8 @@ func TestAT_AUDIT_001_064_AuditVerifyInternalErrorDoesNotLeak(t *testing.T) {
 }
 
 func TestAuditVerifyHandler_LedgerCorruptReturnsStableAuditCode(t *testing.T) {
-	// Risk killed: a structurally corrupt persisted audit row must be visible as
-	// ledger_corrupt, not hidden as a transient lookup failure.
+	// 消除的风险:一条结构性损坏的已持久化审计行, 必须以 ledger_corrupt
+	// 的形式可见, 而不是被掩盖成一次暂时性的查找失败。
 	ledger := &failingAuditVerifyLedger{err: fmt.Errorf("scan audit ledger row: %w", auditledger.ErrLedgerEntryCorrupt)}
 	rec := invokeAuditVerifyWithDeps(AuditVerifyStaticDeps{Ledger: ledger}, "/v1/audit/verify?request_id=req_corrupt&tenant_scope_ref="+auditledger.TenantScopeRef(7))
 	if rec.Code != http.StatusInternalServerError {

@@ -50,21 +50,33 @@ func newTTLLRU[K comparable, V any](opts CacheOptions) *ttlLRU[K, V] {
 }
 
 func (c *ttlLRU[K, V]) Get(key K) (V, bool) {
+	value, fresh, _ := c.get(key, false)
+	return value, fresh
+}
+
+func (c *ttlLRU[K, V]) GetAllowStale(key K) (V, bool, bool) {
+	return c.get(key, true)
+}
+
+func (c *ttlLRU[K, V]) get(key K, allowStale bool) (V, bool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var zero V
 	el, ok := c.items[key]
 	if !ok {
-		return zero, false
+		return zero, false, false
 	}
 	entry := el.Value.(cacheEntry[K, V])
 	if !entry.expiresAt.After(c.now()) {
+		if allowStale {
+			return entry.value, false, true
+		}
 		c.ll.Remove(el)
 		delete(c.items, key)
-		return zero, false
+		return zero, false, false
 	}
 	c.ll.MoveToFront(el)
-	return entry.value, true
+	return entry.value, true, false
 }
 
 func (c *ttlLRU[K, V]) Set(key K, value V) {

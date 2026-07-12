@@ -3,7 +3,9 @@ package gatewayhttp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,8 +25,150 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
+
+func TestChatCompletionsNonStreamingSettleFailureKeepsDeliveredResponseAndEnqueuesRecovery(t *testing.T) {
+	// 该测试守住结算与交付的顺序：完整业务体必须先到客户端，之后的结算故障只能进入恢复。
+	// 变异：把结算移回写体之前，会返回 500 且响应缺少 canonical 内容，本测试必红。
+	enableHCSFDispatchForTest(t)
+	settler := &failingSettleSettler{err: errors.New("settle unavailable")}
+	recovery := &postDeliverySpyEnqueuer{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.SettleRecoveryDLQ = recovery
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !json.Valid(rec.Body.Bytes()) || !strings.Contains(rec.Body.String(), "hello from canonical") {
+		t.Fatalf("响应体不是完整业务 JSON: %q", rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none after full delivery", settler.aborts)
+	}
+	if recovery.calls != 1 || recovery.lastEvt.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("recovery calls/kind=%d/%q want 1/%q", recovery.calls, recovery.lastEvt.EventKind, dlq.EventKindPostDeliverySettlement)
+	}
+	decoded, err := settlementrecovery.Decode(recovery.lastEvt.Payload)
+	if err != nil {
+		t.Fatalf("decode recovery payload: %v", err)
+	}
+	if decoded.Source != settlementrecovery.SourceDirectSettle {
+		t.Fatalf("recovery source=%q want %q", decoded.Source, settlementrecovery.SourceDirectSettle)
+	}
+}
+
+func TestChatCompletionsNonStreamingPartialWriteAbortsWithoutSettlement(t *testing.T) {
+	// 该测试守住未完整交付不得计费：写出部分业务字节后报错时，只能释放预留，不能结算或入恢复。
+	// 变异：忽略 Write 的 n/err 会产生一次 Settle 且没有 Abort，本测试必红。
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	recovery := &postDeliverySpyEnqueuer{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.SettleRecoveryDLQ = recovery
+	w := &partialWriteResponseWriter{header: make(http.Header), limit: 9, err: io.ErrClosedPipe}
+	h := NewChatCompletionsHandler(d)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	h.ServeHTTP(w, req)
+
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 on partial write", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "client_response_write_error" {
+		t.Fatalf("aborts=%+v want one client_response_write_error", settler.aborts)
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 for undelivered body", recovery.calls)
+	}
+	if w.writeHeaderCalls != 0 {
+		t.Fatalf("WriteHeader calls=%d want 0 before fallible body write", w.writeHeaderCalls)
+	}
+	if w.body.Len() == 0 {
+		t.Fatal("fixture did not exercise a partial write")
+	}
+	if w.flushes != 0 {
+		t.Fatalf("flushes=%d want 0 after incomplete body", w.flushes)
+	}
+}
+
+func TestChatCompletionsNonStreamingFullLengthWriteErrorIsConservativelyDelivered(t *testing.T) {
+	// 写入器报告完整长度但同时返回错误时，客户端是否收到不可判定；必须按已交付结算，不能 Abort。
+	enableHCSFDispatchForTest(t)
+	w := &partialWriteResponseWriter{header: make(http.Header), limit: -1, err: io.ErrUnexpectedEOF}
+	settler := &flushCheckingSettler{flushed: func() bool { return w.flushes > 0 }}
+	recovery := &postDeliverySpyEnqueuer{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	d.SettleRecoveryDLQ = recovery
+	h := NewChatCompletionsHandler(d)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	h.ServeHTTP(w, req)
+
+	if len(settler.calls) != 1 || len(settler.aborts) != 0 {
+		t.Fatalf("settles=%d aborts=%d want 1/0 for uncertain full write", len(settler.calls), len(settler.aborts))
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 after successful direct settlement", recovery.calls)
+	}
+	if !json.Valid(w.body.Bytes()) {
+		t.Fatalf("fixture did not report a full JSON write: %q", w.body.String())
+	}
+	if w.flushes != 1 || settler.settleBeforeFlush {
+		t.Fatalf("flushes/settleBeforeFlush=%d/%v want 1/false", w.flushes, settler.settleBeforeFlush)
+	}
+}
+
+type flushCheckingSettler struct {
+	recordingSettler
+	flushed           func() bool
+	settleBeforeFlush bool
+}
+
+func (s *flushCheckingSettler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
+	if s.flushed == nil || !s.flushed() {
+		s.settleBeforeFlush = true
+	}
+	return s.recordingSettler.Settle(ctx, req)
+}
+
+type partialWriteResponseWriter struct {
+	header           http.Header
+	body             bytes.Buffer
+	limit            int
+	err              error
+	writeHeaderCalls int
+	flushes          int
+}
+
+func (w *partialWriteResponseWriter) Header() http.Header { return w.header }
+
+func (w *partialWriteResponseWriter) WriteHeader(int) { w.writeHeaderCalls++ }
+
+func (w *partialWriteResponseWriter) Write(p []byte) (int, error) {
+	n := w.limit
+	if n < 0 || n > len(p) {
+		n = len(p)
+	}
+	_, _ = w.body.Write(p[:n])
+	return n, w.err
+}
+
+func (w *partialWriteResponseWriter) Flush() { w.flushes++ }
 
 func TestChatCompletions_AuditLedgerNilGracefulNoPanic(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -76,8 +220,8 @@ func TestNonStreamingUsageDraftCarriesCostSnapshot(t *testing.T) {
 
 	draft := nonStreamingUsageDraft(env, actualCost, nil)
 
-	// Mutation: dropping the non-streaming draft CostSnapshot assignment leaves
-	// cost correct but loses auditability for the model that charged the row.
+	// 变异：去掉非流式 draft 的 CostSnapshot 赋值会让 cost 仍正确，但丢失对该行
+	// 按哪个 model 计费的可审计性。
 	if draft.CostSnapshot != "tiered:vtest-policy" {
 		t.Fatalf("CostSnapshot=%q want tiered:vtest-policy", draft.CostSnapshot)
 	}
@@ -156,10 +300,9 @@ func TestChatCompletions_AuditLedgerAppendWritesHeaders(t *testing.T) {
 }
 
 func TestChatCompletions_AuditLedgerAppendFailureEnqueuesDLQAndDelivers(t *testing.T) {
-	// Risk killed: GW-07 Append failure must persist a DLQ intent and still
-	// deliver the buffered response. Mutation self-check: deleting the DLQ
-	// enqueue path leaves events empty and this test fails even if the handler
-	// still returns 200.
+	// 已消除风险：GW-07 的 Append 失败必须持久化一条 DLQ intent，同时仍交付
+	// buffered 响应。变异自检：删除 DLQ 入队路径会让 events 为空，即使 handler
+	// 仍返回 200，本测试也会失败。
 	enableHCSFDispatchForTest(t)
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -192,10 +335,9 @@ func TestChatCompletions_AuditLedgerAppendFailureEnqueuesDLQAndDelivers(t *testi
 }
 
 func TestChatCompletions_AuditLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T) {
-	// Risk killed: when both Append and DLQ enqueue fail in production, the
-	// request must fail closed before positive settlement. Mutation self-check:
-	// returning Deferred despite enqueue failure makes status 200 and records a
-	// settle call, so this test fails.
+	// 已消除风险：当生产环境里 Append 与 DLQ 入队都失败时，请求必须在做出正向
+	// 结算之前 fail closed。变异自检：在入队失败时仍返回 Deferred 会让状态变 200
+	// 并记录一次 settle 调用，于是本测试失败。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	enableHCSFDispatchForTest(t)
 	signer, err := sign.GenerateKey()
@@ -227,8 +369,8 @@ func TestChatCompletions_AuditLedgerAppendAndDLQFailureProductionDoesNotSettle(t
 }
 
 func TestChatCompletions_AuditLedgerDuplicateRequestIDStillSettlesDeliveredCharge(t *testing.T) {
-	// Mutation: keeping the old ErrDuplicateRequestID Abort+500 branch makes
-	// the second delivered request return 500 with only one non-zero settle.
+	// 变异：保留旧的 ErrDuplicateRequestID Abort+500 分支会让第二次已交付的
+	// 请求返回 500，且只有一次非零 settle。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	enableHCSFDispatchForTest(t)
 	signer, err := sign.GenerateKey()
@@ -313,7 +455,7 @@ func TestChatCompletions_AuditLedgerDuplicateRequestIDStillSettlesDeliveredCharg
 }
 
 func TestChatCompletions_DirectSettleNilBusRejectsMissingAuditRef(t *testing.T) {
-	// Mutation: 删除 CompletionBus==nil 分支 Settle 前的 validator 时，本用例会返回 200 且 settle calls 变成 1。
+	// 变异: 删除 CompletionBus==nil 分支 Settle 前的 validator 时，本用例会返回 200 且 settle calls 变成 1。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	d := clientAdapterDeps(t)
@@ -338,7 +480,7 @@ func TestChatCompletions_DirectSettleNilBusRejectsMissingAuditRef(t *testing.T) 
 }
 
 func TestChatCompletions_DirectSettleNilBusAllowsDLQRef(t *testing.T) {
-	// Mutation: 删除 Deferred ledger result 到 AuditLedgerDLQRef 的映射时，本用例会被 production policy 拒绝且 settle calls 保持 0。
+	// 变异: 删除 Deferred ledger result 到 AuditLedgerDLQRef 的映射时，本用例会被 production policy 拒绝且 settle calls 保持 0。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	d := clientAdapterDeps(t)
@@ -361,7 +503,7 @@ func TestChatCompletions_DirectSettleNilBusAllowsDLQRef(t *testing.T) {
 }
 
 func TestChatCompletions_DirectSettleFallbackRejectsMissingAuditRef(t *testing.T) {
-	// Mutation: 只保护 CompletionBus==nil、漏掉 shouldDirectSettleFallback 分支时，本用例会 fallback settle 并让 settle calls 变成 1。
+	// 变异: 只保护 CompletionBus==nil、漏掉 shouldDirectSettleFallback 分支时，本用例会 回退 settle 并让 settle calls 变成 1。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	d := clientAdapterDeps(t)
@@ -386,7 +528,7 @@ func TestChatCompletions_DirectSettleFallbackRejectsMissingAuditRef(t *testing.T
 }
 
 func TestChatCompletions_DirectSettleFallbackAllowsDLQRef(t *testing.T) {
-	// Mutation: fallback 分支 Settle 前误把 DLQRef 分支也要求 fingerprint 时，本用例会返回 500 且 settle calls 保持 0。
+	// 变异: 回退分支 Settle 前误把 DLQRef 分支也要求 fingerprint 时，本用例会返回 500 且 settle calls 保持 0。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	d := clientAdapterDeps(t)
@@ -409,7 +551,7 @@ func TestChatCompletions_DirectSettleFallbackAllowsDLQRef(t *testing.T) {
 }
 
 func TestChatCompletions_DirectSettleProductionEscapeFlagStillRejectsMissingAuditRef(t *testing.T) {
-	// Mutation: 恢复 production AllowMissingMoneyRef 旁路时，本用例会返回 200 且 settle calls 变成 1。
+	// 变异: 恢复 production AllowMissingMoneyRef 旁路时，本用例会返回 200 且 settle calls 变成 1。
 	enableHCSFDispatchForTest(t)
 	logs := captureSlogForTest(t)
 	settler := &recordingSettler{}

@@ -162,12 +162,11 @@ func TestResolveActiveReturnsNotFoundWhenNoCredentialRowsExist(t *testing.T) {
 }
 
 func TestLoadForRefreshQueryFiltersUnsafeProviderAccountHealth(t *testing.T) {
-	// locked reread guard LoadForRefresh is called before adapter work
-	// and again inside the refresh transaction. Its SQL must refuse revoked and
-	// still-cooling provider accounts, otherwise a row revoked after the scan can
-	// still reach the upstream refresh adapter. Mutation check: delete the
-	// provider-account health predicate from LoadForRefresh and this SQL-shape
-	// guard goes red even when real-PG tests are skipped locally.
+	// 加锁重读守护:LoadForRefresh 在 adapter 工作之前会被调用,在 refresh 事务内
+	// 又会再次被调用。它的 SQL 必须拒绝 revoked 以及仍在 cooling 的 provider 账号,
+	// 否则一行在扫描后被 revoked 的记录仍可能抵达上游 refresh adapter。变异检查:
+	// 从 LoadForRefresh 删除 provider-account health 谓词,即使本地跳过真实 PG 测试,
+	// 这个 SQL 形状守护也会变红。
 	db := &credentialStoreDBStub{
 		queryRow: func(_ context.Context, sql string, _ ...interface{}) pgx.Row {
 			for _, required := range []string{
@@ -289,6 +288,34 @@ func TestListRenewStatusPlaintextFreeTenantCursorQuery(t *testing.T) {
 	}
 }
 
+func TestListByAccountExposesProjectRef(t *testing.T) {
+	projectRef := "project-from-column"
+	now := pgtype.Timestamptz{Time: time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC), Valid: true}
+	emptyTime := pgtype.Timestamptz{}
+	var nilString *string
+	db := &credentialStoreDBStub{query: func(_ context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+		if !strings.Contains(sql, "external_account_email, project_ref, created_at") {
+			t.Fatalf("ListByAccount SQL 未选择 project_ref：\n%s", sql)
+		}
+		if len(args) != 2 || args[0] != int64(7) || args[1] != int64(77) {
+			t.Fatalf("ListByAccount args=%v，期望 tenant/account=7/77", args)
+		}
+		return &credentialMetadataRowsStub{values: [][]any{{
+			int64(201), int64(7), int64(77), VendorAntigravity, AuthModeOAuth, StateActive, int32(3),
+			emptyTime, emptyTime, emptyTime, nilString, nilString, int32(0),
+			nilString, nilString, &projectRef, now, now,
+		}}}, nil
+	}}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+	rows, err := store.ListByAccount(context.Background(), 7, 77)
+	if err != nil {
+		t.Fatalf("ListByAccount 失败：%v", err)
+	}
+	if len(rows) != 1 || rows[0].ProjectRef == nil || *rows[0].ProjectRef != projectRef {
+		t.Fatalf("project_ref 未暴露：%+v", rows)
+	}
+}
+
 func mustTestKeyProvider(t *testing.T) KeyProvider {
 	t.Helper()
 	provider, err := NewStaticKeyProvider("test-key", []byte("0123456789abcdef0123456789abcdef"))
@@ -350,6 +377,9 @@ func (r credentialStoreRowValuesStub) Scan(dest ...interface{}) error {
 
 func resolveActiveRecordValues(activeModeCount int64) []any {
 	values := credentialRecordBaseValues()
+	// external_account_id 列(迁移 0141)在 resolveActiveQuery 末段位于 deleted_at
+	// 之后、active_mode_count 之前;mock 行须对齐此顺序,否则 Scan 计数不符。
+	values = append(values, (*string)(nil))
 	return append(values, activeModeCount, int64(1), false)
 }
 
@@ -372,6 +402,7 @@ func resolveInactiveRecordValues(credentialRowCount int64) []any {
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
 		pgtype.Timestamptz{}, (*string)(nil), (*string)(nil), int32(0),
 		pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{}, pgtype.Timestamptz{},
+		(*string)(nil), // external_account_id 占位(no_serving_credential 分支返 NULL)
 		int64(0), credentialRowCount, true,
 	}
 }
@@ -407,6 +438,43 @@ type credentialStoreRowsStub struct {
 	idx  int
 	err  error
 }
+
+type credentialMetadataRowsStub struct {
+	values [][]any
+	idx    int
+}
+
+func (r *credentialMetadataRowsStub) Close()                                       {}
+func (r *credentialMetadataRowsStub) Err() error                                   { return nil }
+func (r *credentialMetadataRowsStub) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *credentialMetadataRowsStub) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *credentialMetadataRowsStub) Next() bool {
+	if r.idx >= len(r.values) {
+		return false
+	}
+	r.idx++
+	return true
+}
+func (r *credentialMetadataRowsStub) Scan(dest ...any) error {
+	if r.idx == 0 || r.idx > len(r.values) {
+		return errors.New("Scan 没有当前行")
+	}
+	values := r.values[r.idx-1]
+	if len(dest) != len(values) {
+		return errors.New("scan destination count mismatch")
+	}
+	for i := range dest {
+		if err := setScanValue(dest[i], values[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (r *credentialMetadataRowsStub) Values() ([]any, error) {
+	return nil, errors.New("unexpected Values")
+}
+func (r *credentialMetadataRowsStub) RawValues() [][]byte { return nil }
+func (r *credentialMetadataRowsStub) Conn() *pgx.Conn     { return nil }
 
 func (r *credentialStoreRowsStub) Close() {}
 

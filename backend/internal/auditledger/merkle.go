@@ -7,11 +7,11 @@ import (
 // ZeroRoot 是 Merkle 链起点（首条 entry 的 PrevMerkleRoot）。
 var ZeroRoot [32]byte
 
-// EntryHash computes the canonical entry hash used as the signature payload
-// and Merkle-chain leaf hash.
+// EntryHash 计算 canonical entry hash，用作签名 payload 以及 Merkle 链的
+// 叶子 hash。
 //
-// The payload is CanonicalPayload(entry), which follows
-// docs/specs/trust-chain-user-verifiable-ledger.md §2 and excludes Signature.
+// 该 payload 即 CanonicalPayload(entry)，遵循
+// docs/specs/trust-chain-user-verifiable-ledger.md §2，且不含 Signature。
 func EntryHash(e *LedgerEntry) ([32]byte, error) {
 	if e == nil {
 		return [32]byte{}, nil

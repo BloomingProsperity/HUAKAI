@@ -5,7 +5,7 @@ import "testing"
 // TestDetect_OpenAIChatVisionDiscriminates 守 vision 检测: 一个带 image_url
 // content part 的 OpenAI Chat body -> vision=true; 仅差那一个 part 改回 text 的
 // body -> vision=false。两个 fixture 只差 image part。
-// mutation: 删 partIsVision 里 case "image_url" -> 第一个断言转红。
+// 变异: 删 partIsVision 里 case "image_url" -> 第一个断言转红。
 func TestDetect_OpenAIChatVisionDiscriminates(t *testing.T) {
 	withImage := `{"model":"gpt-4o","messages":[{"role":"user","content":[` +
 		`{"type":"text","text":"describe this"},` +
@@ -23,7 +23,7 @@ func TestDetect_OpenAIChatVisionDiscriminates(t *testing.T) {
 
 // TestDetect_VisionEmptyImageGuard 守空图误报: data URI base64 payload 为空时不算
 // 真图 (镜像 sub2api 的 empty-image guard)。
-// mutation: 去掉 isEmptyDataURI 判定 -> 空图被当真图 -> 转红。
+// 变异: 去掉 isEmptyDataURI 判定 -> 空图被当真图 -> 转红。
 func TestDetect_VisionEmptyImageGuard(t *testing.T) {
 	emptyDataURI := `{"messages":[{"role":"user","content":[` +
 		`{"type":"image_url","image_url":{"url":"data:image/png;base64,"}}]}]}`
@@ -39,7 +39,7 @@ func TestDetect_VisionEmptyImageGuard(t *testing.T) {
 
 // TestDetect_ToolsDiscriminates 守 tools 检测: 非空 tools[] -> tools=true;
 // 仅 legacy functions[] -> tools=true (覆盖 OpenAI 旧字段回退); 空 tools:[] -> false。
-// mutation: 把 nonEmptyArray 换成 present (空数组算有) -> 空数组用例转红。
+// 变异: 把 nonEmptyArray 换成 present (空数组算有) -> 空数组用例转红。
 func TestDetect_ToolsDiscriminates(t *testing.T) {
 	withTools := `{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"get_weather"}}]}`
 	if _, tl, _, _ := Detect([]byte(withTools)); !tl {
@@ -59,7 +59,7 @@ func TestDetect_ToolsDiscriminates(t *testing.T) {
 
 // TestDetect_JSONDiscriminates 守 json 检测: json_schema / json_object -> json=true;
 // type:text 或缺省 -> false。
-// mutation: 把 formatTypeIsJSON 改成 "存在 response_format 即 true" -> type:text 用例转红。
+// 变异: 把 formatTypeIsJSON 改成 "存在 response_format 即 true" -> type:text 用例转红。
 func TestDetect_JSONDiscriminates(t *testing.T) {
 	jsonSchema := `{"messages":[],"response_format":{"type":"json_schema","json_schema":{"name":"x","schema":{}}}}`
 	if _, _, j, _ := Detect([]byte(jsonSchema)); !j {
@@ -80,7 +80,7 @@ func TestDetect_JSONDiscriminates(t *testing.T) {
 }
 
 // TestDetect_ResponsesTextFormatJSON 守 OpenAI Responses 把 json 嵌在 text.format 下的形状。
-// mutation: 删 detectJSON 里的 text.format 分支 -> 转红。
+// 变异: 删 detectJSON 里的 text.format 分支 -> 转红。
 func TestDetect_ResponsesTextFormatJSON(t *testing.T) {
 	body := `{"input":"hi","text":{"format":{"type":"json_schema","name":"x","schema":{}}}}`
 	if _, _, j, _ := Detect([]byte(body)); !j {
@@ -94,7 +94,7 @@ func TestDetect_ResponsesTextFormatJSON(t *testing.T) {
 
 // TestDetect_AnthropicShape 守经 NewMessagesHandler 进来的 Anthropic 形状:
 // content block type=image + 顶层 tools[] (带 input_schema)。
-// mutation: 删 partIsVision 里 case "image" -> vision 转红; 删 tools 检测 -> tools 转红。
+// 变异: 删 partIsVision 里 case "image" -> vision 转红; 删 tools 检测 -> tools 转红。
 func TestDetect_AnthropicShape(t *testing.T) {
 	body := `{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":[` +
 		`{"type":"text","text":"what is this"},` +
@@ -111,7 +111,7 @@ func TestDetect_AnthropicShape(t *testing.T) {
 
 // TestDetect_ResponsesInputImage 守 OpenAI Responses input_image part: top-level
 // input 数组里出现 input_image -> vision=true; 仅 input_text -> false。
-// mutation: 删 partIsVision 里 case "input_image" -> 转红。
+// 变异: 删 partIsVision 里 case "input_image" -> 转红。
 func TestDetect_ResponsesInputImage(t *testing.T) {
 	withImage := `{"input":[{"type":"input_image","image_url":"https://example.com/cat.png"}]}`
 	if v, _, _, _ := Detect([]byte(withImage)); !v {
@@ -126,7 +126,7 @@ func TestDetect_ResponsesInputImage(t *testing.T) {
 // TestDetect_AudioInputPartDiscriminates 守 audio 检测的输入支路: 一条带
 // input_audio content part (有 data/format 载荷) 的 OpenAI Chat body -> audio=true;
 // 仅差那一个 part 改回 text 的 body -> audio=false。两个 fixture 只差 input_audio part。
-// mutation: 删 partIsAudio 里 type=="input_audio" 分支 (或令其恒 false) -> 第一个断言转红。
+// 变异: 删 partIsAudio 里 type=="input_audio" 分支 (或令其恒 false) -> 第一个断言转红。
 func TestDetect_AudioInputPartDiscriminates(t *testing.T) {
 	withAudio := `{"model":"gpt-4o-audio-preview","messages":[{"role":"user","content":[` +
 		`{"type":"text","text":"transcribe this"},` +
@@ -135,7 +135,7 @@ func TestDetect_AudioInputPartDiscriminates(t *testing.T) {
 	if !a {
 		t.Fatalf("audio: input_audio part present, want audio=true")
 	}
-	// input_audio must NOT leak into the other three flags — it is audio-only.
+	// input_audio 绝不能泄漏到其它三个标志 —— 它只属于 audio。
 	if v || tl || j {
 		t.Fatalf("audio: input_audio must flip audio only, got (v=%v,tl=%v,j=%v)", v, tl, j)
 	}
@@ -149,7 +149,7 @@ func TestDetect_AudioInputPartDiscriminates(t *testing.T) {
 
 // TestDetect_AudioEmptyInputGuard 守空音频误报: input_audio part 没有载荷对象时不算
 // 真音频 (镜像 vision 的 empty-payload guard)。
-// mutation: 把 partIsAudio 改成只看 type 不看 present(input_audio) -> 空 part 误报 -> 转红。
+// 变异: 把 partIsAudio 改成只看 type 不看 present(input_audio) -> 空 part 误报 -> 转红。
 func TestDetect_AudioEmptyInputGuard(t *testing.T) {
 	emptyPart := `{"messages":[{"role":"user","content":[` +
 		`{"type":"input_audio"}]}]}`
@@ -165,7 +165,7 @@ func TestDetect_AudioEmptyInputGuard(t *testing.T) {
 
 // TestDetect_AudioModalitiesDiscriminates 守 audio 检测的输出支路: 顶层
 // modalities 数组含 "audio" -> audio=true; 仅 ["text"] 或缺省 -> false。
-// mutation: 删 detectAudio 里的 modalitiesHaveAudio 调用 (或令其恒 false) -> 第一个断言转红。
+// 变异: 删 detectAudio 里的 modalitiesHaveAudio 调用 (或令其恒 false) -> 第一个断言转红。
 func TestDetect_AudioModalitiesDiscriminates(t *testing.T) {
 	withAudioMode := `{"model":"gpt-4o-audio-preview","modalities":["text","audio"],` +
 		`"messages":[{"role":"user","content":"say hello out loud"}]}`
@@ -182,7 +182,7 @@ func TestDetect_AudioModalitiesDiscriminates(t *testing.T) {
 
 // TestDetect_PlainTextNoAudio 守回退兼容: 普通纯文本请求绝不 flag audio
 // (不引入额外约束、不缩小账号集)。
-// mutation: 让 detectAudio 默认返回 true / 漏掉空数组 guard -> 转红。
+// 变异: 让 detectAudio 默认返回 true / 漏掉空数组 guard -> 转红。
 func TestDetect_PlainTextNoAudio(t *testing.T) {
 	plain := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`
 	if v, tl, j, a := Detect([]byte(plain)); a {
@@ -193,36 +193,36 @@ func TestDetect_PlainTextNoAudio(t *testing.T) {
 // TestDetect_DefensiveNeverPanics 守防御性: 各种畸形 / null / 空 / 错类型 body
 // 必须返回 (false,false,false,false) 且不 panic。新增 modalities / input_audio 的
 // 错类型 fixture,保证 audio 支路同样不 panic、不误报。
-// mutation: 去掉任一 ok-assert / type-guard -> panic -> 转红。
+// 变异: 去掉任一 ok-assert / type-guard -> panic -> 转红。
 func TestDetect_DefensiveNeverPanics(t *testing.T) {
 	cases := []string{
-		``,                       // empty bytes
-		`null`,                   // JSON null
-		`{`,                      // truncated
-		`not json at all`,        // garbage
-		`{"messages":"bare"}`,    // messages as a string
-		`{"messages":123}`,       // messages as a number
-		`{"messages":[123,"x"]}`, // message elements wrong type
-		`{"messages":[{"content":"plain string"}]}`,         // content string
-		`{"messages":[{"content":42}]}`,                     // content number
-		`{"messages":[{"content":[1,2,3]}]}`,                // parts as numbers
-		`{"messages":[{"content":["a","b"]}]}`,              // parts as strings
-		`{"messages":[{"content":[{"type":123}]}]}`,         // part type wrong
-		`{"tools":"a string not array"}`,                    // tools wrong type
-		`{"tools":{"k":"v"}}`,                               // tools as object
-		`{"functions":42}`,                                  // functions wrong type
-		`{"response_format":"json"}`,                        // response_format string
-		`{"response_format":[]}`,                            // response_format array
-		`{"text":"hi"}`,                                     // text as string
-		`{"input":42}`,                                      // input wrong type
-		`{"input":[{"image_url":{"url":42}}]}`,              // nested url wrong type
-		`{"messages":[{"content":[{"type":"image_url"}]}]}`, // image_url part missing payload
-		`{"deeply":{"nested":{"junk":[null,{},[]]}}}`,       // unrelated junk
-		`{"modalities":"audio"}`,                            // modalities as a bare string
-		`{"modalities":{"audio":true}}`,                     // modalities as an object
-		`{"modalities":42}`,                                 // modalities as a number
-		`{"modalities":[1,2,3]}`,                            // modalities elements non-string
-		`{"messages":[{"content":[{"type":"input_audio"}]}]}`, // input_audio part missing payload
+		``,                       // 空字节
+		`null`,                   // JSON null 值
+		`{`,                      // 被截断
+		`not json at all`,        // 垃圾数据
+		`{"messages":"bare"}`,    // messages 是字符串
+		`{"messages":123}`,       // messages 是数字
+		`{"messages":[123,"x"]}`, // message 元素类型错误
+		`{"messages":[{"content":"plain string"}]}`,         // content 是字符串
+		`{"messages":[{"content":42}]}`,                     // content 是数字
+		`{"messages":[{"content":[1,2,3]}]}`,                // parts 是数字
+		`{"messages":[{"content":["a","b"]}]}`,              // parts 是字符串
+		`{"messages":[{"content":[{"type":123}]}]}`,         // part type 错误
+		`{"tools":"a string not array"}`,                    // tools 类型错误
+		`{"tools":{"k":"v"}}`,                               // tools 是对象
+		`{"functions":42}`,                                  // functions 类型错误
+		`{"response_format":"json"}`,                        // response_format 是字符串
+		`{"response_format":[]}`,                            // response_format 是数组
+		`{"text":"hi"}`,                                     // text 是字符串
+		`{"input":42}`,                                      // input 类型错误
+		`{"input":[{"image_url":{"url":42}}]}`,              // 嵌套 url 类型错误
+		`{"messages":[{"content":[{"type":"image_url"}]}]}`, // image_url part 缺少载荷
+		`{"deeply":{"nested":{"junk":[null,{},[]]}}}`,       // 无关垃圾
+		`{"modalities":"audio"}`,                            // modalities 是裸字符串
+		`{"modalities":{"audio":true}}`,                     // modalities 是对象
+		`{"modalities":42}`,                                 // modalities 是数字
+		`{"modalities":[1,2,3]}`,                            // modalities 元素非字符串
+		`{"messages":[{"content":[{"type":"input_audio"}]}]}`, // input_audio part 缺少载荷
 	}
 	for _, body := range cases {
 		func() {

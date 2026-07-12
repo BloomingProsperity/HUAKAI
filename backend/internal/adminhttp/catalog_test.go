@@ -175,20 +175,37 @@ func TestCatalogDoesNotAdvertiseAzureMockTokenEndpoint(t *testing.T) {
 
 func TestRequestedChannelDispositionsCoverOpenAICompatibleAndIDESubscriptions(t *testing.T) {
 	dispositions := RequestedChannelDispositions()
-	want := []string{
-		"openrouter/api_key",
+	// 三段审定:enabled=官 key 厂商(迁移 0169 已放行存储约束,Owner 2026-07-02 指派接入);
+	// hidden=全球推理托管云(Owner 明确不接,存储约束仍未放行);roadmap=IDE 订阅类。
+	wantEnabled := []string{
 		"deepseek/api_key",
 		"grok/api_key",
+		"kimi/api_key",
+		"qwen/api_key",
+		"glm/api_key",
+		"yi/api_key",
+		"baichuan/api_key",
+		"doubao/api_key",
+		"minimax/api_key",
+		"ernie/api_key",
+		"hunyuan/api_key",
+		"step/api_key",
+	}
+	wantHidden := []string{
+		"openrouter/api_key",
 		"mistral/api_key",
 		"groqcloud/api_key",
 		"together/api_key",
 		"perplexity/api_key",
 		"fireworks/api_key",
+	}
+	wantRoadmap := []string{
 		"cursor/oauth",
 		"kiro/aws_sso",
 	}
-	if len(dispositions) != len(want) {
-		t.Fatalf("requested channel disposition count=%d want %d: %+v", len(dispositions), len(want), dispositions)
+	total := len(wantEnabled) + len(wantHidden) + len(wantRoadmap)
+	if len(dispositions) != total {
+		t.Fatalf("requested channel disposition count=%d want %d: %+v", len(dispositions), total, dispositions)
 	}
 	seen := map[string]ChannelDisposition{}
 	for _, d := range dispositions {
@@ -197,20 +214,31 @@ func TestRequestedChannelDispositionsCoverOpenAICompatibleAndIDESubscriptions(t 
 			t.Fatalf("empty disposition for %+v", d)
 		}
 	}
-	for _, key := range want {
+	for _, key := range append(append(append([]string{}, wantEnabled...), wantHidden...), wantRoadmap...) {
 		if _, ok := seen[key]; !ok {
 			t.Fatalf("missing requested channel disposition %s; got keys=%v", key, keys(seen))
 		}
 	}
-	for _, key := range want[:8] {
+	catalog := DefaultCatalog()
+	for _, key := range wantEnabled {
+		if seen[key].Disposition != DispositionEnabled {
+			t.Fatalf("%s disposition=%q want enabled(存储约束已由 0169 放行)", key, seen[key].Disposition)
+		}
+		// 判别性断言:enabled 渠道必须真的出现在默认目录里(计划提升 + handlerSpec 注册双条件,
+		// 二者缺一 BuildCatalog 都会将其剔除——变异「把计划改回 hidden」或「删 handlerSpec」此断言即红)。
+		if !hasMode(catalog, strings.TrimSuffix(key, "/api_key"), credentialstore.AuthModeAPIKey) {
+			t.Fatalf("%s 应在默认目录可见(0169 已放行 + handlerSpec 已注册),实际缺席", key)
+		}
+	}
+	for _, key := range wantHidden {
 		if seen[key].Disposition != DispositionHiddenFlag || seen[key].FeatureFlag != "account_modes.openai_compatible" || !seen[key].IsExperimental {
 			t.Fatalf("%s disposition=%q flag=%q experimental=%v want hidden flag", key, seen[key].Disposition, seen[key].FeatureFlag, seen[key].IsExperimental)
 		}
-		if hasMode(DefaultCatalog(), strings.TrimSuffix(key, "/api_key"), credentialstore.AuthModeAPIKey) {
+		if hasMode(catalog, strings.TrimSuffix(key, "/api_key"), credentialstore.AuthModeAPIKey) {
 			t.Fatalf("%s must not be visible in the default catalog while storage constraints are unreleased", key)
 		}
 	}
-	for _, key := range want[8:] {
+	for _, key := range wantRoadmap {
 		if seen[key].Disposition != DispositionMandatoryRoadmap || !seen[key].IsExperimental {
 			t.Fatalf("%s disposition=%q experimental=%v want roadmap+experimental", key, seen[key].Disposition, seen[key].IsExperimental)
 		}

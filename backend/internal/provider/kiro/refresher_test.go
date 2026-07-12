@@ -22,9 +22,8 @@ import (
 )
 
 func TestKiroRefreshAdapterSuccessUsesAWSSSOCreateTokenShape(t *testing.T) {
-	// Regression killed: Kiro AWS SSO refresh must use operator-configured
-	// CreateToken fields and promote the refreshed access token to runtime
-	// session material.
+	// 锁定回归：Kiro AWS SSO 刷新必须使用 operator 配置的 CreateToken 字段，
+	// 并把刷新后的 access token 提升为运行时 session 凭据。
 	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {
@@ -80,10 +79,9 @@ func TestKiroRefreshAdapterSuccessUsesAWSSSOCreateTokenShape(t *testing.T) {
 
 func TestKiroRefreshAdapterRejectsCredentialSuppliedOAuthConfig(t *testing.T) {
 	t.Run("token endpoint from credential is ignored", func(t *testing.T) {
-		// Regression killed: attacker-controlled credential JSON must not decide
-		// where the AWS SSO refresh token is POSTed. Mutation self-check: reading
-		// oauth_token_endpoint/token_endpoint from credential calls this HTTP
-		// client and turns the test red.
+		// 锁定回归：攻击者可控的凭据 JSON 不得决定 AWS SSO refresh token POST 到
+		// 何处。变异自检：若从凭据读取 oauth_token_endpoint/token_endpoint，就会调用
+		// 本 HTTP client，使测试变红。
 		calledURL := ""
 		client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			calledURL = r.URL.String()
@@ -131,9 +129,8 @@ func TestKiroRefreshAdapterRejectsCredentialSuppliedOAuthConfig(t *testing.T) {
 }
 
 func TestKiroRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
-	// Regression killed: Kiro refresh failures must map to distinct worker
-	// outcomes. Mutation self-check: flattening status/body handling breaks at
-	// least one of 401, 429, or risk-triggering 403.
+	// 锁定回归：Kiro 刷新失败必须映射到不同的 worker outcome。变异自检：把
+	// status/body 处理压平会破坏 401、429 或触发风控的 403 中至少一个。
 	tests := []struct {
 		name       string
 		statusCode int
@@ -174,9 +171,8 @@ func TestKiroRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 }
 
 func TestKiroRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
-	// Regression killed: provider-specific refresher must record the precise
-	// failure class in the credential transaction, not save a stale credential
-	// or collapse every failure to a generic transient state.
+	// 锁定回归：provider 专属 refresher 必须在凭据事务中记录精确的失败类别，
+	// 不能保存陈旧凭据，也不能把所有失败都坍缩成通用的 transient 状态。
 	calls := []string{}
 	store := &recordingKiroRefreshStore{
 		calls: &calls,
@@ -208,7 +204,7 @@ func TestKiroRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
 	if got := auth.RefreshAuditOutcomeFromError(err); got != "auth_expired" {
 		t.Fatalf("refresh audit outcome=%q, want auth_expired", got)
 	}
-	wantCalls := []string{"probe", "tx_begin", "lock:91", "reread", "failure:91:auth_expired"}
+	wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:91", "reread", "failure:91:auth_expired"}
 	if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 		t.Fatalf("calls=%v, want %v", calls, wantCalls)
 	}
@@ -262,7 +258,7 @@ type recordingKiroRefreshTx struct {
 }
 
 func (tx *recordingKiroRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:"+kiroStrconvInt64(args[0]))
+	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 
@@ -295,13 +291,13 @@ func kiroStrconvInt64(v any) string {
 	return strconv.FormatInt(n, 10)
 }
 
-// TestKiroRefreshAdapterSSRFBlocksInternalEndpoint guards S2-054: when no HTTPClient is injected the
-// vendor refresher must fall back to the SSRF-protected client, so an operator/credential-configured
-// token endpoint that points at loopback/internal is refused at dial time — the refresh token AND
-// client secret must NOT be POSTed to the internal listener.
+// TestKiroRefreshAdapterSSRFBlocksInternalEndpoint 守 S2-054：未注入 HTTPClient 时，
+// vendor refresher 必须兜底到 SSRF-protected client，使得 operator/凭据配置的、指向
+// loopback/内网的 token endpoint 在拨号阶段就被拒绝——refresh token 和 client secret
+// 都不得被 POST 到内网监听器。
 //
-// Mutation check: restore `return http.DefaultClient` in httpClient(); DefaultClient dials the literal
-// 127.0.0.1 listener, the handler is hit (hit=true) and the secret leaks → this test goes red.
+// 变异自检：把 httpClient() 里改回 `return http.DefaultClient`；DefaultClient 会拨向
+// 字面 127.0.0.1 监听器，handler 被命中（hit=true）、密钥外泄 → 本测试变红。
 func TestKiroRefreshAdapterSSRFBlocksInternalEndpoint(t *testing.T) {
 	hit := false
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -317,7 +313,7 @@ func TestKiroRefreshAdapterSSRFBlocksInternalEndpoint(t *testing.T) {
 	defer func() { _ = srv.Close() }()
 
 	a := RefreshAdapter{
-		TokenURL:     "http://" + ln.Addr().String() + "/token", // literal loopback IP
+		TokenURL:     "http://" + ln.Addr().String() + "/token", // 字面 loopback IP
 		ClientID:     "cid",
 		ClientSecret: "sec",
 		Now:          func() time.Time { return time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC) },

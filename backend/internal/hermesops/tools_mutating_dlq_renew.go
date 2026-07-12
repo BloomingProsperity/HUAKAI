@@ -3,38 +3,35 @@ package hermesops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 )
 
-// This file declares the dlq_replay + renew_trigger MUTATING tools. Like the
-// account toggles, each WRAPS an existing mutation. Unlike the account toggles,
-// the underlying mutation (dlq.Service.Replay, credentialstore.Store.Rotate)
-// manages its OWN transaction + side effects (handler invocation / nested
-// credential-audit tx), so it cannot be folded into the orchestrator tx. For
-// these two, the orchestrator's verified-before-commit ordering applies: the
-// hermes_tool_calls + admin_audit_events rows are inserted + accepted by the DB
-// inside the orchestrator tx BEFORE Replay/Rotate runs, so a broken audit path
-// aborts with the target unchanged.
+// 本文件声明 dlq_replay + renew_trigger 两个 MUTATING 工具。与 account toggle 一样,
+// 每个都包装一个已有的改动。但与 account toggle 不同的是,底层改动
+// (dlq.Service.Replay、credentialstore.Store.Rotate)管理着它自己的事务 + 副作用
+// (handler 调用 / 嵌套的凭证审计 tx),因此无法折叠进 orchestrator 的 tx。对这两个工具,
+// 适用 orchestrator 的"提交前已校验"排序:hermes_tool_calls + admin_audit_events 行会在
+// Replay/Rotate 运行之前,在 orchestrator tx 内被插入并被 DB 接受,因此一旦审计路径损坏,
+// 会以目标未改动的状态中止。
 
 // ---------------------------------------------------------------------------
-// dlq_replay  (platform_admin ONLY)
+// dlq_replay (仅限 platform_admin)
 // ---------------------------------------------------------------------------
 
-// DLQReplayDeps wires the dlq_replay tool. Lookup is the read used by Resolve to
-// fetch the target record (tenant-scoped) for the preview + tenant re-check.
-// Replay is the EXISTING dlq.Service.Replay, which re-claims the record by id
-// (using its IdempotencyKey to dedupe) and re-runs the delivery handler.
+// DLQReplayDeps 把 dlq_replay 工具接上依赖。Lookup 是 Resolve 用来读取目标记录
+// (按租户限定)以供预览 + 租户复检的读取。Replay 是已有的 dlq.Service.Replay,
+// 它按 id 重新 claim 该记录(用其 IdempotencyKey 去重)并重新运行投递 handler。
 type DLQReplayDeps struct {
 	Lookup func(ctx context.Context, id, tenantID int64) (dlq.Record, error)
 	Replay func(ctx context.Context, id int64, actorID string) (*dlq.Record, error)
 }
 
-// DLQReplaySpec builds the dlq_replay mutating tool. platform_admin ONLY — a
-// tenant_operator is forbidden (the RBAC floor is RolePlatformAdmin, mirroring
-// the admin DLQ handler's platform-admin gate). Args: { "id": <int64> }.
+// DLQReplaySpec 构建 dlq_replay 改动型工具。仅限 platform_admin —— 禁止 tenant_operator
+// (RBAC 底线是 RolePlatformAdmin,与 admin DLQ handler 的 platform-admin 门一致)。Args: { "id": <int64> }。
 func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 	return ToolSpec{
 		Name:                 ToolDLQReplay,
@@ -74,8 +71,7 @@ func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 					"current_status":  string(rec.Status),
 					"replay_attempts": rec.ReplayAttempts,
 					"intended_action": "re_deliver",
-					// already_delivered makes the preview honest about a replay that
-					// the idempotency guard will no-op.
+					// already_delivered 让预览如实反映:这次 replay 会被幂等守卫变成 no-op。
 					"already_delivered": rec.Status == dlq.StatusDelivered,
 				},
 			}, nil
@@ -84,13 +80,21 @@ func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 			if deps.Replay == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
-			// L5 idempotency: Replay re-claims by id and the record's
-			// IdempotencyKey dedupes — an already-delivered record is not
-			// re-processed (ClaimByID refuses an active/closed claim). actorID is
-			// the operator's threaded user id.
+			// L5 幂等:Replay 按 id 重新 claim,记录的 IdempotencyKey 负责去重 ——
+			// 已投递的记录不会被重新处理(ClaimByID 会拒绝一个 active/closed 的 claim)。
+			// actorID 是传入的 operator 用户 id。
 			actorID := fmt.Sprintf("%d", req.ActorUserID)
 			rec, err := deps.Replay(ctx, plan.TargetID, actorID)
 			if err != nil {
+				if errors.Is(err, dlq.ErrNotFound) {
+					return ToolResult{Summary: map[string]any{
+						"dlq_id":          plan.TargetID,
+						"previous_status": plan.Preview["current_status"],
+						"status":          "already_processed",
+						"idempotent":      true,
+						"message":         "DLQ 记录已处理或已由其他副本投递,无需重复 replay",
+					}}, nil
+				}
 				return ToolResult{}, err
 			}
 			summary := map[string]any{
@@ -107,27 +111,23 @@ func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 }
 
 // ---------------------------------------------------------------------------
-// renew_trigger  (platform_admin OR tenant_operator within tenant)
+// renew_trigger (platform_admin 或租户内的 tenant_operator)
 // ---------------------------------------------------------------------------
 
-// RenewTriggerDeps wires the renew_trigger tool. ListByAccount is the read used
-// by Resolve to fetch the credential's current version + verify tenant
-// ownership. Rotate is the EXISTING credentialstore.Store.Rotate, which
-// atomically supersedes the prior credential version (optimistic
-// credential_version match -> version+1) and returns metadata ONLY (never the
-// rotated payload).
+// RenewTriggerDeps 把 renew_trigger 工具接上依赖。ListByAccount 是 Resolve 用来读取凭证
+// 当前版本 + 校验租户归属的读取。Rotate 是已有的 credentialstore.Store.Rotate,
+// 它原子地取代上一版凭证(乐观的 credential_version 匹配 -> version+1),且只返回元数据
+// (绝不返回轮换后的 payload)。
 type RenewTriggerDeps struct {
 	ListByAccount func(ctx context.Context, tenantID, accountID int64) ([]credentialstore.CredentialMetadata, error)
 	Rotate        func(ctx context.Context, in credentialstore.RotateCredentialInput) (credentialstore.CredentialMetadata, error)
 }
 
-// RenewTriggerSpec builds the renew_trigger mutating tool: it rotates a provider
-// account credential to a new payload, invalidating the prior version. Scoped:
-// platform_admin OR tenant_operator within the target tenant. Args:
-// { "account_id": <int64>, "credential_id": <int64>, "credentials": <object> }.
-// PRIVACY: the new credential material ("credentials") is accepted but is a
-// sensitive arg (redacted in the audit row); the rotated material is NEVER
-// returned — only the resulting version + state.
+// RenewTriggerSpec 构建 renew_trigger 改动型工具:它把某个 provider account 的凭证轮换到
+// 新 payload,使上一版失效。scope:platform_admin 或目标租户内的 tenant_operator。Args:
+// { "account_id": <int64>, "credential_id": <int64>, "credentials": <object> }。
+// 隐私:新凭证材料("credentials")会被接收,但它是敏感参数(在审计行里被脱敏);
+// 轮换后的材料绝不返回 —— 只返回结果版本 + state。
 func RenewTriggerSpec(deps RenewTriggerDeps) ToolSpec {
 	return ToolSpec{
 		Name:                 ToolRenewTrigger,
@@ -209,8 +209,8 @@ func RenewTriggerSpec(deps RenewTriggerDeps) ToolSpec {
 			if err != nil {
 				return ToolResult{}, err
 			}
-			// PRIVACY: surface ONLY the resulting version + state — never the
-			// rotated payload (CredentialMetadata carries no payload field).
+			// 隐私:只露出结果版本 + state —— 绝不露轮换后的 payload
+			// (CredentialMetadata 本身就不带 payload 字段)。
 			return ToolResult{Summary: map[string]any{
 				"credential_id":    plan.TargetID,
 				"previous_version": plan.Preview["current_version"],
@@ -221,9 +221,8 @@ func RenewTriggerSpec(deps RenewTriggerDeps) ToolSpec {
 	}
 }
 
-// rotatePayload extracts the new credential payload from the args and re-encodes
-// it as JSON for Rotate. The payload is NEVER persisted raw — it flows only into
-// the rotation; the audit row redacts the "credentials" key.
+// rotatePayload 从 args 中提取新凭证 payload,并重新编码为 JSON 供 Rotate 使用。该 payload
+// 绝不以原始形式持久化 —— 它只流入轮换;审计行会对 "credentials" 键脱敏。
 func rotatePayload(args map[string]any) ([]byte, error) {
 	raw, ok := args["credentials"]
 	if !ok {

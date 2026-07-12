@@ -4,12 +4,141 @@ package payment
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/shopspring/decimal"
 )
+
+// TestPostgresStoreAdminAdjustBalanceAttributesNumericTokenID 跨层真路径守 P2b-1 回归:
+// 真 Service.AdminAdjustBalance(真库,非 mock)喂纯数字 TokenID("11") →
+// payment_orders.created_by_admin_id / confirmed_by_admin_id 与 payment_audit_events.actor_id
+// 三处归属列都必须落成数字 11(不是 0 / NULL)。
+//
+// 说明(与任务措辞的表名对应):HUAKAI 实际写的钱表是 payment_orders(任务口径 recharge_orders)
+// 与 payment_audit_events(任务口径 payment_audit_log,后者是遗留兼容表)。归属列断言在这两张真表上。
+//
+// 这条捕捉 P2b-1 handler 单测(mock 掉 Service、只验传入串)所无法捕捉的下游 ParseInt→列值缺口:
+// 若 handler 回退成传 AuditActor() 的 "admin_token:11",parseAdminActorID 得 0 → nullableInt64→NULL,
+// 本测三处归属断言全红。
+func TestPostgresStoreAdminAdjustBalanceAttributesNumericTokenID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+
+	svc := NewService(NewPostgresStore(pool))
+	// 纯数字 TokenID —— 生产 handler(balance_credit)P2b-1 修复后传的正是 fmt.Sprintf("%d", ident.TokenID)。
+	const wantAdminID = int64(11)
+	credit, err := svc.AdminAdjustBalance(ctx, AdminBalanceAdjustmentInput{
+		TenantID:        f.tenantA,
+		UserID:          f.userA,
+		Amount:          decimal.RequireFromString("200.00000000"),
+		CurrencyCode:    "USD",
+		ActorID:         "11",
+		Reason:          "owner-approved manual recharge attribution",
+		ExternalTradeNo: "admin-credit-attr-200",
+		Now:             time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("AdminAdjustBalance +200: %v", err)
+	}
+	if credit.RechargeOrderID == 0 {
+		t.Fatal("positive admin recharge must create a recharge order")
+	}
+
+	// 订单归属两列:建单归属(created_by_admin_id)+ 确认归属(confirmed_by_admin_id)。
+	assertOrderAdminAttribution(t, ctx, pool, f.tenantA, credit.RechargeOrderID, wantAdminID, wantAdminID)
+	// 审计事件归属:AuditCredited(入账)那条 actor_id 必须是数字 TokenID,不能 NULL。
+	assertAuditEventActorID(t, ctx, pool, f.tenantA, credit.RechargeOrderID, AuditCredited, wantAdminID)
+	// AuditOrderCreated / AuditPaidConfirmed 也应带同一归属(穷举归属落库的三个审计写点)。
+	assertAuditEventActorID(t, ctx, pool, f.tenantA, credit.RechargeOrderID, AuditOrderCreated, wantAdminID)
+	assertAuditEventActorID(t, ctx, pool, f.tenantA, credit.RechargeOrderID, AuditPaidConfirmed, wantAdminID)
+}
+
+// TestPostgresStoreAdminAdjustBalancePoisonedActorLosesAttribution 把「传字符串会丢归属」这个
+// 跨层坑钉成回归:喂一个非数字 actor 串("admin_token:5")→ parseAdminActorID 得 0 →
+// 归属确实变成 0 / NULL(三处归属列)。
+//
+// 目的是防未来有人再把 AuditActor() 接进 balance_credit:这条测试文档化并锁死了
+// 「非数字 actor → 归属丢失」的当前(已知有害的)行为。它是 P2b-1 回归的负向镜像断言。
+func TestPostgresStoreAdminAdjustBalancePoisonedActorLosesAttribution(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+
+	svc := NewService(NewPostgresStore(pool))
+	// AuditActor() 形态:parseAdminActorID(strconv.ParseInt)吞错 → 0。
+	credit, err := svc.AdminAdjustBalance(ctx, AdminBalanceAdjustmentInput{
+		TenantID:        f.tenantA,
+		UserID:          f.userA,
+		Amount:          decimal.RequireFromString("70.00000000"),
+		CurrencyCode:    "USD",
+		ActorID:         "admin_token:5",
+		Reason:          "poisoned non-numeric actor drops attribution (P2b-1 regression mirror)",
+		ExternalTradeNo: "admin-credit-poison-70",
+		Now:             time.Date(2026, 6, 3, 9, 30, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("AdminAdjustBalance +70 poisoned actor: %v", err)
+	}
+	if credit.RechargeOrderID == 0 {
+		t.Fatal("positive admin recharge must create a recharge order even with poisoned actor")
+	}
+
+	// 归属确实丢:两个订单归属列 + 审计 actor_id 都是 0 / NULL。
+	// (assertOrderAdminAttribution / assertAuditEventActorID 传 0 → 断言列为 NULL。)
+	assertOrderAdminAttribution(t, ctx, pool, f.tenantA, credit.RechargeOrderID, 0, 0)
+	assertAuditEventActorID(t, ctx, pool, f.tenantA, credit.RechargeOrderID, AuditCredited, 0)
+}
+
+// assertOrderAdminAttribution 断言 payment_orders 一行的建单/确认归属列。
+// wantCreated/wantConfirmed==0 表示期望该列为 NULL(归属丢失);>0 表示期望等于该数字 admin id。
+func assertOrderAdminAttribution(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID, wantCreated, wantConfirmed int64) {
+	t.Helper()
+	var created, confirmed sql.NullInt64
+	if err := pool.QueryRow(ctx,
+		`SELECT created_by_admin_id, confirmed_by_admin_id FROM payment_orders WHERE tenant_id=$1 AND id=$2`,
+		tenantID, orderID,
+	).Scan(&created, &confirmed); err != nil {
+		t.Fatalf("read order admin attribution: %v", err)
+	}
+	assertNullInt64Attribution(t, "created_by_admin_id", created, wantCreated)
+	assertNullInt64Attribution(t, "confirmed_by_admin_id", confirmed, wantConfirmed)
+}
+
+// assertAuditEventActorID 断言指定 event_type 的 payment_audit_events 行的 actor_id。
+// want==0 表示期望 actor_id 为 NULL(归属丢失);>0 表示等于该数字 admin id。
+func assertAuditEventActorID(t *testing.T, ctx context.Context, pool queryPool, tenantID, orderID int64, eventType string, want int64) {
+	t.Helper()
+	var actorID sql.NullInt64
+	if err := pool.QueryRow(ctx,
+		`SELECT actor_id FROM payment_audit_events WHERE tenant_id=$1 AND payment_order_id=$2 AND event_type=$3 ORDER BY id LIMIT 1`,
+		tenantID, orderID, eventType,
+	).Scan(&actorID); err != nil {
+		t.Fatalf("read audit event %s actor_id: %v", eventType, err)
+	}
+	assertNullInt64Attribution(t, "audit_events["+eventType+"].actor_id", actorID, want)
+}
+
+func assertNullInt64Attribution(t *testing.T, col string, got sql.NullInt64, want int64) {
+	t.Helper()
+	if want == 0 {
+		if got.Valid {
+			t.Fatalf("%s=%d want NULL (非数字 actor 应丢归属)", col, got.Int64)
+		}
+		return
+	}
+	if !got.Valid {
+		t.Fatalf("%s=NULL want %d (数字 TokenID 归属被抹成 NULL —— P2b-1 回归)", col, want)
+	}
+	if got.Int64 != want {
+		t.Fatalf("%s=%d want %d", col, got.Int64, want)
+	}
+}
 
 func TestPostgresStoreAdminAdjustBalanceCreditsAuditsAndRejectsDebitWithoutBalanceMutation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

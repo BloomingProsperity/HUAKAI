@@ -3,6 +3,9 @@ package rerankhttp
 import (
 	"context"
 	"errors"
+	"expvar"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -13,6 +16,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
+
+var rerankQuotaReserveFailedOpenTotal = expvar.NewInt("rerank_quota_reserve_failed_open_total")
 
 func (ex *execution) reserve(w http.ResponseWriter) bool {
 	ex.ensureIdempotency()
@@ -47,6 +52,13 @@ func (ex *execution) reserve(w http.ResponseWriter) bool {
 		writeInsufficientBalanceError(w)
 		return false
 	}
+	// 幂等竞争 / Serializable 重试耗尽:可重试,返 409+Retry-After 让客户端稍后再试
+	//(镜像 chat completions;此前落进下方通用 500 = 把可重试竞争误报成服务端错误)。
+	if errors.Is(err, billing.ErrClaimRace) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace))
+		return false
+	}
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeReserveError, clienterr.MessageFor(clienterr.CodeReserveError))
 		return false
@@ -79,9 +91,17 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 	}
 	if quotaenforce.IsDenied(err) || (err == nil && !result.Allowed) {
 		ex.abort(w, "quota_denied", 0)
-		writeInsufficientQuotaError(w)
+		writeInsufficientQuotaErrorRetryable(w, quotaenforce.DenyRetryAfter(result, err), quotaenforce.DenyWindowKind(result, err))
 		return false
 	}
+	rerankQuotaReserveFailedOpenTotal.Add(1)
+	slog.WarnContext(ex.ctx, "quota reserve failed open",
+		slog.String("request_id", ex.requestID),
+		slog.Int64("tenant_id", ex.ident.TenantID),
+		slog.Int64("claim_id", ex.reserveRes.ClaimID),
+		slog.String("reason", "quota_reserve_infra_error"),
+		slog.String("error_type", fmt.Sprintf("%T", err)),
+	)
 	return true
 }
 

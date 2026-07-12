@@ -14,9 +14,9 @@ import (
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
 )
 
-// Enum allowlists mirror the quota_policies CHECK constraints. Validating here
-// turns bad enum input into a 400 instead of letting Postgres raise a CHECK
-// (which would surface as a 503/500). The full HUAKAI superset is exposed.
+// 这些枚举白名单与 quota_policies 的 CHECK 约束保持一致。在此处校验可把非法
+// 枚举输入变成 400,而不是让 Postgres 抛出 CHECK(那会表现为 503/500)。
+// 这里暴露的是 HUAKAI 的完整超集。
 var (
 	validScopeKinds = map[string]struct{}{
 		"global": {}, "user": {}, "api_key": {}, "channel": {},
@@ -38,8 +38,8 @@ const (
 	defaultMode   = "enforce"
 )
 
-// quotaPolicyItem is the response DTO. Numeric caps are rendered as decimal
-// strings (limit_value / burst_value) so no precision is lost across JSON.
+// quotaPolicyItem 是响应 DTO。数值上限以十进制字符串渲染
+//(limit_value / burst_value),以免在 JSON 传输中丢失精度。
 type quotaPolicyItem struct {
 	ID                  int64   `json:"id"`
 	TenantID            int64   `json:"tenant_id"`
@@ -74,9 +74,8 @@ type quotaPolicyDeleteResponse struct {
 	Deleted bool   `json:"deleted"`
 }
 
-// quotaPolicyRequest is the create/update body. Pointer fields distinguish
-// "omitted" (apply default) from an explicit value. limit_value / burst_value
-// are decimal strings.
+// quotaPolicyRequest 是 create/update 的请求体。指针字段用来区分"省略"
+//(套用默认值)与显式给定的值。limit_value / burst_value 为十进制字符串。
 type quotaPolicyRequest struct {
 	ScopeKind     string  `json:"scope_kind"`
 	ScopeID       string  `json:"scope_id"`
@@ -93,7 +92,7 @@ type quotaPolicyRequest struct {
 	Reason        string  `json:"reason"`
 }
 
-// validatedPolicy is the fully-checked, neutral form shared by create/update.
+// validatedPolicy 是经过完整校验、中立的表示形式,由 create/update 共用。
 type validatedPolicy struct {
 	scopeKind     string
 	scopeID       string

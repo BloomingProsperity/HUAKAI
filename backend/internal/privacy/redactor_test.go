@@ -157,3 +157,35 @@ func ioReadAll(r io.Reader) ([]byte, error) {
 	_, err := buf.ReadFrom(r)
 	return buf.Bytes(), err
 }
+
+// TestMiddlewareFuncPerRequestLimit 守护 MiddlewareFunc 真按"每请求"返回的上限执行(而非固定单值):
+// 同一中间件,大上限路径放过、小上限路径 413。这是按路径解耦缓冲上限的基础——若 MiddlewareFunc 忽略
+// 传入函数恒用某一固定上限,则两路径之一的断言 RED。
+//
+// 自证式:用 80 字节 body 跨两个不同上限(大 1000 / 小 10)各打一次,断言放过 vs 413 相反结果。
+func TestMiddlewareFuncPerRequestLimit(t *testing.T) {
+	const big = 1000
+	const small = 10
+	limitFor := func(r *http.Request) int {
+		if r.URL.Path == "/big" {
+			return big
+		}
+		return small
+	}
+	handler := MiddlewareFunc(limitFor)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	body := strings.Repeat("x", 80) // 80 字节:< big(放过)、> small(拒)
+
+	recBig := httptest.NewRecorder()
+	handler.ServeHTTP(recBig, httptest.NewRequest(http.MethodPost, "/big", strings.NewReader(body)))
+	if recBig.Code != http.StatusOK {
+		t.Fatalf("/big(上限 %d)应放过 80 字节,got status=%d", big, recBig.Code)
+	}
+
+	recSmall := httptest.NewRecorder()
+	handler.ServeHTTP(recSmall, httptest.NewRequest(http.MethodPost, "/small", strings.NewReader(body)))
+	if recSmall.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("/small(上限 %d)应拒 80 字节(413),got status=%d", small, recSmall.Code)
+	}
+}

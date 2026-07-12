@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
 func TestPlanVendorCatalogDisablesOnlyAutoSyncedMissingAliases(t *testing.T) {
@@ -98,5 +99,20 @@ func TestPlanVendorCatalogAllowsSmallLegitimateRetirement(t *testing.T) {
 	}
 	if len(plan.DisableAliases) != 1 || plan.DisableAliases[0] != "claude-retired" {
 		t.Fatalf("disabled=%v want only claude-retired", plan.DisableAliases)
+	}
+}
+
+// TestModelSyncProtocolFamilyUsesRegistryFamily 守 model sync 写 models.protocol_family
+// 时不得再使用旧客户端协议名。变异证明:把 Gemini 默认值改回 "gemini" 或删掉
+// normalizeSyncedProtocolFamily 的兼容折叠 → 本测试红，实际同步会被 CHECK 拒绝。
+func TestModelSyncProtocolFamilyUsesRegistryFamily(t *testing.T) {
+	if got := defaultProtocolForVendor(modelsync.VendorGemini); got != registrydefault.ProtocolGeminiMessages {
+		t.Fatalf("gemini default protocol=%q want %q", got, registrydefault.ProtocolGeminiMessages)
+	}
+	if got := normalizeSyncedProtocolFamily("gemini"); got != registrydefault.ProtocolGeminiMessages {
+		t.Fatalf("normalized protocol=%q want %q", got, registrydefault.ProtocolGeminiMessages)
+	}
+	if got := defaultProtocolForVendor(modelsync.VendorOpenAI); got != registrydefault.ProtocolOpenAIChat {
+		t.Fatalf("openai default protocol=%q want %q", got, registrydefault.ProtocolOpenAIChat)
 	}
 }

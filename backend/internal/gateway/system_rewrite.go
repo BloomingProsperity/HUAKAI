@@ -1,5 +1,5 @@
-// Anthropic Messages API system 字段重写引擎。Spec：
-// docs/specs/upstream-credential-management.md §Phase C 第 27 步 step 1 of 6。
+// Anthropic Messages API system 字段重写引擎。规格：
+// docs/specs/upstream-credential-management.md §Phase C 第 27 步（6 步中的第 1 步）。
 //
 // 纯 JSON 变换，不做 IO/网络/凭据接触。覆盖 system 字段的合法形态：
 // 缺省/null、字符串、单个内容块对象（{"type":"text","text":"...",
@@ -8,11 +8,11 @@
 //
 // 设计要点：
 //   - PrefixText 走调用方配置（不硬编码常量），策略由 SystemRewriteMode
-//     enum 切换三种（EnsurePrefix / ReplaceAll / AppendAfter）
-//   - rewrite 是纯函数，无 service 耦合
+//     枚举切换三种（EnsurePrefix / ReplaceAll / AppendAfter）
+//   - 重写是纯函数，无服务耦合
 //   - 单对象形态归一化为单元素数组后走数组路径，避免 unsupported_shape
-//   - 数组形态下用 raw block 重新拼接，保住已有块上的 cache_control 与
-//     任何未知字段（cache_control 在 prefix 注入块上由后续 mimicry step 决定，
+//   - 数组形态下用原始 block 重新拼接，保住已有块上的 cache_control 与
+//     任何未知字段（cache_control 在 prefix 注入块上由后续 mimicry 步骤决定，
 //     本步不放）
 package gateway
 
@@ -48,7 +48,7 @@ type SystemRewriteMode int
 
 const (
 	// SystemRewriteEnsurePrefix 保证 PrefixText 出现在 system 头部；已经在头
-	// 部时为 no-op。强伪装的默认模式。
+	// 部时为空操作。强伪装的默认模式。
 	SystemRewriteEnsurePrefix SystemRewriteMode = iota
 	// SystemRewriteReplaceAll 丢弃原有 system 内容，替换为 PrefixText 的字符
 	// 串形态。
@@ -77,7 +77,7 @@ type SystemRewritePlan struct {
 //   - "appended"          AppendAfter 模式已追加
 //   - "unsupported_shape" 原 system 是不支持的 JSON 形态
 //   - "invalid_body"      body 解析失败
-//   - "empty_prefix"      PrefixText 为空，no-op
+//   - "empty_prefix"      PrefixText 为空，空操作
 type SystemRewriteResult struct {
 	Body    []byte
 	Applied bool
@@ -87,12 +87,11 @@ type SystemRewriteResult struct {
 type DispatchBodyControls struct {
 	SystemPrompt   *SystemRewritePlan
 	ParamGate      paramgate.GateConfig
-	ObfuscateWords []string // opt-in; empty = no-op
+	ObfuscateWords []string // 选择性开启;空 = 不处理
 }
 
-// SystemPromptPlanFromBinding converts optional channel metadata into a
-// RewriteSystem plan. Empty metadata returns ok=false so callers can skip JSON
-// parsing and preserve the original body byte-for-byte.
+// SystemPromptPlanFromBinding 把可选的渠道元数据转换为一个 RewriteSystem 计划。
+// 元数据为空时返回 ok=false,使调用方可以跳过 JSON 解析并逐字节保留原始请求体。
 func SystemPromptPlanFromBinding(binding registry.BindingMetadata) (SystemRewritePlan, bool) {
 	if binding.SystemPrompt == "" {
 		return SystemRewritePlan{}, false

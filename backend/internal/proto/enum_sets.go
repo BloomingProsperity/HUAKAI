@@ -148,8 +148,8 @@ var protocolLossSeveritySet = map[ProtocolLossSeverity]struct{}{
 
 // audioFormatSet 是 AudioNode.Format 的 P-1 白名单（只增不删）。
 //
-// 7 vocab 覆盖主流 provider 用法：wav (PCM unbox) / mp3 / opus (low-latency) /
-// pcm16 (real-time)  / flac (lossless) / m4a (AAC) / webm (containerized opus)。
+// 7 个词表覆盖主流 provider 用法：wav (PCM 拆箱) / mp3 / opus (低延迟) /
+// pcm16 (实时) / flac (无损) / m4a (AAC) / webm (opus 容器)。
 // 新格式应推 P-1.x minor bump。
 var audioFormatSet = map[string]struct{}{
 	"wav":   {},

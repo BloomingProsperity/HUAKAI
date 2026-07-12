@@ -19,27 +19,37 @@ func parseOpenAIResponsesInput(raw json.RawMessage) ([]openAIResponsesInputItem,
 	return items, nil
 }
 
-func parseOpenAIResponsesContent(raw json.RawMessage, mi int) ([]string, []ProtocolLossEntry, error) {
+func parseOpenAIResponsesContent(raw json.RawMessage, mi int) ([]openAIChatParsedPart, []ProtocolLossEntry, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil, nil
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return []string{s}, nil, nil
+		return []openAIChatParsedPart{{Kind: "text", Text: s}}, nil, nil
 	}
 	var parts []openAIResponsesInputPart
 	if err := json.Unmarshal(raw, &parts); err != nil {
 		return nil, nil, fmt.Errorf("proto: openai_responses input[%d].content must be string or part array", mi)
 	}
-	var texts []string
+	var out []openAIChatParsedPart
 	var losses []ProtocolLossEntry
 	for _, p := range parts {
 		switch p.Type {
 		case "input_text", "output_text", "text":
-			texts = append(texts, p.Text)
+			out = append(out, openAIChatParsedPart{Kind: "text", Text: p.Text})
 		case "input_image":
-			loss, _ := NewClientLossEntry(ProtocolLossWarning, "responses_input_image_d9_pending", "d9_image_pending", CapabilityImage, "")
-			losses = append(losses, loss)
+			// F4 视觉:Responses input_image 建 CapabilityImage 节点(镜像 openai_chat 的 image_url 修复)。
+			// 此前只记 d9_image_pending loss 把图丢了,HCSF 默认开时上游收不到图。
+			node, imgLosses := buildOpenAIResponsesImageNode(p.ImageURL, p.Detail)
+			losses = append(losses, imgLosses...)
+			if node == nil {
+				continue // 畸形/缺失已记 loss,跳过该 part
+			}
+			out = append(out, openAIChatParsedPart{
+				Kind:  "image",
+				Image: node,
+				Raw:   append(json.RawMessage(nil), p.ImageURL...),
+			})
 		case "input_file":
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "responses_input_file_d9_pending", "d9_file_pending", CapabilityFile, "")
 			losses = append(losses, loss)
@@ -48,7 +58,34 @@ func parseOpenAIResponsesContent(raw json.RawMessage, mi int) ([]string, []Proto
 			losses = append(losses, loss)
 		}
 	}
-	return texts, losses, nil
+	return out, losses, nil
+}
+
+// buildOpenAIResponsesImageNode 把 Responses input_image 的 image_url + 部件级 detail 转 ImageNode。
+// Responses 规范里 image_url 是裸字符串(data URI 或 http url)、detail 是 part 的兄弟字段;
+// 兼容个别 SDK 传 {url,detail} 对象。判定内核复用 imageNodeFromURL(与 openai_chat 同一套)。
+func buildOpenAIResponsesImageNode(rawImageURL json.RawMessage, detail string) (*ImageNode, []ProtocolLossEntry) {
+	if len(rawImageURL) == 0 {
+		loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_image_url_missing_url", "invalid_image_url", CapabilityImage, "")
+		return nil, []ProtocolLossEntry{loss}
+	}
+	var url string
+	if err := json.Unmarshal(rawImageURL, &url); err != nil {
+		// 兼容对象形态 {url, detail}(part 级 detail 优先,缺省再取对象内 detail)。
+		var shape struct {
+			URL    string `json:"url"`
+			Detail string `json:"detail"`
+		}
+		if err2 := json.Unmarshal(rawImageURL, &shape); err2 != nil {
+			loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_image_url_missing_url", "invalid_image_url", CapabilityImage, "")
+			return nil, []ProtocolLossEntry{loss}
+		}
+		url = shape.URL
+		if detail == "" {
+			detail = shape.Detail
+		}
+	}
+	return imageNodeFromURL(url, detail)
 }
 
 // convertOpenAIResponsesTools 把 Responses tools[] 转 CanonicalTool[]。

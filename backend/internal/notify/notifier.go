@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -43,10 +42,9 @@ type Config struct {
 	HTTPClient  HTTPDoer
 	RateLimiter *RateLimiter
 	Now         func() time.Time
-	// NotifyTypeCacheTTL bounds the in-process notify_type cache that lets the
-	// settlement hot path skip the GetSettings DB read while notifications are
-	// disabled. Zero selects DefaultNotifyTypeCacheTTL; negative disables the
-	// cache (every call reads the DB).
+	// NotifyTypeCacheTTL 限定进程内 notify_type 缓存的有效期,该缓存让结算热路径
+	// 在通知被禁用时跳过 GetSettings 的数据库读取。取零值时选用
+	// DefaultNotifyTypeCacheTTL;取负值则禁用缓存(每次调用都读数据库)。
 	NotifyTypeCacheTTL time.Duration
 }
 
@@ -94,9 +92,8 @@ func (n *Notifier) NotifyLowBalance(ctx context.Context, tenantID, userID int64,
 	if n == nil || n.store == nil {
 		return nil
 	}
-	// Cheap in-process short-circuit first: when a fresh cache entry says this
-	// (tenant,user) has notifications disabled, skip the GetSettings DB read so
-	// the common notify_type=none settlement never touches the shared DB pool.
+	// 先做廉价的进程内短路:当一条新鲜的缓存条目表明该 (tenant,user) 已禁用通知时,
+	// 跳过 GetSettings 的数据库读取,这样常见的 notify_type=none 结算就不会触碰共享数据库连接池。
 	if n.typeCache.disabled(tenantID, userID, n.now()) {
 		return nil
 	}
@@ -125,10 +122,12 @@ func (n *Notifier) NotifyLowBalance(ctx context.Context, tenantID, userID int64,
 		return err
 	}
 	now := n.now()
+	limited := false
 	if n.limiter != nil && !n.limiter.Allow(tenantID, userID, EventLowBalance, now) {
 		return nil
 	}
-	return n.send(ctx, settings, Event{
+	limited = n.limiter != nil
+	err = n.send(ctx, settings, Event{
 		EventType:      EventLowBalance,
 		TenantID:       tenantID,
 		UserID:         userID,
@@ -137,6 +136,10 @@ func (n *Notifier) NotifyLowBalance(ctx context.Context, tenantID, userID int64,
 		BillingEventID: billingEventID,
 		OccurredAt:     now.UTC(),
 	})
+	if err != nil && limited {
+		n.limiter.Release(tenantID, userID, EventLowBalance, now)
+	}
+	return err
 }
 
 func (n *Notifier) NotifyAlertFiring(ctx context.Context, tenantID int64, alert AlertFiringInfo) error {
@@ -156,13 +159,12 @@ func (n *Notifier) NotifyAlertFiring(ctx context.Context, tenantID int64, alert 
 	})
 }
 
-// broadcast fans a tenant-level operational notification out to every active
-// per-(tenant,user) notification channel: it resolves ListActiveSettings, skips
-// notify_type=none recipients, re-validates each recipient's settings, enforces
-// the tenant boundary, and applies the per-(tenant,user,eventType) rate limit
-// before invoking deliver for the surviving recipients. NotifyAlertFiring and
-// NotifyProviderAccountDown share this loop so the multi-channel pipeline is
-// reused, not forked. deliver receives validated, tenant-matched settings.
+// broadcast 将一条租户级运维通知扇出到每个活跃的 per-(tenant,user) 通知渠道:
+// 它解析 ListActiveSettings,跳过 notify_type=none 的接收者,重新校验每个接收者的
+// settings,强制租户边界,并在为存活下来的接收者调用 deliver 之前施加
+// per-(tenant,user,eventType) 限流。NotifyAlertFiring 和
+// NotifyProviderAccountDown 共用这个循环,使多渠道流水线得以复用而非各自分叉。
+// deliver 收到的是已校验、且租户匹配的 settings。
 func (n *Notifier) broadcast(ctx context.Context, tenantID int64, eventType string, now time.Time, deliver func(context.Context, Settings) error) error {
 	lister, ok := n.store.(activeSettingsLister)
 	if !ok {
@@ -194,8 +196,13 @@ func (n *Notifier) broadcast(ctx context.Context, tenantID int64, eventType stri
 		if n.limiter != nil && !n.limiter.Allow(tenantID, settings.UserID, eventType, now) {
 			continue
 		}
-		if err := deliver(ctx, settings); err != nil && firstErr == nil {
-			firstErr = err
+		if err := deliver(ctx, settings); err != nil {
+			if n.limiter != nil {
+				n.limiter.Release(tenantID, settings.UserID, eventType, now)
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 	return firstErr
@@ -523,33 +530,6 @@ func validateOutboundURL(label, raw string) error {
 		return fmt.Errorf("%w: %v", ErrUnsafeEndpoint, err)
 	}
 	return nil
-}
-
-type RateLimiter struct {
-	mu     sync.Mutex
-	window time.Duration
-	last   map[string]time.Time
-}
-
-func NewRateLimiter(window time.Duration) *RateLimiter {
-	return &RateLimiter{
-		window: window,
-		last:   make(map[string]time.Time),
-	}
-}
-
-func (l *RateLimiter) Allow(tenantID, userID int64, eventType string, now time.Time) bool {
-	if l == nil || l.window <= 0 {
-		return true
-	}
-	key := fmt.Sprintf("%d:%d:%s", tenantID, userID, eventType)
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if last, ok := l.last[key]; ok && now.Sub(last) < l.window {
-		return false
-	}
-	l.last[key] = now
-	return true
 }
 
 func (n *Notifier) sendExtraEmailCopies(ctx context.Context, settings Settings, base mailinfra.Message) {

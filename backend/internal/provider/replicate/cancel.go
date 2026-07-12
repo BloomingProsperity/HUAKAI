@@ -20,7 +20,7 @@ import (
 )
 
 // defaultCancelEndpointTemplate 是 prediction 取消端点模板;{id} 由 PathEscape
-// 后的 prediction id 替换。passthrough base_url 覆盖与 SSRF 守卫走
+// 后的 prediction id 替换。凭据 base_url 覆盖与 SSRF 守卫走
 // EndpointForCredential 统一通道,与 BuildRequest 同口径。
 const defaultCancelEndpointTemplate = "https://api.replicate.com/v1/predictions/{id}/cancel"
 
@@ -52,7 +52,7 @@ func CancelWorthwhile(status string) bool {
 }
 
 // predictionIDPattern 白名单校验 prediction id(上游 id 是 URL-safe token)。
-// 不用逐字符 escape:EndpointForCredential 对 passthrough base_url 会重组 URL
+// 不用逐字符 escape:EndpointForCredential 对自定义 base_url 会重组 URL
 // (url.Parse 解码 %2F 再 String() 重编码,转义斜杠塌缩),escape 不可依赖;
 // 白名单一次根除路径段注入。
 var predictionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -60,7 +60,7 @@ var predictionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // NewCancelRequest 构造 POST predictions/{id}/cancel 请求。endpoint 与鉴权都
 // 复用 BuildRequest 的同一口径(EndpointForCredential + applyCredentialAuth),
 // 自托管/代理 base_url 凭据照常生效。注意:本函数只做静态构造;发送方必须再做
-// 运行时守卫(passthrough 凭据 ValidatePassthroughEndpointTarget + dial 时刻
+// 运行时守卫(自定义 endpoint 凭据 ValidatePassthroughEndpointTarget + dial 时刻
 // wrap),与主出站 dispatcher 同口径。
 func NewCancelRequest(ctx context.Context, cred provider.Credential, predictionID string) (*http.Request, error) {
 	id := strings.TrimSpace(predictionID)

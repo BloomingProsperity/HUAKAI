@@ -14,7 +14,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/realtokenizer"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
@@ -29,20 +31,18 @@ type completionUsageForCost struct {
 	CacheCreation1hTokens int
 	CacheReadTokens       int
 
-	// ToolCallCounts holds built-in tool call counts for surcharge billing.
-	// Defaults to zero (no surcharge) when not populated.
+	// ToolCallCounts 保存用于附加费计费的内置工具调用次数。未填充时默认为零
+	// (无附加费)。
 	//
-	// TODO(NAPI-BILLING-01): wire real counts from upstream response usage.
-	// Provider-specific locations where tool-call counts are exposed:
-	//   - OpenAI chat/completions: response.usage has no per-tool call count
-	//     field today; OpenAI bills via usage_details once GA.
-	//   - OpenAI Responses API: response.usage.input_tokens_details may carry
-	//     tool call counts in future versions.
-	//   - Anthropic Messages API: server_tool_use block count can be derived
-	//     from response.content blocks of type="server_tool_use"; no dedicated
-	//     usage field exists today.
-	// Until a stable upstream signal is available, counts default to zero,
-	// which means zero surcharge — safe conservative billing.
+	// TODO(NAPI-BILLING-01): 从上游响应 usage 接入真实次数。
+	// 各 provider 暴露工具调用次数的位置:
+	//   - OpenAI chat/completions: 目前 response.usage 没有逐工具的调用次数
+	//     字段;OpenAI 在 usage_details GA 后才计费。
+	//   - OpenAI Responses API: 未来版本中 response.usage.input_tokens_details
+	//     可能携带工具调用次数。
+	//   - Anthropic Messages API: server_tool_use 块数量可从 response.content
+	//     中 type="server_tool_use" 的块推导;目前没有专门的 usage 字段。
+	// 在稳定的上游信号可用之前,次数默认为零,即零附加费——安全且保守的计费。
 	ToolCallCounts toolpricing.ToolCallCounts
 }
 
@@ -82,7 +82,7 @@ type pricingRatioResolverWithSignal interface {
 
 func (ex *chatExecution) predictedCompletionCost() (decimal.Decimal, error) {
 	cost, err := ex.completionCost(completionUsageForCost{
-		InputTokens:  estimateInputTokens(ex.body),
+		InputTokens:  estimateInputTokens(ex.req.Model, ex.body),
 		OutputTokens: estimateOutputTokens(ex.req),
 	})
 	if err != nil {
@@ -151,17 +151,22 @@ func snapshotWithEstimatedUsageBasis(snapshot string) string {
 	return snapshot + ";" + estimatedUsageBasisMarker
 }
 
-// cacheExclusiveInputFamilies are upstream protocol families whose vendor reports
-// input_tokens EXCLUDING cache-read/cache-creation tokens (cache counted as a
-// parallel dimension, per the Anthropic Messages contract). For these the additive
-// rate model already prices each dimension once. Every other family (OpenAI, Gemini,
-// and all OpenAI-compatible providers) reports prompt_tokens INCLUDING cached tokens,
-// so cached tokens must be removed from the billing input bucket to avoid charging
-// them twice -- once at the input rate and again at the cache rate. Mirrors new-api's
-// `!IsClaudeUsageSemantic` base-token subtraction (service/text_quota.go).
+// cacheExclusiveInputFamilies 是这样一些上游协议族:其供应商报告的 input_tokens
+// 「不含」cache-read/cache-creation token(按 Anthropic Messages 契约,缓存被作为
+// 一个并列维度计量)。对这些族,加法式费率模型已经对每个维度各计价一次。其它所有族
+// (OpenAI、Gemini 以及所有 OpenAI 兼容 provider)报告的 prompt_tokens「包含」缓存
+// token,因此必须把缓存 token 从计费的 input 桶中扣除,以避免对其重复收费——一次按
+// input 费率、再一次按 cache 费率。对应于参考实现里基于「Claude 用量语义」判定的基础
+// token 扣减逻辑。
+// 必须与所有复用 anthropic.Adapter(input_tokens 不含 cache 的 Anthropic 用量约定)的
+// 协议族保持一致。漏项=对缓存请求二次减 cache→少计费(B2:vertex_anthropic、R1A 引入的
+// anthropic_claude_session 曾漏)。TestCacheExclusiveInputFamiliesCoverAnthropicParser
+// 遍历契约 ResponseParseShape 防复发。
 var cacheExclusiveInputFamilies = map[string]struct{}{
-	"anthropic_messages": {},
-	"bedrock_invoke":     {},
+	"anthropic_messages":       {},
+	"anthropic_claude_session": {},
+	"bedrock_invoke":           {},
+	"vertex_anthropic":         {},
 }
 
 func inputTokensExcludeCache(protocolFamily string) bool {
@@ -169,11 +174,10 @@ func inputTokensExcludeCache(protocolFamily string) bool {
 	return ok
 }
 
-// billingUsageForCacheConvention returns a billing copy of usage whose InputTokens
-// never double-counts cached tokens. Cache-inclusive upstreams fold cache-read and
-// cache-creation tokens into prompt_tokens; subtract them so the input bucket bills
-// only non-cached tokens while the cache buckets bill the cached tokens once.
-// Client-facing CanonicalUsage is untouched; only this billing-local copy changes.
+// billingUsageForCacheConvention 返回 usage 的一个计费副本,其 InputTokens 永不重复
+// 计入缓存 token。缓存包含式的上游把 cache-read 和 cache-creation token 折进
+// prompt_tokens;扣除它们,使 input 桶只对非缓存 token 计费,而 cache 桶对缓存 token
+// 计费一次。面向客户端的 CanonicalUsage 不受影响;仅改动这个计费本地副本。
 func (ex *chatExecution) billingUsageForCacheConvention(usage completionUsageForCost) completionUsageForCost {
 	if inputTokensExcludeCache(ex.resolved.ProtocolFamily) {
 		return usage
@@ -241,10 +245,9 @@ func (ex *chatExecution) applyCacheCostOverride(result pricingeval.Result) prici
 	return pricingeval.ApplyCacheCostOverride(result, override)
 }
 
-// applyToolCallSurcharge adds the built-in tool-call surcharge to result when a
-// ToolPricingTable is configured for this (tenant, model) pair. Returns result
-// unmodified (default-off) when ToolPricingTable is nil or the lookup returns
-// zero prices.
+// applyToolCallSurcharge 在为该 (tenant, model) 配对配置了 ToolPricingTable 时,把
+// 内置工具调用附加费加到 result 上。当 ToolPricingTable 为 nil 或查询返回零价格时,
+// 返回未改动的 result(默认关闭)。
 func (ex *chatExecution) applyToolCallSurcharge(result pricingeval.Result, counts toolpricing.ToolCallCounts, groupRatio decimal.Decimal) pricingeval.Result {
 	if ex.d.ToolPricingTable == nil {
 		return result
@@ -286,11 +289,13 @@ func (ex *chatExecution) cacheGroupPricingRatio(ratio decimal.Decimal, pendingRe
 }
 
 func (ex *chatExecution) defaultRatioAfterResolverError(err error) (decimal.Decimal, bool) {
+	// 错误只落分类与类型,不落原文:与全仓「err 出口过 privacy 脱敏」约定一致。
 	slog.ErrorContext(ex.ctx, "pricing ratio resolver error served default ratio",
 		"tenant_id", ex.ident.TenantID,
 		"pool_group_id", ex.attempt.PoolGroupID,
 		"default_group_ratio", "1",
-		"error", err,
+		"error_class", privacy.ErrorClassFor(ex.ctx, err),
+		"error_type", fmt.Sprintf("%T", err),
 	)
 	return decimal.NewFromInt(1), true
 }
@@ -403,7 +408,18 @@ func (v completionRateVector) flatRateFallback() pricingeval.FlatRateFallback {
 	}
 }
 
-func estimateInputTokens(body []byte) int {
+// estimateInputTokens 产出请求前的 input token 估算,供预测成本与配额预留余量使用
+// (永远不是权威收费,权威收费以 provider 报告的 usage 为准)。开启真实 tokenizer
+// 时(默认),OpenAI 族文本用 tiktoken 计数,多模态大块被封顶;
+// HUAKAI_REAL_TOKENIZER_ENABLED=false 时恢复旧的按字节估算。
+func estimateInputTokens(model string, body []byte) int {
+	if realtokenizer.Enabled() {
+		return realtokenizer.InputTokens(model, body)
+	}
+	return legacyEstimateInputTokens(body)
+}
+
+func legacyEstimateInputTokens(body []byte) int {
 	n := len(strings.TrimSpace(string(body)))
 	if n <= 0 {
 		return 1
@@ -507,13 +523,12 @@ func parseRateVector(raw json.RawMessage) (completionRateVector, error) {
 	} else if ok {
 		out.Multiplier = multiplier
 	}
-	// Default the cache-read bucket to the input rate when a model is priced (has an
-	// input rate) but omits an explicit cache-read rate. Cache-inclusive upstreams
-	// (OpenAI / Gemini / OpenAI-compatible) report cached tokens for such models;
-	// without this the additive model would fail closed (pricing_unavailable -> 503)
-	// on every cache-hit response. Billing cached tokens at the input rate matches
-	// new-api's cache-ratio default (1.0). Models with an explicit cache-read rate keep
-	// it; truly unpriced models (no input rate) still fail closed.
+	// 当一个模型有定价(有 input 费率)但缺少显式的 cache-read 费率时,把 cache-read
+	// 桶默认为 input 费率。缓存包含式的上游(OpenAI / Gemini / OpenAI 兼容)会为这类
+	// 模型报告缓存 token;没有这一处理,加法式模型会在每个缓存命中的响应上 fail closed
+	// (pricing_unavailable -> 503)。按 input 费率对缓存 token 计费,与参考实现的缓存
+	// 比率默认值(1.0)一致。有显式 cache-read 费率的模型保留其费率;真正未定价的模型
+	// (无 input 费率)仍然 fail closed。
 	if out.HasInput && !out.HasCacheRead {
 		out.CacheRead = out.Input
 		out.HasCacheRead = true

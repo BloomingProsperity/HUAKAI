@@ -84,6 +84,10 @@ type Decision struct {
 	Scope      Scope
 	Metric     Metric
 	Amount     decimal.Decimal
+	// WindowKind 标明本次拒绝命中的是哪个时间窗口(calendar_day/week/month/fixed/manual)。
+	// 仅在拒绝决策上有意义,供拒绝响应透出"是日额还是月额超了";零值(WindowNone/空)表示无固定
+	// 窗口或未知,调用方据此决定不透出窗口名,保持对未配多窗口租户的零行为变化。
+	WindowKind WindowKind
 }
 
 // ReservationStatus 是 reservation ledger 的生命周期状态。
@@ -152,7 +156,7 @@ type WindowCounter struct {
 	Version       int
 }
 
-// CurrentWindowRead is the read-only subscription/admin projection for a policy's current window.
+// CurrentWindowRead 是某条 policy 当前窗口的只读 subscription/admin 投影视图。
 type CurrentWindowRead struct {
 	TenantID      int64
 	PolicyID      int64
@@ -207,4 +211,25 @@ type ReconciliationJob struct {
 	AttemptCount  int
 	LastError     *string
 	NextRunAt     time.Time
+}
+
+// ClaimTerminalState 是 billing claim 的现状点查视图。ActualCostSet=false 表示
+// actual_cost 仍为 NULL(尚未 commit 写入实结额)。
+type ClaimTerminalState struct {
+	Status        string
+	ActualCost    decimal.Decimal
+	ActualCostSet bool
+}
+
+// StaleReservation 是 lease 已过期仍未终态的预留 + 其 billing claim 终态视图,
+// 供清扫器按 claim 终态定向补偿(committed→Settle, aborted→Release)。
+// ClaimActualCostSet=false 表示 claim 行 actual_cost 为 NULL(此时用 PredictedCost 兜底)。
+type StaleReservation struct {
+	TenantID           int64
+	ReservationID      int64
+	ClaimID            int64
+	PredictedCost      decimal.Decimal
+	ClaimStatus        string
+	ClaimActualCost    decimal.Decimal
+	ClaimActualCostSet bool
 }

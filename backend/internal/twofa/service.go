@@ -146,6 +146,10 @@ func (s *Service) Enable(ctx context.Context, in VerifyInput) (Status, error) {
 		return Status{}, err
 	}
 	defer privacy.Zeroize(secret)
+	// 启用是一次性初始证明,**不消费时间步**:把"已消费时间步"防重放收敛在登录路径
+	// (审计点名的攻击面)。这枚启用码在随后首次登录里仍可被消费一次,其后任何重复使用
+	// 都会被 VerifyLogin 的防重放守卫拒绝——既堵住登录重放,又不破坏"启用后立即用同一码
+	// 登录一次"的合法流程。
 	if !VerifyTOTP(secret, in.Code, s.now().UTC(), defaultTOTPConfig()) {
 		if err := s.recordFailure(ctx, settings); err != nil {
 			return Status{}, err
@@ -254,8 +258,13 @@ func (s *Service) VerifyLogin(ctx context.Context, in VerifyInput) (VerifyResult
 		return VerifyResult{}, err
 	}
 	defer privacy.Zeroize(secret)
-	if VerifyTOTP(secret, in.Code, now, defaultTOTPConfig()) {
-		return s.recordSuccess(ctx, settings, MethodTOTP, now)
+	if step, ok := VerifyTOTPStep(secret, in.Code, now, defaultTOTPConfig()); ok {
+		// 防重放(RFC 6238 §5.2):先按已加载的 LastUsedStep 快速拒绝重复使用的(或更早的)
+		// 时间步。这是有效但已用过的码,**不计失败次数**,以免合法用户的网络重试触发锁定。
+		if settings.LastUsedStep != nil && step <= *settings.LastUsedStep {
+			return VerifyResult{}, ErrCodeReused
+		}
+		return s.recordTOTPSuccess(ctx, settings, step, now)
 	}
 	hash, ok := hashBackupCode(in.TenantID, in.UserID, in.Code)
 	if ok {
@@ -296,11 +305,17 @@ func (s *Service) VerifyLoginChallenge(ctx context.Context, in ChallengeVerifyIn
 	if err != nil {
 		return VerifyResult{}, err
 	}
-	return s.VerifyLogin(ctx, VerifyInput{
+	res, err := s.VerifyLogin(ctx, VerifyInput{
 		TenantID: payload.TenantID,
 		UserID:   payload.UserID,
 		Code:     in.Code,
 	})
+	if err != nil {
+		// challenge 已解出身份, 校验失败也回填 —— 调用方的失败/锁定审计才能归因到
+		// (tenant, user), 否则恒记 0/0 无法追查。
+		return VerifyResult{TenantID: payload.TenantID, UserID: payload.UserID}, err
+	}
+	return res, nil
 }
 
 func (s *Service) ready() error {
@@ -323,6 +338,27 @@ func (s *Service) recordSuccess(ctx context.Context, settings Settings, method s
 	}
 	return VerifyResult{
 		TenantID: settings.TenantID, UserID: settings.UserID, Method: method,
+		BackupCodesRemaining: remaining,
+	}, nil
+}
+
+// recordTOTPSuccess 落 TOTP 成功并消费时间步。MarkTOTPSuccess 的条件更新若未命中
+// (stored=false),说明并发请求已抢先消费同一时间步,按重放拒绝——与快速路径的
+// LastUsedStep 比较共同构成"读-比-写"竞态下的双层防重放。
+func (s *Service) recordTOTPSuccess(ctx context.Context, settings Settings, step int64, now time.Time) (VerifyResult, error) {
+	stored, err := s.store.MarkTOTPSuccess(ctx, settings.TenantID, settings.UserID, step, now)
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	if !stored {
+		return VerifyResult{}, ErrCodeReused
+	}
+	remaining, err := s.store.CountUnusedBackupCodes(ctx, settings.TenantID, settings.UserID)
+	if err != nil {
+		return VerifyResult{}, err
+	}
+	return VerifyResult{
+		TenantID: settings.TenantID, UserID: settings.UserID, Method: MethodTOTP,
 		BackupCodesRemaining: remaining,
 	}, nil
 }

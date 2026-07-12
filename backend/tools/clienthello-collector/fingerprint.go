@@ -94,8 +94,8 @@ func ja4ALPNToken(alpns []string) string {
 	if len(alpns) == 0 {
 		return "00"
 	}
-	// HUAKAI templates preserve the historical Gemini convention:
-	// h2,http/1.1 advertised together is encoded as the http/1.1 token "ht".
+	// HUAKAI 模板沿用历史上的 Gemini 约定：
+	// 同时声明 h2,http/1.1 时，按 http/1.1 的 token "ht" 编码。
 	alpn := alpns[len(alpns)-1]
 	if len(alpn) >= 2 {
 		return alpn[:2]

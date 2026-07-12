@@ -39,9 +39,9 @@ import (
 type vertexMode int
 
 const (
-	// ModeGemini Gemini-on-Vertex（publisher=google，body passthrough）。
+	// ModeGemini Gemini-on-Vertex（publisher=google，body passthrough 直通）。
 	ModeGemini vertexMode = iota
-	// ModeAnthropic Anthropic-on-Vertex（publisher=anthropic，body reshape）。
+	// ModeAnthropic Anthropic-on-Vertex（publisher=anthropic，body reshape 重塑）。
 	ModeAnthropic
 )
 

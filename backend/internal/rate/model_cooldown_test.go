@@ -20,9 +20,9 @@ func (f *fakeModelCooldownQueries) SetProviderAccountModelRateLimit(_ context.Co
 }
 
 func TestModelCooldownServiceRecordsDefault404Cooldown(t *testing.T) {
-	// Regression guarded: upstream 404 must become a model-scoped cooldown
-	// write, not only a request-local client error. Mutation self-check:
-	// deleting the service's query write leaves fake.calls=0.
+	// 守护的回归:上游 404 必须变为一次 model 作用域的冷却写入,而不只是
+	// 一个请求局部的客户端错误。变异自检:删掉 service 的查询写入会使
+	// fake.calls=0。
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	fake := &fakeModelCooldownQueries{}
 	svc := NewModelCooldownService(fake, WithNow(func() time.Time { return now }))
@@ -51,6 +51,9 @@ func TestModelCooldownServiceRecordsDefault404Cooldown(t *testing.T) {
 	}
 	if fake.arg.UpstreamStatusCode != 404 || fake.arg.UpstreamRequestID != "up-req-1" {
 		t.Fatalf("upstream evidence=(%d,%q), want (404, up-req-1)", fake.arg.UpstreamStatusCode, fake.arg.UpstreamRequestID)
+	}
+	if fake.arg.SourceLayer != "gateway_upstream_error" {
+		t.Fatalf("source_layer=%q, want gateway_upstream_error", fake.arg.SourceLayer)
 	}
 	got := fake.arg.ResetAt.Time
 	if got.Before(now.Add(5*time.Minute)) || got.After(now.Add(5*time.Minute+time.Second)) {

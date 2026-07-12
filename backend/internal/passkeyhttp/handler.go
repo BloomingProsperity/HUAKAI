@@ -298,7 +298,7 @@ func writeStepUpError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrStepUpRequired):
 		writeError(w, http.StatusForbidden, "passkey_step_up_required", "recent password or two-factor verification is required")
-	case errors.Is(err, ErrStepUpInvalid), errors.Is(err, userauth.ErrInvalidCredentials), errors.Is(err, twofa.ErrInvalidCode):
+	case errors.Is(err, ErrStepUpInvalid), errors.Is(err, userauth.ErrInvalidCredentials), errors.Is(err, twofa.ErrInvalidCode), errors.Is(err, twofa.ErrCodeReused):
 		writeError(w, http.StatusUnauthorized, "passkey_step_up_invalid", "step-up verification failed")
 	case errors.Is(err, ErrStepUpNotConfigured):
 		writeError(w, http.StatusServiceUnavailable, "passkey_step_up_not_configured", "passkey step-up dependency unset")
@@ -325,7 +325,11 @@ func writePasskeyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "passkey_duplicate", "passkey credential already exists")
 	case errors.Is(err, passkey.ErrCloneDetected):
 		writeError(w, http.StatusForbidden, "passkey_clone_detected", "passkey authenticator clone detected")
-	case errors.Is(err, userauth.ErrUserNotFound):
+	case errors.Is(err, userauth.ErrUserNotFound),
+		errors.Is(err, userauth.ErrUserDisabled),
+		errors.Is(err, userauth.ErrUserLocked),
+		errors.Is(err, userauth.ErrPasswordResetRequired):
+		// 统一返回 generic account_not_active(403),不向客户端泄露具体账号状态。
 		writeError(w, http.StatusForbidden, "account_not_active", "account is no longer active")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "passkey_backend_error", "passkey service unavailable")

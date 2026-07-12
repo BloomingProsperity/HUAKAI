@@ -7,16 +7,16 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// gptImageOfficialCatalog is the exact provider/model JSON seeded by migration
-// 0134_openai_gpt_image_pricing. Keep in sync with the .up.sql; the DB gate
-// cross-checks the seeded row and this test cross-checks the token rates.
+// gptImageOfficialCatalog 是 migration 0134_openai_gpt_image_pricing 注入的
+// 完整 provider/model JSON。需与 .up.sql 保持同步;DB 门控会交叉核对注入的行,
+// 本测试则交叉核对 token 费率。
 const gptImageOfficialCatalog = `{"providers":{"openai":{"models":{"gpt-image-1":{"pricing_scheme":"token_image","input_micro_usd":"5","output_micro_usd":"40","image_output_token_upper_bound":{"1024x1024":4160,"1024x1536":6240,"1536x1024":6208,"auto":6240},"image_size_multipliers":{"1024x1024":"1","1024x1536":"1","1536x1024":"1","auto":"1"},"image_amount_range":{"min":1,"max":10},"image_prompt_max_chars":32000},"gpt-image-1.5":{"pricing_scheme":"token_image","input_micro_usd":"5","output_micro_usd":"32","image_output_token_upper_bound":{"1024x1024":4160,"1024x1536":6240,"1536x1024":6208,"auto":6240},"image_size_multipliers":{"1024x1024":"1","1024x1536":"1","1536x1024":"1","auto":"1"},"image_amount_range":{"min":1,"max":10},"image_prompt_max_chars":32000}}}}}`
 
-// TestCatalog_GptImageOfficialTokenRates verifies the seeded gpt-image models use
-// the token_image scheme with the official OpenAI per-1M-token rates (text input /
-// image output). For generation the upstream-reported input_tokens are text only,
-// so input_micro_usd is the text rate; settle bills actual tokens, the upper bound
-// only sizes the reservation hold.
+// TestCatalog_GptImageOfficialTokenRates 验证注入的 gpt-image 模型使用
+// token_image scheme,并采用官方 OpenAI 的每百万 token 费率(text input /
+// image output)。对于生成,上游报告的 input_tokens 仅为文本,
+// 因此 input_micro_usd 是文本费率;结算按实际 token 计费,上界仅用于
+// 确定预留 hold 的大小。
 func TestCatalog_GptImageOfficialTokenRates(t *testing.T) {
 	c, err := NewCatalog(json.RawMessage(gptImageOfficialCatalog))
 	if err != nil {
@@ -46,7 +46,7 @@ func TestCatalog_GptImageOfficialTokenRates(t *testing.T) {
 		if !rates.Output.Equal(decimal.RequireFromString(tc.wantOutput)) {
 			t.Fatalf("%s output rate=%s want %s ($%s/1M image output)", tc.model, rates.Output, tc.wantOutput, tc.wantOutput)
 		}
-		// the reservation upper bound must resolve for the default size
+		// 预留上界必须能为默认 size 解析出来
 		if _, err := c.OutputTokenUpperBound("openai", []string{tc.model}, "1024x1024"); err != nil {
 			t.Fatalf("%s OutputTokenUpperBound: %v", tc.model, err)
 		}

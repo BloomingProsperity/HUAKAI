@@ -8,7 +8,7 @@ import (
 )
 
 // ----------------------------------------------------------------------------
-// D6 CanonicalToClientResponse — HCSF buffered → OpenAI Chat completion JSON
+// D6 CanonicalToClientResponse — HCSF buffered → OpenAI Chat completion JSON 序列化
 // ----------------------------------------------------------------------------
 
 type openAIChatCompletion struct {
@@ -28,7 +28,7 @@ type openAIChatChoice struct {
 
 type openAIChatChoiceMsg struct {
 	Role      string                       `json:"role"`
-	Content   *string                      `json:"content"` // null when tool_calls present
+	Content   *string                      `json:"content"` // 存在 tool_calls 时为 null
 	ToolCalls []openAIChatResponseToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -79,7 +79,7 @@ func canonicalToOpenAIFinishReason(c CanonicalStopReason) (*string, []ProtocolLo
 }
 
 // CanonicalToClientResponse 把 HCSF buffered envelope 序列化为 OpenAI Chat
-// completion JSON。
+// completion JSON 响应。
 func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
 	if canonical == nil {
 		return nil, nil, errors.New("proto: openai_chat CanonicalToClientResponse nil envelope")
@@ -164,6 +164,16 @@ func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canoni
 	body, err := json.Marshal(out)
 	if err != nil {
 		return nil, nil, fmt.Errorf("proto: openai_chat marshal response: %w", err)
+	}
+	// 合并上游响应的顶层透传字段(如 system_fingerprint / service_tier / prompt_filter_results
+	// 等 typed struct 未建模的键)。与 anthropic_messages 序列化器对称: 非流式响应必经
+	// CanonicalToClientResponse, 不补 merge 则这些字段被静默丢弃。MergeExtrasInto 保证 typed
+	// 字段优先、不覆盖已知键。
+	if resp.Passthrough != nil {
+		body, err = MergeExtrasInto(body, resp.Passthrough)
+		if err != nil {
+			return nil, nil, fmt.Errorf("proto: openai_chat merge response passthrough: %w", err)
+		}
 	}
 	return body, losses, nil
 }

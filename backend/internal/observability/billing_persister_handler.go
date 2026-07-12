@@ -15,23 +15,12 @@ import (
 var ErrSettlerNotConfigured = errors.New("observability: billing settler not configured")
 
 type BillingPersisterHandler struct {
-	settler    billing.Settler
-	timeout    time.Duration
-	reconciler *DualRunReconciler
+	settler billing.Settler
+	timeout time.Duration
 }
 
-type BillingPersisterOption func(*BillingPersisterHandler)
-
-func WithBillingPersisterReconciler(r *DualRunReconciler) BillingPersisterOption {
-	return func(h *BillingPersisterHandler) { h.reconciler = r }
-}
-
-func NewBillingPersisterHandler(settler billing.Settler, timeout time.Duration, opts ...BillingPersisterOption) *BillingPersisterHandler {
-	h := &BillingPersisterHandler{settler: settler, timeout: timeout}
-	for _, opt := range opts {
-		opt(h)
-	}
-	return h
+func NewBillingPersisterHandler(settler billing.Settler, timeout time.Duration) *BillingPersisterHandler {
+	return &BillingPersisterHandler{settler: settler, timeout: timeout}
 }
 
 func (h *BillingPersisterHandler) ID() eventbus.HandlerID {
@@ -92,10 +81,7 @@ func (h *BillingPersisterHandler) Handle(ctx context.Context, event eventbus.Req
 	if req.AuditRequestID == "" {
 		req.AuditRequestID = event.RequestID
 	}
-	res, err := h.settler.Settle(ctx, req)
-	if h.reconciler != nil {
-		h.reconciler.RecordAsync(event, req, res, err)
-	}
+	_, err := h.settler.Settle(ctx, req)
 	if err != nil {
 		return fmt.Errorf("observability: billing persister settle: %w", err)
 	}

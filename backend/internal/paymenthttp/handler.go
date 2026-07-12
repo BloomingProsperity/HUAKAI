@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
@@ -187,20 +188,23 @@ func toAuditEventViews(events []payment.AuditEvent) []auditEventView {
 
 // MountPaymentAdminRoutes 挂载管理员支付端点 (建单 / 确认+履约 / 查单 / 列单)。
 func MountPaymentAdminRoutes(r chi.Router, d AdminDeps) {
-	r.Post("/", newAdminCreateOrderHandler(d))
+	// money-via-login:动钱 admin 操作放开给登录 admin(session),对标 new-api;危险者靠前端确认弹窗。
+	// provider config 只含 enabled+checkout_url(无密钥),归 SessionSafe;归属经 P2b-2 双身份 text 列可追。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/", newAdminCreateOrderHandler(d))
 	r.Get("/", newAdminListOrdersHandler(d))
 	r.Get("/dashboard", newAdminDashboardHandler(d))
 	r.Get("/providers/{provider}/config", newAdminGetProviderConfigHandler(d))
-	r.Put("/providers/{provider}/config", newAdminPutProviderConfigHandler(d))
+	r.With(safe).Put("/providers/{provider}/config", newAdminPutProviderConfigHandler(d))
 	r.Get("/refund-requests", newAdminListRefundRequestsHandler(d))
-	r.Post("/refund-requests/{id}/approve", newAdminApproveRefundRequestHandler(d))
-	r.Post("/refund-requests/{id}/reject", newAdminRejectRefundRequestHandler(d))
+	r.With(safe).Post("/refund-requests/{id}/approve", newAdminApproveRefundRequestHandler(d))
+	r.With(safe).Post("/refund-requests/{id}/reject", newAdminRejectRefundRequestHandler(d))
 	r.Get("/{id}/audit", newAdminAuditHandler(d))
-	r.Post("/{id}/retry", newAdminRetryHandler(d))
+	r.With(safe).Post("/{id}/retry", newAdminRetryHandler(d))
 	r.Get("/{id}", newAdminGetOrderHandler(d))
-	r.Post("/{id}/confirm", newAdminConfirmHandler(d))
-	r.Post("/{id}/cancel", newAdminCancelHandler(d))
-	r.Post("/{id}/refund", newAdminRefundHandler(d))
+	r.With(safe).Post("/{id}/confirm", newAdminConfirmHandler(d))
+	r.With(safe).Post("/{id}/cancel", newAdminCancelHandler(d))
+	r.With(safe).Post("/{id}/refund", newAdminRefundHandler(d))
 }
 
 // MountPaymentUserRoutes 挂载用户支付端点 (自己的订单 / 余额 / 门户充值 / 退款申请)。
@@ -266,6 +270,7 @@ func newAdminCreateOrderHandler(d AdminDeps) http.HandlerFunc {
 			OrderKind:          req.OrderKind,
 			SubscriptionPlanID: req.SubscriptionPlanID,
 			ActorAdminID:       ident.TokenID,
+			ActorRef:           ident.AuditActor(),
 			RequestID:          requestID(r),
 		})
 		if err != nil {

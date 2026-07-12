@@ -28,6 +28,8 @@ type overviewTotals struct {
 	TotalTokens   int64  `json:"total_tokens"`
 	ActiveUsers   int64  `json:"active_users"`
 	ActiveAPIKeys int64  `json:"active_api_keys"`
+	SuccessCount  int64  `json:"success_count"`
+	ErrorCount    int64  `json:"error_count"`
 	SuccessRate   string `json:"success_rate"`
 }
 
@@ -43,9 +45,9 @@ type overviewResponse struct {
 	Trend  []overviewTrendPoint `json:"trend"`
 }
 
-// NewOverviewHandler serves GET /v1/admin/usage/overview after the caller
-// wires it behind platform-admin RBAC. It is read-only and intentionally
-// reports actual_cost for operator spend analysis.
+// NewOverviewHandler 在调用方将其接到平台管理员 RBAC 之后，
+// 提供 GET /v1/admin/usage/overview。它是只读的，并有意上报
+// actual_cost 供运营者做花费分析。
 func NewOverviewHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
@@ -124,12 +126,20 @@ func overviewTotalsFromRow(row dbbilling.AggregateUsageOverviewTotalsRow) (overv
 	if err != nil {
 		return overviewTotals{}, err
 	}
+	// 成功请求是总请求的过滤子集，因此该值保持非负；为与 perf-metrics
+	// handler 对称起见，仍做防御性钳制。
+	errorCount := row.RequestCount - row.SuccessCount
+	if errorCount < 0 {
+		errorCount = 0
+	}
 	return overviewTotals{
 		Requests:      row.RequestCount,
 		TotalCost:     cost,
 		TotalTokens:   row.TotalTokens,
 		ActiveUsers:   row.ActiveUsers,
 		ActiveAPIKeys: row.ActiveApiKeys,
+		SuccessCount:  row.SuccessCount,
+		ErrorCount:    errorCount,
 		SuccessRate:   successRateText(row.SuccessCount, row.RequestCount),
 	}, nil
 }

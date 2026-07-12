@@ -22,7 +22,7 @@ type KeyControlService struct {
 	store        controlsStore
 	logger       *slog.Logger
 	now          func() time.Time
-	progressRead quota.ProgressReadStore // KEY-007: optional usage reader
+	progressRead quota.ProgressReadStore // KEY-007:可选的用量读取器
 }
 
 func NewKeyControlService(pool *pgxpool.Pool, logger *slog.Logger, opts ...func(*KeyControlService)) *KeyControlService {
@@ -50,8 +50,8 @@ func newServiceForTest(store controlsStore, now func() time.Time) *KeyControlSer
 	return &KeyControlService{store: store, logger: slog.Default(), now: now}
 }
 
-// WithProgressReader injects a quota.ProgressReadStore for KEY-007 used_usd reporting.
-// If not set, GetKeyQuota returns used_usd=0 and no remaining_usd.
+// WithProgressReader 注入一个 quota.ProgressReadStore,供 KEY-007 上报 used_usd。
+// 若未设置,GetKeyQuota 返回 used_usd=0 且不返回 remaining_usd。
 func WithProgressReader(r quota.ProgressReadStore) func(*KeyControlService) {
 	return func(s *KeyControlService) {
 		s.progressRead = r
@@ -121,12 +121,12 @@ func (s *KeyControlService) GetKeyQuota(ctx context.Context, tenantID, userID, a
 	}
 	view := quotaViewFromRow(apiKeyID, row)
 
-	// KEY-007: inject usage if progress reader is available
+	// KEY-007:若 progress reader 可用则注入用量
 	if s.progressRead != nil {
 		scopeID := strconv.FormatInt(apiKeyID, 10)
 		windows, err := s.progressRead.ListCurrentWindowsForScope(ctx, tenantID, quota.ScopeAPIKey, scopeID, s.now().UTC())
 		if err != nil {
-			// Non-fatal: log and return zero usage rather than failing the read.
+			// 非致命:记录日志并返回零用量,而不是让读取失败。
 			if s.logger != nil {
 				s.logger.WarnContext(ctx, "userkeycontrols.get_quota_usage_failed",
 					"api_key_id", apiKeyID,
@@ -135,11 +135,18 @@ func (s *KeyControlService) GetKeyQuota(ctx context.Context, tenantID, userID, a
 			}
 		} else {
 			var used decimal.Decimal
+			var windowEnd *time.Time
 			for _, w := range windows {
-				// consumed = settled + reserved
+				// 已消耗 = 已结算 + 已预留
 				used = used.Add(w.SettledValue).Add(w.ReservedValue)
+				// 暴露当前各 cost 窗口中最早的重置边界。
+				if windowEnd == nil || w.Window.End.Before(*windowEnd) {
+					end := w.Window.End
+					windowEnd = &end
+				}
 			}
 			view.UsedUSD = used
+			view.WindowEnd = windowEnd
 			if !row.LimitUSD.IsZero() {
 				remaining := row.LimitUSD.Sub(used)
 				view.RemainingUSD = &remaining
@@ -199,7 +206,7 @@ func (s *KeyControlService) GetKeyIPAllowlist(ctx context.Context, tenantID, use
 	return KeyIPAllowlistView{APIKeyID: row.APIKeyID, IPAllowlist: entries}, nil
 }
 
-// KEY-016: IP blacklist set/get (parallel to allowlist)
+// KEY-016:IP 黑名单的 set/get(与白名单平行)
 
 func (s *KeyControlService) SetKeyIPBlacklist(ctx context.Context, req SetKeyIPBlacklistRequest) (SetKeyIPBlacklistResult, error) {
 	if s == nil || s.store == nil {
@@ -363,6 +370,7 @@ func quotaResultToSet(apiKeyID int64, row quotaPolicyRow) SetKeyQuotaResult {
 		WindowKind:    row.WindowKind,
 		WindowSeconds: row.WindowSeconds,
 		Mode:          row.Mode,
+		Priority:      row.Priority,
 		ValidFrom:     row.ValidFrom,
 	}
 }
@@ -378,6 +386,7 @@ func quotaViewFromRow(apiKeyID int64, row quotaPolicyRow) KeyQuotaView {
 		WindowKind:    row.WindowKind,
 		WindowSeconds: row.WindowSeconds,
 		Mode:          row.Mode,
+		Priority:      row.Priority,
 		ValidFrom:     row.ValidFrom,
 	}
 }

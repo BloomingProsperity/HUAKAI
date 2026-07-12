@@ -165,18 +165,16 @@ func updateProviderAccountHealth(ctx context.Context, exec db.DBTX, change Provi
 	return nil
 }
 
-// ProviderAccountDownDeliverer bridges a health transition that raised the
-// operator-alert flag into the notification pipeline. It is defined here (not as
-// an import of the notify package) so credentialworker stays decoupled and
-// unit-testable with a spy, mirroring providerAccountHealthStore. The
-// implementation lives in the gateway wiring as an adapter onto
-// notify.NotifyProviderAccountDown.
+// ProviderAccountDownDeliverer 把一次升起了 operator-alert 标记的 health 转换
+// 桥接到通知管线。它定义在这里(而不是 import notify 包),让 credentialworker
+// 保持解耦、可用 spy 做单元测试,与 providerAccountHealthStore 同思路。具体
+// 实现位于 gateway wiring,作为 notify.NotifyProviderAccountDown 的适配器。
 type ProviderAccountDownDeliverer interface {
 	DeliverProviderAccountDown(ctx context.Context, change ProviderAccountHealthChange, outcome auth.Outcome) error
 }
 
-// providerAccountDownDeliveryTimeout bounds the detached best-effort alert send
-// so a slow/hung webhook receiver cannot leak a goroutine indefinitely.
+// providerAccountDownDeliveryTimeout 为脱离请求生命周期的 best-effort 告警发送
+// 设定上限,使一个缓慢/卡住的 webhook 接收方不会无限期地泄漏 goroutine。
 const providerAccountDownDeliveryTimeout = 15 * time.Second
 
 func (s *Scheduler) maybeLogProviderAccountHealthAlert(ctx context.Context, change ProviderAccountHealthChange, outcome auth.Outcome) {
@@ -192,12 +190,11 @@ func (s *Scheduler) maybeLogProviderAccountHealthAlert(ctx context.Context, chan
 	s.deliverProviderAccountDown(ctx, change, outcome)
 }
 
-// deliverProviderAccountDown fires the operator alert out-of-band. It is
-// deliberately non-fatal: the alert runs AFTER the credential-worker DB tx has
-// committed and its error is only logged, never propagated back into recordAudit
-// — a notification-pipeline failure must never break credential-worker integrity.
-// The send runs on a context detached from the request lifecycle (so it isn't
-// cancelled when RunOnce returns) but is bounded by a timeout so it cannot leak.
+// deliverProviderAccountDown 带外触发 operator 告警。它刻意做成非致命:告警在
+// credential-worker 的 DB 事务提交之后才运行,其错误只记录、绝不回传进
+// recordAudit——通知管线的失败绝不能破坏 credential-worker 的完整性。发送运行在
+// 一个脱离请求生命周期的 context 上(因此 RunOnce 返回时不会被取消),但受超时
+// 约束以防泄漏。
 func (s *Scheduler) deliverProviderAccountDown(ctx context.Context, change ProviderAccountHealthChange, outcome auth.Outcome) {
 	if s == nil || s.alertDeliverer == nil {
 		return
@@ -217,9 +214,8 @@ func (s *Scheduler) deliverProviderAccountDown(ctx context.Context, change Provi
 	})
 }
 
-// runAlertAsync launches the best-effort alert send. Production uses a detached
-// goroutine; tests inject a synchronous runner so the spy assertion is
-// deterministic (mirrors notify.WithSettlerAsync).
+// runAlertAsync 启动 best-effort 告警发送。生产使用一个脱离的 goroutine;测试
+// 注入一个同步 runner,使 spy 断言具有确定性(与 notify.WithSettlerAsync 同思路)。
 func (s *Scheduler) runAlertAsync(fn func()) {
 	if s.alertAsync != nil {
 		s.alertAsync(fn)

@@ -13,7 +13,7 @@ import (
 )
 
 func TestReferralRewardIssuedOnceOnQualify(t *testing.T) {
-	// Mutation: drop the unique referral reward gate or the status='pending' qualifier guard -> this test can double-create reward/payment facts.
+	// 变异:去掉唯一推荐奖励闸门或 status='pending' 资格守卫 -> 本测试会重复创建奖励/支付事实。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
@@ -43,7 +43,7 @@ func TestReferralRewardIssuedOnceOnQualify(t *testing.T) {
 }
 
 func TestReferralRewardIdempotent(t *testing.T) {
-	// Mutation: remove ON CONFLICT (tenant_id, referral_id) or update already-rewarded detection -> second call credits the referrer twice.
+	// 变异:移除 ON CONFLICT (tenant_id, referral_id) 或改动"已奖励"检测 -> 第二次调用会给推荐人重复入账。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
@@ -82,7 +82,7 @@ func TestReferralRewardIdempotent(t *testing.T) {
 }
 
 func TestReferralRewardAtomic_CreditFailureRollsBack(t *testing.T) {
-	// Mutation: inserting referral_rewards or setting referrals.status outside the credit transaction leaves rows behind after this forced credit failure.
+	// 变异:在入账事务之外插入 referral_rewards 或设置 referrals.status,会在本次强制入账失败后残留记录。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)
@@ -121,7 +121,7 @@ func TestReferralRewardAtomic_CreditFailureRollsBack(t *testing.T) {
 }
 
 func TestReferralRewardAmount(t *testing.T) {
-	// Mutation: hard-code the default reward amount instead of using RewardCents -> balance and amount_usd_micros assertions go red.
+	// 变异:写死默认奖励金额而非使用 RewardCents -> balance 与 amount_usd_micros 断言变红。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)

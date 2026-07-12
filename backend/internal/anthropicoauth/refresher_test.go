@@ -43,7 +43,7 @@ func TestRefresherInvalidGrantRecordsAuthExpiredInRefreshTransaction(t *testing.
 	wantCalls := []string{
 		"probe:101",
 		"tx_begin",
-		"lock:44",
+		"lock:credential_refresh:44",
 		"reread:101",
 		"failure:auth_expired",
 		"audit:credential_refresh_failed:auth_expired",
@@ -55,10 +55,10 @@ func TestRefresherInvalidGrantRecordsAuthExpiredInRefreshTransaction(t *testing.
 }
 
 func TestRefresherUnauthorizedStatusRecordsAuthExpiredViaOutcomeClassifier(t *testing.T) {
-	// Regression killed: Anthropic 401 must use the shared refresh outcome
-	// classifier, not only the legacy invalid_grant body parser. Mutation
-	// self-check: forcing the classifier bridge to return unknown records
-	// non_retryable and this test turns red.
+	// 杜绝的回归：Anthropic 的 401 必须走共享的 refresh outcome
+	// classifier，而不能只靠 legacy 的 invalid_grant body 解析。Mutation
+	// 自检：强制让 classifier bridge 返回 unknown，就会被记成
+	// non_retryable，本 test 随之变红。
 	now := time.Date(2026, 5, 24, 10, 32, 0, 0, time.UTC)
 	store := newMemoryRefreshStore()
 	client := &http.Client{Transport: refreshRoundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -287,7 +287,8 @@ func (tx *memoryRefreshTx) SaveRefreshFailure(_ context.Context, _ credentialsto
 }
 
 func (tx *memoryRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	tx.store.calls = append(tx.store.calls, "lock:"+int64String(args[0].(int64)))
+	// 锁键现以单个 text 参数传入(修复 pgx 无法把 int64 编码成 text 的 bug),故按 string 记录。
+	tx.store.calls = append(tx.store.calls, "lock:"+args[0].(string))
 	return pgconn.NewCommandTag("SELECT 1"), nil
 }
 

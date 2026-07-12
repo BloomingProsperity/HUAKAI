@@ -1,4 +1,4 @@
-// Package credentialacq owns F-CRED-001 credential acquisition flow state.
+// Package credentialacq 负责 F-CRED-001 凭据获取流程的状态。
 package credentialacq
 
 import (
@@ -165,10 +165,10 @@ type CredentialCandidate struct {
 	Payload           []byte
 	ActorID           string
 	RedactedContext   map[string]any
-	// ExternalAccountID/ExternalAccountEmail/AccountIDSource carry the upstream
-	// provider account identity auto-extracted at token exchange (accountident).
-	// They are non-secret account-management metadata, never an authorization input,
-	// and are empty when extraction yielded nothing (manual/operator value wins).
+	// ExternalAccountID/ExternalAccountEmail/AccountIDSource 携带在 token 交换时
+	// 自动提取出的上游 provider 账号身份(accountident)。
+	// 它们属于非机密的账号管理元数据,绝非授权输入,
+	// 当提取无结果时为空(手工/operator 值优先)。
 	ExternalAccountID    string
 	ExternalAccountEmail string
 	AccountIDSource      string
@@ -243,9 +243,22 @@ func DefaultModePlans() []ModePlan {
 		manualUpstreamTokenPlan(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, FlowKindTokenExchange, ClientSourceOperatorConfig, []FlowKind{FlowKindTokenExchange, FlowKindPaste}, sessionTokenFields()),
 		oauthPlan(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindJSONImport}, RiskLevelMedium),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorOpenRouter),
-		hiddenOpenAICompatiblePlan(credentialstore.VendorDeepSeek),
-		hiddenOpenAICompatiblePlan(credentialstore.VendorGrok),
+		// 官 key 厂商(2026-07-02 Owner 指派接入):存储约束已由迁移 0169 放行,
+		// grok/deepseek 从 hidden 提升为正式 api_key 粘贴计划,kimi + 国内大厂新增同构计划。
+		apiKeyPlan(credentialstore.VendorDeepSeek),
+		apiKeyPlan(credentialstore.VendorGrok),
 		oauthPlan(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
+		apiKeyPlan(credentialstore.VendorKimi),
+		apiKeyPlan(credentialstore.VendorQwen),
+		apiKeyPlan(credentialstore.VendorGLM),
+		apiKeyPlan(credentialstore.VendorYi),
+		apiKeyPlan(credentialstore.VendorBaichuan),
+		apiKeyPlan(credentialstore.VendorDoubao),
+		apiKeyPlan(credentialstore.VendorMiniMax),
+		apiKeyPlan(credentialstore.VendorErnie),
+		apiKeyPlan(credentialstore.VendorHunyuan),
+		apiKeyPlan(credentialstore.VendorStep),
+		// 全球推理托管云:Owner 明确不接,保持 hidden(且无 handlerSpec、不进 0169 CHECK,双层拒绝)。
 		hiddenOpenAICompatiblePlan(credentialstore.VendorMistral),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorGroqCloud),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorTogether),

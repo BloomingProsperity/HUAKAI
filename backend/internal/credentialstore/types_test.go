@@ -2,6 +2,7 @@ package credentialstore
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,19 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		"windsurf/oauth",
 		"grok/xai_oauth",
 		"kimi/kimi_oauth",
+		// 官 key 厂商(2026-07-02 接入,迁移 0169 放行存储)。
+		"grok/api_key",
+		"deepseek/api_key",
+		"kimi/api_key",
+		"qwen/api_key",
+		"glm/api_key",
+		"yi/api_key",
+		"baichuan/api_key",
+		"doubao/api_key",
+		"minimax/api_key",
+		"ernie/api_key",
+		"hunyuan/api_key",
+		"step/api_key",
 	}
 	if got := registry.Names(); len(got) != len(want) {
 		t.Fatalf("handler count=%d want %d: %v", len(got), len(want), got)
@@ -67,6 +81,7 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 	}{
 		{VendorAnthropic, AuthModeAPIKey, `{"api_key":"sk-ant"}`, RuntimeAPIKey, "sk-ant"},
 		{VendorAnthropic, AuthModeClaudeAIOAuth, `{"access_token":"anthropic-access","refresh_token":"anthropic-refresh","auth_mode":"claude_ai_oauth"}`, RuntimeOAuthAccessToken, "anthropic-access"},
+		{VendorAnthropic, AuthModeClaudeCode, `{"session_token":"anthropic-session","access_token":"anthropic-access","auth_mode":"claude_code"}`, RuntimeSessionToken, "anthropic-session"},
 		{VendorAnthropic, AuthModeBedrock, `{"aws_access_key_id":"ak","aws_secret_access_key":"sec","aws_region":"us-east-1"}`, RuntimeAWSSigV4, "sec"},
 		{VendorOpenAI, AuthModeRefreshToken, `{"access_token":"tok","refresh_token":"rt"}`, RuntimeUpstreamPassthrough, "Bearer tok"},
 		{VendorGemini, AuthModeAntigravity, `{"session_token":"sess"}`, RuntimeSessionToken, "sess"},
@@ -88,6 +103,84 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		if got.Kind != tc.kind || got.Value != tc.value {
 			t.Fatalf("%s/%s got kind=%q value=%q want %q/%q", tc.vendor, tc.mode, got.Kind, got.Value, tc.kind, tc.value)
 		}
+	}
+}
+
+// TestAzureAPIKeyFailsClosedToPreventOpenAILeak 咬住 S0:azure_api_key(无 api_key、无
+// access_token)必须 fail-closed 物化——否则会被物化成普通 APIKey,由 OpenAI adapter
+// 发往 api.openai.com(Bearer),把 Azure 密钥外发给 OpenAI。Entra access_token 仍走
+// passthrough(尊重 base_url,发往 operator 自配 endpoint,不外发)。api_key 正常。
+// 变异:恢复 firstField(fields,"api_key","azure_api_key")而去掉 fail-close → azure_api_key
+// 物化成 APIKey(value=Azure 密钥),第一条断言红。
+func TestAzureAPIKeyFailsClosedToPreventOpenAILeak(t *testing.T) {
+	handler, err := DefaultHandlerRegistry().MustLookup(VendorOpenAI, AuthModeAzure)
+	if err != nil {
+		t.Fatalf("azure handler lookup: %v", err)
+	}
+	// azure_api_key 单独存在 → 必须拒绝物化,且错误不回显密钥。
+	if _, err := handler.RuntimeMaterial([]byte(`{"azure_api_key":"azkey-secret","base_url":"https://x.openai.azure.com"}`)); err == nil {
+		t.Fatal("azure_api_key 应 fail-closed 拒绝物化,却成功(密钥会外发到 OpenAI)")
+	} else if strings.Contains(err.Error(), "azkey-secret") {
+		t.Fatalf("错误信息不得回显密钥: %v", err)
+	}
+	// Entra access_token → passthrough(不外发,尊重 base_url)。
+	got, err := handler.RuntimeMaterial([]byte(`{"access_token":"entra-tok","base_url":"https://x.openai.azure.com"}`))
+	if err != nil {
+		t.Fatalf("Entra access_token 应可物化: %v", err)
+	}
+	if got.Kind != RuntimeUpstreamPassthrough || got.Value != "Bearer entra-tok" {
+		t.Fatalf("Entra 应为 passthrough Bearer,得 kind=%q value=%q", got.Kind, got.Value)
+	}
+	// 普通 api_key(非 azure)正常物化。
+	got, err = handler.RuntimeMaterial([]byte(`{"api_key":"sk-openai"}`))
+	if err != nil || got.Kind != RuntimeAPIKey || got.Value != "sk-openai" {
+		t.Fatalf("普通 api_key 应正常物化,得 kind=%q value=%q err=%v", got.Kind, got.Value, err)
+	}
+}
+
+func TestOpenAICodexRuntimeMaterialSurfacesAccountHeaders(t *testing.T) {
+	registry := DefaultHandlerRegistry()
+	cases := []struct {
+		name string
+		mode string
+	}{
+		{name: "chatgpt oauth", mode: AuthModeChatGPTOAuth},
+		{name: "codex cli oauth", mode: AuthModeCodexCLIOAuth},
+		{name: "codex web oauth", mode: AuthModeCodexWebOAuth},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, err := registry.MustLookup(VendorOpenAI, tc.mode)
+			if err != nil {
+				t.Fatalf("lookup: %v", err)
+			}
+			raw := `{
+				"access_token":"access-for-codex",
+				"account_id":"acct_primary",
+				"chatgpt_account_id":"acct_header",
+				"codex_version":"0.99.0",
+				"originator":"codex_cli_rs",
+				"oai_device_id":"device_1"
+			}`
+			material, err := handler.RuntimeMaterial([]byte(raw))
+			if err != nil {
+				t.Fatalf("RuntimeMaterial: %v", err)
+			}
+			if material.Kind != RuntimeSessionToken || material.Value != "access-for-codex" {
+				t.Fatalf("material kind/value=%q/%q want session access token", material.Kind, material.Value)
+			}
+			for key, want := range map[string]string{
+				"account_id":         "acct_primary",
+				"chatgpt_account_id": "acct_header",
+				"codex_version":      "0.99.0",
+				"originator":         "codex_cli_rs",
+				"oai_device_id":      "device_1",
+			} {
+				if got := material.Extra[key]; got != want {
+					t.Fatalf("Extra[%s]=%q want %q; extra=%+v", key, got, want, material.Extra)
+				}
+			}
+		})
 	}
 }
 
@@ -120,6 +213,9 @@ func TestVertexRuntimeMaterialSurfacesLocation(t *testing.T) {
 			if material.Kind != RuntimeUpstreamPassthrough {
 				t.Fatalf("kind=%q want %q", material.Kind, RuntimeUpstreamPassthrough)
 			}
+			if material.Value != "Bearer vertex-access" {
+				t.Fatalf("Value=%q want Bearer vertex-access (v2 vertex_sa 必须产可转发主值)", material.Value)
+			}
 			if got := material.Extra["location"]; got != "us-east5" {
 				t.Fatalf("Extra[location]=%q want us-east5 (location 必须透到 adapter)", got)
 			}
@@ -131,8 +227,8 @@ func TestVertexRuntimeMaterialSurfacesLocation(t *testing.T) {
 }
 
 func TestXAIOAuthHandlerSpec(t *testing.T) {
-	// Mutation: remove the grok/xai_oauth handlerSpec, make it session-token
-	// runtime, or accept session_token-only payloads and this test must go red.
+	// 变异:删除 grok/xai_oauth 的 handlerSpec、将其改为 session-token runtime,
+	// 或接受仅含 session_token 的 payload,本测试都必须变红。
 	handler, ok := DefaultHandlerRegistry().Lookup(VendorGrok, AuthModeXAIOAuth)
 	if !ok {
 		t.Fatal("missing grok/xai_oauth handler")
@@ -169,8 +265,8 @@ func TestXAIOAuthHandlerSpec(t *testing.T) {
 }
 
 func TestKimiHandlerSpecRefreshable(t *testing.T) {
-	// Mutation: remove refreshable or drop access_token/refresh_token from the
-	// Kimi handler anyOf list; this test must go RED on either regression.
+	// 变异:从 Kimi handler 的 anyOf 列表中移除 refreshable 或去掉
+	// access_token/refresh_token;任一回归都必须使本测试变红。
 	registry := DefaultHandlerRegistry()
 	handler, err := registry.MustLookup(VendorKimi, AuthModeKimiOAuth)
 	if err != nil {

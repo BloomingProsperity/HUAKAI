@@ -85,9 +85,10 @@ func TestCodeAssistBodyEnvelope(t *testing.T) {
 		sessionCred(map[string]string{"project_id": "proj-x"}), "gemini-2.5-pro", inner))
 
 	var env struct {
-		Model   string          `json:"model"`
-		Project string          `json:"project"`
-		Request json.RawMessage `json:"request"`
+		Model              string          `json:"model"`
+		Project            string          `json:"project"`
+		Request            json.RawMessage `json:"request"`
+		EnabledCreditTypes []string        `json:"enabledCreditTypes"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
 		t.Fatalf("out body not JSON envelope: %v\nbody=%s", err, body)
@@ -97,6 +98,9 @@ func TestCodeAssistBodyEnvelope(t *testing.T) {
 	}
 	if env.Project != "proj-x" {
 		t.Errorf("envelope.project=%q want proj-x", env.Project)
+	}
+	if len(env.EnabledCreditTypes) != 0 {
+		t.Fatalf("默认 Gemini Code Assist 不应注入 credits，got %v", env.EnabledCreditTypes)
 	}
 	// request 必须是内层 gemini body 原文(含 unknownVendorField,证明未经重
 	// marshal 丢字段)。比较 canonical JSON 等价。

@@ -13,8 +13,8 @@ import (
 
 const canonicalLedgerSchemaVersion = "trust.ledger.v1"
 
-// CanonicalPayload returns the deterministic byte payload used for the
-// ledger entry hash. It intentionally excludes Signature and MerkleRoot.
+// CanonicalPayload 返回用于 ledger 条目哈希的确定性字节负载。
+// 它有意排除 Signature 与 MerkleRoot。
 func CanonicalPayload(entry LedgerEntry) []byte {
 	payload, _ := canonicalPayload(entry)
 	return payload
@@ -53,8 +53,8 @@ func canonicalPayload(entry LedgerEntry) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// TenantScopeRef is a stable non-reversible tenant reference for canonical
-// receipts. It avoids exposing the raw tenant_id in public proof material.
+// TenantScopeRef 是用于规范化回执的稳定且不可逆的租户引用。
+// 它避免在公开的证明材料中暴露原始 tenant_id。
 func TenantScopeRef(tenantID int64) string {
 	if tenantID == 0 {
 		return ""

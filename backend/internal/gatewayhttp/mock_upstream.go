@@ -1,11 +1,10 @@
-// Phase C mock upstream emitter — produces a deterministic Anthropic SSE
-// stream so the gateway can prove its Tx1→forward→Tx2 pipeline against
-// real PostgreSQL without depending on Anthropic's network. Phase E will
-// replace this with the real upstream client.
+// Phase C mock upstream 发射器 —— 产生一段确定性的 Anthropic SSE
+// 流,让 gateway 能针对真实 PostgreSQL 验证其 Tx1→forward→Tx2 流水线,
+// 而无需依赖 Anthropic 的网络。Phase E 将用真实 upstream 客户端替换它。
 //
-// SSE event shape mirrors backend/internal/gateway/forwarder_test.go so
-// anthropic.Adapter accepts the bytes and produces a non-zero
-// UsageRecordDraft (TokensInput / TokensOutput populated).
+// SSE 事件形态对齐 backend/internal/gateway/forwarder_test.go,以便
+// anthropic.Adapter 接受这些字节并产出非零的
+// UsageRecordDraft(TokensInput / TokensOutput 已填充)。
 
 package gatewayhttp
 
@@ -15,11 +14,11 @@ import (
 	"fmt"
 )
 
-// MockAnthropicUpstreamBytes returns a 4-event Anthropic SSE stream:
-// message_start → content_block_delta → message_delta (usage) → message_stop.
-// Caller passes inputTokens / outputTokens; the emitter encodes them onto
-// the message_delta usage field, which anthropic.Adapter extracts into
-// the UsageRecordDraft.
+// MockAnthropicUpstreamBytes 返回一段含 4 个事件的 Anthropic SSE 流:
+// message_start → content_block_delta → message_delta(usage)→ message_stop。
+//调用方传入 inputTokens / outputTokens;发射器把它们编码进
+// message_delta 的 usage 字段,anthropic.Adapter 再从中提取到
+// UsageRecordDraft。
 func MockAnthropicUpstreamBytes(messageID, model string, inputTokens, outputTokens int) []byte {
 	var b bytes.Buffer
 	writeSSE(&b, "message_start", map[string]any{

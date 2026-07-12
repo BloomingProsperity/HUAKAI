@@ -15,10 +15,10 @@ import (
 )
 
 func TestAuditLedgerDLQHandlerHappyPathAppendsPreparedEntry(t *testing.T) {
-	// Risk killed: replaying an audit_ledger_entry DLQ record must run the full
-	// Append path, not merely mark the DLQ row delivered.
-	// Mutation self-check: replace handler Append with return nil and this test
-	// fails because MemoryLedger has no row for the request_id.
+	// 消除的风险：重放 audit_ledger_entry 的 DLQ 记录必须走完整的
+	// Append 路径，而不能只把 DLQ 行标记为已投递。
+	// 变异自检：把 handler 的 Append 改成 return nil，本测试就会失败，
+	// 因为 MemoryLedger 里没有对应 request_id 的行。
 	ctx := context.Background()
 	signer, _ := sign.GenerateKey()
 	ledger, err := NewMemoryLedger(signer)
@@ -47,10 +47,10 @@ func TestAuditLedgerDLQHandlerHappyPathAppendsPreparedEntry(t *testing.T) {
 }
 
 func TestAuditLedgerDLQHandlerExistingRequestDoesNotAppendAgain(t *testing.T) {
-	// Risk killed: if request_id already has a durable ledger row, replay must
-	// be idempotently delivered without a second Append attempt.
-	// Mutation self-check: remove the GetByRequestID delivered branch and this
-	// test fails because the spy records an Append call.
+	// 消除的风险：若 request_id 已有持久化的 ledger 行，重放必须
+	// 幂等地标记为已投递，而不应再尝试第二次 Append。
+	// 变异自检：删除 GetByRequestID 的已投递分支，本测试就会失败，
+	// 因为 spy 记录到了一次 Append 调用。
 	spy := &ledgerSpy{
 		getEntry: preparedDLQFixture(t, "req_dlq_duplicate").AsLedgerEntry(),
 		getErr:   nil,
@@ -66,11 +66,11 @@ func TestAuditLedgerDLQHandlerExistingRequestDoesNotAppendAgain(t *testing.T) {
 }
 
 func TestAuditLedgerDLQHandlerCorruptExistingRequestDoesNotAppendAgain(t *testing.T) {
-	// Risk killed: a corrupt row still proves the request_id exists; replay must
-	// not create a duplicate ledger row while B-15 verification handles corrupt
-	// evidence separately.
-	// Mutation self-check: treat ErrLedgerEntryCorrupt like not-found and this
-	// test fails because Append is called.
+	// 消除的风险：损坏的行仍能证明 request_id 存在；重放必须
+	// 不创建重复的 ledger 行，损坏证据由 B-15 verification 单独
+	// 处理。
+	// 变异自检：把 ErrLedgerEntryCorrupt 当作 not-found 处理，本
+	// 测试就会失败，因为 Append 被调用了。
 	spy := &ledgerSpy{
 		getEntry: preparedDLQFixture(t, "req_dlq_corrupt").AsLedgerEntry(),
 		getErr:   ErrLedgerEntryCorrupt,
@@ -86,11 +86,11 @@ func TestAuditLedgerDLQHandlerCorruptExistingRequestDoesNotAppendAgain(t *testin
 }
 
 func TestAuditLedgerDLQHandlerAppendFailureReturnsOriginalError(t *testing.T) {
-	// Risk killed: Append errors must propagate so the DLQ framework can
-	// MarkFailed and retry with backoff; swallowing the error falsely delivers
-	// an unwritten audit intent.
-	// Mutation self-check: return nil after Append failure and this test fails
-	// because errors.Is no longer sees appendErr.
+	// 消除的风险：Append 的错误必须向上传播，让 DLQ 框架能够
+	// MarkFailed 并带退避重试；吞掉错误会把一条未写入的 audit
+	// 意图错误地标记为已投递。
+	// 变异自检：在 Append 失败后 return nil，本测试就会失败，
+	// 因为 errors.Is 再也看不到 appendErr。
 	appendErr := errors.New("append unavailable")
 	spy := &ledgerSpy{
 		getErr:    ErrLedgerEntryNotFound,
@@ -107,11 +107,11 @@ func TestAuditLedgerDLQHandlerAppendFailureReturnsOriginalError(t *testing.T) {
 }
 
 func TestAuditLedgerDLQHandlerDuplicateRaceDelivered(t *testing.T) {
-	// Risk killed: a concurrent worker may insert the same request_id after the
-	// not-found lookup; ErrDuplicateRequestID is delivered only after the
-	// existing row is proven to belong to the DLQ record tenant.
-	// Mutation self-check: remove the post-duplicate lookup and this test fails
-	// because the spy records one GetByRequestID call instead of two.
+	// 消除的风险：并发 worker 可能在 not-found 查询之后插入相同的
+	// request_id；只有在证明已存在的行属于该 DLQ 记录所在 tenant
+	// 之后，才会把 ErrDuplicateRequestID 标记为已投递。
+	// 变异自检：删除重复后的二次查询，本测试就会失败，因为 spy
+	// 记录到一次而不是两次 GetByRequestID 调用。
 	requestID := "req_dlq_duplicate_race"
 	spy := &ledgerSpy{
 		getResults: []ledgerSpyGetResult{
@@ -134,11 +134,11 @@ func TestAuditLedgerDLQHandlerDuplicateRaceDelivered(t *testing.T) {
 }
 
 func TestAuditLedgerDLQHandlerRejectsCrossTenantExistingRequestID(t *testing.T) {
-	// Risk killed: request_id is globally unique and may come from a client
-	// header; an existing row for another tenant must not let this tenant's DLQ
-	// row be marked delivered without its own audit evidence.
-	// Mutation self-check: remove the existing-row tenant ownership check and
-	// this test fails because the handler returns nil.
+	// 消除的风险：request_id 全局唯一，且可能来自 client header；
+	// 属于另一个 tenant 的已存在行，不能让本 tenant 的 DLQ 行在没有
+	// 自己的 audit 证据时就被标记为已投递。
+	// 变异自检：删除对已存在行的 tenant 归属校验，本测试就会失败，
+	// 因为 handler 返回了 nil。
 	const requestID = "req_dlq_cross_tenant_existing"
 	spy := &ledgerSpy{
 		getEntry: preparedDLQFixtureForTenant(t, requestID, 101).AsLedgerEntry(),
@@ -155,11 +155,11 @@ func TestAuditLedgerDLQHandlerRejectsCrossTenantExistingRequestID(t *testing.T) 
 }
 
 func TestAuditLedgerDLQHandlerRejectsCrossTenantDuplicateRace(t *testing.T) {
-	// Risk killed: if Append loses a duplicate request_id race, the worker must
-	// re-read the winning row and reject it when that row belongs to another
-	// tenant instead of falsely delivering this DLQ record.
-	// Mutation self-check: return nil directly on ErrDuplicateRequestID and this
-	// test fails because no ownership error is returned.
+	// 消除的风险：若 Append 在 duplicate request_id 竞争中落败，worker
+	// 必须重新读取胜出的那一行，并在该行属于另一个 tenant 时拒绝它，
+	// 而不是错误地把这条 DLQ 记录标记为已投递。
+	// 变异自检：遇到 ErrDuplicateRequestID 直接 return nil，本测试就会
+	// 失败，因为没有返回归属错误。
 	const requestID = "req_dlq_cross_tenant_race"
 	spy := &ledgerSpy{
 		getResults: []ledgerSpyGetResult{
@@ -182,12 +182,11 @@ func TestAuditLedgerDLQHandlerRejectsCrossTenantDuplicateRace(t *testing.T) {
 }
 
 func TestAuditLedgerDLQHandlerRepreparesPersistedPayloadBeforeAppend(t *testing.T) {
-	// Risk killed: a DLQ row is persisted data, not a live sealed
-	// PreparedEntry. Replay must run PrepareEntry again so hand-edited or bad
-	// enqueue payloads cannot sign raw prompt/key material into the ledger.
-	// Mutation self-check: decoding the payload directly to PreparedEntry and
-	// appending it makes this test fail because forbidden_marker remains in the
-	// persisted hop detail.
+	// 消除的风险：DLQ 行是持久化数据，而非活的、已封箱的
+	// PreparedEntry。重放必须重新运行 PrepareEntry，这样手工篡改或
+	// 入队错误的 payload 才无法把原始 prompt / key 材料签进 ledger。
+	// 变异自检：把 payload 直接解码成 PreparedEntry 再 append，本测试
+	// 就会失败，因为 forbidden_marker 仍留在持久化的 hop detail 里。
 	const marker = "w4a-dlq-replay-marker-sk-never-persist"
 	previousRedactor := ledgerRedactor
 	ledgerRedactor = func() ledgerPayloadRedactor {
@@ -252,11 +251,11 @@ func TestAuditLedgerDLQHandlerRepreparesPersistedPayloadBeforeAppend(t *testing.
 }
 
 func TestAuditLedgerDLQHandlerRejectsMismatchedTenantScopeRefWithoutAppend(t *testing.T) {
-	// Risk killed: a hand-edited DLQ payload must not sign a non-empty
-	// tenant_scope_ref that conflicts with the envelope tenant and later makes
-	// the persisted proof unverifiable when the DB scan derives scope by tenant.
-	// Mutation self-check: remove the tenant_scope_ref guard and this test fails
-	// because the handler returns nil and the spy records an Append call.
+	// 消除的风险：手工篡改的 DLQ payload 不能签入一个与 envelope
+	// tenant 冲突的非空 tenant_scope_ref，否则当 DB 扫描按 tenant 推导
+	// scope 时，会让持久化的证明无法验签。
+	// 变异自检：删除 tenant_scope_ref 的守卫，本测试就会失败，因为
+	// handler 返回 nil 且 spy 记录到一次 Append 调用。
 	raw, err := json.Marshal(preparedEntryJSON{
 		RequestID:      "req_dlq_scope_mismatch",
 		TenantID:       77,
@@ -301,11 +300,11 @@ func TestAuditLedgerDLQHandlerRejectsMismatchedTenantScopeRefWithoutAppend(t *te
 }
 
 func TestAuditLedgerDLQHandlerAllowsMatchingTenantScopeRefAndClearsBeforeSigning(t *testing.T) {
-	// Risk killed: a valid non-empty tenant_scope_ref from an older DLQ payload
-	// must be accepted only when it matches the verified tenant, then cleared so
-	// canonical signing derives the same value DB scan/verify derives later.
-	// Mutation self-check: reject all non-empty tenant_scope_ref values and this
-	// test fails before the replayed ledger row exists.
+	// 消除的风险：来自较旧 DLQ payload 的合法非空 tenant_scope_ref
+	// 只有在与已验证的 tenant 匹配时才接受，随后将其清空，使
+	// canonical 签名推导出的值与 DB 扫描 / verify 之后推导的值一致。
+	// 变异自检：拒绝所有非空 tenant_scope_ref 值，本测试就会在重放的
+	// ledger 行出现之前失败。
 	ctx := context.Background()
 	signer, _ := sign.GenerateKey()
 	ledger, err := NewMemoryLedger(signer)
@@ -343,11 +342,11 @@ func TestAuditLedgerDLQHandlerAllowsMatchingTenantScopeRefAndClearsBeforeSigning
 }
 
 func TestAuditLedgerDLQHandlerAllowsEmptyTenantScopeRefAndDerivesBeforeSigning(t *testing.T) {
-	// Risk killed: empty tenant_scope_ref is a valid DLQ payload shape; replay
-	// must derive the canonical scope from the already-verified tenant_id and
-	// produce a signature that DB scan/verify can recompute.
-	// Mutation self-check: reject empty tenant_scope_ref in the worker and this
-	// test fails before the replayed ledger row exists.
+	// 消除的风险：空 tenant_scope_ref 是一种合法的 DLQ payload 形态；
+	// 重放必须从已验证的 tenant_id 推导出 canonical scope，并产出一个
+	// DB 扫描 / verify 能够重算的 signature。
+	// 变异自检：在 worker 里拒绝空 tenant_scope_ref，本测试就会在重放的
+	// ledger 行出现之前失败。
 	ctx := context.Background()
 	signer, _ := sign.GenerateKey()
 	ledger, err := NewMemoryLedger(signer)
@@ -400,12 +399,11 @@ func TestAuditLedgerDLQHandlerAllowsEmptyTenantScopeRefAndDerivesBeforeSigning(t
 }
 
 func TestAuditLedgerDLQHandlerReplaysCredentialWorkerPayloadWithoutHopChain(t *testing.T) {
-	// Risk killed: credentialworker audit entries legitimately prepare no
-	// HopChain. DLQ replay must not strand those rows at decode time; it must
-	// re-run PrepareEntry, Append the entry, and return delivered.
-	// Mutation self-check: restore the old empty-hop_chain decode guard and this
-	// test fails because handler returns a decode error before the ledger row is
-	// written.
+	// 消除的风险：credentialworker 的 audit 条目合法地不准备任何
+	// HopChain。DLQ 重放不能在 decode 时卡住这些行；它必须重新运行
+	// PrepareEntry，Append 该条目，并返回已投递。
+	// 变异自检：恢复旧的 empty-hop_chain decode 守卫，本测试就会失败，
+	// 因为 handler 在 ledger 行写入之前返回了 decode 错误。
 	ctx := context.Background()
 	signer, _ := sign.GenerateKey()
 	ledger, err := NewMemoryLedger(signer)
@@ -445,10 +443,10 @@ func TestAuditLedgerDLQHandlerReplaysCredentialWorkerPayloadWithoutHopChain(t *t
 }
 
 func TestAuditLedgerDLQHandlerIdempotencyKeyMustMatchPayloadRequestID(t *testing.T) {
-	// Risk killed: DLQ replay must not let a bad payload request_id steer
-	// duplicate detection and append away from the envelope's request identity.
-	// Mutation self-check: remove the idempotency/request_id guard and this test
-	// fails because the handler returns nil and Append is called for payload id.
+	// 消除的风险：DLQ 重放不能让一个错误的 payload request_id 把重复
+	// 检测与 append 引向偏离 envelope 请求身份的方向。
+	// 变异自检：删除 idempotency/request_id 守卫，本测试就会失败，因为
+	// handler 返回 nil 且 Append 是针对 payload id 调用的。
 	spy := &ledgerSpy{getErr: ErrLedgerEntryNotFound}
 
 	err := NewDLQHandler(spy)(context.Background(), dlqRecordForPreparedWithKey(t,
@@ -464,11 +462,11 @@ func TestAuditLedgerDLQHandlerIdempotencyKeyMustMatchPayloadRequestID(t *testing
 }
 
 func TestAuditLedgerDLQHandlerTenantMismatchReturnsErrorWithoutAppend(t *testing.T) {
-	// Risk killed: a bad enqueue or hand-edited DLQ row must not let the
-	// payload tenant override the DLQ envelope tenant and create cross-tenant
-	// audit evidence.
-	// Mutation self-check: remove the tenant mismatch guard and this test fails
-	// because the handler returns nil and the spy records an Append for tenant 8.
+	// 消除的风险：错误的入队或手工篡改的 DLQ 行，不能让 payload
+	// 里的 tenant 覆盖 DLQ envelope 的 tenant，从而创建跨 tenant 的
+	// audit 证据。
+	// 变异自检：删除 tenant mismatch 守卫，本测试就会失败，因为
+	// handler 返回 nil 且 spy 记录到一次针对 tenant 8 的 Append。
 	raw, err := json.Marshal(preparedEntryJSON{
 		RequestID:      "req_dlq_tenant_mismatch",
 		TenantID:       8,

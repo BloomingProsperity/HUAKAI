@@ -1,9 +1,7 @@
-// Package channelhealth implements F-CH-002 channel health auto-disable.
+// 包 channelhealth 实现 F-CH-002 渠道健康自动停用。
 //
-// The package is intentionally vendor-neutral. It stores only tenant-scoped
-// credential identity, safe reason classes, rolling counts, and state-machine
-// evidence. Raw upstream response text and credential material are not part of
-// the API surface.
+// 该包刻意保持供应商中立。它只存储 tenant 范围内的凭据身份、安全的原因类别、滚动计数
+// 以及状态机证据。原始上游响应文本和凭据材料不属于 API 暴露面。
 package channelhealth
 
 import (
@@ -11,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 )
 
 type HealthState string
@@ -38,6 +38,9 @@ const (
 	SignalForbidden                       SignalClass = "forbidden"
 	SignalLatencyP99                      SignalClass = "latency_p99"
 	SignalAccountSuspended                SignalClass = "account_suspended"
+	// SignalAuthChallenge:auth 失败(401 / Grok 400-auth)。刻意独立于健康 FSM——applySignal 把它
+	// 单独路由进 auth 降级车道(authcooldown),完全不改 rec.State/Score、不进 error-rate/ban-ramp 窗口。
+	SignalAuthChallenge                   SignalClass = "auth_challenge"
 	SignalTokenRevoked                    SignalClass = "token_revoked"
 	SignalCredentialRevoked               SignalClass = "credential_revoked"
 	SignalAccountDisabled                 SignalClass = "account_disabled"
@@ -244,9 +247,11 @@ type Signal struct {
 	At               time.Time
 	RequestID        string
 	RateLimitResetAt *time.Time
-	// RawUpstreamText is accepted for classification tests only. Service logic
-	// deliberately never stores or echoes this value.
+	// RawUpstreamText 仅用于分类测试而接收。Service 逻辑刻意从不存储或回显该值。
 	RawUpstreamText string
+	// AuthFailureClass 仅当 Class==SignalAuthChallenge 时有意义:区分 iron-clad/ambiguous,
+	// 决定 auth 车道是否允许升级 HardDisabled。零值=ambiguous(安全默认:永不永久禁)。
+	AuthFailureClass authcooldown.FailureClass
 }
 
 type SignalSample struct {

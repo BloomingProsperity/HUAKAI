@@ -18,10 +18,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 )
 
 func TestDefaultModeAdapterRegistryCoversCredentialStoreModes(t *testing.T) {
@@ -62,10 +62,9 @@ func TestDefaultModeAdapterRegistryRoutesSlice26OAuthModes(t *testing.T) {
 }
 
 func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
-	// Regression killed: windsurf/oauth credentials could be stored, but the
-	// refresh worker's mode registry missed the executor and marked the account
-	// adapter_missing. Mutation self-check: deleting the windsurf/oauth default
-	// registration makes this test fail with failure:88:adapter_missing.
+	// 修掉的回归:windsurf/oauth 凭据可以被存储,但 refresh worker 的 mode registry
+	// 缺少对应的执行器,从而把账号标为 adapter_missing。Mutation 自检:删掉
+	// windsurf/oauth 的默认注册会让本测试以 failure:88:adapter_missing 失败。
 	calls := []string{}
 	store := &recordingRefreshStore{
 		calls: &calls,
@@ -83,9 +82,9 @@ func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh returned %v, want no adapter_missing for windsurf/oauth", err)
 	}
-	// TOKLIFE-04: ErrNoRefreshRequired now sets next_attempt_at via SetNextAttemptThrottle
-	// to prevent a tight re-attempt loop; throttle:88 is expected in the call sequence.
-	want := []string{"probe", "tx_begin", "lock:88", "reread", "throttle:88"}
+	// TOKLIFE-04:ErrNoRefreshRequired 现在通过 SetNextAttemptThrottle 设置
+	// next_attempt_at,以防止紧密的重试循环;调用序列中预期出现 throttle:88。
+	want := []string{"probe", "tx_begin", "lock:credential_refresh:88", "reread", "throttle:88"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -128,8 +127,8 @@ func assertWindsurfManualModeAdapter(t *testing.T, adapter ModeRefreshAdapter) {
 }
 
 func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *testing.T) {
-	// Regression killed: the default scheduled Codex refresh path must not
-	// fall back to endpoint/client/scope embedded in credential JSON.
+	// 修掉的回归:默认的定时 Codex refresh 路径绝不能回退到嵌在 credential JSON
+	// 里的 endpoint/client/scope。
 	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
 	if !ok {
 		t.Fatal("Codex CLI OAuth mode adapter missing")
@@ -150,44 +149,92 @@ func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *test
 	}
 }
 
-func TestGeminiAntigravityRefreshIsFailClosedUntilReactivation(t *testing.T) {
-	// 判别 mutation：把 registry 改回 legacy AntigravityRefresh 时会发生 HTTP 调用。
-	previousClient := http.DefaultClient
-	t.Cleanup(func() { http.DefaultClient = previousClient })
-	var calls int
-	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		calls++
-		return jsonResponse(`{"access_token":"unexpected","refresh_token":"unexpected-rt","expires_in":1800}`), nil
+// TestGeminiAntigravityRefreshUsesBuiltinProfile 守住重激活路径：canonical 的
+// gemini/antigravity mode 必须调用既有 Antigravity 刷新核，并且只把内置公开
+// endpoint/client/secret/scope 发给 Google。退回暂停 adapter 或改用 Gemini
+// 默认 client 时都会在本测试中变红。
+func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
+	var gotURL string
+	var gotForm url.Values
+	mockClient := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("读取 refresh body 失败：%v", err)
+		}
+		gotForm, err = url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatalf("解析 refresh body 失败：%v", err)
+		}
+		return jsonResponse(`{"access_token":"ag-access-new","refresh_token":"ag-refresh-new","expires_in":1800,"token_type":"Bearer"}`), nil
 	})}
 
-	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil).Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
 	if !ok {
-		t.Fatal("missing gemini/antigravity refresh adapter")
+		t.Fatal("缺少 gemini/antigravity refresh adapter")
 	}
-	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+	legacy, ok := adapter.(legacyOAuthModeAdapter)
+	if !ok {
+		t.Fatalf("adapter type=%T，期望 legacyOAuthModeAdapter 复用刷新契约", adapter)
+	}
+	wire, ok := legacy.adapter.(providerantigravity.RefreshAdapter)
+	if !ok {
+		t.Fatalf("底层 adapter type=%T，期望 antigravity.RefreshAdapter", legacy.adapter)
+	}
+	if wire.TokenURL != providerantigravity.AntigravityOAuthTokenEndpoint || wire.ClientID != providerantigravity.AntigravityOAuthClientID() {
+		t.Fatalf("底层 endpoint/client=(%q,%q)", wire.TokenURL, wire.ClientID)
+	}
+
+	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
 		ProviderAccountID: 94,
 		Vendor:            credentialstore.VendorGemini,
 		AuthMode:          credentialstore.AuthModeAntigravity,
-		Payload:           []byte(`{"access_token":"old","refresh_token":"rt-old","client_secret":"credential-secret"}`),
+		Payload: []byte(`{
+			"session_token":"ag-session-old",
+			"access_token":"ag-access-old",
+			"refresh_token":"ag-refresh-old",
+			"project_id":"project-preserved",
+			"oauth_token_endpoint":"https://attacker.example/token",
+			"client_id":"attacker-client",
+			"client_secret":"attacker-secret",
+			"scope":"attacker-scope"
+		}`),
 	})
-	if !errors.Is(err, credentialacq.ErrFeatureDisabled) {
-		t.Fatalf("RefreshCredential err=%v, want credentialacq.ErrFeatureDisabled", err)
+	if err != nil {
+		t.Fatalf("RefreshCredential 失败：%v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "antigravity OAuth wiring pending Owner reactivation") {
-		t.Fatalf("RefreshCredential err=%v, want Owner reactivation pause message", err)
+	if gotURL != providerantigravity.AntigravityOAuthTokenEndpoint {
+		t.Fatalf("refresh URL=%q，期望 %q", gotURL, providerantigravity.AntigravityOAuthTokenEndpoint)
 	}
-	if calls != 0 {
-		t.Fatalf("HTTP calls=%d want 0 while gemini/antigravity refresh is paused", calls)
+	wantForm := map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": "ag-refresh-old",
+		"client_id":     providerantigravity.AntigravityOAuthClientID(),
+		"client_secret": providerantigravity.AntigravityOAuthClientSecret(),
+		"scope":         strings.Join(providerantigravity.DefaultOAuthConfig().Scopes, " "),
+	}
+	for key, want := range wantForm {
+		if got := gotForm.Get(key); got != want {
+			t.Errorf("refresh form %s=%q，期望 %q", key, got, want)
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(result.Payload, &payload); err != nil {
+		t.Fatalf("解析刷新结果失败：%v", err)
+	}
+	if payload["access_token"] != "ag-access-new" || payload["session_token"] != "ag-access-new" {
+		t.Fatalf("新 access/session token 未同步：%s", result.Payload)
+	}
+	if payload["refresh_token"] != "ag-refresh-new" || payload["project_id"] != "project-preserved" {
+		t.Fatalf("refresh_token/project_id 未正确合并：%s", result.Payload)
 	}
 }
 
 func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRefreshesSessionToken(t *testing.T) {
-	// Regression killed: gemini/oauth and antigravity/oauth scheduled refresh
-	// must use existing HUAKAI_GEMINI_OAUTH_* operator config and must replace
-	// stale session_token with the freshly refreshed access_token. Mutation
-	// self-checks: reading only the newer HERMES-specific env names fails before
-	// the request; deleting session_token synchronization leaves old-session in
-	// the saved payload and makes this test red.
+	// 修掉的回归:gemini/oauth 与 antigravity/oauth 的定时 refresh 必须使用现有的
+	// HUAKAI_GEMINI_OAUTH_* operator 配置,并且必须用刚刷新得到的 access_token 替换
+	// 陈旧的 session_token。Mutation 自检:只读取较新的 HERMES 专属 env 名会在请求前
+	// 失败;删掉 session_token 同步会让保存的 payload 残留 old-session,使本测试转红。
 	cases := []struct {
 		name     string
 		vendor   string
@@ -216,11 +263,12 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 			t.Setenv("HUAKAI_GEMINI_OAUTH_TOKEN_URL", operatorEndpoint)
 			t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_ID", operatorClientID)
 			t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", "")
-			previousClient := http.DefaultClient
-			t.Cleanup(func() { http.DefaultClient = previousClient })
 			var gotURL string
 			var gotForm url.Values
-			http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			// operator OAuth 路径生产用 SSRF 防护拨号 client(丢弃自定义 RoundTripper、拨号层校验
+			// 目标 IP),无法用 http.DefaultClient mock 驱动。经 newDefaultModeAdapterRegistry 注入
+			// mock client 直驱刷新逻辑;SSRF 防护本身另由 TestGeminiRefreshHTTPClientIsSSRFProtectedAtWiring 覆盖。
+			mockClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				gotURL = r.URL.String()
 				body, err := io.ReadAll(r.Body)
 				if err != nil {
@@ -233,7 +281,7 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 				return jsonResponse(`{"access_token":"` + wantAccessToken + `","refresh_token":"` + wantRefreshToken + `","expires_in":1800,"token_type":"Bearer"}`), nil
 			})}
 
-			adapter, ok := DefaultModeAdapterRegistry().Lookup(tc.vendor, tc.authMode)
+			adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil).Lookup(tc.vendor, tc.authMode)
 			if !ok {
 				t.Fatalf("missing mode refresh adapter %s/%s", tc.vendor, tc.authMode)
 			}
@@ -280,12 +328,58 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 	}
 }
 
+type modeProjectResolverStub struct {
+	projectID string
+	calls     int
+	token     string
+}
+
+func (s *modeProjectResolverStub) ResolveProjectID(_ context.Context, token string) (string, error) {
+	s.calls++
+	s.token = token
+	return s.projectID, nil
+}
+
+func TestDefaultModeAdapterRegistryWiresAntigravityProjectResolver(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_GEMINI_OAUTH_TOKEN_URL", "https://operator.antigravity.example.test/oauth/token")
+	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_ID", "operator-antigravity-client")
+	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", "")
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResponse(`{"access_token":"access-after-refresh","refresh_token":"refresh-after-refresh","expires_in":1800}`), nil
+	})}
+	resolver := &modeProjectResolverStub{projectID: "project-through-registry"}
+	registry := newDefaultModeAdapterRegistryWithProjectResolver(client, resolver)
+	adapter, ok := registry.Lookup(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
+	if !ok {
+		t.Fatal("缺少 antigravity/oauth refresh adapter")
+	}
+	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 95,
+		Vendor:            credentialstore.VendorAntigravity,
+		AuthMode:          credentialstore.AuthModeOAuth,
+		Payload:           []byte(`{"access_token":"access-old","refresh_token":"refresh-old"}`),
+	})
+	if err != nil {
+		t.Fatalf("RefreshCredential 失败：%v", err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(result.Payload, &payload); err != nil {
+		t.Fatalf("解析刷新结果失败：%v", err)
+	}
+	if resolver.calls != 1 || resolver.token != "access-after-refresh" {
+		t.Fatalf("resolver 接线未生效：calls=%d token=%q", resolver.calls, resolver.token)
+	}
+	if payload["project_id"] != "project-through-registry" || payload["project_metadata_status"] != "resolved" {
+		t.Fatalf("project 未经 registry 接线写回：%s", result.Payload)
+	}
+}
+
 func TestWindsurfManualModeAdapterRejectsRefreshTokenOnlyCredential(t *testing.T) {
-	// Regression killed: a stored Windsurf OAuth payload with only refresh_token
-	// is unusable by the runtime session adapter, so scheduled refresh must
-	// fail closed instead of silently treating it as a manual no-op. Mutation
-	// self-check: deleting the session/access-token guard returns
-	// ErrNoRefreshRequired and makes this test red.
+	// 修掉的回归:一个只含 refresh_token 的已存储 Windsurf OAuth payload 无法被运行时
+	// session adapter 使用,因此定时 refresh 必须 fail closed,而不是悄悄把它当作一次
+	// 手动 no-op。Mutation 自检:删掉 session/access-token 守卫会返回
+	// ErrNoRefreshRequired,使本测试转红。
 	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth)
 	if !ok {
 		t.Fatal("missing windsurf/oauth mode adapter")
@@ -341,7 +435,7 @@ func TestModeRefreshCodexOperatorConfigFailureRecordsOperatorClass(t *testing.T)
 	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
 		t.Fatalf("Refresh err=%v, want ErrCodexOAuthConfigRequired", err)
 	}
-	want := []string{"probe", "tx_begin", "lock:45", "reread", "failure:45:operator_config_required"}
+	want := []string{"probe", "tx_begin", "lock:credential_refresh:45", "reread", "failure:45:operator_config_required"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -398,16 +492,15 @@ func TestMetadataTokenAdapterUsesStdlibMetadataRequest(t *testing.T) {
 	}
 }
 
-// assertSSRFBlocksLoopbackEndpoint runs a credential-driven token adapter with NO injected client
-// (forcing the production fallback) against a real loopback HTTP server that WOULD hand back a usable
-// access_token if reached. The SSRF-protected fallback must refuse to dial 127.0.0.1, so run() must
-// return a dial error and never capture the token. This is the discriminating fixture shared
-// by the mock and metadata adapters.
+// assertSSRFBlocksLoopbackEndpoint 在不注入 client(强制走生产 fallback)的情况下,
+// 用一个 credential 驱动的 token adapter 去打一个真实的 loopback HTTP 服务器——若被
+// 打到,该服务器会回交一个可用的 access_token。受 SSRF 保护的 fallback 必须拒绝拨号
+// 127.0.0.1,因此 run() 必须返回一个拨号错误且绝不捕获到 token。这是 mock 与
+// metadata adapter 共享的区分性 fixture。
 //
-// Mutation check: restore the bare `http.DefaultClient` fallback in either adapter — the request then
-// reaches the loopback server, RefreshCredential succeeds with a captured token, err is nil, and this
-// assertion goes red. The success path proves the regression is real token exfiltration, not a
-// cosmetic error.
+// Mutation check:在任一 adapter 中还原裸 `http.DefaultClient` fallback——请求随后会
+// 打到 loopback 服务器,RefreshCredential 成功并捕获到 token,err 为 nil,本断言转红。
+// 这条成功路径证明该回归是真实的 token 外泄,而非仅仅一个表面错误。
 func assertSSRFBlocksLoopbackEndpoint(t *testing.T, run func(endpoint string) error) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -460,7 +553,7 @@ func TestRefreshAdvisoryLockPrecedesRereadAndSave(t *testing.T) {
 	if err := refresher.Refresh(context.Background(), 101); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	want := []string{"probe", "tx_begin", "lock:44", "reread", "adapter:44", "save:44"}
+	want := []string{"probe", "tx_begin", "lock:credential_refresh:44", "reread", "adapter:44", "save:44"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -490,7 +583,7 @@ func TestGeminiFallbackAuditWrittenInRefreshTransaction(t *testing.T) {
 		t.Fatalf("Refresh: %v", err)
 	}
 	want := []string{
-		"probe", "tx_begin", "lock:55", "reread", "adapter:55",
+		"probe", "tx_begin", "lock:credential_refresh:55", "reread", "adapter:55",
 		"audit:gemini_cross_client_fallback:code_assist:ai_studio:true", "save:55",
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -521,13 +614,13 @@ func jsonResponse(body string) *http.Response {
 	}
 }
 
-// TestRefreshLockedRecordSurfacesSaveFailureError guards when persisting the refresh-failure
-// state itself fails, refreshLockedRecord must surface that error (joined with the cause), not drop
-// it with `_ =`. Otherwise the credential's failure state (cooldown / retry count / reason) is
-// silently lost and the scheduler keeps retrying on stale state.
+// TestRefreshLockedRecordSurfacesSaveFailureError 守卫:当持久化 refresh-failure
+// 状态本身失败时,refreshLockedRecord 必须把该错误暴露出来(与起因 join),而不是
+// 用 `_ =` 丢弃。否则凭据的失败状态(冷却 / 重试计数 / 原因)会被悄悄丢失,scheduler
+// 会按陈旧状态反复重试。
 //
-// Mutation check: restore `_ = txStore.SaveRefreshFailure(...)` and the returned error no longer
-// wraps the persistence sentinel → red. Uses the adapter-missing branch (no live adapter needed).
+// Mutation check:还原 `_ = txStore.SaveRefreshFailure(...)`,返回的错误就不再 wrap
+// 持久化 sentinel → 转红。使用 adapter-missing 分支(无需活的 adapter)。
 func TestRefreshLockedRecordSurfacesSaveFailureError(t *testing.T) {
 	saveErr := errors.New("save refresh failure write failed")
 	calls := []string{}
@@ -567,7 +660,8 @@ type recordingRefreshTx struct {
 }
 
 func (tx *recordingRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:"+strconv.FormatInt(args[0].(int64), 10))
+	// 锁键现以单个 text 参数传入(修复 pgx int64→text 编码 bug),按 string 记录。
+	*tx.calls = append(*tx.calls, "lock:"+args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 
@@ -636,13 +730,13 @@ func (a recordingModeAdapter) RefreshCredential(_ context.Context, in ModeRefres
 }
 
 func TestDefaultModeAdapterRegistryRoutesUpstreamOAuthRefreshModes(t *testing.T) {
-	// Mutation: drop either register(...) for grok/xai_oauth or kimi/kimi_oauth,
-	// or point tokenURL/clientID at the wrong value; this test goes RED.
+	// Mutation:删掉 grok/xai_oauth 或 kimi/kimi_oauth 任一的 register(...),
+	// 或把 tokenURL/clientID 指向错误的值;本测试就会转红。
 	registry := DefaultModeAdapterRegistry()
 	cases := []struct {
 		vendor, authMode, wantTokenURL, wantClientID string
 	}{
-		{credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, "https://auth.x.ai/oauth/token", "b1a00492-073a-47ea-816f-4c329264a828"},
+		{credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, "https://auth.x.ai/oauth2/token", "b1a00492-073a-47ea-816f-4c329264a828"},
 		{credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, "https://auth.kimi.com/api/oauth/token", "17e5f671-d194-4dfb-9706-5516cb48c098"},
 	}
 	for _, tc := range cases {
@@ -683,7 +777,7 @@ func TestBuiltinRefreshTokenModeAdapterRotatesTokens(t *testing.T) {
 	if err := json.Unmarshal(res.Payload, &fields); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	// Mutation: remove the refresh_token rotation in executeTokenRequest -> RED.
+	// Mutation:删掉 executeTokenRequest 中的 refresh_token 轮换 -> 转红。
 	if fields["access_token"] != "new-access" {
 		t.Fatalf("access_token=%v want new-access", fields["access_token"])
 	}
@@ -696,7 +790,7 @@ func TestBuiltinRefreshTokenModeAdapterRotatesTokens(t *testing.T) {
 }
 
 func TestBuiltinRefreshTokenModeAdapterNoRefreshTokenSkips(t *testing.T) {
-	// Mutation: treat missing refresh_token as an error instead of ErrNoRefreshRequired -> RED.
+	// Mutation:把缺失 refresh_token 当作错误而非 ErrNoRefreshRequired -> 转红。
 	adapter := builtinRefreshTokenModeAdapter{providerName: "kimi", tokenURL: "https://auth.kimi.com/api/oauth/token", clientID: "x"}
 	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{Payload: []byte(`{"access_token":"only"}`)})
 	if !errors.Is(err, ErrNoRefreshRequired) {

@@ -32,7 +32,11 @@ func (s *PostgresStore) Generate(ctx context.Context, rec generateRecord) (Invit
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	// 同租户邀请码创建串行化，避免并发请求一起越过月配额。
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('invitation_quota:' || $1::text, 0))`, rec.TenantID); err != nil {
+	// 锁键整串在 Go 侧拼好后作单个 text 参数传入：原先 `'invitation_quota:' || $1::text` 把 int64
+	// tenant_id 声明成 text 参数，pgx 扩展协议下无法把 int64 编码成 text(OID 25)→ "cannot find
+	// encode plan",导致所有邀请/推广码生成 503。改成传一个真 text 参数即可,哈希值不变。
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		fmt.Sprintf("invitation_quota:%d", rec.TenantID)); err != nil {
 		return Invitation{}, fmt.Errorf("invitation: quota lock: %w", err)
 	}
 	clientKey := sql.NullString{}
@@ -50,10 +54,9 @@ func (s *PostgresStore) Generate(ctx context.Context, rec generateRecord) (Invit
 			return Invitation{}, fmt.Errorf("invitation: get by idempotency key: %w", err)
 		}
 	}
-	// QuotaExempt rows (self-referral codes) skip the campaign cap entirely: a
-	// user materializing their own stable code must never be blocked by the
-	// shared single-tenant monthly campaign quota. The count below also excludes
-	// self-coded rows so they never starve the campaign budget.
+	// QuotaExempt 的行（自荐码）完全跳过活动上限：用户物化自己的稳定码
+	// 绝不能被共享的单租户每月活动配额拦截。下面的计数也排除了自荐行，
+	// 使它们永远不会挤占活动预算。
 	if !rec.QuotaExempt {
 		var count int
 		if err := tx.QueryRow(ctx, `
@@ -171,8 +174,7 @@ func (s *PostgresStore) CountTenantInvitationsSince(ctx context.Context, tenantI
 		return 0, ErrStoreNotConfigured
 	}
 	var count int
-	// Exclude self-referral codes: they are quota-exempt identity rows and must
-	// not consume the monthly campaign budget shared across a single tenant.
+	// 排除自荐码：它们是免配额的身份行，不得消耗单租户共享的每月活动预算。
 	if err := s.pool.QueryRow(ctx, `
 SELECT COUNT(*)
 FROM invitations

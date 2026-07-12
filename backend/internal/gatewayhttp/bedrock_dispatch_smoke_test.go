@@ -2,21 +2,21 @@
 //
 // 覆盖链路:
 //
-//	inbound POST /v1/messages (Anthropic Messages API form)
+//	入站 POST /v1/messages (Anthropic Messages API 形态)
 //	  → Auth.Resolve → Registry.Resolve (bedrock_invoke)
 //	  → Router.Plan → ClaimGate.Reserve → Selector.Select(account 99)
-//	  → CredentialVault.Resolve(99) → {aws_sigv4 fake creds}
+//	  → CredentialVault.Resolve(99) → {aws_sigv4 假凭据}
 //	  → Dispatcher.Dispatch → bedrock.PassthroughAdapter.BuildRequest
 //	     (AutoTranslate Anthropic → Bedrock body + Track C cache_control 注入 + SigV4 sign)
 //	  → redirectRoundTripper → httptest.Server（模拟 AWS Bedrock invoke-with-response-stream）
-//	  → Forwarder.Forward (BedrockEventStreamScanner 解 binary frames + bedrock.EventStreamAdapter
+//	  → Forwarder.Forward (BedrockEventStreamScanner 解 binary frame + bedrock.EventStreamAdapter
 //	     转 canonical → SSE 输出给客户端)
 //	  → Settler.Settle
 //
-// 与 dispatch_smoke_test.go (OpenAI) 共用同包 stubs (smokeAuth/smokeRouter/...)
+// 与 dispatch_smoke_test.go (OpenAI) 共用同包 stub (smokeAuth/smokeRouter/...)
 // 不依赖真实 AWS 网络，不引新依赖。
 //
-// Lane: claude-executor | UTC: 2026-05-08
+// 通道: claude-executor | UTC: 2026-05-08
 package gatewayhttp
 
 import (
@@ -86,7 +86,7 @@ func encodeBedrockEventFrame(headers map[string]string, payload []byte) []byte {
 // {"bytes":"<base64-of-inner-json>"}。
 func chunkPayload(innerJSON string) []byte {
 	enc := bytes.NewBufferString(`{"bytes":"`)
-	// base64 encode innerJSON
+	// 对 innerJSON 做 base64 编码
 	const tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	src := []byte(innerJSON)
 	for i := 0; i < len(src); i += 3 {
@@ -130,7 +130,7 @@ func chunkFrame(innerJSON string) []byte {
 	return encodeBedrockEventFrame(headers, chunkPayload(innerJSON))
 }
 
-// bedrockSmokeStream 拼接 Bedrock-on-Anthropic happy path 的 4 帧 binary 流:
+// bedrockSmokeStream 拼接 Bedrock-on-Anthropic 正向路径的 4 帧 binary 流:
 // message_start + content_block_delta(text="Hello") + message_delta(usage) +
 // message_stop。message_delta 携带 usage 含 cache_creation_input_tokens=1024
 // （表示首次写入 vendor cache），用于断言 cache metrics 链路。
@@ -186,7 +186,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 
 	mockHost := strings.TrimPrefix(mockServer.URL, "http://")
 
-	// --- 2. CredentialVault: 注入 account 42 → fake AWS SigV4 凭据 ---
+	// --- 2. CredentialVault: 注入 account 42 → 假 AWS SigV4 凭据 ---
 	// 用 42 与 dispatch_smoke_test.go 现有 smokeSelector / smokeRouter 默认
 	// account ID 对齐,无需新增 fixture。
 	vault := provider.NewStaticVault()
@@ -221,7 +221,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 	}
 
 	// --- 4. StreamForwarder: 真 BedrockEventStreamScanner + ProtocolAdapters ---
-	// 使用 default registries — 都已 wire bedrock_invoke (gateway/stream_scanner.go +
+	// 使用默认 registry — 都已接入 bedrock_invoke (gateway/stream_scanner.go +
 	// gateway/protocol_selector.go)。
 	forwarder := &gateway.StreamForwarder{
 		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
@@ -309,7 +309,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 		t.Errorf("缺 anthropic_version 或值错: %v", out["anthropic_version"])
 	}
 
-	// Track C 注入: system 字段应被 wrap 成 array form 含 cache_control:ephemeral
+	// Track C 注入:system 字段应被包装成数组形态,并携带 cache_control:ephemeral
 	if !bytes.Contains(upstreamBody, []byte(`"cache_control"`)) {
 		t.Errorf("Track C 自动 cache_control 注入未生效\nbody:%s", string(upstreamBody))
 	}
@@ -338,9 +338,9 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 	}
 }
 
-// TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure 验证 synthesis
-// plan §4 step 6 failure path: mock Bedrock 返 5xx 时 gateway 不能 silent-OK
-// + 必须调 Abort 不调 Settle，audit/metrics 不能误记 success。
+// TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure 验证综合计划
+// §4 step 6 的失败路径:mock Bedrock 返 5xx 时 gateway 不能静默当作成功,
+// 且必须调 Abort、不调 Settle，audit/metrics 不能误记成功。
 func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) {
 	var upstreamReqCount int64
 
@@ -348,7 +348,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) 
 		atomic.AddInt64(&upstreamReqCount, 1)
 		// 模拟 AWS Bedrock throttling / 内部错误。AWS 出错走 JSON application/x-amz-json-1.1
 		// 形态而不是 binary EventStream（错误发生在 stream 建立前），HUAKAI 上游层
-		// 不应解析为 binary EventStream success path。
+		// 不应解析为 binary EventStream 成功路径。
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"__type":"ServiceUnavailableException","message":"upstream throttle simulation"}`))
@@ -397,7 +397,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) 
 		RequestClass:         "default",
 	}
 
-	// 长 system 触发 Track C 注入路径（与 happy 一致, 让 failure 不影响 inject 已发生）
+	// 长 system 触发 Track C 注入路径（与正向路径一致,让失败不影响已发生的注入）
 	longSystem := strings.Repeat("You are a helpful assistant. ", 200)
 	bodyMap := map[string]any{
 		"model":      "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -422,10 +422,10 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) 
 		t.Errorf("上游 5xx 时客户端不应见 200; 得 %d (body=%s)", rec.Code, rec.Body.String())
 	}
 
-	// 断言: failure path 不能调 Settle (没有正常完成); 应调 Abort
+	// 断言:失败路径不能调 Settle（没有正常完成）；应调 Abort
 	if sc := atomic.LoadInt64(&settler.settleCalls); sc != 0 {
 		t.Errorf("upstream 失败时 Settler.Settle 不应被调 (得 %d)", sc)
 	}
-	// Abort 是预期行为, 但当前 settler stub 接口 Abort 计数, 不强制 == 1
+	// Abort 是预期行为,但当前 settler stub 接口只记录 Abort 计数,不强制 == 1
 	// (handler 实现可能选择特定语义; 关键是 Settle 必须 = 0)
 }

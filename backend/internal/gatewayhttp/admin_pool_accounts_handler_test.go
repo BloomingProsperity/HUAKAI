@@ -18,12 +18,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
 
-// adminAuditActionWhitelist mirrors the migrated admin_audit_events_action_check
-// CHECK constraint (latest = migration 0141). The stub enforces it so a handler
-// that emits an action absent from the live whitelist fails the same way it
-// would against a real DB (SQLSTATE 23514) instead of silently passing — this
-// is what turns the formerly non-discriminating stub into a guard that catches
-// the latent "action not whitelisted -> 503 audit_write_failed" bug.
+// adminAuditActionWhitelist 镜像已迁移的 admin_audit_events_action_check CHECK
+// 约束(最新 = 迁移 0141)。该 stub 强制执行它,这样一个发出不在实时白名单中
+// action 的 handler 会以与对真实 DB 相同的方式失败(SQLSTATE 23514),而不是静默
+// 通过 —— 正是这一点把原先不加区分的 stub 变成一道能抓住「action 未列入白名单 ->
+// 503 audit_write_failed」潜在缺陷的守卫。
 var adminAuditActionWhitelist = map[string]struct{}{
 	"issue_api_key": {}, "revoke_api_key": {}, "list_api_keys": {},
 	"issue_admin_token": {}, "revoke_admin_token": {}, "admin_login": {},
@@ -31,13 +30,13 @@ var adminAuditActionWhitelist = map[string]struct{}{
 	"enable_provider_account": {}, "delete_provider_account": {},
 	"create_account_credential": {}, "rotate_account_credential": {},
 	"disable_account_credential": {}, "delete_account_credential": {},
-	"list_account_credentials": {},
+	"list_account_credentials":       {},
 	"credential_acquisition_started": {}, "credential_acquisition_completed": {},
 	"credential_acquisition_failed": {}, "credential_acquisition_cancelled": {},
 	"update_billing_settings": {},
-	"create_pool_group": {}, "update_pool_group": {},
+	"create_pool_group":       {}, "update_pool_group": {},
 	"update_platform_settings": {},
-	"unlock_user": {}, "force_disable_2fa": {}, "reset_passkey": {},
+	"unlock_user":              {}, "force_disable_2fa": {}, "reset_passkey": {},
 	"set_user_group": {}, "set_user_remark": {},
 	"set_user_status": {}, "create_user": {}, "delete_user": {},
 	"create_quota_policy": {}, "update_quota_policy": {}, "delete_quota_policy": {},
@@ -54,18 +53,26 @@ func (s adminPoolAuthStub) Resolve(context.Context, *http.Request) (admin.AdminI
 }
 
 type adminPoolStoreStub struct {
-	insertID   int64
-	insert     *admindb.InsertProviderAccountParams
-	riskPeers  []providerAccountRiskPeerForTest
-	listArg    *admindb.ListAdminProviderAccountsParams
-	list       []admindb.AdminProviderAccountRow
-	getArg     *admindb.GetAdminProviderAccountParams
-	get        *admindb.AdminProviderAccountRow
-	updateFull *admindb.UpdateAdminProviderAccountParams
-	update     *admindb.UpdateProviderAccountEnabledParams
-	clear      *admindb.ClearProviderAccountRateLimitParams
-	delete     *admindb.SoftDeleteProviderAccountParams
-	audits     []admindb.InsertAdminAuditEventParams
+	insertID         int64
+	insert           *admindb.InsertProviderAccountParams
+	providerFamilies map[int64]string
+	riskPeers        []providerAccountRiskPeerForTest
+	listArg          *admindb.ListAdminProviderAccountsParams
+	list             []admindb.AdminProviderAccountRow
+	getArg           *admindb.GetAdminProviderAccountParams
+	get              *admindb.AdminProviderAccountRow
+	updateFull       *admindb.UpdateAdminProviderAccountParams
+	update           *admindb.UpdateProviderAccountEnabledParams
+	clear            *admindb.ClearProviderAccountRateLimitParams
+	delete           *admindb.SoftDeleteProviderAccountParams
+	audits           []admindb.InsertAdminAuditEventParams
+}
+
+func (s *adminPoolStoreStub) GetProviderProtocolForAccountCreate(_ context.Context, arg admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
+	if family, ok := s.providerFamilies[arg.ProviderID]; ok {
+		return family, nil
+	}
+	return "openai_chat", nil
 }
 
 type providerAccountRiskPeerForTest struct {
@@ -128,6 +135,9 @@ func (s *adminPoolStoreStub) ListProviderAccountRiskPeers(_ context.Context, arg
 }
 
 func (s *adminPoolStoreStub) InsertProviderAccountWithMixedRiskCheck(ctx context.Context, arg adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error) {
+	if err := validateProviderAccountProtocolCompatibility(arg.ProviderFamily, arg.Candidate.AccountType, arg.Candidate.Vendor, arg.Candidate.AuthMode); err != nil {
+		return adminPoolAccountCreateWithMixedRiskResult{}, err
+	}
 	peers, err := s.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
 		TenantID:  arg.Insert.TenantID,
 		ChannelID: arg.Insert.ChannelID,
@@ -144,6 +154,17 @@ func (s *adminPoolStoreStub) InsertProviderAccountWithMixedRiskCheck(ctx context
 		return adminPoolAccountCreateWithMixedRiskResult{RiskReport: report}, err
 	}
 	return adminPoolAccountCreateWithMixedRiskResult{ID: id, RiskReport: report}, nil
+}
+
+func mixedRiskPeerAccounts(rows []admindb.ProviderAccountRiskPeerRow) []mixedchannelrisk.Account {
+	out := make([]mixedchannelrisk.Account, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, mixedchannelrisk.Account{
+			ID: row.ID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
+			AccountType: row.AccountType, Vendor: row.CredentialVendor, AuthMode: row.CredentialAuthMode,
+		})
+	}
+	return out
 }
 
 func (s *adminPoolStoreStub) ListAdminProviderAccounts(_ context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
@@ -231,8 +252,8 @@ func (s *adminPoolStoreStub) SoftDeleteProviderAccount(_ context.Context, arg ad
 
 func (s *adminPoolStoreStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
 	if _, ok := adminAuditActionWhitelist[arg.Action]; !ok {
-		// Reproduce the real CHECK violation a non-whitelisted action triggers
-		// against Postgres so handler tests stop masking the audit-write bug.
+		// 复现一个不在白名单中的 action 对 Postgres 触发的真实 CHECK 违反,
+		// 使 handler 测试不再掩盖 audit-write 缺陷。
 		return admindb.InsertAdminAuditEventRow{}, &pgconn.PgError{
 			Code:           "23514",
 			ConstraintName: "admin_audit_events_action_check",
@@ -351,6 +372,36 @@ func TestAdminPoolAccounts_CreateWithCredentialV2StoresEmptyLegacyJSON(t *testin
 	}
 	if response.ID != 77 {
 		t.Fatalf("id=%d want 77", response.ID)
+	}
+}
+
+// TestAdminPoolAccounts_ClaudeSessionRejectsAPIKeyBeforeInsert 咬住配置面防线：
+// API-key 账号不能挂到 session provider，且拒绝发生在账号行与凭据写入之前。
+func TestAdminPoolAccounts_ClaudeSessionRejectsAPIKeyBeforeInsert(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77, providerFamilies: map[int64]string{8: "anthropic_claude_session"}}
+	credentials := &adminPoolCredentialWriterStub{id: 88}
+	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":8,"channel_id":9,"name":"wrong-key","account_type":"api_key","vendor":"anthropic","auth_mode":"api_key","credentials":{"api_key":"sk-ant"}}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert != nil || credentials.input != nil {
+		t.Fatalf("不兼容账号不得落库或写凭据: insert=%+v credential=%+v", store.insert, credentials.input)
+	}
+}
+
+// TestAdminPoolAccounts_ClaudeSessionAcceptsOAuth 证明正向模式仍可创建，
+// 并精确把 claude_ai_oauth 凭据交给 credential store。
+func TestAdminPoolAccounts_ClaudeSessionAcceptsOAuth(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77, providerFamilies: map[int64]string{8: "anthropic_claude_session"}}
+	credentials := &adminPoolCredentialWriterStub{id: 88}
+	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":8,"channel_id":9,"name":"claude-oauth","account_type":"oauth","vendor":"anthropic","auth_mode":"claude_ai_oauth","credentials":{"access_token":"oauth-access","refresh_token":"oauth-refresh"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert == nil || credentials.input == nil || credentials.input.AuthMode != credentialstore.AuthModeClaudeAIOAuth {
+		t.Fatalf("session OAuth 正向创建未闭合: insert=%+v credential=%+v", store.insert, credentials.input)
 	}
 }
 
@@ -545,6 +596,9 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	if len(response.Items) != 1 || response.Items[0].ID != 77 || !response.Page.HasMore || response.Page.NextCursor == nil {
 		t.Fatalf("unexpected list response: %+v", response)
 	}
+	if strings.Contains(rec.Body.String(), "temp_unschedulable_rules") {
+		t.Fatalf("列表响应不应携带详情规则：%s", rec.Body.String())
+	}
 }
 
 func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
@@ -554,6 +608,7 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	row.ProbeModel = &probeModel
 	row.Tags = []string{"prod", "blue"}
 	row.Extra = []byte(`{"azure_api_version":"2024-08-01"}`)
+	row.TempUnschedulableRules = []byte(`[{"error_code":529,"keywords":["busy"],"duration_minutes":5,"description":"拥塞"}]`)
 	store := &adminPoolStoreStub{get: &row}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts/77", "")
 	if rec.Code != http.StatusOK {
@@ -574,6 +629,18 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	}
 	if !strings.Contains(string(body.Extra), `"azure_api_version":"2024-08-01"`) {
 		t.Fatalf("extra response=%s", string(body.Extra))
+	}
+	var rules []struct {
+		ErrorCode       int      `json:"error_code"`
+		Keywords        []string `json:"keywords"`
+		DurationMinutes int      `json:"duration_minutes"`
+		Description     string   `json:"description"`
+	}
+	if err := json.Unmarshal(body.TempUnschedulableRules, &rules); err != nil {
+		t.Fatalf("temp_unschedulable_rules 响应无效: %v raw=%s", err, body.TempUnschedulableRules)
+	}
+	if len(rules) != 1 || rules[0].ErrorCode != 529 || rules[0].DurationMinutes != 5 || rules[0].Description != "拥塞" {
+		t.Fatalf("temp_unschedulable_rules=%+v", rules)
 	}
 }
 
@@ -604,9 +671,8 @@ func TestAdminPoolAccounts_UpdateProviderAccountFull(t *testing.T) {
 func TestAdminPoolAccounts_ClearRateLimit(t *testing.T) {
 	store := &adminPoolStoreStub{}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
-	// Parity-or-better: the endpoint now returns the reactivated account row
-	// (200 + body) instead of an opaque 204 so the operator UI sees the
-	// account is unbenched (mirrors sub2api's recovered-account response).
+	// 对齐或更优:该端点现在返回被重新激活的账号行(200 + body)而非不透明的
+	// 204,以便运维 UI 看到该账号已解除停用(对齐参考实现恢复账号的响应)。
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -626,15 +692,14 @@ func TestAdminPoolAccounts_ClearRateLimit(t *testing.T) {
 }
 
 // TestAdminPoolAccounts_ClearRateLimit_AuditWhitelistGuardIsDiscriminating
-// proves the hardened audit stub actually catches the latent bug this slice
-// fixes: if 'clear_provider_account_rate_limit' is NOT whitelisted (the
-// pre-migration-0141 world), the audit INSERT raises CHECK 23514 and the
-// handler returns 503 audit_write_failed — exactly the failure mode that was
-// previously masked. The happy-path test above passes ONLY because the action
-// is now in the whitelist; this test pins down what happens without it, so the
-// pair is self-proving (correct path vs broken/baseline path differ).
+// 证明加固后的 audit stub 确实能抓住本切片所修的潜在缺陷:若
+// 'clear_provider_account_rate_limit' 「未」列入白名单(迁移 0141 之前的世界),
+// audit INSERT 会触发 CHECK 23514,handler 返回 503 audit_write_failed —— 正是先前
+// 被掩盖的那种失败模式。上面的 happy-path 测试「仅」因为该 action 现已在白名单中
+// 才通过;本测试钉住没有它时会发生什么,因此这一对测试自我证明(正确路径 vs
+// 损坏/基线路径 不同)。
 func TestAdminPoolAccounts_ClearRateLimit_AuditWhitelistGuardIsDiscriminating(t *testing.T) {
-	// Temporarily remove the action to simulate the pre-0141 whitelist.
+	// 临时移除该 action 以模拟 0141 之前的白名单。
 	if _, ok := adminAuditActionWhitelist["clear_provider_account_rate_limit"]; !ok {
 		t.Fatal("precondition: action must be whitelisted before the test removes it")
 	}
@@ -669,8 +734,8 @@ func TestAdminPoolAccounts_CrossTenantBodyRejected(t *testing.T) {
 }
 
 func TestAdminPoolAccounts_GlobalAdminWithTenantQueryOperatesTargetTenant(t *testing.T) {
-	// Global platform_admin (no implicit scope) names tenant 9 via ?tenant_id=9
-	// and the list must run against tenant 9 — NOT silently fall back to tenant 1.
+	// 全局 platform_admin(无隐式 scope)通过 ?tenant_id=9 指名 tenant 9,
+	// 列表必须针对 tenant 9 运行 —— 「不」能静默回退到 tenant 1。
 	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{adminProviderRow(77, 9)}}
 	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodGet,
 		"/admin/v1/provider-accounts?tenant_id=9", "")
@@ -683,8 +748,8 @@ func TestAdminPoolAccounts_GlobalAdminWithTenantQueryOperatesTargetTenant(t *tes
 }
 
 func TestAdminPoolAccounts_GlobalAdminWithoutTenantQueryRejected(t *testing.T) {
-	// Without an explicit tenant_id a global platform_admin must be rejected
-	// (no silent default to tenant 1) and the store must stay untouched.
+	// 没有显式 tenant_id 时,全局 platform_admin 必须被拒绝(不静默默认为
+	// tenant 1),且 store 必须保持未被触碰。
 	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{adminProviderRow(77, 1)}}
 	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodGet,
 		"/admin/v1/provider-accounts", "")
@@ -697,8 +762,8 @@ func TestAdminPoolAccounts_GlobalAdminWithoutTenantQueryRejected(t *testing.T) {
 }
 
 func TestAdminPoolAccounts_GlobalAdminCreateScopesToQueryTenant(t *testing.T) {
-	// Global platform_admin creates into the tenant named by ?tenant_id=9
-	// (body tenant_id must agree); the insert must land in tenant 9, not 1.
+	// 全局 platform_admin 创建到 ?tenant_id=9 指名的 tenant(body 的 tenant_id
+	// 必须一致);insert 必须落在 tenant 9 而非 1。
 	store := &adminPoolStoreStub{insertID: 77}
 	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodPost,
 		"/admin/v1/provider-accounts?tenant_id=9",

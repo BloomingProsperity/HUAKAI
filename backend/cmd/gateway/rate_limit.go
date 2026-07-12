@@ -18,39 +18,37 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
 
-// Inbound rate limiting.
+// 入站限流。
 //
-// Token-bucket tiers, keyed on the RealIP-derived client address, stop request
-// floods before any route handler / provider-account / quota use.
-// The anti-enumeration argon2 path is expensive enough that an unbounded
-// /v1/auth/* flood is a self-amplifying DoS; the strict auth tier caps that.
-// The optional media tier caps high-cost media endpoints when explicitly enabled.
+// 令牌桶分层,以 RealIP 推导出的客户端地址为键,在任何路由 handler /
+// provider-account / 配额被使用之前拦下请求洪泛。
+// 反枚举的 argon2 路径足够昂贵,以至于一个无界的 /v1/auth/* 洪泛
+// 本身就是自我放大的 DoS;严格的 auth 层把它封顶。
+// 可选的 media 层在显式启用时给高成本媒体端点封顶。
 //
-// Tier 1 (global front door): one bucket per client IP, applied to EVERY request.
-// Tier 2 (auth-strict): an additional, tighter bucket per client IP, applied only
-// to the sensitive auth/session mutation endpoints. A request to those endpoints
-// must pass BOTH tiers.
-// Tier 3 (media-strict): default disabled; when enabled, media paths share a
-// separate per-IP bucket without changing auth/global budgets.
+// 第 1 层(全局前门):每个客户端 IP 一个桶,对每个请求都生效。
+// 第 2 层(auth-strict):每个客户端 IP 额外多一个更紧的桶,只对
+// 敏感的 auth/session 变更端点生效。打到这些端点的请求必须同时通过两层。
+// 第 3 层(media-strict):默认禁用;启用后,媒体路径共用一个
+// 独立的按 IP 桶,不改变 auth/global 的预算。
 //
-// The buckets reuse the existing token-bucket primitive; this package owns only
-// the per-IP registry, the env-tunable thresholds, and the wiring. The registry
-// is bounded so an IP-spoofed flood (many distinct source addresses) cannot grow
-// the map without limit — once the cap is reached the registry is reset, which
-// trades a small fairness hiccup for a hard memory ceiling.
+// 这些桶复用既有的令牌桶原语;本包只拥有按 IP 的 registry、
+// env 可调阈值,以及接线。registry 是有界的,这样 IP 伪造洪泛
+//(大量不同源地址)无法让这个 map 无限增长——一旦达到上限,registry
+// 即被重置,用一次小小的公平性抖动换来一个硬性的内存上限。
 
 const (
-	// envRateLimitDisable fully disables both tiers when set truthy. The limiter
-	// is otherwise always-on (no opt-in needed) per the approved policy.
+	// envRateLimitDisable 设为真值时彻底禁用两层限流。否则按既定策略,
+	// 限流器始终开启(无需显式 opt-in)。
 	envRateLimitDisable = "HUAKAI_RL_DISABLE"
 
-	// Global front-door defaults: 180 requests / 180s per IP => sustained 1 req/s
-	// with a 180-request burst cushion.
+	// 全局前门默认值:每 IP 180 请求 / 180s => 持续 1 req/s,
+	// 外加 180 请求的突发缓冲。
 	defaultGlobalRate  = 1.0
 	defaultGlobalBurst = 180.0
 
-	// Per-class auth-strict defaults, expressed as requests-per-minute. Burst is
-	// the same integer count (a one-minute bucket).
+	// 各 class 的 auth-strict 默认值,以「每分钟请求数」表示。Burst 取
+	// 同样的整数计数(一分钟的桶)。
 	defaultAuthLoginPerMin    = 20.0
 	defaultAuthRegisterPerMin = 5.0
 	defaultAuthVerifyPerMin   = 5.0
@@ -59,15 +57,15 @@ const (
 	defaultRefreshPerMin      = 30.0
 	defaultMediaPerMin        = 0.0
 
-	// maxBucketsPerTier bounds each tier's per-IP registry so a spoofed-source
-	// flood can't grow it without limit. Reaching the cap clears the registry.
+	// maxBucketsPerTier 给每层的按 IP registry 设上界,这样伪造源洪泛
+	// 无法让它无限增长。达到上限会清空该 registry。
 	maxBucketsPerTier = 50000
 )
 
-// ipBucketRegistry is a concurrency-safe, size-bounded map of client-IP ->
-// TokenBucket for a single tier. It is intentionally simple: when the entry
-// count would exceed maxEntries the whole map is dropped (a coarse but O(1)
-// eviction that guarantees a hard memory ceiling under an IP-spoofed flood).
+// ipBucketRegistry 是单层限流用的、并发安全且大小有界的
+// 「客户端 IP -> TokenBucket」映射。它刻意保持简单:当条目数将要
+// 超过 maxEntries 时,整个 map 被丢弃(一种粗放但 O(1) 的淘汰,
+// 在 IP 伪造洪泛下保证硬性内存上限)。
 type ipBucketRegistry struct {
 	rate       float64
 	burst      float64
@@ -86,9 +84,9 @@ func newIPBucketRegistry(rate, burst float64) *ipBucketRegistry {
 	}
 }
 
-// bucketFor returns the TokenBucket for key, creating it on first use. If adding
-// a new entry would breach the cap the registry is reset first; the bound is on
-// resident entries, not on total distinct IPs ever seen.
+// bucketFor 返回 key 对应的 TokenBucket,首次使用时创建。如果新增一个
+// 条目会突破上限,则先重置 registry;界限作用于驻留条目数,而非历史上
+// 见过的不同 IP 总数。
 func (r *ipBucketRegistry) bucketFor(key string) *gateway.TokenBucket {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -96,9 +94,9 @@ func (r *ipBucketRegistry) bucketFor(key string) *gateway.TokenBucket {
 		return b
 	}
 	if len(r.buckets) >= r.maxEntries {
-		// Hard ceiling reached: drop the table. New callers (including the one
-		// being served) get a fresh full bucket, which is fail-open for a single
-		// request but preserves the memory bound against IP spoofing.
+		// 达到硬上限:丢弃整张表。新来者(包括当前正在被服务的这一个)
+		// 拿到一个全新的满桶,对单个请求而言是 fail-open,但保住了
+		// 抵御 IP 伪造的内存上界。
 		r.buckets = make(map[string]*gateway.TokenBucket)
 	}
 	b := gateway.NewTokenBucket(r.rate, r.burst)
@@ -106,55 +104,53 @@ func (r *ipBucketRegistry) bucketFor(key string) *gateway.TokenBucket {
 	return b
 }
 
-// allow reports whether a request from key may proceed (consumes one token).
+// allow 报告来自 key 的请求是否可以放行(消耗一个令牌)。
 func (r *ipBucketRegistry) allow(key string, now time.Time) bool {
 	return r.bucketFor(key).TryAcquire(now)
 }
 
-// rateLimiter holds the global tier plus a path-class lookup for the auth-strict
-// tier. nowFn is injectable so tests can drive a deterministic clock. resolver is
-// the gateway's fail-closed trusted-proxy IP resolver (nil-safe): it derives the
-// per-IP key from the socket peer plus only-trusted forwarded hops, so a client
-// cannot mint fresh buckets by forging forwarding headers.
+// rateLimiter 持有全局层,以及 auth-strict 层的「路径 -> class」查找表。
+// nowFn 可注入,便于测试驱动一个确定性时钟。resolver 是网关的
+// fail-closed 可信代理 IP 解析器(nil-safe):它从 socket 对端加上仅可信的
+// 转发跳数推导出按 IP 的键,因此客户端无法通过伪造转发头来铸造新桶。
 type rateLimiter struct {
 	global      *ipBucketRegistry
-	authStrict  map[string]*authStrictTier // request path -> tier
-	mediaStrict map[string]*authStrictTier // request path -> tier
+	authStrict  map[string]*authStrictTier // 请求路径 -> 层
+	mediaStrict map[string]*authStrictTier // 请求路径 -> 层
 	resolver    *clientip.Resolver
 	logger      *zap.Logger
 	nowFn       func() time.Time
 	retryAfterS int
 }
 
-// authStrictTier couples a per-IP registry with its Retry-After hint. Auth and
-// media strict classes reuse this same tier primitive. The hint is derived from
-// the configured rate (not hard-coded), so a tuned override yields an accurate
-// retry delay.
+// authStrictTier 把一个按 IP registry 与它的 Retry-After 提示耦合在一起。
+// auth 与 media 的 strict class 复用同一个层原语。该提示由配置的 rate 推导
+//(并非写死),所以一个调过的 override 会给出准确的重试延迟。
 type authStrictTier struct {
 	registry   *ipBucketRegistry
 	retryAfter int
 }
 
-// authClass describes one strict path class: one bucket policy shared by one or
-// more request paths. Paths that share a single env knob (e.g. both OAuth routes)
-// belong to the SAME class so they share ONE registry — otherwise alternating
-// between the paths would multiply the effective per-class budget.
+// authClass 描述一个 strict 路径 class:一套桶策略,被一条或多条请求路径共享。
+// 共用同一个 env 旋钮的路径(例如两条 OAuth 路由)属于同一个 class,
+// 因此它们共享同一个 registry——否则在这些路径之间交替会让该 class
+// 的有效预算成倍放大。
 type authClass struct {
-	paths     []string // request paths that share this class's bucket
-	envPerMin string   // env var holding a requests-per-minute override
-	defPerMin float64  // default requests-per-minute
+	paths     []string // 共享本 class 桶的请求路径
+	envPerMin string   // 持有「每分钟请求数」override 的 env 变量
+	defPerMin float64  // 默认每分钟请求数
 }
 
-// authClasses is the static policy table. login + 2fa share the single login
-// endpoint that exists today; verify-email is the "send verification code"
-// class; reset-password is the "forgot password" class; social login routes
-// share one class (one budget); sessions/refresh is the "refresh token" class.
+// authClasses 是静态策略表。login + 2fa 共用当前存在的那唯一一个 login
+// 端点;verify-email 是「发送验证码」class;reset-password 是「忘记密码」
+// class;社交登录路由共用一个 class(一份预算);sessions/refresh 是
+//「刷新令牌」class。
 var authClasses = []authClass{
 	{paths: []string{"/v1/auth/login", "/v1/auth/passkey/login/begin", "/v1/auth/passkey/login/finish"}, envPerMin: "HUAKAI_RL_AUTH_LOGIN_PER_MIN", defPerMin: defaultAuthLoginPerMin},
 	{paths: []string{"/v1/auth/register", "/v1/auth/validate-invitation-code"}, envPerMin: "HUAKAI_RL_AUTH_REGISTER_PER_MIN", defPerMin: defaultAuthRegisterPerMin},
 	{paths: []string{"/v1/auth/verify-email"}, envPerMin: "HUAKAI_RL_AUTH_VERIFY_PER_MIN", defPerMin: defaultAuthVerifyPerMin},
 	{paths: []string{"/v1/auth/reset-password"}, envPerMin: "HUAKAI_RL_AUTH_RESET_PER_MIN", defPerMin: defaultAuthResetPerMin},
-	{paths: []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback", "/v1/auth/telegram-login"}, envPerMin: "HUAKAI_RL_AUTH_OAUTH_PER_MIN", defPerMin: defaultAuthOAuthPerMin},
+	{paths: []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback", "/v1/auth/telegram-login", "/v1/auth/oauth-pending/send-code", "/v1/auth/oauth-pending/complete"}, envPerMin: "HUAKAI_RL_AUTH_OAUTH_PER_MIN", defPerMin: defaultAuthOAuthPerMin},
 	{paths: []string{"/v1/sessions/refresh"}, envPerMin: "HUAKAI_RL_AUTH_REFRESH_PER_MIN", defPerMin: defaultRefreshPerMin},
 }
 
@@ -168,10 +164,10 @@ var mediaClasses = []authClass{
 	}, envPerMin: "HUAKAI_RL_MEDIA_PER_MIN", defPerMin: defaultMediaPerMin},
 }
 
-// retryAfterForRatePerSec converts a tokens-per-second refill rate into a
-// whole-second Retry-After hint: roughly the time until the next token refills
-// (1/ratePerSec), rounded up and floored at 1s. Tracks env overrides so a
-// tuned-down rate (e.g. 0.1 req/s) reports a realistic ~10s delay, not a stale 1s.
+// retryAfterForRatePerSec 把「每秒令牌补充速率」换算成一个整秒的
+// Retry-After 提示:大致是到下一个令牌补充为止的时间(1/ratePerSec),
+// 向上取整并以 1s 为下限。它跟随 env override,因此一个调低的 rate
+//(例如 0.1 req/s)会报告一个真实的 ~10s 延迟,而非陈旧的 1s。
 func retryAfterForRatePerSec(ratePerSec float64) int {
 	if ratePerSec <= 0 {
 		return 60
@@ -183,36 +179,35 @@ func retryAfterForRatePerSec(ratePerSec float64) int {
 	return secs
 }
 
-// retryAfterForRate converts a requests-per-minute rate into a whole-second
-// Retry-After hint. A tuned-down rate (e.g. 1/min) reports a realistic ~60s delay.
+// retryAfterForRate 把「每分钟请求数」换算成一个整秒的 Retry-After 提示。
+// 一个调低的 rate(例如 1/min)会报告一个真实的 ~60s 延迟。
 func retryAfterForRate(perMin float64) int {
 	return retryAfterForRatePerSec(perMin / 60.0)
 }
 
-// newRateLimiter builds the limiter from env (falling back to the approved
-// defaults). The returned limiter is always-on unless HUAKAI_RL_DISABLE is set.
-// resolver is the gateway's trusted-proxy IP resolver used for the bucket key
-// (nil is safe: keys then fall back to the socket peer). logger is used to emit
-// operator-visible evidence on each denial (nil-safe: a no-op logger is used).
+// newRateLimiter 从 env 构建限流器(回退到既定默认值)。除非设置了
+// HUAKAI_RL_DISABLE,返回的限流器始终开启。resolver 是网关用于桶键的
+// 可信代理 IP 解析器(nil 也安全:此时键回退到 socket 对端)。logger 用于
+// 在每次拒绝时发出运维可见的证据(nil-safe:此时使用一个 no-op logger)。
 func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimiter {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 	gRate := envFloat("HUAKAI_RL_GLOBAL_RATE", defaultGlobalRate)
-	// A global burst below one token would reject every request (the limiter asks
-	// for exactly one token per request), so a too-small override falls back to
-	// the safe default rather than bricking the front door closed.
+	// 低于一个令牌的全局 burst 会拒绝每一个请求(限流器对每个请求恰好
+	// 请求一个令牌),所以过小的 override 会回退到安全默认值,而不是把
+	// 前门彻底锁死。
 	gBurst := envBurst("HUAKAI_RL_GLOBAL_BURST", defaultGlobalBurst)
 
 	authStrict := make(map[string]*authStrictTier, len(authClasses))
 	for _, c := range authClasses {
 		perMin := envFloat(c.envPerMin, c.defPerMin)
-		// rate = requests per second; burst = the per-minute count (clamped >= 1).
+		// rate = 每秒请求数;burst = 每分钟计数(钳到 >= 1)。
 		burst := perMin
 		if burst < 1 {
 			burst = 1
 		}
-		// One registry per CLASS, shared by every path in the class.
+		// 每个 class 一个 registry,被该 class 中的每条路径共享。
 		tier := &authStrictTier{
 			registry:   newIPBucketRegistry(perMin/60.0, burst),
 			retryAfter: retryAfterForRate(perMin),
@@ -247,18 +242,17 @@ func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimite
 		resolver:    resolver,
 		logger:      logger,
 		nowFn:       time.Now,
-		// Global-tier Retry-After is derived from the configured rate so a tuned-down
-		// HUAKAI_RL_GLOBAL_RATE (e.g. 0.1 req/s) reports a realistic delay, not a
-		// stale 1s that would make honoring clients retry too early.
+		// 全局层的 Retry-After 由配置的 rate 推导,因此一个调低的
+		// HUAKAI_RL_GLOBAL_RATE(例如 0.1 req/s)会报告真实的延迟,而非
+		// 陈旧的 1s——后者会让守规矩的客户端过早重试。
 		retryAfterS: retryAfterForRatePerSec(gRate),
 	}
 }
 
-// middleware returns the chi middleware enforcing global plus configured strict
-// path tiers. Global is checked first on every request; auth/media strict tiers
-// are checked only for their configured classes. Any exhausted tier yields 429
-// and the request never reaches the wrapped handler (no provider-account /
-// quota use).
+// middleware 返回执行全局层加各已配置 strict 路径层的 chi 中间件。
+// 全局层对每个请求先检查;auth/media strict 层只对其已配置的 class 检查。
+// 任意一层耗尽都会产出 429,请求绝不会到达被包装的 handler(不消耗
+// provider-account / 配额)。
 func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := rl.clientKey(r)
@@ -290,10 +284,9 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 	})
 }
 
-// denied emits operator-visible evidence for a rate-limit denial (AT-SEC-001):
-// which tier fired, the per-IP key, and the request method/path, so operators can
-// review the event and distinguish abuse from a false positive. The per-IP key is
-// the resolved client IP — not credentials — so this is safe to log.
+// denied 为一次限流拒绝发出运维可见的证据(AT-SEC-001):哪一层触发、
+// 按 IP 的键,以及请求的 method/path,这样运维就能复盘该事件并把滥用
+// 与误报区分开。按 IP 的键是解析出的客户端 IP——而非凭据——所以可安全记录。
 func (rl *rateLimiter) denied(r *http.Request, tier, key string, retryAfterS int) {
 	rl.logger.Warn("inbound rate limit triggered",
 		zap.String("tier", tier),
@@ -304,17 +297,15 @@ func (rl *rateLimiter) denied(r *http.Request, tier, key string, retryAfterS int
 	)
 }
 
-// authStrictFor resolves the auth-strict tier for the request, if any. The
-// limiter runs before chi route matching, so it matches on the request path
-// (falling back to the resolved route pattern when present). Returns nil when
-// the request is not an auth-strict class.
+// authStrictFor 为该请求解析出 auth-strict 层(若有)。限流器运行在 chi
+// 路由匹配之前,所以它按请求路径匹配(若已解析出路由模式则回退到该模式)。
+// 当请求不属于 auth-strict class 时返回 nil。
 //
-// The auth-strict tier is charged ONLY for POST — the single mutation method
-// these auth/session routes accept. Any other method (CORS OPTIONS preflight,
-// or a cheap cross-site GET/HEAD that the route would 405 anyway) must NOT drain
-// the much tighter auth bucket; charging it would let a browser preflight or an
-// induced cross-site GET 429 the real login/register/refresh POST for an IP. The
-// wider global tier still bounds floods of those other methods.
+// auth-strict 层只对 POST 记账——这是这些 auth/session 路由接受的唯一变更方法。
+// 任何其它方法(CORS OPTIONS 预检,或一个本就会被路由 405 的廉价跨站
+// GET/HEAD)都不得耗尽那个紧得多的 auth 桶;若给它记账,一个浏览器预检
+// 或被诱导的跨站 GET 就能让某个 IP 真正的 login/register/refresh POST 吃到 429。
+// 更宽的全局层仍然给这些其它方法的洪泛设界。
 func (rl *rateLimiter) authStrictFor(r *http.Request) *authStrictTier {
 	return rl.strictTierFor(r, rl.authStrict)
 }
@@ -338,7 +329,7 @@ func (rl *rateLimiter) strictTierFor(r *http.Request, tiers map[string]*authStri
 	return nil
 }
 
-// reject writes the gateway's standard JSON error body with HTTP 429.
+// reject 以 HTTP 429 写出网关标准的 JSON 错误响应体。
 func (rl *rateLimiter) reject(w http.ResponseWriter, retryAfterS int) {
 	if retryAfterS > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfterS))
@@ -357,14 +348,13 @@ func (rl *rateLimiter) reject(w http.ResponseWriter, retryAfterS int) {
 	_, _ = w.Write(body)
 }
 
-// clientKey derives the per-IP bucket key. It uses the gateway's trusted-proxy
-// resolver so the key is the real client as seen past only-trusted forwarding
-// hops — a client cannot mint fresh buckets by forging X-Forwarded-For/X-Real-IP.
-// With no trusted proxies configured the resolver returns the socket peer (the
-// safe default for direct exposure). The port is already stripped by the
-// resolver; a bare RemoteAddr fallback covers the nil-resolver path.
-// clientid.Identity is deliberately NOT used: it is a coarse client-TYPE enum and
-// would collapse all callers into a single bucket, defeating per-IP isolation.
+// clientKey 推导按 IP 的桶键。它使用网关的可信代理 resolver,因此键是
+// 穿过仅可信转发跳数之后看到的真实客户端——客户端无法通过伪造
+// X-Forwarded-For/X-Real-IP 来铸造新桶。在未配置任何可信代理时,
+// resolver 返回 socket 对端(直连暴露下的安全默认)。端口已由 resolver
+// 剥除;一个裸 RemoteAddr 回退覆盖 resolver 为 nil 的路径。
+// clientid.Identity 刻意不使用:它是一个粗粒度的客户端类型枚举,会把所有
+// 调用方塌缩进同一个桶,破坏按 IP 的隔离。
 func (rl *rateLimiter) clientKey(r *http.Request) string {
 	if key := strings.TrimSpace(rl.resolver.ClientIP(r)); key != "" {
 		return key
@@ -379,10 +369,9 @@ func (rl *rateLimiter) clientKey(r *http.Request) string {
 	return addr
 }
 
-// envFloat reads a positive, finite float env override, falling back when the var
-// is unset/blank/invalid, non-positive, or non-finite (NaN/Inf). A NaN/Inf burst
-// would never exhaust the bucket (silently disabling the always-on limiter), so
-// such values are rejected in favor of the safe default.
+// envFloat 读取一个正的、有限的 float env override,当变量未设置/为空/非法、
+// 非正、或非有限(NaN/Inf)时回退。一个 NaN/Inf 的 burst 永远不会耗尽桶
+//(从而悄悄禁用始终开启的限流器),所以这类值被拒绝、改用安全默认值。
 func envFloat(name string, fallback float64) float64 {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -395,10 +384,9 @@ func envFloat(name string, fallback float64) float64 {
 	return v
 }
 
-// envBurst reads a burst override but additionally rejects values below one token:
-// the limiter consumes exactly one token per request, so a burst in (0,1) would
-// reject every request and brick the front door closed. Such values fall back to
-// the safe default.
+// envBurst 读取一个 burst override,但额外拒绝低于一个令牌的值:
+// 限流器对每个请求恰好消耗一个令牌,所以位于 (0,1) 的 burst 会拒绝
+// 每一个请求、把前门彻底锁死。这类值回退到安全默认值。
 func envBurst(name string, fallback float64) float64 {
 	v := envFloat(name, fallback)
 	if v < 1 {
@@ -407,7 +395,7 @@ func envBurst(name string, fallback float64) float64 {
 	return v
 }
 
-// rateLimitDisabled reports whether the limiter is turned off via env.
+// rateLimitDisabled 报告限流器是否经由 env 被关闭。
 func rateLimitDisabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(envRateLimitDisable))) {
 	case "1", "true", "yes", "on":

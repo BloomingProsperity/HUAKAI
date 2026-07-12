@@ -5,10 +5,24 @@ package subscription
 import (
 	"context"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// hasTier 判断去重键集合里是否记录了某档位。兼容新版 "N@日期" 复合键(reminderDedupKey)
+// 与历史纯档位键 "N"——这些断言关心的是"该档是否被 claim/记录", 不关心键的精确格式。
+func hasTier(keys map[string]struct{}, tier int) bool {
+	want := strconv.Itoa(tier)
+	for k := range keys {
+		if k == want || strings.HasPrefix(k, want+"@") {
+			return true
+		}
+	}
+	return false
+}
 
 // fakeMailer 记录每次发送调用并按配置返回结果 (测试用)。
 type fakeMailer struct {
@@ -167,13 +181,62 @@ func TestReminder_DedupAcrossTicks(t *testing.T) {
 		t.Fatalf("mailer calls = %d, want 1", c)
 	}
 	keys, _ := store.SentReminderKeys(ctx, 1, subID)
-	if _, ok := keys["3"]; !ok {
+	if !hasTier(keys, 3) {
 		t.Fatalf("expected tier '3' recorded, got %v", keys)
 	}
 }
 
-// TestReminder_ConcurrentReplicasClaimBeforeSend forces two reminder services to
-// race the same subscription tier after both have observed no existing reminder.
+// TestReminder_RenewalResendsAfterExpiryMoves 是 #10 (S2) 的判别测试: 订阅续期/延期把到期日
+// 推到新周期后, 新周期临近到期必须重新发提醒, 而非被上一周期的已发记录永久去重掉(续期是对
+// 同一 user_subscription 行原地 UPDATE expires_at, ID 不变)。
+// 判别性: 把 reminderDedupKey 退化回纯档位键(去掉到期日)→ 续期后新周期键与旧键相同 →
+// SentReminderKeys 命中 → 跳过 → 新周期 sent=0 / mailer.count 停在 1 → 本测试转红。
+func TestReminder_RenewalResendsAfterExpiryMoves(t *testing.T) {
+	assignNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	var reminderNow time.Time
+	mailer := &fakeMailer{outcome: ReminderSent}
+	svc, rsvc, store := reminderHarness(&assignNow, &reminderNow, mailer, nil)
+	subID := assignSubExpiringIn(t, svc, store, &assignNow, &reminderNow, 1, 50, "u@example.com", 2*day) // 第一周期 tier 3
+	ctx := context.Background()
+
+	// 第一周期: tier 3 发一次, 同周期重复 tick 去重不重发。
+	if sent, err := rsvc.ProcessDueReminders(ctx, 100); err != nil || sent != 1 {
+		t.Fatalf("cycle1 first tick: sent=%d err=%v, want 1", sent, err)
+	}
+	if sent, _ := rsvc.ProcessDueReminders(ctx, 100); sent != 0 {
+		t.Fatalf("cycle1 second tick: sent=%d, want 0 (same-cycle dedup)", sent)
+	}
+
+	// 续期: 延期 +30 天, 到期日推进到新周期(同一订阅行原地 UPDATE)。
+	updated, err := svc.ExtendSubscription(ctx, ExtendSubscriptionInput{TenantID: 1, SubscriptionID: subID, Days: 30})
+	if err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+	// 把 reminderNow 设到新周期的 tier 3 band。
+	reminderNow = updated.ExpiresAt.Add(-2 * day)
+
+	// 新周期临近到期: 必须重新发(新到期日 → 新复合键 → 不被旧周期 "3@旧日期" 去重)。
+	if sent, err := rsvc.ProcessDueReminders(ctx, 100); err != nil || sent != 1 {
+		t.Fatalf("cycle2 after renewal: sent=%d err=%v, want 1 (续期后新周期必须重新提醒)", sent, err)
+	}
+	if c := mailer.count(); c != 2 {
+		t.Fatalf("mailer calls = %d, want 2 (每周期一封)", c)
+	}
+	// 两周期应记录两个不同的 tier-3 复合键(各自到期日)。
+	keys, _ := store.SentReminderKeys(ctx, 1, subID)
+	tier3Keys := 0
+	for k := range keys {
+		if strings.HasPrefix(k, "3@") {
+			tier3Keys++
+		}
+	}
+	if tier3Keys != 2 {
+		t.Fatalf("expected 2 distinct tier-3 cycle keys, got %d (%v)", tier3Keys, keys)
+	}
+}
+
+// TestReminder_ConcurrentReplicasClaimBeforeSend 让两个 reminder service 在
+// 都观察到不存在既有 reminder 之后,去竞争同一个 subscription tier。
 // 判别性: 把 claim 移回 SendReminder 之后时, 两个副本都会先发邮件, mailer calls=2 -> 红。
 func TestReminder_ConcurrentReplicasClaimBeforeSend(t *testing.T) {
 	assignNow := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -214,7 +277,7 @@ func TestReminder_ConcurrentReplicasClaimBeforeSend(t *testing.T) {
 		t.Fatalf("mailer calls = %d, want 1 cross-replica send", c)
 	}
 	keys, _ := store.SentReminderKeys(context.Background(), 1, subID)
-	if _, ok := keys["3"]; !ok {
+	if !hasTier(keys, 3) {
 		t.Fatalf("expected tier '3' recorded, got %v", keys)
 	}
 }
@@ -237,9 +300,9 @@ func TestReminder_DistinctTiersFireSeparately(t *testing.T) {
 	rsvc.ProcessDueReminders(ctx, 100) // 发 tier 1
 
 	keys, _ := store.SentReminderKeys(ctx, 1, subID)
-	for _, want := range []string{"7", "3", "1"} {
-		if _, ok := keys[want]; !ok {
-			t.Fatalf("expected tier %q recorded, got %v", want, keys)
+	for _, want := range []int{7, 3, 1} {
+		if !hasTier(keys, want) {
+			t.Fatalf("expected tier %d recorded, got %v", want, keys)
 		}
 	}
 	if c := mailer.count(); c != 3 {
@@ -264,7 +327,7 @@ func TestReminder_MissingRecipientSkippedNotSent(t *testing.T) {
 		t.Fatalf("mailer calls = %d, want 0 (no recipient must not call mailer)", c)
 	}
 	keys, _ := store.SentReminderKeys(ctx, 1, subID)
-	if _, ok := keys["3"]; !ok {
+	if !hasTier(keys, 3) {
 		t.Fatalf("expected skip recorded for tier '3' (dedup), got %v", keys)
 	}
 	// 第二次 tick 仍不发 (跳过记录已去重)。
@@ -288,7 +351,7 @@ func TestReminder_UnconfiguredClaimedAtMostOnce(t *testing.T) {
 		t.Fatalf("unconfigured tick sent=%d err=%v, want sent=0 with failure error", sent, err)
 	}
 	keys, _ := store.SentReminderKeys(ctx, 1, subID)
-	if _, ok := keys["3"]; !ok {
+	if !hasTier(keys, 3) {
 		t.Fatalf("unconfigured attempt must claim tier '3', got %v", keys)
 	}
 	if c := mailer.count(); c != 1 {
@@ -319,7 +382,7 @@ func TestReminder_RetryableFailureClaimedAtMostOnce(t *testing.T) {
 		t.Fatalf("failing tick sent=%d err=%v, want sent=0 with failure error", sent, err)
 	}
 	keys, _ := store.SentReminderKeys(ctx, 1, subID)
-	if _, ok := keys["3"]; !ok {
+	if !hasTier(keys, 3) {
 		t.Fatalf("retryable failure must claim tier '3', got %v", keys)
 	}
 	if c := mailer.count(); c != 1 {
@@ -353,8 +416,11 @@ func TestReminder_NoStarvationPastFirstPage(t *testing.T) {
 	}
 	// 全部同到期, 按 id 升序 = ListDueReminder 顺序; 预先把最小两个 id (最早一页) 标记已发。
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	// 预记录键必须与生产 processCandidate 对这些候选计算出的复合键一致(同到期日)才能去重;
+	// 候选 ExpiresAt = 订阅真实到期 = reminderNow + 2d。
+	preExpires := reminderNow.Add(2 * day)
 	for _, id := range ids[:2] {
-		if _, err := store.RecordReminder(ctx, reminderRecord{TenantID: 1, SubscriptionID: id, ReminderKey: "3", Status: ReminderStatusSent, ExpiresAt: reminderNow.Add(2 * day)}); err != nil {
+		if _, err := store.RecordReminder(ctx, reminderRecord{TenantID: 1, SubscriptionID: id, ReminderKey: reminderDedupKey(3, preExpires), Status: ReminderStatusSent, ExpiresAt: preExpires}); err != nil {
 			t.Fatalf("pre-record: %v", err)
 		}
 	}

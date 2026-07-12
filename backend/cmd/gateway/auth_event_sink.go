@@ -44,6 +44,12 @@ func (s *zapAuthEventSink) RecordAuthEvent(_ context.Context, event gatewayhttp.
 	if event.UserID != 0 {
 		fields = append(fields, zap.Int64("user_id", event.UserID))
 	}
+	if event.IP != "" {
+		fields = append(fields, zap.String("ip", event.IP))
+	}
+	if event.UserAgent != "" {
+		fields = append(fields, zap.String("user_agent", event.UserAgent))
+	}
 	if event.Provider != "" {
 		fields = append(fields, zap.String("provider", event.Provider))
 	}

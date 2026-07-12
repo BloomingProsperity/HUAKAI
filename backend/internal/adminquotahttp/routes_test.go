@@ -100,11 +100,9 @@ func (f *quotaFixture) createPolicy(tenantID int64, body string) quotaPolicyItem
 	return item
 }
 
-// TestCreatePersistsAndAuditsRealStore exercises the real InsertQuotaPolicy +
-// InsertAdminAuditEvent inside one tx. The discriminating assertion: an audit
-// row (action=create_quota_policy, target_type=quota_policy, target_id=new id)
-// must exist. MUTATION: dropping InsertAdminAuditEvent from the tx makes the
-// audit-row query return no rows -> red, even though the create still 201s.
+// TestCreatePersistsAndAuditsRealStore 守住 policy 与审计事件在同一个事务持久化。
+// HTTP 201 之外还必须存在与新 policy 标识一致的 create_quota_policy 审计行，
+// 否则管理员无法追溯创建动作。
 func TestCreatePersistsAndAuditsRealStore(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -142,10 +140,8 @@ func TestCreatePersistsAndAuditsRealStore(t *testing.T) {
 	}
 }
 
-// TestCrossTenantGet404 proves GetQuotaPolicyByID is tenant-fenced: a policy
-// created for tenant A is invisible via ?tenant_id=B. MUTATION: dropping
-// `AND tenant_id=$1` from GetQuotaPolicyByID returns the cross-tenant row, so
-// this 404 assertion goes red — the core cross-tenant leak guard.
+// TestCrossTenantGet404 守住 GetQuotaPolicyByID 的租户围栏：租户 A 的 policy
+// 对租户 B 必须返回 404，响应体也不得泄露租户 A 的 scope 内容。
 func TestCrossTenantGet404(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -164,10 +160,8 @@ func TestCrossTenantGet404(t *testing.T) {
 	}
 }
 
-// TestDeleteInUseRealFK proves the quota_windows FK ON DELETE RESTRICT (23503)
-// is surfaced as 409 quota_policy_in_use. The fixture WITHOUT the window would
-// let the delete succeed (200), so seeding the window is what proves the FK
-// path. MUTATION: mapping 23503 to 503 makes the 409 assertion red.
+// TestDeleteInUseRealFK 守住 quota_windows 占用 policy 时的 FK 约束语义：
+// 接口必须返回 409 quota_policy_in_use，不得把可操作的资源冲突误报为 503。
 func TestDeleteInUseRealFK(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -194,8 +188,8 @@ func TestDeleteInUseRealFK(t *testing.T) {
 	}
 }
 
-// TestDeleteCleanRealStore proves a policy with no windows hard-deletes (200),
-// writes a delete_quota_policy audit row, and a subsequent GET returns 404.
+// TestDeleteCleanRealStore 守住未被 window 使用的 policy 可从主表移除，
+// 同时写入一条 delete_quota_policy 审计行，且随后的 GET 返回 404。
 func TestDeleteCleanRealStore(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -227,12 +221,9 @@ func TestDeleteCleanRealStore(t *testing.T) {
 	}
 }
 
-// TestUpdateEnabledTogglesReserveVisibility is self-proving: it runs BOTH the
-// admin List reader and the reserve-path ListActiveQuotaPoliciesForScopes reader
-// after disabling a policy and asserts they DIFFER — admin still sees the row,
-// reserve does not. MUTATION: a broken admin List that copies the reserve-path
-// `WHERE enabled=true` filter would make BOTH empty and the "admin sees it,
-// reserve doesn't" assertion red.
+// TestUpdateEnabledTogglesReserveVisibility 守住禁用 policy 的双重可见性：
+// admin List 仍能用于运维查看，reserve 读取器必须忽略该行；两类读取结果
+// 相同会让禁用状态失去运维可见性或继续影响准入。
 func TestUpdateEnabledTogglesReserveVisibility(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)
@@ -254,7 +245,7 @@ func TestUpdateEnabledTogglesReserveVisibility(t *testing.T) {
 		t.Fatalf("reserve read should see enabled policy before toggle")
 	}
 
-	// PUT enabled=false.
+	// PUT 设置 enabled=false。
 	idPath := "/" + strconv.FormatInt(item.ID, 10) + "?tenant_id=" + strconv.FormatInt(f.tenantA, 10)
 	rec := f.invoke(http.MethodPut, idPath,
 		`{"scope_kind":"user","scope_id":"123","metric":"cost_usd","window_kind":"calendar_day","limit_value":"3","mode":"enforce","enabled":false}`)
@@ -262,7 +253,7 @@ func TestUpdateEnabledTogglesReserveVisibility(t *testing.T) {
 		t.Fatalf("disable PUT status=%d body=%s", rec.Code, strings.TrimSpace(rec.Body.String()))
 	}
 
-	// Reserve path no longer returns it.
+	// reserve 路径不再返回它。
 	after, err := reserve.ListActiveQuotaPoliciesForScopes(ctx, reservequota.ListActiveQuotaPoliciesForScopesParams{
 		TenantID: f.tenantA, Scopes: scopes, Metrics: []string{"cost_usd"},
 		AtTime: pgTimestamptz(time.Now().UTC()),
@@ -274,7 +265,7 @@ func TestUpdateEnabledTogglesReserveVisibility(t *testing.T) {
 		t.Fatalf("reserve read must NOT see disabled policy")
 	}
 
-	// Admin list (ignores enabled) still returns it.
+	// admin list(忽略 enabled)仍然返回它。
 	adminRec := f.invoke(http.MethodGet, "/?tenant_id="+strconv.FormatInt(f.tenantA, 10)+"&scope_kind=user&scope_id=123", "")
 	if adminRec.Code != http.StatusOK {
 		t.Fatalf("admin list status=%d", adminRec.Code)
@@ -297,10 +288,9 @@ func TestUpdateEnabledTogglesReserveVisibility(t *testing.T) {
 	}
 }
 
-// TestNoMoneySideEffect proves a cost_usd quota policy CRUD never touches
-// user_balances or billing_ledger_claims: row counts are unchanged before/after
-// create+update+delete. MUTATION: wiring any balance/ledger write into the
-// handler makes the count-delta assertion red.
+// TestNoMoneySideEffect 守住 cost_usd quota policy 的 CRUD 只管理策略，
+// create+update+delete 前后 user_balances 与 billing_ledger_claims 行数必须不变；
+// 任一余额或账本写入都违反管理面与钱路隔离。
 func TestNoMoneySideEffect(t *testing.T) {
 	ctx := context.Background()
 	pool := openQuotaPool(t, ctx)

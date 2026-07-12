@@ -47,12 +47,19 @@ func SidecarProfileForMode(mode TransportMode) (string, bool) {
 	}
 }
 
+// NewSidecarRoundTripperForMode 用 env 默认的 forceH1Enabled() 决定是否强制 H1。
+// 保留无 force_h1 形参的旧签名供既有调用方使用,默认值与 uTLS 路一致(默认开)。
 func NewSidecarRoundTripperForMode(socketPath string, mode TransportMode) (http.RoundTripper, error) {
+	return NewSidecarRoundTripperForModeForceH1(socketPath, mode, forceH1Enabled())
+}
+
+// NewSidecarRoundTripperForModeForceH1 显式透传 forceH1,供 wiring 按运维 config 装配。
+func NewSidecarRoundTripperForModeForceH1(socketPath string, mode TransportMode, forceH1 bool) (http.RoundTripper, error) {
 	profileID, ok := SidecarProfileForMode(mode)
 	if !ok {
 		return nil, fmt.Errorf("%w: no profile for mode %s", ErrSidecarProfileUnavailable, mode)
 	}
-	return NewSidecarRoundTripper(NewSidecarClient(socketPath), profileID), nil
+	return NewSidecarRoundTripperForceH1(NewSidecarClient(socketPath), profileID, forceH1), nil
 }
 
 func ProbeSidecarForMode(ctx context.Context, socketPath string, mode TransportMode) error {
@@ -76,7 +83,7 @@ func ProbeSidecarForMode(ctx context.Context, socketPath string, mode TransportM
 		Port:       1,
 		ProfileID:  profileID,
 	}
-	if err := writeSidecarFrame(conn, req); err != nil {
+	if _, err := writeSidecarFrame(conn, req); err != nil {
 		return fmt.Errorf("%w: write probe frame: %w", ErrSidecarUnavailable, err)
 	}
 	var ack sidecarControlAck

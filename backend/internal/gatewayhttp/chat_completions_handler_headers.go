@@ -3,11 +3,13 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
@@ -16,8 +18,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway/streamdelivery"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trust"
 	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
@@ -27,6 +31,26 @@ const (
 	headerHUAKAIModelRequested = "X-HUAKAI-Model-Requested"
 	headerHUAKAIModelDelivered = "X-HUAKAI-Model-Delivered"
 )
+
+const MaxRequestIDLength = 256
+
+// RequestIDLengthLimiter 拒绝过长 X-Request-Id，避免下游账务和审计路径放大输入。
+func RequestIDLengthLimiter(maxBytes int) func(http.Handler) http.Handler {
+	if maxBytes <= 0 {
+		maxBytes = MaxRequestIDLength
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if len(r.Header.Get("X-Request-Id")) > maxBytes {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprint(w, `{"error":"request_id_too_long"}`)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 func setAccountingModelRequested(env *proto.HCSF, requested string) {
 	if env == nil || requested == "" {
@@ -155,6 +179,7 @@ type l2CacheHitInput struct {
 	PlanSnapshot      string
 	PayloadHash       string
 	AttemptSeq        int
+	SettlementIntent  *settlementintent.Tracker
 }
 
 func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request, d ChatHandlerDeps, in l2CacheHitInput) bool {
@@ -191,23 +216,20 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	cachedEnv.Accounting.HopChain = gateway.BuildHopChain(forwardReq, "", in.RequestStartedAt, time.Now())
 	appendTrustChainWarning(cachedEnv, "response_cache_l2_hit", "served from HUAKAI L2 response cache")
 	ledgerResult, err := submitAuditLedgerEntry(ctx, d, cachedEnv, in.Ident.TenantID, in.RequestID)
-	// in.AccountID == 0 表示 cache 检查在 acquire 之前,
-	// reserve 完成但还没拿到 pool slot / acquisition_token, 不能走 settleCompletion
-	// (它 lookup claim by acquisition_token 找不到行返 500)。
+	// acquire 前尚无 pool slot/acquisition_token，不能走依赖 acquisition_token 的 settleCompletion。
 	if in.ReserveResult == nil || in.AccountID == 0 {
 		if err != nil {
 			if in.ReserveResult != nil {
-				if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0, protocolLossJSONFromEnv(cachedEnv)); abortErr != nil {
+				if abortErr := detachedAbort(ctx, d.Settler, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0, protocolLossJSONFromEnv(cachedEnv)); abortErr != nil {
 					setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
+				} else {
+					in.SettlementIntent.MarkAborted(ctx)
 				}
 			}
 			writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
 			return true
 		}
-		// cache 命中是成功请求 (返 200 缓存体), claim 必须以 committed (零成本)
-		// 终结而非 aborted — 否则审计把成功请求记成中止。 CommitCacheHit 同时写
-		// 一条 provider-less usage_records 行, 使 receipt / 用量视图可见。 终结
-		// 必须在写 200 body 之前完成, 否则进程退出会让 claim 永卡 reserving。
+		// acquire 前的 cache 命中以零成本提交 claim 并写审计 usage，且提交必须先于响应体。
 		if in.ReserveResult != nil {
 			cacheHitDraft := withOriginAudit(nonStreamingUsageDraft(cachedEnv, completionCostBreakdown{}, routingReasonWithCacheHit(routingReason, true, in.Entry.Key)), r, d)
 			cacheHitDraft.ClientTool = clientToolFromContext(ctx)
@@ -245,11 +267,14 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				rejectErr, abortErr := rejectMoneyPathCacheHitCommit(ctx, d, auditEvent, err)
 				if abortErr != nil {
 					setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
+				} else {
+					in.SettlementIntent.MarkAborted(ctx)
 				}
 				writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditRefMissing, rejectErr)
 				return true
 			}
 			if commitErr := d.Settler.CommitCacheHit(ctx, cacheHitReq); commitErr != nil {
+				in.SettlementIntent.MarkFailed(ctx, decimal.Zero)
 				writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeCacheSettleError, commitErr)
 				return true
 			}
@@ -258,13 +283,14 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		w.Header().Set("X-HUAKAI-Cache-L2", "hit")
 		WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID, d.Signer)
 		recordCacheHitReplay(ctx, d, in)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(in.Entry.Body)
+		writeL2CacheHitBody(ctx, w, in, decimal.Zero)
 		return true
 	}
 	if err != nil {
-		if abortErr := d.Settler.Abort(ctx, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0, protocolLossJSONFromEnv(cachedEnv)); abortErr != nil {
+		if abortErr := detachedAbort(ctx, d.Settler, in.Ident.TenantID, in.ReserveResult.ClaimID, "audit_ledger_error", in.RequestID, 0, protocolLossJSONFromEnv(cachedEnv)); abortErr != nil {
 			setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
+		} else {
+			in.SettlementIntent.MarkAborted(ctx)
 		}
 		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
 		return true
@@ -312,6 +338,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		SettleRequest:             settleReq,
 		Metadata:                  completionMetadata(in.RouteID, in.ClientRequestID),
 	}); err != nil {
+		in.SettlementIntent.MarkFailed(ctx, settleReq.ActualCost)
 		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
 		return true
 	}
@@ -319,9 +346,19 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	w.Header().Set("X-HUAKAI-Cache-L2", "hit")
 	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID, d.Signer)
 	recordCacheHitReplay(ctx, d, in)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(in.Entry.Body)
+	writeL2CacheHitBody(ctx, w, in, settleReq.ActualCost)
 	return true
+}
+
+func writeL2CacheHitBody(ctx context.Context, w http.ResponseWriter, in l2CacheHitInput, actualCost decimal.Decimal) {
+	w.WriteHeader(http.StatusOK)
+	delivered, err := streamdelivery.WriteBusinessAndFlush(w, in.Entry.Body)
+	if !delivered {
+		logInternalError(ctx, in.RequestID, "cache_hit_client_response_write_error", err)
+		return
+	}
+	in.SettlementIntent.MarkDelivering(ctx, time.Now().UTC())
+	in.SettlementIntent.MarkSettled(ctx, actualCost)
 }
 
 func cacheEntry(ex *chatExecution, cacheKey string, clientBody, cacheEnvelope []byte) l2cache.Entry {

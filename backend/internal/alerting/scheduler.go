@@ -33,12 +33,24 @@ type SchedulerTicker interface {
 	Stop()
 }
 
+// LeaderLock 把单次评估 tick 控制为：在多个网关副本之间，对于给定的某个
+// tick 只有 leader 才会发出告警——否则每个副本都会评估相同的规则并发出
+// 重复通知。OBS-193。
+type LeaderLock interface {
+	// TryAcquire 是非阻塞的：当本副本是 tick leader 时返回 (true, release, nil)
+	//（调用方在评估完后必须调用 release）；当另一个副本持有锁时返回
+	//（false, nil, nil）；锁故障时返回非 nil 的 error。
+	TryAcquire(ctx context.Context) (acquired bool, release func(), err error)
+}
+
 type SchedulerConfig struct {
 	Evaluator    RuleEvaluator
 	Store        EnabledRuleTenantLister
 	MetricSource MetricSource
 	Interval     time.Duration
 	NewTicker    func(time.Duration) SchedulerTicker
+	// LeaderLock 可选；nil = 每个 tick 都评估（单副本默认值，与当前行为完全一致）。
+	LeaderLock LeaderLock
 }
 
 type Scheduler struct {
@@ -47,6 +59,7 @@ type Scheduler struct {
 	metricSource MetricSource
 	interval     time.Duration
 	newTicker    func(time.Duration) SchedulerTicker
+	leaderLock   LeaderLock
 }
 
 func NewScheduler(cfg SchedulerConfig) *Scheduler {
@@ -64,6 +77,7 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		metricSource: cfg.MetricSource,
 		interval:     cfg.Interval,
 		newTicker:    cfg.NewTicker,
+		leaderLock:   cfg.LeaderLock,
 	}
 }
 
@@ -91,6 +105,19 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 func (s *Scheduler) evaluateOnce(ctx context.Context) {
+	// OBS-193：配置了 leader lock 后，只有抢到该非阻塞锁的副本才评估这个
+	// tick——从而避免多副本间的重复告警。锁故障时我们 fail OPEN（照样评估）：
+	// 重复一条告警也好过悄悄丢掉告警。
+	if s.leaderLock != nil {
+		acquired, release, err := s.leaderLock.TryAcquire(ctx)
+		if err != nil {
+			logIfLive(ctx, "alerting leader-lock acquire failed; evaluating anyway", err)
+		} else if !acquired {
+			return
+		} else {
+			defer release()
+		}
+	}
 	tenantIDs, err := s.store.ListTenantsWithEnabledRules(ctx)
 	if err != nil {
 		logIfLive(ctx, "alerting scheduler list enabled tenants failed", err)

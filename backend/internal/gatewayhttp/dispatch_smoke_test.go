@@ -233,12 +233,12 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 	// --- 4. 构建真实 StreamForwarder ---
 	// ProtocolAdapters：使用默认 registry，让 openai_chat 走真实 stream adapter。
 	// 该 adapter 会从 mock 的 OpenAI SSE usage/content 填充 draft token 信号；
-	// ClientAdapter 仍为空，因此响应侧保持 raw SSE fallback 的冒烟级断言。
+	// ClientAdapter 仍为空，因此响应侧保持 raw SSE 回退 的冒烟级断言。
 	protoReg := gateway.BuildDefaultProtocolAdapterRegistry()
 	forwarder := &gateway.StreamForwarder{
 		ProtocolAdapters: protoReg,
-		// A1 atomic：Forward 现要求 Scanners 非 nil。注入默认注册表
-		// （19 个 family 全 SSE，与本测试期望的 SSE wire 行为一致）。
+		// A1 原子变更：Forward 现要求 Scanners 非 nil。注入默认注册表
+		// （19 个 family 全 SSE，与本测试期望的 SSE 线协议行为一致）。
 		Scanners: gateway.BuildDefaultStreamScannerRegistry(),
 	}
 
@@ -364,12 +364,12 @@ func TestChatCompletionsMixedLoadP95(t *testing.T) {
 		t.Skip("HUAKAI_SKIP_PERF_LATENCY_GATE=1; broad race suite skips latency gate")
 	}
 
-	// Mutation self-checks for PM shell verification:
-	// 1. Wrap the handler call path in a package-global sync.Mutex: wallClock
-	//    should grow toward totalRequests*soloLatency, speedup should fall
-	//    toward 1, and the speedup >= 4 assertion should fail.
-	// 2. Start one goroutine per request without returning it: the post-load
-	//    goroutine bound should fail.
+	// 供 PM 壳验证用的变异自检:
+	// 1. 把 handler 调用路径用一个 package 级 sync.Mutex 包起来:wallClock
+	//    应当趋向 totalRequests*soloLatency,speedup 应当趋向 1,而
+	//    speedup >= 4 的断言应当失败。
+	// 2. 每个请求起一个 goroutine 却不让它返回:负载后的 goroutine 上界
+	//    断言应当失败。
 	baselineGoroutines := runtime.NumGoroutine()
 	harness := newFullChainChatHarness(t)
 	defer harness.Close()

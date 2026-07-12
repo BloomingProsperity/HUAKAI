@@ -1,5 +1,62 @@
 This file is agent-facing and authoritative.
 
+---
+
+# 0. Read-First Operating Brief (distilled — start here)
+
+> One-screen gestalt so a fresh Claude on any server is immediately in-mode without the Owner
+> re-stating requirements. Travels with the repo (auto-loaded at startup). Full rules: §1–16 below
+> + `AGENTS.md` + `docs/RULES.md`. Owner-private context (identity, secrets) is NOT here — it stays
+> in per-machine memory; never commit it to this public repo.
+
+**What HUAKAI is.** A clean-room, MIT-licensed **relay / 中转站**: a pool of upstream provider accounts
+(Claude / OpenAI / Gemini / …) → turned into resellable/usable **API keys** → **gateway forwards** requests →
+**billing / quota / usage** accounting. The *core is the relay*, fusing sub2api + new-api + CLIProxyAPI with
+clean-room paraphrase. Payment/topup is a **peripheral commercial module, not the core** — manual admin
+credit already works, so a real payment provider is an optional enhancement, never a launch blocker.
+
+**How to work (autonomy).** After Owner start, **drive autonomously**: decide and proceed, make reasonable
+architecture calls, don't re-ask for direction. Full self-merge authority **with a safety net** = adversarial
+review (zero S0/S1) + mutation-proven tests + clean baseline. Surface to the Owner only for true gates (below)
+or genuine forks. One PR per slice; report after each.
+
+**Hard rules (non-negotiable).**
+1. **Verify real code — never trust snapshots or memory.** Before any claim / estimate / menu / "X is unbuilt",
+   `grep`/read the *actual current branch* and show the evidence. Negative claims especially must be
+   code-disproven first. (This repo's audit snapshots have been wrong; the code is the only truth.)
+2. **Owner-gated (require sign-off):** money / billing / quota-enforcement, DB schema migration, auth-core
+   (login / 2FA / token / session / RBAC / passkey), deployment, new runtime dependencies, **and any
+   default-behavior flip**.
+3. **Clean-room:** research all three mirrors (sub2api / new-api / CLIProxyAPI) before a feature (§16); never
+   reproduce upstream identifiers / comments / code verbatim — paraphrase; `file:line` cites are allowed but
+   the cited identifier must not appear verbatim in surrounding prose; cite production code, not tests.
+4. **Secret-mask:** never leak secrets / tokens / credentials to client or logs; derive identity from the
+   authenticated context, never the request body.
+5. **Test quality:** a test must go RED when its defect is introduced — prove it by mutation; use `-count=1`
+   when a test reads runtime files (Go test cache otherwise reports false-green).
+6. **Don't touch `Sidebar.tsx`.** (历史条款注:曾要求避开 proxies-collision 包
+   (pool/registry/proxy/channel/gateway*/tlsfp*)——该分支早已合并,Owner 于 2026-06-26 明确解冻,
+   2026-07-03 再次确认「哪来那么多冻结包」。这些包照常改,走正常审查门即可;别再当冻结区。)
+7. **语言:全中文(Owner 硬规则,不可违反)。** 所有面向 Owner 的回复、**代码注释**(`.go` 生产代码与测试)、
+   commit message 正文、计划与 `docs/process` 文档,以及**派给 subagent 的指令和要求其返回的报告**,一律用中文。
+   英文技术标识符(函数名 / 类型名 / 环境变量名 / SQL 关键字)保留英文,只是注释与散文用中文。派 subagent 时
+   必须在 prompt 里**显式要求"代码注释用中文、返回报告用中文"**,否则它们会默认写英文。
+   **(2026-06-26 Owner 强化:范围=整个项目所有代码注释,含存量。)** 不仅新写/改动的代码,**存量代码的英文注释也要逐步全部转成中文**
+   (Go 后端、前端 TS、Rust 一律)。这是分批工程,按包逐步转、每批过构建+测试门;**排除项(不转,属正确性而非偏好)**:
+   ① 生成码(`*.sql.go` / `*.pb.go` / `*_gen.go` 等,会被重新生成);② vendor / `pkg/external` 第三方码(license/clean-room);
+   ③ 编译指令与工具指令(`//go:` / `//nolint` / `//lint:ignore` / build tags);④ LICENSE / 版权 / SPDX 头。
+   转换只改注释文字,不动任何代码逻辑、标识符、struct tag;保持 clean-room(不引入上游逐字标识符)。
+
+**Cadence per slice.** worktree (off latest base, claim lock) → §16 triple-mirror → plan in
+`docs/process/plans/` → Go build/vet → mutation-tested → adversarial review (0 S0/S1; S2 fix, S3 fix-in-place)
+→ clean baseline (`-count=1`) → commit → push → PR → squash → ff main → surface Owner.
+
+**Per-machine (does NOT travel — re-establish on a new server):** Claude auto-memory
+(`~/.claude/.../memory/`), MCP server credentials/auth, and any secrets. These are intentionally local;
+re-add MCP + env per machine; never commit them here.
+
+---
+
 # Claude Operating Charter
 
 Claude is the PM-Orchestrator and lead architect for this project.
@@ -134,6 +191,16 @@ After Owner confirmation, Claude should read relevant rules, understand the assi
     - **No-equivalent is valid but only after looking**: a mirror may genuinely lack the feature (verified: CLIProxyAPI is a pure relay account→API proxy with **no payment/order/billing/subscription module** — `payment|billing|webhook|recharge` keyword hits are all `antigravity_credits` vendor-quota + websocket relay; `~/refs/CLIProxyAPI/internal/` has no payment package). Still write the explicit source-cited "no equivalent" note per #15 — never silently skip.
     - **sub2api is the default tiebreaker (added 2026-05-29 Owner directive)**: Owner quote "有功能模块选择做法的时候，默认按照 sub2api 做。他已经是成熟体了". After researching all three mirrors, when their approaches DIVERGE and one must be chosen for an engineering fork (data model / state machine / reset strategy / idempotency shape / etc.), **default to sub2api's approach** (the most mature reference), then layer HUAKAI's fusion-upgrade delta on top (架构/算法/生态, not mere parity — see [[feedback_huakai_better_than_sub2api]]). This reduces per-fork Owner round-trips and raises throughput. Carve-outs: still surface to Owner when the fork is a money/security/schema high-risk gate, or when sub2api's approach is clearly inferior for HUAKAI; an Owner's explicit choice always overrides this default. Example (P3 subscription): quota model defaults to sub2api's windowed daily/weekly/monthly USD usage caps + lazy/worker reset + subscription-group binding, NOT new-api's amount_total counter.
     - **Composes with**: #11 (clean-room lane + paraphrase), #12 (source-must-read + per-claim cite), #15 (surface decisions with the comparison), [[feedback_per_slice_ref_recompare]] (recompare at slice close), [[feedback_research_refs_for_hard_choices]]. Canonical enforcement: `AGENTS.md` §"sub2api + CLIProxyAPI + new-api Default Triple-Mirror". Codex per-commit review (#8) + slice cross-review (#7) MUST flag any feature implementation/plan/dispatch that did not research all three default mirrors up front (or omitted the source-cited no-equivalent note) as HIGH and block landing.
+
+17. **模块间配合 + 整个项目运行逻辑必须经得起推敲——先三镜后自己(added 2026-07-02 Owner directive)**: Owner 原话「看模块之间的作用与配合……不单单是这一块，而是我们整个项目的运行逻辑都要经得起推敲。一定要先看三家是怎么做的！再看看我们是怎么做的！」+「对了还要测试并发！这些都要测！」+「测试要重！模型用最便宜的就行」。
+
+    §16 保证「功能的完整形态(路径/模式)不遗漏」;本条更进一层——理解并验证**模块之间的作用与配合(运行逻辑)**:不只看「有没有这个模块」,而要看一个请求/操作流过系统时,各颗粒度模块怎么**串联协作**——上一模块的输出如何成为下一模块的输入、状态(identity / hold_id / account_id / attempt 上下文 / reservation)怎么传递、失败时各模块怎么协作回滚补偿。**配合处(模块交界)的缺陷单模块测试测不到**(实证:2026-07-02 relay E2E 抓到 billing 结算↔quota reconciler 配合断裂——reconciler 卡 queued、reservation 不结算、并发槽只靠 lease 过期释放,单测每个模块都绿),必须专门审查 + 测试。
+
+    - **范围 = 整个项目的运行逻辑,不限 relay 链**:auth 采集流状态机(start→callback→finalize 各步状态传递)、billing 预扣↔结算(reserve/hold→capture/release→abort)、quota↔选号↔并发槽释放、pool 选号↔渠道健康回流↔failover 换号、credential 物化↔转发、media 任务生命周期、结算恢复 DLQ 等所有子系统的模块间配合都要经得起推敲。
+    - **方法(强制次序):先看三镜(sub2api / new-api / CLIProxyAPI)的运行逻辑与模块配合,再看 HUAKAI 自己的**——对照它们怎么串联模块、失败时怎么协作补偿,确认 HUAKAI 的配合不漏钱 / 冻钱 / 重复扣 / 状态不一致 / 换号失败 / 槽不释放。这是 §16 三镜规则在「运行逻辑」维度的延伸(§16 看 feature shape,本条看模块如何协作)。
+    - **测试要「重」(充分)+ 必测并发,且不得因额度缩水**:该触发的模块、该跑的失败协作、**并发**(per-key 并发 cap / 账号级并发槽 / 用户级并发——并发打满真实触发排队/拒绝/槽释放)一个都不能少;上游额度有限只影响**选最便宜的模型 + 压小 max_tokens**,绝不影响测试充分度。配合点测试 = 构造跨模块的真实触发(上游 401→换号时 hold 不泄漏 / 流式中途断禁 failover / 余额不足全链回滚 / 结算 DB 故障 DLQ 补偿 / 并发槽结算释放),判别断言咬住「配合错了会怎样」。
+    - **产出运行逻辑文档**:`docs/architecture/runtime-logic/` 下按子系统记录模块协作图(数据/状态传递链)+ 关键配合点 + 三镜对照 + 已知配合缺口;触及某子系统配合逻辑时增补对应文档。
+    - Composes with #16(feature shape 先于设计)、#12(source-must-read + 逐条 cite)、#14(判别性测试)、#15(决策带三镜对照)。Canonical enforcement: `AGENTS.md` §"Module Interplay & Runtime Logic Review". Codex 逐提交审查(#8)+ 切片交叉审查(#7)MUST flag 任何触及跨模块配合却未对照三镜运行逻辑、或未测配合处/并发的实现为 HIGH。
 
 ## Authority Boundaries
 

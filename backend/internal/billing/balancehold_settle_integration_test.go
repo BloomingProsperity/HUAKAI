@@ -4,6 +4,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ import (
 )
 
 func TestSettler_SettleAppliesCaptureAndReturnsUpdatedBalance(t *testing.T) {
-	// Mutation check: capture path writes usage/billing row but never debits user balance.
+	// 变异检查:capture 路径写入 usage/billing 行但从不扣减用户余额。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -51,8 +52,8 @@ func TestSettler_SettleAppliesCaptureAndReturnsUpdatedBalance(t *testing.T) {
 }
 
 func TestSettler_CacheHitCapturesZeroAndReleasesHold(t *testing.T) {
-	// Mutation check: skip BalanceHold.Capture in CommitCacheHit.
-	// Without capture, held would remain 0.01 on a success L2 hit.
+	// 变异检查:在 CommitCacheHit 中跳过 BalanceHold.Capture。
+	// 不做 capture 时,L2 命中成功后 held 会停留在 0.01。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -94,8 +95,8 @@ func TestSettler_CacheHitCapturesZeroAndReleasesHold(t *testing.T) {
 }
 
 func TestSettler_AbortReleasesHold(t *testing.T) {
-	// Mutation check: omit Release in Abort.
-	// Without Release the held budget remains non-zero and future claims overdraw.
+	// 变异检查:在 Abort 中省略 Release。
+	// 不做 Release 时,held 预算保持非零,后续 claim 会透支。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -131,7 +132,7 @@ func TestSettler_AbortReleasesHold(t *testing.T) {
 }
 
 func TestSettler_LeaseSweepAbortsExpiredClaims(t *testing.T) {
-	// Mutation check: sweep selects only stale claims or never aborts them.
+	// 变异检查:sweep 只选取陈旧 claim,或从不 abort 它们。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -169,8 +170,151 @@ func TestSettler_LeaseSweepAbortsExpiredClaims(t *testing.T) {
 	}
 }
 
+func TestSettler_LeaseSweepProtectsDeliveredUnsettledClaim(t *testing.T) {
+	// 变异检查:移除 post_delivery_settlement 未决行排除条件,受保护 claim 会被零成本 Abort。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openPool(t, ctx)
+	protected := seedSettlerGraph(t, ctx, pool, "lease-sweep-delivered-unsettled")
+	ordinary := seedSettlerGraph(t, ctx, pool, "lease-sweep-ordinary-orphan")
+	for _, seed := range []settlerSeed{protected, ordinary} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO user_balances (tenant_id, user_id, balance, held)
+			 VALUES ($1, $2, 10, 0) ON CONFLICT (tenant_id, user_id) DO NOTHING`,
+			seed.tenantID, seed.userID,
+		); err != nil {
+			t.Fatalf("seed user balance: %v", err)
+		}
+		if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.01000000")); err != nil {
+			t.Fatalf("reserve hold: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE billing_ledger_claims SET lease_expires_at=NOW()-interval '100 years' WHERE tenant_id=$1 AND id=$2`,
+			seed.tenantID, seed.claimID,
+		); err != nil {
+			t.Fatalf("expire claim lease: %v", err)
+		}
+	}
+	seedPendingSettlementRecovery(t, ctx, pool, protected.tenantID, protected.claimID)
+
+	sweeper := NewLeaseSweeper(pool, NewSettler(pool), 1000)
+	if _, err := sweeper.SweepOnce(ctx); err != nil {
+		t.Logf("SweepOnce non-fatal errors from shared dev DB: %v", err)
+	}
+
+	var protectedStatus, ordinaryStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM billing_ledger_claims WHERE tenant_id=$1 AND id=$2`, protected.tenantID, protected.claimID).Scan(&protectedStatus); err != nil {
+		t.Fatalf("read protected claim: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM billing_ledger_claims WHERE tenant_id=$1 AND id=$2`, ordinary.tenantID, ordinary.claimID).Scan(&ordinaryStatus); err != nil {
+		t.Fatalf("read ordinary claim: %v", err)
+	}
+	if protectedStatus != "reserving" {
+		t.Fatalf("protected claim status=%q want reserving", protectedStatus)
+	}
+	if ordinaryStatus != "aborted" {
+		t.Fatalf("ordinary orphan status=%q want aborted", ordinaryStatus)
+	}
+
+	var protectedHeld, ordinaryHeld decimal.Decimal
+	if err := pool.QueryRow(ctx, `SELECT held FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, protected.tenantID, protected.userID).Scan(&protectedHeld); err != nil {
+		t.Fatalf("read protected hold: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT held FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, ordinary.tenantID, ordinary.userID).Scan(&ordinaryHeld); err != nil {
+		t.Fatalf("read ordinary hold: %v", err)
+	}
+	if !protectedHeld.Equal(decimal.RequireFromString("0.01000000")) {
+		t.Fatalf("protected held=%s want 0.01000000", protectedHeld)
+	}
+	if !ordinaryHeld.IsZero() {
+		t.Fatalf("ordinary held=%s want 0", ordinaryHeld)
+	}
+}
+
+func TestSettler_AbortRechecksDeliveredUnsettledRecoveryInsideTransaction(t *testing.T) {
+	// 变异检查:只保留 sweeper 候选查询的排除条件、移除 Abort 事务内复核时，
+	// 直接进入 Abort 的过期候选会被写成 aborted，并释放已交付请求的 hold。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "abort-recheck-delivered-unsettled")
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_balances (tenant_id, user_id, balance, held)
+		 VALUES ($1, $2, 10, 0) ON CONFLICT (tenant_id, user_id) DO NOTHING`,
+		seed.tenantID, seed.userID,
+	); err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.01000000")); err != nil {
+		t.Fatalf("reserve hold: %v", err)
+	}
+	seedPendingSettlementRecovery(t, ctx, pool, seed.tenantID, seed.claimID)
+
+	err := NewSettler(pool).Abort(ctx, seed.tenantID, seed.claimID, "lease_expired", uuid.NewString(), 0, nil)
+	if !errors.Is(err, ErrPostDeliverySettlementPending) {
+		t.Fatalf("Abort error=%v want ErrPostDeliverySettlementPending", err)
+	}
+
+	var status string
+	var held decimal.Decimal
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM billing_ledger_claims WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, seed.claimID,
+	).Scan(&status); err != nil {
+		t.Fatalf("read protected claim: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT held FROM user_balances WHERE tenant_id=$1 AND user_id=$2`,
+		seed.tenantID, seed.userID,
+	).Scan(&held); err != nil {
+		t.Fatalf("read protected hold: %v", err)
+	}
+	if status != "reserving" || !held.Equal(decimal.RequireFromString("0.01000000")) {
+		t.Fatalf("protected claim status/held=%q/%s want reserving/0.01000000", status, held)
+	}
+}
+
+func TestSettler_LeaseSweepProtectsSlotForUnresolvedDeliveryRecovery(t *testing.T) {
+	// 变异检查:移除 slot orphan 查询中的恢复行排除条件,遗留终态 claim 的槽会被清掉。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "slot-sweep-delivered-unsettled")
+	if _, err := pool.Exec(ctx,
+		`UPDATE billing_ledger_claims
+		 SET status='aborted', aborted_reason='legacy_unsettled_delivery'
+		 WHERE tenant_id=$1 AND id=$2`, seed.tenantID, seed.claimID,
+	); err != nil {
+		t.Fatalf("seed legacy claim state: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE pool_slot_acquisitions
+		 SET lease_expires_at=NOW()-interval '100 years'
+		 WHERE tenant_id=$1 AND acquisition_token=$2`, seed.tenantID, seed.acquisitionToken,
+	); err != nil {
+		t.Fatalf("expire slot lease: %v", err)
+	}
+	seedPendingSettlementRecovery(t, ctx, pool, seed.tenantID, seed.claimID)
+
+	if _, err := NewLeaseSweeper(pool, NewSettler(pool), 1000).SweepOnce(ctx); err != nil {
+		t.Logf("SweepOnce non-fatal errors from shared dev DB: %v", err)
+	}
+	var slotStatus string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM pool_slot_acquisitions WHERE tenant_id=$1 AND acquisition_token=$2`,
+		seed.tenantID, seed.acquisitionToken,
+	).Scan(&slotStatus); err != nil {
+		t.Fatalf("read protected slot: %v", err)
+	}
+	if slotStatus != "acquired" {
+		t.Fatalf("protected slot status=%q want acquired", slotStatus)
+	}
+}
+
 func TestSettler_LeaseSweepReclaimsExpiredSlotAcquisitions(t *testing.T) {
-	// Mutation check: remove orphan slot sweeping and the slot stays acquired with in_flight_count=1.
+	// 变异检查:移除孤儿 slot 的回收,slot 会保持 acquired 且 in_flight_count=1。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -227,7 +371,7 @@ func TestSettler_LeaseSweepReclaimsExpiredSlotAcquisitions(t *testing.T) {
 }
 
 func TestSettler_LeaseSweepReclaimsExpiredSlotFromPriorAttempt(t *testing.T) {
-	// Mutation check: remove attempt_seq from the live-claim guard and the prior-attempt slot remains acquired.
+	// 变异检查:从 live-claim 守卫中移除 attempt_seq,上一次尝试的 slot 会保持 acquired。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -307,7 +451,7 @@ func TestSettler_LeaseSweepReclaimsExpiredSlotFromPriorAttempt(t *testing.T) {
 }
 
 func TestSettler_RefundCreditsUserBalance(t *testing.T) {
-	// Mutation check: remove refund UPDATE to user_balances.
+	// 变异检查:移除对 user_balances 的退款 UPDATE。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -358,4 +502,21 @@ func reserveAndCommitBalanceHold(ctx context.Context, t *testing.T, pool *pgxpoo
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func seedPendingSettlementRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, claimID int64) {
+	t.Helper()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO usage_record_dlq (
+			tenant_id, claim_id, payload, failure_reason, event_kind, lane, status,
+			next_retry_at, lease_ttl, replica_status, replica_target, idempotency_key,
+			source_table, source_id
+		 ) VALUES (
+			$1, $2, '{}', 'settlement_failed', 'post_delivery_settlement', 'HIGH', 'pending',
+			NOW(), interval '30 seconds', 'none', 'primary', $3,
+			'billing_ledger_claims', $2
+		 )`, tenantID, claimID, "protect-sweep-"+uuid.NewString(),
+	); err != nil {
+		t.Fatalf("seed pending settlement recovery: %v", err)
+	}
 }

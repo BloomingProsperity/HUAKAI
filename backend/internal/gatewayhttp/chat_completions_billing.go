@@ -2,8 +2,6 @@ package gatewayhttp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,13 +20,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
+	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
 
-// Above the heuristic estimator's own noise floor; sub-floor deltas are false-positive-dominated.
+// 高于启发式估算器自身的噪声底线; 低于该底线的 delta 以误报为主。
 const crossCheckMinAbsTokenDelta = 50
 
 // crossCheckAudit 计算 token 交叉校验的审计信号(confidence_score / pending_reconciliation)。
@@ -93,7 +93,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	// 使 audit_ledger_error abort 与成功 settle 的 protocol_loss 缺 ledger 侧损失(item 2)。
 	ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "audit_ledger_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "audit_ledger_error", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeAuditLedgerError, err)
@@ -110,7 +110,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		ex.protocolLoss = protocolLossJSONFromEnv(bufferedEnv)
 	}
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "canonical_response_error", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "canonical_response_error", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
@@ -119,14 +119,14 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
 	if err != nil {
-		if abortErr := ex.d.Settler.Abort(ex.ctx, ex.ident.TenantID, ex.reserveRes.ClaimID, "pricing_unavailable", ex.requestID, 0, ex.protocolLoss); abortErr != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pricing_unavailable", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
 		}
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, err)
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	settleReq := ex.nonStreamingSettleRequest(bufferedEnv, actualCost, ex.selRes.RoutingReasonJSON)
-	if _, err := settleCompletion(ex.ctx, ex.d, eventbus.RequestCompletionEvent{
+	settleEvent := eventbus.RequestCompletionEvent{
 		ID:                        ex.requestID,
 		TenantID:                  ex.ident.TenantID,
 		ClaimID:                   ex.reserveRes.ClaimID,
@@ -136,36 +136,64 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		RequestedModel:            ex.req.Model,
 		UpstreamModel:             ex.upstreamModelID,
 		PayloadHash:               ex.payloadHash,
-		RawBodyHash:               bodyHash(ex.body),
-		RedactedBodyRef:           redactedBodyRef(ex.body),
+		RawBodyHash:               payloadhash.Sum(ex.body),
+		RedactedBodyRef:           payloadhash.RedactedRef(ex.body),
 		AuditLedgerID:             ledgerID(ledgerResult),
 		AuditLedgerDLQRef:         ledgerDLQRef(ledgerResult),
 		AuditSignatureFingerprint: ledgerFingerprint(ledgerResult),
 		SettleRequest:             settleReq,
 		Metadata:                  completionMetadata(ex.routeID, ex.clientRequestID),
-	}); err != nil {
-		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
-		return markAttemptOutcomeDelivered(outcome)
 	}
-	// 持久幂等重放: 存原始响应供同 Idempotency-Key 重试路由无关地重放。
-	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
-	if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
-		// retry/failover 可能跨 upstream model 成功；cache 写入必须使用
-		// 实际成功 attempt 的 model，避免把 fallback 响应写进 primary key。
-		if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
-			ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
-			syncL2SizeMetrics(ex.d.ResponseCache)
-		}
+	if err := validateMoneyPathAuditRefForSource(ex.ctx, ex.d, settleEvent, "direct_settle"); err != nil {
+		rejectErr, abortErr := rejectMoneyPathAuditRef(ex.ctx, ex.d, settleEvent, err, "direct_settle")
+		ex.settlementIntent.MarkAbortResult(ex.ctx, abortErr)
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(rejectErr), rejectErr)
+		return markAttemptOutcomeDelivered(outcome)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" {
 		w.Header().Set("X-HUAKAI-Cache-L2", "miss")
 	}
 	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerResult, ex.requestID, ex.ident.TenantID, ex.d.Signer)
+	fullyWritten, writeErr := chatpipe.WriteFull(w, clientBody)
+	if !fullyWritten {
+		logInternalError(ex.ctx, ex.requestID, "client_response_write_error", writeErr)
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "client_response_write_error", 0, ex.protocolLoss); abortErr != nil {
+			logInternalError(ex.ctx, ex.requestID, clienterr.CodeAbortFailed, abortErr)
+		}
+		outcome.DeliveryStarted = true
+		return outcome
+	} else if writeErr != nil {
+		logInternalError(ex.ctx, ex.requestID, "client_response_write_uncertain", writeErr)
+	}
+	// 结算前主动刷新；完整 Write 后的刷新错误按已交付保守结算。
+	if flushErr := http.NewResponseController(w).Flush(); flushErr != nil {
+		logInternalError(ex.ctx, ex.requestID, "client_response_flush_uncertain", flushErr)
+	}
+	afterDelivery, waitForDeliveryIntent := ex.settlementIntent.AfterDeliveryAsync(ex.ctx)
+	afterDelivery(time.Now().UTC())
+	// 响应已交付后立即保存幂等重放证据，不依赖本次 Tx2 是否立即成功。
+	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
+	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
+	defer settleCancel()
+	_, recoveryEnqueued, settleErr := settleCompletionWithRecovery(settleCtx, ex.d, settleEvent, settlementrecovery.SourceDirectSettle)
+	ex.settlementIntent.WaitAndMarkSettlementResult(settleCtx, settleReq.ActualCost, settleErr, recoveryEnqueued, waitForDeliveryIntent)
+	if settleErr != nil {
+		logInternalError(settleCtx, ex.requestID, settleErrorCode(settleErr), settleErr)
+	} else {
+		if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
+			if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
+				ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
+				syncL2SizeMetrics(ex.d.ResponseCache)
+			}
+		}
+	}
 	outcome = ex.baseAttemptOutcome()
+	outcome.DeliveryStarted = true
 	outcome.Success = &attemptSuccess{
 		StatusCode: http.StatusOK,
 		Body:       clientBody,
+		Written:    true,
 	}
 	return outcome
 }
@@ -180,18 +208,21 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost c
 	draft := withOriginAudit(nonStreamingUsageDraft(env, actualCost, routingReason), ex.r, ex.d)
 	draft.ClientTool = clientToolFromContext(ex.ctx)
 	return billing.SettleRequest{
-		ClaimID:             ex.reserveRes.ClaimID,
-		AccountID:           ex.acquiredAccountID,
-		AcquisitionToken:    ex.acquisitionToken,
-		TenantID:            ex.ident.TenantID,
-		APIKeyID:            ex.ident.APIKeyID,
-		UserID:              ex.ident.UserID,
-		ProviderAccountID:   ex.acquiredAccountID,
-		AttemptSeq:          int32(ex.activeAttemptSeq()),
-		RequestedModel:      ex.req.Model,
-		UpstreamModel:       ex.upstreamModelID,
-		Provider:            ex.cacheVendor,
-		Stream:              false,
+		ClaimID:           ex.reserveRes.ClaimID,
+		AccountID:         ex.acquiredAccountID,
+		AcquisitionToken:  ex.acquisitionToken,
+		TenantID:          ex.ident.TenantID,
+		APIKeyID:          ex.ident.APIKeyID,
+		UserID:            ex.ident.UserID,
+		ProviderAccountID: ex.acquiredAccountID,
+		AttemptSeq:        int32(ex.activeAttemptSeq()),
+		RequestedModel:    ex.req.Model,
+		UpstreamModel:     ex.upstreamModelID,
+		Provider:          ex.cacheVendor,
+		Stream:            false,
+		// RequestedAt=请求到达时刻(非结算时刻),TTFT/延迟基准。此前不设→settler 兜底 time.Now()
+		// =结算时刻,使 first_byte_at-requested_at 失真。
+		RequestedAt:         ex.startedAt,
 		ActualCost:          actualCost.Total,
 		ProtocolLoss:        ex.protocolLoss,
 		Fingerprint:         ex.payloadHash,
@@ -264,69 +295,28 @@ func mergeProtocolLossWithEntries(base json.RawMessage, entries []proto.Protocol
 	return protocolLossJSONFromEntries(merged)
 }
 
-// normalizedPayloadHash 对客户端原始请求体做 SHA256 摘要, 作为 idempotency
-// fingerprint。
-//
-// 旧实现只 hash (model, messages), 客户端可以用同 Idempotency-Key 但带不同
-// input / system / tools / temperature / max_tokens 等字段重放, hash 不变
-// 就被当成 replay 命中 cached claim, 出现 "同 key 不同 payload 静默复用同条
-// claim → 跟实际上游响应/成本错配" 风险。
-//
-// 新实现 hash 原始 body 字节: 任何字段变更 (含 OpenAI /v1/responses 的 input,
-// Anthropic 的 system, function calling 的 tools, 采样参数 temperature /
-// top_p / max_tokens 等) 都触发新 hash, ClaimGate fingerprint conflict 检测
-// 生效, 重放被拒绝。
-//
-// Note: 字节级 hash, 不做 JSON canonicalization。客户端 whitespace / key
-// order 不同视为不同请求 — idempotency replay detection 角度合理, 因为
-// 上游 upstream 实际看到的请求 body 字节才是判定 dup 的本质。
-func normalizedPayloadHash(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
-}
-
-// settleCompletionWithRecovery 包 settleCompletion,在 post-delivery 场景
-// (响应已发给客户端 + settle 失败)把 RequestCompletionEvent 转
-// settlementrecovery.Payload enqueue 进 usage_record_dlq,worker 后续重放
-// Settler.Settle。
-//
-// 调用约定:
-//   - source != "" 表示 "已交付内容 给客户端" — settle 失败必须 durable 兜底
-//   - source == "" 或 SettleRecoveryDLQ == nil — 跟原 settleCompletion 一致,
-//     失败只返 err,caller 自决(stream/billing pre-delivery path 返 5xx 给客户端)
-//
-// Enqueue 自己失败时 P0 log alert(Owner D-4 已批 — 不再 disk spool,只 alert),
-// 但不阻塞:流式响应已发给客户端不能反悔。
-//
-// settle err 始终原样传给 caller,跟 settleCompletion 行为一致。
-func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, error) {
-	res, err := settleCompletion(ctx, d, event)
+func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, bool, error) {
+	var res *billing.SettleResult
+	var err error
+	if source != "" {
+		if validationErr := validateMoneyPathAuditRefForSource(ctx, d, event, string(source)); validationErr != nil {
+			logMoneyPathAuditRefError(ctx, event, validationErr, string(source), false)
+			err = fmt.Errorf("post-delivery settlement deferred: %w", validationErr)
+		} else {
+			res, err = settleCompletion(ctx, d, event)
+		}
+	} else {
+		res, err = settleCompletion(ctx, d, event)
+	}
 	if err == nil {
-		return res, nil
+		return res, false, nil
 	}
 	if source == "" || d.SettleRecoveryDLQ == nil {
-		return res, err
+		return res, false, err
 	}
 	payload := settlementrecovery.FromCompletionEvent(source, event)
-	// post-delivery recovery DLQ 是持久运维元数据,也只能保留错误类别,不能保留 settle 原始错误文本。
-	settleFailureClass := privacy.ErrorClassFor(ctx, err)
-	if _, enqErr := settlementrecovery.EnqueuePayload(ctx, d.SettleRecoveryDLQ, payload, settleFailureClass); enqErr != nil {
-		// DLQ persist 自己失败 = money path 双环灰区 (Owner D-4: 只 alert,不 disk spool)。
-		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
-			Severity:   privacy.SeverityError,
-			Component:  "gatewayhttp.settle_recovery",
-			RequestID:  event.RequestID,
-			ErrorClass: privacy.ErrorClassFor(ctx, enqErr),
-			Attrs: map[string]any{
-				"event_class":          "settle_recovery_dlq_enqueue_failed",
-				"event_type":           string(source),
-				"tenant_id":            event.TenantID,
-				"claim_id":             event.ClaimID,
-				"failure_reason_class": settleFailureClass,
-			},
-		})
-	}
-	return res, err
+	enqueueErr := settlementrecovery.EnqueueFailure(ctx, d.SettleRecoveryDLQ, payload, err, "gatewayhttp.settle_recovery")
+	return res, enqueueErr == nil, err
 }
 
 func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent) (*billing.SettleResult, error) {
@@ -384,8 +374,9 @@ func rejectMoneyPathAuditRef(ctx context.Context, d ChatHandlerDeps, event event
 	if d.Settler != nil && event.ClaimID > 0 {
 		// 复用事件已携带的 protocol_loss 证据(event.SettleRequest.ProtocolLoss),
 		// 这条 audit-ref-missing 的零成本 abort 是该 claim 唯一持久行;之前传 nil
-		// 会丢失损失证据(item 3)。不新增 eventbus 字段。
-		abortErr = d.Settler.Abort(ctx, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0, event.SettleRequest.ProtocolLoss)
+		// 会丢失损失证据。脱离请求 ctx 释放(见 detachedAbort):cache-hit-commit /
+		// direct-settle 走请求 ctx,断连时不脱离会漏 hold/并发槽。
+		abortErr = detachedAbort(ctx, d.Settler, event.TenantID, event.ClaimID, clienterr.CodeAuditRefMissing, event.RequestID, 0, event.SettleRequest.ProtocolLoss)
 	}
 	logMoneyPathAuditRefError(ctx, event, validationErr, source, false)
 	if abortErr != nil {
@@ -468,18 +459,6 @@ func settleErrorCode(err error) string {
 		return clienterr.CodeAuditRefMissing
 	}
 	return clienterr.CodeSettleError
-}
-
-func bodyHash(body []byte) string {
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])
-}
-
-func redactedBodyRef(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	return "sha256:" + bodyHash(body)
 }
 
 func ledgerID(result auditledger.AuditLedgerResult) string {
@@ -700,6 +679,7 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost completionCostBreakdown,
 		TokensInput:           usage.InputTokens,
 		TokensOutput:          usage.OutputTokens,
 		DeliveredTokenCount:   int64(usage.OutputTokens),
+		ReasoningTokens:       usage.ReasoningTokens,
 		CacheCreationTokens:   cacheCreationTokens,
 		CacheCreation5mTokens: usage.CacheCreationInputTokens5m,
 		CacheCreation1hTokens: usage.CacheCreationInputTokens1h,

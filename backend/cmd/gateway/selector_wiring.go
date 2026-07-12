@@ -8,7 +8,7 @@
 //   - 启动期失败 → fail-fast 让 main 退出 (LoadPoolSelector 已守门, 这里再一次
 //     Validate; misconfigure 不允许 silent 退化)
 //   - shadow / canary / pasr-* 模式才启动 PASR 基础设施: SegmentTable +
-//     AgingWorker (1 min ticker) + RegisterPASRCacheFeedback (cachemetrics
+//     AgingWorker (每分钟 ticker) + RegisterPASRCacheFeedback (cachemetrics
 //     全局 observer)
 //   - shadow 实例 Slots=nil + Claims=nil + ReadOnlySegments=true (段表只读
 //   - 三层防御之一)
@@ -22,6 +22,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
@@ -30,10 +32,20 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate/precheck"
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 )
+
+// envInt64 读取一个非负的 int64 配置值;缺失/非法/为负 → 0。
+func envInt64(key string) int64 {
+	v, err := strconv.ParseInt(os.Getenv(key), 10, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
 
 // buildSelector 装配 selector 链, 返 (Selector 接口, cleanup 闭包, error)。
 // caller 应 defer cleanup() 在 server shutdown 之前调用。
@@ -63,23 +75,75 @@ func buildSelector(
 		return nil, nil, fmt.Errorf("buildSelector: invalid config: %w", err)
 	}
 
+	// ROUTE-121:opt-in 的主动 RPM/TPM 限流器。默认关闭 → counter 为 nil
+	//(gate fail-open + RecordingSelector 透传 = 与现状完全一致)。
+	// 同一个共享 counter 同时供给 gate(选号时读取预算)和
+	// RecordingSelector(在 dispatch 时消耗预算),覆盖全部 5 个 mode。
+	var ratePrecheckCounter *precheck.Counter
+	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_RATE_PRECHECK_ENABLED")); on {
+		ratePrecheckCounter = pool.NewRatePrecheckCounter()
+		logger.Info("ROUTE-121 proactive RPM/TPM rate pre-check ENABLED (per-account, opt-in via rpm_limit/tpm_limit)")
+	}
+
+	// SEC-249/250:opt-in 的全局按 API-key RPM/TPM 限额,以解析出的
+	// APIKeyID 为键(无法通过轮换 IP 绕过)。限额为 0 = 默认关闭。
+	keyRPM := envInt64("HUAKAI_KEY_RPM_LIMIT")
+	keyTPM := envInt64("HUAKAI_KEY_TPM_LIMIT")
+	var keyRateCounter *precheck.Counter
+	if keyRPM > 0 || keyTPM > 0 {
+		keyRateCounter = pool.NewRatePrecheckCounter()
+		logger.Info("SEC-249/250 per-API-key rate limit ENABLED", zap.Int64("rpm", keyRPM), zap.Int64("tpm", keyTPM))
+	}
+
+	// 按 binding 的 RPM/TPM 限额,以解析出的 BindingID 为键。与按 key 的封顶(一份
+	// 全局配置限额)不同,这里读取每个 binding 自身的 model_pool_bindings.rpm_limit/tpm_limit,
+	// 由 SelectionRequest 随每次请求携带。经 env opt-in(默认关闭 → counter 为 nil →
+	// BindingRateLimitSelector 透传 = 与现状完全一致);即便启用,未配置限额的 binding
+	// 也保持惰性。它有自己独立的 counter 实例 → 即便某个 BindingID 恰好等于某个
+	// AccountID/APIKeyID,也不会与按账号/按 key 的 counter 发生键碰撞。
+	var bindingRateCounter *precheck.Counter
+	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_BINDING_RATE_LIMIT_ENABLED")); on {
+		bindingRateCounter = pool.NewRatePrecheckCounter()
+		logger.Info("per-binding RPM/TPM rate limit ENABLED (opt-in via model_pool_bindings.rpm_limit/tpm_limit)")
+	}
+
+	// wrapRecording 组合这些 opt-in 的 selector 包装层(全部在关闭时惰性):
+	// BindingRateLimit(按 binding,最外层)套在 KeyRateLimit(按 key,在选号前就拒绝)外,
+	// 再套在 Recording(按账号消耗预算,ROUTE-121)外。
+	wrapRecording := func(s pool.Selector) pool.Selector {
+		if ratePrecheckCounter != nil {
+			s = pool.NewRecordingSelector(s, ratePrecheckCounter)
+		}
+		if keyRateCounter != nil {
+			s = pool.NewKeyRateLimitSelector(s, keyRateCounter, keyRPM, keyTPM)
+		}
+		if bindingRateCounter != nil {
+			s = pool.NewBindingRateLimitSelector(s, bindingRateCounter)
+		}
+		return s
+	}
+
 	// 1. default selector 总是构造 — 即使 PASR 模式也作为 fallback 实例。
 	// gate 链构造抽到 buildGroupRoutingGates 便于直接单测生产激活接线 (否则漏接订阅
 	// gate 静默退回 AllowAll 无测可抓)。同一 gates 值流入 default selector + actual/shadow PASR,
 	// 一处接线覆盖全 5 mode。
-	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, sessionCapRegistry, logger)
+	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, sessionCapRegistry, ratePrecheckCounter, logger)
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
 		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
 		pool.WithClaimGate(pool.NewDBClaimGate(q)),
 		pool.WithStickyStore(pool.NewDBStickyStore(q)),
+		// 路由加权激活闭环:注入生产 RoutingPolicySource,据请求命中 binding 的 selection_mode
+		// 返回选号策略。此前缺该注入 → policy() 恒 nil → priority_weighted 分支永不可达(断点1)。
+		// 默认 strict_priority 行为不变(opt-in 激活,非全局翻转)。
+		pool.WithRoutingPolicySource(newBindingRoutingPolicySource(q)),
 	)
 
 	// 2. default mode: 直接返, 不启动 PASR 基础设施
 	if !selectorCfg.IsPASR() {
 		logger.Info("selector mode=default — PASR 基础设施未启动")
-		return defaultSel, func() {}, nil
+		return wrapRecording(defaultSel), func() {}, nil
 	}
 
 	// 3. PASR 基础设施: SegmentTable + AgingWorker + cache feedback observer
@@ -146,7 +210,7 @@ func buildSelector(
 		dispatcher.Stop()
 		agingWorker.Stop()
 	}
-	return dispatcher, cleanup, nil
+	return wrapRecording(dispatcher), cleanup, nil
 }
 
 // buildGroupRoutingGates 构造 selector 用的 gate 链 (R-SUB-WIRE-1 生产激活点)。在
@@ -155,7 +219,7 @@ func buildSelector(
 // 必红 (TestBuildGroupRoutingGates_WiresRealGroupPolicyGate)。
 // observer: routes repo 不可用 / 查询失败时 fail-open 保可用性并累计 metric + WARN;
 // 明确硬拒路径保留 fail-closed observer 接口, transient 控制面问题不误拒付费用户。
-func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, windowCostReader windowcost.CostReader, sessionCapRegistry *sessioncap.Registry, logger *zap.Logger) pool.GateChain {
+func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthService *channelhealth.Service, windowCostReader windowcost.CostReader, sessionCapRegistry *sessioncap.Registry, ratePrecheckCounter *precheck.Counter, logger *zap.Logger) pool.GateChain {
 	gates := pool.DefaultGateChain()
 	if healthService != nil {
 		gates.Health = channelhealth.NewServicePoolGate(healthService, nil)
@@ -165,15 +229,19 @@ func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthSer
 		subscriptionenforce.WithFailOpenObserver(newGroupPolicyFailOpenObserver(logger)),
 		subscriptionenforce.WithFailClosedObserver(newGroupPolicyFailClosedObserver(logger)),
 	)
-	// SUB2-EGRESS-03: per-account 5h window spend cap gate.
-	// windowCostReader nil → WindowCostGate is fail-open (AllowAll equivalent).
+	// SUB2-EGRESS-03:按账号的 5 小时窗口消费封顶 gate。
+	// windowCostReader 为 nil → WindowCostGate 为 fail-open(等价 AllowAll)。
 	gates.WindowCost = pool.WindowCostGate{Reader: windowCostReader}
-	// SUB2-EGRESS-02: per-account max concurrent sessions cap gate.
-	// sessionCapRegistry nil -> SessionCountGate is fail-open.
+	// SUB2-EGRESS-02:按账号的最大并发会话封顶 gate。
+	// sessionCapRegistry 为 nil → SessionCountGate 为 fail-open。
 	gates.SessionCount = pool.SessionCountGate{Registry: sessionCapRegistry}
-	// ROUTE-023: per-model context-window admission gate. No injected dependency
-	// (reads only SelectionRequest fields); explicit set keeps a wiring
-	// regression test-catchable rather than silently relying on the default.
+	// ROUTE-023:按模型的上下文窗口准入 gate。无注入依赖
+	//(只读 SelectionRequest 字段);显式设置可让接线回归被测试抓到,
+	// 而非默默依赖默认值。
 	gates.ContextWindow = pool.ContextWindowGate{}
+	// ROUTE-121:按账号的主动 RPM/TPM 预检。counter 为 nil → gate 为
+	// fail-open(默认关闭);buildSelector 仅在设置了 HUAKAI_RATE_PRECHECK_ENABLED 时
+	// 才注入 counter,并把它与一个 RecordingSelector 配对,这样预算会在 dispatch 时消耗。
+	gates.RatePrecheck = pool.RatePrecheckGate{Counter: ratePrecheckCounter}
 	return gates
 }

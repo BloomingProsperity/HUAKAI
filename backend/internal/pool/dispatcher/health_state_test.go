@@ -15,9 +15,8 @@ import (
 )
 
 func TestDefaultSelectorSkipsThrottledAccountSnapshot(t *testing.T) {
-	// Regression killed: health_state filtering must happen before ranking.
-	// Mutation self-check: deleting the health gate makes account 101 win on
-	// priority and this test turns red.
+	// 锁定的回归：health_state 过滤必须发生在排名之前。
+	// 变异自检：删除 health gate 会让账号 101 凭优先级胜出，此测试随之变红。
 	now := time.Date(2026, 5, 25, 9, 0, 0, 0, time.UTC)
 	src := &healthStateAccountSource{accounts: []*AccountSnapshot{
 		{ID: 101, TenantID: 7, Priority: 1, MaxConcurrency: 4, HealthState: "throttled", HealthStateUntil: now.Add(3 * time.Minute)},
@@ -38,9 +37,8 @@ func TestDefaultSelectorSkipsThrottledAccountSnapshot(t *testing.T) {
 }
 
 func TestDefaultSelectorReactivatesExpiredHealthStateSnapshot(t *testing.T) {
-	// Regression killed: a revoked account with an expired deadline must become
-	// eligible again. Mutation self-check: treating revoked as permanent makes
-	// account 202 win and this test turns red.
+	// 锁定的回归：一个已 revoked 但截止时间已过期的账号必须重新变得合格。
+	// 变异自检：把 revoked 当作永久会让账号 202 胜出，此测试随之变红。
 	now := time.Date(2026, 5, 25, 9, 0, 0, 0, time.UTC)
 	src := &healthStateAccountSource{accounts: []*AccountSnapshot{
 		{ID: 101, TenantID: 7, Priority: 1, MaxConcurrency: 4, HealthState: "revoked", HealthStateUntil: now.Add(-time.Minute)},
@@ -61,9 +59,9 @@ func TestDefaultSelectorReactivatesExpiredHealthStateSnapshot(t *testing.T) {
 }
 
 func TestDefaultSelectorSkipsActiveModelRateLimitSnapshot(t *testing.T) {
-	// Regression killed: model_rate_limits must be an account+model gate before
-	// ranking. Mutation self-check: replacing the model gate with AllowAllGate
-	// makes account 101 win on priority and this test turns red.
+	// 锁定的回归：model_rate_limits 必须是排名之前的 account+model gate。
+	// 变异自检：把 model gate 换成 AllowAllGate 会让账号 101 凭优先级胜出，
+	// 此测试随之变红。
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	src := &healthStateAccountSource{accounts: []*AccountSnapshot{
 		{

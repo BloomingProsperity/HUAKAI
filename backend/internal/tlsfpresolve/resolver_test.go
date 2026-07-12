@@ -40,7 +40,7 @@ func (f fakeFetcher) fetch(context.Context, int64) (accountState, error) { retur
 
 func ptr(f mimicry.ProfileFields) *mimicry.ProfileFields { return &f }
 
-// ---- ResolveRoundTripper (end-to-end via fake fetcher) ----
+// ---- ResolveRoundTripper(经 fake fetcher 端到端)----
 
 func TestResolver_BoundActive_BuildsRT(t *testing.T) {
 	r := newResolver(fakeFetcher{st: accountState{bound: ptr(validFields())}})
@@ -101,16 +101,19 @@ func TestResolver_ZeroAccount_Builtin(t *testing.T) {
 	}
 }
 
-// ---- pure selection logic ----
+// ---- 纯选择逻辑 ----
 
 func TestPickIndex_DeterministicAndSpread(t *testing.T) {
 	for _, id := range []int64{1, 2, 99} {
-		if pickIndex(id, 4) != pickIndex(id, 4) {
+		// 同入参两次调用须得同 index(确定性守卫);分别捕获再判,避免 SA4000 误判为自反比较。
+		idxA := pickIndex(id, 4)
+		idxB := pickIndex(id, 4)
+		if idxA != idxB {
 			t.Fatalf("pickIndex not deterministic for account %d", id)
 		}
 	}
-	// MUTATION GUARD: hardcoding pickIndex to a constant collapses rotation to a
-	// single profile (the JA3-clustering 0037 warns about) -> this goes red.
+	// 变异守卫:把 pickIndex 写死为常量会让轮换坍缩为单一 profile
+	// (即 0037 所警告的 JA3 聚簇)-> 本测试变红。
 	seen := map[int]bool{}
 	for id := int64(1); id <= 64; id++ {
 		seen[pickIndex(id, 4)] = true
@@ -126,17 +129,16 @@ func TestPickIndex_DeterministicAndSpread(t *testing.T) {
 func TestSelectProfile_RotateUsesPool(t *testing.T) {
 	pool := []mimicry.ProfileFields{fieldsWithJA3("a"), fieldsWithJA3("b"), fieldsWithJA3("c")}
 	st := accountState{rotate: true, pool: pool}
-	// MUTATION GUARD: making selectProfile ignore the pool (use bound) returns
-	// nil here -> red.
+	// 变异守卫:让 selectProfile 忽略 pool(改用 bound)会在此返回 nil -> 变红。
 	p1 := selectProfile(7, st)
 	if p1 == nil {
 		t.Fatal("rotate must pick a profile from the pool")
 	}
-	// same account -> same pick (sticky)
+	// 同一账号 -> 同一选择(粘性)
 	if p2 := selectProfile(7, st); p2 == nil || p2.ExpectedJA3Hash != p1.ExpectedJA3Hash {
 		t.Fatal("rotation must be sticky per account")
 	}
-	// picked one is actually in the pool
+	// 被选中的那个确实在 pool 中
 	in := false
 	for _, pp := range pool {
 		if pp.ExpectedJA3Hash == p1.ExpectedJA3Hash {

@@ -15,8 +15,8 @@ import (
 
 // TestBillingState_PartialRSTKeepsFramesOutOfTokensOutput 守 C1:partial RST(投递了内容但上游报告
 // 输出 0)结算后 delivered_token_count 记帧数 3,但 tokens_output 记 0(不把帧数当 token)。成本由 draft
-// 携带(0.02,partial 可计费),与 tokens_output 解耦。MUTATION:恢复 outputTokensForAttempt 的帧数回退
-// → tokens_output==3 → RED。
+// 携带(0.02,partial 可计费),与 tokens_output 解耦。变异:恢复 outputTokensForAttempt 的帧数回退
+// → tokens_output==3 → 变红。
 func TestBillingState_PartialRSTKeepsFramesOutOfTokensOutput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

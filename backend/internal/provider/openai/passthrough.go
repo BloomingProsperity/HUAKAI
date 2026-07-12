@@ -26,7 +26,7 @@ const defaultChatCompletionsEndpoint = "https://api.openai.com/v1/chat/completio
 
 // PassthroughAdapter 实现 provider.Adapter，把客户原始 OpenAI 形态请求直通
 // 转发到 OpenAI 官方 endpoint，仅注入 Authorization 与可选的 organization
-// / project header。
+// / project header 头。
 type PassthroughAdapter struct {
 	// Endpoint 覆盖默认 endpoint。空串走 OpenAI 官方
 	// "https://api.openai.com/v1/chat/completions"。
@@ -38,8 +38,8 @@ func (a *PassthroughAdapter) Platform() string {
 	return "openai"
 }
 
-// AcceptableCredentialTypes 列出本 adapter 支持的凭据形态。仅 apikey
-// 与 upstream_passthrough（自带 base URL 的开发者代理）。
+// AcceptableCredentialTypes 列出本 adapter 支持的凭据形态。apikey 与
+// upstream_passthrough 都可由 operator 配置 base URL。
 func (a *PassthroughAdapter) AcceptableCredentialTypes() []provider.CredentialType {
 	return []provider.CredentialType{
 		provider.CredentialTypeAPIKey,
@@ -61,8 +61,8 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	if defaultEndpoint == "" {
 		defaultEndpoint = defaultChatCompletionsEndpoint
 	}
-	// upstream_passthrough 凭据自带 base_url, 优先用之 (防第三方 token 发到
-	// OpenAI 官方端点)。
+	// API key 或 upstream_passthrough 凭据自带 base_url 时优先使用；统一
+	// endpoint 守卫在 EndpointForBuildInput 内执行。
 	endpoint, err := provider.EndpointForBuildInput(defaultEndpoint, in)
 	if err != nil {
 		return nil, fmt.Errorf("openai passthrough: endpoint rejected: %w", err)
@@ -79,7 +79,7 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		return nil, fmt.Errorf("openai passthrough: 构造请求失败: %w", err)
 	}
 
-	// Authorization header
+	// Authorization 头
 	switch in.Credential.Type {
 	case provider.CredentialTypeAPIKey:
 		req.Header.Set("Authorization", "Bearer "+in.Credential.Value)

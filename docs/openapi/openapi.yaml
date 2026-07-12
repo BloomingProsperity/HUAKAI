@@ -1547,6 +1547,50 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/me/usage-records:
+    get:
+      tags: [user-audit]
+      summary: End-user self-service consumption records across all the caller's API keys
+      operationId: listMyUsageRecords
+      x-huakai-spec-source:
+        - backend/internal/meusagehttp/session_handler.go
+        - docs/specs/observability-billing.md
+      description: |
+        Returns immutable per-request usage records for the authenticated session
+        user, scoped by user_id across ALL of the caller's API keys (unlike
+        `/v1/me/usage`, which is API-key auth and scoped to a single key). Tenant
+        and user scope come only from the validated session identity; client-supplied
+        tenant_id, api_key_id, or user_id query parameters are ignored and cannot
+        widen the read. Response records intentionally omit tenant_id, api_key_id,
+        user_id, prompt, body, and message payloads.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned as `next_cursor`.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Session-scoped consumption records for the caller across all their API keys.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeUsageListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/me/quota:
     get:
       tags: [user-quota]
@@ -1780,6 +1824,8 @@ paths:
                       total_tokens: { type: integer, format: int64 }
                       active_users: { type: integer, format: int64 }
                       active_api_keys: { type: integer, format: int64 }
+                      success_count: { type: integer, format: int64, description: Successful requests in the window. }
+                      error_count: { type: integer, format: int64, description: Failed requests in the window (requests - success_count). }
                       success_rate: { type: string }
                   trend:
                     type: array
@@ -1980,6 +2026,172 @@ paths:
         '401': { description: Missing or invalid admin credential. }
         '403': { description: Insufficient role. }
         '503': { description: Health source not configured. }
+
+  /v1/admin/ops/runtime-logs:
+    get:
+      summary: Query captured runtime logs (warn and above)
+      description: >
+        分页查询运行日志(异步 sink 只采集 warn+ 级别,批量入库;stderr 输出照旧)。
+        键集分页 id 降序(新→旧):用响应的 next_before_id 作为下一页 before_id;
+        前端以短间隔轮询无 before_id 的首页即得"实时"视图。platform_admin only
+        (运行日志是进程级平台数据,无租户列)。
+      operationId: listAdminRuntimeLogs
+      tags: [admin, observability]
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      parameters:
+        - name: level
+          in: query
+          schema: { type: string, enum: [warn, error] }
+        - name: component
+          in: query
+          schema: { type: string }
+        - name: request_id
+          in: query
+          schema: { type: string }
+        - name: before_id
+          in: query
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        '200':
+          description: Newest-first page of runtime log rows.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminRuntimeLogsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/ops/runtime-logs/cleanup:
+    post:
+      summary: Delete runtime logs older than a timestamp
+      description: 保留策略由运营者掌控:删除 before 之前的运行日志,返回删除行数。platform_admin only。
+      operationId: cleanupAdminRuntimeLogs
+      tags: [admin, observability]
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminRuntimeLogsCleanupRequest' }
+      responses:
+        '200':
+          description: Number of deleted rows.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminRuntimeLogsCleanupResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/ops/runtime-logs/health:
+    get:
+      summary: Runtime log sink health
+      description: 采集 sink 观测:队列积压、累计入库、累计丢弃(超载/DB 故障)、最后成功落库时刻。platform_admin only。
+      operationId: getAdminRuntimeLogSinkHealth
+      tags: [admin, observability]
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      responses:
+        '200':
+          description: Sink health counters.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminRuntimeLogSinkHealth' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/backup/manifest:
+    get:
+      summary: Read-only backup manifest (metadata only)
+      description: >
+        只读"可备份清单":表名 + 行数估算(pg_class.reltuples)+ schema/迁移版本 +
+        脱敏策略声明。NOT a data export — 不返回任何业务数据、零写入、零凭据外泄。
+        platform_admin only(全库元数据属平台级)。真正的数据导出 bundle 与恢复(写入)是后续
+        Owner-gated 切片。
+      operationId: getAdminBackupManifest
+      tags: [admin, observability]
+      x-huakai-spec-source:
+        - backend/internal/backuphttp/store.go
+        - backend/internal/backuphttp/handler.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Backup manifest metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, schema_version, schema_dirty, estimate_basis, table_count, tables, redaction_policy]
+                properties:
+                  object: { type: string }
+                  schema_version: { type: integer, format: int64 }
+                  schema_dirty: { type: boolean }
+                  estimate_basis: { type: string }
+                  table_count: { type: integer }
+                  tables:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, estimated_rows]
+                      properties:
+                        name: { type: string }
+                        estimated_rows: { type: integer, format: int64 }
+                  redaction_policy:
+                    type: object
+                    properties:
+                      note: { type: string }
+                      redacted_columns:
+                        type: array
+                        items: { type: string }
+        '401': { description: Missing or invalid admin credential. }
+        '403': { description: platform_admin role required. }
+        '503': { description: Backup manifest backend unavailable. }
+
+  /admin/v1/risk/overview:
+    get:
+      tags: [admin-risk]
+      summary: Read-only platform risk overview (aggregated counts)
+      operationId: adminRiskOverview
+      x-huakai-spec-source:
+        - backend/internal/riskoverviewhttp/store.go
+        - backend/internal/riskoverviewhttp/handler.go
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      description: |
+        Read-only fan-out of already-wired risk signals into a single counts snapshot:
+        disabled API keys, firing alert events, disabled users, and keys with an IP
+        blacklist. Zero enforcement, zero writes. Tenant scope comes from the admin
+        identity; platform_admin must pass tenant_id, tenant_operator defaults to its
+        scoped tenant. No plaintext keys or full IPs are returned.
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Risk signal counts for the resolved tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, tenant_id, disabled_keys, firing_alerts, disabled_users, ip_blacklisted_keys]
+                properties:
+                  object: { type: string }
+                  tenant_id: { type: integer, format: int64 }
+                  disabled_keys: { type: integer, format: int64 }
+                  firing_alerts: { type: integer, format: int64 }
+                  disabled_users: { type: integer, format: int64 }
+                  ip_blacklisted_keys: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Caller cannot act on this tenant scope. }
+        '503': { description: Risk overview backend unavailable. }
 
   /admin/v1/system/health:
     get:
@@ -2847,7 +3059,8 @@ paths:
       summary: Detached verification for a supplied receipt payload
       operationId: verifyCostReceipt
       x-huakai-spec-source: [docs/specs/user-consumption-transparency.md]
-      security: []
+      security:
+        - sessionBearerAuth: []
       parameters:
         - in: path
           name: request_id
@@ -2865,6 +3078,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ReceiptVerifyResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '413':
           description: Receipt body exceeds the 10KB detached verification limit.
           content:
@@ -3254,8 +3468,10 @@ paths:
       description: |
         Returns a customer-safe public pricing catalog for enabled model aliases
         in the default public pricing scope. This marketing view requires no
-        bearer token and no `version` query parameter, and it exposes only model
-        names, canonical model ids, public unit prices, and context length.
+        bearer token and no `version` query parameter, and it exposes only
+        customer-safe catalog metadata: model names, canonical model ids, public
+        unit prices, context length, owner/provider, interaction mode, maximum
+        output tokens, and capability flags.
         It never exposes actual cost, tenant/user/api-key identity, provider
         account ids, internal ratios, cache tiers, markups, or raw rate-table
         payloads.
@@ -3606,7 +3822,7 @@ paths:
       summary: Download a signed audit proof bundle by request id
       operationId: downloadAuditProof
       x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
-      security: []
+      x-huakai-required-role: session
       parameters:
         - in: path
           name: request_id
@@ -3614,7 +3830,8 @@ paths:
           schema: { type: string, minLength: 1, maxLength: 256 }
         - in: query
           name: tenant_scope_ref
-          required: true
+          required: false
+          description: Optional. The export scope is always derived from the authenticated session's tenant; when supplied this value must match that tenant, otherwise the request is rejected with 403.
           schema: { type: string, minLength: 1, maxLength: 128 }
       responses:
         '200':
@@ -3627,6 +3844,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuditVerifyResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -3636,11 +3855,12 @@ paths:
       summary: Download tenant-scoped audit proof export bundle
       operationId: downloadAuditExport
       x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
-      security: []
+      x-huakai-required-role: session
       parameters:
         - in: query
           name: tenant_scope_ref
-          required: true
+          required: false
+          description: Optional. The export scope is always derived from the authenticated session's tenant; when supplied this value must match that tenant, otherwise the request is rejected with 403.
           schema: { type: string, minLength: 1, maxLength: 128 }
         - in: query
           name: from
@@ -3668,6 +3888,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuditExportBundle' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '413':
           description: Audit export exceeds the bounded row limit.
           content:
@@ -3888,6 +4110,32 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/auth/confirm-device:
+    post:
+      tags: [auth]
+      summary: Confirm a new device to free a session slot
+      operationId: authConfirmDevice
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      security: []
+      description: |
+        Consumes a one-time device confirmation token (delivered by email when the device policy is
+        `confirm` and the active-device limit is reached). On success the oldest session family is revoked
+        to free a slot so the user can sign in again. Token is the only credential; no prior login required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthConfirmDeviceRequest' }
+      responses:
+        '200':
+          description: Device confirmed and the oldest session slot freed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthConfirmDeviceResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/auth/reset-password:
     post:
       tags: [auth]
@@ -3976,6 +4224,28 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminEmailTestResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/email/templates/preview:
+    post:
+      tags: [admin-email]
+      summary: Render an auth email template with sample values (no send)
+      operationId: previewAdminEmailTemplate
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_email_settings_handler.go]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminEmailTemplatePreviewRequest' }
+      responses:
+        '200':
+          description: Rendered subject and HTML body using sample placeholder values.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminEmailTemplatePreviewResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -4128,6 +4398,72 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/oauth-pending/send-code:
+    post:
+      tags: [auth]
+      summary: Send email verification code for OAuth no-verified-email signup completion
+      description: >
+        Given a signed pending_token (issued by oauth-callback when a verified social
+        identity lacks a verified email), send a one-time code to the supplied email and
+        return a signed challenge_token. Stateless: the code is not stored; the challenge
+        token carries only an HMAC binding of the code.
+      operationId: authOAuthPendingSendCode
+      x-huakai-spec-source: [backend/internal/gatewayhttp/oauth_pending.go]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pending_token, email]
+              properties:
+                pending_token: { type: string }
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Code sent; challenge_token returned for the complete step.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  challenge_token: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/oauth-pending/complete:
+    post:
+      tags: [auth]
+      summary: Complete OAuth no-verified-email signup by verifying the email code
+      description: >
+        Given the challenge_token and the emailed code, verify email ownership, create the
+        account with the verified social identity, and issue a platform session.
+      operationId: authOAuthPendingComplete
+      x-huakai-spec-source: [backend/internal/gatewayhttp/oauth_pending.go]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challenge_token, code]
+              properties:
+                challenge_token: { type: string }
+                code: { type: string }
+                device_info: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Email ownership verified, account created and session issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -4429,6 +4765,51 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/users/me/oauth-bindings/telegram:
+    post:
+      tags: [auth]
+      summary: Bind a verified Telegram identity to the authenticated user (bind-then-login)
+      operationId: bindUserTelegramIdentity
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/oauth_bindings_handler.go
+        - backend/internal/telegramauth/telegramauth.go
+        - backend/internal/userauth/social_login.go
+      security:
+        - sessionBearerAuth: []
+      description: |
+        Binds the Telegram Login Widget payload to the authenticated user's account
+        ("bind-then-login" model). The server verifies the widget data with the bot
+        token (HMAC-SHA256) and links the verified telegram subject to the session
+        tenant/user. Takeover protection: a subject already bound to another user is
+        rejected (409 social_identity_already_bound). Requires the bot token to be
+        configured server-side; otherwise 503.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [params]
+              properties:
+                params:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: Telegram Login Widget fields (id/auth_date/hash/...).
+      responses:
+        '200':
+          description: Telegram identity bound to the authenticated user.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  provider: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -4895,7 +5276,7 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
     patch:
       tags: [user-api-keys]
-      summary: Partially update name and/or status of one of the authenticated user's API keys
+      summary: Partially update name, status, and/or expiry of one of the authenticated user's API keys
       operationId: patchUserAPIKey
       x-huakai-spec-source:
         - backend/internal/userkeyhttp/handlers.go
@@ -4907,9 +5288,18 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name: { type: string, maxLength: 128 }
                 status: { type: string, enum: [active, revoked] }
+                expires_at:
+                  type: string
+                  description: >-
+                    Tri-state. Omit to leave the deadline unchanged; send an empty string "" to
+                    clear it (key becomes never-expiring); send an RFC3339 timestamp to set a new
+                    deadline. A non-empty value that is not RFC3339 is rejected (400
+                    invalid_expires_at); a past timestamp is rejected (400 invalid_expires_at) to
+                    avoid silently disabling the key.
       responses:
         '200':
           description: Updated api_key fields. Only provided fields are changed.
@@ -4921,6 +5311,11 @@ paths:
                   api_key_id: { type: integer, format: int64 }
                   name: { type: string }
                   status: { type: string }
+                  expires_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: Deadline after the update; omitted when the key never expires.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -7762,6 +8157,47 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/routes/{id}/enabled:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    put:
+      tags: [admin-routes]
+      summary: Enable or disable one routing rule's gate independently of a full update
+      operationId: adminSetRouteEnabled
+      x-huakai-spec-source: [docs/process/plans/2026-05-30-routeadmin-crud-claude.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+                  description: Required; omitting it is rejected (400) so the rule's gate is never silently defaulted. tenant_id in the body is rejected — the route is located by path id within the query tenant scope.
+      responses:
+        '200':
+          description: Routing rule gate updated; the updated row is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/tls-fingerprint-profiles:
     get:
       tags: [admin-tls-fingerprint-profiles]
@@ -8616,6 +9052,71 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/users/{id}/usage:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-users]
+      summary: List one tenant user's per-request usage records
+      operationId: listAdminUserUsage
+      description: |
+        Returns immutable per-request usage records scoped by both the tenant
+        authorized for the administrator and the target user id in the path.
+        Tenant operators default to their own scope; platform administrators
+        must explicitly select an authorized tenant with `tenant_id`. The result
+        spans all API keys owned by that user and never accepts client-supplied
+        user scope.
+      x-huakai-spec-source:
+        - backend/internal/adminuserhttp/user_usage.go
+        - docs/process/plans/2026-07-10-admin-user-usage.md
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant and may only repeat that tenant explicitly.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: model
+          in: query
+          required: false
+          schema: { type: string, maxLength: 200 }
+        - name: provider
+          in: query
+          required: false
+          schema: { type: string, maxLength: 200 }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [success, error] }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned as `next_cursor`.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tenant-and-user-scoped usage records, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeUsageListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/users/2fa-adoption-stats:
     get:
       tags: [admin-users]
@@ -8686,7 +9187,8 @@ paths:
         `code` is unique per tenant among non-deleted providers. platform_admin
         callers must pass tenant_id; tenant_operator callers may omit it and
         are scoped to their admin token tenant. Successful mutations write an
-        admin audit event.
+        admin audit event. When `enabled=true`, the selected protocol family
+        must pass the current process serving-readiness closure check.
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
       parameters:
@@ -8710,6 +9212,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/providers/{code}:
@@ -8720,7 +9223,12 @@ paths:
       description: |
         Updates display name, upstream protocol, and enabled state for a
         provider selected by tenant scope plus path `code`. Successful
-        mutations write an admin audit event.
+        mutations write an admin audit event. When `enabled=true`, the selected
+        protocol family must pass the current process serving-readiness closure
+        check. Only disabled rows for canonical adapter-backed families declared
+        by `registrydefault` bypass closure validation and remain storable for
+        read-only retention. Contract-only or otherwise non-serving-ready
+        families return HTTP 422 on closure failure even when `enabled=false`.
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
       parameters:
@@ -8748,6 +9256,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
     delete:
       tags: [admin-provider-catalog]
@@ -9366,6 +9875,95 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/admin-tokens:
+    post:
+      tags: [admin-tokens]
+      summary: Issue a new admin token (temporary/one-shot supported)
+      operationId: issueAdminToken
+      description: |
+        Mints a new operator credential (hk_admin_...). The plaintext bearer
+        is returned ONCE in `plaintext_bearer` and never again. Supports an
+        optional strictly-future `expires_at` for temporary/one-shot tokens —
+        the token is rejected by the resolver after expiry. High-privilege:
+        only platform_admin may call this; tenant_operator gets 403.
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTokenCreate' }
+      responses:
+        '201':
+          description: Token issued. plaintext_bearer shown ONCE.
+          headers:
+            X-Huakai-Key-Display:
+              description: Always 'once-only' on success.
+              schema: { type: string, enum: [once-only] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTokenIssued' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    get:
+      tags: [admin-tokens]
+      summary: List admin tokens (metadata only)
+      operationId: listAdminTokens
+      description: |
+        Returns admin token metadata (never plaintext, never key_hash). Only
+        platform_admin may call this; tenant_operator gets 403.
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated list.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTokenList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/admin-tokens/{id}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-tokens]
+      summary: Revoke an admin token
+      operationId: revokeAdminToken
+      description: |
+        Soft-revokes (status='revoked', revoked_at=now()). Idempotent:
+        revoking an already-non-active token returns 200 with
+        already_revoked=true. Only platform_admin may call this.
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTokenRevokeRequest' }
+      responses:
+        '200':
+          description: Revoked (or already-revoked).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTokenRevokeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   # ==========================================================================
   # Admin: Pool Groups (F-POOL-001)
   # ==========================================================================
@@ -9696,6 +10294,87 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/provider-accounts/health-summary:
+    get:
+      tags: [admin-accounts]
+      summary: 账号池健康聚合(运维巡检)
+      operationId: summarizeProviderAccountHealth
+      description: |
+        跨整个租户池按 health_state 与 enabled 聚合计数（非分页），供管理端一眼看清问题账号分布。
+        只读、不含钱字段；needs_attention 计入非 healthy 或被停用的账号。租户边界由 SQL 谓词保护。
+      x-huakai-spec-source:
+        - backend/sql/queries/admin_provider_account_health.sql
+        - backend/internal/adminhttp/provider_account_health_summary_handler.go
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: 无固定租户作用域的 platform_admin 必须显式指定；tenant_operator 始终使用自身租户。
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 账号池健康聚合总览。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, enabled, disabled, needs_attention, states]
+                properties:
+                  total: { type: integer, format: int64 }
+                  enabled: { type: integer, format: int64 }
+                  disabled: { type: integer, format: int64 }
+                  needs_attention: { type: integer, format: int64 }
+                  states:
+                    type: array
+                    items:
+                      type: object
+                      required: [health_state, count]
+                      properties:
+                        health_state: { type: string }
+                        count: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/recent-requests:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-accounts]
+      summary: 获取 Provider Account 最近已结算请求
+      operationId: listProviderAccountRecentRequests
+      description: |
+        返回指定账号最近完成的请求健康信号，包括状态、端到端时延、TTFT 与 token 数。
+        此诊断端点刻意不返回实际成本或其它钱字段；租户边界同时由账号存在性查询与
+        usage_records SQL 谓词保护。没有已结算请求的合法账号返回空 items。
+      x-huakai-spec-source:
+        - backend/sql/queries/observability.sql
+        - backend/internal/adminhttp/provider_account_recent_requests_handler.go
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: 无固定租户作用域的 platform_admin 必须显式指定；tenant_operator 始终使用自身租户。
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          required: false
+          description: 默认 20；服务端把大于 100 的正整数钳制为 100。
+          schema: { type: integer, format: int32, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: 最近已结算请求列表；合法空历史返回空数组。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountRecentRequestsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/enabled:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -9718,6 +10397,50 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderAccountEnabledResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/fingerprint-profile:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    patch:
+      tags: [admin-accounts]
+      summary: Bind or unbind a Provider Account's TLS fingerprint profile
+      operationId: setProviderAccountFingerprintProfile
+      description: |
+        设置 provider account 绑定的 TLS 指纹 profile(provider_accounts.tls_fingerprint_profile_id)。
+        profile_id 为正整数 → 绑定该 profile;null/省略 → 解绑回内置默认。跨租户或不存在的 profile
+        被 DB 触发器/FK 拒绝(返回 400)。补此前的死缺口:profile 池建好但账号无绑定写入口。
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/admin_pool_accounts_handler.go
+        - backend/sql/migrations/0038_proxies_pool_and_account_links.up.sql
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenant_id: { type: integer, format: int64, minimum: 1 }
+                profile_id:
+                  type: integer
+                  format: int64
+                  nullable: true
+                  description: 正整数=绑定该 profile;null=解绑回内置默认。
+                reason: { type: string }
+      responses:
+        '200':
+          description: Fingerprint profile binding updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer, format: int64 }
+                  tls_fingerprint_profile_id: { type: integer, format: int64, nullable: true }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -9866,6 +10589,40 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/credentials/{credential_id}/resolve-project:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+      - name: credential_id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    post:
+      tags: [admin-accounts]
+      summary: 解析并持久化 Antigravity 凭证的 project 标识
+      operationId: resolveProviderAccountCredentialProject
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountCredentialProjectResolveRequest' }
+      responses:
+        '200':
+          description: 解析成功；响应只含非密 project 标识，不返回任何凭据材料。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountCredentialProjectResolveResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: 目标凭证不支持 project 解析。
+        '502':
+          description: 上游 project 解析失败。
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/provider-accounts/{id}/channel-health/pause:
@@ -10554,6 +11311,32 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/billing/reprice:
+    post:
+      tags: [admin-billing]
+      summary: Dry-run or apply manual-first usage repricing
+      operationId: repriceAdminBillingUsage
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-03-audit-remediation-claude.md
+        - backend/internal/billing/reprice.go
+      x-huakai-required-role: platform_admin
+      description: Recomputes pending usage record cost with the current pricing table. dry_run defaults to true. apply only appends reconciliation events and clears pending flags; balance and ledger adjustments remain a separate manual admin workflow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminBillingRepriceRequest' }
+      responses:
+        '200':
+          description: Per-record reprice report.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminBillingRepriceResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/pricing/ratios:
     get:
       tags: [admin-pricing]
@@ -10582,6 +11365,36 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AdminPricingRatioListResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/pricing/ratios/audit/verify:
+    get:
+      tags: [admin-pricing]
+      summary: Verify the signed pricing-ratio audit hash chain
+      operationId: verifyAdminPricingRatioAudit
+      x-huakai-spec-source:
+        - backend/internal/pricingcataloghttp/pricing_ratio_audit_handler.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Optional tenant scope; resolved against the platform_admin caller.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Pricing-ratio audit chain integrity proof (secret-masked; no signatures or key material returned).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string }
+                  ok: { type: boolean }
+                  row_id: { type: integer, format: int64 }
+                  reason: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
@@ -10848,6 +11661,105 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/ModelCapabilityBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/model-registry-policy:
+    get:
+      tags: [admin-models]
+      summary: Read a tenant's model-catalog inheritance policy (inherit_global_catalog)
+      operationId: getAdminTenantModelRegistryPolicy
+      description: |
+        Platform-admin read of one tenant's model-registry policy. When the tenant has no
+        policy row the store returns the effective default (inherit_global_catalog=false),
+        aligning with resolve-time semantics, so the endpoint always reports the live value.
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/model_registry_policy_handler.go
+        - backend/internal/registry/tenant_policy_admin.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          description: Target tenant whose catalog-inheritance policy is read.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: The tenant's catalog-inheritance policy (defaulted when no row exists).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [policy]
+                properties:
+                  policy:
+                    type: object
+                    additionalProperties: false
+                    required: [tenant_id, inherit_global_catalog]
+                    properties:
+                      tenant_id: { type: integer, format: int64, minimum: 1 }
+                      inherit_global_catalog: { type: boolean }
+                      updated_at: { type: string, format: date-time }
+                      updated_by_actor: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-models]
+      summary: Set a tenant's inherit_global_catalog flag (bumps that tenant's registry snapshot version)
+      operationId: setAdminTenantModelRegistryPolicy
+      description: |
+        Platform-admin write of one tenant's inherit_global_catalog flag. Granting global-catalog
+        inheritance is a privilege decision owned by the platform (not tenant self-service), so the
+        route sits behind the platform-admin gate. The flag is upserted and the target tenant's
+        model_registry_snapshots version is incremented in the same transaction so client ETags
+        invalidate. The acting admin identity is taken from the authenticated context, never the body.
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/model_registry_policy_handler.go
+        - backend/internal/registry/tenant_policy_admin.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          description: Target tenant whose policy is written.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [inherit_global_catalog]
+              properties:
+                inherit_global_catalog:
+                  type: boolean
+                  description: Required; omitting it is rejected (400) so an already-inheriting tenant is never silently reset to false. tenant_id is carried in the query, not the body.
+      responses:
+        '200':
+          description: Updated policy for the tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [policy]
+                properties:
+                  policy:
+                    type: object
+                    additionalProperties: false
+                    required: [tenant_id, inherit_global_catalog]
+                    properties:
+                      tenant_id: { type: integer, format: int64, minimum: 1 }
+                      inherit_global_catalog: { type: boolean }
+                      updated_at: { type: string, format: date-time }
+                      updated_by_actor: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -11323,6 +12235,233 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /admin/v1/obs-dlq:
+    get:
+      tags: [admin-dlq]
+      summary: List observability outbox dead-letter events
+      operationId: listObsDLQ
+      x-huakai-spec-source:
+        - backend/internal/obsdlqhttp/handler.go
+        - backend/internal/obs/dlq/store_admin.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: tenant
+          in: query
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: event_type
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        '200':
+          description: Matching observability dead-letter events.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObsDLQEntryList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/obs-dlq/{id}/replay:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [admin-dlq]
+      summary: Replay an observability outbox dead-letter event
+      operationId: replayObsDLQ
+      x-huakai-spec-source:
+        - backend/internal/obsdlqhttp/handler.go
+        - backend/internal/obs/dlq/store_admin.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Outbox event was returned to pending state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ObsDLQReplayResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/model-pool-bindings:
+    get:
+      tags: [admin-model-bindings]
+      summary: List tenant-scoped model→pool bindings
+      operationId: listAdminModelPoolBindings
+      description: |
+        Returns the tenant's model→pool routing bindings for the operations
+        console. This is the admin view: it includes disabled, not-yet-effective
+        and expired rows (unlike the routing read which filters them). platform_admin
+        callers must pass tenant_id; tenant_operator callers may omit it. Optional
+        model_id / pool_group_id filters.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: model_id
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: pool_group_id
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Binding list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ModelPoolBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-model-bindings]
+      summary: Create a tenant-scoped model→pool binding
+      operationId: createAdminModelPoolBinding
+      description: |
+        Binds a model (tenant-owned or global) to one of the tenant's pool groups.
+        model_id + pool_group_id define the binding identity (unique per tenant).
+        Unset numeric fields default (priority 100, weight 1, selection_mode
+        strict_priority, fallback_class normal, enabled true). The write bumps the
+        tenant's model-registry snapshot version so the router observes it.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelPoolBindingCreateRequest' }
+      responses:
+        '201':
+          description: Created binding.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelPoolBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: model not bindable by tenant, or pool group not found for tenant.
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/model-pool-bindings/{id}:
+    get:
+      tags: [admin-model-bindings]
+      summary: Get a tenant-scoped model→pool binding
+      operationId: getAdminModelPoolBinding
+      description: Fetches one binding by tenant scope plus path id; 404 if absent or owned by another tenant.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Binding.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelPoolBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    patch:
+      tags: [admin-model-bindings]
+      summary: Update a tenant-scoped model→pool binding
+      operationId: updateAdminModelPoolBinding
+      description: |
+        Updates the tunable fields of a binding selected by tenant scope plus path
+        id. model_id / pool_group_id are immutable (change identity via delete +
+        create). The write bumps the tenant's snapshot version.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelPoolBindingUpdateRequest' }
+      responses:
+        '200':
+          description: Updated binding.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelPoolBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-model-bindings]
+      summary: Delete a tenant-scoped model→pool binding
+      operationId: deleteAdminModelPoolBinding
+      description: Soft-deletes a binding by tenant scope plus path id and bumps the tenant snapshot version. Returns 204 on success.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '204':
+          description: Binding was deleted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/proxies:
     get:
       tags: [admin-proxies]
@@ -11504,6 +12643,54 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminProxyStatusResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/proxies/{id}/test:
+    post:
+      tags: [admin-proxies]
+      summary: Active connectivity probe through a tenant-scoped outbound proxy
+      operationId: testAdminProxy
+      description: |
+        经该 stored 代理建隧道到一个**服务端固定 canary 目标**(api.anthropic.com:443)做一次
+        TLS 握手,测真实出站连通性 + 延迟,区别于被动 TCP 存活探测。探测目标是服务端常量,
+        请求体不参与目标决策(杜绝双跳 SSRF)。响应**绝不含**代理 URL/凭据/原始错误,只回
+        {ok, latency_ms, error_class, probed_at}。代理 host 指向内网/metadata 时返回
+        ok=false + error_class=unsafe_proxy_host。不写库,只返即时结果。
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/probe_handler.go
+        - backend/internal/proxyhealth/probe_through.go
+        - backend/internal/proxyadmin/dial_target.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Probe ran; result reflects connectivity (ok=false with error_class on failure).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, ok, latency_ms, probed_at]
+                properties:
+                  object: { type: string }
+                  ok: { type: boolean }
+                  latency_ms: { type: integer, format: int64 }
+                  error_class:
+                    type: string
+                    enum: [unsafe_proxy_host, target_denied, bad_proxy_url, dial_timeout, tunnel_refused, tls_fail]
+                  probed_at: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -11811,6 +12998,22 @@ components:
       properties:
         tenant_id: { type: integer, format: int64 }
         token: { type: string }
+
+    AuthConfirmDeviceRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/session-management.md]
+      required: [tenant_id, token]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        token: { type: string }
+
+    AuthConfirmDeviceResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [device_confirmed] }
 
     AuthResetPasswordRequest:
       type: object
@@ -12568,7 +13771,9 @@ components:
         - window_kind
         - window_seconds
         - mode
+        - priority
         - valid_from
+        - used_usd
       properties:
         api_key_id: { type: integer, format: int64, minimum: 1 }
         policy_id: { type: integer, format: int64, minimum: 1 }
@@ -12591,7 +13796,23 @@ components:
         mode:
           type: string
           enum: [enforce, observe, manual_first, disabled]
+        priority:
+          type: integer
+          format: int32
+          description: Resolution tiebreaker; the lowest-priority policy wins when several overlap.
         valid_from: { type: string, format: date-time }
+        used_usd:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+          description: Settled + reserved consumption in the current window (0 when no window exists).
+        remaining_usd:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+          description: limit_usd - used_usd (may be negative in observe mode); omitted when the limit is zero (unlimited).
+        window_end:
+          type: string
+          format: date-time
+          description: Reset boundary of the current quota window — soonest end across the current cost windows; omitted when no window exists yet.
 
     UserAPIKeyGroupUpdateRequest:
       type: object
@@ -13245,10 +14466,12 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/subscriptionhttp/admin_worker_stats.go
-      required: [reminder, expiry]
+      required: [reminder, expiry, auto_renew, pending_reconciliation]
       properties:
         reminder: { $ref: '#/components/schemas/AdminReminderWorkerStats' }
         expiry: { $ref: '#/components/schemas/AdminExpiryWorkerStats' }
+        auto_renew: { $ref: '#/components/schemas/AdminAutoRenewWorkerStats' }
+        pending_reconciliation: { $ref: '#/components/schemas/AdminPendingReconciliationWorkerStats' }
 
     AdminReminderWorkerStats:
       type: object
@@ -13267,6 +14490,25 @@ components:
         tick_count: { type: integer, format: int64, minimum: 0 }
         expired_total: { type: integer, format: int64, minimum: 0 }
         failed_ticks: { type: integer, format: int64, minimum: 0 }
+
+    AdminAutoRenewWorkerStats:
+      type: object
+      additionalProperties: false
+      required: [enabled, tick_count, renewed_total, skipped_total, failed_ticks]
+      properties:
+        enabled: { type: boolean }
+        tick_count: { type: integer, format: int64, minimum: 0 }
+        renewed_total: { type: integer, format: int64, minimum: 0 }
+        skipped_total: { type: integer, format: int64, minimum: 0 }
+        failed_ticks: { type: integer, format: int64, minimum: 0 }
+
+    AdminPendingReconciliationWorkerStats:
+      type: object
+      additionalProperties: false
+      required: [usage_records, query_failed]
+      properties:
+        usage_records: { type: integer, format: int64, minimum: 0 }
+        query_failed: { type: boolean }
 
     ModerationKeywordCreateRequest:
       type: object
@@ -14730,6 +15972,23 @@ components:
           type: integer
           minimum: 1
           description: Public context window from the model registry.
+        owned_by:
+          type: string
+          minLength: 1
+          description: Model owner/provider as published in the registry catalog.
+        mode:
+          type: string
+          minLength: 1
+          description: Model interaction mode (e.g. chat) from the registry catalog.
+        max_output_tokens:
+          type: integer
+          minimum: 1
+          description: Maximum output tokens when published by the model registry.
+        capabilities:
+          type: object
+          additionalProperties:
+            type: boolean
+          description: Capability flags (e.g. vision, tools) from the model registry catalog.
 
     RateTable:
       type: object
@@ -15120,6 +16379,102 @@ components:
         smtp_from_name: { type: string }
         smtp_use_tls: { type: boolean }
         email_verify_enabled: { type: boolean }
+        templates:
+          type: object
+          description: >-
+            Per-kind auth email template overrides. Keys: verification, password_reset,
+            device_confirmation, oauth_code. Omitted field = unchanged; empty string = clear
+            override (rendering falls back to the built-in default). Placeholders use
+            {{name}} syntax; the body must contain the always-available credential
+            placeholder ({{token}} or {{code}}).
+          additionalProperties:
+            $ref: '#/components/schemas/AdminEmailTemplateInput'
+
+    AdminEmailTemplateInput:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_email_settings_handler.go]
+      properties:
+        subject: { type: string }
+        body: { type: string }
+
+    AdminEmailTemplatePreviewRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_email_settings_handler.go]
+      required: [tenant_id, kind]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        kind:
+          type: string
+          enum: [verification, password_reset, device_confirmation, oauth_code]
+        subject: { type: string }
+        body: { type: string }
+
+    AdminEmailTemplatePreviewResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_email_settings_handler.go]
+      required: [kind, subject, html]
+      properties:
+        kind: { type: string }
+        subject: { type: string }
+        html: { type: string }
+
+    AdminRuntimeLogRow:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/logsink/store_postgres.go]
+      required: [id, created_at, level, component, message, attrs]
+      properties:
+        id: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        level: { type: string, enum: [warn, error] }
+        component: { type: string }
+        message: { type: string }
+        request_id: { type: string, nullable: true }
+        attrs: { type: object }
+
+    AdminRuntimeLogsResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [items, next_before_id]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminRuntimeLogRow' }
+        next_before_id:
+          type: integer
+          format: int64
+          description: 下一页 before_id;0 = 本页为空,无更旧数据可翻。
+
+    AdminRuntimeLogsCleanupRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [before]
+      properties:
+        before: { type: string, format: date-time }
+
+    AdminRuntimeLogsCleanupResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [deleted]
+      properties:
+        deleted: { type: integer, format: int64 }
+
+    AdminRuntimeLogSinkHealth:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [queue_len, inserted, dropped]
+      properties:
+        queue_len: { type: integer }
+        inserted: { type: integer, format: int64 }
+        dropped: { type: integer, format: int64 }
+        last_flush_at: { type: string, format: date-time }
 
     AdminEmailSettingsUpdateResponse:
       type: object
@@ -15188,6 +16543,7 @@ components:
         - feature_flag
         - risk_level
         - risk_reasons
+        - serving_readiness
       properties:
         vendor: { type: string }
         auth_mode: { type: string }
@@ -15217,6 +16573,28 @@ components:
         risk_reasons:
           type: array
           items: { type: string }
+        serving_readiness: { $ref: '#/components/schemas/AccountModeServingReadiness' }
+
+    AccountModeServingReadiness:
+      x-huakai-spec-source: [docs/11_ACCEPTANCE_TEST_MATRIX.md]
+      type: object
+      additionalProperties: false
+      required: [ready, enableable, traffic_allowed, status, action]
+      properties:
+        family: { type: string }
+        release_state:
+          type: string
+          enum: [scaffold, experimental, released, retired]
+        ready: { type: boolean }
+        enableable: { type: boolean }
+        traffic_allowed: { type: boolean }
+        status:
+          type: string
+          enum: [ready, experimental, collect_only, collectable_not_serving, experimental_wire_unverified, scaffold, retired, not_ready, test_only]
+        action:
+          type: string
+          enum: [allow, reject_write, mark_red, hide_read_only, reject_publish, report_only]
+        reason: { type: string }
 
     AccountModeField:
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]
@@ -15263,6 +16641,70 @@ components:
           type: string
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         created_at: { type: string, format: date-time }
+
+    ModelPoolBinding:
+      type: object
+      additionalProperties: false
+      required: [id, model_id, pool_group_id, priority, weight, selection_mode, provider_model_id_override, rpm_limit, tpm_limit, max_parallel_requests, fallback_class, enabled, disabled_reason, effective_from, effective_until, reason, created_at, updated_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        model_id: { type: integer, format: int64, minimum: 1 }
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        priority: { type: integer, format: int32, minimum: 0, description: "Lower routes first." }
+        weight: { type: integer, format: int32, minimum: 1 }
+        selection_mode: { type: string, enum: [strict_priority, priority_weighted], description: "priority_weighted is stored but not yet executed (routes as strict_priority)." }
+        provider_model_id_override: { type: string, nullable: true, description: "Upstream model name override; null uses the model's own id." }
+        rpm_limit: { type: integer, format: int32, nullable: true, minimum: 0 }
+        tpm_limit: { type: integer, format: int32, nullable: true, minimum: 0 }
+        max_parallel_requests: { type: integer, format: int32, nullable: true, minimum: 0 }
+        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        enabled: { type: boolean }
+        disabled_reason: { type: string, nullable: true }
+        effective_from: { type: string, format: date-time, nullable: true }
+        effective_until: { type: string, format: date-time, nullable: true }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ModelPoolBindingCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [model_id, pool_group_id]
+      properties:
+        model_id: { type: integer, format: int64, minimum: 1 }
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        priority: { type: integer, format: int32, minimum: 0 }
+        weight: { type: integer, format: int32, minimum: 1 }
+        selection_mode: { type: string, enum: [strict_priority, priority_weighted] }
+        provider_model_id_override: { type: string }
+        rpm_limit: { type: integer, format: int32, minimum: 0 }
+        tpm_limit: { type: integer, format: int32, minimum: 0 }
+        max_parallel_requests: { type: integer, format: int32, minimum: 0 }
+        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        enabled: { type: boolean }
+        disabled_reason: { type: string }
+        effective_from: { type: string, format: date-time }
+        effective_until: { type: string, format: date-time }
+        reason: { type: string }
+
+    ModelPoolBindingUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: "Tunable fields only; model_id / pool_group_id are immutable."
+      properties:
+        priority: { type: integer, format: int32, minimum: 0 }
+        weight: { type: integer, format: int32, minimum: 1 }
+        selection_mode: { type: string, enum: [strict_priority, priority_weighted] }
+        provider_model_id_override: { type: string }
+        rpm_limit: { type: integer, format: int32, minimum: 0 }
+        tpm_limit: { type: integer, format: int32, minimum: 0 }
+        max_parallel_requests: { type: integer, format: int32, minimum: 0 }
+        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        enabled: { type: boolean }
+        disabled_reason: { type: string }
+        effective_from: { type: string, format: date-time }
+        effective_until: { type: string, format: date-time }
+        reason: { type: string }
 
     Proxy:
       type: object
@@ -15383,13 +16825,14 @@ components:
             - balance_recharged
             - payment_credited
             - payment_refunded
+            - subscription_auto_renewed
         amount:
           type: string
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         fingerprint: { type: string }
         source_type:
           type: string
-          enum: [payment_credit, payment_refund, voucher_redemption, recharge_order, billing_claim, billing_event]
+          enum: [payment_credit, payment_refund, voucher_redemption, recharge_order, subscription_auto_renewal, billing_claim, billing_event]
         source_id: { type: integer, format: int64, minimum: 1 }
         occurred_at: { type: string, format: date-time }
 
@@ -15476,16 +16919,34 @@ components:
         - openai_codex
         - gemini
         - gemini_messages
+        - gemini_code_assist
         - bedrock
         - bedrock_invoke
         - openrouter_chat
         - grok_chat
+        - kimi_chat
         - deepseek_chat
         - mistral_chat
         - groqcloud_chat
         - together_chat
         - perplexity_chat
         - fireworks_chat
+        - qwen_chat
+        - glm_chat
+        - yi_chat
+        - baichuan_chat
+        - doubao_chat
+        - ernie_chat
+        - step_chat
+        - hunyuan_chat
+        - minimax_chat
+        - cohere_chat
+        - ollama_chat
+        - ollama_native
+        - dify_chat
+        - replicate_image
+        - vertex_gemini
+        - vertex_anthropic
         - anthropic_claude_session
         - cursor_session
         - copilot_session
@@ -15831,6 +17292,102 @@ components:
           type: boolean
           description: true when the key was already revoked before this call. The response is still 200 (idempotent).
 
+    AdminTokenCreate:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [platform_admin, tenant_operator]
+          description: Role of the minted admin token.
+        tenant_id:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+          description: Required for tenant_operator; must be omitted for platform_admin (scope consistency).
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: Strictly future timestamp for a temporary/one-shot token. Null = permanent. Past values rejected with 400.
+        name: { type: string }
+        note: { type: string }
+
+    AdminTokenIssued:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - role
+        - key_prefix
+        - status
+        - created_at
+        - plaintext_bearer
+      properties:
+        id: { type: integer, format: int64 }
+        role: { type: string, enum: [platform_admin, tenant_operator] }
+        key_prefix: { type: string }
+        status: { type: string, enum: [active] }
+        expires_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+        plaintext_bearer:
+          type: string
+          description: |
+            Full plaintext admin bearer (e.g. hk_admin_xxxxxxxxxxxxxxxxxxxxxxxx).
+            Returned ONCE on issuance — never echoed by LIST or any later
+            fetch. Operators MUST capture this at issuance time.
+
+    AdminTokenListItem:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required: [id, name, key_prefix, role, bootstrap, status, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        key_prefix: { type: string }
+        role: { type: string, enum: [platform_admin, tenant_operator] }
+        scope_tenant_id: { type: [integer, 'null'], format: int64 }
+        bootstrap: { type: boolean }
+        status: { type: string, enum: [active, disabled, revoked] }
+        expires_at: { type: [string, 'null'], format: date-time }
+        last_used_at: { type: [string, 'null'], format: date-time }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        revoked_reason: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+
+    AdminTokenList:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminTokenListItem' }
+        limit: { type: integer, minimum: 1, maximum: 500 }
+        offset: { type: integer, minimum: 0 }
+
+    AdminTokenRevokeRequest:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string }
+
+    AdminTokenRevokeResponse:
+      x-huakai-spec-source: [docs/specs/api-contract.md]
+      type: object
+      additionalProperties: false
+      required: [id, already_revoked]
+      properties:
+        id: { type: integer, format: int64 }
+        already_revoked:
+          type: boolean
+          description: true when the token was already non-active before this call. The response is still 200 (idempotent).
+
     PoolGroup:
       type: object
       additionalProperties: false
@@ -16162,6 +17719,18 @@ components:
         custom_error_codes: { type: array, items: { type: integer } }
         pool_mode: { type: boolean, default: false }
         temp_unschedulable_enabled: { type: boolean, default: false }
+        temp_unschedulable_rules:
+          description: 仅账号详情读取接口返回；列表与其它账号响应省略。
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [error_code, keywords, duration_minutes]
+            properties:
+              error_code: { type: integer }
+              keywords: { type: array, items: { type: string } }
+              duration_minutes: { type: integer }
+              description: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -16322,6 +17891,17 @@ components:
       required:
         - id
         - health_state
+        - last_probe_latency_ms
+        - last_probe_at
+        - model_sync_last_check_at
+        - session_window_5h_start
+        - session_window_5h_end
+        - session_window_5h_status
+        - session_window_5h_utilization
+        - session_window_7d_start
+        - session_window_7d_end
+        - session_window_7d_status
+        - session_window_7d_utilization
         - last_refresh_at
         - last_refresh_outcome
         - failure_class
@@ -16338,6 +17918,29 @@ components:
           type: string
           format: date-time
           description: Present only when the current health state has an automatic recovery deadline.
+        last_probe_latency_ms: { type: [integer, 'null'], format: int32, minimum: 0 }
+        last_probe_at: { type: [string, 'null'], format: date-time }
+        model_sync_last_check_at: { type: [string, 'null'], format: date-time }
+        session_window_5h_start: { type: [string, 'null'], format: date-time }
+        session_window_5h_end: { type: [string, 'null'], format: date-time }
+        session_window_5h_status:
+          type: [string, 'null']
+          description: 窗口结束时间早于读取时间时固定投影为 expired。
+        session_window_5h_utilization:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 100
+          description: 仅活动窗口返回；过期或无法判活时为 null。
+        session_window_7d_start: { type: [string, 'null'], format: date-time }
+        session_window_7d_end: { type: [string, 'null'], format: date-time }
+        session_window_7d_status:
+          type: [string, 'null']
+          description: 窗口结束时间早于读取时间时固定投影为 expired。
+        session_window_7d_utilization:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 100
+          description: 仅活动窗口返回；过期或无法判活时为 null。
         last_refresh_at: { type: [string, 'null'], format: date-time }
         last_refresh_outcome: { type: [string, 'null'] }
         failure_class: { type: [string, 'null'] }
@@ -16347,6 +17950,40 @@ components:
           type: boolean
           description: True when health_state is revoked or failure_count is greater than 3.
         updated_at: { type: string, format: date-time }
+
+    ProviderAccountRecentRequest:
+      x-huakai-spec-source:
+        - backend/sql/queries/observability.sql
+        - backend/internal/adminhttp/provider_account_recent_requests_handler.go
+      type: object
+      additionalProperties: false
+      required: [at, model, upstream_model, status, latency_ms, ttft_ms, tokens_in, tokens_out, stream, attempt_seq]
+      properties:
+        at: { type: string, format: date-time }
+        model: { type: string }
+        upstream_model: { type: [string, 'null'] }
+        status: { type: string, enum: [success, error] }
+        latency_ms: { type: integer, format: int64 }
+        ttft_ms: { type: [integer, 'null'], format: int64 }
+        tokens_in: { type: integer, format: int32, minimum: 0 }
+        tokens_out: { type: integer, format: int32, minimum: 0 }
+        stream: { type: boolean }
+        attempt_seq: { type: integer, format: int32, minimum: 1 }
+
+    ProviderAccountRecentRequestsResponse:
+      x-huakai-spec-source:
+        - backend/sql/queries/observability.sql
+        - backend/internal/adminhttp/provider_account_recent_requests_handler.go
+      type: object
+      additionalProperties: false
+      required: [items, source]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountRecentRequest' }
+        source:
+          type: string
+          const: settled_usage_records
 
     ProviderAccountList:
       x-huakai-spec-source:
@@ -16399,6 +18036,11 @@ components:
         last_refresh_outcome: { type: string }
         failure_class: { type: string }
         failure_count: { type: integer, format: int32, minimum: 0 }
+        project_ref:
+          type: string
+          description: >-
+            从凭证载荷 project_id 派生的非密 project 标识。存量加密凭证无法一次性回填，
+            在后续刷新或管理员手动解析前省略该字段。
         external_account_id:
           type: string
           description: >-
@@ -16526,6 +18168,26 @@ components:
         state: { type: string }
         reason: { type: string }
 
+    AccountCredentialProjectResolveRequest:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [tenant_id]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string }
+
+    AccountCredentialProjectResolveResponse:
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      type: object
+      additionalProperties: false
+      required: [project_ref]
+      properties:
+        project_ref:
+          type: string
+          minLength: 1
+          description: 已解析并写回凭证载荷及 project_ref 元数据列的 project 标识。
+
     CredentialAcquisitionStart:
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]
       type: object
@@ -16534,7 +18196,7 @@ components:
       properties:
         tenant_id: { type: integer, format: int64 }
         provider_account_id: { type: integer, format: int64 }
-        vendor: { type: string, enum: [anthropic, openai, gemini] }
+        vendor: { type: string, enum: [anthropic, openai, gemini, copilot, antigravity, windsurf, grok, kimi, deepseek, qwen, glm, yi, baichuan, doubao, minimax, ernie, hunyuan, step] }
         auth_mode:
           type: string
           enum:
@@ -16545,6 +18207,7 @@ components:
             - vertex_anthropic
             - chatgpt_oauth
             - codex_cli_oauth
+            - codex_web_oauth
             - azure
             - refresh_token
             - aistudio_api_key
@@ -16552,6 +18215,10 @@ components:
             - code_assist
             - google_one
             - antigravity
+            - copilot_oauth
+            - xai_oauth
+            - kimi_oauth
+            - oauth
         flow_kind:
           type: string
           enum: [oauth, cli_import, paste, csv_import, json_import, cloud_bootstrap, token_exchange, setup_token, manual_first]
@@ -16611,7 +18278,7 @@ components:
       properties:
         tenant_id: { type: integer, format: int64 }
         provider_account_id: { type: integer, format: int64 }
-        vendor: { type: string, enum: [anthropic, openai, gemini] }
+        vendor: { type: string, enum: [anthropic, openai, gemini, copilot, antigravity, windsurf, grok, kimi, deepseek, qwen, glm, yi, baichuan, doubao, minimax, ernie, hunyuan, step] }
         auth_mode: { type: string }
         flow_kind:
           type: string
@@ -16989,8 +18656,10 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/mequotahttp/handler.go
-        - backend/internal/quota/pg_store.go
+        - backend/internal/quota/pg_store_window_reads.go
+        - backend/internal/quota/pg_store_map.go
       required:
+        - metric
         - window_kind
         - cap
         - consumed
@@ -17000,12 +18669,18 @@ components:
         - window_start
         - window_end
       properties:
+        metric:
+          type: string
+          description: >-
+            Which quota dimension this window measures. Concurrency is excluded (slot-based,
+            not a window-accumulation counter).
+          enum: [requests, cost_usd, tokens_estimated]
         window_kind:
           type: string
           enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual]
         cap:
           type: string
-          description: 'numeric(20,8) cost_usd limit rendered as a string.'
+          description: "numeric(20,8) limit for this window's metric, rendered as a string."
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         consumed:
           type: string
@@ -17017,7 +18692,7 @@ components:
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         overage:
           type: string
-          description: 'Current cost_usd overage counter rendered as a string.'
+          description: "Current overage counter for this window's metric, rendered as a string."
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
         request_count: { type: integer, format: int64, minimum: 0 }
         window_start: { type: string, format: date-time }
@@ -17090,10 +18765,12 @@ components:
         - requested_model
         - upstream_model
         - actual_cost
+        - tokens
         - ledger_id
         - verify_hint
         - created_at
         - status
+        - stream
       properties:
         requested_model:
           type: string
@@ -17105,6 +18782,15 @@ components:
           type: string
           description: 'numeric(20,8) real cost rendered as string for client BigNumber safety.'
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        tokens:
+          type: object
+          additionalProperties: false
+          required: [input, output]
+          properties:
+            input: { type: integer, format: int32, minimum: 0 }
+            output: { type: integer, format: int32, minimum: 0 }
+            cache_creation: { type: integer, format: int32, minimum: 0 }
+            cache_read: { type: integer, format: int32, minimum: 0 }
         provider:
           type: string
           description: Provider code when available from usage joins.
@@ -17123,6 +18809,16 @@ components:
         request_id:
           type: string
           description: Audit request id used by `/v1/audit/verify` when present.
+        stream:
+          type: boolean
+          description: Whether the request was a streaming request (request mode).
+        stream_terminated_reason:
+          type: string
+          description: Reason a stream ended abnormally; absent for normal completion.
+        requested_at:
+          type: string
+          format: date-time
+          description: Request arrival time, enabling client-side latency calculation.
 
     MeUsageVerifyHint:
       type: object
@@ -17172,6 +18868,14 @@ components:
         tokens_input: { type: integer, minimum: 0 }
         tokens_output: { type: integer, minimum: 0 }
         cache_creation_tokens: { type: integer, minimum: 0 }
+        cache_creation_5m_tokens:
+          type: integer
+          minimum: 0
+          description: 使用默认 5 分钟 TTL 写入提示缓存的 input token 数。
+        cache_creation_1h_tokens:
+          type: integer
+          minimum: 0
+          description: 使用显式 1 小时 TTL 写入提示缓存的 input token 数。
         cache_read_tokens: { type: integer, minimum: 0 }
         actual_cost:
           type: string
@@ -17215,6 +18919,15 @@ components:
         requested_model: { type: string }
         upstream_model: { type: [string, 'null'] }
         stream: { type: boolean, default: false }
+        ip_address:
+          type: [string, 'null']
+          description: 'Client IP captured at billing settlement; admin observability only (never exposed to the /v1/me usage list).'
+        user_agent:
+          type: [string, 'null']
+          description: 'Client User-Agent captured at billing settlement; admin observability only (never exposed to the /v1/me usage list).'
+        client_tool:
+          type: [string, 'null']
+          description: 'Normalized client-tool enum (e.g. cursor, claude_code) captured at settlement; admin observability only (never exposed to the /v1/me usage list). Raw User-Agent values are not stored here.'
 
     UsageRecordList:
       x-huakai-spec-source: [docs/specs/observability-billing.md]
@@ -17325,6 +19038,107 @@ components:
         reason:
           type: string
           minLength: 1
+
+    AdminBillingRepriceRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-03-audit-remediation-claude.md
+        - backend/internal/billingreconhttp/handler.go
+      properties:
+        usage_record_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Single usage record scope. Cannot be combined with tenant_id/from/to.
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Batch scope tenant id. Required with from/to when usage_record_id is absent.
+        from:
+          type: string
+          format: date-time
+          description: Inclusive settled_at lower bound for batch scope.
+        to:
+          type: string
+          format: date-time
+          description: Exclusive settled_at upper bound for batch scope.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 100
+        dry_run:
+          type: boolean
+          default: true
+
+    AdminBillingRepriceResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/billing/reprice.go
+        - backend/internal/billingreconhttp/handler.go
+      required: [object, dry_run, items, summary]
+      properties:
+        object:
+          type: string
+          enum: [billing_reprice_report]
+        dry_run:
+          type: boolean
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminBillingRepriceItem' }
+        summary:
+          $ref: '#/components/schemas/AdminBillingRepriceSummary'
+
+    AdminBillingRepriceItem:
+      type: object
+      additionalProperties: false
+      required:
+        - usage_record_id
+        - tenant_id
+        - status
+        - original_cost
+        - authoritative_cost
+        - cost_delta
+      properties:
+        usage_record_id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        status:
+          type: string
+          enum: [would_apply, repriced, already_repriced, skipped, error]
+        skipped_reason:
+          type: string
+          enum: [already_reconciled, not_found]
+        error_code:
+          type: string
+        error_message:
+          type: string
+        original_cost:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        authoritative_cost:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        cost_delta:
+          type: string
+          pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
+        pricing_source:
+          type: string
+          description: Current pricing table, selected rate source, cost snapshot, and pricing ratio evidence.
+
+    AdminBillingRepriceSummary:
+      type: object
+      additionalProperties: false
+      required: [total, would_apply, repriced, already_repriced, skipped, failed]
+      properties:
+        total: { type: integer, minimum: 0 }
+        would_apply: { type: integer, minimum: 0 }
+        repriced: { type: integer, minimum: 0 }
+        already_repriced: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
 
     UserRechargeCreateRequest:
       type: object
@@ -17472,7 +19286,7 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - docs/process/plans/h-ops-systemhealth.md
-      required: [status, components]
+      required: [status, components, runtime]
       properties:
         status:
           type: string
@@ -17481,6 +19295,7 @@ components:
         components:
           type: array
           items: { $ref: '#/components/schemas/SystemHealthComponent' }
+        runtime: { $ref: '#/components/schemas/SystemHealthRuntime' }
 
     SystemHealthComponent:
       type: object
@@ -17496,6 +19311,25 @@ components:
         detail:
           type: string
           description: Optional human-readable detail string.
+
+    SystemHealthRuntime:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/systemhealthhttp/systemhealth.go
+      description: >
+        Live snapshot of the gateway process's own resource usage, read from the Go
+        runtime at request time (no collector, no storage). Diagnostics only — never
+        secrets; the binary path is not exposed, only its size.
+      required: [go_version, num_goroutine, heap_alloc_bytes, heap_sys_bytes, num_gc, uptime_seconds]
+      properties:
+        go_version: { type: string, description: Go toolchain version of the running binary. }
+        num_goroutine: { type: integer, format: int64, minimum: 0 }
+        heap_alloc_bytes: { type: integer, format: int64, minimum: 0, description: Currently allocated heap bytes. }
+        heap_sys_bytes: { type: integer, format: int64, minimum: 0, description: Heap memory obtained from the OS. }
+        num_gc: { type: integer, format: int64, minimum: 0, description: Completed GC cycles. }
+        uptime_seconds: { type: integer, format: int64, minimum: 0 }
+        binary_size_bytes: { type: integer, format: int64, minimum: 0, description: Running executable size; omitted if it cannot be resolved. }
 
 
     AuditEvent:
@@ -17601,6 +19435,62 @@ components:
       properties:
         item: { $ref: '#/components/schemas/DLQEntry' }
         replayed: { type: boolean }
+
+    ObsDLQEntry:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/obsdlqhttp/handler.go
+        - backend/internal/obs/dlq/store_admin.go
+      required:
+        - id
+        - outbox_event_id
+        - tenant_id
+        - event_type
+        - priority
+        - payload
+        - dead_at
+        - dead_reason
+        - attempt_count
+        - outbox_status
+        - created_at
+        - next_retry_at
+      properties:
+        id: { type: string }
+        outbox_event_id: { type: string }
+        tenant_id: { type: integer, format: int64 }
+        event_type: { type: string }
+        priority:
+          type: string
+          enum: [default, high, critical]
+        payload: { type: object, additionalProperties: true }
+        dead_at: { type: string, format: date-time }
+        dead_reason: { type: string }
+        attempt_count: { type: integer, minimum: 0 }
+        outbox_status:
+          type: string
+          enum: [pending, processing, completed, failed_retry, failed_dead]
+        failure_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        next_retry_at: { type: string, format: date-time }
+
+    ObsDLQEntryList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ObsDLQEntry' }
+
+    ObsDLQReplayResult:
+      type: object
+      additionalProperties: false
+      required: [replayed, id, outbox_event_id]
+      properties:
+        replayed: { type: boolean }
+        id: { type: string }
+        outbox_event_id: { type: string }
 
 # ============================================================================
 # Synthesis metadata

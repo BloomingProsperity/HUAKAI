@@ -35,7 +35,7 @@ func TestBroadcastValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// MUTATION: remove title/body/severity/tenant validation; this broadcast succeeds.
+			// 变异：移除 title/body/severity/tenant 校验；这条 broadcast 会成功。
 			if _, err := svc.Broadcast(context.Background(), tt.in); !errors.Is(err, ErrInvalidInput) {
 				t.Fatalf("Broadcast err=%v want ErrInvalidInput", err)
 			}
@@ -44,7 +44,7 @@ func TestBroadcastValidation(t *testing.T) {
 }
 
 func TestListNotificationsSelfScopedUnreadFirst(t *testing.T) {
-	// MUTATION: drop user_id filtering or unread_only filtering in ListForUser; user A sees user B's row or read rows in unread-only mode.
+	// 变异：在 ListForUser 中去掉 user_id 过滤或 unread_only 过滤；用户 A 会看到用户 B 的行，或在仅未读模式下看到已读行。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	store := NewMemoryStore()
 	store.AddActiveUser(7, 101)
@@ -87,7 +87,7 @@ func TestListNotificationsSelfScopedUnreadFirst(t *testing.T) {
 }
 
 func TestMarkReadOwnOnly(t *testing.T) {
-	// MUTATION: drop user_id from MarkRead update; user A marks user B's notification read.
+	// 变异：从 MarkRead 更新中去掉 user_id；用户 A 会把用户 B 的通知标记为已读。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	store := NewMemoryStore()
 	store.AddActiveUser(7, 101)

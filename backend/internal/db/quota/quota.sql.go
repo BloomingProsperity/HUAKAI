@@ -259,14 +259,22 @@ func (q *Queries) EnqueueQuotaReconciliationJob(ctx context.Context, arg Enqueue
 }
 
 const expireQuotaConcurrencySlots = `-- name: ExpireQuotaConcurrencySlots :execrows
-UPDATE quota_concurrency_slots
+UPDATE quota_concurrency_slots qcs
 SET status = 'expired',
     released_at = NOW(),
     release_reason = 'lease_expired',
     updated_at = NOW()
-WHERE tenant_id = $1::bigint
-  AND status = 'acquired'
-  AND lease_expires_at <= $2::timestamptz
+WHERE qcs.tenant_id = $1::bigint
+  AND qcs.status = 'acquired'
+  AND qcs.lease_expires_at <= $2::timestamptz
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_dlq d
+      WHERE d.tenant_id = qcs.tenant_id
+        AND d.claim_id = qcs.claim_id
+        AND d.event_kind = 'post_delivery_settlement'
+        AND d.status <> 'delivered'
+  )
 `
 
 type ExpireQuotaConcurrencySlotsParams struct {
@@ -874,7 +882,7 @@ WHERE qp.tenant_id = $2::bigint
   AND qp.mode <> 'disabled'
   AND qp.scope_kind = $3::text
   AND qp.scope_id = $4::text
-  AND qp.metric = 'cost_usd'
+  AND qp.metric = ANY($5::text[])
   AND qp.valid_from <= $1::timestamptz
   AND (qp.valid_until IS NULL OR qp.valid_until > $1::timestamptz)
 ORDER BY
@@ -893,6 +901,7 @@ type ListCurrentQuotaWindowsForScopeParams struct {
 	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
 	ScopeKind string             `db:"scope_kind" json:"scope_kind"`
 	ScopeID   string             `db:"scope_id" json:"scope_id"`
+	Metrics   []string           `db:"metrics" json:"metrics"`
 }
 
 type ListCurrentQuotaWindowsForScopeRow struct {
@@ -919,13 +928,17 @@ type ListCurrentQuotaWindowsForScopeRow struct {
 	Version       int32              `db:"version" json:"version"`
 }
 
-// Subscription progress read projection: active cost_usd policies for one tenant/scope plus the current window counters.
+// Active quota-window read projection: policies for one tenant/scope filtered to the
+// requested metrics, plus the current window counters. Cost-only callers (subscription
+// progress, key-control) pass {cost_usd} to preserve their original behaviour; the
+// self-service /quota read passes the window-shaped metrics (requests/cost_usd/tokens).
 func (q *Queries) ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListCurrentQuotaWindowsForScopeParams) ([]ListCurrentQuotaWindowsForScopeRow, error) {
 	rows, err := q.db.Query(ctx, listCurrentQuotaWindowsForScope,
 		arg.AtTime,
 		arg.TenantID,
 		arg.ScopeKind,
 		arg.ScopeID,
+		arg.Metrics,
 	)
 	if err != nil {
 		return nil, err
@@ -1038,6 +1051,50 @@ func (q *Queries) ListDueQuotaReconciliationJobs(ctx context.Context, arg ListDu
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTenantsWithDueQuotaReconciliationJobs = `-- name: ListTenantsWithDueQuotaReconciliationJobs :many
+SELECT DISTINCT tenant_id
+FROM quota_reconciliation_jobs
+WHERE (
+    (status IN ('queued', 'failed')
+     AND next_run_at <= $1::timestamptz)
+    OR (
+        status = 'running'
+        AND (
+            locked_at IS NULL
+            OR locked_at < $1::timestamptz - INTERVAL '15 minutes'
+        )
+    )
+)
+ORDER BY tenant_id ASC
+LIMIT $2::integer
+`
+
+type ListTenantsWithDueQuotaReconciliationJobsParams struct {
+	AtTime      pgtype.Timestamptz `db:"at_time" json:"at_time"`
+	TenantLimit int32              `db:"tenant_limit" json:"tenant_limit"`
+}
+
+// 全局 sweep:列出有到期 job 的 distinct 租户,供跨租户 worker 公平轮转。
+func (q *Queries) ListTenantsWithDueQuotaReconciliationJobs(ctx context.Context, arg ListTenantsWithDueQuotaReconciliationJobsParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listTenantsWithDueQuotaReconciliationJobs, arg.AtTime, arg.TenantLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var tenantID int64
+		if err := rows.Scan(&tenantID); err != nil {
+			return nil, err
+		}
+		items = append(items, tenantID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

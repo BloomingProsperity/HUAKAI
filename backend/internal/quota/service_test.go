@@ -166,9 +166,9 @@ func TestServiceReserve_RequestsMetricUsesModelBReservedAndSettled(t *testing.T)
 }
 
 func TestServiceReserve_NoTokenPolicyDoesNotApplyTokenEstimate(t *testing.T) {
-	// Mutation check: mistakenly applying ReservedTokens to the requests metric
-	// would deny or reserve 50000 request units. With no token policy configured,
-	// TPD estimates must have zero effect on request quota behavior.
+	// 变异自检: 若误把 ReservedTokens 套用到 requests metric 上, 会拒绝或预留
+	// 50000 个 request 单位。在没有配置 token 策略时, TPD 估算必须对 request
+	// 配额行为零影响。
 	at := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	store := &requestMetricReserveStore{
 		at: at,
@@ -206,9 +206,8 @@ func TestServiceReserve_NoTokenPolicyDoesNotApplyTokenEstimate(t *testing.T) {
 }
 
 func TestServiceReserve_TokensEstimatedEnforceDeniesWhenEstimateExceedsLimit(t *testing.T) {
-	// Mutation check: restoring the old MetricTokensEstimated skip lets this
-	// request through and inserts a reservation; the deny and insert assertions
-	// must turn red.
+	// 变异自检: 若恢复旧的 MetricTokensEstimated 跳过逻辑, 这个请求会被放行
+	// 并插入一条 reservation; 此时 deny 和 insert 的断言必须变红。
 	at := time.Date(2026, 6, 4, 10, 30, 0, 0, time.UTC)
 	store := &tokenMetricReserveStore{
 		at:    at,
@@ -246,8 +245,8 @@ func TestServiceReserve_TokensEstimatedEnforceDeniesWhenEstimateExceedsLimit(t *
 }
 
 func TestServiceReserve_TokensEstimatedAllowReservesEstimateAndSnapshotsAmount(t *testing.T) {
-	// Mutation check: reserving 1 token instead of the estimate leaves
-	// reserveDelta=1 and snapshot reserved_amount=1; both assertions must fail.
+	// 变异检查:预留 1 个 token 而非估算值,会让 reserveDelta=1 且快照
+	// reserved_amount=1;两个断言都会失败。
 	at := time.Date(2026, 6, 4, 10, 45, 0, 0, time.UTC)
 	store := &tokenMetricReserveStore{
 		at:    at,
@@ -295,9 +294,8 @@ func TestServiceReserve_TokensEstimatedAllowReservesEstimateAndSnapshotsAmount(t
 }
 
 func TestServiceReserve_TokensEstimatedZeroEstimateSkipsWithoutDeny(t *testing.T) {
-	// Mutation check: treating missing estimates as 1 token would deny against
-	// this already-full token window. Zero estimate must preserve the current
-	// observe/skip behavior and allow the hot path.
+	// 变异检查:把缺失的估算当作 1 个 token,会在这个已满的 token 窗口上拒绝。
+	// 零估算必须保持当前的观测 / 跳过行为,并放行热路径。
 	at := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)
 	store := &tokenMetricReserveStore{
 		at:    at,
@@ -506,6 +504,14 @@ func (s *noTxReserveStore) MarkReservationReconciliationNeeded(context.Context, 
 	return s.fail()
 }
 
+func (s *noTxReserveStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
+	return nil, s.fail()
+}
+
+func (s *noTxReserveStore) GetClaimTerminalState(context.Context, int64, int64) (ClaimTerminalState, error) {
+	return ClaimTerminalState{}, s.fail()
+}
+
 func (s *noTxReserveStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {
 	return ConcurrencySlot{}, s.fail()
 }
@@ -527,6 +533,10 @@ func (s *noTxReserveStore) EnqueueReconciliationJob(context.Context, Reconciliat
 }
 
 func (s *noTxReserveStore) ListDueReconciliationJobs(context.Context, int64, time.Time, int) ([]ReconciliationJob, error) {
+	return nil, s.fail()
+}
+
+func (s *noTxReserveStore) ListTenantsWithDueReconciliationJobs(context.Context, time.Time, int) ([]int64, error) {
 	return nil, s.fail()
 }
 
@@ -619,6 +629,14 @@ func (s *claimConflictReplayStore) MarkReservationReconciliationNeeded(context.C
 	return errors.New("unexpected MarkReservationReconciliationNeeded")
 }
 
+func (s *claimConflictReplayStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
+	return nil, errors.New("unexpected ListStaleReservedReservations")
+}
+
+func (s *claimConflictReplayStore) GetClaimTerminalState(context.Context, int64, int64) (ClaimTerminalState, error) {
+	return ClaimTerminalState{}, errors.New("unexpected GetClaimTerminalState")
+}
+
 func (s *claimConflictReplayStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {
 	return ConcurrencySlot{}, errors.New("unexpected AcquireConcurrencySlot")
 }
@@ -641,6 +659,10 @@ func (s *claimConflictReplayStore) EnqueueReconciliationJob(context.Context, Rec
 
 func (s *claimConflictReplayStore) ListDueReconciliationJobs(context.Context, int64, time.Time, int) ([]ReconciliationJob, error) {
 	return nil, errors.New("unexpected ListDueReconciliationJobs")
+}
+
+func (s *claimConflictReplayStore) ListTenantsWithDueReconciliationJobs(context.Context, time.Time, int) ([]int64, error) {
+	return nil, errors.New("unexpected ListTenantsWithDueReconciliationJobs")
 }
 
 func (s *claimConflictReplayStore) MarkReconciliationJobRunning(context.Context, int64, int64) error {
@@ -931,4 +953,16 @@ func (s *txRetryReserveStore) ReactivateReservation(context.Context, Reservation
 func (s *txRetryReserveStore) InsertAuditEvent(context.Context, AuditEvent) (int64, error) {
 	s.auditCalls++
 	return int64(s.auditCalls), nil
+}
+
+// TestExceededDecisionCarriesWindowKind 验证 exceededDecision 把命中策略的窗口种类带进 Decision,
+// 这是拒绝响应能透出"是哪个窗口超限"的源头。变异:删 exceededDecision 里 WindowKind 那行赋值 →
+// Decision.WindowKind 变零值 → 本断言红。
+func TestExceededDecisionCarriesWindowKind(t *testing.T) {
+	dec := exceededDecision(ReserveRequest{}, Policy{
+		Window: Window{Kind: WindowCalendarMonth},
+	}, policyAssessment{})
+	if dec.WindowKind != WindowCalendarMonth {
+		t.Fatalf("Decision.WindowKind=%q want calendar_month", dec.WindowKind)
+	}
 }

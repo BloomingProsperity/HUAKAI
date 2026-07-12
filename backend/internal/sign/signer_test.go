@@ -78,7 +78,7 @@ func TestFingerprint_StableAndLen(t *testing.T) {
 	if len(fp1) != PubkeyFingerprintLen {
 		t.Errorf("fingerprint len: got %d want %d", len(fp1), PubkeyFingerprintLen)
 	}
-	// hex chars only
+	// 只能是 hex 字符
 	for _, c := range fp1 {
 		if !strings.ContainsRune("0123456789abcdef", c) {
 			t.Errorf("fingerprint contains non-hex char: %q", fp1)

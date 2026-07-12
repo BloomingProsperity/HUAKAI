@@ -33,9 +33,16 @@ type PGStore interface {
 	InsertAuditEvent(ctx context.Context, event AuditEvent) (int64, error)
 	EnqueueReconciliationJob(ctx context.Context, input ReconciliationEnqueue) (ReconciliationJob, error)
 	ListDueReconciliationJobs(ctx context.Context, tenantID int64, at time.Time, limit int) ([]ReconciliationJob, error)
+	// ListTenantsWithDueReconciliationJobs 返回有到期 job 的 distinct 租户,供跨租户全局 sweep worker 使用。
+	ListTenantsWithDueReconciliationJobs(ctx context.Context, at time.Time, tenantLimit int) ([]int64, error)
 	MarkReconciliationJobRunning(ctx context.Context, tenantID int64, jobID int64) error
 	CompleteReconciliationJob(ctx context.Context, tenantID int64, jobID int64) error
 	FailReconciliationJob(ctx context.Context, input ReconciliationFailure) error
+	// ListStaleReservedReservations 返回 lease 已过期仍未终态、claim 已终态、且无补偿 job 史的
+	// 孤儿预留(跨租户),供清扫器兜住「billing 终态后补偿 job 从未入队」的崩溃窗口。
+	ListStaleReservedReservations(ctx context.Context, at time.Time, limit int) ([]StaleReservation, error)
+	// GetClaimTerminalState 点查 billing claim 现状,供补偿动作执行前复核与取实结额。
+	GetClaimTerminalState(ctx context.Context, tenantID, claimID int64) (ClaimTerminalState, error)
 }
 
 type ProgressReadStore interface {

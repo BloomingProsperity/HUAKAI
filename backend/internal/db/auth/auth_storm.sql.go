@@ -121,3 +121,22 @@ func (q *Queries) TryAcquireAccountStormSlot(ctx context.Context, id int64) (int
 	err := row.Scan(&current_in_flight)
 	return current_in_flight, err
 }
+
+const reapStaleAccountStormSlots = `-- name: ReapStaleAccountStormSlots :execrows
+UPDATE oauth_storm_budget
+SET current_in_flight = 0,
+    last_updated_at = NOW()
+WHERE scope_type = 'account'
+  AND current_in_flight > 0
+  AND last_updated_at <= $1::timestamptz
+`
+
+// ReapStaleAccountStormSlots 归零陈旧的 in_flight 计数 (release 失败/进程崩溃留下的
+// 永久 +1 泄漏; cap=1 时该账号永久无法刷新)。返回归零的行数。
+func (q *Queries) ReapStaleAccountStormSlots(ctx context.Context, staleBefore pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, reapStaleAccountStormSlots, staleBefore)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

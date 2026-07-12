@@ -2,6 +2,8 @@ package rate
 
 import (
 	"context"
+	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,36 +14,65 @@ import (
 
 const defaultUpstreamCooldown = 5 * time.Minute
 const sessionWindow5hDuration = 5 * time.Hour
+const sessionWindow7dDuration = 7 * 24 * time.Hour
 
 var sessionWindow5hStatusHeaders = []string{
-	"anthropic-ratelimit-unified-5h-status",
+	sessionWindow5hPrefix + "-status",
 	"x-ratelimit-5h-status",
 	"x-codex-5h-status",
 }
 
 var sessionWindow5hResetHeaders = []string{
-	"anthropic-ratelimit-unified-5h-reset",
+	sessionWindow5hPrefix + "-reset",
 	"x-ratelimit-5h-reset",
 	"x-codex-5h-reset",
 	"x-ratelimit-reset",
 }
 
+var sessionWindow7dStatusHeaders = []string{
+	sessionWindow7dPrefix + "-status",
+	"x-ratelimit-7d-status",
+	"x-codex-7d-status",
+}
+
+var sessionWindow7dResetHeaders = []string{
+	sessionWindow7dPrefix + "-reset",
+	"x-ratelimit-7d-reset",
+	"x-codex-7d-reset",
+}
+
+var sessionWindow5hUtilizationHeaders = []string{
+	sessionWindow5hPrefix + "-utilization",
+	"x-ratelimit-5h-utilization",
+	"x-codex-5h-utilization",
+}
+
+var sessionWindow7dUtilizationHeaders = []string{
+	sessionWindow7dPrefix + "-utilization",
+	"x-ratelimit-7d-utilization",
+	"x-codex-7d-utilization",
+}
+
 type SessionWindowUpdate struct {
-	ProviderAccountID int64
-	WindowStart       time.Time
-	WindowEnd         time.Time
-	Status            string
+	ProviderAccountID   int64
+	Window5hStart       *time.Time
+	Window5hEnd         *time.Time
+	Window5hStatus      *string
+	Window5hUtilization *float64
+	Window7dStart       *time.Time
+	Window7dEnd         *time.Time
+	Window7dStatus      *string
+	Window7dUtilization *float64
 }
 
 type SessionWindowStore interface {
-	UpdateProviderAccountSessionWindow5h(context.Context, SessionWindowUpdate) error
+	UpdateProviderAccountSessionWindows(context.Context, SessionWindowUpdate) error
 }
 
-// CooldownStateStore atomically clears every cooldown-state column on a single
-// account so a benched upstream account becomes schedulable again. It carries
-// no tenant scope: ClearCascade callers are system-trusted (or have already
-// performed their own tenant ownership guard before delegating), so the impl
-// keys solely on account id.
+// CooldownStateStore 原子地清除单个账号上的每一个冷却状态列,使一个被下场
+// (benched)的上游账号重新变为可调度。它不带 tenant 作用域:ClearCascade 的
+// 调用方是系统可信的(或在委派前已自行做过 tenant 归属守卫),因此该实现
+// 仅按 account id 寻址。
 type CooldownStateStore interface {
 	ClearCooldownCascade(ctx context.Context, accountID int64) error
 }
@@ -62,10 +93,10 @@ type upstreamRateService struct {
 	now             func() time.Time
 	defaultCooldown time.Duration
 	sessionWindows  SessionWindowStore
-	cooldownState   CooldownStateStore // nil = no-op (default)
+	cooldownState   CooldownStateStore // nil = 空操作(默认)
 	transient       TransientCooldownConfig
 	disableCooling  bool
-	rulesProvider   AccountErrorRulesProvider // nil = no-op (default)
+	rulesProvider   AccountErrorRulesProvider // nil = 空操作(默认)
 }
 
 type UpstreamRateServiceOption func(*upstreamRateService)
@@ -82,18 +113,18 @@ func WithTransientCooldown(duration time.Duration) UpstreamRateServiceOption {
 	}
 }
 
-// WithAccountErrorRulesProvider injects a provider for per-account
-// temp-unschedulable rules and custom error codes. A nil provider (the
-// default) preserves zero-config no-op behaviour.
+// WithAccountErrorRulesProvider 注入一个为按账号 temp-unschedulable 规则和
+// custom error codes 提供数据的 provider。nil 的 provider(默认)保留零配置的
+// 空操作行为。
 func WithAccountErrorRulesProvider(p AccountErrorRulesProvider) UpstreamRateServiceOption {
 	return func(s *upstreamRateService) {
 		s.rulesProvider = p
 	}
 }
 
-// WithCooldownStateStore injects the store that backs ClearCascade. A nil
-// store (the default) preserves zero-config no-op behaviour, so ClearCascade
-// stays a safe no-op until production wires a real store.
+// WithCooldownStateStore 注入支撑 ClearCascade 的 store。nil 的 store(默认)
+// 保留零配置的空操作行为,因此在生产接入真实 store 之前,ClearCascade 保持
+// 为安全的空操作。
 func WithCooldownStateStore(store CooldownStateStore) UpstreamRateServiceOption {
 	return func(s *upstreamRateService) {
 		s.cooldownState = store
@@ -124,19 +155,27 @@ func NewPostgresSessionWindowStore(db sessionWindowDB) *PostgresSessionWindowSto
 	return &PostgresSessionWindowStore{db: db}
 }
 
-func (s *PostgresSessionWindowStore) UpdateProviderAccountSessionWindow5h(ctx context.Context, update SessionWindowUpdate) error {
+func (s *PostgresSessionWindowStore) UpdateProviderAccountSessionWindows(ctx context.Context, update SessionWindowUpdate) error {
 	if s == nil || s.db == nil || update.ProviderAccountID <= 0 {
 		return nil
 	}
 	_, err := s.db.Exec(ctx, `
 UPDATE provider_accounts
-SET session_window_5h_start = $2,
-    session_window_5h_end = $3,
-    session_window_5h_status = $4,
+SET session_window_5h_start = COALESCE($2::timestamptz, session_window_5h_start),
+    session_window_5h_end = COALESCE($3::timestamptz, session_window_5h_end),
+    session_window_5h_status = COALESCE($4::text, session_window_5h_status),
+    session_window_5h_utilization = COALESCE($5::numeric, session_window_5h_utilization),
+    session_window_7d_start = COALESCE($6::timestamptz, session_window_7d_start),
+    session_window_7d_end = COALESCE($7::timestamptz, session_window_7d_end),
+    session_window_7d_status = COALESCE($8::text, session_window_7d_status),
+    session_window_7d_utilization = COALESCE($9::numeric, session_window_7d_utilization),
     updated_at = now()
 WHERE id = $1
   AND deleted_at IS NULL
-`, update.ProviderAccountID, update.WindowStart.UTC(), update.WindowEnd.UTC(), update.Status)
+`, update.ProviderAccountID,
+		utcTimePointer(update.Window5hStart), utcTimePointer(update.Window5hEnd), update.Window5hStatus, update.Window5hUtilization,
+		utcTimePointer(update.Window7dStart), utcTimePointer(update.Window7dEnd), update.Window7dStatus, update.Window7dUtilization,
+	)
 	return err
 }
 
@@ -144,13 +183,12 @@ func NewPostgresCooldownStateStore(db sessionWindowDB) *PostgresCooldownStateSto
 	return &PostgresCooldownStateStore{db: db}
 }
 
-// ClearCooldownCascade clears every cooldown-state column on one account in a
-// single atomic UPDATE: rate-limit (3 cols), overload (1), temp-unschedulable
-// (3), model_rate_limits jsonb, and the OpenAI-403 counter window (2). This is
-// the same column set the tenant-scoped admin clear-rate-limit path resets;
-// here the WHERE is id-only (no tenant) because the caller is system-trusted
-// or has already enforced ownership. Clearing already-clear columns is a safe
-// idempotent no-op.
+// ClearCooldownCascade 在单条原子 UPDATE 中清除一个账号上的每个冷却状态列:
+// rate-limit(3 列)、overload(1 列)、temp-unschedulable(3 列)、
+// model_rate_limits jsonb,以及 OpenAI-403 计数窗口(2 列)。这与 tenant 作用域
+// 的 admin clear-rate-limit 路径所重置的是同一组列;此处 WHERE 仅按 id(无
+// tenant),因为调用方是系统可信的,或已自行强制做过归属校验。清除本就已清空
+// 的列是一个安全、幂等的空操作。
 func (s *PostgresCooldownStateStore) ClearCooldownCascade(ctx context.Context, accountID int64) error {
 	if s == nil || s.db == nil || accountID <= 0 {
 		return nil
@@ -175,17 +213,16 @@ WHERE id = $1
 }
 
 func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID int64, statusCode int, respHeaders http.Header, respBody []byte) (Decision, error) {
-	_ = ctx
 	now := s.now().UTC()
 
-	// F-RATE-001 §1.6: evaluate per-account temp-unschedulable rules and
-	// custom error codes when the feature is enabled on this account.
-	// This is ADDITIVE — evaluated first, before the existing 429/529 path,
-	// so operators can classify any upstream status code including 403.
+	// F-RATE-001 §1.6:当该账号上启用了此特性时,评估按账号的
+	// temp-unschedulable 规则和 custom error codes。
+	// 这是增量式的 —— 先于现有的 429/529 路径评估,这样运营者就能对任意
+	// 上游状态码(包括 403)进行分类。
 	if s.rulesProvider != nil {
-		rules, customCodes := s.rulesProvider.GetAccountErrorRules(accountID)
-		if len(rules) > 0 || len(customCodes) > 0 {
-			if dec := evalAccountErrorRules(statusCode, respBody, rules, customCodes,
+		policy := s.rulesProvider.GetAccountErrorPolicy(accountID)
+		if len(policy.Rules) > 0 || len(policy.CustomErrorCodes) > 0 {
+			if dec := evalAccountErrorRules(statusCode, respBody, policy.Rules, policy.CustomErrorCodes,
 				func(minutes int) time.Duration {
 					if minutes <= 0 {
 						return s.defaultCooldown
@@ -197,6 +234,13 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 			); dec.StateChange != StateNoChange {
 				return dec, nil
 			}
+		}
+		if policy.PoolMode {
+			slog.InfoContext(ctx, "账号池模式跳过未匹配自定义规则的本地状态改写",
+				"provider_account_id", accountID,
+				"upstream_status_code", statusCode,
+			)
+			return Decision{ShouldFailover: true, SuppressLocalState: true}, nil
 		}
 	}
 
@@ -247,12 +291,11 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 	return dec, nil
 }
 
-// ClearCascade honors the rate.Service contract (rate.go §ClearCascade):
-// atomically clear all cooldown state for one account. It delegates to the
-// injected CooldownStateStore. A nil store (the zero-config default) keeps it a
-// safe no-op so an unwired Service does not error. actorID is carried for the
-// contract signature and audit symmetry but the store clears by id only — the
-// admin HTTP path owns the tenant-scoped audit row.
+// ClearCascade 遵守 rate.Service 契约(rate.go §ClearCascade):原子地清除
+// 一个账号的全部冷却状态。它委托给注入的 CooldownStateStore。nil 的 store
+// (零配置默认)使其保持为安全的空操作,因此未接线的 Service 不会报错。
+// actorID 是为契约签名和审计对称性而携带的,但 store 只按 id 清除 ——
+// tenant 作用域的审计行由 admin HTTP 路径负责。
 func (s *upstreamRateService) ClearCascade(ctx context.Context, accountID int64, actorID string) error {
 	_ = actorID
 	if s == nil || s.cooldownState == nil || accountID <= 0 {
@@ -265,28 +308,49 @@ func (s *upstreamRateService) UpdateSessionWindow(ctx context.Context, accountID
 	if s == nil || s.sessionWindows == nil || accountID <= 0 {
 		return nil
 	}
-	status := sessionWindow5hStatus(headers)
-	if status == "" {
-		return nil
-	}
 	now := s.now().UTC()
-	windowEnd, ok := sessionWindow5hReset(headers, now)
-	if !ok {
+	update := SessionWindowUpdate{ProviderAccountID: accountID}
+	setSessionWindowFromHeaders(
+		headers, now, sessionWindow5hStatusHeaders, sessionWindow5hResetHeaders,
+		sessionWindow5hUtilizationHeaders, sessionWindow5hDuration,
+		&update.Window5hStart, &update.Window5hEnd, &update.Window5hStatus, &update.Window5hUtilization,
+	)
+	setSessionWindowFromHeaders(
+		headers, now, sessionWindow7dStatusHeaders, sessionWindow7dResetHeaders,
+		sessionWindow7dUtilizationHeaders, sessionWindow7dDuration,
+		&update.Window7dStart, &update.Window7dEnd, &update.Window7dStatus, &update.Window7dUtilization,
+	)
+	if !update.hasValues() {
 		return nil
 	}
-	return s.sessionWindows.UpdateProviderAccountSessionWindow5h(ctx, SessionWindowUpdate{
-		ProviderAccountID: accountID,
-		WindowStart:       windowEnd.Add(-sessionWindow5hDuration).UTC(),
-		WindowEnd:         windowEnd.UTC(),
-		Status:            status,
-	})
+	return s.sessionWindows.UpdateProviderAccountSessionWindows(ctx, update)
 }
 
-func sessionWindow5hStatus(headers http.Header) string {
+func setSessionWindowFromHeaders(
+	headers http.Header,
+	now time.Time,
+	statusHeaders, resetHeaders, utilizationHeaders []string,
+	duration time.Duration,
+	start, end **time.Time,
+	status **string,
+	utilization **float64,
+) {
+	parsedStatus := sessionWindowStatus(headers, statusHeaders)
+	if windowEnd, ok := sessionWindowReset(headers, resetHeaders, now, duration); ok && parsedStatus != "" {
+		windowStart := windowEnd.Add(-duration).UTC()
+		windowEnd = windowEnd.UTC()
+		*start = &windowStart
+		*end = &windowEnd
+		*status = &parsedStatus
+	}
+	*utilization = sessionWindowUtilization(headers, utilizationHeaders)
+}
+
+func sessionWindowStatus(headers http.Header, names []string) string {
 	if headers == nil {
 		return ""
 	}
-	for _, name := range sessionWindow5hStatusHeaders {
+	for _, name := range names {
 		status := strings.TrimSpace(headers.Get(name))
 		if status == "" {
 			continue
@@ -299,12 +363,12 @@ func sessionWindow5hStatus(headers http.Header) string {
 	return ""
 }
 
-func sessionWindow5hReset(headers http.Header, now time.Time) (time.Time, bool) {
+func sessionWindowReset(headers http.Header, names []string, now time.Time, duration time.Duration) (time.Time, bool) {
 	if headers == nil {
 		return time.Time{}, false
 	}
 	var raw string
-	for _, name := range sessionWindow5hResetHeaders {
+	for _, name := range names {
 		raw = strings.TrimSpace(headers.Get(name))
 		if raw != "" {
 			break
@@ -321,10 +385,42 @@ func sessionWindow5hReset(headers http.Header, now time.Time) (time.Time, bool) 
 		resetUnix = resetUnix / 1000
 	}
 	resetAt := time.Unix(resetUnix, 0).UTC()
-	if resetAt.Before(now.Add(-sessionWindow5hDuration)) || resetAt.After(now.Add(7*24*time.Hour)) {
+	if resetAt.Before(now.Add(-duration)) || resetAt.After(now.Add(sessionWindow7dDuration)) {
 		return time.Time{}, false
 	}
 	return resetAt, true
+}
+
+func sessionWindowUtilization(headers http.Header, names []string) *float64 {
+	if headers == nil {
+		return nil
+	}
+	for _, name := range names {
+		raw := strings.TrimSpace(headers.Get(name))
+		if raw == "" {
+			continue
+		}
+		raw = strings.TrimSpace(strings.TrimSuffix(raw, "%"))
+		value, err := strconv.ParseFloat(raw, 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+			return nil
+		}
+		return &value
+	}
+	return nil
+}
+
+func (u SessionWindowUpdate) hasValues() bool {
+	return u.Window5hStart != nil || u.Window5hEnd != nil || u.Window5hStatus != nil || u.Window5hUtilization != nil ||
+		u.Window7dStart != nil || u.Window7dEnd != nil || u.Window7dStatus != nil || u.Window7dUtilization != nil
+}
+
+func utcTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	utc := value.UTC()
+	return &utc
 }
 
 func retryAfterCooldown(headers http.Header, now time.Time) (time.Time, int, bool) {

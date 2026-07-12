@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-// Kind is the type of intercepted request.
+// Kind 是被拦截请求的类型。
 type Kind int
 
 const (
@@ -277,7 +277,7 @@ func SyntheticStreamBody(kind Kind, model string) []byte {
 	return []byte(sb.String())
 }
 
-// WriteNonStream writes the synthetic non-stream response to w.
+// WriteNonStream 将合成的非流式应答写入 w。
 func WriteNonStream(w http.ResponseWriter, kind Kind, model string) {
 	status, body := SyntheticNonStreamBody(kind, model)
 	w.Header().Set("Content-Type", "application/json")
@@ -285,7 +285,7 @@ func WriteNonStream(w http.ResponseWriter, kind Kind, model string) {
 	_, _ = w.Write(body)
 }
 
-// WriteStream writes the synthetic SSE stream response to w.
+// WriteStream 将合成的 SSE 流式应答写入 w。
 func WriteStream(w http.ResponseWriter, kind Kind, model string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

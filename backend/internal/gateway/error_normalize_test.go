@@ -5,9 +5,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 )
 
-// AT-RATE-021 - invalid_grant in 401 body -> R-001 -> iron_clad -> disabled.
+// AT-RATE-021 —— 401 响应体中含 invalid_grant -> R-001 -> iron_clad -> disabled。
 func TestClassify_R001_InvalidGrant(t *testing.T) {
 	c, err := Classify(401, nil, []byte(`{"error":"invalid_grant"}`), "openai")
 	if err != nil {
@@ -21,7 +23,7 @@ func TestClassify_R001_InvalidGrant(t *testing.T) {
 	}
 }
 
-// AT-RATE-022 - generic 5xx -> R-015 -> ambiguous -> degraded, NOT disabled.
+// AT-RATE-022 —— 通用 5xx -> R-015 -> ambiguous -> 降级,而非 disabled。
 func TestClassify_R015_5xx_NeverDisabled(t *testing.T) {
 	c, err := Classify(503, nil, []byte("internal error"), "openai")
 	if err != nil {
@@ -35,7 +37,67 @@ func TestClassify_R015_5xx_NeverDisabled(t *testing.T) {
 	}
 }
 
-// AT-RATE-023 - unknown error -> R-016 catch-all -> pass_through.
+// enableAuthLaneRules 在测试内临时打开车道绑定规则(R-024/R-025 + xai 归一化),测试结束自动还原。
+func enableAuthLaneRules(t *testing.T) {
+	t.Helper()
+	SetAuthLaneRulesEnabled(true)
+	t.Cleanup(func() { SetAuthLaneRulesEnabled(false) })
+}
+
+// 缺口①附带修复(knob 开时生效)—— Grok/xAI 坏 key 返 400(非 401)带 invalid_api_key/
+// incorrect api key 文本 -> R-024/R-025 -> token_revoked 类。此前无规则命中 → R-016 通配 → unknown →
+// upstream_client_4xx 直接透传给客户端(既不换号也不冷却)。判别:删掉 R-024/R-025 → 落回 R-016
+// unknown,断言红。
+func TestClassify_R024_R025_GrokBadKey400(t *testing.T) {
+	enableAuthLaneRules(t)
+	cases := []struct {
+		name     string
+		provider string
+		body     string
+		wantRule string
+	}{
+		{"grok_invalid_api_key", "grok", `{"code":"400","error":"invalid_api_key: bad key"}`, "R-024"},
+		{"grok_incorrect_api_key", "grok", `{"error":{"message":"Incorrect API key provided"}}`, "R-025"},
+		{"xai_alias_invalid_api_key", "xai", `{"error":"invalid_api_key"}`, "R-024"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Classify(400, nil, []byte(c.body), c.provider)
+			if err != nil {
+				t.Fatalf("classify err: %v", err)
+			}
+			if got.RuleID != c.wantRule || got.Class != ErrorClassTokenRevoked {
+				t.Fatalf("got rule=%s class=%s; want %s token_revoked", got.RuleID, got.Class, c.wantRule)
+			}
+		})
+	}
+	// 反例:grok 400 但非认证类文本 → 不应命中 R-024/R-025(保守 keyword,不误禁好号)。
+	got, _ := Classify(400, nil, []byte(`{"error":"model not found"}`), "grok")
+	if got.RuleID == "R-024" || got.RuleID == "R-025" {
+		t.Fatalf("非认证类 grok 400 误命中 auth 规则:rule=%s", got.RuleID)
+	}
+}
+
+// TestClassify_GrokAuthRulesGatedByKnob(审查 S1):knob 关(默认生产态)时 R-024/R-025 与
+// xai→grok 归一化必须不生效——grok/xai 400 坏 key 保持基底行为(R-016 unknown → 400 原样透传
+// + error-rate 健康记账),客户端契约与健康记账零变化。判别:去掉 matchRule 的 RequiresAuthLane
+// 门控或 normalizeProvider 的 knob 判断 → 命中 R-024,断言红。
+func TestClassify_GrokAuthRulesGatedByKnob(t *testing.T) {
+	// 不 enable(模拟默认关);防其它测试残留,显式置 false 并还原。
+	SetAuthLaneRulesEnabled(false)
+	t.Cleanup(func() { SetAuthLaneRulesEnabled(false) })
+	for _, provider := range []string{"grok", "xai"} {
+		got, err := Classify(400, nil, []byte(`{"error":"invalid_api_key"}`), provider)
+		if err != nil {
+			t.Fatalf("classify err: %v", err)
+		}
+		if got.RuleID != "R-016" || got.Class != ErrorClassUnknown {
+			t.Fatalf("knob 关时 %s 400 坏 key 必须保持基底分类 R-016 unknown,实际 rule=%s class=%s", provider, got.RuleID, got.Class)
+		}
+	}
+}
+
+// AT-RATE-023 —— 未知错误 -> R-016 兜底规则 -> pass_through。
 func TestClassify_R016_Wildcard(t *testing.T) {
 	c, err := Classify(418, nil, []byte("teapot"), "fictional_provider")
 	if err != nil {
@@ -61,11 +123,11 @@ func TestStatusCodeRemap(t *testing.T) {
 	if got := RemapClientStatus(http.StatusNotFound, remap); got != http.StatusNotFound {
 		t.Fatalf("unmapped status changed to %d; want original 404", got)
 	}
-	// MUTATION: ignoring the map leaves 400 here, which makes the first
-	// assertion fail while the body-preservation guard still documents scope.
+	// 变异:忽略 map 会让这里保留 400,使第一个
+	// 断言失败,而 body 保留守卫仍记录了适用范围。
 }
 
-// DR-009 6.6 hard-floor invariant: no ambiguous rule can yield disabled.
+// DR-009 6.6 硬底线不变量:任何 ambiguous 规则都不能得出 disabled。
 func TestSixSixInvariant_AmbiguousNeverDisables(t *testing.T) {
 	for _, r := range errorRules {
 		if r.Tier != TierAmbiguous {
@@ -78,7 +140,7 @@ func TestSixSixInvariant_AmbiguousNeverDisables(t *testing.T) {
 	}
 }
 
-// IsIronCladKeyword must be exactly the 5 task-spec keywords.
+// IsIronCladKeyword 必须恰好是任务规格里的 5 个关键词。
 func TestIsIronCladKeyword_Exactly5(t *testing.T) {
 	want := []string{"invalid_grant", "identity verification", "org_disabled", "token_revoked", "deactivated_workspace"}
 	for _, k := range want {
@@ -104,7 +166,7 @@ func TestIsIronCladKeyword_Exactly5(t *testing.T) {
 	}
 }
 
-// 429 with Retry-After integer header -> cooldown + retry_after_ms parsed.
+// 带整数型 Retry-After 头的 429 -> cooldown + 解析出 retry_after_ms。
 func TestClassify_R013_RateLimitedWithRetryAfter(t *testing.T) {
 	h := http.Header{"Retry-After": []string{"30"}}
 	c, _ := Classify(429, h, nil, "openai")
@@ -116,7 +178,7 @@ func TestClassify_R013_RateLimitedWithRetryAfter(t *testing.T) {
 	}
 }
 
-// Retry-After HTTP-date format (RFC 7231).
+// Retry-After 为 HTTP-date 格式(RFC 7231)。
 func TestRetryAfter_HttpDateFormat(t *testing.T) {
 	future := time.Now().Add(2 * time.Minute).UTC().Format(http.TimeFormat)
 	h := http.Header{"Retry-After": []string{future}}
@@ -126,7 +188,7 @@ func TestRetryAfter_HttpDateFormat(t *testing.T) {
 	}
 }
 
-// Bedrock 429 ThrottlingException uses R-018 ahead of generic 429.
+// Bedrock 429 ThrottlingException 优先用 R-018 而非通用 429。
 func TestProviderSpecificity_BedrockThrottling(t *testing.T) {
 	c, _ := Classify(429, nil, []byte("ThrottlingException"), "bedrock")
 	if c.RuleID != "R-018" {
@@ -135,10 +197,51 @@ func TestProviderSpecificity_BedrockThrottling(t *testing.T) {
 	if c.Class != ErrorClassRateLimited {
 		t.Fatalf("class=%s; want upstream_rate_limited", c.Class)
 	}
-	// Other provider with the same 429 falls through to generic R-013.
+	// 其他 provider 即便同样是 429 也会落到通用 R-013。
 	c2, _ := Classify(429, nil, []byte("ThrottlingException"), "openai")
 	if c2.RuleID != "R-013" {
 		t.Fatalf("openai 429 got rule=%s; want R-013", c2.RuleID)
+	}
+}
+
+func TestClassify_OpenAIAndCodex429QuotaExhaustedBeforeRateLimit(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		body     string
+		wantRule string
+	}{
+		{"openai_structured_quota", "openai", `{"error":{"type":"insufficient_quota"}}`, "R-026"},
+		{"codex_alias_structured_quota", "openai_codex", `{"error":{"code":"insufficient_quota"}}`, "R-027"},
+		{"openai_hard_limit_code", "openai", `{"error":{"code":"billing_hard_limit_reached"}}`, "R-028"},
+		{"codex_hard_limit_code", "codex", `{"error":{"code":"billing_hard_limit_reached"}}`, "R-029"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Classify(429, nil, []byte(tt.body), tt.provider)
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if got.RuleID != tt.wantRule || got.Class != ErrorClassCreditExhausted {
+				t.Fatalf("rule/class=%s/%s want %s/%s", got.RuleID, got.Class, tt.wantRule, ErrorClassCreditExhausted)
+			}
+			if got.RetryAction != RetryActionPermanentDisable || got.Tier != TierIronClad || got.FsmTransition != FsmTransitionDisabled {
+				t.Fatalf("action/tier/fsm=%s/%s/%s want permanent_disable/iron_clad/disabled", got.RetryAction, got.Tier, got.FsmTransition)
+			}
+			if sig := SignalFromClassification(429, got); sig != channelhealth.SignalAccountSuspended {
+				t.Fatalf("signal=%s want account_suspended", sig)
+			}
+		})
+	}
+}
+
+func TestClassify_429QuotaWordsRemainRateLimitedUnlessNarrowEvidence(t *testing.T) {
+	got, err := Classify(429, nil, []byte(`{"error":{"message":"quota window rate limit reached"}}`), "openai")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got.RuleID != "R-013" || got.Class != ErrorClassRateLimited {
+		t.Fatalf("rule/class=%s/%s want R-013/rate_limited;泛 quota 文案不得整号禁用", got.RuleID, got.Class)
 	}
 }
 
@@ -174,7 +277,7 @@ func TestR020_Bedrock503ServiceUnavailable(t *testing.T) {
 	}
 }
 
-// Anthropic 403 with "validation" body -> permanent disable (R-011).
+// Anthropic 403 且响应体含 "validation" -> 永久禁用(R-011)。
 func TestAnthropic403Validation_R011(t *testing.T) {
 	c, _ := Classify(403, nil, []byte(`{"error":"validation failed"}`), "anthropic")
 	if c.RuleID != "R-011" {
@@ -185,7 +288,7 @@ func TestAnthropic403Validation_R011(t *testing.T) {
 	}
 }
 
-// Provider alias: "anthropic_messages" normalizes to "anthropic".
+// Provider 别名:"anthropic_messages" 归一化为 "anthropic"。
 func TestProviderAlias_AnthropicMessages(t *testing.T) {
 	c, _ := Classify(403, nil, []byte("validation failed"), "anthropic_messages")
 	if c.RuleID != "R-011" {
@@ -193,7 +296,7 @@ func TestProviderAlias_AnthropicMessages(t *testing.T) {
 	}
 }
 
-// Generic 401 without keyword -> R-009 permanent disable.
+// 无关键词的通用 401 -> R-009 永久禁用。
 func TestClassify_R009_Generic401(t *testing.T) {
 	c, _ := Classify(401, nil, []byte(`{"detail":"unauthorized"}`), "openai")
 	if c.RuleID != "R-009" {
@@ -204,7 +307,7 @@ func TestClassify_R009_Generic401(t *testing.T) {
 	}
 }
 
-// Anthropic 402 with credit keyword -> R-007.
+// Anthropic 402 且含 credit 关键词 -> R-007。
 func TestClassify_R007_CreditExhausted(t *testing.T) {
 	c, _ := Classify(402, nil, []byte("Insufficient credit balance"), "anthropic")
 	if c.RuleID != "R-007" {
@@ -267,7 +370,7 @@ func TestR008_AnthropicCreditBalance400(t *testing.T) {
 	}
 }
 
-// Iron-clad token_invalidated alias -> R-006 -> token_revoked.
+// Iron-clad 的 token_invalidated 别名 -> R-006 -> token_revoked。
 func TestClassify_R006_TokenInvalidatedAlias(t *testing.T) {
 	c, _ := Classify(401, nil, []byte("token_invalidated"), "openai")
 	if c.RuleID != "R-006" || c.Class != ErrorClassTokenRevoked {
@@ -275,7 +378,7 @@ func TestClassify_R006_TokenInvalidatedAlias(t *testing.T) {
 	}
 }
 
-// Synthesized network timeout: status 0 + body "timeout" -> R-019.
+// 合成的网络超时:status 0 + body 含 "timeout" -> R-019。
 func TestClassify_R019_SynthesizedTimeout(t *testing.T) {
 	c, _ := Classify(0, nil, []byte("upstream connection timeout"), "openai")
 	if c.RuleID != "R-019" {
@@ -286,14 +389,14 @@ func TestClassify_R019_SynthesizedTimeout(t *testing.T) {
 	}
 }
 
-// Negative status returns error.
+// 负数 status 返回错误。
 func TestClassify_NegativeStatus(t *testing.T) {
 	if _, err := Classify(-1, nil, nil, "openai"); err == nil {
 		t.Fatal("expected error for negative status")
 	}
 }
 
-// Body keyword matching is case-insensitive.
+// 响应体关键词匹配大小写不敏感。
 func TestClassify_BodyMatchCaseInsensitive(t *testing.T) {
 	c, _ := Classify(401, nil, []byte("INVALID_GRANT"), "openai")
 	if c.RuleID != "R-001" {
@@ -301,7 +404,7 @@ func TestClassify_BodyMatchCaseInsensitive(t *testing.T) {
 	}
 }
 
-// All ERROR_RULES have unique RuleID.
+// 所有 ERROR_RULES 的 RuleID 都唯一。
 func TestRuleTable_UniqueIDs(t *testing.T) {
 	seen := map[string]struct{}{}
 	for _, r := range errorRules {
@@ -312,7 +415,7 @@ func TestRuleTable_UniqueIDs(t *testing.T) {
 	}
 }
 
-// All ERROR_RULES use a non-empty ErrorClass.
+// 所有 ERROR_RULES 都使用非空的 ErrorClass。
 func TestRuleTable_AllRulesHaveClass(t *testing.T) {
 	for _, r := range errorRules {
 		if r.Class == "" {
@@ -321,7 +424,7 @@ func TestRuleTable_AllRulesHaveClass(t *testing.T) {
 	}
 }
 
-// Custom RetryAfter with seconds=0 yields 0 (no retry hint).
+// seconds=0 的自定义 RetryAfter 得出 0(无重试提示)。
 func TestRetryAfter_ZeroSeconds(t *testing.T) {
 	h := http.Header{"Retry-After": []string{"0"}}
 	c, _ := Classify(429, h, nil, "openai")
@@ -330,7 +433,7 @@ func TestRetryAfter_ZeroSeconds(t *testing.T) {
 	}
 }
 
-// Empty body + 429 still classifies as rate-limited (no body keyword required).
+// 空响应体 + 429 仍被分类为 rate-limited(不要求响应体含关键词)。
 func TestClassify_429_EmptyBody(t *testing.T) {
 	c, _ := Classify(429, nil, nil, "openai")
 	if c.Class != ErrorClassRateLimited {
@@ -338,7 +441,7 @@ func TestClassify_429_EmptyBody(t *testing.T) {
 	}
 }
 
-// Unicode/locale: keyword matching tolerates leading/trailing whitespace + mixed.
+// Unicode/locale:关键词匹配容忍首尾空白 + 混合情形。
 func TestClassify_BodyWithWhitespace(t *testing.T) {
 	c, _ := Classify(401, nil, []byte("  invalid_grant  \n"), "openai")
 	if c.RuleID != "R-001" {
@@ -346,14 +449,14 @@ func TestClassify_BodyWithWhitespace(t *testing.T) {
 	}
 }
 
-// Sanity: provider="*" is still a normal entry, not a separator.
+// 健全性:provider="*" 仍是一条正常条目,不是分隔符。
 func TestNormalizeProvider_Wildcard(t *testing.T) {
 	if normalizeProvider("*") != "*" || normalizeProvider("") != "*" {
 		t.Fatal("wildcard normalization broken")
 	}
 }
 
-// Confidence assignment: iron_clad=high, ambiguous=medium, none=low.
+// 置信度赋值:iron_clad=high,ambiguous=medium,none=low。
 func TestConfidenceForTier(t *testing.T) {
 	if confidenceForTier(TierIronClad) != ConfidenceHigh {
 		t.Errorf("iron_clad confidence != high")
@@ -366,23 +469,23 @@ func TestConfidenceForTier(t *testing.T) {
 	}
 }
 
-// Body matching does not panic on nil body.
+// nil body 时响应体匹配不会 panic。
 func TestClassify_NilBody(t *testing.T) {
 	c, err := Classify(429, nil, nil, "openai")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(string(c.Class), "upstream_") {
-		// Acceptable result is rate_limited.
+		// 可接受的结果是 rate_limited。
 	}
 }
 
 // ---------------------------------------------------------------------------
-// D8 new tests (5+)
+// D8 新增测试(5+)
 // ---------------------------------------------------------------------------
 
-// TestR021_Anthropic402Billing: anthropic 402 no body -> R-021 -> CreditExhausted iron_clad.
-// R-021 is the catch-all billing rule at priority 25, after keyword-specific R-007 (priority 20).
+// TestR021_Anthropic402Billing:anthropic 402 无响应体 -> R-021 -> CreditExhausted iron_clad。
+// R-021 是优先级 25 的兜底 billing 规则,排在按关键词命中的 R-007(优先级 20)之后。
 func TestR021_Anthropic402Billing(t *testing.T) {
 	c, err := Classify(402, nil, []byte(`{"type":"billing_error"}`), "anthropic")
 	if err != nil {
@@ -405,7 +508,7 @@ func TestR021_Anthropic402Billing(t *testing.T) {
 	}
 }
 
-// TestR022_Anthropic504Timeout: anthropic 504 -> R-022 -> UpstreamTimeout ambiguous cooldown.
+// TestR022_Anthropic504Timeout：anthropic 504 -> R-022 -> UpstreamTimeout 模糊冷却。
 func TestR022_Anthropic504Timeout(t *testing.T) {
 	c, err := Classify(504, nil, []byte(`{"type":"timeout_error"}`), "anthropic")
 	if err != nil {
@@ -426,14 +529,14 @@ func TestR022_Anthropic504Timeout(t *testing.T) {
 	if c.FsmTransition != FsmTransitionCooling {
 		t.Fatalf("fsm=%s; want cooling_down", c.FsmTransition)
 	}
-	// Hard-floor check: ambiguous must never reach disabled.
+	// 硬底线检查:ambiguous 绝不能到达 disabled。
 	if c.FsmTransition == FsmTransitionDisabled {
 		t.Fatal("DR-009 6.6 violation: ambiguous R-022 reached disabled")
 	}
 }
 
-// TestR023_Anthropic413RequestTooLarge: anthropic 413 -> R-023 -> RequestTooLarge
-// none tier pass_through (client error, no FSM change).
+// TestR023_Anthropic413RequestTooLarge:anthropic 413 -> R-023 -> RequestTooLarge
+// none 层 pass_through(客户端错误,不触发 FSM 变更)。
 func TestR023_Anthropic413RequestTooLarge(t *testing.T) {
 	c, err := Classify(413, nil, []byte(`{"type":"request_too_large"}`), "anthropic")
 	if err != nil {
@@ -456,8 +559,55 @@ func TestR023_Anthropic413RequestTooLarge(t *testing.T) {
 	}
 }
 
-// TestR007_StillFiresWithCreditKeyword: anthropic 402+credit keyword -> R-007 (priority 20)
-// wins over R-021 (priority 25). Lower priority number = higher priority.
+func TestSignalFromClassification_ClientMalformed4xxDoesNotBecomeChannelError(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		class  Classification
+		want   channelhealth.SignalClass
+	}{
+		{
+			name:   "typed request too large",
+			status: http.StatusRequestEntityTooLarge,
+			class:  Classification{Class: ErrorClassRequestTooLarge, Tier: TierNone, RetryAction: RetryActionPassThrough, FsmTransition: FsmTransitionNoChange},
+			want:   channelhealth.SignalClientMalformed,
+		},
+		{
+			name:   "unknown bad request passthrough",
+			status: http.StatusBadRequest,
+			class:  Classification{Class: ErrorClassUnknown, Tier: TierNone, RetryAction: RetryActionPassThrough, FsmTransition: FsmTransitionNoChange},
+			want:   channelhealth.SignalClientMalformed,
+		},
+		{
+			name:   "unprocessable request passthrough",
+			status: http.StatusUnprocessableEntity,
+			class:  Classification{Class: ErrorClassUnknown, Tier: TierNone, RetryAction: RetryActionPassThrough, FsmTransition: FsmTransitionNoChange},
+			want:   channelhealth.SignalClientMalformed,
+		},
+		{
+			name:   "account auth stays auth lane",
+			status: http.StatusUnauthorized,
+			class:  Classification{Class: ErrorClassTokenRevoked, Tier: TierIronClad, RetryAction: RetryActionPermanentDisable, FsmTransition: FsmTransitionDisabled},
+			want:   channelhealth.SignalAuthChallenge,
+		},
+		{
+			name:   "rate limit stays rate limit",
+			status: http.StatusTooManyRequests,
+			class:  Classification{Class: ErrorClassRateLimited, Tier: TierAmbiguous, RetryAction: RetryActionCooldown, FsmTransition: FsmTransitionCooling},
+			want:   channelhealth.SignalRateLimit,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SignalFromClassification(tt.status, tt.class); got != tt.want {
+				t.Fatalf("SignalFromClassification=%s want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestR007_StillFiresWithCreditKeyword:anthropic 402 + credit 关键词 -> R-007(优先级 20)
+// 胜过 R-021(优先级 25)。优先级数字越小 = 优先级越高。
 func TestR007_StillFiresWithCreditKeyword(t *testing.T) {
 	c, err := Classify(402, nil, []byte(`{"error":"credit exhausted, billing failed"}`), "anthropic")
 	if err != nil {
@@ -474,8 +624,8 @@ func TestR007_StillFiresWithCreditKeyword(t *testing.T) {
 	}
 }
 
-// TestErrorClass_AllDistinct: 14 ErrorClass constants (D8 adds 2) are all unique.
-// Replaces the original TestErrorClass_TwelveDistinct.
+// TestErrorClass_AllDistinct:14 个 ErrorClass 常量(D8 新增 2 个)全部唯一。
+// 取代原来的 TestErrorClass_TwelveDistinct。
 func TestErrorClass_AllDistinct(t *testing.T) {
 	classes := []ErrorClass{
 		ErrorClassOAuthInvalidGrant,
@@ -490,7 +640,7 @@ func TestErrorClass_AllDistinct(t *testing.T) {
 		ErrorClassServerError,
 		ErrorClassNetworkTimeout,
 		ErrorClassUnknown,
-		// D8 additions:
+		// D8 新增:
 		ErrorClassUpstreamTimeout,
 		ErrorClassRequestTooLarge,
 	}

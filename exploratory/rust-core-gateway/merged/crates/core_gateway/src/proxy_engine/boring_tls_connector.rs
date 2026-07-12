@@ -1,4 +1,4 @@
-//! HUAKAI BoringSSL TLS connector for hyper outbound HTTPS client
+//! 用于 hyper outbound HTTPS client 的 HUAKAI BoringSSL TLS connector
 //!
 //! 本模块把 R-2-B-2 `build_boring_connector` 产出的
 //! `boring::ssl::SslConnector` 包成 hyper-util legacy client 接受的

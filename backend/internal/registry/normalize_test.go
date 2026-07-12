@@ -10,17 +10,17 @@ func TestAliasNormalize(t *testing.T) {
 	}{
 		{"empty", "", ""},
 		{"whitespace_only", "   ", ""},
-		// Test inputs taken from the verified-current model lineup
-		// (docs/process/plans/2026-04-30-n5-model-registry.md Appendix B):
-		// claude-opus-4-7 / claude-haiku-4-5 (Anthropic 2026-04-30T10:08Z),
-		// gpt-5.4-mini (OpenAI 2026-04-30T10:09Z),
-		// gemini-2.5-pro (Google 2026-04-30T10:08Z).
+		// 测试输入取自已核实的当前 model 阵容
+		//(docs/process/plans/2026-04-30-n5-model-registry.md 附录 B):
+		// claude-opus-4-7 / claude-haiku-4-5(Anthropic 2026-04-30T10:08Z)、
+		// gpt-5.4-mini(OpenAI 2026-04-30T10:09Z)、
+		// gemini-2.5-pro(Google 2026-04-30T10:08Z)。
 		{"plain", "claude-opus-4-7", "claude-opus-4-7"},
 		{"lowercases_uppercase", "GPT-5.4-Mini", "gpt-5.4-mini"},
 		{"trims_outer_whitespace", "  claude-haiku-4-5\t", "claude-haiku-4-5"},
 		{"collapses_mixed_case", "Claude-Opus-4-7", "claude-opus-4-7"},
-		// NFC normalization: precomposed form. We don't generate
-		// decomposed sequences in fixtures, but validate the call path.
+		// NFC 归一化:预组合形式。fixture 中不生成分解序列,
+		// 但仍验证该调用路径。
 		{"ascii_unaffected_by_nfc", "gemini-2.5-pro", "gemini-2.5-pro"},
 	}
 	for _, tc := range cases {

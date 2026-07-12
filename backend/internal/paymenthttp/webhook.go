@@ -80,6 +80,9 @@ func writeWebhookError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "order_not_confirmable", "order is not in a confirmable state")
 	case errors.Is(err, payment.ErrOrderNotFulfillable):
 		writeJSONError(w, http.StatusConflict, "order_not_fulfillable", "order is not in a fulfillable state")
+	case errors.Is(err, payment.ErrOrderFulfillFailed):
+		// 履约确定性失败, 订单已转终态 failed —— 业务冲突, 别让 provider 当瞬时错误重试。
+		writeJSONError(w, http.StatusConflict, "order_fulfill_failed", "order fulfillment failed terminally")
 	case errors.Is(err, payment.ErrProviderNoCallback):
 		writeJSONError(w, http.StatusBadRequest, "provider_no_callback", "provider does not support callbacks")
 	case errors.Is(err, payment.ErrProviderUnknown):

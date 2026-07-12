@@ -1,4 +1,4 @@
-// Package adminuserhttp exposes tenant-scoped admin user visibility and recovery endpoints.
+// Package adminuserhttp 暴露按租户隔离的 admin 用户可见性与账号恢复端点。
 package adminuserhttp
 
 import (
@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
@@ -29,6 +30,7 @@ const (
 type Deps struct {
 	Auth             adminAuth
 	Store            userReadStore
+	UsageStore       UsageStore
 	SocialLinks      socialLinkService
 	UnlockAudit      userUnlockAuditStore
 	Unlocker         userUnlockService
@@ -143,19 +145,23 @@ func (s postgresUnlockAuditStore) UnlockUserWithAudit(ctx context.Context, tenan
 }
 
 func MountRoutes(r chi.Router, d Deps) {
+	// SessionSafe:登录 admin(session)可直接写的用户账号运维/恢复类操作(危险者靠前端确认弹窗防误操作)。
+	// 未挂此中间件的写端点默认 token-only(建/删用户、删 passkey、改分组=耦合计费档,均高危,继续只认令牌)。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newListHandler(d))
 	r.Post("/", newCreateUserHandler(d))
 	r.Delete("/{id}", newDeleteUserHandler(d))
 	r.Get("/2fa-adoption-stats", newTwoFAStatsHandler(d))
 	r.Get("/{id}", newGetHandler(d))
-	r.Post("/{id}/unlock", newUnlockHandler(d))
-	r.Post("/{id}/2fa/force-disable", newForceDisable2FAHandler(d))
+	r.With(safe).Post("/{id}/unlock", newUnlockHandler(d))
+	r.With(safe).Post("/{id}/2fa/force-disable", newForceDisable2FAHandler(d))
 	r.Delete("/{id}/passkeys", newResetPasskeyHandler(d))
 	r.Put("/{id}/group", newSetUserGroupHandler(d))
-	r.Put("/{id}/remark", newSetUserRemarkHandler(d))
-	r.Put("/{id}/status", newSetUserStatusHandler(d))
+	r.With(safe).Put("/{id}/remark", newSetUserRemarkHandler(d))
+	r.With(safe).Put("/{id}/status", newSetUserStatusHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
-	r.Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
+	r.Get("/{id}/usage", newUserUsageHandler(d))
+	r.With(safe).Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -177,16 +183,6 @@ type userBody struct {
 	Remark    string `json:"remark"`
 	Balance   string `json:"balance"`
 	CreatedAt string `json:"created_at"`
-}
-
-type balanceHistoryBody struct {
-	ID          int64  `json:"id"`
-	EventType   string `json:"event_type"`
-	Amount      string `json:"amount"`
-	Fingerprint string `json:"fingerprint"`
-	SourceType  string `json:"source_type"`
-	SourceID    int64  `json:"source_id"`
-	OccurredAt  string `json:"occurred_at"`
 }
 
 type twoFAStatsBody struct {
@@ -367,62 +363,6 @@ func newUnlockHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-func newBalanceHistoryHandler(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, ok := resolveTenant(w, r, d)
-		if !ok {
-			return
-		}
-		userID, ok := pathID(w, r)
-		if !ok {
-			return
-		}
-		limit, offset, ok := pagination(w, r)
-		if !ok {
-			return
-		}
-		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{
-			TenantID: tenantID,
-			UserID:   userID,
-		}); errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
-			return
-		} else if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
-				fmt.Sprintf("get user failed: %v", err))
-			return
-		}
-		rows, err := d.Store.AdminListUserBalanceHistoryForTenant(r.Context(), admindb.AdminListUserBalanceHistoryForTenantParams{
-			TenantID:   tenantID,
-			UserID:     userID,
-			PageLimit:  limit,
-			PageOffset: offset,
-		})
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
-				fmt.Sprintf("list balance history failed: %v", err))
-			return
-		}
-		items := make([]balanceHistoryBody, 0, len(rows))
-		for _, row := range rows {
-			items = append(items, balanceHistoryBody{
-				ID:          row.ID,
-				EventType:   row.EventType,
-				Amount:      row.Amount,
-				Fingerprint: row.Fingerprint,
-				SourceType:  row.SourceType,
-				SourceID:    row.SourceID,
-				OccurredAt:  timestamp(row.OccurredAt.Time),
-			})
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"items":  items,
-			"limit":  limit,
-			"offset": offset,
-		})
-	}
-}
-
 func newUnlinkSocialIdentityHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID, ok := resolveTenant(w, r, d)
@@ -503,7 +443,7 @@ func buildUnlockAuditInput(r *http.Request, ident admin.AdminIdentity, beforeSta
 		reqIDArg = &reqID
 	}
 	return unlockAuditInput{
-		ActorID:      fmt.Sprintf("%d", ident.TokenID),
+		ActorID:      ident.AuditActor(),
 		ActorRole:    actorRole,
 		RequestID:    reqIDArg,
 		BeforeStatus: beforeStatus,
@@ -628,9 +568,9 @@ func timestamp(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-// newForceDisable2FAHandler lets a tenant operator force-clear a locked-out user's
-// TOTP 2FA (account recovery), mirroring newUnlockHandler. Tenant-scoped + audited
-// (action=force_disable_2fa). AUTH-108b.
+// newForceDisable2FAHandler 让 tenant operator 强制清除被锁定用户的 TOTP 2FA
+// (账号恢复),镜像 newUnlockHandler。按租户隔离 + 审计
+// (action=force_disable_2fa)。AUTH-108b。
 func newForceDisable2FAHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
@@ -666,9 +606,9 @@ func newForceDisable2FAHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// newResetPasskeyHandler force-clears ALL of a user's passkeys (admin account
-// recovery), mirroring newForceDisable2FAHandler. Tenant-scoped + audited
-// (action=reset_passkey). AUTH-098.
+// newResetPasskeyHandler 强制清除某用户的全部 passkey(admin 账号恢复),
+// 镜像 newForceDisable2FAHandler。按租户隔离 + 审计
+// (action=reset_passkey)。AUTH-098。
 func newResetPasskeyHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
@@ -709,12 +649,12 @@ type setUserGroupRequest struct {
 	Group string `json:"group"`
 }
 
-// postgresUserGroupStore sets users.user_group (routing entitlement) for a tenant user.
+// postgresUserGroupStore 为某租户用户设置 users.user_group(路由权益)。
 type postgresUserGroupStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresUserGroupStore wires the admin user-group setter.
+// NewPostgresUserGroupStore 接线 admin 用户分组 setter。
 func NewPostgresUserGroupStore(pool *pgxpool.Pool) userGroupSetter {
 	if pool == nil {
 		return nil
@@ -727,9 +667,9 @@ func (s postgresUserGroupStore) SetUserGroupForTenant(ctx context.Context, tenan
 	return err
 }
 
-// newSetUserGroupHandler lets a tenant operator set a user's routing group
-// (users.user_group), mirroring newForceDisable2FAHandler. Tenant-scoped + audited
-// (action=set_user_group). AUTH-031. Additive admin-management; default-preserving.
+// newSetUserGroupHandler 让 tenant operator 设置某用户的路由分组
+// (users.user_group),镜像 newForceDisable2FAHandler。按租户隔离 + 审计
+// (action=set_user_group)。AUTH-031。增量式 admin 管理;保留默认行为。
 func newSetUserGroupHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
@@ -788,7 +728,7 @@ type postgresUserRemarkStore struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresUserRemarkStore wires the admin user-remark setter.
+// NewPostgresUserRemarkStore 接线 admin 用户备注 setter。
 func NewPostgresUserRemarkStore(pool *pgxpool.Pool) userRemarkSetter {
 	if pool == nil {
 		return nil
@@ -801,9 +741,9 @@ func (s postgresUserRemarkStore) SetUserRemarkForTenant(ctx context.Context, ten
 	return err
 }
 
-// newSetUserRemarkHandler lets a tenant operator set a free-text admin note on a
-// user (users.remark), mirroring newSetUserGroupHandler. Tenant-scoped + audited
-// (action=set_user_remark). AUTH-030. Additive admin-management; default-preserving.
+// newSetUserRemarkHandler 让 tenant operator 为某用户设置自由文本 admin 备注
+// (users.remark),镜像 newSetUserGroupHandler。按租户隔离 + 审计
+// (action=set_user_remark)。AUTH-030。增量式 admin 管理;保留默认行为。
 func newSetUserRemarkHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
@@ -842,9 +782,17 @@ func newSetUserRemarkHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		ai := buildUnlockAuditInput(r, ident, "")
+		// payload 列 NOT NULL(默认 '{}');必须显式给非 NULL payload,否则 INSERT 撞 23502 → 503 且审计丢失。
+		// 记录改后的备注长度(不落原文,备注可能含敏感信息;长度足够审计追踪)。
+		remarkPayload, err := json.Marshal(map[string]any{"remark_length": len([]rune(remark))})
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "audit_payload_failed", err.Error())
+			return
+		}
 		audit := admindb.InsertAdminAuditEventParams{
 			TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole,
 			Action: "set_user_remark", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID,
+			Payload: remarkPayload,
 		}
 		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write remark audit failed: %v", err))

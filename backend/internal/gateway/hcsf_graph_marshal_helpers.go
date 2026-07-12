@@ -235,15 +235,15 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 		body["tools"] = renderControlTools(family, c.Tools)
 	}
 	if c.ResponseFormat != nil {
-		// D5 first slice raw-passthrough:Schema 字段存的是 inbound 原始
-		// response_format / text 整体,marshal 必须 1:1 还原上游契约,
-		// 不能再包一层 {"type":"raw","schema":...} — 上游 OpenAI 只接受
-		// response_format 为 {"type":"json_object"} / {"type":"json_schema",...}
-		// 或 Responses 的 text:{"format":{...}},包错壳会直接 4xx reject。
+		// Schema 存 inbound 原始 response_format/text;同协议直通,Chat→Responses 改写为 text.format。
 		if c.ResponseFormat.Type == "raw" && len(c.ResponseFormat.Schema) > 0 {
 			switch family {
 			case "openai_responses":
-				body["text"] = rawJSONValue(c.ResponseFormat.Schema)
+				if text, ok := OpenAIResponsesTextFromChatResponseFormatRaw(c.ResponseFormat.Schema); ok {
+					body["text"] = text
+				} else {
+					body["text"] = rawJSONValue(c.ResponseFormat.Schema)
+				}
 			case "openai_chat":
 				body["response_format"] = rawJSONValue(c.ResponseFormat.Schema)
 			}
@@ -264,6 +264,29 @@ func injectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 	}
 	mergeRequestPassthrough(body, env)
 	return json.Marshal(body)
+}
+
+func OpenAIResponsesTextFromChatResponseFormatRaw(raw json.RawMessage) (map[string]any, bool) {
+	var rf map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &rf) != nil {
+		return nil, false
+	}
+	typ, _ := rf["type"].(string)
+	format := map[string]any{"type": typ}
+	switch typ {
+	case "text", "json_object":
+	case "json_schema":
+		if inner, ok := rf["json_schema"].(map[string]any); ok {
+			for _, key := range []string{"name", "strict", "schema"} {
+				if v, exists := inner[key]; exists {
+					format[key] = v
+				}
+			}
+		}
+	default:
+		return nil, false
+	}
+	return map[string]any{"format": format}, true
 }
 
 func mergeRequestPassthrough(body map[string]any, env *proto.HCSF) {
@@ -302,11 +325,25 @@ func injectGeminiRequestControls(body map[string]any, env *proto.HCSF) ([]byte, 
 	if c.ResponseFormat != nil && len(c.ResponseFormat.Schema) > 0 {
 		var raw map[string]any
 		if json.Unmarshal(c.ResponseFormat.Schema, &raw) == nil {
+			// inbound 已是 Gemini 形:responseMimeType/responseSchema 直传(保持原行为)。
 			if v, ok := raw["responseMimeType"]; ok && v != "" {
 				generation["responseMimeType"] = v
 			}
 			if v, ok := raw["responseSchema"]; ok {
 				generation["responseSchema"] = v
+			}
+			// inbound 是 OpenAI Chat response_format(json_object / json_schema):翻译成 Gemini 等价物。
+			// 此前无此映射 → OpenAI 客户端的结构化输出请求打到 Gemini 上游被静默丢弃(structured_output
+			// 能力缝)。Gemini 契约 responseMimeType="application/json" + responseSchema=<schema> 为公开 API。
+			if _, has := generation["responseMimeType"]; !has {
+				if mime, schema := openAIResponseFormatToGemini(raw); mime != "" {
+					generation["responseMimeType"] = mime
+					if schema != nil {
+						if _, hasSchema := generation["responseSchema"]; !hasSchema {
+							generation["responseSchema"] = schema
+						}
+					}
+				}
 			}
 		}
 	}
@@ -317,6 +354,33 @@ func injectGeminiRequestControls(body map[string]any, env *proto.HCSF) ([]byte, 
 		body["tools"] = renderGeminiControlTools(c.Tools)
 	}
 	return json.Marshal(body)
+}
+
+// openAIResponseFormatToGemini 把 inbound 的 OpenAI Chat response_format(已 unmarshal 的 raw map)
+// 翻译为 Gemini generationConfig 的 (responseMimeType, responseSchema):
+//   - {"type":"json_object"}                                  → ("application/json", nil)    JSON 模式无 schema
+//   - {"type":"json_schema","json_schema":{"schema":{...}}}   → ("application/json", <schema>)
+//   - 其它(无可识别 type / 已是 Gemini 形)                    → ("", nil)  表示不由本函数映射
+//
+// 注:Gemini responseSchema 仅接受 OpenAPI 子集,不兼容的 schema 会被上游 4xx 拒(显式失败,优于
+// 此前对客户端显式结构化输出请求的静默丢弃)。schema 透传为 any(已是解析后的 JSON 值),由
+// json.Marshal 重新序列化进 generationConfig。OpenAI 的 json_schema.name 是元数据、strict 在 Gemini
+// 不支持(无对应字段),故二者均不映射(非信息丢失)。json_schema 缺/空 schema 时只回 mime(schema=nil),
+// 退化为 Gemini "JSON 模式"(responseMimeType 单独合法、不强制 schema),不注入坏 responseSchema。
+func openAIResponseFormatToGemini(raw map[string]any) (mime string, schema any) {
+	t, _ := raw["type"].(string)
+	switch t {
+	case "json_object":
+		return "application/json", nil
+	case "json_schema":
+		if js, ok := raw["json_schema"].(map[string]any); ok {
+			if s, ok := js["schema"]; ok {
+				return "application/json", s
+			}
+		}
+		return "application/json", nil
+	}
+	return "", nil
 }
 
 func renderGeminiControlTools(tools []proto.CanonicalTool) []any {

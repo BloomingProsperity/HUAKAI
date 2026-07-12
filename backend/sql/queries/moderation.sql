@@ -58,6 +58,25 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND id = sqlc.arg(id)::bigint
   AND deleted_at IS NULL;
 
+-- name: GetModerationKeyword :one
+-- 供 Hermes mutating 工具 moderation_keyword_enable/disable 的 Resolve 按租户+id 读取单条
+-- 未软删关键词(复检租户归属 + 渲染预览)。
+SELECT id, tenant_id, keyword, reason_code, enabled, created_at, updated_at
+FROM moderation_keywords
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(id)::bigint
+  AND deleted_at IS NULL;
+
+-- name: SetModerationKeywordEnabled :execrows
+-- 供 Hermes mutating 工具在 orchestrator 事务内定向翻转单条未软删关键词的 enabled 列
+-- (只改 enabled + updated_at;租户 scope 绑死在 WHERE tenant_id)。
+UPDATE moderation_keywords
+SET enabled = sqlc.arg(enabled)::boolean,
+    updated_at = now()
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(id)::bigint
+  AND deleted_at IS NULL;
+
 -- name: ListModerationHashes :many
 SELECT id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
 FROM moderation_hashes

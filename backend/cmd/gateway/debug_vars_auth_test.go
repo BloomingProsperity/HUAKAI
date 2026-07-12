@@ -25,8 +25,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// fakeAdminResolver injects a fixed identity/error so the gate's RBAC is testable
-// without a real *admindb.Queries / pgxpool.
+// fakeAdminResolver 注入固定的身份/错误，从而无需真实的 *admindb.Queries / pgxpool
+// 即可测试 gate 的 RBAC。
 type fakeAdminResolver struct {
 	id  admin.AdminIdentity
 	err error
@@ -66,11 +66,10 @@ func TestDebugVarsAuth_NoCredentials_Returns_503_When_Resolver_Nil(t *testing.T)
 	}
 }
 
-// A tenant_operator is AUTHENTICATED but must NOT be AUTHORIZED to read
-// the process-global /debug/vars metrics — only platform_admin may. This is the
-// discriminating pair: same gate + handler, tenant denied (403, no expvar leak)
-// vs platform allowed (200, reaches expvar). Mutation check: drop the role check
-// in adminGate and the tenant case flips to 200 + leaks "memstats" → red.
+// tenant_operator 虽已通过认证（AUTHENTICATED），但绝不应被授权（AUTHORIZED）读取
+// 进程全局的 /debug/vars 指标——只有 platform_admin 才可以。这是一对鉴别用例：
+// 相同的 gate + handler，租户被拒（403，不泄漏 expvar）vs 平台被放行（200，抵达 expvar）。
+// 变异检查：去掉 adminGate 中的角色检查，租户用例就会翻成 200 并泄漏 "memstats" → 红。
 func TestDebugVarsAuth_TenantOperator_Forbidden_NoLeak(t *testing.T) {
 	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 42}}
 	gated := adminGate(resolver, expvar.Handler())
@@ -91,8 +90,8 @@ func TestDebugVarsAuth_TenantOperator_Forbidden_NoLeak(t *testing.T) {
 	}
 }
 
-// Positive half: platform_admin reaches the metrics (proves the gate is
-// not just blanket-denying — it discriminates by role).
+// 正向一半：platform_admin 能抵达 metrics（证明 gate 并非
+// 一刀切全拒——它是按角色加以鉴别的）。
 func TestDebugVarsAuth_PlatformAdmin_ReachesMetrics(t *testing.T) {
 	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}
 	gated := adminGate(resolver, expvar.Handler())
@@ -108,10 +107,10 @@ func TestDebugVarsAuth_PlatformAdmin_ReachesMetrics(t *testing.T) {
 	}
 }
 
-// Default-off guard: when otelbridge.Setup returns a nil metrics
-// handler, newRouter must not mount /metrics at all. Mutation check: unconditionally
-// register router.Handle("/metrics", ...) and this flips from 404 to admin-gate
-// 503/401, proving the endpoint is unexpectedly exposed.
+// 默认关闭守卫：当 otelbridge.Setup 返回 nil 的 metrics handler 时，
+// newRouter 绝不能挂载 /metrics。变异检查：无条件地
+// 注册 router.Handle("/metrics", ...)，本断言就会从 404 翻成 admin-gate 的
+// 503/401，从而证明该端点被意外暴露。
 func TestMetricsRoute_NotMountedWhenHandlerNil(t *testing.T) {
 	t.Setenv("HUAKAI_RL_DISABLE", "true")
 	router := newRouter(minimalDeps(), zap.NewNop())
@@ -124,9 +123,9 @@ func TestMetricsRoute_NotMountedWhenHandlerNil(t *testing.T) {
 	}
 }
 
-// /metrics enabled is process-global like /debug/vars, so it must reuse the
-// same admin gate. Mutation: mount d.metricsHandler directly and this request
-// flips to 200 with "huakai_secret_metric" in the body.
+// 启用后的 /metrics 与 /debug/vars 一样是进程全局的，因此必须复用
+// 同一个 admin gate。变异：直接挂载 d.metricsHandler，本请求就会
+// 翻成 200，且 body 中带有 "huakai_secret_metric"。
 func TestMetricsRoute_MountedHandlerRequiresAdminGate(t *testing.T) {
 	t.Setenv("HUAKAI_RL_DISABLE", "true")
 	d := minimalDeps()
@@ -146,7 +145,7 @@ func TestMetricsRoute_MountedHandlerRequiresAdminGate(t *testing.T) {
 	}
 }
 
-// A resolver error (invalid/missing credential) still yields 401 — not 403/200.
+// resolver 报错（凭证无效/缺失）依然返回 401——而非 403/200。
 func TestDebugVarsAuth_ResolverError_Returns401(t *testing.T) {
 	resolver := fakeAdminResolver{err: errors.New("unauthorized")}
 	gated := adminGate(resolver, expvar.Handler())
@@ -233,10 +232,10 @@ func TestWriteAdminGateError_OutputShape(t *testing.T) {
 	}
 }
 
-// TestWriteAdminGateErrorProducesValidJSONForControlChars guards the admin-gate error
-// writer. Today it is only called with static literals, but it shared the fmt %q hand-formatter,
-// so this locks the writer itself against re-introducing the invalid-JSON anti-pattern.
-// Mutation check: restore the fmt %q formatter and json.Valid goes false on the \x01 byte → red.
+// TestWriteAdminGateErrorProducesValidJSONForControlChars 守护 admin-gate 的错误
+// writer。当下它只用静态字面量调用，但它曾共用 fmt %q 手工格式化器，
+// 因此本测试把 writer 本身锁住，防止重新引入「产出非法 JSON」这一反模式。
+// 变异检查：恢复 fmt %q 格式化器，json.Valid 在遇到 \x01 字节时会变成 false → 红。
 func TestWriteAdminGateErrorProducesValidJSONForControlChars(t *testing.T) {
 	rec := httptest.NewRecorder()
 	msg := "missing or invalid admin credential \x01 \"x\"\nline2"

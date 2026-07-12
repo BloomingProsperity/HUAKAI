@@ -96,7 +96,11 @@ type Querier interface {
 	// bootstrap rows should be auto-disabled so the env-var token is no
 	// longer accepted by the resolver. Idempotent.
 	DisableBootstrapAdminTokens(ctx context.Context) (int64, error)
+	// Fetch a single admin token's metadata (no key_hash) for revoke
+	// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
+	GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error)
 	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
+	GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error)
 	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
 	// 单 profile 查询 (按 tenant + id 双过滤); admin UI 编辑 + resolver 走这条。
@@ -118,6 +122,10 @@ type Querier interface {
 	// Drift worker 用; 只取 status='active' 且未软删。
 	ListActiveTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListActiveTLSFingerprintProfilesByTenantRow, error)
 	ListAdminChannelsByTenant(ctx context.Context, arg ListAdminChannelsByTenantParams) ([]ListAdminChannelsByTenantRow, error)
+	// Metadata-only listing of admin tokens for the operator console. NEVER
+	// selects key_hash — only key_prefix (insufficient on its own to
+	// authenticate) plus lifecycle columns. Soft-deleted rows are excluded.
+	ListAdminTokens(ctx context.Context, arg ListAdminTokensParams) ([]ListAdminTokensRow, error)
 	// P0 provider/channel admin catalog queries.
 	// Read-only directory data for admin UI. These SELECT lists intentionally
 	// exclude tenant_id and every credential-bearing provider_accounts column.
@@ -165,10 +173,15 @@ type Querier interface {
 	// 软删 (设 deleted_at); provider_accounts.tls_fingerprint_profile_id 引用仍存在
 	// (FK 不级联), 但 resolver 走 GetByID 因 deleted_at IS NULL 过滤掉, 降级到 builtin.
 	SoftDeleteTLSFingerprintProfile(ctx context.Context, arg SoftDeleteTLSFingerprintProfileParams) error
+	// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 跨整个租户池计数。
+	SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error)
+	// 由异步 eventbus account_health_probe handler 调用,盖 last_probe_at 戳点亮健康面板。
+	TouchProviderAccountProbe(ctx context.Context, arg TouchProviderAccountProbeParams) error
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error)
 	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)
 	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
+	UpdateProviderAccountFingerprintProfile(ctx context.Context, arg UpdateProviderAccountFingerprintProfileParams) error
 	UpdateProxy(ctx context.Context, arg UpdateProxyParams) (UpdateProxyRow, error)
 	// 全字段更新; admin UI 修改时调用。updated_at 自动刷; status 走专用 SetStatus 端点。
 	UpdateTLSFingerprintProfile(ctx context.Context, arg UpdateTLSFingerprintProfileParams) (UpdateTLSFingerprintProfileRow, error)

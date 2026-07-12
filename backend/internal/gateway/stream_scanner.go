@@ -1,24 +1,5 @@
-// stream_scanner.go — A1 atomic（Bedrock plan §A1）：StreamForwarder
-// 从硬编码 SSE 行扫描升级为可插拔的 wire-format scanner。
-//
-// 现状（A1 之前）：StreamForwarder.Forward 内部直接调用 ScanSSEEvents，
-// 这意味着所有 protocol family 都被假定走 SSE 文本帧。Bedrock streaming
-// 的 binary EventStream 无法塞进 bufio.Scanner（按 \n 切分会切碎 frame）。
-//
-// A1 引入的抽象层（行为不变）：
-//   - StreamScanner 接口：把 io.Reader 切成 SSEEvent 流（保留事件结构，
-//     避免大改 forwarder 下游消费代码）
-//   - StreamScannerRegistry：按 protocol family 路由到对应 scanner
-//   - SSEStreamScanner：thin wrapper 调旧 ScanSSEEvents（实现等价）
-//   - BuildDefaultStreamScannerRegistry：覆盖所有现有 19 个 family，全部
-//     走 SSE。Bedrock 专属 scanner 在 A2+A3 atomic 加入
-//
-// 不做：
-//   - 不改 SSEEvent 结构（保留 Type/Data/ObservedAt 三字段；下游 forwarder
-//     代码不动）
-//   - 不动 ScanSSEEvents 实现（只是被 SSEStreamScanner 调用）
-//   - 不引入新的 wire 元数据字段（StreamWireProtocol 留到
-//     未来 observability 需要时再加）
+// stream_scanner.go 把不同上游线格式统一投影为 SSEEvent 迭代器；
+// 文本 SSE、NDJSON 与二进制 EventStream 由各自 scanner 负责切帧。
 package gateway
 
 import (
@@ -33,17 +14,17 @@ import (
 	"time"
 )
 
-// StreamScanner 把 io.Reader 上的字节按 wire format 切成 SSEEvent 流。
+// StreamScanner 把 io.Reader 上的字节按线格式切成 SSEEvent 流。
 //
 // Scan 返回值规则：
 //   - 正常事件：(SSEEvent{Type, Data, ObservedAt}, nil)
 //   - scanner 内部错误：(SSEEvent{}, err)（如 ErrScannerOverflow / ctx.Err()）
-//   - 流结束：iterator 自然 done，不 yield 任何零值
+//   - 流结束：iterator 自然完成，不 yield 任何零值
 //
 // 实现责任：
 //   - 必须遵守 ctx.Done() 提前退出
-//   - bufferCap 是底层缓冲上限，scanner 自行决定如何 honor（SSE 走
-//     bufio.Scanner.Buffer；Bedrock 走逐 frame 读 + frame size 上限）
+//   - bufferCap 是底层缓冲上限，scanner 自行决定如何遵守（SSE 走
+//     bufio.Scanner.Buffer；Bedrock 走逐帧读取 + 帧大小上限）
 type StreamScanner interface {
 	Scan(ctx context.Context, r io.Reader, bufferCap int) iter.Seq2[SSEEvent, error]
 }
@@ -60,7 +41,7 @@ var ErrUnknownStreamScanner = errors.New("gateway: 未注册该 protocol family 
 var errDuplicateStreamScanner = errors.New("gateway: stream scanner 重复注册")
 
 // StaticStreamScannerRegistry 是只读静态注册表；启动期 Register 完成后只读。
-// 与 StaticProtocolAdapterRegistry 同形态：MustRegister panic on duplicate / nil。
+// 与 StaticProtocolAdapterRegistry 同形态：MustRegister 在重复注册或 nil 时 panic。
 type StaticStreamScannerRegistry struct {
 	scanners map[string]StreamScanner
 }
@@ -110,7 +91,7 @@ func (r *StaticStreamScannerRegistry) For(family string) (StreamScanner, error) 
 	return s, nil
 }
 
-// SSEStreamScanner 是 ScanSSEEvents 的 thin adapter，把现有 SSE 扫描
+// SSEStreamScanner 是 ScanSSEEvents 的薄 adapter，把现有 SSE 扫描
 // 暴露为 StreamScanner 接口实现。行为完全等价。
 type SSEStreamScanner struct{}
 
@@ -119,13 +100,13 @@ func (s *SSEStreamScanner) Scan(ctx context.Context, r io.Reader, bufferCap int)
 	return ScanSSEEvents(ctx, r, bufferCap)
 }
 
-// NDJSONStreamScanner 把 NDJSON（newline-delimited JSON）wire 切成事件流：
+// NDJSONStreamScanner 把 NDJSON（按换行分隔的 JSON）按线格式切成事件流：
 // 逐行一个裸 JSON 对象，无 "data:" 前缀、无 [DONE] 哨兵、无 event: 行。
 // 每行原样作为 SSEEvent.Data 交给 proto adapter——不剥任何前缀、不识别哨兵
 // （行内出现 "data:" 字面也按 payload 原样保留）；空行跳过。
 //
 // 与 SSEStreamScanner / BedrockEventStreamScanner 的契约对齐：
-//   - honor bufferCap（bufio.Scanner.Buffer 上限），超长行 yield
+//   - 遵守 bufferCap（bufio.Scanner.Buffer 上限），超长行 yield
 //     ErrScannerOverflow（与 ScanSSEEvents 的错误分类一致，forwarder 归类
 //     ResponseEventTooLarge）
 //   - 遵守 ctx.Done() 提前退出，yield ctx.Err()
@@ -170,8 +151,8 @@ func (s *NDJSONStreamScanner) Scan(ctx context.Context, r io.Reader, bufferCap i
 
 // BuildDefaultStreamScannerRegistry 构造默认 scanner 注册表。
 // 当前阶段除 bedrock_invoke 外所有 family 走 SSE；bedrock_invoke 走专用
-// BedrockEventStreamScanner（A3 atomic 实现，binary EventStream 切帧）。
-// 注册顺序与 BuildDefaultProtocolAdapterRegistry 保持一致便于代码 cross-check。
+// BedrockEventStreamScanner（A3 原子变更实现，binary EventStream 切帧）。
+// 注册顺序与 BuildDefaultProtocolAdapterRegistry 保持一致，便于代码交叉检查。
 func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 	r := NewStaticStreamScannerRegistry()
 	sse := &SSEStreamScanner{}
@@ -192,7 +173,7 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		"vertex_anthropic",
 		// Gemini Code Assist:streamGenerateContent?alt=sse 投影为标准 SSE 帧
 		// （每帧 data 是包 {response} 的 JSON），由 geminicodeassist proto adapter
-		// unwrap 后解。wire 仍是 SSE,本 scanner 照常切帧。
+		// 拆包后解。线格式仍是 SSE,本 scanner 照常切帧。
 		"gemini_code_assist",
 		"openrouter_chat",
 		"grok_chat",
@@ -221,10 +202,11 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		"minimax_chat",
 		"cohere_chat",
 		"ollama_chat",
-		// Dify 应用 API:event-keyed SSE——wire 仍是标准 SSE 帧(本 scanner 照常
+		// Dify 应用 API:event-keyed SSE——线格式仍是标准 SSE 帧(本 scanner 照常
 		// 切),但事件名在 data JSON 的 "event" 字段里,由 proto/dify adapter 解。
 		"dify_chat",
 		// 6 家订阅 session 反转
+		"anthropic_claude_session",
 		"copilot_session",
 		"cursor_session",
 		"gemini_advanced_session",
@@ -235,11 +217,11 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 		r.MustRegister(family, sse)
 	}
 
-	// AWS Bedrock invoke-with-response-stream 走 binary EventStream wire format
+	// AWS Bedrock invoke-with-response-stream 走 binary EventStream 线格式
 	// （非 SSE），需 BedrockEventStreamScanner 切帧并解 chunk envelope。
 	r.MustRegister("bedrock_invoke", &BedrockEventStreamScanner{})
 
-	// Ollama 原生 /api/chat 走 NDJSON wire（逐行裸 JSON，无 data: 前缀/[DONE]
+	// Ollama 原生 /api/chat 走 NDJSON 线格式（逐行裸 JSON，无 data: 前缀/[DONE]
 	// 哨兵），专用 NDJSONStreamScanner；不进上面的 SSE for-range 列表。
 	// 注：与 OpenAI 兼容直通的 ollama_chat（SSE，已在上方列表）并存。
 	r.MustRegister("ollama_native", &NDJSONStreamScanner{})
@@ -247,7 +229,7 @@ func BuildDefaultStreamScannerRegistry() *StaticStreamScannerRegistry {
 	return r
 }
 
-// isNilStreamScanner 检查 nil 接口（含 typed nil）。
+// isNilStreamScanner 检查 nil 接口（含带类型的 nil）。
 // 复用 protocol_selector.isNilUpstreamAdapter 的 reflect 逻辑。
 func isNilStreamScanner(s StreamScanner) bool {
 	if s == nil {

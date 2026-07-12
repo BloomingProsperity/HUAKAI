@@ -8,7 +8,7 @@ import (
 )
 
 func TestAlertRuleCRUD(t *testing.T) {
-	// MUTATION: drop tenant filtering in rule list/delete or bypass comparator/severity validation; cross-tenant rows leak or invalid rules persist.
+	// MUTATION：在 rule 列表/删除中去掉租户过滤，或绕过 comparator/severity 校验；跨租户行会泄漏，或非法规则会被持久化。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
@@ -100,7 +100,7 @@ func TestAlertRuleCRUD(t *testing.T) {
 }
 
 func TestEvaluateRules_FiresOnBreach(t *testing.T) {
-	// MUTATION: implement gte as gt or skip event creation; equality at threshold fails to create the required firing event.
+	// MUTATION：把 gte 实现成 gt，或跳过 event 创建；在恰好等于阈值时无法创建本应触发的 firing event。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
@@ -138,7 +138,7 @@ func TestEvaluateRules_FiresOnBreach(t *testing.T) {
 }
 
 func TestEvaluateRules_ResolvesWhenRecovered(t *testing.T) {
-	// MUTATION: never mark firing events resolved on recovery; the event remains firing and resolved_at stays nil.
+	// MUTATION：在恢复时从不把 firing event 标记为 resolved；该 event 一直停在 firing，resolved_at 始终为 nil。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
@@ -171,7 +171,7 @@ func TestEvaluateRules_ResolvesWhenRecovered(t *testing.T) {
 }
 
 func TestSilencedAlertNotDelivered(t *testing.T) {
-	// MUTATION: ignore active rule-matching silences for delivery; the silenced firing edge calls the deliverer.
+	// MUTATION：投递时忽略与规则匹配的生效中 silence；被静默的 firing 边沿仍会调用 deliverer。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	deliverer := &recordingFiringDeliverer{}
@@ -211,7 +211,7 @@ func TestSilencedAlertNotDelivered(t *testing.T) {
 }
 
 func TestEvaluateRules_Idempotent(t *testing.T) {
-	// MUTATION: insert a new firing row on every evaluation; two identical breach evaluations produce duplicate firing events.
+	// MUTATION：每次评估都插入一条新的 firing 行；两次相同的越界评估会产生重复的 firing event。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
@@ -240,7 +240,7 @@ func TestEvaluateRules_Idempotent(t *testing.T) {
 }
 
 func TestSustainedMinutes(t *testing.T) {
-	// MUTATION: ignore sustained_seconds and fire on the first breach; the 60s breach window creates a firing event too early.
+	// MUTATION：忽略 sustained_seconds，在首次越界就触发；60s 的越界窗口会过早创建 firing event。
 	ctx := context.Background()
 	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -308,7 +308,7 @@ func TestSustainedMinutes(t *testing.T) {
 }
 
 func TestCooldownSuppression(t *testing.T) {
-	// MUTATION: ignore cooldown_seconds after a resolved event; a second breach inside the cooldown creates a duplicate firing event.
+	// MUTATION：在一个 resolved event 之后忽略 cooldown_seconds；cooldown 期内的第二次越界会创建重复的 firing event。
 	ctx := context.Background()
 	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -357,7 +357,7 @@ func TestCooldownSuppression(t *testing.T) {
 }
 
 func TestEventThresholdDimensions(t *testing.T) {
-	// MUTATION: omit threshold_value, metric_value, or dimensions when creating a firing event; the event no longer explains why it fired.
+	// MUTATION：创建 firing event 时省略 threshold_value、metric_value 或 dimensions；该 event 就无法说明它为何触发。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
@@ -395,7 +395,7 @@ func TestEventThresholdDimensions(t *testing.T) {
 }
 
 func TestEvaluateRulesFromSourcePassesFilters(t *testing.T) {
-	// MUTATION: always call the global metric source snapshot and ignore rule filters; the scoped source never receives model=x.
+	// MUTATION：总是调用全局 metric source 快照并忽略规则过滤条件；受限作用域的 source 永远收不到 model=x。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	source := &scopedMetricSourceStub{
@@ -432,7 +432,7 @@ func TestEvaluateRulesFromSourcePassesFilters(t *testing.T) {
 }
 
 func TestSilenceScope(t *testing.T) {
-	// MUTATION: ignore platform/group/region scope and treat a scoped silence as global; the p2 alert delivery is incorrectly suppressed.
+	// MUTATION：忽略 platform/group/region 作用域，把受限作用域的 silence 当作全局；p2 告警的投递会被错误地抑制。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	deliverer := &recordingFiringDeliverer{}
@@ -484,7 +484,7 @@ func TestSilenceScope(t *testing.T) {
 }
 
 func TestManualResolvedEvent(t *testing.T) {
-	// MUTATION: resolve admin action writes regular resolved instead of manual_resolved; operators cannot distinguish recovery from manual closure.
+	// MUTATION：管理员的 resolve 操作写成普通 resolved 而非 manual_resolved；运维就无法区分自动恢复和人工关闭。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
@@ -519,7 +519,7 @@ func TestManualResolvedEvent(t *testing.T) {
 }
 
 func TestFiringDeliveryMarksEmailSent(t *testing.T) {
-	// MUTATION: deliver the notification but never persist email_sent; operators cannot audit which firing produced outbound notification.
+	// MUTATION：投递了通知却从不持久化 email_sent；运维就无法审计哪次 firing 产生了对外通知。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	deliverer := &recordingFiringDeliverer{}
@@ -547,7 +547,7 @@ func TestFiringDeliveryMarksEmailSent(t *testing.T) {
 }
 
 func TestRootNotifyRateLimitSuppressesRepeatDelivery(t *testing.T) {
-	// MUTATION: ignore the root notify rate-limit window; a second firing inside the window calls the deliverer twice.
+	// MUTATION：忽略根级 notify 限流窗口；窗口内的第二次 firing 会两次调用 deliverer。
 	ctx := context.Background()
 	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -585,7 +585,7 @@ func TestRootNotifyRateLimitSuppressesRepeatDelivery(t *testing.T) {
 }
 
 func TestFiringEdgeDeliversOnce(t *testing.T) {
-	// MUTATION: deliver on every evaluation instead of only a newly created firing edge; the deliverer call count becomes 2.
+	// MUTATION：在每次评估时都投递，而不是只在新建的 firing 边沿投递；deliverer 的调用次数变成 2。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	deliverer := &recordingFiringDeliverer{}
@@ -620,7 +620,7 @@ func TestFiringEdgeDeliversOnce(t *testing.T) {
 }
 
 func TestNilDelivererSafe(t *testing.T) {
-	// MUTATION: assume a non-nil deliverer on the firing edge; this test panics before the persisted event assertion.
+	// MUTATION：在 firing 边沿上假设 deliverer 非 nil；本测试会在到达持久化 event 的断言之前 panic。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
@@ -647,7 +647,7 @@ func TestNilDelivererSafe(t *testing.T) {
 }
 
 func TestFiringDeliveryErrorDoesNotFailEvaluation(t *testing.T) {
-	// MUTATION: return the deliverer error from EvaluateRules; the evaluation fails instead of preserving the firing event.
+	// MUTATION：把 deliverer 的错误从 EvaluateRules 返回出去；评估会失败，而不是保住 firing event。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	deliveryErr := errors.New("delivery down")
@@ -687,7 +687,7 @@ func TestFiringDeliveryErrorDoesNotFailEvaluation(t *testing.T) {
 }
 
 func TestAlert_TenantScoped(t *testing.T) {
-	// MUTATION: drop tenant filters from rules/events/silences; tenant A sees tenant B rows or tenant A silence suppresses tenant B delivery.
+	// MUTATION：从 rules/events/silences 中去掉租户过滤；租户 A 会看到租户 B 的行，或租户 A 的 silence 会抑制租户 B 的投递。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	deliverer := &recordingFiringDeliverer{}

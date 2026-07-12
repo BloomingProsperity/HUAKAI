@@ -10,7 +10,7 @@ const HCSFVersion = "0.4"
 // 形态推导规则（不引入 EnvelopeKind 枚举字段）：
 //
 //   - 仅 Messages 非空 + BufferedResponse=nil + StreamEvents=nil → request envelope
-//   - BufferedResponse != nil → buffered response envelope
+//   - BufferedResponse != nil → buffered response envelope 响应信封
 //   - StreamEvents != nil → event-replay envelope（fixture / replay 用途）
 //   - Native Passthrough → RequestMeta.NativePassthrough=true；route 实现见 P-4 决策
 //

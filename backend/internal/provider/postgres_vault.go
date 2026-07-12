@@ -116,18 +116,27 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, account
 	if err != nil {
 		return Credential{}, AccountInfo{}, err
 	}
-	cred = mergeCredentialAccountExtra(cred, decodeProviderAccountExtra(row.extra))
+	oauthScope := strings.TrimSpace(cred.Extra["scope"])
+	accountExtra := decodeProviderAccountExtra(row.extra)
+	cred = mergeCredentialAccountExtra(cred, accountExtra)
 
 	// 提交只读事务（提交一个只读事务无副作用，与 postgres_registry.go 一致）。
 	if err := tx.Commit(ctx); err != nil {
 		return Credential{}, AccountInfo{}, fmt.Errorf("provider vault: commit: %w", err)
 	}
 
+	// legacy 行没有 account_credentials 主键可回填:channel_health_state 对
+	// account_credential_id 有强外键且 (account_credential_id, credential_version)
+	// 全局唯一,借用 provider_accounts.id 会外键违约或串写其他凭据的健康行。
+	// 故 legacy 账号健康 subject 留空(healthKeyOK=false,健康回流不落),
+	// 直到该账号迁入 v2 credentialstore。
 	info := AccountInfo{
-		AccountID:   row.id,
-		TenantID:    row.tenantID,
-		Platform:    row.platform,
-		AccountType: row.accountType,
+		AccountID:    row.id,
+		TenantID:     row.tenantID,
+		OAuthScope:   oauthScope,
+		Platform:     row.platform,
+		AccountType:  row.accountType,
+		CodexCLIOnly: codexCLIOnlyFromAccountExtra(accountExtra),
 	}
 
 	return cred, info, nil
@@ -157,6 +166,7 @@ func (v *PostgresCredentialVault) resolveFromStore(
 		return Credential{}, AccountInfo{}, true, err
 	}
 	cred := mapRuntimeMaterial(material)
+	oauthScope := strings.TrimSpace(material.Extra["scope"])
 	accountExtra, err := v.loadProviderAccountExtra(ctx, tenantID, accountID)
 	if err != nil {
 		return Credential{}, AccountInfo{}, true, err
@@ -165,11 +175,26 @@ func (v *PostgresCredentialVault) resolveFromStore(
 	return cred, AccountInfo{
 		AccountID:           rec.ProviderAccountID,
 		TenantID:            rec.TenantID,
+		OAuthScope:          oauthScope,
 		Platform:            rec.Vendor,
 		AccountType:         rec.AuthMode,
+		CodexCLIOnly:        codexCLIOnlyFromAccountExtra(accountExtra),
 		AccountCredentialID: rec.ID,
 		CredentialVersion:   int(rec.CredentialVersion),
+		// 把凭据行上的上游账号标识(迁移 0141 列)投影进 AccountInfo,供 R7 身份
+		// 改写把它写进 metadata.user_id 的 account 组件。nil(未提取到)→ 空串 →
+		// 下游 fail-open 不改写,与 account_uuid=="" 跳过语义一致。
+		ExternalAccountID: derefString(rec.ExternalAccountID),
 	}, true, nil
+}
+
+// derefString 解引用 *string;nil 返回空串。用于把可空的上游账号标识列投影成
+// AccountInfo 的非指针字段(空串语义 = 未提取到 = 下游 fail-open)。
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func (v *PostgresCredentialVault) loadProviderAccountExtra(ctx context.Context, tenantID, accountID int64) (map[string]string, error) {
@@ -193,19 +218,39 @@ LIMIT 1`, tenantID, accountID).Scan(&raw)
 	return decodeProviderAccountExtra(raw), nil
 }
 
+const providerAccountExtraCodexCLIOnlyKey = "codex_cli_only"
+
+// codexCLIOnlyFromAccountExtra 解析账号级 Codex CLI 入站门控开关。account extra 先经
+// decodeProviderAccountExtra 规整为字符串;缺省、空值或非法值都按 false 处理,避免
+// 配置错误扩大拦截范围。
+func codexCLIOnlyFromAccountExtra(accountExtra map[string]string) bool {
+	value, ok := accountExtra[providerAccountExtraCodexCLIOnlyKey]
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(value), "true")
+}
+
 func mergeCredentialAccountExtra(cred Credential, accountExtra map[string]string) Credential {
-	if len(accountExtra) == 0 {
-		return cred
-	}
-	if cred.Extra == nil {
-		cred.Extra = make(map[string]string, len(accountExtra))
-	}
-	for key, value := range accountExtra {
-		if _, exists := cred.Extra[key]; exists {
-			continue
+	if len(accountExtra) > 0 {
+		if cred.Extra == nil {
+			cred.Extra = make(map[string]string, len(accountExtra))
 		}
-		cred.Extra[key] = value
+		for key, value := range accountExtra {
+			// codex_cli_only 是 HUAKAI 内部账号策略键,只供入站门控消费;绝不并入出站
+			// Credential.Extra(vendor-specific 语义),否则会被当成上游附加字段泄漏出去。
+			if key == providerAccountExtraCodexCLIOnlyKey {
+				continue
+			}
+			if _, exists := cred.Extra[key]; exists {
+				continue
+			}
+			cred.Extra[key] = value
+		}
 	}
+	// 绝对保证出站 Extra 永不含内部策略键——即便凭据载荷本身误带同名键也一并清除
+	// (delete 对 nil map 安全,是 no-op)。
+	delete(cred.Extra, providerAccountExtraCodexCLIOnlyKey)
 	return cred
 }
 
@@ -512,9 +557,8 @@ func mapOAuth(raw []byte) (Credential, error) {
 	return cred, nil
 }
 
-// mapServiceAccount 解析 service_account 类型凭据（Google SA）。
-// 映射为 CredentialTypeOAuthAccessToken，并在 Extra["auth_kind"]="google_sa" 标记。
-// client_email / private_key / token_uri 一并放入 Extra，供下游 adapter 使用。
+// mapServiceAccount 拒绝 legacy service_account。旧表只有私钥材料,没有本仓
+// v2 凭据刷新链产出的可转发 access token；继续产空 Value 会把失败延后到出站。
 func mapServiceAccount(raw []byte) (Credential, error) {
 	var r rawServiceAccount
 	if err := json.Unmarshal(raw, &r); err != nil {
@@ -526,20 +570,7 @@ func mapServiceAccount(raw []byte) (Credential, error) {
 	if r.PrivateKey == "" {
 		return Credential{}, fmt.Errorf("%w: service_account private_key field is empty", ErrCredentialFormat)
 	}
-	extra := map[string]string{
-		"auth_kind":    "google_sa",
-		"client_email": r.ClientEmail,
-		"private_key":  r.PrivateKey,
-	}
-	if r.TokenURI != "" {
-		extra["token_uri"] = r.TokenURI
-	}
-	// service_account 在获取访问令牌前主值留空；适配器凭 auth_kind 决策令牌交换流程。
-	return Credential{
-		Type:  CredentialTypeOAuthAccessToken,
-		Value: "",
-		Extra: extra,
-	}, nil
+	return Credential{}, fmt.Errorf("%w: legacy service_account cannot materialize runtime credential; migrate to v2 vertex_sa", ErrCredentialFormat)
 }
 
 // mapUpstreamStatic 解析 upstream_static 类型凭据。

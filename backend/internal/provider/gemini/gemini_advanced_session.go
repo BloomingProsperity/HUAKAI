@@ -162,4 +162,4 @@ func (a *GeminiAdvancedSessionAdapter) acceptsCredential(t provider.CredentialTy
 	return false
 }
 
-// Source files read: /c/HUAKAI/repo/backend/internal/provider/openai/codex_session.go; Lane: claude; Time: 2026-05-06T00:00:00Z
+// 已阅源文件: /c/HUAKAI/repo/backend/internal/provider/openai/codex_session.go; 通道: claude; 时间: 2026-05-06T00:00:00Z

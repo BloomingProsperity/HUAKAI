@@ -47,6 +47,18 @@ type Store interface {
 	// ExpireSubscription: 标 expired + 关 quota 策略 + 降级 (downgrade 守卫: 无更新 active 升级订阅才降), 单事务, 幂等。
 	ExpireSubscription(ctx context.Context, rec lifecycleRecord) (UserSubscription, error)
 
+	// --- 自动续费 worker (P-AUTORENEW) ---
+	// ListAutoRenewDue: 扫 expires_at<=dueCutoff 且 auto_renew=true 的 active 订阅, 限量批处理。
+	// dueCutoff = now + 提前续费窗口(renew-ahead grace),让续费抢在到期 worker 收割前完成,
+	// 且续费失败(余额不足)的订阅照常在 expires_at 到点被 ExpiryWorker 收割, 不留白嫖窗口。
+	ListAutoRenewDue(ctx context.Context, dueCutoff time.Time, limit int) ([]UserSubscription, error)
+	// TryAutoRenewSubscription: 单事务尝试"扣钱包余额 → 续期"。
+	//   - 锁订阅行重查仍 active+auto_renew+due (并发/重复防护), 否则零副作用跳过。
+	//   - 幂等锚: 同 (订阅, 续费周期) 已扣过 → 跳过, 不重复扣 (worker 重跑安全)。
+	//   - 余额 < 续费价 → 跳过, 绝不扣款。余额够 → 扣 user_balances + 记账 + 续期, 三者同事务原子。
+	// money fail-safe: 任一步失败回滚整事务, 宁可不续也不会扣了不续 / 续了没扣。
+	TryAutoRenewSubscription(ctx context.Context, rec autoRenewRecord) (AutoRenewResult, error)
+
 	// --- 到期提醒 (P3b-1) ---
 	// ListDueReminder: active 且 expires_at 在 (now, now+within] 且 (expires_at, id) > 游标 的订阅,
 	// 按 (expires_at, id) 升序限量返回, 附收件邮箱与套餐名 (游标用于一次 tick 翻完整窗口)。
@@ -91,6 +103,7 @@ type updatePlanRecord struct {
 	ForSale       bool
 	SortOrder     int
 	ActorAdminID  int64
+	ActorRef      string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID     string
 	Now           time.Time
 }
@@ -101,6 +114,7 @@ type assignRecord struct {
 	UserID       int64
 	PlanID       int64
 	ActorAdminID int64
+	ActorRef     string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID    string
 	Now          time.Time
 }
@@ -111,6 +125,7 @@ type lifecycleRecord struct {
 	SubscriptionID int64
 	ActorKind      string
 	ActorID        int64
+	ActorRef       string // 同上
 	RequestID      string
 	Now            time.Time
 }
@@ -119,6 +134,7 @@ type extendRecord struct {
 	TenantID       int64
 	SubscriptionID int64
 	ActorAdminID   int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 	Days           int
 	Until          *time.Time
@@ -132,6 +148,7 @@ type changePlanRecord struct {
 	NewPlanID      int64
 	AllowDowngrade bool
 	ActorAdminID   int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 	Now            time.Time
 }
@@ -140,7 +157,37 @@ type revokeRecord struct {
 	TenantID       int64
 	SubscriptionID int64
 	ActorAdminID   int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	Reason         string
 	RequestID      string
 	Now            time.Time
 }
+
+// autoRenewRecord 单条自动续费的事务输入 (system 触发, worker 逐条调)。
+type autoRenewRecord struct {
+	TenantID       int64
+	SubscriptionID int64
+	Now            time.Time
+	// DueCutoff = 批扫时的 now + 提前续费窗口; 锁行后复查 expires_at<=DueCutoff 仍成立才续,
+	// 否则(到期日被别的路径推到窗口外)零副作用跳过。与 ListAutoRenewDue 的 cutoff 同源。
+	DueCutoff time.Time
+}
+
+// AutoRenewResult 单条自动续费的结果。
+//   - Renewed=true: 已扣款 (或免费续费) 并续期成功。
+//   - Renewed=false: 跳过, SkipReason 说明原因 (余额不足 / 已续过 / 重查不再 due), 零副作用。
+type AutoRenewResult struct {
+	Subscription UserSubscription
+	Renewed      bool
+	SkipReason   string
+	ChargedCents int64 // 本次扣减的钱包金额 (cents); 免费续费或跳过为 0
+}
+
+// 自动续费跳过原因 (AutoRenewResult.SkipReason)。
+const (
+	AutoRenewSkipNotDue           = "not_due"           // 重查不再 active / 不再 due (并发已被别的路径处理)
+	AutoRenewSkipAutoRenewOff     = "auto_renew_off"    // 重查 auto_renew 已被关
+	AutoRenewSkipAlreadyRenewed   = "already_renewed"   // 该续费周期已有扣款行 (幂等命中)
+	AutoRenewSkipInsufficientFund = "insufficient_fund" // 钱包余额 < 续费价, 绝不扣款
+	AutoRenewSkipPlanUnavailable  = "plan_unavailable"  // 套餐已停用 / 不存在, 不续
+)

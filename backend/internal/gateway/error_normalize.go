@@ -1,19 +1,19 @@
-// Package gateway provider error normalization (A13 ERROR_RULES rule table).
-// Spec: docs/specs/rate-limiting.md A13 / DR-009 1 Q1.
+// Package gateway 上游 provider 错误归一化(A13 ERROR_RULES 规则表)。
+// 规格: docs/specs/rate-limiting.md A13 / DR-009 1 Q1。
 //
-// Hard floor (DR-009 6.6): the FSM must never auto-reach `disabled`
-// on an `ambiguous` signal alone. Enforced structurally: `ambiguous`
-// rules can only emit RetryActionCountedDisable / Cooldown / WarnOnly,
-// never RetryActionPermanentDisable.
+// 硬底线(DR-009 6.6): FSM 绝不能仅凭一个 ambiguous 信号就自动到达
+// disabled。结构上强制保证: ambiguous 规则只能产出
+// RetryActionCountedDisable / Cooldown / WarnOnly,绝不会产出
+// RetryActionPermanentDisable。
 //
-// D8 additions (2026-05-06 vendor-drift-audit.md):
-// Anthropic now documents 3 new typed error classes:
+// D8 新增(2026-05-06 vendor-drift-audit.md):
+// Anthropic 现在记录了 3 个新的类型化 error class:
 //
-//	402 → billing_error   (R-021, catch-all after keyword-specific R-007)
-//	504 → timeout_error   (R-022, upstream gateway timeout)
-//	413 → request_too_large (R-023, client error, no retry)
+//	402 → billing_error   (R-021, 在 keyword 专用的 R-007 之后兜底)
+//	504 → timeout_error   (R-022, upstream gateway 超时)
+//	413 → request_too_large (R-023, 客户端错误, 不重试)
 //
-// Source: platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
+// 来源: platform.claude.com/docs/en/api/errors (2026-05-06 抓取)。
 package gateway
 
 import (
@@ -22,10 +22,82 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 )
 
-// ErrorClass enumerates the 14 normalized error categories from A13 (updated D8).
+// authLaneRulesEnabled 门控与 auth 降级车道绑定的分类改动(R-024/R-025 + xai→grok 归一化)。
+// 这些改动会把 grok/xai 400 坏 key 从「unknown→400 原样透传+error-rate 记账」变成
+// 「token_revoked→401+auth-failover 换号」——属客户端契约与健康记账的行为变化,必须与
+// HUAKAI_AUTH_COOLDOWN_ENABLED 同源生效(审查 S1:开关关闭=行为逐字节不变是本片可落地根基)。
+var authLaneRulesEnabled atomic.Bool
+
+// SetAuthLaneRulesEnabled 由 wiring 启动期调用一次,与 auth 车道 knob 同源;测试可临时翻转(须还原)。
+func SetAuthLaneRulesEnabled(on bool) { authLaneRulesEnabled.Store(on) }
+
+// AuthFailureClassFromClassification 把上游分类映射为 auth 降级车道的确定性分级:
+// token_revoked/关键词 invalid_grant(R-001)/Grok 400-auth → iron-clad(可硬禁);
+// 通用 401(R-009 无关键词)→ ambiguous(永远退避自愈,绝不永久禁)。
+func AuthFailureClassFromClassification(c Classification) authcooldown.FailureClass {
+	switch c.Class {
+	case ErrorClassTokenRevoked:
+		return authcooldown.ClassIronClad
+	case ErrorClassOAuthInvalidGrant:
+		if c.RuleID == "R-001" {
+			return authcooldown.ClassIronClad
+		}
+	}
+	return authcooldown.ClassAmbiguous
+}
+
+// SignalFromClassification 把上游错误分类映射为 channelhealth 信号类。auth 类(token_revoked /
+// oauth_invalid_grant,含 Grok 400-auth 归的 token_revoked)映射为 SignalAuthChallenge——由
+// channelhealth 单独路由进 auth 降级车道(临时移出选号、短 TTL 自愈),不写健康 State/Score/窗口。
+func SignalFromClassification(statusCode int, c Classification) channelhealth.SignalClass {
+	switch c.Class {
+	case ErrorClassRateLimited:
+		return channelhealth.SignalRateLimit
+	case ErrorClassServerError, ErrorClassOverloaded:
+		return channelhealth.SignalUpstream5xx
+	case ErrorClassNetworkTimeout, ErrorClassUpstreamTimeout:
+		return channelhealth.SignalTimeout
+	case ErrorClassTokenRevoked, ErrorClassOAuthInvalidGrant:
+		return channelhealth.SignalAuthChallenge
+	case ErrorClassRequestTooLarge:
+		return channelhealth.SignalClientMalformed
+	case ErrorClassKYCRequired, ErrorClassOrgDisabled,
+		ErrorClassWorkspaceDeactivated, ErrorClassCreditExhausted:
+		return channelhealth.SignalAccountSuspended
+	case ErrorClassPlatformPolicy:
+		return channelhealth.SignalForbidden
+	}
+	switch {
+	case statusCode == http.StatusTooManyRequests:
+		return channelhealth.SignalRateLimit
+	case statusCode == http.StatusForbidden:
+		return channelhealth.SignalForbidden
+	case clientMalformedStatus(statusCode) && c.Tier == TierNone && c.RetryAction == RetryActionPassThrough && c.FsmTransition == FsmTransitionNoChange:
+		return channelhealth.SignalClientMalformed
+	case statusCode >= 500:
+		return channelhealth.SignalUpstream5xx
+	default:
+		return channelhealth.SignalChannelError
+	}
+}
+
+func clientMalformedStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
+}
+
+// ErrorClass 枚举来自 A13 的 14 个归一化错误类别(D8 已更新)。
 type ErrorClass string
 
 const (
@@ -42,14 +114,14 @@ const (
 	ErrorClassNetworkTimeout       ErrorClass = "network_timeout"
 	ErrorClassUnknown              ErrorClass = "unknown_upstream"
 
-	// D8 additions — Anthropic new typed error classes (2026-05-06).
-	// ErrorClassUpstreamTimeout distinguishes upstream-self gateway timeout (504)
-	// from local network timeout (R-019 ErrorClassNetworkTimeout, status=0).
+	// D8 新增 —— Anthropic 新的类型化 error class(2026-05-06)。
+	// ErrorClassUpstreamTimeout 区分 upstream 自身的 gateway 超时(504)
+	// 与本地 network 超时(R-019 ErrorClassNetworkTimeout, status=0)。
 	ErrorClassUpstreamTimeout ErrorClass = "upstream_timeout"
 	ErrorClassRequestTooLarge ErrorClass = "request_too_large"
 )
 
-// Confidence is a coarse signal-quality indicator carried in the Classification.
+// Confidence 是 Classification 中携带的粗粒度信号质量指示。
 type Confidence string
 
 const (
@@ -58,8 +130,8 @@ const (
 	ConfidenceLow    Confidence = "low"
 )
 
-// DisableTier encodes DR-009 Q1: iron_clad = unambiguous proof of permanent
-// invalidity (5 keywords); ambiguous = transient/unknown.
+// DisableTier 编码 DR-009 Q1: iron_clad = 永久失效的无歧义铁证
+// (5 个 keyword); ambiguous = 暂时性/未知。
 type DisableTier string
 
 const (
@@ -68,7 +140,7 @@ const (
 	TierNone      DisableTier = ""
 )
 
-// RetryAction is the prescribed action for the caller.
+// RetryAction 是给调用方规定的动作。
 type RetryAction string
 
 const (
@@ -79,8 +151,8 @@ const (
 	RetryActionPassThrough      RetryAction = "pass_through"
 )
 
-// FsmTransition is the suggested A22 FSM target state. The classifier does NOT
-// mutate FSM state; this field is a hint for the FSM caller.
+// FsmTransition 是建议的 A22 FSM 目标状态。分类器不会变更 FSM 状态;
+// 此字段只是给 FSM调用方的提示。
 type FsmTransition string
 
 const (
@@ -91,29 +163,31 @@ const (
 	FsmTransitionManualOnly FsmTransition = "operator_review"
 )
 
-// HeaderMatch optionally constrains a rule on a response header.
+// HeaderMatch 可选地按响应 header 对规则加以约束。
 type HeaderMatch struct {
 	Name     string
 	Equals   string
 	Contains string
 }
 
-// ErrorRule is a single row in the ERROR_RULES table.
+// ErrorRule 是 ERROR_RULES 表中的一行。
 type ErrorRule struct {
 	RuleID      string
 	Version     int
-	Priority    int    // ascending = higher priority
-	Provider    string // "*" = wildcard
-	HTTPStatus  string // "*" = wildcard, "5xx" = range, otherwise exact int
-	BodyKeyword string // case-insensitive substring match; "" = no constraint
+	Priority    int    // 升序 = 优先级更高
+	Provider    string // "*" = 通配
+	HTTPStatus  string // "*" = 通配, "5xx" = 区间, 否则为精确整数
+	BodyKeyword string // 大小写不敏感的子串匹配; "" = 无约束
 	HeaderMatch HeaderMatch
 	Class       ErrorClass
 	Action      RetryAction
 	Tier        DisableTier
+	// RequiresAuthLane=true 的规则只在 auth 降级车道 knob 开时参与匹配(默认关=零行为变)。
+	RequiresAuthLane bool
 }
 
-// Classification is the output of Classify(). It carries everything A22 (FSM)
-// and A11 (audit) need without re-parsing the upstream response.
+// Classification 是 Classify() 的输出。它携带了 A22(FSM)与 A11(审计)
+// 所需的全部信息, 无需再次解析 upstream 响应。
 type Classification struct {
 	Class         ErrorClass
 	Confidence    Confidence
@@ -125,9 +199,9 @@ type Classification struct {
 	RetryAfterMs  int64
 }
 
-// IronCladKeywords is the exactly-5 keyword set per DR-009 1 Q1.
-// External callers (custom rule loaders, audit re-classification) should
-// consult this set rather than hardcoding the list locally.
+// IronCladKeywords 是 DR-009 1 Q1 规定的恰好 5 个 keyword 集合。
+// 外部调用方(自定义规则加载器、审计重分类)应查询此集合,
+// 而不要在本地硬编码这个列表。
 var IronCladKeywords = map[string]struct{}{
 	"invalid_grant":         {},
 	"identity verification": {},
@@ -136,22 +210,26 @@ var IronCladKeywords = map[string]struct{}{
 	"deactivated_workspace": {},
 }
 
-// IsIronCladKeyword reports whether a keyword belongs to the exactly-5
-// iron_clad set per DR-009 1 Q1 / synthesis 6.6.
+// IsIronCladKeyword 报告某个 keyword 是否属于 DR-009 1 Q1 / 综合 6.6
+// 规定的恰好 5 个 iron_clad 集合。
 func IsIronCladKeyword(keyword string) bool {
 	_, ok := IronCladKeywords[strings.ToLower(strings.TrimSpace(keyword))]
 	return ok
 }
 
 const (
-	keywordInvalidGrant                = "invalid_grant"
-	keywordIdentityVerification        = "identity verification"
-	keywordOrgDisabled                 = "org_disabled"
-	keywordTokenRevoked                = "token_revoked"
-	keywordDeactivatedWorkspace        = "deactivated_workspace"
-	keywordTokenInvalidated            = "token_invalidated"
-	keywordCredit                      = "credit"
-	keywordCreditBalance               = "credit balance"
+	keywordInvalidGrant         = "invalid_grant"
+	keywordIdentityVerification = "identity verification"
+	keywordOrgDisabled          = "org_disabled"
+	keywordTokenRevoked         = "token_revoked"
+	keywordDeactivatedWorkspace = "deactivated_workspace"
+	keywordTokenInvalidated     = "token_invalidated"
+	keywordCredit               = "credit"
+	keywordCreditBalance        = "credit balance"
+	keywordInsufficientQuota    = "insufficient_quota"
+	// 匹配机器码字段形态(如 error.code=billing_hard_limit_reached);OpenAI/Codex 把稳定标识
+	// 放在 code/type 而非人类可读 message,下划线子串比空格文案更可靠,也能命中 *_reached 后缀变体。
+	keywordBillingHardLimit            = "billing_hard_limit"
 	keywordValidation                  = "validation"
 	keywordPermissionDenied            = "permission denied"
 	keywordThrottling                  = "throttling"
@@ -160,9 +238,9 @@ const (
 	keywordTimeout                     = "timeout"
 )
 
-// errorRules is the A13 rule table, evaluated in priority-then-specificity order.
+// errorRules 是 A13 规则表, 按「优先级再具体度」的顺序求值。
 var errorRules = []ErrorRule{
-	// Priority 10 - iron_clad permanent signals (5 mandated + 1 alias)
+	// 优先级 10 - iron_clad 永久信号(5 个强制 + 1 个别名)
 	{RuleID: "R-001", Version: 1, Priority: 10, Provider: "*", HTTPStatus: "401",
 		BodyKeyword: keywordInvalidGrant, Class: ErrorClassOAuthInvalidGrant,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
@@ -175,22 +253,19 @@ var errorRules = []ErrorRule{
 	{RuleID: "R-004", Version: 1, Priority: 10, Provider: "*", HTTPStatus: "401",
 		BodyKeyword: keywordTokenRevoked, Class: ErrorClassTokenRevoked,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
-	// Drift D3 (docs/reference_delta/2026-05-06/vendor-drift-audit.md):
-	// OpenAI docs no longer publish 402 for billing/deactivation. Keep the
-	// deactivated_workspace keyword as an OpenAI-scoped defensive match across
-	// statuses. Fetch URLs: https://developers.openai.com/api/docs/guides/error-codes
-	// and https://platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
+	// 漂移 D3(详见 docs/reference_delta/2026-05-06/vendor-drift-audit.md):OpenAI 文档不再为
+	// billing/deactivation 给出 402,故保留跨状态码防御性匹配。
 	{RuleID: "R-005", Version: 2, Priority: 10, Provider: "openai", HTTPStatus: "*",
 		BodyKeyword: keywordDeactivatedWorkspace, Class: ErrorClassWorkspaceDeactivated,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
-	// R-006 token_invalidated is treated as token_revoked equivalent (vendor synonym).
+	// R-006 token_invalidated 等同 token_revoked 处理(厂商同义词)。
 	{RuleID: "R-006", Version: 1, Priority: 10, Provider: "*", HTTPStatus: "401",
 		BodyKeyword: keywordTokenInvalidated, Class: ErrorClassTokenRevoked,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 20 - credit / billing iron_clad.
-	// Drift D3 scopes legacy 402/400 credit keywords to Anthropic only; OpenAI
-	// current docs use 429 for rate_limit_error and do not document 402.
+	// 优先级 20 - credit / billing iron_clad。
+	// 漂移 D3 把遗留的 402/400 credit keyword 范围收窄到仅 Anthropic;OpenAI
+	// 现行文档对 rate_limit_error 用 429, 不再记录 402。
 	{RuleID: "R-007", Version: 2, Priority: 20, Provider: "anthropic", HTTPStatus: "402",
 		BodyKeyword: keywordCredit, Class: ErrorClassCreditExhausted,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
@@ -198,25 +273,35 @@ var errorRules = []ErrorRule{
 		BodyKeyword: keywordCreditBalance, Class: ErrorClassCreditExhausted,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 25 - D8: Anthropic 402 catch-all billing_error.
-	// Fires after R-007 (priority 20, keyword-specific). Any Anthropic 402 without
-	// a credit keyword still represents billing_error per new Anthropic typed error
-	// class docs (platform.claude.com/docs/en/api/errors, fetched 2026-05-06).
+	// 优先级 22 - Grok/xAI 坏 key 返 400(非 401):归 token_revoked 类,使其经 SignalFromClassification
+	// 走 auth 降级车道、经 decisionFromHTTPClassification 走 auth-failover(缺口① 附带修复:此前 grok 400
+	// 通配 R-016 → unknown → upstream_client_4xx 直接透传给客户端,既不换号也不冷却)。
+	// keyword 集刻意保守(过宽会误禁好 grok 号,F1 Owner-gated):只认最明确的认证失败标识。
+	// tier=ambiguous(error_normalize 层不永久禁);是否硬禁由 auth 车道的 iron-clad 分级独立决定。
+	// RequiresAuthLane:客户端契约(400 透传→401 换号)与健康记账都会变,必须随车道 knob 生效。
+	{RuleID: "R-024", Version: 1, Priority: 22, Provider: "grok", HTTPStatus: "400",
+		BodyKeyword: "invalid_api_key", Class: ErrorClassTokenRevoked,
+		Action: RetryActionCooldown, Tier: TierAmbiguous, RequiresAuthLane: true},
+	{RuleID: "R-025", Version: 1, Priority: 22, Provider: "grok", HTTPStatus: "400",
+		BodyKeyword: "incorrect api key", Class: ErrorClassTokenRevoked,
+		Action: RetryActionCooldown, Tier: TierAmbiguous, RequiresAuthLane: true},
+
+	// 优先级 25 - D8: Anthropic 402 兜底 billing_error,排在 R-007 keyword 专用规则之后。
 	{RuleID: "R-021", Version: 1, Priority: 25, Provider: "anthropic", HTTPStatus: "402",
 		BodyKeyword: "", Class: ErrorClassCreditExhausted,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 30 - generic 401 (no keyword): permanent disable per spec
+	// 优先级 30 - 通用 401(无 keyword): 按规格永久禁用
 	{RuleID: "R-009", Version: 1, Priority: 30, Provider: "*", HTTPStatus: "401",
 		Class:  ErrorClassOAuthInvalidGrant,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 35 - Gemini-specific 403 with permission_denied (counted, not iron_clad)
+	// 优先级 35 - Gemini 专用的带 permission_denied 的 403(计数禁用, 非 iron_clad)
 	{RuleID: "R-017", Version: 1, Priority: 35, Provider: "gemini", HTTPStatus: "403",
 		BodyKeyword: keywordPermissionDenied, Class: ErrorClassPlatformPolicy,
 		Action: RetryActionCountedDisable, Tier: TierAmbiguous},
 
-	// Priority 40 - 403 platform-specific
+	// 优先级 40 - 403 平台专用
 	{RuleID: "R-010", Version: 1, Priority: 40, Provider: "openai", HTTPStatus: "403",
 		Class:  ErrorClassPlatformPolicy,
 		Action: RetryActionCountedDisable, Tier: TierAmbiguous},
@@ -227,10 +312,7 @@ var errorRules = []ErrorRule{
 		Class:  ErrorClassPlatformPolicy,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
 
-	// Priority 45 - Bedrock drift D2 (2026-05-06 vendor audit):
-	// 429 ThrottlingException is quota/rate limiting; 503
-	// ServiceUnavailableException is capacity/overload, not rate limiting.
-	// Fetch URL: https://docs.aws.amazon.com/bedrock/latest/userguide/troubleshooting-api-error-codes.html
+	// 优先级 45 - Bedrock 漂移 D2:429 ThrottlingException 是限流;503 ServiceUnavailableException 是过载。
 	{RuleID: "R-018", Version: 2, Priority: 45, Provider: "bedrock", HTTPStatus: "429",
 		BodyKeyword: keywordThrottlingException, Class: ErrorClassRateLimited,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
@@ -238,7 +320,13 @@ var errorRules = []ErrorRule{
 		BodyKeyword: keywordServiceUnavailableException, Class: ErrorClassOverloaded,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// Priority 50 - rate limit and overload (always ambiguous, cooldown only)
+	// 优先级 48 - OpenAI/Codex 429 的明确配额耗尽证据;极窄词表避免把普通限速误禁整号。
+	{RuleID: "R-026", Version: 1, Priority: 48, Provider: "openai", HTTPStatus: "429", BodyKeyword: keywordInsufficientQuota, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
+	{RuleID: "R-027", Version: 1, Priority: 48, Provider: "codex", HTTPStatus: "429", BodyKeyword: keywordInsufficientQuota, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
+	{RuleID: "R-028", Version: 1, Priority: 48, Provider: "openai", HTTPStatus: "429", BodyKeyword: keywordBillingHardLimit, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
+	{RuleID: "R-029", Version: 1, Priority: 48, Provider: "codex", HTTPStatus: "429", BodyKeyword: keywordBillingHardLimit, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
+
+	// 优先级 50 - 限流与过载(始终 ambiguous, 仅 cooldown)
 	{RuleID: "R-013", Version: 1, Priority: 50, Provider: "*", HTTPStatus: "429",
 		Class:  ErrorClassRateLimited,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
@@ -246,46 +334,41 @@ var errorRules = []ErrorRule{
 		Class:  ErrorClassOverloaded,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// D8: Anthropic 504 timeout_error — upstream gateway timeout (ambiguous, cooldown).
-	// Distinct from R-019 network timeout (status=0, local synthesized).
-	// Source: platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
+	// D8: Anthropic 504 timeout_error 是 upstream gateway 超时,不同于本地合成的 R-019(status=0)。
 	{RuleID: "R-022", Version: 1, Priority: 50, Provider: "anthropic", HTTPStatus: "504",
 		Class:  ErrorClassUpstreamTimeout,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// D8: Anthropic 413 request_too_large — client payload error, no retry.
-	// PassThrough: caller must reduce request size; no FSM state change.
-	// Source: platform.claude.com/docs/en/api/errors (fetched 2026-05-06).
+	// D8: Anthropic 413 request_too_large 是客户端载荷错误,不重试且不改变 FSM 状态。
 	{RuleID: "R-023", Version: 1, Priority: 50, Provider: "anthropic", HTTPStatus: "413",
 		Class:  ErrorClassRequestTooLarge,
 		Action: RetryActionPassThrough, Tier: TierNone},
 
-	// Priority 55 - synthesized network timeout (status 0 + body hint)
+	// 优先级 55 - 合成的 network 超时(status 0 + body 提示)
 	{RuleID: "R-019", Version: 1, Priority: 55, Provider: "*", HTTPStatus: "0",
 		BodyKeyword: keywordTimeout, Class: ErrorClassNetworkTimeout,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
-	// Priority 60 - generic 5xx (warn only)
+	// 优先级 60 - 通用 5xx(仅告警)
 	{RuleID: "R-015", Version: 1, Priority: 60, Provider: "*", HTTPStatus: "5xx",
 		Class:  ErrorClassServerError,
 		Action: RetryActionWarnOnly, Tier: TierAmbiguous},
 
-	// Priority 70 - wildcard catch-all
+	// 优先级 70 - 通配兜底
 	{RuleID: "R-016", Version: 1, Priority: 70, Provider: "*", HTTPStatus: "*",
 		Class:  ErrorClassUnknown,
 		Action: RetryActionPassThrough, Tier: TierNone},
 }
 
-// ErrNoMatchingRule is returned by Classify when no rule (including the wildcard
-// catch-all) matches. In practice unreachable because R-016 matches everything.
+// ErrNoMatchingRule 在没有任何规则(含通配兜底)匹配时由 Classify 返回。
+// 实践中不可达, 因为 R-016 匹配一切。
 var ErrNoMatchingRule = errors.New("no matching error normalization rule")
 
-// Classify evaluates the ERROR_RULES table against an upstream response and
-// returns a Classification. The classifier never mutates state; FsmTransition
-// is a hint, the FSM caller (A22) owns the actual transition.
+// Classify 用 ERROR_RULES 表对一个 upstream 响应求值并返回 Classification。
+// 分类器从不变更状态; FsmTransition 只是提示, 实际状态转移由 FSM调用方(A22)负责。
 //
-// httpStatus 0 represents a synthesized response (no upstream reply, e.g.
-// network timeout) - combined with BodyKeyword "timeout" matches R-019.
+// httpStatus 0 代表一个合成响应(没有 upstream 回复, 例如 network 超时)——
+// 与 BodyKeyword "timeout" 组合即匹配 R-019。
 func Classify(httpStatus int, headers http.Header, body []byte, provider string) (Classification, error) {
 	if httpStatus < 0 {
 		return Classification{}, errors.New("http status must be non-negative")
@@ -308,10 +391,9 @@ func Classify(httpStatus int, headers http.Header, body []byte, provider string)
 	}, nil
 }
 
-// RemapClientStatus applies an optional channel-level status mapping for the
-// client response only. Empty or unmapped configs return the upstream-derived
-// status unchanged; callers must keep classification, body, and billing inputs
-// on the original upstream status.
+// RemapClientStatus 仅对客户端响应应用一个可选的 channel 级状态码映射。
+// 空配置或未命中映射时, 原样返回从 upstream 推导出的状态码;调用方必须让
+// classification、body 与计费输入仍基于原始的 upstream 状态码。
 func RemapClientStatus(status int, mapping map[int]int) int {
 	if len(mapping) == 0 {
 		return status
@@ -329,6 +411,10 @@ func matchRule(httpStatus int, headers http.Header, body []byte, provider string
 	var best ErrorRule
 	found := false
 	for _, rule := range errorRules {
+		// 车道绑定规则只在 knob 开时参与(默认关 → grok/xai 分类保持基底行为)。
+		if rule.RequiresAuthLane && !authLaneRulesEnabled.Load() {
+			continue
+		}
 		if !providerMatches(rule.Provider, normalizedProvider) {
 			continue
 		}
@@ -355,6 +441,15 @@ func normalizeProvider(provider string) string {
 		return "*"
 	case "anthropic_messages":
 		return "anthropic"
+	case "openai_codex":
+		return "codex"
+	case "xai":
+		// xAI 与 grok 是同一上游的两种叫法;归一到 canonical vendor "grok",让 R-024/R-025 覆盖两者。
+		// 与 R-024/R-025 同门控:knob 关时保持基底归一化(xai 只匹配通配规则),零行为变。
+		if authLaneRulesEnabled.Load() {
+			return "grok"
+		}
+		return "xai"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}
@@ -430,8 +525,8 @@ func confidenceForTier(tier DisableTier) Confidence {
 	}
 }
 
-// transitionFor enforces the DR-009 6.6 hard floor structurally:
-// ambiguous-tier rules cannot reach FsmTransitionDisabled regardless of action.
+// transitionFor 结构上强制 DR-009 6.6 的硬底线:
+// ambiguous 档位的规则无论是什么 action 都到不了 FsmTransitionDisabled。
 func transitionFor(action RetryAction, tier DisableTier) FsmTransition {
 	switch action {
 	case RetryActionPermanentDisable:
@@ -448,7 +543,7 @@ func transitionFor(action RetryAction, tier DisableTier) FsmTransition {
 	}
 }
 
-// retryAfterMillis parses RFC 7231 Retry-After (delta-seconds OR HTTP-date).
+// retryAfterMillis 解析 RFC 7231 Retry-After(delta-seconds 或 HTTP-date)。
 func retryAfterMillis(headers http.Header) int64 {
 	if headers == nil {
 		return 0
@@ -473,10 +568,10 @@ func retryAfterMillis(headers http.Header) int64 {
 	return 0
 }
 
-// retryAfterFromBody extracts a cooldown delta from a provider error BODY when no
-// Retry-After header was supplied (RR-02). Codex usage_limit_reached carries
-// error.resets_at (unix seconds) / error.resets_in_seconds in the body only, so
-// a header-only parser benches the account for the wrong (default) duration.
+// retryAfterFromBody 在没有提供 Retry-After header 时(RR-02), 从 provider 的
+// 错误 body 中提取冷却时长。Codex 的 usage_limit_reached 只在 body 里携带
+// error.resets_at(unix 秒)/ error.resets_in_seconds, 因此只解析 header 的
+// 解析器会用错误的(默认)时长把账号停用。
 func retryAfterFromBody(body []byte, now time.Time) int64 {
 	if len(body) == 0 {
 		return 0

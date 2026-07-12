@@ -81,14 +81,25 @@ func (s *Service) Reserve(ctx context.Context, req ReserveRequest) (ReserveResul
 		err = s.withStore(ctx, func(tx PGStore) error {
 			existing, err := tx.GetReservationByClaimForUpdate(ctx, req.TenantID, req.ClaimID)
 			if err == nil && existing.ID != 0 {
+				if canReactivateReservation(existing.Status) {
+					// 可复活态(released/expired)只校验 fingerprint(请求内容身份):
+					// billing 复活 aborted claim 时本就接受新 predicted/池绑定(pooling_group
+					// 不入幂等指纹),predicted/scopes 是派生的定价/路由态——admin 改组价率或
+					// 池绑定后,同 Idempotency-Key 重试必然携新值,在此严格比对会让重试永久
+					// 429。reactivate 用新值重跑策略评估与窗口判定,强制面不缩。
+					if strings.TrimSpace(existing.RequestFingerprint) != strings.TrimSpace(req.RequestFingerprint) {
+						conflict := reservationReplayConflictError()
+						result = ReserveResult{Decision: conflict.Decision, Reservation: existing}
+						deny = conflict
+						return nil
+					}
+					result, deny, err = reactivateExistingReservation(ctx, tx, req, existing)
+					return err
+				}
 				if conflict := reservationReplayConflict(req, existing); conflict != nil {
 					result = ReserveResult{Decision: conflict.Decision, Reservation: existing}
 					deny = conflict
 					return nil
-				}
-				if canReactivateReservation(existing.Status) {
-					result, deny, err = reactivateExistingReservation(ctx, tx, req, existing)
-					return err
 				}
 				result, deny = existingReservationResult(req, existing)
 				return nil
@@ -519,6 +530,8 @@ func exceededDecision(req ReserveRequest, policy Policy, assessment policyAssess
 		Scope:      policy.Scope,
 		Metric:     policy.Metric,
 		Amount:     assessment.amount,
+		// 透出命中的窗口种类,供拒绝响应让客户端区分日/周/月额超限。policy 已在手,直接取其窗口。
+		WindowKind: policy.Window.Kind,
 	}
 }
 
@@ -848,6 +861,7 @@ func assessmentPayload(policy Policy, current decimal.Decimal, amount decimal.De
 		"scope_id":      normalizeScopeID(policy.Scope.Kind, policy.Scope.ID),
 		"metric":        policy.Metric,
 		"mode":          policy.Mode,
+		"window_kind":   policy.Window.Kind,
 		"current":       current.String(),
 		"amount":        amount.String(),
 		"limit":         limit.String(),

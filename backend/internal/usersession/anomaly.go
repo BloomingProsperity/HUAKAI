@@ -1,6 +1,7 @@
 package usersession
 
 import (
+	"context"
 	"net"
 	"strings"
 )
@@ -17,6 +18,28 @@ const (
 type DriftResult struct {
 	Level  DriftLevel `json:"level"`
 	Reason string     `json:"reason,omitempty"`
+}
+
+// SessionDriftEvent 一次会话上下文漂移的观测事件。Medium(仅 IP 变)/Low(仅 UA 变)
+// 是 token 被盗用/重放最常见形态的弱信号, 只算不消费则检测全盲; High 也进同一信号流
+// (撤销行为不变), 供告警侧看到完整梯度。IP/UA 记 class 而非原文 (不落 PII 进日志)。
+type SessionDriftEvent struct {
+	TenantID   int64
+	UserID     int64
+	FamilyID   string
+	Level      DriftLevel
+	Reason     string
+	Source     string // "validate" / "refresh"
+	IPClass    string
+	UAClass    string
+	BaselineIP string // 家族基线 IP class
+	BaselineUA string // 家族基线 UA class
+}
+
+// DriftObserver 消费漂移事件 (结构化日志/指标/告警)。纯观测: 不得阻塞、不返回错误,
+// 对 Validate/Refresh 的放行与拒绝零影响。
+type DriftObserver interface {
+	ObserveSessionDrift(ctx context.Context, ev SessionDriftEvent)
 }
 
 func DetectDrift(family SessionFamily, ip, userAgent string) DriftResult {

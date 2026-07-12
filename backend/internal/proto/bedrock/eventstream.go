@@ -73,10 +73,9 @@ func (s *EventStreamAdapter) CanonicalToProviderRequest(ctx context.Context, can
 	return nil, nil, proto.ErrNotImplemented
 }
 
-// ProviderResponseToCanonical translates Bedrock-on-Anthropic InvokeModel
-// responses. The non-streaming body is the same Anthropic Messages response
-// shape used by the native Anthropic adapter, with Bedrock-specific top-level
-// fields preserved through passthrough.
+// ProviderResponseToCanonical 翻译 Bedrock-on-Anthropic InvokeModel 响应。
+// 非流式 body 与 native Anthropic 适配器使用的 Anthropic Messages 响应
+// 形态一致，Bedrock 特有的顶层字段通过 passthrough 保留。
 func (s *EventStreamAdapter) ProviderResponseToCanonical(ctx context.Context, raw []byte) (*proto.HCSF, []proto.ProtocolLossEntry, error) {
 	return s.innerDelegate().ProviderResponseToCanonical(ctx, raw)
 }
@@ -102,7 +101,7 @@ func (s *EventStreamAdapter) ProviderEventToCanonicalEvents(ctx context.Context,
 }
 
 // FinalizeUpstreamStream 在流终止（EOF / 异常 / cancel）时补齐未结束的
-// content_block_stop + message_stop。per-call delegate anthropic.Adapter。
+// content_block_stop + message_stop。每次调用都委派给 anthropic.Adapter。
 func (s *EventStreamAdapter) FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error) {
 	return s.innerDelegate().FinalizeUpstreamStream(ctx, state)
 }
@@ -110,11 +109,11 @@ func (s *EventStreamAdapter) FinalizeUpstreamStream(ctx context.Context, state a
 // 编译期接口断言。
 var _ proto.UpstreamAdapter = (*EventStreamAdapter)(nil)
 
-// Source files read:
+// 已阅读的源文件：
 //   - backend/internal/proto/anthropic/sse.go (HUAKAI 内部，anthropic.UpstreamState 复用)
 //   - backend/internal/proto/proto.go (proto.UpstreamAdapter 接口)
 //   - backend/internal/proto/hcsf.go (CanonicalEvent 类型)
 //   - backend/internal/gateway/bedrock_stream_scanner.go (A3，emit shape 参考)
-//   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (Bedrock chunk envelope)
-// Lane: claude
-// Time: 2026-05-08T<UTC>
+//   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (Bedrock chunk 信封)
+// 通道：claude
+// 时间：2026-05-08T<UTC>

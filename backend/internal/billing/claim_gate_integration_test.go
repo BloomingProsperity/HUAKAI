@@ -1,12 +1,12 @@
 //go:build integration_pg
 
-// F-OBS-001 Tx1 ClaimGate integration tests against real PostgreSQL.
-// Requires the dev PG container + applied migrations:
+// F-OBS-001 Tx1 ClaimGate 针对真实 PostgreSQL 的集成测试。
+// 需要 dev PG 容器 + 已应用的迁移:
 //
 //	make db-up && make db-migrate
 //	make test-integration
 //
-// Strong assertions per spec §Tx1 + AT-OBS-001/002.
+// 按规格 §Tx1 + AT-OBS-001/002 做强断言。
 package billing
 
 import (
@@ -32,16 +32,14 @@ func dsn(t *testing.T) string {
 	return v
 }
 
-// seedTenant inserts a fresh tenant + real users + api_keys row + registers
-// cleanup. Returns IDs. Migration 0009 replaced the previous
-// synthetic-id pattern (apiKeyID = tenantID*100 + 1) with a real seed
-// because migration 0009 added composite FKs from billing_ledger_claims
-// (tenant_id, api_key_id) -> api_keys (tenant_id, id) and from
-// (tenant_id, user_id) -> users (tenant_id, id).
+// seedTenant 插入一个全新的 tenant + 真实 users + api_keys 行,并注册
+// 清理逻辑。返回各 ID。迁移 0009 用真实 seed 取代了此前的合成 id 模式
+//(apiKeyID = tenantID*100 + 1),因为迁移 0009 为 billing_ledger_claims
+// 增加了从 (tenant_id, api_key_id) -> api_keys (tenant_id, id) 以及从
+// (tenant_id, user_id) -> users (tenant_id, id) 的复合 FK。
 //
-// The bcrypt hash + key_prefix are placeholders — the resolver path is
-// not exercised by these tests; the FK target just needs an api_keys row
-// to exist with the same (tenant_id, id) pair.
+// bcrypt hash + key_prefix 只是占位符 —— 这些测试不会走 resolver 路径;
+// FK 目标只需存在一个 (tenant_id, id) 对相同的 api_keys 行即可。
 func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string) (tenantID, apiKeyID, userID int64) {
 	t.Helper()
 	tenantName := fmt.Sprintf("test-tenant-%s-%d", suffix, time.Now().UnixNano())
@@ -74,7 +72,7 @@ func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix st
 	}
 	t.Cleanup(func() {
 		c := context.Background()
-		// FK chain: claims/usage/archive -> api_keys -> users -> tenants.
+		// FK 链:claims/usage/archive -> api_keys -> users -> tenants。
 		_, _ = pool.Exec(c, `DELETE FROM usage_record_dlq WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
@@ -89,8 +87,8 @@ func seedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix st
 	return tenantID, apiKeyID, userID
 }
 
-// min is a tiny helper since the std-lib min(int, int) is only Go 1.21+.
-// Once the module is verified to be on >= 1.21 this can be deleted.
+// min 是一个小工具,因为标准库的 min(int, int) 仅 Go 1.21+ 才有。
+// 一旦确认模块已在 >= 1.21,即可删除它。
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -124,8 +122,44 @@ func baseRequest(tenantID, apiKeyID, userID int64) ReserveRequest {
 	}
 }
 
-// AT-OBS-001 strong: Idempotent replay (same fingerprint) returns cached
-// claim, NO second row inserted, IdempotencyHit=true on the second call.
+// TestClaimReserveLeaseCoversMaxRequestLifetime 守 reserve 写入的 claim 租约窗口
+// 覆盖最大请求生命周期。否则 LeaseSweeper(按 lease_expires_at<NOW() 捞 reserving
+// claim 无条件 Abort)会在长流(可达 600s)仍在传输时把活 claim 误 Abort:已交付内容
+// 永不计费(亏钱)+ in_flight 在流仍活时被减低估致上游账号超并发(CONC-1/LEAK-1)。
+// 变异判据:把 DefaultClaimLeaseWindow 还原成旧值 90s → lease_expires_at-reserveStart
+// ≈90s < 10min → 本测试 RED。
+func TestClaimReserveLeaseCoversMaxRequestLifetime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	tenantID, apiKeyID, userID := seedTenant(t, ctx, pool, "lease")
+	gate := NewClaimGate(pool)
+
+	reserveStart := time.Now().UTC()
+	r, err := gate.Reserve(ctx, baseRequest(tenantID, apiKeyID, userID))
+	if err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if r.ClaimID == 0 {
+		t.Fatalf("Reserve 须返非零 ClaimID")
+	}
+	var leaseExpiresAt time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT lease_expires_at FROM billing_ledger_claims WHERE tenant_id=$1 AND id=$2`,
+		tenantID, r.ClaimID,
+	).Scan(&leaseExpiresAt); err != nil {
+		t.Fatalf("读 lease_expires_at: %v", err)
+	}
+	covered := leaseExpiresAt.Sub(reserveStart)
+	const minCover = 10 * time.Minute // 须 > 最大流时长 600s + 结算/DLQ 余量
+	if covered < minCover {
+		t.Fatalf("claim 租约只覆盖 %v(< %v):长流会被 LeaseSweeper 中途 abort 致亏钱+超并发;租约须 >= 最大请求生命周期",
+			covered, minCover)
+	}
+}
+
+// AT-OBS-001 强断言:幂等重放(相同指纹)返回缓存的 claim,
+// 不插入第二行,第二次调用时 IdempotencyHit=true。
 func TestAT_OBS_001_IdempotentReplay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -145,7 +179,7 @@ func TestAT_OBS_001_IdempotentReplay(t *testing.T) {
 		t.Fatalf("first Reserve must return non-zero ClaimID")
 	}
 
-	// Mark first claim committed so the second Reserve takes the cached-replay branch.
+	// 把第一个 claim 标记为 committed,使第二次 Reserve 走缓存重放分支。
 	if _, err := pool.Exec(ctx,
 		`UPDATE billing_ledger_claims SET status='committed', settled_at=NOW() WHERE id=$1`,
 		r1.ClaimID,
@@ -164,7 +198,7 @@ func TestAT_OBS_001_IdempotentReplay(t *testing.T) {
 		t.Fatalf("second Reserve must return SAME ClaimID; got first=%d second=%d", r1.ClaimID, r2.ClaimID)
 	}
 
-	// Spec invariant: NO second claim row inserted.
+	// 规格不变式:不插入第二行 claim。
 	var count int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM billing_ledger_claims WHERE tenant_id=$1 AND api_key_id=$2`,
@@ -177,8 +211,8 @@ func TestAT_OBS_001_IdempotentReplay(t *testing.T) {
 	}
 }
 
-// AT-OBS-002 strong: Replay attack (different fingerprint, same logical_request_id)
-// returns ErrFingerprintConflict + FingerprintConflict=true, NO charge, NO row.
+// AT-OBS-002 强断言:重放攻击(不同指纹、相同 logical_request_id)
+// 返回 ErrFingerprintConflict + FingerprintConflict=true,不计费、不插行。
 func TestAT_OBS_002_FingerprintConflict(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -195,7 +229,7 @@ func TestAT_OBS_002_FingerprintConflict(t *testing.T) {
 		t.Fatalf("first Reserve must return ClaimID")
 	}
 
-	// Same logical_request_id, different normalized_payload_hash → replay attack.
+	// 相同 logical_request_id、不同 normalized_payload_hash → 重放攻击。
 	req2 := req1
 	req2.NormalizedPayloadHash = "hash-BBB-attacker"
 	r2, err := gate.Reserve(ctx, req2)
@@ -206,7 +240,7 @@ func TestAT_OBS_002_FingerprintConflict(t *testing.T) {
 		t.Fatalf("expected FingerprintConflict=true on result; got %+v", r2)
 	}
 
-	// Spec invariant: only ONE row exists for the original request.
+	// 规格不变式:原请求只存在唯一一行。
 	var count int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM billing_ledger_claims WHERE tenant_id=$1 AND api_key_id=$2`,
@@ -219,8 +253,8 @@ func TestAT_OBS_002_FingerprintConflict(t *testing.T) {
 	}
 }
 
-// Plan §F contract: function returns typed error when PG is unreachable,
-// not a 200 OK. Constructed with nil pool → ErrPoolNotConfigured.
+// 计划 §F 契约:PG 不可达时函数返回一个有类型的错误,而非 200 OK。
+// 用 nil pool 构造 → ErrPoolNotConfigured。
 func TestClaimGate_NilPool_ReturnsTypedError(t *testing.T) {
 	gate := NewClaimGate(nil)
 	_, err := gate.Reserve(context.Background(), ReserveRequest{TenantID: 1, APIKeyID: 1})
@@ -229,8 +263,8 @@ func TestClaimGate_NilPool_ReturnsTypedError(t *testing.T) {
 	}
 }
 
-// AT-OBS-014 partial: Money decimal precision survives PG numeric(20,8) round-trip.
-// 1_000_000 × 0.0000001 == 0.10 exactly when stored and read back.
+// AT-OBS-014 部分覆盖:金额 decimal 精度在 PG numeric(20,8) 往返后保持不变。
+// 存入再读回时,1_000_000 × 0.0000001 精确等于 0.10。
 func TestAT_OBS_014_MoneyPrecisionRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

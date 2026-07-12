@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// MUTATION: ignore tenantID or drop the per-tenant overlay -> usage keys are absent or tenant-blind -> RED.
+// 变异:忽略 tenantID 或去掉 per-tenant overlay → usage key 缺失或对租户无感 → 红。
 func TestCompositeMetricSourceOverlaysPerTenant(t *testing.T) {
 	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
 	rolluper := &stubUsageRolluper{
@@ -40,7 +40,44 @@ func TestCompositeMetricSourceOverlaysPerTenant(t *testing.T) {
 	assertFloat(t, got[MetricUsageRequestRatePerMinute], 1)
 }
 
-// MUTATION: drop the expvar/global delegate -> existing global keys disappear -> RED.
+// 变异:把 rollup.LatencyP99MS 写到 p95 key 下(或漏写其中之一)→
+// p95 断言会看到 480.25 而非 120.5 → 红。fixture 让 p95 与 p99 保持不同,
+// 以确保 key 被交换/复用时不会蒙混通过。
+func TestCompositeMetricSourceOverlaysLatencyPercentiles(t *testing.T) {
+	now := time.Date(2026, 6, 14, 9, 0, 0, 0, time.UTC)
+	rolluper := &stubUsageRolluper{
+		rollup: RecentUsageRollup{
+			RequestCount: 4,
+			LatencyP95MS: 120.5,
+			LatencyP99MS: 480.25,
+		},
+	}
+	source := NewCompositeMetricSource(CompositeMetricSourceConfig{
+		GlobalSource:  stubGlobalSource{snapshot: map[string]float64{}},
+		UsageRolluper: rolluper,
+		RecentWindow:  10 * time.Minute,
+		Now:           func() time.Time { return now },
+	})
+
+	got, err := source.Snapshot(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	assertFloat(t, got[MetricUsageLatencyP95MS], 120.5)
+	assertFloat(t, got[MetricUsageLatencyP99MS], 480.25)
+
+	// 负延迟(时钟偏移/坏样本)必须被钳到 0,而不是作为负的 SLO 指标
+	// 输出。变异:跳过 nonNegativeFloat → -1 → 红。
+	rolluper.rollup = RecentUsageRollup{RequestCount: 1, LatencyP95MS: -1, LatencyP99MS: -2}
+	got, err = source.Snapshot(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	assertFloat(t, got[MetricUsageLatencyP95MS], 0)
+	assertFloat(t, got[MetricUsageLatencyP99MS], 0)
+}
+
+// 变异:去掉 expvar/global 委托 → 已有的全局 key 消失 → 红。
 func TestCompositeMetricSourcePreservesGlobals(t *testing.T) {
 	source := NewCompositeMetricSource(CompositeMetricSourceConfig{
 		GlobalSource: stubGlobalSource{
@@ -62,7 +99,7 @@ func TestCompositeMetricSourcePreservesGlobals(t *testing.T) {
 	}
 }
 
-// MUTATION: pass tenantID 0 or a constant to the rollup querier -> tenant-scoped call assertion fails -> RED.
+// 变异:给 rollup 查询器传 tenantID 0 或常量 → 按租户限定调用的断言失败 → 红。
 func TestCompositeMetricSourceTenantScoped(t *testing.T) {
 	now := time.Date(2026, 6, 7, 12, 30, 0, 0, time.UTC)
 	rolluper := &stubUsageRolluper{rollup: RecentUsageRollup{RequestCount: 1}}
@@ -89,7 +126,7 @@ func TestCompositeMetricSourceTenantScoped(t *testing.T) {
 	}
 }
 
-// MUTATION: propagate the usage rollup DB error -> scheduler evaluation breaks instead of using globals -> RED.
+// 变异:把 usage rollup 的 DB 错误向上传播 → 调度器评估中断而非退回用全局指标 → 红。
 func TestCompositeMetricSourceDBErrorFailsSoft(t *testing.T) {
 	source := NewCompositeMetricSource(CompositeMetricSourceConfig{
 		GlobalSource: stubGlobalSource{
@@ -112,7 +149,7 @@ func TestCompositeMetricSourceDBErrorFailsSoft(t *testing.T) {
 	}
 }
 
-// MUTATION: ignore UsageStatsEnabled=false -> usage rollup runs and emits usage keys -> RED.
+// 变异:忽略 UsageStatsEnabled=false → usage rollup 仍执行并输出 usage key → 红。
 func TestCompositeMetricSourceUsageStatsToggle(t *testing.T) {
 	rolluper := &stubUsageRolluper{rollup: RecentUsageRollup{RequestCount: 9}}
 	source := NewCompositeMetricSource(CompositeMetricSourceConfig{

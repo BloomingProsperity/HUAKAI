@@ -32,8 +32,8 @@ func TestRankFreshWeightedReservoirHonorsWeight(t *testing.T) {
 		counts[ranked[0].ID]++
 	}
 
-	// MUTATION: ignoring Weight makes all three accounts win roughly uniformly,
-	// so the heavy:light ratio collapses near 1 instead of near 10.
+	// 变异:忽略 Weight 会让三个账号大致均匀胜出,于是 heavy:light 比例从接近
+	// 10 坍缩到接近 1。
 	lightAvg := float64(counts[11]+counts[12]) / 2
 	if lightAvg == 0 {
 		t.Fatalf("light accounts were never selected; counts=%v", counts)
@@ -68,9 +68,8 @@ func TestRankFreshDefaultModeUnchanged(t *testing.T) {
 		})
 		got := selector.rankFresh(accounts, policy)
 		if got[0].ID != expected[0] {
-			// MUTATION: always applying weighted selection consumes a different
-			// random sequence and strongly favors account 20, so this exact
-			// pre-change Shuffle sequence comparison turns red.
+			// 变异:总是套用加权选择会消费不同的随机序列并强烈偏向账号 20,
+			// 因此这一精确的、改动前 Shuffle 序列的比对会变红。
 			t.Fatalf("draw %d default winner = %d, want pre-change shuffle winner %d", i, got[0].ID, expected[0])
 		}
 	}
@@ -96,8 +95,8 @@ func TestAccountSnapshotWeightPopulated(t *testing.T) {
 		t.Fatalf("Select: %v", err)
 	}
 
-	// MUTATION: dropping selector-side Weight population leaves account 31 at
-	// zero, so the default-as-1 contract is not visible to routing gates.
+	// 变异:省去 selector 侧的 Weight 填充会让账号 31 停留在零,于是「默认为
+	// 1」的契约对路由 gate 不可见。
 	if got := capture.weights[30]; got != 5 {
 		t.Fatalf("account 30 Weight = %d, want 5", got)
 	}

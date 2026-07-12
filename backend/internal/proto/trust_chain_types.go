@@ -5,8 +5,8 @@ import "encoding/json"
 // HUAKAI 信任链 T1：HopAttestation + ModelChain 类型定义。
 //
 // 设计依据：docs/process/plans/2026-05-13-trust-chain-feature-family-claude.md §3-§5。
-// 与 sub2api / new-api / portkey / litellm / helicone 现有项目根本差异：
-//   - 所有现有项目"信任商家"，user 看不到 hop chain；HUAKAI 强制 hop chain 写
+// HUAKAI 的根本设计：
+//   - 不让 user 盲目信任商家；HUAKAI 强制 hop chain 写
 //     入 Accounting，T2 加 ed25519 签名，T4 落 audit_ledger Merkle 链。
 //   - 防偷换模型、防虚报 token、防伪造 cache hit 由 ModelChain 三方比对 +
 //     audit_ledger cross-check 共同守护。
@@ -35,9 +35,8 @@ const (
 //     绝不能放 prompt / completion / tool 内容。
 type HopAttestation struct {
 	// SchemaVersion / HopIndex / HopKind / Actor / StartedAt / EndedAt /
-	// DecisionRef are the F-TRUST-001 receipt-facing fields. Older gateway
-	// paths may still fill the compact Hop/Timestamp fields below during
-	// transition.
+	// DecisionRef 是 F-TRUST-001 面向 receipt 的字段。过渡期内较旧的 gateway
+	// 路径可能仍然填写下面紧凑的 Hop/Timestamp 字段。
 	SchemaVersion string   `json:"schema_version,omitempty"`
 	HopIndex      int      `json:"hop_index,omitempty"`
 	HopKind       string   `json:"hop_kind,omitempty"`

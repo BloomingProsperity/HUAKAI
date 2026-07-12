@@ -14,8 +14,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/buildinfo"
 )
 
-// invokeVersion builds a minimal chi router that mirrors the exact path used
-// by routes.go, then fires a GET request at the given target.
+// invokeVersion 构建一个最小化的 chi router,镜像 routes.go 使用的完全相同
+// 的路径,然后向给定的 target 发起一个 GET 请求。
 func invokeVersion(t *testing.T, deps VersionDeps, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
@@ -28,7 +28,7 @@ func invokeVersion(t *testing.T, deps VersionDeps, target string) *httptest.Resp
 	return rec
 }
 
-// TestVersionUnauthorized: unauthenticated caller gets 401.
+// TestVersionUnauthorized:未认证的调用方得到 401。
 func TestVersionUnauthorized(t *testing.T) {
 	rec := invokeVersion(t, VersionDeps{
 		Auth: versionAuthStub{err: admin.ErrAdminUnauthorized},
@@ -39,7 +39,7 @@ func TestVersionUnauthorized(t *testing.T) {
 	}
 }
 
-// TestVersionForbidden: authenticated but unknown role gets 403.
+// TestVersionForbidden:已认证但角色未知,得到 403。
 func TestVersionForbidden(t *testing.T) {
 	rec := invokeVersion(t, VersionDeps{
 		Auth: versionAuthStub{ident: admin.AdminIdentity{Role: "unknown_role"}},
@@ -50,7 +50,7 @@ func TestVersionForbidden(t *testing.T) {
 	}
 }
 
-// TestVersionTenantOperatorOK: tenant_operator sees 200 with all 4 fields.
+// TestVersionTenantOperatorOK:tenant_operator 看到 200,且包含全部 4 个字段。
 func TestVersionTenantOperatorOK(t *testing.T) {
 	rec := invokeVersion(t, VersionDeps{
 		Auth: versionAuthStub{ident: tenantOperator(7)},
@@ -59,7 +59,7 @@ func TestVersionTenantOperatorOK(t *testing.T) {
 	assertVersionOK(t, rec)
 }
 
-// TestVersionPlatformAdminOK: platform_admin also sees 200.
+// TestVersionPlatformAdminOK:platform_admin 同样看到 200。
 func TestVersionPlatformAdminOK(t *testing.T) {
 	rec := invokeVersion(t, VersionDeps{
 		Auth: versionAuthStub{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
@@ -68,7 +68,7 @@ func TestVersionPlatformAdminOK(t *testing.T) {
 	assertVersionOK(t, rec)
 }
 
-// TestVersionGoVersionNonEmpty: go_version field always reflects runtime.Version().
+// TestVersionGoVersionNonEmpty:go_version 字段始终反映 runtime.Version()。
 func TestVersionGoVersionNonEmpty(t *testing.T) {
 	rec := invokeVersion(t, VersionDeps{
 		Auth: versionAuthStub{ident: tenantOperator(1)},
@@ -89,7 +89,7 @@ func TestVersionGoVersionNonEmpty(t *testing.T) {
 	}
 }
 
-// TestVersionNilDepsServiceUnavailable: nil Auth → 503 (not panic).
+// TestVersionNilDepsServiceUnavailable:Auth 为 nil → 503(而非 panic)。
 func TestVersionNilDepsServiceUnavailable(t *testing.T) {
 	rec := invokeVersion(t, VersionDeps{Auth: nil}, "/admin/v1/version")
 	if rec.Code != http.StatusServiceUnavailable {
@@ -97,8 +97,8 @@ func TestVersionNilDepsServiceUnavailable(t *testing.T) {
 	}
 }
 
-// TestVersionRouteNotDoublePrefix: ensure router responds 200 at /admin/v1/version
-// and NOT at /admin/v1/admin/v1/version (double-prefix guard).
+// TestVersionRouteNotDoublePrefix:确保 router 在 /admin/v1/version 上响应 200,
+// 而在 /admin/v1/admin/v1/version 上不响应(双重前缀守卫)。
 func TestVersionRouteNotDoublePrefix(t *testing.T) {
 	deps := VersionDeps{Auth: versionAuthStub{ident: tenantOperator(1)}}
 
@@ -107,7 +107,7 @@ func TestVersionRouteNotDoublePrefix(t *testing.T) {
 		t.Fatalf("correct path: status=%d body=%s", good.Code, good.Body.String())
 	}
 
-	// Build the SAME router and hit a bad double-prefix path — must 404.
+	// 构建同一个 router,并访问一个错误的双重前缀路径——必须返回 404。
 	r := chi.NewRouter()
 	r.Route("/admin/v1", func(r chi.Router) {
 		MountVersionRoutes(r, deps)

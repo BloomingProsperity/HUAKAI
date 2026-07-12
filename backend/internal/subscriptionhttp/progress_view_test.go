@@ -11,12 +11,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
 
-// fixedNow is an injected clock so resets_in_seconds is deterministic (no real time.Now).
+// fixedNow 是一个注入的时钟,使 resets_in_seconds 具有确定性(不用真实的 time.Now)。
 var fixedNow = time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
-// windowRead builds a CurrentWindowRead from decimal strings, splitting consumed into
-// settled+reserved the same way the production projection sums them (so the derived
-// fields are exercised over the real consumed = settled+reserved path).
+// windowRead 从十进制字符串构建一个 CurrentWindowRead,按生产投影求和的相同方式
+// 把 consumed 拆为 settled+reserved(这样派生字段就是在真实的
+// consumed = settled+reserved 路径上被测到的)。
 func windowRead(limit, settled, reserved, overage string, end time.Time) quota.CurrentWindowRead {
 	return quota.CurrentWindowRead{
 		LimitValue:    decimal.RequireFromString(limit),
@@ -32,10 +32,10 @@ func windowRead(limit, settled, reserved, overage string, end time.Time) quota.C
 	}
 }
 
-// REGRESSION: a window under cap must report usage_percent=consumed/cap*100,
-// over_limit=false, over_limit_amount="0", and a positive resets countdown.
+// 回归:一个未超上限的窗口必须报告 usage_percent=consumed/cap*100、
+// over_limit=false、over_limit_amount="0",以及一个正的重置倒计时。
 func TestProgressView_UnderCap(t *testing.T) {
-	// consumed = 200 settled + 50 reserved = 250 of a 1000 cap → 25%.
+	// consumed = 200 settled + 50 reserved = 250,上限 1000 → 25%。
 	end := fixedNow.Add(time.Hour)
 	got := toSubscriptionProgressView(windowRead("1000", "200", "50", "0", end), fixedNow)
 
@@ -53,10 +53,10 @@ func TestProgressView_UnderCap(t *testing.T) {
 	}
 }
 
-// REGRESSION: a window past cap must report usage_percent>100, over_limit=true, and
-// over_limit_amount = consumed − cap (same USD decimal unit as consumed).
+// 回归:一个超过上限的窗口必须报告 usage_percent>100、over_limit=true,以及
+// over_limit_amount = consumed − cap(与 consumed 同为 USD 十进制单位)。
 func TestProgressView_OverCap(t *testing.T) {
-	// consumed = 1100 settled + 100 reserved = 1200 of a 1000 cap → 120%, overage 200.
+	// consumed = 1100 settled + 100 reserved = 1200,上限 1000 → 120%,超额 200。
 	end := fixedNow.Add(time.Hour)
 	got := toSubscriptionProgressView(windowRead("1000", "1100", "100", "0", end), fixedNow)
 
@@ -71,8 +71,8 @@ func TestProgressView_OverCap(t *testing.T) {
 	}
 }
 
-// REGRESSION: cap==0 must take the documented guard (usage_percent=0, no divide-by-zero
-// panic / Inf / NaN). Any nonzero consumption still flags over_limit.
+// 回归:cap==0 必须走文档化的守卫(usage_percent=0,不出现除零 panic / Inf / NaN)。
+// 任何非零的消耗仍然标记 over_limit。
 func TestProgressView_ZeroCapGuard(t *testing.T) {
 	end := fixedNow.Add(time.Hour)
 	got := toSubscriptionProgressView(windowRead("0", "5", "0", "0", end), fixedNow)
@@ -80,16 +80,16 @@ func TestProgressView_ZeroCapGuard(t *testing.T) {
 	if got.UsagePercent != 0.0 {
 		t.Fatalf("usage_percent = %v, want documented 0 guard when cap==0 (no NaN/Inf)", got.UsagePercent)
 	}
-	// consumed 5 > cap 0 → still over_limit with overage 5.
+	// consumed 5 > cap 0 → 仍然 over_limit,超额 5。
 	if !got.OverLimit || got.OverLimitAmount != "5" {
 		t.Fatalf("over_limit/amount = %v/%q, want true/\"5\" (cap 0, consumed 5)", got.OverLimit, got.OverLimitAmount)
 	}
 }
 
-// REGRESSION: resets_in_seconds clamps to 0 (never negative) when window_end is already
-// in the past relative to the injected clock.
+// 回归:当 window_end 相对注入时钟已是过去时,resets_in_seconds 钳到 0
+// (绝不为负)。
 func TestProgressView_ResetsClampsToZeroWhenWindowElapsed(t *testing.T) {
-	end := fixedNow.Add(-time.Minute) // window already ended a minute ago
+	end := fixedNow.Add(-time.Minute) // 窗口已在一分钟前结束
 	got := toSubscriptionProgressView(windowRead("1000", "100", "0", "0", end), fixedNow)
 
 	if got.ResetsInSeconds != 0 {
@@ -97,13 +97,13 @@ func TestProgressView_ResetsClampsToZeroWhenWindowElapsed(t *testing.T) {
 	}
 }
 
-// REGRESSION: the pre-existing fields (cap/consumed/remaining/overage/request_count/
-// window_start/window_end) are unchanged by the additive derived fields — consumed still
-// = settled+reserved, remaining still floors at 0, and overage still mirrors the ledger
-// OverageValue (NOT the derived over_limit_amount).
+// 回归:既有字段(cap/consumed/remaining/overage/request_count/window_start/
+// window_end)不因新增的派生字段而改变 —— consumed 仍为 settled+reserved,
+// remaining 仍以 0 为下限,overage 仍镜像 ledger 的 OverageValue
+// (「不是」派生的 over_limit_amount)。
 func TestProgressView_ExistingFieldsUnchanged(t *testing.T) {
 	end := fixedNow.Add(time.Hour)
-	w := windowRead("1000", "1100", "100", "0.25", end) // over cap: consumed 1200, ledger overage 0.25
+	w := windowRead("1000", "1100", "100", "0.25", end) // 超上限:consumed 1200,ledger 超额 0.25
 	got := toSubscriptionProgressView(w, fixedNow)
 
 	if got.Cap != "1000" {
@@ -115,8 +115,8 @@ func TestProgressView_ExistingFieldsUnchanged(t *testing.T) {
 	if got.Remaining != "0" {
 		t.Fatalf("remaining = %q, want \"0\" (floored at 0, unchanged)", got.Remaining)
 	}
-	// Persisted ledger Overage must stay sourced from OverageValue (0.25), NOT replaced by
-	// the derived over_limit_amount (200). This guards against the two being conflated.
+	// 持久化的 ledger Overage 必须仍来源于 OverageValue(0.25),「不能」被派生的
+	// over_limit_amount(200)替换。这防止二者被混为一谈。
 	if got.Overage != "0.25" {
 		t.Fatalf("overage = %q, want \"0.25\" (persisted ledger OverageValue, unchanged)", got.Overage)
 	}

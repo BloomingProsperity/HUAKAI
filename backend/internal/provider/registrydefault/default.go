@@ -10,13 +10,13 @@
 //
 // Protocol family 字符串约定（与 router.ResolvedModel.ProtocolFamily 对齐）：
 //   - openai_chat              OpenAI Chat Completions 兼容
-//   - openai_responses         OpenAI Responses API
+//   - openai_responses         OpenAI Responses API 协议
 //   - openai_codex             OpenAI Codex CLI / ChatGPT Plus session 反转
-//   - anthropic_messages       Anthropic Messages
+//   - anthropic_messages       Anthropic Messages 协议
 //   - anthropic_claude_session Anthropic Pro/Max OAuth session 反转
-//   - gemini_messages          Google Gemini generativelanguage
+//   - gemini_messages          Google Gemini generativelanguage 协议
 //   - openrouter_chat          OpenRouter（OpenAI 兼容）
-//   - bedrock_invoke           AWS Bedrock Runtime invoke
+//   - bedrock_invoke           AWS Bedrock Runtime invoke 协议
 //   - grok_chat                xAI Grok（OpenAI 兼容）
 //   - kimi_chat                Kimi / Moonshot（OpenAI 兼容）
 //   - deepseek_chat            DeepSeek（OpenAI 兼容）
@@ -33,19 +33,20 @@
 //   - ollama_native            Ollama 原生 /api/chat（NDJSON 流式；与 ollama_chat 并存）
 //   - dify_chat                Dify 应用 API（per-app token；bot_type 分端点）
 //   - replicate_image          Replicate 图片生成（models/{model}/predictions；图片 lane 专用）
-//   - vertex_gemini            Gemini-on-Vertex（publishers/google；generateContent/streamGenerateContent）
-//   - vertex_anthropic         Anthropic-on-Vertex（publishers/anthropic；rawPredict/streamRawPredict + body reshape）
+//   - vertex_gemini            Gemini-on-Vertex 协议（publishers/google；generateContent/streamGenerateContent）
+//   - vertex_anthropic         Anthropic-on-Vertex（publishers/anthropic；rawPredict/streamRawPredict + body reshape 重塑）
 //   - gemini_code_assist       Google Gemini Code Assist（cloudcode-pa v1internal，OAuth；env-gated 默认 off）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
-//   - antigravity_session      Antigravity AI session 反转（占位）
+//   - antigravity_session      Antigravity Cloud Code OAuth 反转（env-gated 默认 off）
 //   - kiro_session             AWS Kiro session 反转（占位）
 //   - windsurf_session         Codeium Windsurf session 反转（占位）
 package registrydefault
 
 import (
 	"os"
+	"sort"
 
 	_ "github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -64,6 +65,77 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/vertex"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 )
+
+var defaultProtocolFamilies = []string{
+	ProtocolOpenAIChat,
+	ProtocolOpenAIResponses,
+	ProtocolOpenAICodex,
+	ProtocolAnthropicMessages,
+	ProtocolAnthropicClaudeSession,
+	ProtocolGeminiMessages,
+	ProtocolOpenRouterChat,
+	ProtocolBedrockInvoke,
+	ProtocolGrokChat,
+	ProtocolKimiChat,
+	ProtocolDeepSeekChat,
+	ProtocolMistralChat,
+	ProtocolGroqCloudChat,
+	ProtocolTogetherChat,
+	ProtocolPerplexityChat,
+	ProtocolFireworksChat,
+	ProtocolQwenChat,
+	ProtocolGLMChat,
+	ProtocolYiChat,
+	ProtocolBaichuanChat,
+	ProtocolDoubaoChat,
+	ProtocolErnieChat,
+	ProtocolStepChat,
+	ProtocolHunyuanChat,
+	ProtocolMinimaxChat,
+	ProtocolCohereChat,
+	ProtocolOllamaChat,
+	ProtocolOllamaNative,
+	ProtocolDifyChat,
+	ProtocolReplicateImage,
+	ProtocolVertexGemini,
+	ProtocolVertexAnthropic,
+}
+
+var envGatedProtocolFamilies = []string{
+	ProtocolGeminiCodeAssist,
+	ProtocolCursorSession,
+	ProtocolCopilotSession,
+	ProtocolGeminiAdvancedSession,
+	ProtocolAntigravitySession,
+	ProtocolKiroSession,
+	ProtocolWindsurfSession,
+}
+
+var supportedProtocolFamilySet = protocolFamilySet(SupportedProtocolFamilies())
+
+// SupportedProtocolFamilies 返回所有已有 adapter 注册路径的协议族，包含默认注册
+// 和按环境变量 opt-in 的实验族；不包含当前刻意 fail-closed 的死常量。
+func SupportedProtocolFamilies() []string {
+	out := make([]string, 0, len(defaultProtocolFamilies)+len(envGatedProtocolFamilies))
+	out = append(out, defaultProtocolFamilies...)
+	out = append(out, envGatedProtocolFamilies...)
+	sort.Strings(out)
+	return out
+}
+
+// IsSupportedProtocolFamily 判断 protocol family 是否有 adapter 注册路径。
+func IsSupportedProtocolFamily(protocolFamily string) bool {
+	_, ok := supportedProtocolFamilySet[protocolFamily]
+	return ok
+}
+
+func protocolFamilySet(families []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(families))
+	for _, family := range families {
+		out[family] = struct{}{}
+	}
+	return out
+}
 
 // Protocol family 常量。供配置层与 router 共享。
 const (
@@ -92,7 +164,7 @@ const (
 	ProtocolErnieChat    = "ernie_chat"    // 文心 ERNIE（百度千帆 Qianfan v2，OpenAI 兼容）
 	ProtocolStepChat     = "step_chat"     // 阶跃星辰 StepFun（OpenAI 兼容）
 	ProtocolHunyuanChat  = "hunyuan_chat"  // 腾讯混元 Hunyuan（OpenAI 兼容端点，Bearer）
-	ProtocolMinimaxChat  = "minimax_chat"  // MiniMax（api.minimax.io，OpenAI 兼容 /v1/chat/completions，Bearer）
+	ProtocolMinimaxChat  = "minimax_chat"  // MiniMax（api.minimaxi.com 国内站，OpenAI 兼容 /v1/chat/completions，Bearer）
 	ProtocolCohereChat   = "cohere_chat"   // Cohere（api.cohere.ai/compatibility/v1，OpenAI 兼容，Bearer）
 	ProtocolOllamaChat   = "ollama_chat"   // Ollama 自托管（OpenAI 兼容 /v1/chat/completions；默认 endpoint 仅占位，实际部署必须经 channel/account base_url 覆盖到真实主机）
 	ProtocolOllamaNative = "ollama_native" // Ollama 原生 /api/chat（NDJSON 流式、options{} 采样参数；与 ollama_chat 并存，默认 endpoint 同为本机占位）
@@ -105,7 +177,7 @@ const (
 	ProtocolReplicateImage = "replicate_image"
 	// Vertex AI serving（Google Cloud aiplatform）。两个独立 family 共享
 	// "vertex" 平台与出站 SSRF 策略：vertex_gemini 走 publishers/google +
-	// generateContent/streamGenerateContent（body passthrough）；vertex_anthropic
+	// generateContent/streamGenerateContent（body passthrough 直通）；vertex_anthropic
 	// 走 publishers/anthropic + rawPredict/streamRawPredict（body 剥 model/stream
 	// + 注 anthropic_version）。凭据 runtime 形态为 upstream_passthrough（Value
 	// 已是 Bearer access_token，由 credentialworker metadata token 刷新链 materialize）。
@@ -117,7 +189,8 @@ const (
 	// 默认 off（OAuth session + 内部 Google 端点高危项），按 cursor/copilot
 	// placeholder 模式 env-gated opt-in 注册。
 	ProtocolGeminiCodeAssist = "gemini_code_assist"
-	// 6 家订阅 session 反转路径（OCAW 实施前为 scaffold + TODO header）
+	// 订阅 session 反转路径；Antigravity 已完成 Cloud Code wire，其他族仍为
+	// 待验证 scaffold。全部保持逐 family env-gated，默认不注册。
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
 	ProtocolGeminiAdvancedSession = "gemini_advanced_session"
@@ -143,7 +216,7 @@ const (
 func Build() *provider.StaticRegistry {
 	r := provider.NewStaticRegistry()
 
-	// OpenAI Chat Completions（v1/chat/completions）
+	// OpenAI Chat Completions 协议（v1/chat/completions）
 	r.MustRegister(ProtocolOpenAIChat, &openai.PassthroughAdapter{})
 
 	// OpenAI Responses API 仅 endpoint 区分；body / SSE shape 由 HCSF
@@ -160,9 +233,9 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolOpenAICodex, &openai.CodexSessionAdapter{})
 
 	r.MustRegister(ProtocolAnthropicMessages, &anthropic.PassthroughAdapter{})
-	// S1-005: the provider-side OAuthSessionAdapter exists, but the
-	// anthropic_claude_session serving path is not fully wired end-to-end.
-	// Keep it fail-closed by default rather than exposing a half-served family.
+	// Claude OAuth/session 独立协议族只接受 OAuth/session 运行时凭据；
+	// 平台仍归一为 anthropic，避免 transport、选号与计价产生第二套 vendor。
+	r.MustRegister(ProtocolAnthropicClaudeSession, &anthropic.OAuthSessionAdapter{})
 	r.MustRegister(ProtocolGeminiMessages, &gemini.PassthroughAdapter{})
 	r.MustRegister(ProtocolOpenRouterChat, &openrouter.PassthroughAdapter{})
 	// AutoTranslateAnthropicAPIBody=true 让 Anthropic CLI / Claude Code 直发的
@@ -210,7 +283,9 @@ func Build() *provider.StaticRegistry {
 	// Bearer 鉴权；channel base_url 可覆盖默认 Endpoint。
 	r.MustRegister(ProtocolQwenChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "qwen",
-		Endpoint:     "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+		// 默认打国内站 dashscope.aliyuncs.com;
+		// 国际站 dashscope-intl 由运营者按需经 channel base_url 覆盖。
+		Endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
 	})
 	r.MustRegister(ProtocolGLMChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "glm",
@@ -242,7 +317,9 @@ func Build() *provider.StaticRegistry {
 	})
 	r.MustRegister(ProtocolMinimaxChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "minimax",
-		Endpoint:     "https://api.minimax.io/v1/chat/completions",
+		// 默认打国内站 api.minimaxi.com;
+		// 国际站 api.minimax.io 由运营者按需经 channel base_url 覆盖。
+		Endpoint: "https://api.minimaxi.com/v1/chat/completions",
 	})
 	r.MustRegister(ProtocolCohereChat, &provider.OpenAICompatPassthroughAdapter{
 		PlatformName: "cohere",
@@ -285,9 +362,8 @@ func Build() *provider.StaticRegistry {
 		r.MustRegister(ProtocolGeminiCodeAssist, &gemini.CodeAssistAdapter{})
 	}
 
-	// 6 家订阅 session 反转路径仍含未验证 placeholder endpoint。
-	// 默认不注册，避免把真实 session credential 发到未确认上游；实验环境
-	// 必须逐 family 显式 opt-in，不能用一个总开关一次性打开全部。
+	// 未验证 session adapter 默认不注册，避免把真实凭据发到占位上游；
+	// 实验环境必须逐 family 显式 opt-in，不能由旧总开关一次性打开全部。
 	if placeholderSessionAdapterEnabled(cursorSessionAdapterEnv) {
 		r.MustRegister(ProtocolCursorSession, &cursor.CursorSessionAdapter{})
 	}
@@ -297,6 +373,8 @@ func Build() *provider.StaticRegistry {
 	if placeholderSessionAdapterEnabled(geminiAdvancedSessionAdapterEnv) {
 		r.MustRegister(ProtocolGeminiAdvancedSession, &gemini.GeminiAdvancedSessionAdapter{})
 	}
+	// Antigravity wire 已落到正式 cloudcode-pa，但生产默认仍保持 off；只有
+	// 部署方显式开启本 family 时才构造并注册 adapter。
 	if placeholderSessionAdapterEnabled(antigravitySessionAdapterEnv) {
 		r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
 	}

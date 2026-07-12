@@ -8,7 +8,7 @@ import (
 
 // 判别测试:真实 Claude Code 形态 body(必带 metadata.user_id)翻译到 Bedrock
 // 后,Bedrock 不识别的顶层字段必须剥除——不剥则 Bedrock 400 ValidationException,
-// 整条 Bedrock CC 闭环对真实 CC 流量坏死(delta-mine #4,参照 sub2api bf28a009)。
+// 整条 Bedrock CC 闭环对真实 CC 流量坏死。
 // Mutation guard: 去掉 delete(raw,"metadata") / 白名单过滤 → 对应断言红。
 func TestTranslateAnthropicAPIToBedrock_StripsBedrockUnknownTopLevel(t *testing.T) {
 	body := []byte(`{

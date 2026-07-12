@@ -69,9 +69,9 @@ type PASRSelector struct {
 	// 段未命中 → 直接走 HRW 全 ring 接力, 等价于 cold-miss 路径。
 	readOnlySegments bool
 
-	// gates keeps PASR aligned with DefaultSelector's lifecycle, credential,
-	// and channel-health predicates. Default is AllowAll plus per-request
-	// exclusion, preserving existing tests unless callers inject stricter gates.
+	// gates 让 PASR 与 DefaultSelector 的生命周期、凭证、channel-health 谓词保持一致。
+	// 默认是 AllowAll 加上按请求的排除项,除非调用方注入更严格的 gate,否则保持
+	// 既有测试不变。
 	gates GateChain
 
 	// ringSeed 用于 RingProvider 未注入时的 request-scoped ring 构造 (synthesis D3)。
@@ -267,7 +267,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		}
 	}
 
-	// metrics: first-pick (idx 0) vs failover (idx 1/2)
+	// 指标:首选(idx 0)对比故障转移(idx 1/2)
 	if chosen.idx == 0 {
 		IncFirstPick()
 	} else {
@@ -424,7 +424,7 @@ func (p *PASRSelector) healthStatus(ctx context.Context, snap *AccountSnapshot, 
 //     ErrPASRPreMutationFail, dispatcher 可安全 fallback default
 //   - Slot 已 acquire, ClaimGate.WriteAcquisition 失败 → release slot +
 //     ErrPASRPostMutationFail, dispatcher 必须 fail closed (再走 default 会双
-//     claim race)
+//     claim 竞争)
 //
 // 不变量: 函数返回 (nil, ErrPASR*) 时, in_flight_count / billing_claims 表都已
 // 还原到入函数前的状态; 返回 (*SelectionResult, nil) 时刚好写了 1 行 slot

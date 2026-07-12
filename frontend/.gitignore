@@ -1,0 +1,18 @@
+# 依赖与构建产物(仓库根 .gitignore 已含 frontend/node_modules 与 frontend/dist,这里补全本目录)
+node_modules/
+dist/
+.next/
+
+# tsc -b(composite)对 vite.config 的发射产物 + 增量缓存,非源码
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
+
+# 本地环境
+.env
+.env.local
+.DS_Store
+
+# Playwright E2E 产物
+test-results/
+playwright-report/

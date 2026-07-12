@@ -75,9 +75,32 @@ func (f *subFixture) seedUser(tenantID int64, label string) int64 {
 
 func (f *subFixture) cleanup() {
 	ctx := context.Background()
+	// billing_events 是 append-only(0039 触发器禁 DELETE),但续费事件行 FK 指向 charges,
+	// 不清就删不动 charges → user_subscriptions 残留 → 污染后续测试的跨租户 worker 扫描
+	// (ProcessAutoRenewal / ProcessDueExpiries)。测试专用:单事务内禁触发器→清本租户行→启用,
+	// 任一步失败整体回滚, 触发器不会残留禁用态。
+	if tx, err := f.pool.Begin(ctx); err == nil {
+		_, err = tx.Exec(ctx, `ALTER TABLE billing_events DISABLE TRIGGER billing_events_append_only_delete`)
+		for _, tenantID := range []int64{f.tenantA, f.tenantB} {
+			if err == nil {
+				_, err = tx.Exec(ctx, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
+			}
+		}
+		if err == nil {
+			_, err = tx.Exec(ctx, `ALTER TABLE billing_events ENABLE TRIGGER billing_events_append_only_delete`)
+		}
+		if err == nil {
+			_ = tx.Commit(ctx)
+		} else {
+			_ = tx.Rollback(ctx)
+			f.t.Logf("cleanup billing_events: %v (残留行可能污染后续跨租户扫描测试)", err)
+		}
+	}
 	for _, tenantID := range []int64{f.tenantA, f.tenantB} {
+		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_auto_renewal_charges WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_fulfillment_effects WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
+		_, _ = f.pool.Exec(ctx, `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_expiry_reminders WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_plan_audit_events WHERE tenant_id=$1`, tenantID)
 		_, _ = f.pool.Exec(ctx, `DELETE FROM subscription_audit_events WHERE tenant_id=$1`, tenantID)

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 )
 
@@ -17,6 +19,15 @@ type Service struct {
 	policy      Policy
 	clock       Clock
 	alertOutbox obsdlq.Outbox
+	// authLane 是独立于健康 FSM 的 auth 降级车道(nil=未接线,SignalAuthChallenge 变 no-op)。
+	authLane AuthCooldownLane
+	// logger 记渠道健康状态转换的 stdout 结构化运维日志——补 DB 审计(AppendAudit)只落库、
+	// 运维实时看不见的观测盲区。nil→slog.Default();可经 WithLogger 注入(测试用收集型 handler)。
+	logger *slog.Logger
+	// pendingTransitionLogs 仅在事务闭包内(withMutation 里的 tx service)非 nil:emitTransitionEvents
+	// 把待打的转换日志攒在这里,由 withMutation 在事务 Commit 成功后才真正打出——避免事务回滚
+	// (Serializable Commit 抛 40001 / emitAlert 失败)后残留与 DB 权威审计矛盾的幽灵日志(审查 S2)。
+	pendingTransitionLogs *[]transitionLogRecord
 }
 
 type transactionalStore interface {
@@ -31,6 +42,13 @@ func WithAlertOutbox(outbox obsdlq.Outbox) ServiceOption {
 	}
 }
 
+// WithLogger 注入渠道健康状态转换运维日志的 logger;nil 时构造器兜底 slog.Default()。
+func WithLogger(logger *slog.Logger) ServiceOption {
+	return func(s *Service) {
+		s.logger = logger
+	}
+}
+
 func NewService(store Store, policy Policy, clock Clock, opts ...ServiceOption) *Service {
 	if clock == nil {
 		clock = realClock{}
@@ -40,6 +58,9 @@ func NewService(store Store, policy Policy, clock Clock, opts ...ServiceOption) 
 		if opt != nil {
 			opt(s)
 		}
+	}
+	if s.logger == nil {
+		s.logger = slog.Default()
 	}
 	return s
 }
@@ -64,6 +85,20 @@ func (s *Service) EnsureDefaultActive(ctx context.Context, key ChannelKey) (Reco
 }
 
 func (s *Service) ApplySignal(ctx context.Context, sig Signal) (Record, error) {
+	// auth 降级车道:auth 失败(SignalAuthChallenge)独立于健康 FSM 处理——只把账号临时移出选号
+	//(authcooldown 纯内存),完全不改 rec.State/Score、不写健康窗口(防 auth blip 污染健康分,
+	// 保留既有「令牌问题不写健康降级」意图)。刻意在 withMutation 之前短路:该路径不碰健康存储,
+	// 进 Serializable 事务只会白开空事务——401 风暴(恰是车道目标场景)下每失败一次多两趟 DB
+	// 往返(审查 S3);lane 未接线(knob 关)时同样短路,与基底「auth 类直接跳过」逐字节等价。
+	if normalizeSignalClass(sig.Class) == SignalAuthChallenge {
+		if s == nil || s.store == nil {
+			return Record{}, errors.New("channelhealth: service not configured")
+		}
+		if s.authLane != nil && sig.Key.ProviderAccountID != 0 {
+			s.authLane.Suspend(ctx, sig.Key.ProviderAccountID, sig.AuthFailureClass, sig.Key.CredentialVersion, s.clock.Now())
+		}
+		return Record{}, nil
+	}
 	return s.withMutation(ctx, func(tx *Service) (Record, error) {
 		return tx.applySignal(ctx, sig)
 	})
@@ -82,6 +117,11 @@ func (s *Service) applySignal(ctx context.Context, sig Signal) (Record, error) {
 	now := s.clock.Now()
 	if sig.At.IsZero() {
 		sig.At = now
+	}
+	class := normalizeSignalClass(sig.Class)
+	// 成功信号顺带清 auth 车道(等价 CLIProxy self-heal:一次成功即解除冷却、strike 归零)。
+	if class == SignalSuccess && s.authLane != nil && sig.Key.ProviderAccountID != 0 {
+		s.authLane.Clear(ctx, sig.Key.ProviderAccountID, authcooldown.ClearReasonSuccess)
 	}
 	rec, err := s.EnsureDefaultActive(ctx, sig.Key)
 	if err != nil {
@@ -405,6 +445,11 @@ func (s *Service) manualTransitionLocked(ctx context.Context, key ChannelKey, ac
 	if err != nil {
 		return Record{}, err
 	}
+	// 运营 resume(ForceActive→active / ManualResume→ramping)一并清 auth 降级车道(含 HardDisabled),
+	// 否则被 auth 车道硬禁的账号运营者救不回(§17 修正2)。ManualPause(→manual_paused)不清。
+	if s.authLane != nil && key.ProviderAccountID != 0 && (state == StateActive || state == StateRamping) {
+		s.authLane.Clear(ctx, key.ProviderAccountID, authcooldown.ClearReasonOperatorResume)
+	}
 	if err := s.emitTransitionEvents(ctx, prev, rec, "", actorID, decision{eventTypes: events}); err != nil {
 		return Record{}, err
 	}
@@ -422,16 +467,25 @@ func (s *Service) withMutation(ctx context.Context, fn func(*Service) (Record, e
 	}
 	txs, ok := s.store.(transactionalStore)
 	if !ok {
+		// 无事务边界的 store:无回滚风险,emitTransitionEvents 里 pending 为 nil 走立即打(行为不变)。
 		return fn(s)
 	}
 	var out Record
+	// 事务内产生的转换日志先攒进 pending;只有 WithTx 返回 nil(即 Commit 成功)后才 flush。
+	var pending []transitionLogRecord
 	err := txs.WithTx(ctx, func(store Store) error {
 		txService := *s
 		txService.store = store
+		txService.pendingTransitionLogs = &pending
 		var err error
 		out, err = fn(&txService)
 		return err
 	})
+	if err == nil {
+		for i := range pending {
+			s.logTransition(ctx, pending[i])
+		}
+	}
 	return out, err
 }
 
@@ -651,34 +705,6 @@ func (s *Service) rollbackRamp(rec *Record, now time.Time, reason SignalClass) {
 	rec.LastTransitionAt = now
 	rec.UpdatedAt = now
 	rec.PolicyVersion = s.policy.Version
-}
-
-func (s *Service) emitTransitionEvents(ctx context.Context, prev HealthState, rec Record, requestID, actorID string, dec decision) error {
-	events := dec.eventTypes
-	if len(events) == 0 {
-		events = defaultEvents(prev, rec.State)
-	}
-	for _, typ := range events {
-		if typ == "" {
-			continue
-		}
-		ev := AuditEvent{
-			Type:          typ,
-			Key:           rec.Key,
-			PreviousState: prev,
-			NewState:      rec.State,
-			ReasonClass:   rec.ReasonClass,
-			PolicyVersion: rec.PolicyVersion,
-			RequestID:     requestID,
-			ActorID:       actorID,
-			OccurredAt:    s.clock.Now(),
-			Payload:       auditPayload(rec),
-		}
-		if err := s.store.AppendAudit(ctx, ev); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Service) emitAlert(ctx context.Context, rec Record, typ AlertType, severity string, payload map[string]any) error {

@@ -40,7 +40,7 @@ func TestNewRunnerClientFromEnvPartialConfigErrors(t *testing.T) {
 }
 
 func TestNewRunnerClientFromEnvRejectsLegacyHMACOnlyConfig(t *testing.T) {
-	// Regression: Slice 2.5 removes HMAC fallback; a legacy shared secret must not construct an authenticated client.
+	// 回归守护：Slice 2.5 移除了 HMAC 回退；一个遗留的 shared secret 绝不能构造出已认证的 client。
 	t.Setenv(RunnerURLEnv, "http://runner.local")
 	t.Setenv("HUAKAI_HERMES_SHARED_SECRET", "runner-secret")
 	t.Setenv(RunnerJWTPrivateKeyEnv, "")
@@ -112,7 +112,7 @@ func TestRunnerClientJWTAuthSetsBearerAndBindsTenantUser(t *testing.T) {
 }
 
 func TestNewRunnerClientFromEnvIgnoresLegacyHMACEnvAndSignsBearer(t *testing.T) {
-	// Regression: legacy HMAC env and auth-mode toggles must not override JWT-only Bearer auth.
+	// 回归守护：遗留的 HMAC env 和 auth-mode 开关绝不能覆盖纯 JWT 的 Bearer 鉴权。
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)

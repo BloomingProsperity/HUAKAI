@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
@@ -26,6 +26,7 @@ type AdminCredentialAcquisitionDeps struct {
 	CredentialAudit          credentialacq.CredentialAuditWriter
 	AuditStore               AdminPoolAccountStore
 	Exchangers               *credentialacq.ExchangerRegistry
+	ProjectEnricher          projectenrich.Enricher
 	AllowLongLivedSetupToken bool
 	BootstrapShortTTL        time.Duration
 	BootstrapLongTTL         time.Duration
@@ -151,7 +152,7 @@ func newCredentialAcqCallbackHandler(d AdminCredentialAcquisitionDeps) http.Hand
 		if !credentialAcqFlowMatchesPathAccount(w, r, existing) {
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		result, ok := completeCredentialAcqOAuthCallback(w, r, d, actorID, ident.Role, flowID, req.State, req.Code)
 		if !ok {
 			return
@@ -181,7 +182,7 @@ func newCredentialAcqCancelHandler(d AdminCredentialAcquisitionDeps) http.Handle
 			writeCredentialAcqError(w, err)
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		_ = credentialacq.EmitLifecycleAudit(r.Context(), d.CredentialAudit, session, credentialacq.EventCancelled, 0, actorID, middleware.GetReqID(r.Context()), nil)
 		writeCredentialAcqAdminAudit(r, d, actorID, ident.Role, session, credentialacq.EventCancelled, "取消 credential acquisition")
 		writeAuditJSON(w, http.StatusOK, map[string]any{"flow": session})
@@ -211,9 +212,8 @@ func newCredentialAcqFinalizeHandler(d AdminCredentialAcquisitionDeps) http.Hand
 		if !credentialAcqFlowMatchesPathAccount(w, r, session) {
 			return
 		}
-		finalizer := credentialacq.NewFinalizer(d.Sessions, credentialstore.DefaultHandlerRegistry(), d.Credentials, d.CredentialAudit)
-		actorID := fmt.Sprintf("%d", ident.TokenID)
-		result, err := finalizer.Finalize(r.Context(), flowID, credentialacq.CredentialCandidate{
+		actorID := ident.AuditActor()
+		result, err := projectenrich.Finalize(r.Context(), d.ProjectEnricher, d.Sessions, d.Credentials, d.CredentialAudit, session, credentialacq.CredentialCandidate{
 			TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 			Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: req.Credentials, ActorID: actorID,
 		}, actorID, middleware.GetReqID(r.Context()))
@@ -244,7 +244,7 @@ func newCredentialAcqImportHelperHandler(d AdminCredentialAcquisitionDeps, kind 
 		}
 		flows := make([]credentialacq.Session, 0, len(candidates))
 		results := make([]credentialacq.FinalizeResult, 0, len(candidates))
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		for _, candidate := range candidates {
 			start := credentialAcqStartRequest{
 				TenantID: req.TenantID, ProviderAccountID: req.ProviderAccountID,
@@ -264,8 +264,7 @@ func newCredentialAcqImportHelperHandler(d AdminCredentialAcquisitionDeps, kind 
 			candidate.TenantID = req.TenantID
 			candidate.ProviderAccountID = req.ProviderAccountID
 			candidate.ActorID = actorID
-			finalizer := credentialacq.NewFinalizer(d.Sessions, credentialstore.DefaultHandlerRegistry(), d.Credentials, d.CredentialAudit)
-			result, err := finalizer.Finalize(r.Context(), session.ID, candidate, actorID, middleware.GetReqID(r.Context()))
+			result, err := projectenrich.Finalize(r.Context(), d.ProjectEnricher, d.Sessions, d.Credentials, d.CredentialAudit, session, candidate, actorID, middleware.GetReqID(r.Context()))
 			if err != nil {
 				writeCredentialAcqError(w, err)
 				return
@@ -326,8 +325,7 @@ func completeCredentialAcqOAuthCallback(w http.ResponseWriter, r *http.Request, 
 		writeCredentialAcqError(w, err)
 		return credentialacq.FinalizeResult{Session: session}, false
 	}
-	finalizer := credentialacq.NewFinalizer(d.Sessions, credentialstore.DefaultHandlerRegistry(), d.Credentials, d.CredentialAudit)
-	result, err := finalizer.Finalize(r.Context(), flowID, candidate, actorID, requestID)
+	result, err := projectenrich.Finalize(r.Context(), d.ProjectEnricher, d.Sessions, d.Credentials, d.CredentialAudit, session, candidate, actorID, requestID)
 	if err != nil {
 		writeCredentialAcqError(w, err)
 		return result, false
@@ -341,7 +339,7 @@ func startCredentialAcqFlow(w http.ResponseWriter, r *http.Request, d AdminCrede
 		writeCredentialAcqError(w, err)
 		return
 	}
-	writeCredentialAcqAdminAudit(r, d, fmt.Sprintf("%d", ident.TokenID), ident.Role, session, credentialacq.EventStarted, firstReason(req.Reason, "启动 credential acquisition"))
+	writeCredentialAcqAdminAudit(r, d, ident.AuditActor(), ident.Role, session, credentialacq.EventStarted, firstReason(req.Reason, "启动 credential acquisition"))
 	resp := map[string]any{"flow": session}
 	if result.AuthorizeURL != "" {
 		resp["authorize_url"] = result.AuthorizeURL
@@ -361,7 +359,7 @@ func createOrStartCredentialAcqSession(ctx context.Context, d AdminCredentialAcq
 	start := credentialacq.StartInput{
 		TenantID: req.TenantID, ProviderAccountID: req.ProviderAccountID,
 		Vendor: req.Vendor, AuthMode: req.AuthMode, Kind: req.FlowKind,
-		ActorID: fmt.Sprintf("%d", ident.TokenID), ActorRole: ident.Role,
+		ActorID: ident.AuditActor(), ActorRole: ident.Role,
 		RedirectURI: req.RedirectURI, RequestedScopes: req.RequestedScopes,
 		RedactedContext: req.RedactedContext, LongLivedRequested: req.LongLivedRequested,
 		IdempotencyKey: idem,

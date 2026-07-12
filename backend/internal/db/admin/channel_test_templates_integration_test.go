@@ -11,7 +11,7 @@ import (
 )
 
 func TestChannelTestTemplateCRUD(t *testing.T) {
-	// MUTATION: make CreateChannelTestTemplate a no-op; the follow-up get/list checks cannot find the template.
+	// 变异:把 CreateChannelTestTemplate 改成空操作;后续的 get/list 检查就找不到该模板。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	pool := openAdminAuditIntegrationPool(t, ctx)

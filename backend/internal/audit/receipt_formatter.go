@@ -3,8 +3,8 @@ package audit
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
@@ -109,7 +109,7 @@ type ReceiptCanonicalPayloadV1 struct {
 	CreatedAt           string `json:"created_at"`
 }
 
-// ReceiptCanonicalPayloadV2 是用户可见 receipt 的签名输入；只放不可逆租户引用。
+// ReceiptCanonicalPayloadV2 是用户可见 receipt 的 canonical 响应字段结构。
 type ReceiptCanonicalPayloadV2 struct {
 	SchemaVersion       string   `json:"schema_version"`
 	RequestID           string   `json:"request_id"`
@@ -298,7 +298,10 @@ func (rf *ReceiptFormatter) DeriveReceipt(ctx context.Context, requestID string)
 	}, nil
 }
 
-// SignReceipt 对 canonical receipt hash 做 ed25519 签名，返回带签名副本。
+// SignReceipt 对 receipt 的 trust.receipt.v1 canonical 做 ed25519 签名,返回带签名副本。
+// canonical 与验签侧(cost_receipt_handler.canonicalBytesFromCostReceipt→FinalTrustReceiptCanonical)
+// 及正常结算侧(attachFinalTrustSignature→trustreceipt.SignReceipt)同口径;SignedHash 存 base64,
+// 与验签解码一致。用此(退款回执唯一签名入口)签的 receipt 才能通过用户验签。
 func (rf *ReceiptFormatter) SignReceipt(ctx context.Context, receipt *CostReceipt) (*CostReceipt, error) {
 	if rf == nil {
 		return nil, ErrReceiptFormatterNil
@@ -319,7 +322,7 @@ func (rf *ReceiptFormatter) SignReceipt(ctx context.Context, receipt *CostReceip
 	if err := validateReceiptForSigning(out); err != nil {
 		return nil, err
 	}
-	canonical, err := canonicalReceiptHashWithRedactor(ctx, rf.redactor, out)
+	canonical, err := FinalTrustReceiptCanonical(out)
 	if err != nil {
 		return nil, err
 	}
@@ -328,73 +331,8 @@ func (rf *ReceiptFormatter) SignReceipt(ctx context.Context, receipt *CostReceip
 		return nil, fmt.Errorf("audit: sign receipt: %w", err)
 	}
 	out.SignerFingerprint = []byte(fingerprint)
-	out.SignedHash = append([]byte(nil), signature...)
+	out.SignedHash = []byte(base64.StdEncoding.EncodeToString(signature))
 	return out, nil
-}
-
-func canonicalReceiptHash(receipt *CostReceipt) ([]byte, error) {
-	return canonicalReceiptHashWithRedactor(context.Background(), privacy.DefaultRedactor(), receipt)
-}
-
-func canonicalReceiptHashWithRedactor(ctx context.Context, redactor privacy.Redactor, receipt *CostReceipt) ([]byte, error) {
-	if receipt == nil {
-		return nil, ErrReceiptRequired
-	}
-	payload := ReceiptCanonicalPayload{
-		SchemaVersion:       ReceiptSchemaVersion,
-		RequestID:           receipt.RequestID,
-		ReceiptSequence:     receipt.ReceiptSequence,
-		TenantScopeRef:      auditledger.TenantScopeRef(receipt.TenantID),
-		Model:               receipt.Model,
-		InputTokens:         receipt.InputTokens,
-		OutputTokens:        receipt.OutputTokens,
-		CachedTokens:        receipt.CachedTokens,
-		CostTotalMicroUSD:   receipt.CostUSDMicros,
-		RateTableSnapshotID: receipt.RateTableSnapshotID,
-		CreatedAt:           receipt.CreatedAt.UTC().Format(time.RFC3339Nano),
-		ValidationState:     NormalizeReceiptValidationState(receipt.ValidationState),
-		Verdict:             NormalizeReceiptVerdict(receipt.Verdict),
-		AdjustmentRefs:      normalizedAdjustmentRefs(receipt.AdjustmentRefs),
-	}
-	return CanonicalReceiptHashWithRedactor(ctx, redactor, payload)
-}
-
-// CanonicalReceiptHashForPayload 返回 detached verify 使用的 receipt hash。
-func CanonicalReceiptHashForPayload(ctx context.Context, payload ReceiptCanonicalPayload) ([]byte, error) {
-	return CanonicalReceiptHashWithRedactor(ctx, privacy.DefaultRedactor(), payload)
-}
-
-// CanonicalReceiptHashForPayloadV1 返回历史 receipt 的 detached verify hash。
-func CanonicalReceiptHashForPayloadV1(ctx context.Context, payload ReceiptCanonicalPayloadV1) ([]byte, error) {
-	return CanonicalReceiptHashV1WithRedactor(ctx, privacy.DefaultRedactor(), payload)
-}
-
-// CanonicalReceiptHashWithRedactor 对 v2 用户可见字段做稳定 JSON + SHA-256。
-func CanonicalReceiptHashWithRedactor(ctx context.Context, redactor privacy.Redactor, payload ReceiptCanonicalPayload) ([]byte, error) {
-	if err := validateReceiptCanonicalPayloadV2(&payload); err != nil {
-		return nil, err
-	}
-	return canonicalReceiptPayloadHash(ctx, redactor, payload)
-}
-
-// CanonicalReceiptHashV1WithRedactor 对 v1 历史字段做稳定 JSON + SHA-256。
-func CanonicalReceiptHashV1WithRedactor(ctx context.Context, redactor privacy.Redactor, payload ReceiptCanonicalPayloadV1) ([]byte, error) {
-	if err := validateReceiptCanonicalPayloadV1(&payload); err != nil {
-		return nil, err
-	}
-	return canonicalReceiptPayloadHash(ctx, redactor, payload)
-}
-
-func canonicalReceiptPayloadHash(ctx context.Context, redactor privacy.Redactor, payload any) ([]byte, error) {
-	if redactor == nil {
-		redactor = privacy.DefaultRedactor()
-	}
-	raw, err := redactor.SanitizePayload(ctx, payload)
-	if err != nil {
-		return nil, fmt.Errorf("audit: canonical receipt redaction: %w", err)
-	}
-	sum := sha256.Sum256(raw)
-	return sum[:], nil
 }
 
 // SQLReceiptSource 是当前 PostgreSQL schema 的 receipt 派生读取器。
@@ -574,69 +512,6 @@ func validateReceiptForSigning(receipt *CostReceipt) error {
 		CostUSDMicros:       receipt.CostUSDMicros,
 		RateTableSnapshotID: receipt.RateTableSnapshotID,
 		CreatedAt:           receipt.CreatedAt,
-	})
-}
-
-func validateReceiptCanonicalPayloadV1(payload *ReceiptCanonicalPayloadV1) error {
-	if payload == nil {
-		return ErrReceiptRequired
-	}
-	if strings.TrimSpace(payload.SchemaVersion) == "" {
-		payload.SchemaVersion = ReceiptSchemaVersionV1
-	}
-	if payload.SchemaVersion != ReceiptSchemaVersionV1 {
-		return fmt.Errorf("%w: schema_version unsupported", ErrReceiptInvalidDerivedData)
-	}
-	if err := validateReceiptRequestID(payload.RequestID); err != nil {
-		return err
-	}
-	return validateReceiptInputs(ReceiptInputs{
-		TenantID:            payload.TenantID,
-		Model:               payload.Model,
-		InputTokens:         payload.InputTokens,
-		OutputTokens:        payload.OutputTokens,
-		CachedTokens:        payload.CachedTokens,
-		CostUSDMicros:       payload.CostTotalMicroUSD,
-		RateTableSnapshotID: payload.RateTableSnapshotID,
-	})
-}
-
-func validateReceiptCanonicalPayloadV2(payload *ReceiptCanonicalPayloadV2) error {
-	if payload == nil {
-		return ErrReceiptRequired
-	}
-	if strings.TrimSpace(payload.SchemaVersion) == "" {
-		payload.SchemaVersion = ReceiptSchemaVersion
-	}
-	if payload.SchemaVersion != ReceiptSchemaVersion {
-		return fmt.Errorf("%w: schema_version unsupported", ErrReceiptInvalidDerivedData)
-	}
-	if err := validateReceiptRequestID(payload.RequestID); err != nil {
-		return err
-	}
-	if payload.ReceiptSequence < 0 {
-		return fmt.Errorf("%w: receipt_sequence must be non-negative", ErrReceiptInvalidDerivedData)
-	}
-	if strings.TrimSpace(payload.TenantScopeRef) == "" {
-		return fmt.Errorf("%w: tenant_scope_ref missing", ErrReceiptInvalidDerivedData)
-	}
-	payload.ValidationState = strings.TrimSpace(payload.ValidationState)
-	if payload.ValidationState == "" {
-		return fmt.Errorf("%w: validation_state missing", ErrReceiptInvalidDerivedData)
-	}
-	payload.Verdict = strings.TrimSpace(payload.Verdict)
-	if payload.Verdict == "" {
-		return fmt.Errorf("%w: verdict missing", ErrReceiptInvalidDerivedData)
-	}
-	payload.AdjustmentRefs = normalizedAdjustmentRefs(payload.AdjustmentRefs)
-	return validateReceiptInputs(ReceiptInputs{
-		TenantID:            1,
-		Model:               payload.Model,
-		InputTokens:         payload.InputTokens,
-		OutputTokens:        payload.OutputTokens,
-		CachedTokens:        payload.CachedTokens,
-		CostUSDMicros:       payload.CostTotalMicroUSD,
-		RateTableSnapshotID: payload.RateTableSnapshotID,
 	})
 }
 

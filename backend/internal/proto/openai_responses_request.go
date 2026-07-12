@@ -9,9 +9,9 @@ import (
 
 // P-2 D9 openai_responses ClientAdapter — RequestToCanonical 第一片：
 // input string + message items（含 input_text）+ function_call items +
-// function_call_output items + instructions + function tools；built-in tools
+// function_call_output items + instructions + function tools；内置工具
 // （web_search/code_interpreter 等）按 synthesis Q9 决策 D 走 native_required
-// + Mandatory Roadmap loss。
+// + Mandatory Roadmap 损失。
 //
 
 type OpenAIResponsesClient struct{}
@@ -72,7 +72,7 @@ func (o *OpenAIResponsesClient) RequestToCanonical(ctx context.Context, raw []by
 		"preset",
 	)
 
-	// Tools: first-class function tools + native_required for built-ins
+	// Tools：一等公民 function 工具 + 内置工具走 native_required
 	if len(req.Tools) > 0 {
 		tools, toolLosses, err := convertOpenAIResponsesTools(req.Tools)
 		if err != nil {
@@ -104,7 +104,7 @@ func (o *OpenAIResponsesClient) RequestToCanonical(ctx context.Context, raw []by
 		losses = append(losses, loss)
 	}
 
-	// Stream
+	// Stream 标志
 	if req.Stream != nil && *req.Stream {
 		env.StreamPlan.Mode = StreamModeStreaming
 	}
@@ -138,26 +138,42 @@ func (o *OpenAIResponsesClient) RequestToCanonical(ctx context.Context, raw []by
 			if it.Role == "" {
 				return nil, nil, fmt.Errorf("proto: openai_responses input[%d] message missing role", mi)
 			}
-			texts, partLoss, err := parseOpenAIResponsesContent(it.Content, mi)
+			parts, partLoss, err := parseOpenAIResponsesContent(it.Content, mi)
 			if err != nil {
 				return nil, nil, err
 			}
 			losses = append(losses, partLoss...)
 			cm := CanonicalMessage{Role: it.Role}
-			for bi, t := range texts {
-				cm.Content = append(cm.Content, CanonicalContentBlock{Type: "text", Text: t})
-				nodeSeq++
-				nodeID := fmt.Sprintf("n_text_%d", nodeSeq)
+			for _, part := range parts {
 				msgIdx := mi
-				blkIdx := bi
-				env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
-					ID: nodeID, Kind: CapabilityText, StreamReady: StreamReadyYes,
-					Source: &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
-					Text:   &TextNode{Role: it.Role, Block: CanonicalContentBlock{Type: "text", Text: t}},
-				})
-				env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
-					Capability: CapabilityText, NodeID: nodeID, Verdict: ProjectionPreserved,
-				})
+				blkIdx := len(cm.Content)
+				switch part.Kind {
+				case "text":
+					cm.Content = append(cm.Content, CanonicalContentBlock{Type: "text", Text: part.Text})
+					nodeSeq++
+					nodeID := fmt.Sprintf("n_text_%d", nodeSeq)
+					env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+						ID: nodeID, Kind: CapabilityText, StreamReady: StreamReadyYes,
+						Source: &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
+						Text:   &TextNode{Role: it.Role, Block: CanonicalContentBlock{Type: "text", Text: part.Text}},
+					})
+					env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+						Capability: CapabilityText, NodeID: nodeID, Verdict: ProjectionPreserved,
+					})
+				case "image":
+					// F4 视觉:Responses input_image → CapabilityImage 节点(镜像 openai_chat_request.go)。
+					cm.Content = append(cm.Content, CanonicalContentBlock{Type: "image", Image: part.Raw})
+					nodeSeq++
+					nodeID := fmt.Sprintf("n_image_%d", nodeSeq)
+					env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+						ID: nodeID, Kind: CapabilityImage, StreamReady: StreamReadyYes,
+						Source: &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
+						Image:  part.Image,
+					})
+					env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+						Capability: CapabilityImage, NodeID: nodeID, Verdict: ProjectionPreserved,
+					})
+				}
 			}
 			env.Messages = append(env.Messages, cm)
 		case "reasoning":

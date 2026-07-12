@@ -15,14 +15,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
-// PostgresRefundRequestRecorder persists user refund requests and admin decisions.
+// PostgresRefundRequestRecorder 持久化用户退款申请与 admin 决策。
 type PostgresRefundRequestRecorder struct {
 	pool   *pgxpool.Pool
 	refund refundRequestMoneyService
 	now    func() time.Time
 }
 
-// NewPostgresRefundRequestRecorder constructs the production refund-request recorder.
+// NewPostgresRefundRequestRecorder 构造生产用的退款申请记录器。
 func NewPostgresRefundRequestRecorder(pool *pgxpool.Pool, refund refundRequestMoneyService) *PostgresRefundRequestRecorder {
 	return &PostgresRefundRequestRecorder{
 		pool:   pool,
@@ -88,11 +88,12 @@ ORDER BY created_at ASC, id ASC`, tenantID)
 	return out, nil
 }
 
-func (s *PostgresRefundRequestRecorder) ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64) (RefundRequest, error) {
+func (s *PostgresRefundRequestRecorder) ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64, actorRef string) (RefundRequest, error) {
 	if s == nil || s.pool == nil || s.refund == nil {
 		return RefundRequest{}, ErrRefundRequestUnavailable
 	}
-	if tenantID <= 0 || requestID <= 0 || adminActorID <= 0 {
+	// session-admin 的 TokenID=0:有 actorRef 即有已认证 admin 身份,不再用 int>0 硬拒(role 制单登录)。
+	if tenantID <= 0 || requestID <= 0 || (adminActorID <= 0 && actorRef == "") {
 		return RefundRequest{}, ErrRefundRequestInvalidInput
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -123,11 +124,12 @@ func (s *PostgresRefundRequestRecorder) ApproveRefundRequest(ctx context.Context
 		Reason:         req.Reason,
 		ActorKind:      payment.ActorKindAdmin,
 		ActorID:        adminActorID,
+		ActorRef:       actorRef,
 	}); err != nil {
 		return RefundRequest{}, err
 	}
 	decidedAt := s.now()
-	req, err = updateRefundRequestDecisionTx(ctx, tx, tenantID, requestID, RefundRequestApproved, req.Reason, decidedAt, adminActorID)
+	req, err = updateRefundRequestDecisionTx(ctx, tx, tenantID, requestID, RefundRequestApproved, req.Reason, decidedAt, adminActorID, actorRef)
 	if err != nil {
 		return RefundRequest{}, err
 	}
@@ -137,11 +139,12 @@ func (s *PostgresRefundRequestRecorder) ApproveRefundRequest(ctx context.Context
 	return req, nil
 }
 
-func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context, tenantID, requestID int64, reason string, adminActorID int64) (RefundRequest, error) {
+func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context, tenantID, requestID int64, reason string, adminActorID int64, actorRef string) (RefundRequest, error) {
 	if s == nil || s.pool == nil {
 		return RefundRequest{}, ErrRefundRequestUnavailable
 	}
-	if tenantID <= 0 || requestID <= 0 || adminActorID <= 0 {
+	// session-admin 的 TokenID=0:有 actorRef 即有已认证 admin 身份,不再用 int>0 硬拒(role 制单登录)。
+	if tenantID <= 0 || requestID <= 0 || (adminActorID <= 0 && actorRef == "") {
 		return RefundRequest{}, ErrRefundRequestInvalidInput
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -160,9 +163,9 @@ func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context,
 		}
 		return req, nil
 	}
-	// Closes the visible split-transaction approval window: if money already moved,
-	// a still-pending request must not be relabeled rejected. Full approve atomicity
-	// needs a future RefundOrder external-transaction refactor.
+	// 关闭可见的拆分事务审批窗口:如果钱已经动了,一个仍处于 pending 的
+	// 申请绝不能被重新标记为 rejected。完整的审批原子性需要将来对
+	// RefundOrder 做外部事务重构。
 	alreadyRefunded, err := refundRequestHasRefundFactTx(ctx, tx, req)
 	if err != nil {
 		return RefundRequest{}, err
@@ -173,7 +176,7 @@ func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context,
 	if trimmed := strings.TrimSpace(reason); trimmed != "" {
 		req.Reason = trimmed
 	}
-	req, err = updateRefundRequestDecisionTx(ctx, tx, tenantID, requestID, RefundRequestRejected, req.Reason, s.now(), adminActorID)
+	req, err = updateRefundRequestDecisionTx(ctx, tx, tenantID, requestID, RefundRequestRejected, req.Reason, s.now(), adminActorID, actorRef)
 	if err != nil {
 		return RefundRequest{}, err
 	}
@@ -219,13 +222,18 @@ FOR UPDATE`, tenantID, requestID))
 	return req, nil
 }
 
-func updateRefundRequestDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, requestID int64, status RefundRequestStatus, reason string, decidedAt time.Time, adminActorID int64) (RefundRequest, error) {
+func updateRefundRequestDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, requestID int64, status RefundRequestStatus, reason string, decidedAt time.Time, adminActorID int64, actorRef string) (RefundRequest, error) {
+	// session-admin 的 adminActorID=0 → decided_by 落 NULL(不误归 id 0),归属靠 decided_by_actor。
+	var decidedBy any
+	if adminActorID > 0 {
+		decidedBy = adminActorID
+	}
 	req, err := scanRefundRequest(tx.QueryRow(ctx, `
 UPDATE payment_refund_requests
-SET status=$3, reason=$4, decided_at=$5, decided_by=$6
+SET status=$3, reason=$4, decided_at=$5, decided_by=$6, decided_by_actor=$7
 WHERE tenant_id=$1 AND id=$2
 RETURNING id, tenant_id, order_id, user_id, COALESCE(reason, ''), status, created_at, decided_at, decided_by`,
-		tenantID, requestID, status, nullableRefundRequestText(reason), decidedAt.UTC(), adminActorID))
+		tenantID, requestID, status, nullableRefundRequestText(reason), decidedAt.UTC(), decidedBy, nullableRefundRequestText(actorRef)))
 	if err != nil {
 		return RefundRequest{}, fmt.Errorf("paymenthttp: update refund request decision: %w", err)
 	}

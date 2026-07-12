@@ -288,7 +288,19 @@ SELECT
     count(*)::bigint                                             AS request_count,
     count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count,
     count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count,
-    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
+    COALESCE(
+        percentile_cont(0.95) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000
+        ) FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::double precision                                         AS latency_p95_ms,
+    COALESCE(
+        percentile_cont(0.99) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000
+        ) FILTER (WHERE ur.first_byte_at IS NOT NULL),
+        0
+    )::double precision                                         AS latency_p99_ms
 FROM usage_records ur
 WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ur.settled_at >= sqlc.arg(settled_since)::timestamptz;

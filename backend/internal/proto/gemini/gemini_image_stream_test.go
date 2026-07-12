@@ -8,11 +8,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
 
-// TestGeminiAdapterStreamInlineImageEmitsImageBlock proves streaming image
-// generation (gemini-2.5-flash-image via generateContent) preserves the inline
-// image as a canonical image block instead of dropping it. Previously the
-// streaming scanner recorded a lossy "skipped" and discarded the image while
-// still billing the output tokens -- the customer paid for a dropped image.
+// TestGeminiAdapterStreamInlineImageEmitsImageBlock 证明流式图片生成
+//（gemini-2.5-flash-image 走 generateContent）会把 inline 图片保留为
+// canonical image block 而不是丢弃。此前流式扫描器会记一条 lossy 的
+// "skipped" 并丢掉图片，却仍按 output tokens 计费——客户为一张被丢弃的图片付了钱。
 func TestGeminiAdapterStreamInlineImageEmitsImageBlock(t *testing.T) {
 	adapter := &Adapter{}
 	state := &UpstreamState{}
@@ -39,7 +38,7 @@ func TestGeminiAdapterStreamInlineImageEmitsImageBlock(t *testing.T) {
 	if len(imageBlock.Image) == 0 {
 		t.Fatalf("image block must carry the inlineData payload")
 	}
-	// output tokens (which include the image tokens) must still accumulate for billing
+	// output tokens（含 image tokens）仍必须为计费而累加
 	if state.AccumulatedUsage.OutputTokens != 1290 {
 		t.Fatalf("output tokens should accumulate for billing: got %d want 1290", state.AccumulatedUsage.OutputTokens)
 	}

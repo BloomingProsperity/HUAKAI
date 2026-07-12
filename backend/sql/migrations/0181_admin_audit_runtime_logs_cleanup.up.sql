@@ -1,0 +1,37 @@
+-- 运行日志清理是抹除运维证据的破坏性操作,必须落管理员审计;显式扩展 action 与
+-- target_type 白名单(action 逐字复现 0177、target_type 逐字复现 0164 + 新增项),避免真实库拒绝审计行。
+BEGIN;
+
+ALTER TABLE admin_audit_events
+    DROP CONSTRAINT IF EXISTS admin_audit_events_action_check,
+    ADD CONSTRAINT admin_audit_events_action_check CHECK (action = ANY (ARRAY[
+        'issue_api_key', 'revoke_api_key', 'list_api_keys', 'issue_admin_token', 'revoke_admin_token',
+        'admin_login', 'create_provider_account', 'disable_provider_account', 'enable_provider_account',
+        'delete_provider_account', 'create_account_credential', 'rotate_account_credential',
+        'disable_account_credential', 'delete_account_credential', 'list_account_credentials',
+        'credential_acquisition_started', 'credential_acquisition_completed', 'credential_acquisition_failed',
+        'credential_acquisition_cancelled', 'update_billing_settings', 'create_pool_group', 'update_pool_group',
+        'update_platform_settings', 'unlock_user', 'force_disable_2fa', 'reset_passkey', 'set_user_group',
+        'set_user_remark', 'set_user_status', 'create_user', 'delete_user', 'create_quota_policy',
+        'update_quota_policy', 'delete_quota_policy', 'clear_provider_account_rate_limit', 'update_provider_account',
+        'hermes.tool.dlq_replay', 'hermes.tool.account_pause', 'hermes.tool.account_resume',
+        'hermes.tool.renew_trigger', 'hermes.tool.alert_rule_enable', 'hermes.tool.alert_rule_disable',
+        'hermes.tool.moderation_keyword_enable', 'hermes.tool.moderation_keyword_disable',
+        'create_provider', 'update_provider', 'delete_provider',
+        'create_channel', 'update_channel', 'delete_channel',
+        'resolve_credential_project',
+        'cleanup_runtime_logs'
+    ]::text[]));
+
+ALTER TABLE admin_audit_events
+    DROP CONSTRAINT IF EXISTS admin_audit_events_target_type_check,
+    ADD CONSTRAINT admin_audit_events_target_type_check
+        CHECK (target_type IN
+            ('api_key', 'admin_token', 'tenant', 'user',
+             'provider_account', 'account_credential',
+             'billing_setting', 'pool_group', 'platform_setting',
+             'quota_policy', 'dlq_event', 'alert_rule', 'moderation_keyword',
+             'provider', 'channel',
+             'runtime_logs'));
+
+COMMIT;

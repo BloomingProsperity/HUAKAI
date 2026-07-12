@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 const (
@@ -58,6 +59,10 @@ type Deps struct {
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string
+	// SettleRecoveryDLQ 是流式交付后(响应已发给客户端)settle 失败时的 durable 兜底队列。
+	// 镜像 gatewayhttp chat 路径的同名依赖。nil 时退回原行为(仅置 X-Huakai-Settle-Failed 头)，
+	// 不破坏现有 wiring；生产由 cmd/gateway/routes.go 注入 d.dlqService。
+	SettleRecoveryDLQ settlementrecovery.Enqueuer
 }
 
 type execution struct {

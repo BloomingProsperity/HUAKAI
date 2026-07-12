@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/jackc/pgx/v5"
 )
 
 type credentialCreator interface {
@@ -137,6 +138,70 @@ func TestFinalizerConcurrentFinalizeRaceIsIdempotent(t *testing.T) {
 	}
 }
 
+type markFinalizedFailDB struct {
+	*testSessionDB
+	err error
+}
+
+func (db *markFinalizedFailDB) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	if strings.Contains(sql, "SET status = 'finalized'") {
+		return testSessionRow{err: db.err}
+	}
+	return db.testSessionDB.QueryRow(ctx, sql, args...)
+}
+
+// TestFinalizerMarkFinalizedFailureExposesCreatedCredential 守护 ACF-2:
+// Create 已成功但 MarkFinalized 全部重试失败时,返回值与错误对象都必须携带已建
+// credential 元数据。这样调用方即使先按 err 写响应,也不会把对账线索静默丢掉。
+//
+// §14 变异:把 finalizer.go 中 CredentialCreatedFinalizeError 包装去掉,直接返回原始
+// MarkFinalized error。errors.As 与错误文本里的 credential_id 断言都会变红。
+func TestFinalizerMarkFinalizedFailureExposesCreatedCredential(t *testing.T) {
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	forcedErr := errors.New("forced mark finalized failure")
+	db := &markFinalizedFailDB{testSessionDB: newTestSessionDB(now), err: forcedErr}
+	store := NewPostgresSessionStore(db).WithNow(func() time.Time { return now })
+	if _, err := store.Create(context.Background(), Session{
+		ID: "flow-mark-finalized-fails", TenantID: 1, ProviderAccountID: 2,
+		Vendor: "openai", AuthMode: "chatgpt_oauth", Kind: FlowKindPaste, Status: StatusStarted,
+		ActorID: "admin-1", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourceNone, RedactedContext: map[string]any{},
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	finalizer := NewFinalizer(store, credentialstore.DefaultHandlerRegistry(), &fakeCredentialCreator{}, nil)
+	result, err := finalizer.Finalize(context.Background(), "flow-mark-finalized-fails", CredentialCandidate{
+		TenantID: 1, ProviderAccountID: 2,
+		Vendor: "openai", AuthMode: "chatgpt_oauth",
+		Payload: samplePayloadForMode("openai", "chatgpt_oauth"),
+		ActorID: "admin-1",
+	}, "admin-1", "req-1")
+	if err == nil {
+		t.Fatal("Finalize returned nil error; want MarkFinalized failure")
+	}
+	if !errors.Is(err, forcedErr) {
+		t.Fatalf("err=%v must unwrap forced MarkFinalized error", err)
+	}
+	if result.Credential.ID == 0 {
+		t.Fatal("FinalizeResult dropped created credential metadata")
+	}
+	var createdErr *CredentialCreatedFinalizeError
+	if !errors.As(err, &createdErr) {
+		t.Fatalf("err=%T %[1]v, want CredentialCreatedFinalizeError", err)
+	}
+	if createdErr.Credential.ID != result.Credential.ID ||
+		createdErr.Credential.TenantID != result.Credential.TenantID ||
+		createdErr.Credential.ProviderAccountID != result.Credential.ProviderAccountID {
+		t.Fatalf("error credential=%+v result credential=%+v, want same created credential", createdErr.Credential, result.Credential)
+	}
+	if !strings.Contains(err.Error(), "credential_id=") ||
+		!strings.Contains(err.Error(), "provider_account_id=2") ||
+		!strings.Contains(err.Error(), "flow_id=flow-mark-finalized-fails") {
+		t.Fatalf("err=%q does not expose reconciliation metadata", err.Error())
+	}
+}
+
 func newProductionTestStore(t *testing.T, flowID, vendor, authMode string) *PostgresSessionStore {
 	t.Helper()
 	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
@@ -170,8 +235,13 @@ func samplePayloadForMode(vendor, mode string) []byte {
 	case "openai/refresh_token":
 		fields["refresh_token"] = "test-refresh-value"
 	default:
-		fields["session_token"] = "test-session-value"
-		fields["refresh_token"] = "test-refresh-value"
+		// 官 key 厂商(grok/deepseek/kimi/国内大厂)统一走纯 api_key 形状;其余默认按 OAuth 会话形状。
+		if credentialstore.Normalize(mode) == credentialstore.AuthModeAPIKey {
+			fields["api_key"] = "test-api-key"
+		} else {
+			fields["session_token"] = "test-session-value"
+			fields["refresh_token"] = "test-refresh-value"
+		}
 	}
 	raw, _ := json.Marshal(fields)
 	return raw

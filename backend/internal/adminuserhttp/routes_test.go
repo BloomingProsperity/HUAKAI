@@ -3,6 +3,7 @@ package adminuserhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -55,12 +56,11 @@ func TestAdminListUsers_PaginationCapsAndOffset(t *testing.T) {
 	}
 }
 
-// TestAdminUsers_ProjectUserGroupAndRemark guards U18/U19: both the admin user
-// LIST and the single-user GET must project the already-stored users.user_group
-// and users.remark columns, so an operator sees a user's routing group and
-// admin note without opening each record. Mutation: drop the UserGroup/Remark
-// mapping in either handler (or the column from the SELECT) -> the matching
-// response field is empty -> RED. Two sub-cases cover both distinct handlers.
+// TestAdminUsers_ProjectUserGroupAndRemark 守护 U18/U19:admin 用户 LIST 与
+// 单用户 GET 都必须投影已存储的 users.user_group 与 users.remark 列,
+// 使运营者无需打开每条记录即可看到用户的路由分组与 admin 备注。
+// 变异:在任一 handler 去掉 UserGroup/Remark 映射(或从 SELECT 去掉该列)
+// → 对应响应字段为空 → 红。两个子用例覆盖两个不同 handler。
 func TestAdminUsers_ProjectUserGroupAndRemark(t *testing.T) {
 	t.Run("list projects group+remark", func(t *testing.T) {
 		store := &usersStoreStub{
@@ -276,7 +276,7 @@ func TestAdminUnlockUserTenantScopedAudited(t *testing.T) {
 	if audit.calls != 1 {
 		t.Fatalf("audit calls=%d want 1", audit.calls)
 	}
-	if audit.arg.Action != "unlock_user" || audit.arg.TargetType != "user" || audit.arg.ActorID != "12" || audit.arg.ActorRole != admin.RoleTenantOperator {
+	if audit.arg.Action != "unlock_user" || audit.arg.TargetType != "user" || audit.arg.ActorID != "admin_token:12" || audit.arg.ActorRole != admin.RoleTenantOperator {
 		t.Fatalf("audit metadata mismatch: %+v", audit.arg)
 	}
 	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
@@ -860,6 +860,36 @@ func TestAdminSetUserStatusDisableAudited(t *testing.T) {
 	if len(audit.arg.Payload) == 0 || !strings.Contains(string(audit.arg.Payload), "status_before") {
 		t.Fatalf("audit payload 缺 before/after: %s", audit.arg.Payload)
 	}
+}
+
+// TestAdminSetUserStatusDisable_RevokesSessions 封禁第三轴:置 disabled 必须撤该用户
+// 全部既有会话(登录门与 API key 联查只挡新入口,已签发 bearer/refresh 不撤能活到自然过期);
+// 重新启用(active)不撤;撤销失败映 503 不静默吞。
+// MUTATION: 去掉 handler 里 status=="disabled" 的 SessionRevoker 调用 → rev.calls==0 → 红。
+func TestAdminSetUserStatusDisable_RevokesSessions(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
+	setter := &userStatusSetterStub{}
+	rev := &sessionRevokerStub{}
+	audit := &adminAuditStub{}
+	deps := Deps{
+		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store,
+		UserStatusSetter: setter, SessionRevoker: rev, Audit: audit,
+	}
+	rec := invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled"}`)
+	assertStatus(t, rec, http.StatusOK)
+	if rev.calls != 1 || rev.in.TenantID != 7 || rev.in.UserID != 101 || rev.in.Reason != "admin_user_disabled" {
+		t.Fatalf("封禁未撤会话: calls=%d in=%+v", rev.calls, rev.in)
+	}
+	// 重新启用不撤会话。
+	rec = invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"active"}`)
+	assertStatus(t, rec, http.StatusOK)
+	if rev.calls != 1 {
+		t.Fatalf("启用不该撤会话: calls=%d want 1", rev.calls)
+	}
+	// 撤销失败 → 503(调用者可重试,RevokeUser 幂等)。
+	deps.SessionRevoker = &sessionRevokerStub{err: errors.New("revoke backend down")}
+	rec = invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled"}`)
+	assertStatus(t, rec, http.StatusServiceUnavailable)
 }
 
 // TestAdminSetUserStatusInvalidRejected 非 active/disabled 状态 → 400,不触达 store/audit。

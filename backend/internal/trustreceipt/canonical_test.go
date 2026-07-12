@@ -44,7 +44,7 @@ func sampleReceipt() TrustReceiptV1 {
 // TestCanonicalPayloadFieldOrderStableForDeterministicHash
 //
 // 守 fixed-order canonical：同一语义 payload 不得受 struct literal 写法影响。
-// Mutation 自检：改顶层 buf 写入顺序或漏写 receipt_id，本测试会 red。
+// 变异自检：改顶层 buf 写入顺序或漏写 receipt_id，本测试会变红。
 func TestCanonicalPayloadFieldOrderStableForDeterministicHash(t *testing.T) {
 	a := sampleReceipt()
 	b := TrustReceiptV1{
@@ -84,7 +84,7 @@ func TestCanonicalPayloadFieldOrderStableForDeterministicHash(t *testing.T) {
 // TestCanonicalRejectsFloatInPriceSnapshot
 //
 // 守金额与快照 ID 不允许 float drift：公开类型必须是 int64。
-// Mutation 自检：把 CostCents 或 RateTableSnapshotID 偷换成 float64 会让本测试 red。
+// 变异自检：把 CostCents 或 RateTableSnapshotID 偷换成 float64 会让本测试变红。
 func TestCanonicalRejectsFloatInPriceSnapshot(t *testing.T) {
 	receiptType := reflect.TypeOf(TrustReceiptV1{})
 	costField, ok := receiptType.FieldByName("CostCents")
@@ -108,7 +108,7 @@ func TestCanonicalRejectsFloatInPriceSnapshot(t *testing.T) {
 // TestCanonicalMapKeySortIsUTF8ByteLex
 //
 // 守 allowlist map key 排序：必须按 UTF-8 byte lex 升序，不能沿用 map 迭代顺序。
-// Mutation 自检：删除 sort 或改成逆序，本测试会 red。
+// 变异自检：删除 sort 或改成逆序，本测试会变红。
 func TestCanonicalMapKeySortIsUTF8ByteLex(t *testing.T) {
 	r := sampleReceipt()
 	r.RedactedMetadataAllowlist = map[string]any{
@@ -138,7 +138,7 @@ func TestCanonicalMapKeySortIsUTF8ByteLex(t *testing.T) {
 // TestCanonicalHashChangesOnAnyFieldFlip
 //
 // 守所有关键字段进入 canonical：provider/cost/token/validation 任一变动 hash 必变。
-// Mutation 自检：漏写任一字段，对应 subtest 会 red。
+// 变异自检：漏写任一字段，对应 subtest 会变红。
 func TestCanonicalHashChangesOnAnyFieldFlip(t *testing.T) {
 	base := sampleReceipt()
 	baseHash, err := CanonicalHash(base)
@@ -173,7 +173,7 @@ func TestCanonicalHashChangesOnAnyFieldFlip(t *testing.T) {
 // TestCanonicalRoundTripJSONUnescape
 //
 // 守字符串 escape 策略：非 ASCII/control 必以 \u 形式进入 canonical，hash 固定。
-// Mutation 自检：改成 raw UTF-8 或不同 escape 策略，本测试会 red。
+// 变异自检：改成 raw UTF-8 或不同 escape 策略,本测试会变红。
 func TestCanonicalRoundTripJSONUnescape(t *testing.T) {
 	r := sampleReceipt()
 	r.Provider = "火山"

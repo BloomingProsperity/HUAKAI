@@ -17,13 +17,12 @@ type refreshQueries interface {
 	ListAccountsForRefresh(ctx context.Context, arg dbbilling.ListAccountsForRefreshParams) ([]dbbilling.ListAccountsForRefreshRow, error)
 }
 
-// stormAcquirer is the three-scope refresh-storm admission contract.
-// Acquire reserves the durable account slot (its returned func releases it).
-// AcquireProviderEndpoint / AcquireGlobal consume the in-memory endpoint/global
-// rate budgets; the func returned by AcquireProviderEndpoint refunds its token
-// and is invoked only when a later scope in the cascade denies. A denial is
-// signaled by a non-empty Outcome (the func is nil); an infrastructure failure
-// by a non-nil error.
+// stormAcquirer 是三 scope 的 refresh-storm 准入契约。
+// Acquire 预留持久化的 account 槽位(其返回的 func 用于释放它)。
+// AcquireProviderEndpoint / AcquireGlobal 消耗内存中的 endpoint/global 速率预算;
+// AcquireProviderEndpoint 返回的 func 用于退还其 token,且仅在级联中靠后的某个
+// scope 拒绝时被调用。一次拒绝以非空的 Outcome 来表示(此时 func 为 nil);一次
+// 基础设施故障以非 nil 的 error 来表示。
 type stormAcquirer interface {
 	Acquire(ctx context.Context, tenantID, accountID int64) (func(), auth.Outcome, error)
 	AcquireProviderEndpoint(ctx context.Context, tenantID int64, providerCode, endpointFingerprint string) (func(), auth.Outcome, error)

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,8 +14,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 )
 
 type AdminCredentialAuth interface {
@@ -44,9 +45,9 @@ type credentialWriteRequest struct {
 	AuthMode    string          `json:"auth_mode"`
 	Credentials json.RawMessage `json:"credentials"`
 	Reason      string          `json:"reason,omitempty"`
-	// ExternalAccountID/ExternalAccountEmail are the operator-supplied upstream account
-	// identity for the manual create path. Auto-extraction at OAuth token exchange is the
-	// primary source; these are the manual override/fallback used when no OAuth flow ran.
+	// ExternalAccountID/ExternalAccountEmail 是运营者在手动创建路径中提供的上游账号
+	// 身份。OAuth token 交换时的自动提取是主要来源；当没有走 OAuth 流程时，
+	// 这两个字段作为手动覆盖/兜底。
 	ExternalAccountID    string `json:"external_account_id,omitempty"`
 	ExternalAccountEmail string `json:"external_account_email,omitempty"`
 }
@@ -69,11 +70,13 @@ type renewStatusCursor struct {
 }
 
 func MountAdminCredentialRoutes(r chi.Router, d AdminCredentialDeps) {
+	// 日常凭证增改放开给登录 admin(rotate=换池账号上游凭证,非 KEK);采集流/import-helper/签发/建删账号仍 token-only。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/{id}/credentials", newListAccountCredentialsHandler(d))
-	r.Post("/{id}/credentials", newCreateAccountCredentialHandler(d))
-	r.Post("/{id}/credentials/{credentialID}/rotate", newRotateAccountCredentialHandler(d))
-	r.Patch("/{id}/credentials/{credentialID}/state", newSetAccountCredentialStateHandler(d))
-	r.Delete("/{id}/credentials/{credentialID}", newDeleteAccountCredentialHandler(d))
+	r.With(safe).Post("/{id}/credentials", newCreateAccountCredentialHandler(d))
+	r.With(safe).Post("/{id}/credentials/{credentialID}/rotate", newRotateAccountCredentialHandler(d))
+	r.With(safe).Patch("/{id}/credentials/{credentialID}/state", newSetAccountCredentialStateHandler(d))
+	r.With(safe).Delete("/{id}/credentials/{credentialID}", newDeleteAccountCredentialHandler(d))
 }
 
 func MountAdminCredentialRenewStatusRoutes(r chi.Router, d AdminCredentialDeps) {
@@ -148,7 +151,7 @@ func newListAccountCredentialsHandler(d AdminCredentialDeps) http.HandlerFunc {
 
 func newCreateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, accountID, _, ok := resolveCredentialAdminRequest(w, r, d, false)
+		ident, accountID, tenantID, ok := resolveCredentialAdminRequest(w, r, d, false)
 		if !ok {
 			return
 		}
@@ -156,10 +159,18 @@ func newCreateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 		if !decodeAdminPoolJSON(w, r, &req) {
 			return
 		}
+		// credential-create 守卫(收敛 G1 account-first + R1A):新凭据 vendor/auth 须与账号所属
+		// provider family 兼容,防给 live 账号加错配凭据。并发 TOCTOU 由运行时兼容门兜底。
+		if d.AuditStore != nil {
+			if err := accountcreate.ValidateCredentialCompatibility(r.Context(), d.AuditStore, tenantID, accountID, req.Vendor, req.AuthMode); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "credential_protocol_incompatible", err.Error())
+				return
+			}
+		}
 		meta, err := d.Credentials.Create(r.Context(), credentialstore.CreateCredentialInput{
 			TenantID: req.TenantID, ProviderAccountID: accountID,
 			Vendor: req.Vendor, AuthMode: req.AuthMode,
-			Payload: req.Credentials, ActorID: fmt.Sprintf("%d", ident.TokenID),
+			Payload: req.Credentials, ActorID: ident.AuditActor(),
 			ExternalAccountID:    req.ExternalAccountID,
 			ExternalAccountEmail: req.ExternalAccountEmail,
 		})
@@ -184,7 +195,7 @@ func newRotateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 		}
 		meta, err := d.Credentials.Rotate(r.Context(), credentialstore.RotateCredentialInput{
 			TenantID: req.TenantID, ProviderAccountID: accountID, CredentialID: credentialID,
-			Payload: req.Credentials, ActorID: fmt.Sprintf("%d", ident.TokenID),
+			Payload: req.Credentials, ActorID: ident.AuditActor(),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_rotate_failed", err.Error())
@@ -209,7 +220,7 @@ func newSetAccountCredentialStateHandler(d AdminCredentialDeps) http.HandlerFunc
 			writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
 			return
 		}
-		if err := d.Credentials.SetState(r.Context(), req.TenantID, accountID, credentialID, req.State, fmt.Sprintf("%d", ident.TokenID)); err != nil {
+		if err := d.Credentials.SetState(r.Context(), req.TenantID, accountID, credentialID, req.State, ident.AuditActor()); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_state_failed", err.Error())
 			return
 		}
@@ -236,7 +247,7 @@ func newDeleteAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
 			return
 		}
-		if err := d.Credentials.Delete(r.Context(), req.TenantID, accountID, credentialID, fmt.Sprintf("%d", ident.TokenID)); err != nil {
+		if err := d.Credentials.Delete(r.Context(), req.TenantID, accountID, credentialID, ident.AuditActor()); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_delete_failed", err.Error())
 			return
 		}
@@ -404,7 +415,7 @@ func writeCredentialAdminAudit(r *http.Request, d AdminCredentialDeps, ident adm
 }
 
 func writeAccountCredentialAudit(ctx context.Context, r *http.Request, store AdminPoolAccountStore, ident admin.AdminIdentity, tenantID *int64, action string, reason *string, payload []byte) error {
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+	actorID := ident.AuditActor()
 	reqID := middleware.GetReqID(r.Context())
 	_, err := store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
 		TenantID: tenantID, ActorID: actorID, ActorRole: ident.Role,

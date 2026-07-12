@@ -5,24 +5,21 @@ import (
 	"testing"
 )
 
-// TestEstimateInputTokens_CJKvsLatin_Discriminating proves the heuristic charges
-// CJK glyphs at a DIFFERENT per-class weight than latin word-runs — i.e. it is
-// vendor-weighted, not a flat count. The two fixtures share an identical
-// structure (N units, each separated by a single comma) so the only term that
-// differs between them is cjkGlyph*N vs wordRun*N; the comma/separator
-// contribution is identical and cancels.
+// TestEstimateInputTokens_CJKvsLatin_Discriminating 证明启发式对 CJK 字符
+// 按【不同】于拉丁词串的逐类权重计费——即它是按厂商加权的，而非平铺计数。
+// 两个 fixture 结构完全一致（N 个单元，各以单个逗号分隔），因此两者唯一
+// 不同的项是 cjkGlyph*N 与 wordRun*N；逗号/分隔符的贡献完全相同会相消。
 //
-// Mutation guard: collapse cjkGlyph and wordRun to the same value (the naive
-// flat-count defect this whole package exists to avoid) and the two estimates
-// become equal → red. This is self-proving: the structural framing isolates the
-// class-weight term exactly.
+// 变异守卫：把 cjkGlyph 和 wordRun 压成同一个值（即本包旨在避免的朴素
+// 平铺计数缺陷），两个估算就会相等 → 变红。这是自证的：结构化框定恰好
+// 隔离出了逐类权重那一项。
 func TestEstimateInputTokens_CJKvsLatin_Discriminating(t *testing.T) {
 	const n = 100
 	cjkParts := make([]string, n)
 	latinParts := make([]string, n)
 	for i := 0; i < n; i++ {
-		cjkParts[i] = "文"   // one CJK glyph per unit
-		latinParts[i] = "a" // one latin letter (a one-letter word-run) per unit
+		cjkParts[i] = "文"   // 每个单元一个 CJK 字符
+		latinParts[i] = "a" // 每个单元一个拉丁字母（单字母词串）
 	}
 	cjk := strings.Join(cjkParts, ",")
 	latin := strings.Join(latinParts, ",")
@@ -36,12 +33,11 @@ func TestEstimateInputTokens_CJKvsLatin_Discriminating(t *testing.T) {
 	}
 }
 
-// TestEstimateInputTokens_Monotonic proves the estimate never shrinks when the
-// body grows, and that an empty body estimates exactly 0.
+// TestEstimateInputTokens_Monotonic 证明 body 增大时估算从不缩小，且空 body
+// 的估算恰好为 0。
 //
-// Mutation guard: if the count is clamped/capped at a constant, the longer-body
-// assertion goes red; if the empty short-circuit is removed, the empty case
-// returns the floor pad (>0) and goes red.
+// 变异守卫：如果计数被钳制/封顶在常量，更长 body 的断言会变红；如果去掉空
+// body 的短路分支，空场景会返回下限补值（>0）而变红。
 func TestEstimateInputTokens_Monotonic(t *testing.T) {
 	if got := Estimate([]byte(""), "openai_chat"); got != 0 {
 		t.Fatalf("empty body must estimate 0, got %d", got)
@@ -62,12 +58,12 @@ func TestEstimateInputTokens_Monotonic(t *testing.T) {
 	}
 }
 
-// TestEstimate_VendorWeightsDiffer proves the protocol-family selector actually
-// switches weight tables: a CJK-heavy body estimates differently across the
-// three vendor classes (Gemini charges CJK cheaper than Anthropic).
+// TestEstimate_VendorWeightsDiffer 证明 protocol-family 选择器确实在切换权重表：
+// 一个 CJK 密集的 body 在三个厂商类下估算各不相同（Gemini 对 CJK 的计费比
+// Anthropic 便宜）。
 //
-// Mutation guard: if classForProtocolFamily always returns one class, the
-// estimates collapse to equal and this goes red.
+// 变异守卫：如果 classForProtocolFamily 始终返回同一个类，估算会塌缩为相等，
+// 本测试变红。
 func TestEstimate_VendorWeightsDiffer(t *testing.T) {
 	body := []byte(strings.Repeat("漢字", 200))
 	anthropic := Estimate(body, "anthropic_messages")
@@ -77,8 +73,8 @@ func TestEstimate_VendorWeightsDiffer(t *testing.T) {
 	}
 }
 
-// TestEstimate_UnknownFamily_FallsBack proves an unknown protocol family does
-// not panic and produces a sane positive estimate (OpenAI fallback table).
+// TestEstimate_UnknownFamily_FallsBack 证明未知 protocol family 不会 panic，
+// 并产出合理的正数估算（OpenAI 回退表）。
 func TestEstimate_UnknownFamily_FallsBack(t *testing.T) {
 	got := Estimate([]byte("hello world"), "some_unknown_family_xyz")
 	want := Estimate([]byte("hello world"), "openai_chat")

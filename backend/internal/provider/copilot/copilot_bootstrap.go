@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
 
 const (
@@ -196,7 +198,9 @@ func (b OAuthBootstrap) httpClient() *http.Client {
 	if b.HTTPClient != nil {
 		return b.HTTPClient
 	}
-	return http.DefaultClient
+	// 设备码引导(一次性 admin 流)同样携带 GitHub token 出站,未注入 client 时回退 SSRF 防护 client
+	// 而非裸 http.DefaultClient(与 CopilotRefreshAdapter 同一修复面,S2-054 同款防线)。
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 func (b OAuthBootstrap) sleep(ctx context.Context, d time.Duration) error {

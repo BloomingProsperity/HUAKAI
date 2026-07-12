@@ -139,7 +139,7 @@ func TestPostAPIKeys_Success(t *testing.T) {
 //
 // 判别 fixture:这是 [[feedback_no_fake_pass]] 防御 — 防有人改 decodeJSON
 // 取消 DisallowUnknownFields 后接受 body 的 tenant_id/user_id 越权字段。
-// Mutation 自检:去掉 DisallowUnknownFields → 这个测试 red。
+// 变异自检:去掉 DisallowUnknownFields → 这个测试 red。
 func TestPostAPIKeys_BodyTenantUserIDIgnored(t *testing.T) {
 	svc := &stubService{
 		issueReturn: userkey.IssueResult{
@@ -228,7 +228,7 @@ func TestListAPIKeys_PassesSessionAndPagination(t *testing.T) {
 //
 // 判别 fixture:Service 返 ErrNotFound,handler 返 404 + 公开 code 是
 // "api_key_not_found"(不是 "forbidden" 不是 "wrong_owner")— 防 ID 枚举。
-// Mutation 自检:改成返 403 → 攻击者可区分"键 ID 存在但归别人"还是"不存在"
+// 变异自检:改成返 403 → 攻击者可区分"键 ID 存在但归别人"还是"不存在"
 // → ID 枚举攻击面打开 → 本测试 red。
 func TestGetAPIKeys_NotFoundCodeIsGeneric(t *testing.T) {
 	svc := &stubService{getErr: userkey.ErrNotFound}
@@ -251,7 +251,7 @@ func TestGetAPIKeys_NotFoundCodeIsGeneric(t *testing.T) {
 // T6: GET 调用把 session (tenant, user) + path id 一起传给 service.Get。
 //
 // 判别 fixture:断言传入 tenant 和 user 来自 session ident,id 来自 path;
-// Mutation 自检:把 ident.UserID 改成 0 / 把 path id 改成 0 → assertion 红。
+// 变异自检:把 ident.UserID 改成 0 / 把 path id 改成 0 → assertion 红。
 func TestGetAPIKeys_ScopeFromSessionAndPath(t *testing.T) {
 	svc := &stubService{getReturn: userkey.KeyDescriptor{APIKeyID: 55, Name: "x", KeyPrefix: "hk_live_xxxxxxxx", Status: "active", CreatedAt: time.Now(), UpdatedAt: time.Now()}}
 	mux := mountWithSession(t, svc, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)
@@ -307,10 +307,10 @@ func TestDeleteAPIKeys_IdempotentBody(t *testing.T) {
 	}
 }
 
-// T8b: DELETE with malformed non-empty JSON must fail before Revoke.
+// T8b:DELETE 带非空但格式错误的 JSON 时,必须在 Revoke 之前失败。
 //
-// Mutation self-check: if the handler discards Decode errors again, this fixture
-// returns 200 and records one revoke call, so both load-bearing assertions go red.
+// 变异自检:如果 handler 再次丢弃 Decode 的 error,这个 fixture 会返回 200 并记录一次
+// revoke 调用,于是两条承重断言都会变红。
 func TestDeleteAPIKeys_MalformedBodyRejected(t *testing.T) {
 	svc := &stubService{revokeReturn: userkey.RevokeResult{APIKeyID: 88}}
 	mux := mountWithSession(t, svc, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)
@@ -332,7 +332,7 @@ func TestDeleteAPIKeys_MalformedBodyRejected(t *testing.T) {
 // T9: ErrActiveKeyCapHit → 409 (Conflict),不是 503。
 //
 // 判别 fixture:cap 命中是用户输入问题不是后端故障;mapping 错 → 用户拿到 503
-// 后无法理解原因。Mutation:把 cap mapping 改成 default 503 → 测试 red。
+// 后无法理解原因。变异:把 cap mapping 改成 default 503 → 测试 red。
 func TestPostAPIKeys_CapMappedToConflict(t *testing.T) {
 	svc := &stubService{issueErr: userkey.ErrActiveKeyCapHit}
 	mux := mountWithSession(t, svc, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)
@@ -364,7 +364,7 @@ func TestPostAPIKeys_InvalidExpiresAt(t *testing.T) {
 // T11: Service nil → 503 (fail-closed)。
 //
 // 判别 fixture:防 wiring 漏装 Service 时 handler 默默崩或返 200/204。
-// Mutation 自检:去掉 resolveSession 里 d.Service == nil 检查 → service.Issue
+// 变异自检:去掉 resolveSession 里 d.Service == nil 检查 → service.Issue
 // nil-pointer panic → 测试是 500 / panic 不是 503 → red。
 func TestPostAPIKeys_NilServiceFailsClosed(t *testing.T) {
 	mux := mountWithSession(t, nil, sessionauth.SessionIdentity{TenantID: 7, UserID: 42}, true)
@@ -396,9 +396,9 @@ func TestErrorMappingFallthrough(t *testing.T) {
 	}
 }
 
-// KEY-028. MUTATION: handler passing TenantID:0 (dropping session scope) makes the
-// revokeCalls fail the owner-scope assertion; treating ErrNotFound as fatal makes
-// the status/not_found assertion fail; only-first-id makes len(revoked)!=2.
+// KEY-028。变异:handler 传 TenantID:0(丢掉 session 作用域)会让 revokeCalls 的
+// owner-scope 断言失败;把 ErrNotFound 当致命错误会让 status/not_found 断言失败;
+// 只处理第一个 id 会让 len(revoked)!=2。
 func TestBatchRevokeOwnerScopedWithNotFound(t *testing.T) {
 	svc := &stubService{
 		revokeReturn:  userkey.RevokeResult{},

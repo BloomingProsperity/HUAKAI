@@ -147,9 +147,16 @@ func (s *MemoryStore) UpdateCredentialUsage(_ context.Context, tenantID int64, c
 		return CredentialRecord{}, ErrCredentialNotFound
 	}
 	record := s.credentials[id]
+	// 与 PostgresStore 的 CAS 守卫对齐:仅允许严格递增(或双 0)写入,挡并发竞态
+	// 绕过克隆检测;否则返 ErrCloneDetected,令测试形态与生产形态行为一致。
+	if !(record.SignCount < signCount || (record.SignCount == 0 && signCount == 0)) {
+		return CredentialRecord{}, ErrCloneDetected
+	}
 	t := now.UTC()
 	record.SignCount = signCount
-	record.CloneWarning = cloneWarning
+	// clone_warning 只升不降:正常递增登录不得抹掉历史置位的告警(防克隆信号是
+	// "曾疑似克隆"的持久标志,真克隆者也会有正常计数那一半)。
+	record.CloneWarning = record.CloneWarning || cloneWarning
 	record.LastUsedAt = &t
 	s.credentials[id] = record
 	return cloneCredential(record), nil

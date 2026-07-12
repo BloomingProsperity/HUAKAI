@@ -26,14 +26,14 @@ func TestPostgresRefundRequestApproveRejectListAndTenantIsolation(t *testing.T) 
 	if pending, err := recorder.ListPendingRefundRequests(ctx, tenantA); err != nil || len(pending) != 1 || pending[0].ID != approvedReq.ID {
 		t.Fatalf("pending before approve=(%+v,%v), want only request %d", pending, err, approvedReq.ID)
 	}
-	if _, err := recorder.ApproveRefundRequest(ctx, tenantB, approvedReq.ID, 99); !errors.Is(err, ErrRefundRequestNotFound) {
+	if _, err := recorder.ApproveRefundRequest(ctx, tenantB, approvedReq.ID, 99, "admin_token:99"); !errors.Is(err, ErrRefundRequestNotFound) {
 		t.Fatalf("cross-tenant approve err=%v want ErrRefundRequestNotFound", err)
 	}
-	first, err := recorder.ApproveRefundRequest(ctx, tenantA, approvedReq.ID, 99)
+	first, err := recorder.ApproveRefundRequest(ctx, tenantA, approvedReq.ID, 99, "admin_token:99")
 	if err != nil {
 		t.Fatalf("first approve: %v", err)
 	}
-	second, err := recorder.ApproveRefundRequest(ctx, tenantA, approvedReq.ID, 99)
+	second, err := recorder.ApproveRefundRequest(ctx, tenantA, approvedReq.ID, 99, "admin_token:99")
 	if err != nil {
 		t.Fatalf("duplicate approve: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestPostgresRefundRequestApproveRejectListAndTenantIsolation(t *testing.T) 
 
 	rejectedOrder := createCompletedTopupForRefundRequest(t, ctx, svc, tenantB, userB, 900, "pg-reject")
 	rejectedReq := createRefundRequestForAdminTest(t, ctx, recorder, tenantB, userB, rejectedOrder.ID, "reject me")
-	rejected, err := recorder.RejectRefundRequest(ctx, tenantB, rejectedReq.ID, "not eligible", 77)
+	rejected, err := recorder.RejectRefundRequest(ctx, tenantB, rejectedReq.ID, "not eligible", 77, "admin_token:77")
 	if err != nil {
 		t.Fatalf("reject: %v", err)
 	}
@@ -72,9 +72,9 @@ func TestPostgresRefundRequestApproveRejectListAndTenantIsolation(t *testing.T) 
 	}
 }
 
-// Reject must not be able to overwrite a pending request after its refund fact exists.
-// This simulates the crash window where RefundOrder committed but ApproveRefundRequest
-// had not yet updated payment_refund_requests.status.
+// 在退款事实已存在之后，Reject 不得覆盖一个 pending 请求。
+// 这模拟了如下崩溃窗口：RefundOrder 已提交，但 ApproveRefundRequest
+// 尚未更新 payment_refund_requests.status。
 func TestPostgresRefundRequestRejectAfterRefundFactIsRefused(t *testing.T) {
 	ctx := context.Background()
 	pool := openPaymentHTTPPool(t, ctx)
@@ -96,7 +96,7 @@ func TestPostgresRefundRequestRejectAfterRefundFactIsRefused(t *testing.T) {
 		t.Fatalf("seed refund fact: %v", err)
 	}
 
-	_, err := recorder.RejectRefundRequest(ctx, tenantID, req.ID, "operator changed mind", 77)
+	_, err := recorder.RejectRefundRequest(ctx, tenantID, req.ID, "operator changed mind", 77, "admin_token:77")
 	if !errors.Is(err, ErrRefundRequestAlreadyResolved) {
 		t.Fatalf("reject after refund fact err=%v want ErrRefundRequestAlreadyResolved", err)
 	}

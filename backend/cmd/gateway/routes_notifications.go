@@ -19,7 +19,7 @@ func mountNotificationRoutes(r chi.Router, d *deps) {
 	var clientIPResolver *clientip.Resolver
 	if d != nil {
 		adminAuth = d.adminAuth
-		reader = newSubscriptionWorkerStatsReader(d.subReminderWorker, d.subExpiryWorker)
+		reader = newSubscriptionWorkerStatsReader(d.subReminderWorker, d.subExpiryWorker, d.subAutoRenewWorker, d.billingQueries)
 		settings = d.notificationSettings
 		inbox = d.userNoticeService
 		sessions = d.userSessions

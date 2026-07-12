@@ -12,17 +12,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestHermesAdminActorColumnsExistAndNullable guards migration 0144: the
-// nullable admin_actor_token_id column must be present on BOTH
-// hermes_audit_events and hermes_conversations and must NOT be NOT NULL.
+// TestHermesAdminActorColumnsExistAndNullable 守 migration 0144:可空的
+// admin_actor_token_id 列必须同时存在于 hermes_audit_events 和
+// hermes_conversations 上，且不能是 NOT NULL。
 //
-// This is the discriminating regression guard. The unit tests use in-memory
-// fakes / sqlc params that do not reflect live schema, so they cannot catch a
-// missing or wrongly-constrained column. This test runs against the real gate
-// DB and FAILS if 0144 is reverted (the columns are absent) or if a future edit
-// makes the column NOT NULL (which would break the existing end-user-path
-// INSERTs that never set it). Verified discriminating: before 0144 the rows
-// returned by the catalog query are empty.
+// 这是有判别力的回归守卫。单元测试用的是内存 fake / sqlc 参数，不反映真实
+// schema，因此抓不出缺失或约束错误的列。本测试针对真实 gate DB 运行，若 0144
+// 被回退（列不存在），或将来某次改动把列改成 NOT NULL（会破坏既有终端用户路径
+// 上从不设置该列的 INSERT），都会失败。已验证其判别力:在 0144 之前，目录查询
+// 返回的行为空。
 func TestHermesAdminActorColumnsExistAndNullable(t *testing.T) {
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")
 	if strings.TrimSpace(dsn) == "" {
@@ -53,8 +51,8 @@ func TestHermesAdminActorColumnsExistAndNullable(t *testing.T) {
 		if !strings.EqualFold(dataType, "bigint") {
 			t.Fatalf("%s.admin_actor_token_id data_type=%s want bigint", table, dataType)
 		}
-		// Discriminating: the column must stay nullable so the legacy end-user
-		// INSERTs that never set it continue to succeed.
+		// 判别要点:该列必须保持可空，这样从不设置它的旧版终端用户
+		// INSERT 才能继续成功。
 		if !strings.EqualFold(isNullable, "YES") {
 			t.Fatalf("%s.admin_actor_token_id is_nullable=%s want YES", table, isNullable)
 		}

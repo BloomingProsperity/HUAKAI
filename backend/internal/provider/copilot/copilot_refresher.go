@@ -222,7 +222,11 @@ func (r CopilotRefreshAdapter) httpClient() *http.Client {
 	if r.HTTPClient != nil {
 		return r.HTTPClient
 	}
-	return http.DefaultClient
+	// 未注入 client 时(生产唯二构造点 wiring/mode_refresh 均零值 Adapter)必须回退到 SSRF 防护 client:
+	// 该路径用 Authorization: token <github_token> 把高价值 GitHub access token 出站,裸 http.DefaultClient
+	// 会读 HTTP_PROXY 经 env 代理外发 token、无拨号层 IP 校验、不禁 3xx。与 kiro/openai refresher 一致
+	// (S2-054 同款防线,此前 copilot 漏修)。
+	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
 func (r CopilotRefreshAdapter) now() time.Time {

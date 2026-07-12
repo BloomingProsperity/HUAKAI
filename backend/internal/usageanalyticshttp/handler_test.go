@@ -62,10 +62,10 @@ func invoke(h http.HandlerFunc, target string) *httptest.ResponseRecorder {
 
 const win = "?from=2026-05-01T00:00:00Z&to=2026-05-08T00:00:00Z"
 
-// TestTimeSeries_LockedToOwnAPIKey is the self-serve isolation invariant: even
-// when the caller injects ?api_key_id=999 and ?tenant_id=88, the SQL scope MUST
-// come from the resolved identity. Mutation: read api_key_id/tenant_id from the
-// query string -> arg.APIKeyID becomes 999 -> this test goes red.
+// TestTimeSeries_LockedToOwnAPIKey 验证自助场景下的隔离不变量:即便调用方注入
+// ?api_key_id=999 和 ?tenant_id=88，SQL 的作用域也必须来自已解析的 identity。
+// 变异:从 query string 读取 api_key_id/tenant_id -> arg.APIKeyID 变成 999
+// -> 此测试变红。
 func TestTimeSeries_LockedToOwnAPIKey(t *testing.T) {
 	ident := auth.Identity{TenantID: 7, APIKeyID: 30, UserID: 40}
 	store := &storeStub{}
@@ -91,7 +91,7 @@ func TestTimeSeries_MissingFromReturns400(t *testing.T) {
 
 func TestTimeSeries_WindowTooLargeReturns400(t *testing.T) {
 	h := NewTimeSeriesHandler(Deps{Auth: authStub{identity: auth.Identity{TenantID: 7, APIKeyID: 30}}, Store: &storeStub{}})
-	// ~60-day window exceeds the 31-day cap.
+	// ~60 天的窗口超过 31 天上限。
 	rec := invoke(h, "/v1/me/analytics/time-series?from=2026-03-01T00:00:00Z&to=2026-04-30T00:00:00Z")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("code=%d want 400 (window too large)", rec.Code)
@@ -182,10 +182,9 @@ func TestTimeSeries_HappyPathMapsCostAndTokens(t *testing.T) {
 	}
 }
 
-// TestTimeSeries_GranularitySelectsDayWeekMonthBuckets guards the requested
-// mutation: if the handler ignores granularity and always uses the day query,
-// the week/month cases return the two seeded day buckets instead of one merged
-// bucket and this test goes red.
+// TestTimeSeries_GranularitySelectsDayWeekMonthBuckets 守护所要求的变异:若
+// handler 忽略 granularity 而始终使用 day 查询，则 week/month 用例会返回两个
+// 预置的 day 桶，而非一个合并后的桶，于是此测试变红。
 func TestTimeSeries_GranularitySelectsDayWeekMonthBuckets(t *testing.T) {
 	ident := auth.Identity{TenantID: 7, APIKeyID: 30}
 	dayA := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)

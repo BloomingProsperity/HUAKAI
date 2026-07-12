@@ -1,6 +1,5 @@
-// Package main wiring tests guard the two production-mode env-gated
-// helpers (`buildAuditLedger` + `loadAuditSigner`) against silent
-// regressions.
+// Package main 的 wiring 测试守护两个 production 模式下 env 门控的
+// helper(`buildAuditLedger` + `loadAuditSigner`),防止它们悄悄回归。
 //
 // 不连真实 DB：production 模式下的 postgres 后端只验证 wiring 是否进入
 // 持久化分支（构造期错误 / 不会 silently fallback 到 memory），不要求
@@ -20,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -38,14 +38,65 @@ import (
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
+	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
+	"github.com/BloomingProsperity/HUAKAI/internal/quota"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
 
+// wiringQuotaFinalizerSpy 观测 quota 结算/释放是否被调用(注入 quotaenforce.Settler 作 Finalizer)。
+type wiringQuotaFinalizerSpy struct {
+	settleCalls  int
+	releaseCalls int
+}
+
+func (s *wiringQuotaFinalizerSpy) Settle(context.Context, quota.SettleRequest) (quota.SettleResult, error) {
+	s.settleCalls++
+	return quota.SettleResult{}, nil
+}
+
+func (s *wiringQuotaFinalizerSpy) Release(context.Context, quota.ReleaseRequest) (quota.ReleaseResult, error) {
+	s.releaseCalls++
+	return quota.ReleaseResult{}, nil
+}
+
+func (s *wiringQuotaFinalizerSpy) CommitCacheHit(context.Context, quota.CacheHitRequest) (quota.CacheHitResult, error) {
+	return quota.CacheHitResult{}, nil
+}
+
+// TestWiring_AsyncBillingHandlerSettlesThroughQuotaDecorator 守 A#1:异步 completion 总线真正落账的
+// BillingPersisterHandler 必须持【quota 装饰后】的 settler——否则成功请求经异步路径结算时绕过 quota
+// 装饰器,配额预留与并发槽永不释放(默认 eventbus+quota 均开即触发,累积后整 scope 被 429 硬拒)。
+// 生产缺陷根因是总线在装饰链装配【之前】构造(持中间层 settler);修复把总线构造挪到全装饰之后。
+// 本测试按 wiring 装饰顺序组 settler(base→quota),交给 BillingPersisterHandler,发一个成功完成事件,
+// 断言 quota.Settle 被调用(即异步落账确经 quota 层)。
+// Mutation: 若 handler 改回持未装饰 base settler(重现 A#1),或 quotaenforce.Settler.Settle 不再调
+// quota.Settle → settleCalls==0 → RED。
+func TestWiring_AsyncBillingHandlerSettlesThroughQuotaDecorator(t *testing.T) {
+	base := &wiringRecordingSettler{}
+	quotaSpy := &wiringQuotaFinalizerSpy{}
+	// 复刻 wiring 的结算装饰:base → quota(buildQuotaEnforcement 等价的外层包装)。
+	decorated := quotaenforce.NewSettler(base, quotaSpy)
+
+	handler := observability.NewBillingPersisterHandler(decorated, time.Second)
+	event := eventbus.RequestCompletionEvent{
+		ID: "evt-a1", TenantID: 7, ClaimID: 101,
+		SettleRequest: billing.SettleRequest{TenantID: 7, ClaimID: 101, AuditRequestID: "req-a1"},
+	}
+	if err := handler.Handle(context.Background(), event); err != nil {
+		t.Fatalf("async billing handler settle: %v", err)
+	}
+	if quotaSpy.settleCalls != 1 {
+		t.Fatalf("quota.Settle 调用次数=%d want 1 —— 异步落账 handler 未经 quota 装饰器结算(A#1:配额/并发槽泄漏)", quotaSpy.settleCalls)
+	}
+}
+
 // ---------------------------------------------------------------
-// Audit-ref policy wiring: 2 case
+// Audit-ref policy 接线:2 个用例
 // ---------------------------------------------------------------
 
 func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
@@ -71,8 +122,96 @@ func TestWiring_AuditRefPolicySharedByBusConfigAndChatDeps(t *testing.T) {
 	}
 }
 
+func TestWiring_SettlementRecoverySharesAuditRefPolicy(t *testing.T) {
+	policy := &eventbus.AuditRefPolicy{ReleaseMode: eventbus.ReleaseModeProduction}
+	handler := newSettlementRecoveryHandler(nil, nil, policy)
+	if handler.AuditRefPolicy != policy {
+		t.Fatalf("settlement recovery AuditRefPolicy pointer=%p want shared %p", handler.AuditRefPolicy, policy)
+	}
+}
+
+// TestWiring_CompletionEventBusConfigCarriesMaxStates 守 config 层的状态 map 上限经由
+// buildCompletionEventBusConfig 透传进运行时 eventbus.Config。否则即便 config 默认 4096,
+// 网关实际跑的 MaxStates 仍是 0(无界),每 handler 状态 map 的内存泄漏会悄悄复活、且无任何测试报红。
+// Mutation: 删掉 middleware.go 里 `MaxStates: cfg.MaxStates` 那一行 → busCfg.MaxStates=0 → 本测试红。
+func TestWiring_CompletionEventBusConfigCarriesMaxStates(t *testing.T) {
+	policy := &eventbus.AuditRefPolicy{ReleaseMode: eventbus.ReleaseModeProduction}
+	def := buildCompletionEventBusConfig(&runtimeconfig.EventBusConfig{Enabled: true, MaxStates: 4096}, policy)
+	if def.MaxStates != 4096 {
+		t.Fatalf("busCfg.MaxStates=%d want 4096(config 层 cap 必须传到运行时 bus)", def.MaxStates)
+	}
+	// 非默认值透传:证明是真透传,而非写死常量。
+	custom := buildCompletionEventBusConfig(&runtimeconfig.EventBusConfig{Enabled: true, MaxStates: 7}, policy)
+	if custom.MaxStates != 7 {
+		t.Fatalf("busCfg.MaxStates=%d want 7(必须按传入值透传,不能是常量)", custom.MaxStates)
+	}
+}
+
+func TestWiring_QuotaReconcilerEnabledByDefault(t *testing.T) {
+	restoreUnsetEnv(t, "HUAKAI_QUOTA_RECONCILER_ENABLED")
+	if !quotaReconcilerEnabledFromEnv() {
+		t.Fatal("HUAKAI_QUOTA_RECONCILER_ENABLED 未设置时应默认启动 quota reconciler")
+	}
+	t.Setenv("HUAKAI_QUOTA_RECONCILER_ENABLED", "not-a-bool")
+	if !quotaReconcilerEnabledFromEnv() {
+		t.Fatal("HUAKAI_QUOTA_RECONCILER_ENABLED 非法值应按安全默认启动处理")
+	}
+	t.Setenv("HUAKAI_QUOTA_RECONCILER_ENABLED", "false")
+	if quotaReconcilerEnabledFromEnv() {
+		t.Fatal("HUAKAI_QUOTA_RECONCILER_ENABLED=false 应显式关闭 quota reconciler")
+	}
+	t.Setenv("HUAKAI_QUOTA_RECONCILER_ENABLED", "0")
+	if quotaReconcilerEnabledFromEnv() {
+		t.Fatal("HUAKAI_QUOTA_RECONCILER_ENABLED=0 应显式关闭 quota reconciler")
+	}
+}
+
+func TestWiring_CompletionEventBusDoesNotInstallDeprecatedReconciliationHandler(t *testing.T) {
+	bus, err := buildCompletionEventBus(
+		&runtimeconfig.EventBusConfig{Enabled: true, HandlerTimeout: time.Second, HighWorkers: 1, MediumWorkers: 1, LowWorkers: 1},
+		&wiringRecordingSettler{},
+		nil,
+		nil,
+		&eventbus.AuditRefPolicy{ReleaseMode: eventbus.ReleaseModeProduction},
+		zaptest.NewLogger(t),
+	)
+	if err != nil {
+		t.Fatalf("buildCompletionEventBus: %v", err)
+	}
+	defer func() {
+		if err := bus.Stop(context.Background()); err != nil {
+			t.Fatalf("stop bus: %v", err)
+		}
+	}()
+
+	handlers := reflect.ValueOf(bus).Elem().FieldByName("handlers")
+	seenBillingPersister := false
+	for i := 0; i < handlers.Len(); i++ {
+		runner := handlers.Index(i)
+		if runner.Kind() == reflect.Pointer {
+			runner = runner.Elem()
+		}
+		handler := runner.FieldByName("handler")
+		if handler.Kind() != reflect.Interface || handler.IsNil() {
+			continue
+		}
+		concrete := handler.Elem()
+		handlerType := concrete.Type().String()
+		if handlerType == "*observability.ReconciliationHandler" {
+			t.Fatal("生产 completion eventbus 不应注册已废弃的 reconciliation handler")
+		}
+		if handlerType != "*observability.BillingPersisterHandler" {
+			continue
+		}
+		seenBillingPersister = true
+	}
+	if !seenBillingPersister {
+		t.Fatal("completion eventbus 未注册 billing persister handler")
+	}
+}
+
 func TestWiring_AlertingEvaluatorDefaultDisabled(t *testing.T) {
-	// MUTATION: start the alerting evaluator regardless of cfg.AlertingEvalEnabled; this observes an unexpected Run call.
+	// 变异:无视 cfg.AlertingEvalEnabled 直接启动 alerting evaluator;这会观察到一次预期之外的 Run 调用。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner := newWiringAlertingRunner()
@@ -91,7 +230,7 @@ func TestWiring_AlertingEvaluatorDefaultDisabled(t *testing.T) {
 }
 
 func TestWiring_AlertingEvaluatorEnabledStopsWithRuntime(t *testing.T) {
-	// MUTATION: start with context.Background instead of the runtime ctx; stop does not cancel the scheduler.
+	// 变异:用 context.Background 而非 runtime ctx 启动;stop 无法取消 scheduler。
 	runner := newWiringAlertingRunner()
 	stop := startAlertingEvaluator(context.Background(), &Config{AlertingEvalEnabled: true}, runner, zaptest.NewLogger(t))
 	if stop == nil {
@@ -114,7 +253,7 @@ func TestWiring_AlertingEvaluatorEnabledStopsWithRuntime(t *testing.T) {
 }
 
 func TestWiring_APIKeyExpiryWorkerDisabledDoesNotStart(t *testing.T) {
-	// MUTATION: start the expiry worker even when disabled; this observes an unexpected Start call.
+	// 变异:即便已禁用也启动 expiry worker;这会观察到一次预期之外的 Start 调用。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	worker := newWiringAPIKeyExpiryWorker()
@@ -133,7 +272,7 @@ func TestWiring_APIKeyExpiryWorkerDisabledDoesNotStart(t *testing.T) {
 }
 
 func TestWiring_APIKeyExpiryWorkerEnabledStopsWithRuntime(t *testing.T) {
-	// MUTATION: forget to save/return Stop; runtime shutdown cannot stop the expiry worker.
+	// 变异:忘记保存/返回 Stop;runtime 关停时无法停止 expiry worker。
 	worker := newWiringAPIKeyExpiryWorker()
 	stop := startAPIKeyExpiryWorker(context.Background(), &Config{APIKeyExpirySweepEnabled: true}, worker)
 	if stop == nil {
@@ -160,12 +299,14 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	rateTables := billing.NewPGXRateTableSource(nil)
 	claimGate := &wiringClaimGate{}
 	settler := &wiringRecordingSettler{}
+	recovery := dlq.NewService(nil)
 	d := &deps{
 		cfg:                  &Config{BillingPolicyVersion: "1.0", RequestClass: "standard"},
 		pricingRatioResolver: resolver,
 		rateTableSource:      rateTables,
 		claimGate:            claimGate,
 		settler:              settler,
+		dlqService:           recovery,
 	}
 
 	chatDeps := chatHandlerDeps(d)
@@ -195,6 +336,9 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	}
 	if imageDeps.RateTables != rateTables || imageDeps.ClaimGate != claimGate || imageDeps.Settler != settler {
 		t.Fatal("image deps did not reuse shared money-path wiring")
+	}
+	if imageDeps.SettleRecoveryDLQ != recovery {
+		t.Fatal("image deps did not reuse shared settlement recovery queue")
 	}
 	if completionsDeps.RateTables != rateTables || completionsDeps.ClaimGate != claimGate || completionsDeps.Settler != settler {
 		t.Fatal("completions deps did not reuse shared money-path wiring")
@@ -250,17 +394,20 @@ func (w *wiringAPIKeyExpiryWorker) Stop() {
 	w.stopOnce.Do(func() { close(w.stopped) })
 }
 
-func TestContentModerationRuntimeEnabledDefaultsOff(t *testing.T) {
-	// Mutation: defaulting the moderation request-path gate to enabled wires a
-	// DB-backed screener into chat and adds moderation lookup latency to every
-	// unconfigured tenant request.
+func TestContentModerationRuntimeEnabledDefaultsOnAndCanDisable(t *testing.T) {
+	// 变异:把 moderation 请求路径 gate 退回默认关闭;管理员 PUT enabled=true 后
+	// 请求路径仍静默不执行审核,首断言转红。
 	t.Setenv(contentModerationEnabledEnv, "")
-	if contentModerationRuntimeEnabled() {
-		t.Fatal("content moderation runtime gate enabled by default; want opt-in")
-	}
-	t.Setenv(contentModerationEnabledEnv, "true")
 	if !contentModerationRuntimeEnabled() {
-		t.Fatal("content moderation runtime gate false for explicit true")
+		t.Fatal("content moderation runtime gate disabled by default; want default enabled")
+	}
+	t.Setenv(contentModerationEnabledEnv, "0")
+	if contentModerationRuntimeEnabled() {
+		t.Fatal("content moderation runtime gate true for explicit 0")
+	}
+	t.Setenv(contentModerationEnabledEnv, "false")
+	if contentModerationRuntimeEnabled() {
+		t.Fatal("content moderation runtime gate true for explicit false")
 	}
 	t.Setenv(contentModerationEnabledEnv, "1")
 	if !contentModerationRuntimeEnabled() {
@@ -308,8 +455,8 @@ func TestWiring_QuotaEnforceOnWrapsSettlerAndProvidesReserver(t *testing.T) {
 }
 
 func TestWiring_BudgetWrapsOutsideQuotaWhenEnabled(t *testing.T) {
-	// Mutation check: wiring budget inside quota, or replacing quota entirely,
-	// changes the returned reserver type and loses durable quota enforcement.
+	// 变异检查:把 budget 接进 quota 内部,或整体替换 quota,都会改变
+	// 返回的 reserver 类型并丢失持久化的配额强制。
 	plain := &wiringRecordingSettler{}
 
 	settler, reserver := buildQuotaEnforcement(&Config{
@@ -371,6 +518,21 @@ type wiringClaimGate struct{}
 
 func (g *wiringClaimGate) Reserve(context.Context, billing.ReserveRequest) (*billing.ReserveResult, error) {
 	return &billing.ReserveResult{ClaimID: 1}, nil
+}
+
+func restoreUnsetEnv(t *testing.T, key string) {
+	t.Helper()
+	old, had := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(key, old)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }
 
 // 生产 wiring 必须真的调用 installAnthropicClaudeAIOAuthMimicryExchanger
@@ -631,10 +793,9 @@ func TestWiring_InstallChatGPTThreadsAdminCallbackAllowlist(t *testing.T) {
 }
 
 func TestWiring_GeminiPublicCLIOAuthMissingSecretIsLazyFeatureGate(t *testing.T) {
-	// Regression killed: non-Gemini deployments must boot without the Gemini
-	// public CLI client secret, while Gemini public CLI OAuth remains disabled
-	// at the feature boundary. Mutation check: reverting either loader or
-	// installer to reject blank secrets makes this test red before StartOAuthFlow.
+	// 消灭的回归:非 Gemini 的部署必须在没有 Gemini public CLI client secret 时
+	// 也能启动,同时 Gemini public CLI OAuth 在特性边界上保持禁用。变异检查:
+	// 把 loader 或 installer 任一改回拒绝空 secret,都会让本测试在 StartOAuthFlow 之前变红。
 	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " ")
 	secret, err := loadGeminiPublicCLIOAuthClientSecretFromEnv()
 	if err != nil {
@@ -684,10 +845,9 @@ func (f wiringRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) 
 }
 
 func TestWiring_BuildVendorRefreshersSkipsBlankTokenURL(t *testing.T) {
-	// Regression killed: operator config with blank TokenURL must not install
-	// a zero-value vendor refresher into Scheduler.vendorRefreshers. Mutation
-	// self-check: force-adding cursor despite empty token_url makes this test
-	// see cursor in the binding list and turn red.
+	// 消灭的回归:TokenURL 为空的运维配置绝不能把一个零值的 vendor refresher
+	// 装进 Scheduler.vendorRefreshers。变异自检:无视空 token_url 强行加入 cursor,
+	// 会让本测试在 binding 列表里看到 cursor 而变红。
 	bindings := buildVendorRefresherBindings(runtimeconfig.VendorOAuthConfigs{
 		runtimeconfig.VendorOAuthCursor: {
 			ClientID: "cursor-client",
@@ -773,7 +933,9 @@ func TestWiring_BuildCompletionEventBusWarnsWhenAuditRefEscapeFlagActive(t *test
 		AllowMissingMoneyRef: true,
 	}
 
-	bus, err := buildCompletionEventBus(nil, nil, nil, policy, logger)
+	// 第三个参数是新增的 *pgxpool.Pool(account health probe 接线);cfg=nil 时函数提前返回,
+	// 不触及 pgPool,故此处传 nil 安全。
+	bus, err := buildCompletionEventBus(nil, nil, nil, nil, policy, logger)
 	if err != nil {
 		t.Fatalf("buildCompletionEventBus: %v", err)
 	}
@@ -794,7 +956,7 @@ func TestWiring_BuildCompletionEventBusWarnsWhenAuditRefEscapeFlagActive(t *test
 }
 
 // ---------------------------------------------------------------
-// loadAuditSigner: 4 case
+// loadAuditSigner:4 个用例
 // ---------------------------------------------------------------
 
 // dev 模式 + 无 path → 自动生成 ephemeral key，附 warn 日志，调用方拿到可用 signer。
@@ -896,7 +1058,7 @@ func TestWiring_LoadAuditSigner_LoadsBase64Path(t *testing.T) {
 }
 
 // ---------------------------------------------------------------
-// buildAuditLedger: 3 case
+// buildAuditLedger:3 个用例
 // ---------------------------------------------------------------
 
 // dev 模式 + 无 backend env → memory ledger（warn 日志），调用方拿到可用 Ledger。

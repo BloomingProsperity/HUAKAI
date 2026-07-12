@@ -42,9 +42,8 @@ type oauthTokenResponse struct {
 	TokenType    string          `json:"token_type"`
 	Scope        string          `json:"scope"`
 	ExpiresIn    json.RawMessage `json:"expires_in"`
-	// Anthropic claude_ai_oauth carries the upstream account identity inline in the
-	// token-exchange response body. Other providers leave these empty and read the
-	// identity from the id_token claim instead, so the fields are purely additive.
+	// Anthropic 的 claude_ai_oauth 在 token 交换响应体内联携带上游账号身份。
+	// 其他 provider 会留空这些字段,改为从 id_token claim 读取身份,因此这些字段纯属增量补充。
 	Account struct {
 		UUID         string `json:"uuid"`
 		EmailAddress string `json:"email_address"`
@@ -376,7 +375,7 @@ func validateOAuthEndpointURL(raw string) error {
 		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 			return fmt.Errorf("host=%s is non-routable / private", host)
 		}
-		if ip.String() == "169.254.169.254" { // GCP/AWS/Azure metadata
+		if ip.String() == "169.254.169.254" { // GCP/AWS/Azure 元数据服务
 			return fmt.Errorf("host=%s is metadata IP", host)
 		}
 	} else {

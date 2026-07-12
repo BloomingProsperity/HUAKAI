@@ -128,6 +128,28 @@ func TestAdminObsUsageTrustFieldsFromAuditLedger(t *testing.T) {
 	}
 }
 
+func TestAdminObsUsageMapsCacheCreationTTLColumns(t *testing.T) {
+	row := usageRow(1)
+	row.CacheCreation5mTokens = 125
+	row.CacheCreation1hTokens = 250
+	store := &obsStoreStub{usage: []dbbilling.ListUsageRecordsRow{row}}
+
+	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage?limit=20")
+	assertStatus(t, rec, http.StatusOK)
+	var body struct {
+		Items []struct {
+			CacheCreation5mTokens int32 `json:"cache_creation_5m_tokens"`
+			CacheCreation1hTokens int32 `json:"cache_creation_1h_tokens"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.Items) != 1 {
+		t.Fatalf("解析 cache TTL 响应失败: body=%s err=%v", rec.Body.String(), err)
+	}
+	if body.Items[0].CacheCreation5mTokens != 125 || body.Items[0].CacheCreation1hTokens != 250 {
+		t.Fatalf("缓存创建 token 分列=%+v，期望 5m=125 1h=250", body.Items[0])
+	}
+}
+
 func TestAdminObsClaimsSuccess(t *testing.T) {
 	store := &obsStoreStub{claims: []dbbilling.ListBillingClaimsRow{claimRow(3)}}
 	rec := invokeObs(NewClaimsHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/billing/claims?status=committed")
@@ -170,7 +192,7 @@ func TestUsageOutcomeInvalid(t *testing.T) {
 	store := &obsStoreStub{}
 	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage?outcome=bogus")
 	assertStatus(t, rec, http.StatusBadRequest)
-	// MUTATION: accepting any outcome reaches the store and returns a non-invalid_outcome response.
+	// 变异:接受任意 outcome 会触达 store 并返回一个非 invalid_outcome 的响应。
 	if !strings.Contains(rec.Body.String(), "invalid_outcome") || store.usageCountCalls != 0 || store.usageListCalls != 0 {
 		t.Fatalf("invalid outcome response/body/store calls mismatch: status=%d body=%s countCalls=%d listCalls=%d", rec.Code, rec.Body.String(), store.usageCountCalls, store.usageListCalls)
 	}
@@ -183,7 +205,7 @@ func TestUsageOutcomeDefaultAll(t *testing.T) {
 	}}
 	rec := invokeObs(NewUsageHandler(obsDepsStub{auth: obsAuthStub{}, s: store}), "/admin/v1/usage")
 	assertStatus(t, rec, http.StatusOK)
-	// MUTATION: defaulting absent outcome to error or success changes the threaded query value.
+	// 变异:把缺省的 outcome 默认成 error 或 success,会改变贯穿传递的 query 值。
 	if store.usageArg.Outcome == nil || *store.usageArg.Outcome != "all" || store.usageCountArg.Outcome == nil || *store.usageCountArg.Outcome != "all" {
 		t.Fatalf("default outcome params mismatch: count=%+v list=%+v", store.usageCountArg, store.usageArg)
 	}
@@ -255,7 +277,12 @@ func claimRow(id int64) dbbilling.ListBillingClaimsRow {
 	return dbbilling.ListBillingClaimsRow{ID: id, TenantID: 7, IdempotencyKey: "idem", APIKeyID: 1, UserID: 2, LogicalRequestID: "lr", EndpointFamily: "chat", RequestedModel: "m", AttemptSeq: 1, PredictedCost: decimal.RequireFromString("0.01000000"), CurrencyCode: "USD", Status: "committed", CreatedAt: ts(id)}
 }
 func auditRow(id int64, severity, ledgerID string) dbbilling.ListAuditEventsRow {
-	return dbbilling.ListAuditEventsRow{ID: id, TenantID: 7, EventClass: "rate_limit", EventType: "permanent_disable_set", Severity: severity, LedgerID: ledgerID, Payload: []byte(`{"ok":true}`), CreatedAt: ts(id)}
+	// LedgerID 为可空 *string(列可为 NULL);空串视作 NULL(nil)以覆盖真实数据形态。
+	var lp *string
+	if ledgerID != "" {
+		lp = &ledgerID
+	}
+	return dbbilling.ListAuditEventsRow{ID: id, TenantID: 7, EventClass: "rate_limit", EventType: "permanent_disable_set", Severity: severity, LedgerID: lp, Payload: []byte(`{"ok":true}`), CreatedAt: ts(id)}
 }
 func ts(id int64) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: time.Date(2026, 5, 14, 0, 0, int(id), 0, time.UTC), Valid: true}

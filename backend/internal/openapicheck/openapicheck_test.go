@@ -236,3 +236,60 @@ func TestReadImplRoutesFile_SkipsCommentsAndBlank(t *testing.T) {
 		t.Errorf("ReadImplRoutesFile: got=%v want=%v", got, want)
 	}
 }
+
+// secDriftAuthMW 是判别夹具:一个具名的"认证中间件"。OperationsGatedByMiddleware 靠 runtime
+// 函数名识别认证中间件(生产里用 "SessionMiddleware"),这里用本函数名 "secDriftAuthMW" 当 marker。
+func secDriftAuthMW(next http.Handler) http.Handler { return next }
+
+func TestSecurityContractDrift_ReportsSpecPublicButImplGated(t *testing.T) {
+	// 三类操作覆盖判别边界:
+	//   POST /v1/x/verify —— spec 标 security:[](公开)且 impl 挂认证中间件 → **应报漂移**
+	//   GET  /v1/y        —— spec 公开且 impl 不挂认证 → 公开一致,不报(防"把所有公开都当漂移")
+	//   GET  /v1/z        —— spec 声明了 scheme(非公开)且 impl 挂认证 → 认证一致,不报(防"把所有认证都当漂移")
+	spec := `openapi: 3.1.0
+paths:
+  /v1/x/verify:
+    post:
+      security: []
+  /v1/y:
+    get:
+      security: []
+  /v1/z:
+    get:
+      security:
+        - sessionBearerAuth: []
+components:
+  schemas: {}
+`
+	tmp := filepath.Join(t.TempDir(), "spec.yaml")
+	if err := os.WriteFile(tmp, []byte(spec), 0o600); err != nil {
+		t.Fatalf("写临时 spec: %v", err)
+	}
+	pub, err := ParseSpecPublicOperations(tmp)
+	if err != nil {
+		t.Fatalf("ParseSpecPublicOperations: %v", err)
+	}
+	// 公开集应仅 {POST /v1/x/verify, GET /v1/y};/v1/z 声明了 scheme,非公开。
+	wantPub := []Operation{
+		{Method: http.MethodGet, Path: "/v1/y"},
+		{Method: http.MethodPost, Path: "/v1/x/verify"},
+	}
+	sortOperations(wantPub)
+	if !reflect.DeepEqual(pub, wantPub) {
+		t.Fatalf("公开集解析错:\n got=%v\nwant=%v", pub, wantPub)
+	}
+
+	okHandler := func(w http.ResponseWriter, r *http.Request) {}
+	r := chi.NewRouter()
+	r.With(secDriftAuthMW).Post("/v1/x/verify", okHandler) // 公开声明却挂认证 → 漂移源
+	r.Get("/v1/y", okHandler)                              // 公开且无认证
+	r.With(secDriftAuthMW).Get("/v1/z", okHandler)         // 认证且 spec 非公开
+
+	gated := OperationsGatedByMiddleware(r, "secDriftAuthMW")
+	drift := SecurityContractDrift(pub, gated)
+
+	want := []Operation{{Method: http.MethodPost, Path: "/v1/x/verify"}}
+	if !reflect.DeepEqual(drift, want) {
+		t.Fatalf("漂移应仅 [POST /v1/x/verify]:\n got=%v\nwant=%v", drift, want)
+	}
+}

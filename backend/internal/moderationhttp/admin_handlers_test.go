@@ -64,6 +64,11 @@ func TestAdminConfig_GetReturnsDefaults(t *testing.T) {
 	if body.TenantID != 7 || body.Enabled || !body.FailClosed {
 		t.Fatalf("default config mismatch: %+v", body)
 	}
+	var raw map[string]json.RawMessage
+	decodeBody(t, rec, &raw)
+	if _, ok := raw["violation_fee_usd"]; ok {
+		t.Fatalf("config response exposed violation_fee_usd; MUTATION: restoring removed fee API field makes this red")
+	}
 }
 
 func TestAdminConfig_PutPersistsConfig(t *testing.T) {
@@ -158,6 +163,22 @@ func TestAdminModerationLogs_ListPassesTenantFilterAndPage(t *testing.T) {
 		body.Items[0].ID != 90 || body.Items[0].PayloadHash != "payload-hash-visible" {
 		t.Fatalf("moderation logs response mismatch: %+v", body)
 	}
+	var raw map[string]any
+	decodeBody(t, rec, &raw)
+	items, ok := raw["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("raw moderation logs items mismatch: %+v", raw["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("raw moderation log item mismatch: %+v", items[0])
+	}
+	if _, ok := item["violation_fee_usd"]; ok {
+		t.Fatalf("log response exposed violation_fee_usd; MUTATION: restoring removed fee API field makes this red")
+	}
+	if _, ok := item["billing_event_id"]; ok {
+		t.Fatalf("log response exposed billing_event_id; MUTATION: restoring removed billing API field makes this red")
+	}
 }
 
 func TestAdminModerationBannedKeys_ListUsesTenantPage(t *testing.T) {
@@ -215,7 +236,7 @@ func TestAdminModerationUnban_PassesActorReasonAndReturnsAudit(t *testing.T) {
 		t.Fatalf("unban calls=%d want 1", store.unbanCalls)
 	}
 	if store.unbanReq.TenantID != 7 || store.unbanReq.APIKeyID != 30 ||
-		store.unbanReq.ActorID != "1" || store.unbanReq.Reason != "manual review cleared" {
+		store.unbanReq.ActorID != "admin_token:1" || store.unbanReq.Reason != "manual review cleared" {
 		t.Fatalf("unban request mismatch: %+v", store.unbanReq)
 	}
 	var body unbanAPIKeyResponse
@@ -226,8 +247,8 @@ func TestAdminModerationUnban_PassesActorReasonAndReturnsAudit(t *testing.T) {
 }
 
 func TestAdminModerationUnban_AdminAuthRequired(t *testing.T) {
-	// Mutation: bypass resolveAdmin and call Store.UnbanAPIKey directly; this test
-	// would return 200 and increment unbanCalls instead of preserving the 403.
+	// 变异：绕过 resolveAdmin 直接调用 Store.UnbanAPIKey；这时本测试会返回 200
+	// 并使 unbanCalls 自增，而不是保住 403。
 	store := &adminStoreStub{}
 	rec := invokeModerationAdmin(t, ModerationAdminDeps{
 		Auth:  adminAuthStub{err: admin.ErrAdminForbidden},
@@ -242,8 +263,8 @@ func TestAdminModerationUnban_AdminAuthRequired(t *testing.T) {
 }
 
 func TestBulkAdminAuthRequired(t *testing.T) {
-	// Mutation: mount bulk handlers outside resolveAdmin or call Store before
-	// auth; these requests return 200 and increment bulk store calls instead of 403.
+	// 变异：把 bulk handler 挂在 resolveAdmin 之外，或在鉴权之前就调用 Store；
+	// 这些请求会返回 200 并使 bulk store 调用数自增，而不是 403。
 	for _, tc := range []struct {
 		name string
 		path string

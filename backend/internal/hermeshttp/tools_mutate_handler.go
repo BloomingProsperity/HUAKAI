@@ -12,26 +12,25 @@ import (
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
 
-// errMutateRateLimited tags the best-effort ledger row written when the S2 (c)
-// per-operator-token rate limiter rejects a confirmed mutation. It is a
-// handler-local classification sentinel (the limiter lives in the handler), not a
-// mutation outcome — nothing was begun, so it must read "rate_limited", never
-// "mutation_failed".
+// errMutateRateLimited 用于标记当 S2 (c) 的 per-operator-token 限流器拒绝一次已确认
+// 变更时,尽力写入的那条账本行。它是一个 handler 本地的分类哨兵(限流器位于 handler
+// 内),并非变更结果——什么都还没开始,因此它必须读作 "rate_limited",绝不是
+// "mutation_failed"。
 var errMutateRateLimited = errors.New("hermeshttp: operator mutation rate limit exceeded")
 
-// mutateRateKey builds the rate-limiter key from the operator admin token id, so
-// the budget is per operator TOKEN (not per tenant): one operator's burst cannot
-// throttle another operator acting in the same tenant.
+// mutateRateKey 用 operator 的 admin token id 构造限流器 key,使配额按 operator
+// token 划分(而非按 tenant):某个 operator 的突发流量无法限流到同一 tenant 内另一个
+// operator。
 func mutateRateKey(tokenID int64) string {
 	return "tok:" + strconv.FormatInt(tokenID, 10)
 }
 
-// retryAfterSeconds renders a coarse (ceil-seconds, minimum 1) Retry-After value
-// for a throttled mutation, mirroring the loginthrottle limiter's coarse hint —
-// no precise remaining-budget is leaked.
+// retryAfterSeconds 为被限流的变更渲染一个粗粒度(向上取整到秒、最小 1)的
+// Retry-After 值,与 loginthrottle 限流器的粗粒度提示一致——不泄露精确的剩余配额。
 func retryAfterSeconds(d time.Duration) string {
 	secs := int64((d + time.Second - 1) / time.Second)
 	if secs < 1 {
@@ -40,26 +39,25 @@ func retryAfterSeconds(d time.Duration) string {
 	return strconv.FormatInt(secs, 10)
 }
 
-// executeMutatingTool runs the WAVE H4 5-layer safety flow for a mutating tool:
+// executeMutatingTool 为一个 mutating 工具运行 WAVE H4 的 5 层安全流程:
 //
-//	L1 RBAC      — AuthorizeMutating checks the role floor (dlq_replay =
-//	               platform_admin only; the others admit tenant_operator). A
-//	               denial records a denied row + 403. Tenant scope was already
-//	               enforced by the H1 middleware; Resolve re-checks the target row.
-//	L2 dry-run + confirm — confirm=false performs a READ-ONLY preview (via the
-//	               SAME Resolve used by execution) and returns a single-use
-//	               correlation_id; confirm=true with a valid correlation_id runs
-//	               the mutation exactly once. A stale/absent/mismatched
-//	               correlation_id is 400 and never executes.
-//	L3 atomic audit — the orchestrator commits the mutation + tool_calls row +
-//	               admin_audit_events row together (audit-verified-before-commit).
-//	L4 advisory lock — the orchestrator serializes concurrent mutations on the
-//	               same target via a pg advisory xact lock keyed on the plan.
-//	L5 idempotency — the correlation_id is single-use (consumed on execution);
-//	               dlq_replay additionally dedupes on the record's idempotency key.
+//	L1 RBAC      — AuthorizeMutating 检查 role 下限(dlq_replay 仅限
+//	               platform_admin;其余允许 tenant_operator)。拒绝时记录一条
+//	               denied 行 + 403。tenant scope 已由 H1 中间件执行;Resolve 会再次
+//	               核对目标行。
+//	L2 dry-run + confirm — confirm=false 经由「与执行相同」的 Resolve 做一次只读
+//	               preview,并返回一个一次性的 correlation_id;confirm=true 且
+//	               correlation_id 有效时恰好执行一次该变更。陈旧/缺失/不匹配的
+//	               correlation_id 即 400 且绝不执行。
+//	L3 atomic audit — orchestrator 把变更 + tool_calls 行 + admin_audit_events 行
+//	               一并提交(提交前先验证审计)。
+//	L4 advisory lock — orchestrator 通过一个以 plan 为 key 的 pg advisory xact lock
+//	               串行化对同一目标的并发变更。
+//	L5 idempotency — correlation_id 一次性(执行时消费);dlq_replay 还会额外按记录的
+//	               idempotency key 去重。
 func (h handler) executeMutatingTool(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest) {
-	// L1: role floor + mutating-tool sanity. AuthorizeMutating refuses a
-	// read-only tool and an under-privileged role.
+	// L1:role 下限 + mutating 工具的合法性检查。AuthorizeMutating 会拒绝只读工具
+	// 以及权限不足的 role。
 	spec, authErr := h.tools.AuthorizeMutating(req.ToolName, actor.Role)
 	if authErr != nil {
 		switch {
@@ -67,7 +65,7 @@ func (h handler) executeMutatingTool(w http.ResponseWriter, r *http.Request, ide
 			h.recordMutatingDenied(r, ident, actor, req)
 			writeError(w, http.StatusNotFound, "hermes_tool_unknown", "unknown tool")
 		case errors.Is(authErr, hermesops.ErrNotMutating):
-			// Should not happen (caller checked Mutating), but fail closed.
+			// 不应发生(调用方已检查 Mutating),但 fail-closed。
 			writeError(w, http.StatusBadRequest, "hermes_tool_not_mutating", "tool is not a mutating tool")
 		case errors.Is(authErr, hermesops.ErrDependencyUnwired):
 			writeError(w, http.StatusServiceUnavailable, "hermes_tool_unavailable", "mutating tool is not fully wired")
@@ -85,8 +83,8 @@ func (h handler) executeMutatingTool(w http.ResponseWriter, r *http.Request, ide
 		Args:        req.Args,
 	}
 
-	// L2 + target resolution. Resolve is READ-ONLY and shared by preview AND
-	// execution, so the preview cannot diverge from the action.
+	// L2 + 目标解析。Resolve 是只读的,并由 preview 与执行共用,因此 preview 不会
+	// 与实际动作产生偏差。
 	plan, resolveErr := spec.Resolve(r.Context(), toolReq)
 	if resolveErr != nil {
 		h.recordMutatingError(r, ident, actor, req, resolveErr, req.Confirm)
@@ -101,16 +99,15 @@ func (h handler) executeMutatingTool(w http.ResponseWriter, r *http.Request, ide
 	h.confirmMutation(w, r, ident, actor, req, spec, plan, toolReq)
 }
 
-// previewMutation handles confirm=false: it records a dry-run tool-call row
-// (status ok, dry_run=true), issues a single-use correlation_id bound to the
-// exact tool/tenant/actor/target, and returns the "what would change" preview.
-// It does NOT mutate.
+// previewMutation 处理 confirm=false:它记录一条 dry-run 的 tool-call 行
+// (status ok、dry_run=true),签发一个绑定到具体 tool/tenant/actor/target 的一次性
+// correlation_id,并返回「将会改动什么」的 preview。它不做任何变更。
 func (h handler) previewMutation(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest, spec hermesops.ToolSpec, plan hermesops.MutationPlan) {
 	if h.confirmCache == nil {
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_unavailable", "confirmation cache unavailable")
 		return
 	}
-	correlationID, err := h.confirmCache.issue(pendingConfirmation{
+	correlationID, err := h.confirmCache.Issue(hermesconfirm.PendingConfirmation{
 		ToolName: spec.Name,
 		TenantID: ident.TenantID,
 		ActorID:  ident.UserID,
@@ -121,9 +118,8 @@ func (h handler) previewMutation(w http.ResponseWriter, r *http.Request, ident s
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_unavailable", "could not issue correlation id")
 		return
 	}
-	// Record the dry-run on the authoritative ledger (best-effort: a preview did
-	// not mutate, so a transient ledger error must not block the operator from
-	// seeing the preview). dry_run=true distinguishes it from a real execution.
+	// 把 dry-run 记录到权威账本(尽力而为:preview 未做变更,因此账本的瞬时错误不应
+	// 阻止 operator 看到 preview)。dry_run=true 将其与真实执行区分开。
 	h.recordMutatingDryRun(r, ident, actor, req, plan)
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -132,15 +128,14 @@ func (h handler) previewMutation(w http.ResponseWriter, r *http.Request, ident s
 		"dry_run":               true,
 		"requires_confirmation": true,
 		"correlation_id":        correlationID,
-		"expires_in_seconds":    int(confirmTTL.Seconds()),
+		"expires_in_seconds":    int(hermesconfirm.ConfirmTTL.Seconds()),
 		"preview":               plan.Preview,
 	})
 }
 
-// confirmMutation handles confirm=true: it consumes the correlation_id
-// (single-use), and on a valid match runs the mutation through the orchestrator
-// (L3 atomic audit + L4 advisory lock). A stale/absent/mismatched correlation_id
-// is 400 and NEVER executes.
+// confirmMutation 处理 confirm=true:它消费该 correlation_id(一次性),在有效匹配时
+// 经由 orchestrator 运行变更(L3 atomic audit + L4 advisory lock)。陈旧/缺失/不匹配的
+// correlation_id 即 400 且绝不执行。
 func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest, spec hermesops.ToolSpec, plan hermesops.MutationPlan, toolReq hermesops.ToolRequest) {
 	if h.mutator == nil {
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_unavailable", "mutation orchestrator unavailable")
@@ -150,34 +145,36 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_required", "confirm=true requires a correlation_id from a prior dry-run")
 		return
 	}
-	// L2/L5: single-use consume. A re-used / stale / wrong-tool / wrong-tenant /
-	// wrong-actor-user / wrong-operator-token correlation_id finds nothing and is
-	// rejected — no mutation. actor.TokenID binds the confirm to the SAME operator
-	// admin token that issued the preview (not just the tenant-user context).
-	entry, ok := h.confirmCache.consume(req.CorrelationID, spec.Name, ident.TenantID, ident.UserID, actor.TokenID)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_invalid", "correlation_id is stale, unknown, or does not match this tool")
+	// L2/L5:一次性消费。被重复使用 / 陈旧 / 错误工具 / 错误 tenant / 错误 actor-user /
+	// 错误 operator-token 的 correlation_id 都会查不到任何记录而被拒绝——不做变更。
+	// actor.TokenID 把本次 confirm 绑定到「签发该 preview 的同一个 operator admin
+	// token」(而不仅是 tenant-user 上下文)。
+	entry, consumeStatus := h.confirmCache.ConsumeWithStatus(req.CorrelationID, spec.Name, ident.TenantID, ident.UserID, actor.TokenID)
+	if consumeStatus != hermesconfirm.ConsumeOK {
+		if consumeStatus == hermesconfirm.ConsumeMissing || consumeStatus == hermesconfirm.ConsumeExpired {
+			writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_repropose_required", "confirm token expired or is not available on this replica; re-run dry-run/propose before confirming")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_invalid", "correlation_id does not match this tool or operator")
 		return
 	}
-	// Defense in depth: the confirmed target must be the one the preview pinned.
-	// Resolve is deterministic for a fixed target, so the freshly-resolved plan's
-	// TargetID must equal the pinned one (it would differ only if the args named
-	// a different target than the preview — reject rather than mutate the wrong row).
+	// 纵深防御:被确认的目标必须正是 preview 所锚定的那个。对固定目标而言 Resolve 是
+	// 确定性的,因此新解析出的 plan 的 TargetID 必须与锚定值相等(只有当 args 指向了与
+	// preview 不同的目标时才会不同——此时应拒绝,而不是去改错误的行)。
 	if entry.TargetID != plan.TargetID {
 		writeError(w, http.StatusBadRequest, "hermes_tool_confirmation_invalid", "confirmation target does not match the previewed target")
 		return
 	}
 
-	// S2 (c) PER-OPERATOR-TOKEN RATE LIMIT: checked AFTER the single-use consume
-	// (so a rejected stale id never burns budget) and BEFORE building rec / calling
-	// Execute (so ONLY real confirmed executes count — previews and denials do not
-	// reach here). Keyed on the operator's admin token so one operator cannot drive
-	// the whole mutating budget. A nil/disabled limiter always allows (legacy).
+	// S2 (c) PER-OPERATOR-TOKEN 限流:在一次性消费之后检查(使被拒绝的陈旧 id 永不
+	// 消耗配额),且在构造 rec / 调用 Execute 之前检查(使只有真正已确认的执行才计数
+	// ——preview 和 denial 到不了这里)。以 operator 的 admin token 为 key,使单个
+	// operator 无法独占整个 mutating 配额。nil/禁用的限流器始终放行(旧行为)。
 	if h.mutateRateLimiter != nil {
 		if ok, retryAfter := h.mutateRateLimiter.Allow(mutateRateKey(actor.TokenID)); !ok {
-			// Record the throttle on the authoritative ledger so it is auditable, then
-			// 429 with a coarse Retry-After. The correlation_id was already consumed
-			// (single-use), so the operator must re-preview to retry — by design.
+			// 把限流记录到权威账本使其可审计,然后返回 429 并附粗粒度 Retry-After。
+			// correlation_id 已被消费(一次性),因此 operator 必须重新 preview 才能
+			// 重试——这是有意为之的设计。
 			h.recordMutatingError(r, ident, actor, req, errMutateRateLimited, false)
 			w.Header().Set("Retry-After", retryAfterSeconds(retryAfter))
 			writeError(w, http.StatusTooManyRequests, "hermes_tool_mutate_rate_limited", "operator mutation rate limit exceeded; retry later")
@@ -203,10 +200,9 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 		TargetType:        plan.TargetType,
 		TargetID:          plan.TargetID,
 		AuditPayload:      mutationAuditPayload(spec.Name, plan, req.Args),
-		// OwnTx lets the orchestrator tell apart a commit-phase fault that left an
-		// already-persisted (own-tx) mutation behind from one that rolled the
-		// (in-tx) mutation back, so the best-effort error_class can be
-		// commit_uncertain vs mutation_failed respectively.
+		// OwnTx 让 orchestrator 能区分两类提交阶段故障:一类是把已经持久化的(own-tx)
+		// 变更遗留下来,另一类是把(in-tx)变更回滚掉,从而把尽力而为的 error_class
+		// 分别定为 commit_uncertain 与 mutation_failed。
 		OwnTx: hermesops.IsOwnTxMutation(spec.Name),
 	}
 
@@ -216,14 +212,13 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 	}
 
 	result, execErr := h.mutator.Execute(r.Context(), lockKey, rec, func(ctx context.Context, tx pgx.Tx) (hermesops.ToolResult, error) {
-		// The mutation runs inside the orchestrator tx (audit rows already
-		// accepted). The orchestrator threads the tx via ctx for tx-bound tools.
+		// 变更在 orchestrator 的事务内运行(审计行已被接受)。orchestrator 通过 ctx
+		// 把 tx 传递给那些绑定事务的工具。
 		return spec.Mutate(ctx, toolReq, plan)
 	})
 	if execErr != nil {
-		// The orchestrator rolled back: no mutation, no audit rows. Record a
-		// best-effort error row on the standalone ledger so the failed attempt is
-		// visible even though the atomic path aborted.
+		// orchestrator 已回滚:无变更、无审计行。在独立账本上尽力记录一条 error 行,
+		// 使得即便原子路径已中止,失败的尝试仍可见。
 		h.recordMutatingError(r, ident, actor, req, execErr, false)
 		writeMutatingExecError(w, execErr)
 		return
@@ -240,9 +235,11 @@ func (h handler) confirmMutation(w http.ResponseWriter, r *http.Request, ident s
 	})
 }
 
-// mutatingAuditAction maps a mutating tool name to its admin_audit_events action
-// (hermes.tool.<name>). Only the four H4 mutating tools are mapped; an unknown
-// name yields "" which the orchestrator's CHECK would reject (fail closed).
+// mutatingAuditAction 把一个 mutating 工具名映射到它的 admin_audit_events 动作
+// (hermes.tool.<name>)。每个 mutating 工具都必须在此映射出审计 action;未知名返回 ""——会被
+// orchestrator 的 admin_audit_events.action CHECK 拒绝(fail-closed:漏映射的工具其 confirm 执行
+// 会因空 action 违反 CHECK 而整事务回滚,绝不会无审计地落库)。新增 mutating 工具时必须同步补这里 +
+// 迁移把 hermes.tool.<name> 加进 action CHECK,二者缺一即该工具 confirm 必然失败。
 func mutatingAuditAction(toolName string) string {
 	switch toolName {
 	case hermesops.ToolDLQReplay:
@@ -253,16 +250,23 @@ func mutatingAuditAction(toolName string) string {
 		return "hermes.tool.account_resume"
 	case hermesops.ToolRenewTrigger:
 		return "hermes.tool.renew_trigger"
+	case hermesops.ToolAlertRuleEnable:
+		return "hermes.tool.alert_rule_enable"
+	case hermesops.ToolAlertRuleDisable:
+		return "hermes.tool.alert_rule_disable"
+	case hermesops.ToolModerationKeywordEnable:
+		return "hermes.tool.moderation_keyword_enable"
+	case hermesops.ToolModerationKeywordDisable:
+		return "hermes.tool.moderation_keyword_disable"
 	default:
 		return ""
 	}
 }
 
-// mutationAuditPayload builds the sanitized previous->next state payload for the
-// admin_audit_events row. It uses the plan's Preview (enums/ids/state-names) +
-// the admin actor attribution. The raw args are NOT folded in here (the
-// tool_calls row already records the sanitized args); the credential payload of
-// renew_trigger therefore never reaches the admin audit payload.
+// mutationAuditPayload 为 admin_audit_events 行构造脱敏后的 previous->next 状态
+// payload。它使用 plan 的 Preview(枚举/id/状态名)+ admin actor 归因。原始 args
+// 不会被折入此处(tool_calls 行已记录脱敏后的 args);因此 renew_trigger 的凭证
+// payload 永远不会进入 admin 审计 payload。
 func mutationAuditPayload(toolName string, plan hermesops.MutationPlan, _ map[string]any) map[string]any {
 	payload := map[string]any{
 		"tool_name":   toolName,
@@ -275,29 +279,28 @@ func mutationAuditPayload(toolName string, plan hermesops.MutationPlan, _ map[st
 	return payload
 }
 
-// recordMutatingDryRun records the dry-run preview as a hermes_tool_calls row
-// (status ok, dry_run=true) on the standalone ledger. Best-effort: a preview did
-// not change state, so a transient ledger error is logged, not surfaced.
+// recordMutatingDryRun 在独立账本上把 dry-run preview 记录为一条 hermes_tool_calls
+// 行(status ok、dry_run=true)。尽力而为:preview 未改动状态,因此账本的瞬时错误只
+// 记日志、不向外暴露。
 func (h handler) recordMutatingDryRun(r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest, plan hermesops.MutationPlan) {
 	h.recordMutatingRow(r, ident, actor, req, hermesops.ResultOK, "", true, plan.Preview)
 }
 
-// recordMutatingDenied records an L1 denial (status denied) on the standalone
-// ledger so a rejected mutating-tool attempt is auditable.
+// recordMutatingDenied 在独立账本上记录一次 L1 拒绝(status denied),使被拒绝的
+// mutating 工具尝试可审计。
 func (h handler) recordMutatingDenied(r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest) {
 	h.recordMutatingRow(r, ident, actor, req, hermesops.ResultDenied, "", false, nil)
 }
 
-// recordMutatingError records a failed mutating-tool attempt (resolve failure or
-// aborted execution) on the standalone ledger (status error).
+// recordMutatingError 在独立账本上记录一次失败的 mutating 工具尝试(resolve 失败或
+// 执行中止)(status error)。
 func (h handler) recordMutatingError(r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest, err error, dryRun bool) {
 	h.recordMutatingRow(r, ident, actor, req, hermesops.ResultError, classifyMutatingError(err), dryRun, nil)
 }
 
-// recordMutatingRow appends one standalone hermes_tool_calls row for a path that
-// does NOT go through the atomic orchestrator (denial / dry-run / pre-mutation
-// error). Best-effort (logged on failure); the atomic path's own row is the
-// authoritative record for a committed mutation.
+// recordMutatingRow 为一条不经过 atomic orchestrator 的路径(denial / dry-run /
+// 变更前错误)追加一条独立的 hermes_tool_calls 行。尽力而为(失败时记日志);对已提交
+// 的变更而言,原子路径自身写的那条行才是权威记录。
 func (h handler) recordMutatingRow(r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest, status hermesops.ResultStatus, errorClass string, dryRun bool, summary map[string]any) {
 	if h.toolCalls == nil {
 		return
@@ -332,28 +335,26 @@ func classifyMutatingError(err error) string {
 	case errors.Is(err, hermesops.ErrDependencyUnwired):
 		return "dependency_unwired"
 	case errors.Is(err, errMutateRateLimited):
-		// S2 (c): the per-operator-token limiter rejected the confirm — nothing was
-		// begun, so this is back-pressure, never a failed/uncertain mutation.
+		// S2 (c):per-operator-token 限流器拒绝了本次 confirm——什么都还没开始,
+		// 因此这是背压(back-pressure),绝不是失败/不确定的变更。
 		return "rate_limited"
 	case errors.Is(err, hermesops.ErrMutateBusy):
-		// S2 (a): the concurrency cap was saturated — nothing was begun.
+		// S2 (a):并发上限已饱和——什么都还没开始。
 		return "mutate_busy"
 	case errors.Is(err, hermesops.ErrMutateTimeoutUncertain):
-		// S2 (b) OWN-TX deadline: the inner own-tx may have committed before the tx
-		// deadline tripped. Checked BEFORE both commit_uncertain and the
-		// mutation_failed default so a timed-out own-tx mutation is never falsely
-		// reported as rolled back. Distinct class so reconciliation can tell a
-		// deadline-uncertain from a commit-uncertain residual.
+		// S2 (b) OWN-TX deadline:内层 own-tx 可能在 tx deadline 触发之前已提交。
+		// 在 commit_uncertain 和 mutation_failed 默认分支之前检查,使超时的 own-tx
+		// 变更绝不会被误报为已回滚。单独一类,使对账能区分 deadline 不确定残留与
+		// commit 不确定残留。
 		return "mutate_timeout_uncertain"
 	case errors.Is(err, hermesops.ErrCommitAfterOwnTxMutation):
-		// An own-tx tool's mutation persisted but the orchestrator commit carrying
-		// the audit rows failed: the outcome is uncertain, not a clean failure.
-		// Checked before the mutation_failed default so this commit-phase residual
-		// is never mislabelled as "the mutation did not happen".
+		// own-tx 工具的变更已持久化,但携带审计行的 orchestrator 提交失败:结果
+		// 不确定,而非干净的失败。在 mutation_failed 默认分支之前检查,使这种提交阶段
+		// 残留绝不会被误标为「变更未发生」。
 		return "commit_uncertain"
 	case errors.Is(err, context.DeadlineExceeded):
-		// S2 (b) IN-TX deadline: the deadline rolled the mutation back atomically,
-		// so it is a clean timeout (distinct class from the own-tx uncertain case).
+		// S2 (b) IN-TX deadline:deadline 已原子地回滚该变更,因此这是一次干净的超时
+		// (与 own-tx 不确定的情形是不同的类别)。
 		return "mutate_timeout"
 	default:
 		return "mutation_failed"
@@ -380,21 +381,20 @@ func writeMutatingExecError(w http.ResponseWriter, err error) {
 	case errors.Is(err, hermesops.ErrDependencyUnwired):
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_unavailable", "tool dependency is not wired")
 	case errors.Is(err, hermesops.ErrMutateBusy):
-		// S2 (a): the concurrency cap was saturated and the bounded acquire window
-		// elapsed — nothing was begun. Pure back-pressure: 429, retry later.
+		// S2 (a):并发上限已饱和,且有界的获取窗口已过——什么都还没开始。纯背压:
+		// 429,稍后重试。
 		writeError(w, http.StatusTooManyRequests, "hermes_tool_mutate_busy", "too many concurrent mutations in flight; retry shortly")
 	case errors.Is(err, hermesops.ErrMutateTimeoutUncertain):
-		// S2 (b) OWN-TX deadline: the inner own-tx may have committed before the tx
-		// deadline tripped. Like commit_uncertain, do NOT claim a rollback — the
-		// outcome is uncertain and reconciliation is required.
+		// S2 (b) OWN-TX deadline:内层 own-tx 可能在 tx deadline 触发之前已提交。
+		// 与 commit_uncertain 一样,不要断言回滚——结果不确定,需要对账。
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_mutate_timeout_uncertain", "mutation may have applied but the tx deadline was hit; reconciliation required")
 	case errors.Is(err, hermesops.ErrCommitAfterOwnTxMutation):
-		// The mutation may have persisted (own-tx) while the audit commit failed:
-		// do NOT claim it was rolled back — signal an uncertain outcome instead.
+		// 变更可能已持久化(own-tx),而审计提交失败:不要断言它已被回滚——而应
+		// 给出「结果不确定」的信号。
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_commit_uncertain", "mutation may have applied but the audit commit failed; reconciliation required")
 	case errors.Is(err, context.DeadlineExceeded):
-		// S2 (b) IN-TX deadline: the mutation rolled back atomically — a clean
-		// gateway timeout (504), not an uncertain outcome.
+		// S2 (b) IN-TX deadline:变更已原子地回滚——这是一次干净的网关超时(504),
+		// 而非不确定的结果。
 		writeError(w, http.StatusGatewayTimeout, "hermes_tool_mutate_timeout", "mutation exceeded its time budget and was rolled back")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "hermes_tool_failed", "mutation failed and was rolled back")

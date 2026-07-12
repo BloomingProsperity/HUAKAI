@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
+	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 )
 
@@ -33,10 +34,9 @@ const (
 	geminiOAuthClientIDEnv     = "HUAKAI_GEMINI_OAUTH_CLIENT_ID"
 	geminiOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
 
-	// ineffectiveRefreshBackoff is applied when a refresh "succeeds" but the
-	// resulting token is still immediately due for refresh (upstream returned a
-	// near-stale token), or when no refresh was required. It prevents a tight
-	// re-attempt loop against the upstream provider.
+	// ineffectiveRefreshBackoff 在以下情形施加:刷新"成功"但得到的 token 仍然立即
+	// 又到了需要刷新的时刻(上游返回了一个接近过期的 token),或者根本不需要刷新。
+	// 它防止对上游 provider 形成紧密的重试循环。
 	ineffectiveRefreshBackoff = credentialstore.IneffectiveRefreshBackoff
 )
 
@@ -81,6 +81,19 @@ func NewModeAdapterRegistry() *ModeAdapterRegistry {
 }
 
 func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
+	// 生产:operator OAuth 路径不注入 client(nil),经 GeminiRefresh.httpClient() 回退到
+	// auth.NewSSRFProtectedOAuthClient(拨号层校验目标 IP、禁代理、禁 3xx)。
+	// newDefaultModeAdapterRegistryWithProjectResolver 的 operatorOAuthClient 仅供测试注入
+	// mock —— SSRF 防护拨号会丢弃自定义 RoundTripper,无法用 http.DefaultClient mock 驱动
+	// operator OAuth 刷新逻辑。
+	return DefaultModeAdapterRegistryWithProjectResolver(&providerantigravity.ProjectResolver{})
+}
+
+func DefaultModeAdapterRegistryWithProjectResolver(resolver adapters.ProjectIDResolver) *ModeAdapterRegistry {
+	return newDefaultModeAdapterRegistryWithProjectResolver(nil, resolver)
+}
+
+func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.Client, projectResolver adapters.ProjectIDResolver) *ModeAdapterRegistry {
 	r := NewModeAdapterRegistry()
 	register := func(vendor, authMode string, adapter ModeRefreshAdapter) {
 		_ = r.Register(vendor, authMode, adapter)
@@ -89,7 +102,7 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth, legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{}})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode, legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{}})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock, staticModeAdapter{})
-	register(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, metadataTokenAdapter{})
+	register(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, vertexSAModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, staticModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, newOpenAIChatGPTBuiltinOAuthModeAdapter())
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: adapters.CodexRefresh{OpenAI: adapters.OpenAIRefresh{}}})
@@ -100,16 +113,26 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAzure, mockTokenExchangeAdapter{providerName: "azure"})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey, staticModeAdapter{})
-	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, metadataTokenAdapter{})
+	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, vertexSAModeAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, newGeminiBuiltinClientOAuthModeAdapter("code_assist"))
 	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, newGeminiBuiltinClientOAuthModeAdapter("google_one"))
-	// gemini/antigravity refresh 标 Mandatory Roadmap，
-	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, geminiAntigravityPausedAdapter{})
+	// gemini/antigravity 使用内置公开 OAuth profile 与既有 Antigravity 刷新核；
+	// endpoint/client/scope 不从凭据 payload 取值。
+	antigravityOAuth := providerantigravity.DefaultOAuthConfig()
+	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, legacyOAuthModeAdapter{
+		providerName: "antigravity",
+		adapter: providerantigravity.RefreshAdapter{
+			TokenURL: antigravityOAuth.TokenURL, ClientID: antigravityOAuth.ClientID,
+			ClientSecret: antigravityOAuth.ClientSecret, Scope: strings.Join(antigravityOAuth.Scopes, " "),
+			HTTPClient: operatorOAuthClient,
+		},
+	})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, operatorOAuthModeAdapter{
 		providerName: "gemini",
 		configVendor: appconfig.VendorOAuthGemini,
 		tokenURLName: geminiOAuthTokenURLEnv,
 		clientIDName: geminiOAuthClientIDEnv,
+		client:       operatorOAuthClient,
 		newAdapter: func(cfg operatorOAuthConfig) RefreshAdapter {
 			return adapters.GeminiRefresh{
 				Endpoint: cfg.TokenEndpoint, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
@@ -123,11 +146,12 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 		configVendor: appconfig.VendorOAuthGemini,
 		tokenURLName: geminiOAuthTokenURLEnv,
 		clientIDName: geminiOAuthClientIDEnv,
+		client:       operatorOAuthClient,
 		newAdapter: func(cfg operatorOAuthConfig) RefreshAdapter {
 			return adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{
 				Endpoint: cfg.TokenEndpoint, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
 				HTTPClient: cfg.HTTPClient, TierCacheTTL: 24 * time.Hour,
-			}}
+			}, ProjectResolver: projectResolver}
 		},
 	})
 	register(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, windsurfManualModeAdapter{adapter: adapters.WindsurfManualTokenRefresh{}})
@@ -137,6 +161,15 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 	register(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, builtinRefreshTokenModeAdapter{
 		providerName: "kimi", tokenURL: credentialacq.KimiOAuthTokenURL, clientID: credentialacq.KimiOAuthClientID,
 	})
+	// 官 key 厂商(2026-07-02 接入):静态 api_key 无刷新语义,与 anthropic/openai 的 api_key 同构。
+	for _, vendor := range []string{
+		credentialstore.VendorGrok, credentialstore.VendorDeepSeek, credentialstore.VendorKimi,
+		credentialstore.VendorQwen, credentialstore.VendorGLM, credentialstore.VendorYi,
+		credentialstore.VendorBaichuan, credentialstore.VendorDoubao, credentialstore.VendorMiniMax,
+		credentialstore.VendorErnie, credentialstore.VendorHunyuan, credentialstore.VendorStep,
+	} {
+		register(vendor, credentialstore.AuthModeAPIKey, staticModeAdapter{})
+	}
 	return r
 }
 
@@ -247,9 +280,8 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 	})
 	if err != nil {
 		if errors.Is(err, ErrNoRefreshRequired) {
-			// No refresh was required, but we still throttle the next attempt to
-			// avoid a tight re-attempt loop. We only set next_attempt_at without
-			// changing state, failure_class, or failure_count.
+			// 不需要刷新,但我们仍然限流下一次尝试,以避免紧密的重试循环。
+			// 我们只设置 next_attempt_at,不改动 state、failure_class 或 failure_count。
 			if throttleErr := txStore.SetNextAttemptThrottle(ctx, rec, r.now().Add(ineffectiveRefreshBackoff)); throttleErr != nil {
 				return throttleErr
 			}
@@ -392,12 +424,6 @@ type staticModeAdapter struct{}
 
 func (staticModeAdapter) RefreshCredential(context.Context, ModeRefreshInput) (ModeRefreshResult, error) {
 	return ModeRefreshResult{}, ErrNoRefreshRequired
-}
-
-type geminiAntigravityPausedAdapter struct{}
-
-func (geminiAntigravityPausedAdapter) RefreshCredential(context.Context, ModeRefreshInput) (ModeRefreshResult, error) {
-	return ModeRefreshResult{}, fmt.Errorf("antigravity OAuth wiring pending Owner reactivation: %w", credentialacq.ErrFeatureDisabled)
 }
 
 type legacyOAuthModeAdapter struct {
@@ -628,10 +654,10 @@ func (a windsurfManualModeAdapter) RefreshCredential(ctx context.Context, in Mod
 	return ModeRefreshResult{}, err
 }
 
-// builtinRefreshTokenModeAdapter refreshes upstream OAuth credentials whose provider
-// exposes a standard OAuth2 refresh_token grant at a fixed, compile-time token endpoint
-// with a built-in public client_id (xAI/Grok, Kimi/Moonshot). The token endpoint is
-// never payload-controlled and all egress uses the SSRF-protected OAuth client.
+// builtinRefreshTokenModeAdapter 刷新这样一类上游 OAuth 凭据:其 provider 在一个
+// 固定的、编译期确定的 token endpoint 上暴露标准 OAuth2 refresh_token grant,并带有
+// 内置的公开 client_id(xAI/Grok、Kimi/Moonshot)。token endpoint 绝不由 payload 控制,
+// 所有出站都使用受 SSRF 保护的 OAuth 客户端。
 type builtinRefreshTokenModeAdapter struct {
 	providerName string
 	tokenURL     string

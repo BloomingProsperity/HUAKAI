@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 )
 
 type auditVerifyLedger interface {
@@ -24,9 +25,8 @@ type auditVerifyLedger interface {
 	Size(context.Context) int
 }
 
-// AuditVerifyDeps is the narrow dependency interface for user-facing audit
-// verification endpoints. Tests and future Postgres wiring can inject any
-// implementation with the same read surface.
+// AuditVerifyDeps 是面向用户的 audit 验签端点所需的窄依赖接口。测试与将来的 Postgres
+// 接线都可注入任意实现,只要提供相同的只读读取面。
 type AuditVerifyDeps interface {
 	AuditLedger() auditVerifyLedger
 }
@@ -34,11 +34,32 @@ type AuditVerifyDeps interface {
 type AuditVerifyStaticDeps struct {
 	Ledger   auditVerifyLedger
 	Registry auditledger.PubkeyRegistry
+	// Revocations 为已吊销的 audit signing key 集合;为 nil 时验签路径回退到
+	// LoadRevocationsFromEnv 读运维登记的吊销表(与 trust-receipt 路径同一来源)。
+	Revocations trusthttp.Revocations
 }
 
 func (d AuditVerifyStaticDeps) AuditLedger() auditVerifyLedger { return d.Ledger }
 func (d AuditVerifyStaticDeps) AuditPubkeyRegistry() auditledger.PubkeyRegistry {
 	return d.Registry
+}
+func (d AuditVerifyStaticDeps) AuditRevocations() trusthttp.Revocations { return d.Revocations }
+
+// auditRevocationsFromDeps 解析本次验证使用的吊销表:优先取 deps 显式注入的集合,
+// 未配置(nil)时回退到 LoadRevocationsFromEnv(运维登记的 HUAKAI_TRUST_REVOKED_KEYS_JSON/FILE)。
+// 与 trust-receipt 路径共用同一吊销来源,确保 audit-ledger 与收据两个验证面的吊销判定一致。
+// env 读取失败时返回 error,由调用方失败安全处理(绝不静默跳过吊销检查)。
+func auditRevocationsFromDeps(d AuditVerifyDeps) (trusthttp.Revocations, error) {
+	if d != nil {
+		if provider, ok := d.(interface {
+			AuditRevocations() trusthttp.Revocations
+		}); ok {
+			if revocations := provider.AuditRevocations(); revocations != nil {
+				return revocations, nil
+			}
+		}
+	}
+	return trusthttp.LoadRevocationsFromEnv()
 }
 
 type AuditVerifyRouter interface {
@@ -146,7 +167,24 @@ func NewAuditVerifyHandler(d AuditVerifyDeps) http.HandlerFunc {
 			writeAuditJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, auditVerifyResponseWithRegistry(r.Context(), entry, auditPubkeyRegistryFromDeps(d)))
+		revocations, rerr := auditRevocationsFromDeps(d)
+		if rerr != nil {
+			// 吊销表加载失败时**失败安全**:拒绝出具"验证通过"结论,绝不静默跳过吊销检查
+			// (否则吊销机制对 audit-ledger 形同虚设)。
+			_ = privacy.LogSystem(r.Context(), privacy.SystemEvent{
+				Severity:   privacy.SeverityError,
+				Component:  "gatewayhttp.audit_verify",
+				RequestID:  req.RequestID,
+				ErrorClass: privacy.ErrorClassFor(r.Context(), rerr),
+				Attrs: map[string]any{
+					"event_class":  "audit_verify_revocations_load_failed",
+					"reason_class": "audit_revocations_error",
+				},
+			})
+			writeAuditJSONError(w, http.StatusServiceUnavailable, "audit_revocations_error", "audit revocation list temporarily unavailable")
+			return
+		}
+		writeAuditJSON(w, http.StatusOK, auditVerifyResponseWithRegistry(r.Context(), entry, auditPubkeyRegistryFromDeps(d), revocations))
 	}
 }
 
@@ -263,12 +301,12 @@ func auditPubkeyRegistryFromDeps(d AuditVerifyDeps) auditledger.PubkeyRegistry {
 	return provider.AuditPubkeyRegistry()
 }
 
-func auditVerifyResponseWithRegistry(ctx context.Context, entry auditledger.LedgerEntry, registry auditledger.PubkeyRegistry) AuditVerifyResponse {
+func auditVerifyResponseWithRegistry(ctx context.Context, entry auditledger.LedgerEntry, registry auditledger.PubkeyRegistry, revocations trusthttp.Revocations) AuditVerifyResponse {
 	resp := auditVerifyResponse(entry)
 	if registry == nil {
 		return resp
 	}
-	verification, err := verifyAuditLedgerEntrySignature(ctx, registry, entry)
+	verification, err := verifyAuditLedgerEntrySignature(ctx, registry, entry, revocations)
 	if err != nil {
 		valid := false
 		resp.ChainProof.SignatureValid = &valid
@@ -282,8 +320,8 @@ func auditVerifyResponseWithRegistry(ctx context.Context, entry auditledger.Ledg
 	return resp
 }
 
-func AuditVerifyResponseForEntry(ctx context.Context, entry auditledger.LedgerEntry, registry auditledger.PubkeyRegistry) AuditVerifyResponse {
-	return auditVerifyResponseWithRegistry(ctx, entry, registry)
+func AuditVerifyResponseForEntry(ctx context.Context, entry auditledger.LedgerEntry, registry auditledger.PubkeyRegistry, revocations trusthttp.Revocations) AuditVerifyResponse {
+	return auditVerifyResponseWithRegistry(ctx, entry, registry, revocations)
 }
 
 func auditVerifyResponse(entry auditledger.LedgerEntry) AuditVerifyResponse {
@@ -310,7 +348,7 @@ func auditVerifyResponse(entry auditledger.LedgerEntry) AuditVerifyResponse {
 	}
 }
 
-func verifyAuditLedgerEntrySignature(ctx context.Context, registry auditledger.PubkeyRegistry, entry auditledger.LedgerEntry) (auditledger.SignatureVerification, error) {
+func verifyAuditLedgerEntrySignature(ctx context.Context, registry auditledger.PubkeyRegistry, entry auditledger.LedgerEntry, revocations trusthttp.Revocations) (auditledger.SignatureVerification, error) {
 	entryHash, err := auditledger.EntryHash(&entry)
 	if err != nil {
 		return auditledger.SignatureVerification{}, err
@@ -333,6 +371,12 @@ func verifyAuditLedgerEntrySignature(ctx context.Context, registry auditledger.P
 	}
 	if signatureOutsideKeyWindow(entryTime, key) {
 		return auditledger.SignatureVerification{Valid: false, KeyStatus: key.Status(), Reason: "signature_outside_key_window"}, nil
+	}
+	// 吊销检查(防篡改的关键一环):签名密码学有效且在 key 有效窗口内,但若该 signing key 已被运维
+	// 登记吊销(泄露后),持有泄露私钥者仍能伪造条目,故必须判为不可信——降级为 key_revoked。与
+	// signature_outside_key_window 一样把 Valid 置 false(非密码学失效但整体不可信)。
+	if _, revoked := revocations.Lookup(strings.TrimSpace(entry.PubkeyFingerprint)); revoked {
+		return auditledger.SignatureVerification{Valid: false, KeyStatus: "revoked", Reason: "key_revoked"}, nil
 	}
 	return verification, nil
 }

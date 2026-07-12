@@ -17,13 +17,13 @@ func (v *ipCapturingValidator) Validate(_ context.Context, _ string, ip string, 
 	return usersession.ValidatedSession{TenantID: 1, UserID: 42, FamilyID: "fam", TokenID: "tok", Generation: 1}, nil
 }
 
-// TestSessionMiddlewareUsesTrustedProxyClientIP proves the session validation
-// path derives its client IP from the same trusted-proxy-aware resolver used at login/refresh.
-// Otherwise login stores the real forwarded client IP while the middleware validates with the proxy
-// socket IP, and DetectDrift can falsely revoke a valid session behind a reverse proxy.
+// TestSessionMiddlewareUsesTrustedProxyClientIP 证明 session 校验路径
+// 使用与 login/refresh 相同的、感知可信代理的 resolver 来推导客户端 IP。
+// 否则 login 存的是真实的 forwarded 客户端 IP, 而 middleware 用代理的
+// socket IP 来校验, DetectDrift 就可能在反向代理后误吊销一个有效 session。
 //
-// Mutation check: revert SessionMiddleware to the old requestIP(r)/RemoteAddr extraction → the
-// captured Validate IP becomes "10.1.2.3" instead of the forwarded "198.51.100.9" → red.
+// 变异检查: 把 SessionMiddleware 退回到旧的 requestIP(r)/RemoteAddr 取值 → 捕获到的
+// Validate IP 会变成 "10.1.2.3" 而非 forwarded 的 "198.51.100.9" → 红。
 func TestSessionMiddlewareUsesTrustedProxyClientIP(t *testing.T) {
 	resolver, err := clientip.NewResolver([]string{"10.0.0.0/8"})
 	if err != nil {
@@ -37,9 +37,9 @@ func TestSessionMiddlewareUsesTrustedProxyClientIP(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
-	req.RemoteAddr = "10.1.2.3:5000" // trusted reverse-proxy peer
+	req.RemoteAddr = "10.1.2.3:5000" // 可信的反向代理 peer
 	req.Header.Set("Authorization", "Bearer sometoken")
-	req.Header.Set("X-Forwarded-For", "198.51.100.9") // real client behind the proxy
+	req.Header.Set("X-Forwarded-For", "198.51.100.9") // 代理后面的真实客户端
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -51,8 +51,8 @@ func TestSessionMiddlewareUsesTrustedProxyClientIP(t *testing.T) {
 	}
 }
 
-// TestSessionMiddlewareNilResolverFallsBackToRemoteAddr proves the nil-resolver path (direct
-// exposure / previous behavior) still validates with the socket peer.
+// TestSessionMiddlewareNilResolverFallsBackToRemoteAddr 证明 nil-resolver 路径
+// (直接暴露/旧行为) 仍然用 socket peer 来校验。
 func TestSessionMiddlewareNilResolverFallsBackToRemoteAddr(t *testing.T) {
 	v := &ipCapturingValidator{}
 	h := SessionMiddleware(v, nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -61,7 +61,7 @@ func TestSessionMiddlewareNilResolverFallsBackToRemoteAddr(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	req.RemoteAddr = "203.0.113.7:443"
 	req.Header.Set("Authorization", "Bearer sometoken")
-	req.Header.Set("X-Forwarded-For", "198.51.100.9") // untrusted (no resolver) → ignored
+	req.Header.Set("X-Forwarded-For", "198.51.100.9") // 不可信 (无 resolver) → 被忽略
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if v.gotIP != "203.0.113.7" {
 		t.Fatalf("nil resolver Validate IP=%q want socket peer 203.0.113.7", v.gotIP)

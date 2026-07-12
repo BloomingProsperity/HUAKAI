@@ -28,7 +28,7 @@ type UserKeyService interface {
 	List(ctx context.Context, req userkey.ListRequest) ([]userkey.KeyDescriptor, error)
 	Get(ctx context.Context, tenantID, userID, apiKeyID int64) (userkey.KeyDescriptor, error)
 	Revoke(ctx context.Context, req userkey.RevokeRequest) (userkey.RevokeResult, error)
-	// KEY-026: partial update
+	// KEY-026:部分更新
 	Patch(ctx context.Context, req userkey.PatchRequest) (userkey.PatchResult, error)
 }
 
@@ -48,7 +48,7 @@ func MountUserAPIKeyRoutes(r chi.Router, d Deps) {
 	r.Post("/batch-revoke", newBatchRevokeHandler(d))
 }
 
-// ---- request / response DTO ----
+// ---- request / response DTO 定义 ----
 
 type createRequest struct {
 	Name        string  `json:"name"`
@@ -223,17 +223,23 @@ func newRevokeHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// ---- KEY-026: PATCH partial update ----
+// ---- KEY-026: PATCH 部分更新 ----
 
 type patchRequest struct {
 	Name   *string `json:"name,omitempty"`
 	Status *string `json:"status,omitempty"`
+	// expires_at 三态(CLAUDE.md #16,sub2api 风格):
+	//   缺省 / JSON null -> nil 指针 = 保持截止时间不变
+	//   空字符串 ""      -> 清除截止时间(key 变为永不过期)
+	//   RFC3339 字符串   -> 把截止时间设为该时刻(解析失败 -> 400)
+	ExpiresAt *string `json:"expires_at,omitempty"`
 }
 
 type patchResponse struct {
-	APIKeyID int64  `json:"api_key_id"`
-	Name     string `json:"name"`
-	Status   string `json:"status"`
+	APIKeyID  int64      `json:"api_key_id"`
+	Name      string     `json:"name"`
+	Status    string     `json:"status"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 func newPatchHandler(d Deps) http.HandlerFunc {
@@ -247,7 +253,7 @@ func newPatchHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		var req patchRequest
-		// Allow empty body (no-op patch).
+		// 允许空 body(无操作的 patch)。
 		body := http.MaxBytesReader(w, r.Body, 16<<10)
 		dec := json.NewDecoder(body)
 		dec.DisallowUnknownFields()
@@ -255,27 +261,47 @@ func newPatchHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 			return
 		}
+		// 把 expires_at 三态解码为 service 的「值 + 清除标志」二分形式。
+		var expiresAt *time.Time
+		var clearExpiry bool
+		if req.ExpiresAt != nil {
+			trimmed := strings.TrimSpace(*req.ExpiresAt)
+			if trimmed == "" {
+				clearExpiry = true
+			} else {
+				t, perr := time.Parse(time.RFC3339, trimmed)
+				if perr != nil {
+					writeError(w, http.StatusBadRequest, "invalid_expires_at",
+						"expires_at must be an RFC3339 timestamp, or empty string to clear")
+					return
+				}
+				expiresAt = &t
+			}
+		}
 		out, err := d.Service.Patch(r.Context(), userkey.PatchRequest{
-			TenantID:  ident.TenantID,
-			UserID:    ident.UserID,
-			APIKeyID:  id,
-			Name:      req.Name,
-			Status:    req.Status,
-			RequestID: requestIDFromReq(r),
+			TenantID:    ident.TenantID,
+			UserID:      ident.UserID,
+			APIKeyID:    id,
+			Name:        req.Name,
+			Status:      req.Status,
+			ExpiresAt:   expiresAt,
+			ClearExpiry: clearExpiry,
+			RequestID:   requestIDFromReq(r),
 		})
 		if err != nil {
 			writeUserKeyError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, patchResponse{
-			APIKeyID: out.APIKeyID,
-			Name:     out.Name,
-			Status:   out.Status,
+			APIKeyID:  out.APIKeyID,
+			Name:      out.Name,
+			Status:    out.Status,
+			ExpiresAt: out.ExpiresAt,
 		})
 	}
 }
 
-// ---- helpers ----
+// ---- 辅助函数 ----
 
 // resolveSession 取 session ident;Service nil → 503;无 session → 401。
 //
@@ -413,10 +439,10 @@ type batchRevokeRequest struct {
 	Reason string  `json:"reason"`
 }
 
-// newBatchRevokeHandler revokes many of the caller's own keys in one request.
-// Each id goes through the SAME idempotent owner-scoped Service.Revoke; a foreign
-// or missing id (ErrNotFound) lands in not_found (anti-enumeration, never another
-// tenant's key) instead of failing the batch. KEY-028.
+// newBatchRevokeHandler 在一个请求中批量吊销 caller 自己的多个 key。
+// 每个 id 都走同一个幂等、owner 作用域的 Service.Revoke;不属于自己或不存在的 id
+//(ErrNotFound)落入 not_found(反枚举,绝不触及另一租户的 key),而不会让整个 batch 失败。
+// KEY-028。
 func newBatchRevokeHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := resolveSession(w, r, d)

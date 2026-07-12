@@ -10,7 +10,7 @@ import (
 // uint64, 再直接 uint8/uint32 截断, p=256 会 wrap 成 0 后被
 // normalizePasswordPolicy 静默拉回 default, 攻击者可借此让 hash 校验绕过
 // hash header 中声明的 parallelism。同时 m / t 缺上限可 DoS。
-// 判别 mutation: 删 p > 255 / m > 2^20 / t > 100 任一 bound check → 对应
+// 判别变异: 删 p > 255 / m > 2^20 / t > 100 任一 bound check → 对应
 // sub-test 立即 PASS 接受恶意值 而 happy path test 仍 PASS, 区分。
 func TestParsePasswordHashRejectsOutOfRangeParams(t *testing.T) {
 	// 合法 argon2id hash header (默认 m=64MB t=3 p=1) + 空 salt/key:

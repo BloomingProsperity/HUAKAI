@@ -1,14 +1,14 @@
-// Package adminhttp wires the operator-facing admin endpoints under
-// /admin/v1/. This slice ships the api_keys issuance + list +
-// revoke surface; later slices add /admin/v1/users, /admin/v1/pools, etc.
+// Package adminhttp 负责接线面向运营者的 admin 端点,挂载在
+// /admin/v1/ 之下。本切片交付 api_keys 的签发 + 列表 +
+// 吊销能力面;后续切片会加上 /admin/v1/users、/admin/v1/pools 等。
 //
-// Per CLAUDE.md + docs/specs/_invariants/cross-module-boundaries.md:
-// this package never imports internal/router or internal/auth.
-//     The customer hot path is unaffected.
-// plaintext bearer is surfaced ONLY in the POST response body
-//     for the operator. Never logged, never echoed in error responses.
-// writes go through internal/admin (admin_tokens / api_keys /
-//     admin_audit_events). No billing/pool/registry mutation.
+// 依据 CLAUDE.md + docs/specs/_invariants/cross-module-boundaries.md:
+// 本包永不 import internal/router 或 internal/auth。
+//     客户热路径不受影响。
+// 明文 bearer 仅在 POST 响应体中向运营者呈现一次。
+//     永不写日志,永不在错误响应里回显。
+// 写操作经由 internal/admin(admin_tokens / api_keys /
+//     admin_audit_events)。不改动任何 billing/pool/registry。
 
 package adminhttp
 
@@ -29,14 +29,13 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// AdminAPIKeysDeps is the subset of the deps tree the api_keys handlers
-// need. Concrete deps in cmd/gateway/main.go satisfy this implicitly via
-// duck typing.
+// AdminAPIKeysDeps 是 api_keys 处理器所需依赖树的子集。
+// cmd/gateway/main.go 里的具体依赖通过 duck typing 隐式满足它。
 type AdminAPIKeysDeps struct {
 	Auth    adminAPIKeysAuth
 	Issuer  adminAPIKeysIssuer
 	Revoker adminAPIKeysRevoker
-	Queries adminAPIKeysQueries // for LIST (read-only)
+	Queries adminAPIKeysQueries // 用于 LIST(只读)
 }
 
 type adminAPIKeysAuth interface {
@@ -57,8 +56,8 @@ type adminAPIKeysQueries interface {
 	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
 }
 
-// MountAPIKeyRoutes attaches POST/GET/POST-revoke handlers under the
-// caller's chi router (typically scoped to /admin/v1/api-keys).
+// MountAPIKeyRoutes 把 POST/GET/POST-revoke 处理器挂到调用方的
+// chi router 上(通常作用域为 /admin/v1/api-keys)。
 func MountAPIKeyRoutes(r chi.Router, d AdminAPIKeysDeps) {
 	r.Post("/", newIssueHandler(d))
 	r.Get("/", newListHandler(d))
@@ -66,15 +65,15 @@ func MountAPIKeyRoutes(r chi.Router, d AdminAPIKeysDeps) {
 }
 
 // -----------------------------------------------------------------------------
-// POST /admin/v1/api-keys — issue
+// POST /admin/v1/api-keys —— 签发
 // -----------------------------------------------------------------------------
 
 type issueRequestBody struct {
 	TenantID    int64   `json:"tenant_id"`
 	UserID      int64   `json:"user_id"`
 	Name        string  `json:"name"`
-	Environment string  `json:"environment,omitempty"` // "live" or "test"; default "live"
-	ExpiresAt   *string `json:"expires_at,omitempty"`  // RFC3339; null = no expiry
+	Environment string  `json:"environment,omitempty"` // "live" 或 "test";默认 "live"
+	ExpiresAt   *string `json:"expires_at,omitempty"`  // RFC3339;null = 永不过期
 	Reason      string  `json:"reason,omitempty"`
 }
 
@@ -87,7 +86,7 @@ type issueResponseBody struct {
 	Status          string  `json:"status"`
 	ExpiresAt       *string `json:"expires_at"`
 	CreatedAt       string  `json:"created_at"`
-	PlaintextBearer string  `json:"plaintext_bearer"` // SHOWN ONCE
+	PlaintextBearer string  `json:"plaintext_bearer"` // 仅显示一次
 }
 
 func newIssueHandler(d AdminAPIKeysDeps) http.HandlerFunc {
@@ -103,7 +102,7 @@ func newIssueHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 64 KiB upper bound
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16) // 上限 64 KiB
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "body_read_error", err.Error())
@@ -138,9 +137,9 @@ func newIssueHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 					"expires_at must be RFC3339")
 				return
 			}
-			// Reject already-expired requests.
-			// Otherwise the issuer mints a key + plaintext bearer that
-			// the customer resolver immediately refuses.
+			// 拒绝已经过期的请求。
+			// 否则签发器会铸出一个 key + 明文 bearer,
+			// 而客户侧的 resolver 会立刻拒绝它。
 			if !t.After(time.Now()) {
 				writeError(w, http.StatusBadRequest, "expires_at_in_past",
 					"expires_at must be strictly in the future")
@@ -164,7 +163,7 @@ func newIssueHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Header reminds operator key is shown once (D3).
+		// 该响应头提醒运营者:key 仅显示一次(D3)。
 		w.Header().Set("X-Huakai-Key-Display", "once-only")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -188,7 +187,7 @@ func newIssueHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 }
 
 // -----------------------------------------------------------------------------
-// GET /admin/v1/api-keys — list (tenant-scoped or platform-wide)
+// GET /admin/v1/api-keys —— 列表(按租户作用域或平台范围)
 // -----------------------------------------------------------------------------
 
 type listItemBody struct {
@@ -217,8 +216,8 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			writeAdminAuthError(w, err)
 			return
 		}
-		// Tenant scope: tenant_operator must list its own scope; platform_admin
-		// MUST pass ?tenant_id=N (no full-fleet list at L0).
+		// 租户作用域:tenant_operator 只能列出自己的作用域;platform_admin
+		// 必须传 ?tenant_id=N(L0 阶段不提供全机队列表)。
 		tenantParam := r.URL.Query().Get("tenant_id")
 		if tenantParam == "" {
 			writeError(w, http.StatusBadRequest, "tenant_id_required",
@@ -236,11 +235,10 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Validate tenant exists BEFORE the list
-		// query + audit insert. Otherwise an unknown tenant_id slides
-		// through the list (empty result) and then trips the
-		// admin_audit_events.tenant_id FK, surfacing as 503 instead of
-		// the deterministic 404 the contract documents.
+		// 在执行 list 查询 + 审计写入之前,先校验租户存在。
+		// 否则一个未知的 tenant_id 会顺利通过 list(返回空结果),
+		// 随后撞上 admin_audit_events.tenant_id 外键约束,表现为 503,
+		// 而非契约所规定的、确定性的 404。
 		exists, err := d.Queries.AdminCheckTenantExists(r.Context(), tenantID)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "tenant_lookup_failed",
@@ -253,9 +251,9 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Malformed pagination must be rejected, not
-		// silently coerced to defaults. Otherwise client paging bugs look
-		// like successful first-page reads.
+		// 格式错误的分页参数必须被拒绝,而非
+		// 静默地强制回退为默认值。否则客户端的分页 bug 看起来
+		// 就像成功读取了第一页。
 		limit := int32(50)
 		if s := r.URL.Query().Get("limit"); s != "" {
 			v, err := strconv.ParseInt(s, 10, 32)
@@ -288,9 +286,9 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Audit successful admin reads. Payload is
-		// scoped (tenant + counts + page) — never per-row plaintext or
-		// prefix data.
+		// 对成功的 admin 读操作记审计。Payload 被限定作用域
+		//(tenant + 计数 + 分页)——绝不含逐行明文或
+		// prefix 数据。
 		actorRole := ident.Role
 		if actorRole == "" {
 			actorRole = admin.RoleTenantOperator
@@ -307,13 +305,13 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 		if reqIDPtr != "" {
 			reqIDArg = &reqIDPtr
 		}
-		// Audit row is part of the contract for admin
-		// reads. If we can't write it, fail closed (503) so the operator
-		// re-tries against a healthy audit pipe rather than silently
-		// dropping the trail.
+		// 审计行是 admin 读操作契约的一部分。
+		// 若写不进去,则 fail closed(503),让运营者
+		// 在审计管道恢复健康后重试,而不是静默地
+		// 丢弃审计轨迹。
 		if _, err := d.Queries.InsertAdminAuditEvent(r.Context(), admindb.InsertAdminAuditEventParams{
 			TenantID:   &tenantPtr,
-			ActorID:    fmt.Sprintf("%d", ident.TokenID),
+			ActorID:    ident.AuditActor(),
 			ActorRole:  actorRole,
 			Action:     "list_api_keys",
 			TargetType: "api_key",
@@ -366,7 +364,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 // -----------------------------------------------------------------------------
 
 type revokeRequestBody struct {
-	TenantID int64  `json:"tenant_id"` // tenant the key belongs to
+	TenantID int64  `json:"tenant_id"` // 该 key 所属的租户
 	Reason   string `json:"reason"`
 }
 
@@ -395,9 +393,9 @@ func newRevokeHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 			return
 		}
 
-		// Surface MaxBytesReader truncation so an
-		// oversized body whose first bytes happen to parse as valid JSON
-		// can't slip through. Mirrors the issue handler.
+		// 让 MaxBytesReader 的截断显式暴露出来,这样一个
+		// 超大的 body——即便其起始字节恰好能解析成合法 JSON——
+		// 也无法蒙混过关。与签发处理器保持一致。
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -438,12 +436,12 @@ func newRevokeHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 }
 
 // -----------------------------------------------------------------------------
-// Error mapping helpers
+// 错误映射辅助函数
 // -----------------------------------------------------------------------------
 
-// writeAdminAuthError handles ErrAdminUnauthorized + ErrAdminBackend
-// from AdminResolver.Resolve. Other admin errors flow through
-// writeAdminError.
+// writeAdminAuthError 处理 AdminResolver.Resolve 返回的
+// ErrAdminUnauthorized + ErrAdminBackend。其它 admin 错误经由
+// writeAdminError 处理。
 func writeAdminAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, admin.ErrAdminBackend):
@@ -463,10 +461,9 @@ func writeAdminError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "admin_forbidden",
 			"caller cannot act on this tenant scope")
 	case errors.Is(err, admin.ErrAdminRateLimited):
-		// Shared RateLimited response in
-		// docs/openapi/openapi.yaml requires Retry-After. The 30/hour
-		// window slides per actor; advise the conservative 60s so a
-		// well-behaved client backs off without thrashing.
+		// docs/openapi/openapi.yaml 中共享的 RateLimited 响应
+		// 要求带 Retry-After。每小时 30 次的窗口按 actor 滑动;
+		// 这里给出保守的 60s,让行为良好的客户端退避而不会反复抖动。
 		w.Header().Set("Retry-After", "60")
 		writeError(w, http.StatusTooManyRequests, "admin_rate_limited",
 			"issuance rate limit exceeded")

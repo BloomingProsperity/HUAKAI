@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,17 +13,22 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminquotahttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminuserhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcementhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditexporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/billingreconhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/completionshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
@@ -40,8 +46,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mequotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/obsdlqhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/orphanreconcilehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
@@ -49,6 +60,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/publicrankinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/referralhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
@@ -80,7 +92,25 @@ func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
 	return d.dlqService
 }
 
-// mountRoutes wires the HTTP routes per docs/openapi/openapi.yaml.
+func credentialAcquisitionRouteDeps(d *deps) gatewayhttp.AdminCredentialAcquisitionDeps {
+	return gatewayhttp.AdminCredentialAcquisitionDeps{
+		Auth: d.adminAuth, Sessions: d.credentialAcqStore,
+		Credentials: d.credentialStore, CredentialAudit: d.credentialStore,
+		AuditStore: d.adminQueries, Exchangers: d.credentialExchangers,
+		ProjectEnricher:   d.projectEnricher,
+		BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
+		BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
+	}
+}
+
+func credentialProjectRouteDeps(d *deps) credentialprojecthttp.Deps {
+	return credentialprojecthttp.Deps{
+		Auth: d.adminAuth, Store: d.credentialStore,
+		Enricher: d.projectEnricher, Audit: d.adminQueries,
+	}
+}
+
+// mountRoutes 按 docs/openapi/openapi.yaml 接线 HTTP 路由。
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	liveness := healthhttp.NewLivenessHandler()
 	r.Method(http.MethodGet, "/healthz", liveness)
@@ -143,9 +173,15 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		r.Get("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
 		r.Post("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
 		r.Get("/merkle-tree.json", gatewayhttp.NewAuditMerkleTreeHandler(auditVerifyDeps))
-		auditexporthttp.MountRoutes(r, auditexporthttp.Deps{
-			Ledger:   auditExportLedgerFrom(d.auditLedger),
-			Registry: d.auditPubkeyRegistry,
+		// 审计导出/证明会按租户范围返回整条审计链,必须认证并绑定到认证身份的租户;
+		// pubkey/verify/merkle 保持公开(trust-chain 单负载验证)。处理器内部还会从认证
+		// 上下文派生 tenant_scope_ref 并失败闭合,中间件与处理器双层堵住跨租户 IDOR。
+		r.Group(func(r chi.Router) {
+			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
+			auditexporthttp.MountRoutes(r, auditexporthttp.Deps{
+				Ledger:   auditExportLedgerFrom(d.auditLedger),
+				Registry: d.auditPubkeyRegistry,
+			})
 		})
 	})
 
@@ -178,6 +214,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Auth:  mequotahttp.SessionResolver{},
 			Store: quota.NewPostgresStore(d.pgPool),
 		}))
+		// 会话级用量明细:跨当前用户全部 key 的逐请求日志(session 鉴权,按 user_id 收敛)。
+		// 区别于顶层 /v1/me/usage(API-key 鉴权、单 key 维度)。
+		r.Get("/usage-records", meusagehttp.NewSessionHandler(d.billingQueries))
 		meexporthttp.MountRoutes(r, meexporthttp.Deps{Store: d.billingQueries})
 		checkinhttp.MountRoutes(r, checkinhttp.Deps{Service: d.checkinService})
 		userauditloghttp.MountRoutes(r, userauditloghttp.Deps{Store: d.userAuditStore})
@@ -237,6 +276,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Route("/v1/auth", func(r chi.Router) {
 		mountInviteValidateRoutes(r, d)
 		gatewayhttp.MountAuthRoutes(r, authHandlerDeps(d, logger))
+		// 「社交登录无邮箱→补邮箱建号」两端点(独立包,不膨胀 gatewayhttp)。
+		oauthpendinghttp.MountRoutes(r, oauthPendingDeps(d, logger))
 		r.Route("/passkey", func(r chi.Router) {
 			passkeyhttp.MountLoginRoutes(r, passkeyHandlerDeps(d))
 		})
@@ -270,7 +311,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
-		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver})
+		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver, PlatformSettings: d.platformSettings})
 	})
 	r.Route("/v1/users/me/oauth-bindings", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
@@ -278,6 +319,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		controlhttp.MountOAuthBindingsRoutes(r, controlhttp.OAuthBindingsDeps{
 			Bindings:    d.userAuth,
 			SocialLinks: d.userAuth,
+			// telegram 绑定腿(「先绑定后登录」):已登录用户绑定自己的 telegram 身份。
+			// bot token 与登录端点同源(env),空则绑定端点降级为 503。
+			TelegramBinder:           d.userAuth,
+			TelegramBotTokenResolver: telegramBotTokenResolver(d),
 		})
 	})
 	paymentDeps := paymenthttp.Deps{Service: d.paymentService, Providers: d.paymentProviders}
@@ -318,11 +363,11 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		mountUserKeyControlsRoutes(r, d)
 	})
 	if d.hermesService != nil && d.hermesRunner != nil {
-		// WAVE H1: Hermes is repositioned to an admin/operator ops assistant.
-		// When HUAKAI_HERMES_ADMIN_ONLY is true (the default), mount behind the
-		// admin-token middleware (admin_tokens auth + tenant-scope enforcement).
-		// When false, the legacy end-user customer-key path is preserved verbatim
-		// for clean rollback.
+		// WAVE H1:Hermes 被重新定位为面向 admin/operator 的运维助手。
+		// 当 HUAKAI_HERMES_ADMIN_ONLY 为 true(默认)时,挂在
+		// admin-token 中间件之后(admin_tokens 鉴权 + 租户作用域强制)。
+		// 为 false 时,旧的终端用户 customer-key 路径被逐字保留,
+		// 以便干净回滚。
 		hermesAuth := hermeshttp.APIKeyMiddleware(d.inboundAuth)
 		if d.hermesAdminOnly {
 			hermesAuth = hermeshttp.AdminAuthMiddleware(d.adminAuth)
@@ -332,15 +377,16 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Runner:         d.hermesRunner,
 			Bridge:         d.hermesChatBridge,
 			HeaderSettings: d.platformSettings,
-			// KNOB A: the runtime mutating-tool kill-switch. The handler enforces it
-			// at the top of the mutating branch (covers preview AND confirm); the
-			// belt-and-suspenders below also withholds the orchestrator when off.
+			// 注入共享 confirm Cache 单例(同一实例后续也会注入 hermeschat 提议侧)。
+			ConfirmCache: d.hermesConfirmCache,
+			// KNOB A:运行时 mutating-tool 总开关。handler 在 mutating 分支顶端
+			// 强制它(覆盖 preview 与 confirm);下方的双保险在它关闭时
+			// 还会扣住 orchestrator 不接线。
 			MutatingEnabled: d.hermesMutatingEnabled,
 		}
-		// WAVE H3 read-only ops spine. Only attach the tool/context deps when the
-		// admin-only repositioning is active — the legacy end-user customer-key
-		// path must not expose operator diagnostics. The handlers also fail
-		// closed (503) if any dep is nil.
+		// WAVE H3 只读运维脊柱。仅在 admin-only 重定位生效时才挂上
+		// tool/context 依赖——旧的终端用户 customer-key 路径绝不得暴露
+		// 运维诊断。任一依赖为 nil 时,handler 也会 fail closed(503)。
 		if d.hermesAdminOnly {
 			if d.hermesToolRegistry != nil {
 				hermesRouterDeps.Tools = d.hermesToolRegistry
@@ -351,15 +397,15 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			if d.hermesModuleSource != nil {
 				hermesRouterDeps.ContextSource = d.hermesModuleSource
 			}
-			// WAVE H4 mutating-tool orchestrator (atomic-audit + advisory-lock).
-			// KNOB A belt-and-suspenders: when the mutating kill-switch is off, the
-			// orchestrator is NOT wired, so even if the handler's flag check were
-			// bypassed a direct confirm path 503s (nil mutator) rather than mutating.
+			// WAVE H4 mutating-tool orchestrator(原子审计 + advisory-lock)。
+			// KNOB A 双保险:当 mutating 总开关关闭时,orchestrator 不被接线,
+			// 因此即便 handler 的标志检查被绕过,直接走 confirm 路径也会
+			// 503(mutator 为 nil)而非真的去改动。
 			if d.hermesMutator != nil && d.hermesMutatingEnabled {
 				hermesRouterDeps.Mutator = d.hermesMutator
-				// S2 (c): the per-operator-token rate limiter rides with the mutator
-				// (same admin-only + mutating-enabled gate). A nil/disabled limiter is
-				// the legacy unbounded behavior.
+				// S2 (c):按 operator-token 的限流器随 mutator 一起挂载
+				//(同样的 admin-only + mutating-enabled 门控)。limiter 为 nil/禁用
+				// 即旧的无界行为。
 				hermesRouterDeps.MutateGuard = &hermeshttp.MutateGuardDeps{
 					RateLimiter: d.hermesMutateRateLimiter,
 				}
@@ -371,11 +417,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/internal/runner/bootstrap", d.handleRunnerBootstrap)
 	r.Post("/internal/runner/refresh", d.handleRunnerRefresh)
 	r.Get("/internal/keys", d.handleRunnerKeys)
-	// WAVE H3b: the runner's mid-conversation READ-ONLY tool-execute callback. It
-	// is authenticated by the session's internal_token (verified inside the
-	// handler) — the SAME HMAC the runner uses for LLM completions on this internal
-	// listener — and dispatches ONLY read-only tools with the bound operator's
-	// scope. Mounted only when the handler is wired (admin-only + chat bridge).
+	// WAVE H3b:runner 在对话中途的只读 tool-execute 回调。它由 session 的
+	// internal_token 鉴权(在 handler 内部校验)——与 runner 在这个内部
+	// 监听器上做 LLM completions 所用的是同一个 HMAC——并且只用绑定 operator 的
+	// 作用域派发只读工具。仅在该 handler 已接线时(admin-only + chat bridge)挂载。
 	if d.hermesInternalToolHandler != nil {
 		r.Method(http.MethodPost, "/internal/hermes/tool-execute", d.hermesInternalToolHandler)
 	}
@@ -585,6 +630,36 @@ func writeInternalError(w http.ResponseWriter, status int, code string) {
 // authHandlerDeps 装配 /v1/auth handlers 的依赖。关键: EventSink 接生产
 // zap sink(newAuthEventSink), 否则登录失败/注册/重置/OAuth/social 等安全
 // 事件在 recordAuthEvent 处因 sink==nil 被静默丢弃。
+// telegramBotTokenResolver 请求期解析 telegram bot token:后台设置 KeyTelegramBotToken 优先(settings-first),
+// 空则回退 env HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN(back-compat)。使运营在管理台配/换 token 即生效、不重部署。
+func telegramBotTokenResolver(d *deps) func(context.Context) string {
+	return func(ctx context.Context) string {
+		if d.platformSettings != nil {
+			if s, err := d.platformSettings.Get(ctx, platformsettings.KeyTelegramBotToken); err == nil {
+				if v := strings.TrimSpace(s.Value); v != "" {
+					return v
+				}
+			}
+		}
+		return strings.TrimSpace(os.Getenv("HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN"))
+	}
+}
+
+// captchaSecretResolver 请求期解析 captcha secret:后台设置 KeyCaptchaSecret 优先(settings-first),
+// 空则回退 env HUAKAI_CAPTCHA_TURNSTILE_SECRET(back-compat)。使运营在管理台配/换 secret 即生效、不重部署。
+func captchaSecretResolver(d *deps) func(context.Context) string {
+	return func(ctx context.Context) string {
+		if d.platformSettings != nil {
+			if s, err := d.platformSettings.Get(ctx, platformsettings.KeyCaptchaSecret); err == nil {
+				if v := strings.TrimSpace(s.Value); v != "" {
+					return v
+				}
+			}
+		}
+		return captchaTurnstileSecret()
+	}
+}
+
 func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 	return gatewayhttp.AuthHandlerDeps{
 		Auth:             d.userAuth,
@@ -596,13 +671,47 @@ func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 		ClientIPResolver: d.clientIPResolver,
 		Captcha: captcha.NewVerifier(
 			d.platformSettings,
-			captchaTurnstileSecret(),
+			captchaSecretResolver(d),
 			&http.Client{Timeout: 10 * time.Second},
 		),
-		LoginThrottle:     d.loginThrottle,
-		TwoFactor:         d.twoFactor,
-		TwoFactorSettings: d.platformSettings,
-		TelegramBotToken:  strings.TrimSpace(os.Getenv("HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN")),
+		LoginThrottle:            d.loginThrottle,
+		TwoFactor:                d.twoFactor,
+		TwoFactorSettings:        d.platformSettings,
+		TelegramBotTokenResolver: telegramBotTokenResolver(d),
+		OAuthPendingKey:          oauthPendingKey(d),
+	}
+}
+
+// oauthPendingKey 从会话签名密钥域分隔派生「社交登录补邮箱」流程专用密钥。会话服务/密钥缺失时返 nil
+// (补邮箱流程随之停用、端点返 503),不 panic。
+func oauthPendingKey(d *deps) []byte {
+	if d == nil || d.userSessions == nil {
+		return nil
+	}
+	return oauthpendinghttp.DeriveKey(d.userSessions.SigningKey)
+}
+
+// oauthPendingDeps 装配「补邮箱建号」独立包的依赖。EmailSender 用类型断言取具体 *email.AuthSender
+// (它实现 SendOAuthEmailCode);断言失败(如 Noop 装配)则不发码。事件经 gatewayhttp 的 AuthEventSink 记录。
+func oauthPendingDeps(d *deps, logger *zap.Logger) oauthpendinghttp.Deps {
+	var emailSender oauthpendinghttp.EmailCodeSender
+	if s, ok := d.authEmailSender.(oauthpendinghttp.EmailCodeSender); ok {
+		emailSender = s
+	}
+	sink := newAuthEventSink(logger)
+	return oauthpendinghttp.Deps{
+		Auth:        d.userAuth,
+		Sessions:    d.userSessions,
+		EmailSender: emailSender,
+		ClientIP:    d.clientIPResolver,
+		Key:         oauthPendingKey(d),
+		RecordEvent: func(ctx context.Context, eventType string, tenantID, userID int64, provider, outcome, reasonClass, ip, userAgent string) {
+			sink.RecordAuthEvent(ctx, gatewayhttp.AuthEvent{
+				EventType: eventType, TenantID: tenantID, UserID: userID,
+				IP: ip, UserAgent: userAgent, Provider: provider,
+				Outcome: outcome, ReasonClass: reasonClass, AuthMethod: provider,
+			})
+		},
 	}
 }
 
@@ -635,41 +744,56 @@ func passkeyHandlerDeps(d *deps) passkeyhttp.Deps {
 
 func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 	return gatewayhttp.ChatHandlerDeps{
-		Auth:                   d.inboundAuth,
-		Registry:               d.modelRegistry,
-		Router:                 d.routePlanner,
-		ClaimGate:              d.claimGate,
-		QuotaReserver:          d.quotaReserver,
-		RateTables:             d.rateTableSource,
-		PricingRatioResolver:   d.pricingRatioResolver,
-		CacheOverrideStore:     d.cacheOverrideStore,
-		Selector:               d.selector,
-		CredentialVault:        d.credentialVault,
-		Dispatcher:             d.dispatcher,
-		Forwarder:              d.forwarder,
-		ResponseCache:          d.responseCache,
-		CacheScope:             d.cacheScope,
-		Settler:                d.settler,
-		ReplayStore:            d.replayStore,
-		BillingPolicyResolver:  d.billingPolicyResolver,
-		CompletionBus:          d.completionBus,
-		AuditRefPolicy:         d.auditRefPolicy,
-		AuditLedger:            d.auditLedger,
-		AuditLedgerDLQ:         d.dlqService,
-		ModerationScreener:     moderationScreener(d),
-		SettleRecoveryDLQ:      d.dlqService,
-		Signer:                 d.auditSigner,
-		ChannelHealth:          d.channelHealth,
-		ModelCooldowns:         d.modelCooldowns,
-		RateService:            d.upstreamRate,
-		RetryBudget:            d.retryBudget,
-		CredentialHotRefresher: d.credentialScheduler,
-		ModelFallbackSettings:  d.platformSettings,
-		BillingPolicyVersion:   d.cfg.BillingPolicyVersion,
-		RequestClass:           d.cfg.RequestClass,
-		ClientIPResolver:       d.clientIPResolver,
-		SessionCapRegistry:     d.sessionCapRegistry,
-		RecentReqRing:          d.recentReqRing,
+		Auth:                    d.inboundAuth,
+		Registry:                d.modelRegistry,
+		Router:                  d.routePlanner,
+		ClaimGate:               d.claimGate,
+		QuotaReserver:           d.quotaReserver,
+		RateTables:              d.rateTableSource,
+		PricingRatioResolver:    d.pricingRatioResolver,
+		CacheOverrideStore:      d.cacheOverrideStore,
+		Selector:                d.selector,
+		QueueWaiter:             d.queueWaiter,
+		CredentialVault:         d.credentialVault,
+		Dispatcher:              d.dispatcher,
+		Forwarder:               d.forwarder,
+		ResponseCache:           d.responseCache,
+		CacheScope:              d.cacheScope,
+		Settler:                 d.settler,
+		SettlementIntents:       d.settlementIntents,
+		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
+		ReplayStore:             d.replayStore,
+		BillingPolicyResolver:   d.billingPolicyResolver,
+		CompletionBus:           d.completionBus,
+		AuditRefPolicy:          d.auditRefPolicy,
+		AuditLedger:             d.auditLedger,
+		AuditLedgerDLQ:          d.dlqService,
+		ModerationScreener:      moderationScreener(d),
+		SettleRecoveryDLQ:       d.dlqService,
+		Signer:                  d.auditSigner,
+		ChannelHealth:           d.channelHealth,
+		ModelCooldowns:          d.modelCooldowns,
+		RateService:             d.upstreamRate,
+		RetryBudget:             d.retryBudget,
+		CredentialHotRefresher:  d.credentialScheduler,
+		AuthCooldown:            d.authCooldown,
+		ModelFallbackSettings:   d.platformSettings,
+		// 非流式 keepalive 间隔:默认 0=关(不改现有行为)。反代(Cloudflare)前建议设
+		// HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL=85s,避开 ~100s 空闲超时掐断长 buffered 响应(图片生成等)。
+		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
+		// 平台设置读取(止漏装配):此前从不赋值 → 热路径恒 nil → warmup_intercept 与
+		// codex_client_access.* 全部键落库后运行时永不被读(死开关)。两族键默认均为
+		// 关/等价现行为,接上不翻转任何默认行为,仅让运维显式配置真正生效。
+		PlatformSettings:     d.platformSettings,
+		BillingPolicyVersion: d.cfg.BillingPolicyVersion,
+		RequestClass:         d.cfg.RequestClass,
+		ClientIPResolver:     d.clientIPResolver,
+		SessionCapRegistry:   d.sessionCapRegistry,
+		RecentReqRing:        d.recentReqRing,
+		// 工具调用附加费价表来源(NAPI-BILLING-01 止漏装配)。之前此字段从不赋值 →
+		// 生产恒 nil → 工具调用加 $0 漏钱;现按 HUAKAI_TOOL_SURCHARGE_ENABLED 接入
+		// platformSource(默认开,计费默认翻转,Owner 已授权)。
+		ToolPricingTable: d.toolPriceSource,
 	}
 }
 
@@ -708,6 +832,8 @@ func completionsHandlerDeps(d *deps) completionshttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		// 流式交付后 settle 失败的 durable 兜底队列，与 chat 路径同一注入(S1-2/S1-3)。
+		SettleRecoveryDLQ: d.dlqService,
 	}
 }
 
@@ -743,10 +869,13 @@ func imageHandlerDeps(d *deps) imageshttp.Deps {
 		CredentialVault:       d.credentialVault,
 		Dispatcher:            d.dispatcher,
 		Settler:               d.settler,
+		SettleRecoveryDLQ:     d.dlqService,
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
 		ClientIPResolver:      d.clientIPResolver,
+		// 图片生成强制 buffered、可达数十秒;反代前设 HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL 保活。默认 0=关。
+		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
 	}
 }
 
@@ -769,42 +898,11 @@ func audioHandlerDeps(d *deps) audiohttp.Deps {
 	}
 }
 
-func mountAdminRoutes(r chi.Router, d *deps) {
-	r.Route("/v1/admin/email", func(r chi.Router) {
-		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
-			Auth:  d.adminAuth,
-			Store: d.emailSettings,
-			Keys:  d.credentialKeys,
-		})
-	})
-	mountPlatformSettingsRoutes(r, d)
-	mountUsageAdminRoutes(r, d)
-	mountSystemHealthRoutes(r, d)   // ADMIN-042
-	mountModuleRegistryRoutes(r, d) // WAVE H2 module-knowledge spine
-	var adminResolver adminIdentityResolver
-	if d.adminAuth != nil {
-		adminResolver = d.adminAuth
-	}
-	r.Method(http.MethodPut, "/v1/admin/models/{id}/capabilities",
-		adminGate(adminResolver, controlhttp.NewAdminCapabilitiesHandler(controlhttp.AdminCapabilitiesDeps{
-			Store: d.modelRegistry,
-		})))
-	modelAliasDeps := controlhttp.AdminModelAliasesDeps{Store: d.modelRegistry}
-	r.Method(http.MethodPost, "/v1/admin/models/aliases/bulk-import",
-		adminGate(adminResolver, controlhttp.NewAdminModelAliasBulkImportHandler(modelAliasDeps)))
-	r.Method(http.MethodGet, "/v1/admin/models/{id}/capability-bindings",
-		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingsHandler(modelAliasDeps)))
-	r.Route("/admin/v1/api-keys", func(r chi.Router) {
-		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
-			Auth:    d.adminAuth,
-			Issuer:  d.adminIssuer,
-			Revoker: d.adminRevoker,
-			Queries: d.adminQueries,
-		})
-	})
-	adminUserDeps := adminuserhttp.Deps{
+func adminUserRouteDeps(d *deps) adminuserhttp.Deps {
+	return adminuserhttp.Deps{
 		Auth:             d.adminAuth,
 		Store:            d.adminQueries,
+		UsageStore:       d.billingQueries,
 		SocialLinks:      d.userAuth,
 		UnlockAudit:      adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
 		TwoFADisabler:    d.twoFactor,
@@ -818,17 +916,90 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Unlocker:         d.userAuth,
 		Audit:            d.adminQueries,
 	}
+}
+
+func mountAdminRoutes(r chi.Router, d *deps) {
+	r.Route("/v1/admin/email", func(r chi.Router) {
+		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
+			Auth:  d.adminAuth,
+			Store: d.emailSettings,
+			Keys:  d.credentialKeys,
+		})
+	})
+	mountPlatformSettingsRoutes(r, d)
+	mountUsageAdminRoutes(r, d)
+	mountSystemHealthRoutes(r, d) // ADMIN-042
+	// 运行日志查询/清理/采集健康(platform_admin;handler 内部自解析鉴权)。
+	r.Route("/v1/admin/ops", func(r chi.Router) {
+		gatewayhttp.MountAdminRuntimeLogRoutes(r, gatewayhttp.AdminRuntimeLogsDeps{
+			Auth:  d.adminAuth,
+			Store: d.runtimeLogStore,
+			Sink:  d.logSink,
+			Audit: d.adminQueries,
+		})
+	})
+	mountBackupRoutes(r, d) // 只读备份 manifest(platform_admin)
+	mountModuleRegistryRoutes(r, d) // WAVE H2 模块知识脊柱
+	var adminResolver adminIdentityResolver
+	if d.adminAuth != nil {
+		adminResolver = d.adminAuth
+	}
+	r.Method(http.MethodPut, "/v1/admin/models/{id}/capabilities",
+		adminGate(adminResolver, controlhttp.NewAdminCapabilitiesHandler(controlhttp.AdminCapabilitiesDeps{
+			Store: d.modelRegistry,
+		})))
+	modelAliasDeps := controlhttp.AdminModelAliasesDeps{Store: d.modelRegistry}
+	r.Method(http.MethodPost, "/v1/admin/models/aliases/bulk-import",
+		adminGate(adminResolver, controlhttp.NewAdminModelAliasBulkImportHandler(modelAliasDeps)))
+	r.Method(http.MethodGet, "/v1/admin/models/{id}/capability-bindings",
+		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingsHandler(modelAliasDeps)))
+	r.Method(http.MethodPut, "/v1/admin/models/{id}/capability-bindings",
+		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingUpsertHandler(modelAliasDeps)))
+	// 租户目录继承策略(inherit_global_catalog)admin 写面 — platform_admin only(经 adminGate), tenant 取 query。
+	tenantPolicyDeps := controlhttp.AdminTenantPolicyDeps{Store: d.modelRegistry}
+	r.Method(http.MethodGet, "/v1/admin/model-registry-policy",
+		adminGate(adminResolver, controlhttp.NewAdminTenantPolicyGetHandler(tenantPolicyDeps)))
+	r.Method(http.MethodPut, "/v1/admin/model-registry-policy",
+		adminGate(adminResolver, controlhttp.NewAdminTenantPolicySetHandler(tenantPolicyDeps)))
+	r.Route("/admin/v1/api-keys", func(r chi.Router) {
+		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
+			Auth:    d.adminAuth,
+			Issuer:  d.adminIssuer,
+			Revoker: d.adminRevoker,
+			Queries: d.adminQueries,
+		})
+	})
+	// admin token(运维凭证)签发 / 列举 / 吊销:支持临时/一次性 token
+	//(可选 expires_at)。高权操作,issuer 内部做 platform_admin-only 的
+	// fail-closed RBAC;明文 bearer 仅在签发响应里返一次。
+	r.Route("/admin/v1/admin-tokens", func(r chi.Router) {
+		adminhttp.MountAdminTokenRoutes(r, adminhttp.AdminTokensDeps{
+			Auth:   d.adminAuth,
+			Issuer: d.adminTokenIssuer,
+		})
+	})
+	adminUserDeps := adminUserRouteDeps(d)
 	r.Get("/admin/v1/users", adminuserhttp.NewListHandler(adminUserDeps))
 	r.Route("/admin/v1/users", func(r chi.Router) {
 		adminuserhttp.MountRoutes(r, adminUserDeps)
 	})
-	// Outbound proxy-pool admin surface (F-FP-POOL): list/create/update/delete/
-	// set-status over the secret-free proxyadmin.Service. Tenant-scoped via the
-	// shared admin gate; auth_secret is write-only and never projected.
+	// 出站代理池 admin 面(F-FP-POOL):在无密钥的 proxyadmin.Service 之上提供
+	// list/create/update/delete/set-status。经共享 admin gate 做租户作用域;
+	// auth_secret 只写,绝不向外投影。
 	r.Route("/admin/v1/proxies", func(r chi.Router) {
 		proxyadminhttp.MountRoutes(r, proxyadminhttp.Deps{
 			Auth:    d.adminAuth,
 			Service: proxyadmin.New(d.adminQueries, d.credentialKeys),
+			Prober:  buildProxyProber(d),
+		})
+	})
+	// Model -> pool 绑定 admin 面:补上之前的死写路径缺口
+	//(列 + resolver 早已存在,但没有 admin CRUD)。顶层资源,双角色
+	// gate,snapshot.version 由 registry.PostgresRegistry 在 Tx 内自增。
+	r.Route("/admin/v1/model-pool-bindings", func(r chi.Router) {
+		modelbindingadminhttp.MountRoutes(r, modelbindingadminhttp.Deps{
+			Auth:    d.adminAuth,
+			Service: registry.NewPostgresRegistry(d.pgPool, nil),
 		})
 	})
 	r.Get("/admin/v1/account-modes", adminhttp.NewAccountModeListHandler(adminhttp.AdminAccountModesDeps{
@@ -855,11 +1026,16 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Auth:  d.adminAuth,
 		Store: adminquotahttp.NewQuotaPolicyStoreAdapter(d.pgPool),
 	}
-	r.Get("/admin/v1/quota-policies", adminquotahttp.NewListHandler(quotaPolicyDeps))
-	r.Post("/admin/v1/quota-policies", adminquotahttp.NewCreateHandler(quotaPolicyDeps))
-	r.Get("/admin/v1/quota-policies/{id}", adminquotahttp.NewGetHandler(quotaPolicyDeps))
-	r.Put("/admin/v1/quota-policies/{id}", adminquotahttp.NewUpdateHandler(quotaPolicyDeps))
-	r.Delete("/admin/v1/quota-policies/{id}", adminquotahttp.NewDeleteHandler(quotaPolicyDeps))
+	// role 制单登录:集合级 + /{id} 端点内联挂载迁入包函数(create/update 挂 SessionSafe、delete 留 token-only),
+	// 路径不变(仍规范无尾斜杠),仅把写分级注解与路由定义收拢到一处。
+	adminquotahttp.MountQuotaPolicyRoutes(r, quotaPolicyDeps)
+	// 孤儿对账闭环 admin 面:只读列表(可视化) + 显式手动对账动作。复用既有 admin 鉴权
+	// (d.adminAuth)。追扣走既有 billing settle、Manual-First、幂等防双扣(详见 orphanreconcilehttp)。
+	if d.mediaTaskStore != nil {
+		orphanDeps := orphanreconcilehttp.Deps{Auth: d.adminAuth, Store: d.mediaTaskStore}
+		r.Get("/admin/v1/media-task-orphans", orphanreconcilehttp.NewListHandler(orphanDeps))
+		r.Post("/admin/v1/media-task-orphans/{id}/reconcile", orphanreconcilehttp.NewReconcileHandler(orphanDeps))
+	}
 	channelTestTemplateDeps := adminhttp.AdminChannelTestTemplateDeps{
 		Auth:  d.adminAuth,
 		Store: d.adminQueries,
@@ -882,10 +1058,17 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Accounts: d.adminQueries,
 			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialworker.DefaultModeAdapterRegistry()),
 		})
+		// 账号 TLS 指纹 profile 绑定/解绑(独立包 accountfphttp,§13 不塞进 god 包 gatewayhttp)。
+		accountfphttp.MountRoutes(r, accountfphttp.Deps{Auth: d.adminAuth, Store: d.adminQueries})
 		adminhttp.MountProviderAccountHealthRoutes(r, adminhttp.ProviderAccountHealthDeps{
 			Auth:          d.adminAuth,
 			Store:         d.adminQueries,
 			RecentReqRing: d.recentReqRing,
+		})
+		adminhttp.MountProviderAccountRecentRequestsRoutes(r, adminhttp.ProviderAccountRecentRequestsDeps{
+			Auth:     d.adminAuth,
+			Accounts: d.adminQueries,
+			Requests: d.billingQueries,
 		})
 		adminhttp.MountProviderAccountBulkRoutes(r, adminhttp.ProviderAccountBulkDeps{
 			Auth:  d.adminAuth,
@@ -901,16 +1084,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Credentials: d.credentialStore,
 			AuditStore:  d.adminQueries,
 		})
-		gatewayhttp.MountAdminCredentialAcquisitionRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
-			Auth:              d.adminAuth,
-			Sessions:          d.credentialAcqStore,
-			Credentials:       d.credentialStore,
-			CredentialAudit:   d.credentialStore,
-			AuditStore:        d.adminQueries,
-			Exchangers:        d.credentialExchangers,
-			BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
-			BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
-		})
+		credentialprojecthttp.MountRoutes(r, credentialProjectRouteDeps(d))
+		gatewayhttp.MountAdminCredentialAcquisitionRoutes(r, credentialAcquisitionRouteDeps(d))
 		gatewayhttp.MountChannelHealthAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
 			Auth:       d.adminAuth,
 			Controller: d.channelHealth,
@@ -940,16 +1115,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Credentials: d.credentialStore,
 			AuditStore:  d.adminQueries,
 		})
-		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, gatewayhttp.AdminCredentialAcquisitionDeps{
-			Auth:              d.adminAuth,
-			Sessions:          d.credentialAcqStore,
-			Credentials:       d.credentialStore,
-			CredentialAudit:   d.credentialStore,
-			AuditStore:        d.adminQueries,
-			Exchangers:        d.credentialExchangers,
-			BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
-			BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
-		})
+		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
 		r.Mount("/", gatewayhttp.NewAdminPoolsHandler(gatewayhttp.AdminPoolsDeps{
@@ -964,6 +1130,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			TenantChecker: d.adminQueries,
 			AuditUpdater:  d.billingAuditUpdater,
 		})
+		repriceService := billing.NewPostgresRepriceService(d.pgPool, d.rateTableSource, d.pricingRatioResolver, d.cfg.BillingPolicyVersion)
+		r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/reprice", billingreconhttp.NewHandler(billingreconhttp.Deps{
+			Auth:    d.adminAuth,
+			Service: repriceService,
+		}))
 	})
 	mountPricingCatalogRoutes(r, d)
 	r.Route("/admin/v1/balances", func(r chi.Router) {
@@ -988,8 +1159,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Auth:     d.adminAuth,
 		Payments: d.paymentService,
 		Usage:    d.billingQueries,
-		Orders:   d.paymentService, // OPS-005: order CSV export (read-only)
-		Refunds:  d.paymentService, // OPS-005: refund CSV export (read-only)
+		Orders:   d.paymentService, // OPS-005:订单 CSV 导出(只读)
+		Refunds:  d.paymentService, // OPS-005:退款 CSV 导出(只读)
 	})
 	r.Route("/v1/admin/payments", func(r chi.Router) {
 		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{
@@ -1052,6 +1223,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	mountAlertingAdminRoutes(r, d)
+	mountRiskAdminRoutes(r, d)
 	mountModerationAdminRoutes(r, d)
 	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
 	r.Get("/admin/v1/billing/claims", gatewayhttp.NewClaimsHandler(d))
@@ -1059,6 +1231,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Get("/admin/v1/dlq/{handler}", gatewayhttp.NewAdminDLQListHandler(d))
 	r.Post("/admin/v1/dlq/{id}/replay", gatewayhttp.NewAdminDLQReplayHandler(d))
 	r.Post("/admin/v1/usage-record-dlq/{id}/replay", gatewayhttp.NewAdminDLQReplayHandler(d))
+	obsDLQDeps := obsdlqhttp.Deps{Auth: d.adminAuth, Store: d.obsDLQAdminStore}
+	r.Get("/admin/v1/obs-dlq", obsdlqhttp.NewListHandler(obsDLQDeps))
+	r.Post("/admin/v1/obs-dlq/{id}/replay", obsdlqhttp.NewReplayHandler(obsDLQDeps))
 	r.Route("/admin/v1/cache/l2", func(r chi.Router) {
 		gatewayhttp.MountAdminL2CacheRoutes(r, gatewayhttp.AdminL2CacheDeps{
 			Auth:  d.adminAuth,

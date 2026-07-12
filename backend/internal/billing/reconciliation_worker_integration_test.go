@@ -45,6 +45,13 @@ func TestPendingReconciliationFinalizerMarksOnlyNoUsageStreamRows(t *testing.T) 
 		settledAt:    now.Add(-10 * time.Minute),
 	})
 	insertNoUsageFinalizationMarker(t, ctx, pg, seed.tenantID, alreadyID, now.Add(-9*time.Minute))
+	manualRepricedID := insertPendingUsageRecordForReconciliationTest(t, ctx, pg, seed, pendingUsageRecordFixture{
+		source:       "inferred",
+		tokensOutput: 0,
+		delivered:    43,
+		settledAt:    now.Add(-10 * time.Minute),
+	})
+	insertReconciliationMarker(t, ctx, pg, seed.tenantID, manualRepricedID, RepriceDefaultSource, now.Add(-8*time.Minute))
 
 	finalizer := NewPostgresPendingReconciliationFinalizer(pg)
 	got, err := finalizer.FinalizePendingNoUsage(
@@ -65,6 +72,7 @@ func TestPendingReconciliationFinalizerMarksOnlyNoUsageStreamRows(t *testing.T) 
 	assertNoUsageMarkerCount(t, ctx, pg, seed.tenantID, reportedID, 0)
 	assertNoUsageMarkerCount(t, ctx, pg, seed.tenantID, outputID, 0)
 	assertNoUsageMarkerCount(t, ctx, pg, seed.tenantID, alreadyID, 1)
+	assertNoUsageMarkerCount(t, ctx, pg, seed.tenantID, manualRepricedID, 0)
 
 	q := dbbilling.New(pg)
 	all, err := q.CountUsageRecords(ctx, dbbilling.CountUsageRecordsParams{
@@ -74,8 +82,8 @@ func TestPendingReconciliationFinalizerMarksOnlyNoUsageStreamRows(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CountUsageRecords all: %v", err)
 	}
-	if all != 4 {
-		t.Fatalf("all usage records=%d want 4", all)
+	if all != 5 {
+		t.Fatalf("all usage records=%d want 5", all)
 	}
 	pending, err := q.CountUsageRecords(ctx, dbbilling.CountUsageRecordsParams{
 		TenantID:                  &seed.tenantID,
@@ -104,7 +112,7 @@ func TestPendingReconciliationFinalizerMarksOnlyNoUsageStreamRows(t *testing.T) 
 			t.Fatalf("pending list missing unreconciled row %d; got %v", id, gotIDs)
 		}
 	}
-	for _, id := range []int64{eligibleID, alreadyID} {
+	for _, id := range []int64{eligibleID, alreadyID, manualRepricedID} {
 		if gotIDs[id] {
 			t.Fatalf("pending list included finalized row %d; got %v", id, gotIDs)
 		}
@@ -171,6 +179,11 @@ func insertPendingUsageRecordForReconciliationTest(t *testing.T, ctx context.Con
 
 func insertNoUsageFinalizationMarker(t *testing.T, ctx context.Context, pg *pgxpool.Pool, tenantID, usageRecordID int64, reconciledAt time.Time) {
 	t.Helper()
+	insertReconciliationMarker(t, ctx, pg, tenantID, usageRecordID, PendingReconciliationSourceStreamNoUsageFinalized, reconciledAt)
+}
+
+func insertReconciliationMarker(t *testing.T, ctx context.Context, pg *pgxpool.Pool, tenantID, usageRecordID int64, source string, reconciledAt time.Time) {
+	t.Helper()
 	if _, err := pg.Exec(ctx, `
 		INSERT INTO usage_record_reconciliation_events (
 			tenant_id,
@@ -184,7 +197,7 @@ func insertNoUsageFinalizationMarker(t *testing.T, ctx context.Context, pg *pgxp
 		) VALUES ($1, $2, 0, 0, 0, 0, $3, $4)`,
 		tenantID,
 		usageRecordID,
-		PendingReconciliationSourceStreamNoUsageFinalized,
+		source,
 		reconciledAt,
 	); err != nil {
 		t.Fatalf("insert reconciliation marker: %v", err)

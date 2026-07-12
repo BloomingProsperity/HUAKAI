@@ -13,20 +13,19 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/thinkingnorm"
 )
 
-// TestIngressProtocolForEffort_ResponsesIsUnmodeled guards the v2-review S2: the
-// OpenAI Responses ingress parser consumes a NESTED reasoning object, not the
-// top-level reasoning_effort string the chat parser reads. Mapping Responses to
-// IngressOpenAIChat would emit reasoning_effort that canonicalization silently
-// drops — a silent effort loss. Responses must map to IngressOther (unmodeled →
-// the request is left unchanged, no silent loss; native wiring is a follow-up).
+// TestIngressProtocolForEffort_ResponsesIsUnmodeled 守护 v2-review 的 S2:
+// OpenAI Responses ingress 解析器消费的是一个嵌套的 reasoning 对象,而非
+// chat 解析器读取的顶层 reasoning_effort 字符串。把 Responses 映射到
+// IngressOpenAIChat 会发出一个被规范化悄悄丢弃的 reasoning_effort——
+// 即静默丢失 effort。Responses 必须映射到 IngressOther(未建模 →
+// 请求保持不变,无静默丢失;原生接线是后续工作)。
 //
-// Regression caught: folding ClientProtocolOpenAIResponses back into the
-// OpenAIChat case turns this RED.
+// 捕获的回归:把 ClientProtocolOpenAIResponses 折回 OpenAIChat 分支会让本测试变红。
 func TestIngressProtocolForEffort_ResponsesIsUnmodeled(t *testing.T) {
 	if got := ingressProtocolForEffort(proto.ClientProtocolOpenAIResponses); got != thinkingnorm.IngressOther {
 		t.Fatalf("OpenAI Responses ingress -> %v, want IngressOther (else suffix effort is silently dropped during canonicalization)", got)
 	}
-	// Sanity: the modeled ingresses still map correctly.
+	// 健全性检查:已建模的 ingress 仍正确映射。
 	if got := ingressProtocolForEffort(proto.ClientProtocolOpenAIChat); got != thinkingnorm.IngressOpenAIChat {
 		t.Fatalf("OpenAIChat ingress -> %v, want IngressOpenAIChat", got)
 	}
@@ -35,11 +34,10 @@ func TestIngressProtocolForEffort_ResponsesIsUnmodeled(t *testing.T) {
 	}
 }
 
-// perModelRegistry is a registry fake that resolves only the names in entries;
-// any other name returns registry.ErrUnknownModel (the real 404 trigger). It
-// counts ResolveModel calls so a test can prove the no-suffix / resolved-first
-// path makes no extra lookups. Capabilities carry through so the reasoning gate
-// is exercised.
+// perModelRegistry 是一个 registry 伪实现,只解析 entries 中的名字;
+// 其它任何名字返回 registry.ErrUnknownModel(即真正触发 404)。它对
+// ResolveModel 的调用计数,使测试能证明 no-suffix / resolved-first
+// 路径不会产生额外查询。Capabilities 会透传,以便驱动 reasoning 闸门。
 type perModelRegistry struct {
 	entries map[string]registry.Resolved
 	calls   int
@@ -78,12 +76,12 @@ func newEffortExecution(t *testing.T, model, body string, ingress proto.ClientPr
 	return ex
 }
 
-// REGRESSION (S1 false-strip, the killer): a real shipped model "yi-medium"
-// (pricing seed migration 0131) routed through the ingress hook must keep
-// routing/pricing seeing "yi-medium" — never "yi". Because the FULL name
-// resolves on the first ResolveModel, the effort-suffix path is never entered
-// and exactly ONE registry call is made. Mutation: pure-string strip at ingress
-// -> routing sees "yi" -> here ex.req.Model becomes "yi" -> RED.
+// 回归(S1 误剥,致命款):一个真实上线的模型 "yi-medium"
+// (定价种子迁移 0131)经过 ingress 钩子后,必须让 routing/pricing 仍看到
+// "yi-medium"——绝不能是 "yi"。因为完整名在第一次 ResolveModel 即解析成功,
+// 不会进入 effort-suffix 路径,且恰好只发生一次 registry 调用。
+// 变异:在 ingress 处做纯字符串剥离 -> routing 看到 "yi" -> 此处 ex.req.Model
+// 变成 "yi" -> 变红。
 func TestPrepareRoute_YiMediumNotFalseStripped(t *testing.T) {
 	reg := &perModelRegistry{entries: map[string]registry.Resolved{
 		"yi-medium": reasoningResolved("yi-medium"),
@@ -106,9 +104,8 @@ func TestPrepareRoute_YiMediumNotFalseStripped(t *testing.T) {
 	}
 }
 
-// REGRESSION: a no-suffix unknown model still 404s with exactly ONE registry
-// call — the suffix probe never runs when there is no effort token. Mutation:
-// run the suffix probe unconditionally -> 2 calls -> RED.
+// 回归:无后缀的未知模型仍以恰好一次 registry 调用 404——没有 effort token
+// 时不会运行后缀探测。变异:无条件运行后缀探测 -> 2 次调用 -> 变红。
 func TestPrepareRoute_NoSuffixUnknownModelSingleCall(t *testing.T) {
 	reg := &perModelRegistry{entries: map[string]registry.Resolved{}}
 	ex := newEffortExecution(t, "totally-unknown",
@@ -122,10 +119,10 @@ func TestPrepareRoute_NoSuffixUnknownModelSingleCall(t *testing.T) {
 	}
 }
 
-// REGRESSION: a genuine "<reasoning-model>-<effort>" whose full name does NOT
-// resolve but whose base DOES (reasoning-capable) is normalized: routing sees
-// the BASE and the body gains reasoning_effort. Mutation: skip ingress
-// normalization -> full name unresolved -> prepareRoute 404s -> RED.
+// 回归:一个真正的 "<reasoning-model>-<effort>",其完整名无法解析但其 base
+// 可以(具备 reasoning 能力)会被规范化:routing 看到 base,且请求体获得
+// reasoning_effort。变异:跳过 ingress 规范化 -> 完整名无法解析 ->
+// prepareRoute 返回 404 -> 变红。
 func TestPrepareRoute_ThinkingHighStrippedBaseRouted(t *testing.T) {
 	reg := &perModelRegistry{entries: map[string]registry.Resolved{
 		"gpt-5-thinking": reasoningResolved("gpt-5-thinking"),
@@ -146,11 +143,11 @@ func TestPrepareRoute_ThinkingHighStrippedBaseRouted(t *testing.T) {
 	}
 }
 
-// REGRESSION (S2 cross-protocol): "claude-...-high" arriving at the OPENAI-CHAT
-// ingress must yield a reasoning_effort the openai-chat parser reads — NOT a
-// thinking object it drops. Param chosen by INGRESS, not model name. Mutation:
-// classify by model name (claude -> thinking) -> thinking object on an
-// openai-chat body -> dropped downstream -> here reasoning_effort absent -> RED.
+// 回归(S2 跨协议):到达 OPENAI-CHAT ingress 的 "claude-...-high" 必须产出一个
+// openai-chat 解析器能读取的 reasoning_effort——而非一个会被丢弃的 thinking
+// 对象。参数由 ingress 决定,而非由模型名决定。变异:按模型名分类
+// (claude -> thinking) -> 在 openai-chat 请求体上放 thinking 对象 ->
+// 下游丢弃 -> 此处 reasoning_effort 缺失 -> 变红。
 func TestPrepareRoute_ClaudeViaOpenAIChatIngressEmitsReasoningEffort(t *testing.T) {
 	reg := &perModelRegistry{entries: map[string]registry.Resolved{
 		"claude-opus-4-8": reasoningResolved("claude-opus-4-8"),
@@ -173,13 +170,12 @@ func TestPrepareRoute_ClaudeViaOpenAIChatIngressEmitsReasoningEffort(t *testing.
 	}
 }
 
-// REGRESSION: when the base is NOT reasoning-capable, the suffix is left in
-// place and the request 404s exactly as it would without the feature (no
-// behavior change). Mutation: strip regardless of reasoning capability -> base
-// routes -> prepareRoute succeeds -> RED.
+// 回归:当 base 不具备 reasoning 能力时,后缀被原样保留,请求会像没有该特性
+// 时一样 404(无行为变化)。变异:不论是否具备 reasoning 能力都剥离 ->
+// base 可路由 -> prepareRoute 成功 -> 变红。
 func TestPrepareRoute_BaseNotReasoningNotStripped(t *testing.T) {
 	nonReasoning := reasoningResolved("foo")
-	nonReasoning.Capabilities = []string{"text", "tools"} // no reasoning/thinking
+	nonReasoning.Capabilities = []string{"text", "tools"} // 无 reasoning/thinking
 	reg := &perModelRegistry{entries: map[string]registry.Resolved{
 		"foo": nonReasoning,
 	}}
@@ -191,9 +187,9 @@ func TestPrepareRoute_BaseNotReasoningNotStripped(t *testing.T) {
 	}
 }
 
-// REGRESSION (clamp through the real hook): claude-opus-4-8-high with
-// max_tokens=2000 via anthropic ingress yields a thinking budget clamped to
-// 2000, not 24576. Mutation: drop the clamp -> 24576 -> RED.
+// 回归(经真实钩子的钳制):claude-opus-4-8-high 通过 anthropic ingress 且
+// max_tokens=2000 时,产出的 thinking 预算被钳制到 2000,而非 24576。
+// 变异:去掉钳制 -> 24576 -> 变红。
 func TestPrepareRoute_AnthropicIngressBudgetClamped(t *testing.T) {
 	reg := &perModelRegistry{entries: map[string]registry.Resolved{
 		"claude-opus-4-8": reasoningResolved("claude-opus-4-8"),

@@ -1,21 +1,8 @@
-// Package clientid 检测进入 HUAKAI 的请求"真实客户端身份"——是
-// Cursor / Claude Code / Cody / 自定义脚本 / chat UI 还是其它。
+// Package clientid 检测进入 HUAKAI 的请求客户端身份(Claude Code / Codex CLI /
+// Cursor / Cody / chat UI / 脚本 / 未知),输出 Identity + confidence(0.0-1.0)。
 //
-// 用途（识别后，下游可做的事）：
-//   - per-client quota 切分（不同客户端按不同档计费）
-//   - abuse detection（同一客户端短时间高频 = 可疑）
-//   - 协议形态适配（Cursor 期望 OpenAI shape；Claude Code 期望 Anthropic shape）
-//
-// 设计：
-//   - 输入: HTTP request 的 headers + path + 可选 body 字段名 hints
-//   - 输出: Identity enum + confidence (0.0-1.0)
-// 多信号融合: User-Agent / 自定义 header (X-Client-*) / Origin / path /
-//     body fingerprint。任一信号都可能被 spoof，故多信号决策树投票
-//
-// 不做的事（U6-A 范围外）：
-//   - 不直接拒绝请求（误识别 fallback 到 IdentityUnknown，让 policy 决定）
-// 不实施反向行为模拟 / 强伪装层
-//   - 不持久化（per-request 检测）
+// 多信号决策树:自定义 header(X-Client-*)> User-Agent > Origin/Referer;
+// 任一信号可被伪造,故多信号融合。检测结果交调用方按需使用(如 policy 判定)。
 package clientid
 
 import (
@@ -34,6 +21,10 @@ const (
 	// IdentityClaudeCode: Anthropic 官方 CLI claude-code。User-Agent 含
 	// "claude-cli" 或 "Claude-Code/"。
 	IdentityClaudeCode Identity = "claude_code"
+
+	// IdentityCodexCLI: OpenAI 官方 Codex CLI。User-Agent 含 "codex_cli"/
+	// "codex-cli"/"codex/"(真实形如 codex_cli_rs/0.125.0 (...))。
+	IdentityCodexCLI Identity = "codex_cli"
 
 	// IdentityCody: Sourcegraph Cody。User-Agent 含 "cody/" 或 "Cody-CLI/"。
 	IdentityCody Identity = "cody"
@@ -102,7 +93,7 @@ func SignalFromRequest(r *http.Request) Signal {
 //  2. 检查 User-Agent 已知 token 子串（次强）
 //  3. 检查 Origin / Referer（弱信号，仅 chat UI 类）
 //  4. 检查 User-Agent 是否典型脚本默认串
-//  5. fallback IdentityUnknown
+//  5. 兜底 IdentityUnknown
 //
 // confidence 含义:
 //   - 1.0: 显式 X-Client-Name 或多信号一致
@@ -153,6 +144,8 @@ func detectFromXClient(xc map[string]string) (Identity, float64, bool) {
 			return IdentityCursor, 1.0, true
 		case strings.Contains(name, "claude") && strings.Contains(name, "code"):
 			return IdentityClaudeCode, 1.0, true
+		case strings.Contains(name, "codex"):
+			return IdentityCodexCLI, 1.0, true
 		case strings.Contains(name, "cody"):
 			return IdentityCody, 1.0, true
 		}
@@ -183,6 +176,8 @@ func detectFromUserAgent(ua string) (Identity, float64, bool) {
 		return IdentityCursor, 0.9, true
 	case strings.Contains(lower, "claude-cli") || strings.Contains(lower, "claude-code/"):
 		return IdentityClaudeCode, 0.9, true
+	case strings.Contains(lower, "codex_cli") || strings.Contains(lower, "codex-cli") || strings.Contains(lower, "codex/"):
+		return IdentityCodexCLI, 0.9, true
 	case strings.Contains(lower, "cody/") || strings.Contains(lower, "cody-cli"):
 		return IdentityCody, 0.9, true
 	}

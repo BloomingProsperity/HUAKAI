@@ -1,7 +1,7 @@
-//! Local TLS ClientHello capture helper for OpenSSL mimicry preflight.
+//! 用于 OpenSSL 拟真 preflight 的本地 TLS ClientHello 捕获工具。
 //!
-//! The helper only reads the first plaintext TLS handshake record and never
-//! completes a TLS handshake. It is feature-gated by the parent module.
+//! 该工具只读取第一条明文 TLS handshake record, 绝不完成完整的 TLS 握手。
+//! 它由父模块 feature-gate 控制。
 
 use std::{
     io::Read,

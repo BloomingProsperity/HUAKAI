@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -64,8 +65,8 @@ func TestSettlerSettleDoesNotFinalizeQuotaWhenBillingFails(t *testing.T) {
 }
 
 func TestSettlerSettleIgnoresMissingQuotaReservationAfterFailOpen(t *testing.T) {
-	// Mutation check: propagating quota.ErrReservationNotFound from quota
-	// settle makes this return an error after billing succeeds.
+	// 变异检查:把 quota settle 抛出的 quota.ErrReservationNotFound 向上传播,
+	// 会让本函数在 billing 成功后仍返回错误。
 	inner := &recordingBillingSettler{}
 	finalizer := &recordingQuotaFinalizer{settleErr: quota.ErrReservationNotFound}
 	settler := NewSettler(inner, finalizer)
@@ -298,4 +299,53 @@ func quotaPostCommitFinalizeFailuresForTest() int64 {
 		return 0
 	}
 	return v.Value()
+}
+
+// TestDenyWindowKind 验证从拒绝决策抽出对外窗口标签的全部分支:DenyError 与 fail-soft result 两条
+// 来源都取窗口;none/空一律抑制(不透出),manual/日历窗口照常透出;allowed 无窗口。
+// 变异:删 windowKindLabel 的 none 抑制 → WindowNone 子用例得到 "none" 而非 "" → 红;
+// 把 deny.Decision.WindowKind 读丢 → calendar_month 子用例得 "" → 红。
+func TestDenyWindowKind(t *testing.T) {
+	cases := []struct {
+		name   string
+		result quota.ReserveResult
+		err    error
+		want   string
+	}{
+		{"deny_error_calendar_month", quota.ReserveResult{}, &quota.DenyError{Decision: quota.Decision{WindowKind: quota.WindowCalendarMonth}}, "calendar_month"},
+		{"deny_error_manual_exposed", quota.ReserveResult{}, &quota.DenyError{Decision: quota.Decision{WindowKind: quota.WindowManual}}, "manual"},
+		{"deny_error_none_suppressed", quota.ReserveResult{}, &quota.DenyError{Decision: quota.Decision{WindowKind: quota.WindowNone}}, ""},
+		{"deny_error_empty_suppressed", quota.ReserveResult{}, &quota.DenyError{Decision: quota.Decision{}}, ""},
+		{"fail_soft_result_calendar_day", quota.ReserveResult{Allowed: false, Decision: quota.Decision{WindowKind: quota.WindowCalendarDay}}, nil, "calendar_day"},
+		{"allowed_no_window", quota.ReserveResult{Allowed: true}, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DenyWindowKind(tc.result, tc.err); got != tc.want {
+				t.Fatalf("DenyWindowKind=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDefaultLeaseTTLOutlivesRequestLifecycle 守并发槽租约窗口的两个不变量:
+//  1. 与 billing claim 租约同源 (统一从"请求最大生命周期"派生, 防两边漂移再生);
+//  2. 显著大于流式上限 (HUAKAI_STREAM_TOTAL_TIMEOUT 默认 600s) —— acquire 在 COUNT 前
+//     清扫过期槽, 窗口短于请求时长时长流的槽中途被当空位扫掉, 并发上限被静默突破。
+//
+// mutation: DefaultLeaseTTL 退回 90*time.Second → 两断言全红。
+func TestDefaultLeaseTTLOutlivesRequestLifecycle(t *testing.T) {
+	if DefaultLeaseTTL != billing.DefaultClaimLeaseWindow {
+		t.Fatalf("DefaultLeaseTTL=%v 与 claim 租约 %v 脱钩 (租约窗口必须同源派生)", DefaultLeaseTTL, billing.DefaultClaimLeaseWindow)
+	}
+	const streamMax = 600 * time.Second // HUAKAI_STREAM_TOTAL_TIMEOUT 默认值
+	if DefaultLeaseTTL <= 2*streamMax {
+		t.Fatalf("DefaultLeaseTTL=%v 不足流上限 %v 的 2 倍余量 —— 长流的槽会被 acquire 清扫顶位", DefaultLeaseTTL, streamMax)
+	}
+	// 默认路径真的用它: BuildReserveRequest 未显式给 lease 时派生 at+TTL。
+	at := time.Date(2026, 7, 5, 14, 0, 0, 0, time.UTC)
+	req := BuildReserveRequest(ReserveInput{TenantID: 1, ClaimID: 2, At: at})
+	if !req.LeaseExpiresAt.Equal(at.Add(DefaultLeaseTTL)) {
+		t.Fatalf("默认 lease = %v, want at+%v", req.LeaseExpiresAt, DefaultLeaseTTL)
+	}
 }

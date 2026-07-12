@@ -36,6 +36,7 @@ func newAdminConfirmHandler(d AdminDeps) http.HandlerFunc {
 			TenantID:      req.TenantID,
 			OrderID:       id,
 			ActorAdminID:  ident.TokenID,
+			ActorRef:      ident.AuditActor(),
 			ConfirmReason: req.ConfirmReason,
 			RequestID:     requestID(r),
 		})
@@ -78,6 +79,7 @@ func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
 			UserID:    0,
 			ActorKind: payment.ActorKindAdmin,
 			ActorID:   ident.TokenID,
+			ActorRef:  ident.AuditActor(),
 			Reason:    req.Reason,
 			RequestID: requestID(r),
 		})

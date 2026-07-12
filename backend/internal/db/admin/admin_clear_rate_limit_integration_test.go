@@ -13,13 +13,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestClearProviderAccountRateLimit_ClearsEveryCascadeColumn seeds a provider
-// account with EVERY cooldown-cascade column set to a distinct NON-clear value,
-// runs ClearProviderAccountRateLimit, then re-selects and asserts every single
-// column is reset. Each field starts in a state that differs from "cleared", so
-// dropping any one column from the UPDATE SET list leaves that column non-clear
-// and the test goes RED — that is the mutation guard. A field that happened to
-// start NULL would be a non-discriminating trap, so all start populated.
+// TestClearProviderAccountRateLimit_ClearsEveryCascadeColumn 种入一个把
+// 每一个冷却级联列都设成各不相同的"非清空"值的池账号,运行
+// ClearProviderAccountRateLimit,然后重新查询并断言每一列都被重置。
+// 每个字段初始状态都不同于"已清空",所以只要从 UPDATE SET 列表里漏掉任意
+// 一列,该列就仍非清空,测试变红 —— 这就是变异守卫。某个恰好以 NULL 起步
+// 的字段会成为无区分度的陷阱,因此所有字段一开始都填了值。
 func TestClearProviderAccountRateLimit_ClearsEveryCascadeColumn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -128,12 +127,11 @@ func TestClearProviderAccountRateLimit_ClearsEveryCascadeColumn(t *testing.T) {
 	}
 }
 
-// TestAdminAuditClearRateLimitActionWhitelisted proves migration 0141 actually
-// whitelisted the two operator audit actions while keeping the CHECK live. The
-// two permitted inserts must succeed; a bogus action must still raise CHECK
-// 23514 on the same constraint. The bogus sub-assert is the baseline that proves
-// the test is discriminating (not "all actions pass"). This is the test that
-// would have caught the original latent bug.
+// TestAdminAuditClearRateLimitActionWhitelisted 证明迁移 0141 确实把两个运维
+// 审计 action 加进了白名单,同时保持 CHECK 仍然生效。两个被允许的 insert 必须
+// 成功;一个伪造 action 仍必须在同一约束上触发 CHECK 23514。伪造子断言是
+// 证明该测试具备区分度(而非"所有 action 都通过")的基线。这正是本可以抓住
+// 原始潜伏 bug 的测试。
 func TestAdminAuditClearRateLimitActionWhitelisted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

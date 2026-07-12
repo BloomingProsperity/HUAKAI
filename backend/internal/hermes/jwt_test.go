@@ -95,7 +95,7 @@ func TestJWTVerifyRejectsWrongAudienceAndFutureNBF(t *testing.T) {
 }
 
 func TestJWTVerifyRejectsFutureIATEvenWhenNBFAllowsNow(t *testing.T) {
-	// Regression: a token with nbf<=now but iat in the future must not be accepted.
+	// 回归守护:nbf<=now 但 iat 在未来的 token 不能被接受。
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)

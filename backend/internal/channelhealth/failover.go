@@ -16,6 +16,8 @@ type PoolGate struct {
 		MaybeStartRamp(context.Context, ChannelKey) (Record, error)
 	}
 	clock Clock
+	// authLane 是独立于健康 FSM 的 auth 降级车道(nil=未接线,auth 检查短路,行为不变)。
+	authLane AuthCooldownLane
 }
 
 type GateStore interface {
@@ -36,11 +38,29 @@ func NewServicePoolGate(service *Service, clock Clock) *PoolGate {
 	store, _ := service.Store().(GateStore)
 	gate := NewPoolGate(store, clock)
 	gate.ramp = service
+	// auth 车道与 Service 共享同一实例:applySignal 写(Suspend/Clear)、PoolGate 读(Eligible),
+	// 二者必须看同一份内存态。
+	gate.authLane = service.authLane
 	return gate
 }
 
 func (g *PoolGate) Allow(ctx context.Context, account *pool.AccountSnapshot, req pool.SelectionRequest) (bool, pool.GateFailureReason, error) {
-	if g == nil || g.store == nil || account == nil {
+	if g == nil || account == nil {
+		return true, "", nil
+	}
+	// auth 降级车道检查:独立于健康 store(即使 store==nil 也生效),不读健康 State/Score。
+	// 被 auth 车道移出选号(now<AuthUntil 或 HardDisabled)→ 返回独立的 GateFailureAuthCooldown,
+	// 与 GateFailureHealth 区分(审计/计数可辨识)。
+	if g.authLane != nil {
+		ok, hardDisabled := g.authLane.Eligible(account.ID, g.clock.Now())
+		if !ok {
+			// DisableCooling 逃生阀只豁免软退避,不豁免 HardDisabled(否则给 revoked 号重开黑洞,修正5)。
+			if !(account.DisableCooling && !hardDisabled) {
+				return false, pool.GateFailureAuthCooldown, nil
+			}
+		}
+	}
+	if g.store == nil {
 		return true, "", nil
 	}
 	rec, err := g.store.LatestByProviderAccount(ctx, req.TenantID, account.ID)
@@ -53,6 +73,17 @@ func (g *PoolGate) Allow(ctx context.Context, account *pool.AccountSnapshot, req
 	rec, err = g.maybeStartExpiredRamp(ctx, rec)
 	if err != nil {
 		return false, pool.GateFailureHealth, err
+	}
+	// disable_cooling 运维逃生阀(TOKLIFE-02):被 flag 的账号豁免"冷却/渐进放量"这类**流量抑制**,
+	// 直接满流量放行。生产门链的 Health gate 被覆盖成本 channelhealth PoolGate(selector_wiring),
+	// 而原本唯一读 DisableCooling 的 ProviderAccountHealthGate 在生产不跑——故该开关在生产此前是死的;
+	// 这里补上读侧消费让它真生效。**只豁免 cooling_down/ramping**:disabled/manual_paused 这类硬停
+	// (ban 信号即时禁用、运维手动暂停)必须仍然拦截,不能被 disable_cooling 绕过。默认 false → 行为不变。
+	if account.DisableCooling {
+		switch rec.State {
+		case StateCoolingDown, StateRamping:
+			return true, "", nil
+		}
 	}
 	ok := IsEligible(rec, RampAdmissionKey(req, account.ID), g.clock.Now())
 	if !ok {
@@ -96,8 +127,13 @@ func IsEligible(rec Record, admissionKey string, now time.Time) bool {
 	case StateRamping:
 		return AdmitRamp(admissionKey, rec.RampStagePct)
 	case StateCoolingDown:
+		// 冷却已到期 → 放行,让通道在冷却结束后自动恢复(否则一旦进 cooling_down 即永久卡死)。
+		// 主流 Allow()/HealthStatus 会先由 maybeStartExpiredRamp 把"非 nil 且已过期"的记录转成
+		// ramping;但当 ramp 未接线(NewPoolGate,g.ramp==nil)或本函数被其它路径直达时,这里是
+		// 唯一的恢复闸门——必须放行已到期冷却。与 maybeStartExpiredRamp 的 guard(同样只对"非 nil
+		// 且已过期"动作)语义对齐:未到期 → 拒绝;无截止时间(nil)→ 保守拒绝(行为不变)。
 		if rec.CooldownUntil != nil && !rec.CooldownUntil.After(now) {
-			return false
+			return true
 		}
 		return false
 	case StateDisabled, StateManualPaused:

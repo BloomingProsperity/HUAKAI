@@ -78,24 +78,26 @@ type DrainBudgets struct {
 
 // UsageRecordDraft 是 F-GW-002 Phase D 交给 F-OBS-001 Tx2 的载荷。
 type UsageRecordDraft struct {
-	TokensInput           int             `json:"tokens_input"`
-	TokensOutput          int             `json:"tokens_output"`
-	DeliveredTokenCount   int64           `json:"delivered_token_count"`
-	CacheCreationTokens   int             `json:"cache_creation_tokens"`
-	CacheCreation5mTokens int             `json:"cache_creation_5m_tokens"`
-	CacheCreation1hTokens int             `json:"cache_creation_1h_tokens"`
-	CacheReadTokens       int             `json:"cache_read_tokens"`
-	ActualCost            decimal.Decimal `json:"actual_cost"`
-	CostSnapshot          string          `json:"cost_snapshot,omitempty"`
-	CacheCreationCost     decimal.Decimal `json:"cache_creation_cost"`
-	CacheReadCost         decimal.Decimal `json:"cache_read_cost"`
-	ImageCount            int32           `json:"image_count"`
-	ImageSize             *string         `json:"image_size,omitempty"`
-	ImageSizeBreakdown    []byte          `json:"image_size_breakdown,omitempty"`
+	TokensInput         int   `json:"tokens_input"`
+	TokensOutput        int   `json:"tokens_output"`
+	DeliveredTokenCount int64 `json:"delivered_token_count"`
+	// BusinessFrameDelivered 覆盖零 token 业务帧，不含心跳与错误帧。
+	BusinessFrameDelivered bool            `json:"business_frame_delivered,omitempty"`
+	CacheCreationTokens    int             `json:"cache_creation_tokens"`
+	CacheCreation5mTokens  int             `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int             `json:"cache_creation_1h_tokens"`
+	CacheReadTokens        int             `json:"cache_read_tokens"`
+	ActualCost             decimal.Decimal `json:"actual_cost"`
+	CostSnapshot           string          `json:"cost_snapshot,omitempty"`
+	CacheCreationCost      decimal.Decimal `json:"cache_creation_cost"`
+	CacheReadCost          decimal.Decimal `json:"cache_read_cost"`
+	ImageCount             int32           `json:"image_count"`
+	ImageSize              *string         `json:"image_size,omitempty"`
+	ImageSizeBreakdown     []byte          `json:"image_size_breakdown,omitempty"`
 
-	// WebSearchCalls / FileSearchCalls / ImageGenerationCalls mirror
-	// proto.CanonicalUsage for the streaming path: populated by upstream
-	// response parse (Stage B+), default zero = no surcharge.
+	// WebSearchCalls / FileSearchCalls / ImageGenerationCalls 为流式路径
+	// 镜像 proto.CanonicalUsage:由上游响应解析填充(Stage B+),
+	// 默认零 = 无附加费。
 	WebSearchCalls       int `json:"web_search_calls,omitempty"`
 	FileSearchCalls      int `json:"file_search_calls,omitempty"`
 	ImageGenerationCalls int `json:"image_generation_calls,omitempty"`
@@ -115,6 +117,13 @@ type UsageRecordDraft struct {
 	PendingReconciliation   bool           `json:"pending_reconciliation"`
 	FirstTokenLatencyMillis int64          `json:"first_token_latency_ms"`
 	TotalDurationMillis     int64          `json:"total_duration_ms"`
+	// FirstByteAt / LastEventAt 是【绝对墙钟时刻】(非相对 ms):首个内容块 flush 给客户的时刻、
+	// 与流末最后事件时刻。结算写入 usage_records 同名列,使 TTFT=first_byte_at-requested_at 与
+	// TPS=tokens_output/(last_event_at-first_byte_at) 可算。此前 forwarder 只量了相对 ms 却无人
+	// 消费、settler 也从不写这两列→列恒 NULL→所有 TTFT/TPS 指标恒 0(监控盲区)。零值(非流式/
+	// 未产出)→ settler 经 pgTimestamp 写 NULL,被 perf SQL 的 IS NOT NULL 过滤排除(均为流式指标)。
+	FirstByteAt time.Time `json:"first_byte_at,omitempty"`
+	LastEventAt time.Time `json:"last_event_at,omitempty"`
 
 	// ReasoningTokens / EstimatedOutputTokens / EstimatedReasoningTokens 携带流式 token 交叉校验
 	// 所需信号到 gatewayhttp 层(settle 时与 reported OutputTokens 比对,审计-only,不参与计费):
@@ -136,7 +145,7 @@ type UsageRecordDraft struct {
 
 // ForwardRequest 携带 F-GW-002 请求身份和协议元数据。
 //
-// 新增字段（wire-up 重构）：
+// 新增字段（接线 重构）：
 //   - ProtocolFamily：协议族标识符，作为 ProtocolAdapterRegistry.For() 的查询键。
 //     调用方必须明确填写；空值会触发 ErrUnknownProtocolFamily 错误。
 //     合法值示例："anthropic_messages" / "openai_chat" / "openai_responses" / "gemini_messages"。
@@ -223,9 +232,9 @@ func (a *UsageAccumulator) Update(source UsageSource, usage proto.CanonicalUsage
 	if usage.CacheReadInputTokens != 0 {
 		a.Usage.CacheReadInputTokens = usage.CacheReadInputTokens
 	}
-	// Stage B: tool-call counts are ADDITIVE across stream events (one
-	// content_block_start per invocation), unlike tokens which are set-to-latest.
-	// Guard: TerminalLocked is already checked at the top of Update().
+	// Stage B:tool-call 计数在各流式事件间是【累加】的(每次调用一个
+	// content_block_start),不同于 token 那种「置为最新值」。
+	// 守卫:TerminalLocked 已在 Update() 开头检查过。
 	a.Usage.WebSearchCalls += usage.WebSearchCalls
 	a.Usage.FileSearchCalls += usage.FileSearchCalls
 	a.Usage.ImageGenerationCalls += usage.ImageGenerationCalls
@@ -266,6 +275,6 @@ var (
 	ErrClientDisconnect   = errors.New("gateway: client disconnect")
 
 	// ErrNilProtocolAdapterRegistry 表示 StreamForwarder.ProtocolAdapters 未注入。
-	// 调用方应在构造 StreamForwarder 时注入非 nil 的注册表。
+	//调用方应在构造 StreamForwarder 时注入非 nil 的注册表。
 	ErrNilProtocolAdapterRegistry = errors.New("gateway: ProtocolAdapters 注册表未注入（nil）")
 )

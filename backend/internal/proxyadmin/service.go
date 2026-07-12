@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -80,8 +81,8 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (Proxy, error) {
 	return fromUpdate(row), nil
 }
 
-// List returns every non-deleted proxy for a tenant, secret-free. The encrypted
-// auth_secret on the underlying rows is never mapped into the result.
+// List 返回某租户全部未删除的代理,不含凭据。底层行上加密的 auth_secret
+// 永远不会被映射进结果。
 func (s *Service) List(ctx context.Context, tenantID int64) ([]Proxy, error) {
 	if tenantID <= 0 {
 		return nil, ErrInvalidInput
@@ -97,8 +98,8 @@ func (s *Service) List(ctx context.Context, tenantID int64) ([]Proxy, error) {
 	return out, nil
 }
 
-// Get returns a single tenant-scoped proxy, secret-free. A missing or
-// cross-tenant id yields ErrNotFound (the query filters by tenant_id).
+// Get 返回单个按租户收敛的代理,不含凭据。不存在或跨租户的 id
+// 会得到 ErrNotFound(查询本身按 tenant_id 过滤)。
 func (s *Service) Get(ctx context.Context, tenantID, id int64) (Proxy, error) {
 	if tenantID <= 0 || id <= 0 {
 		return Proxy{}, ErrInvalidInput
@@ -113,8 +114,8 @@ func (s *Service) Get(ctx context.Context, tenantID, id int64) (Proxy, error) {
 	return fromGet(row), nil
 }
 
-// Delete soft-deletes a tenant-scoped proxy. The underlying UPDATE is tenant +
-// not-already-deleted scoped; it is idempotent (a second delete is a no-op).
+// Delete 对按租户收敛的代理执行软删除。底层 UPDATE 同时按租户与"尚未删除"收敛;
+// 它是幂等的(再删一次是 no-op)。
 func (s *Service) Delete(ctx context.Context, tenantID, id int64) error {
 	if tenantID <= 0 || id <= 0 {
 		return ErrInvalidInput
@@ -125,8 +126,8 @@ func (s *Service) Delete(ctx context.Context, tenantID, id int64) error {
 	return nil
 }
 
-// SetStatus flips a proxy's lifecycle status (active/disabled/dead) for a tenant
-// and stamps last_check_at. Invalid status values are rejected before the write.
+// SetStatus 为某租户翻转代理的生命周期状态(active/disabled/dead)并打上
+// last_check_at 时间戳。非法的 status 值在写入前即被拒绝。
 func (s *Service) SetStatus(ctx context.Context, tenantID, id int64, status string) error {
 	if tenantID <= 0 || id <= 0 {
 		return ErrInvalidInput
@@ -167,7 +168,70 @@ func validateCommon(tenantID, id int64, name, protocol, host string, port int32,
 	if !validStatus(statusOrActive(status)) {
 		return ErrInvalidStatus
 	}
+	// SSRF 静态防护:挡管理员把租户代理 host 指向【绝不可能是合法代理】的目标
+	// (云 metadata 端点 / loopback / link-local / unspecified / multicast)。
+	// 刻意【放行】RFC1918 私网与 .internal 类主机名——企业/内网出口代理本就常驻
+	// 私网,封死会误伤正常配置。Create/Update 两条写路径单点覆盖。
+	if !proxyHostSafe(host) {
+		return ErrUnsafeHost
+	}
 	return nil
+}
+
+// 永不可能是合法代理目标的 metadata / 本机主机名(精确匹配,不做后缀封禁,
+// 以免误伤 proxy.internal 这类合法企业代理主机名)。
+var blockedProxyHostnames = map[string]bool{
+	"localhost":                  true,
+	"localhost.localdomain":      true,
+	"metadata":                   true,
+	"metadata.google.internal":   true,
+	"metadata.goog":              true,
+	"instance-data":              true,
+	"instance-data.ec2.internal": true,
+}
+
+// 落在私网段、逃过 link-local 检测、但确是真实可达云 metadata 端点的 IP。
+// IPv4 169.254.169.254 已被 IsLinkLocalUnicast 覆盖;此处补 IPv6 ULA 形式——
+// fd00:ec2::254 是 AWS IMDS-over-IPv6,落在 fc00::/7 私网段、IsPrivate=true、
+// 非 link-local,故不在通用私网放行里特判挡掉(挡 metadata 是本守卫核心目标,
+// 且无任何合法代理会驻该地址,零误伤)。
+var blockedMetadataIPs = []netip.Addr{
+	netip.MustParseAddr("fd00:ec2::254"),
+}
+
+// proxyHostSafe 判定一个【裸主机名/IP】能否作为租户代理目标。
+// 阻断面刻意收窄成"绝无合法用途"的集合:
+//   - IP 字面量:loopback(127/8、::1)、link-local(169.254/16 含云 metadata IP、
+//     fe80::/10)、unspecified(0.0.0.0、::)、multicast,外加 blockedMetadataIPs
+//     里的非 link-local 云 metadata 地址。私网(10/172.16/192.168、fc00::/7)与
+//     公网一律放行。
+//   - 主机名:仅精确匹配 metadata/本机名单(见 blockedProxyHostnames),其余放行。
+//
+// 注:这是写时静态校验,不做 DNS 解析(无法挡 rebinding);代理目标本就 admin-gated,
+// 此处是纵深防御。是否进一步【默认封私网 / CGNAT 100.64.0.0/10 等 special-use】属
+// 信任模型决策(多级代理/委派 admin 时才需要),留作 Owner 决策,不在本切片。
+func proxyHostSafe(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		h = h[1 : len(h)-1]
+	}
+	if h == "" {
+		return false
+	}
+	if addr, err := netip.ParseAddr(h); err == nil {
+		addr = addr.Unmap()
+		for _, m := range blockedMetadataIPs {
+			if addr == m {
+				return false
+			}
+		}
+		if addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
+			addr.IsMulticast() || addr.IsUnspecified() {
+			return false
+		}
+		return true
+	}
+	return !blockedProxyHostnames[h]
 }
 
 func validStatus(status string) bool {

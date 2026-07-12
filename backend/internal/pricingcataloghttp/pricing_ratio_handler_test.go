@@ -339,6 +339,9 @@ type fakeRatioStore struct {
 	lastUpsert   pricingcatalog.UpsertRatioParams
 	lastDelete   pricingcatalog.DeleteRatioParams
 	deleteErr    error
+	verifyResult pricingcatalog.VerifyChainResult
+	verifyErr    error
+	verifyCalled bool
 }
 
 func (s *fakeRatioStore) GetRatio(context.Context, int64, int64) (pricingcatalog.GroupPricingRatio, error) {
@@ -380,4 +383,9 @@ func (s *fakeRatioStore) DeleteRatio(_ context.Context, p pricingcatalog.DeleteR
 		s.getRow = pricingcatalog.GroupPricingRatio{}
 	}
 	return s.deleteErr
+}
+
+func (s *fakeRatioStore) VerifyChain(context.Context) (pricingcatalog.VerifyChainResult, error) {
+	s.verifyCalled = true
+	return s.verifyResult, s.verifyErr
 }

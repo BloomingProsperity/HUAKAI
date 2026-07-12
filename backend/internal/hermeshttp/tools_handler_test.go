@@ -19,10 +19,10 @@ import (
 
 const handlerSecretSentinel = "sk-HANDLER-LEAK-7c1d"
 
-// --- fakes ------------------------------------------------------------------
+// --- 伪实现 ------------------------------------------------------------------
 
-// fakeToolCalls captures every hermes_tool_calls insert (the authoritative
-// tool-call ledger) so a test can assert what was recorded on each path.
+// fakeToolCalls 捕获每一次 hermes_tool_calls 插入(权威的 tool-call 账本),
+// 使测试能断言每条路径上记录了什么。
 type fakeToolCalls struct {
 	rows []hermestoolsdb.InsertHermesToolCallParams
 }
@@ -32,8 +32,8 @@ func (f *fakeToolCalls) InsertHermesToolCall(_ context.Context, arg hermestoolsd
 	return hermestoolsdb.InsertHermesToolCallRow{ID: int64(len(f.rows))}, nil
 }
 
-// auditCaptureStore is a hermes.Store whose only meaningful method is
-// InsertAuditEvent (the mirror target); the rest are unused by these tests.
+// auditCaptureStore 是一个 hermes.Store,其唯一有意义的方法是 InsertAuditEvent
+// (镜像目标);其余方法在这些测试中未使用。
 type auditCaptureStore struct {
 	auditCalls int
 }
@@ -43,7 +43,7 @@ func (s *auditCaptureStore) InsertAuditEvent(_ context.Context, _ dbhermes.Inser
 	return dbhermes.HermesAuditEvent{}, nil
 }
 
-// remaining hermes.Store methods (unused here) — minimal stubs.
+// 其余 hermes.Store 方法(此处未使用)——最小桩实现。
 func (s *auditCaptureStore) AppendMessage(context.Context, dbhermes.AppendMessageParams) (int64, error) {
 	return 0, nil
 }
@@ -96,9 +96,9 @@ func (s *auditCaptureStore) UpsertSettings(context.Context, dbhermes.UpsertSetti
 	return dbhermes.HermesSetting{}, nil
 }
 
-// buildToolHandler wires a white-box handler with an injected identity + admin
-// actor in context (mirroring what AdminAuthMiddleware injects), so the
-// tool-execute RBAC + audit can be tested without a DB.
+// buildToolHandler 接出一个白盒 handler,并在 context 中注入身份 + admin actor
+// (与 AdminAuthMiddleware 注入的内容一致),使 tool-execute 的 RBAC + 审计可在无 DB
+// 的情况下测试。
 func buildToolHandler(t *testing.T, reg ToolRegistry, calls *fakeToolCalls) (handler, *auditCaptureStore) {
 	t.Helper()
 	store := &auditCaptureStore{}
@@ -120,9 +120,8 @@ func execute(h handler, ident sessionauth.Identity, actor adminActor, body strin
 	return rec
 }
 
-// fakeTool registers a single read-only tool whose Run returns a fixed summary
-// that includes an injected secret under a sensitive key, to prove the persisted
-// row redacts it.
+// leakyRegistry 注册一个只读工具,其 Run 返回固定的 summary,内含一个置于敏感键
+// 之下的注入秘密,用以证明持久化的行会将其脱敏。
 func leakyRegistry() *hermesops.Registry {
 	reg := hermesops.NewRegistry()
 	reg.Register(hermesops.ToolSpec{
@@ -131,11 +130,11 @@ func leakyRegistry() *hermesops.Registry {
 		Run: func(_ context.Context, _ hermesops.ToolRequest) (hermesops.ToolResult, error) {
 			return hermesops.ToolResult{Summary: map[string]any{
 				"dlq_count":    1,
-				"secret_token": handlerSecretSentinel, // sensitive key must be redacted on persist
+				"secret_token": handlerSecretSentinel, // 敏感键在持久化时必须被脱敏
 			}}, nil
 		},
 	})
-	// A platform-admin-only tool to exercise the RBAC denial path.
+	// 一个仅限 platform-admin 的工具,用于检验 RBAC 拒绝路径。
 	reg.Register(hermesops.ToolSpec{
 		Name: "admin_only_probe", Category: hermesops.CategoryDiagnostic,
 		ReadOnly: true, RequiredRole: hermesops.RolePlatformAdmin,
@@ -150,14 +149,13 @@ func operator(tenant int64) (sessionauth.Identity, adminActor) {
 	return sessionauth.Identity{TenantID: tenant, UserID: 42}, adminActor{TokenID: 99, Role: admin.RoleTenantOperator}
 }
 
-// --- tests ------------------------------------------------------------------
+// --- 测试 ------------------------------------------------------------------
 
 func TestToolExecuteRecordsOkRowAndMirrorsAudit(t *testing.T) {
-	// Regression: a successful tool call must (1) return 200 with the structured
-	// result, (2) record exactly one hermes_tool_calls row with status 'ok' and
-	// the operator's token id, and (3) mirror one hermes_audit_events row.
-	// Mutation: dropping the recordToolCall call leaves calls.rows empty; dropping
-	// the mirror leaves auditCalls 0.
+	// 回归:一次成功的工具调用必须 (1) 返回 200 及结构化结果,(2) 恰好记录一条
+	// 状态为 'ok' 且带 operator token id 的 hermes_tool_calls 行,(3) 镜像写入一条
+	// hermes_audit_events 行。变异:去掉 recordToolCall 调用会让 calls.rows 为空;
+	// 去掉镜像会让 auditCalls 为 0。
 	calls := &fakeToolCalls{}
 	h, store := buildToolHandler(t, leakyRegistry(), calls)
 	ident, actor := operator(7)
@@ -181,9 +179,8 @@ func TestToolExecuteRecordsOkRowAndMirrorsAudit(t *testing.T) {
 }
 
 func TestToolExecuteRedactsSecretInPersistedRow(t *testing.T) {
-	// Regression (PRIVACY, DISCRIMINATING): a secret the tool put under a
-	// sensitive summary key must be redacted in the persisted row. Mutation:
-	// removing the sanitize pass in RecordToolCall persists the raw sentinel.
+	// 回归(隐私,区分性):工具放在敏感 summary 键之下的秘密,在持久化的行里
+	// 必须被脱敏。变异:去掉 RecordToolCall 里的脱敏步骤会把原始哨兵原样持久化。
 	calls := &fakeToolCalls{}
 	h, _ := buildToolHandler(t, leakyRegistry(), calls)
 	ident, actor := operator(7)
@@ -205,10 +202,9 @@ func TestToolExecuteRedactsSecretInPersistedRow(t *testing.T) {
 }
 
 func TestToolExecuteRBACDenialRecordsDeniedRow(t *testing.T) {
-	// Regression (RBAC + audit): a tenant_operator running a platform_admin-only
-	// tool must get 403 AND a recorded 'denied' tool-call row — the rejected
-	// attempt is auditable, and the tool body never ran. Mutation: skipping the
-	// denied insert leaves no trail; authorizing-after-run would 200.
+	// 回归(RBAC + 审计):tenant_operator 运行仅限 platform_admin 的工具时,必须
+	// 得到 403 并记录一条 'denied' tool-call 行——被拒绝的尝试可审计,且工具主体
+	// 从未运行。变异:跳过 denied 插入会让轨迹缺失;先运行后授权则会返回 200。
 	calls := &fakeToolCalls{}
 	h, store := buildToolHandler(t, leakyRegistry(), calls)
 	ident, actor := operator(7)
@@ -220,17 +216,15 @@ func TestToolExecuteRBACDenialRecordsDeniedRow(t *testing.T) {
 	if len(calls.rows) != 1 || calls.rows[0].ResultStatus != string(hermesops.ResultDenied) {
 		t.Fatalf("denied row not recorded: rows=%+v", calls.rows)
 	}
-	// A denial must NOT mirror a success/failure action row (it is captured by
-	// the denied tool-call row).
+	// 拒绝不得镜像出一条 success/failure 的动作行(它已由 denied tool-call 行捕获)。
 	if store.auditCalls != 0 {
 		t.Fatalf("audit mirror ran on denial: calls=%d want 0", store.auditCalls)
 	}
 }
 
 func TestToolExecuteUnknownToolIs404WithDeniedRow(t *testing.T) {
-	// Regression: an unknown tool name must 404 and still record a denied row
-	// (the attempt is auditable). Mutation: returning 200/500 or skipping the row
-	// fails this.
+	// 回归:未知工具名必须 404,并仍记录一条 denied 行(该尝试可审计)。变异:
+	// 返回 200/500 或跳过该行都会使本测试失败。
 	calls := &fakeToolCalls{}
 	h, _ := buildToolHandler(t, leakyRegistry(), calls)
 	ident, actor := operator(7)
@@ -245,10 +239,9 @@ func TestToolExecuteUnknownToolIs404WithDeniedRow(t *testing.T) {
 }
 
 func TestToolExecuteRequiresIdentity(t *testing.T) {
-	// Regression: without a resolved identity in context (which the H1 middleware
-	// guarantees in production), the handler must reject 401 and never dispatch.
-	// This proves the handler reuses requireIdentity rather than trusting the
-	// request blindly.
+	// 回归:当 context 中没有已解析的身份时(生产中由 H1 中间件保证),handler
+	// 必须拒绝 401 且绝不派发。这证明 handler 复用了 requireIdentity,而非盲目信任
+	// 请求。
 	calls := &fakeToolCalls{}
 	h, _ := buildToolHandler(t, leakyRegistry(), calls)
 
@@ -264,11 +257,10 @@ func TestToolExecuteRequiresIdentity(t *testing.T) {
 }
 
 func TestToolExecuteTenantThreadedFromIdentityNotBody(t *testing.T) {
-	// Regression (cross-tenant): the tool's ToolRequest.TenantID must come from
-	// the middleware-resolved identity, NOT from any body field, so a caller
-	// cannot smuggle a foreign tenant in the request body. We register a tool
-	// that echoes the tenant it received and assert it equals the identity tenant
-	// even though the body names a different one.
+	// 回归(跨 tenant):工具的 ToolRequest.TenantID 必须来自中间件解析出的身份,
+	// 而非任何 body 字段,使调用方无法在请求 body 中夹带一个外部 tenant。我们注册
+	// 一个会回显其收到的 tenant 的工具,并断言:即便 body 指定了不同的 tenant,
+	// 它仍等于身份里的 tenant。
 	reg := hermesops.NewRegistry()
 	reg.Register(hermesops.ToolSpec{
 		Name: hermesops.ToolDLQInspect, ReadOnly: true, RequiredRole: hermesops.RoleTenantOperator,

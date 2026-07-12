@@ -82,10 +82,9 @@ func NewRunnerClient(cfg RunnerConfig) (*RunnerClient, error) {
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		// Bounded egress client (connect/TLS/response-header timeouts, no total
-		// timeout so SSE streams are not truncated). Never fall back to the
-		// unbounded http.DefaultClient — a sick runner there can brown out the
-		// shared core data plane. Tests inject their own client via cfg.HTTPClient.
+		// 有界的出口 client（连接/TLS/响应头超时，但不设总超时，避免 SSE
+		// 流被截断）。绝不回退到无界的 http.DefaultClient——在那里一个生病的
+		// runner 会拖垮共享的核心数据面。测试通过 cfg.HTTPClient 注入自己的 client。
 		client = defaultRunnerHTTPClient()
 	}
 	return &RunnerClient{

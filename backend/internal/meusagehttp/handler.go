@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
@@ -37,6 +38,9 @@ type queryParams struct {
 	Limit, FetchLimit             int32
 	HasCursor                     bool
 	CursorID                      int64
+	Model                         *string
+	Provider                      *string
+	Outcome                       *string
 }
 
 type usageCursor struct {
@@ -52,26 +56,30 @@ type listResponse struct {
 }
 
 type usageRecord struct {
-	RequestedModel    string      `json:"requested_model"`
-	UpstreamModel     string      `json:"upstream_model"`
-	ActualCost        string      `json:"actual_cost"`
-	Tokens            usageTokens `json:"tokens"`
-	Provider          string      `json:"provider,omitempty"`
-	ProviderAccountID *int64      `json:"provider_account_id,omitempty"`
-	LedgerID          string      `json:"ledger_id"`
-	VerifyHint        verifyHint  `json:"verify_hint"`
-	CreatedAt         string      `json:"created_at"`
-	Status            string      `json:"status"`
-	RequestID         string      `json:"request_id,omitempty"`
+	RequestedModel         string      `json:"requested_model"`
+	UpstreamModel          string      `json:"upstream_model"`
+	ActualCost             string      `json:"actual_cost"`
+	Tokens                 usageTokens `json:"tokens"`
+	Provider               string      `json:"provider,omitempty"`
+	ProviderAccountID      *int64      `json:"provider_account_id,omitempty"`
+	LedgerID               string      `json:"ledger_id"`
+	VerifyHint             verifyHint  `json:"verify_hint"`
+	CreatedAt              string      `json:"created_at"`
+	Status                 string      `json:"status"`
+	RequestID              string      `json:"request_id,omitempty"`
+	Stream                 bool        `json:"stream"`
+	StreamTerminatedReason string      `json:"stream_terminated_reason,omitempty"`
+	RequestedAt            string      `json:"requested_at,omitempty"`
+	// 端到端时延(结算-请求,毫秒);任一时间缺失或为负则省略,不伪造 0。
+	LatencyMS *int64 `json:"latency_ms,omitempty"`
 }
 
-// usageTokens surfaces the per-request token breakdown already stored in
-// usage_records (input/output always present; cache counts emitted only when
-// non-zero). This is the genuine residual of the "relay request log" feature:
-// GET /v1/me/usage already served model / cost / status / provider / verify_hint
-// with keyset pagination and self-scoped relay-key auth, so we surface the token
-// columns ListUsageRecords already SELECTs — instead of building a redundant
-// relay_request_logs table plus a fail-open money-path settler hook.
+// usageTokens 暴露每次请求的 token 明细，这些数据已存于 usage_records
+// （input/output 始终存在；cache 计数仅在非零时输出）。这是「中转请求日志」
+// 功能真正剩下的部分：GET /v1/me/usage 已经提供 model / cost / status /
+// provider / verify_hint，配合 keyset 分页与自我作用域的 relay-key 鉴权，
+// 因此我们只是暴露 ListUsageRecords 早已 SELECT 出来的 token 列 ——
+// 而不是另建一张冗余的 relay_request_logs 表外加一个 fail-open 的资金路径结算钩子。
 type usageTokens struct {
 	Input         int32 `json:"input"`
 	Output        int32 `json:"output"`
@@ -89,7 +97,10 @@ type verifyHint struct {
 	TenantScopeRef    string `json:"tenant_scope_ref,omitempty"`
 }
 
-const cursorKind = "me_usage"
+const (
+	cursorKind          = "me_usage"
+	maxUsageFilterRunes = 200
+)
 
 func NewHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +136,9 @@ func NewHandler(d Deps) http.HandlerFunc {
 			FromTs:          q.FromTs,
 			ToTs:            q.ToTs,
 			APIKeyID:        &apiKeyID,
+			Model:           q.Model,
+			Provider:        q.Provider,
+			Outcome:         q.Outcome,
 			HasCursor:       q.HasCursor,
 			CursorCreatedAt: q.CursorCreatedAt,
 			CursorID:        q.CursorID,
@@ -180,6 +194,28 @@ func parseQuery(w http.ResponseWriter, u *url.URL) (queryParams, bool) {
 		}
 		q.HasCursor, q.CursorCreatedAt, q.CursorID = true, tsParam(&ts), id
 	}
+	if raw := trim(values, "model"); raw != "" {
+		if utf8.RuneCountInString(raw) > maxUsageFilterRunes {
+			writeJSONError(w, http.StatusBadRequest, "invalid_model", "model must not exceed 200 characters")
+			return queryParams{}, false
+		}
+		q.Model = &raw
+	}
+	if raw := trim(values, "provider"); raw != "" {
+		if utf8.RuneCountInString(raw) > maxUsageFilterRunes {
+			writeJSONError(w, http.StatusBadRequest, "invalid_provider", "provider must not exceed 200 characters")
+			return queryParams{}, false
+		}
+		q.Provider = &raw
+	}
+	switch raw := trim(values, "status"); raw {
+	case "":
+	case "success", "error":
+		q.Outcome = &raw
+	default:
+		writeJSONError(w, http.StatusBadRequest, "invalid_status", "status must be success or error")
+		return queryParams{}, false
+	}
 	return q, true
 }
 
@@ -196,32 +232,52 @@ func mapUsageRecord(row dbbilling.ListUsageRecordsRow, tenantID int64) usageReco
 			CacheCreation: row.CacheCreationTokens,
 			CacheRead:     row.CacheReadTokens,
 		},
-		Provider:          valueString(row.Provider),
-		ProviderAccountID: row.ProviderAccountID,
-		LedgerID:          ledgerID,
-		VerifyHint:        buildVerifyHint(ledgerID, requestID, tenantID),
-		CreatedAt:         formatTS(row.CreatedAt),
-		Status:            usageStatus(row),
-		RequestID:         requestID,
+		Provider:               valueString(row.Provider),
+		ProviderAccountID:      row.ProviderAccountID,
+		LedgerID:               ledgerID,
+		VerifyHint:             buildVerifyHint(ledgerID, requestID, tenantID),
+		CreatedAt:              formatTS(row.CreatedAt),
+		Status:                 usageStatus(row),
+		RequestID:              requestID,
+		Stream:                 row.Stream,
+		StreamTerminatedReason: valueString(row.StreamTerminatedReason),
+		RequestedAt:            formatTS(row.RequestedAt),
+		LatencyMS:              computeLatencyMS(row.RequestedAt, row.CreatedAt),
 	}
+}
+
+// computeLatencyMS 从请求时间与结算时间(row.CreatedAt=settled_at)算端到端时延毫秒。
+// 任一时间无效或结算早于请求(时钟/数据异常)则返回 nil,响应省略该字段而非伪造 0。
+func computeLatencyMS(requestedAt, settledAt pgtype.Timestamptz) *int64 {
+	if !requestedAt.Valid || !settledAt.Valid {
+		return nil
+	}
+	ms := settledAt.Time.Sub(requestedAt.Time).Milliseconds()
+	if ms < 0 {
+		return nil
+	}
+	return &ms
 }
 
 func mapGenerationUsageRecord(row dbbilling.GetUsageRecordByRequestIDRow, tenantID int64) usageRecord {
 	return mapUsageRecord(dbbilling.ListUsageRecordsRow{
-		RequestedModel:        row.RequestedModel,
-		UpstreamModel:         row.UpstreamModel,
-		ActualCost:            decimalFromNumeric(row.ActualCost),
-		TokensInput:           row.TokensInput,
-		TokensOutput:          row.TokensOutput,
-		CacheCreationTokens:   row.CacheCreationTokens,
-		CacheReadTokens:       row.CacheReadTokens,
-		Provider:              row.Provider,
-		ProviderAccountID:     row.ProviderAccountID,
-		AuditLedgerID:         row.AuditLedgerID,
-		CreatedAt:             row.CreatedAt,
-		EndClass:              row.EndClass,
-		PendingReconciliation: row.PendingReconciliation,
-		RequestID:             row.RequestID,
+		RequestedModel:         row.RequestedModel,
+		UpstreamModel:          row.UpstreamModel,
+		ActualCost:             decimalFromNumeric(row.ActualCost),
+		TokensInput:            row.TokensInput,
+		TokensOutput:           row.TokensOutput,
+		CacheCreationTokens:    row.CacheCreationTokens,
+		CacheReadTokens:        row.CacheReadTokens,
+		Provider:               row.Provider,
+		ProviderAccountID:      row.ProviderAccountID,
+		AuditLedgerID:          row.AuditLedgerID,
+		CreatedAt:              row.CreatedAt,
+		EndClass:               row.EndClass,
+		PendingReconciliation:  row.PendingReconciliation,
+		RequestID:              row.RequestID,
+		Stream:                 row.Stream,
+		StreamTerminatedReason: row.StreamTerminatedReason,
+		RequestedAt:            row.RequestedAt,
 	}, tenantID)
 }
 

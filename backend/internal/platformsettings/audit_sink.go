@@ -64,7 +64,9 @@ func platformSettingAuditPayload(params AuditParams) ([]byte, error) {
 }
 
 func auditValueForSetting(key SettingKey, value string) string {
-	if key == KeyModerationExternalAPIKeys && strings.TrimSpace(value) != "" {
+	// 密钥类 key 的明文绝不落入审计 payload,统一走 IsSecretKey 判定,与读路径
+	// 脱敏共用同一份 key 清单,避免两处范围漂移。
+	if IsSecretKey(key) && strings.TrimSpace(value) != "" {
 		return "[redacted]"
 	}
 	return value

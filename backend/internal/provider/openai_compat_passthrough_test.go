@@ -101,14 +101,56 @@ func TestOpenAICompatPassthroughAdapter_FoldedPlatforms(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatPassthroughAdapter_LegacyCredentialPaths(t *testing.T) {
+func TestOpenAICompatPassthroughAdapter_CredentialAuthorization(t *testing.T) {
 	a := &OpenAICompatPassthroughAdapter{
-		PlatformName: "deepseek",
-		Endpoint:     "https://api.deepseek.com/v1/chat/completions",
+		PlatformName: "grok",
+		Endpoint:     "https://api.x.ai/v1/chat/completions",
+	}
+
+	// 变异：从接受列表移除 OAuth access token 会让 oauth_access_token 子用例返回
+	// “不支持的凭据形态”；只移除请求头分支则会得到空 Authorization，两者都会转红。
+	credentialCases := []struct {
+		name              string
+		credential        Credential
+		wantAuthorization string
+	}{
+		{
+			name:              "api_key 使用 Bearer",
+			credential:        Credential{Type: CredentialTypeAPIKey, Value: "api-key-value"},
+			wantAuthorization: "Bearer api-key-value",
+		},
+		{
+			name:              "OAuth access token 使用 Bearer",
+			credential:        Credential{Type: CredentialTypeOAuthAccessToken, Value: "oauth-token-value"},
+			wantAuthorization: "Bearer oauth-token-value",
+		},
+		{
+			name:              "upstream passthrough 保持原值",
+			credential:        Credential{Type: CredentialTypeUpstreamPassthrough, Value: "Custom upstream-value"},
+			wantAuthorization: "Custom upstream-value",
+		},
+	}
+	for _, tc := range credentialCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := a.BuildRequest(context.Background(), BuildInput{
+				InboundBody: []byte(`{}`),
+				Credential:  tc.credential,
+			})
+			if err != nil {
+				t.Fatalf("BuildRequest: %v", err)
+			}
+			if got := req.Header.Get("Authorization"); got != tc.wantAuthorization {
+				t.Fatalf("Authorization=%q want %q", got, tc.wantAuthorization)
+			}
+		})
 	}
 
 	gotTypes := a.AcceptableCredentialTypes()
-	wantTypes := []CredentialType{CredentialTypeAPIKey, CredentialTypeUpstreamPassthrough}
+	wantTypes := []CredentialType{
+		CredentialTypeAPIKey,
+		CredentialTypeOAuthAccessToken,
+		CredentialTypeUpstreamPassthrough,
+	}
 	if len(gotTypes) != len(wantTypes) {
 		t.Fatalf("AcceptableCredentialTypes length=%d want %d: %v", len(gotTypes), len(wantTypes), gotTypes)
 	}
@@ -116,13 +158,6 @@ func TestOpenAICompatPassthroughAdapter_LegacyCredentialPaths(t *testing.T) {
 		if gotTypes[i] != wantTypes[i] {
 			t.Fatalf("AcceptableCredentialTypes[%d]=%q want %q", i, gotTypes[i], wantTypes[i])
 		}
-	}
-
-	_, err := a.BuildRequest(context.Background(), BuildInput{
-		Credential: Credential{Type: CredentialTypeOAuthAccessToken, Value: "tok"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "deepseek passthrough: 不支持的凭据形态") {
-		t.Fatalf("oauth rejection err=%v", err)
 	}
 
 	customEndpoint := "https://my-deepseek-proxy.example/chat"
@@ -138,20 +173,6 @@ func TestOpenAICompatPassthroughAdapter_LegacyCredentialPaths(t *testing.T) {
 	}
 	if req.URL.String() != customEndpoint {
 		t.Fatalf("custom endpoint URL=%q want %q", req.URL.String(), customEndpoint)
-	}
-
-	req, err = a.BuildRequest(context.Background(), BuildInput{
-		InboundBody: []byte(`{}`),
-		Credential: Credential{
-			Type:  CredentialTypeUpstreamPassthrough,
-			Value: "Bearer custom-prefixed",
-		},
-	})
-	if err != nil {
-		t.Fatalf("upstream passthrough BuildRequest: %v", err)
-	}
-	if got := req.Header.Get("Authorization"); got != "Bearer custom-prefixed" {
-		t.Fatalf("upstream passthrough Authorization=%q", got)
 	}
 }
 

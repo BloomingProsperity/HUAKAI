@@ -1,14 +1,14 @@
 //go:build integration_pg
 
-// Real PostgreSQL connection smoke test. Requires:
+// 真实 PostgreSQL 连接冒烟测试。需要先执行：
 //
 //	make db-up && make db-migrate
 //
-// then:
+// 然后：
 //
 //	make test-integration
 //
-// Skipped in the default suite (no //go:build => standard build tag).
+// 默认测试套件中会被跳过（无 //go:build => 标准 build tag）。
 package db
 
 import (
@@ -33,8 +33,8 @@ func dsn(t *testing.T) string {
 	return v
 }
 
-// TestPgConnect verifies the pgxpool factory opens a real connection,
-// passes liveness probe, and returns a usable *Queries handle.
+// TestPgConnect 验证 pgxpool 工厂能开启一个真实连接、通过存活探测，
+// 并返回一个可用的 *Queries handle。
 func TestPgConnect(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -54,9 +54,9 @@ func TestPgConnect(t *testing.T) {
 	}
 }
 
-// TestPgSchemaApplied confirms the migrations landed and the key
-// money-path tables (claim ledger + usage records + outbox) exist.
-// If this fails, run `make db-migrate`.
+// TestPgSchemaApplied 确认 migration 已落地，且关键钱路径表
+// （claim ledger + usage records + outbox）存在。
+// 失败时请运行 `make db-migrate`。
 func TestPgSchemaApplied(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -74,6 +74,7 @@ func TestPgSchemaApplied(t *testing.T) {
 		"pool_slot_acquisitions",
 		"oauth_refresh_audit_events",
 		"sticky_bindings",
+		"settlement_intents",
 	}
 	for _, table := range expected {
 		var present bool
@@ -89,10 +90,9 @@ func TestPgSchemaApplied(t *testing.T) {
 		}
 	}
 
-	// schema_migrations sanity: the applied version must match the highest
-	// migration file on disk. Derived from sql/migrations so this assertion
-	// auto-fails the moment a new migration is added without re-running
-	// `make db-migrate` (no hardcoded version to drift).
+	// schema_migrations 的合理性检查：已应用的 version 必须匹配磁盘上最高的
+	// migration 文件。该值从 sql/migrations 推导，所以一旦新增 migration 而未
+	// 重跑 `make db-migrate`，本断言就会自动失败（没有会漂移的硬编码 version）。
 	want := latestMigrationVersion(t)
 	var version int
 	var dirty bool
@@ -107,9 +107,8 @@ func TestPgSchemaApplied(t *testing.T) {
 	}
 }
 
-// latestMigrationVersion returns the highest numeric prefix among the
-// *.up.sql files in sql/migrations. The directory is located relative to
-// this test source file so the result is independent of the working dir.
+// latestMigrationVersion 返回 sql/migrations 下 *.up.sql 文件中最高的数字前缀。
+// 该目录相对于本测试源文件定位，所以结果与工作目录无关。
 func latestMigrationVersion(t *testing.T) int {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -145,8 +144,8 @@ func latestMigrationVersion(t *testing.T) int {
 	return versions[len(versions)-1]
 }
 
-// TestOpenWithoutDSN proves the contract from plan §F: "If a function
-// cannot reach PG, it returns a typed error, not a 200 OK."
+// TestOpenWithoutDSN 证明 plan §F 的契约：「若某函数无法连到 PG，
+// 它返回一个有类型的 error，而不是 200 OK。」
 func TestOpenWithoutDSN(t *testing.T) {
 	_, err := Open(context.Background(), PoolConfig{DSN: ""})
 	if !errors.Is(err, ErrNotConfigured) {

@@ -15,7 +15,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
 
-const DefaultLeaseTTL = 90 * time.Second
+// DefaultLeaseTTL 并发槽租约窗口, 与 billing claim 租约同源派生 —— 槽和 claim 一样
+// 必须活过整个请求生命周期(流式可达 HUAKAI_STREAM_TOTAL_TIMEOUT 默认 600s)。
+// acquire DB 函数在 COUNT 前会清扫已过 lease 的槽: 窗口短于请求时长时, 长流的槽
+// 中途被当空位扫掉、新请求顶上, 并发上限被静默突破。正常路径 settle/abort 即时释放,
+// 本窗口只兜真孤儿(进程崩溃), 代价仅是崩溃后槽位回收延迟变长。
+const DefaultLeaseTTL = billing.DefaultClaimLeaseWindow
 
 type Reserver interface {
 	Reserve(context.Context, quota.ReserveRequest) (quota.ReserveResult, error)
@@ -111,6 +116,31 @@ func DenyRetryAfter(result quota.ReserveResult, err error) time.Duration {
 		return result.Decision.RetryAfter
 	}
 	return 0
+}
+
+// DenyWindowKind 取配额拒绝决策命中的窗口种类标签(calendar_day/week/month/fixed 等),供 HTTP 层
+// 在 429 里透出"是哪个窗口超了",让客户端区分日额/月额满。来源与 DenyRetryAfter 同(DenyError 包裹
+// 的 Decision,或 fail-soft !Allowed 的 ReserveResult.Decision)。none/manual(无固定重置窗口)与未知
+// 一律返回空串,调用方据此不透出窗口名 —— 既与 window_resets_at(对 manual/none 本就为空)解耦,
+// 又保证对未配多窗口策略的租户零行为变化。
+func DenyWindowKind(result quota.ReserveResult, err error) string {
+	var deny *quota.DenyError
+	if errors.As(err, &deny) {
+		return windowKindLabel(deny.Decision.WindowKind)
+	}
+	if !result.Allowed {
+		return windowKindLabel(result.Decision.WindowKind)
+	}
+	return ""
+}
+
+// windowKindLabel 把窗口种类归一为对外标签:无固定窗口(WindowNone)与空值不透出(返回空串),
+// 其余(日历日/周/月、固定秒、手动)原样透出。
+func windowKindLabel(kind quota.WindowKind) string {
+	if kind == quota.WindowNone || kind == "" {
+		return ""
+	}
+	return string(kind)
 }
 
 func (s *Settler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {

@@ -181,6 +181,7 @@ func (r tokenResponse) toToken(now time.Time, cfg credentialacq.OAuthClientConfi
 	email := firstNonEmpty(r.Email, r.Account.EmailAddress)
 	return Token{
 		AccessToken: r.AccessToken, RefreshToken: r.RefreshToken, IDToken: r.IDToken,
+		Scope: firstNonEmpty(r.Scope, strings.Join(cfg.Scopes, " ")),
 		Email: email, ExpiresAt: expiresAt.UTC(), AuthMode: session.AuthMode,
 		ClientID: cfg.ClientID, ClientIDSource: firstNonEmpty(session.ClientIdentitySource, cfg.Source),
 		TokenEndpoint: cfg.TokenURL,

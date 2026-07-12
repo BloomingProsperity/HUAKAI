@@ -6,20 +6,25 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 var moderationFailureMetrics = expvar.NewMap("huakai_moderation_failure_total")
 
 type ScreenerDeps struct {
-	Config   ConfigStore
-	Keywords KeywordStore
-	Hashes   HashStore
-	Audit    AuditLogger
-	Ban      AutoBanCounter
-	External ExternalModerator
+	Config         ConfigStore
+	Keywords       KeywordStore
+	Hashes         HashStore
+	Audit          AuditLogger
+	Ban            AutoBanCounter
+	External       ExternalModerator
+	ConfigCacheTTL time.Duration
+	Now            func() time.Time
 }
 
 type storeScreener struct {
@@ -29,6 +34,7 @@ type storeScreener struct {
 	audit    AuditLogger
 	ban      AutoBanCounter
 	external ExternalModerator
+	configs  *ttlLRU[int64, ModerationConfig]
 }
 
 type AutoBanCounter interface {
@@ -36,6 +42,18 @@ type AutoBanCounter interface {
 }
 
 func NewScreener(deps ScreenerDeps) Screener {
+	configTTL := deps.ConfigCacheTTL
+	if configTTL == 0 {
+		configTTL = 30 * time.Second
+	}
+	var configs *ttlLRU[int64, ModerationConfig]
+	if configTTL > 0 {
+		configs = newTTLLRU[int64, ModerationConfig](CacheOptions{
+			MaxEntries: 1024,
+			TTL:        configTTL,
+			Now:        deps.Now,
+		})
+	}
 	return &storeScreener{
 		config:   deps.Config,
 		keywords: deps.Keywords,
@@ -43,16 +61,21 @@ func NewScreener(deps ScreenerDeps) Screener {
 		audit:    deps.Audit,
 		ban:      deps.Ban,
 		external: deps.External,
+		configs:  configs,
 	}
 }
 
 func (s *storeScreener) Screen(ctx context.Context, req ScreenRequest) (ScreenResult, error) {
 	cfg, err := s.loadConfig(ctx, req.TenantID)
+	if !cfg.Enabled {
+		result := ScreenResult{Decision: DecisionPass, ReasonCode: "moderation_disabled"}
+		if err != nil {
+			reportModerationFailure(ctx, "config_backend_error", req, result, err)
+		}
+		return result, nil
+	}
 	if err != nil {
 		return s.backendResult(cfg, "config_backend_error", err)
-	}
-	if !cfg.Enabled {
-		return ScreenResult{Decision: DecisionPass, ReasonCode: "moderation_disabled"}, nil
 	}
 	hashResult, err := s.checkHash(ctx, req, cfg)
 	if err != nil || hashResult.Decision != "" {
@@ -81,9 +104,28 @@ func (s *storeScreener) loadConfig(ctx context.Context, tenantID int64) (Moderat
 	if s.config == nil {
 		return DefaultConfig(tenantID), nil
 	}
+	var staleCfg ModerationConfig
+	hasStale := false
+	if s.configs != nil {
+		if cfg, fresh, stale := s.configs.GetAllowStale(tenantID); fresh {
+			return cfg, nil
+		} else if stale {
+			staleCfg = cfg
+			hasStale = true
+		}
+	}
 	cfg, err := s.config.GetConfig(ctx, tenantID)
 	if err != nil {
-		return DefaultConfig(tenantID), err
+		if hasStale {
+			return staleCfg, err
+		}
+		if cfg.TenantID == 0 {
+			cfg = DefaultConfig(tenantID)
+		}
+		return cfg, err
+	}
+	if s.configs != nil {
+		s.configs.Set(tenantID, cfg)
 	}
 	return cfg, nil
 }
@@ -245,9 +287,9 @@ func moderationTokens(value string) []string {
 }
 
 func normalizeModerationText(value string) string {
-	// NFKC + zero-width stripping catches common width and invisible-character
-	// evasions. This remains token matching, not semantic filtering; cross-script
-	// confusables and language-specific segmentation need later classifiers.
+	// NFKC + 剥离零宽字符可拦住常见的全角/不可见字符绕过。
+	// 这仍是 token 匹配,不是语义过滤；跨脚本形近字
+	// 和语言相关的分词需要后续的分类器处理。
 	return strings.Map(func(r rune) rune {
 		if isZeroWidthRune(r) {
 			return -1
@@ -308,7 +350,7 @@ func reportModerationFailure(ctx context.Context, kind string, req ScreenRequest
 		slog.String("request_id", req.RequestID),
 		slog.String("decision", string(res.Decision)),
 		slog.String("reason_code", res.ReasonCode),
-		slog.String("error_type", fmt.Sprintf("%T", err)),
+		slog.String("error_class", privacy.ErrorClassFor(ctx, err)),
 	)
 }
 

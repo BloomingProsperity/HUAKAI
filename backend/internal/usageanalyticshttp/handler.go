@@ -1,8 +1,8 @@
-// Package usageanalyticshttp serves aggregated usage analytics over already-
-// settled usage_records. SELECT-only; never reads or logs credentials
-// . The self-serve surface is locked to the authenticated API key's
-// (tenant_id, api_key_id) — the key scope is taken from the resolved identity,
-// never from the query string, so cross-key reads are structurally impossible.
+// 包 usageanalyticshttp 基于已结算的 usage_records 提供聚合的用量分析。
+// 仅 SELECT;绝不读取或记录任何 credential
+// 。自助面被锁定到已认证 API key 的
+// (tenant_id, api_key_id) —— key 范围取自解析出的身份,
+// 绝不取自 query string,因此跨 key 读取在结构上不可能。
 package usageanalyticshttp
 
 import (
@@ -20,8 +20,8 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// maxAnalyticsWindow caps a self-serve query window so an unbounded full-history
-// scan cannot be requested by accident (design risk mitigation).
+// maxAnalyticsWindow 限制自助查询窗口,使得无界的全历史扫描
+// 不会被意外地请求(设计风险缓解)。
 const maxAnalyticsWindow = 31 * 24 * time.Hour
 
 type AuthResolver interface {
@@ -83,9 +83,9 @@ type usageAggregateRow struct {
 	RequestCount             int64
 }
 
-// NewTimeSeriesHandler serves GET /v1/me/analytics/time-series: a self-serve
-// usage time-series (cost + token totals by UTC day/week/month and model) for
-// the authenticated API key. Scope is locked to ident.TenantID + ident.APIKeyID.
+// NewTimeSeriesHandler 提供 GET /v1/me/analytics/time-series:面向已认证 API key 的
+// 自助用量时间序列(按 UTC 天/周/月与 model 聚合的 cost + token 总量)。
+// 范围锁定到 ident.TenantID + ident.APIKeyID。
 func NewTimeSeriesHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil || d.Store == nil {
@@ -117,7 +117,7 @@ func NewTimeSeriesHandler(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		// Scope is taken ONLY from the resolved identity — never the query string.
+		// 范围仅取自解析出的身份 —— 绝不取自 query string。
 		rows, err := aggregateMyUsage(r.Context(), d.Store, granularity, ident, from, to)
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "analytics_query_failed", "analytics backend unavailable")

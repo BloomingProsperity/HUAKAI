@@ -10,17 +10,17 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-// TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes guards the three-way
-// terminal / transient-cooldown / healthy taxonomy. The table is self-discriminating —
-// the terminal classes (auth_expired, risk_control_triggered, account_disabled) MUST carry a
-// nil HealthStateUntil so the eligibility SQL (health_state_until IS NOT NULL) and router gate
-// (until.IsZero) refuse to auto-recover them, while the genuinely-transient rate_limit_exceeded
-// MUST keep a finite future deadline so it DOES auto-recover.
+// TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes 守卫终态 / 瞬态冷却 /
+// healthy 三分类法。该表自带区分力——终态类(auth_expired、risk_control_triggered、
+// account_disabled)必须携带 nil HealthStateUntil,使 eligibility SQL
+// (health_state_until IS NOT NULL)与 router gate(until.IsZero)都拒绝自动恢复它们;
+// 而真正瞬态的 rate_limit_exceeded 必须保留一个有限的未来截止时间,以便它确实会
+// 自动恢复。
 //
-// Mutation check: revert auth_expired (or risk_control_triggered) to now+RevokedCooldown and its
-// wantUntil:nil assertion goes red; conversely if a fix blanket-nils every outcome, the
-// rate_limit_exceeded wantUntil:+3m row goes red — proving the test distinguishes terminal from
-// transient rather than rubber-stamping either extreme.
+// Mutation check:把 auth_expired(或 risk_control_triggered)改回 now+RevokedCooldown,
+// 其 wantUntil:nil 断言就会转红;反过来,如果某个修复把每个 outcome 一律置 nil,
+// rate_limit_exceeded 的 wantUntil:+3m 那一行就会转红——证明本测试区分终态与瞬态,
+// 而非对两个极端任一盖章放行。
 func TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes(t *testing.T) {
 	fixed := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
 	policy := DefaultProviderAccountHealthPolicy()
@@ -84,9 +84,9 @@ func TestDefaultProviderAccountHealthPolicyMapsAuditOutcomes(t *testing.T) {
 }
 
 func TestSchedulerAuthExpiredMarksProviderAccountRevoked(t *testing.T) {
-	// Regression killed: scheduler audit outcome must also mutate
-	// provider_accounts.health_state. Mutation self-check: deleting the health
-	// update leaves health.entries empty and this test turns red.
+	// 修掉的回归:scheduler 的 audit outcome 还必须改写
+	// provider_accounts.health_state。Mutation 自检:删掉 health 更新会让
+	// health.entries 为空,本测试转红。
 	fixed := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
 	health := &healthStateStoreSpy{}
 	audit := &auditSpy{}
@@ -117,9 +117,9 @@ func TestSchedulerAuthExpiredMarksProviderAccountRevoked(t *testing.T) {
 	if got.HealthState != "revoked" {
 		t.Fatalf("health state=%q, want revoked", got.HealthState)
 	}
-	// auth_expired is terminal — HealthStateUntil must be nil so neither the eligibility
-	// SQL nor the router gate auto-recovers the account on a timer. Mutation check: restore the
-	// now+cooldown deadline and this assertion goes red.
+	// auth_expired 是终态——HealthStateUntil 必须为 nil,使 eligibility SQL 与 router
+	// gate 都不会靠定时器自动恢复该账号。Mutation check:还原 now+cooldown 截止时间,
+	// 本断言就会转红。
 	if got.HealthStateUntil != nil {
 		t.Fatalf("health until=%v, want nil (terminal)", got.HealthStateUntil)
 	}
@@ -142,10 +142,9 @@ func (s *healthStateStoreSpy) UpdateProviderAccountHealth(_ context.Context, cha
 }
 
 func TestSchedulerHealthStateUpdateFailureFailsClosed(t *testing.T) {
-	// Regression killed: health_state mutation failure must not be hidden
-	// behind a successful audit write. Mutation self-check: swallowing the
-	// health store error makes RunOnce return only the classified refresh error
-	// without the sentinel below.
+	// 修掉的回归:health_state 改写失败绝不能被一次成功的 audit 写入掩盖。
+	// Mutation 自检:吞掉 health store 错误会让 RunOnce 只返回已分类的 refresh
+	// 错误,而不带下方的 sentinel。
 	healthErr := errors.New("health update rejected")
 	health := &healthStateStoreSpy{err: healthErr}
 	ref := &refresherSpy{errs: []error{
@@ -162,9 +161,9 @@ func TestSchedulerHealthStateUpdateFailureFailsClosed(t *testing.T) {
 	}
 }
 
-// providerAccountDownSpy records every alert delivery the scheduler attempts so
-// the tests can assert the (tenant, account, state, outcome) tuple and the call
-// count. err lets a test simulate a failing notification pipeline.
+// providerAccountDownSpy 记录 scheduler 尝试的每一次告警投递,使测试可以断言
+// (tenant, account, state, outcome) 元组及调用次数。err 让测试可以模拟一个失败的
+// 通知管线。
 type providerAccountDownSpy struct {
 	deliveries []providerAccountDownDelivery
 	err        error
@@ -189,14 +188,14 @@ func (s *providerAccountDownSpy) DeliverProviderAccountDown(_ context.Context, c
 
 func syncAlertRunner(fn func()) { fn() }
 
-// TestSchedulerProviderAccountDownDeliveredOnAuthExpired proves the alert
-// deliverer fires exactly once, carrying the right (tenant, account, state)
-// tuple, when a refresh classifies as auth_expired (Alert=true).
+// TestSchedulerProviderAccountDownDeliveredOnAuthExpired 证明:当一次刷新被分类为
+// auth_expired(Alert=true)时,告警 deliverer 恰好触发一次,且携带正确的
+// (tenant, account, state) 元组。
 //
-// Mutation check: delete the s.deliverProviderAccountDown call inside
-// maybeLogProviderAccountHealthAlert and the spy stays empty -> red. The spy
-// records the concrete (tenant=7, account=31, state=revoked) tuple, so a no-op
-// or a wrong-target delivery is also caught, not merely "something fired".
+// Mutation check:删掉 maybeLogProviderAccountHealthAlert 内部的
+// s.deliverProviderAccountDown 调用,spy 就会保持为空 -> 转红。spy 记录具体的
+// (tenant=7, account=31, state=revoked) 元组,因此一次 no-op 或投递到错误目标也会
+// 被抓住,而不只是"触发了某个东西"。
 func TestSchedulerProviderAccountDownDeliveredOnAuthExpired(t *testing.T) {
 	fixed := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
 	alertSpy := &providerAccountDownSpy{}
@@ -227,14 +226,13 @@ func TestSchedulerProviderAccountDownDeliveredOnAuthExpired(t *testing.T) {
 	}
 }
 
-// TestSchedulerProviderAccountDownNotDeliveredWhenAlertFalse proves the Alert
-// flag is the gate: account_disabled and rate_limit_exceeded both transition the
-// account but currently carry Alert=false, so NO alert must be delivered.
+// TestSchedulerProviderAccountDownNotDeliveredWhenAlertFalse 证明 Alert 标志即为
+// 闸门:account_disabled 与 rate_limit_exceeded 都会让账号发生转换,但目前都携带
+// Alert=false,因此绝不能投递任何告警。
 //
-// Mutation check: flip `if !change.Alert { return }` in
-// maybeLogProviderAccountHealthAlert to deliver unconditionally and the spy gains
-// deliveries -> red. This is the discriminating fixture for the gate itself, not
-// just for "delivery happens".
+// Mutation check:把 maybeLogProviderAccountHealthAlert 里的
+// `if !change.Alert { return }` 翻成无条件投递,spy 就会增加投递记录 -> 转红。
+// 这是针对闸门本身的区分性 fixture,而不仅仅是针对"投递发生"。
 func TestSchedulerProviderAccountDownNotDeliveredWhenAlertFalse(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -265,13 +263,13 @@ func TestSchedulerProviderAccountDownNotDeliveredWhenAlertFalse(t *testing.T) {
 	}
 }
 
-// TestSchedulerProviderAccountDownDeliveryFailureNonFatal proves an alert send
-// failure never breaks the credential worker: RunOnce's returned error must be
-// exactly the classified refresh error and must NOT wrap the deliverer error.
+// TestSchedulerProviderAccountDownDeliveryFailureNonFatal 证明一次告警发送失败
+// 绝不会破坏 credential worker:RunOnce 返回的错误必须恰好是已分类的 refresh 错误,
+// 且绝不能 wrap deliverer 错误。
 //
-// Mutation check: propagate the deliverer error into recordAudit's return and
-// RunOnce would then wrap deliverErr -> errors.Is(err, deliverErr) becomes true
-// -> red. Proves the non-fatal isolation (the core safety property).
+// Mutation check:把 deliverer 错误传播进 recordAudit 的返回值,RunOnce 就会 wrap
+// deliverErr -> errors.Is(err, deliverErr) 变为 true -> 转红。证明非致命隔离
+// (核心安全属性)。
 func TestSchedulerProviderAccountDownDeliveryFailureNonFatal(t *testing.T) {
 	fixed := time.Date(2026, 5, 25, 9, 30, 0, 0, time.UTC)
 	deliverErr := errors.New("notification pipeline unavailable")
@@ -295,8 +293,8 @@ func TestSchedulerProviderAccountDownDeliveryFailureNonFatal(t *testing.T) {
 	if errors.Is(err, deliverErr) {
 		t.Fatalf("RunOnce wrapped the alert delivery error %v; MUTATION: propagating the deliverer error up makes this fail", err)
 	}
-	// The alert was still attempted (delivery ran, returned its error) and the
-	// audit/health path still committed normally.
+	// 告警仍然被尝试(投递执行了,并返回了它的错误),而 audit/health 路径仍然
+	// 正常提交。
 	if len(alertSpy.deliveries) != 1 {
 		t.Fatalf("alert deliveries=%d, want 1 (attempted-then-failed)", len(alertSpy.deliveries))
 	}

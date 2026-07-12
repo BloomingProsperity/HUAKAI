@@ -199,13 +199,13 @@ fn register_all(r: &Registry) {
     r.register(Box::new(g.clone())).expect("注册应成功");
     let _ = OPEN_UPSTREAM_CONNECTIONS.set(g);
 
-    // P4 in-flight requests
+    // P4 in-flight 请求数
     let g = IntGauge::new("huakai_inflight_requests", "当前业务 in-flight 请求数")
         .expect("gauge 创建应成功");
     r.register(Box::new(g.clone())).expect("注册应成功");
     let _ = INFLIGHT_REQUESTS.set(g);
 
-    // P4 in-flight limit
+    // P4 in-flight 请求上限
     let g = IntGauge::new(
         "huakai_inflight_limit",
         "业务 in-flight 请求上限; 0 表示未启用卸载",

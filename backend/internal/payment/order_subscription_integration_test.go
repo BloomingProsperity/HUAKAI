@@ -236,16 +236,26 @@ func TestPG_OrderSubscription_DowngradeBlocked(t *testing.T) {
 
 	lowOrder := f.createSubOrder(svc, low.ID, "low-"+f.suffix, 999)
 	_, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: f.tenantA, OrderID: lowOrder.ID, ActorAdminID: 1})
-	if !errors.Is(err, subscription.ErrDowngradeNotAllowed) {
-		t.Fatalf("downgrade err = %v, want ErrDowngradeNotAllowed", err)
+	if !errors.Is(err, subscription.ErrDowngradeNotAllowed) || !errors.Is(err, ErrOrderFulfillFailed) {
+		t.Fatalf("downgrade err = %v, want ErrOrderFulfillFailed 包裹 ErrDowngradeNotAllowed", err)
 	}
-	// 整事务回滚: 低档单未进 completed (phase1 已持久推 recharging, phase2 回滚)。
+	// 确定性不可履约 → 订单转终态 failed(此前留 recharging = 已付款订单永久悬空:
+	// webhook 重投/admin 重点都撞同一堵墙, 且无清扫器认领 recharging)。
+	// mutation: completeFulfillOnce 去掉 isDeterministicFulfillFailure 分支退回
+	// `return FulfillResult{}, err` → status 停 recharging + 无审计行 → 双断言红。
 	got, err := svc.GetOrder(ctx, f.tenantA, lowOrder.ID)
 	if err != nil {
 		t.Fatalf("get low order: %v", err)
 	}
-	if got.Status != StatusRecharging {
-		t.Fatalf("low order status = %q, want recharging (phase2 rolled back)", got.Status)
+	if got.Status != StatusFailed {
+		t.Fatalf("low order status = %q, want failed (确定性失败必须终态化, 否则订单悬空)", got.Status)
+	}
+	if n := f.countInt(`SELECT count(*) FROM payment_audit_events WHERE tenant_id=$1 AND payment_order_id=$2 AND event_type='fulfillment_failed'`, f.tenantA, lowOrder.ID); n != 1 {
+		t.Fatalf("fulfillment_failed 审计行 = %d, want 1 (终态化必须留痕供 admin 处置退款)", n)
+	}
+	// 幂等: 对 failed 单重投确认 → 不可确认冲突, 不复活不重试。
+	if _, rerr := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: f.tenantA, OrderID: lowOrder.ID, ActorAdminID: 1}); !errors.Is(rerr, ErrOrderNotConfirmable) {
+		t.Fatalf("failed 单重投 err = %v, want ErrOrderNotConfirmable", rerr)
 	}
 	// 低档无生效, 仍是高档 cap; effect 只有高档那条。
 	if n := f.dayCapCount(f.userA, "10"); n != 0 {

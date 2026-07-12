@@ -42,6 +42,9 @@ type AdminProviderAccountRow struct {
 	CustomErrorCodes         []int32            `db:"custom_error_codes" json:"custom_error_codes"`
 	PoolMode                 bool               `db:"pool_mode" json:"pool_mode"`
 	TempUnschedulableEnabled bool               `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
+	ProxyID                  *int64             `db:"proxy_id" json:"proxy_id"`
+	ProxyGroupID             *string            `db:"proxy_group_id" json:"proxy_group_id"`
 	CreatedAt                pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt                pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
@@ -100,6 +103,12 @@ type UpdateAdminProviderAccountParams struct {
 	TempUnschedulableEnabled   *bool  `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
 	SetTempUnschedulableRules  bool   `db:"set_temp_unschedulable_rules" json:"set_temp_unschedulable_rules"`
 	TempUnschedulableRulesJSON []byte `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
+	// 代理绑定(Set-flag 范式,照 SetProbeModel):Set*=false 保留旧值;true 时写
+	// 对应值(ProxyID/ProxyGroupID 可为 nil/"" 表示清回直连)。互斥由 handler 保证。
+	SetProxyID      bool    `db:"set_proxy_id" json:"set_proxy_id"`
+	ProxyID         *int64  `db:"proxy_id" json:"proxy_id"`
+	SetProxyGroupID bool    `db:"set_proxy_group_id" json:"set_proxy_group_id"`
+	ProxyGroupID    *string `db:"proxy_group_id" json:"proxy_group_id"`
 }
 
 type ClearProviderAccountRateLimitParams struct {
@@ -144,6 +153,9 @@ const adminProviderAccountColumns = `
     custom_error_codes,
     pool_mode,
     temp_unschedulable_enabled,
+    temp_unschedulable_rules,
+    proxy_id,
+    proxy_group_id,
     created_at,
     updated_at`
 
@@ -266,6 +278,63 @@ func (q *Queries) ListProviderAccountRiskPeers(ctx context.Context, arg ListProv
 	return items, nil
 }
 
+// listProviderAccountsForProviderCompat 列某 provider 全部非删账号 × 其**每一条**活跃凭据的
+// account_type 与 vendor/auth_mode,供协议变更时逐条校验与新协议兼容性。用全连接(非
+// LIMIT 1)是防"较新兼容凭据遮蔽同账号另一条不兼容凭据"的绕过——一个账号可同时有多条
+// 不同 (vendor,auth_mode) 的活跃凭据,任一不兼容都必须拦。无活跃凭据的账号出一行(空
+// vendor/auth,仍受 account_type 校验)。列集合与 ProviderAccountRiskPeerRow 一致,复用其
+// 行类型。UPDATE providers 的 FOR NO KEY UPDATE 与该事务同锁生命周期,防读后并发新增。
+const listProviderAccountsForProviderCompat = `
+SELECT
+    pa.id,
+    pa.tenant_id,
+    pa.provider_id,
+    pa.channel_id,
+    pa.account_type,
+    COALESCE(ac.vendor, '') AS credential_vendor,
+    COALESCE(ac.auth_mode, '') AS credential_auth_mode
+FROM provider_accounts pa
+LEFT JOIN account_credentials ac
+    ON ac.tenant_id = pa.tenant_id
+   AND ac.provider_account_id = pa.id
+   AND ac.deleted_at IS NULL
+   AND ac.state IN ('active', 'refreshing', 'refreshing_with_grace', 'temp_unschedulable', 'needs_rotation', 'operator_attention')
+WHERE pa.tenant_id = $1
+  AND pa.provider_id = $2
+  AND pa.deleted_at IS NULL
+ORDER BY pa.id ASC, ac.id ASC
+`
+
+// ListProviderAccountsForProviderCompatParams 按 tenant+provider 列账号。
+type ListProviderAccountsForProviderCompatParams struct {
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	ProviderID int64 `db:"provider_id" json:"provider_id"`
+}
+
+// ListProviderAccountsForProviderCompat 返回该 provider 的账号(复用 RiskPeer 行类型)。
+func (q *Queries) ListProviderAccountsForProviderCompat(ctx context.Context, arg ListProviderAccountsForProviderCompatParams) ([]ProviderAccountRiskPeerRow, error) {
+	rows, err := q.db.Query(ctx, listProviderAccountsForProviderCompat, arg.TenantID, arg.ProviderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProviderAccountRiskPeerRow{}
+	for rows.Next() {
+		var i ProviderAccountRiskPeerRow
+		if err := rows.Scan(
+			&i.ID, &i.TenantID, &i.ProviderID, &i.ChannelID,
+			&i.AccountType, &i.CredentialVendor, &i.CredentialAuthMode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateAdminProviderAccount = `
 UPDATE provider_accounts
 SET
@@ -283,6 +352,8 @@ SET
     pool_mode = COALESCE($11::boolean, pool_mode),
     temp_unschedulable_enabled = COALESCE($12::boolean, temp_unschedulable_enabled),
     temp_unschedulable_rules = CASE WHEN $13::boolean THEN COALESCE($14::jsonb, '[]'::jsonb) ELSE temp_unschedulable_rules END,
+    proxy_id = CASE WHEN $25::boolean THEN $26::bigint ELSE proxy_id END,
+    proxy_group_id = CASE WHEN $27::boolean THEN NULLIF($28::text, '') ELSE proxy_group_id END,
     updated_at = NOW(),
     last_modified_by_actor = $22::text
 WHERE id = $23
@@ -317,6 +388,10 @@ func (q *Queries) UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdmi
 		arg.ActorID,
 		arg.ID,
 		arg.TenantID,
+		arg.SetProxyID,
+		arg.ProxyID,
+		arg.SetProxyGroupID,
+		arg.ProxyGroupID,
 	)
 	var i AdminProviderAccountRow
 	err := scanAdminProviderAccount(row, &i)
@@ -392,6 +467,9 @@ func scanAdminProviderAccount(row adminProviderAccountScanner, i *AdminProviderA
 		&i.CustomErrorCodes,
 		&i.PoolMode,
 		&i.TempUnschedulableEnabled,
+		&i.TempUnschedulableRules,
+		&i.ProxyID,
+		&i.ProxyGroupID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

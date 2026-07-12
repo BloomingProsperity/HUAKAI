@@ -1,6 +1,6 @@
-// bedrock_stream_scanner_test.go — A3 atomic 单测：
-// 用 A2 eventstream test-only encoder 构造合成 Bedrock binary 流，
-// 验证 scanner 行为：chunk envelope 解析、exception 终止、unknown skip。
+// bedrock_stream_scanner_test.go — A3 原子变更单测：
+// 用 A2 eventstream 测试专用 encoder 构造合成 Bedrock binary 流，
+// 验证 scanner 行为：chunk envelope 解析、exception 终止、unknown 跳过。
 //
 // 不依赖 AWS 网络。
 package gateway
@@ -20,8 +20,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/bedrock/eventstream"
 )
 
-// encodeBedrockFrame 是 test-only encoder：复制 eventstream package 的
-// 测试 encoder 形状（避免循环 import；包内私有）。仅 string headers。
+// encodeBedrockFrame 是测试专用 encoder：复制 eventstream 包的
+// 测试 encoder 形状（避免循环 import；包内私有）。仅支持 string headers。
 func encodeBedrockFrame(headers map[string]string, payload []byte) []byte {
 	var hbuf bytes.Buffer
 	for name, value := range headers {
@@ -228,8 +228,8 @@ func TestBedrockScanner_UnknownMessageTypeTerminates(t *testing.T) {
 }
 
 func TestBedrockScanner_InitialResponseEventSkipped(t *testing.T) {
-	// Smithy Event Stream RPC protocols can send initial-response control events.
-	// They are not Bedrock model output and can be skipped without hiding errors.
+	// Smithy Event Stream RPC 协议可能发送 initial-response 控制事件。
+	// 它们不是 Bedrock 模型输出，可以跳过而不会掩盖错误。
 	control := encodeBedrockFrame(
 		map[string]string{":message-type": "event", ":event-type": "initial-response"},
 		[]byte(`{"requestId":"control"}`),
@@ -241,7 +241,7 @@ func TestBedrockScanner_InitialResponseEventSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err=%v", err)
 	}
-	// 只 emit chunk，不 emit control event
+	// 只发出 chunk，不发出 control event
 	if len(events) != 1 {
 		t.Fatalf("event count=%d want 1 (only the chunk)", len(events))
 	}
@@ -340,5 +340,5 @@ func TestBedrockScanner_EmptyStream(t *testing.T) {
 	}
 }
 
-// 验证 io.EOF 不被 yield 为 error（应直接 return 终止 iterator）
+// 验证 io.EOF 不会作为 error yield（应直接 return 终止 iterator）
 var _ io.Reader = (*bytes.Reader)(nil)

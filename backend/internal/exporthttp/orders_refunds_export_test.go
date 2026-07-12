@@ -14,7 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
-// stubs
+// 桩对象
 
 type ordersExportStub struct {
 	rows  []payment.Order
@@ -51,10 +51,10 @@ func newOrdersRefundsRouter(orders *ordersExportStub, refunds *refundsExportStub
 	return r
 }
 
-// TestOrdersExportCSV seeds 2 orders; verifies header + 2 data rows + CSV-injection guard.
+// TestOrdersExportCSV 种入 2 条订单;校验表头 + 2 行数据 + CSV 注入防护。
 //
-// MUTATION: if safeCSVRecord / SafeCSVCell is bypassed for out_trade_no,
-// the injection cell starts with "=" instead of "'=" -> RED.
+// 变异:若 out_trade_no 绕过了 safeCSVRecord / SafeCSVCell,
+// 注入单元格会以 "=" 而非 "'=" 开头 -> 变红。
 func TestOrdersExportCSV(t *testing.T) {
 	created := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
 	orders := &ordersExportStub{rows: []payment.Order{
@@ -68,7 +68,7 @@ func TestOrdersExportCSV(t *testing.T) {
 			ID: 11, TenantID: 7, UserID: 71,
 			Status: payment.StatusCompleted, ProviderKind: payment.ProviderManual,
 			OrderKind: payment.OrderKindTopup, AmountCents: 1000, CurrencyCode: "USD",
-			// injection payload starting with "=" must be prefix-escaped by SafeCSVCell
+			// 以 "=" 开头的注入载荷必须被 SafeCSVCell 前缀转义
 			OutTradeNo: "=cmd|' /C calc'!A0",
 			CreatedAt:  created.Add(time.Minute),
 		},
@@ -84,19 +84,19 @@ func TestOrdersExportCSV(t *testing.T) {
 	}
 	records := readCSV(t, rec.Body.String())
 
-	// Header row must be present and correct.
+	// 表头行必须存在且正确。
 	if len(records) < 1 {
 		t.Fatal("no records returned")
 	}
 	assertCSVRow(t, records[0], ordersCSVHeader)
 
-	// Must have header + 2 data rows.
+	// 必须有表头 + 2 行数据。
 	if len(records) != 3 {
 		t.Fatalf("records=%d want header+2 data rows; got %v", len(records), records)
 	}
 
-	// CSV-injection guard: cell starting with "=" must be prefixed with single-quote.
-	// out_trade_no is column index 7 in ordersCSVHeader.
+	// CSV 注入防护:以 "=" 开头的单元格必须加上单引号前缀。
+	// out_trade_no 在 ordersCSVHeader 中是第 7 列(索引)。
 	injectionCell := records[2][7]
 	if strings.HasPrefix(injectionCell, "=") {
 		t.Errorf("CSV injection not escaped: cell=%q; MUTATION: removing SafeCSVCell makes this fail", injectionCell)
@@ -107,10 +107,10 @@ func TestOrdersExportCSV(t *testing.T) {
 	}
 }
 
-// TestRefundsExportRange verifies that a refund outside the date window is excluded.
+// TestRefundsExportRange 校验落在日期窗口外的退款会被排除。
 //
-// MUTATION: if parseExportRange is ignored or From/To not forwarded to the store,
-// the out-of-window refund is included and len(records)==3 -> RED.
+// 变异:若 parseExportRange 被忽略,或 From/To 未传给 store,
+// 窗口外的退款会被纳入,len(records)==3 -> 变红。
 func TestRefundsExportRange(t *testing.T) {
 	from := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
@@ -136,8 +136,8 @@ func TestRefundsExportRange(t *testing.T) {
 	}
 	records := readCSV(t, rec.Body.String())
 
-	// Must have header + 1 in-window row only.
-	// MUTATION: if range ignored, both rows appear -> len==3 -> RED.
+	// 必须只有表头 + 1 行窗口内数据。
+	// 变异:若范围被忽略,两行都会出现 -> len==3 -> 变红。
 	if len(records) != 2 {
 		t.Fatalf("records=%d want header+1 in-window row; MUTATION: ignoring range includes out-of-window row", len(records))
 	}
@@ -146,7 +146,7 @@ func TestRefundsExportRange(t *testing.T) {
 	}
 }
 
-// filteringRefundsStub honours date-range filters to simulate real store behaviour.
+// filteringRefundsStub 遵守日期范围过滤,以模拟真实 store 的行为。
 type filteringRefundsStub struct {
 	all []payment.RefundRecord
 }

@@ -14,11 +14,11 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// TestCreateDeleteUser_RealStoreAndMigrationConstraint exercises the real
-// CreateUser / SoftDeleteForTenant SQL AND proves migration 0138 admits the new
-// admin_audit_events.action values 'create_user' / 'delete_user' (a stubbed
-// audit store would hide a missing CHECK-constraint value). Also confirms the
-// soft-delete leaves the email reusable via the partial unique index.
+// TestCreateDeleteUser_RealStoreAndMigrationConstraint 跑通真实的
+// CreateUser / SoftDeleteForTenant SQL,并证明迁移 0138 允许新增的
+// admin_audit_events.action 取值 'create_user' / 'delete_user'(用桩 audit
+// store 会掩盖缺失的 CHECK 约束取值)。同时确认软删后,邮箱可经 partial
+// unique index 复用。
 func TestCreateDeleteUser_RealStoreAndMigrationConstraint(t *testing.T) {
 	ctx := context.Background()
 	pool := openAdminUsersPool(t, ctx)
@@ -77,7 +77,7 @@ func TestCreateDeleteUser_RealStoreAndMigrationConstraint(t *testing.T) {
 	}
 	assertLatestAuditAction(t, ctx, pool, f.tenantID, created.ID, "delete_user")
 
-	// Soft-delete frees the email (partial unique index WHERE deleted_at IS NULL).
+	// 软删释放该邮箱(partial unique index WHERE deleted_at IS NULL)。
 	reRec := invokeAdminUsersBody(t, createDeps, http.MethodPost, "/admin/v1/users",
 		`{"email":"`+email+`","password":"longenough1"}`)
 	assertStatus(t, reRec, http.StatusCreated)

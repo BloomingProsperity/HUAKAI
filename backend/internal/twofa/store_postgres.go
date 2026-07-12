@@ -19,6 +19,7 @@ type postgresQueries interface {
 	DeleteTwoFactorBackupCodesForUser(ctx context.Context, arg dbtwofa.DeleteTwoFactorBackupCodesForUserParams) error
 	GetTwoFactorSettings(ctx context.Context, arg dbtwofa.GetTwoFactorSettingsParams) (dbtwofa.TwoFactorSetting, error)
 	MarkTwoFactorSuccess(ctx context.Context, arg dbtwofa.MarkTwoFactorSuccessParams) error
+	MarkTwoFactorTOTPSuccess(ctx context.Context, arg dbtwofa.MarkTwoFactorTOTPSuccessParams) (int64, error)
 	SetTwoFactorEnabled(ctx context.Context, arg dbtwofa.SetTwoFactorEnabledParams) error
 	UpdateTwoFactorFailure(ctx context.Context, arg dbtwofa.UpdateTwoFactorFailureParams) error
 	UpsertTwoFactorSettings(ctx context.Context, arg dbtwofa.UpsertTwoFactorSettingsParams) (dbtwofa.TwoFactorSetting, error)
@@ -101,6 +102,23 @@ func (s *PostgresStore) MarkSuccess(ctx context.Context, tenantID, userID int64,
 	})
 }
 
+func (s *PostgresStore) MarkTOTPSuccess(ctx context.Context, tenantID, userID int64, consumedStep int64, now time.Time) (bool, error) {
+	if s == nil || s.q == nil {
+		return false, ErrStoreNotConfigured
+	}
+	step := consumedStep
+	// 条件 UPDATE 的 WHERE 含 last_used_step < $4,把"读 LastUsedStep→比较→写"的竞态收进
+	// 单条原子语句:并发两次提交同一时间步,只有一个命中 1 行(stored=true),另一个命 0 行
+	// (stored=false),调用方据此按重放拒绝。
+	rows, err := s.q.MarkTwoFactorTOTPSuccess(ctx, dbtwofa.MarkTwoFactorTOTPSuccessParams{
+		TenantID: tenantID, UserID: userID, LastUsedAt: timestamptz(now), LastUsedStep: &step,
+	})
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
 func (s *PostgresStore) MarkFailure(ctx context.Context, tenantID, userID int64, failedAttempts int, lockedUntil *time.Time, now time.Time) error {
 	if s == nil || s.q == nil {
 		return ErrStoreNotConfigured
@@ -176,11 +194,21 @@ func settingsFromDB(row dbtwofa.TwoFactorSetting) Settings {
 		TenantID: row.TenantID, UserID: row.UserID,
 		SecretEnc: append([]byte(nil), row.SecretEnc...),
 		Enabled:   row.IsEnabled, FailedAttempts: int(row.FailedAttempts),
-		LockedUntil: timePtrFromPG(row.LockedUntil),
-		LastUsedAt:  timePtrFromPG(row.LastUsedAt),
-		CreatedAt:   timeFromPG(row.CreatedAt),
-		UpdatedAt:   timeFromPG(row.UpdatedAt),
+		LockedUntil:  timePtrFromPG(row.LockedUntil),
+		LastUsedAt:   timePtrFromPG(row.LastUsedAt),
+		LastUsedStep: cloneInt64Ptr(row.LastUsedStep),
+		CreatedAt:    timeFromPG(row.CreatedAt),
+		UpdatedAt:    timeFromPG(row.UpdatedAt),
 	}
+}
+
+// cloneInt64Ptr 复制一个 *int64,避免把 sqlc 行内部指针别名进领域对象。
+func cloneInt64Ptr(v *int64) *int64 {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	return &copied
 }
 
 func timestamptz(t time.Time) pgtype.Timestamptz {

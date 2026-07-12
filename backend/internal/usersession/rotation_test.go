@@ -176,11 +176,10 @@ func TestAT_SESSION_001_004_PerTokenFamilyAndUserInvalidation(t *testing.T) {
 	}
 }
 
-// TestRevokeOthersKeepsCurrentFamilyAndRevokesOtherFamilies guards the 2FA UX
-// contract: sensitive state changes should kick out other browsers, not the one
-// that just proved possession. Mutation check: implement this via RevokeUser and
-// the current session validation goes red while the other-session assertion still
-// proves this is not a no-op.
+// TestRevokeOthersKeepsCurrentFamilyAndRevokesOtherFamilies 守护 2FA 的 UX
+// 契约: 敏感状态变更应当踢掉其它浏览器, 而不是刚刚证明了持有权的
+// 那一个。变异检查: 改用 RevokeUser 来实现, 那么对当前 session 的校验
+// 会变红, 同时对其它 session 的断言仍证明这不是一个 no-op。
 func TestRevokeOthersKeepsCurrentFamilyAndRevokesOtherFamilies(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)

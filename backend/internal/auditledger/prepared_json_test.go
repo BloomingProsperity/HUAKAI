@@ -10,13 +10,12 @@ import (
 )
 
 func TestPreparedEntryJSONRoundTripPreservesAppendIntent(t *testing.T) {
-	// Risk killed: DLQ must persist enough append intent to reconstruct a raw
-	// LedgerEntry and then re-run PrepareEntry before Append. Losing any JSON
-	// shadow field means replay signs a different ledger entry.
-	// Mutation self-check: delete request_id, tenant_id, created_at,
-	// tenant_scope_ref, hop_chain, or model_chain from the shadow mapping and
-	// this test fails because the re-prepared entry no longer matches the
-	// fixture.
+	// 消除的风险：DLQ 必须持久化足够多的 append 意图，以便重建一条原始
+	// LedgerEntry，并在 Append 之前重新运行 PrepareEntry。丢失任何一个 JSON
+	// 影子字段都意味着重放会签出一条不同的 ledger entry。
+	// 变异自检：从影子映射中删掉 request_id、tenant_id、created_at、
+	// tenant_scope_ref、hop_chain 或 model_chain，本测试就会失败，因为重新
+	// prepare 出的 entry 不再与 fixture 匹配。
 	prepared := mustPrepareForAppend(t, context.Background(), LedgerEntry{
 		Timestamp:      "2026-05-22T12:34:56.789Z",
 		RequestID:      "req_prepared_json_roundtrip",
@@ -86,10 +85,10 @@ func TestPreparedEntryJSONRoundTripPreservesAppendIntent(t *testing.T) {
 }
 
 func TestPreparedEntryExternalJSONUnmarshalCannotBypassSeal(t *testing.T) {
-	// Risk killed: callers outside auditledger must not be able to construct a
-	// sealed PreparedEntry by feeding arbitrary JSON into json.Unmarshal. If a
-	// public UnmarshalJSON method exists, this test fails because the projection
-	// is populated instead of staying zero-valued.
+	// 消除的风险：auditledger 之外的调用方不能通过把任意 JSON 喂给
+	// json.Unmarshal 来构造一个已封箱的 PreparedEntry。若存在公开的
+	// UnmarshalJSON 方法，本测试就会失败，因为投影被填充了而不是保持
+	// 零值。
 	prepared := mustPrepareForAppend(t, context.Background(), LedgerEntry{
 		Timestamp:      "2026-05-22T13:00:00.000Z",
 		RequestID:      "req_prepared_json_seal",
@@ -135,12 +134,12 @@ func TestPreparedEntryExternalJSONUnmarshalCannotBypassSeal(t *testing.T) {
 }
 
 func TestDecodeLedgerEntryFromDLQPayloadAllowsMissingOptionalAppendFields(t *testing.T) {
-	// Risk killed: valid JSON DLQ payloads from existing callers may omit
-	// created_at or hop_chain. Decode must not strand those rows before the
-	// worker can re-run PrepareEntry and Append's normal timestamp handling.
-	// Mutation self-check: restore the old required-field guards for request_id,
-	// created_at, or hop_chain and the matching subtest fails with a decode
-	// error instead of returning the empty LedgerEntry field.
+	// 消除的风险：来自现有调用方的合法 JSON DLQ payload 可能会省略
+	// created_at 或 hop_chain。Decode 不能在 worker 重新运行 PrepareEntry
+	// 以及 Append 的常规 timestamp 处理之前就卡住这些行。
+	// 变异自检：恢复对 request_id、created_at 或 hop_chain 的旧的必填字段
+	// 守卫，对应的子测试就会以 decode 错误失败，而不是返回空的
+	// LedgerEntry 字段。
 	tests := []struct {
 		name string
 		raw  string
@@ -214,11 +213,11 @@ func TestDecodeLedgerEntryFromDLQPayloadAllowsMissingOptionalAppendFields(t *tes
 }
 
 func TestDecodeLedgerEntryFromDLQPayloadAllowsMissingModelChain(t *testing.T) {
-	// Risk killed: streaming ledger emitters may produce HopChain-only intents;
-	// the required-field validation must not accidentally make model_chain
-	// mandatory and strand valid streaming DLQ rows.
-	// Mutation self-check: require model_chain during decode and this test fails
-	// with a decode error.
+	// 消除的风险：流式 ledger 发射方可能产出只含 HopChain 的意图；必填
+	// 字段校验不能意外地把 model_chain 变成强制项，从而卡住合法的流式
+	// DLQ 行。
+	// 变异自检：在 decode 时要求 model_chain，本测试就会以 decode 错误
+	// 失败。
 	raw, err := json.Marshal(preparedEntryJSON{
 		RequestID:      "req_decode_streaming_without_model_chain",
 		TenantID:       77,

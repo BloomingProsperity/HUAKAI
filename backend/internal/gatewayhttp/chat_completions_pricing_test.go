@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/realtokenizer"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
@@ -194,10 +195,10 @@ func TestSettleCompletion_GroupRatioDiscountsReserveAndActualCost(t *testing.T) 
 func TestSettleCompletion_CacheOverrideScalesOnlyCacheCosts(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
-	// gpt-4o is a cache-inclusive provider: prompt_tokens (InputTokens) already
-	// includes the cache_read + cache_creation tokens. Billing subtracts them from
-	// the input bucket (non-cached = 20-7-5 = 8) so cached tokens are priced once,
-	// not twice (input rate + cache rate). See billingUsageForCacheConvention.
+	// gpt-4o 属于「缓存内含」型上游:prompt_tokens(InputTokens)里已经
+	// 含了 cache_read + cache_creation 这部分 token。计费会把它们从
+	// input 桶里扣掉(非缓存 = 20-7-5 = 8),这样缓存 token 只计一次价,
+	// 而非两次(input 费率 + cache 费率)。参见 billingUsageForCacheConvention。
 	usage := proto.CanonicalUsage{
 		InputTokens:              20,
 		OutputTokens:             3,
@@ -375,7 +376,7 @@ func TestStreamingCompletionEvent_NoUsageKeepsZeroCostPendingInferred(t *testing
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 若重新按 DeliveredTokenCount（此处为 40 个内容帧）计 provisional，有效费率表（output 2500）
+	// 变异: 若重新按 DeliveredTokenCount（此处为 40 个内容帧）计 provisional，有效费率表（output 2500）
 	// 会把 40 帧当 40 token 计成 ActualCost=0.1（向用户多收）→ 此断言（==0）RED；修复后帧数不计费 → 0 → GREEN。
 	// 有效费率表是判别关键：费率表损坏会让新旧都为 0（非判别）。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
@@ -417,8 +418,8 @@ func TestStreamingCompletionEvent_CarriesCostSnapshotToDraft(t *testing.T) {
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 3}, auditledger.AuditLedgerResult{})
 
-	// Mutation: dropping the streaming draft CostSnapshot assignment leaves
-	// this empty while cost remains correct, hiding the audit regression.
+	// 变异:去掉流式 draft 的 CostSnapshot 赋值,会让这里为空而成本仍正确,
+	// 把审计回归藏起来。
 	if event.SettleRequest.Draft.CostSnapshot != "flat" {
 		t.Fatalf("Draft.CostSnapshot=%q want flat", event.SettleRequest.Draft.CostSnapshot)
 	}
@@ -450,7 +451,7 @@ func TestStreamingCompletionEvent_PricingConfigFailureStaysReportedNotInferred(t
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 若错误分支无条件标 inferred（去掉 reportedUsageMissing 守卫），这条有真实 token 的行会变 inferred
+	// 变异: 若错误分支无条件标 inferred（去掉 reportedUsageMissing 守卫），这条有真实 token 的行会变 inferred
 	// → settlementreconcile worker 会把真实请求零差额定稿成 $0（静默零计费）→ RED；有守卫则保持 reported（留人工对账）→ GREEN。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
 	if !event.SettleRequest.Draft.PendingReconciliation {
@@ -488,11 +489,15 @@ func TestStreamingCompletionEvent_AmbiguousUsagePreservedNotInferred(t *testing.
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 去掉 `!= UsageSourceAmbiguous` 守卫，歧义用量会被降级成 inferred → RED。
-	// 歧义流须保留 ambiguous 态留待真对账，不可降级成可被宽限定稿的 $0 provisional。
+	// SM-05 判别对照:本 draft 只有 DeliveredTokenCount=40(chunk 帧数)、无 EstimatedOutputTokens
+	//(可估交付=0)。歧义放行估算的判据必须是「有可估交付内容」(EstimatedOutputTokens+
+	// EstimatedReasoningTokens>0),无可估内容的歧义流仍保留 ambiguous 态留待真对账。
+	// 变异: 若把放行判据错写成 DeliveredTokenCount>0(按 chunk 帧数而非可估输出),本歧义流
+	// 会被误降级 inferred(且可被宽限定稿成 $0 provisional)→ UsageSource 断言 RED;
+	// 正确按可估输出判据则原样保留 → GREEN。证「只在有可估交付时才收」。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
 	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceAmbiguous {
-		t.Fatalf("UsageSource=%q want %q (ambiguous must be preserved)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceAmbiguous)
+		t.Fatalf("UsageSource=%q want %q (无可估交付的歧义流须保留 ambiguous)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceAmbiguous)
 	}
 	if !event.SettleRequest.Draft.PendingReconciliation {
 		t.Fatal("PendingReconciliation=false want true")
@@ -529,7 +534,7 @@ func estimatedFallbackRateTable() billing.RateTableSource {
 // TestStreamingCompletionEvent_WiresClientToolFromContext W4:settle draft 必须
 // 带上 clientid 中间件归一出的客户端工具枚举(从请求 ctx 取),供按客户端归因
 // 用量/成本。
-// MUTATION: 去掉 streamingCompletionEvent 里 draft.ClientTool = clientToolFromContext
+// 变异: 去掉 streamingCompletionEvent 里 draft.ClientTool = clientToolFromContext
 // 接线 → Draft.ClientTool 空 → 断言红。判别关键:ctx 注入 cursor,空 ctx 会得空串
 // (区别于"恒空")。
 func TestStreamingCompletionEvent_WiresClientToolFromContext(t *testing.T) {
@@ -572,7 +577,7 @@ func TestStreamingCompletionEvent_MissingUsageBillsEstimatedDeliveredContent(t *
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 去掉估算兜底（恢复零结算路径），无 usage 但交付了 200 估算 token 的流
+	// 变异: 去掉估算兜底（恢复零结算路径），无 usage 但交付了 200 估算 token 的流
 	// ActualCost 回到 0（漏钱）→ 本断言 RED；有兜底则按估算基数计出正成本 → GREEN。
 	wantInput := tokencheck.EstimateRequestInputTokens(ex.body)
 	wantCost := decimal.NewFromInt(int64(wantInput)*1000 + 200*2000).Div(decimal.NewFromInt(1_000_000))
@@ -608,7 +613,7 @@ func TestStreamingCompletionEvent_MissingUsageEstimateIncludesReasoningText(t *t
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 10}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算基数漏加 EstimatedReasoningTokens，thinking-only 流（可见输出为 0）
+	// 变异: 估算基数漏加 EstimatedReasoningTokens，thinking-only 流（可见输出为 0）
 	// 回到零结算 → 本断言 RED;计入 reasoning 文本则产出 120 token 的正成本 → GREEN。
 	if got := event.SettleRequest.Draft.TokensOutput; got != 120 {
 		t.Fatalf("Draft.TokensOutput=%d want 120 (reasoning text is billable output)", got)
@@ -629,7 +634,7 @@ func TestStreamingCompletionEvent_MixedVisibleAndReasoningEstimateSums(t *testin
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 10}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 基数只取 EstimatedOutputTokens 或只取 EstimatedReasoningTokens
+	// 变异: 基数只取 EstimatedOutputTokens 或只取 EstimatedReasoningTokens
 	//（「二选一」类变体）→ 220 断言 RED;求和则 GREEN。
 	if got := event.SettleRequest.Draft.TokensOutput; got != 220 {
 		t.Fatalf("Draft.TokensOutput=%d want 220 (visible + reasoning sum)", got)
@@ -648,7 +653,7 @@ func TestStreamingCompletionEvent_ReportedUsageNeverReplacedByEstimate(t *testin
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算分支越过「actualCompletionCost 失败 && reportedUsageMissing」双门
+	// 变异: 估算分支越过「actualCompletionCost 失败 && reportedUsageMissing」双门
 	//（如 err==nil 也进估算），真实 reported usage 被估算覆盖 → 下列断言 RED。
 	wantCost := decimal.NewFromInt(10*1000 + 1000*2000).Div(decimal.NewFromInt(1_000_000))
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, wantCost)
@@ -677,7 +682,7 @@ func TestStreamingCompletionEvent_EstimatedSettleStripsRatioPending(t *testing.T
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算路径不剥离 ratio fail-soft 带来的 PendingReconciliation → 估算行
+	// 变异: 估算路径不剥离 ratio fail-soft 带来的 PendingReconciliation → 估算行
 	// 以 inferred+tokens>0+pending=true 落库,no-usage 定稿 SQL（只认全零记录）永远
 	// 跳过 → 永久 pending → 本断言 RED;剥离后估算行保持终局 → GREEN（ratio 故障
 	// 已由快照标记留痕，不丢审计信号）。
@@ -701,7 +706,7 @@ func TestStreamingCompletionEvent_MultimodalInputBasisCapped(t *testing.T) {
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 5}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 输入基数退回原始 body 字节数/4，44KB base64 折 ~11000 token 终局
+	// 变异: 输入基数退回原始 body 字节数/4，44KB base64 折 ~11000 token 终局
 	// 多收 → 上界断言 RED。多模态超收回归（对抗评审 S1/F-1）由此锁死。
 	if got := event.SettleRequest.Draft.TokensInput; got > 2000 {
 		t.Fatalf("Draft.TokensInput=%d want <= 2000 (base64 blob must be capped, not billed by raw bytes)", got)
@@ -711,7 +716,7 @@ func TestStreamingCompletionEvent_MultimodalInputBasisCapped(t *testing.T) {
 	}
 }
 
-func TestStreamingCompletionEvent_AmbiguousUsageNeverEstimated(t *testing.T) {
+func TestStreamingCompletionEvent_AmbiguousWithDeliveredBillsEstimated(t *testing.T) {
 	ex := estimatedFallbackChatExecution(t, estimatedFallbackRateTable())
 	draft := gateway.UsageRecordDraft{
 		DeliveredTokenCount:   40,
@@ -721,14 +726,27 @@ func TestStreamingCompletionEvent_AmbiguousUsageNeverEstimated(t *testing.T) {
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算分支漏掉 Ambiguous 守卫，歧义流被估算终局计费且 pending 被清 →
-	// 真对账通道被关死 → 本断言 RED;有守卫则歧义态原样保留 → GREEN。
-	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
-	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceAmbiguous {
-		t.Fatalf("UsageSource=%q want %q (ambiguous must never be estimated)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceAmbiguous)
+	// SM-05:歧义用量但已交付可估内容(EstimatedOutputTokens>0)——内容已发给用户,而
+	// reconciliation 是 refund-only/zero-finalize 永不补收,留歧义态会永久零收漏钱。故放行
+	// estimatedStreamingCost 估算保守计费,升 inferred + 清 pending + 挂估算基数标记。
+	// 变异: 守卫重新排除 Ambiguous(恢复零收)→ ActualCost 回零 + UsageSource 退回
+	// ambiguous + pending 留 true → 下列断言全 RED;放行估算 → GREEN。判别关键:成本基数取
+	// EstimatedOutputTokens=200(可见输出估算)而非 DeliveredTokenCount=40(chunk 帧数),
+	// 证按可见输出估算计费而非按帧数(宁少勿多收)。
+	wantInput := tokencheck.EstimateRequestInputTokens(ex.body)
+	wantCost := decimal.NewFromInt(int64(wantInput)*1000 + 200*2000).Div(decimal.NewFromInt(1_000_000))
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, wantCost)
+	if got := event.SettleRequest.Draft.TokensOutput; got != 200 {
+		t.Fatalf("Draft.TokensOutput=%d want 200 (估算基数取可见输出 200,非 chunk 帧数 40)", got)
 	}
-	if !event.SettleRequest.Draft.PendingReconciliation {
-		t.Fatal("PendingReconciliation=false want true")
+	if event.SettleRequest.Draft.UsageSource != gateway.UsageSourceInferred {
+		t.Fatalf("UsageSource=%q want %q (歧义+已交付须升 inferred 落估算账)", event.SettleRequest.Draft.UsageSource, gateway.UsageSourceInferred)
+	}
+	if event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("PendingReconciliation=true want false (估算结算是终局)")
+	}
+	if !strings.Contains(event.SettleRequest.Draft.CostSnapshot, "usage_basis=estimated") {
+		t.Fatalf("CostSnapshot=%q want usage_basis=estimated 标记", event.SettleRequest.Draft.CostSnapshot)
 	}
 }
 
@@ -742,7 +760,7 @@ func TestStreamingCompletionEvent_EstimateUnpriceableKeepsPendingZero(t *testing
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 40}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: 估算分支忽略 completionCost 错误伪造成本（或把 pending 清掉），费率表
+	// 变异: 估算分支忽略 completionCost 错误伪造成本（或把 pending 清掉），费率表
 	// 故障时会凭空收费/丢失对账信号 → RED;正确行为是回退零结算 + pending + inferred → GREEN。
 	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, decimal.Zero)
 	if !event.SettleRequest.Draft.PendingReconciliation {
@@ -789,8 +807,8 @@ func TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields(t *t
 		wantPendingReconcile bool
 	}{
 		{
-			// reported 远大于可见估算 → Fail20。Mutation: 去掉 streamingCompletionEvent 的
-			// crossCheckAudit stamp → ConfidenceScore 保持 nil 起始的 1.0/false → RED。
+			// reported 远大于可见估算 → Fail20。变异:去掉 streamingCompletionEvent 的
+			// crossCheckAudit stamp → ConfidenceScore 保持 nil 起始的 1.0/false → 变红。
 			name:                 "fail verdict marks low confidence and pending",
 			tokensOutput:         1000,
 			estimatedOutput:      100,
@@ -800,8 +818,8 @@ func TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields(t *t
 		// review R2: provider 把 thinking 以 ReasoningText 流出(estimatedReasoning>0)却
 		// 不单列 ReasoningTokens(Anthropic 扩展思考 / Gemini thought)。reported OutputTokens 是否含
 		// thinking 因 provider 而异、canonical 无 folding 信号 → 跳过交叉校验保持满置信、不 pending。
-		// Mutation: 去掉 crossCheckAudit 的 `reasoningTokens==0 && estimatedReasoning>0` 跳过 →
-		// visible=1000 vs estimated=100 → Fail20 → 0.5/true → RED。
+		// 变异:去掉 crossCheckAudit 的 `reasoningTokens==0 && estimatedReasoning>0` 跳过 →
+		// visible=1000 vs estimated=100 → Fail20 → 0.5/true → 变红。
 		{
 			name:                 "streamed reasoning without token count suppresses cross-check",
 			tokensOutput:         1000,
@@ -811,8 +829,8 @@ func TestStreamingCompletionEvent_OutputTokenCrossCheckAnnotatesAuditFields(t *t
 			wantPendingReconcile: false,
 		},
 		{
-			// 隐藏 reasoning 占 reported 大头,扣除后可见==估算 → OK。Mutation: stamp 不传
-			// draft.ReasoningTokens(传 0)→ visible=1100 vs 100 → Fail20 → 0.5/true → RED。
+			// 隐藏 reasoning 占 reported 大头,扣除后可见==估算 → OK。变异:stamp 不传
+			// draft.ReasoningTokens(传 0)→ visible=1100 vs 100 → Fail20 → 0.5/true → 变红。
 			name:                 "hidden reasoning excluded keeps full confidence",
 			tokensOutput:         1100,
 			reasoningTokens:      1000,
@@ -904,7 +922,7 @@ func TestStreamingCompletionEvent_MergesRequestAndStreamProtocolLoss(t *testing.
 
 	event := ex.streamingCompletionEvent(draft, billing.Attempt{DeliveredTokenCount: 20}, auditledger.AuditLedgerResult{})
 
-	// MUTATION: stream.go 还原 `ProtocolLoss: ex.protocolLoss`(不合并 draft.StreamProtocolLoss)
+	// 变异: stream.go 还原 `ProtocolLoss: ex.protocolLoss`(不合并 draft.StreamProtocolLoss)
 	// → 缺 stream_event_loss_sentinel → RED。
 	if !settledLossHasCode(t, event.SettleRequest.ProtocolLoss, "request_translation_loss_sentinel") {
 		t.Fatalf("merged ProtocolLoss missing request sentinel: %s", event.SettleRequest.ProtocolLoss)
@@ -942,7 +960,7 @@ func TestRejectMoneyPathAuditRef_PreservesEventProtocolLoss(t *testing.T) {
 			if len(settler.aborts) != 1 {
 				t.Fatalf("aborts=%d want 1", len(settler.aborts))
 			}
-			// MUTATION: rejectMoneyPathAuditRef 传 nil 而非 event.SettleRequest.ProtocolLoss → 空 → RED。
+			// 变异: rejectMoneyPathAuditRef 传 nil 而非 event.SettleRequest.ProtocolLoss → 空 → RED。
 			if !settledLossHasCode(t, settler.aborts[0].protocolLoss, "audit_ref_abort_sentinel") {
 				t.Fatalf("abort protocolLoss=%s want code audit_ref_abort_sentinel", settler.aborts[0].protocolLoss)
 			}
@@ -970,7 +988,7 @@ func TestNonStreamingSettle_CapturesResponseConversionProtocolLoss(t *testing.T)
 	if len(settler.calls) != 1 {
 		t.Fatalf("settle calls=%d want 1", len(settler.calls))
 	}
-	// MUTATION: 还原 billing.go CanonicalToClientResponse 的损失丢弃(_) → settle 缺 stop_reason_unknown → RED。
+	// 变异: 还原 billing.go CanonicalToClientResponse 的损失丢弃(_) → settle 缺 stop_reason_unknown → RED。
 	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "stop_reason_unknown") {
 		t.Fatalf("settle ProtocolLoss=%s want code stop_reason_unknown", settler.calls[0].ProtocolLoss)
 	}
@@ -997,7 +1015,7 @@ func TestNonStreamingSettle_CapturesRequestTranslationProtocolLoss(t *testing.T)
 	if len(settler.calls) != 1 {
 		t.Fatalf("settle calls=%d want 1", len(settler.calls))
 	}
-	// MUTATION: 还原 dispatch.go RequestToCanonical 的损失丢弃(_) → settle 缺 d5_metadata_field_pending → RED。
+	// 变异: 还原 dispatch.go RequestToCanonical 的损失丢弃(_) → settle 缺 d5_metadata_field_pending → RED。
 	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "d5_metadata_field_pending") {
 		t.Fatalf("settle ProtocolLoss=%s want code d5_metadata_field_pending", settler.calls[0].ProtocolLoss)
 	}
@@ -1025,8 +1043,8 @@ func TestCompletionRateVector_PricesCacheCreationTiersAndReadSeparately(t *testi
 		t.Fatalf("price: %v", err)
 	}
 
-	// Mutation guard: if 5m and 1h writes are collapsed to one cache_creation rate,
-	// this exact 0.225 cache-creation assertion goes red.
+	// 变异守卫:若把 5m 与 1h 的写入塌缩成单一 cache_creation 费率,
+	// 这条精确的 0.225 cache-creation 断言会变红。
 	assertDecimalEqual(t, "CacheCreationCost", got.CacheCreationCost, decimal.RequireFromString("0.225"))
 	assertDecimalEqual(t, "CacheReadCost", got.CacheReadCost, decimal.RequireFromString("0.02"))
 	assertDecimalEqual(t, "Total", got.Total, decimal.RequireFromString("0.245"))
@@ -1050,8 +1068,8 @@ func TestCompletionRateVector_CacheCreationSplitChangesCostForSameTokenTotal(t *
 		t.Fatalf("price 1h-only: %v", err)
 	}
 
-	// Mutation guard: with a merged cache_creation bucket, these equal-token cases
-	// would produce the same cache-creation cost and this test would fail.
+	// 变异守卫:若 cache_creation 桶被合并,这两个 token 数相同的用例
+	// 会算出相同的 cache-creation 成本,本测试就会失败。
 	if fiveMinuteOnly.CacheCreationCost.Equal(oneHourOnly.CacheCreationCost) {
 		t.Fatalf("same cache token total with different TTL split must price differently; 5m=%s 1h=%s",
 			fiveMinuteOnly.CacheCreationCost, oneHourOnly.CacheCreationCost)
@@ -1082,8 +1100,8 @@ func TestCompletionRateVector_UsesAggregateCacheCreationFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("price split fallback: %v", err)
 	}
-	// Mutation guard: removing the aggregate fallback for split tokens makes this
-	// return a missing-rate error instead of the legacy cache_creation rate.
+	// 变异守卫:去掉对拆分 token 的聚合兜底后,这里会返回缺失费率错误,
+	// 而非沿用旧的 cache_creation 费率。
 	assertDecimalEqual(t, "split fallback CacheCreationCost", splitFallback.CacheCreationCost, decimal.RequireFromString("0.045"))
 	assertDecimalEqual(t, "split fallback Total", splitFallback.Total, decimal.RequireFromString("0.045"))
 }
@@ -1120,8 +1138,8 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 		},
 		// 判别: o1/o3 隐藏 reasoning token 占 reported OutputTokens 大头。reported
 		// = 可见估算 + 1000 reasoning；扣除 reasoning 后 visible == estimated -> OK -> 满信心。
-		// Mutation: billing.go 去掉 `- usage.ReasoningTokens` 扣减 -> visible=reported -> delta=1000
-		// >= 50 -> Fail20 -> 0.5/true -> RED。
+		// 变异:billing.go 去掉 `- usage.ReasoningTokens` 扣减 -> visible=reported -> delta=1000
+		// >= 50 -> Fail20 -> 0.5/true -> 变红。
 		{
 			name:                 "hidden reasoning tokens excluded from cross-check keep full confidence",
 			content:              blocks,
@@ -1131,8 +1149,8 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 			wantConfidence:       1.0,
 			wantPendingReconcile: false,
 		},
-		// Mutation guard: without the absolute-token floor, this short
-		// response would be Fail20 -> 0.5/true -> RED.
+		// 变异守卫:若没有绝对 token 下限,这个短回复
+		// 会被判成 Fail20 -> 0.5/true -> 变红。
 		{
 			name:                 "short fail verdict below absolute floor keeps full confidence",
 			content:              shortBlocks,
@@ -1156,8 +1174,8 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 			wantConfidence:       1.0,
 			wantPendingReconcile: false,
 		},
-		// Mutation guard: without the zero-cost gate, this zero-cost draft
-		// would be Fail20 -> 0.5/true -> RED.
+		// 变异守卫:若没有零成本闸门,这个零成本 draft
+		// 会被判成 Fail20 -> 0.5/true -> 变红。
 		{
 			name:                 "zero cost fail verdict keeps full confidence",
 			content:              blocks,
@@ -1179,8 +1197,8 @@ func TestNonStreamingUsageDraft_OutputTokenCrossCheckAnnotatesAuditFields(t *tes
 			if draft.ConfidenceScore == nil {
 				t.Fatal("ConfidenceScore=nil want populated audit score")
 			}
-			// Mutation guard: if CrossCheck is not wired (confidence hardcoded 1.0,
-			// pending false), the FAIL case asserts 0.5/true -> RED.
+			// 变异守卫:若 CrossCheck 未接线(confidence 硬编码 1.0、
+			// pending 为 false),FAIL 用例断言 0.5/true -> 变红。
 			if got := *draft.ConfidenceScore; got != tt.wantConfidence {
 				t.Fatalf("ConfidenceScore=%v want %v", got, tt.wantConfidence)
 			}
@@ -1270,6 +1288,10 @@ func (s *gatewayPricingRatioStore) DeleteRatio(context.Context, pricingcatalog.D
 	return pricingcatalog.ErrBackend
 }
 
+func (s *gatewayPricingRatioStore) VerifyChain(context.Context) (pricingcatalog.VerifyChainResult, error) {
+	return pricingcatalog.VerifyChainResult{}, pricingcatalog.ErrBackend
+}
+
 func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) (decimal.Decimal, error) {
 	if s != nil && s.err != nil {
 		return decimal.Zero, s.err
@@ -1281,16 +1303,16 @@ func (s *pricingRatioResolverStub) Resolve(context.Context, int64, int64) (decim
 }
 
 // ---------------------------------------------------------------------------
-// NAPI-BILLING-01 Stage A discriminating tests
+// NAPI-BILLING-01 Stage A 判别性测试
 // ---------------------------------------------------------------------------
 
-// TestToolSurcharge_EmptyTableByteIdentical verifies default-off: when
-// ToolPricingTable is nil, the Total is byte-identical to the no-surcharge
-// result even if ToolCallCounts are non-zero.
+// TestToolSurcharge_EmptyTableByteIdentical 验证默认关闭:当
+// ToolPricingTable 为 nil 时,即便 ToolCallCounts 非零,Total 也与无附加费
+// 的结果逐字节一致。
 //
-// MUTATION: if the applyToolCallSurcharge call site is removed from
-// completionCost(), this test still passes (both paths skip surcharge).
-// The mutation guard is TestToolSurcharge_ConfiguredFires below.
+// 变异:若把 applyToolCallSurcharge 的调用点从 completionCost() 里移除,
+// 本测试仍会通过(两条路径都跳过附加费)。
+// 真正的变异守卫是下面的 TestToolSurcharge_ConfiguredFires。
 func TestToolSurcharge_EmptyTableByteIdentical(t *testing.T) {
 	ex := &chatExecution{
 		ctx: context.Background(),
@@ -1300,7 +1322,7 @@ func TestToolSurcharge_EmptyTableByteIdentical(t *testing.T) {
 				PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
 			}},
 			BillingPolicyVersion: "test-policy",
-			ToolPricingTable:     nil, // default-off
+			ToolPricingTable:     nil, // 默认关闭
 		},
 		ident:           auth.Identity{TenantID: 7, APIKeyID: 11},
 		req:             chatRequest{Model: "gpt-4o"},
@@ -1308,7 +1330,7 @@ func TestToolSurcharge_EmptyTableByteIdentical(t *testing.T) {
 		cacheVendor:     "openai",
 	}
 
-	// usage with non-zero token cost + non-zero tool calls
+	// token 成本非零 + 工具调用次数非零的 usage
 	usage := completionUsageForCost{
 		InputTokens:  100,
 		OutputTokens: 200,
@@ -1317,7 +1339,7 @@ func TestToolSurcharge_EmptyTableByteIdentical(t *testing.T) {
 		},
 	}
 
-	// baseline: compute cost without any tool pricing
+	// 基线:不带任何工具计价地算成本
 	baseEx := &chatExecution{
 		ctx: ex.ctx,
 		d: ChatHandlerDeps{
@@ -1333,7 +1355,7 @@ func TestToolSurcharge_EmptyTableByteIdentical(t *testing.T) {
 	baselineUsage := completionUsageForCost{
 		InputTokens:  100,
 		OutputTokens: 200,
-		// no tool counts
+		// 不带工具调用次数
 	}
 
 	got, err := ex.completionCost(usage)
@@ -1350,17 +1372,16 @@ func TestToolSurcharge_EmptyTableByteIdentical(t *testing.T) {
 	}
 }
 
-// TestToolSurcharge_ConfiguredFires verifies that when a ToolPricingTable is
-// configured for (tenant, model) and WebSearch counts are non-zero, the
-// surcharge is correctly added to Total.
+// TestToolSurcharge_ConfiguredFires 验证:当为 (tenant, model) 配置了
+// ToolPricingTable 且 WebSearch 次数非零时,附加费会正确地加进 Total。
 //
-// Formula: tokenCost + (WebSearchPer1000/1000 * count * groupRatio)
+// 公式:tokenCost + (WebSearchPer1000/1000 * count * groupRatio)
 //
 //	= tokenCost + (10.0/1000 * 3 * 1.0) = tokenCost + 0.03
 //
-// MUTATION GUARD: if the applyToolCallSurcharge call site in completionCost()
-// is removed, Total stays at tokenCost (no surcharge added) => this test RED.
-// This is the primary discriminating test for Stage A wiring.
+// 变异守卫:若把 completionCost() 里 applyToolCallSurcharge 的调用点移除,
+// Total 会停在 tokenCost(不加附加费)=> 本测试变红。
+// 这是 Stage A 接线的主判别性测试。
 func TestToolSurcharge_ConfiguredFires(t *testing.T) {
 	priceTable := toolpricing.Table{}
 	priceTable.Set(7, "gpt-4o", toolpricing.ToolPrices{
@@ -1416,13 +1437,122 @@ func TestToolSurcharge_ConfiguredFires(t *testing.T) {
 		t.Fatalf("completionCost with surcharge error: %v", err)
 	}
 
-	// Expected surcharge: 10.0/1000 * 3 * groupRatio(1.0) = 0.03
-	// groupRatio defaults to 1.0 (no PricingRatioResolver configured => ratio 0 => treated as 1)
+	// 预期附加费:10.0/1000 * 3 * groupRatio(1.0) = 0.03
+	// groupRatio 默认 1.0(未配置 PricingRatioResolver => ratio 0 => 当作 1 处理)
 	expectedSurcharge := decimal.RequireFromString("0.03")
 	wantTotal := tokenOnlyCost.Total.Add(expectedSurcharge)
 
 	if !got.Total.Equal(wantTotal) {
 		t.Fatalf("Total=%s want tokenCost(%s) + surcharge(%s) = %s MUTATION: removing applyToolCallSurcharge call site => Total stays at tokenCost => RED",
 			got.Total, tokenOnlyCost.Total, expectedSurcharge, wantTotal)
+	}
+}
+
+// TestToolSurcharge_PlatformSourceFiresEndToEnd 是【止漏端到端】测试,走真实生产
+// 装配会注入的 toolpricing.Source —— platformSource(平台默认价 + 无 override),
+// 而不是测试专用的裸 Table。它断言:WebSearch>0 时,带 source 的 Total 比无附加费的
+// token-only Total【严格变大】,且差值正好是按官方默认 $10/1000 计的附加费。
+//
+// 这一条覆盖了字段类型从 Table 改成 Source 之后,生产真正用的那种 source 也能把
+// 附加费打进 Total —— 即「漏钱被止住」。判别性 fixture:WebSearch=4 + 默认 $10/1000
+// → 附加费 0.04 ≠ 0,token-only Total 与 with-surcharge Total 必不相等。
+//
+// 变异:把 ToolPricingTable 改成 nil(或运维开关关 → 生产注入 nil)→ 附加费不再打进
+// Total、Total 退回 token-only 值,本测试 RED(严格变大断言失败)。
+func TestToolSurcharge_PlatformSourceFiresEndToEnd(t *testing.T) {
+	// 生产装配同款 source:平台默认价(web_search $10/1000)+ 无 override。
+	source := toolpricing.NewPlatformSource(toolpricing.DefaultToolPrices(), nil)
+
+	rateTables := &rateTableSourceStub{table: billing.RateTable{
+		Version:     "test-policy",
+		PricingData: json.RawMessage(`{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000}}}`),
+	}}
+
+	withSurcharge := &chatExecution{
+		ctx: context.Background(),
+		d: ChatHandlerDeps{
+			RateTables:           rateTables,
+			BillingPolicyVersion: "test-policy",
+			ToolPricingTable:     source,
+		},
+		ident:           auth.Identity{TenantID: 7, APIKeyID: 11},
+		req:             chatRequest{Model: "gpt-4o"},
+		upstreamModelID: "gpt-4o",
+		cacheVendor:     "openai",
+	}
+
+	// 同样 token 量、同样 4 次 web_search,但 source 为 nil(模拟开关关 / 旧漏钱行为)。
+	withoutSurcharge := &chatExecution{
+		ctx: withSurcharge.ctx,
+		d: ChatHandlerDeps{
+			RateTables:           rateTables,
+			BillingPolicyVersion: "test-policy",
+			ToolPricingTable:     nil,
+		},
+		ident:           withSurcharge.ident,
+		req:             withSurcharge.req,
+		upstreamModelID: withSurcharge.upstreamModelID,
+		cacheVendor:     withSurcharge.cacheVendor,
+	}
+
+	usage := completionUsageForCost{
+		InputTokens:  100,
+		OutputTokens: 200,
+		ToolCallCounts: toolpricing.ToolCallCounts{
+			WebSearch: 4, // 判别性:非零次数,附加费 = 10/1000 * 4 = 0.04 ≠ 0
+		},
+	}
+
+	withCost, err := withSurcharge.completionCost(usage)
+	if err != nil {
+		t.Fatalf("带 platformSource 计费出错: %v", err)
+	}
+	withoutCost, err := withoutSurcharge.completionCost(usage)
+	if err != nil {
+		t.Fatalf("无附加费(nil source)计费出错: %v", err)
+	}
+
+	// 1) 严格变大:带 source 的 Total 必须 > 无附加费的 Total(止漏的直接证据)。
+	if !withCost.Total.GreaterThan(withoutCost.Total) {
+		t.Fatalf("止漏失败:带 platformSource 的 Total(%s) 未严格大于无附加费 Total(%s) —— 工具调用仍加 $0",
+			withCost.Total, withoutCost.Total)
+	}
+
+	// 2) 差值精确:附加费 = 10.0/1000 * 4 * groupRatio(1.0) = 0.04。
+	gotSurcharge := withCost.Total.Sub(withoutCost.Total)
+	wantSurcharge := decimal.RequireFromString("0.04")
+	if !gotSurcharge.Equal(wantSurcharge) {
+		t.Fatalf("附加费差值=%s want %s(web_search 4 次 @ $10/1000)", gotSurcharge, wantSurcharge)
+	}
+}
+
+// estimateInputTokens 必须把请求前的估算走真实 tokenizer(默认开启),
+// 这样 OpenAI 模型的预测成本 / 配额预留才会反映 tiktoken,而旧路径仍走字节估算。
+// 变异:去掉 realtokenizer.Enabled() 分支(永远走 legacy),gpt-4o 断言
+// 会变红;在 legacy 里恢复 (n+3)/4,则由 legacy 断言来守护它。
+func TestEstimateInputTokens_RoutesThroughRealTokenizer(t *testing.T) {
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"the quick brown fox jumps over the lazy dog"}]}`)
+
+	if !realtokenizer.Enabled() {
+		t.Skip("real tokenizer disabled in this environment")
+	}
+	got := estimateInputTokens("gpt-4o", body)
+	if want := realtokenizer.InputTokens("gpt-4o", body); got != want {
+		t.Fatalf("estimateInputTokens(gpt-4o)=%d; want realtokenizer %d", got, want)
+	}
+	// 对这段 body,真实估算必须与旧的字节估算不同,
+	// 否则就观察不到接线是否生效。
+	if legacy := legacyEstimateInputTokens(body); got == legacy {
+		t.Fatalf("real estimate %d equals legacy %d; non-discriminating fixture", got, legacy)
+	}
+}
+
+func TestLegacyEstimateInputTokens_ByteHeuristic(t *testing.T) {
+	body := []byte("abcdefgh") // 8 bytes -> (8+3)/4 = 2
+	if got := legacyEstimateInputTokens(body); got != 2 {
+		t.Fatalf("legacyEstimateInputTokens=%d want 2", got)
+	}
+	if got := legacyEstimateInputTokens([]byte("   ")); got != 1 {
+		t.Fatalf("legacy floor=%d want 1 for whitespace-only", got)
 	}
 }

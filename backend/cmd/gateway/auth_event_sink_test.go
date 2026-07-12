@@ -29,6 +29,8 @@ func TestZapAuthEventSinkRecords(t *testing.T) {
 	sink.RecordAuthEvent(context.Background(), gatewayhttp.AuthEvent{
 		EventType:   "user_login_failed",
 		TenantID:    7,
+		IP:          "203.0.113.77",
+		UserAgent:   "HUAKAI-AuthAudit-Test/1.0",
 		Outcome:     "failure",
 		ReasonClass: "invalid_credentials",
 	})
@@ -38,6 +40,13 @@ func TestZapAuthEventSinkRecords(t *testing.T) {
 	}
 	if entries[0].Level != zapcore.WarnLevel {
 		t.Fatalf("expected failure event at Warn level, got %v", entries[0].Level)
+	}
+	fields := entries[0].ContextMap()
+	if fields["ip"] != "203.0.113.77" {
+		t.Fatalf("认证事件日志 IP=%v，期望 203.0.113.77", fields["ip"])
+	}
+	if fields["user_agent"] != "HUAKAI-AuthAudit-Test/1.0" {
+		t.Fatalf("认证事件日志 User-Agent=%v，期望 HUAKAI-AuthAudit-Test/1.0", fields["user_agent"])
 	}
 }
 

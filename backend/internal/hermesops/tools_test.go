@@ -20,9 +20,8 @@ import (
 
 const secretSentinel = "sk-SECRET-LEAK-SENTINEL-9f3a"
 
-// jsonContains reports whether the sentinel appears anywhere in the JSON
-// encoding of v. Used to prove a tool result / persisted row never carries an
-// injected secret.
+// jsonContains 报告哨兵值是否出现在 v 的 JSON 编码中的任何位置。
+// 用于证明工具结果 / 持久化行绝不携带被注入的密钥。
 func jsonContains(t *testing.T, v any, needle string) bool {
 	t.Helper()
 	raw, err := json.Marshal(v)
@@ -45,18 +44,16 @@ func (fakeCredTestStore) LoadForProviderAccountTest(context.Context, int64, int6
 }
 
 func TestCredentialDiagnoseShapeAndPrivacy(t *testing.T) {
-	// Regression: the tool must surface the dry-run ok flag + error_class and the
-	// renew status's diagnostic fields, and must NOT leak the secret a faked
-	// renew row carries. Mutation: dropping the error_class field, or projecting
-	// the whole renew row (which would carry the sentinel), fails this.
+	// 回归:工具必须露出 dry-run 的 ok 标志 + error_class,以及续期状态的诊断字段,
+	// 且绝不能泄露一条 fake 续期行所携带的密钥。变异:丢掉 error_class 字段,
+	// 或投影整条续期行(那会带上哨兵值),都会让此测试失败。
 	deps := CredentialDiagnoseDeps{
 		DryRun: func(_ context.Context, _ credentialworker.ProviderAccountCredentialTestStore, _ *credentialworker.ModeAdapterRegistry, tenantID, accountID int64, _ time.Time) (credentialworker.ProviderAccountCredentialTestResult, error) {
 			return credentialworker.ProviderAccountCredentialTestResult{OK: false, ErrorClass: "invalid_grant", Message: "credential authorization failed; operator re-authentication is required"}, nil
 		},
 		TestStore: fakeCredTestStore{},
 		RenewStatus: func(_ context.Context, _ credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error) {
-			// AccountName carries the injected secret sentinel — it is a non-
-			// diagnostic field the projection MUST drop.
+			// AccountName 携带被注入的密钥哨兵值 —— 它是一个非诊断字段,投影必须丢弃它。
 			fc := "invalid_grant"
 			return []credentialstore.RenewStatusMetadata{{
 				CredentialID: 9, AccountID: 5, AccountName: secretSentinel,
@@ -84,8 +81,7 @@ func TestCredentialDiagnoseShapeAndPrivacy(t *testing.T) {
 }
 
 func TestCredentialDiagnoseFailsClosedOnNilDep(t *testing.T) {
-	// Regression: a nil dry-run/store dependency must yield ErrDependencyUnwired,
-	// never a panic.
+	// 回归:nil 的 dry-run/store 依赖必须产生 ErrDependencyUnwired,而绝不能 panic。
 	spec := CredentialDiagnoseSpec(CredentialDiagnoseDeps{})
 	r := req(7)
 	r.Args["account_id"] = float64(5)
@@ -94,9 +90,62 @@ func TestCredentialDiagnoseFailsClosedOnNilDep(t *testing.T) {
 	}
 }
 
+// TestCredentialDiagnoseProjectsExpiryTiming 守护 access_expires_at /
+// refresh_before_at / last_refresh_at 的投影(凭证到期根因)。
+// 三个时间戳各不相同(因此丢掉某个 key 会读到 nil,字段被错位则会不匹配),
+// 且该行仍在一个非诊断字段里携带密钥哨兵值 —— 所以此测试也再次确认这些时间戳
+// 没有放宽掩码。变异:丢掉这三个 key 中的任意一个 -> 变红。
+func TestCredentialDiagnoseProjectsExpiryTiming(t *testing.T) {
+	accessExp := time.Date(2026, 5, 14, 18, 0, 0, 0, time.UTC)
+	refreshBy := time.Date(2026, 5, 14, 17, 0, 0, 0, time.UTC)
+	lastRefresh := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	deps := CredentialDiagnoseDeps{
+		DryRun: func(_ context.Context, _ credentialworker.ProviderAccountCredentialTestStore, _ *credentialworker.ModeAdapterRegistry, _, _ int64, _ time.Time) (credentialworker.ProviderAccountCredentialTestResult, error) {
+			return credentialworker.ProviderAccountCredentialTestResult{OK: true, Message: "credential is valid"}, nil
+		},
+		TestStore: fakeCredTestStore{},
+		RenewStatus: func(_ context.Context, _ credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error) {
+			return []credentialstore.RenewStatusMetadata{{
+				CredentialID: 9, AccountID: 5, AccountName: secretSentinel,
+				Vendor: "anthropic", AuthMode: "oauth", State: "active",
+				AccessExpiresAt: &accessExp, RefreshBeforeAt: &refreshBy, LastRefreshAt: &lastRefresh,
+			}}, nil
+		},
+	}
+	spec := CredentialDiagnoseSpec(deps)
+	r := req(7)
+	r.Args["account_id"] = float64(5)
+	res, err := spec.Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	rows, ok := res.Summary["renew_status"].([]map[string]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("renew_status=%v want exactly one row", res.Summary["renew_status"])
+	}
+	row := rows[0]
+	for _, c := range []struct {
+		key  string
+		want time.Time
+	}{
+		{"access_expires_at", accessExp},
+		{"refresh_before_at", refreshBy},
+		{"last_refresh_at", lastRefresh},
+	} {
+		got, ok := row[c.key].(time.Time)
+		if !ok || !got.Equal(c.want) {
+			t.Fatalf("%s=%v want %v (projection dropped?)", c.key, row[c.key], c.want)
+		}
+	}
+	// 新增的时间戳绝不能放宽密钥掩码。
+	if jsonContains(t, res.Summary, secretSentinel) {
+		t.Fatalf("credential_diagnose leaked the secret sentinel after adding timestamps: %v", res.Summary)
+	}
+}
+
 func TestCredentialDiagnoseRejectsMissingAccountID(t *testing.T) {
-	// Regression: a missing/zero account_id must be ErrInvalidArgs (400), not a
-	// read against account 0.
+	// 回归:缺失/为零的 account_id 必须返回 ErrInvalidArgs(400),
+	// 而不是对 account 0 发起读取。
 	spec := CredentialDiagnoseSpec(CredentialDiagnoseDeps{
 		DryRun: func(_ context.Context, _ credentialworker.ProviderAccountCredentialTestStore, _ *credentialworker.ModeAdapterRegistry, _, _ int64, _ time.Time) (credentialworker.ProviderAccountCredentialTestResult, error) {
 			return credentialworker.ProviderAccountCredentialTestResult{OK: true}, nil
@@ -111,9 +160,8 @@ func TestCredentialDiagnoseRejectsMissingAccountID(t *testing.T) {
 // --- account_health_diagnose ------------------------------------------------
 
 func TestAccountHealthDiagnoseShape(t *testing.T) {
-	// Regression: the tool must surface the account health row's state + failure
-	// class/count and the channel summary's per-state counts. Mutation: dropping
-	// failure_class breaks the error_class derivation asserted below.
+	// 回归:工具必须露出 account health 行的 state + 失败分类/计数,以及 channel summary
+	// 的逐状态计数。变异:丢掉 failure_class 会破坏下面断言的 error_class 推导。
 	fc := "rate_limit_exceeded"
 	deps := AccountHealthDeps{
 		ProviderAccountHealth: func(_ context.Context, p admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
@@ -151,12 +199,51 @@ func TestAccountHealthDiagnoseFailsClosedOnNilDep(t *testing.T) {
 	}
 }
 
+// TestAccountHealthDiagnoseProjectsRecoveryAndSessionWindow 守护恢复 ETA
+// (health_state_until)和 5h 会话窗口边界(start/end)的投影。
+// 三个时间戳各不相同,所以丢掉某个 key(nil)或字段被错位都会失败。
+// 变异:从 summary map 里移除这三个 key 中的任意一个 -> 变红。
+func TestAccountHealthDiagnoseProjectsRecoveryAndSessionWindow(t *testing.T) {
+	until := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	winStart := time.Date(2026, 5, 14, 8, 0, 0, 0, time.UTC)
+	winEnd := time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC)
+	deps := AccountHealthDeps{
+		ProviderAccountHealth: func(_ context.Context, _ admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
+			return admindb.GetAdminProviderAccountHealthRow{
+				ID: 5, TenantID: 7, HealthState: "degraded",
+				HealthStateUntil:     pgtype.Timestamptz{Time: until, Valid: true},
+				SessionWindow5hStart: pgtype.Timestamptz{Time: winStart, Valid: true},
+				SessionWindow5hEnd:   pgtype.Timestamptz{Time: winEnd, Valid: true},
+			}, nil
+		},
+	}
+	spec := AccountHealthDiagnoseSpec(deps)
+	r := req(7)
+	r.Args["account_id"] = float64(5)
+	res, err := spec.Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, c := range []struct {
+		key  string
+		want time.Time
+	}{
+		{"health_state_until", until},
+		{"session_window_5h_start", winStart},
+		{"session_window_5h_end", winEnd},
+	} {
+		got, ok := res.Summary[c.key].(time.Time)
+		if !ok || !got.Equal(c.want) {
+			t.Fatalf("%s=%v want %v (projection dropped?)", c.key, res.Summary[c.key], c.want)
+		}
+	}
+}
+
 // --- request_diagnose -------------------------------------------------------
 
 func TestRequestDiagnoseCorrelatesAndDropsCost(t *testing.T) {
-	// Regression: the tool must correlate only the matching request_id and must
-	// DROP actual_cost (money). Mutation: emitting actual_cost, or not filtering
-	// by request_id, fails this.
+	// 回归:工具必须只关联匹配的 request_id,且必须丢弃 actual_cost(钱)。
+	// 变异:输出 actual_cost,或不按 request_id 过滤,都会让此测试失败。
 	deps := ObservabilityDeps{
 		ListUsage: func(_ context.Context, p dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
 			return []dbbilling.ListUsageRecordsRow{
@@ -194,12 +281,49 @@ func TestRequestDiagnoseFailsClosedOnNilDep(t *testing.T) {
 	}
 }
 
+// TestRequestDiagnoseProjectsModelRewriteFields 守护 requested_model /
+// upstream_model 的投影,它让运营者能看到某 request_id 的模型重写 / 回退
+// (requested != upstream)。变异:从 usageDiagnosticShape 丢掉其中任一 key ->
+// 该字段会从 usage_records[0] 中消失 -> 变红。
+func TestRequestDiagnoseProjectsModelRewriteFields(t *testing.T) {
+	upstream := "claude-opus-4-20260514"
+	deps := ObservabilityDeps{
+		ListUsage: func(_ context.Context, _ dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
+			return []dbbilling.ListUsageRecordsRow{
+				{ID: 1, ClaimID: 11, RequestID: "req-A", RequestedModel: "claude-opus-4", UpstreamModel: &upstream, EndClass: "ok"},
+			}, nil
+		},
+		ListClaims: func(_ context.Context, _ dbbilling.ListBillingClaimsParams) ([]dbbilling.ListBillingClaimsRow, error) {
+			return nil, nil
+		},
+	}
+	spec := RequestDiagnoseSpec(deps)
+	r := req(7)
+	r.Args["request_id"] = "req-A"
+	res, err := spec.Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	records, ok := res.Summary["usage_records"].([]map[string]any)
+	if !ok || len(records) != 1 {
+		t.Fatalf("usage_records=%v want exactly one shape", res.Summary["usage_records"])
+	}
+	rec := records[0]
+	// 有区分度:requested != upstream 是一次真实的重写;若投影被丢掉,
+	// 该 key 会变成 nil,与两个预置值都不相同。
+	if rec["requested_model"] != "claude-opus-4" {
+		t.Fatalf("requested_model=%v want claude-opus-4 (projection dropped?)", rec["requested_model"])
+	}
+	if rec["upstream_model"] != "claude-opus-4-20260514" {
+		t.Fatalf("upstream_model=%v want claude-opus-4-20260514 (projection dropped?)", rec["upstream_model"])
+	}
+}
+
 // --- audit_lookup -----------------------------------------------------------
 
 func TestAuditLookupDropsPayloadAndReason(t *testing.T) {
-	// Regression (PRIVACY): the audit projection must DROP the free-form Payload
-	// blob and Reason string, which here carry the secret sentinel. Mutation:
-	// surfacing payload/reason re-introduces the leak.
+	// 回归(PRIVACY):审计投影必须丢弃自由文本的 Payload blob 和 Reason 字符串,
+	// 它们在这里携带密钥哨兵值。变异:露出 payload/reason 会重新引入泄露。
 	reason := secretSentinel
 	deps := ObservabilityDeps{
 		ListAudit: func(_ context.Context, p dbbilling.ListAuditEventsParams) ([]dbbilling.ListAuditEventsRow, error) {
@@ -226,9 +350,8 @@ func TestAuditLookupDropsPayloadAndReason(t *testing.T) {
 // --- log_analyze ------------------------------------------------------------
 
 func TestLogAnalyzeAggregatesEnums(t *testing.T) {
-	// Regression: the tool must count end_class enums (here 2 ok + 1 error) and
-	// NEVER read a raw body. Mutation: miscounting (e.g. only counting the first
-	// row) fails the discriminating expected map.
+	// 回归:工具必须统计 end_class 枚举(这里是 2 个 ok + 1 个 error),
+	// 且绝不读取原始报文。变异:统计错误(例如只统计第一行)会让有区分度的预期 map 失败。
 	deps := ObservabilityDeps{
 		ListUsage: func(_ context.Context, p dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
 			return []dbbilling.ListUsageRecordsRow{
@@ -258,9 +381,8 @@ func TestLogAnalyzeAggregatesEnums(t *testing.T) {
 // --- dlq_inspect ------------------------------------------------------------
 
 func TestDLQInspectDropsPayloadAndAggregates(t *testing.T) {
-	// Regression (PRIVACY + shape): dlq_inspect must DROP the raw event Payload
-	// (carrying the sentinel) and aggregate by status/kind. Mutation: surfacing
-	// the payload re-leaks; miscounting fails the discriminating maps.
+	// 回归(PRIVACY + 结构):dlq_inspect 必须丢弃原始事件 Payload(携带哨兵值),
+	// 并按 status/kind 聚合。变异:露出 payload 会再次泄露;统计错误会让有区分度的 map 失败。
 	deps := DLQInspectDeps{
 		List: func(_ context.Context, f dlq.ListFilter) ([]dlq.Record, error) {
 			if f.TenantID == nil || *f.TenantID != 7 {
@@ -296,5 +418,134 @@ func TestDLQInspectFailsClosedOnNilDep(t *testing.T) {
 	}
 }
 
-// ensure pgtype stays referenced for fixtures that need a valid timestamp.
+// 确保 pgtype 在需要有效时间戳的 fixture 中保持被引用。
 var _ = pgtype.Timestamptz{Valid: true}
+
+// TestAccountHealthDiagnoseFoldsAccountChannels 守增强:account_health_diagnose 折叠**本账号**
+// (account_id 匹配 ProviderAccountID)的逐通道明细 + 只露安全投影字段;别账号通道绝不混入。
+// Mutation:删 channelHealthShape 折叠里的 account_id 过滤 → 别账号通道也进 channels → count 转红。
+func TestAccountHealthDiagnoseFoldsAccountChannels(t *testing.T) {
+	deps := AccountHealthDeps{
+		ProviderAccountHealth: func(_ context.Context, p admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
+			return admindb.GetAdminProviderAccountHealthRow{ID: 5, TenantID: 7, HealthState: "active", Enabled: true}, nil
+		},
+		ChannelList: func(_ context.Context, tenantID int64, limit, offset int) ([]channelhealth.Record, error) {
+			if tenantID != 7 {
+				t.Fatalf("scope leaked: tenantID=%d want 7", tenantID)
+			}
+			return []channelhealth.Record{
+				// ManualPauseReason 设哨兵:operator 自填自由文本,**绝不能进 LLM 可见输出**。
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-a", ProviderAccountID: 5, Vendor: "openai"}, State: "cooling_down", ReasonClass: "rate_limit", ManualPauseReason: "SENTINEL-free-text-must-not-leak"},
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-b", ProviderAccountID: 5}, State: "active"},
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-other", ProviderAccountID: 99}, State: "disabled"}, // 别账号:不应出现
+			}, nil
+		},
+	}
+	spec := AccountHealthDiagnoseSpec(deps)
+	r := req(7)
+	r.Args["account_id"] = float64(5)
+	res, err := spec.Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	chans, ok := res.Summary["channels"].([]map[string]any)
+	if !ok {
+		t.Fatalf("channels 缺失或类型不对: %T", res.Summary["channels"])
+	}
+	if len(chans) != 2 {
+		t.Fatalf("应只折叠本账号(id=5)的 2 条通道,got %d(account_id 过滤被破坏会带进别账号)", len(chans))
+	}
+	for _, c := range chans {
+		if c["provider_account_id"].(int64) != 5 {
+			t.Fatalf("混入别账号通道: %v", c)
+		}
+		if _, has := c["state"]; !has {
+			t.Fatalf("投影缺 state: %v", c)
+		}
+		// safe-by-construction:绝不投影自由文本字段(防 operator 笔记泄露进 LLM)。
+		if _, has := c["manual_pause_reason"]; has {
+			t.Fatalf("投影泄露了自由文本 manual_pause_reason(应只露枚举/时间戳/ids/计数): %v", c)
+		}
+		if _, has := c["recovery_blocked_reason"]; has {
+			t.Fatalf("投影泄露了自由文本 recovery_blocked_reason: %v", c)
+		}
+	}
+}
+
+// TestAccountHealthDiagnoseChannelsBackwardCompat:ChannelList nil 时退化为不返 channels(向后兼容)。
+func TestAccountHealthDiagnoseChannelsBackwardCompat(t *testing.T) {
+	deps := AccountHealthDeps{
+		ProviderAccountHealth: func(_ context.Context, p admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
+			return admindb.GetAdminProviderAccountHealthRow{ID: 5, TenantID: 7, HealthState: "active", Enabled: true}, nil
+		},
+		// ChannelList 故意 nil
+	}
+	r := req(7)
+	r.Args["account_id"] = float64(5)
+	res, err := AccountHealthDiagnoseSpec(deps).Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, has := res.Summary["channels"]; has {
+		t.Fatalf("ChannelList nil 时不应出现 channels(向后兼容): %v", res.Summary["channels"])
+	}
+}
+
+// TestChannelHealthListSpec 守新只读工具:整租户逐通道列表 + state 过滤 + by_state 聚合 + no-leak。
+// Mutation:删 state 过滤 → cooling_down 查询返全部 3 条 → count 转红;删投影 no-leak → 哨兵泄露转红。
+func TestChannelHealthListSpec(t *testing.T) {
+	deps := ChannelHealthListDeps{
+		List: func(_ context.Context, tenantID int64, limit, offset int) ([]channelhealth.Record, error) {
+			if tenantID != 7 {
+				t.Fatalf("scope leaked: tenantID=%d want 7", tenantID)
+			}
+			return []channelhealth.Record{
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-a", ProviderAccountID: 5}, State: "cooling_down", ManualPauseReason: "SENTINEL-must-not-leak"},
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-b", ProviderAccountID: 6}, State: "active"},
+				{Key: channelhealth.ChannelKey{ChannelID: "ch-c", ProviderAccountID: 7}, State: "cooling_down"},
+			}, nil
+		},
+	}
+	spec := ChannelHealthListSpec(deps)
+
+	// 无过滤:全部 3 条。
+	res, err := spec.Run(context.Background(), req(7))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Summary["channel_count"].(int) != 3 {
+		t.Fatalf("channel_count want 3, got %v", res.Summary["channel_count"])
+	}
+	items := res.Summary["items"].([]map[string]any)
+	if len(items) != 3 {
+		t.Fatalf("无过滤应 3 条, got %d", len(items))
+	}
+	// no-leak:自由文本字段不投影。
+	for _, c := range items {
+		if _, has := c["manual_pause_reason"]; has {
+			t.Fatalf("泄露自由文本 manual_pause_reason: %v", c)
+		}
+	}
+
+	// state 过滤:只 cooling_down(2 条);by_state 仍统计全部 3。
+	r2 := req(7)
+	r2.Args["state"] = "cooling_down"
+	res2, err := spec.Run(context.Background(), r2)
+	if err != nil {
+		t.Fatalf("run filtered: %v", err)
+	}
+	items2 := res2.Summary["items"].([]map[string]any)
+	if len(items2) != 2 {
+		t.Fatalf("cooling_down 过滤应 2 条, got %d(过滤被破坏会返全部)", len(items2))
+	}
+	if res2.Summary["channel_count"].(int) != 3 {
+		t.Fatalf("channel_count 应仍是全部 3(by_state 过滤前统计), got %v", res2.Summary["channel_count"])
+	}
+}
+
+func TestChannelHealthListNilDep(t *testing.T) {
+	_, err := ChannelHealthListSpec(ChannelHealthListDeps{}).Run(context.Background(), req(7))
+	if !errors.Is(err, ErrDependencyUnwired) {
+		t.Fatalf("nil dep 应 ErrDependencyUnwired, got %v", err)
+	}
+}

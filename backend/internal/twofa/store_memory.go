@@ -93,6 +93,33 @@ func (s *MemoryStore) MarkSuccess(_ context.Context, tenantID, userID int64, now
 	return nil
 }
 
+func (s *MemoryStore) MarkTOTPSuccess(_ context.Context, tenantID, userID int64, consumedStep int64, now time.Time) (bool, error) {
+	if s == nil {
+		return false, ErrStoreNotConfigured
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := userKey(tenantID, userID)
+	settings, ok := s.settings[key]
+	if !ok {
+		return false, ErrNotSetup
+	}
+	// 条件守卫:仅当 consumedStep 严格大于已存 LastUsedStep(或其为 nil)时才记录,镜像
+	// Postgres 条件 UPDATE 的原子语义——并发提交同一时间步只有一个成功(stored=true),
+	// 其余返回 stored=false 供调用方按重放拒绝。锁持有期间完成"比较+写入"保证原子。
+	if settings.LastUsedStep != nil && consumedStep <= *settings.LastUsedStep {
+		return false, nil
+	}
+	settings.FailedAttempts = 0
+	settings.LockedUntil = nil
+	settings.LastUsedAt = cloneTimePtr(&now)
+	step := consumedStep
+	settings.LastUsedStep = &step
+	settings.UpdatedAt = now
+	s.settings[key] = settings
+	return true, nil
+}
+
 func (s *MemoryStore) MarkFailure(_ context.Context, tenantID, userID int64, failedAttempts int, lockedUntil *time.Time, now time.Time) error {
 	if s == nil {
 		return ErrStoreNotConfigured
@@ -175,5 +202,6 @@ func cloneSettings(in Settings) Settings {
 	in.SecretEnc = append([]byte(nil), in.SecretEnc...)
 	in.LockedUntil = cloneTimePtr(in.LockedUntil)
 	in.LastUsedAt = cloneTimePtr(in.LastUsedAt)
+	in.LastUsedStep = cloneInt64Ptr(in.LastUsedStep)
 	return in
 }

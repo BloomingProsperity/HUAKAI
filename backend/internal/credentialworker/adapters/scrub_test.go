@@ -11,7 +11,7 @@ import (
 // mergeTokenResponse 写回 store 前必须主动删 hostile credential 字段,
 // 防止 cred 残留攻击面被未来 refresh / ingest path 意外读取。
 //
-// 判别 mutation: 删 mergeTokenResponse 中 delete(cred, "oauth_token_endpoint")
+// 判别变异: 删 mergeTokenResponse 中 delete(cred, "oauth_token_endpoint")
 // 等任一行 → 对应 sub-test 立即变红 — store 里仍能取出 attacker 值。
 func TestMergeTokenResponseScrubsHostileCredentialFields(t *testing.T) {
 	// caller 构造的 cred 含 attacker plant 的 hostile 字段 (模拟历史 ingest 时
@@ -89,5 +89,5 @@ func TestMergeTokenResponseScrubsHostileCredentialFields(t *testing.T) {
 			t.Fatalf("scrub 后 marshal 仍含 %q: %s", hostileSubstring, rawStr)
 		}
 	}
-	_ = time.Now // keep time import (resp.ExpiresIn 间接用到)
+	_ = time.Now // 保留 time import（resp.ExpiresIn 间接用到）
 }

@@ -34,7 +34,10 @@ ORDER BY priority ASC, id ASC
 FOR UPDATE;
 
 -- name: ListCurrentQuotaWindowsForScope :many
--- Subscription progress read projection: active cost_usd policies for one tenant/scope plus the current window counters.
+-- Active quota-window read projection: policies for one tenant/scope filtered to the
+-- requested metrics, plus the current window counters. Cost-only callers (subscription
+-- progress, key-control) pass {cost_usd} to preserve their original behaviour; the
+-- self-service /quota read passes the window-shaped metrics (requests/cost_usd/tokens).
 SELECT
     qp.tenant_id,
     qp.id AS policy_id,
@@ -68,7 +71,7 @@ WHERE qp.tenant_id = sqlc.arg(tenant_id)::bigint
   AND qp.mode <> 'disabled'
   AND qp.scope_kind = sqlc.arg(scope_kind)::text
   AND qp.scope_id = sqlc.arg(scope_id)::text
-  AND qp.metric = 'cost_usd'
+  AND qp.metric = ANY(sqlc.arg(metrics)::text[])
   AND qp.valid_from <= sqlc.arg(at_time)::timestamptz
   AND (qp.valid_until IS NULL OR qp.valid_until > sqlc.arg(at_time)::timestamptz)
 ORDER BY
@@ -384,14 +387,22 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
 
 -- name: ExpireQuotaConcurrencySlots :execrows
 -- 租户内 lease 过期清理, 不写 provider cooldown。
-UPDATE quota_concurrency_slots
+UPDATE quota_concurrency_slots qcs
 SET status = 'expired',
     released_at = NOW(),
     release_reason = 'lease_expired',
     updated_at = NOW()
-WHERE tenant_id = sqlc.arg(tenant_id)::bigint
-  AND status = 'acquired'
-  AND lease_expires_at <= sqlc.arg(at_time)::timestamptz;
+WHERE qcs.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND qcs.status = 'acquired'
+  AND qcs.lease_expires_at <= sqlc.arg(at_time)::timestamptz
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_dlq d
+      WHERE d.tenant_id = qcs.tenant_id
+        AND d.claim_id = qcs.claim_id
+        AND d.event_kind = 'post_delivery_settlement'
+        AND d.status <> 'delivered'
+  );
 
 -- name: InsertQuotaAuditEvent :one
 -- 配额审计事件; deny/overage/reconcile 都只写 quota audit。
@@ -505,6 +516,27 @@ ORDER BY next_run_at ASC, id ASC
 LIMIT sqlc.arg(job_limit)::integer
 FOR UPDATE SKIP LOCKED;
 
+-- name: ListTenantsWithDueQuotaReconciliationJobs :many
+-- 全局 sweep 入口: 列出「有到期 job」的 distinct 租户, 供跨租户 worker 公平轮转。
+-- due 条件与单租户 ListDueQuotaReconciliationJobs 逐字一致(queued/failed 到期, 或 running
+-- 但 lock 陈旧), 确保「有 due 的租户」精确; worker 再对每个租户走单租户领取 + 每租户 limit,
+-- 天然公平不饿死其它租户。tenant_limit 封顶单轮扫描的租户数。
+SELECT DISTINCT tenant_id
+FROM quota_reconciliation_jobs
+WHERE (
+    (status IN ('queued', 'failed')
+     AND next_run_at <= sqlc.arg(at_time)::timestamptz)
+    OR (
+        status = 'running'
+        AND (
+            locked_at IS NULL
+            OR locked_at < sqlc.arg(at_time)::timestamptz - INTERVAL '15 minutes'
+        )
+    )
+)
+ORDER BY tenant_id ASC
+LIMIT sqlc.arg(tenant_limit)::integer;
+
 -- name: MarkQuotaReconciliationJobRunning :execrows
 -- worker 领取 job 后标记 running; 超过 15 分钟的 running 视为可回收 lease。
 UPDATE quota_reconciliation_jobs
@@ -545,3 +577,43 @@ SET status = 'failed',
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND id = sqlc.arg(job_id)::bigint
   AND status = 'running';
+
+-- name: ListStaleReservedQuotaReservations :many
+-- 清扫入口: lease 过期未终态 + claim 已终态 + 无任何补偿 job 史的孤儿预留(有 job 史的行归 job 重放段, 其退避与终态停靠不可被清扫段每轮重试击穿)。
+SELECT qr.tenant_id,
+       qr.id AS reservation_id,
+       qr.claim_id,
+       qr.predicted_cost,
+       blc.status AS claim_status,
+       blc.actual_cost AS claim_actual_cost
+FROM quota_reservations qr
+JOIN billing_ledger_claims blc
+  ON blc.tenant_id = qr.tenant_id
+ AND blc.id = qr.claim_id
+WHERE qr.status IN ('reserved', 'reconciliation_needed')
+  AND qr.lease_expires_at <= sqlc.arg(at_time)::timestamptz
+  AND blc.status IN ('committed', 'aborted')
+  AND NOT EXISTS (
+      SELECT 1
+      FROM quota_reconciliation_jobs j
+      WHERE j.tenant_id = qr.tenant_id
+        AND j.claim_id = qr.claim_id
+        AND j.status IN ('queued', 'running', 'failed')
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM usage_record_dlq d
+      WHERE d.tenant_id = qr.tenant_id
+        AND d.claim_id = qr.claim_id
+        AND d.event_kind = 'post_delivery_settlement'
+        AND d.status <> 'delivered'
+  )
+ORDER BY qr.lease_expires_at ASC, qr.id ASC
+LIMIT sqlc.arg(row_limit)::integer;
+
+-- name: GetBillingClaimTerminalState :one
+-- claim 终态点查: 补偿动作执行前复核 claim 现状(actual_cost 非 NULL 等价于已 commit 写入实结额)。
+SELECT status, actual_cost
+FROM billing_ledger_claims
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND id = sqlc.arg(claim_id)::bigint;

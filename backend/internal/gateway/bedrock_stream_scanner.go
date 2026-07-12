@@ -1,25 +1,25 @@
-// bedrock_stream_scanner.go — A3 atomic：把 AWS Bedrock 二进制 EventStream
+// bedrock_stream_scanner.go — A3 原子变更：把 AWS Bedrock 二进制 EventStream
 // 转换为 forwarder 消费的 SSEEvent 流。
 //
 // 与 SSEStreamScanner 同形态实现 StreamScanner 接口，但底层走
-// provider/bedrock/eventstream 包的 binary frame decoder，不走 SSE 行扫描。
+// provider/bedrock/eventstream 包的二进制帧解码器，不走 SSE 行扫描。
 //
 // 行为概要：
-//   - 循环读 binary frame
+//   - 循环读取 binary frame
 //   - 按 :message-type / :event-type header 分支
 //   - "event" + "chunk" → payload 是 {"bytes":"<base64>"}，解 base64 得
-//     内层 Anthropic event JSON → 提取 {"type":"..."} → emit 为
+//     内层 Anthropic event JSON → 提取 {"type":"..."} → 发出为
 //     SSEEvent{Type: 内层 type, Data: 原 JSON 字节}
-//   - "exception" / "error" → emit 为 protocol-level error
+//   - "exception" / "error" → 发出为协议级 error
 //     SSEEvent（Type="error", Data=原 payload），随后 yield ErrBedrockException
-//     结束流（R4 决策：当 protocol-level error 处理）
-//   - Bedrock response exception event-types / unknown message-type →
-//     protocol-level error；明确的 control event 才可跳过
+//     结束流（R4 决策：当协议级 error 处理）
+//   - Bedrock response exception 事件类型 / unknown message-type →
+//     协议级 error；明确的 control event 才可跳过
 //   - decoder 错误传播为 (SSEEvent{}, err)，scanner 退出
 //
 // 设计约束（与 codex_session 同条款）：
-// 不读 aws-sdk-go EventStreamHandler / TranscribeAdapter
-//     等 reference 实现；逻辑基于 AWS Bedrock 公开文档的 streaming response
+//   - 不读 aws-sdk-go EventStreamHandler / TranscribeAdapter
+//     等参考实现；逻辑基于 AWS Bedrock 公开文档的 streaming response
 //     形态推导
 //   - 只支持 Anthropic-on-Bedrock 子集（chunk envelope = {"bytes": ...}）；
 //     Llama-on-Bedrock / Cohere-on-Bedrock 等 chunk 内部形态可能不同，
@@ -41,7 +41,7 @@ import (
 )
 
 // ErrBedrockException 表示 Bedrock 后端发回了 :message-type=exception 帧。
-// scanner 把 exception payload 作为最后一条 SSEEvent emit 后，再 yield 此 error。
+// scanner 把 exception payload 作为最后一条 SSEEvent 发出后，再 yield 此 error。
 var ErrBedrockException = errors.New("gateway: Bedrock EventStream 返回 exception 帧")
 
 // ErrBedrockChunkPayload 表示 chunk envelope 解析失败（base64 / JSON 错）。
@@ -102,7 +102,7 @@ func (s *BedrockEventStreamScanner) Scan(ctx context.Context, r io.Reader, buffe
 					return
 				}
 			case "exception", "error":
-				// R4 决策：当 protocol-level error；emit error event + 终止
+				// R4 决策：当协议级 error；发出 error event + 终止
 				yieldBedrockProtocolError("message-type", messageType, msg.Payload, yield)
 				return
 			default:
@@ -127,7 +127,7 @@ func (s *BedrockEventStreamScanner) handleEventFrame(eventType string, payload [
 		return yieldBedrockProtocolError("event-type", eventType, payload, yield)
 	}
 
-	// chunk envelope 形态：{"bytes": "<base64-encoded inner JSON>"}
+	// chunk envelope 形态：{"bytes": "<base64 编码的内层 JSON>"}
 	var envelope struct {
 		Bytes string `json:"bytes"`
 	}
@@ -143,7 +143,7 @@ func (s *BedrockEventStreamScanner) handleEventFrame(eventType string, payload [
 	var inner struct {
 		Type string `json:"type"`
 	}
-	// 解析失败不致命：仍可作为 anonymous SSEEvent emit（forwarder 下游
+	// 解析失败不致命：仍可作为 anonymous SSEEvent 发出（forwarder 下游
 	// adapter 自己再解析）；只是 SSEEvent.Type 为空。
 	_ = json.Unmarshal(innerJSON, &inner)
 
@@ -162,9 +162,9 @@ func yieldBedrockProtocolError(kind, value string, payload []byte, yield func(SS
 	return false
 }
 
-// Source files read:
-//   - https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModelWithResponseStream.html (Bedrock streaming response shape)
-//   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (chunk envelope: bytes field, base64-encoded inner JSON)
-//   - HUAKAI internal: backend/internal/provider/bedrock/eventstream/decoder.go (A2 atomic)
-// Lane: claude
-// Time: 2026-05-07T<UTC>
+// 参阅的来源文件:
+//   - https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModelWithResponseStream.html (Bedrock 流式响应形态)
+//   - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-invoke-stream.html (chunk envelope:bytes 字段,base64 编码的内层 JSON)
+//   - HUAKAI 内部:backend/internal/provider/bedrock/eventstream/decoder.go (A2 原子变更)
+// 通道: claude
+// 时间: 2026-05-07T<UTC>

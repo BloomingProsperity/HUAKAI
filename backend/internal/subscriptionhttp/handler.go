@@ -17,6 +17,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
@@ -38,7 +39,7 @@ type Service interface {
 	DisablePlan(context.Context, int64, int64) error
 	AssignSubscription(context.Context, subscription.AssignSubscriptionInput) (subscription.AssignResult, error)
 	BulkAssign(context.Context, subscription.BulkAssignInput) (subscription.BulkAssignResult, error)
-	CancelSubscription(context.Context, int64, int64, int64, string) (subscription.UserSubscription, error)
+	CancelSubscription(context.Context, int64, int64, int64, string, string) (subscription.UserSubscription, error)
 	ExtendSubscription(context.Context, subscription.ExtendSubscriptionInput) (subscription.UserSubscription, error)
 	ResetQuota(context.Context, subscription.ResetQuotaInput) (subscription.UserSubscription, error)
 	ChangePlan(context.Context, subscription.ChangePlanInput) (subscription.UserSubscription, error)
@@ -67,8 +68,8 @@ type AdminDeps struct {
 // UserDeps 用户路由依赖。
 type UserDeps struct {
 	Service Service
-	// Quota is used only by GET /me/progress to read the caller's current subscription usage.
-	// nil is tolerated for routes that do not expose usage; an active progress request returns 503.
+	// Quota 仅由 GET /me/progress 用来读取调用者当前订阅的用量。
+	// 对不暴露用量的路由可容忍为 nil;此时一个活跃的 progress 请求返回 503。
 	Quota QuotaProgressStore
 	// Payment 用于订阅自助购买 (POST /purchase): 复用支付建单, 造一张 subscription 类型订单,
 	// 待 confirm/webhook 履约后才真正 grant 订阅。nil 时该端点回 503, 不影响只读端点。
@@ -249,22 +250,25 @@ func toAuditEventViews(events []subscription.AuditEvent) []auditEventView {
 
 // MountSubscriptionAdminRoutes 挂载管理员订阅端点 (套餐 CRUD + 分配/取消/查询)。
 func MountSubscriptionAdminRoutes(r chi.Router, d AdminDeps) {
-	r.Post("/plans", newAdminCreatePlanHandler(d))
+	// money-via-login:订阅套餐/指派/发券等 admin 动钱操作放开给登录 admin(session),对标 new-api;
+	// 危险者靠前端确认弹窗。归属经 P2b-2 双身份 text 列(assigned_by_actor/actor_ref)可追。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/plans", newAdminCreatePlanHandler(d))
 	r.Get("/plans", newAdminListPlansHandler(d))
 	r.Get("/plans/{id}", newAdminGetPlanHandler(d))
-	r.Put("/plans/{id}", newAdminUpdatePlanHandler(d))
-	r.Post("/plans/{id}", newAdminUpdatePlanHandler(d))
-	r.Post("/plans/{id}/disable", newAdminDisablePlanHandler(d))
-	r.Post("/assignments", newAdminAssignHandler(d))
-	r.Post("/assignments/bulk", newAdminBulkAssignHandler(d))
+	r.With(safe).Put("/plans/{id}", newAdminUpdatePlanHandler(d))
+	r.With(safe).Post("/plans/{id}", newAdminUpdatePlanHandler(d))
+	r.With(safe).Post("/plans/{id}/disable", newAdminDisablePlanHandler(d))
+	r.With(safe).Post("/assignments", newAdminAssignHandler(d))
+	r.With(safe).Post("/assignments/bulk", newAdminBulkAssignHandler(d))
 	r.Get("/assignments", newAdminListAssignmentsHandler(d))
 	r.Get("/assignments/{id}", newAdminGetAssignmentHandler(d))
-	r.Post("/assignments/{id}/cancel", newAdminCancelHandler(d))
-	r.Post("/assignments/{id}/extend", newAdminExtendHandler(d))
-	r.Post("/assignments/{id}/reset-quota", newAdminResetQuotaHandler(d))
-	r.Post("/assignments/{id}/change-plan", newAdminChangePlanHandler(d))
-	r.Post("/assignments/{id}/revoke", newAdminRevokeHandler(d))
-	r.Post("/vouchers", newAdminCreateSubscriptionVoucherHandler(d))
+	r.With(safe).Post("/assignments/{id}/cancel", newAdminCancelHandler(d))
+	r.With(safe).Post("/assignments/{id}/extend", newAdminExtendHandler(d))
+	r.With(safe).Post("/assignments/{id}/reset-quota", newAdminResetQuotaHandler(d))
+	r.With(safe).Post("/assignments/{id}/change-plan", newAdminChangePlanHandler(d))
+	r.With(safe).Post("/assignments/{id}/revoke", newAdminRevokeHandler(d))
+	r.With(safe).Post("/vouchers", newAdminCreateSubscriptionVoucherHandler(d))
 }
 
 // MountSubscriptionUserRoutes 挂载用户订阅端点 (当前订阅 / 可购套餐 / 自助购买)。
@@ -403,8 +407,8 @@ func newAdminAssignHandler(d AdminDeps) http.HandlerFunc {
 			TenantID:     req.TenantID,
 			UserID:       req.UserID,
 			PlanID:       req.PlanID,
-			ActorAdminID: ident.TokenID,
-			RequestID:    requestID(r),
+			ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(),
+			RequestID: requestID(r),
 		})
 		if err != nil {
 			writeSubscriptionError(w, err)
@@ -500,7 +504,7 @@ func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		sub, err := d.Service.CancelSubscription(r.Context(), req.TenantID, id, ident.TokenID, requestID(r))
+		sub, err := d.Service.CancelSubscription(r.Context(), req.TenantID, id, ident.TokenID, requestID(r), ident.AuditActor())
 		if err != nil {
 			writeSubscriptionError(w, err)
 			return
@@ -537,7 +541,7 @@ func newAdminCreateSubscriptionVoucherHandler(d AdminDeps) http.HandlerFunc {
 		}
 		planID := req.PlanID
 		result, err := d.VoucherService.Create(r.Context(), voucher.CreateInput{
-			TenantID: req.TenantID, AdminID: ident.TokenID, Code: req.Code,
+			TenantID: req.TenantID, AdminID: ident.TokenID, ActorRef: ident.AuditActor(), Code: req.Code,
 			AmountCents: req.AmountCents, CurrencyCode: req.CurrencyCode,
 			ValidFrom: req.ValidFrom, ValidUntil: req.ValidUntil,
 			MaxRedemptions: req.MaxRedemptions, SingleUsePerUser: boolDefault(req.SingleUsePerUser, true),

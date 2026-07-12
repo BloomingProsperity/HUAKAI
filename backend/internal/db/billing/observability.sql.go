@@ -117,6 +117,25 @@ func (q *Queries) CountBillingClaims(ctx context.Context, arg CountBillingClaims
 	return column_1, err
 }
 
+const countPendingReconciliationUsageRecords = `-- name: CountPendingReconciliationUsageRecords :one
+SELECT count(*)::bigint
+FROM usage_records ur
+WHERE ur.pending_reconciliation = true
+  AND NOT EXISTS (
+    SELECT 1
+    FROM usage_record_reconciliation_events re
+    WHERE re.tenant_id = ur.tenant_id
+      AND re.original_usage_record_id = ur.id
+  )
+`
+
+func (q *Queries) CountPendingReconciliationUsageRecords(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countPendingReconciliationUsageRecords)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countUsageRecords = `-- name: CountUsageRecords :one
 SELECT count(*)::bigint
 FROM usage_records ur
@@ -140,7 +159,6 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -401,7 +419,10 @@ type ListAuditEventsRow struct {
 	EventClass        string             `db:"event_class" json:"event_class"`
 	EventType         string             `db:"event_type" json:"event_type"`
 	Severity          string             `db:"severity" json:"severity"`
-	LedgerID          string             `db:"ledger_id" json:"ledger_id"`
+	// ledger_id 在 ListAuditEvents 的 UNION 里源自 billing/admin 分支的 claim_id::text,
+	// 目录/用户管理类审计事件没有挂 ledger 会产出 NULL,故必须可空指针;
+	// sqlc 重新生成会退回非指针 string,扫描 NULL 时崩(audit_query_failed),需手工回补。
+	LedgerID          *string            `db:"ledger_id" json:"ledger_id"`
 	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
 	ProviderAccountID *int64             `db:"provider_account_id" json:"provider_account_id"`
 	PoolGroupID       *int64             `db:"pool_group_id" json:"pool_group_id"`
@@ -578,6 +599,77 @@ func (q *Queries) ListBillingClaims(ctx context.Context, arg ListBillingClaimsPa
 	return items, nil
 }
 
+const listProviderAccountRecentRequests = `-- name: ListProviderAccountRecentRequests :many
+SELECT
+    ur.id, ur.requested_at, ur.settled_at, ur.requested_model,
+    ur.upstream_model, ur.end_class, ur.stream, ur.tokens_input,
+    ur.tokens_output, ur.cache_read_tokens, ur.first_byte_at,
+    ur.upstream_request_at, ur.attempt_seq
+FROM usage_records ur
+WHERE ur.provider_account_id = $1::bigint
+  AND ur.tenant_id = $2::bigint
+ORDER BY ur.settled_at DESC, ur.id DESC
+LIMIT $3::integer
+`
+
+type ListProviderAccountRecentRequestsParams struct {
+	ProviderAccountID int64 `db:"provider_account_id" json:"provider_account_id"`
+	TenantID          int64 `db:"tenant_id" json:"tenant_id"`
+	RowLimit          int32 `db:"row_limit" json:"row_limit"`
+}
+
+type ListProviderAccountRecentRequestsRow struct {
+	ID                int64              `db:"id" json:"id"`
+	RequestedAt       pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
+	SettledAt         pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
+	RequestedModel    string             `db:"requested_model" json:"requested_model"`
+	UpstreamModel     *string            `db:"upstream_model" json:"upstream_model"`
+	EndClass          string             `db:"end_class" json:"end_class"`
+	Stream            bool               `db:"stream" json:"stream"`
+	TokensInput       int32              `db:"tokens_input" json:"tokens_input"`
+	TokensOutput      int32              `db:"tokens_output" json:"tokens_output"`
+	CacheReadTokens   int32              `db:"cache_read_tokens" json:"cache_read_tokens"`
+	FirstByteAt       pgtype.Timestamptz `db:"first_byte_at" json:"first_byte_at"`
+	UpstreamRequestAt pgtype.Timestamptz `db:"upstream_request_at" json:"upstream_request_at"`
+	AttemptSeq        int32              `db:"attempt_seq" json:"attempt_seq"`
+}
+
+// 账号健康诊断只读取请求结果与时延信号，刻意不选择 actual_cost 等钱字段。
+// tenant_id 与 provider_account_id 同时下推，避免仅靠处理器作用域保护租户边界。
+func (q *Queries) ListProviderAccountRecentRequests(ctx context.Context, arg ListProviderAccountRecentRequestsParams) ([]ListProviderAccountRecentRequestsRow, error) {
+	rows, err := q.db.Query(ctx, listProviderAccountRecentRequests, arg.ProviderAccountID, arg.TenantID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListProviderAccountRecentRequestsRow
+	for rows.Next() {
+		var i ListProviderAccountRecentRequestsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RequestedAt,
+			&i.SettledAt,
+			&i.RequestedModel,
+			&i.UpstreamModel,
+			&i.EndClass,
+			&i.Stream,
+			&i.TokensInput,
+			&i.TokensOutput,
+			&i.CacheReadTokens,
+			&i.FirstByteAt,
+			&i.UpstreamRequestAt,
+			&i.AttemptSeq,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsageRecords = `-- name: ListUsageRecords :many
 
 SELECT
@@ -593,7 +685,9 @@ SELECT
     ale.ledger_id AS audit_ledger_id,
     ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
     ale.hop_chain AS audit_hop_chain,
-    ale.model_chain AS audit_model_chain
+    ale.model_chain AS audit_model_chain,
+    ur.ip_address, ur.user_agent, ur.client_tool,
+    ur.cache_creation_5m_tokens, ur.cache_creation_1h_tokens
 FROM usage_records ur
 JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
 LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
@@ -606,10 +700,12 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
   AND ($4::text IS NULL OR p.code = $4::text)
   AND ($5::bigint IS NULL OR blc.pooling_group_id = $5::bigint)
   AND ($6::bigint IS NULL OR ur.api_key_id = $6::bigint)
-  AND ($7::bigint IS NULL OR ur.provider_account_id = $7::bigint)
-  AND ($8::text IS NULL OR ur.requested_model = $8::text)
+  -- user_id 过滤:供会话级用量端点按调用者用户(跨其所有 key)收敛,与 api_key_id 互补。
+  AND ($7::bigint IS NULL OR ur.user_id = $7::bigint)
+  AND ($8::bigint IS NULL OR ur.provider_account_id = $8::bigint)
+  AND ($9::text IS NULL OR ur.requested_model = $9::text)
   AND (
-    $9::boolean = false
+    $10::boolean = false
     OR (
       ur.pending_reconciliation = true
       AND NOT EXISTS (
@@ -617,19 +713,18 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
   AND (
-    $10::text IS NULL
-    OR $10::text = 'all'
-    OR ($10::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
-    OR ($10::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
+    $11::text IS NULL
+    OR $11::text = 'all'
+    OR ($11::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
+    OR ($11::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
   )
-  AND ($11::boolean = false OR (ur.settled_at, ur.id) < ($12::timestamptz, $13::bigint))
+  AND ($12::boolean = false OR (ur.settled_at, ur.id) < ($13::timestamptz, $14::bigint))
 ORDER BY ur.settled_at DESC, ur.id DESC
-LIMIT $14::integer
+LIMIT $15::integer
 `
 
 type ListUsageRecordsParams struct {
@@ -639,6 +734,7 @@ type ListUsageRecordsParams struct {
 	Provider                  *string            `db:"provider" json:"provider"`
 	PoolID                    *int64             `db:"pool_id" json:"pool_id"`
 	APIKeyID                  *int64             `db:"api_key_id" json:"api_key_id"`
+	UserID                    *int64             `db:"user_id" json:"user_id"`
 	ProviderAccountID         *int64             `db:"provider_account_id" json:"provider_account_id"`
 	Model                     *string            `db:"model" json:"model"`
 	PendingReconciliationOnly bool               `db:"pending_reconciliation_only" json:"pending_reconciliation_only"`
@@ -681,6 +777,11 @@ type ListUsageRecordsRow struct {
 	AuditPubkeyFingerprint *string            `db:"audit_pubkey_fingerprint" json:"audit_pubkey_fingerprint"`
 	AuditHopChain          []byte             `db:"audit_hop_chain" json:"audit_hop_chain"`
 	AuditModelChain        []byte             `db:"audit_model_chain" json:"audit_model_chain"`
+	IPAddress              *string            `db:"ip_address" json:"ip_address"`
+	UserAgent              *string            `db:"user_agent" json:"user_agent"`
+	ClientTool             *string            `db:"client_tool" json:"client_tool"`
+	CacheCreation5mTokens  int32              `db:"cache_creation_5m_tokens" json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens  int32              `db:"cache_creation_1h_tokens" json:"cache_creation_1h_tokens"`
 }
 
 // F-OBS-001 admin read APIs. SELECT-only: no hot-path, quota, billing,
@@ -693,6 +794,7 @@ func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsPara
 		arg.Provider,
 		arg.PoolID,
 		arg.APIKeyID,
+		arg.UserID,
 		arg.ProviderAccountID,
 		arg.Model,
 		arg.PendingReconciliationOnly,
@@ -741,6 +843,11 @@ func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsPara
 			&i.AuditPubkeyFingerprint,
 			&i.AuditHopChain,
 			&i.AuditModelChain,
+			&i.IPAddress,
+			&i.UserAgent,
+			&i.ClientTool,
+			&i.CacheCreation5mTokens,
+			&i.CacheCreation1hTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -794,7 +901,6 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )

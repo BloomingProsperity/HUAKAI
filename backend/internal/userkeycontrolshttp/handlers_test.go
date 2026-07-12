@@ -40,8 +40,8 @@ func TestPutQuota_NegativeLimitUSD_400(t *testing.T) {
 }
 
 func TestPutQuota_RequestCountMetricPropagates(t *testing.T) {
-	// Mutation check: ignore the JSON metric field and the captured service
-	// request stays cost_usd/empty instead of MetricRequests.
+	// 变异检查:忽略 JSON 中的 metric 字段,捕获到的 service 请求就会停留在
+	// cost_usd/空,而非 MetricRequests。
 	service := &stubService{}
 	rr := serveControls(t, Deps{Service: service}, http.MethodPut, "/123/quota",
 		`{"limit_usd":"2","metric":"request-count","window_kind":"fixed","window_seconds":60}`, true)
@@ -74,8 +74,8 @@ func TestPutGroup_InvalidGroupID_400(t *testing.T) {
 }
 
 func TestPutModelAllowlist_UsesSessionScopeAndBodyList(t *testing.T) {
-	// Mutation check: route not mounted, scope sourced from body, or body list
-	// ignored all make the status/captured request assertions go red.
+	// 变异检查:路由未挂载、scope 取自请求体、或忽略请求体中的列表,
+	// 这几种情况都会让 status/捕获请求的断言转红。
 	service := &stubService{}
 	rr := serveControls(t, Deps{Service: service}, http.MethodPut, "/123/model-allowlist",
 		`{"allowed_models":["gpt-4o","claude-3"]}`, true)
@@ -114,8 +114,8 @@ func TestGetModelAllowlist_UsesSessionScope(t *testing.T) {
 }
 
 func TestPutIPAllowlist_UsesSessionScopeAndBodyList(t *testing.T) {
-	// Mutation check: take tenant/user/api_key from the body or skip the new
-	// route and the captured request/status assertions go red.
+	// 变异检查:从请求体取 tenant/user/api_key,或跳过新路由,
+	// 都会让捕获请求/status 的断言转红。
 	service := &stubService{}
 	rr := serveControls(t, Deps{Service: service}, http.MethodPut, "/123/ip-allowlist",
 		`{"ip_allowlist":["10.0.0.0/8","203.0.113.7"]}`, true)

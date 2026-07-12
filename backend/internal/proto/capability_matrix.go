@@ -7,7 +7,7 @@ import (
 
 var ErrUnsupportedFeature = errors.New("proto: unsupported feature for selected upstream")
 
-// ClientProtocol is the client-side protocol enum from spec section 4.1.
+// ClientProtocol 是客户端侧协议枚举，对应规范第 4.1 节。
 type ClientProtocol string
 
 const (
@@ -17,7 +17,7 @@ const (
 	ClientProtocolGemini            ClientProtocol = "gemini"
 )
 
-// UpstreamProtocol is the upstream protocol enum from spec section 4.1.
+// UpstreamProtocol 是上游协议枚举，对应规范第 4.1 节。
 type UpstreamProtocol string
 
 const (
@@ -28,7 +28,7 @@ const (
 	UpstreamProtocolAntigravity UpstreamProtocol = "antigravity"
 )
 
-// FeatureName is the protocol capability feature enum from spec section 4.1.
+// FeatureName 是协议能力特性枚举，对应规范第 4.1 节。
 type FeatureName string
 
 const (
@@ -47,6 +47,10 @@ const (
 	FeatureSignatureDelta         FeatureName = "signature_delta"
 	FeatureSystemPromptArray      FeatureName = "system_prompt_array"
 	FeatureMultiRoleMessages      FeatureName = "multi_role_messages"
+	// FeatureMultiCandidate 标记上游一次返回多个候选(Gemini candidateCount>1 等)。
+	// HUAKAI canonical 模型只承载单一主候选,非主候选被丢弃时记一条 lossy 损失。
+	// 矩阵未显式登记该 feature 的单元格 → Lookup 默认 VerdictUnsupported(语义正确:不支持多候选)。
+	FeatureMultiCandidate FeatureName = "multi_candidate"
 )
 
 var allFeatures = []FeatureName{
@@ -55,9 +59,10 @@ var allFeatures = []FeatureName{
 	FeatureAudioInput, FeatureImageOutput, FeatureMaxTokensFinishReason,
 	FeatureMaxCompletionTokens, FeatureStopSequenceEmit, FeatureCacheBreakpoints,
 	FeatureSignatureDelta, FeatureSystemPromptArray, FeatureMultiRoleMessages,
+	FeatureMultiCandidate,
 }
 
-// CapabilityMatrix is the in-memory protocol matrix from spec section 4.1.
+// CapabilityMatrix 是内存中的协议矩阵，对应规范第 4.1 节。
 type CapabilityMatrix map[ClientProtocol]map[UpstreamProtocol]map[FeatureName]Verdict
 
 func (m CapabilityMatrix) Lookup(client ClientProtocol, upstream UpstreamProtocol, feature FeatureName) Verdict {

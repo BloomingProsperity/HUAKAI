@@ -168,13 +168,12 @@ func (m *mockProxyQuerier) SoftDeleteProxy(_ context.Context, arg admindb.SoftDe
 	return m.deleteErr
 }
 
-// TestListProjectsNonSecretFieldsTenantScoped guards the read-path projection:
-// List must pass the tenant id through to the tenant-scoped query and map the
-// non-secret columns (name/protocol/host/port/auth_username/status/timestamps)
-// into the result, while the encrypted auth_secret column on the underlying row
-// must NOT be carried (the Proxy type has no such field — this asserts the
-// mapping is structurally secret-free). MUTATION: drop the AuthUsername mapping
-// in fromList or forward the wrong tenant id -> RED.
+// TestListProjectsNonSecretFieldsTenantScoped 守护读取路径的投影:List 必须把
+// tenant id 透传给按租户收敛的查询,并把非凭据列
+//(name/protocol/host/port/auth_username/status/timestamps)映射进结果,
+// 同时底层行上加密的 auth_secret 列绝不可携带(Proxy 类型没有该字段——这断言
+// 映射在结构上不含凭据)。变异:删掉 fromList 里的 AuthUsername 映射,或透传
+// 错误的 tenant id → 转红。
 func TestListProjectsNonSecretFieldsTenantScoped(t *testing.T) {
 	ctx := context.Background()
 	user := "proxy-user"
@@ -183,7 +182,7 @@ func TestListProjectsNonSecretFieldsTenantScoped(t *testing.T) {
 		listRows: []admindb.ListProxiesByTenantRow{{
 			ID: 11, TenantID: 7, Name: "residential-a", Protocol: "http",
 			Host: "proxy.example.com", Port: 3128, AuthUsername: &user,
-			// The encrypted blob deliberately set: it must never surface.
+			// 刻意设置的加密密文:它绝不可浮现到结果中。
 			AuthSecret:  strPtr("hk_proxy_v1$leakcanary$ciphertext"),
 			Status:      "active",
 			LastCheckAt: pgts(checked),
@@ -213,17 +212,16 @@ func TestListProjectsNonSecretFieldsTenantScoped(t *testing.T) {
 	if got.LastCheckAt == nil || !got.LastCheckAt.Equal(checked) {
 		t.Fatalf("List must project last_check_at; got %v", got.LastCheckAt)
 	}
-	// Structural secret-free proof: the row carried a ciphertext, but the only way
-	// it could leak is through a struct field — and Proxy has none. We verify the
-	// projection above carries no value derived from AuthSecret by exhaustively
-	// asserting every populated field originates from a non-secret column.
+	// 结构层面的不含凭据证明:该行携带了密文,但它唯一可能泄露的途径是结构体字段——
+	// 而 Proxy 一个都没有。我们通过穷尽断言每个被填充的字段都源自非凭据列,
+	// 来验证上面的投影不携带任何由 AuthSecret 派生的值。
 	assertProxySecretFree(t, got)
 }
 
-// TestGetTenantScopedAndNotFound guards Get: it forwards {tenant_id,id}, maps the
-// non-secret row, and translates pgx.ErrNoRows (missing or cross-tenant, since the
-// query filters by tenant) into ErrNotFound. MUTATION: forget the ErrNoRows->
-// ErrNotFound translation -> caller sees ErrBackend -> RED on the not-found case.
+// TestGetTenantScopedAndNotFound 守护 Get:它透传 {tenant_id,id},映射非凭据行,
+// 并把 pgx.ErrNoRows(不存在或跨租户,因查询按租户过滤)翻译成 ErrNotFound。
+// 变异:遗漏 ErrNoRows→ErrNotFound 的翻译 → 调用方看到 ErrBackend → not-found
+// 用例转红。
 func TestGetTenantScopedAndNotFound(t *testing.T) {
 	ctx := context.Background()
 	user := "u"
@@ -257,10 +255,9 @@ func TestGetTenantScopedAndNotFound(t *testing.T) {
 	})
 }
 
-// TestSetStatusValidatesAndScopes guards SetStatus: valid values pass through with
-// the tenant+id, invalid values are rejected with ErrInvalidStatus BEFORE any DB
-// write. MUTATION: drop the validStatus guard -> "banned" reaches the querier ->
-// RED (setStatusCalls != 0).
+// TestSetStatusValidatesAndScopes 守护 SetStatus:合法值连同 tenant+id 一起透传,
+// 非法值在任何 DB 写入之前就以 ErrInvalidStatus 被拒绝。变异:删掉 validStatus
+// 守卫 → "banned" 抵达 querier → 转红(setStatusCalls != 0)。
 func TestSetStatusValidatesAndScopes(t *testing.T) {
 	ctx := context.Background()
 
@@ -287,10 +284,9 @@ func TestSetStatusValidatesAndScopes(t *testing.T) {
 	})
 }
 
-// TestDeleteTenantScopedIdempotent guards Delete: it forwards {tenant_id,id} to the
-// soft-delete query and surfaces backend errors as ErrBackend. MUTATION: forward the
-// wrong tenant -> arg assertion RED; drop mapErr -> a backend failure would surface
-// raw instead of ErrBackend.
+// TestDeleteTenantScopedIdempotent 守护 Delete:它把 {tenant_id,id} 透传给软删除
+// 查询,并把后端错误以 ErrBackend 暴露。变异:透传错误的 tenant → 参数断言转红;
+// 删掉 mapErr → 后端故障会以原始形态而非 ErrBackend 暴露。
 func TestDeleteTenantScopedIdempotent(t *testing.T) {
 	ctx := context.Background()
 
@@ -313,9 +309,9 @@ func TestDeleteTenantScopedIdempotent(t *testing.T) {
 	})
 }
 
-// TestReadPathRejectsBadScope guards the cheap input gate shared by the read paths:
-// non-positive tenant/id never reaches the querier. MUTATION: remove the tenantID<=0
-// guard -> the querier is called with tenant 0 -> RED.
+// TestReadPathRejectsBadScope 守护读取路径共用的廉价输入门:非正的 tenant/id
+// 绝不抵达 querier。变异:移除 tenantID<=0 守卫 → querier 被以 tenant 0 调用 →
+// 转红。
 func TestReadPathRejectsBadScope(t *testing.T) {
 	ctx := context.Background()
 	q := &mockProxyQuerier{}
@@ -334,11 +330,10 @@ func TestReadPathRejectsBadScope(t *testing.T) {
 	}
 }
 
-// assertProxySecretFree asserts the secret-free contract of the read-path DTO: the
-// projection must populate the non-secret fields and there is no path for the
-// encrypted auth_secret to appear (the Proxy type has no such field). If a future
-// edit added a secret-bearing field to Proxy, this helper (and the type) would have
-// to change, which is the tripwire we want.
+// assertProxySecretFree 断言读取路径 DTO 的"不含凭据"契约:投影必须填充非凭据
+// 字段,且加密的 auth_secret 没有任何途径浮现(Proxy 类型没有该字段)。若日后某次
+// 修改给 Proxy 加上携带凭据的字段,这个 helper(以及该类型)就不得不改动,
+// 这正是我们想要的绊线。
 func assertProxySecretFree(t *testing.T, p Proxy) {
 	t.Helper()
 	if p.ID <= 0 || p.Name == "" || p.Protocol == "" || p.Host == "" || p.Port <= 0 || p.Status == "" {

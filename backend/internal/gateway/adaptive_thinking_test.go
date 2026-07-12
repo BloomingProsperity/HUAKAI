@@ -22,7 +22,7 @@ func newAdaptiveTestCtx() context.Context {
 // 判别测试:claude-fable-5 的 adaptive thinking(无 budget_tokens)必须端到端经
 // HCSF 重组路径保留到上游 body。此前解析侧只认 type=enabled、adaptive 不建节点
 // 且零 loss,marshal 侧又要求 budget>0,导致 fable-5 thinking 整个蒸发。
-// Mutation guard: 解析不建 adaptive 节点 / marshal 不发 adaptive → thinking 丢失,红。
+// 变异守卫: 解析不建 adaptive 节点 / marshal 不发 adaptive → thinking 丢失,红。
 func TestAnthropicAdaptiveThinking_SurvivesHCSFRoundTrip(t *testing.T) {
 	client := &proto.AnthropicMessagesClient{}
 	reqBody := []byte(`{

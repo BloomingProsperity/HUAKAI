@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +33,14 @@ const subscriptionSelectColumns = `
 	daily_cap_usd, weekly_cap_usd, monthly_cap_usd,
 	status, source, auto_renew, assigned_by_admin_id, prev_user_group,
 	starts_at, expires_at, cancelled_at, created_at, updated_at`
+
+// subscriptionSelectColumnsS 是 subscriptionSelectColumns 的 s. 限定版, 用于 UPDATE ... FROM
+// 带 CTE/join 的 RETURNING 子句: 此时 target CTE 也暴露 id, 裸 id 会触发 42702 列引用歧义。
+const subscriptionSelectColumnsS = `
+	s.id, s.tenant_id, s.user_id, s.plan_id, s.granted_group,
+	s.daily_cap_usd, s.weekly_cap_usd, s.monthly_cap_usd,
+	s.status, s.source, s.auto_renew, s.assigned_by_admin_id, s.prev_user_group,
+	s.starts_at, s.expires_at, s.cancelled_at, s.created_at, s.updated_at`
 
 // PostgresStore 订阅权威存储。配额策略写入共享的 quota_policies 表 (不 import internal/quota,
 // 与 payment 写 billing_events 同一"共享表 seam"模式), quota 引擎只读解析这些策略。
@@ -196,6 +203,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 			EventType:          AuditIdempotentReplay,
 			ActorKind:          ActorKindAdmin,
 			ActorID:            rec.ActorAdminID,
+			ActorRef:           rec.ActorRef,
 			RequestID:          rec.RequestID,
 			Payload:            map[string]any{"plan_id": rec.PlanID},
 			Now:                rec.Now,
@@ -225,7 +233,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 		StartsAt:          rec.Now,
 		ExpiresAt:         expiresAt,
 	}
-	sub, err = insertSubscriptionTx(ctx, tx, sub, rec.Now)
+	sub, err = insertSubscriptionTx(ctx, tx, sub, rec.ActorRef, rec.Now)
 	if err != nil {
 		return AssignResult{}, err // 23505 由外层当幂等处理
 	}
@@ -246,6 +254,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 			EventType:          AuditGroupUpgraded,
 			ActorKind:          ActorKindAdmin,
 			ActorID:            rec.ActorAdminID,
+			ActorRef:           rec.ActorRef,
 			RequestID:          rec.RequestID,
 			Payload:            map[string]any{"from": prevGroup, "to": plan.GrantedGroup},
 			Now:                rec.Now,
@@ -260,6 +269,7 @@ func (s *PostgresStore) assignOnce(ctx context.Context, rec assignRecord) (Assig
 		EventType:          AuditSubscriptionCreated,
 		ActorKind:          ActorKindAdmin,
 		ActorID:            rec.ActorAdminID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Payload:            assignAuditPayload(sub),
 		Now:                rec.Now,
@@ -297,6 +307,7 @@ func (s *PostgresStore) readActiveAsIdempotent(ctx context.Context, rec assignRe
 		EventType:          AuditIdempotentReplay,
 		ActorKind:          ActorKindAdmin,
 		ActorID:            rec.ActorAdminID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Payload:            map[string]any{"plan_id": rec.PlanID},
 		Now:                rec.Now,
@@ -386,7 +397,7 @@ UPDATE user_subscriptions s
 SET auto_renew=$3, updated_at=now()
 FROM target
 WHERE s.tenant_id=$1 AND s.id=target.id
-RETURNING`+subscriptionSelectColumns, tenantID, userID, autoRenew)
+RETURNING`+subscriptionSelectColumnsS, tenantID, userID, autoRenew)
 	sub, err := scanSubscription(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UserSubscription{}, ErrSubscriptionNotFound
@@ -445,6 +456,16 @@ func (s *PostgresStore) closeSubscriptionOnce(ctx context.Context, rec lifecycle
 		return sub, nil
 	}
 
+	// 到期路径专属: 锁行后重验仍到点。ListDueExpiry 扫出快照与拿锁之间, 若订阅被续费(自动/手动/延期)
+	// 推后 expires_at, 则此刻已不到点, 不可置 expired —— 否则错杀刚续费成功的订阅(镜像在到期写点均带
+	// 时间条件, 本处对齐)。Cancel/Revoke 是无条件终态, 不受此复查约束。
+	if terminal == StatusExpired && !sub.IsExpiredAt(rec.Now) {
+		if err := tx.Commit(ctx); err != nil {
+			return UserSubscription{}, fmt.Errorf("subscription: commit no-op expire recheck: %w", err)
+		}
+		return sub, nil
+	}
+
 	var cancelledAt any
 	if terminal == StatusCancelled {
 		cancelledAt = rec.Now
@@ -487,6 +508,7 @@ RETURNING`+subscriptionSelectColumns,
 					EventType:          AuditGroupDowngraded,
 					ActorKind:          actorKindOrDefault(rec.ActorKind),
 					ActorID:            rec.ActorID,
+					ActorRef:           rec.ActorRef,
 					RequestID:          rec.RequestID,
 					Payload:            map[string]any{"from": currentGroup, "to": targetGroup},
 					Now:                rec.Now,
@@ -503,6 +525,7 @@ RETURNING`+subscriptionSelectColumns,
 		EventType:          event,
 		ActorKind:          actorKindOrDefault(rec.ActorKind),
 		ActorID:            rec.ActorID,
+		ActorRef:           rec.ActorRef,
 		RequestID:          rec.RequestID,
 		Now:                rec.Now,
 	}); err != nil {
@@ -753,7 +776,7 @@ FOR UPDATE`, tenantID, userID)
 	return sub, nil
 }
 
-func insertSubscriptionTx(ctx context.Context, tx pgx.Tx, sub UserSubscription, now time.Time) (UserSubscription, error) {
+func insertSubscriptionTx(ctx context.Context, tx pgx.Tx, sub UserSubscription, actorRef string, now time.Time) (UserSubscription, error) {
 	daily, err := capParam(sub.DailyCapUSD)
 	if err != nil {
 		return UserSubscription{}, ErrInvalidInput
@@ -771,69 +794,17 @@ INSERT INTO user_subscriptions (
 	tenant_id, user_id, plan_id, granted_group,
 	daily_cap_usd, weekly_cap_usd, monthly_cap_usd,
 	status, source, auto_renew, assigned_by_admin_id, prev_user_group,
-	starts_at, expires_at, created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
+	starts_at, expires_at, created_at, updated_at, assigned_by_actor
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15, $16)
 RETURNING`+subscriptionSelectColumns,
 		sub.TenantID, sub.UserID, sub.PlanID, sub.GrantedGroup,
 		daily, weekly, monthly,
 		string(sub.Status), string(sub.Source), sub.AutoRenew, nullableInt64(sub.AssignedByAdminID), sub.PrevUserGroup,
-		sub.StartsAt, sub.ExpiresAt, now)
+		sub.StartsAt, sub.ExpiresAt, now, nullableText(actorRef))
 	return scanSubscription(row)
 }
 
 // installCapsTx 为订阅每档非空 cap 装一条 quota cost_usd 日历窗口策略, 并记 policy link。
-func installCapsTx(ctx context.Context, tx pgx.Tx, sub UserSubscription, now time.Time) error {
-	scopeID := strconv.FormatInt(sub.UserID, 10)
-	actor := fmt.Sprintf("subscription:%d", sub.ID)
-	for _, cap := range sub.Caps() {
-		limit, err := encodeNumeric(cap.Limit)
-		if err != nil {
-			return ErrQuotaInstallFailed
-		}
-		var policyID int64
-		if err := tx.QueryRow(ctx, `
-INSERT INTO quota_policies (
-	tenant_id, scope_kind, scope_id, metric, window_kind, window_seconds,
-	limit_value, burst_value, mode, priority, enabled,
-	valid_from, valid_until, created_by_actor, last_modified_by_actor, created_at, updated_at
-) VALUES ($1, 'user', $2, 'cost_usd', $3, 0, $4, 0, 'enforce', $5, true, $6, $7, $8, $8, $9, $9)
-RETURNING id`,
-			sub.TenantID, scopeID, string(cap.Window), limit, subscriptionPolicyPriority,
-			sub.StartsAt, sub.ExpiresAt, actor, now).Scan(&policyID); err != nil {
-			return fmt.Errorf("subscription: install quota policy: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `
-INSERT INTO subscription_policy_links (
-	tenant_id, user_subscription_id, quota_policy_id, window_kind, status, created_at
-) VALUES ($1, $2, $3, $4, 'active', $5)`,
-			sub.TenantID, sub.ID, policyID, string(cap.Window), now); err != nil {
-			return fmt.Errorf("subscription: link quota policy: %w", err)
-		}
-	}
-	return nil
-}
-
-// closeCapsTx 关闭订阅的所有 active quota 策略 (disable, 保留行作审计) 并标记 link closed。
-func closeCapsTx(ctx context.Context, tx pgx.Tx, tenantID, subscriptionID int64, now time.Time) error {
-	if _, err := tx.Exec(ctx, `
-UPDATE quota_policies SET enabled=false, last_modified_by_actor=$3, updated_at=$4
-WHERE tenant_id=$1 AND id IN (
-	SELECT quota_policy_id FROM subscription_policy_links
-	WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'
-)`, tenantID, subscriptionID, fmt.Sprintf("subscription:%d", subscriptionID), now); err != nil {
-		return fmt.Errorf("subscription: disable quota policies: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-UPDATE subscription_policy_links SET status='closed', closed_at=$3
-WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'`,
-		tenantID, subscriptionID, now); err != nil {
-		return fmt.Errorf("subscription: close policy links: %w", err)
-	}
-	return nil
-}
-
-// renewSubscriptionTx 把 active 订阅续期/换档: 覆盖 plan/group/caps 为新套餐, 延长 expires_at。
-// 调用方负责 close 旧 caps 策略 + install 新策略 (基于返回的更新后订阅)。
 func renewSubscriptionTx(ctx context.Context, tx pgx.Tx, existing UserSubscription, plan Plan, newExpires, now time.Time) (UserSubscription, error) {
 	daily, err := capParam(plan.DailyCapUSD)
 	if err != nil {
@@ -957,6 +928,7 @@ type subAuditInsert struct {
 	EventType          string
 	ActorKind          string
 	ActorID            int64
+	ActorRef           string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	ReasonClass        string
 	RequestID          string
 	Payload            map[string]any
@@ -970,11 +942,11 @@ func insertSubAuditTx(ctx context.Context, tx pgx.Tx, ev subAuditInsert) error {
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO subscription_audit_events (
-	tenant_id, user_subscription_id, event_type, actor_kind, actor_id,
+	tenant_id, user_subscription_id, event_type, actor_kind, actor_id, actor_ref,
 	reason_class, request_id, redacted_payload, occurred_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		ev.TenantID, ev.UserSubscriptionID, ev.EventType, actorKindOrDefault(ev.ActorKind),
-		nullableInt64(ev.ActorID), nullableText(ev.ReasonClass), nullableText(ev.RequestID),
+		nullableInt64(ev.ActorID), nullableText(ev.ActorRef), nullableText(ev.ReasonClass), nullableText(ev.RequestID),
 		nullableJSON(raw), ev.Now); err != nil {
 		return fmt.Errorf("subscription: insert audit event: %w", err)
 	}

@@ -375,10 +375,10 @@ func pgTimestamp(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
 }
 
-// TestWriteErrorProducesValidJSONForControlChars guards for the admin API-key error
-// writer: its default branch echoes err.Error() into message, which can carry control bytes.
-// The body must stay RFC-valid JSON. Mutation check: restore the fmt %q hand-formatter and
-// json.Valid goes false on the \x01 byte (plus the message no longer round-trips) → red.
+// TestWriteErrorProducesValidJSONForControlChars 为 admin API-key 的错误写入器把关:
+// 其 default 分支会把 err.Error() 回显进 message,而后者可能携带控制字节。
+// 响应体必须始终是符合 RFC 的合法 JSON。变异检验:换回 fmt %q 手工格式化,
+// json.Valid 会因 \x01 字节而变 false(且 message 不再原样往返)→ 红。
 func TestWriteErrorProducesValidJSONForControlChars(t *testing.T) {
 	rec := httptest.NewRecorder()
 	msg := "admin backend failure: \x01\x1f \"q\"\ntab\there"

@@ -121,6 +121,7 @@ type RefundRecord struct {
 	Reason         string
 	ActorKind      string
 	ActorID        int64
+	ActorRef       string // 同上
 	BillingEventID int64
 	CreatedAt      time.Time
 }
@@ -138,6 +139,7 @@ type CreateOrderInput struct {
 	ActorAdminID       int64
 	ActorKind          string
 	ActorID            int64
+	ActorRef           string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID          string
 	ExpiresIn          time.Duration // 0 = 默认 TTL
 	// OrderKind 缺省 topup; subscription 时 SubscriptionPlanID 必填。
@@ -161,6 +163,7 @@ type AdminConfirmPaidInput struct {
 	TenantID      int64
 	OrderID       int64
 	ActorAdminID  int64
+	ActorRef      string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID     string
 	ConfirmReason string
 }
@@ -171,6 +174,7 @@ type CancelOrderInput struct {
 	TenantID  int64
 	OrderID   int64
 	UserID    int64
+	ActorRef  string // 双身份归属串,空则 NULL
 	ActorKind string // user / admin
 	ActorID   int64
 	Reason    string
@@ -186,6 +190,7 @@ type RefundOrderInput struct {
 	Reason         string
 	ActorKind      string
 	ActorID        int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 }
 
@@ -194,6 +199,7 @@ type FulfillInput struct {
 	TenantID  int64
 	OrderID   int64
 	ActorKind string
+	ActorRef  string // 双身份归属串,空则 NULL
 	ActorID   int64
 	RequestID string
 }
@@ -224,12 +230,15 @@ type Balance struct {
 }
 
 var (
-	ErrStoreNotConfigured     = errors.New("payment: store not configured")
-	ErrOrderNotFound          = errors.New("payment: order not found")
-	ErrInvalidAmount          = errors.New("payment: amount must be positive")
-	ErrInvalidInput           = errors.New("payment: invalid input")
-	ErrOrderNotConfirmable    = errors.New("payment: order not in a confirmable state")
-	ErrOrderNotFulfillable    = errors.New("payment: order not in a fulfillable state")
+	ErrStoreNotConfigured  = errors.New("payment: store not configured")
+	ErrOrderNotFound       = errors.New("payment: order not found")
+	ErrInvalidAmount       = errors.New("payment: amount must be positive")
+	ErrInvalidInput        = errors.New("payment: invalid input")
+	ErrOrderNotConfirmable = errors.New("payment: order not in a confirmable state")
+	ErrOrderNotFulfillable = errors.New("payment: order not in a fulfillable state")
+	// ErrOrderFulfillFailed: 履约命中确定性失败(降档拒绝/套餐停用等), 订单已转终态 failed。
+	// 重试注定同样失败, 调用方不得当瞬时错误重试; 退款走 admin 通道(Manual-First)。
+	ErrOrderFulfillFailed     = errors.New("payment: order fulfillment failed terminally")
 	ErrOrderNotCancelable     = errors.New("payment: order not in a cancelable state")
 	ErrOrderNotRefundable     = errors.New("payment: order not in a refundable state")
 	ErrRefundExceedsAvailable = errors.New("payment: refund exceeds available balance")

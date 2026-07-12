@@ -16,9 +16,10 @@ import (
 )
 
 type completionRequest struct {
-	Model  string          `json:"model"`
-	Prompt json.RawMessage `json:"prompt"`
-	Stream bool            `json:"stream"`
+	Model     string          `json:"model"`
+	Prompt    json.RawMessage `json:"prompt"`
+	Stream    bool            `json:"stream"`
+	MaxTokens *int            `json:"max_tokens"`
 }
 
 type countTokensRequest struct {

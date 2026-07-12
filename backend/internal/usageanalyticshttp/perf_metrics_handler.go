@@ -4,15 +4,24 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/healthscore"
 )
+
+// ChannelHealthSummarizer 是 health-score handler 取"基础设施面"信号的窄只读接口:汇总某租户上游渠道
+// 的健康状态分布(active/degraded/cooling_down/...)。仅声明所需方法,避免直接耦合整个 channelhealth.Service
+// (与本包 ProviderAccountCountsQuerier 等窄接口风格一致)。生产实现 = channelhealth.Service。
+type ChannelHealthSummarizer interface {
+	SummarizeChannelHealth(ctx context.Context, tenantID int64) (channelhealth.ChannelHealthSummary, error)
+}
 
 const (
 	defaultPerfMetricsBucket = "hour"
@@ -83,10 +92,15 @@ type healthScoreResponse struct {
 type healthScoreSignals struct {
 	ErrorRate string  `json:"error_rate"`
 	TTFTP99MS float64 `json:"ttft_p99_ms"`
+	// 基础设施面信号(与上面的业务面错误率/延迟物理不同源):自动托管上游渠道的健康分布。
+	// ChannelHealthAvailable=false 表示未传 tenant_id 或取数不可用,infra_score 走保守满分降级。
+	ChannelHealthAvailable bool  `json:"channel_health_available"`
+	HealthyChannels        int64 `json:"healthy_channels"`
+	ManagedChannels        int64 `json:"managed_channels"`
 }
 
-// NewPerfMetricsSummaryHandler serves a read-only platform-admin performance
-// summary with global/requested_model latency percentiles.
+// NewPerfMetricsSummaryHandler 提供只读的平台管理员性能汇总，
+// 包含 global/requested_model 维度的延迟分位数。
 func NewPerfMetricsSummaryHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
@@ -106,8 +120,8 @@ func NewPerfMetricsSummaryHandler(q Querier) http.HandlerFunc {
 	}
 }
 
-// NewPerfMetricsByBucketHandler serves read-only requested_model performance
-// metrics grouped by hour/day requested_at buckets.
+// NewPerfMetricsByBucketHandler 提供只读的 requested_model 性能指标，
+// 按小时/天的 requested_at 桶分组。
 func NewPerfMetricsByBucketHandler(q Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
@@ -141,9 +155,10 @@ func NewPerfMetricsByBucketHandler(q Querier) http.HandlerFunc {
 	}
 }
 
-// NewHealthScoreHandler serves a read-only 0-100 health score using recent
-// business-visible error rate and TTFT p99.
-func NewHealthScoreHandler(q Querier) http.HandlerFunc {
+// NewHealthScoreHandler 提供只读的 0-100 健康分。业务面=近期业务可见的错误率与 TTFT p99;
+// 基础设施面=按 ?tenant_id 取的上游渠道健康状态分布(与业务面物理不同源,缺 tenant_id 则保守降级);
+// 二者经 healthscore.Overall 按 70/30 合成。
+func NewHealthScoreHandler(q Querier, ch ChannelHealthSummarizer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "analytics dependency unset")
@@ -170,19 +185,66 @@ func NewHealthScoreHandler(q Querier) http.HandlerFunc {
 			errorCount = 0
 		}
 		errorRate := errorRateValue(errorCount, totals.RequestCount)
+		// 业务面:用户可见的错误率 + TTFT p99。
 		businessScore := healthscore.Business(errorRate, percentiles.P99Ms)
-		infraScore := healthscore.Business(errorRate, percentiles.P99Ms)
+		// 基础设施面:上游渠道健康分布(与业务面物理不同源)。按 ?tenant_id 取该租户的渠道健康汇总;
+		// 缺 tenant_id / 无冲减器 / 取数失败时,infra 走保守满分降级(ChannelHealthAvailable=false),
+		// 绝不回退成"复制业务分"——那会让两路输入相同、Overall 的 70/30 加权退化。
+		infraSignal := computeInfraSignal(r, ch)
+		infraScore := healthscore.Infra(infraSignal.HealthyChannels, infraSignal.ManagedChannels)
 		writeJSON(w, http.StatusOK, healthScoreResponse{
 			Window:        query.windowLabel,
 			BusinessScore: businessScore,
 			InfraScore:    infraScore,
 			OverallScore:  healthscore.Overall(businessScore, infraScore),
 			Signals: healthScoreSignals{
-				ErrorRate: errorRateText(errorCount, totals.RequestCount),
-				TTFTP99MS: percentiles.P99Ms,
+				ErrorRate:              errorRateText(errorCount, totals.RequestCount),
+				TTFTP99MS:              percentiles.P99Ms,
+				ChannelHealthAvailable: infraSignal.Available,
+				HealthyChannels:        infraSignal.HealthyChannels,
+				ManagedChannels:        infraSignal.ManagedChannels,
 			},
 		})
 	}
+}
+
+type infraHealthSignal struct {
+	Available       bool
+	HealthyChannels int64
+	ManagedChannels int64
+}
+
+// computeInfraSignal 从请求的 ?tenant_id 取该租户上游渠道健康分布,折算成"可服务 / 自动托管"两数,
+// 供 healthscore.Infra 打分。SummarizeChannelHealth 要求 tenantID>0;缺 tenant_id、无冲减器或取数失败
+// 一律降级为 Available=false(infra 走保守满分),绝不 500、绝不回退复制业务分。
+func computeInfraSignal(r *http.Request, ch ChannelHealthSummarizer) infraHealthSignal {
+	if ch == nil {
+		return infraHealthSignal{}
+	}
+	tenantID, err := parseHealthScoreTenantID(r.URL.Query().Get("tenant_id"))
+	if err != nil || tenantID <= 0 {
+		return infraHealthSignal{}
+	}
+	summary, err := ch.SummarizeChannelHealth(r.Context(), tenantID)
+	if err != nil {
+		return infraHealthSignal{}
+	}
+	healthy := summary.ByState[channelhealth.StateActive] + summary.ByState[channelhealth.StateRamping]
+	// 自动托管 = 健康 + 自动失败态(degraded/cooling_down/disabled);手动暂停(manual_paused)是人为意图,
+	// 不进分母也不算健康。
+	managed := healthy +
+		summary.ByState[channelhealth.StateDegraded] +
+		summary.ByState[channelhealth.StateCoolingDown] +
+		summary.ByState[channelhealth.StateDisabled]
+	return infraHealthSignal{Available: true, HealthyChannels: healthy, ManagedChannels: managed}
+}
+
+func parseHealthScoreTenantID(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	return strconv.ParseInt(raw, 10, 64)
 }
 
 func loadPerfMetricsSummary(ctx context.Context, q Querier, query perfMetricsQuery) (perfMetricsSummaryResponse, error) {

@@ -1,48 +1,41 @@
-# HUAKAI Frontend — Vertical Closure 工具
+# HUAKAI 前端(React + Vite + TypeScript SPA)
 
-本目录是 HUAKAI 项目的最小前端 wedge，用于 **vertical closure 手测 + E2E 路径验证**。
-不是 Admin UI，不含 pool / user / billing 管理页。
-
-## 目标
-
-| 页面 | 路径 | 作用 |
-|------|------|------|
-| ChatPage | `/` | 直接向 HUAKAI 网关发 Anthropic Messages 形请求，支持 SSE 流式 |
-| ObservabilityPage | `/observability` | 每 2 秒 poll `/debug/vars`，展示 cache token 命中率 |
+中转站运维控制台。单页应用,生产期由网关二进制经 `go:embed` 提供(沿 sub2api/new-api 范式),
+与后端 API 同源,无独立部署。旧 Next.js 实验前端已移除(归档于 `archive/frontend-nextjs-pre-vite`),
+本目录为干净的 React+Vite 重建。
 
 ## 技术栈
 
-- Next.js 14 App Router + TypeScript strict mode
-- 无 UI 库（无 shadcn / mui / antd）— 纯 CSS
-- 无 SSE 第三方库 — fetch + ReadableStream + 行解析
-- Next.js rewrites 把 `/v1/*` 和 `/debug/*` 反代到 `localhost:8080`
+- React 18 + TypeScript + Vite 5
+- react-router-dom v6(`createBrowserRouter`)
+- 无 UI 框架依赖:走自有设计 token(`src/styles/tokens.css`,反克隆基线),禁魔法色值
 
-## 快速启动
-
-```bash
-cd frontend
-npm install
-npm run dev
-# 浏览器打开 http://localhost:3000
-```
-
-需要 backend 先跑（`go run ./cmd/gateway` 或 `make run`），默认监听 `:8080`。
-
-## 文件结构
+## 结构
 
 ```
 frontend/
-  package.json
-  tsconfig.json
-  next.config.mjs          # rewrites /v1/* /debug/* → :8080
-  app/
-    layout.tsx             # 极简 header + nav
-    page.tsx               # ChatPage（< 250 LoC）
-    observability/
-      page.tsx             # ObservabilityPage（< 250 LoC）
-    globals.css            # 纯 CSS base style
+  index.html
+  src/
+    main.tsx            挂载入口
+    app/                App / 路由 / 导航模型(管线即导航)
+    shell/              外壳:顶栏 / 管线导航 / 布局
+    pages/              页面(总览 + 占位)
+    lib/api.ts          网关 API 客户端基座(fetch 封装 + 错误归一 + 混合鉴权)
+    styles/             设计 token + 全局样式
 ```
 
-## 关联计划
+## 开发
 
-见 `docs/process/plans/2026-05-08-vertical-closure-synthesis.md` §3 "前端 wedge 最小集"。
+```bash
+npm install
+npm run dev          # http://localhost:5173;/api 代理到 HUAKAI_GATEWAY_ORIGIN(默认 :8080)
+npm run build        # tsc -b && vite build → dist/
+npm run typecheck
+```
+
+## 路线
+
+按《docs/frontend/2026-06-24-源码梳理与前端编写方案.md》第四节逐个 P0 切片点亮 8 个域
+(账号中心 → 路由与池 → API Key → 用量计费 → 用户租户 → 模型定价 → 系统 → 安全审计)。
+当前为**地基切片**:外壳 + 管线导航 + API 基座 + 设计 token,域模块挂占位页。
+embed 进单二进制(`backend/internal/webui/dist`)为后续独立切片(触网关 router,Owner-gated 部署前置)。

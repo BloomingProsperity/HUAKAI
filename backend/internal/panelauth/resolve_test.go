@@ -54,6 +54,24 @@ func TestResolver_PanelForUser(t *testing.T) {
 	}
 }
 
+// TestResolver_InactiveAdminDowngradedToUserPanel 守 B8: 封禁/锁定的 admin 账号
+// /me 面板降级为 user, 绝不给 admin 面板(与 admin 权力面 ActiveUserRole 同口径);
+// 锁定用户不 403(锁定只守登录门, 不把用户踢出面板, 防失败锁定当面板 DoS)。
+// mutation: PanelForUser 退回查 UserRole → 封禁 admin 仍得 PanelAdmin → 红。
+func TestResolver_InactiveAdminDowngradedToUserPanel(t *testing.T) {
+	store := NewMemoryRoleStore().
+		WithInactiveUser(5, 300, RoleAdmin). // 被封 admin
+		WithInactiveUser(5, 400, RoleUser)   // 被锁 user
+	r := NewResolver(store)
+
+	if p, err := r.PanelForUser(context.Background(), 5, 300); err != nil || p != PanelUser {
+		t.Fatalf("封禁 admin: panel=%q err=%v, want PanelUser/nil(绝不给 admin 面板)", p, err)
+	}
+	if p, err := r.PanelForUser(context.Background(), 5, 400); err != nil || p != PanelUser {
+		t.Fatalf("锁定 user: panel=%q err=%v, want PanelUser/nil(不被踢出面板)", p, err)
+	}
+}
+
 // 守用户不存在 → ErrUserNotFound(不 fallback 成某面板)。
 func TestResolver_UnknownUser(t *testing.T) {
 	r := NewResolver(NewMemoryRoleStore())

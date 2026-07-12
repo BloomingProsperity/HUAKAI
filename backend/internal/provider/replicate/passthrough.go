@@ -85,8 +85,8 @@ func (a *Adapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*ht
 	// passthrough 的顺序坑)。model 逐段 PathEscape:owner/name 间的 "/" 是
 	// 字面路径分隔必须保留,段内保留字符必须转义。
 	substituted := strings.ReplaceAll(template, "{model}", escapeModelPath(in.UpstreamModelID))
-	// upstream_passthrough 凭据自带 base_url 优先;统一 SSRF 守卫在其内部,
-	// adapter 不得自行拼 endpoint 绕过。
+	// API key 或 upstream_passthrough 凭据自带 base_url 时优先使用；统一
+	// SSRF 守卫在其内部，adapter 不得自行拼 endpoint 绕过。
 	endpoint, err := provider.EndpointForCredential(substituted, in.Credential)
 	if err != nil {
 		return nil, fmt.Errorf("replicate: endpoint rejected: %w", err)

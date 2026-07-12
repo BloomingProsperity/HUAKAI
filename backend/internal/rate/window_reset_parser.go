@@ -7,14 +7,19 @@ import (
 	"time"
 )
 
-// ParseMultiWindowReset extracts vendor multi-window reset hints for 429
-// cooldown refinement. It returns ok=false when no exceeded window is proven.
+const (
+	sessionWindow5hPrefix = "anthropic-ratelimit-unified-5h"
+	sessionWindow7dPrefix = "anthropic-ratelimit-unified-7d"
+)
+
+// ParseMultiWindowReset 提取厂商的多窗口 reset 提示,用于细化 429 的冷却。
+// 当无法证明有任何已超限的窗口时返回 ok=false。
 func ParseMultiWindowReset(headers http.Header, now time.Time) (time.Time, Reason, bool) {
 	if headers == nil {
 		return time.Time{}, "", false
 	}
-	reset5h, ok5h := exceededWindowReset(headers, now, "anthropic-ratelimit-unified-5h")
-	reset7d, ok7d := exceededWindowReset(headers, now, "anthropic-ratelimit-unified-7d")
+	reset5h, ok5h := exceededWindowReset(headers, now, sessionWindow5hPrefix)
+	reset7d, ok7d := exceededWindowReset(headers, now, sessionWindow7dPrefix)
 	switch {
 	case ok5h && ok7d:
 		if reset7d.After(reset5h) {

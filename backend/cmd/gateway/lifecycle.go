@@ -31,28 +31,34 @@ import (
 )
 
 type gatewayRuntime struct {
-	deps                       *deps
-	pgPool                     *pgxpool.Pool
-	selectorCleanup            func()
-	replayJanitorStop          func()
-	hermesRetentionWorker      *hermes.MessageRetentionWorker
-	usageRetentionWorker       *usageretention.Worker
-	leaseSweepStop             func()
-	paymentExpireSweepStop     func()
-	apiKeyExpirySweepStop      func()
-	pendingReconcileStop       func()
-	modelSyncStop              func()
-	alertingEvalStop           func()
-	closeReplica               func()
-	credentialScheduler        *credentialworker.Scheduler
-	dlqWorker                  *legacydlq.Worker
-	outboxWorker               *obsoutbox.Worker
-	subscriptionExpiryWorker   *subscription.ExpiryWorker
-	subscriptionReminderWorker *subscription.ReminderWorker
-	hermesInspectionWorker     *hermesadmin.InspectionWorker
-	mediaTaskWorker            *mediatask.Worker
-	obsDLQEnabled              bool
-	outboxRuntime              obsoutbox.RuntimeConfig
+	deps                        *deps
+	pgPool                      *pgxpool.Pool
+	selectorCleanup             func()
+	replayJanitorStop           func()
+	hermesRetentionWorker       *hermes.MessageRetentionWorker
+	usageRetentionWorker        *usageretention.Worker
+	leaseSweepStop              func()
+	settlementIntentSweepStop   func()
+	paymentExpireSweepStop      func()
+	apiKeyExpirySweepStop       func()
+	pendingReconcileStop        func()
+	quotaReconcileStop          func()
+	modelSyncStop               func()
+	alertingEvalStop            func()
+	closeReplica                func()
+	credentialScheduler         *credentialworker.Scheduler
+	dlqWorker                   *legacydlq.Worker
+	outboxWorker                *obsoutbox.Worker
+	subscriptionExpiryWorker    *subscription.ExpiryWorker
+	subscriptionReminderWorker  *subscription.ReminderWorker
+	subscriptionAutoRenewWorker *subscription.AutoRenewWorker
+	hermesInspectionWorker      *hermesadmin.InspectionWorker
+	mediaTaskWorker             *mediatask.Worker
+	obsDLQEnabled               bool
+	outboxRuntime               obsoutbox.RuntimeConfig
+	// logSinkStop 停止运行日志落库 worker 并等 drain;必须在其余 worker 都停完、
+	// 关 DB 之前调用,否则停机窗口产生的 warn/error 会滞留队列丢失。
+	logSinkStop func()
 }
 
 func (rt *gatewayRuntime) close() {
@@ -77,6 +83,9 @@ func (rt *gatewayRuntime) close() {
 	if rt.leaseSweepStop != nil {
 		rt.leaseSweepStop()
 	}
+	if rt.settlementIntentSweepStop != nil {
+		rt.settlementIntentSweepStop()
+	}
 	if rt.paymentExpireSweepStop != nil {
 		rt.paymentExpireSweepStop()
 	}
@@ -85,6 +94,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.pendingReconcileStop != nil {
 		rt.pendingReconcileStop()
+	}
+	if rt.quotaReconcileStop != nil {
+		rt.quotaReconcileStop()
 	}
 	if rt.mediaTaskWorker != nil {
 		rt.mediaTaskWorker.Stop()
@@ -102,6 +114,10 @@ func (rt *gatewayRuntime) close() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = rt.deps.otelShutdown(ctx)
 		cancel()
+	}
+	// 运行日志 sink 最后停(仅早于关 DB):以上各 worker 停机期间的 warn/error 也要落库。
+	if rt.logSinkStop != nil {
+		rt.logSinkStop()
 	}
 	if rt.pgPool != nil {
 		rt.pgPool.Close()
@@ -203,6 +219,10 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	// 提醒 worker 同理独立, 优雅停止。
 	if rt.subscriptionReminderWorker != nil {
 		rt.subscriptionReminderWorker.Stop()
+	}
+	// 自动续费 worker (默认关; 仅 KNOB 开时非 nil) 同理独立, 优雅停止。
+	if rt.subscriptionAutoRenewWorker != nil {
+		rt.subscriptionAutoRenewWorker.Stop()
 	}
 	// 每日巡检 worker 独立于 in-flight handler; Stop 在当前 tick 结束后立即返回。
 	if rt.hermesInspectionWorker != nil {
@@ -327,12 +347,24 @@ func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, e
 	userAuthService.AllowedRedirectURIs = loadUserOAuthRedirectAllowlistFromEnv()
 	userAuthService.VerificationTTL = mailinfra.DefaultVerificationTTL
 	userAuthService.Verification = mailinfra.NewVerificationPolicy(emailSettings)
-	sessionSigningKey, err := loadSessionSigningKey()
+	sessionSigningKey, err := loadSessionSigningKey(logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load session signing key: %w", err)
 	}
 	userSessionService := usersession.NewService(usersession.NewPostgresStore(pgPool))
 	userSessionService.SigningKey = sessionSigningKey
+	// 会话使用期资格复核: Validate/Refresh 每次复核 users.status, 封禁/删除下一请求即生效
+	// (主动吊销只是辅助, 这道闸不依赖各封禁入口记得调 Revoke)。
+	userSessionService.UserGate = sessionUserGate{auth: userAuthService}
+	// 漂移观测: Medium/Low 弱信号落结构化日志 (不消费则 token 盗用最常见形态检测全盲)。
+	userSessionService.DriftObserver = newSessionDriftObserver(logger)
+	// 新设备策略两旋钮 (默认休眠 max=0, 零行为变更); 非法配置 fail-loud 拒启。
+	maxActiveDevices, devicePolicy, err := loadSessionDevicePolicyFromEnv()
+	if err != nil {
+		return nil, nil, fmt.Errorf("load session device policy: %w", err)
+	}
+	userSessionService.MaxActiveFamilies = maxActiveDevices
+	userSessionService.DevicePolicy = devicePolicy
 	return userAuthService, userSessionService, nil
 }
 
@@ -355,7 +387,7 @@ func buildAuditServices(ctx context.Context, pgPool *pgxpool.Pool, logger *zap.L
 	return auditSigner, auditLedger, auditPubkeyRegistry, nil
 }
 
-func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, auditLedger auditledger.Ledger) (*legacydlq.Store, *legacydlq.Service, *legacydlq.Worker, string, func()) {
+func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, auditLedger auditledger.Ledger, outboxStore *obsoutbox.PostgresOutbox) (*legacydlq.Store, *legacydlq.Service, *legacydlq.Worker, string, func()) {
 	dlqStore := legacydlq.NewStore(pgPool)
 	dlqService := legacydlq.NewService(dlqStore, legacydlq.WithPolicy(legacydlq.RetryPolicy{
 		BaseBackoff: cfg.BaseBackoff,
@@ -381,7 +413,32 @@ func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, audi
 		LeaseTTL:      cfg.LeaseTTL,
 		IdleSleep:     time.Second,
 	})
-	// OPS-003: keep the dlq_depth expvar gauge fresh for alerting.
-	dlqWorker.ApplyWorkerOptions(legacydlq.WithDepthRefresher(dlqStore))
+	// OPS-003：让 dlq_depth 的 expvar gauge 保持新鲜，供告警使用；同时把 obs/outbox 死信深度
+	// 并入同一个 gauge map，避免运维只看到旧 DLQ 而漏掉邮件 / 渠道告警死信。
+	dlqWorker.ApplyWorkerOptions(legacydlq.WithDepthRefresher(combinedDLQDepthRefresher{legacy: dlqStore, obs: outboxStore}))
 	return dlqStore, dlqService, dlqWorker, replicaTarget, closeReplica
+}
+
+type combinedDLQDepthRefresher struct {
+	legacy interface {
+		UpdateDLQDepthGauge(context.Context) error
+	}
+	obs interface {
+		UpdateDLQDepthGauge(context.Context) error
+	}
+}
+
+func (r combinedDLQDepthRefresher) UpdateDLQDepthGauge(ctx context.Context) error {
+	var firstErr error
+	if r.legacy != nil {
+		if err := r.legacy.UpdateDLQDepthGauge(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if r.obs != nil {
+		if err := r.obs.UpdateDLQDepthGauge(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

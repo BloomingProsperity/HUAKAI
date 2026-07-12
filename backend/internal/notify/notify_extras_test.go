@@ -7,9 +7,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// NOTIF-013 + NOTIF-014. MUTATION coverage:
-//   - drop the threshold_type validation -> "bogus" accepted -> validate test fails.
-//   - notifier ignores ExtraEmails -> only the main recipient sent -> fanout test fails.
+// NOTIF-013 + NOTIF-014。变异覆盖:
+//   - 去掉 threshold_type 校验 -> "bogus" 被接受 -> validate 测试失败。
+//   - notifier 忽略 ExtraEmails -> 只发送给主接收者 -> fanout 测试失败。
 func TestThresholdTypeAndExtraEmailsValidate(t *testing.T) {
 	base := Settings{
 		TenantID:          7,

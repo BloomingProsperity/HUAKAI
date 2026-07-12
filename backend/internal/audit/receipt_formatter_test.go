@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -113,13 +114,21 @@ func TestAT_AUDIT_001_002_SignReceiptDeterministic(t *testing.T) {
 	if string(signed1.SignerFingerprint) != signer.Fingerprint() {
 		t.Fatalf("fingerprint=%q want %q", string(signed1.SignerFingerprint), signer.Fingerprint())
 	}
-	canonical, err := canonicalReceiptHash(signed1)
+	// 走【生产验签口径】:trust.v1 canonical(FinalTrustReceiptCanonical,同 cost_receipt_handler
+	// 验签侧)+ base64 解码 SignedHash。此前用 v2 canonical + 原始 SignedHash 验签是伪绿(B7)——
+	// 退款回执实际按 trust.v1 验签,若签名口径不符则用户验签恒失败(B2)。
+	// Mutation: 把 SignReceipt 改回签 v2 canonical 哈希 / 存原始字节 → 本处 trust.v1 验签失败 → RED。
+	canonical, err := FinalTrustReceiptCanonical(signed1)
 	if err != nil {
-		t.Fatalf("canonical hash: %v", err)
+		t.Fatalf("canonical: %v", err)
 	}
-	ok, err := signer.Verify(ctx, canonical, signed1.SignedHash, string(signed1.SignerFingerprint))
+	sig, err := base64.StdEncoding.DecodeString(string(signed1.SignedHash))
+	if err != nil {
+		t.Fatalf("SignedHash 必须是 base64 编码: %v", err)
+	}
+	ok, err := signer.Verify(ctx, canonical, sig, string(signed1.SignerFingerprint))
 	if err != nil || !ok {
-		t.Fatalf("signature verify: ok=%v err=%v", ok, err)
+		t.Fatalf("退款回执签名必须通过生产 trust.v1 验签口径: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -522,44 +531,6 @@ func TestAT_AUDIT_001_009_NonUUIDRequestIDWorks(t *testing.T) {
 		if !db.hasRequest(requestID) {
 			t.Fatalf("receipt storage missing request_id %q", requestID)
 		}
-	}
-}
-
-func TestReceiptCanonicalPayloadUsesMicroUSDField(t *testing.T) {
-	ctx := context.Background()
-	redactor := &capturingReceiptRedactor{}
-	receipt := &CostReceipt{
-		RequestID:           "host/random-000005",
-		TenantID:            7,
-		ReceiptSequence:     2,
-		Model:               "gpt-4.1-mini",
-		InputTokens:         10,
-		OutputTokens:        2,
-		CostUSDMicros:       1234,
-		RateTableSnapshotID: 8,
-		CreatedAt:           time.Date(2026, 5, 17, 17, 0, 0, 0, time.UTC),
-	}
-	if _, err := canonicalReceiptHashWithRedactor(ctx, redactor, receipt); err != nil {
-		t.Fatalf("canonicalReceiptHashWithRedactor: %v", err)
-	}
-	raw := string(redactor.lastRaw)
-	if !strings.Contains(raw, `"cost_total_micro_usd":1234`) {
-		t.Fatalf("canonical payload missing micro-USD field: %s", raw)
-	}
-	if !strings.Contains(raw, `"receipt_sequence":2`) {
-		t.Fatalf("canonical payload missing receipt_sequence field: %s", raw)
-	}
-	if strings.Contains(raw, "cost_total_microcents") {
-		t.Fatalf("canonical payload must not use microcents field: %s", raw)
-	}
-	if !strings.Contains(raw, `"validation_state":"valid"`) {
-		t.Fatalf("canonical payload missing validation_state field: %s", raw)
-	}
-	if !strings.Contains(raw, `"verdict":"match"`) {
-		t.Fatalf("canonical payload missing verdict field: %s", raw)
-	}
-	if !strings.Contains(raw, `"adjustment_refs":[]`) {
-		t.Fatalf("canonical payload missing adjustment_refs field: %s", raw)
 	}
 }
 
@@ -1017,30 +988,6 @@ func (r scriptedReceiptRow) Scan(dest ...any) error {
 		}
 	}
 	return nil
-}
-
-type capturingReceiptRedactor struct {
-	lastRaw []byte
-}
-
-func (r *capturingReceiptRedactor) SanitizePayload(_ context.Context, payload any) ([]byte, error) {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	r.lastRaw = append([]byte(nil), raw...)
-	return raw, nil
-}
-
-func (r *capturingReceiptRedactor) SanitizeError(_ context.Context, err error) (string, error) {
-	if err == nil {
-		return "", nil
-	}
-	return err.Error(), nil
-}
-
-func (r *capturingReceiptRedactor) AllowlistField(string) bool {
-	return true
 }
 
 func testFormatter(t *testing.T, signer *auditledger.LocalEd25519Signer) *ReceiptFormatter {

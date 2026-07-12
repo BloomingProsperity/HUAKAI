@@ -16,7 +16,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
@@ -252,12 +251,12 @@ func (a RefreshAdapter) postRefresh(ctx context.Context, tokenURL string, form u
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := a.httpClient().Do(req)
 	if err != nil {
-		return tokenResponse{}, &RefreshError{Outcome: string(credentialworker.OutcomeTransientError), Retryable: true, Cause: err}
+		return tokenResponse{}, &RefreshError{Outcome: string(auth.OutcomeTransientError), Retryable: true, Cause: err}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return tokenResponse{}, &RefreshError{Outcome: string(credentialworker.OutcomeTransientError), Retryable: true, Cause: err}
+		return tokenResponse{}, &RefreshError{Outcome: string(auth.OutcomeTransientError), Retryable: true, Cause: err}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return tokenResponse{}, classifyHTTPRefreshError(resp.StatusCode, resp.Header, body, a.now())
@@ -363,7 +362,7 @@ type tokenResponse struct {
 
 func classifyHTTPRefreshError(status int, header http.Header, body []byte, now time.Time) error {
 	bodyText := sanitizedRefreshBody(body)
-	outcome := credentialworker.ClassifyRefreshError(errors.New(bodyText), GeminiVendor, status)
+	outcome := auth.ClassifyRefreshError(errors.New(bodyText), GeminiVendor, status)
 	refreshErr := &RefreshError{
 		Outcome:    string(outcome),
 		StatusCode: status,
@@ -371,18 +370,18 @@ func classifyHTTPRefreshError(status int, header http.Header, body []byte, now t
 		Body:       bodyText,
 	}
 	switch outcome {
-	case credentialworker.OutcomeAuthExpired:
+	case auth.OutcomeAuthExpired:
 		refreshErr.Cause = ErrGeminiAuthExpired
-	case credentialworker.OutcomeRateLimit:
+	case auth.OutcomeRateLimit:
 		refreshErr.Cause = ErrGeminiRateLimited
 		refreshErr.RetryAfter = now.Add(parseRetryAfter(header, now))
-	case credentialworker.OutcomeRiskControl:
+	case auth.OutcomeRiskControl:
 		refreshErr.Cause = ErrGeminiRiskControl
-	case credentialworker.OutcomeTransientError:
+	case auth.OutcomeTransientError:
 		refreshErr.Cause = ErrGeminiTransient
 		refreshErr.Retryable = true
 	default:
-		refreshErr.Outcome = string(credentialworker.OutcomeUnknown)
+		refreshErr.Outcome = string(auth.OutcomeUnknown)
 	}
 	return refreshErr
 }
@@ -398,7 +397,7 @@ func classifyRefreshFailure(err error) string {
 	if errors.Is(err, ErrGeminiRecordMismatch) {
 		return failureVendorMismatch
 	}
-	if outcome := credentialworker.ClassifyRefreshError(err, GeminiVendor, 0); outcome != credentialworker.OutcomeUnknown {
+	if outcome := auth.ClassifyRefreshError(err, GeminiVendor, 0); outcome != auth.OutcomeUnknown {
 		return string(outcome)
 	}
 	return failureUnknown

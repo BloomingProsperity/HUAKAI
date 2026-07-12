@@ -31,7 +31,7 @@ func (r *contentThenBlockReader) Read(p []byte) (int, error) {
 // T2:terminalErrorFrame 纯函数 — 每个客户端协议的终止 error 帧格式正确。
 // 这是修复的根:canonicalStreamErrorSSE() 是 anthropic-only event: error,对
 // openai_chat 客户端(只认 data: 行)等于没发=静默截断(Codex 报 stream closed)。
-// Mutation guard: terminalErrorFrame 永远 return canonicalStreamErrorSSE() →
+// 变异守卫: terminalErrorFrame 永远 return canonicalStreamErrorSSE() →
 // openai_chat/gemini/responses 子断言红。
 func TestTerminalErrorFrame_PerProtocolFormat(t *testing.T) {
 	join := func(fr [][]byte) string {
@@ -80,7 +80,7 @@ func TestTerminalErrorFrame_PerProtocolFormat(t *testing.T) {
 
 // T1:已交付真实内容后 inter-event 超时 → 必须补一个【按客户端协议正确的】终止
 // error 帧。此前条件含 !firstEmitted,已交付后超时被漏掉=静默截断。
-// Mutation guard: 补帧条件改回 !firstEmitted → firstEmitted=true 时不补 → body 无 error 帧红。
+// 变异守卫: 补帧条件改回 !firstEmitted → firstEmitted=true 时不补 → body 无 error 帧红。
 func TestForward_DeliveredThenTimeout_EmitsProtocolTerminalFrame(t *testing.T) {
 	cases := []struct {
 		clientProto     string

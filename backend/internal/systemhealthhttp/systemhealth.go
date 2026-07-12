@@ -1,15 +1,15 @@
-// Package systemhealthhttp implements ADMIN-042: read-only system health
-// aggregation endpoint for operators.
+// Package systemhealthhttp 实现 ADMIN-042:面向运维的只读系统健康
+// 聚合端点。
 //
-// GET /v1/admin/system/health (alias /admin/v1/system/health)
+// GET /v1/admin/system/health(别名 /admin/v1/system/health)
 //
-// The handler aggregates already-computed read-only snapshots from:
-//   - channelhealth controller (SummarizeChannelHealth snapshot)
-//   - DLQ pending depth (List with StatusPending)
-//   - Alerting active (firing) event count (ListEvents with state=firing)
+// 该 handler 聚合以下来源的、已经算好的只读快照:
+//   - channelhealth controller(SummarizeChannelHealth 快照)
+//   - DLQ pending 深度(List 配 StatusPending)
+//   - Alerting 活跃(firing)事件计数(ListEvents 配 state=firing)
 //   - DB ping
 //
-// No upstream paid calls; zero billing side effects.
+// 不会发起任何上游付费调用;零计费副作用。
 package systemhealthhttp
 
 import (
@@ -17,9 +17,16 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
+	"runtime"
+	"time"
 )
 
-// ComponentStatus represents the health of a single sub-system.
+// processStart 近似为进程启动时刻:本包被 gateway main 包导入,
+// 因此其 init 在启动时运行。uptime 据此推算。
+var processStart = time.Now()
+
+// ComponentStatus 表示单个子系统的健康状态。
 type ComponentStatus string
 
 const (
@@ -28,7 +35,7 @@ const (
 	ComponentStatusUnhealthy ComponentStatus = "unhealthy"
 )
 
-// TopLevelStatus is the aggregated system status derived from component statuses.
+// TopLevelStatus 是由各组件状态推导出的聚合系统状态。
 type TopLevelStatus string
 
 const (
@@ -37,41 +44,78 @@ const (
 	TopLevelStatusUnhealthy TopLevelStatus = "unhealthy"
 )
 
-// Component is one named sub-system entry in the health response.
+// Component 是健康响应中一个具名的子系统条目。
 type Component struct {
 	Name   string          `json:"name"`
 	Status ComponentStatus `json:"status"`
 	Detail string          `json:"detail,omitempty"`
 }
 
-// HealthResponse is the JSON body returned by the health endpoint.
+// RuntimeInfo 是 gateway 进程自身资源占用的实时快照,在请求时直接从
+// Go runtime 读取(无后台采集器,无存储)。所有值都是诊断信息 —— heap/goroutine/GC
+// 仪表盘外加 uptime、Go 工具链版本和二进制大小 —— 绝不含机密
+//(二进制的 PATH 不会暴露,只暴露其大小)。
+type RuntimeInfo struct {
+	GoVersion       string `json:"go_version"`
+	NumGoroutine    int    `json:"num_goroutine"`
+	HeapAllocBytes  uint64 `json:"heap_alloc_bytes"`
+	HeapSysBytes    uint64 `json:"heap_sys_bytes"`
+	NumGC           uint32 `json:"num_gc"`
+	UptimeSeconds   int64  `json:"uptime_seconds"`
+	BinarySizeBytes int64  `json:"binary_size_bytes,omitempty"`
+}
+
+// HealthResponse 是健康端点返回的 JSON body。
 type HealthResponse struct {
 	Status     TopLevelStatus `json:"status"`
 	Components []Component    `json:"components"`
+	Runtime    RuntimeInfo    `json:"runtime"`
 }
 
-// SystemHealthSource provides read-only already-computed snapshots for aggregation.
-// Production implementations are backed by live service fields in deps.
+// collectRuntimeInfo 读取一份实时的进程运行时快照。纯 runtime/os 读取;
+// 无依赖、无 ctx、无副作用。当无法解析/stat 当前可执行文件时,
+// BinarySizeBytes 被省略(为 0)。
+func collectRuntimeInfo() RuntimeInfo {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	info := RuntimeInfo{
+		GoVersion:      runtime.Version(),
+		NumGoroutine:   runtime.NumGoroutine(),
+		HeapAllocBytes: ms.HeapAlloc,
+		HeapSysBytes:   ms.HeapSys,
+		NumGC:          ms.NumGC,
+		UptimeSeconds:  int64(time.Since(processStart).Seconds()),
+	}
+	if exe, err := os.Executable(); err == nil {
+		if fi, statErr := os.Stat(exe); statErr == nil {
+			info.BinarySizeBytes = fi.Size()
+		}
+	}
+	return info
+}
+
+// SystemHealthSource 为聚合提供只读的、已经算好的快照。
+// 生产实现由 deps 中的实时 service 字段支撑。
 type SystemHealthSource interface {
-	// ChannelHealthSummary returns (total, unhealthyCount, err).
-	// "unhealthy" = cooling_down + disabled + degraded counts.
+	// ChannelHealthSummary 返回 (total, unhealthyCount, err)。
+	// "unhealthy" = cooling_down + disabled + degraded 的计数之和。
 	ChannelHealthSummary(ctx context.Context) (total int64, unhealthyCount int64, err error)
-	// DLQPendingDepth returns the number of pending DLQ records.
+	// DLQPendingDepth 返回 pending 状态的 DLQ 记录数。
 	DLQPendingDepth(ctx context.Context) (int64, error)
-	// AlertingFiringCount returns the number of currently-firing alert events.
+	// AlertingFiringCount 返回当前处于 firing 状态的告警事件数。
 	AlertingFiringCount(ctx context.Context) (int64, error)
-	// DBPing checks database reachability.
+	// DBPing 检查数据库可达性。
 	DBPing(ctx context.Context) error
 }
 
-// NewSystemHealthHandler returns the aggregated health handler.
-// The handler is intentionally behind adminGate (caller's responsibility).
+// NewSystemHealthHandler 返回聚合健康 handler。
+// 该 handler 有意置于 adminGate 之后(由调用方负责)。
 func NewSystemHealthHandler(src SystemHealthSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		var components []Component
 
-		// ── component: database ──────────────────────────────────────────────
+		// ── 组件:database ──────────────────────────────────────────────
 		if src == nil {
 			writeJSON(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:     TopLevelStatusUnhealthy,
@@ -88,7 +132,7 @@ func NewSystemHealthHandler(src SystemHealthSource) http.HandlerFunc {
 		}
 		components = append(components, Component{Name: "database", Status: dbStatus, Detail: dbDetail})
 
-		// ── component: channel_health ─────────────────────────────────────────
+		// ── 组件:channel_health ─────────────────────────────────────────
 		total, unhealthy, err := src.ChannelHealthSummary(ctx)
 		chStatus, chDetail := ComponentStatusHealthy, ""
 		if err != nil {
@@ -101,7 +145,7 @@ func NewSystemHealthHandler(src SystemHealthSource) http.HandlerFunc {
 		}
 		components = append(components, Component{Name: "channel_health", Status: chStatus, Detail: chDetail})
 
-		// ── component: dlq ───────────────────────────────────────────────────
+		// ── 组件:dlq ───────────────────────────────────────────────────
 		dlqDepth, err := src.DLQPendingDepth(ctx)
 		dlqStatus, dlqDetail := ComponentStatusHealthy, ""
 		if err != nil {
@@ -114,7 +158,7 @@ func NewSystemHealthHandler(src SystemHealthSource) http.HandlerFunc {
 		}
 		components = append(components, Component{Name: "dlq", Status: dlqStatus, Detail: dlqDetail})
 
-		// ── component: alerting ───────────────────────────────────────────────
+		// ── 组件:alerting ───────────────────────────────────────────────
 		firingCount, err := src.AlertingFiringCount(ctx)
 		alertStatus, alertDetail := ComponentStatusHealthy, ""
 		if err != nil {
@@ -127,21 +171,21 @@ func NewSystemHealthHandler(src SystemHealthSource) http.HandlerFunc {
 		}
 		components = append(components, Component{Name: "alerting", Status: alertStatus, Detail: alertDetail})
 
-		// ── derive top-level status ───────────────────────────────────────────
-		// MUTATION guard: if this is replaced with always-healthy the test turns red.
+		// ── 推导顶层状态 ───────────────────────────────────────────
+		// 变异守护:若把这里替换成永远 healthy,测试就会变红。
 		top := deriveTopLevel(components)
 
-		writeJSON(w, http.StatusOK, HealthResponse{Status: top, Components: components})
+		writeJSON(w, http.StatusOK, HealthResponse{Status: top, Components: components, Runtime: collectRuntimeInfo()})
 	}
 }
 
-// deriveTopLevel returns the worst component status as the system status.
+// deriveTopLevel 取各组件中最差的状态作为系统状态返回。
 func deriveTopLevel(components []Component) TopLevelStatus {
 	result := TopLevelStatusHealthy
 	for _, c := range components {
 		switch c.Status {
 		case ComponentStatusUnhealthy:
-			return TopLevelStatusUnhealthy // worst possible — short circuit
+			return TopLevelStatusUnhealthy // 最差情况 —— 短路返回
 		case ComponentStatusDegraded:
 			result = TopLevelStatusDegraded
 		}
@@ -181,7 +225,7 @@ func int64str(v int64) string {
 	if neg {
 		buf = append(buf, '-')
 	}
-	// reverse
+	// 反转
 	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
 		buf[i], buf[j] = buf[j], buf[i]
 	}

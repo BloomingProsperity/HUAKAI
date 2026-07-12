@@ -57,6 +57,9 @@ func (s *Service) Submit(ctx context.Context, tenantID, userID int64, input Subm
 		TaskType: input.TaskType, Provider: input.Provider, InputParams: input.InputParams,
 		EstimatedCents: estimated, BillingPolicyVersion: cfg.BillingPolicyVersion,
 		RequestClass: cfg.RequestClass,
+		// claim 孤儿回收租约必须覆盖任务整个生命周期(TaskTimeout)再加余量,随运维
+		// 调整 TaskTimeout 自动跟随,避免 billing LeaseSweeper 在任务跑完前误 abort。
+		ClaimLeaseWindow: cfg.TaskTimeout + claimLeaseGrace,
 	})
 	return task, err
 }

@@ -101,11 +101,10 @@ type openAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
 	TotalTokens      int `json:"total_tokens,omitempty"`
-	// OpenAI prompt caching: usage.prompt_tokens_details.cached_tokens
-	// 表示该请求命中缓存的 prompt token 数。OpenAI 没有"创建缓存"的概念
-	// （implicit caching），只暴露读命中。映射到 proto.CanonicalUsage.CacheReadInputTokens。
-	// (sonnet F4 MEDIUM 修复: 缺失 OpenAI cache 观测)
-	PromptTokensDetails *openAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// 指针用于区分字段缺失与显式零，避免 vendor 字段错误覆盖标准字段。
+	PromptTokensDetails   *openAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	PromptCacheHitTokens  *int                       `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int                       `json:"prompt_cache_miss_tokens,omitempty"`
 	// completion_tokens_details.reasoning_tokens: OpenAI o1/o3 隐藏推理 token，已计入
 	// completion_tokens（=OutputTokens）。映射到 proto.CanonicalUsage.ReasoningTokens
 	// 供 token 交叉校验扣除（S2-163-fu）。
@@ -113,7 +112,7 @@ type openAIUsage struct {
 }
 
 type openAIPromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	CachedTokens *int `json:"cached_tokens,omitempty"`
 	// AudioTokens 是 prompt_tokens 的子拆分(已含在 InputTokens 里计费),有意
 	// 不进 CanonicalUsage:HUAKAI 暂无按模态差异计价,carry 它只会引入双算风险。
 	// 若日后做 per-modality 定价,应仿 ReasoningTokens 加 audit-only 字段且不入
@@ -493,10 +492,7 @@ func (u openAIUsage) canonical() proto.CanonicalUsage {
 		OutputTokens: u.CompletionTokens,
 		TotalTokens:  u.TotalTokens,
 	}
-	if u.PromptTokensDetails != nil {
-		// OpenAI 只暴露 read（命中）；creation 永远 0
-		out.CacheReadInputTokens = u.PromptTokensDetails.CachedTokens
-	}
+	out.CacheReadInputTokens = u.cacheReadInputTokens()
 	if u.CompletionTokensDetails != nil {
 		out.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
 	}
@@ -504,6 +500,33 @@ func (u openAIUsage) canonical() proto.CanonicalUsage {
 		out.TotalTokens = out.InputTokens + out.OutputTokens
 	}
 	return out
+}
+
+func (u openAIUsage) cacheReadInputTokens() int {
+	if u.PromptTokens <= 0 {
+		return 0
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens != nil {
+		return boundedCacheReadTokens(*u.PromptTokensDetails.CachedTokens, u.PromptTokens)
+	}
+	if u.PromptCacheHitTokens == nil {
+		return 0
+	}
+	// prompt 总量是包含式权威值；负拆分表示 vendor 扩展不可用。
+	if u.PromptCacheMissTokens != nil && *u.PromptCacheMissTokens < 0 {
+		return 0
+	}
+	return boundedCacheReadTokens(*u.PromptCacheHitTokens, u.PromptTokens)
+}
+
+func boundedCacheReadTokens(reported, prompt int) int {
+	if reported <= 0 || prompt <= 0 {
+		return 0
+	}
+	if reported > prompt {
+		return prompt
+	}
+	return reported
 }
 
 func usageHasValue(usage proto.CanonicalUsage) bool {
@@ -516,8 +539,11 @@ func canonicalOpenAICallID(upstreamID string) (string, []proto.ProtocolLossEntry
 	}
 	callID, err := proto.ToCanonicalCallID(upstreamID, proto.UpstreamProtocolOpenAI)
 	if err != nil {
-		loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed OpenAI tool call identifier")
-		return "", []proto.ProtocolLossEntry{loss}
+		// OpenAI 兼容供应商（Mistral 9 字符 / Qwen / GLM / Kimi 等）的 tool_call id 常不带 call_ 前缀。
+		// 不能丢成空串——空 CallID 会让下游 Anthropic 客户端硬报错、或发出无法关联 tool_result 的 tool_use。
+		// 保留并合成一个可用的 canonical id，仅记一条 loss 而非丢弃。
+		loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-canonical OpenAI tool call identifier; preserved via synthesized canonical call_id")
+		return proto.SynthesizeCanonicalCallID(upstreamID), []proto.ProtocolLossEntry{loss}
 	}
 	return callID, nil
 }

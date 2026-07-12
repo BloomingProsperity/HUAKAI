@@ -6,20 +6,20 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 )
 
-// RedactedContext keys carrying the auto-extracted upstream account identity. These
-// hold ONLY the non-secret account id / email / provenance — never the raw id_token
-// or any bearer material, so they survive ValidateRedactedContext's secret scrubber.
+// 承载自动提取出的上游账户身份的 RedactedContext key。它们只保存非机密的
+// account id / email / 来源 —— 绝不保存原始 id_token 或任何 bearer 凭据材料，
+// 因此能通过 ValidateRedactedContext 的 secret scrubber。
 const (
 	RedactedKeyUpstreamAccountID    = "upstream_account_id"
 	RedactedKeyUpstreamAccountEmail = "upstream_account_email"
 	RedactedKeyAccountIDSource      = "account_id_source"
 )
 
-// AttachIdentity threads an auto-extracted upstream account identity onto a credential
-// candidate: it sets the durable candidate fields (persisted as queryable columns) and
-// mirrors the non-secret values into RedactedContext (immediate audit/UI surface, zero
-// schema change). It is a no-op for an empty identity so manual/operator binding wins.
-// The raw id_token is never placed here — only the extracted, non-secret values.
+// AttachIdentity 把自动提取出的上游账户身份挂接到一个 credential candidate 上：
+// 它设置持久化的 candidate 字段（落库为可查询的列），并把非机密的值镜像进
+// RedactedContext（用于即时的审计/UI 展示，零 schema 改动）。对于空 identity 它
+// 是 no-op，从而让 manual/operator 绑定为准。原始 id_token 绝不会放在这里 ——
+// 只放提取出的、非机密的值。
 func AttachIdentity(candidate *CredentialCandidate, identity accountident.Identity) {
 	if candidate == nil {
 		return
@@ -27,8 +27,8 @@ func AttachIdentity(candidate *CredentialCandidate, identity accountident.Identi
 	accountID := strings.TrimSpace(identity.AccountID)
 	candidate.AccountIDSource = strings.TrimSpace(identity.Source)
 	if identity.Empty() {
-		// Record provenance even when nothing was extracted so the UI can show the
-		// binding fell back to manual, but add no id/email keys.
+		// 即使没有提取到任何内容也记录来源，让 UI 能展示该绑定已回退为 manual，
+		// 但不添加任何 id/email key。
 		if candidate.AccountIDSource != "" {
 			candidate.RedactedContext = setRedactedKey(candidate.RedactedContext, RedactedKeyAccountIDSource, candidate.AccountIDSource)
 		}

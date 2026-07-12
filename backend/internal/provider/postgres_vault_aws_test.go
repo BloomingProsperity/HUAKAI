@@ -2,7 +2,7 @@
 //
 // 测试 mapAWSSigV4 + mapCredential("aws_sigv4", ...) 路径，覆盖 Bedrock
 // PassthroughAdapter 的输入契约：
-//   - Credential.Value = secret access key
+//   - Credential.Value = secret access key(密钥)
 //   - Credential.Extra["aws_access_key_id"]
 //   - Credential.Extra["aws_region"]
 //   - Credential.Extra["aws_session_token"]（可选）

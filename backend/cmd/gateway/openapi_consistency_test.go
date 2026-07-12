@@ -116,6 +116,43 @@ func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 	}
 }
 
+// TestOpenAPI_SecurityContractMatchesImpl 校验 security 维度的契约一致性:OpenAPI 标 security:[]
+// (公开)的操作,实现里不得挂会话认证中间件。否则前端/第三方按 spec 当公开调用会撞 401,且这类漂移
+// 是 IDOR 类回归(实现加了租户/会话校验却忘同步 spec)的征兆——本次正是审计 IDOR 修复后 receipts
+// verify 的 spec 漏改(impl 已挂 SessionMiddleware 守退款队列跨租户,spec 仍标公开)被此检查抓出。
+// 本检查只覆盖"spec 公开但 impl 认证"方向(反向因 admin 等在 handler 内鉴权、无中间件,无法纯靠
+// 中间件内省判定,纳入会误报)。两处 len==0 守卫确保 parser/内省失效时不会"空集假绿"。
+func TestOpenAPI_SecurityContractMatchesImpl(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specPublic, err := openapicheck.ParseSpecPublicOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI 公开操作: %v", err)
+	}
+	if len(specPublic) == 0 {
+		t.Fatalf("spec 解析出 0 条 security:[] 公开操作 — parser 可能漏了 security 行")
+	}
+
+	r := buildTestRouter(t)
+	// "SessionMiddleware" 是会话认证中间件(internal/auth)的函数名标记。
+	gated := openapicheck.OperationsGatedByMiddleware(r, "SessionMiddleware")
+	if len(gated) == 0 {
+		t.Fatalf("impl 走出 0 条会话认证路由 — 中间件内省失效")
+	}
+
+	drift := openapicheck.SecurityContractDrift(specPublic, gated)
+	if len(drift) > 0 {
+		msgs := make([]string, 0, len(drift))
+		for _, op := range drift {
+			msgs = append(msgs, op.Method+" "+op.Path)
+		}
+		t.Errorf("OpenAPI 标 security:[](公开)但实现挂了会话认证的 %d 条操作(契约漂移,客户端会撞 401):%v",
+			len(drift), msgs)
+	}
+}
+
 func TestOpenAPI_ChatCompletionsMethodMatchesRuntimePOST(t *testing.T) {
 	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
 	if err != nil {
@@ -145,8 +182,8 @@ func TestOpenAPI_ChatCompletionsMethodMatchesRuntimePOST(t *testing.T) {
 }
 
 func TestCodexResponsesIngressRouteMounted(t *testing.T) {
-	// MUTATION: omit r.Post("/backend-api/codex/responses", ...); chi returns
-	// 404 for Codex CLI instead of reaching the shared Responses handler.
+	// 变异:省略 r.Post("/backend-api/codex/responses", ...);chi 会对 Codex CLI
+	// 返回 404,而非到达共享的 Responses handler。
 	r := buildTestRouter(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/backend-api/codex/responses",
@@ -740,11 +777,11 @@ func TestProviderChannelCatalogRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	}
 }
 
-// TestQuotaPoliciesRoutesAndOpenAPISchemasStayInSync is the wiring tripwire for
-// BILL-122: it asserts all 5 quota-policy routes exist in BOTH the chi impl and
-// openapi.yaml, plus the spec carries the schema/enum snippets. Forgetting the
-// openapi entry would otherwise only fire the impl-only TestOpenAPI_Implementation
-// Consistency hard failure; this gives a named, targeted failure instead.
+// TestQuotaPoliciesRoutesAndOpenAPISchemasStayInSync 是 BILL-122 的接线绊线:
+// 它断言全部 5 条 quota-policy 路由在 chi 实现与 openapi.yaml 中都存在,
+// 并且 spec 中带有相应的 schema/enum 片段。若忘了写 openapi 条目,否则只会
+// 触发 impl-only 的 TestOpenAPI_ImplementationConsistency 硬失败;这里改为给出
+// 一个具名的、针对性的失败。
 func TestQuotaPoliciesRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	r := buildTestRouter(t)
 	implOps := openapicheck.WalkChiOperations(r)
@@ -811,6 +848,7 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		"/admin/v1/users",
 		"/admin/v1/users/{id}",
 		"/admin/v1/users/{id}/balance-history",
+		"/admin/v1/users/{id}/usage",
 	}
 	for _, path := range readOps {
 		if !hasOperationEquivalent(implOps, http.MethodGet, path) {
@@ -820,8 +858,8 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 	if !hasOperationEquivalent(implOps, http.MethodPost, "/admin/v1/users/{id}/unlock") {
 		t.Fatalf("runtime missing POST /admin/v1/users/{id}/unlock")
 	}
-	// S4 single-tenant out-of-box: admin user create + soft-delete are now
-	// intentional mutations on this slice.
+	// S4 单租户开箱即用:admin 创建用户 + 软删除现在是本切片上
+	// 刻意保留的 mutation。
 	if !hasOperationEquivalent(implOps, http.MethodPost, "/admin/v1/users") {
 		t.Fatalf("runtime missing POST /admin/v1/users (admin create user)")
 	}
@@ -837,6 +875,9 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		{http.MethodPost, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodPatch, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodDelete, "/admin/v1/users/{id}/balance-history"},
+		{http.MethodPost, "/admin/v1/users/{id}/usage"},
+		{http.MethodPatch, "/admin/v1/users/{id}/usage"},
+		{http.MethodDelete, "/admin/v1/users/{id}/usage"},
 	} {
 		if hasOperationEquivalent(implOps, op.method, op.path) {
 			t.Fatalf("runtime unexpectedly exposes read-only slice mutation %s %s", op.method, op.path)
@@ -874,6 +915,9 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		{http.MethodPost, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodPatch, "/admin/v1/users/{id}/balance-history"},
 		{http.MethodDelete, "/admin/v1/users/{id}/balance-history"},
+		{http.MethodPost, "/admin/v1/users/{id}/usage"},
+		{http.MethodPatch, "/admin/v1/users/{id}/usage"},
+		{http.MethodDelete, "/admin/v1/users/{id}/usage"},
 	} {
 		if hasOperation(specOps, op.method, op.path) {
 			t.Fatalf("OpenAPI unexpectedly declares read-only slice mutation %s %s", op.method, op.path)
@@ -893,6 +937,7 @@ func TestAdminUsersRoutesAndOpenAPISchemasStayInSync(t *testing.T) {
 		"listAdminUsers",
 		"getAdminUser",
 		"listAdminUserBalanceHistory",
+		"listAdminUserUsage",
 		"adminUnlockUser",
 		"balance-history",
 		"unlock_user",
@@ -968,6 +1013,93 @@ func TestModelCapabilitiesRouteAndOpenAPISchemaStayInSync(t *testing.T) {
 	} {
 		if !strings.Contains(spec, snippet) {
 			t.Fatalf("OpenAPI model capabilities schema missing snippet %q", snippet)
+		}
+	}
+}
+
+// TestPublicPricingPageItemSchemaListsCatalogMetadata 把公开定价页的响应形状
+// 绑定到其 OpenAPI schema。handler 会把 owned_by/mode/max_output_tokens/capabilities
+// 投影到响应上,而 PublicPricingPageItem 是 additionalProperties:false——所以若这些
+// property 从 schema 中被删掉、handler 却仍在产出它们,文档化的契约就会悄悄偏离。
+// 变异:从 openapi.yaml 的 PublicPricingPageItem 块中删掉这四条 property 中的任意一条,
+// 本测试即变红(该块不再包含那个字段)。
+func TestPublicPricingPageItemSchemaListsCatalogMetadata(t *testing.T) {
+	r := buildTestRouter(t)
+	if !hasOperation(openapicheck.WalkChiOperations(r), http.MethodGet, "/v1/pricing/page") {
+		t.Fatalf("runtime missing GET /v1/pricing/page")
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	block := yamlSchemaBlock(string(raw), "PublicPricingPageItem:")
+	if block == "" {
+		t.Fatalf("PublicPricingPageItem schema block not found in OpenAPI")
+	}
+	for _, field := range []string{"owned_by:", "mode:", "max_output_tokens:", "capabilities:"} {
+		if !strings.Contains(block, field) {
+			t.Fatalf("PublicPricingPageItem schema missing %q property (handler emits it; schema is additionalProperties:false)", field)
+		}
+	}
+}
+
+// yamlSchemaBlock 返回某个具名 schema 的 YAML 文本(从其缩进 4 空格的头行起,
+// 到同一缩进层级的下一个兄弟 schema 为止);不存在则返回 ""。
+func yamlSchemaBlock(spec, header string) string {
+	lines := strings.Split(spec, "\n")
+	start := -1
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "    ") && strings.TrimSpace(ln) == header {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		ln := lines[i]
+		// 下一个兄弟 schema = 恰好 4 个前导空格、第 5 列为非空格、且以 ':' 结尾
+		if len(ln) > 4 && ln[:4] == "    " && ln[4] != ' ' && strings.HasSuffix(strings.TrimSpace(ln), ":") {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// TestMeUsageRecordSchemaListsStreamShapeAndTiming 把自助用量记录的响应形状
+// 绑定到其 OpenAPI schema。handler 会投影 stream/stream_terminated_reason/requested_at,
+// 而 MeUsageRecord 是 additionalProperties:false——所以若这些 property 从 schema 中被删掉、
+// handler 却仍在产出它们,文档化的契约就会悄悄偏离。变异:从 openapi.yaml 的 MeUsageRecord
+// 块中删掉这三条 property 中的任意一条,本测试即变红。
+func TestMeUsageRecordSchemaListsStreamShapeAndTiming(t *testing.T) {
+	r := buildTestRouter(t)
+	if !hasOperation(openapicheck.WalkChiOperations(r), http.MethodGet, "/v1/me/usage") {
+		t.Fatalf("runtime missing GET /v1/me/usage")
+	}
+
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	block := yamlSchemaBlock(string(raw), "MeUsageRecord:")
+	if block == "" {
+		t.Fatalf("MeUsageRecord schema block not found in OpenAPI")
+	}
+	for _, field := range []string{"stream:", "stream_terminated_reason:", "requested_at:"} {
+		if !strings.Contains(block, field) {
+			t.Fatalf("MeUsageRecord schema missing %q property (handler emits it; schema is additionalProperties:false)", field)
 		}
 	}
 }

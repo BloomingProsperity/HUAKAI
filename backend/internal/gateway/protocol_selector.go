@@ -82,21 +82,22 @@ func (r *StaticProtocolAdapterRegistry) For(family string) (proto.UpstreamAdapte
 //
 // 以下 6 家 vendor 使用 openai.Adapter 解析 SSE，因为它们均实现了
 // OpenAI Chat Completions 兼容协议（data: {"choices":[...]} 形态）：
-//   - deepseek_chat   DeepSeek
-//   - mistral_chat    Mistral AI
-//   - groqcloud_chat  Groq Cloud
-//   - together_chat   Together AI
-//   - perplexity_chat Perplexity AI
-//   - fireworks_chat  Fireworks AI
+//   - deepseek_chat   DeepSeek 协议族
+//   - mistral_chat    Mistral AI 协议族
+//   - groqcloud_chat  Groq Cloud 协议族
+//   - together_chat   Together AI 协议族
+//   - perplexity_chat Perplexity AI 协议族
+//   - fireworks_chat  Fireworks AI 协议族
 func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	r := NewStaticProtocolAdapterRegistry()
 	r.MustRegister("anthropic_messages", &anthropic.Adapter{CarryForwardSignatureDelta: false})
+	r.MustRegister("anthropic_claude_session", &anthropic.Adapter{CarryForwardSignatureDelta: false})
 	r.MustRegister("openai_chat", &openai.Adapter{})
-	r.MustRegister("openai_responses", &openai.Adapter{})
-	// openai_codex 出站到 chatgpt.com/backend-api/codex/completions，
-	// 但响应 SSE 形态与 OpenAI Chat Completions 兼容（data: {"choices":[...]}）。
-	// 复用 openai.Adapter；若后续观测到形态差异再做专用 session SSE adapter。
-	r.MustRegister("openai_codex", &openai.Adapter{})
+	r.MustRegister("openai_responses", &openai.ResponsesAdapter{})
+	// openai_codex 出站到 chatgpt.com/backend-api/codex/responses。
+	// 真实探测已确认它返回 OpenAI Responses SSE(named event +
+	// data.type=response.*)，不是 Chat Completions chunk。
+	r.MustRegister("openai_codex", &openai.ResponsesAdapter{})
 	r.MustRegister("gemini_messages", &gemini.Adapter{})
 	// Vertex AI serving 入站响应解析复用既有 proto adapter：
 	//   - vertex_gemini    上游 generateContent/streamGenerateContent 的 SSE/JSON
@@ -118,8 +119,8 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	// xAI Grok v1/chat/completions 严格 OpenAI 兼容。
 	r.MustRegister("grok_chat", &openai.Adapter{})
 	// AWS Bedrock 走二进制 EventStream（非 SSE），由专用 bedrock.EventStreamAdapter
-	// （proto/bedrock/eventstream.go，A4 atomic）+ BedrockEventStreamScanner
-	// （gateway/bedrock_stream_scanner.go，A3 atomic）成对处理。
+	// （proto/bedrock/eventstream.go，A4 原子变更）+ BedrockEventStreamScanner
+	// （gateway/bedrock_stream_scanner.go，A3 原子变更）成对处理。
 	// 当前限定 Bedrock-on-Anthropic（Claude on Bedrock）；future Llama/Cohere
 	// on Bedrock 时再 model-family 分流。
 	r.MustRegister("bedrock_invoke", bedrock.NewEventStreamAdapter())
@@ -153,16 +154,15 @@ func BuildDefaultProtocolAdapterRegistry() *StaticProtocolAdapterRegistry {
 	// 哨兵，done:true 终帧携带 usage），专用 adapter；与 OpenAI 兼容直通的
 	// ollama_chat（上方，openai.Adapter）并存为两个独立 family。
 	r.MustRegister("ollama_native", &protoollama.Adapter{})
-	// 订阅 session 反转路径。响应 SSE 形态分两类：
+	// 订阅 session 反转路径。响应 SSE 形态按真实上游区分：
 	//   - copilot_session:               OpenAI Chat Completions 兼容 → openai.Adapter
 	//   - gemini_advanced_session:       Google 内部 SSE 形态，近似 Gemini 官方 → gemini.Adapter
-	//   - cursor / antigravity / kiro / windsurf: SSE 形态待 OCAW 采集后确认；
-	//     先复用 openai.Adapter 作占位（多数采用 OpenAI Chat 兼容形态），
-	//     若实测形态不同再做专用 adapter。
+	//   - antigravity_session:            Cloud Code {response} envelope → geminicodeassist.Adapter
+	//   - cursor / kiro / windsurf:       SSE 形态待采集确认，暂用 openai.Adapter。
 	r.MustRegister("copilot_session", &openai.Adapter{})
 	r.MustRegister("gemini_advanced_session", &gemini.Adapter{})
 	r.MustRegister("cursor_session", &openai.Adapter{})
-	r.MustRegister("antigravity_session", &openai.Adapter{})
+	r.MustRegister("antigravity_session", &geminicodeassist.Adapter{})
 	r.MustRegister("kiro_session", &openai.Adapter{})
 	r.MustRegister("windsurf_session", &openai.Adapter{})
 	return r

@@ -816,7 +816,7 @@ func makeFullCapabilityFixture() *HCSFEnvelope {
 			Verdict:   VerdictLossy,
 			Note:      "legacy v0.3 entry preserved for adapter compatibility",
 		},
-		// v0.4：error severity + native required
+		// v0.4:error 严重级别 + 要求 native
 		{
 			Field:      "live_session.modalities",
 			Vendor:     "bedrock",

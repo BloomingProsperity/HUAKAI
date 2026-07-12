@@ -241,10 +241,9 @@ func geminiPartToCanonicalEvents(part geminiPart, state *UpstreamState) ([]proto
 	}
 
 	if len(bytes.TrimSpace(part.InlineData)) > 0 {
-		// Emit the inline image as a canonical image block (mirrors the buffered
-		// path in client.go) instead of dropping it. Streaming image generation
-		// (e.g. gemini-2.5-flash-image via generateContent) previously lost the
-		// image entirely while still billing the output tokens.
+		// 把 inline 图片作为 canonical image block 输出（与 client.go 里的 buffered
+		// 路径一致）而不是丢弃。流式图片生成（如 gemini-2.5-flash-image 走
+		// generateContent）此前会把图片整个丢失，却仍按 output tokens 计费。
 		imageIndex := state.NextBlockIndex
 		state.NextBlockIndex++
 		imageBlock := proto.CanonicalContentBlock{Type: "image", Image: cloneRaw(part.InlineData)}
@@ -391,8 +390,10 @@ func geminiCanonicalCallID(upstreamID string, state *UpstreamState) (string, []p
 	if upstreamID != "" {
 		callID, err := proto.ToCanonicalCallID(upstreamID, proto.UpstreamProtocolGemini)
 		if err != nil {
-			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "malformed Gemini functionCall identifier")
-			return "", []proto.ProtocolLossEntry{loss}
+			// Gemini functionCall 携带 id 时常不带 func_ 前缀；同 OpenAI 路径，保留合成而非丢空串，
+			// 否则 provided-id 分支会断裂 tool_use/tool_result 关联。
+			loss := proto.NewLossEntry(proto.FeatureToolUse, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-canonical Gemini functionCall identifier; preserved via synthesized canonical call_id")
+			return proto.SynthesizeCanonicalCallID(upstreamID), []proto.ProtocolLossEntry{loss}
 		}
 		return callID, nil
 	}
@@ -490,6 +491,12 @@ func geminiResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, []p
 	}
 
 	var losses []proto.ProtocolLossEntry
+	// 非流式同样只取主候选 Candidates[0];多候选(candidateCount>1)时非主候选被丢弃,
+	// 与流式路对称地记一条 lossy 损失(此前非流式静默丢弃、无审计痕迹)。canonical 模型
+	// 只承载单一主候选,故主答案完整返回、仅丢非主候选。
+	if len(resp.Candidates) > 1 {
+		losses = append(losses, proto.NewLossEntry(proto.FeatureMultiCandidate, proto.DirectionUpstreamToCanonical, proto.VerdictLossy, "non-primary Gemini candidate skipped (non-stream)"))
+	}
 	candidate := resp.Candidates[0]
 	out.StopReason = mapGeminiStopReason(candidate.FinishReason)
 	losses = append(losses, geminiStopLoss(candidate.FinishReason)...)

@@ -190,3 +190,79 @@ func completeGatewayEmailSettings(t *testing.T, keys credentialstore.KeyProvider
 		mailinfra.SettingVerifyRequirement: "true",
 	}
 }
+
+// PUT templates:合法覆盖落库到对应设置键;非法(缺凭证占位符/未知 kind)拒绝且不落库。
+func TestAdminEmailSettingsPutTemplates(t *testing.T) {
+	keys := testGatewayEmailKeys(t)
+	store := newGatewayEmailSettingsStore()
+	handler := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
+		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Store: store,
+		Keys:  keys,
+	})
+	rec := serveAdminEmailJSON(t, handler, http.MethodPut, "/v1/admin/email/settings", map[string]any{
+		"tenant_id": 1,
+		"templates": map[string]any{
+			"verification": map[string]any{"subject": "验证 {{token}}", "body": "<p>点 {{link}} 或 {{token}}</p>"},
+		},
+	})
+	assertHTTPStatus(t, rec, http.StatusOK)
+	subjectKey, bodyKey := mailinfra.TemplateSettingKeys("verification")
+	if store.settings[1][subjectKey] != "验证 {{token}}" || store.settings[1][bodyKey] != "<p>点 {{link}} 或 {{token}}</p>" {
+		t.Fatalf("模板覆盖未落库: %#v", store.settings[1])
+	}
+
+	// 变异:砍掉 ValidateTemplateOverride 调用 → 本段红。
+	rec = serveAdminEmailJSON(t, handler, http.MethodPut, "/v1/admin/email/settings", map[string]any{
+		"tenant_id": 1,
+		"templates": map[string]any{"verification": map[string]any{"body": "没有凭证占位符"}},
+	})
+	assertHTTPStatus(t, rec, http.StatusBadRequest)
+	rec = serveAdminEmailJSON(t, handler, http.MethodPut, "/v1/admin/email/settings", map[string]any{
+		"tenant_id": 1,
+		"templates": map[string]any{"bogus_kind": map[string]any{"body": "{{token}}"}},
+	})
+	assertHTTPStatus(t, rec, http.StatusBadRequest)
+
+	// 空串 = 清除覆盖(渲染回退内置默认)。
+	rec = serveAdminEmailJSON(t, handler, http.MethodPut, "/v1/admin/email/settings", map[string]any{
+		"tenant_id": 1,
+		"templates": map[string]any{"verification": map[string]any{"subject": "", "body": ""}},
+	})
+	assertHTTPStatus(t, rec, http.StatusOK)
+	if store.settings[1][subjectKey] != "" || store.settings[1][bodyKey] != "" {
+		t.Fatalf("清除覆盖未生效: %#v", store.settings[1])
+	}
+}
+
+// 预览:样例值渲染出主题/正文;未知占位符 400;跨租户 403。
+func TestAdminEmailTemplatePreview(t *testing.T) {
+	keys := testGatewayEmailKeys(t)
+	handler := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
+		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Store: newGatewayEmailSettingsStore(),
+		Keys:  keys,
+	})
+	rec := serveAdminEmailJSON(t, handler, http.MethodPost, "/v1/admin/email/templates/preview", map[string]any{
+		"tenant_id": 1, "kind": "oauth_code", "subject": "验证码来了", "body": "<b>{{code}}</b>",
+	})
+	assertHTTPStatus(t, rec, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), "836195") {
+		t.Fatalf("预览未渲染样例验证码: %s", rec.Body.String())
+	}
+
+	rec = serveAdminEmailJSON(t, handler, http.MethodPost, "/v1/admin/email/templates/preview", map[string]any{
+		"tenant_id": 1, "kind": "oauth_code", "body": "{{token}}",
+	})
+	assertHTTPStatus(t, rec, http.StatusBadRequest)
+
+	scoped := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
+		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Store: newGatewayEmailSettingsStore(),
+		Keys:  keys,
+	})
+	rec = serveAdminEmailJSON(t, scoped, http.MethodPost, "/v1/admin/email/templates/preview", map[string]any{
+		"tenant_id": 8, "kind": "oauth_code", "body": "{{code}}",
+	})
+	assertHTTPStatus(t, rec, http.StatusForbidden)
+}

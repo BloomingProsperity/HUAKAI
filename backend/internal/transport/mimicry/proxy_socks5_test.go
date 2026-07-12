@@ -9,9 +9,8 @@ import (
 	"time"
 )
 
-// PROXY-06: the SOCKS5 dialer must complete a real SOCKS5 handshake (method
-// negotiation + user/pass auth + CONNECT) and tunnel to the intended target, so
-// uTLS mimicry can egress through a residential SOCKS5 pool.
+// PROXY-06:SOCKS5 dialer 必须完成一次真实的 SOCKS5 握手(method negotiation +
+// user/pass auth + CONNECT)并隧道到目标,使 uTLS 伪装能经住宅 SOCKS5 池出口。
 func TestSocks5Dialer_TunnelsThroughProxy(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -29,16 +28,16 @@ func TestSocks5Dialer_TunnelsThroughProxy(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		// greeting: ver, nmethods, methods...
+		// 握手问候:ver、nmethods、methods...
 		g := make([]byte, 2)
 		if _, err := io.ReadFull(c, g); err != nil {
 			return
 		}
 		methods := make([]byte, int(g[1]))
 		_, _ = io.ReadFull(c, methods)
-		// select user/pass auth (0x02)
+		// 选择 user/pass auth(0x02)
 		_, _ = c.Write([]byte{0x05, 0x02})
-		// auth: ver, ulen, user, plen, pass
+		// 认证:ver、ulen、user、plen、pass
 		ah := make([]byte, 2)
 		_, _ = io.ReadFull(c, ah)
 		ub := make([]byte, int(ah[1]))
@@ -49,8 +48,8 @@ func TestSocks5Dialer_TunnelsThroughProxy(t *testing.T) {
 		pb := make([]byte, int(pl[0]))
 		_, _ = io.ReadFull(c, pb)
 		gotPass = string(pb)
-		_, _ = c.Write([]byte{0x01, 0x00}) // auth ok
-		// connect: ver, cmd, rsv, atyp(0x03 domain), len, host, port
+		_, _ = c.Write([]byte{0x01, 0x00}) // auth 成功
+		// 连接:ver、cmd、rsv、atyp(0x03 domain)、len、host、port
 		h := make([]byte, 4)
 		_, _ = io.ReadFull(c, h)
 		if h[3] == 0x03 {
@@ -63,7 +62,7 @@ func TestSocks5Dialer_TunnelsThroughProxy(t *testing.T) {
 		p := make([]byte, 2)
 		_, _ = io.ReadFull(c, p)
 		gotPort = int(p[0])<<8 | int(p[1])
-		// reply success: ver, rep, rsv, atyp(ipv4), 0.0.0.0, 0
+		// 回成功响应:ver、rep、rsv、atyp(ipv4)、0.0.0.0、0
 		_, _ = c.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		_, _ = io.Copy(io.Discard, c)
 	}()

@@ -1,5 +1,5 @@
-// Package pool tests F-POOL-001 implementation against the contract
-// in docs/specs/pool-routing.md.
+// Package pool 针对 docs/specs/pool-routing.md 中的契约测试
+// F-POOL-001 的实现。
 package pool
 
 import (
@@ -12,19 +12,19 @@ import (
 )
 
 // =====================================================================
-// Sub2API-inheritable scenarios
+// 可从上游通用做法继承的场景
 // =====================================================================
 
-// AT-POOL-001: Layer 1 routing-config hit.
-// Routing config maps requested_model → [101, 102]; HealthGate marks 102 unhealthy.
-// Selector MUST return 101 (in routing list AND healthy), NOT 102 (in list but unhealthy)
-// nor 999 (healthier but outside routing list).
+// AT-POOL-001: Layer 1 路由配置命中。
+// 路由配置把 requested_model 映射到 [101, 102]；HealthGate 把 102 标为不健康。
+// Selector 必须返回 101(在路由表内且健康),而不是 102(在表内但不健康),
+// 也不是 999(更健康但在路由表外)。
 func TestAT_POOL_001_RoutingConfigHit(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
 		snap(101, 1, 100, 0.1, now.Add(-1*time.Hour)),
-		snap(102, 1, 100, 0.5, now.Add(-30*time.Minute)), // unhealthy via HealthGate
-		snap(999, 1, 50, 0.05, now.Add(-2*time.Hour)),    // healthier but NOT in routing list
+		snap(102, 1, 100, 0.5, now.Add(-30*time.Minute)), // 经 HealthGate 判为不健康
+		snap(999, 1, 50, 0.05, now.Add(-2*time.Hour)),    // 更健康但不在路由表内
 	}}
 	policy := &stubPolicy{p: &RoutingPolicy{
 		ModelAccountIDs: map[string][]int64{"claude-3-5-sonnet": {101, 102}},
@@ -59,7 +59,7 @@ func TestAT_POOL_001_ModelRouteFallbackCannotEscapeAllowlist(t *testing.T) {
 	allowed.MaxWaiting = 1
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
 		allowed,
-		snap(999, 1, 1, 0.01, now.Add(-2*time.Hour)), // would win fresh if the allowlist is dropped
+		snap(999, 1, 1, 0.01, now.Add(-2*time.Hour)), // 若去掉 allowlist 它将在 fresh 阶段胜出
 	}}
 	policy := &stubPolicy{p: &RoutingPolicy{
 		ModelAccountIDs: map[string][]int64{"claude-3-5-sonnet": {101}},
@@ -97,7 +97,7 @@ func (s slotUnavailableFor) Acquire(_ context.Context, account *AccountSnapshot,
 	return &AcquireResult{AcquisitionToken: uuid.New()}, nil
 }
 
-// AT-POOL-011: routing reason JSON schema-conformant on every selection result.
+// AT-POOL-011: 每个选择结果上的 routing reason 都符合 JSON schema。
 func TestAT_POOL_011_RoutingReasonSchema(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
@@ -146,7 +146,7 @@ func TestAT_POOL_011_RoutingReasonSchema(t *testing.T) {
 	}
 }
 
-// unhealthyAccountsGate rejects accounts in its set; used to model HealthGate in tests.
+// unhealthyAccountsGate 拒绝其集合内的账号；测试中用它来模拟 HealthGate。
 type unhealthyAccountsGate map[int64]struct{}
 
 func (u unhealthyAccountsGate) Allow(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (bool, GateFailureReason, error) {
@@ -156,12 +156,12 @@ func (u unhealthyAccountsGate) Allow(_ context.Context, account *AccountSnapshot
 	return true, "", nil
 }
 
-// AT-POOL-003: sticky-standalone hit.
+// AT-POOL-003: sticky 独立命中。
 func TestAT_POOL_003_StickyStandaloneHit(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
 		snap(7, 1, 100, 0.5, now.Add(-1*time.Hour)),
-		snap(8, 1, 50, 0.1, now.Add(-2*time.Hour)), // would win Layer 2 lex-sort
+		snap(8, 1, 50, 0.1, now.Add(-2*time.Hour)), // 在 Layer 2 字典序排序中本会胜出
 	}}
 	policy := &stubPolicy{p: &RoutingPolicy{TopKDefault: 1}}
 	sticky := &stubSticky{bindings: map[string]int64{"sess-abc": 7}}
@@ -183,16 +183,16 @@ func TestAT_POOL_003_StickyStandaloneHit(t *testing.T) {
 	}
 }
 
-// AT-POOL-004: Layer 2 fresh tier-by-tier filter.
-// Lower priority value wins; among same priority, lower load_rate; among same priority+load, older last_used wins.
+// AT-POOL-004: Layer 2 fresh 逐层(tier-by-tier)过滤。
+// priority 值越小越优先；同 priority 时 load_rate 越小越优先；同 priority+load 时 last_used 越早越优先。
 func TestAT_POOL_004_Layer2TierFilter(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
 		snap(1, 1, 200, 0.10, now.Add(-1*time.Hour)),
 		snap(2, 1, 100, 0.50, now.Add(-2*time.Hour)),
-		snap(3, 1, 100, 0.10, now.Add(-3*time.Hour)), // expected winner: lowest-tier priority=100 + lowest load=0.10 + oldest last_used
+		snap(3, 1, 100, 0.10, now.Add(-3*time.Hour)), // 预期胜出者:最低档 priority=100 + 最低 load=0.10 + 最早 last_used
 		snap(4, 1, 100, 0.10, now.Add(-30*time.Minute)),
-		snap(5, 1, 300, 0.05, now.Add(-1*time.Hour)), // lowest load BUT highest priority value loses tier 1
+		snap(5, 1, 300, 0.05, now.Add(-1*time.Hour)), // load 最低但 priority 值最高,在第 1 层就被淘汰
 	}}
 	policy := &stubPolicy{p: &RoutingPolicy{TopKDefault: 1}}
 
@@ -210,7 +210,7 @@ func TestAT_POOL_004_Layer2TierFilter(t *testing.T) {
 	}
 }
 
-// AT-POOL-006: per-request exclusion list honored.
+// AT-POOL-006: per-request 排除列表被遵守。
 func TestAT_POOL_006_PerRequestExclusion(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
@@ -236,11 +236,11 @@ func TestAT_POOL_006_PerRequestExclusion(t *testing.T) {
 }
 
 // =====================================================================
-// HUAKAI-design scenarios
+// HUAKAI 自有设计场景
 // =====================================================================
 
-// AT-POOL-008: Pattern B placeholder writeback — selector calls ClaimGate
-// with provider_account_id + acquisition_token after acquire.
+// AT-POOL-008: Pattern B 占位回写 —— selector 在 acquire 之后以
+// provider_account_id + acquisition_token 调用 ClaimGate。
 func TestAT_POOL_008_PatternBWriteback(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{snap(7, 1, 100, 0.1, now.Add(-1*time.Hour))}}
@@ -271,7 +271,7 @@ func TestAT_POOL_008_PatternBWriteback(t *testing.T) {
 	}
 }
 
-// AT-POOL-009: acquisition-token idempotent release — release twice only decrements once.
+// AT-POOL-009: acquisition-token 幂等释放 —— 释放两次只递减一次。
 func TestAT_POOL_009_AcquisitionTokenIdempotent(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{snap(20, 1, 100, 0.1, now.Add(-1*time.Hour))}}
@@ -290,7 +290,7 @@ func TestAT_POOL_009_AcquisitionTokenIdempotent(t *testing.T) {
 	if res.AcquisitionToken == ([16]byte{}) {
 		t.Fatalf("Selector must surface AcquisitionToken in result for idempotent release contract")
 	}
-	// Look up the release fn the slot manager handed out.
+	// 查出 slot manager 交出的 release 函数。
 	release := slots.releaseFor(res.AcquisitionToken)
 	if release == nil {
 		t.Fatalf("memSlotManager has no release fn for token %v", res.AcquisitionToken)
@@ -306,12 +306,12 @@ func TestAT_POOL_009_AcquisitionTokenIdempotent(t *testing.T) {
 	}
 }
 
-// AT-POOL-010: tenant isolation — Tenant 1's selection NEVER returns Tenant 2's accounts.
+// AT-POOL-010: 租户隔离 —— 租户 1 的选择绝不会返回租户 2 的账号。
 func TestAT_POOL_010_TenantIsolation(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
 		snap(1, 1, 100, 0.5, now.Add(-1*time.Hour)),
-		snap(2, 2, 50, 0.05, now.Add(-2*time.Hour)), // Tenant 2 higher priority — should NOT be picked for Tenant 1
+		snap(2, 2, 50, 0.05, now.Add(-2*time.Hour)), // 租户 2 的账号优先级更高 —— 不应被选给租户 1
 	}}
 	policy := &stubPolicy{p: &RoutingPolicy{TopKDefault: 1}}
 
@@ -329,15 +329,15 @@ func TestAT_POOL_010_TenantIsolation(t *testing.T) {
 	}
 }
 
-// AT-POOL-013: Default Top-K compatibility (K=1 unless tie group).
-// 5 accounts with distinct (priority, load, last_used); selector returns the
-// unique top candidate, NOT a random pick from a wider band.
+// AT-POOL-013: 默认 Top-K 兼容性(除非存在并列组,否则 K=1)。
+// 5 个账号具有互不相同的 (priority, load, last_used);selector 返回那个
+// 唯一的最优候选,而不是从更宽的候选带中随机挑一个。
 func TestAT_POOL_013_DefaultTopKCompatibility(t *testing.T) {
 	now := time.Now()
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
 		snap(1, 1, 200, 0.10, now.Add(-1*time.Hour)),
 		snap(2, 1, 100, 0.30, now.Add(-2*time.Hour)),
-		snap(3, 1, 100, 0.10, now.Add(-3*time.Hour)), // unique top by lex-sort
+		snap(3, 1, 100, 0.10, now.Add(-3*time.Hour)), // 按字典序排序的唯一最优者
 		snap(4, 1, 100, 0.20, now.Add(-30*time.Minute)),
 		snap(5, 1, 300, 0.99, now.Add(-1*time.Hour)),
 	}}
@@ -348,7 +348,7 @@ func TestAT_POOL_013_DefaultTopKCompatibility(t *testing.T) {
 		WithSlotManager(newMemSlotManager()),
 		WithClaimGate(&captureClaimGate{}),
 	)
-	// Run 50 trials to confirm deterministic pick (compatibility mode).
+	// 跑 50 次试验以确认是确定性挑选(兼容模式)。
 	for i := 0; i < 50; i++ {
 		res, err := sel.Select(context.Background(), SelectionRequest{TenantID: 1, ClaimID: int64(60 + i), RequestedModel: "x"})
 		if err != nil {
@@ -360,13 +360,15 @@ func TestAT_POOL_013_DefaultTopKCompatibility(t *testing.T) {
 	}
 }
 
-// AT-POOL-019: Cross-feature with F-OBS-001; deferred.
-func TestAT_POOL_019_Tx2Atomicity(t *testing.T) {
-	t.Skip("Cross-feature with F-OBS-001 settler; awaits slice 5 implementation.")
-}
+// AT-POOL-019(Tx2 原子性:slot release + usage record + claim status 全或无)的依赖
+// "slice 5 / F-OBS-001 settler" 已实现(internal/billing.DefaultSettler.Settle 把 write+release+audit
+// 包在单个 Serializable Tx + 一次 Commit)。其覆盖现位于 settler 所有者包 internal/billing:
+//   - happy 五效应原子提交:TestAT_OBS_004_AtomicFiveEffect
+//   - mid-Tx2 失败 → 无部分行(回滚):TestAT_OBS_004_RollbackOnSlotReleaseMiss
+// 故此处不再保留跨包的 skipped 占位(避免误导性的"已跳过"测试)。
 
 // =====================================================================
-// Smoke
+// 冒烟测试
 // =====================================================================
 
 func TestPackageCompiles(t *testing.T) {
@@ -432,7 +434,7 @@ func TestVendorFromProtocolFamily(t *testing.T) {
 		// 边界 — 空字符串 / 未注册字面量 / 大小写敏感 / 裸 vendor 名
 		{"", ""},
 		{"unknown_family", ""},
-		{"OPENAI_CHAT", ""}, // exact-match case-sensitive
+		{"OPENAI_CHAT", ""}, // 精确匹配且大小写敏感
 		{"openai", ""},      // 裸 vendor 名 (无 family suffix) 不许通过
 		{"codex", ""},
 		{"anthropic", ""},

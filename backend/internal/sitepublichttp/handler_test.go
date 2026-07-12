@@ -11,14 +11,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
-// expectedFieldCount is the exact size of the public projection: tenant_id +
-// 8 booleans + 13 strings. It is asserted directly so that adding a key to the
-// handler without updating this test (or vice versa) is caught, and so the
-// CMB-5 leak test can prove "no extra key slipped in".
-const expectedFieldCount = 1 + 8 + 13
+// expectedFieldCount 是公开投射的精确尺寸:tenant_id + 8 个布尔 + 14 个字符串
+// (14 含新增的 telegram_bot_username 公开 bot 用户名)。
+// 它被直接断言,这样在 handler 加了 key 却没更新本测试(或反之)时就能被抓到,
+// 也让 CMB-5 泄漏测试能够证明「没有多余的 key 混进来」。
+const expectedFieldCount = 1 + 8 + 14
 
-// stubSettings serves canned setting values; absent keys fall back to the
-// compiled default exactly like the real Service does on a DB-miss.
+// stubSettings 提供预设的 setting 值;缺失的 key 回退到编译期默认值,
+// 与真实 Service 在 DB-miss 时的行为完全一致。
 type stubSettings struct {
 	values map[platformsettings.SettingKey]string
 }
@@ -48,9 +48,8 @@ func decodeSiteConfig(t *testing.T, rec *httptest.ResponseRecorder) map[string]a
 	return body
 }
 
-// T1: with an empty stub every field must equal the compiled default. Guards
-// against a missing projection key or a wrong default. Mutation: flip the
-// KeyTwoFactorEnabled default in types.go to "false" and this goes red.
+// T1:使用空 stub 时,每个字段都必须等于编译期默认值。防止漏掉某个投射 key 或
+// 默认值错误。变异:把 types.go 里 KeyTwoFactorEnabled 的默认值翻成 "false",本测试变红。
 func TestSiteConfigProjectsCompiledDefaults(t *testing.T) {
 	rec := serveSiteConfig(t, Deps{Settings: stubSettings{}, TenantID: 1})
 	if rec.Code != http.StatusOK {
@@ -61,8 +60,7 @@ func TestSiteConfigProjectsCompiledDefaults(t *testing.T) {
 	if len(body) != expectedFieldCount {
 		t.Fatalf("field count=%d want=%d body keys=%v", len(body), expectedFieldCount, keysOf(body))
 	}
-	// Discriminating defaults: each differs from the "broken" value a naive
-	// implementation would produce (false/empty for everything).
+	// 判别性默认值:每一个都不同于幼稚实现会产出的「坏」值(对所有项都是 false/空)。
 	wantBool := map[string]bool{
 		"registration_enabled":      false,
 		"invitation_required":       true,
@@ -71,7 +69,8 @@ func TestSiteConfigProjectsCompiledDefaults(t *testing.T) {
 		"captcha_enabled":           false,
 		"two_factor_enabled":        true,
 		"passkey_enabled":           false,
-		"promo_enabled":             false,
+		// promo_enabled 默认翻转 false→true(Owner A 方案:行为保持 + 一个能用的开关)。
+		"promo_enabled": true,
 	}
 	for field, want := range wantBool {
 		if got, ok := body[field].(bool); !ok || got != want {
@@ -84,6 +83,7 @@ func TestSiteConfigProjectsCompiledDefaults(t *testing.T) {
 		"passkey_rp_id":           "",
 		"passkey_rp_display_name": "HUAKAI",
 		"oauth_providers_enabled": "",
+		"telegram_bot_username":   "",
 		"site_name":               "HUAKAI",
 		"site_logo":               "",
 		"site_footer":             "",
@@ -103,10 +103,9 @@ func TestSiteConfigProjectsCompiledDefaults(t *testing.T) {
 	}
 }
 
-// T2: DB-set values must override defaults AND booleans must be parsed into
-// real JSON bools, not passed through as the string "true". Mutation: project
-// the raw string instead of parsing -> body["registration_enabled"] becomes
-// the string "true" and the bool assertion fails.
+// T2:DB 设置的值必须覆盖默认值,且布尔值必须被解析为真正的 JSON bool,
+// 而不是原样以字符串 "true" 透传。变异:投射原始字符串而不解析 ->
+// body["registration_enabled"] 变成字符串 "true",bool 断言失败。
 func TestSiteConfigAppliesDBValuesAndParsesBooleans(t *testing.T) {
 	rec := serveSiteConfig(t, Deps{
 		Settings: stubSettings{values: map[platformsettings.SettingKey]string{
@@ -123,8 +122,8 @@ func TestSiteConfigAppliesDBValuesAndParsesBooleans(t *testing.T) {
 	}
 	body := decodeSiteConfig(t, rec)
 
-	// JSON bool, not the string "true": a non-parsing handler returns a string
-	// here and this type assertion fails.
+	// 是 JSON bool 而非字符串 "true":不做解析的 handler 在此返回字符串,
+	// 这个类型断言就会失败。
 	if v, ok := body["registration_enabled"].(bool); !ok || v != true {
 		t.Fatalf("registration_enabled=%v (%T) want JSON bool true", body["registration_enabled"], body["registration_enabled"])
 	}
@@ -134,7 +133,7 @@ func TestSiteConfigAppliesDBValuesAndParsesBooleans(t *testing.T) {
 	if body["captcha_provider"] != "turnstile" {
 		t.Fatalf("captcha_provider=%v want turnstile", body["captcha_provider"])
 	}
-	// captcha_site_key is a PUBLIC key and must be projected verbatim.
+	// captcha_site_key 是公开 key,必须原样投射。
 	if body["captcha_site_key"] != "pk_pub123" {
 		t.Fatalf("captcha_site_key=%v want pk_pub123 (public key must project)", body["captcha_site_key"])
 	}
@@ -143,10 +142,9 @@ func TestSiteConfigAppliesDBValuesAndParsesBooleans(t *testing.T) {
 	}
 }
 
-// T2b: the extended branding strings (subtitle/contact/doc URL/api base URL)
-// must be projected verbatim from the store so an anonymous frontend can render
-// them. Mutation: drop any of the four entries from the handler's stringKeys and
-// that field falls back to its empty default here, failing the assertion.
+// T2b:扩展品牌字符串(subtitle/contact/doc URL/api base URL)必须从 store 原样投射,
+// 以便匿名前端能渲染它们。变异:从 handler 的 stringKeys 删掉这四项中任何一项,该字段
+// 在此就会回退到它的空默认值,断言失败。
 func TestSiteConfigProjectsExtendedBranding(t *testing.T) {
 	rec := serveSiteConfig(t, Deps{
 		Settings: stubSettings{values: map[platformsettings.SettingKey]string{
@@ -173,11 +171,28 @@ func TestSiteConfigProjectsExtendedBranding(t *testing.T) {
 	}
 }
 
-// T3 (CMB-5 core): even when the settings store carries secret-bearing keys,
-// the response must contain ONLY the allowlisted public fields and must not
-// echo any secret substring. Mutation: add a line projecting
-// KeyPaymentProviderConfig or KeyModerationExternalAPIKeys into the output map
-// and BOTH the field-count assertion and the substring scan go red.
+// T2c:公开 Telegram bot 用户名必须从 store 原样投射,匿名前端才能据此渲染 Login Widget。
+// 变异:从 handler 的 stringKeys 删掉 telegram_bot_username 这一项,该字段回退到空默认值,
+// 断言失败。这是 telegram 登录前端能接线的前提(前端拿不到 username 就渲染不出 widget)。
+func TestSiteConfigProjectsTelegramBotUsername(t *testing.T) {
+	rec := serveSiteConfig(t, Deps{
+		Settings: stubSettings{values: map[platformsettings.SettingKey]string{
+			platformsettings.KeyTelegramBotUsername: "HuakaiLoginBot",
+		}},
+		TenantID: 1,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := decodeSiteConfig(t, rec)
+	if got, ok := body["telegram_bot_username"].(string); !ok || got != "HuakaiLoginBot" {
+		t.Fatalf("telegram_bot_username=%v (%T) want HuakaiLoginBot", body["telegram_bot_username"], body["telegram_bot_username"])
+	}
+}
+
+// T3(CMB-5 核心):即便 settings store 携带带密钥的 key,响应也只能包含 allowlist 中的
+// 公开字段,且绝不能回显任何密钥子串。变异:加一行把 KeyPaymentProviderConfig 或
+// KeyModerationExternalAPIKeys 投射进输出 map,字段数断言与子串扫描都会变红。
 func TestSiteConfigNeverLeaksSecretBearingKeys(t *testing.T) {
 	rec := serveSiteConfig(t, Deps{
 		Settings: stubSettings{values: map[platformsettings.SettingKey]string{
@@ -205,10 +220,9 @@ func TestSiteConfigNeverLeaksSecretBearingKeys(t *testing.T) {
 	}
 }
 
-// T4: a turnstile secret living only in an env var must never appear in the
-// response, because the handler reads the platform-settings allowlist and the
-// secret env is not on it. Mutation: have the handler call os.Getenv on the
-// turnstile secret and project it -> the substring scan goes red.
+// T4:只存在于 env 变量里的 turnstile secret 绝不能出现在响应中,因为 handler 读的是
+// platform-settings 的 allowlist,而 secret env 不在其中。变异:让 handler 对 turnstile
+// secret 调 os.Getenv 并投射它 -> 子串扫描变红。
 func TestSiteConfigDoesNotProjectTurnstileSecretEnv(t *testing.T) {
 	t.Setenv("HUAKAI_CAPTCHA_TURNSTILE_SECRET", "secret-xyz")
 	rec := serveSiteConfig(t, Deps{
@@ -226,9 +240,8 @@ func TestSiteConfigDoesNotProjectTurnstileSecretEnv(t *testing.T) {
 	}
 }
 
-// T5: a nil Settings dependency must degrade to a 503 with a stable error
-// code, never a panic or a partially-formed body. Mutation: delete the nil
-// guard in NewHandler and a nil-map Get panics / 500s instead.
+// T5:nil 的 Settings 依赖必须降级为 503 并带稳定的 error code,绝不能 panic 或返回
+// 半成型的 body。变异:删掉 NewHandler 里的 nil 守卫,nil-map 的 Get 会 panic / 500。
 func TestSiteConfigReturns503WhenSettingsUnset(t *testing.T) {
 	rec := serveSiteConfig(t, Deps{Settings: nil, TenantID: 1})
 	if rec.Code != http.StatusServiceUnavailable {
@@ -241,8 +254,8 @@ func TestSiteConfigReturns503WhenSettingsUnset(t *testing.T) {
 	}
 }
 
-// T6: tenant_id must be sourced from Deps, not hardcoded. Mutation: write a
-// literal 0 (or 1) into the output map and a Deps{TenantID:7} request fails.
+// T6:tenant_id 必须来源于 Deps,而非硬编码。变异:在输出 map 里写死字面量 0(或 1),
+// 则 Deps{TenantID:7} 的请求会失败。
 func TestSiteConfigInjectsTenantID(t *testing.T) {
 	rec := serveSiteConfig(t, Deps{Settings: stubSettings{}, TenantID: 7})
 	if rec.Code != http.StatusOK {

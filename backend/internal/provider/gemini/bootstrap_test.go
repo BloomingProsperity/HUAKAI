@@ -10,9 +10,8 @@ import (
 )
 
 func TestGeminiOAuthConfigRequiresOperatorVerifiedPKCEConfig(t *testing.T) {
-	// Regression killed: Gemini OAuth must fail closed until the operator
-	// supplies endpoints, client ID, and scopes. Mutation self-check: adding
-	// guessed defaults makes this test fail.
+	// 锁定回归：在 operator 提供 endpoint、client ID 和 scope 之前，Gemini OAuth
+	// 必须 fail closed。变异自检：加入猜测的默认值会让本测试失败。
 	cfg := DefaultOAuthConfig()
 
 	if cfg.AuthURL != "" || cfg.TokenURL != "" || cfg.ClientID != "" {
@@ -30,8 +29,8 @@ func TestGeminiOAuthConfigRequiresOperatorVerifiedPKCEConfig(t *testing.T) {
 }
 
 func TestGeminiOAuthAuthorizeURLUsesOperatorPKCEValues(t *testing.T) {
-	// Regression killed: PKCE auth URL generation must copy operator config
-	// defensively and must not rely on embedded Gemini endpoints or scopes.
+	// 锁定回归：PKCE 授权 URL 生成必须防御性地拷贝 operator 配置，且不得依赖
+	// 内置的 Gemini endpoint 或 scope。
 	override := credentialacq.OAuthClientConfig{
 		AuthURL:     "https://operator.google.example.test/oauth/authorize",
 		TokenURL:    "https://operator.google.example.test/oauth/token",
@@ -64,8 +63,7 @@ func TestGeminiOAuthAuthorizeURLUsesOperatorPKCEValues(t *testing.T) {
 }
 
 func TestGeminiOAuthConfigRejectsNonOperatorSource(t *testing.T) {
-	// Regression killed: source=operator_config is an enforcement point, not
-	// display metadata.
+	// 锁定回归：source=operator_config 是一个强制校验点，而非展示用的元数据。
 	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
 		AuthURL:     "https://operator.google.example.test/oauth/authorize",
 		TokenURL:    "https://operator.google.example.test/oauth/token",

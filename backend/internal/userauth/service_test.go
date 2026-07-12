@@ -100,6 +100,51 @@ func (p staticVerificationPolicy) EmailVerificationEnabled(context.Context, int6
 	return bool(p), nil
 }
 
+// erroringVerificationPolicy 是可配置的验证策略桩:返回预设的 (enabled, err)。
+// 现有 staticVerificationPolicy 永远返回 nil err,无法覆盖"DB 真错"分支;本桩专为守护
+// 邮箱门软化后的运行时安全不变量(DB 错时 fail-safe 要求验证、不绕过)。
+type erroringVerificationPolicy struct {
+	enabled bool
+	err     error
+}
+
+func (p erroringVerificationPolicy) EmailVerificationEnabled(context.Context, int64) (bool, error) {
+	return p.enabled, p.err
+}
+
+// TestRequireEmailVerificationFailsSafeOnError 守护邮箱门软化切片的核心运行时不变量:
+// production 启动期 fail-loud 门撤掉后,整个安全论证转嫁到请求时 fail-safe——当
+// EmailVerificationEnabled 因 DB 真错返回 (_, err) 时,必须落到 RequireVerified 要求验证,
+// 绝不能把 DB 错误当作"验证关闭"而放行未验证用户注册为 active。
+//
+// 自证式 + 变异检查:同为 enabled=false,err!=nil 应得"要求验证"(true)、err==nil 应得
+// "不要求"(false),两路结果必须相反;把 service.go 的 `if err == nil { return enabled }`
+// 改成吞 err 的 `return enabled`,err!=nil 那路即由 true 变 false(本测试 RED)。
+func TestRequireEmailVerificationFailsSafeOnError(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 23, 8, 0, 0, 0, time.UTC)
+	svc := NewService(newMemoryAuthStore(now))
+	svc.RequireVerified = true // 生产默认(service.go NewService 即此),fail-safe 的兜底值
+
+	// DB 真错:必须 fail-safe 要求验证。
+	svc.Verification = erroringVerificationPolicy{enabled: false, err: errors.New("settings store unavailable")}
+	gotOnErr := svc.requireEmailVerification(ctx, 1)
+	if !gotOnErr {
+		t.Fatal("DB 错时必须 fail-safe 要求验证(不得把错误当\"验证关闭\"放行未验证用户)")
+	}
+
+	// 正常未配(无错、enabled=false):不要求验证,与上相反。
+	svc.Verification = erroringVerificationPolicy{enabled: false, err: nil}
+	gotOnOK := svc.requireEmailVerification(ctx, 1)
+	if gotOnOK {
+		t.Fatal("err==nil 且 enabled=false 时应不要求验证(正常未配走惰性放行)")
+	}
+
+	if gotOnErr == gotOnOK {
+		t.Fatal("自证失败:DB 错与正常未配两路结果应相反,否则吞 err 的回退无法被判别")
+	}
+}
+
 func TestPasswordRegisterToggle(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 7, 8, 0, 0, 0, time.UTC)
@@ -508,13 +553,13 @@ func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 	}
 }
 
-// TestStartOAuthRedirectAllowlist guards a caller-supplied redirect_uri must be rejected
-// unless it exactly matches the configured allowlist (fail-closed); an empty redirect_uri is allowed
-// and falls back to the provider's server-side RedirectURI. Prevents open-redirect / authorization
-// -code hijack to attacker-controlled callbacks.
+// TestStartOAuthRedirectAllowlist 守护一点: 调用方提供的 redirect_uri 必须被拒,
+// 除非它与配置的 allowlist 精确匹配 (fail-closed); 空的 redirect_uri 允许,
+// 此时回退到 provider 的服务端 RedirectURI。防止 open-redirect / 授权码
+// 被劫持到攻击者可控的 callback。
 //
-// Mutation check: delete the validateOAuthRedirectURI call in StartOAuth and the "not in allowlist"
-// case is accepted → red. Discriminating: same provider/tenant, only the redirect_uri + allowlist vary.
+// 变异检查: 删掉 StartOAuth 里的 validateOAuthRedirectURI 调用, "不在 allowlist 内"
+// 的 case 就会被接受 → 红。判别性: provider/tenant 相同, 只有 redirect_uri + allowlist 变化。
 func TestStartOAuthRedirectAllowlist(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 10, 30, 0, 0, time.UTC)
@@ -528,15 +573,15 @@ func TestStartOAuthRedirectAllowlist(t *testing.T) {
 		s.AllowedRedirectURIs = allow
 		return s
 	}
-	// (1) caller redirect_uri not in (empty) allowlist → rejected fail-closed.
+	// (1) 调用方的 redirect_uri 不在 (空的) allowlist 内 → fail-closed 被拒。
 	if _, err := newSvc().StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle, RedirectURI: "https://evil.example.test/steal"}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("caller redirect_uri not in allowlist must be rejected; got %v", err)
 	}
-	// (2) caller redirect_uri exactly in allowlist → accepted.
+	// (2) 调用方的 redirect_uri 精确命中 allowlist → 接受。
 	if _, err := newSvc("https://app.example.test/cb").StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle, RedirectURI: "https://app.example.test/cb"}); err != nil {
 		t.Fatalf("allowlisted redirect_uri must be accepted; got %v", err)
 	}
-	// (3) empty redirect_uri → accepted (server-side default callback used).
+	// (3) 空的 redirect_uri → 接受 (使用服务端默认 callback)。
 	if _, err := newSvc().StartOAuth(ctx, OAuthInitInput{TenantID: 1, Provider: SocialProviderGoogle}); err != nil {
 		t.Fatalf("empty redirect_uri must be accepted (server default); got %v", err)
 	}
@@ -687,8 +732,8 @@ func TestApplyVerifiedSocialIdentityRejectsTelegramSyntheticEmailPendingVerifica
 		Provider: SocialProviderTelegram,
 		Subject:  "424242",
 		Email:    SyntheticOAuthEmail(SocialProviderTelegram, "424242"),
-		// Telegram login-widget does not prove email ownership. This must stay
-		// false so the shared pending-email path rejects instead of creating a user.
+		// Telegram login-widget 并不能证明对 email 的所有权。这里必须保持
+		// false, 让共享的 pending-email 路径拒绝, 而不是创建一个用户。
 		EmailVerified: false,
 	})
 	if !errors.Is(err, ErrOAuthPendingEmailRequired) {
@@ -696,6 +741,148 @@ func TestApplyVerifiedSocialIdentityRejectsTelegramSyntheticEmailPendingVerifica
 	}
 	if len(store.users) != 0 || len(store.socialLinks) != 0 {
 		t.Fatalf("Telegram pending-email identity persisted users=%+v links=%+v", store.users, store.socialLinks)
+	}
+}
+
+// TestApplyVerifiedSocialIdentityBoundEmaillessLogsIn 锁定「先绑定后登录」的关键 reorder:
+// 一个已绑定的无邮箱社交身份(telegram,EmailVerified 恒 false)再次登录时,必须凭既有绑定直接登录、
+// 拿到本人用户,而不是被邮箱门拦成 pending-email。
+// 变异(把既有绑定查询改回邮箱门之后,即旧顺序)→ 已绑定的 telegram 身份会先撞 !EmailVerified 返回
+// ErrOAuthPendingEmailRequired,本测试第一处断言 RED——正是修掉的「连已绑定用户都登不进」顺序缺陷。
+func TestApplyVerifiedSocialIdentityBoundEmaillessLogsIn(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 9, 30, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+
+	// 先有一个真实账号(邮箱+密码),并已把 telegram 身份绑到它(模拟「先绑定」那一步已完成)。
+	user, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: 1, Email: "bound@example.test", DisplayName: "Bound",
+		PasswordHash: "argon2id-test-hash", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.LinkSocialIdentity(ctx, 1, user.ID, SocialProviderTelegram, "tg-bound-1"); err != nil {
+		t.Fatalf("LinkSocialIdentity: %v", err)
+	}
+
+	// 现在用同一 telegram 身份「登录」(widget 恒 EmailVerified:false)。应直接登录到本人,而非 pending。
+	got, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
+		Provider:      SocialProviderTelegram,
+		Subject:       "tg-bound-1",
+		Email:         SyntheticOAuthEmail(SocialProviderTelegram, "tg-bound-1"),
+		EmailVerified: false,
+	})
+	if err != nil {
+		t.Fatalf("已绑定 telegram 身份登录应成功,得 err=%v", err)
+	}
+	if got.ID != user.ID {
+		t.Fatalf("登录返回的用户=%d,应为已绑定的本人 %d", got.ID, user.ID)
+	}
+
+	// 判别性对照:未绑定的 telegram 身份(不同 subject)仍必须被邮箱门拦成 pending、不建号。
+	if _, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
+		Provider: SocialProviderTelegram, Subject: "tg-unbound-9",
+		Email: SyntheticOAuthEmail(SocialProviderTelegram, "tg-unbound-9"), EmailVerified: false,
+	}); !errors.Is(err, ErrOAuthPendingEmailRequired) {
+		t.Fatalf("未绑定 telegram 身份 err=%v,应 ErrOAuthPendingEmailRequired", err)
+	}
+}
+
+// TestCompleteSocialSignupWithVerifiedEmail 锁定「OAuth 无邮箱补全」建号方法的四条不变量:
+// 建号+链身份+邮箱已验证;邮箱被占用拒;既有绑定幂等;注册关时拒。
+func TestCompleteSocialSignupWithVerifiedEmail(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+	svc.SocialSignup = true
+
+	idQQ := VerifiedIdentity{Provider: SocialProviderQQ, Subject: "qq-1", Email: SyntheticOAuthEmail(SocialProviderQQ, "qq-1"), EmailVerified: false}
+
+	// ① 新身份 + 新邮箱 → 建号 + 链接 + 邮箱已验证(调用方已验码)。
+	user, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, idQQ, "alice@example.test")
+	if err != nil {
+		t.Fatalf("① 建号应成功: %v", err)
+	}
+	if user.Email != "alice@example.test" || !user.EmailVerified {
+		t.Fatalf("① 建号 email/verified 不对: %+v", user)
+	}
+	// 链接已落:用 QQ 身份登录应直接到该用户。
+	gotLogin, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, idQQ)
+	if err != nil || gotLogin.ID != user.ID {
+		t.Fatalf("① 链接后登录应到本人,得 user=%d err=%v", gotLogin.ID, err)
+	}
+
+	// ② 邮箱已被占用(不同身份)→ ErrEmailExists,防抢注/接管。
+	idGH := VerifiedIdentity{Provider: SocialProviderGitHub, Subject: "gh-9", Email: SyntheticOAuthEmail(SocialProviderGitHub, "gh-9"), EmailVerified: false}
+	if _, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, idGH, "alice@example.test"); !errors.Is(err, ErrEmailExists) {
+		t.Fatalf("② 邮箱被占用应 ErrEmailExists,得 %v", err)
+	}
+
+	// ③ 既有绑定 → 幂等返回本人(不因邮箱不同而重复建号)。
+	again, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, idQQ, "other@example.test")
+	if err != nil || again.ID != user.ID {
+		t.Fatalf("③ 既有绑定应幂等返回本人,得 user=%d err=%v", again.ID, err)
+	}
+
+	// ④ 注册关闭 → 拒(与密码 Register 同闸)。变异:去掉 registrationMode 闸 → 这里会建号,断言 RED。
+	svc.RegistrationMode = RegistrationModeDisabled
+	if _, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, idGH, "bob@example.test"); !errors.Is(err, ErrRegistrationDisabled) {
+		t.Fatalf("④ 注册关闭应 ErrRegistrationDisabled,得 %v", err)
+	}
+}
+
+// TestLinkVerifiedSocialIdentity 锁定绑定腿的两条不变量:幂等 + 接管保护。
+func TestLinkVerifiedSocialIdentity(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+
+	alice, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: 1, Email: "alice@example.test", PasswordHash: "h", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser alice: %v", err)
+	}
+	bob, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: 1, Email: "bob@example.test", PasswordHash: "h", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser bob: %v", err)
+	}
+	tgIdentity := VerifiedIdentity{
+		Provider: SocialProviderTelegram, Subject: "tg-777",
+		Email: SyntheticOAuthEmail(SocialProviderTelegram, "tg-777"), EmailVerified: false,
+	}
+
+	// alice 首次绑定成功,且之后能凭该绑定登录到 alice。
+	if _, err := svc.LinkVerifiedSocialIdentity(ctx, 1, alice.ID, tgIdentity); err != nil {
+		t.Fatalf("alice 绑定应成功,得 err=%v", err)
+	}
+	loggedIn, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, tgIdentity)
+	if err != nil || loggedIn.ID != alice.ID {
+		t.Fatalf("绑定后凭 telegram 登录应到 alice,得 user=%d err=%v", loggedIn.ID, err)
+	}
+
+	// 幂等:alice 再绑同一身份不报错。
+	if _, err := svc.LinkVerifiedSocialIdentity(ctx, 1, alice.ID, tgIdentity); err != nil {
+		t.Fatalf("alice 重复绑定应幂等成功,得 err=%v", err)
+	}
+
+	// 接管保护:bob 试图绑 alice 已占用的同一 telegram 身份 → 必须拒。
+	// 变异(去掉 existing.ID != userID 的拒绝)→ bob 抢绑成功,本断言 RED(账号接管漏洞)。
+	if _, err := svc.LinkVerifiedSocialIdentity(ctx, 1, bob.ID, tgIdentity); !errors.Is(err, ErrSocialIdentityAlreadyBound) {
+		t.Fatalf("bob 抢绑他人已占身份 err=%v,应 ErrSocialIdentityAlreadyBound", err)
+	}
+	// 抢绑被拒后,该身份仍归 alice。
+	if owner, err := store.GetUserBySocialIdentity(ctx, 1, SocialProviderTelegram, "tg-777"); err != nil || owner.ID != alice.ID {
+		t.Fatalf("接管被拒后身份应仍归 alice,得 owner=%d err=%v", owner.ID, err)
 	}
 }
 

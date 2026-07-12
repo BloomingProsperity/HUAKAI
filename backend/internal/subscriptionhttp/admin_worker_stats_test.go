@@ -3,6 +3,7 @@
 package subscriptionhttp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,7 @@ type fakeWorkerStatsReader struct {
 	stats WorkerStats
 }
 
-func (f fakeWorkerStatsReader) ReadWorkerStats() WorkerStats {
+func (f fakeWorkerStatsReader) ReadWorkerStats(context.Context) WorkerStats {
 	return f.stats
 }
 
@@ -72,8 +73,13 @@ func TestAdminWorkerStatsReturnsCountersForPlatformAdmin(t *testing.T) {
 		got.Reminder.FailedTicks != want.Reminder.FailedTicks ||
 		got.Expiry.TickCount != want.Expiry.TickCount ||
 		got.Expiry.ExpiredTotal != want.Expiry.ExpiredTotal ||
-		got.Expiry.FailedTicks != want.Expiry.FailedTicks {
+		got.Expiry.FailedTicks != want.Expiry.FailedTicks ||
+		got.PendingReconciliation != want.PendingReconciliation {
 		t.Fatalf("worker stats = %+v, want %+v", got, want)
+	}
+	// B10: 自动续费 money 计数进响应 (此前无读者)。
+	if got.AutoRenew != want.AutoRenew {
+		t.Fatalf("auto_renew stats = %+v, want %+v (续费 money 指标未暴露)", got.AutoRenew, want.AutoRenew)
 	}
 }
 
@@ -93,7 +99,11 @@ func TestAdminWorkerStatsNilReaderFailsClosed(t *testing.T) {
 
 func sampleWorkerStats() WorkerStats {
 	return WorkerStats{
-		Reminder: ReminderWorkerStats{TickCount: 11, SentTotal: 7, FailedTicks: 2},
-		Expiry:   ExpiryWorkerStats{TickCount: 13, ExpiredTotal: 5, FailedTicks: 3},
+		Reminder:  ReminderWorkerStats{TickCount: 11, SentTotal: 7, FailedTicks: 2},
+		Expiry:    ExpiryWorkerStats{TickCount: 13, ExpiredTotal: 5, FailedTicks: 3},
+		AutoRenew: AutoRenewWorkerStats{Enabled: true, TickCount: 9, RenewedTotal: 4, SkippedTotal: 6, FailedTicks: 1},
+		PendingReconciliation: PendingReconciliationWorkerStats{
+			UsageRecords: 17,
+		},
 	}
 }

@@ -45,6 +45,9 @@ type notifySettingsRequest struct {
 	GotifyToken       string           `json:"gotify_token,omitempty"`
 	GotifyPriority    *int             `json:"gotify_priority,omitempty"`
 	BalanceThreshold  *decimal.Decimal `json:"balance_threshold,omitempty"`
+	// ExtraEmails 额外抄送邮箱: 低余额/告警通知除主收件人外, 再逐个独立投递到这些地址(notifier.sendExtraEmailCopies)。
+	// 校验交后端 ValidateSettings(写路径 UpsertSettings 已调): ≤10 条 + 每条 rejectHeaderInjection + mail.ParseAddress。
+	ExtraEmails []string `json:"extra_emails,omitempty"`
 }
 
 type notifySettingsResponse struct {
@@ -59,6 +62,7 @@ type notifySettingsResponse struct {
 	GotifyTokenConfigured   bool            `json:"gotify_token_configured,omitempty"`
 	GotifyPriority          int             `json:"gotify_priority,omitempty"`
 	BalanceThreshold        decimal.Decimal `json:"balance_threshold"`
+	ExtraEmails             []string        `json:"extra_emails,omitempty"`
 	UpdatedAt               string          `json:"updated_at,omitempty"`
 	UpdatedBy               string          `json:"updated_by,omitempty"`
 }
@@ -144,7 +148,7 @@ func (h notifyAdminHandler) put(w http.ResponseWriter, r *http.Request) {
 	if !decodeNotifySettingsRequest(w, r, &req) {
 		return
 	}
-	settings := notifyRequestToSettings(req, tenantID, userID, fmt.Sprintf("admin:%d", ident.TokenID))
+	settings := notifyRequestToSettings(req, tenantID, userID, ident.AuditActor())
 	saved, err := h.deps.Service.UpsertSettings(r.Context(), settings)
 	if err != nil {
 		writeNotifyError(w, err, "notification_settings_update_failed")
@@ -237,6 +241,7 @@ func notifyRequestToSettings(req notifySettingsRequest, tenantID, userID int64, 
 		GotifyToken:       req.GotifyToken,
 		GotifyPriority:    5,
 		BalanceThreshold:  notify.DefaultLowBalanceThreshold,
+		ExtraEmails:       req.ExtraEmails, // 原值透传; 数量/格式/header 注入校验交 ValidateSettings(UpsertSettings 写路径已调)
 		UpdatedBy:         actor,
 	}
 	if req.GotifyPriority != nil {
@@ -261,6 +266,7 @@ func notifyResponseFromSettings(settings notify.Settings) notifySettingsResponse
 		GotifyTokenConfigured:   strings.TrimSpace(settings.GotifyToken) != "",
 		GotifyPriority:          settings.GotifyPriority,
 		BalanceThreshold:        settings.BalanceThreshold,
+		ExtraEmails:             settings.ExtraEmails, // GET 读回, 支持 read-modify-write
 		UpdatedBy:               settings.UpdatedBy,
 	}
 	if !settings.UpdatedAt.IsZero() {

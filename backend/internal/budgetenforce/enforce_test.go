@@ -14,8 +14,8 @@ import (
 )
 
 func TestReserverRunsBudgetBeforeQuotaAndShortCircuitsDeny(t *testing.T) {
-	// Mutation check: delegating quota before budget increments quota.calls and
-	// can consume durable quota for a request budget already rejected.
+	// 变异检查:在 budget 之前先委托 quota 会递增 quota.calls,并可能为一个
+	// budget 已拒绝的请求消耗持久化 quota。
 	b := &budgetStub{
 		reserveResult: budget.ReserveResult{
 			Allowed: false,
@@ -49,8 +49,8 @@ func TestReserverRunsBudgetBeforeQuotaAndShortCircuitsDeny(t *testing.T) {
 }
 
 func TestReserverReleasesBudgetWhenDelegateQuotaDenies(t *testing.T) {
-	// Mutation check: deleting this release leaves RPM/TPM reserved for a request
-	// that never enters the gateway path after durable quota denial.
+	// 变异检查:删掉这个 release 会让 RPM/TPM 一直为某个请求预留着,而该请求在
+	// 持久化 quota 拒绝后根本不会进入 gateway 路径。
 	b := &budgetStub{reserveResult: budget.ReserveResult{Allowed: true}}
 	q := &quotaStub{err: &quota.DenyError{Decision: quota.Decision{Kind: quota.DecisionDeny, Code: "quota_limit_exceeded"}}}
 	reserver := NewReserver(b, q)
@@ -67,8 +67,8 @@ func TestReserverReleasesBudgetWhenDelegateQuotaDenies(t *testing.T) {
 }
 
 func TestSettlerSettleAppliesActualTokenDeltaAfterInnerCommit(t *testing.T) {
-	// Mutation check: running budget settlement before inner Settle charges TPM
-	// even when billing fails; omitting output tokens undercounts actual usage.
+	// 变异检查:在内层 Settle 之前先做 budget 结算,即使 billing 失败也会扣 TPM;
+	// 漏掉 output token 会少计实际用量。
 	b := &budgetStub{}
 	inner := &settlerStub{}
 	settler := NewSettler(inner, b)
@@ -94,8 +94,8 @@ func TestSettlerSettleAppliesActualTokenDeltaAfterInnerCommit(t *testing.T) {
 }
 
 func TestSettlerDoesNotTouchBudgetWhenInnerSettleFails(t *testing.T) {
-	// Mutation check: ignoring the inner error and reconciling budget would make
-	// budget state diverge from failed durable billing.
+	// 变异检查:忽略内层错误并去对账 budget,会让 budget 状态与失败的持久化
+	// billing 产生分歧。
 	b := &budgetStub{}
 	inner := &settlerStub{settleErr: errors.New("billing failed")}
 	settler := NewSettler(inner, b)
@@ -109,8 +109,8 @@ func TestSettlerDoesNotTouchBudgetWhenInnerSettleFails(t *testing.T) {
 }
 
 func TestSettlerAbortReleasesBudgetAfterInnerAbort(t *testing.T) {
-	// Mutation check: omitting budget release leaves failed/aborted requests with
-	// phantom RPM/TPM in their reserved minute.
+	// 变异检查:漏掉 budget release 会让失败 / 中止的请求在其预留分钟里留下
+	// 幽灵 RPM/TPM。
 	b := &budgetStub{}
 	inner := &settlerStub{}
 	settler := NewSettler(inner, b)
@@ -195,8 +195,8 @@ func (s *settlerStub) Refund(context.Context, billing.RefundRequest) (*billing.R
 var _ billing.Settler = (*settlerStub)(nil)
 
 func TestQuotaReserveConversionCarriesModelAndTokenEstimate(t *testing.T) {
-	// Mutation check: dropping RequestedModel/ReservedTokens prevents per-model
-	// budgets and TPM pre-reserve from seeing the gateway estimate.
+	// 变异检查:丢掉 RequestedModel/ReservedTokens 会让按模型的 budget 和 TPM
+	// 预留看不到 gateway 的估算值。
 	req := ReserveRequestFromQuota(quota.ReserveRequest{
 		TenantID:       9,
 		ClaimID:        90,
@@ -217,8 +217,8 @@ func TestQuotaReserveConversionCarriesModelAndTokenEstimate(t *testing.T) {
 }
 
 func TestActualTokensFromSettleRequestUsesStreamAttemptWhenPresent(t *testing.T) {
-	// Mutation check: ignoring StreamAttempt undercounts streaming paths whose
-	// Draft is not fully populated before settlement.
+	// 变异检查:忽略 StreamAttempt 会少计那些在结算前 Draft 尚未完全填充的
+	// 流式路径。
 	req := billing.SettleRequest{
 		Draft: gateway.UsageRecordDraft{TokensInput: 10, TokensOutput: 1},
 		StreamAttempt: &billing.Attempt{
@@ -231,8 +231,8 @@ func TestActualTokensFromSettleRequestUsesStreamAttemptWhenPresent(t *testing.T)
 }
 
 func TestBudgetDenyErrorCarriesQuotaDecisionCode(t *testing.T) {
-	// Mutation check: mapping budget denial to a generic infra error makes the
-	// existing handler fail-open instead of returning a deterministic 429.
+	// 变异检查:把 budget 拒绝映射成通用的基础设施错误,会让现有 handler
+	// fail-open,而不是返回确定的 429。
 	err := quotaDenyFromBudget(budget.ReserveResult{Decision: budget.Decision{Code: budget.CodeLimitExceeded}})
 	if !quota.IsDenied(err) {
 		t.Fatalf("err=%v want quota deny", err)
@@ -240,8 +240,7 @@ func TestBudgetDenyErrorCarriesQuotaDecisionCode(t *testing.T) {
 }
 
 func TestNoBudgetReturnsDelegate(t *testing.T) {
-	// Mutation check: returning nil when budget is disabled would silently remove
-	// the existing quota layer.
+	// 变异检查:当 budget 被禁用时返回 nil,会悄悄移除现有的 quota 层。
 	q := &quotaStub{}
 	reserver := NewReserver(nil, q)
 	if _, err := reserver.Reserve(context.Background(), quota.ReserveRequest{TenantID: 1, ClaimID: 1}); err != nil {

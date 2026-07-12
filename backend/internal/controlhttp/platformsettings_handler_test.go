@@ -127,7 +127,7 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 			Value:     "true",
 			Source:    platformsettings.SourceDB,
 			UpdatedAt: updatedAt,
-			UpdatedBy: "11",
+			UpdatedBy: "admin_token:11",
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
@@ -144,21 +144,20 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 		t.Fatalf("upsert calls=%d want 1", svc.upsertCalls)
 	}
 	if svc.lastUpsert.Key != platformsettings.KeyPromoEnabled || svc.lastUpsert.Value != "true" ||
-		svc.lastUpsert.UpdatedBy != "11" || svc.lastUpsert.ActorID != "11" ||
+		svc.lastUpsert.UpdatedBy != "admin_token:11" || svc.lastUpsert.ActorID != "admin_token:11" ||
 		svc.lastUpsert.ActorRole != admin.RolePlatformAdmin || svc.lastUpsert.Reason != "" {
 		t.Fatalf("upsert input=%+v", svc.lastUpsert)
 	}
 	got := decodePlatformSettingsResponse(t, rec)
-	if got.Value != "true" || got.Source != "db" || got.UpdatedAt == nil || *got.UpdatedBy != "11" {
+	if got.Value != "true" || got.Source != "db" || got.UpdatedAt == nil || *got.UpdatedBy != "admin_token:11" {
 		t.Fatalf("response=%+v want db true with metadata", got)
 	}
 }
 
-// TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret guards the new-api-like
-// config-time gate: operators may boot with a missing secret, but cannot turn on
-// CAPTCHA until this gateway process has the runtime secret configured. Mutation
-// check: delete the guard and the enable request reaches Upsert while the disable
-// request still proves the check is not a blanket write blocker.
+// TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret 守护这一配置期闸门:
+// 运维可以在缺失 secret 的情况下启动,但在本网关进程配置好运行时 secret 之前,
+// 不能开启 CAPTCHA。变异检查:删掉该守卫后,启用请求会到达 Upsert,而禁用请求
+// 仍然证明这个检查不是一刀切的写入拦截器。
 func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 	svc := &platformSettingsServiceStub{
 		upsertResult: platformsettings.StoredSetting{
@@ -170,7 +169,7 @@ func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
 		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service:                 svc,
-		CaptchaSecretConfigured: false,
+		CaptchaSecretConfigured: func(context.Context) bool { return false },
 	})
 
 	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
@@ -193,10 +192,36 @@ func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 	}
 }
 
-// TestHandlerGETCaptchaEnabledShowsMissingSecretHealth gives admins the runtime
-// misconfiguration signal that replaced fail-boot. Mutation check: remove health
-// decoration and the response still returns the setting but lacks the degraded
-// missing-secret marker.
+// TestHandlerPUTCaptchaEnabledAllowedWhenSecretConfigured 是上面的判别镜像:secret 已配置
+// (resolver 返回 true)时启用 captcha 必须放行到 Upsert。变异:若把配置门写死成恒 false
+// (无视 resolver)→ 本用例会拿到 400 而非放行 → RED;证明 resolver 的 true 分支真被消费。
+func TestHandlerPUTCaptchaEnabledAllowedWhenSecretConfigured(t *testing.T) {
+	svc := &platformSettingsServiceStub{
+		upsertResult: platformsettings.StoredSetting{
+			Key:    platformsettings.KeyCaptchaEnabled,
+			Value:  "true",
+			Source: platformsettings.SourceDB,
+		},
+	}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service:                 svc,
+		CaptchaSecretConfigured: func(context.Context) bool { return true },
+	})
+
+	rec := servePlatformSettingsJSON(t, handler, http.MethodPut, "/v1/admin/platform-settings/captcha_enabled", map[string]any{
+		"value": "true",
+	})
+
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	if svc.upsertCalls != 1 || svc.lastUpsert.Key != platformsettings.KeyCaptchaEnabled || svc.lastUpsert.Value != "true" {
+		t.Fatalf("configured-secret enable upsert calls=%d input=%+v", svc.upsertCalls, svc.lastUpsert)
+	}
+}
+
+// TestHandlerGETCaptchaEnabledShowsMissingSecretHealth 给管理员提供这个运行时
+// 配置错误信号,它取代了原先的启动失败。变异检查:移除健康状态装饰后,响应仍会
+// 返回该设置,但缺少降级的「缺失 secret」标记。
 func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
 	svc := &platformSettingsServiceStub{
 		getResult: platformsettings.StoredSetting{
@@ -208,7 +233,7 @@ func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
 		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
 		Service:                 svc,
-		CaptchaSecretConfigured: false,
+		CaptchaSecretConfigured: func(context.Context) bool { return false },
 	})
 
 	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/captcha_enabled", nil)
@@ -286,6 +311,141 @@ func TestHandlerGETListReturnsAllDefinedKeys(t *testing.T) {
 	}
 	if seen["registration_enabled"].Value != "false" || seen["registration_enabled"].Source != "default" {
 		t.Fatalf("registration item=%+v want default false", seen["registration_enabled"])
+	}
+}
+
+// canaryModerationAPIKey 是只在密钥类设置值里出现的判别性夹具串。脱敏正确时它
+// 绝不应出现在任何读响应体中;一旦读路径回吐明文,断言会因为响应体含此子串而 RED。
+const canaryModerationAPIKey = "sk-canary-moderation-7f3a9b2c"
+
+// paymentCheckoutFragment 是塞进支付配置 checkout_url 里的判别性夹具串。payment 是
+// 非密钥类配置(仅支付方式开关+收银台 URL),读路径应原样回吐、不脱敏,故它必须出现
+// 在读响应体中;一旦 payment 被误当密钥脱敏,断言会因响应体缺此子串而 RED。
+const paymentCheckoutFragment = "pay-checkout-d41d8cd9"
+
+// TestHandlerGETModerationAPIKeysIsMaskedNotPlaintext 守护读路径对外部审核 provider
+// bearer 密钥数组的脱敏:GET 单 key 时响应体不得含明文密钥子串,且必须以
+// value_configured=true 指示已配置、Value 被清空。变异实验:删去
+// platformSettingsResponseFromStored 中的脱敏分支(直接 Value: setting.Value),
+// 明文密钥会回到响应体,本测试断言响应体不含 canary 子串处即 RED。
+func TestHandlerGETModerationAPIKeysIsMaskedNotPlaintext(t *testing.T) {
+	stored := `["` + canaryModerationAPIKey + `"]`
+	svc := &platformSettingsServiceStub{
+		getResult: platformsettings.StoredSetting{
+			Key:    platformsettings.KeyModerationExternalAPIKeys,
+			Value:  stored,
+			Source: platformsettings.SourceDB,
+		},
+	}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service: svc,
+	})
+
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/moderation_external_api_keys", nil)
+
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	if strings.Contains(rec.Body.String(), canaryModerationAPIKey) {
+		t.Fatalf("响应体泄露了明文密钥: %s", rec.Body.String())
+	}
+	got := decodePlatformSettingsResponse(t, rec)
+	if got.Value != "" {
+		t.Fatalf("Value 应被清空, got=%q", got.Value)
+	}
+	if got.ValueConfigured == nil || !*got.ValueConfigured {
+		t.Fatalf("已配置的密钥 value_configured 应为 true, got=%+v", got.ValueConfigured)
+	}
+}
+
+// TestHandlerGETModerationAPIKeysEmptyShowsNotConfigured 守护“未配置”指示:空集合
+// 占位 "[]" 应解读为未配置,value_configured=false。变异实验:把
+// HasConfiguredSecretValue 对 "[]" 的判定改成返回 true,则空密钥会被错报为已配置,
+// 本断言 RED。
+func TestHandlerGETModerationAPIKeysEmptyShowsNotConfigured(t *testing.T) {
+	svc := &platformSettingsServiceStub{
+		getResult: platformsettings.StoredSetting{
+			Key:    platformsettings.KeyModerationExternalAPIKeys,
+			Value:  "[]",
+			Source: platformsettings.SourceDefault,
+		},
+	}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service: svc,
+	})
+
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/moderation_external_api_keys", nil)
+
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	got := decodePlatformSettingsResponse(t, rec)
+	if got.ValueConfigured == nil || *got.ValueConfigured {
+		t.Fatalf("空密钥 value_configured 应为 false, got=%+v", got.ValueConfigured)
+	}
+	if got.Value != "" {
+		t.Fatalf("Value 应被清空, got=%q", got.Value)
+	}
+}
+
+// TestHandlerGETListMasksSecretKeysButNotPublicKeys 是自证测试:List 同时返回密钥类
+// 与非密钥类 key,断言唯一密钥类(moderation 数组)的明文不在响应体,而非密钥类的
+// payment 配置(支付方式开关+收银台 URL)与 site_name 明文原样保留。既证脱敏生效,
+// 又证未误伤非密钥配置。变异实验一:删脱敏分支 → moderation 明文回到响应体 → 首个
+// 断言 RED。变异实验二:把脱敏判定改成无条件脱敏、或把 payment 误加进 secretSettingKeys
+// → payment/site_name 明文被清空 → 对应"明文应保留"断言 RED。
+func TestHandlerGETListMasksSecretKeysButNotPublicKeys(t *testing.T) {
+	const siteNamePlain = "华楷中转站"
+	items := []platformsettings.StoredSetting{
+		{
+			Key:    platformsettings.KeyModerationExternalAPIKeys,
+			Value:  `["` + canaryModerationAPIKey + `"]`,
+			Source: platformsettings.SourceDB,
+		},
+		{
+			Key:    platformsettings.KeyPaymentProviderConfig,
+			Value:  `{"manual":{"enabled":true,"checkout_url":""},"taobao":{"enabled":true,"checkout_url":"https://pay.example/` + paymentCheckoutFragment + `"}}`,
+			Source: platformsettings.SourceDB,
+		},
+		{
+			Key:    platformsettings.KeySiteName,
+			Value:  siteNamePlain,
+			Source: platformsettings.SourceDB,
+		},
+	}
+	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
+		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Service: &platformSettingsServiceStub{listResult: items},
+	})
+
+	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
+
+	assertPlatformSettingsStatus(t, rec, http.StatusOK)
+	body := rec.Body.String()
+	if strings.Contains(body, canaryModerationAPIKey) {
+		t.Fatalf("List 泄露了 moderation 明文密钥: %s", body)
+	}
+	if !strings.Contains(body, paymentCheckoutFragment) {
+		t.Fatalf("payment 是非密钥配置,读路径应原样返回其 checkout_url,却未出现在响应体: %s", body)
+	}
+	if !strings.Contains(body, siteNamePlain) {
+		t.Fatalf("非密钥类 site_name 明文被误伤删除: %s", body)
+	}
+
+	got := decodePlatformSettingsListResponse(t, rec)
+	seen := map[string]platformSettingsResponse{}
+	for _, item := range got.Items {
+		seen[item.Key] = item
+	}
+	mod := seen["moderation_external_api_keys"]
+	if mod.Value != "" || mod.ValueConfigured == nil || !*mod.ValueConfigured {
+		t.Fatalf("moderation 项未正确脱敏: %+v", mod)
+	}
+	pay := seen["payment_provider_config"]
+	if pay.ValueConfigured != nil || !strings.Contains(pay.Value, paymentCheckoutFragment) {
+		t.Fatalf("payment 是非密钥配置,应原样返回(Value 含 checkout_url、不带 value_configured): %+v", pay)
+	}
+	site := seen["site_name"]
+	if site.Value != siteNamePlain || site.ValueConfigured != nil {
+		t.Fatalf("非密钥类 site_name 不应脱敏: %+v", site)
 	}
 }
 

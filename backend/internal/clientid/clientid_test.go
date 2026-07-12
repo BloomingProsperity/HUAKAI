@@ -250,16 +250,16 @@ func TestIdentityContext_NoValueReturnsUnknown(t *testing.T) {
 }
 
 func TestIdentityContext_NilCtxSafe(t *testing.T) {
-	id, _ := IdentityFromContext(nil) //nolint:staticcheck // intentional nil test
+	//lint:ignore SA1012 故意传 nil 验证 nil-context 安全(测试本意,见函数名 NilCtxSafe)
+	id, _ := IdentityFromContext(nil)
 	if id != IdentityUnknown {
 		t.Errorf("nil ctx 应 IdentityUnknown，得 %q", id)
 	}
 }
 
 func TestToolFromContextReturnsPersistableEnumOnly(t *testing.T) {
-	// Mutation check: returning the raw User-Agent/header value instead of the
-	// normalized enum would leak sensitive request metadata and fail this exact
-	// equality assertion.
+	// 变异检查: 若返回原始 User-Agent/header 值而非归一化后的枚举，
+	// 会泄漏敏感的请求元数据，并使此处的精确相等断言失败。
 	ctx := WithIdentity(context.Background(), IdentityCursor, 1.0)
 	if got := ToolFromContext(ctx); got != "cursor" {
 		t.Fatalf("ToolFromContext=%q want cursor enum", got)
@@ -273,8 +273,8 @@ func TestToolFromContextUnknownStaysEmptyForNullableColumn(t *testing.T) {
 		"nil":     nil,
 	} {
 		t.Run(name, func(t *testing.T) {
-			// Mutation check: persisting "unknown" would make usage_records.client_tool
-			// non-NULL for unidentified clients, violating W4's zero-impact default.
+			// 变异检查: 持久化 "unknown" 会让未识别客户端的 usage_records.client_tool
+			// 变成非 NULL，违反 W4 的零影响默认值约定。
 			if got := ToolFromContext(ctx); got != "" {
 				t.Fatalf("ToolFromContext=%q want empty string for nullable client_tool", got)
 			}

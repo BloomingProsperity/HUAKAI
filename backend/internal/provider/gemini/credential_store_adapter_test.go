@@ -7,9 +7,8 @@ import (
 )
 
 func TestGeminiNewRefresherNilStoreFailsClosed(t *testing.T) {
-	// Regression killed: the credential-store adapter must fail closed when no
-	// credentialstore.Store is wired, rather than silently pretending refresh
-	// happened.
+	// 锁定回归：当未接入 credentialstore.Store 时，credential-store adapter 必须
+	// fail closed，而不能静默地假装刷新已发生。
 	err := NewRefresher(nil).Refresh(context.Background(), 42)
 	if !errors.Is(err, ErrGeminiStoreMissing) {
 		t.Fatalf("Refresh err=%v, want ErrGeminiStoreMissing", err)

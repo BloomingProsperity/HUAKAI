@@ -12,7 +12,7 @@ import (
 )
 
 func TestEnableForUser_TenantIsolation(t *testing.T) {
-	// Regression: enabling Hermes for tenant A must not update the same user id in tenant B.
+	// 回归守护:为租户 A 启用 Hermes 绝不能更新到租户 B 中同一个 user id。
 	store := &hermesStoreSpy{}
 
 	row, err := enableForUserWithStore(context.Background(), store, 7, 1, APISourceManaged, nil)
@@ -30,7 +30,7 @@ func TestEnableForUser_TenantIsolation(t *testing.T) {
 }
 
 func TestGetSettings_TenantScoped(t *testing.T) {
-	// Regression: settings reads must include tenant id, or same user id can read another tenant's Hermes state.
+	// 回归守护:settings 读取必须带上 tenant id,否则同一个 user id 会读到另一个租户的 Hermes 状态。
 	store := &hermesStoreSpy{}
 	service := NewService(store)
 
@@ -49,7 +49,7 @@ func TestGetSettings_TenantScoped(t *testing.T) {
 }
 
 func TestRecordAudit_TenantTagged(t *testing.T) {
-	// Regression: audit rows must carry tenant_id so operations evidence cannot be mixed across tenants.
+	// 回归守护:audit 行必须携带 tenant_id,使运维取证不会在租户之间混淆。
 	store := &hermesStoreSpy{}
 	service := NewService(store)
 

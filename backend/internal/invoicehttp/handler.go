@@ -1,6 +1,6 @@
 // HUAKAI · iKun
 
-// Package invoicehttp exposes read-only user invoice/receipt endpoints.
+// 包 invoicehttp 暴露只读的用户发票 / 收据端点。
 package invoicehttp
 
 import (
@@ -19,8 +19,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
-// OrderReader is the complete money-safety dependency surface for receipts.
-// It intentionally exposes no credit, debit, billing, or refund operations.
+// OrderReader 是收据所需的完整资金安全依赖面。
+// 它有意不暴露任何 credit、debit、billing 或 refund 操作。
 type OrderReader interface {
 	GetOrder(ctx context.Context, tenantID, orderID int64) (payment.Order, error)
 }

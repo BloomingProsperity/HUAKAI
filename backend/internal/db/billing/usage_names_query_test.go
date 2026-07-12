@@ -2,7 +2,7 @@ package billing
 
 import "testing"
 
-// MUTATION: remove tenant_id from either name join -> this SQL text guard fails -> RED.
+// 变异:从任一 name join 去掉 tenant_id -> 这个 SQL 文本守卫失败 -> 变红。
 func TestListUsageRecordsWithNamesTenantJoinPinned(t *testing.T) {
 	for _, snippet := range []string{
 		"ak.id = ur.api_key_id AND ak.tenant_id = ur.tenant_id",

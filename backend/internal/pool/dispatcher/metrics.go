@@ -1,5 +1,5 @@
-// pasr_dispatch_metrics.go — PASR-lite main-wire M2 atomic: SelectorDispatcher
-// expvar metrics, eager init 启动期 /debug/vars 立即可见。
+// pasr_dispatch_metrics.go — PASR-lite 主接线 M2 原子：SelectorDispatcher 的
+// expvar metrics，eager init 启动期 /debug/vars 立即可见。
 //
 // 与已有 `pasr` map (pasr_metrics.go) 并列 — 不嵌套, 不污染。 dispatcher 关心
 // 跨 selector 比对 (shadow match/diff)、canary 分桶占比、shadow 异步生命周期

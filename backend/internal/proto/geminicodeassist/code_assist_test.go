@@ -129,7 +129,7 @@ func TestFinalizeAndCanonicalRequestPassthrough(t *testing.T) {
 	if _, _, err := ca.CanonicalToProviderRequest(context.Background(), &proto.HCSF{}); err == nil {
 		t.Fatalf("CanonicalToProviderRequest 应透传 inner 的 ErrNotImplemented")
 	}
-	// finalize after consuming a chunk should not panic and should produce events.
+	// 消费一个 chunk 后 finalize 不应 panic，且应产出事件。
 	state := &gemini.UpstreamState{}
 	chunk := []byte(`{"response":{"candidates":[{"content":{"parts":[{"text":"x"}],"role":"model"},"index":0,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}`)
 	if _, _, err := ca.ProviderEventToCanonicalEvents(context.Background(), chunk, state); err != nil {

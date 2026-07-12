@@ -11,6 +11,11 @@ SELECT
     pa.session_window_5h_start,
     pa.session_window_5h_end,
     pa.session_window_5h_status,
+    pa.session_window_5h_utilization,
+    pa.session_window_7d_start,
+    pa.session_window_7d_end,
+    pa.session_window_7d_status,
+    pa.session_window_7d_utilization,
     COALESCE(ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
     COALESCE(ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
     ac.failure_class,
@@ -34,3 +39,24 @@ LEFT JOIN LATERAL (
 WHERE pa.tenant_id = sqlc.arg(tenant_id)::bigint
   AND pa.id = sqlc.arg(id)::bigint
   AND pa.deleted_at IS NULL;
+
+-- name: TouchProviderAccountProbe :exec
+-- 由异步 eventbus account_health_probe handler 调用:每次请求完成在对应池账号上
+-- 盖一个"最近探测时间"戳,点亮运维健康面板的 last_probe_at 列(迁移 0110 早已加列,
+-- 但此前全仓零写入,该列恒 NULL)。纯可观测写,单行 PK 定位,不碰钱/auth/health_state。
+-- last_probe_latency_ms 暂留 follow-up(请求延迟分散在多个发射点,见计划工件)。
+UPDATE provider_accounts
+SET last_probe_at = sqlc.arg(probed_at)::timestamptz
+WHERE id = sqlc.arg(id)::bigint
+  AND tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL;
+
+-- name: SummarizeProviderAccountHealth :many
+-- 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 计数,跨整个租户池(非分页)。
+-- 只读、不含钱字段;供管理端一眼看清问题账号分布。软删账号排除。
+SELECT health_state, enabled, count(*)::bigint AS n
+FROM provider_accounts
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL
+GROUP BY health_state, enabled
+ORDER BY health_state, enabled;

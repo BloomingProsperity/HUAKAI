@@ -1,9 +1,9 @@
 //go:build integration_pg
 
-// Reader integration tests run against real PostgreSQL.
-// Validates read-only — Reader writes nothing by construction,
-// and no credential fields surface by SQL coverage. Tenant
-// scope is enforced by every query's WHERE clause.
+// Reader 集成测试对真实 PostgreSQL 运行。
+// 验证只读 —— Reader 在结构上不写任何东西,
+// 且 SQL 覆盖范围内不暴露任何 credential 字段。租户
+// 范围由每条查询的 WHERE 子句强制。
 
 package obs
 
@@ -55,24 +55,24 @@ func seedReaderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rea
 	unique := uuid.NewString()
 	s := &readerSeed{}
 
-	// Primary tenant.
+	// 主租户。
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
 		"obs-tenant-"+unique,
 	).Scan(&s.tenantID); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
-	// Adversary tenant for cross-tenant probe.
+	// 用于跨租户探测的对手租户。
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
 		"obs-other-"+unique,
 	).Scan(&s.otherTenantID); err != nil {
 		t.Fatalf("seed other tenant: %v", err)
 	}
-	// Slice 2: real users + api_keys rows replace the
-	// previous synthetic-id pattern (`s.apiKeyID = s.tenantID*100 + 1`).
-	// Migration 0009 added composite FKs from billing_ledger_claims +
-	// usage_records (tenant_id, api_key_id|user_id) -> api_keys|users.
+	// Slice 2:用真实的 users + api_keys 行替换
+	// 之前的合成 id 模式(`s.apiKeyID = s.tenantID*100 + 1`)。
+	// 迁移 0009 添加了从 billing_ledger_claims + usage_records
+	//(tenant_id, api_key_id|user_id)-> api_keys|users 的复合 FK。
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`,
 		s.tenantID, "obs-user-"+unique,
@@ -92,7 +92,7 @@ func seedReaderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rea
 	t.Cleanup(func() {
 		c := context.Background()
 		for _, tid := range []int64{s.tenantID, s.otherTenantID} {
-			// FK chain after migration 0009: claims/usage/archive -> api_keys -> users -> tenants.
+			// 迁移 0009 之后的 FK 链:claims/usage/archive -> api_keys -> users -> tenants。
 			_, _ = pool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tid)
 			_, _ = pool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tid)
@@ -108,7 +108,7 @@ func seedReaderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rea
 		}
 	})
 
-	// Pool/channel/account graph for primary tenant.
+	// 主租户的 pool/channel/account 关系图。
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
 		 VALUES ($1, $2, $3, 'openai_chat') RETURNING id`,
@@ -136,7 +136,7 @@ func seedReaderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rea
 		t.Fatalf("seed account: %v", err)
 	}
 
-	// One committed claim with usage_record + billing_event (claim_committed).
+	// 一个已提交的 claim,带 usage_record + billing_event(claim_committed)。
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO billing_ledger_claims (
 			tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
@@ -179,7 +179,7 @@ func seedReaderGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *rea
 		t.Fatalf("seed billing_event: %v", err)
 	}
 
-	// One aborted claim for status counts.
+	// 一个已中止的 claim,用于状态计数。
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO billing_ledger_claims (
 			tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
@@ -228,8 +228,8 @@ func TestReader_ListUsage_TenantScopedOnly(t *testing.T) {
 		t.Fatalf("usage row tenant mismatch: %d vs seed %d", rows[0].TenantID, seed.tenantID)
 	}
 
-	// Cross-tenant probe — adversary should see 0 rows even though
-	// the row exists under primary tenant.
+	// 跨租户探测 —— 即便该行存在于主租户下,
+	// 对手也应看到 0 行。
 	otherRows, err := r.ListUsage(ctx, seed.otherTenantID, Page{Limit: 100})
 	if err != nil {
 		t.Fatalf("ListUsage(other): %v", err)
@@ -318,5 +318,5 @@ func TestReader_CountClaimsByStatus(t *testing.T) {
 	}
 }
 
-// silence unused-import linter when integration_pg tag yields skipped tests
+// 当 integration_pg 标签使测试被跳过时,消除 unused-import linter 告警
 var _ = fmt.Sprintf

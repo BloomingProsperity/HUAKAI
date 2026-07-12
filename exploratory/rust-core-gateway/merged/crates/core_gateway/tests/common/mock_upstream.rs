@@ -359,10 +359,8 @@ async fn drain_body_checked(
 fn box_response_body(response: Response<Body>) -> Response<GatewayHttpResponseBody> {
     response.map(|body| {
         body.map_err(|err| -> GatewayHttpBoxError {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                err.to_string(),
-            ))
+            // toolchain 1.96 clippy::io_other_error: 用 Error::other 取代 Error::new(ErrorKind::Other, _)
+            Box::new(std::io::Error::other(err.to_string()))
         })
         .boxed_unsync()
     })

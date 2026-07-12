@@ -57,6 +57,7 @@ func newAdminRefundHandler(d AdminDeps) http.HandlerFunc {
 			Reason:         req.Reason,
 			ActorKind:      payment.ActorKindAdmin,
 			ActorID:        ident.TokenID,
+			ActorRef:       ident.AuditActor(), // 双身份归属:session-admin 靠此列,token 双写
 			RequestID:      requestID(r),
 		})
 		if err != nil {

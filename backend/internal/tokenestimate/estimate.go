@@ -1,16 +1,12 @@
-// Package tokenestimate provides a fast, dependency-free heuristic that
-// approximates the number of input tokens a request body will consume on a
-// given upstream vendor, without invoking a real tokenizer.
+// 包 tokenestimate 提供一个快速、无依赖的启发式算法，在不调用真实 tokenizer
+// 的前提下，近似估算一个请求 body 在指定上游 vendor 上会消耗的 input token 数。
 //
-// The heuristic walks the body rune-by-rune, classifies each rune into a small
-// number of character classes (CJK glyphs, latin word runs, digit runs,
-// whitespace/newlines, emoji, and several punctuation buckets), and accumulates
-// a per-class weight. Different vendors tokenize the same text differently —
-// CJK glyphs are cheap on some tokenizers and expensive on others, latin words
-// rarely map 1:1 to tokens — so the weight table is selected from the request's
-// protocol family. The result is deliberately an estimate: it is consumed by a
-// pre-dispatch routing gate that can only make a routing decision slightly more
-// or less conservative, never a billing or correctness decision.
+// 该启发式逐个 rune 扫描 body，把每个 rune 归入少数几个字符类（CJK 字形、latin
+// 单词串、数字串、空白/换行、emoji 以及若干标点桶），并按类累加权重。不同 vendor
+// 对同一段文本的分词方式不同——CJK 字形在某些 tokenizer 上便宜、在另一些上昂贵，
+// latin 单词很少与 token 一一对应——所以权重表按请求的 protocol family 选取。
+// 结果刻意只是个估计值：它被一个 pre-dispatch 路由闸门消费，该闸门至多只能让路由
+// 决策稍微更保守或更激进，绝不参与计费或正确性决策。
 package tokenestimate
 
 import (
@@ -19,25 +15,24 @@ import (
 	"unicode"
 )
 
-// classWeights holds the per-character-class multipliers used while scanning a
-// body. Values are intentionally fractional: a latin word of several letters
-// contributes roughly one weight unit, a CJK glyph contributes its own unit,
-// and whitespace contributes very little.
+// classWeights 保存扫描 body 时各字符类的乘数。这些值刻意取小数：由若干字母组成
+// 的一个 latin 单词大致贡献一个权重单位，一个 CJK 字形贡献自己的一个单位，空白
+// 贡献极少。
 type classWeights struct {
-	wordRun    float64 // one latin alphabetic run (a "word")
-	numberRun  float64 // one contiguous digit run
-	cjkGlyph   float64 // each individual CJK glyph
-	punct      float64 // ordinary punctuation rune
-	mathPunct  float64 // mathematical operators/symbols
-	pathPunct  float64 // url/path delimiters (/ : ? & = # %)
-	atSign     float64 // '@' (tends to split words)
-	emoji      float64 // each emoji / pictograph rune
-	newline    float64 // newline or tab
-	space      float64 // ordinary space
-	floor      int     // additive baseline once any content is present
+	wordRun    float64 // 一个 latin 字母串（一个"单词"）
+	numberRun  float64 // 一个连续数字串
+	cjkGlyph   float64 // 每个单独的 CJK 字形
+	punct      float64 // 普通标点 rune
+	mathPunct  float64 // 数学运算符/符号
+	pathPunct  float64 // url/path 分隔符 (/ : ? & = # %)
+	atSign     float64 // '@'（倾向于拆分单词）
+	emoji      float64 // 每个 emoji / 象形文字 rune
+	newline    float64 // 换行或 tab
+	space      float64 // 普通空格
+	floor      int     // 一旦有内容就加上的基线增量
 }
 
-// vendorClass groups protocol families that share tokenizer behaviour.
+// vendorClass 把分词行为相同的 protocol family 归为一类。
 type vendorClass int
 
 const (
@@ -46,11 +41,10 @@ const (
 	vendorGemini
 )
 
-// weightsFor returns the weight table for a vendor class. The numbers below are
-// hand-tuned approximations chosen so that (a) longer text always estimates
-// higher, and (b) CJK-heavy text estimates differently from latin-word text on
-// every vendor — the two properties the routing gate relies on. They are not
-// copied from any reference table; they are independent round-number choices.
+// weightsFor 返回某个 vendor class 的权重表。下面这些数字是手工调出的近似值，
+// 选取它们是为了让 (a) 文本越长估值总是越高，且 (b) 在每家 vendor 上 CJK 密集文本
+// 的估值都与 latin 单词文本不同——这正是路由闸门依赖的两个性质。它们不是从任何
+// 参考表抄来的，而是独立选定的整齐数值。
 func weightsFor(v vendorClass) classWeights {
 	switch v {
 	case vendorAnthropic:
@@ -65,7 +59,7 @@ func weightsFor(v vendorClass) classWeights {
 			mathPunct: 1.1, pathPunct: 1.2, atSign: 2.5, emoji: 1.1,
 			newline: 1.1, space: 0.2, floor: 1,
 		}
-	default: // vendorOpenAI and any unknown family fall back here
+	default: // vendorOpenAI 及任何未知 family 落到这里
 		return classWeights{
 			wordRun: 1.05, numberRun: 1.5, cjkGlyph: 0.85, punct: 0.4,
 			mathPunct: 2.0, pathPunct: 1.0, atSign: 2.0, emoji: 2.0,
@@ -74,10 +68,10 @@ func weightsFor(v vendorClass) classWeights {
 	}
 }
 
-// classForProtocolFamily maps a HUAKAI protocol-family literal (the same values
-// produced by registry resolution, e.g. "anthropic_messages", "openai_chat",
-// "gemini_messages") onto a tokenizer vendor class. Unknown families fall back
-// to the OpenAI-style table, matching the gate's fail-open philosophy.
+// classForProtocolFamily 把一个 HUAKAI protocol-family 字面量（即 registry 解析
+// 产出的那些值，如 "anthropic_messages"、"openai_chat"、"gemini_messages"）映射到
+// 一个 tokenizer vendor class。未知 family 回落到 OpenAI 风格的权重表，与该闸门
+// fail-open 的理念一致。
 func classForProtocolFamily(family string) vendorClass {
 	switch {
 	case strings.HasPrefix(family, "anthropic"), strings.HasPrefix(family, "claude"):
@@ -89,17 +83,15 @@ func classForProtocolFamily(family string) vendorClass {
 	}
 }
 
-// Estimate approximates the input-token count of body for the given protocol
-// family. An empty body estimates 0. The estimate is monotonic in body length
-// (appending content never lowers the estimate) and is vendor-weighted, so a
-// run of CJK glyphs estimates differently from an equal-length run of latin
-// words.
+// Estimate 近似估算 body 在指定 protocol family 上的 input-token 数。空 body
+// 估为 0。该估值随 body 长度单调（追加内容绝不会降低估值），且按 vendor 加权，
+// 因此一串 CJK 字形与等长的一串 latin 单词估出的结果不同。
 func Estimate(body []byte, protocolFamily string) int {
 	return EstimateString(string(body), protocolFamily)
 }
 
-// EstimateString is Estimate over a string. It is the scanning core; Estimate
-// is a thin []byte adapter.
+// EstimateString 是作用于字符串的 Estimate。它是扫描核心；Estimate 只是一层
+// 薄薄的 []byte 适配器。
 func EstimateString(text, protocolFamily string) int {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -131,8 +123,8 @@ func EstimateString(text, protocolFamily string) int {
 			current = runNone
 			total += w.emoji
 		case unicode.IsLetter(r):
-			// A latin/alphabetic run is charged once at its start; interior
-			// letters of the same run are free, modelling subword merging.
+			// 一个 latin/字母串在其起始处计费一次；同一串内部的字母不计费，
+			// 以此模拟 subword 合并。
 			if current != runWord {
 				total += w.wordRun
 				current = runWord
@@ -160,27 +152,26 @@ func EstimateString(text, protocolFamily string) int {
 	return int(math.Ceil(total)) + w.floor
 }
 
-// isCJKGlyph reports whether r is a Chinese/Japanese/Korean (or related) glyph
-// that most tokenizers charge per-character.
+// isCJKGlyph 报告 r 是否是一个多数 tokenizer 按字符计费的中文/日文/韩文
+// （或相关）字形。
 func isCJKGlyph(r rune) bool {
 	switch {
-	case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
+	case r >= 0x4E00 && r <= 0x9FFF: // CJK 统一表意文字
 		return true
-	case r >= 0x3400 && r <= 0x4DBF: // CJK Extension A
+	case r >= 0x3400 && r <= 0x4DBF: // CJK 扩展 A
 		return true
-	case r >= 0x3040 && r <= 0x30FF: // Hiragana + Katakana
+	case r >= 0x3040 && r <= 0x30FF: // 平假名 + 片假名
 		return true
-	case r >= 0xAC00 && r <= 0xD7AF: // Hangul syllables
+	case r >= 0xAC00 && r <= 0xD7AF: // 谚文音节
 		return true
-	case r >= 0xF900 && r <= 0xFAFF: // CJK compatibility ideographs
+	case r >= 0xF900 && r <= 0xFAFF: // CJK 兼容表意文字
 		return true
 	default:
 		return false
 	}
 }
 
-// isPictograph reports whether r sits in one of the common emoji / pictograph
-// blocks.
+// isPictograph 报告 r 是否落在常见的 emoji / 象形文字区块之一。
 func isPictograph(r rune) bool {
 	switch {
 	case r >= 0x1F300 && r <= 0x1FAFF:
@@ -194,8 +185,8 @@ func isPictograph(r rune) bool {
 	}
 }
 
-// isMathSymbol reports whether r is a mathematical operator/symbol that
-// tokenizers tend to charge more for than ordinary punctuation.
+// isMathSymbol 报告 r 是否是一个数学运算符/符号——tokenizer 往往对它比对普通
+// 标点收更高费用。
 func isMathSymbol(r rune) bool {
 	if unicode.Is(unicode.Sm, r) {
 		return true
@@ -208,8 +199,8 @@ func isMathSymbol(r rune) bool {
 	}
 }
 
-// isPathDelim reports whether r is a url/path delimiter that common tokenizers
-// handle cheaply.
+// isPathDelim 报告 r 是否是一个 url/path 分隔符——常见 tokenizer 对它处理得
+// 比较便宜。
 func isPathDelim(r rune) bool {
 	switch r {
 	case '/', ':', '?', '&', '=', '#', '%':

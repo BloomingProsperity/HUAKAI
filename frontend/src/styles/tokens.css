@@ -1,0 +1,81 @@
+/*
+ * HUAKAI 设计 token — Owner 认可的"绿净密集"基线。
+ *
+ * 方向(Owner 2026-07-12 拍板,依其认可的运营台参考稿):
+ *  - 主色取明亮干净的绿(brand 与 success 同源),用于品牌/激活/成功/执行按钮;
+ *  - 中性取"冷中性灰"(非暖灰),配白卡 + 细线,读感干净不糊;
+ *  - 阴影走"极轻扁平"(靠 1px 细线分隔,不靠重投影);圆角收紧成统一阶梯;
+ *  - 危险操作红,语义状态(成功/警告/危险/信息)各自独立于品牌绿;
+ *  - 分类标签用多色软药丸(蓝/紫/青),区分角色/类型。
+ * 所有组件只准引用这些变量,禁写魔法色值,保证"离默认"一致可控。
+ */
+:root {
+  /* 主色:亮净绿阶梯(brand + success 同源) */
+  --hk-primary-50: #eaf6f0;
+  --hk-primary-100: #cdebdc;
+  --hk-primary-300: #6bc79e;
+  --hk-primary-500: #21a566;
+  --hk-primary-600: #1b9159;
+  --hk-primary-700: #157a4a;
+
+  /* 中性:冷中性灰(干净,区别于旧暖灰) */
+  --hk-ink-900: #202a36;
+  --hk-ink-700: #414c59;
+  --hk-ink-500: #66717f;
+  --hk-ink-300: #98a2ae;
+  --hk-line: #e6e9ed;
+  --hk-line-soft: #eff1f4;
+  --hk-surface: #ffffff;
+  --hk-surface-sunken: #f4f6f8;
+  --hk-canvas: #f3f5f7;
+
+  /* 语义状态 + 软背景(状态药丸用) */
+  --hk-success: #1f9d6b;
+  --hk-success-soft: rgba(31, 157, 107, 0.12);
+  --hk-warn: #d6902b;
+  --hk-warn-soft: rgba(214, 144, 43, 0.13);
+  --hk-danger: #de4b47;
+  --hk-danger-soft: rgba(222, 75, 71, 0.11);
+  --hk-danger-700: #c53d3a;
+  --hk-info: #3b79ee;
+  --hk-info-soft: rgba(59, 121, 238, 0.11);
+
+  /* 分类标签:多色软药丸(角色/类型区分) */
+  --hk-cat-blue: #3b79ee;
+  --hk-cat-blue-soft: rgba(59, 121, 238, 0.11);
+  --hk-cat-purple: #7a69db;
+  --hk-cat-purple-soft: rgba(122, 105, 219, 0.12);
+  --hk-cat-teal: #1d9c9c;
+  --hk-cat-teal-soft: rgba(29, 156, 156, 0.12);
+
+  /* 圆角阶梯(收紧,统一) */
+  --hk-radius-sm: 6px;
+  --hk-radius-md: 9px;
+  --hk-radius-lg: 14px;
+  --hk-radius-pill: 999px;
+
+  /* 间距 4px 基数阶梯 */
+  --hk-space-1: 4px;
+  --hk-space-2: 8px;
+  --hk-space-3: 12px;
+  --hk-space-4: 16px;
+  --hk-space-5: 24px;
+  --hk-space-6: 32px;
+  --hk-space-8: 48px;
+
+  /* 阴影:极轻扁平(靠细线分隔,不靠重投影) */
+  --hk-shadow-1: 0 1px 2px rgba(24, 34, 48, 0.05);
+  --hk-shadow-2: 0 1px 2px rgba(24, 34, 48, 0.05), 0 1px 1px rgba(24, 34, 48, 0.03);
+  --hk-shadow-3: 0 8px 28px rgba(24, 34, 48, 0.1);
+
+  /* 字体:中文优先栈 + 等宽用于时间/ID/数值对齐 */
+  --hk-font-sans: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui,
+    -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --hk-font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, Menlo,
+    Consolas, monospace;
+
+  /* 层级 */
+  --hk-z-rail: 20;
+  --hk-z-topbar: 30;
+  --hk-z-overlay: 100;
+}

@@ -91,9 +91,11 @@ type Querier interface {
 	CountBillingClaims(ctx context.Context, arg CountBillingClaimsParams) (int64, error)
 	// Operator overview: how many claims are in each status for one tenant.
 	CountClaimsByStatus(ctx context.Context, tenantID int64) ([]CountClaimsByStatusRow, error)
+	CountPendingReconciliationUsageRecords(ctx context.Context) (int64, error)
 	// DM-14:告警指标——当前被自动摘除(非 healthy 且仍在生效期)的账号数,按状态分组。
 	// 过期的 cooldown/throttled 已重新可调度(对齐 ListEligibleAccounts 语义),不计入。
 	CountUnhealthyAccountsByTenant(ctx context.Context, tenantID int64) ([]CountUnhealthyAccountsByTenantRow, error)
+	CountUnresolvedSettlementIntentsForClaim(ctx context.Context, arg CountUnresolvedSettlementIntentsForClaimParams) (int64, error)
 	CountUsageRecords(ctx context.Context, arg CountUsageRecordsParams) (int64, error)
 	DecrementInFlightCount(ctx context.Context, id int64) error
 	// 过期清理扫描 (供后台 janitor 周期调用)。
@@ -134,6 +136,7 @@ type Querier interface {
 	GetIdempotencyReplayRecord(ctx context.Context, arg GetIdempotencyReplayRecordParams) (GetIdempotencyReplayRecordRow, error)
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetPool(ctx context.Context, arg GetPoolParams) (PoolGroup, error)
+	GetSettlementIntentByClaimAttempt(ctx context.Context, arg GetSettlementIntentByClaimAttemptParams) (SettlementIntent, error)
 	GetStickyBinding(ctx context.Context, arg GetStickyBindingParams) (int64, error)
 	GetUsageRecordByRequestID(ctx context.Context, arg GetUsageRecordByRequestIDParams) (GetUsageRecordByRequestIDRow, error)
 	GetUserBalance(ctx context.Context, arg GetUserBalanceParams) (GetUserBalanceRow, error)
@@ -158,6 +161,9 @@ type Querier interface {
 	// policy returns false unless explicitly forced in test); when the policy
 	// returns true, this query enqueues the row.
 	InsertSchedulerOutboxRow(ctx context.Context, arg InsertSchedulerOutboxRowParams) (InsertSchedulerOutboxRowRow, error)
+	// 结算意图在首个业务字节前写入。balance_holds 以 claim_id 为主键，
+	// 因此这里只在真实 hold 行存在时记录该稳定标识；未启用余额强制的请求保持 NULL。
+	InsertSettlementIntent(ctx context.Context, arg InsertSettlementIntentParams) (int64, error)
 	InsertSlotAcquisition(ctx context.Context, arg InsertSlotAcquisitionParams) (int64, error)
 	// Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
 	// Slice 2 (N+5b 2026-05-01): added snapshot_version (column from migration
@@ -190,6 +196,10 @@ type Querier interface {
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
+	// 账号健康诊断只读取请求结果与时延信号，刻意不选择 actual_cost 等钱字段。
+	// tenant_id 与 provider_account_id 同时下推，避免仅靠处理器作用域保护租户边界。
+	ListProviderAccountRecentRequests(ctx context.Context, arg ListProviderAccountRecentRequestsParams) ([]ListProviderAccountRecentRequestsRow, error)
+	ListStaleNonTerminalSettlementIntents(ctx context.Context, arg ListStaleNonTerminalSettlementIntentsParams) ([]ListStaleNonTerminalSettlementIntentsRow, error)
 	// F-OBS-001 read-only query surface for the admin/audit lane.
 	// This file contains SELECT-only queries; the Repository wrapper enforces tenant
 	// scope on every call.
@@ -205,6 +215,14 @@ type Querier interface {
 	// Tenant predicates on api_keys/users are deliberate defense-in-depth even
 	// though those ids are globally unique today.
 	ListUsageRecordsWithNames(ctx context.Context, arg ListUsageRecordsWithNamesParams) ([]ListUsageRecordsWithNamesRow, error)
+	MarkSettlementIntentAborted(ctx context.Context, arg MarkSettlementIntentAbortedParams) (int32, error)
+	MarkSettlementIntentAbortedIfStale(ctx context.Context, arg MarkSettlementIntentAbortedIfStaleParams) (int32, error)
+	MarkSettlementIntentDelivering(ctx context.Context, arg MarkSettlementIntentDeliveringParams) (int32, error)
+	MarkSettlementIntentFailed(ctx context.Context, arg MarkSettlementIntentFailedParams) (int32, error)
+	MarkSettlementIntentSettled(ctx context.Context, arg MarkSettlementIntentSettledParams) (int32, error)
+	MarkSettlementIntentSettledIfStale(ctx context.Context, arg MarkSettlementIntentSettledIfStaleParams) (int32, error)
+	MarkSettlementIntentSettling(ctx context.Context, arg MarkSettlementIntentSettlingParams) (int32, error)
+	MarkSettlementIntentSupersededIfStale(ctx context.Context, arg MarkSettlementIntentSupersededIfStaleParams) (int32, error)
 	// Usage-log retention only. Deletes bounded batches from usage_records and
 	// deliberately does not touch billing_ledger_claims, billing_events, audit
 	// tables, or other money/trust-chain records.

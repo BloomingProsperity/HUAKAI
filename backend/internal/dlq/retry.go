@@ -1,6 +1,9 @@
 package dlq
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type RetryPolicy struct {
 	BaseBackoff time.Duration
@@ -47,6 +50,16 @@ func (p RetryPolicy) NextFailure(now, firstFailureAt time.Time, previousAttempts
 	if attempts >= p.MaxAttempts || (!firstFailureAt.IsZero() && !now.Before(firstFailureAt.Add(p.DLQAfter))) {
 		return RetryDecision{Status: StatusOperatorReview, Attempts: attempts}
 	}
+	return p.pendingDecision(now, attempts)
+}
+
+// NextFailureContinuous 让必须最终闭合的钱账事件在告警阈值后仍按封顶退避重试。
+func (p RetryPolicy) NextFailureContinuous(now time.Time, previousAttempts int) RetryDecision {
+	p = p.normalized()
+	return p.pendingDecision(now, previousAttempts+1)
+}
+
+func (p RetryPolicy) pendingDecision(now time.Time, attempts int) RetryDecision {
 	delay := p.BaseBackoff
 	for i := 1; i < attempts; i++ {
 		delay *= 2
@@ -64,4 +77,15 @@ func (p RetryPolicy) NextFailure(now, firstFailureAt time.Time, previousAttempts
 		Attempts:    attempts,
 		Delay:       delay,
 	}
+}
+
+// NextFailureForErr 在 NextFailure 的基础上加一层"结构性不可重试"短路:当 handler 返回的
+// 错误经 errors.Is 命中 ErrUnretryable(payload 损坏/校验不过/事件类型不匹配等毒消息)
+// 或 ErrNoHandler(当前部署没有可处理该 kind 的 handler),直接判定 quarantined 并停止重试。
+// failErr 为 nil 或瞬时错误时,行为与 NextFailure 完全一致。
+func (p RetryPolicy) NextFailureForErr(now, firstFailureAt time.Time, previousAttempts int, failErr error) RetryDecision {
+	if failErr != nil && (errors.Is(failErr, ErrUnretryable) || errors.Is(failErr, ErrNoHandler)) {
+		return RetryDecision{Status: StatusQuarantined, Attempts: previousAttempts + 1}
+	}
+	return p.NextFailure(now, firstFailureAt, previousAttempts)
 }

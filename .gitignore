@@ -30,6 +30,8 @@ backend/.gocache/
 .env.*
 !.env.example
 !backend/.env.dev.example
+!backend/.env.prod.example
+!backend/.env.direct.example
 *.pem
 *.key
 *.crt
@@ -42,6 +44,10 @@ credentials.json
 # Build output (placeholder for future phases)
 dist/
 build/
+# The committed SPA-embed placeholder must stay tracked so `go build -tags embed`
+# compiles on a clean checkout (the real dist is produced by the build pipeline).
+!backend/internal/webui/dist/
+!backend/internal/webui/dist/index.html
 out/
 target/
 .cargo-targets/
@@ -123,3 +129,7 @@ frontend/next-env.d.ts
 .coordination/.dispatcher.lock
 # Claude 子 agent 的临时 git worktree(codex P2:别当 embedded repo 误提交)
 .claude/worktrees/
+
+# compiled local helper binaries
+/backend/mvp-seed
+/backend/huakai-gw

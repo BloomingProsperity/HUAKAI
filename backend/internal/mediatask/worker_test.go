@@ -9,8 +9,8 @@ import (
 )
 
 func TestWorkerQueuedTaskSubmitsProviderOnce(t *testing.T) {
-	// Mutation: call Poll before Submit for a queued task; provider.submitCalls
-	// stays zero and this test fails.
+	// 变异:对一个 queued 任务在 Submit 之前先 Poll;provider.submitCalls
+	// 会保持为零,本测试失败。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	store := newWorkerStore(Task{ID: 1, TenantID: 7, UserID: 42, RequestID: "req-1", TaskType: "image_generation", Provider: "http", Status: StatusQueued, CreatedAt: now})
 	provider := &workerProvider{submitID: "up-1"}
@@ -32,8 +32,8 @@ func TestWorkerQueuedTaskSubmitsProviderOnce(t *testing.T) {
 }
 
 func TestWorkerSuccessSettlesOnceAcrossConcurrentRunOnce(t *testing.T) {
-	// Mutation: remove lease_owner / terminal-status guard in CompleteSuccess;
-	// both workers settle and completeCalls becomes 2.
+	// 变异:去掉 CompleteSuccess 里的 lease_owner / 终态守卫;
+	// 两个 worker 都会结算,completeCalls 变成 2。
 	now := time.Date(2026, 6, 6, 12, 5, 0, 0, time.UTC)
 	store := newWorkerStore(Task{
 		ID: 2, TenantID: 7, UserID: 42, RequestID: "req-2", TaskType: "image_generation",
@@ -62,8 +62,8 @@ func TestWorkerSuccessSettlesOnceAcrossConcurrentRunOnce(t *testing.T) {
 }
 
 func TestWorkerFailureRefundsTerminally(t *testing.T) {
-	// Mutation: map provider failed to progress update instead of terminal
-	// failure; failureCalls remains zero and held money would not be released.
+	// 变异:把 provider 的 failed 映射成进度更新而非终态失败;
+	// failureCalls 保持为零,被冻结的款项不会被释放。
 	now := time.Date(2026, 6, 6, 12, 10, 0, 0, time.UTC)
 	store := newWorkerStore(Task{ID: 3, TenantID: 7, UserID: 42, TaskType: "image_generation", Provider: "http", ProviderTaskID: "up-3", Status: StatusInProgress, CreatedAt: now})
 	provider := &workerProvider{poll: PollResult{Status: StatusFailed, Progress: 20, ErrorClass: "provider_failed"}}
@@ -78,8 +78,8 @@ func TestWorkerFailureRefundsTerminally(t *testing.T) {
 }
 
 func TestWorkerTimeoutExpiresAndRefunds(t *testing.T) {
-	// Mutation: check updated_at instead of created_at for timeout; this stale
-	// task is polled instead of expired and expireCalls remains zero.
+	// 变异:超时判定时检查 updated_at 而非 created_at;这个陈旧任务
+	// 会被 poll 而非过期,expireCalls 保持为零。
 	base := time.Date(2026, 6, 6, 12, 15, 0, 0, time.UTC)
 	cfg := testConfig()
 	cfg.TaskTimeout = time.Minute
@@ -93,6 +93,99 @@ func TestWorkerTimeoutExpiresAndRefunds(t *testing.T) {
 	if store.expireCalls != 1 || provider.pollCalls != 0 || store.task.Status != StatusExpired {
 		t.Fatalf("expireCalls=%d pollCalls=%d task=%+v", store.expireCalls, provider.pollCalls, store.task)
 	}
+}
+
+func TestWorkerLeaseLostReportsOrphanWithIdempotencyKey(t *testing.T) {
+	// 场景:worker A 已 Submit 创建真实上游任务,但租约在 Submit 期间过期被另一个
+	// worker 抢走,MarkProviderSubmitted 返回 ErrLeaseLost。
+	// 断言 (a):Submit 携带了由任务身份派生的幂等键(让上游对重复提交去重);
+	// 断言 (b):ErrLeaseLost 时孤儿被上报(含 providerTaskID + tenant),而非静默吞掉。
+	//
+	// 变异一:把 worker.go 里 SubmitReq 的 IdempotencyKey 字段去掉 →
+	//   provider.gotReq.IdempotencyKey 为空,断言 (a) RED。
+	// 变异二:把 ErrLeaseLost 分支改回 `return nil`(删掉 w.reportOrphan 调用)→
+	//   reporter.calls 为 0,断言 (b) RED。
+	now := time.Date(2026, 6, 6, 12, 30, 0, 0, time.UTC)
+	store := newLeaseStealingStore(Task{
+		ID: 9, TenantID: 7, UserID: 42, RequestID: "req-9", TaskType: "image_generation",
+		Provider: "http", Status: StatusQueued, CreatedAt: now,
+	})
+	provider := &capturingProvider{submitID: "up-orphan-9"}
+	reporter := &spyOrphanReporter{}
+	worker := NewWorker(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{"http": provider},
+		WorkerOptions{Owner: "wA", Now: func() time.Time { return now }, OrphanReporter: reporter})
+
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if !processed {
+		t.Fatal("RunOnce processed=false want true")
+	}
+
+	// 断言 (a):Submit 真的发生且携带了幂等键,值等于任务派生键。
+	if provider.submitCalls != 1 {
+		t.Fatalf("submitCalls=%d want 1", provider.submitCalls)
+	}
+	wantKey := DeriveIdempotencyKey(9, "req-9")
+	if wantKey != "mediatask-9" {
+		t.Fatalf("派生键自检失败 want mediatask-9 got %q", wantKey)
+	}
+	if provider.gotReq.IdempotencyKey != wantKey {
+		t.Fatalf("SubmitReq.IdempotencyKey=%q want %q(重复上游提交不会被去重)", provider.gotReq.IdempotencyKey, wantKey)
+	}
+
+	// 断言 (b):租约丢失时孤儿被上报,且携带 providerTaskID + tenant,而非静默丢弃。
+	if reporter.calls != 1 {
+		t.Fatalf("orphan reporter calls=%d want 1(孤儿 providerTaskID 被静默吞掉)", reporter.calls)
+	}
+	got := reporter.last
+	if got.ProviderTaskID != "up-orphan-9" || got.TaskID != 9 || got.TenantID != 7 || got.UserID != 42 {
+		t.Fatalf("orphan event=%+v want providerTaskID=up-orphan-9 task=9 tenant=7 user=42", got)
+	}
+}
+
+type capturingProvider struct {
+	submitID    string
+	submitCalls int
+	gotReq      SubmitReq
+}
+
+func (p *capturingProvider) Submit(_ context.Context, req SubmitReq) (string, error) {
+	p.submitCalls++
+	p.gotReq = req
+	return p.submitID, nil
+}
+
+func (p *capturingProvider) Poll(context.Context, string) (PollResult, error) {
+	return PollResult{Status: StatusInProgress}, nil
+}
+
+type spyOrphanReporter struct {
+	mu    sync.Mutex
+	calls int
+	last  OrphanProviderTask
+}
+
+func (r *spyOrphanReporter) ReportOrphanProviderTask(_ context.Context, ev OrphanProviderTask) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	r.last = ev
+}
+
+// leaseStealingStore 模拟"租约在 Submit 期间被抢走"的竞态:任务可被正常租出,
+// 但 MarkProviderSubmitted 必定命 0 行(返回 ErrLeaseLost),复现孤儿成本路径。
+type leaseStealingStore struct {
+	*workerStore
+}
+
+func newLeaseStealingStore(task Task) *leaseStealingStore {
+	return &leaseStealingStore{workerStore: newWorkerStore(task)}
+}
+
+func (s *leaseStealingStore) MarkProviderSubmitted(_ context.Context, _ Task, _, _ string, _ time.Time) (Task, error) {
+	return Task{}, ErrLeaseLost
 }
 
 type workerProvider struct {

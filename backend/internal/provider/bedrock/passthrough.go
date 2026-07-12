@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
@@ -33,6 +34,45 @@ const endpointInvoke = "https://bedrock-runtime.%s.amazonaws.com/model/%s/invoke
 
 // endpointInvokeStream 是 Bedrock Runtime invoke-with-response-stream endpoint 模板。
 const endpointInvokeStream = "https://bedrock-runtime.%s.amazonaws.com/model/%s/invoke-with-response-stream"
+
+// validBedrockRegions 是 Bedrock Runtime 当前允许拼入官方 endpoint 的区域白名单。
+// 新增 AWS 区域时必须显式补表,避免运营配置污染把任意 host 片段拼进出站地址。
+var validBedrockRegions = map[string]struct{}{
+	"af-south-1":     {},
+	"ap-east-2":      {},
+	"ap-northeast-1": {},
+	"ap-northeast-2": {},
+	"ap-northeast-3": {},
+	"ap-south-1":     {},
+	"ap-south-2":     {},
+	"ap-southeast-1": {},
+	"ap-southeast-2": {},
+	"ap-southeast-3": {},
+	"ap-southeast-4": {},
+	"ap-southeast-5": {},
+	"ap-southeast-6": {},
+	"ap-southeast-7": {},
+	"ca-central-1":   {},
+	"ca-west-1":      {},
+	"eu-central-1":   {},
+	"eu-central-2":   {},
+	"eu-north-1":     {},
+	"eu-south-1":     {},
+	"eu-south-2":     {},
+	"eu-west-1":      {},
+	"eu-west-2":      {},
+	"eu-west-3":      {},
+	"il-central-1":   {},
+	"me-central-1":   {},
+	"me-south-1":     {},
+	"sa-east-1":      {},
+	"us-east-1":      {},
+	"us-east-2":      {},
+	"us-gov-east-1":  {},
+	"us-gov-west-1":  {},
+	"us-west-1":      {},
+	"us-west-2":      {},
+}
 
 // PassthroughAdapter 实现 provider.Adapter，把客户原始请求直通转发到
 // AWS Bedrock Runtime，使用 SigV4 签名（aws_sigv4 模式）或透传
@@ -91,9 +131,12 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	}
 
 	// 区域必填
-	region := in.Credential.Extra["aws_region"]
+	region := strings.TrimSpace(in.Credential.Extra["aws_region"])
 	if region == "" {
 		return nil, errors.New("bedrock passthrough: Extra[\"aws_region\"] 不能为空")
+	}
+	if !validBedrockRegion(region) {
+		return nil, fmt.Errorf("bedrock passthrough: aws_region %q 非法（仅允许 Bedrock Runtime 区域代码）", region)
 	}
 
 	// AutoTranslate 是否对当前请求生效：
@@ -230,4 +273,9 @@ func (a *PassthroughAdapter) acceptsCredential(t provider.CredentialType) bool {
 		}
 	}
 	return false
+}
+
+func validBedrockRegion(region string) bool {
+	_, ok := validBedrockRegions[region]
+	return ok
 }

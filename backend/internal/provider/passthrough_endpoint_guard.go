@@ -16,6 +16,8 @@ import (
 
 var ErrUnsafePassthroughEndpoint = errors.New("provider: unsafe upstream passthrough endpoint")
 
+var ErrPassthroughProxyCustomEndpointIncompatible = errors.New("config_incompatible_proxy_custom_endpoint")
+
 func safePassthroughBaseURL(raw string) (*url.URL, error) {
 	if hasControlOrSpace(raw) {
 		return nil, passthroughEndpointBlocked("control character or whitespace")
@@ -99,10 +101,16 @@ func validatePassthroughHostWithPolicy(raw string, policy ssrfpolicy.Policy) (st
 	return host, nil
 }
 
-// UsesCustomPassthroughEndpoint reports whether cred carries a tenant-supplied
-// upstream base URL whose request target must be guarded before Do().
+// UsesCustomPassthroughEndpoint 报告 API key 或透传凭据是否选择了 operator
+// 自配的上游 endpoint；这类请求必须在 Do() 前经过 DNS 守卫校验，并在直连
+// 拨号时继续 fail-closed 拦截 metadata、内网、loopback 与其它特殊用途地址。
 func UsesCustomPassthroughEndpoint(cred Credential) bool {
-	if cred.Type != CredentialTypeUpstreamPassthrough {
+	switch cred.Type {
+	case CredentialTypeAPIKey:
+		return strings.TrimSpace(cred.Extra["base_url"]) != ""
+	case CredentialTypeUpstreamPassthrough:
+		// 透传凭据还可能由专用 adapter 使用历史 endpoint 字段。
+	default:
 		return false
 	}
 	for _, key := range []string{"base_url", "endpoint_api", "copilot_endpoint_api"} {
@@ -115,20 +123,18 @@ func UsesCustomPassthroughEndpoint(cred Credential) bool {
 
 var passthroughEndpointLookupNetIP = net.DefaultResolver.LookupNetIP
 
-// SwapPassthroughEndpointLookupForTesting replaces the endpoint DNS lookup hook.
-// It is exported for cross-package dispatcher tests; production code must not
-// call it.
+// SwapPassthroughEndpointLookupForTesting 替换 endpoint 的 DNS 查询钩子。
+// 它仅为跨包的 dispatcher 测试导出；生产代码绝不能调用它。
 func SwapPassthroughEndpointLookupForTesting(fn func(context.Context, string, string) ([]netip.Addr, error)) func() {
 	original := passthroughEndpointLookupNetIP
 	passthroughEndpointLookupNetIP = fn
 	return func() { passthroughEndpointLookupNetIP = original }
 }
 
-// ValidatePassthroughEndpointTarget resolves a tenant-supplied passthrough
-// request target immediately before outbound I/O. EndpointForCredential stays
-// pure/static so adapters do not perform DNS, while the dispatcher can still
-// fail closed on hostname aliases that resolve to loopback, private, link-local,
-// metadata, or other special-use addresses.
+// ValidatePassthroughEndpointTarget 在出站 I/O 之前的最后一刻解析租户提供的
+// passthrough 请求目标。EndpointForCredential 保持纯函数/静态，使适配器不执行
+// DNS；而 dispatcher 仍可对那些解析到 loopback、私网、link-local、metadata 或
+// 其它特殊用途地址的主机名别名做到 fail-closed（拒绝放行）。
 func ValidatePassthroughEndpointTarget(ctx context.Context, endpoint *url.URL) error {
 	host, err := validatePassthroughEndpointURL(endpoint)
 	if err != nil {
@@ -153,10 +159,10 @@ func ValidatePassthroughEndpointTarget(ctx context.Context, endpoint *url.URL) e
 	return nil
 }
 
-// WrapPassthroughEndpointTransport returns a transport whose actual direct dial
-// uses the same public-IP policy as ValidatePassthroughEndpointTarget. It must be
-// applied after account-proxy resolution; proxied or custom RoundTrippers cannot
-// bind HUAKAI's DNS decision to the target dial, so they fail closed here.
+// WrapPassthroughEndpointTransport 返回一个 transport，其真正的直连拨号使用与
+// ValidatePassthroughEndpointTarget 相同的公网 IP 策略。它必须在账号代理解析
+// 之后应用；代理型或自定义的 RoundTripper 无法把 HUAKAI 的 DNS 决策绑定到
+// 目标拨号上，因此在此处 fail-closed（拒绝放行）。
 func WrapPassthroughEndpointTransport(rt http.RoundTripper) (http.RoundTripper, error) {
 	if rt == nil {
 		rt = http.DefaultTransport
@@ -166,7 +172,7 @@ func WrapPassthroughEndpointTransport(rt http.RoundTripper) (http.RoundTripper, 
 		return nil, passthroughEndpointBlocked("unsupported transport")
 	}
 	if base.Proxy != nil {
-		return nil, passthroughEndpointBlocked("proxy transport is not allowed")
+		return nil, fmt.Errorf("%w: %w", ErrUnsafePassthroughEndpoint, ErrPassthroughProxyCustomEndpointIncompatible)
 	}
 	clone := base.Clone()
 	dial := clone.DialContext

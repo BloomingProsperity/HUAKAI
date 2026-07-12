@@ -1,18 +1,15 @@
-// Package modulehttp serves the merged module-knowledge view: it joins the LIVE
-// moduleregistry (runtime descriptors + health probes) with the STATIC
-// modulecatalog (feature-tree-derived identity: section, feature id, parity
-// status, owning packages), and exposes:
+// Package modulehttp 提供合并后的模块知识视图:它把实时的 moduleregistry
+//(运行时 descriptor + 健康探针)与静态的 modulecatalog(从 feature-tree 派生的
+// 身份:section、feature id、parity 状态、所属包)连接起来,并暴露:
 //
-//   - GET /admin/v1/modules (+ ?category=) — admin-gated, read-only, for Hermes
-//     and an admin UI to query each module's identity + capabilities + status +
-//     live probe.
+//   - GET /admin/v1/modules (+ ?category=) —— 管理员门控、只读,供 Hermes
+//     和 admin UI 查询每个模块的身份 + 能力 + 状态 + 实时探针。
 //
-// The Hermes runner-context feed accessor is added in the H3 wave alongside its
-// consumer (kept out of this wave so no unwired accessor ships unused).
+// Hermes runner-context 馈送访问器在 H3 波次与其消费者一同加入(在本波次中
+// 被排除,以免发布一个未接线、闲置无用的访问器)。
 //
-// Privacy: this surface carries module identity, enum statuses, and short
-// diagnostic detail strings only — never secrets or user data. It is the
-// operator/assistant root-cause spine, intentionally off every request hot path.
+// 隐私:此接口面只携带模块身份、枚举状态和简短诊断 detail 字符串 ——
+// 绝不含密钥或用户数据。它是运维/助手的根因主干,刻意不在任何请求热路径上。
 package modulehttp
 
 import (
@@ -22,19 +19,19 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 )
 
-// ModuleView is one module's merged identity + runtime state.
+// ModuleView 是一个模块的合并身份 + 运行时状态。
 type ModuleView struct {
 	ID           string   `json:"id"`
 	Category     string   `json:"category"`
 	Title        string   `json:"title"`
 	Capabilities []string `json:"capabilities,omitempty"`
-	// Static overlay (from the feature-tree catalog), nil when no catalog match.
+	// 静态覆盖层(来自 feature-tree catalog),无 catalog 匹配时为 nil。
 	Catalog *CatalogOverlay `json:"catalog,omitempty"`
-	// Live probe result from the registry Snapshot.
+	// 来自 registry Snapshot 的实时探针结果。
 	LiveProbe moduleregistry.ProbeResult `json:"live_probe"`
 }
 
-// CatalogOverlay is the static knowledge merged onto a live module.
+// CatalogOverlay 是被合并到一个实时模块上的静态知识。
 type CatalogOverlay struct {
 	Section   string   `json:"section,omitempty"`
 	FeatureID string   `json:"feature_id,omitempty"`
@@ -43,29 +40,27 @@ type CatalogOverlay struct {
 	Pkgs      []string `json:"pkgs,omitempty"`
 }
 
-// Source provides the two halves of the merged view. Splitting it behind an
-// interface keeps the handler unit-testable with fakes (no DB, no real wiring).
+// Source 提供合并视图的两个半边。把它藏在一个 interface 之后,使 handler
+// 能用 fake 进行单元测试(无 DB、无真实接线)。
 type Source interface {
-	// Snapshot returns the live descriptors + probe results.
+	// Snapshot 返回实时的 descriptor + 探针结果。
 	Snapshot(ctx context.Context) []moduleregistry.ModuleSnapshot
-	// CatalogLookup returns the static overlay for a package short-name.
+	// CatalogLookup 返回一个包短名对应的静态覆盖层。
 	CatalogLookup(pkg string) (modulecatalog.CatalogModule, bool)
-	// CatalogPkgFor maps a live module ID to its catalog package short-name. The
-	// seeds register an explicit mapping; an unmapped ID yields ("", false) and
-	// the view simply omits the static overlay (live-only module).
+	// CatalogPkgFor 把一个实时模块 ID 映射到它的 catalog 包短名。seeds 会
+	// 注册一个显式映射;未映射的 ID 产出 ("", false),视图便直接省略静态
+	// 覆盖层(纯实时模块)。
 	CatalogPkgFor(moduleID string) (string, bool)
 }
 
-// ContextSummary is the read-only module-knowledge view the Hermes ops
-// assistant consumes (WAVE H3 — its consumer is GET /v1/hermes/context). It is
-// the merged module identity + capabilities + live state across ALL categories,
-// the same shape an operator sees, so the assistant can ground a root-cause
-// answer in what is wired and how healthy it is.
+// ContextSummary 是 Hermes 运维助手所消费的只读模块知识视图(H3 波次 ——
+// 其消费者是 GET /v1/hermes/context)。它是跨所有 category 的合并模块身份 +
+// 能力 + 实时状态,与运维人员看到的形状相同,这样助手就能把根因回答建立在
+// 「什么已接线、健康程度如何」之上。
 //
-// This accessor was intentionally held out of the H2 landing (no consumer yet);
-// it ships now alongside the hermes context endpoint that calls it. It carries
-// module identity, enum statuses, and short diagnostic detail strings only —
-// never secrets or user data.
+// 此访问器在 H2 落地时被刻意排除(当时尚无消费者);现在它与调用它的 hermes
+// context 端点一同发布。它只携带模块身份、枚举状态和简短诊断 detail 字符串
+// —— 绝不含密钥或用户数据。
 func ContextSummary(ctx context.Context, src Source) []ModuleView {
 	if src == nil {
 		return []ModuleView{}
@@ -77,9 +72,8 @@ func ContextSummary(ctx context.Context, src Source) []ModuleView {
 	return views
 }
 
-// Merge joins the live snapshot with the static catalog into the operator view,
-// optionally filtered by category (empty category = all). The result preserves
-// the snapshot's sorted-by-ID order.
+// Merge 把实时 snapshot 与静态 catalog 连接成运维视图,可按 category 选择性
+// 过滤(空 category = 全部)。结果保留 snapshot 的按 ID 排序顺序。
 func Merge(ctx context.Context, src Source, category string) []ModuleView {
 	snaps := src.Snapshot(ctx)
 	views := make([]ModuleView, 0, len(snaps))

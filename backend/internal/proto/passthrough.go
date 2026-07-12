@@ -6,8 +6,8 @@
 // HUAKAI 客户端永远看不到。本类型 + helpers 让任意未识别字段以 RawMessage
 // 形式被携带过整个 canonical pipeline，最终序列化时合并回输出。
 //
-// 与 portkey 的 extras 思路同方向但 HUAKAI 升级点：每个 extra field 都可
-// 走 FieldMatrix 查询 verdict（preserve / transform / drop），运维可观测。
+// HUAKAI 升级点：每个 extra field 都可走 FieldMatrix 查询 verdict
+// （preserve / transform / drop），运维可观测。
 //
 // 使用模式（adapter 端）：
 //
@@ -65,7 +65,7 @@ func UnmarshalWithExtras(raw []byte, typed any, dst *PassthroughEnvelope) error 
 		return nil
 	}
 
-	// Pass 1: typed unmarshal
+	// 第 1 遍：typed unmarshal
 	if typed != nil {
 		if err := json.Unmarshal(raw, typed); err != nil {
 			return fmt.Errorf("proto.UnmarshalWithExtras: typed: %w", err)
@@ -75,7 +75,7 @@ func UnmarshalWithExtras(raw []byte, typed any, dst *PassthroughEnvelope) error 
 		return nil
 	}
 
-	// Pass 2: full raw → map
+	// 第 2 遍：完整 raw → map
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &all); err != nil {
 		// 顶层不是 JSON object（数组 / 标量） — typed 已尝试解，extras 不适用

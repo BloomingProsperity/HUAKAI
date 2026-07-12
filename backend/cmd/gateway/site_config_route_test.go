@@ -6,20 +6,20 @@ import (
 	"testing"
 )
 
-// TestSiteConfigRouteIsAnonymous proves GET /v1/site/config is mounted and
-// reachable WITHOUT a session cookie. buildTestRouter wires nil
-// platformSettings, so a correctly-mounted anonymous handler answers 503
-// (gateway_not_configured) — never 404 (not mounted) and never 401/redirect
-// (session required).
+// TestSiteConfigRouteIsAnonymous 证明 GET /v1/site/config 已挂载,且
+// 在*没有* session cookie 的情况下可达。buildTestRouter 接入的是 nil 的
+// platformSettings,因此一个正确挂载的匿名处理器会返回 503
+//(gateway_not_configured)——绝不会是 404(未挂载),也绝不会是 401/重定向
+//(需要 session)。
 //
-// Mutation guard: wrap the route in auth.SessionMiddleware and an anonymous
-// request returns 401, flipping this assertion red. Removing the mount makes
-// it 404, also red.
+// 变异守护:把该路由用 auth.SessionMiddleware 包起来,则匿名
+// 请求返回 401,使本断言转红。移除该挂载会让它返回
+// 404,同样转红。
 func TestSiteConfigRouteIsAnonymous(t *testing.T) {
 	r := buildTestRouter(t)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/site/config", nil) // no cookie, no auth header
+	req := httptest.NewRequest(http.MethodGet, "/v1/site/config", nil) // 无 cookie,无 auth header
 	r.ServeHTTP(rec, req)
 
 	if rec.Code == http.StatusNotFound {

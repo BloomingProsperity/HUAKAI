@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
@@ -62,8 +63,8 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 		t.Fatalf("expected one usage_record with claim_id=%d; got %d", seed.claimID, usageCount)
 	}
 
-	// The success-path usage row carries the
-	// router+registry stamp from migration 0008's snapshot_version column.
+	// 成功路径的 usage 行携带来自迁移 0008 的 snapshot_version 列的
+	// router+registry 标记。
 	var snapshot *string
 	if err := pool.QueryRow(ctx,
 		`SELECT snapshot_version FROM usage_records WHERE claim_id=$1`,
@@ -114,6 +115,125 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 	}
 }
 
+func TestSettler_SettleRetriesSerializationConflictWithoutDuplicateEffects(t *testing.T) {
+	// 变异检查:若 DefaultSettler.Settle 去掉 retryTx2 包装、直接调用 settleOnce,
+	// 第一次 Tx2 在 claim committed 更新处抛 40001 后会直接失败,本测试红。
+	// 若回滚边界被破坏,第一次尝试写过的 usage/billing/slot/hold 会留下重复证据。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-serialization-retry")
+	settler := NewSettler(pool)
+
+	if _, err := pool.Exec(ctx, `INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 10, 0) ON CONFLICT (tenant_id, user_id) DO NOTHING`, seed.tenantID, seed.userID); err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.01000000")); err != nil {
+		t.Fatalf("reserve hold: %v", err)
+	}
+	seqRef, cleanup := installSettlerClaimCommitSerializationFailure(t, ctx, pool, seed.claimID)
+	defer cleanup()
+
+	actualCost := decimal.RequireFromString("0.03000000")
+	res, err := settler.Settle(ctx, settleRequest(seed, actualCost))
+	if err != nil {
+		t.Fatalf("Settle 应重试一次 40001 后成功: %v", err)
+	}
+	if res == nil || !res.NewUserBalance.Equal(decimal.RequireFromString("9.97")) {
+		t.Fatalf("Settle result=%+v want NewUserBalance=9.97", res)
+	}
+	assertSequenceLastValue(t, ctx, pool, seqRef, 2)
+
+	assertSettledEvidenceOnce(t, ctx, pool, seed, actualCost)
+	var holdState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM balance_holds WHERE claim_id=$1`, seed.claimID).Scan(&holdState); err != nil {
+		t.Fatalf("read hold state: %v", err)
+	}
+	if holdState != "captured" {
+		t.Fatalf("hold state=%q want captured", holdState)
+	}
+	var balance, held decimal.Decimal
+	if err := pool.QueryRow(ctx, `SELECT balance, held FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID).Scan(&balance, &held); err != nil {
+		t.Fatalf("read user balance: %v", err)
+	}
+	if !balance.Equal(decimal.RequireFromString("9.97")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("balance/held=%s/%s want 9.97/0", balance, held)
+	}
+}
+
+// TestAT_OBS_004_RollbackOnSlotReleaseMiss 是 AT-OBS-004 / AT-POOL-019 的强(回滚)变体:Tx2 必须
+// all-or-nothing。注入一个 mid-Tx2 失败——把 slot 提前置为非 'acquired',使 Settle 内的
+// ReleaseSlotAndDecrementInFlight 返 0 → ErrSlotReleaseMissed(settler.go),而这发生在 billing_event
+// + usage_record 已在同一事务写入之后。验证那两笔更早的写入被**完整回滚**(无孤儿 usage_record /
+// 无新增 billing_event / claim 未 committed)。这正是 phase-b5/integration-sprint 计划要求过、但一直
+// 缺失的 "kill mid-Tx2 → no partial rows" 测试,也是 pool AT-POOL-019(Tx2 原子性)的实质覆盖。
+//
+// Mutation:若 settler 把 billing_event/usage 写在独立事务(破坏单 Serializable Tx 原子性),回滚
+// 不生效 → "无 usage_record" 断言转红。
+func TestAT_OBS_004_RollbackOnSlotReleaseMiss(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "settle-rollback")
+	settler := NewSettler(pool)
+
+	// 同 claim 当前的 billing_events 基线(seed 可能已写过 reserve 类事件)。
+	var eventsBefore int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing_events WHERE claim_id=$1`, seed.claimID).Scan(&eventsBefore); err != nil {
+		t.Fatalf("count billing_events before: %v", err)
+	}
+
+	// 注入 mid-Tx2 失败:把 slot 提前置为非 'acquired',ReleaseSlotAndDecrementInFlight 将返 0。
+	if _, err := pool.Exec(ctx,
+		`UPDATE pool_slot_acquisitions SET status='released_success', released_at=NOW() WHERE acquisition_token=$1`,
+		seed.acquisitionToken); err != nil {
+		t.Fatalf("预置 slot 为 released: %v", err)
+	}
+
+	actualCost := decimal.RequireFromString("0.02000000")
+	if _, err := settler.Settle(ctx, settleRequest(seed, actualCost)); !errors.Is(err, ErrSlotReleaseMissed) {
+		t.Fatalf("slot 非 acquired 时 Settle 应返回 ErrSlotReleaseMissed,got %v", err)
+	}
+
+	// 回滚验证 1:usage_record 必须为 0(它在 ReleaseSlot 失败前已写入同事务,失败后整体回滚;
+	// 非原子=会留下孤儿 usage_record)。
+	var usageCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM usage_records WHERE claim_id=$1`, seed.claimID).Scan(&usageCount); err != nil {
+		t.Fatalf("count usage_records: %v", err)
+	}
+	if usageCount != 0 {
+		t.Fatalf("Tx2 失败后不应有 usage_record(单 Tx 回滚被破坏=孤儿写),got %d", usageCount)
+	}
+
+	// 回滚验证 2:billing_events 数量不变(settle 写的事件被回滚,回到基线)。
+	var eventsAfter int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing_events WHERE claim_id=$1`, seed.claimID).Scan(&eventsAfter); err != nil {
+		t.Fatalf("count billing_events after: %v", err)
+	}
+	if eventsAfter != eventsBefore {
+		t.Fatalf("Tx2 失败后 billing_events 应回滚回基线 %d,got %d", eventsBefore, eventsAfter)
+	}
+
+	// 回滚验证 3:claim 不应 committed(整事务回滚,状态保持)。
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM billing_ledger_claims WHERE id=$1`, seed.claimID).Scan(&status); err != nil {
+		t.Fatalf("read claim status: %v", err)
+	}
+	if status == "committed" {
+		t.Fatalf("Tx2 失败后 claim 不应 committed,got %q", status)
+	}
+
+	// 回滚验证 4(slot 维度强判别):ReleaseSlot 命中 0 行即不减 in_flight,且整事务回滚,
+	// 故 provider_accounts.in_flight_count 必须保持 seed 的 2 不变(非幂等/非原子减会被抓)。
+	var inFlightAfter int
+	if err := pool.QueryRow(ctx, `SELECT in_flight_count FROM provider_accounts WHERE id=$1`, seed.providerAccountID).Scan(&inFlightAfter); err != nil {
+		t.Fatalf("read in_flight after failed settle: %v", err)
+	}
+	if inFlightAfter != 2 {
+		t.Fatalf("ReleaseSlot 失败后 in_flight_count 不应递减,应保持 2,got %d", inFlightAfter)
+	}
+}
+
 func TestSettler_SettlePersistsCacheTierTokensAndCosts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -144,8 +264,8 @@ func TestSettler_SettlePersistsCacheTierTokensAndCosts(t *testing.T) {
 		t.Fatalf("read cache-tier usage_record fields: %v", err)
 	}
 
-	// Mutation guard: reverting settler cache-tier fields to hardcoded zero makes
-	// each persisted value differ from these inputs, so this test goes red.
+	// 变异守卫:把 settler 的 cache-tier 字段还原成硬编码零值,会使每个持久化值
+	// 都与这些输入不同,于是本测试转红。
 	if got5m != 100 {
 		t.Fatalf("cache_creation_5m_tokens=%d want 100", got5m)
 	}
@@ -196,7 +316,7 @@ func TestSettler_SettleZerosCacheBucketCostsForNonChargeableAttempt(t *testing.T
 		t.Fatalf("read cache-tier cost fields: %v", err)
 	}
 
-	// MUTATION: if cache bucket costs are not gated by CostForAttempt, cache_creation_cost stays nonzero while actual_cost=0 -> RED.
+	// 变异:若 cache 桶成本未经 CostForAttempt 门控,cache_creation_cost 会保持非零而 actual_cost=0 -> RED。
 	if !actualCost.IsZero() {
 		t.Fatalf("actual_cost=%s want 0", actualCost)
 	}
@@ -284,6 +404,47 @@ func TestSettler_AbortPath(t *testing.T) {
 	}
 }
 
+func TestSettler_AbortRetriesSerializationConflictWithoutDuplicateEffects(t *testing.T) {
+	// 变异检查:若 DefaultSettler.Abort 去掉 retryTx2 包装、直接调用 abortOnce,
+	// 第一次 Tx2 在 claim_aborted 事件插入处抛 40001 后会直接失败,本测试红。
+	// 该失败点位于 claim 状态更新和 hold release 之后,可验证整事务回滚后不会重复退款/审计。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "abort-serialization-retry")
+	settler := NewSettler(pool)
+
+	if _, err := pool.Exec(ctx, `INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 10, 0) ON CONFLICT (tenant_id, user_id) DO NOTHING`, seed.tenantID, seed.userID); err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.01000000")); err != nil {
+		t.Fatalf("reserve hold: %v", err)
+	}
+	seqRef, cleanup := installSettlerAbortEventSerializationFailure(t, ctx, pool, seed.claimID)
+	defer cleanup()
+
+	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "serialization_retry_abort", "req-abort-serialization-retry", 7, nil); err != nil {
+		t.Fatalf("Abort 应重试一次 40001 后成功: %v", err)
+	}
+	assertSequenceLastValue(t, ctx, pool, seqRef, 2)
+	assertAbortedEvidenceOnce(t, ctx, pool, seed, "serialization_retry_abort", 7)
+
+	var holdState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM balance_holds WHERE claim_id=$1`, seed.claimID).Scan(&holdState); err != nil {
+		t.Fatalf("read hold state: %v", err)
+	}
+	if holdState != "released" {
+		t.Fatalf("hold state=%q want released", holdState)
+	}
+	var held decimal.Decimal
+	if err := pool.QueryRow(ctx, `SELECT held FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID).Scan(&held); err != nil {
+		t.Fatalf("read held: %v", err)
+	}
+	if !held.Equal(decimal.Zero) {
+		t.Fatalf("held=%s want 0", held)
+	}
+}
+
 func TestSettler_AbortRecordsObservedInputTokensAtZeroCost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -346,8 +507,8 @@ func TestSettler_AbortWritesProtocolLossEvidence(t *testing.T) {
 }
 
 func TestSettler_SettleWritesProtocolLossEvidence(t *testing.T) {
-	// Mutation: settler hardcoding []byte("[]") (the pre-fix bug) instead
-	// of reading req.ProtocolLoss → Settle persists [] ≠ want → RED.
+	// 变异:settler 硬编码 []byte("[]")(修复前的 bug)而非读取 req.ProtocolLoss
+	// → Settle 持久化的是 [] ≠ want → RED。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openPool(t, ctx)
@@ -408,6 +569,9 @@ func TestPR4_AbortReReserveCrossPoolFinalSettleOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Reserve: %v", err)
 	}
+	if first.AttemptSeq != 1 {
+		t.Fatalf("first Reserve attempt_seq=%d want 1", first.AttemptSeq)
+	}
 	firstAcq, err := slotManager.Acquire(ctx, &pool.AccountSnapshot{
 		ID:       graph.firstAccountID,
 		TenantID: graph.tenantID,
@@ -441,6 +605,9 @@ func TestPR4_AbortReReserveCrossPoolFinalSettleOnce(t *testing.T) {
 	}
 	if second.ClaimID != first.ClaimID {
 		t.Fatalf("re-reserve claim id=%d want same %d", second.ClaimID, first.ClaimID)
+	}
+	if second.AttemptSeq != 2 {
+		t.Fatalf("re-reserve result attempt_seq=%d want 2", second.AttemptSeq)
 	}
 	assertClaimReReservedClean(t, ctx, pg, first.ClaimID, graph.secondPoolID, 2)
 
@@ -499,6 +666,9 @@ func TestPR4_ReReserveClearsStaleAcquisitionBeforePreAcquireAbort(t *testing.T) 
 	if err != nil {
 		t.Fatalf("first Reserve: %v", err)
 	}
+	if first.AttemptSeq != 1 {
+		t.Fatalf("first Reserve attempt_seq=%d want 1", first.AttemptSeq)
+	}
 	firstAcq, err := slotManager.Acquire(ctx, &pool.AccountSnapshot{
 		ID:       graph.firstAccountID,
 		TenantID: graph.tenantID,
@@ -527,6 +697,9 @@ func TestPR4_ReReserveClearsStaleAcquisitionBeforePreAcquireAbort(t *testing.T) 
 	second, err := gate.Reserve(ctx, req)
 	if err != nil {
 		t.Fatalf("second Reserve re-reserve: %v", err)
+	}
+	if second.AttemptSeq != 2 {
+		t.Fatalf("re-reserve result attempt_seq=%d want 2", second.AttemptSeq)
 	}
 	assertClaimReReservedClean(t, ctx, pg, second.ClaimID, graph.secondPoolID, 2)
 	if err := settler.Abort(ctx, graph.tenantID, second.ClaimID, "pre_acquire_retry_exhausted", "req-pr4-clear-attempt-2", 0, nil); err != nil {
@@ -1076,6 +1249,75 @@ func assertPositiveCommittedUsageOnce(t *testing.T, ctx context.Context, pg *pgx
 	}
 }
 
+func assertSettledEvidenceOnce(t *testing.T, ctx context.Context, pg *pgxpool.Pool, seed settlerSeed, actualCost decimal.Decimal) {
+	t.Helper()
+	var status string
+	var storedCost decimal.Decimal
+	if err := pg.QueryRow(ctx, `SELECT status, actual_cost FROM billing_ledger_claims WHERE id=$1`, seed.claimID).Scan(&status, &storedCost); err != nil {
+		t.Fatalf("read settled claim: %v", err)
+	}
+	if status != "committed" || !storedCost.Equal(actualCost) {
+		t.Fatalf("claim status/cost=%q/%s want committed/%s", status, storedCost, actualCost)
+	}
+	var usageCount int
+	if err := pg.QueryRow(ctx, `SELECT count(*) FROM usage_records WHERE claim_id=$1 AND actual_cost=$2`, seed.claimID, actualCost).Scan(&usageCount); err != nil {
+		t.Fatalf("count settled usage_records: %v", err)
+	}
+	if usageCount != 1 {
+		t.Fatalf("settle retry 后 usage_records=%d want 1", usageCount)
+	}
+	var eventCount int
+	if err := pg.QueryRow(ctx, `SELECT count(*) FROM billing_events WHERE claim_id=$1 AND event_type='claim_committed' AND actual_cost=$2`, seed.claimID, actualCost).Scan(&eventCount); err != nil {
+		t.Fatalf("count claim_committed events: %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("settle retry 后 claim_committed events=%d want 1", eventCount)
+	}
+	var releasedSlots int
+	if err := pg.QueryRow(ctx, `SELECT count(*) FROM pool_slot_acquisitions WHERE claim_id=$1 AND status='released_success'`, seed.claimID).Scan(&releasedSlots); err != nil {
+		t.Fatalf("count released slots: %v", err)
+	}
+	if releasedSlots != 1 {
+		t.Fatalf("settle retry 后 released slots=%d want 1", releasedSlots)
+	}
+	assertAccountInFlight(t, ctx, pg, seed.providerAccountID, 1)
+}
+
+func assertAbortedEvidenceOnce(t *testing.T, ctx context.Context, pg *pgxpool.Pool, seed settlerSeed, reason string, observedInputTokens int32) {
+	t.Helper()
+	var status string
+	var abortedReason *string
+	if err := pg.QueryRow(ctx, `SELECT status, aborted_reason FROM billing_ledger_claims WHERE id=$1`, seed.claimID).Scan(&status, &abortedReason); err != nil {
+		t.Fatalf("read aborted claim: %v", err)
+	}
+	if status != "aborted" || abortedReason == nil || *abortedReason != reason {
+		t.Fatalf("claim status/reason=%q/%v want aborted/%s", status, abortedReason, reason)
+	}
+	var eventCount int
+	if err := pg.QueryRow(ctx, `SELECT count(*) FROM billing_events WHERE claim_id=$1 AND event_type='claim_aborted' AND actual_cost=0`, seed.claimID).Scan(&eventCount); err != nil {
+		t.Fatalf("count claim_aborted events: %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("abort retry 后 claim_aborted events=%d want 1", eventCount)
+	}
+	var usageCount int
+	var tokensInput int32
+	if err := pg.QueryRow(ctx, `SELECT count(*), COALESCE(max(tokens_input), 0) FROM usage_records WHERE claim_id=$1 AND actual_cost=0`, seed.claimID).Scan(&usageCount, &tokensInput); err != nil {
+		t.Fatalf("count abort usage_records: %v", err)
+	}
+	if usageCount != 1 || tokensInput != observedInputTokens {
+		t.Fatalf("abort retry 后 usage_records/tokens_input=%d/%d want 1/%d", usageCount, tokensInput, observedInputTokens)
+	}
+	var releasedSlots int
+	if err := pg.QueryRow(ctx, `SELECT count(*) FROM pool_slot_acquisitions WHERE claim_id=$1 AND status='released_success'`, seed.claimID).Scan(&releasedSlots); err != nil {
+		t.Fatalf("count released slots: %v", err)
+	}
+	if releasedSlots != 1 {
+		t.Fatalf("abort retry 后 released slots=%d want 1", releasedSlots)
+	}
+	assertAccountInFlight(t, ctx, pg, seed.providerAccountID, 1)
+}
+
 func assertFinalClaimPool(t *testing.T, ctx context.Context, pg *pgxpool.Pool, claimID, wantPoolID int64) {
 	t.Helper()
 	var status string
@@ -1091,6 +1333,108 @@ func assertFinalClaimPool(t *testing.T, ctx context.Context, pg *pgxpool.Pool, c
 	}
 	if poolID == nil || *poolID != wantPoolID {
 		t.Fatalf("final claim pooling_group_id=%v want %d", poolID, wantPoolID)
+	}
+}
+
+func installSettlerClaimCommitSerializationFailure(t *testing.T, ctx context.Context, pg *pgxpool.Pool, claimID int64) (string, func()) {
+	t.Helper()
+	suffix := fmt.Sprintf("%d_%d", claimID, time.Now().UTC().UnixNano())
+	seqName := "huakai_tx2_settle_seq_" + suffix
+	fnName := "huakai_tx2_settle_fail_" + suffix
+	triggerName := "huakai_tx2_settle_fail_" + suffix
+	seqIdent := pgx.Identifier{"public", seqName}.Sanitize()
+	fnIdent := pgx.Identifier{"public", fnName}.Sanitize()
+	triggerIdent := pgx.Identifier{triggerName}.Sanitize()
+	seqRef := "public." + seqName
+
+	if _, err := pg.Exec(ctx, fmt.Sprintf(`CREATE SEQUENCE %s`, seqIdent)); err != nil {
+		t.Fatalf("create settle serialization sequence: %v", err)
+	}
+	createFn := fmt.Sprintf(`
+CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	IF NEW.id = %d
+		AND OLD.status = 'reserving'
+		AND NEW.status = 'committed'
+		AND nextval('%s'::regclass) = 1 THEN
+		RAISE EXCEPTION 'forced settle Tx2 serialization conflict' USING ERRCODE = '40001';
+	END IF;
+	RETURN NEW;
+END;
+$$`, fnIdent, claimID, seqRef)
+	if _, err := pg.Exec(ctx, createFn); err != nil {
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP SEQUENCE IF EXISTS %s`, seqIdent))
+		t.Fatalf("create settle serialization function: %v", err)
+	}
+	createTrigger := fmt.Sprintf(`
+CREATE TRIGGER %s
+BEFORE UPDATE OF status ON billing_ledger_claims
+FOR EACH ROW EXECUTE FUNCTION %s()`, triggerIdent, fnIdent)
+	if _, err := pg.Exec(ctx, createTrigger); err != nil {
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fnIdent))
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP SEQUENCE IF EXISTS %s`, seqIdent))
+		t.Fatalf("create settle serialization trigger: %v", err)
+	}
+	return seqRef, func() {
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON billing_ledger_claims`, triggerIdent))
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fnIdent))
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP SEQUENCE IF EXISTS %s`, seqIdent))
+	}
+}
+
+func installSettlerAbortEventSerializationFailure(t *testing.T, ctx context.Context, pg *pgxpool.Pool, claimID int64) (string, func()) {
+	t.Helper()
+	suffix := fmt.Sprintf("%d_%d", claimID, time.Now().UTC().UnixNano())
+	seqName := "huakai_tx2_abort_seq_" + suffix
+	fnName := "huakai_tx2_abort_fail_" + suffix
+	triggerName := "huakai_tx2_abort_fail_" + suffix
+	seqIdent := pgx.Identifier{"public", seqName}.Sanitize()
+	fnIdent := pgx.Identifier{"public", fnName}.Sanitize()
+	triggerIdent := pgx.Identifier{triggerName}.Sanitize()
+	seqRef := "public." + seqName
+
+	if _, err := pg.Exec(ctx, fmt.Sprintf(`CREATE SEQUENCE %s`, seqIdent)); err != nil {
+		t.Fatalf("create abort serialization sequence: %v", err)
+	}
+	createFn := fmt.Sprintf(`
+CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	IF NEW.claim_id = %d
+		AND NEW.event_type = 'claim_aborted'
+		AND nextval('%s'::regclass) = 1 THEN
+		RAISE EXCEPTION 'forced abort Tx2 serialization conflict' USING ERRCODE = '40001';
+	END IF;
+	RETURN NEW;
+END;
+$$`, fnIdent, claimID, seqRef)
+	if _, err := pg.Exec(ctx, createFn); err != nil {
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP SEQUENCE IF EXISTS %s`, seqIdent))
+		t.Fatalf("create abort serialization function: %v", err)
+	}
+	createTrigger := fmt.Sprintf(`
+CREATE TRIGGER %s
+BEFORE INSERT ON billing_events
+FOR EACH ROW EXECUTE FUNCTION %s()`, triggerIdent, fnIdent)
+	if _, err := pg.Exec(ctx, createTrigger); err != nil {
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fnIdent))
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP SEQUENCE IF EXISTS %s`, seqIdent))
+		t.Fatalf("create abort serialization trigger: %v", err)
+	}
+	return seqRef, func() {
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON billing_events`, triggerIdent))
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, fnIdent))
+		_, _ = pg.Exec(context.Background(), fmt.Sprintf(`DROP SEQUENCE IF EXISTS %s`, seqIdent))
+	}
+}
+
+func assertSequenceLastValue(t *testing.T, ctx context.Context, pg *pgxpool.Pool, seqRef string, want int64) {
+	t.Helper()
+	var got int64
+	if err := pg.QueryRow(ctx, fmt.Sprintf(`SELECT last_value FROM %s`, seqRef)).Scan(&got); err != nil {
+		t.Fatalf("read serialization sequence %s: %v", seqRef, err)
+	}
+	if got != want {
+		t.Fatalf("serialization trigger fire count=%d want %d", got, want)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,8 +18,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
-
-const defaultProviderAccountTestPlatformTenantID = int64(1)
 
 type ProviderAccountTestDeps struct {
 	Auth     providerAccountTestAuth
@@ -134,7 +131,11 @@ func resolveProviderAccountTestTenant(w http.ResponseWriter, r *http.Request, d 
 		if ident.ScopeTenantID > 0 {
 			return ident, ident.ScopeTenantID, true
 		}
-		return ident, defaultProviderAccountTestPlatformTenantID, true
+		tenantID, ok := resolvePlatformAdminQueryTenant(w, r, ident)
+		if !ok {
+			return admin.AdminIdentity{}, 0, false
+		}
+		return ident, tenantID, true
 	default:
 		writeError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, 0, false
@@ -159,7 +160,7 @@ func writeProviderAccountTestReadError(w http.ResponseWriter, err error, code st
 }
 
 func writeProviderAccountTestAudit(ctx context.Context, r *http.Request, store providerAccountTestAccountStore, ident admin.AdminIdentity, tenantID, accountID int64, result credentialworker.ProviderAccountCredentialTestResult, testErr error) error {
-	actorID := fmt.Sprintf("%d", ident.TokenID)
+	actorID := ident.AuditActor()
 	reqID := middleware.GetReqID(r.Context())
 	reason := "测试 provider account credential"
 	errorClass := result.ErrorClass

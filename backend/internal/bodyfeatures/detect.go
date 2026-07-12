@@ -1,13 +1,12 @@
-// Package bodyfeatures extracts request-level capability signals from a raw
-// client request body so the Router can demand those capabilities of pool
-// accounts (capability_flags @> required_capabilities).
+// Package bodyfeatures 从原始客户端请求体中提取请求级别的能力信号,
+// 以便 Router 能要求池中账号具备这些能力
+// (capability_flags @> required_capabilities)。
 //
-// The single entry point Detect is protocol-agnostic: one request handler
-// backs OpenAI Chat Completions, Anthropic Messages, and OpenAI Responses,
-// so the scan recognises all three body shapes. It is deliberately
-// defensive — any malformed, null, empty, or wrong-typed body yields all
-// false (no capability constraint, never a panic) so a parse hiccup can
-// never shrink the eligible account set or crash the dispatch path.
+// 唯一入口 Detect 与协议无关:同一个请求 handler 同时支撑
+// OpenAI Chat Completions、Anthropic Messages 和 OpenAI Responses,
+// 因此扫描能识别这三种 body 形状。它刻意做得很防御 —— 任何畸形、null、
+// 空或类型错误的 body 都会全部返回 false(不施加能力约束,也绝不 panic),
+// 这样一次解析故障永远不会缩小可用账号集合,也不会让分发路径崩溃。
 package bodyfeatures
 
 import (
@@ -15,17 +14,15 @@ import (
 	"strings"
 )
 
-// Detect scans a raw request body and reports which routable capabilities
-// the request actually needs. The booleans align with the capability tokens
-// the Router emits and accounts are stamped with:
+// Detect 扫描原始请求体,报告该请求实际需要哪些可路由的能力。这些布尔值
+// 与 Router 发出、并打在账号上的能力标记 token 一一对应:
 //
 //	vision -> "vision", tools -> "tools", json -> "json", audio -> "audio".
 //
-// Detection is conservative: only a genuinely-present signal flips a flag
-// (a non-empty tools/functions array, a real image part with a usable URL,
-// a json_object/json_schema response format, an input_audio content part or
-// an "audio" modality request). Unknown or empty signals stay false so the
-// request is not over-constrained.
+// 检测是保守的:只有真正存在的信号才会翻转某个标志(非空的
+// tools/functions 数组、带有可用 URL 的真实 image part、json_object/json_schema
+// 的 response format、input_audio content part 或带 "audio" 的 modality 请求)。
+// 未知或为空的信号保持 false,以免对请求施加过度约束。
 func Detect(body []byte) (vision, tools, json, audio bool) {
 	if len(body) == 0 {
 		return false, false, false, false
@@ -41,50 +38,48 @@ func Detect(body []byte) (vision, tools, json, audio bool) {
 	return vision, tools, json, audio
 }
 
-// unmarshal is a thin seam over the stdlib decoder so the package keeps a
-// single tolerant parse of the (<=1MB) body; callers run Detect once before
-// the attempt loop because capabilities are stable across retries.
+// unmarshal 是对标准库解码器的一层薄封装,让本包对(<=1MB 的)body 只做
+// 一次宽容解析;调用方在重试循环之前只跑一次 Detect,因为能力在多次重试
+// 之间是稳定的。
 func unmarshal(body []byte, v *looseRequest) error {
 	return json.Unmarshal(body, v)
 }
 
-// looseRequest holds only the fields that carry capability signals across
-// the three protocols, leaving content as RawMessage so the per-part walk
-// is deferred until a flag is actually in question.
+// looseRequest 只保留三种协议中承载能力信号的字段,把 content 留作
+// RawMessage,这样逐 part 的遍历会推迟到某个标志真正被需要判定时再进行。
 type looseRequest struct {
 	// OpenAI Chat / Anthropic Messages
 	Messages []looseMessage `json:"messages"`
-	// OpenAI Responses (input may be a string or an array of parts)
+	// OpenAI Responses(input 可能是字符串,也可能是 part 数组)
 	Input json.RawMessage `json:"input"`
 
-	// tools / function-call signals across all three shapes
+	// 三种形状下的 tools / function-call 信号
 	Tools     json.RawMessage `json:"tools"`
 	Functions json.RawMessage `json:"functions"`
 
-	// structured-output signals
+	// 结构化输出信号
 	ResponseFormat json.RawMessage `json:"response_format"`
 	Text           json.RawMessage `json:"text"`
 
-	// audio output signal: OpenAI Chat carries a top-level modalities array
-	// whose elements are output modes (text / audio / ...). An "audio"
-	// element means the request asks the model to produce audio, which
-	// requires an audio-class account.
+	// audio 输出信号:OpenAI Chat 在顶层带一个 modalities 数组,其元素是
+	// 输出模式(text / audio / ...)。出现 "audio" 元素表示该请求要求模型
+	// 产出音频,这需要一个 audio 类账号。
 	Modalities json.RawMessage `json:"modalities"`
 }
 
 type looseMessage struct {
-	// Content is string (OpenAI Chat simple) or an array of typed parts
-	// (OpenAI Chat multimodal / Anthropic content blocks).
+	// Content 可能是字符串(OpenAI Chat 简单形式),也可能是带类型的 part
+	// 数组(OpenAI Chat 多模态 / Anthropic content blocks)。
 	Content json.RawMessage `json:"content"`
 }
 
 // --- vision -----------------------------------------------------------------
 
-// detectVision reports whether any message or Responses-input part carries a
-// media payload that requires a vision-class account. It covers OpenAI Chat
-// content parts (image_url / file / video_url), Anthropic image blocks (type
-// "image" with a source), and OpenAI Responses input_image parts (data-URI
-// image_url). Audio parts are classified separately by detectAudio.
+// detectVision 报告是否有任何 message 或 Responses-input part 携带需要
+// vision 类账号的媒体载荷。它覆盖 OpenAI Chat content parts
+// (image_url / file / video_url)、Anthropic image blocks(type "image"
+// 且带 source)以及 OpenAI Responses input_image parts(data-URI 的
+// image_url)。audio parts 由 detectAudio 单独分类。
 func detectVision(doc looseRequest) bool {
 	for _, msg := range doc.Messages {
 		if contentHasVisionPart(msg.Content) {
@@ -94,9 +89,9 @@ func detectVision(doc looseRequest) bool {
 	return contentHasVisionPart(doc.Input)
 }
 
-// contentHasVisionPart walks a content value that may be a bare string, an
-// array of typed parts, or junk. Only an array can hold media parts; every
-// lookup is ok-guarded so adversarial shapes fall through to false.
+// contentHasVisionPart 遍历一个 content 值,它可能是裸字符串、带类型的
+// part 数组或垃圾数据。只有数组才能承载媒体 part;每次查找都有 ok 守卫,
+// 因此对抗性的形状会一路落到 false。
 func contentHasVisionPart(raw json.RawMessage) bool {
 	parts, ok := asArray(raw)
 	if !ok {
@@ -114,24 +109,24 @@ func contentHasVisionPart(raw json.RawMessage) bool {
 	return false
 }
 
-// partIsVision classifies a single content part. The part "type" token spans
-// protocols: OpenAI Chat uses image_url/file/video_url; Anthropic uses image
-// (with a non-empty source); OpenAI Responses uses input_image. An image part
-// with no usable URL is skipped to avoid the empty-image false positive.
+// partIsVision 对单个 content part 进行分类。part 的 "type" token 横跨多种
+// 协议:OpenAI Chat 用 image_url/file/video_url;Anthropic 用 image(且带
+// 非空的 source);OpenAI Responses 用 input_image。没有可用 URL 的 image
+// part 会被跳过,以避免空图误报。
 func partIsVision(obj map[string]json.RawMessage) bool {
 	partType := stringField(obj, "type")
 	switch partType {
 	case "image_url":
 		return imageURLPresent(obj["image_url"])
 	case "input_image":
-		// Responses input_image carries a data-URI/url at the part level.
+		// Responses 的 input_image 在 part 层级携带 data-URI/url。
 		return nonEmptyString(obj["image_url"]) && !isEmptyDataURI(stringValue(obj["image_url"]))
 	case "image":
-		// Anthropic image block requires a source object/value to be real.
+		// Anthropic image block 必须带 source 对象/值才算真图。
 		return present(obj["source"])
 	case "file", "input_file", "video_url":
-		// Document/video media is vision-class media content; only count it
-		// when the carrying field is actually present, not an empty stub.
+		// 文档/视频媒体属于 vision 类媒体内容;只有承载字段确实存在
+		// (而非空占位)时才计入。
 		return present(obj["file"]) || present(obj["file_url"]) ||
 			present(obj["video_url"]) || present(obj["image_url"]) ||
 			nonEmptyString(obj["file_id"])
@@ -140,9 +135,9 @@ func partIsVision(obj map[string]json.RawMessage) bool {
 	}
 }
 
-// imageURLPresent handles the OpenAI Chat image_url part whose payload is an
-// object {url:...} (or, tolerantly, a bare string), skipping empty or empty
-// base64 data URIs so a placeholder part does not over-constrain routing.
+// imageURLPresent 处理 OpenAI Chat 的 image_url part,其载荷是一个对象
+// {url:...}(或宽容地接受裸字符串),并跳过空值或空 base64 data URI,
+// 以免占位 part 对路由造成过度约束。
 func imageURLPresent(raw json.RawMessage) bool {
 	if !present(raw) {
 		return false
@@ -160,13 +155,12 @@ func imageURLPresent(raw json.RawMessage) bool {
 
 // --- audio ------------------------------------------------------------------
 
-// detectAudio reports whether the request needs an audio-class account. Two
-// independent signals flip it: (1) any message or Responses-input part is an
-// input_audio content part carrying a real audio payload (OpenAI Chat audio
-// input); (2) the top-level modalities array lists "audio" as an output mode
-// (OpenAI Chat audio output). Either signal alone suffices. As with the other
-// detectors, every shape is comma-ok guarded so a malformed body yields false
-// rather than a panic or a spurious constraint.
+// detectAudio 报告该请求是否需要 audio 类账号。有两个独立信号会翻转它:
+// (1)任何 message 或 Responses-input part 是携带真实音频载荷的 input_audio
+// content part(OpenAI Chat 音频输入);(2)顶层 modalities 数组把 "audio"
+// 列为输出模式(OpenAI Chat 音频输出)。两者任一即足够。与其它检测器一样,
+// 每种形状都有 comma-ok 守卫,因此畸形 body 会得到 false,而非 panic 或
+// 虚假约束。
 func detectAudio(doc looseRequest) bool {
 	for _, msg := range doc.Messages {
 		if contentHasAudioPart(msg.Content) {
@@ -179,10 +173,9 @@ func detectAudio(doc looseRequest) bool {
 	return modalitiesHaveAudio(doc.Modalities)
 }
 
-// contentHasAudioPart walks a content value that may be a bare string, an
-// array of typed parts, or junk. Only an array can hold media parts; every
-// lookup is ok-guarded so adversarial shapes fall through to false. Mirrors
-// contentHasVisionPart.
+// contentHasAudioPart 遍历一个 content 值,它可能是裸字符串、带类型的
+// part 数组或垃圾数据。只有数组才能承载媒体 part;每次查找都有 ok 守卫,
+// 因此对抗性的形状会一路落到 false。与 contentHasVisionPart 对称。
 func contentHasAudioPart(raw json.RawMessage) bool {
 	parts, ok := asArray(raw)
 	if !ok {
@@ -200,10 +193,10 @@ func contentHasAudioPart(raw json.RawMessage) bool {
 	return false
 }
 
-// partIsAudio classifies a single content part. An input_audio part carries
-// the clip under an input_audio object (with data/format) at the part level;
-// a part with no usable input_audio payload is skipped to avoid an empty-audio
-// false positive, mirroring partIsVision's empty-image guard.
+// partIsAudio 对单个 content part 进行分类。input_audio part 在 part 层级
+// 把音频片段放在一个 input_audio 对象下(带 data/format);没有可用
+// input_audio 载荷的 part 会被跳过,以避免空音频误报,与 partIsVision 的
+// 空图守卫对称。
 func partIsAudio(obj map[string]json.RawMessage) bool {
 	if stringField(obj, "type") != "input_audio" {
 		return false
@@ -211,9 +204,8 @@ func partIsAudio(obj map[string]json.RawMessage) bool {
 	return present(obj["input_audio"])
 }
 
-// modalitiesHaveAudio reports whether the top-level modalities array lists an
-// "audio" output mode. Tolerant of non-array shapes (string / object / null)
-// and of non-string elements, which are simply skipped.
+// modalitiesHaveAudio 报告顶层 modalities 数组是否列出了 "audio" 输出模式。
+// 对非数组形状(string / object / null)以及非字符串元素都很宽容,直接跳过。
 func modalitiesHaveAudio(raw json.RawMessage) bool {
 	mods, ok := asArray(raw)
 	if !ok {
@@ -229,24 +221,24 @@ func modalitiesHaveAudio(raw json.RawMessage) bool {
 
 // --- tools -------------------------------------------------------------------
 
-// detectTools reports whether the request supplies callable tools. It treats
-// a non-empty top-level tools[] (OpenAI Chat / Anthropic / Responses) or the
-// legacy functions[] (OpenAI) as the signal; an empty array is not a signal.
+// detectTools 报告该请求是否提供了可调用的 tools。它把非空的顶层 tools[]
+// (OpenAI Chat / Anthropic / Responses)或旧的 functions[](OpenAI)视为
+// 信号;空数组不算信号。
 func detectTools(doc looseRequest) bool {
 	return nonEmptyArray(doc.Tools) || nonEmptyArray(doc.Functions)
 }
 
 // --- json --------------------------------------------------------------------
 
-// detectJSON reports whether the request asks for structured output. OpenAI
-// Chat/Responses use response_format.type in {json_object, json_schema};
-// OpenAI Responses also nests the format under text.format.type. A "text"
-// format type (or any other value) is not a structured-output request.
+// detectJSON 报告该请求是否要求结构化输出。OpenAI Chat/Responses 用
+// response_format.type 取值 {json_object, json_schema};OpenAI Responses
+// 还会把 format 嵌在 text.format.type 之下。"text" 格式类型(或任何其它
+// 取值)都不属于结构化输出请求。
 func detectJSON(doc looseRequest) bool {
 	if formatTypeIsJSON(doc.ResponseFormat) {
 		return true
 	}
-	// Responses text.format.{type|json_schema}.
+	// Responses 的 text.format.{type|json_schema}。
 	if obj, ok := asObject(doc.Text); ok {
 		if formatTypeIsJSON(obj["format"]) {
 			return true
@@ -255,8 +247,8 @@ func detectJSON(doc looseRequest) bool {
 	return false
 }
 
-// formatTypeIsJSON inspects a response_format / text.format object and reports
-// whether its "type" selects JSON output. Tolerant of non-object shapes.
+// formatTypeIsJSON 检查 response_format / text.format 对象,报告其 "type"
+// 是否选择了 JSON 输出。对非对象形状很宽容。
 func formatTypeIsJSON(raw json.RawMessage) bool {
 	obj, ok := asObject(raw)
 	if !ok {
@@ -270,10 +262,10 @@ func formatTypeIsJSON(raw json.RawMessage) bool {
 	}
 }
 
-// --- low-level tolerant helpers ---------------------------------------------
+// --- 底层宽容辅助函数 ---------------------------------------------
 
-// asArray decodes raw into a JSON array of raw elements, returning ok=false
-// for null, strings, numbers, objects, or malformed input.
+// asArray 把 raw 解码为由 raw 元素组成的 JSON 数组,对 null、字符串、数字、
+// 对象或畸形输入返回 ok=false。
 func asArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	if !present(raw) {
 		return nil, false
@@ -285,8 +277,8 @@ func asArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	return arr, true
 }
 
-// asObject decodes raw into a JSON object map, returning ok=false for any
-// non-object shape so callers can comma-ok guard every field access.
+// asObject 把 raw 解码为 JSON 对象 map,对任何非对象形状返回 ok=false,
+// 这样调用方可以对每次字段访问做 comma-ok 守卫。
 func asObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
 	if !present(raw) {
 		return nil, false
@@ -301,26 +293,25 @@ func asObject(raw json.RawMessage) (map[string]json.RawMessage, bool) {
 	return obj, true
 }
 
-// nonEmptyArray reports whether raw decodes to an array with at least one
-// element. Empty arrays and non-arrays are not signals.
+// nonEmptyArray 报告 raw 是否解码为至少含一个元素的数组。空数组和非数组
+// 都不算信号。
 func nonEmptyArray(raw json.RawMessage) bool {
 	arr, ok := asArray(raw)
 	return ok && len(arr) > 0
 }
 
-// stringField reads obj[key] as a string, returning "" when absent or not a
-// string.
+// stringField 把 obj[key] 读为字符串,缺失或非字符串时返回 ""。
 func stringField(obj map[string]json.RawMessage, key string) string {
 	return stringValue(obj[key])
 }
 
-// stringValue reads raw as a string, returning "" for any non-string shape.
+// stringValue 把 raw 读为字符串,对任何非字符串形状返回 ""。
 func stringValue(raw json.RawMessage) string {
 	s, _ := tryString(raw)
 	return s
 }
 
-// tryString reports whether raw is a JSON string and returns its value.
+// tryString 报告 raw 是否为 JSON 字符串,并返回其值。
 func tryString(raw json.RawMessage) (string, bool) {
 	if !present(raw) {
 		return "", false
@@ -332,21 +323,20 @@ func tryString(raw json.RawMessage) (string, bool) {
 	return s, true
 }
 
-// nonEmptyString reports whether raw is a non-empty JSON string.
+// nonEmptyString 报告 raw 是否为非空的 JSON 字符串。
 func nonEmptyString(raw json.RawMessage) bool {
 	s, ok := tryString(raw)
 	return ok && s != ""
 }
 
-// present reports whether raw carries a value distinguishable from JSON null
-// or absence.
+// present 报告 raw 是否携带一个可与 JSON null 或缺失区分开的值。
 func present(raw json.RawMessage) bool {
 	trimmed := strings.TrimSpace(string(raw))
 	return trimmed != "" && trimmed != "null"
 }
 
-// isEmptyDataURI reports whether s is a base64 data URI whose payload is
-// empty, so a placeholder image part is not mistaken for a real one.
+// isEmptyDataURI 报告 s 是否为载荷为空的 base64 data URI,这样占位 image
+// part 就不会被误当成真图。
 func isEmptyDataURI(s string) bool {
 	if !strings.HasPrefix(s, "data:") {
 		return false

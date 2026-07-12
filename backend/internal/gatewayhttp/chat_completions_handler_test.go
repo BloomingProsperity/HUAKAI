@@ -51,7 +51,7 @@ func (s stubRouter) Plan(_ context.Context, _ router.PlanInput) (router.RoutePla
 type stubClaimGate struct{}
 
 func (stubClaimGate) Reserve(_ context.Context, _ billing.ReserveRequest) (*billing.ReserveResult, error) {
-	return &billing.ReserveResult{ClaimID: 999}, nil
+	return &billing.ReserveResult{ClaimID: 999, AttemptSeq: 1}, nil
 }
 
 type insufficientBalanceClaimGate struct{}
@@ -122,7 +122,7 @@ func minimalDeps() ChatHandlerDeps {
 		Router:    stubRouter{plan: router.RoutePlan{Attempts: []router.AttemptPlan{{PoolGroupID: 42}}, SnapshotVersion: "registry:7:1;router:v0.1-phase-c"}},
 		ClaimGate: stubClaimGate{},
 		Selector:  stubSelector{},
-		// 真出站链路占位，让入口校验类测试通过 nil-guard。
+		// 真出站链路占位，让入口校验类测试通过 nil 守卫。
 		CredentialVault:      provider.NewStaticVault(),
 		Dispatcher:           &gateway.UpstreamDispatcher{},
 		Forwarder:            &gateway.StreamForwarder{},
@@ -145,8 +145,8 @@ func validBody() string {
 }
 
 func TestHandler_AuthForbiddenReturns403(t *testing.T) {
-	// Mutation check: collapse ErrForbidden into the generic auth error path and
-	// this returns 401, hiding an authenticated key's IP policy denial from clients.
+	// 变异检查:若把 ErrForbidden 塌缩进通用鉴权错误路径,这里会返回 401,
+	// 从而对客户端隐藏了某个已认证 key 的 IP 策略拒绝。
 	d := minimalDeps()
 	d.Auth = stubAuth{err: auth.ErrForbidden}
 
@@ -161,8 +161,8 @@ func TestHandler_AuthForbiddenReturns403(t *testing.T) {
 }
 
 func TestHandler_ModelAllowlistForbiddenBeforeRoute(t *testing.T) {
-	// Mutation check: fail open on allowlist miss and the request continues into
-	// registry/routing instead of returning this stable 403.
+	// 变异检查:若 allowlist 未命中时放行(fail open),请求会继续进入
+	// registry/routing,而不是返回这个稳定的 403。
 	allowedModels := "gpt-4o"
 	d := minimalDeps()
 	d.Auth = stubAuth{identity: auth.Identity{
@@ -183,9 +183,9 @@ func TestHandler_ModelAllowlistForbiddenBeforeRoute(t *testing.T) {
 }
 
 func TestHandler_InsufficientBalanceReturnsClientParseable402(t *testing.T) {
-	// Mutation check: leaving the old reserve_error branch returns a generic
-	// body without type=insufficient_quota, code=insufficient_balance, and the
-	// exact Chinese message clients parse for top-up UX.
+	// 变异检查:若保留旧的 reserve_error 分支,会返回一个通用的 body,
+	// 缺少 type=insufficient_quota、code=insufficient_balance,以及客户端为充值
+	// UX 解析的那条精确中文消息。
 	d := minimalDeps()
 	d.ClaimGate = insufficientBalanceClaimGate{}
 
@@ -212,8 +212,8 @@ func TestHandler_InsufficientBalanceReturnsClientParseable402(t *testing.T) {
 }
 
 func TestHandler_ModerationBlockReturns403BeforeReserveAndAutoBanUsesIdentity(t *testing.T) {
-	// Mutation: moving/removing the moderation hook lets the forbidden request
-	// reserve a billing claim and reach dispatch; the call-count assertions go red.
+	// 变异:移动/移除审核钩子会让被禁请求得以预留计费 claim 并到达 dispatch;
+	// 调用计数断言会变红。
 	enableHCSFDispatchForTest(t)
 	claimGate := &moderationClaimGateSpy{}
 	dispatcher := &mockCanonicalBufferedDispatcher{}
@@ -338,8 +338,8 @@ func TestHandler_ModerationBackendErrorFailOpenProceeds(t *testing.T) {
 }
 
 func TestHandler_ModerationDefaultOffWithoutScreenerPreservesChatPath(t *testing.T) {
-	// Mutation: making moderation mandatory in chatHandlerConfigured or calling
-	// a nil/default screener changes this already-valid chat path.
+	// 变异:在 chatHandlerConfigured 中把审核改成强制,或调用一个
+	// nil/默认 screener,都会改变这条本已有效的 chat 路径。
 	enableHCSFDispatchForTest(t)
 	claimGate := &moderationClaimGateSpy{}
 	dispatcher := &mockCanonicalBufferedDispatcher{}
@@ -419,7 +419,7 @@ func (s *chatModerationBanSpy) RecordAndCheck(_ context.Context, event moderatio
 }
 
 // 守:dedup until map 必须惰性回收已过期项,否则高账号 churn 下无限增长。window=0 让每个
-// 条目立即过期;填满超阈值后再 admit 触发清理。Mutation: 去掉 purge → size 仍 > threshold,红。
+// 条目立即过期;填满超阈值后再 admit 触发清理。变异: 去掉 purge → size 仍 > threshold,红。
 func TestDedupingCredentialHotRefresher_PurgesExpiredEntries(t *testing.T) {
 	r := newDedupingCredentialHotRefresher(nil, 0).(*dedupingCredentialHotRefresher)
 	for i := int64(1); i <= int64(credentialHotRefreshPurgeThreshold)+5; i++ {

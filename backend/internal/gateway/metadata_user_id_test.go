@@ -1,4 +1,4 @@
-// R7.5 测试：覆盖 metadata.user_id 双格式解析、组件替换、Fallback 注入、
+// R7.5 测试：覆盖 metadata.user_id 双格式解析、组件替换、回退注入、
 // preserve/force 模式、版本检测等核心路径。
 package gateway
 

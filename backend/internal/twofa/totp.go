@@ -35,6 +35,16 @@ func GenerateTOTP(secret []byte, at time.Time, digits int, step time.Duration) (
 }
 
 func VerifyTOTP(secret []byte, code string, at time.Time, cfg TOTPConfig) bool {
+	_, ok := VerifyTOTPStep(secret, code, at, cfg)
+	return ok
+}
+
+// VerifyTOTPStep 与 VerifyTOTP 等价校验,但额外返回匹配到的**时间步计数器**
+// (counter = candidateAt.Unix()/step)。调用方据此做单调"已消费时间步"防重放:
+// 拒绝计数器小于等于上次成功消费值的码,从而堵住同一个(或更早的)6 位码在其
+// 当前 ±Window 有效窗口内被重复使用(RFC 6238 §5.2)。未匹配时返回 ok=false,
+// 此时 step 无意义。
+func VerifyTOTPStep(secret []byte, code string, at time.Time, cfg TOTPConfig) (int64, bool) {
 	code = strings.TrimSpace(code)
 	if cfg.Digits <= 0 {
 		cfg.Digits = DefaultTOTPDigits
@@ -43,19 +53,19 @@ func VerifyTOTP(secret []byte, code string, at time.Time, cfg TOTPConfig) bool {
 		cfg.Step = DefaultTOTPStep
 	}
 	if cfg.Window < 0 || len(code) != cfg.Digits || !allDigits(code) {
-		return false
+		return 0, false
 	}
 	for offset := -cfg.Window; offset <= cfg.Window; offset++ {
 		candidateAt := at.Add(time.Duration(offset) * cfg.Step)
 		candidate, err := GenerateTOTP(secret, candidateAt, cfg.Digits, cfg.Step)
 		if err != nil {
-			return false
+			return 0, false
 		}
 		if hmac.Equal([]byte(candidate), []byte(code)) {
-			return true
+			return candidateAt.UTC().Unix() / int64(cfg.Step.Seconds()), true
 		}
 	}
-	return false
+	return 0, false
 }
 
 func DecodeSecret(encoded string) ([]byte, error) {

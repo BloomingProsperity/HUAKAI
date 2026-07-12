@@ -61,7 +61,7 @@ func (s platformImageVaultStub) Resolve(context.Context, int64, int64) (provider
 // 正常交付路径(交付数==请求数)必须按解析账号平台重定价。预扣用协议族 vendor
 // (replicate_image→replicate,0.04/张);解析账号平台是 gemini(0.08/张,价不同)。
 // reserve 估 replicate 价,settle 必须重算成 gemini 价。
-// MUTATION: 正常路径沿用 predictedCost(去掉 perImageCost 重算)→ settle ActualCost
+// 变异:正常路径沿用 predictedCost(去掉 perImageCost 重算)→ settle ActualCost
 // 回到 reserve 的 0.04 → 本断言红。判别关键:gemini 价≠replicate 价,且账号平台≠
 // 协议族 vendor(gemini 是合法 transport provider code)。
 func TestReplicateImagesHandler_SettleRepricesByResolvedAccountPlatform(t *testing.T) {
@@ -192,7 +192,7 @@ func TestReplicateImagesHandler_EndToEndSucceededPrediction(t *testing.T) {
 
 // TestReplicateImagesHandler_NonSucceededPredictionAbortsWithoutSettle
 // 误计费守卫:上游 200 但 status=starting(Prefer: wait 超窗)/failed 时,
-// 必须 abort 退预留、settle 0、客户端 502。Mutation:去掉 attempt.go 的
+// 必须 abort 退预留、settle 0、客户端 502。变异:去掉 attempt.go 的
 // 翻译钩子(原样转发 prediction)→ 200 + settle 1 → 本测试红。
 func TestReplicateImagesHandler_NonSucceededPredictionAbortsWithoutSettle(t *testing.T) {
 	for name, body := range map[string]string{
@@ -280,7 +280,7 @@ func TestReplicateImagesHandler_EditsVariationsRejectedPreReserve(t *testing.T) 
 // TestReplicateImagesHandler_PricingResolvesProvidersReplicateNode 抓的回归:
 // providerForPricing 对 replicate_image 在选号前解析不出 "replicate"
 // (pool.VendorFromProtocolFamily 返空 → providers.replicate 计价节点永远
-// 找不到 → 全部请求 503 pricing_unavailable)。Mutation:删
+// 找不到 → 全部请求 503 pricing_unavailable)。变异:删
 // pricingVendorForFamily 映射 → 本测试红。
 func TestReplicateImagesHandler_PricingResolvesProvidersReplicateNode(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
@@ -303,7 +303,7 @@ func TestReplicateImagesHandler_PricingResolvesProvidersReplicateNode(t *testing
 // 请求 n=2 但上游 succeeded 只回 1 张(Replicate model-specific num_outputs
 // 被忽略/部分输出被过滤),settle 必须按交付 1 张(0.04)计费、ImageCount=1,
 // 绝不按请求 2 张(0.08)多收用户钱。
-// Mutation:删 billableImageCount 的交付数对账分支(总返回 amount)→
+// 变异:删 billableImageCount 的交付数对账分支(总返回 amount)→
 // ActualCost 变 0.08 + ImageCount 变 2,本测试红。
 func TestReplicateImagesHandler_SettlesByDeliveredImageCount(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
@@ -355,8 +355,8 @@ func (d *recordingCancelDoer) Do(req *http.Request) (*http.Response, error) {
 // TestBestEffortCancelSurvivesCanceledRequestContext detached-context 守卫:
 // 客户端断连(请求 context 已取消)正是最需要 cancel 的时刻,cancel 必须在
 // 脱离请求取消的 context 上发出。
-// MUTATION: bestEffortCancel 的 context 直接从 ex.ctx 派生(去掉 WithoutCancel)
-// → doer 按真实 client 口径拒发 → outcome 变 cancel_send_failed → RED。
+// 变异:bestEffortCancel 的 context 直接从 ex.ctx 派生(去掉 WithoutCancel)
+// → doer 按真实 client 口径拒发 → outcome 变 cancel_send_failed → 变红。
 func TestBestEffortCancelSurvivesCanceledRequestContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -377,41 +377,42 @@ func TestBestEffortCancelSurvivesCanceledRequestContext(t *testing.T) {
 	}
 }
 
-// TestBestEffortCancelBlocksRebindingPassthroughEndpoint 运行时 SSRF 守卫
-// (评审 S1):租户自填 base_url 的 host 静态检查能过,但 DNS 解析到内网/
+// TestBestEffortCancelBlocksRebindingCustomEndpoint 运行时 SSRF 守卫：租户自填
+// base_url 的 host 静态检查能过，但 DNS 解析到内网/
 // metadata(rebinding)时,cancel 发送前必须 fail-closed——cancel 不得成为
 // 主出站守卫的旁路。
-// MUTATION: 删 bestEffortCancel 里的 ValidatePassthroughEndpointTarget 调用 →
-// doer 收到请求 + outcome=cancel_issued → 两断言 RED。
-func TestBestEffortCancelBlocksRebindingPassthroughEndpoint(t *testing.T) {
+// 变异:删 bestEffortCancel 里的运行时校验，或不再识别 API key 的 base_url，
+// doer 会收到对应请求且 outcome=cancel_issued，断言转红。
+func TestBestEffortCancelBlocksRebindingCustomEndpoint(t *testing.T) {
 	restore := provider.SwapPassthroughEndpointLookupForTesting(func(context.Context, string, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("169.254.169.254")}, nil
 	})
 	defer restore()
-	doer := &recordingCancelDoer{}
-	ex := &execution{
-		ctx: context.Background(),
-		cred: provider.Credential{
-			Type:  provider.CredentialTypeUpstreamPassthrough,
-			Value: "Token x",
-			Extra: map[string]string{"base_url": "https://relay.rebind.example"},
-		},
-		d: Deps{ReplicateCancelClient: doer},
+	tests := []struct {
+		name string
+		cred provider.Credential
+	}{
+		{name: "API key", cred: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "x", Extra: map[string]string{"base_url": "https://relay.rebind.example"}}},
+		{name: "upstream passthrough", cred: provider.Credential{Type: provider.CredentialTypeUpstreamPassthrough, Value: "Token x", Extra: map[string]string{"base_url": "https://relay.rebind.example"}}},
 	}
-
-	outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-ssrf", Status: "processing"})
-
-	if !strings.HasPrefix(outcome, "cancel_blocked_unsafe_endpoint") {
-		t.Fatalf("outcome=%q want cancel_blocked_unsafe_endpoint 前缀(rebinding 必须拦截)", outcome)
-	}
-	if got := len(doer.requests); got != 0 {
-		t.Fatalf("cancel requests=%d want 0(被守卫拦截不得出站)", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			doer := &recordingCancelDoer{}
+			ex := &execution{ctx: context.Background(), cred: tc.cred, d: Deps{ReplicateCancelClient: doer}}
+			outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-ssrf", Status: "processing"})
+			if !strings.HasPrefix(outcome, "cancel_blocked_unsafe_endpoint") {
+				t.Fatalf("outcome=%q want cancel_blocked_unsafe_endpoint 前缀(rebinding 必须拦截)", outcome)
+			}
+			if got := len(doer.requests); got != 0 {
+				t.Fatalf("cancel requests=%d want 0(被守卫拦截不得出站)", got)
+			}
+		})
 	}
 }
 
 // TestBestEffortCancelRecordsRejectedStatus 非 2xx cancel 响应进审计结局
 // (评审遗留 X2:此前 cancel_rejected_status_* 是测试死路径)。
-// MUTATION: 删 status 检查恒返 cancel_issued → RED。
+// 变异:删 status 检查恒返 cancel_issued → 变红。
 func TestBestEffortCancelRecordsRejectedStatus(t *testing.T) {
 	doer := &recordingCancelDoer{status: 422}
 	ex := &execution{
@@ -430,7 +431,7 @@ func TestBestEffortCancelRecordsRejectedStatus(t *testing.T) {
 // TestReplicateImagesHandler_WaitOverrunCancelsPrediction 钱路守卫:Prefer: wait
 // 超窗(status=processing 且带 prediction id)时,abort 退款之外必须向上游发
 // POST predictions/{id}/cancel(鉴权同出站口径),且 id+结局进 abort 审计。
-// Mutation:删 translateUpstreamResponseForFamily 的 cancel 调用 → doer 0 请求
+// 变异:删 translateUpstreamResponseForFamily 的 cancel 调用 → doer 0 请求
 // → 本测试红(上游任务继续烧钱,平台单边吃成本)。
 func TestReplicateImagesHandler_WaitOverrunCancelsPrediction(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
@@ -472,7 +473,7 @@ func TestReplicateImagesHandler_WaitOverrunCancelsPrediction(t *testing.T) {
 
 // TestReplicateImagesHandler_CancelFailureDoesNotBlockAbort best-effort 语义:
 // cancel 发送失败时 abort 退款主路径照常走完(退预留、502、无 abort-failed 头),
-// 失败结局只进审计。Mutation:cancel 错误传染 abort(提前 return / 改 reason)
+// 失败结局只进审计。变异:cancel 错误传染 abort(提前 return / 改 reason)
 // → 本测试红。
 func TestReplicateImagesHandler_CancelFailureDoesNotBlockAbort(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
@@ -504,7 +505,7 @@ func TestReplicateImagesHandler_CancelFailureDoesNotBlockAbort(t *testing.T) {
 
 // TestReplicateImagesHandler_TerminalPredictionNotCanceled 终态(failed)不发
 // cancel(徒增上游调用),但 prediction id 仍进 abort 审计。
-// Mutation:去掉 CancelWorthwhile 状态门 → doer 收到请求 → 本测试红。
+// 变异:去掉 CancelWorthwhile 状态门 → doer 收到请求 → 本测试红。
 func TestReplicateImagesHandler_TerminalPredictionNotCanceled(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
 		status: http.StatusOK,

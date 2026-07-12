@@ -10,6 +10,8 @@ import (
 	"os"
 	"syscall"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
 type timeoutNetError struct{}
@@ -168,6 +170,23 @@ func TestClassifyAttemptHTTPError_TaxonomyTable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClassifyAttemptDispatchErrorCredentialExpiredUsesAuthBudget 咬住本地过期
+// 不得落回通用 local_dispatch_error：必须在交付前 abort、换号并触发一次热刷新，
+// 且只消费独立 auth 子预算，不切换 pool。
+func TestClassifyAttemptDispatchErrorCredentialExpiredUsesAuthBudget(t *testing.T) {
+	err := errors.Join(errors.New("adapter build failed"), credentialstore.ErrCredentialExpired)
+	decision := ClassifyAttemptDispatchError(err)
+	assertDecision(t, decision, AttemptRetryDecision{
+		RetryableBeforeDelivery:         true,
+		SwitchAccount:                   true,
+		RefreshIntent:                   RefreshOAuthHotPath,
+		ClientStatus:                    http.StatusServiceUnavailable,
+		AbortReason:                     "local_credential_expired",
+		TransportClass:                  TransportErrorCredentialExpired,
+		CountsAgainstAuthFailoverBudget: true,
+	})
 }
 
 func TestClassifyAttemptHTTPErrorReadsBodyForIronCladSignals(t *testing.T) {
@@ -385,7 +404,7 @@ func assertDecision(t *testing.T, got, want AttemptRetryDecision) {
 
 var _ net.Error = timeoutNetError{}
 
-// MUTATION: persistentTransportErrorClass 退化返回 TransportErrorNone,或
+// 变异: persistentTransportErrorClass 退化返回 TransportErrorNone,或
 // ClassifyAttemptTransportError 漏新 case → 子断言红(DM-06:持久传输错必须
 // failover 换号,不得归 local_dispatch_error 直接 500 终结)。
 func TestClassifyAttemptDispatchError_PersistentTransportFailures(t *testing.T) {

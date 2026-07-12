@@ -60,7 +60,7 @@ const (
 	PageLimitMax     = 200
 )
 
-// Errors.
+// 错误。
 var (
 	ErrInvalidName      = errors.New("userkey: name invalid")
 	ErrInvalidExpiry    = errors.New("userkey: expires_at must be future")
@@ -150,11 +150,12 @@ type ListRequest struct {
 //   - Get: 按 (tenant_id, user_id, id) 取单条;不归属 caller → ErrNotFound
 //   - Revoke: 按 (tenant_id, user_id, id) 撤销;不归属 → ErrNotFound,已撤销 → 幂等
 type Service struct {
-	pool       *pgxpool.Pool
-	logger     *slog.Logger
-	auditSink  userauditlog.UserAuditSink
-	bcryptCost int
-	now        func() time.Time
+	pool            *pgxpool.Pool
+	logger          *slog.Logger
+	auditSink       userauditlog.UserAuditSink
+	bcryptCost      int
+	now             func() time.Time
+	defaultKeyQuota defaultKeyQuotaConfig
 }
 
 type Option func(*Service)
@@ -290,6 +291,9 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 		}
 		out.APIKeyID = id
 		out.CreatedAt = createdAt
+		if err := s.seedDefaultKeyQuota(ctx, tx, req.TenantID, req.UserID, id); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
@@ -621,31 +625,44 @@ func auditAPIKeyID(id int64) *int64 {
 	return &id
 }
 
-// PatchRequest is the partial-update request for KEY-026. Fields use pointers so
-// the handler can distinguish "omitted" (nil) from "explicitly set". Only non-nil
-// fields are updated; omitted fields are left unchanged.
-type PatchRequest struct {
-	TenantID  int64
-	UserID    int64
-	APIKeyID  int64
-	Name      *string // nil = leave unchanged
-	Status    *string // nil = leave unchanged; accepted: "active" | "revoked"
-	RequestID string
-}
-
-// PatchResult is the partial-update result returned to the handler.
-type PatchResult struct {
-	APIKeyID int64
-	Name     string
-	Status   string
-}
-
-// Patch partially updates name and/or status of a key owned by the caller.
-// Only non-nil request fields are written. No-op if both are nil.
+// PatchRequest 是 KEY-026 的部分更新请求。字段使用指针,以便
+// handler 能区分「省略」(nil)与「显式设置」。只更新非 nil
+// 字段;被省略的字段保持不变。
 //
-// Security: WHERE clause enforces (id, tenant_id, user_id) ownership — a foreign
-// key silently maps to ErrNotFound (same as Get/Revoke, anti-enumeration).
-// CMB-5: key prefix is never logged here.
+// expires_at 携带单个 nullable 字段无法表达的三态
+// (nil 已经表示「保持不变」),所以 handler 把它拆成一个值
+// 指针加一个显式 clear 标志:
+//   - ExpiresAt == nil && !ClearExpiry → 截止时间保持不变
+//   - ExpiresAt != nil                 → 把截止时间设为 *ExpiresAt(必须是将来)
+//   - ClearExpiry == true              → 清除截止时间(key 变为永不过期)
+// 优先级为 clear > set > unchanged;set 时若传入过去的截止时间会以
+// ErrInvalidExpiry 拒绝,与 Issue 创建路径中的将来时刻检查保持一致。
+type PatchRequest struct {
+	TenantID    int64
+	UserID      int64
+	APIKeyID    int64
+	Name        *string    // nil = 保持不变
+	Status      *string    // nil = 保持不变;可接受:"active" | "revoked"
+	ExpiresAt   *time.Time // 非 nil = 设置截止时间(校验为将来);nil = 保持不变,除非 ClearExpiry
+	ClearExpiry bool       // true = 清除截止时间 -> 永不过期(优先于 ExpiresAt)
+	RequestID   string
+}
+
+// PatchResult 是返回给 handler 的部分更新结果。ExpiresAt 是
+// 更新后的截止时间(nil = 永不过期)。
+type PatchResult struct {
+	APIKeyID  int64
+	Name      string
+	Status    string
+	ExpiresAt *time.Time
+}
+
+// Patch 部分更新 caller 名下某个 key 的 name 和/或 status。
+// 只写入非 nil 的请求字段。两者都为 nil 则是空操作。
+//
+// 安全:WHERE 子句强制 (id, tenant_id, user_id) 归属 —— 别人的
+// key 会静默映射为 ErrNotFound(与 Get/Revoke 一致,防枚举)。
+// CMB-5:这里绝不记录 key prefix。
 func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, error) {
 	if s == nil || s.pool == nil {
 		return PatchResult{}, fmt.Errorf("%w: pool unset", ErrServiceMisconfig)
@@ -653,13 +670,19 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
 		return PatchResult{}, ErrNotFound
 	}
-	if req.Name == nil && req.Status == nil {
-		// Nothing to update — fetch and return current state.
+	if req.Name == nil && req.Status == nil && req.ExpiresAt == nil && !req.ClearExpiry {
+		// 没有要更新的 —— 取出并返回当前状态。
 		row, err := s.Get(ctx, req.TenantID, req.UserID, req.APIKeyID)
 		if err != nil {
 			return PatchResult{}, err
 		}
-		return PatchResult{APIKeyID: row.APIKeyID, Name: row.Name, Status: row.Status}, nil
+		return PatchResult{APIKeyID: row.APIKeyID, Name: row.Name, Status: row.Status, ExpiresAt: row.ExpiresAt}, nil
+	}
+	// set 时拒绝过去的截止时间,与创建路径(Issue)保持一致。这
+	// 堵住了两个参考项目都带的「静默砖化」陷阱(sub2api/new-api
+	// 在更新时接受过去的时间戳)。clear 没有可校验的时刻。
+	if req.ExpiresAt != nil && !req.ExpiresAt.After(s.now().UTC()) {
+		return PatchResult{}, ErrInvalidExpiry
 	}
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
@@ -678,8 +701,8 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 	var out PatchResult
 	out.APIKeyID = req.APIKeyID
 	err := s.tx(ctx, func(tx pgx.Tx) error {
-		// Build a dynamic UPDATE that only touches provided fields.
-		// We always update updated_at.
+		// 构造一条只触碰已提供字段的动态 UPDATE。
+		// 我们总是更新 updated_at。
 		var (
 			setClauses []string
 			args       []any
@@ -694,16 +717,25 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 			setClauses = append(setClauses, fmt.Sprintf("status = $%d", argIdx))
 			args = append(args, *req.Status)
 			argIdx++
-			// set revoked_at when transitioning to revoked
+			// 转为 revoked 时设置 revoked_at
 			setClauses = append(setClauses, fmt.Sprintf(
 				"revoked_at = CASE WHEN $%d = 'revoked' THEN NOW() ELSE revoked_at END", argIdx))
 			args = append(args, *req.Status)
 			argIdx++
 		}
+		// expires_at 三态:clear 优先(-> NULL),否则设置
+		// 提供的将来截止时间;省略则不触碰该列。
+		if req.ClearExpiry {
+			setClauses = append(setClauses, "expires_at = NULL")
+		} else if req.ExpiresAt != nil {
+			setClauses = append(setClauses, fmt.Sprintf("expires_at = $%d", argIdx))
+			args = append(args, *req.ExpiresAt)
+			argIdx++
+		}
 		setClauses = append(setClauses, "updated_at = NOW()")
 		setSQL := strings.Join(setClauses, ", ")
 
-		// WHERE enforces owner triple; tenant/user active check via JOIN.
+		// WHERE 强制 owner 三元组;tenant/user active 检查通过 JOIN 完成。
 		whereArgs := []any{req.APIKeyID, req.TenantID, req.UserID}
 		for i, a := range whereArgs {
 			_ = a
@@ -716,16 +748,21 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 			    AND tenant_id = $%d
 			    AND user_id = $%d
 			    AND deleted_at IS NULL
-			RETURNING name, status`,
+			RETURNING name, status, expires_at`,
 			setSQL, argIdx, argIdx+1, argIdx+2,
 		)
 		allArgs := append(args, req.APIKeyID, req.TenantID, req.UserID)
+		var expiresAt pgtype.Timestamptz
 		row := tx.QueryRow(ctx, query, allArgs...)
-		if err := row.Scan(&out.Name, &out.Status); err != nil {
+		if err := row.Scan(&out.Name, &out.Status, &expiresAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
 			return fmt.Errorf("%w: patch: %v", ErrBackend, err)
+		}
+		if expiresAt.Valid {
+			t := expiresAt.Time
+			out.ExpiresAt = &t
 		}
 		return nil
 	})

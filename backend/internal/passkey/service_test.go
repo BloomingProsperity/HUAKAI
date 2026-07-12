@@ -11,8 +11,8 @@ import (
 )
 
 func TestPasskeyChallengeSingleUse(t *testing.T) {
-	// Mutation killed: if ConsumeCeremonySession is replaced with a read-only lookup,
-	// the second LoginFinish reuses the same challenge and this test stops failing.
+	// 杀掉的变异: 若 ConsumeCeremonySession 被换成只读查找,
+	// 第二次 LoginFinish 就会复用同一个 challenge, 本测试不再失败。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC)
 	engine := &fakeEngine{loginCredentialID: []byte("cred-a"), assertedSignCount: 2}
@@ -42,8 +42,8 @@ func TestPasskeyChallengeSingleUse(t *testing.T) {
 }
 
 func TestPasskeyRegisterThenLoginSuccess(t *testing.T) {
-	// Mutation killed: if RegisterFinish does not persist the verified credential,
-	// the later discoverable LoginFinish cannot resolve the credential owner.
+	// 杀掉的变异: 若 RegisterFinish 不持久化已验证的 credential,
+	// 后续的 discoverable LoginFinish 就无法解析出 credential 的 owner。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 10, 2, 0, 0, time.UTC)
 	engine := &fakeEngine{loginCredentialID: []byte("registered-cred"), assertedSignCount: 2}
@@ -78,9 +78,89 @@ func TestPasskeyRegisterThenLoginSuccess(t *testing.T) {
 	}
 }
 
+// TestPasskeyLoginRejectsDisabledUser 守护:passkey 登录在签发 session 前必须复用账号资格门——
+// 被管理员禁用的用户即便持有有效 passkey 也不能登录(否则账号停用形同虚设,属 auth-core 访问控制绕过)。
+//
+// 自证式:同一注册凭据,active 用户 LoginFinish 成功、disabled 用户 LoginFinish 被拒(返
+// userauth.ErrUserDisabled 且不返回 user)。变异检查:删掉 LoginFinish 里的 EnsureLoginEligible 门,
+// disabled 用例会由"被拒"变成"成功签发",本测试转红。
+func TestPasskeyLoginRejectsDisabledUser(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 10, 5, 0, 0, time.UTC)
+	engine := &fakeEngine{loginCredentialID: []byte("registered-cred"), assertedSignCount: 2}
+	user := testUser(1, 101, "alice@example.test")
+	users := fakeUsers{rows: map[userKey]userauth.User{{tenantID: 1, userID: 101}: user}}
+	svc := NewService(NewMemoryStore(), users, StaticConfigSource(testConfig()), WithCeremonyEngine(engine), WithNow(func() time.Time { return now }))
+
+	rb, err := svc.RegisterBegin(ctx, RegisterBeginInput{TenantID: 1, User: user, Name: "MacBook"})
+	if err != nil {
+		t.Fatalf("RegisterBegin: %v", err)
+	}
+	if _, err := svc.RegisterFinish(ctx, RegisterFinishInput{TenantID: 1, User: user, SessionID: rb.SessionID, CredentialJSON: []byte(`{"id":"registered-cred"}`), Name: "MacBook"}); err != nil {
+		t.Fatalf("RegisterFinish: %v", err)
+	}
+
+	// 模拟管理员封禁:把该用户置为 disabled,持有效 passkey 登录必须被拒。
+	// (不先跑 active 登录,避免 signCount 被顶高后撞 clone 检测,从而让"无资格门则成功签发"
+	//  成为干净的变异目标——删掉门后本用例会变成登录成功 err==nil。)
+	disabled := user
+	disabled.Status = userauth.UserStatusDisabled
+	users.rows[userKey{tenantID: 1, userID: 101}] = disabled
+
+	lb2, err := svc.LoginBegin(ctx, LoginBeginInput{TenantID: 1})
+	if err != nil {
+		t.Fatalf("LoginBegin(disabled): %v", err)
+	}
+	result, err := svc.LoginFinish(ctx, LoginFinishInput{TenantID: 1, SessionID: lb2.SessionID, CredentialJSON: []byte(`{"id":"registered-cred"}`)})
+	if !errors.Is(err, userauth.ErrUserDisabled) {
+		t.Fatalf("disabled 用户 LoginFinish err=%v want userauth.ErrUserDisabled", err)
+	}
+	if result.User.ID != 0 {
+		t.Fatalf("disabled 用户不应返回 user(更不应签发 session), got user=%+v", result.User)
+	}
+}
+
+// TestPasskeyLoginRejectsTimeLockedUser 守护:passkey 资格门与密码门一致,也拒"时间型临时锁"
+// (status 仍 active 但 locked_until 在未来)。变异检查:删掉 EnsureLoginEligible 里的 LockedUntil
+// 分支,本用例由"被拒(ErrUserLocked)"变成"成功签发(err==nil)",转红。
+func TestPasskeyLoginRejectsTimeLockedUser(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 6, 10, 6, 0, 0, time.UTC)
+	engine := &fakeEngine{loginCredentialID: []byte("registered-cred"), assertedSignCount: 2}
+	user := testUser(1, 101, "alice@example.test")
+	users := fakeUsers{rows: map[userKey]userauth.User{{tenantID: 1, userID: 101}: user}}
+	svc := NewService(NewMemoryStore(), users, StaticConfigSource(testConfig()), WithCeremonyEngine(engine), WithNow(func() time.Time { return now }))
+
+	rb, err := svc.RegisterBegin(ctx, RegisterBeginInput{TenantID: 1, User: user, Name: "MacBook"})
+	if err != nil {
+		t.Fatalf("RegisterBegin: %v", err)
+	}
+	if _, err := svc.RegisterFinish(ctx, RegisterFinishInput{TenantID: 1, User: user, SessionID: rb.SessionID, CredentialJSON: []byte(`{"id":"registered-cred"}`), Name: "MacBook"}); err != nil {
+		t.Fatalf("RegisterFinish: %v", err)
+	}
+
+	// status 仍 active,但被设置了未来的 locked_until(时间型临时锁);passkey 登录必须与密码门一致地拒。
+	locked := user
+	until := now.Add(time.Hour)
+	locked.LockedUntil = &until
+	users.rows[userKey{tenantID: 1, userID: 101}] = locked
+
+	lb, err := svc.LoginBegin(ctx, LoginBeginInput{TenantID: 1})
+	if err != nil {
+		t.Fatalf("LoginBegin: %v", err)
+	}
+	result, err := svc.LoginFinish(ctx, LoginFinishInput{TenantID: 1, SessionID: lb.SessionID, CredentialJSON: []byte(`{"id":"registered-cred"}`)})
+	if !errors.Is(err, userauth.ErrUserLocked) {
+		t.Fatalf("时间锁用户 LoginFinish err=%v want userauth.ErrUserLocked", err)
+	}
+	if result.User.ID != 0 {
+		t.Fatalf("时间锁用户不应签发 session, got user=%+v", result.User)
+	}
+}
+
 func TestPasskeyRegisterChallengeSingleUse(t *testing.T) {
-	// Mutation killed: if RegisterFinish reads but does not delete the ceremony
-	// row, replaying the same attestation creates a duplicate credential attempt.
+	// 杀掉的变异: 若 RegisterFinish 读取但不删除 ceremony 行,
+	// 重放同一份 attestation 就会产生重复的 credential 创建尝试。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 10, 3, 0, 0, time.UTC)
 	user := testUser(1, 101, "alice@example.test")
@@ -99,8 +179,8 @@ func TestPasskeyRegisterChallengeSingleUse(t *testing.T) {
 }
 
 func TestPasskeyOriginBoundToConfig(t *testing.T) {
-	// Mutation killed: if request Origin is ignored or accepted from request
-	// body, an evil origin can start or finish a passkey ceremony.
+	// 杀掉的变异: 若请求的 Origin 被忽略, 或从请求 body 里
+	// 接受 Origin, 恶意 origin 就能发起或完成一次 passkey ceremony。
 	ctx := context.Background()
 	users := fakeUsers{rows: map[userKey]userauth.User{{tenantID: 1, userID: 101}: testUser(1, 101, "alice@example.test")}}
 	svc := NewService(NewMemoryStore(), users, StaticConfigSource(testConfig()), WithCeremonyEngine(&fakeEngine{}))
@@ -113,8 +193,8 @@ func TestPasskeyOriginBoundToConfig(t *testing.T) {
 }
 
 func TestPasskeySignCountRegressionRejected(t *testing.T) {
-	// Mutation killed: removing the assertedSignCount <= stored SignCount guard
-	// accepts a replayed/cloned authenticator assertion and updates last_used_at.
+	// 杀掉的变异: 移除 assertedSignCount <= 存储的 SignCount 这道 guard,
+	// 会接受被重放/克隆的 authenticator assertion 并更新 last_used_at。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 10, 5, 0, 0, time.UTC)
 	engine := &fakeEngine{loginCredentialID: []byte("cred-a"), assertedSignCount: 7}
@@ -152,8 +232,8 @@ func TestPasskeySignCountRegressionRejected(t *testing.T) {
 }
 
 func TestPasskeyCrossUserIsolation(t *testing.T) {
-	// Mutation killed: dropping user_id from DeleteCredential allows user A to
-	// delete user B's credential; dropping credential-owner resolution logs in A.
+	// 杀掉的变异: 从 DeleteCredential 去掉 user_id, 会让用户 A 能
+	// 删除用户 B 的 credential; 去掉 credential-owner 解析会把 A 登录进来。
 	ctx := context.Background()
 	now := time.Date(2026, 6, 6, 10, 10, 0, 0, time.UTC)
 	engine := &fakeEngine{loginCredentialID: []byte("cred-b"), assertedSignCount: 3}
@@ -274,8 +354,8 @@ func testUser(tenantID, userID int64, email string) userauth.User {
 }
 
 func TestPasskeyUserHandleIsTenantScopedAndStable(t *testing.T) {
-	// Mutation killed: deriving the WebAuthn user handle from user_id only
-	// makes same numeric IDs collide across tenants.
+	// 杀掉的变异: 仅从 user_id 推导 WebAuthn user handle, 会让
+	// 相同数字 ID 在不同租户间发生碰撞。
 	a := WebAuthnUserHandle(1, 42)
 	b := WebAuthnUserHandle(2, 42)
 	c := WebAuthnUserHandle(1, 42)

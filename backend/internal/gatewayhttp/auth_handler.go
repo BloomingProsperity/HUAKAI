@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/authaudit"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
@@ -27,6 +28,8 @@ import (
 type AuthEmailSender interface {
 	SendVerification(context.Context, userauth.User, string) error
 	SendPasswordReset(context.Context, userauth.User, string) error
+	// SendDeviceConfirmation 发新设备确认邮件 (DevicePolicy=confirm 达上限时), 携带一次性原文 token。
+	SendDeviceConfirmation(context.Context, userauth.User, string) error
 }
 
 type AuthEmailSendLimiter interface {
@@ -50,11 +53,12 @@ type AuthTwoFactor interface {
 type AuthTwoFactorSettings interface {
 	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
-
 type AuthEvent struct {
 	EventType       string `json:"event_type"`
 	TenantID        int64  `json:"tenant_id,omitempty"`
 	UserID          int64  `json:"user_id,omitempty"`
+	IP              string `json:"ip,omitempty"`
+	UserAgent       string `json:"user_agent,omitempty"`
 	Provider        string `json:"provider,omitempty"`
 	Outcome         string `json:"outcome"`
 	ReasonClass     string `json:"reason_class,omitempty"`
@@ -62,11 +66,13 @@ type AuthEvent struct {
 	SessionPolicy   string `json:"session_policy,omitempty"`
 	SessionsRevoked int64  `json:"sessions_revoked,omitempty"`
 }
-
 type NoopAuthEmailSender struct{}
 
 func (NoopAuthEmailSender) SendVerification(context.Context, userauth.User, string) error { return nil }
 func (NoopAuthEmailSender) SendPasswordReset(context.Context, userauth.User, string) error {
+	return nil
+}
+func (NoopAuthEmailSender) SendDeviceConfirmation(context.Context, userauth.User, string) error {
 	return nil
 }
 
@@ -83,9 +89,25 @@ type AuthHandlerDeps struct {
 	TwoFactorSettings AuthTwoFactorSettings
 	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸。nil = 不限流(测试/旧装配),
 	// 生产装配必须注入,否则未认证攻击者可对任意邮箱触发昂贵 argon2 放大 CPU。
-	LoginThrottle        *loginthrottle.Limiter
-	TelegramBotToken     string
-	TelegramWidgetMaxAge time.Duration
+	LoginThrottle *loginthrottle.Limiter
+	// TelegramBotToken 是静态 bot token(测试/旧装配直接注入)。生产走 TelegramBotTokenResolver
+	// 请求期读后台设置(settings-first,空则回退 env),使运营在管理台改 token 即生效、不重部署。
+	TelegramBotToken         string
+	TelegramBotTokenResolver func(context.Context) string
+	TelegramWidgetMaxAge     time.Duration
+	// OAuthPendingKey 是「社交登录无邮箱→补邮箱」流程 pending/challenge token 的 HMAC 密钥
+	//(由会话签名密钥域分隔派生,见 DeriveOAuthPendingKey)。空 = 补邮箱流程停用(端点返 503)。
+	OAuthPendingKey []byte
+}
+
+// resolveTelegramBotToken 请求期解析 bot token:优先 resolver(后台设置 settings-first),否则静态字段。
+func (d AuthHandlerDeps) resolveTelegramBotToken(ctx context.Context) string {
+	if d.TelegramBotTokenResolver != nil {
+		if v := strings.TrimSpace(d.TelegramBotTokenResolver(ctx)); v != "" {
+			return v
+		}
+	}
+	return d.TelegramBotToken
 }
 
 type authRegisterRequest struct {
@@ -112,6 +134,11 @@ type authTwoFactorLoginRequest struct {
 }
 
 type authVerifyEmailRequest struct {
+	TenantID int64  `json:"tenant_id"`
+	Token    string `json:"token"`
+}
+
+type authConfirmDeviceRequest struct {
 	TenantID int64  `json:"tenant_id"`
 	Token    string `json:"token"`
 }
@@ -163,9 +190,12 @@ func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/login", newAuthLoginHandler(d))
 	r.Post("/login/2fa", newAuthTwoFactorLoginHandler(d))
 	r.Post("/verify-email", newAuthVerifyEmailHandler(d))
+	r.Post("/confirm-device", newAuthConfirmDeviceHandler(d))
 	r.Post("/reset-password", newAuthResetPasswordHandler(d))
 	r.Post("/oauth-init", newAuthOAuthInitHandler(d))
 	r.Post("/oauth-callback", newAuthOAuthCallbackHandler(d))
+	// 「社交登录无已验证邮箱 → 补邮箱建号」两步(发码/验码)由 oauthpendinghttp 独立包挂载,
+	// 见 cmd/gateway 装配(mountAuthPendingRoutes)。
 	r.Post("/telegram-login", newAuthTelegramLoginHandler(d))
 	r.Post("/social/identity-changed", newAuthSocialIdentityChangedHandler(d))
 }
@@ -194,7 +224,7 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 			Password: req.Password, InviteCode: req.InviteCode,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_register_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
 			})
 			writeAuthError(w, err)
@@ -215,7 +245,7 @@ func newAuthRegisterHandler(d AuthHandlerDeps) http.HandlerFunc {
 			"verification_required": result.VerificationToken != "",
 		}
 		addDevAuthToken(resp, "verification_token", result.VerificationToken)
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_registered", TenantID: result.User.TenantID, UserID: result.User.ID, Outcome: "success",
 		})
 		writeAuditJSON(w, http.StatusCreated, resp)
@@ -243,7 +273,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			lease, dec = d.LoginThrottle.Begin(ip)
 			defer lease.Cancel()
 			if !dec.Allowed {
-				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 					EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: "login_rate_limited", AuthMethod: "password",
 				})
 				writeLoginThrottled(w, dec.RetryAfter)
@@ -264,7 +294,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if err != nil {
 			lease.Failure() // nil-safe: 限流未装配时为 no-op
 			// 审计记录真实 reason(操作员可见), 但对外统一 generic, 杜绝状态码/消息枚举(门2)。
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: "password",
 			})
 			writeLoginFailureGeneric(w, err)
@@ -273,7 +303,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		lease.Success() // 登录凭据通过, 释放在途槽且不计失败(成功不消耗限流配额)
 		required, err := authTwoFactorRequired(r.Context(), d, user.TenantID, user.ID)
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_2fa_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
 				ReasonClass: twoFactorReasonClass(err), AuthMethod: "password",
 			})
@@ -283,14 +313,14 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if required {
 			challenge, err := d.TwoFactor.StartLoginChallenge(r.Context(), user.TenantID, user.ID)
 			if err != nil {
-				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 					EventType: "user_login_2fa_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
 					ReasonClass: twoFactorReasonClass(err), AuthMethod: "password",
 				})
 				writeTwoFactorLoginError(w, err)
 				return
 			}
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_2fa_required", TenantID: user.TenantID, UserID: user.ID, Outcome: "challenge", AuthMethod: "password",
 			})
 			writeAuditJSON(w, http.StatusAccepted, map[string]any{
@@ -306,14 +336,17 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_session_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
 				ReasonClass: sessionReasonClass(err), AuthMethod: "password",
 			})
+			if handleDeviceConfirmationRequired(w, r, d, user, err) {
+				return
+			}
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_login_succeeded", TenantID: user.TenantID, UserID: user.ID, Outcome: "success", AuthMethod: "password",
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
@@ -339,7 +372,7 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			Code:        req.Code,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_2fa_failed", TenantID: result.TenantID, UserID: result.UserID,
 				Outcome: "failure", ReasonClass: twoFactorReasonClass(err), AuthMethod: "password+2fa",
 			})
@@ -347,19 +380,44 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			return
 		}
 		authMethod := "password+" + result.Method
+		// 账号资格门:challenge 签发(密码对)到此刻之间账号可能被封禁/锁定/删除,
+		// 签发会话前必须复核(与 passkey/social 登录同一道门), 否则 challenge 窗口
+		// 成为停用控制的绕过口。对外统一 403 account_not_active, 不泄露具体状态。
+		if user, err := d.Auth.GetProfile(r.Context(), result.TenantID, result.UserID); err != nil || userauth.EnsureLoginEligible(user, time.Now()) != nil {
+			if err == nil {
+				err = userauth.EnsureLoginEligible(user, time.Now())
+			}
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
+				EventType: "user_login_2fa_failed", TenantID: result.TenantID, UserID: result.UserID,
+				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: authMethod,
+			})
+			switch {
+			case errors.Is(err, userauth.ErrUserNotFound),
+				errors.Is(err, userauth.ErrUserDisabled),
+				errors.Is(err, userauth.ErrUserLocked),
+				errors.Is(err, userauth.ErrPasswordResetRequired):
+				writeJSONError(w, http.StatusForbidden, "account_not_active", "account is no longer active")
+			default:
+				writeJSONError(w, http.StatusServiceUnavailable, "auth_backend_error", "auth backend transient failure")
+			}
+			return
+		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
 			TenantID: result.TenantID, UserID: result.UserID, DeviceInfo: req.DeviceInfo,
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: authMethod,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_session_failed", TenantID: result.TenantID, UserID: result.UserID, Outcome: "failure",
 				ReasonClass: sessionReasonClass(err), AuthMethod: authMethod,
 			})
+			if handleDeviceConfirmationRequiredByID(w, r, d, result.TenantID, result.UserID, err) {
+				return
+			}
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_login_succeeded", TenantID: result.TenantID, UserID: result.UserID, Outcome: "success", AuthMethod: authMethod,
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"session": tokens})
@@ -386,6 +444,10 @@ func writeTwoFactorLoginError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_two_factor_request", "two-factor request is invalid")
 	case errors.Is(err, twofa.ErrInvalidCode), errors.Is(err, twofa.ErrChallengeInvalid), errors.Is(err, twofa.ErrChallengeExpired):
 		writeJSONError(w, http.StatusUnauthorized, "two_factor_invalid", "two-factor challenge or code is invalid")
+	case errors.Is(err, twofa.ErrCodeReused):
+		// 码有效但已被消费过(防重放):按校验失败返 401,用独立 code 让前端提示"该验证码
+		// 已使用过,请用下一个",而不是落到默认 503 backend_error。
+		writeJSONError(w, http.StatusUnauthorized, "two_factor_code_reused", "two-factor code has already been used")
 	case errors.Is(err, twofa.ErrLocked):
 		writeJSONError(w, http.StatusTooManyRequests, "two_factor_locked", "two-factor verification is temporarily locked")
 	default:
@@ -397,6 +459,8 @@ func twoFactorReasonClass(err error) string {
 	switch {
 	case errors.Is(err, twofa.ErrInvalidCode):
 		return "two_factor_invalid"
+	case errors.Is(err, twofa.ErrCodeReused):
+		return "two_factor_code_reused"
 	case errors.Is(err, twofa.ErrLocked):
 		return "two_factor_locked"
 	case errors.Is(err, twofa.ErrChallengeInvalid), errors.Is(err, twofa.ErrChallengeExpired):
@@ -427,7 +491,7 @@ func verifyAuthCaptcha(
 	); err == nil {
 		return true
 	}
-	recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+	recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 		EventType: eventType, TenantID: tenantID, Outcome: "failure",
 		ReasonClass: "captcha_failed", AuthMethod: authMethod,
 	})
@@ -467,7 +531,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if strings.TrimSpace(req.Token) == "" {
 			result, err := d.Auth.RequestPasswordReset(r.Context(), userauth.PasswordResetRequest{TenantID: req.TenantID, Email: req.Email})
 			if err != nil {
-				recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 					EventType: "user_password_reset_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
 				})
 				writeAuthError(w, err)
@@ -484,7 +548,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 				}
 				if sender := authEmailSender(d); sender != nil {
 					if err := sender.SendPasswordReset(r.Context(), user, result.Token); err != nil {
-						recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+						recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 							EventType: "user_password_reset_failed", TenantID: req.TenantID, UserID: result.UserID,
 							Outcome: "failure", ReasonClass: "email_delivery_failed",
 						})
@@ -495,7 +559,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 			}
 			resp := map[string]any{"reset_requested": true}
 			addDevAuthToken(resp, "reset_token", result.Token)
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_requested", TenantID: req.TenantID, UserID: result.UserID, Outcome: "success",
 			})
 			writeAuditJSON(w, http.StatusAccepted, resp)
@@ -510,20 +574,20 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		subject, err := d.Auth.PreparePasswordReset(r.Context(), confirm)
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
 			})
 			writeAuthError(w, err)
 			return
 		}
-		// PreparePasswordReset validates the token and places the user behind a login barrier before
-		// revocation, so no old-password login can create a fresh session between revoke and commit.
+		// PreparePasswordReset 会校验 token，并在吊销之前把该用户挡在一道登录屏障之后，
+		// 这样在 revoke 与 commit 之间，旧密码登录无法创建出新的 session。
 		revoked, revErr := d.Sessions.Revoke(r.Context(), usersession.RevokeInput{
 			TenantID: subject.TenantID, UserID: subject.ID, Reason: "password_reset",
 		})
 		if revErr != nil {
 			logInternalError(r.Context(), "", "user_password_reset_session_revoke_failed", revErr)
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_session_revoke_failed", TenantID: subject.TenantID, UserID: subject.ID,
 				Outcome: "failure", ReasonClass: sessionReasonClass(revErr), SessionPolicy: "failed", SessionsRevoked: revoked,
 			})
@@ -532,7 +596,7 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		user, err := d.Auth.ResetPassword(r.Context(), confirm)
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err),
 			})
 			writeAuthError(w, err)
@@ -545,14 +609,14 @@ func newAuthResetPasswordHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if postErr != nil {
 			sessionRevocation = "failed"
 			logInternalError(r.Context(), "", "user_password_reset_session_revoke_failed", postErr)
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_password_reset_session_revoke_failed", TenantID: user.TenantID, UserID: user.ID,
 				Outcome: "failure", ReasonClass: sessionReasonClass(postErr), SessionPolicy: "failed", SessionsRevoked: revoked,
 			})
 		} else {
 			revoked += postRevoked
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_password_reset_completed", TenantID: user.TenantID, UserID: user.ID,
 			Outcome: "success", SessionPolicy: sessionRevocation, SessionsRevoked: revoked,
 		})
@@ -574,7 +638,7 @@ func newAuthOAuthInitHandler(d AuthHandlerDeps) http.HandlerFunc {
 			TenantID: req.TenantID, Provider: req.Provider, RedirectURI: req.RedirectURI,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: safeProviderForEvent(req.Provider),
 				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: safeProviderForEvent(req.Provider),
 			})
@@ -586,55 +650,14 @@ func newAuthOAuthInitHandler(d AuthHandlerDeps) http.HandlerFunc {
 	}
 }
 
-func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if d.Auth == nil || d.Sessions == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth/session dependency unset")
-			return
-		}
-		var req authOAuthCallbackRequest
-		if !decodeAdminPoolJSON(w, r, &req) {
-			return
-		}
-		if err := requireOAuthStateCookie(w, r, req.State); err != nil {
-			writeAuthError(w, err)
-			return
-		}
-		user, err := d.Auth.CompleteOAuth(r.Context(), userauth.OAuthCallbackInput{
-			TenantID: req.TenantID, Provider: req.Provider, State: req.State, Code: req.Code,
-		})
-		if err != nil {
-			writeAuthError(w, err)
-			return
-		}
-		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
-			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
-			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
-		})
-		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
-				EventType: "user_social_login_session_failed", TenantID: user.TenantID, UserID: user.ID,
-				Provider: safeProviderForEvent(req.Provider), Outcome: "failure", ReasonClass: sessionReasonClass(err),
-				AuthMethod: safeProviderForEvent(req.Provider),
-			})
-			writeSessionError(w, err)
-			return
-		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
-			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
-			Provider: safeProviderForEvent(req.Provider), Outcome: "success", AuthMethod: safeProviderForEvent(req.Provider),
-		})
-		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
-	}
-}
-
 func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if d.Auth == nil || d.Sessions == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth/session dependency unset")
 			return
 		}
-		if strings.TrimSpace(d.TelegramBotToken) == "" {
+		botToken := d.resolveTelegramBotToken(r.Context())
+		if strings.TrimSpace(botToken) == "" {
 			writeAuthError(w, userauth.ErrOAuthProviderMissing)
 			return
 		}
@@ -642,9 +665,9 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if !decodeAdminPoolJSON(w, r, &req) {
 			return
 		}
-		identity, err := telegramauth.VerifyWidget(req.Params, d.TelegramBotToken, d.Auth.Clock(), telegramWidgetMaxAge(d))
+		identity, err := telegramauth.VerifyWidget(req.Params, botToken, d.Auth.Clock(), telegramWidgetMaxAge(d))
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: userauth.SocialProviderTelegram,
 				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: userauth.SocialProviderTelegram,
 			})
@@ -653,7 +676,7 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		user, err := d.Auth.ApplyVerifiedSocialIdentity(r.Context(), req.TenantID, identity)
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_failed", TenantID: req.TenantID, Provider: userauth.SocialProviderTelegram,
 				Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: userauth.SocialProviderTelegram,
 			})
@@ -665,15 +688,18 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: userauth.SocialProviderTelegram,
 		})
 		if err != nil {
-			recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_social_login_session_failed", TenantID: user.TenantID, UserID: user.ID,
 				Provider: userauth.SocialProviderTelegram, Outcome: "failure", ReasonClass: sessionReasonClass(err),
 				AuthMethod: userauth.SocialProviderTelegram,
 			})
+			if handleDeviceConfirmationRequired(w, r, d, user, err) {
+				return
+			}
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
 			Provider: userauth.SocialProviderTelegram, Outcome: "success", AuthMethod: userauth.SocialProviderTelegram,
 		})
@@ -776,7 +802,7 @@ func newAuthSocialIdentityChangedHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeSessionError(w, err)
 			return
 		}
-		recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_social_identity_changed", TenantID: user.TenantID, UserID: user.ID, Provider: provider,
 			Outcome: "success", ReasonClass: reason, SessionPolicy: "revoked", SessionsRevoked: revoked,
 		})
@@ -791,10 +817,11 @@ func newAuthSocialIdentityChangedHandler(d AuthHandlerDeps) http.HandlerFunc {
 	}
 }
 
-func recordAuthEvent(ctx context.Context, sink AuthEventSink, event AuthEvent) {
+func recordAuthEvent(ctx context.Context, sink AuthEventSink, r *http.Request, ipResolver *clientip.Resolver, event AuthEvent) {
 	if sink == nil {
 		return
 	}
+	event.IP, event.UserAgent = authaudit.WithRequestSource(r, ipResolver, event.IP, event.UserAgent)
 	sink.RecordAuthEvent(ctx, event)
 }
 
@@ -936,7 +963,7 @@ func allowAuthEmailSend(w http.ResponseWriter, r *http.Request, d AuthHandlerDep
 	if allowed {
 		return true
 	}
-	recordAuthEvent(r.Context(), d.EventSink, AuthEvent{
+	recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 		EventType: "auth_email_send_rate_limited", TenantID: tenantID, UserID: userID,
 		Outcome: "failure", ReasonClass: "email_send_rate_limited",
 	})
@@ -1052,8 +1079,8 @@ func writeLoginThrottled(w http.ResponseWriter, retryAfter time.Duration) {
 	writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many login attempts; please retry later")
 }
 
-// writeEmailSendThrottled is the auth email-send limiter response: 429 + coarse
-// Retry-After, without exposing per-email state or remaining quota.
+// writeEmailSendThrottled 是鉴权邮件发送限流器的响应：429 + 粗粒度的
+// Retry-After，不暴露 per-email 状态或剩余配额。
 func writeEmailSendThrottled(w http.ResponseWriter, retryAfter time.Duration) {
 	if retryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second), 10))

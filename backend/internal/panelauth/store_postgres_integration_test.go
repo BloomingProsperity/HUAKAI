@@ -106,3 +106,44 @@ func TestPG_UserRoleResolution(t *testing.T) {
 		t.Fatalf("soft-deleted admin user: panel=%q err=%v, want PanelNone/ErrUserNotFound (deleted_at IS NULL must exclude it)", p, err)
 	}
 }
+
+// TestPG_ActiveUserRoleExcludesNonActive 守 S2 修复:封禁(disabled)的 admin 经 ActiveUserRole
+// 即刻失去 session-admin 权力面;UserRole(panel 判定用)不受 status 影响。
+// mutation: ActiveUserRole 去掉 `AND status = 'active'` → disabled 断言红。
+func TestPG_ActiveUserRoleExcludesNonActive(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+
+	tenant := seedTenant(t, ctx, pool, "panelauth-active-"+t.Name())
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, tenant)
+		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id=$1`, tenant)
+	})
+	admin := seedUser(t, ctx, pool, tenant, RoleAdmin)
+	store := NewPostgresRoleStore(pool)
+
+	// active(列默认)→ 两个查询都给 admin。
+	if role, err := store.ActiveUserRole(ctx, tenant, admin); err != nil || role != RoleAdmin {
+		t.Fatalf("active admin: role=%q err=%v, want admin", role, err)
+	}
+
+	// 封禁 → ActiveUserRole 即刻拒(session-admin 掉权);UserRole 仍可查(panel 判定语义不变)。
+	if _, err := pool.Exec(ctx, `UPDATE users SET status='disabled' WHERE id=$1`, admin); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+	if role, err := store.ActiveUserRole(ctx, tenant, admin); !errors.Is(err, ErrUserNotFound) || role != "" {
+		t.Fatalf("disabled admin: role=%q err=%v, want ErrUserNotFound(封禁必须即刻掉权)", role, err)
+	}
+	if role, err := store.UserRole(ctx, tenant, admin); err != nil || role != RoleAdmin {
+		t.Fatalf("UserRole(panel 判定)不应受 status 影响: role=%q err=%v", role, err)
+	}
+
+	// 锁定同拒(疑似被爆破的 admin 保守掉权)。
+	if _, err := pool.Exec(ctx, `UPDATE users SET status='locked' WHERE id=$1`, admin); err != nil {
+		t.Fatalf("lock user: %v", err)
+	}
+	if _, err := store.ActiveUserRole(ctx, tenant, admin); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("locked admin 应被 ActiveUserRole 拒,得 err=%v", err)
+	}
+}

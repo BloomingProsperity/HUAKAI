@@ -15,7 +15,9 @@ SELECT
     ale.ledger_id AS audit_ledger_id,
     ale.pubkey_fingerprint AS audit_pubkey_fingerprint,
     ale.hop_chain AS audit_hop_chain,
-    ale.model_chain AS audit_model_chain
+    ale.model_chain AS audit_model_chain,
+    ur.ip_address, ur.user_agent, ur.client_tool,
+    ur.cache_creation_5m_tokens, ur.cache_creation_1h_tokens
 FROM usage_records ur
 JOIN billing_ledger_claims blc ON blc.id = ur.claim_id AND blc.tenant_id = ur.tenant_id
 LEFT JOIN provider_accounts pa ON pa.id = ur.provider_account_id AND pa.tenant_id = ur.tenant_id
@@ -28,6 +30,8 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
   AND (sqlc.narg(provider)::text IS NULL OR p.code = sqlc.narg(provider)::text)
   AND (sqlc.narg(pool_id)::bigint IS NULL OR blc.pooling_group_id = sqlc.narg(pool_id)::bigint)
   AND (sqlc.narg(api_key_id)::bigint IS NULL OR ur.api_key_id = sqlc.narg(api_key_id)::bigint)
+  -- user_id 过滤:供会话级用量端点按调用者用户(跨其所有 key)收敛,与 api_key_id 互补。
+  AND (sqlc.narg(user_id)::bigint IS NULL OR ur.user_id = sqlc.narg(user_id)::bigint)
   AND (sqlc.narg(provider_account_id)::bigint IS NULL OR ur.provider_account_id = sqlc.narg(provider_account_id)::bigint)
   AND (sqlc.narg(model)::text IS NULL OR ur.requested_model = sqlc.narg(model)::text)
   AND (
@@ -39,7 +43,6 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -52,6 +55,20 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
   AND (sqlc.arg(has_cursor)::boolean = false OR (ur.settled_at, ur.id) < (sqlc.arg(cursor_created_at)::timestamptz, sqlc.arg(cursor_id)::bigint))
 ORDER BY ur.settled_at DESC, ur.id DESC
 LIMIT sqlc.arg(page_limit)::integer;
+
+-- name: ListProviderAccountRecentRequests :many
+-- 账号健康诊断只读取请求结果与时延信号，刻意不选择 actual_cost 等钱字段。
+-- tenant_id 与 provider_account_id 同时下推，避免仅靠处理器作用域保护租户边界。
+SELECT
+    ur.id, ur.requested_at, ur.settled_at, ur.requested_model,
+    ur.upstream_model, ur.end_class, ur.stream, ur.tokens_input,
+    ur.tokens_output, ur.cache_read_tokens, ur.first_byte_at,
+    ur.upstream_request_at, ur.attempt_seq
+FROM usage_records ur
+WHERE ur.provider_account_id = sqlc.arg(provider_account_id)::bigint
+  AND ur.tenant_id = sqlc.arg(tenant_id)::bigint
+ORDER BY ur.settled_at DESC, ur.id DESC
+LIMIT sqlc.arg(row_limit)::integer;
 
 -- name: ListUsageRecordsWithNames :many
 -- Sibling of ListUsageRecords with display names joined for admin/operator UI.
@@ -98,7 +115,6 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -189,7 +205,6 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
         FROM usage_record_reconciliation_events re
         WHERE re.tenant_id = ur.tenant_id
           AND re.original_usage_record_id = ur.id
-          AND re.reconciliation_source = 'stream_no_usage_finalized'
       )
     )
   )
@@ -198,6 +213,17 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_i
     OR sqlc.narg(outcome)::text = 'all'
     OR (sqlc.narg(outcome)::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
     OR (sqlc.narg(outcome)::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
+  );
+
+-- name: CountPendingReconciliationUsageRecords :one
+SELECT count(*)::bigint
+FROM usage_records ur
+WHERE ur.pending_reconciliation = true
+  AND NOT EXISTS (
+    SELECT 1
+    FROM usage_record_reconciliation_events re
+    WHERE re.tenant_id = ur.tenant_id
+      AND re.original_usage_record_id = ur.id
   );
 
 -- name: ListBillingClaims :many

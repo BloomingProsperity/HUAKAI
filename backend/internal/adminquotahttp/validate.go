@@ -18,10 +18,9 @@ import (
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
 )
 
-// validateRequest applies the full union validation: enum allowlists, scope_id
-// bounds, numeric >=0, window_seconds required for fixed windows, and the
-// valid_until > valid_from rule — all BEFORE the DB write so bad input yields a
-// 400 rather than a CHECK-constraint 503.
+// validateRequest 施加完整的并集校验:枚举白名单、scope_id 长度上限、数值 >=0、
+// fixed 窗口必须给 window_seconds,以及 valid_until > valid_from 规则 —— 全部在
+// 写库之前完成,这样非法输入会得到 400,而不是 CHECK 约束触发的 503。
 func validateRequest(w http.ResponseWriter, req quotaPolicyRequest) (validatedPolicy, bool) {
 	var vp validatedPolicy
 
@@ -246,7 +245,7 @@ func writeMutationError(w http.ResponseWriter, err error, fallbackCode string) {
 	}
 }
 
-// --- small helpers -----------------------------------------------------------
+// --- 小工具函数 -----------------------------------------------------------
 
 func filterValue(w http.ResponseWriter, r *http.Request, key string, allow map[string]struct{}, code string) (*string, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get(key))
@@ -386,13 +385,14 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
-// actorID is the audit ActorID (admin_audit_events.actor_id, a text column).
+// actorID 是审计用的 ActorID(admin_audit_events.actor_id,一个 text 列)。
+// 统一走 AuditActor():token 源返 admin_token:<TokenID>,session 源返 admin_user:<UserID>。
 func actorID(ident admin.AdminIdentity) string {
-	return fmt.Sprintf("%d", ident.TokenID)
+	return ident.AuditActor()
 }
 
-// actorAttribution is the created_by/last_modified_by_actor column value
-// (nullable text); it tracks who issued the change for ecosystem audit.
+// actorAttribution 是 created_by/last_modified_by_actor 列的取值
+//(可空 text);它记录是谁发起了本次变更,用于整体审计追溯。
 func actorAttribution(ident admin.AdminIdentity) *string {
 	s := actorID(ident)
 	return &s

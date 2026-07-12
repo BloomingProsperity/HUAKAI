@@ -1,4 +1,4 @@
-// stream_scanner_test.go — A1 atomic 单测：StreamScanner 抽象 + 注册表 +
+// stream_scanner_test.go — A1 原子变更单测：StreamScanner 抽象 + 注册表 +
 // SSEStreamScanner 包装等价性。
 package gateway
 
@@ -103,7 +103,7 @@ func TestBuildDefaultStreamScannerRegistry(t *testing.T) {
 	}
 
 	for _, family := range []string{
-		"anthropic_messages", "openai_chat", "openai_responses", "openai_codex",
+		"anthropic_messages", "anthropic_claude_session", "openai_chat", "openai_responses", "openai_codex",
 		"gemini_messages", "openrouter_chat", "grok_chat",
 		"deepseek_chat", "mistral_chat", "groqcloud_chat",
 		"together_chat", "perplexity_chat", "fireworks_chat",
@@ -123,7 +123,7 @@ func TestBuildDefaultStreamScannerRegistry(t *testing.T) {
 		}
 	}
 
-	// bedrock_invoke 走专用 BedrockEventStreamScanner（A3 atomic 实现）
+	// bedrock_invoke 走专用 BedrockEventStreamScanner（A3 原子变更实现）
 	bedrock, err := r.For("bedrock_invoke")
 	if err != nil {
 		t.Errorf("bedrock_invoke 应已注册（A5+A6 atomic），err=%v", err)
@@ -309,7 +309,7 @@ func lastScanError(seq func(yield func(SSEEvent, error) bool)) error {
 // (或反之),该 family 的流式请求会在 forwarder.go 的 Scanners.For 取 scanner
 // 失败、在投递前直接挂。本轮修复的 kimi/qwen/glm/yi/baichuan/doubao/ernie/step/
 // hunyuan/minimax/cohere/ollama_chat 12 族整类即此漏接(同 23e0cb91 入站漏接同源)。
-// Mutation guard: 删 stream_scanner.go 任一 SSE family,或 protocol_selector.go
+// 变异守卫: 删 stream_scanner.go 任一 SSE family,或 protocol_selector.go
 // 任一 MustRegister → 两集不等,对应方向子断言红。
 func TestStreamScannerAndProtocolAdapterRegistriesAreSymmetric(t *testing.T) {
 	scanners := BuildDefaultStreamScannerRegistry().scanners

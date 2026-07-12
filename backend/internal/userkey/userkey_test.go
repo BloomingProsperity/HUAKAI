@@ -73,12 +73,12 @@ func TestEnvAliases(t *testing.T) {
 	}
 }
 
-// TestUserAuditSinkBestEffort: durable audit sink failures must not make the
-// userkey audit path fatal. The real Issue success path is covered by
-// integration_pg; this fast unit locks the local best-effort contract.
+// TestUserAuditSinkBestEffort: 持久审计 sink 的失败绝不能让 userkey 审计路径
+// 变成 fatal。真正的 Issue 成功路径由 integration_pg 覆盖;这个快速单测锁定
+// 本地的 best-effort 契约。
 //
-// Mutation: make logIssue panic or return/propagate the sink error -> this test
-// fails before any DB is involved.
+// 变异:让 logIssue panic 或返回/传播 sink 的错误 -> 本测试在涉及任何 DB
+// 之前就失败。
 func TestUserAuditSinkBestEffort(t *testing.T) {
 	sink := &failingAuditSink{err: errors.New("audit sink down")}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

@@ -18,7 +18,7 @@ import (
 )
 
 func TestMediaTaskSubmitReservesOnce(t *testing.T) {
-	// MUTATION: remove billing.Reserve from CreateTask; held remains 0 instead of 1.23.
+	// 变异：从 CreateTask 移除 billing.Reserve；held 会停在 0 而非 1.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -39,7 +39,7 @@ func TestMediaTaskSubmitReservesOnce(t *testing.T) {
 }
 
 func TestMediaTaskIdempotentSubmit(t *testing.T) {
-	// MUTATION: skip the (tenant_id, request_id) lookup before reserve; second submit doubles held to 2.46.
+	// 变异：在 reserve 前跳过 (tenant_id, request_id) 查找；第二次提交会把 held 翻倍到 2.46。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -71,7 +71,7 @@ func TestMediaTaskIdempotentSubmit(t *testing.T) {
 }
 
 func TestMediaTaskSuccessSettlesActual(t *testing.T) {
-	// MUTATION: capture estimated cost instead of actual_cents; balance becomes 8.77 instead of 9.23.
+	// 变异：入账时用预估成本而非 actual_cents；balance 会变成 8.77 而非 9.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -97,8 +97,93 @@ func TestMediaTaskSuccessSettlesActual(t *testing.T) {
 	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("0.77"))
 }
 
+// TestMediaTaskSuccessZeroActualAnchorsToEstimate 锁住 bug ② 修复:上游 Poll 未回实际用量
+// (ActualCents=0,图像/视频任务创建型上游的常态)时,成功任务必须按【预扣的预估】结算(锚定
+// EstimatedCents),绝不按 $0 结算,否则平台白吃真实上游成本、等同给客户做了全额退式 $0 结算。
+// 变异(§14):删掉 store_money.go 里 `if billedCents <= 0 { billedCents = locked.EstimatedCents }`
+// 这个下限,actual=0 会按 $0 入账 —— balance 停在 10.00(不扣费)、claim committed@0.00,下面对
+// balance=8.77 / claim committed@1.23 的断言必然全红。
+func TestMediaTaskSuccessZeroActualAnchorsToEstimate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "zeroactual")
+	svc := newIntegrationService(pool)
+	store := svc.store.(*PostgresStore)
+
+	task := submitAndMarkSubmitted(t, ctx, svc, store, seed, "req-zeroactual")
+	leased := leaseTaskForTest(t, ctx, pool, task.ID, "worker-zero")
+	// 上游回成功但不带用量:ActualCents 保持 0。
+	ok, err := store.CompleteSuccess(ctx, leased, "worker-zero", PollResult{Status: StatusSucceeded, Progress: 100, ActualCents: 0, Result: []byte(`{"ok":true}`)}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CompleteSuccess(零用量): %v", err)
+	}
+	if !ok {
+		t.Fatal("CompleteSuccess(零用量) ok=false,任务未走到终态")
+	}
+
+	// 锚定预估结算:扣 1.23(预扣的预估,而非 0),held 清零。
+	balance, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
+	if !balance.Equal(decimal.RequireFromString("8.77")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("balance/held=%s/%s want 8.77/0(actual=0 必须锚定预估 1.23 结算,不得 $0 白吃成本)", balance, held)
+	}
+	assertTaskStatus(t, ctx, pool, task.ID, StatusSucceeded)
+	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("1.23"))
+}
+
+// TestMediaTaskSuccessOverEstimateClampsToEstimate 锁住"成功任务的实际成本超过预估"
+// 这条亏钱缺陷的修复:上游真把任务跑成功、但 ActualCents(200) 高于预扣的
+// EstimatedCents(123) 时,必须把成功任务推进到终态 succeeded,并按【预扣的预估】
+// 结算(收费 clamp 到预估上限,平台吸收有界超出部分),而不是回滚整事务、把成功
+// 任务卡死在 in_progress、最终被 TaskTimeout→ExpireTask 全额释放预扣致平台白吃上游成本。
+//
+// 变异证:把 store_money.go 的处理改回旧逻辑
+//
+//	if result.ActualCents > locked.EstimatedCents { return ErrActualExceedsEstimate }
+//
+// (即回滚而非 clamp 推进终态),本测试必然变红 —— CompleteSuccess 会返回
+// ErrActualExceedsEstimate,ok=false,任务停在 in_progress、预扣 1.23 不释放,
+// 下面对 balance=8.77 / held=0 / status=succeeded / claim=committed@1.23 的断言全部失败。
+func TestMediaTaskSuccessOverEstimateClampsToEstimate(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "over-estimate")
+	svc := newIntegrationService(pool)
+	store := svc.store.(*PostgresStore)
+
+	task := submitAndMarkSubmitted(t, ctx, svc, store, seed, "req-over-estimate")
+	leased := leaseTaskForTest(t, ctx, pool, task.ID, "worker-over")
+	// ActualCents=200 严格大于预扣的 EstimatedCents=123,触发"超估价"分支。
+	ok, err := store.CompleteSuccess(ctx, leased, "worker-over", PollResult{Status: StatusSucceeded, Progress: 100, ActualCents: 200, Result: []byte(`{"ok":true}`)}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CompleteSuccess(超估价): %v", err)
+	}
+	if !ok {
+		t.Fatal("CompleteSuccess(超估价) ok=false,任务未走到终态")
+	}
+
+	// 结算 clamp 到预估:扣 1.23(而非 2.00,不超收客户),held 清零。
+	balance, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
+	if !balance.Equal(decimal.RequireFromString("8.77")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("balance/held=%s/%s want 8.77/0(按预估 1.23 结算且不残留预扣)", balance, held)
+	}
+	// 终态必须是成功(而非卡死或被超时释放成 expired)。
+	assertTaskStatus(t, ctx, pool, task.ID, StatusSucceeded)
+	// claim 入账成本 clamp 到预估 0.77... 即 1.23;actual_cents 仍按真实 200 落媒体任务行做对账留痕。
+	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("1.23"))
+	// 媒体任务行的 actual_cents 保留真实上游成本(200),供运维核对平台吸收了多少。
+	var actualCents int64
+	if err := pool.QueryRow(ctx, `SELECT actual_cents FROM media_tasks WHERE id=$1`, task.ID).Scan(&actualCents); err != nil {
+		t.Fatalf("read media_tasks.actual_cents: %v", err)
+	}
+	if actualCents != 200 {
+		t.Fatalf("media_tasks.actual_cents=%d want 200(保留真实上游成本做对账)", actualCents)
+	}
+}
+
 func TestMediaTaskFailureRefundsFull(t *testing.T) {
-	// MUTATION: use Capture(0) instead of Release on failure; claim may commit and failure audit is wrong.
+	// 变异：失败时用 Capture(0) 而非 Release；claim 可能被 commit 且失败审计出错。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -124,7 +209,7 @@ func TestMediaTaskFailureRefundsFull(t *testing.T) {
 }
 
 func TestMediaTaskTimeoutExpiresAndRefunds(t *testing.T) {
-	// MUTATION: mark timeout expired without billing.Release; held remains 1.23.
+	// 变异：标记超时为 expired 时不做 billing.Release；held 会停在 1.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -147,11 +232,46 @@ func TestMediaTaskTimeoutExpiresAndRefunds(t *testing.T) {
 	}
 	assertTaskStatus(t, ctx, pool, task.ID, StatusExpired)
 	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "aborted", decimal.Zero)
+	if n := countSweptOrphans(t, ctx, store, task.ID); n != 1 {
+		t.Fatalf("已有上游任务 ID 的超时任务应落孤儿线索,orphan rows=%d want 1", n)
+	}
+}
+
+func TestMediaTaskTimeoutWithoutProviderTaskDoesNotCreateOrphan(t *testing.T) {
+	// 变异：无上游任务 ID 时也无条件 persistOrphanTx；orphan rows 会从 0 变 1。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "timeout-no-provider")
+	svc := newIntegrationService(pool)
+	store := svc.store.(*PostgresStore)
+
+	task, err := svc.Submit(ctx, seed.tenantID, seed.userID, submitInput("req-timeout-no-provider"))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	leased := leaseTaskForTest(t, ctx, pool, task.ID, "worker-timeout-no-provider")
+	ok, err := store.ExpireTask(ctx, leased, "worker-timeout-no-provider", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("ExpireTask: %v", err)
+	}
+	if !ok {
+		t.Fatal("ExpireTask ok=false")
+	}
+	balance, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
+	if !balance.Equal(decimal.RequireFromString("10.00")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("balance/held=%s/%s want 10.00/0", balance, held)
+	}
+	assertTaskStatus(t, ctx, pool, task.ID, StatusExpired)
+	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "aborted", decimal.Zero)
+	if n := countSweptOrphans(t, ctx, store, task.ID); n != 0 {
+		t.Fatalf("无上游任务 ID 时不应落孤儿线索,orphan rows=%d want 0", n)
+	}
 }
 
 func TestMediaTaskWorkerFencing_NoDoubleSettle(t *testing.T) {
-	// MUTATION: remove SKIP LOCKED / lease_owner from AcquireLease or terminal update;
-	// two workers append two claim_committed events or debit twice.
+	// 变异：从 AcquireLease 或终态更新中移除 SKIP LOCKED / lease_owner；
+	// 两个 worker 会追加两条 claim_committed 事件或重复扣费。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -191,7 +311,7 @@ func TestMediaTaskWorkerFencing_NoDoubleSettle(t *testing.T) {
 }
 
 func TestMediaTaskSubmitAtomic_ReserveAndRowTogether(t *testing.T) {
-	// MUTATION: reserve outside the media task insert transaction; held remains 1.23 after injected insert failure.
+	// 变异：在媒体任务 insert 事务之外做 reserve；注入 insert 失败后 held 会停在 1.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -220,7 +340,7 @@ func TestMediaTaskSubmitAtomic_ReserveAndRowTogether(t *testing.T) {
 }
 
 func TestMediaTaskTenantIsolation(t *testing.T) {
-	// MUTATION: drop user_id from Get/List/idempotency guards; user B sees or replays user A's task.
+	// 变异：从 Get/List/幂等守卫中去掉 user_id；用户 B 会看到或重放用户 A 的任务。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -256,7 +376,7 @@ func TestMediaTaskTenantIsolation(t *testing.T) {
 }
 
 func TestMigration0099(t *testing.T) {
-	// MUTATION: omit unique(tenant_id, request_id) or runnable partial index; schema probes fail.
+	// 变异：省略 unique(tenant_id, request_id) 或可运行的部分索引；schema 探测会失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)

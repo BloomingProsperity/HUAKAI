@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
@@ -31,7 +31,9 @@ type adminBalanceCreditService interface {
 }
 
 func MountBalanceCreditRoutes(r chi.Router, d AdminBalanceCreditDeps) {
-	r.Post("/adjustments", newBalanceCreditHandler(d))
+	// money-via-login:手动充值/余额调整放开给登录 admin(session),对标 new-api;前端确认弹窗防误操作。
+	// 归属经 P2b-2 双身份 text 列(created_by_actor/actor_ref)可追。
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/adjustments", newBalanceCreditHandler(d))
 }
 
 type balanceCreditRequestBody struct {
@@ -89,7 +91,11 @@ func newBalanceCreditHandler(d AdminBalanceCreditDeps) http.HandlerFunc {
 			UserID:          req.UserID,
 			Amount:          req.Amount,
 			CurrencyCode:    req.CurrencyCode,
-			ActorID:         strconv.FormatInt(ident.TokenID, 10),
+			// 双身份归属(money-via-login Stage 1):ActorID 仍传纯数字 TokenID 喂旧 bigint 列
+			//(token 通道向后兼容;session-admin 为 0→NULL,不能传 AuditActor() 否则 ParseInt 成 0);
+			// ActorRef 传 AuditActor() 串落新 text 列,两通道都可归属(admin_token:N / admin_user:N)。
+			ActorID:         fmt.Sprintf("%d", ident.TokenID),
+			ActorRef:        ident.AuditActor(),
 			Reason:          req.Reason,
 			RequestID:       middleware.GetReqID(r.Context()),
 			ExternalTradeNo: req.IdempotencyKey,

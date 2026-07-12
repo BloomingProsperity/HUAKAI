@@ -8,19 +8,17 @@ import (
 	"time"
 )
 
-// FormattedReport is the rendered output handed to the email sender: a subject,
-// an HTML body, and a plaintext fallback. All three are built ONLY from the
-// report's typed enum/count/id fields — there is no path for free-form user
-// content to reach them.
+// FormattedReport 是交给邮件发送方的渲染产物：一个主题、一个 HTML 正文以及一个
+// 纯文本兜底。这三者仅由报告中带类型的 enum/count/id 字段构建——没有任何路径能让
+// 自由格式的用户内容流入其中。
 type FormattedReport struct {
 	Subject   string
 	HTMLBody  string
 	PlainBody string
 }
 
-// Headline returns the one-line status summary. An all-clear run reads "All
-// clear"; otherwise it states the issue count and, when present, the critical
-// count so the operator can triage from the subject line alone.
+// Headline 返回单行状态摘要。一切正常的运行显示为 "All clear"；否则会给出问题数，
+// 并在存在 critical 时给出 critical 数，使运维仅凭主题行即可分诊。
 func Headline(r InspectionReport) string {
 	if r.AllClear() {
 		return "All clear"
@@ -39,7 +37,7 @@ func Headline(r InspectionReport) string {
 	return fmt.Sprintf("%d %s need attention", issues, noun)
 }
 
-// Subject builds the email subject: a status badge + headline + UTC date.
+// Subject 构建邮件主题：状态徽标 + 标题 + UTC 日期。
 func Subject(r InspectionReport) string {
 	badge := "[OK]"
 	switch r.Worst() {
@@ -52,7 +50,7 @@ func Subject(r InspectionReport) string {
 		badge, Headline(r), r.GeneratedAt.UTC().Format("2006-01-02"))
 }
 
-// Format renders the full report into subject + HTML + plaintext bodies.
+// Format 把完整报告渲染为 主题 + HTML + 纯文本 三种正文。
 func Format(r InspectionReport) FormattedReport {
 	return FormattedReport{
 		Subject:   Subject(r),
@@ -72,13 +70,12 @@ func sevBadge(s Severity) string {
 	}
 }
 
-// esc HTML-escapes a value before it enters the email body. Every dynamic string
-// in the report is a system enum/id, but escaping is applied unconditionally as
-// defense in depth so even a future free-form field cannot inject markup.
+// esc 在值进入邮件正文前对其做 HTML 转义。报告中每个动态字符串都是系统 enum/id，
+// 但作为纵深防御，转义是无条件施加的，这样即便将来出现自由格式字段也无法注入标记。
 func esc(v string) string { return html.EscapeString(v) }
 
-// sortedIntCounts renders a string->int map as "k=v" pairs sorted by key for
-// deterministic output.
+// sortedIntCounts 将 string->int 映射渲染为按键排序的 "k=v" 键值对，以保证输出
+// 确定性。
 func sortedIntCounts(m map[string]int) string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

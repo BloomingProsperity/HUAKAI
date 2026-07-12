@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-// TempUnschedulableRule is the per-account error-ban rule stored as JSONB.
-// Schema from sql/migrations/0004_rate_limiting.up.sql:
+// TempUnschedulableRule 是按账号存储为 JSONB 的错误封禁(error-ban)规则。
+// schema 来自 sql/migrations/0004_rate_limiting.up.sql:
 //
 //	{ error_code, keywords[], duration_minutes, description }
 //
-// A rule matches when error_code equals the upstream status code AND
-// at least one keyword (if any) appears as a case-insensitive substring
-// of the response body. An empty keywords list means "any body".
+// 当 error_code 等于上游状态码,且(若有关键词)至少有一个 keyword 作为
+// 不区分大小写的子串出现在响应体中时,规则即匹配。空的 keywords 列表表示
+// 「任意 body」。
 type TempUnschedulableRule struct {
 	ErrorCode       int      `json:"error_code"`
 	Keywords        []string `json:"keywords"`
@@ -21,25 +21,28 @@ type TempUnschedulableRule struct {
 	Description     string   `json:"description"`
 }
 
-// AccountErrorRulesProvider supplies per-account error-ban config to the
-// rate service. Implementations may use an in-process cache. A nil provider
-// is treated as "no rules" (zero-config no-op).
-//
-// The provider is responsible for applying both enable flags
-// (temp_unschedulable_enabled and custom_error_codes_enabled): it returns
-// empty slices for any feature that is disabled, so the caller never needs
-// a separate enabled bool.
-type AccountErrorRulesProvider interface {
-	// GetAccountErrorRules returns the effective temp-unschedulable rules and
-	// custom error codes for the given account, with both enable flags already
-	// applied. Empty slices mean "feature off / no config" (no-op).
-	GetAccountErrorRules(accountID int64) (rules []TempUnschedulableRule, customErrorCodes []int32)
+// AccountErrorPolicy 是单个账号在错误决策树中的完整本地状态策略。
+type AccountErrorPolicy struct {
+	Rules            []TempUnschedulableRule
+	CustomErrorCodes []int32
+	PoolMode         bool
 }
 
-const maxBodyBytesForMatch = 8 * 1024 // 8 KB cap — never log this slice
+// AccountErrorRulesProvider 向 rate service 提供按账号的错误封禁配置。实现
+// 可使用进程内缓存。nil 的 provider 被视为「无规则」(零配置的空操作)。
+//
+// provider 负责应用两个 enable 标志(temp_unschedulable_enabled 和
+// custom_error_codes_enabled):对任何被禁用的特性,它都返回空切片,因此
+// 调用方永远不需要一个单独的 enabled bool。
+type AccountErrorRulesProvider interface {
+	// GetAccountErrorPolicy 已应用两个 enable 标志；查询失败时返回零值以维持既有行为。
+	GetAccountErrorPolicy(accountID int64) AccountErrorPolicy
+}
 
-// ParseTempUnschedulableRules deserialises the raw JSONB bytes from the DB.
-// Returns nil on empty or invalid input (treated as no rules).
+const maxBodyBytesForMatch = 8 * 1024 // 8 KB 上限 —— 绝不要记录这段切片
+
+// ParseTempUnschedulableRules 反序列化来自 DB 的原始 JSONB 字节。
+// 对空或非法输入返回 nil(视为无规则)。
 func ParseTempUnschedulableRules(raw []byte) []TempUnschedulableRule {
 	if len(raw) == 0 {
 		return nil
@@ -51,16 +54,16 @@ func ParseTempUnschedulableRules(raw []byte) []TempUnschedulableRule {
 	return rules
 }
 
-// evalAccountErrorRules is a pure function that checks whether the upstream
-// response matches any operator-configured ban-signal rule.
+// evalAccountErrorRules 是一个纯函数,检查上游响应是否匹配任何由运营者
+// 配置的封禁信号(ban-signal)规则。
 //
-// Matching semantics (F-RATE-001 §1.6):
-//  1. custom_error_codes: if statusCode is a member → StateTempUnsched / ReasonCustomErrorCode.
-//  2. temp_unschedulable_rules: first rule whose error_code == statusCode AND
-//     (keywords is empty OR any keyword is a case-insensitive substring of body) → match.
+// 匹配语义(F-RATE-001 §1.6):
+//  1. custom_error_codes:若 statusCode 是其中成员 → StateTempUnsched / ReasonCustomErrorCode。
+//  2. temp_unschedulable_rules:首个满足 error_code == statusCode 且
+//     (keywords 为空 或 任一 keyword 是 body 的不区分大小写子串)的规则 → 匹配。
 //
-// Returns zero Decision (StateNoChange) when nothing matches.
-// PURE: no I/O, no logging, no side effects.
+// 无任何匹配时返回零值 Decision(StateNoChange)。
+// 纯函数:无 I/O、无日志、无副作用。
 func evalAccountErrorRules(
 	statusCode int,
 	respBody []byte,
@@ -71,23 +74,23 @@ func evalAccountErrorRules(
 	now time.Time,
 	disableCooling bool,
 ) Decision {
-	// 1. Custom error codes (membership check).
-	// Uses defaultCooldown so CooldownUntil is always set (never zero).
+	// 1. 自定义错误码(成员检查)。
+	// 使用 defaultCooldown,确保 CooldownUntil 总会被设置(永不为零)。
 	for _, code := range customErrorCodes {
 		if int(code) == statusCode {
 			return makeTempUnschedDecision(defaultCooldown, now, disableCooling, ReasonCustomErrorCode)
 		}
 	}
 
-	// Prepare a length-capped, lowercased copy of the body for substring matching.
-	// This slice is for matching ONLY — never logged.
+	// 准备一个长度受限、已转小写的 body 拷贝用于子串匹配。
+	// 这段切片仅用于匹配 —— 绝不记录日志。
 	body := respBody
 	if len(body) > maxBodyBytesForMatch {
 		body = body[:maxBodyBytesForMatch]
 	}
 	lowerBody := bytes.ToLower(body)
 
-	// 2. Temp-unschedulable rules (first-match wins).
+	// 2. Temp-unschedulable 规则(首个匹配胜出)。
 	for _, r := range rules {
 		if r.ErrorCode != statusCode {
 			continue
@@ -100,9 +103,9 @@ func evalAccountErrorRules(
 	return Decision{}
 }
 
-// matchesKeywords returns true when keywords is empty (wildcard) or any
-// keyword is found as a case-insensitive substring of lowerBody.
-// lowerBody must already be lowercased by the caller.
+// matchesKeywords 在 keywords 为空(通配)或任一 keyword 作为不区分大小写的
+// 子串出现在 lowerBody 中时返回 true。
+// lowerBody 必须已由调用方转为小写。
 func matchesKeywords(lowerBody []byte, keywords []string) bool {
 	if len(keywords) == 0 {
 		return true

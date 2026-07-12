@@ -6,10 +6,9 @@ import (
 )
 
 func TestSessionBindingExpiryIsFailClosed(t *testing.T) {
-	// Regression (FAIL-CLOSED): an expired binding must be treated as absent so a
-	// leaked request_id cannot be replayed after the session window. Mutation: if
-	// Lookup ignored ExpiresAt, the stale binding would still authorize. We bind
-	// with an expiry, advance the clock past it, and assert Lookup misses.
+	// 回归(FAIL-CLOSED):已过期的绑定必须被视为不存在,使泄露的 request_id 无法在会话
+	// 窗口之后被重放。变异:若 Lookup 忽略 ExpiresAt,陈旧的绑定仍会授权。我们带过期时间
+	// 绑定,把时钟拨过该时间,并断言 Lookup 未命中。
 	now := time.Unix(1700000000, 0).UTC()
 	clock := func() time.Time { return now }
 	b := NewSessionBindings(clock)
@@ -20,7 +19,7 @@ func TestSessionBindingExpiryIsFailClosed(t *testing.T) {
 	if _, ok := b.Lookup("req-exp"); !ok {
 		t.Fatalf("binding missing before expiry")
 	}
-	// Advance past expiry.
+	// 拨过过期时间。
 	now = exp.Add(time.Second)
 	if _, ok := b.Lookup("req-exp"); ok {
 		t.Fatalf("expired binding still resolved — replay window not closed")
@@ -28,9 +27,8 @@ func TestSessionBindingExpiryIsFailClosed(t *testing.T) {
 }
 
 func TestSessionBindingReleaseRemovesBinding(t *testing.T) {
-	// Regression: Release must drop the binding so it cannot outlive its session
-	// even before expiry. Mutation: if Release were a no-op, a finished session's
-	// request_id would remain usable until expiry.
+	// 回归:Release 必须丢弃绑定,使其即便在过期之前也不会比其会话存活更久。变异:若
+	// Release 是空操作,已结束会话的 request_id 会一直可用直到过期。
 	clock := func() time.Time { return time.Unix(1700000000, 0).UTC() }
 	b := NewSessionBindings(clock)
 	b.Bind("req-rel", SessionOperator{TenantID: 7, ActorUserID: 42, AdminActorTokenID: 9, Role: "platform_admin", ExpiresAt: clock().Add(time.Minute)})
@@ -41,8 +39,8 @@ func TestSessionBindingReleaseRemovesBinding(t *testing.T) {
 }
 
 func TestSessionBindingBlankRequestIDNeverMatches(t *testing.T) {
-	// Regression: a blank request_id must never bind or match — defense in depth so
-	// a blank-keyed lookup cannot collide with a blank-keyed bind.
+	// 回归:空白的 request_id 绝不能绑定或匹配——纵深防御,使以空白键的 lookup 无法与
+	// 以空白键的 bind 相撞。
 	clock := func() time.Time { return time.Unix(1700000000, 0).UTC() }
 	b := NewSessionBindings(clock)
 	b.Bind("", SessionOperator{TenantID: 7, Role: "platform_admin", ExpiresAt: clock().Add(time.Minute)})

@@ -11,7 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/buildinfo"
 )
 
-// VersionDeps holds the auth dependency for the admin version endpoint.
+// VersionDeps 持有管理端 version 端点的认证依赖。
 type VersionDeps struct {
 	Auth versionAuth
 }
@@ -20,9 +20,9 @@ type versionAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-// MountVersionRoutes registers GET /version on the provided router.
-// Callers should mount this under /admin/v1 and /v1/admin so both prefix
-// conventions are served.
+// MountVersionRoutes 在给定的 router 上注册 GET /version。
+// 调用方应将其挂载到 /admin/v1 与 /v1/admin 下,以便同时服务两种
+// 前缀约定。
 func MountVersionRoutes(r chi.Router, d VersionDeps) {
 	r.Get("/version", newVersionHandler(d))
 }
@@ -40,7 +40,7 @@ func newVersionHandler(d VersionDeps) http.HandlerFunc {
 		}
 		switch ident.Role {
 		case admin.RoleTenantOperator, admin.RolePlatformAdmin:
-			// both roles may read build info
+			// 两种角色都可以读取构建信息
 		default:
 			writeError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 			return

@@ -218,7 +218,7 @@ func TestSubProgress_ConsumedVsCap(t *testing.T) {
 		t.Fatalf("progress len = %d, want 1; body=%s", len(out.Progress), rec.Body.String())
 	}
 	got := out.Progress[0]
-	// MUTATION: compute remaining as cap (ignore consumed) or consumed=settled only (drop reserved) -> this assertion goes RED.
+	// 变异：把 remaining 算成 cap（忽略 consumed），或令 consumed=仅 settled（丢掉 reserved）-> 此断言变红。
 	if got.Cap != "10" || got.Consumed != "4" || got.Remaining != "6" {
 		t.Fatalf("cap/consumed/remaining = %s/%s/%s, want 10/4/6", got.Cap, got.Consumed, got.Remaining)
 	}
@@ -252,7 +252,7 @@ func TestSubProgress_SelfScoped(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	out := decodeProgressResponse(t, rec)
-	// MUTATION: drop tenant_id or user scope predicates from ListCurrentWindowsForScope -> user B/tenant B windows leak and this goes RED.
+	// 变异：从 ListCurrentWindowsForScope 去掉 tenant_id 或 user 作用域谓词 -> user B/tenant B 的窗口泄露，此处变红。
 	if len(out.Progress) != 1 {
 		t.Fatalf("progress len = %d, want only caller's one window; body=%s", len(out.Progress), rec.Body.String())
 	}
@@ -282,7 +282,7 @@ func TestSubProgress_NoActiveSub(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	out := decodeProgressResponse(t, rec)
-	// MUTATION: read quota progress before confirming an active subscription -> seeded quota appears and this goes RED.
+	// 变异：在确认存在活跃 subscription 之前就读取 quota 进度 -> 播种的 quota 会出现，此处变红。
 	if out.Subscription != nil || len(out.Progress) != 0 {
 		t.Fatalf("subscription/progress = %+v/%d, want nil/empty for no active subscription; body=%s",
 			out.Subscription, len(out.Progress), rec.Body.String())
@@ -296,7 +296,7 @@ func TestSubProgress_AuthRequired(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	// MUTATION: mount progress outside session resolution or bypass resolveSession -> status becomes 200 and this goes RED.
+	// 变异：把 progress 挂在 session 解析之外，或绕过 resolveSession -> 状态码变成 200，此处变红。
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401 for missing session; body=%s", rec.Code, rec.Body.String())
 	}

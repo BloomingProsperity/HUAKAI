@@ -15,9 +15,9 @@ import (
 )
 
 func TestDefaultExchangerRegistryIncludesAntigravityOAuthAlias(t *testing.T) {
-	// Regression killed: Antigravity acquisition must be reachable through the
-	// vendor-native antigravity/oauth key, not only the legacy
-	// gemini/antigravity credentialstore mode.
+	// 回归保护:Antigravity 获取必须能通过
+	// vendor 原生的 antigravity/oauth 键到达,而不只是旧的
+	// gemini/antigravity credentialstore mode。
 	registry := DefaultExchangerRegistry()
 	candidate, err := registry.Exchange(context.Background(), Session{
 		TenantID: 1, ProviderAccountID: 42, Vendor: "antigravity", AuthMode: "oauth", ActorID: "owner",
@@ -38,7 +38,7 @@ func TestDefaultExchangerRegistryIncludesAntigravityOAuthAlias(t *testing.T) {
 }
 
 func TestXAIOAuthExchangerRegistered(t *testing.T) {
-	// Mutation: drop the grok/xai_oauth register line and this lookup must go red.
+	// 变异:去掉 grok/xai_oauth 的注册行,此 lookup 就必须变红。
 	registry := DefaultExchangerRegistry()
 	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth))
 	if !ok {
@@ -57,8 +57,8 @@ func TestXAIOAuthExchangerRegistered(t *testing.T) {
 }
 
 func TestXAIOAuthConfigEndpointsAndClient(t *testing.T) {
-	// Mutation: change the xAI client_id, scope, auth host, token host, or stop
-	// applying registered defaults during StartOAuthFlow and this test must go red.
+	// 变异:改动 xAI 的 client_id、scope、auth host、token host,或在 StartOAuthFlow 期间
+	// 停止套用已注册的默认值,本测试就必须变红。
 	const wantClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	const wantScope = "openid profile email offline_access grok-cli:access api:access"
 	registry := DefaultExchangerRegistry()
@@ -77,10 +77,10 @@ func TestXAIOAuthConfigEndpointsAndClient(t *testing.T) {
 	if got := strings.Join(cfg.Scopes, " "); got != wantScope {
 		t.Fatalf("scope=%q want %q", got, wantScope)
 	}
-	if cfg.AuthURL != "https://auth.x.ai/oauth/authorize" {
+	if cfg.AuthURL != "https://auth.x.ai/oauth2/authorize" {
 		t.Fatalf("auth_url=%q", cfg.AuthURL)
 	}
-	if cfg.TokenURL != "https://auth.x.ai/oauth/token" {
+	if cfg.TokenURL != "https://auth.x.ai/oauth2/token" {
 		t.Fatalf("token_url=%q", cfg.TokenURL)
 	}
 	if cfg.Source != ClientSourceOperatorConfig {
@@ -118,13 +118,13 @@ func TestXAIOAuthConfigEndpointsAndClient(t *testing.T) {
 }
 
 func TestXAIOAuthSSRFHost(t *testing.T) {
-	// Mutation: allow arbitrary non-x.ai OAuth hosts for grok/xai_oauth and this
-	// test must go red by accepting the attacker endpoint.
+	// 变异:为 grok/xai_oauth 放行任意非 x.ai 的 OAuth host,本
+	// 测试就会因接受攻击者端点而变红。
 	const wantClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	wantScopes := strings.Fields("openid profile email offline_access grok-cli:access api:access")
 	base := OAuthClientConfig{
 		Source: ClientSourceOperatorConfig, ClientID: wantClientID,
-		AuthURL: "https://auth.x.ai/oauth/authorize", TokenURL: "https://auth.x.ai/oauth/token",
+		AuthURL: "https://auth.x.ai/oauth2/authorize", TokenURL: "https://auth.x.ai/oauth2/token",
 		RedirectURI: "https://huakai.example.test/admin/v1/credentials/oauth-callback",
 		Scopes:      wantScopes,
 	}
@@ -286,18 +286,18 @@ func TestGeminiOperatorOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpo
 	}
 }
 
-// TestValidateOAuthModeConsistencyAcceptsHealthyDefaults guards the production default
-// registry + mode plans must pass the boot consistency gate. Mutation: re-register any OAuth mode
-// with a fake (see the reject test) and this baseline goes red — proving the gate actually runs.
+// TestValidateOAuthModeConsistencyAcceptsHealthyDefaults 守护:生产环境的默认
+// registry + mode plan 必须通过 boot 期的一致性闸门。变异:把任一 OAuth mode 用 fake
+// 重新注册(见 reject 测试),此基线就会变红 —— 证明该闸门确实在跑。
 func TestValidateOAuthModeConsistencyAcceptsHealthyDefaults(t *testing.T) {
 	if err := ValidateOAuthModeConsistency(DefaultModePlans(), DefaultExchangerRegistry()); err != nil {
 		t.Fatalf("healthy default registry must pass the OAuth consistency gate: %v", err)
 	}
 }
 
-// TestValidateOAuthModeConsistencyRejectsFakeExchanger guards a fake exchanger on any
-// FlowKindOAuth mode must be caught at boot and named. Mutation: delete the pkceFakeExchanger type
-// assertion in ValidateOAuthModeConsistency and this test goes red (the injected fake passes).
+// TestValidateOAuthModeConsistencyRejectsFakeExchanger 守护:任何 FlowKindOAuth mode 上的
+// fake exchanger 都必须在 boot 期被抓住并指名。变异:删除 ValidateOAuthModeConsistency 中的
+// pkceFakeExchanger 类型断言,本测试就会变红(注入的 fake 会通过)。
 func TestValidateOAuthModeConsistencyRejectsFakeExchanger(t *testing.T) {
 	registry := DefaultExchangerRegistry()
 	key := exchangerKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
@@ -313,9 +313,9 @@ func TestValidateOAuthModeConsistencyRejectsFakeExchanger(t *testing.T) {
 	}
 }
 
-// TestValidateOAuthModeConsistencyRejectsMissingExchanger guards a FlowKindOAuth ModePlan
-// with no registered exchanger must be caught at boot, not silently surface ErrOAuthExchangerMissing
-// only on a live callback.
+// TestValidateOAuthModeConsistencyRejectsMissingExchanger 守护:一个没有注册 exchanger 的
+// FlowKindOAuth ModePlan 必须在 boot 期被抓住,而不是仅在真实回调时才静默暴露
+// ErrOAuthExchangerMissing。
 func TestValidateOAuthModeConsistencyRejectsMissingExchanger(t *testing.T) {
 	plans := []ModePlan{{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth, Kind: FlowKindOAuth}}
 	if err := ValidateOAuthModeConsistency(plans, NewExchangerRegistry()); err == nil {
@@ -323,11 +323,12 @@ func TestValidateOAuthModeConsistencyRejectsMissingExchanger(t *testing.T) {
 	}
 }
 
-// TestGeminiAntigravityAcquisitionFailsClosedNotFake guards the core trust-boundary fix:
-// gemini/antigravity acquisition must NO LONGER accept a JSON-token-shaped callback code as a real
-// credential; it must fail-closed with ErrFeatureDisabled, consistent with the paused refresh side.
-// Mutation: restore NewPKCEFakeExchanger for this mode and the forged blob is accepted (err==nil) —
-// this test goes red, proving it guards real forged-credential acceptance, not a cosmetic error.
+// TestGeminiAntigravityAcquisitionFailsClosedNotFake 守护核心的信任边界修复:
+// gemini/antigravity 获取绝不能再把 JSON-token 形状的回调码当作真实
+// 凭据接受;在授权页地址尚未确认时必须以 ErrFeatureDisabled fail-closed。
+// CLI token 导入后的 refresh 是独立且已激活的路径，不受此边界影响。
+// 变异:为此 mode 还原 NewPKCEFakeExchanger,伪造的 blob 就会被接受(err==nil)——
+// 本测试随之变红,证明它守护的是真实的伪造凭据接受,而非一个装样子的错误。
 func TestGeminiAntigravityAcquisitionFailsClosedNotFake(t *testing.T) {
 	registry := DefaultExchangerRegistry()
 	_, err := registry.Exchange(context.Background(), Session{
@@ -338,9 +339,9 @@ func TestGeminiAntigravityAcquisitionFailsClosedNotFake(t *testing.T) {
 	}
 }
 
-// TestCopilotOAuthAcquisitionFailsClosed guards copilot/copilot_oauth is advertised as an
-// OAuth mode but its callback acquisition is unimplemented; it must fail-closed with a clear
-// ErrFeatureDisabled rather than the prior vague ErrOAuthExchangerMissing.
+// TestCopilotOAuthAcquisitionFailsClosed 守护:copilot/copilot_oauth 被宣告为一个
+// OAuth mode,但其回调获取尚未实现;它必须以明确的
+// ErrFeatureDisabled fail-closed,而非此前模糊的 ErrOAuthExchangerMissing。
 func TestCopilotOAuthAcquisitionFailsClosed(t *testing.T) {
 	registry := DefaultExchangerRegistry()
 	_, err := registry.Exchange(context.Background(), Session{
@@ -351,10 +352,10 @@ func TestCopilotOAuthAcquisitionFailsClosed(t *testing.T) {
 	}
 }
 
-// TestNoFakeExchangerRemainsInDefaultRegistry guards no pkceFakeExchanger may remain
-// reachable in the production default registry (orphaned cursor/windsurf fakes removed,
-// gemini/antigravity migrated to fail-closed). Mutation: restore any NewPKCEFakeExchanger
-// registration and this scan finds it → red.
+// TestNoFakeExchangerRemainsInDefaultRegistry 守护:生产环境默认 registry 中不得再有
+// 任何可达的 pkceFakeExchanger(孤儿 cursor/windsurf fake 已移除,
+// gemini/antigravity 已迁移为 fail-closed)。变异:还原任意 NewPKCEFakeExchanger
+// 注册,此扫描就会发现它 → 变红。
 func TestNoFakeExchangerRemainsInDefaultRegistry(t *testing.T) {
 	registry := DefaultExchangerRegistry()
 	for _, name := range registry.Names() {

@@ -95,13 +95,12 @@ LIMIT $4`,
 	return out, nil
 }
 
-// GetByID reads a single dead-letter record by its id, scoped to tenantID. It is
-// READ-ONLY (no claim, no lease, no state change) — a target lookup for the
-// mutating dlq_replay preview/confirm path, where matching by id over a bounded
-// List window could miss records older than that window. Returns ErrNotFound
-// when no row with that id belongs to tenantID, so a wrong-tenant id cannot
-// resolve another tenant's record (tenant isolation). The actual replay still
-// runs through Claim/Replay; this only resolves the target for the preview.
+// GetByID 按 id 读取单条死信记录，并限定在 tenantID 范围内。它是只读的
+// （不 claim、不 lease、不改状态)——用于 mutating 的 dlq_replay preview/confirm
+// 路径的目标查找，在那条路径上，若在有界的 List 窗口里按 id 匹配，可能漏掉比该
+// 窗口更老的记录。当不存在属于 tenantID 且 id 为该值的行时返回 ErrNotFound，
+// 因此一个错误租户的 id 无法解析到另一个租户的记录(租户隔离)。真正的重放仍
+// 走 Claim/Replay；这里只为 preview 解析目标。
 func (s *Store) GetByID(ctx context.Context, tenantID, id int64) (Record, error) {
 	if s == nil || s.pool == nil {
 		return Record{}, ErrStoreNotConfigured
@@ -140,6 +139,11 @@ WITH candidate AS (
 	  AND (
 		(q.status = 'pending' AND q.next_retry_at <= now())
 		OR (q.status = 'inflight' AND q.lease_until < now())
+		OR (
+			q.event_kind = 'post_delivery_settlement'
+			AND q.status IN ('operator_review', 'dlq', 'quarantined')
+			AND q.next_retry_at <= now()
+		)
 	  )
 	ORDER BY q.next_retry_at ASC, q.failure_at ASC, q.id ASC
 	LIMIT 1

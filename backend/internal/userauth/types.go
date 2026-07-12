@@ -39,6 +39,12 @@ var (
 	ErrOAuthProviderMissing         = errors.New("userauth: oauth provider not configured")
 	ErrSocialLoginRejected          = errors.New("userauth: social login rejected")
 	ErrLastLoginMethod              = errors.New("userauth: cannot remove last login method")
+	// ErrSocialIdentityAlreadyBound 表示该社交身份(provider+subject)已被「另一个」用户绑定。
+	// 用于「先绑定后登录」的绑定接口:防止把同一个 telegram/QQ 账号绑到多个本地账号(接管/混淆)。
+	ErrSocialIdentityAlreadyBound   = errors.New("userauth: social identity already bound to another account")
+	// ErrEmailExists 表示该邮箱已被某账号占用。用于「OAuth 无邮箱补全」建号:拒绝把社交身份
+	// 抢注到/接管一个既有邮箱账号。
+	ErrEmailExists                  = errors.New("userauth: email already registered")
 	ErrOAuthPendingEmailRequired    = errors.New("userauth: oauth pending email verification required")
 	ErrStoreNotConfigured           = errors.New("userauth: store not configured")
 )

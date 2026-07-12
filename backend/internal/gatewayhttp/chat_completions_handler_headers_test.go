@@ -65,8 +65,8 @@ func TestChatCompletionsClientAdapter_NonStreamingModelChainAndHeaders(t *testin
 
 // TestChatCompletionResponseHeaderIncludesUpstreamProvider
 //
-// 守 TRUST-A-2 wire contract：成功响应必须把实际 dispatch path 的 provider /
-// model / request_id 暴露为 X-Huakai-* header。Mutation 自检：删掉 trust
+// 守 TRUST-A-2 线协议契约：成功响应必须把实际 dispatch path 的 provider /
+// model / request_id 暴露为 X-Huakai-* header。变异自检：删掉 trust
 // header 注入时，本测试的 provider/model/request_id 三个断言会一起 red。
 func TestChatCompletionResponseHeaderIncludesUpstreamProvider(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -99,7 +99,7 @@ func TestChatCompletionResponseHeaderIncludesUpstreamProvider(t *testing.T) {
 //
 // 守 TRUST-A-1/A-2 默认状态：TRUST-B signer payload 尚未接通前，普通成功响应
 // 只能标 `unverified`，不能因为旧 audit ledger 头存在就假称 verified。
-// Mutation 自检：把默认状态改成 verified/signed-only，本测试会 red。
+// 变异自检：把默认状态改成 verified/signed-only，本测试会 red。
 func TestChatCompletionResponseHeaderTrustStatusIsUnverifiedDefault(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	d := clientAdapterDeps(t)
@@ -118,7 +118,7 @@ func TestChatCompletionResponseHeaderTrustStatusIsUnverifiedDefault(t *testing.T
 //
 // 守 TRUST-B-2 inline provisional signature：非流式 Persisted ledger result +
 // signer 可用时，response header 必须带 receipt 签名并把 TRUST-A 默认
-// unverified 升到 signed-only。Mutation 自检：删掉 SignReceipt 调用或不覆盖
+// unverified 升到 signed-only。变异自检：删掉 SignReceipt 调用或不覆盖
 // status，本测试会看到空签名或 unverified。
 func TestChatCompletionResponseHeaderTrustSignedOnlyWhenSignerAvailable(t *testing.T) {
 	signer, err := sign.GenerateKey()
@@ -161,7 +161,7 @@ func TestChatCompletionResponseHeaderTrustSignedOnlyWhenSignerAvailable(t *testi
 // TestChatCompletionResponseHeaderTrustStaysUnverifiedWhenSignerNil
 //
 // 守 D-8 本切片语义：signer 不可用时不伪造签名、不升级状态，保留 TRUST-A
-// unverified。Mutation 自检：nil signer 仍尝试签名会 panic；无条件 signed-only
+// unverified。变异自检：nil signer 仍尝试签名会 panic；无条件 signed-only
 // 会让 status 断言 red。
 func TestChatCompletionResponseHeaderTrustStaysUnverifiedWhenSignerNil(t *testing.T) {
 	h := http.Header{}
@@ -186,7 +186,7 @@ func TestChatCompletionResponseHeaderTrustStaysUnverifiedWhenSignerNil(t *testin
 // TestChatCompletionResponseFailOpenWhenSignerNilInProduction
 //
 // 守 D-8=A signer 不可用时仍走 W4 deferred ledger 路径：返 200 OK +
-// status=unverified + DLQRef 非空。Mutation 自检：删 DLQ enqueue 会被
+// status=unverified + DLQRef 非空。变异自检：删 DLQ enqueue 会被
 // production audit-ref policy 拒成 500；删 audit_signer_deferred warning 会
 // 让 warning 断言 red。
 func TestChatCompletionResponseFailOpenWhenSignerNilInProduction(t *testing.T) {
@@ -265,7 +265,7 @@ func TestNonStreamingSettle_CapturesLedgerProtocolLoss(t *testing.T) {
 	if len(settler.calls) != 1 {
 		t.Fatalf("settle calls=%d want 1", len(settler.calls))
 	}
-	// MUTATION: 把 ex.protocolLoss 快照移回 submitAuditLedgerEntry 之前 → settle 缺 audit_signer_deferred → RED。
+	// 变异: 把 ex.protocolLoss 快照移回 submitAuditLedgerEntry 之前 → settle 缺 audit_signer_deferred → RED。
 	if !settledLossHasCode(t, settler.calls[0].ProtocolLoss, "audit_signer_deferred") {
 		t.Fatalf("settle ProtocolLoss=%s want code audit_signer_deferred", settler.calls[0].ProtocolLoss)
 	}
@@ -345,8 +345,8 @@ func signedHeaderPersistedResult(requestID string) auditledger.AuditLedgerResult
 // TestChatCompletionResponseMismatchDetectedWhenAuditMismatchesHeader
 //
 // 守 TRUST-A-2 mismatch 分支：response header 仍展示 dispatch path，
-// 但 audit ledger append 返回的 provider 与 header 不一致时，trust status 必须
-// 强制降为 mismatch。Mutation 自检：删除 header-vs-ledger 比对时，本测试会看到
+// 但 audit ledger 追加 返回的 provider 与 header 不一致时，trust status 必须
+// 强制降为 mismatch。变异自检：删除 header-vs-ledger 比对时，本测试会看到
 // unverified 而不是 mismatch。
 func TestChatCompletionResponseMismatchDetectedWhenAuditMismatchesHeader(t *testing.T) {
 	enableHCSFDispatchForTest(t)
@@ -471,10 +471,10 @@ func TestWriteStreamBillingHeaders(t *testing.T) {
 // LedgerID / verify URL / signature。
 // 判别 fixture B (Deferred + 空 DLQRef):什么也不写 (防 DLQRef 字段被误写空串)。
 //
-// Mutation 自检:保留旧 `if result.State != Persisted return` 行 → A 路径
+// 变异自检:保留旧 `if result.State != Persisted return` 行 → A 路径
 // X-HUAKAI-Ledger-DLQ-Ref 是空 → 本用例 red。
 func TestWriteHuakaiHeaders_NonStreamingDeferredWritesDLQRef(t *testing.T) {
-	// fixture A:Deferred + DLQRef="audit_ledger_dlq:42"
+	// 夹具 A:Deferred + DLQRef="audit_ledger_dlq:42"
 	hA := http.Header{}
 	resultA := auditledger.AuditLedgerResult{
 		State:  auditledger.LedgerResultStateDeferred,
@@ -511,7 +511,7 @@ func TestWriteHuakaiHeaders_NonStreamingDeferredWritesDLQRef(t *testing.T) {
 // 正向保持守:Persisted 路径(包括 LedgerID/Fingerprint/verify URL)行为不动,
 // **不**写 DLQ ref header。配对 T_NS1 防 Persisted/Deferred 分支错乱。
 //
-// Mutation 自检:把 Persisted case 也加 DLQRef 写 → 本用例 red(DLQ header 不应出现)。
+// 变异自检:把 Persisted case 也加 DLQRef 写 → 本用例 red(DLQ header 不应出现)。
 func TestWriteHuakaiHeaders_NonStreamingPersistedHeadersUnchanged(t *testing.T) {
 	h := http.Header{}
 	result := auditledger.AuditLedgerResult{

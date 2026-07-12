@@ -306,6 +306,49 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 	return Session{}, ErrFlowNotFound
 }
 
+func (s *PostgresSessionStore) UpdateStatusFrom(ctx context.Context, id string, status FlowStatus, errorClass, redactedMessage string, allowed ...FlowStatus) (Session, error) {
+	if s == nil || s.db == nil {
+		return Session{}, errors.New("credentialacq: session store not configured")
+	}
+	if NormalizeFlowStatus(status) == "" || len(allowed) == 0 {
+		return Session{}, ErrInvalidImportBody
+	}
+	allowedText := make([]string, 0, len(allowed))
+	for _, candidate := range allowed {
+		if NormalizeFlowStatus(candidate) == "" {
+			return Session{}, ErrInvalidImportBody
+		}
+		allowedText = append(allowedText, string(candidate))
+	}
+	const q = `
+UPDATE credential_acquisition_flow_sessions
+SET status = $2,
+    error_class = NULLIF($3, ''),
+    error_message_redacted = NULLIF($4, ''),
+    updated_at = NOW()
+WHERE id = $1::uuid
+  AND status = ANY($5::text[])
+RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
+          actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
+          client_identity_source, auth_type, device_code_payload,
+          redirect_uri, requested_scopes, redacted_context,
+          long_lived_requested, idempotency_key_hash, result_account_credential_id,
+          error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
+          created_at, updated_at`
+	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), status, strings.TrimSpace(errorClass), strings.TrimSpace(redactedMessage), allowedText))
+	if err == nil {
+		return row, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Session{}, err
+	}
+	existing, getErr := s.Get(ctx, id)
+	if getErr != nil {
+		return Session{}, getErr
+	}
+	return existing, ErrFlowReplay
+}
+
 func (s *PostgresSessionStore) Cancel(ctx context.Context, id string) (Session, error) {
 	if s == nil || s.db == nil {
 		return Session{}, errors.New("credentialacq: session store not configured")

@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-// P-2 D0 shared foundation for ClientAdapter（client wire ↔ canonical）。
+// P-2 D0 ClientAdapter 的共享基础设施（client wire ↔ canonical）。
 //
 // 范围（按 P-2 ClientAdapter synthesis §5.1 Q5 决策 A）：
 //   - RequestMetaSeed + context 注入；client adapter 的 RequestToCanonical
@@ -45,8 +45,8 @@ type RequestMetaSeed struct {
 	// IngressPath 必填；如 /v1/chat/completions、/v1/messages、/v1/responses。
 	IngressPath string
 
-	// Model 可选；path-scoped native protocols such as Gemini v1beta carry the
-	// model in the URL rather than the JSON body.
+	// Model 可选；path-scoped 的 native 协议（如 Gemini v1beta）把模型名带在
+	// URL 里而不是 JSON body 里。
 	Model string
 
 	// TenantID 可选；0 表示无租户上下文。
@@ -195,7 +195,7 @@ func (r *ClientAdapterRegistry) Protocols() []ClientProtocol {
 }
 
 // ----------------------------------------------------------------------------
-// SSE emit helpers
+// SSE 输出辅助函数
 // ----------------------------------------------------------------------------
 
 // EmitSSEEvent 拼装一个具名 SSE event：

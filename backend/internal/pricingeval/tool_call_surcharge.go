@@ -6,19 +6,19 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 )
 
-// ApplyToolCallSurcharge adds the built-in tool-call surcharge to an existing
-// billing Result. It is an additive Total-adjuster that mirrors the shape of
-// ApplyCacheCostOverride: a strict no-op when unconfigured.
+// ApplyToolCallSurcharge 把内置的工具调用附加费叠加到一个已有的
+// 计费 Result 上。它是一个对 Total 做加法调整的器件,形态与
+// ApplyCacheCostOverride 一致:未配置时严格空操作。
 //
-// Default-zero safety invariants (all must hold for the surcharge to be non-zero):
-//   - Usage.ToolCallCounts must be non-zero (at least one tool was called)
-//   - prices returned by the Table lookup must be non-zero (tenant opted in)
+// 默认为零的安全不变量(要使附加费非零,以下全部必须成立):
+//   - Usage.ToolCallCounts 必须非零(至少调用了一个工具)
+//   - Table 查表返回的 prices 必须非零(租户已选择启用)
 //
-// When either condition is false the function returns res unmodified —
-// Total is byte-identical to the token-only result produced by Resolve().
+// 任一条件不成立时,函数原样返回 res ——
+// Total 与 Resolve() 产出的仅 token 结果逐字节相同。
 //
-// groupRatio is passed through to toolpricing.Surcharge; zero is treated as 1.0
-// (matching pricingeval.pricingGroupRatio semantics).
+// groupRatio 透传给 toolpricing.Surcharge;零被当作 1.0
+// (与 pricingeval.pricingGroupRatio 语义一致)。
 func ApplyToolCallSurcharge(res Result, prices toolpricing.ToolPrices, counts toolpricing.ToolCallCounts, groupRatio decimal.Decimal) Result {
 	if prices.IsZero() || counts.IsZero() {
 		return res

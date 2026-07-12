@@ -80,17 +80,26 @@ func (f *meQuotaFixture) seedUser(tenantID int64, label string) int64 {
 
 func (f *meQuotaFixture) seedQuotaWindow(tenantID, userID int64, at time.Time, limit, reserved, settled string) {
 	f.t.Helper()
+	f.seedQuotaWindowMetric(tenantID, userID, "cost_usd", at, limit, reserved, settled)
+}
+
+func (f *meQuotaFixture) seedQuotaWindowMetric(tenantID, userID int64, metric string, at time.Time, limit, reserved, settled string) {
+	f.t.Helper()
+	f.seedScopeQuotaWindowMetric(tenantID, "user", strconv.FormatInt(userID, 10), metric, at, limit, reserved, settled)
+}
+
+func (f *meQuotaFixture) seedScopeQuotaWindowMetric(tenantID int64, scopeKind, scopeID, metric string, at time.Time, limit, reserved, settled string) {
+	f.t.Helper()
 	var policyID int64
-	scopeID := strconv.FormatInt(userID, 10)
 	if err := f.pool.QueryRow(f.ctx, `
 INSERT INTO quota_policies (
 	tenant_id, scope_kind, scope_id, metric, window_kind, window_seconds,
 	limit_value, burst_value, mode, priority, enabled, valid_from, valid_until
 ) VALUES (
-	$1, 'user', $2, 'cost_usd', 'calendar_day', 0,
-	$3::numeric(20,8), 0, 'enforce', 10, true, $4, $5
-) RETURNING id`, tenantID, scopeID, limit, at.Add(-time.Hour), at.Add(24*time.Hour)).Scan(&policyID); err != nil {
-		f.t.Fatalf("seed quota policy: %v", err)
+	$1, $2, $3, $4, 'calendar_day', 0,
+	$5::numeric(20,8), 0, 'enforce', 10, true, $6, $7
+) RETURNING id`, tenantID, scopeKind, scopeID, metric, limit, at.Add(-time.Hour), at.Add(24*time.Hour)).Scan(&policyID); err != nil {
+		f.t.Fatalf("seed quota policy (%s/%s): %v", scopeKind, metric, err)
 	}
 	start, end, ok := quota.ComputeWindow(quota.WindowCalendarDay, 0, at)
 	if !ok {
@@ -104,7 +113,7 @@ INSERT INTO quota_windows (
 	$1, $2, $3, $4, $5::numeric(20,8),
 	$6::numeric(20,8), 0, 9
 )`, tenantID, policyID, start, end, reserved, settled); err != nil {
-		f.t.Fatalf("seed quota window: %v", err)
+		f.t.Fatalf("seed quota window (%s/%s): %v", scopeKind, metric, err)
 	}
 }
 
@@ -144,8 +153,8 @@ func TestMeQuotaSelfScope(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
 	}
-	// MUTATION: handler hard-codes userB scopeID, passes "", or accepts query scope;
-	// user A sees userB/all windows and this assertion goes RED.
+	// 变异:handler 硬编码 userB 的 scopeID、传 "",或接受 query 里的 scope;
+	// user A 就会看到 userB/全部窗口,此断言转红。
 	if len(body.Items) != 1 {
 		t.Fatalf("items len=%d want only user A quota window; body=%s", len(body.Items), rec.Body.String())
 	}
@@ -156,4 +165,113 @@ func TestMeQuotaSelfScope(t *testing.T) {
 	if strings.Contains(rec.Body.String(), `"99"`) {
 		t.Fatalf("response leaked user B quota window: %s", rec.Body.String())
 	}
+}
+
+// TestMeQuotaMultiMetricWindows_Integration 是针对真实 DB 的端到端 F-OPS-001
+// 证明:一个带有 requests + cost_usd + tokens_estimated 策略的用户能看到全部
+// 三个窗口、各按 metric 标记。它还守护「不能偏移」:订阅/key-control 所依赖的
+// cost-only store 方法,在其它策略也存在时仍只返回 cost_usd。
+// 变异:把查询过滤回退为单个 metric -> 多 metric 读取返回 <3 -> 转红;
+//   放宽 cost-only 方法的 metric 集合 -> 它返回 >1 -> 转红。
+func TestMeQuotaMultiMetricWindows_Integration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openMeQuotaPool(t, ctx)
+	f := newMeQuotaFixture(t, ctx, pool)
+	at := time.Now().UTC()
+	f.seedQuotaWindowMetric(f.tenantA, f.userA, "requests", at, "1000", "0", "120")
+	f.seedQuotaWindowMetric(f.tenantA, f.userA, "cost_usd", at, "10", "0", "3.5")
+	f.seedQuotaWindowMetric(f.tenantA, f.userA, "tokens_estimated", at, "1000000", "0", "45000")
+
+	// 端到端:handler 返回全部三个窗口,各按其 metric 标记。
+	h := NewHandler(Deps{
+		Auth:  authStub{identity: auth.Identity{TenantID: f.tenantA, UserID: f.userA}},
+		Store: quota.NewPostgresStore(pool),
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/me/quota?scope_id="+strconv.FormatInt(f.userA, 10), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	gotCap := map[string]any{}
+	for _, it := range body.Items {
+		m, _ := it["metric"].(string)
+		gotCap[m] = it["cap"]
+	}
+	for metric, wantCap := range map[string]string{"requests": "1000", "cost_usd": "10", "tokens_estimated": "1000000"} {
+		if gotCap[metric] != wantCap {
+			t.Fatalf("metric %s cap=%v want %q; body=%s", metric, gotCap[metric], wantCap, rec.Body.String())
+		}
+	}
+
+	// 不能偏移:cost-only store 方法(订阅进度 + key-control)即便现在存在
+	// requests/tokens 策略,也必须仍只返回 cost_usd 窗口。
+	store := quota.NewPostgresStore(pool)
+	scopeID := strconv.FormatInt(f.userA, 10)
+	costOnly, err := store.ListCurrentWindowsForScope(ctx, f.tenantA, quota.ScopeUser, scopeID, at)
+	if err != nil {
+		t.Fatalf("cost-only read: %v", err)
+	}
+	if len(costOnly) != 1 || costOnly[0].Metric != quota.MetricCostUSD {
+		t.Fatalf("cost-only method returned %d windows (%v); must stay cost_usd-only", len(costOnly), metricsOf(costOnly))
+	}
+	multi, err := store.ListCurrentWindowsForScopeMetrics(ctx, f.tenantA, quota.ScopeUser, scopeID, at,
+		[]quota.Metric{quota.MetricRequests, quota.MetricCostUSD, quota.MetricTokensEstimated})
+	if err != nil {
+		t.Fatalf("multi-metric read: %v", err)
+	}
+	if len(multi) != 3 {
+		t.Fatalf("multi-metric method returned %d windows want 3 (%v)", len(multi), metricsOf(multi))
+	}
+}
+
+// TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly 在涉及金钱的 api_key scope 上
+// 钉住「不能偏移」不变量。key-control 的 UsedUSD
+//(userkeycontrols/key_control_service.go)以 ScopeAPIKey 调用
+// ListCurrentWindowsForScope,并对返回的每个窗口求 settled+reserved 之和,
+// 且 Go 侧没有 metric 过滤 —— 因此一旦 cost-only 方法放宽到非 cost 的 metric,
+// UsedUSD 就会被污染(一个 request 计数 + 一个 token 计数被加进 USD)。
+// 上面多 metric 测试里的 ScopeUser 守卫覆盖不到这个 scope。
+// 变异:在 pg_store_window_reads.go 中把 cost-only 的 metric 集合放宽到包含
+//   requests/tokens -> 在 api_key scope 这里会返回 3 个窗口 -> 转红。
+func TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openMeQuotaPool(t, ctx)
+	f := newMeQuotaFixture(t, ctx, pool)
+	at := time.Now().UTC()
+	// quota 的 scope_id 是自由文本,且对 api_key 而言 normalizeScopeID 是恒等
+	// 映射,因此任意的 key id 都无需真实的 api_keys 行。在这个 scope 上预置全部
+	// 三个 metric。
+	const keyScope = "777"
+	f.seedScopeQuotaWindowMetric(f.tenantA, "api_key", keyScope, "requests", at, "1000", "0", "120")
+	f.seedScopeQuotaWindowMetric(f.tenantA, "api_key", keyScope, "cost_usd", at, "10", "0", "3.5")
+	f.seedScopeQuotaWindowMetric(f.tenantA, "api_key", keyScope, "tokens_estimated", at, "1000000", "0", "45000")
+
+	store := quota.NewPostgresStore(pool)
+	costOnly, err := store.ListCurrentWindowsForScope(ctx, f.tenantA, quota.ScopeAPIKey, keyScope, at)
+	if err != nil {
+		t.Fatalf("cost-only read at api_key scope: %v", err)
+	}
+	if len(costOnly) != 1 || costOnly[0].Metric != quota.MetricCostUSD {
+		t.Fatalf("cost-only method at api_key scope returned %d windows (%v); key-control UsedUSD must see cost_usd ONLY", len(costOnly), metricsOf(costOnly))
+	}
+	// 唯一的窗口是 cost 行(settled 3.5),而非计数行 —— 证明没有 metric 混入。
+	if costOnly[0].SettledValue.String() != "3.5" {
+		t.Fatalf("cost window settled=%s want 3.5 (a count row would be 120/45000)", costOnly[0].SettledValue.String())
+	}
+}
+
+func metricsOf(rows []quota.CurrentWindowRead) []quota.Metric {
+	out := make([]quota.Metric, len(rows))
+	for i, r := range rows {
+		out[i] = r.Metric
+	}
+	return out
 }

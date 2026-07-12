@@ -1,14 +1,14 @@
-// Global CORS + browser security-header contract.
+// 全局 CORS 与浏览器安全响应头契约。
 //
-// Discriminating intent (mutation checks called out per case): the gateway had
-// ZERO security headers and no CORS policy; these tests go red if a header is
-// dropped, if a disallowed origin is echoed, or if the wildcard-with-credentials
-// anti-pattern is reintroduced.
+// 鉴别意图（每个用例逐一标注变异检查）：此前网关没有任何安全响应头、也没有 CORS 策略；
+// 一旦某个响应头被丢掉、被回显了不允许的 origin、或重新引入「wildcard 配合 credentials」
+// 这类反模式，这些测试就会变红。
 package main
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -19,8 +19,8 @@ func okHandler() http.Handler {
 	})
 }
 
-// Security headers must be present on a normal response. Mutation: delete any
-// h.Set(...) in securityHeaders and the matching assertion goes red.
+// 普通响应上必须带有安全响应头。变异：删除 securityHeaders 中任意一个
+// h.Set(...)，对应的断言就会变红。
 func TestSecurityHeaders_Present(t *testing.T) {
 	rec := httptest.NewRecorder()
 	securityHeaders(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/auth/login", nil))
@@ -38,15 +38,42 @@ func TestSecurityHeaders_Present(t *testing.T) {
 	}
 }
 
-// HSTS only over TLS edge — never asserted on plaintext (would be a misconfig).
+// SPA「文档面」(非 API 路径,如 /login、/oauth/callback)必须拿到能加载自身脚本/样式的 CSP,
+// 否则 default-src 'none' 会连内嵌前端自己的 JS/CSS 一起拦死 → 整个页面白屏。
+// 变异:若 securityHeaders 对所有路径恒设 default-src 'none'(退回分流前),script-src 'self'
+// 断言与"不得含 default-src 'none'"断言即 RED —— 这正是活栈测抓到的白屏 bug。
+func TestSecurityHeaders_SPADocumentGetsLoadableCSP(t *testing.T) {
+	for _, path := range []string{"/login", "/oauth/callback", "/"} {
+		rec := httptest.NewRecorder()
+		securityHeaders(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		csp := rec.Header().Get("Content-Security-Policy")
+		if strings.Contains(csp, "default-src 'none'") {
+			t.Fatalf("%s 是 SPA 文档,不得用 default-src 'none'(会白屏);got %q", path, csp)
+		}
+		if !strings.Contains(csp, "script-src 'self'") {
+			t.Errorf("%s 的 CSP 必须允许 script-src 'self' 以自举;got %q", path, csp)
+		}
+		if !strings.Contains(csp, "frame-ancestors 'none'") {
+			t.Errorf("%s 的 CSP 仍须保留 frame-ancestors 'none' 防点击劫持;got %q", path, csp)
+		}
+	}
+	// 对照:API 路径必须仍是彻底锁死的严格 CSP(分流不能把 API 也放松)。
+	rec := httptest.NewRecorder()
+	securityHeaders(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/auth/login", nil))
+	if got := rec.Header().Get("Content-Security-Policy"); got != "default-src 'none'; frame-ancestors 'none'" {
+		t.Errorf("API 路径 CSP 必须保持严格 default-src 'none';got %q", got)
+	}
+}
+
+// HSTS 仅在 TLS 边缘下发——明文场景下绝不断言（否则属于配置错误）。
 func TestSecurityHeaders_HSTS_OnlyOnTLSEdge(t *testing.T) {
-	// plaintext: no HSTS
+	// 明文：不下发 HSTS
 	rec := httptest.NewRecorder()
 	securityHeaders(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/auth/login", nil))
 	if got := rec.Header().Get("Strict-Transport-Security"); got != "" {
 		t.Errorf("HSTS must NOT be set on plaintext; got %q", got)
 	}
-	// X-Forwarded-Proto: https -> HSTS present
+	// X-Forwarded-Proto: https -> 带有 HSTS
 	req := httptest.NewRequest(http.MethodGet, "/v1/auth/login", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rec2 := httptest.NewRecorder()
@@ -56,8 +83,8 @@ func TestSecurityHeaders_HSTS_OnlyOnTLSEdge(t *testing.T) {
 	}
 }
 
-// Allowlisted origin is echoed back exactly (never "*"), with Vary: Origin.
-// Mutation: echo "*" or skip the allowlist check and the assertions go red.
+// 在白名单内的 origin 会被原样回显（绝不会是 "*"），并带上 Vary: Origin。
+// 变异：回显 "*" 或跳过白名单校验，断言就会变红。
 func TestCORS_AllowedOrigin_EchoedNotWildcard(t *testing.T) {
 	allowed := parseAllowedOrigins("https://panel.hkai.shop, https://admin.hkai.shop")
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
@@ -79,8 +106,8 @@ func TestCORS_AllowedOrigin_EchoedNotWildcard(t *testing.T) {
 	}
 }
 
-// Disallowed origin gets NO CORS headers — the browser then blocks the read.
-// Mutation: drop the allowlist gate and ACAO becomes non-empty -> red.
+// 不允许的 origin 得不到任何 CORS 响应头——浏览器随之会阻止读取。
+// 变异：去掉白名单闸门，ACAO 就会变成非空 -> 红。
 func TestCORS_DisallowedOrigin_NoHeaders(t *testing.T) {
 	allowed := parseAllowedOrigins("https://panel.hkai.shop")
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
@@ -94,15 +121,15 @@ func TestCORS_DisallowedOrigin_NoHeaders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("non-preflight still passes through (auth handles it); got %d", rec.Code)
 	}
-	// Cache safety: even with no CORS headers, the response must Vary: Origin so a
-	// shared cache can't reuse it for an allowlisted origin. Mutation: drop the
-	// unconditional Vary in corsMiddleware and this goes red.
+	// 缓存安全：即便没有任何 CORS 响应头，响应也必须带 Vary: Origin，
+	// 这样共享缓存才不会把它复用给白名单内的 origin。变异：去掉 corsMiddleware 中
+	// 那条无条件的 Vary，本断言就会变红。
 	if rec.Header().Get("Vary") != "Origin" {
 		t.Errorf("disallowed/origin-dependent response must carry Vary: Origin; got %q", rec.Header().Get("Vary"))
 	}
 }
 
-// Preflight from an allowlisted origin -> 204 + method/header contract.
+// 来自白名单内 origin 的预检请求 -> 204 + 方法/响应头契约。
 func TestCORS_Preflight_Allowed(t *testing.T) {
 	allowed := parseAllowedOrigins("https://panel.hkai.shop")
 	req := httptest.NewRequest(http.MethodOptions, "/v1/api-keys", nil)
@@ -119,7 +146,7 @@ func TestCORS_Preflight_Allowed(t *testing.T) {
 	}
 }
 
-// Preflight from a disallowed origin -> 403, no CORS headers, never reaches handler.
+// 来自不允许 origin 的预检请求 -> 403，无 CORS 响应头，且永不抵达 handler。
 func TestCORS_Preflight_Disallowed_Forbidden(t *testing.T) {
 	allowed := parseAllowedOrigins("https://panel.hkai.shop")
 	req := httptest.NewRequest(http.MethodOptions, "/v1/api-keys", nil)
@@ -136,7 +163,7 @@ func TestCORS_Preflight_Disallowed_Forbidden(t *testing.T) {
 	}
 }
 
-// Empty allowlist = default-deny: even a well-formed origin gets nothing.
+// 空白名单 = 默认拒绝：即便是格式完全正确的 origin 也什么都拿不到。
 func TestCORS_EmptyAllowlist_DefaultDeny(t *testing.T) {
 	allowed := parseAllowedOrigins("")
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)

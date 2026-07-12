@@ -29,7 +29,7 @@ func TestGenerateBearer_AllEnvironments(t *testing.T) {
 			if !strings.HasPrefix(bearer, prefix) {
 				t.Errorf("prefix %q is not a prefix of bearer %q", prefix, bearer)
 			}
-			// 24 base32 chars after the namespace = 32-char total.
+			// namespace 之后 24 个 base32 字符 = 共 32 个字符。
 			if got := len(bearer) - len(tc.wantNS); got != 24 {
 				t.Errorf("suffix len = %d; want 24 (120 bits entropy)", got)
 			}
@@ -43,9 +43,9 @@ func TestGenerateBearer_RejectsInvalidEnvironment(t *testing.T) {
 	}
 }
 
-// TestGenerateBearer_Uniqueness — N runs produce N distinct bearers.
-// Probability of collision at 120 bits over a few thousand draws is
-// negligible; the test guards against a stub rand.Reader regression.
+// TestGenerateBearer_Uniqueness —— N 次运行产生 N 个互不相同的 bearer。
+// 在 120 bit、几千次抽取下发生碰撞的概率可忽略不计;该测试用于防止
+// rand.Reader 被打桩(stub)的回归。
 func TestGenerateBearer_Uniqueness(t *testing.T) {
 	const n = 1000
 	seen := make(map[string]struct{}, n)

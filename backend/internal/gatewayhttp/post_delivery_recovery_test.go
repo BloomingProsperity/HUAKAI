@@ -42,15 +42,17 @@ func (s *postDeliveryFakeSettler) Refund(_ context.Context, _ billing.RefundRequ
 
 // postDeliverySpyEnqueuer 捕获 EnqueuePayload 调用,验 event 字段。
 type postDeliverySpyEnqueuer struct {
-	calls    int
-	lastEvt  dlq.Event
-	returnID int64
-	retErr   error
+	calls      int
+	lastEvt    dlq.Event
+	returnID   int64
+	retErr     error
+	lastCtxErr error // ctx.Err() 在 Enqueue 被调那一刻的快照，守 enqueue 用 fresh(非过期 settle)ctx
 }
 
-func (s *postDeliverySpyEnqueuer) Enqueue(_ context.Context, e dlq.Event) (int64, error) {
+func (s *postDeliverySpyEnqueuer) Enqueue(ctx context.Context, e dlq.Event) (int64, error) {
 	s.calls++
 	s.lastEvt = e
+	s.lastCtxErr = ctx.Err()
 	if s.retErr != nil {
 		return 0, s.retErr
 	}
@@ -58,6 +60,36 @@ func (s *postDeliverySpyEnqueuer) Enqueue(_ context.Context, e dlq.Event) (int64
 		return 42, nil
 	}
 	return s.returnID, nil
+}
+
+// TestSettleCompletionWithRecovery_EnqueueUsesFreshContext 守住已交付结算超时后的恢复写
+// 使用独立未过期上下文，数据库受压时仍能持久化恢复意图。
+func TestSettleCompletionWithRecovery_EnqueueUsesFreshContext(t *testing.T) {
+	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle deadline exceeded")}
+	spy := &postDeliverySpyEnqueuer{}
+	deps := ChatHandlerDeps{
+		Settler:           settler,
+		SettleRecoveryDLQ: spy,
+	}
+	event := newPostDeliveryFixtureEvent()
+
+	// 模拟 settle ctx 已过期/取消(deadline 耗尽场景)。
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, recoveryEnqueued, err := settleCompletionWithRecovery(expired, deps, event, settlementrecovery.SourceStream)
+	if err == nil {
+		t.Fatal("settle err must propagate")
+	}
+	if spy.calls != 1 {
+		t.Fatalf("enqueue calls=%d want 1 (recovery must run on deadline-exceeded settle ctx)", spy.calls)
+	}
+	if !recoveryEnqueued {
+		t.Fatal("恢复行已成功持久化时必须向调用方报告成功入队")
+	}
+	if spy.lastCtxErr != nil {
+		t.Fatalf("DLQ enqueue ran on already-expired settle ctx (err=%v) — recovery intent would never persist (S2 #2)", spy.lastCtxErr)
+	}
 }
 
 // fakeAuditRefPolicy 返"不需要 audit ref" — 让 validateMoneyPathAuditRefForSource
@@ -83,10 +115,7 @@ func newPostDeliveryFixtureEvent() eventbus.RequestCompletionEvent {
 	}
 }
 
-// TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue 守:settle 成功时
-// SettleRecoveryDLQ 不被调用 — 防误兜底正常 settle。
-//
-// Mutation:把 helper 改成"无条件 enqueue" → 本用例 spy.calls=1 必红。
+// TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue 守住主结算成功时不创建恢复行。
 func TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: nil}
 	spy := &postDeliverySpyEnqueuer{}
@@ -96,22 +125,43 @@ func TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue(t *testing.T) {
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
 	if err != nil {
 		t.Fatalf("settle success path returned err=%v", err)
 	}
 	if spy.calls != 0 {
 		t.Fatalf("Enqueuer.Enqueue calls=%d want=0 on settle success", spy.calls)
 	}
+	if recoveryEnqueued {
+		t.Fatal("主结算成功时不得报告恢复入队")
+	}
 }
 
-// TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery 守 P2/P3 主修复:
-// 流式 settle 失败 + source=stream + SettleRecoveryDLQ 已注入 → enqueue 1 次,
-// 行 event_kind=post_delivery_settlement,payload 可 decode 回 SettleRequest。
-//
-// Mutation 1:删 settleCompletionWithRecovery 内 enqueue 调用 → spy.calls=0 红。
-// Mutation 2:把 source 改成 source="" 调用 → 同样不 enqueue 红。
-// Mutation 3:把 event_kind 改回 EventKindUsageRecord → assertion 红。
+// TestSettleCompletionWithRecovery_DirectSettleEnqueues 守住非流式响应已交付后的结算
+// 失败同样创建恢复行，避免已交付请求丢账。
+func TestSettleCompletionWithRecovery_DirectSettleEnqueues(t *testing.T) {
+	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle db error")}
+	spy := &postDeliverySpyEnqueuer{}
+	deps := ChatHandlerDeps{
+		Settler:           settler,
+		SettleRecoveryDLQ: spy,
+	}
+	event := newPostDeliveryFixtureEvent()
+
+	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceDirectSettle)
+	if err == nil {
+		t.Fatal("settle err must propagate")
+	}
+	if spy.calls != 1 {
+		t.Fatalf("非流式 SourceDirectSettle settle 失败必入 DLQ 恢复,enqueue calls=%d want 1", spy.calls)
+	}
+	if !recoveryEnqueued {
+		t.Fatal("非流式结算失败且恢复持久化成功时必须报告成功入队")
+	}
+}
+
+// TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery 守住流式结算失败只入队
+// 一次，事件类型和可重放结算载荷保持完整。
 func TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("pgx: connection reset")}
 	spy := &postDeliverySpyEnqueuer{}
@@ -121,12 +171,15 @@ func TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery(t *testing.T) {
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
 	if err == nil {
 		t.Fatal("settleCompletionWithRecovery must propagate settle err (caller may want to log)")
 	}
 	if spy.calls != 1 {
 		t.Fatalf("Enqueuer.Enqueue calls=%d want=1 on post-delivery settle failure", spy.calls)
+	}
+	if !recoveryEnqueued {
+		t.Fatal("流式结算失败且恢复持久化成功时必须报告成功入队")
 	}
 	if spy.lastEvt.EventKind != dlq.EventKindPostDeliverySettlement {
 		t.Fatalf("dlq event_kind=%q want=%q", spy.lastEvt.EventKind, dlq.EventKindPostDeliverySettlement)
@@ -161,11 +214,8 @@ func TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery(t *testing.T) {
 	}
 }
 
-// TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue 守 pre-delivery
-// 调用方(source="")不触发 enqueue — 非流式 settle 失败 = 500 给客户端,
-// 不应进 DLQ 重 settle。
-//
-// Mutation:把 source==""  check 删 → 本用例 spy.calls=1 必红。
+// TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue 守住未声明交付后来源的失败
+// 不创建恢复行。
 func TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle failed")}
 	spy := &postDeliverySpyEnqueuer{}
@@ -175,22 +225,20 @@ func TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue(t *testing.T) {
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.Source(""))
+	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.Source(""))
 	if err == nil {
 		t.Fatal("must still propagate settle err")
 	}
 	if spy.calls != 0 {
 		t.Fatalf("Enqueuer.Enqueue calls=%d want=0 when source=\"\"", spy.calls)
 	}
+	if recoveryEnqueued {
+		t.Fatal("无恢复来源时不得报告恢复入队")
+	}
 }
 
-// TestSettleCompletionWithRecovery_NilDLQDoesNotPanic 守 wire 缺时不 panic —
-// 生产部署可能阶段性 wire 缺(测试环境 / 启动 race),不能因此让 stream
-// handler 崩溃。
-//
-// Mutation:删 d.SettleRecoveryDLQ==nil check → settlementrecovery.EnqueuePayload
-// 内 q==nil 返 ErrEnqueuerNil 但本测试是 helper level — 实际 helper 跳过
-// settlementrecovery.EnqueuePayload 调用,nil DLQ 时不该触发。
+// TestSettleCompletionWithRecovery_NilDLQDoesNotPanic 守住恢复队列缺失时仍返回原结算
+// 错误且不崩溃，也不得报告成功入队。
 func TestSettleCompletionWithRecovery_NilDLQDoesNotPanic(t *testing.T) {
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("settle failed")}
 	deps := ChatHandlerDeps{
@@ -200,19 +248,17 @@ func TestSettleCompletionWithRecovery_NilDLQDoesNotPanic(t *testing.T) {
 	event := newPostDeliveryFixtureEvent()
 
 	// 不应 panic,settle err 原样返回
-	_, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
 	if err == nil {
 		t.Fatal("must propagate settle err even when DLQ is nil")
 	}
+	if recoveryEnqueued {
+		t.Fatal("恢复队列未配置时不得报告恢复入队")
+	}
 }
 
-// TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated 守 D-4 决策:
-// DLQ persist 自己失败 = money path 双环灰区 — log P0 alert 但不影响 caller
-// (流式响应已发给客户端,不能反悔)。settle err 是 caller 看到的唯一 err。
-//
-// Mutation 1:helper 把 enqueue err 也返给 caller → caller 拿到 enqueue err
-// 而不是 settle err,日志链断。
-// Mutation 2:helper panic on enqueue err → 本用例 panic。
+// TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated 守住双失败时记录脱敏
+// 高优先级信号，同时向调用方保留原结算错误并报告恢复未入队。
 func TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated(t *testing.T) {
 	var logs bytes.Buffer
 	prev := slog.Default()
@@ -232,18 +278,21 @@ func TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated(t *testing.T
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
 	if !errors.Is(err, settleErr) {
 		t.Fatalf("err=%v should be settle err (not enqueue err) — caller logs settle, ops alert reads slog", err)
 	}
 	if spy.calls != 1 {
 		t.Fatalf("Enqueuer must be called once even if it errors, got %d", spy.calls)
 	}
+	if recoveryEnqueued {
+		t.Fatal("恢复队列写失败时不得报告成功入队")
+	}
 	if spy.lastEvt.FailureReason != "internal_error" {
 		t.Fatalf("DLQ FailureReason=%q want error class internal_error", spy.lastEvt.FailureReason)
 	}
 	gotLog := logs.String()
-	for _, want := range []string{"req-pd-1", "settle_recovery_dlq_enqueue_failed", "error_class"} {
+	for _, want := range []string{"req-pd-1", "money_lost_double_fault", "critical", "P0", "error_class"} {
 		if !strings.Contains(gotLog, want) {
 			t.Fatalf("sanitized settle recovery log missing %q: %s", want, gotLog)
 		}

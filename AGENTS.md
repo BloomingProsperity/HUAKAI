@@ -13,6 +13,8 @@ This project builds an MIT clean-room AI Gateway + Account Hub + Admin Ops Platf
 - Every reference feature must be mapped to `Implemented`, `Implemented Better`, `Merged Equivalent`, `Safe Equivalent`, `Plugin`, `Feature Flag`, or `Mandatory Roadmap`.
 - No feature may be silently dropped.
 - Do not modify `LICENSE` without explicit owner instruction.
+- **语言:全中文(Owner 硬规则)。** 代码注释(`.go` 生产代码与测试)、commit message 正文、计划与 `docs/process` 文档、面向 Owner 的汇报、以及派发给其它 agent 的指令与其返回报告,一律用中文;英文技术标识符(函数 / 类型 / 环境变量名、SQL 关键字)保留英文,只是注释与散文用中文。Dispatch subagent 时必须在 prompt 显式要求"代码注释用中文、返回报告用中文"。
+- **代码注释禁止提及借鉴项目(Owner 硬规则 + clean-room)。** `.go` 代码注释里**绝不**出现 sub2api / new-api / CLIProxyAPI 等借鉴项目名,也不写"借鉴 / 参考某项目的做法"。注释只描述 HUAKAI 自身的意图与机制。对借鉴项目的 #16 调研与对照只保留在 `docs/process` 计划文档里,不进代码注释。
 
 ## Owner Start Gate
 
@@ -728,6 +730,30 @@ Owner 2026-05-29 quotes「你做任何功能的时候都要看下 sub2 和 clipr
 - `REFERENCE PROJECTS IN SCOPE` 缺 CLIProxyAPI / sub2api / new-api 三者任一
 - 某镜子无等价物却没写 source-cite 的 "no equivalent" 注脚
 - 复杂 feature 的 plan 缺 shape inventory(path/mode 清单)导致路径遗漏
+
+## Module Interplay & Runtime Logic Review (added 2026-07-02 Owner directive)
+
+Owner 2026-07-02 原话「看模块之间的作用与配合……不单单是这一块，而是我们整个项目的运行逻辑都要经得起推敲。一定要先看三家是怎么做的！再看看我们是怎么做的！」+「还要测试并发！这些都要测！」+「测试要重！模型用最便宜的就行」。镜像 `CLAUDE.md` #17,给 codex / reviewer / 所有 lane。
+
+### 与 #16 的区别
+
+#16 保证「功能完整形态(path/mode/state)不遗漏」;本条更进一层——看**模块之间的作用与配合(运行逻辑)**。功能各模块单独都在、单测都绿,但**模块交界处的协作**可能是断的。实证(2026-07-02 relay 细粒度 E2E):billing 结算 ↔ quota reconciler 配合断裂——reconciler job 卡 queued、reservation 不结算、并发槽只靠 lease 过期释放;而 RPM / 计费 / 停用等**每个单模块测都 PASS**。这类缺陷只有沿「模块协作链」测才抓得到。
+
+### 规则
+
+- **审查对象 = 模块间的数据/状态传递 + 失败协作**:一个请求/操作流过系统时,追每个颗粒度模块从上一环拿什么(identity / hold_id / account_id / attempt 上下文 / reservation)、产出什么、传给下一环什么;失败时(上游 4xx/5xx、流式中途断、余额不足、结算 DB 故障、换号)各模块怎么协作回滚补偿。
+- **范围 = 整个项目运行逻辑,不限 relay**:auth 采集流状态机、billing 预扣↔结算↔abort、quota↔选号↔并发槽释放、pool 选号↔渠道健康回流↔failover、credential 物化↔转发、media 任务生命周期、结算恢复 DLQ,均需经得起推敲。
+- **强制次序:先三镜后自己**。碰某子系统的配合逻辑前,先读 sub2api / new-api / CLIProxyAPI 同款子系统怎么串联模块、失败怎么协作(带 file:line),再对照 HUAKAI,确认不漏钱/冻钱/重复扣/状态不一致/换号失败/槽不释放。
+- **测试要「重」+ 必测并发,不因额度缩水**:配合处测试构造跨模块真实触发,判别断言咬住「配合错的后果」;**并发**(per-key cap / 账号槽 / 用户级)并发打满真实触发排队/拒绝/槽释放,必测。上游额度有限只允许**选最便宜模型 + 压小 max_tokens**,不允许减少测试场景或跳过失败协作。
+- **产出**:`docs/architecture/runtime-logic/<子系统>.md`,记模块协作图 + 关键配合点 + 三镜对照 + 已知配合缺口。
+
+### Codex reviewer enforcement
+
+`codex exec review --uncommitted` / 切片 cross-review 必须把以下标为 HIGH 阻 land:
+- 触及跨模块配合(billing/quota/pool/failover/采集流状态机等)却未先对照三镜运行逻辑
+- 测试只覆盖单模块、未测配合处(模块交界的数据/状态传递 + 失败协作)
+- 涉及并发的路径未做并发触发测试
+- 以「省额度」为由缩水本应充分的功能测试
 
 ## Parallel-Edit Coordination (added 2026-05-30 Owner directive)
 

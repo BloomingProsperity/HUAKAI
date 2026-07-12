@@ -2,7 +2,9 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -63,20 +65,20 @@ func (r *PostgresRegistry) BulkImportModelAliases(ctx context.Context, params Bu
 		if err := upsertModelAliasTx(ctx, tx, normalized); err != nil {
 			_ = tx.Rollback(ctx)
 			result.Status = "failed"
-			result.Error = err.Error()
+			result.Error = sanitizeAliasImportRowError(ctx, i, normalized.Alias, err)
 			results = append(results, result)
 			continue
 		}
 		if err := bumpAliasImportSnapshot(ctx, tx, normalized, params); err != nil {
 			_ = tx.Rollback(ctx)
 			result.Status = "failed"
-			result.Error = err.Error()
+			result.Error = sanitizeAliasImportRowError(ctx, i, normalized.Alias, err)
 			results = append(results, result)
 			continue
 		}
 		if err := tx.Commit(ctx); err != nil {
 			result.Status = "failed"
-			result.Error = fmt.Errorf("%w: commit alias import row: %v", ErrRegistryBackend, err).Error()
+			result.Error = sanitizeAliasImportRowError(ctx, i, normalized.Alias, fmt.Errorf("%w: commit alias import row: %v", ErrRegistryBackend, err))
 			results = append(results, result)
 			continue
 		}
@@ -84,6 +86,20 @@ func (r *PostgresRegistry) BulkImportModelAliases(ctx context.Context, params Bu
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+// sanitizeAliasImportRowError 把一行导入的 DB/事务错误映射成给客户端的安全文案, 并把原始错误落 server 日志。
+// 安全边界: bulk-import 整体返 HTTP 200, 单行失败经 result.Error 回客户端 —— 故这里绝不能把 raw pgx/事务错误
+// (含表名/SQL/约束名/SQLSTATE 等 DB 内部) 原样回客户端。ErrUnknownModel 是安全的用户向 sentinel(目标模型
+// 不存在), 给清晰文案帮运维改输入且不泄内部; 其余(ErrRegistryBackend 包裹的后端错误)一律收敛成通用码,
+// 原始错误仅经 slog 落 server 日志供排障。校验类失败(normalizeModelAliasImport)走另一分支, 不经本函数。
+func sanitizeAliasImportRowError(ctx context.Context, index int, alias string, err error) string {
+	if errors.Is(err, ErrUnknownModel) {
+		return "model_not_found"
+	}
+	slog.ErrorContext(ctx, "model alias import row failed",
+		slog.Int("index", index), slog.String("alias", alias), slog.Any("error", err))
+	return "import_row_failed"
 }
 
 func normalizeModelAliasImport(item *ModelAliasImport) (ModelAliasImport, error) {

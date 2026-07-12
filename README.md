@@ -150,7 +150,8 @@ risk changes implementation method rather than scope.
 | Path | Purpose |
 | --- | --- |
 | [backend/](backend/) | Go backend core: gateway HTTP entrypoint, inbound auth, model registry, router engine, resource pool, protocol translation, streaming forwarder, billing/observability ledger, SQL migrations, and tests. |
-| [frontend/](frontend/) | Frontend workspace placeholder. The operations console is not implemented yet. |
+| [frontend/](frontend/) | Frontend workspace. A build scaffold exists, but the operations console UI is not yet implemented; self-hosting today is API-only (bootstrap admin token + admin API). |
+| [docs/deploy/](docs/deploy/) | Production deploy + first-boot bootstrap guide (`docker-compose.prod.yml`, env example, startup gates). |
 | [tools/](tools/) | Operator tools (e.g. `fingerprint-collector` for transport-mimicry preparation). Each tool ships its own README with use-boundary rules. |
 | [CLAUDE.md](CLAUDE.md) / [GEMINI.md](GEMINI.md) / [AGENTS.md](AGENTS.md) | Per-agent operating charters. |
 | [docs/](docs/) | Authoritative governance, contracts, parity matrix, risk register, release gates, specs, and plans. |
@@ -165,7 +166,10 @@ risk changes implementation method rather than scope.
 
 ## Current backend slice
 
-The current live path is `POST /v1/chat/completions`.
+The live inbound surface spans 44 distinct `/v1/*` and `/admin/v1/*` route prefixes
+(not just `POST /v1/chat/completions`) — including `/v1/messages`, `/v1/embeddings`,
+`/v1/images`, `/v1/audio`, `/v1/responses`, and `/v1/rerank`
+(`backend/cmd/gateway/routes.go:106` registers `/v1/messages`).
 
 Implemented:
 
@@ -175,7 +179,7 @@ Implemented:
 - Resource pool selection and claim writeback in `backend/internal/pool`.
 - Streaming forwarder and usage draft extraction in `backend/internal/gateway`.
 - Tx1/Tx2 billing and observability settlement in `backend/internal/billing`.
-- PostgreSQL migrations through `0093_billing_ledger_claims_listing_index`.
+- PostgreSQL migrations through `0151_media_task_orphans`.
 - R7 application-layer mimicry primitives (system rewrite, cache_control breakpoints,
   tool-name obfuscation, metadata user_id rewrite, 6-step composer) in
   `backend/internal/gateway/`.
@@ -185,11 +189,21 @@ Known limitations:
 - Router is still L0: one primary attempt from `PoolCandidates[0]`.
 - Gateway executor logic is still embedded in the chat handler.
 - `attempt_id` and `lease_id` are documented but not yet first-class schema fields.
-- Provider adapters are not production-complete; the current happy path uses mock upstream
-  bytes and an Anthropic SSE parser.
-- Successful requests still settle with a fixed placeholder cost.
-- Admin APIs and the frontend operations console are not implemented yet.
-- R3 transport-layer mimicry is in plan stage; no production-ready code yet.
+- Provider adapters are production-wired: a default registry registers real passthrough
+  adapters (Grok / Kimi / DeepSeek / Mistral and more) in
+  `backend/internal/provider/registrydefault/default.go:177`, and Anthropic egress goes
+  through a real uTLS mimicry exchanger (`backend/cmd/gateway/wiring.go:829`), not mock bytes.
+- Successful requests settle with real micro-USD pricing
+  (`backend/internal/billing/public_price_table.go:166`), not a fixed placeholder cost.
+- Admin APIs are implemented and mounted (20+ `/admin/v1/*` route groups in
+  `backend/cmd/gateway/routes.go:815` plus `internal/{adminhttp,adminuserhttp,adminquotahttp,
+  proxyadminhttp,modelbindingadminhttp}` packages); only the frontend operations console
+  is not yet built.
+- R3 transport-layer mimicry is production code: a real uTLS dialer
+  (`backend/internal/transport/mimicry/utls_dialer.go:13`) is injected into the production
+  dispatcher (`backend/cmd/gateway/wiring.go:1178`, consumed at
+  `backend/internal/gateway/upstream_dispatcher.go:196`). It is off by default
+  (operator opt-in), not in plan stage.
 
 ## Where to start
 

@@ -50,7 +50,7 @@ const DefaultSegmentTableCap = 100_000
 // 不变量:
 //   - len(Members) == PASRSegmentSize (始终 3)
 //   - HasCacheBitmap 仅低 3 bit 有意义；bit_i=1 表示 Members[i] 见过
-//     vendor cache_creation_input_tokens > 0
+//     厂商返回的 cache_creation_input_tokens > 0
 //   - LastReadAt 单调递增（atomic store, 不回退）
 //
 // 线程安全: 字段读写都用 atomic 操作（避免 per-segment mutex 在 hot path
@@ -135,7 +135,7 @@ func (s *PrefixSegment) Demote(idx int) {
 	mask := uint32(1) << idx
 	for {
 		old := s.HasCacheBitmap.Load()
-		new := old &^ mask // clear bit
+		new := old &^ mask // 清除该 bit
 		if old == new || s.HasCacheBitmap.CompareAndSwap(old, new) {
 			break
 		}
@@ -222,7 +222,7 @@ func (s *PrefixSegment) IndexOf(accountID int64) int {
 type SegmentTable struct {
 	mu sync.RWMutex
 
-	// segments string-keyed map (key = string(prefix_hash))。
+	// segments 是以字符串为键的 map（key = string(prefix_hash)）。
 	segments map[string]*segmentEntry
 
 	// lruOrder LRU 链表; front = 最新, back = 最老 (淘汰候选)。
@@ -342,7 +342,7 @@ func (t *SegmentTable) LookupOrCreate(tenantID int64, prefixHash []byte, ring *A
 	t.segments[key] = &segmentEntry{seg: seg, lruNode: node}
 	IncSegmentCreates() // metrics: cold-start 频率
 
-	// LRU evict back if cap exceeded
+	// 若超过容量上限，按 LRU 淘汰最旧条目
 	if len(t.segments) > t.maxSegments {
 		t.evictOldestLocked()
 		AddEvictions(1)
@@ -466,7 +466,7 @@ const (
 )
 
 func segmentKey(tenantID int64, prefixHash []byte) string {
-	var head [9]byte // 8B tenant_id + 1B mode tag
+	var head [9]byte // 8 字节 tenant_id + 1 字节 mode tag
 	binary.BigEndian.PutUint64(head[:8], uint64(tenantID))
 	if len(prefixHash) <= 32 {
 		head[8] = segmentKeyModeRaw

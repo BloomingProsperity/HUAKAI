@@ -69,6 +69,7 @@ type createOrderRecord struct {
 	ProviderOrderRef       string
 	RequestFingerprint     string
 	CreatedByAdminID       int64
+	CreatedByActor         string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	CreatedActorKind       string
 	CreatedActorID         int64
 	RequestID              string
@@ -93,6 +94,7 @@ type confirmRecord struct {
 	TenantID      int64
 	OrderID       int64
 	AdminID       int64
+	ActorRef      string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	ActorKind     string // admin = 管理员手动 (P1); system = 支付回调自动 (P2a)。空缺省按 system。
 	ConfirmReason string
 	RequestID     string
@@ -104,6 +106,7 @@ type cancelRecord struct {
 	OrderID   int64
 	UserID    int64 // >0: 用户自助取消(校验归属); 0: admin 取消(不限用户)。
 	ActorKind string
+	ActorRef  string // 双身份归属串,空则 NULL
 	ActorID   int64
 	Reason    string
 	RequestID string
@@ -118,6 +121,7 @@ type refundRecord struct {
 	Reason         string
 	ActorKind      string
 	ActorID        int64
+	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 	Now            time.Time
 }
@@ -126,6 +130,7 @@ type fulfillRecord struct {
 	TenantID  int64
 	OrderID   int64
 	ActorKind string
+	ActorRef  string // 双身份归属串,空则 NULL
 	ActorID   int64
 	RequestID string
 	Now       time.Time

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,8 +172,11 @@ func TestFactory_For_MimicrySidecarSocketUsesSidecarRoundTripper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid fake sidecar should produce sidecar RoundTripper: %v", err)
 	}
-	if _, ok := rt.(*http.Transport); !ok {
-		t.Fatalf("sidecar branch should return *http.Transport from NewSidecarRoundTripperForMode, got %T", rt)
+	// sidecar 分支返回带 SidecarProfileID() 标记的 wrapper(内嵌 *http.Transport),转发层
+	// (gateway.applyTLSProfile)据此短路 per-account DB profile 替换。这条断言是 ②-2b 的
+	// 真实接线守卫:必须验【生产构造器的输出真满足标记接口】,而非手搓 marker 的假绿。
+	if _, ok := rt.(interface{ SidecarProfileID() string }); !ok {
+		t.Fatalf("sidecar branch should return a sidecar-marked RoundTripper (impl SidecarProfileID), got %T", rt)
 	}
 	if probeCalls != 1 {
 		t.Fatalf("probe calls=%d want 1", probeCalls)
@@ -222,6 +228,56 @@ func TestFactory_For_MimicrySidecarNoAckTimesOutFailClosed(t *testing.T) {
 	}
 }
 
+func TestFactory_For_MimicrySidecarFailureCacheCoalescesConcurrentProbeTimeouts(t *testing.T) {
+	f := NewFactory()
+	f.SidecarSocketPath = "/tmp/huakai-stuck-sidecar.sock"
+	f.sidecarProbeTimeout = 30 * time.Millisecond
+	f.sidecarFailureCacheTTL = time.Second
+	var probeCalls atomic.Int64
+	f.sidecarProbe = func(ctx context.Context, _ string, _ mimicry.TransportMode, _ string) error {
+		probeCalls.Add(1)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	const concurrent = 10
+	start := make(chan struct{})
+	errs := make(chan error, concurrent)
+	var wg sync.WaitGroup
+	wg.Add(concurrent)
+	started := time.Now()
+	for i := 0; i < concurrent; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
+			if err == nil {
+				errs <- fmt.Errorf("sidecar 挂起时不应返回 rt=%T", rt)
+				return
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err == nil {
+			t.Fatal("sidecar 挂起时所有并发请求都应失败")
+		}
+		if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarUnavailable {
+			t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarUnavailable)
+		}
+	}
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("挂起 sidecar 的并发探测次数=%d want 1；失败负缓存未命中会导致锁内串行探测", got)
+	}
+	if elapsed := time.Since(started); elapsed >= f.sidecarProbeTimeout*time.Duration(concurrent)/2 {
+		t.Fatalf("并发挂起 sidecar 总耗时=%s，接近线性串行探测；timeout=%s N=%d", elapsed, f.sidecarProbeTimeout, concurrent)
+	}
+}
+
 func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOffDoesNotDegrade(t *testing.T) {
 	native := &stubRoundTripper{}
 	f := NewFactory()
@@ -231,6 +287,10 @@ func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOffDoesNotDegrade(t *t
 	f.sidecarProbe = func(context.Context, string, mimicry.TransportMode, string) error {
 		return errors.New("connection refused")
 	}
+
+	// A2/S2-1:probe 阶段的出口失败必须计入拨号计数——这是默认 fail-closed 下 sidecar 宕机的
+	// 主路径(DialTLS 从不运行)。connection refused 归 sidecar_unavailable → dial_fail 桶。
+	beforeDialFail := egressDialFailCount()
 
 	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
 
@@ -246,6 +306,25 @@ func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOffDoesNotDegrade(t *t
 	if got := TransportErrorClassOf(err); got != TransportErrorClassSidecarUnavailable {
 		t.Fatalf("error class=%q want %q", got, TransportErrorClassSidecarUnavailable)
 	}
+	// 判别性:删 sidecarRoundTripper probe 失败分支的 mimicry.RecordEgressProbeFailure → 增量 0 → 红。
+	// 证 probe 期出口宕机不再是指标死账(补齐"出口成功率"分母的关联缺口)。
+	if delta := egressDialFailCount() - beforeDialFail; delta != 1 {
+		t.Fatalf("egress_sidecar_dial_total{dial_fail} 增量=%d 应为 1(probe 期 sidecar 宕机未计入拨号失败,出口成功率分母漏账)", delta)
+	}
+}
+
+// egressDialFailCount 读 bridge 面 dial 计数的 dial_fail 桶(经 expvar 全局 map,跨包读)。
+// probe 失败在 mimicry 包计数,这里用 expvar 名字读回,顺带证跨包 expvar 契约。
+func egressDialFailCount() int64 {
+	m, ok := expvar.Get("egress_sidecar_dial_total").(*expvar.Map)
+	if !ok || m == nil {
+		return 0
+	}
+	iv, ok := m.Get("dial_fail").(*expvar.Int)
+	if !ok || iv == nil {
+		return 0
+	}
+	return iv.Value()
 }
 
 func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOnUsesNativeAndCountsMetric(t *testing.T) {
@@ -258,6 +337,10 @@ func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOnUsesNativeAndCountsM
 		return errors.New("connection refused")
 	}
 
+	// A2:抓 bridge 面 expvar 的增量。expvar 是进程全局、与其它测试共享,故取增量而非绝对值。
+	// unavailable 类应 +1,与内存原子计数 SidecarFallbackCount 同步递增。
+	beforeUnavailable := egressFallbackClassCount(TransportErrorClassSidecarUnavailable)
+
 	rt, err := f.For(ProviderAnthropic, TransportModeMimicryClaudeCode)
 
 	if err != nil {
@@ -269,6 +352,22 @@ func TestFactory_For_MimicrySidecarUnavailableFallbackFlagOnUsesNativeAndCountsM
 	if got := f.SidecarFallbackCount(); got != 1 {
 		t.Fatalf("fallback metric=%d want 1", got)
 	}
+	// 判别性:删 recordSidecarFallback 里的 recordEgressFallbackMetric(class) → 此增量为 0 → 红。
+	// 且 reason_class 必须落在 sidecar_unavailable 桶(probe connection refused),写错分类桶也红。
+	if delta := egressFallbackClassCount(TransportErrorClassSidecarUnavailable) - beforeUnavailable; delta != 1 {
+		t.Fatalf("egress_sidecar_fallback_total{sidecar_unavailable} 增量=%d 应为 1(降级事件未桥进 expvar,或写错 reason_class 桶)", delta)
+	}
+}
+
+// egressFallbackClassCount 读 bridge 面 expvar 里某一 reason_class 的降级计数(同包可直接读
+// 包级 var)。用于断言"内存原子计数"与"expvar 桥接面"在同一真实降级路径上同步 +1。
+func egressFallbackClassCount(class TransportErrorClass) int64 {
+	v := egressSidecarFallbackTotal.Get(string(class))
+	iv, ok := v.(*expvar.Int)
+	if !ok || iv == nil {
+		return 0
+	}
+	return iv.Value()
 }
 
 func TestFactory_For_MimicrySidecarRuntimeFailureFallbacksToNative(t *testing.T) {

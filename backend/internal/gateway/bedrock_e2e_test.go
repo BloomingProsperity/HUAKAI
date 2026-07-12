@@ -1,14 +1,14 @@
-// bedrock_e2e_test.go — A6 atomic e2e 烟测：完整 Bedrock binary EventStream
-// 链路 → forwarder pipeline → 客户端透传或 canonical event 翻译。
+// bedrock_e2e_test.go — A6 原子变更 e2e 烟测：完整 Bedrock binary EventStream
+// 链路 → forwarder 流水线 → 客户端透传或 canonical event 翻译。
 //
 // 链路覆盖：
-//  1. 合成 AWS Binary EventStream byte stream（含 prelude + headers + payload + CRC）
+//  1. 合成 AWS Binary EventStream 字节流（含 prelude + headers + payload + CRC）
 //  2. 走 BedrockEventStreamScanner（A3）切帧 + 解 chunk envelope
 //  3. 走 bedrock.EventStreamAdapter（A4）转 CanonicalEvent
 //  4. 走 StreamForwarder.Forward 写入 http.ResponseWriter
 //
 // 不依赖 AWS 网络，不引新依赖；与 bedrock_stream_scanner_test.go 共用
-// encodeBedrockFrame helper（同 package）。
+// encodeBedrockFrame helper（同包）。
 package gateway
 
 import (
@@ -33,7 +33,7 @@ import (
 // 注意：bedrock_stream_scanner_test.go 已定义同名 helper（encodeBedrockFrame /
 // chunkPayload / chunkFrame），同 package 下复用即可，无需重复定义。
 
-// bedrockE2EStream 拼接 Bedrock-on-Anthropic happy path 的 3 帧 binary 流：
+// bedrockE2EStream 拼接 Bedrock-on-Anthropic 正向路径的 3 帧 binary 流：
 // message_start + content_block_delta(text="Hello") + message_stop。
 func bedrockE2EStream(t *testing.T) []byte {
 	t.Helper()
@@ -73,7 +73,7 @@ func TestBedrockE2E_ForwarderPipeline_Happy(t *testing.T) {
 }
 
 // TestBedrockE2E_TruncatedFrame_PropagatesAsScanError 截断 binary 流应触发
-// scanner ErrTruncatedFrame，forwarder 把它当 scan error 报告。
+// scanner ErrTruncatedFrame，forwarder 把它当扫描错误报告。
 func TestBedrockE2E_TruncatedFrame_PropagatesAsScanError(t *testing.T) {
 	stream := bedrockE2EStream(t)
 	truncated := stream[:len(stream)-5]
@@ -116,7 +116,7 @@ func TestBedrockE2E_ExceptionFrame_TerminatesWithError(t *testing.T) {
 	if !errors.Is(err, ErrBedrockException) {
 		t.Errorf("err=%v want ErrBedrockException", err)
 	}
-	// scanner 在 yield ErrBedrockException **之前**先 emit 一条 error SSEEvent，
+	// scanner 在 yield ErrBedrockException **之前**先发出一条 error SSEEvent，
 	// forwarder.handleEventWithAdapter 必须脱敏后再写入 ResponseRecorder 和内部日志。
 	body := recorder.Body.String()
 	if strings.Contains(body, marker) {
@@ -134,7 +134,7 @@ func TestBedrockE2E_ExceptionFrame_TerminatesWithError(t *testing.T) {
 
 // TestBedrockE2E_RegistryWiring_BothLanesPresent 单元层守界：bedrock_invoke
 // 在 ProtocolAdapters 与 Scanners 两 registry 都注册（任一缺失 forwarder 入口
-// 即 fail-loud）。回归保险。
+// 即显式失败）。回归保险。
 func TestBedrockE2E_RegistryWiring_BothLanesPresent(t *testing.T) {
 	adapters := BuildDefaultProtocolAdapterRegistry()
 	scanners := BuildDefaultStreamScannerRegistry()
@@ -148,10 +148,10 @@ func TestBedrockE2E_RegistryWiring_BothLanesPresent(t *testing.T) {
 }
 
 // encodeBedrockExceptionFrame 拼一个 :message-type=exception 帧，A3 scanner
-// 见此 type 即 emit error SSEEvent + yield ErrBedrockException。
+// 见此 type 即发出 error SSEEvent + yield ErrBedrockException。
 //
 // 与 chunk frame 不同点：headers 里 :message-type 是 "exception" 而非 "event"，
-// payload 是 raw JSON（非 chunk envelope）。CRC 等其它 wire format 同。
+// payload 是 raw JSON（非 chunk envelope）。CRC 等其它线格式相同。
 func encodeBedrockExceptionFrame(t *testing.T, exceptionType, payload string) []byte {
 	t.Helper()
 	headers := map[string]string{

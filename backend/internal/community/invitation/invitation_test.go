@@ -293,7 +293,7 @@ func (s *memoryStore) CountTenantInvitationsSince(_ context.Context, tenantID in
 	count := 0
 	for _, row := range s.rows {
 		if s.selfCodes[row.Code] {
-			continue // self-referral codes are quota-exempt, never counted
+			continue // 自荐码免配额，从不计入
 		}
 		if row.TenantID == tenantID && !row.CreatedAt.Before(since) {
 			count++
@@ -346,11 +346,10 @@ func codeForSequence(n int) string {
 	return string(out)
 }
 
-// TestSelfReferralCodeExemptFromTenantMonthlyQuota is the reporter's discriminating
-// guard: once the shared single-tenant campaign quota is exhausted for the month,
-// a pure get-of-my-own-code must still succeed. MUTATION: routing
-// GetOrCreateSelfReferralCode through checkTenantMonthlyQuota (or dropping the
-// QuotaExempt flag) makes this return ErrQuotaExceeded → RED.
+// TestSelfReferralCodeExemptFromTenantMonthlyQuota 是报告者的鉴别性守卫：
+// 当本月共享的单租户活动配额耗尽后，仅仅获取自己的码也必须仍然成功。
+// MUTATION：把 GetOrCreateSelfReferralCode 路由经过 checkTenantMonthlyQuota
+//（或丢掉 QuotaExempt 标志）会使其返回 ErrQuotaExceeded → RED。
 func TestSelfReferralCodeExemptFromTenantMonthlyQuota(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
@@ -374,13 +373,13 @@ func TestSelfReferralCodeExemptFromTenantMonthlyQuota(t *testing.T) {
 	}
 }
 
-// TestSelfReferralCodeIsStableIdempotent guards the get-OR-create contract:
-// repeated calls return the same code and create exactly one row. Idempotency
-// rests on the self path persisting the stable self:<userID> idempotency key.
-// MUTATION: minting the self row with a nil (or per-call) idempotency key
-// removes the stable marker → the second call mints a second code/row → RED.
-// (The service-level early lookup alone is NOT what this guards — the store
-// also dedupes on the key; the persisted KEY is the guarantee.)
+// TestSelfReferralCodeIsStableIdempotent 守护 get-OR-create 契约：
+// 重复调用返回同一个码且只创建一行。幂等性依赖于 self 路径持久化稳定的
+// self:<userID> 幂等键。
+// MUTATION：用 nil（或每次调用都不同）的幂等键去铸造 self 行会移除该稳定
+// 标记 → 第二次调用又铸造出第二个码/行 → RED。
+//（仅靠 service 层的提前查找并不是本测试守护的对象——store 也会按该键去重；
+// 被持久化的那个 KEY 才是保证。）
 func TestSelfReferralCodeIsStableIdempotent(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
@@ -404,10 +403,10 @@ func TestSelfReferralCodeIsStableIdempotent(t *testing.T) {
 	}
 }
 
-// TestSelfReferralCodeDoesNotStarveCampaignQuota guards the counter-exclusion:
-// self codes must not consume the campaign budget, else many users materializing
-// their own codes would 429 the campaign POST for everyone. MUTATION: counting
-// self codes in CountTenantInvitationsSince → the campaign Generate below 429s → RED.
+// TestSelfReferralCodeDoesNotStarveCampaignQuota 守护计数排除：
+// 自荐码不得消耗活动预算，否则大量用户物化自己的码会让所有人的活动
+// POST 都被 429。MUTATION：在 CountTenantInvitationsSince 中把自荐码计入
+// → 下面的活动 Generate 被 429 → RED。
 func TestSelfReferralCodeDoesNotStarveCampaignQuota(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)
@@ -427,10 +426,9 @@ func TestSelfReferralCodeDoesNotStarveCampaignQuota(t *testing.T) {
 	}
 }
 
-// TestCampaignGenerateRejectsReservedSelfPrefix closes the quota-bypass exploit:
-// a campaign caller must not be able to supply a self-prefixed idempotency key,
-// which would otherwise make the row escape the campaign counter. MUTATION:
-// dropping the reserved-prefix check in validateGenerateParams → err is nil → RED.
+// TestCampaignGenerateRejectsReservedSelfPrefix 封堵绕过配额的漏洞：
+// 活动调用方不得能够提供带 self 前缀的幂等键，否则那一行会逃过活动计数器。
+// MUTATION：丢掉 validateGenerateParams 中的保留前缀检查 → err 为 nil → RED。
 func TestCampaignGenerateRejectsReservedSelfPrefix(t *testing.T) {
 	store := newMemoryStore()
 	now := time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)

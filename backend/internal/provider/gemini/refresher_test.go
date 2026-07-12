@@ -18,15 +18,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
 func TestGeminiRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
-	// Regression killed: attacker-controlled credential JSON must not decide
-	// the token endpoint, client ID, or scope used for refresh. Mutation
-	// self-check: reading oauth_token_endpoint/client_id/scope from credential
-	// sends at least one attacker value and turns this test red.
+	// 锁定回归：攻击者可控的凭据 JSON 不得决定刷新所用的 token endpoint、
+	// client ID 或 scope。变异自检：若从凭据读取 oauth_token_endpoint/client_id/scope，
+	// 就会发送至少一个攻击者值，使本测试变红。
 	now := time.Date(2026, 5, 24, 14, 0, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if got := r.URL.String(); got != "https://operator.google.example.test/oauth/token" {
@@ -97,10 +95,9 @@ func TestGeminiRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
 }
 
 func TestGeminiRefreshAdapterPostsOperatorClientSecretForConfidentialClient(t *testing.T) {
-	// Regression killed: confidential OAuth refresh must carry the operator
-	// client_secret from OAuthConfig through the adapter into the token form.
-	// Mutation self-check: dropping client_secret from RefreshAdapter or the
-	// POST form makes this test fail before the token response is accepted.
+	// 锁定回归：confidential OAuth 刷新必须把 operator 的 client_secret 从
+	// OAuthConfig 经 adapter 一路带进 token form。变异自检：从 RefreshAdapter 或
+	// POST form 里去掉 client_secret，会让本测试在 token 响应被接受前就失败。
 	now := time.Date(2026, 5, 24, 14, 15, 0, 0, time.UTC)
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(r.Body)
@@ -148,9 +145,9 @@ func TestGeminiRefreshAdapterPostsOperatorClientSecretForConfidentialClient(t *t
 }
 
 func TestGeminiRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *testing.T) {
-	// Regression killed: credential-supplied OAuth endpoints must fail closed
-	// when operator token_url is absent. Mutation self-check: using the
-	// credential endpoint makes the HTTP client run and this test fails.
+	// 锁定回归：当 operator token_url 缺失时，凭据提供的 OAuth endpoint 必须
+	// fail closed。变异自检：若使用凭据里的 endpoint，会让 HTTP client 实际发起
+	// 请求，使本测试失败。
 	called := false
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		called = true
@@ -174,18 +171,17 @@ func TestGeminiRefreshAdapterRejectsCredentialSuppliedTokenEndpoint(t *testing.T
 }
 
 func TestGeminiRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
-	// Regression killed: Gemini refresh failures must preserve distinct audit
-	// outcomes. Mutation self-check: flattening status/body handling breaks at
-	// least one of 401, 429, or risk-triggering 403.
+	// 锁定回归：Gemini 刷新失败必须保留各自不同的审计 outcome。变异自检：把
+	// status/body 处理压平会破坏 401、429 或触发风控的 403 中至少一个。
 	tests := []struct {
 		name       string
 		statusCode int
 		body       string
-		want       credentialworker.RefreshOutcome
+		want       auth.RefreshOutcome
 	}{
-		{name: "unauthorized", statusCode: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`, want: credentialworker.OutcomeAuthExpired},
-		{name: "rate_limited", statusCode: http.StatusTooManyRequests, body: `{"error":"rate_limit_exceeded"}`, want: credentialworker.OutcomeRateLimit},
-		{name: "risk_control", statusCode: http.StatusForbidden, body: `{"message":"risk control triggered"}`, want: credentialworker.OutcomeRiskControl},
+		{name: "unauthorized", statusCode: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`, want: auth.OutcomeAuthExpired},
+		{name: "rate_limited", statusCode: http.StatusTooManyRequests, body: `{"error":"rate_limit_exceeded"}`, want: auth.OutcomeRateLimit},
+		{name: "risk_control", statusCode: http.StatusForbidden, body: `{"message":"risk control triggered"}`, want: auth.OutcomeRiskControl},
 	}
 
 	for _, tt := range tests {
@@ -206,7 +202,7 @@ func TestGeminiRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 			if !errors.As(err, &refreshErr) {
 				t.Fatalf("err=%T %v, want *RefreshError", err, err)
 			}
-			if got := credentialworker.ClassifyRefreshError(err, GeminiVendor, refreshErr.StatusCode); got != tt.want {
+			if got := auth.ClassifyRefreshError(err, GeminiVendor, refreshErr.StatusCode); got != tt.want {
 				t.Fatalf("classified outcome=%q, want %q; err=%v", got, tt.want, err)
 			}
 			if refreshErr.Outcome != string(tt.want) {
@@ -262,7 +258,7 @@ func TestGeminiRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) {
 			if got := auth.RefreshAuditOutcomeFromError(err); got != tt.want {
 				t.Fatalf("refresh audit outcome=%q, want %q", got, tt.want)
 			}
-			wantCalls := []string{"probe", "tx_begin", "lock:111", "reread", "failure:111:" + tt.want}
+			wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:111", "reread", "failure:111:" + tt.want}
 			if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 				t.Fatalf("calls=%v, want %v", calls, wantCalls)
 			}
@@ -305,7 +301,7 @@ type recordingGeminiRefreshTx struct {
 }
 
 func (tx *recordingGeminiRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:"+geminiStrconvInt64(args[0]))
+	*tx.calls = append(*tx.calls, "lock:"+args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

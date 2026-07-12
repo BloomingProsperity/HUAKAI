@@ -2,7 +2,7 @@ package proto
 
 import "encoding/json"
 
-// Anthropic Messages API wire-format types — 仅本包 internal 用，不对外暴露。
+// Anthropic Messages API 线格式类型 — 仅本包 internal 用，不对外暴露。
 //
 // 字段子集覆盖 P-2 D1 + D1.x 所需：text / system / tools / tool_choice /
 // tool_use / tool_result / image / thinking / cache_control。

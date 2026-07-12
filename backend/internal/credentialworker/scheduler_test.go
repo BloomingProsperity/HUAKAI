@@ -87,11 +87,10 @@ func TestSchedulerStormRejectsSkipsRefresh(t *testing.T) {
 }
 
 func TestSchedulerEndpointStormDenialSkipsRefreshAndAuditsScope(t *testing.T) {
-	// Regression killed: an endpoint-scope storm denial must skip the
-	// refresh, release the account slot, NOT consult the global scope, and audit
-	// the denial under the "provider_endpoint" scope (not "account"). Mutation:
-	// drop the endpoint acquire in processAccount, or mislabel it "account" → the
-	// scope/skip/short-circuit assertions go red.
+	// 修掉的回归:一次 endpoint-scope 的 storm 拒绝必须跳过刷新、释放 account 槽位、
+	// 不去咨询 global scope,并把该拒绝按 "provider_endpoint" scope(而非 "account")
+	// 记入 audit。Mutation:删掉 processAccount 中的 endpoint acquire,或把它误标为
+	// "account" → scope/skip/short-circuit 这些断言会转红。
 	storm := &stormSpy{endpointOutcome: auth.OutcomeStormBudgetExhausted}
 	ref := &refresherSpy{}
 	audit := &auditSpy{}
@@ -119,11 +118,10 @@ func TestSchedulerEndpointStormDenialSkipsRefreshAndAuditsScope(t *testing.T) {
 }
 
 func TestSchedulerGlobalStormDenialRefundsEndpointAndAuditsScope(t *testing.T) {
-	// Regression killed: a global-scope denial must refund the already
-	// consumed endpoint token (a never-run attempt must not waste the endpoint
-	// budget), skip the refresh, and audit under the "global" scope. Mutation:
-	// remove the endpointRefund() call on the global-deny branch → endpointRefunds
-	// stays 0 → red; relabel the audit scope → the scope assertion goes red.
+	// 修掉的回归:一次 global-scope 的拒绝必须退还已被消耗的 endpoint token(一次
+	// 从未运行的尝试不能浪费 endpoint 预算)、跳过刷新,并按 "global" scope 记入 audit。
+	// Mutation:删掉 global-deny 分支上的 endpointRefund() 调用 → endpointRefunds 保持
+	// 为 0 → 转红;改写 audit scope 标签 → scope 断言转红。
 	storm := &stormSpy{globalOutcome: auth.OutcomeStormBudgetExhausted}
 	ref := &refresherSpy{}
 	audit := &auditSpy{}
@@ -148,11 +146,10 @@ func TestSchedulerGlobalStormDenialRefundsEndpointAndAuditsScope(t *testing.T) {
 }
 
 func TestSchedulerAllScopesAdmitConsultEachOnceThenRefresh(t *testing.T) {
-	// Regression killed: the happy path must consult all three scopes
-	// (account, endpoint, global) exactly once and then refresh; a completed
-	// attempt must NOT refund the endpoint token (its budget stays consumed so a
-	// success cannot reopen the storm window). Mutation: skip the endpoint or
-	// global acquire → its call counter drops to 0 → red.
+	// 修掉的回归:happy path 必须把三个 scope(account、endpoint、global)各咨询恰好
+	// 一次然后刷新;一次已完成的尝试绝不能退还 endpoint token(其预算保持被消耗,
+	// 使一次成功无法重新打开 storm 窗口)。Mutation:跳过 endpoint 或 global 的
+	// acquire → 其调用计数降为 0 → 转红。
 	storm := &stormSpy{}
 	ref := &refresherSpy{}
 	audit := &auditSpy{}
@@ -177,8 +174,8 @@ func TestSchedulerAllScopesAdmitConsultEachOnceThenRefresh(t *testing.T) {
 }
 
 func TestSchedulerHotPathUsesStormScopesAndVendorRefresher(t *testing.T) {
-	// Mutation: wiring the gateway hot path directly to Refresher.Refresh skips
-	// account/endpoint/global storm admission and routes through the wrong refresher.
+	// Mutation:把 gateway hot path 直接接到 Refresher.Refresh 会跳过
+	// account/endpoint/global 的 storm 准入,并路由到错误的 refresher。
 	storm := &stormSpy{}
 	defaultRef := &refresherSpy{}
 	anthropicRef := &refresherSpy{}
@@ -234,10 +231,9 @@ func TestSchedulerRefreshSuccessWritesAudit(t *testing.T) {
 }
 
 func TestSchedulerVendorRefresherRoutesOnlyMatchingVendor(t *testing.T) {
-	// Regression killed: vendor-specific refreshers must dispatch by the
-	// scanned vendor name, not by "first registered refresher". Mutation
-	// self-check: routing the anthropic row to the copilot refresher leaves the
-	// default refresher without account 22 and this test turns red.
+	// 修掉的回归:vendor 专属的 refresher 必须按扫描到的 vendor 名分发,而不是按
+	// "第一个注册的 refresher"。Mutation 自检:把 anthropic 行路由到 copilot
+	// refresher 会让 default refresher 拿不到 account 22,使本测试转红。
 	copilotRef := &refresherSpy{}
 	defaultRef := &refresherSpy{}
 	audit := &auditSpy{}
@@ -271,10 +267,9 @@ func TestSchedulerVendorRefresherRoutesOnlyMatchingVendor(t *testing.T) {
 }
 
 func TestSchedulerWithVendorRefresherRoutesCursorByVendorName(t *testing.T) {
-	// Regression killed: cursor must route through the cursor-specific
-	// refresher registered by WithVendorRefresher("cursor", ...). Mutation
-	// self-check: changing the registration key or scheduler lookup to another
-	// vendor leaves cursorRef unused and this test turns red.
+	// 修掉的回归:cursor 必须经由通过 WithVendorRefresher("cursor", ...) 注册的
+	// cursor 专属 refresher 路由。Mutation 自检:把注册 key 或 scheduler 查找改成
+	// 另一个 vendor 会让 cursorRef 闲置不用,使本测试转红。
 	cursorRef := &refresherSpy{}
 	windsurfRef := &refresherSpy{errs: []error{errors.New("cursor routed to windsurf")}}
 	defaultRef := &refresherSpy{errs: []error{errors.New("cursor routed to default")}}
@@ -304,10 +299,9 @@ func TestSchedulerWithVendorRefresherRoutesCursorByVendorName(t *testing.T) {
 }
 
 func TestSchedulerFallsBackToDefaultRefresherAndWritesAuditWhenVendorRefresherMissing(t *testing.T) {
-	// Regression killed: a vendor without a dedicated refresher must keep the
-	// legacy refresh path and still write the refresh audit row. Mutation
-	// self-check: sending this anthropic row to the registered copilot refresher
-	// returns crossVendorErr instead of the success audit evidence below.
+	// 修掉的回归:一个没有专属 refresher 的 vendor 必须保留 legacy 刷新路径,并且
+	// 仍然写入 refresh audit 行。Mutation 自检:把这个 anthropic 行发给已注册的
+	// copilot refresher 会返回 crossVendorErr,而不是下方的成功 audit 证据。
 	crossVendorErr := errors.New("copilot refresher received non-copilot account")
 	copilotRef := &refresherSpy{errs: []error{crossVendorErr}}
 	defaultRef := &refresherSpy{}
@@ -341,10 +335,9 @@ func TestSchedulerFallsBackToDefaultRefresherAndWritesAuditWhenVendorRefresherMi
 }
 
 func TestSchedulerCopilotVendorRefresherRecordsAuthExpiredOn401(t *testing.T) {
-	// Regression killed: Scheduler vendor routing must actually execute
-	// CopilotRefresher, preserving its 401 -> auth_expired classification.
-	// Mutation self-check: falling back to the default refresher or swallowing
-	// the Copilot error leaves no auth_expired sidecar evidence.
+	// 修掉的回归:Scheduler 的 vendor 路由必须真正执行 CopilotRefresher,保留其
+	// 401 -> auth_expired 的分类。Mutation 自检:回退到 default refresher 或吞掉
+	// Copilot 错误会让 auth_expired 的旁路证据缺失。
 	store := &schedulerCopilotStore{raw: []byte(`{"github_access_token":"expired-github-token"}`)}
 	client := &http.Client{Transport: schedulerRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -385,9 +378,9 @@ func TestSchedulerCopilotVendorRefresherRecordsAuthExpiredOn401(t *testing.T) {
 }
 
 func TestSchedulerCursorVendorRefresherRecordsAuthExpiredOn401(t *testing.T) {
-	// Regression killed: CursorRefresher must carry its 401 classification to
-	// scheduler audit. Mutation self-check: returning the bare Cursor error
-	// leaves no auth_expired sidecar, so scheduler writes permanent_disable.
+	// 修掉的回归:CursorRefresher 必须把它的 401 分类带到 scheduler audit。
+	// Mutation 自检:返回裸 Cursor 错误会让 auth_expired 旁路缺失,于是 scheduler
+	// 写入 permanent_disable。
 	store := &schedulerCursorStore{rec: credentialstore.CredentialRecord{
 		ID: 91, TenantID: 7, ProviderAccountID: 25,
 		Vendor: "cursor", AuthMode: "oauth", CredentialVersion: 2,
@@ -514,10 +507,9 @@ func TestRefreshTimeoutDefaultDoesNotInjectDeadline(t *testing.T) {
 }
 
 func TestSchedulerStopsBackoffLoopForNonRetryableRefreshError(t *testing.T) {
-	// Regression killed: vendor refreshers that have already classified a
-	// failure as terminal for the current tick must not be called again by the
-	// generic retry loop. Mutation self-check: removing RetryableRefresh()
-	// handling makes this test call the refresher three times.
+	// 修掉的回归:对当前 tick 已把一次失败分类为终态的 vendor refresher,绝不能被
+	// 通用重试循环再次调用。Mutation 自检:删掉 RetryableRefresh() 的处理会让本测试
+	// 把 refresher 调用三次。
 	ref := &refresherSpy{errs: []error{nonRetryableRefreshErr{}}}
 	audit := &auditSpy{}
 	var delays []time.Duration
@@ -596,9 +588,9 @@ func (l *listSpy) ListAccountsForRefresh(_ context.Context, arg dbbilling.ListAc
 }
 
 type stormSpy struct {
-	outcome         auth.Outcome // account-scope denial outcome ("" = admit)
-	endpointOutcome auth.Outcome // provider-endpoint denial outcome ("" = admit)
-	globalOutcome   auth.Outcome // global-scope denial outcome ("" = admit)
+	outcome         auth.Outcome // account-scope 拒绝结果("" = 放行)
+	endpointOutcome auth.Outcome // provider-endpoint 拒绝结果("" = 放行)
+	globalOutcome   auth.Outcome // global-scope 拒绝结果("" = 放行)
 	calls           int
 	released        int
 	endpointCalls   int

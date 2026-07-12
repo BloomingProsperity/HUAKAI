@@ -138,7 +138,7 @@ func TestTranslateImageRequestClientInputNonBillingPassthrough(t *testing.T) {
 // aspect_ratio/size),使出站量与计费量脱钩——可发 n=1 + input.num_outputs=4
 // 计 1 张出 4 张,绕 amount_range/quota。计费轴必须由顶层 n/size 单一掌控,
 // input 里的同名 key 一律剔除。
-// Mutation:删 request_translator 的 billingAxisInputKeys 剔除分支 → 本测试红。
+// 变异:删 request_translator 的 billingAxisInputKeys 剔除分支 → 本测试红。
 func TestTranslateImageRequestClientInputCannotOverrideBillingAxis(t *testing.T) {
 	// n=1 但 input 试图放大 num_outputs=4 → 必须保持 1(顶层 n)
 	input := translatedInput(t, `{"prompt":"p","n":1,"input":{"num_outputs":4}}`)

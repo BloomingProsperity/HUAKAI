@@ -9,7 +9,7 @@ import (
 )
 
 func TestServiceSubmitValidatesAndPassesEstimateToStore(t *testing.T) {
-	// Mutation: ignore default_estimated_cents or let the client provide tenant/user.
+	// 变异:忽略 default_estimated_cents, 或允许客户端自带 tenant/user。
 	store := &fakeStore{created: Task{ID: 9, TenantID: 7, UserID: 42, RequestID: "req-9", Status: StatusQueued}}
 	svc := NewService(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{"http": NewNoopProvider()})
 
@@ -35,8 +35,8 @@ func TestServiceSubmitValidatesAndPassesEstimateToStore(t *testing.T) {
 }
 
 func TestServiceDisabledDoesNotTouchStoreOrProvider(t *testing.T) {
-	// Mutation: perform validation or create the task before checking enabled;
-	// disabled mode must leave both DB and provider surfaces untouched.
+	// 变异:在检查 enabled 之前就做校验或创建任务;
+	// disabled 模式必须让 DB 与 provider 两侧都保持不被触碰。
 	store := &fakeStore{}
 	cfg := testConfig()
 	cfg.Enabled = false
@@ -57,8 +57,8 @@ func TestServiceDisabledDoesNotTouchStoreOrProvider(t *testing.T) {
 }
 
 func TestServiceStatusAndListAreTenantUserScoped(t *testing.T) {
-	// Mutation: drop user_id from Status/List store calls and this test observes
-	// a zero user scope instead of the authenticated user.
+	// 变异:从 Status/List 的 store 调用中去掉 user_id, 本测试就会观察到
+	// 一个为零的 user 范围, 而非已认证的用户。
 	store := &fakeStore{
 		statusTask: Task{ID: 10, TenantID: 7, UserID: 42, RequestID: "req-10", Status: StatusInProgress},
 		listTasks:  []Task{{ID: 10, TenantID: 7, UserID: 42, RequestID: "req-10", Status: StatusInProgress}},
@@ -85,6 +85,33 @@ func TestCanTransitionRejectsTerminalRegression(t *testing.T) {
 	}
 	if !CanTransition(StatusQueued, StatusInProgress) || !CanTransition(StatusInProgress, StatusSucceeded) {
 		t.Fatal("valid queued/in_progress transitions rejected")
+	}
+}
+
+func TestServiceSubmitSetsClaimLeaseCoveringTaskTimeout(t *testing.T) {
+	// 真 money 守卫:billing LeaseSweeper 每 30s Abort 任何 lease 过期仍 reserving 的
+	// claim。若 media claim lease < TaskTimeout,跑得久的合法媒体任务(视频等)的 claim
+	// 会被提前 abort,完成时无法 commit 计费 → 亏钱。断言 service 传给 store 的 claim
+	// lease 窗口 >= TaskTimeout。
+	// Mutation:把 service 的 cfg.TaskTimeout+claimLeaseGrace 写回 90*time.Second,
+	// TaskTimeout=15min 时 90s < 15min,本断言转红。
+	store := &fakeStore{created: Task{ID: 1, Status: StatusQueued}}
+	cfg := testConfig()
+	cfg.TaskTimeout = 15 * time.Minute // 媒体任务可跑数分钟,远超旧的 90s claim lease
+	svc := NewService(store, StaticConfigSource{Config: cfg}, StaticProviderRegistry{"http": NewNoopProvider()})
+
+	if _, err := svc.Submit(context.Background(), 7, 42, SubmitInput{
+		RequestID: "req-lease", TaskType: "image_generation", Provider: "http",
+		InputParams: json.RawMessage(`{"prompt":"x"}`),
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if len(store.submitCalls) != 1 {
+		t.Fatalf("submit calls=%d want 1", len(store.submitCalls))
+	}
+	got := store.submitCalls[0].ClaimLeaseWindow
+	if got < cfg.TaskTimeout {
+		t.Fatalf("claim lease 窗口=%s 必须 >= TaskTimeout=%s,否则长任务 claim 会被 LeaseSweeper 提前 abort 亏钱", got, cfg.TaskTimeout)
 	}
 }
 

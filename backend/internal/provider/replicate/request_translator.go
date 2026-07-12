@@ -60,7 +60,7 @@ type openAIImageRequest struct {
 //   - size 1024x1792   → input.aspect_ratio "9:16"
 //   - size 其它 WxH    → input.aspect_ratio "custom" + width/height
 //     (32 步进 snap、clamp [256,1440])
-//   - quality hd/high  → input.prompt_upsampling true
+//   - quality hd/high  → input.prompt_upsampling true（提示词增强）
 //   - 顶层 "input" 对象 → 合并 model-specific 调参,但计费承重轴
 //     (num_outputs/width/height/aspect_ratio/size)被剔除,由顶层字段单一掌控
 //

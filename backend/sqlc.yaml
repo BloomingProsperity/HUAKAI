@@ -86,6 +86,7 @@ sql:
       - sql/queries/pool_slot_acquisitions.sql
       - sql/queries/pool_sticky_bindings.sql
       - sql/queries/pools.sql
+      - sql/queries/settlement_intents.sql
     gen:
       go:
         package: billing
@@ -414,6 +415,10 @@ overrides:
       - column: "balance_holds.amount"
         go_type: "github.com/shopspring/decimal.Decimal"
       - column: "balance_holds.captured"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "settlement_intents.predicted_cost"
+        go_type: "github.com/shopspring/decimal.Decimal"
+      - column: "settlement_intents.actual_cost"
         go_type: "github.com/shopspring/decimal.Decimal"
       - column: "moderation_config.violation_fee_usd"
         go_type: "github.com/shopspring/decimal.Decimal"

@@ -13,6 +13,11 @@ type AntigravityRefresh struct {
 	Gemini                  GeminiRefresh
 	RequireRefreshTokenOnly bool
 	HTTPClient              *http.Client
+	ProjectResolver         ProjectIDResolver
+}
+
+type ProjectIDResolver interface {
+	ResolveProjectID(context.Context, string) (string, error)
 }
 
 func (r AntigravityRefresh) RefreshForProvider(ctx context.Context, accountID int64, providerName string, currentCredential []byte) ([]byte, time.Time, error) {
@@ -36,7 +41,20 @@ func (r AntigravityRefresh) RefreshForProvider(ctx context.Context, accountID in
 		return nil, time.Time{}, err
 	}
 	if credentialString(updated, "project_id") == "" {
-		if previous := credentialString(cred, "project_id"); previous != "" {
+		projectID := ""
+		if r.ProjectResolver != nil {
+			accessToken := credentialString(updated, "access_token")
+			if accessToken != "" {
+				resolved, resolveErr := r.ProjectResolver.ResolveProjectID(ctx, accessToken)
+				if resolveErr == nil {
+					projectID = strings.TrimSpace(resolved)
+				}
+			}
+		}
+		if projectID != "" {
+			updated["project_id"] = projectID
+			updated["project_metadata_status"] = "resolved"
+		} else if previous := credentialString(cred, "project_id"); previous != "" {
 			updated["project_id"] = previous
 			updated["project_metadata_status"] = "preserved_stale"
 		} else {

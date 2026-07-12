@@ -16,7 +16,7 @@ import (
 )
 
 func TestPostgresStoreAlertTenantScopeAndEvaluation(t *testing.T) {
-	// MUTATION: drop tenant_id SQL predicates in rule/event/silence queries; tenant B rows leak into tenant A or tenant A silence suppresses tenant B.
+	// MUTATION：在 rule/event/silence 查询中去掉 tenant_id 的 SQL 谓词；租户 B 的行会泄漏进租户 A，或租户 A 的 silence 抑制租户 B。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openAlertingPool(t, ctx)
@@ -82,7 +82,7 @@ func TestPostgresStoreAlertTenantScopeAndEvaluation(t *testing.T) {
 }
 
 func TestPostgresStoreAlertEnrichmentRoundTrip(t *testing.T) {
-	// MUTATION: omit event threshold/metric/dimensions/email_sent or rule last_triggered_at in SQL; this round-trip loses the alert firing evidence.
+	// MUTATION：在 SQL 中省略 event 的 threshold/metric/dimensions/email_sent 或 rule 的 last_triggered_at；这次往返会丢失告警触发的证据。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openAlertingPool(t, ctx)
@@ -135,7 +135,7 @@ func TestPostgresStoreAlertEnrichmentRoundTrip(t *testing.T) {
 }
 
 func TestPostgresStoreSilenceScope(t *testing.T) {
-	// MUTATION: ignore platform scope in SQL/store-backed evaluation; the platform p2 alert is suppressed by a p1-only silence.
+	// MUTATION：在 SQL/基于 store 的评估中忽略 platform 作用域；platform 级的 p2 告警会被一个只针对 p1 的 silence 抑制。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openAlertingPool(t, ctx)
@@ -197,7 +197,7 @@ func TestPostgresStoreSilenceScope(t *testing.T) {
 }
 
 func TestMigration0103(t *testing.T) {
-	// MUTATION: omit any alerting table, tenant/rule/state index, enum CHECK, composite FK, or down DROP; these schema probes fail.
+	// MUTATION：省略任意一个 alerting 表、tenant/rule/state 索引、enum CHECK、复合 FK 或 down DROP；这些 schema 探测会失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openAlertingPool(t, ctx)
@@ -292,7 +292,7 @@ WHERE schemaname LIKE 'pg_temp_%'
 }
 
 func TestMigration0114AlertingEnrichment(t *testing.T) {
-	// MUTATION: omit enrichment columns, manual_resolved state, defaults, or down cleanup; these schema probes fail in a temp schema.
+	// MUTATION：省略 enrichment 列、manual_resolved 状态、默认值或 down 清理；这些 schema 探测会在临时 schema 中失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	pool := openAlertingPool(t, ctx)

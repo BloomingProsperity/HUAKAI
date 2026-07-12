@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 )
 
@@ -32,6 +33,8 @@ type RouteAdminService interface {
 	Create(context.Context, routeadmin.CreateInput) (routeadmin.Route, error)
 	List(context.Context, int64) ([]routeadmin.Route, error)
 	Get(context.Context, int64, int64) (routeadmin.Route, error)
+	Update(context.Context, routeadmin.UpdateInput) (routeadmin.Route, error)
+	SetEnabled(ctx context.Context, tenantID, id int64, enabled bool, adminID int64) (routeadmin.Route, error)
 	Delete(context.Context, int64, int64, int64) (routeadmin.Route, error)
 }
 
@@ -48,6 +51,23 @@ type createRouteRequest struct {
 	ModelPatternMatch string `json:"model_pattern_match,omitempty"`
 	PoolGroupID       int64  `json:"pool_group_id"`
 	MatchPriority     *int   `json:"match_priority,omitempty"`
+}
+
+// updateRouteRequest 是 PUT /{id} 的请求体。**不含 tenant_id** —— 租户取自 query 参数、行由
+// path id 定位, 故 body 内出现 tenant_id 会被 DisallowUnknownFields 拒(防经更新跨租户搬移/走私)。
+type updateRouteRequest struct {
+	Name              string `json:"name"`
+	UserGroupMatch    string `json:"user_group_match"`
+	ModelPatternMatch string `json:"model_pattern_match,omitempty"`
+	PoolGroupID       int64  `json:"pool_group_id"`
+	MatchPriority     *int   `json:"match_priority,omitempty"`
+}
+
+// setRouteEnabledRequest 是 PUT /{id}/enabled 的请求体。**不含 tenant_id** —— 租户取自 query、行由 path id
+// 定位, body 内出现 tenant_id 会被 DisallowUnknownFields 拒(防经此面跨租户搬移/走私)。Enabled 用 *bool 强制
+// 显式存在: 缺字段(空 body `{}`)→ nil → 400, 防客户端漏传 enabled 时按 Go 零值静默把路由停用。
+type setRouteEnabledRequest struct {
+	Enabled *bool `json:"enabled"`
 }
 
 // routeView 是面向管理员的 route DTO — snake_case, 仅暴露管理 CRUD 关心的核心字段。
@@ -80,12 +100,18 @@ func routeAdminToRouteViews(routes []routeadmin.Route) []routeView {
 	return out
 }
 
-// MountRouteAdminRoutes 挂载管理员分组路由端点 (建 / 列 / 查 / 软删)。
+// MountRouteAdminRoutes 挂载管理员分组路由端点 (建 / 列 / 查 / 改 / 启停 / 软删)。
+// {id}/enabled 与 {id} 段深不同, chi 不冲突: PUT /55 命中 {id}(全替换), PUT /55/enabled 命中 {id}/enabled(启停)。
 func MountRouteAdminRoutes(r chi.Router, d RouteAdminDeps) {
-	r.Post("/", newRouteAdminCreateHandler(d))
+	// SessionSafe:分组路由(routes 表)增改停删都是可逆的选路配置,登录 admin(session)可直接写;
+	// 危险者(如删)靠前端确认弹窗防误操作。
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/", newRouteAdminCreateHandler(d))
 	r.Get("/", newRouteAdminListHandler(d))
 	r.Get("/{id}", newRouteAdminGetHandler(d))
-	r.Delete("/{id}", newRouteAdminDeleteHandler(d))
+	r.With(safe).Put("/{id}", newRouteAdminUpdateHandler(d))
+	r.With(safe).Put("/{id}/enabled", newRouteAdminSetEnabledHandler(d))
+	r.With(safe).Delete("/{id}", newRouteAdminDeleteHandler(d))
 }
 
 func newRouteAdminCreateHandler(d RouteAdminDeps) http.HandlerFunc {
@@ -147,6 +173,80 @@ func newRouteAdminGetHandler(d RouteAdminDeps) http.HandlerFunc {
 			return
 		}
 		route, err := d.Service.Get(r.Context(), tenantID, id)
+		if err != nil {
+			routeAdminWriteRouteError(w, err)
+			return
+		}
+		controlWriteJSON(w, http.StatusOK, map[string]any{"route": routeAdminToRouteView(route)})
+	}
+}
+
+// newRouteAdminUpdateHandler 处理 PUT /{id}: 全替换一条 route 的可编辑字段。
+// PUT 幂等: 同一请求体重放产生同一行状态(updated_at 每次写都 bump, 仅供审计追踪, 不破坏幂等)。
+// 全替换语义提醒: 省略 match_priority 即回落 DB 默认 100 —— 后续 priority 真裁决落地后该字段变
+// 真选路键, 故前端编辑须 read-modify-write 始终显式带 match_priority, 防 read-omit-write 静默重置。
+func newRouteAdminUpdateHandler(d RouteAdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := routeAdminResolveAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		tenantID, ok := routeAdminParsePositiveQuery(w, r, "tenant_id")
+		if !ok {
+			return
+		}
+		id, ok := routeAdminParsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req updateRouteRequest
+		if !routeAdminDecodeJSON(w, r, &req) {
+			return
+		}
+		route, err := d.Service.Update(r.Context(), routeadmin.UpdateInput{
+			TenantID:          tenantID, // 取自 query, 不可经 body 改 → 防跨租户搬移
+			ID:                id,       // 取自 path
+			Name:              req.Name,
+			UserGroupMatch:    req.UserGroupMatch,
+			ModelPatternMatch: req.ModelPatternMatch,
+			PoolGroupID:       req.PoolGroupID,
+			MatchPriority:     req.MatchPriority,
+			AdminID:           ident.TokenID, // 审计归属取自已认证身份, 非请求体
+		})
+		if err != nil {
+			routeAdminWriteRouteError(w, err)
+			return
+		}
+		controlWriteJSON(w, http.StatusOK, map[string]any{"route": routeAdminToRouteView(route)})
+	}
+}
+
+// newRouteAdminSetEnabledHandler 处理 PUT /{id}/enabled: 独立翻转一条 route 的 enabled 闸(非全替换)。
+// 停用即把路由移出分组路由生效集(热路径 gate 过滤 enabled=true)而不软删, 可后续再启用。幂等。
+// tenant 取 query、id 取 path、adminID 取已认证身份(审计归属); enabled 必须显式在 body 给(*bool, 防空 body 静默停用)。
+func newRouteAdminSetEnabledHandler(d RouteAdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := routeAdminResolveAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		tenantID, ok := routeAdminParsePositiveQuery(w, r, "tenant_id")
+		if !ok {
+			return
+		}
+		id, ok := routeAdminParsePathID(w, r)
+		if !ok {
+			return
+		}
+		var req setRouteEnabledRequest
+		if !routeAdminDecodeJSON(w, r, &req) {
+			return
+		}
+		if req.Enabled == nil {
+			controlWriteJSONError(w, http.StatusBadRequest, "invalid_route_request", "enabled field is required")
+			return
+		}
+		route, err := d.Service.SetEnabled(r.Context(), tenantID, id, *req.Enabled, ident.TokenID)
 		if err != nil {
 			routeAdminWriteRouteError(w, err)
 			return

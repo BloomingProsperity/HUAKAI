@@ -8,6 +8,7 @@ func TestParsePolicyPortRangesAndHostPatterns(t *testing.T) {
 		"blocked.example",
 		"api.openai.com,*.anthropic.com",
 		"10.1.2.3,Private-Proxy.Example",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
@@ -50,7 +51,7 @@ func TestParsePolicyPortRangesAndHostPatterns(t *testing.T) {
 }
 
 func TestParsePolicyEmptyDefaultsPreserveAllowAll(t *testing.T) {
-	policy, err := Parse("", "", "", "")
+	policy, err := Parse("", "", "", "", "")
 	if err != nil {
 		t.Fatalf("Parse empty policy returned error: %v", err)
 	}
@@ -65,6 +66,42 @@ func TestParsePolicyEmptyDefaultsPreserveAllowAll(t *testing.T) {
 	}
 }
 
+// SEC-084:总开关必须强制拒绝一个本会被按主机 allowlist 放行的主机,
+// 同时让默认/启用的各种情形与之前完全一致。该测试夹具在全部三种开关状态下都固定使用
+// 同一个被 allowlist 的主机,从而隔离出开关本身的效果。
+// 变异:去掉 `if p.privateIPsDisabled { return false }` 守卫,则禁用情形会放行
+// 被 allowlist 的主机 -> 变红。
+func TestPrivateIPsMasterKillSwitch(t *testing.T) {
+	const host = "internal-proxy.example"
+	const allowlist = "10.0.0.5," + host
+
+	disabled, err := Parse("", "", "", allowlist, "false")
+	if err != nil {
+		t.Fatalf("Parse disabled toggle: %v", err)
+	}
+	if disabled.AllowsPrivateIPHost(host) {
+		t.Fatal("master kill-switch off must deny an allowlisted private host")
+	}
+	if disabled.AllowsPrivateIPHost("10.0.0.5") {
+		t.Fatal("master kill-switch off must deny every allowlisted private host")
+	}
+
+	// 默认(未设置)与显式 true 必须保持 allowlist 行为:同一个主机被放行。
+	// 这证明 kill-switch 是唯一的差别。
+	for _, raw := range []string{"", "true"} {
+		enabled, err := Parse("", "", "", allowlist, raw)
+		if err != nil {
+			t.Fatalf("Parse enabled toggle %q: %v", raw, err)
+		}
+		if !enabled.AllowsPrivateIPHost(host) {
+			t.Fatalf("toggle %q must keep allowlisted host admitted", raw)
+		}
+		if enabled.AllowsPrivateIPHost("10.0.0.6") {
+			t.Fatalf("toggle %q must still reject an unlisted private host", raw)
+		}
+	}
+}
+
 func TestParsePolicyRejectsInvalidOperatorInput(t *testing.T) {
 	cases := []struct {
 		name                string
@@ -72,15 +109,17 @@ func TestParsePolicyRejectsInvalidOperatorInput(t *testing.T) {
 		domainDenylist      string
 		domainAllowlist     string
 		allowPrivateIPHosts string
+		privateIPsEnabled   string
 	}{
 		{name: "descending port range", portAllowlist: "9000-8000"},
 		{name: "invalid port", portAllowlist: "70000"},
 		{name: "bare wildcard", domainAllowlist: "*"},
 		{name: "wildcard explicit private host", allowPrivateIPHosts: "*.example.com"},
+		{name: "non-boolean master toggle", privateIPsEnabled: "maybe"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Parse(tc.portAllowlist, tc.domainDenylist, tc.domainAllowlist, tc.allowPrivateIPHosts); err == nil {
+			if _, err := Parse(tc.portAllowlist, tc.domainDenylist, tc.domainAllowlist, tc.allowPrivateIPHosts, tc.privateIPsEnabled); err == nil {
 				t.Fatal("Parse returned nil error for invalid policy")
 			}
 		})

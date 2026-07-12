@@ -18,9 +18,9 @@ import (
 )
 
 func TestRedeemCreditsUserBalanceForReserveCaptureAndIdempotency(t *testing.T) {
-	// Mutation check: remove the voucher redemption -> user_balances UPSERT.
-	// Without that bridge, the first balance read has no row and Reserve pass-throughs
-	// without creating a hold, so the reserve/capture assertions fail.
+	// 变异检查: 移除「券兑换 -> user_balances」的 UPSERT 桥接。
+	// 缺了这道桥, 首次读余额时没有对应行, Reserve 会直接放行而不建持有,
+	// 于是 reserve/capture 的断言失败。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -109,9 +109,9 @@ func TestRedeemCreditsUserBalanceForReserveCaptureAndIdempotency(t *testing.T) {
 }
 
 func TestRedeemReplayReturnsCurrentWalletAfterPartialCapture(t *testing.T) {
-	// Mutation check: make the idempotent redeem result read voucher_redemption
-	// totals again. After a $30 capture, that broken path returns the original
-	// 10000c voucher total instead of the current 7000c spendable balance.
+	// 变异检查: 让幂等兑换结果重新去读 voucher_redemption 累计额。
+	// 在一次 $30 的 capture 之后, 这条错误路径会返回原始的 10000 分券面额,
+	// 而不是当前可用的 7000 分余额。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -171,10 +171,9 @@ func TestRedeemReplayReturnsCurrentWalletAfterPartialCapture(t *testing.T) {
 }
 
 func TestRedeemReplayReturnsCurrentWalletAfterPriorVoucherWasSpent(t *testing.T) {
-	// Mutation check: preserve the legacy cumulative voucher-redemption floor
-	// even after any wallet debit exists. After spending the first $100 voucher,
-	// replaying the second $100 voucher must report the current 10000c wallet
-	// rather than the cumulative 20000c voucher audit total.
+	// 变异检查: 即便已存在任何钱包扣减, 仍保留旧的累计券兑换下限。
+	// 在花掉第一张 $100 券之后, 重放第二张 $100 券必须报告当前的 10000 分钱包余额,
+	// 而不是累计的 20000 分券审计总额。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -344,10 +343,9 @@ func TestRedeemReturnsCurrentWalletBalanceCents(t *testing.T) {
 }
 
 func TestRedeemReplayIgnoresPostRedeemUnheldClaims(t *testing.T) {
-	// Mutation check: count every later claim_committed event as a wallet debit
-	// during idempotent replay reconstruction. Claims that passed through before a
-	// user_balances row existed have no balance_hold, so capture is a no-op; adding
-	// their cost back inflates the replayed voucher balance.
+	// 变异检查:在幂等重放重建时,把之后每个 claim_committed 事件都算作钱包扣减。
+	// 那些在 user_balances 行还不存在时就走完的 claim 没有 balance_hold,所以
+	// capture 是空操作;把它们的成本加回去会虚增重放出来的券余额。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -409,9 +407,8 @@ func TestRedeemReplayIgnoresPostRedeemUnheldClaims(t *testing.T) {
 }
 
 func TestRedeemReplayPreservesLegacyUnmaterializedVoucherCredit(t *testing.T) {
-	// Mutation check: replay a historical voucher_redemption that has a billing
-	// event but no user_balances credit. Without the legacy no-row fallback, replay
-	// cannot return the historical voucher credit.
+	// 变异检查:重放一条有 billing event 但没有 user_balances 入账的历史
+	// voucher_redemption。没有针对遗留无行情形的兜底,重放就无法返回历史的券额度。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -447,9 +444,9 @@ func TestRedeemReplayPreservesLegacyUnmaterializedVoucherCredit(t *testing.T) {
 }
 
 func TestRedeemReplayNoEventLegacyUsesCurrentWalletAfterSpend(t *testing.T) {
-	// Mutation check: keep the BillingEventID<=0 shortcut returning the
-	// voucher_redemption sum. Once the legacy credit has a materialized balance row
-	// and a captured spend, replay must report the current 7000c wallet.
+	// 变异检查:保留 BillingEventID<=0 的捷径去返回 voucher_redemption 累计额。
+	// 一旦该遗留额度已物化出余额行并发生过一次 capture 消费,重放就必须报告
+	// 当前的 7000 分钱包。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -500,10 +497,9 @@ func TestRedeemReplayNoEventLegacyUsesCurrentWalletAfterSpend(t *testing.T) {
 }
 
 func TestRedeemReplayPreservesLegacyCreditWithLaterWalletRow(t *testing.T) {
-	// Mutation check: return user_balances immediately whenever a wallet row
-	// exists. For a pre-bridge redemption, a later wallet row may not include that
-	// historical voucher credit; the replay must keep the legacy redemption floor
-	// while no positive captured wallet debit proves spend should be visible.
+	// 变异检查:只要存在钱包行就立即返回 user_balances。对一笔桥接前的兑换,
+	// 之后出现的钱包行可能并不包含那笔历史券额度;在没有正向的 capture 钱包扣减
+	// 证明消费可见之前,重放必须保留遗留兑换下限。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -552,9 +548,9 @@ func TestRedeemReplayPreservesLegacyCreditWithLaterWalletRow(t *testing.T) {
 }
 
 func TestRedeemReplayRoundsCurrentFractionalWalletBalance(t *testing.T) {
-	// Mutation check: make idempotent replay read voucher_redemption totals. After
-	// a fractional capture leaves the wallet at 99.985, the broken sum path returns
-	// the original 10000c instead of the rounded current wallet 9999c.
+	// 变异检查:让幂等重放去读 voucher_redemption 累计额。当一次小数 capture
+	// 把钱包留在 99.985 后,这条有缺陷的累加路径会返回原始的 10000 分,
+	// 而不是四舍五入后的当前钱包 9999 分。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -607,11 +603,10 @@ func TestRedeemReplayRoundsCurrentFractionalWalletBalance(t *testing.T) {
 }
 
 func TestRedeemReplayReturnsCurrentWalletAfterDelayedCapture(t *testing.T) {
-	// Mutation check: reconstruct the original idempotent response from billing
-	// events instead of reading user_balances. A settler can insert the
-	// claim_committed event before voucher redemption but resolve the balance hold
-	// after the voucher response; replay must report the current wallet after that
-	// capture, not the original 20000c response.
+	// 变异检查:从 billing events 重建原始的幂等响应,而不是去读 user_balances。
+	// settler 可能在券兑换之前就插入 claim_committed 事件,却在券响应之后才解决
+	// balance hold;重放必须报告该 capture 之后的当前钱包,而不是原始的
+	// 20000 分响应。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -696,9 +691,9 @@ WHERE claim_id=$1 AND tenant_id=$2 AND user_id=$3`,
 }
 
 func TestRedeemReplayIgnoresNonUSDLegacyRedemptionFloor(t *testing.T) {
-	// Mutation check: remove the USD currency predicate from redemptionBalanceThrough.
-	// The replay floor then counts a legacy EUR redemption as USD cents and returns
-	// 15000c instead of the original USD voucher response of 10000c.
+	// 变异检查:从 redemptionBalanceThrough 移除 USD 货币谓词。重放下限随后会把
+	// 一笔遗留的 EUR 兑换当作 USD 分计入,返回 15000 分,而不是原始的 USD
+	// 券响应 10000 分。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -752,10 +747,9 @@ func TestRedeemReplayIgnoresNonUSDLegacyRedemptionFloor(t *testing.T) {
 }
 
 func TestRedeemReplayIgnoresNonUSDLegacyVoucherDelta(t *testing.T) {
-	// Mutation check: remove the USD currency predicate from the post-redemption
-	// voucher_redeemed delta. With a prior wallet debit, replay must not fall back
-	// to the redemption floor; counting a later EUR voucher event reconstructs
-	// 5000c instead of the original USD voucher response of 10000c.
+	// 变异检查:从兑换后的 voucher_redeemed delta 移除 USD 货币谓词。在已有
+	// 一笔先前钱包扣减的情况下,重放不应回退到兑换下限;把之后的 EUR 券事件
+	// 计入会重建出 5000 分,而不是原始的 USD 券响应 10000 分。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -830,10 +824,9 @@ func TestRedeemReplayIgnoresNonUSDLegacyVoucherDelta(t *testing.T) {
 }
 
 func TestRedeemReplayReturnsCurrentWalletAfterSameTimestampReconciliation(t *testing.T) {
-	// Mutation check: reconstruct the idempotent replay response from voucher
-	// redemptions instead of user_balances. After a same-timestamp refund moves the
-	// wallet to 5000c, the broken audit-derived path still returns the original
-	// 10000c voucher total.
+	// 变异检查:从 voucher 兑换记录重建幂等重放响应,而不是从 user_balances。
+	// 当一次同时间戳的退款把钱包移到 5000 分后,这条有缺陷的、从审计推导的
+	// 路径仍会返回原始的 10000 分券总额。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

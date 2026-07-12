@@ -25,9 +25,9 @@ type Usage struct {
 	CacheReadTokens       int64
 	BillableUnits         decimal.Decimal
 
-	// ToolCallCounts holds the number of server-side built-in tool calls
-	// (web_search, file_search, image_generation). Defaults to zero.
-	// Zero counts = zero surcharge = Total byte-identical to token-only billing.
+	// ToolCallCounts 持有服务端内置工具调用的次数
+	//(web_search、file_search、image_generation)。默认为零。
+	// 零次数 = 零附加费 = Total 与仅按 token 计费逐字节一致。
 	ToolCallCounts toolpricing.ToolCallCounts
 }
 

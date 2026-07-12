@@ -98,6 +98,45 @@ func TestServiceReserve_ObserveDoesNotDeny(t *testing.T) {
 	}
 }
 
+// ReserveNoPolicyAllows 守住「配额强制默认开」的安全前提:没有任何策略配置时,
+// Reserve 必须放行(并按并发槽建预留),否则 default-on 会拦截未配置策略的部署。
+// Mutation: 让无策略路径返回 deny / 不建预留 -> RED。
+func TestServiceReserve_NoPolicyAllows(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openQuotaIntegrationPool(t, ctx)
+	f := newQuotaFixture(t, ctx, pool)
+	service := NewService(NewPostgresStore(pool))
+
+	now := time.Date(2026, 6, 14, 9, 30, 0, 0, time.UTC)
+	// 有意不为任何 scope 配置策略。
+	claimID := f.seedClaim("reserve-no-policy")
+
+	result, err := service.Reserve(ctx, ReserveRequest{
+		TenantID:            f.tenantID,
+		ClaimID:             claimID,
+		RequestFingerprint:  "reserve-no-policy-" + uuid.NewString(),
+		Scopes:              f.reserveScopes(),
+		PredictedCost:       decimal.RequireFromString("999999"),
+		ReservedTokens:      1_000_000,
+		NeedConcurrencySlot: true,
+		LeaseExpiresAt:      now.Add(5 * time.Minute),
+		At:                  now,
+	})
+	if err != nil {
+		t.Fatalf("Reserve no-policy: %v", err)
+	}
+	if result.Decision.Kind != DecisionAllow {
+		t.Fatalf("decision=%+v; want allow when no policy configured", result.Decision)
+	}
+	if IsDenied(err) {
+		t.Fatal("no-policy reserve must never be denied (default-on safety)")
+	}
+	if got := f.auditCount("reserve_denied"); got != 0 {
+		t.Fatalf("reserve_denied audit count=%d; want 0 with no policy", got)
+	}
+}
+
 // ReserveStrictestScopeWins 守住多 scope 同时生效时任一 enforce 超限即整体拒绝。
 func TestServiceReserve_StrictestScopeWins(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1053,6 +1092,14 @@ func (s failingReserveStore) MarkReservationReconciliationNeeded(context.Context
 	return s.err
 }
 
+func (s failingReserveStore) ListStaleReservedReservations(context.Context, time.Time, int) ([]StaleReservation, error) {
+	return nil, s.err
+}
+
+func (s failingReserveStore) GetClaimTerminalState(context.Context, int64, int64) (ClaimTerminalState, error) {
+	return ClaimTerminalState{}, s.err
+}
+
 func (s failingReserveStore) AcquireConcurrencySlot(context.Context, ConcurrencyAcquire) (ConcurrencySlot, error) {
 	return ConcurrencySlot{}, s.err
 }
@@ -1074,6 +1121,10 @@ func (s failingReserveStore) EnqueueReconciliationJob(context.Context, Reconcili
 }
 
 func (s failingReserveStore) ListDueReconciliationJobs(context.Context, int64, time.Time, int) ([]ReconciliationJob, error) {
+	return nil, s.err
+}
+
+func (s failingReserveStore) ListTenantsWithDueReconciliationJobs(context.Context, time.Time, int) ([]int64, error) {
 	return nil, s.err
 }
 

@@ -1,8 +1,7 @@
-// Package rate implements F-RATE-001: upstream rate-limit + cooldown.
+// Package rate 实现 F-RATE-001:上游限流 + 冷却(cooldown)。
 //
-// See docs/specs/rate-limiting.md for the released spec.
-// This package defines the rate/cooldown contract and provider-specific
-// classifier surface.
+// 已发布的规格见 docs/specs/rate-limiting.md。
+// 本包定义限流/冷却契约,以及各 provider 专属的分类器接口面。
 package rate
 
 import (
@@ -11,31 +10,33 @@ import (
 	"time"
 )
 
-// Service runs the ordered upstream error decision tree.
+// Service 运行有序的上游错误决策树。
 type Service interface {
-	// HandleUpstreamError applies the layered decision tree:
-	// pool-mode → custom-codes → temp-unsched rules → status branches.
+	// HandleUpstreamError 应用分层决策树:
+	// custom-codes/temp-unsched 规则 → pool-mode 未匹配短路 → 状态码分支。
 	HandleUpstreamError(ctx context.Context, accountID int64, statusCode int,
 		respHeaders http.Header, respBody []byte) (Decision, error)
 
-	// ClearCascade atomically clears all cooldown state:
-	// rate_limit, overload, temp_unsched, model_rate_limits, openai_403_counter.
+	// ClearCascade 原子地清除所有冷却状态:
+	// rate_limit、overload、temp_unsched、model_rate_limits、openai_403_counter。
 	ClearCascade(ctx context.Context, accountID int64, actorID string) error
 
-	// UpdateSessionWindow applies the recovery-signal handler.
+	// UpdateSessionWindow 应用恢复信号(recovery-signal)的处理逻辑。
 	UpdateSessionWindow(ctx context.Context, accountID int64, headers http.Header) error
 }
 
-// Decision is the outcome of HandleUpstreamError.
+// Decision 是 HandleUpstreamError 的结果。
 type Decision struct {
 	StateChange       StateChange
 	CooldownUntil     time.Time
 	Reason            Reason
 	ShouldFailover    bool
 	RetryAfterSeconds int
+	// SuppressLocalState 只由 pool_mode 的未匹配分支设置；请求仍可故障转移，但不得写账号或模型健康状态。
+	SuppressLocalState bool
 }
 
-// StateChange classifies the Account-state mutation.
+// StateChange 对 Account 状态变更进行分类。
 type StateChange int
 
 const (
@@ -47,7 +48,7 @@ const (
 	StatePermanentDisable
 )
 
-// Reason is the structured rate_limit_reason enum per spec §Failure Path.
+// Reason 是规格 §Failure Path 中定义的结构化 rate_limit_reason 枚举。
 type Reason string
 
 const (

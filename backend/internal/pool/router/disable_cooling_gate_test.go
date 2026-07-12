@@ -6,17 +6,17 @@ import (
 	"time"
 )
 
-// TestProviderAccountHealthGate_DisableCooling verifies the TOKLIFE-02 escape hatch.
+// TestProviderAccountHealthGate_DisableCooling 验证 TOKLIFE-02 的逃生舱。
 //
-// Discriminating tests:
-//  1. cooldown + disable_cooling=TRUE  → eligible (escape hatch fires)
-//  2. cooldown + disable_cooling=FALSE → excluded (DEFAULT SAFETY — flag is the only gate)
-//  3. healthy  + disable_cooling=FALSE → eligible (healthy accounts unaffected)
+// 区分性测试:
+//  1. cooldown + disable_cooling=TRUE  → 合格(逃生舱生效)
+//  2. cooldown + disable_cooling=FALSE → 剔除(默认安全 —— 该标志是唯一的开关)
+//  3. healthy  + disable_cooling=FALSE → 合格(健康账号不受影响)
 func TestProviderAccountHealthGate_DisableCooling(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	// future cooldown_until so account would normally be benched
+	// 未来的 cooldown_until,正常情况下该账号会被剔除
 	cooldownUntil := now.Add(10 * time.Minute)
 
 	gate := ProviderAccountHealthGate{Now: func() time.Time { return now }}

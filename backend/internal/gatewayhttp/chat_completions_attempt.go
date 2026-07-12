@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -17,11 +19,66 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/bodymodel"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
+
+// routerResolvedModelFromRegistry 把 registry 解析结果翻成 router 入参。从
+// chat_completions_dispatch.go 挪来(那文件已达 codebudget 单文件上限),职责=registry→router 翻译。
+func routerResolvedModelFromRegistry(resolved registry.Resolved) router.ResolvedModel {
+	return router.ResolvedModel{
+		PublicAlias:     resolved.PublicAlias,
+		InternalModelID: resolved.CanonicalModelID,
+		ProviderModelID: resolved.ProviderModelID,
+		ContextWindow:   resolved.ContextWindow,
+		Capabilities:    resolved.Capabilities,
+		PricingClass:    resolved.PricingClass,
+		ProtocolFamily:  resolved.ProtocolFamily,
+		PoolCandidates:  resolved.PoolCandidates,
+		PoolMetadata:    routerPoolMetadataFromRegistry(resolved),
+		SnapshotVersion: resolved.SnapshotVersion,
+	}
+}
+
+func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCandidateMeta {
+	if len(resolved.BindingMetadata) == 0 {
+		return nil
+	}
+	defaultProviderModelID := resolved.DefaultProviderModelID
+	if defaultProviderModelID == "" {
+		defaultProviderModelID = resolved.ProviderModelID
+	}
+	out := make([]router.PoolCandidateMeta, 0, len(resolved.BindingMetadata))
+	for _, binding := range resolved.BindingMetadata {
+		if binding.PoolGroupID == 0 {
+			continue
+		}
+		providerModelID := defaultProviderModelID
+		if binding.ProviderModelIDOverride != nil && *binding.ProviderModelIDOverride != "" {
+			providerModelID = *binding.ProviderModelIDOverride
+		}
+		out = append(out, router.PoolCandidateMeta{
+			PoolGroupID:     binding.PoolGroupID,
+			ProviderModelID: providerModelID,
+			// 透传 selection_mode:此前丢弃致 pool/router 加权分支永不可达(断点2)。
+			SelectionMode: binding.SelectionMode,
+		})
+	}
+	return out
+}
+
+// activeBindingSelectionMode 返回命中 binding 的 selection_mode(取不到则空=默认 strict_priority)。
+func (ex *chatExecution) activeBindingSelectionMode() string {
+	if binding, ok := ex.activeBindingMetadata(); ok {
+		return binding.SelectionMode
+	}
+	return ""
+}
 
 type attemptInput struct {
 	Plan             router.AttemptPlan
@@ -49,7 +106,7 @@ type attemptSuccess struct {
 	StatusCode int
 	Header     http.Header
 	Body       []byte
-	Streamed   bool
+	Written    bool
 }
 
 type classifiedAttemptFailure struct {
@@ -127,6 +184,23 @@ func degradeFailureIfAbortFailed(ctx context.Context, requestID string, failure 
 	return failure
 }
 
+// detachedAbort 在脱离请求 ctx 的独立 ctx(WithoutCancel + 超时)上释放 hold 与并发槽,
+// 使释放不受客户端断连影响——否则请求 ctx 随断连取消会让 Settler.Abort 失败,
+// hold/并发槽泄漏到 lease 过期才回收。settle / cache-hit-commit / direct-settle /
+// eventbus 各失败路径的 abort 统一走此入口。
+func detachedAbort(reqCtx context.Context, settler billing.Settler, tenantID, claimID int64, reason, requestID string, observedTokens int64, protocolLoss json.RawMessage) error {
+	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), 30*time.Second)
+	defer cancel()
+	return settler.Abort(abortCtx, tenantID, claimID, reason, requestID, observedTokens, protocolLoss)
+}
+
+// abortReservation 释放本次预扣的 hold 与并发槽(脱离请求 ctx,见 detachedAbort)。
+func (ex *chatExecution) abortReservation(claimID int64, reason string, observedTokens int64, protocolLoss json.RawMessage) error {
+	err := detachedAbort(ex.ctx, ex.d.Settler, ex.ident.TenantID, claimID, reason, ex.requestID, observedTokens, protocolLoss)
+	ex.settlementIntent.MarkAbortResult(ex.ctx, err)
+	return err
+}
+
 func endClassFromAttemptFailure(classification gateway.Classification, decision gateway.AttemptRetryDecision) gateway.StreamEndClass {
 	var draft gateway.UsageRecordDraft
 	gateway.ApplyClassificationToDraft(&draft, classification)
@@ -140,6 +214,7 @@ func endClassFromAttemptFailure(classification gateway.Classification, decision 
 		gateway.TransportErrorUpstreamBodyIdleTimeout:
 		return gateway.InterEventTimeout
 	case gateway.TransportErrorTLSHandshakeFailed,
+		gateway.TransportErrorCredentialExpired,
 		gateway.TransportErrorConnectionRefused,
 		gateway.TransportErrorDNSFailure,
 		gateway.TransportErrorNetworkUnreachable,
@@ -150,6 +225,7 @@ func endClassFromAttemptFailure(classification gateway.Classification, decision 
 	case "upstream_5xx", "upstream_overloaded", "pool_no_capacity",
 		"pool_select_error", "pool_select_no_account", "credential_resolve_error",
 		"upstream_dispatch_error", "upstream_empty_response",
+		"local_credential_expired",
 		"transport_connection_refused", "transport_dns_failure",
 		"transport_network_unreachable", "transport_proxy_failure":
 		return gateway.UpstreamError5xx
@@ -293,17 +369,27 @@ func (ex *chatExecution) prepareNextAttemptAfterAbort() {
 	ex.forwardReq = gateway.ForwardRequest{}
 	ex.healthKey = channelhealth.ChannelKey{}
 	ex.healthKeyOK = false
+	ex.officialDirect = false
 }
 
 func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
 	if ex == nil || len(body) == 0 {
 		return body
 	}
+	if ex.officialDirect && ex.resolved.ProtocolFamily == "anthropic_claude_session" {
+		// 官方直发默认字节等价;仅当 alias≠上游 model 时才改写 model(否则上游未知模型)。
+		if strings.TrimSpace(ex.upstreamModelID) != "" && !bodymodel.ModelMatches(body, ex.upstreamModelID) {
+			if rewritten, ok := bodymodel.RewriteModel(body, ex.upstreamModelID); ok {
+				return rewritten
+			}
+		}
+		return body
+	}
 	out := body
 	// dify_chat 的出站 body 没有 model 字段(Dify 由 app token 决定模型,
 	// 模型选择只参与路由/计费),不得把顶层 model 注进翻译产物污染契约。
 	if strings.TrimSpace(ex.upstreamModelID) != "" && ex.resolved.ProtocolFamily != "dify_chat" {
-		rewritten, ok := ex.rewriteUpstreamModel(body)
+		rewritten, ok := bodymodel.RewriteModel(body, ex.upstreamModelID)
 		if !ok {
 			return body
 		}
@@ -329,23 +415,6 @@ func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
 		out = next
 	}
 	return out
-}
-
-func (ex *chatExecution) rewriteUpstreamModel(body []byte) ([]byte, bool) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return body, false
-	}
-	modelRaw, err := json.Marshal(ex.upstreamModelID)
-	if err != nil {
-		return body, false
-	}
-	obj["model"] = modelRaw
-	out, err := json.Marshal(obj)
-	if err != nil {
-		return body, false
-	}
-	return out, true
 }
 
 func (ex *chatExecution) activeBodyParamGate() (map[string]json.RawMessage, []string) {
@@ -394,7 +463,7 @@ func (ex *chatExecution) runAttempt(w http.ResponseWriter, in attemptInput) atte
 }
 
 func writeAttemptSuccess(w http.ResponseWriter, out attemptOutcome) {
-	if out.Success == nil || out.Success.Streamed {
+	if out.Success == nil || out.Success.Written {
 		return
 	}
 	if out.Success.Header != nil {
@@ -446,51 +515,22 @@ func writeAttemptFailure(w http.ResponseWriter, failure *classifiedAttemptFailur
 }
 
 type deliveryTracker struct {
-	http.ResponseWriter
-	startedFlag bool
-	status      int
+	*chatpipe.DeliveryTracker
 }
 
 func newDeliveryTracker(w http.ResponseWriter) *deliveryTracker {
-	return &deliveryTracker{ResponseWriter: w}
-}
-
-func (w *deliveryTracker) WriteHeader(statusCode int) {
-	if !w.startedFlag {
-		w.startedFlag = true
-		w.status = statusCode
-	}
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (w *deliveryTracker) Write(p []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(p)
-	if n > 0 && !w.startedFlag {
-		w.startedFlag = true
-		w.status = http.StatusOK
-	}
-	return n, err
-}
-
-func (w *deliveryTracker) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
-}
-
-func (w *deliveryTracker) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
+	return &deliveryTracker{DeliveryTracker: chatpipe.NewDeliveryTracker(w)}
 }
 
 func (w *deliveryTracker) started() bool {
-	return w != nil && w.startedFlag
+	return w != nil && w.DeliveryTracker.Started()
 }
 
 func (w *deliveryTracker) statusCode() int {
-	if w == nil || w.status == 0 {
+	if w == nil {
 		return http.StatusOK
 	}
-	return w.status
+	return w.DeliveryTracker.StatusCode()
 }
 
 // stripCrossAccountResponseChain(DM-07):responses 协议的 previous_response_id
@@ -516,4 +556,23 @@ func (ex *chatExecution) stripCrossAccountResponseChain(body []byte) []byte {
 			slog.Int64("account_id", ex.accInfo.AccountID))
 	}
 	return stripped
+}
+
+// noCapacityFallbackRetryAfter 是无法估算池恢复时刻时的默认 Retry-After 秒数(沿用历史常数)。
+const noCapacityFallbackRetryAfter = 5
+
+// poolNoCapacityRetryAfter 从无容量错误里取池最早恢复时刻算 Retry-After 秒:错误携带未来恢复时刻 →
+// ceil(恢复时刻 - now)(至少 1 秒);否则(非 NoCapacityError / 无可估时刻 / 时刻已过)回退默认值。
+// 这样客户端按真实窗口边界退避(如上游长时限流),而非每隔固定 5 秒空撞 503。
+func poolNoCapacityRetryAfter(err error, now time.Time) int {
+	var noCap *pool.NoCapacityError
+	if errors.As(err, &noCap) && noCap != nil && noCap.EarliestRecoveryAt.After(now) {
+		// 整数向上取整,避免引入 math 依赖:(d + 1s - 1ns) / 1s。
+		secs := int((noCap.EarliestRecoveryAt.Sub(now) + time.Second - time.Nanosecond) / time.Second)
+		if secs < 1 {
+			secs = 1
+		}
+		return secs
+	}
+	return noCapacityFallbackRetryAfter
 }

@@ -12,16 +12,17 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
 
-// newHermesGateTestDeps builds a deps with both hermesService and hermesRunner
-// non-nil (so the /v1/hermes mount condition is satisfied) plus an
-// admin.AdminResolver whose queries are nil. A nil-queries resolver returns
-// ErrAdminBackend from Resolve, which the admin middleware maps to 503 with a
-// distinct code — letting an in-process test discriminate the admin mount path
-// from the legacy path WITHOUT a database.
+// newHermesGateTestDeps 构建一个 deps:其中 hermesService 与 hermesRunner
+// 均非 nil(以满足 /v1/hermes 的挂载条件),外加一个
+// queries 为 nil 的 admin.AdminResolver。queries 为 nil 的 resolver 在 Resolve 时
+// 返回 ErrAdminBackend,admin 中间件会把它映射为带有独特错误码的 503——
+// 从而让进程内测试无需数据库即可把 admin 挂载路径
+// 与旧版路径区分开来。
 func newHermesGateTestDeps(t *testing.T, adminOnly bool) *deps {
 	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -42,19 +43,20 @@ func newHermesGateTestDeps(t *testing.T, adminOnly bool) *deps {
 		hermesService:   hermes.NewService(&hermesAuditStoreSpy{}),
 		hermesRunner:    runner,
 		hermesAdminOnly: adminOnly,
-		// nil queries -> Resolve returns ErrAdminBackend (fail-closed 503).
-		adminAuth: admin.NewAdminResolver(nil),
-		// inboundAuth is intentionally nil: the legacy APIKeyMiddleware maps a nil
-		// resolver to 503 hermes_auth_unavailable, distinct from the admin codes.
+		// queries 为 nil -> Resolve 返回 ErrAdminBackend(fail-closed 503)。
+		// 组合器包一层,session 依赖为 nil → 委托令牌通道,行为不变。
+		adminAuth: adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil),
+		// inboundAuth 故意为 nil:旧版 APIKeyMiddleware 会把 nil 的
+		// resolver 映射为 503 hermes_auth_unavailable,与 admin 的错误码有区别。
 	}
 }
 
 func TestHermesAdminOnlyModeUsesAdminGate(t *testing.T) {
-	// Regression (mutation: revert routes.go to always use APIKeyMiddleware): in
-	// admin-only mode a no-credential request to a Hermes endpoint is handled by
-	// the ADMIN middleware. With a nil-queries admin resolver it fails closed as
-	// 503 hermes_admin_backend_error — a code the legacy path never emits — which
-	// proves the admin middleware (not the customer-key middleware) is mounted.
+	// 回归(变异:把 routes.go 退回成始终使用 APIKeyMiddleware):在
+	// admin-only 模式下,对 Hermes 端点的无凭证请求由
+	// ADMIN 中间件处理。在 queries 为 nil 的 admin resolver 下,它 fail closed 成
+	// 503 hermes_admin_backend_error——一个旧版路径永不产出的错误码——这就
+	// 证明挂载的是 admin 中间件(而非客户密钥中间件)。
 	d := newHermesGateTestDeps(t, true)
 	r := chi.NewRouter()
 	mountRoutes(r, d, zap.NewNop())
@@ -72,13 +74,13 @@ func TestHermesAdminOnlyModeUsesAdminGate(t *testing.T) {
 }
 
 func TestHermesAdminOnlyFalsePreservesLegacyEndUserPath(t *testing.T) {
-	// Regression (rollback path): with HUAKAI_HERMES_ADMIN_ONLY=false the legacy
-	// customer-key APIKeyMiddleware is mounted verbatim. A no-credential request
-	// is handled by THAT middleware — its customer-key resolver path yields the
-	// legacy hermes_auth_backend_error code, which is distinct from the admin
-	// middleware's hermes_admin_backend_error, proving the rollback path is
-	// intact. (Mutation: if routes.go ignored the flag and always mounted the
-	// admin middleware, this body would carry the admin code instead.)
+	// 回归(回滚路径):当 HUAKAI_HERMES_ADMIN_ONLY=false 时,旧版的
+	// 客户密钥 APIKeyMiddleware 被原封不动地挂载。无凭证请求
+	// 由「那个」中间件处理——其客户密钥 resolver 路径产出
+	// 旧版的 hermes_auth_backend_error 错误码,它与 admin
+	// 中间件的 hermes_admin_backend_error 有区别,从而证明回滚路径
+	// 完好。(变异:若 routes.go 忽略该开关而始终挂载
+	// admin 中间件,则此处 body 会改而携带 admin 的错误码。)
 	d := newHermesGateTestDeps(t, false)
 	r := chi.NewRouter()
 	mountRoutes(r, d, zap.NewNop())
@@ -100,47 +102,47 @@ func TestHermesAdminOnlyFalsePreservesLegacyEndUserPath(t *testing.T) {
 }
 
 func TestHermesAdminOnlyFromEnvFailClosed(t *testing.T) {
-	// S10: the resolver is fail-closed. Default (unset) and a malformed value
-	// behave as before; the security change is that HUAKAI_HERMES_ADMIN_ONLY=false
-	// ALONE no longer drops to legacy customer-key auth — it requires the explicit
-	// second opt-in, and is refused in production.
+	// S10:resolver 是 fail-closed 的。默认(未设置)与格式错误的值
+	// 行为同前;此次安全变更在于:仅有 HUAKAI_HERMES_ADMIN_ONLY=false
+	// 本身,不再降级到旧版客户密钥认证——它要求显式的
+	// 第二个 opt-in,且在生产环境下被拒绝。
 
-	// Default unset -> admin-only. Mutation: default to false -> RED.
+	// 默认未设置 -> admin-only。变异:把默认改为 false -> 红。
 	t.Setenv(hermesAdminOnlyEnv, "")
 	t.Setenv(hermesAllowLegacyUserAuthEnv, "")
 	if v, err := hermesAdminOnlyFromEnv(nil); err != nil || !v {
 		t.Fatalf("unset v=%v err=%v want true,nil", v, err)
 	}
 
-	// =false WITHOUT the second opt-in -> STILL admin-only (the fail-closed core).
-	// Mutation: drop the opt-in requirement (return ParseBool(raw)) -> v=false -> RED.
+	// =false 但「没有」第二个 opt-in -> 仍是 admin-only(fail-closed 的核心)。
+	// 变异:去掉 opt-in 要求(直接 return ParseBool(raw))-> v=false -> 红。
 	t.Setenv(hermesAdminOnlyEnv, "false")
 	t.Setenv(hermesAllowLegacyUserAuthEnv, "")
 	if v, err := hermesAdminOnlyFromEnv(nil); err != nil || !v {
 		t.Fatalf("=false without opt-in v=%v err=%v want true,nil (fail-closed)", v, err)
 	}
-	// A truthy-but-not-"true" opt-in value does not count.
+	// 一个为真但不等于 "true" 的 opt-in 值不算数。
 	t.Setenv(hermesAllowLegacyUserAuthEnv, "1")
 	if v, err := hermesAdminOnlyFromEnv(nil); err != nil || !v {
 		t.Fatalf("opt-in must be exactly true; got v=%v err=%v want true,nil", v, err)
 	}
 
-	// =false WITH the second opt-in (non-production) -> legacy mode (rollback works).
-	// Mutation: drop the both-opt-ins branch -> never reaches false -> RED.
+	// =false 且「带有」第二个 opt-in(非生产)-> 旧版模式(回滚可用)。
+	// 变异:去掉「两个 opt-in 都满足」的分支 -> 永远到不了 false -> 红。
 	t.Setenv(hermesAllowLegacyUserAuthEnv, "true")
 	if v, err := hermesAdminOnlyFromEnv(nil); err != nil || v {
 		t.Fatalf("both opt-ins v=%v err=%v want false,nil (legacy enabled)", v, err)
 	}
 
-	// Both opt-ins + production -> boot refusal. Mutation: delete the production
-	// refusal -> err is nil -> RED.
+	// 两个 opt-in 都满足 + 生产 -> 启动拒绝。变异:删除生产环境的
+	// 拒绝逻辑 -> err 为 nil -> 红。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	if _, err := hermesAdminOnlyFromEnv(nil); err == nil {
 		t.Fatalf("legacy mode in production must be a boot error, got nil")
 	}
 	t.Setenv("HUAKAI_RELEASE_MODE", "")
 
-	// Malformed value -> fail-loud boot error (unchanged).
+	// 格式错误的值 -> fail-loud 启动报错(行为不变)。
 	t.Setenv(hermesAdminOnlyEnv, "not-a-bool")
 	if _, err := hermesAdminOnlyFromEnv(nil); err == nil {
 		t.Fatalf("malformed value must be a boot error, got nil")
@@ -148,29 +150,29 @@ func TestHermesAdminOnlyFromEnvFailClosed(t *testing.T) {
 }
 
 func TestHermesBoolEnabledDefaultTrue(t *testing.T) {
-	// Defect this catches: the two runtime kill-switch parsers (KNOB A
-	// HUAKAI_HERMES_MUTATING_ENABLED, KNOB B HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)
-	// must DEFAULT TRUE (unset => enabled => zero behavior change), honor an explicit
-	// bool, and FAIL LOUD on a malformed value (never silently disable enforcement,
-	// and never silently re-enable a surface the operator meant to turn off).
+	// 本测试要抓的缺陷:两个运行时 kill-switch 解析器(KNOB A
+	// HUAKAI_HERMES_MUTATING_ENABLED、KNOB B HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)
+	// 必须「默认为 TRUE」(未设置 => 启用 => 零行为变化),尊重显式的
+	// bool,并对格式错误的值「fail loud」(绝不静默禁用强制,
+	// 也绝不静默重新启用运维本想关掉的面)。
 	for _, env := range []string{hermesMutatingEnabledEnv, hermesLLMToolLoopEnabledEnv} {
-		// Unset -> true. Mutation: change the empty-string return to false -> RED.
+		// 未设置 -> true。变异:把空串的返回值改成 false -> 红。
 		t.Setenv(env, "")
 		if v, err := hermesBoolEnabledDefaultTrue(env); err != nil || !v {
 			t.Fatalf("%s unset v=%v err=%v want true,nil (default-enabled)", env, v, err)
 		}
-		// Explicit false honored. Mutation: hardcode return true -> RED.
+		// 尊重显式的 false。变异:硬编码 return true -> 红。
 		t.Setenv(env, "false")
 		if v, err := hermesBoolEnabledDefaultTrue(env); err != nil || v {
 			t.Fatalf("%s=false v=%v err=%v want false,nil", env, v, err)
 		}
-		// Explicit true honored.
+		// 尊重显式的 true。
 		t.Setenv(env, "true")
 		if v, err := hermesBoolEnabledDefaultTrue(env); err != nil || !v {
 			t.Fatalf("%s=true v=%v err=%v want true,nil", env, v, err)
 		}
-		// Malformed -> fail-loud boot error. Mutation: swallow ParseBool's error and
-		// return a default -> err is nil -> RED.
+		// 格式错误 -> fail-loud 启动报错。变异:吞掉 ParseBool 的错误并
+		// 返回一个默认值 -> err 为 nil -> 红。
 		t.Setenv(env, "maybe")
 		if _, err := hermesBoolEnabledDefaultTrue(env); err == nil {
 			t.Fatalf("%s malformed must be a boot error, got nil", env)

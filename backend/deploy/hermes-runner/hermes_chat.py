@@ -28,8 +28,7 @@ HERMES_HOME_ROOT = "/var/lib/huakai/hermes"
 INTERNAL_BASE_URL_ENV = "HUAKAI_HERMES_INTERNAL_LLM_BASE_URL"
 INTERNAL_TOKEN_SECRET_ENV = "HUAKAI_HERMES_INTERNAL_TOKEN_SECRET"
 INTERNAL_TOKEN_MAX_TTL_SECONDS = 5 * 60
-# Bounds one conversational tool call's round-trip to the gateway. Diagnostic
-# reads are fast; a hung gateway must not stall the chat indefinitely.
+# 给单次对话工具调用到网关的一次往返设上界。诊断读很快;卡死的网关不能让对话无限期停滞。
 TOOL_EXECUTE_TIMEOUT_SECONDS = 15
 
 _DONE = object()
@@ -42,11 +41,12 @@ class ChatPayload:
     internal_token: str = field(repr=False)
     conversation_id: int | None = None
     model: str | None = None
-    # tool_catalog is the gateway-injected list of READ-ONLY diagnostic tools the
-    # ops assistant may call mid-conversation (name + description + input_schema).
-    # It NEVER contains a mutating tool — the gateway filters to read-only before
-    # injection. The runner does not authorize tools; it only forwards the model's
-    # chosen tool call to the gateway, which authorizes + executes + audits.
+    # tool_catalog 是网关注入的、运维助手可在对话中调用的工具列表(name + description +
+    # input_schema)。默认只含只读诊断工具;当 Phase B 提议 KNOB 打开时,还会包含"可提议的"
+    # B 级 mutating 工具——这些条目带 mutating=true(及 requires_confirmation)标志。runner
+    # 不授权任何工具:它只转发模型选中的工具调用给网关(网关授权 + 执行 + 审计);对带 mutating
+    # 标志的工具,它以 mode=propose 转发(只做 dry-run、返回 needs_confirmation 供运营者确认),
+    # 自己绝不执行、绝不自动确认。
     tool_catalog: tuple[dict[str, Any], ...] = ()
 
 
@@ -174,12 +174,9 @@ class _StreamCallback:
 async def _invoke_run_conversation(agent: Any, payload: ChatPayload, callback: Callable[[Any], Any]) -> Any:
     method = agent.run_conversation
     kwargs = _conversation_kwargs(payload, callback)
-    # WAVE H3b: inject the READ-ONLY tool catalog + a tool executor ONLY when the
-    # loaded agent's run_conversation accepts them (signature-aware), so an agent
-    # that does not support tools is unaffected and the supply-chain surface is not
-    # widened. The executor merely FORWARDS the model's chosen tool call to the
-    # gateway over the internal token — it performs NO authorization itself; the
-    # gateway authorizes (read-only filter + RBAC + tenant scope) + audits.
+    # WAVE H3b:仅当所加载 agent 的 run_conversation 接受这些参数时(感知签名),才注入"只读"工具目录
+    # 与工具执行器,使不支持工具的 agent 不受影响、供应链面也不被扩大。执行器只是把模型选中的工具调用
+    # 经 internal token 转发给网关——它自己不做任何授权;授权(只读过滤 + RBAC + 租户隔离)与审计都在网关。
     _inject_tool_kwargs(method, kwargs, payload)
 
     if inspect.iscoroutinefunction(method):
@@ -188,10 +185,9 @@ async def _invoke_run_conversation(agent: Any, payload: ChatPayload, callback: C
 
 
 def _inject_tool_kwargs(method: Callable[..., Any], kwargs: dict[str, Any], payload: ChatPayload) -> None:
-    """Add tool_catalog + tool_executor to kwargs iff (a) a non-empty catalog was
-    injected by the gateway AND (b) run_conversation declares the matching
-    parameter (or **kwargs). Fail-safe: if the signature cannot be introspected,
-    inject nothing rather than risk a TypeError that aborts the chat."""
+    """仅当 (a) 网关注入了非空目录 且 (b) run_conversation 声明了对应参数(或 **kwargs)时,才把
+    tool_catalog + tool_executor 加进 kwargs。安全失败:若签名无法内省,则什么也不注入,而不是冒着
+    TypeError 中断对话的风险。"""
     if not payload.tool_catalog:
         return
     try:
@@ -206,43 +202,52 @@ def _inject_tool_kwargs(method: Callable[..., Any], kwargs: dict[str, Any], payl
 
 
 def _build_tool_executor(payload: ChatPayload) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
-    """Return a callable (tool_name, args) -> sanitized result dict that the agent
-    invokes when the model picks a tool. It POSTs to the gateway's internal
-    read-only tool-execute endpoint with the session internal_token as proof.
-    The gateway is the sole authority: it verifies the token, resolves the bound
-    operator, REJECTS any mutating tool, runs the read-only tool with the
-    operator's role floor + tenant scope, audits the call, and returns only the
-    sanitized summary. The runner never sees a secret and never authorizes."""
+    """返回一个 (tool_name, args) -> 已脱敏结果 dict 的可调用对象,供 agent 在模型选中工具时调用。
+    它带着会话 internal_token 作为凭据,POST 到网关的内部 tool-execute 端点。网关是唯一权威:校验
+    token、解析绑定的 operator、按角色下限 + 租户隔离执行、审计、只返回脱敏摘要。runner 从不接触密钥、
+    从不授权。
+
+    Phase B:对目录里被标记 mutating 的工具(可提议的 B 级 mutating 工具),executor 以 mode=propose
+    转发——网关只做 dry-run 解析、返回 needs_confirmation + correlation_id 供运营者经独立路径确认。runner
+    没有运营者确认凭据,故绝不直接执行、也绝不自动确认;它只把 needs_confirmation 结果原样回灌给模型,由
+    模型转达运营者。只读工具仍以空 mode 转发(走原只读路径)。"""
     url = _internal_tool_execute_url(payload.internal_base_url)
     token = payload.internal_token
+    # 从网关注入的目录里挑出带 mutating 标志的工具名(Phase B 提议 KNOB 关时目录里没有这类工具,
+    # 该集合为空 => 所有调用都以空 mode 走只读路径,行为与提议接入前一致)。
+    mutating_tools = {t["name"] for t in payload.tool_catalog if t.get("mutating") is True}
 
     def execute(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
-        return _post_tool_execute(url, token, tool_name, args or {})
+        mode = "propose" if tool_name in mutating_tools else ""
+        return _post_tool_execute(url, token, tool_name, args or {}, mode)
 
     return execute
 
 
 def _internal_tool_execute_url(internal_base_url: str) -> str:
-    """Derive the gateway's tool-execute endpoint from the internal LLM base URL.
-    The base URL points at the gateway's internal listener (e.g.
-    http://host:8080/internal/v1/openai); the tool endpoint is a sibling fixed
-    path on the SAME origin so it inherits the listener's network isolation."""
+    """从 internal LLM base URL 推导网关的 tool-execute 端点。base URL 指向网关的内部监听器(例如
+    http://host:8080/internal/v1/openai);工具端点是"同一 origin"上的固定同级路径,从而继承该监听器
+    的网络隔离。"""
     from urllib.parse import urlsplit, urlunsplit
 
     parts = urlsplit(internal_base_url)
     return urlunsplit((parts.scheme, parts.netloc, "/internal/hermes/tool-execute", "", ""))
 
 
-def _post_tool_execute(url: str, token: str, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-    """Synchronously POST one tool call to the gateway and return the parsed
-    result. Network/parse failures and non-2xx responses are surfaced as a
-    structured error dict (never a raw secret) so the agent can decide how to
-    continue rather than crashing the conversation."""
+def _post_tool_execute(url: str, token: str, tool_name: str, args: dict[str, Any], mode: str = "") -> dict[str, Any]:
+    """同步 POST 一次工具调用到网关并返回解析后的结果。网络/解析失败与非 2xx 响应都被转成结构化
+    error dict(绝不含原始密钥),使 agent 能自行决定如何继续而非崩掉对话。
+
+    mode 为空(默认)走只读路径;mode="propose"(Phase B,针对 mutating 工具)让网关做 dry-run 解析、
+    返回 needs_confirmation + correlation_id。mode 仅在非空时写入请求体,故只读调用的请求体逐字节不变。"""
     import json as _json
     import urllib.error
     import urllib.request
 
-    body = _json.dumps({"tool_name": tool_name, "args": args}).encode("utf-8")
+    body_obj: dict[str, Any] = {"tool_name": tool_name, "args": args}
+    if mode:
+        body_obj["mode"] = mode
+    body = _json.dumps(body_obj).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", f"Bearer {token}")
@@ -256,13 +261,13 @@ def _post_tool_execute(url: str, token: str, tool_name: str, args: dict[str, Any
     except urllib.error.HTTPError as exc:
         return _tool_execute_http_error(exc)
     except Exception:
-        # Never leak the token or a stack trace into the conversation surface.
+        # 绝不把 token 或堆栈信息泄露到对话面。
         return {"status": "error", "error_class": "tool_execute_failed"}
 
 
 def _tool_execute_http_error(exc: Any) -> dict[str, Any]:
-    """Map a non-2xx gateway response to a structured error dict. The gateway's
-    error body is a small {"error": "<code>"} enum (no PII), safe to surface."""
+    """把非 2xx 的网关响应映射成结构化 error dict。网关的 error body 是个小的 {"error": "<code>"} 枚举
+    (不含 PII),可安全暴露。"""
     code = "tool_execute_failed"
     try:
         detail = json_loads_safe(exc.read())
@@ -413,12 +418,13 @@ def _parse_payload(value: Any) -> ChatPayload:
 
 
 def _parse_tool_catalog(raw: Any) -> tuple[dict[str, Any], ...]:
-    """Normalize the gateway-injected tool catalog into an immutable tuple of
-    {name, description, input_schema} dicts. Anything malformed is dropped so a
-    bad entry can never crash the conversation; absent => empty catalog (no tool
-    loop). The runner trusts the gateway's read-only filter — it does not re-check
-    mutating-ness here (it has no registry), it only forwards what the model picks
-    and the gateway re-authorizes."""
+    """把网关注入的工具目录归一化成不可变的 {name, description, input_schema} dict 元组。任何畸形条目
+    都被丢弃,以免坏条目崩掉对话;缺失 => 空目录(无工具循环)。runner 信任网关侧的过滤——它自己没有
+    registry,不重新判定工具的 mutating 性,只转发模型选中的,由网关再授权。
+
+    Phase B:若条目带 mutating=true(可提议的 B 级 mutating 工具,网关 ProposableCatalog 注入),则保留
+    mutating(及 requires_confirmation)标志,使 executor 知道要以 mode=propose 转发、模型知道要向运营者
+    渲染确认步骤。标志仅在显式为 true 时保留 => 只读条目的形状逐字节不变。"""
     if not isinstance(raw, list):
         return ()
     catalog: list[dict[str, Any]] = []
@@ -429,13 +435,16 @@ def _parse_tool_catalog(raw: Any) -> tuple[dict[str, Any], ...]:
         if not isinstance(name, str) or not name.strip():
             continue
         schema = entry.get("input_schema")
-        catalog.append(
-            {
-                "name": name.strip(),
-                "description": str(entry.get("description") or ""),
-                "input_schema": schema if isinstance(schema, dict) else {},
-            }
-        )
+        item: dict[str, Any] = {
+            "name": name.strip(),
+            "description": str(entry.get("description") or ""),
+            "input_schema": schema if isinstance(schema, dict) else {},
+        }
+        if entry.get("mutating") is True:
+            item["mutating"] = True
+        if entry.get("requires_confirmation") is True:
+            item["requires_confirmation"] = True
+        catalog.append(item)
     return tuple(catalog)
 
 

@@ -1,11 +1,13 @@
 package imageshttp
 
 import (
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/httpkeepalive"
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
@@ -67,7 +69,11 @@ func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bo
 	if isMultipart {
 		dispatchInput.InboundContentType = inboundCT
 	}
+	// 图片同步 API 常在 Dispatch(等上游生成完再回 header)一步就阻塞数十秒,期间对客户端零字节;
+	// 起 keepalive 保活避开反代空闲超时,Stop 在下方任何写 w 之前(含错误路径)。
+	dispatchKeepalive := httpkeepalive.Start(w, ex.d.NonStreamKeepAliveInterval)
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, dispatchInput)
+	dispatchKeepalive.Stop()
 	if err != nil {
 		ex.abort(w, "upstream_dispatch_error", 0)
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
@@ -87,7 +93,11 @@ func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bo
 }
 
 func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {
+	// 若上游改在 body 读阶段才慢(early header + 延迟 body),读全 body 也起 keepalive 兜住;
+	// Stop 在下方任何写 w 之前。与 Dispatch 处的保活互补,覆盖两种慢点形态。
+	readKeepalive := httpkeepalive.Start(w, ex.d.NonStreamKeepAliveInterval)
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
+	readKeepalive.Stop()
 	if readErr != nil {
 		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
@@ -152,17 +162,32 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 			return false
 		}
 	}
-	ibctx, icancel := ex.billingCtx()
-	defer icancel()
-	if _, err := ex.d.Settler.Settle(ibctx, ex.settleRequest(tokens, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
-		return false
-	}
+	settleReq := ex.settleRequest(tokens, actualCost, costSnapshot, attemptSeq, pending)
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw)
+	written, writeErr := w.Write(raw)
+	fullyWritten := written >= len(raw)
+	if !fullyWritten && writeErr == nil {
+		writeErr = io.ErrShortWrite
+	}
+	if !fullyWritten {
+		ex.abortAfterResponseWriteFailure("client_response_write_error", int64(tokens.InputTokens), writeErr)
+		return false
+	}
+	if writeErr != nil {
+		ex.observeResponseWriteUncertainty(writeErr)
+	}
+	// 小图片 JSON 可能仍在 net/http 写缓冲中；结算前刷新，使业务体尽早对客户端可见。
+	// 完整 Write 后的刷新错误属于交付不确定，按已交付保守结算，不能释放预留。
+	if flushErr := http.NewResponseController(w).Flush(); flushErr != nil {
+		ex.observeResponseWriteUncertainty(flushErr)
+	}
+	ibctx, icancel := ex.billingCtx()
+	defer icancel()
+	if err := ex.settleDeliveredResponse(ibctx, settleReq); err != nil {
+		return false
+	}
 	return true
 }

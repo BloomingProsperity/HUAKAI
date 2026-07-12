@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -68,13 +69,17 @@ func TransportErrorClassOf(err error) TransportErrorClass {
 // standardRoundTripper），以剥离 HTTP_PROXY/HTTPS_PROXY env 对账号绑定
 // 代理隔离的破坏。
 type Factory struct {
-	// SidecarSocketPath enables the Rust/BoringSSL TLS sidecar for mimicry
-	// modes. Empty keeps the existing Go uTLS path for backwards compatibility.
+	// SidecarSocketPath 为 mimicry 模式启用 Rust/BoringSSL TLS sidecar。
+	// 为空则保留既有的 Go uTLS 路径以向后兼容。
 	SidecarSocketPath string
 	// SidecarFallbackEnabled 只有显式打开时才允许 Rust sidecar 不可用后回退
 	// Go-native mimicry transport。默认 false，生产 fail-closed，防静默丢失
 	// 强伪装能力。
 	SidecarFallbackEnabled bool
+	// SidecarForceH1 控制 Rust sidecar 握手是否只广告 ALPN=http/1.1。nil 时
+	// 沿用 mimicry 既有 env 默认(forceH1Enabled，默认开),与 Go uTLS 路一致；
+	// 非 nil 时由运维 config 显式覆盖。指针是为了区分"未配置"与"显式 false"。
+	SidecarForceH1 *bool
 	// standard 是 standard mode 用的 RoundTripper。nil 时回落到
 	// fallback：http.DefaultTransport.Clone() 并把 Proxy 设为 nil，
 	// 任何代理只能通过 dispatcher.applyProxy 显式绑定生效。
@@ -86,21 +91,29 @@ type Factory struct {
 	// mimicry 是测试或外部装配注入点。nil 时按 registry 查 per-mode 模板。
 	mimicry http.RoundTripper
 	// templateRegistry 保存 per-mode ClientHello 模板。
-	templateRegistry *mimicry.TemplateRegistry
-	mimicryMu        sync.Mutex
-	mimicryByMode    map[TransportMode]http.RoundTripper
-	sidecarByMode    map[TransportMode]http.RoundTripper
-	sidecarMandatory map[TransportMode]bool
-	sidecarFallbacks atomic.Uint64
-	// sidecarProbeTimeout bounds startup/request-time sidecar readiness checks.
-	// Zero uses defaultSidecarProbeTimeout.
-	sidecarProbeTimeout time.Duration
-	sidecarProbe        func(context.Context, string, mimicry.TransportMode, string) error
+	templateRegistry     *mimicry.TemplateRegistry
+	mimicryMu            sync.Mutex
+	mimicryByMode        map[TransportMode]http.RoundTripper
+	sidecarByMode        map[TransportMode]http.RoundTripper
+	sidecarFailureByMode map[TransportMode]sidecarFailureCache
+	sidecarMandatory     map[TransportMode]bool
+	sidecarFallbacks     atomic.Uint64
+	// sidecarProbeTimeout 限定启动时/请求时的 sidecar 就绪检查时长。
+	// 为零则使用 defaultSidecarProbeTimeout。
+	sidecarProbeTimeout    time.Duration
+	sidecarFailureCacheTTL time.Duration
+	sidecarProbe           func(context.Context, string, mimicry.TransportMode, string) error
 	// diagnostics 是仅做连通性诊断的 RoundTripper。nil 表示尚未实施。
 	diagnostics http.RoundTripper
 }
 
 const defaultSidecarProbeTimeout = 5 * time.Second
+const defaultSidecarFailureCacheTTL = time.Second
+
+type sidecarFailureCache struct {
+	err       error
+	expiresAt time.Time
+}
 
 // NewFactory 构造一个新的 Factory。所有 RoundTripper 字段为 nil — 调用
 // SetXxx 注入实例。standard 在未注入时回落到 http.DefaultTransport。
@@ -164,6 +177,16 @@ func (f *Factory) SidecarFallbackCount() uint64 {
 func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTripper, error) {
 	if err := ValidateModeForProvider(provider, mode); err != nil {
 		return nil, err
+	}
+	// 全局伪装运维开关:HUAKAI_TRANSPORT_MIMICRY=false 时,把所有 mimicry mode
+	// 整体降级为标准 transport——用于排障,或伪装实现出故障时一键回退到标准
+	// net/http。默认开(空或非 "false" 视为开),不改现有生产行为。放在
+	// ValidateModeForProvider 之后:校验仍按真实 (provider, mode) 进行;降级目标
+	// standard 对任何曾允许 mimicry 的 provider 必然合法(allowedModesByProvider
+	// 中每个含 mimicry 的 provider 同时允许 standard),故降级后不触发非法组合。
+	// 该降级覆盖 dispatcher / HCSF / OAuth 全部出站路径——它们都经本 For。
+	if mode.isMimicry() && !MimicryEnabled() {
+		mode = TransportModeStandard
 	}
 	switch mode {
 	case TransportModeStandard:
@@ -278,6 +301,12 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 	if rt := f.sidecarByMode[mode]; rt != nil {
 		return rt, nil
 	}
+	if cached, ok := f.sidecarFailureByMode[mode]; ok {
+		if time.Now().Before(cached.expiresAt) {
+			return nil, cached.err
+		}
+		delete(f.sidecarFailureByMode, mode)
+	}
 	sidecarMode := mimicry.TransportMode(mode)
 	profileID, ok := mimicry.SidecarProfileForMode(sidecarMode)
 	if !ok {
@@ -298,6 +327,9 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 	}
 	if err := probe(ctx, f.SidecarSocketPath, sidecarMode, profileID); err != nil {
 		class := classifySidecarError(err)
+		// probe 失败 = 出口在真实拨号前就转不出去(默认 fail-closed 下 sidecar 宕机的主路径)。
+		// 计入与 DialTLS 同一套 result 桶,否则出口成功率分母漏掉最主要的宕机情形。
+		mimicry.RecordEgressProbeFailure(class == TransportErrorClassSidecarProfileUnavailable)
 		slog.Warn("transport mimicry sidecar unavailable",
 			"mode", mode,
 			"socket_path", f.SidecarSocketPath,
@@ -305,14 +337,43 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 			"reason_class", class,
 			"error", err,
 		)
-		return nil, newSidecarTransportError(class, mode, f.SidecarSocketPath, err)
+		transportErr := newSidecarTransportError(class, mode, f.SidecarSocketPath, err)
+		f.cacheSidecarFailureLocked(mode, transportErr)
+		return nil, transportErr
 	}
-	rt, err := mimicry.NewSidecarRoundTripperForMode(f.SidecarSocketPath, sidecarMode)
+	var (
+		rt  http.RoundTripper
+		err error
+	)
+	if f.SidecarForceH1 != nil {
+		// 运维 config 显式覆盖 force_h1。
+		rt, err = mimicry.NewSidecarRoundTripperForModeForceH1(f.SidecarSocketPath, sidecarMode, *f.SidecarForceH1)
+	} else {
+		// 未配置时沿用 mimicry 的 env 默认(forceH1Enabled)。
+		rt, err = mimicry.NewSidecarRoundTripperForMode(f.SidecarSocketPath, sidecarMode)
+	}
 	if err != nil {
-		return nil, newSidecarTransportError(classifySidecarError(err), mode, f.SidecarSocketPath, err)
+		transportErr := newSidecarTransportError(classifySidecarError(err), mode, f.SidecarSocketPath, err)
+		f.cacheSidecarFailureLocked(mode, transportErr)
+		return nil, transportErr
 	}
+	delete(f.sidecarFailureByMode, mode)
 	f.sidecarByMode[mode] = rt
 	return rt, nil
+}
+
+func (f *Factory) cacheSidecarFailureLocked(mode TransportMode, err error) {
+	if err == nil {
+		return
+	}
+	ttl := f.sidecarFailureCacheTTL
+	if ttl <= 0 {
+		ttl = defaultSidecarFailureCacheTTL
+	}
+	if f.sidecarFailureByMode == nil {
+		f.sidecarFailureByMode = make(map[TransportMode]sidecarFailureCache)
+	}
+	f.sidecarFailureByMode[mode] = sidecarFailureCache{err: err, expiresAt: time.Now().Add(ttl)}
 }
 
 func (f *Factory) sidecarModeMandatory(mode TransportMode) bool {
@@ -327,6 +388,9 @@ func (f *Factory) recordSidecarFallback(mode TransportMode, err error) {
 	}
 	class := classifySidecarError(err)
 	f.sidecarFallbacks.Add(1)
+	// 同点把降级事件桥进 expvar(reason_class 维度),让 /metrics 也能看见出口降级——
+	// 此前只有内存计数 + slog,Prometheus 侧不可见(看关联产物:计数器要到达其下游消费者)。
+	recordEgressFallbackMetric(class)
 	slog.Warn("transport mimicry sidecar fallback to Go-native mimicry",
 		"audit_event", "transport_sidecar_fallback",
 		"mode", mode,
@@ -363,6 +427,64 @@ func (rt *sidecarFallbackRoundTripper) RoundTrip(req *http.Request) (*http.Respo
 		return nil, fmt.Errorf("transport: sidecar runtime fallback failed for mode=%s: %w; native fallback: %w", rt.mode, transportErr, fallbackErr)
 	}
 	return fallbackResp, nil
+}
+
+// proxyAwareRoundTripper 在本包内复刻 provider 侧消费的结构化代理接口,避免
+// 反向 import provider。WithProxy 的存在与否决定 provider.WrapTransportWithProxy
+// 走"账号绑定代理叠加"分支还是 fail-loud 分支。
+type proxyAwareRoundTripper interface {
+	WithProxy(proxyURL *url.URL) (http.RoundTripper, error)
+}
+
+// WithProxy 让 sidecarFallbackRoundTripper 也满足 provider.proxyAwareRoundTripper:
+// 把代理分别叠加到 primary(sidecar)与 fallback(Go-native uTLS)两条腿上,再用同一个
+// wrapper 重新封装返回。**必须实现此方法**——否则开启 SidecarFallbackEnabled 后,绑定了
+// 出口代理的 mimicry 账号会因 wrapper 不被识别为 proxy-aware,落到
+// WrapTransportWithProxy 的 fail-loud 分支(proxyWrappedRoundTripper),每个请求都返回
+// ErrProxyUnsupportedTransport,代理 mimicry 账号整体不可用(本就是 #11 要修的命门)。
+//
+// primary 在生产里恒为 mimicry.sidecarTransport(它实现 WithProxy);若某天不再是
+// proxy-aware,这里 fail-loud 返回 err,经 WrapTransportWithProxy 的 buildErr 路径仍
+// fail-closed,绝不静默丢代理导致真实出口 IP 泄露。fallback 为 Go uTLS native RT,同样
+// 实现 WithProxy;它若不支持也 fail-loud——两条腿必须都带上代理,否则回退路径会绕过
+// 账号级 IP 隔离。
+func (rt *sidecarFallbackRoundTripper) WithProxy(proxyURL *url.URL) (http.RoundTripper, error) {
+	primaryPA, ok := rt.primary.(proxyAwareRoundTripper)
+	if !ok {
+		return nil, fmt.Errorf("transport: sidecar fallback primary 不支持 WithProxy,无法叠加账号代理 mode=%s", rt.mode)
+	}
+	primaryProxied, err := primaryPA.WithProxy(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	fallbackPA, ok := rt.fallback.(proxyAwareRoundTripper)
+	if !ok {
+		return nil, fmt.Errorf("transport: sidecar fallback native 不支持 WithProxy,无法叠加账号代理 mode=%s", rt.mode)
+	}
+	fallbackProxied, err := fallbackPA.WithProxy(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	return &sidecarFallbackRoundTripper{
+		primary:    primaryProxied,
+		fallback:   fallbackProxied,
+		factory:    rt.factory,
+		mode:       rt.mode,
+		socketPath: rt.socketPath,
+	}, nil
+}
+
+// SidecarProfileID 转发 primary 的 sidecar profile id,使 wrapper 同样携带"我已走
+// sidecar"的导出标记。**必须实现此方法**——否则开启 SidecarFallbackEnabled 后,绑定了
+// DB TLS profile 的账号在 dispatcher.applyTLSProfile 处不被识别为 sidecar RT,会被
+// per-account DB uTLS profile 整体替换,sidecar 永远轮不到、强伪装能力静默丢失。
+// 接口断言(interface{ SidecarProfileID() string })只看方法是否存在,故只要本方法
+// 存在,wrapper 即被 applyTLSProfile 正确短路保留。
+func (rt *sidecarFallbackRoundTripper) SidecarProfileID() string {
+	if p, ok := rt.primary.(interface{ SidecarProfileID() string }); ok {
+		return p.SidecarProfileID()
+	}
+	return ""
 }
 
 func newSidecarTransportError(class TransportErrorClass, mode TransportMode, socketPath string, err error) *TransportError {
@@ -426,7 +548,12 @@ func (f *Factory) mimicryRoundTripper(mode TransportMode, tmpl *mimicry.ClientHe
 	if rt := f.mimicryByMode[mode]; rt != nil {
 		return rt
 	}
-	rt := mimicry.NewRoundTripper(tmpl)
+	var rt http.RoundTripper
+	if f.SidecarForceH1 != nil {
+		rt = mimicry.NewRoundTripperForceH1(tmpl, *f.SidecarForceH1)
+	} else {
+		rt = mimicry.NewRoundTripper(tmpl)
+	}
 	f.mimicryByMode[mode] = rt
 	return rt
 }

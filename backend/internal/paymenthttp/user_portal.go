@@ -143,8 +143,8 @@ type RefundRequestInput struct {
 type RefundRequestRecorder interface {
 	CreateRefundRequest(ctx context.Context, in RefundRequestInput) (RefundRequest, error)
 	ListPendingRefundRequests(ctx context.Context, tenantID int64) ([]RefundRequest, error)
-	ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64) (RefundRequest, error)
-	RejectRefundRequest(ctx context.Context, tenantID, requestID int64, reason string, adminActorID int64) (RefundRequest, error)
+	ApproveRefundRequest(ctx context.Context, tenantID, requestID, adminActorID int64, actorRef string) (RefundRequest, error)
+	RejectRefundRequest(ctx context.Context, tenantID, requestID int64, reason string, adminActorID int64, actorRef string) (RefundRequest, error)
 }
 
 // memoryRefundRequestRecorder 进程内退款申请记录 (MVP 兜底)。
@@ -432,7 +432,7 @@ func newPortalRefundRequestHandler(d UserDeps) http.HandlerFunc {
 			return
 		}
 		var req portalRefundRequestBody
-		// requestBody is optional (OpenAPI required:false); only decode when a body is present
+		// requestBody 是可选的(OpenAPI required:false);仅在存在 body 时才解码
 		if r.ContentLength != 0 && r.Body != http.NoBody {
 			if !decodeJSON(w, r, &req) {
 				return

@@ -89,9 +89,9 @@ func TestClientProtocolByIngressPath(t *testing.T) {
 }
 
 func TestCodexResponsesSamePipelineAsV1Responses(t *testing.T) {
-	// MUTATION: map /backend-api/codex/responses to openai_chat or leave it
-	// as the default unknown path; Codex CLI would bypass the Responses adapter
-	// or return 404 instead of sharing /v1/responses behavior.
+	// 变异点：把 /backend-api/codex/responses 映射到 openai_chat，或让它落入
+	// 默认的 unknown 路径；这样 Codex CLI 会绕过 Responses adapter，或返回 404，
+	// 而不是复用 /v1/responses 的行为。
 	got, ok := ClientProtocolByIngressPath("/backend-api/codex/responses")
 	if !ok {
 		t.Fatal("Codex Responses ingress path must resolve instead of falling through to 404")

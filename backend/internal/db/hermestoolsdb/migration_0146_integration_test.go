@@ -1,19 +1,19 @@
 //go:build integration_pg
 
-// Migration guard for 0146_hermes_mutating_tools: proves the WAVE H4 migration
-//  1. extends hermes_tool_calls.tool_name CHECK to admit the four mutating tool
-//     names (dlq_replay / account_pause / account_resume / renew_trigger) and
-//     still rejects a bogus name;
-//  2. adds the hermes_tool_calls.dry_run column (accepts a boolean);
-//  3. extends admin_audit_events.action CHECK to admit the four
-//     hermes.tool.<name> mutating actions and still rejects a bogus one;
-//  4. extends admin_audit_events.target_type CHECK to admit 'dlq_event'.
+// 0146_hermes_mutating_tools 的迁移守卫:证明 WAVE H4 这次迁移
+//  1. 扩展 hermes_tool_calls.tool_name 的 CHECK，允许四个 mutating 工具名
+//     (dlq_replay / account_pause / account_resume / renew_trigger)，同时仍
+//     拒绝伪造的名字;
+//  2. 新增 hermes_tool_calls.dry_run 列(接受布尔值);
+//  3. 扩展 admin_audit_events.action 的 CHECK，允许四个 hermes.tool.<name>
+//     mutating action，同时仍拒绝伪造的;
+//  4. 扩展 admin_audit_events.target_type 的 CHECK，允许 'dlq_event'。
 //
-// DISCRIMINATING vs the prior migration (0145): at 0145 the four mutating
-// tool_names + actions + dry_run column + dlq_event target_type do NOT exist, so
-// each accept-assertion below would fail (CHECK violation / unknown column).
+// 相对上一次迁移(0145)的判别力:在 0145 时，这四个 mutating tool_name +
+// action + dry_run 列 + dlq_event target_type 都不存在，因此下面每条 accept
+// 断言都会失败(CHECK 违反 / 未知列)。
 //
-// Requires HUAKAI_DATABASE_URL pointing at a migrated DB; skips when unset.
+// 需要 HUAKAI_DATABASE_URL 指向一个已迁移的 DB;未设置时跳过。
 package hermestoolsdb
 
 import (
@@ -33,7 +33,7 @@ func TestMigration0146_MutatingToolNamesAndDryRun(t *testing.T) {
 	tenantID, userID := seedTenantUser(t, ctx, pool)
 	q := New(pool)
 
-	// Each of the four mutating tool names inserts cleanly, with dry_run set.
+	// 四个 mutating 工具名各自都能干净插入，且设置了 dry_run。
 	for _, tool := range []string{"dlq_replay", "account_pause", "account_resume", "renew_trigger"} {
 		row, err := q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 			TenantID:     tenantID,
@@ -51,14 +51,14 @@ func TestMigration0146_MutatingToolNamesAndDryRun(t *testing.T) {
 		}
 	}
 
-	// dry_run defaults / persists: a row with dry_run=false reads back false.
+	// dry_run 的默认值 / 持久化:dry_run=false 的行读回来仍是 false。
 	var dryRun bool
 	if err := pool.QueryRow(ctx,
 		`SELECT dry_run FROM hermes_tool_calls WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1`, tenantID).Scan(&dryRun); err != nil {
 		t.Fatalf("read dry_run column (does it exist?): %v", err)
 	}
 
-	// DISCRIMINATING: a still-unknown tool name is rejected by the extended CHECK.
+	// 判别力:一个仍然未知的工具名会被扩展后的 CHECK 拒绝。
 	_, err := q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 		TenantID: tenantID, ActorUserID: userID, ToolName: "bogus_mutator",
 		ResultStatus: "ok", CalledAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
@@ -85,7 +85,7 @@ func TestMigration0146_AdminAuditMutatingActionsAndTargetType(t *testing.T) {
 		return e
 	}
 
-	// The four mutating actions + their target types insert cleanly.
+	// 四个 mutating action 及其 target type 都能干净插入。
 	cases := []struct{ action, target string }{
 		{"hermes.tool.dlq_replay", "dlq_event"},
 		{"hermes.tool.account_pause", "provider_account"},
@@ -101,7 +101,7 @@ func TestMigration0146_AdminAuditMutatingActionsAndTargetType(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM admin_audit_events WHERE tenant_id = $1`, tenantID)
 	})
 
-	// DISCRIMINATING: a bogus hermes.tool.* action is still rejected.
+	// 判别力:伪造的 hermes.tool.* action 仍会被拒绝。
 	var pgErr *pgconn.PgError
 	if err := insertAdmin("hermes.tool.bogus", "provider_account"); err == nil {
 		t.Fatalf("bogus mutating action accepted; action CHECK too permissive")
@@ -109,8 +109,8 @@ func TestMigration0146_AdminAuditMutatingActionsAndTargetType(t *testing.T) {
 		t.Fatalf("bogus action error=%v want 23514 CHECK violation", err)
 	}
 
-	// DISCRIMINATING: an unknown target_type is still rejected (dlq_event is the
-	// only new one this migration adds).
+	// 判别力:未知的 target_type 仍会被拒绝(本次迁移只新增了 dlq_event
+	// 这一个)。
 	if err := insertAdmin("hermes.tool.dlq_replay", "bogus_target"); err == nil {
 		t.Fatalf("bogus target_type accepted; target_type CHECK too permissive")
 	} else if !errors.As(err, &pgErr) || pgErr.Code != "23514" {

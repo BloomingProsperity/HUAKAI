@@ -269,7 +269,7 @@ func TestBedrockAdapter_ZeroValueStructStillWorks(t *testing.T) {
 // adapter 实例（registry 形态）+ 各自独立 anthropic.UpstreamState 时无 data race。
 // 覆盖 registry 共享并发路径，防止每请求 state 串扰。
 func TestBedrockAdapter_ConcurrentRegistrySharing(t *testing.T) {
-	ad := NewEventStreamAdapter() // shared
+	ad := NewEventStreamAdapter() // 共享实例
 	const n = 64
 	done := make(chan error, n)
 	for i := 0; i < n; i++ {

@@ -13,47 +13,46 @@ import (
 )
 
 // ============================================================
-// Fingerprints / config keys
+// 指纹 / 配置键
 // ============================================================
 
 const (
 	signupBonusFingerprint   = "signup_bonus"
 	inviteeRewardFingerprint = "invitee_reward"
 
-	envSignupBonusUSDMicros   = "HUAKAI_SIGNUP_BONUS_USD_MICROS"
-	envInviteeRewardUSDMicros = "HUAKAI_REFERRAL_INVITEE_USD_MICROS"
-
-	// signupInviteeMicrosPerCent: 1 USD = 100 cents = 1 000 000 micros => 1 cent = 10 000 micros
-	signupInviteeMicrosPerCent = 10_000
+	envSignupBonusUSDCents   = "HUAKAI_SIGNUP_BONUS_USD_CENTS"
+	envInviteeRewardUSDCents = "HUAKAI_REFERRAL_INVITEE_USD_CENTS"
 )
 
 // ============================================================
-// Config
+// 配置
 // ============================================================
 
-// SignupInviteeConfig holds the bonus/reward amounts for the two signup-time
-// wallet credits. Both default to 0 (feature off). Amounts are in USD micros;
-// a positive value enables the credit.
+// SignupInviteeConfig 持有两笔注册时钱包入账的奖励金额。
+// 两者默认都为 0 (功能关闭)。**金额单位直接为美分(cents)= 钱包入账的最小单位**,正值即启用。
+// 历史上配置用 USD micros 再 /10_000 换算成美分,会把非整万 micros 的亚分静默截断丢失;改为直接以
+// 美分配置后从源头消除该截断入口(对齐 new-api 奖励配置即最终整数单位的姿态)。钱包入账本以美分为
+// 最小单位,故"直接用美分"不丢任何可表达的奖励额。
 type SignupInviteeConfig struct {
-	// SignupBonusUSDMicros is the welcome credit issued to every new registrant.
-	// Env: HUAKAI_SIGNUP_BONUS_USD_MICROS (default 0 = disabled).
-	SignupBonusUSDMicros int64
-	// ReferralInviteeUSDMicros is the credit issued to the new user when an
-	// invite binding is applied at registration.
-	// Env: HUAKAI_REFERRAL_INVITEE_USD_MICROS (default 0 = disabled).
-	ReferralInviteeUSDMicros int64
+	// SignupBonusCents 是发给每位新注册用户的欢迎入账(美分)。
+	// Env: HUAKAI_SIGNUP_BONUS_USD_CENTS (默认 0 = 禁用)。
+	SignupBonusCents int64
+	// ReferralInviteeCents 是注册时应用邀请绑定后, 发给新用户的入账(美分)。
+	// Env: HUAKAI_REFERRAL_INVITEE_USD_CENTS (默认 0 = 禁用)。
+	ReferralInviteeCents int64
 }
 
-// SignupInviteeConfigFromEnv reads config from environment variables.
-// Missing or zero values leave the feature disabled (default-OFF safety).
+// SignupInviteeConfigFromEnv 从环境变量读取配置。
+// 缺失或为零值时功能保持禁用 (默认关闭的安全姿态)。
 func SignupInviteeConfigFromEnv() SignupInviteeConfig {
 	return SignupInviteeConfig{
-		SignupBonusUSDMicros:     parseEnvMicros(envSignupBonusUSDMicros),
-		ReferralInviteeUSDMicros: parseEnvMicros(envInviteeRewardUSDMicros),
+		SignupBonusCents:     parseEnvCents(envSignupBonusUSDCents),
+		ReferralInviteeCents: parseEnvCents(envInviteeRewardUSDCents),
 	}
 }
 
-func parseEnvMicros(key string) int64 {
+// parseEnvCents 读取一个非负整数美分配置;缺失/非法/负值一律回落到 0(禁用)。
+func parseEnvCents(key string) int64 {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
 		return 0
@@ -65,24 +64,19 @@ func parseEnvMicros(key string) int64 {
 	return n
 }
 
-// signupInviteeCents converts USD micros to cents (integer division).
-func signupInviteeCents(micros int64) int64 {
-	return micros / signupInviteeMicrosPerCent
-}
-
 // ============================================================
-// Result types
+// 结果类型
 // ============================================================
 
-// SignupBonusResult is returned by IssueSignupBonus.
+// SignupBonusResult 由 IssueSignupBonus 返回。
 type SignupBonusResult struct {
-	Issued         bool  // true on first issue
-	AlreadyIssued  bool  // true when idempotent replay
-	NewBalance     int64 // cents
+	Issued         bool  // 首次发放时为 true
+	AlreadyIssued  bool  // 幂等重放时为 true
+	NewBalance     int64 // 美分
 	BillingEventID int64
 }
 
-// InviteeRewardResult is returned by IssueInviteeReward.
+// InviteeRewardResult 由 IssueInviteeReward 返回。
 type InviteeRewardResult struct {
 	Issued         bool
 	AlreadyIssued  bool
@@ -91,21 +85,21 @@ type InviteeRewardResult struct {
 }
 
 // ============================================================
-// Store interfaces
+// Store 接口
 // ============================================================
 
-// SignupBonusStore is implemented by PostgresStore.
+// SignupBonusStore 由 PostgresStore 实现。
 type SignupBonusStore interface {
 	ApplySignupBonus(context.Context, signupBonusInput) (SignupBonusResult, error)
 }
 
-// InviteeRewardStore is implemented by PostgresStore.
+// InviteeRewardStore 由 PostgresStore 实现。
 type InviteeRewardStore interface {
 	ApplyInviteeReward(context.Context, inviteeRewardInput) (InviteeRewardResult, error)
 }
 
 // ============================================================
-// Internal input types
+// 内部输入类型
 // ============================================================
 
 type signupBonusInput struct {
@@ -123,25 +117,24 @@ type inviteeRewardInput struct {
 }
 
 // ============================================================
-// Injectable credit functions (testable, mirrors checkin/referral)
+// 可注入的入账函数 (便于测试, 与 checkin/referral 同款)
 // ============================================================
 
 var insertSignupBonusTopupCreditTx = insertTopupCreditTx
 var insertInviteeRewardTopupCreditTx = insertTopupCreditTx
 
 // ============================================================
-// IssueSignupBonus — Service facade
+// IssueSignupBonus — Service 门面
 // ============================================================
 
-// IssueSignupBonus issues a one-time welcome wallet credit to a new user.
-// If cfg.SignupBonusUSDMicros <= 0 the call is a no-op (default-OFF safety).
-// On idempotency conflict the error is suppressed — safe for registration
-// retries and OAuth re-entry.
+// IssueSignupBonus 给新用户发放一次性的欢迎钱包入账。
+// 若 cfg.SignupBonusCents <= 0 则本次调用为 no-op (默认关闭的安全姿态)。
+// 遇幂等冲突时错误被吞掉 — 对注册重试和 OAuth 重入是安全的。
 func (s *Service) IssueSignupBonus(ctx context.Context, cfg SignupInviteeConfig, tenantID, userID int64) (SignupBonusResult, error) {
 	if s == nil || s.store == nil {
 		return SignupBonusResult{}, ErrStoreNotConfigured
 	}
-	cents := signupInviteeCents(cfg.SignupBonusUSDMicros)
+	cents := cfg.SignupBonusCents
 	if cents <= 0 {
 		return SignupBonusResult{}, nil
 	}
@@ -160,17 +153,17 @@ func (s *Service) IssueSignupBonus(ctx context.Context, cfg SignupInviteeConfig,
 }
 
 // ============================================================
-// IssueInviteeReward — Service facade
+// IssueInviteeReward — Service 门面
 // ============================================================
 
-// IssueInviteeReward issues a one-time invite-based wallet credit to the
-// referee (new user) when an invite binding is applied at registration.
-// If cfg.ReferralInviteeUSDMicros <= 0 the call is a no-op.
+// IssueInviteeReward 在注册时应用邀请绑定后, 给被邀请人 (新用户)
+// 发放一次性的、基于邀请的钱包入账。
+// 若 cfg.ReferralInviteeCents <= 0 则本次调用为 no-op。
 func (s *Service) IssueInviteeReward(ctx context.Context, cfg SignupInviteeConfig, tenantID, userID int64) (InviteeRewardResult, error) {
 	if s == nil || s.store == nil {
 		return InviteeRewardResult{}, ErrStoreNotConfigured
 	}
-	cents := signupInviteeCents(cfg.ReferralInviteeUSDMicros)
+	cents := cfg.ReferralInviteeCents
 	if cents <= 0 {
 		return InviteeRewardResult{}, nil
 	}
@@ -207,7 +200,7 @@ func (s *PostgresStore) ApplySignupBonus(ctx context.Context, input signupBonusI
 			continue
 		}
 		if isUniqueViolation(err) {
-			// out_trade_no unique conflict = already issued; treat as idempotent.
+			// out_trade_no 唯一约束冲突 = 已发放;按幂等处理。
 			return SignupBonusResult{AlreadyIssued: true}, nil
 		}
 		return SignupBonusResult{}, err
@@ -228,7 +221,7 @@ func (s *PostgresStore) applySignupBonusOnce(ctx context.Context, input signupBo
 
 	requestKey := signupBonusRequestKey(input.TenantID, input.UserID)
 
-	// Check for existing order (idempotency replay).
+	// 检查是否已存在订单(幂等重放)。
 	found, err := orderExistsByOutTradeNoTx(ctx, tx, input.TenantID, requestKey)
 	if err != nil {
 		return SignupBonusResult{}, err
@@ -435,7 +428,7 @@ RETURNING`+orderSelectColumns, input.TenantID, order.ID, input.Now)
 }
 
 // ============================================================
-// Request key helpers
+// Request key 辅助函数
 // ============================================================
 
 func signupBonusRequestKey(tenantID, userID int64) string {
@@ -447,11 +440,11 @@ func inviteeRewardRequestKey(tenantID, userID int64) string {
 }
 
 // ============================================================
-// Helper: check whether out_trade_no already exists
+// 辅助函数:检查 out_trade_no 是否已存在
 // ============================================================
 
-// orderExistsByOutTradeNoTx returns true if a payment_order with the given
-// out_trade_no already exists for the tenant (within a transaction).
+// orderExistsByOutTradeNoTx 在事务内,若该 tenant 下已存在带给定 out_trade_no 的
+// payment_order,则返回 true。
 func orderExistsByOutTradeNoTx(ctx context.Context, tx pgx.Tx, tenantID int64, outTradeNo string) (bool, error) {
 	var exists bool
 	err := tx.QueryRow(ctx,

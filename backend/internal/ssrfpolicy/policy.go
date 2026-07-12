@@ -1,4 +1,4 @@
-// Package ssrfpolicy parses operator-controlled passthrough SSRF policy.
+// Package ssrfpolicy 解析由运营者控制的透传(passthrough)SSRF 策略。
 package ssrfpolicy
 
 import (
@@ -14,6 +14,11 @@ const (
 	DomainDenylistEnv      = "HUAKAI_PASSTHROUGH_DOMAIN_DENYLIST"
 	DomainAllowlistEnv     = "HUAKAI_PASSTHROUGH_DOMAIN_ALLOWLIST"
 	AllowPrivateIPHostsEnv = "HUAKAI_PASSTHROUGH_ALLOW_PRIVATE_IP_HOSTS"
+	// PrivateIPsEnabledEnv 是私网 IP 透传逃生口(SEC-084)的总开关(master kill-switch)。
+	// 未设置或为 true 时,保持按主机的 allowlist(AllowPrivateIPHostsEnv)行为不变;
+	// 显式为 false 时,无视 allowlist 强制拒绝每一个私网 IP 主机——这是一种只会收紧、
+	// 绝不会放宽策略的紧急封锁。
+	PrivateIPsEnabledEnv = "HUAKAI_PASSTHROUGH_PRIVATE_IPS_ENABLED"
 )
 
 type Policy struct {
@@ -21,6 +26,9 @@ type Policy struct {
 	domainDenylist     []hostPattern
 	domainAllowlist    []hostPattern
 	allowPrivateIPHost map[string]struct{}
+	// privateIPsDisabled 是总开关(SEC-084)。其零值为 false(即未禁用),
+	// 因此零值的 Policy 仍保持先前"空 allowlist 即 fail-closed"的行为。
+	privateIPsDisabled bool
 }
 
 type portRange struct {
@@ -48,6 +56,7 @@ func LoadFromEnv() (Policy, error) {
 			os.Getenv(DomainDenylistEnv),
 			os.Getenv(DomainAllowlistEnv),
 			os.Getenv(AllowPrivateIPHostsEnv),
+			os.Getenv(PrivateIPsEnabledEnv),
 		)
 	})
 	return defaultEnvCache.policy, defaultEnvCache.err
@@ -57,7 +66,7 @@ func ResetForTesting() {
 	defaultEnvCache = envCache{}
 }
 
-func Parse(portAllowlist, domainDenylist, domainAllowlist, allowPrivateIPHosts string) (Policy, error) {
+func Parse(portAllowlist, domainDenylist, domainAllowlist, allowPrivateIPHosts, privateIPsEnabled string) (Policy, error) {
 	ports, err := parsePortRanges(portAllowlist)
 	if err != nil {
 		return Policy{}, fmt.Errorf("%s: %w", PortAllowlistEnv, err)
@@ -74,12 +83,32 @@ func Parse(portAllowlist, domainDenylist, domainAllowlist, allowPrivateIPHosts s
 	if err != nil {
 		return Policy{}, fmt.Errorf("%s: %w", AllowPrivateIPHostsEnv, err)
 	}
+	disabled, err := parsePrivateIPsDisabled(privateIPsEnabled)
+	if err != nil {
+		return Policy{}, fmt.Errorf("%s: %w", PrivateIPsEnabledEnv, err)
+	}
 	return Policy{
 		portAllowlist:      ports,
 		domainDenylist:     deny,
 		domainAllowlist:    allow,
 		allowPrivateIPHost: privateHosts,
+		privateIPsDisabled: disabled,
 	}, nil
+}
+
+// parsePrivateIPsDisabled 读取总开关。空值默认为启用(即未禁用),这样私网 IP 逃生口
+// 保持其先前行为;显式为 false 则将其禁用。该 env 命名的是 ALLOW 状态,
+// 因此 disabled = !allow。
+func parsePrivateIPsDisabled(raw string) (bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false, nil
+	}
+	allow, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("invalid boolean")
+	}
+	return !allow, nil
 }
 
 func (p Policy) AllowsPort(port int) bool {
@@ -109,6 +138,10 @@ func (p Policy) AllowsHost(host string) bool {
 }
 
 func (p Policy) AllowsPrivateIPHost(host string) bool {
+	// SEC-084 总开关:当逃生口被禁用时,无视按主机的 allowlist,拒绝每一个私网 IP 主机。
+	if p.privateIPsDisabled {
+		return false
+	}
 	host = normalizeHost(host)
 	if host == "" || len(p.allowPrivateIPHost) == 0 {
 		return false

@@ -28,17 +28,14 @@ func openVoucherPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	return pool
 }
 
-// TestGetBatchReturnsAllVouchersBeyond1000NewerWindow guards GetBatch must return the
-// COMPLETE voucher set of the requested batch, even when the tenant has >1000 newer vouchers in
-// other batches. The old implementation reused a tenant-wide list capped at LIMIT 1000 ordered by
-// id DESC and filtered in memory, so an older batch fell entirely outside the newest-1000 window
-// and was silently returned empty (still HTTP 200) — corrupting admin export / fraud review /
-// campaign reconciliation.
+// TestGetBatchReturnsAllVouchersBeyond1000NewerWindow 守护 GetBatch 必须返回所请求批次的
+// 完整券集合, 即便该租户在其他批次里还有超过 1000 张更新的券。旧实现复用了一个租户级列表,
+// 上限 LIMIT 1000 按 id DESC 排序后在内存里过滤, 于是较旧的批次整批落在「最新 1000」窗口之外,
+// 被静默返回空集 (仍是 HTTP 200) —— 破坏 admin 导出 / 反欺诈审查 / 活动对账。
 //
-// Mutation check: revert GetBatch to `ListVouchers(ListInput{TenantID, Limit:1000})` + in-memory
-// batch filter; the 2 target-batch vouchers are pushed out by the 1000 newer ones → GetBatch
-// returns 0 vouchers → both assertions go red. Discriminating fixture: exactly 1000 newer rows
-// (the documented max batch size) so the older batch sits just past the cap.
+// 变异检查: 把 GetBatch 退回到 `ListVouchers(ListInput{TenantID, Limit:1000})` + 内存批次过滤;
+// 那 2 张目标批次的券会被 1000 张更新的券挤出 → GetBatch 返回 0 张券 → 两个断言都变红。
+// 判别夹具: 恰好 1000 张更新的行 (文档约定的最大批量), 让较旧的批次正好落在上限之外一格。
 func TestGetBatchReturnsAllVouchersBeyond1000NewerWindow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

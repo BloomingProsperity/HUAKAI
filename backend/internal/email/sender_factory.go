@@ -3,6 +3,8 @@ package email
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,9 +25,19 @@ type AuthSender struct {
 	resetCooldown        time.Duration
 	mu                   sync.Mutex
 	lastSent             map[string]time.Time
+	// frontendBaseURL 解析本站前端公开 base URL(platformsettings.site_frontend_base_url)。
+	// 配置后,鉴权邮件投递「完整可点链接」(用户直接点,无需手抄 token);未配/nil 则回退裸 token。
+	frontendBaseURL func(context.Context) string
 }
 
 type AuthSenderOption func(*AuthSender)
+
+// WithFrontendBaseURL 注入前端 base URL 解析器,使鉴权邮件能拼出完整可点链接。
+func WithFrontendBaseURL(resolver func(context.Context) string) AuthSenderOption {
+	return func(sender *AuthSender) {
+		sender.frontendBaseURL = resolver
+	}
+}
 
 func WithSMTPDispatch(dispatch SMTPDispatch) AuthSenderOption {
 	return func(sender *AuthSender) {
@@ -81,11 +93,15 @@ func (s *AuthSender) SendVerification(ctx context.Context, user userauth.User, t
 	if !allowed {
 		return nil
 	}
+	link := s.authLink(ctx, "/email-verify", user.TenantID, token, nil)
+	subject, body := s.resolveAuthEmail(ctx, user.TenantID, TemplateKindVerification,
+		map[string]string{"link": link, "token": token},
+		"HUAKAI email verification", buildVerificationBody(link, token))
 	err := s.sendForTenant(ctx, user.TenantID, Message{
 		TenantID: user.TenantID,
 		To:       user.Email,
-		Subject:  "HUAKAI email verification",
-		HTMLBody: buildVerificationBody(token),
+		Subject:  subject,
+		HTMLBody: body,
 	})
 	if err != nil {
 		// 硬失败(永久失败 / 无 outbox / enqueue 失败)= 既没发出也没入队重试 → 回滚 cooldown,
@@ -107,14 +123,77 @@ func (s *AuthSender) SendPasswordReset(ctx context.Context, user userauth.User, 
 	if !allowed {
 		return nil
 	}
+	link := s.authLink(ctx, "/reset-password", user.TenantID, token, map[string]string{"email": user.Email})
+	subject, body := s.resolveAuthEmail(ctx, user.TenantID, TemplateKindPasswordReset,
+		map[string]string{"link": link, "token": token, "email": user.Email},
+		"HUAKAI password reset", buildPasswordResetBody(link, token))
 	err := s.sendForTenant(ctx, user.TenantID, Message{
 		TenantID: user.TenantID,
 		To:       user.Email,
-		Subject:  "HUAKAI password reset",
-		HTMLBody: buildPasswordResetBody(token),
+		Subject:  subject,
+		HTMLBody: body,
 	})
 	if err != nil {
 		// 见 SendVerification:硬失败回滚 cooldown,避免冷却窗口吞掉合法重发。
+		rollback()
+	}
+	return err
+}
+
+// SendDeviceConfirmation 发新设备确认邮件 (DevicePolicy=confirm 达上限时)。复用 reset 的冷却闸,
+// 避免攻击者借确认流对某邮箱刷信。token 为空则不发 (no-op)。
+func (s *AuthSender) SendDeviceConfirmation(ctx context.Context, user userauth.User, token string) error {
+	if s == nil {
+		return ErrEmailBackendUnconfigured
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil
+	}
+	allowed, rollback := s.reserveCooldown("device", user.TenantID, user.Email, s.resetCooldown)
+	if !allowed {
+		return nil
+	}
+	link := s.authLink(ctx, "/device-confirm", user.TenantID, token, nil)
+	subject, body := s.resolveAuthEmail(ctx, user.TenantID, TemplateKindDeviceConfirmation,
+		map[string]string{"link": link, "token": token},
+		"HUAKAI new device confirmation", buildDeviceConfirmationBody(link, token))
+	err := s.sendForTenant(ctx, user.TenantID, Message{
+		TenantID: user.TenantID,
+		To:       user.Email,
+		Subject:  subject,
+		HTMLBody: body,
+	})
+	if err != nil {
+		// 见 SendVerification:硬失败回滚 cooldown,避免冷却窗口吞掉合法重发。
+		rollback()
+	}
+	return err
+}
+
+// SendOAuthEmailCode 给「社交登录无邮箱 → 补邮箱」流程发一次性验证码到裸邮箱(账号尚未建、无 User)。
+// 与验证/重置邮件不同:这里发的是**要用户填回的短码**(非可点链接/长 token),复用同一发送链路 + 冷却。
+func (s *AuthSender) SendOAuthEmailCode(ctx context.Context, tenantID int64, email, code string) error {
+	if s == nil {
+		return ErrEmailBackendUnconfigured
+	}
+	if strings.TrimSpace(email) == "" || strings.TrimSpace(code) == "" {
+		return nil
+	}
+	allowed, rollback := s.reserveCooldown("oauth_code", tenantID, email, s.verificationCooldown)
+	if !allowed {
+		return nil
+	}
+	subject, body := s.resolveAuthEmail(ctx, tenantID, TemplateKindOAuthCode,
+		map[string]string{"code": code},
+		"HUAKAI email verification code", buildOAuthCodeBody(code))
+	err := s.sendForTenant(ctx, tenantID, Message{
+		TenantID: tenantID,
+		To:       email,
+		Subject:  subject,
+		HTMLBody: body,
+	})
+	if err != nil {
+		// 见 SendVerification:硬失败回滚冷却,避免吞掉合法重发。
 		rollback()
 	}
 	return err
@@ -237,14 +316,88 @@ func defaultSMTPDispatch(ctx context.Context, settings SMTPSettings, msg Message
 	return NewSMTPSender(settings).Send(ctx, msg)
 }
 
-func buildVerificationBody(token string) string {
-	token = SanitizeHeaderValue(token)
-	return `<html><body><p>Use this one-time HUAKAI verification token:</p><p><code>` + token + `</code></p><p>This token expires soon.</p></body></html>`
+// authLink 拼出前端落地页的完整可点链接。base URL 未配置(resolver nil 或返回空)则返回空串,
+// 调用方据此回退到「裸 token」邮件。query 形态与前端三页解析约定一致(tenant_id + token [+ email])。
+// 链接经 url 包正确转义,token/email 不会破坏 URL;空 token 视为非法返回空串。
+func (s *AuthSender) authLink(ctx context.Context, path string, tenantID int64, token string, extra map[string]string) string {
+	token = strings.TrimSpace(token)
+	if token == "" || s == nil || s.frontendBaseURL == nil {
+		return ""
+	}
+	base := strings.TrimSpace(s.frontendBaseURL(ctx))
+	if base == "" {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimRight(base, "/") + path)
+	if err != nil {
+		return ""
+	}
+	q := u.Query()
+	q.Set("tenant_id", strconv.FormatInt(tenantID, 10))
+	q.Set("token", token)
+	for k, v := range extra {
+		if strings.TrimSpace(v) != "" {
+			q.Set(k, v)
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
-func buildPasswordResetBody(token string) string {
+// buildAuthActionBody 统一拼鉴权邮件正文。link 非空时以「完整可点链接」为首选 UX(用户直接点),
+// 并附 token 作为邮件客户端剥链接时的兜底;link 为空(未配前端 base URL)则只投递裸 token,
+// 由前端落地页的手动粘贴框兜底。link 经 HTML 属性安全处理。
+func buildAuthActionBody(intro, link, token, actionLabel, footer string) string {
 	token = SanitizeHeaderValue(token)
-	return `<html><body><p>Use this one-time HUAKAI password reset token:</p><p><code>` + token + `</code></p><p>If you did not request this, ignore this email.</p></body></html>`
+	var b strings.Builder
+	b.WriteString(`<html><body><p>`)
+	b.WriteString(intro)
+	b.WriteString(`</p>`)
+	if link != "" {
+		safeLink := SanitizeHeaderValue(link)
+		// 同时把 href 里的 HTML 特殊字符转义,避免属性截断(token 已是 base32/hex,通常无危险字符,纵深防御)。
+		attrLink := strings.NewReplacer(`"`, "%22", `<`, "%3C", `>`, "%3E").Replace(safeLink)
+		b.WriteString(`<p><a href="`)
+		b.WriteString(attrLink)
+		b.WriteString(`">`)
+		b.WriteString(actionLabel)
+		b.WriteString(`</a></p><p>If the button does not work, open this link: `)
+		b.WriteString(safeLink)
+		b.WriteString(`</p><p>Or use this one-time token manually: <code>`)
+		b.WriteString(token)
+		b.WriteString(`</code></p>`)
+	} else {
+		b.WriteString(`<p>Use this one-time token: <code>`)
+		b.WriteString(token)
+		b.WriteString(`</code></p>`)
+	}
+	b.WriteString(`<p>`)
+	b.WriteString(footer)
+	b.WriteString(`</p></body></html>`)
+	return b.String()
+}
+
+func buildVerificationBody(link, token string) string {
+	return buildAuthActionBody("Confirm your HUAKAI email address:", link, token, "Verify email", "This link/token expires soon.")
+}
+
+func buildPasswordResetBody(link, token string) string {
+	return buildAuthActionBody("Reset your HUAKAI password:", link, token, "Reset password", "If you did not request this, ignore this email.")
+}
+
+func buildDeviceConfirmationBody(link, token string) string {
+	return buildAuthActionBody("A new device tried to sign in to your HUAKAI account. Authorize it:", link, token, "Confirm device", "If this was not you, ignore this email and change your password.")
+}
+
+// buildOAuthCodeBody 构造补邮箱验证码邮件体:显著展示要填回的一次性短码(非链接)。
+func buildOAuthCodeBody(code string) string {
+	code = SanitizeHeaderValue(code)
+	var b strings.Builder
+	b.WriteString(`<html><body><p>Enter this verification code to finish signing in to HUAKAI:</p>`)
+	b.WriteString(`<p style="font-size:20px;font-weight:bold;letter-spacing:2px"><code>`)
+	b.WriteString(code)
+	b.WriteString(`</code></p><p>This code expires soon. If you did not try to sign in, ignore this email.</p></body></html>`)
+	return b.String()
 }
 
 type VerificationPolicy struct {

@@ -1,6 +1,6 @@
 package privacy
 
-// SensitivityLabel classifies fields before they can reach durable sinks.
+// SensitivityLabel 在字段抵达持久化落地点之前对其分类。
 type SensitivityLabel string
 
 const (

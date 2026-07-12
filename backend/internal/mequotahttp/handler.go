@@ -19,7 +19,7 @@ type AuthResolver interface {
 }
 
 type Store interface {
-	ListCurrentWindowsForScope(context.Context, int64, quota.ScopeKind, string, time.Time) ([]quota.CurrentWindowRead, error)
+	ListCurrentWindowsForScopeMetrics(context.Context, int64, quota.ScopeKind, string, time.Time, []quota.Metric) ([]quota.CurrentWindowRead, error)
 }
 
 type Deps struct {
@@ -27,8 +27,8 @@ type Deps struct {
 	Store Store
 }
 
-// SessionResolver adapts the validated /v1/me session context into the same
-// AuthResolver shape used by API-key scoped self-service handlers.
+// SessionResolver 把已校验的 /v1/me 会话上下文适配为与 API-key 作用域的
+// 自助 handler 所用相同的 AuthResolver 形状。
 type SessionResolver struct{}
 
 func (SessionResolver) Resolve(ctx context.Context, _ *http.Request) (auth.Identity, error) {
@@ -44,6 +44,7 @@ type listResponse struct {
 }
 
 type windowView struct {
+	Metric       string    `json:"metric"`
 	WindowKind   string    `json:"window_kind"`
 	Cap          string    `json:"cap"`
 	Consumed     string    `json:"consumed"`
@@ -78,12 +79,14 @@ func NewHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		now := time.Now().UTC()
-		rows, err := d.Store.ListCurrentWindowsForScope(
+		rows, err := d.Store.ListCurrentWindowsForScopeMetrics(
 			r.Context(),
 			ident.TenantID,
 			quota.ScopeUser,
 			strconv.FormatInt(ident.UserID, 10),
 			now,
+			// 仅限窗口形态的 metric;并发是基于槽位的(无窗口行)。
+			[]quota.Metric{quota.MetricRequests, quota.MetricCostUSD, quota.MetricTokensEstimated},
 		)
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "quota_status_unavailable", "quota status unavailable")
@@ -104,6 +107,7 @@ func toWindowView(w quota.CurrentWindowRead) windowView {
 		remaining = decimal.Zero
 	}
 	return windowView{
+		Metric:       string(w.Metric),
 		WindowKind:   string(w.Window.Kind),
 		Cap:          w.LimitValue.String(),
 		Consumed:     consumed.String(),

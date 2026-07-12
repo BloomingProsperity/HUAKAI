@@ -17,8 +17,8 @@ import (
 
 const prometheusMetricsEnv = "HUAKAI_METRICS_PROMETHEUS"
 
-// Setup builds the metrics export pipeline. It is intentionally default-off:
-// only HUAKAI_METRICS_PROMETHEUS=true creates a scrape handler.
+// Setup 构建指标导出流水线。它有意默认关闭:
+// 只有 HUAKAI_METRICS_PROMETHEUS=true 才会创建 scrape handler。
 func Setup(_ context.Context) (otelmetric.MeterProvider, http.Handler, func(context.Context) error, error) {
 	if !prometheusEnabled() {
 		return metricnoop.NewMeterProvider(), nil, func(context.Context) error { return nil }, nil

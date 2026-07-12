@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -323,4 +325,112 @@ func FormatReport(rep Report) string {
 		}
 	}
 	return sb.String()
+}
+
+// ParseSpecPublicOperations 从 OpenAPI YAML 抽出**显式声明 `security: []`（即公开、不要求认证)**
+// 的 method+path 操作。用途：把"契约声明的公开面"与实现实际挂的认证中间件做一致性校验，
+// 防止"spec 标公开但实现要求认证（前端/第三方按 spec 当公开调用却撞 401）"这类契约漂移逃过 CI。
+//
+// 解析取舍（沿用本文件 §设计取舍的行解析风格，不引 yaml dep）：只识别**操作属性缩进（6-space）**
+// 上的单行 `security: []`；多行 `security:` 列表（声明了具体 scheme）视为"非公开"，不在本检查范围。
+// 遇下一个 method 行或 path 行即切换当前操作归属。
+func ParseSpecPublicOperations(path string) ([]Operation, error) {
+	f, err := os.Open(path) // #nosec G304 — caller-supplied spec path
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
+	pathLine := regexp.MustCompile(`^\s\s(/[A-Za-z0-9_\-{}./]+):\s*$`)
+	methodLine := regexp.MustCompile(`^\s{4}(get|put|post|delete|options|head|patch|trace):\s*(?:\{\})?\s*$`)
+	// 操作级 `security: []`（空数组 = OpenAPI 标准的"覆盖顶层安全、声明本操作公开"）。
+	securityEmptyLine := regexp.MustCompile(`^\s{6}security:\s*\[\s*\]\s*$`)
+	topKey := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*:\s*$`)
+	inPaths := false
+	currentPath := ""
+	currentMethod := ""
+	var ops []Operation
+	seen := make(map[string]struct{})
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !inPaths {
+			if strings.TrimRight(line, " \t") == "paths:" {
+				inPaths = true
+			}
+			continue
+		}
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && topKey.MatchString(strings.TrimRight(line, " \t")) {
+			break
+		}
+		if m := pathLine.FindStringSubmatch(line); m != nil {
+			currentPath = m[1]
+			currentMethod = ""
+			continue
+		}
+		if m := methodLine.FindStringSubmatch(line); m != nil {
+			currentMethod = strings.ToUpper(m[1])
+			continue
+		}
+		if currentPath != "" && currentMethod != "" && securityEmptyLine.MatchString(line) {
+			op := Operation{Method: currentMethod, Path: currentPath}
+			k := operationKey(op)
+			if _, ok := seen[k]; !ok {
+				seen[k] = struct{}{}
+				ops = append(ops, op)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	sortOperations(ops)
+	return ops, nil
+}
+
+// OperationsGatedByMiddleware 用 chi.Walk 抽出"中间件链里挂了名字匹配 marker 的中间件"的
+// method+path 操作。chi 注册的中间件是闭包，无法按类型识别；改用 runtime 函数名判断——认证中间件
+// 的闭包函数名形如 `...SessionMiddleware.1`，故 marker 传 "SessionMiddleware" 即可识别该路由是否
+// 被会话认证守卫。供与 spec 的公开声明做一致性校验（见 SecurityContractDrift）。
+func OperationsGatedByMiddleware(r chi.Router, marker string) []Operation {
+	seen := make(map[string]Operation)
+	_ = chi.Walk(r, func(method string, route string, _ http.Handler, middlewares ...func(http.Handler) http.Handler) error {
+		for _, mw := range middlewares {
+			name := runtime.FuncForPC(reflect.ValueOf(mw).Pointer()).Name()
+			if strings.Contains(name, marker) {
+				op := Operation{Method: strings.ToUpper(method), Path: route}
+				seen[operationKey(op)] = op
+				break
+			}
+		}
+		return nil
+	})
+	out := make([]Operation, 0, len(seen))
+	for _, op := range seen {
+		out = append(out, op)
+	}
+	sortOperations(out)
+	return out
+}
+
+// SecurityContractDrift 返回"spec 声明 `security: []`（公开）但实现实际挂了认证中间件"的操作。
+// 这类漂移会让按 spec 当公开调用的客户端撞 401，且是 IDOR 类回归（实现加了租户/会话校验却忘了
+// 同步 spec，或反向）的征兆。比对在 method+path 维度做（operationKey 已套 normalize + alias 展开）。
+func SecurityContractDrift(specPublic, implGated []Operation) []Operation {
+	gatedSet := make(map[string]struct{}, len(implGated))
+	for _, op := range implGated {
+		gatedSet[operationKey(op)] = struct{}{}
+	}
+	var drift []Operation
+	for _, op := range specPublic {
+		if _, ok := gatedSet[operationKey(op)]; ok {
+			drift = append(drift, op)
+		}
+	}
+	sortOperations(drift)
+	return drift
 }

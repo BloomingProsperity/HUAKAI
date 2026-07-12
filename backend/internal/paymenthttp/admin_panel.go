@@ -121,6 +121,7 @@ func newAdminRetryHandler(d AdminDeps) http.HandlerFunc {
 			TenantID:     req.TenantID,
 			OrderID:      id,
 			ActorAdminID: ident.TokenID,
+			ActorRef:     ident.AuditActor(),
 			RequestID:    requestID(r),
 		})
 		if err != nil {
@@ -181,7 +182,7 @@ func newAdminPutProviderConfigHandler(d AdminDeps) http.HandlerFunc {
 			ProviderKind: kind,
 			Enabled:      *req.Enabled,
 			CheckoutURL:  req.CheckoutURL,
-			UpdatedBy:    strconv.FormatInt(ident.TokenID, 10),
+			UpdatedBy:    ident.AuditActor(),
 		})
 		if err != nil {
 			writePaymentError(w, err)

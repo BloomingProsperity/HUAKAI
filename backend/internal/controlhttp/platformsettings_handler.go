@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -28,9 +27,20 @@ type PlatformSettingsService interface {
 }
 
 type PlatformSettingsDeps struct {
-	Auth                    PlatformSettingsAuth
-	Service                 PlatformSettingsService
-	CaptchaSecretConfigured bool
+	Auth    PlatformSettingsAuth
+	Service PlatformSettingsService
+	// CaptchaSecretConfigured 请求期报告 captcha secret 是否已配置(后台设置 captcha_secret
+	// 非空 或 回退 env 非空)。改为请求期 resolver(而非 boot 快照),因为 secret 现可在管理台
+	// 自助配置、无需重部署;nil 视为未配置。
+	CaptchaSecretConfigured func(context.Context) bool
+}
+
+// captchaSecretConfigured 请求期解析 captcha secret 是否已配置,nil-safe。
+func (d PlatformSettingsDeps) captchaSecretConfigured(ctx context.Context) bool {
+	if d.CaptchaSecretConfigured == nil {
+		return false
+	}
+	return d.CaptchaSecretConfigured(ctx)
 }
 
 type platformSettingsPutRequest struct {
@@ -39,12 +49,16 @@ type platformSettingsPutRequest struct {
 }
 
 type platformSettingsResponse struct {
-	Key       string                  `json:"key"`
-	Value     string                  `json:"value"`
-	Source    string                  `json:"source"`
-	UpdatedAt *time.Time              `json:"updated_at"`
-	UpdatedBy *string                 `json:"updated_by"`
-	Health    *platformSettingsHealth `json:"health,omitempty"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	// ValueConfigured 仅对密钥/凭据类 key 出现:读路径不回吐其明文,改用此布尔
+	// 指示运维该密钥是否已配置(true=已配置非空值,false=未配置)。非密钥类 key
+	// 不带此字段(omitempty + 指针),保持原样返回 Value。
+	ValueConfigured *bool                   `json:"value_configured,omitempty"`
+	Source          string                  `json:"source"`
+	UpdatedAt       *time.Time              `json:"updated_at"`
+	UpdatedBy       *string                 `json:"updated_by"`
+	Health          *platformSettingsHealth `json:"health,omitempty"`
 }
 
 type platformSettingsHealth struct {
@@ -75,7 +89,7 @@ func newPlatformSettingsListHandler(d PlatformSettingsDeps) http.HandlerFunc {
 		}
 		out := make([]platformSettingsResponse, 0, len(items))
 		for _, item := range items {
-			out = append(out, platformSettingsResponseFromStored(item, d))
+			out = append(out, platformSettingsResponseFromStored(r.Context(), item, d))
 		}
 		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsListResponse{Items: out})
 	}
@@ -95,7 +109,7 @@ func newPlatformSettingsGetHandler(d PlatformSettingsDeps) http.HandlerFunc {
 			platformSettingsWriteServiceError(w, err)
 			return
 		}
-		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsResponseFromStored(setting, d))
+		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsResponseFromStored(r.Context(), setting, d))
 	}
 }
 
@@ -117,11 +131,11 @@ func newPlatformSettingsPutHandler(d PlatformSettingsDeps) http.HandlerFunc {
 			platformSettingsWriteJSONError(w, http.StatusBadRequest, "platform_setting_value_required", "value is required")
 			return
 		}
-		if key == platformsettings.KeyCaptchaEnabled && strings.TrimSpace(*req.Value) == "true" && !d.CaptchaSecretConfigured {
+		if key == platformsettings.KeyCaptchaEnabled && strings.TrimSpace(*req.Value) == "true" && !d.captchaSecretConfigured(r.Context()) {
 			platformSettingsWriteJSONError(w, http.StatusBadRequest, "captcha_secret_required", "cannot enable CAPTCHA until Turnstile secret is configured")
 			return
 		}
-		actorID := fmt.Sprintf("%d", ident.TokenID)
+		actorID := ident.AuditActor()
 		setting, err := d.Service.Upsert(r.Context(), platformsettings.UpsertInput{
 			Key:       key,
 			Value:     *req.Value,
@@ -135,7 +149,7 @@ func newPlatformSettingsPutHandler(d PlatformSettingsDeps) http.HandlerFunc {
 			platformSettingsWriteServiceError(w, err)
 			return
 		}
-		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsResponseFromStored(setting, d))
+		platformSettingsWriteJSON(w, http.StatusOK, platformSettingsResponseFromStored(r.Context(), setting, d))
 	}
 }
 
@@ -185,14 +199,22 @@ func platformSettingsDecodeJSON(w http.ResponseWriter, r *http.Request, dst any)
 	return true
 }
 
-func platformSettingsResponseFromStored(setting platformsettings.StoredSetting, d PlatformSettingsDeps) platformSettingsResponse {
+func platformSettingsResponseFromStored(ctx context.Context, setting platformsettings.StoredSetting, d PlatformSettingsDeps) platformSettingsResponse {
 	resp := platformSettingsResponse{
 		Key:    string(setting.Key),
 		Value:  setting.Value,
 		Source: setting.Source,
 	}
+	// 密钥/凭据类 key 在读路径一律脱敏:清空明文 Value,改以 value_configured 指示
+	// 是否已配置。任何角色(端点仍限 RolePlatformAdmin)都拿不到明文密钥,与审计日志
+	// 的 [redacted] 处理保持一致。
+	if platformsettings.IsSecretKey(setting.Key) {
+		configured := platformsettings.HasConfiguredSecretValue(setting.Key, setting.Value)
+		resp.Value = ""
+		resp.ValueConfigured = &configured
+	}
 	if setting.Key == platformsettings.KeyCaptchaEnabled {
-		resp.Health = platformSettingsCaptchaHealth(setting, d)
+		resp.Health = platformSettingsCaptchaHealth(ctx, setting, d)
 	}
 	if !setting.UpdatedAt.IsZero() {
 		updatedAt := setting.UpdatedAt.UTC()
@@ -204,12 +226,13 @@ func platformSettingsResponseFromStored(setting platformsettings.StoredSetting, 
 	return resp
 }
 
-func platformSettingsCaptchaHealth(setting platformsettings.StoredSetting, d PlatformSettingsDeps) *platformSettingsHealth {
+func platformSettingsCaptchaHealth(ctx context.Context, setting platformsettings.StoredSetting, d PlatformSettingsDeps) *platformSettingsHealth {
+	configured := d.captchaSecretConfigured(ctx)
 	health := &platformSettingsHealth{
 		Status:                  "ok",
-		CaptchaSecretConfigured: d.CaptchaSecretConfigured,
+		CaptchaSecretConfigured: configured,
 	}
-	if strings.TrimSpace(setting.Value) == "true" && !d.CaptchaSecretConfigured {
+	if strings.TrimSpace(setting.Value) == "true" && !configured {
 		health.Status = "degraded"
 		health.Issue = "turnstile_secret_missing"
 	}

@@ -16,16 +16,16 @@ func oauthInput(id int64) provider.BuildInput {
 	}
 }
 
-// DEVPIN-02: the OAuth/session path is the primary pooled-account anti-ban egress
-// and must carry the Claude Code device fingerprint, not go out as a bare relay.
+// DEVPIN-02:OAuth/session 路径是池账号反封禁的主出口,必须带上 Claude Code
+// 设备指纹,而不是以裸中转的形态发出去。
 func TestOAuthSession_BuildRequest_DeviceProfile(t *testing.T) {
 	a := &OAuthSessionAdapter{}
 	req, err := a.BuildRequest(context.Background(), oauthInput(7))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// MUTATION GUARD: dropping applyClaudeDeviceProfile leaves these empty -> the
-	// OAuth egress is a bare relay (no Claude Code signature) -> red.
+	// MUTATION GUARD:去掉 applyClaudeDeviceProfile 会让这些头为空 -> OAuth
+	// 出口变成裸中转(没有 Claude Code 签名)-> 变红。
 	for _, h := range []string{"User-Agent", "X-Stainless-Package-Version", "X-Stainless-Os", "X-Stainless-Arch"} {
 		if req.Header.Get(h) == "" {
 			t.Fatalf("OAuth session egress missing %s (bare-relay tell)", h)
@@ -36,7 +36,7 @@ func TestOAuthSession_BuildRequest_DeviceProfile(t *testing.T) {
 	}
 }
 
-// per-account distinctness on the OAuth path too (anti-clustering).
+// OAuth 路径上同样要做到按账号区分(anti-clustering)。
 func TestOAuthSession_BuildRequest_PerAccountDistinct(t *testing.T) {
 	a := &OAuthSessionAdapter{}
 	seen := map[string]bool{}

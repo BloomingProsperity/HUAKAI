@@ -155,4 +155,4 @@ func (a *KiroSessionAdapter) acceptsCredential(t provider.CredentialType) bool {
 	return false
 }
 
-// Source files read: /c/HUAKAI/repo/backend/internal/provider/openai/codex_session.go; Lane: claude; Time: 2026-05-06T00:00:00Z
+// 参考源文件: /c/HUAKAI/repo/backend/internal/provider/openai/codex_session.go; 泳道: claude; 时间: 2026-05-06T00:00:00Z

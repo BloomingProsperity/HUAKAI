@@ -28,7 +28,7 @@ func TestSnapshotDefaultsAndGoVersion(t *testing.T) {
 }
 
 func TestSnapshotLdflagsOverride(t *testing.T) {
-	// Simulate what -ldflags -X would do at link time.
+	// 模拟 -ldflags -X 在链接期会做的事。
 	origVersion := Version
 	origCommit := Commit
 	origBuildTime := BuildTime

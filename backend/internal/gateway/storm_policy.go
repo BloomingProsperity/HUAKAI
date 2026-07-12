@@ -1,26 +1,26 @@
-// A07.3: 3-scope refresh storm policy compositor.
-// Spec: docs/specs/upstream-credential-management.md §A07 / synthesis §1 A07.
+// A07.3:三作用域刷新风暴策略合成器。
+// 规格:docs/specs/upstream-credential-management.md §A07 / synthesis §1 A07。
 //
-// Composes A07.1 (TokenBucket) and A07.2 (SingleFlight) into the three-scope
-// refresh-storm controller:
+// 把 A07.1(TokenBucket)与 A07.2(SingleFlight)组合为三作用域的
+// 刷新风暴控制器:
 //
-//   scope 1 (account):  SingleFlight dedup — N concurrent same-account callers
-//                       result in exactly ONE inner execution; followers share
-//                       the leader's result without consuming additional budget.
-//                       This is the critical OAuth-storm prevention: 100 same-
-//                       account 401s ⇒ 1 vendor refresh call.
+//   作用域 1(account): SingleFlight 去重 —— N 个并发的同账号调用者
+//                       最终只会触发一次内层执行;跟随者共享
+//                       领头者的结果,不额外消耗预算。
+//                       这是关键的 OAuth 风暴防护:100 个同
+//                       账号 401 ⇒ 仅 1 次 vendor refresh 调用。
 //
-//   scope 2 (endpoint): per-(provider, oauth_url) TokenBucket — protects vendor
-//                       endpoint from M-account simultaneous-expiry stampede.
+//   作用域 2(endpoint): 按 (provider, oauth_url) 维度的 TokenBucket —— 保护 vendor
+//                       endpoint 免受 M 个账号同时过期的踩踏冲击。
 //
-//   scope 3 (global):   process-wide TokenBucket — last-resort cap.
+//   作用域 3(global): 进程级 TokenBucket —— 最后一道封顶。
 //
-// Acquire order: account-singleflight WRAPS endpoint→global→fn so followers
-// pay no budget. Refund is fired only when a bucket denied (NOT on fn error)
-// so a failed vendor call still consumes its budget — refunding-on-failure
-// would re-open the storm window.
+// Acquire 顺序:account 层 singleflight 包裹 endpoint→global→fn,这样跟随者
+// 不付任何预算。仅当某个 bucket 拒绝时才退还(fn 报错时不退还),
+// 这样一次失败的 vendor 调用仍会消耗其预算 —— 在失败时退还
+// 会重新打开风暴窗口。
 //
-// No IO, no network, no credential contact: pure composition + admission.
+// 无 IO、无网络、不接触凭证:纯组合 + 准入。
 package gateway
 
 import (
@@ -28,9 +28,9 @@ import (
 	"time"
 )
 
-// DenyReason identifies which budget scope (if any) rejected an Acquire call.
-// DenyAccount is intentionally absent: the SingleFlight scope deduplicates,
-// it never denies — followers receive the leader's outcome verbatim.
+// DenyReason 标识是哪个预算作用域(若有)拒绝了一次 Acquire 调用。
+// 故意不设 DenyAccount:SingleFlight 作用域只做去重,
+// 它从不拒绝 —— 跟随者会原样收到领头者的结果。
 type DenyReason string
 
 const (
@@ -39,41 +39,40 @@ const (
 	DenyGlobal   DenyReason = "global"
 )
 
-// StormPolicyConfig holds the rate/burst parameters for both bucket scopes.
-// AccountSF may be injected to share account-dedup state across multiple
-// StormPolicy instances; nil means each StormPolicy owns a private one.
+// StormPolicyConfig 持有两个 bucket 作用域的 rate/burst 参数。
+// AccountSF 可注入,以便在多个 StormPolicy 实例间共享账号去重状态;
+// nil 表示每个 StormPolicy 各自持有一个私有实例。
 type StormPolicyConfig struct {
-	GlobalRate       float64 // tokens/second for the shared global bucket
-	GlobalBurst      float64 // capacity ceiling for the global bucket
-	PerEndpointRate  float64 // tokens/second for each per-endpoint bucket
-	PerEndpointBurst float64 // capacity ceiling for each per-endpoint bucket
+	GlobalRate       float64 // 共享 global bucket 的每秒 token 数
+	GlobalBurst      float64 // global bucket 的容量上限
+	PerEndpointRate  float64 // 每个 per-endpoint bucket 的每秒 token 数
+	PerEndpointBurst float64 // 每个 per-endpoint bucket 的容量上限
 	AccountSF        *SingleFlight
 }
 
-// StormPolicy is the three-scope refresh storm controller. All methods are
-// safe for concurrent use.
+// StormPolicy 是三作用域刷新风暴控制器。所有方法
+// 均可安全并发使用。
 type StormPolicy struct {
 	cfg             StormPolicyConfig
 	globalBucket    *TokenBucket
-	endpointBuckets sync.Map // map[string]*TokenBucket — lazy on first Acquire
+	endpointBuckets sync.Map // map[string]*TokenBucket —— 首次 Acquire 时惰性创建
 	accountSF       *SingleFlight
 }
 
-// stormPolicyResult is what the singleflight inner executor returns. The outer
-// Acquire unpacks this back into (val, err, denied).
+// stormPolicyResult 是 singleflight 内层执行器的返回值。外层
+// Acquire 把它拆回 (val, err, denied)。
 type stormPolicyResult struct {
 	val    any
 	denied DenyReason
 }
 
-// NewStormPolicy returns an initialized policy. Rate/burst values are taken
-// literally — 0 means "never admit", positive values mean their literal token
-// budget. Callers are responsible for passing meaningful defaults; this
-// primitive does not silently inject "permissive" sentinels (that would mask
-// a misconfigured operator policy as "all-allow").
+// NewStormPolicy 返回一个初始化好的策略。Rate/burst 值按字面取用 ——
+// 0 表示「永不准入」,正值表示其字面 token 预算。调用方
+// 负责传入有意义的默认值;这个原语不会悄悄注入「宽松」哨兵值
+// (那样会把配错的 operator 策略伪装成「全部放行」)。
 //
-// AccountSF may be supplied to share dedup state across StormPolicy instances;
-// nil means each policy owns a private SingleFlight.
+// 可提供 AccountSF 以在多个 StormPolicy 实例间共享去重状态;
+// nil 表示每个策略各自持有一个私有 SingleFlight。
 func NewStormPolicy(cfg StormPolicyConfig) *StormPolicy {
 	accountSF := cfg.AccountSF
 	if accountSF == nil {
@@ -87,8 +86,8 @@ func NewStormPolicy(cfg StormPolicyConfig) *StormPolicy {
 	}
 }
 
-// endpointBucket returns the TokenBucket for endpointKey, lazy-creating one on
-// first access (race-safe via sync.Map LoadOrStore).
+// endpointBucket 返回 endpointKey 对应的 TokenBucket,首次访问时
+// 惰性创建一个(通过 sync.Map LoadOrStore 做到竞态安全)。
 func (p *StormPolicy) endpointBucket(endpointKey string) *TokenBucket {
 	if v, ok := p.endpointBuckets.Load(endpointKey); ok {
 		return v.(*TokenBucket)
@@ -98,16 +97,16 @@ func (p *StormPolicy) endpointBucket(endpointKey string) *TokenBucket {
 	return actual.(*TokenBucket)
 }
 
-// Acquire enforces the three-scope policy and runs fn at most once per
-// concurrent same-account caller-set.
+// Acquire 执行三作用域策略,对每组并发的同账号调用者
+// 集合最多运行一次 fn。
 //
-// Returns:
-//   - (val, fn-err, DenyNone)        — fn executed (or its result was shared by a follower)
-//   - (nil, nil, DenyEndpoint)       — endpoint bucket exhausted; no fn run
-//   - (nil, nil, DenyGlobal)         — global bucket exhausted; no fn run
+// 返回:
+//   - (val, fn-err, DenyNone)        —— fn 已执行(或其结果被某个跟随者共享)
+//   - (nil, nil, DenyEndpoint)       —— endpoint bucket 耗尽;未运行 fn
+//   - (nil, nil, DenyGlobal)         —— global bucket 耗尽;未运行 fn
 //
-// Refund is fired only on bucket denial. fn errors keep tokens consumed so a
-// failed attempt does not reopen the storm window.
+// 仅在 bucket 拒绝时才退还。fn 报错时 token 保持已消耗状态,这样一次
+// 失败的尝试不会重新打开风暴窗口。
 func (p *StormPolicy) Acquire(
 	now time.Time,
 	accountID, endpointKey string,
@@ -116,36 +115,36 @@ func (p *StormPolicy) Acquire(
 	eb := p.endpointBucket(endpointKey)
 
 	wrapped, fnErr, _ := p.accountSF.Do(accountID, func() (any, error) {
-		// Scope 2: endpoint
+		// 作用域 2:endpoint
 		if !eb.TryAcquire(now) {
 			return stormPolicyResult{denied: DenyEndpoint}, nil
 		}
-		// Scope 3: global — refund endpoint on global denial
+		// 作用域 3:global —— global 拒绝时退还 endpoint
 		if !p.globalBucket.TryAcquire(now) {
 			eb.Refund(now)
 			return stormPolicyResult{denied: DenyGlobal}, nil
 		}
-		// Both buckets admitted; run fn. If fn errors, tokens stay consumed
-		// (failed attempts must NOT reopen storm window).
+		// 两个 bucket 都准入;运行 fn。若 fn 报错,token 保持已消耗
+		// (失败的尝试绝不能重新打开风暴窗口)。
 		v, e := fn()
 		return stormPolicyResult{val: v, denied: DenyNone}, e
 	})
 
 	result, ok := wrapped.(stormPolicyResult)
 	if !ok {
-		// Defensive: fn ran outside our wrapper somehow; surface raw value.
+		// 防御性:fn 不知何故在我们的 wrapper 之外运行;直接返回原始值。
 		return wrapped, fnErr, DenyNone
 	}
 	return result.val, fnErr, result.denied
 }
 
-// NextEligibleAt returns the earliest wall-clock time at which an Acquire for
-// endpointKey could succeed. Schedulers use this to choose between waiting and
-// failing over to another endpoint.
+// NextEligibleAt 返回针对 endpointKey 的 Acquire 可能成功的最早
+// 墙钟时间。调度器用它在「等待」与「故障转移到另一个 endpoint」
+// 之间做选择。
 //
-// Returns max(global.NextAvailableAt, endpoint.NextAvailableAt). If either
-// bucket reports the zero time ("never"), zero is propagated so callers can
-// detect the unsatisfiable case.
+// 返回 max(global.NextAvailableAt, endpoint.NextAvailableAt)。若任一
+// bucket 报告零时间(「永不」),则零值会向上传播,以便调用方
+// 检测出不可满足的情形。
 func (p *StormPolicy) NextEligibleAt(now time.Time, endpointKey string) time.Time {
 	eb := p.endpointBucket(endpointKey)
 	globalNext := p.globalBucket.NextAvailableAt(now)

@@ -26,6 +26,15 @@ type RoutingPolicySource = router.RoutingPolicySource
 type StickyStore = router.StickyStore
 type ClaimGate = router.ClaimGate
 
+// SelectionMode 与其常量 re-export,供 cmd/gateway 装配生产 RoutingPolicySource 时
+// 按 binding selection_mode 返回对应策略,无需直引 pool/router 内部包。
+type SelectionMode = router.SelectionMode
+
+const (
+	SelectionModeStrictPriority   = router.SelectionModeStrictPriority
+	SelectionModePriorityWeighted = router.SelectionModePriorityWeighted
+)
+
 type GateFailureReason = router.GateFailureReason
 
 const (
@@ -37,11 +46,13 @@ const (
 	GateFailureCapability          = router.GateFailureCapability
 	GateFailureCredential          = router.GateFailureCredential
 	GateFailureHealth              = router.GateFailureHealth
+	GateFailureAuthCooldown        = router.GateFailureAuthCooldown
 	GateFailureGroupPolicy         = router.GateFailureGroupPolicy
 	GateFailurePerRequestExclusion = router.GateFailurePerRequestExclusion
 	GateFailureScoredBand          = router.GateFailureScoredBand
 	GateFailureWindowCost          = router.GateFailureWindowCost
 	GateFailureContextWindow       = router.GateFailureContextWindow
+	GateFailureRatePrecheck        = router.GateFailureRatePrecheck
 )
 
 type Gate = router.Gate
@@ -62,6 +73,7 @@ type AllowAllGate = router.AllowAllGate
 type WindowCostGate = router.WindowCostGate
 type SessionCountGate = router.SessionCountGate
 type ContextWindowGate = router.ContextWindowGate
+type RatePrecheckGate = router.RatePrecheckGate
 
 const (
 	HealthStateActive      = router.HealthStateActive
@@ -91,8 +103,13 @@ type RoutingReasonWaitAction = router.RoutingReasonWaitAction
 type RoutingReasonExclusionItem = router.RoutingReasonExclusionItem
 type RoutingReasonBuilder = router.RoutingReasonBuilder
 
+// NoCapacityError 透传 router 的无容量错误类型,供 HTTP 层 errors.As 取最早恢复时刻算 Retry-After。
+type NoCapacityError = router.NoCapacityError
+
 var (
 	ErrNoEligibleAccount      = router.ErrNoEligibleAccount
+	ErrKeyRateLimited         = router.ErrKeyRateLimited
+	ErrBindingRateLimited     = router.ErrBindingRateLimited
 	ErrAllChannelsDegraded    = router.ErrAllChannelsDegraded
 	ErrClaimRace              = router.ErrClaimRace
 	ErrSlotManagerUnavailable = router.ErrSlotManagerUnavailable

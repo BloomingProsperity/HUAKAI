@@ -74,8 +74,8 @@ func createDeps(creator *userCreateStub, audit *adminAuditStub) Deps {
 	}
 }
 
-// TestCreateUser_HappyPath: valid create persists a role=user account, never
-// stores the plaintext password (CMB-5), and writes a create_user audit.
+// TestCreateUser_HappyPath:合法创建会持久化一个 role=user 账号,绝不存储
+// 明文口令(CMB-5),并写入一条 create_user 审计。
 func TestCreateUser_HappyPath(t *testing.T) {
 	creator := &userCreateStub{}
 	audit := &adminAuditStub{}
@@ -88,7 +88,7 @@ func TestCreateUser_HappyPath(t *testing.T) {
 	if creator.in.Role != "user" {
 		t.Fatalf("created role=%q want user", creator.in.Role)
 	}
-	// CMB-5: the store must receive an argon2id hash, never the plaintext.
+	// CMB-5:store 必须收到 argon2id 散列,绝不能收到明文。
 	if creator.in.PasswordHash == "longenough1" || !strings.HasPrefix(creator.in.PasswordHash, "$argon2") {
 		t.Fatalf("password not hashed: %q", creator.in.PasswordHash)
 	}
@@ -97,9 +97,9 @@ func TestCreateUser_HappyPath(t *testing.T) {
 	}
 }
 
-// TestCreateUser_RejectsAdminRole is the privilege-escalation guard: this
-// endpoint must never mint an admin. MUTATION: drop the role!="user" check in
-// setUserCreateRequest → role=admin yields 201 + creator called → RED.
+// TestCreateUser_RejectsAdminRole 是越权提权护栏:此端点绝不能创建 admin。
+// 变异:去掉 setUserCreateRequest 中的 role!="user" 校验 → role=admin 得到
+// 201 + creator 被调用 → 红。
 func TestCreateUser_RejectsAdminRole(t *testing.T) {
 	creator := &userCreateStub{}
 	rec := invokeAdminUsersBody(t, createDeps(creator, &adminAuditStub{}), http.MethodPost, "/admin/v1/users",
@@ -113,7 +113,7 @@ func TestCreateUser_RejectsAdminRole(t *testing.T) {
 	}
 }
 
-// TestCreateUser_WeakPasswordRejectedBeforeStore: < min length → 400, no store.
+// TestCreateUser_WeakPasswordRejectedBeforeStore:口令长度 < 下限 → 400,不触达 store。
 func TestCreateUser_WeakPassword(t *testing.T) {
 	creator := &userCreateStub{}
 	rec := invokeAdminUsersBody(t, createDeps(creator, &adminAuditStub{}), http.MethodPost, "/admin/v1/users",
@@ -124,7 +124,7 @@ func TestCreateUser_WeakPassword(t *testing.T) {
 	}
 }
 
-// TestCreateUser_DuplicateMaps409: store ErrUserAlreadyExists → 409.
+// TestCreateUser_DuplicateMaps409:store 返回 ErrUserAlreadyExists → 409。
 func TestCreateUser_Duplicate(t *testing.T) {
 	creator := &userCreateStub{err: ErrUserAlreadyExists}
 	rec := invokeAdminUsersBody(t, createDeps(creator, &adminAuditStub{}), http.MethodPost, "/admin/v1/users",
@@ -145,10 +145,9 @@ func deleteDeps(getRow admindb.AdminGetUserForTenantRow, getErr error, del *user
 	}
 }
 
-// TestDeleteUser_SoftDeletesAndRevokesSessions: deleting a role=user account
-// soft-deletes it AND revokes its sessions (closing the post-delete access
-// window) AND writes a delete_user audit. MUTATION: drop the SessionRevoker
-// call → revoker.calls==0 → RED.
+// TestDeleteUser_SoftDeletesAndRevokesSessions:删除一个 role=user 账号会
+// 软删它,并撤销其会话(关闭删除后的访问窗口),并写入一条 delete_user 审计。
+// 变异:去掉 SessionRevoker 调用 → revoker.calls==0 → 红。
 func TestDeleteUser_SoftDeletesAndRevokesSessions(t *testing.T) {
 	del := &userSoftDeleteStub{affected: 1}
 	rev := &sessionRevokerStub{}
@@ -167,9 +166,8 @@ func TestDeleteUser_SoftDeletesAndRevokesSessions(t *testing.T) {
 	}
 }
 
-// TestDeleteUser_RejectsAdminTarget is the guard against deleting an admin via
-// this endpoint. MUTATION: drop the before.Role=="admin" check → soft-delete
-// runs on an admin → RED.
+// TestDeleteUser_RejectsAdminTarget 是防止经此端点删除 admin 的护栏。
+// 变异:去掉 before.Role=="admin" 校验 → 软删在 admin 上执行 → 红。
 func TestDeleteUser_RejectsAdminTarget(t *testing.T) {
 	del := &userSoftDeleteStub{affected: 1}
 	deps := deleteDeps(admindb.AdminGetUserForTenantRow{ID: 9, Role: "admin", Status: "active"}, nil, del, &sessionRevokerStub{}, &adminAuditStub{})
@@ -183,7 +181,7 @@ func TestDeleteUser_RejectsAdminTarget(t *testing.T) {
 	}
 }
 
-// TestDeleteUser_NotFound: a missing user 404s before any mutation.
+// TestDeleteUser_NotFound:不存在的用户在任何改动前即返回 404。
 func TestDeleteUser_NotFound(t *testing.T) {
 	del := &userSoftDeleteStub{}
 	deps := deleteDeps(admindb.AdminGetUserForTenantRow{}, pgx.ErrNoRows, del, &sessionRevokerStub{}, &adminAuditStub{})

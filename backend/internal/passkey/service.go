@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
 type CeremonyEngine interface {
@@ -186,6 +189,13 @@ func (s *Service) LoginFinish(ctx context.Context, in LoginFinishInput) (LoginFi
 	if err != nil {
 		return LoginFinishResult{}, err
 	}
+	// 账号资格门:ceremony 已验证 credential 归属,但签发 session 前必须复用与密码/social 登录
+	// 一致的账号状态门(EnsureLoginEligible)。否则被管理员禁用/删除/锁定/待重置的用户,凭既有
+	// passkey 仍能登录拿到 session,绕过账号停用控制(auth-core 访问控制不变量)。放在引擎返回后
+	// 而非 resolver 内,避免依赖 webauthn 引擎是否原样透传 resolver 错误。
+	if err := userauth.EnsureLoginEligible(result.User.User, s.now()); err != nil {
+		return LoginFinishResult{}, err
+	}
 	stored := result.MatchedCredential
 	if len(stored.CredentialID) == 0 {
 		stored = result.UserCredential()
@@ -196,6 +206,12 @@ func (s *Service) LoginFinish(ctx context.Context, in LoginFinishInput) (LoginFi
 	}
 	updated, err := s.store.UpdateCredentialUsage(ctx, in.TenantID, stored.CredentialID, result.Credential.SignCount, result.Credential.CloneWarning, s.now())
 	if err != nil {
+		// 并发竞态:两个登录都过了上面的应用层 signCountRegressed,其中一个在
+		// store 的 CAS 处失败返回 ErrCloneDetected。与上面单请求路径对齐——也置位
+		// clone_warning,否则这条防克隆信号在竞态路径下丢失(可观测性缺口)。
+		if errors.Is(err, ErrCloneDetected) {
+			_ = s.store.FlagCredentialCloneWarning(ctx, in.TenantID, stored.CredentialID, s.now())
+		}
 		return LoginFinishResult{}, err
 	}
 	return LoginFinishResult{User: result.User.User, Credential: updated}, nil
@@ -354,9 +370,8 @@ func optionsJSON(options CeremonyOptions) json.RawMessage {
 	return json.RawMessage(options)
 }
 
-// AdminClearCredentials force-removes ALL of a user's passkeys for admin account
-// recovery, reusing the owner-scoped list+delete primitives; returns the count
-// cleared. AUTH-098.
+// AdminClearCredentials 为 admin 账号找回强制删除某用户的所有 passkey,
+// 复用 owner 维度的 list+delete 原语; 返回清除的数量。AUTH-098。
 func (s *Service) AdminClearCredentials(ctx context.Context, tenantID, userID int64) (int, error) {
 	summaries, err := s.ListCredentials(ctx, tenantID, userID)
 	if err != nil {

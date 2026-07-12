@@ -58,4 +58,7 @@ type Store interface {
 	ListRatios(ctx context.Context, tenantID int64) ([]GroupPricingRatio, error)
 	UpsertRatio(ctx context.Context, p UpsertRatioParams) (GroupPricingRatio, error)
 	DeleteRatio(ctx context.Context, p DeleteRatioParams) error
+	// VerifyChain 重新遍历已签名的定价倍率审计哈希链，并报告
+	// 第一条被篡改的记录（若有），便于运维人员证明其完整性。
+	VerifyChain(ctx context.Context) (VerifyChainResult, error)
 }

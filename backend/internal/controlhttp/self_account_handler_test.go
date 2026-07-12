@@ -13,7 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
-// --- stubs ------------------------------------------------------------------
+// --- 桩 ----------------------------------------------------------------------
 
 type selfAccountStub struct {
 	changeCalls int
@@ -71,7 +71,7 @@ func serveSelfAccount(t *testing.T, deps AuthMeDeps, ident sessionauth.SessionId
 	return serveAuthAction(t, deps, ident, method, target, body)
 }
 
-// --- change password --------------------------------------------------------
+// --- 修改密码 ----------------------------------------------------------------
 
 //  1. 改密-校旧密:service 返 ErrInvalidCredentials → 401 invalid_old_password,
 //     且 RevokeOthers 必须 NOT 被调(旧密错绝不能撤会话)。
@@ -169,7 +169,7 @@ func TestChangePasswordEmptyNewRejectedBeforeService(t *testing.T) {
 	}
 }
 
-// --- delete self ------------------------------------------------------------
+// --- 注销本账号 --------------------------------------------------------------
 
 //  5. 删号-末位 admin 保护:service 返 ErrLastAdmin → 409 last_admin_protected,
 //     且不撤任何 session(删失败不能误撤会话)。

@@ -1,5 +1,5 @@
-// Package config loads HUAKAI gateway runtime configuration from environment
-// variables. YAML support is deferred until a multi-deployment story exists.
+// Package config 从环境变量加载 HUAKAI gateway 的运行时配置。
+// YAML 支持暂缓, 等到出现多部署场景的需求时再做。
 package config
 
 import (
@@ -9,61 +9,70 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/apikeyns"
 )
 
-// Config is the typed snapshot of all settings the gateway needs at boot.
-// All fields are populated from env vars; missing required fields → typed
-// error. There is no silent default for security-sensitive values.
+// Config 是 gateway 启动时所需全部配置的类型化快照。
+// 所有字段都来自 env 变量;缺少必填字段 → 返回类型化错误。
+// 对安全敏感的值绝不使用静默默认值。
 type Config struct {
-	// DatabaseURL is the PostgreSQL DSN. Required.
+	// DatabaseURL 是 PostgreSQL 的 DSN。必填。
 	DatabaseURL string
 
-	// DBMaxConns optionally overrides the Postgres pool max connections.
-	// Zero keeps the db package default (16); operator-tunable for scaling.
+	// DBMaxConns 可选地覆盖 Postgres 连接池的最大连接数。
+	// 为零时沿用 db 包的默认值(16);可由运维按扩容需求调整。
 	DBMaxConns int32
-	// DBMinConns optionally overrides the pool min connections. Zero keeps default (2).
+	// DBMinConns 可选地覆盖连接池的最小连接数。为零时沿用默认值(2)。
 	DBMinConns int32
-	// DBMaxConnLifetime optionally overrides pool conn max lifetime
-	// (HUAKAI_DB_MAX_CONN_LIFETIME_SECONDS). Zero keeps default (30m).
+	// DBMaxConnLifetime 可选地覆盖连接池中连接的最大存活时长
+	//(HUAKAI_DB_MAX_CONN_LIFETIME_SECONDS)。为零时沿用默认值(30m)。
 	DBMaxConnLifetime time.Duration
-	// DBMaxConnIdleTime optionally overrides pool conn max idle time
-	// (HUAKAI_DB_MAX_CONN_IDLE_TIME_SECONDS). Zero keeps default (5m).
+	// DBMaxConnIdleTime 可选地覆盖连接池中连接的最大空闲时长
+	//(HUAKAI_DB_MAX_CONN_IDLE_TIME_SECONDS)。为零时沿用默认值(5m)。
 	DBMaxConnIdleTime time.Duration
 
-	// Listen is the HTTP bind address (e.g. ":8080" or ":0" for tests).
+	// Listen 是 HTTP 绑定地址(例如 ":8080", 测试中用 ":0")。
 	Listen string
 
-	// BillingPolicyVersion is recorded on every claim row.
+	// BillingPolicyVersion 会记录到每一条 claim 行上。
 	BillingPolicyVersion string
 
-	// RequestClass tags the claim for downstream policy routing. Default "standard".
+	// RequestClass 给 claim 打标, 供下游策略路由使用。默认 "standard"。
 	RequestClass string
 
-	// TransportSidecarSocket points mimicry transport modes at the local TLS
-	// sidecar Unix socket. Empty keeps the existing Go uTLS path.
+	// TransportSidecarSocket 让 mimicry 传输模式指向本地 TLS sidecar 的 Unix
+	// socket。为空时沿用现有的 Go uTLS 路径。
 	TransportSidecarSocket string
-	// TransportSidecarFallback is explicit opt-in. Default false keeps production
-	// fail-closed when Rust sidecar is configured but unavailable.
+	// TransportSidecarFallback 是显式的 opt-in。默认 false, 当 Rust sidecar 已配置
+	// 但不可用时, 让生产保持 fail-closed。
 	TransportSidecarFallback bool
+	// TransportSidecarForceH1 控制 Rust sidecar 握手是否只广告 ALPN=http/1.1。
+	// nil(env 未设)时沿用 transport 层默认(默认强制 H1,与 Go uTLS 路一致);
+	// 非 nil 时由运维 HUAKAI_TRANSPORT_FORCE_H1 显式覆盖(仅 "false" 关)。
+	TransportSidecarForceH1 *bool
 
-	// QuotaEnforce wires the quota reservation/finalization path into chat
-	// admission. Default false leaves the hot path unchanged.
+	// QuotaEnforce 把配额预留/结清路径接入 chat 准入。
+	// 默认 false, 不改动热路径。
 	QuotaEnforce bool
-	// Budget wires per-minute RPM/TPM budget tracking. Default disabled keeps
-	// the hot path unchanged; fail mode defaults to memory_fallback when enabled.
+	// SettlementIntentEnabled 在 relay 首字节前持久化结算意图。默认关闭；
+	// 意图写失败始终降级为 warning，不改变原有钱路结果。
+	SettlementIntentEnabled bool
+	// Budget 接入每分钟 RPM/TPM 预算跟踪。默认关闭, 不改动热路径;
+	// 启用时失败模式默认为 memory_fallback。
 	Budget BudgetConfig
 
-	// VendorOAuth holds operator-owned OAuth refresh settings for vendor
-	// refreshers. Empty TokenURL means that vendor refresher is not wired.
+	// VendorOAuth 持有运维提供的、供 vendor refresher 使用的 OAuth 刷新配置。
+	// TokenURL 为空表示该 vendor refresher 未接线。
 	VendorOAuth VendorOAuthConfigs
 
-	// CredentialAcqBootstrap*TTL optionally override credential acquisition
-	// OAuth bootstrap windows. Zero means the credentialacq package default.
+	// CredentialAcqBootstrap*TTL 可选地覆盖凭证获取的 OAuth bootstrap 窗口。
+	// 为零时取 credentialacq 包的默认值。
 	CredentialAcqBootstrapShortTTL time.Duration
 	CredentialAcqBootstrapLongTTL  time.Duration
 
-	// PaymentHMACSecrets maps payment provider name -> webhook HMAC secret.
-	// Values come from HUAKAI_PAYMENT_HMAC_SECRETS and must never be logged.
+	// PaymentHMACSecrets 把支付 provider 名映射到 webhook HMAC secret。
+	// 取值来自 HUAKAI_PAYMENT_HMAC_SECRETS, 绝不可写入日志。
 	PaymentHMACSecrets map[string]string
 	PaymentEnableMock  bool
 	// 淘宝/闲鱼 manual-redirect 支付: 默认关闭。启用后下单返回 checkout_url + 订单号,
@@ -72,26 +81,23 @@ type Config struct {
 	PaymentTaobaoCheckoutURL     string
 	PaymentExpireSweepInterval   time.Duration
 	PaymentExpireSweepBatchLimit int
-	// APIKeyExpirySweep* wires the inbound API-key display-state expiry worker.
-	// Default enabled with a bounded ticker; set enabled=false to pause it.
+	// APIKeyExpirySweep* 接入入站 API-key 显示状态过期 worker。
+	// 默认启用, 配有限制的 ticker;设 enabled=false 可暂停它。
 	APIKeyExpirySweepEnabled    bool
 	APIKeyExpirySweepInterval   time.Duration
 	APIKeyExpirySweepBatchLimit int
 
-	// CacheAnthropicAutoBreakpoints opts into automatic cache_control
-	// breakpoint planning on the live Anthropic Messages egress path
-	// (HUAKAI_CACHE_ANTHROPIC_AUTO_BREAKPOINTS). Default false keeps the
-	// outbound body byte-for-byte. When true the dispatcher injects ephemeral
-	// breakpoints only for anthropic_messages requests that carry no
-	// client-supplied cache_control; clients managing their own caching are
-	// never touched.
+	// CacheAnthropicAutoBreakpoints 在实时的 Anthropic Messages 出站路径上开启
+	// 自动的 cache_control 断点规划(HUAKAI_CACHE_ANTHROPIC_AUTO_BREAKPOINTS)。
+	// 默认 false, 让出站 body 逐字节保持原样。为 true 时, dispatcher 仅对那些
+	// 未携带客户端自带 cache_control 的 anthropic_messages 请求注入临时断点;
+	// 自行管理缓存的客户端绝不受影响。
 	CacheAnthropicAutoBreakpoints bool
 
-	// AlertingEvalEnabled wires the alert-rule evaluator background loop.
-	// Default false keeps the newly-created alerting engine CRUD-only until an
-	// operator explicitly opts into live evaluation.
+	// AlertingEvalEnabled 接入告警规则评估器的后台循环。
+	// 默认 false, 让新建的告警引擎仅保持 CRUD, 直到运维显式开启实时评估。
 	AlertingEvalEnabled bool
-	// AlertingEvalInterval bounds the evaluator ticker. Default 60s.
+	// AlertingEvalInterval 限制评估器 ticker 的频率。默认 60s。
 	AlertingEvalInterval time.Duration
 }
 
@@ -121,7 +127,7 @@ const (
 	vendorOAuthScope                    = "SCOPE"
 )
 
-// VendorOAuth is one operator-provided OAuth client configuration.
+// VendorOAuth 是一份运维提供的 OAuth client 配置。
 type VendorOAuth struct {
 	TokenURL     string
 	ClientID     string
@@ -130,19 +136,24 @@ type VendorOAuth struct {
 	AuthURL      string
 }
 
-// VendorOAuthConfigs is keyed by vendor name:
-// cursor, windsurf, openai_codex, kiro, gemini.
+// VendorOAuthConfigs 以 vendor 名为键:
+// cursor、windsurf、openai_codex、kiro、gemini。
 type VendorOAuthConfigs map[string]VendorOAuth
 
-// ErrMissingRequired indicates one or more required env vars were not set.
+// ErrMissingRequired 表示有一个或多个必填 env 变量未设置。
 var ErrMissingRequired = errors.New("config: missing required env var")
 
-// Load reads env vars into a Config. Required vars: HUAKAI_DATABASE_URL.
+// Load 把 env 变量读入 Config。必填变量:HUAKAI_DATABASE_URL。
 //
-// Removed Smoke* fields — replaced by api_keys-table-
-// backed inbound auth (auth.APIKeyResolver). Rolling back to env-injected
-// auth requires a code revert (no build-tag escape hatch).
+// 已移除 Smoke* 字段——改用基于 api_keys 表的入站鉴权
+// (auth.APIKeyResolver)。要回滚到 env 注入式鉴权需改代码回退
+// (没有 build-tag 这类逃生出口)。
 func Load() (*Config, error) {
+	// 客户 API key 前缀(HUAKAI_API_KEY_PREFIX,默认 hk):若运维设了非法值,启动期
+	// fail-loud,免得静默回落默认后所有客户端被拒还查不出原因。空=用默认,无误。
+	if err := apikeyns.ConfiguredBaseError(); err != nil {
+		return nil, err
+	}
 	paymentHMACSecrets, err := loadPaymentHMACSecrets()
 	if err != nil {
 		return nil, err
@@ -179,7 +190,15 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	quotaEnforce, err := envBool("HUAKAI_QUOTA_ENFORCE")
+	// BILL-121/123:既然引擎已被证明安全, 配额强制执行现在默认开启——它在未配置
+	// 任何策略时直接 no-op(跳过评估), 让 observe 模式策略保持非阻塞, 并在基础设施
+	// 错误时 fail OPEN, 所以默认开启不会阻断一个未配置的部署。运维仍可设
+	// HUAKAI_QUOTA_ENFORCE=false 作为逃生出口。
+	quotaEnforce, err := envBoolDefault("HUAKAI_QUOTA_ENFORCE", true)
+	if err != nil {
+		return nil, err
+	}
+	settlementIntentEnabled, err := envBool("HUAKAI_SETTLEMENT_INTENT_ENABLED")
 	if err != nil {
 		return nil, err
 	}
@@ -187,10 +206,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	alertingEvalEnabled, err := envBool("HUAKAI_ALERTING_EVAL_ENABLED")
-	if err != nil {
-		return nil, err
-	}
+	// 告警规则评估器默认开启:无规则时评估循环空转 no-op,LeaderLock 已避免重复
+	// worker。运维仍可设 HUAKAI_ALERTING_EVAL_ENABLED=false 作为逃生出口;历史上
+	// 部分部署写过非布尔占位值,这里按默认开启处理,避免控制面规则创建后静默不评估。
+	alertingEvalEnabled := envBoolDefaultLenient("HUAKAI_ALERTING_EVAL_ENABLED", true)
 	alertingEvalInterval, err := envOptionalDurationSeconds("HUAKAI_ALERTING_EVAL_INTERVAL_SECONDS")
 	if err != nil {
 		return nil, err
@@ -233,7 +252,9 @@ func Load() (*Config, error) {
 		RequestClass:                   envDefault("HUAKAI_REQUEST_CLASS", "standard"),
 		TransportSidecarSocket:         os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
 		TransportSidecarFallback:       transportSidecarFallback,
+		TransportSidecarForceH1:        envOptionalForceH1("HUAKAI_TRANSPORT_FORCE_H1"),
 		QuotaEnforce:                   quotaEnforce,
+		SettlementIntentEnabled:        settlementIntentEnabled,
 		Budget:                         budgetCfg,
 		VendorOAuth:                    loadVendorOAuthConfigs(),
 		CredentialAcqBootstrapShortTTL: credentialAcqBootstrapShortTTL,
@@ -409,6 +430,31 @@ func envBoolDefault(name string, fallback bool) (bool, error) {
 	return v, nil
 }
 
+func envBoolDefaultLenient(name string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+// envOptionalForceH1 解析 HUAKAI_TRANSPORT_FORCE_H1,语义与 mimicry.forceH1Enabled
+// 完全一致:env 未设时返回 nil(由 transport 层 env 默认决定,默认开),已设时返回
+// 显式 *bool——非 "false" 一律视为开,仅显式 "false" 关。返回指针是为了区分"未配置"
+// 与"显式 false",避免运维想关却被默认开覆盖。
+func envOptionalForceH1(name string) *bool {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+	enabled := strings.TrimSpace(raw) != "false"
+	return &enabled
+}
+
 func envOptionalDurationSeconds(name string) (time.Duration, error) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -496,9 +542,9 @@ func envPositiveIntDefault(name string, fallback int) (int, error) {
 	return value, nil
 }
 
-// envOptionalInt32 parses a non-negative int32 from env. Unset/empty -> 0 so the
-// caller treats 0 as "use the package default". Invalid or out-of-range -> typed
-// error so a misconfiguration fails loudly at boot instead of silently degrading.
+// envOptionalInt32 从 env 解析一个非负的 int32。未设置/为空 -> 0, 让调用方把 0
+// 当作"使用包默认值"。非法或越界 -> 返回类型化错误, 让配置错误在启动时显式失败,
+// 而不是静默降级。
 func envOptionalInt32(name string) (int32, error) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {

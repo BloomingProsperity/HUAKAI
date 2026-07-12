@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -26,7 +27,7 @@ func TestSubscriptionPostgres_AdminExtendSubscription(t *testing.T) {
 		t.Fatalf("assign active: %v", err)
 	}
 	original := active.Subscription.ExpiresAt
-	// MUTATION that makes this RED: drop the active/non-expired guard and allow cancelled/expired rows to extend.
+	// 让其变红的变异:去掉 active/非过期的守卫,允许 cancelled/expired 的行被延期。
 	extended, err := svc.ExtendSubscription(ctx, ExtendSubscriptionInput{
 		TenantID: f.tenantA, SubscriptionID: active.Subscription.ID, ActorAdminID: 7, RequestID: "extend-active", Days: 30,
 	})
@@ -41,7 +42,7 @@ func TestSubscriptionPostgres_AdminExtendSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign cancelled candidate: %v", err)
 	}
-	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-extend"); err != nil {
+	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-extend", "admin_token:7"); err != nil {
 		t.Fatalf("cancel candidate: %v", err)
 	}
 	if _, err := svc.ExtendSubscription(ctx, ExtendSubscriptionInput{
@@ -55,6 +56,7 @@ func TestSubscriptionPostgres_AdminExtendSubscription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign expired candidate: %v", err)
 	}
+	clk.set(expired.Subscription.ExpiresAt.Add(time.Hour)) // 推进到到期后 (到期路径锁内复查 expires_at<=now)
 	if _, err := store.ExpireSubscription(ctx, lifecycleRecord{
 		TenantID: f.tenantA, SubscriptionID: expired.Subscription.ID, ActorKind: ActorKindSystem, Now: clk.now(),
 	}); err != nil {
@@ -80,7 +82,7 @@ func TestSubscriptionPostgres_AdminExtendIdempotent(t *testing.T) {
 		t.Fatalf("assign: %v", err)
 	}
 	original := assigned.Subscription.ExpiresAt
-	// MUTATION that makes this RED: drop idempotency lookup by request_id, causing double extension.
+	// 让其变红的变异:去掉按 request_id 的幂等查找,导致重复延期。
 	for i := 0; i < 2; i++ {
 		if _, err := svc.ExtendSubscription(ctx, ExtendSubscriptionInput{
 			TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, ActorAdminID: 7, RequestID: "extend-once", Days: 30,
@@ -117,7 +119,7 @@ func TestSubscriptionPostgres_AdminResetQuota(t *testing.T) {
 	oldPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
 	f.seedQuotaWindow(oldPolicy, clk.now(), "4", "3", 2)
 
-	// MUTATION that makes this RED: reset to a wrong baseline limit or leave old consumed active window attached.
+	// 让其变红的变异:重置到错误的基准额度,或仍挂着旧的已消耗 active 窗口。
 	if _, err := svc.ResetQuota(ctx, ResetQuotaInput{
 		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, ActorAdminID: 7, RequestID: "reset-quota-1",
 	}); err != nil {
@@ -143,7 +145,7 @@ func TestSubscriptionPostgres_AdminResetQuota(t *testing.T) {
 	}
 }
 
-func TestSubscriptionPostgres_ChangePlanSwapsCapsAndPolicy(t *testing.T) {
+func TestSubscriptionPostgres_ChangePlanReconcilesCapsInPlace(t *testing.T) {
 	ctx := context.Background()
 	pool := openIntegrationPool(t, ctx)
 	f := newSubFixture(t, ctx, pool)
@@ -169,7 +171,10 @@ func TestSubscriptionPostgres_ChangePlanSwapsCapsAndPolicy(t *testing.T) {
 	}
 	oldPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
 
-	// MUTATION that makes this RED: skip old-policy-close on change, leaving two active policies/links.
+	// 模拟当期已用 $7:给旧 monthly policy 写一条 quota_windows。换套餐(期中)绝不能把它清零,
+	// 否则自助 /change-plan 成了绕过月度护栏白吃成本的第二扇门(与 ActivateOrRenewTx 同源)。
+	f.seedQuotaWindow(oldPolicy, clk.now(), "0", "7", 1)
+
 	changed, err := svc.ChangePlan(ctx, ChangePlanInput{
 		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
 		AllowDowngrade: false, ActorAdminID: 7, RequestID: "change-swap",
@@ -180,20 +185,25 @@ func TestSubscriptionPostgres_ChangePlanSwapsCapsAndPolicy(t *testing.T) {
 	if changed.PlanID != premium.ID || changed.MonthlyCapUSD == nil || !changed.MonthlyCapUSD.Equal(*dec("25")) {
 		t.Fatalf("changed subscription = %+v, want premium snapshot", changed)
 	}
-	if enabled := f.countInt(`SELECT count(*) FROM quota_policies WHERE tenant_id=$1 AND id=$2 AND enabled=true`, f.tenantA, oldPolicy); enabled != 0 {
-		t.Fatalf("old policy enabled count=%d, want 0", enabled)
+	// 期中换套餐 = 原地 reconcile:同一 policy_id、仍 enabled、limit 升到 25,不留 disabled 旧策略。
+	newPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
+	if newPolicy != oldPolicy {
+		t.Fatalf("期中换套餐应原地复用同一 policy_id(否则用量被重置), old=%d new=%d", oldPolicy, newPolicy)
 	}
 	if active := f.countInt(`SELECT count(*) FROM subscription_policy_links
 		WHERE tenant_id=$1 AND user_subscription_id=$2 AND status='active'`,
 		f.tenantA, assigned.Subscription.ID); active != 1 {
-		t.Fatalf("active policy link count=%d, want 1 after swap", active)
+		t.Fatalf("active policy link count=%d, want 1", active)
 	}
-	newPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
-	if newPolicy == oldPolicy {
-		t.Fatalf("change plan reused old policy id=%d; want fresh policy", newPolicy)
+	if disabled := f.countInt(`SELECT count(*) FROM quota_policies WHERE tenant_id=$1 AND id=$2 AND enabled=false`, f.tenantA, oldPolicy); disabled != 0 {
+		t.Fatalf("期中换套餐不应 disable 旧 policy, 实际 %d", disabled)
 	}
 	if got := f.policyLimit(newPolicy); !got.Equal(decimal.NewFromInt(25)) {
-		t.Fatalf("active policy limit=%s, want 25", got.String())
+		t.Fatalf("active policy limit=%s, want 25 (原地升档)", got.String())
+	}
+	// 核心:已用量 settled_value=7 必须保留(护栏不被清零)。
+	if n := f.countInt(`SELECT count(*) FROM quota_windows WHERE tenant_id=$1 AND policy_id=$2 AND settled_value=7`, f.tenantA, oldPolicy); n != 1 {
+		t.Fatalf("换套餐后已用量应保留 settled_value=7, 命中 %d 行", n)
 	}
 	if n := f.countInt(`SELECT count(*) FROM subscription_audit_events
 		WHERE tenant_id=$1 AND user_subscription_id=$2 AND event_type=$3`,
@@ -228,7 +238,7 @@ func TestSubscriptionPostgres_ChangePlanDowngradeGuard(t *testing.T) {
 	}
 	oldPolicy := f.activeSubPolicyID(assigned.Subscription.ID, string(CapWindowMonthly))
 
-	// MUTATION that makes this RED: ignore the guard and allow lower caps with AllowDowngrade=false.
+	// 让其变红的变异:忽略守卫,在 AllowDowngrade=false 时仍允许更低额度。
 	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
 		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, NewPlanID: low.ID,
 		AllowDowngrade: false, ActorAdminID: 7, RequestID: "downgrade-denied",
@@ -292,7 +302,7 @@ func TestSubscriptionPostgres_ChangePlanIdempotent(t *testing.T) {
 	}
 	originalExpires := assigned.Subscription.ExpiresAt
 
-	// MUTATION that makes this RED: drop idempotency lookup by request_id, causing double renewal and extra audit.
+	// 让其变红的变异:去掉按 request_id 的幂等查找,导致重复续费和多余的审计。
 	for i := 0; i < 2; i++ {
 		if _, err := svc.ChangePlan(ctx, ChangePlanInput{
 			TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, NewPlanID: premium.ID,
@@ -340,10 +350,10 @@ func TestSubscriptionPostgres_ChangePlanRejectsNonActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign cancelled candidate: %v", err)
 	}
-	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-change"); err != nil {
+	if _, err := svc.CancelSubscription(ctx, f.tenantA, cancelled.Subscription.ID, 7, "cancel-before-change", "admin_token:7"); err != nil {
 		t.Fatalf("cancel candidate: %v", err)
 	}
-	// MUTATION that makes this RED: update cancelled/expired rows without active status guard.
+	// 让其变红的变异:不带 active 状态守卫就更新 cancelled/expired 的行。
 	if _, err := svc.ChangePlan(ctx, ChangePlanInput{
 		TenantID: f.tenantA, SubscriptionID: cancelled.Subscription.ID, NewPlanID: upgrade.ID,
 		ActorAdminID: 7, RequestID: "change-cancelled",
@@ -358,6 +368,7 @@ func TestSubscriptionPostgres_ChangePlanRejectsNonActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assign expired candidate: %v", err)
 	}
+	clk.set(expired.Subscription.ExpiresAt.Add(time.Hour)) // 推进到到期后 (到期路径锁内复查 expires_at<=now)
 	if _, err := store.ExpireSubscription(ctx, lifecycleRecord{
 		TenantID: f.tenantA, SubscriptionID: expired.Subscription.ID, ActorKind: ActorKindSystem, Now: clk.now(),
 	}); err != nil {
@@ -380,7 +391,7 @@ func TestSubscriptionPostgres_AdminBulkAssignPartialFailure(t *testing.T) {
 	plan := createPremiumPlan(t, ctx, svc, f.tenantA, "premium")
 	missingUser := int64(999999999)
 
-	// MUTATION that makes this RED: wrap all assignments in one transaction and roll back the two valid users on one failure.
+	// 让其变红的变异:把所有 assignment 包进一个事务,一旦失败就把两个有效用户也一并回滚。
 	result, err := svc.BulkAssign(ctx, BulkAssignInput{
 		TenantID: f.tenantA, UserIDs: []int64{f.userA, missingUser, f.userA2}, PlanID: plan.ID,
 		ActorAdminID: 7, RequestID: "bulk-partial",
@@ -420,7 +431,7 @@ func TestSubscriptionPostgres_AdminRevokeSubscription(t *testing.T) {
 		t.Fatalf("assign: %v", err)
 	}
 	scope := strconv.FormatInt(f.userA, 10)
-	// MUTATION that makes this RED: skip quota-policy close during revoke, leaving enabled entitlement guardrails active.
+	// 让其变红的变异:撤销时不关闭 quota-policy,留下仍 enabled 的权益护栏处于 active。
 	revoked, err := svc.RevokeSubscription(ctx, RevokeSubscriptionInput{
 		TenantID: f.tenantA, SubscriptionID: assigned.Subscription.ID, ActorAdminID: 7,
 		Reason: "fraud", RequestID: "revoke-1",
@@ -483,7 +494,7 @@ func TestSubscriptionPostgres_AdminUpdatePlan(t *testing.T) {
 	if updated.MonthlyCapUSD == nil || !updated.MonthlyCapUSD.Equal(*dec("25")) {
 		t.Fatalf("monthly cap=%v, want 25", updated.MonthlyCapUSD)
 	}
-	// MUTATION that makes this RED: update the plan row but omit the plan audit insert.
+	// 让其变红的变异:更新 plan 行但漏掉 plan 审计的插入。
 	if n := f.countInt(`SELECT count(*) FROM subscription_plan_audit_events
 		WHERE tenant_id=$1 AND plan_id=$2 AND event_type=$3`,
 		f.tenantA, plan.ID, AuditSubscriptionPlanUpdated); n != 1 {

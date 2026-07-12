@@ -37,6 +37,16 @@ func (p *httpAsyncProvider) Submit(ctx context.Context, req SubmitReq) (string, 
 		return "", err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	// 携带由任务身份派生的稳定幂等键:同一任务被重复提交(例如租约过期后第二个
+	// worker 再次提交)时,上游据此把重复请求去重到同一条上游任务,避免产生无人
+	// 结算的孤儿上游成本。键优先取请求体里已派生好的值,缺失时就地从任务身份派生。
+	idemKey := strings.TrimSpace(req.IdempotencyKey)
+	if idemKey == "" {
+		idemKey = DeriveIdempotencyKey(req.TaskID, req.RequestID)
+	}
+	if idemKey != "" {
+		httpReq.Header.Set("Idempotency-Key", idemKey)
+	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		return "", err

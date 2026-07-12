@@ -97,6 +97,17 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorDeepSeek, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourceOperatorConfig},
+		// 官 key 厂商(2026-07-02 接入,迁移 0169 放行存储):kimi + 国内大厂,纯 api_key 粘贴形状。
+		{Vendor: credentialstore.VendorKimi, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorQwen, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorGLM, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorYi, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorBaichuan, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorDoubao, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorMiniMax, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorErnie, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorHunyuan, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
+		{Vendor: credentialstore.VendorStep, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorMistral, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorGroqCloud, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorTogether, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
@@ -178,8 +189,8 @@ func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 }
 
 func TestXAIOAuthModePlan(t *testing.T) {
-	// Mutation: remove the grok/xai_oauth ModePlan seed or expose it as a paste
-	// helper and this test must go red.
+	// 变异:移除 grok/xai_oauth 的 ModePlan 播种,或把它暴露为 paste
+	// helper,本测试就必须变红。
 	plan, ok := LookupModePlan(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth)
 	if !ok {
 		t.Fatal("DefaultModePlans missing grok/xai_oauth")

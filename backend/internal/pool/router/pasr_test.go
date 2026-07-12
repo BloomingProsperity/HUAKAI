@@ -396,7 +396,7 @@ func TestPASR_Select_RingProvider_HotSwap(t *testing.T) {
 		t.Errorf("ring1 阶段应选 ring1 内账号, 选到 %d", res.AccountID)
 	}
 
-	// hot-swap ring + accounts
+	// 热替换 ring + accounts
 	currentRing = NewAccountRing(accs2, 0xC0FFEE)
 	src.snapshots = snaps2
 
@@ -477,10 +477,10 @@ func TestPASR_DefaultLoadCap(t *testing.T) {
 }
 
 // =====================================================================
-// cache-aware A2: ranking score = locality + headroom
+// 感知缓存的 A2:排序分数 = locality + headroom
 // =====================================================================
 
-// loadOf 在 src 里找 acc 对应 snapshot 设 LoadRate (test helper).
+// loadOf 在 src 里找 acc 对应 snapshot 设 LoadRate(测试辅助函数)。
 func setLoadRate(src *fakeAccountSource, accID int64, rate float64) {
 	for _, s := range src.snapshots {
 		if s.ID == accID {

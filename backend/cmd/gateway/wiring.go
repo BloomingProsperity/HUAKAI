@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
@@ -25,6 +27,7 @@ import (
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/budget"
 	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
@@ -36,6 +39,7 @@ import (
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -44,6 +48,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	hermestoolsdb "github.com/BloomingProsperity/HUAKAI/internal/db/hermestoolsdb"
+	"github.com/BloomingProsperity/HUAKAI/internal/dbmigrate"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/emailsendlimit"
@@ -52,6 +57,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
@@ -68,9 +74,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/paymenthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool/queuewait"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
 	providercursor "github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
 	providergemini "github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
@@ -81,6 +89,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaprobe"
 	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -88,12 +97,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
+	"github.com/BloomingProsperity/HUAKAI/internal/settingscipher"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpresolve"
+	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
@@ -103,58 +115,70 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
+	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
+	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 )
 
-// deps is the live dependency tree handlers receive after run() boots.
+// deps 是 run() 启动后 handler 收到的 live 依赖树。
 type deps struct {
-	cfg                      *Config
-	clientIPResolver         *clientip.Resolver
-	pgPool                   *pgxpool.Pool
-	adminQueries             *admindb.Queries
-	billingQueries           *dbbilling.Queries
-	billingPolicyStore       billing.PolicyStore
-	billingPolicyResolver    *billing.PolicyResolver
-	selector                 pool.Selector
-	channelHealth            *channelhealth.Service
-	modelCooldowns           *ratelimit.ModelCooldownService
-	upstreamRate             ratelimit.Service
-	retryBudget              *retrybudget.Budget
-	claimGate                billing.ClaimGate
-	settler                  billing.Settler
-	quotaReserver            quotaenforce.Reserver
-	replayStore              billing.ReplayStore
-	forwarder                *gateway.StreamForwarder
-	credentialVault          provider.CredentialVault
-	credentialStore          *credentialstore.Store
-	credentialKeys           credentialstore.KeyProvider
-	credentialAcqStore       *credentialacq.PostgresSessionStore
-	credentialExchangers     *credentialacq.ExchangerRegistry
-	credentialScheduler      *credentialworker.Scheduler
-	emailSettings            *mailinfra.PostgresSettingsStore
-	authEmailSender          gatewayhttp.AuthEmailSender
-	emailSendLimit           *emailsendlimit.Limiter
-	userAuth                 *userauth.Service
-	userSessions             *usersession.Service
-	passkeys                 *passkey.Service
-	twoFactor                *twofa.Service
-	loginThrottle            *loginthrottle.Limiter
-	userKeyService           *userkey.Service
-	userAuditStore           *userauditlog.PostgresStore
-	paymentService           *payment.Service
-	checkinService           *checkin.Service
-	paymentProviders         map[string]paymenthttp.ProviderBinding
-	paymentRefundRequests    paymenthttp.RefundRequestRecorder
-	voucherService           *voucher.Service
-	subscriptionService      *subscription.Service
-	subExpiryWorker          *subscription.ExpiryWorker
-	subReminderWorker        *subscription.ReminderWorker
-	notificationSettings     *notify.Service
-	announcementService      *announcement.Service
-	userNoticeService        *usernotice.Service
-	mediaTaskService         *mediatask.Service
-	mediaTaskWorker          *mediatask.Worker
+	cfg                   *Config
+	clientIPResolver      *clientip.Resolver
+	pgPool                *pgxpool.Pool
+	logSink               *logsink.Sink
+	runtimeLogStore       *logsink.PostgresStore
+	adminQueries          *admindb.Queries
+	billingQueries        *dbbilling.Queries
+	billingPolicyStore    billing.PolicyStore
+	billingPolicyResolver *billing.PolicyResolver
+	selector              pool.Selector
+	queueWaiter           *queuewait.Executor
+	channelHealth         *channelhealth.Service
+	authCooldown          *authcooldown.Store
+	modelCooldowns        *ratelimit.ModelCooldownService
+	upstreamRate          ratelimit.Service
+	retryBudget           *retrybudget.Budget
+	claimGate             billing.ClaimGate
+	settler               billing.Settler
+	settlementIntents     settlementintent.Store
+	quotaReserver         quotaenforce.Reserver
+	replayStore           billing.ReplayStore
+	forwarder             *gateway.StreamForwarder
+	credentialVault       provider.CredentialVault
+	credentialStore       *credentialstore.Store
+	credentialKeys        credentialstore.KeyProvider
+	credentialAcqStore    *credentialacq.PostgresSessionStore
+	credentialExchangers  *credentialacq.ExchangerRegistry
+	projectEnricher       projectenrich.Enricher
+	credentialScheduler   *credentialworker.Scheduler
+	emailSettings         *mailinfra.PostgresSettingsStore
+	authEmailSender       gatewayhttp.AuthEmailSender
+	emailSendLimit        *emailsendlimit.Limiter
+	userAuth              *userauth.Service
+	userSessions          *usersession.Service
+	passkeys              *passkey.Service
+	twoFactor             *twofa.Service
+	loginThrottle         *loginthrottle.Limiter
+	userKeyService        *userkey.Service
+	userAuditStore        *userauditlog.PostgresStore
+	paymentService        *payment.Service
+	checkinService        *checkin.Service
+	paymentProviders      map[string]paymenthttp.ProviderBinding
+	paymentRefundRequests paymenthttp.RefundRequestRecorder
+	voucherService        *voucher.Service
+	subscriptionService   *subscription.Service
+	subExpiryWorker       *subscription.ExpiryWorker
+	subReminderWorker     *subscription.ReminderWorker
+	subAutoRenewWorker    *subscription.AutoRenewWorker
+	notificationSettings  *notify.Service
+	announcementService   *announcement.Service
+	userNoticeService     *usernotice.Service
+	mediaTaskService      *mediatask.Service
+	mediaTaskWorker       *mediatask.Worker
+	// mediaTaskStore 既供 worker/service 用,也供孤儿对账 admin 面(orphanreconcilehttp)
+	// 复用其只读列表 + 单一动钱入口 ReconcileOrphan(Manual-First,复用既有 billing settle)。
+	mediaTaskStore           *mediatask.PostgresStore
 	routeAdminService        *routeadmin.Service
 	panelAuthResolver        *panelauth.Resolver
 	invitationService        *communityinvitation.Service
@@ -162,6 +186,7 @@ type deps struct {
 	responseCache            l2cache.Store
 	cacheScope               string
 	dlqService               *legacydlq.Service
+	obsDLQAdminStore         *obsoutbox.PostgresOutbox
 	completionBus            *eventbus.Bus
 	auditRefPolicy           *eventbus.AuditRefPolicy
 	inboundAuth              *auth.APIKeyResolver
@@ -179,9 +204,10 @@ type deps struct {
 	modelRegistry            *registry.PostgresRegistry
 	modelSync                *modelsync.Service
 	routePlanner             *router.DefaultRouter
-	adminAuth                *admin.AdminResolver
+	adminAuth                *adminsessionauth.Resolver
 	adminIssuer              *admin.KeyIssuer
 	adminRevoker             *admin.KeyRevoker
+	adminTokenIssuer         *admin.AdminTokenIssuer
 	billingAuditUpdater      gatewayhttp.AdminBillingSettingsAuditUpdater
 	platformSettings         *platformsettings.Service
 	hermesService            *hermes.Service
@@ -190,53 +216,75 @@ type deps struct {
 	hermesKeyStore           *hermes.KeyStore
 	hermesBootstrapIssuer    *hermes.BootstrapIssuer
 	hermesRunnerSharedSecret []byte
-	// hermesAdminOnly re-gates Hermes to ADMIN/OPERATOR-only auth when true
-	// (the default). When false the legacy end-user APIKeyMiddleware path is
-	// preserved verbatim for clean rollback. Sourced from
-	// HUAKAI_HERMES_ADMIN_ONLY via envBoolDefault(..., true).
+	// hermesAdminOnly 为 true(默认)时,把 Hermes 重新门控为仅
+	// ADMIN/OPERATOR 鉴权。为 false 时,旧的终端用户 APIKeyMiddleware 路径被
+	// 逐字保留以便干净回滚。经 envBoolDefault(..., true) 从
+	// HUAKAI_HERMES_ADMIN_ONLY 取值。
 	hermesAdminOnly      bool
 	metricsHandler       http.Handler
 	otelShutdown         func(context.Context) error
 	usageRetentionWorker *usageretention.Worker
 	sessionCapRegistry   *sessioncap.Registry
 	recentReqRing        *recentreq.Ring
-	// moduleRegistry is the WAVE H2 runtime module-knowledge spine queried by the
-	// admin /admin/v1/modules endpoint and (later) the Hermes ops assistant. It is
-	// off every request hot path; populated near the end of buildGatewayRuntime
-	// once probe-referenced services are wired.
+	// toolPriceSource 提供工具调用附加费价表来源(NAPI-BILLING-01)。按运维开关
+	// HUAKAI_TOOL_SURCHARGE_ENABLED 构建:启用 → 带平台默认价的 platformSource;
+	// 关闭 → nil(退回旧 $0 行为)。接入 chatHandlerDeps 的 ToolPricingTable。
+	toolPriceSource toolpricing.Source
+	// moduleRegistry 是 WAVE H2 运行时的模块知识脊柱,由 admin 的
+	// /admin/v1/modules 端点(以及后续的 Hermes 运维助手)查询。它不在任何
+	// 请求热路径上;在 buildGatewayRuntime 接近结尾、probe 引用的服务都接好后填充。
 	moduleRegistry *moduleregistry.Registry
-	// WAVE H3 read-only ops spine: the diagnostic-tool registry, the
-	// hermes_tool_calls audit inserter, and the module-context source. All are
-	// off the request hot path; mounted under the H1 admin-gated /v1/hermes.
+	// WAVE H3 只读运维脊柱:诊断工具 registry、hermes_tool_calls 审计写入器,
+	// 以及模块上下文 source。三者都不在请求热路径上;挂在 H1 admin 门控的
+	// /v1/hermes 之下。
 	hermesToolRegistry *hermesops.Registry
 	hermesToolCalls    *hermestoolsdb.Queries
 	hermesModuleSource *moduleSource
-	// hermesMutator runs the WAVE H4 mutating-tool atomic-audit + advisory-lock
-	// transaction. Nil when the pool is unset (mutating tools then fail closed).
-	// Built with the S2 concurrency cap + tx deadline orchestrator options.
+	// hermesMutator 运行 WAVE H4 mutating-tool 的原子审计 + advisory-lock 事务。
+	// pool 未设置时为 nil(此时 mutating 工具 fail closed)。
+	// 用 S2 并发上限 + 事务 deadline 的 orchestrator 选项构建。
 	hermesMutator *hermesops.MutateOrchestrator
-	// hermesMutateRateLimiter is the S2 (c) per-operator-token sliding-window
-	// limiter, enforced in the mutate handler. Nil/disabled when the rate knob is 0
-	// (legacy unbounded). Mounted only when the admin-only mutator path is active.
+	// hermesConfirmCache 是 Hermes mutating-tool 的 dry-run→confirm 进程内单次令牌 store 的
+	// **共享单例**。构造一次,注入 hermeshttp 的 operator 确认侧(本 PR);后续 Phase B 会把同一实例
+	// 注入 hermeschat 的 LLM 提议侧,使提议发的 correlation_id 能被 operator 的确认消费(同一进程内)。
+	hermesConfirmCache *hermesconfirm.Cache
+	// hermesMutateRateLimiter 是 S2 (c) 的按 operator-token 滑动窗口限流器,
+	// 在 mutate handler 中强制。rate 旋钮为 0 时为 nil/禁用(旧的无界行为)。
+	// 仅在 admin-only 的 mutator 路径生效时挂载。
 	hermesMutateRateLimiter *mutateguard.RateLimiter
-	// hermesMutatingEnabled is the runtime kill-switch (KNOB A) for ALL Hermes
-	// mutating tools. Default true (HUAKAI_HERMES_MUTATING_ENABLED). When false the
-	// mutating branch of tool-execute is refused (403 hermes_mutating_disabled) and
-	// the mutator is also withheld from the router, while read-only diagnostics +
-	// chat stay live.
+	// hermesMutatingEnabled 是所有 Hermes mutating 工具的运行时总开关(KNOB A)。
+	// 默认 true(HUAKAI_HERMES_MUTATING_ENABLED)。为 false 时,tool-execute 的
+	// mutating 分支被拒绝(403 hermes_mutating_disabled),且 mutator 也不会被挂入
+	// router,而只读诊断 + chat 仍然在线。
 	hermesMutatingEnabled bool
-	// hermesToolLoopEnabled is the runtime kill-switch (KNOB B) for the LLM
-	// conversational tool loop. Default true (HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED).
-	// When false no read-only tool catalog is injected into the chat body and the
-	// runner's /internal/hermes/tool-execute callback is refused (403
-	// llm_toolloop_disabled), while plain /v1/hermes/chat keeps streaming.
+	// hermesToolLoopEnabled 是 LLM 对话式工具循环的运行时总开关(KNOB B)。
+	// 默认 true(HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)。为 false 时,不向 chat
+	// 请求体注入任何只读工具 catalog,且 runner 的 /internal/hermes/tool-execute
+	// 回调被拒绝(403 llm_toolloop_disabled),而普通的 /v1/hermes/chat 仍持续流式。
 	hermesToolLoopEnabled bool
-	// WAVE H3b conversational READ-ONLY tool loop: the shared session-binding store
-	// (operator identity per chat session, keyed by the internal_token request_id)
-	// and the internal tool-execute handler the runner calls back into. The handler
-	// is nil outside the admin-only repositioning or when the chat bridge is unset.
+	// hermesProposeEnabled 是 Phase B 提议 KNOB(默认 FALSE,HUAKAI_HERMES_LLM_PROPOSE_ENABLED)。
+	// 为 false 时,internal handler 在任何 dry-run 解析之前拒绝每个 mode=propose 调用
+	//(403 llm_propose_disabled),故 LLM 无法提议任何 mutating 工具。默认关意味着接入提议路径在
+	// Owner 翻开它之前是零生产行为变。额外受 hermesToolLoopEnabled(KNOB B)门控。
+	hermesProposeEnabled bool
+	// WAVE H3b 对话式只读工具循环:共享的 session-binding store
+	//(每个 chat 会话的 operator 身份,以 internal_token 的 request_id 为键),
+	// 以及 runner 回调进来的 internal tool-execute handler。在 admin-only 重定位
+	// 之外、或 chat bridge 未设置时,该 handler 为 nil。
 	hermesSessionBindings     *hermeschat.SessionBindings
 	hermesInternalToolHandler *hermeschat.InternalToolHandler
+}
+
+func quotaReconcilerEnabledFromEnv() bool {
+	raw, ok := os.LookupEnv("HUAKAI_QUOTA_RECONCILER_ENABLED")
+	if !ok || strings.TrimSpace(raw) == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(raw)
+	if err != nil {
+		return true
+	}
+	return on
 }
 
 type refundReceiptAppender interface {
@@ -276,11 +324,25 @@ type runtimeOptions struct {
 	cacheScope    string
 }
 
+// newClaimGateWithLease 构造 claim gate 并按 env 设置孤儿回收租约窗口。
+// HUAKAI_BILLING_CLAIM_LEASE 默认 billing.DefaultClaimLeaseWindow(30min),
+// 必须 > HUAKAI_STREAM_TOTAL_TIMEOUT(默认 600s)+ 结算/DLQ 余量,否则跑得久的
+// 合法流式请求会被 LeaseSweeper 在传输中误 Abort(亏钱 + 超并发)。留 env 开关可回退。
+func newClaimGateWithLease(pool *pgxpool.Pool) billing.ClaimGate {
+	cg := billing.NewClaimGate(pool)
+	if cg.LeaseWindow > 0 {
+		cg.LeaseWindow = streamDurationEnv("HUAKAI_BILLING_CLAIM_LEASE", billing.DefaultClaimLeaseWindow)
+	}
+	return cg
+}
+
 func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistry) *transport.Factory {
 	factory := transport.NewFactory(mimicryRegistry)
 	if cfg != nil {
 		factory.SidecarSocketPath = cfg.TransportSidecarSocket
 		factory.SidecarFallbackEnabled = cfg.TransportSidecarFallback
+		// nil 时保持 factory 默认(沿用 mimicry env 默认强制 H1);非 nil 时运维显式覆盖。
+		factory.SidecarForceH1 = cfg.TransportSidecarForceH1
 	}
 	return factory
 }
@@ -323,10 +385,9 @@ func (d notifyFiringDeliverer) DeliverFiring(ctx context.Context, tenantID int64
 	})
 }
 
-// providerAccountDownDeliverer maps a credential-worker health transition that
-// raised the operator-alert flag (CRED-293) onto notify.NotifyProviderAccountDown,
-// reusing the same multi-channel broadcast pipeline as alert-firing. Parallel to
-// notifyFiringDeliverer.
+// providerAccountDownDeliverer 把一次触发了 operator-alert 标志(CRED-293)的
+// credential-worker 健康状态切换,映射到 notify.NotifyProviderAccountDown,
+// 复用与告警触发相同的多渠道广播管线。与 notifyFiringDeliverer 平行。
 type providerAccountDownDeliverer struct {
 	notifier *notify.Notifier
 }
@@ -381,18 +442,29 @@ const (
 	geminiPublicCLIOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
 	adminOAuthCallbackAllowlistEnv      = "HUAKAI_ADMIN_OAUTH_CALLBACK_ALLOWLIST"
 	userOAuthRedirectAllowlistEnv       = "HUAKAI_USER_OAUTH_REDIRECT_ALLOWLIST"
-	// trustedProxyCIDRsEnv lists the reverse-proxy / CDN CIDRs whose X-Forwarded-For
-	// is trusted for client-IP extraction. Empty = direct exposure, RemoteAddr only.
+	// trustedProxyCIDRsEnv 列出反向代理 / CDN 的 CIDR,这些来源的 X-Forwarded-For
+	// 在提取 client-IP 时被信任。为空 = 直连暴露,只用 RemoteAddr。
 	trustedProxyCIDRsEnv = "HUAKAI_TRUSTED_PROXY_CIDRS"
-	// Refresh-storm endpoint/global token budgets. Each scope needs BOTH
-	// a positive rate (tokens/sec) and a burst >= 1 to engage; all unset = account
-	// scope only. The account scope is always enforced (DB-durable), independent of these.
+	// Refresh-storm 的端点/全局令牌预算。每个 scope 都需要同时有一个正的 rate
+	//(令牌/秒)和一个 burst >= 1 才会生效;全部未设置 = 仅账号 scope。账号 scope
+	// 始终强制(DB 持久化),与这些 env 无关。
 	stormEndpointRateEnv  = "HUAKAI_STORM_ENDPOINT_RATE"
 	stormEndpointBurstEnv = "HUAKAI_STORM_ENDPOINT_BURST"
 	stormGlobalRateEnv    = "HUAKAI_STORM_GLOBAL_RATE"
 	stormGlobalBurstEnv   = "HUAKAI_STORM_GLOBAL_BURST"
 	tenantRetryBudgetEnv  = "HUAKAI_TENANT_RETRY_BUDGET"
 	tenantRetryWindowEnv  = "HUAKAI_TENANT_RETRY_WINDOW"
+	// CRED-288 凭据轮换扫描:credentialworker 每个 tick 在 refresh pass 之后
+	// 把签发 (created_at) 超过 maxAge 的 active 凭据置为 needs_rotation。
+	// 默认 OFF(maxAge 留空 => 0 => 关),因为 needs_rotation 不是 serving 状态
+	// (resolveActiveQuery / LoadForRefresh 都排除它),且没有自动恢复路径——
+	// CRED-288c 恢复闭环落地后默认【开启】(留空=90 天窗口):超期凭据不再被粗暴下线
+	// ——可刷新凭据保持在线自愈、静态 key 仅告警,故默认开不造成可用性/计费回退。
+	// 取值:Go duration("2160h"=90 天)或裸秒数;显式设 0 关闭;留空=默认 90 天。
+	credentialRotationMaxAgeEnv = "HUAKAI_CREDENTIAL_ROTATION_MAX_AGE"
+	// 每个 tick 最多置标的行数上限(<=0 => 走 store 默认 100),用于把"超期积压"
+	// 分摊到多个 tick、避免一次性把大量账号打入 needs_rotation。
+	credentialRotationLimitEnv = "HUAKAI_CREDENTIAL_ROTATION_LIMIT"
 )
 
 func buildPaymentProviderBindings(cfg *Config) (map[string]paymenthttp.ProviderBinding, error) {
@@ -541,10 +613,10 @@ func parseTenantRetryBudgetWindow(name string, def time.Duration) (time.Duration
 	return window, nil
 }
 
-// loadStormScopeConfigFromEnv parses the optional endpoint/global refresh-storm
-// budgets. A scope half-configured (only rate or only burst, or burst<1)
-// is a boot error — fail loud rather than silently leaving the throttle off and
-// letting a cross-account stampede through. All four unset => account scope only.
+// loadStormScopeConfigFromEnv 解析可选的端点/全局 refresh-storm 预算。
+// 半配置的 scope(只设了 rate 或只设了 burst,或 burst<1)是一个启动错误——
+// 宁可 fail loud,也不能默默让限流关着、放任跨账号的踩踏冲过去。
+// 四个全未设置 => 仅账号 scope。
 func loadStormScopeConfigFromEnv() (auth.StormScopeConfig, error) {
 	endpointRate, err := parseStormFloatEnv(stormEndpointRateEnv)
 	if err != nil {
@@ -586,9 +658,9 @@ func parseStormFloatEnv(name string) (float64, error) {
 		return 0, fmt.Errorf("%s: invalid float %q: %w", name, raw, err)
 	}
 	if math.IsInf(v, 0) || math.IsNaN(v) {
-		// ParseFloat accepts "Inf"/"NaN" without error; an infinite budget would
-		// boot an effectively unbounded throttle and a NaN would silently disable
-		// the scope — both defeat the fail-loud contract, so reject them here.
+		// ParseFloat 会无错误地接受 "Inf"/"NaN";无穷大的预算会启动一个
+		// 实际上无界的限流,而 NaN 会默默禁用该 scope——两者都违背 fail-loud
+		// 契约,所以在这里拒绝它们。
 		return 0, fmt.Errorf("%s: must be a finite number, got %q", name, raw)
 	}
 	if v < 0 {
@@ -597,22 +669,74 @@ func parseStormFloatEnv(name string) (float64, error) {
 	return v, nil
 }
 
-// validateStormScopePair rejects a half-configured scope so a typo (rate set,
-// burst forgotten) cannot silently disable the throttle.
+// validateStormScopePair 拒绝半配置的 scope,这样一个笔误(设了 rate、
+// 忘了 burst)就不能默默禁用限流。
 func validateStormScopePair(scope string, rate, burst float64) error {
 	switch {
 	case rate == 0 && burst == 0:
-		return nil // scope intentionally off
+		return nil // scope 刻意关闭
 	case rate > 0 && burst >= 1:
-		return nil // scope fully configured
+		return nil // scope 完整配置
 	default:
 		return fmt.Errorf("storm %s scope half-configured: rate=%v burst=%v (need both rate>0 and burst>=1, or both unset)", scope, rate, burst)
 	}
 }
 
-// loadClientIPResolverFromEnv builds the trusted-proxy-aware client IP resolver from
-// trustedProxyCIDRsEnv (comma-separated CIDR/IP). A malformed entry is a hard boot error
-// (fail loud) rather than silently degrading the burst-limit / anomaly / voucher source.
+// credentialRotationScanConfig 是 CRED-288 凭据轮换扫描的运维配置。
+// MaxAge<=0 表示关闭(默认);>0 才启用扫描。
+type credentialRotationScanConfig struct {
+	MaxAge time.Duration
+	Limit  int
+}
+
+// Enabled 报告扫描是否被运维显式打开(必须配置一个正的 maxAge)。
+func (c credentialRotationScanConfig) Enabled() bool { return c.MaxAge > 0 }
+
+// defaultCredentialRotationMaxAge 是 CRED-288 凭据轮换扫描的默认 maxAge(90 天)。
+// 之所以默认【开启】而非 opt-in:恢复闭环(CRED-288c)落地后,扫描对超期凭据不再
+// 粗暴下线——可刷新(OAuth)凭据保持 active 在线、只被推进既有刷新流自愈,静态 key
+// 仅告警不下线,故"默认开"不会再造成可用性/计费回退。配合 DueForRotation 按
+// COALESCE(last_refresh_at, created_at) 判超期(幂等、刷过即掉出),默认开是安全的。
+// 运维可显式设 HUAKAI_CREDENTIAL_ROTATION_MAX_AGE=0 关闭,或设其它正 duration 调节窗口。
+const defaultCredentialRotationMaxAge = 90 * 24 * time.Hour
+
+// loadCredentialRotationScanFromEnv 解析 CRED-288 凭据轮换扫描的开关。
+// HUAKAI_CREDENTIAL_ROTATION_MAX_AGE 留空 => 默认 90 天(启用);显式设 0 => 关闭;
+// 配其它正 duration(如 "2160h")=> 自定义窗口。malformed => fail-loud。
+// HUAKAI_CREDENTIAL_ROTATION_LIMIT 控制每个 tick 处理上限,<=0 => 走 store 默认。
+func loadCredentialRotationScanFromEnv() (credentialRotationScanConfig, error) {
+	maxAge, err := envDurationDisable0Default(credentialRotationMaxAgeEnv, defaultCredentialRotationMaxAge)
+	if err != nil {
+		return credentialRotationScanConfig{}, err
+	}
+	limit, err := envIntDisable0Default(credentialRotationLimitEnv, 0)
+	if err != nil {
+		return credentialRotationScanConfig{}, err
+	}
+	return credentialRotationScanConfig{MaxAge: maxAge, Limit: limit}, nil
+}
+
+// buildRotationScanOptions 把轮换扫描配置转成 scheduler option。disabled(MaxAge<=0)
+// 时返回空切片——即不注入 WithRotationScan,保持现有行为不翻转;enabled 时返回恰好
+// 一个 WithRotationScan,装上传入的 store 与 maxAge/limit。把这条 gating 决策抽成独立
+// 函数,既给生产 wiring 用,也让测试能直接断言"死开关是否被救活"。
+func buildRotationScanOptions(cfg credentialRotationScanConfig, store credentialworker.RotationStore) []credentialworker.Option {
+	if !cfg.Enabled() {
+		return nil
+	}
+	return []credentialworker.Option{
+		credentialworker.WithRotationScan(
+			store,
+			cfg.MaxAge,
+			cfg.Limit,
+			nil, // alert 可选;运维通过 needs_rotation 状态 + 既有 health 告警感知
+		),
+	}
+}
+
+// loadClientIPResolverFromEnv 从 trustedProxyCIDRsEnv(逗号分隔的 CIDR/IP)
+// 构建感知可信代理的 client IP resolver。格式错误的条目是一个硬性启动错误
+// (fail loud),而非默默降级 burst-limit / anomaly / voucher 的来源。
 func loadClientIPResolverFromEnv() (*clientip.Resolver, error) {
 	return clientip.NewResolver(parseCSVAllowlistEnv(trustedProxyCIDRsEnv))
 }
@@ -682,12 +806,62 @@ func buildVendorRefresherOptions(bindings []vendorRefresherBinding) []credential
 	return opts
 }
 
-func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger) (*gatewayRuntime, error) {
+// buildAuthCooldownStore 按 HUAKAI_AUTH_COOLDOWN_ENABLED 决定是否接线 auth 降级车道(缺口① S1)。
+// 默认关(未设/false)→ 返回 nil → 车道未接线,auth 失败对选号仍是 no-op(逐字节保持既有行为);
+// 翻默认开 = 默认行为翻转(§2 硬门 A1,Owner-gated):auth 失败后临时把坏号移出选号、短 TTL 自愈。
+// 退避参数(base=30s/cap=30min/硬禁 strike K=3)用 Config 默认;进一步调参为 Owner-gated 后续项(F2)。
+func buildAuthCooldownStore() *authcooldown.Store {
+	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_AUTH_COOLDOWN_ENABLED")); !on {
+		return nil
+	}
+	return authcooldown.NewStore(authcooldown.Config{})
+}
+
+func buildSettlementIntentStore(queries *dbbilling.Queries, enabled bool) settlementintent.Store {
+	return settlementintent.NewConfiguredPostgresStore(queries, enabled)
+}
+
+func buildSettlementIntentSweeper(queries *dbbilling.Queries, enabled bool) *settlementintent.SettlementIntentSweeper {
+	if !enabled {
+		return nil
+	}
+	store := settlementintent.NewPostgresStore(queries)
+	return settlementintent.NewSettlementIntentSweeper(
+		store,
+		settlementintent.NewPostgresClaimAuthority(queries),
+		settlementintent.SweeperOptions{},
+	)
+}
+
+func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger, sink *logsink.Sink) (*gatewayRuntime, error) {
 	pgPool, err := db.Open(ctx, dbPoolConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	rt := &gatewayRuntime{pgPool: pgPool}
+	// DB 就绪即启动运行日志落库 worker;进程更早的 warn+ 已积压在 sink 队列,启动后一并刷出。
+	// 刻意不用信号 ctx:它在 HTTP drain(最长 60s)开始前就取消,期间产生的 warn/error 会
+	// 进入无人消费的队列丢失。sink 用独立生命周期,由 runtime.close() 在各 worker 停完、
+	// 关 DB 之前显式停止并等 drain。sink 为 nil(测试直构 runtime)时跳过。
+	runtimeLogStore := logsink.NewPostgresStore(pgPool)
+	var logSinkStop func()
+	if sink != nil {
+		sinkCtx, sinkCancel := context.WithCancel(context.Background())
+		sink.Start(sinkCtx, runtimeLogStore)
+		logSinkStop = func() {
+			sinkCancel()
+			sink.WaitDone(3 * time.Second)
+		}
+	}
+	// 可选进程内自迁移(HUAKAI_AUTO_MIGRATE=true,默认关):在任何代码用表之前把 schema 升到最新,
+	// 供裸二进制单实例部署省去"先手动跑迁移再起 gateway"那一步。默认关时迁移仍外置(compose
+	// 的 migrate one-shot 受控跑、多副本防竞态);两路共用同一张 schema_migrations、互相幂等不撞表。
+	if autoMigrateEnabled() {
+		logger.Info("HUAKAI_AUTO_MIGRATE=true:启动时进程内自迁移到最新")
+		if err := dbmigrate.Up(sqlmigrations.Files, cfg.DatabaseURL); err != nil {
+			return nil, fmt.Errorf("auto-migrate: %w", err)
+		}
+	}
+	rt := &gatewayRuntime{pgPool: pgPool, logSinkStop: logSinkStop}
 	ready := false
 	defer func() {
 		if !ready {
@@ -698,11 +872,28 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	adminQueries := admindb.New(pgPool)
 	authQueries := dbauth.New(pgPool)
 	billingQueries := dbbilling.New(pgPool)
-	platformSettingsService := platformsettings.NewService(platformsettings.NewPostgresStore(pgPool), nil)
+	// 提前加载凭据加密主密钥,给 secret 平台设置做 at-rest 加密(secret settings 复用同一把主密钥)。
+	credentialKeys, err := loadCredentialKeyProvider()
+	if err != nil {
+		return nil, fmt.Errorf("load credential encryption key: %w", err)
+	}
+	settingsOpts := []platformsettings.Option{}
+	if settingsSecretCipher := settingscipher.New(credentialstore.NewCipher(credentialKeys)); settingsSecretCipher != nil {
+		settingsOpts = append(settingsOpts, platformsettings.WithSecretCipher(settingsSecretCipher))
+	}
+	platformSettingsService := platformsettings.NewService(platformsettings.NewPostgresStore(pgPool), nil, settingsOpts...)
 	if err := platformSettingsService.RefreshAll(ctx); err != nil {
 		logger.Warn("platform settings prewarm failed", zap.Error(err))
 	}
+	// captcha secret 现为 settings-first(后台设置 captcha_secret 优先、空回退 env),
+	// boot 期日志/生产门也据此解析,避免密钥已在管理台配置却误报"未配置"。
+	// platformSettingsService 此处必非 nil(刚构造),可安全 Get。
 	captchaSecret := captchaTurnstileSecret()
+	if s, err := platformSettingsService.Get(ctx, platformsettings.KeyCaptchaSecret); err == nil {
+		if v := strings.TrimSpace(s.Value); v != "" {
+			captchaSecret = v
+		}
+	}
 	if err := validateProductionCaptchaConfig(ctx, platformSettingsService, captchaSecret); err != nil {
 		return nil, err
 	}
@@ -733,7 +924,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
-	// Runtime kill-switches (both default ENABLED => zero behavior change unset).
+	// 运行时总开关(两者默认 ENABLED => 不设置时零行为变更)。
 	hermesMutatingEnabled, err := hermesBoolEnabledDefaultTrue(hermesMutatingEnabledEnv)
 	if err != nil {
 		return nil, err
@@ -742,6 +933,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
+	// Phase B 提议 KNOB(默认禁用 => 未设置即零行为变:在 Owner 显式打开它之前,LLM 无法提议任何
+	// mutating 工具)。
+	hermesProposeEnabled, err := hermesBoolEnabledDefaultFalse(hermesLLMProposeEnabledEnv)
+	if err != nil {
+		return nil, err
+	}
+	hermesProposeEnabled = effectiveHermesProposeEnabled(hermesMutatingEnabled, hermesProposeEnabled, logger)
 	if !hermesMutatingEnabled {
 		logger.Warn("Hermes MUTATING tools disabled at runtime — account_pause/account_resume/dlq_replay/renew_trigger are refused; read-only diagnostics + chat remain live",
 			zap.String("knob", hermesMutatingEnabledEnv+"=false"))
@@ -750,9 +948,15 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		logger.Warn("Hermes LLM conversational tool loop disabled at runtime — no tool catalog is injected and the internal tool-execute callback is refused; plain chat keeps streaming",
 			zap.String("knob", hermesLLMToolLoopEnabledEnv+"=false"))
 	}
-	// S2: bound the Hermes MUTATING path (concurrency cap + tx deadline +
-	// per-operator-token rate limit). Defaults are conservative; every knob carries
-	// a disable sentinel so an unset deployment is byte-for-byte legacy behavior.
+	if hermesProposeEnabled {
+		// 默认关的特权面:LLM-提议路径被激活时大声记日志,使激活可审计。LLM 现在可以提议可逆的
+		// B 级 mutating 工具(仅 dry-run);执行仍需一个独立的 OPERATOR 确认——提议本身从不 mutate。
+		logger.Warn("Hermes LLM-propose path ENABLED at runtime — the assistant may now propose Proposable mutating tools (dry-run + operator confirm required to execute)",
+			zap.String("knob", hermesLLMProposeEnabledEnv+"=true"))
+	}
+	// S2:给 Hermes 的 mutating 路径设界(并发上限 + 事务 deadline +
+	// 按 operator-token 限流)。默认值偏保守;每个旋钮都带一个禁用哨兵值,
+	// 这样一个未设置的部署就是逐字节等同于旧行为。
 	hermesMutateGuard, err := hermesMutateGuardConfigFromEnv()
 	if err != nil {
 		return nil, err
@@ -771,17 +975,24 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.outboxRuntime = opts.outboxRuntime
 	auditRefPolicy := buildAuditRefPolicy(opts.eventBus)
 
-	credentialKeys, err := loadCredentialKeyProvider()
-	if err != nil {
-		return nil, fmt.Errorf("load credential encryption key: %w", err)
-	}
+	// credentialKeys 已在前面(platformSettings 构造处)加载,此处直接复用。
 	if hermesService != nil {
 		hermesService.WithMessageContentKeys(credentialKeys)
 	}
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
+	credentialVault := provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore)
+	accountProxyResolver := provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys)
+	antigravityProjectResolver := &providerantigravity.ProjectResolver{}
+	credentialProjectEnricher := projectenrich.New(antigravityProjectResolver)
+	// 启动期凭证密钥自检(fail-closed):用当前 KEK 解一条既有 active 凭证,解不开则拒绝启动,
+	// 避免 operator 轮换密钥后在运行时全 relay 静默解密瘫痪而无启动信号。详见 VerifyKeySelfCheck。
+	if err := credentialStore.VerifyKeySelfCheck(ctx); err != nil {
+		return nil, err
+	}
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
 	credentialExchangers := credentialacq.DefaultExchangerRegistry()
-	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicoauth.DefaultHTTPClient()); err != nil {
+	anthropicOAuthHTTPClient := anthropicoauth.DefaultHTTPClient()
+	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicOAuthHTTPClient); err != nil {
 		return nil, fmt.Errorf("register anthropic claude_ai_oauth exchanger with mimicry: %w", err)
 	}
 	geminiOAuthClientSecret, err := loadGeminiPublicCLIOAuthClientSecretFromEnv()
@@ -824,17 +1035,40 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	emailSettingsStore := mailinfra.NewPostgresSettingsStore(pgPool)
 	if releaseModeProduction() {
-		if err := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys); err != nil {
+		// production 邮箱门:默认软化为不拦启动(对齐成熟中转站的请求时惰性做法),未配齐 SMTP/邮箱验证的
+		// 租户其验证邮件功能在请求时惰性失败;设 HUAKAI_REQUIRE_EMAIL_GATE=true 恢复"必须配齐才放行"的旧行为。
+		gateErr := mailinfra.ValidateProductionReleaseGate(ctx, emailSettingsStore, credentialKeys)
+		if err := emailGateStartupError(gateErr, requireEmailReleaseGate()); err != nil {
 			return nil, fmt.Errorf("production email release gate: %w", err)
 		}
+		if gateErr != nil {
+			logger.Warn("production 邮箱门未满足:未配齐 SMTP/邮箱验证的租户,其验证邮件相关功能将在请求时惰性返回错误"+
+				"(注册按\"验证关闭\"放行,用户直接 active);如需恢复\"必须配齐才放行\"的旧行为,设 HUAKAI_REQUIRE_EMAIL_GATE=true",
+				zap.Error(gateErr))
+		}
 	}
-	authEmailSender, err := buildAuthEmailSender(cfg, emailSettingsStore, credentialKeys, logger, outboxStore)
+	// 前端 base URL 解析器:从 platformsettings 读 site_frontend_base_url(运营在设置里配),
+	// 使鉴权邮件能拼出完整可点链接;未配则返回空,邮件回退裸 token(前端粘贴框兜底)。
+	frontendBaseURLResolver := func(ctx context.Context) string {
+		setting, err := platformSettingsService.Get(ctx, platformsettings.KeySiteFrontendBaseURL)
+		if err != nil {
+			return ""
+		}
+		return setting.Value
+	}
+	authEmailSender, err := buildAuthEmailSender(cfg, emailSettingsStore, credentialKeys, logger, outboxStore, frontendBaseURLResolver)
 	if err != nil {
 		return nil, fmt.Errorf("build auth email sender: %w", err)
 	}
 	userAuthService, userSessionService, err := buildUserServices(pgPool, credentialKeys, emailSettingsStore, logger)
 	if err != nil {
 		return nil, err
+	}
+	// 注入 OAuth provider 请求期解析器(settings-first 覆盖 env)。必须用 cipher-enabled 的
+	// platformSettingsService(line ~815 带 WithSecretCipher):oauth_providers_secrets 在库里是密文,
+	// 读时须解密成明文 client_secret;buildUserServices 内部那个是 cipher-less 的,不能用于读 secret。
+	if userAuthService.OAuth != nil {
+		userAuthService.OAuth.SetProviderResolver(oauthProviderSettingsResolver(platformSettingsService, logger))
 	}
 	twoFactorService := twofa.NewService(twofa.NewPostgresStore(pgPool), credentialKeys)
 	passkeyService := passkey.NewService(
@@ -855,11 +1089,26 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealthStoreOptions = append(channelHealthStoreOptions, channelhealth.WithProductionRequired())
 	}
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner, channelHealthStoreOptions...)
-	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelhealth.WithAlertOutbox(outboxStore))
-	// SUB2-EGRESS-03: construct window cost cache before selector so the gate
-	// can reference it on startup. Worker is started after selector is ready.
+	// auth 降级车道(缺口① S1):默认关(HUAKAI_AUTH_COOLDOWN_ENABLED 未设=nil→车道未接线,行为逐字节不变)。
+	// 翻默认开=默认行为翻转(§2 硬门,Owner-gated A1):auth 失败从对选号 no-op 变临时排除坏号。
+	authCooldownStore := buildAuthCooldownStore()
+	// 车道绑定的分类规则(R-024/R-025 + xai→grok 归一化)与 knob 同源生效:它们改变 grok/xai
+	// 400 坏 key 的客户端契约(400 透传→401 换号)与健康记账,knob 关时必须保持基底行为。
+	gateway.SetAuthLaneRulesEnabled(authCooldownStore != nil)
+	// 渠道健康状态转换的 stdout 结构化运维日志走进程默认 slog 实例(与 billing lease sweeper /
+	// quota reconciler 同源;片D slog 门面合并后自动升级 JSON)。显式注入 = 等价 nil 兜底,零行为变化。
+	channelHealthOptions := []channelhealth.ServiceOption{
+		channelhealth.WithAlertOutbox(outboxStore),
+		channelhealth.WithLogger(slog.Default()),
+	}
+	if authCooldownStore != nil {
+		channelHealthOptions = append(channelHealthOptions, channelhealth.WithAuthCooldownLane(authCooldownStore))
+	}
+	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelHealthOptions...)
+	// SUB2-EGRESS-03:在 selector 之前构建 window cost cache,这样 gate
+	// 在启动时就能引用它。worker 在 selector 就绪后再启动。
 	windowCostCache := windowcost.NewCache()
-	// SUB2-EGRESS-02: per-account max concurrent sessions cap registry.
+	// SUB2-EGRESS-02:按账号的最大并发会话封顶 registry。
 	sessionCapRegistry := sessioncap.NewRegistry(0)
 	recentReqRing := recentreq.NewRing()
 	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, sessionCapRegistry, logger)
@@ -868,7 +1117,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	rt.selectorCleanup = selectorCleanup
 
-	dlqStore, dlqService, dlqWorker, replicaTarget, closeReplica := buildDLQRuntime(pgPool, opts.obsDLQ, auditLedger)
+	dlqStore, dlqService, dlqWorker, replicaTarget, closeReplica := buildDLQRuntime(pgPool, opts.obsDLQ, auditLedger, outboxStore)
 	rt.closeReplica = closeReplica
 	outboxWorker := buildOutboxWorker(outboxStore, opts.outboxRuntime, emailSettingsStore, credentialKeys, channelHealthStore)
 	notificationStore := notify.NewPostgresStore(pgPool, credentialKeys)
@@ -885,10 +1134,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	})
 	paymentStore := payment.NewPostgresStore(pgPool)
 	paymentService := payment.NewService(paymentStore, paymentServiceOptions(cfg)...)
-	// NAPI-DIST-SIGNUP-03 + INVITEE-04: wire the registration-time wallet-credit
-	// issuers (default-OFF; amounts read from env, 0 => IssueSignupBonus/Reward
-	// short-circuit before any insert). userauth swallows the returned error so a
-	// credit failure never rolls back the registration.
+	// NAPI-DIST-SIGNUP-03 + INVITEE-04:接线注册时的钱包入账签发器
+	//(默认关闭;金额从 env 读取,为 0 => IssueSignupBonus/Reward 在任何 insert
+	// 之前短路)。userauth 会吞掉返回的 error,因此一次入账失败绝不会回滚注册。
 	signupInviteeCfg := payment.SignupInviteeConfigFromEnv()
 	userAuthService.SignupBonusFn = func(ctx context.Context, tenantID, userID int64) error {
 		_, err := paymentService.IssueSignupBonus(ctx, signupInviteeCfg, tenantID, userID)
@@ -898,8 +1146,15 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		_, err := paymentService.IssueInviteeReward(ctx, signupInviteeCfg, tenantID, userID)
 		return err
 	}
-	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, completionBus, err := buildSettlementServices(
-		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, opts.eventBus, auditRefPolicy, logger, paymentService, platformSettingsService,
+	// 退款配额冲减器:启用配额强制时,退款落库后把退款的实际金额从配额 settled_value 负向冲减
+	// (修补"退款只退钱包、配额计数没退→用户提前撞成本上限")。quota.Service 无状态,此处独立实例
+	// 与配额强制层用同一套 quota 表,功能等价;未启用配额强制则传 nil,退款不触发冲减(零行为变化)。
+	var refundQuotaReverser auditreceipt.QuotaReverser
+	if cfg != nil && cfg.QuotaEnforce {
+		refundQuotaReverser = quotaCostReverser{svc: quota.NewService(quota.NewPostgresStore(pgPool))}
+	}
+	settler, receiptStore, receiptFormatter, refundQueue, rateTableSource, err := buildSettlementServices(
+		ctx, pgPool, auditSigner, auditLedger, dlqStore, dlqService, replicaTarget, logger, paymentService, platformSettingsService, refundQuotaReverser,
 	)
 	if err != nil {
 		return nil, err
@@ -912,23 +1167,26 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	settler = notify.NewSettler(settler, notifier, notify.WithSettlerDeliveryErrorRecorder(func(err error) {
 		logger.Warn("low balance notification delivery failed", zap.Error(err))
 	}))
+	// completion 事件总线在 settler 全装饰(quota/budget/notify)完成后再构造,使异步成功结算走完整的
+	// billing→quota→budget→notify 结算链——否则总线持中间层 settler,成功请求漏释放配额预留/并发槽与
+	// 预算预留(默认 eventbus+quota 均开即触发)。abort 走同步装饰后 settler 本就正确,唯成功异步路径漏。
+	completionBus, err := buildCompletionEventBus(opts.eventBus, settler, pgPool, dlqService, auditRefPolicy, logger)
+	if err != nil {
+		return nil, fmt.Errorf("build completion eventbus: %w", err)
+	}
 
 	// P2/P3 post-delivery settle 恢复:把 settler 注入 settlementrecovery
 	// handler,注册到 dlqService 让 worker 拿到 post_delivery_settlement
 	// 行后重调 Settler.Settle。三证 proof 用 PG 直接查 claim/usage/billing_events。
 	settlementProof := settlementrecovery.NewPostgresCommittedProof(pgPool)
-	settlementHandler := &settlementrecovery.Handler{
-		Settler: settler,
-		Proof:   settlementProof,
-	}
+	settlementHandler := newSettlementRecoveryHandler(settler, settlementProof, auditRefPolicy)
 	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
-	// WAVE H3 read-only diagnostic-tool spine + its hermes_tool_calls audit
-	// inserter, built HERE (before the chat bridge) so the WAVE H3b conversational
-	// tool loop can share the registry (catalog provider) + the session-binding
-	// store with the bridge AND the internal tool-execute handler. The mutating
-	// orchestrator is also returned for the H4 path. Each tool wraps its EXISTING
-	// read function — no new query logic. Held in locals here (the deps struct is
-	// built later) and assigned into d below.
+	// WAVE H3 只读诊断工具脊柱 + 它的 hermes_tool_calls 审计写入器,在这里构建
+	//(早于 chat bridge),这样 WAVE H3b 对话式工具循环就能把 registry(catalog
+	// provider)+ session-binding store 与 bridge 以及 internal tool-execute handler
+	// 共享。mutating orchestrator 也一并返回,供 H4 路径用。每个工具都包裹它已有的
+	// 读函数——没有新的查询逻辑。这里先暂存在局部变量中(deps 结构体稍后才构建),
+	// 然后在下方赋给 d。
 	hermesToolRegistry, hermesToolCalls, hermesMutator := buildHermesToolRegistry(hermesToolDeps{
 		pool:           pgPool,
 		adminQueries:   adminQueries,
@@ -937,16 +1195,20 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealth:  channelHealthService,
 		dlqStore:       dlqStore,
 		dlqService:     dlqService,
+		// model_resolve_diagnose 的只读解析依赖。此 hermes 工具注册早于下方 1150 行的 canonical
+		// modelRegistry 构造(它给 model registry admin/router 用),故这里就地构造一份专用实例:
+		// PostgresRegistry 是 pgPool 的无状态包装(noopCache),ResolveModel 每次自开只读 TX,
+		// 两份实例语义等价且彼此隔离,避免为接线而重排这个 god-file 的 100+ 行依赖顺序。
+		modelRegistry: registry.NewPostgresRegistry(pgPool, nil),
 	}, hermesMutateGuard.orchestratorOptions()...)
-	// S2 (c): the per-operator-token rate limiter, enforced in the mutate handler.
+	// S2 (c):按 operator-token 的限流器,在 mutate handler 中强制。
 	hermesMutateRateLimiter := hermesMutateGuard.newRateLimiter()
-	// WAVE H3b: the in-process session-binding store shared by the bridge (writes
-	// the operator binding at chat start) and the internal tool handler (reads it
-	// to authorize each conversational tool call).
+	// WAVE H3b:进程内的 session-binding store,由 bridge(在 chat 开始时写入
+	// operator 绑定)和 internal tool handler(读取它以授权每次对话式工具调用)共享。
 	hermesSessionBindings := hermeschat.NewSessionBindings(nil)
 	var hermesChatBridge *hermeschat.Bridge
 	if hermesRunner != nil {
-		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesSessionBindings, hermesToolRegistry, hermesToolLoopEnabled)
+		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesSessionBindings, hermesToolRegistry, hermesToolLoopEnabled, hermesProposeEnabled)
 		if err != nil {
 			return nil, err
 		}
@@ -970,8 +1232,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, err
 	}
-	// retention_days=0 is the default safe value: keep usage analytics history
-	// permanently unless an operator explicitly configures a positive TTL.
+	// retention_days=0 是默认的安全值:除非运维显式配置一个正的 TTL,
+	// 否则永久保留用量分析历史。
 	if usageRetentionDays > 0 {
 		usageRetentionWorker := usageretention.NewUsageRetentionWorker(usageretention.Config{
 			Store:         usageretention.NewPostgresUsagePurgeStore(billingQueries),
@@ -989,6 +1251,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
 	leaseSweeper.Start(ctx)
 	rt.leaseSweepStop = leaseSweeper.Stop
+	// sweeper 与正向意图共用默认关闭的总开关：关闭时不构造、不启动，也不扫描数据库。
+	// 多副本无需选主来保证正确性，终态写由意图行的 version 与悬挂状态守卫裁决单胜者。
+	settlementIntentSweeper := buildSettlementIntentSweeper(billingQueries, cfg.SettlementIntentEnabled)
+	if settlementIntentSweeper != nil {
+		settlementIntentSweeper.Start(ctx)
+		rt.settlementIntentSweepStop = settlementIntentSweeper.Stop
+	}
 	pendingReconciler := billing.NewPendingReconciliationWorker(
 		billing.NewPostgresPendingReconciliationFinalizer(pgPool),
 		0,
@@ -997,6 +1266,17 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	)
 	pendingReconciler.Start(ctx)
 	rt.pendingReconcileStop = pendingReconciler.Stop
+
+	// quota 补偿器 worker:每轮两段——①重放结算/释放失败后入队的补偿 job;②清扫 lease 已过期、
+	// billing claim 已终态、但补偿 job 从未入队(进程死于 billing 终态与 quota 补偿之间的崩溃窗口)
+	// 的孤儿预留,按 claim 终态定向 Settle/Release。两段缺一,预留都会永久卡 reserved 冻结窗口
+	// headroom(手动/累计窗无滚动自愈)。默认启动;显式 false/0 才跳过。
+	if quotaReconcilerEnabledFromEnv() {
+		quotaReconciler := quota.NewReconciler(nil, quota.NewPostgresStore(pgPool), quota.ReconcilerOptions{})
+		quotaWorker := quota.NewReconciliationWorker(quotaReconciler, 0)
+		quotaWorker.Start(ctx)
+		rt.quotaReconcileStop = quotaWorker.Stop
+	}
 
 	// PROXY-04: 代理池健康探测 worker, 带迟滞维护 status (active<->dead)。无此
 	// worker 时一个 flap 的代理会被永久 dead, 绑定它的账号 fail-closed 永不自愈;
@@ -1020,7 +1300,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	)
 	tlsProfileHealthWorker.Start(ctx)
 
-	// SUB2-EGRESS-03: start the per-account 5h window spend cap aggregator.
+	// SUB2-EGRESS-03:启动按账号的 5 小时窗口消费封顶聚合器。
 	windowCostWorker := windowcost.NewWorker(
 		windowcost.NewPostgresLister(pgPool),
 		windowcost.NewPostgresAggregator(pgPool),
@@ -1029,6 +1309,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		nil,
 	)
 	windowCostWorker.Start(ctx)
+
+	// 配额探测只写观测窗口，不接入健康状态、冷却或选号依赖。
+	quotaProbeWorker := quotaprobe.NewWorker(quotaprobe.WorkerConfig{
+		Accounts: quotaprobe.NewPostgresAccountLister(pgPool),
+		Vault:    credentialVault,
+		Fetcher:  quotaprobe.NewHTTPUsageFetcher(anthropicOAuthHTTPClient, accountProxyResolver),
+		Store:    ratelimit.NewPostgresSessionWindowStore(pgPool),
+		Settings: platformSettingsService,
+	})
+	quotaProbeWorker.Start(ctx)
 
 	clientIPResolver, err := loadClientIPResolverFromEnv()
 	if err != nil {
@@ -1077,9 +1367,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		RequestClass:         cfg.RequestClass,
 		BalanceModeResolver:  billingPolicyResolver,
 	})
-	mediaTaskProviders := mediatask.NewHTTPProviderRegistry(mediaTaskConfig, http.DefaultClient)
+	// 媒体 provider 出站客户端必须带 Timeout(与同文件 modelsync fetcher 一致):裸 http.DefaultClient
+	// 无超时,慢上游/半开连接会让串行媒体 worker 永久挂起。worker 侧已对每次 Submit/Poll 加 context 硬超时
+	// 为主防线,此处 client.Timeout 作外层兜底(防 provider 实现忽略 ctx)。
+	mediaTaskProviders := mediatask.NewHTTPProviderRegistry(mediaTaskConfig, &http.Client{Timeout: 60 * time.Second})
 	mediaTaskService := mediatask.NewService(mediaTaskStore, mediaTaskConfig, mediaTaskProviders)
-	mediaTaskWorker := mediatask.NewWorker(mediaTaskStore, mediaTaskConfig, mediaTaskProviders, mediatask.WorkerOptions{})
+	// OrphanReporter 把"租约丢失致 providerTaskID 未落库"的孤儿上游任务持久化到 media_task_orphans,
+	// 供对账消费者/运维查处(此前仅日志,易随轮转丢失)。logger 传 nil → 与 worker 同走 slog 默认实例。
+	mediaTaskWorker := mediatask.NewWorker(mediaTaskStore, mediaTaskConfig, mediaTaskProviders, mediatask.WorkerOptions{
+		OrphanReporter: mediatask.NewPersistingOrphanReporter(mediaTaskStore, nil),
+	})
 	mediaTaskWorker.Start(ctx)
 	rt.mediaTaskWorker = mediaTaskWorker
 	userAuditStore := userauditlog.NewPostgresStore(pgPool)
@@ -1087,27 +1384,34 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	d := &deps{
 		cfg:                   cfg,
 		clientIPResolver:      clientIPResolver,
+		logSink:               sink,
+		runtimeLogStore:       runtimeLogStore,
 		adminQueries:          adminQueries,
 		billingQueries:        billingQueries,
 		billingPolicyStore:    billingPolicyStore,
 		billingPolicyResolver: billingPolicyResolver,
 		selector:              selector,
+		queueWaiter:           queuewait.NewExecutor(),
 		sessionCapRegistry:    sessionCapRegistry,
 		recentReqRing:         recentReqRing,
+		toolPriceSource:       buildToolPriceSource(),
 		channelHealth:         channelHealthService,
+		authCooldown:          authCooldownStore,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool))),
 		retryBudget:           tenantRetryBudget,
-		claimGate:             billing.NewClaimGate(pgPool),
+		claimGate:             newClaimGateWithLease(pgPool),
 		settler:               settler,
+		settlementIntents:     buildSettlementIntentStore(billingQueries, cfg.SettlementIntentEnabled),
 		quotaReserver:         quotaReserver,
 		replayStore:           replayStore,
 		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService),
-		credentialVault:       provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore),
+		credentialVault:       credentialVault,
 		credentialStore:       credentialStore,
 		credentialKeys:        credentialKeys,
 		credentialAcqStore:    credentialAcqStore,
 		credentialExchangers:  credentialExchangers,
+		projectEnricher:       credentialProjectEnricher,
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
 		emailSendLimit:        emailSendLimit,
@@ -1117,53 +1421,67 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		passkeys:              passkeyService,
 		twoFactor:             twoFactorService,
 		loginThrottle:         loginThrottle,
-		userKeyService:        userkey.NewService(pgPool, nil, userkey.WithAuditSink(userAuditStore)),
+		userKeyService:        userkey.NewService(pgPool, nil, userkey.WithAuditSink(userAuditStore), userkey.WithDefaultKeyQuota(runtimeconfig.LoadDefaultKeyQuota())),
 		userAuditStore:        userAuditStore,
 		paymentService:        paymentService,
 		checkinService:        checkinService,
 		paymentProviders:      paymentProviders,
 		paymentRefundRequests: buildPaymentRefundRequestRecorder(pgPool, paymentService),
-		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool), voucher.WithAuditSink(voucher.PrivacyLogAuditSink{})),
+		voucherService:        voucher.NewService(voucher.NewPostgresStore(pgPool), buildVoucherServiceOptions(cfg)...),
 		subscriptionService:   subscription.NewService(subscription.NewPostgresStore(pgPool)),
 		notificationSettings:  notificationSettings,
 		announcementService:   announcementService,
 		userNoticeService:     userNoticeService,
 		mediaTaskService:      mediaTaskService,
 		mediaTaskWorker:       mediaTaskWorker,
+		mediaTaskStore:        mediaTaskStore,
 		routeAdminService:     routeadmin.NewService(routeadmin.NewPostgresStore(pgPool), nil),
 		panelAuthResolver:     panelauth.NewResolver(panelauth.NewPostgresRoleStore(pgPool)),
 		invitationService:     communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool)),
 		responseCache:         opts.responseCache,
 		cacheScope:            opts.cacheScope,
 		dlqService:            dlqService,
+		obsDLQAdminStore:      outboxStore,
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:                 registrydefault.Build(),
 			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
-			ProxyResolver:            provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys),
+			ProxyResolver:            accountProxyResolver,
 			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
 			Timeouts:                 buildGatewayTimeoutConfig(),
 			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
+			AnthropicTTLSettings:     platformSettingsService,
+			// 仅 dev/demo:当设置了 HUAKAI_DEV_MOCK_UPSTREAM 且网关不在
+			// production 模式时,一个伪造的 doer 会捏造上游 SSE,使本地 MVP
+			// 循环无需真实 provider 即可运行。在 production / 未设置时为 nil →
+			// 真实的 transport 路径不受影响。
+			HTTPClient: devMockUpstreamDoer(),
 		},
-		inboundAuth:              auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
-		auditLedger:              auditLedger,
-		auditSigner:              auditSigner,
-		cacheOverrideStore:       billing.NewCacheOverrideStore(auditSigner, nil),
-		auditPubkeyRegistry:      auditPubkeyRegistry,
-		receiptStore:             receiptStore,
-		receiptFormatter:         receiptFormatter,
-		disputeStore:             disputeStore,
-		refundQueue:              refundQueue,
-		rateTableSource:          rateTableSource,
-		pricingRatioStore:        pricingRatioStore,
-		pricingRatioResolver:     pricingRatioResolver,
-		modelRegistry:            modelRegistry,
-		modelSync:                modelSyncService,
-		routePlanner:             router.NewDefaultRouter(),
-		adminAuth:                admin.NewAdminResolver(adminQueries),
+		inboundAuth:          auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
+		auditLedger:          auditLedger,
+		auditSigner:          auditSigner,
+		cacheOverrideStore:   billing.NewCacheOverrideStore(auditSigner, nil),
+		auditPubkeyRegistry:  auditPubkeyRegistry,
+		receiptStore:         receiptStore,
+		receiptFormatter:     receiptFormatter,
+		disputeStore:         disputeStore,
+		refundQueue:          refundQueue,
+		rateTableSource:      rateTableSource,
+		pricingRatioStore:    pricingRatioStore,
+		pricingRatioResolver: pricingRatioResolver,
+		modelRegistry:        modelRegistry,
+		modelSync:            modelSyncService,
+		routePlanner:         router.NewDefaultRouter(),
+		adminAuth: adminsessionauth.New(
+			admin.NewAdminResolver(adminQueries),   // 令牌通道(hk_admin_,行为不变)
+			userSessionService,                     // session 校验器
+			panelauth.NewPostgresRoleStore(pgPool), // users.role 只读查询
+			clientIPResolver,
+		),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
 		adminRevoker:             admin.NewKeyRevoker(pgPool),
+		adminTokenIssuer:         admin.NewAdminTokenIssuer(pgPool),
 		billingAuditUpdater:      gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
 		platformSettings:         platformSettingsService,
 		hermesService:            hermesService,
@@ -1176,9 +1494,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesToolRegistry:       hermesToolRegistry,
 		hermesToolCalls:          hermesToolCalls,
 		hermesMutator:            hermesMutator,
+		hermesConfirmCache:       hermesconfirm.NewCache(),
 		hermesMutateRateLimiter:  hermesMutateRateLimiter,
 		hermesMutatingEnabled:    hermesMutatingEnabled,
 		hermesToolLoopEnabled:    hermesToolLoopEnabled,
+		hermesProposeEnabled:     hermesProposeEnabled,
 		hermesSessionBindings:    hermesSessionBindings,
 	}
 	rt.deps = d
@@ -1234,6 +1554,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			AccountHealth: alertmetrics.NewPoolAccountHealthCounter(billingQueries),
 		}),
 		Interval: cfg.AlertingEvalInterval,
+		// OBS-193:对于某个 tick,只有抢到 advisory lock 的副本才触发告警,
+		// 这样多副本部署就不会发出重复告警。
+		LeaderLock: alerting.NewPostgresLeaderLock(pgPool),
 	})
 	rt.alertingEvalStop = startAlertingEvaluator(ctx, cfg, alertingScheduler, logger)
 
@@ -1245,6 +1568,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// 断头)。已有任意工作租户时本钩子零写入。
 	if err := tenancy.EnsureDefaultTenant(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("ensure default tenant: %w", err)
+	}
+	// role 制单登录 bootstrap:把 HUAKAI_ADMIN_BOOTSTRAP_EMAIL 指定的已注册账号提升为
+	// role=admin(env 未设 = no-op)。租户走与种默认租户同一真相源,尊重 env 覆盖。
+	if workingTenantID, err := tenancy.WorkingTenantIDFromEnv(); err != nil {
+		return nil, fmt.Errorf("resolve working tenant: %w", err)
+	} else if err := panelauth.MaybeBootstrapAdminUser(ctx, pgPool, workingTenantID, logger); err != nil {
+		return nil, fmt.Errorf("admin user bootstrap: %w", err)
 	}
 	// Production-required gate: credentialScheduler 必须装
 	// authQueries + auditLedger + pgPool + auditSigner,否则 audit/ledger 链
@@ -1259,7 +1589,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if auditSigner == nil {
 		return nil, fmt.Errorf("credentialworker: production auditSigner unset (audit fail-closed gate)")
 	}
-	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistry())
+	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistryWithProjectResolver(antigravityProjectResolver))
 	credentialSchedulerOptions := []credentialworker.Option{
 		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),
@@ -1274,9 +1604,25 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialworker.WithVendorRefresher("copilot", &providercopilot.CopilotRefresher{
 			Store: providercopilot.NewCredentialStoreAdapter(credentialStore),
 		}),
-		// CRED-293: fire an operator alert through the notify pipeline when a
-		// refresh drives an account into a terminal/unhealthy state (Alert flag).
+		// CRED-293:当一次 refresh 把某账号推入终态/不健康状态(Alert 标志)时,
+		// 经 notify 管线触发一次运维告警。
 		credentialworker.WithProviderAccountDownDeliverer(providerAccountDownDeliverer{notifier: notifier}),
+	}
+	// CRED-288:把凭据轮换扫描接进 scheduler。运维 opt-in(配一个正的 maxAge 才启用);
+	// 默认关闭以避免把超期凭据集体打入 needs_rotation 这一非 serving 状态(可用性回退)。
+	rotationScanCfg, err := loadCredentialRotationScanFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load credential rotation scan config: %w", err)
+	}
+	if rotationScanCfg.Enabled() {
+		credentialSchedulerOptions = append(
+			credentialSchedulerOptions,
+			buildRotationScanOptions(rotationScanCfg, credentialworker.NewPostgresRotationStore(pgPool))...,
+		)
+		logger.Info("credential rotation-due scan enabled",
+			zap.Duration("max_age", rotationScanCfg.MaxAge),
+			zap.Int("limit", rotationScanCfg.Limit),
+		)
 	}
 	credentialSchedulerOptions = append(
 		credentialSchedulerOptions,
@@ -1318,36 +1664,52 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	d.subExpiryWorker = subscriptionExpiryWorker
 	d.subReminderWorker = subscriptionReminderWorker
 
+	// 订阅自动续费 worker: money 动作 (扫到期 → 扣钱包余额 → 续期), 默认 KNOB 关 (零生产行为变),
+	// 仅 HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED=true 时构造并启动。非法值 fail-loud。
+	autoRenewEnabled, err := subscriptionAutoRenewEnabledFromEnv(subscriptionAutoRenewEnabledEnv)
+	if err != nil {
+		return nil, err
+	}
+	var subscriptionAutoRenewWorker *subscription.AutoRenewWorker
+	if autoRenewEnabled {
+		subscriptionAutoRenewWorker = subscription.NewAutoRenewWorker(subscription.AutoRenewWorkerConfig{Service: d.subscriptionService})
+		subscriptionAutoRenewWorker.Start(ctx)
+		if logger != nil {
+			logger.Info("订阅自动续费 worker 已启用 (将自动扣减钱包余额续期到期订阅)",
+				zap.String("enabled_by", subscriptionAutoRenewEnabledEnv+"=true"))
+		}
+	}
+	d.subAutoRenewWorker = subscriptionAutoRenewWorker
+
 	rt.credentialScheduler = credentialScheduler
 	rt.dlqWorker = dlqWorker
 	rt.outboxWorker = outboxWorker
 	rt.subscriptionExpiryWorker = subscriptionExpiryWorker
 	rt.subscriptionReminderWorker = subscriptionReminderWorker
+	rt.subscriptionAutoRenewWorker = subscriptionAutoRenewWorker
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
-	// WAVE H2: build the module-knowledge spine LAST, after all probe-referenced
-	// services (settler, selector, credential store + scheduler) are wired, so the
-	// seed probes capture live (not nil) references. Off the request hot path.
+	// WAVE H2:最后再构建模块知识脊柱,等所有 probe 引用的服务
+	//(settler、selector、credential store + scheduler)都接好之后,这样 seed
+	// probe 捕获到的是 live(非 nil)引用。不在请求热路径上。
 	d.moduleRegistry = buildModuleRegistry(d)
-	// WAVE H3 read-only diagnostic-tool spine is built earlier (before the chat
-	// bridge) so the H3b conversational tool loop can share it. Here we only build
-	// the module-context source.
+	// WAVE H3 只读诊断工具脊柱在更早处构建(早于 chat bridge),这样 H3b
+	// 对话式工具循环能共享它。这里只构建模块上下文 source。
 	d.hermesModuleSource = newModuleSource(d.moduleRegistry)
-	// WAVE H3b: the internal READ-ONLY tool-execute handler the runner calls back
-	// into mid-conversation. It verifies the session's internal_token, resolves
-	// the bound operator, and dispatches ONLY read-only tools (Run refuses a
-	// mutation) with the operator's role floor + tenant scope + audit. Built only
-	// when the admin-only repositioning + the chat bridge are active.
+	// WAVE H3b:runner 在对话中途回调进来的 internal 只读 tool-execute handler。
+	// 它校验 session 的 internal_token、解析出绑定的 operator,并且只派发只读工具
+	//(Run 拒绝任何 mutation),带上 operator 的角色下限 + 租户作用域 + 审计。
+	// 仅在 admin-only 重定位 + chat bridge 都生效时才构建。
 	if d.hermesAdminOnly && d.hermesChatBridge != nil {
 		if internalSecret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv)); internalSecret != "" {
 			d.hermesInternalToolHandler = buildHermesInternalToolHandler(
 				[]byte(internalSecret), d.hermesSessionBindings, d.hermesToolRegistry, d.hermesToolCalls, d.hermesToolLoopEnabled,
+				d.hermesConfirmCache, d.hermesProposeEnabled,
 			)
 		}
 	}
-	// WAVE H5: the daily ops-inspection worker. Default-OFF (opt-in enable flag);
-	// it only starts when enabled AND an admin recipient resolves (platform setting
-	// or env fallback). It reuses the EXISTING read-only diagnostics + notification
-	// email sender + module spine — purely additive, off the request hot path.
+	// WAVE H5:每日运维巡检 worker。默认关闭(opt-in 启用标志);仅在启用
+	// 且能解析出一个 admin 收件人(platform setting 或 env 回退)时才启动。
+	// 它复用已有的只读诊断 + 通知邮件发送器 + 模块脊柱——纯增量,不在请求热路径上。
 	if inspectionWorker := buildHermesInspectionWorker(ctx, hermesAdminDeps{
 		settings:       platformSettingsService,
 		emailSender:    notificationEmailSender,
@@ -1355,6 +1717,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialStr:  credentialStore,
 		channelHealth:  channelHealthService,
 		dlqStore:       dlqStore,
+		obsDLQStore:    outboxStore,
 		billingQueries: billingQueries,
 		logger:         logger,
 	}); inspectionWorker != nil {
@@ -1363,6 +1726,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	ready = true
 	return rt, nil
+}
+
+func newSettlementRecoveryHandler(settler billing.Settler, proof settlementrecovery.CommittedProof, auditRefPolicy *eventbus.AuditRefPolicy) *settlementrecovery.Handler {
+	return &settlementrecovery.Handler{
+		Settler:        settler,
+		Proof:          proof,
+		AuditRefPolicy: auditRefPolicy,
+	}
 }
 
 func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.PostgresRegistry) *modelsync.Service {
@@ -1409,7 +1780,7 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	})
 }
 
-func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, bindings *hermeschat.SessionBindings, toolRegistry *hermesops.Registry, toolLoopEnabled bool) (*hermeschat.Bridge, error) {
+func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, bindings *hermeschat.SessionBindings, toolRegistry *hermesops.Registry, toolLoopEnabled bool, proposeEnabled bool) (*hermeschat.Bridge, error) {
 	if hermesService == nil {
 		return nil, nil
 	}
@@ -1427,18 +1798,21 @@ func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.
 		hermeschat.WithResponseHeaderSettings(settings),
 		hermeschat.WithMessageContentKeys(keys),
 	}
-	// WAVE H3b: attach the session-binding store + the read-only tool catalog so
-	// the chat payload carries the catalog and each session's operator is bound.
-	// Both optional — a nil bindings store leaves the chat path unchanged.
+	// WAVE H3b:挂上 session-binding store + 只读工具 catalog,这样 chat 负载
+	// 就携带该 catalog,且每个会话的 operator 都被绑定。两者均可选——
+	// bindings store 为 nil 时,chat 路径保持不变。
 	if bindings != nil {
 		opts = append(opts, hermeschat.WithSessionBindings(bindings))
 	}
 	if toolRegistry != nil {
-		opts = append(opts, hermeschat.WithToolCatalog(readOnlyCatalogProvider{reg: toolRegistry}))
+		// Phase B:proposeEnabled 打开时注入 ProposableCatalog(含可提议的 mutating 工具 + 标志),
+		// 否则注入 ReadOnlyCatalog(默认,零行为变)。与 internal_tool_handler 的 propose 分支共用
+		// 同一个 KNOB。
+		opts = append(opts, hermeschat.WithToolCatalog(hermesToolCatalogProvider{reg: toolRegistry, proposeEnabled: proposeEnabled}))
 	}
-	// KNOB B: when the LLM conversational tool loop is disabled at runtime, the
-	// bridge injects no tool_catalog (the WithToolCatalog provider above stays
-	// wired but the gate suppresses injection), so the LLM is told about no tools.
+	// KNOB B:当 LLM 对话式工具循环在运行时被禁用时,bridge 不注入任何
+	// tool_catalog(上面的 WithToolCatalog provider 仍接着,但 gate 抑制注入),
+	// 因此 LLM 被告知没有任何工具。
 	opts = append(opts, hermeschat.WithToolLoopEnabled(toolLoopEnabled))
 	bridge, err := hermeschat.NewBridge(hermesService, opts...)
 	if err != nil {
@@ -1455,25 +1829,24 @@ func loadHermesInternalSharedSecret() ([]byte, error) {
 	return []byte(secret), nil
 }
 
-// hermesAdminOnlyEnv re-gates Hermes routes to ADMIN/OPERATOR-only auth.
+// hermesAdminOnlyEnv 把 Hermes 路由重新门控为仅 ADMIN/OPERATOR 鉴权。
 const hermesAdminOnlyEnv = "HUAKAI_HERMES_ADMIN_ONLY"
 
-// hermesAllowLegacyUserAuthEnv is the explicit SECOND opt-in required to mount
-// Hermes behind the legacy customer-key path. Without it an
-// HUAKAI_HERMES_ADMIN_ONLY=false is ignored and Hermes stays admin-only — a
-// single env flip can no longer silently expose the LLM ops-assistant to
-// ordinary customer API keys.
+// hermesAllowLegacyUserAuthEnv 是把 Hermes 挂到旧 customer-key 路径背后所需的
+// 显式第二个 opt-in。没有它,HUAKAI_HERMES_ADMIN_ONLY=false 会被忽略,Hermes
+// 保持 admin-only——单次 env 翻转再也无法默默把 LLM 运维助手暴露给
+// 普通客户 API key。
 const hermesAllowLegacyUserAuthEnv = "HUAKAI_HERMES_ALLOW_LEGACY_USER_AUTH"
 
-// hermesAdminOnlyFromEnv resolves whether Hermes is admin/operator-only. It is
-// FAIL-CLOSED: the default (unset), any truthy value, and even an explicit
-// HUAKAI_HERMES_ADMIN_ONLY=false WITHOUT the second opt-in
-// HUAKAI_HERMES_ALLOW_LEGACY_USER_AUTH=true all resolve to admin-only. Legacy
-// end-user (customer-key) auth is entered ONLY when BOTH opt-ins are present,
-// and is refused outright in production (HUAKAI_RELEASE_MODE=production),
-// mirroring validateProductionCaptchaConfig's startup gate. A malformed
-// HUAKAI_HERMES_ADMIN_ONLY is still a fail-loud boot error. A nil logger is
-// tolerated (warnings skipped), matching logCaptchaConfig.
+// hermesAdminOnlyFromEnv 解析 Hermes 是否为 admin/operator-only。它是
+// FAIL-CLOSED 的:默认(未设置)、任何真值、乃至显式的
+// HUAKAI_HERMES_ADMIN_ONLY=false 但缺少第二个 opt-in
+// HUAKAI_HERMES_ALLOW_LEGACY_USER_AUTH=true,都解析为 admin-only。只有当
+// 两个 opt-in 都存在时,才进入旧的终端用户(customer-key)鉴权;并且在
+// production(HUAKAI_RELEASE_MODE=production)下直接拒绝,镜像
+// validateProductionCaptchaConfig 的启动门。格式错误的
+// HUAKAI_HERMES_ADMIN_ONLY 仍是一个 fail-loud 启动错误。logger 为 nil 时
+// 可容忍(跳过警告),与 logCaptchaConfig 一致。
 func hermesAdminOnlyFromEnv(logger *zap.Logger) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(hermesAdminOnlyEnv))
 	if raw == "" {
@@ -1486,8 +1859,8 @@ func hermesAdminOnlyFromEnv(logger *zap.Logger) (bool, error) {
 	if wantAdminOnly {
 		return true, nil
 	}
-	// Explicitly false: legacy customer-key auth requested. Require the second
-	// opt-in; otherwise stay admin-only (fail-closed) and warn loudly.
+	// 显式 false:请求使用旧的 customer-key 鉴权。要求第二个 opt-in;
+	// 否则保持 admin-only(fail-closed)并大声告警。
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv(hermesAllowLegacyUserAuthEnv)), "true") {
 		if logger != nil {
 			logger.Warn("HUAKAI_HERMES_ADMIN_ONLY=false ignored — legacy end-user auth for Hermes requires an explicit second opt-in; staying admin-only",
@@ -1495,7 +1868,7 @@ func hermesAdminOnlyFromEnv(logger *zap.Logger) (bool, error) {
 		}
 		return true, nil
 	}
-	// Both opt-ins present → legacy mode. Never permitted in production.
+	// 两个 opt-in 都存在 → 旧模式。production 下绝不允许。
 	if releaseModeProduction() {
 		return false, fmt.Errorf("refusing to start: Hermes legacy end-user auth (%s=false + %s=true) exposes the LLM ops-assistant to customer API keys and is forbidden when HUAKAI_RELEASE_MODE=production",
 			hermesAdminOnlyEnv, hermesAllowLegacyUserAuthEnv)
@@ -1507,27 +1880,68 @@ func hermesAdminOnlyFromEnv(logger *zap.Logger) (bool, error) {
 	return false, nil
 }
 
-// hermesMutatingEnabledEnv is the runtime kill-switch for ALL Hermes MUTATING
-// tools (account_pause/account_resume/dlq_replay/renew_trigger). It defaults
-// ENABLED so an unset env is zero behavior change; flip it to false to disable
-// every mutating tool at runtime while keeping the read-only diagnostics + the
-// conversational chat fully live. Orthogonal to HUAKAI_HERMES_ADMIN_ONLY.
+// hermesMutatingEnabledEnv 是所有 Hermes mutating 工具
+// (account_pause/account_resume/dlq_replay/renew_trigger)的运行时总开关。
+// 它默认 ENABLED,因此未设置 env 即零行为变更;翻为 false 可在运行时
+// 禁用每个 mutating 工具,同时保持只读诊断 + 对话式 chat 完全在线。
+// 与 HUAKAI_HERMES_ADMIN_ONLY 正交。
 const hermesMutatingEnabledEnv = "HUAKAI_HERMES_MUTATING_ENABLED"
 
-// hermesLLMToolLoopEnabledEnv is the runtime kill-switch for the LLM
-// CONVERSATIONAL tool loop (read-only tool-catalog injection into the chat body
-// + the runner's mid-conversation /internal/hermes/tool-execute callback). It
-// defaults ENABLED; flip it to false to disable the tool loop while plain
-// /v1/hermes/chat keeps streaming. Orthogonal to HUAKAI_HERMES_ADMIN_ONLY and to
-// the mutating kill-switch above.
+// hermesLLMToolLoopEnabledEnv 是 LLM 对话式工具循环的运行时总开关
+// (向 chat 请求体注入只读工具 catalog + runner 在对话中途的
+// /internal/hermes/tool-execute 回调)。它默认 ENABLED;翻为 false 可禁用
+// 工具循环,同时普通的 /v1/hermes/chat 仍持续流式。与 HUAKAI_HERMES_ADMIN_ONLY
+// 以及上面的 mutating 总开关均正交。
 const hermesLLMToolLoopEnabledEnv = "HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED"
 
-// hermesBoolEnabledDefaultTrue resolves a DEFAULT-TRUE runtime boolean knob,
-// mirroring hermesAdminOnlyFromEnv's parse style: unset/empty => the default
-// (true, enabled); any parseable bool is honored; a malformed value is a
-// fail-loud boot error (never a silent fallback that would disable enforcement
-// or, worse, silently re-enable a privileged surface the operator meant to turn
-// off). Used for both Hermes runtime kill-switches.
+// hermesLLMProposeEnabledEnv 是 Phase B 提议 KNOB(默认禁用)。未设置/false 时,internal handler
+// 在任何 dry-run 解析之前拒绝每个 mode=propose 调用(403),故 LLM 无法提议任何 mutating 工具——
+// 接入提议路径是零行为变。设为 true(Owner-gated 激活)可让助手提议可逆的 B 级 mutating 工具;
+// 执行仍需一个独立的 OPERATOR 确认。额外受 tool-loop kill-switch(HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)
+// 与 per-tool 的 Proposable 标志门控。
+const hermesLLMProposeEnabledEnv = "HUAKAI_HERMES_LLM_PROPOSE_ENABLED"
+
+// subscriptionAutoRenewEnabledEnv 是订阅自动续费 worker 的启用开关。默认 FALSE:
+// 不设/空都解析为 false → worker 不启动 → 现有 auto_renew=true 订阅行为零变化
+// (合并即零生产行为变)。Owner 显式翻 true 才激活"扫到期 → 扣钱包余额 → 续期"的自动扣费。
+const subscriptionAutoRenewEnabledEnv = "HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED"
+
+// subscriptionAutoRenewEnabledFromEnv 解析 DEFAULT-FALSE 运行时布尔旋钮: 不设/空 => false
+// (默认关, money 安全); 任意可解析布尔被尊重; 非法值 fail-loud 启动报错 (绝不静默退回, 以免
+// 把本该关闭的自动扣费悄悄打开)。形态对称 hermesBoolEnabledDefaultFalse, 语义专属订阅自动续费。
+func subscriptionAutoRenewEnabledFromEnv(envName string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(envName))
+	if raw == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean, got %q: %w", envName, raw, err)
+	}
+	return enabled, nil
+}
+
+// hermesBoolEnabledDefaultFalse 解析一个默认 FALSE 的运行时布尔 knob(hermesBoolEnabledDefaultTrue
+// 的镜像):unset/空 => 默认(false、禁用);任何可解析的 bool 被采纳;格式错误的值是 fail-loud
+// boot error(绝不静默回退而悄悄启用 operator 未选择开启的特权面)。用于 Phase B 提议 KNOB,其
+// 安全默认是关。
+func hermesBoolEnabledDefaultFalse(envName string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(envName))
+	if raw == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean, got %q: %w", envName, raw, err)
+	}
+	return enabled, nil
+}
+
+// hermesBoolEnabledDefaultTrue 解析一个默认 TRUE 的运行时布尔 knob,
+// 镜像 hermesAdminOnlyFromEnv 的解析风格:unset/空 => 默认(true、启用);
+// 任何可解析的 bool 被采纳;格式错误的值是一个 fail-loud 启动错误
+// (绝不静默回退而禁用强制,或更糟地悄悄重新启用一个 operator 本想关掉的
+// 特权面)。用于 Hermes 的两个运行时总开关。
 func hermesBoolEnabledDefaultTrue(envName string) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(envName))
 	if raw == "" {
@@ -1735,9 +2149,9 @@ func buildAuditRefPolicy(cfg *runtimeconfig.EventBusConfig) *eventbus.AuditRefPo
 	}
 }
 
-// dbPoolConfig maps operator-tunable pool overrides from Config into db.PoolConfig.
-// Unset overrides stay zero so the db package keeps its defaults (16/2/30m/5m),
-// preserving existing deployment behavior while allowing scale tuning.
+// dbPoolConfig 把 Config 中运维可调的连接池 override 映射进 db.PoolConfig。
+// 未设置的 override 保持为零,这样 db 包沿用它的默认值(16/2/30m/5m),
+// 在允许规模化调优的同时保留现有部署行为。
 func dbPoolConfig(cfg *Config) db.PoolConfig {
 	return db.PoolConfig{
 		DSN:             cfg.DatabaseURL,

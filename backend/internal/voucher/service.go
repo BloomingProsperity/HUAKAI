@@ -60,7 +60,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 	}
 	hash, fp := CodeHash(input.TenantID, code)
 	v, err := s.store.CreateVoucher(ctx, createVoucherRecord{
-		TenantID: input.TenantID, AdminID: input.AdminID, CodeHash: hash, CodeFingerprint: fp,
+		TenantID: input.TenantID, AdminID: input.AdminID, ActorRef: input.ActorRef, CodeHash: hash, CodeFingerprint: fp,
 		AmountCents: input.AmountCents, CurrencyCode: input.CurrencyCode,
 		ValidFrom: input.ValidFrom, ValidUntil: input.ValidUntil,
 		MaxRedemptions: input.MaxRedemptions, SingleUsePerUser: input.SingleUsePerUser,
@@ -82,7 +82,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 	}
 	_ = s.emit(ctx, AuditEvent{
 		EventType: AuditVoucherCreated, TenantID: v.TenantID, VoucherID: v.ID,
-		ActorID: strconv.FormatInt(input.AdminID, 10), CodeFingerprint: v.CodeFingerprint,
+		ActorID: voucherAuditActor(input.AdminID, input.ActorRef), CodeFingerprint: v.CodeFingerprint,
 		Payload:    payload,
 		OccurredAt: input.Now,
 	})
@@ -98,7 +98,7 @@ func (s *Service) CreateBatch(ctx context.Context, input BatchCreateInput) (Batc
 		return BatchCreateResult{}, err
 	}
 	batchRec := createBatchRecord{
-		TenantID: input.TenantID, AdminID: input.AdminID, RequestedCount: input.Count,
+		TenantID: input.TenantID, AdminID: input.AdminID, ActorRef: input.ActorRef, RequestedCount: input.Count,
 		AmountCents: input.AmountCents, CurrencyCode: input.CurrencyCode,
 		ValidFrom: input.ValidFrom, ValidUntil: input.ValidUntil,
 		MaxRedemptions: input.MaxRedemptions, SingleUsePerUser: input.SingleUsePerUser,
@@ -121,7 +121,7 @@ func (s *Service) CreateBatch(ctx context.Context, input BatchCreateInput) (Batc
 		}
 		seen[key] = struct{}{}
 		records = append(records, createVoucherRecord{
-			TenantID: input.TenantID, AdminID: input.AdminID, CodeHash: hash, CodeFingerprint: fp,
+			TenantID: input.TenantID, AdminID: input.AdminID, ActorRef: input.ActorRef, CodeHash: hash, CodeFingerprint: fp,
 			AmountCents: input.AmountCents, CurrencyCode: input.CurrencyCode,
 			ValidFrom: input.ValidFrom, ValidUntil: input.ValidUntil,
 			MaxRedemptions: input.MaxRedemptions, SingleUsePerUser: input.SingleUsePerUser,
@@ -138,7 +138,7 @@ func (s *Service) CreateBatch(ctx context.Context, input BatchCreateInput) (Batc
 		codes[i].VoucherID = vouchers[i].ID
 		_ = s.emit(ctx, AuditEvent{
 			EventType: AuditVoucherCreated, TenantID: input.TenantID, BatchID: batch.ID,
-			VoucherID: vouchers[i].ID, ActorID: strconv.FormatInt(input.AdminID, 10),
+			VoucherID: vouchers[i].ID, ActorID: voucherAuditActor(input.AdminID, input.ActorRef),
 			CodeFingerprint: vouchers[i].CodeFingerprint, OccurredAt: input.Now,
 			Payload: map[string]any{"amount_cents": vouchers[i].AmountCents, "batch_id": batch.ID},
 		})
@@ -156,11 +156,12 @@ func (s *Service) Redeem(ctx context.Context, input RedeemInput) (RedeemResult, 
 	}
 	hash, fp := CodeHash(input.TenantID, NormalizeCode(input.Code))
 	ipHash := SourceIPHash(input.SourceIP)
+	burstAttempt := BurstAttempt{
+		TenantID: input.TenantID, UserID: input.UserID, SourceIPHash: ipHash,
+		CodeFingerprint: fp, RequestID: input.RequestID, Now: input.Now,
+	}
 	if s.limiter != nil {
-		decision, err := s.limiter.AllowVoucherAttempt(ctx, BurstAttempt{
-			TenantID: input.TenantID, UserID: input.UserID, SourceIPHash: ipHash,
-			CodeFingerprint: fp, RequestID: input.RequestID, Now: input.Now,
-		})
+		decision, err := s.limiter.CheckVoucherBurst(ctx, burstAttempt)
 		if err != nil {
 			return RedeemResult{}, err
 		}
@@ -185,6 +186,12 @@ func (s *Service) Redeem(ctx context.Context, input RedeemInput) (RedeemResult, 
 			EventType: AuditVoucherRedeemFailed, TenantID: input.TenantID, UserID: input.UserID,
 			RequestID: input.RequestID, ReasonClass: reason, CodeFingerprint: fp, OccurredAt: input.Now,
 		})
+		// 只对"猜码类"失败(码不存在)计入失败计数:反复猜错码者会被限流;持有效码却遇过期/已用/
+		// 基础设施错误的合法用户不计数(它们不是猜码信号)。这与 CheckVoucherBurst 的"只读判定"配套,
+		// 实现"只计失败"的反猜码限流。
+		if s.limiter != nil && errors.Is(err, ErrVoucherNotFound) {
+			_ = s.limiter.RecordVoucherFailure(ctx, burstAttempt)
+		}
 		if errors.Is(err, ErrVoucherExpired) {
 			_ = s.emit(ctx, AuditEvent{
 				EventType: AuditVoucherExpired, TenantID: input.TenantID, UserID: input.UserID,
@@ -221,7 +228,7 @@ func (s *Service) Revoke(ctx context.Context, input RevokeInput) (Voucher, error
 	if s == nil || s.store == nil {
 		return Voucher{}, ErrStoreNotConfigured
 	}
-	if input.TenantID <= 0 || input.ID <= 0 || input.AdminID <= 0 {
+	if input.TenantID <= 0 || input.ID <= 0 || (input.AdminID <= 0 && input.ActorRef == "") {
 		return Voucher{}, ErrInvalidInput
 	}
 	input.Reason = strings.TrimSpace(input.Reason)
@@ -234,7 +241,7 @@ func (s *Service) Revoke(ctx context.Context, input RevokeInput) (Voucher, error
 	}
 	_ = s.emit(ctx, AuditEvent{
 		EventType: AuditVoucherRevoked, TenantID: v.TenantID, VoucherID: v.ID,
-		ActorID: strconv.FormatInt(input.AdminID, 10), ReasonClass: "admin_revoked",
+		ActorID: voucherAuditActor(input.AdminID, input.ActorRef), ReasonClass: "admin_revoked",
 		CodeFingerprint: v.CodeFingerprint, OccurredAt: input.Now,
 		Payload: map[string]any{"unredeemed_capacity": v.MaxRedemptions - v.RedeemedCount},
 	})
@@ -324,7 +331,7 @@ func normalizeGrantKind(k string) string {
 
 func validateCreateInput(input CreateInput) error {
 	// AmountCents 对两种券都要求为正: 余额券即面额; 订阅券为名义价 (信息性, 兑换时不入余额)。
-	if input.TenantID <= 0 || input.AdminID <= 0 || input.AmountCents <= 0 || input.MaxRedemptions <= 0 {
+	if input.TenantID <= 0 || (input.AdminID <= 0 && input.ActorRef == "") || input.AmountCents <= 0 || input.MaxRedemptions <= 0 {
 		return ErrInvalidInput
 	}
 	if input.CurrencyCode != supportedVoucherBalanceCurrency {
@@ -364,7 +371,7 @@ func normalizeBatchInput(input BatchCreateInput) BatchCreateInput {
 }
 
 func validateBatchInput(input BatchCreateInput) error {
-	if input.TenantID <= 0 || input.AdminID <= 0 || input.Count <= 0 || input.Count > 1000 ||
+	if input.TenantID <= 0 || (input.AdminID <= 0 && input.ActorRef == "") || input.Count <= 0 || input.Count > 1000 ||
 		input.AmountCents <= 0 || input.MaxRedemptions <= 0 {
 		return ErrInvalidInput
 	}
@@ -424,4 +431,13 @@ func redeemFailureReason(err error) string {
 	default:
 		return "rejected"
 	}
+}
+
+// voucherAuditActor 返回审计事件的 actor 归属:session-admin(AdminID=0 但 ActorRef 非空)用
+// AuditActor() 串(admin_user:N);token-admin 保持数字串(向后兼容,不改既有格式)。
+func voucherAuditActor(adminID int64, actorRef string) string {
+	if adminID <= 0 && actorRef != "" {
+		return actorRef
+	}
+	return strconv.FormatInt(adminID, 10)
 }

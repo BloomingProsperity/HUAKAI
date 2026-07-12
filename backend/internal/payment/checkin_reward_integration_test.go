@@ -12,7 +12,7 @@ import (
 )
 
 func TestCheckinAtomic_CreditFailureRollsBack(t *testing.T) {
-	// Mutation: committing after daily_checkin insert but before payment credit makes the orphan row assertion red.
+	// 变异:在 daily_checkin 插入之后、payment credit 之前就提交,会让"孤儿行"断言变红。
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openPaymentIntegrationPool(t, ctx)

@@ -264,6 +264,10 @@ func writeTwoFAError(w http.ResponseWriter, err error) {
 		twoFAWriteError(w, http.StatusBadRequest, "invalid_two_factor_request", "two-factor request is invalid")
 	case errors.Is(err, twofa.ErrInvalidCode):
 		twoFAWriteError(w, http.StatusUnauthorized, "two_factor_invalid", "two-factor code is invalid")
+	case errors.Is(err, twofa.ErrCodeReused):
+		// 码有效但已被消费过(防重放):按校验失败处理(401),用独立 code 让前端提示
+		// "该验证码已使用过,请用下一个",而不是落到默认 503 backend_error。
+		twoFAWriteError(w, http.StatusUnauthorized, "two_factor_code_reused", "two-factor code has already been used")
 	case errors.Is(err, twofa.ErrLocked):
 		twoFAWriteError(w, http.StatusTooManyRequests, "two_factor_locked", "two-factor verification is temporarily locked")
 	case errors.Is(err, twofa.ErrDisabled):

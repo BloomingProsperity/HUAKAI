@@ -1,11 +1,11 @@
 package adminhttp
 
-// Admin channel catalog mutation handlers (create / update / delete). Mirrors
-// provider_catalog_mutation_handler.go: each mutation runs in a pgx tx that
-// writes the channels row and an admin audit event atomically, behind the same
-// adminCatalogAuth tenant/role gate. Channels are keyed by id within a tenant
-// (no "code"); the (tenant_id, pool_group_id, name) uniqueness is enforced by
-// uq_channels_tenant_pool_name and surfaced as 409.
+// Admin channel catalog 的变更处理器(create / update / delete)。
+// 与 provider_catalog_mutation_handler.go 保持一致:每次变更都在一个 pgx tx 中运行,
+// 原子地写入 channels 行和一条 admin 审计事件,并受同一道 adminCatalogAuth 的
+// 租户/角色门控。Channel 在租户内以 id 为键(没有 "code");
+// (tenant_id, pool_group_id, name) 的唯一性由 uq_channels_tenant_pool_name 约束
+// 强制保证,并以 409 呈现。
 
 import (
 	"context"
@@ -34,8 +34,8 @@ var (
 	errChannelCatalogTxPoolUnset  = errors.New("channel catalog transaction pool unset")
 )
 
-// defaultFailoverStatusCodes mirrors the channels.failover_status_codes column
-// default; applied when the caller omits the list.
+// defaultFailoverStatusCodes 与 channels.failover_status_codes 列的默认值保持一致;
+// 当调用方省略该列表时应用此默认值。
 var defaultFailoverStatusCodes = []int32{401, 403, 429, 529}
 
 type channelCatalogCreateParams struct {
@@ -94,8 +94,8 @@ type channelCatalogStoreAdapter struct {
 	pool *pgxpool.Pool
 }
 
-// NewChannelCatalogStoreAdapter wires the sqlc queries + tx pool into the
-// mutation store used by the create/update/delete handlers.
+// NewChannelCatalogStoreAdapter 把 sqlc 查询 + tx 连接池接线进
+// create/update/delete 处理器所用的变更存储。
 func NewChannelCatalogStoreAdapter(base channelCatalogDB, pool *pgxpool.Pool) adminChannelCatalogStore {
 	return channelCatalogStoreAdapter{base: base, pool: pool}
 }
@@ -131,7 +131,7 @@ func (s channelCatalogStoreAdapter) CreateChannelCatalogWithAudit(ctx context.Co
 			FailoverStatusCodes: arg.FailoverStatusCodes, Enabled: arg.Enabled,
 		})
 		if err != nil {
-			// EXISTS pool-group guard miss returns no row.
+			// EXISTS pool-group 守卫未命中时不返回任何行。
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errChannelCatalogPoolNotFound
 			}
@@ -159,9 +159,9 @@ func (s channelCatalogStoreAdapter) UpdateChannelCatalogWithAudit(ctx context.Co
 			Name: arg.Name, FailoverStatusCodes: arg.FailoverStatusCodes, Enabled: arg.Enabled,
 		})
 		if err != nil {
-			// No row means either the channel is gone for this tenant or the
-			// pool-group guard failed; surface not-found (the conflict path is
-			// the 23505 below).
+			// 没有返回行意味着:要么该 channel 在此租户下已不存在,
+			// 要么 pool-group 守卫失败;统一呈现 not-found(冲突路径是
+			// 下面的 23505)。
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errChannelCatalogNotFound
 			}
@@ -203,7 +203,7 @@ func (s channelCatalogStoreAdapter) DeleteChannelCatalogWithAudit(ctx context.Co
 	return item, err
 }
 
-// MountChannelCatalogRoutes registers the full channel catalog CRUD surface.
+// MountChannelCatalogRoutes 注册完整的 channel catalog CRUD 能力面。
 func MountChannelCatalogRoutes(r chi.Router, d AdminChannelCatalogDeps) {
 	r.Get("/", NewChannelCatalogListHandler(d))
 	r.Post("/", newCreateChannelCatalogHandler(d))
@@ -416,9 +416,9 @@ func validateChannelCatalogEnabled(w http.ResponseWriter, enabled *bool) (bool, 
 	return *enabled, true
 }
 
-// validateChannelCatalogFailoverCodes validates HTTP status codes and applies
-// the column default on create when the list is omitted. Empty-on-update is an
-// explicit "clear to default" too, keeping a row from ever holding no codes.
+// validateChannelCatalogFailoverCodes 校验 HTTP 状态码,并在 create 时
+// 若列表被省略则应用列默认值。update 时传空也被视为一次明确的
+//「清空为默认值」,以确保任何一行永远不会处于没有 codes 的状态。
 func validateChannelCatalogFailoverCodes(w http.ResponseWriter, codes []int32, _ bool) ([]int32, bool) {
 	if len(codes) == 0 {
 		out := make([]int32, len(defaultFailoverStatusCodes))
@@ -477,7 +477,7 @@ func buildChannelCatalogAuditParams(w http.ResponseWriter, r *http.Request, iden
 		reasonArg = &reason
 	}
 	return admindb.InsertAdminAuditEventParams{
-		TenantID: &tenantID, ActorID: fmt.Sprintf("%d", ident.TokenID), ActorRole: actorRole,
+		TenantID: &tenantID, ActorID: ident.AuditActor(), ActorRole: actorRole,
 		Action: action, TargetType: "channel", RequestID: reqIDArg,
 		Reason: reasonArg, Payload: raw,
 	}, true

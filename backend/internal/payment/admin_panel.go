@@ -34,7 +34,7 @@ type OrderExportFilter struct {
 	Limit    int
 }
 
-// RefundExportFilter filters for refund CSV export.
+// RefundExportFilter 是退款 CSV 导出的过滤条件。
 type RefundExportFilter struct {
 	TenantID int64
 	From     *time.Time
@@ -66,6 +66,7 @@ type RetryFulfillmentInput struct {
 	TenantID     int64
 	OrderID      int64
 	ActorAdminID int64
+	ActorRef     string // 双身份归属串,空则 NULL
 	RequestID    string
 }
 
@@ -108,7 +109,7 @@ func (s *Service) ExportOrders(ctx context.Context, filter OrderExportFilter) ([
 	return store.AdminExportOrders(ctx, filter)
 }
 
-// ExportRefunds returns refund records for CSV export (read-only, no billing side effects).
+// ExportRefunds 返回用于 CSV 导出的退款记录(只读,无计费副作用)。
 func (s *Service) ExportRefunds(ctx context.Context, filter RefundExportFilter) ([]RefundRecord, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrStoreNotConfigured
@@ -143,6 +144,7 @@ func (s *Service) RetryFulfillment(ctx context.Context, in RetryFulfillmentInput
 		OrderID:   in.OrderID,
 		ActorKind: ActorKindAdmin,
 		ActorID:   in.ActorAdminID,
+		ActorRef:  in.ActorRef,
 		RequestID: in.RequestID,
 	})
 }

@@ -115,7 +115,9 @@ func TestNewVerifierNoSecretIsNoopEvenWhenRuntimeEnabled(t *testing.T) {
 	})
 	settings := enabledTurnstileSettings()
 
-	verifier := NewVerifier(settings, "", client)
+	// resolver 请求期返回空(设置与 env 都没配)→ Verify 必须 fail-open noop,
+	// 且 secret 先行短路,不读运行时 captcha_enabled/provider 设置(calls==0)。
+	verifier := NewVerifier(settings, staticSecret(""), client)
 	if err := verifier.Verify(
 		context.Background(),
 		"",
@@ -154,7 +156,7 @@ func TestCaptchaProviderRouting(t *testing.T) {
 
 				verifier := NewVerifier(
 					enabledCaptchaSettings(provider.name),
-					"secret-"+provider.name,
+					staticSecret("secret-"+provider.name),
 					siteVerifyHandlerClient(t, handler, provider.wantEndpoint, time.Second),
 				)
 
@@ -205,7 +207,7 @@ func TestCaptchaFailClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			verifier := NewVerifier(
 				enabledCaptchaSettings("recaptcha"),
-				"secret",
+				staticSecret("secret"),
 				siteVerifyHandlerClient(t, tc.handler, "https://www.google.com/recaptcha/api/siteverify", tc.clientPeriod),
 			)
 
@@ -215,6 +217,11 @@ func TestCaptchaFailClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// staticSecret 把固定 secret 包成请求期 resolver,复现旧版「boot 期固定 secret」语义供测试用。
+func staticSecret(s string) func(context.Context) string {
+	return func(context.Context) string { return s }
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

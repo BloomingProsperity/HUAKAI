@@ -1,7 +1,7 @@
 // HUAKAI · iKun
 
-// Package voucherhttp exposes voucher user HTTP endpoints that are not part of
-// the legacy gatewayhttp voucher handler bundle.
+// Package voucherhttp 暴露面向用户的 voucher HTTP 端点, 这些端点不属于
+// 旧的 gatewayhttp voucher handler 集合。
 package voucherhttp
 
 import (

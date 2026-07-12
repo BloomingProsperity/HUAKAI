@@ -17,8 +17,8 @@ import (
 )
 
 func TestSubmitUsesSessionIdentityAndReturns202(t *testing.T) {
-	// Mutation: read tenant_id/user_id from JSON body instead of session; the
-	// service call below observes spoofed values and this test fails.
+	// 变异:从 JSON 请求体而非 session 读取 tenant_id/user_id;下面的 service 调用
+	// 会观察到被伪造的值,本测试随即失败。
 	service := &serviceStub{submitResult: taskFixture(11, 7, 42)}
 	mux := mountWithSession(service, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
 	rec := httptest.NewRecorder()
@@ -53,8 +53,8 @@ func TestSubmitUsesSessionIdentityAndReturns202(t *testing.T) {
 }
 
 func TestDisabledSubmitReturns404AndDoesNotCreateTask(t *testing.T) {
-	// Mutation: map ErrDisabled after calling through to the store; submitCalls
-	// would be non-zero or status would not be 404.
+	// 变异:在已透传到 store 之后才映射 ErrDisabled;那样 submitCalls 会非零,
+	// 或 status 不为 404。
 	service := &serviceStub{submitErr: mediatask.ErrDisabled}
 	mux := mountWithSession(service, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
 	rec := httptest.NewRecorder()
@@ -76,8 +76,8 @@ func TestDisabledSubmitReturns404AndDoesNotCreateTask(t *testing.T) {
 }
 
 func TestStatusAndListUseSessionScope(t *testing.T) {
-	// Mutation: omit user_id from status/list service calls; the captured scope
-	// below is not the session user.
+	// 变异:在 status/list 的 service 调用中省略 user_id;下面捕获到的 scope
+	// 就不是 session 用户。
 	service := &serviceStub{
 		statusResult: taskFixture(12, 7, 42),
 		listResult:   []mediatask.Task{taskFixture(12, 7, 42)},

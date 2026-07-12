@@ -1,16 +1,15 @@
-// Package sensitiveobfuscate provides keyword-cloaking for outbound request text.
-// It inserts a zero-width space (U+200B) after the first rune of each matched
-// sensitive word inside Anthropic Messages request bodies (system + message
-// content), making the text pass through upstream keyword classifiers while
-// remaining visually identical to humans.
+// Package sensitiveobfuscate 为出站请求文本提供关键词隐匿能力。
+// 它在 Anthropic Messages 请求体（system + message content）中每个匹配到的
+// 敏感词的首个 rune 之后插入一个零宽空格（U+200B），使文本能够绕过上游的
+// 关键词分类器，同时对人类肉眼而言保持完全一致。
 //
-// Design rules:
-//   - Empty word list -> Obfuscate is identity; input bytes returned unchanged.
-//   - Parse error -> input bytes returned unchanged (fail-safe).
-//   - Only re-serializes when at least one substitution was made.
-//   - Longest-match wins when words overlap (e.g. ["ban","banned"] -> "banned"
-//     is matched as one unit, not double-replaced).
-//   - Case-insensitive matching; substitution preserves original casing.
+// 设计规则：
+//   - 空词表 -> Obfuscate 为恒等操作；原样返回输入字节。
+//   - 解析出错 -> 原样返回输入字节（fail-safe）。
+//   - 仅在至少做了一次替换时才重新序列化。
+//   - 词条重叠时最长匹配优先（例如 ["ban","banned"] -> "banned"
+//     会作为一个整体匹配，而不会被重复替换）。
+//   - 大小写不敏感匹配；替换保留原始大小写。
 package sensitiveobfuscate
 
 import (
@@ -21,18 +20,17 @@ import (
 	"unicode/utf8"
 )
 
-const zwsp = "​"
+const zwsp = "\u200b"
 
-// Matcher holds a compiled sensitive-word pattern. A zero-value Matcher (or
-// one built from an empty word list) is a safe no-op.
+// Matcher 持有一个已编译的敏感词模式。零值 Matcher（或由空词表
+// 构建出的 Matcher）是安全的空操作。
 type Matcher struct {
-	re *regexp.Regexp // nil when no words configured
+	re *regexp.Regexp // 未配置任何词条时为 nil
 }
 
-// BuildSensitiveWordMatcher compiles words into a longest-first, case-insensitive
-// alternation regex. Blank/whitespace-only words are silently skipped. If no
-// valid words remain, the returned Matcher is a no-op (Obfuscate returns input
-// unchanged).
+// BuildSensitiveWordMatcher 将词条编译为一个最长优先、大小写不敏感的
+// 多选分支正则。空白/纯空白词条会被静默跳过。若没有任何有效词条剩下，
+// 返回的 Matcher 即为空操作（Obfuscate 原样返回输入）。
 func BuildSensitiveWordMatcher(words []string) Matcher {
 	var valid []string
 	for _, w := range words {
@@ -43,11 +41,11 @@ func BuildSensitiveWordMatcher(words []string) Matcher {
 	if len(valid) == 0 {
 		return Matcher{}
 	}
-	// Sort longest first so longer words take priority over shorter prefixes.
+	// 最长优先排序，使更长的词条优先于更短的前缀。
 	sort.Slice(valid, func(i, j int) bool {
 		return len(valid[i]) > len(valid[j])
 	})
-	// Build alternation; each word is quoted so no regex meta-chars leak.
+	// 构建多选分支；每个词条都被转义，使正则元字符不会泄漏出去。
 	var sb strings.Builder
 	sb.WriteString("(?i)(")
 	for i, w := range valid {
@@ -61,11 +59,10 @@ func BuildSensitiveWordMatcher(words []string) Matcher {
 	return Matcher{re: re}
 }
 
-// ObfuscateSensitiveWords walks the Anthropic Messages JSON body and inserts
-// U+200B after the first rune of every matched sensitive word in all text
-// fields (system string/blocks and messages[].content string/blocks with
-// type=="text"). Returns the original body unchanged on empty matcher, no
-// match, or parse failure.
+// ObfuscateSensitiveWords 遍历 Anthropic Messages JSON 请求体，在所有文本
+// 字段（system 字符串/blocks，以及 messages[].content 字符串/type=="text"
+// 的 blocks）中每个匹配到的敏感词首个 rune 之后插入 U+200B。当 matcher 为空、
+// 无匹配或解析失败时，原样返回请求体。
 func ObfuscateSensitiveWords(body []byte, m Matcher) []byte {
 	if m.re == nil {
 		return body
@@ -76,7 +73,7 @@ func ObfuscateSensitiveWords(body []byte, m Matcher) []byte {
 	}
 	changed := false
 
-	// --- system field ---
+	// --- system 字段 ---
 	if sysRaw, ok := root["system"]; ok {
 		if newRaw, c := obfuscateFieldRaw(sysRaw, m); c {
 			root["system"] = newRaw
@@ -84,7 +81,7 @@ func ObfuscateSensitiveWords(body []byte, m Matcher) []byte {
 		}
 	}
 
-	// --- messages field ---
+	// --- messages 字段 ---
 	if msgsRaw, ok := root["messages"]; ok {
 		var msgs []json.RawMessage
 		if json.Unmarshal(msgsRaw, &msgs) == nil {
@@ -128,13 +125,13 @@ func ObfuscateSensitiveWords(body []byte, m Matcher) []byte {
 	return out
 }
 
-// obfuscateFieldRaw handles a raw JSON value that may be:
-//   - a JSON string  -> obfuscate directly
-//   - a JSON array   -> walk blocks with type=="text"
+// obfuscateFieldRaw 处理一个可能为以下形态的原始 JSON 值：
+//   - JSON 字符串  -> 直接做隐匿处理
+//   - JSON 数组    -> 遍历 type=="text" 的 blocks
 //
-// Returns (newRaw, true) when something changed, (original, false) otherwise.
+// 有变更时返回 (newRaw, true)，否则返回 (original, false)。
 func obfuscateFieldRaw(raw json.RawMessage, m Matcher) (json.RawMessage, bool) {
-	// Try string first.
+	// 先尝试当作字符串。
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
 		if ns, c := obfuscateString(s, m); c {
@@ -146,7 +143,7 @@ func obfuscateFieldRaw(raw json.RawMessage, m Matcher) (json.RawMessage, bool) {
 		}
 		return raw, false
 	}
-	// Try array of content blocks.
+	// 再尝试当作 content blocks 数组。
 	var blocks []json.RawMessage
 	if json.Unmarshal(raw, &blocks) == nil {
 		blockChanged := false
@@ -155,7 +152,7 @@ func obfuscateFieldRaw(raw json.RawMessage, m Matcher) (json.RawMessage, bool) {
 			if json.Unmarshal(blkRaw, &blk) != nil {
 				continue
 			}
-			// Only process type=="text" blocks.
+			// 仅处理 type=="text" 的 block。
 			var btype string
 			if json.Unmarshal(blk["type"], &btype) != nil || btype != "text" {
 				continue
@@ -190,15 +187,15 @@ func obfuscateFieldRaw(raw json.RawMessage, m Matcher) (json.RawMessage, bool) {
 	return raw, false
 }
 
-// obfuscateString inserts U+200B after the first rune of each matched word in s.
-// Returns (modified, true) when at least one substitution was made.
+// obfuscateString 在 s 中每个匹配到的词条首个 rune 之后插入 U+200B。
+// 当至少做了一次替换时返回 (modified, true)。
 func obfuscateString(s string, m Matcher) (string, bool) {
 	if m.re == nil {
 		return s, false
 	}
 	changed := false
 	result := m.re.ReplaceAllStringFunc(s, func(match string) string {
-		// Insert ZWSP after the first rune.
+		// 在首个 rune 之后插入 ZWSP。
 		_, size := utf8.DecodeRuneInString(match)
 		changed = true
 		return match[:size] + zwsp + match[size:]

@@ -209,7 +209,7 @@ func nullableReferralStatus(status *string) any {
 
 var _ referralRecordsStore = (*PostgresStore)(nil)
 
-// ListReferralRewardsAdmin implements the tenant-scoped admin reward ledger read.
+// ListReferralRewardsAdmin 实现租户级的管理员奖励账本读取。
 func (s *PostgresStore) ListReferralRewardsAdmin(ctx context.Context, input ListReferralRewardsAdminInput) (AdminReferralRewardPage, error) {
 	if s == nil || s.pool == nil {
 		return AdminReferralRewardPage{}, ErrStoreNotConfigured

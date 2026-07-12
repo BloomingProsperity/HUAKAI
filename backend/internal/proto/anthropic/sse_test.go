@@ -66,6 +66,60 @@ func TestAT_PROTO_002_01_AnthropicSSEStreamGraceful(t *testing.T) {
 	}
 }
 
+// TestAT_PROTO_002_StreamMessageDeltaPreservesCacheUsage 守"message_delta 只带
+// output_tokens 时,不得抹掉 message_start 已确立的 input/cache 维度"。
+//
+// 这是判别性测试:message_start 带 input=1000 + cache_read=5000 + cache_creation=200,
+// 随后 message_delta 仅带 output=50。正确合并(非零才覆盖)下 message_delta 事件的
+// Usage 必须同时保留 cache_read=5000/cache_creation=200/input=1000 并更新 output=50。
+// 变异判据:若把 mergeUsage 改回"a 非零即整段替换 base",cache_read 会变 0 → 本测试 RED。
+// 该抹零会让 message_stop 的 cache 命中观测读到 0,饿掉 cache-aware 路由正反馈。
+func TestAT_PROTO_002_StreamMessageDeltaPreservesCacheUsage(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	evts := [][]byte{
+		anthroEvt(t, "message_start", map[string]any{"message": map[string]any{
+			"id":    "msg_cache_stream",
+			"model": "claude-3-5-sonnet",
+			"usage": map[string]any{
+				"input_tokens":                1000,
+				"output_tokens":               1,
+				"cache_read_input_tokens":     5000,
+				"cache_creation_input_tokens": 200,
+			},
+		}}),
+		anthroEvt(t, "content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "text", "text": ""}}),
+		anthroEvt(t, "content_block_delta", map[string]any{"index": 0, "delta": map[string]any{"type": "text_delta", "text": "hi"}}),
+		anthroEvt(t, "content_block_stop", map[string]any{"index": 0}),
+		anthroEvt(t, "message_delta", map[string]any{"delta": map[string]any{"stop_reason": "end_turn"}, "usage": map[string]any{"output_tokens": 50}}),
+		anthroEvt(t, "message_stop", nil),
+	}
+	canonical, _ := runStream(t, adapter, evts)
+
+	var deltaUsage *proto.CanonicalUsage
+	for _, ev := range canonical {
+		if ev.Type == "message_delta" && ev.Usage != nil {
+			deltaUsage = ev.Usage
+		}
+	}
+	if deltaUsage == nil {
+		t.Fatalf("message_delta 事件缺 Usage")
+	}
+	// cache_read 是被抹零 bug 直接命中的字段——必须保留 message_start 的值。
+	if deltaUsage.CacheReadInputTokens != 5000 {
+		t.Fatalf("cache_read 被抹零: 期望 5000 实得 %d", deltaUsage.CacheReadInputTokens)
+	}
+	if deltaUsage.CacheCreationInputTokens != 200 {
+		t.Fatalf("cache_creation 被抹零: 期望 200 实得 %d", deltaUsage.CacheCreationInputTokens)
+	}
+	if deltaUsage.InputTokens != 1000 {
+		t.Fatalf("input 被抹零: 期望 1000 实得 %d", deltaUsage.InputTokens)
+	}
+	// output 必须取 message_delta 的最新值。
+	if deltaUsage.OutputTokens != 50 {
+		t.Fatalf("output 未更新: 期望 50 实得 %d", deltaUsage.OutputTokens)
+	}
+}
+
 func TestAT_PROTO_002_02_ToolCallInterleavingPreservesIndex(t *testing.T) {
 	adapter := &anthropic.Adapter{}
 	const upstreamToolID = "toolu_abc123"
@@ -228,7 +282,10 @@ func TestAT_PROTO_002_07_MaxTokensFinishReason(t *testing.T) {
 
 func TestAT_PROTO_002_08_UnknownEventType(t *testing.T) {
 	adapter := &anthropic.Adapter{}
-	evt := anthroEvt(t, "ping", nil)
+	// 用一个真正未知的事件类型作夹具(不要用 ping——ping 是合法保活帧,有专门 case 容忍,
+	// 由 TestAT_PROTO_002_PingKeepaliveTolerated 守)。default 分支对真正未知类型仍须
+	// 返 ErrUnknownEventType + loss,保留协议漂移信号。
+	evt := anthroEvt(t, "totally_unknown_event_xyz", nil)
 	state := &anthropic.UpstreamState{}
 	out, loss, err := adapter.ProviderEventToCanonicalEvents(context.Background(), evt, state)
 	if !errors.Is(err, proto.ErrUnknownEventType) {
@@ -239,6 +296,37 @@ func TestAT_PROTO_002_08_UnknownEventType(t *testing.T) {
 	}
 	if len(loss) == 0 {
 		t.Fatalf("unknown event must emit protocol_loss entry (NOT silent drop)")
+	}
+}
+
+// TestAT_PROTO_002_PingKeepaliveTolerated 守"Anthropic 上游 ping 保活帧必须被静默
+// 容忍,绝不返 error"。
+//
+// 这是判别性测试:直接喂 ping 事件(不走 runStream——后者会吞 ErrUnknownEventType
+// 掩盖判别性),断言 err==nil、0 canonical 事件、0 loss。
+// 变异判据:删掉 providerEventSwitch 的 `case "ping"`,ping 落入 default → 返
+// ErrUnknownEventType + loss → `err==nil` 断言 RED。
+// 真实危害:ping 若返 error,forwarder 会判 UnknownTermination 截断整流,并对已交付
+// 内容计费(对失败请求收钱),破坏所有稍有延迟的 Claude 流式请求。
+func TestAT_PROTO_002_PingKeepaliveTolerated(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	state := &anthropic.UpstreamState{}
+	// 先建立流状态(真实流里 ping 总在 message_start 之后到达)。
+	if _, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(),
+		anthroEvt(t, "message_start", map[string]any{"message": map[string]any{"id": "msg_ping", "model": "claude-3-5-sonnet"}}),
+		state); err != nil {
+		t.Fatalf("message_start 不应出错: %v", err)
+	}
+	out, loss, err := adapter.ProviderEventToCanonicalEvents(context.Background(),
+		anthroEvt(t, "ping", nil), state)
+	if err != nil {
+		t.Fatalf("ping 保活帧不得返错误(否则 forwarder 判 UnknownTermination 截断并计费); got %v", err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("ping 不得产生 canonical 事件; got %d", len(out))
+	}
+	if len(loss) != 0 {
+		t.Fatalf("ping 是正常保活帧,不得记协议损失(避免长流账面噪音); got %d", len(loss))
 	}
 }
 
@@ -953,4 +1041,38 @@ func TestAT_PROTO_002_14_TranslationLatencySLO(t *testing.T) {
 		t.Logf("WARN p99=%v exceeds SLO %v (spec marks as telemetry, not failure)", p99, slo)
 	}
 	t.Logf("translation latency p99=%v over %d events", p99, len(durations))
+}
+
+// TestAnthropicStreamingToolUseMalformedIDPreserved 守 S2(同 S1-1 族的 anthropic streaming 兄弟):
+// streaming canonicalBlock 在 tool_use id 无法翻译(缺 toolu_ 前缀/畸形)时必须保留成非空 canonical id，
+// 而不是丢成空串——空 CallID 会让下游 openai 流硬报错、anthropic 流发出无法关联 tool_result 的 tool_use。
+// buffered 路径(anthropicBufferedToolUseBlock)早已合成 fallback，本测试守 streaming 路径与之对齐。
+// Mutation: 把 canonicalBlock 的 err 分支退回 `return {Type:"tool_use", Name, Input}`(不带 CallID) →
+// CallID 变空 → 此处 RED。
+func TestAnthropicStreamingToolUseMalformedIDPreserved(t *testing.T) {
+	adapter := &anthropic.Adapter{}
+	const malformedToolID = "weirdid99" // 无 toolu_ 前缀 → ToCanonicalCallID 失败
+	evts := [][]byte{
+		anthroEvt(t, "message_start", map[string]any{"message": map[string]any{"id": "msg_y", "model": "claude-3-5-sonnet"}}),
+		anthroEvt(t, "content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "tool_use", "id": malformedToolID, "name": "search"}}),
+		anthroEvt(t, "content_block_stop", map[string]any{"index": 0}),
+		anthroEvt(t, "message_stop", nil),
+	}
+	canonical, _ := runStream(t, adapter, evts)
+	var toolBlockEvt *proto.CanonicalEvent
+	for i := range canonical {
+		if canonical[i].Type == "content_block_start" && canonical[i].ContentBlock != nil && canonical[i].ContentBlock.Type == "tool_use" {
+			toolBlockEvt = &canonical[i]
+			break
+		}
+	}
+	if toolBlockEvt == nil {
+		t.Fatalf("tool_use content_block_start missing")
+	}
+	if toolBlockEvt.ContentBlock.CallID == "" {
+		t.Fatalf("malformed anthropic streaming tool_use id was dropped to empty (the S2 sibling defect)")
+	}
+	if !strings.HasPrefix(toolBlockEvt.ContentBlock.CallID, "call_") {
+		t.Fatalf("synthesized id must keep canonical call_ prefix, got %q", toolBlockEvt.ContentBlock.CallID)
+	}
 }

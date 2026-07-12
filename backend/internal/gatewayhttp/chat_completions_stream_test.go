@@ -1,14 +1,5 @@
 package gatewayhttp
 
-// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat /
-// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses
-// 守 P2-B 修复在流式 marshal 路径(injectStreamingRequestControls)。同非流式
-// 测试逻辑:Type:"raw" 时 marshal 必须 1:1 还原 Schema 整体,不能再包
-// {"type":"raw","schema":...}。
-//
-// Mutation:改回 raw-wrap 逻辑时两 用例必红 — response_format.type 变 "raw"
-// 而非 inbound 'json_object',或 text.format 嵌套出多一层 schema 包壳。
-
 import (
 	"bytes"
 	"context"
@@ -40,9 +31,19 @@ import (
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
+
+func streamLossHasCode(losses []proto.ProtocolLossEntry, code string) bool {
+	for _, loss := range losses {
+		if loss.Code == code {
+			return true
+		}
+	}
+	return false
+}
 
 func TestDeliveryTrackerMarksStartedOnWriteAndWriteHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
@@ -50,6 +51,25 @@ func TestDeliveryTrackerMarksStartedOnWriteAndWriteHeader(t *testing.T) {
 	if tracker.started() {
 		t.Fatal("new tracker must start as not delivered")
 	}
+	if _, err := tracker.Write([]byte("\n")); err != nil {
+		t.Fatalf("Write keepalive: %v", err)
+	}
+	if tracker.BusinessStarted() {
+		t.Fatal("裸换行 keepalive 不得标成业务交付")
+	}
+	if _, err := tracker.Write([]byte(": hk\n\n")); err != nil {
+		t.Fatalf("Write SSE keepalive: %v", err)
+	}
+	if tracker.BusinessStarted() {
+		t.Fatal("SSE 注释 keepalive 不得标成业务交付")
+	}
+	if _, err := tracker.Write([]byte(": hk\n\ndata: [DONE]\n\n")); err != nil {
+		t.Fatalf("Write combined frames: %v", err)
+	}
+	if !tracker.BusinessStarted() {
+		t.Fatal("同次写入中 keepalive 后的业务帧必须标成交付")
+	}
+	tracker = newDeliveryTracker(httptest.NewRecorder())
 	if _, err := tracker.Write([]byte("data: hello\n\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -58,6 +78,14 @@ func TestDeliveryTrackerMarksStartedOnWriteAndWriteHeader(t *testing.T) {
 	}
 	if tracker.statusCode() != http.StatusOK {
 		t.Fatalf("status=%d want 200 after implicit WriteHeader", tracker.statusCode())
+	}
+	if !tracker.BusinessStarted() {
+		t.Fatal("业务 SSE 帧必须标成交付")
+	}
+	partial := newDeliveryTracker(&partialWriteResponseWriter{header: make(http.Header), limit: 5, err: io.ErrClosedPipe})
+	_, _ = partial.Write([]byte("data: partial\n\n"))
+	if !partial.BusinessWriteUncertain() {
+		t.Fatal("业务帧部分写入必须标成交付不确定")
 	}
 
 	rec = httptest.NewRecorder()
@@ -195,7 +223,7 @@ func (d *recordingStreamingDoer) Do(req *http.Request) (*http.Response, error) {
 // ClientStreamIntent 的 gatewayhttp 接线点(F4 修复主线):openai 客户端流式
 // 请求 → gemini_messages 上游,非 gemini ingress 无 Extra["stream"]、marshal 的
 // gemini body 无顶层 stream 字段,出站 URL 必须仍选 :streamGenerateContent。
-// MUTATION: 删 executeStreamingAttempt 里 DispatchInput 的
+// 变异:删 executeStreamingAttempt 里 DispatchInput 的
 // ClientStreamIntent: ex.req.Stream 接线 → 出站 URL 退回非流 :generateContent
 // → 本测试红(评审 M6:链条两端有锁、源头裸奔的缺口由此补上)。
 func TestHandleStreamingResponse_CrossProtocolGeminiSelectsStreamAction(t *testing.T) {
@@ -287,9 +315,9 @@ func (rt *selectiveTransportRoundTripper) RoundTrip(req *http.Request) (*http.Re
 }
 
 func TestChatCompletions_ReverseSessionUsesMimicryTransport(t *testing.T) {
-	// Mutation check: if chatExecution stops passing TransportMode into either
-	// Dispatch or DispatchHCSF, these cases take the standard transport and fail
-	// before delivery instead of returning the fixture response.
+	// 变异:若 chatExecution 不再把 TransportMode 传入 Dispatch 或 DispatchHCSF,
+	// 这些用例就会走 standard transport,在交付前失败,
+	// 而非返回 fixture 响应。
 	t.Run("streaming raw dispatch", func(t *testing.T) {
 		standard, mimicry, dispatcher := copilotTransportModeDispatcher(t, openAIStreamingFixture())
 		reqBody := []byte(`{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
@@ -623,11 +651,9 @@ func TestAT_GW_002_14_StreamingIdempotencyReplayRecordsSSEAndReplays(t *testing.
 	}
 }
 
-func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T) {
-	// Risk killed: streaming Append+DLQ double failure must not become a
-	// chargeable 200 with no audit row. Mutation self-check: removing the
-	// post-Forward ledger-result settle gate records a settle for this fixture;
-	// removing trailer reconciliation leaves StreamState=partial instead of failed.
+func TestStreamingLedgerAppendAndDLQFailureAfterBusinessDeliveryDefersSettlementWithoutAbort(t *testing.T) {
+	// 该测试守住已交付永不反悔：业务帧已写出后，审计 ledger 双失败只能把结算交给恢复，不能 Abort。
+	// 变异：恢复旧 ledgerFailClosed 分支会写成 failed 并 Abort，本测试的终态、Abort、恢复断言同时变红。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -640,6 +666,9 @@ func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T)
 	deps.AuditLedgerDLQ = dlqSink
 	deps.Signer = signer
 	deps.Settler = settler
+	deps.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	recovery := &postDeliverySpyEnqueuer{}
+	deps.SettleRecoveryDLQ = recovery
 
 	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
 	if rec.Code != http.StatusOK {
@@ -649,28 +678,35 @@ func TestStreamingLedgerAppendAndDLQFailureProductionDoesNotSettle(t *testing.T)
 		t.Fatalf("stream body=%s want delivered fixture content", rec.Body.String())
 	}
 	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 when streaming ledger has no durable result", len(settler.calls))
+		t.Fatalf("direct settle calls=%d want 0 when audit ref is unavailable", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
-		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none after business delivery", settler.aborts)
 	}
 	if len(dlqSink.events) != 1 {
 		t.Fatalf("DLQ events=%d want 1 attempted enqueue", len(dlqSink.events))
 	}
-	result := rec.Result()
-	if got := result.Trailer.Get(headerHUAKAIStreamState); got != "failed" {
-		t.Fatalf("%s trailer=%q want failed for fail-closed ledger abort", headerHUAKAIStreamState, got)
+	if recovery.calls != 1 {
+		t.Fatalf("settlement recovery calls=%d want 1", recovery.calls)
 	}
-	if got := result.Trailer.Get(headerHUAKAIStreamState); got == "partial" {
-		t.Fatalf("%s trailer must not stay chargeable partial after fail-closed abort", headerHUAKAIStreamState)
+	payload, err := settlementrecovery.Decode(recovery.lastEvt.Payload)
+	if err != nil {
+		t.Fatalf("decode settlement recovery: %v", err)
+	}
+	if payload.Source != settlementrecovery.SourceStream {
+		t.Fatalf("settlement recovery source=%q want %q", payload.Source, settlementrecovery.SourceStream)
+	}
+	result := rec.Result()
+	if got := result.Trailer.Get(headerHUAKAIStreamState); got != "deferred" {
+		t.Fatalf("%s trailer=%q want deferred", headerHUAKAIStreamState, got)
 	}
 }
 
 func TestStreamingPersistedLedgerIDIsTrailerOnly(t *testing.T) {
-	// Risk killed: C-13 moves streaming ledger emission after body bytes, so
-	// LedgerID must be a declared trailer, not an ordinary header. Mutation
-	// self-check: writing the old ordinary header before first byte leaves
-	// Result().Header populated and Result().Trailer empty.
+	// 已消除风险:C-13 把流式 ledger 的发出挪到 body 字节之后,因此
+	// LedgerID 必须是声明过的 trailer,而非普通 header。变异自检:
+	// 在首字节前按旧方式写普通 header,会让 Result().Header 有值
+	// 而 Result().Trailer 为空。
 	signer, err := sign.GenerateKey()
 	if err != nil {
 		t.Fatalf("signer: %v", err)
@@ -768,9 +804,9 @@ func TestStreamingLedgerCallback_PersistedSetsVerifyAndFingerprintTrailers(t *te
 }
 
 func TestStreamingDeferredLedgerDLQRefIsTrailer(t *testing.T) {
-	// Risk killed: C-13 rev2 requires Deferred streaming results to expose
-	// DLQRef in its own trailer, never mixed into LedgerID. Mutation
-	// self-check: omitting the Deferred trailer writer leaves DLQRef empty.
+	// 已消除风险:C-13 rev2 要求 Deferred 流式结果在自己的 trailer 中暴露
+	// DLQRef,绝不混进 LedgerID。变异自检:
+	// 省略 Deferred trailer 写入器会让 DLQRef 为空。
 	signer, err := sign.GenerateKey()
 	if err != nil {
 		t.Fatalf("signer: %v", err)
@@ -797,10 +833,9 @@ func TestStreamingDeferredLedgerDLQRefIsTrailer(t *testing.T) {
 	}
 }
 
-func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testing.T) {
-	// Risk killed: duplicate request_id is never recoverable by DLQ replay.
-	// Mutation self-check: removing the duplicate special-case enqueues DLQ,
-	// sends a Deferred callback, and the handler settles this chargeable stream.
+func TestStreamingLedgerDuplicateRequestIDAfterDeliveryDefersSettlementWithoutAbort(t *testing.T) {
+	// 重复审计 request_id 不能恢复审计行，但业务帧已经交付时仍不得 Abort；结算转入三证恢复并告警。
+	// 变异：恢复旧 fail-closed Abort 后，Abort 与恢复断言同时变红。
 	t.Setenv("HUAKAI_RELEASE_MODE", "production")
 	signer, err := sign.GenerateKey()
 	if err != nil {
@@ -813,6 +848,9 @@ func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testin
 	deps.AuditLedgerDLQ = dlqSink
 	deps.Signer = signer
 	deps.Settler = settler
+	deps.AuditRefPolicy = productionAuditRefPolicyForGatewayTest(false)
+	recovery := &postDeliverySpyEnqueuer{}
+	deps.SettleRecoveryDLQ = recovery
 
 	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
 	if rec.Code != http.StatusOK {
@@ -822,17 +860,20 @@ func TestStreamingLedgerDuplicateRequestIDProductionDoesNotSettleOrDLQ(t *testin
 		t.Fatalf("stream body=%s want delivered fixture content", rec.Body.String())
 	}
 	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 for duplicate request_id", len(settler.calls))
+		t.Fatalf("direct settle calls=%d want 0 for missing audit ref", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 || settler.aborts[0].reason != "audit_ledger_error" {
-		t.Fatalf("aborts=%+v want one audit_ledger_error abort", settler.aborts)
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want none after business delivery", settler.aborts)
 	}
 	if len(dlqSink.events) != 0 {
 		t.Fatalf("DLQ events=%d want 0 for duplicate request_id", len(dlqSink.events))
 	}
+	if recovery.calls != 1 {
+		t.Fatalf("settlement recovery calls=%d want 1", recovery.calls)
+	}
 }
 
-func TestStreamingIdempotencyReplayAbortsZeroChargeGracefulStream(t *testing.T) {
+func TestStreamingIdempotencyReplayCommitsZeroTokenBusinessFrames(t *testing.T) {
 	replayStore := billing.NewMemoryReplayStore()
 	body := openAIStreamingRequestBody()
 	claimID := int64(77706)
@@ -844,63 +885,42 @@ func TestStreamingIdempotencyReplayAbortsZeroChargeGracefulStream(t *testing.T) 
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d want 200; body=%s", first.Code, first.Body.String())
 	}
-	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 for zero-delivery stream", len(settler.calls))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 for delivered zero-token frames", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 {
-		t.Fatalf("abort calls=%d want 1 for zero-delivery stream", len(settler.aborts))
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 after business frames", len(settler.aborts))
 	}
-	if got := settler.aborts[0].claimID; got != claimID {
-		t.Fatalf("abort claimID=%d want %d", got, claimID)
+	if got := settler.calls[0].ClaimID; got != claimID {
+		t.Fatalf("settle claimID=%d want %d", got, claimID)
 	}
-	if got := settler.aborts[0].reason; got != "stream_no_billable_delivery" {
-		t.Fatalf("abort reason=%q want stream_no_billable_delivery", got)
-	}
-	if _, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID); err != nil {
+	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, claimID)
+	if err != nil {
 		t.Fatalf("lookup replay: %v", err)
-	} else if ok {
-		t.Fatal("zero-delivery stream must not record idempotency replay")
+	}
+	if !ok || string(stored.ResponseBody) != first.Body.String() {
+		t.Fatalf("zero-token business frames were not recorded for replay: ok=%v stored=%q first=%q", ok, stored.ResponseBody, first.Body.String())
 	}
 
-	retryClaimID := claimID + 1
 	retrySettler := &recordingSettler{}
-	secondDeps := streamingReplayDeps(t, retryClaimID, false, openAIStreamingFixture(), replayStore)
+	secondDeps := streamingReplayDeps(t, claimID, true, "data: should-not-dispatch\n\n", replayStore)
 	secondDeps.Settler = retrySettler
 	second := invokeWithIdempotencyKey(t, secondDeps, body, "stream-idem-zero-charge")
 	if second.Code != http.StatusOK {
 		t.Fatalf("retry status=%d want 200; body=%s", second.Code, second.Body.String())
 	}
-	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "" {
-		t.Fatalf("retry idempotency-hit header=%q want empty after aborted first claim", got)
+	if got := second.Header().Get("X-HUAKAI-Idempotency-Hit"); got != "true" {
+		t.Fatalf("replay idempotency-hit header=%q want true", got)
 	}
-	if !strings.Contains(second.Body.String(), "pong") {
-		t.Fatalf("retry should dispatch upstream and return fresh stream; body=%s", second.Body.String())
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("replay body mismatch:\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
-	if len(retrySettler.calls) != 1 {
-		t.Fatalf("retry settle calls=%d want 1", len(retrySettler.calls))
-	}
-	if retrySettler.calls[0].ClaimID != retryClaimID {
-		t.Fatalf("retry settle claimID=%d want %d", retrySettler.calls[0].ClaimID, retryClaimID)
-	}
-	stored, ok, err := replayStore.Lookup(context.Background(), validIdentity().TenantID, retryClaimID)
-	if err != nil {
-		t.Fatalf("lookup replay: %v", err)
-	}
-	if !ok {
-		t.Fatal("retry chargeable stream must record replay after successful settlement")
-	}
-	if stored.ContentType != idempotencyReplayContentTypeSSE {
-		t.Fatalf("stored ContentType=%q want %q", stored.ContentType, idempotencyReplayContentTypeSSE)
-	}
-	if string(stored.ResponseBody) != second.Body.String() {
-		t.Fatalf("stored retry body mismatch:\nstored=%s\nretry=%s", string(stored.ResponseBody), second.Body.String())
-	}
-	if first.Body.String() == second.Body.String() {
-		t.Fatalf("fixture sanity: zero-delivery first body should differ from fresh chargeable retry\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
+	if len(retrySettler.calls) != 0 || len(retrySettler.aborts) != 0 {
+		t.Fatalf("replay must not settle or abort: settles=%d aborts=%d", len(retrySettler.calls), len(retrySettler.aborts))
 	}
 }
 
-func TestStreamingCaseCDefaultNoBillAbortsWithZeroObservedInput(t *testing.T) {
+func TestStreamingCaseCDefaultPolicySettlesDeliveredBusinessFrame(t *testing.T) {
 	settler := &recordingSettler{}
 	deps := inputOnlyInterruptedStreamDeps(t, 77801, 17, billing.NewPolicyResolver(&streamPolicyStore{}, time.Minute))
 	deps.Settler = settler
@@ -909,21 +929,18 @@ func TestStreamingCaseCDefaultNoBillAbortsWithZeroObservedInput(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 for case C no_bill", len(settler.calls))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 after business frame", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 {
-		t.Fatalf("abort calls=%d want 1 for case C no_bill", len(settler.aborts))
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 after business frame", len(settler.aborts))
 	}
-	if got := settler.aborts[0].reason; got != "upstream_5xx" {
-		t.Fatalf("abort reason=%q want upstream_5xx", got)
-	}
-	if got := settler.aborts[0].observedInputTokens; got != 0 {
-		t.Fatalf("observed input tokens=%d want 0 for default no_bill", got)
+	if got := settler.calls[0].Draft.TokensInput; got != 17 {
+		t.Fatalf("settled input tokens=%d want authoritative 17", got)
 	}
 }
 
-func TestStreamingCaseCNoBillRecordAbortsWithObservedInput(t *testing.T) {
+func TestStreamingCaseCNoBillRecordPolicySettlesDeliveredBusinessFrame(t *testing.T) {
 	settler := &recordingSettler{}
 	deps := inputOnlyInterruptedStreamDeps(t, 77802, 23, streamPolicyResolver(billing.StreamInputOnlyInterruptedPolicyNoBillRecord))
 	deps.Settler = settler
@@ -932,20 +949,20 @@ func TestStreamingCaseCNoBillRecordAbortsWithObservedInput(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 for case C no_bill_record", len(settler.calls))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 after business frame", len(settler.calls))
 	}
-	if len(settler.aborts) != 1 {
-		t.Fatalf("abort calls=%d want 1 for case C no_bill_record", len(settler.aborts))
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 after business frame", len(settler.aborts))
 	}
-	if got := settler.aborts[0].observedInputTokens; got != 23 {
-		t.Fatalf("observed input tokens=%d want 23 for no_bill_record", got)
+	if got := settler.calls[0].Draft.TokensInput; got != 23 {
+		t.Fatalf("settled input tokens=%d want authoritative 23", got)
 	}
 }
 
 func TestStreamingNoBillRecordTrueZeroDeliveryKeepsZeroObservedInput(t *testing.T) {
 	settler := &recordingSettler{}
-	deps := streamingReplayDeps(t, 77803, false, zeroTokenOpenAIStreamingFixture(), nil)
+	deps := streamingReplayDeps(t, 77803, false, "", nil)
 	deps.BillingPolicyResolver = streamPolicyResolver(billing.StreamInputOnlyInterruptedPolicyNoBillRecord)
 	deps.Settler = settler
 
@@ -964,7 +981,27 @@ func TestStreamingNoBillRecordTrueZeroDeliveryKeepsZeroObservedInput(t *testing.
 	}
 }
 
-func TestStreamingCaseCNilResolverDefaultsNoBill(t *testing.T) {
+func TestStreamingProtocolErrorFrameBeforeBusinessDeliveryStillAborts(t *testing.T) {
+	// 变异检查:若重新按“任意非注释 SSE 字节”判定业务交付，终止错误帧会触发 Settle，
+	// 本测试的零结算与单次 Abort 断言同时变红。
+	settler := &recordingSettler{}
+	upstream := "event: error\ndata: {\"message\":\"upstream failed\"}\n\n"
+	deps := streamingReplayDeps(t, 77805, false, upstream, nil)
+	deps.Settler = settler
+
+	rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "upstream_error") {
+		t.Fatalf("status/body=%d/%q want delivered protocol error frame", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 for error-only stream", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1 for zero business-frame stream", len(settler.aborts))
+	}
+}
+
+func TestStreamingCaseCNilResolverSettlesDeliveredBusinessFrame(t *testing.T) {
 	settler := &recordingSettler{}
 	deps := inputOnlyInterruptedStreamDeps(t, 77804, 31, nil)
 	deps.Settler = settler
@@ -973,11 +1010,14 @@ func TestStreamingCaseCNilResolverDefaultsNoBill(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if len(settler.aborts) != 1 {
-		t.Fatalf("abort calls=%d want 1 for nil resolver case C", len(settler.aborts))
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 after business frame", len(settler.calls))
 	}
-	if got := settler.aborts[0].observedInputTokens; got != 0 {
-		t.Fatalf("observed input tokens=%d want 0 for nil resolver", got)
+	if len(settler.aborts) != 0 {
+		t.Fatalf("abort calls=%d want 0 after business frame", len(settler.aborts))
+	}
+	if got := settler.calls[0].Draft.TokensInput; got != 31 {
+		t.Fatalf("settled input tokens=%d want authoritative 31", got)
 	}
 }
 
@@ -1006,8 +1046,8 @@ func TestAT_GW_002_19_TokenizerFallbackInferredUsage(t *testing.T) {
 	// 新契约（usage 估算兜底）：EOF 无终帧但交付了可见内容的流按逐事件估算终局
 	// 计费——正成本 + 估算 token 基数 + usage_basis 快照标记，且不挂 pending
 	//（no-usage 定稿 SQL 只认全零记录，挂上即永久 pending）。
-	// MUTATION: 去掉估算兜底（恢复零结算 + pending 旧路径）→ ActualCost==0 且
-	// pending==true → 下面三条断言 RED。
+	// 变异:去掉估算兜底（恢复零结算 + pending 旧路径）→ ActualCost==0 且
+	// pending==true → 下面三条断言变红。
 	if draft.PendingReconciliation {
 		t.Fatal("estimated settle is final; PendingReconciliation must be false for estimable delivered stream")
 	}
@@ -1060,10 +1100,9 @@ func TestAT_GW_002_19_TokenizerFallbackInferredUsage(t *testing.T) {
 }
 
 func TestAT_GW_002_17_TenantIsolationUnderLoad(t *testing.T) {
-	// Risk killed: replay persistence is keyed by tenant_id + claim_id under
-	// concurrent streams. Mutation self-check: removing tenant_id from the replay
-	// key causes shared claim IDs below to collide and body-marker assertions turn
-	// red for at least one tenant.
+	// 已消除风险:并发流式下,replay 持久化以 tenant_id + claim_id 为键。
+	// 变异自检:从 replay 键中移除 tenant_id 后,下面共享的 claim ID 会冲突,
+	// 至少一个租户的 body-marker 断言会变红。
 	const (
 		tenants          = 5
 		streamsPerTenant = 20
@@ -1258,8 +1297,17 @@ func TestStreamingIdempotencyReplaySettlesAmbiguousUsageWithDeliveredContent(t *
 	if settler.calls[0].StreamAttempt == nil {
 		t.Fatal("StreamAttempt missing")
 	}
-	if settler.calls[0].StreamAttempt.State.Chargeable() {
-		t.Fatalf("ambiguous usage attempt must stay non-chargeable; StreamAttempt=%#v", settler.calls[0].StreamAttempt)
+	// SM-05 端到端铁证:歧义用量但已交付可估内容(fixture 发出 "partial" 文本 →
+	// forwarder 累出 EstimatedOutputTokens>0)。内容已发给用户,reconciliation 是
+	// refund-only 永不补收 → 须按估算保守正收,非零收漏钱。
+	// 变异:还原任一闸(state.go 对 Ambiguous 恒判 Failed,或 stream.go 守卫排除
+	// Ambiguous)→ State 退回 Failed(非 Chargeable)且 ActualCost 回零 → 下列断言变红;
+	// 两闸放行则 State=Partial 且估出正成本 → 变绿。
+	if !settler.calls[0].StreamAttempt.State.Chargeable() {
+		t.Fatalf("歧义+已交付可估内容须可计费(Partial); StreamAttempt=%#v", settler.calls[0].StreamAttempt)
+	}
+	if !settler.calls[0].ActualCost.IsPositive() {
+		t.Fatalf("歧义+已交付须按估算正收; ActualCost=%s want >0", settler.calls[0].ActualCost)
 	}
 	if settler.calls[0].StreamAttempt.DeliveredTokenCount <= 0 {
 		t.Fatalf("StreamAttempt DeliveredTokenCount=%d want >0", settler.calls[0].StreamAttempt.DeliveredTokenCount)
@@ -1318,14 +1366,14 @@ func TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders(t *testing.T) {
 		if got := rec.Header().Get("X-Huakai-Settle-Error"); got != "" {
 			t.Fatalf("X-Huakai-Settle-Error=%q want empty", got)
 		}
-		assertLogContains(t, logs, "settle_failed", "error_class")
+		assertLogContains(t, logs, "settlement_deferred", "error_class")
 		assertLogOmits(t, logs, marker)
 	})
 
-	t.Run("abort error after delivery", func(t *testing.T) {
+	t.Run("abort error before business delivery", func(t *testing.T) {
 		const marker = "SENSITIVE_STREAM_ABORT_MARKER"
 		logs := captureSlogForTest(t)
-		deps := streamingReplayDeps(t, 77903, false, zeroTokenOpenAIStreamingFixture(), nil)
+		deps := streamingReplayDeps(t, 77903, false, "", nil)
 		deps.Settler = &failingAbortSettler{err: errors.New(marker)}
 
 		rec := invokeHandler(t, deps, openAIStreamingRequestBody())
@@ -1347,6 +1395,8 @@ func TestStreamingIdempotencyReplayAbortsZeroByteForwardError(t *testing.T) {
 
 	deps := streamingReplayDeps(t, claimID, false, "", replayStore)
 	deps.Settler = settler
+	recovery := &postDeliverySpyEnqueuer{}
+	deps.SettleRecoveryDLQ = recovery
 	scanners := gateway.NewStaticStreamScannerRegistry()
 	scanners.MustRegister("openai_chat", scannerImmediateError{err: io.ErrUnexpectedEOF})
 	deps.Forwarder.Scanners = scanners
@@ -1366,6 +1416,9 @@ func TestStreamingIdempotencyReplayAbortsZeroByteForwardError(t *testing.T) {
 	}
 	if len(settler.aborts) != 1 {
 		t.Fatalf("abort calls=%d want 1 for zero-byte forward error", len(settler.aborts))
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 for zero business frames", recovery.calls)
 	}
 	if got := settler.aborts[0].claimID; got != claimID {
 		t.Fatalf("abort claimID=%d want %d", got, claimID)
@@ -1782,119 +1835,18 @@ func assertLogOmits(t *testing.T, logs *bytes.Buffer, forbiddens ...string) {
 	}
 }
 
-// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat
-// 守 P2-B 修复在流式 marshal 路径(injectStreamingRequestControls)。
-// 与非流式 hcsf_graph_marshal_test.go 中同名用例同源:Type:"raw" 时 marshal
-// 必须 1:1 还原 Schema 整体,不再包 {"type":"raw","schema":...}。
-//
-// Mutation:把流式 helper 改回原 wrap 逻辑时本用例必红 — body["response_format"]
-// 会变成 {"type":"raw","schema":{"type":"json_object"}},.type != "json_object"。
-func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIChat(t *testing.T) {
-	raw := json.RawMessage(`{"type":"json_object"}`)
-	env := &proto.HCSF{
-		RequestControls: proto.RequestControls{
-			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
-		},
-	}
-	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_chat")
-	if err != nil {
-		t.Fatalf("injectStreamingRequestControls err=%v", err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(out, &body); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, out)
-	}
-	rf, ok := body["response_format"].(map[string]any)
-	if !ok {
-		t.Fatalf("response_format must be JSON object, got %T: %v", body["response_format"], body["response_format"])
-	}
-	if rf["type"] != "json_object" {
-		t.Fatalf("streaming response_format.type = %v, want inbound 'json_object' (raw-wrap regression)", rf["type"])
-	}
-	if _, hasSchema := rf["schema"]; hasSchema {
-		t.Fatalf("streaming response_format 出现 'schema' key 是 raw-wrap regression: body=%+v", body)
-	}
-}
-
-// TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses
-// 守 P2-B 修复在 Responses 流式 marshal 路径。
-//
-// Mutation:同上,改回原 wrap 时 body["text"] 会成
-// {"format":{"type":"raw","schema":...}} 而非 inbound 原 text 整体。
-func TestInjectStreamingRequestControlsResponseFormatRawPassthrough_OpenAIResponses(t *testing.T) {
-	raw := json.RawMessage(`{"format":{"type":"json_schema","json_schema":{"name":"Person","schema":{"type":"object"}}}}`)
-	env := &proto.HCSF{
-		RequestControls: proto.RequestControls{
-			ResponseFormat: &proto.ResponseFormat{Type: "raw", Schema: raw},
-		},
-	}
-	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_responses")
-	if err != nil {
-		t.Fatalf("injectStreamingRequestControls err=%v", err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(out, &body); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, out)
-	}
-	text, ok := body["text"].(map[string]any)
-	if !ok {
-		t.Fatalf("text must be JSON object, got %T: %v", body["text"], body["text"])
-	}
-	format, ok := text["format"].(map[string]any)
-	if !ok {
-		t.Fatalf("text.format must be object, got %T: %v", text["format"], text["format"])
-	}
-	if format["type"] != "json_schema" {
-		t.Fatalf("streaming text.format.type = %v, want inbound 'json_schema' (raw-wrap regression)", format["type"])
-	}
-	if _, hasOuter := format["schema"]; hasOuter {
-		t.Fatalf("streaming text.format 出现包壳 'schema' 字段是 raw-wrap regression: body=%+v", body)
-	}
-}
-
-func TestInjectStreamingRequestControlsMergesRequestPassthrough(t *testing.T) {
-	max := 12
-	env := &proto.HCSF{
-		RequestControls: proto.RequestControls{MaxTokens: &max},
-		Passthrough: &proto.PassthroughEnvelope{Extra: map[string]json.RawMessage{
-			"max_tool_calls":    json.RawMessage(`3`),
-			"prompt_cache_key":  json.RawMessage(`"tenant-a:stable-prefix"`),
-			"max_output_tokens": json.RawMessage(`999`),
-		}},
-	}
-	out, err := injectStreamingRequestControls([]byte(`{}`), env, "openai_responses")
-	if err != nil {
-		t.Fatalf("injectStreamingRequestControls err=%v", err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(out, &body); err != nil {
-		t.Fatalf("unmarshal: %v body=%s", err, out)
-	}
-	maxToolCalls, ok := body["max_tool_calls"].(float64)
-	if !ok || maxToolCalls != 3 {
-		t.Fatalf("max_tool_calls passthrough lost: %+v", body)
-	}
-	if body["prompt_cache_key"] != "tenant-a:stable-prefix" {
-		t.Fatalf("prompt_cache_key passthrough lost: %+v", body)
-	}
-	maxOutputTokens, ok := body["max_output_tokens"].(float64)
-	if !ok || maxOutputTokens != 12 {
-		t.Fatalf("modeled max_output_tokens should win over passthrough conflict: %+v", body)
-	}
-}
-
 // TestStreamingProviderRequestBodyNormalizesMarshalShape 守卫流式翻译路径
-// 的形态归一:injectStreamingRequestControls 的按形态分支(response_format
+// 的形态归一:chatpipe controls 注入的按形态分支(response_format
 // raw 直通的 case "openai_chat" 等)必须收到归一后的形态族,不能收到原始
 // 族名。判别点(真实可达路径 = 跨协议翻译,如 gemini 客户端→kimi 上游):
 //  1. kimi_chat → max_tokens=33 + 顶层 stream:true(openai_chat 形态);
 //  2. kimi_chat + ResponseFormat{Type:"raw"} → body 出现 response_format
 //     ——不归一时 family="kimi_chat" 命中不了 case "openai_chat",raw
 //     response_format 被静默丢弃。
-//  3. 留 fail-closed 的族(openai_codex/cursor_session/gemini_advanced_session)
-//     在此报错,不产出 body。
+//  3. openai_codex → Responses 形 body;仍留 fail-closed 的族
+//     (cursor_session/gemini_advanced_session)在此报错,不产出 body。
 //
-// Mutation:删掉 streamingProviderRequestBody 开头的形态归一行 → 2 必红
+// 变异:删掉 streamingProviderRequestBody 开头的形态归一行 → 2 必红
 // (response_format 缺失);把归一改错成恒等 → 同红。
 func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 	newEnv := func() *proto.HCSF {
@@ -1910,6 +1862,7 @@ func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 		max := 33
 		env.RequestControls.MaxTokens = &max
 		env.RequestControls.ResponseFormat = &proto.ResponseFormat{Type: "raw", Schema: json.RawMessage(`{"type":"json_object"}`)}
+		env.RequestControls.SystemPrompt = "system policy"
 		return env
 	}
 
@@ -1932,7 +1885,35 @@ func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 		t.Errorf("kimi_chat 的 raw response_format 未直通(形态归一缺失时 case openai_chat 不命中、静默丢弃): %v", kimi["response_format"])
 	}
 
-	for _, fam := range []string{"openai_codex", "cursor_session", "gemini_advanced_session"} {
+	codexEnv := newEnv()
+	rawCodex, err := streamingProviderRequestBody(codexEnv, "openai_codex")
+	if err != nil {
+		t.Fatalf("openai_codex streamingProviderRequestBody err=%v(chat/anthropic→codex 流式翻译路径回归 501)", err)
+	}
+	var codex map[string]any
+	if err := json.Unmarshal(rawCodex, &codex); err != nil {
+		t.Fatalf("unmarshal codex: %v body=%s", err, rawCodex)
+	}
+	if _, ok := codex["input"].([]any); !ok {
+		t.Errorf("openai_codex 应投影为 Responses input[] 形态,got=%+v", codex)
+	}
+	if codex["instructions"] != "system policy" {
+		t.Errorf("openai_codex instructions=%v want system policy", codex["instructions"])
+	}
+	if codex["stream"] != true {
+		t.Errorf("openai_codex stream=%v want true", codex["stream"])
+	}
+	if got, ok := codex["max_output_tokens"].(float64); !ok || got != 33 {
+		t.Errorf("openai_codex 应注入 max_output_tokens=33(Responses 形态),got=%v", codex["max_output_tokens"])
+	}
+	if _, ok := codex["messages"]; ok {
+		t.Errorf("openai_codex 不得产出 Chat messages 形态: %+v", codex)
+	}
+	if !streamLossHasCode(codexEnv.CapabilityGraph.ProtocolLoss, "codex_max_output_tokens_stripped") {
+		t.Errorf("codex MaxTokens 被 adapter 剥离但未记 loss: %+v", codexEnv.CapabilityGraph.ProtocolLoss)
+	}
+
+	for _, fam := range []string{"cursor_session", "gemini_advanced_session"} {
 		if _, err := streamingProviderRequestBody(newEnv(), fam); err == nil {
 			t.Errorf("family %q 应在 marshal 处 fail-closed(待 OCAW 确认形态),却产出了 body", fam)
 		}
@@ -1941,11 +1922,11 @@ func TestStreamingProviderRequestBodyNormalizesMarshalShape(t *testing.T) {
 
 // TestStreamingProviderRequestBodyDifyChat 抓的回归:dify_chat 流式翻译 body
 // 被 openai 形处理污染——Dify 的流式语义只在 body 内 response_mode 字段,
-// (1) forceStreamingRequest 注顶层 stream:true、(2) injectStreamingRequestControls
+// (1) forceStreamingRequest 注顶层 stream:true、(2) chatpipe controls 注入
 // 注 max_tokens 等 openai 形 controls,任一发生都是协议污染;且被丢弃的
 // MaxTokens 控制必须在 marshal 内记 loss 而非静默蒸发。
-// Mutation:从 streamingProviderRequestBody 的跳过分支删掉 dify_chat → 顶层
-// stream 断言红;从 injectStreamingRequestControls 删掉 dify_chat 早退 →
+// 变异:从 streamingProviderRequestBody 的跳过分支删掉 dify_chat → 顶层
+// stream 断言红;从 chatpipe controls 注入删掉 dify_chat 早退 →
 // max_tokens 断言红。
 func TestStreamingProviderRequestBodyDifyChat(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
@@ -1991,10 +1972,10 @@ func TestStreamingProviderRequestBodyDifyChat(t *testing.T) {
 
 // TestStreamingProviderRequestBodyOllamaNative 抓的回归:ollama_native 流式
 // 翻译 body 被 openai 形处理污染——Ollama 的采样控制只认 options{} 嵌套
-// (num_predict),injectStreamingRequestControls 注顶层 max_tokens 即协议污染;
+// (num_predict),chatpipe controls 注入顶层 max_tokens 即协议污染;
 // stream 字段由 marshal 按 StreamPlan 显式写,真相源必须唯一(forceStreaming
 // 跳过为单源纪律,其 true 写入与 marshal 幂等,判别断言落在 controls 注入)。
-// Mutation:从 injectStreamingRequestControls 删掉 ollama_native 早退 →
+// 变异:从 chatpipe controls 注入删掉 ollama_native 早退 →
 // 顶层 max_tokens 断言红。
 func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
@@ -2037,14 +2018,14 @@ func TestStreamingProviderRequestBodyOllamaNative(t *testing.T) {
 }
 
 // TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough 守卫流式
-// 翻译门(renew-156 族集不对称第 5 处变体):上游族的 wire 形态与客户端协议
-// 同形时(kimi/qwen/... == openai_chat;openai_codex 刻意不在映射表内,
-// responses→codex 留 fail-closed,见下方用例)
+// 翻译门(renew-156 族集不对称第 5 处变体):上游族的线格式形态与客户端协议
+// 同形时(kimi/qwen/... == openai_chat;Responses 客户端到 codex 同为
+// Responses 线格式)
 // 必须走 raw 直通——既保留 vendor 专有字段(top_k 等,流式无 raw-merge,
 // 走 HCSF 翻译会被静默丢),也是此前全部兼容族流式 501 的根因(返回 true 后
 // MarshalToProviderRequest 不认这些族)。真跨协议(anthropic→kimi、
-// openai→anthropic)仍须翻译。
-// Mutation:删掉 needsStreamingHCSFTranslation 的同形态 fast-path → 兼容族
+// openai→anthropic/openai→codex)仍须翻译。
+// 变异:删掉 needsStreamingHCSFTranslation 的同形态 fast-path → 兼容族
 // 用例红;把 fast-path 错写成无条件 false → 跨协议用例红。
 func TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough(t *testing.T) {
 	cases := []struct {
@@ -2060,11 +2041,12 @@ func TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough(t *testing.T
 		{"openai→grok 同形态直通", proto.ClientProtocolOpenAIChat, "grok_chat", false},
 		{"openai→deepseek 同形态直通", proto.ClientProtocolOpenAIChat, "deepseek_chat", false},
 		{"openai→copilot_session JSON形 session 直通", proto.ClientProtocolOpenAIChat, "copilot_session", false},
-		// cursor(Connect/proto 帧)/codex(形态仓内互斥)不在映射表 →
+		// cursor(Connect/proto 帧)不在映射表 →
 		// 仍走翻译路径,在 marshal 处 fail-closed 501(见
 		// hcsfProviderRequestModelFamily 排除注释;OCAW 采集后再接)。
 		{"openai→cursor_session 留 fail-closed", proto.ClientProtocolOpenAIChat, "cursor_session", true},
-		{"responses→codex 留 fail-closed", proto.ClientProtocolOpenAIResponses, "openai_codex", true},
+		{"responses→codex Responses形直通", proto.ClientProtocolOpenAIResponses, "openai_codex", false},
+		{"openai→codex 片2c走 Responses 形翻译", proto.ClientProtocolOpenAIChat, "openai_codex", true},
 		{"openai→openai 既有直通不回归", proto.ClientProtocolOpenAIChat, "openai_chat", false},
 		{"openai→anthropic 跨协议须翻译", proto.ClientProtocolOpenAIChat, "anthropic_messages", true},
 		{"anthropic→kimi 跨协议须翻译", proto.ClientProtocolAnthropicMessages, "kimi_chat", true},
