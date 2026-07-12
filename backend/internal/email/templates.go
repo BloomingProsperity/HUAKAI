@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -38,30 +37,6 @@ var templateKinds = map[string]templateKindSpec{
 	TemplateKindPasswordReset:      {allowed: map[string]bool{"link": true, "token": true, "email": true}, credential: "token"},
 	TemplateKindDeviceConfirmation: {allowed: map[string]bool{"link": true, "token": true}, credential: "token"},
 	TemplateKindOAuthCode:          {allowed: map[string]bool{"code": true}, credential: "code"},
-}
-
-// TemplateKinds 返回全部模板 kind(稳定排序),供管理面枚举。
-func TemplateKinds() []string {
-	kinds := make([]string, 0, len(templateKinds))
-	for k := range templateKinds {
-		kinds = append(kinds, k)
-	}
-	sort.Strings(kinds)
-	return kinds
-}
-
-// TemplateAllowedPlaceholders 返回某 kind 允许的占位符(稳定排序);未知 kind 返回 nil。
-func TemplateAllowedPlaceholders(kind string) []string {
-	spec, ok := templateKinds[kind]
-	if !ok {
-		return nil
-	}
-	names := make([]string, 0, len(spec.allowed))
-	for n := range spec.allowed {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // TemplateSettingKeys 返回某 kind 的 (subjectKey, bodyKey);未知 kind 返回空串。

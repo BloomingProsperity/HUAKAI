@@ -358,6 +358,8 @@ internal/hermeschat/bridge.go:  unreachable func: copyResponseHeaders
 internal/hermeschat/bridge_audit.go:  unreachable func: Bridge.warnAuditFailure
 internal/hermeshttp/chat_handler.go:  unreachable func: copyProxyResponse
 internal/hermeshttp/router.go:  unreachable func: NewRouter
+internal/logsink/sink.go:  unreachable func: WithBatch
+internal/logsink/sink.go:  unreachable func: WithQueueSize
 internal/mediatask/provider.go:  unreachable func: NewNoopProvider
 internal/mediatask/provider.go:  unreachable func: noopProvider.Poll
 internal/mediatask/provider.go:  unreachable func: noopProvider.Submit
@@ -618,6 +620,7 @@ internal/provider/antigravity/bootstrap.go:  unreachable func: OAuthConfig
 internal/provider/antigravity/bootstrap.go:  unreachable func: RefreshAdapterFromOAuthConfig
 internal/provider/antigravity/bootstrap.go:  unreachable func: ValidateOAuthConfig
 internal/provider/antigravity/bootstrap.go:  unreachable func: scopeString
+internal/provider/antigravity/bootstrap.go:  unreachable func: validateRefreshOAuthConfig
 internal/provider/antigravity/credential_store_adapter.go:  unreachable func: NewRefresher
 internal/provider/antigravity/credential_store_adapter.go:  unreachable func: credentialStoreRefreshAdapter.LoadForRefresh
 internal/provider/antigravity/credential_store_adapter.go:  unreachable func: credentialStoreRefreshAdapter.WithRefreshTransaction

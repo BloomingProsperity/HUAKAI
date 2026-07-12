@@ -169,7 +169,7 @@ func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
 		return jsonResponse(`{"access_token":"ag-access-new","refresh_token":"ag-refresh-new","expires_in":1800,"token_type":"Bearer"}`), nil
 	})}
 
-	adapter, ok := newDefaultModeAdapterRegistry(mockClient).Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil).Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
 	if !ok {
 		t.Fatal("缺少 gemini/antigravity refresh adapter")
 	}
@@ -281,7 +281,7 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 				return jsonResponse(`{"access_token":"` + wantAccessToken + `","refresh_token":"` + wantRefreshToken + `","expires_in":1800,"token_type":"Bearer"}`), nil
 			})}
 
-			adapter, ok := newDefaultModeAdapterRegistry(mockClient).Lookup(tc.vendor, tc.authMode)
+			adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil).Lookup(tc.vendor, tc.authMode)
 			if !ok {
 				t.Fatalf("missing mode refresh adapter %s/%s", tc.vendor, tc.authMode)
 			}

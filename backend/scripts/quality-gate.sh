@@ -38,8 +38,13 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # 写分级 _test.go 真调用(Resolver/Status 等),但 `deadcode ./...` 不带 -test 看不到跨包测试引用
 # → 必然误命中(与上述 memoryStore test-fake 同类)。全量重算基线净 +4(+5 脚手架项,-1 voucher
 # WithBurstLimiter 已不再死),DC_MAX 875->879(Owner 可见可审);非死代码堆积,是测试专用脚手架。
+# 2026-07-12 B6/B7 收口清债+补录:真死码删除(vertexsa cache 层未接线——adapter 直用 Mint、
+# email 枚举助手零消费者、credentialworker 测试专用 wrapper 改由测试直调底层);补录 3 项——
+# logsink WithBatch/WithQueueSize 被 3 个 _test.go 真调用(deadcode 不带 -test 看不到,与
+# memoryStore/adminsessionauthtest 先例同类),antigravity validateRefreshOAuthConfig 属
+# env-gated 车道家族(全部调用者已在 baseline)。DC_MAX 879->882(Owner 可见可审)。
 SC_MAX=94
-DC_MAX=879
+DC_MAX=882
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1
