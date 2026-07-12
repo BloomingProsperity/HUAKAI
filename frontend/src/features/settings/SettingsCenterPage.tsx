@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { EmailSmtpSection } from './EmailSmtpSection'
+import { EmailTemplatesSection } from './EmailTemplatesSection'
 import { listSettings, updateSetting } from './api'
 import {
   TAB_GROUPS,
@@ -131,8 +132,13 @@ export function SettingsCenterPage() {
         )}
       </div>
 
-      {/* 邮件 tab 追加 SMTP 发信配置分区(走 email 子系统自有端点,非 platform-settings) */}
-      {activeTab === 'email' && <EmailSmtpSection />}
+      {/* 邮件 tab 追加 SMTP 发信配置 + 鉴权邮件模板分区(走 email 子系统自有端点,非 platform-settings) */}
+      {activeTab === 'email' && (
+        <>
+          <EmailSmtpSection />
+          <EmailTemplatesSection />
+        </>
+      )}
     </div>
   )
 }

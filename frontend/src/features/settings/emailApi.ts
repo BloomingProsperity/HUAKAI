@@ -35,6 +35,19 @@ export interface EmailSettingsUpdate {
   smtp_from_name?: string
   smtp_use_tls?: boolean
   email_verify_enabled?: boolean
+  /** 按 kind 的鉴权邮件模板覆盖。字段省略=不修改,空串=清除覆盖(回退内置默认)。 */
+  templates?: Record<string, EmailTemplateInput>
+}
+
+export interface EmailTemplateInput {
+  subject?: string
+  body?: string
+}
+
+export interface EmailTemplatePreviewResult {
+  kind: string
+  subject: string
+  html: string
 }
 
 export interface EmailSettingsUpdateResult {
@@ -59,4 +72,19 @@ export function updateEmailSettings(body: EmailSettingsUpdate): Promise<EmailSet
 
 export function sendTestEmail(tenantId: number, to: string): Promise<EmailTestResult> {
   return apiSend<EmailTestResult>('POST', `${PATH}/test`, { tenant_id: tenantId, to })
+}
+
+/** 用样例值服务端渲染模板(不发信),供编辑器预览。 */
+export function previewEmailTemplate(
+  tenantId: number,
+  kind: string,
+  subject: string,
+  body: string,
+): Promise<EmailTemplatePreviewResult> {
+  return apiSend<EmailTemplatePreviewResult>('POST', `${PATH}/templates/preview`, {
+    tenant_id: tenantId,
+    kind,
+    subject,
+    body,
+  })
 }

@@ -4151,6 +4151,28 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/email/templates/preview:
+    post:
+      tags: [admin-email]
+      summary: Render an auth email template with sample values (no send)
+      operationId: previewAdminEmailTemplate
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_email_settings_handler.go]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminEmailTemplatePreviewRequest' }
+      responses:
+        '200':
+          description: Rendered subject and HTML body using sample placeholder values.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminEmailTemplatePreviewResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/platform-settings:
     get:
       tags: [admin-platform-settings]
@@ -16279,6 +16301,47 @@ components:
         smtp_from_name: { type: string }
         smtp_use_tls: { type: boolean }
         email_verify_enabled: { type: boolean }
+        templates:
+          type: object
+          description: >-
+            Per-kind auth email template overrides. Keys: verification, password_reset,
+            device_confirmation, oauth_code. Omitted field = unchanged; empty string = clear
+            override (rendering falls back to the built-in default). Placeholders use
+            {{name}} syntax; the body must contain the always-available credential
+            placeholder ({{token}} or {{code}}).
+          additionalProperties:
+            $ref: '#/components/schemas/AdminEmailTemplateInput'
+
+    AdminEmailTemplateInput:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_email_settings_handler.go]
+      properties:
+        subject: { type: string }
+        body: { type: string }
+
+    AdminEmailTemplatePreviewRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_email_settings_handler.go]
+      required: [tenant_id, kind]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        kind:
+          type: string
+          enum: [verification, password_reset, device_confirmation, oauth_code]
+        subject: { type: string }
+        body: { type: string }
+
+    AdminEmailTemplatePreviewResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_email_settings_handler.go]
+      required: [kind, subject, html]
+      properties:
+        kind: { type: string }
+        subject: { type: string }
+        html: { type: string }
 
     AdminEmailSettingsUpdateResponse:
       type: object

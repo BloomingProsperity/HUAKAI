@@ -93,11 +93,15 @@ func (s *AuthSender) SendVerification(ctx context.Context, user userauth.User, t
 	if !allowed {
 		return nil
 	}
+	link := s.authLink(ctx, "/email-verify", user.TenantID, token, nil)
+	subject, body := s.resolveAuthEmail(ctx, user.TenantID, TemplateKindVerification,
+		map[string]string{"link": link, "token": token},
+		"HUAKAI email verification", buildVerificationBody(link, token))
 	err := s.sendForTenant(ctx, user.TenantID, Message{
 		TenantID: user.TenantID,
 		To:       user.Email,
-		Subject:  "HUAKAI email verification",
-		HTMLBody: buildVerificationBody(s.authLink(ctx, "/email-verify", user.TenantID, token, nil), token),
+		Subject:  subject,
+		HTMLBody: body,
 	})
 	if err != nil {
 		// 硬失败(永久失败 / 无 outbox / enqueue 失败)= 既没发出也没入队重试 → 回滚 cooldown,
@@ -119,11 +123,15 @@ func (s *AuthSender) SendPasswordReset(ctx context.Context, user userauth.User, 
 	if !allowed {
 		return nil
 	}
+	link := s.authLink(ctx, "/reset-password", user.TenantID, token, map[string]string{"email": user.Email})
+	subject, body := s.resolveAuthEmail(ctx, user.TenantID, TemplateKindPasswordReset,
+		map[string]string{"link": link, "token": token, "email": user.Email},
+		"HUAKAI password reset", buildPasswordResetBody(link, token))
 	err := s.sendForTenant(ctx, user.TenantID, Message{
 		TenantID: user.TenantID,
 		To:       user.Email,
-		Subject:  "HUAKAI password reset",
-		HTMLBody: buildPasswordResetBody(s.authLink(ctx, "/reset-password", user.TenantID, token, map[string]string{"email": user.Email}), token),
+		Subject:  subject,
+		HTMLBody: body,
 	})
 	if err != nil {
 		// 见 SendVerification:硬失败回滚 cooldown,避免冷却窗口吞掉合法重发。
@@ -145,11 +153,15 @@ func (s *AuthSender) SendDeviceConfirmation(ctx context.Context, user userauth.U
 	if !allowed {
 		return nil
 	}
+	link := s.authLink(ctx, "/device-confirm", user.TenantID, token, nil)
+	subject, body := s.resolveAuthEmail(ctx, user.TenantID, TemplateKindDeviceConfirmation,
+		map[string]string{"link": link, "token": token},
+		"HUAKAI new device confirmation", buildDeviceConfirmationBody(link, token))
 	err := s.sendForTenant(ctx, user.TenantID, Message{
 		TenantID: user.TenantID,
 		To:       user.Email,
-		Subject:  "HUAKAI new device confirmation",
-		HTMLBody: buildDeviceConfirmationBody(s.authLink(ctx, "/device-confirm", user.TenantID, token, nil), token),
+		Subject:  subject,
+		HTMLBody: body,
 	})
 	if err != nil {
 		// 见 SendVerification:硬失败回滚 cooldown,避免冷却窗口吞掉合法重发。
@@ -171,11 +183,14 @@ func (s *AuthSender) SendOAuthEmailCode(ctx context.Context, tenantID int64, ema
 	if !allowed {
 		return nil
 	}
+	subject, body := s.resolveAuthEmail(ctx, tenantID, TemplateKindOAuthCode,
+		map[string]string{"code": code},
+		"HUAKAI email verification code", buildOAuthCodeBody(code))
 	err := s.sendForTenant(ctx, tenantID, Message{
 		TenantID: tenantID,
 		To:       email,
-		Subject:  "HUAKAI email verification code",
-		HTMLBody: buildOAuthCodeBody(code),
+		Subject:  subject,
+		HTMLBody: body,
 	})
 	if err != nil {
 		// 见 SendVerification:硬失败回滚冷却,避免吞掉合法重发。

@@ -35,6 +35,20 @@ type adminEmailSettingsRequest struct {
 	SMTPFromName      string  `json:"smtp_from_name,omitempty"`
 	SMTPUseTLS        *bool   `json:"smtp_use_tls,omitempty"`
 	EmailVerifyEnable *bool   `json:"email_verify_enabled,omitempty"`
+	// 按 kind 的鉴权邮件模板覆盖:字段 nil=不修改,空串=清除覆盖(渲染时回退内置默认)。
+	Templates map[string]adminEmailTemplateInput `json:"templates,omitempty"`
+}
+
+type adminEmailTemplateInput struct {
+	Subject *string `json:"subject,omitempty"`
+	Body    *string `json:"body,omitempty"`
+}
+
+type adminEmailTemplatePreviewRequest struct {
+	TenantID int64  `json:"tenant_id"`
+	Kind     string `json:"kind"`
+	Subject  string `json:"subject,omitempty"`
+	Body     string `json:"body,omitempty"`
 }
 
 type adminEmailTestRequest struct {
@@ -46,6 +60,7 @@ func MountAdminEmailSettingsRoutes(r chi.Router, d AdminEmailSettingsDeps) {
 	r.Get("/settings", newAdminEmailSettingsGetHandler(d))
 	r.Put("/settings", newAdminEmailSettingsPutHandler(d))
 	r.Post("/test", newAdminEmailTestHandler(d))
+	r.Post("/templates/preview", newAdminEmailTemplatePreviewHandler(d))
 }
 
 func newAdminEmailSettingsGetHandler(d AdminEmailSettingsDeps) http.HandlerFunc {
@@ -217,7 +232,87 @@ func adminEmailSettingsValues(ctx context.Context, keys mailinfra.SecretKeyProvi
 	if req.EmailVerifyEnable != nil {
 		values[mailinfra.SettingVerifyRequirement] = strconv.FormatBool(*req.EmailVerifyEnable)
 	}
+	for kind, tpl := range req.Templates {
+		subjectKey, bodyKey := mailinfra.TemplateSettingKeys(kind)
+		if subjectKey == "" {
+			return nil, fmt.Errorf("unknown template kind %q", kind)
+		}
+		subject, body := "", ""
+		if tpl.Subject != nil {
+			subject = strings.TrimSpace(*tpl.Subject)
+		}
+		if tpl.Body != nil {
+			body = strings.TrimSpace(*tpl.Body)
+		}
+		if err := mailinfra.ValidateTemplateOverride(kind, subject, body); err != nil {
+			return nil, err
+		}
+		if tpl.Subject != nil {
+			values[subjectKey] = subject
+		}
+		if tpl.Body != nil {
+			values[bodyKey] = body
+		}
+	}
 	return values, nil
+}
+
+// newAdminEmailTemplatePreviewHandler 用样例值纯渲染模板供前端预览,不发信、不落库。
+// 主题/正文传空则预览内置默认形态(占位符原样展示)。
+func newAdminEmailTemplatePreviewHandler(d AdminEmailSettingsDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, ok := resolveAdminEmailSettings(w, r, d)
+		if !ok {
+			return
+		}
+		var req adminEmailTemplatePreviewRequest
+		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		if !adminCanAccessTenant(ident, req.TenantID) {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
+			return
+		}
+		if err := mailinfra.ValidateTemplateOverride(req.Kind, req.Subject, req.Body); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "email_template_invalid", err.Error())
+			return
+		}
+		vars := sampleTemplateVars(req.Kind)
+		subject, body := strings.TrimSpace(req.Subject), strings.TrimSpace(req.Body)
+		if subject != "" {
+			rendered, err := mailinfra.RenderTemplate(subject, vars)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, "email_template_invalid", err.Error())
+				return
+			}
+			subject = rendered
+		}
+		if body != "" {
+			rendered, err := mailinfra.RenderTemplate(body, vars)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, "email_template_invalid", err.Error())
+				return
+			}
+			body = rendered
+		}
+		writeAuditJSON(w, http.StatusOK, map[string]any{
+			"kind":    req.Kind,
+			"subject": subject,
+			"html":    body,
+		})
+	}
+}
+
+// sampleTemplateVars 给预览用的占位样例值(与真实发送时的变量集合一一对应)。
+func sampleTemplateVars(kind string) map[string]string {
+	switch kind {
+	case mailinfra.TemplateKindOAuthCode:
+		return map[string]string{"code": "836195"}
+	case mailinfra.TemplateKindPasswordReset:
+		return map[string]string{"link": "https://example.com/reset-password?tenant_id=1&token=SAMPLETOKEN", "token": "SAMPLETOKEN", "email": "user@example.com"}
+	default:
+		return map[string]string{"link": "https://example.com/email-verify?tenant_id=1&token=SAMPLETOKEN", "token": "SAMPLETOKEN"}
+	}
 }
 
 func maskEmailSettings(rows []mailinfra.StoredSetting) []map[string]any {
