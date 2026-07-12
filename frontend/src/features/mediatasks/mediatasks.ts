@@ -1,5 +1,5 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
-import type { MediaTask } from './types'
+import type { CreateMediaTaskRequest, MediaTask, MediaTaskCreateForm, MediaTaskKind } from './types'
 
 /*
  * 媒体任务纯逻辑(与 React/网络解耦,便于变异):状态配色/中文名、任务类型名、计费展示、是否进行中。
@@ -44,11 +44,16 @@ export function statusLabel(status: string): string {
 export function taskTypeLabel(taskType: string): string {
   switch (taskType.trim().toLowerCase()) {
     case 'image':
+    case 'image_generation':
       return '绘图'
     case 'video':
+    case 'video_generation':
       return '视频'
     case 'audio':
       return '音频'
+    case 'music':
+    case 'music_generation':
+      return '音乐'
     default:
       return taskType || '任务'
   }
@@ -79,4 +84,66 @@ export function centsToUSD(cents: number): string {
   const whole = Math.floor(abs / 100)
   const frac = abs % 100
   return `${sign}${whole}.${String(frac).padStart(2, '0')}`
+}
+
+export const DEFAULT_MEDIA_TASK_FORM: MediaTaskCreateForm = {
+  taskKind: 'image',
+  model: '',
+  prompt: '',
+  parametersJSON: '{}',
+}
+
+export function buildMediaTaskRequest(form: MediaTaskCreateForm, requestID: string): CreateMediaTaskRequest {
+  const model = form.model.trim()
+  const prompt = form.prompt.trim()
+  const normalizedRequestID = requestID.trim()
+  if (!normalizedRequestID) throw new Error('缺少请求 ID')
+  if (!model) throw new Error('请填写模型')
+  if (!prompt) throw new Error('请填写 Prompt')
+
+  const parameters = parseParameters(form.parametersJSON)
+  for (const fixed of ['model', 'prompt']) {
+    if (fixed in parameters) throw new Error(`高级参数不能覆盖 ${fixed}`)
+  }
+  return {
+    request_id: normalizedRequestID,
+    task_type: taskTypeValue(form.taskKind),
+    provider: 'http',
+    input_params: { model, prompt, ...parameters },
+  }
+}
+
+export function newMediaTaskRequestID(): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  if (uuid) return `web-${uuid}`
+  return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+export async function pollMediaTaskUpdates(
+  ids: number[],
+  load: (id: number) => Promise<MediaTask>,
+): Promise<MediaTask[]> {
+  const results = await Promise.allSettled(ids.map(load))
+  return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+}
+
+function taskTypeValue(kind: MediaTaskKind): string {
+  switch (kind) {
+    case 'image': return 'image_generation'
+    case 'music': return 'music_generation'
+    case 'video': return 'video_generation'
+  }
+}
+
+function parseParameters(raw: string): Record<string, unknown> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw.trim() || '{}')
+  } catch {
+    throw new Error('参数 JSON 格式无效')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('参数 JSON 必须是对象')
+  }
+  return parsed as Record<string, unknown>
 }

@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
-import { listMediaTasks } from './api'
-import { formatTaskCost, isActive, statusLabel, statusTone, taskTypeLabel } from './mediatasks'
+import { getMediaTask, listMediaTasks } from './api'
+import { CreateMediaTaskModal } from './CreateMediaTaskModal'
+import { formatTaskCost, isActive, pollMediaTaskUpdates, statusLabel, statusTone, taskTypeLabel } from './mediatasks'
 import type { MediaTask } from './types'
 
 /*
- * 媒体任务记录(用户门户)。AI 绘图/视频/音频异步任务的历史与状态,只读(列表+进度+计费)。
- * session 鉴权,不触钱不翻默认。提交新任务会触发真实生成与计费,属 Owner-gated,不在本页。
- * 后端 GET /v1/media-tasks。
+ * 媒体任务页使用 session 鉴权；创建会触发真实生成与计费，页内明确提示。
  */
 export function MediaTasksPage() {
   const [tasks, setTasks] = useState<MediaTask[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [flash, setFlash] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
@@ -35,6 +36,33 @@ export function MediaTasksPage() {
   }, [refreshKey])
 
   const activeCount = tasks.filter((t) => isActive(t.status)).length
+  const activeTaskIDs = tasks.filter((task) => isActive(task.status)).map((task) => task.id).join(',')
+
+  useEffect(() => {
+    if (!activeTaskIDs) return
+    const ids = activeTaskIDs.split(',').map(Number)
+    const ctrl = new AbortController()
+    let inFlight = false
+    const timer = window.setInterval(async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        const updated = await pollMediaTaskUpdates(ids, (id) => getMediaTask(id, ctrl.signal))
+        if (updated.length > 0) {
+          const byID = new Map(updated.map((task) => [task.id, task]))
+          setTasks((current) => current.map((task) => byID.get(task.id) ?? task))
+        }
+      } catch {
+        // 列表主请求负责展示错误；单次轮询失败留待下一轮恢复。
+      } finally {
+        inFlight = false
+      }
+    }, 5000)
+    return () => {
+      ctrl.abort()
+      window.clearInterval(timer)
+    }
+  }, [activeTaskIDs])
 
   return (
     <div className="hk-page">
@@ -45,21 +73,39 @@ export function MediaTasksPage() {
             绘图 / 视频 / 音频异步任务的历史与状态{activeCount > 0 ? ` · ${activeCount} 个进行中` : ''}。
           </p>
         </div>
-        <button type="button" onClick={() => setRefreshKey((k) => k + 1)} className="hk-btn" disabled={loading}>
-          {loading ? '刷新中…' : '刷新'}
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
+          <button type="button" onClick={() => setRefreshKey((k) => k + 1)} className="hk-btn" disabled={loading}>
+            {loading ? '刷新中…' : '刷新'}
+          </button>
+          <button type="button" onClick={() => setCreateOpen(true)} className="hk-btn hk-btn--green">＋ 新建任务</button>
+        </div>
       </header>
+
+      {createOpen && (
+        <CreateMediaTaskModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={(created) => {
+            setFlash(`媒体任务 #${created.task_id} 已创建，当前状态：${statusLabel(created.status)}`)
+            setRefreshKey((key) => key + 1)
+          }}
+        />
+      )}
 
       {error && (
         <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>
           {error}
         </div>
       )}
+      {flash && (
+        <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>
+          {flash}
+        </div>
+      )}
 
       {loading && tasks.length === 0 ? (
         <Empty>加载中…</Empty>
       ) : tasks.length === 0 ? (
-        <Empty>还没有媒体任务记录。绘图/视频/音频任务通过 API 提交后会在此列出。</Empty>
+        <Empty>还没有媒体任务。点击右上角「新建任务」创建图片、音乐或视频任务。</Empty>
       ) : (
         <div className="hk-card">
           <div className="hk-tablewrap">

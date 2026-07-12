@@ -1,9 +1,15 @@
-/*
- * Playground(在线调试台)类型。对应 OpenAI 兼容 relay:
- *  - GET  /v1/models            → {object:"list", data:[{id,...}]}(controlhttp model_list_handler.go)
- *  - POST /v1/chat/completions  → 标准 chat completion(gatewayhttp ChatCompletionsHandler)
- * 用 BYO-key(用户粘自己的 API Key)直调,走现有 relay + 计费,无新后端/auth/money 路径。
- */
+export type PlaygroundProtocol =
+  | 'chat'
+  | 'completions'
+  | 'messages'
+  | 'responses'
+  | 'embeddings'
+  | 'rerank'
+  | 'images'
+  | 'speech'
+  | 'gemini'
+
+export type GeminiAction = 'generateContent' | 'countTokens' | 'embedContent' | 'batchEmbedContents'
 
 export interface ModelObject {
   id: string
@@ -32,9 +38,12 @@ export interface ChatUsage {
   prompt_tokens?: number
   completion_tokens?: number
   total_tokens?: number
+  input_tokens?: number
+  output_tokens?: number
 }
 
 export interface ChatChoice {
+  text?: string
   message?: { role?: string; content?: string }
   finish_reason?: string
 }
@@ -44,4 +53,47 @@ export interface ChatResponse {
   model?: string
   choices?: ChatChoice[]
   usage?: ChatUsage
+}
+
+export interface ProtocolFormState {
+  system: string
+  input: string
+  query: string
+  documents: string
+  maxTokens: string
+  topN: string
+  imageCount: string
+  imageSize: string
+  imageQuality: string
+  imageFormat: '' | 'url' | 'b64_json'
+  voice: string
+  audioFormat: 'mp3' | 'opus' | 'aac' | 'flac' | 'wav' | 'pcm'
+  geminiAction: GeminiAction
+  rawJSON: string
+}
+
+export type JSONRecord = Record<string, unknown>
+
+export interface ProtocolRequestPlan {
+  protocol: PlaygroundProtocol
+  path: string
+  body: JSONRecord
+  stream: boolean
+}
+
+export interface ParsedSSEEvent {
+  done: boolean
+  content: string
+  payload?: unknown
+}
+
+export interface AudioResponse {
+  blob: Blob
+  contentType: string
+}
+
+export interface RerankResultView {
+  index: number
+  score: number
+  document?: unknown
 }
