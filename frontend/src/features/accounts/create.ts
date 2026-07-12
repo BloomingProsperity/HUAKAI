@@ -5,7 +5,8 @@ import type { AccountMode, CreateAccountRequest, FieldSpec } from './createTypes
  *  - account_type 必选且为枚举(oauth/api_key/service_account/upstream_static/session/aws_sigv4);
  *  - credentials 必须是非空 JSON 对象,键 = required_fields 的 name,值 = 运维输入;
  *  - vendor/auth_mode 非空 → 走 V2 凭据库(credentials 按 mode required_fields 校验);
- *  - 可选参数(priority/static_weight/cap_concurrency/probe_model/tags)留空必须省略;
+ *  - 可选参数(priority/static_weight/cap_concurrency/probe_model/tags/model_allow_list/
+ *    capability_flags)留空必须省略;
  *  - 混合渠道风险时二次提交带 confirm=true。
  */
 
@@ -36,6 +37,8 @@ export interface CreateAccountForm {
   capConcurrency: string
   probeModel: string
   tags: string
+  modelAllowList: string
+  capabilityFlags: string
   reason: string
 }
 
@@ -52,6 +55,8 @@ export const EMPTY_CREATE_FORM: CreateAccountForm = {
   capConcurrency: '',
   probeModel: '',
   tags: '',
+  modelAllowList: '',
+  capabilityFlags: '',
   reason: '',
 }
 
@@ -119,6 +124,10 @@ export function buildCreateRequest(
   if (probe) req.probe_model = probe
   const tags = splitTags(form.tags)
   if (tags) req.tags = tags
+  const modelAllowList = splitTags(form.modelAllowList)
+  if (modelAllowList) req.model_allow_list = modelAllowList
+  const capabilityFlags = splitTags(form.capabilityFlags)
+  if (capabilityFlags) req.capability_flags = capabilityFlags
   const reason = form.reason.trim()
   if (reason) req.reason = reason
   if (confirm) req.confirm = true

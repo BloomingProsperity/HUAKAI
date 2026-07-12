@@ -203,6 +203,12 @@ export function CreateAccountModal({ onClose, onCreated }: { onClose: () => void
               <Field label="标签(逗号/空格分隔)">
                 <input value={form.tags} onChange={(e) => set('tags', e.target.value)} style={inp} />
               </Field>
+              <Field label="模型白名单(model_allow_list,逗号/空格分隔,留空=不限)">
+                <input value={form.modelAllowList} onChange={(e) => set('modelAllowList', e.target.value)} placeholder="gpt-4o, claude-3-5-sonnet" style={inp} />
+              </Field>
+              <Field label="能力标记(capability_flags,逗号/空格分隔)">
+                <input value={form.capabilityFlags} onChange={(e) => set('capabilityFlags', e.target.value)} placeholder="vision, tools" style={inp} />
+              </Field>
             </Section>
           )}
 

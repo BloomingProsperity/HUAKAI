@@ -4,12 +4,33 @@ import type { ProviderAccount } from './types'
  * 账号编辑(池调优旋钮 + 出站/高级设置)纯逻辑(可单测)。PATCH /{id} 是部分更新:
  * 只下发【实际改动】的字段,未改字段省略(避免无谓覆盖)。对齐 routing 的 buildBindingUpdate 模式。
  * 后端契约字段:proxy_binding / probe_model / model_allow_list / capability_flags /
- * custom_error_codes(_enabled) / temp_unschedulable_enabled
+ * custom_error_codes(_enabled) / pool_mode / temp_unschedulable_enabled /
+ * temp_unschedulable_rules / extra
  * (backend/internal/gatewayhttp/admin_pool_accounts_handler.go 的 updateProviderAccountRequest)。
  */
 
 /** 出站代理绑定模式:直连 / 单代理 / 代理组(三者互斥,后端按 mode 构造性写两列)。 */
 export type ProxyBindingMode = 'direct' | 'proxy' | 'group'
+
+/** 三态选择确保默认不触碰后端 pool_mode。 */
+export type PoolModeChoice = 'unchanged' | 'enabled' | 'disabled'
+
+/** 详情接口不回传现有规则,因此默认保持不变,明确选择 replace 才会发送。 */
+export type TempRulesMode = 'unchanged' | 'replace'
+
+export interface TempUnschedulableRuleForm {
+  errorCode: string
+  keywords: string
+  durationMinutes: string
+  description: string
+}
+
+export interface TempUnschedulableRule {
+  error_code: number
+  keywords: string[]
+  duration_minutes: number
+  description?: string
+}
 
 /** proxy_binding 请求体:mode 必填;proxy/group 各自带对应字段。 */
 export interface ProxyBindingBody {
@@ -34,8 +55,16 @@ export interface AccountEditForm {
   customErrorCodesEnabled: boolean
   /** 逗号分隔的自定义错误码串(HTTP 状态码)。 */
   customErrorCodes: string
+  /** 池模式三态选择;默认不修改。 */
+  poolMode: PoolModeChoice
   /** 临时不可调度开关。 */
   tempUnschedulableEnabled: boolean
+  /** 规则修改模式;详情 API 不回显旧规则,默认必须保持不变。 */
+  tempRulesMode: TempRulesMode
+  /** 替换模式下要提交的完整规则集。 */
+  tempUnschedulableRules: TempUnschedulableRuleForm[]
+  /** provider 专属自由扩展 JSON 对象。 */
+  extraJson: string
   /** 出站代理模式。 */
   proxyMode: ProxyBindingMode
   /** 选中的单代理 id(proxyMode=proxy 时用)。 */
@@ -55,7 +84,10 @@ export interface AccountUpdateBody {
   capability_flags?: string[]
   custom_error_codes_enabled?: boolean
   custom_error_codes?: number[]
+  pool_mode?: boolean
   temp_unschedulable_enabled?: boolean
+  temp_unschedulable_rules?: TempUnschedulableRule[]
+  extra?: Record<string, unknown>
   proxy_binding?: ProxyBindingBody
   reason?: string
 }
@@ -79,7 +111,11 @@ export function formFromAccount(a: ProviderAccount): AccountEditForm {
     capabilityFlags: (a.capability_flags ?? []).join(', '),
     customErrorCodesEnabled: a.custom_error_codes_enabled ?? false,
     customErrorCodes: (a.custom_error_codes ?? []).join(', '),
+    poolMode: 'unchanged',
     tempUnschedulableEnabled: a.temp_unschedulable_enabled ?? false,
+    tempRulesMode: 'unchanged',
+    tempUnschedulableRules: [],
+    extraJson: JSON.stringify(a.extra ?? {}, null, 2),
     proxyMode: proxyModeFromAccount(a),
     proxyId: a.proxy_id != null ? String(a.proxy_id) : '',
     proxyGroupId: a.proxy_group_id ?? '',
@@ -115,6 +151,61 @@ export function parseErrorCodes(raw: string): number[] | { error: string } {
     out.push(n)
   }
   return out
+}
+
+/** 校验 extra 的 JSON 语法及对象形状;数组/null 不是后端接受的扩展对象。 */
+export function parseExtraJson(raw: string): Record<string, unknown> | { error: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { error: '扩展 JSON 格式无效' }
+  }
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+    return { error: '扩展 JSON 必须是 JSON 对象' }
+  }
+  return parsed as Record<string, unknown>
+}
+
+/** 临时停调规则按真实运行 schema 组装;空 keywords 表示匹配任意响应体。 */
+export function buildTempUnschedulableRules(
+  rows: TempUnschedulableRuleForm[],
+): TempUnschedulableRule[] | { error: string } {
+  const rules: TempUnschedulableRule[] = []
+  for (const [index, row] of rows.entries()) {
+    const errorCode = Number(row.errorCode.trim())
+    if (!Number.isInteger(errorCode) || errorCode < 100 || errorCode > 599) {
+      return { error: `第 ${index + 1} 条规则的错误码须为 100-599 的整数` }
+    }
+    const durationMinutes = Number(row.durationMinutes.trim())
+    if (!Number.isInteger(durationMinutes) || durationMinutes < 1) {
+      return { error: `第 ${index + 1} 条规则的停调时长须为正整数分钟` }
+    }
+    const keywords = row.keywords
+      .split(/[,，]+/)
+      .map((keyword) => keyword.trim())
+      .filter(Boolean)
+    const description = row.description.trim()
+    rules.push({
+      error_code: errorCode,
+      keywords,
+      duration_minutes: durationMinutes,
+      ...(description ? { description } : {}),
+    })
+  }
+  return rules
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    return `{${Object.keys(obj)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
 }
 
 export type BuildResult = AccountUpdateBody | { error: string } | { noop: true }
@@ -188,9 +279,24 @@ export function buildAccountUpdate(original: ProviderAccount, form: AccountEditF
   if (!Array.isArray(codes)) return codes
   if (!listEqual(codes, original.custom_error_codes ?? [])) body.custom_error_codes = codes
 
+  if (form.poolMode !== 'unchanged') {
+    const nextPoolMode = form.poolMode === 'enabled'
+    if (nextPoolMode !== (original.pool_mode ?? false)) body.pool_mode = nextPoolMode
+  }
+
   if (form.tempUnschedulableEnabled !== (original.temp_unschedulable_enabled ?? false)) {
     body.temp_unschedulable_enabled = form.tempUnschedulableEnabled
   }
+
+  if (form.tempRulesMode === 'replace') {
+    const rules = buildTempUnschedulableRules(form.tempUnschedulableRules)
+    if (!Array.isArray(rules)) return rules
+    body.temp_unschedulable_rules = rules
+  }
+
+  const extra = parseExtraJson(form.extraJson)
+  if ('error' in extra) return extra
+  if (canonicalJson(extra) !== canonicalJson(original.extra ?? {})) body.extra = extra
 
   const proxy = buildProxyBinding(original, form)
   if (proxy && 'error' in proxy) return proxy

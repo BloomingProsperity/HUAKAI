@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { buildAccountUpdate, formFromAccount, parseErrorCodes, parseTags, proxyModeFromAccount, type AccountEditForm } from './edit'
+import {
+  buildAccountUpdate,
+  buildTempUnschedulableRules,
+  formFromAccount,
+  parseErrorCodes,
+  parseExtraJson,
+  parseTags,
+  proxyModeFromAccount,
+  type AccountEditForm,
+} from './edit'
 import type { ProviderAccount } from './types'
 
 const base = {
@@ -8,11 +17,13 @@ const base = {
   static_weight: 100,
   cap_concurrency: 5,
   tags: ['prod', 'us'],
+  extra: {},
   probe_model: null,
   model_allow_list: [],
   capability_flags: [],
   custom_error_codes_enabled: false,
   custom_error_codes: [],
+  pool_mode: false,
   temp_unschedulable_enabled: false,
   proxy_id: null,
   proxy_group_id: null,
@@ -42,6 +53,40 @@ describe('parseErrorCodes', () => {
   })
 })
 
+describe('parseExtraJson', () => {
+  it('合法 JSON 对象通过,语法错误与非对象拒绝', () => {
+    expect(parseExtraJson('{"region":"us"}')).toEqual({ region: 'us' })
+    // 判别核心:后端只接受对象。变异为只做 JSON.parse 时,数组分支会错误通过。
+    expect(parseExtraJson('{oops')).toEqual({ error: '扩展 JSON 格式无效' })
+    expect(parseExtraJson('[]')).toEqual({ error: '扩展 JSON 必须是 JSON 对象' })
+    expect(parseExtraJson('null')).toEqual({ error: '扩展 JSON 必须是 JSON 对象' })
+  })
+})
+
+describe('buildTempUnschedulableRules', () => {
+  it('按真实 schema 组装,关键词留空表示通配且说明可省略', () => {
+    expect(
+      buildTempUnschedulableRules([
+        { errorCode: '403', keywords: ' unusual activity，risk control ', durationMinutes: '30', description: ' 风控 ' },
+        { errorCode: '529', keywords: '', durationMinutes: '5', description: '' },
+      ]),
+    ).toEqual([
+      { error_code: 403, keywords: ['unusual activity', 'risk control'], duration_minutes: 30, description: '风控' },
+      { error_code: 529, keywords: [], duration_minutes: 5 },
+    ])
+  })
+
+  it('非法错误码或非正时长拒绝', () => {
+    // 判别核心:若删除前端 schema 校验,两个坏规则会进入 PATCH 体。
+    expect(buildTempUnschedulableRules([{ errorCode: '99', keywords: '', durationMinutes: '5', description: '' }])).toEqual({
+      error: '第 1 条规则的错误码须为 100-599 的整数',
+    })
+    expect(buildTempUnschedulableRules([{ errorCode: '403', keywords: '', durationMinutes: '0', description: '' }])).toEqual({
+      error: '第 1 条规则的停调时长须为正整数分钟',
+    })
+  })
+})
+
 describe('proxyModeFromAccount', () => {
   it('proxy_id 优先于 group,再到 direct', () => {
     expect(proxyModeFromAccount({ ...base, proxy_id: 7 } as ProviderAccount)).toBe('proxy')
@@ -60,6 +105,9 @@ describe('buildAccountUpdate', () => {
     expect('tags' in (r as object)).toBe(false)
     expect('proxy_binding' in (r as object)).toBe(false)
     expect('probe_model' in (r as object)).toBe(false)
+    expect('pool_mode' in (r as object)).toBe(false)
+    expect('temp_unschedulable_rules' in (r as object)).toBe(false)
+    expect('extra' in (r as object)).toBe(false)
   })
 
   it('标签变更被收录,顺序变化也算变更', () => {
@@ -100,6 +148,59 @@ describe('buildAccountUpdate', () => {
 
   it('临时不可调度开关:翻转收录', () => {
     expect(buildAccountUpdate(base, form({ tempUnschedulableEnabled: true }))).toEqual({ temp_unschedulable_enabled: true })
+  })
+
+  it('池模式三态:不改不发送,开/关仅在改变原值时发送', () => {
+    expect(buildAccountUpdate(base, form({ poolMode: 'unchanged' }))).toEqual({ noop: true })
+    expect(buildAccountUpdate(base, form({ poolMode: 'enabled' }))).toEqual({ pool_mode: true })
+    expect(buildAccountUpdate(base, form({ poolMode: 'disabled' }))).toEqual({ noop: true })
+
+    const enabled = { ...base, pool_mode: true } as ProviderAccount
+    expect(buildAccountUpdate(enabled, { ...formFromAccount(enabled), poolMode: 'disabled' })).toEqual({ pool_mode: false })
+    expect(buildAccountUpdate(enabled, { ...formFromAccount(enabled), poolMode: 'enabled' })).toEqual({ noop: true })
+  })
+
+  it('临时停调规则默认不发送,明确替换才发送完整数组或空数组', () => {
+    expect(buildAccountUpdate(base, form({ priority: '20', tempRulesMode: 'unchanged' }))).toEqual({ priority: 20 })
+    expect(
+      buildAccountUpdate(
+        base,
+        form({
+          tempRulesMode: 'replace',
+          tempUnschedulableRules: [
+            { errorCode: '403', keywords: 'risk control', durationMinutes: '30', description: '风控' },
+          ],
+        }),
+      ),
+    ).toEqual({
+      temp_unschedulable_rules: [
+        { error_code: 403, keywords: ['risk control'], duration_minutes: 30, description: '风控' },
+      ],
+    })
+    expect(buildAccountUpdate(base, form({ tempRulesMode: 'replace', tempUnschedulableRules: [] }))).toEqual({
+      temp_unschedulable_rules: [],
+    })
+  })
+
+  it('规则替换遇到非法 schema 时不组装 PATCH', () => {
+    expect(
+      buildAccountUpdate(
+        base,
+        form({
+          tempRulesMode: 'replace',
+          tempUnschedulableRules: [{ errorCode: '403', keywords: '', durationMinutes: 'x', description: '' }],
+        }),
+      ),
+    ).toEqual({ error: '第 1 条规则的停调时长须为正整数分钟' })
+  })
+
+  it('扩展 JSON 内容变化才发送,格式或键顺序变化不发送,非法 JSON 拒绝', () => {
+    const withExtra = { ...base, extra: { region: 'us', nested: { enabled: true } } } as ProviderAccount
+    const initial = formFromAccount(withExtra)
+    expect(buildAccountUpdate(withExtra, { ...initial, extraJson: '{ "nested": {"enabled": true}, "region": "us" }' })).toEqual({ noop: true })
+    expect(buildAccountUpdate(withExtra, { ...initial, extraJson: '{"region":"eu"}' })).toEqual({ extra: { region: 'eu' } })
+    expect(buildAccountUpdate(withExtra, { ...initial, extraJson: '{bad' })).toEqual({ error: '扩展 JSON 格式无效' })
+    expect(buildAccountUpdate(withExtra, { ...initial, extraJson: '[]' })).toEqual({ error: '扩展 JSON 必须是 JSON 对象' })
   })
 
   it('出站代理:direct→proxy 需选到代理,未选报错', () => {

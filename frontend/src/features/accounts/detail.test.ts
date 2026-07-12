@@ -7,11 +7,11 @@ function fixture(over: Partial<ProviderAccount>): ProviderAccount {
     id: 1, tenant_id: 1, provider_id: 1, channel_id: 1, name: 'a', account_type: 'oauth',
     enabled: true, expires_at: null, health_state: 'active', credential_state: 'active',
     cap_concurrency: 4, in_flight_count: 0, priority: 0, static_weight: 1, probe_model: null,
-    tags: [], last_dispatch_at: null, last_probe_latency_ms: null, last_probe_at: null,
+    tags: [], extra: {}, last_dispatch_at: null, last_probe_latency_ms: null, last_probe_at: null,
     model_allow_list: [], capability_flags: [], rate_limited_at: null, rate_limit_reset_at: null,
     rate_limit_reason: null, overload_until: null, temp_unschedulable_until: null,
     token_version: 1, last_refresh_at: null, last_refresh_outcome: null,
-    custom_error_codes_enabled: false, custom_error_codes: [], temp_unschedulable_enabled: false,
+    custom_error_codes_enabled: false, custom_error_codes: [], pool_mode: false, temp_unschedulable_enabled: false,
     proxy_id: null, proxy_group_id: null,
     ...over,
   }

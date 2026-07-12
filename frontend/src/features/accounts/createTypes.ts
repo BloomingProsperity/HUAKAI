@@ -82,6 +82,8 @@ export interface CreateAccountRequest {
   cap_concurrency?: number
   probe_model?: string
   tags?: string[]
+  model_allow_list?: string[]
+  capability_flags?: string[]
   credentials: Record<string, string>
   reason?: string
 }

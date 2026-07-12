@@ -57,6 +57,8 @@ describe('buildCreateRequest', () => {
     // 空可选参数必须省略(后端对空/非正会 400)。
     expect(req.priority).toBeUndefined()
     expect(req.cap_concurrency).toBeUndefined()
+    expect(req.model_allow_list).toBeUndefined()
+    expect(req.capability_flags).toBeUndefined()
     expect(req.confirm).toBeUndefined()
   })
 
@@ -70,6 +72,25 @@ describe('buildCreateRequest', () => {
     expect(req.priority).toBe(5)
     expect(req.static_weight).toBeUndefined() // 0 非正 → 省略
     expect(req.cap_concurrency).toBeUndefined() // 非整 → 省略
+  })
+
+  it('模型白名单与能力标记去空拆分后写入,留空则省略', () => {
+    const req = buildCreateRequest(
+      form({
+        providerId: '1',
+        channelId: '1',
+        name: 'a',
+        accountType: 'api_key',
+        modelAllowList: ' gpt-4o, claude-3-5-sonnet ',
+        capabilityFlags: 'vision tools',
+        credentialValues: { api_key: 'k' },
+      }),
+      mode,
+      false,
+    )
+    // 判别核心:若组装器漏接新字段,两个精确数组断言都会变红。
+    expect(req.model_allow_list).toEqual(['gpt-4o', 'claude-3-5-sonnet'])
+    expect(req.capability_flags).toEqual(['vision', 'tools'])
   })
 })
 

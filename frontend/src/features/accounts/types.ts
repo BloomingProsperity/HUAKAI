@@ -1,7 +1,7 @@
 /*
  * 上游账号(provider account)前端类型 —— 镜像后端 providerAccountResponse 的 JSON 形态
  * (backend/internal/gatewayhttp/admin_pool_accounts_handler.go 的 providerAccountResponse)。
- * 只取列表页用得到的字段;详情页扩展字段后续切片再补。
+ * 列表与详情共用该响应类型;凭据密文始终不在读模型中。
  */
 
 /** 账号运行态枚举(state_filter 合法值,与后端一致)。 */
@@ -30,6 +30,8 @@ export interface ProviderAccount {
   static_weight: number
   probe_model: string | null
   tags: string[]
+  /** 后端保证为 JSON 对象;用于 provider 专属自由扩展配置。 */
+  extra: Record<string, unknown>
   last_dispatch_at: string | null
   last_probe_latency_ms: number | null
   last_probe_at: string | null
@@ -48,7 +50,9 @@ export interface ProviderAccount {
   custom_error_codes_enabled: boolean
   /** 自定义错误码列表(HTTP 状态码);后端可能回 null,消费处按空数组处理。 */
   custom_error_codes: number[]
-  /** 临时不可调度开关(开启后账号被临时移出可调度池)。 */
+  /** 池模式错误处理策略标记。 */
+  pool_mode: boolean
+  /** 临时停调规则开关;规则命中后账号才会进入临时不可调度状态。 */
   temp_unschedulable_enabled: boolean
   /** 出站单代理绑定(与 proxy_group_id 互斥);null=未绑单代理。 */
   proxy_id: number | null
