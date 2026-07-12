@@ -42,7 +42,8 @@ export function LoginPage() {
   const nav = useNavigate()
   const auth = useAuth()
   const [mode, setMode] = useState<Mode>('login')
-  const [tenantId, setTenantId] = useState('1')
+  // 单实例:租户固定为 1(不暴露给用户);状态保留供 tid() 内部使用。
+  const [tenantId] = useState('1')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -296,9 +297,8 @@ export function LoginPage() {
             }}
             style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}
           >
-            <Field label="租户 ID">
-              <input value={tenantId} onChange={(e) => setTenantId(e.target.value)} inputMode="numeric" style={inp} />
-            </Field>
+            {/* 单实例部署:租户固定为 1,不向用户暴露"租户 ID"栏(对齐 sub2api/new-api 单实例登录)。
+                tenantId 状态仍保留供内部登录/注册/OAuth 使用,只是不渲染输入框。 */}
 
             {/* 密码登录/注册区:password_login_enabled=false 时登录态隐藏(只留社交/passkey);
                 注册态始终显示表单(注册本就需要密码)。 */}
