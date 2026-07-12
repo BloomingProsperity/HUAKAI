@@ -1,5 +1,5 @@
 -- 运行日志清理是抹除运维证据的破坏性操作,必须落管理员审计;显式扩展 action 与
--- target_type 白名单(逐字复现 0177/0161 列表 + 新增项),避免真实库拒绝审计行。
+-- target_type 白名单(action 逐字复现 0177、target_type 逐字复现 0164 + 新增项),避免真实库拒绝审计行。
 BEGIN;
 
 ALTER TABLE admin_audit_events
@@ -31,6 +31,7 @@ ALTER TABLE admin_audit_events
              'provider_account', 'account_credential',
              'billing_setting', 'pool_group', 'platform_setting',
              'quota_policy', 'dlq_event', 'alert_rule', 'moderation_keyword',
+             'provider', 'channel',
              'runtime_logs'));
 
 COMMIT;

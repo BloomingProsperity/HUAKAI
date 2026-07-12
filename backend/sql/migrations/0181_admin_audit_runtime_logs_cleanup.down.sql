@@ -27,6 +27,7 @@ ALTER TABLE admin_audit_events
             ('api_key', 'admin_token', 'tenant', 'user',
              'provider_account', 'account_credential',
              'billing_setting', 'pool_group', 'platform_setting',
-             'quota_policy', 'dlq_event', 'alert_rule', 'moderation_keyword'));
+             'quota_policy', 'dlq_event', 'alert_rule', 'moderation_keyword',
+             'provider', 'channel'));
 
 COMMIT;
