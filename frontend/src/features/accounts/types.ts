@@ -117,6 +117,25 @@ export interface AccountHealth {
   }
 }
 
+/** GET /{id}/recent-requests 单条(已结算 usage_records,不含钱字段)。ttft/upstream_model 可空。 */
+export interface AccountRecentRequestItem {
+  at: string
+  model: string
+  upstream_model: string | null
+  status: string
+  latency_ms: number
+  ttft_ms: number | null
+  tokens_in: number
+  tokens_out: number
+  stream: boolean
+  attempt_seq: number
+}
+
+export interface AccountRecentRequestsResponse {
+  items: AccountRecentRequestItem[]
+  source: string
+}
+
 /** GET /{id}/upstream-models 上游可用模型清单(OpenAI 兼容 /v1/models 去重后)。 */
 export interface UpstreamModelsResult {
   models: string[]

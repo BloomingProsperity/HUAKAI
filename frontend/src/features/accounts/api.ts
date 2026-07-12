@@ -2,6 +2,7 @@ import { apiGet, apiSend } from '../../lib/api'
 import { buildAccountListQuery, type AccountListFilters } from './query'
 import type {
   AccountHealth,
+  AccountRecentRequestsResponse,
   AccountTestResult,
   BulkByTagResult,
   DeleteAccountResult,
@@ -103,6 +104,22 @@ export async function getProviderAccountHealth(id: number, signal?: AbortSignal)
  */
 export async function getProviderAccountUpstreamModels(id: number): Promise<UpstreamModelsResult> {
   return apiGet<UpstreamModelsResult>(`${ACCOUNTS_PATH}/${id}/upstream-models`)
+}
+
+/**
+ * 账号最近请求(已结算 usage_records,只读、不含钱字段):
+ * GET /admin/v1/provider-accounts/{id}/recent-requests?limit=(默认 20,上限 100)。
+ * 真码:backend/internal/adminhttp/provider_account_recent_requests_handler.go:53。
+ */
+export async function getProviderAccountRecentRequests(
+  id: number,
+  limit = 20,
+  signal?: AbortSignal,
+): Promise<AccountRecentRequestsResponse> {
+  return apiGet<AccountRecentRequestsResponse>(`${ACCOUNTS_PATH}/${id}/recent-requests`, {
+    query: { limit },
+    signal,
+  })
 }
 
 /**

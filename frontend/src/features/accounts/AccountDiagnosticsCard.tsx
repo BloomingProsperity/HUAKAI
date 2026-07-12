@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { ApiError } from '../../lib/api'
 import {
   getProviderAccountHealth,
+  getProviderAccountRecentRequests,
   getProviderAccountUpstreamModels,
   testProviderAccount,
 } from './api'
 import { healthRows, testSummary, type TestSummary } from './diagnostics'
-import type { AccountHealth, UpstreamModelsResult } from './types'
+import { fmtLatency, fmtTtft, recentModelDisplay, recentStatusTone } from './recentRequests'
+import type { AccountHealth, AccountRecentRequestsResponse, UpstreamModelsResult } from './types'
 
 /*
  * 账号诊断卡(详情页)。三块运维诊断,均按需触发(避免详情页一进来就打三个上游/DB 请求):
@@ -25,6 +27,17 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
   const [test, setTest] = useState<{ busy: boolean; summary?: TestSummary }>({ busy: false })
   const [health, setHealth] = useState<{ busy: boolean; data?: AccountHealth; error?: string }>({ busy: false })
   const [models, setModels] = useState<{ busy: boolean; data?: UpstreamModelsResult; error?: string }>({ busy: false })
+  const [recent, setRecent] = useState<{ busy: boolean; data?: AccountRecentRequestsResponse; error?: string; limit: number }>({ busy: false, limit: 20 })
+
+  async function loadRecent(limit = recent.limit) {
+    setRecent((s) => ({ ...s, busy: true, limit }))
+    try {
+      const data = await getProviderAccountRecentRequests(id, limit)
+      setRecent({ busy: false, data, limit })
+    } catch (e) {
+      setRecent({ busy: false, error: errText(e, '加载最近请求失败'), limit })
+    }
+  }
 
   async function runTest() {
     setTest({ busy: true })
@@ -117,8 +130,61 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
           )
         )}
       </div>
+
+      {/* 最近请求(已结算 usage_records,只读、不含金额) */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+        <div style={row}>
+          <button type="button" disabled={recent.busy} onClick={() => void loadRecent()} style={ghostBtn}>
+            {recent.busy ? '加载中…' : recent.data ? '刷新最近请求' : '加载最近请求'}
+          </button>
+          <div className="hk-seg">
+            {[20, 50, 100].map((n) => (
+              <button key={n} type="button" className={recent.limit === n ? 'is-on' : ''} onClick={() => void loadRecent(n)} disabled={recent.busy}>
+                {n}
+              </button>
+            ))}
+          </div>
+          {recent.error && <span style={{ fontSize: 13, color: 'var(--hk-danger)' }}>{recent.error}</span>}
+          <span style={hint}>按结算时间倒序 · 不含金额</span>
+        </div>
+        {recent.data && (
+          recent.data.items.length === 0 ? (
+            <div className="hk-empty">该账号暂无已结算请求。</div>
+          ) : (
+            <div className="hk-tablewrap">
+              <table className="hk-table">
+                <thead>
+                  <tr>{['时间', '模型', '状态', '延迟', 'TTFT', '输入', '输出', '流式', 'attempt'].map((h) => <th key={h}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {recent.data.items.map((it, i) => (
+                    <tr key={`${it.at}-${i}`}>
+                      <td className="hk-mono">{fmtTime(it.at)}</td>
+                      <td title={recentModelDisplay(it)} style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{recentModelDisplay(it)}</td>
+                      <td><span className={`hk-pill ${recentStatusTone(it.status) === 'ok' ? 'hk-pill--ok' : 'hk-pill--crit'}`}>{it.status}</span></td>
+                      <td className="hk-mono">{fmtLatency(it.latency_ms)}</td>
+                      <td className="hk-mono">{fmtTtft(it.ttft_ms)}</td>
+                      <td className="hk-mono" style={{ textAlign: 'right' }}>{it.tokens_in}</td>
+                      <td className="hk-mono" style={{ textAlign: 'right' }}>{it.tokens_out}</td>
+                      <td>{it.stream ? '是' : '否'}</td>
+                      <td className="hk-mono" style={{ textAlign: 'right' }}>{it.attempt_seq}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+      </div>
     </section>
   )
+}
+
+// fmtTime:ISO → 本地化;空/非法 → 原样或 "—"。
+function fmtTime(iso: string): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
 const card: React.CSSProperties = {
